@@ -310,7 +310,7 @@ loop_deliver (struct loop *loop)
 void
 loop_fini (struct loop *loop)
 {
-	loop->exit = true;
+	loop->flags |= LOOP_EXIT;
 	for (loop_collect(loop); loop->mail; loop_collect(loop))
 		loop_deliver(loop);
 
@@ -497,7 +497,8 @@ loop_ready (struct loop      *loop,
             struct loop_step *step)
 {
 	if (!step->hook.next)
-		list_append(&loop->ready[loop->stepping ? ONGOING : FRESH], &step->hook);
+		list_append(&loop->ready[loop->flags & LOOP_STEPPING ? ONGOING : FRESH],
+		            &step->hook);
 }
 
 void
@@ -599,7 +600,7 @@ static unsigned
 loop_fire (struct loop *loop)
 {
 	unsigned n = 0;
-	for (; n < TIMERS && loop->timers && !loop->exit; ++n) {
+	for (; n < TIMERS && loop->timers && !(loop->flags & LOOP_EXIT); ++n) {
 		struct loop_timer *timer = loop->heap[0];
 		if (timer->due > loop->now)
 			break;
@@ -642,7 +643,8 @@ loop_run (struct loop *loop,
 	uint64_t t = loop_clock();
 	uint64_t steps = 0;
 	size_t i = *cursor;
-	for (size_t empty = 0; empty < n && !loop->exit && (!steps || t < until);
+	for (size_t empty = 0;
+	     empty < n && !(loop->flags & LOOP_EXIT) && (!steps || t < until);
 	     i = (i + 1) % n) {
 		if (list_is_empty(&batch[i])) {
 			++empty;
@@ -755,13 +757,13 @@ loop_turn (struct loop *loop,
 
 	uint64_t start = loop->now = loop_clock();
 	atomic_store_explicit(&loop->turn, start, memory_order_relaxed);
-	for (int i = 0; i < n && !loop->exit; ++i) {
+	for (int i = 0; i < n && !(loop->flags & LOOP_EXIT); ++i) {
 		struct loop_ref *ref = events[i].data.ptr;
 		if (ref && ref->cb)
 			ref->cb(loop, ref, events[i].events);
 	}
 	loop_collect(loop);
-	for (unsigned i = 0; i < MAIL && loop->mail && !loop->exit; ++i) {
+	for (unsigned i = 0; i < MAIL && loop->mail && !(loop->flags & LOOP_EXIT); ++i) {
 		uint64_t posted = loop->mail->posted;
 		uint64_t now = loop_clock();
 		hist_record(&loop->metrics->inbox, now > posted ? now - posted : 0);
@@ -771,11 +773,11 @@ loop_turn (struct loop *loop,
 	loop_most(&s->events, (uint64_t)n);
 	loop_most(&s->timers, loop_fire(loop));
 
-	loop->stepping = true;
+	loop->flags |= LOOP_STEPPING;
 	uint64_t steps = loop_run(loop, &loop->ready[FRESH], 2, &loop->cursor,
 	                          start + INTERACTIVE_NS, false);
 	steps += loop_run(loop, &loop->ready[BULK], 1, &(size_t){}, start + BULK_NS, true);
-	loop->stepping = false;
+	loop->flags &= ~LOOP_STEPPING;
 	loop_most(&s->steps, steps);
 	loop_reap(loop);
 	loop_stats_time(s, TIME_TURN, &loop->metrics->turn, loop_clock() - start);
@@ -788,7 +790,7 @@ loop_exec (struct loop *loop)
 	/* Set the timer slack of the thread to 1 ns. The default slack of 50 µs
 	 * delays each timed wake-up. */
 	(void)prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL);
-	while (!loop->exit) {
+	while (!(loop->flags & LOOP_EXIT)) {
 		int e = loop_turn(loop, UINT64_MAX);
 		if (e)
 			return e;
@@ -810,5 +812,5 @@ loop_fail (struct loop *loop,
 void
 loop_exit (struct loop *loop)
 {
-	loop->exit = true;
+	loop->flags |= LOOP_EXIT;
 }

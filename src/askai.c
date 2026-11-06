@@ -292,7 +292,7 @@ askai_walk_done (struct loop *loop,
                  struct msg  *msg)
 {
 	(void)msg;
-	if (loop->exit)
+	if (loop->flags & LOOP_EXIT)
 		return;
 	walker.keep->trim_ns += walker.job.error ? 0 : walker.ns;
 	askai_keep_trimmed(walker.keep);
@@ -557,10 +557,10 @@ askai_reload_done (struct loop *loop,
 	/* Cancelled, as the blockers stop, the work was not done. */
 	if (r->job.error)
 		return;
-	if (!loop->exit)
+	if (!(loop->flags & LOOP_EXIT))
 		askai_reload_apply(app, r);
 	config_fini(&r->cfg);
-	if (r->again && !loop->exit) {
+	if (r->again && !(loop->flags & LOOP_EXIT)) {
 		r->again = false;
 		askai_home_reload(app, loop);
 	}

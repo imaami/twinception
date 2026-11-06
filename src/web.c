@@ -722,12 +722,12 @@ web_run_mail (struct loop *loop,
 		{ .error = stopping, .e = ESHUTDOWN },
 		{ .error = "",       .e = ECANCELED },
 	};
-	struct web_response const *end = &ends[!loop->exit];
+	struct web_response const *end = &ends[!(loop->flags & LOOP_EXIT)];
 	uint32_t bits = atomic_exchange(&run->bits, 0);
 
 	switch (bits & (RUN_SUBMIT | RUN_CANCEL)) {
 	case RUN_SUBMIT:
-		if (!loop->exit) {
+		if (!(loop->flags & LOOP_EXIT)) {
 			web_run_start(web, run);
 			break;
 		}

@@ -246,7 +246,7 @@ cli_network_chunk_returned (struct loop *loop,
 	--network->messages;
 	free(chunk);
 	chunk = nullptr;
-	if (!loop->exit)
+	if (!(loop->flags & LOOP_EXIT))
 		cli_network_progress(network);
 }
 
@@ -538,7 +538,7 @@ cli_network_progress_message (struct loop *loop,
 {
 	struct cli_network *network = container_of(message, struct cli_network, progress);
 	atomic_store(&network->progress_pending, false);
-	if (!loop->exit)
+	if (!(loop->flags & LOOP_EXIT))
 		cli_network_progress(network);
 }
 
@@ -825,7 +825,7 @@ cli_network_start (struct loop *loop,
 	struct cli_network_request *request = container_of(message, struct cli_network_request, start);
 	struct cli_network *network = container_of(loop, struct cli_network, loop);
 	list_append(&network->requests, &request->hook);
-	if (loop->exit || atomic_load(&request->cancelled)) {
+	if (loop->flags & LOOP_EXIT || atomic_load(&request->cancelled)) {
 		cli_network_finish(request, ECANCELED, nullptr);
 		return;
 	}

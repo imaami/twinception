@@ -2218,7 +2218,7 @@ httpd_conn_back (struct loop *loop,
 {
 	struct httpd_conn *conn = container_of(msg, struct httpd_conn, msg);
 	struct httpd_home *home = door;
-	if (loop->exit || !home) {
+	if (loop->flags & LOOP_EXIT || !home) {
 		httpd_conn_destroy(&conn);
 		return;
 	}
@@ -2298,7 +2298,7 @@ httpd_conn_take (struct loop *loop,
                  struct msg  *msg)
 {
 	struct httpd_conn *conn = container_of(msg, struct httpd_conn, msg);
-	if (loop->exit) {
+	if (loop->flags & LOOP_EXIT) {
 		httpd_conn_drop(conn);
 		httpd_conn_destroy(&conn);
 		return;
@@ -2337,7 +2337,7 @@ httpd_lane_policy (struct loop *loop,
 {
 	struct httpd_lane *lane = container_of(msg, struct httpd_lane, handover);
 	struct policy *policy = atomic_exchange(&lane->policy, nullptr);
-	if (policy && !loop->exit) {
+	if (policy && !(loop->flags & LOOP_EXIT)) {
 		struct policy *old = lane->srv->policy;
 		lane->srv->policy = policy;
 		policy = old;
@@ -2353,7 +2353,7 @@ httpd_lane_evict (struct loop *loop,
 {
 	struct httpd_lane *lane = container_of(msg, struct httpd_lane, evict);
 	uint32_t n = atomic_exchange(&lane->evicts, 0);
-	if (loop->exit)
+	if (loop->flags & LOOP_EXIT)
 		return;
 	lane->srv->evicting += n;
 	loop_ready_bulk(loop, &lane->srv->evict);

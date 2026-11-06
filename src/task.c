@@ -115,7 +115,7 @@ task_arrive (struct loop *loop,
              struct msg  *msg)
 {
 	struct task *task = container_of(msg, struct task, msg);
-	if (loop->exit)
+	if (loop->flags & LOOP_EXIT)
 		task_abandon(task);
 	else
 		task_lane_take(task_pool_lane(task->pool, loop), task, loop);

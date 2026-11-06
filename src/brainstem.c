@@ -183,7 +183,7 @@ brainstem_thread_obey (struct loop *loop,
 	struct brainstem_app const *app = t->app;
 	void *ctx = t->ctx;
 	uint32_t orders = atomic_exchange(&t->orders, 0);
-	if (loop->exit)
+	if (loop->flags & LOOP_EXIT)
 		return;
 	if (orders & STATS) {
 		char label[sizeof t->name + 1];

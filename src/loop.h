@@ -79,6 +79,11 @@ struct loop_metrics {
 	_Atomic uint64_t work[LOOP_UNITS];  /**< the most of each unit a step did */
 };
 
+/** The bits of loop.flags: loop_exit() or loop_fini() was called, and
+ *  steps run, whose loop_ready() calls queue steps that are not fresh.
+ */
+enum { LOOP_EXIT = 1, LOOP_STEPPING = 2 };
+
 /**
  * An event loop. Only its own thread touches it, but for loop_post(), which
  * any thread may call, and the fields marked as read elsewhere.
@@ -114,11 +119,10 @@ struct loop {
 	                                               unless that list is empty */
 	uint64_t               now;               /**< when the turn began, CLOCK_MONOTONIC ns */
 	uint64_t               work[LOOP_UNITS];  /**< done by the step under way */
+	uint64_t               flags;             /**< LOOP_* bits, widened over the
+	                                               padding */
 	int                    epfd;
 	int                    error;
-	uint32_t               stepping;          /**< nonzero while steps run: theirs
-	                                               are not fresh */
-	uint32_t               exit;
 	uint32_t               used;              /**< slots ever used */
 	uint32_t               vacant;            /**< the last slot freed + 1, whose
 	                                               own vacant links the next;

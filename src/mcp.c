@@ -1722,7 +1722,7 @@ mcp_req_abort (struct mcp_req *req,
 	 * callback reaches the call then. */
 	if (req->phase != PHASE_END)
 		req->error = e;
-	else if (!req->mcp->draining && !req->mcp->loop->exit)
+	else if (!req->mcp->draining && !(req->mcp->loop->flags & LOOP_EXIT))
 		return;
 	mcp_req_finish(req);
 }
@@ -2612,7 +2612,7 @@ mcp_on_job (struct loop *loop,
 {
 	struct job *job = container_of(msg, struct job, to_front);
 	uint32_t bits = atomic_exchange(&job->front_bits, 0);
-	if (loop->exit) {
+	if (loop->flags & LOOP_EXIT) {
 		/* The last reference frees the job: a completion brings the
 		 * front's too, as its request has gone. */
 		uint32_t refs = bits & JOB_RETURN ? 0 : bits & JOB_DONE ? 2 : 1;
@@ -2755,7 +2755,7 @@ static struct mcp_req *
 mcp_req_named (struct loop const *loop,
                struct handle      who)
 {
-	return loop->exit ? nullptr : loop_lookup(loop, who, HANDLE_REQ);
+	return loop->flags & LOOP_EXIT ? nullptr : loop_lookup(loop, who, HANDLE_REQ);
 }
 
 /* A wait for a journal callback of @p req, which names the request by a
@@ -3700,7 +3700,7 @@ struct mcp_slot *
 mcp_slot_named (struct loop const *loop,
                 struct handle      who)
 {
-	return loop && !loop->exit ? loop_lookup(loop, who, HANDLE_SLOT) : nullptr;
+	return loop && !(loop->flags & LOOP_EXIT) ? loop_lookup(loop, who, HANDLE_SLOT) : nullptr;
 }
 
 /* The reply to @p wait, the HTTP request of the call that @p who names, has

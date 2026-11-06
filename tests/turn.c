@@ -73,7 +73,7 @@ turn_mail (struct loop *loop,
 	/* loop_fini() sets the exit flag and then calls this handler for the
 	 * message that is still posted. In that case the handler must not post
 	 * the message again. */
-	if (loop->exit)
+	if (loop->flags & LOOP_EXIT)
 		return;
 	clock_ns += t.mail_ns;
 	loop_ready(loop, &t.fresh);

@@ -1170,7 +1170,7 @@ home_journal_done (struct loop *loop,
 	--r->pending;
 	if (home)
 		--home->persisting;
-	if (!home || loop->exit) {
+	if (!home || loop->flags & LOOP_EXIT) {
 		home_job_put(job, 1);
 		return;
 	}
@@ -2731,7 +2731,7 @@ home_job (struct loop *loop,
 {
 	struct job *job = container_of(msg, struct job, to_home);
 	uint32_t bits = atomic_exchange(&job->home_bits, 0);
-	if (loop->exit) {
+	if (loop->flags & LOOP_EXIT) {
 		home_job_orphan(job, bits);
 		return;
 	}
