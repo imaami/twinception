@@ -124,12 +124,12 @@ notes_tool_hidden (struct notes_tool const *tool,
 	return side == NOTES_UPSTREAM && tool->attach ? 0 : NOTE_UPLOAD;
 }
 
-/* The message for a file argument that is not a valid name. */
+/* The message for a file or as argument that is not a valid name. */
 static struct cstr_view const bad_name =
-	CSTR_VIEW_INIT("The file argument must be a file name of 1 to 255 bytes, such as "
-	               "plan.md or findings/locks.md. It cannot have control characters or "
-	               "empty parts, and no part can be ., .., .git or git~1, in any case "
-	               "and also with spaces or dots after it.");
+	CSTR_VIEW_INIT("A note's name must be 1 to 255 bytes, such as plan.md or "
+	               "design/locks.md. It cannot have control characters or empty parts, "
+	               "and no part can be ., .., .git or git~1, in any case and also with "
+	               "spaces or dots after it.");
 
 /* The message for a write that must replace a note, if no note of the
  * name exists.
@@ -1479,8 +1479,7 @@ notes_tool_read (struct mcp_slot    *slot,
 		if (!as) {
 			to = name;
 		} else if (notes_name(&to)) {
-			mcp_slot_tell(slot, CSTR_VIEW("The as argument must be a file name, as the "
-			                              "file argument is."), TOOL_FAILED);
+			mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 			return;
 		}
 		(void)util_text_store(&call->name, to);
@@ -1551,11 +1550,11 @@ notes_tool_start (struct mcp_slot    *slot,
 	if (which == array_size(notes_tool_actions) ||
 	    notes_tool_actions[which].flags & hidden) {
 		dstr_auto why = DSTR_INIT;
-		bool ok = dstr_cat(&why, "The action must be one of:");
+		bool ok = dstr_cat(&why, "The action argument must be one of:");
 		for (size_t i = 0; ok && i < array_size(notes_tool_actions); ++i) {
 			struct cstr_view const name = notes_tool_actions[i].name;
 			ok = notes_tool_actions[i].flags & hidden ||
-			     dstr_printf(&why, " %.*s", (int)name.len, name.data);
+			     dstr_printf(&why, "%s%.*s", i ? ", " : " ", (int)name.len, name.data);
 		}
 		if (!ok || !dstr_cat_n(&why, ".", 1))
 			mcp_slot_fail(slot, ENOMEM);
@@ -1577,15 +1576,15 @@ notes_tool_start (struct mcp_slot    *slot,
 	struct json_object *from = jb_get(args, "from");
 	struct json_object *to = jb_get(args, "to");
 	if ((revision && !(flags & NOTE_REVISION)) || ((from || to) && !diff)) {
-		mcp_slot_tell(slot, CSTR_VIEW("revision applies to read and restore; from and to "
-		                              "apply to diff. Use history to find commit IDs."),
-		              TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("revision is for read and restore, and from and to are "
+		                              "for diff. The description of action lists the "
+		                              "arguments of each action."), TOOL_FAILED);
 		return;
 	}
 	if (side == NOTES_CLIENT) {
 		struct json_object *thread = jb_get(args, "thread");
 		if (thread && !hexid_valid(jb_view(thread))) {
-			mcp_slot_tell(slot, CSTR_VIEW("The optional thread must be 32 hexadecimal "
+			mcp_slot_tell(slot, CSTR_VIEW("The thread argument must be 32 hexadecimal "
 			                              "digits. It does not select the notes "
 			                              "session."), TOOL_FAILED);
 			return;
@@ -1662,21 +1661,18 @@ notes_tool_schema (struct notes_tool const *tool,
 {
 	static char const *const descriptions[] = {
 		[NOTES_UPSTREAM] =
-			"Your persistent notebook in this shared Git session. Add findings, "
-			"decisions and plans as named files. replace can update your own "
-			"existing files; Git preserves every previous version. All instances sharing the repository "
-			"can read every notebook, but you can write only your own. Use action "
-			"notebooks to discover the others, then list or read with that notebook "
-			"selector. Your notes are included after compaction; read older notes "
-			"when needed. Non-UTF-8 bytes are displayed as \xe2\x9f\xa6XX\xe2\x9f\xa7.",
+			"Notes are files that last across ask calls and compactions, and every "
+			"version stays in the history. You can read every notebook but write only "
+			"your own. After a compaction, you see your note history and your newest "
+			"note.",
 		[NOTES_CLIENT] =
-			"Your persistent notebook in this shared Git session. Notes are named "
-			"files; add creates one, replace updates one while preserving history. All instances sharing the "
-			"repository can read every notebook; only your own can be written. "
-			"Use action notebooks to discover selectors, then list or read one. "
-			"copy imports a note into your own notebook without changing its text. "
-			"content keeps an attached user file. Threads do not partition notes. "
-			"Non-UTF-8 bytes are displayed as \xe2\x9f\xa6XX\xe2\x9f\xa7.",
+			"Notes are files, and every version stays in the history. You can read "
+			"every notebook but write only your own.",
+	};
+	static char const *const notebooks[] = {
+		[NOTES_UPSTREAM] = "own, the default, or a selector from action notebooks.",
+		[NOTES_CLIENT] = "own, the default, other for the other side, or a selector from "
+		                 "action notebooks. other is copy's default.",
 	};
 	/* A turn can attach a note only if its upstream accepts files. */
 	uint32_t const hidden = notes_tool_hidden(tool, side);
@@ -1688,47 +1684,33 @@ notes_tool_schema (struct notes_tool const *tool,
 			actions = jb_push_or_free(actions, jb_string(notes_tool_actions[i].name));
 	struct json_object *props = jb_object(
 		"action", jb_set_or_free(schema_enum(actions, nullptr), "description", schema_text3(
-			"add a note, replace an existing own note, list current files "
-			"with their byte sizes and blob ids, show history oldest first "
-			"with commit IDs and messages (line counts are lines added by each change), "
-			"read a note, "
-			"diff two versions, or restore an old version in a new own commit "
-			"unless the note already has its bytes. "
-			"To recover lost text: history with file, diff with file and from, then "
-			"read with revision for selected text or restore with revision for the whole file. "
-			"Use copy to import a note into yours, or discover all session notebooks with "
-			"notebooks.", files ? " attach gives a note as a file." : "", "")),
-		"file", jb_set_or_free(schema_property("string", nullptr), "description", schema_text3(
-			"For add, replace, restore, read, diff", files ? ", copy and attach" : " and copy",
-			": the file name of the note, at most 255 bytes. It can have "
-			"directories, such as findings/locks.md. Its extension, such "
-			"as .md or .txt, shows the format of the text. Optional for history "
-			"to show only changes to that exact file name.")),
+			"add creates a note (file) with text. replace replaces the whole text of a "
+			"note. restore writes a note's version at the commit revision in a new "
+			"commit. copy copies a note (file) from another notebook (notebook) into "
+			"yours, under as if given. list lists the current notes. history lists the "
+			"changes, oldest first, to all notes or to one (file). read reads a note, "
+			"or its version at the commit revision. diff shows the changes to a note "
+			"between the commits from and to. notebooks lists the session's notebooks.",
+			files ? " attach gives you a whole note (file) as a file after the turn's "
+			        "results." : "",
+			" The actions that read take notebook. To recover lost text: history with "
+			"file, then diff, then read or restore with revision.")),
+		"file", schema_property("string",
+			"A note's file name, at most 255 bytes, such as plan.md or design/locks.md. "
+			"Its extension shows the format of the text. With history, only that "
+			"file's changes."),
 		"revision", schema_property("string",
-			"For read: full commit ID from the selected notebook's history, "
-			"or current (default). Required for restore, which copies the exact "
-			"historical bytes into your own notebook in a new commit, preserving "
-			"all intervening history; if the note already has those bytes, it "
-			"makes no commit. No Git revision expressions."),
+			"A full commit ID from the notebook's history, or current, the default."),
 		"from", schema_property("string",
-			"Required for diff: the older full commit ID from this notebook's history, "
-			"or current. The diff compares that file at from against to."),
+			"The older commit: a full commit ID from the notebook's history, or "
+			"current."),
 		"to", schema_property("string",
-			"For diff: full commit ID from the same notebook, or current (default). "
-			"Both revisions are resolved against one notebook snapshot. Output names "
-			"the resolved IDs; reuse them when continuing with offset."),
-		"as", schema_property("string",
-			"For copy: the file name of the copy in your notebook. The "
-			"default is the name of the note."),
-		"text", schema_property("string",
-			"For add and replace: the text of the note, at most 4 MiB."),
+			"The newer commit: a full commit ID, or current, the default. The output "
+			"names both commits; give those IDs with offset."),
+		"as", schema_property("string", "The name to write the note under, instead of file."),
+		"text", schema_property("string", "The text, at most 4 MiB."),
 		"offset", schema_count(0, TOOL_OFFSET_ABOUT),
-		"notebook", jb_set_or_free(schema_property("string", nullptr), "description", schema_text3(
-			"For list, history, read, diff and copy", files ? ", and attach" : "",
-			": own (default), or a participant/principal/side selector "
-			"from action notebooks. That action identifies your writable "
-			"notebook even before your first note. For copy, explicitly "
-			"select the source. add, replace and restore write only your own notebook.")),
+		"notebook", schema_property("string", notebooks[side]),
 		nullptr);
 	if (side == NOTES_CLIENT) {
 		/* The client program, not the model, fills in content with a
@@ -1747,18 +1729,13 @@ notes_tool_schema (struct notes_tool const *tool,
 			"to the configured shared repository, independent of this value."));
 	}
 	dstr_auto description = DSTR_INIT;
-	if (!dstr_printf(&description, "Participant: %s. %s "
-	                 "Prefer small, controlled, incremental edits. Before using replace, "
-	                 "read the complete current file; send the complete updated file "
-	                 "while preserving unrelated passages, findings and evidence verbatim. "
-	                 "If an edit would overhaul most of a document, prefer add with a "
-	                 "new versioned filename, keep the previous file, and identify the "
-	                 "predecessor and what changed in the new document. Preserve existing "
-	                 "structure and useful detail across session resumes and model changes.%s",
-	                 notes_writer(tool->notes),
-	                 descriptions[side], files
-	                 ? " attach gives you a whole note as a file after the results "
-	                   "of the turn, where read shows a large note in parts." : "")) {
+	if (!dstr_printf(&description, "Participant: %s. %s Prefer small, incremental edits. "
+	                 "Before replace, read the whole note, then send the whole new text and "
+	                 "keep unrelated passages and evidence word for word. For an overhaul of "
+	                 "most of a note, add a new versioned file, keep the old one, and name "
+	                 "the predecessor and what changed. Bytes that are not UTF-8 show as "
+	                 "\xe2\x9f\xa6XX\xe2\x9f\xa7.", notes_writer(tool->notes),
+	                 descriptions[side])) {
 		json_object_put(props);
 		return nullptr;
 	}

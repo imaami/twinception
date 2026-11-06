@@ -674,7 +674,7 @@ read the other notebooks. The repository, rather than an ask call or
 transport connection, determines which session a note belongs to.
 
 A note is a file. The model chooses its name, such as `plan.md` or
-`findings/locks.md`, and writes its text, at most 4 MiB. The extension of
+`design/locks.md`, and writes its text, at most 4 MiB. The extension of
 the name shows the format of the text, which `askai` does not check.
 The tool `notes` creates a file with `add` or updates an existing file with
 `replace`. Each write that changes a note adds a commit to the caller's

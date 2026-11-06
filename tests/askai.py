@@ -5670,7 +5670,7 @@ def check_logs(binary, up):
             line = ai.wait_log(r"^tool call notes from anonymous failed ")
             assert re.fullmatch(
                 r'tool call notes from anonymous failed after \d+\.\d s \(88 bytes\); '
-                r'error "The optional thread must be 32 hexadecimal digits\. '
+                r'error "The thread argument must be 32 hexadecimal digits\. '
                 r'It does not select the notes session\."\n', line), line
             assert "SECRETFILE" not in "".join(ai.log), ai.log
 
@@ -5879,7 +5879,7 @@ def check_logs(binary, up):
             line = ai.wait_log(r"^tool call notes from anonymous failed ")
             assert line.endswith("; arguments " + json.dumps(odd, separators=(",", ":"),
                                                              ensure_ascii=False) +
-                                 '; error "The optional thread must be 32 hexadecimal digits. '
+                                 '; error "The thread argument must be 32 hexadecimal digits. '
                                  'It does not select the notes session."\n'), line
             script[:] = [
                 lambda r: (200, turn_stream([("a", "notes", json.dumps(
@@ -10170,21 +10170,21 @@ def check_notes(binary, up):
             for name, why in (("plan.md", "A note of that name exists"),
                               ("a", "That name is a directory of notes"),
                               ("plan.md/x", "A directory in that name is a note"),
-                              ("", "The file argument must be"),
-                              ("/", "The file argument must be"),
-                              ("a//b", "The file argument must be"),
-                              ("a/", "The file argument must be"),
-                              (".", "The file argument must be"),
-                              ("x/../plan.md", "The file argument must be"),
-                              ("x/.Git/y", "The file argument must be"),
-                              (".git.", "The file argument must be"),
-                              (".GIT ", "The file argument must be"),
-                              ("git~1", "The file argument must be"),
-                              ("x/GIT~1/y", "The file argument must be"),
-                              (".git:x", "The file argument must be"),
-                              ("a\\.git", "The file argument must be"),
-                              ("a\tb", "The file argument must be"),
-                              ("x" * 256, "The file argument must be")):
+                              ("", "A note's name must be"),
+                              ("/", "A note's name must be"),
+                              ("a//b", "A note's name must be"),
+                              ("a/", "A note's name must be"),
+                              (".", "A note's name must be"),
+                              ("x/../plan.md", "A note's name must be"),
+                              ("x/.Git/y", "A note's name must be"),
+                              (".git.", "A note's name must be"),
+                              (".GIT ", "A note's name must be"),
+                              ("git~1", "A note's name must be"),
+                              ("x/GIT~1/y", "A note's name must be"),
+                              (".git:x", "A note's name must be"),
+                              ("a\\.git", "A note's name must be"),
+                              ("a\tb", "A note's name must be"),
+                              ("x" * 256, "A note's name must be")):
                 said = call({"action": "add", "file": name, "text": "t",
                              "thread": thread})
                 assert said.startswith("!" + why), (name, said)
@@ -10232,8 +10232,8 @@ def check_notes(binary, up):
             assert "plan.md" in call({"action": "list"})
             assert call({"action": "read", "file": "plan.md"}) == "step 1"
             assert call({"action": "list", "thread": "xyz"}).startswith(
-                "!The optional thread must be 32 hexadecimal digits.")
-            assert call({"action": "remove"}).startswith("!The action must")
+                "!The thread argument must be 32 hexadecimal digits.")
+            assert call({"action": "remove"}).startswith("!The action argument must")
             for action in ("add", "read", "diff", "restore"):
                 assert call({"action": action, "text": "x", "file": None}) == "!The file " \
                     "argument is missing: give the name of a note, such as plan.md.", action
@@ -10291,9 +10291,8 @@ def check_notes(binary, up):
                     ({"file": "found.md"}, "!A note of that name exists. Use action "
                      "replace to update it, or add under another name."),
                     ({"file": "none.md"}, "!No note has that name."),
-                    ({"file": "found.md", "as": "a//b"}, "!The as argument must be a "
-                     "file name, as the file argument is."),
-                    ({"file": "../x"}, "!The file argument must be")):
+                    ({"file": "found.md", "as": "a//b"}, "!A note's name must be"),
+                    ({"file": "../x"}, "!A note's name must be")):
                 got = call({"action": "copy", "thread": shared} | arguments)
                 assert got.startswith(said) if said[0] == "!" else wrote(got, said), \
                     (arguments, got)
@@ -10935,9 +10934,10 @@ def check_notes_texts(binary, up):
     does not apply to that result, and a turn's offset does. The
     notebooks action lists only the caller's own notebook before the
     first note. The check also compares the texts for an empty notebook,
-    an unusable revision and a diff without differences. It compares the
-    notebook notice after a turn's diff and the last line of the trace
-    when the turns of an ask call kept notes."""
+    an unusable revision and a diff without differences, and the tool's
+    definitions. It compares the notebook notice after a turn's diff and
+    the last line of the trace when the turns of an ask call kept
+    notes."""
     held = up.reply
     script = []
     up.reply = lambda request: script.pop(0)(request)
@@ -10982,6 +10982,64 @@ def check_notes_texts(binary, up):
                 assert trace == "The other AI made 3 tool calls in 2 turns:\n" \
                     f"- notes list: {len(none)} bytes\n- notes list: {len(none)} bytes\n" \
                     f"- notes notebooks: {len(upstream) + 18} bytes\n", trace
+                # The definitions: the description, what each action does with
+                # its arguments, and what each argument is.
+                lent = next(t["function"] for t in up.requests[-1]["body"]["tools"]
+                            if t["function"]["name"] == "notes")
+                listed = next(t for t in ai.rpc("tools/list")[2]["result"]["tools"]
+                              if t["name"] == "notes")
+                for definition, schema, side, notebook, tail in (
+                        (lent, "parameters", "Notes are files that last across ask calls "
+                         "and compactions, and every version stays in the history. You "
+                         "can read every notebook but write only your own. After a "
+                         "compaction, you see your note history and your newest note.",
+                         "own, the default, or a selector from action notebooks.", PAGED),
+                        (listed, "inputSchema", "Notes are files, and every version stays "
+                         "in the history. You can read every notebook but write only your "
+                         "own.", "own, the default, other for the other side, "
+                         "or a selector from action notebooks. other is copy's default.",
+                         "")):
+                    assert definition["description"] == f"Participant: p. {side} Prefer " \
+                        "small, incremental edits. Before replace, read the whole note, then " \
+                        "send the whole new text and keep unrelated passages and evidence " \
+                        "word for word. For an overhaul of most of a note, add a new " \
+                        "versioned file, keep the old one, and name the predecessor and what " \
+                        "changed. Bytes that are not UTF-8 show as \u27e6XX\u27e7." + tail, \
+                        definition
+                    described = {name: p["description"] for name, p in
+                                 definition[schema]["properties"].items()}
+                    assert described == {
+                        "action": "add creates a note (file) with text. replace replaces the "
+                        "whole text of a note. restore writes a note's version at the commit "
+                        "revision in a new commit. copy copies a note (file) from another "
+                        "notebook (notebook) into yours, under as if given. list lists the "
+                        "current notes. history lists the changes, oldest first, to all notes "
+                        "or to one (file). read reads a note, or its version at the commit "
+                        "revision. diff shows the changes to a note between the commits from "
+                        "and to. notebooks lists the session's notebooks. The actions that read "
+                        "take notebook. To recover lost text: history with file, then diff, "
+                        "then read or restore with revision.",
+                        "file": "A note's file name, at most 255 bytes, such as plan.md or "
+                        "design/locks.md. Its extension shows the format of the text. With "
+                        "history, only that file's changes.",
+                        "text": "The text, at most 4 MiB.",
+                        "revision": "A full commit ID from the notebook's history, or "
+                        "current, the default.",
+                        "from": "The older commit: a full commit ID from the notebook's "
+                        "history, or current.",
+                        "to": "The newer commit: a full commit ID, or current, the default. "
+                        "The output names both commits; give those IDs with offset.",
+                        "as": "The name to write the note under, instead of file.",
+                        "notebook": notebook, "offset": OFFSET_ABOUT} | ({
+                            "content": "For add and replace, instead of text: a file that "
+                            "the user gave, which your client attaches as it is. Do not "
+                            "write it yourself.",
+                            "thread": "Optional legacy ask-chain id (32 hexadecimal "
+                            "digits). Notes belong to the configured shared repository, "
+                            "independent of this value."} if not tail else {}), described
+                assert call(action="copy", file="a.md", notebook=upstream, **{"from": "x"}) == \
+                    "!revision is for read and restore, and from and to are for diff. The " \
+                    "description of action lists the arguments of each action."
 
                 assert re.fullmatch(saved('Add "a.md" (6 bytes)'),
                                     call(action="add", file="a.md", text="alpha\n"))
@@ -11501,7 +11559,8 @@ def check_attach(binary, up):
                              lambda r: (200, answer("A"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
                 assert call({"action": "attach", "file": "latin1.c", "thread": thread}) \
-                    == "!The action must be one of: add replace restore notebooks list history read diff copy."
+                    == "!The action argument must be one of: add, replace, restore, " \
+                    "notebooks, list, history, read, diff, copy."
 
                 count = len(up.requests)
                 stored = len(up.uploads)
@@ -11515,7 +11574,8 @@ def check_attach(binary, up):
                 properties = notes_tool[schema]["properties"]
                 assert all(properties[name]["type"] == "string"
                            for name in ("revision", "from", "to")), properties
-                assert "attach gives you a whole note" in notes_tool["description"], notes_tool
+                assert "attach gives you a whole note (file) as a file after the turn's " \
+                    "results. The actions" in action["description"], action
                 view, plain = up.uploads[stored:]
                 assert view["raw"] == note_view(latin1).encode() and \
                     plain["raw"] == code.encode(), (view, plain)
@@ -11974,7 +12034,7 @@ def check_turns(binary, up):
                 "reached the output token limit, which cut these arguments short, " \
                 "so the call was not run.", up.requests[count + 2]
             assert turns(up.requests[count + 3])[-1]["content"].startswith(
-                "The file argument must be a file name"), up.requests[count + 3]
+                "A note's name must be 1 to 255 bytes"), up.requests[count + 3]
 
             values = ai.metrics()
             assert total(values, "askai_turns_total") == 13, values
