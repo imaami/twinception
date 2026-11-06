@@ -28,12 +28,35 @@ enum {
 	JOURNAL_LOAD_MAX   = 64 << 20,
 };
 
+/**
+ * The kinds of the records of a job's recovery checkpoint, as X(ID, name):
+ * JOURNAL_ID in enum journal_kind, and the name of the kind in a record and
+ * in journal_put(). After a RESULT or a CANCEL, the job runs no more. A
+ * LEGACY record marks a job whose records came from the legacy WAL.
+ */
+#define JOURNAL_KIND_LIST(X)          \
+        X(STATE,       "state")       \
+        X(META,        "meta")        \
+        X(TOOL_INTENT, "tool-intent") \
+        X(TOOL_RESULT, "tool-result") \
+        X(RESULT,      "result")      \
+        X(CANCEL,      "cancel")      \
+        X(LEGACY,      "legacy")
+
+#define JOURNAL_KIND_ID(id, name) JOURNAL_##id,
+enum journal_kind : uint8_t {
+	JOURNAL_KIND_LIST(JOURNAL_KIND_ID)
+	JOURNAL_OTHER  /**< a kind that is in no checkpoint */
+};
+#undef JOURNAL_KIND_ID
+
 struct journal_record {
 	struct journal_record *next;
 	uint64_t               sequence;
 	size_t                 len;
 	struct hexid           id;
 	char                   kind[JOURNAL_KIND + 1];
+	enum journal_kind      type;  /**< the kind's enum journal_kind */
 	unsigned char          data[];
 };
 

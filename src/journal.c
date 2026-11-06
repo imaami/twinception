@@ -77,6 +77,22 @@ enum {
 	JOURNAL_THOUGHT_FINISH,
 };
 
+/* The names of the kinds of records, by enum journal_kind. */
+#define JOURNAL_KIND_NAME(id, name) CSTR_VIEW_INIT(name),
+static struct cstr_view const kind_names[] = { JOURNAL_KIND_LIST(JOURNAL_KIND_NAME) };
+#undef JOURNAL_KIND_NAME
+
+/* The bit of the kind @p k in a mask of kinds, and the mask of the kinds
+ * after which a job runs no more.
+ */
+#define KIND(k) (1u << (k))
+enum { TERMINAL = KIND(JOURNAL_RESULT) | KIND(JOURNAL_CANCEL) };
+
+/* The bits of journal_job.flags: the job runs no more, and its records
+ * came from the legacy WAL.
+ */
+enum { JOB_TERMINAL = 1, JOB_LEGACY = 2 };
+
 struct journal_job {
 	uint64_t     bytes; /* zero until a recovery checkpoint exists */
 	uint64_t     touched;
@@ -85,9 +101,8 @@ struct journal_job {
 	int          thought_error;
 	int          error;   /* the error of a lost record; the job's later
 	                         appends fail with it */
+	uint16_t     flags;   /* JOB_* bits */
 	struct hexid id;
-	bool         terminal;
-	bool         legacy;
 };
 
 struct journal_file {
@@ -132,6 +147,15 @@ struct journal {
 	struct oid             tip;
 	char                   ref[sizeof REF + UTIL_WORD_MAX];
 };
+
+/* The kind named @p name, or JOURNAL_OTHER for one that is in no
+ * checkpoint.
+ */
+static enum journal_kind
+journal_kind (struct cstr_view name)
+{
+	return (enum journal_kind)cstr_view_index(kind_names, array_size(kind_names), name);
+}
 
 static int
 journal_digest (struct journal      *j,
@@ -398,11 +422,13 @@ journal_record_read (struct journal         *j,
 	r->sequence = util_be_get(header + 8, 8);
 	r->len = (size_t)length;
 	memcpy(r->kind, header + 56, JOURNAL_KIND);
+	size_t const kind_len = util_word_len(r->kind, JOURNAL_KIND);
 	if (hexid_init(&r->id, (struct cstr_view){ (char const *)header + 24, HEXID_DIGITS }) ||
-	    !util_word_len(r->kind, JOURNAL_KIND)) {
+	    !kind_len) {
 		journal_records_destroy(&r);
 		return EILSEQ;
 	}
+	r->type = journal_kind((struct cstr_view){ r->kind, kind_len });
 	e = util_read_all(fd, r->data, r->len, *offset + JOURNAL_HEADER, &got);
 	if (e || got != r->len) {
 		journal_records_destroy(&r);
@@ -426,27 +452,45 @@ incomplete:
 	return partial ? 0 : EILSEQ;
 }
 
-/* A record after which the job runs no more. */
-static bool
-journal_terminal (char const *kind)
-{
-	return !strcmp(kind, "result") || !strcmp(kind, "cancel");
-}
-
-static bool
-journal_control_kind (char const *kind)
-{
-	return !strcmp(kind, "state") || !strcmp(kind, "meta") ||
-	       !strcmp(kind, "tool-intent") || !strcmp(kind, "tool-result") ||
-	       journal_terminal(kind) || !strcmp(kind, "legacy");
-}
-
 static int
 journal_existing (int         directory,
                   char const *name,
                   int        *fd)
 {
 	return journal_file_open(directory, name, O_RDONLY, fd);
+}
+
+/* Free the records of @p *list whose kinds' bits are set in @p kinds;
+ * returns the bytes they took.
+ */
+static size_t
+journal_records_drop (struct journal_record **list,
+                      unsigned                kinds)
+{
+	size_t bytes = 0;
+	while (*list) {
+		struct journal_record *r = *list;
+		if (!(KIND(r->type) & kinds)) {
+			list = &r->next;
+			continue;
+		}
+		*list = r->next;
+		r->next = nullptr;
+		bytes += sizeof *r + r->len + 1;
+		journal_records_destroy(&r);
+	}
+	return bytes;
+}
+
+/* The flags of a job whose checkpoint is the list @p records. */
+static uint16_t
+journal_job_flags (struct journal_record const *records)
+{
+	unsigned kinds = 0;
+	for (; records; records = records->next)
+		kinds |= KIND(records->type);
+	return (kinds & TERMINAL ? JOB_TERMINAL : 0) |
+	       (kinds & KIND(JOURNAL_LEGACY) ? JOB_LEGACY : 0);
 }
 
 /** New snapshots are atomic replacements; legacy WAL tails may end with an
@@ -459,6 +503,12 @@ journal_records_read (struct journal         *j,
                       bool                    legacy,
                       struct journal_record **out)
 {
+	/* What a record of the legacy WAL replaces: a state all records before
+	 * it, and a meta the metas before it. */
+	static unsigned const replaces[JOURNAL_OTHER] = {
+		[JOURNAL_STATE] = ~0u,
+		[JOURNAL_META]  = KIND(JOURNAL_META),
+	};
 	off_t offset = 0;
 	uint64_t sequence = 0;
 	size_t bytes = 0;
@@ -473,30 +523,14 @@ journal_records_read (struct journal         *j,
 			return EILSEQ;
 		}
 		sequence = r->sequence;
-		if ((id && !hexid_equal(&r->id, id)) || !journal_control_kind(r->kind)) {
+		if ((id && !hexid_equal(&r->id, id)) || r->type == JOURNAL_OTHER) {
 			journal_records_destroy(&r);
 			continue;
 		}
-		if (legacy && !strcmp(r->kind, "state")) {
-			journal_records_destroy(out);
-			tail = out;
-			bytes = 0;
-		}
-		if (legacy && !strcmp(r->kind, "meta")) {
-			struct journal_record **at = out;
-			while (*at) {
-				struct journal_record *old = *at;
-				if (!strcmp(old->kind, "meta")) {
-					*at = old->next;
-					if (!*at)
-						tail = at;
-					bytes -= sizeof *old + old->len + 1;
-					old->next = nullptr;
-					journal_records_destroy(&old);
-				} else {
-					at = &old->next;
-				}
-			}
+		if (legacy && replaces[r->type]) {
+			bytes -= journal_records_drop(out, replaces[r->type]);
+			for (tail = out; *tail; tail = &(*tail)->next)
+				;
 		}
 		size_t size = sizeof *r + r->len + 1;
 		if (size > JOURNAL_LOAD_MAX - bytes) {
@@ -564,10 +598,7 @@ journal_jobs_scan (struct journal *j)
 			job->id = id;
 			job->bytes = (uint64_t)st.st_size;
 			job->touched = st.st_mtim.tv_sec < 0 ? 0 : clk_ns(st.st_mtim);
-			for (struct journal_record *r = records; r; r = r->next) {
-				job->terminal |= journal_terminal(r->kind);
-				job->legacy |= !strcmp(r->kind, "legacy");
-			}
+			job->flags = journal_job_flags(records);
 			j->recovery_bytes += job->bytes;
 		}
 		journal_records_destroy(&records);
@@ -596,7 +627,8 @@ journal_checkpoint_space (struct journal     *j,
 		struct journal_job *oldest = nullptr;
 		for (size_t k = 0; k < array_size(j->jobs); ++k) {
 			struct journal_job *job = &j->jobs[k];
-			if (job != keep && *job->id.hex && job->terminal && !job->legacy &&
+			if (job != keep && *job->id.hex &&
+			    (job->flags & (JOB_TERMINAL | JOB_LEGACY)) == JOB_TERMINAL &&
 			    (!oldest || job->touched < oldest->touched))
 				oldest = job;
 		}
@@ -655,17 +687,18 @@ static int
 journal_checkpoint_write (struct journal        *j,
                           struct journal_record *record)
 {
-	if (!journal_control_kind(record->kind))
+	if (record->type == JOURNAL_OTHER)
 		return EINVAL;
+	unsigned const kind = KIND(record->type);
+	bool const state = kind == KIND(JOURNAL_STATE);
+	bool const terminal = kind & TERMINAL;
 	struct journal_job *job = journal_job_find(j, &record->id);
-	bool state = !strcmp(record->kind, "state");
-	bool terminal = journal_terminal(record->kind);
 	/* A lost record leaves a gap in its job's checkpoint, so the job's
 	 * later records fail with its error, until a state snapshot or a
 	 * terminal record, which keeps only the state, replaces them all. */
-	if (job && job->error && !state && !terminal)
+	if (job && job->error && !(kind & (KIND(JOURNAL_STATE) | TERMINAL)))
 		return job->error;
-	bool legacy = job && job->legacy;
+	bool legacy = job && job->flags & JOB_LEGACY;
 	struct journal_record *records = nullptr;
 	int e = 0;
 	if (!state) {
@@ -680,39 +713,28 @@ journal_checkpoint_write (struct journal        *j,
 			legacy = records != nullptr;
 		}
 	}
-	if (!e && legacy) {
-		bool marked = false;
-		for (struct journal_record *r = records; r; r = r->next)
-			marked |= !strcmp(r->kind, "legacy");
-		if (!marked) {
-			struct journal_record *mark = calloc(1, sizeof *mark + 1);
-			if (!mark)
-				e = ENOMEM;
-			else {
-				mark->id = record->id;
-				memcpy(mark->kind, "legacy", sizeof "legacy");
-				mark->next = records;
-				records = mark;
-			}
+	uint16_t const had = journal_job_flags(records);
+	if (!e && legacy && !(had & JOB_LEGACY)) {
+		struct journal_record *mark = calloc(1, sizeof *mark + 1);
+		if (!mark)
+			e = ENOMEM;
+		else {
+			mark->id = record->id;
+			memcpy(mark->kind, kind_names[JOURNAL_LEGACY].data,
+			       kind_names[JOURNAL_LEGACY].len);
+			mark->type = JOURNAL_LEGACY;
+			mark->next = records;
+			records = mark;
 		}
 	}
 	/* A completed job needs only its owner/state and result. Drop tool
 	 * evidence once the terminal record makes further execution impossible.
-	 * A terminal reserve lets even a full active cache retire a job. */
-	if (!strcmp(record->kind, "meta") || terminal) {
-		struct journal_record **at = &records;
-		while (*at) {
-			struct journal_record *r = *at;
-			if (!strcmp(r->kind, record->kind) ||
-			    (terminal && strcmp(r->kind, "state") && strcmp(r->kind, "legacy"))) {
-				*at = r->next;
-				r->next = nullptr;
-				journal_records_destroy(&r);
-			} else {
-				at = &r->next;
-			}
-		}
-	}
+	 * A terminal reserve lets even a full active cache retire a job. A meta
+	 * replaces the metas before it. */
+	unsigned const stale = terminal ? ~(KIND(JOURNAL_STATE) | KIND(JOURNAL_LEGACY))
+	                     : kind & KIND(JOURNAL_META);
+	if (stale)
+		(void)journal_records_drop(&records, stale);
 	uint64_t bytes = JOURNAL_HEADER + record->len;
 	for (struct journal_record *r = records; r; r = r->next)
 		bytes += JOURNAL_HEADER + r->len;
@@ -746,10 +768,8 @@ journal_checkpoint_write (struct journal        *j,
 			uint64_t now = clk_realtime_ns();
 			if (now)
 				job->touched = now;
-			job->legacy = legacy;
-			job->terminal = terminal;
-			for (struct journal_record *r = records; r; r = r->next)
-				job->terminal |= journal_terminal(r->kind);
+			job->flags = had | (legacy ? JOB_LEGACY : 0) |
+			             (terminal ? JOB_TERMINAL : 0);
 			job->error = 0;
 			if (state) {
 				job->thought_error = 0;
@@ -887,7 +907,7 @@ journal_thought_put (struct journal            *j,
 	e = begin ? 0 : job->thought_error ? job->thought_error : journal_thought_write(j, item);
 	job->thought_error = e;
 	if (!job->bytes)
-		job->terminal = false;
+		job->flags &= ~JOB_TERMINAL;
 	if (!e)
 		job->thought_seen = item->offset + item->record->len;
 	return e;
@@ -1060,7 +1080,7 @@ journal_thread (void *arg)
 		         item->operation == JOURNAL_THOUGHT_FINISH) {
 			struct journal_job *job = journal_job_find(j, &item->id);
 			if (job && !job->bytes)
-				job->terminal = true;
+				job->flags |= JOB_TERMINAL;
 		}
 		journal_finish(item, e);
 	}
@@ -1076,7 +1096,7 @@ journal_enqueue (struct journal      *j,
 	 * transcript traffic saturates its queue. These extra bounds remain
 	 * finite and cannot be used by streams, loads, or oversized records. */
 	bool control = item->record && item->record->len <= JOURNAL_CONTROL_RECORD &&
-	               !strcmp(item->record->kind, "cancel");
+	               item->record->type == JOURNAL_CANCEL;
 	size_t maximum = JOURNAL_QUEUE + (control ? JOURNAL_CONTROL : 0);
 	size_t bytes = JOURNAL_BYTES + (control ? JOURNAL_CONTROL_BYTES : 0);
 	pthread_mutex_lock(&j->lock);
@@ -1139,6 +1159,7 @@ journal_submit (struct journal     *j,
 	item->record->len = len;
 	item->record->id = *id;
 	memcpy(item->record->kind, kind, kind_len);
+	item->record->type = journal_kind((struct cstr_view){ kind, kind_len });
 	if (len)
 		memcpy(item->record->data, data, len);
 	int e = journal_enqueue(j, item);
@@ -1485,3 +1506,5 @@ journal_key (struct journal const *j,
 	memcpy(key, j->key, sizeof j->key);
 	return 0;
 }
+
+#undef KIND

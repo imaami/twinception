@@ -6356,10 +6356,10 @@ mcp_recover_back (struct loop           *loop,
 	}
 	struct journal_record *checkpoint = nullptr, *end = nullptr;
 	for (struct journal_record *r = records; r; r = r->next) {
-		if (!strcmp(r->kind, "state")) {
+		if (r->type == JOURNAL_STATE) {
 			checkpoint = r;
 			end = nullptr;
-		} else if (!strcmp(r->kind, "result") || !strcmp(r->kind, "cancel")) {
+		} else if (r->type == JOURNAL_RESULT || r->type == JOURNAL_CANCEL) {
 			end = r;
 		}
 	}
@@ -6414,8 +6414,8 @@ mcp_recover_back (struct loop           *loop,
 	uint32_t intents = 0, results = 0;
 	struct json_object *last_tool_result = nullptr;
 	for (struct journal_record *r = checkpoint->next; r; r = r->next) {
-		bool intent = !strcmp(r->kind, "tool-intent");
-		if (!intent && strcmp(r->kind, "tool-result"))
+		bool intent = r->type == JOURNAL_TOOL_INTENT;
+		if (!intent && r->type != JOURNAL_TOOL_RESULT)
 			continue;
 		struct json_object *obj = mcp_archive_json(r);
 		int64_t k = jb_int(jb_get(obj, "index"), 0);

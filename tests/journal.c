@@ -20,6 +20,16 @@ journal_test_id (struct hexid *id, unsigned number)
 	assert(snprintf(id->hex, sizeof id->hex, "%032x", number) == (int)sizeof id->hex - 1);
 }
 
+/* Give @p r the kind @p name. */
+static void
+journal_test_kind (struct journal_record *r,
+                   char const            *name)
+{
+	struct cstr_view const kind = cstr_view(name);
+	memcpy(r->kind, kind.data, kind.len + 1);
+	r->type = journal_kind(kind);
+}
+
 static void
 journal_test_thoughts (struct journal *j)
 {
@@ -61,7 +71,7 @@ journal_test_thoughts (struct journal *j)
 	loop_fini(&events);
 	assert(journal_test_completed == 2 * (JOURNAL_FILES + 1) + 9);
 	assert(!journal_job_find(j, &id)->thought_error);
-	assert(!journal_job_find(j, &id)->terminal);
+	assert(!(journal_job_find(j, &id)->flags & JOB_TERMINAL));
 	struct journal_item load = { .id = id };
 	assert(!journal_load_records(j, &load) && !load.record);
 }
@@ -75,10 +85,10 @@ journal_test_load (struct journal *j)
 	assert(record);
 	for (unsigned k = 1; k <= 4; ++k) {
 		journal_test_id(&record->id, k);
-		memcpy(record->kind, "state", sizeof "state");
+		journal_test_kind(record, "state");
 		record->len = JOURNAL_RECORD_MAX;
 		assert(!journal_checkpoint_write(j, record));
-		memcpy(record->kind, "meta", sizeof "meta");
+		journal_test_kind(record, "meta");
 		record->len = 1;
 		assert(!journal_checkpoint_write(j, record));
 	}
@@ -100,50 +110,53 @@ static void
 journal_test_gap (struct journal *j)
 {
 	struct journal_record r = {};
-	struct journal_record other = { .kind = "state" };
+	struct journal_record other = {};
 	journal_test_id(&r.id, 100);
 	journal_test_id(&other.id, 101);
-	memcpy(r.kind, "state", sizeof "state");
+	journal_test_kind(&other, "state");
+	journal_test_kind(&r, "state");
 	assert(!journal_checkpoint_write(j, &r));
 	int jobs = j->jobs_fd;
 	j->jobs_fd = -1;
-	memcpy(r.kind, "tool-intent", sizeof "tool-intent");
+	journal_test_kind(&r, "tool-intent");
 	assert(journal_checkpoint_write(j, &r) == EBADF);
 	j->jobs_fd = jobs;
-	memcpy(r.kind, "tool-result", sizeof "tool-result");
+	journal_test_kind(&r, "tool-result");
 	assert(journal_checkpoint_write(j, &r) == EBADF);
 	assert(!journal_checkpoint_write(j, &other));
-	memcpy(other.kind, "meta", sizeof "meta");
+	journal_test_kind(&other, "meta");
 	assert(!journal_checkpoint_write(j, &other));
-	memcpy(r.kind, "state", sizeof "state");
+	journal_test_kind(&r, "state");
 	assert(!journal_checkpoint_write(j, &r));
-	memcpy(r.kind, "tool-intent", sizeof "tool-intent");
+	journal_test_kind(&r, "tool-intent");
 	assert(!journal_checkpoint_write(j, &r));
 	j->jobs_fd = -1;
 	assert(journal_checkpoint_write(j, &r) == EBADF);
 	j->jobs_fd = jobs;
-	memcpy(r.kind, "result", sizeof "result");
+	journal_test_kind(&r, "result");
 	assert(!journal_checkpoint_write(j, &r));
-	assert(!journal_job_find(j, &r.id)->error && journal_job_find(j, &r.id)->terminal);
+	assert(!journal_job_find(j, &r.id)->error &&
+	       journal_job_find(j, &r.id)->flags & JOB_TERMINAL);
 }
 
 static void
 journal_test_legacy (struct journal *j)
 {
-	struct journal_record record = { .kind = "state" };
+	struct journal_record record = {};
+	journal_test_kind(&record, "state");
 	journal_test_id(&record.id, JOURNAL_FILES + 1);
 	j->wal_fd = memfd_create("journal-legacy-test", MFD_CLOEXEC);
 	assert(j->wal_fd >= 0);
 	assert(!journal_record_write(j, j->wal_fd, &record, 1));
-	memcpy(record.kind, "stream", sizeof "stream");
+	journal_test_kind(&record, "stream");
 	assert(!journal_record_write(j, j->wal_fd, &record, 2));
 	struct journal_item load = { .id = record.id };
 	assert(!journal_load_records(j, &load));
 	assert(load.record && !load.record->next && !strcmp(load.record->kind, "state"));
 	journal_records_destroy(&load.record);
-	memcpy(record.kind, "meta", sizeof "meta");
+	journal_test_kind(&record, "meta");
 	assert(!journal_checkpoint_write(j, &record));
-	assert(journal_job_find(j, &record.id)->legacy);
+	assert(journal_job_find(j, &record.id)->flags & JOB_LEGACY);
 	assert(!journal_load_records(j, &load));
 	unsigned count = 0;
 	for (struct journal_record *r = load.record; r; r = r->next) {
@@ -219,7 +232,7 @@ main (int argc, char **argv)
 		journal_test_id(&id, k);
 		struct journal_job *job = journal_job_enter(j, &id, &e);
 		assert(job && !e);
-		job->terminal = true;
+		job->flags |= JOB_TERMINAL;
 	}
 	assert(j->n_jobs == JOURNAL_JOBS);
 	journal_destroy(&j);

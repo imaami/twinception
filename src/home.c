@@ -310,7 +310,7 @@ home_job_restore (struct job                  *job,
 		return EBUSY;
 	r->flags = RECOVERY_RESTORING;
 	for (; records; records = records->next) {
-		if (strcmp(records->kind, "meta"))
+		if (records->type != JOURNAL_META)
 			continue;
 		struct json_object *meta = jb_parse((char const *)records->data,
 		                                    records->len, 0, 8);
