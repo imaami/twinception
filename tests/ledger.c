@@ -232,7 +232,7 @@ test_restore (void)
 		return;
 	}
 	CHECK(done->created == 10 && done->ended == 20 && done->tool == 7 &&
-	      done->kind == LEDGER_JOB && atomic_load(&done->status) == LEDGER_COMPLETED &&
+	      done->kind == LEDGER_JOB && ledger_task_status(done) == LEDGER_COMPLETED &&
 	      dstr_len(&done->result) == body.len && done->size == body.len &&
 	      !memcmp(dstr_get(&done->result), body.ptr, body.len) && test_found(l, A, &done->id) &&
 	      !test_found(l, B, &done->id) && !ledger_owner_find(l, A)->running);
@@ -249,7 +249,7 @@ test_restore (void)
 	                      (struct span){}, nullptr, (struct handle){}, nullptr,
 	                      &e) && e == EEXIST);
 	CHECK(l->n == 1 && done->tool == 7 && done->created == 10 &&
-	      atomic_load(&done->status) == LEDGER_COMPLETED &&
+	      ledger_task_status(done) == LEDGER_COMPLETED &&
 	      !ledger_owner_find(l, B));
 
 	/* Restore in reverse creation order; listing still orders by creation.
@@ -378,7 +378,7 @@ test_remove (void)
 	CHECK(ledger_remove(l, B, &id) == ENOENT && !ledger_remove(l, A, &id) &&
 	      ledger_remove(l, A, &id) == ENOENT && !test_found(l, A, &old->id) &&
 	      !old->owner && atomic_load(&old->refs) == 2 &&
-	      atomic_load(&old->status) == LEDGER_FAILED &&
+	      ledger_task_status(old) == LEDGER_FAILED &&
 	      dstr_len(&old->result) == body.len && old->size == body.len &&
 	      !memcmp(dstr_get(&old->result), body.ptr, body.len) &&
 	      !l->n && !l->n_owners && !l->bytes);
@@ -410,7 +410,7 @@ test_caps (struct ledger *l)
 	for (; n < LEDGER_RUNNING; ++n) {
 		t[n] = test_open(l, A, LEDGER_JOB, &e);
 		CHECK(t[n] && !e && t[n]->kind == LEDGER_JOB && t[n]->tool == 5 &&
-		      !atomic_load(&t[n]->told));
+		      !(atomic_load(&t[n]->state) & LEDGER_TOLD));
 	}
 	CHECK(!test_open(l, A, LEDGER_JOB, &e) && e == EBUSY);
 	CHECK(atomic_load(&m->refused) == 1 && !atomic_load(&m->full));
@@ -425,7 +425,7 @@ test_caps (struct ledger *l)
 	 * nothing. */
 	ledger_end(l, t[0], LEDGER_COMPLETED);
 	ledger_end(l, t[0], LEDGER_FAILED);
-	CHECK(atomic_load(&t[0]->status) == LEDGER_COMPLETED &&
+	CHECK(ledger_task_status(t[0]) == LEDGER_COMPLETED &&
 	      atomic_load(&m->ended[LEDGER_COMPLETED]) == 1 &&
 	      !atomic_load(&m->ended[LEDGER_FAILED]) &&
 	      ledger_owner_find(l, A)->running == LEDGER_RUNNING);
@@ -658,7 +658,7 @@ test_waits (struct ledger *l)
 	struct ledger_look look;
 	CHECK(!ledger_tell(l, w[1], nullptr, 0, &look) && look.n_tasks == 2 &&
 	      look.tasks[0] == t[0] && look.tasks[1] == t[1] && !look.n_timers &&
-	      look.due == UINT64_MAX && atomic_load(&t[0]->told) &&
+	      look.due == UINT64_MAX && atomic_load(&t[0]->state) & LEDGER_TOLD &&
 	      atomic_load(&t[1]->refs) == 3);
 	ledger_look_put(&look);
 	CHECK(!look.n_tasks && atomic_load(&t[1]->refs) == 2);

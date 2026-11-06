@@ -90,6 +90,18 @@ enum ledger_status {
 	LEDGER_STATUSES
 };
 
+/** The bits of the state of a record besides its status, an enum
+ *  ledger_status in the bits LEDGER_STATUS.
+ */
+enum ledger_state : uint64_t {
+	LEDGER_STATUS = 3u,       /**< the bits of the status */
+	LEDGER_ASKED  = 1u << 2,  /**< a client asked to cancel the task */
+	LEDGER_TOLD   = 1u << 3,  /**< the owner has read the record of the
+	                               ended call */
+};
+
+static_assert(LEDGER_STATUSES - 1 <= LEDGER_STATUS);
+
 /** What made a record. */
 enum ledger_kind : uint8_t {
 	LEDGER_TASK,  /**< a tool call that became a task of MCP's tasks
@@ -192,17 +204,23 @@ struct ledger_task {
 	uint64_t             due;        /**< loop_clock() when the ledger
 	                                      removes the record, once ended */
 	struct handle        who;        /**< names the call on its loop */
-	_Atomic uint64_t     status;     /**< enum ledger_status: an end
-	                                      published last */
+	_Atomic uint64_t     state;      /**< enum ledger_state, and the status,
+	                                      an end published last */
 	_Atomic uint32_t     refs;
-	_Atomic uint32_t     asked;      /**< bool: a client asked to cancel */
-	_Atomic uint32_t     told;       /**< bool: the owner has read the
-	                                      record of the ended call */
 	uint16_t             tool;       /**< the id of the call's tool
 	                                      (src/registry.h) */
 	enum ledger_kind     kind;
 	struct hexid         id;
 };
+
+/** The status of @p task, loaded with acquire ordering: once it is not
+ *  LEDGER_WORKING, the end of the call and its result can be read.
+ */
+static inline enum ledger_status
+ledger_task_status (struct ledger_task const *task)
+{
+	return atomic_load_explicit(&task->state, memory_order_acquire) & LEDGER_STATUS;
+}
 
 /** An empty ledger; nullptr, with the error in @p *e, if it cannot be made. */
 extern struct ledger *

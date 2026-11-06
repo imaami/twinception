@@ -288,10 +288,11 @@ ledger_owner_tell (struct ledger_owner *o,
 	for (struct list *pos = o->records.next;
 	     pos != &o->records && out->n_tasks < array_size(out->tasks); pos = pos->next) {
 		struct ledger_task *t = container_of(pos, struct ledger_task, mine);
-		if (atomic_load_explicit(&t->status, memory_order_relaxed) == LEDGER_WORKING ||
+		if (!(atomic_load_explicit(&t->state, memory_order_relaxed) & LEDGER_STATUS) ||
 		    (n && !ledger_listed(ids, n, &t->id)))
 			continue;
-		if (atomic_exchange_explicit(&t->told, 1, memory_order_relaxed) && !n)
+		if (atomic_fetch_or_explicit(&t->state, LEDGER_TOLD, memory_order_relaxed) &
+		    LEDGER_TOLD && !n)
 			continue;
 		atomic_fetch_add_explicit(&t->refs, 1, memory_order_relaxed);
 		out->tasks[out->n_tasks++] = t;
@@ -317,7 +318,7 @@ ledger_owner_ended (struct ledger_owner const *o)
 	struct list *pos;
 	list_foreach(pos, &o->records) {
 		struct ledger_task *t = container_of(pos, struct ledger_task, mine);
-		if (atomic_load_explicit(&t->status, memory_order_relaxed) != LEDGER_WORKING)
+		if (atomic_load_explicit(&t->state, memory_order_relaxed) & LEDGER_STATUS)
 			return t;
 	}
 	return nullptr;
@@ -439,7 +440,7 @@ ledger_insert (struct ledger       *l,
 	struct ledger_owner *o = ledger_owner_get(l, key, &e);
 	if (!o)
 		return e;
-	bool working = atomic_load_explicit(&t->status, memory_order_relaxed) == LEDGER_WORKING;
+	bool working = !(atomic_load_explicit(&t->state, memory_order_relaxed) & LEDGER_STATUS);
 	if (working && t->kind == LEDGER_JOB && o->running >= LEDGER_RUNNING)
 		return EBUSY;
 	struct ledger_task *old = o->n >= LEDGER_MINE ? ledger_owner_ended(o) : nullptr;
@@ -595,10 +596,8 @@ ledger_restore (struct ledger      *ledger,
 	t->ended = working ? 0 : ended ? ended : clk_realtime_ns();
 	t->due = working ? 0 : loop_clock() + LEDGER_KEEP * NS;
 	t->who = who;
-	atomic_init(&t->status, status);
+	atomic_init(&t->state, status);
 	atomic_init(&t->refs, 2);
-	atomic_init(&t->asked, 0);
-	atomic_init(&t->told, 0);
 	t->tool = tool;
 	t->kind = kind;
 	t->id = *id;
@@ -668,7 +667,7 @@ ledger_end (struct ledger      *ledger,
             enum ledger_status  status)
 {
 	if (!ledger || !task || status == LEDGER_WORKING || status >= LEDGER_STATUSES ||
-	    atomic_load_explicit(&task->status, memory_order_relaxed) != LEDGER_WORKING)
+	    atomic_load_explicit(&task->state, memory_order_relaxed) & LEDGER_STATUS)
 		return;
 	/* Only a whole reply is kept, so task->size is the bytes of the kept
 	 * reply. */
@@ -679,7 +678,8 @@ ledger_end (struct ledger      *ledger,
 	task->ended = clk_realtime_ns();
 	task->due = loop_clock() + LEDGER_KEEP * NS;
 	pthread_mutex_lock(&ledger->lock);
-	atomic_store_explicit(&task->status, status, memory_order_release);
+	/* The status was LEDGER_WORKING, 0, so the bits take it. */
+	atomic_fetch_or_explicit(&task->state, status, memory_order_release);
 	list_append(&ledger->ended, &task->hook);
 	--task->owner->running;
 	struct ledger_wait *hits = ledger_owner_wake(task->owner);
@@ -719,8 +719,8 @@ ledger_remove (struct ledger      *ledger,
 	struct ledger_task *gone = nullptr;
 	pthread_mutex_lock(&ledger->lock);
 	struct ledger_task *t = ledger_mine(ledger, owner, id);
-	int e = !t ? ENOENT :
-	        atomic_load_explicit(&t->status, memory_order_relaxed) == LEDGER_WORKING ? EBUSY : 0;
+	int e = !t ? ENOENT
+	      : atomic_load_explicit(&t->state, memory_order_relaxed) & LEDGER_STATUS ? 0 : EBUSY;
 	if (!e)
 		ledger_drop(ledger, t, &gone);
 	pthread_mutex_unlock(&ledger->lock);
@@ -731,8 +731,9 @@ ledger_remove (struct ledger      *ledger,
 void
 ledger_task_cancel (struct ledger_task *task)
 {
-	if (atomic_exchange_explicit(&task->asked, 1, memory_order_relaxed) ||
-	    atomic_load_explicit(&task->status, memory_order_acquire) != LEDGER_WORKING)
+	/* Asked before, or ended: nothing to cancel. */
+	if (atomic_fetch_or_explicit(&task->state, LEDGER_ASKED, memory_order_acquire) &
+	    (LEDGER_ASKED | LEDGER_STATUS))
 		return;
 	atomic_fetch_add_explicit(&task->refs, 1, memory_order_relaxed);
 	/* A message that loop_post() refuses never runs, so the function drops

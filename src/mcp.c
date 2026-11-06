@@ -5243,9 +5243,9 @@ mcp_slot_client_list (struct mcp_slot *slot)
 	bool ok = true;
 	for (uint32_t i = 0; ok && i < look.n_tasks; ++i) {
 		struct ledger_task const *t = look.tasks[i];
-		enum ledger_status status = atomic_load_explicit(&t->status,
-		                                                 memory_order_acquire);
-		bool told = atomic_load_explicit(&t->told, memory_order_relaxed);
+		uint64_t state = atomic_load_explicit(&t->state, memory_order_acquire);
+		enum ledger_status status = state & LEDGER_STATUS;
+		bool told = state & LEDGER_TOLD;
 		ok = dstr_printf(d, "%s %s: %s: ", record_kinds[t->kind], t->id.hex,
 		                 mcp_static_tool(st, t->tool)->name.data) &&
 		     (status == LEDGER_WORKING
@@ -5282,7 +5282,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 	struct ledger_task *task = mcp_slot_client_find(slot, args);
 	if (!task)
 		return;
-	enum ledger_status status = atomic_load_explicit(&task->status, memory_order_acquire);
+	enum ledger_status status = ledger_task_status(task);
 	if (!(mcp_slot_tool(slot)->kind->flags & KF_AGENDA) && status == LEDGER_WORKING) {
 		ledger_task_put(task);
 		mcp_slot_result(slot, CSTR_VIEW("That job is still running. Call this same tool "
@@ -5300,7 +5300,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
-	atomic_store_explicit(&task->told, 1, memory_order_relaxed);
+	atomic_fetch_or_explicit(&task->state, LEDGER_TOLD, memory_order_relaxed);
 	slot->flags |= SLOT_DONE;
 	req->shown = task;
 	req->off = 0;
@@ -5347,8 +5347,7 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 	struct ledger_task *task = mcp_slot_client_find(slot, args);
 	if (!task)
 		return;
-	bool const runs = atomic_load_explicit(&task->status, memory_order_acquire) ==
-	                  LEDGER_WORKING;
+	bool const runs = ledger_task_status(task) == LEDGER_WORKING;
 	struct cstr_view said = runs_no_more;
 	if (runs) {
 		ledger_task_cancel(task);
@@ -5460,8 +5459,7 @@ mcp_wait_report (struct mcp_wait const    *w,
 	bool ok = true;
 	for (uint32_t i = 0; ok && i < look->n_tasks; ++i) {
 		struct ledger_task const *t = look->tasks[i];
-		enum ledger_status status = atomic_load_explicit(&t->status,
-		                                                 memory_order_acquire);
+		enum ledger_status status = ledger_task_status(t);
 		char const *kind = record_kinds[t->kind];
 		char const *tool = mcp_static_tool(st, t->tool)->name.data;
 		ok = status == LEDGER_CANCELLED
@@ -7229,7 +7227,7 @@ mcp_req_task_show (struct mcp_req     *req,
 		                       "as asked.\""),
 	};
 #undef S
-	enum ledger_status status = atomic_load_explicit(&task->status, memory_order_acquire);
+	enum ledger_status status = ledger_task_status(task);
 	bool whole = false;
 	uint64_t updated_at = task->created;
 	char ms[UTIL_DECIMAL];
@@ -7238,7 +7236,7 @@ mcp_req_task_show (struct mcp_req     *req,
 	 * The reply then contains the end of the call, and the time to live is
 	 * the run time of the call plus the time that the record stays. */
 	if (status != LEDGER_WORKING) {
-		atomic_store_explicit(&task->told, 1, memory_order_relaxed);
+		atomic_fetch_or_explicit(&task->state, LEDGER_TOLD, memory_order_relaxed);
 		whole = task->size != 0;
 		updated_at = task->ended;
 		uint64_t ran = task->ended > task->created ? task->ended - task->created : 0;
