@@ -200,10 +200,18 @@ struct home {
 	struct ai_endpoint const *ep;
 	struct htab               whom;        /* the principals with jobs queued */
 	struct http_request      *ask;         /* GET /props, under way */
+	char const              **headers;     /* with llama, the upstream's
+	                                          header lines without an
+	                                          X-Conversation-Id line, and
+	                                          then the line in conversation;
+	                                          nullptr otherwise */
 	uint64_t                  timeout;     /* ns from a start to its deadline */
 	uint64_t                  silence;     /* ns an answer may pause */
 	uint64_t                  backoff;     /* the breaker's next open spell */
 	uint64_t                  until;       /* when the breaker half-opens */
+	char                      conversation[64];  /* the X-Conversation-Id
+	                                                line of the job that
+	                                                home_open() starts */
 	uint32_t                  max;         /* jobs in flight at most */
 	uint32_t                  slots;       /* upstream calls at once at most */
 	uint32_t                  context;     /* tokens of the upstream's context,
@@ -264,6 +272,9 @@ home_llama (struct home const *home)
 	return home->ep->background && home->ep->provider == AI_LLAMA &&
 	       home_apis[home->ep->api].llama.len;
 }
+
+/* The field name of llama's conversation header line. */
+static struct cstr_view const conversation_id = CSTR_VIEW_INIT("X-Conversation-Id:");
 
 /* Whether the provider keeps a job's generation, which askai can reattach
  * to and must cancel: native background execution, or llama's.
@@ -1241,39 +1252,25 @@ home_open (struct home *home,
             bool         resume)
 {
 	struct ai_endpoint const *ep = home->ep;
+	char const *const *headers = ep->headers;
 	char *url = nullptr;
-	int e = resume ? home_provider_url(home, job, false, &url) : 0;
-	if (e)
-		return e;
-	char const **headers = nullptr;
-	char conversation[64];
-	if (!resume && home_llama(home)) {
-		size_t n = 0;
-		if (ep->headers)
-			while (ep->headers[n])
-				++n;
-		headers = calloc(n + 2, sizeof *headers);
-		if (!headers) {
-			curl_free(url);
-			return ENOMEM;
+	struct span body = {};
+	if (resume) {
+		int e = home_provider_url(home, job, false, &url);
+		if (e)
+			return e;
+	} else {
+		body = buf_peek(&job->request);
+		if (home->headers) {
+			util_format(home->conversation, sizeof home->conversation, "%s %s",
+			            conversation_id.data, job->recovery.provider_id);
+			headers = home->headers;
 		}
-		size_t kept = 0;
-		for (size_t k = 0; k < n; ++k)
-			if (!cstr_view_starts_case(cstr_view(ep->headers[k]),
-			                           CSTR_VIEW("X-Conversation-Id:")))
-				headers[kept++] = ep->headers[k];
-		util_format(conversation, sizeof conversation, "X-Conversation-Id: %s",
-		            job->recovery.provider_id);
-		headers[kept] = conversation;
 	}
-	struct span body = buf_peek(&job->request);
 	job->flags &= ~(SEEN | DELIVERED);
-	e = http_post_json(home->http, url ? url : ep->url,
-	                   resume ? nullptr : (char const *)body.ptr, resume ? 0 : body.len,
-	                   false, headers ? headers : ep->headers, 0,
-	                   home_job_write, home_job_done, job, &job->transfer);
-	free(headers);
-	headers = nullptr;
+	int e = http_post_json(home->http, url ? url : ep->url, (char const *)body.ptr, body.len,
+	                       false, headers, 0, home_job_write, home_job_done, job,
+	                       &job->transfer);
 	curl_free(url);
 	url = nullptr;
 	return e;
@@ -2747,6 +2744,29 @@ home_job (struct loop *loop,
 	}
 }
 
+/* With llama, make home->headers: the upstream's header lines without an
+ * X-Conversation-Id line, and then home->conversation, which home_open()
+ * writes for each job. Returns 0 or ENOMEM.
+ */
+static int
+home_conversation_headers (struct home *home)
+{
+	char const *const *lines = home->ep->headers;
+	size_t n = 0;
+	while (lines && lines[n])
+		++n;
+	char const **headers = calloc(n + 2, sizeof *headers);
+	if (!headers)
+		return ENOMEM;
+	size_t kept = 0;
+	for (size_t k = 0; k < n; ++k)
+		if (!cstr_view_starts_case(cstr_view(lines[k]), conversation_id))
+			headers[kept++] = lines[k];
+	headers[kept] = home->conversation;
+	home->headers = headers;
+	return 0;
+}
+
 /* Put @p home's timers in the heap from the start, so that setting them
  * never fails, and make its curl bridge, which counts into @p metrics.
  */
@@ -2797,6 +2817,8 @@ home_fini (struct home *home)
 	jb_parser_fini(&home->parser, &home->pool, nullptr);
 	jb_reaper_fini(&home->reaper);
 	buf_fini(&home->answer);
+	free(home->headers);
+	home->headers = nullptr;
 	while (home_relieve(home, BUF_CRITICAL, SIZE_MAX))
 		;
 	self = nullptr;
@@ -2870,6 +2892,8 @@ home_create (struct loop         *loop,
 	*e = htab_init(&home->whom, stdc_bit_ceil(max < KEYS_MAX ? max : (uint32_t)KEYS_MAX));
 	if (!*e)
 		*e = home_arm(home, http);
+	if (!*e && home_llama(home))
+		*e = home_conversation_headers(home);
 	if (*e) {
 		home_fini(home);
 		free(home);
