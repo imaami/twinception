@@ -349,6 +349,50 @@ autocomplete_json_parse (struct autocomplete *autocomplete,
 	return 0;
 }
 
+/* Decode a segment of a JSON pointer into ac->key, where ~0 is ~ and ~1
+ * is /. Returns 0 or ENOMEM.
+ */
+static int
+autocomplete_segment (struct autocomplete *ac,
+                      struct cstr_view     segment)
+{
+	(void)dstr_clear(&ac->key);
+	/* The appends below fit in the room that this reserves. */
+	if (!dstr_reserve(&ac->key, segment.len))
+		return ENOMEM;
+	for (size_t i = 0; i < segment.len; ++i) {
+		char byte = segment.data[i];
+		bool tilde = byte == '~' && i + 1 < segment.len &&
+		             (segment.data[i + 1] == '0' || segment.data[i + 1] == '1');
+		if (tilde)
+			byte = segment.data[++i] == '0' ? '~' : '/';
+		(void)dstr_cat_n(&ac->key, &byte, 1);
+	}
+	return 0;
+}
+
+/* Set *target to the value at the JSON pointer path in root, or to nullptr
+ * if there is none. path is the part of the pointer after "#/". Returns 0
+ * or ENOMEM.
+ */
+static int
+autocomplete_pointer (struct autocomplete  *ac,
+                      struct json_object   *root,
+                      struct cstr_view      path,
+                      struct json_object  **target)
+{
+	*target = root;
+	for (bool last = false; *target && !last;) {
+		struct cstr_view segment = path;
+		last = !cstr_view_cut(&path, '/', &segment);
+		int error = autocomplete_segment(ac, segment);
+		if (error)
+			return error;
+		*target = jb_get(*target, dstr_get(&ac->key));
+	}
+	return 0;
+}
+
 static int
 autocomplete_resolve (struct autocomplete  *autocomplete,
                       struct json_object   *root,
@@ -358,26 +402,10 @@ autocomplete_resolve (struct autocomplete  *autocomplete,
 		struct cstr_view ref = autocomplete_json_text(jb_get(*schema, "$ref"));
 		if (!cstr_view_starts(ref, CSTR_VIEW("#/")))
 			break;
-		struct json_object *next = root;
-		for (size_t begin = 2; next && begin <= ref.len;) {
-			size_t end = begin;
-			while (end < ref.len && ref.data[end] != '/')
-				++end;
-			(void)dstr_clear(&autocomplete->key);
-			/* The appends below fit in the room that this reserves. */
-			if (!dstr_reserve(&autocomplete->key, end - begin))
-				return ENOMEM;
-			for (size_t i = begin; i < end; ++i) {
-				char byte = ref.data[i];
-				if (byte == '~' && i + 1 < end && (ref.data[i + 1] == '0' || ref.data[i + 1] == '1'))
-					byte = ref.data[++i] == '0' ? '~' : '/';
-				(void)dstr_cat_n(&autocomplete->key, &byte, 1);
-			}
-			next = jb_get(next, dstr_get(&autocomplete->key));
-			if (end == ref.len)
-				break;
-			begin = end + 1;
-		}
+		struct json_object *next;
+		int error = autocomplete_pointer(autocomplete, root, cstr_view_slice(ref, 2, SIZE_MAX), &next);
+		if (error)
+			return error;
 		if (!next || next == *schema)
 			break;
 		*schema = next;
@@ -521,20 +549,14 @@ autocomplete_property_init (struct autocomplete_property *property,
 		flags |= AUTOCOMPLETE_ENUMERATED;
 		count = json_object_array_length(enumeration);
 	}
-	if (flags & AUTOCOMPLETE_TYPE_STRING)
+	/* Without a type, a constant string or an enumeration of strings is a
+	 * string. */
+	bool strings = count;
+	for (size_t i = 0; strings && i < count; ++i)
+		strings = json_object_is_type(json_object_array_get_idx(enumeration, i), json_type_string);
+	if ((flags & AUTOCOMPLETE_TYPE_STRING) ||
+	    (!(flags & AUTOCOMPLETE_TYPED) && (json_object_is_type(constant, json_type_string) || strings)))
 		flags |= AUTOCOMPLETE_STRING;
-	else if (!(flags & AUTOCOMPLETE_TYPED)) {
-		if (json_object_is_type(constant, json_type_string))
-			flags |= AUTOCOMPLETE_STRING;
-		else if (count) {
-			flags |= AUTOCOMPLETE_STRING;
-			for (size_t i = 0; i < count; ++i)
-				if (!json_object_is_type(json_object_array_get_idx(enumeration, i), json_type_string)) {
-					flags &= ~AUTOCOMPLETE_STRING;
-					break;
-				}
-		}
-	}
 	if (schema && !enumeration && !(flags & AUTOCOMPLETE_CONSTANT) &&
 	    ((flags & (AUTOCOMPLETE_TYPED | AUTOCOMPLETE_TYPE_STRING)) != AUTOCOMPLETE_TYPED))
 		flags |= AUTOCOMPLETE_NAMES;
@@ -628,6 +650,35 @@ autocomplete_destroy (struct autocomplete **pp)
 	*pp = nullptr;
 }
 
+/* Add the properties with safe names in properties, an object, to entry.
+ * Returns 0 or an error number, with the properties added so far in entry.
+ */
+static int
+autocomplete_entry_properties (struct autocomplete       *ac,
+                               struct autocomplete_entry *entry,
+                               struct json_object        *properties)
+{
+	size_t count = json_object_is_type(properties, json_type_object)
+	               ? (size_t)json_object_object_length(properties) : 0;
+	if (!count)
+		return 0;
+	entry->properties = malloc(count * sizeof *entry->properties);
+	if (!entry->properties)
+		return ENOMEM;
+	struct json_object_iter iterator;
+	json_object_object_foreachC(properties, iterator) {
+		/* json-c does not expose key lengths. Measure once at discovery. */
+		struct cstr_view name = cstr_view(iterator.key);
+		if (!autocomplete_safe(name, true))
+			continue;
+		int error = autocomplete_property_init(&entry->properties[entry->count++], ac, entry->tool.schema,
+		                                       iterator.val, name);
+		if (error)
+			return error;
+	}
+	return 0;
+}
+
 int
 autocomplete_add_tool (struct autocomplete *ac,
                        struct json_object  *def)
@@ -657,32 +708,10 @@ autocomplete_add_tool (struct autocomplete *ac,
 		goto fail;
 	}
 	error = autocomplete_resolve(ac, entry.root, &entry.root);
+	if (!error)
+		error = autocomplete_entry_properties(ac, &entry, jb_get(entry.root, "properties"));
 	if (error)
 		goto fail;
-	struct json_object *properties = jb_get(entry.root, "properties");
-	if (json_object_is_type(properties, json_type_object)) {
-		size_t count = (size_t)json_object_object_length(properties);
-		if (count) {
-			entry.properties = malloc(count * sizeof *entry.properties);
-			if (!entry.properties) {
-				error = ENOMEM;
-				goto fail;
-			}
-		}
-		struct json_object_iter iterator;
-		json_object_object_foreachC(properties, iterator) {
-			/* json-c does not expose key lengths. Measure once at discovery. */
-			struct cstr_view property_name = cstr_view(iterator.key);
-			if (!autocomplete_safe(property_name, true))
-				continue;
-			error = autocomplete_property_init(&entry.properties[entry.count], ac,
-			                                   entry.tool.schema, iterator.val,
-			                                   property_name);
-			++entry.count;
-			if (error)
-				goto fail;
-		}
-	}
 	if (!replace) {
 		error = util_grow(ac->entries, ac->capacity, ac->count + 1);
 		if (error)
@@ -936,11 +965,12 @@ autocomplete_note_paths (struct autocomplete              *ac,
 		struct cstr_view key = cstr_view_slice(line, token.begin, token.equals - token.begin);
 		struct autocomplete_token *selected = cstr_view_equal(key, CSTR_VIEW("action")) ? &action
 		                                    : cstr_view_equal(key, CSTR_VIEW("notebook")) ? &notebook : nullptr;
-		if (selected) {
-			if (selected->equals != SIZE_MAX)
-				return 0;
-			*selected = token;
-		}
+		if (!selected)
+			continue;
+		/* Either one given twice selects nothing. */
+		if (selected->equals != SIZE_MAX)
+			return 0;
+		*selected = token;
 	}
 	bool copy = false;
 	if (action.equals != SIZE_MAX) {
@@ -1101,11 +1131,11 @@ autocomplete_commands (struct autocomplete      *ac,
 		struct cstr_view key = cstr_view_slice(line, current.begin, current.equals - current.begin);
 		return autocomplete_values(ac, line, current, cursor, entry, autocomplete_entry_property(entry, key));
 	}
+	/* A name in the token being edited does not count as used. */
+	size_t except = current.end > current.begin ? index : SIZE_MAX;
 	for (size_t i = 0; i < entry->count; ++i) {
 		struct cstr_view name = entry->properties[i].name;
-		if (!cstr_view_starts(name, prefix) ||
-		    autocomplete_used(ac, line, name,
-		                     current.end > current.begin ? index : SIZE_MAX))
+		if (!cstr_view_starts(name, prefix) || autocomplete_used(ac, line, name, except))
 			continue;
 		int error = cstr_view_store(name, &ac->quoted);
 		if (error)
@@ -1306,11 +1336,11 @@ autocomplete_convert (struct autocomplete *autocomplete,
 	    (flags & (AUTOCOMPLETE_STRING | AUTOCOMPLETE_UNION)) == AUTOCOMPLETE_STRING)
 		flags |= AUTOCOMPLETE_USE_STRING;
 	if (!(flags & AUTOCOMPLETE_USE_STRING)) {
+		/* A value that is not JSON of its type is a string, if it may be. */
 		error = autocomplete_json_parse(autocomplete, decoded, converted);
-		if (!error) {
-			if (!(flags & AUTOCOMPLETE_STRING) || autocomplete_accepted_type(flags, *converted))
-				return 0;
-		} else if (error != EINVAL || (flags & (AUTOCOMPLETE_STRING | AUTOCOMPLETE_TYPED)) == AUTOCOMPLETE_TYPED)
+		bool string = error ? error == EINVAL && (flags & (AUTOCOMPLETE_STRING | AUTOCOMPLETE_TYPED)) != AUTOCOMPLETE_TYPED
+		                    : (flags & AUTOCOMPLETE_STRING) && !autocomplete_accepted_type(flags, *converted);
+		if (!string)
 			return error;
 	}
 	json_object_put(*converted);
