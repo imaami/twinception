@@ -8763,6 +8763,10 @@ def check_git(binary, up):
             assert {"-F", "-E", "-C#"} <= set(help_text["options"]) and not \
                 {"--cached", "--untracked"} & set(help_text["options"]), help_text
             assert "commit:path:line:text" in help_text["description"], help_text
+            # The help and the pattern property say that a pattern is an
+            # extended regex.
+            assert "extended regex" in help_text["description"] and \
+                "extended regex" in schema["properties"]["pattern"]["description"], schema
             commands = schema["properties"]["command"]["enum"]
             assert "status" not in commands and "ls-files" not in commands, commands
             # help:true describes the command whatever else the call gives.
@@ -8974,6 +8978,14 @@ def check_git(binary, up):
             assert argv[argv.index("--git-dir=.") + 1:] == [
                 "cat-file", "blob", "--end-of-options", "1" * 40 + ":a.txt"], argv
             assert "2>&1" not in numbered, numbered
+            # grep's -E comes before the call's options, so that -G, -F or -P
+            # can follow it.
+            out = text_of(call(ai, repo="proj", command="grep", pattern="a|b",
+                               options=["-F"], revisions=["echo"]))
+            argv = out.split("---\n")[0].splitlines()
+            assert argv[argv.index("--git-dir=.") + 1:] == [
+                "grep", "--no-textconv", "-n", "-E", "-F", "-e", "a|b",
+                "--end-of-options", "1" * 40, "--"], argv
 
             # The real git: output, errors, mending, the cut, and grep's none.
             head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], text=True,
@@ -8986,6 +8998,15 @@ def check_git(binary, up):
             # Every match has its line's number, -n or not.
             assert text_of(call(ai, repo="proj", command="grep", pattern="beta")) == \
                 f"{head}:a.txt:2:beta ?? gamma\n"
+            # A pattern is an extended regex unless the options give -G, -F or -P.
+            assert text_of(call(ai, repo="proj", command="grep", pattern="beta|nothing")) \
+                == f"{head}:a.txt:2:beta ?? gamma\n"
+            assert text_of(call(ai, repo="proj", command="grep", pattern="beta|nothing",
+                                options=["-G"])) == "[No matches.]"
+            # --heading gives commit:path once, above the file's matches.
+            assert text_of(call(ai, repo="proj", command="grep", pattern="a",
+                                options=["--heading"], paths=["a.txt"])) == \
+                f"{head}:a.txt\n1:alpha\n2:beta ?? gamma\n"
             result = call(ai, repo="proj", command="grep", pattern="nothing here")
             assert not result.get("isError") and \
                 text_of(result) == "[No matches.]", result

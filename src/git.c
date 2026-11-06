@@ -249,11 +249,13 @@ static struct {
 	{ CSTR_VIEW_INIT("diff"),      diff_options,      { "--no-ext-diff", "--no-textconv" },
 	  "Compare two commits: give two revisions, or one explicit A..B or A...B "
 	  "range. Paths restrict the comparison.", FILES | END | RANGE | PAIR },
-	{ CSTR_VIEW_INIT("grep"),      grep_options,      { "--no-textconv", "-n" },
-	  "Search committed trees; defaults to HEAD. Each match is "
-	  "commit:path:line:text; read takes commit:path as its revision and that "
-	  "line. Use -F for literal search, -E for extended regex, -C3 for context.",
-	  FILES | END | PATTERN },
+	{ CSTR_VIEW_INIT("grep"),      grep_options,      { "--no-textconv", "-n", "-E" },
+	  "Search committed trees; defaults to HEAD. The pattern is an extended "
+	  "regex: -G makes it basic, -F plain text, -P Perl; -i ignores case. Each "
+	  "match is commit:path:line:text with the full commit ID; read takes "
+	  "commit:path as its revision and that line. --heading gives commit:path "
+	  "once per file. -C3 adds three lines of context, -p the function's first "
+	  "line, -W the whole function.", FILES | END | PATTERN },
 	{ CSTR_VIEW_INIT("blame"),     blame_options,     { "--no-textconv" },
 	  "Annotate a committed file; defaults to HEAD. Give one path; -L10,30 "
 	  "limits the line range.", FILES | SINGLE },
@@ -460,7 +462,8 @@ git_definition (void const *service)
 					"the output of a command such as log or diff to those "
 					"paths. They do not read a file."),
 				"pattern", schema_property("string",
-					"The pattern for grep. Only grep takes a pattern."),
+					"The pattern for grep, an extended regex unless options "
+					"give -G (basic), -F (plain text) or -P (Perl)."),
 				"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 				"line", schema_count(1,
 					"For read: the number of the first line to give, "

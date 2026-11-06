@@ -1389,8 +1389,10 @@ version. `status`, `ls-files`, `--cached`, `--staged`, `--untracked` and
 `log --all` are unavailable. `diff` requires two committed revisions or a range
 with both endpoints, such as `main..topic` or `main...topic`.
 
-`-F` means literal search, `-E` extended regex, and `-C3` three lines of context.
-Every match is numbered: `commit:path:line:text`, with the full commit ID.
+A `grep` pattern is an extended regex unless the options give `-G` (basic),
+`-F` (literal) or `-P` (Perl); `-C3` gives three lines of context.
+Every match is numbered: `commit:path:line:text`, with the full commit ID;
+`--heading` gives `commit:path` once above the matches of each file.
 Option values stay attached in one array entry. To read a committed file, use
 `command: "read"` with `"revisions":["HEAD:src/journal.c"]`, and optionally
 `line`, the first line (default 1), and `count`, the most lines (default as
