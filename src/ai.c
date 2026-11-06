@@ -5,7 +5,6 @@
 #include <errno.h>
 #include <stdckdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -111,15 +110,12 @@ ai_merge (struct json_object *dst,
 	struct json_object_iter it;
 	json_object_object_foreachC(src, it) {
 		struct json_object *cur = jb_get(dst, it.key);
-		if (!it.val) {
+		bool deep = json_object_is_type(it.val, json_type_object) &&
+		            json_object_is_type(cur, json_type_object);
+		if (!it.val)
 			json_object_object_del(dst, it.key);
-		} else if (json_object_is_type(it.val, json_type_object) &&
-		           json_object_is_type(cur, json_type_object)) {
-			if (ai_merge(cur, it.val))
-				return ENOMEM;
-		} else if (jb_set(dst, it.key, ai_copy(it.val))) {
+		else if (deep ? ai_merge(cur, it.val) : jb_set(dst, it.key, ai_copy(it.val)))
 			return ENOMEM;
-		}
 	}
 	return 0;
 }
@@ -1670,7 +1666,7 @@ ai_uploaded (enum ai_api       api,
 	                                    : nullptr;
 	struct json_object *file = jb_get(root, "file");
 	struct cstr_view at = jb_view(jb_get(file, "uri"));
-	int e = 0;
+	int e;
 	if (status < 200 || status > 299 || !at.data) {
 		e = ai_describe_error(why, status, root, body);
 		e = e ? e : EIO;
