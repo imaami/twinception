@@ -400,6 +400,12 @@ the longest page of many a system, renders to 1.4 MiB, which is some 370,000
 tokens, more than many a model's context holds. An optional `offset`, in
 bytes, starts the reply further on in the page.
 
+With an optional `heading`, such as `SYNOPSIS`, `EINVAL` or `-Wall`, the
+output is the part of the page under the least indented line that begins
+with the heading followed by a space, a comma, `=`, `[` or the line's end,
+and `offset` counts within the part; a page without such a line is a tool
+error that lists the page's headings.
+
 Each page is rendered once and kept, by its file: `printf` in section `3p` and
 in `3posix` share one rendering, as do `S_ISBLK` and `inode(7)`, which the
 former's file points to. Asked for again, a page comes from memory, in 0.3 ms

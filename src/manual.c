@@ -2,6 +2,7 @@
  *
  * Man pages tool.
  */
+#define _GNU_SOURCE /* memmem() */
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -29,9 +30,15 @@ enum {
 	MANUAL_SECONDS = 10,       /**< for man to find, or render, a page */
 	MANUAL_NAME    = 128,      /**< bytes of a page's name, at most */
 	MANUAL_SECTION = 16,       /**< and of a section's */
+	MANUAL_HEADING = 128,      /**< and of a heading's */
 	MANUAL_WHY     = 1020,     /**< bytes of the reason why there is no
 	                                page, with a list of pages; a waiter
 	                                has no padding */
+	MANUAL_HEADS   = 2044,     /**< bytes of a page's headings in a
+	                                refusal; a call has no padding */
+	HEAD_INDENT    = 3,        /**< spaces before a heading at most: man
+	                                indents a section's heading 0 and a
+	                                subsection's 3 */
 	FOUND_MAX      = 4 << 10,  /**< bytes of man -w's answer: a path, a line break */
 	SEARCH_MAX     = 16 << 10, /**< bytes of man -k's answer that count */
 	ALIASES        = 8,        /**< names a file is kept by, at most */
@@ -77,6 +84,29 @@ struct manual_loop {
 	struct list    *children;
 	struct manual  *manual;
 	struct loop    *loop;
+};
+
+/* The state of the scan of a page for the part under a heading, as bits. */
+enum manual_scan : uint32_t {
+	SCAN_OPEN = 1u << 0,  /* the lines that follow belong to the part */
+	SCAN_TAGS = 1u << 1,  /* a line as deep continues the part, as -Wformat=n after -Wformat */
+};
+
+/* A man call: the page it gives, and for a call with a heading, the scan
+ * of the page for the part under the heading (manual_step()).
+ */
+struct manual_call {
+	struct manual_page *page;     /* the call's reference, once it has one */
+	struct json_object *heading;  /* a reference to the heading argument,
+	                                 or nullptr */
+	struct loop_lines   lines;    /* the page split so far */
+	size_t              from;     /* where the part begins */
+	size_t              to;       /* where its last line that is not blank
+	                                 ends, its line feed included */
+	uint32_t            depth;    /* the indentation of its first line, or
+	                                 UINT32_MAX while there is no part */
+	uint32_t            scan;     /* enum manual_scan */
+	UTIL_TEXT(MANUAL_HEADS) heads;  /* " A, B,": the headings */
 };
 
 /* What ends a page cut short. */
@@ -579,16 +609,110 @@ manual_loop_ask (struct manual_loop *ml,
 	return 0;
 }
 
-/* Ends the call in @p slot with the text of @p page. The call owns the
- * reference @p page until manual_drop() releases it.
+/* Gives the call in @p slot @p page, whose reference the call takes until
+ * manual_drop(): all of it, or for a call with a heading, the part that
+ * manual_step() finds. Returns true if the call goes on in steps.
  */
-static void
+static bool
 manual_answer (struct mcp_slot    *slot,
                struct manual_page *page)
 {
-	*mcp_slot_own(slot) = page;
+	struct manual_call *call = *mcp_slot_own(slot);
+	call->page = page;
+	if (call->heading)
+		return !mcp_slot_ready(slot);
 	mcp_slot_lend(slot, (struct cstr_view){ page->text, page->len });
 	mcp_slot_finish(slot, 0);
+	return false;
+}
+
+/*
+ * Scans @p line of the page @p text for the part of @p call under
+ * @p heading. The part begins at a line after the page's first whose text
+ * after its indentation begins with the heading, followed by a space, a
+ * comma, =, [ or the end of the line: of such lines, the least indented,
+ * the first of those. It goes on with the deeper lines that follow, and if
+ * its first line has no two spaces in a row, with the lines as deep while
+ * no blank or deeper line has come. Lines of at most MANUAL_HEADING bytes
+ * and HEAD_INDENT spaces of indentation, without two spaces in a row, are
+ * headings, which go to call->heads. Returns true once no later line can
+ * change the part: a part at indentation 0 has closed.
+ */
+static bool
+manual_call_line (struct manual_call *call,
+                  struct cstr_view    text,
+                  struct cstr_view    heading,
+                  struct cstr_view    line)
+{
+	size_t const at = (size_t)(line.data - text.data);
+	if (!at)
+		return false;
+	size_t depth = 0;
+	while (depth < line.len && line.data[depth] == ' ')
+		++depth;
+	struct cstr_view const rest = cstr_view_slice(line, depth, SIZE_MAX);
+	if (!rest.len) {
+		call->scan &= ~SCAN_TAGS;
+		return false;
+	}
+	if (depth > call->depth)
+		call->scan &= ~SCAN_TAGS;
+	else if (depth < call->depth || !(call->scan & SCAN_TAGS))
+		call->scan = 0;
+	size_t const end = at + line.len + (at + line.len < text.len);
+	if (call->scan & SCAN_OPEN) {
+		call->to = end;
+		return false;
+	}
+	if (depth < call->depth && cstr_view_starts(rest, heading) &&
+	    (rest.len == heading.len || memchr(" =,[", rest.data[heading.len], 4))) {
+		call->from = at;
+		call->to = end;
+		call->depth = (uint32_t)depth;
+		call->scan = SCAN_OPEN | (memmem(rest.data, rest.len, "  ", 2) ? 0 : SCAN_TAGS);
+		return false;
+	}
+	if (depth <= HEAD_INDENT && rest.len <= MANUAL_HEADING &&
+	    !memmem(rest.data, rest.len, "  ", 2))
+		(void)util_text_printf(&call->heads, " %.*s,", (int)rest.len, rest.data);
+	return !call->depth;
+}
+
+/* Looks for the part of the call's page under its heading, as far as the
+ * step's share goes. Then ends the call with the part, or if the page has
+ * no such part, with a refusal that lists the page's headings.
+ */
+static void
+manual_step (struct mcp_slot *slot)
+{
+	struct manual_call *call = *mcp_slot_own(slot);
+	struct cstr_view const text = { call->page->text, call->page->len };
+	struct cstr_view const heading = jb_view(call->heading);
+	struct loop *loop = mcp_slot_loop(slot);
+	bool done = false;
+	for (struct cstr_view line; !done && loop_lines_next(&call->lines, loop, text, &line); )
+		done = manual_call_line(call, text, heading, line);
+	if (!done && call->lines.start < text.len) {
+		(void)mcp_slot_ready(slot);
+		return;
+	}
+	if (call->depth != UINT32_MAX) {
+		/* A part that runs into the cut of the page ends with the note. */
+		size_t const to = call->to + sizeof cut - 1 >= text.len &&
+		                  cstr_view_ends(text, (struct cstr_view){ cut, sizeof cut - 1 })
+		                  ? text.len : call->to;
+		mcp_slot_lend(slot, cstr_view_slice(text, call->from, to - call->from));
+		mcp_slot_finish(slot, 0);
+	} else if (call->heads.len) {
+		manual_list_end(&call->heads.len, call->heads.data, sizeof call->heads.data);
+		mcp_slot_tellf(slot, TOOL_FAILED, "No line of the page begins with %.*s "
+		               "followed by a space, a comma, =, [ or the line's end. Its "
+		               "headings:%s", (int)heading.len, heading.data, call->heads.data);
+	} else {
+		mcp_slot_tellf(slot, TOOL_FAILED, "No line of the page begins with %.*s "
+		               "followed by a space, a comma, =, [ or the line's end.",
+		               (int)heading.len, heading.data);
+	}
 }
 
 /* Handles the end of the fetch that a man call waited for. The function
@@ -610,7 +734,7 @@ manual_back (struct loop *loop,
 	struct manual_page *page = w->page;
 	w->page = nullptr;
 	if (page) {
-		manual_answer(slot, page);
+		(void)manual_answer(slot, page);
 	} else {
 		LOG(LOG_VERBOSE, "man call failed after %.1f s: %s",
 		    (double)(loop_clock() - w->since) / 1e9, w->why.data);
@@ -802,7 +926,7 @@ manual_word (struct cstr_view  s,
 
 /* Starts a man call in @p slot for the page in the name argument of
  * @p args, in the section of the section argument if it is given. If the
- * manual stores the page, the function ends the call with it. Otherwise
+ * manual stores the page, the function gives it to the call. Otherwise
  * the call waits for manual_back() under its handle.
  */
 static void
@@ -810,6 +934,8 @@ manual_start (struct mcp_slot    *slot,
               struct json_object *args)
 {
 	struct json_object *section = jb_get(args, "section");
+	struct json_object *heading = jb_get(args, "heading");
+	struct cstr_view const head = jb_view(heading);
 	struct cstr_view const page = jb_view(jb_get(args, "name"));
 	struct cstr_view sect = jb_view(section);
 	/* A small model may give a section as a number. */
@@ -827,33 +953,50 @@ manual_start (struct mcp_slot    *slot,
 		: section && !(sect.data && (!sect.len || manual_word(sect, MANUAL_SECTION, UTIL_ALNUM)))
 		? CSTR_VIEW("The section argument must name a section, such as 1, 3 or 3p: "
 		            "1 to 16 letters and digits.")
+		: heading && !(head.len && head.len <= MANUAL_HEADING && *head.data != ' ' &&
+		               !memchr(head.data, '\n', head.len))
+		? CSTR_VIEW("The heading argument must be the first words of a line of the "
+		            "page: 1 to 128 bytes without a line feed, the first not a space.")
 		: (struct cstr_view){};
-	static_assert(MANUAL_NAME == 128 && MANUAL_SECTION == 16, "the problems say");
+	static_assert(MANUAL_NAME == 128 && MANUAL_SECTION == 16 && MANUAL_HEADING == 128,
+	              "the problems say");
 	if (problem.data) {
 		mcp_slot_tell(slot, problem, TOOL_FAILED);
 		return;
 	}
 	if (mcp_slot_offset(slot, args))
 		return;
+	struct manual_call *call = malloc(sizeof *call);
+	if (!call) {
+		mcp_slot_fail(slot, ENOMEM);
+		return;
+	}
+	*call = (struct manual_call){ .heading = json_object_get(heading), .depth = UINT32_MAX };
+	*mcp_slot_own(slot) = call;
 	struct handle who;
 	struct manual_page *found = nullptr;
 	int e = mcp_slot_name(slot, &who);
 	e = e ? e : manual_find(mcp_slot_part(slot), page, sect, who, &found);
 	if (e)
 		mcp_slot_fail(slot, e);
-	else if (found)
-		manual_answer(slot, found);
-	else
+	else if (!found || manual_answer(slot, found))
 		mcp_slot_park(slot);
 }
 
-/* Let go of a man call's page, and set the call's own word to nullptr. */
+/* Let go of a man call's page and heading, free the call, and set the
+ * call's own word to nullptr.
+ */
 static void
 manual_drop (struct mcp_slot *slot)
 {
 	void **own = mcp_slot_own(slot);
-	manual_page_put(*own);
+	struct manual_call *call = *own;
 	*own = nullptr;
+	manual_page_put(call->page);
+	call->page = nullptr;
+	json_object_put(call->heading);
+	call->heading = nullptr;
+	free(call);
 }
 
 static struct json_object *
@@ -877,6 +1020,11 @@ manual_definition (void const *service)
 					"functions, 3p POSIX, 4 devices, 5 file formats, 7 "
 					"overviews and conventions, 8 administration. Without "
 					"it, the first page man finds in its usual order."),
+				"heading", schema_property("string",
+					"Optional: the first words of a line of the page, such as "
+					"SYNOPSIS, RETURN VALUE, EINVAL or -Wall. The output is "
+					"then that line and the more deeply indented lines after "
+					"it."),
 				"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 				nullptr),
 			&CSTR_VIEW("name"), 1),
@@ -891,6 +1039,7 @@ struct plugin const manual_plugin = {
 	.tools = {{
 		.definition = manual_definition,
 		.start = manual_start,
+		.step = manual_step,
 		.drop = manual_drop,
 		.flags = TOOL_LENT | TOOL_PAGED | TOOL_DETACH
 	}}

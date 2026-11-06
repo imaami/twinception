@@ -18,8 +18,8 @@
  * The man tool is the manual's kind of tool (src/tool.h), its part of a
  * client loop the fetches there. A man call takes its page at once if the
  * manual has it, else once man has, which the call waits for, named
- * (src/mcp.h). It replies with the page, or with why there is none. A
- * call that goes leaves the page to the manual.
+ * (src/mcp.h). It replies with the page, the part of it under a heading,
+ * or why there is none. A call that goes leaves the page to the manual.
  */
 #ifndef ASKAI_SRC_MANUAL_H_
 #define ASKAI_SRC_MANUAL_H_

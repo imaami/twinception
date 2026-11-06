@@ -8239,6 +8239,33 @@ headed)
 
 	SYNOPSIS
 	       int headed(void);
+	              ERRORS below
+
+	ERRORS
+	       EINVAL The argument is bad.
+	              More about EINVAL.
+
+	       EPERM  Not allowed.
+
+	       -Wone
+	       -Wone=n
+	              Two names of one entry.
+
+	   Sub heading
+	       text
+
+	OPTIONS
+	       -x, --ex
+	              An option with a long name.
+
+	       --color[=WHEN]
+	              An option with an optional value.
+
+	       -Wtwo=n
+	              An option with a value.
+
+	       SIGA      1   A row of a table
+	       SIGB      2   The row after it
 
 	Fake 1.0                 2026-11-06            HEADED(3)
 	EOF
@@ -8256,6 +8283,7 @@ echo)
 	;;
 broken) exit 3 ;;
 big) head -c 5242880 /dev/zero | tr '\0' x ;;
+huge) printf 'HUGE(1)\nHUGE\n'; yes '  line' | head -c 5242880 ;;
 endless) yes ;;
 bytes) printf 'a\377b\303(c\342\202\254' ;;
 slow) sleep 1; echo slow ;;
@@ -8269,6 +8297,10 @@ wait*)
 *) echo "page ${page##*/}" ;;
 esac
 """
+
+
+# What follows the heading in the refusal of a heading that no line has.
+AFTER = "followed by a space, a comma, =, [ or the line's end."
 
 
 # The description of the man tool.
@@ -8298,7 +8330,8 @@ def check_man(binary, up):
     and descriptors of its own; the page cut at 4 MiB and mended into UTF-8
     text, or why there is none, which a turn's call is given whole, whatever
     its offset, and a turn's window of a page from the start of the line
-    that contains the offset. Each page is rendered once and kept by its
+    that contains the offset; the part of a page under a heading, or the
+    page's headings. Each page is rendered once and kept by its
     file, for every name it is found by, eight at most, and given while its
     file is unchanged; a name is found anew, in the background, once the
     recheck has passed; the asks for a page under way wait for its one fetch.
@@ -8347,6 +8380,8 @@ def check_man(binary, up):
             tools = ai.rpc("tools/list")[2]["result"]["tools"]
             assert [t["name"] for t in tools] == ["ask_ai", "man"], tools
             assert tools[1]["inputSchema"]["required"] == ["name"], tools[1]
+            assert list(tools[1]["inputSchema"]["properties"]) == \
+                ["name", "section", "heading", "offset"], tools[1]
             assert tools[1]["inputSchema"]["properties"]["offset"]["description"] == \
                 OFFSET_ABOUT and tools[1]["description"] == MAN_ABOUT, tools[1]
 
@@ -8474,6 +8509,45 @@ def check_man(binary, up):
                 lines("searches")
             assert ai.metrics()["askai_man_runs_total{run=\"search\"}"] == 11
 
+            # A heading gives the line that begins with it, after the
+            # indentation, and the lines indented deeper after it, the
+            # offset counting from its start; no such line, the headings.
+            synopsis = "SYNOPSIS\n       int headed(void);\n              ERRORS below\n"
+            for heading, text in (("SYNOPSIS", synopsis),
+                                  ("EINVAL", "       EINVAL The argument is bad.\n"
+                                             "              More about EINVAL.\n"),
+                                  ("-Wone", "       -Wone\n       -Wone=n\n"
+                                            "              Two names of one entry.\n"),
+                                  ("Sub", "   Sub heading\n       text\n"),
+                                  ("-x", "       -x, --ex\n"
+                                         "              An option with a long name.\n"),
+                                  ("--color", "       --color[=WHEN]\n              An "
+                                              "option with an optional value.\n"),
+                                  ("-Wtwo", "       -Wtwo=n\n"
+                                            "              An option with a value.\n"),
+                                  ("SIGA", "       SIGA      1   A row of a table\n"),
+                                  ("ERRORS", "ERRORS\n       EINVAL The argument is bad.\n"
+                                             "              More about EINVAL.\n\n"
+                                             "       EPERM  Not allowed.\n\n"
+                                             "       -Wone\n       -Wone=n\n"
+                                             "              Two names of one entry.\n\n"
+                                             "   Sub heading\n       text\n")):
+                assert text_of(man_call(ai, name="headed", heading=heading)) == text, heading
+            assert text_of(man_call(ai, name="headed", heading="ERRORS", offset=7)) == \
+                text[7:]
+            for heading in ("Synopsis", "HEADED", "SYN"):
+                result = man_call(ai, name="headed", heading=heading)
+                assert result.get("isError") and text_of(result) == \
+                    f"No line of the page begins with {heading} {AFTER} Its headings: " \
+                    "NAME, SYNOPSIS, ERRORS, Sub heading, OPTIONS.", result
+            for heading in ("", " NAME", "a\nb", "x" * 129, 1):
+                result = man_call(ai, name="headed", heading=heading)
+                assert result.get("isError") and text_of(result) == \
+                    "The heading argument must be the first words of a line of the " \
+                    "page: 1 to 128 bytes without a line feed, the first not a space.", \
+                    (heading, result)
+            assert runs("headed") == (1, 1), runs("headed")
+
             # A page is cut at 4 MiB, and made UTF-8 text.
             note = "\n\n[The page goes on past the 4 MiB shown.]\n"
             for _ in range(2):
@@ -8483,7 +8557,24 @@ def check_man(binary, up):
             result = man_call(ai, name="endless")
             assert text_of(result) == "y\n" * (2 << 20) + note, len(text_of(result))
             assert text_of(man_call(ai, name="bytes")) == "a?b?(c€"
+            # A list of headings that fills its room ends in "...".
+            result = man_call(ai, name="endless", heading="z")
+            assert result.get("isError") and text_of(result) == \
+                f"No line of the page begins with z {AFTER} Its headings: " + \
+                ", ".join(["y"] * 680) + ",...", result
             assert runs("big") == (1, 1), runs("big")
+            # A heading's scan of a page of one 4 MiB line takes steps. The
+            # note after the cut is a line of the page.
+            result = man_call(ai, name="big", heading="x")
+            assert result.get("isError") and text_of(result) == \
+                f"No line of the page begins with x {AFTER} Its headings: " \
+                "[The page goes on past the 4 MiB shown.].", result
+            # A part that runs into the cut ends with the note.
+            assert text_of(man_call(ai, name="huge", heading="HUGE")) == \
+                "HUGE\n" + "  line\n" * 599184 + "  l" + note
+            parse = [v for k, v in ai.metrics().items()
+                     if k.startswith("askai_loop_step_work_max{") and 'unit="parse"' in k]
+            assert parse and max(parse) <= 16 << 10, parse
 
             # One call waits out its deadline, and fifteen more go: sixteen
             # children at most, which go on until their deadline.
@@ -8529,12 +8620,14 @@ def check_man(binary, up):
             assert all(alive(p) for p in (ai.proc.pid,))
 
         # A turn's call is given what man says whole, whatever its offset,
-        # and a page from the start of the line that contains the offset,
-        # with a note even if that is the start of the page.
+        # a page from the start of the line that contains the offset,
+        # with a note even if that is the start of the page, and the part
+        # under a heading.
         replies = [(200, turn_stream([(str(off), "man", json.dumps(
             {"name": "missing", "offset": off})) for off in (5, 100000)] +
             [(f"h{off}", "man", json.dumps({"name": "headed", "offset": off}))
-             for off in (70, 5)]))]
+             for off in (70, 5)] +
+            [("h", "man", json.dumps({"name": "headed", "heading": "SYNOPSIS"}))]))]
         up.reply = lambda request: replies.pop() if replies else \
             (200, turn_stream(text="A"))
         with Askai(binary, "-u", up.url(), "--man", "--upstream-tools", env=env) as ai:
@@ -8548,6 +8641,7 @@ def check_man(binary, up):
             assert results[3]["content"].startswith("HEADED(3)") and re.search(
                 r"\n\n\[Bytes 0 to (\d+) of \1: its end\.\]$", results[3]["content"]), \
                 results[3]
+            assert results[4]["content"] == synopsis, results[4]
             [lent] = [t["function"] for t in up.requests[count]["body"]["tools"]
                       if t["function"]["name"] == "man"]
             assert lent["parameters"]["properties"]["offset"]["description"] == \
@@ -8601,6 +8695,9 @@ def check_man(binary, up):
         assert max(len(line) for line in text.split("\n")) <= 80
         assert text_of(man_call(ai, name="printf", section=3)) == text
         assert ai.metrics()["askai_man_asks_total{result=\"hit\"}"] == 1
+        part = text_of(man_call(ai, name="printf", section=3, heading="RETURN VALUE"))
+        assert part.startswith("RETURN VALUE\n") and part in text and \
+            "\nERRORS" not in part, part
         result = man_call(ai, name="no_such_page_xyz", section="3")
         assert result.get("isError") and text_of(result) == \
             "No manual entry for no_such_page_xyz in section 3.", result
