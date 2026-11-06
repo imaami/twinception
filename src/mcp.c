@@ -4856,14 +4856,14 @@ mcp_agenda_job_done (struct mcp_slot *slot)
 }
 
 /* Appends the notice that the timer @p t fired, with its note, to @p d.
- * Returns false if out of memory.
+ * Returns 0, or ENOMEM.
  */
-static bool
+static int
 mcp_notice_timer (struct dstr               *d,
                   struct ledger_timer const *t)
 {
 	return dstr_printf(d, "[askai: timer %" PRIu32 " fired%s%.*s.]\n", t->id,
-	                   t->len ? ": " : "", (int)t->len, t->note);
+	                   t->len ? ": " : "", (int)t->len, t->note) ? 0 : ENOMEM;
 }
 
 /** Handles the alarm @p timer of an agenda. The timers that are due fire,
@@ -4883,8 +4883,9 @@ mcp_agenda_alarm (struct loop       *loop,
 			continue;
 		t->due = 0;
 		fired = true;
-		if (!mcp_notice_timer(&a->notices, t)) {
-			mcp_req_fail(a->req, ENOMEM);
+		int e = mcp_notice_timer(&a->notices, t);
+		if (e) {
+			mcp_req_fail(a->req, e);
 			return;
 		}
 	}
@@ -5447,7 +5448,7 @@ mcp_wait_report (struct mcp_wait const    *w,
 		                 record_status[status].data, t->id.hex);
 	}
 	for (uint32_t i = 0; ok && i < look->n_timers; ++i)
-		ok = mcp_notice_timer(d, &look->timers[i]);
+		ok = !mcp_notice_timer(d, &look->timers[i]);
 	if (ok && !look->n_tasks && !look->n_timers)
 		ok = dstr_printf(d, "Nothing happened in %" PRIu32 " s.", w->secs);
 	return ok ? 0 : ENOMEM;
