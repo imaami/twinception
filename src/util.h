@@ -164,6 +164,20 @@ util_clip (char const *s,
 	return max;
 }
 
+/** Returns @p off, at most @p len, moved forward past the UTF-8
+ *  continuation bytes of the @p len bytes at @p s: the start of a
+ *  character, or @p len.
+ */
+static inline size_t
+util_char_start (char const *s,
+                 size_t      len,
+                 size_t      off)
+{
+	while (off < len && ((unsigned char)s[off] & 0xc0) == 0x80)
+		++off;
+	return off;
+}
+
 /** The most bytes of a word in askai's Git refs, such as a participant. */
 enum { UTIL_WORD_MAX = 64 };
 

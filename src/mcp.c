@@ -2039,11 +2039,9 @@ mcp_slot_respond (struct mcp_slot *slot,
 	}
 	mcp_req_log_call(req, failed ? "failed" : "answered",
 	                 (struct cstr_view){ (char const *)text.ptr, text.len }, failed);
-	while (off < text.len && (text.ptr[off] & 0xc0) == 0x80)
-		++off;
 	req->failed = failed;
 	req->phase = PHASE_REPLY;
-	req->off = off;
+	req->off = util_char_start((char const *)text.ptr, text.len, off);
 	int e = mcp_req_tool_open(req, req->agenda ? cstr_view_dstr(&req->agenda->said)
 	                                           : (struct cstr_view){});
 	if (e) {
@@ -5768,9 +5766,8 @@ static void
 mcp_slot_window (struct mcp_slot *slot,
                  struct span      out)
 {
-	size_t skip = slot->skip < out.len ? slot->skip : out.len;
-	while (skip < out.len && (out.ptr[skip] & 0xc0) == 0x80)
-		++skip;
+	size_t skip = util_char_start((char const *)out.ptr, out.len,
+	                              slot->skip < out.len ? slot->skip : out.len);
 	size_t cap = mcp_req_lend_max(slot->req);
 	size_t len = out.len - skip;
 	size_t window = len;

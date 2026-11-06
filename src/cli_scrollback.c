@@ -129,9 +129,7 @@ cli_scrollback_line_trim (struct cli_scrollback      *scrollback,
                           size_t                      skip)
 {
 	size_t old = dstr_len(&line->text);
-	char const *data = dstr_get(&line->text);
-	while (skip < old && ((unsigned char)data[skip] & 0xc0) == 0x80)
-		++skip;
+	skip = util_char_start(dstr_get(&line->text), old, skip);
 	size_t discarded = 0;
 	if (line->columns && line->columns == scrollback->columns) {
 		int e = cli_scrollback_prefix(line, &skip, &discarded);
@@ -180,9 +178,7 @@ cli_scrollback_append_part (struct cli_scrollback *scrollback,
 	/* A single unterminated line must not bypass the transcript bound.
 	 * Drop its oldest prefix, retaining complete UTF-8 code points. */
 	if (part.len > CLI_SCROLLBACK_BYTES) {
-		size_t skip = part.len - CLI_SCROLLBACK_BYTES;
-		while (skip < part.len && ((unsigned char)part.data[skip] & 0xc0) == 0x80)
-			++skip;
+		size_t skip = util_char_start(part.data, part.len, part.len - CLI_SCROLLBACK_BYTES);
 		part = cstr_view_slice(part, skip, SIZE_MAX);
 	}
 	if (part.len && line->style_count == CLI_SCROLLBACK_STYLES &&
