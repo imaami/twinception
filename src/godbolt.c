@@ -1181,9 +1181,10 @@ godbolt_tagged (struct cstr_view const *tags,
 }
 
 /* Returns whether an element of a list matches the words of the argument
- * match and the argument ids. Each word must be in one of the @p n texts
- * of @p f. @p f[0] is the id of the element. If the call has ids, the
- * function clears the bit of the id in call->missing.
+ * match and the argument ids, and counts a match in call->matching. Each
+ * word must be in one of the @p n texts of @p f. @p f[0] is the id of the
+ * element. With the argument ids, the function clears the bit of the id
+ * in call->missing.
  */
 static bool
 godbolt_matches (struct godbolt         *call,
@@ -1197,12 +1198,23 @@ godbolt_matches (struct godbolt         *call,
 		if (!hit)
 			return false;
 	}
-	if (!call->args.n_ids)
-		return true;
 	size_t const i = cstr_view_index(call->args.ids, call->args.n_ids, f[0]);
-	if (i == call->args.n_ids)
+	if (call->args.n_ids && i == call->args.n_ids)
 		return false;
 	call->missing &= ~(1u << i);
+	++call->matching;
+	return true;
+}
+
+/* Returns whether the limit allows another row of the catalog, and counts
+ * the row in call->listed if it does.
+ */
+static bool
+godbolt_row (struct godbolt *call)
+{
+	if (call->listed == call->args.limit)
+		return false;
+	++call->listed;
 	return true;
 }
 
@@ -1244,9 +1256,8 @@ godbolt_language_row (struct godbolt     *call,
 	}
 	++call->total;
 	struct cstr_view const f[] = { id, jb_view(jb_get(element, "name")) };
-	if (!godbolt_matches(call, f, array_size(f)) || ++call->matching > call->args.limit)
+	if (!godbolt_matches(call, f, array_size(f)) || !godbolt_row(call))
 		return 0;
-	++call->listed;
 	godbolt_put_field(call, f[0]);
 	godbolt_put(call, CSTR_VIEW("\t"));
 	godbolt_put_field(call, f[1]);
@@ -1338,7 +1349,6 @@ godbolt_compiler_row (struct godbolt     *call,
 	    (v[2].len && !cstr_view_equal(f[4], v[2])) ||
 	    !godbolt_matches(call, f, n))
 		return 0;
-	++call->matching;
 	switch (call->args.action) {
 	case GODBOLT_KINDS:
 		return godbolt_count(call, f[2].data);
@@ -1347,9 +1357,8 @@ godbolt_compiler_row (struct godbolt     *call,
 	case GODBOLT_FAMILIES:
 		return godbolt_count_families(call, t, n - GODBOLT_COLUMNS);
 	}
-	if (call->listed == call->args.limit)
+	if (!godbolt_row(call))
 		return 0;
-	++call->listed;
 	for (size_t i = 0; i < n; ++i) {
 		godbolt_put_field(call, f[i]);
 		godbolt_put(call, i < GODBOLT_COLUMNS ? CSTR_VIEW("\t")
