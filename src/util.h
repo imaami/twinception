@@ -35,14 +35,17 @@ util_hex (char *restrict       dst,
 	}
 }
 
-/** Fill the @p n bytes at @p dst, at most 256, with random bytes from the
- *  kernel. Returns 0, or the error number.
+/** The most bytes that util_random() fills in one call. */
+enum { UTIL_RANDOM_MAX = 256 };
+
+/** Fill the @p n bytes at @p dst, at most UTIL_RANDOM_MAX, with random
+ *  bytes from the kernel. Returns 0, or the error number.
  */
 static inline int
 util_random (void   *dst,
              size_t  n)
 {
-	if (n > 256)
+	if (n > UTIL_RANDOM_MAX)
 		return EINVAL;
 	/* For so few bytes, getrandom() returns fewer only if a signal
 	 * interrupts it before it has any. */
@@ -53,17 +56,15 @@ util_random (void   *dst,
 	return (size_t)got == n ? 0 : EIO;
 }
 
-/** Write @p n random bytes, at most 256, from the kernel to @p dst as 2 @p n
- *  lowercase hexadecimal digits, without a NUL. Returns 0, or the error
- *  number.
+/** Write @p n random bytes, at most UTIL_RANDOM_MAX, from the kernel to
+ *  @p dst as 2 @p n lowercase hexadecimal digits, without a NUL. Returns 0,
+ *  or the error number.
  */
 static inline int
 util_random_hex (char   *dst,
                  size_t  n)
 {
-	unsigned char bits[256];
-	if (n > sizeof bits)
-		return EINVAL;
+	unsigned char bits[UTIL_RANDOM_MAX];
 	int e = util_random(bits, n);
 	if (!e)
 		util_hex(dst, bits, n);
@@ -419,8 +420,6 @@ util_url_shown (char const *restrict url,
 			return url;
 		}
 	}
-
-	return host;
 }
 
 [[gnu::format(printf, 3, 0)]]
