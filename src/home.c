@@ -710,6 +710,16 @@ home_job_erred (struct job *job,
 	return home_job_say(job, "Upstream error (HTTP %d): %.*s", job->http, len, what);
 }
 
+/* A journal write of @p job failed with the error in job->recovery.error:
+ * say so in @p job's result (home_job_say()).
+ */
+static void
+home_job_unpersisted (struct job *job)
+{
+	job->flags |= ERRED;
+	(void)home_job_say(job, "Transcript persistence failed: %s", strerror(job->recovery.error));
+}
+
 /* The breaker is open: end @p job, which may not go upstream, with when to
  * try again.
  */
@@ -1159,8 +1169,7 @@ home_journal_done (struct loop *loop,
 	if (r->flags & RECOVERY_ENDING) {
 		r->flags &= ~RECOVERY_ENDING;
 		if (r->error && job->status != JOB_CANCELLED) {
-			(void)home_job_say(job, "Transcript persistence failed: %s",
-			                   strerror(r->error));
+			home_job_unpersisted(job);
 			job->status = JOB_FAILED;
 		}
 		home_job_end(job, job->status);
@@ -1169,8 +1178,7 @@ home_journal_done (struct loop *loop,
 	if (list_is_empty(&job->due))
 		goto done;
 	if (r->error) {
-		(void)home_job_say(job, "Transcript persistence failed: %s", strerror(r->error));
-		job->flags |= ERRED;
+		home_job_unpersisted(job);
 		home_cut(home, job, CURLE_OK);
 		goto done;
 	}
@@ -1998,11 +2006,8 @@ home_take (struct home        *home,
 	} else if (e == EILSEQ) {
 		(void)home_job_erred(job, "an answer that is not text", -1);
 	}
-	if (e && job->recovery.error) {
-		(void)home_job_say(job, "Transcript persistence failed: %s",
-		                   strerror(job->recovery.error));
-		job->flags |= ERRED;
-	}
+	if (e && job->recovery.error)
+		home_job_unpersisted(job);
 	if (!(job->flags & DROPPED) && buf_peek(&job->delta).len) {
 		job->flags |= DELTA_PENDING;
 		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DELTA);
