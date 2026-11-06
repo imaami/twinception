@@ -56,10 +56,15 @@ struct cli_state {
 	size_t                  turn_bytes;
 	int                     directory;
 	int                     lock;
+	uint32_t                flags;
 	struct oid              identity_blob;     /**< empty until hashed */
 	struct oid              parent;
-	bool                    snapshot_pending;
-	bool                    unsaved;           /**< the last save failed */
+};
+
+/** The flags of struct cli_state. */
+enum {
+	CLI_STATE_SNAPSHOT_PENDING = 1u << 0,  /**< the snapshot is not committed */
+	CLI_STATE_UNSAVED          = 1u << 1,  /**< the last save failed */
 };
 
 static char const cli_state_magic[] = "ASKAI-CLI-1\n";
@@ -69,7 +74,7 @@ extern char **environ;
 static force_inline int
 cli_state_private (int fd)
 {
-	struct stat s = {0};
+	struct stat s;
 	return fstat(fd, &s) ? errno
 	                     : (S_ISREG(s.st_mode) &&
 	                        !(s.st_mode & 077) &&
@@ -264,10 +269,12 @@ cli_state_commit (struct cli_state *state)
 		e = cli_state_tree_entry(state, &state->identity_blob, "identity.txt");
 	if (!e && state->input_count)
 		e = cli_state_tree_blob(state, "input.txt", cli_state_input_at(state, state->input_count - 1));
-	if (!e && state->turn_count)
-		e = cli_state_tree_blob(state, "prompt.txt", cstr_view_dstr(&state->turns[state->turn_count - 1].prompt));
-	if (!e && state->turn_count)
-		e = cli_state_tree_blob(state, "answer.txt", cstr_view_dstr(&state->turns[state->turn_count - 1].answer));
+	if (!e && state->turn_count) {
+		struct cli_state_turn const *last = &state->turns[state->turn_count - 1];
+		e = cli_state_tree_blob(state, "prompt.txt", cstr_view_dstr(&last->prompt));
+		if (!e)
+			e = cli_state_tree_blob(state, "answer.txt", cstr_view_dstr(&last->answer));
+	}
 	struct oid tree;
 	if (!e)
 		e = cli_state_git_oid(state, (char const *[]){ "mktree", nullptr }, cstr_view_dstr(&state->tree),
@@ -283,26 +290,25 @@ cli_state_commit (struct cli_state *state)
 	if (!e && !dstr_printf(&state->scratch, "start\nupdate %s %s\nupdate %s %s\nprepare\ncommit\n",
 	                       dstr_get(&state->branch), commit.hex, dstr_get(&state->latest), commit.hex))
 		e = ENOMEM;
-	if (!e) {
+	if (!e)
 		e = cli_state_lock(state, state->lock);
-		if (!e) {
-			e = cli_state_git_ok(state, (char const *[]){ "update-ref", "--stdin", nullptr }, cstr_view_dstr(&state->scratch));
-			if (flock(state->lock, LOCK_UN) && !e)
-				e = errno;
-		}
+	if (!e) {
+		e = cli_state_git_ok(state, (char const *[]){ "update-ref", "--stdin", nullptr }, cstr_view_dstr(&state->scratch));
+		if (flock(state->lock, LOCK_UN) && !e)
+			e = errno;
 	}
-	if (!e)
-		state->parent = commit;
-	if (!e)
-		(void)cli_state_git_ok(state, (char const *[]){ "gc", "--auto", "--quiet", nullptr },
-		                       (struct cstr_view){});
-	return e;
+	if (e)
+		return e;
+	state->parent = commit;
+	(void)cli_state_git_ok(state, (char const *[]){ "gc", "--auto", "--quiet", nullptr },
+	                       (struct cstr_view){});
+	return 0;
 }
 
 static int
 cli_state_save (struct cli_state *state)
 {
-	state->unsaved = true;
+	state->flags |= CLI_STATE_UNSAVED;
 	int fd = openat(state->directory, dstr_get(&state->temporary),
 	                O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
 	if (fd < 0)
@@ -335,16 +341,14 @@ cli_state_save (struct cli_state *state)
 		             state->directory, dstr_get(&state->name)))
 			e = errno;
 		else
-			state->snapshot_pending = true;
+			state->flags |= CLI_STATE_SNAPSHOT_PENDING;
 	}
 	if (!e && fsync(state->directory))
 		e = errno;
-	if (!e) {
-		state->snapshot_pending = true;
+	if (!e)
 		e = cli_state_commit(state);
-	}
 	if (!e) {
-		state->snapshot_pending = state->unsaved = false;
+		state->flags &= ~(CLI_STATE_SNAPSHOT_PENDING | CLI_STATE_UNSAVED);
 		if (unlinkat(state->directory, dstr_get(&state->name), 0))
 			e = errno;
 	}
@@ -757,7 +761,7 @@ cli_state_destroy (struct cli_state **pstate)
 	struct cli_state *state = *pstate;
 
 	if (state->directory >= 0) {
-		if (!state->snapshot_pending && dstr_len(&state->name))
+		if (!(state->flags & CLI_STATE_SNAPSHOT_PENDING) && dstr_len(&state->name))
 			(void)unlinkat(state->directory, dstr_get(&state->name), 0);
 		if (dstr_len(&state->temporary))
 			(void)unlinkat(state->directory, dstr_get(&state->temporary), 0);
@@ -796,8 +800,8 @@ cli_state_destroy (struct cli_state **pstate)
 struct cstr_view
 cli_state_recovery_file (struct cli_state const *state)
 {
-	return state && state->snapshot_pending ? cstr_view_dstr(&state->name)
-	                                       : (struct cstr_view){};
+	return state && (state->flags & CLI_STATE_SNAPSHOT_PENDING) ? cstr_view_dstr(&state->name)
+	                                                            : (struct cstr_view){};
 }
 
 size_t
@@ -843,7 +847,7 @@ cli_state_add_input (struct cli_state *state,
 		int e = cli_state_push_input(state, text);
 		if (e)
 			return e;
-	} else if (!state->unsaved) {
+	} else if (!(state->flags & CLI_STATE_UNSAVED)) {
 		return 0;
 	}
 	return cli_state_save(state);
