@@ -171,6 +171,7 @@ static char const *const fixed[] = {
         O("--diff-filter="), O("-M"), O("--find-renames")
 static struct cstr_view const log_options[] = {
 	DISPLAY, O("--graph"), O("--reverse"), O("--first-parent"), O("--no-merges"),
+	O("--all"), O("--branches"), O("--tags"), O("--remotes"),
 	O("--merges"), O("--follow"), O("--max-count="), O("-n#"),
 	O("--skip="), O("--since="), O("--until="), O("--after="), O("--before="),
 	O("--author="), O("--committer="), O("--grep="), O("-i"),

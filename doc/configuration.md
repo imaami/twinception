@@ -1385,8 +1385,10 @@ separate `git` tool call's arguments:
 The default revision is `HEAD`, including for `grep`, `blame` and `ls-tree`.
 Staged, working-tree, untracked and ignored content is not exposed. Use
 `ls-tree` to list committed files; a staged deletion does not hide its committed
-version. `status`, `ls-files`, `--cached`, `--staged`, `--untracked` and
-`log --all` are unavailable. `diff` requires two committed revisions or a range
+version. `status`, `ls-files`, `--cached`, `--staged` and `--untracked` are
+unavailable; `log --all`, `--branches`, `--tags` and `--remotes` walk only
+`HEAD` and the branches, tags and remote-tracking refs. `diff` requires two
+committed revisions or a range
 with both endpoints, such as `main..topic` or `main...topic`.
 
 A `grep` pattern is an extended regex unless the options give `-G` (basic),

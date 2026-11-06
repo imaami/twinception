@@ -477,17 +477,17 @@ revision gives the file as it is.
 Use `"help": true` with a command to list its options, source selection and
 argument limits, and the bytes of output that one result of the caller takes
 (`window_bytes`: a turn's window, or 16 MiB for a client). The other arguments
-of such a call, except `offset`, are ignored. Each option must be
-on that command's allowlist, with its value attached (`--max-count=20`, not
-`-n 20`). Revisions name commits, optionally with
-`^` or `~` ancestry; `log` and `diff` also accept explicit ranges. Only `read`,
-`show` and `cat-file` take a path in a revision, as `commit:path`; `ls-tree`
-lists the entries in a directory given in `paths` as `src/`, with the slash.
-Index selectors such as `:path`, raw blob or tree IDs, stash and reflog
-selectors, and revision-list expansion syntax are rejected. `status`,
-`ls-files`, index and worktree options, and `log --all` are unavailable. Every
-resolved commit, including `blame --ignore-rev` values, must be reachable from
-`HEAD`, a branch, a tag or a remote-tracking ref.
+of such a call, except `offset`, are ignored. Each option must be on that
+command's allowlist, with its value attached (`--max-count=20`, not `-n 20`).
+Revisions name commits, optionally with `^` or `~` ancestry; `log` and `diff`
+also accept explicit ranges. Only `read`, `show` and `cat-file` take a path in a
+revision, as `commit:path`; `ls-tree` lists the entries in a directory given in
+`paths` as `src/`, with the slash. Index selectors such as `:path`, raw blob or
+tree IDs, stash and reflog selectors, and revision-list expansion syntax are
+rejected. `status`, `ls-files`, and index and worktree options are unavailable.
+`log` also takes `--all`, `--branches`, `--tags` and `--remotes`. Every resolved
+commit, including `blame --ignore-rev` values, must be reachable from `HEAD`, a
+branch, a tag or a remote-tracking ref.
 Knowing a stash or dangling commit's hash does not grant access. A commit
 deliberately added to ordinary history becomes available through that history.
 Paths are relative to the repository's top, with no `..` component

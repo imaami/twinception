@@ -9186,14 +9186,12 @@ def check_git(binary, up):
                     ("disk", "index", "staged-only.txt", "loose.txt", "hidden.ignore")), errors
 
             for command, option in (("grep", "--cached"), ("grep", "--untracked"),
-                                    ("diff", "--cached"), ("diff", "--staged"),
-                                    ("log", "--all")):
+                                    ("diff", "--cached"), ("diff", "--staged")):
                 arguments = {"pattern": "PRIVATE_"} if command == "grep" else \
                     {"revisions": ["HEAD", "HEAD"]}
                 result = call(ai, repo="proj", command=command, options=[option], **arguments)
                 assert result.get("isError") and text_of(result) == \
-                    (bad_option(command, option) if option == "--all" else
-                     source_option(option, pair=command == "diff")), result
+                    source_option(option, pair=command == "diff"), result
             for revision in (":a.txt", ":0:a.txt", ":staged-only.txt", staged, staged[:12]):
                 for command in ("show", "cat-file", "read"):
                     arguments = {"options": ["-p"]} if command == "cat-file" else {}
@@ -9463,6 +9461,19 @@ def check_git_scope(binary, up):
                         ai, "scope", "diff", revisions=revisions), revisions
                 assert "\talpha\n" in ok(ai, "scope", "blame", paths=["a.txt"],
                     options=["--line-porcelain", "--ignore-rev=" + topic])
+                # log --all, --branches, --tags and --remotes walk the refs of
+                # the view, and never a stash, a private ref or a detached
+                # commit.
+                for option, subjects in (
+                        ("--all", ["ordinary history", "topic history",
+                                   "long path history", "tag-only history",
+                                   "remote-only history"]),
+                        ("--branches", ["ordinary history", "topic history",
+                                        "long path history"]),
+                        ("--tags", ["ordinary history", "tag-only history"]),
+                        ("--remotes", ["ordinary history", "remote-only history"])):
+                    text = ok(ai, "scope", "log", options=["--format=%s", option])
+                    assert sorted(text.splitlines()) == sorted(subjects), (option, text)
 
                 for command, arguments in (
                         ("log", {"options": ["-p"]}), ("show", {}),
