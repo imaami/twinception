@@ -1504,7 +1504,7 @@ config_check_git (struct config const *cfg,
 }
 
 static int
-config_check_gits (struct config const *cfg)
+config_check_gits (struct config *cfg)
 {
 	for (size_t i = 0; i < cfg->n_gits; ++i) {
 		int status = config_check_git(cfg, i);
@@ -1534,7 +1534,7 @@ config_api (struct config *cfg)
 
 /* Check that the upstream may call tools, if it is to. */
 static int
-config_check_upstream (struct config const *cfg)
+config_check_upstream (struct config *cfg)
 {
 	if (!(cfg->flags & CFG_UPSTREAM_TOOLS))
 		return 0;
@@ -1574,7 +1574,7 @@ config_check_notes_parent (struct config const *cfg)
  * exist.
  */
 static int
-config_check_notes (struct config const *cfg)
+config_check_notes (struct config *cfg)
 {
 	char const *path = cfg->notes;
 	if (!path)
@@ -2248,42 +2248,16 @@ config_policy (struct config *cfg)
 static int
 config_finish (struct config *cfg)
 {
-	int status = config_fit_limits(cfg);
-	if (status)
-		return status;
-	status = config_check_gits(cfg);
-	if (status)
-		return status;
-	status = config_api(cfg);
-	if (status)
-		return status;
-	status = config_check_upstream(cfg);
-	if (status)
-		return status;
-	status = config_check_notes(cfg);
-	if (status)
-		return status;
-	status = config_session(cfg);
-	if (status)
-		return status;
-	status = config_upstream(cfg);
-	if (status)
-		return status;
-	status = config_listens(cfg);
-	if (status)
-		return status;
-	status = config_registry(cfg);
-	if (status)
-		return status;
-	status = config_allow(cfg);
-	if (status)
-		return status;
-	status = config_description(cfg);
-	if (status)
-		return status;
-	status = config_policy(cfg);
-	if (status)
-		return status;
+	static int (*const steps[]) (struct config *cfg) = {
+		config_fit_limits, config_check_gits, config_api, config_check_upstream,
+		config_check_notes, config_session, config_upstream, config_listens,
+		config_registry, config_allow, config_description, config_policy,
+	};
+	for (size_t i = 0; i < array_size(steps); ++i) {
+		int status = steps[i](cfg);
+		if (status)
+			return status;
+	}
 	/* One CPU fewer than askai may use is left to home and the threads that
 	 * mostly sleep (design section 1). */
 	size_t loops = cfg->loops;
