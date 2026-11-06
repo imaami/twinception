@@ -307,18 +307,46 @@ ledger_owner_ended (struct ledger_owner const *o)
 	return nullptr;
 }
 
+/* The link to the record whose id is @p id and whose hash is @p hash, the
+ * lock held, or the link at the end of its bucket if the ledger has none.
+ */
+static struct ledger_task **
+ledger_slot (struct ledger      *l,
+             uint64_t            hash,
+             struct hexid const *id)
+{
+	struct ledger_task **p = &l->buckets[hash & (BUCKETS - 1)];
+	while (*p && ((*p)->hash != hash || !hexid_equal(&(*p)->id, id)))
+		p = &(*p)->next;
+	return p;
+}
+
+/* The record of the owner @p owner whose id is @p id, the lock held;
+ * nullptr if the ledger has none. Ids are unique across owners, as
+ * ledger_restore() refuses one in the ledger.
+ */
+static struct ledger_task *
+ledger_mine (struct ledger      *l,
+             uint64_t            owner,
+             struct hexid const *id)
+{
+	struct ledger_task *t = *ledger_slot(l, util_hash(0, id->hex, HEXID_DIGITS), id);
+	return t && t->owner->key == owner ? t : nullptr;
+}
+
 /* Take @p t, an ended record, out of the table, off the ended list and off
  * its owner's list, the lock held, and free the owner if it has no records
- * left. The ledger's reference to @p t is then the caller's to drop.
+ * left. Chains @p t at @p *gone, whose references the caller drops once
+ * the lock is not held.
  */
 static void
-ledger_drop (struct ledger      *l,
-             struct ledger_task *t)
+ledger_drop (struct ledger       *l,
+             struct ledger_task  *t,
+             struct ledger_task **gone)
 {
-	struct ledger_task **p = &l->buckets[t->hash & (BUCKETS - 1)];
-	while (*p != t)
-		p = &(*p)->next;
-	*p = t->next;
+	*ledger_slot(l, t->hash, &t->id) = t->next;
+	t->next = *gone;
+	*gone = t;
 	list_del(&t->hook);
 	list_del(&t->mine);
 	struct ledger_owner *o = t->owner;
@@ -369,18 +397,12 @@ ledger_sweep (struct ledger      *l,
 		struct ledger_task *t = container_of(l->ended.next, struct ledger_task, hook);
 		if (t == keep || (t->due > now && l->bytes <= LEDGER_BYTES))
 			break;
-		ledger_drop(l, t);
-		t->next = gone;
-		gone = t;
+		ledger_drop(l, t, &gone);
 	}
 	struct ledger_owner *o = room && l->n == LEDGER_MAX ? ledger_owner_most(l) : nullptr;
-	if (o) {
-		/* The owner has an ended record, as o->n - o->running counts them. */
-		struct ledger_task *t = ledger_owner_ended(o);
-		ledger_drop(l, t);
-		t->next = gone;
-		gone = t;
-	}
+	/* The owner has an ended record, as o->n - o->running counts them. */
+	if (o)
+		ledger_drop(l, ledger_owner_ended(o), &gone);
 	return gone;
 }
 
@@ -405,11 +427,8 @@ ledger_insert (struct ledger       *l,
 	if (working && t->kind == LEDGER_JOB && o->running >= LEDGER_RUNNING)
 		return EBUSY;
 	struct ledger_task *old = o->n >= LEDGER_MINE ? ledger_owner_ended(o) : nullptr;
-	if (old) {
-		ledger_drop(l, old);
-		old->next = *gone;
-		*gone = old;
-	}
+	if (old)
+		ledger_drop(l, old, gone);
 	struct ledger_task **bucket = &l->buckets[t->hash & (BUCKETS - 1)];
 	t->next = *bucket;
 	*bucket = t;
@@ -585,11 +604,8 @@ ledger_restore (struct ledger      *ledger,
 	struct ledger_task *excess = nullptr;
 	struct ledger_wait *hits = nullptr;
 	pthread_mutex_lock(&ledger->lock);
-	struct ledger_task *old = ledger->buckets[t->hash & (BUCKETS - 1)];
-	while (old && (old->hash != t->hash || !hexid_equal(&old->id, &t->id)))
-		old = old->next;
 	*e = EEXIST;
-	if (!old) {
+	if (!*ledger_slot(ledger, t->hash, &t->id)) {
 		gone = ledger_sweep(ledger, nullptr, true);
 		*e = ledger_insert(ledger, t, owner, &gone);
 	}
@@ -678,12 +694,9 @@ ledger_find (struct ledger      *ledger,
 {
 	if (!ledger || !id)
 		return nullptr;
-	uint64_t hash = util_hash(0, id->hex, HEXID_DIGITS);
 	pthread_mutex_lock(&ledger->lock);
 	struct ledger_task *gone = ledger_sweep(ledger, nullptr, false);
-	struct ledger_task *t = ledger->buckets[hash & (BUCKETS - 1)];
-	while (t && (t->hash != hash || !hexid_equal(&t->id, id) || t->owner->key != owner))
-		t = t->next;
+	struct ledger_task *t = ledger_mine(ledger, owner, id);
 	if (t)
 		atomic_fetch_add_explicit(&t->refs, 1, memory_order_relaxed);
 	pthread_mutex_unlock(&ledger->lock);
@@ -698,18 +711,15 @@ ledger_remove (struct ledger      *ledger,
 {
 	if (!ledger || !id || !*id->hex)
 		return EINVAL;
-	uint64_t hash = util_hash(0, id->hex, HEXID_DIGITS);
+	struct ledger_task *gone = nullptr;
 	pthread_mutex_lock(&ledger->lock);
-	struct ledger_task *t = ledger->buckets[hash & (BUCKETS - 1)];
-	while (t && (t->hash != hash || !hexid_equal(&t->id, id) || t->owner->key != owner))
-		t = t->next;
+	struct ledger_task *t = ledger_mine(ledger, owner, id);
 	int e = !t ? ENOENT :
 	        atomic_load_explicit(&t->status, memory_order_relaxed) == LEDGER_WORKING ? EBUSY : 0;
 	if (!e)
-		ledger_drop(ledger, t);
+		ledger_drop(ledger, t, &gone);
 	pthread_mutex_unlock(&ledger->lock);
-	if (!e)
-		ledger_task_put(t);
+	ledger_put_all(gone);
 	return e;
 }
 
