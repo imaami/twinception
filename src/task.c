@@ -14,14 +14,15 @@
 
 /* A client loop's part. */
 struct task_lane {
-	struct loop        *loop;     /* the loop's, as it attaches */
-	struct list         held;     /* the loop's: the tasks it holds */
-	uint64_t            rng;      /* the loop's: its choices' xorshift64 */
-	struct task_metrics metrics;  /* the loop's */
-	_Atomic uint64_t    load;     /* tasks placed on the loop and not gone
-	                                 from it: placers add, the loop takes
-	                                 away; once it has stopped, so many
-	                                 that none chooses it */
+	_Atomic(struct loop *) loop;     /* the loop, stored as it attaches;
+	                                    nullptr until then */
+	struct list            held;     /* the loop's: the tasks it holds */
+	uint64_t               rng;      /* the loop's: its choices' xorshift64 */
+	struct task_metrics    metrics;  /* the loop's */
+	_Atomic uint64_t       load;     /* tasks placed on the loop and not
+	                                    gone from it: placers add, the loop
+	                                    takes away; once it has stopped, so
+	                                    many that none chooses it */
 };
 
 struct task_pool {
@@ -107,6 +108,28 @@ task_arrive (struct loop *loop,
 	task_lane_take(&task->pool->lane[loop->id - 1], task, loop);
 }
 
+/* Places @p task, which is on no lane, on the lane @p to, from the lane
+ * @p self of @p loop: by a message to the loop of @p to, unless @p to is
+ * @p self. @p self takes the task if @p to is @p self, or if the loop of
+ * @p to cannot take the message, as before that loop attaches.
+ */
+static void
+task_lane_place (struct task_lane *self,
+                 struct task_lane *to,
+                 struct task      *task,
+                 struct loop      *loop)
+{
+	atomic_fetch_add_explicit(&to->load, 1, memory_order_relaxed);
+	if (to != self) {
+		task->msg.fn = task_arrive;
+		if (!loop_post(atomic_load_explicit(&to->loop, memory_order_acquire), &task->msg))
+			return;
+		atomic_fetch_sub_explicit(&to->load, 1, memory_order_relaxed);
+		atomic_fetch_add_explicit(&self->load, 1, memory_order_relaxed);
+	}
+	task_lane_take(self, task, loop);
+}
+
 /* After a slice of @p task, which @p lane holds on @p loop: queue it for the
  * next, or move it, while the loop holds more than TASK_BACKLOG, to a loop
  * that holds two fewer at least.
@@ -124,11 +147,9 @@ task_lane_next (struct task_lane *lane,
 		return;
 	}
 	task_lane_leave(lane, task);
-	atomic_fetch_add_explicit(&to->load, 1, memory_order_relaxed);
 	hist_add(&lane->metrics.moved, 1);
 	++task->moves;
-	task->msg.fn = task_arrive;
-	loop_post(to->loop, &task->msg);
+	task_lane_place(lane, to, task, loop);
 }
 
 /* A slice of a task, unless it is cancelled: then, or once it is done, it
@@ -155,7 +176,10 @@ task_step (struct loop      *loop,
 	task_lane_leave(self, task);
 	atomic_fetch_add_explicit(ended, 1, memory_order_relaxed);
 	task->msg.fn = task->back;
-	loop_post(task->owner, &task->msg);
+	/* A message that the owner's loop refuses never runs, so the runner's
+	 * reference goes here. */
+	if (loop_post(task->owner, &task->msg))
+		task_put(task, 1);
 }
 
 struct task_pool *
@@ -179,6 +203,7 @@ task_pool_create (size_t  loops,
 		atomic_init(&lane->metrics.slices, 0);
 		atomic_init(&lane->metrics.moved, 0);
 		atomic_init(&lane->load, 0);
+		atomic_init(&lane->loop, nullptr);
 	}
 	*e = 0;
 	return pool;
@@ -198,9 +223,9 @@ task_pool_attach (struct task_pool *pool,
                   struct loop      *loop)
 {
 	struct task_lane *lane = &pool->lane[loop->id - 1];
-	lane->loop = loop;
 	list_init(&lane->held);
 	lane->rng = loop_clock() * 0x9e3779b97f4a7c15 | 1;
+	atomic_store_explicit(&lane->loop, loop, memory_order_release);
 }
 
 void
@@ -264,14 +289,7 @@ task_submit (struct task *task,
 	struct task_lane *self = &pool->lane[loop->id - 1];
 	atomic_store_explicit(&task->refs, 2, memory_order_relaxed);
 	atomic_fetch_add_explicit(&pool->metrics.submitted, 1, memory_order_relaxed);
-	struct task_lane *to = task_pool_choose(pool, self, false);
-	atomic_fetch_add_explicit(&to->load, 1, memory_order_relaxed);
-	if (to == self) {
-		task_lane_take(self, task, loop);
-		return;
-	}
-	task->msg.fn = task_arrive;
-	loop_post(to->loop, &task->msg);
+	task_lane_place(self, task_pool_choose(pool, self, false), task, loop);
 }
 
 void
