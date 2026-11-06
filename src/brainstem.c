@@ -475,25 +475,6 @@ brainstem_watch (struct brainstem *bs,
 		brainstem_thread_watch(&bs->threads[i], now, threshold);
 }
 
-/* The start of the file at @p path, as a string in the @p size bytes at
- * @p buf, empty if unreadable; 0 or the error number.
- */
-static int
-brainstem_read (char const *path,
-                char       *buf,
-                size_t      size)
-{
-	*buf = '\0';
-	int fd = open(path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return errno;
-	ssize_t n = read(fd, buf, size - 1);
-	int e = n < 0 ? errno : 0;
-	close(fd);
-	buf[n > 0 ? n : 0] = '\0';
-	return e;
-}
-
 /* Whether a gauge at @p value went up to @p up (1) or back below @p down
  * (-1): bit @p bit of bs->high is set from the one to the other.
  */
@@ -521,7 +502,7 @@ brainstem_number (char const *path,
                   uint64_t    none)
 {
 	unsigned long long n;
-	return brainstem_read(path, buf, size) || sscanf(buf, "%llu", &n) != 1 ? none : n;
+	return util_read_text(path, buf, size) || sscanf(buf, "%llu", &n) != 1 ? none : n;
 }
 
 /* The number after field @p name in @p text, or @p none if it has none. */
@@ -579,7 +560,7 @@ brainstem_cgroup (struct brainstem *bs,
 			continue;
 		*least = *least && *least < cap ? *least : cap;
 		memcpy(path + len, cgroup_stat, sizeof cgroup_stat);
-		uint64_t cache = brainstem_read(path, buf, size)
+		uint64_t cache = util_read_text(path, buf, size)
 		               ? 0 : brainstem_field(buf, "\ninactive_file ", 0);
 		memcpy(path + len, cgroup_current, sizeof cgroup_current);
 		uint64_t use = brainstem_number(path, buf, size, 0);
@@ -655,7 +636,7 @@ brainstem_pressure (struct brainstem *bs,
                     char             *buf,
                     size_t            size)
 {
-	(void)brainstem_read("/proc/meminfo", buf, size);
+	(void)util_read_text("/proc/meminfo", buf, size);
 	uint64_t total = brainstem_field(buf, "MemTotal:", 0) << 10;
 	uint64_t avail = brainstem_field(buf, "MemAvailable:", 0) << 10;
 	uint64_t usage;
@@ -744,7 +725,7 @@ brainstem_psi (struct brainstem *bs,
 		char const *name = files[i] + sizeof PSI - 1;
 		double avg10;
 		unsigned long long total;
-		if (brainstem_read(files[i], buf, size) ||
+		if (util_read_text(files[i], buf, size) ||
 		    sscanf(buf, "some avg10=%lf avg60=%*f avg300=%*f total=%llu", &avg10,
 		           &total) != 2)
 			continue;
@@ -774,7 +755,7 @@ brainstem_sample (struct brainstem *bs,
 	char buf[16 << 10];
 	long page = sysconf(_SC_PAGESIZE);
 	unsigned long long resident;
-	if (page > 0 && !brainstem_read("/proc/self/statm", buf, sizeof buf) &&
+	if (page > 0 && !util_read_text("/proc/self/statm", buf, sizeof buf) &&
 	    sscanf(buf, "%*s %llu", &resident) == 1)
 		hist_set(&brainstem_metrics.rss, resident * (uint64_t)page);
 	brainstem_fds(bs, buf, sizeof buf);
@@ -880,7 +861,7 @@ brainstem_cgroup_dir (size_t  room,
 	/* A line break first, as if a line came before the file's first. */
 	char buf[1 + 4096];
 	buf[0] = '\n';
-	(void)brainstem_read("/proc/self/cgroup", buf + 1, sizeof buf - 1);
+	(void)util_read_text("/proc/self/cgroup", buf + 1, sizeof buf - 1);
 	char const *line = strstr(buf, "\n0::/");
 	char const *path = line ? line + 4 : "";
 	/* "/", the root's path, adds nothing. */
@@ -916,7 +897,7 @@ brainstem_cpus (void)
 		unsigned long long quota;
 		unsigned long long period;
 		memcpy(path + len, max_file, sizeof max_file);
-		if (brainstem_read(path, buf, sizeof buf) ||
+		if (util_read_text(path, buf, sizeof buf) ||
 		    sscanf(buf, "%llu %llu", &quota, &period) != 2 || !period)
 			continue;
 		uint64_t cpus = (quota + period - 1) / period;

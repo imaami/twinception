@@ -7,6 +7,7 @@
 #define TWINCEPTION_SRC_UTIL_H_
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -311,6 +312,26 @@ util_read_all (int     fd,
 		*got += (size_t)n;
 	}
 	return 0;
+}
+
+/** Read the start of the file at @p path, at most @p size - 1 bytes, into
+ *  @p buf as a string, which is empty if the file cannot be opened.
+ *  Returns 0, or the error number.
+ */
+static inline int
+util_read_text (char const *path,
+                char       *buf,
+                size_t      size)
+{
+	*buf = '\0';
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return errno;
+	size_t got;
+	int e = util_read_all(fd, buf, size - 1, -1, &got);
+	close(fd);
+	buf[got] = '\0';
+	return e;
 }
 
 /** A hash of the @p len bytes at @p data, seeded with @p seed: a seed no
