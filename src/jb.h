@@ -301,6 +301,15 @@ jb_uint_checked (struct json_object const *val,
 	return 0;
 }
 
+/** Returns the JSON integer @p val if it is from 1 to @p max, else 0. */
+static inline uint64_t
+jb_count (struct json_object const *val,
+          uint64_t                  max)
+{
+	uint64_t n = 0;
+	return jb_uint_checked(val, max, &n) ? 0 : n;
+}
+
 /** A parse a slice at a time; zeroed to begin. */
 struct jb_parser {
 	struct json_tokener *tok;

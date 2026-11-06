@@ -3264,10 +3264,10 @@ mcp_slot_offset (struct mcp_slot    *slot,
 	if (slot->done)
 		return EINVAL;
 	struct json_object *o = jb_get(args, "offset");
-	int64_t n = !o ? 0
-	          : json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : -1;
-	slot->skip = n > 0 ? (size_t)n : 0;
-	if (n >= 0)
+	uint64_t n = 0;
+	int e = o ? jb_uint_checked(o, SIZE_MAX, &n) : 0;
+	slot->skip = (size_t)n;
+	if (!e)
 		return 0;
 	mcp_slot_tell(slot, CSTR_VIEW("The offset argument must be a whole number of bytes, "
 	                              "from 0."), TOOL_FAILED);
@@ -3894,9 +3894,8 @@ mcp_slot_spin (struct mcp_slot    *slot,
 	static_assert(SPIN_MAX == 100'000, "update the problem text");
 	struct mcp *mcp = slot->req->mcp;
 	struct loop *loop = mcp->loop;
-	int64_t n = json_object_is_type(slices, json_type_int)
-	          ? json_object_get_int64(slices) : 0;
-	if (n < 1 || n > SPIN_MAX) {
+	uint64_t const n = jb_count(slices, SPIN_MAX);
+	if (!n) {
 		mcp_slot_tell(slot, CSTR_VIEW("The slices argument must be a whole number "
 		                              "from 1 to 100000."), TOOL_FAILED);
 		return;
@@ -3909,7 +3908,7 @@ mcp_slot_spin (struct mcp_slot    *slot,
 		return;
 	}
 	task_init(&s->task, mcp->st->tasks, loop, mcp_spin_slice, mcp_spin_back);
-	s->left = (uint64_t)n;
+	s->left = n;
 	s->slices = 0;
 	s->x = loop->now | 1;
 	*mcp_slot_own(slot) = &s->task;
@@ -4770,18 +4769,6 @@ mcp_slot_refused (struct mcp_slot  *slot,
 		mcp_slot_fail(slot, e);
 }
 
-/* Returns the argument seconds of @p args if it is a whole number from 1
- * to @p max, else 0.
- */
-static int64_t
-mcp_seconds (struct json_object *args,
-             int64_t             max)
-{
-	struct json_object *o = jb_get(args, "seconds");
-	int64_t secs = json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : 0;
-	return secs >= 1 && secs <= max ? secs : 0;
-}
-
 /* Returns the whole seconds from @p from to @p to, or 0 if @p to is not
  * later.
  */
@@ -5125,19 +5112,17 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 	}
 	char text[192];
 	if (timer) {
-		if (!json_object_is_type(timer, json_type_int)) {
+		uint32_t const n = (uint32_t)jb_count(timer, UINT32_MAX);
+		if (!n) {
 			mcp_slot_result(slot, TEXT("The timer argument must be the number of a "
 			                           "timer of yours."), true);
 			return;
 		}
-		int64_t n = json_object_get_int64(timer);
-		int e = n < 1 || n > UINT32_MAX ? ENOENT
-		      : ledger_timer_cancel(req->mcp->st->ledger, mcp_req_owner(req),
-		                            (uint32_t)n);
-		size_t len = !e ? util_format(text, sizeof text, "Cancelled timer %" PRId64 ".", n)
-		           : e == EALREADY ? util_format(text, sizeof text, "Timer %" PRId64 " has "
+		int e = ledger_timer_cancel(req->mcp->st->ledger, mcp_req_owner(req), n);
+		size_t len = !e ? util_format(text, sizeof text, "Cancelled timer %" PRIu32 ".", n)
+		           : e == EALREADY ? util_format(text, sizeof text, "Timer %" PRIu32 " has "
 		                                         "fired, and a call of wait reports it.", n)
-		           : util_format(text, sizeof text, "You have no timer %" PRId64 " set.", n);
+		           : util_format(text, sizeof text, "You have no timer %" PRIu32 " set.", n);
 		mcp_slot_result(slot, ESC(text, len), e != 0);
 		return;
 	}
@@ -5212,9 +5197,8 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 		return;
 	}
 	bool result = jb_is(action, "result");
-	struct json_object *o = jb_get(args, "job");
-	int64_t n = json_object_is_type(o, json_type_int) ? json_object_get_int64(o) : 0;
-	struct mcp_slot *job = a && n >= 1 && n <= a->n_jobs ? &a->jobs[n - 1] : nullptr;
+	uint64_t const n = jb_count(jb_get(args, "job"), a ? a->n_jobs : 0);
+	struct mcp_slot *job = n ? &a->jobs[n - 1] : nullptr;
 	struct mcp_piece problem =
 		!result && !jb_is(action, "cancel")
 		? TEXT("The action argument must be list, result or cancel.")
@@ -5346,7 +5330,7 @@ mcp_on_wake (struct loop *loop,
 static void
 mcp_slot_client_wait (struct mcp_slot    *slot,
                       struct json_object *args,
-                      int64_t             secs)
+                      uint64_t            secs)
 {
 	static_assert(WAIT_IDS == 16 && LEDGER_WAITS == 4, "update the problem texts");
 	static char const bad_list[] = "The jobs argument must list at most 16 ids of "
@@ -5390,7 +5374,7 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
 	}
 	w->alarm = (struct loop_timer){ .fn = mcp_wait_alarm };
 	w->slot = slot;
-	w->end = mcp->loop->now + (uint64_t)secs * NS;
+	w->end = mcp->loop->now + secs * NS;
 	w->secs = (uint32_t)secs;
 	w->n = (uint32_t)n;
 	struct handle who;
@@ -5440,7 +5424,7 @@ mcp_slot_wait (struct mcp_slot    *slot,
 {
 	static_assert(WAIT_MAX == 600 && JOBS_MAX <= 32, "update the problem text");
 	struct mcp_req *req = slot->req;
-	int64_t secs = mcp_seconds(args, WAIT_MAX);
+	uint64_t const secs = jb_count(jb_get(args, "seconds"), WAIT_MAX);
 	if (!secs) {
 		mcp_slot_result(slot, TEXT("The seconds argument must be a whole number from 1 "
 		                           "to 600."), true);
@@ -5456,9 +5440,8 @@ mcp_slot_wait (struct mcp_slot    *slot,
 	bool listed = !list || json_object_is_type(list, json_type_array);
 	struct json_object *item;
 	for (size_t i = 0; listed && (item = jb_at(list, i)); ++i) {
-		int64_t n = json_object_is_type(item, json_type_int)
-		          ? json_object_get_int64(item) : 0;
-		listed = n >= 1 && n <= n_jobs;
+		uint64_t const n = jb_count(item, n_jobs);
+		listed = n != 0;
 		mask |= listed ? 1u << (n - 1) : 0;
 	}
 	if (!listed) {
@@ -5474,7 +5457,7 @@ mcp_slot_wait (struct mcp_slot    *slot,
 	}
 	a->wait = slot;
 	a->wait_for = mask;
-	a->wait_end = req->mcp->loop->now + (uint64_t)secs * NS;
+	a->wait_end = req->mcp->loop->now + secs * NS;
 	a->waited = (uint32_t)secs;
 	/* A job waited for that has finished already ends it, too. */
 	for (uint32_t k = 0; mask && k < n_jobs; ++k)
@@ -5529,7 +5512,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200 && LEDGER_TIMERS == 8,
 	              "update the problem texts");
 	struct mcp_req *req = slot->req;
-	int64_t secs = mcp_seconds(args, TIMER_MAX);
+	uint64_t const secs = jb_count(jb_get(args, "seconds"), TIMER_MAX);
 	struct json_object *o = jb_get(args, "note");
 	struct cstr_view note = jb_view(o);
 	struct mcp_piece problem =
@@ -5542,7 +5525,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
-	uint64_t due = req->mcp->loop->now + (uint64_t)secs * NS;
+	uint64_t due = req->mcp->loop->now + secs * NS;
 	uint32_t id;
 	int e = slot->role == ROLE_OWN
 	      ? ledger_timer_set(req->mcp->st->ledger, mcp_req_owner(req), due, note, &id)
@@ -5553,7 +5536,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 	}
 	char said[64];
 	mcp_slot_result(slot, ESC(said, util_format(said, sizeof said, "Timer %" PRIu32
-	                                            " will fire in %" PRId64 " s.", id,
+	                                            " will fire in %" PRIu64 " s.", id,
 	                                            secs)), false);
 }
 

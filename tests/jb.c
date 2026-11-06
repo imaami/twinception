@@ -91,6 +91,14 @@ main (void)
 	CHECK(integer("{}", -7, 7));
 	CHECK(jb_int(nullptr, -7) == -7 && jb_uint(nullptr, 7) == 7);
 
+	/* A count is an integer from 1 to its most; anything else is 0. */
+	struct json_object *counts = json_tokener_parse("[0, 1, 5, 6, -1, 1.0, \"2\"]");
+	CHECK(!jb_count(jb_at(counts, 0), 5) && jb_count(jb_at(counts, 1), 5) == 1);
+	CHECK(jb_count(jb_at(counts, 2), 5) == 5 && !jb_count(jb_at(counts, 3), 5));
+	CHECK(!jb_count(jb_at(counts, 4), 5) && !jb_count(jb_at(counts, 5), 5));
+	CHECK(!jb_count(jb_at(counts, 6), 5) && !jb_count(nullptr, 5));
+	json_object_put(counts);
+
 	/* A nullptr value fails the set or the push. The failure frees the
 	 * container. With a nullptr container, the call returns nullptr and
 	 * frees the value. */

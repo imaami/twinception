@@ -2632,7 +2632,8 @@ godbolt_args_set (struct godbolt_args *a,
 		return value->data ? 0 : EINVAL;
 	}
 	case GODBOLT_ARG_LIMIT:
-		return jb_uint_checked(v, GODBOLT_LIMIT_MAX, &a->limit) || !a->limit ? EINVAL : 0;
+		a->limit = jb_count(v, GODBOLT_LIMIT_MAX);
+		return a->limit ? 0 : EINVAL;
 	case GODBOLT_ARG_OFFSET:
 		/* mcp_slot_offset() checks the offset. */
 		a->paged = jb_int(v, 0) > 0;

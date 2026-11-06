@@ -1323,8 +1323,8 @@ review_args_parse (struct review_args  *a,
 		                       CSTR_VIEW(", "), CSTR_VIEW(" and "), out) &&
 		       dstr_printf(out, ", not %.*s.", (int)other.len, other.data) ? EINVAL : ENOMEM;
 	struct json_object *id = of[REVIEW_ARG_ID];
-	uint64_t n = 0;
-	if (id && (jb_uint_checked(id, SIZE_MAX, &n) || !n))
+	uint64_t const n = jb_count(id, SIZE_MAX);
+	if (id && !n)
 		return REFUSE(out, "The id argument must be the number of a finding, such as 3.");
 	if (n > r->n_findings) {
 		/* %.0zu writes nothing for 0. */
