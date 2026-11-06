@@ -292,7 +292,7 @@ cli_shutdown (struct cli *cli)
 	atomic_store(&cli->cancel_io, true);
 	cli_network_cancel(cli->network, true);
 	if (cli->console)
-		(void)cli_console_interrupt(cli->console, true);
+		cli_console_interrupt(cli->console, true);
 }
 
 static void
@@ -304,7 +304,7 @@ cli_signal (struct cli_signals *signals,
 	switch (number) {
 	case SIGWINCH:
 		if (cli->console)
-			e = cli_console_resize(cli->console);
+			cli_console_resize(cli->console);
 		break;
 	case SIGTSTP:
 		if (cli->console)
@@ -326,7 +326,7 @@ cli_signal (struct cli_signals *signals,
 					cli_tool_cancel_last(&cli->tools);
 				cli_network_cancel(cli->network, false);
 			} else if (cli->console) {
-				e = cli_console_interrupt(cli->console, false);
+				cli_console_interrupt(cli->console, false);
 			}
 			break;
 		}

@@ -1548,7 +1548,7 @@ cli_console_render (struct cli_console *console)
 	return e;
 }
 
-int
+void
 cli_console_interrupt (struct cli_console *console,
                        bool                terminate)
 {
@@ -1558,14 +1558,12 @@ cli_console_interrupt (struct cli_console *console,
 	} else if (!(console->flags & CLI_CONSOLE_BUSY)) {
 		console->flags |= CLI_CONSOLE_INTERRUPT_PENDING;
 	}
-	return 0;
 }
 
-int
+void
 cli_console_resize (struct cli_console *console)
 {
 	console->flags |= CLI_CONSOLE_RESIZE_PENDING;
-	return 0;
 }
 
 int

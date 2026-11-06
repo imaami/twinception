@@ -32,11 +32,11 @@ cli_console_create (uint32_t         flags,
 extern int
 cli_console_service (struct cli_console *console);
 
-extern int
+extern void
 cli_console_interrupt (struct cli_console *console,
                        bool                terminate);
 
-extern int
+extern void
 cli_console_resize (struct cli_console *console);
 
 extern int

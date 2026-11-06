@@ -34,10 +34,10 @@ static void cli_input_signal(struct loop *loop, struct loop_ref *ref, uint32_t e
 	struct signalfd_siginfo signal;
 	while (read(ref->fd, &signal, sizeof signal) == sizeof signal) {
 		if (signal.ssi_signo == SIGWINCH)
-			(void)cli_console_resize(driver->console);
+			cli_console_resize(driver->console);
 		else {
 			driver->stop = (int)signal.ssi_signo;
-			(void)cli_console_interrupt(driver->console, true);
+			cli_console_interrupt(driver->console, true);
 		}
 	}
 }
