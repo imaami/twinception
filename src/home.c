@@ -2471,10 +2471,8 @@ home_props_step (struct loop      *loop,
 	struct json_object *ctx = props ? jb_get(jb_get(root, "default_generation_settings"),
 	                                         "n_ctx")
 	                                : jb_get(root, "inputTokenLimit");
-	int64_t n = json_object_is_type(total, json_type_int)
-	          ? json_object_get_int64(total) : 0;
-	int64_t tokens = json_object_is_type(ctx, json_type_int)
-	               ? json_object_get_int64(ctx) : 0;
+	int64_t n = jb_int(total, 0);
+	int64_t tokens = jb_int(ctx, 0);
 	jb_reaper_add(&home->reaper, root);
 	home_reap(home);
 	if (tokens > 0 && !home->context) {
