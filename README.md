@@ -681,7 +681,10 @@ The tool `notes` creates a file with `add` or updates an existing file with
 branch with `git fast-import`. Its message says what the write did, the
 note's name and its size before and after, such as
 `Replace "plan.md" (1234 to 1302 bytes)`; previous versions remain in
-history. The result names the new commit and repeats its message. A
+history. The result names the new commit and repeats its message. If the
+write changed a note, the result also names the commit of the previous
+version, after the lines that a `replace` or `restore` removed and added,
+such as `1 line removed, 2 added.`, unless Git sees the note as binary. A
 `replace` or `restore` that would leave the note's bytes as they are
 makes no commit; its result says `Unchanged` and names the current
 commit. `add` refuses an existing name, and `replace` refuses a missing

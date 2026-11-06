@@ -85,6 +85,7 @@ static char const *const cmds[][10] = {
 	[NOTES_ANCESTOR] = { "merge-base", "--is-ancestor", word, word },
 	[NOTES_DIFF]     = { "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
 	                     "--no-color", "--submodule=short", word, word, "--", word },
+	[NOTES_STAT]     = { "diff", "--numstat", "--no-textconv", word, word },
 };
 
 /* The kinds of the objects in the output of git cat-file. */
@@ -416,6 +417,16 @@ notes_revision_init (struct notes_revision *dest,
 	*dest = (struct notes_revision){ .from = *from, .to = *to, .phase = REVISION_HEAD };
 	(void)util_text_store(&dest->file, file);
 	return 0;
+}
+
+void
+notes_revision_pin (struct notes_revision *revision,
+                    struct oid const      *from,
+                    struct oid const      *to)
+{
+	revision->from = *from;
+	revision->to = *to;
+	revision->phase = REVISION_DATA;
 }
 
 void

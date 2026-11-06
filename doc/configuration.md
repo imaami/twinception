@@ -1472,7 +1472,9 @@ an existing file in the caller's own notebook, adding a Git commit that
 preserves its previous contents. The message of each write's commit says
 what the write did, the note's name and its size before and after, such
 as `Replace "plan.md" (1234 to 1302 bytes)`. The result names the new
-commit and repeats its message. A `replace` or `restore` that would leave
+commit and repeats its message. If the write changed a note, the result also
+names the commit of the previous version, after the lines that a `replace`
+or `restore` removed and added. A `replace` or `restore` that would leave
 the note's bytes as they are makes no commit; its result says `Unchanged`
 and names the current commit. Concurrent writes that race to update the
 same branch fail rather than discard another writer's changes. When a

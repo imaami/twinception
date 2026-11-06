@@ -52,6 +52,7 @@ enum notes_tool_fetch : uint32_t {
 	FETCH_NEWEST,          /* read the newest note, after FETCH_RESUME or
 	                          FETCH_COMPACT */
 	FETCH_DIFF,            /* compare two revisions of a note */
+	FETCH_STAT,            /* count the lines that a write changed */
 	FETCH_KIND = 15,       /* the mask of the kinds */
 	FETCH_COPY = 32,       /* set with FETCH_READ for copy. The note goes to
 	                          the caller's own notebook. */
@@ -172,7 +173,9 @@ struct notes_tool_call {
 	                                      that the prompt shows */
 	struct notes_revision   revision;  /* the revisions of a read, diff or
 	                                      restore, or the file of a history;
-	                                      zeroed for the other calls */
+	                                      zeroed for the other calls. tip
+	                                      is the parent of a write that
+	                                      changes a note. */
 	union {
 		UTIL_TEXT(NOTES_MESSAGE)  message;  /* the commit message of a
 		                                       write, for its result */
@@ -339,10 +342,11 @@ notes_tool_then (struct mcp_slot *slot,
 }
 
 /* Handles the error @p e of spawning git for the call in @p slot. For a
- * compaction and for the newest note, the step runs with no child, as if
- * git had failed. The ask call then goes on without those notes. A call of
- * the notes tool, and the list for the start of an ask call, end with the
- * error.
+ * compaction, for the newest note and for the lines of a write, the step
+ * runs with no child, as if git had failed. The ask call then goes on
+ * without those notes, and the write's result without those lines. A call
+ * of the notes tool, and the list for the start of an ask call, end with
+ * the error.
  */
 static void
 notes_tool_failed (struct mcp_slot *slot,
@@ -354,6 +358,7 @@ notes_tool_failed (struct mcp_slot *slot,
 	switch (call->fetch & FETCH_KIND) {
 	case FETCH_NEWEST:
 	case FETCH_COMPACT:
+	case FETCH_STAT:
 		notes_tool_fetch_step(call->fetch)->out(slot);
 		return;
 	case FETCH_RESUME:
@@ -656,16 +661,13 @@ notes_tool_created (struct mcp_slot *slot)
 }
 
 /* Ends the write in @p slot after it saved the note or left the note
- * unchanged. The caller's own notebook exists then, and mcp_slot_noted()
- * records that. If @p e is not 0, the call fails with @p e
- * (notes_tool_end()).
+ * unchanged. If @p e is not 0, the call fails with @p e (notes_tool_end()).
  */
 static void
 notes_tool_wrote (struct mcp_slot *slot,
                   int              e)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	(void)mcp_slot_noted(slot);
 	if (!e && call->stripped)
 		e = cstr_view_cat(CSTR_VIEW(" askai left out the [askai: ...] lines at the end of "
 		                            "the text. askai adds those lines to tool results, and "
@@ -676,8 +678,9 @@ notes_tool_wrote (struct mcp_slot *slot,
 /* Returns true if @p note, the note that NOTES_CHECK found, already has
  * the bytes of call->file. The function then answers the replace or
  * restore in @p slot without a commit. The answer names @p tip, the newest
- * commit of the branch. If the bytes cannot be compared, the function logs
- * a warning and returns false, and the write goes on.
+ * commit of the branch. The caller's own notebook contains notes, and
+ * the function calls mcp_slot_noted(). If the bytes cannot be compared,
+ * the function logs a warning and returns false, and the write goes on.
  */
 static bool
 notes_tool_unchanged (struct mcp_slot         *slot,
@@ -700,6 +703,7 @@ notes_tool_unchanged (struct mcp_slot         *slot,
 	e = dstr_printf(call->text, "Unchanged: %.*s already has %s %" PRIu64 " byte%s, at "
 	                "commit %s. No commit was made.", (int)jb_utf8(name, call->part.name_len),
 	                name, n == 1 ? "this" : "these", n, util_s(n), tip->hex) ? 0 : ENOMEM;
+	(void)mcp_slot_noted(slot);
 	notes_tool_wrote(slot, e);
 	return true;
 }
@@ -708,7 +712,8 @@ notes_tool_unchanged (struct mcp_slot         *slot,
  * a name that is neither a note nor a directory of notes. No directory in
  * the name can be a note. replace accepts only the name of an existing
  * note. A replace or a restore that leaves the bytes of the note unchanged
- * makes no commit.
+ * makes no commit. For a write that changes an existing note, the function
+ * stores the newest commit, the parent of the write, in call->revision.tip.
  */
 static void
 notes_tool_checked (struct mcp_slot *slot)
@@ -732,6 +737,7 @@ notes_tool_checked (struct mcp_slot *slot)
 		}
 	}
 	if (!r) {
+		call->revision.tip = before == NO_NOTE ? (struct oid){} : tip;
 		if (before == NO_NOTE || !notes_tool_unchanged(slot, &note, &tip)) {
 			child_destroy(&call->child);
 			notes_tool_write(slot, &tip, before);
@@ -749,18 +755,57 @@ notes_tool_checked (struct mcp_slot *slot)
 	              : notes_tool_call_unread(call), TOOL_FAILED);
 }
 
+/* Ends the write in @p slot after its result named the new commit. If the
+ * write changed an existing note, the result names the commit of the
+ * previous version, call->revision.tip. If @p e is not 0, the call fails
+ * with @p e.
+ */
+static void
+notes_tool_saved (struct mcp_slot *slot,
+                  int              e)
+{
+	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	if (!e && oid_len(&call->revision.tip))
+		e = dstr_printf(call->text, " The previous version is in commit %s.",
+		                call->revision.tip.hex) ? 0 : ENOMEM;
+	notes_tool_wrote(slot, e);
+}
+
+/* Handles the output of NOTES_STAT after a replace or restore. The
+ * function appends to the result the lines that the write removed and
+ * added, unless git failed or counted the note as binary.
+ */
+static void
+notes_tool_stated (struct mcp_slot *slot)
+{
+	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	struct span const out = child_ok(call->child) ? buf_peek(&call->child->out)
+	                                              : (struct span){};
+	struct cstr_view rest = { (char const *)out.ptr, out.len }, added, removed;
+	uint64_t a, r;
+	int e = cstr_view_cut(&rest, '\t', &added) && cstr_view_cut(&rest, '\t', &removed) &&
+	        !util_number(added.data, added.len, UINT64_MAX, &a) &&
+	        !util_number(removed.data, removed.len, UINT64_MAX, &r) &&
+	        !dstr_printf(call->text, " %" PRIu64 " line%s removed, %" PRIu64 " added.", r,
+	                     util_s(r), a) ? ENOMEM : 0;
+	notes_tool_saved(slot, e);
+}
+
 /* Handles the end of git fast-import. The result contains the id of the
  * new commit and the commit message, or the reason why git did not save
- * the note.
+ * the note. The caller's own notebook contains notes then, and the
+ * function calls mcp_slot_noted(). After a replace or restore of an
+ * existing note, git counts the lines that the write changed.
  */
 static void
 notes_tool_added (struct mcp_slot *slot)
 {
-	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	struct notes_tool_call *call = *mcp_slot_own(slot);
 	if (!child_ok(call->child)) {
 		notes_tool_unadded(slot);
 		return;
 	}
+	(void)mcp_slot_noted(slot);
 	struct oid commit;
 	if (notes_add_out(buf_peek(&call->child->out), &commit))
 		LOG(LOG_WARN, "notes: git fast-import gave no commit id");
@@ -769,11 +814,17 @@ notes_tool_added (struct mcp_slot *slot)
 		oid_view(&commit),
 		CSTR_VIEW(": "),
 		{ call->message.data, jb_utf8(call->message.data, call->message.len) },
-		notes_tool_actions[call->action].fetch & (FETCH_REPLACE | FETCH_RESTORE)
-		? CSTR_VIEW(". Previous versions remain in history.") : CSTR_VIEW("."),
+		CSTR_VIEW("."),
 	};
-	notes_tool_wrote(slot, cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""),
-	                                      CSTR_VIEW(""), call->text));
+	int e = cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""),
+	                       call->text);
+	if (e || !oid_len(&commit) || !oid_len(&call->revision.tip)) {
+		notes_tool_saved(slot, e);
+		return;
+	}
+	notes_revision_pin(&call->revision, &call->revision.tip, &commit);
+	child_destroy(&call->child);
+	notes_tool_run(slot, FETCH_STAT | FETCH_REVISION, &(struct buf){}, 0);
 }
 
 /* Appends the history in @p out, the output of git for NOTES_LIST, to
@@ -1318,6 +1369,7 @@ static struct notes_tool_fetch_step const notes_tool_fetch_steps[] = {
 	[FETCH_FILES]   = { notes_tool_got_list,  NOTES_FILES,  1 },
 	[FETCH_NEWEST]  = { notes_tool_newest,    NOTES_READ,   0 },
 	[FETCH_DIFF]    = { notes_tool_got_diff,  NOTES_DIFF,   1 },
+	[FETCH_STAT]    = { notes_tool_stated,    NOTES_STAT,   0 },
 };
 static_assert(array_size(notes_tool_fetch_steps) <= FETCH_KIND + 1);
 

@@ -67,6 +67,8 @@ enum notes_cmd : uint8_t {
 	NOTES_HEAD,      /**< resolves a notebook branch to its full commit id */
 	NOTES_ANCESTOR,  /**< checks that a commit is an ancestor of another */
 	NOTES_DIFF,      /**< compares a note in two commits */
+	NOTES_STAT,      /**< counts the lines that one commit changed against
+	                      another */
 };
 
 /** A current note in the output of NOTES_FILES or NOTES_CHECK. Views
@@ -196,9 +198,9 @@ notes_exists (struct notes const *notes);
  *  command come from @p words, in this order: for NOTES_LIST a notebook
  *  branch or commit and a file name or nullptr, for NOTES_FILES and
  *  NOTES_HEAD a notebook branch or commit, for NOTES_ANCESTOR two commits,
- *  and for NOTES_DIFF two commits and a file name. The other commands do
- *  not read @p words, which may then be nullptr. The words must outlive
- *  @p argv.
+ *  for NOTES_DIFF two commits and a file name, and for NOTES_STAT two
+ *  commits. The other commands do not read @p words, which may then be
+ *  nullptr. The words must outlive @p argv.
  */
 extern void
 notes_argv (struct notes const *notes,
@@ -236,10 +238,19 @@ notes_revision_init (struct notes_revision *dest,
                      struct oid const      *from,
                      struct oid const      *to);
 
+/** Sets @p revision to the stage that runs its command on the commits
+ *  @p from and @p to, without the stages that check them. askai wrote or
+ *  checked both commits itself.
+ */
+extern void
+notes_revision_pin (struct notes_revision *revision,
+                    struct oid const      *from,
+                    struct oid const      *to);
+
 /** Builds the current stage's Git argv: pin the selected notebook tip,
- *  authorize explicit revisions by ancestry, then run @p cmd, NOTES_READ or
- *  NOTES_DIFF, on those exact snapshots. @p revision and @p repo must
- *  outlive the argv.
+ *  authorize explicit revisions by ancestry, then run @p cmd, NOTES_READ,
+ *  NOTES_DIFF or NOTES_STAT, on those exact snapshots. @p revision and
+ *  @p repo must outlive the argv.
  */
 extern void
 notes_revision_argv (struct notes_revision const *revision,

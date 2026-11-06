@@ -819,11 +819,15 @@ def saved(message, commit="[0-9a-f]{40}|[0-9a-f]{64}", stripped=False):
     """A regular expression for the result of a note write whose commit has
     the message @p message. @p commit is a regular expression for the ID of
     the commit, such as the ID itself. @p stripped is true if askai left
-    notices out of the text."""
-    kept = " Previous versions remain in history." if message.startswith(
+    notices out of the text. A write that changed a note names the commit
+    of the previous version, after the lines that a replace or a restore
+    changed if git counted them."""
+    lines = r"(?: \d+ lines? removed, \d+ added\.)?" if message.startswith(
         ("Replace ", "Restore ")) else ""
-    return f"Saved in commit (?:{commit}): " + re.escape(
-        f"{message}.{kept}" + (LEFT_OUT if stripped else ""))
+    previous = lines + r" The previous version is in commit (?:[0-9a-f]{40}|[0-9a-f]{64})\." \
+        if re.search(r" to \d+ bytes\)$", message) else ""
+    return f"Saved in commit (?:{commit}): " + re.escape(f"{message}.") + previous + \
+        re.escape(LEFT_OUT if stripped else "")
 
 
 def unchanged_result(name, size, commit, stripped=False):
@@ -10373,7 +10377,8 @@ def check_notes(binary, up):
             # Replacements extend the branch, preserving each previous blob.
             before = git("rev-parse", own).decode().strip()
             said = call({"action": "replace", "file": "plan.md", "text": "step 2\nready"})
-            assert wrote(said, 'Replace "plan.md" (6 to 12 bytes)'), said
+            assert wrote(said, 'Replace "plan.md" (6 to 12 bytes)') and said.endswith(
+                f". 1 line removed, 2 added. The previous version is in commit {before}."), said
             assert git("rev-parse", f"{own}^").decode().strip() == before
             assert git("show", f"{before}:plan.md") == b"step 1"
             assert call({"action": "read", "file": "plan.md"}) == "step 2\nready"
@@ -10407,7 +10412,8 @@ def check_notes(binary, up):
             replacement = b"\0\xffnew"
             uri = "data:;base64," + base64.b64encode(replacement).decode()
             said = call({"action": "replace", "file": "legacy.c", "content": uri})
-            assert wrote(said, 'Replace "legacy.c" (36 to 5 bytes)'), said
+            assert wrote(said, 'Replace "legacy.c" (36 to 5 bytes)') and \
+                " removed, " not in said, said
             assert git("show", f"{own}^:legacy.c") == latin
             assert git("show", f"{own}:legacy.c") == replacement
             assert call({"action": "read", "file": "legacy.c"}) == note_view(replacement)
@@ -10693,9 +10699,10 @@ def check_notes_history(binary, up):
                 assert wrote(said, 'Add "plan.md" (9 bytes)'), said
                 first = tip()
                 assert len(first) == (40 if object_format == "sha1" else 64), first
-                assert not call(alice, action="replace", file="plan.md",
-                                text="new plan\n").startswith("!")
+                said = call(alice, action="replace", file="plan.md", text="new plan\n")
                 second = tip()
+                assert said == f'Saved in commit {second}: Replace "plan.md" (9 to 9 bytes). ' \
+                    f"1 line removed, 1 added. The previous version is in commit {first}.", said
                 said = call(alice, action="add", file="unrelated.md", text="keep me")
                 assert wrote(said, 'Add "unrelated.md" (7 bytes)'), said
                 third = tip()
@@ -10766,8 +10773,9 @@ def check_notes_history(binary, up):
 
                 # A restore appends a commit and leaves unrelated notes alone.
                 restored = call(alice, action="restore", file="plan.md", revision=first)
-                assert wrote(restored, f'Restore "plan.md" from {first} (9 to 9 bytes)'), \
-                    restored
+                assert restored == f"Saved in commit {tip()}: Restore \"plan.md\" from {first} " \
+                    f"(9 to 9 bytes). 1 line removed, 1 added. The previous version is in " \
+                    f"commit {third}.", restored
                 assert tip(f"{own}^") == third
                 assert git("show", f"{own}:plan.md") == b"old plan\n"
                 assert git("show", f"{second}:plan.md") == b"new plan\n"
@@ -10823,6 +10831,12 @@ def check_notes_history(binary, up):
                                 text="must not match a literal path").startswith("!")
                 literal = call(alice, action="diff", file="[p]lan.md", **{"from": before})
                 assert not literal.startswith("!") and "@@" not in literal, literal
+                assert not call(alice, action="add", file="abc.md",
+                                text="a\nb\nc\n").startswith("!")
+                before = tip()
+                said = call(alice, action="replace", file="abc.md", text="a\n")
+                assert said.endswith(" (6 to 2 bytes). 2 lines removed, 0 added. The previous "
+                                     f"version is in commit {before}."), said
                 if object_format == "sha1":
                     # Exercise the model-facing workflow and its own writer too.
                     upstream = "refs/heads/notes/alice/anonymous/upstream"
