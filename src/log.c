@@ -337,8 +337,10 @@ log_fini (void)
 {
 	if (!lg.rings)
 		return;
-	for (size_t i = 0; i < lg.n; ++i)
+	for (size_t i = 0; i < lg.n; ++i) {
 		free(lg.rings[i].data);
+		lg.rings[i].data = nullptr;
+	}
 	free(lg.rings);
 	lg.rings = nullptr;
 	lg.n = 0;

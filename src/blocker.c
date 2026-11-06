@@ -85,16 +85,10 @@ blocker_create (int  notify_fd,
                 int *e)
 {
 	struct blocker *b = calloc(1, sizeof *b);
-	if (!b) {
-		*e = ENOMEM;
-		return nullptr;
-	}
-	if ((*e = pthread_mutex_init(&b->lock, nullptr))) {
-		free(b);
-		return nullptr;
-	}
-	if ((*e = pthread_cond_init(&b->ready, nullptr))) {
+	*e = b ? pthread_mutex_init(&b->lock, nullptr) : ENOMEM;
+	if (!*e && (*e = pthread_cond_init(&b->ready, nullptr)))
 		pthread_mutex_destroy(&b->lock);
+	if (*e) {
 		free(b);
 		return nullptr;
 	}

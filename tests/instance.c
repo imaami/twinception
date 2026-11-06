@@ -40,6 +40,7 @@ object_fini (void *instance)
 {
 	struct object *o = instance;
 	free(o->block);
+	o->block = nullptr;
 	++destroyed;
 }
 
