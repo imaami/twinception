@@ -165,25 +165,25 @@ struct notes_tool_call {
 	struct notes_revision   revision;  /* the revisions of a read, diff or
 	                                      restore, or the file of a history;
 	                                      zeroed for the other calls */
+	union {
+		UTIL_TEXT(NOTES_MESSAGE)  message;  /* the commit message of a
+		                                       write, for its result */
+		UTIL_TEXT(NOTES_NAME + 1) name;     /* the name of a copy, until
+		                                       its file part is written */
+		struct oid                id;       /* the object id of an
+		                                       attached note, until the
+		                                       upload's answer */
+	};
 	uint32_t                fetch;     /* why git runs (enum
 	                                      notes_tool_fetch) */
-	uint16_t                len;       /* bytes in the union */
-	uint8_t                 action;    /* the row of notes_tool_actions[] */
-	bool                    stripped;  /* askai cut its notices off the
-	                                      text */
+	uint32_t                action;    /* the row of notes_tool_actions[] */
+	uint32_t                stripped;  /* nonzero if askai cut its notices
+	                                      off the text */
 	char                    repo[NOTES_REPO];      /* the caller's own
 	                                                  notebook */
 	char                    notebook[NOTES_REPO];  /* the notebook that the
 	                                                  call selected, or ""
 	                                                  for repo */
-	union {
-		char message[NOTES_MESSAGE];  /* the commit message of a write,
-		                                 for its result */
-		char name[NOTES_NAME];        /* the name of a copy, until its
-		                                 file part is written */
-		struct oid id;                /* the object id of an attached note,
-		                                 until the upload's answer */
-	};
 };
 
 void *
@@ -528,14 +528,13 @@ notes_tool_unadded (struct mcp_slot *slot)
 /* The size of a note before a write that creates the note. */
 static constexpr uint64_t NO_NOTE = UINT64_MAX;
 
-/* Writes to @p msg the commit message for the note that @p call writes.
- * Returns the length of the message, or 0 if it does not fit. @p before is
- * the size of the note before the write, or NO_NOTE.
+/* Writes to call->message the commit message for the note that @p call
+ * writes. @p before is the size of the note before the write, or NO_NOTE.
+ * Returns 0, or EINVAL if the message does not fit.
  */
-static size_t
-notes_tool_call_message (struct notes_tool_call const *call,
-                         uint64_t                      before,
-                         char                          msg[NOTES_MESSAGE])
+static int
+notes_tool_call_message (struct notes_tool_call *call,
+                         uint64_t                before)
 {
 	static_assert(sizeof "Restore  from  ( to  bytes)" + 2 * UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
 	              NOTES_REPO <= NOTES_MESSAGE);
@@ -548,14 +547,14 @@ notes_tool_call_message (struct notes_tool_call const *call,
 	int len = (int)call->part.name_len;
 	char const *name = (char const *)buf_peek(&call->file).ptr + call->part.name_at;
 	uint64_t after = call->part.data_len;
-	int n = before == NO_NOTE
-	      ? snprintf(msg, NOTES_MESSAGE, "%c%.*s %.*s%s%s (%" PRIu64 " byte%s)", up,
-	                 (int)verb.len - 1, verb.data + 1, len, name, sep, from, after,
-	                 util_s(after))
-	      : snprintf(msg, NOTES_MESSAGE, "%c%.*s %.*s%s%s (%" PRIu64 " to %" PRIu64 " bytes)",
-	                 up, (int)verb.len - 1, verb.data + 1, len, name, sep, from, before,
-	                 after);
-	return n < 0 || n >= NOTES_MESSAGE ? 0 : (size_t)n;
+	util_text_clear(&call->message);
+	return before == NO_NOTE
+	     ? util_text_printf(&call->message, "%c%.*s %.*s%s%s (%" PRIu64 " byte%s)", up,
+	                        (int)verb.len - 1, verb.data + 1, len, name, sep, from, after,
+	                        util_s(after))
+	     : util_text_printf(&call->message, "%c%.*s %.*s%s%s (%" PRIu64 " to %" PRIu64
+	                        " bytes)", up, (int)verb.len - 1, verb.data + 1, len, name, sep,
+	                        from, before, after);
 }
 
 /* Runs git to commit the note in call->file of @p slot. The new commit has
@@ -575,9 +574,9 @@ notes_tool_write (struct mcp_slot  *slot,
 	}
 	struct span file = buf_peek(&call->file);
 	struct buf in = {};
-	call->len = notes_tool_call_message(call, before, call->message);
-	struct span msg = { (unsigned char *)call->message, call->len };
-	int e = !msg.len ? EINVAL : notes_add_input(&in, call->repo, tip, msg, file);
+	int e = notes_tool_call_message(call, before);
+	struct span const msg = { (unsigned char *)call->message.data, call->message.len };
+	e = e ? e : notes_add_input(&in, call->repo, tip, msg, file);
 	buf_fini(&call->file);
 	notes_tool_run(slot, FETCH_ADD, &in, e);
 }
@@ -732,7 +731,7 @@ notes_tool_added (struct mcp_slot *slot)
 		oid_len(&commit) ? CSTR_VIEW("Saved in commit ") : CSTR_VIEW("Saved"),
 		oid_view(&commit),
 		CSTR_VIEW(": "),
-		{ call->message, jb_utf8(call->message, call->len) },
+		{ call->message.data, jb_utf8(call->message.data, call->message.len) },
 		notes_tool_actions[call->action].fetch & (FETCH_REPLACE | FETCH_RESTORE)
 		? CSTR_VIEW(". Previous versions remain in history.") : CSTR_VIEW("."),
 	};
@@ -1395,7 +1394,7 @@ notes_tool_got_copy (struct mcp_slot *slot,
                      struct span      text)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct cstr_view to = { call->name, call->len };
+	struct cstr_view to = util_text_view(&call->name);
 	if (call->fetch & FETCH_RESTORE) {
 		if (text.len > TOOL_TEXT_MAX) {
 			mcp_slot_tell(slot, CSTR_VIEW("That revision exceeds the 4 MiB note size "
@@ -1438,8 +1437,7 @@ notes_tool_read (struct mcp_slot    *slot,
 			                              "file argument is."), TOOL_FAILED);
 			return;
 		}
-		call->len = to.len;
-		memcpy(call->name, to.data, to.len);
+		(void)util_text_store(&call->name, to);
 	}
 	struct buf in = {};
 	int e = notes_read_input(&in, notes_tool_call_notebook(call), name);
