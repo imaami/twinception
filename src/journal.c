@@ -24,6 +24,7 @@
 #include "git.h"
 #include "journal.h"
 #include "loop.h"
+#include "oid.h"
 #include "util.h"
 
 enum {
@@ -128,7 +129,7 @@ struct journal {
 	bool                   cond_ready;
 	bool                   started;
 	bool                   stop;
-	char                   tip[65];
+	struct oid             tip;
 	char                   ref[sizeof REF + UTIL_WORD_MAX];
 };
 
@@ -136,19 +137,6 @@ static bool
 journal_id (char const *id)
 {
 	return id && util_is_hex(id, JOURNAL_ID) && !id[JOURNAL_ID];
-}
-
-/* The length of the object name that is all of git's output @p out but for
- * its newline, which this replaces with a NUL; 0 if @p out is not that.
- */
-static size_t
-journal_oid (char *out)
-{
-	size_t n = strcspn(out, "\n");
-	if (!util_is_oid(out, n) || out[n] != '\n' || out[n + 1])
-		return 0;
-	out[n] = '\0';
-	return n;
 }
 
 static int
@@ -349,14 +337,12 @@ journal_tip (struct journal *j)
 	char const *command[] = { "rev-parse", "--verify", "--quiet", j->ref, nullptr };
 	char *out = nullptr;
 	int status = 0;
-	int e = journal_git(j, command, -1, &out, 80, &status);
-	size_t n = 0;
-	if (!e && status == 1)
-		j->tip[0] = '\0';
-	else if (!e && (status || !(n = journal_oid(out))))
+	int e = journal_git(j, command, -1, &out, OID_SHA256 + 1, &status);
+	struct oid tip = {};
+	if (!e && status != 1 && (status || oid_init_line(&tip, cstr_view(out))))
 		e = EIO;
 	else if (!e)
-		memcpy(j->tip, out, n + 1);
+		j->tip = tip;
 	free(out);
 	out = nullptr;
 	return e;
@@ -955,34 +941,35 @@ journal_thought_commit (struct journal            *j,
 	if (fdatasync(file->fd) || lseek(file->fd, 0, SEEK_SET) < 0)
 		return errno;
 	char const *hash[] = { "hash-object", "-w", "--stdin", nullptr };
-	char *oid = nullptr;
-	e = journal_git(j, hash, file->fd, &oid, 80, nullptr);
-	size_t oid_len = e ? 0 : journal_oid(oid);
-	if (!e && !oid_len)
+	char *out = nullptr;
+	e = journal_git(j, hash, file->fd, &out, OID_SHA256 + 1, nullptr);
+	struct oid blob;
+	if (!e && oid_init_line(&blob, cstr_view(out)))
 		e = EILSEQ;
+	free(out);
 	char path[96];
 	int n = snprintf(path, sizeof path, "reasoning/%.2s/%s/%" PRIu32 ".txt",
 	                 item->id, item->id, item->turn);
 	if (!e && (n < 0 || n >= (int)sizeof path))
 		e = EOVERFLOW;
-	if (!e && *j->tip) {
+	if (!e && oid_len(&j->tip)) {
 		char name[sizeof j->tip + sizeof path];
-		n = snprintf(name, sizeof name, "%s:%s", j->tip, path);
+		n = snprintf(name, sizeof name, "%s:%s", j->tip.hex, path);
 		if (n < 0 || n >= (int)sizeof name)
 			e = EOVERFLOW;
 		char const *find[] = { "rev-parse", "--verify", "--quiet", name, nullptr };
 		char *previous = nullptr;
 		int status = 0;
 		if (!e)
-			e = journal_git(j, find, -1, &previous, 80, &status);
-		bool same = !e && !status && !strncmp(previous, oid, oid_len) && previous[oid_len] == '\n';
+			e = journal_git(j, find, -1, &previous, OID_SHA256 + 1, &status);
+		struct oid old;
+		bool same = !e && !status && !oid_init_line(&old, cstr_view(previous)) &&
+		            oid_equal(&old, &blob);
 		free(previous);
 		previous = nullptr;
 		if (same) {
 			file->committed = true;
 			file->committed_size = file->size;
-			free(oid);
-			oid = nullptr;
 			return 0;
 		}
 	}
@@ -1001,9 +988,9 @@ journal_thought_commit (struct journal            *j,
 			e = EIO;
 		fprintf(output, "commit %s\ncommitter AskAI <askai@localhost> %" PRIdMAX
 		                " +0000\ndata 17\nRecord reasoning\n\n", j->ref, (intmax_t)now);
-		if (*j->tip)
-			fprintf(output, "from %s\n", j->tip);
-		fprintf(output, "M 100644 %s %s\n\ndone\n", oid, path);
+		if (oid_len(&j->tip))
+			fprintf(output, "from %s\n", j->tip.hex);
+		fprintf(output, "M 100644 %s %s\n\ndone\n", blob.hex, path);
 		if (fflush(output) || ferror(output))
 			e = e ? e : EIO;
 		if (!e && lseek(fd, 0, SEEK_SET) < 0)
@@ -1019,8 +1006,6 @@ journal_thought_commit (struct journal            *j,
 		fd = -1;
 	}
 	util_close(&fd);
-	free(oid);
-	oid = nullptr;
 	/* Only this writer's children write its ref, and they have all been
 	 * reaped: a lock that one left is stale, and the ref may have moved. */
 	if (e)
