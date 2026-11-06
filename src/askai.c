@@ -6,7 +6,6 @@
 #include <inttypes.h>
 #include <malloc.h>
 #include <signal.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -710,14 +709,20 @@ askai_shared_make (struct askai_shared *s,
 	return e;
 }
 
-/* Repositories must not contain each other. In particular, a transcript
- * directory must not turn a not-yet-initialized notes repo into a nonempty
- * non-repository. journal_create() also rejects symbolic links and "..".
+/* Repositories must not be one directory, nor contain each other. In
+ * particular, a transcript directory must not turn a not-yet-initialized
+ * notes repo into a nonempty non-repository. journal_create() also rejects
+ * symbolic links and "..".
  */
 static int
 askai_separate_repos (char const *notes,
                       char const *transcripts)
 {
+	struct stat a;
+	struct stat b;
+	if (!stat(notes, &a) && !stat(transcripts, &b) && a.st_dev == b.st_dev &&
+	    a.st_ino == b.st_ino)
+		return EINVAL;
 	char *cwd = nullptr;
 	if (*transcripts != '/' && !(cwd = getcwd(nullptr, 0)))
 		return errno;
@@ -741,9 +746,13 @@ askai_separate_repos (char const *notes,
 		to += len;
 	}
 	*to = '\0';
-	size_t n = strlen(notes), t = (size_t)(to - path);
-	if (!e && ((t >= n && !memcmp(path, notes, n) && (!path[n] || path[n] == '/')) ||
-	           (n >= t && !memcmp(notes, path, t) && (!notes[t] || notes[t] == '/'))))
+	/* One contains the other if the shorter is a prefix of the longer
+	 * that ends where a part of the longer does. */
+	size_t n = strlen(notes);
+	size_t t = (size_t)(to - path);
+	size_t m = n < t ? n : t;
+	char c = (n < t ? path : notes)[m];
+	if (!e && !memcmp(path, notes, m) && (!c || c == '/'))
 		e = EINVAL;
 	free(path);
 	path = nullptr;
@@ -759,7 +768,7 @@ askai_shared_init (struct askai_shared *s,
                    struct config const *cfg,
                    size_t               n)
 {
-	int e = 0;
+	int e;
 	if (cfg->notes) {
 		char why[256];
 		if (!(s->notes = notes_create(cfg->notes, cfg->participant, why, sizeof why, &e))) {
@@ -769,17 +778,9 @@ askai_shared_init (struct askai_shared *s,
 	}
 	if (cfg->transcripts) {
 		char why[256];
-		if (cfg->notes) {
-			if ((e = askai_separate_repos(notes_directory(s->notes), cfg->transcripts))) {
-				fprintf(stderr, "notes and transcripts require separate, nonnested repositories\n");
-				return e;
-			}
-			struct stat notes, transcripts;
-			if (!stat(notes_directory(s->notes), &notes) && !stat(cfg->transcripts, &transcripts) &&
-			    notes.st_dev == transcripts.st_dev && notes.st_ino == transcripts.st_ino) {
-				fprintf(stderr, "notes and transcripts require separate repositories\n");
-				return EINVAL;
-			}
+		if (cfg->notes && (e = askai_separate_repos(notes_directory(s->notes), cfg->transcripts))) {
+			fprintf(stderr, "notes and transcripts require separate, nonnested repositories\n");
+			return e;
 		}
 		if (!(s->journal = journal_create(cfg->transcripts, cfg->participant,
 		                                  why, sizeof why, &e))) {
