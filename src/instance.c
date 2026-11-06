@@ -11,21 +11,15 @@
 #include "plugin.h"
 #include "util.h"
 
-static_assert(!(INSTANCE_MAX & (INSTANCE_MAX - 1)),
-              "INSTANCE_MAX - 1 is the mask that selects a bucket");
-
 /* The table's record of one instance. The plugin's bytes follow the record
  * in the same allocation.
  */
 struct instance {
 	struct list          hook;        /* links the instance into one of the
 	                                     table's lists: busy, idle or gone */
-	struct instance     *next;        /* the next instance in the same
-	                                     bucket */
+	struct htab_node     node;        /* in the buckets, if it is there */
 	struct plugin const *plugin;
 	uint64_t             principal;   /* the user of the instance */
-	uint64_t             generation;  /* the generation of the request whose
-	                                     call made the instance */
 	uint64_t             idle;        /* the loop's time when the last call
 	                                     stopped using the instance */
 	uint64_t             calls;       /* the number of calls that use the
@@ -33,35 +27,27 @@ struct instance {
 	alignas(max_align_t) unsigned char bytes[];
 };
 
-/* Returns true if an instance for principal, made for a request of
- * generation, goes into the buckets, so that later calls of the user get
- * the same instance. It returns false for an anonymous client and for a
- * request that began before the last flush.
+/* Returns true if the plugin and the principal of the instance of node are
+ * those of the instance key.
  */
 static bool
-instance_table_lists (struct instance_table const *t,
-                      uint64_t                     principal,
-                      uint64_t                     generation)
+instance_match (struct htab_node const *node,
+                void const             *key)
 {
-	return principal && generation == t->generation;
+	struct instance const *inst = container_of(node, struct instance, node);
+	struct instance const *k = key;
+	return inst->principal == k->principal && inst->plugin == k->plugin;
 }
 
-/* Returns the address of the pointer that links the instance of plugin for
- * principal into its bucket. If the bucket has no such instance, it
- * returns the address of the null pointer at the end of the bucket's
- * chain.
+/* Returns the instance in the buckets with the plugin and the principal of
+ * key, whose hash is set, or nullptr.
  */
-static struct instance **
-instance_table_find (struct instance_table *t,
-                     struct plugin const   *plugin,
-                     uint64_t               principal)
+static struct instance *
+instance_table_find (struct instance_table const *t,
+                     struct instance const       *key)
 {
-	uint64_t const key[] = { principal, (uintptr_t)plugin };
-	struct instance **link = &t->buckets[util_hash(0, key, sizeof key) &
-	                                     (INSTANCE_MAX - 1)];
-	while (*link && ((*link)->principal != principal || (*link)->plugin != plugin))
-		link = &(*link)->next;
-	return link;
+	struct htab_node *node = *htab_find(&t->listed, key->node.hash, instance_match, key);
+	return node ? container_of(node, struct instance, node) : nullptr;
 }
 
 /* Removes inst from its bucket and moves it from the list idle to the list
@@ -71,8 +57,7 @@ static void
 instance_table_retire (struct instance_table *t,
                        struct instance       *inst)
 {
-	*instance_table_find(t, inst->plugin, inst->principal) = inst->next;
-	--t->listed;
+	htab_unlink(&t->listed, &inst->node);
 	list_del(&inst->hook);
 	list_append(&t->gone, &inst->hook);
 	loop_ready_bulk(t->loop, &t->reap);
@@ -118,7 +103,7 @@ instance_table_init (struct instance_table *dest,
 	list_init(&dest->busy);
 	list_init(&dest->idle);
 	list_init(&dest->gone);
-	return 0;
+	return htab_init(&dest->listed, INSTANCE_MAX);
 }
 
 void
@@ -127,33 +112,33 @@ instance_table_fini (struct instance_table *t)
 	list_transplant(&t->gone, &t->idle);
 	(void)instance_table_reap(t, SIZE_MAX);
 	loop_unready(&t->reap);
+	htab_fini(&t->listed);
 }
 
-/* Allocates an instance of plugin for principal and calls the plugin's
- * instance_init() for its bytes. The new instance has one call and is on
- * the list busy. Stores the instance in *p_inst. Returns 0, ENOMEM, or
- * the error number of instance_init(). It returns EIO if instance_init()
- * returned EBUSY, because instance_table_get() returns EBUSY only for a
- * full table. It also returns EIO if instance_init() returned a number
- * that is not positive, because such a number is no error number.
+/* Allocates an instance with the plugin, the principal and the hash of
+ * key, and calls the plugin's instance_init() for its bytes. The new
+ * instance has one call and is on the list busy. Stores the instance in
+ * *p_inst. Returns 0, ENOMEM, or the error number of instance_init(). It
+ * returns EIO if instance_init() returned EBUSY, because
+ * instance_table_get() returns EBUSY only for a full table. It also
+ * returns EIO if instance_init() returned a number that is not positive,
+ * because such a number is no error number.
  */
 static int
 instance_table_make (struct instance_table  *t,
-                     struct plugin const    *plugin,
-                     uint64_t                principal,
-                     uint64_t                generation,
+                     struct instance const  *key,
                      struct instance       **p_inst)
 {
-	struct instance *inst = malloc(sizeof *inst + plugin->instance_size);
+	struct instance *inst = malloc(sizeof *inst + key->plugin->instance_size);
 	if (!inst)
 		return ENOMEM;
 	*inst = (struct instance){
-		.plugin = plugin,
-		.principal = principal,
-		.generation = generation,
+		.node.hash = key->node.hash,
+		.plugin = key->plugin,
+		.principal = key->principal,
 		.calls = 1,
 	};
-	int e = plugin->instance_init(inst->bytes, principal, t->loop);
+	int e = key->plugin->instance_init(inst->bytes, key->principal, t->loop);
 	if (e) {
 		free(inst);
 		return e > 0 && e != EBUSY ? e : EIO;
@@ -173,14 +158,22 @@ instance_table_get (struct instance_table  *t,
 	*p_instance = nullptr;
 	if (!plugin->instance_size)
 		return 0;
+	uint64_t const words[] = { principal, (uintptr_t)plugin };
+	struct instance const key = {
+		.node.hash = util_hash(0, words, sizeof words),
+		.plugin = plugin,
+		.principal = principal,
+	};
 	struct instance *inst;
-	if (!instance_table_lists(t, principal, generation)) {
-		int e = instance_table_make(t, plugin, principal, generation, &inst);
+	/* The call of an anonymous client, or of a request that began before
+	 * the last flush, gets an instance that is not in the buckets. */
+	if (!principal || generation != t->generation) {
+		int e = instance_table_make(t, &key, &inst);
 		if (!e)
 			*p_instance = inst->bytes;
 		return e;
 	}
-	inst = *instance_table_find(t, plugin, principal);
+	inst = instance_table_find(t, &key);
 	if (inst) {
 		++inst->calls;
 		list_del(&inst->hook);
@@ -192,18 +185,15 @@ instance_table_get (struct instance_table  *t,
 	 * to the list gone. It has been unused for the longest time. The
 	 * table's step destroys it later, because instance_fini() must not run
 	 * inside this function. */
-	if (t->listed == INSTANCE_MAX) {
+	if (t->listed.n == INSTANCE_MAX) {
 		if (list_is_empty(&t->idle))
 			return EBUSY;
 		instance_table_retire(t, container_of(t->idle.next, struct instance, hook));
 	}
-	int e = instance_table_make(t, plugin, principal, generation, &inst);
+	int e = instance_table_make(t, &key, &inst);
 	if (e)
 		return e;
-	/* The address of the bucket's link is looked up only now, because
-	 * instance_table_retire() above can change the same bucket. */
-	*instance_table_find(t, plugin, principal) = inst;
-	++t->listed;
+	htab_link(&t->listed, &inst->node);
 	*p_instance = inst->bytes;
 	return 0;
 }
@@ -221,7 +211,9 @@ instance_table_put (struct instance_table  *t,
 		return;
 	inst->idle = t->loop->now;
 	list_del(&inst->hook);
-	if (instance_table_lists(t, inst->principal, inst->generation)) {
+	/* An instance in the buckets waits for the next call of its user; a
+	 * flush emptied the buckets of those before it. */
+	if (instance_table_find(t, inst) == inst) {
 		list_append(&t->idle, &inst->hook);
 		return;
 	}
@@ -233,8 +225,8 @@ void
 instance_table_flush (struct instance_table *t)
 {
 	++t->generation;
-	t->listed = 0;
-	memset(t->buckets, 0, sizeof t->buckets);
+	t->listed.n = 0;
+	memset(t->listed.buckets, 0, (t->listed.mask + 1) * sizeof *t->listed.buckets);
 	list_transplant(&t->gone, &t->idle);
 	loop_ready_bulk(t->loop, &t->reap);
 }

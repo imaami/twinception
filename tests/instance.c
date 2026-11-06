@@ -139,7 +139,7 @@ main (void)
 	CHECK(!instance_table_get(&t, &with, 6, g, &d) && d != a && d != c);
 	CHECK(((struct object *)d)->principal == 6);
 	CHECK((uintptr_t)a % alignof (max_align_t) == 0);
-	CHECK(made == 3 && t.listed == 3 && count(&t.busy) == 3);
+	CHECK(made == 3 && t.listed.n == 3 && count(&t.busy) == 3);
 	void *was = a;
 	instance_table_put(&t, &a);
 	CHECK(!a && count(&t.busy) == 3 && list_is_empty(&t.idle));
@@ -164,14 +164,14 @@ main (void)
 	fail_with = -1;
 	CHECK(instance_table_get(&t, &with, 7, g, &a) == EIO && !a);
 	fail_with = 0;
-	CHECK(t.listed == 3 && list_is_empty(&t.busy) && list_is_empty(&t.gone));
+	CHECK(t.listed.n == 3 && list_is_empty(&t.busy) && list_is_empty(&t.gone));
 
 	/* The instance of an anonymous client is for one call only. The same
 	 * is true of a request with an older generation. instance_table_get()
 	 * and instance_table_put() destroy nothing. The table's step destroys
 	 * the instance. */
 	CHECK(!instance_table_get(&t, &with, 0, g, &a) && !instance_table_get(&t, &with, 0, g, &b));
-	CHECK(a != b && t.listed == 3);
+	CHECK(a != b && t.listed.n == 3);
 	instance_table_put(&t, &a);
 	CHECK(destroyed == 0 && count(&t.gone) == 1);
 	settle(&t);
@@ -179,7 +179,7 @@ main (void)
 	instance_table_put(&t, &b);
 	settle(&t);
 	CHECK(destroyed == 2);
-	CHECK(!instance_table_get(&t, &with, 5, g - 1, &a) && a != was && t.listed == 3);
+	CHECK(!instance_table_get(&t, &with, 5, g - 1, &a) && a != was && t.listed.n == 3);
 	CHECK(((struct object *)a)->principal == 5);
 	instance_table_put(&t, &a);
 	CHECK(destroyed == 2 && count(&t.gone) == 1);
@@ -194,10 +194,10 @@ main (void)
 	for (uint64_t p = 100; p < 100 + 4 * INSTANCE_MAX; ++p) {
 		CHECK(!instance_table_get(&t, &with, p, g, &a));
 		instance_table_put(&t, &a);
-		CHECK(t.listed <= INSTANCE_MAX);
+		CHECK(t.listed.n <= INSTANCE_MAX);
 	}
 	CHECK(destroyed == before && count(&t.gone) == 3 * INSTANCE_MAX + 3);
-	CHECK(count(&t.idle) == INSTANCE_MAX && t.listed == INSTANCE_MAX);
+	CHECK(count(&t.idle) == INSTANCE_MAX && t.listed.n == INSTANCE_MAX);
 	settle(&t);
 	CHECK(destroyed - before == 3 * INSTANCE_MAX + 3);
 	/* The user of the last call gets the same instance again. The user
@@ -217,7 +217,7 @@ main (void)
 	int e = 0;
 	for (; n < INSTANCE_MAX && !(e = instance_table_get(&t, &other, 10000 + n, g, &busy[n])); ++n)
 		;
-	CHECK(!e && n == INSTANCE_MAX && list_is_empty(&t.idle) && t.listed == INSTANCE_MAX);
+	CHECK(!e && n == INSTANCE_MAX && list_is_empty(&t.idle) && t.listed.n == INSTANCE_MAX);
 	CHECK(instance_table_get(&t, &other, 5, g, &a) == EBUSY && !a);
 	CHECK(!instance_table_get(&t, &with, 0, g, &a) && a);
 	instance_table_put(&t, &a);
@@ -232,21 +232,21 @@ main (void)
 	instance_table_flush(&t);
 	CHECK(instance_table_generation(&t) == g + 1 && destroyed == before);
 	settle(&t);
-	CHECK(destroyed - before == INSTANCE_MAX / 2 && list_is_empty(&t.idle) && !t.listed);
+	CHECK(destroyed - before == INSTANCE_MAX / 2 && list_is_empty(&t.idle) && !t.listed.n);
 	was = busy[INSTANCE_MAX - 1];
 	/* A request that began before the flush gets an instance of its own. */
 	CHECK(!instance_table_get(&t, &other, 10000 + INSTANCE_MAX - 1, g, &a) && a != was);
-	CHECK(!t.listed);
+	CHECK(!t.listed.n);
 	instance_table_put(&t, &a);
 	g = instance_table_generation(&t);
 	CHECK(!instance_table_get(&t, &other, 10000 + INSTANCE_MAX - 1, g, &a) && a != was);
-	CHECK(t.listed == 1 && ((struct object *)was)->principal == 10000 + INSTANCE_MAX - 1);
+	CHECK(t.listed.n == 1 && ((struct object *)was)->principal == 10000 + INSTANCE_MAX - 1);
 	instance_table_put(&t, &a);
 	for (size_t i = INSTANCE_MAX / 2; i < INSTANCE_MAX; ++i)
 		instance_table_put(&t, &busy[i]);
 	CHECK(count(&t.idle) == 1);
 	settle(&t);
-	CHECK(made - destroyed == 1 && t.listed == 1);
+	CHECK(made - destroyed == 1 && t.listed.n == 1);
 	CHECK(instance_table_relieve(&t, BUF_CRITICAL, 100) == 1 && made == destroyed);
 
 	/* A relief at BUF_HIGH destroys the instances that have been unused for
@@ -267,7 +267,7 @@ main (void)
 	CHECK(instance_table_relieve(&t, BUF_CRITICAL, 100) == 0 && count(&t.busy) == 1);
 	instance_table_put(&t, &a);
 	CHECK(instance_table_relieve(&t, BUF_CRITICAL, 100) == 1);
-	CHECK(made == destroyed && !t.listed);
+	CHECK(made == destroyed && !t.listed.n);
 	/* A relief destroys at most max instances. */
 	for (uint64_t p = 1; p <= 10; ++p) {
 		CHECK(!instance_table_get(&t, &other, p, g, &a));

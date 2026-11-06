@@ -51,6 +51,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "htab.h"
 #include "list.h"
 #include "loop.h"
 
@@ -59,8 +60,7 @@ struct plugin;
 
 enum {
 	/** The largest number of instances that a table has for later calls
-	 *  of their users. It is a power of two, because INSTANCE_MAX - 1 is
-	 *  the mask that selects a bucket. */
+	 *  of their users, and the number of its buckets, a power of two. */
 	INSTANCE_MAX = 256,
 };
 
@@ -76,16 +76,15 @@ struct instance_table {
 	                                    that no later call gets. The
 	                                    table's step destroys them. */
 	struct loop      *loop;
-	/** The instances that a later call of their user gets. A hash of the
-	 *  principal and of the plugin's address selects the bucket. */
-	struct instance  *buckets[INSTANCE_MAX];
-	uint64_t          listed;      /**< the number of instances in buckets */
+	/** The instances in the buckets, which a later call of their user
+	 *  gets, by a hash of the principal and of the plugin's address. */
+	struct htab       listed;
 	uint64_t          generation;  /**< the number of calls of
 	                                    instance_table_flush() so far */
 };
 
-/** Initializes @p dest as the empty table of @p loop. It allocates nothing,
- *  so it always returns 0.
+/** Initializes @p dest as the empty table of @p loop. Returns 0, or ENOMEM
+ *  if it cannot allocate the buckets.
  */
 extern int
 instance_table_init (struct instance_table *dest,
