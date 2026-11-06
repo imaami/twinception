@@ -19,6 +19,7 @@ struct findings_call {
 	struct json_object *args;    /* a reference to the arguments */
 	struct dstr         out;     /* what review_call() wrote */
 	struct tool_cursor  cursor;  /* the position of a show in its text */
+	size_t              texts;   /* the bytes of the claim and the evidence */
 };
 
 struct json_object *
@@ -95,10 +96,8 @@ findings_step (struct mcp_slot *slot)
 	 * and the step has used part of its share, the call runs in the next
 	 * step. A show writes at most the room of the step, and the rest of its
 	 * text in later steps (EAGAIN). */
-	size_t const texts = jb_view(jb_get(call->args, "claim")).len +
-	                     jb_view(jb_get(call->args, "evidence")).len;
 	uint64_t const room = loop_room(loop, LOOP_COPY);
-	if (room < texts && room < LOOP_STEP_COPY) {
+	if (room < call->texts && room < LOOP_STEP_COPY) {
 		mcp_slot_ready(slot);
 		return;
 	}
@@ -106,7 +105,7 @@ findings_step (struct mcp_slot *slot)
 	int e = review_call(mcp_slot_review(slot), call->args, mcp_slot_turn(slot), notice_kept,
 	                    &call->cursor, room, &call->out);
 	struct cstr_view const out = cstr_view_dstr(&call->out);
-	loop_work(loop, LOOP_COPY, texts + out.len - had);
+	loop_work(loop, LOOP_COPY, call->texts + out.len - had);
 	switch (e) {
 	case 0:
 		break;
@@ -137,7 +136,11 @@ findings_start (struct mcp_slot    *slot,
 		mcp_slot_fail(slot, ENOMEM);
 		return;
 	}
-	*call = (struct findings_call){ .args = json_object_get(args), .out = DSTR_INIT };
+	*call = (struct findings_call){
+		.args  = json_object_get(args),
+		.out   = DSTR_INIT,
+		.texts = jb_view(jb_get(args, "claim")).len + jb_view(jb_get(args, "evidence")).len,
+	};
 	*mcp_slot_own(slot) = call;
 	findings_step(slot);
 }
