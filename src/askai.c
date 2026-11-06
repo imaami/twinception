@@ -134,8 +134,13 @@ struct askai_reload {
 	struct blocker_job job;
 	struct config      cfg;     /* as the blocker read it */
 	int                status;  /* config_reload()'s */
-	uint16_t           busy;    /* bool */
-	uint16_t           again;   /* bool */
+	uint32_t           flags;   /* RELOAD_BUSY, RELOAD_AGAIN */
+};
+
+/* Whether a reload is under way, and whether a SIGHUP came meanwhile. */
+enum {
+	RELOAD_BUSY  = 1u << 0,
+	RELOAD_AGAIN = 1u << 1,
 };
 
 /* What runs on home: the jobs (src/home.h), and the door, which accepts the
@@ -498,8 +503,8 @@ askai_home_reload (void        *ctx,
 {
 	struct askai_home *app = ctx;
 	struct askai_reload *r = &app->reload;
-	if (r->busy) {
-		r->again = true;
+	if (r->flags & RELOAD_BUSY) {
+		r->flags |= RELOAD_AGAIN;
 		return;
 	}
 	r->job = (struct blocker_job){
@@ -507,8 +512,8 @@ askai_home_reload (void        *ctx,
 		.work = askai_reload_work,
 		.loop = loop
 	};
-	r->busy = !blocker_submit(app->keep.blockers, &r->job);
-	if (!r->busy)
+	r->flags = blocker_submit(app->keep.blockers, &r->job) ? 0 : RELOAD_BUSY;
+	if (!r->flags)
 		LOG(LOG_WARN, "configuration not reloaded: the blockers are busy");
 }
 
@@ -553,17 +558,18 @@ askai_reload_done (struct loop *loop,
 {
 	struct askai_reload *r = container_of(msg, struct askai_reload, job.done);
 	struct askai_home *app = container_of(r, struct askai_home, reload);
-	r->busy = false;
+	uint32_t again = r->flags & RELOAD_AGAIN;
+	r->flags = 0;
 	/* Cancelled, as the blockers stop, the work was not done. */
 	if (r->job.error)
 		return;
 	if (!(loop->flags & LOOP_EXIT))
 		askai_reload_apply(app, r);
+	else
+		again = 0;
 	config_fini(&r->cfg);
-	if (r->again && !(loop->flags & LOOP_EXIT)) {
-		r->again = false;
+	if (again)
 		askai_home_reload(app, loop);
-	}
 }
 
 static void
