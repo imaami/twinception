@@ -81,6 +81,7 @@ findings_drop (struct mcp_slot *slot)
 	void **own = mcp_slot_own(slot);
 	struct findings_call *call = *own;
 	json_object_put(call->args);
+	call->args = nullptr;
 	dstr_cleanup(&call->out);
 	free(*own);
 	*own = nullptr;
