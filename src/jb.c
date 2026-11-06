@@ -56,7 +56,7 @@ jb_scan_open (struct jb_scan *scan,
               uint32_t        members)
 {
 	if (members != UINT32_MAX) {
-		if (util_grow(scan->members, scan->cap, (size_t)scan->depth + 1))
+		if (util_grow(scan->members, scan->cap, scan->depth + 1))
 			return ENOMEM;
 		scan->members[scan->depth] = 0;
 	}

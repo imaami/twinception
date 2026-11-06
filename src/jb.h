@@ -180,8 +180,8 @@ struct jb_scan {
 	                         copies each whole as it ends */
 	size_t    run;      /**< bytes of the string or scalar under way */
 	size_t    cap;      /**< the number of counts that fit in members */
+	size_t    depth;    /**< containers open */
 	uint32_t  values;   /**< values begun, object keys included */
-	uint32_t  depth;    /**< containers open */
 	enum {
 		JB_SCAN_GAP,
 		JB_SCAN_STRING,
