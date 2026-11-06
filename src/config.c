@@ -625,7 +625,7 @@ config_complain (struct config const *cfg,
 	char const *colon = ": ";
 	if (!where)
 		where = colon = "";
-	if (cfg->logged)
+	if (cfg->flags & CFG_LOGGED)
 		LOG(LOG_ERROR, "%s%s%s", where, colon, what);
 	else
 		fprintf(stderr, "%s%s%s\n", where, colon, what);
@@ -894,9 +894,9 @@ config_apply (struct config *cfg,
 	case 's': ep->system = arg; break;
 	case 'l':
 		/* The command line's listeners replace the file's. */
-		if (!where && cfg->listen_file)
+		if (!where && cfg->flags & CFG_LISTEN_FILE)
 			cfg->n_listens = 0;
-		cfg->listen_file = where != nullptr;
+		cfg->flags = (cfg->flags & ~CFG_LISTEN_FILE) | (where ? CFG_LISTEN_FILE : 0);
 		config_push(cfg->listens, &cfg->n_listens, arg);
 		break;
 	case 'v': cfg->flags |= CFG_VERBOSE; break;
@@ -1866,7 +1866,7 @@ config_listens (struct config *cfg)
 		int e;
 		struct httpd_listen_addr const a = httpd_listen_addr(cfg->listens[i], &e);
 		if (e)
-			return config_complain(cfg, cfg->listen_file ? cfg->path : nullptr,
+			return config_complain(cfg, cfg->flags & CFG_LISTEN_FILE ? cfg->path : nullptr,
 			                       "invalid --listen: %s: %s", cfg->listens[i],
 			                       strerror(e));
 		tls |= a.tls;
@@ -1881,7 +1881,7 @@ static void
 config_note_token (struct config const *cfg)
 {
 	char const *token = getenv("ASKAI_TOKEN");
-	if (cfg->logged || !token || !*token || !cfg->file)
+	if (cfg->flags & CFG_LOGGED || !token || !*token || !cfg->file)
 		return;
 	struct json_object_iter it;
 	json_object_object_foreachC(cfg->file, it)
@@ -2306,7 +2306,7 @@ config_finish (struct config *cfg)
 static int
 config_misuse (struct config const *cfg)
 {
-	if (!cfg->logged)
+	if (!(cfg->flags & CFG_LOGGED))
 		config_usage(cfg, stderr);
 	return 2;
 }
@@ -2315,7 +2315,7 @@ config_misuse (struct config const *cfg)
 static int
 config_argv (struct config *cfg)
 {
-	opterr = !cfg->logged;
+	opterr = !(cfg->flags & CFG_LOGGED);
 	optind = 0;
 	for (int opt; (opt = getopt_long(cfg->argc, cfg->argv, shorts, options,
 	                                 nullptr)) >= 0; ) {
@@ -2370,7 +2370,7 @@ config_parse (struct config *cfg)
 	optind = 0;
 	for (int opt; (opt = getopt_long(cfg->argc, cfg->argv, shorts, options,
 	                                 nullptr)) >= 0; ) {
-		if (opt == 'h' && !cfg->logged) {
+		if (opt == 'h' && !(cfg->flags & CFG_LOGGED)) {
 			config_usage(cfg, stdout);
 			return 0;
 		}
@@ -2402,10 +2402,11 @@ config_reload (struct config       *cfg,
                struct config const *from)
 {
 	*cfg = config_defaults(from->argc, from->argv);
-	cfg->logged = true;
+	cfg->flags |= CFG_LOGGED;
 	cfg->running = from;
 	int status = config_parse(cfg);
-	cfg->restart = status < 0 && !config_same_options(cfg, from);
+	if (status < 0 && !config_same_options(cfg, from))
+		cfg->flags |= CFG_RESTART;
 	return status;
 }
 

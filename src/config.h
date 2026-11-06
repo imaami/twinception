@@ -39,6 +39,14 @@ enum config_flag {
 	                                    and timer (src/mcp.h) */
 	CFG_BODY_GIVEN     = 1u << 7,  /**< --max-body was given, which the
 	                                    budgets then do not lower */
+	CFG_LOGGED         = 1u << 8,  /**< what is wrong goes to the log, as on
+	                                    a reload */
+	CFG_RESTART        = 1u << 9,  /**< once reloaded: the file's options
+	                                    other than its policy are not those
+	                                    askai runs with, which take a
+	                                    restart */
+	CFG_LISTEN_FILE    = 1u << 10, /**< the listeners so far are the
+	                                    file's */
 };
 
 /**
@@ -106,15 +114,6 @@ struct config {
 	uint32_t              loops;        /**< client loops asked for; 0: one
 	                                         fewer than the CPUs */
 	int                   argc;
-	uint32_t              logged;       /**< bool: what is wrong goes to the
-	                                         log, as on a reload */
-	uint32_t              restart;      /**< bool, once reloaded: the file's
-	                                         options other than its policy are
-	                                         not those askai runs with, which
-	                                         take a restart */
-	uint64_t              listen_file;  /**< bool: the listeners so far are
-	                                         the file's; widened over the
-	                                         padding */
 };
 
 /**

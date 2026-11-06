@@ -539,7 +539,7 @@ askai_reload_apply (struct askai_home         *app,
 		cert = " and TLS certificate";
 	}
 	LOG(LOG_INFO, "configuration reloaded: policy%s", cert);
-	if (r->cfg.restart)
+	if (r->cfg.flags & CFG_RESTART)
 		LOG(LOG_WARN, "warning: other changed options need a restart");
 	config_log_policy(&r->cfg);
 }
