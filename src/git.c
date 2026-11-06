@@ -505,19 +505,16 @@ git_option_find (struct cstr_view const *allowed,
 	*match = (struct cstr_view){};
 	int e = ENOENT;
 	for (; allowed->data; ++allowed) {
-		size_t n = allowed->len;
-		char last = allowed->data[n - 1];
-		if (last != '=' && last != '#' && last != '*') {
-			if (cstr_view_equal(opt, *allowed)) {
-				*match = *allowed;
-				return 0;
-			}
+		size_t const n = allowed->len;
+		char const last = allowed->data[n - 1];
+		/* An exact spelling matches only itself, which then passes the
+		 * value tests below. */
+		bool const exact = last != '=' && last != '#' && last != '*';
+		if (exact ? !cstr_view_equal(opt, *allowed)
+		          : (!cstr_view_starts(opt, cstr_view_slice(*allowed, 0, n - 1)) ||
+		             (last == '=' && opt.len >= n && opt.data[n - 1] != '=')))
 			continue;
-		}
-		if (!cstr_view_starts(opt, cstr_view_slice(*allowed, 0, n - 1)) ||
-		    (last == '=' && opt.len >= n && opt.data[n - 1] != '='))
-			continue;
-		size_t at = last == '=' ? n : n - 1;
+		size_t const at = last == '=' ? n : n - 1;
 		*match = *allowed;
 		if (opt.len <= at)
 			e = ENODATA;
@@ -717,18 +714,17 @@ git_call_command (struct git_call  *call,
 		return git_wrong(why, ". Use help:true for its options.");
 	}
 	call->command = c;
-	uint64_t takes = commands[c].takes;
-	if (seen >> GIT_ARG_HELP & 1) {
-		struct json_object *help = of[GIT_ARG_HELP];
-		if (!json_object_is_type(help, json_type_boolean))
-			return git_wrong(why, "The help argument must be a boolean.");
-		if (json_object_get_boolean(help)) {
-			if (seen >> GIT_ARG_OPTIONS)
-				return git_wrong(why, "With help:true, give only repo, "
-				                 "command, help and optional offset.");
-			call->phase = GIT_HELP;
-			return 0;
-		}
+	uint64_t const takes = commands[c].takes;
+	bool const read = takes & LINES;
+	struct json_object *help = of[GIT_ARG_HELP];
+	if ((seen >> GIT_ARG_HELP & 1) && !json_object_is_type(help, json_type_boolean))
+		return git_wrong(why, "The help argument must be a boolean.");
+	if (json_object_get_boolean(help)) {
+		if (seen >> GIT_ARG_OPTIONS)
+			return git_wrong(why, "With help:true, give only repo, command, help and "
+			                 "optional offset.");
+		call->phase = GIT_HELP;
+		return 0;
 	}
 
 	static size_t const most[GIT_ARGS] = {
@@ -747,10 +743,12 @@ git_call_command (struct git_call  *call,
 		if (lens[l] > most[l])
 			return git_wrong(why, "The %s argument has %zu entries; its limit is "
 			                 "%zu.", name, lens[l], most[l]);
-		for (size_t i = 0; i < lens[l]; ++i)
-			if (!git_word(jb_at(of[l], i)).data)
-				return git_wrong(why, "%s[%zu] must be a string of 1 to %d "
-				                 "bytes with no NUL.", name, i, WORD);
+		size_t i = 0;
+		while (i < lens[l] && git_word(jb_at(of[l], i)).data)
+			++i;
+		if (i < lens[l])
+			return git_wrong(why, "%s[%zu] must be a string of 1 to %d bytes with no "
+			                 "NUL.", name, i, WORD);
 	}
 	if ((takes & SINGLE) && lens[GIT_ARG_REVISIONS] > 1)
 		return git_wrong(why, "git %.*s takes at most one revision.", (int)cmd.len,
@@ -767,15 +765,16 @@ git_call_command (struct git_call  *call,
 	} else if (pattern) {
 		return git_wrong(why, "Only git grep takes a pattern.");
 	}
+	uint64_t const numbers = seen & (1U << GIT_ARG_LINE | 1U << GIT_ARG_COUNT);
+	if (numbers && !read)
+		return git_wrong(why, "Only git read takes line and count.");
 	size_t *const values[] = { &call->read.line, &call->read.count };
 	call->read.line = 1;
 	call->read.count = SIZE_MAX;
 	for (size_t i = 0; i < array_size(values); ++i) {
 		size_t const k = GIT_ARG_LINE + i;
-		if (!(seen >> k & 1))
+		if (!(numbers >> k & 1))
 			continue;
-		if (!(takes & LINES))
-			return git_wrong(why, "Only git read takes line and count.");
 		uint64_t const v = jb_count(of[k], UINT64_MAX);
 		if (!v)
 			return git_wrong(why, "The %s argument must be a whole number from 1.",
@@ -788,7 +787,7 @@ git_call_command (struct git_call  *call,
 
 	size_t k = 0;
 	char const **argv = call->argv;
-	argv[k++] = takes & LINES ? "cat-file" : cmd.data;
+	argv[k++] = read ? "cat-file" : cmd.data;
 	for (size_t i = 0; i < array_size(commands[c].forced) && commands[c].forced[i];
 	     ++i)
 		argv[k++] = commands[c].forced[i];
@@ -850,7 +849,7 @@ git_call_command (struct git_call  *call,
 			                 "selectors and revision expansions are unavailable.", i);
 		argv[k++] = rev->text;
 	}
-	if ((takes & LINES) && !call->revisions[0].path.len)
+	if (read && !call->revisions[0].path.len)
 		return git_wrong(why, "git read needs the file as its revision, such as "
 		                 "\"revisions\": [\"HEAD:src/main.c\"].");
 	if ((takes & PAIR) && endpoints != 2)
