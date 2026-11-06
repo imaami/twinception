@@ -15,6 +15,7 @@
 #include <spawn.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
 #include <sys/pidfd.h>
@@ -481,6 +482,46 @@ child_run (struct child_cmd const *cmd,
 	if (!e)
 		*status = info.si_status;
 	return e;
+}
+
+int
+child_capture (struct child_cmd const *cmd,
+               struct child_fds        fds,
+               char                   *buf,
+               size_t                  size,
+               size_t                 *len,
+               int                    *status)
+{
+	*len = 0;
+	fds.out = memfd_create("askai-output", MFD_CLOEXEC);
+	if (fds.out < 0)
+		return errno;
+	int e = child_run(cmd, fds, status);
+	if (!e)
+		e = util_read_all(fds.out, buf, size, 0, len);
+	if (!e && *len == size)
+		e = EFBIG;
+	close(fds.out);
+	return e;
+}
+
+int
+child_argv (char const        **argv,
+            size_t              cap,
+            char const *const  *prefix,
+            size_t              n,
+            char const *const  *words)
+{
+	if (n >= cap)
+		return E2BIG;
+	memcpy(argv, prefix, n * sizeof *argv);
+	for (; *words; ++words) {
+		if (n + 1 >= cap)
+			return E2BIG;
+		argv[n++] = *words;
+	}
+	argv[n] = nullptr;
+	return 0;
 }
 
 struct cstr_view

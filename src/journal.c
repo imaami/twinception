@@ -113,7 +113,7 @@ struct journal {
 	struct journal_job     jobs[JOURNAL_JOBS];
 	struct journal_file    files[JOURNAL_FILES];
 	EVP_MD_CTX            *digest;
-	unsigned char          scratch[JOURNAL_SCRATCH];
+	char                   scratch[JOURNAL_SCRATCH];
 	unsigned char          key[JOURNAL_KEY];  /* the key of the principals,
 	                                             read from
 	                                             askai-journal/principal.key */
@@ -260,15 +260,15 @@ journal_file (int         dir,
 }
 
 /** Fixed argv and environment. Input/output are anonymous files, so a
- * child's output can never deadlock its input pipe. Only the writer and
- * startup call this function.
+ * child's output can never deadlock its input pipe. The output goes to
+ * j->scratch, and @p out, if not nullptr, views it until the next use of
+ * j->scratch. Only the writer and startup call this function.
  */
 static int
 journal_git (struct journal    *j,
              char const *const *command,
              int                input,
-             char             **output,
-             size_t             maximum,
+             struct cstr_view  *out,
              int               *status)
 {
 	static char const *const prefix[] = {
@@ -277,18 +277,9 @@ journal_git (struct journal    *j,
 	};
 	char *const env[] = { util_env_path(), GIT_ENV_FIXED, nullptr };
 	char const *argv[48];
-	static_assert(array_size(prefix) < array_size(argv));
-	memcpy(argv, prefix, sizeof prefix);
-	size_t argc = array_size(prefix);
-	for (size_t i = 0; command[i]; ++i) {
-		if (argc + 1 >= array_size(argv))
-			return E2BIG;
-		argv[argc++] = command[i];
-	}
-	argv[argc] = nullptr;
-	int out = memfd_create("askai-journal-git", MFD_CLOEXEC);
-	if (out < 0)
-		return errno;
+	int e = child_argv(argv, array_size(argv), prefix, array_size(prefix), command);
+	if (e)
+		return e;
 	/* A Git child can outlive an abruptly killed AskAI. It keeps the same
 	 * flock open through exec, so restart cannot race that child. */
 	struct child_cmd const cmd = {
@@ -298,30 +289,17 @@ journal_git (struct journal    *j,
 		.deadline = loop_clock() + JOURNAL_GIT_NS,
 		.grace    = JOURNAL_GRACE_NS,
 	};
+	struct child_fds const fds = { .in = input, .out = -1, .dir = j->repo_fd,
+	                               .keep = j->lock_fd };
+	size_t len;
 	int code = 0;
-	struct child_fds fds = { .in = input, .out = out, .dir = j->repo_fd, .keep = j->lock_fd };
-	int e = child_run(&cmd, fds, &code);
+	e = child_capture(&cmd, fds, j->scratch, sizeof j->scratch, &len, &code);
 	if (!e && status)
 		*status = code;
 	else if (!e && code)
 		e = EIO;
-	if (!e && output) {
-		struct stat st;
-		if (fstat(out, &st))
-			e = errno;
-		else if (st.st_size < 0 || (uint64_t)st.st_size > maximum)
-			e = EFBIG;
-		else if (!(*output = malloc((size_t)st.st_size + 1)))
-			e = ENOMEM;
-		else {
-			size_t got = 0;
-			e = util_read_all(out, *output, (size_t)st.st_size, 0, &got);
-			if (!e && got != (size_t)st.st_size)
-				e = EIO;
-			(*output)[got] = '\0';
-		}
-	}
-	close(out);
+	if (out)
+		*out = (struct cstr_view){ j->scratch, len };
 	return e;
 }
 
@@ -329,16 +307,14 @@ static int
 journal_tip (struct journal *j)
 {
 	char const *command[] = { "rev-parse", "--verify", "--quiet", j->ref, nullptr };
-	char *out = nullptr;
+	struct cstr_view out;
 	int status = 0;
-	int e = journal_git(j, command, -1, &out, OID_SHA256 + 1, &status);
+	int e = journal_git(j, command, -1, &out, &status);
 	struct oid tip = {};
-	if (!e && status != 1 && (status || oid_init_line(&tip, cstr_view(out))))
+	if (!e && status != 1 && (status || oid_init_line(&tip, out)))
 		e = EIO;
 	else if (!e)
 		j->tip = tip;
-	free(out);
-	out = nullptr;
 	return e;
 }
 
@@ -936,12 +912,11 @@ journal_thought_commit (struct journal            *j,
 	if (fdatasync(file->fd) || lseek(file->fd, 0, SEEK_SET) < 0)
 		return errno;
 	char const *hash[] = { "hash-object", "-w", "--stdin", nullptr };
-	char *out = nullptr;
-	e = journal_git(j, hash, file->fd, &out, OID_SHA256 + 1, nullptr);
+	struct cstr_view out;
+	e = journal_git(j, hash, file->fd, &out, nullptr);
 	struct oid blob;
-	if (!e && oid_init_line(&blob, cstr_view(out)))
+	if (!e && oid_init_line(&blob, out))
 		e = EILSEQ;
-	free(out);
 	char path[96];
 	int n = snprintf(path, sizeof path, "reasoning/%.2s/%s/%" PRIu32 ".txt",
 	                 item->id.hex, item->id.hex, item->turn);
@@ -953,16 +928,11 @@ journal_thought_commit (struct journal            *j,
 		if (n < 0 || n >= (int)sizeof name)
 			e = EOVERFLOW;
 		char const *find[] = { "rev-parse", "--verify", "--quiet", name, nullptr };
-		char *previous = nullptr;
 		int status = 0;
 		if (!e)
-			e = journal_git(j, find, -1, &previous, OID_SHA256 + 1, &status);
+			e = journal_git(j, find, -1, &out, &status);
 		struct oid old;
-		bool same = !e && !status && !oid_init_line(&old, cstr_view(previous)) &&
-		            oid_equal(&old, &blob);
-		free(previous);
-		previous = nullptr;
-		if (same) {
+		if (!e && !status && !oid_init_line(&old, out) && oid_equal(&old, &blob)) {
 			file->committed = true;
 			file->committed_size = file->size;
 			return 0;
@@ -992,7 +962,7 @@ journal_thought_commit (struct journal            *j,
 			e = errno;
 		char const *import[] = { "fast-import", "--quiet", "--done", nullptr };
 		if (!e)
-			e = journal_git(j, import, fd, nullptr, 0, nullptr);
+			e = journal_git(j, import, fd, nullptr, nullptr);
 	}
 	if (output) {
 		if (fclose(output) && !e)
@@ -1340,19 +1310,17 @@ journal_setup (struct journal *j,
 		else {
 			char const *command[] = { "init", "--bare", "--quiet", "--template=",
 			                          "--initial-branch=reasoning", ".", nullptr };
-			e = journal_git(j, command, -1, nullptr, 0, nullptr);
+			e = journal_git(j, command, -1, nullptr, nullptr);
 		}
 	} else if (!e && !S_ISREG(st.st_mode)) {
 		e = EINVAL;
 	}
 	if (!e) {
 		char const *command[] = { "rev-parse", "--is-bare-repository", nullptr };
-		char *out = nullptr;
-		e = journal_git(j, command, -1, &out, 16, nullptr);
-		if (!e && strcmp(out, "true\n"))
+		struct cstr_view out;
+		e = journal_git(j, command, -1, &out, nullptr);
+		if (!e && !cstr_view_equal(out, CSTR_VIEW("true\n")))
 			e = EINVAL;
-		free(out);
-		out = nullptr;
 	}
 	if (!e)
 		e = journal_directory(j->repo_fd, "askai-journal", &state);

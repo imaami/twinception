@@ -195,6 +195,31 @@ child_run (struct child_cmd const *cmd,
            struct child_fds        fds,
            int                    *status);
 
+/**
+ * Run @p cmd as child_run() does, its output into a file in memory in place
+ * of fds.out, and read the output into the @p size bytes at @p buf, its
+ * length into @p *len. Returns 0 and the exit status in @p *status, EFBIG
+ * if the output fills @p size bytes, or the error of the run or the read.
+ */
+extern int
+child_capture (struct child_cmd const *cmd,
+               struct child_fds        fds,
+               char                   *buf,
+               size_t                  size,
+               size_t                 *len,
+               int                    *status);
+
+/** Write the @p n words at @p prefix, then the words at @p words up to its
+ *  nullptr, and a nullptr to the @p cap pointers at @p argv. Returns 0, or
+ *  E2BIG if they do not fit.
+ */
+extern int
+child_argv (char const        **argv,
+            size_t              cap,
+            char const *const  *prefix,
+            size_t              n,
+            char const *const  *words);
+
 /** Let go of @p *p_c, which becomes nullptr: free it, if it has ended;
  *  else kill it, stop reading its output, and free it once it is reaped.
  */

@@ -14,7 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -178,27 +177,14 @@ cli_state_git (struct cli_state  *state,
                int                output_fd,
                int               *status)
 {
-	#define ARGV "git", "-C", dstr_get(&state->path)           \
-	                  , "-c", "user.name=AskAI CLI"            \
-	                  , "-c", "user.email=askai-cli@localhost" \
-	                  , "-c", "core.fsync=committed"
-	char const *argv[32] = { ARGV };
-
-	#define ARGC array_size((char const *[]){ ARGV })
-	static_assert(ARGC < array_size(argv));
-
-	for (size_t i = 0U; args[i]; ++i) {
-		if (i == last_index(argv) - ARGC)
-			return E2BIG;
-		argv[ARGC + i] = args[i];
-	}
-
-	#undef ARGC
-	#undef ARGV
-
-	int out = output_fd >= 0 ? output_fd : memfd_create("askai-cli-git", MFD_CLOEXEC);
-	if (out < 0)
-		return errno;
+	char const *const prefix[] = {
+		"git", "-C", dstr_get(&state->path), "-c", "user.name=AskAI CLI",
+		"-c", "user.email=askai-cli@localhost", "-c", "core.fsync=committed"
+	};
+	char const *argv[32];
+	int e = child_argv(argv, array_size(argv), prefix, array_size(prefix), args);
+	if (e)
+		return e;
 	struct child_cmd const cmd = {
 		.file = "git",
 		.argv = argv,
@@ -206,21 +192,15 @@ cli_state_git (struct cli_state  *state,
 		.in   = { (unsigned char *)(uintptr_t)input.data, input.len },
 	};
 	struct child_fds fds = child_fds();
-	fds.out = out;
-	int e = child_run(&cmd, fds, status);
 	(void)dstr_clear(&state->output);
-	if (output_fd >= 0)
-		return e;
+	if (output_fd >= 0) {
+		fds.out = output_fd;
+		return child_run(&cmd, fds, status);
+	}
 	char buffer[4097];
-	size_t got = 0;
-	if (!e)
-		e = util_read_all(out, buffer, sizeof buffer, 0, &got);
-	if (!e && got == sizeof buffer)
-		e = EFBIG;
-	if (!e && !dstr_cat_n(&state->output, buffer, got))
-		e = ENOMEM;
-	close(out);
-	return e;
+	size_t got;
+	e = child_capture(&cmd, fds, buffer, sizeof buffer, &got, status);
+	return e ? e : cstr_view_cat((struct cstr_view){ buffer, got }, &state->output);
 }
 
 static int
