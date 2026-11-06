@@ -459,36 +459,43 @@ cli_scrollback_line_write (struct cli_scrollback_line const *line,
 	return 0;
 }
 
-/* Write the row of line from start to end, which ends at column, or count
- * it off *skip, the rows still to skip.
+/* Write the row of line from *start to end, which ends at column *column,
+ * or, while *skip is not 0, decrement *skip instead. Then set *start to
+ * end and *column to 0 for the next row.
  */
 static int
 cli_scrollback_row (struct cli_scrollback_line const *line,
                     size_t                           *skip,
-                    size_t                            start,
+                    size_t                           *start,
                     size_t                            end,
-                    size_t                            column,
+                    size_t                           *column,
                     struct cli_scrollback_frame      *frame)
 {
+	size_t from = *start;
+	size_t to = *column;
+	*start = end;
+	*column = 0;
 	if (*skip) {
 		--*skip;
 		return 0;
 	}
-	int e = cli_scrollback_line_write(line, start, end, frame);
-	return e ? e : cli_scrollback_frame_end(frame, column);
+	int e = cli_scrollback_line_write(line, from, end, frame);
+	return e ? e : cli_scrollback_frame_end(frame, to);
 }
 
-/* Write the text of line from start to offset, and then the cell at offset
- * as the spaces of a tab or as "?".
+/* Write the text of line from *start to offset, and then the cell at
+ * offset as the spaces of a tab or as "?". Set *start to the offset after
+ * the cell.
  */
 static int
 cli_scrollback_cell_write (struct cli_scrollback_line const *line,
-                           size_t                            start,
+                           size_t                           *start,
                            size_t                            offset,
                            struct cli_scrollback_cell        cell,
                            struct cli_scrollback_frame      *frame)
 {
-	int e = cli_scrollback_line_write(line, start, offset, frame);
+	int e = cli_scrollback_line_write(line, *start, offset, frame);
+	*start = offset + cell.bytes;
 	size_t next = cli_scrollback_style_after(line, offset);
 	if (!e)
 		e = cli_scrollback_frame_style(frame, next ? line->styles[next - 1].id : CLI_STYLE_RESET);
@@ -512,25 +519,16 @@ cli_scrollback_line_render (struct cli_scrollback_line  *line,
 	/* While rows are skipped, a row starts only where it wraps. */
 	while (offset < text.len && frame->height) {
 		struct cli_scrollback_cell cell = cli_scrollback_cell(text, offset, column, frame->columns);
-		if (cell.flags & CLI_SCROLLBACK_WRAP) {
-			int e = cli_scrollback_row(line, skip, start, offset, column, frame);
-			if (e)
-				return e;
-			start = offset;
-			column = 0;
-			if (!frame->height)
-				break;
-		}
-		if (!*skip && (text.data[offset] == '\t' || (cell.flags & CLI_SCROLLBACK_REPLACE))) {
-			int e = cli_scrollback_cell_write(line, start, offset, cell, frame);
-			if (e)
-				return e;
-			start = offset + cell.bytes;
-		}
+		int e = cell.flags & CLI_SCROLLBACK_WRAP ? cli_scrollback_row(line, skip, &start, offset, &column, frame) : 0;
+		bool shown = !*skip && (text.data[offset] == '\t' || (cell.flags & CLI_SCROLLBACK_REPLACE));
+		if (!e && frame->height && shown)
+			e = cli_scrollback_cell_write(line, &start, offset, cell, frame);
+		if (e)
+			return e;
 		column += cell.width;
 		offset += cell.bytes;
 	}
-	return frame->height ? cli_scrollback_row(line, skip, start, offset, column, frame) : 0;
+	return frame->height ? cli_scrollback_row(line, skip, &start, offset, &column, frame) : 0;
 }
 
 int
