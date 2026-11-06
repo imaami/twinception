@@ -922,6 +922,23 @@ mcp_piece_write (struct mcp_piece const *p,
 	return e;
 }
 
+/* Append the @p n pieces at @p p to @p buf: all of them, or on an error
+ * none, so that no part of a fragment stays in @p buf.
+ */
+static int
+mcp_pieces_put (struct buf             *buf,
+                struct mcp_piece const *p,
+                size_t                  n)
+{
+	size_t const had = buf_peek(buf).len;
+	int e = 0;
+	for (size_t i = 0; !e && i < n; ++i)
+		e = p[i].bytes.len ? mcp_piece_write(&p[i], 0, p[i].bytes.len, buf, SIZE_MAX) : 0;
+	if (e)
+		buf_cut(buf, had, buf_peek(buf).len - had);
+	return e;
+}
+
 /* Free the message, or the answer, now if the step has the share for it,
  * else leave it to the request's steps, a few values each: freeing one takes
  * as long as parsing it.
@@ -1727,14 +1744,33 @@ mcp_req_put (struct mcp_req         *req,
              struct mcp_piece const *p,
              size_t                  n)
 {
-	for (size_t i = 0; i < n; ++i) {
-		if (!p[i].bytes.len)
-			continue;
-		int e = mcp_piece_write(&p[i], 0, p[i].bytes.len, &req->reply, SIZE_MAX);
-		if (e)
-			return e;
-	}
-	return 0;
+	return mcp_pieces_put(&req->reply, p, n);
+}
+
+/* End the reply as the last event of an event stream, else send the head
+ * of a JSON response with @p status, the header @p fields and the length
+ * of the reply.
+ */
+static int
+mcp_req_head (struct mcp_req *req,
+              uint16_t        status,
+              struct span     fields)
+{
+	struct stream *s = req->s;
+	return req->flags & REQ_SSE ? mcp_req_put(req, &FRAG("\n\n"), 1)
+	                            : s->ops->head(s, status, fields, buf_peek(&req->reply).len);
+}
+
+/* Send the reply at once, unless making it failed with @p e, and empty
+ * it. Returns @p e, or the error of mcp_req_write().
+ */
+static int
+mcp_req_flush (struct mcp_req *req,
+               int             e)
+{
+	e = e ? e : mcp_req_write(req, buf_peek(&req->reply));
+	buf_clear(&req->reply);
+	return e;
 }
 
 /* Begin the reply: on an event stream, an event; then
@@ -1783,16 +1819,10 @@ mcp_req_close (struct mcp_req *req,
                struct span     fields,
                int             e)
 {
-	struct stream *s = req->s;
 	mcp_req_unwait(req);
 	mcp_req_drop(req);
 	loop_timer_stop(req->mcp->loop, &req->timer);
-	if (e) {
-		mcp_req_abort(req, e);
-		return;
-	}
-	e = req->flags & REQ_SSE ? mcp_req_put(req, &FRAG("\n\n"), 1)
-	                         : s->ops->head(s, status, fields, buf_peek(&req->reply).len);
+	e = e ? e : mcp_req_head(req, status, fields);
 	if (e) {
 		mcp_req_abort(req, e);
 		return;
@@ -2118,9 +2148,7 @@ mcp_req_notify (struct mcp_req   *req,
                 struct cstr_view  text,
                 bool              tool)
 {
-	if (!mcp_req_notify_put(req, value, text, tool))
-		(void)mcp_req_write(req, buf_peek(&req->reply));
-	buf_clear(&req->reply);
+	(void)mcp_req_flush(req, mcp_req_notify_put(req, value, text, tool));
 	req->noted = req->mcp->loop->now;
 	req->next_note = value + 1;
 }
@@ -2169,7 +2197,6 @@ mcp_req_delta (struct mcp_req *req)
 		};
 		int e = mcp_req_put(req, p, array_size(p));
 		loop_work(loop, LOOP_ESCAPE, n);
-		struct span notice = buf_peek(&req->reply);
 		if (e) {
 			mcp_req_abort(req, e);
 			return;
@@ -2179,9 +2206,8 @@ mcp_req_delta (struct mcp_req *req)
 			req->delta_at += sizeof header + header.len;
 			req->delta_read = 0;
 		}
-		e = mcp_req_write(req, notice);
-		loop_work(loop, LOOP_SEND, notice.len);
-		buf_consume(&req->reply, notice.len);
+		loop_work(loop, LOOP_SEND, buf_peek(&req->reply).len);
+		e = mcp_req_flush(req, 0);
 		if (e) {
 			mcp_req_abort(req, e);
 			return;
@@ -2594,15 +2620,11 @@ mcp_key (struct job  *job,
 {
 	if (!session.ptr)
 		return 0;
-	struct span s;
-	int e = buf_reserve(&job->key, session.len + 1, SIZE_MAX, &s);
-	if (e)
-		return e;
-	memcpy(s.ptr, session.ptr, session.len);
-	s.ptr[session.len] = '\n';
-	buf_commit(&job->key, session.len + 1);
-	job->session = (uint32_t)(session.len + 1);
-	return 0;
+	struct mcp_piece const p[] = { RAW(session.ptr, session.len), FRAG("\n") };
+	int e = mcp_pieces_put(&job->key, p, array_size(p));
+	if (!e)
+		job->session = (uint32_t)(session.len + 1);
+	return e;
 }
 
 /** Writes into @p key the key of a call in the roster and stores its seeded
@@ -2624,23 +2646,17 @@ mcp_req_key (struct mcp_req const *req,
 		memcpy(who + 1, s->peer.key, sizeof s->peer.key);
 	struct span session = s->ops->field(s, F_SESSION);
 	struct cstr_view const json = jb_wire(id);
-	if (!json.data)
-		return ENOMEM;
-	size_t head = sizeof who + (session.ptr ? session.len + 1 : 0);
-	size_t total = head + json.len;
-	struct span k;
-	int e = buf_reserve(key, total, SIZE_MAX, &k);
-	if (e)
-		return e;
-	memcpy(k.ptr, who, sizeof who);
-	if (session.ptr) {
-		memcpy(k.ptr + sizeof who, session.ptr, session.len);
-		k.ptr[head - 1] = '\n';
-	}
-	memcpy(k.ptr + head, json.data, json.len);
-	buf_commit(key, total);
-	*hash = util_hash(req->mcp->st->seed, k.ptr, total);
-	return 0;
+	struct mcp_piece const p[] = {
+		RAW(who, sizeof who),
+		RAW(session.ptr, session.len),
+		session.ptr ? FRAG("\n") : FRAG(""),
+		RAW(json.data, json.len),
+	};
+	int e = json.data ? mcp_pieces_put(key, p, array_size(p)) : ENOMEM;
+	struct span const k = buf_peek(key);
+	if (!e)
+		*hash = util_hash(req->mcp->st->seed, k.ptr, k.len);
+	return e;
 }
 
 /* A journal callback names a request rather than keeping its address: a
@@ -3162,10 +3178,7 @@ mcp_req_detach (struct mcp_req     *req,
 {
 	struct mcp *mcp = req->mcp;
 	struct stream *s = req->s;
-	e = e ? e : req->flags & REQ_SSE ? mcp_req_put(req, &FRAG("\n\n"), 1)
-	          : s->ops->head(s, 200, SPAN(JSON_FIELD), buf_peek(&req->reply).len);
-	e = e ? e : mcp_req_write(req, buf_peek(&req->reply));
-	buf_clear(&req->reply);
+	e = mcp_req_flush(req, e ? e : mcp_req_head(req, 200, SPAN(JSON_FIELD)));
 	if (e) {
 		mcp_req_record_end(req, &task, LEDGER_CANCELLED);
 		mcp_req_abort(req, e);
@@ -6598,16 +6611,10 @@ mcp_req_attach (struct mcp_req   *req,
 {
 	struct ai_format const *f = req->mcp->st->format;
 	/* A turn makes at most JOB_CALLS calls, so the files add a few KiB. */
-	struct span to;
-	int e = buf_reserve(&req->attached, f->file.len + 6 * uri.len + f->file_end.len,
-	                    SIZE_MAX, &to);
+	struct mcp_piece const p[] = { BYTES(f->file), ESC_VIEW(uri), BYTES(f->file_end) };
+	int e = mcp_pieces_put(&req->attached, p, array_size(p));
 	if (e)
 		return e;
-	char *p = (char *)to.ptr;
-	memcpy(p, f->file.data, f->file.len);
-	size_t n = f->file.len + jb_escape(p + f->file.len, uri.data, uri.len);
-	memcpy(p + n, f->file_end.data, f->file_end.len);
-	buf_commit(&req->attached, n + f->file_end.len);
 	req->filed += bytes;
 	req->flags |= REQ_FILING;
 	return 0;
