@@ -63,12 +63,13 @@ schema_count (int32_t     min,
 }
 
 struct json_object *
-schema_object (struct json_object *properties,
-               struct json_object *required)
+schema_object (struct json_object     *properties,
+               struct cstr_view const *required,
+               size_t                  n)
 {
-	return jb_object("type", json_object_new_string("object"),
-	                 "properties", properties,
-	                 "required", required,
-	                 "additionalProperties", json_object_new_boolean(0),
-	                 nullptr);
+	struct json_object *obj = jb_object("type", json_object_new_string("object"),
+	                                    "properties", properties, nullptr);
+	if (required)
+		obj = jb_set_or_free(obj, "required", schema_names(required, n));
+	return jb_set_or_free(obj, "additionalProperties", json_object_new_boolean(0));
 }

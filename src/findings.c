@@ -74,7 +74,7 @@ findings_definition (void const *service)
 					"For show: the byte of the output to start from, to "
 					"read on past where it was cut."),
 				nullptr),
-			jb_list(json_object_new_string("action"))),
+			&CSTR_VIEW("action"), 1),
 		nullptr);
 }
 

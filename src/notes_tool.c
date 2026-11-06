@@ -1795,7 +1795,7 @@ notes_tool_schema (struct notes_tool const *tool,
 	return jb_object(
 		"name", json_object_new_string("notes"),
 		"description", jb_string(cstr_view_dstr(&description)),
-		"inputSchema", schema_object(props, jb_list(json_object_new_string("action"))),
+		"inputSchema", schema_object(props, &CSTR_VIEW("action"), 1),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(0),
 			"destructiveHint", json_object_new_boolean(0),

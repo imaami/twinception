@@ -8013,7 +8013,7 @@ mcp_tool_definition (void const *service)
 				                              nullptr),
 				          "content", schema_property("string", nullptr),
 				          nullptr),
-				schema_names(keys, array_size(keys))),
+				keys, array_size(keys)),
 			nullptr),
 		"background", schema_property("boolean",
 			"False waits for the answer on this connection. True requires server "
@@ -8050,9 +8050,7 @@ mcp_tool_definition (void const *service)
 			  "completion. Set background false to wait for the answer on this "
 			  "connection."
 			: "", ""),
-		"inputSchema", schema_object(props, st->ep->background
-		                                    ? json_object_new_array()
-		                                    : jb_list(json_object_new_string("prompt"))),
+		"inputSchema", schema_object(props, &CSTR_VIEW("prompt"), st->ep->background ? 0 : 1),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(!st->ep->background),
 			"openWorldHint", json_object_new_boolean(1),
@@ -8074,15 +8072,13 @@ mcp_task_definition (void const *service)
 			"slices ran and how often the task moved between loops; or, "
 			"given a prompt instead, a question to the upstream AI as "
 			"background work, which interactive calls go before."),
-		"inputSchema", jb_object(
-			"type", json_object_new_string("object"),
-			"properties", jb_object(
+		"inputSchema", schema_object(
+			jb_object(
 				"slices", jb_set_or_free(schema_count(1, nullptr), "maximum",
 				                         json_object_new_int(SPIN_MAX)),
 				"prompt", schema_property("string", nullptr),
 				nullptr),
-			"additionalProperties", json_object_new_boolean(0),
-			nullptr),
+			nullptr, 0),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(1),
 			"openWorldHint", json_object_new_boolean(0),
@@ -8114,7 +8110,7 @@ mcp_compact_definition (void const *service)
 					"Where the task stands: what is done, what you found, "
 					"and what you will do next; at most 4 MiB."),
 				nullptr),
-			jb_list(json_object_new_string("summary"))),
+			&CSTR_VIEW("summary"), 1),
 		nullptr);
 }
 
@@ -8127,12 +8123,11 @@ static struct json_object *
 mcp_definition (char const         *name,
                 char const         *about,
                 struct json_object *properties,
-                char const         *required)
+                struct cstr_view    required)
 {
 	return jb_object("name", json_object_new_string(name),
 	                 "description", json_object_new_string(about),
-	                 "inputSchema", schema_object(properties,
-	                                              jb_list(json_object_new_string(required))),
+	                 "inputSchema", schema_object(properties, &required, 1),
 	                 nullptr);
 }
 
@@ -8155,7 +8150,7 @@ mcp_background_definition (void const *service)
 			"arguments", schema_property("object",
 				"Its arguments, as you would give them to it."),
 			nullptr),
-		"tool");
+		CSTR_VIEW("tool"));
 }
 
 /* Returns the actions of the jobs tool as a JSON array, or nullptr if out
@@ -8186,7 +8181,7 @@ mcp_jobs_definition (void const *service)
 			"offset", schema_property("integer", "For result: the byte of the "
 			                          "output to start from, to read on."),
 			nullptr),
-		"action");
+		CSTR_VIEW("action"));
 }
 
 /* Returns the definition of wait for the turns. */
@@ -8209,7 +8204,7 @@ mcp_wait_definition (void const *service)
 					"The jobs to wait for; any if none."),
 				nullptr),
 			nullptr),
-		"seconds");
+		CSTR_VIEW("seconds"));
 }
 
 /* Returns the definition of timer for the turns. */
@@ -8228,7 +8223,7 @@ mcp_timer_definition (void const *service)
 			"note", schema_property("string", "What it is for, which askai "
 			                        "says as it fires; at most 200 bytes."),
 			nullptr),
-		"seconds");
+		CSTR_VIEW("seconds"));
 }
 
 /** Returns the definition of background that clients list with
@@ -8257,7 +8252,7 @@ mcp_background_client_definition (void const *service)
 			"arguments", schema_property("object", "The arguments for the tool, "
 			                             "the same as in a direct call."),
 			nullptr),
-		"tool");
+		CSTR_VIEW("tool"));
 }
 
 /* Returns the definition of jobs that clients list with --client-jobs. */
@@ -8278,7 +8273,7 @@ mcp_jobs_client_definition (void const *service)
 			"timer", schema_property("integer", "The number of the timer for "
 			                         "cancel, from the result of timer."),
 			nullptr),
-		"action");
+		CSTR_VIEW("action"));
 }
 
 /* Returns the definition of wait that clients list with --client-jobs. */
@@ -8305,7 +8300,7 @@ mcp_wait_client_definition (void const *service)
 					"ids, any job."),
 				nullptr),
 			nullptr),
-		"seconds");
+		CSTR_VIEW("seconds"));
 }
 
 /* Returns the definition of timer that clients list with --client-jobs. */
@@ -8325,7 +8320,7 @@ mcp_timer_client_definition (void const *service)
 			                        "200 bytes; the result of a wait contains it "
 			                        "when the timer fires."),
 			nullptr),
-		"seconds");
+		CSTR_VIEW("seconds"));
 }
 
 /* Serialize @p val into @p text, then free it. */

@@ -880,7 +880,7 @@ manual_definition (void const *service)
 					"The byte of the page to start from, to read on past "
 					"where it was cut."),
 				nullptr),
-			jb_list(json_object_new_string("name"))),
+			&CSTR_VIEW("name"), 1),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(1),
 			"openWorldHint", json_object_new_boolean(0),

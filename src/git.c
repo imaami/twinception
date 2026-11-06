@@ -500,7 +500,7 @@ git_definition (void const *service)
 					"For read: the most lines to give. The default is "
 					"as many as the response window holds."),
 				nullptr),
-			schema_names(required, array_size(required))),
+			required, array_size(required)),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(1),
 			"openWorldHint", json_object_new_boolean(0),

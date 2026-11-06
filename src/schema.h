@@ -50,11 +50,13 @@ schema_count (int32_t     min,
 
 /**
  * Returns the schema of an object with the members @p properties. The
- * array @p required names the members that the object must have. The
- * object can have no other members.
+ * @p n names at @p required are the members that the object must have. If
+ * @p required is nullptr, the schema has no member "required". The object
+ * can have no other members.
  */
 extern struct json_object *
-schema_object (struct json_object *properties,
-               struct json_object *required);
+schema_object (struct json_object     *properties,
+               struct cstr_view const *required,
+               size_t                  n);
 
 #endif /* TWINCEPTION_SRC_SCHEMA_H_ */
