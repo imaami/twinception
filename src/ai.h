@@ -83,6 +83,9 @@ ai_background (struct ai_endpoint const *ep)
 	         (ep->provider == AI_NO_PROVIDER || ep->provider == AI_GOOGLE)));
 }
 
+/** The APIs of Gemini, a bit for each enum ai_api. */
+enum { AI_GEMINI = 1u << AI_GENERATE | 1u << AI_INTERACTIONS };
+
 /** Whether the upstream of @p ep may be llama-server, which says at /props
  *  what it has: one that ai_llama_like() allows, with an API that is not
  *  one of Gemini's.
@@ -90,8 +93,7 @@ ai_background (struct ai_endpoint const *ep)
 static inline bool
 ai_props (struct ai_endpoint const *ep)
 {
-	return ai_llama_like(ep->provider) && ep->api != AI_GENERATE &&
-	       ep->api != AI_INTERACTIONS;
+	return ai_llama_like(ep->provider) && !(AI_GEMINI >> ep->api & 1);
 }
 
 /**
@@ -334,30 +336,35 @@ extern struct ai_upload const *
 ai_upload (enum ai_api api);
 
 /**
- * The URL of @p path and then @p tail, unless it is nullptr, at the root of
- * Gemini's API that @p url, an upstream's URL, has: the part of @p url
- * before "/v1beta/", which may have a path of a gateway, and the parameter
- * key of the query of @p url, if it has one. Returns a string for free(),
- * or nullptr if @p url has no "/v1beta/" or askai runs out of memory.
+ * Append to @p out the URL of @p path and then @p tail, unless it is
+ * nullptr, at the root of Gemini's API that @p url, an upstream's URL,
+ * has: the part of @p url before "/v1beta/", which may have a path of a
+ * gateway, and the parameter key of the query of @p url, if it has one.
+ * Returns 0, ENOENT if @p url has no "/v1beta/", EINVAL for a null
+ * pointer, or ENOMEM.
  */
-extern char *
-ai_gemini_url (char const *url,
-               char const *path,
-               char const *tail);
+extern int
+ai_gemini_url (char const  *url,
+               char const  *path,
+               char const  *tail,
+               struct dstr *out);
 
-/** The URL to which the upstream of @p ep takes files (ai_upload()), a
- *  string for free(), or nullptr if it takes none or askai runs out of
- *  memory.
+/** Append to @p out the URL to which the upstream of @p ep takes files
+ *  (ai_upload()). Returns 0, ENOENT if it takes none, or an error of
+ *  ai_gemini_url().
  */
-extern char *
-ai_upload_url (struct ai_endpoint const *ep);
+extern int
+ai_upload_url (struct ai_endpoint const *ep,
+               struct dstr              *out);
 
-/** The URL at which Gemini's API says what the model of @p ep has, its
- *  inputTokenLimit among them, a string for free(), or nullptr if @p ep has
- *  no model, no API of Gemini's, or no such URL (ai_gemini_url()).
+/** Append to @p out the URL at which Gemini's API says what the model of
+ *  @p ep has, its inputTokenLimit among them. Returns 0, ENOENT if @p ep
+ *  has no model, no API of Gemini's or no such URL, or an error of
+ *  ai_gemini_url().
  */
-extern char *
-ai_model_url (struct ai_endpoint const *ep);
+extern int
+ai_model_url (struct ai_endpoint const *ep,
+              struct dstr              *out);
 
 /**
  * Read the answer @p body of HTTP @p status to an upload (ai_upload()).

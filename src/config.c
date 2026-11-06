@@ -25,6 +25,7 @@
 #include "ai.h"
 #include "brainstem.h"
 #include "config.h"
+#include "dstr.h"
 #include "git.h"
 #include "httpd.h"
 #include "jb.h"
@@ -2399,16 +2400,15 @@ config_log_url (char const *name,
 static void
 config_log_files (struct config const *cfg)
 {
-	char *url = ai_upload_url(&cfg->ep);
+	dstr_auto url = DSTR_INIT;
 	if (!ai_upload(cfg->ep.api))
 		LOG_ALL(LOG_INFO, "  files     off (the API takes none)");
-	else if (!url)
+	else if (ai_upload_url(&cfg->ep, &url))
 		LOG_ALL(LOG_INFO, "  files     off (the URL has no /v1beta/)");
 	else if (!cfg->notes || !(cfg->flags & CFG_UPSTREAM_TOOLS))
 		LOG_ALL(LOG_INFO, "  files     off (--notes and --upstream-tools)");
 	else
-		config_log_url("files", url);
-	free(url);
+		config_log_url("files", dstr_get(&url));
 }
 
 void
@@ -2427,17 +2427,17 @@ config_log (struct config const *cfg)
 	 * API about its model, but not when told the slots and lending the
 	 * upstream no tools (home_create()). */
 	bool const props = ai_props(ep);
-	char *model = props ? nullptr : ai_model_url(ep);
+	dstr_auto model = DSTR_INIT;
+	bool const gemini = !props && !ai_model_url(ep, &model);
 	bool asked = !ep->slots || cfg->flags & CFG_UPSTREAM_TOOLS;
 	if (ep->context > 0)
 		LOG_ALL(LOG_INFO, "  context   %ld tokens", ep->context);
 	else if (props && asked)
 		LOG_ALL(LOG_INFO, "  context   from llama-server");
-	else if (model && asked)
+	else if (gemini && asked)
 		LOG_ALL(LOG_INFO, "  context   from the model");
 	else
 		LOG_ALL(LOG_INFO, "  context   unknown");
-	free(model);
 	config_log_url("URL", ep->url);
 	config_log_files(cfg);
 	if (cfg->notes || cfg->transcripts)

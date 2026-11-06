@@ -412,10 +412,9 @@ struct mcp_static {
 	struct uploads           *uploads;      /**< the files that turns
 	                                             attached, if the upstream
 	                                             takes files (ai_upload()) */
-	char                     *files_url;    /**< the URL of their uploads */
+	struct dstr               files_url;    /**< the URL of their uploads */
 	char const              **files_lines;  /**< the header lines of their
 	                                             uploads, nullptr-terminated */
-	size_t                    files_url_len;
 	uint64_t                  seed;         /**< of the calls' keys' hash */
 	uint64_t                  endpoint;     /**< the hash of the URL and the
 	                                             model of ep that a checkpoint
@@ -6718,7 +6717,7 @@ mcp_slot_post_file (struct mcp_slot  *slot,
 	static char const accept[] = "application/json";
 	struct mcp_static const *st = slot->req->mcp->st;
 	struct web_request const request = {
-		.url = st->files_url,
+		.url = dstr_get(&st->files_url),
 		.body = body,
 		.accept = accept,
 		.max = FILES_ANSWER,
@@ -6726,7 +6725,7 @@ mcp_slot_post_file (struct mcp_slot  *slot,
 	};
 	struct web_ask ask = {
 		.request = &request,
-		.url = st->files_url_len,
+		.url = dstr_len(&st->files_url),
 		.accept = sizeof accept - 1,
 		.lines = st->files_lines
 	};
@@ -8850,9 +8849,9 @@ mcp_static_uploads (struct mcp_static *st)
 {
 	struct ai_endpoint const *ep = st->ep;
 	struct ai_upload const *up = ai_upload(ep->api);
-	if (!up || !(st->files_url = ai_upload_url(ep)))
-		return 0;
-	st->files_url_len = strlen(st->files_url);
+	int e = up ? ai_upload_url(ep, &st->files_url) : ENOENT;
+	if (e)
+		return e == ENOENT ? 0 : e;
 	static char const *const none[] = { nullptr };
 	char const *const *headers = ep->headers ? ep->headers : none;
 	size_t n = 0;
@@ -8866,7 +8865,6 @@ mcp_static_uploads (struct mcp_static *st)
 		return ENOMEM;
 	memcpy(st->files_lines, headers, n * sizeof *st->files_lines);
 	memcpy(st->files_lines + n, up->lines, (m + 1) * sizeof *st->files_lines);
-	int e = 0;
 	st->uploads = uploads_create(&e);
 	return e;
 }
@@ -8916,6 +8914,7 @@ mcp_static_create (struct config const *cfg,
 		.modern_tail = DSTR_INIT,
 		.server_meta = DSTR_INIT,
 		.versions = DSTR_INIT,
+		.files_url = DSTR_INIT,
 		.tasks = tasks,
 		.journal = journal,
 		.ledger = ledger,
@@ -8974,7 +8973,7 @@ mcp_static_destroy (struct mcp_static **p_static)
 	dstr_cleanup(&st->server_meta);
 	dstr_cleanup(&st->versions);
 	uploads_destroy(&st->uploads);
-	free(st->files_url);
+	dstr_cleanup(&st->files_url);
 	free(st->files_lines);
 	free(st);
 }

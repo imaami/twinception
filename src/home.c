@@ -2442,17 +2442,16 @@ home_props_get (struct home *home,
  * is asked for the context size of the model instead, at GET models/MODEL
  * at the root of the API of the upstream's URL. Returns 0 once asked,
  * ENOTSUP if the endpoint names no model or no such URL exists, else the
- * error of the request.
+ * error of the URL or of the request.
  */
 static int
 home_props_ask (struct home *home)
 {
 	struct ai_endpoint const *ep = home->ep;
 	if (!ai_props(ep)) {
-		char *url = home->context ? nullptr : ai_model_url(ep);
-		int e = url ? home_props_get(home, url) : ENOTSUP;
-		free(url);
-		return e;
+		dstr_auto url = DSTR_INIT;
+		int e = home->context ? ENOENT : ai_model_url(ep, &url);
+		return e == ENOENT ? ENOTSUP : e ? e : home_props_get(home, dstr_get(&url));
 	}
 	CURLU *u = curl_url();
 	if (!u)
