@@ -5,9 +5,9 @@ $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-ai check-askai check-buf check-cli check-completion check-cstr-view \
         check-datauri check-dstr check-jb check-handle check-instance check-journal check-ledger check-load \
-        check-review check-turn check-twinception load load-build
+        check-review check-turn load load-build
 default:; @:
-check: | check-completion check-twinception check-askai check-cli check-ai check-jb check-buf \
+check: | check-completion check-askai check-cli check-ai check-jb check-buf \
          check-datauri check-handle check-turn check-instance check-journal check-ledger \
          check-review check-dstr check-load
 
@@ -43,17 +43,14 @@ override TEST_FLAGS := -std=gnu23 -O2 -g -Wall -Wextra -Wpedantic -pthread
 # the rules in this makefile only. They are defined below the tab-completion
 # guard, so the root makefile does not import them and tab completion does
 # not offer them.
-.PHONY: askai askai-cli godbolt.so test_plugin.so twinception
-askai askai-cli godbolt.so test_plugin.so twinception:
+.PHONY: askai askai-cli godbolt.so test_plugin.so
+askai askai-cli godbolt.so test_plugin.so:
 	+$(MAKE) -C "$(TEST_DIR)../src" $@ O="$O"
 
 # Compares the targets that bash tab completion offers for make in the
 # repository root, in src/ and in tests/ with the lists in completion.py.
 check-completion:
 	$(PYTHON) $(TEST_DIR)completion.py $(TEST_DIR)..
-
-check-twinception: | twinception
-	$(PYTHON) $(TEST_DIR)check.py $Otwinception
 
 # askai.py loads the test plugin in check_plugin() and the godbolt plugin in
 # check_godbolt().

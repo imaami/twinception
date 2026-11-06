@@ -25,7 +25,6 @@ SRC = """
     askai-cli clean-askai-cli purge-askai-cli
     godbolt.so clean-godbolt.so purge-godbolt.so
     test_plugin.so clean-test_plugin.so purge-test_plugin.so
-    twinception clean-twinception purge-twinception
     compile_commands.json clean-compile_commands.json
     clean purge
 """.split()
@@ -35,7 +34,6 @@ TESTS = """
     check check-ai check-askai check-buf check-cli check-completion check-cstr-view check-datauri
     check-dstr check-jb
     check-handle check-instance check-journal check-ledger check-load check-review check-turn
-    check-twinception
     load load-build
 """.split()
 
