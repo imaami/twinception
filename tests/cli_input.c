@@ -101,7 +101,7 @@ static int cli_input_run(struct cli_input_driver *driver, int records, bool mult
 	for (;;) {
 		dstr_auto text = dstr(nullptr);
 		bool eof;
-		int e = cli_console_read(driver->console, &text, multiline, &eof, "test> ");
+		int e = cli_console_read(driver->console, &text, multiline, &eof, CSTR_VIEW("test> "));
 		if (e == EINTR) {
 			dstr_auto signum = dstr(nullptr);
 			if (!dstr_printf(&signum, "%d", driver->stop))

@@ -1176,7 +1176,7 @@ cli_chat_read (struct cli       *cli,
 	}
 	bool eof;
 	e = cli_console_read(cli->console, prompt, options->flags & CLI_MULTILINE, &eof,
-	                     options->flags & CLI_TTY ? "\n> " : "");
+	                     options->flags & CLI_TTY ? CSTR_VIEW("\n> ") : (struct cstr_view){});
 	if (!e && eof) {
 		cli->flags |= CLI_QUITTING;
 		return EAGAIN;

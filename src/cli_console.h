@@ -157,7 +157,7 @@ cli_console_read (struct cli_console *console,
                   struct dstr        *text,
                   bool                multiline,
                   bool               *eof,
-                  char const         *prompt);
+                  struct cstr_view    prompt);
 
 extern int
 cli_console_set_display (struct cli_console *console,

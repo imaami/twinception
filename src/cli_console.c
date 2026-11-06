@@ -1292,9 +1292,9 @@ int cli_console_remember(struct cli_console *console, struct cstr_view text)
 }
 
 static int cli_console_read_simple(struct cli_console *console, struct buf *bytes,
-                                   bool multiline, char const *prompt)
+                                   bool multiline, struct cstr_view prompt)
 {
-	int error = cli_console_queue(console, cstr_view(prompt));
+	int error = cli_console_queue(console, prompt);
 	if (error)
 		return error;
 	bool more;
@@ -1662,11 +1662,10 @@ cli_console_service (struct cli_console *console)
 
 static int
 cli_console_readline (struct cli_console *console,
-                      char const         *prompt)
+                      struct cstr_view    prompt)
 {
-	struct cstr_view prefix = cstr_view(prompt);
-	if (!cstr_view_equal(prefix, cstr_view_dstr(&console->prompt))) {
-		if (cstr_view_store(prefix, &console->prompt))
+	if (!cstr_view_equal(prompt, cstr_view_dstr(&console->prompt))) {
+		if (cstr_view_store(prompt, &console->prompt))
 			return ENOMEM;
 		if ((console->flags & CLI_CONSOLE_CALLBACK_ACTIVE) && rl_set_prompt(dstr_get(&console->prompt)))
 			return EIO;
@@ -1704,7 +1703,7 @@ static int
 cli_console_read_text_simple (struct cli_console *console,
                               struct dstr        *text,
                               bool                multiline,
-                              char const         *prompt)
+                              struct cstr_view    prompt)
 {
 	struct buf bytes = {};
 	int e = cli_console_read_simple(console, &bytes, multiline, prompt);
@@ -1725,7 +1724,7 @@ cli_console_read_text_simple (struct cli_console *console,
 static int
 cli_console_read_text_readline (struct cli_console *console,
                                 struct dstr        *text,
-                                char const         *prompt)
+                                struct cstr_view    prompt)
 {
 	int e = cli_console_readline(console, prompt);
 	if (!console->queue.count) {
@@ -1756,7 +1755,7 @@ cli_console_read (struct cli_console *console,
                   struct dstr        *text,
                   bool                multiline,
                   bool               *eof,
-                  char const         *prompt)
+                  struct cstr_view    prompt)
 {
 	dstr_clear(text);
 	*eof = false;
