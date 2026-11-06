@@ -225,11 +225,11 @@ notes_common (struct notes *notes)
 	if (S_ISDIR(st.st_mode))
 		e = notes_resolve(notes->dir, ".git", &git);
 	else {
+		static char const gitdir[] = "gitdir: ";
 		e = notes_line(notes->dir, ".git", &line);
-		if (!e && strncmp(line, "gitdir: ", 8))
-			e = EINVAL;
 		if (!e)
-			e = notes_resolve(notes->dir, line + 8, &git);
+			e = strncmp(line, gitdir, sizeof gitdir - 1) ? EINVAL
+			  : notes_resolve(notes->dir, line + sizeof gitdir - 1, &git);
 		free(line);
 		line = nullptr;
 	}
