@@ -1698,10 +1698,9 @@ static int
 mcp_req_open (struct mcp_req   *req,
               struct mcp_piece  key)
 {
-	if (req->task) {
-		buf_consume(&req->reply, buf_peek(&req->reply).len);
+	buf_clear(&req->reply);
+	if (req->task)
 		return mcp_req_put(req, &key, 1);
-	}
 	struct mcp_piece id[3] = {};
 	if (req->id) {
 		size_t len = 0;
@@ -1720,7 +1719,6 @@ mcp_req_open (struct mcp_req   *req,
 		id[2],
 		key,
 	};
-	buf_consume(&req->reply, buf_peek(&req->reply).len);
 	return mcp_req_put(req, p, array_size(p));
 }
 
@@ -2091,7 +2089,7 @@ mcp_req_notify (struct mcp_req *req,
 {
 	if (!mcp_req_notify_put(req, value, text, len, tool))
 		(void)mcp_req_write(req, buf_peek(&req->reply));
-	buf_consume(&req->reply, buf_peek(&req->reply).len);
+	buf_clear(&req->reply);
 	req->noted = req->mcp->loop->now;
 	req->next_note = value + 1;
 }
@@ -3101,7 +3099,7 @@ mcp_req_detach (struct mcp_req         *req,
 	e = e ? e : req->sse ? mcp_req_put(req, &FRAG("\n\n"), 1)
 	          : s->ops->head(s, 200, SPAN(JSON_FIELD), buf_peek(&req->reply).len);
 	e = e ? e : mcp_req_write(req, buf_peek(&req->reply));
-	buf_consume(&req->reply, buf_peek(&req->reply).len);
+	buf_clear(&req->reply);
 	if (e) {
 		ledger_end(mcp->st->ledger, task, LEDGER_CANCELLED);
 		loop_forget(mcp->loop, task->who);

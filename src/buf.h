@@ -189,6 +189,13 @@ buf_consume (struct buf *buf,
 		buf->head = buf->tail = 0;
 }
 
+/** Drop all readable bytes, rewinding the buffer. */
+static inline void
+buf_clear (struct buf *buf)
+{
+	buf->head = buf->tail = 0;
+}
+
 /**
  * Drop @p len readable bytes that begin @p off bytes after the head, moving
  * the readable bytes after them down: it costs as many bytes as follow them.

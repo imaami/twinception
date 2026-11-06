@@ -649,7 +649,7 @@ home_job_say (struct job *job,
               char const *fmt,
               ...)
 {
-	buf_consume(&job->result, buf_peek(&job->result).len);
+	buf_clear(&job->result);
 	va_list ap;
 	va_start(ap, fmt);
 	int e = buf_vprintf(&job->result, fmt, ap);
@@ -2285,11 +2285,11 @@ home_preempt (struct home *home,
 	struct home_metrics *m = home->metrics;
 	home_abort(home, job);
 	home_unstream(home, job);
-	buf_consume(&job->result, buf_peek(&job->result).len);
+	buf_clear(&job->result);
 	for (size_t k = 0; k < JOB_CALLS; ++k)
-		buf_consume(&job->calls[k], buf_peek(&job->calls[k]).len);
-	buf_consume(&job->thought, buf_peek(&job->thought).len);
-	buf_consume(&job->replay, buf_peek(&job->replay).len);
+		buf_clear(&job->calls[k]);
+	buf_clear(&job->thought);
+	buf_clear(&job->replay);
 	home_job_reset(job, PREEMPTED | READY);
 	hist_add(&m->running, -1ULL);
 	hist_add(&m->background, -1ULL);
