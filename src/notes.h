@@ -29,7 +29,6 @@ struct notes_revision;
 enum {
 	NOTES_NAME = 255,      /**< bytes of the name of a note, at most */
 	NOTES_MAX  = 16 << 20, /**< bytes of the output of git, at most */
-	NOTES_ID   = 32,       /**< hexadecimal digits of the id of a thread */
 	NOTES_REPO = 128,      /**< bytes of a full notebook branch ref, NUL included */
 	NOTES_ARGV = 40,       /**< elements of the argv of git, nullptr
 	                            included */
@@ -143,17 +142,6 @@ notes_directory (struct notes const *notes);
 /** The configured writer identity, shared by this instance's notebooks. */
 extern char const *
 notes_writer (struct notes const *notes);
-
-/** Writes the id of a new thread, 128 random bits as hexadecimal digits,
- *  to @p id, with a NUL after it. Returns 0, or the error number if the
- *  kernel gave no random bits.
- */
-extern int
-notes_id (char id[NOTES_ID + 1]);
-
-/** Returns true if @p id is the id of a thread. */
-extern bool
-notes_is_id (struct cstr_view id);
 
 /** Writes the caller's server-selected branch ref to @p repo. */
 extern void

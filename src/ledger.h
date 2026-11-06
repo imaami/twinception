@@ -54,11 +54,11 @@
 #include "buf.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "hexid.h"
 #include "list.h"
 #include "loop.h"
 
 enum {
-	LEDGER_ID      = 32,    /**< hex digits of an id */
 	LEDGER_MAX     = 1024,  /**< records in the ledger at most */
 	LEDGER_KEEP    = 3600,  /**< seconds from the end of a record's call to
 	                             the record's removal */
@@ -91,7 +91,7 @@ enum ledger_status {
 };
 
 /** What made a record. */
-enum ledger_kind : uint16_t {
+enum ledger_kind : uint8_t {
 	LEDGER_TASK,  /**< a tool call that became a task of MCP's tasks
 	                   extension */
 	LEDGER_JOB,   /**< a client's background wrapper or detached ask call */
@@ -201,7 +201,7 @@ struct ledger_task {
 	uint16_t             tool;       /**< the id of the call's tool
 	                                      (src/registry.h) */
 	enum ledger_kind     kind;
-	char                 id[LEDGER_ID];
+	struct hexid         id;
 };
 
 /** An empty ledger; nullptr, with the error in @p *e, if it cannot be made. */
@@ -245,34 +245,34 @@ ledger_open (struct ledger    *ledger,
              int              *e);
 
 /** Restore a record from durable storage, copying @p id and @p result.
- *  The id must contain LEDGER_ID lowercase hexadecimal bytes. Preserves
- *  @p created and @p ended, in CLOCK_REALTIME ns; for an ended record, an
- *  @p ended of 0 uses the current time. An ended record gets a fresh
- *  LEDGER_KEEP retention period. A working record requires @p loop and
- *  @p fn, and an empty result and an @p ended of 0. An ended record needs
- *  neither a loop nor a cancel handler; a cancelled record has no result.
+ *  Preserves @p created and @p ended, in CLOCK_REALTIME ns; for an ended
+ *  record, an @p ended of 0 uses the current time. An ended record gets a
+ *  fresh LEDGER_KEEP retention period. A working record requires @p loop
+ *  and @p fn, and an empty result and an @p ended of 0. An ended record
+ *  needs neither a loop nor a cancel handler; a cancelled record has no
+ *  result.
  *
  *  Returns a reference for the caller, as ledger_open() does. Its limits
  *  and errors apply, except the running limit applies only to working
  *  jobs. EEXIST means the id is already in the ledger, under any owner:
  *  the existing record is never replaced or changed. EINVAL also covers
- *  malformed ids, statuses and result spans. No file I/O is performed.
+ *  no id, malformed statuses and result spans. No file I/O is performed.
  */
 extern struct ledger_task *
-ledger_restore (struct ledger     *ledger,
-                uint64_t           owner,
-                enum ledger_kind   kind,
-                uint16_t           tool,
-                struct span        id,
-                uint64_t           created,
-                uint64_t           ended,
-                enum ledger_status status,
-                struct span        result,
-                struct loop       *loop,
-                struct handle      who,
-                void             (*fn) (struct loop *loop,
-                                        struct msg  *msg),
-                int               *e);
+ledger_restore (struct ledger      *ledger,
+                uint64_t            owner,
+                enum ledger_kind    kind,
+                uint16_t            tool,
+                struct hexid const *id,
+                uint64_t            created,
+                uint64_t            ended,
+                enum ledger_status  status,
+                struct span         result,
+                struct loop        *loop,
+                struct handle       who,
+                void              (*fn) (struct loop *loop,
+                                         struct msg  *msg),
+                int                *e);
 
 /** Makes room for the result of the call of @p task, of @p len bytes.
  *  Returns 0, or ENOMEM.
@@ -301,25 +301,24 @@ ledger_end (struct ledger      *ledger,
             struct ledger_task *task,
             enum ledger_status  status);
 
-/** The record with the id @p id, of @p len bytes, as a reference, if the
- *  record is in the ledger and its owner is @p owner; else nullptr.
+/** The record with the id @p id, as a reference, if the record is in the
+ *  ledger and its owner is @p owner; else nullptr.
  */
 extern struct ledger_task *
-ledger_find (struct ledger *ledger,
-             uint64_t       owner,
-             char const    *id,
-             size_t         len);
+ledger_find (struct ledger      *ledger,
+             uint64_t            owner,
+             struct hexid const *id);
 
 /** Remove an ended record owned by @p owner, dropping the ledger's
  *  reference. Other references remain valid. Returns 0, ENOENT if the
  *  id is absent or belongs to another owner, EBUSY if its call still
- *  works, or EINVAL for a null pointer or an id length other than
- *  LEDGER_ID. Does not remove or cancel a working call.
+ *  works, or EINVAL for a null pointer or no id. Does not remove or cancel
+ *  a working call.
  */
 extern int
-ledger_remove (struct ledger *ledger,
-               uint64_t       owner,
-               struct span    id);
+ledger_remove (struct ledger      *ledger,
+               uint64_t            owner,
+               struct hexid const *id);
 
 /** Ask to cancel the task: its call's loop gets the cancel, once, if the
  *  task works.
@@ -438,17 +437,17 @@ ledger_list (struct ledger      *ledger,
  * the ended records of the wait's owner, the oldest first, at most
  * LEDGER_MINE, and the owner's fired timers, by number, which the ledger
  * then removes. If @p n is 0, the records are those that no one has read.
- * Otherwise they are those whose ids are among the @p n ids of LEDGER_ID
- * bytes each at @p ids, read or not. Marks the records read, so no other
- * ledger_tell() returns an unread record or a timer that this call returns.
- * @p out->due is the time of the first timer that has not fired. Returns
- * 0, or EINVAL for a null pointer or a wait out of the ledger, @p out then
- * empty if it is not nullptr. ledger_look_put() drops the references.
+ * Otherwise they are those whose ids are among the @p n ids at @p ids,
+ * read or not. Marks the records read, so no other ledger_tell() returns
+ * an unread record or a timer that this call returns. @p out->due is the
+ * time of the first timer that has not fired. Returns 0, or EINVAL for a
+ * null pointer or a wait out of the ledger, @p out then empty if it is
+ * not nullptr. ledger_look_put() drops the references.
  */
 extern int
 ledger_tell (struct ledger      *ledger,
              struct ledger_wait *wait,
-             char const         *ids,
+             struct hexid const *ids,
              size_t              n,
              struct ledger_look *out);
 

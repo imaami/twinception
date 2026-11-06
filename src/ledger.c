@@ -21,7 +21,6 @@
 enum {
 	BUCKETS       = LEDGER_MAX,     /* the table's, a power of two */
 	OWNER_BUCKETS = 256,            /* the owners' table's, likewise */
-	BITS          = LEDGER_ID / 2,  /* random bytes of an id */
 };
 
 static_assert(!(BUCKETS & (BUCKETS - 1)), "a mask picks the bucket");
@@ -248,14 +247,14 @@ ledger_owner_timers (struct ledger_owner *o,
 	}
 }
 
-/* Whether @p id is among the @p n ids of LEDGER_ID bytes each at @p ids. */
+/* Whether @p id is among the @p n ids at @p ids. */
 static bool
-ledger_listed (char const *ids,
-               size_t      n,
-               char const *id)
+ledger_listed (struct hexid const *ids,
+               size_t              n,
+               struct hexid const *id)
 {
 	for (size_t i = 0; i < n; ++i)
-		if (!memcmp(ids + i * LEDGER_ID, id, LEDGER_ID))
+		if (hexid_equal(&ids[i], id))
 			return true;
 	return false;
 }
@@ -266,7 +265,7 @@ ledger_listed (char const *ids,
  */
 static void
 ledger_owner_tell (struct ledger_owner *o,
-                   char const          *ids,
+                   struct hexid const  *ids,
                    size_t               n,
                    struct ledger_look  *out)
 {
@@ -274,7 +273,7 @@ ledger_owner_tell (struct ledger_owner *o,
 	     pos != &o->records && out->n_tasks < LEDGER_MINE; pos = pos->next) {
 		struct ledger_task *t = container_of(pos, struct ledger_task, mine);
 		if (atomic_load_explicit(&t->status, memory_order_relaxed) == LEDGER_WORKING ||
-		    (n && !ledger_listed(ids, n, t->id)))
+		    (n && !ledger_listed(ids, n, &t->id)))
 			continue;
 		if (atomic_exchange_explicit(&t->told, 1, memory_order_relaxed) && !n)
 			continue;
@@ -516,41 +515,39 @@ ledger_open (struct ledger    *ledger,
 		*e = EINVAL;
 		return nullptr;
 	}
-	unsigned char id[LEDGER_ID];
-	if ((*e = util_random_hex((char *)id, BITS)))
+	struct hexid id;
+	if ((*e = hexid_make(&id)))
 		return nullptr;
-	return ledger_restore(ledger, owner, kind, tool, (struct span){ id, sizeof id },
-	                      clk_realtime_ns(), 0, LEDGER_WORKING, (struct span){}, loop, who,
-	                      fn, e);
+	return ledger_restore(ledger, owner, kind, tool, &id, clk_realtime_ns(), 0,
+	                      LEDGER_WORKING, (struct span){}, loop, who, fn, e);
 }
 
 struct ledger_task *
-ledger_restore (struct ledger     *ledger,
-                uint64_t           owner,
-                enum ledger_kind   kind,
-                uint16_t           tool,
-                struct span        id,
-                uint64_t           created,
-                uint64_t           ended,
-                enum ledger_status status,
-                struct span        result,
-                struct loop       *loop,
-                struct handle      who,
-                void             (*fn) (struct loop *loop,
-                                        struct msg  *msg),
-                int               *e)
+ledger_restore (struct ledger      *ledger,
+                uint64_t            owner,
+                enum ledger_kind    kind,
+                uint16_t            tool,
+                struct hexid const *id,
+                uint64_t            created,
+                uint64_t            ended,
+                enum ledger_status  status,
+                struct span         result,
+                struct loop        *loop,
+                struct handle       who,
+                void              (*fn) (struct loop *loop,
+                                         struct msg  *msg),
+                int                *e)
 {
 	if (!e)
 		return nullptr;
 	*e = EINVAL;
 	bool working = status == LEDGER_WORKING;
-	if (!ledger || !id.ptr || id.len != LEDGER_ID ||
+	if (!ledger || !id || !*id->hex ||
 	    (kind != LEDGER_TASK && kind != LEDGER_JOB) ||
 	    status < LEDGER_WORKING || status >= LEDGER_STATUSES ||
 	    (result.len && !result.ptr) ||
 	    (working && (!loop || !fn || result.len || ended)) ||
-	    (status == LEDGER_CANCELLED && result.len) ||
-	    !util_is_hex((char const *)id.ptr, id.len))
+	    (status == LEDGER_CANCELLED && result.len))
 		return nullptr;
 	struct ledger_task *t = malloc(sizeof *t);
 	if (!t) {
@@ -580,8 +577,8 @@ ledger_restore (struct ledger     *ledger,
 	atomic_init(&t->told, 0);
 	t->tool = tool;
 	t->kind = kind;
-	memcpy(t->id, id.ptr, LEDGER_ID);
-	t->hash = util_hash(0, t->id, LEDGER_ID);
+	t->id = *id;
+	t->hash = util_hash(0, t->id.hex, HEXID_DIGITS);
 
 	struct ledger_metrics *m = &ledger->metrics;
 	struct ledger_task *gone = nullptr;
@@ -589,7 +586,7 @@ ledger_restore (struct ledger     *ledger,
 	struct ledger_wait *hits = nullptr;
 	pthread_mutex_lock(&ledger->lock);
 	struct ledger_task *old = ledger->buckets[t->hash & (BUCKETS - 1)];
-	while (old && (old->hash != t->hash || memcmp(old->id, t->id, LEDGER_ID)))
+	while (old && (old->hash != t->hash || !hexid_equal(&old->id, &t->id)))
 		old = old->next;
 	*e = EEXIST;
 	if (!old) {
@@ -675,18 +672,17 @@ ledger_end (struct ledger      *ledger,
 }
 
 struct ledger_task *
-ledger_find (struct ledger *ledger,
-             uint64_t       owner,
-             char const    *id,
-             size_t         len)
+ledger_find (struct ledger      *ledger,
+             uint64_t            owner,
+             struct hexid const *id)
 {
-	if (!ledger || !id || len != LEDGER_ID)
+	if (!ledger || !id)
 		return nullptr;
-	uint64_t hash = util_hash(0, id, len);
+	uint64_t hash = util_hash(0, id->hex, HEXID_DIGITS);
 	pthread_mutex_lock(&ledger->lock);
 	struct ledger_task *gone = ledger_sweep(ledger, nullptr, false);
 	struct ledger_task *t = ledger->buckets[hash & (BUCKETS - 1)];
-	while (t && (t->hash != hash || memcmp(t->id, id, len) || t->owner->key != owner))
+	while (t && (t->hash != hash || !hexid_equal(&t->id, id) || t->owner->key != owner))
 		t = t->next;
 	if (t)
 		atomic_fetch_add_explicit(&t->refs, 1, memory_order_relaxed);
@@ -696,16 +692,16 @@ ledger_find (struct ledger *ledger,
 }
 
 int
-ledger_remove (struct ledger *ledger,
-               uint64_t       owner,
-               struct span    id)
+ledger_remove (struct ledger      *ledger,
+               uint64_t            owner,
+               struct hexid const *id)
 {
-	if (!ledger || !id.ptr || id.len != LEDGER_ID)
+	if (!ledger || !id || !*id->hex)
 		return EINVAL;
-	uint64_t hash = util_hash(0, id.ptr, id.len);
+	uint64_t hash = util_hash(0, id->hex, HEXID_DIGITS);
 	pthread_mutex_lock(&ledger->lock);
 	struct ledger_task *t = ledger->buckets[hash & (BUCKETS - 1)];
-	while (t && (t->hash != hash || memcmp(t->id, id.ptr, id.len) || t->owner->key != owner))
+	while (t && (t->hash != hash || !hexid_equal(&t->id, id) || t->owner->key != owner))
 		t = t->next;
 	int e = !t ? ENOENT :
 	        atomic_load_explicit(&t->status, memory_order_relaxed) == LEDGER_WORKING ? EBUSY : 0;
@@ -940,7 +936,7 @@ ledger_list (struct ledger      *ledger,
 int
 ledger_tell (struct ledger      *ledger,
              struct ledger_wait *wait,
-             char const         *ids,
+             struct hexid const *ids,
              size_t              n,
              struct ledger_look *out)
 {

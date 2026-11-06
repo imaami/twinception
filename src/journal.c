@@ -61,7 +61,7 @@ struct journal_item {
 	uint64_t               offset;
 	uint32_t               turn;
 	uint8_t                operation;
-	char                   id[JOURNAL_ID + 1];
+	struct hexid           id;
 };
 
 /* The prefix of the participant's reasoning branch. */
@@ -78,26 +78,26 @@ enum {
 };
 
 struct journal_job {
-	uint64_t bytes; /* zero until a recovery checkpoint exists */
-	uint64_t touched;
-	uint64_t thought_seen;
-	uint32_t thought_turn;
-	int      thought_error;
-	int      error;   /* the error of a lost record; the job's later
-	                     appends fail with it */
-	char     id[JOURNAL_ID + 1];
-	bool     terminal;
-	bool     legacy;
+	uint64_t     bytes; /* zero until a recovery checkpoint exists */
+	uint64_t     touched;
+	uint64_t     thought_seen;
+	uint32_t     thought_turn;
+	int          thought_error;
+	int          error;   /* the error of a lost record; the job's later
+	                         appends fail with it */
+	struct hexid id;
+	bool         terminal;
+	bool         legacy;
 };
 
 struct journal_file {
-	uint64_t touched;
-	uint64_t size;
-	uint64_t committed_size;
-	uint32_t turn;
-	int      fd;
-	char     id[JOURNAL_ID + 1];
-	bool     committed;
+	uint64_t     touched;
+	uint64_t     size;
+	uint64_t     committed_size;
+	uint32_t     turn;
+	int          fd;
+	struct hexid id;
+	bool         committed;
 };
 
 struct journal {
@@ -132,12 +132,6 @@ struct journal {
 	struct oid             tip;
 	char                   ref[sizeof REF + UTIL_WORD_MAX];
 };
-
-static bool
-journal_id (char const *id)
-{
-	return id && util_is_hex(id, JOURNAL_ID) && !id[JOURNAL_ID];
-}
 
 static int
 journal_digest (struct journal      *j,
@@ -427,9 +421,9 @@ journal_record_read (struct journal         *j,
 		return ENOMEM;
 	r->sequence = util_be_get(header + 8, 8);
 	r->len = (size_t)length;
-	memcpy(r->id, header + 24, JOURNAL_ID);
 	memcpy(r->kind, header + 56, JOURNAL_KIND);
-	if (!journal_id(r->id) || !util_word_len(r->kind, JOURNAL_KIND)) {
+	if (hexid_init(&r->id, (struct cstr_view){ (char const *)header + 24, HEXID_DIGITS }) ||
+	    !util_word_len(r->kind, JOURNAL_KIND)) {
 		journal_records_destroy(&r);
 		return EILSEQ;
 	}
@@ -485,7 +479,7 @@ journal_existing (int         directory,
 static int
 journal_records_read (struct journal         *j,
                       int                     fd,
-                      char const             *id,
+                      struct hexid const     *id,
                       bool                    legacy,
                       struct journal_record **out)
 {
@@ -503,7 +497,7 @@ journal_records_read (struct journal         *j,
 			return EILSEQ;
 		}
 		sequence = r->sequence;
-		if ((id && strcmp(r->id, id)) || !journal_control_kind(r->kind)) {
+		if ((id && !hexid_equal(&r->id, id)) || !journal_control_kind(r->kind)) {
 			journal_records_destroy(&r);
 			continue;
 		}
@@ -540,11 +534,11 @@ journal_records_read (struct journal         *j,
 }
 
 static struct journal_job *
-journal_job_find (struct journal *j,
-                  char const     *id)
+journal_job_find (struct journal     *j,
+                  struct hexid const *id)
 {
 	for (size_t k = 0; k < array_size(j->jobs); ++k)
-		if (!strcmp(j->jobs[k].id, id))
+		if (hexid_equal(&j->jobs[k].id, id))
 			return &j->jobs[k];
 	return nullptr;
 }
@@ -569,7 +563,8 @@ journal_jobs_scan (struct journal *j)
 			e = errno;
 			break;
 		}
-		if (!journal_id(entry->d_name))
+		struct hexid id;
+		if (hexid_init(&id, cstr_view(entry->d_name)))
 			continue;
 		if (j->n_jobs == JOURNAL_JOBS) {
 			e = EFBIG;
@@ -586,11 +581,11 @@ journal_jobs_scan (struct journal *j)
 			e = EFBIG;
 		struct journal_record *records = nullptr;
 		if (!e)
-			e = journal_records_read(j, input, entry->d_name, false, &records);
+			e = journal_records_read(j, input, &id, false, &records);
 		util_close(&input);
 		if (!e) {
 			struct journal_job *job = &j->jobs[j->n_jobs++];
-			memcpy(job->id, entry->d_name, sizeof job->id);
+			job->id = id;
 			job->bytes = (uint64_t)st.st_size;
 			job->touched = st.st_mtim.tv_sec < 0 ? 0 : clk_ns(st.st_mtim);
 			for (struct journal_record *r = records; r; r = r->next) {
@@ -625,14 +620,14 @@ journal_checkpoint_space (struct journal     *j,
 		struct journal_job *oldest = nullptr;
 		for (size_t k = 0; k < array_size(j->jobs); ++k) {
 			struct journal_job *job = &j->jobs[k];
-			if (job != keep && *job->id && job->terminal && !job->legacy &&
+			if (job != keep && *job->id.hex && job->terminal && !job->legacy &&
 			    (!oldest || job->touched < oldest->touched))
 				oldest = job;
 		}
 		if (!oldest)
 			return ENOSPC;
 		if (oldest->bytes &&
-		    (unlinkat(j->jobs_fd, oldest->id, 0) || fsync(j->jobs_fd)))
+		    (unlinkat(j->jobs_fd, oldest->id.hex, 0) || fsync(j->jobs_fd)))
 			return errno;
 		j->recovery_bytes -= oldest->bytes;
 		--j->n_jobs;
@@ -642,9 +637,9 @@ journal_checkpoint_space (struct journal     *j,
 }
 
 static struct journal_job *
-journal_job_enter (struct journal *j,
-                   char const     *id,
-                   int            *e)
+journal_job_enter (struct journal     *j,
+                   struct hexid const *id,
+                   int                *e)
 {
 	struct journal_job *job = journal_job_find(j, id);
 	*e = job ? 0 : journal_checkpoint_space(j, nullptr, 0, true);
@@ -652,9 +647,9 @@ journal_job_enter (struct journal *j,
 		return job;
 	for (size_t k = 0; k < array_size(j->jobs); ++k) {
 		job = &j->jobs[k];
-		if (*job->id)
+		if (*job->id.hex)
 			continue;
-		memcpy(job->id, id, sizeof job->id);
+		job->id = *id;
 		++j->n_jobs;
 		return job;
 	}
@@ -672,7 +667,7 @@ journal_record_write (struct journal              *j,
 	memcpy(header, "ASKAIJ1\n", 8);
 	util_be_put(header + 8, sequence, 8);
 	util_be_put(header + 16, r->len, 8);
-	memcpy(header + 24, r->id, JOURNAL_ID);
+	memcpy(header + 24, r->id.hex, HEXID_DIGITS);
 	memcpy(header + 56, r->kind, JOURNAL_KIND);
 	int e = journal_digest(j, header, r->data, r->len, header + JOURNAL_SIGNED);
 	if (!e)
@@ -686,7 +681,7 @@ journal_checkpoint_write (struct journal        *j,
 {
 	if (!journal_control_kind(record->kind))
 		return EINVAL;
-	struct journal_job *job = journal_job_find(j, record->id);
+	struct journal_job *job = journal_job_find(j, &record->id);
 	bool state = !strcmp(record->kind, "state");
 	bool terminal = journal_terminal(record->kind);
 	/* A lost record leaves a gap in its job's checkpoint, so the job's
@@ -700,12 +695,12 @@ journal_checkpoint_write (struct journal        *j,
 	if (!state) {
 		if (job && job->bytes) {
 			int input = -1;
-			e = journal_existing(j->jobs_fd, record->id, &input);
+			e = journal_existing(j->jobs_fd, record->id.hex, &input);
 			if (!e)
-				e = journal_records_read(j, input, record->id, false, &records);
+				e = journal_records_read(j, input, &record->id, false, &records);
 			util_close(&input);
 		} else if (j->wal_fd >= 0) {
-			e = journal_records_read(j, j->wal_fd, record->id, true, &records);
+			e = journal_records_read(j, j->wal_fd, &record->id, true, &records);
 			legacy = records != nullptr;
 		}
 	}
@@ -718,7 +713,7 @@ journal_checkpoint_write (struct journal        *j,
 			if (!mark)
 				e = ENOMEM;
 			else {
-				memcpy(mark->id, record->id, sizeof mark->id);
+				mark->id = record->id;
 				memcpy(mark->kind, "legacy", sizeof "legacy");
 				mark->next = records;
 				records = mark;
@@ -763,12 +758,12 @@ journal_checkpoint_write (struct journal        *j,
 		e = errno;
 	if (fd >= 0 && close(fd) && !e)
 		e = errno;
-	if (!e && (renameat(j->jobs_fd, ".checkpoint.tmp", j->jobs_fd, record->id) ||
+	if (!e && (renameat(j->jobs_fd, ".checkpoint.tmp", j->jobs_fd, record->id.hex) ||
 	           fsync(j->jobs_fd)))
 		e = errno;
 	if (!e) {
 		if (!job)
-			job = journal_job_enter(j, record->id, &e);
+			job = journal_job_enter(j, &record->id, &e);
 		if (job) {
 			j->recovery_bytes = j->recovery_bytes - job->bytes + bytes;
 			job->bytes = bytes;
@@ -798,12 +793,12 @@ journal_load_records (struct journal      *j,
                       struct journal_item *item)
 {
 	int fd = -1;
-	int e = journal_existing(j->jobs_fd, item->id, &fd);
+	int e = journal_existing(j->jobs_fd, item->id.hex, &fd);
 	if (!e)
-		e = journal_records_read(j, fd, item->id, false, &item->record);
+		e = journal_records_read(j, fd, &item->id, false, &item->record);
 	util_close(&fd);
 	if (e == ENOENT)
-		e = j->wal_fd < 0 ? 0 : journal_records_read(j, j->wal_fd, item->id, true,
+		e = j->wal_fd < 0 ? 0 : journal_records_read(j, j->wal_fd, &item->id, true,
 		                                             &item->record);
 	return e;
 }
@@ -819,7 +814,7 @@ journal_thought_file (struct journal            *j,
 	struct journal_file *oldest = &j->files[0];
 	for (size_t k = 0; k < array_size(j->files); ++k) {
 		struct journal_file *file = &j->files[k];
-		if (file->fd >= 0 && file->turn == item->turn && !strcmp(file->id, item->id)) {
+		if (file->fd >= 0 && file->turn == item->turn && hexid_equal(&file->id, &item->id)) {
 			file->touched = ++j->clock;
 			*out = file;
 			return 0;
@@ -832,9 +827,9 @@ journal_thought_file (struct journal            *j,
 	bool append = item->operation == JOURNAL_THOUGHT_PUT;
 	int e = 0;
 	if (append)
-		e = journal_directory(j->thoughts_fd, item->id, &directory);
+		e = journal_directory(j->thoughts_fd, item->id.hex, &directory);
 	else {
-		directory = openat(j->thoughts_fd, item->id,
+		directory = openat(j->thoughts_fd, item->id.hex,
 		                   O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
 		if (directory < 0)
 			e = errno;
@@ -865,7 +860,7 @@ journal_thought_file (struct journal            *j,
 	oldest->committed_size = 0;
 	oldest->turn = item->turn;
 	oldest->touched = ++j->clock;
-	memcpy(oldest->id, item->id, sizeof oldest->id);
+	oldest->id = item->id;
 	*out = oldest;
 	return 0;
 }
@@ -904,7 +899,7 @@ journal_thought_put (struct journal            *j,
                      struct journal_item const *item)
 {
 	int e = 0;
-	struct journal_job *job = journal_job_enter(j, item->id, &e);
+	struct journal_job *job = journal_job_enter(j, &item->id, &e);
 	if (!job)
 		return e;
 	bool begin = !item->offset && !item->record->len;
@@ -926,7 +921,7 @@ static int
 journal_thought_commit (struct journal            *j,
                         struct journal_item const *item)
 {
-	struct journal_job *job = journal_job_find(j, item->id);
+	struct journal_job *job = journal_job_find(j, &item->id);
 	if (job && job->thought_turn == item->turn && job->thought_error)
 		return job->thought_error;
 	struct journal_file *file = nullptr;
@@ -949,7 +944,7 @@ journal_thought_commit (struct journal            *j,
 	free(out);
 	char path[96];
 	int n = snprintf(path, sizeof path, "reasoning/%.2s/%s/%" PRIu32 ".txt",
-	                 item->id, item->id, item->turn);
+	                 item->id.hex, item->id.hex, item->turn);
 	if (!e && (n < 0 || n >= (int)sizeof path))
 		e = EOVERFLOW;
 	if (!e && oid_len(&j->tip)) {
@@ -1093,7 +1088,7 @@ journal_thread (void *arg)
 			e = journal_thought_put(j, item);
 		else if (!(e = journal_thought_commit(j, item)) &&
 		         item->operation == JOURNAL_THOUGHT_FINISH) {
-			struct journal_job *job = journal_job_find(j, item->id);
+			struct journal_job *job = journal_job_find(j, &item->id);
 			if (job && !job->bytes)
 				job->terminal = true;
 		}
@@ -1135,22 +1130,22 @@ journal_enqueue (struct journal      *j,
 }
 
 static int
-journal_submit (struct journal  *j,
-                char const      *id,
-                char const      *kind,
-                uint32_t         turn,
-                uint64_t         offset,
-                uint8_t          operation,
-                void const      *data,
-                size_t           len,
-                struct loop     *loop,
-                journal_done_cb *done,
-                void            *arg)
+journal_submit (struct journal     *j,
+                struct hexid const *id,
+                char const         *kind,
+                uint32_t            turn,
+                uint64_t            offset,
+                uint8_t             operation,
+                void const         *data,
+                size_t              len,
+                struct loop        *loop,
+                journal_done_cb    *done,
+                void               *arg)
 {
 	if (!j)
 		return 0;
 	size_t const kind_len = util_word_len(kind, JOURNAL_KIND);
-	if (!journal_id(id) || !kind_len || (len && !data) || (!!loop != !!done))
+	if (!id || !*id->hex || !kind_len || (len && !data) || (!!loop != !!done))
 		return EINVAL;
 	if (len > JOURNAL_RECORD_MAX)
 		return EFBIG;
@@ -1170,9 +1165,9 @@ journal_submit (struct journal  *j,
 	item->operation = operation;
 	item->turn = turn;
 	item->offset = offset;
-	memcpy(item->id, id, sizeof item->id);
+	item->id = *id;
 	item->record->len = len;
-	memcpy(item->record->id, id, JOURNAL_ID + 1);
+	item->record->id = *id;
 	memcpy(item->record->kind, kind, kind_len);
 	if (len)
 		memcpy(item->record->data, data, len);
@@ -1183,29 +1178,29 @@ journal_submit (struct journal  *j,
 }
 
 int
-journal_put (struct journal  *j,
-             char const      *id,
-             char const      *kind,
-             void const      *data,
-             size_t           len,
-             struct loop     *loop,
-             journal_done_cb *done,
-             void            *arg)
+journal_put (struct journal     *j,
+             struct hexid const *id,
+             char const         *kind,
+             void const         *data,
+             size_t              len,
+             struct loop        *loop,
+             journal_done_cb    *done,
+             void               *arg)
 {
 	return journal_submit(j, id, kind, 0, 0, JOURNAL_CONTROL_PUT,
 	                      data, len, loop, done, arg);
 }
 
 int
-journal_thought (struct journal  *j,
-                 char const      *id,
-                 uint32_t         turn,
-                 uint64_t         offset,
-                 void const      *data,
-                 size_t           len,
-                 struct loop     *loop,
-                 journal_done_cb *done,
-                 void            *arg)
+journal_thought (struct journal     *j,
+                 struct hexid const *id,
+                 uint32_t            turn,
+                 uint64_t            offset,
+                 void const         *data,
+                 size_t              len,
+                 struct loop        *loop,
+                 journal_done_cb    *done,
+                 void               *arg)
 {
 	if (!turn)
 		return EINVAL;
@@ -1214,13 +1209,13 @@ journal_thought (struct journal  *j,
 }
 
 int
-journal_thought_end (struct journal  *j,
-                     char const      *id,
-                     uint32_t         turn,
-                     bool             final,
-                     struct loop     *loop,
-                     journal_done_cb *done,
-                     void            *arg)
+journal_thought_end (struct journal     *j,
+                     struct hexid const *id,
+                     uint32_t            turn,
+                     bool                final,
+                     struct loop        *loop,
+                     journal_done_cb    *done,
+                     void               *arg)
 {
 	if (!turn)
 		return EINVAL;
@@ -1230,13 +1225,13 @@ journal_thought_end (struct journal  *j,
 }
 
 int
-journal_load_current (struct journal  *j,
-                      char const      *id,
-                      struct loop     *loop,
-                      journal_load_cb *done,
-                      void            *arg)
+journal_load_current (struct journal     *j,
+                      struct hexid const *id,
+                      struct loop        *loop,
+                      journal_load_cb    *done,
+                      void               *arg)
 {
-	if (!j || !loop || !done || !journal_id(id))
+	if (!j || !loop || !done || !id || !*id->hex)
 		return EINVAL;
 	struct journal_item *item = calloc(1, sizeof *item);
 	if (!item)
@@ -1246,7 +1241,7 @@ journal_load_current (struct journal  *j,
 	item->loaded = done;
 	item->arg = arg;
 	item->bytes = sizeof *item;
-	memcpy(item->id, id, JOURNAL_ID + 1);
+	item->id = *id;
 	int e = journal_enqueue(j, item);
 	if (e)
 		journal_item_destroy(&item);

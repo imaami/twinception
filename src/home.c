@@ -1171,7 +1171,7 @@ home_metadata (struct home     *home,
 	if (!meta)
 		return ENOMEM;
 	struct cstr_view const json = jb_wire(meta);
-	int e = json.data ? journal_put(job->journal, job->archive, "meta", json.data, json.len,
+	int e = json.data ? journal_put(job->journal, &job->archive, "meta", json.data, json.len,
 	                                done ? home->loop : nullptr, done, done ? job : nullptr)
 	                  : ENOMEM;
 	json_object_put(meta);
@@ -1191,7 +1191,7 @@ home_connect (struct home *home,
 	if (!job->journal)
 		return home_open(home, job, resume);
 	if (resume) {
-		int e = journal_thought(job->journal, job->archive, job->archive_turn,
+		int e = journal_thought(job->journal, &job->archive, job->archive_turn,
 		                        0, nullptr, 0, home->loop, home_journal_done, job);
 		if (e)
 			return e;
@@ -1589,7 +1589,7 @@ home_thought_end (struct home *home,
 	struct home_recovery *r = job->recovery;
 	if (!job->journal || r->thought_final || (!final && !r->thought_open))
 		return 0;
-	int e = journal_thought_end(job->journal, job->archive, job->archive_turn,
+	int e = journal_thought_end(job->journal, &job->archive, job->archive_turn,
 	                            final, home->loop, home_journal_done, job);
 	if (e) {
 		r->error = e;
@@ -1625,7 +1625,7 @@ home_journal_thought (struct home      *home,
 {
 	struct home_recovery *r = job->recovery;
 	int e = text.len > UINT64_MAX - r->thought_offset ? EOVERFLOW :
-	        journal_thought(job->journal, job->archive, job->archive_turn,
+	        journal_thought(job->journal, &job->archive, job->archive_turn,
 	                        r->thought_offset, text.data, text.len, home->loop,
 	                        home_journal_done, job);
 	if (e) {

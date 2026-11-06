@@ -18,6 +18,7 @@
 #include "cstr_view.h"
 #include "datauri.h"
 #include "dstr.h"
+#include "hexid.h"
 #include "jb.h"
 #include "list.h"
 #include "log.h"
@@ -1340,8 +1341,9 @@ notes_tool_step (struct mcp_slot *slot)
 	 : notes_tool_fetch_step(call->fetch)->out)(slot);
 }
 
-static_assert(TOOL_TEXT_MAX == 4U << 20 && NOTES_NAME == 255, "update the texts in this file "
-              "that say 4 MiB or 255 bytes");
+static_assert(TOOL_TEXT_MAX == 4U << 20 && NOTES_NAME == 255 && HEXID_DIGITS == 32,
+              "update the texts in this file that say 4 MiB, 255 bytes or 32 hexadecimal "
+              "digits");
 
 /* The message for a file argument that is not a valid name. */
 static struct cstr_view const bad_name =
@@ -1593,7 +1595,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	}
 	if (call->side == NOTES_CLIENT) {
 		struct json_object *thread = jb_get(args, "thread");
-		if (thread && !notes_is_id(jb_view(thread))) {
+		if (thread && !hexid_valid(jb_view(thread))) {
 			mcp_slot_tell(slot, CSTR_VIEW("The optional thread must be 32 hexadecimal "
 			                              "digits. It does not select the notes "
 			                              "session."), TOOL_FAILED);

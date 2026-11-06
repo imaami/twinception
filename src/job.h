@@ -51,6 +51,7 @@
 
 #include "ai.h"
 #include "buf.h"
+#include "hexid.h"
 #include "jb.h"
 #include "list.h"
 #include "loop.h"
@@ -264,7 +265,7 @@ struct job {
 	char                   reason[42];  /**< home's: the answer's stop reason,
 	                                         longer than any the providers
 	                                         name */
-	char                   archive[33]; /**< the front's: transcript job id */
+	struct hexid           archive;     /**< the front's: transcript job id */
 };
 
 /** Home's handler of the messages to it (home.c). */
@@ -314,7 +315,7 @@ job_init (struct job  *job,
 	job->provider_done = false;
 	job->delta_pending = job->delta_ended = false;
 	job->reason[0] = '\0';
-	job->archive[0] = '\0';
+	job->archive = (struct hexid){};
 	atomic_init(&job->progress, 0);
 	atomic_init(&job->home_bits, 0);
 	atomic_init(&job->front_bits, 0);

@@ -307,19 +307,6 @@ notes_writer (struct notes const *notes)
 	return notes->participant;
 }
 
-int
-notes_id (char id[NOTES_ID + 1])
-{
-	id[NOTES_ID] = '\0';
-	return util_random_hex(id, NOTES_ID / 2);
-}
-
-bool
-notes_is_id (struct cstr_view id)
-{
-	return id.len == NOTES_ID && util_is_hex(id.data, id.len);
-}
-
 void
 notes_repo (struct notes const *notes,
             uint64_t            principal,

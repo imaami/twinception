@@ -16,11 +16,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "hexid.h"
+
 struct journal;
 struct loop;
 
 enum {
-	JOURNAL_ID         = 32,
 	JOURNAL_KIND       = 32,
 	JOURNAL_KEY        = 32,  /**< bytes of the principal key */
 	JOURNAL_RECORD_MAX = 16 << 20,
@@ -31,7 +32,7 @@ struct journal_record {
 	struct journal_record *next;
 	uint64_t               sequence;
 	size_t                 len;
-	char                   id[JOURNAL_ID + 1];
+	struct hexid           id;
 	char                   kind[JOURNAL_KIND + 1];
 	unsigned char          data[];
 };
@@ -93,14 +94,14 @@ journal_destroy (struct journal **p_journal);
  * A null journal disables recording and returns 0 (without a callback).
  */
 extern int
-journal_put (struct journal  *journal,
-             char const      *id,
-             char const      *kind,
-             void const      *data,
-             size_t           len,
-             struct loop     *loop,
-             journal_done_cb *done,
-             void            *arg);
+journal_put (struct journal     *journal,
+             struct hexid const *id,
+             char const         *kind,
+             void const         *data,
+             size_t              len,
+             struct loop        *loop,
+             journal_done_cb    *done,
+             void               *arg);
 
 /** Append decoded reasoning at its logical byte offset. Replayed bytes
  * must match the existing file; only a new suffix is appended. Completion
@@ -110,15 +111,15 @@ journal_put (struct journal  *journal,
  * it resets the verified prefix without creating or changing a file.
  */
 extern int
-journal_thought (struct journal  *journal,
-                 char const      *id,
-                 uint32_t         turn,
-                 uint64_t         offset,
-                 void const      *data,
-                 size_t           len,
-                 struct loop     *loop,
-                 journal_done_cb *done,
-                 void            *arg);
+journal_thought (struct journal     *journal,
+                 struct hexid const *id,
+                 uint32_t            turn,
+                 uint64_t            offset,
+                 void const         *data,
+                 size_t              len,
+                 struct loop        *loop,
+                 journal_done_cb    *done,
+                 void               *arg);
 
 /** Synchronize and commit this turn's reasoning if it changed. Unchanged
  * content is a successful asynchronous no-op. Intermediate boundaries leave
@@ -126,13 +127,13 @@ journal_thought (struct journal  *journal,
  * prefix to have been verified. Missing files are successful no-ops.
  */
 extern int
-journal_thought_end (struct journal  *journal,
-                     char const      *id,
-                     uint32_t         turn,
-                     bool             final,
-                     struct loop     *loop,
-                     journal_done_cb *done,
-                     void            *arg);
+journal_thought_end (struct journal     *journal,
+                     struct hexid const *id,
+                     uint32_t            turn,
+                     bool                final,
+                     struct loop        *loop,
+                     journal_done_cb    *done,
+                     void               *arg);
 
 /** Loads the latest turn's private recovery controls of the job @p id, in
  * sequence order, on the writer. Missing new-format snapshots fall back to
@@ -142,11 +143,11 @@ journal_thought_end (struct journal  *journal,
  * EFBIG instead of growing without bound.
  */
 extern int
-journal_load_current (struct journal  *journal,
-                      char const      *id,
-                      struct loop     *loop,
-                      journal_load_cb *done,
-                      void            *arg);
+journal_load_current (struct journal     *journal,
+                      struct hexid const *id,
+                      struct loop        *loop,
+                      journal_load_cb    *done,
+                      void               *arg);
 
 extern void
 journal_records_destroy (struct journal_record **p_records);
