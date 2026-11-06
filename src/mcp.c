@@ -8027,14 +8027,11 @@ mcp_tool_definition (void const *service)
 		props = jb_set_or_free(props, "job", schema_property("string",
 			"The job id returned by this tool. Give job instead of prompt, "
 			"system or thread to check its status or read its completed result."));
-		props = jb_set_or_free(props, "action", jb_object(
-			"type", json_object_new_string("string"),
-			"enum", schema_names(actions, array_size(actions)),
-			"default", json_object_new_string("result"),
-			"description", json_object_new_string(
-				"With job: result checks its status or returns its completed "
-				"answer; cancel stops the job. Omit action to use result."),
-			nullptr));
+		props = jb_set_or_free(props, "action", jb_set_or_free(schema_enum(
+			schema_names(actions, array_size(actions)),
+			"With job: result checks its status or returns its completed "
+			"answer; cancel stops the job. Omit action to use result."),
+			"default", json_object_new_string("result")));
 	}
 	return jb_object(
 		"name", json_object_new_string(st->tool->name),

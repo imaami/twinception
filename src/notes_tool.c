@@ -1705,30 +1705,23 @@ notes_tool_schema (struct notes_tool const *tool,
 		if (files || !(notes_tool_actions[i].flags & NOTE_UPLOAD))
 			actions = jb_push_or_free(actions, jb_string(notes_tool_actions[i].name));
 	struct json_object *props = jb_object(
-		"action", jb_object(
-			"type", json_object_new_string("string"),
-			"enum", actions,
-			"description", schema_text3(
-				"add a note, replace an existing own note, list current files "
-				"with their byte sizes and blob ids, show history oldest first "
-				"with commit IDs and messages (line counts are lines added by each change), "
-				"read a note, "
-				"diff two versions, or restore an old version in a new own commit "
-				"unless the note already has its bytes. "
-				"To recover lost text: history with file, diff with file and from, then "
-				"read with revision for selected text or restore with revision for the whole file. "
-				"Use copy to import a note into yours, or discover all session notebooks with "
-				"notebooks.", files ? " attach gives a note as a file." : "", ""),
-			nullptr),
-		"file", jb_object(
-			"type", json_object_new_string("string"),
-			"description", schema_text3(
-				"For add, replace, restore, read, diff", files ? ", copy and attach" : " and copy",
-				": the file name of the note, at most 255 bytes. It can have "
-				"directories, such as findings/locks.md. Its extension, such "
-				"as .md or .txt, shows the format of the text. Optional for history "
-				"to show only changes to that exact file name."),
-			nullptr),
+		"action", jb_set_or_free(schema_enum(actions, nullptr), "description", schema_text3(
+			"add a note, replace an existing own note, list current files "
+			"with their byte sizes and blob ids, show history oldest first "
+			"with commit IDs and messages (line counts are lines added by each change), "
+			"read a note, "
+			"diff two versions, or restore an old version in a new own commit "
+			"unless the note already has its bytes. "
+			"To recover lost text: history with file, diff with file and from, then "
+			"read with revision for selected text or restore with revision for the whole file. "
+			"Use copy to import a note into yours, or discover all session notebooks with "
+			"notebooks.", files ? " attach gives a note as a file." : "", "")),
+		"file", jb_set_or_free(schema_property("string", nullptr), "description", schema_text3(
+			"For add, replace, restore, read, diff", files ? ", copy and attach" : " and copy",
+			": the file name of the note, at most 255 bytes. It can have "
+			"directories, such as findings/locks.md. Its extension, such "
+			"as .md or .txt, shows the format of the text. Optional for history "
+			"to show only changes to that exact file name.")),
 		"revision", schema_property("string",
 			"For read: full commit ID from the selected notebook's history, "
 			"or current (default). Required for restore, which copies the exact "
@@ -1750,15 +1743,12 @@ notes_tool_schema (struct notes_tool const *tool,
 		"offset", schema_count(0,
 			"For list, history, notebooks, read and diff: the byte of the output "
 			"to start from, to read on past where it was cut."),
-		"notebook", jb_object(
-			"type", json_object_new_string("string"),
-			"description", schema_text3(
-				"For list, history, read, diff and copy", files ? ", and attach" : "",
-				": own (default), or a participant/principal/side selector "
-				"from action notebooks. That action identifies your writable "
-				"notebook even before your first note. For copy, explicitly "
-				"select the source. add, replace and restore write only your own notebook."),
-			nullptr),
+		"notebook", jb_set_or_free(schema_property("string", nullptr), "description", schema_text3(
+			"For list, history, read, diff and copy", files ? ", and attach" : "",
+			": own (default), or a participant/principal/side selector "
+			"from action notebooks. That action identifies your writable "
+			"notebook even before your first note. For copy, explicitly "
+			"select the source. add, replace and restore write only your own notebook.")),
 		nullptr);
 	if (side == NOTES_CLIENT) {
 		/* The client program, not the model, fills in content with a
