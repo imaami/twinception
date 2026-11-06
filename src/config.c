@@ -891,8 +891,7 @@ config_apply (struct config *cfg,
 		break;
 	}
 	case 'u':
-		if (strncmp(arg, "http://", sizeof "http://" - 1) &&
-		    strncmp(arg, "https://", sizeof "https://" - 1))
+		if (!util_url_scheme(cstr_view(arg)))
 			return config_complain(cfg, where, "not an http(s) URL: %s", arg);
 		ep->url = arg;
 		break;

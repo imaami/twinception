@@ -347,6 +347,24 @@ util_concat (char const *a,
 	return s;
 }
 
+/** Returns the length of the scheme of @p url with its "://", 7 for http
+ *  and 8 for https, if more follows it and each byte of @p url is printable
+ *  ASCII and not a space; 0 otherwise.
+ */
+static inline size_t
+util_url_scheme (struct cstr_view url)
+{
+	size_t const scheme = cstr_view_starts(url, CSTR_VIEW("http://")) ? sizeof "http://" - 1
+	                    : cstr_view_starts(url, CSTR_VIEW("https://")) ? sizeof "https://" - 1
+	                    : 0;
+	if (!scheme || scheme == url.len)
+		return 0;
+	for (size_t i = 0; i < url.len; ++i)
+		if ((unsigned char)url.data[i] <= ' ' || (unsigned char)url.data[i] > '~')
+			return 0;
+	return scheme;
+}
+
 /** The part of @p url that a log shows after its scheme: the rest of the
  *  URL after its user name and password, if it has them. Stores the length
  *  of the scheme and its "://" in @p *scheme.

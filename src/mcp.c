@@ -3567,8 +3567,7 @@ mcp_slot_fetch (struct mcp_slot          *slot,
 		if (accept_len - 1 >= WEB_ACCEPT_MAX)
 			return EINVAL;
 	}
-	size_t scheme = cstr_view_starts(url, CSTR_VIEW("http://")) ? sizeof "http://" - 1
-	              : cstr_view_starts(url, CSTR_VIEW("https://")) ? sizeof "https://" - 1 : 0;
+	size_t scheme = util_url_scheme(url);
 	/* The authority ends at the first '/', '?' or '#'. A user name or a
 	 * password in it ends in '@'. For a URL that is too long, authority
 	 * is 0, and the URL is refused. */
@@ -3578,9 +3577,6 @@ mcp_slot_fetch (struct mcp_slot          *slot,
 	    request->body.len > WEB_SEND_MAX || request->max - 1 >= WEB_BODY_MAX ||
 	    request->timeout - 1 >= WEB_TIMEOUT_MAX || request->keep > WEB_KEEP_MAX)
 		return EINVAL;
-	for (size_t i = 0; i < url.len; ++i)
-		if ((unsigned char)url.data[i] <= ' ' || (unsigned char)url.data[i] > '~')
-			return EINVAL;
 	for (size_t i = 0; i < accept_len; ++i)
 		if ((unsigned char)accept[i] < ' ' || (unsigned char)accept[i] > '~')
 			return EINVAL;

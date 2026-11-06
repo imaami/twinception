@@ -718,26 +718,6 @@ godbolt_or (struct cstr_view t,
 	return t.len ? t : otherwise;
 }
 
-/* Returns the length of the scheme of the URL @p t with its "://", which
- * is 7 for http and 8 for https. Returns 0 for another scheme, for a URL
- * that ends after its scheme, and for a URL with a byte that is not
- * printable ASCII or is a space.
- */
-static size_t
-godbolt_scheme (struct cstr_view t)
-{
-	struct cstr_view const http = CSTR_VIEW("http://");
-	struct cstr_view const https = CSTR_VIEW("https://");
-	size_t const scheme = cstr_view_starts(t, http) ? http.len
-	                    : cstr_view_starts(t, https) ? https.len : 0;
-	if (!scheme || scheme == t.len)
-		return 0;
-	for (size_t i = 0; i < t.len; ++i)
-		if (t.data[i] <= ' ' || t.data[i] > '~')
-			return 0;
-	return scheme;
-}
-
 /* Returns the member @p name of @p obj, or nullptr if @p obj has no such
  * member.
  */
@@ -1917,7 +1897,7 @@ godbolt_link (struct godbolt *call)
 	                                                (int)call->resp.len);
 	loop_work(call->loop, LOOP_PARSE, call->resp.len);
 	struct cstr_view const link = godbolt_member(doc, "url");
-	if (link.len <= GODBOLT_SHORT_MAX && godbolt_scheme(link)) {
+	if (link.len <= GODBOLT_SHORT_MAX && util_url_scheme(link)) {
 		godbolt_put(call, CSTR_VIEW("Link: "));
 		godbolt_put(call, link);
 		godbolt_put(call, CSTR_VIEW("\n"));
@@ -2948,7 +2928,7 @@ godbolt_config_url (struct godbolt_config *c,
                     struct json_object    *v)
 {
 	struct cstr_view const t = godbolt_text(v, 1, GODBOLT_URL_MAX, nullptr);
-	size_t const scheme = godbolt_scheme(t);
+	size_t const scheme = util_url_scheme(t);
 	if (!scheme)
 		return EINVAL;
 	size_t n = t.len;

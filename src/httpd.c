@@ -510,11 +510,7 @@ httpd_header (char const *name,
 static bool
 httpd_loopback_origin (char const *origin)
 {
-	static char const http[] = "http://";
-	static char const https[] = "https://";
-	size_t scheme = !strncmp(origin, http, sizeof http - 1) ? sizeof http - 1
-	              : !strncmp(origin, https, sizeof https - 1) ? sizeof https - 1
-	              : 0;
+	size_t scheme = util_url_scheme(cstr_view(origin));
 	return scheme && httpd_loopback_host(origin + scheme);
 }
 
