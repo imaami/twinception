@@ -30,13 +30,14 @@ enum autocomplete_flag : uint64_t {
 	AUTOCOMPLETE_CONSTANT     = UINT64_C(1) <<  7,
 	AUTOCOMPLETE_ENUMERATED   = UINT64_C(1) <<  8,
 	AUTOCOMPLETE_NAMES        = UINT64_C(1) <<  9,
+	/* The flag of each JSON type is the flag of null shifted by the type. */
 	AUTOCOMPLETE_TYPE_NULL    = UINT64_C(1) << 10,
-	AUTOCOMPLETE_TYPE_BOOLEAN = UINT64_C(1) << 11,
-	AUTOCOMPLETE_TYPE_NUMBER  = UINT64_C(1) << 12,
-	AUTOCOMPLETE_TYPE_INTEGER = UINT64_C(1) << 13,
-	AUTOCOMPLETE_TYPE_OBJECT  = UINT64_C(1) << 14,
-	AUTOCOMPLETE_TYPE_ARRAY   = UINT64_C(1) << 15,
-	AUTOCOMPLETE_TYPE_STRING  = UINT64_C(1) << 16,
+	AUTOCOMPLETE_TYPE_BOOLEAN = AUTOCOMPLETE_TYPE_NULL << json_type_boolean,
+	AUTOCOMPLETE_TYPE_NUMBER  = AUTOCOMPLETE_TYPE_NULL << json_type_double,
+	AUTOCOMPLETE_TYPE_INTEGER = AUTOCOMPLETE_TYPE_NULL << json_type_int,
+	AUTOCOMPLETE_TYPE_OBJECT  = AUTOCOMPLETE_TYPE_NULL << json_type_object,
+	AUTOCOMPLETE_TYPE_ARRAY   = AUTOCOMPLETE_TYPE_NULL << json_type_array,
+	AUTOCOMPLETE_TYPE_STRING  = AUTOCOMPLETE_TYPE_NULL << json_type_string,
 };
 
 struct autocomplete_candidate {
@@ -336,22 +337,18 @@ autocomplete_resolve (struct autocomplete  *autocomplete,
 static uint64_t
 autocomplete_type_flag (struct cstr_view type)
 {
-	static struct {
-		struct cstr_view name;
-		uint64_t         flag;
-	} const types[] = {
-		{CSTR_VIEW_INIT("null"), AUTOCOMPLETE_TYPE_NULL},
-		{CSTR_VIEW_INIT("boolean"), AUTOCOMPLETE_TYPE_BOOLEAN},
-		{CSTR_VIEW_INIT("number"), AUTOCOMPLETE_TYPE_NUMBER},
-		{CSTR_VIEW_INIT("integer"), AUTOCOMPLETE_TYPE_INTEGER},
-		{CSTR_VIEW_INIT("object"), AUTOCOMPLETE_TYPE_OBJECT},
-		{CSTR_VIEW_INIT("array"), AUTOCOMPLETE_TYPE_ARRAY},
-		{CSTR_VIEW_INIT("string"), AUTOCOMPLETE_TYPE_STRING},
+	/* The names of the types in a JSON schema, by enum json_type. */
+	static struct cstr_view const names[] = {
+		[json_type_null]    = CSTR_VIEW_INIT("null"),
+		[json_type_boolean] = CSTR_VIEW_INIT("boolean"),
+		[json_type_double]  = CSTR_VIEW_INIT("number"),
+		[json_type_int]     = CSTR_VIEW_INIT("integer"),
+		[json_type_object]  = CSTR_VIEW_INIT("object"),
+		[json_type_array]   = CSTR_VIEW_INIT("array"),
+		[json_type_string]  = CSTR_VIEW_INIT("string"),
 	};
-	for (size_t i = 0; i < array_size(types); ++i)
-		if (cstr_view_equal(types[i].name, type))
-			return types[i].flag;
-	return 0;
+	size_t i = cstr_view_index(names, array_size(names), type);
+	return i < array_size(names) ? AUTOCOMPLETE_TYPE_NULL << i : 0;
 }
 
 static uint64_t
@@ -371,22 +368,15 @@ static bool
 autocomplete_accepted_type (uint64_t            flags,
                             struct json_object *value)
 {
-	if (!(flags & AUTOCOMPLETE_TYPED))
+	/* An integer is a number too, and a whole number is an integer. */
+	enum json_type type = json_object_get_type(value);
+	if (!(flags & AUTOCOMPLETE_TYPED) || (flags & (AUTOCOMPLETE_TYPE_NULL << type)) ||
+	    (type == json_type_int && (flags & AUTOCOMPLETE_TYPE_NUMBER)))
 		return true;
-	switch (json_object_get_type(value)) {
-	case json_type_null: return flags & AUTOCOMPLETE_TYPE_NULL;
-	case json_type_boolean: return flags & AUTOCOMPLETE_TYPE_BOOLEAN;
-	case json_type_double: {
-		double number = json_object_get_double(value);
-		return (flags & AUTOCOMPLETE_TYPE_NUMBER) ||
-		       ((flags & AUTOCOMPLETE_TYPE_INTEGER) && isfinite(number) && floor(number) == number);
-	}
-	case json_type_int: return flags & (AUTOCOMPLETE_TYPE_INTEGER | AUTOCOMPLETE_TYPE_NUMBER);
-	case json_type_object: return flags & AUTOCOMPLETE_TYPE_OBJECT;
-	case json_type_array: return flags & AUTOCOMPLETE_TYPE_ARRAY;
-	case json_type_string: return flags & AUTOCOMPLETE_TYPE_STRING;
-	}
-	return false;
+	if (type != json_type_double || !(flags & AUTOCOMPLETE_TYPE_INTEGER))
+		return false;
+	double number = json_object_get_double(value);
+	return isfinite(number) && floor(number) == number;
 }
 
 static struct autocomplete_entry const *
@@ -950,31 +940,41 @@ autocomplete_values (struct autocomplete                *ac,
 		if (error)
 			return error;
 	}
-	if (!(flags & (AUTOCOMPLETE_CONSTANT | AUTOCOMPLETE_ENUMERATED))) {
-		if (flags & AUTOCOMPLETE_TYPE_BOOLEAN) {
-			error = autocomplete_value_match(ac, line, current, prefix, CSTR_VIEW("false"), 0, mark, AUTOCOMPLETE_VALUE);
-			if (!error)
-				error = autocomplete_value_match(ac, line, current, prefix, CSTR_VIEW("true"), 0, mark, AUTOCOMPLETE_VALUE);
-			if (error)
-				return error;
-		}
-		if (flags & AUTOCOMPLETE_TYPE_NULL) {
-			error = autocomplete_value_match(ac, line, current, prefix, CSTR_VIEW("null"), 0, mark, AUTOCOMPLETE_VALUE);
-			if (error)
-				return error;
-		}
+	/* The literals of the types of a value without fixed values. */
+	static struct {
+		struct cstr_view word;
+		uint64_t         type;
+	} const literals[] = {
+		{CSTR_VIEW_INIT("false"), AUTOCOMPLETE_TYPE_BOOLEAN},
+		{CSTR_VIEW_INIT("true"), AUTOCOMPLETE_TYPE_BOOLEAN},
+		{CSTR_VIEW_INIT("null"), AUTOCOMPLETE_TYPE_NULL},
+	};
+	uint64_t open = flags & (AUTOCOMPLETE_CONSTANT | AUTOCOMPLETE_ENUMERATED) ? 0 : flags;
+	for (size_t i = 0; i < array_size(literals); ++i) {
+		if (!(open & literals[i].type))
+			continue;
+		error = autocomplete_value_match(ac, line, current, prefix, literals[i].word, 0, mark, AUTOCOMPLETE_VALUE);
+		if (error)
+			return error;
 	}
 	if (!(flags & AUTOCOMPLETE_NAMES))
 		return 0;
+	/* The properties whose values are the names of a list. */
+	static struct {
+		struct cstr_view property;
+		uint64_t         list;  /* enum autocomplete_list */
+	} const lists[] = {
+		{CSTR_VIEW_INIT("participant"), AUTOCOMPLETE_PARTICIPANTS},
+		{CSTR_VIEW_INIT("recipient"), AUTOCOMPLETE_PARTICIPANTS},
+		{CSTR_VIEW_INIT("author"), AUTOCOMPLETE_PARTICIPANTS},
+		{CSTR_VIEW_INIT("notebook"), AUTOCOMPLETE_NOTEBOOKS},
+	};
 	struct autocomplete_names const *names = nullptr;
+	for (size_t i = 0; !names && i < array_size(lists); ++i)
+		if (cstr_view_equal(property->name, lists[i].property))
+			names = &ac->lists[lists[i].list];
 	enum autocomplete_kind kind = AUTOCOMPLETE_NAME;
-	if (cstr_view_equal(property->name, CSTR_VIEW("participant")) ||
-	    cstr_view_equal(property->name, CSTR_VIEW("recipient")) ||
-	    cstr_view_equal(property->name, CSTR_VIEW("author")))
-		names = &ac->lists[AUTOCOMPLETE_PARTICIPANTS];
-	else if (cstr_view_equal(property->name, CSTR_VIEW("notebook")))
-		names = &ac->lists[AUTOCOMPLETE_NOTEBOOKS];
-	else if (cstr_view_equal(property->name, CSTR_VIEW("file"))) {
+	if (!names && cstr_view_equal(property->name, CSTR_VIEW("file"))) {
 		kind = AUTOCOMPLETE_FILE;
 		error = autocomplete_note_paths(ac, line, entry->tool.name, &names);
 		if (error)
