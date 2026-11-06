@@ -10234,6 +10234,9 @@ def check_notes(binary, up):
             assert call({"action": "list", "thread": "xyz"}).startswith(
                 "!The optional thread must be 32 hexadecimal digits.")
             assert call({"action": "remove"}).startswith("!The action must")
+            for action in ("add", "read", "diff", "restore"):
+                assert call({"action": action, "text": "x", "file": None}) == "!The file " \
+                    "argument is missing: give the name of a note, such as plan.md.", action
             # The opposite side's branch is a convenience alias. Its
             # files share the repository, but an add still writes only to
             # the caller's own branch.

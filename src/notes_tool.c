@@ -1567,6 +1567,12 @@ notes_tool_start (struct mcp_slot    *slot,
 	uint32_t flags = notes_tool_actions[which].flags;
 	uint32_t fetch = notes_tool_actions[which].fetch;
 	bool diff = fetch == FETCH_DIFF;
+	struct json_object *file = jb_get(args, "file");
+	if ((flags & NOTE_FILE) && !file) {
+		mcp_slot_tell(slot, CSTR_VIEW("The file argument is missing: give the name of a "
+		                              "note, such as plan.md."), TOOL_FAILED);
+		return;
+	}
 	struct json_object *revision = jb_get(args, "revision");
 	struct json_object *from = jb_get(args, "from");
 	struct json_object *to = jb_get(args, "to");
@@ -1616,7 +1622,6 @@ notes_tool_start (struct mcp_slot    *slot,
 	}
 	if ((flags & NOTE_OFFSET) && mcp_slot_offset(slot, args))
 		return;
-	struct json_object *file = jb_get(args, "file");
 	struct cstr_view const name = jb_view(file);
 	if (revision || diff || fetch & FETCH_RESTORE || (fetch == FETCH_LIST && file)) {
 		struct json_object *const revisions[] = { diff ? from : revision, to };
