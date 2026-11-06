@@ -798,7 +798,7 @@ http_destroy (struct http **p_http)
 	struct list *node;
 	struct list *tmp;
 	struct list *const lists[] = { &http->queued, &http->requests };
-	for (size_t i = 0; i < ARRAY_SIZE(lists); ++i) {
+	for (size_t i = 0; i < array_size(lists); ++i) {
 		list_foreach_safe (node, tmp, lists[i]) {
 			struct http_request *request = container_of(node,
 			                                           struct http_request,

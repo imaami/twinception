@@ -849,7 +849,7 @@ askai_tasks_report (struct task_pool const *tasks,
 		{ "under way", submitted > ended ? submitted - ended : 0 },
 	};
 	fprintf(stderr, "tasks:\n");
-	for (size_t i = 0; i < ARRAY_SIZE(counts); ++i)
+	for (size_t i = 0; i < array_size(counts); ++i)
 		fprintf(stderr, "  %-9s  %" PRIu64 "\n", counts[i].name, counts[i].count);
 }
 

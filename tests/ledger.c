@@ -445,9 +445,9 @@ test_caps (struct ledger *l)
 
 	/* Tasks of C fill the ledger. To make room, the ledger removes the two
 	 * records whose calls have ended, the oldest first. */
-	while (n < ARRAY_SIZE(t) && (t[n] = test_open(l, C, LEDGER_TASK, &e)))
+	while (n < array_size(t) && (t[n] = test_open(l, C, LEDGER_TASK, &e)))
 		++n;
-	CHECK(n == ARRAY_SIZE(t) && !e && l->n == LEDGER_MAX && !t[0]->owner &&
+	CHECK(n == array_size(t) && !e && l->n == LEDGER_MAX && !t[0]->owner &&
 	      !t[LEDGER_RUNNING]->owner);
 	CHECK(!test_open(l, B, LEDGER_TASK, &e) && e == ENOSPC);
 	CHECK(!test_open(l, B, LEDGER_JOB, &e) && e == ENOSPC);
@@ -650,7 +650,7 @@ test_waits (struct ledger *l)
 
 	/* Two ends post each wait of A once, and no wait of B. */
 	struct ledger_task *t[5];
-	for (size_t k = 0; k < ARRAY_SIZE(t); ++k)
+	for (size_t k = 0; k < array_size(t); ++k)
 		t[k] = test_open(l, A, LEDGER_JOB, &e);
 	uint64_t seen = wakes;
 	ledger_end(l, t[0], LEDGER_COMPLETED);
@@ -724,7 +724,7 @@ test_waits (struct ledger *l)
 	ledger_wait_put(left);
 	ledger_wait_leave(l, &b);
 	CHECK(!atomic_load(&m->waits) && !ledger_owner_find(l, B) && ledger_owner_find(l, A));
-	for (size_t k = 0; k < ARRAY_SIZE(t); ++k)
+	for (size_t k = 0; k < array_size(t); ++k)
 		ledger_task_put(t[k]);
 }
 

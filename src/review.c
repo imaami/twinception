@@ -1637,12 +1637,12 @@ review_check_location (struct review const          *r,
 		              "src/mcp.c:120-140, which you read with git read.",
 		              review_state_names[state].data);
 	struct cstr_view found[4];
-	size_t const n = review_log_resolve(r, loc, prefix, found, ARRAY_SIZE(found));
+	size_t const n = review_log_resolve(r, loc, prefix, found, array_size(found));
 	if (n == 1)
 		loc->path = found[0];
 	if (n > 1 && (in_args || requires_log)) {
 		/* List up to three paths, then "and others". */
-		size_t const shown = n < ARRAY_SIZE(found) ? n : ARRAY_SIZE(found) - 1;
+		size_t const shown = n < array_size(found) ? n : array_size(found) - 1;
 		bool ok = dstr_printf(out, "%.*s matches ", (int)loc->path.len, loc->path.data);
 		for (size_t i = 0; ok && i < shown; ++i)
 			ok = (!i || review_put(out, i + 1 < n ? CSTR_VIEW(", ")
@@ -2124,7 +2124,7 @@ review_restore_log (struct review            *r,
 		return e;
 	r->dropped_turn = (uint32_t)dropped;
 	/* The restore stops once the record exceeds REVIEW_MAX. */
-	for (size_t k = 0; !e && k < ARRAY_SIZE(lists); ++k) {
+	for (size_t k = 0; !e && k < array_size(lists); ++k) {
 		struct json_object const *a = jb_get(obj, lists[k].key);
 		e = json_object_is_type(a, json_type_array) ? 0 : EINVAL;
 		for (size_t i = 0, n = jb_len(a); !e && r->size <= REVIEW_MAX && i < n; ++i)

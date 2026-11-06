@@ -392,9 +392,9 @@ test_stash (void)
 
 	/* At critical pressure all goes, as many blocks a call as allowed. */
 	struct buf many[3] = {};
-	for (size_t i = 0; i < ARRAY_SIZE(many); ++i)
+	for (size_t i = 0; i < array_size(many); ++i)
 		CHECK(put(&many[i], bytes, 1, SIZE_MAX));
-	for (size_t i = 0; i < ARRAY_SIZE(many); ++i)
+	for (size_t i = 0; i < array_size(many); ++i)
 		buf_fini(&many[i]);
 	CHECK(stash.n[0] == 3);
 	CHECK(buf_stash_release(&stash, BUF_CRITICAL, 2) == 2 && stash.n[0] == 1);
@@ -420,9 +420,9 @@ test_stash (void)
 	for (size_t i = 0; i < 4; ++i)
 		buf_fini(&wave[i]);
 	uint64_t released = hist_get(&stash.metrics.released);
-	for (size_t i = 0; i < ARRAY_SIZE(wave); ++i)
+	for (size_t i = 0; i < array_size(wave); ++i)
 		CHECK(put(&wave[i], large, 20 << 10, SIZE_MAX) && wave[i].cap == 32 << 10);
-	for (size_t i = 0; i < ARRAY_SIZE(wave); ++i)
+	for (size_t i = 0; i < array_size(wave); ++i)
 		buf_fini(&wave[i]);
 	CHECK(stash.n[4] == 4 && stash.n[3] == 8 && stashed(&stash) == 2 * stash.peak);
 	CHECK(hist_get(&stash.metrics.released) == released);

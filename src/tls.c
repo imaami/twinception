@@ -149,7 +149,7 @@ tls_ctx_key_type (SSL_CTX             *ctx,
 	size_t n;
 	if (!EVP_PKEY_get_group_name(key, curve, sizeof curve, &n))
 		return other;
-	for (size_t i = 0; i < ARRAY_SIZE(curves); ++i)
+	for (size_t i = 0; i < array_size(curves); ++i)
 		if (!strcmp(curve, curves[i]))
 			return nullptr;
 	return other;

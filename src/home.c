@@ -2801,7 +2801,7 @@ home_arm (struct home         *home,
 	struct loop_timer *const timers[] = {
 		&home->deadline, &home->quiet, &home->breaker, &home->cancel_due,
 	};
-	for (size_t i = 0; i < ARRAY_SIZE(timers); ++i) {
+	for (size_t i = 0; i < array_size(timers); ++i) {
 		int e = loop_timer_set(home->loop, timers[i], UINT64_MAX);
 		if (e)
 			return e;
@@ -2831,7 +2831,7 @@ home_fini (struct home *home)
 		&home->resume, &home->feed, &home->reap, &home->shed, &home->preempt,
 		&home->props, &home->cleanup,
 	};
-	for (size_t i = 0; i < ARRAY_SIZE(steps); ++i)
+	for (size_t i = 0; i < array_size(steps); ++i)
 		loop_unready(steps[i]);
 	loop_timer_stop(home->loop, &home->breaker);
 	loop_timer_stop(home->loop, &home->quiet);
@@ -2965,7 +2965,7 @@ home_destroy (struct home **p_home)
 		{ "preempted", &m->preempted },
 	};
 	LOG_ALL(LOG_INFO, "upstream requests:");
-	for (size_t i = 0; i < ARRAY_SIZE(counts); ++i)
+	for (size_t i = 0; i < array_size(counts); ++i)
 		LOG_ALL(LOG_INFO, "  %-9s  %" PRIu64, counts[i].name, hist_get(counts[i].count));
 	home_fini(home);
 	free(home);

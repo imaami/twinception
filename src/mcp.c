@@ -185,7 +185,7 @@ static struct cstr_view const versions[] = {
 	CSTR_VIEW_INIT("2025-03-26"),
 	CSTR_VIEW_INIT("2024-11-05"),
 };
-enum { MODERN = 1, PRE_STREAMS = ARRAY_SIZE(versions) - 1 };
+enum { MODERN = 1, PRE_STREAMS = array_size(versions) - 1 };
 
 static char const meta_version[] = "io.modelcontextprotocol/protocolVersion";
 static char const meta_caps[] = "io.modelcontextprotocol/clientCapabilities";
@@ -800,8 +800,8 @@ mcp_span_is (struct span      s,
 static bool
 mcp_is_legacy (struct cstr_view v)
 {
-	size_t i = cstr_view_index(versions, ARRAY_SIZE(versions), v);
-	return i >= MODERN && i < ARRAY_SIZE(versions);
+	size_t i = cstr_view_index(versions, array_size(versions), v);
+	return i >= MODERN && i < array_size(versions);
 }
 
 static bool
@@ -1573,7 +1573,7 @@ mcp_req_finish (struct mcp_req *req)
 	ledger_task_put(req->shown);
 	req->shown = nullptr;
 	mcp_req_dispose(req);
-	mcp_req_args_free(req, 0, ARRAY_SIZE(req->args));
+	mcp_req_args_free(req, 0, array_size(req->args));
 	json_object_put(req->draft);
 	json_object_put(req->id);
 	json_object_put(req->token);
@@ -1736,7 +1736,7 @@ mcp_req_open (struct mcp_req   *req,
 		key,
 	};
 	buf_consume(&req->reply, buf_peek(&req->reply).len);
-	return mcp_req_put(req, p, ARRAY_SIZE(p));
+	return mcp_req_put(req, p, array_size(p));
 }
 
 /* The call is answered: take it off the calls under way, which a drain
@@ -1793,7 +1793,7 @@ mcp_req_error_put (struct mcp_req         *req,
 	int e = mcp_req_open(req, FRAG("\"error\":"));
 	if (e)
 		return e;
-	e = mcp_req_put(req, p, ARRAY_SIZE(p));
+	e = mcp_req_put(req, p, array_size(p));
 	if (e)
 		return e;
 	e = mcp_req_put(req, data, n_data);
@@ -1862,7 +1862,7 @@ mcp_req_tool_open (struct mcp_req   *req,
 		ESC_VIEW(text),
 	};
 	int e = mcp_req_open(req, FRAG("\"result\":"));
-	return e ? e : mcp_req_put(req, p, ARRAY_SIZE(p));
+	return e ? e : mcp_req_put(req, p, array_size(p));
 }
 
 /* Write into @p tail, of @p size bytes, how the turns ended, after what they
@@ -1914,7 +1914,7 @@ mcp_req_trace_put (struct mcp_req *req)
 		ESC(tail, mcp_req_trace_tail(req, tail, sizeof tail)),
 		FRAG("\"}"),
 	};
-	return mcp_req_put(req, p, ARRAY_SIZE(p));
+	return mcp_req_put(req, p, array_size(p));
 }
 
 /* End a tool result, its trace after its text, and send it. The result of
@@ -1933,7 +1933,7 @@ mcp_req_tool_close (struct mcp_req *req)
 	};
 	int e = mcp_req_trace_put(req);
 	mcp_req_close(req, 200, SPAN(JSON_FIELD),
-	              e ? e : mcp_req_put(req, p, ARRAY_SIZE(p)));
+	              e ? e : mcp_req_put(req, p, array_size(p)));
 }
 
 static void mcp_slot_done (struct mcp_slot *slot, bool failed);
@@ -2093,7 +2093,7 @@ mcp_req_notify_put (struct mcp_req *req,
 		tool ? FRAG("tool") : FRAG("status"),
 		FRAG("\"}}}}\n\n"),
 	};
-	return mcp_req_put(req, p, ARRAY_SIZE(p));
+	return mcp_req_put(req, p, array_size(p));
 }
 
 /* Send a notification of progress @p value, saying the @p len bytes of
@@ -2156,7 +2156,7 @@ mcp_req_delta (struct mcp_req *req)
 			FRAG(",\"kind\":\""), header.thought ? FRAG("reasoning") : FRAG("text"),
 			FRAG("\",\"text\":\""), ESC(text + req->delta_read, n), FRAG("\"}}\n\n"),
 		};
-		int e = mcp_req_put(req, p, ARRAY_SIZE(p));
+		int e = mcp_req_put(req, p, array_size(p));
 		loop_work(loop, LOOP_ESCAPE, n);
 		struct span notice = buf_peek(&req->reply);
 		if (e) {
@@ -2316,7 +2316,7 @@ mcp_overflow_what (struct cstr_view rest)
 	static struct cstr_view const what[] = {
 		CSTR_VIEW_INIT("size"), CSTR_VIEW_INIT("length"), CSTR_VIEW_INIT("window"),
 	};
-	for (size_t k = 0; k < ARRAY_SIZE(what); ++k)
+	for (size_t k = 0; k < array_size(what); ++k)
 		if (rest.len >= what[k].len && !strncasecmp(rest.data, what[k].data, what[k].len))
 			return true;
 	return false;
@@ -2376,10 +2376,10 @@ mcp_req_log_turn (struct mcp_req const *req,
 		[JOB_CANCELLED] = "cancelled",
 		[JOB_SUSPENDED] = "suspended",
 	};
-	static_assert(ARRAY_SIZE(ends) == JOB_CANCELLED + 1);
+	static_assert(array_size(ends) == JOB_CANCELLED + 1);
 	if (log_threshold < LOG_VERBOSE)
 		return;
-	uint8_t status = job->status < ARRAY_SIZE(ends) ? job->status : JOB_FAILED;
+	uint8_t status = job->status < array_size(ends) ? job->status : JOB_FAILED;
 	char http[24] = "no HTTP status";
 	if (job->http)
 		util_format(http, sizeof http, "HTTP %" PRIu16, job->http);
@@ -3168,7 +3168,7 @@ mcp_req_promote (struct mcp_req     *req,
 		RAW(at, n),
 		FRAG("\",\"ttlMs\":null,\"pollIntervalMs\":1000}}"),
 	};
-	if (!mcp_req_detach(req, task, p, ARRAY_SIZE(p)))
+	if (!mcp_req_detach(req, task, p, array_size(p)))
 		LOG(LOG_VERBOSE, "tool call %s from %s became task %.*s after %.1f s",
 		    mcp_slot_offer(&req->self)->tool.name.data, mcp_req_client(req), LEDGER_ID,
 		    task->id, mcp_elapsed(req->head));
@@ -3757,7 +3757,7 @@ mcp_history_valid (struct json_object *history)
 		if (!json_object_is_type(message, json_type_object) ||
 		    json_object_object_length(message) != 2 ||
 		    !jb_text(jb_get(message, "content")) ||
-		    cstr_view_index(roles, ARRAY_SIZE(roles), role) == ARRAY_SIZE(roles))
+		    cstr_view_index(roles, array_size(roles), role) == array_size(roles))
 			return false;
 	}
 	return true;
@@ -4321,7 +4321,7 @@ mcp_req_call_put (struct mcp_req         *req,
 		BYTES(c->extra),
 		BYTES(f->call_end),
 	};
-	e = mcp_req_upload(req, p, ARRAY_SIZE(p));
+	e = mcp_req_upload(req, p, array_size(p));
 	if (!e)
 		req->listed = true;
 	return e;
@@ -4361,7 +4361,7 @@ mcp_req_turn_part (struct mcp_req *req)
 			mcp_req_items(req, buf_peek(&job->replay).len),
 			BYTES(req->n_calls ? f->turn_end : f->answer_end),
 		};
-		return mcp_req_upload(req, p, ARRAY_SIZE(p));
+		return mcp_req_upload(req, p, array_size(p));
 	}
 	if (req->part)
 		return mcp_req_turn_call(req, f);
@@ -4376,7 +4376,7 @@ mcp_req_turn_part (struct mcp_req *req)
 		ESC(thought.ptr, thinks ? thought.len : 0),
 		req->n_calls ? BYTES(f->calls) : (struct mcp_piece){},
 	};
-	int e = mcp_req_upload(req, p, ARRAY_SIZE(p));
+	int e = mcp_req_upload(req, p, array_size(p));
 	if (!e)
 		req->listed = !f->turn.len;
 	return e;
@@ -4610,7 +4610,7 @@ mcp_agenda_arm (struct mcp_agenda *a)
 {
 	struct loop *loop = a->req->mcp->loop;
 	uint64_t due = a->wait ? a->wait_end : UINT64_MAX;
-	for (size_t i = 0; i < ARRAY_SIZE(a->timers); ++i)
+	for (size_t i = 0; i < array_size(a->timers); ++i)
 		if (a->timers[i].due && a->timers[i].due < due)
 			due = a->timers[i].due;
 	if (due == UINT64_MAX) {
@@ -4732,7 +4732,7 @@ mcp_agenda_alarm (struct loop       *loop,
 {
 	struct mcp_agenda *a = container_of(timer, struct mcp_agenda, alarm);
 	bool fired = false;
-	for (size_t i = 0; i < ARRAY_SIZE(a->timers); ++i) {
+	for (size_t i = 0; i < array_size(a->timers); ++i) {
 		struct ledger_timer *t = &a->timers[i];
 		if (!t->due || t->due > loop->now)
 			continue;
@@ -4883,7 +4883,7 @@ mcp_req_background (struct mcp_req *req,
 		req->modern ? DSTR(&st->modern_tail) : FRAG("}"),
 		FRAG("}"),
 	};
-	return mcp_req_detach(req, task, p, ARRAY_SIZE(p));
+	return mcp_req_detach(req, task, p, array_size(p));
 }
 
 /** Starts the client's call of background in @p slot, which is req->self,
@@ -6028,7 +6028,7 @@ mcp_req_result_put (struct mcp_req       *req,
 		BYTES(f->end),
 	};
 	bool last = req->part + 1u == req->n_calls;
-	return mcp_req_upload(req, p, last ? ARRAY_SIZE(p) : ARRAY_SIZE(p) - 3);
+	return mcp_req_upload(req, p, last ? array_size(p) : array_size(p) - 3);
 }
 
 /* Pass review_pending_add() the lines of a committed file that the result in
@@ -6543,7 +6543,7 @@ mcp_req_add_write (struct mcp_req *req)
 		BYTES(f->prompt_end),
 		BYTES(f->end),
 	};
-	int e = mcp_req_upload(req, p, ARRAY_SIZE(p));
+	int e = mcp_req_upload(req, p, array_size(p));
 	if (e == EAGAIN) {
 		loop_ready_bulk(req->mcp->loop, &req->step);
 		return;
@@ -6808,7 +6808,7 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	int e = CAT(d, "\n\n[askai: you compacted the context: the conversation since the "
 	            "task is gone, your turns and the tools' results with it. Your summary "
 	            "of it:]\n\n") && dstr_cat_n(d, summary, jb_utf8(summary, len)) ? 0 : ENOMEM;
-	mcp_req_args_free(req, req->part, ARRAY_SIZE(req->args));
+	mcp_req_args_free(req, req->part, array_size(req->args));
 	mcp_req_slots_drop(req);
 	buf_fini(&req->calls);
 	if (e) {
@@ -6843,7 +6843,7 @@ mcp_req_compact_full (struct mcp_req *req)
 	    "compacted by askai", req->mcp->loop->id, req->asked, req->turn);
 	req->reminded = 0;
 	mcp_req_drop(req);
-	mcp_req_args_free(req, 0, ARRAY_SIZE(req->args));
+	mcp_req_args_free(req, 0, array_size(req->args));
 	buf_fini(&req->calls);
 	dstr_clear(&req->self.answer);
 	int e = CAT(&req->self.answer, "\n\n[askai: your context filled up, so the "
@@ -7029,7 +7029,7 @@ mcp_req_initialize (struct mcp_req     *req,
 		DSTR(&req->mcp->st->init_tail),
 		FRAG("}"),
 	};
-	mcp_req_result(req, p, ARRAY_SIZE(p), f);
+	mcp_req_result(req, p, array_size(p), f);
 }
 
 /* Handles the notifications/cancelled in @p req. The notification cancels
@@ -7057,7 +7057,7 @@ mcp_req_result_of (struct mcp_req    *req,
                    struct dstr const *text)
 {
 	struct mcp_piece const p[] = { DSTR(text), FRAG("}") };
-	mcp_req_result(req, p, ARRAY_SIZE(p), SPAN(JSON_FIELD));
+	mcp_req_result(req, p, array_size(p), SPAN(JSON_FIELD));
 }
 
 /** Replies to the tools/list of @p req with the definitions of the tools
@@ -7116,7 +7116,7 @@ mcp_req_show (struct mcp_req *req)
 		tail ? DSTR(&st->modern_tail) : FRAG(""),
 		RAW("}}", (size_t)tail + (req->method == METHOD_TASKS_GET)),
 	};
-	mcp_req_close(req, 200, SPAN(JSON_FIELD), e ? e : mcp_req_put(req, p, ARRAY_SIZE(p)));
+	mcp_req_close(req, 200, SPAN(JSON_FIELD), e ? e : mcp_req_put(req, p, array_size(p)));
 }
 
 /** Answers the tasks/get of @p req with the status of @p task. After the
@@ -7184,7 +7184,7 @@ mcp_req_task_show (struct mcp_req     *req,
 		: FRAG("}"),
 	};
 	int e = mcp_req_open(req, FRAG("\"result\":"));
-	e = e ? e : mcp_req_put(req, p, ARRAY_SIZE(p));
+	e = e ? e : mcp_req_put(req, p, array_size(p));
 	if (e || !whole) {
 		ledger_task_put(task);
 		mcp_req_close(req, 200, SPAN(JSON_FIELD), e ? e : mcp_req_put(req, &FRAG("}"), 1));
@@ -7214,7 +7214,7 @@ mcp_req_tasks (struct mcp_req     *req,
 		};
 		mcp_req_error(req, 400, MISSING_CAPABILITY,
 		              FRAG("Missing required client capability"), data,
-		              ARRAY_SIZE(data));
+		              array_size(data));
 		return;
 	}
 	size_t len = 0;
@@ -7238,7 +7238,7 @@ mcp_req_tasks (struct mcp_req     *req,
 		DSTR(&st->server_meta),
 		FRAG("}}"),
 	};
-	mcp_req_result(req, p, ARRAY_SIZE(p), SPAN(JSON_FIELD));
+	mcp_req_result(req, p, array_size(p), SPAN(JSON_FIELD));
 }
 
 /* Answer a valid request, or start the tool call it asks for, unless its era
@@ -7316,7 +7316,7 @@ mcp_req_modern (struct mcp_req     *req,
 		                   "request _meta"), nullptr, 0);
 		return;
 	}
-	if (cstr_view_index(versions, ARRAY_SIZE(versions), version) >= MODERN) {
+	if (cstr_view_index(versions, array_size(versions), version) >= MODERN) {
 		struct mcp_piece const data[] = {
 			FRAG("{\"supported\":"),
 			DSTR(&req->mcp->st->versions),
@@ -7325,7 +7325,7 @@ mcp_req_modern (struct mcp_req     *req,
 			FRAG("\"}"),
 		};
 		mcp_req_error(req, 400, UNSUPPORTED_VERSION,
-		              FRAG("Unsupported protocol version"), data, ARRAY_SIZE(data));
+		              FRAG("Unsupported protocol version"), data, array_size(data));
 		return;
 	}
 	if (!mcp_span_is(s->ops->field(s, F_METHOD), method)) {
@@ -7658,7 +7658,7 @@ static void (*const mcp_phase_steps[]) (struct mcp_req *req) = {
 	[PHASE_SEND]     = mcp_req_send,
 	[PHASE_METRICS]  = mcp_req_metrics,
 };
-static_assert(ARRAY_SIZE(mcp_phase_steps) == PHASE_METRICS + 1);
+static_assert(array_size(mcp_phase_steps) == PHASE_METRICS + 1);
 
 /* A keep-alive, if one is due before the reply, a slice of what is left to
  * free, then the phase's work.
@@ -8074,11 +8074,11 @@ mcp_tool_definition (void const *service)
 				"Each has role user or assistant and plain string content. The "
 				"client retains this history; thread does not retain messages."),
 			"items", schema_object(
-				jb_object("role", schema_enum(schema_names(roles, ARRAY_SIZE(roles)),
+				jb_object("role", schema_enum(schema_names(roles, array_size(roles)),
 				                              nullptr),
 				          "content", schema_property("string", nullptr),
 				          nullptr),
-				schema_names(keys, ARRAY_SIZE(keys))),
+				schema_names(keys, array_size(keys))),
 			nullptr),
 		"background", schema_property("boolean",
 			"False waits for the answer on this connection. True requires server "
@@ -8097,7 +8097,7 @@ mcp_tool_definition (void const *service)
 			"system or thread to check its status or read its completed result."));
 		props = jb_set_or_free(props, "action", jb_object(
 			"type", json_object_new_string("string"),
-			"enum", schema_names(actions, ARRAY_SIZE(actions)),
+			"enum", schema_names(actions, array_size(actions)),
 			"default", json_object_new_string("result"),
 			"description", json_object_new_string(
 				"With job: result checks its status or returns its completed "
@@ -8232,7 +8232,7 @@ mcp_jobs_actions (void)
 {
 	struct cstr_view const names[] = { CSTR_VIEW("list"), CSTR_VIEW("result"),
 	                                   CSTR_VIEW("cancel") };
-	return schema_names(names, ARRAY_SIZE(names));
+	return schema_names(names, array_size(names));
 }
 
 /* Returns the definition of jobs for the turns. */
@@ -8443,7 +8443,7 @@ mcp_static_tails (struct mcp_static  *st,
                   struct json_object *info,
                   struct json_object *list)
 {
-	for (size_t i = 0; i < ARRAY_SIZE(versions); ++i) {
+	for (size_t i = 0; i < array_size(versions); ++i) {
 		int e = jb_push(list, jb_string(versions[i]));
 		if (e)
 			return e;
@@ -8811,7 +8811,7 @@ mcp_static_plugin (struct mcp_static            *st,
 		{ .entry.plugin = &notes_tool_plugin, .service = &st->notes_tool,
 		  .part_create = notes_tool_loop_create, .part_destroy = notes_tool_loop_destroy },
 	};
-	for (size_t i = 0; i < ARRAY_SIZE(own); ++i)
+	for (size_t i = 0; i < array_size(own); ++i)
 		if (own[i].entry.plugin == entry->plugin)
 			return own[i];
 	return (struct mcp_plugin){ .entry = *entry };

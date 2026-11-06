@@ -7,6 +7,9 @@
 
 #include <stdint.h>
 
+/** main.c's name for array_size() of compat.h. */
+#define ARRAY_SIZE(a) array_size(a)
+
 enum app_history_mode {
 	APP_HISTORY_SPLIT,
 	APP_HISTORY_SHARED_A,

@@ -68,9 +68,9 @@ registry_load (struct registry    *reg,
                char               *why,
                size_t              len)
 {
-	if (reg->n_plugins == ARRAY_SIZE(reg->plugins)) {
+	if (reg->n_plugins == array_size(reg->plugins)) {
 		util_format(why, len, "askai cannot load more than %zu plugins",
-		            ARRAY_SIZE(reg->plugins));
+		            array_size(reg->plugins));
 		return EINVAL;
 	}
 	int e = 0;

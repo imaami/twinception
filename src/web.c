@@ -677,7 +677,7 @@ web_run_start (struct web     *web,
 	for (char const *l = lines; l < body; l += strlen(l) + 1)
 		++n;
 	char const *few[3];
-	char const **headers = n <= ARRAY_SIZE(few) ? few : malloc(n * sizeof *headers);
+	char const **headers = n <= array_size(few) ? few : malloc(n * sizeof *headers);
 	run->since = loop_clock();
 	list_append(&web->live, &run->live);
 	int e = ENOMEM;

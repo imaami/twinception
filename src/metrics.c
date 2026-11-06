@@ -378,7 +378,7 @@ metrics_put_hist (struct buf         *out,
 	char const *sep = *labels ? "," : "";
 	uint64_t n = 0;
 	size_t i = 0;
-	for (size_t b = 0; b < ARRAY_SIZE(bounds); ++b) {
+	for (size_t b = 0; b < array_size(bounds); ++b) {
 		for (size_t end = hist_index(bounds[b].ns); i <= end; ++i)
 			n += hist_get(&h->bucket[i]);
 		int e = buf_printf(out, "%s_bucket{%s%sle=\"%s\"} %" PRIu64 "\n", name, labels,
@@ -510,7 +510,7 @@ metrics_render (struct metrics_src const *src,
 		[CGROUP] = hist_get(&brainstem_metrics.cg_limit) ? &brainstem_metrics : nullptr,
 	};
 	size_t const n = src->n_loops;
-	size_t const end = ARRAY_SIZE(table) * n;
+	size_t const end = array_size(table) * n;
 	for (unsigned cost = 0; *pos < end && cost < BUDGET; ) {
 		struct metrics_entry const *m = &table[*pos / n];
 		size_t l = *pos % n;

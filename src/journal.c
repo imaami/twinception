@@ -322,11 +322,11 @@ journal_git (struct journal    *j,
 	};
 	char *const env[] = { util_env_path(), GIT_ENV_FIXED, nullptr };
 	char const *argv[48];
-	static_assert(ARRAY_SIZE(prefix) < ARRAY_SIZE(argv));
+	static_assert(array_size(prefix) < array_size(argv));
 	memcpy(argv, prefix, sizeof prefix);
-	size_t argc = ARRAY_SIZE(prefix);
+	size_t argc = array_size(prefix);
 	for (size_t i = 0; command[i]; ++i) {
-		if (argc + 1 >= ARRAY_SIZE(argv))
+		if (argc + 1 >= array_size(argv))
 			return E2BIG;
 		argv[argc++] = command[i];
 	}
@@ -400,7 +400,7 @@ journal_unlock (struct journal *j)
 	if (fd < 0)
 		return errno;
 	int e = 0;
-	for (size_t i = 0; i < ARRAY_SIZE(dirs); ++i) {
+	for (size_t i = 0; i < array_size(dirs); ++i) {
 		int next = openat(fd, dirs[i], O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
 		if (next < 0) {
 			e = errno == ENOENT ? 0 : errno;
@@ -584,7 +584,7 @@ static struct journal_job *
 journal_job_find (struct journal *j,
                   char const     *id)
 {
-	for (size_t k = 0; k < ARRAY_SIZE(j->jobs); ++k)
+	for (size_t k = 0; k < array_size(j->jobs); ++k)
 		if (!strcmp(j->jobs[k].id, id))
 			return &j->jobs[k];
 	return nullptr;
@@ -667,7 +667,7 @@ journal_checkpoint_space (struct journal     *j,
 	       bytes > limit - (j->recovery_bytes - previous) ||
 	       (!keep && j->n_jobs == JOURNAL_JOBS)) {
 		struct journal_job *oldest = nullptr;
-		for (size_t k = 0; k < ARRAY_SIZE(j->jobs); ++k) {
+		for (size_t k = 0; k < array_size(j->jobs); ++k) {
 			struct journal_job *job = &j->jobs[k];
 			if (job != keep && *job->id && job->terminal && !job->legacy &&
 			    (!oldest || job->touched < oldest->touched))
@@ -694,7 +694,7 @@ journal_job_enter (struct journal *j,
 	*e = job ? 0 : journal_checkpoint_space(j, nullptr, 0, true);
 	if (job || *e)
 		return job;
-	for (size_t k = 0; k < ARRAY_SIZE(j->jobs); ++k) {
+	for (size_t k = 0; k < array_size(j->jobs); ++k) {
 		job = &j->jobs[k];
 		if (*job->id)
 			continue;
@@ -863,7 +863,7 @@ journal_thought_file (struct journal            *j,
                       struct journal_file      **out)
 {
 	struct journal_file *oldest = &j->files[0];
-	for (size_t k = 0; k < ARRAY_SIZE(j->files); ++k) {
+	for (size_t k = 0; k < array_size(j->files); ++k) {
 		struct journal_file *file = &j->files[k];
 		if (file->fd >= 0 && file->turn == item->turn && !strcmp(file->id, item->id)) {
 			file->touched = ++j->clock;
@@ -1486,7 +1486,7 @@ journal_create (char const *path,
 		return nullptr;
 	}
 	j->repo_fd = j->state_fd = j->jobs_fd = j->thoughts_fd = j->lock_fd = j->wal_fd = -1;
-	for (size_t k = 0; k < ARRAY_SIZE(j->files); ++k)
+	for (size_t k = 0; k < array_size(j->files); ++k)
 		j->files[k].fd = -1;
 	j->digest = EVP_MD_CTX_new();
 	j->ref = util_concat(REF, sizeof REF - 1, participant);
@@ -1511,7 +1511,7 @@ journal_create (char const *path,
 		};
 		sigset_t all, old;
 		sigfillset(&all);
-		for (size_t i = 0; i < ARRAY_SIZE(faults); ++i)
+		for (size_t i = 0; i < array_size(faults); ++i)
 			sigdelset(&all, faults[i]);
 		*e = pthread_sigmask(SIG_BLOCK, &all, &old);
 		if (!*e) {
@@ -1551,7 +1551,7 @@ journal_destroy (struct journal **p_journal)
 	struct journal *j = *p_journal;
 	*p_journal = nullptr;
 	journal_stop(j);
-	for (size_t k = 0; k < ARRAY_SIZE(j->files); ++k) {
+	for (size_t k = 0; k < array_size(j->files); ++k) {
 		if (j->files[k].fd >= 0)
 			close(j->files[k].fd);
 		j->files[k].fd = -1;

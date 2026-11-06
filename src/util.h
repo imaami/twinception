@@ -19,8 +19,6 @@
 #include "compat.h"
 #include "cstr_view.h"
 
-#define ARRAY_SIZE(a) (sizeof (a) / sizeof *(a))
-
 /** Nanoseconds in a second. */
 static constexpr uint64_t NS = 1'000'000'000;
 

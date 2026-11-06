@@ -681,7 +681,7 @@ policy_build_role_one (struct policy_build *b,
 	if (!json_object_is_type(members, json_type_object))
 		return policy_build_fail(b, "role %s must be an object", name);
 	struct cstr_view const parts[] = { CSTR_VIEW("role "), { name, len } };
-	r->who = policy_build_who(b, ARRAY_SIZE(parts), parts);
+	r->who = policy_build_who(b, array_size(parts), parts);
 	struct json_object_iter m;
 	json_object_object_foreachC(members, m) {
 		int e = policy_build_member(b, r, name, m.key, m.val);
@@ -744,7 +744,7 @@ policy_build_identity (struct policy_build *b,
 	if (!n)
 		return policy_build_fail(b, "identity %s needs tokens", who);
 	struct cstr_view const parts[] = { CSTR_VIEW("identity "), { who, len } };
-	struct cstr_view name = policy_build_who(b, ARRAY_SIZE(parts), parts);
+	struct cstr_view name = policy_build_who(b, array_size(parts), parts);
 	for (size_t i = 0; i < n; ++i) {
 		struct json_object *spec = json_object_array_get_idx(tokens, i);
 		unsigned char digest[DIGEST];
@@ -860,7 +860,7 @@ policy_build_anonymous (struct policy_build *b,
 			CSTR_VIEW("anonymous "), policy_kinds[k], CSTR_VIEW(" ("),
 			p->roles[role].who, CSTR_VIEW(")")
 		};
-		p->strangers[k] = policy_build_who(b, ARRAY_SIZE(parts), parts);
+		p->strangers[k] = policy_build_who(b, array_size(parts), parts);
 	}
 	return 0;
 }
@@ -1217,7 +1217,7 @@ static void
 policy_log_peers (struct policy const *policy)
 {
 	static char const *const files[] = { POLICY_OVERFLOWUID, POLICY_OVERFLOWGID };
-	for (size_t i = 0; i < ARRAY_SIZE(files); ++i)
+	for (size_t i = 0; i < array_size(files); ++i)
 		if (policy->overflow_errors[i])
 			LOG_ALL(LOG_WARN, "warning: cannot read %s: %s", files[i],
 			        strerror(policy->overflow_errors[i]));

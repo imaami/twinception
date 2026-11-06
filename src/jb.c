@@ -436,7 +436,7 @@ jb_parser_fini (struct jb_parser *parser,
 	}
 	if (tok) {
 		json_tokener_reset(tok);
-		if (pool->n < ARRAY_SIZE(pool->free)) {
+		if (pool->n < array_size(pool->free)) {
 			pool->bytes += (size_t)tok->pb->size;
 			pool->free[pool->n++] = tok;
 		} else {

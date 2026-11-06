@@ -276,9 +276,9 @@ static struct {
 	  "--verify requires one valid revision.", 0 },
 };
 
-static_assert(1 + ARRAY_SIZE(fixed) + 5 + 3 + OPTIONS + 2 + 1 + REVISIONS + 1 +
+static_assert(1 + array_size(fixed) + 5 + 3 + OPTIONS + 2 + 1 + REVISIONS + 1 +
               PATHS + 1 <= GIT_ARGV, "a command fits argv");
-static_assert(1 + ARRAY_SIZE(fixed) + 5 + 10 + ROOTS + 1 <= GIT_ARGV,
+static_assert(1 + array_size(fixed) + 5 + 10 + ROOTS + 1 <= GIT_ARGV,
               "history validation fits argv");
 
 struct cstr_view
@@ -444,7 +444,7 @@ git_definition (void const *service)
 	for (size_t i = 0; repos && i < git->n; ++i)
 		repos = jb_push_or_free(repos, jb_string(git->repo[i].name));
 	struct json_object *cmds = json_object_new_array();
-	for (size_t i = 0; cmds && i < ARRAY_SIZE(commands); ++i)
+	for (size_t i = 0; cmds && i < array_size(commands); ++i)
 		cmds = jb_push_or_free(cmds, jb_string(commands[i].name));
 	struct cstr_view const required[] = { CSTR_VIEW("repo"), CSTR_VIEW("command") };
 	return jb_object(
@@ -504,7 +504,7 @@ git_definition (void const *service)
 					"For read: the most lines to give. The default is "
 					"as many as the response window holds."),
 				nullptr),
-			schema_names(required, ARRAY_SIZE(required))),
+			schema_names(required, array_size(required))),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(1),
 			"openWorldHint", json_object_new_boolean(0),
@@ -708,7 +708,7 @@ git_known (char const *key)
 		"repo", "command", "help", "options", "revisions", "paths", "pattern", "offset",
 		"line", "count"
 	};
-	for (size_t i = 0; i < ARRAY_SIZE(keys); ++i)
+	for (size_t i = 0; i < array_size(keys); ++i)
 		if (!strcmp(key, keys[i]))
 			return true;
 	return false;
@@ -739,9 +739,9 @@ git_call_command (struct git_call  *call,
 	call->repo = repo;
 	struct cstr_view const cmd = git_word(jb_get(args, "command"));
 	size_t c = 0;
-	while (c < ARRAY_SIZE(commands) && !cstr_view_equal(cmd, commands[c].name))
+	while (c < array_size(commands) && !cstr_view_equal(cmd, commands[c].name))
 		++c;
-	if (c == ARRAY_SIZE(commands)) {
+	if (c == array_size(commands)) {
 		if (cstr_view_equal(cmd, CSTR_VIEW("status")) ||
 		    cstr_view_equal(cmd, CSTR_VIEW("ls-files")))
 			return git_wrong(why, "git %.*s is unavailable: index and working-tree "
@@ -750,7 +750,7 @@ git_call_command (struct git_call  *call,
 			                 "files; revisions defaults to HEAD.",
 			                 (int)cmd.len, cmd.data);
 		git_wrong(why, "The command argument must be one of:");
-		for (size_t i = 0; i < ARRAY_SIZE(commands); ++i)
+		for (size_t i = 0; i < array_size(commands); ++i)
 			git_wrong(why, "%s %.*s", i ? "," : "", (int)commands[i].name.len,
 			          commands[i].name.data);
 		return git_wrong(why, ". Use help:true for its options.");
@@ -829,7 +829,7 @@ git_call_command (struct git_call  *call,
 	size_t k = 0;
 	char const **argv = call->argv;
 	argv[k++] = takes & LINES ? "cat-file" : cmd.data;
-	for (size_t i = 0; i < ARRAY_SIZE(commands[c].forced) && commands[c].forced[i];
+	for (size_t i = 0; i < array_size(commands[c].forced) && commands[c].forced[i];
 	     ++i)
 		argv[k++] = commands[c].forced[i];
 	/* The options, then the pattern, the revisions and the paths, each
@@ -1020,7 +1020,7 @@ git_call_run (struct git_call *call,
 {
 	char const *argv[GIT_ARGV] = { "git" };
 	size_t k = 1;
-	for (size_t i = 0; i < ARRAY_SIZE(fixed); ++i)
+	for (size_t i = 0; i < array_size(fixed); ++i)
 		argv[k++] = fixed[i];
 	argv[k++] = "-c";
 	argv[k++] = call->repo->safe;
@@ -1248,7 +1248,7 @@ git_ended (struct mcp_slot *slot,
 	};
 	int e = 0;
 	size_t taken;
-	for (size_t i = note.data ? 0 : ARRAY_SIZE(p); i < ARRAY_SIZE(p) && !e; ++i)
+	for (size_t i = note.data ? 0 : array_size(p); i < array_size(p) && !e; ++i)
 		e = mcp_slot_write(slot, p[i], 0, &taken);
 	if (e) {
 		mcp_slot_fail(slot, e);
@@ -1400,7 +1400,7 @@ git_read_head (struct git_read const *read,
 		                               cut ? "at least " : "", read->total)
 		            : CSTR_VIEW(": the file is empty.]"),
 	};
-	return git_write(slot, p, ARRAY_SIZE(p));
+	return git_write(slot, p, array_size(p));
 }
 
 /* Write the lines of the file @p blob from read->at on to @p slot, each
@@ -1499,7 +1499,7 @@ git_read_foot (struct git_read const *read,
 		git_digits(n + sizeof n, read->last + !kind, 0),
 		note[3],
 	};
-	return git_write(slot, p, ARRAY_SIZE(p));
+	return git_write(slot, p, array_size(p));
 }
 
 /* Pass mcp_slot_source() the numbered lines of the read in @p call, from

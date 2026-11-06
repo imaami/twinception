@@ -456,7 +456,7 @@ httpd_loopback_host (char const *host)
 	static struct cstr_view const names[] = {
 		CSTR_VIEW_INIT("localhost"), CSTR_VIEW_INIT("127.0.0.1"), CSTR_VIEW_INIT("[::1]")
 	};
-	for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+	for (size_t i = 0; i < array_size(names); ++i) {
 		if (strncasecmp(host, names[i].data, names[i].len))
 			continue;
 		char const *port = host + names[i].len;
@@ -1139,7 +1139,7 @@ httpd_conn_head (struct httpd_conn      *conn,
 	f[n++] = CSTR_VIEW("\r\n");
 	if (conn->closing)
 		f[n++] = CSTR_VIEW("Connection: close\r\n");
-	for (size_t i = 0; i < ARRAY_SIZE(framing); ++i)
+	for (size_t i = 0; i < array_size(framing); ++i)
 		f[n++] = framing[i];
 	if (origin.data) {
 		f[n++] = CSTR_VIEW("Access-Control-Allow-Origin: ");
@@ -1193,7 +1193,7 @@ httpd_conn_error (struct httpd_conn      *conn,
 		message.len ? message : httpd_reason(status),
 		CSTR_VIEW("\"}}"),
 	};
-	httpd_conn_respond(conn, status, extra, n_extra, body, ARRAY_SIZE(body));
+	httpd_conn_respond(conn, status, extra, n_extra, body, array_size(body));
 }
 
 /* Fail the request under way with @p status, taking the stream back from the
@@ -1230,7 +1230,7 @@ httpd_conn_preflight (struct httpd_conn *conn)
 		         : CSTR_VIEW(""),
 		CSTR_VIEW("Vary: Access-Control-Request-Headers\r\n"),
 	};
-	httpd_conn_respond(conn, 204, extra, ARRAY_SIZE(extra), nullptr, 0);
+	httpd_conn_respond(conn, 204, extra, array_size(extra), nullptr, 0);
 }
 
 static int
@@ -1281,7 +1281,7 @@ httpd_stream_data (struct stream *s,
 		f[0] = (struct cstr_view){ size, (size_t)(digits + sizeof digits - size) };
 		f[2] = CSTR_VIEW("\r\n");
 	}
-	if (httpd_conn_put(conn, f, ARRAY_SIZE(f)))
+	if (httpd_conn_put(conn, f, array_size(f)))
 		return EPIPE;
 	loop_work(srv->loop, LOOP_SEND, bytes.len);
 	loop_ready(srv->loop, &conn->step);
@@ -2695,7 +2695,7 @@ static struct {
 	[POLICY_SUBORDINATE] = { { httpd_subordinate, sizeof httpd_subordinate - 1 },
 	                         "subordinate uid" },
 };
-static_assert(ARRAY_SIZE(httpd_refusals) == ARRAY_SIZE((struct httpd_home){}.denied));
+static_assert(array_size(httpd_refusals) == array_size((struct httpd_home){}.denied));
 
 /*
  * Place the client on @p fd, from listener @p l, unless its address is at
@@ -2881,11 +2881,11 @@ httpd_home_tick (struct loop       *loop,
 		    " clients away", home->capped);
 	home->refused = home->capped = 0;
 	uint32_t denied = 0;
-	for (size_t i = 0; i < ARRAY_SIZE(home->denied); ++i)
+	for (size_t i = 0; i < array_size(home->denied); ++i)
 		denied |= home->denied[i];
 	if (denied)
 		LOG(LOG_WARN, "Unix socket peers turned away:");
-	for (size_t i = 0; i < ARRAY_SIZE(home->denied); ++i)
+	for (size_t i = 0; i < array_size(home->denied); ++i)
 		if (home->denied[i])
 			LOG(LOG_WARN, "  %-15s  %" PRIu32 " (last uid %" PRIu32 ")",
 			    httpd_refusals[i].name, home->denied[i], home->last[i]);
@@ -3432,7 +3432,7 @@ httpd_destroy (struct httpd **p_httpd)
 		httpd_conn_setup(conn, srv);
 	}
 	struct list *const lists[] = { &srv->idle, &srv->busy };
-	for (size_t i = 0; i < ARRAY_SIZE(lists); ++i)
+	for (size_t i = 0; i < array_size(lists); ++i)
 		while (!list_is_empty(lists[i]))
 			httpd_conn_close(container_of(lists[i]->next, struct httpd_conn, hook));
 	/* Home, which outlives the loop's server, has them back now. */

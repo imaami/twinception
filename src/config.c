@@ -68,7 +68,7 @@ static char const *const provider_names[] = {
  * No provider's are those of a URL that --url gives.
  */
 static struct {
-	char const  *url[ARRAY_SIZE(api_names)];
+	char const  *url[array_size(api_names)];
 	char const  *keys[2];
 	enum ai_api  api;
 } const providers[] = {
@@ -839,9 +839,9 @@ config_apply_number (struct config *cfg,
                      char const    *where)
 {
 	struct config_number const *n = numbers;
-	while (n < numbers + ARRAY_SIZE(numbers) && n->opt != opt)
+	while (n < numbers + array_size(numbers) && n->opt != opt)
 		++n;
-	if (n == numbers + ARRAY_SIZE(numbers))
+	if (n == numbers + array_size(numbers))
 		return 2;
 	uint64_t value;
 	if (config_parse_count(arg, n->min, n->max, n->bytes, &value))
@@ -877,14 +877,14 @@ config_apply (struct config *cfg,
 	struct ai_endpoint *ep = &cfg->ep;
 	switch (opt) {
 	case 'p': {
-		size_t i = config_find(provider_names, ARRAY_SIZE(provider_names), arg);
+		size_t i = config_find(provider_names, array_size(provider_names), arg);
 		if (!i)
 			return config_complain(cfg, where, "unknown provider: %s", arg);
 		ep->provider = (enum ai_provider)i;
 		break;
 	}
 	case OPT_API: {
-		size_t i = config_find(api_names, ARRAY_SIZE(api_names), arg);
+		size_t i = config_find(api_names, array_size(api_names), arg);
 		if (!i)
 			return config_complain(cfg, where, "unknown API: %s", arg);
 		ep->api = (enum ai_api)i;
@@ -1266,7 +1266,7 @@ static int
 config_lists (struct config *cfg)
 {
 	size_t room = (size_t)cfg->argc + 4;
-	for (size_t g = 1; g < ARRAY_SIZE(group_names); ++g)
+	for (size_t g = 1; g < array_size(group_names); ++g)
 		room += config_values(json_object_object_get(cfg->file, group_names[g]));
 	struct json_object *tools = json_object_object_get(cfg->file, "tools");
 	struct json_object_iter it;
@@ -1306,7 +1306,7 @@ static size_t
 config_tool_member (struct option const *o)
 {
 	size_t i = 0;
-	while (i + 1 < ARRAY_SIZE(tool_members) && tool_members[i].val != o->val)
+	while (i + 1 < array_size(tool_members) && tool_members[i].val != o->val)
 		++i;
 	return i;
 }
@@ -1335,7 +1335,7 @@ config_misplaced (struct config const *cfg,
 static bool
 config_is_tool (char const *name)
 {
-	for (size_t i = 0; i < ARRAY_SIZE(tool_members); ++i)
+	for (size_t i = 0; i < array_size(tool_members); ++i)
 		if (!strcmp(name, tool_members[i].tool))
 			return true;
 	return false;
@@ -1355,10 +1355,10 @@ config_apply_tool (struct config      *cfg,
 	struct json_object_iter it;
 	json_object_object_foreachC(obj, it) {
 		size_t i = 0;
-		while (i < ARRAY_SIZE(tool_members) && (strcmp(tool_members[i].tool, tool) ||
+		while (i < array_size(tool_members) && (strcmp(tool_members[i].tool, tool) ||
 		                                        strcmp(tool_members[i].name, it.key)))
 			++i;
-		if (i == ARRAY_SIZE(tool_members))
+		if (i == array_size(tool_members))
 			return config_complain(cfg, cfg->path, "tools.%s: unknown member %s",
 			                       tool, it.key);
 		struct option const *o = options;
@@ -1427,7 +1427,7 @@ config_apply_file (struct config *cfg)
 		if (config_of_policy(it.key) || !strcmp(it.key, "plugins") ||
 		    !strcmp(it.key, "tools"))
 			continue;
-		size_t g = config_find(group_names, ARRAY_SIZE(group_names), it.key);
+		size_t g = config_find(group_names, array_size(group_names), it.key);
 		struct option const *o = config_named(it.key);
 		int status = g ? config_apply_group(cfg, (enum config_group)g, it.val)
 		           : o && groups[o - options] == GROUP_ROOT
@@ -1474,7 +1474,7 @@ config_fit_limits (struct config *cfg)
 		lim->bodies, lim->client_bodies ? lim->client_bodies : SIZE_MAX
 	};
 	static char const *const names[] = { "--body-budget", "--client-budget" };
-	for (size_t i = 0; i < ARRAY_SIZE(budgets); ++i) {
+	for (size_t i = 0; i < array_size(budgets); ++i) {
 		if (lim->body <= budgets[i])
 			continue;
 		if (cfg->flags & CFG_BODY_GIVEN)
@@ -1706,7 +1706,7 @@ config_key_usual (struct config const *cfg,
 		return 0;
 	enum ai_provider p = cfg->ep.url ? AI_NO_PROVIDER : cfg->ep.provider;
 	char const *const *vars = providers[p].keys;
-	for (size_t i = 0; i < ARRAY_SIZE(providers[0].keys) && vars[i]; ++i) {
+	for (size_t i = 0; i < array_size(providers[0].keys) && vars[i]; ++i) {
 		char const *key = getenv(vars[i]);
 		if (key && *key)
 			return config_key_take(cfg, key, p_key);

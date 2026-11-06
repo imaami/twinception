@@ -386,7 +386,7 @@ notes_argv_prefix (struct notes const *notes,
 	argv[k++] = create ? notes->dir : notes->directory;
 	if (!create)
 		argv[k++] = "--git-dir=.";
-	for (size_t i = 0; i < ARRAY_SIZE(fixed); ++i)
+	for (size_t i = 0; i < array_size(fixed); ++i)
 		argv[k++] = fixed[i];
 	return k;
 }
@@ -397,9 +397,9 @@ notes_argv_command (struct notes const *notes,
                     enum notes_cmd      cmd,
                     char const         *argv[NOTES_ARGV])
 {
-	static_assert(4 + ARRAY_SIZE(fixed) + ARRAY_SIZE(cmds[0]) + 3 <= NOTES_ARGV);
+	static_assert(4 + array_size(fixed) + array_size(cmds[0]) + 3 <= NOTES_ARGV);
 	size_t k = notes_argv_prefix(notes, cmd == NOTES_CREATE, argv);
-	for (size_t i = 0; i < ARRAY_SIZE(cmds[cmd]) && cmds[cmd][i]; ++i)
+	for (size_t i = 0; i < array_size(cmds[cmd]) && cmds[cmd][i]; ++i)
 		argv[k++] = cmds[cmd][i];
 	if (cmd == NOTES_CREATE)
 		argv[k++] = ".";
@@ -441,7 +441,7 @@ notes_ancestor_argv (struct notes const *notes,
                      char const         *tip,
                      char const         *argv[NOTES_ARGV])
 {
-	static_assert(4 + ARRAY_SIZE(fixed) + 5 <= NOTES_ARGV);
+	static_assert(4 + array_size(fixed) + 5 <= NOTES_ARGV);
 	size_t k = notes_argv_prefix(notes, false, argv);
 	argv[k++] = "merge-base";
 	argv[k++] = "--is-ancestor";
@@ -461,9 +461,9 @@ notes_diff_argv (struct notes const *notes,
 		"diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color",
 		"--submodule=short",
 	};
-	static_assert(4 + ARRAY_SIZE(fixed) + ARRAY_SIZE(diff) + 5 <= NOTES_ARGV);
+	static_assert(4 + array_size(fixed) + array_size(diff) + 5 <= NOTES_ARGV);
 	size_t k = notes_argv_prefix(notes, false, argv);
-	for (size_t i = 0; i < ARRAY_SIZE(diff); ++i)
+	for (size_t i = 0; i < array_size(diff); ++i)
 		argv[k++] = diff[i];
 	argv[k++] = from;
 	argv[k++] = to;
@@ -557,7 +557,7 @@ notes_revision_history_argv (struct notes_revision const *revision,
                              char const                  *repo,
                              char const                  *argv[NOTES_ARGV])
 {
-	static_assert(4 + ARRAY_SIZE(fixed) + ARRAY_SIZE(cmds[NOTES_LIST]) + 4 <= NOTES_ARGV);
+	static_assert(4 + array_size(fixed) + array_size(cmds[NOTES_LIST]) + 4 <= NOTES_ARGV);
 	size_t k = notes_argv_command(notes, repo, NOTES_LIST, argv);
 	argv[k++] = revision->file;
 	argv[k] = nullptr;

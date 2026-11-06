@@ -545,7 +545,7 @@ ai_event_error (struct json_object *ev)
 	struct json_object *const words[] = {
 		jb_get(error, "message"), error, erred ? jb_get(ev, "message") : nullptr
 	};
-	for (size_t i = 0; i < ARRAY_SIZE(words); ++i) {
+	for (size_t i = 0; i < array_size(words); ++i) {
 		char const *msg = jb_text(words[i]);
 		if (msg)
 			return msg;
@@ -1490,7 +1490,7 @@ ai_describe_error (struct dstr        *text,
 	};
 	if (!dstr_printf(text, "Upstream error (HTTP %ld): ", status))
 		return ENOMEM;
-	for (size_t i = 0; i < ARRAY_SIZE(words); ++i) {
+	for (size_t i = 0; i < array_size(words); ++i) {
 		char const *msg = jb_text(words[i]);
 		if (msg)
 			return dstr_cat(text, msg) ? 0 : ENOMEM;
@@ -1662,7 +1662,7 @@ ai_answer (enum ai_api         api,
 		[AI_GENERATE]     = ai_generate_answer,
 		[AI_INTERACTIONS] = ai_interactions_answer,
 	};
-	if (!api || api >= ARRAY_SIZE(answers))
+	if (!api || api >= array_size(answers))
 		return EINVAL;
 	char const *reason = nullptr;
 	int e = answers[api](root, text, &reason);

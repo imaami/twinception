@@ -134,7 +134,7 @@ static void
 loop_metrics_init (struct loop_metrics *m)
 {
 	hist_init(&m->turn);
-	for (size_t i = 0; i < ARRAY_SIZE(m->step); ++i)
+	for (size_t i = 0; i < array_size(m->step); ++i)
 		hist_init(&m->step[i]);
 	hist_init(&m->late);
 	hist_init(&m->inbox);
@@ -247,7 +247,7 @@ loop_init (struct loop *loop)
 	loop->now = loop_clock();
 	list_init(&loop->refs);
 	list_init(&loop->dead);
-	for (size_t i = 0; i < ARRAY_SIZE(loop->ready); ++i)
+	for (size_t i = 0; i < array_size(loop->ready); ++i)
 		list_init(&loop->ready[i]);
 	loop->epfd = epoll_create1(EPOLL_CLOEXEC);
 	if (loop->epfd < 0)
@@ -344,7 +344,7 @@ loop_fini (struct loop *loop)
 		loop_unwatch(loop, ref);
 	}
 	loop_reap(loop);
-	for (size_t i = 0; i < ARRAY_SIZE(loop->ready); ++i)
+	for (size_t i = 0; i < array_size(loop->ready); ++i)
 		while (!list_is_empty(&loop->ready[i]))
 			loop_unready(container_of(loop->ready[i].next, struct loop_step,
 			                          hook));

@@ -491,7 +491,7 @@ notes_tool_raced (struct child const *child)
 		CSTR_VIEW(" but expected "), CSTR_VIEW("File exists"),
 	};
 	struct span out = buf_peek(&child->out);
-	for (size_t i = 0; i < ARRAY_SIZE(raced) && out.len; ++i)
+	for (size_t i = 0; i < array_size(raced) && out.len; ++i)
 		if (memmem(out.ptr, out.len, raced[i].data, raced[i].len))
 			return true;
 	return false;
@@ -756,7 +756,7 @@ notes_tool_added (struct mcp_slot *slot)
 		notes_tool_actions[call->action].fetch & (FETCH_REPLACE | FETCH_RESTORE)
 		? CSTR_VIEW(". Previous versions remain in history.") : CSTR_VIEW("."),
 	};
-	notes_tool_wrote(slot, notes_tool_call_say(call, p, ARRAY_SIZE(p)));
+	notes_tool_wrote(slot, notes_tool_call_say(call, p, array_size(p)));
 }
 
 /* Appends the history in @p out, the output of git for NOTES_LIST, to
@@ -1228,7 +1228,7 @@ notes_tool_prompt_list (struct mcp_slot  *slot,
 			{ name.data, jb_utf8(name.data, name.len) },
 			CSTR_VIEW(":]\n\n"),
 		};
-		e = notes_tool_call_say(call, p, ARRAY_SIZE(p));
+		e = notes_tool_call_say(call, p, array_size(p));
 		e = e ? e : notes_read_input(&in, call->repo, name);
 	} else if (!e && name.len) {
 		e = notes_tool_call_say(call, &CSTR_VIEW("\n[askai: the newest note could not "
@@ -1281,7 +1281,7 @@ notes_tool_newest (struct mcp_slot *slot)
 		CSTR_VIEW("\n"),
 	};
 	bool newline = body.len && body.data[body.len - 1] == '\n';
-	notes_tool_then(slot, notes_tool_call_say(call, p, newline && !more.len ? 1 : ARRAY_SIZE(p)));
+	notes_tool_then(slot, notes_tool_call_say(call, p, newline && !more.len ? 1 : array_size(p)));
 }
 
 /* Handles the list of the notes for the start of an ask call. The list
@@ -1543,7 +1543,7 @@ notes_tool_revision (struct mcp_slot          *slot,
 {
 	struct cstr_view ids[2] = {};
 	bool bad = !revisions[0] && (fetch & (FETCH_DIFF | FETCH_RESTORE));
-	for (size_t i = 0; !bad && i < ARRAY_SIZE(ids); ++i) {
+	for (size_t i = 0; !bad && i < array_size(ids); ++i) {
 		ids[i] = jb_view(revisions[i]);
 		bad = revisions[i] && !util_is_oid(ids[i].data, ids[i].len) &&
 		      !cstr_view_equal(ids[i], CSTR_VIEW("current"));
@@ -1591,14 +1591,14 @@ notes_tool_start (struct mcp_slot    *slot,
 	bool uploads = call->side == NOTES_UPSTREAM && call->loop->tool->attach;
 	struct cstr_view const action = jb_view(jb_get(args, "action"));
 	size_t which = 0;
-	while (which < ARRAY_SIZE(notes_tool_actions) &&
+	while (which < array_size(notes_tool_actions) &&
 	       !cstr_view_equal(action, notes_tool_actions[which].name))
 		++which;
-	if (which == ARRAY_SIZE(notes_tool_actions) ||
+	if (which == array_size(notes_tool_actions) ||
 	    ((notes_tool_actions[which].flags & NOTE_UPLOAD) && !uploads)) {
 		dstr_auto why = DSTR_INIT;
 		bool ok = dstr_cat(&why, "The action must be one of:");
-		for (size_t i = 0; ok && i < ARRAY_SIZE(notes_tool_actions); ++i)
+		for (size_t i = 0; ok && i < array_size(notes_tool_actions); ++i)
 			if (uploads || !(notes_tool_actions[i].flags & NOTE_UPLOAD))
 				ok = dstr_printf(&why, " %.*s", (int)notes_tool_actions[i].name.len,
 				                 notes_tool_actions[i].name.data);
@@ -1724,7 +1724,7 @@ notes_tool_schema (struct notes_tool const *tool,
 	bool files = side == NOTES_UPSTREAM && tool->attach;
 	size_t most = tool->files_inline;
 	struct json_object *actions = json_object_new_array();
-	for (size_t i = 0; actions && i < ARRAY_SIZE(notes_tool_actions); ++i)
+	for (size_t i = 0; actions && i < array_size(notes_tool_actions); ++i)
 		if (files || !(notes_tool_actions[i].flags & NOTE_UPLOAD))
 			actions = jb_push_or_free(actions, jb_string(notes_tool_actions[i].name));
 	struct json_object *props = jb_object(

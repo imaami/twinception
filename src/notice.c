@@ -74,7 +74,7 @@ notice_kept (char const *text,
 		char const *nl = memrchr(text, '\n', end);
 		size_t line = nl ? (size_t)(nl - text) + 1 : 0;
 		bool notice = false;
-		for (size_t i = 0; !notice && i < ARRAY_SIZE(notice_formats); ++i)
+		for (size_t i = 0; !notice && i < array_size(notice_formats); ++i)
 			notice = notice_is(notice_formats[i], text + line, end - line);
 		if (!notice)
 			break;

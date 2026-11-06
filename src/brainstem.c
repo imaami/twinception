@@ -321,7 +321,7 @@ brainstem_nap (struct brainstem *bs,
 		{ .fd = bs->wake_fd, .events = POLLIN },
 		{ .fd = bs->sig_fd, .events = POLLIN },
 	};
-	if (ppoll(fds, ARRAY_SIZE(fds), until == UINT64_MAX ? nullptr : &ts,
+	if (ppoll(fds, array_size(fds), until == UINT64_MAX ? nullptr : &ts,
 	          nullptr) <= 0)
 		return false;
 	if (fds[0].revents) {
@@ -752,7 +752,7 @@ brainstem_psi (struct brainstem *bs,
 {
 #define PSI "/proc/pressure/"
 	static char const *const files[] = { PSI "cpu", PSI "memory", PSI "io" };
-	for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
+	for (size_t i = 0; i < array_size(files); ++i) {
 		char const *name = files[i] + sizeof PSI - 1;
 		double avg10;
 		unsigned long long total;
@@ -804,7 +804,7 @@ brainstem_mind (struct brainstem *bs,
 {
 	uint64_t next = until;
 	uint64_t const due[] = { bs->tick, bs->sample, bs->deadline };
-	for (size_t i = 0; i < ARRAY_SIZE(due); ++i)
+	for (size_t i = 0; i < array_size(due); ++i)
 		next = due[i] < next ? due[i] : next;
 	if (brainstem_nap(bs, next))
 		brainstem_signals(bs);
@@ -1006,7 +1006,7 @@ brainstem_block (void)
 	sigset_t all;
 	sigset_t old;
 	sigfillset(&all);
-	for (size_t i = 0; i < ARRAY_SIZE(faults); ++i)
+	for (size_t i = 0; i < array_size(faults); ++i)
 		sigdelset(&all, faults[i]);
 	pthread_sigmask(SIG_BLOCK, &all, &old);
 	/* libcurl leaves SIGPIPE to us because CURLOPT_NOSIGNAL is set. */
@@ -1026,7 +1026,7 @@ brainstem_mine (struct brainstem_cfg const *cfg)
 	static int const stops[] = { SIGHUP, SIGINT, SIGTERM };
 	sigset_t mine;
 	sigemptyset(&mine);
-	for (size_t i = 0; i < ARRAY_SIZE(stops); ++i) {
+	for (size_t i = 0; i < array_size(stops); ++i) {
 		struct sigaction sa = {};
 		(void)sigaction(stops[i], nullptr, &sa);
 		if (sa.sa_handler != SIG_IGN || (stops[i] == SIGHUP && cfg->home.reload))
