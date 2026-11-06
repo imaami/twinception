@@ -125,18 +125,6 @@ enum : uint64_t {
 	RECOVERY_FINAL     = 1u << 7,  /* the final thought boundary is written */
 };
 
-/* Archive writes gate parsing, not reception; the wire and each event
- * remain bounded. A restored job restarts its provider stream from the
- * beginning, which home_start() reattaches to.
- */
-struct home_recovery {
-	char     *provider_id;
-	uint64_t  thought_offset;
-	uint64_t  flags;    /* RECOVERY_* */
-	uint32_t  pending;  /* journal writes under way */
-	int       error;    /* the last error of a journal write, or 0 */
-};
-
 /*
  * Every job in flight is on the timeline, in the order of its deadline: the
  * front's, from its submission, while it waits, and from its start upstream
@@ -254,26 +242,18 @@ home_native (struct home const *home)
 void
 home_job_recovery_fini (struct job *job)
 {
-	struct home_recovery *r = job->recovery;
-	if (!r)
-		return;
-	free(r->provider_id);
-	r->provider_id = nullptr;
-	free(r);
-	job->recovery = nullptr;
+	free(job->recovery.provider_id);
+	job->recovery = (struct home_recovery){};
 }
 
 int
 home_job_restore (struct job                  *job,
                   struct journal_record const *records)
 {
-	if (job->recovery)
+	struct home_recovery *r = &job->recovery;
+	if (r->flags)
 		return EBUSY;
-	struct home_recovery *r = calloc(1, sizeof *r);
-	if (!r)
-		return ENOMEM;
-	job->recovery = r;
-	r->flags |= RECOVERY_RESTORING;
+	r->flags = RECOVERY_RESTORING;
 	for (; records; records = records->next) {
 		if (strcmp(records->kind, "meta"))
 			continue;
@@ -430,8 +410,8 @@ home_job_end (struct job      *job,
               enum job_status  status)
 {
 	job->status = (uint8_t)status;
-	if (job->recovery && job->recovery->pending) {
-		job->recovery->flags |= RECOVERY_ENDING;
+	if (job->recovery.pending) {
+		job->recovery.flags |= RECOVERY_ENDING;
 		return;
 	}
 	switch (job->flags & (DELTA_PENDING | DROPPED)) {
@@ -570,7 +550,7 @@ home_native_cancel (struct home *home,
 {
 	if (!home_native(home) || (job->flags & (RUNNING | PROVIDER_DONE)) != RUNNING)
 		return;
-	if (!job->cancel_url && job->recovery && job->recovery->provider_id)
+	if (!job->cancel_url && job->recovery.provider_id)
 		(void)home_provider_url(home, job, true, &job->cancel_url);
 	if (!job->cancel_url) {
 		LOG(LOG_WARN, "native background cancellation unavailable: no provider job id");
@@ -641,7 +621,7 @@ home_end (struct home      *home,
           _Atomic uint64_t *count)
 {
 	bool durable = job->asks & JOB_DURABLE;
-	bool explicit_cancel = job->recovery && job->recovery->flags & RECOVERY_CANCEL;
+	bool explicit_cancel = job->recovery.flags & RECOVERY_CANCEL;
 	if ((status == JOB_CANCELLED || status == JOB_FAILED) &&
 	    (!durable || explicit_cancel))
 		home_native_cancel(home, job);
@@ -743,7 +723,7 @@ home_job_cuttable (struct home const *home,
                    struct job const  *job)
 {
 	return !home_native(home) && !(job->asks & JOB_DURABLE) && job->transfer &&
-	       !(job->recovery && (job->recovery->pending || job->recovery->thought_offset)) &&
+	       !(job->recovery.pending || job->recovery.thought_offset) &&
 	       !(job->flags & (PROBE | DELIVERED | ENDED));
 }
 
@@ -914,9 +894,8 @@ home_finish (struct home *home,
 	home_breaker_note(home, job, failed, retry);
 	if (result || job->flags & ERRED) {
 		(void)home_explain(home, job, result, error);
-		struct home_recovery const *r = job->recovery;
 		bool resumable = result && failed && !(job->flags & (ERRED | PROVIDER_DONE)) &&
-		                 job->asks & JOB_DURABLE && job->journal && r && r->provider_id &&
+		                 job->asks & JOB_DURABLE && job->journal && job->recovery.provider_id &&
 		                 home_native(home) &&
 		                 (!job->deadline || home->loop->now < job->deadline);
 		home_end(home, job, resumable ? JOB_SUSPENDED : JOB_FAILED,
@@ -951,12 +930,21 @@ home_hold (struct home *home,
 	loop_ready_bulk(home->loop, &home->resume);
 }
 
+/* Whether @p job's stream waits for its front to drain the delta mailbox,
+ * or for a journal write.
+ */
+static bool
+home_job_waits (struct job const *job)
+{
+	return job->flags & DELTA_PENDING || job->recovery.pending;
+}
+
 /* Have the feed step read @p job's stream. */
 static void
 home_feed (struct home *home,
            struct job  *job)
 {
-	if (job->flags & DELTA_PENDING || (job->recovery && job->recovery->pending))
+	if (home_job_waits(job))
 		return;
 	if (list_is_empty(&job->feed))
 		list_append(&home->feeding, &job->feed);
@@ -1066,7 +1054,7 @@ home_job_done (CURLcode    result,
 	/* An archive write under way, or the events still to read of a
 	 * native background stream, wait for the transfer's end, which the
 	 * job keeps. */
-	bool pending = job->recovery && job->recovery->pending;
+	bool pending = job->recovery.pending;
 	bool events = result && job->flags & STREAM && ai_background(home->ep) &&
 	              buf_peek(&job->wire).len;
 	struct home_delivery_error *d = pending || events ? malloc(sizeof *d) : nullptr;
@@ -1081,8 +1069,8 @@ home_job_done (CURLcode    result,
 	}
 	if (pending) {
 		if (!d)
-			job->recovery->error = ENOMEM;
-		job->recovery->flags |= RECOVERY_DEFERRED;
+			job->recovery.error = ENOMEM;
+		job->recovery.flags |= RECOVERY_DEFERRED;
 		return;
 	}
 	if (d) {
@@ -1107,7 +1095,7 @@ home_journal_done (struct loop *loop,
 {
 	struct home *home = self;
 	struct job *job = arg;
-	struct home_recovery *r = job->recovery;
+	struct home_recovery *r = &job->recovery;
 	--r->pending;
 	if (home)
 		--home->persisting;
@@ -1169,7 +1157,7 @@ home_metadata (struct home     *home,
 {
 	if (!job->journal)
 		return 0;
-	struct home_recovery *r = job->recovery;
+	struct home_recovery *r = &job->recovery;
 	struct json_object *meta = jb_object(
 		"turn", json_object_new_uint64(job->archive_turn),
 		"provider", json_object_new_string(home_llama(home) ? "llama" :
@@ -1206,7 +1194,7 @@ home_connect (struct home *home,
 			return e;
 		home_archive_pending(home, job);
 	}
-	job->recovery->flags |= RECOVERY_OPENING | (resume ? RECOVERY_RESUME : 0);
+	job->recovery.flags |= RECOVERY_OPENING | (resume ? RECOVERY_RESUME : 0);
 	return home_metadata(home, job, resume, home_journal_done);
 }
 
@@ -1216,7 +1204,6 @@ home_open (struct home *home,
             bool         resume)
 {
 	struct ai_endpoint const *ep = home->ep;
-	struct home_recovery *r = job->recovery;
 	char *url = nullptr;
 	int e = resume ? home_provider_url(home, job, false, &url) : 0;
 	if (e)
@@ -1238,7 +1225,8 @@ home_open (struct home *home,
 			if (!cstr_view_starts_case(cstr_view(ep->headers[k]),
 			                           CSTR_VIEW("X-Conversation-Id:")))
 				headers[kept++] = ep->headers[k];
-		util_format(conversation, sizeof conversation, "X-Conversation-Id: %s", r->provider_id);
+		util_format(conversation, sizeof conversation, "X-Conversation-Id: %s",
+		            job->recovery.provider_id);
 		headers[kept] = conversation;
 	}
 	struct span body = buf_peek(&job->request);
@@ -1303,15 +1291,10 @@ home_start (struct home *home,
 		job->deadline = home->timeout ? loop->now + home->timeout : 0;
 	home_timeline(home, job);
 	home_job_progress(job, 0);
-	if (!job->recovery && (job->journal || home_native(home)) &&
-	    !(job->recovery = calloc(1, sizeof *job->recovery))) {
-		home_end(home, job, JOB_FAILED, &m->completed);
-		return;
-	}
 	/* A restored job reattaches to its provider stream; it never submits
 	 * the original request again. */
-	struct home_recovery *r = job->recovery;
-	bool resume = r && r->flags & RECOVERY_RESTORING;
+	struct home_recovery *r = &job->recovery;
+	bool resume = r->flags & RECOVERY_RESTORING;
 	int e = 0;
 	if (resume) {
 		r->flags &= ~RECOVERY_RESTORING;
@@ -1324,12 +1307,9 @@ home_start (struct home *home,
 	if (!e)
 		e = home_connect(home, job, resume);
 	if (e) {
-		if (resume)
-			(void)home_job_say(job, "Cannot reattach provider stream: %s. The "
-			                   "original request will not be submitted again.",
-			                   strerror(e));
-		else
-			(void)home_job_say(job, "Cannot start provider stream: %s", strerror(e));
+		(void)home_job_say(job, resume ? "Cannot reattach provider stream: %s. The "
+		                                 "original request will not be submitted again."
+		                               : "Cannot start provider stream: %s", strerror(e));
 		home_end(home, job, JOB_FAILED, &m->completed);
 	}
 }
@@ -1580,7 +1560,7 @@ static void
 home_archive_pending (struct home *home,
                       struct job  *job)
 {
-	++job->recovery->pending;
+	++job->recovery.pending;
 	++home->persisting;
 	atomic_fetch_add_explicit(&job->refs, 1, memory_order_relaxed);
 }
@@ -1595,7 +1575,7 @@ home_thought_end (struct home *home,
                   struct job  *job,
                   bool         final)
 {
-	struct home_recovery *r = job->recovery;
+	struct home_recovery *r = &job->recovery;
 	uint64_t const thought = r->flags & (RECOVERY_THOUGHT | RECOVERY_FINAL);
 	if (!job->journal || thought & RECOVERY_FINAL || (!thought && !final))
 		return 0;
@@ -1632,7 +1612,7 @@ home_journal_thought (struct home      *home,
                       struct job       *job,
                       struct cstr_view  text)
 {
-	struct home_recovery *r = job->recovery;
+	struct home_recovery *r = &job->recovery;
 	int e = text.len > UINT64_MAX - r->thought_offset ? EOVERFLOW :
 	        journal_thought(job->journal, &job->archive, job->archive_turn,
 	                        r->thought_offset, text.data, text.len, home->loop,
@@ -1829,8 +1809,8 @@ home_provider_url (struct home *home,
                     bool         cancel,
                     char       **out)
 {
-	struct home_recovery *r = job->recovery;
-	if (!r || !r->provider_id || !*r->provider_id)
+	struct home_recovery const *r = &job->recovery;
+	if (!r->provider_id || !*r->provider_id)
 		return ENODATA;
 	if (!home_native(home))
 		return ENOTSUP;
@@ -1921,8 +1901,8 @@ home_native_id (struct home        *home,
 	char *copy = strndup(id.data, id.len);
 	if (!copy)
 		return ENOMEM;
-	free(job->recovery->provider_id);
-	job->recovery->provider_id = copy;
+	free(job->recovery.provider_id);
+	job->recovery.provider_id = copy;
 	return home_provider_url(home, job, true, &job->cancel_url);
 }
 
@@ -2012,9 +1992,9 @@ home_take (struct home        *home,
 	} else if (e == EILSEQ) {
 		(void)home_job_erred(job, "an answer that is not text", -1);
 	}
-	if (e && job->recovery && job->recovery->error) {
+	if (e && job->recovery.error) {
 		(void)home_job_say(job, "Transcript persistence failed: %s",
-		                   strerror(job->recovery->error));
+		                   strerror(job->recovery.error));
 		job->flags |= ERRED;
 	}
 	if (!(job->flags & DROPPED) && buf_peek(&job->delta).len) {
@@ -2209,7 +2189,7 @@ home_read_stream (struct home *home,
                   struct job  *job)
 {
 	for (;;) {
-		if (job->flags & DELTA_PENDING || (job->recovery && job->recovery->pending)) {
+		if (home_job_waits(job)) {
 			list_del(&job->feed);
 			return true;
 		}
@@ -2231,10 +2211,6 @@ home_feed_step (struct loop      *loop,
 	struct home *home = container_of(step, struct home, feed);
 	while (!list_is_empty(&home->feeding)) {
 		struct job *job = container_of(home->feeding.next, struct job, feed);
-		if (job->recovery && job->recovery->pending) {
-			list_del(&job->feed);
-			continue;
-		}
 		if (home_read_stream(home, job))
 			continue;
 		list_del(&job->feed);
@@ -2705,8 +2681,7 @@ home_release (struct home *home,
               uint32_t     bits)
 {
 	home_delta_release(job);
-	if (job->recovery)
-		job->recovery->flags |= bits & JOB_CANCEL ? RECOVERY_CANCEL : 0;
+	job->recovery.flags |= bits & JOB_CANCEL ? RECOVERY_CANCEL : 0;
 	if (job->transfer) {
 		job->flags |= DROPPED;
 		home_drop(home, job);

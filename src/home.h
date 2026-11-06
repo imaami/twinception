@@ -71,13 +71,15 @@ struct journal_record;
  *  home_start() then reconnects to the provider's stream of that job, and
  *  does not send the request again. Returns 0, EBUSY if @p job already
  *  has recovery state, EPROTO if a "meta" record cannot be parsed, or
- *  ENOMEM if the recovery state cannot be allocated.
+ *  ENOMEM if the provider's job id cannot be copied.
  */
 extern int
 home_job_restore (struct job                  *job,
                   struct journal_record const *records);
 
-/** Free a job's recovery state after its last home reference is gone. */
+/** Free the provider's job id in a job's recovery state and clear the
+ *  state, after the last home reference to the job is gone.
+ */
 extern void
 home_job_recovery_fini (struct job *job);
 

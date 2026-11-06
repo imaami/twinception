@@ -59,7 +59,6 @@
 
 struct home_principal;
 struct home_delivery_error;
-struct home_recovery;
 struct http_request;
 struct journal;
 
@@ -160,6 +159,18 @@ struct job_delta {
 	uint32_t thought;
 };
 
+/** Home's state of the journal and the recovery of a job (home.c). A
+ *  zeroed one is no state.
+ */
+struct home_recovery {
+	char     *provider_id;     /**< the id of the provider's native job, or
+	                                nullptr */
+	uint64_t  thought_offset;  /**< bytes of thinking in the journal */
+	uint64_t  flags;           /**< home's RECOVERY_* bits */
+	uint32_t  pending;         /**< journal writes under way */
+	int       error;           /**< the last error of a journal write, or 0 */
+};
+
 /** An upstream call, shared by its front and home (R4). */
 struct job {
 	struct msg             to_home;     /**< SUBMIT, CANCEL: the front posts it */
@@ -208,9 +219,9 @@ struct job {
 	struct home_principal *who;         /**< home's: whose queue it is on */
 	struct home_delivery_error *delivery_error; /**< home's: transfer error kept
 	                                               while buffered events drain */
-	struct home_recovery  *recovery;    /**< home's: journal and replay state */
 	struct journal        *journal;     /**< the front's: shared reasoning archive
 	                                         and recovery checkpoint writer */
+	struct home_recovery   recovery;    /**< home's: journal and replay state */
 	struct handle          call;        /**< the front's: what waits for it */
 	uint64_t               deadline;    /**< the front writes, before SUBMIT, when
 	                                         the call times out waiting, and home
