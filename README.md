@@ -507,8 +507,9 @@ quoted. Repository metadata and object storage remain trusted: this view is
 not an operating-system sandbox.
 
 The reply is `git`'s output, made UTF-8 text and cut at 4 MiB with a note saying
-so, from the byte an optional `offset` names. History validation failures return
-a generic error. Failed `show` and `cat-file` calls
+so, from the byte an optional `offset` names. A revision that names no readable
+commit gets one text, which lists the possible causes, so that a caller cannot
+tell a missing hash from an unreachable one. Failed `show` and `cat-file` calls
 return a generic committed-object error, and a failed `read` says only that
 the commit has no file at that path, hiding Git's hints about local files;
 other Git errors are preserved. `read` runs `git cat-file blob` with its errors

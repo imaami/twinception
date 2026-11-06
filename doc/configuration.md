@@ -1421,8 +1421,9 @@ output gives the exact next `offset` to use with the same arguments. `read`
 gives the whole lines that fit the window and pages by `line` instead; only a
 line longer than the window is cut by bytes. A
 successful search with no matches says `[No matches.]`;
-other nonzero Git exits are reported as errors. History validation failures are
-generic. Failed `read`, `show` and `cat-file`
+other nonzero Git exits are reported as errors. A revision that names no
+readable commit gets one text that lists the causes, the same for a hash that
+does not exist and one that is not reachable. Failed `read`, `show` and `cat-file`
 calls return a generic committed-object error so Git's local-file existence
 hints cannot reveal uncommitted paths.
 

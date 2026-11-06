@@ -1149,11 +1149,24 @@ git_call_advance (struct git_call *call,
 		git_call_run(call, slot);
 		return;
 	}
+	/* rev-parse fails (EINVAL) for a root that names no commit, and rev-list
+	 * lists one that the refs do not reach (EACCES). Both get one text, so
+	 * that a caller cannot learn from it whether an unreachable object
+	 * exists. */
+	bool const revision = call->phase >= GIT_RESOLVE && (e == EINVAL || e == EACCES);
 	git_drop(slot);
+	if (e == ENOMEM) {
+		mcp_slot_fail(slot, e);
+		return;
+	}
 	mcp_slot_tell(slot, late ? CSTR_VIEW("Git history validation timed out.")
-	                         : CSTR_VIEW("Cannot read the requested committed history. "
-	                                     "Use commits reachable from HEAD, branches, "
-	                                     "tags or remote-tracking refs."), TOOL_FAILED);
+	                  : revision ? CSTR_VIEW("A revision names no commit that the git tool "
+	                                         "can read: a name or hash that does not exist, "
+	                                         "~N past the first commit, a blob or tree hash "
+	                                         "(use commit:path), or a commit that HEAD, "
+	                                         "branches, tags and remote-tracking refs do not "
+	                                         "reach.")
+	                  : CSTR_VIEW("Git cannot read the repository."), TOOL_FAILED);
 }
 
 /* Returns true if the string @p path contains a ':' and digits after it

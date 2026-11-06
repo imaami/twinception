@@ -8582,6 +8582,7 @@ FAKE_GIT = r"""#!/bin/sh
 dir=${0%/*}
 case " $* " in *" for-each-ref "*)
     [ -e "$dir/vanish" ] && /bin/chmod -x "$0"
+    [ -e "$dir/broken" ] && exit 2
     ;;
 esac
 rev= seen= command=
@@ -8720,6 +8721,11 @@ def check_git(binary, up):
                                                     "arguments": arguments})
             assert status == 200, (status, body)
             return body["result"]
+
+        history = ("A revision names no commit that the git tool can read: a name or "
+                   "hash that does not exist, ~N past the first commit, a blob or tree "
+                   "hash (use commit:path), or a commit that HEAD, branches, tags and "
+                   "remote-tracking refs do not reach.")
 
         with Askai(binary, "-u", up.url(), "--git", repo, "--git", f"{d}/other",
                    "--git-timeout", "1", env=env) as ai:
@@ -8971,7 +8977,7 @@ def check_git(binary, up):
             assert not result.get("isError") and \
                 text_of(result) == "[No matches.]", result
             result = call(ai, repo="proj", command="show", revisions=["nosuch"])
-            assert result.get("isError") and "committed" in text_of(result), result
+            assert result.get("isError") and text_of(result) == history, result
             result = call(ai, repo="proj", command="cat-file", options=["-p"],
                           revisions=["HEAD:big.txt"])
             assert not result.get("isError") and text_of(result) == "x" * (4 << 20) + \
@@ -9002,11 +9008,23 @@ def check_git(binary, up):
                 f"{topic}:ä.txt:1:alpha\n"
             assert text_of(call(ai, repo="proj", command="rev-parse",
                                 revisions=["HEAD"])) == head + "\n"
-            result = call(ai, repo="proj", command="rev-parse", revisions=["a.txt"])
-            assert result.get("isError") and "committed" in text_of(result), result
-            result = call(ai, repo="proj", command="cat-file", options=["-e"],
-                          revisions=["0" * 40])
-            assert result.get("isError") and "committed" in text_of(result), result
+            # Every revision that names no readable commit gets one text.
+            blob = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD:a.txt"], text=True,
+                                  capture_output=True, check=True,
+                                  env=os.environ | git).stdout.strip()
+            for command, revision in (("rev-parse", "a.txt"), ("rev-parse", "HEAD~9999"),
+                                      ("rev-parse", blob), ("cat-file", "0" * 40)):
+                result = call(ai, repo="proj", command=command, revisions=[revision],
+                              **({"options": ["-e"]} if command == "cat-file" else {}))
+                assert result.get("isError") and text_of(result) == history, result
+            # A repository that git cannot read is not a revision's fault.
+            open(f"{fake}/broken", "w").close()
+            try:
+                result = call(ai, repo="proj", command="log")
+            finally:
+                os.unlink(f"{fake}/broken")
+            assert result.get("isError") and \
+                text_of(result) == "Git cannot read the repository.", result
 
             # The committed tree defines the work. Neither the index nor the
             # worktree may change which files, contents or names are visible.
@@ -9380,17 +9398,25 @@ def check_git_scope(binary, up):
                 denied = (saved[:12], staged, staged[:12], untracked, untracked[:12],
                           "MERGE_AUTOSTASH", "MERGE_AUTOSTASH^2", "refs/private/saved",
                           detached)
+                # An unreachable commit gets the text of a hash that does not
+                # exist, so that a caller cannot tell the two apart.
+                gone = text_of(call(ai, "scope", "show", revisions=["0" * len(base)]))
+                assert gone.startswith("A revision names no commit that the git tool "
+                                       "can read"), gone
                 for revision in denied:
                     for command, arguments in (("show", {}),
                                                ("cat-file", {"options": ["-p"]})):
                         result = call(ai, "scope", command, revisions=[revision], **arguments)
-                        assert result.get("isError"), (command, revision, result)
+                        assert result.get("isError") and text_of(result) == gone, \
+                            (command, revision, result)
                     result = call(ai, "scope", "read", revisions=[revision + ":a.txt"])
-                    assert result.get("isError"), (revision, result)
+                    assert result.get("isError") and text_of(result) == gone, \
+                        (revision, result)
                 for revision in (saved, saved[:12], "MERGE_AUTOSTASH", "refs/private/saved"):
                     result = call(ai, "scope", "blame", paths=["a.txt"],
                                   options=["--ignore-rev=" + revision])
-                    assert result.get("isError"), (revision, result)
+                    assert result.get("isError") and text_of(result) == gone, \
+                        (revision, result)
 
                 # Implicit .mailmap reads must use the committed file whether
                 # the local copy is dirty, staged, or absent from the index.
