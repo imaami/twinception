@@ -2139,7 +2139,7 @@ review_restore (struct review            *r,
 	/* The restore stops once the record exceeds TOOL_TEXT_MAX. */
 	for (size_t i = 0, n = jb_len(findings); !e && got.size <= TOOL_TEXT_MAX && i < n; ++i)
 		e = review_findings_add_json(&got, jb_at(findings, i));
-	if (!e && got.size <= TOOL_TEXT_MAX && (got.flags & REVIEW_READ_LOG))
+	if (!e && (got.flags & REVIEW_READ_LOG))
 		e = review_restore_log(&got, obj);
 	if (!e && got.size > TOOL_TEXT_MAX)
 		e = EINVAL;
