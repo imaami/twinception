@@ -44,7 +44,7 @@ struct manual_page {
 	ino_t            ino;
 	off_t            size;
 	size_t           len;
-	_Atomic uint32_t refs;
+	_Atomic uint64_t refs;   /**< widened over the padding */
 	char             text[];
 };
 
@@ -94,7 +94,8 @@ struct manual_entry {
 	union {
 		struct {                                     /* a file's */
 			struct manual_page  *page;     /* the manual's reference */
-			uint32_t             aliases;  /* that name the file */
+			uint64_t             aliases;  /* that name the file,
+			                                  widened over the padding */
 		};
 		struct {                                     /* an alias's */
 			struct manual_entry *file;     /* what man found for it */
@@ -102,7 +103,7 @@ struct manual_entry {
 			uint64_t             found;    /* loop_clock() as man found it */
 		};
 	};
-	uint32_t             len;                    /* of the key, less its '\0' */
+	size_t               len;                    /* of the key, less its '\0' */
 	char                 key[];
 };
 
@@ -206,7 +207,7 @@ manual_add (struct manual *m,
 	struct manual_entry *e = malloc(sizeof *e + len + 1);
 	if (!e)
 		return nullptr;
-	*e = (struct manual_entry){ .node.hash = hash, .len = (uint32_t)len };
+	*e = (struct manual_entry){ .node.hash = hash, .len = len };
 	memcpy(e->key, key, len);
 	e->key[len] = '\0';
 	if (m->table.n > m->table.mask)
