@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "dstr.h"
 #include "jb.h"
 #include "util.h"
 
@@ -472,6 +473,21 @@ jb_escape (char       *dst,
 		out += 2;
 	}
 	return (size_t)(out - dst);
+}
+
+int
+jb_escape_cat (struct cstr_view  text,
+               struct dstr      *dest)
+{
+	/* Escape the text a part at a time: jb_escape() writes at most 6 bytes
+	 * for a byte. */
+	char part[6 * 64];
+	for (size_t i = 0, n; i < text.len; i += n) {
+		n = text.len - i < sizeof part / 6 ? text.len - i : sizeof part / 6;
+		if (!dstr_cat_n(dest, part, jb_escape(part, text.data + i, n)))
+			return ENOMEM;
+	}
+	return 0;
 }
 
 size_t

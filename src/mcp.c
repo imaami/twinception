@@ -7048,16 +7048,17 @@ mcp_req_tools_call (struct mcp_req     *req,
 		};
 		size_t r = id < st->reg->n_granted ? 2 : name.data != nullptr;
 		struct cstr_view what = r ? name : CSTR_VIEW("(none)");
-		struct cstr_view head = refusals[r].head;
 		char quoted[QUOTED(NAME_LOG)];
 		LOG(LOG_WARN, "tool call %s from %s refused: %s",
 		    r == 1 ? mcp_quote(quoted, sizeof quoted, name, NAME_LOG) : what.data,
 		    mcp_req_client(req), refusals[r].why);
-		char msg[sizeof "Tool not available: " + 6 * MAX_ECHO];
-		memcpy(msg, head.data, head.len);
-		size_t n = head.len + jb_escape(msg + head.len, what.data,
-		                                util_clip(what.data, what.len, MAX_ECHO));
-		mcp_req_error(req, 200, INVALID_PARAMS, RAW(msg, n), nullptr, 0);
+		dstr_auto msg = DSTR_INIT;
+		if (cstr_view_cat(refusals[r].head, &msg) ||
+		    jb_escape_cat(cstr_view_slice(what, 0, util_clip(what.data, what.len, MAX_ECHO)),
+		                  &msg))
+			mcp_req_fail(req, ENOMEM);
+		else
+			mcp_req_error(req, 200, INVALID_PARAMS, DSTR(&msg), nullptr, 0);
 		return;
 	}
 	struct registry_tool const *tool = mcp_static_tool(st, id);

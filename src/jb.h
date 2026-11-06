@@ -433,6 +433,14 @@ jb_escape (char       *dst,
            char const *src,
            size_t      len);
 
+/** Append the UTF-8 text @p text to @p dest as the inside of a JSON
+ *  string, escaped as jb_escape() writes it. Returns 0, or ENOMEM with a
+ *  part of the escapes appended.
+ */
+extern int
+jb_escape_cat (struct cstr_view  text,
+               struct dstr      *dest);
+
 /**
  * Returns the length of the longest prefix of the @p len bytes of UTF-8
  * text at @p src that is whole characters and whose escapes, as

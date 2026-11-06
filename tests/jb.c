@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "check.h"
+#include "dstr.h"
 #include "jb.h"
 
 /* Whether json-c's tokener constructors fail, as when memory runs out. */
@@ -121,6 +122,20 @@ main (void)
 	CHECK(wire.data && n == wire.len - 2 && !memcmp(escaped, wire.data + 1, n));
 	json_object_put(str);
 	CHECK(!jb_escape(escaped, nullptr, 1) && !jb_escape(nullptr, raw, 1));
+
+	/* jb_escape_cat() appends the same escapes, a part at a time. */
+	char many[20 * (sizeof raw - 1)];
+	for (size_t i = 0; i < sizeof many; i += sizeof raw - 1)
+		memcpy(many + i, raw, sizeof raw - 1);
+	str = json_object_new_string_len(many, sizeof many);
+	struct cstr_view const all = jb_wire(str);
+	struct dstr out = dstr("x");
+	CHECK(all.data && !jb_escape_cat((struct cstr_view){ many, sizeof many }, &out));
+	CHECK(dstr_len(&out) == all.len - 1 && *dstr_get(&out) == 'x' &&
+	      !memcmp(dstr_get(&out) + 1, all.data + 1, all.len - 2));
+	CHECK(jb_escape_cat(CSTR_VIEW("a"), nullptr) == ENOMEM);
+	dstr_cleanup(&out);
+	json_object_put(str);
 	CHECK(!jb_wire(nullptr).data && !jb_wire(nullptr).len);
 
 	/* Keys are looked up among names, and the first other one is reported,

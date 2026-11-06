@@ -1524,15 +1524,14 @@ review_refuse_unread (struct review const               *r,
 		", where the path is the file's whole path from the top of the repository", "",
 		", in as many calls as it takes",
 	};
-	char escaped[6 * REVIEW_NAME_MAX];
-	size_t const escaped_len = jb_escape(escaped, path, loc->path.len);
 	return failed || !dstr_printf(out, " Read %s with the git tool's read command, with "
-	                              "\"revisions\": [\"%.*s:%.*s\"] and \"line\": %" PRIu32 "%s. "
-	                              "The log takes the lines of a read once you have seen them, "
-	                              "so call again in a later turn.", rest ? "the rest" : "them",
-	                              (int)rev.len, rev.data, (int)escaped_len, escaped,
-	                              rest ? c->end + 1 : loc->first,
-	                              hints[to ? 2 : resolved != 0]) ? ENOMEM : EINVAL;
+	                              "\"revisions\": [\"%.*s:", rest ? "the rest" : "them",
+	                              (int)rev.len, rev.data) ||
+	       jb_escape_cat(loc->path, out) ||
+	       !dstr_printf(out, "\"] and \"line\": %" PRIu32 "%s. The log takes the lines of a "
+	                    "read once you have seen them, so call again in a later turn.",
+	                    rest ? c->end + 1 : loc->first, hints[to ? 2 : resolved != 0])
+	       ? ENOMEM : EINVAL;
 }
 
 /**

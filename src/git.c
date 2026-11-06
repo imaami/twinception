@@ -1276,14 +1276,8 @@ git_read_begin (struct git_call *call,
 	struct git_revision const *rev = &call->revisions[0];
 	dstr_clear(&call->text);
 	int e = cstr_view_cat(oid_view(&call->roots[rev->root]), &call->text);
-	/* The path, a part at a time. */
-	for (struct cstr_view left = rev->path; !e && left.len;) {
-		char part[6 * 64];
-		struct cstr_view const t = cstr_view_slice(left, 0, sizeof part / 6);
-		e = cstr_view_cat((struct cstr_view){ part, jb_escape(part, t.data, t.len) },
-		                  &call->text);
-		left = cstr_view_slice(left, t.len, SIZE_MAX);
-	}
+	if (!e)
+		e = jb_escape_cat(rev->path, &call->text);
 	read->rev_len = dstr_len(&call->text);
 	/* The header contains the repository name, the commit ID and path from
 	 * the revision, and three numbers. The longest footer contains the
