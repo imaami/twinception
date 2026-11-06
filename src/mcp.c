@@ -624,7 +624,8 @@ struct mcp_req {
 	                                    have them, until its last result */
 	struct mcp_slot     *slots;      /* JOB_CALLS slots for the tool calls
 	                                    of a turn, from the first turn with
-	                                    calls until mcp_req_finish() */
+	                                    calls on. A spare request reuses
+	                                    them and their answers' storage. */
 	struct mcp_agenda   *agenda;     /* the jobs and timers of the turns,
 	                                    from the first background, wait or
 	                                    timer call until mcp_req_finish() */
@@ -1026,11 +1027,16 @@ mcp_req_flag (struct mcp_req *req,
 static uint64_t
 mcp_req_kept (struct mcp_req const *req)
 {
-	return sizeof *req + dstr_get_block_count(&req->self.answer) * DSTR_BLK_SIZE +
-	       dstr_get_block_count(&req->trace) * DSTR_BLK_SIZE +
-	       req->scan.cap * sizeof *req->scan.members +
-	       req->reaper.cap * sizeof *req->reaper.stack +
-	       req->splice_max * sizeof *req->splice;
+	uint64_t bytes = sizeof *req + dstr_get_block_count(&req->self.answer) * DSTR_BLK_SIZE +
+	                 dstr_get_block_count(&req->trace) * DSTR_BLK_SIZE +
+	                 req->scan.cap * sizeof *req->scan.members +
+	                 req->reaper.cap * sizeof *req->reaper.stack +
+	                 req->splice_max * sizeof *req->splice;
+	size_t const slots = req->slots ? JOB_CALLS : 0;
+	for (size_t k = 0; k < slots; ++k)
+		bytes += sizeof *req->slots +
+		         dstr_get_block_count(&req->slots[k].answer) * DSTR_BLK_SIZE;
+	return bytes;
 }
 
 /* End the stream, if the request still has it, and keep the request for
@@ -1055,8 +1061,8 @@ mcp_req_end (struct mcp_req *req)
 
 /* Returns a request to begin: the spare request that ended last, or a new
  * request if there is none. Returns nullptr if out of memory. The answer,
- * the pre-scan and the reaper of a spare request are empty, but their
- * storage and the storage of the splice array are not freed.
+ * the pre-scan, the reaper and the slots of a spare request are empty, but
+ * their storage and the storage of the splice array are not freed.
  */
 static struct mcp_req *
 mcp_spare_take (struct mcp *mcp)
@@ -1089,6 +1095,10 @@ mcp_spare_drop (struct mcp *mcp)
 	dstr_cleanup(&req->self.answer);
 	dstr_cleanup(&req->trace);
 	free(req->splice);
+	size_t const slots = req->slots ? JOB_CALLS : 0;
+	for (size_t k = 0; k < slots; ++k)
+		dstr_cleanup(&req->slots[k].answer);
+	free(req->slots);
 	free(req);
 }
 
@@ -1693,11 +1703,6 @@ mcp_req_finish (struct mcp_req *req)
 	buf_fini(&req->attached);
 	dstr_clear(&req->self.answer);
 	dstr_clear(&req->trace);
-	size_t const slots = req->slots ? JOB_CALLS : 0;
-	for (size_t k = 0; k < slots; ++k)
-		dstr_cleanup(&req->slots[k].answer);
-	free(req->slots);
-	req->slots = nullptr;
 	if (!req->reaper.n) {
 		mcp_req_end(req);
 		return;
@@ -7772,6 +7777,7 @@ mcp_begin (struct mcp           *mcp,
 		.trace = req->trace,
 		.splice = req->splice,
 		.splice_max = req->splice_max,
+		.slots = req->slots,
 		.s = s,
 		.mcp = mcp,
 		.head = loop_clock(),
