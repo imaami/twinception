@@ -97,7 +97,8 @@ struct child_cmd {
 	uint64_t           deadline;  /**< loop_clock(); 0: none */
 	uint64_t           grace;     /**< ns from SIGTERM to SIGKILL at the
 	                                   deadline; 0: SIGKILL at once */
-	uint32_t           flags;     /**< enum child_flag */
+	uint64_t           flags;     /**< enum child_flag, widened over the
+	                                   padding */
 };
 
 /** The descriptors of a child that child_run() runs, each -1 if it has

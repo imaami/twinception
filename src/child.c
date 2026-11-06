@@ -244,7 +244,7 @@ child_fd (posix_spawn_file_actions_t *fa,
 static int
 child_fds_actions (struct child_fds const     *fds,
                    posix_spawn_file_actions_t *fa,
-                   uint32_t                    flags)
+                   uint64_t                    flags)
 {
 	int e = fds->dir < 0 ? 0 : posix_spawn_file_actions_addfchdir_np(fa, fds->dir);
 	if (!e)
