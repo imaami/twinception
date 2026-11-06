@@ -23,6 +23,7 @@
 #include "cli_state.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "hexid.h"
 #include "jb.h"
 #include "oid.h"
 #include "util.h"
@@ -666,9 +667,8 @@ cli_state_repository (struct cli_state *state)
 		group ^= (unsigned char)identity.data[i];
 		group *= UINT64_C(1099511628211);
 	}
-	char writer[33];
-	writer[32] = '\0';
-	e = util_random_hex(writer, 16);
+	struct hexid writer;
+	e = hexid_make(&writer);
 	if (!e)
 		e = cstr_view_store(identity, &state->metadata);
 	if (e)
@@ -679,11 +679,11 @@ cli_state_repository (struct cli_state *state)
 		if (!metadata[i])
 			metadata[i] = '\n';
 	(void)dstr_clear(&state->scratch);
-	if (!dstr_printf(&state->metadata, "\nwriter=%s\n", writer) ||
-	    !dstr_printf(&state->branch, "refs/heads/cli/%016" PRIx64 "/%s", group, writer) ||
+	if (!dstr_printf(&state->metadata, "\nwriter=%s\n", writer.hex) ||
+	    !dstr_printf(&state->branch, "refs/heads/cli/%016" PRIx64 "/%s", group, writer.hex) ||
 	    !dstr_printf(&state->latest, "refs/heads/cli/%016" PRIx64 "/latest", group) ||
-	    !dstr_printf(&state->name, "cli-%s.snapshot", writer) ||
-	    !dstr_printf(&state->temporary, "cli-%s.snapshot.tmp", writer) ||
+	    !dstr_printf(&state->name, "cli-%s.snapshot", writer.hex) ||
+	    !dstr_printf(&state->temporary, "cli-%s.snapshot.tmp", writer.hex) ||
 	    !dstr_printf(&state->scratch, "cli-%016" PRIx64 ".lock", group))
 		return ENOMEM;
 	state->lock = openat(state->directory, dstr_get(&state->scratch),
