@@ -1071,6 +1071,22 @@ autocomplete_used (struct autocomplete const *ac,
 	return false;
 }
 
+/* Offer the tools whose names start with prefix, in place of current. */
+static int
+autocomplete_tool_names (struct autocomplete      *ac,
+                         struct cstr_view          line,
+                         struct autocomplete_token current,
+                         struct cstr_view          prefix)
+{
+	int error = 0;
+	for (size_t i = 0; !error && i < ac->count; ++i) {
+		struct cstr_view name = ac->entries[i].tool.name;
+		error = cstr_view_starts(name, prefix)
+		      ? autocomplete_replacement(ac, line, current.begin, current.end, name, true, AUTOCOMPLETE_TOOL) : 0;
+	}
+	return error;
+}
+
 static int
 autocomplete_commands (struct autocomplete      *ac,
                        struct cstr_view          line,
@@ -1079,15 +1095,13 @@ autocomplete_commands (struct autocomplete      *ac,
                        size_t                    index)
 {
 	struct cstr_view prefix = cstr_view_slice(line, current.begin, cursor - current.begin);
+	int error = 0;
 	if (!index) {
 		struct cli_command_matches commands = cli_command_prefix(prefix);
-		for (size_t i = 0; i < commands.count; ++i) {
-			struct cli_command const *command = &commands.data[i];
-			int error = autocomplete_replacement(ac, line, current.begin, current.end, command->name, true, AUTOCOMPLETE_COMMAND);
-			if (error)
-				return error;
-		}
-		return 0;
+		for (size_t i = 0; !error && i < commands.count; ++i)
+			error = autocomplete_replacement(ac, line, current.begin, current.end, commands.data[i].name, true,
+			                                 AUTOCOMPLETE_COMMAND);
+		return error;
 	}
 	if (!ac->token_count)
 		return 0;
@@ -1096,17 +1110,8 @@ autocomplete_commands (struct autocomplete      *ac,
 	if (!command || (command->args != CLI_COMMAND_ARGS_TOOL && command->args != CLI_COMMAND_ARGS_TOOL_CALL))
 		return 0;
 	bool call = command->args == CLI_COMMAND_ARGS_TOOL_CALL;
-	if (index == 1 || ac->token_count == 1) {
-		for (size_t i = 0; i < ac->count; ++i) {
-			struct cstr_view name = ac->entries[i].tool.name;
-			if (!cstr_view_starts(name, prefix))
-				continue;
-			int error = autocomplete_replacement(ac, line, current.begin, current.end, name, true, AUTOCOMPLETE_TOOL);
-			if (error)
-				return error;
-		}
-		return 0;
-	}
+	if (index == 1 || ac->token_count == 1)
+		return autocomplete_tool_names(ac, line, current, prefix);
 	if (!call || ac->token_count < 2 || (prefix.len && prefix.data[0] == '{'))
 		return 0;
 	struct autocomplete_token tool_token = ac->tokens[1];
@@ -1123,7 +1128,7 @@ autocomplete_commands (struct autocomplete      *ac,
 		struct cstr_view name = entry->properties[i].name;
 		if (!cstr_view_starts(name, prefix) || autocomplete_used(ac, line, name, except))
 			continue;
-		int error = cstr_view_store(name, &ac->quoted);
+		error = cstr_view_store(name, &ac->quoted);
 		if (error)
 			return error;
 		if (current.equals == SIZE_MAX && !dstr_cat_n(&ac->quoted, "=", 1))
