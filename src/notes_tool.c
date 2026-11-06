@@ -115,12 +115,9 @@ static struct {
 
 /* The part of the notes tool on one loop. */
 struct notes_tool_loop {
-	struct list              children;  /* the git children of the notes
-	                                       calls on the loop */
-	struct shelf             spare;     /* finished calls, kept for reuse
-	                                       with the storage of their
-	                                       output */
-	struct notes_tool const *tool;      /* the service */
+	struct shelf             spare;  /* finished calls, kept for reuse with
+	                                    the storage of their output */
+	struct notes_tool const *tool;   /* the service */
 };
 
 /* The state of one notes call. It is the own word of the call's slot. An
@@ -177,15 +174,16 @@ struct notes_tool_call {
 void *
 notes_tool_loop_create (void        *service,
                         struct loop *loop,
+                        struct list *children,
                         int         *e)
 {
 	(void)loop;
+	(void)children;
 	struct notes_tool_loop *nl = malloc(sizeof *nl);
 	*e = nl ? 0 : ENOMEM;
 	if (!nl)
 		return nullptr;
 	*nl = (struct notes_tool_loop){ .tool = service };
-	list_init(&nl->children);
 	list_init(&nl->spare.list);
 	return nl;
 }
@@ -197,7 +195,6 @@ notes_tool_loop_destroy (void **p_part)
 	if (!nl)
 		return;
 	*p_part = nullptr;
-	child_destroy_all(&nl->children);
 	for (struct list *spare; (spare = shelf_take(&nl->spare)); ) {
 		struct notes_tool_call *call = container_of(spare, struct notes_tool_call, spare);
 		dstr_cleanup(&call->out);
@@ -262,15 +259,6 @@ notes_tool_drop (struct mcp_slot *slot)
 	if (call)
 		notes_tool_loop_put(call->loop, &call);
 	*mcp_slot_own(slot) = nullptr;
-}
-
-/* Queues the step of the slot of @p c. child.c calls this function after
- * git has exited and askai has read all of its output.
- */
-static void
-notes_tool_back (struct child *c)
-{
-	mcp_slot_ready(c->owner);
 }
 
 /* Releases the notes call in @p slot, the ask call's own slot, after git
@@ -371,7 +359,7 @@ notes_tool_run (struct mcp_slot *slot,
 	};
 	call->fetch = fetch;
 	int e = 0;
-	call->child = child_create(loop, &call->loop->children, &c, notes_tool_back, slot, &e);
+	call->child = mcp_slot_spawn(slot, &c, &e);
 	if (in)
 		buf_fini(in);
 	if (!call->child) {

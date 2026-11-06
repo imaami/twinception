@@ -14,7 +14,6 @@
 #include "git.h"
 #include "git_view.h"
 #include "jb.h"
-#include "list.h"
 #include "log.h"
 #include "loop.h"
 #include "mcp.h"
@@ -72,15 +71,6 @@ struct git {
 	uint64_t        timeout;
 	size_t          n;
 	struct git_repo repo[];
-};
-
-/* What a client loop has of the git tool, its part of it: the children of
- * the calls there, the git, and the loop.
- */
-struct git_loop {
-	struct list       children;
-	struct git const *git;
-	struct loop      *loop;
 };
 
 enum git_phase : uint64_t {
@@ -942,15 +932,6 @@ git_help (struct mcp_slot *slot,
 		mcp_slot_finish(slot, 0);
 }
 
-/* A git call's git has ended, its output all in: take it in steps of the
- * call's own.
- */
-static void
-git_back (struct child *c)
-{
-	mcp_slot_ready(c->owner);
-}
-
 static void
 git_call_destroy (struct git_call **p_call)
 {
@@ -996,7 +977,6 @@ git_call_create (struct json_object *args,
 /** Run one phase without extending the call's deadline. */
 static int
 git_call_run (struct git_call *call,
-              struct git_loop *gl,
               struct mcp_slot *slot)
 {
 	char const *argv[GIT_ARGV] = { "git" };
@@ -1046,8 +1026,9 @@ git_call_run (struct git_call *call,
 			argv[k++] = words[i];
 	}
 	argv[k] = nullptr;
+	struct git const *git = mcp_slot_part(slot);
 	char *env[ENV];
-	memcpy(env, gl->git->env, sizeof env);
+	memcpy(env, git->env, sizeof env);
 	if (call->view && git_view_has_head(call->view))
 		env[ATTR] = "GIT_ATTR_SOURCE=HEAD";
 	struct child_cmd const cmd = {
@@ -1064,7 +1045,7 @@ git_call_run (struct git_call *call,
 		         ? CHILD_STDERR : 0,
 	};
 	int e = 0;
-	call->child = child_create(gl->loop, &gl->children, &cmd, git_back, slot, &e);
+	call->child = mcp_slot_spawn(slot, &cmd, &e);
 	return e;
 }
 
@@ -1135,7 +1116,7 @@ git_call_advance (struct git_call *call,
 	child_destroy(&call->child);
 	if (!e) {
 		++call->phase;
-		e = git_call_run(call, mcp_slot_part(slot), slot);
+		e = git_call_run(call, slot);
 	}
 	if (!e) {
 		mcp_slot_park(slot);
@@ -1174,11 +1155,11 @@ git_ended (struct mcp_slot *slot,
 {
 	uint64_t const takes = commands[call->command].takes;
 	struct child *c = call->child;
-	struct git_loop const *gl = mcp_slot_part(slot);
+	struct git const *git = mcp_slot_part(slot);
 	struct cstr_view out = mcp_slot_answer(slot);
 	/* The blank line before the note and its brackets are 4 bytes at most. */
 	char buf[GIT_NOTE - 4];
-	struct cstr_view note = child_why(c, "git", gl->git->timeout, buf, sizeof buf);
+	struct cstr_view note = child_why(c, "git", git->timeout, buf, sizeof buf);
 	int const status = child_status(c);
 	bool failed = true;
 	if ((c->flags & (CHILD_CUT | CHILD_LATE)) == CHILD_CUT) {
@@ -1633,22 +1614,22 @@ git_step (struct mcp_slot *slot)
 }
 
 /* Starts a git call in @p slot. The call runs the command in @p args, in
- * the repository of the repo argument, as a child on the loop of the
- * tool's part.
+ * the repository of the repo argument, as a child on the call's loop.
  */
 static void
 git_start (struct mcp_slot    *slot,
            struct json_object *args)
 {
-	struct git_loop *gl = mcp_slot_part(slot);
+	struct git const *git = mcp_slot_part(slot);
 	int e = 0;
-	struct git_call *call = git_call_create(args, gl->loop->now + gl->git->timeout, &e);
+	struct git_call *call = git_call_create(args, mcp_slot_loop(slot)->now + git->timeout,
+	                                        &e);
 	if (e) {
 		mcp_slot_fail(slot, e);
 		return;
 	}
 	struct git_why why = {};
-	if (git_call_command(call, gl->git, &why)) {
+	if (git_call_command(call, git, &why)) {
 		git_call_destroy(&call);
 		mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
 		return;
@@ -1662,7 +1643,7 @@ git_start (struct mcp_slot    *slot,
 		git_call_destroy(&call);
 		return;
 	}
-	e = git_call_run(call, gl, slot);
+	e = git_call_run(call, slot);
 	if (!e) {
 		*mcp_slot_own(slot) = call;
 		mcp_slot_park(slot);
@@ -1675,41 +1656,6 @@ git_start (struct mcp_slot    *slot,
 	}
 	LOG(LOG_WARN, "Cannot run git: %s.", strerror(e));
 	mcp_slot_tellf(slot, TOOL_FAILED, "Cannot run git: %s.", strerror(e));
-}
-
-/* Creates the git tool's part of @p loop for @p service, a struct git. The
- * part has the list of the children that the git calls on the loop run.
- * Returns the part, or nullptr with ENOMEM in @p *e.
- */
-void *
-git_loop_create (void        *service,
-                 struct loop *loop,
-                 int         *e)
-{
-	struct git_loop *gl = malloc(sizeof *gl);
-	if (!gl) {
-		*e = ENOMEM;
-		return nullptr;
-	}
-	*gl = (struct git_loop){ .git = service, .loop = loop };
-	list_init(&gl->children);
-	*e = 0;
-	return gl;
-}
-
-/* Free the children of the calls on the loop, as it stops, killing any
- * still alive; then free @p *p_part, the git tool's part of the loop, and
- * set it to nullptr.
- */
-void
-git_loop_destroy (void **p_part)
-{
-	struct git_loop *gl = *p_part;
-	if (!gl)
-		return;
-	*p_part = nullptr;
-	child_destroy_all(&gl->children);
-	free(gl);
 }
 
 struct plugin const git_plugin = {

@@ -81,6 +81,7 @@
 
 #include "ai.h"
 #include "buf.h"
+#include "child.h"
 #include "clk.h"
 #include "config.h"
 #include "dstr.h"
@@ -729,6 +730,8 @@ struct mcp {
 	                                         message */
 	struct list               ending;     /* requests that write their end
 	                                         record */
+	struct list               children;   /* children of the calls and of the
+	                                         parts */
 	struct shelf              spare;      /* finished requests */
 	struct shelf              jobs;       /* jobs that requests released */
 	struct loop_step          drain;      /* ends the calls when the loop
@@ -3135,6 +3138,24 @@ void *
 mcp_slot_part (struct mcp_slot const *slot)
 {
 	return slot->req->mcp->parts[mcp_slot_offer(slot)->tool.part];
+}
+
+/* Queues the step of the call in the slot c->owner once @p c has ended,
+ * its output all in.
+ */
+static void
+mcp_slot_child_done (struct child *c)
+{
+	(void)mcp_slot_ready(c->owner);
+}
+
+struct child *
+mcp_slot_spawn (struct mcp_slot        *slot,
+                struct child_cmd const *cmd,
+                int                    *e)
+{
+	struct mcp *mcp = slot->req->mcp;
+	return child_create(mcp->loop, &mcp->children, cmd, mcp_slot_child_done, slot, e);
 }
 
 void *
@@ -7852,6 +7873,7 @@ mcp_create (struct loop              *loop,
 	list_init(&mcp->tasks);
 	list_init(&mcp->freeing);
 	list_init(&mcp->ending);
+	list_init(&mcp->children);
 	list_init(&mcp->spare.list);
 	list_init(&mcp->jobs.list);
 	*e = instance_table_init(&mcp->instances, loop);
@@ -7866,7 +7888,8 @@ mcp_create (struct loop              *loop,
 		 * neither, so its part is nullptr. */
 		int pe = 0;
 		mcp->parts[i] = p->service;
-		if (p->part_create && !(mcp->parts[i] = p->part_create(p->service, loop, &pe))) {
+		if (p->part_create &&
+		    !(mcp->parts[i] = p->part_create(p->service, loop, &mcp->children, &pe))) {
 			*e = pe ? pe : ENOMEM;
 			mcp_destroy_parts(mcp, i);
 			instance_table_fini(&mcp->instances);
@@ -7906,6 +7929,7 @@ mcp_destroy (struct mcp **p_mcp)
 		;
 	instance_table_fini(&mcp->instances);
 	mcp_destroy_parts(mcp, mcp->st->n_plugins);
+	child_destroy_all(&mcp->children);
 	loop_unready(&mcp->drain);
 	self = nullptr;
 	free(mcp);
@@ -8663,11 +8687,11 @@ mcp_lent (void const *cfg,
 
 /** Returns the record of the plugin of the registry entry @p entry for
  *  @p st. The record of a built-in plugin also contains its service and
- *  its two part functions. The service of askai's own kinds is @p st, the
- *  service of the plugin of the man tool is @p manual, the service of the
- *  plugin of the git tool is @p git, and the service of the plugin of the
- *  notes tool is st->notes_tool. Each of these three plugins creates a part
- *  on every client loop.
+ *  its part functions, if any. The service of askai's own kinds is @p st,
+ *  the service of the plugin of the man tool is @p manual, the service of
+ *  the plugin of the git tool is @p git, and the service of the plugin of
+ *  the notes tool is st->notes_tool. The plugins of the man and notes tools
+ *  create a part on every client loop.
  */
 static struct mcp_plugin
 mcp_static_plugin (struct mcp_static            *st,
@@ -8679,8 +8703,7 @@ mcp_static_plugin (struct mcp_static            *st,
 		{ .entry.plugin = &mcp_host_plugin, .service = st },
 		{ .entry.plugin = &manual_plugin, .service = manual,
 		  .part_create = manual_loop_create, .part_destroy = manual_loop_destroy },
-		{ .entry.plugin = &git_plugin, .service = git,
-		  .part_create = git_loop_create, .part_destroy = git_loop_destroy },
+		{ .entry.plugin = &git_plugin, .service = git },
 		{ .entry.plugin = &notes_tool_plugin, .service = &st->notes_tool,
 		  .part_create = notes_tool_loop_create, .part_destroy = notes_tool_loop_destroy },
 	};

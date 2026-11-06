@@ -15,11 +15,14 @@
 #include "loop_export.h"
 #include "tool.h"
 
+struct child;
+struct child_cmd;
 struct config;
 struct dstr;
 struct git;
 struct ledger;
 struct journal;
+struct list;
 struct roster;
 struct manual;
 struct mcp;
@@ -240,12 +243,15 @@ mcp_app (struct mcp *mcp);
 
 /** Creates the part of a built-in plugin for the client loop @p loop.
  *  @p service is the plugin's service, the object that all loops share.
- *  askai calls the function on the thread of @p loop, before the loop's
- *  first call. Returns the part. On failure it returns nullptr and stores
- *  the error number in @p *e. Only the built-in plugins have parts.
+ *  @p children is the list of the children (src/child.h) of the loop,
+ *  which askai frees after the parts. askai calls the function on the
+ *  thread of @p loop, before the loop's first call. Returns the part. On
+ *  failure it returns nullptr and stores the error number in @p *e. Parts
+ *  exist only for the built-in plugins.
  */
 typedef void *mcp_part_create_fn (void        *service,
                                   struct loop *loop,
+                                  struct list *children,
                                   int         *e);
 
 /** Destroys the part @p *p_part and sets @p *p_part to nullptr. askai
@@ -268,6 +274,18 @@ static constexpr uint64_t KF_SERIAL = 1ull << 32;
  */
 extern void *
 mcp_slot_part (struct mcp_slot const *slot);
+
+/** Spawns @p cmd for the call on the call's loop, as child_create()
+ *  (src/child.h) does. Once the child is reaped and its output is all in,
+ *  askai queues the step() of the call's kind, unless the kind has
+ *  destroyed or released the child. Returns the child, or nullptr with the
+ *  error in @p *e. Only the built-in plugins run children, so askai does
+ *  not export this function.
+ */
+extern struct child *
+mcp_slot_spawn (struct mcp_slot        *slot,
+                struct child_cmd const *cmd,
+                int                    *e);
 
 /** Returns the call's instance: the bytes that instance_init() of the
  *  tool's plugin initialized for the call's user on the call's loop

@@ -48,9 +48,8 @@ extern struct plugin const notes_tool_plugin;
  */
 extern mcp_part_create_fn notes_tool_loop_create;
 
-/** Frees the children of the notes calls on the loop as it stops, and
- *  kills any that are still alive. Then frees the spare calls and the part
- *  at @p *p_part, and sets @p *p_part to nullptr.
+/** Frees the spare calls and the part at @p *p_part, and sets @p *p_part
+ *  to nullptr.
  */
 extern mcp_part_destroy_fn notes_tool_loop_destroy;
 

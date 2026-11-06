@@ -66,11 +66,11 @@ struct manual_wait {
 };
 
 /** What a client loop has of the manual, the man tool's part of it: the
- *  fetches it runs, and their children.
+ *  fetches it runs, and the list of the loop's children.
  */
 struct manual_loop {
 	struct list     fetches;
-	struct list     children;
+	struct list    *children;
 	struct manual  *manual;
 	struct loop    *loop;
 };
@@ -357,7 +357,7 @@ manual_fetch_run (struct manual_fetch *f,
 		.deadline = loop->now + MANUAL_SECONDS * NS
 	};
 	int e = 0;
-	f->child = child_create(loop, &ml->children, &cmd, done, f, &e);
+	f->child = child_create(loop, ml->children, &cmd, done, f, &e);
 	if (f->child) {
 		hist_count(runs, 1);
 		return;
@@ -670,13 +670,14 @@ manual_find (struct manual_loop  *ml,
 	return e;
 }
 
-/* Creates the man tool's part of @p loop for @p service, a struct manual.
- * The part has the list of the fetches that the loop runs and the list of
- * their children. Returns the part, or nullptr with ENOMEM in @p *e.
+/* Creates the man tool's part of @p loop for @p service, a struct manual:
+ * the list of the fetches that the loop runs. Their children go on
+ * @p children. Returns the part, or nullptr with ENOMEM in @p *e.
  */
 void *
 manual_loop_create (void        *service,
                     struct loop *loop,
+                    struct list *children,
                     int         *e)
 {
 	struct manual_loop *ml = malloc(sizeof *ml);
@@ -684,9 +685,8 @@ manual_loop_create (void        *service,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*ml = (struct manual_loop){ .manual = service, .loop = loop };
+	*ml = (struct manual_loop){ .children = children, .manual = service, .loop = loop };
 	list_init(&ml->fetches);
-	list_init(&ml->children);
 	*e = 0;
 	return ml;
 }
@@ -705,7 +705,6 @@ manual_loop_destroy (void **p_part)
 	while (!list_is_empty(&ml->fetches))
 		manual_fetch_fail(container_of(ml->fetches.next, struct manual_fetch, hook),
 		                  CSTR_VIEW("Server is shutting down."));
-	child_destroy_all(&ml->children);
 	free(ml);
 }
 

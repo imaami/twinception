@@ -44,7 +44,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "mcp.h"
+#include "cstr_view.h"
 
 struct git;
 struct plugin;
@@ -102,18 +102,8 @@ extern void
 git_destroy (struct git **p_git);
 
 /** The plugin of the git tool. It is built into askai (src/plugin.h), and
- *  its service is a struct git.
+ *  its service, which is also its part on every loop, is a struct git.
  */
 extern struct plugin const git_plugin;
-
-/** Creates the git tool's part of a client loop (src/mcp.h). The service
- *  argument points to the struct git. The only error number is ENOMEM.
- */
-extern mcp_part_create_fn git_loop_create;
-
-/** Kills the children that the git calls on the loop run. Then it frees
- *  the part and sets the caller's pointer to nullptr.
- */
-extern mcp_part_destroy_fn git_loop_destroy;
 
 #endif /* TWINCEPTION_SRC_GIT_H_ */
