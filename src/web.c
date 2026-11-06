@@ -50,7 +50,6 @@ enum {
 	WEB_CACHE_MAX = 64 << 20,  /* bytes of the stored responses */
 	WEB_HOST      = 2,         /* connections to one host at once */
 	WEB_BUCKETS   = 1 << 12,   /* of the table */
-	WEB_GROW      = 16 << 10,  /* bytes of the first storage of a body */
 };
 
 /* The bits of the message of a run to home. */
@@ -532,17 +531,9 @@ web_run_write (char const *data,
 		run->fault = EFBIG;
 		return 0;
 	}
-	if (len > run->cap - run->len) {
-		size_t cap = run->cap ? 2 * run->cap : WEB_GROW;
-		cap = cap < run->len + len ? run->len + len : cap;
-		cap = cap < run->key.max ? cap : run->key.max;
-		char *body = realloc(run->body, cap);
-		if (!body) {
-			run->fault = ENOMEM;
-			return 0;
-		}
-		run->body = body;
-		run->cap = cap;
+	if (util_grow(run->body, run->cap, run->len + len)) {
+		run->fault = ENOMEM;
+		return 0;
 	}
 	memcpy(run->body + run->len, data, len);
 	run->len += len;
