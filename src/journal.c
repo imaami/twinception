@@ -148,9 +148,9 @@ struct journal {
 	struct journal_file    files[JOURNAL_FILES];
 	EVP_MD_CTX            *digest;
 	char                   scratch[JOURNAL_SCRATCH];
-	unsigned char          key[JOURNAL_KEY];  /* the key of the principals,
-	                                             read from
-	                                             askai-journal/principal.key */
+	unsigned char          key[POLICY_KEY];  /* the key of the principals,
+	                                            read from
+	                                            askai-journal/principal.key */
 	size_t                 queued;
 	size_t                 bytes;
 	int                    repo_fd;
@@ -1490,7 +1490,7 @@ journal_seed (struct journal const *j)
 
 int
 journal_key (struct journal const *j,
-             unsigned char         key[JOURNAL_KEY])
+             unsigned char         key[POLICY_KEY])
 {
 	if (!j || !key)
 		return EINVAL;

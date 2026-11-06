@@ -161,8 +161,6 @@ struct askai_home {
 	unsigned char        key[POLICY_KEY];
 };
 
-static_assert(POLICY_KEY == JOURNAL_KEY);
-
 /* What runs on a client loop: MCP over HTTP. */
 struct askai_client {
 	struct askai_keep          keep;

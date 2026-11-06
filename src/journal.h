@@ -17,13 +17,13 @@
 #include <stdint.h>
 
 #include "hexid.h"
+#include "policy.h"
 
 struct journal;
 struct loop;
 
 enum {
 	JOURNAL_KIND       = 32,
-	JOURNAL_KEY        = 32,  /**< bytes of the principal key */
 	JOURNAL_RECORD_MAX = 16 << 20,
 	JOURNAL_LOAD_MAX   = 64 << 20,
 };
@@ -187,6 +187,6 @@ journal_seed (struct journal const *journal);
  */
 extern int
 journal_key (struct journal const *journal,
-             unsigned char         key[JOURNAL_KEY]);
+             unsigned char         key[POLICY_KEY]);
 
 #endif /* TWINCEPTION_SRC_JOURNAL_H_ */
