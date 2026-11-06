@@ -32,42 +32,6 @@ jb_list (struct json_object *val)
 	return jb_push_or_free(json_object_new_array(), val);
 }
 
-int
-jb_set (struct json_object *obj,
-        char const         *key,
-        struct json_object *val)
-{
-	if (obj && val && !json_object_object_add(obj, key, val))
-		return 0;
-	json_object_put(val);
-	return ENOMEM;
-}
-
-int
-jb_push (struct json_object *arr,
-         struct json_object *val)
-{
-	if (arr && val && !json_object_array_add(arr, val))
-		return 0;
-	json_object_put(val);
-	return ENOMEM;
-}
-
-struct json_object *
-jb_get (struct json_object const *obj,
-        char const               *key)
-{
-	struct json_object *val;
-	return json_object_object_get_ex(obj, key, &val) ? val : nullptr;
-}
-
-struct json_object *
-jb_at (struct json_object const *arr,
-       size_t                    idx)
-{
-	return idx < jb_len(arr) ? json_object_array_get_idx(arr, idx) : nullptr;
-}
-
 char const *
 jb_text (struct json_object *val)
 {

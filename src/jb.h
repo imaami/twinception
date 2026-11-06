@@ -1,6 +1,8 @@
 /** @file jb.h
  *
- * Terse, leak-safe helpers for building and reading json-c values.
+ * Terse, leak-safe helpers for building and reading json-c values. The
+ * static inline ones call only json-c and other static inline functions,
+ * so plugins can use them.
  */
 #ifndef TWINCEPTION_SRC_JB_H_
 #define TWINCEPTION_SRC_JB_H_
@@ -31,17 +33,29 @@ jb_list (struct json_object *val);
 /** Set @p key to @p val, which is consumed even on failure or when @p obj
  *  is nullptr; returns 0 or ENOMEM.
  */
-extern int
+static inline int
 jb_set (struct json_object *obj,
         char const         *key,
-        struct json_object *val);
+        struct json_object *val)
+{
+	if (obj && val && !json_object_object_add(obj, key, val))
+		return 0;
+	json_object_put(val);
+	return ENOMEM;
+}
 
 /** Append @p val, which is consumed even on failure or when @p arr is
  *  nullptr; returns 0 or ENOMEM.
  */
-extern int
+static inline int
 jb_push (struct json_object *arr,
-         struct json_object *val);
+         struct json_object *val)
+{
+	if (arr && val && !json_object_array_add(arr, val))
+		return 0;
+	json_object_put(val);
+	return ENOMEM;
+}
 
 /**
  * Set the member @p key of @p obj to @p val, and return @p obj. The call
@@ -75,14 +89,13 @@ jb_push_or_free (struct json_object *arr,
 }
 
 /** Member @p key, or nullptr if absent, null, or @p obj is no object. */
-extern struct json_object *
+static inline struct json_object *
 jb_get (struct json_object const *obj,
-        char const               *key);
-
-/** Element @p idx, or nullptr if out of range or @p arr is no array. */
-extern struct json_object *
-jb_at (struct json_object const *arr,
-       size_t                    idx);
+        char const               *key)
+{
+	struct json_object *val;
+	return json_object_object_get_ex(obj, key, &val) ? val : nullptr;
+}
 
 /** Returns the length of the array @p val, or 0 if @p val is not an array. */
 static inline size_t
@@ -90,6 +103,14 @@ jb_len (struct json_object const *val)
 {
 	return json_object_is_type(val, json_type_array) ? json_object_array_length(val)
 	                                                 : 0;
+}
+
+/** Element @p idx, or nullptr if out of range or @p arr is no array. */
+static inline struct json_object *
+jb_at (struct json_object const *arr,
+       size_t                    idx)
+{
+	return idx < jb_len(arr) ? json_object_array_get_idx(arr, idx) : nullptr;
 }
 
 /** String value, or nullptr if @p val is no string. */
@@ -104,7 +125,7 @@ jb_str (struct json_object *val,
         size_t             *len);
 
 /** Returns a view of the string @p val, or an empty view with data nullptr
- *  if @p val is not a string. It calls only json-c, so plugins can use it.
+ *  if @p val is not a string.
  */
 static inline struct cstr_view
 jb_view (struct json_object *val)
