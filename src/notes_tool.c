@@ -135,8 +135,6 @@ struct notes_tool_call {
 	struct list             spare;     /* the call's node on loop->spare */
 	struct child           *child;     /* the call's git, until a step has
 	                                      read its output */
-	struct notes_revision  *revision;  /* the revisions of a read, diff,
-	                                      restore or history, or nullptr */
 	struct notes_tool_loop *loop;      /* the part of the call's loop */
 	struct dstr            *text;      /* &out for a tool call. For the
 	                                      prompt notes, it is the text that
@@ -149,6 +147,9 @@ struct notes_tool_call {
 	                                      uploads */
 	size_t                  most;      /* the most bytes of the newest note
 	                                      that the prompt shows */
+	struct notes_revision   revision;  /* the revisions of a read, diff or
+	                                      restore, or the file of a history;
+	                                      zeroed for the other calls */
 	uint16_t                fetch;     /* why git runs (enum
 	                                      notes_tool_fetch) */
 	uint16_t                len;       /* bytes in the union */
@@ -240,7 +241,6 @@ notes_tool_loop_put (struct notes_tool_loop  *loop,
 		child_release(&call->child);
 	else
 		child_destroy(&call->child);
-	notes_revision_destroy(&call->revision);
 	buf_fini(&call->file);
 	if (atomic_load_explicit(&buf_pressure, memory_order_relaxed) == BUF_EASY) {
 		(void)dstr_clear(&call->out);
@@ -340,10 +340,10 @@ notes_tool_run (struct mcp_slot *slot,
 	}
 	char const *argv[NOTES_ARGV];
 	char const *const words[] = {
-		repo, call->revision ? notes_revision_file(call->revision).data : nullptr
+		repo, call->revision.file.len ? call->revision.file.data : nullptr
 	};
 	if (fetch & FETCH_REVISION)
-		notes_revision_argv(call->revision, notes, notes_tool_call_notebook(call),
+		notes_revision_argv(&call->revision, notes, notes_tool_call_notebook(call),
 		                    fetch & FETCH_DIFF ? NOTES_DIFF : NOTES_READ, argv);
 	else
 		notes_argv(notes, cmd, words, argv);
@@ -516,7 +516,7 @@ notes_tool_call_message (struct notes_tool_call const *call,
 	              NOTES_REPO <= NOTES_MESSAGE);
 	uint16_t fetch = notes_tool_actions[call->action].fetch;
 	char const *verb = notes_tool_actions[call->action].verb;
-	char const *from = fetch & FETCH_RESTORE ? notes_revision_from(call->revision)->hex
+	char const *from = fetch & FETCH_RESTORE ? call->revision.from.hex
 	                 : fetch & FETCH_COPY ? notes_selector(notes_tool_call_notebook(call)) : "";
 	char const *sep = *from ? " from " : "";
 	int len = (int)call->part.name_len;
@@ -667,7 +667,7 @@ notes_tool_checked (struct mcp_slot *slot)
 	if (fetch & FETCH_RESTORE) {
 		if (r == EEXIST)
 			r = 0;
-		if (!r && !oid_equal(&tip, notes_revision_tip(call->revision))) {
+		if (!r && !oid_equal(&tip, &call->revision.tip)) {
 			int e = cstr_view_cat(CSTR_VIEW("The notebook changed during "
 			                                "restore. Read its current "
 			                                "state and retry."), call->text);
@@ -742,8 +742,7 @@ notes_tool_history (struct mcp_slot *slot,
 	struct notes_cursor cursor = { .end = out.len };
 	struct notes_entry entry;
 	bool history = (call->fetch & FETCH_KIND) == FETCH_LIST;
-	struct cstr_view filter = history && call->revision ? notes_revision_file(call->revision)
-	                                                    : (struct cstr_view){};
+	struct cstr_view const filter = util_text_view(&call->revision.file);
 	uint32_t k = 0;
 	while (notes_entry_before(out, &cursor, &entry)) {
 		char const *name = (char const *)entry.name.ptr;
@@ -952,7 +951,7 @@ notes_tool_revision_step (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	if (!child_ok(call->child) ||
-	    notes_revision_next(call->revision, buf_peek(&call->child->out))) {
+	    notes_revision_next(&call->revision, buf_peek(&call->child->out))) {
 		int e = cstr_view_cat(CSTR_VIEW("Cannot use that revision in this "
 		                                "notebook. Use a full commit ID "
 		                                "from its history; the notebook "
@@ -964,10 +963,8 @@ notes_tool_revision_step (struct mcp_slot *slot)
 	child_destroy(&call->child);
 	struct buf in = {};
 	int e = 0;
-	if (notes_revision_ready(call->revision) && !(call->fetch & FETCH_DIFF)) {
-		struct cstr_view file = notes_revision_file(call->revision);
-		e = notes_read_input(&in, notes_revision_from(call->revision)->hex, file);
-	}
+	if (notes_revision_ready(&call->revision) && !(call->fetch & FETCH_DIFF))
+		e = notes_read_input(&in, call->revision.from.hex, util_text_view(&call->revision.file));
 	if (e) {
 		buf_fini(&in);
 		notes_tool_end(slot, e, true);
@@ -986,16 +983,13 @@ notes_tool_got_diff (struct mcp_slot *slot)
 		notes_tool_end(slot, notes_tool_call_unread(call), true);
 		return;
 	}
-	struct cstr_view file = notes_revision_file(call->revision);
+	struct notes_revision const *r = &call->revision;
 	struct span out = buf_peek(&c->out);
 	struct dstr *d = call->text;
 	char const *selector = notes_selector(notes_tool_call_notebook(call));
 	(void)mcp_slot_shows(slot, selector);
-	int e = dstr_printf(d, "Notebook %s — %.*s\nfrom %s\nto %s\n\n",
-	                    selector, (int)file.len, file.data,
-	                    notes_revision_from(call->revision)->hex,
-	                    notes_revision_to(call->revision)->hex)
-	      ? 0 : ENOMEM;
+	int e = dstr_printf(d, "Notebook %s — %s\nfrom %s\nto %s\n\n", selector, r->file.data,
+	                    r->from.hex, r->to.hex) ? 0 : ENOMEM;
 	struct cstr_view const diff = { (char const *)out.ptr, out.len };
 	if (!e)
 		e = !diff.len ? cstr_view_cat(CSTR_VIEW("No differences.\n"), call->text)
@@ -1043,12 +1037,9 @@ notes_tool_got_note (struct mcp_slot *slot)
 	char const *selector = notes_selector(notes_tool_call_notebook(call));
 	(void)mcp_slot_shows(slot, selector);
 	int e = 0;
-	if (call->fetch & FETCH_REVISION) {
-		struct cstr_view file = notes_revision_file(call->revision);
-		e = dstr_printf(call->text, "Notebook %s — %.*s at %s:\n\n",
-		                selector, (int)file.len, file.data,
-		                notes_revision_from(call->revision)->hex) ? 0 : ENOMEM;
-	}
+	if (call->fetch & FETCH_REVISION)
+		e = dstr_printf(call->text, "Notebook %s — %s at %s:\n\n", selector,
+		                call->revision.file.data, call->revision.from.hex) ? 0 : ENOMEM;
 	e = e ? e : jb_is_text(body) ? cstr_view_cat(body, call->text)
 	      : notes_tool_view(call->text, body, SIZE_MAX, nullptr);
 	notes_tool_end(slot, e, false);
@@ -1313,7 +1304,7 @@ notes_tool_step (struct mcp_slot *slot)
 	/* Only attach reaches this step without a child. The step then handles
 	 * the answer to the upload. */
 	(!call->child ? notes_tool_uploaded
-	 : (call->fetch & FETCH_REVISION) && !notes_revision_ready(call->revision)
+	 : (call->fetch & FETCH_REVISION) && !notes_revision_ready(&call->revision)
 	 ? notes_tool_revision_step
 	 : call->fetch & FETCH_DIFF ? notes_tool_got_diff
 	 : notes_tool_fetch_step(call->fetch)->out)(slot);
@@ -1432,7 +1423,7 @@ notes_tool_got_copy (struct mcp_slot *slot,
 			notes_tool_end(slot, e, true);
 			return;
 		}
-		to = notes_revision_file(call->revision);
+		to = util_text_view(&call->revision.file);
 	}
 	struct cstr_view const bytes = { (char const *)text.ptr, text.len };
 	int e = notes_add_file(&call->file, to, bytes, &call->part);
@@ -1505,13 +1496,8 @@ notes_tool_revision (struct mcp_slot          *slot,
 		return;
 	}
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	int e = 0;
-	call->revision = notes_revision_create(file, &ids[0], &ids[1], &e);
-	if (!call->revision) {
-		if (e == EINVAL)
-			mcp_slot_tell(slot, bad_name, TOOL_FAILED);
-		else
-			mcp_slot_fail(slot, e);
+	if (notes_revision_init(&call->revision, file, &ids[0], &ids[1])) {
+		mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 		return;
 	}
 	if ((fetch & FETCH_KIND) != FETCH_LIST)

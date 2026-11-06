@@ -22,9 +22,9 @@
 #include "clk.h"
 #include "cstr_view.h"
 #include "oid.h"
+#include "util.h"
 
 struct notes;
-struct notes_revision;
 
 enum {
 	NOTES_NAME = 255,      /**< bytes of the name of a note, at most */
@@ -200,19 +200,35 @@ notes_argv (struct notes const *notes,
             char const *const  *words,
             char const         *argv[NOTES_ARGV]);
 
-/** Owns a historical read or diff's arguments and authorization state.
- *  File names follow notes_name(). The revisions @p from and @p to are
- *  commits, or no name for the notebook's pinned tip. Returns nullptr and
- *  EINVAL or ENOMEM through @p e on failure.
- */
-extern struct notes_revision *
-notes_revision_create (struct cstr_view  file,
-                       struct oid const *from,
-                       struct oid const *to,
-                       int              *e);
+/** The stage of a historical read or diff (notes.c). */
+enum notes_revision_phase : uint8_t;
 
-extern void
-notes_revision_destroy (struct notes_revision **p_revision);
+/** The arguments and the authorization stage of a historical read or diff.
+ *  After the first stage, from, to and tip are the commits that the later
+ *  stages check, read and compare, and the pinned tip can also guard a
+ *  later write against changes since the authorization.
+ */
+struct notes_revision {
+	UTIL_TEXT(NOTES_NAME + 1)  file;   /**< the name of the note */
+	struct oid                 from;   /**< the older commit, or no name
+	                                        for the tip */
+	struct oid                 to;     /**< the newer commit, or no name for
+	                                        the tip */
+	struct oid                 tip;    /**< the notebook's tip, which the
+	                                        first stage pins */
+	enum notes_revision_phase  phase;
+};
+
+/** Initializes @p dest for a read or diff of the note @p file, whose name
+ *  notes_name() accepts. The revisions @p from and @p to are commits, or no
+ *  name for the notebook's pinned tip. Returns 0, or EINVAL for a null
+ *  argument or a name that is not valid.
+ */
+extern int
+notes_revision_init (struct notes_revision *dest,
+                     struct cstr_view       file,
+                     struct oid const      *from,
+                     struct oid const      *to);
 
 /** Builds the current stage's Git argv: pin the selected notebook tip,
  *  authorize explicit revisions by ancestry, then run @p cmd, NOTES_READ or
@@ -238,21 +254,6 @@ notes_revision_next (struct notes_revision *revision,
 /** Whether the next command reads the authorized snapshots. */
 extern bool
 notes_revision_ready (struct notes_revision const *revision);
-
-extern struct cstr_view
-notes_revision_file (struct notes_revision const *revision);
-
-/** Immutable ids after authorization, in @p revision. The pinned tip can
- *  also guard a later write against changes since authorization.
- */
-extern struct oid const *
-notes_revision_from (struct notes_revision const *revision);
-
-extern struct oid const *
-notes_revision_to (struct notes_revision const *revision);
-
-extern struct oid const *
-notes_revision_tip (struct notes_revision const *revision);
 
 /**
  * Checks @p *name as the name of a note. Slashes at the start do not belong

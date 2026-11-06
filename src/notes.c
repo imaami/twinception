@@ -35,20 +35,12 @@ struct notes {
 	uint32_t bare;
 };
 
+/* The stages of a historical read or diff, in their order. */
 enum notes_revision_phase : uint8_t {
-	REVISION_HEAD,
-	REVISION_FROM,
-	REVISION_TO,
-	REVISION_DATA,
-};
-
-struct notes_revision {
-	char                      file[NOTES_NAME + 1];
-	struct oid                from;
-	struct oid                to;
-	struct oid                tip;
-	uint8_t                   file_len;
-	enum notes_revision_phase phase;
+	REVISION_HEAD,  /* git pins the tip of the notebook */
+	REVISION_FROM,  /* git checks that from is an ancestor of the tip */
+	REVISION_TO,    /* git checks that to is one too */
+	REVISION_DATA,  /* git reads the note at from, or compares it with to */
 };
 
 /* The options of git before each command: GIT_OPTIONS_FIXED, which stop
@@ -382,36 +374,18 @@ notes_argv (struct notes const *notes,
 	argv[k] = nullptr;
 }
 
-struct notes_revision *
-notes_revision_create (struct cstr_view  file,
-                       struct oid const *from,
-                       struct oid const *to,
-                       int              *e)
+int
+notes_revision_init (struct notes_revision *dest,
+                     struct cstr_view       file,
+                     struct oid const      *from,
+                     struct oid const      *to)
 {
-	static_assert(NOTES_NAME <= UINT8_MAX);
-	*e = from && to ? notes_name(&file) : EINVAL;
-	if (*e)
-		return nullptr;
-	struct notes_revision *revision = calloc(1, sizeof *revision);
-	if (!revision) {
-		*e = ENOMEM;
-		return nullptr;
-	}
+	if (!dest || !from || !to || notes_name(&file))
+		return EINVAL;
 	/* No name stands for the tip until the first stage pins it. */
-	revision->from = *from;
-	revision->to = *to;
-	revision->file_len = (uint8_t)file.len;
-	memcpy(revision->file, file.data, file.len);
-	return revision;
-}
-
-void
-notes_revision_destroy (struct notes_revision **p_revision)
-{
-	if (!p_revision)
-		return;
-	free(*p_revision);
-	*p_revision = nullptr;
+	*dest = (struct notes_revision){ .from = *from, .to = *to, .phase = REVISION_HEAD };
+	(void)util_text_store(&dest->file, file);
+	return 0;
 }
 
 void
@@ -431,7 +405,7 @@ notes_revision_argv (struct notes_revision const *revision,
 		[REVISION_HEAD] = { repo },
 		[REVISION_FROM] = { revision->from.hex, revision->tip.hex },
 		[REVISION_TO]   = { revision->to.hex, revision->tip.hex },
-		[REVISION_DATA] = { revision->from.hex, revision->to.hex, revision->file },
+		[REVISION_DATA] = { revision->from.hex, revision->to.hex, revision->file.data },
 	};
 	notes_argv(notes, phases[revision->phase], words[revision->phase], argv);
 }
@@ -469,30 +443,6 @@ bool
 notes_revision_ready (struct notes_revision const *revision)
 {
 	return revision->phase == REVISION_DATA;
-}
-
-struct cstr_view
-notes_revision_file (struct notes_revision const *revision)
-{
-	return (struct cstr_view){ revision->file, revision->file_len };
-}
-
-struct oid const *
-notes_revision_from (struct notes_revision const *revision)
-{
-	return &revision->from;
-}
-
-struct oid const *
-notes_revision_to (struct notes_revision const *revision)
-{
-	return &revision->to;
-}
-
-struct oid const *
-notes_revision_tip (struct notes_revision const *revision)
-{
-	return &revision->tip;
 }
 
 /* Returns true if the part of a name of @p n bytes at @p part is a name
