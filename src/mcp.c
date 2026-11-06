@@ -5923,8 +5923,8 @@ mcp_slot_note_window (struct mcp_slot *slot,
 	size_t end = slot->skip + slot->window;
 	if (end < len && mcp_slot_tool(slot)->kind->flags & TOOL_PAGED)
 		(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: for the "
-		                       "rest, call again with \"offset\": %zu.]", slot->skip,
-		                       end, len, end);
+		                       "rest, call again with the same arguments and "
+		                       "\"offset\": %zu.]", slot->skip, end, len, end);
 	else if (end < len)
 		(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: the rest "
 		                       "is cut.]", slot->skip, end, len);
@@ -8271,8 +8271,7 @@ mcp_jobs_definition (void const *service)
 				"list the jobs, read a job's result, or cancel it."),
 			"job", schema_property("integer", "For result and cancel: the "
 			                       "job's number."),
-			"offset", schema_property("integer", "For result: the byte of the "
-			                          "output to start from, to read on."),
+			"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 			nullptr),
 		CSTR_VIEW("action"));
 }

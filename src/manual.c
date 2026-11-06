@@ -846,9 +846,7 @@ manual_definition (void const *service)
 					"functions, 3p POSIX, 4 devices, 5 file formats, 7 "
 					"overviews and conventions, 8 administration. Without "
 					"it, the first page man finds in its usual order."),
-				"offset", schema_count(0,
-					"The byte of the page to start from, to read on past "
-					"where it was cut."),
+				"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 				nullptr),
 			&CSTR_VIEW("name"), 1),
 		"annotations", jb_object(

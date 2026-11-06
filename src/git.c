@@ -462,9 +462,7 @@ git_definition (void const *service)
 					"paths. They do not read a file."),
 				"pattern", schema_property("string",
 					"The pattern for grep. Only grep takes a pattern."),
-				"offset", schema_count(0,
-					"The byte of the output to start from, to read on "
-					"past where it was cut."),
+				"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 				"line", schema_count(1,
 					"For read: the number of the first line to give, "
 					"from 1. The default is 1."),

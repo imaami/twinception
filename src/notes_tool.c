@@ -1721,9 +1721,7 @@ notes_tool_schema (struct notes_tool const *tool,
 			"default is the name of the note."),
 		"text", schema_property("string",
 			"For add and replace: the text of the note, at most 4 MiB."),
-		"offset", schema_count(0,
-			"For list, history, notebooks, read and diff: the byte of the output "
-			"to start from, to read on past where it was cut."),
+		"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 		"notebook", jb_set_or_free(schema_property("string", nullptr), "description", schema_text3(
 			"For list, history, read, diff and copy", files ? ", and attach" : "",
 			": own (default), or a participant/principal/side selector "

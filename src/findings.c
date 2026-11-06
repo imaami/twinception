@@ -68,9 +68,7 @@ findings_definition (void const *service)
 			"id", schema_count(1,
 				"Required for update, and for show to give one "
 				"finding's history: the number of the finding."),
-			"offset", schema_count(0,
-				"For show: the byte of the output to start from, to "
-				"read on past where it was cut."),
+			"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 			nullptr),
 		CSTR_VIEW("action"));
 }

@@ -50,6 +50,9 @@ TASK = ("[askai: askai keeps your task word for word through every compaction of
         "the task into notes or a summary.]\n")
 REVIEW_EMPTY = REVIEW + ("[askai: you have recorded no findings; the findings tool "
                          "records them.]")
+# The description of the offset of each tool that pages its output
+# (TOOL_OFFSET_ABOUT, src/tool.h).
+OFFSET_ABOUT = "The byte of the output to start from."
 # The API that each answer format of the fake upstream is in.
 API = {"openai": "chat", "responses": "responses", "anthropic": "messages",
        "gemini": "generate", "interactions": "interactions"}
@@ -2670,7 +2673,7 @@ def check_recovery_notes(binary, up):
                             item.get("type") == "function_call_output"]
                 match = re.fullmatch(
                     r"(.*)\n\n\[Bytes 5 to (\d+) of (\d+): for the rest, call again "
-                    r'with "offset": (\d+)\.\]' +
+                    r'with the same arguments and "offset": (\d+)\.\]' +
                     re.escape(f"\n\n[askai: notebook {selector}]"), output, re.S)
                 assert match, output
                 end, total, offset = map(int, match.groups()[1:])
@@ -8302,6 +8305,8 @@ def check_man(binary, up):
             tools = ai.rpc("tools/list")[2]["result"]["tools"]
             assert [t["name"] for t in tools] == ["ask_ai", "man"], tools
             assert tools[1]["inputSchema"]["required"] == ["name"], tools[1]
+            assert tools[1]["inputSchema"]["properties"]["offset"]["description"] == \
+                OFFSET_ABOUT, tools[1]
 
             # Its arguments, environment, descriptors, signals and session.
             page = text_of(man_call(ai, name="echo", section="3p"))
@@ -8484,6 +8489,10 @@ def check_man(binary, up):
             assert results[3]["content"].startswith("HEADED(3)") and re.search(
                 r"\n\n\[Bytes 0 to (\d+) of \1: its end\.\]$", results[3]["content"]), \
                 results[3]
+            [lent] = [t["function"] for t in up.requests[count]["body"]["tools"]
+                      if t["function"]["name"] == "man"]
+            assert lent["parameters"]["properties"]["offset"]["description"] == \
+                OFFSET_ABOUT, lent
         up.reply = lambda request: (200, ANSWERS["openai"])
 
         # A name is found anew once the recheck has passed, its page given
@@ -11476,8 +11485,10 @@ def check_turns(binary, up):
         with Askai(binary, *args) as ai:
             tools = {t["name"]: t for t in ai.rpc("tools/list")[2]["result"]["tools"]}
             assert "thread" in tools["ask_ai"]["inputSchema"]["properties"], tools
-            assert "offset" in tools["git"]["inputSchema"]["properties"], tools
             assert "thread" in tools["notes"]["inputSchema"]["properties"], tools
+            for name in ("git", "notes"):
+                assert tools[name]["inputSchema"]["properties"]["offset"][
+                    "description"] == OFFSET_ABOUT, tools[name]
             assert "compact" not in tools and "findings" not in tools, tools
             body = ai.rpc("tools/call", {"name": "findings", "arguments": {
                 "action": "show"}})[2]
@@ -11501,6 +11512,12 @@ def check_turns(binary, up):
             assert [t["function"]["name"] for t in body["tools"]] == \
                 ["git", "notes", "compact", "findings", "background", "jobs", "wait",
                  "timer"], body["tools"]
+            # The lent tools that read on from an offset describe it alike.
+            offsets = {t["function"]["name"]: t["function"]["parameters"]["properties"][
+                "offset"]["description"] for t in body["tools"]
+                if "offset" in t["function"]["parameters"]["properties"]}
+            assert offsets == dict.fromkeys(("git", "notes", "findings", "jobs"), OFFSET_ABOUT), \
+                offsets
             # The upstream's notes use the thread of the ask call.
             assert "thread" not in body["tools"][1]["function"]["parameters"][
                 "properties"], body["tools"][1]
@@ -11848,10 +11865,10 @@ def check_turns(binary, up):
             # Lines of 11 bytes: 363 of them in an eighth of 8000 tokens.
             assert out.startswith("line 00000\n") and re.search(
                 r"line 00362\n\n\n\[Bytes 0 to 3993 of 44000: for the rest, call "
-                r"again with \"offset\": 3993\.\]\n\n\[askai: your context is "
-                r"6[0-6]% full, \d+ of 8000 tokens\. Now is a good time to write "
-                r"notes of what you have learned\. Compaction removes the "
-                r"conversation, but not the notes\.\]$", out), out[-300:]
+                r"again with the same arguments and \"offset\": 3993\.\]\n\n\[askai: "
+                r"your context is 6[0-6]% full, \d+ of 8000 tokens\. Now is a good "
+                r"time to write notes of what you have learned\. Compaction removes "
+                r"the conversation, but not the notes\.\]$", out), out[-300:]
             # An offset within a line gives the window from the line's start.
             out = turns(up.requests[count + 2])[3]["content"]
             assert out.startswith("line 00363\n") and \
@@ -12355,7 +12372,8 @@ def check_turns(binary, up):
             assert reads[0] == note_files(selector, {
                 f"{c}/{c}.txt": (f"{c * 1199}\n" * 6).encode() for c in "abc"}), reads[0]
             assert reads[1] == f"{'c' * 1199}\n" * 2 + "\n\n[Bytes 0 to 2400 of 7200: " \
-                "for the rest, call again with \"offset\": 2400.]" + provenance, reads[1][-200:]
+                "for the rest, call again with the same arguments and \"offset\": 2400.]" + \
+                provenance, reads[1][-200:]
             assert reads[2] == f"{'c' * 1199}\n\n\n[Bytes 6000 to 7200 of 7200: its " \
                 "end.]" + provenance, reads[2][-200:]
             # The result of the last call also has the warning that the context
@@ -12613,7 +12631,8 @@ def check_review(binary, up):
                 f"{k + 1}. candidate\n   claim: {k} " + "x" * (600 << 10) for k in range(3))
             shown = results(up.requests[count + 4])[0]
             found = re.fullmatch(r"(.*)\n\n\[Bytes 0 to (\d+) of (\d+): for the rest, call "
-                                 r"again with \"offset\": \2\.\]", shown, re.S)
+                                 r"again with the same arguments and \"offset\": \2\.\]",
+                                 shown, re.S)
             assert found and int(found[3]) == len(text) and found[1] == text[:int(found[2])], \
                 shown[-200:]
 
@@ -14617,6 +14636,8 @@ def check_godbolt(binary, up, godbolt):
                      ["compilers"], ["compilers"]], tools
                 for tool in tools[1:]:
                     assert f"Compiler Explorer at {ce.url()}" in tool["description"], tool
+                    assert tool["inputSchema"]["properties"]["offset"]["description"] == \
+                        OFFSET_ABOUT, tool
                 # With short links, the tools that take share store data on
                 # Compiler Explorer.
                 for tool in tools[1:]:

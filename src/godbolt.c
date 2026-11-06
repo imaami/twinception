@@ -2919,9 +2919,8 @@ godbolt_configure (void               *config,
         "strings, and each string has at most 8192 bytes. No shell interprets "  \
         "them.\"}"
 #define GODBOLT_DEF_OFFSET                                                      \
-        "\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":"       \
-        "\"The byte of the output to start from, to read on past where it was "  \
-        "cut.\"}"
+        "\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":\""     \
+        TOOL_OFFSET_ABOUT "\"}"
 #define GODBOLT_DEF_HINTS                                                       \
         "\"annotations\":{\"readOnlyHint\":true,\"destructiveHint\":false,"      \
         "\"idempotentHint\":true,\"openWorldHint\":true}"
