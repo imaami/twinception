@@ -127,19 +127,6 @@ static int cli_client_response_event(struct cli_client_response *response, struc
 	return response->notify ? response->notify(response->context, event, response->id, response->error) : 0;
 }
 
-static int cli_client_response_append(struct buf *buffer, struct cstr_view bytes)
-{
-	if (!bytes.len)
-		return 0;
-	struct span room;
-	int e = buf_reserve(buffer, bytes.len, CLI_LIMIT, &room);
-	if (!e) {
-		memcpy(room.ptr, bytes.data, bytes.len);
-		buf_commit(buffer, bytes.len);
-	}
-	return e == ENOBUFS ? EFBIG : e;
-}
-
 /* Append end, the rest of a line of an SSE stream without its newline, to
  * response->line, and handle the line. An empty line ends an event, and a
  * data line adds its value to the data of the event. Returns 0 or an error
@@ -148,7 +135,7 @@ static int cli_client_response_append(struct buf *buffer, struct cstr_view bytes
 static int cli_client_response_line(struct cli_client_response *response, struct cstr_view end)
 {
 	struct buf *line = &response->line, *data = &response->data;
-	int e = cli_client_response_append(line, end);
+	int e = buf_put(line, end.data, end.len, CLI_LIMIT);
 	struct cstr_view text = {(char const *)line->data, line->tail};
 	line->tail = 0;
 	if (e)
@@ -166,8 +153,8 @@ static int cli_client_response_line(struct cli_client_response *response, struct
 	struct cstr_view value = cstr_view_slice(text, field.len, SIZE_MAX);
 	if (value.len && value.data[0] == ' ')
 		value = cstr_view_slice(value, 1, SIZE_MAX);
-	e = cli_client_response_append(data, value);
-	return e ? e : cli_client_response_append(data, CSTR_VIEW("\n"));
+	e = buf_put(data, value.data, value.len, CLI_LIMIT);
+	return e ? e : buf_put(data, "\n", 1, CLI_LIMIT);
 }
 
 static int cli_client_response_receive(struct cstr_view bytes, void *context)
@@ -186,9 +173,9 @@ static int cli_client_response_receive(struct cstr_view bytes, void *context)
 		newline = memchr(bytes.data, '\n', bytes.len);
 	}
 	if (!response->failure)
-		response->failure = cli_client_response_append(rest, bytes);
-	if (response->failure == EFBIG)
-		(void)cli_error_set(response->error, EFBIG, "AskAI response exceeds the 16 MiB client limit");
+		response->failure = buf_put(rest, bytes.data, bytes.len, CLI_LIMIT);
+	if (response->failure == ENOBUFS)
+		response->failure = cli_error_set(response->error, EFBIG, "AskAI response exceeds the 16 MiB client limit");
 	return response->failure;
 }
 

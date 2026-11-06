@@ -882,11 +882,8 @@ home_finish_text (struct home *home,
 		home_end(home, job, JOB_FAILED, completed);
 		return;
 	}
-	if (job->flags & TRUNCATED &&
-	    !buf_reserve(&job->result, sizeof AI_CUT_NOTE - 1, SIZE_MAX, &s)) {
-		memcpy(s.ptr, AI_CUT_NOTE, sizeof AI_CUT_NOTE - 1);
-		buf_commit(&job->result, sizeof AI_CUT_NOTE - 1);
-	}
+	if (job->flags & TRUNCATED)
+		(void)buf_put(&job->result, AI_CUT_NOTE, sizeof AI_CUT_NOTE - 1, SIZE_MAX);
 	home_end(home, job, JOB_TEXT, completed);
 }
 
@@ -995,14 +992,11 @@ home_receive (struct home *home,
 		home_hold(home, job);
 		return CURL_WRITEFUNC_PAUSE;
 	}
-	struct span s;
-	int e = buf_reserve(to, len, MAX_RESPONSE, &s);
+	int e = buf_put(to, data, len, MAX_RESPONSE);
 	if (e) {
 		job->flags |= e == ENOBUFS ? OVERFLOW : 0;
 		return 0;
 	}
-	memcpy(s.ptr, data, len);
-	buf_commit(to, len);
 	loop_work(loop, LOOP_RECV, len);
 	return len;
 }
@@ -1542,12 +1536,9 @@ home_append_text (struct home      *home,
 		return EILSEQ;
 	if (!text.len)
 		return 0;
-	struct span s;
-	int e = buf_reserve(to, text.len, MAX_RESPONSE, &s);
+	int e = buf_put(to, text.data, text.len, MAX_RESPONSE);
 	if (e)
 		return e;
-	memcpy(s.ptr, text.data, text.len);
-	buf_commit(to, text.len);
 	loop_work(home->loop, LOOP_COPY, text.len);
 	return 0;
 }
@@ -2401,11 +2392,8 @@ home_props_write (char const *data,
 		loop_ready_bulk(home->loop, &home->props);
 		return CURL_WRITEFUNC_PAUSE;
 	}
-	struct span s;
-	if (buf_reserve(&home->answer, len, MAX_PROPS, &s))
+	if (buf_put(&home->answer, data, len, MAX_PROPS))
 		return 0;
-	memcpy(s.ptr, data, len);
-	buf_commit(&home->answer, len);
 	loop_work(home->loop, LOOP_RECV, len);
 	return len;
 }

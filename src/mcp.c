@@ -885,20 +885,13 @@ mcp_piece_write (struct mcp_piece const *p,
                  struct buf             *buf,
                  size_t                  max)
 {
+	if (!p->text)
+		return buf_put(buf, p->bytes.data + off, len, max);
 	struct span s;
-	if (p->text) {
-		int e = buf_reserve(buf, 6 * len, max, &s);
-		if (e)
-			return e;
+	int e = buf_reserve(buf, 6 * len, max, &s);
+	if (!e)
 		buf_commit(buf, jb_escape((char *)s.ptr, p->bytes.data + off, len));
-		return 0;
-	}
-	int e = buf_reserve(buf, len, max, &s);
-	if (e)
-		return e;
-	memcpy(s.ptr, p->bytes.data + off, len);
-	buf_commit(buf, len);
-	return 0;
+	return e;
 }
 
 /* Free the message, or the answer, now if the step has the share for it,
@@ -2550,10 +2543,7 @@ mcp_req_copy (struct mcp_req *req,
 {
 	size_t from = k ? req->splice[k - 1].at : 0;
 	size_t len = (k < req->splices ? req->splice[k].at : req->text.len) - from;
-	if (!len)
-		return 0;
-	return mcp_piece_write(&BYTES(req->text), from, len, &req->upload,
-	                       SIZE_MAX);
+	return buf_put(&req->upload, req->text.data + from, len, SIZE_MAX);
 }
 
 /* Writes the call's session field and a line break into @p job's key, if
@@ -4395,7 +4385,7 @@ mcp_req_turn_write (struct mcp_req *req)
 	int e = 0;
 	for (uint16_t k = 0; !e && k < req->n_calls; ++k) {
 		struct span c = buf_peek(&req->job->calls[k]);
-		e = mcp_piece_write(&RAW(c.ptr, c.len), 0, c.len, &req->calls, CALLS_MAX);
+		e = buf_put(&req->calls, c.ptr, c.len, CALLS_MAX);
 		loop_work(loop, LOOP_COPY, c.len);
 	}
 	if (e) {
@@ -6327,8 +6317,7 @@ mcp_recover_back (struct loop           *loop,
 	 * checkpoint as it was, with no end record. */
 	struct json_object *local = last_tool_result ? last_tool_result : state;
 	struct cstr_view attached = jb_view(jb_get(local, "attached"));
-	if (attached.len &&
-	    mcp_piece_write(&BYTES(attached), 0, attached.len, &req->attached, SIZE_MAX)) {
+	if (buf_put(&req->attached, attached.data, attached.len, SIZE_MAX)) {
 		problem = TEXT("Cannot restore this turn's saved attachments.");
 		goto failed;
 	}
@@ -6355,7 +6344,7 @@ mcp_recover_back (struct loop           *loop,
 		               "was sent.");
 		goto failed;
 	}
-	e = mcp_piece_write(&BYTES(request), 0, request.len, &req->upload, SIZE_MAX);
+	e = buf_put(&req->upload, request.data, request.len, SIZE_MAX);
 	struct cstr_view trace = jb_view(jb_get(state, "trace"));
 	if (!e && trace.len && !dstr_cat_n(&req->trace, trace.data, trace.len))
 		e = ENOMEM;
@@ -7797,8 +7786,7 @@ mcp_on_body (struct stream *s,
 		                   : "Out of memory");
 		return;
 	}
-	if (bytes.len && mcp_piece_write(&RAW(bytes.ptr, bytes.len), 0, bytes.len,
-	                                 &req->body, SIZE_MAX)) {
+	if (buf_put(&req->body, bytes.ptr, bytes.len, SIZE_MAX)) {
 		mcp_req_http_error(req, 500, "Out of memory");
 		return;
 	}

@@ -76,12 +76,9 @@ cli_read_file (struct dstr      *text,
 			e = cli_error_set(error, EFBIG, "Prompt file exceeds the 16 MiB client limit");
 			break;
 		}
-		struct span room;
-		e = buf_reserve(&bytes, count, CLI_LIMIT, &room);
+		e = buf_put(&bytes, chunk, count, CLI_LIMIT);
 		if (e)
 			break;
-		memcpy(room.ptr, chunk, count);
-		buf_commit(&bytes, count);
 		if (count < sizeof chunk)
 			break;
 	}

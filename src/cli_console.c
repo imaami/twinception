@@ -833,14 +833,8 @@ static int
 cli_console_queue (struct cli_console *console,
                    struct cstr_view    text)
 {
-	struct span room;
-	int e = buf_reserve(&console->output_queue, text.len, CLI_CONSOLE_OUTPUT_LIMIT, &room);
-	if (e)
-		return e;
-	if (text.len)
-		memcpy(room.ptr, text.data, text.len);
-	buf_commit(&console->output_queue, text.len);
-	return cli_console_output_drain(console);
+	int e = buf_put(&console->output_queue, text.data, text.len, CLI_CONSOLE_OUTPUT_LIMIT);
+	return e ? e : cli_console_output_drain(console);
 }
 
 static ssize_t
@@ -1331,12 +1325,10 @@ static int cli_console_read_simple(struct cli_console *console, struct buf *byte
 		size_t start = bytes->tail;
 		int byte;
 		while ((byte = cli_console_byte(console)) != EOF && byte != '\n') {
-			struct span room;
-			int e = buf_reserve(bytes, 1, CLI_CONSOLE_INPUT_LIMIT - 1, &room);
+			int e = buf_put(bytes, &(unsigned char){ (unsigned char)byte }, 1,
+			                CLI_CONSOLE_INPUT_LIMIT - 1);
 			if (e)
 				return e == ENOBUFS ? EFBIG : e;
-			room.ptr[0] = (unsigned char)byte;
-			buf_commit(bytes, 1);
 		}
 		if (console->in.error || (console->input_eof && bytes->tail == start))
 			return console->in.error;
@@ -1350,12 +1342,9 @@ static int cli_console_read_simple(struct cli_console *console, struct buf *byte
 				more = last == '\\' && !more;
 			}
 		}
-		struct span room;
-		int e = buf_reserve(bytes, 1, CLI_CONSOLE_INPUT_LIMIT, &room);
+		int e = buf_put(bytes, "\n", 1, CLI_CONSOLE_INPUT_LIMIT);
 		if (e)
 			return e == ENOBUFS ? EFBIG : e;
-		room.ptr[0] = '\n';
-		buf_commit(bytes, 1);
 	} while (more && !console->input_eof);
 	return 0;
 }

@@ -9,6 +9,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /**
  * Binary byte buffer for sockets, TLS and pipes; [head, tail) is readable.
@@ -146,6 +147,27 @@ buf_commit (struct buf *buf,
             size_t      len)
 {
 	buf->tail += len;
+}
+
+/** Append the @p len bytes at @p data, reserving room for them with
+ *  buf_reserve() up to @p max. Returns 0, also for @p len 0, or
+ *  buf_reserve()'s error.
+ */
+static inline int
+buf_put (struct buf *buf,
+         void const *data,
+         size_t      len,
+         size_t      max)
+{
+	if (!len)
+		return 0;
+	struct span s;
+	int e = buf_reserve(buf, len, max, &s);
+	if (!e) {
+		memcpy(s.ptr, data, len);
+		buf_commit(buf, len);
+	}
+	return e;
 }
 
 /** The readable bytes. */
