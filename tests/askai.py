@@ -12160,9 +12160,12 @@ def check_turns(binary, up):
             assert result["content"][1]["text"].count("- git ") == 3, result
 
             # A job in the background, and a timer: background starts git and
-            # answers at once; a wait for the job ends as it finishes, saying
-            # so; jobs lists it and gives its output; a later wait ends as the
-            # timer fires, saying so; a cancelled job runs no more.
+            # answers at once; a wait for the job ends as it finishes, with the
+            # notice of its end; jobs lists it and gives its output; a later
+            # wait ends as the timer fires, saying so; a wait for the ended
+            # job ends at once, with the same notice; a cancelled job runs no
+            # more, and a wait for it ends at once, with the notice that it
+            # was cancelled.
             def tool_call(cid, name, **args):
                 return (cid, name, json.dumps(args))
             script[:] = [
@@ -12176,10 +12179,12 @@ def check_turns(binary, up):
                 lambda r: (200, turn_stream([tool_call("w2", "wait", seconds=10)])),
                 lambda r: (200, turn_stream([
                     tool_call("b2", "background", tool="git", arguments=json.loads(slow)),
-                    tool_call("b3", "background", tool="notes", arguments={})])),
+                    tool_call("b3", "background", tool="notes", arguments={}),
+                    tool_call("w3", "wait", seconds=5, jobs=[1])])),
                 lambda r: (200, turn_stream([tool_call("c1", "jobs", action="cancel", job=2),
                                              tool_call("c2", "jobs", action="list"),
-                                             tool_call("c3", "wait", seconds=0)])),
+                                             tool_call("c3", "wait", seconds=0),
+                                             tool_call("w4", "wait", seconds=1, jobs=[2])])),
             ]
             count = len(up.requests)
             start = time.monotonic()
@@ -12192,24 +12197,27 @@ def check_turns(binary, up):
                 """What request k of the call says call cid gave."""
                 return next(m["content"] for m in turns(asked[k])
                             if m.get("tool_call_id") == cid)
+            ended = "[askai: job 1, git, completed: call jobs with the action result and " \
+                "job 1 for its result.]\n"
             assert said(1, "b1") == "Started job 1." and \
                 said(1, "t1") == "Timer 1 will fire in 2 s.", turns(asked[1])
-            assert said(2, "w1").startswith("[askai: job 1, git, finished: call jobs") and \
-                "timer" not in said(2, "w1"), said(2, "w1")
+            assert said(2, "w1") == ended, said(2, "w1")
             # The list shows the job's arguments exactly as the turn sent
             # them. The job has its own copy, which stays valid after askai
             # frees the arguments of the turn's call of background.
             wire = json.dumps(json.loads(slow), separators=(",", ":"))
-            assert re.fullmatch(r"job 1: git " + re.escape(wire) + r": finished, \d+ bytes\n",
+            assert re.fullmatch(r"job 1: git " + re.escape(wire) + r": completed, \d+ bytes\n",
                                 said(3, "j1")), said(3, "j1")
             assert said(3, "j2") == "[No output.]", said(3, "j2")
             assert said(4, "w2") == "[askai: timer 1 fired: check it.]\n", said(4, "w2")
             assert said(5, "b2") == "Started job 2." and \
-                said(5, "b3").startswith("The tool argument must name a tool"), \
-                turns(asked[5])
+                said(5, "b3").startswith("The tool argument must name a tool") and \
+                said(5, "w3") == ended, turns(asked[5])
             assert said(6, "c1") == "Cancelled the job." and \
-                "job 2: git" in said(6, "c2") and said(6, "c2").endswith(": cancelled\n") \
-                and said(6, "c3").startswith("The seconds argument"), turns(asked[6])
+                re.fullmatch(r"job 1: git .*: completed, \d+ bytes\njob 2: git .*: cancelled\n",
+                             said(6, "c2")) and \
+                said(6, "c3").startswith("The seconds argument") and \
+                said(6, "w4") == "[askai: job 2, git, cancelled.]\n", turns(asked[6])
             assert 2 <= took < 6, took
             trace = result["content"][1]["text"]
             assert all(f"- {t} " in trace for t in ("background", "timer", "wait", "jobs")), \
@@ -12232,6 +12240,18 @@ def check_turns(binary, up):
                             "background tool call git answered"):
                 ai.wait_log(r"^ask call \d+\.\d+ turn \d+: " + pattern +
                             r" after \d+\.\d s \(\d+ bytes\); arguments \{.*\}$")
+
+            # A job that ended while the upstream wrote the next turn: a wait
+            # for it in that turn gives the notice of its end once.
+            script[:] = [
+                lambda r: (200, turn_stream([
+                    tool_call("b1", "background", tool="git", arguments=json.loads(slow))])),
+                lambda r: (time.sleep(2), (200, turn_stream([
+                    tool_call("w1", "wait", seconds=5, jobs=[1])])))[1]]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            asked = up.requests[count:]
+            assert said(2, "w1") == ended, said(2, "w1")
 
             # The output token limit can cut the arguments of a call short.
             # askai does not run such a call, and the time in the log line of
@@ -12264,8 +12284,8 @@ def check_turns(binary, up):
             result = ai.ask("Q")
             took = time.monotonic() - start
             asked = up.requests[count:]
-            finished = "[askai: job 1, git, finished: call jobs with the action " \
-                "result and job 1 for its output.]\n"
+            finished = "[askai: job 1, git, completed: call jobs with the action " \
+                "result and job 1 for its result.]\n"
             assert len(asked) == 5 and turns(asked[2])[2:] == [
                 {"role": "assistant", "content": "Waiting."},
                 {"role": "user", "content": "[askai: timer 1 fired: look.]\n"}], asked

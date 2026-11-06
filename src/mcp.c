@@ -4854,6 +4854,25 @@ mcp_req_doze (struct mcp_req *req)
 	mcp_req_wait(req);
 }
 
+/* Appends the notice of the end of the job a->jobs[@p k] to the notices of
+ * @p a. Returns 0, or ENOMEM.
+ */
+static int
+mcp_agenda_job_notice (struct mcp_agenda *a,
+                       uint32_t           k)
+{
+	struct mcp_slot const *job = &a->jobs[k];
+	char const *tool = mcp_slot_tool(job)->name.data;
+	bool const ok = job->flags & SLOT_CANCELLED
+	              ? dstr_printf(&a->notices, "[askai: job %" PRIu32 ", %s, cancelled.]\n",
+	                            k + 1, tool)
+	              : dstr_printf(&a->notices, "[askai: job %" PRIu32 ", %s, %s: call jobs "
+	                            "with the action result and job %" PRIu32 " for its "
+	                            "result.]\n", k + 1, tool,
+	                            job->flags & SLOT_FAILED ? "failed" : "completed", k + 1);
+	return ok ? 0 : ENOMEM;
+}
+
 /* The job in @p slot has its output, or failed: the next result says so,
  * and a wait for it ends, or it wakes the turns, if they doze.
  */
@@ -4861,15 +4880,13 @@ static void
 mcp_agenda_job_done (struct mcp_slot *slot)
 {
 	struct mcp_agenda *a = slot->req->agenda;
-	uint32_t n = (uint32_t)(slot - a->jobs) + 1;
-	if (!dstr_printf(&a->notices, "[askai: job %" PRIu32 ", %s, %s: call jobs with the "
-	                 "action result and job %" PRIu32 " for its output.]\n", n,
-	                 mcp_slot_tool(slot)->name.data,
-	                 slot->flags & SLOT_FAILED ? "failed" : "finished", n)) {
-		mcp_req_fail(slot->req, ENOMEM);
+	uint32_t const k = (uint32_t)(slot - a->jobs);
+	int e = mcp_agenda_job_notice(a, k);
+	if (e) {
+		mcp_req_fail(slot->req, e);
 		return;
 	}
-	if (a->wait && (!a->wait_for || a->wait_for >> (n - 1) & 1))
+	if (a->wait && (!a->wait_for || a->wait_for >> k & 1))
 		mcp_agenda_wait_end(a);
 	else if (a->req->phase == PHASE_DOZE)
 		mcp_agenda_wake(a);
@@ -5089,7 +5106,7 @@ mcp_slot_turn_list (struct mcp_slot *slot)
 {
 	static char const *const states[] = {
 		[0]                          = "running",
-		[SLOT_DONE]                  = "finished",
+		[SLOT_DONE]                  = "completed",
 		[SLOT_DONE | SLOT_FAILED]    = "failed",
 		[SLOT_DONE | SLOT_CANCELLED] = "cancelled",
 	};
@@ -5339,10 +5356,12 @@ mcp_slot_wait (struct mcp_slot    *slot,
 	a->wait_for = mask;
 	a->wait_end = req->mcp->loop->now + secs * NS;
 	a->waited = (uint32_t)secs;
-	/* A job waited for that has finished already ends it, too. */
-	for (uint32_t k = 0; mask && k < n_jobs; ++k)
-		if (mask >> k & 1 && a->jobs[k].flags & SLOT_DONE &&
-		    !dstr_printf(&a->notices, "[askai: job %" PRIu32 " runs no more.]\n", k + 1)) {
+	/* A job waited for that has ended already ends it, too, with the
+	 * notice of its end. Pending notices end it instead, and they include
+	 * the job's notice if the job ended after the last result. */
+	bool const told = !dstr_len(&a->notices);
+	for (uint32_t k = 0; told && mask && k < n_jobs; ++k)
+		if (mask >> k & 1 && a->jobs[k].flags & SLOT_DONE && mcp_agenda_job_notice(a, k)) {
 			mcp_req_fail(req, ENOMEM);
 			return;
 		}
