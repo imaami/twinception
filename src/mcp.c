@@ -146,6 +146,8 @@ enum {
 	TRACE_MAX    = 48,        /* tool calls the trace tells of */
 	TRACE_ARGS   = 200,       /* bytes of a call's arguments in the trace
 	                             and in the log */
+	JOB_ARGS     = 100,       /* bytes of a job's arguments that the list of
+	                             the jobs shows */
 	SHOWN        = TRACE_ARGS + sizeof "...",  /* bytes of those in the log,
 	                                              with their mark and NUL */
 	PROMPT_LOG   = 100,       /* bytes of a prompt that the log shows, as
@@ -461,8 +463,20 @@ enum mcp_role : uint8_t {
 	ROLE_JOB,   /* a job a turn started in the background */
 };
 
+/* The states of a slot's call, as the bits of slot->flags. */
+enum mcp_slot_flag : uint16_t {
+	SLOT_DONE      = 1u << 0,  /* the call has ended. A call ends when its
+	                              output is all in, when it fails, when it
+	                              is cancelled, and when askai calls its
+	                              kind's drop(). The functions of the call
+	                              API that would end or change a call do
+	                              nothing for an ended call. */
+	SLOT_FAILED    = 1u << 1,  /* the call failed */
+	SLOT_CANCELLED = 1u << 2,  /* the job was cancelled */
+};
+
 /* A tool call that a request runs. It is the client's call or a call of a
- * turn. req->self also holds the answer of an ask call. The notes git
+ * turn. The answer of an ask call is in req->self too, and the notes git
  * commands that an ask call runs for itself also use req->self.
  */
 struct mcp_slot {
@@ -499,21 +513,11 @@ struct mcp_slot {
 	                                  notes read or diff shows, or nullptr.
 	                                  mcp_slot_done() puts it in the notice
 	                                  and the journal and then clears it. */
-	uint16_t            note_len;  /* the length of note in bytes */
-	uint8_t             tool;      /* the offer id of the tool, or TOOL_MAX */
+	UTIL_TEXT(512)      note;      /* text appended to the tool output */
+	uint8_t             tool;      /* the id of the tool, or TOOL_MAX */
 	uint8_t             role;      /* enum mcp_role */
-	bool                done;      /* true once the call has ended. A
-	                                  call ends when it has its output,
-	                                  when it fails, when it is
-	                                  cancelled, and when askai calls
-	                                  its kind's drop(). The functions
-	                                  of the call API that would end or
-	                                  change a call do nothing for an
-	                                  ended call. */
-	bool                failed;    /* the call failed */
-	bool                cancelled; /* the job was cancelled */
-	char                note[513]; /* text appended to the tool output. Its
-	                                  size fills the trailing padding. */
+	uint16_t            flags;     /* enum mcp_slot_flag, widened over the
+	                                  padding */
 };
 
 static_assert(TOOL_MAX <= UINT8_MAX, "TOOL_MAX must fit in slot->tool");
@@ -1060,8 +1064,23 @@ mcp_req_slots_make (struct mcp_req *req)
 
 static void mcp_slot_drop (struct mcp_slot *slot);
 
-/* Let go of what the turn's calls launched wait for, and of their output,
- * which the slots' storage keeps for reuse.
+/* Drop the call in @p slot, a slot of a turn's calls, and empty the slot
+ * for the next call. The storage of its output stays for reuse.
+ */
+static void
+mcp_slot_reset (struct mcp_slot *slot)
+{
+	mcp_slot_drop(slot);
+	slot->of = nullptr;
+	dstr_clear(&slot->answer);
+	slot->skip = slot->window = 0;
+	util_text_clear(&slot->note);
+	slot->tool = TOOL_MAX;
+	slot->flags = 0;
+}
+
+/* Let go of what the turn's calls launched wait for, and of their output.
+ * The slots before req->part are empty, as their results are written.
  */
 static void
 mcp_req_slots_drop (struct mcp_req *req)
@@ -1069,16 +1088,8 @@ mcp_req_slots_drop (struct mcp_req *req)
 	if (req->agenda)
 		req->agenda->wait = nullptr;
 	uint32_t const launched = req->slots ? req->launched : 0;
-	for (uint32_t k = 0; k < launched; ++k) {
-		struct mcp_slot *slot = &req->slots[k];
-		slot->of = nullptr;
-		mcp_slot_drop(slot);
-		dstr_clear(&slot->answer);
-		slot->skip = slot->window = 0;
-		slot->note_len = 0;
-		slot->tool = TOOL_MAX;
-		slot->done = slot->failed = false;
-	}
+	for (uint32_t k = req->part; k < launched; ++k)
+		mcp_slot_reset(&req->slots[k]);
 	req->launched = 0;
 }
 
@@ -1339,7 +1350,7 @@ static void
 mcp_slot_drop (struct mcp_slot *slot)
 {
 	if (slot->own) {
-		slot->done = true;
+		slot->flags |= SLOT_DONE;
 		struct registry_tool const *tool = mcp_slot_tool(slot);
 		if (tool->kind->drop)
 			tool->kind->drop(slot);
@@ -1932,7 +1943,7 @@ mcp_slot_result (struct mcp_slot  *slot,
                  bool              failed)
 {
 	struct mcp_req *req = slot->req;
-	slot->done = true;
+	slot->flags |= SLOT_DONE;
 	if (slot->role != ROLE_OWN) {
 		/* An offset does not apply to the answer of a failed call. */
 		if (failed)
@@ -2012,7 +2023,7 @@ static void
 mcp_slot_respond (struct mcp_slot *slot,
                   bool             failed)
 {
-	slot->done = true;
+	slot->flags |= SLOT_DONE;
 	if (slot->role != ROLE_OWN) {
 		mcp_slot_done(slot, failed);
 		return;
@@ -3263,15 +3274,26 @@ mcp_slot_wake (struct mcp_slot *slot)
 	mcp_slot_unwait(slot);
 }
 
+/* Returns 0 if the call in @p slot has not ended and no bit of @p flags is
+ * outside @p allowed, EFAULT if @p slot is nullptr, and EINVAL otherwise,
+ * as the call API checks its inputs (src/mcp.h).
+ */
+static int
+mcp_slot_live (struct mcp_slot const *slot,
+               uint32_t               flags,
+               uint32_t               allowed)
+{
+	return !slot ? EFAULT : slot->flags & SLOT_DONE || flags & ~allowed ? EINVAL : 0;
+}
+
 int
 mcp_slot_tell (struct mcp_slot  *slot,
                struct cstr_view  text,
                uint32_t          flags)
 {
-	if (!slot || (!text.data && text.len))
-		return EFAULT;
-	if (slot->done || flags & ~(uint32_t)TOOL_FAILED)
-		return EINVAL;
+	int e = !text.data && text.len ? EFAULT : mcp_slot_live(slot, flags, TOOL_FAILED);
+	if (e)
+		return e;
 	size_t len = jb_utf8(text.data, text.len < TOOL_TELL_MAX ? text.len : TOOL_TELL_MAX);
 	mcp_slot_wake(slot);
 	/* The output is the text whole, not lent, nor from an offset. */
@@ -3301,10 +3323,9 @@ int
 mcp_slot_finish (struct mcp_slot *slot,
                  uint32_t         flags)
 {
-	if (!slot)
-		return EFAULT;
-	if (slot->done || flags & ~(uint32_t)TOOL_FAILED)
-		return EINVAL;
+	int e = mcp_slot_live(slot, flags, TOOL_FAILED);
+	if (e)
+		return e;
 	mcp_slot_wake(slot);
 	mcp_slot_respond(slot, flags & TOOL_FAILED);
 	return 0;
@@ -3314,11 +3335,10 @@ int
 mcp_slot_fail (struct mcp_slot *slot,
                int              e)
 {
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
-	slot->done = true;
+	int const refused = mcp_slot_live(slot, 0, 0);
+	if (refused)
+		return refused;
+	slot->flags |= SLOT_DONE;
 	mcp_req_fail(slot->req, e);
 	return 0;
 }
@@ -3327,13 +3347,12 @@ int
 mcp_slot_offset (struct mcp_slot    *slot,
                  struct json_object *args)
 {
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
+	int e = mcp_slot_live(slot, 0, 0);
+	if (e)
+		return e;
 	struct json_object *o = jb_get(args, "offset");
 	uint64_t n = 0;
-	int e = o ? jb_uint_checked(o, SIZE_MAX, &n) : 0;
+	e = o ? jb_uint_checked(o, SIZE_MAX, &n) : 0;
 	slot->skip = (size_t)n;
 	if (!e)
 		return 0;
@@ -3351,10 +3370,9 @@ mcp_slot_write (struct mcp_slot  *slot,
 	if (!taken)
 		return EFAULT;
 	*taken = 0;
-	if (!slot || (!text.data && text.len))
-		return EFAULT;
-	if (slot->done || flags & ~(uint32_t)TOOL_MORE)
-		return EINVAL;
+	int e = !text.data && text.len ? EFAULT : mcp_slot_live(slot, flags, TOOL_MORE);
+	if (e)
+		return e;
 	struct dstr *answer = &slot->answer;
 	size_t had = dstr_len(answer);
 	if (text.len > TOOL_OUTPUT_MAX - had)
@@ -3435,10 +3453,9 @@ int
 mcp_slot_source (struct mcp_slot            *slot,
                  struct review_source const *src)
 {
-	if (!slot || !src)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
+	int e = !src ? EFAULT : mcp_slot_live(slot, 0, 0);
+	if (e)
+		return e;
 	review_read_destroy(&slot->read);
 	/* A turn's window is at most mcp_slot_window_max() bytes of the output,
 	 * so no window shows a longer single line whole. Keep no such line, so
@@ -3446,7 +3463,6 @@ mcp_slot_source (struct mcp_slot            *slot,
 	if (!slot->req->review ||
 	    (src->first == src->last && src->len > mcp_slot_window_max(slot)))
 		return 0;
-	int e = 0;
 	slot->read = review_read_create(src, mcp_slot_answer(slot), &e);
 	if (slot->read)
 		loop_work(slot->req->mcp->loop, LOOP_COPY, src->len);
@@ -3457,23 +3473,19 @@ int
 mcp_slot_shows (struct mcp_slot *slot,
                 char const      *selector)
 {
-	if (!slot || !selector)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
-	slot->shows = selector;
-	return 0;
+	int e = !selector ? EFAULT : mcp_slot_live(slot, 0, 0);
+	if (!e)
+		slot->shows = selector;
+	return e;
 }
 
 int
 mcp_slot_noted (struct mcp_slot *slot)
 {
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
-	slot->req->flags |= REQ_BRANCH;
-	return 0;
+	int e = mcp_slot_live(slot, 0, 0);
+	if (!e)
+		slot->req->flags |= REQ_BRANCH;
+	return e;
 }
 
 /* Its request parks, if the slot is its own; a turn's call keeps it among
@@ -3482,10 +3494,9 @@ mcp_slot_noted (struct mcp_slot *slot)
 int
 mcp_slot_park (struct mcp_slot *slot)
 {
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
+	int e = mcp_slot_live(slot, 0, 0);
+	if (e)
+		return e;
 	struct mcp_req *req = slot->req;
 	if (mcp_slot_tool(slot)->kind->flags & TOOL_STREAM &&
 	    (req->flags & (REQ_SSE_OK | REQ_SSE)) == REQ_SSE_OK)
@@ -3500,10 +3511,9 @@ mcp_slot_park (struct mcp_slot *slot)
 int
 mcp_slot_ready (struct mcp_slot *slot)
 {
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
+	int e = mcp_slot_live(slot, 0, 0);
+	if (e)
+		return e;
 	if (!mcp_slot_tool(slot)->kind->step) {
 		(void)mcp_slot_tell(slot, CSTR_VIEW("The tool's kind has no step(), so the "
 		                                    "call cannot go on."), TOOL_FAILED);
@@ -3520,12 +3530,9 @@ mcp_slot_name (struct mcp_slot *slot,
 	if (!who)
 		return EFAULT;
 	*who = (struct handle){};
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
-	int e = slot->call.bits ? 0 : loop_handle(slot->req->mcp->loop, slot, HANDLE_SLOT,
-	                                          &slot->call);
+	int e = mcp_slot_live(slot, 0, 0);
+	if (!e && !slot->call.bits)
+		e = loop_handle(slot->req->mcp->loop, slot, HANDLE_SLOT, &slot->call);
 	if (!e)
 		*who = slot->call;
 	return e;
@@ -3552,7 +3559,7 @@ mcp_slot_fetch_back (struct loop     *loop,
 		web_wait_leave(&wait);
 		return;
 	}
-	if (!slot->done)
+	if (!(slot->flags & SLOT_DONE))
 		loop_ready_bulk(loop, &slot->step);
 }
 
@@ -3585,10 +3592,10 @@ int
 mcp_slot_fetch (struct mcp_slot          *slot,
                 struct web_request const *request)
 {
-	if (!slot || !request || !request->url || (!request->body.data && request->body.len))
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
+	int e = !request || !request->url || (!request->body.data && request->body.len)
+	      ? EFAULT : mcp_slot_live(slot, 0, 0);
+	if (e)
+		return e;
 	struct cstr_view url = { request->url, strnlen(request->url, WEB_URL_MAX + 1) };
 	char const *accept = request->accept;
 	size_t accept_len = 0;
@@ -3631,10 +3638,9 @@ mcp_slot_fetched (struct mcp_slot const *slot,
 	if (!response)
 		return EFAULT;
 	*response = (struct web_response){};
-	if (!slot)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
+	int e = mcp_slot_live(slot, 0, 0);
+	if (e)
+		return e;
 	if (!slot->web)
 		return ENOENT;
 	if (!web_wait_done(slot->web))
@@ -4131,7 +4137,7 @@ mcp_agenda_pending (struct mcp_agenda const *a)
 		return false;
 	bool any = dstr_len(&a->notices) || dstr_len(&a->told);
 	for (uint32_t k = 0; !any && k < a->n_jobs; ++k)
-		any = !a->jobs[k].done;
+		any = !(a->jobs[k].flags & SLOT_DONE);
 	return any || ledger_timer_any(a->timers);
 }
 
@@ -4691,7 +4697,7 @@ mcp_agenda_job_done (struct mcp_slot *slot)
 	if (!dstr_printf(&a->notices, "[askai: job %" PRIu32 ", %s, %s: call jobs with the "
 	                 "action result and job %" PRIu32 " for its output.]\n", n,
 	                 mcp_slot_tool(slot)->name.data,
-	                 slot->failed ? "failed" : "finished", n)) {
+	                 slot->flags & SLOT_FAILED ? "failed" : "finished", n)) {
 		mcp_req_fail(slot->req, ENOMEM);
 		return;
 	}
@@ -4968,25 +4974,31 @@ mcp_slot_background (struct mcp_slot    *slot,
 static int
 mcp_slot_jobs_list (struct mcp_slot *slot)
 {
+	static char const *const states[] = {
+		[0]                          = "running",
+		[SLOT_DONE]                  = "finished",
+		[SLOT_DONE | SLOT_FAILED]    = "failed",
+		[SLOT_DONE | SLOT_CANCELLED] = "cancelled",
+	};
 	struct mcp_agenda const *a = slot->req->agenda;
 	uint32_t n = a ? a->n_jobs : 0;
+	struct dstr *d = &slot->answer;
 	if (!n)
-		return CAT(&slot->answer, "You have started no jobs.") ? 0 : ENOMEM;
+		return CAT(d, "You have started no jobs.") ? 0 : ENOMEM;
 	for (uint32_t k = 0; k < n; ++k) {
 		struct mcp_slot const *job = &a->jobs[k];
 		struct cstr_view const args = jb_wire(job->args);
-		char state[48];
-		if (job->cancelled)
-			util_format(state, sizeof state, "cancelled");
-		else if (!job->done)
-			util_format(state, sizeof state, "running");
-		else
-			util_format(state, sizeof state, "%s, %zu bytes",
-			            job->failed ? "failed" : "finished", mcp_slot_output(job).len);
-		if (!args.data || !dstr_printf(&slot->answer, "job %" PRIu32 ": %s %.*s%s: %s\n",
-		                               k + 1, mcp_slot_tool(job)->name.data,
-		                               (int)util_clip(args.data, args.len, 100), args.data,
-		                               args.len > 100 ? "..." : "", state))
+		size_t const shown = util_clip(args.data, args.len, JOB_ARGS);
+		uint16_t const state = job->flags & (SLOT_DONE | SLOT_FAILED | SLOT_CANCELLED);
+		/* The output of a job that ran to its end is sized. */
+		bool const sized = (state & (SLOT_DONE | SLOT_CANCELLED)) == SLOT_DONE;
+		bool const ok = args.data &&
+		                dstr_printf(d, "job %" PRIu32 ": %s %.*s%s: %s", k + 1,
+		                            mcp_slot_tool(job)->name.data, (int)shown, args.data,
+		                            shown < args.len ? "..." : "", states[state]) &&
+		                (!sized || dstr_printf(d, ", %zu bytes", mcp_slot_output(job).len)) &&
+		                CAT(d, "\n");
+		if (!ok)
 			return ENOMEM;
 	}
 	return 0;
@@ -5000,14 +5012,14 @@ mcp_slot_jobs_result (struct mcp_slot    *slot,
                       struct mcp_slot    *job,
                       struct json_object *args)
 {
-	if (!job->done) {
+	if (!(job->flags & SLOT_DONE)) {
 		mcp_slot_result(slot, TEXT("That job still runs: wait for it."), true);
 		return;
 	}
 	if (mcp_slot_offset(slot, args))
 		return;
 	slot->of = job;
-	mcp_slot_respond(slot, job->failed);
+	mcp_slot_respond(slot, job->flags & SLOT_FAILED);
 }
 
 /* Cancel @p job, as the jobs tool's call in @p slot asks, if it runs. */
@@ -5015,12 +5027,12 @@ static void
 mcp_slot_jobs_cancel (struct mcp_slot *slot,
                       struct mcp_slot *job)
 {
-	if (job->done) {
+	if (job->flags & SLOT_DONE) {
 		mcp_slot_result(slot, TEXT("That job runs no more."), true);
 		return;
 	}
 	mcp_slot_drop(job);
-	job->done = job->cancelled = true;
+	job->flags |= SLOT_DONE | SLOT_CANCELLED;
 	mcp_slot_result(slot, TEXT("Cancelled the job."), false);
 }
 
@@ -5131,7 +5143,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 		return;
 	}
 	atomic_store_explicit(&task->told, 1, memory_order_relaxed);
-	slot->done = true;
+	slot->flags |= SLOT_DONE;
 	req->shown = task;
 	req->off = 0;
 	int e = mcp_req_open(req, FRAG(""));
@@ -5250,7 +5262,7 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 		!result && !jb_is(action, "cancel")
 		? TEXT("The action argument must be list, result or cancel.")
 		: !job ? TEXT("The job argument must be the number of a job you started.")
-		: job->cancelled ? TEXT("That job was cancelled.")
+		: job->flags & SLOT_CANCELLED ? TEXT("That job was cancelled.")
 		: (struct mcp_piece){};
 	if (problem.bytes.data) {
 		mcp_slot_result(slot, problem, true);
@@ -5346,7 +5358,7 @@ mcp_wait_alarm (struct loop       *loop,
 {
 	(void)loop;
 	struct mcp_wait *w = container_of(timer, struct mcp_wait, alarm);
-	if (!w->slot->done)
+	if (!(w->slot->flags & SLOT_DONE))
 		mcp_wait_check(w, false);
 }
 
@@ -5362,7 +5374,7 @@ mcp_on_wake (struct loop *loop,
 	ledger_wait_heard(w);
 	struct mcp_slot *slot = mcp_slot_named(loop, w->who);
 	ledger_wait_put(w);
-	if (slot && !slot->done)
+	if (slot && !(slot->flags & SLOT_DONE))
 		loop_ready_bulk(loop, &slot->step);
 }
 
@@ -5441,7 +5453,7 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
 static void
 mcp_slot_wait_step (struct mcp_slot *slot)
 {
-	if (slot->own && !slot->done)
+	if (slot->own && !(slot->flags & SLOT_DONE))
 		mcp_wait_check(slot->own, false);
 }
 
@@ -5506,7 +5518,7 @@ mcp_slot_wait (struct mcp_slot    *slot,
 	a->waited = (uint32_t)secs;
 	/* A job waited for that has finished already ends it, too. */
 	for (uint32_t k = 0; mask && k < n_jobs; ++k)
-		if (mask >> k & 1 && a->jobs[k].done &&
+		if (mask >> k & 1 && a->jobs[k].flags & SLOT_DONE &&
 		    !dstr_printf(&a->notices, "[askai: job %" PRIu32 " runs no more.]\n", k + 1)) {
 			mcp_req_fail(req, ENOMEM);
 			return;
@@ -5729,7 +5741,7 @@ mcp_req_calls_next (struct mcp_req *req)
 		return;
 	}
 	struct mcp_slot *slot = &req->slots[req->part];
-	if (slot->done) {
+	if (slot->flags & SLOT_DONE) {
 		mcp_req_result_begin(req, slot);
 		return;
 	}
@@ -5764,29 +5776,27 @@ mcp_slot_window (struct mcp_slot *slot,
 
 /* Say in slot->note where the window is in the output of @p len bytes of
  * @p slot's call, unless it is all of it, or that slot->skip was @p past
- * its end; returns the note's length.
+ * its end.
  */
-static size_t
+static void
 mcp_slot_note_window (struct mcp_slot *slot,
                       size_t           len,
                       bool             past)
 {
 	size_t end = slot->skip + slot->window;
-	if (end < len) {
-		if (mcp_slot_tool(slot)->kind->flags & TOOL_PAGED)
-			return util_format(slot->note, sizeof slot->note, "\n\n[Bytes %zu to %zu "
-			                   "of %zu: for the rest, call again with \"offset\": "
-			                   "%zu.]", slot->skip, end, len, end);
-		return util_format(slot->note, sizeof slot->note, "\n\n[Bytes %zu to %zu of "
-		                   "%zu: the rest is cut.]", slot->skip, end, len);
-	}
-	if (past)
-		return util_format(slot->note, sizeof slot->note, "[The output has %zu bytes, "
-		                   "fewer than the offset.]", len);
-	if (slot->skip)
-		return util_format(slot->note, sizeof slot->note, "\n\n[Bytes %zu to %zu of "
-		                   "%zu: its end.]", slot->skip, len, len);
-	return 0;
+	if (end < len && mcp_slot_tool(slot)->kind->flags & TOOL_PAGED)
+		(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: for the "
+		                       "rest, call again with \"offset\": %zu.]", slot->skip,
+		                       end, len, end);
+	else if (end < len)
+		(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: the rest "
+		                       "is cut.]", slot->skip, end, len);
+	else if (past)
+		(void)util_text_printf(&slot->note, "[The output has %zu bytes, fewer than the "
+		                       "offset.]", len);
+	else if (slot->skip)
+		(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: its end.]",
+		                       slot->skip, len, len);
 }
 
 static void mcp_agenda_job_done (struct mcp_slot *slot);
@@ -5847,7 +5857,7 @@ mcp_slot_done (struct mcp_slot *slot,
 		    failed ? "failed" : "answered", mcp_elapsed(slot->start), out.len,
 		    util_s(out.len), shown, *text ? "; error " : "", text);
 	}
-	slot->failed = failed;
+	slot->flags |= failed ? SLOT_FAILED : 0;
 	char const *notebook = !failed ? slot->shows : nullptr;
 	slot->shows = nullptr;
 	if (job) {
@@ -5876,46 +5886,42 @@ mcp_slot_done (struct mcp_slot *slot,
 	}
 	bool past = slot->skip > out.len;
 	mcp_slot_window(slot, out);
-	slot->note_len = (uint16_t)mcp_slot_note_window(slot, out.len, past);
+	mcp_slot_note_window(slot, out.len, past);
 	if (notebook)
-		slot->note_len += (uint16_t)util_format(slot->note + slot->note_len,
-		                                        sizeof slot->note - slot->note_len,
-		                                        "\n\n" NOTICE_NOTEBOOK, notebook);
+		(void)util_text_printf(&slot->note, "\n\n" NOTICE_NOTEBOOK, notebook);
 	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
-/* Writes a notice about the context of @p req into the @p size bytes at
- * @p buf, and returns its length. @p tokens is the number of tokens in the
- * context after the turn's results. From two thirds of the context on, the
- * notice asks the turns to call compact, after each turn, if they have it.
- * Below two thirds,
- * if the turns have the notes tool, the notice reminds them to write notes,
- * once when the context is a quarter full and once when it is half full.
+/* Appends a notice about the context of @p req to the note of @p slot.
+ * @p tokens is the number of tokens in the context after the turn's
+ * results. From two thirds of the context on, the notice asks the turns to
+ * call compact, after each turn, if they have it. Below two thirds, if the
+ * turns have the notes tool, the notice reminds them to write notes, once
+ * when the context is a quarter full and once when it is half full.
  * Otherwise there is no notice. With --verbose, a notice is logged.
  */
-static size_t
-mcp_req_context_note (struct mcp_req *req,
-                      char           *buf,
-                      size_t          size,
-                      uint64_t        tokens)
+static void
+mcp_req_context_note (struct mcp_req  *req,
+                      struct mcp_slot *slot,
+                      uint64_t         tokens)
 {
 	uint64_t context = req->context;
 	if (!context)
-		return 0;
+		return;
 	struct mcp_lending const *l = &req->mcp->st->lending;
 	bool full = tokens * 3 >= context * 2;
 	uint8_t quarters = tokens * 2 >= context ? 2 : tokens * 4 >= context;
 	if (full ? !(req->lent & l->of[KIND_COMPACT])
 	         : quarters <= req->reminded || !(req->lent & l->of[KIND_NOTES]))
-		return 0;
+		return;
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": context "
 	    "notice, %" PRIu64 " %% full, %" PRIu64 " of %" PRIu64 " tokens: %s",
 	    req->mcp->loop->id, req->asked, req->turn, tokens * 100 / context, tokens,
 	    context, full ? "a request to call compact" : "a reminder to write notes");
 	if (!full)
 		req->reminded = quarters;
-	return util_format(buf, size, full ? "\n\n" NOTICE_COMPACT : "\n\n" NOTICE_REMIND,
-	                   tokens * 100 / context, tokens, context);
+	(void)util_text_printf(&slot->note, full ? "\n\n" NOTICE_COMPACT : "\n\n" NOTICE_REMIND,
+	                       tokens * 100 / context, tokens, context);
 }
 
 /* Write the result of the turn's call in @p slot, the next in order. After
@@ -5934,15 +5940,12 @@ mcp_req_result_begin (struct mcp_req  *req,
 		}
 		dstr_clear(&a->notices);
 	}
-	size_t n = slot->note_len;
 	if (req->part + 1u == req->n_calls) {
-		size_t size = sizeof slot->note;
-		uint64_t tokens = mcp_req_tokens(req) + (slot->window + n) / 4;
-		n += mcp_req_context_note(req, slot->note + n, size - n, tokens);
+		mcp_req_context_note(req, slot, mcp_req_tokens(req) +
+		                                (slot->window + slot->note.len) / 4);
 		if (req->turn + 1u == req->mcp->st->turns)
-			n += util_format(slot->note + n, size - n, "\n\n" NOTICE_LAST);
+			(void)util_text_printf(&slot->note, "\n\n" NOTICE_LAST);
 	}
-	slot->note_len = (uint16_t)n;
 	req->next = 0;
 	req->off = 0;
 	mcp_req_enter(req, PHASE_RESULT);
@@ -5988,7 +5991,7 @@ mcp_req_result_put (struct mcp_req       *req,
 		also,
 		BYTES(f->output),
 		ESC(out.len ? out.ptr + slot->skip : nullptr, slot->window),
-		ESC(slot->note, slot->note_len),
+		ESC_VIEW(util_text_view(&slot->note)),
 		ESC("\n\n", told.len ? 2 : 0),
 		ESC_VIEW(told),
 		BYTES(f->result_end),
@@ -6042,17 +6045,13 @@ mcp_req_result_write (struct mcp_req *req)
 	struct mcp_slot *slot = &req->slots[req->part];
 	(void)mcp_req_trace(req, &c, req->args[req->part],
 	                    mcp_row_of(mcp_slot_tool(slot))->trace);
-	(void)mcp_req_trace_end(req, slot->failed, mcp_slot_output(slot).len);
+	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED, mcp_slot_output(slot).len);
 	e = mcp_req_shown(req, slot);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_drop(slot);
-	slot->of = nullptr;
-	dstr_clear(&slot->answer);
-	slot->note_len = 0;
-	slot->skip = slot->window = 0;
+	mcp_slot_reset(slot);
 	if (req->agenda)
 		dstr_clear(&req->agenda->told);
 	req->at += job_call_size(&h);
@@ -6618,17 +6617,18 @@ mcp_slot_attach (struct mcp_slot  *slot,
                  size_t           *bytes,
                  struct dstr      *out)
 {
-	if (!slot || !id || !bytes || !out || (!file.data && file.len))
+	if (!id || !bytes || !out || (!file.data && file.len))
 		return EFAULT;
 	*bytes = 0;
-	if (slot->done)
-		return EINVAL;
+	int e = mcp_slot_live(slot, 0, 0);
+	if (e)
+		return e;
 	struct mcp_req *req = slot->req;
 	struct mcp_static const *st = req->mcp->st;
 	if (!st->uploads)
 		return ENOTSUP;
 	if (file.data) {
-		int e = mcp_req_fits(req, file.len, out);
+		e = mcp_req_fits(req, file.len, out);
 		e = e ? e : mcp_slot_post_file(slot, file);
 		if (e == EAGAIN)
 			return CAT(out, "askai sends too many requests at once to upload the "
@@ -6638,7 +6638,7 @@ mcp_slot_attach (struct mcp_slot  *slot,
 	char uri[UPLOADS_URI];
 	size_t uri_len = 0;
 	size_t file_bytes = 0;
-	int e = uploads_find(st->uploads, mcp_req_owner(req), id, clk_realtime().tv_sec, uri,
+	e = uploads_find(st->uploads, mcp_req_owner(req), id, clk_realtime().tv_sec, uri,
 	                     &uri_len, &file_bytes);
 	if (!e)
 		e = mcp_req_fits(req, file_bytes, out);
@@ -6655,14 +6655,13 @@ mcp_slot_attached (struct mcp_slot  *slot,
                    size_t            bytes,
                    struct dstr      *out)
 {
-	if (!slot || !id || !out)
-		return EFAULT;
-	if (slot->done)
-		return EINVAL;
+	int e = !id || !out ? EFAULT : mcp_slot_live(slot, 0, 0);
+	if (e)
+		return e;
 	struct mcp_req *req = slot->req;
 	struct mcp_static const *st = req->mcp->st;
 	struct web_response r;
-	int e = mcp_slot_fetched(slot, &r);
+	e = mcp_slot_fetched(slot, &r);
 	if (e)
 		return e;
 	dstr_auto uri = DSTR_INIT;
