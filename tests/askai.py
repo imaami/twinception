@@ -834,8 +834,8 @@ def unchanged_result(name, size, commit, stripped=False):
     """The result of a note write that leaves the note @p name, quoted as in
     a commit message, with its @p size bytes, at the commit @p commit."""
     these = "this 1 byte" if size == 1 else f"these {size} bytes"
-    return (f"Unchanged: {name} already has {these}, at commit {commit}. No commit was "
-            "made." + (LEFT_OUT if stripped else ""))
+    return (f"Unchanged: {name} already has {these} at the notebook's newest commit {commit}. "
+            "No commit was made." + (LEFT_OUT if stripped else ""))
 
 
 def grouped(members):

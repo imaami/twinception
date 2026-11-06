@@ -686,9 +686,9 @@ write changed a note, the result also names the commit of the previous
 version, after the lines that a `replace` or `restore` removed and added,
 such as `1 line removed, 2 added.`, unless Git sees the note as binary. A
 `replace` or `restore` that would leave the note's bytes as they are
-makes no commit; its result says `Unchanged` and names the current
-commit. `add` refuses an existing name, and `replace` refuses a missing
-one. Concurrent branch updates fail rather than overwrite another
+makes no commit; its result says `Unchanged` and names the notebook's
+newest commit. `add` refuses an existing name, and `replace` refuses a
+missing one. Concurrent branch updates fail rather than overwrite another
 writer's changes. When a turn writes text whose last lines are askai's
 own notices from tool results, such as `[askai: notebook ...]` or the
 context notices, askai leaves those lines out and says so in the result.

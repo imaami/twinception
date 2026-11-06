@@ -1476,9 +1476,9 @@ commit and repeats its message. If the write changed a note, the result also
 names the commit of the previous version, after the lines that a `replace`
 or `restore` removed and added. A `replace` or `restore` that would leave
 the note's bytes as they are makes no commit; its result says `Unchanged`
-and names the current commit. Concurrent writes that race to update the
-same branch fail rather than discard another writer's changes. When a
-turn writes text whose last lines are askai's own notices from tool
+and names the notebook's newest commit. Concurrent writes that race to
+update the same branch fail rather than discard another writer's changes.
+When a turn writes text whose last lines are askai's own notices from tool
 results, such as `[askai: notebook ...]` or the context notices, askai
 leaves those lines out and says so in the result. Notices inside the
 text, and text from clients, stay as they are.

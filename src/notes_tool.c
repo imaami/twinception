@@ -700,8 +700,9 @@ notes_tool_unchanged (struct mcp_slot         *slot,
 		return false;
 	char const *name = (char const *)file.ptr + call->part.name_at;
 	uint64_t n = note->bytes;
-	e = dstr_printf(call->text, "Unchanged: %.*s already has %s %" PRIu64 " byte%s, at "
-	                "commit %s. No commit was made.", (int)jb_utf8(name, call->part.name_len),
+	e = dstr_printf(call->text, "Unchanged: %.*s already has %s %" PRIu64 " byte%s at the "
+	                "notebook's newest commit %s. No commit was made.",
+	                (int)jb_utf8(name, call->part.name_len),
 	                name, n == 1 ? "this" : "these", n, util_s(n), tip->hex) ? 0 : ENOMEM;
 	(void)mcp_slot_noted(slot);
 	notes_tool_wrote(slot, e);
