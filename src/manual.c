@@ -733,14 +733,12 @@ manual_destroy (struct manual **p_manual)
 		return;
 	struct manual *m = *p_manual;
 	*p_manual = nullptr;
-	for (size_t i = 0; i <= m->table.mask; ++i) {
-		for (struct htab_node *node = m->table.buckets[i], *next; node; node = next) {
-			next = node->next;
-			struct manual_entry *e = container_of(node, struct manual_entry, node);
-			/* A file's key, a path, holds no '\0'. */
-			manual_page_put(memchr(e->key, '\0', e->len) ? nullptr : e->page);
-			free(e);
-		}
+	for (struct htab_node *node = htab_next(&m->table, nullptr), *next; node; node = next) {
+		next = htab_next(&m->table, node);
+		struct manual_entry *e = container_of(node, struct manual_entry, node);
+		/* A file's key, a path, holds no '\0'. */
+		manual_page_put(memchr(e->key, '\0', e->len) ? nullptr : e->page);
+		free(e);
 	}
 	htab_fini(&m->table);
 	pthread_mutex_destroy(&m->lock);

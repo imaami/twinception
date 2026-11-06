@@ -23,7 +23,9 @@ struct htab_node {
 	struct htab_node *next;  /**< the next node of the bucket, or nullptr */
 };
 
-/** A hash table. htab_init() allocates its buckets. */
+/** A hash table. htab_init() allocates its buckets, or the caller
+ *  provides them to htab().
+ */
 struct htab {
 	struct htab_node **buckets;  /**< the first node of each bucket */
 	size_t             mask;     /**< the number of buckets minus 1 */
@@ -33,6 +35,18 @@ struct htab {
 /** Returns true if the key of the record of @p node equals @p key. */
 typedef bool htab_match_fn (struct htab_node const *node,
                             void const             *key);
+
+/** Returns a table with the @p n buckets at @p buckets, a power of two of
+ *  them, which the caller provides empty and keeps for the life of the
+ *  table. The table must not grow, and htab_fini() must not be called on
+ *  it.
+ */
+static inline struct htab
+htab (struct htab_node **buckets,
+      size_t             n)
+{
+	return (struct htab){ .buckets = buckets, .mask = n - 1 };
+}
 
 /** Initializes @p dest with @p n empty buckets. Returns 0, EINVAL if @p n
  *  is not a power of two, or ENOMEM.
@@ -98,8 +112,9 @@ htab_unlink (struct htab      *t,
 /**
  * Returns the address of the pointer to the first node of the bucket of
  * @p hash whose hash is @p hash and for which @p match returns true with
- * @p key. If no node matches, the pointer at that address is nullptr, and
- * it is the end of the bucket's chain.
+ * @p key. A nullptr @p match matches each node with the hash, for keys
+ * that are their own hashes. If no node matches, the pointer at that
+ * address is nullptr, and it is the end of the bucket's chain.
  */
 static inline struct htab_node **
 htab_find (struct htab const *t,
@@ -108,9 +123,29 @@ htab_find (struct htab const *t,
            void const        *key)
 {
 	struct htab_node **link = htab_bucket(t, hash);
-	while (*link && ((*link)->hash != hash || !match(*link, key)))
+	while (*link && ((*link)->hash != hash || (match && !match(*link, key))))
 		link = &(*link)->next;
 	return link;
+}
+
+/** Returns the node of @p t after @p node, or the first node if @p node
+ *  is nullptr; nullptr after the last node. A walk can unlink or free each
+ *  node once it has the node after it.
+ */
+static inline struct htab_node *
+htab_next (struct htab const      *t,
+           struct htab_node const *node)
+{
+	size_t i = 0;
+	if (node) {
+		if (node->next)
+			return node->next;
+		i = (node->hash & t->mask) + 1;
+	}
+	for (; i <= t->mask; ++i)
+		if (t->buckets[i])
+			return t->buckets[i];
+	return nullptr;
 }
 
 /** Doubles the number of buckets of @p t and moves each node to its new
