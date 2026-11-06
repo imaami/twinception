@@ -260,14 +260,14 @@ task_pool_detach (struct task_pool *pool,
 }
 
 struct task_metrics const *
-task_pool_loop_metrics (struct task_pool const *pool,
-                        size_t                  i)
+task_pool_loop_counts (struct task_pool const *pool,
+                       size_t                  i)
 {
 	return &pool->lane[i].metrics;
 }
 
 struct task_pool_metrics const *
-task_pool_metrics (struct task_pool const *pool)
+task_pool_counts (struct task_pool const *pool)
 {
 	return &pool->metrics;
 }

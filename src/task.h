@@ -110,12 +110,14 @@ extern void
 task_pool_detach (struct task_pool *pool,
                   struct loop      *loop);
 
+/** Returns the counts of the tasks of the loop @p i of @p pool. */
 extern struct task_metrics const *
-task_pool_loop_metrics (struct task_pool const *pool,
-                        size_t                  i);
+task_pool_loop_counts (struct task_pool const *pool,
+                       size_t                  i);
 
+/** Returns the counts of the work of @p pool. */
 extern struct task_pool_metrics const *
-task_pool_metrics (struct task_pool const *pool);
+task_pool_counts (struct task_pool const *pool);
 
 /** Initialize @p task, in storage just allocated, for its owner @p loop:
  *  slices in @p slice, back to @p back.

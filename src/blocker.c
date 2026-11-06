@@ -162,7 +162,7 @@ blocker_destroy (struct blocker **p_blocker)
 }
 
 struct blocker_metrics const *
-blocker_metrics (struct blocker const *blocker)
+blocker_counts (struct blocker const *blocker)
 {
 	return &blocker->metrics;
 }

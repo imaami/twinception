@@ -403,7 +403,7 @@ test_remove (void)
 static void
 test_caps (struct ledger *l)
 {
-	struct ledger_metrics const *m = ledger_metrics(l);
+	struct ledger_metrics const *m = ledger_counts(l);
 	static struct ledger_task *t[LEDGER_MAX + 2];
 	size_t n = 0;
 	int e = 0;
@@ -457,7 +457,7 @@ test_caps (struct ledger *l)
 static void
 test_mine (struct ledger *l)
 {
-	struct ledger_metrics const *m = ledger_metrics(l);
+	struct ledger_metrics const *m = ledger_counts(l);
 	uint64_t gone = atomic_load(&m->gone);
 	struct ledger_task *t[LEDGER_MINE + 1];
 	int e = 0;
@@ -507,7 +507,7 @@ test_mine (struct ledger *l)
 static void
 test_fair (struct ledger *l)
 {
-	struct ledger_metrics const *m = ledger_metrics(l);
+	struct ledger_metrics const *m = ledger_counts(l);
 	uint64_t gone = atomic_load(&m->gone);
 	int e = 0;
 	struct ledger_task *a = test_open(l, A, LEDGER_TASK, &e);
@@ -561,7 +561,7 @@ test_keep (struct ledger *l)
 static void
 test_timers (struct ledger *l)
 {
-	struct ledger_metrics const *m = ledger_metrics(l);
+	struct ledger_metrics const *m = ledger_counts(l);
 	int e = 0;
 	/* Timer base + k fires in 10 - k seconds, so timer base + 8 fires
 	 * first. The timers of B get the next numbers, also after the ledger
@@ -628,7 +628,7 @@ test_timers (struct ledger *l)
 static void
 test_waits (struct ledger *l)
 {
-	struct ledger_metrics const *m = ledger_metrics(l);
+	struct ledger_metrics const *m = ledger_counts(l);
 	int e = 0;
 	struct ledger_wait *w[LEDGER_WAITS];
 	for (size_t k = 0; k < LEDGER_WAITS; ++k)
@@ -724,7 +724,7 @@ test_waits (struct ledger *l)
 static void
 test_owners_table (struct ledger *l)
 {
-	struct ledger_metrics const *m = ledger_metrics(l);
+	struct ledger_metrics const *m = ledger_counts(l);
 	int e = 0;
 	struct ledger_task *t = test_open(l, C, LEDGER_TASK, &e);
 	uint32_t id = test_timer(l, C, 10, nullptr, &e);

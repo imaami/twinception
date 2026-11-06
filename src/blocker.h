@@ -77,7 +77,8 @@ blocker_done (struct blocker const *blocker);
 extern void
 blocker_destroy (struct blocker **p_blocker);
 
+/** Returns the counts of the work of @p blocker. */
 extern struct blocker_metrics const *
-blocker_metrics (struct blocker const *blocker);
+blocker_counts (struct blocker const *blocker);
 
 #endif /* TWINCEPTION_SRC_BLOCKER_H_ */

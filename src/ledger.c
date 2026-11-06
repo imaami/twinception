@@ -506,7 +506,7 @@ ledger_destroy (struct ledger **p_ledger)
 }
 
 struct ledger_metrics const *
-ledger_metrics (struct ledger const *ledger)
+ledger_counts (struct ledger const *ledger)
 {
 	return &ledger->metrics;
 }

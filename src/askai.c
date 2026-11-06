@@ -440,7 +440,7 @@ askai_home_start (void           *ctx,
 	memcpy(mine->name, name, sizeof name);
 	mine->loop = loop->metrics;
 	mine->stash = &app->keep.stash.metrics;
-	s->metrics.blockers = blocker_metrics(blockers);
+	s->metrics.blockers = blocker_counts(blockers);
 	int e = askai_home_parts(app, s->hub, loop, blockers);
 	if (e)
 		LOG(LOG_ERROR, "cannot start home: %s", strerror(e));
@@ -604,10 +604,10 @@ askai_client_start (void           *ctx,
 	mine->loop = loop->metrics;
 	mine->stash = &app->keep.stash.metrics;
 	mine->mcp = &app->counts;
-	mine->conns = httpd_hub_metrics(s->hub, i);
+	mine->conns = httpd_hub_counts(s->hub, i);
 	if (s->tasks) {
 		task_pool_attach(s->tasks, loop);
-		mine->tasks = task_pool_loop_metrics(s->tasks, i);
+		mine->tasks = task_pool_loop_counts(s->tasks, i);
 	}
 	int e = askai_client_parts(app, loop, blockers);
 	if (!e)
@@ -827,10 +827,10 @@ static void
 askai_tasks_report (struct task_pool const *tasks,
                     size_t                  n)
 {
-	struct task_pool_metrics const *t = task_pool_metrics(tasks);
+	struct task_pool_metrics const *t = task_pool_counts(tasks);
 	uint64_t moved = 0;
 	for (size_t i = 0; i < n; ++i)
-		moved += hist_get(&task_pool_loop_metrics(tasks, i)->moved);
+		moved += hist_get(&task_pool_loop_counts(tasks, i)->moved);
 	uint64_t submitted = hist_get(&t->submitted);
 	uint64_t done = hist_get(&t->done);
 	uint64_t cancelled = hist_get(&t->cancelled);
@@ -868,8 +868,8 @@ askai_run (struct askai_shared *s,
 		.http = &home->http,
 		.jobs = &home->jobs,
 		.man = s->manual ? manual_counts(s->manual) : nullptr,
-		.tasks = s->tasks ? task_pool_metrics(s->tasks) : nullptr,
-		.ledger = ledger_metrics(s->ledger),
+		.tasks = s->tasks ? task_pool_counts(s->tasks) : nullptr,
+		.ledger = ledger_counts(s->ledger),
 		.n_loops = n + 1
 	};
 	/* Its atomic members are valid as its storage is static: no struct

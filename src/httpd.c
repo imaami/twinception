@@ -3204,8 +3204,8 @@ httpd_hub_destroy (struct httpd_hub **p_hub)
 }
 
 struct metrics_conns const *
-httpd_hub_metrics (struct httpd_hub const *hub,
-                   size_t                  i)
+httpd_hub_counts (struct httpd_hub const *hub,
+                  size_t                  i)
 {
 	return &hub->lane[i].metrics;
 }

@@ -232,8 +232,9 @@ ledger_create (int *e);
 extern void
 ledger_destroy (struct ledger **p_ledger);
 
+/** Returns the counts of the work of @p ledger. */
 extern struct ledger_metrics const *
-ledger_metrics (struct ledger const *ledger);
+ledger_counts (struct ledger const *ledger);
 
 /**
  * Open a working record of @p kind, under a new id, for the owner @p owner

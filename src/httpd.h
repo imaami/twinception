@@ -132,8 +132,8 @@ httpd_hub_destroy (struct httpd_hub **p_hub);
 
 /** What client loop @p i counts of its connections, for GET /metrics. */
 extern struct metrics_conns const *
-httpd_hub_metrics (struct httpd_hub const *hub,
-                   size_t                  i);
+httpd_hub_counts (struct httpd_hub const *hub,
+                  size_t                  i);
 
 /**
  * Home's door on home's @p loop: listen on cfg->listen, and from
