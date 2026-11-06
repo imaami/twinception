@@ -805,6 +805,21 @@ static struct cstr_view const runs_no_more = CSTR_VIEW_INIT("That job runs no mo
 static struct cstr_view const bad_action = CSTR_VIEW_INIT("The action argument must be list, "
                                                           "result or cancel.");
 
+/* The words for the kinds and the statuses of the records of the ledger,
+ * which the log, the answers of a client's jobs and wait, and tasks/get
+ * use.
+ */
+static char const *const record_kinds[] = {
+	[LEDGER_TASK] = "task",
+	[LEDGER_JOB]  = "job",
+};
+static struct cstr_view const record_status[LEDGER_STATUSES] = {
+	[LEDGER_WORKING]   = CSTR_VIEW_INIT("working"),
+	[LEDGER_COMPLETED] = CSTR_VIEW_INIT("completed"),
+	[LEDGER_FAILED]    = CSTR_VIEW_INIT("failed"),
+	[LEDGER_CANCELLED] = CSTR_VIEW_INIT("cancelled"),
+};
+
 /* A run of bytes: a piece of JSON text, or words for a client or the
  * model.
  */
@@ -1333,8 +1348,8 @@ mcp_req_log_call (struct mcp_req   *req,
 		            req->flags & REQ_STOPPED ? ", stopped at --max-turns" : "");
 	char record[sizeof "; task " + HEXID_DIGITS] = "";
 	if (req->task)
-		util_format(record, sizeof record, "; %s %s",
-		            req->task->kind == LEDGER_JOB ? "job" : "task", req->task->id.hex);
+		util_format(record, sizeof record, "; %s %s", record_kinds[req->task->kind],
+		            req->task->id.hex);
 	char text[QUOTED(ERROR_LOG)] = "";
 	if (failed && out.len)
 		mcp_quote(text, sizeof text, out, ERROR_LOG);
@@ -3133,22 +3148,20 @@ mcp_req_record (struct mcp_req   *req,
 	return task;
 }
 
-/* Answers the call's client with the result that the @p n pieces at @p p
- * make, which close the result and the reply. From then on, the call runs
- * as the task or the job of the record @p task: its stream is the stand-in,
- * which writes the call's reply into the record. If the answer cannot go,
- * the function ends the record and the call, and returns the error.
+/* Answers the call's client with the reply of the request, a result
+ * that mcp_req_open() began, unless writing it failed with @p e. From then
+ * on, the call runs as the task or the job of the record @p task: its
+ * stream is the stand-in, which writes the call's reply into the record.
+ * If the answer cannot go, the function ends the record and the call, and
+ * returns the error.
  */
 static int
-mcp_req_detach (struct mcp_req         *req,
-                struct ledger_task     *task,
-                struct mcp_piece const *p,
-                size_t                  n)
+mcp_req_detach (struct mcp_req     *req,
+                struct ledger_task *task,
+                int                 e)
 {
 	struct mcp *mcp = req->mcp;
 	struct stream *s = req->s;
-	int e = mcp_req_open(req, FRAG("\"result\":"));
-	e = e ? e : mcp_req_put(req, p, n);
 	e = e ? e : req->flags & REQ_SSE ? mcp_req_put(req, &FRAG("\n\n"), 1)
 	          : s->ops->head(s, 200, SPAN(JSON_FIELD), buf_peek(&req->reply).len);
 	e = e ? e : mcp_req_write(req, buf_peek(&req->reply));
@@ -3176,6 +3189,42 @@ mcp_req_detach (struct mcp_req         *req,
 	return 0;
 }
 
+/* Appends a task object of the record @p task to the reply of @p req, up
+ * to its pollIntervalMs: with the result type @p type, the status
+ * @p status, @p updated as its last update and the time to live @p ttl,
+ * JSON text. Returns 0 or the error of mcp_req_put().
+ */
+static int
+mcp_req_task_put (struct mcp_req           *req,
+                  struct ledger_task const *task,
+                  struct mcp_piece          type,
+                  struct cstr_view          status,
+                  uint64_t                  updated,
+                  struct cstr_view          ttl)
+{
+	static_assert(POLL_MS == 1000, "update the reply");
+	char created_at[ISO_TIME];
+	char updated_at[ISO_TIME];
+	struct mcp_piece const p[] = {
+		FRAG("{\"resultType\":\""),
+		type,
+		FRAG("\","),
+		DSTR(&req->mcp->st->server_meta),
+		FRAG(",\"taskId\":\""),
+		BYTES(hexid_view(&task->id)),
+		FRAG("\",\"status\":\""),
+		BYTES(status),
+		FRAG("\",\"createdAt\":\""),
+		RAW(created_at, mcp_iso_time(created_at, task->created)),
+		FRAG("\",\"lastUpdatedAt\":\""),
+		RAW(updated_at, mcp_iso_time(updated_at, updated)),
+		FRAG("\",\"ttlMs\":"),
+		BYTES(ttl),
+		FRAG(",\"pollIntervalMs\":1000"),
+	};
+	return mcp_req_put(req, p, array_size(p));
+}
+
 /* Answers the call's client with the task of the record @p task, which the
  * call runs as from now on, as mcp_req_detach() describes.
  */
@@ -3183,21 +3232,10 @@ static void
 mcp_req_promote (struct mcp_req     *req,
                  struct ledger_task *task)
 {
-	static_assert(POLL_MS == 1000, "update the reply");
-	char at[ISO_TIME];
-	size_t n = mcp_iso_time(at, task->created);
-	struct mcp_piece const p[] = {
-		FRAG("{\"resultType\":\"task\","),
-		DSTR(&req->mcp->st->server_meta),
-		FRAG(",\"taskId\":\""),
-		BYTES(hexid_view(&task->id)),
-		FRAG("\",\"status\":\"working\",\"createdAt\":\""),
-		RAW(at, n),
-		FRAG("\",\"lastUpdatedAt\":\""),
-		RAW(at, n),
-		FRAG("\",\"ttlMs\":null,\"pollIntervalMs\":1000}}"),
-	};
-	if (!mcp_req_detach(req, task, p, array_size(p)))
+	int e = mcp_req_open(req, FRAG("\"result\":"));
+	e = e ? e : mcp_req_task_put(req, task, FRAG("task"), record_status[LEDGER_WORKING],
+	                             task->created, CSTR_VIEW("null"));
+	if (!mcp_req_detach(req, task, e ? e : mcp_req_put(req, &FRAG("}}"), 1)))
 		LOG(LOG_VERBOSE, "tool call %s from %s became task %s after %.1f s",
 		    mcp_slot_tool(&req->self)->name.data, mcp_req_client(req), task->id.hex,
 		    mcp_elapsed(req->head));
@@ -4822,20 +4860,6 @@ mcp_slot_start (struct mcp_slot    *slot,
 		tool->kind->start(slot, args);
 }
 
-/* The words for the kinds and the statuses of the records of the ledger,
- * which the answers of a client's jobs and wait use.
- */
-static char const *const record_kinds[] = {
-	[LEDGER_TASK] = "task",
-	[LEDGER_JOB]  = "job",
-};
-static char const *const record_status[LEDGER_STATUSES] = {
-	[LEDGER_WORKING]   = "running",
-	[LEDGER_COMPLETED] = "completed",
-	[LEDGER_FAILED]    = "failed",
-	[LEDGER_CANCELLED] = "cancelled",
-};
-
 /* The answer to a client's call of background, timer or wait that the
  * ledger refuses for want of room.
  */
@@ -4904,7 +4928,8 @@ mcp_req_background (struct mcp_req *req,
 		req->flags & REQ_MODERN ? DSTR(&st->modern_tail) : FRAG("}"),
 		FRAG("}"),
 	};
-	return mcp_req_detach(req, task, p, array_size(p));
+	e = mcp_req_open(req, FRAG("\"result\":"));
+	return mcp_req_detach(req, task, e ? e : mcp_req_put(req, p, array_size(p)));
 }
 
 /** Starts the client's call of background in @p slot, which is req->self,
@@ -5129,7 +5154,7 @@ mcp_slot_client_list (struct mcp_slot *slot)
 		     (status == LEDGER_WORKING
 		      ? dstr_printf(d, "running for %" PRIu64 " s\n",
 		                    mcp_seconds_since(t->created, day))
-		      : dstr_printf(d, "%s %" PRIu64 " s ago%s\n", record_status[status],
+		      : dstr_printf(d, "%s %" PRIu64 " s ago%s\n", record_status[status].data,
 		                    mcp_seconds_since(t->ended, day), told ? "" : ", unread"));
 	}
 	if (ok && look.more)
@@ -5348,7 +5373,7 @@ mcp_wait_report (struct mcp_wait const    *w,
 		   ? dstr_printf(d, "[askai: %s %s, %s, cancelled.]\n", kind, t->id.hex, tool)
 		   : dstr_printf(d, "[askai: %s %s, %s, %s: call jobs with the action result "
 		                 "and job %s for its result.]\n", kind, t->id.hex, tool,
-		                 record_status[status], t->id.hex);
+		                 record_status[status].data, t->id.hex);
 	}
 	for (uint32_t i = 0; ok && i < look->n_timers; ++i)
 		ok = mcp_notice_timer(d, &look->timers[i]);
@@ -7105,14 +7130,7 @@ static void
 mcp_req_task_show (struct mcp_req     *req,
                    struct ledger_task *task)
 {
-	static_assert(POLL_MS == 1000, "update the reply");
 #define S(s) { CSTR_VIEW_INIT(s), false }
-	static struct mcp_piece const statuses[LEDGER_STATUSES] = {
-		[LEDGER_WORKING]   = S("working"),
-		[LEDGER_COMPLETED] = S("completed"),
-		[LEDGER_FAILED]    = S("failed"),
-		[LEDGER_CANCELLED] = S("cancelled"),
-	};
 	static struct mcp_piece const said[LEDGER_STATUSES] = {
 		[LEDGER_FAILED]    = S(",\"statusMessage\":\"The tool call failed: its error "
 		                       "says why.\""),
@@ -7120,12 +7138,11 @@ mcp_req_task_show (struct mcp_req     *req,
 		                       "as asked.\""),
 	};
 #undef S
-	struct mcp_static const *st = req->mcp->st;
 	enum ledger_status status = atomic_load_explicit(&task->status, memory_order_acquire);
 	bool whole = false;
 	uint64_t updated_at = task->created;
-	char ttl[24] = "null";
-	size_t n_ttl = sizeof "null" - 1;
+	char ms[UTIL_DECIMAL];
+	struct cstr_view ttl = CSTR_VIEW("null");
 	/* A tasks/get of a record whose call ended marks the record read.
 	 * The reply then contains the end of the call, and the time to live is
 	 * the run time of the call plus the time that the record stays. */
@@ -7134,25 +7151,9 @@ mcp_req_task_show (struct mcp_req     *req,
 		whole = task->size != 0;
 		updated_at = task->ended;
 		uint64_t ran = task->ended > task->created ? task->ended - task->created : 0;
-		n_ttl = util_format(ttl, sizeof ttl, "%" PRIu64,
-		                    ran / MS + LEDGER_KEEP * 1000);
+		ttl = util_format_view(ms, sizeof ms, "%" PRIu64, ran / MS + LEDGER_KEEP * 1000);
 	}
-	char created[ISO_TIME];
-	char updated[ISO_TIME];
 	struct mcp_piece const p[] = {
-		FRAG("{\"resultType\":\"complete\","),
-		DSTR(&st->server_meta),
-		FRAG(",\"taskId\":\""),
-		BYTES(hexid_view(&task->id)),
-		FRAG("\",\"status\":\""),
-		statuses[status],
-		FRAG("\",\"createdAt\":\""),
-		RAW(created, mcp_iso_time(created, task->created)),
-		FRAG("\",\"lastUpdatedAt\":\""),
-		RAW(updated, mcp_iso_time(updated, updated_at)),
-		FRAG("\",\"ttlMs\":"),
-		RAW(ttl, n_ttl),
-		FRAG(",\"pollIntervalMs\":1000"),
 		said[status],
 		/* A result or error goes after a comma, and closes the object. */
 		whole ? FRAG(",")
@@ -7161,6 +7162,8 @@ mcp_req_task_show (struct mcp_req     *req,
 		: FRAG("}"),
 	};
 	int e = mcp_req_open(req, FRAG("\"result\":"));
+	e = e ? e : mcp_req_task_put(req, task, FRAG("complete"), record_status[status],
+	                             updated_at, ttl);
 	e = e ? e : mcp_req_put(req, p, array_size(p));
 	if (e || !whole) {
 		ledger_task_put(task);
