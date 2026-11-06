@@ -40,6 +40,14 @@ typedef int cli_client_report_fn (struct cli_client *client,
                                   struct cstr_view    title,
                                   struct cstr_view    detail);
 
+/** The flags of struct cli_client. */
+enum {
+	CLI_CLIENT_CATALOG_DIRTY    = 1u << 0,  /**< the tools may have changed */
+	CLI_CLIENT_NOTES_DIRTY      = 1u << 1,  /**< the note files may have changed */
+	CLI_CLIENT_IDENTITY_CHANGED = 1u << 2,  /**< AskAI changed its session,
+	                                             participant or ask tool */
+};
+
 /** Strings and the catalog are owned; network is borrowed. The client and
  * its protocol callbacks are confined to the UI thread.
  */
@@ -55,9 +63,7 @@ struct cli_client {
 	struct cli_network    *network;
 	cli_client_report_fn  *report;
 	int64_t                next_id;
-	bool                   catalog_dirty;
-	bool                   notes_dirty;
-	bool                   identity_changed;
+	uint64_t               flags;
 };
 
 extern struct cli_client

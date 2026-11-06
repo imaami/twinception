@@ -684,7 +684,7 @@ cli_ask (struct cli          *cli,
          struct cli_error    *error)
 {
 	*answer = nullptr;
-	cli->client.notes_dirty |= dstr_len(&cli->client.notes_tool) != 0;
+	cli->client.flags |= dstr_len(&cli->client.notes_tool) ? CLI_CLIENT_NOTES_DIRTY : 0;
 	if (turns >= 512)
 		return cli_error_set(error, E2BIG, "Conversation has 512 turns; use /clear");
 	if (prompt.len > CLI_LIMIT)
@@ -790,7 +790,7 @@ cli_manual_done (struct cli_tool        *tool,
 	struct cli *cli = context;
 	if (!cli_stopping(cli)) {
 		cli_fail(cli, cli_tool_finish(tool, e, result, error));
-		if (cli->client.notes_dirty || cli->client.catalog_dirty)
+		if (cli->client.flags & (CLI_CLIENT_CATALOG_DIRTY | CLI_CLIENT_NOTES_DIRTY))
 			cli_console_yield(cli->console);
 	}
 	cli_fail(cli, cli_busy(cli, cli->flags & CLI_BUSY));
@@ -1113,10 +1113,10 @@ static int
 cli_chat_refresh (struct cli       *cli,
                   struct cli_error *error)
 {
-	bool catalog = cli->client.catalog_dirty;
-	if (cli_console_queued(cli->console) || !list_is_empty(&cli->tools) ||
-	    !(catalog || cli->client.notes_dirty))
+	uint64_t dirty = cli->client.flags & (CLI_CLIENT_CATALOG_DIRTY | CLI_CLIENT_NOTES_DIRTY);
+	if (!dirty || cli_console_queued(cli->console) || !list_is_empty(&cli->tools))
 		return 0;
+	bool catalog = dirty & CLI_CLIENT_CATALOG_DIRTY;
 	int e = cli_busy(cli, true);
 	if (!e)
 		e = catalog ? cli_client_refresh(&cli->client, error)
@@ -1134,7 +1134,7 @@ cli_chat_refresh (struct cli       *cli,
 	case ENOMEM:
 		return e;
 	}
-	if ((cli->flags & CLI_QUITTING) || cli->client.identity_changed)
+	if ((cli->flags & CLI_QUITTING) || (cli->client.flags & CLI_CLIENT_IDENTITY_CHANGED))
 		return e;
 	e = cli_ui_error(cli->console, catalog ? CSTR_VIEW("Cannot refresh completion metadata")
 	                                       : CSTR_VIEW("Cannot refresh note filenames"),
@@ -1251,7 +1251,7 @@ cli_chat (struct cli       *cli,
 			e = display;
 		if (cli->flags & CLI_QUITTING)
 			return 0;
-		if (cli->client.identity_changed || (!e && action == CLI_ACTION_EXIT))
+		if ((cli->client.flags & CLI_CLIENT_IDENTITY_CHANGED) || (!e && action == CLI_ACTION_EXIT))
 			return e;
 		e = e ? cli_chat_error(cli, e, error) : 0;
 		if (e)

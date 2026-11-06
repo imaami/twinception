@@ -14,8 +14,6 @@
 #include "jb.h"
 #include "list.h"
 
-enum { CLI_TOOL_WRITES_NOTES = 1u << 0 };
-
 struct cli_tool {
 	struct cli_stream   stream;
 	struct list         hook;
@@ -25,7 +23,7 @@ struct cli_tool {
 	cli_tool_done_fn   *done;
 	void               *context;
 	uint64_t            request;
-	uint64_t            flags;
+	uint64_t            dirty;  /**< the flags that the call sets in the client */
 };
 
 static struct cstr_view
@@ -52,10 +50,10 @@ cli_tool_create (struct cli_client  *client,
 		error->len = (uint32_t)strlen(error->data);
 		return nullptr;
 	}
-	uint64_t flags = cstr_view_equal(entry->name, cstr_view_dstr(&client->notes_tool)) &&
+	uint64_t dirty = cstr_view_equal(entry->name, cstr_view_dstr(&client->notes_tool)) &&
 	                 cstr_view_index(writes, array_size(writes),
 	                                 jb_view(jb_get(arguments, "action"))) < array_size(writes)
-	                 ? CLI_TOOL_WRITES_NOTES : 0;
+	                 ? CLI_CLIENT_NOTES_DIRTY : 0;
 	struct cstr_view const token = CSTR_VIEW("tool");
 	cli_json_auto params = jb_object("name", cli_client_string(entry->name),
 	                                 "arguments", json_object_get(arguments),
@@ -68,7 +66,7 @@ cli_tool_create (struct cli_client  *client,
 	}
 	*tool = (struct cli_tool){.client = client,
 	                          .name = json_object_get(jb_get(params, "name")),
-	                          .params = json_object_get(params), .flags = flags};
+	                          .params = json_object_get(params), .dirty = dirty};
 	list_init(&tool->hook);
 	/* The stream views the name that the tool owns. */
 	tool->stream = cli_stream(console, cli_tool_name(tool), token, 0);
@@ -94,7 +92,7 @@ cli_tool_destroy (struct cli_tool **pp)
 static int
 cli_tool_begin (struct cli_tool *tool)
 {
-	tool->client->notes_dirty |= (tool->flags & CLI_TOOL_WRITES_NOTES) != 0;
+	tool->client->flags |= tool->dirty;
 	struct cstr_view name = cli_tool_name(tool);
 	dstr_auto action = dstr("call ");
 	if (cstr_view_cat(name, &action))
@@ -183,7 +181,7 @@ cli_tool_done (void                   *context,
 {
 	struct cli_tool *tool = container_of(context, struct cli_tool, stream);
 	tool->request = 0;
-	tool->client->notes_dirty |= (tool->flags & CLI_TOOL_WRITES_NOTES) != 0;
+	tool->client->flags |= tool->dirty;
 	list_del(&tool->hook);
 	tool->done(tool, tool->context, e, result, error);
 	cli_tool_destroy(&tool);

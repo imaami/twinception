@@ -114,7 +114,7 @@ static int cli_client_response_event(char const *data, size_t len, void *user)
 		return 0;
 	}
 	if (jb_is(jb_get(event, "method"), "notifications/tools/list_changed"))
-		response->client->catalog_dirty = true;
+		response->client->flags |= CLI_CLIENT_CATALOG_DIRTY;
 	return response->notify ? response->notify(response->context, event, response->id, response->error) : 0;
 }
 
@@ -656,7 +656,7 @@ int
 cli_client_refresh_notes (struct cli_client *client,
                           struct cli_error  *error)
 {
-	client->notes_dirty = false;
+	client->flags &= ~CLI_CLIENT_NOTES_DIRTY;
 	if (!dstr_len(&client->notes_tool))
 		return 0;
 	autocomplete_clear_note_files(client->catalog);
@@ -725,8 +725,7 @@ int
 cli_client_refresh (struct cli_client *client,
                     struct cli_error  *error)
 {
-	client->catalog_dirty = false;
-	client->notes_dirty = false;
+	client->flags &= ~(CLI_CLIENT_CATALOG_DIRTY | CLI_CLIENT_NOTES_DIRTY);
 	int e = 0;
 	struct autocomplete *catalog = autocomplete_create(&e);
 	cli_json_auto names = json_object_new_array();
@@ -839,7 +838,7 @@ cli_client_refresh (struct cli_client *client,
 	if (client->catalog && (!cstr_view_equal(cstr_view_dstr(&client->session_key), cstr_view_dstr(&session)) ||
 	                        !cstr_view_equal(cstr_view_dstr(&client->participant), cstr_view_dstr(&participant)) ||
 	                        !cstr_view_equal(cstr_view_dstr(&client->tool), cstr_view_dstr(&chosen)))) {
-		client->identity_changed = true;
+		client->flags |= CLI_CLIENT_IDENTITY_CHANGED;
 		e = cli_error_set(error, ESTALE, "AskAI changed its session, participant or ask tool; restart the client to select its history");
 		goto done;
 	}
