@@ -69,6 +69,53 @@ enum buf_pressure {
  */
 extern _Atomic uint32_t buf_pressure;
 
+/** A count of objects or blocks kept for reuse, and the fewest kept through
+ *  windows of reuse: those went unused. Zeroed, it counts none.
+ */
+struct buf_kept {
+	size_t n;
+	size_t low;   /**< fewest kept in this window */
+	size_t idle;  /**< fewest kept in the window before */
+};
+
+/** Count one taken off @p kept for reuse. */
+static inline void
+buf_kept_take (struct buf_kept *kept)
+{
+	if (--kept->n < kept->low)
+		kept->low = kept->n;
+}
+
+/** Count one taken off @p kept to free it: it counts as one that went
+ *  unused, if any did.
+ */
+static inline void
+buf_kept_drop (struct buf_kept *kept)
+{
+	--kept->n;
+	kept->low -= kept->low > 0;
+	kept->idle -= kept->idle > 0;
+}
+
+/** How many of @p kept a relief at @p level frees: at BUF_HIGH those unused
+ *  through the window before and this one so far, at BUF_CRITICAL all.
+ */
+static inline size_t
+buf_kept_unused (struct buf_kept const *kept,
+                 enum buf_pressure      level)
+{
+	return level >= BUF_CRITICAL ? kept->n
+	     : kept->low < kept->idle ? kept->low : kept->idle;
+}
+
+/** Begin a window of reuse of @p kept. */
+static inline void
+buf_kept_age (struct buf_kept *kept)
+{
+	kept->idle = kept->low;
+	kept->low = kept->n;
+}
+
 /** What a stash keeps and has done: its thread writes, any reads (hist.h). */
 struct buf_stash_metrics {
 	_Atomic uint64_t retained;  /**< bytes kept for reuse */
@@ -95,11 +142,7 @@ struct buf_stash_metrics {
 struct buf_stash {
 	struct buf_stash_metrics metrics;
 	void                    *top[BUF_CLASSES];   /**< the last block given */
-	size_t                   n[BUF_CLASSES];     /**< blocks kept */
-	size_t                   low[BUF_CLASSES];   /**< fewest kept in this
-	                                                  window */
-	size_t                   idle[BUF_CLASSES];  /**< fewest kept in the
-	                                                  window before */
+	struct buf_kept          kept[BUF_CLASSES];  /**< blocks kept */
 	size_t                   held;               /**< bytes of blocks that
 	                                                  buffers hold */
 	size_t                   peak;               /**< the most held at once

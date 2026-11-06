@@ -50,9 +50,7 @@ buf_stash_drop (struct buf_stash *stash,
 	void *data = stash->top[c];
 	memcpy(&stash->top[c], data, sizeof stash->top[c]);
 	free(data);
-	--stash->n[c];
-	stash->low[c] -= stash->low[c] > 0;
-	stash->idle[c] -= stash->idle[c] > 0;
+	buf_kept_drop(&stash->kept[c]);
 	hist_add(&stash->metrics.retained, -(uint64_t)size);
 	hist_add(&stash->metrics.released, size);
 }
@@ -71,10 +69,9 @@ buf_stash_take (struct buf_stash *stash,
 	if (c >= BUF_CLASSES || !stash)
 		return malloc(*cap);
 	unsigned char *data = stash->top[c];
-	if (stash->n[c]) {
+	if (stash->kept[c].n) {
 		memcpy(&stash->top[c], data, sizeof stash->top[c]);
-		if (--stash->n[c] < stash->low[c])
-			stash->low[c] = stash->n[c];
+		buf_kept_take(&stash->kept[c]);
 		hist_add(&stash->metrics.hits, 1);
 		hist_add(&stash->metrics.retained, -(uint64_t)*cap);
 	} else {
@@ -82,7 +79,7 @@ buf_stash_take (struct buf_stash *stash,
 		size_t held = stash->held + *cap;
 		size_t room = 2 * (held > stash->peak ? held : stash->peak) - held;
 		for (unsigned d = BUF_CLASSES; d-- && hist_get(&stash->metrics.retained) > room; )
-			while (stash->n[d] && hist_get(&stash->metrics.retained) > room)
+			while (stash->kept[d].n && hist_get(&stash->metrics.retained) > room)
 				buf_stash_drop(stash, d);
 		if (!(data = malloc(*cap)))
 			return nullptr;
@@ -116,7 +113,7 @@ buf_stash_give (struct buf_stash *stash,
 	}
 	memcpy(data, &stash->top[c], sizeof stash->top[c]);
 	stash->top[c] = data;
-	++stash->n[c];
+	++stash->kept[c].n;
 	hist_add(&stash->metrics.retained, cap);
 }
 
@@ -226,8 +223,8 @@ buf_stash_attach (struct buf_stash *stash)
 void
 buf_stash_age (struct buf_stash *stash)
 {
-	memcpy(stash->idle, stash->low, sizeof stash->idle);
-	memcpy(stash->low, stash->n, sizeof stash->low);
+	for (size_t c = 0; c < array_size(stash->kept); ++c)
+		buf_kept_age(&stash->kept[c]);
 }
 
 size_t
@@ -238,8 +235,7 @@ buf_stash_release (struct buf_stash  *stash,
 	size_t done = 0;
 	for (unsigned c = BUF_CLASSES; c--; ) {
 		size_t units = buf_units((size_t)1 << (BUF_CLASS_MIN + c));
-		size_t n = level >= BUF_CRITICAL ? stash->n[c]
-		         : stash->low[c] < stash->idle[c] ? stash->low[c] : stash->idle[c];
+		size_t n = buf_kept_unused(&stash->kept[c], level);
 		for (; n && (!done || done + units <= max); --n, done += units)
 			buf_stash_drop(stash, c);
 		if (n)

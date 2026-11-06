@@ -357,19 +357,19 @@ test_stash (void)
 	unsigned char *data = b.data;
 	buf_fini(&a);
 	buf_fini(&b);
-	CHECK(stash.n[0] == 2 && stashed(&stash) == 8192);
+	CHECK(stash.kept[0].n == 2 && stashed(&stash) == 8192);
 	CHECK(hist_get(&stash.metrics.misses) == 2 && !hist_get(&stash.metrics.hits));
 	CHECK(put(&a, bytes, 1, SIZE_MAX) && a.data == data);
-	CHECK(stash.n[0] == 1 && stashed(&stash) == 4096);
+	CHECK(stash.kept[0].n == 1 && stashed(&stash) == 4096);
 	CHECK(hist_get(&stash.metrics.hits) == 1);
 
 	/* Growth gives the smaller block up, and trimming the larger. */
 	CHECK(put(&a, bytes, 8192, SIZE_MAX) && a.cap == 16384);
-	CHECK(stash.n[0] == 2 && stashed(&stash) == 8192);
+	CHECK(stash.kept[0].n == 2 && stashed(&stash) == 8192);
 	buf_consume(&a, 8192);
-	CHECK(buf_trim(&a) == 1 && a.cap == 4096 && stash.n[2] == 1 && stash.n[0] == 1);
+	CHECK(buf_trim(&a) == 1 && a.cap == 4096 && stash.kept[2].n == 1 && stash.kept[0].n == 1);
 	buf_fini(&a);
-	CHECK(stash.n[0] == 2 && stashed(&stash) == 8192 + 16384);
+	CHECK(stash.kept[0].n == 2 && stashed(&stash) == 8192 + 16384);
 
 	/* At high pressure, what went unused since the last window began goes:
 	 * none before a window has passed, all that went unused after. */
@@ -380,7 +380,7 @@ test_stash (void)
 	buf_fini(&a);
 	buf_stash_age(&stash);
 	CHECK(buf_stash_release(&stash, BUF_HIGH, 256) == 2);
-	CHECK(stash.n[0] == 1 && !stash.n[2] && stashed(&stash) == 4096);
+	CHECK(stash.kept[0].n == 1 && !stash.kept[2].n && stashed(&stash) == 4096);
 	CHECK(hist_get(&stash.metrics.released) == 4096 + 16384);
 	CHECK(!buf_stash_release(&stash, BUF_HIGH, 256));
 
@@ -390,8 +390,8 @@ test_stash (void)
 		CHECK(put(&many[i], bytes, 1, SIZE_MAX));
 	for (size_t i = 0; i < array_size(many); ++i)
 		buf_fini(&many[i]);
-	CHECK(stash.n[0] == 3);
-	CHECK(buf_stash_release(&stash, BUF_CRITICAL, 2) == 2 && stash.n[0] == 1);
+	CHECK(stash.kept[0].n == 3);
+	CHECK(buf_stash_release(&stash, BUF_CRITICAL, 2) == 2 && stash.kept[0].n == 1);
 	CHECK(buf_stash_release(&stash, BUF_CRITICAL, 2) == 1 && !stashed(&stash));
 	CHECK(!buf_stash_release(&stash, BUF_CRITICAL, 2));
 	CHECK(!stash.held && !stash.peak);
@@ -418,10 +418,10 @@ test_stash (void)
 		CHECK(put(&wave[i], large, 20 << 10, SIZE_MAX) && wave[i].cap == 32 << 10);
 	for (size_t i = 0; i < array_size(wave); ++i)
 		buf_fini(&wave[i]);
-	CHECK(stash.n[4] == 4 && stash.n[3] == 8 && stashed(&stash) == 2 * stash.peak);
+	CHECK(stash.kept[4].n == 4 && stash.kept[3].n == 8 && stashed(&stash) == 2 * stash.peak);
 	CHECK(hist_get(&stash.metrics.released) == released);
 	CHECK(put(&b, large, 10 << 10, SIZE_MAX) && b.cap == 16 << 10);
-	CHECK(stash.n[4] == 3 && stash.n[3] == 8);
+	CHECK(stash.kept[4].n == 3 && stash.kept[3].n == 8);
 	CHECK(hist_get(&stash.metrics.released) == released + (64 << 10));
 	CHECK(stashed(&stash) + stash.held <= 2 * stash.peak);
 	buf_fini(&b);
@@ -444,7 +444,7 @@ test_stash (void)
 	buf_stash_attach(nullptr);
 	CHECK(put(&a, bytes, 1, SIZE_MAX));
 	buf_fini(&a);
-	CHECK(!stash.n[0] && !stashed(&stash));
+	CHECK(!stash.kept[0].n && !stashed(&stash));
 }
 
 #undef CHECK
