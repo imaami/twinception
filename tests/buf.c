@@ -231,6 +231,55 @@ test_wipe (void)
 	buf_fini(&buf);
 }
 
+/* buf_read() of the first @p len bytes of @p bytes from a pipe. */
+static int
+read_pipe (struct buf          *buf,
+           unsigned char const *bytes,
+           size_t               len,
+           size_t               size,
+           size_t               max)
+{
+	int fds[2];
+	if (pipe(fds))
+		return errno;
+	int e = util_write_all(fds[1], bytes, len);
+	util_close(&fds[1]);
+	if (!e)
+		e = buf_read(buf, fds[0], size, max);
+	util_close(&fds[0]);
+	return e;
+}
+
+static void
+test_read (void)
+{
+	static unsigned char bytes[10000];
+	for (size_t i = 0; i < sizeof bytes; ++i)
+		bytes[i] = (unsigned char)(i * 7);
+	struct buf buf = {};
+
+	/* Without a size, the storage grows to the end of the file, which
+	 * may fill max exactly. */
+	CHECK(!read_pipe(&buf, bytes, sizeof bytes, 0, sizeof bytes));
+	CHECK(holds(&buf, bytes, sizeof bytes) && buf.cap == 16384);
+	buf_fini(&buf);
+	CHECK(!read_pipe(&buf, bytes, 0, 0, sizeof bytes) && !buf_peek(&buf).len);
+	buf_fini(&buf);
+
+	/* One byte past max fails, and a size past it fails before a read. */
+	CHECK(read_pipe(&buf, bytes, sizeof bytes, 0, sizeof bytes - 1) == ENOBUFS);
+	buf_fini(&buf);
+	CHECK(read_pipe(&buf, bytes, 100, 5000, 4999) == ENOBUFS && !buf.data);
+
+	/* A file of the size given is read into the first reservation, after
+	 * the bytes that the buffer holds. */
+	CHECK(put(&buf, "ab", 2, SIZE_MAX));
+	CHECK(!read_pipe(&buf, bytes, 5000, 5000, 5002) && buf.cap == 8192);
+	struct span s = buf_peek(&buf);
+	CHECK(s.len == 5002 && !memcmp(s.ptr, "ab", 2) && !memcmp(s.ptr + 2, bytes, 5000));
+	buf_fini(&buf);
+}
+
 /* xorshift64*: a fixed, portable sequence. */
 static uint64_t
 rnd (uint64_t *state)
@@ -459,6 +508,7 @@ main (void)
 	test_trim();
 	test_cut();
 	test_wipe();
+	test_read();
 	test_stash();
 	test_model();
 	return check_report("buf");

@@ -10,6 +10,7 @@
 
 #include "buf.h"
 #include "hist.h"
+#include "util.h"
 
 _Atomic uint32_t buf_pressure;
 
@@ -281,4 +282,26 @@ buf_printf (struct buf *buf,
 	int e = buf_vprintf(buf, fmt, ap);
 	va_end(ap);
 	return e;
+}
+
+int
+buf_read (struct buf *buf,
+          int         fd,
+          size_t      size,
+          size_t      max)
+{
+	/* Room for one byte past max tells a file of max bytes from a longer
+	 * one, for which the reservation after it fails. */
+	max += max < SIZE_MAX;
+	for (size_t min = size + 1;; min = 1) {
+		struct span room;
+		int e = buf_reserve(buf, min, max, &room);
+		if (e)
+			return e;
+		size_t got;
+		e = util_read_all(fd, room.ptr, room.len, -1, &got);
+		buf_commit(buf, got);
+		if (e || got < room.len)
+			return e;
+	}
 }

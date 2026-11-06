@@ -117,32 +117,17 @@ git_view_shallow (struct git_view *view,
 	if (fd < 0)
 		return errno == ENOENT ? 0 : errno;
 	struct stat st;
-	int e = 0;
-	if (fstat(fd, &st))
-		e = errno;
-	else if (!S_ISREG(st.st_mode) || st.st_size < 0 || st.st_size > GIT_VIEW_SHALLOW)
-		e = EINVAL;
-	size_t const size = e ? 0 : (size_t)st.st_size;
-	unsigned char *data = e ? nullptr : malloc(size + 1);
-	if (!e && !data)
-		e = ENOMEM;
-	size_t used = 0;
-	if (!e)
-		e = util_read_all(fd, data, size + 1, -1, &used);
-	if (!e && used > size)
-		e = EFBIG;
+	struct buf data = {};
+	int e = fstat(fd, &st) ? errno : !S_ISREG(st.st_mode) ? EINVAL
+	      : buf_read(&data, fd, (size_t)st.st_size, GIT_VIEW_SHALLOW);
 	util_close(&fd);
-	struct span left = { data, used };
-	while (!e && left.len) {
-		struct span oid;
+	for (struct span left = buf_peek(&data), oid; !e && left.len; )
 		if (git_view_line(&left, &oid) || oid.len != width ||
 		    !oid_valid((struct cstr_view){ (char const *)oid.ptr, oid.len }))
 			e = EINVAL;
-	}
 	if (!e)
-		e = git_view_file(view, "shallow", (struct span){ data, used });
-	free(data);
-	data = nullptr;
+		e = git_view_file(view, "shallow", buf_peek(&data));
+	buf_fini(&data);
 	return e;
 }
 

@@ -21,8 +21,8 @@ struct git_view;
  * the namespaces of GIT_VIEW_REFS. No source configuration, worktree, index
  * or other refs are imported. The newlines after the two paths in
  * @p metadata are overwritten with NULs; other input storage remains the
- * caller's. Returns nullptr with EINVAL for malformed input, or a system
- * error in @p e.
+ * caller's. Returns nullptr with EINVAL for malformed input, ENOBUFS for
+ * a shallow file over 4 MiB, or a system error in @p e.
  */
 extern struct git_view *
 git_view_create (struct span metadata,

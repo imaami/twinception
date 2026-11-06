@@ -184,6 +184,21 @@ buf_printf (struct buf *buf,
             char const *fmt,
             ...);
 
+/**
+ * Read from @p fd, from where its file stands to its end, into @p buf,
+ * which may then hold at most @p max readable bytes. The first reservation
+ * is for @p size bytes and one more, so that a file of the @p size that
+ * fstat() gave is read into storage that does not grow and leaves no copy.
+ * Returns 0; ENOBUFS if the file goes on past @p max, at once if @p size
+ * does; or the error of buf_reserve() or read(). On an error, the bytes
+ * read stay in @p buf.
+ */
+extern int
+buf_read (struct buf *buf,
+          int         fd,
+          size_t      size,
+          size_t      max);
+
 /** Make @p len bytes written into the last reservation readable. */
 static inline void
 buf_commit (struct buf *buf,
