@@ -81,16 +81,6 @@ util_is_hex (char const *s,
 	return true;
 }
 
-/** Whether the @p n bytes at @p s are the full name of a Git object: 40
- *  (SHA-1) or 64 (SHA-256) lowercase hexadecimal digits.
- */
-static inline bool
-util_is_oid (char const *s,
-             size_t      n)
-{
-	return (n == 40 || n == 64) && util_is_hex(s, n);
-}
-
 /** The value of the hexadecimal digit @p c, of either case, or 16 if @p c
  *  is not one.
  */
