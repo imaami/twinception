@@ -11,17 +11,17 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "list.h"
+#include "tally.h"
 
 struct cli_scrollback {
-	struct list lines;
-	size_t      bytes;
-	size_t      count;
-	size_t      offset;
-	size_t      unread;
-	size_t      rows;
-	size_t      columns;
-	size_t      discarded;
-	size_t      styles;
+	struct list  lines;
+	struct tally used;  /**< the lines and the bytes of their text */
+	size_t       offset;
+	size_t       unread;
+	size_t       rows;
+	size_t       columns;
+	size_t       discarded;
+	size_t       styles;
 };
 
 extern void

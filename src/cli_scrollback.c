@@ -81,23 +81,22 @@ cli_scrollback_add_line (struct cli_scrollback *scrollback)
 	*line = (struct cli_scrollback_line){.text = dstr(nullptr)};
 	list_init(&line->hook);
 	list_append(&scrollback->lines, &line->hook);
-	++scrollback->count;
+	tally_add(&scrollback->used, 0);
 	return 0;
 }
 
 static void
 cli_scrollback_trim (struct cli_scrollback *scrollback)
 {
-	while (scrollback->count > 1 &&
-	       (scrollback->count > CLI_SCROLLBACK_LINES || scrollback->bytes > CLI_SCROLLBACK_BYTES ||
+	while (scrollback->used.n > 1 &&
+	       (scrollback->used.n > CLI_SCROLLBACK_LINES || scrollback->used.bytes > CLI_SCROLLBACK_BYTES ||
 	        scrollback->styles > CLI_SCROLLBACK_STYLES)) {
 		struct cli_scrollback_line *line = container_of(scrollback->lines.next,
 		                                                  struct cli_scrollback_line, hook);
 		if (line->columns == scrollback->columns)
 			scrollback->discarded += line->rows;
-		scrollback->bytes -= dstr_len(&line->text);
+		tally_sub(&scrollback->used, dstr_len(&line->text));
 		scrollback->styles -= line->style_count;
-		--scrollback->count;
 		cli_scrollback_line_destroy(&line);
 	}
 }
@@ -137,7 +136,7 @@ cli_scrollback_line_trim (struct cli_scrollback      *scrollback,
 			return e;
 	}
 	(void)dstr_erase(&line->text, 0, skip);
-	scrollback->bytes -= skip;
+	scrollback->used.bytes -= skip;
 	scrollback->discarded += discarded;
 	line->columns = 0;
 	size_t first = cli_scrollback_style_after(line, skip);
@@ -207,7 +206,7 @@ cli_scrollback_append_part (struct cli_scrollback *scrollback,
 		return ENOMEM;
 	line->style_count += change;
 	scrollback->styles += change;
-	scrollback->bytes += part.len;
+	scrollback->used.bytes += part.len;
 	if (scrollback->offset && !scrollback->unread)
 		scrollback->unread = 1;
 	return 0;

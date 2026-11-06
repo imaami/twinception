@@ -128,7 +128,7 @@ cli_scrollback_test_viewport (void)
 		assert(dstr_printf(&line, "line %zu\n", i));
 		assert(!cli_scrollback_append(&scrollback, cstr_view_dstr(&line)));
 	}
-	assert(scrollback.count == 10000);
+	assert(scrollback.used.n == 10000);
 	dstr_auto before = dstr(nullptr);
 	dstr_auto after = dstr(nullptr);
 	cli_scrollback_test_render(&scrollback, 40, 4, false, &before);
@@ -139,7 +139,7 @@ cli_scrollback_test_viewport (void)
 	cli_scrollback_test_render(&scrollback, 40, 4, false, &after);
 	assert(cstr_view_equal(cstr_view_dstr(&before), cstr_view_dstr(&after)));
 	assert(scrollback.unread);
-	assert(scrollback.count == 10000);
+	assert(scrollback.used.n == 10000);
 	cli_scrollback_bottom(&scrollback);
 	cli_scrollback_test_render(&scrollback, 40, 4, false, &after);
 	assert(!scrollback.offset && !scrollback.unread);
@@ -154,7 +154,7 @@ cli_scrollback_test_styles (void)
 	cli_scrollback_init(&scrollback);
 	dstr_auto frame = dstr(nullptr);
 	assert(cli_scrollback_append_style(&scrollback, CSTR_VIEW("invalid"), CLI_STYLE_COUNT) == EINVAL);
-	assert(!scrollback.count && !scrollback.bytes && !scrollback.styles);
+	assert(!scrollback.used.n && !scrollback.used.bytes && !scrollback.styles);
 	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("abc"), CLI_STYLE_REASONING));
 	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("def"), CLI_STYLE_REASONING));
 	assert(scrollback.styles == 1);
@@ -179,7 +179,7 @@ cli_scrollback_test_styles (void)
 		assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("x"), i % 2 ? CLI_STYLE_REASONING : CLI_STYLE_USER_INPUT));
 	assert(scrollback.styles == 65536);
 	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("x\n"), CLI_STYLE_REASONING));
-	assert(scrollback.bytes == 65537 && scrollback.count == 2);
+	assert(scrollback.used.bytes == 65537 && scrollback.used.n == 2);
 	assert(scrollback.styles == 65536);
 	cli_scrollback_fini(&scrollback);
 
@@ -187,7 +187,7 @@ cli_scrollback_test_styles (void)
 	for (size_t i = 0; i < 70000; ++i)
 		assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("x"), i % 2 ? CLI_STYLE_REASONING : CLI_STYLE_USER_INPUT));
 	assert(scrollback.styles <= 65536);
-	assert(scrollback.bytes < 70000);
+	assert(scrollback.used.bytes < 70000);
 	cli_scrollback_test_render(&scrollback, 2, 1, true, &frame);
 	CLI_SCROLLBACK_FRAME(&frame, CSTR_VIEW("\033[1;1H"), cli_scrollback_test_sgr(CLI_STYLE_USER_INPUT), CSTR_VIEW("x"),
 	                     cli_scrollback_test_sgr(CLI_STYLE_REASONING), CSTR_VIEW("x"));
@@ -370,7 +370,7 @@ cli_scrollback_test_prefix_eviction (void)
 	assert(!cli_scrollback_append(&scrollback, CSTR_VIEW("Z")));
 	cli_scrollback_test_render(&scrollback, 80, 3, false, &after);
 	assert(cstr_view_equal(cstr_view_dstr(&before), cstr_view_dstr(&after)));
-	assert(scrollback.bytes <= length);
+	assert(scrollback.used.bytes <= length);
 	free(text);
 	text = nullptr;
 	cli_scrollback_fini(&scrollback);
@@ -386,8 +386,8 @@ cli_scrollback_test_long_line (void)
 	assert(text);
 	memset(text, 'a', length);
 	assert(!cli_scrollback_append(&scrollback, (struct cstr_view){text, length}));
-	assert(scrollback.bytes == 16 * 1024 * 1024);
-	assert(scrollback.count == 1);
+	assert(scrollback.used.bytes == 16 * 1024 * 1024);
+	assert(scrollback.used.n == 1);
 	dstr_auto frame = dstr(nullptr);
 	cli_scrollback_test_render(&scrollback, 80, 3, false, &frame);
 	assert(dstr_len(&frame) < 300);
