@@ -31,6 +31,14 @@ struct task_pool {
 	struct task_lane         lane[];   /* client loop i + 1's at i */
 };
 
+/* The lane of the client loop @p loop. */
+static struct task_lane *
+task_pool_lane (struct task_pool  *pool,
+                struct loop const *loop)
+{
+	return &pool->lane[loop->id - 1];
+}
+
 static uint64_t
 task_lane_load (struct task_lane const *lane)
 {
@@ -91,6 +99,14 @@ task_pool_choose (struct task_pool *pool,
 	return task_lane_load(y) < task_lane_load(x) ? y : x;
 }
 
+/* Lets go of @p task, which never runs again, as abandoned. */
+static void
+task_abandon (struct task *task)
+{
+	atomic_fetch_add_explicit(&task->pool->metrics.abandoned, 1, memory_order_relaxed);
+	task_put(task, 1);
+}
+
 /* A task moved to this loop; once the loop has stopped, it never runs, and
  * the loop lets go of it.
  */
@@ -99,13 +115,10 @@ task_arrive (struct loop *loop,
              struct msg  *msg)
 {
 	struct task *task = container_of(msg, struct task, msg);
-	if (loop->exit) {
-		atomic_fetch_add_explicit(&task->pool->metrics.abandoned, 1,
-		                          memory_order_relaxed);
-		task_put(task, 1);
-		return;
-	}
-	task_lane_take(&task->pool->lane[loop->id - 1], task, loop);
+	if (loop->exit)
+		task_abandon(task);
+	else
+		task_lane_take(task_pool_lane(task->pool, loop), task, loop);
 }
 
 /* Places @p task, which is on no lane, on the lane @p to, from the lane
@@ -161,7 +174,7 @@ task_step (struct loop      *loop,
 {
 	struct task *task = container_of(step, struct task, step);
 	struct task_pool *pool = task->pool;
-	struct task_lane *self = &pool->lane[loop->id - 1];
+	struct task_lane *self = task_pool_lane(pool, loop);
 	_Atomic uint64_t *ended = &pool->metrics.cancelled;
 	if (!atomic_load_explicit(&task->cancel, memory_order_acquire)) {
 		enum task_state state = task->slice(task, loop, loop_clock() + TASK_SLICE_NS);
@@ -222,7 +235,7 @@ void
 task_pool_attach (struct task_pool *pool,
                   struct loop      *loop)
 {
-	struct task_lane *lane = &pool->lane[loop->id - 1];
+	struct task_lane *lane = task_pool_lane(pool, loop);
 	list_init(&lane->held);
 	lane->rng = loop_clock() * 0x9e3779b97f4a7c15 | 1;
 	atomic_store_explicit(&lane->loop, loop, memory_order_release);
@@ -232,17 +245,16 @@ void
 task_pool_detach (struct task_pool *pool,
                   struct loop      *loop)
 {
-	struct task_lane *lane = &pool->lane[loop->id - 1];
+	struct task_lane *lane = task_pool_lane(pool, loop);
 	while (!list_is_empty(&lane->held)) {
 		struct task *task = container_of(lane->held.next, struct task, hook);
 		loop_unready(&task->step);
-		list_del(&task->hook);
-		hist_add(&lane->metrics.held, -1ULL);
-		atomic_fetch_add_explicit(&pool->metrics.abandoned, 1, memory_order_relaxed);
-		task_put(task, 1);
+		task_lane_leave(lane, task);
+		task_abandon(task);
 	}
-	/* A placer that read the load before goes on, and its task is
-	 * abandoned; the count stays far from wrapping. */
+	/* The load replaces what the leaves took away. A placer that read the
+	 * load before goes on, and its task is abandoned; the count stays far
+	 * from wrapping. */
 	atomic_store_explicit(&lane->load, UINT64_MAX / 2, memory_order_relaxed);
 }
 
@@ -286,7 +298,7 @@ task_submit (struct task *task,
              struct loop *loop)
 {
 	struct task_pool *pool = task->pool;
-	struct task_lane *self = &pool->lane[loop->id - 1];
+	struct task_lane *self = task_pool_lane(pool, loop);
 	atomic_store_explicit(&task->refs, 2, memory_order_relaxed);
 	atomic_fetch_add_explicit(&pool->metrics.submitted, 1, memory_order_relaxed);
 	task_lane_place(self, task_pool_choose(pool, self, false), task, loop);
