@@ -196,6 +196,7 @@ struct httpd_conn {
 	size_t               held;      /* body bytes counted in the budgets */
 	size_t               got;       /* body bytes handed on */
 	size_t               chunk;     /* bytes left of the chunk under way */
+	size_t               room;      /* groups the groups' storage holds */
 	struct httpd_req     req;
 	uint32_t            *groups;    /* home sets them: a Unix socket's user's
 	                                   groups, sorted, in storage kept with
@@ -205,7 +206,6 @@ struct httpd_conn {
 	                                   httpd_conn_user() sets it on home's
 	                                   loop. */
 	uint32_t             n_groups;
-	uint32_t             room;      /* groups the groups' storage holds */
 	uint32_t             events;    /* reported since the last step, and DEADLINE */
 	uint32_t             scan;      /* where to resume looking for the head's end */
 	uint32_t             trailer;   /* trailer bytes so far */
@@ -2243,7 +2243,7 @@ httpd_conn_setup (struct httpd_conn *conn,
 	uint32_t *groups = conn->groups;
 	uint64_t principal = conn->principal;
 	uint32_t n_groups = conn->n_groups;
-	uint32_t room = conn->room;
+	size_t room = conn->room;
 	struct ssl_ctx_st *ctx = conn->ctx;
 	int fd = conn->fd;
 	bool local = conn->local;
@@ -2504,23 +2504,6 @@ httpd_home_lane (struct httpd_home *home)
 	return wy < wx || (wy == wx && y->conns < x->conns) ? y : x;
 }
 
-/* Make room for @p n groups in the storage kept with the connection: 0, or
- * ENOMEM.
- */
-static int
-httpd_conn_room (struct httpd_conn *conn,
-                 size_t             n)
-{
-	if (conn->room >= n)
-		return 0;
-	uint32_t *groups = realloc(conn->groups, n * sizeof *groups);
-	if (!groups)
-		return ENOMEM;
-	conn->groups = groups;
-	conn->room = (uint32_t)n;
-	return 0;
-}
-
 /* Read the groups of the user of Unix socket @p fd into @p conn, sorted,
  * growing the storage for them if needed. @p gid is the effective gid that
  * SO_PEERCRED reports. It can differ from the primary group of the user
@@ -2538,7 +2521,7 @@ httpd_conn_groups (struct httpd_conn *conn,
 	size_t n = 0;
 	int e = ERANGE;
 	while (e == ERANGE) {
-		if (httpd_conn_room(conn, n + 1))
+		if (util_grow(conn->groups, conn->room, n + 1))
 			return ENOMEM;
 		socklen_t size = (socklen_t)((conn->room - 1) * sizeof *conn->groups);
 		e = getsockopt(fd, SOL_SOCKET, SO_PEERGROUPS, conn->groups, &size) ? errno : 0;
