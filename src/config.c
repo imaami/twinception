@@ -2040,14 +2040,9 @@ config_allow_none (struct config const   *cfg,
                    struct registry const *reg,
                    struct json_object    *v)
 {
-	char names[1024];
-	size_t len = 0;
-	for (uint32_t id = 1; id < reg->n_tools; ++id)
-		len += util_format(names + len, sizeof names - len, "%s%s", len ? ", " : "",
-		                   reg->tools[id].name.data);
 	return config_complain(cfg, cfg->path, "%s: askai has no tool %s; the tools "
 	                       "are %s", where, json_object_to_json_string(v),
-	                       len ? names : "none");
+	                       registry_names(reg, ~(tool_mask)1).data);
 }
 
 /* The mask, in @p *mask, of the tools of @p reg that @p list names, an

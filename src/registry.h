@@ -21,6 +21,7 @@
 
 #include "cstr_view.h"
 #include "tool.h"
+#include "util.h"
 
 struct json_object;
 struct plugin;
@@ -82,6 +83,18 @@ extern uint32_t
 registry_find (struct registry const *reg,
                struct cstr_view       name,
                uint32_t               n);
+
+/** The names of tools of a registry, separated by ", ". */
+struct registry_names {
+	UTIL_TEXT(1024);
+};
+
+/** Returns the names of the tools of @p reg whose bits are set in @p mask,
+ *  or "none" if there is no such tool, cut with "..." if they do not fit.
+ */
+extern struct registry_names
+registry_names (struct registry const *reg,
+                tool_mask              mask);
 
 /**
  * Adds the tool @p tool of the plugin @p plugin.

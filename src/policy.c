@@ -545,24 +545,6 @@ policy_build_token (struct policy_build *b,
 	return 0;
 }
 
-/* Write the names of the tools of @p reg in @p mask into the @p size bytes
- * at @p buf, separated by commas, or "none" for no tool; returns the
- * length.
- */
-static size_t
-policy_names (char                  *buf,
-              size_t                 size,
-              struct registry const *reg,
-              tool_mask              mask)
-{
-	size_t len = 0;
-	for (uint32_t id = 0; id < reg->n_tools; ++id)
-		if (mask >> id & 1)
-			len += util_format(buf + len, size - len, "%s%s", len ? ", " : "",
-			                   reg->tools[id].name.data);
-	return len ? len : util_format(buf, size, "none");
-}
-
 /* The mask of the tools of @p reg that a role can grant. */
 static tool_mask
 policy_all (struct registry const *reg)
@@ -581,9 +563,7 @@ policy_build_no_tool (struct policy_build *b,
                       struct json_object  *v,
                       bool                 up)
 {
-	char names[1024];
-	tool_mask mask = up ? b->upstream : policy_all(b->reg);
-	policy_names(names, sizeof names, b->reg, mask);
+	tool_mask const mask = up ? b->upstream : policy_all(b->reg);
 	if (up && !mask)
 		return policy_build_fail(b, "role %s: askai offers no tool %s to the "
 		                         "upstream; it lends no tool", name,
@@ -591,7 +571,7 @@ policy_build_no_tool (struct policy_build *b,
 	return policy_build_fail(b, "role %s: askai offers no tool %s%s; the tools %s"
 	                         "are %s", name, json_object_to_json_string(v),
 	                         up ? " to the upstream" : "", up ? "that it lends " : "",
-	                         names);
+	                         registry_names(b->reg, mask).data);
 }
 
 /* Read the list of tool names @p list of role @p name into @p r. @p key is

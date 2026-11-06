@@ -29,6 +29,20 @@ registry_find (struct registry const *reg,
 	return id < end ? id : n;
 }
 
+struct registry_names
+registry_names (struct registry const *reg,
+                tool_mask              mask)
+{
+	struct registry_names names = {};
+	for (uint32_t id = 0; id < reg->n_tools; ++id)
+		if (mask >> id & 1)
+			(void)util_text_printf(&names, "%s%s", names.len ? ", " : "",
+			                       reg->tools[id].name.data);
+	if (!names.len)
+		(void)util_text_printf(&names, "none");
+	return names;
+}
+
 /* Returns the index of plugin in reg->plugins. A plugin that is not there
  * yet is appended. The caller has checked that n_tools is less than
  * TOOL_MAX. Each plugin in reg->plugins is the plugin of at least one
