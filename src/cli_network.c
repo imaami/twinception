@@ -12,6 +12,7 @@
 #include "curl_loop.h"
 #include "dstr.h"
 #include "loop.h"
+#include "tally.h"
 #include "util.h"
 
 /* Calls for control are admitted past the bounds of the other calls, by
@@ -20,12 +21,16 @@
 enum {
 	CLI_NETWORK_BYTES = 256 * 1024,
 	CLI_NETWORK_DELIVERY = 64 * 1024,
-	CLI_NETWORK_MESSAGES = 64,
 	CLI_NETWORK_CALLS = 16,
 	CLI_NETWORK_CONTROL_CALLS = 2,
 	CLI_NETWORK_REQUEST_BYTES = 32 * 1024 * 1024,
 	CLI_NETWORK_CONTROL_BYTES = 64 * 1024,
 };
+
+/* The bounds of the chunks that the network thread has posted to the UI
+ * and not got back yet.
+ */
+static constexpr struct tally cli_network_credit = { 64, CLI_NETWORK_BYTES };
 
 /* The bits of a call's flags, after CLI_NETWORK_INTERRUPTIBLE. */
 enum {
@@ -105,10 +110,8 @@ struct cli_network {
 	void                       *ready_context;
 	pthread_t                   thread;
 	uint64_t                    sequence; /* UI thread only. */
-	size_t                      request_bytes; /* UI thread only. */
-	size_t                      call_count; /* UI thread only. */
-	size_t                      bytes; /* Network thread's aggregate response credit. */
-	size_t                      messages;
+	struct tally                load; /* UI thread only: the calls and the bytes of their requests. */
+	struct tally                credit; /* Network thread's: the chunks posted to the UI. */
 	_Atomic int                 failure;
 	_Atomic uint32_t            posted; /* Unhandled messages to the UI, and 1 for the thread. */
 	_Atomic uint32_t            shared;
@@ -250,8 +253,7 @@ cli_network_chunk_returned (struct loop *loop,
 {
 	struct cli_network_chunk *chunk = container_of(message, struct cli_network_chunk, msg);
 	struct cli_network *network = container_of(loop, struct cli_network, loop);
-	network->bytes -= chunk->length;
-	--network->messages;
+	tally_sub(&network->credit, chunk->length);
 	free(chunk);
 	chunk = nullptr;
 	if (!(loop->flags & LOOP_EXIT))
@@ -308,7 +310,7 @@ static void
 cli_network_deliver (struct cli_network *network)
 {
 	size_t delivered = 0;
-	for (size_t count = network->call_count;
+	for (size_t count = network->load.n;
 	     count && delivered < CLI_NETWORK_DELIVERY && !list_is_empty(&network->calls); --count) {
 		struct cli_network_call *call = container_of(network->calls.next, struct cli_network_call, hook);
 		list_del(&call->hook);
@@ -323,8 +325,7 @@ cli_network_deliver (struct cli_network *network)
 			*call->result = request->result;
 		call->flags |= CLI_NETWORK_DONE;
 		list_del(&call->hook);
-		--network->call_count;
-		network->request_bytes -= call->bytes;
+		tally_sub(&network->load, call->bytes);
 		if (call->complete)
 			call->complete(call->context, call->error, &request->result);
 		else if (!(call->flags & CLI_NETWORK_ABANDONED))
@@ -363,8 +364,7 @@ cli_network_receive (struct cli_network_request *request,
 	if (!length)
 		return 0;
 	struct cli_network *network = request->network;
-	if (network->messages == CLI_NETWORK_MESSAGES ||
-	    length > CLI_NETWORK_BYTES - network->bytes) {
+	if (!tally_fits(&network->credit, cli_network_credit, length)) {
 		request->flags |= CLI_NETWORK_PAUSED;
 		return CURL_WRITEFUNC_PAUSE;
 	}
@@ -381,8 +381,7 @@ cli_network_receive (struct cli_network_request *request,
 		.header = header,
 	};
 	memcpy(chunk->bytes, bytes, length);
-	network->bytes += length;
-	++network->messages;
+	tally_add(&network->credit, length);
 	cli_network_post(network, &chunk->msg);
 	return length;
 }
@@ -411,8 +410,7 @@ cli_network_progress (struct cli_network *network)
 	struct list pending;
 	list_init(&pending);
 	list_transplant(&pending, &network->requests);
-	while (!list_is_empty(&pending) && network->messages < CLI_NETWORK_MESSAGES &&
-	       network->bytes < CLI_NETWORK_BYTES) {
+	while (!list_is_empty(&pending) && tally_fits(&network->credit, cli_network_credit, 1)) {
 		struct cli_network_request *request = container_of(pending.next, struct cli_network_request, hook);
 		list_del(&request->hook);
 		list_append(&network->requests, &request->hook);
@@ -771,31 +769,29 @@ cli_network_admit (struct cli_network            *network,
 	if (network->sequence == UINT64_MAX)
 		return EOVERFLOW;
 	bool control = !(post->flags & CLI_NETWORK_INTERRUPTIBLE);
-	size_t const limit = CLI_NETWORK_REQUEST_BYTES + control * CLI_NETWORK_CONTROL_BYTES;
-	size_t const calls = CLI_NETWORK_CALLS + control * CLI_NETWORK_CONTROL_CALLS;
-	if (network->call_count >= calls)
-		return EAGAIN;
+	struct tally const max = {
+		CLI_NETWORK_CALLS + control * CLI_NETWORK_CONTROL_CALLS,
+		CLI_NETWORK_REQUEST_BYTES + control * CLI_NETWORK_CONTROL_BYTES,
+	};
 	size_t bytes = sizeof(struct cli_network_request) + 1;
 	size_t const lengths[] = {post->socket.len, post->session.len, post->wire.len};
 	for (size_t i = 0; i < array_size(lengths); ++i) {
-		if (lengths[i] > limit - bytes)
+		if (lengths[i] > max.bytes - bytes)
 			return EFBIG;
 		bytes += lengths[i];
 	}
-	if (network->request_bytes > limit || bytes > limit - network->request_bytes)
+	if (!tally_fits(&network->load, max, bytes))
 		return EAGAIN;
 	int e;
 	struct cli_network_request *request = cli_network_request_create(network, post, done, result, bytes, &e);
 	if (!request)
 		return e;
 	list_append(&network->calls, &request->call.hook);
-	++network->call_count;
-	network->request_bytes += bytes;
+	tally_add(&network->load, bytes);
 	e = loop_post(&network->loop, &request->start);
 	if (e) {
 		list_del(&request->call.hook);
-		--network->call_count;
-		network->request_bytes -= bytes;
+		tally_sub(&network->load, bytes);
 		cli_network_request_destroy(&request);
 		return e;
 	}

@@ -49,8 +49,7 @@ struct cli_state {
 	struct dstr             metadata;
 	struct dstr             scratch;
 	struct cli_state_ring   ring;  /**< of the inputs */
-	size_t                  turn_count;
-	size_t                  turn_bytes;
+	struct tally            turns_used;  /**< the turns and their bytes */
 	int                     directory;
 	int                     lock;
 	uint32_t                flags;
@@ -263,10 +262,10 @@ cli_state_commit (struct cli_state *state)
 		                      cstr_view_dstr(&state->metadata), &state->identity_blob);
 	if (!e)
 		e = cli_state_tree_entry(state, &state->identity_blob, "identity.txt");
-	if (!e && state->ring.count)
-		e = cli_state_tree_blob(state, "input.txt", cli_state_input_at(state, state->ring.count - 1));
-	if (!e && state->turn_count) {
-		struct cli_state_turn const *last = &state->turns[state->turn_count - 1];
+	if (!e && state->ring.used.n)
+		e = cli_state_tree_blob(state, "input.txt", cli_state_input_at(state, state->ring.used.n - 1));
+	if (!e && state->turns_used.n) {
+		struct cli_state_turn const *last = &state->turns[state->turns_used.n - 1];
 		e = cli_state_tree_blob(state, "prompt.txt", cstr_view_dstr(&last->prompt));
 		if (!e)
 			e = cli_state_tree_blob(state, "answer.txt", cstr_view_dstr(&last->answer));
@@ -317,12 +316,12 @@ cli_state_save (struct cli_state *state)
 	if (!e)
 		e = cli_state_write_text(fd, &state->identity);
 	if (!e)
-		e = cli_state_write_number(fd, state->ring.count);
+		e = cli_state_write_number(fd, state->ring.used.n);
 	if (!e)
-		e = cli_state_write_number(fd, state->turn_count);
-	for (size_t i = 0; !e && i < state->ring.count; ++i)
+		e = cli_state_write_number(fd, state->turns_used.n);
+	for (size_t i = 0; !e && i < state->ring.used.n; ++i)
 		e = cli_state_write_text(fd, &state->inputs[cli_state_ring_slot(&state->ring, i)]);
-	for (size_t i = 0; !e && i < state->turn_count; ++i) {
+	for (size_t i = 0; !e && i < state->turns_used.n; ++i) {
 		e = cli_state_write_text(fd, &state->turns[i].prompt);
 		if (!e)
 			e = cli_state_write_text(fd, &state->turns[i].answer);
@@ -405,14 +404,14 @@ cli_state_recall (struct cli_state *state,
 	if (!jb_is_text(text))
 		return EILSEQ;
 	struct cli_state_ring const *ring = &state->ring;
-	for (size_t j = 0; j < ring->count; ++j) {
+	for (size_t j = 0; j < ring->used.n; ++j) {
 		if (!cstr_view_equal(cli_state_input_at(state, j), text))
 			continue;
 		struct dstr *inputs = state->inputs;
 		struct dstr entry = inputs[cli_state_ring_slot(ring, j)];
-		for (size_t k = j; k + 1 < ring->count; ++k)
+		for (size_t k = j; k + 1 < ring->used.n; ++k)
 			inputs[cli_state_ring_slot(ring, k)] = inputs[cli_state_ring_slot(ring, k + 1)];
-		inputs[cli_state_ring_slot(ring, ring->count - 1)] = entry;
+		inputs[cli_state_ring_slot(ring, ring->used.n - 1)] = entry;
 		return 0;
 	}
 	return cli_state_push_input(state, text);
@@ -475,8 +474,7 @@ cli_state_read_turns (struct cli_state *state,
 			return e;
 	}
 
-	state->turn_count = count;
-	state->turn_bytes = CLI_STATE_TURN_BYTES - budget;
+	state->turns_used = (struct tally){ count, CLI_STATE_TURN_BYTES - budget };
 
 	char trailing = '\0';
 	size_t got = 0;
@@ -796,14 +794,14 @@ cli_state_recovery_file (struct cli_state const *state)
 size_t
 cli_state_input_count (struct cli_state const *state)
 {
-	return state ? state->ring.count : 0;
+	return state ? state->ring.used.n : 0;
 }
 
 struct cstr_view
 cli_state_input_at (struct cli_state const *state,
                     size_t                  index)
 {
-	return state && index < state->ring.count
+	return state && index < state->ring.used.n
 	       ? cstr_view_dstr(&state->inputs[cli_state_ring_slot(&state->ring, index)])
 	       : (struct cstr_view){};
 }
@@ -811,14 +809,14 @@ cli_state_input_at (struct cli_state const *state,
 size_t
 cli_state_turn_count (struct cli_state const *state)
 {
-	return state ? state->turn_count : 0;
+	return state ? state->turns_used.n : 0;
 }
 
 struct cli_state_turn const *
 cli_state_turn_at (struct cli_state const *state,
                    size_t                  index)
 {
-	return state && index < state->turn_count ? &state->turns[index] : nullptr;
+	return state && index < state->turns_used.n ? &state->turns[index] : nullptr;
 }
 
 int
@@ -832,7 +830,7 @@ cli_state_add_input (struct cli_state *state,
 	if (!text.len)
 		return 0;
 	/* An input that repeats the last one saves only to retry a failure. */
-	if (!cstr_view_equal(cli_state_input_at(state, state->ring.count - 1), text)) {
+	if (!cstr_view_equal(cli_state_input_at(state, state->ring.used.n - 1), text)) {
 		int e = cli_state_push_input(state, text);
 		if (e)
 			return e;
@@ -848,17 +846,15 @@ cli_state_add_turn (struct cli_state *state,
                     struct cstr_view  answer,
                     bool              replace)
 {
-	if (!state || (replace && !state->turn_count) ||
+	if (!state || (replace && !state->turns_used.n) ||
 	    !jb_is_text(prompt) || !jb_is_text(answer))
 		return EINVAL;
-	size_t index = state->turn_count - replace;
-	if (index >= array_size(state->turns))
-		return EFBIG;
-	size_t bytes = state->turn_bytes;
+	struct tally used = state->turns_used;
+	size_t const index = used.n - replace;
 	if (replace)
-		bytes -= dstr_len(&state->turns[index].prompt) + dstr_len(&state->turns[index].answer);
-	if (prompt.len > CLI_STATE_TURN_BYTES - bytes ||
-	    answer.len > CLI_STATE_TURN_BYTES - bytes - prompt.len)
+		tally_sub(&used, dstr_len(&state->turns[index].prompt) + dstr_len(&state->turns[index].answer));
+	if (!tally_fits(&used, (struct tally){ array_size(state->turns), CLI_STATE_TURN_BYTES },
+	                prompt.len + answer.len))
 		return EFBIG;
 	int e = cstr_view_store(prompt, &state->pending.prompt);
 	if (!e)
@@ -868,8 +864,8 @@ cli_state_add_turn (struct cli_state *state,
 	struct cli_state_turn previous = state->turns[index];
 	state->turns[index] = state->pending;
 	state->pending = previous;
-	state->turn_count = index + 1;
-	state->turn_bytes = bytes + prompt.len + answer.len;
+	tally_add(&used, prompt.len + answer.len);
+	state->turns_used = used;
 	return cli_state_save(state);
 }
 
@@ -878,6 +874,6 @@ cli_state_clear_turns (struct cli_state *state)
 {
 	if (!state)
 		return EINVAL;
-	state->turn_count = state->turn_bytes = 0;
+	state->turns_used = (struct tally){};
 	return cli_state_save(state);
 }

@@ -8,6 +8,7 @@
 
 #include "cstr_view.h"
 #include "dstr.h"
+#include "tally.h"
 
 /** CLI_STATE_INPUTS is the maximum number of inputs that a state stores, and
  *  CLI_STATE_INPUT_BYTES is the maximum total size of their text. The input
@@ -25,13 +26,12 @@ enum {
 struct cli_state;
 
 /** The positions of the inputs in a ring of CLI_STATE_INPUTS slots. first
- *  is the slot of the oldest input, count is the number of inputs, and
- *  bytes is the total length of their text.
+ *  is the slot of the oldest input, and used counts the inputs and the
+ *  total length of their text.
  */
 struct cli_state_ring {
-	size_t first;
-	size_t count;
-	size_t bytes;
+	size_t       first;
+	struct tally used;
 };
 
 /** The slot of the input at @p index of @p ring, 0 for the oldest. */
@@ -49,7 +49,8 @@ static inline bool
 cli_state_ring_full (struct cli_state_ring const *ring,
                      size_t                       len)
 {
-	return ring->count && (ring->count == CLI_STATE_INPUTS || len > CLI_STATE_INPUT_BYTES - ring->bytes);
+	return ring->used.n &&
+	       !tally_fits(&ring->used, (struct tally){ CLI_STATE_INPUTS, CLI_STATE_INPUT_BYTES }, len);
 }
 
 /** Drop the oldest input, of @p len bytes, from @p ring. */
@@ -57,9 +58,8 @@ static inline void
 cli_state_ring_drop (struct cli_state_ring *ring,
                      size_t                 len)
 {
-	ring->bytes -= len;
+	tally_sub(&ring->used, len);
 	ring->first = cli_state_ring_slot(ring, 1);
-	--ring->count;
 }
 
 /** Add an input of @p len bytes to @p ring. Returns its slot. */
@@ -67,8 +67,8 @@ static inline size_t
 cli_state_ring_add (struct cli_state_ring *ring,
                     size_t                 len)
 {
-	ring->bytes += len;
-	return cli_state_ring_slot(ring, ring->count++);
+	tally_add(&ring->used, len);
+	return cli_state_ring_slot(ring, ring->used.n - 1);
 }
 
 /** A completed turn of the conversation. */

@@ -10,6 +10,7 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "list.h"
+#include "tally.h"
 
 struct cli_console;
 struct cli_io;
@@ -22,14 +23,13 @@ struct cli_console_line {
 	size_t      flags;  /**< defined by the user of the queue */
 };
 
-/** A queue of lines of input, with the number of lines and the total
- *  length of their text. A zeroed queue with its list initialized is
- *  empty.
+/** A queue of lines of input, with the tally of the lines and of the
+ *  total length of their text. A zeroed queue with its list initialized
+ *  is empty.
  */
 struct cli_console_lines {
-	struct list lines;
-	size_t      count;
-	size_t      bytes;
+	struct list  lines;
+	struct tally used;
 };
 
 /** Move @p text into a new line with @p flags at the end of @p queue.

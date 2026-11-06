@@ -921,7 +921,7 @@ cli_input_append (struct cli  *cli,
                   struct dstr *text,
                   size_t       flags)
 {
-	if (dstr_len(text) > CLI_LIMIT - cli->inputs.bytes)
+	if (dstr_len(text) > CLI_LIMIT - cli->inputs.used.bytes)
 		return ENOBUFS;
 	return cli_console_lines_push(&cli->inputs, text, flags);
 }
@@ -1134,7 +1134,7 @@ cli_chat_read (struct cli       *cli,
 	int e = cli_chat_refresh(cli, error);
 	if (e)
 		return e;
-	if ((cli->flags & CLI_QUITTING) || cli->inputs.count)
+	if ((cli->flags & CLI_QUITTING) || cli->inputs.used.n)
 		return EAGAIN;
 	if (*initial) {
 		*interpret = false;
@@ -1168,7 +1168,7 @@ cli_chat (struct cli       *cli,
 		util_text_clear(error);
 		dstr_auto prompt = dstr(nullptr);
 		bool interpret = true;
-		int e = cli->inputs.count ? cli_chat_pop(cli, &prompt, error)
+		int e = cli->inputs.used.n ? cli_chat_pop(cli, &prompt, error)
 		                          : cli_chat_read(cli, &prompt, &initial, &interpret, error);
 		if (e == EAGAIN)
 			continue;
