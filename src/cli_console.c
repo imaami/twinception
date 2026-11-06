@@ -1883,11 +1883,12 @@ cli_console_output_write (struct cli_console_output *state,
 	return 0;
 }
 
-static int
-cli_console_write_pane (struct cli_console      *console,
-                        enum cli_console_pane_id target,
-                        struct cstr_view         text)
+int
+cli_console_write (struct cli_console *console,
+                   bool                reasoning,
+                   struct cstr_view    text)
 {
+	enum cli_console_pane_id target = reasoning ? CLI_CONSOLE_REASONING : CLI_CONSOLE_CONVERSATION;
 	struct cli_console_pane *pane = &console->panes[target];
 	struct dstr *clean = &console->clean;
 	(void)dstr_clear(clean);
@@ -1917,7 +1918,7 @@ cli_console_print (struct cli_console            *console,
 		int e = 0;
 		for (size_t i = 0; !e && i < count; ++i) {
 			console->display = spans[i].style;
-			e = cli_console_write_pane(console, CLI_CONSOLE_CONVERSATION, spans[i].text);
+			e = cli_console_write(console, false, spans[i].text);
 		}
 		console->display = CLI_STYLE_RESET;
 		return e;
@@ -1941,20 +1942,6 @@ cli_console_print (struct cli_console            *console,
 	if (!e)
 		console->display = CLI_STYLE_RESET;
 	return e;
-}
-
-int
-cli_console_write (struct cli_console *console,
-                   struct cstr_view    text)
-{
-	return cli_console_write_pane(console, CLI_CONSOLE_CONVERSATION, text);
-}
-
-int
-cli_console_reasoning (struct cli_console *console,
-                       struct cstr_view    text)
-{
-	return cli_console_write_pane(console, CLI_CONSOLE_REASONING, text);
 }
 
 int

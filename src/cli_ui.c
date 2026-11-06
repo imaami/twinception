@@ -20,18 +20,10 @@ cli_ui (struct cli_console *console)
 }
 
 static int
-cli_ui_write (struct cli_ui    *ui,
-              bool              reasoning,
-              struct cstr_view  text)
-{
-	return reasoning ? cli_console_reasoning(ui->console, text) : cli_console_write(ui->console, text);
-}
-
-static int
 cli_ui_newline (struct cli_ui *ui)
 {
 	if (!ui->trailing_newline) {
-		int e = cli_ui_write(ui, ui->reasoning, CSTR_VIEW("\n"));
+		int e = cli_console_write(ui->console, ui->reasoning, CSTR_VIEW("\n"));
 		if (e)
 			return e;
 		ui->trailing_newline = true;
@@ -55,8 +47,8 @@ cli_ui_push (struct cli_ui    *ui,
 		if (!e && thinking)
 			e = cli_console_set_display(ui->console, CLI_STYLE_REASONING);
 		if (!e)
-			e = cli_ui_write(ui, true, thinking ? CSTR_VIEW("[Start thinking]\n\n")
-			                                    : CSTR_VIEW("[End thinking]\n\n"));
+			e = cli_console_write(ui->console, true, thinking ? CSTR_VIEW("[Start thinking]\n\n")
+			                                                  : CSTR_VIEW("[End thinking]\n\n"));
 		if (!e && !thinking)
 			e = cli_console_set_display(ui->console, CLI_STYLE_RESET);
 		if (e)
@@ -64,7 +56,7 @@ cli_ui_push (struct cli_ui    *ui,
 		ui->reasoning = thinking;
 	}
 	ui->trailing_newline = text.data[text.len - 1] == '\n';
-	return cli_ui_write(ui, thinking, text);
+	return cli_console_write(ui->console, thinking, text);
 }
 
 static int
@@ -89,7 +81,7 @@ cli_ui_finish (struct cli_ui *ui)
 	if (!e)
 		e = cli_ui_newline(ui);
 	if (!e && ui->reasoning)
-		e = cli_ui_write(ui, true, CSTR_VIEW("[End thinking]\n"));
+		e = cli_console_write(ui->console, true, CSTR_VIEW("[End thinking]\n"));
 	ui->reasoning = false;
 	int reset = cli_console_set_display(ui->console, CLI_STYLE_RESET);
 	if (!e && !reset && ui->pending)

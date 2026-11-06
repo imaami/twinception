@@ -61,9 +61,4 @@ cli_stream_result (struct cli_stream   *stream,
                    struct json_object **answer,
                    struct cli_error    *error);
 
-extern int
-cli_stream_action (struct cli_stream *stream,
-                   struct cstr_view   actor,
-                   struct cstr_view   text);
-
 #endif /* TWINCEPTION_SRC_CLI_STREAM_H_ */

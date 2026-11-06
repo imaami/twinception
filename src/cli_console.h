@@ -124,15 +124,15 @@ extern int
 cli_console_set_display (struct cli_console *console,
                          enum cli_style      display);
 
-/** Peer-supplied terminal controls are filtered, including UTF-8 C1 controls. */
+/** Write @p text to the conversation, or with @p reasoning to the
+ *  reasoning, which is shown in its own bounded buffer and viewport in the
+ *  full-screen UI. Peer-supplied terminal controls are filtered, including
+ *  UTF-8 C1 controls.
+ */
 extern int
 cli_console_write (struct cli_console *console,
+                   bool                reasoning,
                    struct cstr_view    text);
-
-/** Reasoning has its own bounded buffer and viewport in the full-screen UI. */
-extern int
-cli_console_reasoning (struct cli_console *console,
-                       struct cstr_view    text);
 
 /** A run of text, and the style it is written in. */
 struct cli_console_span {

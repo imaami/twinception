@@ -97,7 +97,7 @@ cli_tool_begin (struct cli_tool *tool)
 	dstr_auto action = dstr("call ");
 	if (cstr_view_cat(name, &action))
 		return ENOMEM;
-	return cli_stream_action(&tool->stream, CSTR_VIEW("you"), cstr_view_dstr(&action));
+	return cli_ui_action(&tool->stream.ui, CSTR_VIEW("you"), cstr_view_dstr(&action));
 }
 
 static int
@@ -146,7 +146,7 @@ cli_tool_result (struct cli_tool    *tool,
 	struct cstr_view name = cli_tool_name(tool);
 	if (!e && json_object_get_boolean(jb_get(result, "isError")))
 		e = cli_error_set(error, EIO, "Tool %.*s failed", (int)name.len, name.data);
-	return e ? e : cli_stream_action(&tool->stream, name, CSTR_VIEW("completed"));
+	return e ? e : cli_ui_action(&tool->stream.ui, name, CSTR_VIEW("completed"));
 }
 
 int

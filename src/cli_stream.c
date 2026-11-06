@@ -119,11 +119,3 @@ cli_stream_result (struct cli_stream   *stream,
 		*answer = json_object_get(value);
 	return e;
 }
-
-int
-cli_stream_action (struct cli_stream *stream,
-                   struct cstr_view   actor,
-                   struct cstr_view   text)
-{
-	return cli_ui_action(&stream->ui, actor, text);
-}
