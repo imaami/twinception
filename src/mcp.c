@@ -369,6 +369,7 @@ struct mcp_plugin {
 struct mcp_static {
 	struct ai_endpoint const *ep;
 	struct mcp_tool const    *tool;   /**< the ask tool's, as configured */
+	struct registry const    *reg;    /**< the configuration's */
 	struct mcp_offer          offers[TOOL_MAX + 1];  /**< by id; TOOL_MAX's,
 	                                                      that of a tool askai
 	                                                      does not offer */
@@ -4445,20 +4446,6 @@ mcp_req_trace_end (struct mcp_req *req,
 	return dstr_printf(&req->trace, ": %zu bytes\n", bytes) ? 0 : ENOMEM;
 }
 
-/** Returns the id of the tool that askai offers with the name @p name, or
- *  TOOL_MAX. No tool name is empty. The ids of the tools that a role can
- *  grant are below st->n_granted.
- */
-static uint32_t
-mcp_static_tool_of (struct mcp_static const *st,
-                    struct cstr_view         name)
-{
-	uint32_t id = 0;
-	while (id < st->n_offers && !cstr_view_equal(st->offers[id].tool.name, name))
-		++id;
-	return id < st->n_offers ? id : TOOL_MAX;
-}
-
 /** Returns @p id if the turns of @p req may call the tool @p id, or
  *  TOOL_MAX.
  */
@@ -4851,7 +4838,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 {
 	struct mcp_req *req = slot->req;
 	struct mcp_static const *st = req->mcp->st;
-	uint32_t id = mcp_static_tool_of(st, jb_view(jb_get(args, "tool")));
+	uint32_t id = registry_find(st->reg, jb_view(jb_get(args, "tool")), TOOL_MAX);
 	struct mcp_offer const *offer = &st->offers[id];
 	struct json_object *call = jb_get(args, "arguments");
 	struct mcp_piece problem =
@@ -4895,7 +4882,8 @@ mcp_slot_background (struct mcp_slot    *slot,
 	struct mcp_req *req = slot->req;
 	struct mcp_static const *st = req->mcp->st;
 	struct json_object *call = jb_get(args, "arguments");
-	uint32_t id = mcp_req_lent_tool(req, mcp_static_tool_of(st, jb_view(jb_get(args, "tool"))));
+	uint32_t id = mcp_req_lent_tool(req, registry_find(st->reg, jb_view(jb_get(args, "tool")),
+	                                                   TOOL_MAX));
 	struct mcp_piece problem =
 		!(st->offers[id].tool.kind->flags & TOOL_DETACH)
 		? TEXT("The tool argument must name a tool of yours that may run in the "
@@ -5627,7 +5615,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		return;
 	struct job_call h;
 	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls).ptr + req->launch_at);
-	uint32_t known = mcp_static_tool_of(mcp->st, c.name);
+	uint32_t known = registry_find(mcp->st->reg, c.name, TOOL_MAX);
 	uint32_t id = mcp_req_lent_tool(req, known);
 	struct registry_tool const *tool = &mcp->st->offers[id].tool;
 	uint64_t const flags = tool->kind->flags;
@@ -6148,7 +6136,7 @@ mcp_archive_lent (struct mcp_req     *req,
 {
 	tool_mask saved = 0;
 	for (size_t k = 0, n = jb_len(names); k < n; ++k) {
-		uint32_t id = mcp_static_tool_of(req->mcp->st, jb_view(jb_at(names, k)));
+		uint32_t id = registry_find(req->mcp->st->reg, jb_view(jb_at(names, k)), TOOL_MAX);
 		saved |= id < TOOL_MAX ? (tool_mask)1 << id : 0;
 	}
 	return mcp_req_lent(req) & saved;
@@ -6884,7 +6872,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 		return;
 	}
 	struct cstr_view name = jb_view(jb_get(params, "name"));
-	uint32_t id = mcp_static_tool_of(st, name);
+	uint32_t id = registry_find(st->reg, name, TOOL_MAX);
 	if (!mcp_req_granted(req, id)) {
 		/* The log quotes an unknown name, which comes from the client. */
 		static struct {
@@ -8579,10 +8567,8 @@ mcp_allowed (struct registry const *reg,
              struct config const   *cfg,
              struct cstr_view       name)
 {
-	for (uint32_t id = 0; id < reg->n_granted; ++id)
-		if (cstr_view_equal(reg->tools[id].name, name))
-			return cfg->tools_clients >> id & 1;
-	return true;
+	uint32_t id = registry_find(reg, name, reg->n_granted);
+	return id == reg->n_granted || cfg->tools_clients >> id & 1;
 }
 
 /** Logs askai's own tools for the clients of @p cfg, each on or off, with
@@ -8778,6 +8764,7 @@ mcp_static_create (struct config const *cfg,
 	*st = (struct mcp_static){
 		.ep = &cfg->ep,
 		.tool = &cfg->tool,
+		.reg = reg,
 		.offers[TOOL_MAX].tool = {
 			.name = mcp_rows[KIND_NONE].name,
 			.kind = &mcp_rows[KIND_NONE].kind,

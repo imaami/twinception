@@ -54,6 +54,7 @@
 
 struct json_object;
 struct policy;
+struct registry;
 
 /** How a client that shows no token connects. */
 enum policy_kind {
@@ -154,12 +155,11 @@ struct policy_grant {
  * describes. If @p file is nullptr or has none of the policy's members,
  * the function creates askai's own policy.
  *
- * @p tools has the names of the @p n_tools tools that a role can grant, at
- * most TOOL_MAX. Bit i of a tool mask stands for the tool tools[i]. An
- * element is nullptr if askai does not offer that tool. @p allowed is the
- * mask of the tools that a client may get at all: a role may name the
- * others, but grants them to no client. @p upstream is the mask of the
- * tools that askai can offer to the upstream.
+ * A role can grant the tools of @p reg whose ids are below
+ * reg->n_granted. Bit i of a tool mask stands for the tool with the id i.
+ * @p allowed is the mask of the tools that a client may get at all: a role
+ * may name the others, but grants them to no client. @p upstream is the
+ * mask of the tools that askai can offer to the upstream.
  *
  * The function reads the subordinate uids of /etc/subuid, which
  * policy_admit_uid() refuses, and the kernel's overflow uid and gid. If
@@ -174,14 +174,13 @@ struct policy_grant {
  * writes a message of at most @p len bytes to @p why.
  */
 extern struct policy *
-policy_create (struct json_object *file,
-               char const *const   tools[],
-               size_t              n_tools,
-               tool_mask           allowed,
-               tool_mask           upstream,
-               char               *why,
-               size_t              len,
-               int                *e);
+policy_create (struct json_object    *file,
+               struct registry const *reg,
+               tool_mask              allowed,
+               tool_mask              upstream,
+               char                  *why,
+               size_t                 len,
+               int                   *e);
 
 /** Another reference to @p policy, which a reload does not change, but
  *  replaces.
@@ -194,12 +193,9 @@ extern void
 policy_put (struct policy *policy);
 
 /**
- * Logs @p policy, which policy_create() made from @p file. @p tools has
- * the names of the @p n_tools tools of askai, at most TOOL_MAX, by id. The
- * first @p n_granted of them are those that policy_create() got, which a
- * role can grant. @p lent, with @p ctx, returns the tools that the
- * upstream may call for a role, and is nullptr if askai lends the upstream
- * no tool.
+ * Logs @p policy, which policy_create() made from @p file and @p reg.
+ * @p lent, with @p ctx, returns the tools that the upstream may call for a
+ * role, and is nullptr if askai lends the upstream no tool.
  *
  * The function logs at LOG_INFO, as lists with one item a line. For
  * askai's own policy, it logs whether ASKAI_TOKEN is set, what each kind of
@@ -209,20 +205,18 @@ policy_put (struct policy *policy);
  * ask calls if @p lent is not nullptr, and whether they may read the
  * metrics; each identity with its role; each Unix group with its role; and
  * the role of each kind of anonymous client. Then it logs at LOG_WARN a
- * list of the first @p n_granted tools that a client may get, but that no
- * role grants and no role lends to the upstream. For both kinds of
+ * list of the tools that a role can grant and a client may get, but that
+ * no role grants and no role lends to the upstream. For both kinds of
  * policy, it ends with the list of the uids that policy_admit_uid()
  * refuses, after a warning at LOG_WARN for an overflow id that it could
  * not read. The lines have no rate limit.
  */
 extern void
-policy_log (struct policy const *policy,
-            struct json_object  *file,
-            char const *const    tools[],
-            size_t               n_tools,
-            size_t               n_granted,
-            policy_lent_fn      *lent,
-            void const          *ctx);
+policy_log (struct policy const   *policy,
+            struct json_object    *file,
+            struct registry const *reg,
+            policy_lent_fn        *lent,
+            void const            *ctx);
 
 /**
  * Decides what a client may do. The client sends the bearer token

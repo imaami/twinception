@@ -17,6 +17,18 @@ registry_fini (struct registry *reg)
 	*reg = (struct registry){};
 }
 
+uint32_t
+registry_find (struct registry const *reg,
+               struct cstr_view       name,
+               uint32_t               n)
+{
+	uint32_t const end = n < reg->n_tools ? n : reg->n_tools;
+	uint32_t id = 0;
+	while (id < end && !cstr_view_equal(reg->tools[id].name, name))
+		++id;
+	return id < end ? id : n;
+}
+
 /* Returns the index of plugin in reg->plugins. A plugin that is not there
  * yet is appended. The caller has checked that n_tools is less than
  * TOOL_MAX. Each plugin in reg->plugins is the plugin of at least one
@@ -43,10 +55,8 @@ registry_add (struct registry            *reg,
 {
 	if (reg->n_tools == TOOL_MAX)
 		return ENOSPC;
-	for (uint32_t id = 0; id < reg->n_tools; ++id) {
-		if (cstr_view_equal(reg->tools[id].name, tool->name))
-			return EEXIST;
-	}
+	if (registry_find(reg, tool->name, TOOL_MAX) < TOOL_MAX)
+		return EEXIST;
 	/* The tools that no role can grant have the ids from n_granted on. A
 	 * tool that a role can grant is inserted before them. */
 	uint32_t id = reg->n_tools;

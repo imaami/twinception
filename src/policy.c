@@ -18,6 +18,7 @@
 #include "jb.h"
 #include "log.h"
 #include "policy.h"
+#include "registry.h"
 #include "util.h"
 
 enum { DIGEST = SHA256_DIGEST_LENGTH };
@@ -131,24 +132,23 @@ static_assert(alignof (struct policy_grant) <= alignof (struct policy) &&
 
 /* The input of policy_create() and the buffer for its error message. */
 struct policy_build {
-	tool_mask            upstream;  /* the tools that askai can offer to
-	                                   the upstream */
-	struct policy       *p;
-	struct json_object  *roles;     /* the member roles of the file, or
-	                                   nullptr */
-	char const *const   *tools;
-	char                *why;
-	char                *names;     /* the place in the policy's block
-	                                   where the next name for the log is
-	                                   written */
-	struct policy_range *subgids;   /* the ranges of /etc/subgid, sorted
-	                                   and merged, which policy_create()
-	                                   frees at the end */
-	size_t               n_tools;
-	size_t               len;
-	size_t               n_subgids;
-	struct buf           nss;       /* the storage of group lookups, which
-	                                   policy_create() frees at the end */
+	tool_mask              upstream;  /* the tools that askai can offer to
+	                                     the upstream */
+	struct policy         *p;
+	struct json_object    *roles;     /* the member roles of the file, or
+	                                     nullptr */
+	struct registry const *reg;
+	char                  *why;
+	char                  *names;     /* the place in the policy's block
+	                                     where the next name for the log is
+	                                     written */
+	struct policy_range   *subgids;   /* the ranges of /etc/subgid, sorted
+	                                     and merged, which policy_create()
+	                                     frees at the end */
+	size_t                 len;
+	size_t                 n_subgids;
+	struct buf             nss;       /* the storage of group lookups, which
+	                                     policy_create() frees at the end */
 };
 
 /* Say what is wrong; returns EINVAL. */
@@ -546,33 +546,30 @@ policy_build_token (struct policy_build *b,
 	return 0;
 }
 
-/* Write the names of the tools in @p mask of the @p n tools @p tools into
- * the @p size bytes at @p buf, separated by commas, or "none" for no tool;
- * returns the length.
+/* Write the names of the tools of @p reg in @p mask into the @p size bytes
+ * at @p buf, separated by commas, or "none" for no tool; returns the
+ * length.
  */
 static size_t
-policy_names (char              *buf,
-              size_t             size,
-              char const *const  tools[],
-              size_t             n,
-              tool_mask          mask)
+policy_names (char                  *buf,
+              size_t                 size,
+              struct registry const *reg,
+              tool_mask              mask)
 {
 	size_t len = 0;
-	for (size_t i = 0; i < n; ++i)
-		if (mask >> i & 1 && tools[i])
+	for (uint32_t id = 0; id < reg->n_tools; ++id)
+		if (mask >> id & 1)
 			len += util_format(buf + len, size - len, "%s%s", len ? ", " : "",
-			                   tools[i]);
+			                   reg->tools[id].name.data);
 	return len ? len : util_format(buf, size, "none");
 }
 
-/* The mask of the tools that askai offers, of @p b's. */
+/* The mask of the tools of @p reg that a role can grant. */
 static tool_mask
-policy_build_all (struct policy_build const *b)
+policy_all (struct registry const *reg)
 {
-	tool_mask all = 0;
-	for (size_t i = 0; i < b->n_tools; ++i)
-		all |= b->tools[i] ? (tool_mask)1 << i : 0;
-	return all;
+	return reg->n_granted < TOOL_MAX ? ((tool_mask)1 << reg->n_granted) - 1
+	                                 : ~(tool_mask)0;
 }
 
 /* Write the reason why role @p name may not name @p v: askai offers no such
@@ -586,8 +583,8 @@ policy_build_no_tool (struct policy_build *b,
                       bool                 up)
 {
 	char names[1024];
-	tool_mask mask = up ? b->upstream : policy_build_all(b);
-	policy_names(names, sizeof names, b->tools, b->n_tools, mask);
+	tool_mask mask = up ? b->upstream : policy_all(b->reg);
+	policy_names(names, sizeof names, b->reg, mask);
 	if (up && !mask)
 		return policy_build_fail(b, "role %s: askai offers no tool %s to the "
 		                         "upstream; it lends no tool", name,
@@ -619,12 +616,8 @@ policy_build_tools (struct policy_build *b,
 	size_t len = json_object_array_length(list);
 	for (size_t i = 0; i < len; ++i) {
 		struct json_object *v = json_object_array_get_idx(list, i);
-		char const *tool = json_object_is_type(v, json_type_string)
-		                 ? json_object_get_string(v) : "";
-		size_t k = 0;
-		while (k < b->n_tools && !(b->tools[k] && !strcmp(b->tools[k], tool)))
-			++k;
-		if (k == b->n_tools || !(offered >> k & 1))
+		uint32_t k = registry_find(b->reg, jb_view(v), b->reg->n_granted);
+		if (k == b->reg->n_granted || !(offered >> k & 1))
 			return policy_build_no_tool(b, name, v, up);
 		*mask |= (tool_mask)1 << k;
 	}
@@ -876,7 +869,7 @@ policy_build_own (struct policy_build *b,
                   char const          *token)
 {
 	struct policy *p = b->p;
-	tool_mask all = policy_build_all(b);
+	tool_mask all = policy_all(b->reg);
 	p->roles[0] = (struct policy_grant){ .tools = all, .upstream = all, .metrics = true };
 	p->roles[1] = (struct policy_grant){ .tools = all, .upstream = all };
 	if (!token) {
@@ -918,20 +911,18 @@ policy_file (struct json_object  *file,
 }
 
 struct policy *
-policy_create (struct json_object *file,
-               char const *const   tools[],
-               size_t              n_tools,
-               tool_mask           allowed,
-               tool_mask           upstream,
-               char               *why,
-               size_t              len,
-               int                *e)
+policy_create (struct json_object    *file,
+               struct registry const *reg,
+               tool_mask              allowed,
+               tool_mask              upstream,
+               char                  *why,
+               size_t                 len,
+               int                   *e)
 {
 	struct policy_build b = {
 		.upstream = upstream,
-		.tools = tools,
+		.reg = reg,
 		.why = why,
-		.n_tools = n_tools,
 		.len = len
 	};
 	struct json_object *ids = nullptr;
@@ -1042,38 +1033,35 @@ policy_put (struct policy *policy)
 	free(policy);
 }
 
-/* Log the tools of @p mask, of the names @p tools of @p n tools, one a
- * line, the first after @p key, which is padded to @p width columns; or
- * none.
+/* Log the tools of @p reg in @p mask, one a line, the first after @p key,
+ * which is padded to @p width columns; or none.
  */
 static void
-policy_log_tools (char const        *key,
-                  int                width,
-                  char const *const  tools[],
-                  size_t             n,
-                  tool_mask          mask)
+policy_log_tools (char const            *key,
+                  int                    width,
+                  struct registry const *reg,
+                  tool_mask              mask)
 {
 	char const *first = key;
-	for (size_t i = 0; i < n; ++i)
-		if (mask >> i & 1 && tools[i]) {
-			LOG_ALL(LOG_INFO, "  %-*s  %s", width, key, tools[i]);
+	for (uint32_t id = 0; id < reg->n_tools; ++id)
+		if (mask >> id & 1) {
+			LOG_ALL(LOG_INFO, "  %-*s  %s", width, key, reg->tools[id].name.data);
 			key = "";
 		}
 	if (key == first)
 		LOG_ALL(LOG_INFO, "  %-*s  none", width, key);
 }
 
-/* Log each role of @p policy, the policy of the file, with the names
- * @p tools of the @p n_tools tools. If @p lent is not nullptr, also log
- * the tools that the upstream may call, which lent() returns with @p ctx.
- * Return the tools that the roles grant or lend.
+/* Log each role of @p policy, the policy of the file, with the tools of
+ * @p reg. If @p lent is not nullptr, also log the tools that the upstream
+ * may call, which lent() returns with @p ctx. Return the tools that the
+ * roles grant or lend.
  */
 static tool_mask
-policy_log_roles (struct policy const *policy,
-                  char const *const    tools[],
-                  size_t               n_tools,
-                  policy_lent_fn      *lent,
-                  void const          *ctx)
+policy_log_roles (struct policy const   *policy,
+                  struct registry const *reg,
+                  policy_lent_fn        *lent,
+                  void const            *ctx)
 {
 	if (!policy->n_roles) {
 		LOG_ALL(LOG_INFO, "roles: none");
@@ -1083,11 +1071,11 @@ policy_log_roles (struct policy const *policy,
 	for (size_t i = 0; i < policy->n_roles; ++i) {
 		struct policy_grant const *r = &policy->roles[i];
 		LOG_ALL(LOG_INFO, "%.*s:", (int)r->who.len, r->who.data);
-		policy_log_tools("tools", 14, tools, n_tools, r->tools);
+		policy_log_tools("tools", 14, reg, r->tools);
 		tool_mask up = 0;
 		if (lent) {
 			up = lent(ctx, r->tools, r->upstream);
-			policy_log_tools("upstream tools", 14, tools, n_tools, up);
+			policy_log_tools("upstream tools", 14, reg, up);
 		}
 		LOG_ALL(LOG_INFO, "  metrics         %s", r->metrics ? "yes" : "no");
 		listed |= r->tools | up;
@@ -1153,16 +1141,14 @@ policy_log_groups (struct policy const *policy,
 }
 
 /* Log askai's own policy @p policy, and if @p lent is not nullptr, the
- * tools of the names @p tools of @p n_tools that the upstream may call,
- * which @p lent returns with @p ctx. The keys are padded to the width of
- * the longest.
+ * tools of @p reg that the upstream may call, which @p lent returns with
+ * @p ctx. The keys are padded to the width of the longest.
  */
 static void
-policy_log_own (struct policy const *policy,
-                char const *const    tools[],
-                size_t               n_tools,
-                policy_lent_fn      *lent,
-                void const          *ctx)
+policy_log_own (struct policy const   *policy,
+                struct registry const *reg,
+                policy_lent_fn        *lent,
+                void const            *ctx)
 {
 	if (policy->n_tokens) {
 		LOG_ALL(LOG_INFO, "policy: built in, with ASKAI_TOKEN");
@@ -1176,7 +1162,7 @@ policy_log_own (struct policy const *policy,
 	}
 	struct policy_grant const *r = &policy->roles[0];
 	if (lent)
-		policy_log_tools("upstream tools", policy->n_tokens ? 22 : 14, tools, n_tools,
+		policy_log_tools("upstream tools", policy->n_tokens ? 22 : 14, reg,
 		                 lent(ctx, r->tools, r->upstream));
 }
 
@@ -1224,27 +1210,25 @@ policy_log_peers (struct policy const *policy)
 }
 
 void
-policy_log (struct policy const *policy,
-            struct json_object  *file,
-            char const *const    tools[],
-            size_t               n_tools,
-            size_t               n_granted,
-            policy_lent_fn      *lent,
-            void const          *ctx)
+policy_log (struct policy const   *policy,
+            struct json_object    *file,
+            struct registry const *reg,
+            policy_lent_fn        *lent,
+            void const            *ctx)
 {
-	if (!policy || !tools || n_tools > TOOL_MAX || n_granted > n_tools)
+	if (!policy || !reg)
 		return;
 	struct json_object *roles = nullptr;
 	struct json_object *ids = nullptr;
 	struct json_object *groups = nullptr;
 	struct json_object *anon = nullptr;
 	if (!policy_file(file, &roles, &ids, &groups, &anon)) {
-		policy_log_own(policy, tools, n_tools, lent, ctx);
+		policy_log_own(policy, reg, lent, ctx);
 		policy_log_peers(policy);
 		return;
 	}
 	LOG_ALL(LOG_INFO, "policy: from the configuration file");
-	tool_mask listed = policy_log_roles(policy, tools, n_tools, lent, ctx);
+	tool_mask listed = policy_log_roles(policy, reg, lent, ctx);
 	policy_log_identities(ids);
 	policy_log_groups(policy, groups);
 	LOG_ALL(LOG_INFO, "anonymous clients:");
@@ -1253,15 +1237,12 @@ policy_log (struct policy const *policy,
 		struct cstr_view who = role < 0 ? CSTR_VIEW("refused") : policy->roles[role].who;
 		LOG_ALL(LOG_INFO, "  %-8s  %.*s", policy_kinds[k].data, (int)who.len, who.data);
 	}
-	tool_mask unlisted = 0;
-	for (size_t i = 0; i < n_granted; ++i)
-		unlisted |= tools[i] && (policy->allowed & ~listed) >> i & 1
-		          ? (tool_mask)1 << i : 0;
+	tool_mask unlisted = policy->allowed & ~listed & policy_all(reg);
 	if (unlisted)
 		LOG_ALL(LOG_WARN, "warning: no role lists these tools:");
-	for (size_t i = 0; i < n_granted; ++i)
-		if (unlisted >> i & 1)
-			LOG_ALL(LOG_WARN, "  %s", tools[i]);
+	for (uint32_t id = 0; id < reg->n_granted; ++id)
+		if (unlisted >> id & 1)
+			LOG_ALL(LOG_WARN, "  %s", reg->tools[id].name.data);
 	policy_log_peers(policy);
 }
 

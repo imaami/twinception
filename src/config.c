@@ -2011,65 +2011,54 @@ config_registry (struct config *cfg)
 }
 
 /* The configuration whose tools the roles of @p cfg name: the running one
- * on a reload, else @p cfg. The names of all its tools go into @p tools,
- * by id, and the mask of the tools that a role can grant and askai can lend
- * to the upstream goes into @p *upstream.
+ * on a reload, else @p cfg.
  */
 static struct config const *
-config_tools (struct config const *cfg,
-              char const          *tools[static TOOL_MAX],
-              tool_mask           *upstream)
+config_run (struct config const *cfg)
 {
-	struct config const *run = cfg->running ? cfg->running : cfg;
-	struct registry const *reg = &run->registry;
-	/* The tools that a role can grant have the first ids of the registry.
-	 * With --upstream-tools, askai can offer such a tool to the upstream if
-	 * the tool's kind has the flag TOOL_LENT. */
-	bool lends = run->flags & CFG_UPSTREAM_TOOLS;
-	*upstream = 0;
-	for (uint32_t id = 0; id < reg->n_tools; ++id) {
-		tools[id] = reg->tools[id].name.data;
-		if (lends && id < reg->n_granted && reg->tools[id].kind->flags & TOOL_LENT)
-			*upstream |= (tool_mask)1 << id;
-	}
-	return run;
+	return cfg->running ? cfg->running : cfg;
+}
+
+/* The bit of the tool named @p name in a tool mask of @p reg, or 0 if
+ * there is no such tool.
+ */
+static tool_mask
+config_tool_bit (struct registry const *reg,
+                 struct cstr_view       name)
+{
+	uint32_t id = registry_find(reg, name, TOOL_MAX);
+	return id < TOOL_MAX ? (tool_mask)1 << id : 0;
 }
 
 /* Say that @p v, in the member tools of the configuration file, is no
- * name of a tool of the @p n tools @p tools that it may name: all but the
- * ask tool, the first. Returns 2.
+ * name of a tool of @p reg that it may name: all but the ask tool, the
+ * first. Returns 2.
  */
 static int
-config_allow_none (struct config const *cfg,
-                   char const          *where,
-                   char const *const    tools[],
-                   size_t               n,
-                   struct json_object  *v)
+config_allow_none (struct config const   *cfg,
+                   char const            *where,
+                   struct registry const *reg,
+                   struct json_object    *v)
 {
-	char const *name = json_object_get_string(v);
-	if (json_object_is_type(v, json_type_string) && !strcmp(name, tools[0]))
-		return config_complain(cfg, cfg->path, "%s: %s is the ask tool, which is "
-		                       "always on", where, name);
 	char names[1024];
 	size_t len = 0;
-	for (size_t id = 1; id < n; ++id)
+	for (uint32_t id = 1; id < reg->n_tools; ++id)
 		len += util_format(names + len, sizeof names - len, "%s%s", len ? ", " : "",
-		                   tools[id]);
+		                   reg->tools[id].name.data);
 	return config_complain(cfg, cfg->path, "%s: askai has no tool %s; the tools "
 	                       "are %s", where, json_object_to_json_string(v),
 	                       len ? names : "none");
 }
 
-/* The mask, in @p *mask, of the tools that @p list names, an array of names
- * of the @p n tools @p tools, the ask tool aside.
+/* The mask, in @p *mask, of the tools of @p reg that @p list names, an
+ * array of names, the ask tool aside.
  */
 static int
-config_allow_names (struct config const *cfg,
-                    char const          *where,
-                    char const *const    tools[],
-                    size_t               n,
-                    struct json_object  *list,
-                    tool_mask           *mask)
+config_allow_names (struct config const   *cfg,
+                    char const            *where,
+                    struct registry const *reg,
+                    struct json_object    *list,
+                    tool_mask             *mask)
 {
 	if (!json_object_is_type(list, json_type_array))
 		return config_complain(cfg, cfg->path, "%s: not a list of tools", where);
@@ -2077,10 +2066,12 @@ config_allow_names (struct config const *cfg,
 	size_t len = json_object_array_length(list);
 	for (size_t i = 0; i < len; ++i) {
 		struct json_object *v = json_object_array_get_idx(list, i);
-		size_t id = json_object_is_type(v, json_type_string)
-		          ? config_find(tools, n, json_object_get_string(v)) : 0;
+		uint32_t id = registry_find(reg, jb_view(v), reg->n_tools);
+		if (id == reg->n_tools)
+			return config_allow_none(cfg, where, reg, v);
 		if (!id)
-			return config_allow_none(cfg, where, tools, n, v);
+			return config_complain(cfg, cfg->path, "%s: %s is the ask tool, which "
+			                       "is always on", where, reg->tools[0].name.data);
 		*mask |= (tool_mask)1 << id;
 	}
 	return 0;
@@ -2093,20 +2084,19 @@ config_allow_names (struct config const *cfg,
  * are skipped (config_apply_tools()).
  */
 static int
-config_allow_form (struct config const *cfg,
-                   char const          *where,
-                   char const *const    tools[],
-                   size_t               n,
-                   struct json_object  *spec,
-                   bool                 top,
-                   tool_mask           *mask)
+config_allow_form (struct config const   *cfg,
+                   char const            *where,
+                   struct registry const *reg,
+                   struct json_object    *spec,
+                   bool                   top,
+                   tool_mask             *mask)
 {
 	if (json_object_is_type(spec, json_type_boolean)) {
 		*mask = json_object_get_boolean(spec) ? ~(tool_mask)0 : 0;
 		return 0;
 	}
 	if (json_object_is_type(spec, json_type_array))
-		return config_allow_names(cfg, where, tools, n, spec, mask);
+		return config_allow_names(cfg, where, reg, spec, mask);
 	if (!json_object_is_type(spec, json_type_object))
 		return config_complain(cfg, cfg->path, "%s: not true, false, a list or "
 		                       "an object", where);
@@ -2121,14 +2111,14 @@ config_allow_form (struct config const *cfg,
 	bool allows = json_object_object_get_ex(spec, "allow", &allow);
 	if (!json_object_object_get_ex(spec, "deny", &deny)) {
 		if (allows)
-			return config_allow_names(cfg, where, tools, n, allow, mask);
+			return config_allow_names(cfg, where, reg, allow, mask);
 		*mask = ~(tool_mask)0;
 		return 0;
 	}
 	if (allows)
 		return config_complain(cfg, cfg->path, "%s: allow and deny together",
 		                       where);
-	int status = config_allow_names(cfg, where, tools, n, deny, mask);
+	int status = config_allow_names(cfg, where, reg, deny, mask);
 	*mask = ~*mask;
 	return status;
 }
@@ -2137,18 +2127,17 @@ config_allow_form (struct config const *cfg,
  * jobs, with which the output of a job is read.
  */
 static int
-config_allow_spec (struct config const *cfg,
-                   char const          *where,
-                   char const *const    tools[],
-                   size_t               n,
-                   struct json_object  *spec,
-                   bool                 top,
-                   tool_mask           *mask)
+config_allow_spec (struct config const   *cfg,
+                   char const            *where,
+                   struct registry const *reg,
+                   struct json_object    *spec,
+                   bool                   top,
+                   tool_mask             *mask)
 {
-	int status = config_allow_form(cfg, where, tools, n, spec, top, mask);
-	size_t background = config_find(tools, n, "background");
-	size_t jobs = config_find(tools, n, "jobs");
-	if (!status && background && *mask >> background & 1 && !(*mask >> jobs & 1))
+	int status = config_allow_form(cfg, where, reg, spec, top, mask);
+	tool_mask background = config_tool_bit(reg, CSTR_VIEW("background"));
+	tool_mask jobs = config_tool_bit(reg, CSTR_VIEW("jobs"));
+	if (!status && *mask & background && !(*mask & jobs))
 		status = config_complain(cfg, cfg->path, "%s: background needs jobs", where);
 	return status;
 }
@@ -2174,7 +2163,7 @@ config_allow_parts (struct config const *cfg,
 }
 
 /* The tools that the member tools of the configuration file allows clients
- * and the upstream, of the tools that config_tools() names. Without the
+ * and the upstream, of the tools of config_run(). Without the
  * member, it allows all. It is one form of config_allow_spec() for both,
  * or an object with the members client and upstream, either of which may be
  * missing, each one of those forms for its own.
@@ -2185,26 +2174,23 @@ config_allow (struct config *cfg)
 	struct json_object *v;
 	if (!json_object_object_get_ex(cfg->file, "tools", &v))
 		return 0;
-	char const *tools[TOOL_MAX];
-	tool_mask lendable;
-	size_t n = config_tools(cfg, tools, &lendable)->registry.n_tools;
+	struct registry const *reg = &config_run(cfg)->registry;
 	struct json_object *client;
 	struct json_object *upstream;
 	bool clients = json_object_object_get_ex(v, "client", &client);
 	bool lends = json_object_object_get_ex(v, "upstream", &upstream);
 	int status = 0;
 	if (!clients && !lends) {
-		status = config_allow_spec(cfg, "tools", tools, n, v, true,
-		                           &cfg->tools_clients);
+		status = config_allow_spec(cfg, "tools", reg, v, true, &cfg->tools_clients);
 		cfg->tools_upstream = cfg->tools_clients;
 	} else {
 		status = config_allow_parts(cfg, v);
 		if (!status && clients)
-			status = config_allow_spec(cfg, "tools: client", tools, n, client,
-			                           false, &cfg->tools_clients);
+			status = config_allow_spec(cfg, "tools: client", reg, client, false,
+			                           &cfg->tools_clients);
 		if (!status && lends)
-			status = config_allow_spec(cfg, "tools: upstream", tools, n, upstream,
-			                           false, &cfg->tools_upstream);
+			status = config_allow_spec(cfg, "tools: upstream", reg, upstream, false,
+			                           &cfg->tools_upstream);
 	}
 	/* mcp_register() adds the ask tool first, with the id 0. */
 	cfg->tools_clients |= 1;
@@ -2220,12 +2206,9 @@ config_description (struct config *cfg)
 {
 	if (cfg->tool.description)
 		return 0;
-	char const *tools[TOOL_MAX];
-	tool_mask lendable;
-	struct config const *run = config_tools(cfg, tools, &lendable);
+	struct config const *run = config_run(cfg);
 	tool_mask lent = mcp_lent(run, ~(tool_mask)0, ~(tool_mask)0);
-	/* config_find() returns 0, the ask tool's id, for none. */
-	size_t notes = config_find(tools, run->registry.n_tools, "notes");
+	tool_mask notes = config_tool_bit(&run->registry, CSTR_VIEW("notes"));
 	char const *who = "another AI model";
 	char const *model = "";
 	if (cfg->ep.model) {
@@ -2241,7 +2224,7 @@ config_description (struct config *cfg)
 	                                  lent ? " It may use some of this server's tools "
 	                                         "itself, and its answer lists the calls it "
 	                                         "made." : "",
-	                                  notes && lent >> notes & 1
+	                                  lent & notes
 	                                  ? " It keeps notes in the shared session repository. "
 	                                    "Each call loads its notes and can read the other "
 	                                    "participants' notes." : "");
@@ -2252,20 +2235,24 @@ config_description (struct config *cfg)
 }
 
 /* Make the policy of who may connect and what they may do. A role can
- * grant the first run->registry.n_granted tools of config_tools(), and
+ * grant the first run->registry.n_granted tools of config_run(), and
  * clients receive only the tools that the member "tools" of the running
- * configuration allows.
+ * configuration allows. With --upstream-tools, askai can offer such a tool
+ * to the upstream if TOOL_LENT is set in the flags of the tool's kind.
  */
 static int
 config_policy (struct config *cfg)
 {
-	char const *tools[TOOL_MAX];
-	tool_mask upstream;
-	struct config const *run = config_tools(cfg, tools, &upstream);
+	struct config const *run = config_run(cfg);
+	struct registry const *reg = &run->registry;
+	tool_mask upstream = 0;
+	if (run->flags & CFG_UPSTREAM_TOOLS)
+		for (uint32_t id = 0; id < reg->n_granted; ++id)
+			upstream |= reg->tools[id].kind->flags & TOOL_LENT ? (tool_mask)1 << id : 0;
 	char why[1024];
 	int e;
-	cfg->http.policy = policy_create(cfg->file, tools, run->registry.n_granted,
-	                                 run->tools_clients, upstream, why, sizeof why, &e);
+	cfg->http.policy = policy_create(cfg->file, reg, run->tools_clients, upstream, why,
+	                                 sizeof why, &e);
 	if (e == ENOMEM)
 		return config_oom(cfg);
 	/* EINVAL means that the configuration file is wrong. Another error
@@ -2509,12 +2496,9 @@ config_log_policy (struct config const *cfg)
 {
 	if (!cfg)
 		return;
-	char const *tools[TOOL_MAX];
-	tool_mask upstream;
-	struct config const *run = config_tools(cfg, tools, &upstream);
-	policy_log(cfg->http.policy, cfg->file, tools, run->registry.n_tools,
-	           run->registry.n_granted, run->flags & CFG_UPSTREAM_TOOLS ? mcp_lent : nullptr,
-	           run);
+	struct config const *run = config_run(cfg);
+	policy_log(cfg->http.policy, cfg->file, &run->registry,
+	           run->flags & CFG_UPSTREAM_TOOLS ? mcp_lent : nullptr, run);
 }
 
 void

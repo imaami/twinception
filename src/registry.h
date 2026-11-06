@@ -75,6 +75,14 @@ struct registry {
 extern void
 registry_fini (struct registry *reg);
 
+/** Returns the id of the tool named @p name among the ids below @p n, or
+ *  @p n if there is no such tool among them.
+ */
+extern uint32_t
+registry_find (struct registry const *reg,
+               struct cstr_view       name,
+               uint32_t               n);
+
 /**
  * Adds the tool @p tool of the plugin @p plugin.
  *
