@@ -259,9 +259,8 @@ struct cli {
 	struct autocomplete_file *files;
 	struct json_object       *history;
 	struct cli_options const *options;
-	struct list               inputs;
+	struct cli_console_lines  inputs;
 	struct list               tools;
-	size_t                    input_bytes;
 	uint64_t                  exit_due;
 	int                       ui_error;
 	uint16_t                  exit_signal;
@@ -283,12 +282,6 @@ cli_stopping (struct cli const *cli)
 }
 
 enum { CLI_INPUT_HANDLED = 1u << 0 };
-
-struct cli_input {
-	struct list hook;
-	struct dstr text;
-	size_t      flags;
-};
 
 static int cli_immediate (struct cli *cli);
 
@@ -960,43 +953,9 @@ cli_input_append (struct cli  *cli,
                   struct dstr *text,
                   size_t       flags)
 {
-	size_t bytes = sizeof(struct cli_input) + dstr_len(text);
-	if (bytes > CLI_LIMIT - cli->input_bytes)
+	if (dstr_len(text) > CLI_LIMIT - cli->inputs.bytes)
 		return ENOBUFS;
-	struct cli_input *input = malloc(sizeof *input);
-	if (!input)
-		return ENOMEM;
-	*input = (struct cli_input){.text = dstr_move(text), .flags = flags};
-	list_append(&cli->inputs, &input->hook);
-	cli->input_bytes += bytes;
-	return 0;
-}
-
-static void
-cli_input_destroy (struct cli_input **ptr)
-{
-	struct cli_input *input = *ptr;
-	if (!input)
-		return;
-	list_del(&input->hook);
-	dstr_cleanup(&input->text);
-	free(input);
-	*ptr = nullptr;
-}
-
-/* Move the text of the first queued input into text, and destroy the input.
- * Returns true if a command already handled the input during a turn.
- */
-static bool
-cli_input_pop (struct cli  *cli,
-               struct dstr *text)
-{
-	struct cli_input *input = container_of(cli->inputs.next, struct cli_input, hook);
-	cli->input_bytes -= sizeof *input + dstr_len(&input->text);
-	*text = dstr_move(&input->text);
-	bool handled = input->flags & CLI_INPUT_HANDLED;
-	cli_input_destroy(&input);
-	return handled;
+	return cli_console_lines_push(&cli->inputs, text, flags);
 }
 
 /* Save a handled input in the history. If a cancel interrupted the save,
@@ -1183,7 +1142,7 @@ cli_chat_pop (struct cli       *cli,
               struct dstr      *prompt,
               struct cli_error *error)
 {
-	if (!cli_input_pop(cli, prompt))
+	if (!(cli_console_lines_pop(&cli->inputs, prompt) & CLI_INPUT_HANDLED))
 		return 0;
 	int e = cli_input_save(cli, prompt, error);
 	return e ? e : EAGAIN;
@@ -1206,7 +1165,7 @@ cli_chat_read (struct cli       *cli,
 	int e = cli_chat_refresh(cli, error);
 	if (e)
 		return e;
-	if ((cli->flags & CLI_QUITTING) || !list_is_empty(&cli->inputs))
+	if ((cli->flags & CLI_QUITTING) || cli->inputs.count)
 		return EAGAIN;
 	if (*initial) {
 		*interpret = false;
@@ -1240,8 +1199,8 @@ cli_chat (struct cli       *cli,
 		util_text_clear(error);
 		dstr_auto prompt = dstr(nullptr);
 		bool interpret = true;
-		int e = list_is_empty(&cli->inputs) ? cli_chat_read(cli, &prompt, &initial, &interpret, error)
-		                                    : cli_chat_pop(cli, &prompt, error);
+		int e = cli->inputs.count ? cli_chat_pop(cli, &prompt, error)
+		                          : cli_chat_read(cli, &prompt, &initial, &interpret, error);
 		if (e == EAGAIN)
 			continue;
 		if (e)
@@ -1288,7 +1247,7 @@ cli_run (struct cli_options const *options,
 	if (!cli)
 		return ENOMEM;
 	atomic_init(&cli->cancel_io, false);
-	list_init(&cli->inputs);
+	list_init(&cli->inputs.lines);
 	list_init(&cli->tools);
 	cli->options = options;
 	cli->signals.ref.fd = -1;
@@ -1367,10 +1326,7 @@ cli_run (struct cli_options const *options,
 	cli_console_destroy(&cli->console);
 	cli_io_destroy(&cli->io);
 	cli_state_destroy(&cli->saved);
-	while (!list_is_empty(&cli->inputs)) {
-		struct cli_input *input = container_of(cli->inputs.next, struct cli_input, hook);
-		cli_input_destroy(&input);
-	}
+	cli_console_lines_fini(&cli->inputs);
 	autocomplete_file_destroy(&cli->files);
 	cli_client_json_cleanup(&cli->history);
 	cli_client_fini(&cli->client);

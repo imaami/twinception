@@ -8,10 +8,49 @@
 #include "autocomplete.h"
 #include "cli_style.h"
 #include "cstr_view.h"
+#include "dstr.h"
+#include "list.h"
 
 struct cli_console;
 struct cli_io;
 struct cli_loop;
+
+/** A line of input in a queue. */
+struct cli_console_line {
+	struct list hook;
+	struct dstr text;
+	size_t      flags;  /**< defined by the user of the queue */
+};
+
+/** A queue of lines of input, with the number of lines and the total
+ *  length of their text. A zeroed queue with its list initialized is
+ *  empty.
+ */
+struct cli_console_lines {
+	struct list lines;
+	size_t      count;
+	size_t      bytes;
+};
+
+/** Move @p text into a new line with @p flags at the end of @p queue.
+ *  Returns 0, or ENOMEM with @p text unchanged.
+ */
+extern int
+cli_console_lines_push (struct cli_console_lines *queue,
+                        struct dstr              *text,
+                        size_t                    flags);
+
+/** Remove the first line of @p queue, which must not be empty, and move
+ *  its text into @p text, or free it if @p text is nullptr. Returns its
+ *  flags.
+ */
+extern size_t
+cli_console_lines_pop (struct cli_console_lines *queue,
+                       struct dstr              *text);
+
+/** Remove every line of @p queue. */
+extern void
+cli_console_lines_fini (struct cli_console_lines *queue);
 
 /** The options of cli_console_create(). */
 enum {

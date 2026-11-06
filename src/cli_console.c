@@ -104,12 +104,6 @@ struct cli_console_completion {
 	enum autocomplete_kind kind;
 };
 
-struct cli_console_line {
-	struct list hook;
-	char       *text;
-	size_t      length;
-};
-
 enum cli_console_pane_id : uint32_t {
 	CLI_CONSOLE_CONVERSATION,
 	CLI_CONSOLE_REASONING,
@@ -150,7 +144,7 @@ struct cli_console {
 	struct dstr                      decorations[4];
 	struct dstr                      clean;  /**< sanitized output */
 	struct dstr                      screen; /**< a frame of the full-screen UI */
-	struct list                      lines;
+	struct cli_console_lines         queue;  /**< the accepted lines */
 	char                            *restored_line;
 	char                            *immediate_line;
 	struct autocomplete_match const *candidates;
@@ -159,8 +153,6 @@ struct cli_console {
 	size_t                           candidate_count;
 	size_t                           completion_count;
 	size_t                           draft_start;
-	size_t                           line_count;
-	size_t                           line_bytes;
 	size_t                           immediate_length;
 	size_t                           input_offset;
 	size_t                           input_size;
@@ -425,47 +417,48 @@ cli_console_input_full (struct cli_console *console,
                         bool                immediate)
 {
 	return immediate ? console->immediate_line != nullptr :
-	       console->line_count >= CLI_CONSOLE_INPUT_COUNT ||
-	       length > CLI_CONSOLE_INPUT_LIMIT - console->line_bytes;
+	       console->queue.count >= CLI_CONSOLE_INPUT_COUNT ||
+	       length > CLI_CONSOLE_INPUT_LIMIT - console->queue.bytes;
 }
 
-static void
-cli_console_line_destroy (struct cli_console_line **ptr)
-{
-	struct cli_console_line *line = *ptr;
-	if (!line)
-		return;
-	free(line->text);
-	line->text = nullptr;
-	free(line);
-	*ptr = nullptr;
-}
-
-/** Takes ownership of text, including on allocation failure. */
-static struct cli_console_line *
-cli_console_line_create (char   *text,
-                         size_t  length,
-                         int    *e)
+int
+cli_console_lines_push (struct cli_console_lines *queue,
+                        struct dstr              *text,
+                        size_t                    flags)
 {
 	struct cli_console_line *line = malloc(sizeof *line);
-	*e = line ? 0 : ENOMEM;
-	if (line)
-		*line = (struct cli_console_line){.text = text, .length = length};
-	else {
-		free(text);
-		text = nullptr;
-	}
-	return line;
+	if (!line)
+		return ENOMEM;
+	*line = (struct cli_console_line){.text = dstr_move(text), .flags = flags};
+	list_append(&queue->lines, &line->hook);
+	++queue->count;
+	queue->bytes += dstr_len(&line->text);
+	return 0;
 }
 
-static void
-cli_console_drop_line (struct cli_console *console)
+size_t
+cli_console_lines_pop (struct cli_console_lines *queue,
+                       struct dstr              *text)
 {
-	struct cli_console_line *line = container_of(console->lines.next, struct cli_console_line, hook);
+	struct cli_console_line *line = container_of(queue->lines.next, struct cli_console_line, hook);
 	list_del(&line->hook);
-	--console->line_count;
-	console->line_bytes -= line->length;
-	cli_console_line_destroy(&line);
+	--queue->count;
+	queue->bytes -= dstr_len(&line->text);
+	if (text) {
+		dstr_cleanup(text);
+		*text = dstr_move(&line->text);
+	}
+	size_t flags = line->flags;
+	dstr_cleanup(&line->text);
+	free(line);
+	return flags;
+}
+
+void
+cli_console_lines_fini (struct cli_console_lines *queue)
+{
+	while (!list_is_empty(&queue->lines))
+		(void)cli_console_lines_pop(queue, nullptr);
 }
 
 static void
@@ -499,15 +492,18 @@ cli_console_accept (char *line)
 		console->immediate_length = text.len;
 		cli_loop_wake(console->loop);
 	} else {
-		int e;
-		struct cli_console_line *input = cli_console_line_create(line, text.len, &e);
-		if (!input) {
+		/* The line is copied into the queue, and text is set to a view
+		 * of the copy. */
+		dstr_auto copy = dstr(nullptr);
+		int e = cstr_view_cat(text, &copy);
+		if (!e)
+			e = cli_console_lines_push(&console->queue, &copy, 0);
+		free(line);
+		if (e) {
 			console->in.error = e;
 			return;
 		}
-		list_append(&console->lines, &input->hook);
-		++console->line_count;
-		console->line_bytes += text.len;
+		text = cstr_view_dstr(&container_of(console->queue.lines.prev, struct cli_console_line, hook)->text);
 	}
 	cli_console_pause_keys(console);
 	if (text.len >= CLI_CONSOLE_INPUT_LIMIT)
@@ -1095,7 +1091,7 @@ cli_console_create (uint32_t         flags,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	list_init(&console->lines);
+	list_init(&console->queue.lines);
 	console->in.ref.fd = -1;
 	console->in.job.job.work = cli_console_input_work;
 	console->in.job.job.done = cli_console_input_done;
@@ -1216,8 +1212,7 @@ cli_console_destroy (struct cli_console **ptr)
 		console->flags &= ~CLI_CONSOLE_CALLBACK_ACTIVE;
 	}
 	(void)cli_console_suspend(console);
-	while (!list_is_empty(&console->lines))
-		cli_console_drop_line(console);
+	cli_console_lines_fini(&console->queue);
 	free(console->restored_line);
 	console->restored_line = nullptr;
 	free(console->immediate_line);
@@ -1471,8 +1466,8 @@ cli_console_status (struct cli_console *console,
 {
 	static char const hint[] = " | Alt-Left/Right pane  Alt-Up/Down scroll  Ctrl-End follow";
 	char status[128];
-	int length = console->line_count
-	           ? snprintf(status, sizeof status, " askai | %zu queued%s", console->line_count, hint)
+	int length = console->queue.count
+	           ? snprintf(status, sizeof status, " askai | %zu queued%s", console->queue.count, hint)
 	           : snprintf(status, sizeof status, " askai | %s%s",
 	                      console->flags & CLI_CONSOLE_BUSY ? "working" : "ready", hint);
 	if (length < 0)
@@ -1757,15 +1752,15 @@ cli_console_read_text_readline (struct cli_console *console,
                                 char const         *prompt)
 {
 	int e = cli_console_readline(console, prompt);
-	if (!console->line_count) {
+	if (!console->queue.count) {
 		if (!e)
 			console->flags |= CLI_CONSOLE_INPUT_EOF;
 		return e;
 	}
 	if (e)
 		return e;
-	struct cli_console_line *accepted = container_of(console->lines.next, struct cli_console_line, hook);
-	if (!dstr_cat_n(text, accepted->text, accepted->length) || !dstr_cat(text, "\n"))
+	struct cli_console_line *accepted = container_of(console->queue.lines.next, struct cli_console_line, hook);
+	if (cstr_view_cat(cstr_view_dstr(&accepted->text), text) || !dstr_cat(text, "\n"))
 		return ENOMEM;
 	if (console->flags & CLI_CONSOLE_FULLSCREEN) {
 		struct cli_console_span const echo[] = {
@@ -1776,7 +1771,7 @@ cli_console_read_text_readline (struct cli_console *console,
 		if (e)
 			return e;
 	}
-	cli_console_drop_line(console);
+	(void)cli_console_lines_pop(&console->queue, nullptr);
 	return 0;
 }
 
@@ -1789,11 +1784,11 @@ cli_console_read (struct cli_console *console,
 {
 	dstr_clear(text);
 	*eof = false;
-	if ((console->flags & (CLI_CONSOLE_INPUT_EOF | CLI_CONSOLE_EOF_PENDING)) && !console->line_count) {
+	if ((console->flags & (CLI_CONSOLE_INPUT_EOF | CLI_CONSOLE_EOF_PENDING)) && !console->queue.count) {
 		*eof = true;
 		return 0;
 	}
-	if (!(console->flags & CLI_CONSOLE_TERMINATED) && !console->line_count)
+	if (!(console->flags & CLI_CONSOLE_TERMINATED) && !console->queue.count)
 		console->in.error = 0;
 	console->flags = (console->flags & ~CLI_CONSOLE_MULTILINE) | (multiline ? CLI_CONSOLE_MULTILINE : 0);
 	int e = cli_console_set_display(console, CLI_STYLE_USER_INPUT);
@@ -1801,7 +1796,7 @@ cli_console_read (struct cli_console *console,
 		e = console->flags & CLI_CONSOLE_SIMPLE ? cli_console_read_text_simple(console, text, multiline, prompt)
 		                                        : cli_console_read_text_readline(console, text, prompt);
 	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
-	if ((console->flags & CLI_CONSOLE_EOF_PENDING) && !console->line_count) {
+	if ((console->flags & CLI_CONSOLE_EOF_PENDING) && !console->queue.count) {
 		console->flags |= CLI_CONSOLE_INPUT_EOF;
 		cli_console_remove_callback(console);
 	}
@@ -1975,7 +1970,7 @@ cli_console_pending (struct cli_console const *console)
 bool
 cli_console_queued (struct cli_console const *console)
 {
-	return console->line_count || (console->flags & CLI_CONSOLE_EOF_PENDING);
+	return console->queue.count || (console->flags & CLI_CONSOLE_EOF_PENDING);
 }
 
 void
