@@ -7,8 +7,8 @@
  * commands that read the notes for the prompt of an ask call
  * (notes_tool_loop_prompt()).
  */
-#ifndef TWINCEPTION_SRC_NOTES_TOOL_H_
-#define TWINCEPTION_SRC_NOTES_TOOL_H_
+#ifndef ASKAI_SRC_NOTES_TOOL_H_
+#define ASKAI_SRC_NOTES_TOOL_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -107,4 +107,4 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
                         size_t                  most,
                         tool_step_fn           *then);
 
-#endif /* TWINCEPTION_SRC_NOTES_TOOL_H_ */
+#endif /* ASKAI_SRC_NOTES_TOOL_H_ */

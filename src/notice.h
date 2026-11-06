@@ -6,8 +6,8 @@
  * result into a note, and notice_kept() finds the notices at the end of
  * such a text by the same formats.
  */
-#ifndef TWINCEPTION_SRC_NOTICE_H_
-#define TWINCEPTION_SRC_NOTICE_H_
+#ifndef ASKAI_SRC_NOTICE_H_
+#define ASKAI_SRC_NOTICE_H_
 
 #include <inttypes.h>
 #include <stddef.h>
@@ -35,4 +35,4 @@ extern size_t
 notice_kept (char const *text,
              size_t      len);
 
-#endif /* TWINCEPTION_SRC_NOTICE_H_ */
+#endif /* ASKAI_SRC_NOTICE_H_ */

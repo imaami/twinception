@@ -2,8 +2,8 @@
  * @file dstr_constants.h
  * @brief Constants for @ref dstr
  */
-#ifndef TWINCEPTION_SRC_DSTR_CONSTANTS_H_
-#define TWINCEPTION_SRC_DSTR_CONSTANTS_H_
+#ifndef ASKAI_SRC_DSTR_CONSTANTS_H_
+#define ASKAI_SRC_DSTR_CONSTANTS_H_
 
 #include <limits.h> /* CHAR_BIT */
 #include <stddef.h> /* size_t */
@@ -86,4 +86,4 @@ enum dstr_constants {
 /* Mask for the block count bits without shift */
 #define DSTR_BLK_COUNT_MASK (UINTPTR_MAX >> (size_t)CHAR_BIT)
 
-#endif /* TWINCEPTION_SRC_DSTR_CONSTANTS_H_ */
+#endif /* ASKAI_SRC_DSTR_CONSTANTS_H_ */

@@ -9,8 +9,8 @@
  * library included, through the shim. The freestanding libc of the
  * qemu trial implements the same functions in its own allocator.
  */
-#ifndef TWINCEPTION_TESTS_DSTR_SHIM_H_
-#define TWINCEPTION_TESTS_DSTR_SHIM_H_
+#ifndef ASKAI_TESTS_DSTR_SHIM_H_
+#define ASKAI_TESTS_DSTR_SHIM_H_
 
 #include <stddef.h>
 
@@ -57,4 +57,4 @@ shim_live (void);
 extern size_t
 shim_bad (void);
 
-#endif /* TWINCEPTION_TESTS_DSTR_SHIM_H_ */
+#endif /* ASKAI_TESTS_DSTR_SHIM_H_ */

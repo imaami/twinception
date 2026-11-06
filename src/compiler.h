@@ -2,8 +2,8 @@
  *
  * Compiler version tests.
  */
-#ifndef TWINCEPTION_SRC_COMPILER_H_
-#define TWINCEPTION_SRC_COMPILER_H_
+#ifndef ASKAI_SRC_COMPILER_H_
+#define ASKAI_SRC_COMPILER_H_
 
 /** @name Compiler version tests
  *
@@ -50,4 +50,4 @@
 
 /** @} */
 
-#endif /* TWINCEPTION_SRC_COMPILER_H_ */
+#endif /* ASKAI_SRC_COMPILER_H_ */

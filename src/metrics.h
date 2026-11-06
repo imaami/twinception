@@ -20,8 +20,8 @@
  * memory pressure and its inputs. Histograms have fixed buckets, from 1 µs
  * to 300 s.
  */
-#ifndef TWINCEPTION_SRC_METRICS_H_
-#define TWINCEPTION_SRC_METRICS_H_
+#ifndef ASKAI_SRC_METRICS_H_
+#define ASKAI_SRC_METRICS_H_
 
 #include <stddef.h>
 
@@ -192,4 +192,4 @@ metrics_render (struct metrics_src const *src,
                 size_t                   *pos,
                 struct buf               *out);
 
-#endif /* TWINCEPTION_SRC_METRICS_H_ */
+#endif /* ASKAI_SRC_METRICS_H_ */

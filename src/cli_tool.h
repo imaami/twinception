@@ -2,8 +2,8 @@
  *
  * Manual tool calls, including their asynchronous request lifetime.
  */
-#ifndef TWINCEPTION_SRC_CLI_TOOL_H_
-#define TWINCEPTION_SRC_CLI_TOOL_H_
+#ifndef ASKAI_SRC_CLI_TOOL_H_
+#define ASKAI_SRC_CLI_TOOL_H_
 
 #include "cstr_view.h"
 
@@ -64,4 +64,4 @@ cli_tool_finish (struct cli_tool        *tool,
 extern void
 cli_tool_cancel_last (struct list *active);
 
-#endif /* TWINCEPTION_SRC_CLI_TOOL_H_ */
+#endif /* ASKAI_SRC_CLI_TOOL_H_ */

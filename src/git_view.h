@@ -2,8 +2,8 @@
  *
  * Private bare snapshots for the git tool.
  */
-#ifndef TWINCEPTION_SRC_GIT_VIEW_H_
-#define TWINCEPTION_SRC_GIT_VIEW_H_
+#ifndef ASKAI_SRC_GIT_VIEW_H_
+#define ASKAI_SRC_GIT_VIEW_H_
 
 #include "buf.h"
 
@@ -41,4 +41,4 @@ git_view_directory (struct git_view const *view);
 extern bool
 git_view_has_head (struct git_view const *view);
 
-#endif /* TWINCEPTION_SRC_GIT_VIEW_H_ */
+#endif /* ASKAI_SRC_GIT_VIEW_H_ */

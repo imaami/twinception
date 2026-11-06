@@ -18,8 +18,8 @@
  * askai's own tools send requests through the same service, such as the
  * uploads of notes (src/mcp.c), with struct web_ask.
  */
-#ifndef TWINCEPTION_SRC_WEB_H_
-#define TWINCEPTION_SRC_WEB_H_
+#ifndef ASKAI_SRC_WEB_H_
+#define ASKAI_SRC_WEB_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -248,4 +248,4 @@ web_wait_response (struct web_wait const *wait,
 extern void
 web_wait_leave (struct web_wait **p_wait);
 
-#endif /* TWINCEPTION_SRC_WEB_H_ */
+#endif /* ASKAI_SRC_WEB_H_ */

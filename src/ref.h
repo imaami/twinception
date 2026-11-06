@@ -4,8 +4,8 @@
  * unsigned integer of any width, and the holder of the last reference
  * frees the object.
  */
-#ifndef TWINCEPTION_SRC_REF_H_
-#define TWINCEPTION_SRC_REF_H_
+#ifndef ASKAI_SRC_REF_H_
+#define ASKAI_SRC_REF_H_
 
 #include <stdatomic.h>
 
@@ -24,4 +24,4 @@
 #define ref_put(refs, n) \
         (atomic_fetch_sub_explicit((refs), (n), memory_order_acq_rel) == (n))
 
-#endif /* TWINCEPTION_SRC_REF_H_ */
+#endif /* ASKAI_SRC_REF_H_ */

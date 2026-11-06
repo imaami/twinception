@@ -11,8 +11,8 @@
  * for the time of its access. When the table is full, a new file takes
  * the place of the file that expires first.
  */
-#ifndef TWINCEPTION_SRC_UPLOADS_H_
-#define TWINCEPTION_SRC_UPLOADS_H_
+#ifndef ASKAI_SRC_UPLOADS_H_
+#define ASKAI_SRC_UPLOADS_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -89,4 +89,4 @@ extern void
 uploads_forget (struct uploads *uploads,
                 uint64_t        owner);
 
-#endif /* TWINCEPTION_SRC_UPLOADS_H_ */
+#endif /* ASKAI_SRC_UPLOADS_H_ */

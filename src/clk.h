@@ -2,8 +2,8 @@
  *
  * Clock readings.
  */
-#ifndef TWINCEPTION_SRC_CLK_H_
-#define TWINCEPTION_SRC_CLK_H_
+#ifndef ASKAI_SRC_CLK_H_
+#define ASKAI_SRC_CLK_H_
 
 #include <errno.h>
 #include <stdint.h>
@@ -145,4 +145,4 @@ clk_realtime_ns (void)
 	return clk_now_or_1970_ns(CLOCK_REALTIME);
 }
 
-#endif /* TWINCEPTION_SRC_CLK_H_ */
+#endif /* ASKAI_SRC_CLK_H_ */

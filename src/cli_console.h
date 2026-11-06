@@ -2,8 +2,8 @@
  * Adapted from llama.cpp common/console.h.
  * Copyright (c) 2023-2026 The ggml authors. MIT license; see doc/llama-cli-LICENSE.
  */
-#ifndef TWINCEPTION_SRC_CLI_CONSOLE_H_
-#define TWINCEPTION_SRC_CLI_CONSOLE_H_
+#ifndef ASKAI_SRC_CLI_CONSOLE_H_
+#define ASKAI_SRC_CLI_CONSOLE_H_
 
 #include "autocomplete.h"
 #include "cli_style.h"
@@ -201,4 +201,4 @@ cli_console_error (struct cli_console *console,
 extern int
 cli_console_flush (struct cli_console *console);
 
-#endif /* TWINCEPTION_SRC_CLI_CONSOLE_H_ */
+#endif /* ASKAI_SRC_CLI_CONSOLE_H_ */

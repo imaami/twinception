@@ -12,8 +12,8 @@
  * Existing repositories can have worktrees; Git resolves their packed refs.
  * Concurrent changes to one branch fail rather than overwrite another writer.
  */
-#ifndef TWINCEPTION_SRC_NOTES_H_
-#define TWINCEPTION_SRC_NOTES_H_
+#ifndef ASKAI_SRC_NOTES_H_
+#define ASKAI_SRC_NOTES_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -396,4 +396,4 @@ notes_entry_before (struct span          out,
                     struct notes_cursor *cursor,
                     struct notes_entry  *entry);
 
-#endif /* TWINCEPTION_SRC_NOTES_H_ */
+#endif /* ASKAI_SRC_NOTES_H_ */

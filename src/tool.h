@@ -6,8 +6,8 @@
  * start() ends or parks a call; step() does a share of its work; drop()
  * lets go of its own word. All run on the call's loop, and never block.
  */
-#ifndef TWINCEPTION_SRC_TOOL_H_
-#define TWINCEPTION_SRC_TOOL_H_
+#ifndef ASKAI_SRC_TOOL_H_
+#define ASKAI_SRC_TOOL_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -95,4 +95,4 @@ struct tool_kind {
 	uint64_t            flags;  /**< enum tool_flag */
 };
 
-#endif /* TWINCEPTION_SRC_TOOL_H_ */
+#endif /* ASKAI_SRC_TOOL_H_ */

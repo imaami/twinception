@@ -2,8 +2,8 @@
  *
  * Minimal intrusive circular doubly-linked list.
  */
-#ifndef TWINCEPTION_SRC_LIST_H_
-#define TWINCEPTION_SRC_LIST_H_
+#ifndef ASKAI_SRC_LIST_H_
+#define ASKAI_SRC_LIST_H_
 
 #include "compat.h"
 
@@ -73,4 +73,4 @@ list_transplant (struct list *dest,
              (pos) != (head); \
              (pos) = (tmp), (tmp) = (pos)->next)
 
-#endif /* TWINCEPTION_SRC_LIST_H_ */
+#endif /* ASKAI_SRC_LIST_H_ */

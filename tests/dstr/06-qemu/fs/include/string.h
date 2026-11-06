@@ -1,6 +1,6 @@
 /* Freestanding <string.h> for the qemu trial (tests/dstr/06-qemu) */
-#ifndef TWINCEPTION_TESTS_DSTR_FS_STRING_H_
-#define TWINCEPTION_TESTS_DSTR_FS_STRING_H_
+#ifndef ASKAI_TESTS_DSTR_FS_STRING_H_
+#define ASKAI_TESTS_DSTR_FS_STRING_H_
 
 #include <stddef.h>
 
@@ -39,4 +39,4 @@ strncmp (char const *a,
 extern char *
 strerror (int err);
 
-#endif /* TWINCEPTION_TESTS_DSTR_FS_STRING_H_ */
+#endif /* ASKAI_TESTS_DSTR_FS_STRING_H_ */

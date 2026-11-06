@@ -1,8 +1,8 @@
 /** @file The checks of a unit test: CHECK() counts and prints each check
  *  that fails, and check_report() prints the result of the test.
  */
-#ifndef TWINCEPTION_TESTS_CHECK_H_
-#define TWINCEPTION_TESTS_CHECK_H_
+#ifndef ASKAI_TESTS_CHECK_H_
+#define ASKAI_TESTS_CHECK_H_
 
 #include <stdio.h>
 
@@ -29,4 +29,4 @@ check_report (char const *name)
 	return 0;
 }
 
-#endif /* TWINCEPTION_TESTS_CHECK_H_ */
+#endif /* ASKAI_TESTS_CHECK_H_ */

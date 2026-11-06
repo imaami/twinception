@@ -30,8 +30,8 @@
  * BRAINSTEM_FORCED. Of those signals, any the process started with ignored,
  * as under nohup, stays ignored.
  */
-#ifndef TWINCEPTION_SRC_BRAINSTEM_H_
-#define TWINCEPTION_SRC_BRAINSTEM_H_
+#ifndef ASKAI_SRC_BRAINSTEM_H_
+#define ASKAI_SRC_BRAINSTEM_H_
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -193,4 +193,4 @@ brainstem_relieved (uint64_t bytes);
 extern uint64_t
 brainstem_trimmed (void);
 
-#endif /* TWINCEPTION_SRC_BRAINSTEM_H_ */
+#endif /* ASKAI_SRC_BRAINSTEM_H_ */

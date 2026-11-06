@@ -5,8 +5,8 @@
  * updates one, or shows the record. The row of the tool in mcp_rows
  * (src/mcp.c) gives its kind these functions.
  */
-#ifndef TWINCEPTION_SRC_FINDINGS_H_
-#define TWINCEPTION_SRC_FINDINGS_H_
+#ifndef ASKAI_SRC_FINDINGS_H_
+#define ASKAI_SRC_FINDINGS_H_
 
 #include "tool.h"
 
@@ -26,4 +26,4 @@ extern tool_step_fn findings_step;
 /** Frees the own word of the call. */
 extern tool_drop_fn findings_drop;
 
-#endif /* TWINCEPTION_SRC_FINDINGS_H_ */
+#endif /* ASKAI_SRC_FINDINGS_H_ */

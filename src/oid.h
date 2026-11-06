@@ -2,8 +2,8 @@
  *
  * Names of Git objects.
  */
-#ifndef TWINCEPTION_SRC_OID_H_
-#define TWINCEPTION_SRC_OID_H_
+#ifndef ASKAI_SRC_OID_H_
+#define ASKAI_SRC_OID_H_
 
 #include <errno.h>
 #include <stdint.h>
@@ -133,4 +133,4 @@ oid_zero (enum oid_format format)
 	return oid;
 }
 
-#endif /* TWINCEPTION_SRC_OID_H_ */
+#endif /* ASKAI_SRC_OID_H_ */

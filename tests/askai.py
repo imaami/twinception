@@ -5032,12 +5032,12 @@ def check_configuration(binary, up, godbolt):
     up.reply = lambda request: (200, ANSWERS["openai"])
 
     with Askai(binary, "-u", up.url(), "-H", "Authorization: Bearer from-header",
-               "--tool-name", "ask_twin", "--tool-description", "Ask the twin.",
+               "--tool-name", "ask_why", "--tool-description", "Ask? Why?",
                "-k", "TEST_KEY", env={"TEST_KEY": "ignored"}) as ai:
         _, _, body = ai.rpc("tools/list")
         tool = body["result"]["tools"][0]
-        assert tool["name"] == "ask_twin" and tool["description"] == "Ask the twin."
-        status, _, body = ai.rpc("tools/call", {"name": "ask_twin",
+        assert tool["name"] == "ask_why" and tool["description"] == "Ask? Why?"
+        status, _, body = ai.rpc("tools/call", {"name": "ask_why",
                                                 "arguments": {"prompt": "Q"}})
         assert text_of(body["result"]) == "A"
         assert up.last()["headers"]["authorization"] == "Bearer from-header"
@@ -5525,8 +5525,8 @@ def check_reload(binary, up):
                 reload(ai, "has no tool").strip() + "".join(ai.log)
             ai.wait_log("configuration not reloaded")
             assert tools(ai, "t1") == ["ask_ai", "man"]
-            write({"roles": {"a": {"tools": ["ask_twin"]}}}, **{"tool-name": "ask_twin"})
-            assert 'askai offers no tool "ask_twin"; the tools are ask_ai, man\n' in \
+            write({"roles": {"a": {"tools": ["ask_why"]}}}, **{"tool-name": "ask_why"})
+            assert 'askai offers no tool "ask_why"; the tools are ask_ai, man\n' in \
                 reload(ai, "offers no tool") + "".join(ai.log)
             ai.wait_log("configuration not reloaded")
             assert tools(ai, "t1") == ["ask_ai", "man"]

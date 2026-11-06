@@ -13,8 +13,8 @@
  * so any thread may read it. registry_fini() frees what the registry
  * allocated.
  */
-#ifndef TWINCEPTION_SRC_REGISTRY_H_
-#define TWINCEPTION_SRC_REGISTRY_H_
+#ifndef ASKAI_SRC_REGISTRY_H_
+#define ASKAI_SRC_REGISTRY_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -131,4 +131,4 @@ registry_load (struct registry    *reg,
                char               *why,
                size_t              len);
 
-#endif /* TWINCEPTION_SRC_REGISTRY_H_ */
+#endif /* ASKAI_SRC_REGISTRY_H_ */

@@ -11,8 +11,8 @@
  * out of range, also for a timer whose member slot is not its place in the
  * loop's heap. loop_now() and loop_room() return 0 for such inputs.
  */
-#ifndef TWINCEPTION_SRC_LOOP_EXPORT_H_
-#define TWINCEPTION_SRC_LOOP_EXPORT_H_
+#ifndef ASKAI_SRC_LOOP_EXPORT_H_
+#define ASKAI_SRC_LOOP_EXPORT_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -193,4 +193,4 @@ extern uint64_t
 loop_room (struct loop const *loop,
            enum loop_unit     u);
 
-#endif /* TWINCEPTION_SRC_LOOP_EXPORT_H_ */
+#endif /* ASKAI_SRC_LOOP_EXPORT_H_ */

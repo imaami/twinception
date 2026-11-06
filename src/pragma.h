@@ -2,8 +2,8 @@
  *
  * Compiler pragma compat macros.
  */
-#ifndef TWINCEPTION_SRC_PRAGMA_H_
-#define TWINCEPTION_SRC_PRAGMA_H_
+#ifndef ASKAI_SRC_PRAGMA_H_
+#define ASKAI_SRC_PRAGMA_H_
 
 /** @name Pragmas
  *
@@ -38,4 +38,4 @@
 
 /** @} */
 
-#endif /* TWINCEPTION_SRC_PRAGMA_H_ */
+#endif /* ASKAI_SRC_PRAGMA_H_ */

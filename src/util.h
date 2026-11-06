@@ -3,8 +3,8 @@
  * Small compile-time, container, hashing, formatting, text and
  * file helpers.
  */
-#ifndef TWINCEPTION_SRC_UTIL_H_
-#define TWINCEPTION_SRC_UTIL_H_
+#ifndef ASKAI_SRC_UTIL_H_
+#define ASKAI_SRC_UTIL_H_
 
 #include <errno.h>
 #include <fcntl.h>
@@ -752,4 +752,4 @@ util_text_printf_ (uint32_t   *len,
 	return *len < size - 1 ? 0 : EINVAL;
 }
 
-#endif /* TWINCEPTION_SRC_UTIL_H_ */
+#endif /* ASKAI_SRC_UTIL_H_ */

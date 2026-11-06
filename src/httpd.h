@@ -4,8 +4,8 @@
  * which accepts the clients and places each on a client loop, and the client
  * loops' servers, which serve them (design section 3).
  */
-#ifndef TWINCEPTION_SRC_HTTPD_H_
-#define TWINCEPTION_SRC_HTTPD_H_
+#ifndef ASKAI_SRC_HTTPD_H_
+#define ASKAI_SRC_HTTPD_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -229,4 +229,4 @@ extern void
 httpd_drain (struct httpd *srv,
              uint64_t      deadline);
 
-#endif /* TWINCEPTION_SRC_HTTPD_H_ */
+#endif /* ASKAI_SRC_HTTPD_H_ */

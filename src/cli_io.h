@@ -3,8 +3,8 @@
  * Blocking CLI work on the blocker threads. A blocker posts each job back
  * to the UI loop when the work is done.
  */
-#ifndef TWINCEPTION_SRC_CLI_IO_H_
-#define TWINCEPTION_SRC_CLI_IO_H_
+#ifndef ASKAI_SRC_CLI_IO_H_
+#define ASKAI_SRC_CLI_IO_H_
 
 #include "blocker.h"
 #include "loop.h"
@@ -53,4 +53,4 @@ cli_io_done (struct cli_io const *io);
 extern void
 cli_io_destroy (struct cli_io **p_io);
 
-#endif /* TWINCEPTION_SRC_CLI_IO_H_ */
+#endif /* ASKAI_SRC_CLI_IO_H_ */

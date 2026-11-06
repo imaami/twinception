@@ -47,8 +47,8 @@
  * job is in flight, and no provider cancellation or journal callback is
  * pending, home makes its loop exit.
  */
-#ifndef TWINCEPTION_SRC_HOME_H_
-#define TWINCEPTION_SRC_HOME_H_
+#ifndef ASKAI_SRC_HOME_H_
+#define ASKAI_SRC_HOME_H_
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -164,4 +164,4 @@ home_relieve (struct home       *home,
               enum buf_pressure  level,
               size_t             max);
 
-#endif /* TWINCEPTION_SRC_HOME_H_ */
+#endif /* ASKAI_SRC_HOME_H_ */

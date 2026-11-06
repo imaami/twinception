@@ -2,8 +2,8 @@
  *
  * Per-request progress, deltas and assistant result rendering.
  */
-#ifndef TWINCEPTION_SRC_CLI_STREAM_H_
-#define TWINCEPTION_SRC_CLI_STREAM_H_
+#ifndef ASKAI_SRC_CLI_STREAM_H_
+#define ASKAI_SRC_CLI_STREAM_H_
 
 #include <stdint.h>
 
@@ -61,4 +61,4 @@ cli_stream_result (struct cli_stream   *stream,
                    struct json_object **answer,
                    struct cli_error    *error);
 
-#endif /* TWINCEPTION_SRC_CLI_STREAM_H_ */
+#endif /* ASKAI_SRC_CLI_STREAM_H_ */

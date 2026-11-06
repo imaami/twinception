@@ -2,8 +2,8 @@
  *
  * C23 polyfills, convenience macros, etc.
  */
-#ifndef TWINCEPTION_SRC_COMPAT_H_
-#define TWINCEPTION_SRC_COMPAT_H_
+#ifndef ASKAI_SRC_COMPAT_H_
+#define ASKAI_SRC_COMPAT_H_
 
 #include <stddef.h> /* offsetof() */
 
@@ -56,4 +56,4 @@ diag_clang(ignored "-Wpre-c23-compat")
 # define const_inline __forceinline
 #endif
 
-#endif /* TWINCEPTION_SRC_COMPAT_H_ */
+#endif /* ASKAI_SRC_COMPAT_H_ */

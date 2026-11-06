@@ -4,8 +4,8 @@
  * returns a new json-c value, or nullptr if memory runs out. A builder
  * consumes the json-c values passed to it, also when it fails.
  */
-#ifndef TWINCEPTION_SRC_SCHEMA_H_
-#define TWINCEPTION_SRC_SCHEMA_H_
+#ifndef ASKAI_SRC_SCHEMA_H_
+#define ASKAI_SRC_SCHEMA_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -81,4 +81,4 @@ schema_tool (char const         *name,
              struct json_object *properties,
              struct cstr_view    required);
 
-#endif /* TWINCEPTION_SRC_SCHEMA_H_ */
+#endif /* ASKAI_SRC_SCHEMA_H_ */

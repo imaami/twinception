@@ -44,8 +44,8 @@
  * no waits. It removes a fired timer that no wait has returned LEDGER_KEEP
  * seconds after the timer's time.
  */
-#ifndef TWINCEPTION_SRC_LEDGER_H_
-#define TWINCEPTION_SRC_LEDGER_H_
+#ifndef ASKAI_SRC_LEDGER_H_
+#define ASKAI_SRC_LEDGER_H_
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -478,4 +478,4 @@ ledger_tell (struct ledger      *ledger,
 extern void
 ledger_look_put (struct ledger_look *look);
 
-#endif /* TWINCEPTION_SRC_LEDGER_H_ */
+#endif /* ASKAI_SRC_LEDGER_H_ */

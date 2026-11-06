@@ -12,8 +12,8 @@
  *
  * Compatible with C11 and later.
  */
-#ifndef TWINCEPTION_TESTS_DSTR_HELL_H_
-#define TWINCEPTION_TESTS_DSTR_HELL_H_
+#ifndef ASKAI_TESTS_DSTR_HELL_H_
+#define ASKAI_TESTS_DSTR_HELL_H_
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -226,4 +226,4 @@ hell_scale (void)
 	return scale ? scale : 1UL;
 }
 
-#endif /* TWINCEPTION_TESTS_DSTR_HELL_H_ */
+#endif /* ASKAI_TESTS_DSTR_HELL_H_ */

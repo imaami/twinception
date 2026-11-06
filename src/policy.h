@@ -42,8 +42,8 @@
  * on loopback that names a loopback host, or a client on a Unix socket, may
  * do everything, and any other client may call the tools.
  */
-#ifndef TWINCEPTION_SRC_POLICY_H_
-#define TWINCEPTION_SRC_POLICY_H_
+#ifndef ASKAI_SRC_POLICY_H_
+#define ASKAI_SRC_POLICY_H_
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -288,4 +288,4 @@ policy_principal_uid (struct policy const *policy,
                       uint32_t             uid,
                       int                 *e);
 
-#endif /* TWINCEPTION_SRC_POLICY_H_ */
+#endif /* ASKAI_SRC_POLICY_H_ */

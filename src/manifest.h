@@ -6,8 +6,8 @@
  * alignment of 4 holds no wider member, and a pointer would need
  * a relocation.
  */
-#ifndef TWINCEPTION_SRC_MANIFEST_H_
-#define TWINCEPTION_SRC_MANIFEST_H_
+#ifndef ASKAI_SRC_MANIFEST_H_
+#define ASKAI_SRC_MANIFEST_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -59,4 +59,4 @@ static_assert(offsetof (struct manifest_note, desc) == 20);
 # define MANIFEST_NO_ASAN
 #endif
 
-#endif /* TWINCEPTION_SRC_MANIFEST_H_ */
+#endif /* ASKAI_SRC_MANIFEST_H_ */

@@ -5,8 +5,8 @@
  * media type with parameters, ";base64" or not, a comma, and the data,
  * base64 in the standard alphabet, or else percent-encoded.
  */
-#ifndef TWINCEPTION_SRC_DATAURI_H_
-#define TWINCEPTION_SRC_DATAURI_H_
+#ifndef ASKAI_SRC_DATAURI_H_
+#define ASKAI_SRC_DATAURI_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -38,4 +38,4 @@ extern void
 datauri_decode (struct datauri const *d,
                 unsigned char        *out);
 
-#endif /* TWINCEPTION_SRC_DATAURI_H_ */
+#endif /* ASKAI_SRC_DATAURI_H_ */

@@ -3,8 +3,8 @@
  * MCP's Streamable HTTP transport and JSON-RPC semantics, over request
  * streams (src/stream.h).
  */
-#ifndef TWINCEPTION_SRC_MCP_H_
-#define TWINCEPTION_SRC_MCP_H_
+#ifndef ASKAI_SRC_MCP_H_
+#define ASKAI_SRC_MCP_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -644,4 +644,4 @@ extern int
 mcp_slot_fail (struct mcp_slot *slot,
                int              e);
 
-#endif /* TWINCEPTION_SRC_MCP_H_ */
+#endif /* ASKAI_SRC_MCP_H_ */

@@ -44,8 +44,8 @@
  * use its instance after it has ended the call, until the kind's function
  * returns.
  */
-#ifndef TWINCEPTION_SRC_INSTANCE_H_
-#define TWINCEPTION_SRC_INSTANCE_H_
+#ifndef ASKAI_SRC_INSTANCE_H_
+#define ASKAI_SRC_INSTANCE_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -167,4 +167,4 @@ instance_table_relieve (struct instance_table *table,
                         enum buf_pressure      level,
                         size_t                 max);
 
-#endif /* TWINCEPTION_SRC_INSTANCE_H_ */
+#endif /* ASKAI_SRC_INSTANCE_H_ */

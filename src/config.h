@@ -6,8 +6,8 @@
  * and whose member tools has the objects of the built-in tools, the
  * command line overriding the file (design section 9, S7).
  */
-#ifndef TWINCEPTION_SRC_CONFIG_H_
-#define TWINCEPTION_SRC_CONFIG_H_
+#ifndef ASKAI_SRC_CONFIG_H_
+#define ASKAI_SRC_CONFIG_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -159,4 +159,4 @@ config_log_policy (struct config const *cfg);
 extern void
 config_fini (struct config *cfg);
 
-#endif /* TWINCEPTION_SRC_CONFIG_H_ */
+#endif /* ASKAI_SRC_CONFIG_H_ */

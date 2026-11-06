@@ -19,8 +19,8 @@
  * connection of a loop shares that queue; after tls_close(), the
  * tls_destroy() that follows it does.
  */
-#ifndef TWINCEPTION_SRC_TLS_H_
-#define TWINCEPTION_SRC_TLS_H_
+#ifndef ASKAI_SRC_TLS_H_
+#define ASKAI_SRC_TLS_H_
 
 #include <stddef.h>
 #include <sys/types.h>
@@ -123,4 +123,4 @@ tls_close (struct ssl_st *ssl);
 extern void
 tls_destroy (struct ssl_st **p_ssl);
 
-#endif /* TWINCEPTION_SRC_TLS_H_ */
+#endif /* ASKAI_SRC_TLS_H_ */

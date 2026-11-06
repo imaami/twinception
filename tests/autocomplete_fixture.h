@@ -1,6 +1,6 @@
 /** @file Shared catalog for the C unit and C++ terminal tests. */
-#ifndef TWINCEPTION_TESTS_AUTOCOMPLETE_FIXTURE_H_
-#define TWINCEPTION_TESTS_AUTOCOMPLETE_FIXTURE_H_
+#ifndef ASKAI_TESTS_AUTOCOMPLETE_FIXTURE_H_
+#define ASKAI_TESTS_AUTOCOMPLETE_FIXTURE_H_
 
 #include "autocomplete.h"
 
@@ -14,4 +14,4 @@ extern int autocomplete_fixture (struct autocomplete *autocomplete);
 }
 #endif
 
-#endif /* TWINCEPTION_TESTS_AUTOCOMPLETE_FIXTURE_H_ */
+#endif /* ASKAI_TESTS_AUTOCOMPLETE_FIXTURE_H_ */

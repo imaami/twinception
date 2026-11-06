@@ -3,8 +3,8 @@
  * Random ids of 128 bits, as lowercase hexadecimal digits: the ids of
  * ledger records, jobs, journals, threads of notes and MCP sessions.
  */
-#ifndef TWINCEPTION_SRC_HEXID_H_
-#define TWINCEPTION_SRC_HEXID_H_
+#ifndef ASKAI_SRC_HEXID_H_
+#define ASKAI_SRC_HEXID_H_
 
 #include <errno.h>
 #include <string.h>
@@ -69,4 +69,4 @@ hexid_equal (struct hexid const *a,
 	return !strcmp(a->hex, b->hex);
 }
 
-#endif /* TWINCEPTION_SRC_HEXID_H_ */
+#endif /* ASKAI_SRC_HEXID_H_ */

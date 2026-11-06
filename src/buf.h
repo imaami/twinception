@@ -2,8 +2,8 @@
  *
  * Byte buffer for sockets, TLS and pipes.
  */
-#ifndef TWINCEPTION_SRC_BUF_H_
-#define TWINCEPTION_SRC_BUF_H_
+#ifndef ASKAI_SRC_BUF_H_
+#define ASKAI_SRC_BUF_H_
 
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -333,4 +333,4 @@ buf_stash_release (struct buf_stash  *stash,
                    enum buf_pressure  level,
                    size_t             max);
 
-#endif /* TWINCEPTION_SRC_BUF_H_ */
+#endif /* ASKAI_SRC_BUF_H_ */

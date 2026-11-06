@@ -4,8 +4,8 @@
  * passed to a mutator must not alias the module-owned storage that it
  * changes: the completion lines, or the names or note paths it replaces.
  */
-#ifndef TWINCEPTION_SRC_AUTOCOMPLETE_H_
-#define TWINCEPTION_SRC_AUTOCOMPLETE_H_
+#ifndef ASKAI_SRC_AUTOCOMPLETE_H_
+#define ASKAI_SRC_AUTOCOMPLETE_H_
 
 #include <stdint.h>
 
@@ -203,4 +203,4 @@ autocomplete_parse_call (struct autocomplete             *ac,
                          char                            *why,
                          size_t                           size);
 
-#endif /* TWINCEPTION_SRC_AUTOCOMPLETE_H_ */
+#endif /* ASKAI_SRC_AUTOCOMPLETE_H_ */

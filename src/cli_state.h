@@ -1,8 +1,8 @@
 /** @file
  * Private, bounded restart state for one CLI conversation.
  */
-#ifndef TWINCEPTION_SRC_CLI_STATE_H_
-#define TWINCEPTION_SRC_CLI_STATE_H_
+#ifndef ASKAI_SRC_CLI_STATE_H_
+#define ASKAI_SRC_CLI_STATE_H_
 
 #include <stdatomic.h>
 
@@ -143,4 +143,4 @@ cli_state_add_turn (struct cli_state *state,
 extern int
 cli_state_clear_turns (struct cli_state *state);
 
-#endif /* TWINCEPTION_SRC_CLI_STATE_H_ */
+#endif /* ASKAI_SRC_CLI_STATE_H_ */

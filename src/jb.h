@@ -4,8 +4,8 @@
  * static inline ones call only json-c and other static inline functions,
  * so plugins can use them.
  */
-#ifndef TWINCEPTION_SRC_JB_H_
-#define TWINCEPTION_SRC_JB_H_
+#ifndef ASKAI_SRC_JB_H_
+#define ASKAI_SRC_JB_H_
 
 #include <errno.h>
 #include <stddef.h>
@@ -459,4 +459,4 @@ jb_escape_fit (char const *src,
                size_t      len,
                size_t      room);
 
-#endif /* TWINCEPTION_SRC_JB_H_ */
+#endif /* ASKAI_SRC_JB_H_ */

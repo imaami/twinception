@@ -9,8 +9,8 @@
  * no data of askai's. A plugin, built the same way, exports askai_plugin
  * alone, which PLUGIN_MANIFEST() declares so.
  */
-#ifndef TWINCEPTION_SRC_EXPORT_H_
-#define TWINCEPTION_SRC_EXPORT_H_
+#ifndef ASKAI_SRC_EXPORT_H_
+#define ASKAI_SRC_EXPORT_H_
 
 /** Default visibility on a declaration: its definition, which sees it,
  *  takes it on, and a plugin's call of it stays an import however the
@@ -18,4 +18,4 @@
  */
 #define EXPORT [[gnu::visibility("default")]]
 
-#endif /* TWINCEPTION_SRC_EXPORT_H_ */
+#endif /* ASKAI_SRC_EXPORT_H_ */

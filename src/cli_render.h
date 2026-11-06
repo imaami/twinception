@@ -2,8 +2,8 @@
  *
  * Changed-span output for independently positioned terminal rows.
  */
-#ifndef TWINCEPTION_SRC_CLI_RENDER_H_
-#define TWINCEPTION_SRC_CLI_RENDER_H_
+#ifndef ASKAI_SRC_CLI_RENDER_H_
+#define ASKAI_SRC_CLI_RENDER_H_
 
 #include <stddef.h>
 
@@ -33,4 +33,4 @@ cli_render_row (struct dstr *cache,
                 size_t       row,
                 size_t       column);
 
-#endif /* TWINCEPTION_SRC_CLI_RENDER_H_ */
+#endif /* ASKAI_SRC_CLI_RENDER_H_ */

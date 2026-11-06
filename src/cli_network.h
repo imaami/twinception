@@ -2,8 +2,8 @@
  *
  * Network ownership and asynchronous Unix-socket HTTP transport.
  */
-#ifndef TWINCEPTION_SRC_CLI_NETWORK_H_
-#define TWINCEPTION_SRC_CLI_NETWORK_H_
+#ifndef ASKAI_SRC_CLI_NETWORK_H_
+#define ASKAI_SRC_CLI_NETWORK_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -123,4 +123,4 @@ cli_network_perform (struct cli_network            *network,
                      struct cli_network_post const *post,
                      struct cli_network_result     *result);
 
-#endif /* TWINCEPTION_SRC_CLI_NETWORK_H_ */
+#endif /* ASKAI_SRC_CLI_NETWORK_H_ */

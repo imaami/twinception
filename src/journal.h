@@ -10,8 +10,8 @@
  * Active and legacy-migrated jobs are retained. Each participant has an
  * exclusive writer lock. No disk or Git operation runs on an event loop.
  */
-#ifndef TWINCEPTION_SRC_JOURNAL_H_
-#define TWINCEPTION_SRC_JOURNAL_H_
+#ifndef ASKAI_SRC_JOURNAL_H_
+#define ASKAI_SRC_JOURNAL_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -189,4 +189,4 @@ extern int
 journal_key (struct journal const *journal,
              unsigned char         key[POLICY_KEY]);
 
-#endif /* TWINCEPTION_SRC_JOURNAL_H_ */
+#endif /* ASKAI_SRC_JOURNAL_H_ */

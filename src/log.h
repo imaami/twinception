@@ -13,8 +13,8 @@
  * A thread without a ring, such as one logging before the logger starts or in
  * a program that has none, writes its lines to stderr itself.
  */
-#ifndef TWINCEPTION_SRC_LOG_H_
-#define TWINCEPTION_SRC_LOG_H_
+#ifndef ASKAI_SRC_LOG_H_
+#define ASKAI_SRC_LOG_H_
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -110,4 +110,4 @@ log_done (void);
 extern void
 log_fini (void);
 
-#endif /* TWINCEPTION_SRC_LOG_H_ */
+#endif /* ASKAI_SRC_LOG_H_ */

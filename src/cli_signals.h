@@ -2,8 +2,8 @@
  *
  * Process signals delivered to one explicitly owned UI descriptor.
  */
-#ifndef TWINCEPTION_SRC_CLI_SIGNALS_H_
-#define TWINCEPTION_SRC_CLI_SIGNALS_H_
+#ifndef ASKAI_SRC_CLI_SIGNALS_H_
+#define ASKAI_SRC_CLI_SIGNALS_H_
 
 #include <signal.h>
 
@@ -39,4 +39,4 @@ cli_signals_init (struct cli_signals *signals,
 extern void
 cli_signals_fini (struct cli_signals *signals);
 
-#endif /* TWINCEPTION_SRC_CLI_SIGNALS_H_ */
+#endif /* ASKAI_SRC_CLI_SIGNALS_H_ */

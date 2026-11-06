@@ -3,8 +3,8 @@
  * A tally of items and of their bytes, as a budget of a number of items
  * and of a number of bytes counts what it holds.
  */
-#ifndef TWINCEPTION_SRC_TALLY_H_
-#define TWINCEPTION_SRC_TALLY_H_
+#ifndef ASKAI_SRC_TALLY_H_
+#define ASKAI_SRC_TALLY_H_
 
 #include <stddef.h>
 
@@ -45,4 +45,4 @@ tally_sub (struct tally *used,
 	used->bytes -= bytes;
 }
 
-#endif /* TWINCEPTION_SRC_TALLY_H_ */
+#endif /* ASKAI_SRC_TALLY_H_ */

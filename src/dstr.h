@@ -49,8 +49,8 @@
  *    be undefined like the others (see 2). Their names end in `_`, like
  *    the internal inline functions behind the API.
  */
-#ifndef TWINCEPTION_SRC_DSTR_H_
-#define TWINCEPTION_SRC_DSTR_H_
+#ifndef ASKAI_SRC_DSTR_H_
+#define ASKAI_SRC_DSTR_H_
 
 #include <stdarg.h> /* va_list */
 #include <string.h> /* strlen() */
@@ -877,4 +877,4 @@ dstr_move (struct dstr *const ds)
 /* Don't move this include statement or reorder lines in relation to it! */
 #include "dstr_priv.h"
 
-#endif /* TWINCEPTION_SRC_DSTR_H_ */
+#endif /* ASKAI_SRC_DSTR_H_ */

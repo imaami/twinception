@@ -2,8 +2,8 @@
  *
  * Upstream AI APIs: request bodies and answer parsing.
  */
-#ifndef TWINCEPTION_SRC_AI_H_
-#define TWINCEPTION_SRC_AI_H_
+#ifndef ASKAI_SRC_AI_H_
+#define ASKAI_SRC_AI_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -419,4 +419,4 @@ ai_thoughts (enum ai_api         api,
              struct json_object *root,
              struct dstr        *text);
 
-#endif /* TWINCEPTION_SRC_AI_H_ */
+#endif /* ASKAI_SRC_AI_H_ */

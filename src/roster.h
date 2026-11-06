@@ -23,8 +23,8 @@
  * cancel message. The call's loop drops both, and the last drop frees the
  * record.
  */
-#ifndef TWINCEPTION_SRC_ROSTER_H_
-#define TWINCEPTION_SRC_ROSTER_H_
+#ifndef ASKAI_SRC_ROSTER_H_
+#define ASKAI_SRC_ROSTER_H_
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -118,4 +118,4 @@ roster_cancel (struct roster *roster,
 extern void
 roster_call_put (struct roster_call *call);
 
-#endif /* TWINCEPTION_SRC_ROSTER_H_ */
+#endif /* ASKAI_SRC_ROSTER_H_ */

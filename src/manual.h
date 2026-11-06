@@ -21,8 +21,8 @@
  * (src/mcp.h). It replies with the page, or with why there is none. A
  * call that goes leaves the page to the manual.
  */
-#ifndef TWINCEPTION_SRC_MANUAL_H_
-#define TWINCEPTION_SRC_MANUAL_H_
+#ifndef ASKAI_SRC_MANUAL_H_
+#define ASKAI_SRC_MANUAL_H_
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -76,4 +76,4 @@ extern mcp_part_create_fn manual_loop_create;
  */
 extern mcp_part_destroy_fn manual_loop_destroy;
 
-#endif /* TWINCEPTION_SRC_MANUAL_H_ */
+#endif /* ASKAI_SRC_MANUAL_H_ */

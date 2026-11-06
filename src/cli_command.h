@@ -2,8 +2,8 @@
  *
  * CLI command spellings, syntax, completion and execution policy.
  */
-#ifndef TWINCEPTION_SRC_CLI_COMMAND_H_
-#define TWINCEPTION_SRC_CLI_COMMAND_H_
+#ifndef ASKAI_SRC_CLI_COMMAND_H_
+#define ASKAI_SRC_CLI_COMMAND_H_
 
 #include <stdint.h>
 
@@ -75,4 +75,4 @@ cli_command_find (struct cstr_view token);
 extern struct cli_command_matches
 cli_command_prefix (struct cstr_view prefix);
 
-#endif /* TWINCEPTION_SRC_CLI_COMMAND_H_ */
+#endif /* ASKAI_SRC_CLI_COMMAND_H_ */

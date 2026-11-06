@@ -13,8 +13,8 @@
  * itself out as it exits, so one stuck in a call can be left to the process's
  * exit.
  */
-#ifndef TWINCEPTION_SRC_BLOCKER_H_
-#define TWINCEPTION_SRC_BLOCKER_H_
+#ifndef ASKAI_SRC_BLOCKER_H_
+#define ASKAI_SRC_BLOCKER_H_
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -81,4 +81,4 @@ blocker_destroy (struct blocker **p_blocker);
 extern struct blocker_metrics const *
 blocker_counts (struct blocker const *blocker);
 
-#endif /* TWINCEPTION_SRC_BLOCKER_H_ */
+#endif /* ASKAI_SRC_BLOCKER_H_ */

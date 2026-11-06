@@ -20,8 +20,8 @@
  * only shuts down its sending side, which HTTP/1.1 cannot tell from one going
  * away, cancels the stream too. Until then that client is still answered.
  */
-#ifndef TWINCEPTION_SRC_STREAM_H_
-#define TWINCEPTION_SRC_STREAM_H_
+#ifndef ASKAI_SRC_STREAM_H_
+#define ASKAI_SRC_STREAM_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -135,4 +135,4 @@ struct stream {
 	struct stream_peer       peer;     /**< the address of the client */
 };
 
-#endif /* TWINCEPTION_SRC_STREAM_H_ */
+#endif /* ASKAI_SRC_STREAM_H_ */

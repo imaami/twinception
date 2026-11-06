@@ -2,8 +2,8 @@
  *
  * Bounded transcript storage, independent of terminal and connections.
  */
-#ifndef TWINCEPTION_SRC_CLI_SCROLLBACK_H_
-#define TWINCEPTION_SRC_CLI_SCROLLBACK_H_
+#ifndef ASKAI_SRC_CLI_SCROLLBACK_H_
+#define ASKAI_SRC_CLI_SCROLLBACK_H_
 
 #include <stddef.h>
 
@@ -67,4 +67,4 @@ cli_scrollback_render_pane (struct cli_scrollback        *scrollback,
                             struct dstr                  *cache,
                             struct dstr                  *output);
 
-#endif /* TWINCEPTION_SRC_CLI_SCROLLBACK_H_ */
+#endif /* ASKAI_SRC_CLI_SCROLLBACK_H_ */

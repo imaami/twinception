@@ -2,8 +2,8 @@
  *
  * Unix-socket MCP connection, independent of terminal and history.
  */
-#ifndef TWINCEPTION_SRC_CLI_CLIENT_H_
-#define TWINCEPTION_SRC_CLI_CLIENT_H_
+#ifndef ASKAI_SRC_CLI_CLIENT_H_
+#define ASKAI_SRC_CLI_CLIENT_H_
 
 #include <json-c/json.h>
 #include <stdint.h>
@@ -149,4 +149,4 @@ cli_client_json_cleanup (struct json_object **value)
 
 #define cli_json_auto __attribute__((cleanup(cli_client_json_cleanup))) struct json_object *
 
-#endif /* TWINCEPTION_SRC_CLI_CLIENT_H_ */
+#endif /* ASKAI_SRC_CLI_CLIENT_H_ */

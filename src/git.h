@@ -38,8 +38,8 @@
  * Calls run as children (child.h) on their client loop. Their output is made
  * UTF-8 a share per step (mcp.h); dropping a call kills its git child.
  */
-#ifndef TWINCEPTION_SRC_GIT_H_
-#define TWINCEPTION_SRC_GIT_H_
+#ifndef ASKAI_SRC_GIT_H_
+#define ASKAI_SRC_GIT_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -113,4 +113,4 @@ git_destroy (struct git **p_git);
  */
 extern struct plugin const git_plugin;
 
-#endif /* TWINCEPTION_SRC_GIT_H_ */
+#endif /* ASKAI_SRC_GIT_H_ */

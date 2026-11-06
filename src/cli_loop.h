@@ -4,8 +4,8 @@
  * that the UI thread runs one turn at a time, each turn with its own
  * deadline.
  */
-#ifndef TWINCEPTION_SRC_CLI_LOOP_H_
-#define TWINCEPTION_SRC_CLI_LOOP_H_
+#ifndef ASKAI_SRC_CLI_LOOP_H_
+#define ASKAI_SRC_CLI_LOOP_H_
 
 #include <stdint.h>
 
@@ -62,4 +62,4 @@ extern int
 cli_loop_turn (struct cli_loop *loop,
                uint64_t         deadline);
 
-#endif /* TWINCEPTION_SRC_CLI_LOOP_H_ */
+#endif /* ASKAI_SRC_CLI_LOOP_H_ */

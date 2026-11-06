@@ -2,8 +2,8 @@
  * Adapted from llama.cpp tools/cli/cli-ui.h.
  * Copyright (c) 2023-2026 The ggml authors. MIT license; see doc/llama-cli-LICENSE.
  */
-#ifndef TWINCEPTION_SRC_CLI_UI_H_
-#define TWINCEPTION_SRC_CLI_UI_H_
+#ifndef ASKAI_SRC_CLI_UI_H_
+#define ASKAI_SRC_CLI_UI_H_
 
 #include "cstr_view.h"
 #include "dstr.h"
@@ -65,4 +65,4 @@ cli_ui_error (struct cli_console *console,
               struct cstr_view    title,
               struct cstr_view    detail);
 
-#endif /* TWINCEPTION_SRC_CLI_UI_H_ */
+#endif /* ASKAI_SRC_CLI_UI_H_ */

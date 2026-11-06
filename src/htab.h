@@ -6,8 +6,8 @@
  * index is its hash masked with the number of buckets minus 1. The caller
  * computes the hashes, compares the keys and does the locking.
  */
-#ifndef TWINCEPTION_SRC_HTAB_H_
-#define TWINCEPTION_SRC_HTAB_H_
+#ifndef ASKAI_SRC_HTAB_H_
+#define ASKAI_SRC_HTAB_H_
 
 #include <errno.h>
 #include <stdbit.h>
@@ -172,4 +172,4 @@ htab_grow (struct htab *t)
 	return 0;
 }
 
-#endif /* TWINCEPTION_SRC_HTAB_H_ */
+#endif /* ASKAI_SRC_HTAB_H_ */

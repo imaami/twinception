@@ -10,8 +10,8 @@
  * it derives facts about the target from the macros. The module uses only
  * libc.
  */
-#ifndef TWINCEPTION_SRC_GODBOLT_PROBE_H_
-#define TWINCEPTION_SRC_GODBOLT_PROBE_H_
+#ifndef ASKAI_SRC_GODBOLT_PROBE_H_
+#define ASKAI_SRC_GODBOLT_PROBE_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -110,4 +110,4 @@ extern char const *
 godbolt_probe_macro (struct godbolt_probe const *probe,
                      char const                 *name);
 
-#endif /* TWINCEPTION_SRC_GODBOLT_PROBE_H_ */
+#endif /* ASKAI_SRC_GODBOLT_PROBE_H_ */

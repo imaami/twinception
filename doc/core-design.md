@@ -1,6 +1,6 @@
 # Daemon core design
 
-Design for the threaded, asynchronous HTTPS core of the daemon, to be built before the semantic engine. Bracketed tags cite measurements and code reviews made while designing it (2026-10-09): [M] mcp2210-proxy's threading, [T] twinception/askai under load, [S] srtview's stalls under load, [P] platform and protocol probes, [ws] a work-sharing simulation, [J1]/[J2] the design judges' re-measurements. The experiments themselves were scratch work and are not in the repository.
+Design for the threaded, asynchronous HTTPS core of the daemon, to be built before the semantic engine. Bracketed tags cite measurements and code reviews made while designing it (2026-10-09): [M] mcp2210-proxy's threading, [T] askai under load, [S] srtview's stalls under load, [P] platform and protocol probes, [ws] a work-sharing simulation, [J1]/[J2] the design judges' re-measurements. The experiments themselves were scratch work and are not in the repository.
 
 ## Summary
 

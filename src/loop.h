@@ -3,8 +3,8 @@
  * Event loop: epoll, a timer heap, two budgeted ready lists and an
  * inbox that other threads post to.
  */
-#ifndef TWINCEPTION_SRC_LOOP_H_
-#define TWINCEPTION_SRC_LOOP_H_
+#ifndef ASKAI_SRC_LOOP_H_
+#define ASKAI_SRC_LOOP_H_
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -326,4 +326,4 @@ loop_fail (struct loop *loop,
 extern void
 loop_exit (struct loop *loop);
 
-#endif /* TWINCEPTION_SRC_LOOP_H_ */
+#endif /* ASKAI_SRC_LOOP_H_ */

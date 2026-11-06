@@ -27,8 +27,8 @@
  * result. A function with an int *e parameter returns nullptr if e is
  * nullptr.
  */
-#ifndef TWINCEPTION_SRC_REVIEW_H_
-#define TWINCEPTION_SRC_REVIEW_H_
+#ifndef ASKAI_SRC_REVIEW_H_
+#define ASKAI_SRC_REVIEW_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -270,4 +270,4 @@ extern int
 review_restore (struct review            *r,
                 struct json_object const *obj);
 
-#endif /* TWINCEPTION_SRC_REVIEW_H_ */
+#endif /* ASKAI_SRC_REVIEW_H_ */

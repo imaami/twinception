@@ -42,8 +42,8 @@
  * (src/roster.h), not through home. The call's front then cancels the
  * call's job with CANCEL.
  */
-#ifndef TWINCEPTION_SRC_JOB_H_
-#define TWINCEPTION_SRC_JOB_H_
+#ifndef ASKAI_SRC_JOB_H_
+#define ASKAI_SRC_JOB_H_
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -350,4 +350,4 @@ job_post (struct job       *job,
 	}
 }
 
-#endif /* TWINCEPTION_SRC_JOB_H_ */
+#endif /* ASKAI_SRC_JOB_H_ */

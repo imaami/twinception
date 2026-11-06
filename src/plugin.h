@@ -51,8 +51,8 @@
  * change it after that. mcp_slot_config() returns it, and askai passes it
  * to definition() of each of the plugin's kinds.
  */
-#ifndef TWINCEPTION_SRC_PLUGIN_H_
-#define TWINCEPTION_SRC_PLUGIN_H_
+#ifndef ASKAI_SRC_PLUGIN_H_
+#define ASKAI_SRC_PLUGIN_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -282,4 +282,4 @@ plugin_loaded_create (char const         *path,
 extern void
 plugin_loaded_destroy (struct plugin_loaded **p_loaded);
 
-#endif /* TWINCEPTION_SRC_PLUGIN_H_ */
+#endif /* ASKAI_SRC_PLUGIN_H_ */

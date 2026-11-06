@@ -8,8 +8,8 @@
  * child_run() instead runs a child on the calling thread, its output in a
  * file, and reaps it through its pidfd.
  */
-#ifndef TWINCEPTION_SRC_CHILD_H_
-#define TWINCEPTION_SRC_CHILD_H_
+#ifndef ASKAI_SRC_CHILD_H_
+#define ASKAI_SRC_CHILD_H_
 
 #include <signal.h>
 #include <stddef.h>
@@ -258,4 +258,4 @@ child_destroy_all (struct list *list);
 extern int
 child_std_open (void);
 
-#endif /* TWINCEPTION_SRC_CHILD_H_ */
+#endif /* ASKAI_SRC_CHILD_H_ */

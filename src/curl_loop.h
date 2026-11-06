@@ -5,8 +5,8 @@
  * steps, and the steps drive curl. A socket that cannot be watched fails
  * only the transfer that asked for it.
  */
-#ifndef TWINCEPTION_SRC_CURL_LOOP_H_
-#define TWINCEPTION_SRC_CURL_LOOP_H_
+#ifndef ASKAI_SRC_CURL_LOOP_H_
+#define ASKAI_SRC_CURL_LOOP_H_
 
 #include <curl/curl.h>
 
@@ -75,4 +75,4 @@ curl_loop_action (struct curl_loop *cl,
                   curl_socket_t     fd,
                   int               what);
 
-#endif /* TWINCEPTION_SRC_CURL_LOOP_H_ */
+#endif /* ASKAI_SRC_CURL_LOOP_H_ */

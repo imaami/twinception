@@ -1,8 +1,8 @@
 /** @file
  * Read-only, byte-counted views of strings.
  */
-#ifndef TWINCEPTION_SRC_CSTR_VIEW_H_
-#define TWINCEPTION_SRC_CSTR_VIEW_H_
+#ifndef ASKAI_SRC_CSTR_VIEW_H_
+#define ASKAI_SRC_CSTR_VIEW_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -258,4 +258,4 @@ cstr_view_list_has (struct cstr_view list,
 	return false;
 }
 
-#endif /* TWINCEPTION_SRC_CSTR_VIEW_H_ */
+#endif /* ASKAI_SRC_CSTR_VIEW_H_ */

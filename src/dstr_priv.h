@@ -11,8 +11,8 @@
  * undefined and not leak into the global namespace of API users, and
  * conversely it keeps them defined for `dstr` implementation code.
  */
-#ifndef TWINCEPTION_SRC_DSTR_PRIV_H_
-#define TWINCEPTION_SRC_DSTR_PRIV_H_
+#ifndef ASKAI_SRC_DSTR_PRIV_H_
+#define ASKAI_SRC_DSTR_PRIV_H_
 
 #undef dstr_printf_like
 #undef dstr_useless
@@ -40,4 +40,4 @@
 /* Don't move this include statement or reorder lines in relation to it! */
 #include "dstr.h"
 
-#endif /* TWINCEPTION_SRC_DSTR_PRIV_H_ */
+#endif /* ASKAI_SRC_DSTR_PRIV_H_ */

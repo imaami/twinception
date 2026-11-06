@@ -31,8 +31,8 @@
  *   assigned: it is declared from a value, or allocated and its atomic
  *   members initialized one by one.
  */
-#ifndef TWINCEPTION_SRC_HIST_H_
-#define TWINCEPTION_SRC_HIST_H_
+#ifndef ASKAI_SRC_HIST_H_
+#define ASKAI_SRC_HIST_H_
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -221,4 +221,4 @@ hist_pct (struct hist const *h,
 	return max;
 }
 
-#endif /* TWINCEPTION_SRC_HIST_H_ */
+#endif /* ASKAI_SRC_HIST_H_ */

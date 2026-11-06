@@ -3,8 +3,8 @@
  * Shelves: finished objects a thread keeps for reuse, and gives back
  * under memory pressure (design section 5).
  */
-#ifndef TWINCEPTION_SRC_SHELF_H_
-#define TWINCEPTION_SRC_SHELF_H_
+#ifndef ASKAI_SRC_SHELF_H_
+#define ASKAI_SRC_SHELF_H_
 
 #include <stddef.h>
 
@@ -71,4 +71,4 @@ shelf_age (struct shelf *shelf)
 	buf_kept_age(&shelf->kept);
 }
 
-#endif /* TWINCEPTION_SRC_SHELF_H_ */
+#endif /* ASKAI_SRC_SHELF_H_ */

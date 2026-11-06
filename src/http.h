@@ -2,8 +2,8 @@
  *
  * Asynchronous HTTP requests over libcurl on an event loop.
  */
-#ifndef TWINCEPTION_SRC_HTTP_H_
-#define TWINCEPTION_SRC_HTTP_H_
+#ifndef ASKAI_SRC_HTTP_H_
+#define ASKAI_SRC_HTTP_H_
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -148,4 +148,4 @@ http_end (struct http          *http,
 extern void
 http_resume (struct http_request *request);
 
-#endif /* TWINCEPTION_SRC_HTTP_H_ */
+#endif /* ASKAI_SRC_HTTP_H_ */

@@ -2,8 +2,8 @@
  *
  * Terminal styles identified by index, with one shared SGR palette.
  */
-#ifndef TWINCEPTION_SRC_CLI_STYLE_H_
-#define TWINCEPTION_SRC_CLI_STYLE_H_
+#ifndef ASKAI_SRC_CLI_STYLE_H_
+#define ASKAI_SRC_CLI_STYLE_H_
 
 #include <stdint.h>
 
@@ -43,4 +43,4 @@ struct cli_style_entry {
 extern struct cli_style_entry const *
 cli_style_palette (bool color);
 
-#endif /* TWINCEPTION_SRC_CLI_STYLE_H_ */
+#endif /* ASKAI_SRC_CLI_STYLE_H_ */

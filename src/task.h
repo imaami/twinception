@@ -20,8 +20,8 @@
  * as askai stops, the last freeing it. A loop's count of the tasks placed
  * on it is shared too: placers add, the loop takes away.
  */
-#ifndef TWINCEPTION_SRC_TASK_H_
-#define TWINCEPTION_SRC_TASK_H_
+#ifndef ASKAI_SRC_TASK_H_
+#define ASKAI_SRC_TASK_H_
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -148,4 +148,4 @@ extern void
 task_put (struct task *task,
           uint32_t     n);
 
-#endif /* TWINCEPTION_SRC_TASK_H_ */
+#endif /* ASKAI_SRC_TASK_H_ */
