@@ -29,6 +29,20 @@ enum child_flag {
 	CHILD_STDERR = 1u << 0,  /**< its standard error goes to its output too */
 };
 
+/** The bits of child.flags. Only child.c uses the bits of CHILD_EVENTS:
+ *  what the next step of the child is to look at.
+ */
+enum child_state : uint32_t {
+	CHILD_CUT    = 1u << 0,  /**< its output went past the cap, or memory
+	                              ran out for it, which killed it */
+	CHILD_LATE   = 1u << 1,  /**< its deadline came, which killed it or is
+	                              about to */
+	CHILD_OUT    = 1u << 2,  /**< its output can be read, or has ended */
+	CHILD_EXIT   = 1u << 3,  /**< it has exited */
+	CHILD_DUE    = 1u << 4,  /**< its deadline has come */
+	CHILD_EVENTS = CHILD_OUT | CHILD_EXIT | CHILD_DUE,
+};
+
 /**
  * A child process, from its spawn until it is reaped and its owner has let
  * go of it. Its session's process group is killed, with SIGKILL, once its
@@ -70,11 +84,7 @@ struct child {
 	                                  failed */
 	int                status;   /**< its exit status, or the signal that
 	                                  killed it */
-	uint16_t           events;   /**< what the next step is to look at */
-	bool               cut;      /**< its output went past the cap, or
-	                                  memory ran out for it, which killed it */
-	bool               late;     /**< its deadline came, which killed it or
-	                                  is about to */
+	uint32_t           flags;    /**< enum child_state */
 };
 
 /** What a child runs, and how. */

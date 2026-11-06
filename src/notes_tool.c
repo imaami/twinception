@@ -411,7 +411,7 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
 static bool
 notes_tool_ok (struct child const *c)
 {
-	return c && !c->cut && !c->late && c->code == CLD_EXITED && !c->status;
+	return c && !(c->flags & (CHILD_CUT | CHILD_LATE)) && c->code == CLD_EXITED && !c->status;
 }
 
 /* Returns true if git wrote a list of the notes. A list that askai cut
@@ -420,7 +420,7 @@ notes_tool_ok (struct child const *c)
 static bool
 notes_tool_listed (struct child const *c)
 {
-	return c && (c->cut || notes_tool_ok(c));
+	return c && (c->flags & CHILD_CUT || notes_tool_ok(c));
 }
 
 /* Returns true if git exited with status 128. It does so if the
@@ -429,7 +429,7 @@ notes_tool_listed (struct child const *c)
 static bool
 notes_tool_none (struct child const *c)
 {
-	return !c->late && c->code == CLD_EXITED && c->status == 128;
+	return !(c->flags & CHILD_LATE) && c->code == CLD_EXITED && c->status == 128;
 }
 
 /* Ends the call of the notes tool in @p slot. The function destroys the
@@ -494,7 +494,7 @@ static int
 notes_tool_call_unadded (struct notes_tool_call const *call)
 {
 	struct child const *c = call->child;
-	if (c->late)
+	if (c->flags & CHILD_LATE)
 		return cstr_view_cat(CSTR_VIEW("Could not write the note: it took "
 		                               "too long."), call->text);
 	if (notes_tool_raced(c)) {
@@ -815,16 +815,16 @@ notes_tool_got_list (struct mcp_slot *slot)
 	struct span out = buf_peek(&c->out);
 	if (!files) {
 		struct span newest;
-		e = e ? e : notes_tool_history(slot, out, c->cut, &newest);
+		e = e ? e : notes_tool_history(slot, out, c->flags & CHILD_CUT, &newest);
 	} else {
 		while (!e && out.len) {
 			struct notes_file file;
 			int r = notes_file_next(&out, &file);
 			if (r) {
-				if (!c->cut)
+				if (!(c->flags & CHILD_CUT))
 					e = cstr_view_cat(CSTR_VIEW("Cannot decode the notebook "
 					                            "file list."), call->text);
-				ok = c->cut;
+				ok = c->flags & CHILD_CUT;
 				break;
 			}
 			char const *name = (char const *)file.name.ptr;
@@ -833,7 +833,7 @@ notes_tool_got_list (struct mcp_slot *slot)
 			                 file.id.hex))
 				e = ENOMEM;
 		}
-		if (!e && c->cut)
+		if (!e && c->flags & CHILD_CUT)
 			e = cstr_view_cat(CSTR_VIEW("[The file list exceeded the capture limit and "
 			                            "is incomplete.]\n"), call->text);
 		loop_work(mcp_slot_loop(slot), LOOP_COPY, buf_peek(&c->out).len);
@@ -882,7 +882,7 @@ notes_tool_got_books (struct mcp_slot *slot)
 		out.ptr += n;
 		out.len -= n;
 	}
-	if (!e && c->cut)
+	if (!e && c->flags & CHILD_CUT)
 		e = cstr_view_cat(CSTR_VIEW("[The notebook list is incomplete.]\n"), call->text);
 	notes_tool_end(slot, e, false);
 }
@@ -1023,7 +1023,7 @@ notes_tool_got_diff (struct mcp_slot *slot)
 		e = !diff.len ? cstr_view_cat(CSTR_VIEW("No differences.\n"), call->text)
 		  : jb_is_text(diff) ? cstr_view_cat(diff, call->text)
 		  : notes_tool_view(d, diff, SIZE_MAX, nullptr);
-	if (!e && c->cut)
+	if (!e && c->flags & CHILD_CUT)
 		e = cstr_view_cat(CSTR_VIEW("\n[The diff exceeded the capture limit "
 		                            "and is incomplete.]\n"), call->text);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
@@ -1184,7 +1184,7 @@ notes_tool_prompt_list (struct mcp_slot  *slot,
 	struct buf in = {};
 	int e = cstr_view_cat(head, call->text);
 	if (!e)
-		e = notes_tool_history(slot, buf_peek(&c->out), c->cut, &newest);
+		e = notes_tool_history(slot, buf_peek(&c->out), c->flags & CHILD_CUT, &newest);
 	struct cstr_view const name = { (char const *)newest.ptr, newest.len };
 	/* The name comes from git. git reads the note only if add would accept
 	 * the name as it is. */

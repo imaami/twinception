@@ -23,13 +23,6 @@
 #include "child.h"
 #include "util.h"
 
-/* What a child's next step is to look at. */
-enum {
-	CHILD_OUT  = 1 << 0,  /* its output can be read, or has ended */
-	CHILD_EXIT = 1 << 1,  /* it has exited */
-	CHILD_LATE = 1 << 2,  /* its deadline has come */
-};
-
 /* The children spawned and not yet reaped, of every loop. */
 static _Atomic uint32_t alive;
 
@@ -114,13 +107,13 @@ child_read (struct child *c)
 		size_t room = loop_room(loop, LOOP_RECV);
 		size_t want = left < room ? left : room;
 		if (!want) {
-			c->events |= CHILD_OUT;
+			c->flags |= CHILD_OUT;
 			loop_ready_bulk(loop, &c->step);
 			return;
 		}
 		struct span s;
 		if (buf_reserve(&c->out, want, c->max + 1, &s)) {
-			c->cut = true;
+			c->flags |= CHILD_CUT;
 			child_kill(c);
 			return;
 		}
@@ -136,7 +129,7 @@ child_read (struct child *c)
 		loop_work(loop, LOOP_RECV, (uint64_t)n);
 		if (len + (size_t)n > c->max) {
 			buf_cut(&c->out, c->max, len + (size_t)n - c->max);
-			c->cut = true;
+			c->flags |= CHILD_CUT;
 			child_kill(c);
 			return;
 		}
@@ -173,8 +166,8 @@ child_exited (struct child *c)
 static void
 child_due (struct child *c)
 {
-	bool term = c->grace && !c->late && c->pid > 0;
-	c->late = true;
+	bool term = c->grace && !(c->flags & CHILD_LATE) && c->pid > 0;
+	c->flags |= CHILD_LATE;
 	if (!term) {
 		child_signal(c, SIGKILL);
 		return;
@@ -192,9 +185,9 @@ child_step (struct loop      *loop,
             struct loop_step *step)
 {
 	struct child *c = container_of(step, struct child, step);
-	uint16_t events = c->events;
-	c->events = 0;
-	if (events & CHILD_LATE)
+	uint32_t events = c->flags & CHILD_EVENTS;
+	c->flags &= ~CHILD_EVENTS;
+	if (events & CHILD_DUE)
 		child_due(c);
 	if (events & CHILD_OUT && c->pipe.fd >= 0)
 		child_read(c);
@@ -217,7 +210,7 @@ child_event (struct loop     *loop,
 {
 	(void)events;
 	struct child *c = ref->owner;
-	c->events |= ref == &c->proc ? CHILD_EXIT : CHILD_OUT;
+	c->flags |= ref == &c->proc ? CHILD_EXIT : CHILD_OUT;
 	loop_ready_bulk(loop, &c->step);
 }
 
@@ -226,7 +219,7 @@ child_late (struct loop       *loop,
             struct loop_timer *timer)
 {
 	struct child *c = container_of(timer, struct child, timer);
-	c->events |= CHILD_LATE;
+	c->flags |= CHILD_DUE;
 	loop_ready_bulk(loop, &c->step);
 }
 

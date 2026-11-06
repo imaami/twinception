@@ -397,9 +397,9 @@ manual_fetch_ended (struct manual_fetch const *f,
                     struct child const        *c,
                     char                      *why)
 {
-	if (c->cut)
+	if (c->flags & CHILD_CUT)
 		return (struct cstr_view){};
-	if (c->late)
+	if (c->flags & CHILD_LATE)
 		return util_format_view(why, MANUAL_WHY, "man took longer than %d s.",
 		                        MANUAL_SECONDS);
 	switch (c->code) {
@@ -455,7 +455,7 @@ manual_fetch_rendered (struct child *c)
 		return;
 	}
 	size_t len = buf_peek(&c->out).len;
-	size_t note = c->cut ? sizeof cut - 1 : 0;
+	size_t note = c->flags & CHILD_CUT ? sizeof cut - 1 : 0;
 	struct manual_page *page = malloc(sizeof *page + len + note);
 	if (!page) {
 		manual_fetch_fail(f, CSTR_VIEW("Out of memory."));

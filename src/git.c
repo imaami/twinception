@@ -1106,7 +1106,7 @@ git_call_advance (struct git_call *call,
                   struct mcp_slot *slot)
 {
 	struct child *c = call->child;
-	int e = c->late || c->cut || c->code != CLD_EXITED ? EIO : 0;
+	int e = c->flags & (CHILD_CUT | CHILD_LATE) || c->code != CLD_EXITED ? EIO : 0;
 	if (!e && c->status && !(call->phase == GIT_META && c->status == 1))
 		e = EINVAL;
 	if (!e) {
@@ -1131,7 +1131,7 @@ git_call_advance (struct git_call *call,
 			break;
 		}
 	}
-	bool late = c->late;
+	bool late = c->flags & CHILD_LATE;
 	child_destroy(&call->child);
 	if (!e) {
 		++call->phase;
@@ -1178,11 +1178,11 @@ git_ended (struct mcp_slot *slot,
 	char buf[GIT_NOTE - 2];  /* the blank line before the note is 2 bytes at most */
 	struct cstr_view note;
 	bool failed = true;
-	if (c->late) {
+	if (c->flags & CHILD_LATE) {
 		struct git_loop const *gl = mcp_slot_part(slot);
 		note = util_format_view(buf, sizeof buf, "[git took longer than %.0f s, and was "
 		                        "stopped.]", (double)gl->git->timeout / 1e9);
-	} else if (c->cut) {
+	} else if (c->flags & CHILD_CUT) {
 		note = CSTR_VIEW("[The output goes on past the 4 MiB shown.]");
 		failed = c->code == CLD_EXITED && c->status;
 	} else if (c->code != CLD_EXITED) {
@@ -1489,7 +1489,7 @@ git_read_shown (struct git_read const *read,
                 size_t                 end)
 {
 	struct child const *c = call->child;
-	bool part = read->last >= read->line && c->cut &&
+	bool part = read->last >= read->line && c->flags & CHILD_CUT &&
 	            buf_peek(&c->out).ptr[read->to - 1] != '\n';
 	if (read->last - part < read->line)
 		return 0;
@@ -1502,7 +1502,7 @@ git_read_shown (struct git_read const *read,
 		.len    = (part ? read->mark : end) - read->head,
 		.first  = read->line,
 		.last   = read->last - part,
-		.total  = c->cut ? 0 : read->total,
+		.total  = c->flags & CHILD_CUT ? 0 : read->total,
 	};
 	return mcp_slot_source(slot, &src);
 }
@@ -1541,7 +1541,7 @@ git_scan (struct mcp_slot *slot,
 	read->total = read->lines;
 	if (read->line > (read->total ? read->total : 1)) {
 		struct git_why why = {};
-		git_read_past(read, c->cut, &why);
+		git_read_past(read, c->flags & CHILD_CUT, &why);
 		git_drop(slot);
 		mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
 		return;
@@ -1565,14 +1565,14 @@ git_number (struct mcp_slot *slot,
 	struct span blob = buf_peek(&c->out);
 	int e = 0;
 	if (!read->head) {
-		e = git_read_head(call, slot, c->cut);
+		e = git_read_head(call, slot, c->flags & CHILD_CUT);
 		read->head = mcp_slot_answer(slot).len;
 	}
 	if (!e)
 		e = git_read_lines(read, slot, blob);
 	size_t end = mcp_slot_answer(slot).len;
 	if (!e)
-		e = git_read_foot(read, slot, blob, c->cut);
+		e = git_read_foot(read, slot, blob, c->flags & CHILD_CUT);
 	if (!e)
 		e = git_read_shown(read, slot, call, end);
 	if (e == EAGAIN) {
@@ -1611,7 +1611,7 @@ git_step (struct mcp_slot *slot)
 	/* When the output goes past 4 MiB, git is killed. A read then writes
 	 * the lines before the cut. */
 	if (takes & LINES) {
-		if (c->late || (!c->cut && c->code != CLD_EXITED))
+		if (c->flags & CHILD_LATE || (!(c->flags & CHILD_CUT) && c->code != CLD_EXITED))
 			git_ended(slot, call);
 		else if (call->phase == GIT_RUN)
 			git_scan(slot, call);
