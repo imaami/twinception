@@ -2470,64 +2470,49 @@ home_props_step (struct loop      *loop,
 		home_props_fail(home, "no total_slots");
 }
 
-/* Ask for /props at the server of @p u, the upstream's URL; the answer may
- * take PROPS_MS, or the calls' timeout if shorter. 0 once asked, else the
- * error that kept it from asking.
+/* Send GET @p url, whose answer the props step reads. The answer may take
+ * PROPS_MS, or the calls' timeout if that is shorter. Returns 0 once
+ * asked, else the error of http_post_json().
  */
 static int
 home_props_get (struct home *home,
-                CURLU       *u)
+                char const  *url)
 {
 	struct ai_endpoint const *ep = home->ep;
-	char *url = nullptr;
-	if (curl_url_set(u, CURLUPART_URL, ep->url, 0) ||
-	    curl_url_set(u, CURLUPART_PATH, "/props", 0) ||
-	    curl_url_set(u, CURLUPART_QUERY, nullptr, 0) ||
-	    curl_url_set(u, CURLUPART_FRAGMENT, nullptr, 0) ||
-	    curl_url_get(u, CURLUPART_URL, &url, 0))
-		return EINVAL;
 	long ms = ep->timeout_ms > 0 && ep->timeout_ms < PROPS_MS ? ep->timeout_ms : PROPS_MS;
-	int e = http_post_json(home->http, url, nullptr, 0, false, ep->headers, ms,
-	                       home_props_write, home_props_done, home, &home->ask);
-	curl_free(url);
-	return e;
+	return http_post_json(home->http, url, nullptr, 0, false, ep->headers, ms,
+	                      home_props_write, home_props_done, home, &home->ask);
 }
 
-/* Ask Gemini's API what the context of the model holds, unless it is told:
- * GET models/MODEL at the root of the API of the upstream's URL, whose
- * answer the props step reads. 0 once asked, ENOTSUP if the upstream has
- * no model or no such URL, else the error that kept it from asking.
- */
-static int
-home_model_get (struct home *home)
-{
-	struct ai_endpoint const *ep = home->ep;
-	char *url = home->context ? nullptr : ai_model_url(ep);
-	if (!url)
-		return ENOTSUP;
-	long ms = ep->timeout_ms > 0 && ep->timeout_ms < PROPS_MS ? ep->timeout_ms : PROPS_MS;
-	int e = http_post_json(home->http, url, nullptr, 0, false, ep->headers, ms,
-	                       home_props_write, home_props_done, home, &home->ask);
-	free(url);
-	return e;
-}
-
-/* Ask the upstream how many slots it has, as llama-server says at GET /props
- * of its endpoint's server (home_props_get()), unless it is known to be no
- * llama-server: a provider's but llama's, or one that has one of Gemini's
- * APIs, which is asked for the context of its model instead
- * (home_model_get()); 0 once asked, else ENOTSUP or the error that kept it
- * from asking.
+/* Ask the upstream for the number of its slots at GET /props of its
+ * endpoint's server, as llama-server answers, unless the upstream is known
+ * to be no llama-server: one of a provider other than llama, or one that
+ * uses one of Gemini's APIs. Unless the context size is known, Gemini's API
+ * is asked for the context size of the model instead, at GET models/MODEL
+ * at the root of the API of the upstream's URL. Returns 0 once asked,
+ * ENOTSUP if the endpoint names no model or no such URL exists, else the
+ * error of the request.
  */
 static int
 home_props_ask (struct home *home)
 {
-	if (!ai_props(home->ep))
-		return home_model_get(home);
+	struct ai_endpoint const *ep = home->ep;
+	if (!ai_props(ep)) {
+		char *url = home->context ? nullptr : ai_model_url(ep);
+		int e = url ? home_props_get(home, url) : ENOTSUP;
+		free(url);
+		return e;
+	}
 	CURLU *u = curl_url();
 	if (!u)
 		return ENOMEM;
-	int e = home_props_get(home, u);
+	char *url = nullptr;
+	int e = curl_url_set(u, CURLUPART_URL, ep->url, 0) ||
+	        curl_url_set(u, CURLUPART_PATH, "/props", 0) ||
+	        curl_url_set(u, CURLUPART_QUERY, nullptr, 0) ||
+	        curl_url_set(u, CURLUPART_FRAGMENT, nullptr, 0) ||
+	        curl_url_get(u, CURLUPART_URL, &url, 0) ? EINVAL : home_props_get(home, url);
+	curl_free(url);
 	curl_url_cleanup(u);
 	return e;
 }
