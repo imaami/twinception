@@ -49,13 +49,6 @@ same (char const *file,
 #define FINDINGS "[askai: your findings; findings action show with an id gives one's history:]\n"
 #define READS "[askai: what you read with git read in this call:]\n"
 
-/* The text of @p ds, for SAME(). */
-static char const *
-got (struct dstr const *ds)
-{
-	return dstr_get(ds);
-}
-
 /* A review_kept_fn that drops "[askai: x]", a stand-in for the notices of
  * askai, from the end of @p s.
  */
@@ -70,6 +63,23 @@ kept (char const *s,
 	return len - n;
 }
 
+/* Run a findings call with the arguments @p args, which it drops, in turn
+ * @p turn with @p trim as its review_kept_fn, and put its result in
+ * @p out. Returns the error number.
+ */
+static int
+run (struct review      *r,
+     struct json_object *args,
+     uint32_t            turn,
+     review_kept_fn     *trim,
+     struct dstr        *out)
+{
+	dstr_clear(out);
+	int e = review_call(r, args, turn, trim, &(struct tool_cursor){}, SIZE_MAX, out);
+	json_object_put(args);
+	return e;
+}
+
 /* Run a findings call with the arguments @p json in turn @p turn, and put
  * its result in @p out. Returns the error number.
  */
@@ -81,10 +91,7 @@ call (struct review *r,
 {
 	struct json_object *args = json_tokener_parse(json);
 	CHECK(args || !strcmp(json, "null"));
-	dstr_clear(out);
-	int e = review_call(r, args, turn, kept, &(struct tool_cursor){}, SIZE_MAX, out);
-	json_object_put(args);
-	return e;
+	return run(r, args, turn, kept, out);
 }
 
 /* Run a findings call in turn 1, without kept(), with the arguments
@@ -106,10 +113,7 @@ call_long (struct review *r,
 	json_object_object_add(args, key, json_object_new_string_len(s ? s : "", s ? (int)len : 0));
 	free(s);
 	s = nullptr;
-	dstr_clear(out);
-	int e = review_call(r, args, 1, nullptr, &(struct tool_cursor){}, SIZE_MAX, out);
-	json_object_put(args);
-	return e;
+	return run(r, args, 1, nullptr, out);
 }
 
 /* Returns the bytes of claim and evidence that the refusal @p text says
@@ -135,7 +139,7 @@ room_of (struct review *r)
 	struct dstr out = DSTR_INIT;
 	CHECK(call_long(r, "{\"action\":\"update\",\"id\":1,\"state\":\"candidate\"}", "evidence",
 	                TOOL_TEXT_MAX, &out) == EINVAL);
-	size_t n = left_in(got(&out));
+	size_t n = left_in(dstr_get(&out));
 	dstr_cleanup(&out);
 	return n;
 }
@@ -147,7 +151,7 @@ room_of (struct review *r)
         do { \
                 struct dstr out_ = DSTR_INIT; \
                 CHECK(call(r, json, turn, &out_) == (e)); \
-                SAME(got(&out_), want); \
+                SAME(dstr_get(&out_), want); \
                 dstr_cleanup(&out_); \
         } while (0)
 
@@ -196,7 +200,7 @@ shown_in (struct review *r,
 	struct dstr out = DSTR_INIT;
 	struct review_source src;
 	output(&out, &src, repo, commit, path, first, last, total, false);
-	struct cstr_view o = { dstr_get(&out), dstr_len(&out) };
+	struct cstr_view o = cstr_view_dstr(&out);
 	int e;
 	struct review_read *read = review_read_create(&src, o, &e);
 	if (!e)
@@ -242,7 +246,7 @@ seen (struct review *r,
         do { \
                 struct dstr out_ = DSTR_INIT; \
                 CHECK(!review_render(r, &out_, SIZE_MAX)); \
-                SAME(got(&out_), want); \
+                SAME(dstr_get(&out_), want); \
                 dstr_cleanup(&out_); \
         } while (0)
 
@@ -321,7 +325,7 @@ lines_of (struct review const *r,
 {
 	struct dstr out = DSTR_INIT;
 	CHECK(!review_render(r, &out, SIZE_MAX));
-	char const *s = strstr(got(&out), "  src/a.c  ");
+	char const *s = strstr(dstr_get(&out), "  src/a.c  ");
 	same(__FILE__, line, s ? s + sizeof "  src/a.c  " - 1 : "(none)", want);
 	dstr_cleanup(&out);
 }
@@ -345,7 +349,7 @@ test_seen (void)
 		{ 4 + 9 * 3, 9 * 2, "lines 4-5: 2 of 9 lines" },     /* a page of two lines */
 		{ 2, SIZE_MAX, "lines 1-9: all 9 lines" },          /* starts in the header */
 	};
-	for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+	for (size_t i = 0; i < array_size(cases); ++i) {
 		struct review *r = fresh();
 		CHECK(!seen_in(r, "p", A, "src/a.c", 1, 9, 9, cases[i].skip, cases[i].window, 1));
 		lines_of(r, cases[i].want, __LINE__);
@@ -385,7 +389,7 @@ test_seen (void)
 		{ 0, 3 }, { 0, 4 + 8 }, { 4 + 9 * 9, SIZE_MAX }, { 4 + 9 * 2 + 3, 9 },
 		{ SIZE_MAX, SIZE_MAX },
 	};
-	for (size_t i = 0; i < sizeof none / sizeof *none; ++i) {
+	for (size_t i = 0; i < array_size(none); ++i) {
 		struct review *r = fresh();
 		CHECK(!seen_in(r, "p", A, "src/a.c", 1, 9, 9, none[i][0], none[i][1], 1));
 		RENDER(r, HEADER NONE);
@@ -396,7 +400,7 @@ test_seen (void)
 	struct dstr out = DSTR_INIT;
 	struct review_source src;
 	output(&out, &src, "p", A, "src/a.c", 1, 3, 3, true);
-	struct cstr_view o = { dstr_get(&out), dstr_len(&out) };
+	struct cstr_view o = cstr_view_dstr(&out);
 	int e;
 	struct review_read *read = review_read_create(&src, o, &e);
 	CHECK(read && !e);
@@ -407,20 +411,19 @@ test_seen (void)
 	lines_of(r, "lines 1-3: all 3 lines", __LINE__);
 	/* An output too short for the read, and one with too many lines. */
 	CHECK(review_pending_add(r, read, (struct cstr_view){ o.data, src.at + src.len - 1 }, 0,
-	                   SIZE_MAX, 1) == EINVAL);
+	                         SIZE_MAX, 1) == EINVAL);
 	struct dstr more = DSTR_INIT;
 	CHECK(dstr_printf(&more, "[h]\n"));
 	for (int i = 0; i < 13; ++i)
 		CHECK(dstr_printf(&more, "a\n"));
-	CHECK(review_pending_add(r, read, (struct cstr_view){ dstr_get(&more), dstr_len(&more) }, 0,
-	                   SIZE_MAX, 1) == EINVAL);
+	CHECK(review_pending_add(r, read, cstr_view_dstr(&more), 0, SIZE_MAX, 1) == EINVAL);
 	dstr_cleanup(&more);
 	review_read_destroy(&read);
 	review_destroy(&r);
 
 	/* Sources that do not match their output or are not valid. */
 	output(&out, &src, "p", A, "src/a.c", 1, 3, 3, false);
-	o = (struct cstr_view){ dstr_get(&out), dstr_len(&out) };
+	o = cstr_view_dstr(&out);
 	struct review_source bad[] = {
 		src, src, src, src, src, src, src, src, src, src, src, src, src, src,
 	};
@@ -438,7 +441,7 @@ test_seen (void)
 	bad[11].last = 0;
 	bad[12].at = SIZE_MAX;
 	bad[13].total = (uint64_t)UINT32_MAX + 1;  /* more than a file records */
-	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
+	for (size_t i = 0; i < array_size(bad); ++i) {
 		e = 0;
 		CHECK(!review_read_create(&bad[i], o, &e) && e == EINVAL);
 	}
@@ -555,7 +558,7 @@ test_refusals (void)
 		{ "{\"action\":\"show\",\"id\":2}",
 		  "There is no finding 2; the record has no findings yet." },
 	};
-	for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i)
+	for (size_t i = 0; i < array_size(cases); ++i)
 		EXPECT(r, cases[i].json, 2, EINVAL, cases[i].want);
 
 	/* The locations that are not path:line or path:first-last. */
@@ -564,7 +567,7 @@ test_refusals (void)
 		"src/a.c:4294967296", "src/a.c:3:", "src/a.c:3 ", A ":src/a.c:3:int x;",
 		"1111111::3", "src/a.c:3-4-5", "src/a.c:+3",
 	};
-	for (size_t i = 0; i < sizeof places / sizeof *places; ++i) {
+	for (size_t i = 0; i < array_size(places); ++i) {
 		char json[256];
 		snprintf(json, sizeof json, "{\"action\":\"add\",\"claim\":\"c\",\"location\":"
 		         "\"%s\"}", places[i]);
@@ -575,19 +578,16 @@ test_refusals (void)
 	/* Texts that are not UTF-8. */
 	struct dstr out = DSTR_INIT;
 	char const *const keys[] = { "claim", "evidence", "location" };
-	for (size_t i = 0; i < sizeof keys / sizeof *keys; ++i) {
+	for (size_t i = 0; i < array_size(keys); ++i) {
 		struct json_object *args = json_object_new_object();
 		json_object_object_add(args, "action", json_object_new_string("add"));
 		json_object_object_add(args, "claim", json_object_new_string("c"));
 		json_object_object_add(args, keys[i], json_object_new_string_len("a\xff", 2));
-		dstr_clear(&out);
-		CHECK(review_call(r, args, 2, nullptr, &(struct tool_cursor){}, SIZE_MAX, &out) ==
-		      EINVAL);
+		CHECK(run(r, args, 2, nullptr, &out) == EINVAL);
 		char want[96];
 		snprintf(want, sizeof want, "The %s must be a string of UTF-8 text, not empty.",
 		         keys[i]);
-		SAME(got(&out), want);
-		json_object_put(args);
+		SAME(dstr_get(&out), want);
 	}
 
 	/* Finding ids past the last. */
@@ -936,7 +936,7 @@ test_pending (void)
 		r = fresh();
 		struct dstr out = DSTR_INIT;
 		CHECK(call_long(r, add, "claim", TOOL_TEXT_MAX, &out) == EINVAL);
-		CHECK(!call_long(r, add, "claim", left_in(got(&out)) - file, &out));
+		CHECK(!call_long(r, add, "claim", left_in(dstr_get(&out)) - file, &out));
 		dstr_cleanup(&out);
 		CHECK(!shown_in(r, "p", A, "src/a.c", 1, 3, 3, 0, SIZE_MAX, 1));
 		EXPECT(r, more, 1, EINVAL, NO_ROOM);
@@ -1065,7 +1065,7 @@ test_render (void)
 	struct dstr history = DSTR_INIT;
 	CHECK(call(r, "{\"action\":\"show\",\"id\":1}", 4, &history) == 0);
 	char const *const shows[] = { "{\"action\":\"show\"}", "{\"action\":\"show\",\"id\":1}" };
-	char const *const texts[] = { want, got(&history) };
+	char const *const texts[] = { want, dstr_get(&history) };
 	for (size_t k = 0; k < 2; ++k) {
 		struct json_object *args = json_tokener_parse(shows[k]);
 		size_t len = strlen(texts[k]);
@@ -1077,7 +1077,7 @@ test_render (void)
 				e = review_call(r, args, 4, nullptr, &cursor, room, &out);
 				CHECK(e == EAGAIN ? dstr_len(&out) == parts * room : !e);
 			}
-			SAME(got(&out), texts[k]);
+			SAME(dstr_get(&out), texts[k]);
 			dstr_cleanup(&out);
 		}
 		json_object_put(args);
@@ -1091,7 +1091,7 @@ test_render (void)
 		struct dstr out = DSTR_INIT;
 		CHECK(dstr_printf(&out, "before"));
 		CHECK(!review_render(r, &out, most));
-		char const *s = got(&out);
+		char const *s = dstr_get(&out);
 		CHECK(!strncmp(s, "before", 6));
 		s += 6;
 		if (most >= len) {
@@ -1127,20 +1127,20 @@ test_full (void)
 	 * from its evidence. */
 	for (int i = 0; i < 4; ++i)
 		CHECK(call_long(r, add, "claim", big, &out) == (i < 3 ? 0 : EINVAL));
-	size_t left = left_in(got(&out));
+	size_t left = left_in(dstr_get(&out));
 	size_t finding = (TOOL_TEXT_MAX - 3 * big - left) / 4;
 	CHECK(4 * finding == TOOL_TEXT_MAX - 3 * big - left);
 	CHECK(call_long(r, update, "evidence", big, &out) == EINVAL);
-	size_t change = TOOL_TEXT_MAX - 3 * (big + finding) - left_in(got(&out));
+	size_t change = TOOL_TEXT_MAX - 3 * (big + finding) - left_in(dstr_get(&out));
 	/* A change charges REVIEW_ITEM and its texts, and a finding
 	 * REVIEW_ITEM, its texts and its first change. */
 	CHECK(change == REVIEW_ITEM);
 	CHECK(finding == change + REVIEW_ITEM);
 	/* The bytes that the refusal names fit, and a byte more does not. */
 	CHECK(call_long(r, add, "claim", left + 1, &out) == EINVAL);
-	CHECK(left_in(got(&out)) == left);
+	CHECK(left_in(dstr_get(&out)) == left);
 	CHECK(!call_long(r, add, "claim", left, &out));
-	SAME(got(&out), "Added finding 4: candidate.");
+	SAME(dstr_get(&out), "Added finding 4: candidate.");
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\"}", 1, EINVAL, NO_MORE);
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"retracted\",\"evidence\":\"e\"}",
 	       1, EINVAL, NO_MORE);
@@ -1149,10 +1149,10 @@ test_full (void)
 	CHECK(!seen(r, "p", A, "src/a.c", 1, 3, 3, 10));
 	struct dstr text = DSTR_INIT;
 	CHECK(!review_render(r, &text, SIZE_MAX));
-	char const *end = strrchr(got(&text), '\n');
+	char const *end = strrchr(dstr_get(&text), '\n');
 	SAME(end, "\n[askai: the read log is full, so what you read from turn 9 on may be "
 	          "missing from it.]");
-	CHECK(!strstr(got(&text), READS));
+	CHECK(!strstr(dstr_get(&text), READS));
 	dstr_cleanup(&text);
 	/* The refusal of verified then suggests no git read. */
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"evidence\":"
@@ -1179,7 +1179,7 @@ test_full (void)
 	r = fresh();
 	CHECK(!seen(r, "proj", A, "src/a.c", 1, 10, 300, 1));
 	CHECK(call_long(r, add, "claim", TOOL_TEXT_MAX, &out) == EINVAL);
-	CHECK(!call_long(r, add, "claim", left_in(got(&out)) - 10, &out));
+	CHECK(!call_long(r, add, "claim", left_in(dstr_get(&out)) - 10, &out));
 	char const wide[] = "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	                    "\"evidence\":\"e\",\"location\":\"src/a.c:10-11\"}";
 	char const some[] = "verified needs the lines of its location in your read log, and "
@@ -1204,7 +1204,7 @@ test_full (void)
 		r = fresh();
 		CHECK(!seen(r, "proj", A, "src/a.c", 1, 10, 300, 1));
 		CHECK(call_long(r, add, "claim", TOOL_TEXT_MAX, &out) == EINVAL);
-		CHECK(!call_long(r, add, "claim", left_in(got(&out)) - room, &out));
+		CHECK(!call_long(r, add, "claim", left_in(dstr_get(&out)) - room, &out));
 		if (room < file) {
 			snprintf(want, sizeof want, "%s The record is full,%s", some, unlogged);
 			EXPECT(r, wide, 2, EINVAL, want);
@@ -1248,7 +1248,7 @@ test_full (void)
 		  "Finding 2 stays candidate, src/a.c:5 at " A12 "; the new evidence is in its "
 		  "history." },
 	};
-	for (size_t i = 0; i < sizeof updates / sizeof *updates; ++i) {
+	for (size_t i = 0; i < array_size(updates); ++i) {
 		size_t had = room_of(r);
 		EXPECT(r, updates[i].json, 2, 0, updates[i].want);
 		CHECK(had - room_of(r) == change + 1 + updates[i].more);
@@ -1317,8 +1317,8 @@ test_no_git (void)
 	CHECK(back && !e && !review_restore(back, obj));
 	struct dstr text = DSTR_INIT;
 	CHECK(!review_render(back, &text, SIZE_MAX));
-	SAME(got(&text), HEADER FINDINGS "1. verified, src/a.c:3 at " A12 "\n   claim: c\n"
-	                 "   evidence: e");
+	SAME(dstr_get(&text), HEADER FINDINGS "1. verified, src/a.c:3 at " A12 "\n   claim: c\n"
+	                      "   evidence: e");
 	dstr_cleanup(&text);
 	CHECK(!review_pending_log(back));
 	json_object_put(obj);
@@ -1372,7 +1372,7 @@ test_json (void)
 	struct dstr a = DSTR_INIT;
 	struct dstr b = DSTR_INIT;
 	CHECK(!review_render(r, &a, SIZE_MAX) && !review_render(back, &b, SIZE_MAX));
-	SAME(got(&b), got(&a));
+	SAME(dstr_get(&b), dstr_get(&a));
 	struct json_object *again = review_json(back, &e);
 	CHECK(again && !e);
 	SAME(json_object_to_json_string_ext(again, JSON_C_TO_STRING_PLAIN), json);
@@ -1396,7 +1396,7 @@ test_json (void)
 	struct dstr shown = DSTR_INIT;
 	struct dstr restored = DSTR_INIT;
 	CHECK(!review_render(back, &shown, SIZE_MAX) && !review_render(other, &restored, SIZE_MAX));
-	SAME(got(&restored), got(&shown));
+	SAME(dstr_get(&restored), dstr_get(&shown));
 	dstr_cleanup(&shown);
 	dstr_cleanup(&restored);
 	review_destroy(&other);
@@ -1463,7 +1463,7 @@ test_json (void)
 	};
 	struct dstr before = DSTR_INIT;
 	CHECK(!review_render(back, &before, SIZE_MAX));
-	for (size_t i = 0; i < sizeof defects / sizeof *defects; ++i) {
+	for (size_t i = 0; i < array_size(defects); ++i) {
 		char const *at = strstr(json, defects[i].from);
 		CHECK(at);
 		if (!at)
@@ -1471,7 +1471,7 @@ test_json (void)
 		struct dstr bad = DSTR_INIT;
 		CHECK(dstr_cat_n(&bad, json, (size_t)(at - json)) && dstr_cat(&bad, defects[i].to) &&
 		      dstr_cat(&bad, at + strlen(defects[i].from)));
-		struct json_object *o = json_tokener_parse(got(&bad));
+		struct json_object *o = json_tokener_parse(dstr_get(&bad));
 		CHECK(o);
 		int got_e = review_restore(back, o);
 		if (got_e != EINVAL)
@@ -1488,7 +1488,7 @@ test_json (void)
 	CHECK(at && dstr_cat_n(&cut, json, (size_t)(at - json)) &&
 	      dstr_cat(&cut, "\"total\":0,\"lines\":[40,300,4]") &&
 	      dstr_cat(&cut, at + sizeof unknown - 1));
-	struct json_object *some = json_tokener_parse(got(&cut));
+	struct json_object *some = json_tokener_parse(dstr_get(&cut));
 	struct review *known = fresh();
 	CHECK(some && !review_restore(known, some));
 	json_object_put(some);
@@ -1497,7 +1497,7 @@ test_json (void)
 	/* A file twice in the log or in the pending lines, and files of one
 	 * commit that are not next to each other. */
 	char const *const lists[] = { "reads", "pending" };
-	for (size_t i = 0; i < sizeof lists / sizeof *lists; ++i) {
+	for (size_t i = 0; i < array_size(lists); ++i) {
 		struct json_object *dup = json_tokener_parse(json);
 		struct json_object *files = json_object_object_get(dup, lists[i]);
 		json_object_array_add(files, json_object_get(json_object_array_get_idx(files, 0)));
@@ -1538,7 +1538,7 @@ test_json (void)
 	json_object_put(array);
 	struct dstr after = DSTR_INIT;
 	CHECK(!review_render(back, &after, SIZE_MAX));
-	SAME(got(&after), got(&before));
+	SAME(dstr_get(&after), dstr_get(&before));
 	/* The empty record. */
 	struct review *empty = fresh();
 	struct json_object *none = review_json(empty, &e);
@@ -1560,7 +1560,7 @@ test_json (void)
 	struct dstr out = DSTR_INIT;
 	struct review_source src;
 	output(&out, &src, "proj", A, "src/a.c", 3, 5, 9, false);
-	struct cstr_view o = { dstr_get(&out), dstr_len(&out) };
+	struct cstr_view o = cstr_view_dstr(&out);
 	struct review_read *read = review_read_create(&src, o, &e);
 	CHECK(read && !e);
 	struct json_object *rj = review_read_json(read, &e);
@@ -1579,7 +1579,7 @@ test_json (void)
 	CHECK(!review_read_create_json(rj, (struct cstr_view){ o.data, 20 }, &e) && e == EINVAL);
 	char const *const members[] = { "repo", "commit", "path", "at", "len", "first", "last",
 	                                "total" };
-	for (size_t i = 0; i < sizeof members / sizeof *members; ++i) {
+	for (size_t i = 0; i < array_size(members); ++i) {
 		struct json_object *less = json_tokener_parse(
 			json_object_to_json_string_ext(rj, JSON_C_TO_STRING_PLAIN));
 		json_object_object_del(less, members[i]);
@@ -1607,7 +1607,7 @@ test_many (void)
 			ok = dstr_printf(&json, "%s{\"repo\":\"p\",\"commit\":\"" A "\",\"path\":"
 			                 "\"f%05zu\",\"total\":0,\"lines\":[1,1,1]}", i ? "," : "", i);
 		CHECK(ok && dstr_printf(&json, "],\"pending\":[],\"full\":0,\"findings\":[]}"));
-		struct json_object *obj = json_tokener_parse(got(&json));
+		struct json_object *obj = json_tokener_parse(dstr_get(&json));
 		CHECK(obj);
 		struct review *r = fresh();
 		CHECK(review_restore(r, obj) == (n == fit ? 0 : EINVAL));
