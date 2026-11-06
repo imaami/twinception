@@ -2257,9 +2257,7 @@ godbolt_section_text (struct godbolt   *call,
 	struct cstr_view const mark = CSTR_VIEW("\n[Truncated]");
 	if (godbolt_slice(call, text) || call->full || call->rec.byte < text.len)
 		return call->e;
-	call->rec.marked |= text.len >= mark.len &&
-	                    cstr_view_equal(cstr_view_slice(text, text.len - mark.len, SIZE_MAX),
-	                                    mark);
+	call->rec.marked |= cstr_view_ends(text, mark);
 	if (text.data[text.len - 1] != '\n')
 		godbolt_put(call, CSTR_VIEW("\n"));
 	return godbolt_section_end(call);

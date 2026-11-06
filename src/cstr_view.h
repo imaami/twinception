@@ -83,6 +83,15 @@ cstr_view_starts (struct cstr_view text,
 	       (!prefix.len || !memcmp(text.data, prefix.data, prefix.len));
 }
 
+/** Whether text ends with suffix. The empty suffix matches every view. */
+static inline bool
+cstr_view_ends (struct cstr_view text,
+                struct cstr_view suffix)
+{
+	return text.len >= suffix.len &&
+	       (!suffix.len || !memcmp(text.data + text.len - suffix.len, suffix.data, suffix.len));
+}
+
 /** Compare all bytes, as cstr_view_equal() does, but take an ASCII letter
  *  and its other case as equal.
  */

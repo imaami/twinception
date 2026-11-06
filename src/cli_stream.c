@@ -103,8 +103,7 @@ cli_stream_result (struct cli_stream   *stream,
 		struct cstr_view streamed = cstr_view_dstr(&stream->text);
 		if (cstr_view_starts(text, streamed))
 			e = cli_ui_push(&stream->ui, false, cstr_view_slice(text, streamed.len, SIZE_MAX));
-		else if (streamed.len && text.len >= streamed.len &&
-		         cstr_view_equal(cstr_view_slice(text, text.len - streamed.len, SIZE_MAX), streamed)) {
+		else if (streamed.len && cstr_view_ends(text, streamed)) {
 			/* Agenda wakeups may include already displayed earlier turns. */
 		} else {
 			if (streamed.len)

@@ -33,6 +33,10 @@ main (void)
 	assert(cstr_view_starts(text, empty));
 	assert(cstr_view_equal(cstr_view("a\0b"), CSTR_VIEW("a")));
 
+	assert(cstr_view_ends(text, CSTR_VIEW("\0b")));
+	assert(cstr_view_ends(text, empty) && cstr_view_ends(empty, empty));
+	assert(!cstr_view_ends(text, CSTR_VIEW("a\0b\0")));
+	assert(!cstr_view_ends(text, CSTR_VIEW("\0c")));
 	assert(cstr_view_equal_case(CSTR_VIEW("Content-Type"), CSTR_VIEW("content-TYPE")));
 	assert(cstr_view_equal_case(empty, CSTR_VIEW("")));
 	assert(cstr_view_equal_case(text, CSTR_VIEW("A\0B")));

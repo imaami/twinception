@@ -762,13 +762,11 @@ notes_kind (char const *line,
             size_t      len,
             size_t     *oid)
 {
-	static char const missing[] = " missing";
 	static char const types[][8] = {
 		[KIND_BLOB] = "blob", [KIND_TREE] = "tree", [KIND_COMMIT] = "commit",
 	};
 	*oid = 0;
-	if (len >= sizeof missing - 1 &&
-	    !memcmp(line + len - (sizeof missing - 1), missing, sizeof missing - 1))
+	if (cstr_view_ends((struct cstr_view){ line, len }, CSTR_VIEW(" missing")))
 		return KIND_MISSING;
 	char const *sp = memchr(line, ' ', len);
 	char const *type = sp ? sp + 1 : line;

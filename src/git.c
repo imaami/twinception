@@ -291,8 +291,7 @@ git_name (char const *path)
 	while (start && path[start - 1] != '/')
 		--start;
 	struct cstr_view name = { path + start, end - start };
-	if (name.len > suffix.len &&
-	    cstr_view_equal(cstr_view_slice(name, name.len - suffix.len, suffix.len), suffix))
+	if (name.len > suffix.len && cstr_view_ends(name, suffix))
 		name.len -= suffix.len;
 	if (!name.len || name.len > 64 || *name.data == '.' ||
 	    strspn(name.data, UTIL_ALNUM "_.-") < name.len)

@@ -504,8 +504,7 @@ cli_client_read_notebooks (struct cstr_view  text,
 		struct cstr_view peer = CSTR_VIEW(" (read-only)");
 		if (cstr_view_starts(line, self))
 			line = cstr_view_slice(line, self.len, SIZE_MAX);
-		if (line.len >= peer.len &&
-		    cstr_view_equal(cstr_view_slice(line, line.len - peer.len, SIZE_MAX), peer))
+		if (cstr_view_ends(line, peer))
 			line.len -= peer.len;
 		char const *first = memchr(line.data, '/', line.len);
 		if (!first)

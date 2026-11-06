@@ -618,8 +618,7 @@ cli_console_complete (char const *text,
 	}
 	/* The text after the cursor is the same in each candidate, and it must
 	 * end the line. */
-	if (suffix.len > line.len ||
-	    !cstr_view_equal(cstr_view_slice(line, line.len - suffix.len, SIZE_MAX), suffix))
+	if (!cstr_view_ends(line, suffix))
 		return nullptr;
 	console->in.error = cli_console_completion_cache(console);
 	if (console->in.error)
