@@ -77,23 +77,6 @@ child_dispose (struct child *c)
 	free(c);
 }
 
-/* read() @p len bytes into @p buf, from @p fd, again after a signal: the
- * bytes, or a negative error.
- */
-static ssize_t
-child_pipe_read (int     fd,
-                 void   *buf,
-                 size_t  len)
-{
-	for (;;) {
-		ssize_t n = read(fd, buf, len);
-		if (n >= 0)
-			return n;
-		if (errno != EINTR)
-			return -errno;
-	}
-}
-
 /* Read as much of the child's output as the step has the share for, the rest
  * in its next step, up to the cap and a byte more, which says the output
  * goes on past it. Its end, or that byte, ends the reading.
@@ -118,20 +101,21 @@ child_read (struct child *c)
 			child_kill(c);
 			return;
 		}
-		ssize_t n = child_pipe_read(c->pipe.fd, s.ptr, want);
-		/* EAGAIN waits for more; anything else ends the output. */
-		if (n == -EAGAIN)
-			return;
-		if (n <= 0) {
-			loop_close(c->loop, &c->pipe);
-			return;
-		}
-		buf_commit(&c->out, (size_t)n);
-		loop_work(loop, LOOP_RECV, (uint64_t)n);
-		if (len + (size_t)n > c->max) {
-			buf_cut(&c->out, c->max, len + (size_t)n - c->max);
+		size_t got;
+		int e = util_read_all(c->pipe.fd, s.ptr, want, -1, &got);
+		buf_commit(&c->out, got);
+		loop_work(loop, LOOP_RECV, got);
+		if (len + got > c->max) {
+			buf_cut(&c->out, c->max, len + got - c->max);
 			c->flags |= CHILD_CUT;
 			child_kill(c);
+			return;
+		}
+		/* EAGAIN waits for more; the end or another error ends the output. */
+		if (e == EAGAIN)
+			return;
+		if (e || got < want) {
+			loop_close(c->loop, &c->pipe);
 			return;
 		}
 	}
