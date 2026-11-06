@@ -115,6 +115,19 @@ static struct {
 #undef NOTE
 };
 
+/* The message for a file argument that is not a valid name. */
+static struct cstr_view const bad_name =
+	CSTR_VIEW_INIT("The file argument must be a file name of 1 to 255 bytes, such as "
+	               "plan.md or findings/locks.md. It cannot have control characters or "
+	               "empty parts, and no part can be ., .., .git or git~1, in any case "
+	               "and also with spaces or dots after it.");
+
+/* The message for a write that must replace a note, if no note of the
+ * name exists.
+ */
+static struct cstr_view const no_note =
+	CSTR_VIEW_INIT("No note has that name. Use action add to create it.");
+
 /* The part of the notes tool on one loop. */
 struct notes_tool_loop {
 	struct shelf             spare;  /* finished calls, kept for reuse with
@@ -446,15 +459,14 @@ notes_tool_none (struct child const *c)
 	return child_status(c) == 128;
 }
 
-/* Appends to call->text why git read no notes. Exit status 128 means that
+/* Returns why git read no notes for @p call. Exit status 128 means that
  * the notebook does not exist yet.
  */
-static int
+static struct cstr_view
 notes_tool_call_unread (struct notes_tool_call const *call)
 {
-	if (!notes_tool_none(call->child))
-		return cstr_view_cat(CSTR_VIEW("The notes could not be read."), call->text);
-	return cstr_view_cat(CSTR_VIEW("This notebook has no notes yet."), call->text);
+	return notes_tool_none(call->child) ? CSTR_VIEW("This notebook has no notes yet.")
+	                                    : CSTR_VIEW("The notes could not be read.");
 }
 
 /* Returns true if the output of git shows that another writer changed the
@@ -475,40 +487,43 @@ notes_tool_raced (struct child const *child)
 	return false;
 }
 
-/* Appends to call->text why git did not write the note. The reasons are a
- * timeout, a race with another writer, a lock file that a dead or hung
- * writer left, and other errors of git. The function logs the last two.
+/* Fails the write in @p slot with why git did not write the note. The
+ * reasons are a timeout, a race with another writer, a lock file that a
+ * dead or hung writer left, and other errors of git. The function logs the
+ * last two.
  */
-static int
-notes_tool_call_unadded (struct notes_tool_call const *call)
+static void
+notes_tool_unadded (struct mcp_slot *slot)
 {
+	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	if (c->flags & CHILD_LATE)
-		return cstr_view_cat(CSTR_VIEW("Could not write the note: it took "
-		                               "too long."), call->text);
+	if (c->flags & CHILD_LATE) {
+		mcp_slot_tell(slot, CSTR_VIEW("Could not write the note: it took too long."),
+		              TOOL_FAILED);
+		return;
+	}
 	if (notes_tool_raced(c)) {
 		struct notes const *notes = call->loop->tool->notes;
 		char const *repo = call->repo;
 		int64_t age = 0;
-		if (notes_lock(notes, repo, &age) || age <= NOTES_STALE)
-			return cstr_view_cat(CSTR_VIEW("Could not write the note, "
-			                               "because another call changed "
-			                               "this notebook at the same "
-			                               "time. Read its current state "
-			                               "and retry."), call->text);
+		if (notes_lock(notes, repo, &age) || age <= NOTES_STALE) {
+			mcp_slot_tell(slot, CSTR_VIEW("Could not write the note, because another "
+			                              "call changed this notebook at the same "
+			                              "time. Read its current state and retry."),
+			              TOOL_FAILED);
+			return;
+		}
 		LOG(LOG_WARN, "notes: %s/%s.lock is %" PRId64 " s old; remove it if no "
 		    "git process uses the repository", notes_directory(notes), repo, age);
-		char message[128];
-		struct cstr_view const text = util_format_view(message, sizeof message, "Could not "
-		                                               "write the note: its notebook has "
-		                                               "been locked for %" PRId64 " s.", age);
-		return cstr_view_cat(text, call->text);
+		mcp_slot_tellf(slot, TOOL_FAILED, "Could not write the note: its notebook has been "
+		               "locked for %" PRId64 " s.", age);
+		return;
 	}
 	struct span out = buf_peek(&c->out);
 	char const *why = (char const *)out.ptr;
 	LOG(LOG_WARN, "notes: git could not write a note: %.*s",
 	    (int)util_clip(why, out.len, 300), why);
-	return cstr_view_cat(CSTR_VIEW("Could not write the note."), call->text);
+	mcp_slot_tell(slot, CSTR_VIEW("Could not write the note."), TOOL_FAILED);
 }
 
 /* The size of a note before a write that creates the note. */
@@ -578,9 +593,8 @@ notes_tool_format (struct mcp_slot *slot)
 	struct cstr_view const format = { (char const *)out.ptr, out.len };
 	struct oid const zero = oid_zero(oid_format(cstr_view_trim_end(format)));
 	if (!child_ok(call->child) || !oid_len(&zero)) {
-		int e = cstr_view_cat(CSTR_VIEW("Cannot determine the repository "
-		                                "object format."), call->text);
-		notes_tool_end(slot, e, true);
+		mcp_slot_tell(slot, CSTR_VIEW("Cannot determine the repository object format."),
+		              TOOL_FAILED);
 		return;
 	}
 	child_destroy(&call->child);
@@ -600,7 +614,7 @@ notes_tool_created (struct mcp_slot *slot)
 		notes_tool_write(slot, &(struct oid){}, NO_NOTE);
 		return;
 	}
-	notes_tool_end(slot, notes_tool_call_unadded(call), true);
+	notes_tool_unadded(slot);
 }
 
 /* Ends the write in @p slot after it saved the note or left the note
@@ -674,10 +688,8 @@ notes_tool_checked (struct mcp_slot *slot)
 		if (r == EEXIST)
 			r = 0;
 		if (!r && !oid_equal(&tip, &call->revision.tip)) {
-			int e = cstr_view_cat(CSTR_VIEW("The notebook changed during "
-			                                "restore. Read its current "
-			                                "state and retry."), call->text);
-			notes_tool_end(slot, e, true);
+			mcp_slot_tell(slot, CSTR_VIEW("The notebook changed during restore. Read "
+			                              "its current state and retry."), TOOL_FAILED);
 			return;
 		}
 	}
@@ -688,17 +700,15 @@ notes_tool_checked (struct mcp_slot *slot)
 		}
 		return;
 	}
-	struct cstr_view const message =
-		r == EEXIST ? CSTR_VIEW("A note of that name exists. Use action replace to "
-		                        "update it, or add under another name.")
-		: r == ENOENT ? CSTR_VIEW("No note has that name. Use action add to create it.")
-		: r == EISDIR ? CSTR_VIEW("That name is a directory of notes. Add the note "
-		                          "under another name.")
-		: r == ENOTDIR ? CSTR_VIEW("A directory in that name is a note. Add the note "
-		                           "under another name.")
-		: (struct cstr_view){};
-	notes_tool_end(slot, message.data ? cstr_view_cat(message, call->text)
-	                                  : notes_tool_call_unread(call), true);
+	mcp_slot_tell(slot,
+	              r == EEXIST ? CSTR_VIEW("A note of that name exists. Use action replace "
+	                                      "to update it, or add under another name.")
+	              : r == ENOENT ? no_note
+	              : r == EISDIR ? CSTR_VIEW("That name is a directory of notes. Add the "
+	                                        "note under another name.")
+	              : r == ENOTDIR ? CSTR_VIEW("A directory in that name is a note. Add the "
+	                                         "note under another name.")
+	              : notes_tool_call_unread(call), TOOL_FAILED);
 }
 
 /* Handles the end of git fast-import. The result contains the id of the
@@ -710,7 +720,7 @@ notes_tool_added (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	if (!child_ok(call->child)) {
-		notes_tool_end(slot, notes_tool_call_unadded(call), true);
+		notes_tool_unadded(slot);
 		return;
 	}
 	struct oid commit;
@@ -949,12 +959,10 @@ notes_tool_revision_step (struct mcp_slot *slot)
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	if (!child_ok(call->child) ||
 	    notes_revision_next(&call->revision, buf_peek(&call->child->out))) {
-		int e = cstr_view_cat(CSTR_VIEW("Cannot use that revision in this "
-		                                "notebook. Use a full commit ID "
-		                                "from its history; the notebook "
-		                                "must exist and the revision must "
-		                                "belong to it."), call->text);
-		notes_tool_end(slot, e, true);
+		mcp_slot_tell(slot, CSTR_VIEW("Cannot use that revision in this notebook. Use "
+		                              "a full commit ID from its history; the notebook "
+		                              "must exist and the revision must belong to "
+		                              "it."), TOOL_FAILED);
 		return;
 	}
 	child_destroy(&call->child);
@@ -1002,13 +1010,10 @@ notes_tool_got_note (struct mcp_slot *slot)
 	struct oid id;
 	int r = child_ok(c) ? notes_read_out(buf_peek(&c->out), &text, &id) : EIO;
 	if (r) {
-		int e = r == ENOENT ? cstr_view_cat(CSTR_VIEW("No note has that name."), call->text)
-		      : r == EISDIR ? cstr_view_cat(CSTR_VIEW("That name is a "
-		                                              "directory of notes. "
-		                                              "list shows the notes "
-		                                              "in it."), call->text)
-		      : notes_tool_call_unread(call);
-		notes_tool_end(slot, e, true);
+		mcp_slot_tell(slot, r == ENOENT ? CSTR_VIEW("No note has that name.")
+		                  : r == EISDIR ? CSTR_VIEW("That name is a directory of notes. "
+		                                            "list shows the notes in it.")
+		                  : notes_tool_call_unread(call), TOOL_FAILED);
 		return;
 	}
 	if (call->fetch & (FETCH_COPY | FETCH_RESTORE)) {
@@ -1080,10 +1085,9 @@ notes_tool_got_attach (struct mcp_slot  *slot,
 		size_t len = 0;
 		(void)notes_tool_view(&view, body, 0, &len);
 		if (len > NOTES_MAX) {
-			e = dstr_printf(call->text, "The note is too large to attach: its file "
-			                "would have %zu bytes, and askai uploads %d MiB at most.",
-			                len, NOTES_MAX >> 20) ? 0 : ENOMEM;
-			notes_tool_end(slot, e, true);
+			mcp_slot_tellf(slot, TOOL_FAILED, "The note is too large to attach: its file "
+			               "would have %zu bytes, and askai uploads %d MiB at most.", len,
+			               NOTES_MAX >> 20);
 			return;
 		}
 		if (notes_tool_view(&view, body, SIZE_MAX, nullptr)) {
@@ -1292,7 +1296,7 @@ notes_tool_step (struct mcp_slot *slot)
 	}
 	struct notes_tool_fetch_step const *row = notes_tool_fetch_step(call->fetch);
 	if (row->listed && !notes_tool_listed(call->child))
-		notes_tool_end(slot, notes_tool_call_unread(call), true);
+		mcp_slot_tell(slot, notes_tool_call_unread(call), TOOL_FAILED);
 	else
 		row->out(slot);
 }
@@ -1300,13 +1304,6 @@ notes_tool_step (struct mcp_slot *slot)
 static_assert(TOOL_TEXT_MAX == 4U << 20 && NOTES_NAME == 255 && HEXID_DIGITS == 32,
               "update the texts in this file that say 4 MiB, 255 bytes or 32 hexadecimal "
               "digits");
-
-/* The message for a file argument that is not a valid name. */
-static struct cstr_view const bad_name =
-	CSTR_VIEW_INIT("The file argument must be a file name of 1 to 255 bytes, such as "
-	               "plan.md or findings/locks.md. It cannot have control characters or "
-	               "empty parts, and no part can be ., .., .git or git~1, in any case "
-	               "and also with spaces or dots after it.");
 
 /* Runs git to check the name @p name of the note in call->file before the
  * write, or to create the shared repository if @p initialized is false. If
@@ -1371,8 +1368,7 @@ notes_tool_add (struct mcp_slot    *slot,
 		return;
 	}
 	if (!initialized && (notes_tool_actions[call->action].fetch & FETCH_REPLACE)) {
-		mcp_slot_tell(slot, CSTR_VIEW("No note has that name. Use action add to "
-		                              "create it."), TOOL_FAILED);
+		mcp_slot_tell(slot, no_note, TOOL_FAILED);
 		return;
 	}
 	int e;
@@ -1400,9 +1396,8 @@ notes_tool_got_copy (struct mcp_slot *slot,
 	struct cstr_view to = { call->name, call->len };
 	if (call->fetch & FETCH_RESTORE) {
 		if (text.len > TOOL_TEXT_MAX) {
-			int e = cstr_view_cat(CSTR_VIEW("That revision exceeds the 4 MiB note size "
-			                                "limit; it was not restored."), call->text);
-			notes_tool_end(slot, e, true);
+			mcp_slot_tell(slot, CSTR_VIEW("That revision exceeds the 4 MiB note size "
+			                              "limit; it was not restored."), TOOL_FAILED);
 			return;
 		}
 		to = util_text_view(&call->revision.file);
