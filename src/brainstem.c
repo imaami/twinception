@@ -670,7 +670,7 @@ brainstem_pressure (struct brainstem *bs,
 		[PRESSURE_SYSTEM] = avail && avail < total ? (total - avail) * 10'000 / total
 		                                           : 0,
 		[PRESSURE_CGROUP] = cg,
-		[PRESSURE_PSI] = hist_get(&brainstem_metrics.psi[1]),
+		[PRESSURE_PSI] = hist_get(&brainstem_metrics.psi[PSI_MEMORY]),
 		[PRESSURE_TEST] = bs->cfg->pressure ? brainstem_number(bs->cfg->pressure, buf,
 		                                                       size, 0) : 0,
 	};
@@ -736,7 +736,9 @@ brainstem_psi (struct brainstem *bs,
                size_t            size)
 {
 #define PSI "/proc/pressure/"
-	static char const *const files[] = { PSI "cpu", PSI "memory", PSI "io" };
+#define PSI_FILE(id, name) [PSI_##id] = PSI name,
+	static char const *const files[] = { BRAINSTEM_PSI(PSI_FILE) };
+#undef PSI_FILE
 	for (size_t i = 0; i < array_size(files); ++i) {
 		char const *name = files[i] + sizeof PSI - 1;
 		double avg10;

@@ -49,16 +49,43 @@ enum { BRAINSTEM_FORCED = 3, BRAINSTEM_RELIEF_MS = 10'000 };
  */
 static constexpr uint64_t MEMORY_HIGH_MIN = 256 << 20;
 
-/** The inputs to the memory pressure level. */
+/**
+ * The inputs to the memory pressure level, as X(ID, name): PRESSURE_ID in
+ * enum brainstem_input, and its name in the metrics. RESIDENT is resident
+ * memory, against memory_high; SYSTEM the RAM in use, MemTotal less
+ * MemAvailable; CGROUP a cgroup's memory.current less its inactive file
+ * cache, against its limit; PSI the memory pressure stall information; and
+ * TEST the test aid's file.
+ */
+#define BRAINSTEM_INPUTS(X)     \
+        X(RESIDENT, "resident") \
+        X(SYSTEM,   "system")   \
+        X(CGROUP,   "cgroup")   \
+        X(PSI,      "psi")      \
+        X(TEST,     "test")
+
+#define BRAINSTEM_INPUT(id, name) PRESSURE_##id,
 enum brainstem_input {
-	PRESSURE_RESIDENT,  /**< resident memory, against memory_high */
-	PRESSURE_SYSTEM,    /**< RAM in use: MemTotal less MemAvailable */
-	PRESSURE_CGROUP,    /**< a cgroup's memory.current less its inactive
-	                         file cache, against its limit */
-	PRESSURE_PSI,       /**< memory pressure stall information */
-	PRESSURE_TEST,      /**< the test aid's file */
+	BRAINSTEM_INPUTS(BRAINSTEM_INPUT)
 	PRESSURE_INPUTS
 };
+#undef BRAINSTEM_INPUT
+
+/** The resources of the pressure stall information, as X(ID, name): PSI_ID
+ *  in enum brainstem_psi, and the name of its file in /proc/pressure, also
+ *  its label in the metrics.
+ */
+#define BRAINSTEM_PSI(X)    \
+        X(CPU,    "cpu")    \
+        X(MEMORY, "memory") \
+        X(IO,     "io")
+
+#define BRAINSTEM_PSI_ID(id, name) PSI_##id,
+enum brainstem_psi {
+	BRAINSTEM_PSI(BRAINSTEM_PSI_ID)
+	PSI_RESOURCES
+};
+#undef BRAINSTEM_PSI_ID
 
 /** What runs on a loop's thread, with the loop's context: @p ctx, or for
  *  the client loops an array of them, loop k's at ctx + (k - 1) * stride.
@@ -118,9 +145,10 @@ struct brainstem_metrics {
 	_Atomic uint64_t rss;           /**< resident bytes */
 	_Atomic uint64_t fds;           /**< descriptors open */
 	_Atomic uint64_t fd_limit;      /**< RLIMIT_NOFILE, soft */
-	_Atomic uint64_t psi[3];        /**< cpu, memory, io: some avg10, in
-	                                     hundredths of a percent */
-	_Atomic uint64_t psi_total[3];  /**< their some total, in µs */
+	_Atomic uint64_t psi[PSI_RESOURCES];        /**< some avg10 of each
+	                                                 resource, in hundredths
+	                                                 of a percent */
+	_Atomic uint64_t psi_total[PSI_RESOURCES];  /**< their some total, in µs */
 	_Atomic uint64_t psi_ok;        /**< bool: /proc/pressure is there */
 	_Atomic uint64_t pressure;      /**< memory pressure, enum buf_pressure */
 	_Atomic uint64_t inputs[PRESSURE_INPUTS];  /**< the level each gives */

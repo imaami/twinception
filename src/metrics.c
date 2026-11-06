@@ -107,9 +107,20 @@ static struct {
         VALUE(name, help, labels, struct task_pool_metrics, field, TASKS_ALL, COUNTER, ONE)
 #define LEDGERS(name, help, labels, field, kind) \
         VALUE(name, help, labels, struct ledger_metrics, field, LEDGER, kind, ONE)
-#define INPUT(help, input, i) \
-        VALUE("askai_memory_pressure_input_level", help, "input=\"" input "\"", \
-              struct brainstem_metrics, inputs[i], BRAINSTEM, GAUGE, ONE)
+#define PSI_RATIO(id, resource) \
+        VALUE("askai_pressure_ratio", PSI_##id ? nullptr : "Share of the last 10 s in " \
+              "which some task stalled on the resource (PSI some avg10).", \
+              "resource=\"" resource "\"", struct brainstem_metrics, psi[PSI_##id], PSI, \
+              GAUGE, PERMYRIAD),
+#define PSI_STALLED(id, resource) \
+        VALUE("askai_pressure_stalled_seconds_total", PSI_##id ? nullptr : "Time some " \
+              "task stalled on the resource (PSI some total).", \
+              "resource=\"" resource "\"", struct brainstem_metrics, \
+              psi_total[PSI_##id], PSI, COUNTER, MICRO),
+#define INPUT(id, input) \
+        VALUE("askai_memory_pressure_input_level", PRESSURE_##id ? nullptr : "The " \
+              "memory pressure level each input gives.", "input=\"" input "\"", \
+              struct brainstem_metrics, inputs[PRESSURE_##id], BRAINSTEM, GAUGE, ONE),
 
 static_assert(LEDGER_RUNNING == 8, "the help of askai_mcp_jobs_refused_total says");
 
@@ -261,29 +272,12 @@ static struct metrics_entry const table[] = {
 	      BRAINSTEM, GAUGE, ONE),
 	VALUE("askai_max_fds", "The descriptor limit.", "", struct brainstem_metrics,
 	      fd_limit, BRAINSTEM, GAUGE, ONE),
-	VALUE("askai_pressure_ratio", "Share of the last 10 s in which some task "
-	      "stalled on the resource (PSI some avg10).", "resource=\"cpu\"",
-	      struct brainstem_metrics, psi[0], PSI, GAUGE, PERMYRIAD),
-	VALUE("askai_pressure_ratio", nullptr, "resource=\"memory\"",
-	      struct brainstem_metrics, psi[1], PSI, GAUGE, PERMYRIAD),
-	VALUE("askai_pressure_ratio", nullptr, "resource=\"io\"",
-	      struct brainstem_metrics, psi[2], PSI, GAUGE, PERMYRIAD),
-	VALUE("askai_pressure_stalled_seconds_total", "Time some task stalled on the "
-	      "resource (PSI some total).", "resource=\"cpu\"", struct brainstem_metrics,
-	      psi_total[0], PSI, COUNTER, MICRO),
-	VALUE("askai_pressure_stalled_seconds_total", nullptr, "resource=\"memory\"",
-	      struct brainstem_metrics, psi_total[1], PSI, COUNTER, MICRO),
-	VALUE("askai_pressure_stalled_seconds_total", nullptr, "resource=\"io\"",
-	      struct brainstem_metrics, psi_total[2], PSI, COUNTER, MICRO),
+	BRAINSTEM_PSI(PSI_RATIO)
+	BRAINSTEM_PSI(PSI_STALLED)
 	VALUE("askai_memory_pressure_level", "Memory pressure: 0 none, 1 high, 2 "
 	      "critical (design section 5).", "", struct brainstem_metrics, pressure,
 	      BRAINSTEM, GAUGE, ONE),
-	INPUT("The memory pressure level each input gives.", "resident",
-	      PRESSURE_RESIDENT),
-	INPUT(nullptr, "system", PRESSURE_SYSTEM),
-	INPUT(nullptr, "cgroup", PRESSURE_CGROUP),
-	INPUT(nullptr, "psi", PRESSURE_PSI),
-	INPUT(nullptr, "test", PRESSURE_TEST),
+	BRAINSTEM_INPUTS(INPUT)
 	VALUE("askai_memory_high_bytes", "Resident memory from which memory pressure "
 	      "is high.", "", struct brainstem_metrics, mem_high, BRAINSTEM, GAUGE, ONE),
 	VALUE("askai_memory_total_bytes", "The system's memory (MemTotal).", "",
@@ -323,6 +317,8 @@ static struct metrics_entry const table[] = {
 };
 
 #undef INPUT
+#undef PSI_STALLED
+#undef PSI_RATIO
 #undef TASKS_ALL
 #undef TASKS
 #undef MAN
