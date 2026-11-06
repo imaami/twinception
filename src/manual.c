@@ -29,8 +29,11 @@ enum {
 	MANUAL_SECONDS = 10,       /**< for man to find, or render, a page */
 	MANUAL_NAME    = 128,      /**< bytes of a page's name, at most */
 	MANUAL_SECTION = 16,       /**< and of a section's */
-	MANUAL_WHY     = 196,      /**< bytes of what says why there is no page */
+	MANUAL_WHY     = 1020,     /**< bytes of the reason why there is no
+	                                page, with a list of pages; a waiter
+	                                has no padding */
 	FOUND_MAX      = 4 << 10,  /**< bytes of man -w's answer: a path, a line break */
+	SEARCH_MAX     = 16 << 10, /**< bytes of man -k's answer that count */
 	ALIASES        = 8,        /**< names a file is kept by, at most */
 	BUCKETS        = 1 << 12,  /**< the table's, to begin with */
 };
@@ -174,13 +177,6 @@ manual_page_same (struct manual_page const *page,
 	return page->dev == st->st_dev && page->ino == st->st_ino &&
 	       page->size == st->st_size && page->ctime.tv_sec == st->st_ctim.tv_sec &&
 	       page->ctime.tv_nsec == st->st_ctim.tv_nsec;
-}
-
-/* Returns the section of the alias @p a, whose key is "NAME\0SECTION". */
-static char const *
-manual_entry_section (struct manual_entry const *a)
-{
-	return a->key + strlen(a->key) + 1;
 }
 
 /* Whether the key of the entry of @p node is the view at @p key. */
@@ -355,37 +351,6 @@ manual_fetch_run (struct manual_fetch *f,
 	manual_fetch_fail(f, child_spawn_why(e, "man", buf, sizeof buf));
 }
 
-/* Writes the refusal of the alias @p a, which is not in the manual, to
- * the @p size bytes at @p why. Returns a view of the text.
- */
-static struct cstr_view
-manual_entry_none (struct manual_entry const *a,
-                   char                      *why,
-                   size_t                     size)
-{
-	char const *section = manual_entry_section(a);
-	return *section ? util_format_view(why, size, "No manual entry for %s in section %s.",
-	                                   a->key, section)
-	                : util_format_view(why, size, "No manual entry for %s.", a->key);
-}
-
-/* Returns a view with data nullptr if man, @p c, ended well or its output
- * was cut short. Otherwise returns the reason, which may be text in the
- * @p size bytes at @p why.
- */
-static struct cstr_view
-manual_fetch_ended (struct manual_fetch const *f,
-                    struct child const        *c,
-                    char                      *why,
-                    size_t                     size)
-{
-	if (c->flags & CHILD_CUT)
-		return (struct cstr_view){};
-	if (child_status(c) == 16)
-		return manual_entry_none(f->alias, why, size);
-	return child_why(c, "man", MANUAL_SECONDS * NS, why, size);
-}
-
 /* Copy as much of the page in as the step has the share for, made UTF-8
  * text, the rest in bulk steps; then the fetch is over.
  */
@@ -420,7 +385,8 @@ manual_fetch_rendered (struct child *c)
 {
 	struct manual_fetch *f = c->owner;
 	char buf[MANUAL_WHY];
-	struct cstr_view const why = manual_fetch_ended(f, c, buf, sizeof buf);
+	struct cstr_view const why = c->flags & CHILD_CUT ? (struct cstr_view){}
+	                             : child_why(c, "man", MANUAL_SECONDS * NS, buf, sizeof buf);
 	if (why.data) {
 		manual_fetch_fail(f, why);
 		return;
@@ -443,6 +409,54 @@ manual_fetch_rendered (struct child *c)
 	manual_fetch_copy(f->ml->loop, &f->step);
 }
 
+/* Ends the list of @p *len bytes at @p data, in which each item ends in a
+ * comma: the comma of the last item becomes a period. A list that fills
+ * the @p size bytes may have lost items, and its end becomes "..." instead.
+ */
+static void
+manual_list_end (uint32_t *len,
+                 char     *data,
+                 size_t    size)
+{
+	if (*len + 1 < size) {
+		data[*len - 1] = '.';
+		return;
+	}
+	*len = (uint32_t)util_clip(data, *len, *len - 3);
+	memcpy(data + *len, "...", 4);
+	*len += 3;
+}
+
+/* Fails the fetch of @p c, a man -k run, with the miss and the pages whose
+ * names begin with the name, if any.
+ */
+static void
+manual_fetch_searched (struct child *c)
+{
+	struct manual_fetch *f = c->owner;
+	char const *key = f->alias->key;
+	struct cstr_view const name = { key, strlen(key) };
+	char const *section = key + name.len + 1;
+	struct span const out = buf_peek(&c->out);
+	struct cstr_view rest = { (char const *)out.ptr, out.len };
+	loop_work(f->ml->loop, LOOP_PARSE, out.len);
+	UTIL_TEXT(MANUAL_WHY) why = {};
+	(void)util_text_printf(&why, "No manual entry for %s%s%s.", key,
+	                       *section ? " in section " : "", section);
+	struct cstr_view const miss = util_text_view(&why);
+	(void)util_text_printf(&why, " Pages whose names begin with %s:", key);
+	uint32_t const lead = why.len;
+	/* A line is "NAME (SECTION) - what the page is about". */
+	for (struct cstr_view line, page; cstr_view_cut(&rest, '\n', &line); ) {
+		if (cstr_view_cut(&line, ' ', &page) && cstr_view_starts_case(page, name) &&
+		    cstr_view_starts(line, CSTR_VIEW("(")) && cstr_view_cut(&line, ')', &line))
+			(void)util_text_printf(&why, " %.*s%.*s),", (int)page.len, page.data,
+			                       (int)line.len, line.data);
+	}
+	manual_list_end(&why.len, why.data, sizeof why.data);
+	manual_fetch_fail(f, why.len > lead ? util_text_view(&why) : miss);
+}
+
 /* Man has found the alias's file, or failed to: give the page the manual
  * has, if the file is as it was, else render it.
  */
@@ -451,8 +465,25 @@ manual_fetch_found (struct child *c)
 {
 	struct manual_fetch *f = c->owner;
 	struct manual *m = f->ml->manual;
+	if (child_status(c) == 16) {
+		/* Man found no page: man -k lists the pages whose names begin with
+		 * the name, . and + escaped. */
+		child_destroy(&f->child);
+		char re[1 + 2 * MANUAL_NAME + 1] = "^";
+		size_t n = 1;
+		for (char const *p = f->alias->key; *p; ++p) {
+			re[n] = '\\';
+			n += *p == '.' || *p == '+';
+			re[n++] = *p;
+		}
+		char const *argv[] = { "man", "-k", "--", re, nullptr };
+		manual_fetch_run(f, argv, SEARCH_MAX, manual_fetch_searched,
+		                 &m->metrics.searches);
+		return;
+	}
 	char buf[MANUAL_WHY];
-	struct cstr_view const why = manual_fetch_ended(f, c, buf, sizeof buf);
+	struct cstr_view const why = c->flags & CHILD_CUT ? (struct cstr_view){}
+	                             : child_why(c, "man", MANUAL_SECONDS * NS, buf, sizeof buf);
 	if (why.data) {
 		manual_fetch_fail(f, why);
 		return;
@@ -535,7 +566,7 @@ manual_loop_ask (struct manual_loop *ml,
 	list_append(&ml->fetches, &f->hook);
 
 	/* Man finds the file. */
-	char const *section = manual_entry_section(a);
+	char const *section = a->key + strlen(a->key) + 1;
 	char const *argv[7] = { "man", "-w" };
 	size_t i = 2;
 	if (*section) {
@@ -725,6 +756,7 @@ manual_create (uint32_t  recheck,
 	atomic_init(&mm->waits, 0);
 	atomic_init(&mm->finds, 0);
 	atomic_init(&mm->renders, 0);
+	atomic_init(&mm->searches, 0);
 	return m;
 }
 

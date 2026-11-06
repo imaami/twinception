@@ -414,7 +414,9 @@ kept page answered and those that waited, and the runs of `man`.
 
 A missing page is a tool error, "No manual entry for NAME in section S.", and
 so are `man`'s other failures and a page that takes more than 10 s to find or
-render; none of those is kept. At most 16 `man` and `git` processes run at
+render; none of those is kept. For a missing page, `askai` also runs
+`man -k -- '^NAME'` and names the pages whose names begin with the name, up
+to some 1 KiB. At most 16 `man` and `git` processes run at
 once; a call past those is answered as busy. A call that goes, as when its client closes
 the connection, leaves the page to be rendered and kept; stopping `askai`
 kills `man` and the processes it started.

@@ -205,8 +205,10 @@ static struct metrics_entry const table[] = {
 	    COUNTER),
 	MAN("askai_man_asks_total", nullptr, "result=\"wait\"", waits, COUNTER),
 	MAN("askai_man_runs_total", "Runs of man: to find a page's file (man -w), "
-	    "or to render the page (man -l).", "run=\"find\"", finds, COUNTER),
+	    "to render the page (man -l), or to search the names after a miss "
+	    "(man -k).", "run=\"find\"", finds, COUNTER),
 	MAN("askai_man_runs_total", nullptr, "run=\"render\"", renders, COUNTER),
+	MAN("askai_man_runs_total", nullptr, "run=\"search\"", searches, COUNTER),
 	TASKS("askai_tasks_held", "Tasks a client loop holds.", held, GAUGE),
 	TASKS("askai_task_slices_total", "Task slices a client loop ran.", slices,
 	      COUNTER),

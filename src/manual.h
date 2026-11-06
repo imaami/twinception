@@ -40,6 +40,7 @@ struct manual_metrics {
 	_Atomic uint64_t waits;    /**< asks that waited for man */
 	_Atomic uint64_t finds;    /**< runs of man that found a page's file */
 	_Atomic uint64_t renders;  /**< runs of man that rendered a page */
+	_Atomic uint64_t searches; /**< runs of man that searched the names */
 };
 
 /**

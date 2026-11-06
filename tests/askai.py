@@ -8196,19 +8196,30 @@ def check_stalled_stderr(binary, up):
 
 
 # A stand-in for man(1). With -w it finds a page's file in its directory's
-# "pages", making it if need be, and notes its arguments in "finds"; else it
-# renders the page that file names, noting its arguments in "renders", and
-# the name says what it does. It notes the processes that wait in
-# "waiting".
+# "pages", making it if need be, and notes its arguments in "finds". With -k
+# it notes its arguments in "searches" and names pages that begin with
+# missing or lots. Else it renders the page that file names, noting its
+# arguments in "renders", and the name says what it does. It notes the
+# processes that wait in "waiting".
 # For the page wait0, the fake man exits at once, and its sleep still has
 # the output pipe open.
 FAKE_MAN = r"""#!/bin/sh
 dir=${0%/*}
 for page; do :; done
+if [ "$1" = -k ]; then
+	echo "$*" >> "$dir/searches"
+	case $page in
+	^missing) printf '%s\n' "missing_link (3)     - a link" "other (1)            - missing" \
+		"Missingno (7)        - a glitch" ;;
+	^lots) seq -f "lots_%g (3) - one of many" 100 ;;
+	*) exit 16 ;;
+	esac
+	exit 0
+fi
 if [ "$1" = -w ]; then
 	echo "$*" >> "$dir/finds"
 	case $page in
-	missing) echo "No manual entry for missing" >&2; exit 16 ;;
+	missing|absent|c++x|a.b|lots) echo "No manual entry for $page" >&2; exit 16 ;;
 	fail) exit 3 ;;
 	nowhere) echo pages/nowhere; exit 0 ;;
 	shadow) [ -e "$dir/moved" ] && page=shadowed ;;
@@ -8292,7 +8303,8 @@ def check_man(binary, up):
     file is unchanged; a name is found anew, in the background, once the
     recheck has passed; the asks for a page under way wait for its one fetch.
     16 children at most, each killed with its group at its deadline or as
-    askai stops; and the real man's pages, where they are installed."""
+    askai stops; a missing name, with the pages whose names begin with it;
+    and the real man's pages, where they are installed."""
     with Askai(binary, "-u", up.url()) as ai:
         tools = ai.rpc("tools/list")[2]["result"]["tools"]
         assert [t["name"] for t in tools] == ["ask_ai"], tools
@@ -8433,10 +8445,16 @@ def check_man(binary, up):
             _, _, body = ai.rpc("tools/call", {"name": "man", "arguments": [1]})
             assert text_of(body["result"]) == "Tool arguments must be an object.", body
 
-            # What man says, and what it does wrong; none of it is kept.
+            # What man says, and what it does wrong; none of it is kept. A
+            # miss names the pages whose names begin with the name, in any
+            # case.
+            like = " Pages whose names begin with missing: missing_link(3), Missingno(7)."
             for arguments, text in (({"name": "missing", "section": "3"},
-                                     "No manual entry for missing in section 3."),
-                                    ({"name": "missing"}, "No manual entry for missing."),
+                                     "No manual entry for missing in section 3." + like),
+                                    ({"name": "missing"}, "No manual entry for missing." + like),
+                                    ({"name": "absent"}, "No manual entry for absent."),
+                                    ({"name": "c++x"}, "No manual entry for c++x."),
+                                    ({"name": "a.b"}, "No manual entry for a.b."),
                                     ({"name": "fail"}, "man exited with status 3."),
                                     ({"name": "broken"}, "man exited with status 3."),
                                     ({"name": "nowhere"},
@@ -8445,6 +8463,16 @@ def check_man(binary, up):
                     result = man_call(ai, **arguments)
                     assert result.get("isError") and text_of(result) == text, result
             assert runs("missing") == (4, 0) and runs("broken") == (2, 2)
+            # A list longer than the reason's room is cut.
+            result = man_call(ai, name="lots")
+            assert result.get("isError") and text_of(result).startswith(
+                "No manual entry for lots. Pages whose names begin with lots: lots_1(3), "
+                "lots_2(3), ") and text_of(result).endswith("...") and \
+                len(text_of(result)) == 1019, result
+            assert lines("searches") == ["-k -- ^missing"] * 4 + ["-k -- ^absent"] * 2 + \
+                ["-k -- ^c\\+\\+x"] * 2 + ["-k -- ^a\\.b"] * 2 + ["-k -- ^lots"], \
+                lines("searches")
+            assert ai.metrics()["askai_man_runs_total{run=\"search\"}"] == 11
 
             # A page is cut at 4 MiB, and made UTF-8 text.
             note = "\n\n[The page goes on past the 4 MiB shown.]\n"
@@ -8514,7 +8542,7 @@ def check_man(binary, up):
             assert ai.ask()["content"][0]["text"] == "A"
             results = up.requests[count + 1]["body"]["messages"][2:]
             assert [m["content"] for m in results[:2]] == \
-                ["No manual entry for missing."] * 2, results
+                ["No manual entry for missing." + like] * 2, results
             assert results[2]["content"].startswith("       headed - a page") and \
                 "\n\n[Bytes 65 to " in results[2]["content"], results[2]
             assert results[3]["content"].startswith("HEADED(3)") and re.search(
