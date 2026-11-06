@@ -53,8 +53,6 @@ enum notes_tool_fetch : uint32_t {
 	                          FETCH_COMPACT */
 	FETCH_DIFF,            /* compare two revisions of a note */
 	FETCH_KIND = 15,       /* the mask of the kinds */
-	FETCH_OTHER = 16,      /* git reads the notebook that the call
-	                          selected */
 	FETCH_COPY = 32,       /* set with FETCH_READ for copy. The note goes to
 	                          the caller's own notebook. */
 	FETCH_ATTACH = 64,     /* set with FETCH_READ for attach. askai uploads
@@ -111,7 +109,7 @@ static struct {
 	NOTE("history",   NOTE_OFFSET,                             FETCH_LIST),
 	NOTE("read",      NOTE_FILE | NOTE_OFFSET | NOTE_REVISION, FETCH_READ),
 	NOTE("diff",      NOTE_FILE | NOTE_OFFSET,                 FETCH_DIFF),
-	NOTE("copy",      NOTE_FILE,                               FETCH_READ | FETCH_OTHER | FETCH_COPY),
+	NOTE("copy",      NOTE_FILE,                               FETCH_READ | FETCH_COPY),
 	NOTE("attach",    NOTE_FILE | NOTE_UPLOAD,                 FETCH_READ | FETCH_ATTACH),
 #undef NOTE
 };
@@ -399,8 +397,8 @@ notes_tool_end (struct mcp_slot *slot,
 }
 
 /* Spawns git for @p fetch in the shared repository and frees @p in, the
- * input of git, which may be empty. With FETCH_OTHER, git reads the
- * notebook that the call selected. Writes always go to call->repo. If
+ * input of git, which may be empty. git reads the notebook that the call
+ * selected, or else call->repo. Writes always go to call->repo. If
  * @p e, the error of making @p in, is not 0, the function frees @p in and
  * ends the call with @p e instead (notes_tool_end()).
  */
@@ -418,7 +416,7 @@ notes_tool_run (struct mcp_slot *slot,
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct notes const *notes = call->loop->tool->notes;
 	struct loop *loop = mcp_slot_loop(slot);
-	char const *repo = fetch & FETCH_OTHER ? notes_tool_call_notebook(call) : call->repo;
+	char const *repo = notes_tool_call_notebook(call);
 	enum notes_cmd cmd = notes_tool_fetch_step(fetch)->cmd;
 	/* git removes its own lock files on SIGTERM. notes_lock() removes a
 	 * lock file that is older than the last boot. Any other lock file
@@ -434,8 +432,7 @@ notes_tool_run (struct mcp_slot *slot,
 		repo, call->revision.file.len ? call->revision.file.data : nullptr
 	};
 	if (fetch & FETCH_REVISION)
-		notes_revision_argv(&call->revision, notes, notes_tool_call_notebook(call), cmd,
-		                    argv);
+		notes_revision_argv(&call->revision, notes, repo, cmd, argv);
 	else
 		notes_argv(notes, cmd, words, argv);
 	struct child_cmd const c = {
@@ -1621,10 +1618,9 @@ notes_tool_start (struct mcp_slot    *slot,
 		return;
 	struct json_object *file = jb_get(args, "file");
 	struct cstr_view const name = jb_view(file);
-	uint32_t const selection = *call->notebook ? FETCH_OTHER : 0;
 	if (revision || diff || fetch & FETCH_RESTORE || (fetch == FETCH_LIST && file)) {
 		struct json_object *const revisions[] = { diff ? from : revision, to };
-		notes_tool_revision(slot, name, revisions, fetch | selection);
+		notes_tool_revision(slot, name, revisions, fetch);
 		return;
 	}
 	if (flags & NOTE_WRITE) {
@@ -1645,9 +1641,9 @@ notes_tool_start (struct mcp_slot    *slot,
 		return;
 	}
 	if (flags & NOTE_FILE)
-		notes_tool_read(slot, name, args, fetch | selection);
+		notes_tool_read(slot, name, args, fetch);
 	else
-		notes_tool_run(slot, fetch | selection, &(struct buf){}, 0);
+		notes_tool_run(slot, fetch, &(struct buf){}, 0);
 }
 
 /* Returns the definition of the notes tool for the side @p side. Only the
