@@ -62,13 +62,6 @@ sse (sse_event_cb *event,
 	};
 }
 
-void
-sse_reset (struct sse *sse)
-{
-	dstr_clear(&sse->input);
-	dstr_clear(&sse->data);
-}
-
 int
 sse_feed (struct sse *sse,
           void const *data,
@@ -96,15 +89,6 @@ sse_feed (struct sse *sse,
 
 	dstr_erase(&sse->input, 0, used);
 	return e;
-}
-
-int
-sse_end (struct sse *sse)
-{
-	size_t len = dstr_len(&sse->input);
-	int e = len ? sse_line(sse, dstr_get(&sse->input), len) : 0;
-	dstr_clear(&sse->input);
-	return e ? e : sse_dispatch(sse);
 }
 
 void
