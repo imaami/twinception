@@ -63,6 +63,18 @@ schema_count (int32_t     min,
 }
 
 struct json_object *
+schema_array (struct json_object *items,
+              size_t              max,
+              char const         *about)
+{
+	struct json_object *arr = jb_object("type", json_object_new_string("array"),
+	                                    "items", items, nullptr);
+	if (max)
+		arr = jb_set_or_free(arr, "maxItems", json_object_new_uint64(max));
+	return schema_about(arr, about);
+}
+
+struct json_object *
 schema_object (struct json_object     *properties,
                struct cstr_view const *required,
                size_t                  n)

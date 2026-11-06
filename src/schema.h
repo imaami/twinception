@@ -49,6 +49,16 @@ schema_count (int32_t     min,
               char const *about);
 
 /**
+ * Returns an array property whose elements have the schema @p items. The
+ * array has at most @p max elements, or any number if @p max is 0. The
+ * description is @p about, as in schema_property().
+ */
+extern struct json_object *
+schema_array (struct json_object *items,
+              size_t              max,
+              char const         *about);
+
+/**
  * Returns the schema of an object with the members @p properties. The
  * @p n names at @p required are the members that the object must have. If
  * @p required is nullptr, the schema has no member "required". The object

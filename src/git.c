@@ -414,19 +414,6 @@ git_destroy (struct git **p_git)
 	free(git);
 }
 
-/* The schema of an argument that is at most @p max strings. */
-static struct json_object *
-git_strings (char const *description,
-             size_t      max)
-{
-	return jb_object(
-		"type", json_object_new_string("array"),
-		"items", schema_property("string", nullptr),
-		"maxItems", json_object_new_int((int32_t)max),
-		"description", json_object_new_string(description),
-		nullptr);
-}
-
 /* Returns the definition of the git tool. @p service is the struct git,
  * and the definition lists the names of its repositories. Returns nullptr
  * if out of memory.
@@ -472,22 +459,20 @@ git_definition (void const *service)
 				"help", schema_property("boolean",
 					"Describe this command without running it. "
 					"Give repo, command, help:true and optional offset."),
-				"options", git_strings("Options, such as --oneline or "
-				                       "--max-count=20. Use help:true to list "
-				                       "the command's exact allowed options.", OPTIONS),
-				"revisions", git_strings("Revisions, such as HEAD~3, main..topic "
-				                         "or the hash of a commit. For read, show "
-				                         "and cat-file, HEAD:path names a file as "
-				                         "of that commit. References and hashes "
-				                         "may use ^/~ ancestry and ^{commit}. Reflogs, "
-				                         "stash, index and raw blob/tree IDs are "
-				                         "excluded. The resolved commit must belong "
-				                         "to HEAD, branch, tag or remote-tracking "
-				                         "history.", REVISIONS),
-				"paths", git_strings("Paths in the repository, relative to its "
-				                     "top. They limit the output of a command "
-				                     "such as log or diff to those paths. They "
-				                     "do not read a file.", PATHS),
+				"options", schema_array(schema_property("string", nullptr), OPTIONS,
+					"Options, such as --oneline or --max-count=20. Use "
+					"help:true to list the command's exact allowed options."),
+				"revisions", schema_array(schema_property("string", nullptr), REVISIONS,
+					"Revisions, such as HEAD~3, main..topic or the hash of a "
+					"commit. For read, show and cat-file, HEAD:path names a "
+					"file as of that commit. References and hashes may use "
+					"^/~ ancestry and ^{commit}. Reflogs, stash, index and "
+					"raw blob/tree IDs are excluded. The resolved commit must "
+					"belong to HEAD, branch, tag or remote-tracking history."),
+				"paths", schema_array(schema_property("string", nullptr), PATHS,
+					"Paths in the repository, relative to its top. They limit "
+					"the output of a command such as log or diff to those "
+					"paths. They do not read a file."),
 				"pattern", schema_property("string",
 					"The pattern for grep. Only grep takes a pattern."),
 				"offset", schema_count(0,

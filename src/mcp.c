@@ -8001,20 +8001,17 @@ mcp_tool_definition (void const *service)
 		"system", schema_property("string",
 			"Optional system instructions for the other AI, such as a role "
 			"or an answer format."),
-		"messages", jb_object(
-			"type", json_object_new_string("array"),
-			"maxItems", json_object_new_int(CHAT_HISTORY),
-			"description", json_object_new_string(
-				"Earlier visible chat messages, in order, before the new prompt. "
-				"Each has role user or assistant and plain string content. The "
-				"client retains this history; thread does not retain messages."),
-			"items", schema_object(
+		"messages", schema_array(
+			schema_object(
 				jb_object("role", schema_enum(schema_names(roles, array_size(roles)),
 				                              nullptr),
 				          "content", schema_property("string", nullptr),
 				          nullptr),
 				keys, array_size(keys)),
-			nullptr),
+			CHAT_HISTORY,
+			"Earlier visible chat messages, in order, before the new prompt. "
+			"Each has role user or assistant and plain string content. The "
+			"client retains this history; thread does not retain messages."),
 		"background", schema_property("boolean",
 			"False waits for the answer on this connection. True requires server "
 			"background mode and returns a job id. Omission follows the server "
@@ -8197,12 +8194,8 @@ mcp_wait_definition (void const *service)
 		jb_object(
 			"seconds", schema_property("integer", "The longest to wait: 1 to "
 			                           "600."),
-			"jobs", jb_object(
-				"type", json_object_new_string("array"),
-				"items", schema_property("integer", nullptr),
-				"description", json_object_new_string(
-					"The jobs to wait for; any if none."),
-				nullptr),
+			"jobs", schema_array(schema_property("integer", nullptr), 0,
+			                     "The jobs to wait for; any if none."),
 			nullptr),
 		CSTR_VIEW("seconds"));
 }
@@ -8292,13 +8285,9 @@ mcp_wait_client_definition (void const *service)
 		jb_object(
 			"seconds", schema_property("integer", "The longest time to wait, "
 			                           "from 1 to 600 seconds."),
-			"jobs", jb_object(
-				"type", json_object_new_string("array"),
-				"items", schema_property("string", nullptr),
-				"description", json_object_new_string(
-					"The ids of the jobs to wait for, at most 16; without "
-					"ids, any job."),
-				nullptr),
+			"jobs", schema_array(schema_property("string", nullptr), 0,
+				"The ids of the jobs to wait for, at most 16; without ids, "
+				"any job."),
 			nullptr),
 		CSTR_VIEW("seconds"));
 }
