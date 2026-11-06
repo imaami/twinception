@@ -32,7 +32,7 @@ struct cstr_view cli_error_text(struct cli_error const *error, int e)
 
 struct json_object *cli_client_string(struct cstr_view text)
 {
-	return text.len <= CLI_LIMIT ? json_object_new_string_len(text.data ? text.data : "", (int)text.len) : nullptr;
+	return text.len <= CLI_LIMIT ? jb_string(text.data ? text : CSTR_VIEW("")) : nullptr;
 }
 
 int
