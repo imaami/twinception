@@ -628,10 +628,8 @@ web_overdue_step (struct loop      *loop,
 {
 	struct web *web = container_of(step, struct web, overdue);
 	for (; !list_is_empty(&web->late); loop_work(loop, LOOP_REQS, 1)) {
-		if (!loop_room(loop, LOOP_REQS)) {
-			loop_ready_bulk(loop, step);
+		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		}
 		struct web_run *run = container_of(web->late.next, struct web_run, held);
 		run->fault = ETIMEDOUT;
 		http_end(web->http, &run->transfer, CURLE_OPERATION_TIMEDOUT);

@@ -2368,10 +2368,8 @@ httpd_evict_step (struct loop      *loop,
 {
 	struct httpd *srv = container_of(step, struct httpd, evict);
 	for (; srv->evicting && !list_is_empty(&srv->idle); --srv->evicting) {
-		if (!loop_room(loop, LOOP_CLOSES)) {
-			loop_ready_bulk(loop, step);
+		if (loop_spent(loop, step, LOOP_CLOSES))
 			return;
-		}
 		httpd_conn_close(container_of(srv->idle.next, struct httpd_conn, hook));
 	}
 	srv->evicting = 0;

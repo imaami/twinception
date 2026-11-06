@@ -239,6 +239,21 @@ extern void
 loop_ready_bulk (struct loop      *loop,
                  struct loop_step *step);
 
+/** Returns false if loop_room() for the unit @p u is not 0. Otherwise
+ *  queues @p step for a bulk step and returns true, and the caller returns
+ *  so that its work continues in that later step.
+ */
+static inline bool
+loop_spent (struct loop      *loop,
+            struct loop_step *step,
+            enum loop_unit    u)
+{
+	if (loop_room(loop, u))
+		return false;
+	loop_ready_bulk(loop, step);
+	return true;
+}
+
 /** Take @p step off its list, if it is on one. */
 extern void
 loop_unready (struct loop_step *step);

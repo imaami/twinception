@@ -600,10 +600,8 @@ home_cleanup_step (struct loop      *loop,
 		                                               struct home_cancellation, hook);
 		if (cancel->deadline > loop->now)
 			return;
-		if (!loop_room(loop, LOOP_REQS)) {
-			loop_ready_bulk(loop, step);
+		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		}
 		http_cancel(home->http, &cancel->transfer);
 		home_cancel_done(CURLE_OPERATION_TIMEDOUT, 0, "", cancel);
 		loop_work(loop, LOOP_REQS, 1);
@@ -1368,10 +1366,8 @@ home_start_step (struct loop      *loop,
 		struct job *job = home_next(home, true);
 		if (!job)
 			return;
-		if (!loop_room(loop, LOOP_REQS)) {
-			loop_ready_bulk(loop, step);
+		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		}
 		if (job->flags & READY) {
 			job->flags &= (uint16_t)~READY;
 			--home->readied[home_job_class(job)];
@@ -1458,10 +1454,8 @@ home_overdue_step (struct loop      *loop,
 			(void)loop_timer_set(loop, &home->deadline, due);
 			return;
 		}
-		if (!loop_room(loop, LOOP_REQS)) {
-			loop_ready_bulk(loop, step);
+		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		}
 		home_expire(home, job);
 	}
 	(void)loop_timer_set(loop, &home->deadline, UINT64_MAX);
@@ -1490,10 +1484,8 @@ home_silent_step (struct loop      *loop,
 			(void)loop_timer_set(loop, &home->quiet, due);
 			return;
 		}
-		if (!loop_room(loop, LOOP_REQS)) {
-			loop_ready_bulk(loop, step);
+		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		}
 		job->flags |= STALLED;
 		hist_add(&home->metrics->stalls, 1);
 		home_cut(home, job, CURLE_OPERATION_TIMEDOUT);
@@ -2264,10 +2256,8 @@ home_shed_step (struct loop      *loop,
 		struct job *job = home_next(home, false);
 		if (!job)
 			return;
-		if (!loop_room(loop, LOOP_REQS)) {
-			loop_ready_bulk(loop, step);
+		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		}
 		home_refuse(home, job);
 		loop_work(loop, LOOP_REQS, 1);
 	}
@@ -2310,10 +2300,8 @@ home_preempt_step (struct loop      *loop,
 {
 	struct home *home = container_of(step, struct home, preempt);
 	for (; !list_is_empty(&home->preempting); loop_work(loop, LOOP_REQS, 1)) {
-		if (!loop_room(loop, LOOP_REQS)) {
-			loop_ready_bulk(loop, step);
+		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		}
 		struct job *job = container_of(home->preempting.next, struct job, queue);
 		list_del(&job->queue);
 		/* Its answer may be all in by now, or the interactive job gone. */
@@ -2335,10 +2323,8 @@ home_stop_step (struct loop      *loop,
 {
 	struct home *home = container_of(step, struct home, stop);
 	for (; !list_is_empty(&home->dropped); loop_work(loop, LOOP_REQS, 1)) {
-		if (!loop_room(loop, LOOP_REQS)) {
-			loop_ready_bulk(loop, step);
+		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		}
 		home_cancel(home, container_of(home->dropped.next, struct job, queue));
 	}
 }
@@ -2350,10 +2336,8 @@ home_drain_step (struct loop      *loop,
 {
 	struct home *home = container_of(step, struct home, drain);
 	for (; !list_is_empty(&home->timeline); loop_work(loop, LOOP_REQS, 1)) {
-		if (!loop_room(loop, LOOP_REQS)) {
-			loop_ready_bulk(loop, step);
+		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		}
 		home_cancel(home, container_of(home->timeline.next, struct job, due));
 	}
 }

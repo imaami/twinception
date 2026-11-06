@@ -7810,10 +7810,8 @@ mcp_drain_step (struct loop      *loop,
 {
 	struct mcp *mcp = container_of(step, struct mcp, drain);
 	for (; !list_is_empty(&mcp->calls); loop_work(loop, LOOP_REQS, 1)) {
-		if (!loop_room(loop, LOOP_REQS)) {
-			loop_ready_bulk(loop, step);
+		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		}
 		mcp_req_fail(container_of(mcp->calls.next, struct mcp_req, hook), ESHUTDOWN);
 	}
 }
