@@ -33,6 +33,7 @@
 #include "compat.h"
 #include "cstr_view.h"
 #include "godbolt_probe.h"
+#include "util.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverlength-strings"
@@ -52,17 +53,6 @@ static bool
 godbolt_probe_space (char c)
 {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r';
-}
-
-/* Returns the value of the hexadecimal digit @p c, or 16 if @p c is not
- * one.
- */
-static unsigned
-godbolt_probe_hex (char c)
-{
-	return c >= '0' && c <= '9' ? (unsigned)(c - '0')
-	     : c >= 'a' && c <= 'f' ? (unsigned)(c - 'a') + 10
-	     : c >= 'A' && c <= 'F' ? (unsigned)(c - 'A') + 10 : 16;
 }
 
 /* Stores in @p *result the value of the integer expansion @p text of a
@@ -145,7 +135,7 @@ godbolt_probe_cite (struct godbolt_probe    *p,
 	for (uint32_t i = 0; i < c->n; ++i)
 		if (!strcmp(c->evidence[i], name))
 			return;
-	if (c->n < GODBOLT_PROBE_EVIDENCE)
+	if (c->n < array_size(c->evidence))
 		c->evidence[c->n++] = name;
 }
 
@@ -513,7 +503,7 @@ godbolt_probe_ucn (char const **c,
 {
 	uint32_t scalar = 0;
 	for (unsigned i = 0; i < digits; ++i) {
-		unsigned const h = *c < end ? godbolt_probe_hex(**c) : 16;
+		unsigned const h = *c < end ? util_hex_digit((unsigned char)**c) : 16;
 		if (h > 15)
 			return EPROTO;
 		scalar = scalar << 4 | h;
@@ -556,8 +546,9 @@ godbolt_probe_escape (char const **c,
 	unsigned value = 0;
 	unsigned digits = 0;
 	if (e == 'x') {
-		for (; *c < end && godbolt_probe_hex(**c) < 16 && value <= UCHAR_MAX; ++digits)
-			value = value << 4 | godbolt_probe_hex(*(*c)++);
+		for (; *c < end && util_hex_digit((unsigned char)**c) < 16 && value <= UCHAR_MAX;
+		     ++digits)
+			value = value << 4 | util_hex_digit((unsigned char)*(*c)++);
 	} else if (e >= '0' && e <= '7') {
 		value = e - '0';
 		for (digits = 1; digits < 3 && *c < end && **c >= '0' && **c <= '7'; ++digits)
@@ -633,7 +624,7 @@ static int
 godbolt_probe_parse_record (struct godbolt_probe         *p,
                             struct godbolt_probe_record  *list,
                             uint32_t                     *n,
-                            uint32_t                      max,
+                            size_t                        max,
                             unsigned                      state,
                             struct cstr_view              rest,
                             char                        **out)
@@ -704,11 +695,11 @@ godbolt_probe_line (struct godbolt_probe  *p,
 	}
 	if (cstr_view_starts(line, macro))
 		return godbolt_probe_parse_record(p, p->macros, &p->n_macros,
-		                                  GODBOLT_PROBE_MACROS, *state,
+		                                  array_size(p->macros), *state,
 		                                  cstr_view_slice(line, macro.len, SIZE_MAX), out);
 	if (cstr_view_starts(line, header))
 		return godbolt_probe_parse_record(p, p->headers, &p->n_headers,
-		                                  GODBOLT_PROBE_HEADERS, *state,
+		                                  array_size(p->headers), *state,
 		                                  cstr_view_slice(line, header.len, SIZE_MAX), out);
 	if (*state == 1 && line.len && *line.data != '#') {
 		p->why = "the block has a line that is not a record";
