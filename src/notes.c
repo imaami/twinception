@@ -732,41 +732,54 @@ notes_file_same (struct notes_file const *file,
 	return 0;
 }
 
+/* Writes @p name at @p p in double quotes, with a backslash before each
+ * double quote and backslash in it, as fast-import reads a path, and
+ * returns the end. The quoted name takes at most 2 * name.len + 2 bytes.
+ */
+static char *
+notes_quote (char             *p,
+             struct cstr_view  name)
+{
+	*p++ = '"';
+	for (size_t i = 0; i < name.len; ++i) {
+		if (name.data[i] == '"' || name.data[i] == '\\')
+			*p++ = '\\';
+		*p++ = name.data[i];
+	}
+	*p++ = '"';
+	return p;
+}
+
 int
 notes_add_head (struct buf        *in,
                 struct cstr_view   name,
                 size_t             len,
                 struct notes_part *part)
 {
-	static char const m[] = "M 100644 inline \"";
+	static char const m[] = "M 100644 inline ";
 	if (!in || !name.data || name.len > NOTES_NAME || !part)
 		return EINVAL;
 	/* The head is m, the name quoted as a C string, which at most doubles
 	 * its bytes, and the data command. Then come the text and a line
 	 * feed. */
 	struct span s;
-	int e = buf_reserve(in, sizeof m + 2 * name.len + sizeof "\"\ndata \n" + UTIL_DECIMAL + len,
-	                    SIZE_MAX, &s);
+	int e = buf_reserve(in, sizeof m + 2 * name.len + sizeof "\"\"\ndata \n" + UTIL_DECIMAL +
+	                    len, SIZE_MAX, &s);
 	if (e)
 		return e;
 	char *const head = (char *)s.ptr;
-	char *p = mempcpy(head, m, sizeof m - 1);
-	for (size_t i = 0; i < name.len; ++i) {
-		if (name.data[i] == '"' || name.data[i] == '\\')
-			*p++ = '\\';
-		*p++ = name.data[i];
-	}
+	char *p = notes_quote(mempcpy(head, m, sizeof m - 1), name);
 	size_t const room = s.len - (size_t)(p - head);
-	int n = snprintf(p, room, "\"\ndata %zu\n", len);
+	int n = snprintf(p, room, "\ndata %zu\n", len);
 	if (n < 0 || (size_t)n >= room)
 		return EINVAL;
 	size_t h = (size_t)(p - head) + (size_t)n;
 	head[h + len] = '\n';
-	/* The name runs from the last byte of m to the quote at p. */
+	/* The quoted name runs from the end of m to p. */
 	size_t at = buf_peek(in).len;
 	*part = (struct notes_part){
-		.name_at = at + sizeof m - 2,
-		.name_len = (size_t)(p - head) - (sizeof m - 2) + 1,
+		.name_at = at + sizeof m - 1,
+		.name_len = (size_t)(p - head) - (sizeof m - 1),
 		.data_at = at + h,
 		.data_len = len,
 	};
@@ -784,6 +797,29 @@ notes_add_file (struct buf        *in,
 	if (!e)
 		memcpy(buf_peek(in).ptr + part->data_at, text.data, text.len);
 	return e;
+}
+
+int
+notes_delete_file (struct buf        *in,
+                   struct cstr_view   name,
+                   struct notes_part *part)
+{
+	if (!in || !name.data || name.len > NOTES_NAME || !part)
+		return EINVAL;
+	/* The part is "D ", the name quoted as a C string, which at most
+	 * doubles its bytes, and a line feed. */
+	struct span s;
+	int e = buf_reserve(in, sizeof "D \"\"\n" + 2 * name.len, SIZE_MAX, &s);
+	if (e)
+		return e;
+	char *const head = (char *)s.ptr;
+	char *p = notes_quote(mempcpy(head, "D ", 2), name);
+	size_t const at = buf_peek(in).len;
+	size_t const end = (size_t)(p - head);
+	*part = (struct notes_part){ .name_at = at + 2, .name_len = end - 2, .data_at = at + end };
+	*p = '\n';
+	buf_commit(in, end + 1);
+	return 0;
 }
 
 int

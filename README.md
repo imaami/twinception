@@ -678,9 +678,11 @@ A note is a file. The model chooses its name, such as `plan.md` or
 the name shows the format of the text, which `askai` does not check.
 The tool `notes` creates a file with `add` or updates an existing file with
 `replace`, or with `append`, which adds text at its end, on a new line if
-the file does not end with a line feed. Each write that changes a note adds
-a commit to the caller's branch with `git fast-import`. Its message says
-what the write did, the note's name and its size before and after, such as
+the file does not end with a line feed. `delete` removes a file;
+`restore` with the commit before the deletion brings it back.
+Each write that changes a note adds a commit to the caller's
+branch with `git fast-import`. Its message says what the write
+did, the note's name and its size before and after, such as
 `Replace "plan.md" (1234 to 1302 bytes)`; previous versions remain in
 history. The result names the new commit and repeats its message. If the
 write changed a note, the result also names the commit of the previous
@@ -688,11 +690,11 @@ version, after the lines that a `replace` or `restore` removed and added,
 such as `1 line removed, 2 added.`, unless Git sees the note as binary. A
 `replace` or `restore` that would leave the note's bytes as they are
 makes no commit; its result says `Unchanged` and names the notebook's
-newest commit. `add` refuses an existing name, and `replace` and `append` a
-missing one. Concurrent branch updates fail rather than overwrite another
-writer's changes. When a turn writes text whose last lines are askai's
-own notices from tool results, such as `[askai: notebook ...]` or the
-context notices, askai leaves those lines out and says so in the result.
+newest commit. `add` refuses an existing name, and `replace`, `append` and
+`delete` a missing one. Concurrent branch updates fail rather than overwrite
+another writer's changes. When a turn writes text whose last lines are
+askai's own notices from tool results, such as `[askai: notebook ...]` or
+the context notices, askai leaves those lines out and says so in the result.
 Notices inside the text, and text from clients, stay as they are. askai
 adds a line feed to a turn's text that does not end with one.
 Names cannot contain control characters or empty parts. No part can be

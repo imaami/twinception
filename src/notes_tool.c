@@ -64,6 +64,7 @@ enum notes_tool_fetch : uint32_t {
 	FETCH_REVISION = 256,  /* check the revisions before git reads a note */
 	FETCH_RESTORE = 512,   /* write an old revision of a note in a new
 	                          commit */
+	FETCH_DELETE = 1024,   /* set for delete */
 };
 
 /* A row of notes_tool_fetch_steps[]: the step that reads the output of
@@ -107,6 +108,7 @@ static struct {
 	NOTE("add",       NOTE_WRITE | NOTE_FILE,                  0),
 	NOTE("append",    NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE | FETCH_APPEND),
 	NOTE("replace",   NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE),
+	NOTE("delete",    NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE | FETCH_DELETE),
 	NOTE("restore",   NOTE_WRITE | NOTE_FILE | NOTE_REVISION,  FETCH_READ | FETCH_RESTORE),
 	NOTE("notebooks", NOTE_OFFSET,                             FETCH_BOOKS),
 	NOTE("list",      NOTE_OFFSET,                             FETCH_FILES),
@@ -134,6 +136,10 @@ static struct cstr_view const bad_name =
 	               "design/locks.md. It cannot have control characters or empty parts, "
 	               "and no part can be ., .., .git or git~1, in any case and also with "
 	               "spaces or dots after it.");
+
+/* The message for a call that names a directory of notes. */
+static struct cstr_view const dir_name =
+	CSTR_VIEW_INIT("That name is a directory of notes. list shows the notes in it.");
 
 /* The message for a call that names a note that does not exist. */
 static struct cstr_view const no_note =
@@ -723,11 +729,11 @@ notes_tool_unchanged (struct mcp_slot         *slot,
 
 /* Handles the output of NOTES_CHECK for a write. add and copy accept only a
  * name that is neither a note nor a directory of notes. No directory in the
- * name can be a note. replace and append accept only the name of an
- * existing note, and git reads the note for append. A replace or a restore
- * that leaves the bytes of the note unchanged makes no commit. For a write
- * that changes an existing note, the function stores the newest commit, the
- * parent of the write, in call->revision.tip.
+ * name can be a note. The writes with FETCH_REPLACE accept only the name
+ * of an existing note, and git reads the note for append. A replace or a
+ * restore that leaves the bytes of the note unchanged makes no commit.
+ * For a write that changes an existing note, the function stores the
+ * newest commit, the parent of the write, in call->revision.tip.
  */
 static void
 notes_tool_checked (struct mcp_slot *slot)
@@ -740,7 +746,7 @@ notes_tool_checked (struct mcp_slot *slot)
 	uint64_t before = r == EEXIST ? note.bytes : NO_NOTE;
 	uint32_t fetch = notes_tool_actions[call->action].fetch;
 	if (fetch & FETCH_REPLACE)
-		r = r == EEXIST ? 0 : r ? r : ENOENT;
+		r = r == EEXIST ? 0 : r && r != ENOTDIR ? r : ENOENT;
 	if (fetch & FETCH_RESTORE) {
 		if (r == EEXIST && !(call->flags & CALL_AS))
 			r = 0;
@@ -758,7 +764,8 @@ notes_tool_checked (struct mcp_slot *slot)
 			int e = notes_read_input(&in, tip.hex, util_text_view(&call->revision.file));
 			child_destroy(&call->child);
 			notes_tool_run(slot, FETCH_READ | FETCH_APPEND, &in, e);
-		} else if (before == NO_NOTE || !notes_tool_unchanged(slot, &note, &tip)) {
+		} else if (before == NO_NOTE || fetch & FETCH_DELETE ||
+		           !notes_tool_unchanged(slot, &note, &tip)) {
 			child_destroy(&call->child);
 			notes_tool_write(slot, &tip, before);
 		}
@@ -768,10 +775,8 @@ notes_tool_checked (struct mcp_slot *slot)
 	              r == EEXIST ? CSTR_VIEW("A note of that name exists. Use replace or append "
 	                                      "to change it, or give another name.")
 	              : r == ENOENT ? no_note
-	              : r == EISDIR ? CSTR_VIEW("That name is a directory of notes. Add the "
-	                                        "note under another name.")
-	              : r == ENOTDIR ? CSTR_VIEW("A directory in that name is a note. Add the "
-	                                         "note under another name.")
+	              : r == EISDIR ? dir_name
+	              : r == ENOTDIR ? CSTR_VIEW("A directory in that name is a note.")
 	              : notes_tool_call_unread(call), TOOL_FAILED);
 }
 
@@ -839,7 +844,7 @@ notes_tool_added (struct mcp_slot *slot)
 	int e = cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""),
 	                       call->text);
 	if (e || !oid_len(&commit) || !oid_len(&call->revision.tip) ||
-	    notes_tool_actions[call->action].fetch & FETCH_APPEND) {
+	    notes_tool_actions[call->action].fetch & (FETCH_APPEND | FETCH_DELETE)) {
 		notes_tool_saved(slot, e);
 		return;
 	}
@@ -1133,9 +1138,7 @@ notes_tool_got_note (struct mcp_slot *slot)
 	struct oid id;
 	int r = child_ok(c) ? notes_read_out(buf_peek(&c->out), &text, &id) : EIO;
 	if (r) {
-		mcp_slot_tell(slot, r == ENOENT ? no_note
-		                  : r == EISDIR ? CSTR_VIEW("That name is a directory of notes. "
-		                                            "list shows the notes in it.")
+		mcp_slot_tell(slot, r == ENOENT ? no_note : r == EISDIR ? dir_name
 		                  : notes_tool_call_unread(call), TOOL_FAILED);
 		return;
 	}
@@ -1299,7 +1302,8 @@ notes_tool_prompt_list (struct mcp_slot  *slot,
 
 /* Appends the newest note, which git read for the prompt, to call->text.
  * If git could not read the note, the function appends the line "[askai:
- * the note could not be read.]" instead. A note longer than call->most
+ * the note could not be read.]" instead, or "[askai: the note was
+ * deleted.]" if the note does not exist. A note longer than call->most
  * bytes is cut there, and the function appends a line with the offset of
  * the rest. Then the ask call continues.
  */
@@ -1330,7 +1334,8 @@ notes_tool_newest (struct mcp_slot *slot)
 	                              "\"offset\": %zu for the rest.]", body.len, len, body.len)
 	                            : (struct cstr_view){};
 	struct cstr_view const p[] = {
-		r ? CSTR_VIEW("[askai: the note could not be read.]") : body,
+		r == ENOENT ? CSTR_VIEW("[askai: the note was deleted.]")
+		: r ? CSTR_VIEW("[askai: the note could not be read.]") : body,
 		more,
 		CSTR_VIEW("\n"),
 	};
@@ -1433,19 +1438,18 @@ static_assert(TOOL_TEXT_MAX == 4U << 20 && NOTES_NAME == 255 && HEXID_DIGITS == 
               "digits");
 
 /* Runs git to check the name @p name of the note in call->file before the
- * write, or to create the shared repository if @p initialized is false. If
+ * write, or to create the shared repository if it does not exist. If
  * @p e is not 0, the function ends the call with @p e instead.
  */
 static void
 notes_tool_check (struct mcp_slot  *slot,
                   struct cstr_view  name,
-                  bool              initialized,
                   int               e)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct buf in = {};
 	uint32_t fetch = FETCH_CREATE;
-	if (!e && initialized) {
+	if (!e && notes_exists(call->loop->tool->notes)) {
 		fetch = FETCH_CHECK;
 		e = notes_check_input(&in, call->repo, name);
 	}
@@ -1465,7 +1469,6 @@ notes_tool_add (struct mcp_slot    *slot,
                 struct json_object *args)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	bool initialized = notes_exists(call->loop->tool->notes);
 	bool turn = !mcp_slot_from_client(slot);
 	size_t most = call->loop->tool->files_inline;
 	struct json_object *content = jb_get(args, "content");
@@ -1498,10 +1501,6 @@ notes_tool_add (struct mcp_slot    *slot,
 		return;
 	}
 	(void)util_text_store(&call->revision.file, name);
-	if (!initialized && (notes_tool_actions[call->action].fetch & FETCH_REPLACE)) {
-		mcp_slot_tell(slot, no_note, TOOL_FAILED);
-		return;
-	}
 	int e;
 	if (content) {
 		e = notes_add_head(&call->file, name, data.size, &call->part);
@@ -1520,7 +1519,7 @@ notes_tool_add (struct mcp_slot    *slot,
 			*(char *)mempcpy(buf_peek(&call->file).ptr + call->part.data_at, text.data,
 			                 kept) = '\n';
 	}
-	notes_tool_check(slot, name, initialized, e);
+	notes_tool_check(slot, name, e);
 }
 
 /* Writes @p text to the note call->name in the caller's own notebook. A
@@ -1541,7 +1540,21 @@ notes_tool_got_copy (struct mcp_slot *slot,
 	int e = notes_add_file(&call->file, to, bytes, &call->part);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, text.len);
 	child_destroy(&call->child);
-	notes_tool_check(slot, to, notes_exists(call->loop->tool->notes), e);
+	notes_tool_check(slot, to, e);
+}
+
+/* Starts delete of the note @p name in the caller's own notebook. */
+static void
+notes_tool_delete (struct mcp_slot  *slot,
+                   struct cstr_view  name)
+{
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	if (notes_name(&name)) {
+		mcp_slot_tell(slot, bad_name, TOOL_FAILED);
+		return;
+	}
+	int e = notes_delete_file(&call->file, name, &call->part);
+	notes_tool_check(slot, name, e);
 }
 
 /* Writes the note @p old, which git read at call->revision.tip, and the
@@ -1759,6 +1772,14 @@ notes_tool_start (struct mcp_slot    *slot,
 		notes_tool_revision(slot, name, revisions, fetch);
 		return;
 	}
+	if (fetch & FETCH_REPLACE && !notes_exists(notes)) {
+		mcp_slot_tell(slot, no_note, TOOL_FAILED);
+		return;
+	}
+	if (fetch & FETCH_DELETE) {
+		notes_tool_delete(slot, name);
+		return;
+	}
 	if (flags & NOTE_WRITE) {
 		notes_tool_add(slot, name, args);
 		return;
@@ -1818,13 +1839,14 @@ notes_tool_schema (struct notes_tool const *tool,
 	struct json_object *props = jb_object(
 		"action", jb_set_or_free(schema_enum(actions, nullptr), "description", schema_text3(
 			"add creates a note (file) with text. append adds text to the end of a "
-			"note, on a new line. replace replaces the whole text of a note. restore "
-			"writes a note's version at the commit revision in a new commit, under as "
-			"if given. copy copies a note (file) from another notebook (notebook) into "
-			"yours, under as if given. list lists the current notes. history lists the "
-			"changes, oldest first, to all notes or to one (file). read reads a note, "
-			"or its version at the commit revision. diff shows the changes to a note "
-			"between the commits from and to. notebooks lists the session's notebooks.",
+			"note, on a new line. replace replaces the whole text of a note. delete "
+			"removes a note; its versions stay in the history. restore writes a note's "
+			"version at the commit revision in a new commit, under as if given. copy "
+			"copies a note (file) from another notebook (notebook) into yours, under as "
+			"if given. list lists the current notes. history lists the changes, oldest "
+			"first, to all notes or to one (file). read reads a note, or its version at "
+			"the commit revision. diff shows the changes to a note between the commits "
+			"from and to. notebooks lists the session's notebooks.",
 			files ? " attach gives you a whole note (file) as a file after the turn's "
 			        "results." : "",
 			" The actions that read take notebook. To recover lost text: history with "

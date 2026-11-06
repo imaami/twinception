@@ -10159,8 +10159,9 @@ def check_notes(binary, up):
                 return re.fullmatch(saved(message, git("rev-parse", ref).decode().strip()),
                                     said)
             assert not os.path.exists(f"{notes}/HEAD"), notebooks
-            assert call({"action": "replace", "file": "missing.md", "text": "x"}) == \
-                "!" + NO_NOTE
+            for action in ("replace", "append", "delete"):
+                assert call({"action": action, "file": "missing.md", "text": "x"}) == \
+                    "!" + NO_NOTE, action
             assert not os.path.exists(f"{notes}/HEAD")
             said = call({"action": "add", "file": "//plan.md", "text": "step 1"})
             assert wrote(said, 'Add "plan.md" (6 bytes)'), said
@@ -10392,7 +10393,7 @@ def check_notes(binary, up):
             before = git("rev-parse", own)
             for name, why in (("missing.md", NO_NOTE),
                               ("a", "That name is a directory of notes"),
-                              ("plan.md/x", "A directory in that name is a note")):
+                              ("plan.md/x", NO_NOTE)):
                 assert call({"action": "replace", "file": name, "text": "x"}).startswith(
                     "!" + why), name
             assert call({"action": "replace", "file": "plan.md", "text": ""}).startswith(
@@ -10867,6 +10868,30 @@ def check_notes_history(binary, up):
                 said = call(alice, action="replace", file="abc.md", text="a\n")
                 assert said.endswith(" (6 to 2 bytes). 2 lines removed, 0 added. The previous "
                                      f"version is in commit {before}."), said
+                # delete removes a note in a new commit, and restore brings it
+                # back.
+                before = tip()
+                said = call(alice, action="delete", file="unrelated.md")
+                assert said == f'Saved in commit {tip()}: Delete "unrelated.md" (7 to 0 ' \
+                    f"bytes). The previous version is in commit {before}.", said
+                assert "unrelated.md" not in call(alice, action="list")
+                assert call(alice, action="history", file="unrelated.md").endswith(
+                    f'  unrelated.md  (+0 -1)  commit {tip()}  Delete "unrelated.md" (7 to 0 '
+                    "bytes)\n")
+                assert not call(alice, action="restore", file="unrelated.md",
+                                revision=before).startswith("!")
+                assert git("show", f"{own}:unrelated.md") == b"keep me"
+                assert not call(alice, action="add", file='q"\\.md', text="q").startswith("!")
+                said = call(alice, action="delete", file='q"\\.md')
+                assert 'Delete "q\\"\\\\.md" (1 to 0 bytes)' in said, said
+                assert 'q"' not in call(alice, action="list")
+                assert not call(alice, action="add", file="dir/x.md", text="x").startswith("!")
+                before = tip()
+                for name, why in (("missing.md", NO_NOTE), ("dir/x.md/y", NO_NOTE),
+                                  ("dir", "That name is a directory of notes. list shows "
+                                   "the notes in it.")):
+                    said = call(alice, action="delete", file=name)
+                    assert said == "!" + why and tip() == before, (name, said)
                 if object_format == "sha1":
                     # Exercise the model-facing workflow and its own writer too.
                     upstream = "refs/heads/notes/alice/anonymous/upstream"
@@ -11070,15 +11095,16 @@ def check_notes_texts(binary, up):
                     assert described == {
                         "action": "add creates a note (file) with text. append adds text to the "
                         "end of a note, on a new line. replace replaces the whole text of a "
-                        "note. restore writes a note's version at the commit revision in a new "
-                        "commit, under as if given. copy copies a note (file) from another "
-                        "notebook (notebook) into yours, under as if given. list lists the "
-                        "current notes. history lists the changes, oldest first, to all notes "
-                        "or to one (file). read reads a note, or its version at the commit "
-                        "revision. diff shows the changes to a note between the commits from "
-                        "and to. notebooks lists the session's notebooks. The actions that read "
-                        "take notebook. To recover lost text: history with file, then diff, "
-                        "then read or restore with revision.",
+                        "note. delete removes a note; its versions stay in the history. restore "
+                        "writes a note's version at the commit revision in a new commit, under "
+                        "as if given. copy copies a note (file) from another notebook "
+                        "(notebook) into yours, under as if given. list lists the current "
+                        "notes. history lists the changes, oldest first, to all notes or to one "
+                        "(file). read reads a note, or its version at the commit revision. diff "
+                        "shows the changes to a note between the commits from and to. notebooks "
+                        "lists the session's notebooks. The actions that read take notebook. To "
+                        "recover lost text: history with file, then diff, then read or restore "
+                        "with revision.",
                         "file": "A note's file name, at most 255 bytes, such as plan.md or "
                         "design/locks.md. Its extension shows the format of the text. With "
                         "history, only that file's changes.",
@@ -11628,8 +11654,8 @@ def check_attach(binary, up):
                              lambda r: (200, answer("A"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
                 assert call({"action": "attach", "file": "latin1.c", "thread": thread}) \
-                    == "!The action argument must be one of: add, append, replace, restore, " \
-                    "notebooks, list, history, read, diff, copy."
+                    == "!The action argument must be one of: add, append, replace, delete, " \
+                    "restore, notebooks, list, history, read, diff, copy."
 
                 count = len(up.requests)
                 stored = len(up.uploads)
@@ -11638,9 +11664,9 @@ def check_attach(binary, up):
                 first, second = up.requests[count:]
                 [notes_tool] = [t for t in tools(first["body"]) if t["name"] == "notes"]
                 action = notes_tool[schema]["properties"]["action"]
-                assert action["enum"] == ["add", "append", "replace", "restore", "notebooks",
-                                           "list", "history", "read", "diff", "copy",
-                                           "attach"], action
+                assert action["enum"] == ["add", "append", "replace", "delete", "restore",
+                                           "notebooks", "list", "history", "read", "diff",
+                                           "copy", "attach"], action
                 properties = notes_tool[schema]["properties"]
                 assert all(properties[name]["type"] == "string"
                            for name in ("revision", "from", "to")), properties
@@ -12437,6 +12463,17 @@ def check_turns(binary, up):
                 f"\\(\\+1 -0\\)\n2\\. {when}  n2\\.md  "
                 "\\(\\+1 -0\\)\n\n\\[askai: the current text of your most recently written note, n2\\.md:\\]\n\nn2\n\n"
                 "\\[askai: go on with the task\\.\\]", prompt(again)), prompt(again)
+            # After a delete, the prompt says that the newest note was deleted.
+            script[:] = [lambda r: (200, turn_stream([("a", "notes", json.dumps(
+                             {"action": "delete", "file": "n2.md"}))])),
+                         lambda r: (400, full)]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            again = up.requests[count + 2]
+            assert re.search(f"\n3\\. {when}  n2\\.md  \\(\\+0 -1\\)\n\n\\[askai: the current "
+                             "text of your most recently written note, n2\\.md:\\]\n\n\\[askai: "
+                             "the note was deleted\\.\\]\n\n\\[askai: go on with the task\\.\\]$",
+                             prompt(again)), prompt(again)
             script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
                          lambda r: (400, full), lambda r: (400, full)]
             result = ai.ask("Q")
@@ -12533,7 +12570,7 @@ def check_turns(binary, up):
 
             values = ai.metrics()
             assert total(values, "askai_compactions_total", by="upstream") == 1 and \
-                total(values, "askai_compactions_total", by="askai") == 2 and \
+                total(values, "askai_compactions_total", by="askai") == 3 and \
                 total(values, "askai_turns_stopped_total") == 1, values
 
             # Notes on the turns' progress, and a client that goes mid-call

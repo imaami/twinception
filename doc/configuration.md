@@ -1470,7 +1470,8 @@ the opposite side of the same participant and identity.
 `add` creates a new file and refuses an existing name. `replace` updates
 an existing file in the caller's own notebook, adding a Git commit that
 preserves its previous contents, and `append` adds text at the end of an
-existing file, on a new line. The message of each write's commit says
+existing file, on a new line. `delete` removes an existing file; its
+versions stay in the history. The message of each write's commit says
 what the write did, the note's name and its size before and after, such
 as `Replace "plan.md" (1234 to 1302 bytes)`. The result names the new
 commit and repeats its message. If the write changed a note, the result also

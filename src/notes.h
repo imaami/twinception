@@ -349,6 +349,17 @@ notes_add_file (struct buf        *in,
                 struct notes_part *part);
 
 /**
+ * Writes to @p in the part of the input of the command NOTES_ADD that
+ * deletes the note of the valid name @p name. It stores the offset of the
+ * name in @p *part, as notes_add_head() does, and no text. Returns 0,
+ * EINVAL for a null argument or a name longer than NOTES_NAME, or ENOMEM.
+ */
+extern int
+notes_delete_file (struct buf        *in,
+                   struct cstr_view   name,
+                   struct notes_part *part);
+
+/**
  * Writes to @p in the input of the command NOTES_ADD. The input is a
  * commit with the message @p message, one line without its line feed, and
  * with @p file, the part that notes_add_file() wrote. A file replaces any
