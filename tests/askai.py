@@ -15040,6 +15040,10 @@ def check_godbolt(binary, up, godbolt):
                 for tool in tools[2:4]:
                     assert "not to repository files" in \
                         tool["inputSchema"]["properties"]["source"]["description"], tool
+                # The argument strings name the compilers that reject -std=c23.
+                for tool in tools[2:]:
+                    assert "Clang before 18 reject -std=c23" in \
+                        tool["inputSchema"]["properties"]["args"]["description"], tool
 
                 # The languages, with the User-Agent of askai and the Accept
                 # that Compiler Explorer needs for JSON.

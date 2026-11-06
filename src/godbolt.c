@@ -2881,7 +2881,8 @@ godbolt_configure (void               *config,
         "\"minItems\":1,\"maxItems\":8,\"default\":[\"\"],\"description\":"     \
         "\"Argument strings, such as \\\"-O2 -std=c23\\\". One string "         \
         "contains all the extra arguments of one compilation, and no shell "    \
-        "interprets it. A string is at most 8192 bytes long.\"}"
+        "interprets it. A string is at most 8192 bytes long. GCC before 14 "    \
+        "and Clang before 18 reject -std=c23.\"}"
 #define GODBOLT_DEF_OFFSET                                                      \
         "\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":\""     \
         TOOL_OFFSET_ABOUT "\"}"
