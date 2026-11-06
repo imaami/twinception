@@ -305,15 +305,15 @@ struct mcp_row {
 	struct cstr_view     name;      /* the name; name.data is nullptr for
 	                                   the ask tool, whose name comes from
 	                                   the configuration */
-	uint8_t              lend;      /* enum mcp_lend: how the tool is lent
+	uint16_t             lend;      /* enum mcp_lend: how the tool is lent
 	                                   to the turns. For a tool of a plugin
 	                                   with LEND_NEVER here, mcp_lend_of()
 	                                   uses the flags of its kind. */
-	uint8_t              metric;    /* enum metrics_lent: the row of the
+	uint16_t             metric;    /* enum metrics_lent: the row of the
 	                                   tool in the metrics of the turns */
 	uint32_t             trace;     /* enum mcp_trace: what the trace shows
-	                                   of the calls, widened over the
-	                                   padding */
+	                                   of the calls. The three enums are
+	                                   widened to fill 8 bytes. */
 };
 
 /* A tool that askai offers. listed is its definition as tools/list lists
