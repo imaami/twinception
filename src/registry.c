@@ -12,7 +12,7 @@
 void
 registry_fini (struct registry *reg)
 {
-	for (uint32_t i = 0; i < reg->n_plugins; ++i)
+	for (uint64_t i = 0; i < reg->n_plugins; ++i)
 		plugin_loaded_destroy(&reg->plugins[i].loaded);
 	*reg = (struct registry){};
 }
@@ -67,9 +67,9 @@ registry_add (struct registry            *reg,
               struct registry_tool const *tool,
               uint32_t                    flags)
 {
-	if (reg->n_tools == TOOL_MAX)
+	if (reg->n_tools == array_size(reg->tools))
 		return ENOSPC;
-	if (registry_find(reg, tool->name, TOOL_MAX) < TOOL_MAX)
+	if (registry_find(reg, tool->name, reg->n_tools) < reg->n_tools)
 		return EEXIST;
 	/* The tools that no role can grant have the ids from n_granted on. A
 	 * tool that a role can grant is inserted before them. */
@@ -117,7 +117,7 @@ registry_load (struct registry    *reg,
 			return util_refuse(why, len, "its tool %s has the name of a tool "
 			                   "that askai already has", name);
 		return util_refuse(why, len, "its tool %s does not fit: askai offers "
-		                   "at most %u tools", name, TOOL_MAX);
+		                   "at most %zu tools", name, array_size(reg->tools));
 	}
 	return 0;
 }
