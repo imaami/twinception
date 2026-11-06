@@ -138,12 +138,12 @@ metrics_mcp_init (struct metrics_mcp *m)
 	atomic_init(&m->calls.cancelled, 0);
 	atomic_init(&m->calls.dropped, 0);
 	atomic_init(&m->calls.turns, 0);
-	for (size_t i = 0; i < LENT_N; ++i)
+	for (size_t i = 0; i < array_size(m->calls.lent); ++i)
 		atomic_init(&m->calls.lent[i], 0);
 	atomic_init(&m->calls.compacted[0], 0);
 	atomic_init(&m->calls.compacted[1], 0);
 	atomic_init(&m->calls.stopped, 0);
-	for (size_t i = 0; i < METHOD_N; ++i)
+	for (size_t i = 0; i < array_size(m->methods); ++i)
 		hist_init(&m->methods[i]);
 }
 

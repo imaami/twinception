@@ -358,7 +358,7 @@ metrics_put_hist (struct buf         *out,
 		if (e)
 			return e;
 	}
-	for (; i < HIST_BUCKETS; ++i)
+	for (; i < array_size(h->bucket); ++i)
 		n += hist_get(&h->bucket[i]);
 	char const *open = *labels ? "{" : "";
 	char const *close = *labels ? "}" : "";
@@ -376,23 +376,23 @@ metrics_put_value (struct buf             *out,
                    uint16_t                scale,
                    _Atomic uint64_t const *p)
 {
+	/* The unit of each scale but ONE, and the decimals it is shown with. */
+	static struct {
+		uint32_t unit;
+		int      digits;
+	} const scales[] = {
+		[NANO]      = { 1'000'000'000, 9 },
+		[MICRO]     = { 1'000'000, 6 },
+		[PERMYRIAD] = { 10'000, 4 },
+	};
 	uint64_t v = hist_get(p);
 	char const *open = *labels ? "{" : "";
 	char const *close = *labels ? "}" : "";
-	switch (scale) {
-	case NANO:
-		return buf_printf(out, "%s%s%s%s %.9f\n", name, open, labels, close,
-		                  (double)v / 1e9);
-	case MICRO:
-		return buf_printf(out, "%s%s%s%s %.6f\n", name, open, labels, close,
-		                  (double)v / 1e6);
-	case PERMYRIAD:
-		return buf_printf(out, "%s%s%s%s %.4f\n", name, open, labels, close,
-		                  (double)v / 1e4);
-	default:
+	if (scale == ONE)
 		return buf_printf(out, "%s%s%s%s %" PRIu64 "\n", name, open, labels, close,
 		                  v);
-	}
+	return buf_printf(out, "%s%s%s%s %.*f\n", name, open, labels, close,
+	                  scales[scale].digits, (double)v / scales[scale].unit);
 }
 
 /* Return the address of the series of @p source of loop @p l, or nullptr
@@ -452,9 +452,8 @@ metrics_put_loop (struct buf                 *out,
 	if (!at)
 		return 0;
 	char labels[128];
-	int n = *m->labels ? snprintf(labels, sizeof labels, "loop=\"%s\",%s", loop->name,
-	                              m->labels)
-	                   : snprintf(labels, sizeof labels, "loop=\"%s\"", loop->name);
+	int n = snprintf(labels, sizeof labels, "loop=\"%s\"%s%s", loop->name,
+	                 *m->labels ? "," : "", m->labels);
 	if (n < 0 || n >= (int)sizeof labels)
 		return EOVERFLOW;
 	return metrics_put_series(out, m, labels, at + m->off, first, cost);
