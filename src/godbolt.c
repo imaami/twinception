@@ -2453,7 +2453,9 @@ godbolt_destroy (struct godbolt **p_call)
 {
 	struct godbolt *call = *p_call;
 	json_tokener_free(call->tok);
+	call->tok = nullptr;
 	json_object_put(call->doc);
+	call->doc = nullptr;
 	godbolt_probe_fini(&call->probe);
 	free(call->body);
 	call->body = nullptr;
