@@ -502,14 +502,16 @@ static int
 cli_state_load (struct cli_state *state,
                 uint64_t          group)
 {
+	/* The parent, then the tips that git lists, as many as fit. */
+	struct oid tips[1 + 32] = { state->parent };
+	char option[sizeof "--count=" + UTIL_DECIMAL];
+	(void)util_format(option, sizeof option, "--count=%zu", array_size(tips) - 1);
 	(void)dstr_clear(&state->scratch);
 	int e = dstr_printf(&state->scratch, "refs/heads/cli/%016" PRIx64 "/", group) ? 0 : ENOMEM;
 	if (!e)
-		e = cli_state_git_ok(state, (char const *[]){ "for-each-ref", "--sort=-committerdate", "--count=32",
+		e = cli_state_git_ok(state, (char const *[]){ "for-each-ref", "--sort=-committerdate", option,
 		                         "--format=%(objectname)", dstr_get(&state->scratch), nullptr },
 		                         (struct cstr_view){});
-	/* The parent, then the other tips, at most 32 (--count=32). */
-	struct oid tips[1 + 32] = { state->parent };
 	size_t n = 1;
 	for (struct cstr_view out = cstr_view_dstr(&state->output); !e && out.len; )
 		if (n == array_size(tips) || oid_init_field(&tips[n], &out, '\n'))
