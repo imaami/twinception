@@ -127,7 +127,7 @@ struct review_location_view {
 
 /**
  * One change of a finding. old_claim is the claim that the change replaced,
- * or empty. If moved is true, old_location is the location that the change
+ * or empty. If moved is not 0, old_location is the location that the change
  * replaced, and its path is empty if the finding had no location. commit is
  * the commit at which the lines of the new location were read, or empty.
  */
@@ -136,8 +136,8 @@ struct review_change {
 	struct dstr            old_claim;
 	struct review_location old_location;
 	uint32_t               turn;
+	uint16_t               moved;
 	enum review_state      state;
-	bool                   moved;
 	struct oid             commit;
 };
 
@@ -373,7 +373,7 @@ review_read_create (struct review_source const *src,
 	if (!oid_valid(src->commit) ||
 	    !review_name_valid(src->repo) || !review_name_valid(src->path) || !src->first ||
 	    src->last < src->first || (src->total && src->total < src->last) ||
-	    !review_source_within(src, out))
+	    src->total > UINT32_MAX || !review_source_within(src, out))
 		return nullptr;
 	/* Each numbered line ends with a newline, except perhaps the last. */
 	struct cstr_view const lines = { out.data + src->at, src->len };
@@ -449,7 +449,7 @@ review_read_create_json (struct json_object const *obj,
 	    jb_uint_checked(jb_get(obj, "len"), SIZE_MAX, &len) ||
 	    jb_uint_checked(jb_get(obj, "first"), UINT32_MAX, &first) ||
 	    jb_uint_checked(jb_get(obj, "last"), UINT32_MAX, &last) ||
-	    jb_uint_checked(jb_get(obj, "total"), UINT32_MAX, &total)) {
+	    jb_uint_checked(jb_get(obj, "total"), UINT64_MAX, &total)) {
 		*e = EINVAL;
 		return nullptr;
 	}
@@ -458,11 +458,11 @@ review_read_create_json (struct json_object const *obj,
 		.repo   = jb_view(jb_get(obj, "repo")),
 		.commit = jb_view(jb_get(obj, "commit")),
 		.path   = jb_view(jb_get(obj, "path")),
+		.total  = total,
 		.at     = (size_t)at,
 		.len    = (size_t)len,
 		.first  = (uint32_t)first,
 		.last   = (uint32_t)last,
-		.total  = (uint32_t)total,
 	};
 	return review_read_create(&src, out, e);
 }
@@ -540,7 +540,7 @@ static int
 review_file_set (struct review_file         *f,
                  struct review_source const *key)
 {
-	f->total = key->total;
+	f->total = (uint32_t)key->total;
 	int e = oid_init(&f->commit, key->commit);
 	e = e ? e : cstr_view_store(key->repo, &f->repo);
 	return e ? e : cstr_view_store(key->path, &f->path);
@@ -647,7 +647,7 @@ review_files_add (struct review              *r,
 	size_t at;
 	size_t const k = review_files_find(list, key, &at);
 	if (k < list->n)
-		return review_file_add_range(r, &list->files[k], key->total, lines);
+		return review_file_add_range(r, &list->files[k], (uint32_t)key->total, lines);
 	size_t const size = r->size + review_charge(2, key->repo.len + key->path.len);
 	if (!review_within_max(r, size, lines.turn))
 		return 0;
@@ -1175,11 +1175,11 @@ struct review_args {
 	struct cstr_view            evidence;  /**< empty if there is none */
 	struct review_location_view location;  /**< location.path is empty if
 	                                            there is no location */
-	size_t                      id;        /**< 0 if there is none */
+	uint32_t                    id;        /**< 0 if there is none */
 	enum review_action          action;
 	enum review_state           state;     /**< REVIEW_STATES if there is
 	                                            none */
-	uint8_t                     trimmed;   /**< enum review_trimmed bits of
+	uint16_t                    trimmed;   /**< enum review_trimmed bits of
 	                                            the texts that @p kept
 	                                            trimmed */
 };
@@ -1302,7 +1302,7 @@ review_args_parse (struct review_args  *a,
 		return REFUSE(out, "There is no finding %" PRIu64 "; the record has %s%.0zu.", n,
 		              have[k < 2 ? k : 2], k);
 	}
-	a->id = (size_t)n;
+	a->id = (uint32_t)n;
 	struct json_object *state = of[REVIEW_ARG_STATE];
 	if (state) {
 		a->state = (enum review_state)cstr_view_index(review_state_names, REVIEW_STATES,
@@ -1382,6 +1382,7 @@ struct review_cover {
 	                                         nullptr */
 	uint32_t                  end;      /**< the last line of the run of
 	                                         best from the first line, or 0 */
+	uint32_t                  turn;     /**< the lowest turn of that run */
 };
 
 /**
@@ -1398,7 +1399,6 @@ review_log_cover (struct review const               *r,
 {
 	struct review_cover c = {};
 	enum review_rank rank = REVIEW_RANK_NONE;
-	uint32_t latest = 0;
 	for (size_t i = 0; i < r->log.n; ++i) {
 		struct review_file const *f = &r->log.files[i];
 		if (!cstr_view_equal(cstr_view_dstr(&f->path), loc->path) ||
@@ -1413,11 +1413,10 @@ review_log_cover (struct review const               *r,
 		enum review_rank k = REVIEW_RANK_ALL;
 		if (end < loc->last)
 			k = !f->total || f->total >= loc->last ? REVIEW_RANK_PART : REVIEW_RANK_SHORTER;
-		if (k < rank || (k == rank && (k == REVIEW_RANK_ALL ? turn < latest : end < c.end)))
+		if (k < rank || (k == rank && (k == REVIEW_RANK_ALL ? turn < c.turn : end < c.end)))
 			continue;
-		c = (struct review_cover){ f, c.largest, end };
+		c = (struct review_cover){ f, c.largest, end, turn };
 		rank = k;
-		latest = turn;
 	}
 	return c;
 }
@@ -1631,7 +1630,7 @@ static int
 review_put_tail (struct dstr                 *out,
                  struct review const         *r,
                  struct review_finding const *f,
-                 uint8_t                      trimmed)
+                 uint16_t                     trimmed)
 {
 	static struct cstr_view const texts[] = {
 		[REVIEW_TRIMMED_CLAIM]    = CSTR_VIEW_INIT("the claim"),
@@ -1779,7 +1778,7 @@ review_update (struct review            *r,
 		" Its old claim and location are in its history.",
 	};
 	bool const same = old == a->state;
-	return !dstr_printf(out, "Finding %zu %s ", a->id, verbs[same]) ||
+	return !dstr_printf(out, "Finding %" PRIu32 " %s ", a->id, verbs[same]) ||
 	       review_put_status(out, f) ||
 	       (same ? PUT(out, "; the new evidence is in its history.")
 	             : !dstr_printf(out, "; it was %s.", review_state_names[old].data)) ||
@@ -1939,7 +1938,7 @@ review_files_add_json (struct review            *r,
 	    numbers % REVIEW_RANGE_NUMBERS || n > (TOOL_TEXT_MAX - r->size) / REVIEW_ITEM ||
 	    review_files_find(list, &key, &at) < list->n)
 		return EINVAL;
-	key.total = (uint32_t)total;
+	key.total = total;
 	struct review_file f = review_file();
 	int e = util_grow(f.ranges, f.cap, n) ? ENOMEM : review_file_set(&f, &key);
 	/* The ranges must be sorted, must not overlap and must be within the
@@ -2083,7 +2082,7 @@ review_change_init_json (struct review_change     *c,
 	    (review_state_logged(state) && (!located || !evidence.len || !id.len)))
 		return EINVAL;
 	*c = review_change((uint32_t)turn, (enum review_state)state, commit);
-	c->moved = location;
+	c->moved = location != nullptr;
 	int e = review_text_json(&c->evidence, evidence, true);
 	if (!e && claim)
 		e = review_text_json(&c->old_claim, jb_view(claim), false);

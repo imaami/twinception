@@ -85,6 +85,8 @@ struct review_source {
 	struct cstr_view repo;    /**< repository name */
 	struct cstr_view commit;  /**< full commit ID */
 	struct cstr_view path;    /**< path of the file in the commit */
+	uint64_t         total;   /**< line count of the file, or 0 if
+	                               unknown */
 	size_t           at;      /**< offset of the numbered lines in the
 	                               output */
 	size_t           len;     /**< bytes of the numbered lines. There is one
@@ -93,8 +95,6 @@ struct review_source {
 	                               newline, except perhaps the last. */
 	uint32_t         first;   /**< number of the first line, from 1 */
 	uint32_t         last;    /**< number of the last line */
-	uint32_t         total;   /**< line count of the file, or 0 if
-	                               unknown */
 };
 
 /** A review record. */
@@ -134,8 +134,8 @@ review_destroy (struct review **p_review);
  *         hexadecimal digits, if the repository name or the path is not 1
  *         to REVIEW_NAME_MAX bytes of UTF-8 text without NUL, if the line
  *         numbers do not satisfy 1 <= first <= last <= total (or total is
- *         0), or if the numbered lines are empty, not within @p out, or not
- *         last - first + 1 lines.
+ *         0), if total is greater than UINT32_MAX, or if the numbered lines
+ *         are empty, not within @p out, or not last - first + 1 lines.
  * @retval nullptr with ENOMEM in @p *e if out of memory.
  */
 extern struct review_read *

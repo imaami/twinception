@@ -174,7 +174,7 @@ output (struct dstr          *out,
 	size_t len = dstr_len(out) - at;
 	CHECK(dstr_printf(out, "\n[f]"));
 	*src = (struct review_source){ cstr_view(repo), cstr_view(commit), cstr_view(path),
-	                               at, len, first, last, total };
+	                               total, at, len, first, last };
 }
 
 /* Build a git read output of lines @p first to @p last, and pass
@@ -422,7 +422,7 @@ test_seen (void)
 	output(&out, &src, "p", A, "src/a.c", 1, 3, 3, false);
 	o = (struct cstr_view){ dstr_get(&out), dstr_len(&out) };
 	struct review_source bad[] = {
-		src, src, src, src, src, src, src, src, src, src, src, src, src,
+		src, src, src, src, src, src, src, src, src, src, src, src, src, src,
 	};
 	bad[0].last = 4;                       /* a line more than the text */
 	bad[1].first = 2;                      /* a line fewer */
@@ -437,12 +437,13 @@ test_seen (void)
 	bad[10].path = (struct cstr_view){ "\xff", 1 };
 	bad[11].last = 0;
 	bad[12].at = SIZE_MAX;
+	bad[13].total = (uint64_t)UINT32_MAX + 1;  /* more than a file records */
 	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
 		e = 0;
 		CHECK(!review_read_create(&bad[i], o, &e) && e == EINVAL);
 	}
 	/* Bytes after the last newline are a line more than the read says. */
-	struct review_source trail = { cstr_view("p"), cstr_view(A), cstr_view("src/a.c"), 0, 5, 1, 1, 0 };
+	struct review_source trail = { cstr_view("p"), cstr_view(A), cstr_view("src/a.c"), 0, 0, 5, 1, 1 };
 	e = 0;
 	CHECK(!review_read_create(&trail, cstr_view("1\ta\n2"), &e) && e == EINVAL);
 	/* The numbered lines may end without the last newline. */
@@ -1630,7 +1631,7 @@ test_nullptr (void)
 	review_read_destroy(&no_read);
 	struct cstr_view out = { "x\n", 2 };
 	CHECK(!review_read_create(nullptr, out, &e) && e == EFAULT);
-	struct review_source src = { cstr_view("p"), cstr_view(A), cstr_view("a"), 0, 2, 1, 1, 0 };
+	struct review_source src = { cstr_view("p"), cstr_view(A), cstr_view("a"), 0, 0, 2, 1, 1 };
 	CHECK(!review_read_create(&src, out, nullptr));
 	e = 0;
 	CHECK(!review_read_create(&src, (struct cstr_view){ nullptr, 2 }, &e) && e == EFAULT);
