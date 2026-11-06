@@ -15,20 +15,31 @@ cli_ui (struct cli_console *console)
 		.console = console,
 		.actor = DSTR_INIT,
 		.status = DSTR_INIT,
-		.trailing_newline = true,
+		.flags = CLI_UI_TRAILING_NEWLINE,
 	};
 }
+
+/* The mark that is written when the output enters a state, and the style
+ * of the output in that state. Index 0 is the state out of the reasoning,
+ * and index 1 the state in the reasoning.
+ */
+static struct {
+	struct cstr_view mark;
+	uint64_t         style;  /* enum cli_style */
+} const cli_ui_modes[] = {
+	{CSTR_VIEW_INIT("[End thinking]\n\n"), CLI_STYLE_RESET},
+	{CSTR_VIEW_INIT("[Start thinking]\n\n"), CLI_STYLE_REASONING},
+};
 
 static int
 cli_ui_newline (struct cli_ui *ui)
 {
-	if (!ui->trailing_newline) {
-		int e = cli_console_write(ui->console, ui->reasoning, CSTR_VIEW("\n"));
-		if (e)
-			return e;
-		ui->trailing_newline = true;
-	}
-	return 0;
+	if (ui->flags & CLI_UI_TRAILING_NEWLINE)
+		return 0;
+	int e = cli_console_write(ui->console, ui->flags & CLI_UI_REASONING, CSTR_VIEW("\n"));
+	if (!e)
+		ui->flags |= CLI_UI_TRAILING_NEWLINE;
+	return e;
 }
 
 int
@@ -38,24 +49,26 @@ cli_ui_push (struct cli_ui    *ui,
 {
 	if (!text.len)
 		return 0;
-	ui->streaming = true;
-	int e = cli_console_set_display(ui->console, ui->reasoning ? CLI_STYLE_REASONING : CLI_STYLE_RESET);
-	if (e)
-		return e;
-	if (thinking != ui->reasoning) {
+	bool reasoning = ui->flags & CLI_UI_REASONING;
+	ui->flags |= CLI_UI_STREAMING;
+	int e = cli_console_set_display(ui->console, cli_ui_modes[reasoning].style);
+	if (!e && thinking != reasoning) {
+		/* The mark is in the reasoning style, and so is the newline that
+		 * ends the reasoning. */
 		e = cli_ui_newline(ui);
-		if (!e && thinking)
+		if (!e)
 			e = cli_console_set_display(ui->console, CLI_STYLE_REASONING);
 		if (!e)
-			e = cli_console_write(ui->console, true, thinking ? CSTR_VIEW("[Start thinking]\n\n")
-			                                                  : CSTR_VIEW("[End thinking]\n\n"));
-		if (!e && !thinking)
-			e = cli_console_set_display(ui->console, CLI_STYLE_RESET);
-		if (e)
-			return e;
-		ui->reasoning = thinking;
+			e = cli_console_write(ui->console, true, cli_ui_modes[thinking].mark);
+		if (!e)
+			e = cli_console_set_display(ui->console, cli_ui_modes[thinking].style);
+		if (!e)
+			ui->flags ^= CLI_UI_REASONING;
 	}
-	ui->trailing_newline = text.data[text.len - 1] == '\n';
+	if (e)
+		return e;
+	ui->flags = (ui->flags & ~CLI_UI_TRAILING_NEWLINE) |
+	            (text.data[text.len - 1] == '\n' ? CLI_UI_TRAILING_NEWLINE : 0);
 	return cli_console_write(ui->console, thinking, text);
 }
 
@@ -71,24 +84,24 @@ cli_ui_write_action (struct cli_ui    *ui,
 		{CSTR_VIEW("* "), lead}, {actor, lead},
 		{CSTR_VIEW(" "), style}, {text, style}, {CSTR_VIEW("\n"), style},
 	};
-	return cli_console_print(ui->console, spans, sizeof spans / sizeof *spans);
+	return cli_console_print(ui->console, spans, array_size(spans));
 }
 
 int
 cli_ui_finish (struct cli_ui *ui)
 {
-	int e = cli_console_set_display(ui->console, ui->reasoning ? CLI_STYLE_REASONING : CLI_STYLE_RESET);
+	bool reasoning = ui->flags & CLI_UI_REASONING;
+	int e = cli_console_set_display(ui->console, cli_ui_modes[reasoning].style);
 	if (!e)
 		e = cli_ui_newline(ui);
-	if (!e && ui->reasoning)
+	if (!e && reasoning)
 		e = cli_console_write(ui->console, true, CSTR_VIEW("[End thinking]\n"));
-	ui->reasoning = false;
 	int reset = cli_console_set_display(ui->console, CLI_STYLE_RESET);
-	if (!e && !reset && ui->pending)
+	if (!e && !reset && (ui->flags & CLI_UI_PENDING))
 		e = cli_ui_write_action(ui, cstr_view_dstr(&ui->actor), cstr_view_dstr(&ui->status), CLI_STYLE_PROGRESS);
 	dstr_clear(&ui->actor);
 	dstr_clear(&ui->status);
-	ui->streaming = ui->shown = ui->pending = false;
+	ui->flags &= CLI_UI_TRAILING_NEWLINE;
 	return e ? e : reset;
 }
 
@@ -118,10 +131,12 @@ cli_ui_progress (struct cli_ui    *ui,
 	dstr_clear(&ui->status);
 	if (cstr_view_cat(actor, &ui->actor) || cstr_view_cat(text, &ui->status))
 		return ENOMEM;
-	ui->pending = ui->streaming || ui->shown;
-	if (ui->pending)
+	/* After a shown line or delta, the last line waits for the end. */
+	if (ui->flags & (CLI_UI_STREAMING | CLI_UI_SHOWN)) {
+		ui->flags |= CLI_UI_PENDING;
 		return 0;
-	ui->shown = true;
+	}
+	ui->flags |= CLI_UI_SHOWN;
 	return cli_ui_write_action(ui, actor, text, CLI_STYLE_PROGRESS);
 }
 
@@ -140,7 +155,7 @@ cli_ui_write_message (struct cli_console *console,
                       enum cli_style      display)
 {
 	struct cli_console_span const spans[] = {{text, display}, {CSTR_VIEW("\n"), display}};
-	return cli_console_print(console, spans, sizeof spans / sizeof *spans);
+	return cli_console_print(console, spans, array_size(spans));
 }
 
 int

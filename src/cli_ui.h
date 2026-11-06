@@ -10,17 +10,22 @@
 
 struct cli_console;
 
+/** The flags of struct cli_ui. */
+enum {
+	CLI_UI_REASONING        = 1u << 0,  /**< the output is in the reasoning */
+	CLI_UI_TRAILING_NEWLINE = 1u << 1,  /**< the output ends a line */
+	CLI_UI_STREAMING        = 1u << 2,  /**< deltas were shown */
+	CLI_UI_SHOWN            = 1u << 3,  /**< a progress line was shown */
+	CLI_UI_PENDING          = 1u << 4,  /**< a progress line waits for the end */
+};
+
 /** A streamed turn borrows its console and owns its pending status text.
  */
 struct cli_ui {
 	struct cli_console *console;
 	struct dstr         actor;
 	struct dstr         status;
-	bool                reasoning;
-	bool                trailing_newline;
-	bool                streaming;
-	bool                shown;
-	bool                pending;
+	uint64_t            flags;
 };
 
 struct cli_ui
