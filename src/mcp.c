@@ -1535,7 +1535,7 @@ mcp_req_leave (struct mcp_req *req)
 /* The reply is queued, or the stream gone: let go of everything at once but
  * the values still to free, and end once those are freed.
  */
-static bool mcp_req_archive_end (struct mcp_req *req);
+static int mcp_req_archive_end (struct mcp_req *req);
 
 static void
 mcp_req_finish (struct mcp_req *req)
@@ -1560,8 +1560,13 @@ mcp_req_finish (struct mcp_req *req)
 	jb_parser_fini(&req->parser, req->phase == PHASE_ANSWER || req->phase == PHASE_ARGS
 	                             ? &mcp->answers : &mcp->pool,
 	               &req->reaper);
-	if (mcp_req_archive_end(req))
+	int e = mcp_req_archive_end(req);
+	if (e == EINPROGRESS)
 		return;
+	if (e) {
+		LOG(LOG_ERROR, "cannot persist job %s: %s", req->archive.hex, strerror(e));
+		req->error = e;
+	}
 	if (req->admitted) {
 		ledger_end(mcp->st->ledger, req->admitted, LEDGER_CANCELLED);
 		loop_forget(mcp->loop, req->admitted->who);
@@ -2614,34 +2619,81 @@ mcp_req_key (struct mcp_req const *req,
 }
 
 /* A journal callback names a request rather than keeping its address: a
- * disconnect or shutdown may have ended it before the disk write ends.
+ * disconnect or shutdown may have ended it before the disk write ends. In
+ * a recovery's wait are its arguments, a reference, and its handler, and
+ * in any other wait the function that the request goes on with.
  */
-struct mcp_archive_wait {
-	struct handle who;
-	void (*done) (struct mcp_req *req, int error);
+struct mcp_journal_wait {
+	struct handle        who;
+	struct json_object  *args;
+	void               (*done) (struct mcp_req *req,
+	                            int             error);
+	void               (*handler) (struct mcp_slot    *slot,
+	                               struct json_object *args,
+	                               bool                own_tool);
 };
 
-/* Name @p req by a handle in @p *who for a journal callback, which no other
- * may be waiting for: 0, EBUSY, or why the handle could not be made.
- */
-static int
-mcp_req_archive_wait (struct mcp_req *req,
-                      struct handle  *who)
-{
-	return req->archive_call.bits ? EBUSY
-	     : loop_handle(req->mcp->loop, req, HANDLE_REQ, who);
-}
-
-/* The request that @p who, the handle of a journal callback, names, its
- * handle freed; nullptr if the request has ended, or the loop ends.
+/* The request that @p who names on @p loop, or nullptr if the request has
+ * ended or the loop has stopped, as mcp_slot_named() does for a call.
  */
 static struct mcp_req *
-mcp_req_archived (struct loop  *loop,
-                  struct handle who)
+mcp_req_named (struct loop const *loop,
+               struct handle      who)
 {
-	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, who, HANDLE_REQ);
+	return loop->exit ? nullptr : loop_lookup(loop, who, HANDLE_REQ);
+}
+
+/* A wait for a journal callback of @p req, which names the request by a
+ * new handle; nullptr with the error in @p *e: EBUSY while the request
+ * waits for another callback, or why the wait or the handle could not be
+ * made.
+ */
+static struct mcp_journal_wait *
+mcp_req_journal_wait (struct mcp_req *req,
+                      int            *e)
+{
+	if (req->archive_call.bits) {
+		*e = EBUSY;
+		return nullptr;
+	}
+	struct mcp_journal_wait *w = calloc(1, sizeof *w);
+	*e = w ? loop_handle(req->mcp->loop, req, HANDLE_REQ, &w->who) : ENOMEM;
+	if (!*e)
+		return w;
+	free(w);
+	return nullptr;
+}
+
+/* Lets go of the wait @p *p_w of @p req, whose journal call did not start,
+ * and sets @p *p_w to nullptr. It does nothing for a nullptr wait.
+ */
+static void
+mcp_req_journal_unwait (struct mcp_req           *req,
+                        struct mcp_journal_wait **p_w)
+{
+	struct mcp_journal_wait *w = *p_w;
+	if (!w)
+		return;
+	*p_w = nullptr;
+	loop_forget(req->mcp->loop, w->who);
+	json_object_put(w->args);
+	free(w);
+}
+
+/* Copies @p wait, the wait of a journal callback on @p loop, into @p w and
+ * frees it. Returns the request that the wait names, its handle freed, or
+ * nullptr if the request has ended or the loop ends.
+ */
+static struct mcp_req *
+mcp_journal_wait_take (void                    *wait,
+                       struct loop             *loop,
+                       struct mcp_journal_wait *w)
+{
+	*w = *(struct mcp_journal_wait *)wait;
+	free(wait);
+	struct mcp_req *req = mcp_req_named(loop, w->who);
 	if (req) {
-		loop_forget(loop, who);
+		loop_forget(loop, w->who);
 		req->archive_call = (struct handle){};
 	}
 	return req;
@@ -2652,46 +2704,52 @@ mcp_archive_back (struct loop *loop,
                   void        *arg,
                   int          error)
 {
-	struct mcp_archive_wait *wait = arg;
-	struct mcp_req *req = mcp_req_archived(loop, wait->who);
-	void (*done)(struct mcp_req *, int) = wait->done;
-	free(wait);
-	wait = nullptr;
+	struct mcp_journal_wait w;
+	struct mcp_req *req = mcp_journal_wait_take(arg, loop, &w);
 	if (req)
-		done(req, error);
+		w.done(req, error);
 }
 
-/* Copy recovery state into the writer's bounded queue. A callback follows
- * the durable private checkpoint; this control data does not enter Git.
+/* Copies @p obj, recovery state of @p req, as a record of @p kind into the
+ * writer's bounded queue, and frees @p obj; this control data does not
+ * enter Git. Returns 0, or why the copy failed: ENOMEM for no @p obj.
  */
 static int
-mcp_req_archive (struct mcp_req    *req,
-                 char const        *kind,
-                 struct json_object *obj,
-                 void             (*done) (struct mcp_req *, int))
+mcp_req_archive_put (struct mcp_req     *req,
+                     char const         *kind,
+                     struct json_object *obj)
 {
-	if (!obj)
-		return ENOMEM;
 	struct cstr_view const text = jb_wire(obj);
-	struct mcp_archive_wait *wait = done ? calloc(1, sizeof *wait) : nullptr;
-	int e = !text.data || (done && !wait) ? ENOMEM : 0;
-	if (!e && done) {
-		wait->done = done;
-		e = mcp_req_archive_wait(req, &wait->who);
-	}
-	if (!e)
-		e = journal_put(req->mcp->st->journal, &req->archive, kind, text.data, text.len,
-		                done ? req->mcp->loop : nullptr,
-		                done ? mcp_archive_back : nullptr, wait);
+	int e = text.data ? journal_put(req->mcp->st->journal, &req->archive, kind, text.data,
+	                                text.len, nullptr, nullptr, nullptr)
+	                  : ENOMEM;
 	json_object_put(obj);
-	if (e) {
-		if (wait && wait->who.bits)
-			loop_forget(req->mcp->loop, wait->who);
-		free(wait);
-		wait = nullptr;
-	} else if (wait) {
-		req->archive_call = wait->who;
+	return e;
+}
+
+/* As mcp_req_archive_put() does, and the request waits for the write: a
+ * callback follows the durable private checkpoint, and @p done goes on
+ * with the request then.
+ */
+static int
+mcp_req_archive (struct mcp_req     *req,
+                 char const         *kind,
+                 struct json_object *obj,
+                 void              (*done) (struct mcp_req *, int))
+{
+	struct cstr_view const text = jb_wire(obj);
+	int e = text.data ? 0 : ENOMEM;
+	struct mcp_journal_wait *w = e ? nullptr : mcp_req_journal_wait(req, &e);
+	if (w) {
+		w->done = done;
+		e = journal_put(req->mcp->st->journal, &req->archive, kind, text.data, text.len,
+		                req->mcp->loop, mcp_archive_back, w);
 	}
+	json_object_put(obj);
+	if (e)
+		mcp_req_journal_unwait(req, &w);
+	else
+		req->archive_call = w->who;
 	return e;
 }
 
@@ -2706,17 +2764,20 @@ mcp_req_archive_finished (struct mcp_req *req,
 	mcp_req_finish(req);
 }
 
-/* A shutdown leaves the last provider checkpoint resumable. Explicit
+/* Writes the end record of the job of @p req, if one is to be written. A
+ * shutdown leaves the last provider checkpoint resumable. Explicit
  * cancellation and completed results are durable before ledger publish.
  * Foreground calls also become terminal, so their checkpoints can expire.
+ * Returns EINPROGRESS if the request now waits for the write, else 0 or
+ * the error of the write.
  */
-static bool
+static int
 mcp_req_archive_end (struct mcp_req *req)
 {
-	bool draining = req->mcp->draining;
+	bool const draining = req->mcp->draining;
 	if (!*req->archive.hex || req->flags & (REQ_ARCHIVED_END | REQ_SUSPENDED) ||
 	    (draining && (req->task || req->admitted)))
-		return false;
+		return 0;
 	req->flags |= REQ_ARCHIVED_END;
 	struct ledger_task const *task = req->task;
 	enum ledger_status status = mcp_req_status(req);
@@ -2727,21 +2788,17 @@ mcp_req_archive_end (struct mcp_req *req)
 		"status", json_object_new_int(status),
 		"ended", json_object_new_uint64(clk_realtime_ns()),
 		"result", jb_string(reply), nullptr);
-	int e = mcp_req_archive(req, status == LEDGER_CANCELLED ? "cancel" : "result",
-	                        obj, draining ? nullptr : mcp_req_archive_finished);
-	if (e) {
-		req->error = e;
-		LOG(LOG_ERROR, "cannot persist job %s: %s", req->archive.hex, strerror(e));
-		return false;
-	}
+	char const *kind = status == LEDGER_CANCELLED ? "cancel" : "result";
 	/* The writer drains after the loops; no request must wait for it on a
 	 * loop which is itself being dismantled. */
-	if (draining)
-		return false;
+	int e = draining ? mcp_req_archive_put(req, kind, obj)
+	                 : mcp_req_archive(req, kind, obj, mcp_req_archive_finished);
+	if (e || draining)
+		return e;
 	loop_unready(&req->step);
 	list_append(&req->mcp->ending, &req->hook);
 	req->phase = PHASE_END;
-	return true;
+	return EINPROGRESS;
 }
 
 /** Hands the upstream request of @p req to a job, names the request by a
@@ -2981,7 +3038,7 @@ mcp_on_task_cancel (struct loop *loop,
                     struct msg  *msg)
 {
 	struct ledger_task *task = container_of(msg, struct ledger_task, cancel);
-	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, task->who, HANDLE_REQ);
+	struct mcp_req *req = mcp_req_named(loop, task->who);
 	ledger_task_put(task);
 	if (!req)
 		return;
@@ -3002,7 +3059,7 @@ mcp_on_withdraw (struct loop *loop,
                  struct msg  *msg)
 {
 	struct roster_call *call = container_of(msg, struct roster_call, cancel);
-	struct mcp_req *req = loop->exit ? nullptr : loop_lookup(loop, call->who, HANDLE_REQ);
+	struct mcp_req *req = mcp_req_named(loop, call->who);
 	roster_call_put(call);
 	if (!req || req->phase >= PHASE_REPLY)
 		return;
@@ -5851,7 +5908,7 @@ mcp_slot_done (struct mcp_slot *slot,
 			result = jb_set_or_free(result, "notebook", json_object_new_string(notebook));
 		if (slot->read)
 			result = jb_set_or_free(result, "source", review_read_json(slot->read, &(int){}));
-		int e = mcp_req_archive(req, "tool-result", result, nullptr);
+		int e = mcp_req_archive_put(req, "tool-result", result);
 		if (e)
 			req->archive_error = e;
 	}
@@ -6117,12 +6174,6 @@ mcp_req_checkpoint (struct mcp_req *req)
 	return e;
 }
 
-struct mcp_recover_wait {
-	struct handle who;
-	struct json_object *args;
-	typeof(mcp_slot_client_result) *handler;
-};
-
 /** Returns the tools in the array of names @p names that mcp_req_lent()
  *  returns for the client of @p req now. The checkpoint of a job stores
  *  names, because the ids of the tools change with the configuration.
@@ -6158,12 +6209,9 @@ mcp_recover_back (struct loop           *loop,
                   int                    error,
                   struct journal_record *records)
 {
-	struct mcp_recover_wait *wait = arg;
-	struct mcp_req *req = mcp_req_archived(loop, wait->who);
-	struct json_object *args = wait->args;
-	typeof(mcp_slot_client_result) *handler = wait->handler;
-	free(wait);
-	wait = nullptr;
+	struct mcp_journal_wait w;
+	struct mcp_req *req = mcp_journal_wait_take(arg, loop, &w);
+	struct json_object *args = w.args;
 	if (!req)
 		goto out;
 	struct mcp_static const *st = req->mcp->st;
@@ -6173,7 +6221,7 @@ mcp_recover_back (struct loop           *loop,
 	                          : ledger_find(st->ledger, owner, &id);
 	if (found) {
 		ledger_task_put(found);
-		handler(&req->self, args, true);
+		w.handler(&req->self, args, true);
 		goto out;
 	}
 	struct journal_record *checkpoint = nullptr, *end = nullptr;
@@ -6218,7 +6266,7 @@ mcp_recover_back (struct loop           *loop,
 		}
 		ledger_task_put(task);
 		json_object_put(state);
-		handler(&req->self, args, true);
+		w.handler(&req->self, args, true);
 		goto out;
 	}
 	if (jb_int(jb_get(state, "api"), 0) != st->ep->api ||
@@ -6350,7 +6398,7 @@ mcp_recover_back (struct loop           *loop,
 	mcp_req_wait(req);
 	if (mcp_req_background(req, req->self.tool, true))
 		goto out;
-	if (handler == mcp_slot_client_cancel)
+	if (w.handler == mcp_slot_client_cancel)
 		ledger_task_cancel(req->task);
 	e = mcp_req_submit(req);
 	if (e)
@@ -6383,27 +6431,21 @@ mcp_req_recover (struct mcp_req                 *req,
 		ledger_task_put(task);
 		return false;
 	}
-	struct mcp_recover_wait *wait = calloc(1, sizeof *wait);
-	int e = wait ? mcp_req_archive_wait(req, &wait->who) : ENOMEM;
-	if (!e) {
-		wait->args = json_object_get(args);
-		wait->handler = handler;
+	int e;
+	struct mcp_journal_wait *w = mcp_req_journal_wait(req, &e);
+	if (w) {
+		w->args = json_object_get(args);
+		w->handler = handler;
 		e = journal_load_current(req->mcp->st->journal, &id, req->mcp->loop,
-		                         mcp_recover_back, wait);
+		                         mcp_recover_back, w);
 	}
 	if (e) {
-		if (wait) {
-			if (wait->who.bits)
-				loop_forget(req->mcp->loop, wait->who);
-			json_object_put(wait->args);
-			free(wait);
-			wait = nullptr;
-		}
+		mcp_req_journal_unwait(req, &w);
 		mcp_slot_result(&req->self, CSTR_VIEW("Cannot load the durable job journal "
 		                                      "now."), true);
 		return true;
 	}
-	req->archive_call = wait->who;
+	req->archive_call = w->who;
 	mcp_req_wait(req);
 	req->s->ops->waiting(req->s);
 	req->phase = PHASE_JOURNAL;
@@ -7446,36 +7488,24 @@ mcp_req_reasoning (struct mcp_req *req)
 	if (!journal || !*req->archive.hex || !req->msg || job->http < 200 ||
 	    job->http >= 300 || jb_get(req->msg, "error"))
 		return 0;
-	struct dstr thought = dstr("");
+	dstr_auto thought = DSTR_INIT;
 	int e = ai_thoughts(req->mcp->st->ep->api, req->msg, &thought);
 	size_t len = dstr_len(&thought);
-	if (e) {
-		dstr_cleanup(&thought);
-		return e;
-	}
-	struct mcp_archive_wait *wait = calloc(1, sizeof *wait);
-	if (!wait) {
-		dstr_cleanup(&thought);
-		return ENOMEM;
-	}
-	wait->done = mcp_req_reasoning_done;
-	e = mcp_req_archive_wait(req, &wait->who);
+	struct mcp_journal_wait *w = e ? nullptr : mcp_req_journal_wait(req, &e);
 	if (!e && len)
 		e = journal_thought(journal, &req->archive, job->archive_turn, 0,
 		                    dstr_get(&thought), len, nullptr, nullptr, nullptr);
 	loop_work(req->mcp->loop, LOOP_COPY, len);
-	dstr_cleanup(&thought);
-	if (!e)
+	if (!e) {
+		w->done = mcp_req_reasoning_done;
 		e = journal_thought_end(journal, &req->archive, job->archive_turn, true,
-		                        req->mcp->loop, mcp_archive_back, wait);
+		                        req->mcp->loop, mcp_archive_back, w);
+	}
 	if (e) {
-		if (wait->who.bits)
-			loop_forget(req->mcp->loop, wait->who);
-		free(wait);
-		wait = nullptr;
+		mcp_req_journal_unwait(req, &w);
 		return e;
 	}
-	req->archive_call = wait->who;
+	req->archive_call = w->who;
 	req->phase = PHASE_JOURNAL;
 	return 0;
 }
