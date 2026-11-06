@@ -19,7 +19,6 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -562,8 +561,7 @@ http_cancel (struct http         *http,
 		curl_multi_remove_handle(http->curl.multi, request->easy);
 		curl_easy_cleanup(request->easy);
 	}
-	if (request->hook.next && request->hook.prev)
-		list_del(&request->hook);
+	list_del(&request->hook);
 	list_del(&request->held);
 	curl_slist_free_all(request->resolve);
 	curl_slist_free_all(request->headers);
@@ -799,7 +797,8 @@ http_accept_encoding (struct http_request *request)
 }
 
 int
-http_method (struct http_request *request, char const *method)
+http_method (struct http_request *request,
+             char const          *method)
 {
 	if (!request || !method)
 		return EFAULT;
