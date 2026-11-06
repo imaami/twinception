@@ -1091,10 +1091,12 @@ mcp_spare_drop (struct mcp *mcp)
 	dstr_cleanup(&req->self.answer);
 	dstr_cleanup(&req->trace);
 	free(req->splice);
+	req->splice = nullptr;
 	size_t const slots = req->slots ? JOB_CALLS : 0;
 	for (size_t k = 0; k < slots; ++k)
 		dstr_cleanup(&req->slots[k].answer);
 	free(req->slots);
+	req->slots = nullptr;
 	free(req);
 }
 
@@ -2788,6 +2790,7 @@ mcp_req_journal_unwait (struct mcp_req           *req,
 	*p_w = nullptr;
 	loop_forget(req->mcp->loop, w->who);
 	json_object_put(w->args);
+	w->args = nullptr;
 	free(w);
 }
 
@@ -4727,6 +4730,7 @@ mcp_agenda_destroy (struct mcp_agenda **p_agenda)
 		mcp_slot_drop(&a->jobs[k]);
 		dstr_cleanup(&a->jobs[k].answer);
 		json_object_put(a->jobs[k].args);
+		a->jobs[k].args = nullptr;
 	}
 	dstr_cleanup(&a->notices);
 	dstr_cleanup(&a->told);
@@ -8973,5 +8977,6 @@ mcp_static_destroy (struct mcp_static **p_static)
 	uploads_destroy(&st->uploads);
 	dstr_cleanup(&st->files_url);
 	free(st->files_lines);
+	st->files_lines = nullptr;
 	free(st);
 }
