@@ -607,30 +607,30 @@ notes_check_input (struct buf       *in,
 	return 0;
 }
 
-/* Returns the kind of the object of the line of @p len bytes at @p line,
- * without its newline, in the output of git cat-file: "OID TYPE SIZE", or
- * "NAME missing". Stores OID in @p *oid, or no name if the line is
- * KIND_MISSING or OID is not a name, which makes the line KIND_OTHER.
+/* Returns the kind of the object of @p line, a line without its newline in
+ * the output of git cat-file: "OID TYPE SIZE", or "NAME missing". Stores
+ * OID in @p *oid, or no name if the line is KIND_MISSING or OID is not a
+ * name, which makes the line KIND_OTHER. Stores SIZE in @p *size if the
+ * line has a TYPE.
  */
 static enum notes_kind
-notes_kind (char const *line,
-            size_t      len,
-            struct oid *oid)
+notes_kind (struct cstr_view  line,
+            struct oid       *oid,
+            struct cstr_view *size)
 {
-	static char const types[][8] = {
-		[KIND_BLOB] = "blob", [KIND_TREE] = "tree", [KIND_COMMIT] = "commit",
+	static struct cstr_view const types[] = {
+		[KIND_BLOB] = CSTR_VIEW_INIT("blob"), [KIND_TREE] = CSTR_VIEW_INIT("tree"),
+		[KIND_COMMIT] = CSTR_VIEW_INIT("commit"),
 	};
 	*oid = (struct oid){};
-	if (cstr_view_ends((struct cstr_view){ line, len }, CSTR_VIEW(" missing")))
+	if (cstr_view_ends(line, CSTR_VIEW(" missing")))
 		return KIND_MISSING;
-	struct cstr_view type = { line, len };
-	char const *end = oid_init_field(oid, &type, ' ') ? nullptr
-	                : memchr(type.data, ' ', type.len);
-	if (!end)
+	struct cstr_view type;
+	if (oid_init_field(oid, &line, ' ') || !cstr_view_cut(&line, ' ', &type))
 		return KIND_OTHER;
-	size_t n = (size_t)(end - type.data);
+	*size = line;
 	for (enum notes_kind k = KIND_BLOB; k < KIND_OTHER; ++k)
-		if (n < sizeof types[k] && !memcmp(type.data, types[k], n) && !types[k][n])
+		if (cstr_view_equal(type, types[k]))
 			return k;
 	return KIND_OTHER;
 }
@@ -650,13 +650,13 @@ notes_checked (struct span        out,
 	bool dir_note = false;
 	enum notes_kind kind = KIND_OTHER;
 	struct cstr_view rest = { (char const *)out.ptr, out.len };
-	struct cstr_view line = {};
+	struct cstr_view line, size = {};
 	struct oid oid;
 	for (; rest.len; ++lines) {
 		if (!cstr_view_cut(&rest, '\n', &line))
 			return EIO;
 		dir_note |= lines > 1 && kind == KIND_BLOB;
-		kind = notes_kind(line.data, line.len, &oid);
+		kind = notes_kind(line, &oid, &size);
 		if (lines || kind == KIND_MISSING)
 			continue;
 		if (kind != KIND_COMMIT)
@@ -669,8 +669,6 @@ notes_checked (struct span        out,
 	if (r != EEXIST)
 		return r;
 	/* The last line is "OID blob SIZE". */
-	struct cstr_view const size = cstr_view_slice(line, oid_len(&oid) + sizeof " blob " - 1,
-	                                              SIZE_MAX);
 	uint64_t bytes;
 	if (util_number(size.data, size.len, UINT64_MAX, &bytes))
 		return EIO;
@@ -833,18 +831,17 @@ notes_read_out (struct span  out,
 	if (!cstr_view_cut(&rest, '\n', &line))
 		return EIO;
 	struct oid oid;
-	enum notes_kind kind = notes_kind(line.data, line.len, &oid);
+	struct cstr_view digits;
+	enum notes_kind kind = notes_kind(line, &oid, &digits);
 	if (kind == KIND_MISSING)
 		return ENOENT;
 	if (kind == KIND_TREE)
 		return EISDIR;
 	if (kind != KIND_BLOB)
 		return EIO;
-	/* The size of the text is the last word of the line, and a line feed
-	 * comes after the text. */
-	char const *digits = (char const *)memrchr(line.data, ' ', line.len) + 1;
+	/* A line feed comes after the text. */
 	uint64_t size;
-	if (util_number(digits, (size_t)(line.data + line.len - digits), UINT64_MAX, &size) ||
+	if (util_number(digits.data, digits.len, UINT64_MAX, &size) ||
 	    !rest.len || size != rest.len - 1 || rest.data[size] != '\n')
 		return EIO;
 	*text = (struct span){ out.ptr + line.len + 1, (size_t)size };
