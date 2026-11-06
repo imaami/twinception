@@ -494,25 +494,21 @@ brainstem_read (char const *path,
 	return e;
 }
 
-/* Whether a gauge went over its threshold (1) or back under it (-1), as bit
- * @p bit of bs->high keeps track of.
+/* Whether a gauge at @p value went up to @p up (1) or back below @p down
+ * (-1): bit @p bit of bs->high is set from the one to the other.
  */
 static int
 brainstem_crossed (struct brainstem *bs,
                    uint32_t          bit,
-                   bool              over,
-                   bool              under)
+                   uint64_t          value,
+                   uint64_t          up,
+                   uint64_t          down)
 {
-	if (bs->high & bit) {
-		if (!under)
-			return 0;
-		bs->high &= ~bit;
-		return -1;
-	}
-	if (!over)
+	bool high = bs->high & bit;
+	if (high ? value >= down : value < up)
 		return 0;
-	bs->high |= bit;
-	return 1;
+	bs->high ^= bit;
+	return high ? -1 : 1;
 }
 
 /* The number the file at @p path starts with, or @p none if it starts with
@@ -726,8 +722,7 @@ brainstem_fds (struct brainstem *bs,
 	uint64_t limit = nofile.rlim_cur;
 	hist_set(&brainstem_metrics.fds, fds);
 	hist_set(&brainstem_metrics.fd_limit, limit);
-	int c = brainstem_crossed(bs, HIGH_FDS, fds >= limit / 10 * 9,
-	                          fds < limit / 10 * 8);
+	int c = brainstem_crossed(bs, HIGH_FDS, fds, limit / 10 * 9, limit / 10 * 8);
 	if (c > 0)
 		LOG(LOG_WARN, "descriptors open: %" PRIu64 " of %" PRIu64, fds, limit);
 	if (c < 0)
@@ -757,8 +752,7 @@ brainstem_psi (struct brainstem *bs,
 		hist_set(&brainstem_metrics.psi_ok, 1);
 		hist_set(&brainstem_metrics.psi[i], permyriad);
 		hist_set(&brainstem_metrics.psi_total[i], total);
-		int c = brainstem_crossed(bs, HIGH_PSI << i, permyriad >= 2000,
-		                          permyriad < 1000);
+		int c = brainstem_crossed(bs, HIGH_PSI << i, permyriad, 2000, 1000);
 		if (c > 0)
 			LOG(LOG_WARN, "pressure on %s: some task stalled %.2f %% of the last "
 			    "10 s", name, avg10);
