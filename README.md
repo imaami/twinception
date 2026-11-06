@@ -389,7 +389,8 @@ optional `section`, such as `2`, `3`, `3p` or `7`. A name is 1 to 128
 letters, digits and `_.:+@-`, and a section 1 to 16 letters and digits, neither
 beginning with `-`, so neither can become an option or a path.
 
-`askai` runs `man` itself, with no shell: `man -w -s SECTION -- NAME`, which
+`askai` runs `man` itself, with no shell: `man -w -s SECTION -- NAME`, or
+`man -w -a -- NAME` without a section, which
 finds the page's file, then `man -l -- FILE`, which renders it. Each runs in a
 session of its own, its standard error discarded, with an environment of its
 own: `PATH` and `MANPATH` as `askai` has them, `LC_ALL=C.UTF-8`, `MANWIDTH=80`,
@@ -405,6 +406,10 @@ output is the part of the page under the least indented line that begins
 with the heading followed by a space, a comma, `=`, `[` or the line's end,
 and `offset` counts within the part; a page without such a line is a tool
 error that lists the page's headings.
+
+Without a section, a name with pages in two or more sections that are a
+single digit, such as `open` in `1` and `2`, is a tool error that lists the
+pages.
 
 Each page is rendered once and kept, by its file: `printf` in section `3p` and
 in `3posix` share one rendering, as do `S_ISBLK` and `inode(7)`, which the

@@ -8196,7 +8196,8 @@ def check_stalled_stderr(binary, up):
 
 
 # A stand-in for man(1). With -w it finds a page's file in its directory's
-# "pages", making it if need be, and notes its arguments in "finds". With -k
+# "pages", making it if need be, and notes its arguments in "finds"; with -a
+# the pages several and suffixed have files in more than one section. With -k
 # it notes its arguments in "searches" and names pages that begin with
 # missing or lots. Else it renders the page that file names, noting its
 # arguments in "renders", and the name says what it does. It notes the
@@ -8220,6 +8221,11 @@ if [ "$1" = -w ]; then
 	echo "$*" >> "$dir/finds"
 	case $page in
 	missing|absent|c++x|a.b|lots) echo "No manual entry for $page" >&2; exit 16 ;;
+	several|suffixed)
+		if [ "$2" = -a ]; then set -- 1 2 3posix; else set -- "$3"; fi
+		[ "$page$#" = suffixed3 ] && set -- 1 3pm
+		for s; do : > "$dir/pages/$page.$s"; echo "$dir/pages/$page.$s"; done
+		exit 0 ;;
 	fail) exit 3 ;;
 	nowhere) echo pages/nowhere; exit 0 ;;
 	shadow) [ -e "$dir/moved" ] && page=shadowed ;;
@@ -8337,7 +8343,8 @@ def check_man(binary, up):
     recheck has passed; the asks for a page under way wait for its one fetch.
     16 children at most, each killed with its group at its deadline or as
     askai stops; a missing name, with the pages whose names begin with it;
-    and the real man's pages, where they are installed."""
+    a name in more than one section, with its pages; and the real man's
+    pages, where they are installed."""
     with Askai(binary, "-u", up.url()) as ai:
         tools = ai.rpc("tools/list")[2]["result"]["tools"]
         assert [t["name"] for t in tools] == ["ask_ai"], tools
@@ -8408,7 +8415,7 @@ def check_man(binary, up):
 
             # Each name man finds the file by shares the one rendering, and
             # once found, a name's page comes from the manual.
-            for section, find in ((3, "-w -s 3 -- echo"), ("", "-w -- echo")):
+            for section, find in ((3, "-w -s 3 -- echo"), ("", "-w -a -- echo")):
                 assert text_of(man_call(ai, name="echo", section=section)) == page
                 assert lines("finds")[-1] == find, (section, lines("finds"))
             for section in ("3p", 3, "", None):
@@ -8508,6 +8515,18 @@ def check_man(binary, up):
                 ["-k -- ^c\\+\\+x"] * 2 + ["-k -- ^a\\.b"] * 2 + ["-k -- ^lots"], \
                 lines("searches")
             assert ai.metrics()["askai_man_runs_total{run=\"search\"}"] == 11
+
+            # Without a section, a name with pages in two or more
+            # single-digit sections gets the list of its pages.
+            for _ in range(2):
+                result = man_call(ai, name="several")
+                assert result.get("isError") and text_of(result) == \
+                    "Pages named several are in more than one section: several(1), " \
+                    "several(2), several(3posix). Give section.", result
+            assert text_of(man_call(ai, name="several", section="2")) == "page several.2\n"
+            assert text_of(man_call(ai, name="suffixed")) == "page suffixed.1\n"
+            assert lines("finds")[-4:] == ["-w -a -- several"] * 2 + \
+                ["-w -s 2 -- several", "-w -a -- suffixed"], lines("finds")
 
             # A heading gives the line that begins with it, after the
             # indentation, and the lines indented deeper after it, the

@@ -39,7 +39,8 @@ enum {
 	HEAD_INDENT    = 3,        /**< spaces before a heading at most: man
 	                                indents a section's heading 0 and a
 	                                subsection's 3 */
-	FOUND_MAX      = 4 << 10,  /**< bytes of man -w's answer: a path, a line break */
+	FOUND_MAX      = 4 << 10,  /**< bytes of man -w's answer: paths, each on a
+	                                line */
 	SEARCH_MAX     = 16 << 10, /**< bytes of man -k's answer that count */
 	ALIASES        = 8,        /**< names a file is kept by, at most */
 	BUCKETS        = 1 << 12,  /**< the table's, to begin with */
@@ -487,6 +488,24 @@ manual_fetch_searched (struct child *c)
 	manual_fetch_fail(f, why.len > lead ? util_text_view(&why) : miss);
 }
 
+/* Returns the section of the page file at @p path, which man -w named:
+ * the last part of the file name between dots that begins with a digit,
+ * such as 3posix in /usr/share/man/man3/printf.3posix.gz. The view is
+ * empty if no part does.
+ */
+static struct cstr_view
+manual_path_section (struct cstr_view path)
+{
+	struct cstr_view section = {}, part;
+	while (cstr_view_cut(&path, '/', &part))
+		continue;
+	while (cstr_view_cut(&path, '.', &part))
+		if (path.len && *path.data >= '0' && *path.data <= '9')
+			section = path;
+	(void)cstr_view_cut(&section, '.', &section);
+	return section;
+}
+
 /* Man has found the alias's file, or failed to: give the page the manual
  * has, if the file is as it was, else render it.
  */
@@ -519,10 +538,30 @@ manual_fetch_found (struct child *c)
 		return;
 	}
 	struct span const out = buf_peek(&c->out);
-	struct cstr_view path = { (char const *)out.ptr, out.len };
+	struct cstr_view const paths = { (char const *)out.ptr, out.len };
+	struct cstr_view path = paths;
 	if (!cstr_view_cut(&path, '\n', &path) || !cstr_view_starts(path, CSTR_VIEW("/")) ||
 	    memchr(path.data, '\0', path.len)) {
 		manual_fetch_fail(f, CSTR_VIEW("man named no file for the page."));
+		return;
+	}
+	loop_work(f->ml->loop, LOOP_PARSE, paths.len);
+	UTIL_TEXT(MANUAL_WHY) several = {};
+	(void)util_text_printf(&several, "Pages named %s are in more than one section:",
+	                       f->alias->key);
+	uint32_t digits = 0;  /* bit d: a page in section d */
+	for (struct cstr_view rest = paths, line; cstr_view_cut(&rest, '\n', &line); ) {
+		struct cstr_view const s = manual_path_section(line);
+		if (s.len == 1)
+			digits |= 1u << (*s.data - '0');
+		if (s.len)
+			(void)util_text_printf(&several, " %s(%.*s),", f->alias->key, (int)s.len,
+			                       s.data);
+	}
+	if (digits & (digits - 1)) {
+		manual_list_end(&several.len, several.data, sizeof several.data);
+		(void)util_text_printf(&several, " Give section.");
+		manual_fetch_fail(f, util_text_view(&several));
 		return;
 	}
 	uint64_t hash = util_hash(m->seed, path.data, path.len);
@@ -595,12 +634,13 @@ manual_loop_ask (struct manual_loop *ml,
 	pthread_mutex_unlock(&m->lock);
 	list_append(&ml->fetches, &f->hook);
 
-	/* Man finds the file. */
+	/* Man finds the file, and without a section every page of the name:
+	 * -s SECTION takes the place of -a. */
 	char const *section = a->key + strlen(a->key) + 1;
-	char const *argv[7] = { "man", "-w" };
-	size_t i = 2;
+	char const *argv[7] = { "man", "-w", "-a" };
+	size_t i = 3;
 	if (*section) {
-		argv[i++] = "-s";
+		argv[2] = "-s";
 		argv[i++] = section;
 	}
 	argv[i++] = "--";
@@ -1019,7 +1059,8 @@ manual_definition (void const *service)
 					"Optional section: 1 commands, 2 system calls, 3 library "
 					"functions, 3p POSIX, 4 devices, 5 file formats, 7 "
 					"overviews and conventions, 8 administration. Without "
-					"it, the first page man finds in its usual order."),
+					"it, the first page man finds, or for a name with pages in "
+					"two or more single-digit sections, a list of those pages."),
 				"heading", schema_property("string",
 					"Optional: the first words of a line of the page, such as "
 					"SYNOPSIS, RETURN VALUE, EINVAL or -Wall. The output is "
