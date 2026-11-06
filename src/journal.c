@@ -1089,6 +1089,7 @@ journal_thread (void *arg)
 	return nullptr;
 }
 
+/* Queue @p item, or destroy it; returns 0 or why it was not queued. */
 static int
 journal_enqueue (struct journal      *j,
                  struct journal_item *item)
@@ -1116,7 +1117,9 @@ journal_enqueue (struct journal      *j,
 		j->bytes += item->bytes;
 	}
 	pthread_mutex_unlock(&j->lock);
-	if (!e)
+	if (e)
+		journal_item_destroy(&item);
+	else
 		pthread_cond_signal(&j->ready);
 	return e;
 }
@@ -1164,10 +1167,7 @@ journal_submit (struct journal     *j,
 	item->record->type = journal_kind((struct cstr_view){ kind, kind_len });
 	if (len)
 		memcpy(item->record->data, data, len);
-	int e = journal_enqueue(j, item);
-	if (e)
-		journal_item_destroy(&item);
-	return e;
+	return journal_enqueue(j, item);
 }
 
 int
@@ -1236,10 +1236,7 @@ journal_load_current (struct journal     *j,
 	item->bytes = sizeof *item;
 	item->operation = JOURNAL_LOAD;
 	item->id = *id;
-	int e = journal_enqueue(j, item);
-	if (e)
-		journal_item_destroy(&item);
-	return e;
+	return journal_enqueue(j, item);
 }
 
 /* Whether the @p len bytes at @p buf are all zero. */
