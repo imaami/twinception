@@ -26,10 +26,10 @@
 #include "notes.h"
 #include "notes_tool.h"
 #include "notice.h"
+#include "oid.h"
 #include "plugin.h"
 #include "schema.h"
 #include "shelf.h"
-#include "uploads.h"
 #include "util.h"
 
 /* A fetch value says why git runs on the notes (src/notes.h). The values
@@ -169,7 +169,7 @@ struct notes_tool_call {
 		                                 for its result */
 		char name[NOTES_NAME];        /* the name of a copy, until its
 		                                 file part is written */
-		char id[UPLOADS_ID];          /* the object id of an attached note,
+		struct oid id;                /* the object id of an attached note,
 		                                 until the upload's answer */
 	};
 };
@@ -537,7 +537,7 @@ notes_tool_call_message (struct notes_tool_call const *call,
 	              NOTES_REPO <= NOTES_MESSAGE);
 	uint16_t fetch = notes_tool_actions[call->action].fetch;
 	char const *verb = notes_tool_actions[call->action].verb;
-	char const *from = fetch & FETCH_RESTORE ? notes_revision_from(call->revision)
+	char const *from = fetch & FETCH_RESTORE ? notes_revision_from(call->revision)->hex
 	                 : fetch & FETCH_COPY ? notes_selector(notes_tool_call_notebook(call)) : "";
 	char const *sep = *from ? " from " : "";
 	int len = (int)call->part.name_len;
@@ -552,17 +552,17 @@ notes_tool_call_message (struct notes_tool_call const *call,
 }
 
 /* Runs git to commit the note in call->file of @p slot. The new commit has
- * the parent @p tip. If @p tip is empty, the notebook has no commits, and
- * git first reads the object format for notes_tool_format(). The note
+ * the parent @p tip. If @p tip is no name, the notebook has no commits,
+ * and git first reads the object format for notes_tool_format(). The note
  * had @p before bytes, or there was none if @p before is NO_NOTE.
  */
 static void
-notes_tool_write (struct mcp_slot *slot,
-                  char const      *tip,
-                  uint64_t         before)
+notes_tool_write (struct mcp_slot  *slot,
+                  struct oid const *tip,
+                  uint64_t          before)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	if (!*tip) {
+	if (!oid_len(tip)) {
 		notes_tool_run(slot, FETCH_FORMAT, nullptr);
 		return;
 	}
@@ -590,19 +590,16 @@ notes_tool_format (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct span out = buf_peek(&call->child->out);
-	size_t size = out.len == 5 && !memcmp(out.ptr, "sha1\n", 5) ? 40
-	            : out.len == 7 && !memcmp(out.ptr, "sha256\n", 7) ? 64 : 0;
-	if (!notes_tool_ok(call->child) || !size) {
+	struct cstr_view const format = { (char const *)out.ptr, out.len };
+	struct oid const zero = oid_zero(oid_format(cstr_view_trim_end(format)));
+	if (!notes_tool_ok(call->child) || !oid_len(&zero)) {
 		int e = cstr_view_cat(CSTR_VIEW("Cannot determine the repository "
 		                                "object format."), call->text);
 		notes_tool_end(slot, e, true);
 		return;
 	}
-	char zero[NOTES_TIP + 1];
-	memset(zero, '0', size);
-	zero[size] = '\0';
 	child_destroy(&call->child);
-	notes_tool_write(slot, zero, NO_NOTE);
+	notes_tool_write(slot, &zero, NO_NOTE);
 }
 
 /* Handles the end of git init for a write. The function writes the note,
@@ -615,7 +612,7 @@ notes_tool_created (struct mcp_slot *slot)
 	if (notes_tool_ok(call->child) ||
 	    (notes_tool_raced(call->child) && notes_exists(call->loop->tool->notes))) {
 		child_destroy(&call->child);
-		notes_tool_write(slot, "", NO_NOTE);
+		notes_tool_write(slot, &(struct oid){}, NO_NOTE);
 		return;
 	}
 	notes_tool_end(slot, notes_tool_call_unadded(call), true);
@@ -648,7 +645,7 @@ notes_tool_wrote (struct mcp_slot *slot,
 static bool
 notes_tool_unchanged (struct mcp_slot         *slot,
                       struct notes_file const *note,
-                      char const              *tip)
+                      struct oid const        *tip)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct span file = buf_peek(&call->file);
@@ -665,7 +662,7 @@ notes_tool_unchanged (struct mcp_slot         *slot,
 	uint64_t n = note->bytes;
 	e = dstr_printf(call->text, "Unchanged: %.*s already has %s %" PRIu64 " byte%s, at "
 	                "commit %s. No commit was made.", (int)jb_utf8(name, call->part.name_len),
-	                name, n == 1 ? "this" : "these", n, util_s(n), tip) ? 0 : ENOMEM;
+	                name, n == 1 ? "this" : "these", n, util_s(n), tip->hex) ? 0 : ENOMEM;
 	notes_tool_wrote(slot, e);
 	return true;
 }
@@ -681,9 +678,9 @@ notes_tool_checked (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	char tip[NOTES_TIP + 1];
+	struct oid tip;
 	struct notes_file note = {};
-	int r = notes_tool_ok(c) ? notes_checked(buf_peek(&c->out), tip, &note) : EIO;
+	int r = notes_tool_ok(c) ? notes_checked(buf_peek(&c->out), &tip, &note) : EIO;
 	uint64_t before = r == EEXIST ? note.bytes : NO_NOTE;
 	uint16_t fetch = notes_tool_actions[call->action].fetch;
 	if (fetch & FETCH_REPLACE)
@@ -691,7 +688,7 @@ notes_tool_checked (struct mcp_slot *slot)
 	if (fetch & FETCH_RESTORE) {
 		if (r == EEXIST)
 			r = 0;
-		if (!r && strcmp(tip, notes_revision_tip(call->revision))) {
+		if (!r && !oid_equal(&tip, notes_revision_tip(call->revision))) {
 			int e = cstr_view_cat(CSTR_VIEW("The notebook changed during "
 			                                "restore. Read its current "
 			                                "state and retry."), call->text);
@@ -700,10 +697,9 @@ notes_tool_checked (struct mcp_slot *slot)
 		}
 	}
 	if (!r) {
-		/* note borrows the output of git until child_destroy(). */
-		if (before == NO_NOTE || !notes_tool_unchanged(slot, &note, tip)) {
+		if (before == NO_NOTE || !notes_tool_unchanged(slot, &note, &tip)) {
 			child_destroy(&call->child);
-			notes_tool_write(slot, tip, before);
+			notes_tool_write(slot, &tip, before);
 		}
 		return;
 	}
@@ -732,12 +728,12 @@ notes_tool_added (struct mcp_slot *slot)
 		notes_tool_end(slot, notes_tool_call_unadded(call), true);
 		return;
 	}
-	char commit[NOTES_TIP + 1];
-	if (notes_add_out(buf_peek(&call->child->out), commit))
+	struct oid commit;
+	if (notes_add_out(buf_peek(&call->child->out), &commit))
 		LOG(LOG_WARN, "notes: git fast-import gave no commit id");
 	struct cstr_view const p[] = {
-		*commit ? CSTR_VIEW("Saved in commit ") : CSTR_VIEW("Saved"),
-		cstr_view(commit),
+		oid_len(&commit) ? CSTR_VIEW("Saved in commit ") : CSTR_VIEW("Saved"),
+		oid_view(&commit),
 		CSTR_VIEW(": "),
 		{ call->message, jb_utf8(call->message, call->len) },
 		notes_tool_actions[call->action].fetch & (FETCH_REPLACE | FETCH_RESTORE)
@@ -786,8 +782,8 @@ notes_tool_history (struct mcp_slot *slot,
 		    !dstr_cat_n(d, name, jb_utf8(name, entry.name.len)) ||
 		    !(entry.lines == NOTES_BINARY ? dstr_cat(d, "  (binary)")
 		      : dstr_printf(d, "  (%" PRIu64 " line%s)", entry.lines, util_s(entry.lines))) ||
-		    (history && !dstr_printf(d, "  commit %.*s%s%.*s", (int)entry.commit.len,
-		                            (char const *)entry.commit.ptr, subject_len ? "  " : "",
+		    (history && !dstr_printf(d, "  commit %s%s%.*s", entry.commit.hex,
+		                            subject_len ? "  " : "",
 		                            (int)subject_len, subject_len ? subject : "")) ||
 		    !dstr_cat_n(d, "\n", 1))
 			return ENOMEM;
@@ -831,9 +827,9 @@ notes_tool_got_list (struct mcp_slot *slot)
 				break;
 			}
 			char const *name = (char const *)file.name.ptr;
-			if (!dstr_printf(d, "%.*s  (%" PRIu64 " bytes, %.*s)\n",
+			if (!dstr_printf(d, "%.*s  (%" PRIu64 " bytes, %s)\n",
 			                 (int)jb_utf8(name, file.name.len), name, file.bytes,
-			                 (int)file.id.len, (char const *)file.id.ptr))
+			                 file.id.hex))
 				e = ENOMEM;
 		}
 		if (!e && c->cut)
@@ -966,7 +962,7 @@ notes_tool_view (struct dstr      *d,
 
 static void notes_tool_got_copy (struct mcp_slot *slot, struct span text);
 static void notes_tool_got_attach (struct mcp_slot *slot, struct span text,
-                                   struct span id);
+                                   struct oid const *id);
 
 /* Handles the output of git for one stage of notes_revision_next(). git
  * reads no note before every revision is resolved and checked against the
@@ -991,7 +987,7 @@ notes_tool_revision_step (struct mcp_slot *slot)
 	int e = 0;
 	if (notes_revision_ready(call->revision) && !(call->fetch & FETCH_DIFF)) {
 		struct cstr_view file = notes_revision_file(call->revision);
-		e = notes_read_input(&in, notes_revision_from(call->revision), file);
+		e = notes_read_input(&in, notes_revision_from(call->revision)->hex, file);
 	}
 	if (e) {
 		buf_fini(&in);
@@ -1018,7 +1014,8 @@ notes_tool_got_diff (struct mcp_slot *slot)
 	(void)mcp_slot_shows(slot, selector);
 	int e = dstr_printf(d, "Notebook %s — %.*s\nfrom %s\nto %s\n\n",
 	                    selector, (int)file.len, file.data,
-	                    notes_revision_from(call->revision), notes_revision_to(call->revision))
+	                    notes_revision_from(call->revision)->hex,
+	                    notes_revision_to(call->revision)->hex)
 	      ? 0 : ENOMEM;
 	struct cstr_view const diff = { (char const *)out.ptr, out.len };
 	if (!e)
@@ -1041,7 +1038,7 @@ notes_tool_got_note (struct mcp_slot *slot)
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
 	struct span text = {};
-	struct span id = {};
+	struct oid id;
 	int r = !notes_tool_ok(c) ? EIO
 	      : call->fetch & FETCH_RESTORE ? notes_read_full_out(buf_peek(&c->out), &text, &id)
 	      : notes_read_out(buf_peek(&c->out), &text, &id);
@@ -1060,7 +1057,7 @@ notes_tool_got_note (struct mcp_slot *slot)
 		return;
 	}
 	if (call->fetch & FETCH_ATTACH) {
-		notes_tool_got_attach(slot, text, id);
+		notes_tool_got_attach(slot, text, &id);
 		return;
 	}
 	struct cstr_view const body = { (char const *)text.ptr, text.len };
@@ -1071,7 +1068,7 @@ notes_tool_got_note (struct mcp_slot *slot)
 		struct cstr_view file = notes_revision_file(call->revision);
 		e = dstr_printf(call->text, "Notebook %s — %.*s at %s:\n\n",
 		                selector, (int)file.len, file.data,
-		                notes_revision_from(call->revision)) ? 0 : ENOMEM;
+		                notes_revision_from(call->revision)->hex) ? 0 : ENOMEM;
 	}
 	e = e ? e : jb_is_text(body) ? cstr_view_cat(body, call->text)
 	      : notes_tool_view(call->text, body, SIZE_MAX, nullptr);
@@ -1104,16 +1101,15 @@ notes_tool_call_attached (struct notes_tool_call const *call,
  * view if the note is not UTF-8 text. The file must fit in the context.
  */
 static void
-notes_tool_got_attach (struct mcp_slot *slot,
-                       struct span      text,
-                       struct span      id)
+notes_tool_got_attach (struct mcp_slot  *slot,
+                       struct span       text,
+                       struct oid const *id)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct cstr_view body = { (char const *)text.ptr, text.len };
 	bool binary = !jb_is_text(body);
-	struct cstr_view const oid = { (char const *)id.ptr, id.len };
 	size_t kept = 0;
-	int e = mcp_slot_attach(slot, oid, (struct cstr_view){}, &kept, call->text);
+	int e = mcp_slot_attach(slot, id, (struct cstr_view){}, &kept, call->text);
 	if (e != ENOENT) {
 		/* The upstream still stores the file of the note. */
 		if (!e)
@@ -1142,11 +1138,8 @@ notes_tool_got_attach (struct mcp_slot *slot,
 	}
 	call->upload = body.len;
 	call->note = text.len;
-	/* The upload table stores no id longer than UPLOADS_ID. For a longer
-	 * id, the call stores an empty id. */
-	call->len = id.len <= UPLOADS_ID ? id.len : 0;
-	memcpy(call->id, id.ptr, call->len);
-	e = mcp_slot_attach(slot, oid, body, &kept, call->text);
+	call->id = *id;
+	e = mcp_slot_attach(slot, id, body, &kept, call->text);
 	if (e == EINPROGRESS) {
 		child_destroy(&call->child);
 		mcp_slot_park(slot);
@@ -1163,8 +1156,7 @@ static void
 notes_tool_uploaded (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	int e = mcp_slot_attached(slot, (struct cstr_view){ call->id, call->len },
-	                          call->upload, call->text);
+	int e = mcp_slot_attached(slot, &call->id, call->upload, call->text);
 	if (e == EINPROGRESS) {
 		mcp_slot_park(slot);
 		return;
@@ -1519,12 +1511,12 @@ notes_tool_revision (struct mcp_slot          *slot,
                      struct json_object *const revisions[2],
                      uint16_t                  fetch)
 {
-	struct cstr_view ids[2] = {};
+	struct oid ids[2] = {};
 	bool bad = !revisions[0] && (fetch & (FETCH_DIFF | FETCH_RESTORE));
 	for (size_t i = 0; !bad && i < array_size(ids); ++i) {
-		ids[i] = jb_view(revisions[i]);
-		bad = revisions[i] && !util_is_oid(ids[i].data, ids[i].len) &&
-		      !cstr_view_equal(ids[i], CSTR_VIEW("current"));
+		struct cstr_view const v = jb_view(revisions[i]);
+		bad = revisions[i] && oid_init(&ids[i], v) &&
+		      !cstr_view_equal(v, CSTR_VIEW("current"));
 	}
 	if (bad) {
 		mcp_slot_tell(slot, CSTR_VIEW("Use a full commit ID from action history, or "
@@ -1534,7 +1526,7 @@ notes_tool_revision (struct mcp_slot          *slot,
 	}
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	int e = 0;
-	call->revision = notes_revision_create(file, ids[0], ids[1], &e);
+	call->revision = notes_revision_create(file, &ids[0], &ids[1], &e);
 	if (!call->revision) {
 		if (e == EINVAL)
 			mcp_slot_tell(slot, bad_name, TOOL_FAILED);

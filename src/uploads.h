@@ -21,12 +21,12 @@
 
 enum {
 	UPLOADS_MAX    = 128,       /**< files in the table */
-	UPLOADS_ID     = 64,        /**< bytes of an object id, at most */
 	UPLOADS_URI    = 256,       /**< bytes of a file's URI, at most */
 	UPLOADS_MARGIN = 6 * 3600,  /**< seconds before its expiry from which
 	                                 a file is no longer given out */
 };
 
+struct oid;
 struct uploads;
 
 /** Creates an empty table. Returns it, or nullptr with the error number
@@ -47,12 +47,12 @@ uploads_destroy (struct uploads **p_uploads);
  * the file in bytes in @p *bytes. The file must expire more than
  * UPLOADS_MARGIN seconds after @p now, in seconds since the epoch.
  * Returns 0, ENOENT if the table does not contain such a file, or EINVAL
- * if a pointer is nullptr or id.data is nullptr while id.len is not 0.
+ * if a pointer is nullptr.
  */
 extern int
 uploads_find (struct uploads   *uploads,
               uint64_t          owner,
-              struct cstr_view  id,
+              struct oid const *id,
               int64_t           now,
               char              uri[UPLOADS_URI],
               size_t           *len,
@@ -64,13 +64,13 @@ uploads_find (struct uploads   *uploads,
  * @p expires, in seconds since the epoch. It replaces the file of the same
  * owner and id, else the file that expires first: a free place, a file that
  * has expired, or the file that expires soonest. Returns 0, or EINVAL if an
- * argument is not valid: an id or a URI that is empty or too long, or an
+ * argument is not valid: no id, a URI that is empty or too long, or an
  * expiry that is not past @p now, in seconds since the epoch.
  */
 extern int
 uploads_keep (struct uploads   *uploads,
               uint64_t          owner,
-              struct cstr_view  id,
+              struct oid const *id,
               struct cstr_view  uri,
               size_t            bytes,
               int64_t           expires,

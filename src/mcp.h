@@ -27,6 +27,7 @@ struct mcp_static;
 struct metrics_mcp;
 struct metrics_src;
 struct notes;
+struct oid;
 struct registry;
 struct review;
 struct review_source;
@@ -443,7 +444,7 @@ mcp_slot_noted (struct mcp_slot *slot);
  */
 extern int
 mcp_slot_attach (struct mcp_slot  *slot,
-                 struct cstr_view  id,
+                 struct oid const *id,
                  struct cstr_view  file,
                  size_t           *bytes,
                  struct dstr      *out);
@@ -460,7 +461,7 @@ mcp_slot_attach (struct mcp_slot  *slot,
  */
 extern int
 mcp_slot_attached (struct mcp_slot  *slot,
-                   struct cstr_view  id,
+                   struct oid const *id,
                    size_t            bytes,
                    struct dstr      *out);
 

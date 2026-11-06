@@ -17,6 +17,7 @@
 #include "clk.h"
 #include "git.h"
 #include "notes.h"
+#include "oid.h"
 #include "util.h"
 
 /* The variables of the environment, its nullptr included. */
@@ -43,9 +44,9 @@ enum notes_revision_phase : uint8_t {
 
 struct notes_revision {
 	char                      file[NOTES_NAME + 1];
-	char                      from[NOTES_TIP + 1];
-	char                      to[NOTES_TIP + 1];
-	char                      tip[NOTES_TIP + 1];
+	struct oid                from;
+	struct oid                to;
+	struct oid                tip;
 	uint8_t                   file_len;
 	enum notes_revision_phase phase;
 };
@@ -410,19 +411,6 @@ notes_argv (struct notes const *notes,
 	notes_argv_command(notes, repo, cmd, argv);
 }
 
-static int
-notes_head_out (struct span out,
-                char        tip[NOTES_TIP + 1])
-{
-	*tip = '\0';
-	if (!out.len || out.ptr[out.len - 1] != '\n' ||
-	    !util_is_oid((char const *)out.ptr, out.len - 1))
-		return EIO;
-	memcpy(tip, out.ptr, out.len - 1);
-	tip[out.len - 1] = '\0';
-	return 0;
-}
-
 static void
 notes_ancestor_argv (struct notes const *notes,
                      char const         *revision,
@@ -461,30 +449,14 @@ notes_diff_argv (struct notes const *notes,
 	argv[k] = nullptr;
 }
 
-/* Empty strings stand for the tip until the first stage pins it. */
-static int
-notes_revision_word (struct cstr_view word,
-                     char             dest[NOTES_TIP + 1])
-{
-	if (!word.len || cstr_view_equal(word, CSTR_VIEW("current"))) {
-		*dest = '\0';
-		return 0;
-	}
-	if (!util_is_oid(word.data, word.len))
-		return EINVAL;
-	memcpy(dest, word.data, word.len);
-	dest[word.len] = '\0';
-	return 0;
-}
-
 struct notes_revision *
-notes_revision_create (struct cstr_view file,
-                       struct cstr_view from,
-                       struct cstr_view to,
-                       int             *e)
+notes_revision_create (struct cstr_view  file,
+                       struct oid const *from,
+                       struct oid const *to,
+                       int              *e)
 {
 	static_assert(NOTES_NAME <= UINT8_MAX);
-	*e = notes_name(&file);
+	*e = from && to ? notes_name(&file) : EINVAL;
 	if (*e)
 		return nullptr;
 	struct notes_revision *revision = calloc(1, sizeof *revision);
@@ -492,13 +464,9 @@ notes_revision_create (struct cstr_view file,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*e = notes_revision_word(from, revision->from);
-	if (!*e)
-		*e = notes_revision_word(to, revision->to);
-	if (*e) {
-		notes_revision_destroy(&revision);
-		return nullptr;
-	}
+	/* No name stands for the tip until the first stage pins it. */
+	revision->from = *from;
+	revision->to = *to;
 	revision->file_len = (uint8_t)file.len;
 	memcpy(revision->file, file.data, file.len);
 	return revision;
@@ -525,14 +493,15 @@ notes_revision_argv (struct notes_revision const *revision,
 		notes_argv(notes, repo, NOTES_HEAD, argv);
 		break;
 	case REVISION_FROM:
-		notes_ancestor_argv(notes, revision->from, revision->tip, argv);
+		notes_ancestor_argv(notes, revision->from.hex, revision->tip.hex, argv);
 		break;
 	case REVISION_TO:
-		notes_ancestor_argv(notes, revision->to, revision->tip, argv);
+		notes_ancestor_argv(notes, revision->to.hex, revision->tip.hex, argv);
 		break;
 	case REVISION_DATA:
 		if (diff)
-			notes_diff_argv(notes, revision->from, revision->to, revision->file, argv);
+			notes_diff_argv(notes, revision->from.hex, revision->to.hex, revision->file,
+			                argv);
 		else
 			notes_argv(notes, repo, NOTES_READ, argv);
 		break;
@@ -558,25 +527,25 @@ notes_revision_next (struct notes_revision *revision,
 	if (revision->phase == REVISION_DATA)
 		return EINVAL;
 	if (revision->phase == REVISION_HEAD) {
-		int e = notes_head_out(out, revision->tip);
-		if (e)
-			return e;
-		if ((*revision->from && strlen(revision->from) != out.len - 1) ||
-		    (*revision->to && strlen(revision->to) != out.len - 1))
+		if (oid_init_line(&revision->tip,
+		                  (struct cstr_view){ (char const *)out.ptr, out.len }))
+			return EIO;
+		if (!oid_len(&revision->from))
+			revision->from = revision->tip;
+		if (!oid_len(&revision->to))
+			revision->to = revision->tip;
+		if (oid_len(&revision->from) != oid_len(&revision->tip) ||
+		    oid_len(&revision->to) != oid_len(&revision->tip))
 			return EINVAL;
-		if (!*revision->from)
-			memcpy(revision->from, revision->tip, sizeof revision->from);
-		if (!*revision->to)
-			memcpy(revision->to, revision->tip, sizeof revision->to);
-		if (strcmp(revision->from, revision->tip)) {
+		if (!oid_equal(&revision->from, &revision->tip)) {
 			revision->phase = REVISION_FROM;
 			return 0;
 		}
 	} else if (out.len)
 		return EIO;
 	revision->phase = revision->phase != REVISION_TO &&
-	                  strcmp(revision->to, revision->tip) &&
-	                  strcmp(revision->to, revision->from) ? REVISION_TO : REVISION_DATA;
+	                  !oid_equal(&revision->to, &revision->tip) &&
+	                  !oid_equal(&revision->to, &revision->from) ? REVISION_TO : REVISION_DATA;
 	return 0;
 }
 
@@ -592,22 +561,22 @@ notes_revision_file (struct notes_revision const *revision)
 	return (struct cstr_view){ revision->file, revision->file_len };
 }
 
-char const *
+struct oid const *
 notes_revision_from (struct notes_revision const *revision)
 {
-	return revision->from;
+	return &revision->from;
 }
 
-char const *
+struct oid const *
 notes_revision_to (struct notes_revision const *revision)
 {
-	return revision->to;
+	return &revision->to;
 }
 
-char const *
+struct oid const *
 notes_revision_tip (struct notes_revision const *revision)
 {
-	return revision->tip;
+	return &revision->tip;
 }
 
 /* Returns true if the part of a name of @p n bytes at @p part is a name
@@ -750,42 +719,42 @@ notes_number (char const *s,
 
 /* Returns the kind of the object of the line of @p len bytes at @p line,
  * without its newline, in the output of git cat-file: "OID TYPE SIZE", or
- * "NAME missing". Stores the length of OID in @p *oid.
+ * "NAME missing". Stores OID in @p *oid, or no name if the line is
+ * KIND_MISSING or OID is not a name, which makes the line KIND_OTHER.
  */
 static enum notes_kind
 notes_kind (char const *line,
             size_t      len,
-            size_t     *oid)
+            struct oid *oid)
 {
 	static char const types[][8] = {
 		[KIND_BLOB] = "blob", [KIND_TREE] = "tree", [KIND_COMMIT] = "commit",
 	};
-	*oid = 0;
+	*oid = (struct oid){};
 	if (cstr_view_ends((struct cstr_view){ line, len }, CSTR_VIEW(" missing")))
 		return KIND_MISSING;
-	char const *sp = memchr(line, ' ', len);
-	char const *type = sp ? sp + 1 : line;
-	char const *end = sp ? memchr(type, ' ', len - (size_t)(type - line)) : nullptr;
+	struct cstr_view type = { line, len };
+	char const *end = oid_init_field(oid, &type, ' ') ? nullptr
+	                : memchr(type.data, ' ', type.len);
 	if (!end)
 		return KIND_OTHER;
-	size_t n = (size_t)(end - type);
-	*oid = (size_t)(sp - line);
+	size_t n = (size_t)(end - type.data);
 	for (enum notes_kind k = KIND_BLOB; k < KIND_OTHER; ++k)
-		if (n < sizeof types[k] && !memcmp(type, types[k], n) && !types[k][n])
+		if (n < sizeof types[k] && !memcmp(type.data, types[k], n) && !types[k][n])
 			return k;
 	return KIND_OTHER;
 }
 
 int
 notes_checked (struct span        out,
-               char               tip[NOTES_TIP + 1],
+               struct oid        *tip,
                struct notes_file *note)
 {
 	if (!tip || !note)
 		return EINVAL;
 	char const *p = (char const *)out.ptr;
 	char const *end = p + out.len;
-	*tip = '\0';
+	*tip = (struct oid){};
 	*note = (struct notes_file){};
 	/* The first line is about the branch, the last line is about the name,
 	 * and the lines between are about the directories in the name. */
@@ -793,7 +762,7 @@ notes_checked (struct span        out,
 	bool dir_note = false;
 	enum notes_kind kind = KIND_OTHER;
 	char const *line = p;
-	size_t oid = 0;
+	struct oid oid;
 	for (char const *nl; p < end; p = nl + 1, ++lines) {
 		if (!(nl = memchr(p, '\n', (size_t)(end - p))))
 			return EIO;
@@ -802,12 +771,9 @@ notes_checked (struct span        out,
 		kind = notes_kind(p, (size_t)(nl - p), &oid);
 		if (lines || kind == KIND_MISSING)
 			continue;
-		/* The name of a commit is 40 hexadecimal digits, or 64 with
-		 * SHA-256. */
-		if (kind != KIND_COMMIT || !util_is_oid(p, oid))
+		if (kind != KIND_COMMIT)
 			return EIO;
-		memcpy(tip, p, oid);
-		tip[oid] = '\0';
+		*tip = oid;
 	}
 	int r = lines < 2 || kind == KIND_OTHER || kind == KIND_COMMIT ? EIO
 	      : dir_note ? ENOTDIR : kind == KIND_TREE ? EISDIR
@@ -815,14 +781,11 @@ notes_checked (struct span        out,
 	if (r != EEXIST)
 		return r;
 	/* The last line is "OID blob SIZE". */
-	char const *size = line + oid + sizeof " blob " - 1;
+	char const *size = line + oid_len(&oid) + sizeof " blob " - 1;
 	uint64_t bytes;
-	if (!util_is_oid(line, oid) || !notes_number(size, (size_t)(end - 1 - size), &bytes))
+	if (!notes_number(size, (size_t)(end - 1 - size), &bytes))
 		return EIO;
-	*note = (struct notes_file){
-		.id = { out.ptr + (line - (char const *)out.ptr), oid },
-		.bytes = bytes,
-	};
+	*note = (struct notes_file){ .bytes = bytes, .id = oid };
 	return EEXIST;
 }
 
@@ -831,7 +794,7 @@ notes_file_same (struct notes_file const *file,
                  struct span              data,
                  bool                    *same)
 {
-	if (!file || !same || !util_is_oid((char const *)file->id.ptr, file->id.len))
+	if (!file || !same || !oid_len(&file->id))
 		return EINVAL;
 	*same = false;
 	if (data.len != file->bytes)
@@ -846,17 +809,17 @@ notes_file_same (struct notes_file const *file,
 	unsigned n = 0;
 	EVP_MD_CTX *ctx = EVP_MD_CTX_new();
 	bool ok = ctx &&
-	          EVP_DigestInit_ex(ctx, file->id.len == 40 ? EVP_sha1() : EVP_sha256(),
+	          EVP_DigestInit_ex(ctx, oid_len(&file->id) == OID_SHA1 ? EVP_sha1() : EVP_sha256(),
 	                            nullptr) == 1 &&
 	          EVP_DigestUpdate(ctx, head, (size_t)h + 1) == 1 &&
 	          EVP_DigestUpdate(ctx, data.ptr, data.len) == 1 &&
-	          EVP_DigestFinal_ex(ctx, digest, &n) == 1 && 2 * n == file->id.len;
+	          EVP_DigestFinal_ex(ctx, digest, &n) == 1 && 2 * n == oid_len(&file->id);
 	EVP_MD_CTX_free(ctx);
 	if (!ok)
 		return EIO;
-	char hex[2 * EVP_MAX_MD_SIZE];
-	util_hex(hex, digest, n);
-	*same = !memcmp(hex, file->id.ptr, file->id.len);
+	struct oid got = {};
+	util_hex(got.hex, digest, n);
+	*same = oid_equal(&got, &file->id);
 	return 0;
 }
 
@@ -912,23 +875,22 @@ notes_add_file (struct buf        *in,
 }
 
 int
-notes_add_input (struct buf  *in,
-                 char const  *repo,
-                 char const  *tip,
-                 struct span  message,
-                 struct span  file)
+notes_add_input (struct buf       *in,
+                 char const       *repo,
+                 struct oid const *tip,
+                 struct span       message,
+                 struct span       file)
 {
 	static char const mark[] = "get-mark :1\n";
-	char head[NOTES_REPO + NOTES_MESSAGE + NOTES_TIP + UTIL_DECIMAL +
+	char head[NOTES_REPO + NOTES_MESSAGE + OID_SHA256 + UTIL_DECIMAL +
 	          sizeof "commit \nmark :1\ncommitter askai <askai> now\ndata \n\nfrom \n"];
-	if (!in || !repo || !tip || !message.ptr || message.len >= NOTES_MESSAGE ||
-	    memchr(message.ptr, '\0', message.len))
+	if (!in || !repo || !tip || !oid_len(tip) || !message.ptr ||
+	    message.len >= NOTES_MESSAGE || memchr(message.ptr, '\0', message.len))
 		return EINVAL;
 	/* The count of the data includes the line feed after the message. */
 	int h = snprintf(head, sizeof head, "commit %s\nmark :1\ncommitter askai <askai> now\n"
 	                 "data %zu\n%.*s\nfrom %s\n", repo, message.len + 1,
-	                 (int)message.len, (char const *)message.ptr,
-	                 *tip ? tip : "0000000000000000000000000000000000000000");
+	                 (int)message.len, (char const *)message.ptr, tip->hex);
 	if (h < 0 || h >= (int)sizeof head)
 		return EINVAL;
 	/* get-mark ends the commit, and git writes the commit's id. */
@@ -945,15 +907,16 @@ notes_add_input (struct buf  *in,
 }
 
 int
-notes_add_out (struct span out,
-               char        commit[NOTES_TIP + 1])
+notes_add_out (struct span  out,
+               struct oid  *commit)
 {
 	if (!commit)
 		return EINVAL;
 	unsigned char *nl = out.len > 1 ? memrchr(out.ptr, '\n', out.len - 1) : nullptr;
 	if (nl)
 		out = (struct span){ nl + 1, out.len - (size_t)(nl + 1 - out.ptr) };
-	return notes_head_out(out, commit);
+	struct cstr_view const line = { (char const *)out.ptr, out.len };
+	return oid_init_line(commit, line) ? EIO : 0;
 }
 
 int
@@ -980,24 +943,24 @@ notes_read_input (struct buf       *in,
 static int
 notes_read_decode (struct span  out,
                    struct span *text,
-                   struct span *id,
+                   struct oid  *id,
                    bool         full)
 {
 	*text = (struct span){};
 	if (id)
-		*id = (struct span){};
+		*id = (struct oid){};
 	char const *line = (char const *)out.ptr;
 	char const *nl = out.len ? memchr(line, '\n', out.len) : nullptr;
 	if (!nl)
 		return EIO;
 	size_t n = (size_t)(nl - line);
-	size_t oid = 0;
+	struct oid oid;
 	enum notes_kind kind = notes_kind(line, n, &oid);
 	if (kind == KIND_MISSING)
 		return ENOENT;
 	if (kind == KIND_TREE)
 		return EISDIR;
-	if (kind != KIND_BLOB || !util_is_oid(line, oid))
+	if (kind != KIND_BLOB)
 		return EIO;
 	/* The size of the text is the last word of the line. The end of the
 	 * output limits the text. */
@@ -1010,14 +973,14 @@ notes_read_decode (struct span  out,
 		return EIO;
 	*text = (struct span){ out.ptr + n + 1, size < room ? (size_t)size : room };
 	if (id)
-		*id = (struct span){ out.ptr, oid };
+		*id = oid;
 	return 0;
 }
 
 int
 notes_read_out (struct span  out,
                 struct span *text,
-                struct span *id)
+                struct oid  *id)
 {
 	return notes_read_decode(out, text, id, false);
 }
@@ -1025,7 +988,7 @@ notes_read_out (struct span  out,
 int
 notes_read_full_out (struct span  out,
                      struct span *text,
-                     struct span *id)
+                     struct oid  *id)
 {
 	return notes_read_decode(out, text, id, true);
 }
@@ -1054,12 +1017,12 @@ notes_file_next (struct span       *out,
 	if (!tab || tab - s < (ptrdiff_t)sizeof "100644 blob " ||
 	    memcmp(s + 6, " blob ", 6) || tab + 1 == nul)
 		return EIO;
-	char const *id = s + sizeof "100644 blob " - 1;
-	char const *end = memchr(id, ' ', (size_t)(tab - id));
-	size_t len = end ? (size_t)(end - id) : 0;
-	if (!util_is_oid(id, len))
+	struct cstr_view rest = { s + sizeof "100644 blob " - 1,
+	                          (size_t)(tab - s) - (sizeof "100644 blob " - 1) };
+	struct oid id;
+	if (oid_init_field(&id, &rest, ' '))
 		return EIO;
-	char const *size = end + 1;
+	char const *size = rest.data;
 	while (size < tab && *size == ' ')
 		++size;
 	uint64_t bytes;
@@ -1067,8 +1030,8 @@ notes_file_next (struct span       *out,
 		return EIO;
 	*file = (struct notes_file){
 		.name = { out->ptr + (tab + 1 - s), (size_t)(nul - tab - 1) },
-		.id = { out->ptr + (id - s), len },
 		.bytes = bytes,
+		.id = id,
 	};
 	size_t consumed = (size_t)(nul + 1 - s);
 	out->ptr += consumed;
@@ -1116,13 +1079,12 @@ notes_entry_before (struct span          out,
 				size_t len = before - 1 - token;
 				char const *space = memchr(s + token, ' ', len);
 				size_t digits = space ? (size_t)(space - s - token) : len;
-				char const *id = space ? space + 1 : nullptr;
-				char const *sep = id ? memchr(id, ' ', len - digits - 1) : nullptr;
-				size_t oid = sep ? (size_t)(sep - id) : 0;
-				if (util_is_oid(id, oid) && notes_number(s + token, digits, &cursor->time)) {
-					cursor->commit = (struct span){ out.ptr + token + digits + 1, oid };
-					cursor->subject = (struct span){ out.ptr + token + digits + oid + 2,
-					                                 len - digits - oid - 2 };
+				struct cstr_view rest = { s + token, len };
+				rest = cstr_view_slice(rest, digits + 1, SIZE_MAX);
+				if (!oid_init_field(&cursor->commit, &rest, ' ') &&
+				    notes_number(s + token, digits, &cursor->time)) {
+					cursor->subject = (struct span){ out.ptr + (rest.data - s),
+					                                 rest.len };
 					cursor->first = before;
 					break;
 				}

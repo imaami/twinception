@@ -6596,12 +6596,12 @@ mcp_req_fits (struct mcp_req const *req,
 
 int
 mcp_slot_attach (struct mcp_slot  *slot,
-                 struct cstr_view  id,
+                 struct oid const *id,
                  struct cstr_view  file,
                  size_t           *bytes,
                  struct dstr      *out)
 {
-	if (!slot || !bytes || !out || (!id.data && id.len) || (!file.data && file.len))
+	if (!slot || !id || !bytes || !out || (!file.data && file.len))
 		return EFAULT;
 	*bytes = 0;
 	if (slot->done)
@@ -6634,11 +6634,11 @@ mcp_slot_attach (struct mcp_slot  *slot,
 
 int
 mcp_slot_attached (struct mcp_slot  *slot,
-                   struct cstr_view  id,
+                   struct oid const *id,
                    size_t            bytes,
                    struct dstr      *out)
 {
-	if (!slot || !out || (!id.data && id.len))
+	if (!slot || !id || !out)
 		return EFAULT;
 	if (slot->done)
 		return EINVAL;

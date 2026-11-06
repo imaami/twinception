@@ -7,17 +7,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "oid.h"
 #include "uploads.h"
 
 /* A file of the table. Its expires is 0 while the place is free. */
 struct uploads_file {
-	int64_t  expires;
-	uint64_t owner;
-	uint64_t bytes;
-	uint16_t id_len;
-	uint16_t uri_len;
-	char     id[UPLOADS_ID];
-	char     uri[UPLOADS_URI];
+	int64_t    expires;
+	uint64_t   owner;
+	uint64_t   bytes;
+	uint16_t   uri_len;
+	struct oid id;
+	char       uri[UPLOADS_URI];
 };
 
 struct uploads {
@@ -56,12 +56,11 @@ uploads_destroy (struct uploads **p_uploads)
 static struct uploads_file *
 uploads_lookup (struct uploads   *u,
                 uint64_t          owner,
-                struct cstr_view  id)
+                struct oid const *id)
 {
 	for (size_t i = 0; i < UPLOADS_MAX; ++i) {
 		struct uploads_file *f = &u->files[i];
-		if (f->expires && f->owner == owner &&
-		    cstr_view_equal((struct cstr_view){ f->id, f->id_len }, id))
+		if (f->expires && f->owner == owner && oid_equal(&f->id, id))
 			return f;
 	}
 	return nullptr;
@@ -70,15 +69,15 @@ uploads_lookup (struct uploads   *u,
 int
 uploads_find (struct uploads   *uploads,
               uint64_t          owner,
-              struct cstr_view  id,
+              struct oid const *id,
               int64_t           now,
               char              uri[UPLOADS_URI],
               size_t           *len,
               size_t           *bytes)
 {
-	if (!uploads || (!id.data && id.len) || !uri || !len || !bytes)
+	if (!uploads || !id || !uri || !len || !bytes)
 		return EINVAL;
-	if (!id.len || id.len > UPLOADS_ID)
+	if (!oid_len(id))
 		return ENOENT;
 	int e = ENOENT;
 	pthread_mutex_lock(&uploads->lock);
@@ -96,14 +95,14 @@ uploads_find (struct uploads   *uploads,
 int
 uploads_keep (struct uploads   *uploads,
               uint64_t          owner,
-              struct cstr_view  id,
+              struct oid const *id,
               struct cstr_view  uri,
               size_t            bytes,
               int64_t           expires,
               int64_t           now)
 {
-	if (!uploads || !id.data || !id.len || id.len > UPLOADS_ID || !uri.data || !uri.len ||
-	    uri.len > UPLOADS_URI || expires <= now)
+	if (!uploads || !id || !oid_len(id) || !uri.data || !uri.len || uri.len > UPLOADS_URI ||
+	    expires <= now)
 		return EINVAL;
 	pthread_mutex_lock(&uploads->lock);
 	struct uploads_file *to = uploads_lookup(uploads, owner, id);
@@ -118,9 +117,8 @@ uploads_keep (struct uploads   *uploads,
 	to->expires = expires;
 	to->owner = owner;
 	to->bytes = bytes;
-	to->id_len = (uint16_t)id.len;
 	to->uri_len = (uint16_t)uri.len;
-	memcpy(to->id, id.data, id.len);
+	to->id = *id;
 	memcpy(to->uri, uri.data, uri.len);
 	pthread_mutex_unlock(&uploads->lock);
 	return 0;

@@ -21,6 +21,7 @@
 #include "buf.h"
 #include "clk.h"
 #include "cstr_view.h"
+#include "oid.h"
 
 struct notes;
 struct notes_revision;
@@ -30,8 +31,6 @@ enum {
 	NOTES_MAX  = 16 << 20, /**< bytes of the output of git, at most */
 	NOTES_ID   = 32,       /**< hexadecimal digits of the id of a thread */
 	NOTES_REPO = 128,      /**< bytes of a full notebook branch ref, NUL included */
-	NOTES_TIP  = 64,       /**< hexadecimal digits of a commit's name, at
-	                            most */
 	NOTES_ARGV = 40,       /**< elements of the argv of git, nullptr
 	                            included */
 	NOTES_MESSAGE = 1024,  /**< bytes of the commit message of a note
@@ -78,8 +77,8 @@ enum notes_cmd : uint8_t {
  */
 struct notes_file {
 	struct span name;
-	struct span id;     /**< hexadecimal blob object id */
 	uint64_t    bytes;
+	struct oid  id;     /**< the name of the blob */
 };
 
 /** The offsets of the name and the text of a note in the buffer that
@@ -96,23 +95,23 @@ struct notes_part {
 /** A change to a note in the output of NOTES_LIST. */
 struct notes_entry {
 	struct span name;
-	struct span commit;  /**< hexadecimal commit id; borrows the history output */
 	struct span subject; /**< the commit's subject; borrows the history output */
 	uint64_t    time;    /**< when it was committed, in seconds since the
 	                          epoch */
 	uint64_t    lines;   /**< the number of lines added by this change, or
 	                          NOTES_BINARY if git sees no text in it */
+	struct oid  commit;
 };
 
 /** Reverse iterator over Git's note history. Initialize only end to the output
  * size. The cached commit boundary avoids rescanning multi-file commits.
  */
 struct notes_cursor {
-	struct span commit;
 	struct span subject;
 	size_t      end;
 	size_t      first;
 	uint64_t    time;
+	struct oid  commit;
 };
 
 /** The lines of a note that git sees as binary (struct notes_entry). */
@@ -205,15 +204,15 @@ notes_argv (struct notes const *notes,
             char const         *argv[NOTES_ARGV]);
 
 /** Owns a historical read or diff's arguments and authorization state.
- *  File names follow notes_name(); revisions are full lowercase commit ids
- *  or "current". Empty revisions also select the notebook's pinned tip.
- *  Returns nullptr and EINVAL or ENOMEM through @p e on failure.
+ *  File names follow notes_name(). The revisions @p from and @p to are
+ *  commits, or no name for the notebook's pinned tip. Returns nullptr and
+ *  EINVAL or ENOMEM through @p e on failure.
  */
 extern struct notes_revision *
-notes_revision_create (struct cstr_view file,
-                       struct cstr_view from,
-                       struct cstr_view to,
-                       int             *e);
+notes_revision_create (struct cstr_view  file,
+                       struct oid const *from,
+                       struct oid const *to,
+                       int              *e);
 
 extern void
 notes_revision_destroy (struct notes_revision **p_revision);
@@ -252,16 +251,16 @@ notes_revision_ready (struct notes_revision const *revision);
 extern struct cstr_view
 notes_revision_file (struct notes_revision const *revision);
 
-/** Immutable ids after authorization; views borrow @p revision. The pinned
- *  tip can also guard a later write against changes since authorization.
+/** Immutable ids after authorization, in @p revision. The pinned tip can
+ *  also guard a later write against changes since authorization.
  */
-extern char const *
+extern struct oid const *
 notes_revision_from (struct notes_revision const *revision);
 
-extern char const *
+extern struct oid const *
 notes_revision_to (struct notes_revision const *revision);
 
-extern char const *
+extern struct oid const *
 notes_revision_tip (struct notes_revision const *revision);
 
 /**
@@ -288,8 +287,8 @@ notes_check_input (struct buf       *in,
 /**
  * Reads @p out, the output of the command NOTES_CHECK. If the branch has
  * notes, the function writes the name of the newest commit to @p tip, else
- * an empty string. If a note has the name, it writes the note's blob id
- * and size to @p note, else it zeroes @p note. Returns 0 if a note of the
+ * no name. If a note has the name, it writes the note's blob id and size
+ * to @p note, else it zeroes @p note. Returns 0 if a note of the
  * name can be added. Returns EEXIST if a note of the name exists, EISDIR
  * if notes are in a directory of the name, ENOTDIR if a directory in the
  * name is a note, EIO if the output is not what the command writes, and
@@ -297,14 +296,14 @@ notes_check_input (struct buf       *in,
  */
 extern int
 notes_checked (struct span        out,
-               char               tip[NOTES_TIP + 1],
+               struct oid        *tip,
                struct notes_file *note);
 
 /**
  * Sets @p *same to whether @p data are the bytes of the blob whose id and
  * size @p file has. It hashes the bytes only if their number is the size.
- * Returns 0, EINVAL for a null argument or an id that is not 40 or 64
- * hexadecimal digits, or EIO if the digest fails.
+ * Returns 0, EINVAL for a null argument or a file without an id, or EIO
+ * if the digest fails.
  */
 extern int
 notes_file_same (struct notes_file const *file,
@@ -345,27 +344,27 @@ notes_add_file (struct buf        *in,
  * commit with the message @p message, one line without its line feed, and
  * with @p file, the part that notes_add_file() wrote. A file replaces any
  * existing note with the same name. The parent is @p tip, or a zero object
- * id of the repository format for a root commit. An empty tip means the
- * SHA-1 zero object id. notes_add_out() reads the new commit's id from
- * the output. Returns 0, EINVAL for a null argument, a NUL in
+ * id of the repository format for a root commit (oid_zero()).
+ * notes_add_out() reads the new commit's id from the output. Returns 0,
+ * EINVAL for a null argument, a @p tip without a name, a NUL in
  * @p message or a message of NOTES_MESSAGE bytes or more, or ENOMEM.
  */
 extern int
-notes_add_input (struct buf  *in,
-                 char const  *repo,
-                 char const  *tip,
-                 struct span  message,
-                 struct span  file);
+notes_add_input (struct buf       *in,
+                 char const       *repo,
+                 struct oid const *tip,
+                 struct span       message,
+                 struct span       file);
 
 /**
  * Reads @p out, the output of the command NOTES_ADD, and writes the id of
  * the new commit, its last line, to @p commit. Returns 0, EINVAL for a
- * null @p commit, or EIO with an empty @p commit if the last line is not
+ * null @p commit, or EIO with no name in @p commit if the last line is not
  * a commit id.
  */
 extern int
-notes_add_out (struct span out,
-               char        commit[NOTES_TIP + 1]);
+notes_add_out (struct span  out,
+               struct oid  *commit);
 
 /** Writes the input of the command NOTES_READ for the valid name @p name
  *  in the notebook branch or commit @p repo to @p in. Returns 0, EINVAL
@@ -378,15 +377,15 @@ notes_read_input (struct buf       *in,
 
 /**
  * Reads @p out, the output of the command NOTES_READ, and stores the text
- * of the note in @p text, and its object id, in hexadecimal, in @p id
- * unless @p id is nullptr. Returns 0, ENOENT if no note has the name,
+ * of the note in @p text, and its object id in @p id unless @p id is
+ * nullptr. Returns 0, ENOENT if no note has the name,
  * EISDIR if the name is a directory of notes, and EIO if the output is not
  * what the command writes.
  */
 extern int
 notes_read_out (struct span  out,
                 struct span *text,
-                struct span *id);
+                struct oid  *id);
 
 /** As notes_read_out(), but rejects incomplete output with EIO. Use this
  *  before copying or restoring bytes rather than displaying a partial read.
@@ -394,7 +393,7 @@ notes_read_out (struct span  out,
 extern int
 notes_read_full_out (struct span  out,
                      struct span *text,
-                     struct span *id);
+                     struct oid  *id);
 
 /**
  * Reads the next current note from @p out, the output of NOTES_FILES, into
