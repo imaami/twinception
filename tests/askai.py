@@ -8580,6 +8580,10 @@ FAKE_GIT = r"""#!/bin/sh
 # Synthetic revisions pass resolution and authorization, then exercise the
 # final child. Discovery and real revisions use the installed Git.
 dir=${0%/*}
+case " $* " in *" for-each-ref "*)
+    [ -e "$dir/vanish" ] && /bin/chmod -x "$0"
+    ;;
+esac
 rev= seen= command=
 for a; do
     case $a in rev-parse|rev-list|log) command=$a ;; esac
@@ -9178,6 +9182,19 @@ def check_git(binary, up):
                     pid = int(f.read())
             wait_for(lambda: not alive(pid))
             assert not os.path.exists(f"{fake}/signals")
+
+        # A phase after the first that cannot start ends the call with the
+        # reason, not as a failed history validation. With the fake git
+        # alone on PATH, no other git runs in its place.
+        with Askai(binary, "-u", up.url(), "--git", repo, env={"PATH": fake}) as ai:
+            open(f"{fake}/vanish", "w").close()
+            try:
+                result = call(ai, repo="proj", command="log")
+            finally:
+                os.chmod(f"{fake}/git", 0o755)
+                os.unlink(f"{fake}/vanish")
+            assert result.get("isError") and \
+                text_of(result) == "Cannot run git: Permission denied.", result
 
         # The same defaults work without any worktree or index.
         bare = f"{d}/snapshot.git"

@@ -985,8 +985,9 @@ git_text_next (char const **next)
 	return word;
 }
 
-/** Run one phase without extending the call's deadline. */
-static int
+/** Starts the next phase of @p call without extending its deadline, then
+ *  parks the call, or ends it if git does not start. */
+static void
 git_call_run (struct git_call *call,
               struct mcp_slot *slot)
 {
@@ -1064,7 +1065,13 @@ git_call_run (struct git_call *call,
 	};
 	int e = 0;
 	call->child = mcp_slot_spawn(slot, &cmd, &e);
-	return e;
+	if (!e) {
+		mcp_slot_park(slot);
+		return;
+	}
+	git_drop(slot);
+	char buf[GIT_WHY];
+	mcp_slot_tell(slot, child_spawn_why(e, "git", buf, sizeof buf), TOOL_FAILED);
 }
 
 /**
@@ -1139,10 +1146,7 @@ git_call_advance (struct git_call *call,
 	child_destroy(&call->child);
 	if (!e) {
 		++call->phase;
-		e = git_call_run(call, slot);
-	}
-	if (!e) {
-		mcp_slot_park(slot);
+		git_call_run(call, slot);
 		return;
 	}
 	git_drop(slot);
@@ -1676,15 +1680,8 @@ git_start (struct mcp_slot    *slot,
 		git_call_destroy(&call);
 		return;
 	}
-	e = git_call_run(call, slot);
-	if (!e) {
-		*mcp_slot_own(slot) = call;
-		mcp_slot_park(slot);
-		return;
-	}
-	git_call_destroy(&call);
-	char buf[GIT_WHY];
-	mcp_slot_tell(slot, child_spawn_why(e, "git", buf, sizeof buf), TOOL_FAILED);
+	*mcp_slot_own(slot) = call;
+	git_call_run(call, slot);
 }
 
 struct plugin const git_plugin = {
