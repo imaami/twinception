@@ -1296,6 +1296,22 @@ int cli_console_remember(struct cli_console *console, struct cstr_view text)
 	return 0;
 }
 
+/* Append the bytes of the input up to the next newline, which is read
+ * too, or up to its end.
+ */
+static int
+cli_console_read_bytes (struct cli_console *console,
+                        struct buf         *bytes)
+{
+	int byte;
+	while ((byte = cli_console_byte(console)) != EOF && byte != '\n') {
+		int e = buf_put(bytes, &(unsigned char){ (unsigned char)byte }, 1, CLI_CONSOLE_INPUT_LIMIT - 1);
+		if (e)
+			return e == ENOBUFS ? EFBIG : e;
+	}
+	return 0;
+}
+
 static int cli_console_read_simple(struct cli_console *console, struct buf *bytes,
                                    bool multiline, struct cstr_view prompt)
 {
@@ -1305,26 +1321,20 @@ static int cli_console_read_simple(struct cli_console *console, struct buf *byte
 	bool more;
 	do {
 		size_t start = bytes->tail;
-		int byte;
-		while ((byte = cli_console_byte(console)) != EOF && byte != '\n') {
-			int e = buf_put(bytes, &(unsigned char){ (unsigned char)byte }, 1,
-			                CLI_CONSOLE_INPUT_LIMIT - 1);
-			if (e)
-				return e == ENOBUFS ? EFBIG : e;
-		}
+		int e = cli_console_read_bytes(console, bytes);
+		if (e)
+			return e;
 		if (console->in.error || ((console->flags & CLI_CONSOLE_INPUT_EOF) && bytes->tail == start))
 			return console->in.error;
 		if (bytes->tail > start && bytes->data[bytes->tail - 1] == '\r')
 			--bytes->tail;
-		more = multiline;
-		if (bytes->tail > start) {
-			unsigned char last = bytes->data[bytes->tail - 1];
-			if (last == '/' || last == '\\') {
-				--bytes->tail;
-				more = last == '\\' && !more;
-			}
-		}
-		int e = buf_put(bytes, "\n", 1, CLI_CONSOLE_INPUT_LIMIT);
+		/* A trailing / ends the input. A trailing \ continues it, or
+		 * ends it in multiline input. */
+		unsigned char last = bytes->tail > start ? bytes->data[bytes->tail - 1] : 0;
+		bool marked = last == '/' || last == '\\';
+		more = marked ? last == '\\' && !multiline : multiline;
+		bytes->tail -= marked;
+		e = buf_put(bytes, "\n", 1, CLI_CONSOLE_INPUT_LIMIT);
 		if (e)
 			return e == ENOBUFS ? EFBIG : e;
 	} while (more && !(console->flags & CLI_CONSOLE_INPUT_EOF));
