@@ -108,7 +108,15 @@ enum ledger_kind : uint8_t {
 	LEDGER_TASK,  /**< a tool call that became a task of MCP's tasks
 	                   extension */
 	LEDGER_JOB,   /**< a client's background wrapper or detached ask call */
+	LEDGER_KINDS
 };
+
+/** The words for the kinds and the statuses of records, which the log,
+ *  the answers of a client's jobs and wait, and tasks/get use; the
+ *  statuses as MCP's tasks extension names them.
+ */
+extern char const *const ledger_kinds[LEDGER_KINDS];
+extern struct cstr_view const ledger_statuses[LEDGER_STATUSES];
 
 /** What the ledger has done: any thread writes, any reads (src/hist.h). */
 struct ledger_metrics {

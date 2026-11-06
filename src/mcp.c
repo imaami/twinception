@@ -836,21 +836,6 @@ static struct cstr_view const actions[ACTIONS] = {
 	[ACTION_CANCEL] = CSTR_VIEW_INIT("cancel"),
 };
 
-/* The words for the kinds and the statuses of the records of the ledger,
- * which the log, the answers of a client's jobs and wait, and tasks/get
- * use.
- */
-static char const *const record_kinds[] = {
-	[LEDGER_TASK] = "task",
-	[LEDGER_JOB]  = "job",
-};
-static struct cstr_view const record_status[LEDGER_STATUSES] = {
-	[LEDGER_WORKING]   = CSTR_VIEW_INIT("working"),
-	[LEDGER_COMPLETED] = CSTR_VIEW_INIT("completed"),
-	[LEDGER_FAILED]    = CSTR_VIEW_INIT("failed"),
-	[LEDGER_CANCELLED] = CSTR_VIEW_INIT("cancelled"),
-};
-
 /* A run of bytes: a piece of JSON text, or words for a client or the
  * model.
  */
@@ -1417,7 +1402,7 @@ mcp_req_log_call (struct mcp_req   *req,
 		            req->flags & REQ_STOPPED ? ", stopped at --max-turns" : "");
 	char record[sizeof "; task " + HEXID_DIGITS] = "";
 	if (req->task)
-		util_format(record, sizeof record, "; %s %s", record_kinds[req->task->kind],
+		util_format(record, sizeof record, "; %s %s", ledger_kinds[req->task->kind],
 		            req->task->id.hex);
 	char text[QUOTED(ERROR_LOG)] = "";
 	if (failed && out.len)
@@ -3319,7 +3304,7 @@ mcp_req_promote (struct mcp_req     *req,
                  struct ledger_task *task)
 {
 	int e = mcp_req_open(req, FRAG("\"result\":"));
-	e = e ? e : mcp_req_task_put(req, task, FRAG("task"), record_status[LEDGER_WORKING],
+	e = e ? e : mcp_req_task_put(req, task, FRAG("task"), ledger_statuses[LEDGER_WORKING],
 	                             task->created, CSTR_VIEW("null"));
 	if (!mcp_req_detach(req, task, e ? e : mcp_req_put(req, &FRAG("}}"), 1)))
 		LOG(LOG_VERBOSE, "tool call %s from %s became task %s after %.1f s",
@@ -5241,12 +5226,12 @@ mcp_slot_client_list (struct mcp_slot *slot)
 		uint64_t state = atomic_load_explicit(&t->state, memory_order_acquire);
 		enum ledger_status status = state & LEDGER_STATUS;
 		bool told = state & LEDGER_TOLD;
-		ok = dstr_printf(d, "%s %s: %s: ", record_kinds[t->kind], t->id.hex,
+		ok = dstr_printf(d, "%s %s: %s: ", ledger_kinds[t->kind], t->id.hex,
 		                 mcp_static_tool(st, t->tool)->name.data) &&
 		     (status == LEDGER_WORKING
 		      ? dstr_printf(d, "running for %" PRIu64 " s\n",
 		                    mcp_seconds_since(t->created, day))
-		      : dstr_printf(d, "%s %" PRIu64 " s ago%s\n", record_status[status].data,
+		      : dstr_printf(d, "%s %" PRIu64 " s ago%s\n", ledger_statuses[status].data,
 		                    mcp_seconds_since(t->ended, day), told ? "" : ", unread"));
 	}
 	if (ok && look.more)
@@ -5347,7 +5332,7 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 	if (runs) {
 		ledger_task_cancel(task);
 		said = util_format_view(text, sizeof text, "askai is cancelling %s %s. %s",
-		                        record_kinds[task->kind], task->id.hex,
+		                        ledger_kinds[task->kind], task->id.hex,
 		                        !(mcp_slot_tool(slot)->kind->flags & KF_AGENDA)
 		                        ? "Call this same tool with the job id to check its status."
 		                        : "Call wait to wait for its end.");
@@ -5455,13 +5440,13 @@ mcp_wait_report (struct mcp_wait const    *w,
 	for (uint32_t i = 0; ok && i < look->n_tasks; ++i) {
 		struct ledger_task const *t = look->tasks[i];
 		enum ledger_status status = ledger_task_status(t);
-		char const *kind = record_kinds[t->kind];
+		char const *kind = ledger_kinds[t->kind];
 		char const *tool = mcp_static_tool(st, t->tool)->name.data;
 		ok = status == LEDGER_CANCELLED
 		   ? dstr_printf(d, "[askai: %s %s, %s, cancelled.]\n", kind, t->id.hex, tool)
 		   : dstr_printf(d, "[askai: %s %s, %s, %s: call jobs with the action result "
 		                 "and job %s for its result.]\n", kind, t->id.hex, tool,
-		                 record_status[status].data, t->id.hex);
+		                 ledger_statuses[status].data, t->id.hex);
 	}
 	for (uint32_t i = 0; ok && i < look->n_timers; ++i)
 		ok = !mcp_notice_timer(d, &look->timers[i]);
@@ -7249,7 +7234,7 @@ mcp_req_task_show (struct mcp_req     *req,
 		: FRAG("}"),
 	};
 	int e = mcp_req_open(req, FRAG("\"result\":"));
-	e = e ? e : mcp_req_task_put(req, task, FRAG("complete"), record_status[status],
+	e = e ? e : mcp_req_task_put(req, task, FRAG("complete"), ledger_statuses[status],
 	                             updated_at, ttl);
 	e = e ? e : mcp_req_put(req, p, array_size(p));
 	if (e || !whole) {

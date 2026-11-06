@@ -19,6 +19,18 @@
 #include "ref.h"
 #include "util.h"
 
+char const *const ledger_kinds[LEDGER_KINDS] = {
+	[LEDGER_TASK] = "task",
+	[LEDGER_JOB]  = "job",
+};
+
+struct cstr_view const ledger_statuses[LEDGER_STATUSES] = {
+	[LEDGER_WORKING]   = CSTR_VIEW_INIT("working"),
+	[LEDGER_COMPLETED] = CSTR_VIEW_INIT("completed"),
+	[LEDGER_FAILED]    = CSTR_VIEW_INIT("failed"),
+	[LEDGER_CANCELLED] = CSTR_VIEW_INIT("cancelled"),
+};
+
 enum {
 	BUCKETS       = LEDGER_MAX,     /* the table's, a power of two */
 	OWNER_BUCKETS = 256,            /* the owners' table's, likewise */
@@ -543,7 +555,7 @@ ledger_restore (struct ledger      *ledger,
 	*e = EINVAL;
 	bool working = status == LEDGER_WORKING;
 	if (!ledger || !id || !*id->hex ||
-	    (kind != LEDGER_TASK && kind != LEDGER_JOB) ||
+	    kind >= LEDGER_KINDS ||
 	    status < LEDGER_WORKING || status >= LEDGER_STATUSES ||
 	    (result.len && !result.ptr) ||
 	    (working && (!loop || !fn || result.len || ended)) ||

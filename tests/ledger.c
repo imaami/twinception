@@ -158,6 +158,13 @@ test_invalid (struct ledger *l)
 	                   test_cancel, &e) && e == EINVAL);
 	CHECK(!ledger_open(l, A, (enum ledger_kind)7, 0, test_loop, (struct handle){},
 	                   test_cancel, &e) && e == EINVAL);
+	/* Each kind and each status has its word. */
+	for (size_t i = 0; i < LEDGER_KINDS; ++i)
+		CHECK(ledger_kinds[i] && *ledger_kinds[i]);
+	for (size_t i = 0; i < LEDGER_STATUSES; ++i)
+		CHECK(ledger_statuses[i].len);
+	CHECK(!strcmp(ledger_kinds[LEDGER_JOB], "job") &&
+	      cstr_view_equal(ledger_statuses[LEDGER_CANCELLED], CSTR_VIEW("cancelled")));
 	CHECK(!ledger_open(l, A, LEDGER_TASK, 0, nullptr, (struct handle){}, test_cancel,
 	                   &e) && e == EINVAL);
 	CHECK(!ledger_open(l, A, LEDGER_TASK, 0, test_loop, (struct handle){}, nullptr,
