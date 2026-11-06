@@ -80,8 +80,12 @@ struct review_file {
 	struct oid           commit;
 };
 
-/** The initializers of the texts of a struct review_file. */
-#define REVIEW_FILE_TEXTS .repo = DSTR_INIT, .path = DSTR_INIT
+/** Returns an empty file. */
+static struct review_file
+review_file (void)
+{
+	return (struct review_file){ .repo = DSTR_INIT, .path = DSTR_INIT };
+}
 
 /** A list of files. The files of one repository and commit are next to
  *  each other, in the order in which they were added.
@@ -137,6 +141,24 @@ struct review_change {
 	struct oid             commit;
 };
 
+/** Returns a change in the turn @p turn to the state @p state, read at the
+ *  commit @p commit, without texts and without an old location.
+ */
+static struct review_change
+review_change (uint32_t          turn,
+               enum review_state state,
+               struct oid        commit)
+{
+	return (struct review_change){
+		.evidence     = DSTR_INIT,
+		.old_claim    = DSTR_INIT,
+		.old_location = review_location(0, 0),
+		.turn         = turn,
+		.state        = state,
+		.commit       = commit,
+	};
+}
+
 /** A finding. Its state is the state of its last change. */
 struct review_finding {
 	struct dstr            claim;
@@ -145,6 +167,16 @@ struct review_finding {
 	size_t                 n;
 	size_t                 cap;
 };
+
+/** Returns a finding without a claim and without changes, at the lines
+ *  @p first to @p last of no path.
+ */
+static struct review_finding
+review_finding (uint32_t first,
+                uint32_t last)
+{
+	return (struct review_finding){ .claim = DSTR_INIT, .location = review_location(first, last) };
+}
 
 struct review_read {
 	struct review_source src;        /**< views of text */
@@ -212,7 +244,7 @@ review_file_fini (struct review_file *f)
 	dstr_cleanup(&f->repo);
 	dstr_cleanup(&f->path);
 	free(f->ranges);
-	*f = (struct review_file){ REVIEW_FILE_TEXTS };
+	*f = review_file();
 }
 
 /** Finalizes the files of @p list and sets its count to 0. The array of
@@ -240,9 +272,6 @@ review_change_fini (struct review_change *c)
 	dstr_cleanup(&c->evidence);
 	dstr_cleanup(&c->old_claim);
 	dstr_cleanup(&c->old_location.path);
-	*c = (struct review_change){
-		.evidence = DSTR_INIT, .old_claim = DSTR_INIT, .old_location = review_location(0, 0)
-	};
 }
 
 static void
@@ -253,7 +282,7 @@ review_finding_fini (struct review_finding *f)
 	for (size_t i = 0; i < f->n; ++i)
 		review_change_fini(&f->changes[i]);
 	free(f->changes);
-	*f = (struct review_finding){ .claim = DSTR_INIT, .location = review_location(0, 0) };
+	*f = review_finding(0, 0);
 }
 
 /** Frees the members of @p r and leaves it empty. */
@@ -622,7 +651,7 @@ review_files_add (struct review              *r,
 	size_t const size = r->size + review_charge(2, key->repo.len + key->path.len);
 	if (!review_within_max(r, size, lines.turn))
 		return 0;
-	struct review_file f = { REVIEW_FILE_TEXTS };
+	struct review_file f = review_file();
 	if (util_grow(f.ranges, f.cap, 1))
 		return ENOMEM;
 	f.ranges[0] = lines;
@@ -723,7 +752,7 @@ review_log_file (struct review      *r,
 	int e = review_files_insert(&r->log, f, at);
 	if (e)
 		return e;
-	*f = (struct review_file){ REVIEW_FILE_TEXTS };
+	*f = review_file();
 	r->size = size;
 	return 0;
 }
@@ -1659,21 +1688,10 @@ review_add (struct review            *r,
 		e = util_grow(r->findings, r->cap_findings, r->n_findings + 1);
 	if (e)
 		return e;
-	struct review_finding f = {
-		.claim    = DSTR_INIT,
-		.location = review_location(loc.first, loc.last),
-		.n        = 1,
-	};
+	struct review_finding f = review_finding(loc.first, loc.last);
 	if (util_grow(f.changes, f.cap, 1))
 		return ENOMEM;
-	f.changes[0] = (struct review_change){
-		.evidence     = DSTR_INIT,
-		.old_claim    = DSTR_INIT,
-		.old_location = review_location(0, 0),
-		.turn   = turn,
-		.state  = state,
-		.commit = commit,
-	};
+	f.changes[f.n++] = review_change(turn, state, commit);
 	e = cstr_view_store(a->claim, &f.claim);
 	if (!e)
 		e = cstr_view_store(loc.path, &f.location.path);
@@ -1731,15 +1749,9 @@ review_update (struct review            *r,
 		return e;
 	if (util_grow(f->changes, f->cap, f->n + 1))
 		return ENOMEM;
-	struct review_change c = {
-		.evidence     = DSTR_INIT,
-		.old_claim    = DSTR_INIT,
-		.old_location = review_location(f->location.first, f->location.last),
-		.turn   = turn,
-		.state  = a->state,
-		.moved  = moved,
-		.commit = commit,
-	};
+	struct review_change c = review_change(turn, a->state, commit);
+	c.old_location = review_location(f->location.first, f->location.last);
+	c.moved = moved;
 	struct dstr claim = DSTR_INIT;
 	struct dstr path = DSTR_INIT;
 	bool const set_path = new_path || moved;
@@ -1943,7 +1955,7 @@ review_files_add_json (struct review            *r,
 	    review_files_find(list, &key, &at) < list->n)
 		return EINVAL;
 	key.total = (uint32_t)total;
-	struct review_file f = { REVIEW_FILE_TEXTS };
+	struct review_file f = review_file();
 	int e = util_grow(f.ranges, f.cap, n) ? ENOMEM : review_file_set(&f, &key);
 	/* The ranges must be sorted, must not overlap and must be within the
 	 * file, and the turns of two adjoining ranges must differ. */
@@ -2066,29 +2078,26 @@ review_location_init_json (struct review_location   *loc,
  * Initializes the change @p c from the saved change @p obj. A change to a
  * state that requires logged lines must contain evidence and a commit, and
  * it is valid only in a finding with a location (@p located). Returns 0,
- * EINVAL or ENOMEM, and leaves @p c empty on failure.
+ * EINVAL or ENOMEM. On failure nothing in @p c needs to be freed.
  */
 static int
 review_change_init_json (struct review_change     *c,
                          struct json_object const *obj,
                          bool                      located)
 {
-	*c = (struct review_change){
-		.evidence = DSTR_INIT, .old_claim = DSTR_INIT, .old_location = review_location(0, 0)
-	};
-	struct cstr_view const commit = jb_view(jb_get(obj, "commit"));
+	struct cstr_view const id = jb_view(jb_get(obj, "commit"));
 	struct cstr_view const evidence = jb_view(jb_get(obj, "evidence"));
 	struct json_object *claim = jb_get(obj, "claim");
 	struct json_object *location = jb_get(obj, "location");
 	size_t const state = cstr_view_index(review_state_names, REVIEW_STATES,
 	                                     jb_view(jb_get(obj, "state")));
+	struct oid commit = {};
 	uint64_t turn;
 	if (jb_uint_checked(jb_get(obj, "turn"), UINT32_MAX, &turn) || state == REVIEW_STATES ||
-	    !commit.data || (commit.len && oid_init(&c->commit, commit)) ||
-	    (review_state_logged(state) && (!located || !evidence.len || !commit.len)))
+	    !id.data || (id.len && oid_init(&commit, id)) ||
+	    (review_state_logged(state) && (!located || !evidence.len || !id.len)))
 		return EINVAL;
-	c->turn = (uint32_t)turn;
-	c->state = (enum review_state)state;
+	*c = review_change((uint32_t)turn, (enum review_state)state, commit);
 	c->moved = location;
 	int e = review_text_json(&c->evidence, evidence, true);
 	if (!e && claim)
@@ -2114,15 +2123,17 @@ review_findings_add_json (struct review            *r,
 		return EINVAL;
 	if (util_grow(r->findings, r->cap_findings, r->n_findings + 1))
 		return ENOMEM;
-	struct review_finding f = { .claim = DSTR_INIT, .location = review_location(0, 0) };
+	struct review_finding f = review_finding(0, 0);
 	if (util_grow(f.changes, f.cap, n))
 		return ENOMEM;
 	int e = review_location_init_json(&f.location, obj);
 	if (!e)
 		e = review_text_json(&f.claim, jb_view(jb_get(obj, "claim")), false);
 	bool const located = dstr_len(&f.location.path);
-	for (; !e && f.n < n; ++f.n)
-		e = review_change_init_json(&f.changes[f.n], jb_at(history, f.n), located);
+	for (size_t i = 0; !e && i < n; ++i) {
+		e = review_change_init_json(&f.changes[i], jb_at(history, i), located);
+		f.n += !e;
+	}
 	if (e) {
 		review_finding_fini(&f);
 		return e;
@@ -2156,5 +2167,3 @@ review_restore (struct review            *r,
 	*r = got;
 	return 0;
 }
-
-#undef REVIEW_FILE_TEXTS
