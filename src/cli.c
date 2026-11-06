@@ -421,20 +421,15 @@ cli_report (struct cli_client *client,
 	return e;
 }
 
+/** A job that the chat waits for. It is embedded in the struct of the
+ *  arguments of the job, and the work function of the job computes the
+ *  address of that struct with container_of().
+ */
 struct cli_work {
 	struct cli_io_job job;
-	int             (*fn) (void *data);
-	void             *data;
 	uint64_t          done;  /**< Nonzero after cli_work_done() runs. It is
 	                              a uint64_t to fill the tail padding. */
 };
-
-static int
-cli_work_run (struct cli_io_job *job)
-{
-	struct cli_work *work = container_of(job, struct cli_work, job);
-	return work->fn(work->data);
-}
 
 static void
 cli_work_done (struct cli_io_job *job)
@@ -443,33 +438,35 @@ cli_work_done (struct cli_io_job *job)
 	work->done = true;
 }
 
+/* Run work, whose job.work is set, on a blocker, and turn the loop of the
+ * UI until it is done. Returns the error of the work, or of its submission.
+ */
 static int
-cli_work_wait (struct cli *cli,
-               int       (*fn) (void *data),
-               void       *data)
+cli_work_wait (struct cli      *cli,
+               struct cli_work *work)
 {
 	if (cli_stopping(cli))
 		return EINTR;
-	struct cli_work work = {.job = {.work = cli_work_run, .done = cli_work_done},
-	                        .fn = fn, .data = data};
-	int e = cli_io_submit(cli->io, &work.job);
+	work->job.done = cli_work_done;
+	int e = cli_io_submit(cli->io, &work->job);
 	if (e)
 		return e;
 	uint8_t busy = cli->flags & CLI_BUSY;
 	cli->flags |= CLI_BUSY;
-	while (!work.done)
+	while (!work->done)
 		cli_wait(cli, cli->exit_due ? cli->exit_due : UINT64_MAX);
 	cli->flags = (cli->flags & ~CLI_BUSY) | busy;
 	if (cli_stopping(cli))
 		return EINTR;
 	if (!busy)
 		atomic_store(&cli->cancel_io, false);
-	return work.job.blocker.error;
+	return work->job.blocker.error;
 }
 
 enum cli_history_operation { CLI_HISTORY_OPEN, CLI_HISTORY_INPUT, CLI_HISTORY_TURN, CLI_HISTORY_CLEAR };
 
 struct cli_history_work {
+	struct cli_work             work;
 	struct cli_state           *state;
 	struct cstr_view            path;
 	struct cstr_view            text;
@@ -480,9 +477,9 @@ struct cli_history_work {
 };
 
 static int
-cli_history_work (void *data)
+cli_history_work (struct cli_io_job *job)
 {
-	struct cli_history_work *work = data;
+	struct cli_history_work *work = container_of(job, struct cli_history_work, work.job);
 	switch (work->operation) {
 	case CLI_HISTORY_OPEN: {
 		int e = 0;
@@ -506,21 +503,23 @@ cli_history_update (struct cli                  *cli,
                     struct cstr_view            answer,
                     bool                        replace)
 {
-	struct cli_history_work work = {.state = cli->saved, .operation = operation,
-	                                .text = text, .answer = answer, .replace = replace};
-	return cli_work_wait(cli, cli_history_work, &work);
+	struct cli_history_work work = {.work.job.work = cli_history_work, .state = cli->saved,
+	                                .operation = operation, .text = text, .answer = answer,
+	                                .replace = replace};
+	return cli_work_wait(cli, &work.work);
 }
 
 struct cli_file_work {
+	struct cli_work   work;
 	struct dstr      *text;
 	struct cstr_view  path;
 	struct cli_error *error;
 };
 
 static int
-cli_file_work (void *data)
+cli_file_work (struct cli_io_job *job)
 {
-	struct cli_file_work *work = data;
+	struct cli_file_work *work = container_of(job, struct cli_file_work, work.job);
 	return cli_read_file(work->text, work->path, work->error);
 }
 
@@ -530,8 +529,8 @@ cli_file_read (struct cli       *cli,
                struct cstr_view  path,
                struct cli_error *error)
 {
-	struct cli_file_work work = {.text = text, .path = path, .error = error};
-	return cli_work_wait(cli, cli_file_work, &work);
+	struct cli_file_work work = {.work.job.work = cli_file_work, .text = text, .path = path, .error = error};
+	return cli_work_wait(cli, &work.work);
 }
 
 static int
@@ -569,6 +568,7 @@ cli_busy (struct cli *cli,
 }
 
 struct cli_completion_work {
+	struct cli_work                  work;
 	struct autocomplete_file        *files;
 	struct cstr_view                 line;
 	struct autocomplete_match const *matches;
@@ -577,9 +577,9 @@ struct cli_completion_work {
 };
 
 static int
-cli_completion_work (void *data)
+cli_completion_work (struct cli_io_job *job)
 {
-	struct cli_completion_work *work = data;
+	struct cli_completion_work *work = container_of(job, struct cli_completion_work, work.job);
 	return autocomplete_file_complete(work->files, work->line, work->cursor,
 	                                  cli_command_at(CLI_COMMAND_READ)->completion, &work->matches, &work->count);
 }
@@ -594,8 +594,9 @@ cli_complete (void                             *context,
 	struct cli *cli = context;
 	int e = autocomplete_complete(cli->client.catalog, line, cursor, matches, count);
 	if (!e && !*count) {
-		struct cli_completion_work work = {.files = cli->files, .line = line, .cursor = cursor};
-		e = cli_work_wait(cli, cli_completion_work, &work);
+		struct cli_completion_work work = {.work.job.work = cli_completion_work, .files = cli->files,
+		                                   .line = line, .cursor = cursor};
+		e = cli_work_wait(cli, &work.work);
 		*matches = work.matches;
 		*count = work.count;
 	}
@@ -607,14 +608,15 @@ cli_complete (void                             *context,
 }
 
 struct cli_path_work {
-	char const  *path;
-	struct dstr *identity;
+	struct cli_work  work;
+	char const      *path;
+	struct dstr     *identity;
 };
 
 static int
-cli_path_work (void *data)
+cli_path_work (struct cli_io_job *job)
 {
-	struct cli_path_work *work = data;
+	struct cli_path_work *work = container_of(job, struct cli_path_work, work.job);
 	char *path = realpath(work->path, nullptr);
 	if (!path)
 		return errno;
@@ -640,8 +642,9 @@ cli_history_open (struct cli       *cli,
 		if (!dstr_cat(&identity, "session=") || cstr_view_cat(key, &identity))
 			return ENOMEM;
 	} else {
-		struct cli_path_work work = {.path = options->socket, .identity = &identity};
-		int e = cli_work_wait(cli, cli_path_work, &work);
+		struct cli_path_work work = {.work.job.work = cli_path_work, .path = options->socket,
+		                             .identity = &identity};
+		int e = cli_work_wait(cli, &work.work);
 		if (e)
 			return cli_error_set(error, e, "Cannot identify history connection: %s", strerror(e));
 	}
@@ -654,9 +657,10 @@ cli_history_open (struct cli       *cli,
 	for (size_t i = 0; i < array_size(parts); ++i)
 		if (cstr_view_cat(parts[i], &identity))
 			return ENOMEM;
-	struct cli_history_work work = {.operation = CLI_HISTORY_OPEN, .cancel = &cli->cancel_io,
-	                                .path = cstr_view(options->history_repo), .text = cstr_view_dstr(&identity)};
-	int e = cli_work_wait(cli, cli_history_work, &work);
+	struct cli_history_work work = {.work.job.work = cli_history_work, .operation = CLI_HISTORY_OPEN,
+	                                .cancel = &cli->cancel_io, .path = cstr_view(options->history_repo),
+	                                .text = cstr_view_dstr(&identity)};
+	int e = cli_work_wait(cli, &work.work);
 	cli->saved = work.state;
 	if (e)
 		return cli_error_set(error, e, "Cannot open client history repository: %s", strerror(e));
