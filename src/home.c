@@ -2722,21 +2722,17 @@ static void
 home_job_orphan (struct job *job,
                  uint32_t    bits)
 {
-	if (bits & JOB_DRAIN && !(bits & (JOB_SUBMIT | JOB_CANCEL | JOB_SUSPEND))) {
-		home_delta_release(job);
-		home_job_put(job, 1);
-		return;
-	}
 	home_delta_release(job);
+	/* The reference of the message, and home's reference too if the
+	 * front let go of the job. */
+	uint32_t const refs = bits & (JOB_CANCEL | JOB_SUSPEND) ? 2 : 1;
 	if (bits & JOB_SUBMIT) {
 		home_job_reset(job, 0);
 		home_job_end(job, JOB_CANCELLED);
-		home_job_put(job, bits & (JOB_CANCEL | JOB_SUSPEND) ? 2 : 1);
-		return;
+	} else if (refs == 2) {
+		home_job_drop_answer(job);
 	}
-	/* Its front has dropped it. */
-	home_job_drop_answer(job);
-	home_job_put(job, 2);
+	home_job_put(job, refs);
 }
 
 void
