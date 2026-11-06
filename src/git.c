@@ -551,10 +551,10 @@ git_commit (char       *dest,
 {
 	memcpy(dest, src, len);
 	dest[len] = '\0';
-	size_t base = strcspn(dest, "^~:@{}");
-	if (!base || *dest == '-' || !git_inside(dest) || strstr(dest, "..") ||
-	    (base == 5 && !memcmp(dest, "stash", 5)) ||
-	    (base == 10 && !memcmp(dest, "refs/stash", 10)))
+	size_t const base = strcspn(dest, "^~:@{}");
+	struct cstr_view const ref = { dest, base };
+	if (!base || *dest == '-' || *dest == '/' || strstr(dest, "..") ||
+	    cstr_view_equal(ref, CSTR_VIEW("stash")) || cstr_view_equal(ref, CSTR_VIEW("refs/stash")))
 		return EINVAL;
 	for (size_t at = base; at < len;) {
 		if (len - at >= sizeof git_commit_suffix - 1 &&
