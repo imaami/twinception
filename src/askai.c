@@ -718,37 +718,19 @@ askai_separate_repos (char const *notes,
 	char *cwd = nullptr;
 	if (*transcripts != '/' && !(cwd = getcwd(nullptr, 0)))
 		return errno;
-	char *path;
-	int e = asprintf(&path, "%s/%s", cwd ? cwd : "", transcripts) < 0 ? ENOMEM : 0;
+	/* One contains the other if the parts of the shorter begin the
+	 * longer. notes is a real path, without "." or "..". */
+	struct cstr_view paths[] = { cstr_view(cwd), cstr_view(transcripts) };
+	struct cstr_view rest = cstr_view(notes);
+	bool apart = false;
+	int e = 0;
+	for (size_t i = 0; !e && i < array_size(paths); ++i)
+		for (struct cstr_view part, other; !(e = util_path_next(&paths[i], &part)) && part.len; )
+			apart = apart || (!util_path_next(&rest, &other) && other.len &&
+			                  !cstr_view_equal(part, other));
 	free(cwd);
 	cwd = nullptr;
-	if (e)
-		return e;
-	char *rest = path, *to = path;
-	for (char *part; (part = strsep(&rest, "/")); ) {
-		if (!*part || !strcmp(part, "."))
-			continue;
-		if (!strcmp(part, "..")) {
-			e = EINVAL;
-			break;
-		}
-		size_t len = strlen(part);
-		*to++ = '/';
-		memmove(to, part, len);
-		to += len;
-	}
-	*to = '\0';
-	/* One contains the other if the shorter is a prefix of the longer
-	 * that ends where a part of the longer does. */
-	size_t n = strlen(notes);
-	size_t t = (size_t)(to - path);
-	size_t m = n < t ? n : t;
-	char c = (n < t ? path : notes)[m];
-	if (!e && !memcmp(path, notes, m) && (!c || c == '/'))
-		e = EINVAL;
-	free(path);
-	path = nullptr;
-	return e;
+	return e ? e : apart ? 0 : EINVAL;
 }
 
 /* What every loop shares, for @p n client loops, made before any starts:
