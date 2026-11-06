@@ -10,6 +10,7 @@
 #include "compat.h"
 #include "jb.h"
 #include "oid.h"
+#include "sse.h"
 #include "util.h"
 
 int
@@ -74,7 +75,8 @@ void cli_client_fini(struct cli_client *client)
 }
 
 struct cli_client_response {
-	struct buf body, line, data;
+	struct buf body;
+	struct sse stream;
 	struct dstr session;
 	struct cli_client *client;
 	struct cli_error *error;
@@ -83,35 +85,24 @@ struct cli_client_response {
 	void *context;
 	int64_t id;
 	int failure;
-	bool sse;
+	uint32_t sse;  /* bool, widened over the padding: the body is an event stream */
 };
-
-static struct cli_client_response
-cli_client_response (struct cli_client    *client,
-                     cli_client_notify_fn *notify,
-                     void                 *context,
-                     int64_t               id,
-                     struct cli_error     *error)
-{
-	return (struct cli_client_response){
-		.session = DSTR_INIT, .client = client, .error = error,
-		.notify = notify, .context = context, .id = id,
-	};
-}
 
 static void cli_client_response_fini(struct cli_client_response *response)
 {
 	buf_fini(&response->body);
-	buf_fini(&response->line);
-	buf_fini(&response->data);
+	sse_fini(&response->stream);
 	dstr_cleanup(&response->session);
 	cli_client_json_cleanup(&response->result);
 }
 
-static int cli_client_response_event(struct cli_client_response *response, struct cstr_view text)
+/* Handle the JSON-RPC message in the @p len bytes at @p data, the body or
+ * one event of the response @p user.
+ */
+static int cli_client_response_event(char const *data, size_t len, void *user)
 {
-	cli_json_auto event = jb_parse(text.data, text.len,
-	                               JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8, 0);
+	struct cli_client_response *response = user;
+	cli_json_auto event = jb_parse(data, len, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8, 0);
 	if (!json_object_is_type(event, json_type_object))
 		return cli_error_set(response->error, EPROTO, "Malformed JSON response from AskAI");
 	struct json_object *id = jb_get(event, "id");
@@ -127,45 +118,37 @@ static int cli_client_response_event(struct cli_client_response *response, struc
 	return response->notify ? response->notify(response->context, event, response->id, response->error) : 0;
 }
 
-/* Append end, the rest of a line of an SSE stream without its newline, to
- * response->line, and handle the line. An empty line ends an event, and a
- * data line adds its value to the data of the event. Returns 0 or an error
- * number.
+/* Start @p response to the request @p id of @p client, 0 for a
+ * notification.
  */
-static int cli_client_response_line(struct cli_client_response *response, struct cstr_view end)
+static void
+cli_client_response_init (struct cli_client_response *response,
+                          struct cli_client          *client,
+                          cli_client_notify_fn       *notify,
+                          void                       *context,
+                          int64_t                     id,
+                          struct cli_error           *error)
 {
-	struct buf *line = &response->line, *data = &response->data;
-	int e = buf_put(line, end.data, end.len, CLI_LIMIT);
-	struct cstr_view text = {(char const *)line->data, line->tail};
-	line->tail = 0;
-	if (e)
-		return e;
-	if (text.len && text.data[text.len - 1] == '\r')
-		--text.len;
-	if (!text.len && data->tail) {
-		e = cli_client_response_event(response, (struct cstr_view){(char const *)data->data, data->tail - 1});
-		data->tail = 0;
-		return e;
-	}
-	struct cstr_view const field = CSTR_VIEW("data:");
-	if (!cstr_view_starts(text, field))
-		return 0;
-	struct cstr_view value = cstr_view_slice(text, field.len, SIZE_MAX);
-	if (value.len && value.data[0] == ' ')
-		value = cstr_view_slice(value, 1, SIZE_MAX);
-	e = buf_put(data, value.data, value.len, CLI_LIMIT);
-	return e ? e : buf_put(data, "\n", 1, CLI_LIMIT);
+	*response = (struct cli_client_response){
+		.stream = sse(cli_client_response_event, response),
+		.session = DSTR_INIT, .client = client, .error = error,
+		.notify = notify, .context = context, .id = id,
+	};
 }
 
+/* The partial line and event of a stream are at most CLI_LIMIT bytes. */
 static int cli_client_response_receive(struct cstr_view bytes, void *context)
 {
 	struct cli_client_response *response = context;
-	struct buf *rest = response->sse ? &response->line : &response->body;
-	struct cstr_view line;
-	while (response->sse && !response->failure && cstr_view_cut(&bytes, '\n', &line))
-		response->failure = cli_client_response_line(response, line);
-	if (!response->failure)
-		response->failure = buf_put(rest, bytes.data, bytes.len, CLI_LIMIT);
+	struct sse *stream = &response->stream;
+	if (response->failure)
+		return response->failure;
+	if (!response->sse)
+		response->failure = buf_put(&response->body, bytes.data, bytes.len, CLI_LIMIT);
+	else if (bytes.len > CLI_LIMIT - dstr_len(&stream->input) - dstr_len(&stream->data))
+		response->failure = ENOBUFS;
+	else
+		response->failure = sse_feed(stream, bytes.data, bytes.len);
 	if (response->failure == ENOBUFS)
 		response->failure = cli_error_set(response->error, EFBIG, "AskAI response exceeds the 16 MiB client limit");
 	return response->failure;
@@ -211,7 +194,7 @@ cli_client_response_status (struct cli_client_response      *response,
 		                      length ? ": " : "", (int)length,
 		                      length ? (char const *)response->body.data : "");
 	}
-	if (response->sse && (response->line.tail || response->data.tail))
+	if (response->sse && (dstr_len(&response->stream.input) || dstr_len(&response->stream.data)))
 		return cli_error_set(response->error, EPROTO, "AskAI closed an incomplete SSE event");
 	return 0;
 }
@@ -239,7 +222,8 @@ static int cli_client_notification(struct cli_client *client, char const *method
                                    long timeout, struct cli_error *error)
 {
 	cli_json_auto message = cli_client_packet(method, params, 0);
-	struct cli_client_response response = cli_client_response(client, nullptr, nullptr, 0, error);
+	struct cli_client_response response;
+	cli_client_response_init(&response, client, nullptr, nullptr, 0, error);
 	struct cstr_view wire;
 	int e = cli_client_wire(message, JB_WIRE, &wire, error);
 	if (!e)
@@ -256,8 +240,8 @@ cli_client_response_result (struct cli_client_response *response,
 		dstr_cleanup(&response->client->session);
 		response->client->session = dstr_move(&response->session);
 	}
-	int e = response->sse ? 0 : cli_client_response_event(response,
-	               (struct cstr_view){(char const *)response->body.data, response->body.tail});
+	int e = response->sse ? 0 : cli_client_response_event((char const *)response->body.data,
+	                                                       response->body.tail, response);
 	if (e)
 		return e;
 	if (!response->result)
@@ -325,7 +309,8 @@ int cli_client_rpc(struct cli_client *client, char const *method,
 	}
 	int64_t id = ++client->next_id;
 	cli_json_auto message = cli_client_packet(method, params, id);
-	struct cli_client_response response = cli_client_response(client, notify, context, id, error);
+	struct cli_client_response response;
+	cli_client_response_init(&response, client, notify, context, id, error);
 	struct cstr_view wire;
 	int e = cli_client_wire(message, JB_WIRE, &wire, error);
 	bool call = !strcmp(method, "tools/call");
@@ -348,12 +333,13 @@ cli_client_call_create (struct cli_client    *client,
                         int                  *e)
 {
 	struct cli_client_call *call = malloc(sizeof *call);
-	*e = call ? 0 : ENOMEM;
-	if (call)
-		*call = (struct cli_client_call){
-			.response = cli_client_response(client, notify, context, id, &call->error),
-			.done = done,
-		};
+	if (!call) {
+		*e = ENOMEM;
+		return nullptr;
+	}
+	*call = (struct cli_client_call){.done = done};
+	cli_client_response_init(&call->response, client, notify, context, id, &call->error);
+	*e = 0;
 	return call;
 }
 

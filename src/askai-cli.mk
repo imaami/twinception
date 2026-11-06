@@ -25,7 +25,8 @@ override SRC_askai-cli := \
   dstr.c                  \
   jb.c                    \
   log.c                   \
-  loop.c
+  loop.c                  \
+  sse.c
 
 override LIB_askai-cli := \
   json-c                  \
