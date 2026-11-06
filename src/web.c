@@ -637,7 +637,7 @@ web_run_start (struct web     *web,
 			headers[k] = lines;
 		headers[n] = nullptr;
 		e = http_post_json(web->http, url, run->key.post ? body : nullptr,
-		                   run->key.body, false, headers, run->timeout * 1000L,
+		                   run->key.body, headers, run->timeout * 1000L,
 		                   web_run_write, web_run_done, run, &run->transfer);
 		if (headers != few)
 			free(headers);

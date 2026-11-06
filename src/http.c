@@ -724,7 +724,6 @@ http_post_json (struct http         *http,
                 char const          *url,
                 char const          *body,
                 size_t               len,
-                bool                 copy,
                 char const *const   *headers,
                 long                 timeout_ms,
                 http_write_cb       *write_cb,
@@ -763,7 +762,7 @@ http_post_json (struct http         *http,
 	SETOPT(CURLOPT_HTTPHEADER, request->headers);
 	if (body) {
 		SETOPT(CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)len);
-		SETOPT(copy ? CURLOPT_COPYPOSTFIELDS : CURLOPT_POSTFIELDS, body);
+		SETOPT(CURLOPT_POSTFIELDS, body);
 	}
 	SETOPT(CURLOPT_WRITEFUNCTION, http_write_adapter);
 	SETOPT(CURLOPT_WRITEDATA, request);

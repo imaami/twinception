@@ -1,6 +1,6 @@
 /** @file http.h
  *
- * Asynchronous HTTP interface used by the model client.
+ * Asynchronous HTTP requests over libcurl on an event loop.
  */
 #ifndef TWINCEPTION_SRC_HTTP_H_
 #define TWINCEPTION_SRC_HTTP_H_
@@ -62,16 +62,15 @@ http_resolver (struct http    *http,
  * step, or a GET if @p body is nullptr. @p headers is an optional
  * nullptr-terminated list of complete header lines; a POST has the
  * Content-Type application/json unless one of them is a Content-Type.
- * @p timeout_ms <= 0 means no total timeout. The headers are copied, and
- * so is the body if @p copy; otherwise it must stay as it is until
- * @p done_cb runs or the request is cancelled.
+ * @p timeout_ms <= 0 means no total timeout. The headers are copied, but
+ * the body is not, so the body must not change until @p done_cb runs or
+ * the request is cancelled.
  */
 extern int
 http_post_json (struct http          *http,
                 char const           *url,
                 char const           *body,
                 size_t                len,
-                bool                  copy,
                 char const *const    *headers,
                 long                  timeout_ms,
                 http_write_cb        *write_cb,

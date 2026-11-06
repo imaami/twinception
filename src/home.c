@@ -619,9 +619,9 @@ home_native_cancel (struct home *home,
 		return;
 	}
 	cancel->deadline = home->loop->now + CANCEL_MS * MS;
-	int e = http_post_json(home->http, job->cancel_url, "", 0, false,
-	                       home->ep->headers, CANCEL_MS, home_cancel_write,
-	                       home_cancel_done, cancel, &cancel->transfer);
+	int e = http_post_json(home->http, job->cancel_url, "", 0, home->ep->headers,
+	                       CANCEL_MS, home_cancel_write, home_cancel_done, cancel,
+	                       &cancel->transfer);
 	if (!e && home_llama(home))
 		e = http_method(cancel->transfer, "DELETE");
 	if (e) {
@@ -1258,8 +1258,7 @@ home_open (struct home *home,
 	}
 	job->flags &= ~(SEEN | DELIVERED);
 	int e = http_post_json(home->http, url ? url : ep->url, (char const *)body.ptr, body.len,
-	                       false, headers, 0, home_job_write, home_job_done, job,
-	                       &job->transfer);
+	                       headers, 0, home_job_write, home_job_done, job, &job->transfer);
 	curl_free(url);
 	url = nullptr;
 	return e;
@@ -2425,7 +2424,7 @@ home_props_get (struct home *home,
 {
 	struct ai_endpoint const *ep = home->ep;
 	long ms = ep->timeout_ms > 0 && ep->timeout_ms < PROPS_MS ? ep->timeout_ms : PROPS_MS;
-	return http_post_json(home->http, url, nullptr, 0, false, ep->headers, ms,
+	return http_post_json(home->http, url, nullptr, 0, ep->headers, ms,
 	                      home_props_write, home_props_done, home, &home->ask);
 }
 
