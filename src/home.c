@@ -220,8 +220,6 @@ struct home {
 static thread_local struct home *self;
 
 static int home_open (struct home *home, struct job *job, bool resume);
-static int home_metadata (struct home *home, struct job *job, bool resume,
-                          journal_done_cb *done);
 static void home_journal_done (struct loop *loop, void *arg, int error);
 static void home_archive_pending (struct home *home, struct job *job);
 static int home_provider_url (struct home *home, struct job *job,
@@ -1160,30 +1158,27 @@ done:
 	home_maybe_exit(home);
 }
 
+/* Write the "meta" record of @p job, the id of the provider's job, to
+ * job->journal, unless that is nullptr. home_journal_done() goes on once
+ * the record is written. home_job_restore() reads the record.
+ */
 static int
-home_metadata (struct home     *home,
-                struct job      *job,
-                bool             resume,
-                journal_done_cb *done)
+home_metadata (struct home *home,
+               struct job  *job)
 {
 	if (!job->journal)
 		return 0;
-	struct home_recovery *r = &job->recovery;
-	struct json_object *meta = jb_object(
-		"turn", json_object_new_uint64(job->archive_turn),
-		"provider", json_object_new_string(home_llama(home) ? "llama" :
-		                                    home->ep->api == AI_RESPONSES ? "responses" :
-		                                    home->ep->api == AI_INTERACTIONS ? "interactions" : "other"),
-		"provider_id", json_object_new_string(r->provider_id ? r->provider_id : ""),
-		"resume", json_object_new_boolean(resume), nullptr);
+	char const *id = job->recovery.provider_id;
+	struct json_object *meta = jb_object("provider_id", json_object_new_string(id ? id : ""),
+	                                     nullptr);
 	if (!meta)
 		return ENOMEM;
 	struct cstr_view const json = jb_wire(meta);
 	int e = json.data ? journal_put(job->journal, &job->archive, "meta", json.data, json.len,
-	                                done ? home->loop : nullptr, done, done ? job : nullptr)
+	                                home->loop, home_journal_done, job)
 	                  : ENOMEM;
 	json_object_put(meta);
-	if (!e && done)
+	if (!e)
 		home_archive_pending(home, job);
 	return e;
 }
@@ -1206,7 +1201,7 @@ home_connect (struct home *home,
 		home_archive_pending(home, job);
 	}
 	job->recovery.flags |= RECOVERY_OPENING | (resume ? RECOVERY_RESUME : 0);
-	return home_metadata(home, job, resume, home_journal_done);
+	return home_metadata(home, job);
 }
 
 static int
@@ -1943,7 +1938,7 @@ home_native_event (struct home        *home,
 		if (e)
 			return e;
 	}
-	return created ? home_metadata(home, job, false, home_journal_done) : 0;
+	return created ? home_metadata(home, job) : 0;
 }
 
 /* Take what @p root, an event of @p job's stream, says (ai_event()): its
