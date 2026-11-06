@@ -961,27 +961,6 @@ brainstem_place_threads (struct brainstem *bs)
 	return 0;
 }
 
-/* Block every signal but those faults raise, in the threads to come too, as
- * they inherit the mask, and ignore SIGPIPE; returns the mask before.
- */
-static sigset_t
-brainstem_block (void)
-{
-	/* Asynchronous signals go to the signalfd alone. */
-	static int const faults[] = {
-		SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGSYS, SIGTRAP
-	};
-	sigset_t all;
-	sigset_t old;
-	sigfillset(&all);
-	for (size_t i = 0; i < array_size(faults); ++i)
-		sigdelset(&all, faults[i]);
-	pthread_sigmask(SIG_BLOCK, &all, &old);
-	/* libcurl leaves SIGPIPE to us because CURLOPT_NOSIGNAL is set. */
-	signal(SIGPIPE, SIG_IGN);
-	return old;
-}
-
 /*
  * The signals the signalfd takes for @p cfg. Shutdown signals the process
  * started with ignored, as nohup and shells leave them to spare a job, stay
@@ -1170,7 +1149,15 @@ brainstem_fini (struct brainstem *bs)
 int
 brainstem_run (struct brainstem_cfg const *cfg)
 {
-	sigset_t old = brainstem_block();
+	/* Asynchronous signals go to the signalfd alone. libcurl leaves
+	 * SIGPIPE to us because CURLOPT_NOSIGNAL is set. */
+	sigset_t old;
+	int e = util_block_async(&old);
+	if (e) {
+		LOG(LOG_ERROR, "cannot block signals: %s", strerror(e));
+		return 1;
+	}
+	signal(SIGPIPE, SIG_IGN);
 	sigset_t mine = brainstem_mine(cfg);
 
 	/* Static, as a blocker stuck in a call may post to home until the
@@ -1180,7 +1167,7 @@ brainstem_run (struct brainstem_cfg const *cfg)
 		.sig_fd = -1,
 		.wake_fd = -1
 	};
-	int e = brainstem_init(&bs, cfg, &mine);
+	e = brainstem_init(&bs, cfg, &mine);
 	if (e)
 		LOG(LOG_ERROR, "cannot start: %s", strerror(e));
 	else

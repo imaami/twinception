@@ -8,6 +8,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -264,6 +265,23 @@ util_close (int *fd)
 	if (*fd >= 0)
 		(void)close(*fd);
 	*fd = -1;
+}
+
+/** Block every signal but those that faults raise in the calling thread,
+ *  whose threads to come inherit its mask, and store the mask before in
+ *  @p old. Returns 0, or the error number of pthread_sigmask().
+ */
+static inline int
+util_block_async (sigset_t *old)
+{
+	static int const faults[] = {
+		SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGSYS, SIGTRAP
+	};
+	sigset_t all;
+	sigfillset(&all);
+	for (size_t i = 0; i < array_size(faults); ++i)
+		sigdelset(&all, faults[i]);
+	return pthread_sigmask(SIG_BLOCK, &all, old);
 }
 
 /** Write the @p len bytes at @p buf to @p fd, again after a signal or a

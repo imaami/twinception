@@ -1445,14 +1445,8 @@ journal_create (char const *path,
 		/* Creation precedes brainstem_run(), which routes asynchronous
 		 * signals through signalfd. Inherit its worker mask at creation,
 		 * never leaving a window for SIGTERM to choose this thread. */
-		static int const faults[] = {
-			SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGSYS, SIGTRAP
-		};
-		sigset_t all, old;
-		sigfillset(&all);
-		for (size_t i = 0; i < array_size(faults); ++i)
-			sigdelset(&all, faults[i]);
-		*e = pthread_sigmask(SIG_BLOCK, &all, &old);
+		sigset_t old;
+		*e = util_block_async(&old);
 		if (!*e) {
 			*e = pthread_create(&j->thread, nullptr, journal_thread, j);
 			j->started = !*e;
