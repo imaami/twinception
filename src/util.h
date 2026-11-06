@@ -126,6 +126,33 @@ util_s (uint64_t n)
 	return n == 1 ? "" : "s";
 }
 
+/** Write the @p n low bytes of @p v, at most 8, to @p to, the most
+ *  significant first.
+ */
+static inline void
+util_be_put (unsigned char *to,
+             uint64_t       v,
+             size_t         n)
+{
+	while (n--) {
+		to[n] = (unsigned char)v;
+		v >>= 8;
+	}
+}
+
+/** The number in the @p n bytes at @p from, at most 8, the most
+ *  significant first.
+ */
+static inline uint64_t
+util_be_get (unsigned char const *from,
+             size_t               n)
+{
+	uint64_t v = 0;
+	for (size_t i = 0; i < n; ++i)
+		v = v << 8 | from[i];
+	return v;
+}
+
 /** Parse the decimal number at the start of the @p len bytes at @p s into
  *  @p *value. Returns the number of digits. If there are no digits or the
  *  number is greater than @p max, returns 0 and sets @p *value to 0.

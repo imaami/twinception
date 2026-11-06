@@ -183,9 +183,7 @@ policy_principal_of (struct policy const *policy,
 	if (!HMAC(EVP_sha256(), policy->key, (int)sizeof policy->key,
 	          (unsigned char const *)text, len, md, &n) || n < sizeof *principal)
 		return EIO;
-	uint64_t h = 0;
-	for (size_t i = 0; i < sizeof h; ++i)
-		h = h << 8 | md[i];
+	uint64_t h = util_be_get(md, sizeof *principal);
 	h = (h & (POLICY_IDENTITY - 1)) | tag;
 	*principal = h + !h;
 	return 0;

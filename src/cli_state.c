@@ -99,12 +99,8 @@ static int
 cli_state_write_number (int    fd,
                         size_t value)
 {
-	unsigned char bytes[] = {
-		(unsigned char)(value >> 24U),
-		(unsigned char)(value >> 16U),
-		(unsigned char)(value >>  8U),
-		(unsigned char) value
-	};
+	unsigned char bytes[4];
+	util_be_put(bytes, value, sizeof bytes);
 	return util_write_all(fd, bytes, sizeof bytes);
 }
 
@@ -115,10 +111,7 @@ cli_state_read_number (int     fd,
 	unsigned char bytes[4];
 	int e = cli_state_read(fd, bytes, sizeof bytes);
 	if (!e)
-		*value = (size_t)bytes[0] << 24U
-		       | (size_t)bytes[1] << 16U
-		       | (size_t)bytes[2] <<  8U
-		       |         bytes[3];
+		*value = (size_t)util_be_get(bytes, sizeof bytes);
 	return e;
 }
 

@@ -158,25 +158,6 @@ journal_oid (char *out)
 	return n;
 }
 
-static void
-journal_number (unsigned char *to,
-                uint64_t       number)
-{
-	for (size_t i = 0; i < 8; ++i) {
-		to[7 - i] = (unsigned char)number;
-		number >>= 8;
-	}
-}
-
-static uint64_t
-journal_value (unsigned char const *from)
-{
-	uint64_t value = 0;
-	for (size_t i = 0; i < 8; ++i)
-		value = (value << 8) | from[i];
-	return value;
-}
-
 static int
 journal_digest (struct journal      *j,
                 unsigned char const *header,
@@ -460,13 +441,13 @@ journal_record_read (struct journal         *j,
 		goto incomplete;
 	if (memcmp(header, "ASKAIJ1\n", 8))
 		return EILSEQ;
-	uint64_t length = journal_value(header + 16);
+	uint64_t length = util_be_get(header + 16, 8);
 	if (length > JOURNAL_RECORD_MAX)
 		return EILSEQ;
 	struct journal_record *r = calloc(1, sizeof *r + (size_t)length + 1);
 	if (!r)
 		return ENOMEM;
-	r->sequence = journal_value(header + 8);
+	r->sequence = util_be_get(header + 8, 8);
 	r->len = (size_t)length;
 	memcpy(r->id, header + 24, JOURNAL_ID);
 	memcpy(r->kind, header + 56, JOURNAL_KIND);
@@ -714,8 +695,8 @@ journal_record_write (struct journal              *j,
 {
 	unsigned char header[JOURNAL_HEADER] = {};
 	memcpy(header, "ASKAIJ1\n", 8);
-	journal_number(header + 8, sequence);
-	journal_number(header + 16, r->len);
+	util_be_put(header + 8, sequence, 8);
+	util_be_put(header + 16, r->len, 8);
 	memcpy(header + 24, r->id, JOURNAL_ID);
 	memcpy(header + 56, r->kind, JOURNAL_KIND);
 	int e = journal_digest(j, header, r->data, r->len, header + JOURNAL_SIGNED);
