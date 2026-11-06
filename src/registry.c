@@ -35,11 +35,11 @@ registry_find (struct registry const *reg,
  * tool, or registry_load() is adding its tools, so n_plugins is less than
  * TOOL_MAX too.
  */
-static uint32_t
+static uint64_t
 registry_part (struct registry     *reg,
                struct plugin const *plugin)
 {
-	uint32_t i = 0;
+	uint64_t i = 0;
 	while (i < reg->n_plugins && reg->plugins[i].plugin != plugin)
 		++i;
 	if (i == reg->n_plugins)

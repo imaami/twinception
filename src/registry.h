@@ -66,7 +66,7 @@ struct registry {
 	uint32_t               n_granted;  /**< the tools with the ids 0 to
 	                                        n_granted - 1 are those that a
 	                                        role can grant */
-	uint32_t               n_plugins;
+	uint64_t               n_plugins;  /**< widened over the padding */
 };
 
 /** Frees the loaded plugins' records and leaves @p reg empty. The shared
