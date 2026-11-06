@@ -20,6 +20,7 @@
 #include "clk.h"
 #include "compat.h"
 #include "log.h"
+#include "util.h"
 
 enum {
 	RING      = 256 << 10,  /* size of each thread's ring in bytes, a power
@@ -370,11 +371,9 @@ log_fini (void)
 	for (size_t i = 0; i < lg.n; ++i)
 		free(lg.rings[i].data);
 	free(lg.rings);
-	if (lg.wake_fd >= 0)
-		close(lg.wake_fd);
 	lg.rings = nullptr;
 	lg.n = 0;
-	lg.wake_fd = -1;
+	util_close(&lg.wake_fd);
 	atomic_store(&lg.attached, 0);
 	atomic_store(&lg.state, RUNNING);
 	self = nullptr;

@@ -611,8 +611,7 @@ cli_state_directory_check_empty (struct cli_state *state)
 	DIR *directory = fdopendir(directory_fd);
 	if (!directory) {
 		int e = errno;
-		(void)close(directory_fd);
-		directory_fd = -1;
+		util_close(&directory_fd);
 		return e;
 	}
 	directory_fd = -1;
@@ -816,13 +815,10 @@ cli_state_destroy (struct cli_state **pstate)
 			(void)unlinkat(state->directory, dstr_get(&state->name), 0);
 		if (dstr_len(&state->temporary))
 			(void)unlinkat(state->directory, dstr_get(&state->temporary), 0);
-		(void)close(state->directory);
-		state->directory = -1;
+		util_close(&state->directory);
 	}
 
-	if (state->lock >= 0)
-		(void)close(state->lock);
-	state->lock = -1;
+	util_close(&state->lock);
 
 	for (size_t i = 0; i < array_size(state->inputs); ++i)
 		dstr_cleanup(&state->inputs[i]);

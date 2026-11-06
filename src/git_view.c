@@ -213,8 +213,7 @@ git_view_destroy (struct git_view **p_view)
 		for (size_t i = 0; i < sizeof files / sizeof *files; ++i)
 			(void)unlinkat(view->fd, files[i], 0);
 		(void)unlinkat(view->fd, "refs", AT_REMOVEDIR);
-		(void)close(view->fd);
-		view->fd = -1;
+		util_close(&view->fd);
 	}
 	if (*view->directory)
 		(void)rmdir(view->directory);

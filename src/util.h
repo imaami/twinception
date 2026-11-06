@@ -251,6 +251,15 @@ util_env_path (void)
 	       ? p : "PATH=/usr/bin:/bin";
 }
 
+/** Close the descriptor @p *fd unless it is negative, and set it to -1. */
+static inline void
+util_close (int *fd)
+{
+	if (*fd >= 0)
+		(void)close(*fd);
+	*fd = -1;
+}
+
 /** Write the @p len bytes at @p buf to @p fd, again after a signal or a
  *  partial write. Returns 0, or the error number, EIO if no byte could be
  *  written.

@@ -2231,8 +2231,7 @@ httpd_conn_drop (struct httpd_conn *conn)
 {
 	tls_ctx_put(conn->ctx);
 	conn->ctx = nullptr;
-	close(conn->fd);
-	conn->fd = -1;
+	util_close(&conn->fd);
 }
 
 /* Home has a connection back: it counts it no more, and keeps its storage
@@ -2783,8 +2782,7 @@ static int
 httpd_home_shed (struct httpd_home           *home,
                  struct httpd_listener const *l)
 {
-	close(home->spare_fd);
-	home->spare_fd = -1;
+	util_close(&home->spare_fd);
 	int e = httpd_home_accept(home, l, true);
 	(void)httpd_home_spare(home);
 	return e;
@@ -3248,8 +3246,7 @@ httpd_home_destroy (struct httpd_home **p_home)
 	*p_home = nullptr;
 	httpd_home_drain(home);
 	loop_timer_stop(home->loop, &home->tick);
-	if (home->spare_fd >= 0)
-		close(home->spare_fd);
+	util_close(&home->spare_fd);
 	while (httpd_home_relieve(home, BUF_CRITICAL, SIZE_MAX))
 		;
 	/* Connections on their way to a loop, or back, count their client
@@ -3326,8 +3323,7 @@ httpd_home_drain (struct httpd_home *home)
 		if (l->fd < 0)
 			continue;
 		loop_unwatch(home->loop, &l->ref);
-		close(l->fd);
-		l->fd = -1;
+		util_close(&l->fd);
 		if (l->path)
 			(void)unlink(l->path);
 	}

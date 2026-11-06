@@ -351,10 +351,8 @@ loop_fini (struct loop *loop)
 	for (size_t i = 0; i < loop->timers; ++i)
 		loop->heap[i]->slot = 0;
 
-	if (wake >= 0)
-		close(wake);
-	if (loop->epfd >= 0)
-		close(loop->epfd);
+	util_close(&wake);
+	util_close(&loop->epfd);
 	free(loop->heap);
 	free(loop->slots);
 	free(loop->stats);

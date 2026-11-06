@@ -481,8 +481,7 @@ plugin_loaded_init (struct plugin_loaded *dest,
 	if (fd < 0)
 		return util_refuse(why, len, "cannot open it: %s", strerror(errno));
 	int e = plugin_manifest_read(&dest->manifest, fd, why, len);
-	(void)close(fd);
-	fd = -1;
+	util_close(&fd);
 	if (e)
 		return e;
 	e = plugin_manifest_check(&dest->manifest, &dest->n_tools, dest->lens,

@@ -341,8 +341,7 @@ brainstem_force (struct brainstem *bs,
 {
 	LOG(LOG_ERROR, "shutting down at once: %s", why);
 	log_stop();
-	close(bs->sig_fd);
-	bs->sig_fd = -1;
+	util_close(&bs->sig_fd);
 	uint64_t until = loop_clock() + FLUSH_MS * MS;
 	while (!log_done() && loop_clock() < until)
 		(void)brainstem_nap(bs, until);
@@ -1207,9 +1206,7 @@ brainstem_fini (struct brainstem *bs)
 	 * still to come, so it stays open until the process exits. */
 	if (freed && log_done())
 		log_fini();
-	if (bs->sig_fd >= 0)
-		close(bs->sig_fd);
-	bs->sig_fd = -1;
+	util_close(&bs->sig_fd);
 	free(bs->cgroup);
 	bs->cgroup = nullptr;
 	bs->cg_len = 0;

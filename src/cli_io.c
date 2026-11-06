@@ -10,6 +10,7 @@
 
 #include "cli_io.h"
 #include "compat.h"
+#include "util.h"
 
 enum { CLI_IO_JOBS = 32 };
 
@@ -70,8 +71,7 @@ cli_io_create (struct loop *ui,
 	int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 	*e = fd < 0 ? errno : loop_watch(ui, &io->notify, fd, EPOLLIN, cli_io_notify, nullptr);
 	if (*e) {
-		if (fd >= 0)
-			(void)close(fd);
+		util_close(&fd);
 		free(io);
 		io = nullptr;
 		return nullptr;

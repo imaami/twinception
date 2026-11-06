@@ -18,6 +18,7 @@
 #include "cli_loop.h"
 #include "compat.h"
 #include "dstr.h"
+#include "util.h"
 
 struct cli_input_driver {
 	struct cli_loop loop;
@@ -166,9 +167,7 @@ int main(int argc, char **argv)
 	cli_loop_fini(&driver.loop);
 	autocomplete_file_destroy(&input.files);
 	autocomplete_destroy(&input.catalog);
-	(void)close(signal_fd);
-	signal_fd = -1;
-	(void)close(records);
-	records = -1;
+	util_close(&signal_fd);
+	util_close(&records);
 	return e ? 1 : 0;
 }

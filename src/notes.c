@@ -285,9 +285,7 @@ notes_destroy (struct notes **p_notes)
 	notes->participant = nullptr;
 	free(notes->directory);
 	notes->directory = nullptr;
-	if (notes->fd >= 0)
-		close(notes->fd);
-	notes->fd = -1;
+	util_close(&notes->fd);
 	free(notes);
 }
 

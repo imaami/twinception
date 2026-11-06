@@ -338,10 +338,8 @@ child_input (struct span  in,
 	int e = util_write_all(*fd, in.ptr, in.len);
 	if (!e && lseek(*fd, 0, SEEK_SET))
 		e = errno;
-	if (e) {
-		close(*fd);
-		*fd = -1;
-	}
+	if (e)
+		util_close(fd);
 	return e;
 }
 
@@ -433,8 +431,7 @@ child_start (struct child           *c,
 		e = child_launch(c, cmd, &fds);
 		close(fds.out);
 	}
-	if (fds.in >= 0)
-		close(fds.in);
+	util_close(&fds.in);
 	return e;
 }
 
@@ -492,8 +489,7 @@ child_run (struct child_cmd const *cmd,
 	}
 	int pidfd = -1;
 	int e = child_cmd_exec(cmd, &fds, &pidfd);
-	if (own >= 0)
-		close(own);
+	util_close(&own);
 	if (e)
 		return e;
 	int waited = child_await(cmd, pidfd);

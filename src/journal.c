@@ -235,8 +235,7 @@ journal_open_path (struct journal *j,
 	if (!e)
 		e = journal_private(fd);
 	if (e) {
-		if (fd >= 0)
-			close(fd);
+		util_close(&fd);
 		return e;
 	}
 	j->repo_fd = fd;
@@ -609,8 +608,7 @@ journal_jobs_scan (struct journal *j)
 		struct journal_record *records = nullptr;
 		if (!e)
 			e = journal_records_read(j, input, entry->d_name, false, &records);
-		if (input >= 0)
-			close(input);
+		util_close(&input);
 		if (!e) {
 			struct journal_job *job = &j->jobs[j->n_jobs++];
 			memcpy(job->id, entry->d_name, sizeof job->id);
@@ -728,8 +726,7 @@ journal_checkpoint_write (struct journal        *j,
 			e = journal_existing(j->jobs_fd, record->id, &input);
 			if (!e)
 				e = journal_records_read(j, input, record->id, false, &records);
-			if (input >= 0)
-				close(input);
+			util_close(&input);
 		} else if (j->wal_fd >= 0) {
 			e = journal_records_read(j, j->wal_fd, record->id, true, &records);
 			legacy = records != nullptr;
@@ -827,8 +824,7 @@ journal_load_records (struct journal      *j,
 	int e = journal_existing(j->jobs_fd, item->id, &fd);
 	if (!e)
 		e = journal_records_read(j, fd, item->id, false, &item->record);
-	if (fd >= 0)
-		close(fd);
+	util_close(&fd);
 	if (e == ENOENT)
 		e = j->wal_fd < 0 ? 0 : journal_records_read(j, j->wal_fd, item->id, true,
 		                                             &item->record);
@@ -854,9 +850,7 @@ journal_thought_file (struct journal            *j,
 		if (file->fd < 0 || (oldest->fd >= 0 && file->touched < oldest->touched))
 			oldest = file;
 	}
-	if (oldest->fd >= 0)
-		close(oldest->fd);
-	oldest->fd = -1;
+	util_close(&oldest->fd);
 	int directory = -1;
 	bool append = item->operation == JOURNAL_THOUGHT_PUT;
 	int e = 0;
@@ -884,12 +878,9 @@ journal_thought_file (struct journal            *j,
 		e = EILSEQ;
 	if (!e && append && !st.st_size && fsync(directory))
 		e = errno;
-	if (directory >= 0)
-		close(directory);
+	util_close(&directory);
 	if (e) {
-		if (oldest->fd >= 0)
-			close(oldest->fd);
-		oldest->fd = -1;
+		util_close(&oldest->fd);
 		return e;
 	}
 	oldest->size = (uint64_t)st.st_size;
@@ -1036,8 +1027,7 @@ journal_thought_commit (struct journal            *j,
 		output = nullptr;
 		fd = -1;
 	}
-	if (fd >= 0)
-		close(fd);
+	util_close(&fd);
 	free(oid);
 	oid = nullptr;
 	/* Only this writer's children write its ref, and they have all been
@@ -1351,8 +1341,7 @@ journal_secret (int         dir,
 			problem = "the file has only zero bytes";
 		}
 	}
-	if (fd >= 0)
-		close(fd);
+	util_close(&fd);
 	if (e)
 		util_format(why, why_len, "%s/%s: %s", shown, name,
 		            problem ? problem : strerror(e));
@@ -1427,8 +1416,7 @@ journal_setup (struct journal *j,
 		                   sizeof j->seed, why, why_len);
 	if (!e && (fsync(state) || fsync(j->state_fd) || fsync(j->repo_fd)))
 		e = errno;
-	if (state >= 0)
-		close(state);
+	util_close(&state);
 	if (init_fd >= 0) {
 		(void)flock(init_fd, LOCK_UN);
 		close(init_fd);
@@ -1531,31 +1519,16 @@ journal_destroy (struct journal **p_journal)
 	struct journal *j = *p_journal;
 	*p_journal = nullptr;
 	journal_stop(j);
-	for (size_t k = 0; k < array_size(j->files); ++k) {
-		if (j->files[k].fd >= 0)
-			close(j->files[k].fd);
-		j->files[k].fd = -1;
-	}
+	for (size_t k = 0; k < array_size(j->files); ++k)
+		util_close(&j->files[k].fd);
 	EVP_MD_CTX_free(j->digest);
 	j->digest = nullptr;
-	if (j->jobs_fd >= 0)
-		close(j->jobs_fd);
-	j->jobs_fd = -1;
-	if (j->thoughts_fd >= 0)
-		close(j->thoughts_fd);
-	j->thoughts_fd = -1;
-	if (j->wal_fd >= 0)
-		close(j->wal_fd);
-	j->wal_fd = -1;
-	if (j->lock_fd >= 0)
-		close(j->lock_fd);
-	j->lock_fd = -1;
-	if (j->state_fd >= 0)
-		close(j->state_fd);
-	j->state_fd = -1;
-	if (j->repo_fd >= 0)
-		close(j->repo_fd);
-	j->repo_fd = -1;
+	util_close(&j->jobs_fd);
+	util_close(&j->thoughts_fd);
+	util_close(&j->wal_fd);
+	util_close(&j->lock_fd);
+	util_close(&j->state_fd);
+	util_close(&j->repo_fd);
 	if (j->cond_ready)
 		pthread_cond_destroy(&j->ready);
 	if (j->mutex_ready)
