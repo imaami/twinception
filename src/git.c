@@ -444,8 +444,7 @@ git_definition (void const *service)
 				"repo", schema_enum(repos, nullptr),
 				"command", schema_enum(cmds, nullptr),
 				"help", schema_property("boolean",
-					"Describe this command without running it. "
-					"Give repo, command, help:true and optional offset."),
+					"Describe this command instead of running it."),
 				"options", schema_array(schema_property("string", nullptr), OPTIONS,
 					"Options, such as --oneline or --max-count=20. Use "
 					"help:true to list the command's exact allowed options."),
@@ -658,7 +657,7 @@ git_repos_wrong (struct git const *git,
 }
 
 /* The arguments of the tool, in the order of git_arg_names[]. A call with
- * help:true takes those before GIT_ARG_OPTIONS only.
+ * help:true uses those before GIT_ARG_OPTIONS only.
  */
 enum git_arg : uint8_t {
 	GIT_ARG_REPO,
@@ -730,9 +729,6 @@ git_call_command (struct git_call  *call,
 	if ((seen >> GIT_ARG_HELP & 1) && !json_object_is_type(help, json_type_boolean))
 		return git_wrong(why, "The help argument must be a boolean.");
 	if (json_object_get_boolean(help)) {
-		if (seen >> GIT_ARG_OPTIONS)
-			return git_wrong(why, "With help:true, give only repo, command, help and "
-			                 "optional offset.");
 		call->phase = GIT_HELP;
 		return 0;
 	}

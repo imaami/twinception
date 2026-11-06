@@ -8765,6 +8765,12 @@ def check_git(binary, up):
             assert "commit:path:line:text" in help_text["description"], help_text
             commands = schema["properties"]["command"]["enum"]
             assert "status" not in commands and "ls-files" not in commands, commands
+            # help:true describes the command whatever else the call gives.
+            for command, extra in (("grep", {"pattern": "x"}), ("read", {"line": 2}),
+                                   ("blame", {"paths": ["a.txt"], "revisions": ["HEAD"]})):
+                result = call(ai, repo="proj", command=command, help=True, **extra)
+                assert not result.get("isError") and \
+                    json.loads(text_of(result))["command"] == command, result
             complete = text_of(call(ai, repo="proj", command="log", help=True))
             result = call(ai, repo="proj", command="log", help=True, offset=100)
             assert not result.get("isError") and text_of(result) == complete[100:], result
@@ -8822,8 +8828,6 @@ def check_git(binary, up):
                      "The help argument must be a boolean."),
                     ({"repo": "proj", "command": "log", "help": None},
                      "The help argument must be a boolean."),
-                    ({"repo": "proj", "command": "grep", "help": True, "pattern": "x"},
-                     "With help:true, give only repo, command, help and optional offset."),
                     ({"repo": "proj", "command": "grep", "help": True, "offset": -1},
                      "The offset argument must be a whole number of bytes, from 0."),
                     ({"repo": "proj", "command": "log", "revisions": ["a\u0000b"]},
@@ -8879,8 +8883,6 @@ def check_git(binary, up):
                       "line": "3"}, "The line argument must be a whole number from 1."),
                     ({"repo": "proj", "command": "read", "revisions": ["HEAD:a.txt"],
                       "count": -1}, "The count argument must be a whole number from 1."),
-                    ({"repo": "proj", "command": "read", "help": True, "line": 2},
-                     "With help:true, give only repo, command, help and optional offset."),
                     ({"repo": "proj", "command": "show", "revisions": ["HEAD:a.txt"],
                       "line": 2}, "Only git read takes line and count."),
                     ({"repo": "proj", "command": "log", "revisions": ["HEAD:a.txt"]},

@@ -469,7 +469,8 @@ is.
 
 Use `"help": true` with a command to list its options, source selection and
 argument limits, and the bytes of output that one result of the caller takes
-(`window_bytes`: a turn's window, or 16 MiB for a client). Each option must be
+(`window_bytes`: a turn's window, or 16 MiB for a client). The other arguments
+of such a call, except `offset`, are ignored. Each option must be
 on that command's allowlist, with its value attached (`--max-count=20`, not
 `-n 20`). Revisions name commits, optionally with
 `^` or `~` ancestry; `log` and `diff` also accept explicit ranges. `read`,
