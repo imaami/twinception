@@ -2817,19 +2817,6 @@ godbolt_start (struct mcp_slot    *slot,
 		mcp_slot_park(slot);
 }
 
-/* The start() of each kind. */
-#define GODBOLT_START(name, NAME, extra)                        \
-        static void                                             \
-        godbolt_##name##_start (struct mcp_slot    *slot,       \
-                                struct json_object *args)       \
-        {                                                       \
-                godbolt_start(slot, args, GODBOLT_##NAME);      \
-        }
-
-GODBOLT_TOOLS_X(GODBOLT_START)
-
-#undef GODBOLT_START
-
 /* Stores the URL @p v in the configuration @p c without its trailing '/'.
  * Returns 0, or EINVAL if @p v is not an http or https URL of at most
  * GODBOLT_URL_MAX bytes, or if it has a user name, a password, a query, a
@@ -2902,51 +2889,6 @@ godbolt_configure (void               *config,
 	return 0;
 }
 
-/* Returns the definition of the tool @p tool in the JSON text @p json as a
- * new reference. Its description is @p head, the base URL of the
- * configuration @p service, and @p tail. If the tool accepts the argument
- * share and the configuration does not turn links off, the function adds
- * the property share and a sentence on links to the definition. With
- * short links, readOnlyHint is false, because Compiler Explorer stores the
- * source of a link. Returns nullptr if json-c runs out of memory, or if
- * the configuration is not valid.
- */
-static struct json_object *
-godbolt_definition (void const        *service,
-                    enum godbolt_tool  tool,
-                    char const        *json,
-                    struct cstr_view   head,
-                    struct cstr_view   tail)
-{
-	struct godbolt_config const *cfg = service ? service : &godbolt_defaults;
-	if (cfg->url.len >= sizeof cfg->url.data || cfg->share >= array_size(godbolt_share_notes))
-		return nullptr;
-	struct cstr_view const url = util_text_view(&cfg->url);
-	struct cstr_view const link = godbolt_params[tool].args >> GODBOLT_ARG_SHARE & 1
-	                              ? godbolt_share_notes[cfg->share] : (struct cstr_view){};
-	char text[2048];
-	if (head.len + url.len + tail.len + link.len > sizeof text)
-		return nullptr;
-	char *end = godbolt_cat(godbolt_cat(text, head), url);
-	end = godbolt_cat(godbolt_cat(end, tail), link);
-	struct json_object *def = json_tokener_parse(json);
-	def = jb_set_or_free(def, "description",
-	                     json_object_new_string_len(text, (int)(end - text)));
-	if (!link.len)
-		return def;
-	struct json_object *props = jb_get(jb_get(def, "inputSchema"), "properties");
-	int e = jb_set(props, "share", json_tokener_parse(
-		"{\"type\":\"boolean\",\"default\":false,\"description\":\"true to begin "
-		"the output with a link to the same source, compilers and arguments on "
-		"Compiler Explorer.\"}"));
-	e = e ? e : jb_set(jb_get(def, "annotations"), "readOnlyHint",
-	                   json_object_new_boolean(cfg->share != GODBOLT_SHARE_SHORT));
-	if (!e)
-		return def;
-	json_object_put(def);
-	return nullptr;
-}
-
 /* The parts of the definitions that several tools share. */
 #define GODBOLT_DEF_LANGUAGE(what, examples)                                    \
         "\"language\":{\"type\":\"string\",\"default\":\"c\",\"description\":"  \
@@ -2977,10 +2919,15 @@ godbolt_definition (void const        *service,
         "\"annotations\":{\"readOnlyHint\":true,\"destructiveHint\":false,"      \
         "\"idempotentHint\":true,\"openWorldHint\":true}"
 
-static struct json_object *
-godbolt_catalog_definition (void const *service)
-{
-	return godbolt_definition(service, GODBOLT_CATALOG,
+/* The definition of each tool: the JSON text, and the description before
+ * and after the base URL of the configuration.
+ */
+static struct {
+	char const      *json;
+	struct cstr_view head;
+	struct cstr_view tail;
+} const godbolt_defs[] = {
+	[GODBOLT_CATALOG] = {
 		"{\"name\":\"godbolt_catalog\",\"title\":\"Compiler Explorer catalog\","
 		"\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		"\"action\":{\"type\":\"string\",\"enum\":[\"languages\",\"compilers\","
@@ -3018,20 +2965,16 @@ godbolt_catalog_definition (void const *service)
 		GODBOLT_DEF_OFFSET "},"
 		"\"required\":[\"action\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
-		CSTR_VIEW("Lists the languages of Compiler Explorer at "),
-		CSTR_VIEW(", the compilers of one language, or the numbers of compilers of "
-		          "each kind, family or architecture. The other godbolt tools accept "
-		          "only the exact compiler ids of this list. Each line of the output "
-		          "is one item, and tabs separate its columns. The first line names "
-		          "the columns. All filters apply together. askai uses a list that it "
-		          "received in the last hour again, so a repeated call is usually "
-		          "fast."));
-}
-
-static struct json_object *
-godbolt_compile_definition (void const *service)
-{
-	return godbolt_definition(service, GODBOLT_COMPILE,
+		CSTR_VIEW_INIT("Lists the languages of Compiler Explorer at "),
+		CSTR_VIEW_INIT(", the compilers of one language, or the numbers of compilers of "
+		               "each kind, family or architecture. The other godbolt tools accept "
+		               "only the exact compiler ids of this list. Each line of the output "
+		               "is one item, and tabs separate its columns. The first line names "
+		               "the columns. All filters apply together. askai uses a list that it "
+		               "received in the last hour again, so a repeated call is usually "
+		               "fast."),
+	},
+	[GODBOLT_COMPILE] = {
 		"{\"name\":\"godbolt_compile\",\"title\":\"Compile on Compiler Explorer\","
 		"\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
@@ -3052,19 +2995,15 @@ godbolt_compile_definition (void const *service)
 		GODBOLT_DEF_OFFSET "},"
 		"\"required\":[\"compilers\",\"source\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
-		CSTR_VIEW("Compiles source code on Compiler Explorer at "),
-		CSTR_VIEW(", once with each compiler and each argument string. The output "
-		          "has a record for each compilation, with the exit code, the "
-		          "assembly and the messages of the compiler, and the last line has "
-		          "the counts of the results. askai sends the source to that service. "
-		          "The compiled program does not run. The compiler ids must be exact "
-		          "ids from godbolt_catalog."));
-}
-
-static struct json_object *
-godbolt_preprocess_definition (void const *service)
-{
-	return godbolt_definition(service, GODBOLT_PREPROCESS,
+		CSTR_VIEW_INIT("Compiles source code on Compiler Explorer at "),
+		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "
+		               "has a record for each compilation, with the exit code, the "
+		               "assembly and the messages of the compiler, and the last line has "
+		               "the counts of the results. askai sends the source to that service. "
+		               "The compiled program does not run. The compiler ids must be exact "
+		               "ids from godbolt_catalog."),
+	},
+	[GODBOLT_PREPROCESS] = {
 		"{\"name\":\"godbolt_preprocess\",\"title\":\"Preprocess on Compiler "
 		"Explorer\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
@@ -3072,20 +3011,16 @@ godbolt_preprocess_definition (void const *service)
 		GODBOLT_DEF_SOURCE "," GODBOLT_DEF_OFFSET "},"
 		"\"required\":[\"compilers\",\"source\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
-		CSTR_VIEW("Preprocesses source code on Compiler Explorer at "),
-		CSTR_VIEW(", once with each compiler and each argument string. The output "
-		          "has a record for each compilation, with the exit code, the "
-		          "preprocessed source and the messages of the compiler, and the last "
-		          "line has the counts of the results. Compiler Explorer resolves the "
-		          "includes with the headers of each compiler. askai sends the source "
-		          "to that service. The compiler ids must be exact ids from "
-		          "godbolt_catalog."));
-}
-
-static struct json_object *
-godbolt_macros_definition (void const *service)
-{
-	return godbolt_definition(service, GODBOLT_MACROS,
+		CSTR_VIEW_INIT("Preprocesses source code on Compiler Explorer at "),
+		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "
+		               "has a record for each compilation, with the exit code, the "
+		               "preprocessed source and the messages of the compiler, and the last "
+		               "line has the counts of the results. Compiler Explorer resolves the "
+		               "includes with the headers of each compiler. askai sends the source "
+		               "to that service. The compiler ids must be exact ids from "
+		               "godbolt_catalog."),
+	},
+	[GODBOLT_MACROS] = {
 		"{\"name\":\"godbolt_macros\",\"title\":\"Predefined macros on Compiler "
 		"Explorer\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
@@ -3096,20 +3031,16 @@ godbolt_macros_definition (void const *service)
 		GODBOLT_DEF_OFFSET "},"
 		"\"required\":[\"compilers\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
-		CSTR_VIEW("Outputs the predefined macros of each compiler with each argument "
-		          "string, from Compiler Explorer at "),
-		CSTR_VIEW(". The output has a record for each compilation, with the exit code, "
-		          "the macros and the messages of the compiler, and the last line has "
-		          "the counts of the results. The record of an MSVC compiler has no "
-		          "macros, because MSVC cannot output them. askai sends the source to "
-		          "that service. The compiler ids must be exact ids from "
-		          "godbolt_catalog."));
-}
-
-static struct json_object *
-godbolt_targets_definition (void const *service)
-{
-	return godbolt_definition(service, GODBOLT_TARGETS,
+		CSTR_VIEW_INIT("Outputs the predefined macros of each compiler with each argument "
+		               "string, from Compiler Explorer at "),
+		CSTR_VIEW_INIT(". The output has a record for each compilation, with the exit code, "
+		               "the macros and the messages of the compiler, and the last line has "
+		               "the counts of the results. The record of an MSVC compiler has no "
+		               "macros, because MSVC cannot output them. askai sends the source to "
+		               "that service. The compiler ids must be exact ids from "
+		               "godbolt_catalog."),
+	},
+	[GODBOLT_TARGETS] = {
 		"{\"name\":\"godbolt_targets\",\"title\":\"Target facts from Compiler "
 		"Explorer\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
@@ -3122,16 +3053,17 @@ godbolt_targets_definition (void const *service)
 		GODBOLT_DEF_OFFSET "},"
 		"\"required\":[\"compilers\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
-		CSTR_VIEW("Preprocesses a fixed probe on Compiler Explorer at "),
-		CSTR_VIEW(", once with each compiler and each argument string. The output "
-		          "has facts about each target that follow from the predefined "
-		          "macros. The facts are the architecture, the operating system, the "
-		          "data model, the width of a pointer, the byte order, the C library "
-		          "and the versions of the compiler and of the language. The line of "
-		          "each fact lists the macros that the fact comes from, and the last "
-		          "line has the counts of the results. The compiler ids must be exact "
-		          "ids from godbolt_catalog."));
-}
+		CSTR_VIEW_INIT("Preprocesses a fixed probe on Compiler Explorer at "),
+		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "
+		               "has facts about each target that follow from the predefined "
+		               "macros. The facts are the architecture, the operating system, the "
+		               "data model, the width of a pointer, the byte order, the C library "
+		               "and the versions of the compiler and of the language. The line of "
+		               "each fact lists the macros that the fact comes from, and the last "
+		               "line has the counts of the results. The compiler ids must be exact "
+		               "ids from godbolt_catalog."),
+	},
+};
 
 #undef GODBOLT_DEF_HINTS
 #undef GODBOLT_DEF_OFFSET
@@ -3139,6 +3071,69 @@ godbolt_targets_definition (void const *service)
 #undef GODBOLT_DEF_COMPILERS
 #undef GODBOLT_DEF_SOURCE
 #undef GODBOLT_DEF_LANGUAGE
+
+/* Returns the definition of the tool @p tool in godbolt_defs[] as a new
+ * reference, with the base URL of the configuration @p service in its
+ * description. If the tool accepts the argument share and the
+ * configuration does not turn links off, the function adds the property
+ * share and a sentence on links to the definition. With short links,
+ * readOnlyHint is false, because Compiler Explorer stores the source of a
+ * link. Returns nullptr if json-c runs out of memory, or if the
+ * configuration is not valid.
+ */
+static struct json_object *
+godbolt_definition (void const        *service,
+                    enum godbolt_tool  tool)
+{
+	struct cstr_view const head = godbolt_defs[tool].head;
+	struct cstr_view const tail = godbolt_defs[tool].tail;
+	struct godbolt_config const *cfg = service ? service : &godbolt_defaults;
+	if (cfg->url.len >= sizeof cfg->url.data || cfg->share >= array_size(godbolt_share_notes))
+		return nullptr;
+	struct cstr_view const url = util_text_view(&cfg->url);
+	struct cstr_view const link = godbolt_params[tool].args >> GODBOLT_ARG_SHARE & 1
+	                              ? godbolt_share_notes[cfg->share] : (struct cstr_view){};
+	char text[2048];
+	if (head.len + url.len + tail.len + link.len > sizeof text)
+		return nullptr;
+	char *end = godbolt_cat(godbolt_cat(text, head), url);
+	end = godbolt_cat(godbolt_cat(end, tail), link);
+	struct json_object *def = json_tokener_parse(godbolt_defs[tool].json);
+	def = jb_set_or_free(def, "description",
+	                     json_object_new_string_len(text, (int)(end - text)));
+	if (!link.len)
+		return def;
+	struct json_object *props = jb_get(jb_get(def, "inputSchema"), "properties");
+	int e = jb_set(props, "share", json_tokener_parse(
+		"{\"type\":\"boolean\",\"default\":false,\"description\":\"true to begin "
+		"the output with a link to the same source, compilers and arguments on "
+		"Compiler Explorer.\"}"));
+	e = e ? e : jb_set(jb_get(def, "annotations"), "readOnlyHint",
+	                   json_object_new_boolean(cfg->share != GODBOLT_SHARE_SHORT));
+	if (!e)
+		return def;
+	json_object_put(def);
+	return nullptr;
+}
+
+/* The start() and definition() of each kind. */
+#define GODBOLT_ENTRIES(name, NAME, extra)                              \
+        static void                                                     \
+        godbolt_##name##_start (struct mcp_slot    *slot,               \
+                                struct json_object *args)               \
+        {                                                               \
+                godbolt_start(slot, args, GODBOLT_##NAME);              \
+        }                                                               \
+                                                                        \
+        static struct json_object *                                     \
+        godbolt_##name##_definition (void const *service)               \
+        {                                                               \
+                return godbolt_definition(service, GODBOLT_##NAME);     \
+        }
+
+GODBOLT_TOOLS_X(GODBOLT_ENTRIES)
+
+#undef GODBOLT_ENTRIES
 
 #define GODBOLT_KIND(name, NAME, extra)                                 \
         {                                                               \
