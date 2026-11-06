@@ -8910,7 +8910,8 @@ def check_git(binary, up):
                     ({"repo": "proj", "command": "read", "revisions": ["HEAD:a.txt"],
                       "count": -1}, "The count argument must be a whole number from 1."),
                     ({"repo": "proj", "command": "show", "revisions": ["HEAD:a.txt"],
-                      "line": 2}, "Only git read takes line and count."),
+                      "line": 2}, "Only git read takes line and count. For lines of a "
+                     "file, call read with commit:path as the revision."),
                     # A path in a revision goes where the command takes it.
                     ({"repo": "proj", "command": "log", "revisions": ["HEAD:a.txt"]},
                      "revisions[0]: git log takes the commit in revisions and the path "

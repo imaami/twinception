@@ -793,7 +793,8 @@ git_call_command (struct git_call  *call,
 	}
 	uint64_t numbers = seen & (1U << GIT_ARG_LINE | 1U << GIT_ARG_COUNT);
 	if (numbers && !read) {
-		bad = git_wrong(why, "Only git read takes line and count.");
+		bad = git_wrong(why, "Only git read takes line and count. For lines of a "
+		                "file, call read with commit:path as the revision.");
 		numbers = 0;
 	}
 	size_t *const values[] = { &call->read.line, &call->read.count };
