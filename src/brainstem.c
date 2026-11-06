@@ -143,9 +143,9 @@ struct brainstem {
 	size_t                      cg_len;    /* of cgroup; 0: none */
 	int                         sig_fd;
 	int                         wake_fd;   /* threads report through it */
-	uint32_t                    high;      /* HIGH_* bits */
-	uint32_t                    level;     /* memory pressure, as published */
 	uint8_t                     levels[PRESSURE_INPUTS];  /* each input's */
+	uint8_t                     level;     /* memory pressure, as published */
+	uint8_t                     high;      /* HIGH_* bits */
 	bool                        stopping;  /* shutting down */
 };
 
@@ -597,18 +597,18 @@ brainstem_cgroup (struct brainstem *bs,
 /* Move each input's memory pressure level with its @p fullness, with
  * hysteresis, and publish it; returns the highest.
  */
-static uint32_t
+static uint8_t
 brainstem_inputs (struct brainstem *bs,
                   uint64_t const   *fullness)
 {
-	uint32_t level = BUF_EASY;
-	for (size_t i = 0; i < PRESSURE_INPUTS; ++i) {
-		uint32_t l = bs->levels[i];
+	uint8_t level = BUF_EASY;
+	for (size_t i = 0; i < array_size(bs->levels); ++i) {
+		uint8_t l = bs->levels[i];
 		while (l < BUF_CRITICAL && fullness[i] >= marks[i].up[l])
 			++l;
 		while (l && fullness[i] < marks[i].down[l - 1])
 			--l;
-		bs->levels[i] = (uint8_t)l;
+		bs->levels[i] = l;
 		hist_set(&brainstem_metrics.inputs[i], l);
 		level = l > level ? l : level;
 	}
@@ -624,7 +624,7 @@ brainstem_inputs (struct brainstem *bs,
 static void
 brainstem_level (struct brainstem *bs,
                  uint64_t          now,
-                 uint32_t          level,
+                 uint8_t           level,
                  uint64_t          rss,
                  uint64_t          high,
                  uint64_t          ram)
