@@ -17,7 +17,7 @@
 struct autocomplete_file {
 	struct autocomplete_matches found;
 	struct dstr                 directory;
-	struct dstr                 home;
+	struct cstr_view            home;  /**< $HOME, which does not change */
 };
 
 struct autocomplete_file *
@@ -30,11 +30,9 @@ autocomplete_file_create (int *const e)
 	}
 	file->found.lines = dstr(nullptr);
 	file->directory = dstr(nullptr);
-	file->home = dstr(nullptr);
 	struct cstr_view const home = cstr_view(getenv("HOME"));
-	*e = jb_is_text(home) ? cstr_view_store(home, &file->home) : 0;
-	if (*e)
-		autocomplete_file_destroy(&file);
+	file->home = jb_is_text(home) ? home : (struct cstr_view){};
+	*e = 0;
 	return file;
 }
 
@@ -46,10 +44,21 @@ autocomplete_file_destroy (struct autocomplete_file **const pp)
 	struct autocomplete_file *file = *pp;
 	dstr_cleanup(&file->found.lines);
 	dstr_cleanup(&file->directory);
-	dstr_cleanup(&file->home);
 	free(file);
 	file = nullptr;
 	*pp = nullptr;
+}
+
+int
+autocomplete_file_expand (struct autocomplete_file const *const file,
+                          struct cstr_view const                path,
+                          struct dstr *const                    dest)
+{
+	bool const tilde = file->home.len &&
+	                   (cstr_view_equal(path, CSTR_VIEW("~")) || cstr_view_starts(path, CSTR_VIEW("~/")));
+	if (tilde && cstr_view_cat(file->home, dest))
+		return ENOMEM;
+	return cstr_view_cat(cstr_view_slice(path, tilde, SIZE_MAX), dest);
 }
 
 static bool
@@ -107,20 +116,8 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 		return e;
 	}
 	(void)dstr_clear(&file->directory);
-	struct cstr_view const home = cstr_view_dstr(&file->home);
-
-	if (!directory_len) {
-		if (!dstr_cat_n(&file->directory, ".", 1))
-			return ENOMEM;
-
-	} else if (home.len && cstr_view_starts(directory, CSTR_VIEW("~/"))) {
-		if (cstr_view_cat(home, &file->directory) ||
-		    !dstr_cat_n(&file->directory, directory.data + 1, directory.len - 1))
-			return ENOMEM;
-
-	} else if (cstr_view_cat(directory, &file->directory)) {
+	if (autocomplete_file_expand(file, directory_len ? directory : CSTR_VIEW("."), &file->directory))
 		return ENOMEM;
-	}
 
 	DIR *dir = opendir(dstr_get(&file->directory));
 	if (!dir)

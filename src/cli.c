@@ -37,38 +37,31 @@
 #include "loop.h"
 
 static int
-cli_read_file (struct dstr      *text,
-               struct cstr_view  path,
-               struct cli_error *error)
+cli_read_file (struct autocomplete_file const *files,
+               struct dstr                    *text,
+               struct cstr_view                path,
+               struct cli_error               *error)
 {
 	if (!path.len || !path.data ||
 	    memchr(path.data, 0, path.len))
 		return EINVAL;
 
 	dstr_auto expanded = dstr(nullptr);
-	dstr_auto contents = dstr(nullptr);
-	__attribute__((cleanup(buf_fini)))
-	struct buf bytes = {};
-	char const *home = getenv("HOME");
-	if (home && (cstr_view_equal(path, CSTR_VIEW("~")) ||
-	             cstr_view_starts(path, CSTR_VIEW("~/")))) {
-		if (!dstr_cat(&expanded, home) ||
-		    !dstr_cat_n(&expanded, path.data + 1, path.len - 1))
-			return ENOMEM;
-	} else if (cstr_view_cat(path, &expanded)) {
+	if (autocomplete_file_expand(files, path, &expanded))
 		return ENOMEM;
-	}
-
 	FILE *file = fopen(dstr_get(&expanded), "rb");
-	int e = 0;
 	if (!file) {
-		e = errno;
+		int e = errno;
 		return cli_error_set(error, e, "%s: %s",
 		                     dstr_get(&expanded),
 		                     strerror(e));
 	}
+	dstr_auto contents = dstr(nullptr);
+	__attribute__((cleanup(buf_fini)))
+	struct buf bytes = {};
 	char chunk[8192];
 	size_t count;
+	int e = 0;
 	/* A file read can end inside a UTF-8 character. Assemble bytes first. */
 	while ((count = fread(chunk, 1, sizeof chunk, file))) {
 		if (count > CLI_LIMIT - bytes.tail) {
@@ -503,17 +496,18 @@ cli_history_update (struct cli                  *cli,
 }
 
 struct cli_file_work {
-	struct cli_work   work;
-	struct dstr      *text;
-	struct cstr_view  path;
-	struct cli_error *error;
+	struct cli_work                 work;
+	struct autocomplete_file const *files;
+	struct dstr                    *text;
+	struct cstr_view                path;
+	struct cli_error               *error;
 };
 
 static int
 cli_file_work (struct cli_io_job *job)
 {
 	struct cli_file_work *work = container_of(job, struct cli_file_work, work.job);
-	return cli_read_file(work->text, work->path, work->error);
+	return cli_read_file(work->files, work->text, work->path, work->error);
 }
 
 static int
@@ -522,7 +516,8 @@ cli_file_read (struct cli       *cli,
                struct cstr_view  path,
                struct cli_error *error)
 {
-	struct cli_file_work work = {.work.job.work = cli_file_work, .text = text, .path = path, .error = error};
+	struct cli_file_work work = {.work.job.work = cli_file_work, .files = cli->files, .text = text,
+	                             .path = path, .error = error};
 	return cli_work_wait(cli, &work.work);
 }
 

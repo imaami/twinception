@@ -14,6 +14,15 @@ autocomplete_file_create (int *e);
 extern void
 autocomplete_file_destroy (struct autocomplete_file **pp);
 
+/** Append @p path to @p dest, with the "~" of a path that is "~" or starts
+ *  with "~/" replaced by $HOME, unless $HOME is unset or not UTF-8 text.
+ *  Returns 0 or ENOMEM.
+ */
+extern int
+autocomplete_file_expand (struct autocomplete_file const *file,
+                          struct cstr_view                path,
+                          struct dstr                    *dest);
+
 /**
  * Completes one filename after command (including its trailing space).
  * Results and scratch buffers remain owned by file until the next call or
