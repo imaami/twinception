@@ -1373,7 +1373,7 @@ godbolt_tally_cmp (void const *a,
  * as many as the limit allows, and stores the number of rows in
  * call->listed. @p n is from 1 to GODBOLT_KEYS, and a key is at most
  * GODBOLT_VALUE_MAX bytes long, so one step writes them. Returns 0, or
- * call->e, which is ENOMEM if memory runs out.
+ * call->e.
  */
 static int
 godbolt_tallies (struct godbolt *call,
@@ -1381,11 +1381,7 @@ godbolt_tallies (struct godbolt *call,
 {
 	size_t const rows = n < call->args.limit ? n : call->args.limit;
 	call->listed = (uint32_t)rows;
-	struct godbolt_tally *t = malloc(n * sizeof *t);
-	if (!t) {
-		call->e = call->e ? call->e : ENOMEM;
-		return call->e;
-	}
+	struct godbolt_tally t[GODBOLT_KEYS];
 	size_t i = 0;
 	struct json_object_iter it;
 	json_object_object_foreachC(call->doc, it)
@@ -1395,8 +1391,6 @@ godbolt_tallies (struct godbolt *call,
 		godbolt_put_field(call, cstr_view(t[k].key));
 		godbolt_putf(call, "\t%" PRId64 "\n", t[k].count);
 	}
-	free(t);
-	t = nullptr;
 	return call->e;
 }
 
