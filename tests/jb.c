@@ -130,6 +130,27 @@ main (void)
 	CHECK(!jb_escape(escaped, nullptr, 1) && !jb_escape(nullptr, raw, 1));
 	CHECK(!jb_wire(nullptr).data && !jb_wire(nullptr).len);
 
+	/* Keys are looked up among names, and the first other one is reported,
+	 * cut at the start of a character. */
+	static struct cstr_view const names[] = {
+		CSTR_VIEW_INIT("a"), CSTR_VIEW_INIT("b"), CSTR_VIEW_INIT("c"),
+	};
+	struct json_object *of[3] = {};
+	uint64_t seen = 9;
+	struct cstr_view other = {};
+	struct json_object *args = json_tokener_parse("{\"c\": 1, \"a\": null}");
+	CHECK(!jb_args(args, names, 3, 5, of, &seen, &other) && seen == 5);
+	CHECK(!of[0] && !of[1] && jb_int(of[2], 0) == 1);
+	CHECK(jb_args(args, names, 3, 4, of, &seen, &other) == EINVAL);
+	CHECK(cstr_view_equal(other, CSTR_VIEW("a")));
+	json_object_put(args);
+	args = json_tokener_parse("{\"c\": 1, \"\u00e4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+	                          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\u00e4\": 2}");
+	CHECK(jb_args(args, names, 3, 7, of, &seen, &other) == EINVAL && seen == 4);
+	CHECK(other.len == JB_KEY_SHOWN - 1 && cstr_view_starts(other, CSTR_VIEW("\xc3\xa4x")));
+	json_object_put(args);
+	CHECK(!jb_args(nullptr, names, 3, 7, of, &seen, &other) && !seen);
+
 	/* Text is UTF-8 without a NUL, or empty. */
 	CHECK(jb_is_text((struct cstr_view){}) && jb_is_text(CSTR_VIEW("\xc3\xa4")));
 	CHECK(!jb_is_text(CSTR_VIEW("a\0b")) && !jb_is_text(CSTR_VIEW("\xc3")));

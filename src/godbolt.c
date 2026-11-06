@@ -2684,25 +2684,22 @@ godbolt_args_read (struct godbolt_args         *a,
 	};
 	if (args && !json_object_is_type(args, json_type_object))
 		return util_refuse(why, len, "The arguments must be a JSON object.");
-	uint32_t seen = 0;
-	struct json_object_iter it;
-	if (args) json_object_object_foreachC(args, it) {
-		size_t const i = cstr_view_index(godbolt_arg_names, GODBOLT_ARG_COUNT,
-		                                 cstr_view(it.key));
-		uint32_t const bit = i < GODBOLT_ARG_COUNT ? 1u << i : 0;
-		if (t->args & ~off & bit) {
-			seen |= bit;
-			if (!godbolt_args_set(a, (enum godbolt_arg)i, it.val))
-				continue;
+	struct json_object *of[GODBOLT_ARG_COUNT] = {};
+	uint64_t seen;
+	struct cstr_view other;
+	if (jb_args(args, godbolt_arg_names, GODBOLT_ARG_COUNT, t->args & ~off, of, &seen,
+	            &other))
+		return t->args & off && cstr_view_equal(other, godbolt_arg_names[GODBOLT_ARG_SHARE])
+		       ? util_refuse(why, len, "Links are turned off on this server, so the tool "
+		                     "has no argument share.")
+		       : util_refuse(why, len, "The tool has no argument %.*s.", (int)other.len,
+		                     other.data);
+	for (uint64_t m = seen; m; m &= m - 1) {
+		size_t const i = stdc_trailing_zeros(m);
+		if (godbolt_args_set(a, (enum godbolt_arg)i, of[i]))
 			return util_refuse(why, len, "%s", godbolt_arg_rules[i].data);
-		}
-		if (t->args & off & bit)
-			return util_refuse(why, len, "Links are turned off on this server, so "
-			                   "the tool has no argument share.");
-		return util_refuse(why, len, "The tool has no argument %.*s.",
-		                   (int)godbolt_cut(cstr_view(it.key), 48), it.key);
 	}
-	uint32_t const missing = t->needs & ~seen;
+	uint32_t const missing = t->needs & ~(uint32_t)seen;
 	if (missing)
 		return util_refuse(why, len, "The argument %s is required.",
 		                   godbolt_arg_names[stdc_trailing_zeros(missing)].data);
@@ -2919,23 +2916,19 @@ godbolt_configure (void               *config,
 		return 0;
 	if (!json_object_is_type(options, json_type_object))
 		return util_refuse(why, len, "not an object");
-	struct json_object_iter it;
-	json_object_object_foreachC(options, it) {
-		if (!strcmp(it.key, "url")) {
-			if (godbolt_config_url(c, it.val))
-				return util_refuse(why, len, "url must be an http or "
-				                   "https URL of at most 255 bytes, "
-				                   "without a user name, a password, a "
-				                   "query or a fragment");
-		} else if (!strcmp(it.key, "share")) {
-			if (godbolt_config_share(c, it.val))
-				return util_refuse(why, len, "share must be short, state "
-				                   "or off");
-		} else {
-			return util_refuse(why, len, "the member %.*s is not an "
-			                   "option", (int)godbolt_cut(cstr_view(it.key), 64), it.key);
-		}
-	}
+	static struct cstr_view const names[] = { CSTR_VIEW_INIT("url"), CSTR_VIEW_INIT("share") };
+	struct json_object *of[array_size(names)] = {};
+	uint64_t seen;
+	struct cstr_view other;
+	if (jb_args(options, names, array_size(names), UINT64_MAX, of, &seen, &other))
+		return util_refuse(why, len, "the member %.*s is not an option", (int)other.len,
+		                   other.data);
+	if (seen & 1 && godbolt_config_url(c, of[0]))
+		return util_refuse(why, len, "url must be an http or https URL of at most 255 "
+		                   "bytes, without a user name, a password, a query or a "
+		                   "fragment");
+	if (seen & 2 && godbolt_config_share(c, of[1]))
+		return util_refuse(why, len, "share must be short, state or off");
 	return 0;
 }
 

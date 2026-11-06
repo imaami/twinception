@@ -38,8 +38,6 @@ enum {
 	                                finding in the record text */
 	REVIEW_RANGE_NUMBERS = 3,    /* JSON numbers of a line range: first,
 	                                last and turn */
-	REVIEW_KEY_SHOWN     = 64,   /* the most bytes of an unknown argument
-	                                name in a refusal */
 };
 
 /* The states that close a finding, and the states that require the lines
@@ -1300,24 +1298,12 @@ review_args_parse (struct review_args  *a,
 	if (a->action == REVIEW_ACTIONS)
 		return review_refuse_names(out, CSTR_VIEW("The action argument must be "),
 		                           review_action_names, REVIEW_ACTIONS, ~0U, CSTR_VIEW("."));
-	/* args is an object, because it contains the action. Find the first
-	 * argument that the action does not accept. */
+	/* Refuse the first argument that the action does not accept. */
 	uint32_t const accepted = review_action_args[a->action];
 	struct json_object *of[REVIEW_ARGS] = {};
-	struct cstr_view other = {};
-	struct json_object_iter it;
-	json_object_object_foreachC(args, it) {
-		size_t const k = cstr_view_index(review_arg_names, REVIEW_ARGS, cstr_view(it.key));
-		if (k < REVIEW_ARGS && accepted >> k & 1U) {
-			of[k] = it.val;
-			continue;
-		}
-		if (!other.data)
-			other = (struct cstr_view){
-				it.key, jb_utf8(it.key, strnlen(it.key, REVIEW_KEY_SHOWN))
-			};
-	}
-	if (other.data)
+	uint64_t seen;
+	struct cstr_view other;
+	if (jb_args(args, review_arg_names, REVIEW_ARGS, accepted, of, &seen, &other))
 		return !cstr_view_cat(review_action_names[a->action], out) && PUT(out, " takes ") &&
 		       !cstr_view_join(review_arg_names + 1, REVIEW_ARGS - 1, accepted >> 1,
 		                       CSTR_VIEW(", "), CSTR_VIEW(" and "), out) &&

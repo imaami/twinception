@@ -681,19 +681,29 @@ git_repos_wrong (struct git const *git,
 	return git_wrong(why, ".");
 }
 
-/* Whether @p key is an argument the tool takes. */
-static bool
-git_known (char const *key)
-{
-	static char const *const keys[] = {
-		"repo", "command", "help", "options", "revisions", "paths", "pattern", "offset",
-		"line", "count"
-	};
-	for (size_t i = 0; i < array_size(keys); ++i)
-		if (!strcmp(key, keys[i]))
-			return true;
-	return false;
-}
+/* The arguments of the tool, in the order of git_arg_names[]. A call with
+ * help:true takes those before GIT_ARG_OPTIONS only.
+ */
+enum git_arg : uint8_t {
+	GIT_ARG_REPO,
+	GIT_ARG_COMMAND,
+	GIT_ARG_HELP,
+	GIT_ARG_OFFSET,
+	GIT_ARG_OPTIONS,
+	GIT_ARG_REVISIONS,
+	GIT_ARG_PATHS,
+	GIT_ARG_PATTERN,
+	GIT_ARG_LINE,
+	GIT_ARG_COUNT,
+	GIT_ARGS
+};
+
+static struct cstr_view const git_arg_names[GIT_ARGS] = {
+	CSTR_VIEW_INIT("repo"), CSTR_VIEW_INIT("command"), CSTR_VIEW_INIT("help"),
+	CSTR_VIEW_INIT("offset"), CSTR_VIEW_INIT("options"), CSTR_VIEW_INIT("revisions"),
+	CSTR_VIEW_INIT("paths"), CSTR_VIEW_INIT("pattern"), CSTR_VIEW_INIT("line"),
+	CSTR_VIEW_INIT("count"),
+};
 
 /*
  * Validate the call and retain its arguments and revision roots. Returns 0,
@@ -708,17 +718,17 @@ git_call_command (struct git_call  *call,
 	struct json_object *args = call->args;
 	if (!args)
 		return git_wrong(why, "Tool arguments must be an object.");
-	struct json_object_iter it;
-	json_object_object_foreachC(args, it)
-		if (!git_known(it.key))
-			return git_wrong(why, "Unknown argument: %.*s.",
-			                 (int)jb_utf8(it.key, strnlen(it.key, 64)), it.key);
+	struct json_object *of[GIT_ARGS] = {};
+	uint64_t seen;
+	struct cstr_view other;
+	if (jb_args(args, git_arg_names, GIT_ARGS, UINT64_MAX, of, &seen, &other))
+		return git_wrong(why, "Unknown argument: %.*s.", (int)other.len, other.data);
 
-	struct git_repo const *repo = git_find(git, git_word(jb_get(args, "repo")));
+	struct git_repo const *repo = git_find(git, git_word(of[GIT_ARG_REPO]));
 	if (!repo)
 		return git_repos_wrong(git, why);
 	call->repo = repo;
-	struct cstr_view const cmd = git_word(jb_get(args, "command"));
+	struct cstr_view const cmd = git_word(of[GIT_ARG_COMMAND]);
 	size_t c = 0;
 	while (c < array_size(commands) && !cstr_view_equal(cmd, commands[c].name))
 		++c;
@@ -738,47 +748,47 @@ git_call_command (struct git_call  *call,
 	}
 	call->command = c;
 	uint64_t takes = commands[c].takes;
-	struct json_object *help;
-	if (json_object_object_get_ex(args, "help", &help)) {
+	if (seen >> GIT_ARG_HELP & 1) {
+		struct json_object *help = of[GIT_ARG_HELP];
 		if (!json_object_is_type(help, json_type_boolean))
 			return git_wrong(why, "The help argument must be a boolean.");
 		if (json_object_get_boolean(help)) {
-			json_object_object_foreachC(args, it)
-				if (strcmp(it.key, "repo") && strcmp(it.key, "command") &&
-				    strcmp(it.key, "help") && strcmp(it.key, "offset"))
-					return git_wrong(why, "With help:true, give only repo, "
-					                 "command, help and optional offset.");
+			if (seen >> GIT_ARG_OPTIONS)
+				return git_wrong(why, "With help:true, give only repo, "
+				                 "command, help and optional offset.");
 			call->phase = GIT_HELP;
 			return 0;
 		}
 	}
 
-	static char const *const names[3] = { "options", "revisions", "paths" };
-	static size_t const most[3] = { OPTIONS, REVISIONS, PATHS };
-	struct json_object *lists[3] = {};
-	size_t lens[3] = {};
-	for (size_t l = 0; l < 3; ++l) {
-		if (!json_object_object_get_ex(args, names[l], &lists[l]))
+	static size_t const most[GIT_ARGS] = {
+		[GIT_ARG_OPTIONS] = OPTIONS, [GIT_ARG_REVISIONS] = REVISIONS,
+		[GIT_ARG_PATHS] = PATHS,
+	};
+	size_t lens[GIT_ARGS] = {};
+	for (size_t l = GIT_ARG_OPTIONS; l <= GIT_ARG_PATHS; ++l) {
+		if (!(seen >> l & 1))
 			continue;
-		if (!json_object_is_type(lists[l], json_type_array))
+		char const *const name = git_arg_names[l].data;
+		if (!json_object_is_type(of[l], json_type_array))
 			return git_wrong(why, "The %s argument must be an array of strings "
-			                 "(at most %zu entries).", names[l], most[l]);
-		lens[l] = json_object_array_length(lists[l]);
+			                 "(at most %zu entries).", name, most[l]);
+		lens[l] = json_object_array_length(of[l]);
 		if (lens[l] > most[l])
 			return git_wrong(why, "The %s argument has %zu entries; its limit is "
-			                 "%zu.", names[l], lens[l], most[l]);
+			                 "%zu.", name, lens[l], most[l]);
 		for (size_t i = 0; i < lens[l]; ++i)
-			if (!git_word(json_object_array_get_idx(lists[l], i)).data)
+			if (!git_word(jb_at(of[l], i)).data)
 				return git_wrong(why, "%s[%zu] must be a string of 1 to %d "
-				                 "bytes with no NUL.", names[l], i, WORD);
+				                 "bytes with no NUL.", name, i, WORD);
 	}
-	if ((takes & SINGLE) && lens[1] > 1)
+	if ((takes & SINGLE) && lens[GIT_ARG_REVISIONS] > 1)
 		return git_wrong(why, "git %.*s takes at most one revision.", (int)cmd.len,
 		                 cmd.data);
-	if (lens[2] && !(takes & FILES))
+	if (lens[GIT_ARG_PATHS] && !(takes & FILES))
 		return git_wrong(why, "git %.*s takes no paths. To name a file, give the "
 		                 "revision HEAD:path.", (int)cmd.len, cmd.data);
-	struct json_object *pattern = jb_get(args, "pattern");
+	struct json_object *pattern = of[GIT_ARG_PATTERN];
 	struct cstr_view const pat = git_word(pattern);
 	if (takes & PATTERN) {
 		if (!pat.data)
@@ -787,24 +797,23 @@ git_call_command (struct git_call  *call,
 	} else if (pattern) {
 		return git_wrong(why, "Only git grep takes a pattern.");
 	}
-	static char const *const numbers[2] = { "line", "count" };
-	size_t *const values[2] = { &call->read.line, &call->read.count };
+	size_t *const values[] = { &call->read.line, &call->read.count };
 	call->read.line = 1;
 	call->read.count = SIZE_MAX;
-	for (size_t i = 0; i < 2; ++i) {
-		struct json_object *val;
-		if (!json_object_object_get_ex(args, numbers[i], &val))
+	for (size_t i = 0; i < array_size(values); ++i) {
+		size_t const k = GIT_ARG_LINE + i;
+		if (!(seen >> k & 1))
 			continue;
 		if (!(takes & LINES))
 			return git_wrong(why, "Only git read takes line and count.");
-		int64_t v = jb_int(val, 0);
-		if (v < 1)
+		uint64_t const v = jb_count(of[k], UINT64_MAX);
+		if (!v)
 			return git_wrong(why, "The %s argument must be a whole number from 1.",
-			                 numbers[i]);
+			                 git_arg_names[k].data);
 		/* Where size_t is narrower than 64 bits, a larger value becomes
 		 * SIZE_MAX. That line is past the end of any file, and that count
 		 * sets no limit. */
-		*values[i] = (uint64_t)v < SIZE_MAX ? (size_t)v : SIZE_MAX;
+		*values[i] = v < SIZE_MAX ? (size_t)v : SIZE_MAX;
 	}
 
 	size_t k = 0;
@@ -815,8 +824,8 @@ git_call_command (struct git_call  *call,
 		argv[k++] = commands[c].forced[i];
 	/* The options, then the pattern, the revisions and the paths, each
 	 * checked as it goes in. */
-	for (size_t i = 0; i < lens[0]; ++i) {
-		struct cstr_view const opt = jb_view(json_object_array_get_idx(lists[0], i));
+	for (size_t i = 0; i < lens[GIT_ARG_OPTIONS]; ++i) {
+		struct cstr_view const opt = jb_view(jb_at(of[GIT_ARG_OPTIONS], i));
 		int e = git_option_check(opt, c, i, why);
 		if (e)
 			return e;
@@ -837,11 +846,12 @@ git_call_command (struct git_call  *call,
 	}
 	if (takes & END)
 		argv[k++] = "--end-of-options";
-	size_t endpoints = lens[1];
-	call->n_revisions = lens[1] ? lens[1] : 1;
+	size_t const listed = lens[GIT_ARG_REVISIONS];
+	size_t endpoints = listed;
+	call->n_revisions = listed ? listed : 1;
 	for (size_t i = 0; i < call->n_revisions; ++i) {
-		struct cstr_view const s = lens[1] ? jb_view(json_object_array_get_idx(lists[1], i))
-		                                   : CSTR_VIEW("HEAD");
+		struct cstr_view const s = listed ? jb_view(jb_at(of[GIT_ARG_REVISIONS], i))
+		                                  : CSTR_VIEW("HEAD");
 		char const *path = strchr(s.data, ':');
 		size_t root = path ? (size_t)(path - s.data) : s.len;
 		if (path && (!(takes & OBJECT) || !path[1] || !git_inside(path + 1)))
@@ -850,7 +860,7 @@ git_call_command (struct git_call  *call,
 		char const *range = strstr(s.data, "..");
 		if (range && range >= s.data + root)
 			range = nullptr;
-		if (range && (!(takes & RANGE) || ((takes & PAIR) && lens[1] != 1)))
+		if (range && (!(takes & RANGE) || ((takes & PAIR) && listed != 1)))
 			return git_wrong(why, "revisions[%zu]: ranges are allowed only by "
 			                 "log, or as diff's single A..B or A...B argument.", i);
 		size_t left = range ? (size_t)(range - s.data) : root;
@@ -878,8 +888,8 @@ git_call_command (struct git_call  *call,
 		                 "A..B or A...B range.");
 	if (takes & FILES)
 		argv[k++] = "--";
-	for (size_t i = 0; i < lens[2]; ++i) {
-		char const *s = jb_view(json_object_array_get_idx(lists[2], i)).data;
+	for (size_t i = 0; i < lens[GIT_ARG_PATHS]; ++i) {
+		char const *s = jb_view(jb_at(of[GIT_ARG_PATHS], i)).data;
 		if (!git_inside(s) || !strncmp(s, ":(", 2))
 			return git_wrong(why, "paths[%zu] must be relative to the repository's "
 			                 "top, with no .. component or :(...) pathspec magic.", i);

@@ -15,9 +15,13 @@
 
 #include "cstr_view.h"
 #include "export.h"
+#include "util.h"
 
 /** Serialization flags for everything sent over the wire. */
 #define JB_WIRE (JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE)
+
+/** The most bytes of a key that jb_args() reports. */
+enum { JB_KEY_SHOWN = 64 };
 
 /**
  * Object from key, value pairs ending with a nullptr key. The values are
@@ -308,6 +312,42 @@ jb_count (struct json_object const *val,
 {
 	uint64_t n = 0;
 	return jb_uint_checked(val, max, &n) ? 0 : n;
+}
+
+/**
+ * Look up each key of the object @p args among the @p n names at @p names,
+ * @p n at most 64. For a key that equals names[i], store its value in
+ * @p of[i] and set bit i of @p *seen; the other bits are 0. Returns 0, or
+ * EINVAL at the first key that is none of the names whose bits @p accepted
+ * sets, with that key, cut to at most JB_KEY_SHOWN bytes at the start of a
+ * character, in @p *other. An @p args that is no object counts as an
+ * object without keys.
+ */
+static inline int
+jb_args (struct json_object      *args,
+         struct cstr_view const  *names,
+         size_t                   n,
+         uint64_t                 accepted,
+         struct json_object     **of,
+         uint64_t                *seen,
+         struct cstr_view        *other)
+{
+	*seen = 0;
+	if (!json_object_is_type(args, json_type_object))
+		return 0;
+	struct json_object_iter it;
+	json_object_object_foreachC(args, it) {
+		struct cstr_view const key = cstr_view(it.key);
+		size_t const i = cstr_view_index(names, n, key);
+		if (i == n || !(accepted >> i & 1)) {
+			*other = (struct cstr_view){ key.data, util_clip(key.data, key.len,
+			                                                 JB_KEY_SHOWN) };
+			return EINVAL;
+		}
+		of[i] = it.val;
+		*seen |= UINT64_C(1) << i;
+	}
+	return 0;
 }
 
 /** A parse a slice at a time; zeroed to begin. */
