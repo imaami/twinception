@@ -78,7 +78,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 #include "ai.h"
 #include "buf.h"
@@ -846,24 +845,8 @@ mcp_method_index (struct cstr_view method)
 static bool
 mcp_accepts_sse (struct span accept)
 {
-	static char const sse[] = "text/event-stream";
-	size_t n = sizeof sse - 1;
-	char const *p = (char const *)accept.ptr;
-	char const *end = p + accept.len;
-	while (p < end) {
-		while (p < end && (*p == ' ' || *p == '\t' || *p == ','))
-			++p;
-		char const *comma = memchr(p, ',', (size_t)(end - p));
-		char const *stop = comma ? comma : end;
-		char const *semi = memchr(p, ';', (size_t)(stop - p));
-		char const *type = semi ? semi : stop;
-		while (type > p && (type[-1] == ' ' || type[-1] == '\t'))
-			--type;
-		if ((size_t)(type - p) == n && !strncasecmp(p, sse, n))
-			return true;
-		p = stop;
-	}
-	return false;
+	return cstr_view_list_has((struct cstr_view){ (char const *)accept.ptr, accept.len },
+	                          CSTR_VIEW("text/event-stream"));
 }
 
 /* Seconds since @p start, a loop_clock(). */

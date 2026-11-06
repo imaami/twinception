@@ -208,4 +208,23 @@ cstr_view_trim (struct cstr_view text)
 	return text;
 }
 
+/**
+ * Whether an element of the comma-separated @p list, a field value of HTTP
+ * (RFC 9110 5.6.1), equals @p token in any case. The white space around an
+ * element and its ";" parameters do not count.
+ */
+static inline bool
+cstr_view_list_has (struct cstr_view list,
+                    struct cstr_view token)
+{
+	for (bool more = true; more; ) {
+		struct cstr_view item = list;
+		more = cstr_view_cut(&list, ',', &item);
+		(void)cstr_view_cut(&item, ';', &item);
+		if (cstr_view_equal_case(cstr_view_trim(item), token))
+			return true;
+	}
+	return false;
+}
+
 #endif /* TWINCEPTION_SRC_CSTR_VIEW_H_ */

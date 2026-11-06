@@ -429,24 +429,6 @@ httpd_ctl (unsigned char c)
 	return (c < ' ' && c != '\t') || c == 0x7f;
 }
 
-static bool
-httpd_has_token (char const *list,
-                 char const *token,
-                 size_t      len)
-{
-	for (char const *p = list; *p; ) {
-		p += strspn(p, " \t,");
-		size_t n = strcspn(p, ",");
-		size_t end = n;
-		while (end && (p[end - 1] == ' ' || p[end - 1] == '\t'))
-			--end;
-		if (end == len && !strncasecmp(p, token, len))
-			return true;
-		p += n;
-	}
-	return false;
-}
-
 /* Whether @p host, a Host field or an origin's host and port, names this
  * machine by loopback, whatever the port.
  */
@@ -639,10 +621,9 @@ httpd_req_header (struct httpd_req        *req,
 		req->chunked = true;
 		return 0;
 	case HEADER_CONNECTION:
-		if (httpd_has_token(value, "close", sizeof "close" - 1))
+		if (cstr_view_list_has(cstr_view(value), CSTR_VIEW("close")))
 			req->close = true;
-		else if (req->http10 && httpd_has_token(value, "keep-alive",
-		                                        sizeof "keep-alive" - 1))
+		else if (req->http10 && cstr_view_list_has(cstr_view(value), CSTR_VIEW("keep-alive")))
 			req->close = false;
 		return 0;
 	case HEADER_EXPECT:

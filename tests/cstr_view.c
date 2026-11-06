@@ -84,6 +84,15 @@ main (void)
 	rest = empty;
 	assert(!cstr_view_cut(&rest, '\0', &head) && !rest.data);
 
+	struct cstr_view const sse = CSTR_VIEW("text/event-stream");
+	assert(cstr_view_list_has(CSTR_VIEW("text/event-stream"), sse));
+	assert(cstr_view_list_has(CSTR_VIEW("application/json, Text/Event-Stream ;q=0.5"), sse));
+	assert(cstr_view_list_has(CSTR_VIEW(",,\ttext/event-stream\t,"), sse));
+	assert(!cstr_view_list_has(CSTR_VIEW("text/event-streams, text/event"), sse));
+	assert(!cstr_view_list_has(CSTR_VIEW("x;text/event-stream"), sse));
+	assert(!cstr_view_list_has(empty, sse));
+	assert(cstr_view_list_has(CSTR_VIEW("keep-alive, Close"), CSTR_VIEW("close")));
+
 	static struct cstr_view const names[] = {
 		CSTR_VIEW_INIT("one"), CSTR_VIEW_INIT("two"), CSTR_VIEW_INIT("t\0o"),
 	};
@@ -108,5 +117,5 @@ main (void)
 	assert(cstr_view_cat(text, nullptr) == ENOMEM);
 	dstr_cleanup(&owned);
 	puts("cstr views: empty values, counted NULs, byte order, cases, bounded slices, trims, "
-	     "cuts, lookups, stores and appends: PASS");
+	     "cuts, lists, lookups, stores and appends: PASS");
 }
