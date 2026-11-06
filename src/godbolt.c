@@ -717,27 +717,6 @@ godbolt_or (struct cstr_view t,
 	return t.len ? t : otherwise;
 }
 
-/* Returns the member @p name of @p obj, or nullptr if @p obj has no such
- * member.
- */
-static struct json_object *
-godbolt_get (struct json_object *obj,
-             char const         *name)
-{
-	struct json_object *v = nullptr;
-	return json_object_object_get_ex(obj, name, &v) ? v : nullptr;
-}
-
-/* Returns the string member @p name of @p obj, as jb_view() does. The
- * text is NUL-terminated.
- */
-static struct cstr_view
-godbolt_member (struct json_object *obj,
-                char const         *name)
-{
-	return jb_view(godbolt_get(obj, name));
-}
-
 /* Returns @p max, or t.len if @p t is shorter. The function returns less if
  * the first @p max bytes of @p t would end inside a UTF-8 character, so
  * that a cut after the returned length does not split a character. The
@@ -1072,7 +1051,7 @@ godbolt_reason (struct godbolt *call,
 		json_tokener_reset(call->tok);
 		doc = json_tokener_parse_ex(call->tok, text.data, (int)text.len);
 		loop_work(call->loop, LOOP_PARSE, text.len);
-		text = godbolt_or(godbolt_member(doc, "message"), text);
+		text = godbolt_or(jb_view(jb_get(doc, "message")), text);
 	}
 	(void)cstr_view_cut(&text, '\n', &text);
 	size_t const n = godbolt_cut(text, GODBOLT_REASON_MAX);
@@ -1315,13 +1294,13 @@ static int
 godbolt_language_row (struct godbolt     *call,
                       struct json_object *element)
 {
-	struct cstr_view const id = godbolt_member(element, "id");
+	struct cstr_view const id = jb_view(jb_get(element, "id"));
 	if (!id.len) {
 		++call->malformed;
 		return 0;
 	}
 	++call->total;
-	struct cstr_view const f[] = { id, godbolt_member(element, "name") };
+	struct cstr_view const f[] = { id, jb_view(jb_get(element, "name")) };
 	if (!godbolt_matches(call, f, array_size(f)) || ++call->matching > call->args.limit)
 		return 0;
 	++call->listed;
@@ -1341,8 +1320,8 @@ static int
 godbolt_count (struct godbolt *call,
                char const     *key)
 {
-	struct json_object *n = nullptr;
-	if (json_object_object_get_ex(call->doc, key, &n)) {
+	struct json_object *n = jb_get(call->doc, key);
+	if (n) {
 		json_object_int_inc(n, 1);
 		return call->e;
 	}
@@ -1352,11 +1331,8 @@ godbolt_count (struct godbolt *call,
 		call->list = GODBOLT_LIST_BAD;
 		return call->e;
 	}
-	struct json_object *one = json_object_new_int(1);
-	if (!one || json_object_object_add(call->doc, key, one)) {
-		json_object_put(one);
+	if (jb_set(call->doc, key, json_object_new_int(1)))
 		call->e = call->e ? call->e : ENOMEM;
-	}
 	return call->e;
 }
 
@@ -1392,16 +1368,16 @@ static int
 godbolt_compiler_row (struct godbolt     *call,
                       struct json_object *element)
 {
-	struct json_object *tags = godbolt_get(element, "compilerCategories");
+	struct json_object *tags = jb_get(element, "compilerCategories");
 	size_t const n_tags = jb_len(tags);
 	/* The columns, and then the family tags that are not empty. */
 	struct cstr_view f[GODBOLT_COLUMNS + GODBOLT_TAGS] = {
-		godbolt_member(element, "id"),
-		godbolt_member(element, "name"),
-		godbolt_or(godbolt_member(element, "compilerType"), CSTR_VIEW("default")),
-		godbolt_member(element, "semver"),
-		godbolt_or(godbolt_member(element, "instructionSet"), CSTR_VIEW("unknown")),
-		godbolt_member(element, "releaseTrack"),
+		jb_view(jb_get(element, "id")),
+		jb_view(jb_get(element, "name")),
+		godbolt_or(jb_view(jb_get(element, "compilerType")), CSTR_VIEW("default")),
+		jb_view(jb_get(element, "semver")),
+		godbolt_or(jb_view(jb_get(element, "instructionSet")), CSTR_VIEW("unknown")),
+		jb_view(jb_get(element, "releaseTrack")),
 	};
 	size_t n = GODBOLT_COLUMNS;
 	bool valid = f[0].len && n_tags <= GODBOLT_TAGS && f[2].len <= GODBOLT_VALUE_MAX &&
@@ -1573,8 +1549,8 @@ static int
 godbolt_driver_row (struct godbolt     *call,
                     struct json_object *element)
 {
-	struct cstr_view const id = godbolt_member(element, "id");
-	struct cstr_view const kind = godbolt_member(element, "compilerType");
+	struct cstr_view const id = jb_view(jb_get(element, "id"));
+	struct cstr_view const kind = jb_view(jb_get(element, "compilerType"));
 	for (uint8_t i = 0; i < call->args.n_ids; ++i) {
 		if (call->found >> i & 1 || !cstr_view_equal(id, call->args.ids[i]))
 			continue;
@@ -1893,7 +1869,7 @@ godbolt_link (struct godbolt *call)
 	struct json_object *doc = json_tokener_parse_ex(call->tok, call->resp.data,
 	                                                (int)call->resp.len);
 	loop_work(call->loop, LOOP_PARSE, call->resp.len);
-	struct cstr_view const link = godbolt_member(doc, "url");
+	struct cstr_view const link = jb_view(jb_get(doc, "url"));
 	if (link.len <= GODBOLT_SHORT_MAX && util_url_scheme(link)) {
 		godbolt_put(call, CSTR_VIEW("Link: "));
 		godbolt_put(call, link);
@@ -2035,18 +2011,18 @@ godbolt_sections_find (struct godbolt *call)
 	enum godbolt_sec const main = call->tool == GODBOLT_MACROS ? GODBOLT_SEC_MACROS
 	                                                           : GODBOLT_SEC_PP;
 	if (from == GODBOLT_FROM_ASM)
-		godbolt_section_add(call, godbolt_get(call->doc, "asm"), GODBOLT_SEC_ASM);
+		godbolt_section_add(call, jb_get(call->doc, "asm"), GODBOLT_SEC_ASM);
 	if (from == GODBOLT_FROM_PP) {
-		struct json_object *pp = godbolt_get(call->doc, "ppOutput");
-		struct json_object *text = godbolt_get(pp, "output");
-		struct json_object *filtered = godbolt_get(pp, "numberOfLinesFiltered");
+		struct json_object *pp = jb_get(call->doc, "ppOutput");
+		struct json_object *text = jb_get(pp, "output");
+		struct json_object *filtered = jb_get(pp, "numberOfLinesFiltered");
 		godbolt_section_add(call, text, main);
 		call->rec.no_pp = !json_object_is_type(text, json_type_string);
-		call->rec.truncated |= json_object_get_int64(filtered) != 0;
+		call->rec.truncated |= jb_int(filtered, 0) != 0;
 	}
-	godbolt_section_add(call, godbolt_get(call->doc, "stdout"),
+	godbolt_section_add(call, jb_get(call->doc, "stdout"),
 	                    from == GODBOLT_FROM_STDOUT ? main : GODBOLT_SEC_STDOUT);
-	godbolt_section_add(call, godbolt_get(call->doc, "stderr"), GODBOLT_SEC_STDERR);
+	godbolt_section_add(call, jb_get(call->doc, "stderr"), GODBOLT_SEC_STDERR);
 }
 
 /* Returns the member text of each element of the array @p v, each with a
@@ -2062,7 +2038,7 @@ godbolt_join (struct godbolt     *call,
 	size_t const n = json_object_array_length(v);
 	size_t bytes = 1;
 	for (size_t i = 0; i < n; ++i)
-		bytes += godbolt_member(json_object_array_get_idx(v, i), "text").len + 1;
+		bytes += jb_view(jb_get(json_object_array_get_idx(v, i), "text")).len + 1;
 	char *text = malloc(bytes);
 	if (!text) {
 		*e = ENOMEM;
@@ -2070,7 +2046,7 @@ godbolt_join (struct godbolt     *call,
 	}
 	char *d = text;
 	for (size_t i = 0; i < n; ++i) {
-		d = godbolt_cat(d, godbolt_member(json_object_array_get_idx(v, i), "text"));
+		d = godbolt_cat(d, jb_view(jb_get(json_object_array_get_idx(v, i), "text")));
 		*d++ = '\n';
 	}
 	*len = (size_t)(d - text);
@@ -2111,7 +2087,7 @@ godbolt_targets_parse (struct godbolt *call)
 	}
 	call->rec.probed = 1;
 	call->rec.n_sec = 0;
-	godbolt_section_add(call, godbolt_get(call->doc, "stderr"), GODBOLT_SEC_STDERR);
+	godbolt_section_add(call, jb_get(call->doc, "stderr"), GODBOLT_SEC_STDERR);
 	return 0;
 }
 
@@ -2122,9 +2098,9 @@ godbolt_targets_parse (struct godbolt *call)
 static enum godbolt_go
 godbolt_classify (struct godbolt *call)
 {
-	struct json_object *code = godbolt_get(call->doc, "code");
-	struct json_object *timed_out = godbolt_get(call->doc, "timedOut");
-	struct json_object *truncated = godbolt_get(call->doc, "truncated");
+	struct json_object *code = jb_get(call->doc, "code");
+	struct json_object *timed_out = jb_get(call->doc, "timedOut");
+	struct json_object *truncated = jb_get(call->doc, "truncated");
 	if (!json_object_is_type(code, json_type_int)) {
 		godbolt_why(call, "the response is not a JSON object with an integer member "
 		            "code");
@@ -2282,7 +2258,7 @@ godbolt_section_lines (struct godbolt     *call,
 			return call->e;
 		loop_work(call->loop, LOOP_VALUES, 1);
 		struct json_object *element = json_object_array_get_idx(v, call->rec.item);
-		struct cstr_view const line = godbolt_member(element, "text");
+		struct cstr_view const line = jb_view(jb_get(element, "text"));
 		if (godbolt_slice(call, line) || call->full || call->rec.byte < line.len)
 			return call->e;
 		godbolt_put(call, CSTR_VIEW("\n"));
@@ -2689,7 +2665,7 @@ godbolt_args_set (struct godbolt_args *a,
 		return jb_uint_checked(v, GODBOLT_LIMIT_MAX, &a->limit) || !a->limit ? EINVAL : 0;
 	case GODBOLT_ARG_OFFSET:
 		/* mcp_slot_offset() checks the offset. */
-		a->paged = json_object_get_int64(v) > 0;
+		a->paged = jb_int(v, 0) > 0;
 		return 0;
 	case GODBOLT_ARG_ARGS:
 		return godbolt_args_strings(a, v);
@@ -2992,24 +2968,6 @@ godbolt_configure (void               *config,
 	return 0;
 }
 
-/* Adds @p val as the member @p key of @p obj, which is a part of the
- * definition @p def, and returns @p def. If @p obj or @p val is nullptr,
- * or if json-c cannot add the member, the function frees @p val and @p def
- * and returns nullptr.
- */
-static struct json_object *
-godbolt_definition_add (struct json_object *def,
-                        struct json_object *obj,
-                        char const         *key,
-                        struct json_object *val)
-{
-	if (obj && val && !json_object_object_add(obj, key, val))
-		return def;
-	json_object_put(val);
-	json_object_put(def);
-	return nullptr;
-}
-
 /* Returns the definition of the tool @p tool in the JSON text @p json as a
  * new reference. Its description is @p head, the base URL of the
  * configuration @p service, and @p tail. If the tool accepts the argument
@@ -3038,17 +2996,21 @@ godbolt_definition (void const        *service,
 	char *end = godbolt_cat(godbolt_cat(text, head), url);
 	end = godbolt_cat(godbolt_cat(end, tail), link);
 	struct json_object *def = json_tokener_parse(json);
-	def = godbolt_definition_add(def, def, "description",
-	                             json_object_new_string_len(text, (int)(end - text)));
+	def = jb_set_or_free(def, "description",
+	                     json_object_new_string_len(text, (int)(end - text)));
 	if (!link.len)
 		return def;
-	struct json_object *props = godbolt_get(godbolt_get(def, "inputSchema"), "properties");
-	def = godbolt_definition_add(def, props, "share", json_tokener_parse(
+	struct json_object *props = jb_get(jb_get(def, "inputSchema"), "properties");
+	int e = jb_set(props, "share", json_tokener_parse(
 		"{\"type\":\"boolean\",\"default\":false,\"description\":\"true to begin "
 		"the output with a link to the same source, compilers and arguments on "
 		"Compiler Explorer.\"}"));
-	return godbolt_definition_add(def, godbolt_get(def, "annotations"), "readOnlyHint",
-	                              json_object_new_boolean(cfg->share != GODBOLT_SHARE_SHORT));
+	e = e ? e : jb_set(jb_get(def, "annotations"), "readOnlyHint",
+	                   json_object_new_boolean(cfg->share != GODBOLT_SHARE_SHORT));
+	if (!e)
+		return def;
+	json_object_put(def);
+	return nullptr;
 }
 
 /* The parts of the definitions that several tools share. */

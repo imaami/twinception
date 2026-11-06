@@ -93,19 +93,6 @@ test_plugin_instance_init (void        *instance,
 	return 0;
 }
 
-/* Returns the string member @p name of @p args as a view. If @p args
- * contains no string member @p name, the view is empty and its data is
- * nullptr.
- */
-static struct cstr_view
-test_plugin_string (struct json_object *args,
-                    char const         *name)
-{
-	struct json_object *v = nullptr;
-	(void)json_object_object_get_ex(args, name, &v);
-	return jb_view(v);
-}
-
 /* Returns the definition of test_echo as a new reference, or nullptr if
  * json-c cannot allocate memory.
  */
@@ -134,7 +121,7 @@ test_plugin_echo_start (struct mcp_slot    *slot,
 		return;
 	/* mcp_slot_write() copies the bytes, so nothing reads args after the
 	 * end of the call. */
-	struct cstr_view const out = test_plugin_string(args, "text");
+	struct cstr_view const out = jb_view(jb_get(args, "text"));
 	if (!out.data) {
 		mcp_slot_tell(slot, CSTR_VIEW("The text argument must be a string."),
 		              TOOL_FAILED);
@@ -246,17 +233,14 @@ test_plugin_state_start (struct mcp_slot    *slot,
 		mcp_slot_tell(slot, CSTR_VIEW("The instance is another user's."), TOOL_FAILED);
 		return;
 	}
-	struct json_object *wait = nullptr;
-	struct json_object *fail = nullptr;
-	(void)json_object_object_get_ex(args, "fail", &fail);
-	bool const waits = json_object_object_get_ex(args, "wait_ms", &wait);
-	uint64_t const ms = (uint64_t)json_object_get_int64(wait);
-	struct cstr_view const text = test_plugin_string(args, "text");
+	struct json_object *const wait = jb_get(args, "wait_ms");
+	uint64_t const ms = jb_uint(wait, 0);
+	struct cstr_view const text = jb_view(jb_get(args, "text"));
 	char now[sizeof inst->last];
 	size_t const len = text.len < sizeof now ? text.len : sizeof now;
 	if (len)
 		memcpy(now, text.data, len);
-	if (!waits) {
+	if (!wait) {
 		test_plugin_state_tell(slot);
 		memcpy(inst->last, now, len);
 		inst->len = len;
@@ -274,7 +258,7 @@ test_plugin_state_start (struct mcp_slot    *slot,
 	*w = (struct test_plugin_wait){
 		.timer = { .due = UINT64_MAX, .fn = test_plugin_wait_fired },
 		.slot = slot,
-		.fail = json_object_get_boolean(fail),
+		.fail = json_object_get_boolean(jb_get(args, "fail")),
 	};
 	*own = w;
 	int e = loop_timer_set(loop, &w->timer, loop_now(loop) + ms * MS);
@@ -537,7 +521,7 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 	if (!slot)
 		return;
 	size_t const what = cstr_view_index(test_plugin_cases, TEST_PLUGIN_CASES,
-	                                    test_plugin_string(args, "case"));
+	                                    jb_view(jb_get(args, "case")));
 	if (what == TEST_PLUGIN_READY) {
 		mcp_slot_ready(slot);
 		return;
@@ -617,19 +601,6 @@ test_plugin_fetch_definition (void const *service)
 		"\"additionalProperties\":false}}");
 }
 
-/* Returns the integer member @p name of @p args, or @p otherwise if
- * @p args has no such member.
- */
-static int64_t
-test_plugin_integer (struct json_object *args,
-                     char const         *name,
-                     int64_t             otherwise)
-{
-	struct json_object *v = nullptr;
-	return json_object_object_get_ex(args, name, &v) ? json_object_get_int64(v)
-	                                                 : otherwise;
-}
-
 /* Starts a test_fetch call. It sends the request that the arguments
  * describe. "url" is required. "body" makes the request a POST. "accept"
  * is the value of Accept. "max" is 65536 bytes, "timeout" 10 seconds and
@@ -648,21 +619,19 @@ test_plugin_fetch_start (struct mcp_slot    *slot,
 	if (!slot)
 		return;
 	struct web_request const request = {
-		.url = test_plugin_string(args, "url").data,
-		.body = test_plugin_string(args, "body"),
-		.accept = test_plugin_string(args, "accept").data,
-		.max = (size_t)test_plugin_integer(args, "max", 65536),
-		.timeout = (uint32_t)test_plugin_integer(args, "timeout", 10),
-		.keep = (uint32_t)test_plugin_integer(args, "keep", 0)
+		.url = jb_view(jb_get(args, "url")).data,
+		.body = jb_view(jb_get(args, "body")),
+		.accept = jb_view(jb_get(args, "accept")).data,
+		.max = (size_t)jb_int(jb_get(args, "max"), 65536),
+		.timeout = (uint32_t)jb_int(jb_get(args, "timeout"), 10),
+		.keep = (uint32_t)jb_int(jb_get(args, "keep"), 0)
 	};
 	int const e = mcp_slot_fetch(slot, &request);
 	if (e) {
 		test_plugin_tellf(slot, TOOL_FAILED, "fetch: %d", e);
 		return;
 	}
-	struct json_object *twice = nullptr;
-	(void)json_object_object_get_ex(args, "twice", &twice);
-	if (json_object_get_boolean(twice))
+	if (json_object_get_boolean(jb_get(args, "twice")))
 		test_plugin_tellf(slot, 0, "twice: %d", mcp_slot_fetch(slot, &request));
 	else
 		mcp_slot_park(slot);
@@ -754,13 +723,7 @@ test_plugin_config_definition (void const *service)
 		"\"inputSchema\":{\"type\":\"object\","
 		"\"properties\":{},"
 		"\"additionalProperties\":false}}");
-	struct json_object *desc = json_object_new_string_len(text, n);
-	if (!def || !desc || json_object_object_add(def, "description", desc)) {
-		json_object_put(desc);
-		json_object_put(def);
-		return nullptr;
-	}
-	return def;
+	return jb_set_or_free(def, "description", json_object_new_string_len(text, n));
 }
 
 /* Ends the call with "greeting=" and the greeting of the configuration, or
