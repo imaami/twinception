@@ -475,12 +475,8 @@ policy_read_overflow (char const *path,
                       uint32_t   *id)
 {
 	*id = 65534;
-	FILE *f = fopen(path, "re");
-	if (!f)
-		return errno;
 	char text[16];
-	int e = fgets(text, sizeof text, f) ? 0 : ferror(f) ? errno : EILSEQ;
-	(void)fclose(f);
+	int e = util_read_text(path, text, sizeof text);
 	if (e)
 		return e;
 	return policy_number((struct cstr_view){ text, strcspn(text, "\n") }, id) ? 0 : EILSEQ;

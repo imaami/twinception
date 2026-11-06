@@ -84,13 +84,9 @@ askai_top_push (void *block)
 static bool
 askai_strict_commit (void)
 {
-	FILE *f = fopen("/proc/sys/vm/overcommit_memory", "re");
-	if (!f)
-		return false;
-	int mode = fgetc(f);
-	/* Only read: nothing is lost if closing fails. */
-	(void)fclose(f);
-	return mode == '2';
+	char mode[2];
+	return !util_read_text("/proc/sys/vm/overcommit_memory", mode, sizeof mode) &&
+	       *mode == '2';
 }
 
 /* What a loop thread keeps for reuse, and its reliefs of memory pressure
