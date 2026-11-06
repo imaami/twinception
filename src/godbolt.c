@@ -201,13 +201,14 @@ enum godbolt_from : uint32_t {
 	GODBOLT_FROM_NONE,    /* none, because the compilation is not sent */
 };
 
-/* The sections of a record. */
+/* The sections of a record, in the order of the output. */
 enum godbolt_sec : uint8_t {
 	GODBOLT_SEC_ASM,
-	GODBOLT_SEC_STDOUT,
-	GODBOLT_SEC_STDERR,
 	GODBOLT_SEC_PP,
 	GODBOLT_SEC_MACROS,
+	GODBOLT_SEC_STDOUT,
+	GODBOLT_SEC_STDERR,
+	GODBOLT_SECS
 };
 
 /* The kinds of request that the plugin sends. */
@@ -515,20 +516,17 @@ enum godbolt_with : uint32_t {
 };
 
 /* The first line of each section of a record. */
-static struct cstr_view const godbolt_sections[] = {
+static struct cstr_view const godbolt_sections[GODBOLT_SECS] = {
 	[GODBOLT_SEC_ASM]    = CSTR_VIEW_INIT("--- asm ---\n"),
-	[GODBOLT_SEC_STDOUT] = CSTR_VIEW_INIT("--- stdout ---\n"),
-	[GODBOLT_SEC_STDERR] = CSTR_VIEW_INIT("--- stderr ---\n"),
 	[GODBOLT_SEC_PP]     = CSTR_VIEW_INIT("--- pp ---\n"),
 	[GODBOLT_SEC_MACROS] = CSTR_VIEW_INIT("--- macros ---\n"),
+	[GODBOLT_SEC_STDOUT] = CSTR_VIEW_INIT("--- stdout ---\n"),
+	[GODBOLT_SEC_STDERR] = CSTR_VIEW_INIT("--- stderr ---\n"),
 };
 
 /* The note after a text that Compiler Explorer cut. */
 static struct cstr_view const godbolt_cut_note =
 	CSTR_VIEW_INIT("[Compiler Explorer cut this output.]\n");
-
-/* The largest number of sections of a record. */
-enum { GODBOLT_SECTIONS = 3 };
 
 /* How a tool compiles with a kind of driver. */
 struct godbolt_recipe {
@@ -619,15 +617,13 @@ enum godbolt_mark : uint32_t {
  * resets it for the next compilation.
  */
 struct godbolt_record {
-	struct json_object *secs[GODBOLT_SECTIONS];  /* the texts of the
-	                                                sections */
+	struct json_object *secs[GODBOLT_SECS];  /* the text of each section,
+	                                            by enum godbolt_sec, or
+	                                            nullptr */
 	struct tool_cursor  at;     /* the section being written, its written
 	                               lines, and the written bytes of its text
 	                               or of the line */
-	uint8_t             sec_of[GODBOLT_SECTIONS];  /* enum godbolt_sec
-	                                                  of secs[i] */
-	uint8_t             n_sec;  /* the number of sections */
-	uint32_t            marks;  /* enum godbolt_mark */
+	uint64_t            marks;  /* enum godbolt_mark */
 };
 
 /* A call of a tool. The call's own word points to it, and drop() frees
@@ -1917,16 +1913,6 @@ godbolt_answer (struct godbolt *call)
 	return GODBOLT_GO;
 }
 
-/* Adds the section @p sec, whose text is @p v, to the record. */
-static void
-godbolt_section_add (struct godbolt     *call,
-                     struct json_object *v,
-                     enum godbolt_sec    sec)
-{
-	call->rec.secs[call->rec.n_sec] = v;
-	call->rec.sec_of[call->rec.n_sec++] = sec;
-}
-
 /* Stores in call->rec.secs the texts of the sections of the record, as the
  * recipe of the compilation selects them. For a recipe that preprocesses,
  * the function marks the record for a note if the response contains no
@@ -1940,18 +1926,18 @@ godbolt_sections_find (struct godbolt *call)
 	enum godbolt_sec const main = call->tool == GODBOLT_MACROS ? GODBOLT_SEC_MACROS
 	                                                           : GODBOLT_SEC_PP;
 	if (from == GODBOLT_FROM_ASM)
-		godbolt_section_add(call, jb_get(call->doc, "asm"), GODBOLT_SEC_ASM);
+		call->rec.secs[GODBOLT_SEC_ASM] = jb_get(call->doc, "asm");
 	if (from == GODBOLT_FROM_PP) {
 		struct json_object *pp = jb_get(call->doc, "ppOutput");
 		struct json_object *text = jb_get(pp, "output");
 		struct json_object *filtered = jb_get(pp, "numberOfLinesFiltered");
-		godbolt_section_add(call, text, main);
+		call->rec.secs[main] = text;
 		call->rec.marks |= (json_object_is_type(text, json_type_string) ? 0 : GODBOLT_REC_NO_PP) |
 		                   (jb_int(filtered, 0) ? GODBOLT_REC_TRUNCATED : 0);
 	}
-	godbolt_section_add(call, jb_get(call->doc, "stdout"),
-	                    from == GODBOLT_FROM_STDOUT ? main : GODBOLT_SEC_STDOUT);
-	godbolt_section_add(call, jb_get(call->doc, "stderr"), GODBOLT_SEC_STDERR);
+	call->rec.secs[from == GODBOLT_FROM_STDOUT ? main : GODBOLT_SEC_STDOUT] =
+		jb_get(call->doc, "stdout");
+	call->rec.secs[GODBOLT_SEC_STDERR] = jb_get(call->doc, "stderr");
 }
 
 /* Returns the member text of each element of the array @p v, each with a
@@ -1985,16 +1971,16 @@ godbolt_join (struct godbolt     *call,
 }
 
 /* Parses the output of the probe of a call of godbolt_targets, which is the
- * main text of the record: a string, or the lines of stdout. If the output
- * contains a valid block, the record contains the facts and the messages
- * of the compiler. Otherwise it contains the output, and its status is the
- * reason. The function parses the whole output in one step. Returns 0, or
- * ENOMEM.
+ * section pp of the record: a string, or the lines of stdout. If the
+ * output contains a valid block, the record contains the facts and the
+ * messages of the compiler. Otherwise it contains the output, and its
+ * status is the reason. The function parses the whole output in one step.
+ * Returns 0, or ENOMEM.
  */
 static int
 godbolt_targets_parse (struct godbolt *call)
 {
-	struct json_object *v = call->rec.secs[0];
+	struct json_object *v = call->rec.secs[GODBOLT_SEC_PP];
 	struct cstr_view text = jb_view(v);
 	char *joined = nullptr;
 	if (json_object_is_type(v, json_type_array)) {
@@ -2015,8 +2001,8 @@ godbolt_targets_parse (struct godbolt *call)
 		return 0;
 	}
 	call->rec.marks |= GODBOLT_REC_PROBED;
-	call->rec.n_sec = 0;
-	godbolt_section_add(call, jb_get(call->doc, "stderr"), GODBOLT_SEC_STDERR);
+	call->rec.secs[GODBOLT_SEC_PP] = nullptr;
+	call->rec.secs[GODBOLT_SEC_STDOUT] = nullptr;
 	return 0;
 }
 
@@ -2212,7 +2198,7 @@ godbolt_section (struct godbolt *call)
 	if (!n)
 		return godbolt_section_end(call);
 	if (!(call->rec.marks & GODBOLT_REC_OPENED))
-		godbolt_put(call, godbolt_sections[call->rec.sec_of[call->rec.at.section]]);
+		godbolt_put(call, godbolt_sections[call->rec.at.section]);
 	call->rec.marks |= GODBOLT_REC_OPENED;
 	return text.data ? godbolt_section_text(call, text) : godbolt_section_lines(call, v, n);
 }
@@ -2296,7 +2282,7 @@ godbolt_write (struct godbolt *call)
 	}
 	/* A record begins only while the output is not full, and a step that
 	 * fills the output ends the loop. */
-	while (call->rec.at.section < call->rec.n_sec) {
+	while (call->rec.at.section < array_size(call->rec.secs)) {
 		size_t const sec = call->rec.at.section;
 		if (godbolt_section(call))
 			return godbolt_fail(call);
