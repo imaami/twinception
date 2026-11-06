@@ -899,13 +899,12 @@ home_finish (struct home *home,
              char const  *error,
              long         retry)
 {
-	home_breaker_note(home, job, home_job_failure(job, result), retry);
+	bool const failed = home_job_failure(job, result);
+	home_breaker_note(home, job, failed, retry);
 	if (result || job->flags & ERRED) {
 		(void)home_explain(home, job, result, error);
 		struct home_recovery const *r = job->recovery;
-		bool resumable = result && result != CURLE_WRITE_ERROR &&
-		                 result != CURLE_OUT_OF_MEMORY &&
-		                 !(job->flags & (ERRED | PROVIDER_DONE)) &&
+		bool resumable = result && failed && !(job->flags & (ERRED | PROVIDER_DONE)) &&
 		                 job->asks & JOB_DURABLE && job->journal && r && r->provider_id &&
 		                 home_native(home) &&
 		                 (!job->deadline || home->loop->now < job->deadline);
