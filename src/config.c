@@ -67,9 +67,9 @@ static char const *const provider_names[] = {
  * No provider's are those of a URL that --url gives.
  */
 static struct {
-	char const  *url[array_size(api_names)];
-	char const  *keys[2];
-	enum ai_api  api;
+	char const *url[array_size(api_names)];
+	char const *keys[2];
+	uint64_t    api;  /* enum ai_api, widened over the padding */
 } const providers[] = {
 	[AI_NO_PROVIDER] = { .keys = { "ASKAI_API_KEY" }, .api = AI_CHAT },
 	[AI_LLAMA] = {
