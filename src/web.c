@@ -177,7 +177,7 @@ struct web {
 	                                0 */
 	struct list        kept;     /* the entries, the one whose keep passes
 	                                first at the front */
-	struct web_entry **buckets;
+	struct web_entry  *buckets[WEB_BUCKETS];
 	size_t             bytes;    /* what the entries count against
 	                                WEB_CACHE_MAX */
 	uint64_t           n_runs;   /* the runs under way */
@@ -266,19 +266,27 @@ web_entries_free (struct web_entry *gone)
 	}
 }
 
-/* Returns the entry whose key is equal to @p key, whose bytes are at
- * @p data, or nullptr if the table has none. The caller has locked the
- * mutex.
+/* Returns the link to the first entry of the bucket of @p hash. */
+static struct web_entry **
+web_bucket (struct web *web,
+            uint64_t    hash)
+{
+	return &web->buckets[hash & (array_size(web->buckets) - 1)];
+}
+
+/* Returns the link to the entry whose key is equal to @p key, whose bytes
+ * are at @p data, or the link at the end of its bucket if the table has
+ * none. The caller has locked the mutex.
  */
-static struct web_entry *
-web_find (struct web const     *web,
+static struct web_entry **
+web_find (struct web           *web,
           struct web_key const *key,
           char const           *data)
 {
-	struct web_entry *entry = web->buckets[key->hash & (WEB_BUCKETS - 1)];
-	while (entry && !web_key_equal(&entry->key, entry->data, key, data))
-		entry = entry->next;
-	return entry;
+	struct web_entry **p = web_bucket(web, key->hash);
+	while (*p && !web_key_equal(&(*p)->key, (*p)->data, key, data))
+		p = &(*p)->next;
+	return p;
 }
 
 /* Returns the run under way whose key is equal to @p key, whose bytes are
@@ -300,20 +308,21 @@ web_find_run (struct web const     *web,
 	return nullptr;
 }
 
-/* Removes @p entry from the table and from the list of stored responses.
- * The caller has locked the mutex, and frees the entry after it has
- * unlocked the mutex.
+/* Removes @p entry from the table and from the list of stored responses,
+ * and puts it on the chain at @p gone, which the member next links. The
+ * caller has locked the mutex, and frees the chain after it has unlocked
+ * the mutex.
  */
 static void
-web_unlink (struct web       *web,
-            struct web_entry *entry)
+web_unlink (struct web        *web,
+            struct web_entry  *entry,
+            struct web_entry **gone)
 {
-	struct web_entry **p = &web->buckets[entry->key.hash & (WEB_BUCKETS - 1)];
-	while (*p != entry)
-		p = &(*p)->next;
-	*p = entry->next;
+	*web_find(web, &entry->key, entry->data) = entry->next;
 	list_del(&entry->hook);
 	web->bytes -= entry->bytes;
+	entry->next = *gone;
+	*gone = entry;
 }
 
 /*
@@ -328,18 +337,13 @@ static struct web_entry *
 web_keep (struct web       *web,
           struct web_entry *entry)
 {
-	struct web_entry *gone = web_find(web, &entry->key, entry->data);
-	if (gone) {
-		web_unlink(web, gone);
-		gone->next = nullptr;
-	}
-	while (web->bytes + entry->bytes > WEB_CACHE_MAX && !list_is_empty(&web->kept)) {
-		struct web_entry *first = container_of(web->kept.next, struct web_entry, hook);
-		web_unlink(web, first);
-		first->next = gone;
-		gone = first;
-	}
-	struct web_entry **bucket = &web->buckets[entry->key.hash & (WEB_BUCKETS - 1)];
+	struct web_entry *gone = nullptr;
+	struct web_entry *old = *web_find(web, &entry->key, entry->data);
+	if (old)
+		web_unlink(web, old, &gone);
+	while (web->bytes + entry->bytes > WEB_CACHE_MAX && !list_is_empty(&web->kept))
+		web_unlink(web, container_of(web->kept.next, struct web_entry, hook), &gone);
+	struct web_entry **bucket = web_bucket(web, entry->key.hash);
 	entry->next = *bucket;
 	*bucket = entry;
 	/* The new entry's keep usually passes last, so the search begins at
@@ -717,11 +721,9 @@ web_wait_mail (struct loop *loop,
 struct web *
 web_create (int *e)
 {
-	struct web *web = malloc(sizeof *web);
-	struct web_entry **buckets = calloc(WEB_BUCKETS, sizeof *buckets);
-	*e = !web || !buckets ? ENOMEM : pthread_mutex_init(&web->lock, nullptr);
+	struct web *web = calloc(1, sizeof *web);
+	*e = web ? pthread_mutex_init(&web->lock, nullptr) : ENOMEM;
 	if (*e) {
-		free(buckets);
 		free(web);
 		return nullptr;
 	}
@@ -729,12 +731,7 @@ web_create (int *e)
 	list_init(&web->kept);
 	list_init(&web->live);
 	list_init(&web->late);
-	web->overdue = (struct loop_step){ .fn = web_overdue_step };
-	web->buckets = buckets;
-	web->http = nullptr;
-	web->loop = nullptr;
-	web->bytes = 0;
-	web->n_runs = 0;
+	web->overdue.fn = web_overdue_step;
 	web->seed = util_seed();
 	return web;
 }
@@ -746,13 +743,7 @@ web_destroy (struct web **p_web)
 		return;
 	struct web *web = *p_web;
 	*p_web = nullptr;
-	while (!list_is_empty(&web->kept)) {
-		struct web_entry *entry = container_of(web->kept.next, struct web_entry, hook);
-		list_del(&entry->hook);
-		web_reply_put(entry->reply);
-		free(entry);
-	}
-	free(web->buckets);
+	(void)web_relieve(web, BUF_CRITICAL, SIZE_MAX);
 	pthread_mutex_destroy(&web->lock);
 	free(web);
 }
@@ -800,10 +791,8 @@ web_relieve (struct web        *web,
 		struct web_entry *first = container_of(web->kept.next, struct web_entry, hook);
 		if (level < BUF_CRITICAL && first->expires > now)
 			break;
-		web_unlink(web, first);
-		first->next = gone;
-		gone = first;
 		units += buf_units(first->bytes);
+		web_unlink(web, first, &gone);
 	}
 	pthread_mutex_unlock(&web->lock);
 	web_entries_free(gone);
@@ -918,7 +907,7 @@ web_wait_create (struct web           *web,
 	struct web_run *join = nullptr;
 	pthread_mutex_lock(&web->lock);
 	if (r->keep) {
-		struct web_entry *entry = web_find(web, &run->key, run->data);
+		struct web_entry *entry = *web_find(web, &run->key, run->data);
 		if (entry && entry->reply->received + r->keep * NS > now)
 			hit = web_reply_get(entry->reply);
 		else
