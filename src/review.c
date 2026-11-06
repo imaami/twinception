@@ -932,14 +932,13 @@ review_put_file (struct dstr              *out,
 	uint64_t lines = 0;
 	for (size_t k = 0; k < f->n; ++k)
 		lines += (uint64_t)(f->ranges[k].last - f->ranges[k].first) + 1;
-	char const *const word = lines == 1 ? "line" : "lines";
 	if (PUT(out, "  ") || cstr_view_cat(cstr_view_dstr(&f->path), out) ||
-	    !dstr_printf(out, "  %s ", word) || review_put_ranges(out, f))
+	    !dstr_printf(out, "  line%s ", util_s(lines)) || review_put_ranges(out, f))
 		return ENOMEM;
 	/* The ranges are within the file and do not overlap, so they cover
 	 * the whole file if lines is f->total. */
 	if (lines == f->total)
-		return dstr_printf(out, ": all %" PRIu64 " %s\n", lines, word) ? 0 : ENOMEM;
+		return dstr_printf(out, ": all %" PRIu64 " line%s\n", lines, util_s(lines)) ? 0 : ENOMEM;
 	if (f->total)
 		return dstr_printf(out, ": %" PRIu64 " of %" PRIu32 " lines\n", lines, f->total)
 		       ? 0 : ENOMEM;
@@ -1773,16 +1772,17 @@ review_update (struct review            *r,
 	f->changes[f->n++] = c;
 	r->size = size;
 	static char const *const verbs[] = { "is now", "stays" };
-	static char const *const history[] = {
-		"", " Its old claim is in its history.", " Its old location is in its history.",
-		" Its old claim and location are in its history.",
+	static struct cstr_view const history[] = {
+		CSTR_VIEW_INIT(""), CSTR_VIEW_INIT(" Its old claim is in its history."),
+		CSTR_VIEW_INIT(" Its old location is in its history."),
+		CSTR_VIEW_INIT(" Its old claim and location are in its history."),
 	};
 	bool const same = old == a->state;
 	return !dstr_printf(out, "Finding %" PRIu32 " %s ", a->id, verbs[same]) ||
 	       review_put_status(out, f) ||
 	       (same ? PUT(out, "; the new evidence is in its history.")
 	             : !dstr_printf(out, "; it was %s.", review_state_names[old].data)) ||
-	       !dstr_printf(out, "%s", history[new_claim | moved << 1]) ||
+	       cstr_view_cat(history[new_claim | moved << 1], out) ||
 	       review_put_tail(out, r, f, a->trimmed) ? ENOMEM : 0;
 }
 
