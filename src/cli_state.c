@@ -48,9 +48,7 @@ struct cli_state {
 	struct dstr             tree;
 	struct dstr             metadata;
 	struct dstr             scratch;
-	size_t                  input_first;
-	size_t                  input_count;
-	size_t                  input_bytes;
+	struct cli_state_ring   ring;  /**< of the inputs */
 	size_t                  turn_count;
 	size_t                  turn_bytes;
 	int                     directory;
@@ -265,8 +263,8 @@ cli_state_commit (struct cli_state *state)
 		                      cstr_view_dstr(&state->metadata), &state->identity_blob);
 	if (!e)
 		e = cli_state_tree_entry(state, &state->identity_blob, "identity.txt");
-	if (!e && state->input_count)
-		e = cli_state_tree_blob(state, "input.txt", cli_state_input_at(state, state->input_count - 1));
+	if (!e && state->ring.count)
+		e = cli_state_tree_blob(state, "input.txt", cli_state_input_at(state, state->ring.count - 1));
 	if (!e && state->turn_count) {
 		struct cli_state_turn const *last = &state->turns[state->turn_count - 1];
 		e = cli_state_tree_blob(state, "prompt.txt", cstr_view_dstr(&last->prompt));
@@ -319,11 +317,11 @@ cli_state_save (struct cli_state *state)
 	if (!e)
 		e = cli_state_write_text(fd, &state->identity);
 	if (!e)
-		e = cli_state_write_number(fd, state->input_count);
+		e = cli_state_write_number(fd, state->ring.count);
 	if (!e)
 		e = cli_state_write_number(fd, state->turn_count);
-	for (size_t i = 0; !e && i < state->input_count; ++i)
-		e = cli_state_write_text(fd, &state->inputs[(state->input_first + i) % array_size(state->inputs)]);
+	for (size_t i = 0; !e && i < state->ring.count; ++i)
+		e = cli_state_write_text(fd, &state->inputs[cli_state_ring_slot(&state->ring, i)]);
 	for (size_t i = 0; !e && i < state->turn_count; ++i) {
 		e = cli_state_write_text(fd, &state->turns[i].prompt);
 		if (!e)
@@ -388,18 +386,12 @@ cli_state_push_input (struct cli_state *state,
 	int e = cstr_view_store(text, &state->scratch);
 	if (e)
 		return e;
-	while (state->input_count && (state->input_count == array_size(state->inputs) ||
-	       text.len > CLI_STATE_INPUT_BYTES - state->input_bytes)) {
-		state->input_bytes -= dstr_len(&state->inputs[state->input_first]);
-		state->input_first = (state->input_first + 1) % array_size(state->inputs);
-		--state->input_count;
-	}
-	size_t index = (state->input_first + state->input_count) % array_size(state->inputs);
+	while (cli_state_ring_full(&state->ring, text.len))
+		cli_state_ring_drop(&state->ring, dstr_len(&state->inputs[state->ring.first]));
+	size_t index = cli_state_ring_add(&state->ring, text.len);
 	struct dstr previous = state->inputs[index];
 	state->inputs[index] = state->scratch;
 	state->scratch = previous;
-	++state->input_count;
-	state->input_bytes += text.len;
 	return 0;
 }
 
@@ -412,15 +404,15 @@ cli_state_recall (struct cli_state *state,
 {
 	if (!jb_is_text(text))
 		return EILSEQ;
-	for (size_t j = 0; j < state->input_count; ++j) {
+	struct cli_state_ring const *ring = &state->ring;
+	for (size_t j = 0; j < ring->count; ++j) {
 		if (!cstr_view_equal(cli_state_input_at(state, j), text))
 			continue;
 		struct dstr *inputs = state->inputs;
-		size_t first = state->input_first;
-		struct dstr entry = inputs[(first + j) % array_size(state->inputs)];
-		for (size_t k = j; k + 1 < state->input_count; ++k)
-			inputs[(first + k) % array_size(state->inputs)] = inputs[(first + k + 1) % array_size(state->inputs)];
-		inputs[(first + state->input_count - 1) % array_size(state->inputs)] = entry;
+		struct dstr entry = inputs[cli_state_ring_slot(ring, j)];
+		for (size_t k = j; k + 1 < ring->count; ++k)
+			inputs[cli_state_ring_slot(ring, k)] = inputs[cli_state_ring_slot(ring, k + 1)];
+		inputs[cli_state_ring_slot(ring, ring->count - 1)] = entry;
 		return 0;
 	}
 	return cli_state_push_input(state, text);
@@ -789,15 +781,15 @@ cli_state_recovery_file (struct cli_state const *state)
 size_t
 cli_state_input_count (struct cli_state const *state)
 {
-	return state ? state->input_count : 0;
+	return state ? state->ring.count : 0;
 }
 
 struct cstr_view
 cli_state_input_at (struct cli_state const *state,
                     size_t                  index)
 {
-	return state && index < state->input_count
-	       ? cstr_view_dstr(&state->inputs[(state->input_first + index) % array_size(state->inputs)])
+	return state && index < state->ring.count
+	       ? cstr_view_dstr(&state->inputs[cli_state_ring_slot(&state->ring, index)])
 	       : (struct cstr_view){};
 }
 
@@ -825,7 +817,7 @@ cli_state_add_input (struct cli_state *state,
 	if (!text.len)
 		return 0;
 	/* An input that repeats the last one saves only to retry a failure. */
-	if (!cstr_view_equal(cli_state_input_at(state, state->input_count - 1), text)) {
+	if (!cstr_view_equal(cli_state_input_at(state, state->ring.count - 1), text)) {
 		int e = cli_state_push_input(state, text);
 		if (e)
 			return e;

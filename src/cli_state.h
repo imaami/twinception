@@ -24,6 +24,53 @@ enum {
 
 struct cli_state;
 
+/** The positions of the inputs in a ring of CLI_STATE_INPUTS slots. first
+ *  is the slot of the oldest input, count is the number of inputs, and
+ *  bytes is the total length of their text.
+ */
+struct cli_state_ring {
+	size_t first;
+	size_t count;
+	size_t bytes;
+};
+
+/** The slot of the input at @p index of @p ring, 0 for the oldest. */
+static inline size_t
+cli_state_ring_slot (struct cli_state_ring const *ring,
+                     size_t                       index)
+{
+	return (ring->first + index) % CLI_STATE_INPUTS;
+}
+
+/** Whether the oldest input of @p ring must be dropped before an input of
+ *  @p len bytes is added.
+ */
+static inline bool
+cli_state_ring_full (struct cli_state_ring const *ring,
+                     size_t                       len)
+{
+	return ring->count && (ring->count == CLI_STATE_INPUTS || len > CLI_STATE_INPUT_BYTES - ring->bytes);
+}
+
+/** Drop the oldest input, of @p len bytes, from @p ring. */
+static inline void
+cli_state_ring_drop (struct cli_state_ring *ring,
+                     size_t                 len)
+{
+	ring->bytes -= len;
+	ring->first = cli_state_ring_slot(ring, 1);
+	--ring->count;
+}
+
+/** Add an input of @p len bytes to @p ring. Returns its slot. */
+static inline size_t
+cli_state_ring_add (struct cli_state_ring *ring,
+                    size_t                 len)
+{
+	ring->bytes += len;
+	return cli_state_ring_slot(ring, ring->count++);
+}
+
 /** A completed turn of the conversation. */
 struct cli_state_turn {
 	struct dstr prompt;

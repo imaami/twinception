@@ -37,9 +37,8 @@ enum {
 	CLI_CONSOLE_INPUT_LIMIT   = AUTOCOMPLETE_BYTES,
 	CLI_CONSOLE_INPUT_COUNT   = 32,
 	CLI_CONSOLE_HISTORY_LIMIT = CLI_STATE_INPUT_BYTES,
-	CLI_CONSOLE_HISTORY_COUNT = CLI_STATE_INPUTS,
 	CLI_CONSOLE_OUTPUT_LIMIT  = 32 * 1024 * 1024,
-	CLI_CONSOLE_TAB_INTERVAL  = 400 * 1000 * 1000,
+	CLI_CONSOLE_TAB_INTERVAL  = 400 * MS,
 	CLI_CONSOLE_ROWS          = 256,
 	CLI_CONSOLE_COLUMNS       = 512,
 };
@@ -156,10 +155,8 @@ struct cli_console {
 	size_t                           immediate_length;
 	size_t                           input_offset;
 	size_t                           input_size;
-	size_t                           history_first;
-	size_t                           history_count;
-	size_t                           history_bytes;
-	size_t                           history_sizes[CLI_CONSOLE_HISTORY_COUNT];
+	struct cli_state_ring            history;
+	size_t                           history_sizes[CLI_STATE_INPUTS];  /**< the bytes of each */
 	struct dstr                      history_last;
 	struct termios                   initial_state;
 	struct termios                   resume_state;
@@ -1289,21 +1286,14 @@ int cli_console_remember(struct cli_console *console, struct cstr_view text)
 	/* The console counts the bytes of the submitted entries itself, because
 	 * Readline changes recalled entries in place and offers no function for
 	 * their length. */
-	size_t const count = array_size(console->history_sizes);
-	while (console->history_count &&
-	       (console->history_count == count ||
-	        console->history_bytes + text.len > CLI_CONSOLE_HISTORY_LIMIT)) {
+	while (cli_state_ring_full(&console->history, text.len)) {
 		free_history_entry(remove_history(0));
-		console->history_bytes -= console->history_sizes[console->history_first];
-		console->history_first = (console->history_first + 1) % count;
-		--console->history_count;
+		cli_state_ring_drop(&console->history, console->history_sizes[console->history.first]);
 	}
 	dstr_cleanup(&console->history_last);
 	console->history_last = dstr_move(&copy);
 	add_history(dstr_get(&console->history_last));
-	console->history_sizes[(console->history_first + console->history_count) % count] = text.len;
-	console->history_bytes += text.len;
-	++console->history_count;
+	console->history_sizes[cli_state_ring_add(&console->history, text.len)] = text.len;
 	return 0;
 }
 
