@@ -2440,6 +2440,12 @@ mcp_req_refit (struct mcp_req   *req,
 	return req->turn > 1 && !req->forced && mcp_overflowed(why);
 }
 
+/* The head of a log line about the turn of the ask call of @p req, and
+ * the arguments of the head.
+ */
+#define TURN_FMT "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": "
+#define TURN_ARGS(req) (req)->mcp->loop->id, (req)->asked, (req)->turn
+
 /** Logs, with --verbose, how the turn of @p req that @p job ran ended, the
  *  HTTP status, the time and the size of the result. The line of a
  *  streamed answer also contains the tokens of the context that the turn
@@ -2467,8 +2473,7 @@ mcp_req_log_turn (struct mcp_req const *req,
 	size_t len = buf_peek(&job->result).len;
 	if (status != JOB_TEXT) {
 		bool body = status == JOB_ANSWERED;
-		LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": %s, %s "
-		    "after %.1f s, %s%zu byte%s of %s", req->mcp->loop->id, req->asked, req->turn,
+		LOG(LOG_VERBOSE, TURN_FMT "%s, %s after %.1f s, %s%zu byte%s of %s", TURN_ARGS(req),
 		    body && job->http >= 400 ? "failed" : ends[status], http,
 		    mcp_elapsed(req->turn_at), body ? "not streamed, " : "", len, util_s(len),
 		    body ? "body" : "error text");
@@ -2487,9 +2492,8 @@ mcp_req_log_turn (struct mcp_req const *req,
 	char reason[QUOTED(sizeof job->reason)] = "none";
 	if (*job->reason)
 		mcp_quote(reason, sizeof reason, cstr_view(job->reason), sizeof job->reason);
-	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": answered, %s "
-	    "after %.1f s, %s, stop reason %s, %" PRIu32 " tool call%s, %zu byte%s of text",
-	    req->mcp->loop->id, req->asked, req->turn, http, mcp_elapsed(req->turn_at),
+	LOG(LOG_VERBOSE, TURN_FMT "answered, %s after %.1f s, %s, stop reason %s, %" PRIu32
+	    " tool call%s, %zu byte%s of text", TURN_ARGS(req), http, mcp_elapsed(req->turn_at),
 	    tokens, reason, calls, util_s(calls), len, util_s(len));
 }
 
@@ -4654,8 +4658,7 @@ mcp_req_log_refused (struct mcp_req const *req,
 	char quoted[QUOTED(NAME_LOG)];
 	struct mcp_shown shown;
 	mcp_args_shown(mcp_static_tool(req->mcp->st, known), args, mcp_req_no_args(req), &shown);
-	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": tool call %s "
-	    "refused: %s; arguments %s", req->mcp->loop->id, req->asked, req->turn,
+	LOG(LOG_VERBOSE, TURN_FMT "tool call %s refused: %s; arguments %s", TURN_ARGS(req),
 	    mcp_quote(quoted, sizeof quoted, name, NAME_LOG),
 	    known < TOOL_MAX ? "not lent to this ask call" : "askai offers no such tool",
 	    shown.data);
@@ -5967,9 +5970,8 @@ mcp_slot_done (struct mcp_slot *slot,
 		if (failed && out.len)
 			mcp_quote(text, sizeof text,
 			          (struct cstr_view){ (char const *)out.ptr, out.len }, ERROR_LOG);
-		LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": %s %s %s "
-		    "after %.1f s (%zu byte%s); arguments %s%s%s", req->mcp->loop->id, req->asked,
-		    req->turn, label[slot->role], tool->name.data,
+		LOG(LOG_VERBOSE, TURN_FMT "%s %s %s after %.1f s (%zu byte%s); arguments %s%s%s",
+		    TURN_ARGS(req), label[slot->role], tool->name.data,
 		    failed ? "failed" : "answered", mcp_elapsed(slot->start), out.len,
 		    util_s(out.len), shown.data, *text ? "; error " : "", text);
 	}
@@ -6045,10 +6047,9 @@ mcp_req_context_note (struct mcp_req  *req,
 	if (full ? !(req->lent & l->of[KIND_COMPACT])
 	         : quarters <= req->reminded || !(req->lent & l->of[KIND_NOTES]))
 		return;
-	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": context "
-	    "notice, %" PRIu64 " %% full, %" PRIu64 " of %" PRIu64 " tokens: %s",
-	    req->mcp->loop->id, req->asked, req->turn, tokens * 100 / context, tokens,
-	    context, full ? "a request to call compact" : "a reminder to write notes");
+	LOG(LOG_VERBOSE, TURN_FMT "context notice, %" PRIu64 " %% full, %" PRIu64 " of %" PRIu64
+	    " tokens: %s", TURN_ARGS(req), tokens * 100 / context, tokens, context,
+	    full ? "a request to call compact" : "a reminder to write notes");
 	if (!full)
 		req->reminded = quarters;
 	(void)util_text_printf(&slot->note, full ? "\n\n" NOTICE_COMPACT : "\n\n" NOTICE_REMIND,
@@ -6866,9 +6867,8 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	(void)mcp_req_trace(req, &c, args, mcp_row_of(t)->trace);
 	(void)mcp_req_trace_end(req, false, summary.len);
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
-	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": compacted by "
-	    "the upstream's compact call, summary %zu byte%s", req->mcp->loop->id, req->asked,
-	    req->turn, summary.len, util_s(summary.len));
+	LOG(LOG_VERBOSE, TURN_FMT "compacted by the upstream's compact call, summary %zu byte%s",
+	    TURN_ARGS(req), summary.len, util_s(summary.len));
 	req->reminded = 0;
 	struct dstr *d = &req->self.answer;
 	dstr_clear(d);
@@ -6907,8 +6907,7 @@ mcp_req_compact_full (struct mcp_req *req)
 		return;
 	}
 	hist_add(&req->mcp->counts->calls.compacted[1], 1);
-	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": context full, "
-	    "compacted by askai", req->mcp->loop->id, req->asked, req->turn);
+	LOG(LOG_VERBOSE, TURN_FMT "context full, compacted by askai", TURN_ARGS(req));
 	req->reminded = 0;
 	mcp_req_drop(req);
 	mcp_req_args_free(req, 0, array_size(req->args));
@@ -6925,6 +6924,8 @@ mcp_req_compact_full (struct mcp_req *req)
 }
 
 #undef CAT
+#undef TURN_ARGS
+#undef TURN_FMT
 
 /* Handles the output of the git that reads the notes for the prompt of the
  * ask call in @p slot, req->self. The read parked the request among the
