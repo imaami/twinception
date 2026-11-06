@@ -1354,14 +1354,20 @@ policy_grant (struct policy const      *policy,
 {
 	if (!policy || !g || kind >= POLICY_KINDS)
 		return POLICY_REFUSED;
-	if (kind != POLICY_UNIX || !peer) {
-		if (token.data && policy->n_tokens)
+	/* Bit 1 is set for a client on a Unix socket, and bit 0 for a token. */
+	switch ((kind == POLICY_UNIX && peer) << 1 | (token.data != nullptr)) {
+	case 1:
+		if (policy->n_tokens)
 			return policy_grant_token(policy, token, g);
+		[[fallthrough]];
+	case 0:
 		return policy_grant_role(policy, policy->anonymous[kind], 0,
 		                         policy->strangers[kind], g);
-	}
-	if (!token.data)
+	case 2:
 		return policy_grant_unix(policy, peer, g);
+	default:
+		break;
+	}
 	if (!policy->unix_token)
 		return POLICY_UNIX_TOKEN;
 	/* ASKAI_TOKEN under askai's own policy grants its role, and the calls
