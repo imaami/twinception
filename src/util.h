@@ -627,12 +627,13 @@ util_vformat (char       *buf,
 			/* Truncated write. Adjust the length we intend to
 			 * return, and indicate truncation by changing the
 			 * last characters to "..." if there's room left.
+			 * The dots also replace the rest of a UTF-8
+			 * character that they would split.
 			 */
 			len = --size;
 			if (len > 2U) {
-				buf[len - 3U] = '.';
-				buf[len - 2U] = '.';
-				buf[len - 1U] = '.';
+				size_t const dots = util_clip(buf, len, len - 3U);
+				memset(buf + dots, '.', len - dots);
 			}
 		}
 	}
