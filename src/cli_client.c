@@ -72,7 +72,6 @@ void cli_client_fini(struct cli_client *client)
 	dstr_cleanup(&client->participant);
 	dstr_cleanup(&client->notes_tool);
 	autocomplete_destroy(&client->catalog);
-	cli_client_json_cleanup(&client->notebooks);
 }
 
 struct cli_client_response {
@@ -513,32 +512,20 @@ cli_client_read_notebooks (struct cstr_view  text,
 	return 0;
 }
 
-struct cli_client_names {
-	struct cstr_view *data;
-	size_t count, capacity;
+/* The note names that cli_client_read_files() parses, as views into the
+ * text that it parses.
+ */
+struct cli_client_files {
+	struct cstr_view *names;
+	size_t            count;
+	size_t            capacity;
 };
-
-static void cli_client_names_fini(struct cli_client_names *names)
-{
-	free(names->data);
-	names->data = nullptr;
-	names->count = names->capacity = 0;
-}
-
-static int cli_client_names_add(struct cli_client_names *names, struct cstr_view text)
-{
-	if (names->count == 65536)
-		return E2BIG;
-	if (util_grow(names->data, names->capacity, names->count + 1))
-		return ENOMEM;
-	names->data[names->count++] = text;
-	return 0;
-}
 
 static int
 cli_client_read_files (struct cstr_view  text,
-                       void             *files)
+                       void             *context)
 {
+	struct cli_client_files *found = context;
 	struct cstr_view line;
 	while (cstr_view_cut(&text, '\n', &line)) {
 		if (!line.len || line.data[line.len - 1] != ')')
@@ -578,29 +565,13 @@ cli_client_read_files (struct cstr_view  text,
 				continue;
 			line = cstr_view_slice(line, date_size, SIZE_MAX);
 		}
-		int e = cli_client_names_add(files, line);
-		if (e)
-			return e;
+		if (found->count == 65536)
+			return E2BIG;
+		if (util_grow(found->names, found->capacity, found->count + 1))
+			return ENOMEM;
+		found->names[found->count++] = line;
 	}
 	return 0;
-}
-
-static int
-cli_client_name_compare (void const *a,
-                         void const *b)
-{
-	struct cstr_view x = jb_view(*(struct json_object *const *)a);
-	struct cstr_view y = jb_view(*(struct json_object *const *)b);
-	return cstr_view_compare(x, y);
-}
-
-static void
-cli_client_unique (struct json_object *names)
-{
-	json_object_array_sort(names, cli_client_name_compare);
-	for (size_t i = json_object_array_length(names); i > 1; --i)
-		if (cstr_view_equal(jb_view(jb_at(names, i - 1)), jb_view(jb_at(names, i - 2))))
-			(void)json_object_array_del_idx(names, i - 1, 1);
 }
 
 /* Call the notes tool with params and pass the text of each text block of
@@ -637,21 +608,20 @@ cli_client_notes (struct cli_client   *client,
 	return e;
 }
 
-/* The notebooks are sorted and unique. */
+/* Discover the note files of the notebooks of the catalog. */
 static int
 cli_client_discover_files (struct cli_client   *client,
                            struct autocomplete *catalog,
                            struct cstr_view     tool,
-                           struct json_object  *notebooks,
                            struct cli_error    *error)
 {
-	size_t count = json_object_array_length(notebooks);
+	size_t count = autocomplete_list_count(catalog, AUTOCOMPLETE_NOTEBOOKS);
 	if (count > 128)
 		return cli_error_set(error, E2BIG, "More than 128 notebooks; filename discovery is bounded to 128");
-	struct cli_client_names files = {};
+	struct cli_client_files files = {};
 	int e = 0;
 	for (size_t i = 0; !e && i < count; ++i) {
-		struct cstr_view notebook = jb_view(jb_at(notebooks, i));
+		struct cstr_view notebook = autocomplete_list_at(catalog, AUTOCOMPLETE_NOTEBOOKS, i);
 		struct json_object *params = jb_object("name", cli_client_string(tool),
 		                                      "arguments", jb_object("action", json_object_new_string("list"),
 		                                                             "notebook", cli_client_string(notebook), nullptr), nullptr);
@@ -661,10 +631,10 @@ cli_client_discover_files (struct cli_client   *client,
 		e = cli_client_notes(client, params, "note filename", true, cli_client_read_files, &files,
 		                     &listing, error);
 		if (!e)
-			e = autocomplete_set_note_files(catalog, tool,
-			                                notebook, files.data, files.count);
+			e = autocomplete_set_note_files(catalog, tool, notebook, files.names, files.count);
 	}
-	cli_client_names_fini(&files);
+	free(files.names);
+	files.names = nullptr;
 	return e;
 }
 
@@ -676,7 +646,7 @@ cli_client_refresh_notes (struct cli_client *client,
 	if (!dstr_len(&client->notes_tool))
 		return 0;
 	autocomplete_clear_note_files(client->catalog);
-	return cli_client_discover_files(client, client->catalog, cstr_view_dstr(&client->notes_tool), client->notebooks, error);
+	return cli_client_discover_files(client, client->catalog, cstr_view_dstr(&client->notes_tool), error);
 }
 
 static int
@@ -704,19 +674,20 @@ cli_client_has_action (struct json_object *actions,
 	return false;
 }
 
+/* Set list of the catalog to the strings of names, a JSON array. */
 static int
 cli_client_catalog_names (struct autocomplete    *catalog,
                           enum autocomplete_list  list,
                           struct json_object     *names)
 {
-	cli_client_unique(names);
-	struct cli_client_names views = {};
-	int e = 0;
-	for (size_t i = 0, count = json_object_array_length(names); !e && i < count; ++i)
-		e = cli_client_names_add(&views, jb_view(jb_at(names, i)));
-	if (!e)
-		e = autocomplete_set_names(catalog, list, views.data, views.count);
-	cli_client_names_fini(&views);
+	size_t count = json_object_array_length(names);
+	struct cstr_view *views = calloc(count ? count : 1, sizeof *views);
+	if (!views)
+		return ENOMEM;
+	for (size_t i = 0; i < count; ++i)
+		views[i] = jb_view(jb_at(names, i));
+	int e = autocomplete_set_names(catalog, list, views, count);
+	free(views);
 	return e;
 }
 
@@ -848,7 +819,7 @@ cli_client_refresh (struct cli_client *client,
 	if (!e && files)
 		e = cli_client_report_optional(client, CSTR_VIEW("Note filename discovery failed"), error,
 		                               cli_client_discover_files(client, catalog, cstr_view_dstr(&notebook_tool),
-		                                                         notebooks, error));
+		                                                         error));
 	if (e)
 		goto done;
 	if (client->catalog && (!cstr_view_equal(cstr_view_dstr(&client->session_key), cstr_view_dstr(&session)) ||
@@ -866,9 +837,6 @@ cli_client_refresh (struct cli_client *client,
 	dstr_cleanup(&client->notes_tool);
 	if (files)
 		client->notes_tool = dstr_move(&notebook_tool);
-	cli_client_json_cleanup(&client->notebooks);
-	client->notebooks = notebooks;
-	notebooks = nullptr;
 	dstr_cleanup(&client->session_key);
 	client->session_key = dstr_move(&session);
 	dstr_cleanup(&client->participant);

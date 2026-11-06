@@ -460,8 +460,8 @@ static void autocomplete_chat_names (void)
 	autocomplete_only(catalog, CSTR_VIEW("@rx"), 3, CSTR_VIEW("@rx6900xt "), 10);
 	autocomplete_only(catalog, CSTR_VIEW("rx"), 2, CSTR_VIEW("rx6900xt: "), 10);
 	autocomplete_empty(catalog, CSTR_VIEW("@rx9"), 4);
-	assert(autocomplete_participant_count(catalog) == 2);
-	assert(cstr_view_equal(autocomplete_participant_at(catalog, 1), names[1]));
+	assert(autocomplete_list_count(catalog, AUTOCOMPLETE_PARTICIPANTS) == 2);
+	assert(cstr_view_equal(autocomplete_list_at(catalog, AUTOCOMPLETE_PARTICIPANTS, 1), names[1]));
 	autocomplete_has(catalog, CSTR_VIEW("/tool git participant=rx9"),
 	                 CSTR_VIEW("/tool git participant=rx9070xt"), sizeof("/tool git participant=rx9") - 1);
 	/* A chat roster can contain several upstreams, independently of stored
@@ -474,7 +474,7 @@ static void autocomplete_chat_names (void)
 	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, nullptr, 0));
 	assert(autocomplete_set_names(catalog, AUTOCOMPLETE_LISTS, nullptr, 0) == EINVAL);
 	autocomplete_empty(catalog, CSTR_VIEW("@rx"), 3);
-	assert(autocomplete_participant_count(catalog) == 2);
+	assert(autocomplete_list_count(catalog, AUTOCOMPLETE_PARTICIPANTS) == 2);
 	autocomplete_destroy(&catalog);
 }
 
@@ -555,7 +555,7 @@ int main(void)
 	EMPTY("/tool absent ");
 	EMPTY("/tool git recipient=");
 	EMPTY("/tool git command=log com");
-	assert(autocomplete_participant_count(catalog) == 3);
+	assert(autocomplete_list_count(catalog, AUTOCOMPLETE_PARTICIPANTS) == 3);
 	assert(autocomplete_tool_count(catalog) == 5);
 	assert(autocomplete_find_tool(catalog, (struct cstr_view){"gitJUNK", 3}));
 	char counted[] = {'@', 'a', 'l'};

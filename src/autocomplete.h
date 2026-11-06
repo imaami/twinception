@@ -1,8 +1,8 @@
 /** @file
  * Connection-owned, offline completion of MCP tools and session names.
  * Input views contain UTF-8 bytes and need not have a trailing NUL. Views
- * passed to mutators must not alias module-owned mutable storage (borrowed
- * completion lines or participant names).
+ * passed to a mutator must not alias the module-owned storage that it
+ * changes: the completion lines, or the names or note paths it replaces.
  */
 #ifndef TWINCEPTION_SRC_AUTOCOMPLETE_H_
 #define TWINCEPTION_SRC_AUTOCOMPLETE_H_
@@ -157,11 +157,16 @@ autocomplete_set_note_files (struct autocomplete    *ac,
                              size_t                  count);
 
 extern size_t
-autocomplete_participant_count (struct autocomplete const *ac);
+autocomplete_list_count (struct autocomplete const *ac,
+                         enum autocomplete_list     list);
 
+/** The name at @p index of the sorted, unique names of @p list, borrowed
+ *  until the list is set again, or an empty view.
+ */
 extern struct cstr_view
-autocomplete_participant_at (struct autocomplete const *ac,
-                             size_t                     index);
+autocomplete_list_at (struct autocomplete const *ac,
+                      enum autocomplete_list     list,
+                      size_t                     index);
 
 /** No I/O. Matches are borrowed until the next completion or destruction.
  * At most 256 matches and 16 MiB of replacement text (including trailing

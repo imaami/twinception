@@ -881,17 +881,19 @@ autocomplete_set_note_files (struct autocomplete    *ac,
 }
 
 size_t
-autocomplete_participant_count (struct autocomplete const *ac)
+autocomplete_list_count (struct autocomplete const *ac,
+                         enum autocomplete_list     list)
 {
-	return ac->lists[AUTOCOMPLETE_PARTICIPANTS].count;
+	return list < AUTOCOMPLETE_LISTS ? ac->lists[list].count : 0;
 }
 
 struct cstr_view
-autocomplete_participant_at (struct autocomplete const *ac,
-                             size_t                     index)
+autocomplete_list_at (struct autocomplete const *ac,
+                      enum autocomplete_list     list,
+                      size_t                     index)
 {
-	struct autocomplete_names const *names = &ac->lists[AUTOCOMPLETE_PARTICIPANTS];
-	return index < names->count ? cstr_view_dstr(&names->values[index]) : CSTR_VIEW("");
+	return index < autocomplete_list_count(ac, list) ? cstr_view_dstr(&ac->lists[list].values[index])
+	                                                 : CSTR_VIEW("");
 }
 
 static int

@@ -59,7 +59,6 @@ struct cli_client {
 	struct dstr            participant;
 	struct dstr            notes_tool;
 	struct autocomplete   *catalog;
-	struct json_object    *notebooks;
 	struct cli_network    *network;
 	cli_client_report_fn  *report;
 	int64_t                next_id;

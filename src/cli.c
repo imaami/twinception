@@ -842,14 +842,14 @@ cli_history_show (struct cli *cli)
 static int
 cli_names (struct cli *cli)
 {
-	size_t count = autocomplete_participant_count(cli->client.catalog);
+	size_t count = autocomplete_list_count(cli->client.catalog, AUTOCOMPLETE_PARTICIPANTS);
 	if (!count)
 		return cli_ui_message(cli->console, CSTR_VIEW("No participants discovered. /refresh reloads the shared notebooks."));
 	dstr_auto names = dstr(nullptr);
 	if (!dstr_cat(&names, "Known session participants:"))
 		return ENOMEM;
 	for (size_t i = 0; i < count; ++i) {
-		struct cstr_view name = autocomplete_participant_at(cli->client.catalog, i);
+		struct cstr_view name = autocomplete_list_at(cli->client.catalog, AUTOCOMPLETE_PARTICIPANTS, i);
 		if (!dstr_cat(&names, " ") || cstr_view_cat(name, &names))
 			return ENOMEM;
 	}
