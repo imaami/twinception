@@ -27,6 +27,22 @@
 #include "oid.h"
 #include "util.h"
 
+/* The header of a record on disk: the magic, the sequence number and the
+ * length of the data, both big-endian, the job's id and the kind, then the
+ * SHA-256 digest of all of that and the data.
+ */
+static char const MAGIC[] = "ASKAIJ1\n";
+enum {
+	JOURNAL_AT_SEQUENCE = sizeof MAGIC - 1,
+	JOURNAL_AT_LENGTH   = JOURNAL_AT_SEQUENCE + sizeof (uint64_t),
+	JOURNAL_AT_ID       = JOURNAL_AT_LENGTH + sizeof (uint64_t),
+	JOURNAL_AT_KIND     = JOURNAL_AT_ID + HEXID_DIGITS,
+	JOURNAL_SIGNED      = JOURNAL_AT_KIND + JOURNAL_KIND,
+	JOURNAL_DIGEST      = 32,
+	JOURNAL_HEADER      = JOURNAL_SIGNED + JOURNAL_DIGEST,
+};
+static_assert(JOURNAL_HEADER == 120, "the records on disk have 120-byte headers");
+
 enum {
 	JOURNAL_QUEUE          = 256,
 	JOURNAL_BYTES          = 32 << 20,
@@ -37,8 +53,6 @@ enum {
 	JOURNAL_RECOVERY_BYTES = 256 << 20,
 	JOURNAL_FILES          = 16,
 	JOURNAL_SCRATCH        = 64 << 10,
-	JOURNAL_HEADER         = 120,
-	JOURNAL_SIGNED         = 88,
 	JOURNAL_TERMINAL_BYTES = JOURNAL_RECORD_MAX + JOURNAL_HEADER,
 };
 
@@ -165,13 +179,13 @@ journal_digest (struct journal      *j,
                 unsigned char const *header,
                 void const          *data,
                 size_t               len,
-                unsigned char        digest[32])
+                unsigned char        digest[JOURNAL_DIGEST])
 {
 	unsigned n = 0;
 	bool ok = EVP_DigestInit_ex(j->digest, EVP_sha256(), nullptr) == 1 &&
 	          EVP_DigestUpdate(j->digest, header, JOURNAL_SIGNED) == 1 &&
 	          EVP_DigestUpdate(j->digest, data, len) == 1 &&
-	          EVP_DigestFinal_ex(j->digest, digest, &n) == 1 && n == 32;
+	          EVP_DigestFinal_ex(j->digest, digest, &n) == 1 && n == JOURNAL_DIGEST;
 	return ok ? 0 : EIO;
 }
 
@@ -414,32 +428,32 @@ journal_record_read (struct journal         *j,
 		return e;
 	if (got != sizeof header)
 		goto incomplete;
-	if (memcmp(header, "ASKAIJ1\n", 8))
+	if (memcmp(header, MAGIC, sizeof MAGIC - 1))
 		return EILSEQ;
-	uint64_t length = util_be_get(header + 16, 8);
+	uint64_t length = util_be_get(header + JOURNAL_AT_LENGTH, sizeof length);
 	if (length > JOURNAL_RECORD_MAX)
 		return EILSEQ;
 	struct journal_record *r = calloc(1, sizeof *r + (size_t)length + 1);
 	if (!r)
 		return ENOMEM;
-	r->sequence = util_be_get(header + 8, 8);
+	r->sequence = util_be_get(header + JOURNAL_AT_SEQUENCE, sizeof r->sequence);
 	r->len = (size_t)length;
-	memcpy(r->kind, header + 56, JOURNAL_KIND);
+	memcpy(r->kind, header + JOURNAL_AT_KIND, JOURNAL_KIND);
+	struct cstr_view const id = { (char const *)header + JOURNAL_AT_ID, HEXID_DIGITS };
 	size_t const kind_len = util_word_len(r->kind, JOURNAL_KIND);
-	if (hexid_init(&r->id, (struct cstr_view){ (char const *)header + 24, HEXID_DIGITS }) ||
-	    !kind_len) {
+	if (hexid_init(&r->id, id) || !kind_len) {
 		journal_records_destroy(&r);
 		return EILSEQ;
 	}
 	r->type = journal_kind((struct cstr_view){ r->kind, kind_len });
-	e = util_read_all(fd, r->data, r->len, *offset + JOURNAL_HEADER, &got);
+	e = util_read_all(fd, r->data, r->len, *offset + (off_t)sizeof header, &got);
 	if (e || got != r->len) {
 		journal_records_destroy(&r);
 		if (e)
 			return e;
 		goto incomplete;
 	}
-	unsigned char digest[32];
+	unsigned char digest[JOURNAL_DIGEST];
 	e = journal_digest(j, header, r->data, r->len, digest);
 	if (!e && memcmp(digest, header + JOURNAL_SIGNED, sizeof digest))
 		e = EILSEQ;
@@ -447,7 +461,7 @@ journal_record_read (struct journal         *j,
 		journal_records_destroy(&r);
 		return e;
 	}
-	*offset += JOURNAL_HEADER + (off_t)r->len;
+	*offset += (off_t)(sizeof header + r->len);
 	*record = r;
 	return 0;
 
@@ -679,11 +693,11 @@ journal_record_write (struct journal              *j,
                       uint64_t                     sequence)
 {
 	unsigned char header[JOURNAL_HEADER] = {};
-	memcpy(header, "ASKAIJ1\n", 8);
-	util_be_put(header + 8, sequence, 8);
-	util_be_put(header + 16, r->len, 8);
-	memcpy(header + 24, r->id.hex, HEXID_DIGITS);
-	memcpy(header + 56, r->kind, JOURNAL_KIND);
+	memcpy(header, MAGIC, sizeof MAGIC - 1);
+	util_be_put(header + JOURNAL_AT_SEQUENCE, sequence, sizeof sequence);
+	util_be_put(header + JOURNAL_AT_LENGTH, r->len, sizeof (uint64_t));
+	memcpy(header + JOURNAL_AT_ID, r->id.hex, HEXID_DIGITS);
+	memcpy(header + JOURNAL_AT_KIND, r->kind, JOURNAL_KIND);
 	int e = journal_digest(j, header, r->data, r->len, header + JOURNAL_SIGNED);
 	if (!e)
 		e = util_write_all(fd, header, sizeof header);
