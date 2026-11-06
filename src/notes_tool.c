@@ -53,6 +53,7 @@ enum notes_tool_fetch : uint32_t {
 	                          FETCH_COMPACT */
 	FETCH_DIFF,            /* compare two revisions of a note */
 	FETCH_STAT,            /* count the lines that a write changed */
+	FETCH_GREP,            /* find the lines that match a pattern */
 	FETCH_KIND = 15,       /* the mask of the kinds */
 	FETCH_APPEND = 16,     /* set for append, also with FETCH_READ to read
 	                          the note to append to */
@@ -112,6 +113,7 @@ static struct {
 	NOTE("restore",   NOTE_WRITE | NOTE_FILE | NOTE_REVISION,  FETCH_READ | FETCH_RESTORE),
 	NOTE("notebooks", NOTE_OFFSET,                             FETCH_BOOKS),
 	NOTE("list",      NOTE_OFFSET,                             FETCH_FILES),
+	NOTE("search",    NOTE_OFFSET,                             FETCH_GREP),
 	NOTE("history",   NOTE_OFFSET,                             FETCH_LIST),
 	NOTE("read",      NOTE_FILE | NOTE_OFFSET | NOTE_REVISION, FETCH_READ),
 	NOTE("diff",      NOTE_FILE | NOTE_OFFSET,                 FETCH_DIFF),
@@ -164,8 +166,10 @@ enum {
  * prompt.
  */
 struct notes_tool_call {
-	struct buf              file;      /* a write's file part, until git has
-	                                      its input */
+	struct buf              file;      /* the input of git, such as a
+	                                      write's file part or the pattern
+	                                      of a search, until notes_tool_run()
+	                                      passes it to git */
 	struct dstr             out;       /* the output of a tool call.
 	                                      notes_tool_end() lends it to
 	                                      the slot. */
@@ -1095,11 +1099,11 @@ notes_tool_revision_step (struct mcp_slot *slot)
 		return;
 	}
 	child_destroy(&call->child);
-	struct buf in = {};
 	int e = 0;
-	if (notes_revision_ready(&call->revision) && (call->fetch & FETCH_KIND) != FETCH_DIFF)
-		e = notes_read_input(&in, call->revision.from.hex, util_text_view(&call->revision.file));
-	notes_tool_run(slot, call->fetch, &in, e);
+	if (notes_revision_ready(&call->revision) && (call->fetch & FETCH_KIND) == FETCH_READ)
+		e = notes_read_input(&call->file, call->revision.from.hex,
+		                     util_text_view(&call->revision.file));
+	notes_tool_run(slot, call->fetch, &call->file, e);
 }
 
 /* Handles the output of git for diff. */
@@ -1123,6 +1127,56 @@ notes_tool_got_diff (struct mcp_slot *slot)
 		e = cstr_view_cat(CSTR_VIEW("\n[The diff exceeded the capture limit "
 		                            "and is incomplete.]\n"), call->text);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
+	notes_tool_end(slot, e, false);
+}
+
+/* Handles the output of git grep for search. git starts each line with
+ * the commit that it searched, the notebook's tip, and a colon, which the
+ * result leaves out. With -z, git quotes no name and ends the name and the
+ * line number with a NUL, and the result puts a colon there instead. Exit
+ * status 1 means that no line matches, and 128 that git refused the
+ * pattern.
+ */
+static void
+notes_tool_got_grep (struct mcp_slot *slot)
+{
+	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	struct child const *c = call->child;
+	bool const cut = c->flags & CHILD_CUT;
+	int const status = child_status(c);
+	if (status != 0 && status != 1 && !cut) {
+		mcp_slot_tell(slot, status == 128 ? CSTR_VIEW("A line of the pattern is not an "
+		                                              "extended regular expression.")
+		                                  : CSTR_VIEW("The notes could not be read."),
+		              TOOL_FAILED);
+		return;
+	}
+	char const *repo = notes_tool_call_notebook(call);
+	size_t const skip = oid_len(&call->revision.from) + 1;
+	struct span const out = buf_peek(&c->out);
+	struct cstr_view rest = { (char const *)out.ptr, out.len }, line;
+	dstr_auto found = DSTR_INIT;
+	int e = 0;
+	while (!e && cstr_view_cut(&rest, '\n', &line)) {
+		struct cstr_view text = cstr_view_slice(line, skip, SIZE_MAX), name, number;
+		if (!cstr_view_cut(&text, '\0', &name) || !cstr_view_cut(&text, '\0', &number))
+			continue;
+		e = cstr_view_join((struct cstr_view const[]){ name, number, text }, 3, UINT64_MAX,
+		                   CSTR_VIEW(":"), CSTR_VIEW(":"), &found) ||
+		    !dstr_cat_n(&found, "\n", 1) ? ENOMEM : 0;
+	}
+	struct cstr_view const lines = cstr_view_dstr(&found);
+	if (!e)
+		e = dstr_printf(call->text, "Notebook %s — lines that match the pattern "
+		                "(file:line:text):\n\n", notes_selector(repo)) ? 0 : ENOMEM;
+	if (!e)
+		e = lines.len ? notes_tool_show(call->text, lines)
+		  : cstr_view_cat(CSTR_VIEW("No line of the current notes matches the "
+		                            "pattern.\n"), call->text);
+	if (!e && cut)
+		e = cstr_view_cat(CSTR_VIEW("[The search output exceeded the capture limit and "
+		                            "is incomplete.]\n"), call->text);
+	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len + lines.len);
 	notes_tool_end(slot, e, false);
 }
 
@@ -1402,6 +1456,7 @@ static struct notes_tool_fetch_step const notes_tool_fetch_steps[] = {
 	[FETCH_NEWEST]  = { notes_tool_newest,    NOTES_READ,   0 },
 	[FETCH_DIFF]    = { notes_tool_got_diff,  NOTES_DIFF,   1 },
 	[FETCH_STAT]    = { notes_tool_stated,    NOTES_STAT,   0 },
+	[FETCH_GREP]    = { notes_tool_got_grep,  NOTES_GREP,   0 },
 };
 static_assert(array_size(notes_tool_fetch_steps) <= FETCH_KIND + 1);
 
@@ -1593,6 +1648,26 @@ notes_tool_got_append (struct mcp_slot *slot,
 	call->file = file;
 	call->part = part;
 	notes_tool_write(slot, &call->revision.tip, old.len);
+}
+
+/* Starts search of the notebook of the call in @p slot. git grep -E -f -
+ * takes @p pattern on its input: extended regular expressions, one on each
+ * line. git pins the notebook's tip first, and then searches the notes at
+ * that commit.
+ */
+static void
+notes_tool_search (struct mcp_slot  *slot,
+                   struct cstr_view  pattern)
+{
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	if (!pattern.len || memchr(pattern.data, '\0', pattern.len)) {
+		mcp_slot_tell(slot, CSTR_VIEW("The pattern argument must be extended regular "
+		                              "expressions, one on each line, with no NUL."),
+		              TOOL_FAILED);
+		return;
+	}
+	notes_tool_run(slot, FETCH_GREP | FETCH_REVISION, &(struct buf){},
+	               buf_put(&call->file, pattern.data, pattern.len, SIZE_MAX));
 }
 
 /* Runs git to read the note @p name. @p fetch is the fetch of read or
@@ -1799,6 +1874,8 @@ notes_tool_start (struct mcp_slot    *slot,
 	}
 	if (flags & NOTE_FILE)
 		notes_tool_read(slot, name, fetch);
+	else if (fetch == FETCH_GREP)
+		notes_tool_search(slot, jb_view(jb_get(args, "pattern")));
 	else
 		notes_tool_run(slot, fetch, &(struct buf){}, 0);
 }
@@ -1846,7 +1923,8 @@ notes_tool_schema (struct notes_tool const *tool,
 			"if given. list lists the current notes. history lists the changes, oldest "
 			"first, to all notes or to one (file). read reads a note, or its version at "
 			"the commit revision. diff shows the changes to a note between the commits "
-			"from and to. notebooks lists the session's notebooks.",
+			"from and to. search lists the lines of the current notes that match "
+			"pattern. notebooks lists the session's notebooks.",
 			files ? " attach gives you a whole note (file) as a file after the turn's "
 			        "results." : "",
 			" The actions that read take notebook. To recover lost text: history with "
@@ -1865,6 +1943,9 @@ notes_tool_schema (struct notes_tool const *tool,
 			"names both commits; give those IDs with offset."),
 		"as", schema_property("string", "The name to write the note under, instead of file."),
 		"text", schema_property("string", "The text, at most 4 MiB."),
+		"pattern", schema_property("string",
+			"Extended regexes, one on each line, case ignored. A line of a note "
+			"matches if one of them matches."),
 		"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 		"notebook", schema_property("string", notebooks[side]),
 		nullptr);

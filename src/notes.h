@@ -69,6 +69,8 @@ enum notes_cmd : uint8_t {
 	NOTES_DIFF,      /**< compares a note in two commits */
 	NOTES_STAT,      /**< counts the lines that one commit changed against
 	                      another */
+	NOTES_GREP,      /**< finds the lines of the current notes that match
+	                      the patterns of its input */
 };
 
 /** A current note in the output of NOTES_FILES or NOTES_CHECK. Views
@@ -198,9 +200,9 @@ notes_exists (struct notes const *notes);
  *  command come from @p words, in this order: for NOTES_LIST a notebook
  *  branch or commit and a file name or nullptr, for NOTES_FILES and
  *  NOTES_HEAD a notebook branch or commit, for NOTES_ANCESTOR two commits,
- *  for NOTES_DIFF two commits and a file name, and for NOTES_STAT two
- *  commits. The other commands do not read @p words, which may then be
- *  nullptr. The words must outlive @p argv.
+ *  for NOTES_DIFF two commits and a file name, for NOTES_STAT two commits,
+ *  and for NOTES_GREP a commit. The other commands do not read @p words,
+ *  which may then be nullptr. The words must outlive @p argv.
  */
 extern void
 notes_argv (struct notes const *notes,
@@ -249,8 +251,8 @@ notes_revision_pin (struct notes_revision *revision,
 
 /** Builds the current stage's Git argv: pin the selected notebook tip,
  *  authorize explicit revisions by ancestry, then run @p cmd, NOTES_READ,
- *  NOTES_DIFF or NOTES_STAT, on those exact snapshots. @p revision and
- *  @p repo must outlive the argv.
+ *  NOTES_DIFF, NOTES_STAT or NOTES_GREP, on those exact snapshots.
+ *  @p revision and @p repo must outlive the argv.
  */
 extern void
 notes_revision_argv (struct notes_revision const *revision,

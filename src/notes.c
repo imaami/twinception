@@ -86,6 +86,7 @@ static char const *const cmds[][10] = {
 	[NOTES_DIFF]     = { "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
 	                     "--no-color", "--submodule=short", word, word, "--", word },
 	[NOTES_STAT]     = { "diff", "--numstat", "--no-textconv", word, word },
+	[NOTES_GREP]     = { "grep", "-IniEz", "--no-color", "-f", "-", word, "--" },
 };
 
 /* The kinds of the objects in the output of git cat-file. */

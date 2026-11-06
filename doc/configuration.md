@@ -1458,9 +1458,9 @@ The configured `participant`, caller identity and client/upstream side
 select the caller's writable notebook branch. Callers can read every
 notebook in the shared session, but can only write their own.
 `{"action":"notebooks"}` identifies the caller's writable notebook even
-before its first note, and lists peers as read-only. `notebook` selects one
-for `list`, `history`, `read`, `copy` or `attach`; `own` is the default,
-a participant's name selects that participant's notebook of the same
+before its first note, and lists peers as read-only. `notebook`
+selects the notebook that an action reads; `own` is the default, a
+participant's name selects that participant's notebook of the same
 identity and side, and an explicit `PARTICIPANT/WHO/SIDE` selects any
 notebook. Agents receive their participant and writable selector in their
 initial prompt, and reads identify the source notebook separately from
@@ -1485,6 +1485,8 @@ results, such as `[askai: notebook ...]` or the context notices, askai
 leaves those lines out and says so in the result. Notices inside the
 text, and text from clients, stay as they are. askai adds a line feed to
 a turn's text that does not end with one.
+`search` lists the lines of the current notes that match `pattern`, whose
+lines are extended regular expressions, case ignored.
 `list` shows each current file once, with its byte count and blob identity;
 `history` shows changes oldest first, with full commit IDs, times, the
 lines added and removed by each change and commit messages.

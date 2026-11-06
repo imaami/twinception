@@ -723,12 +723,14 @@ several files added by one commit. `list` reflects the current tree;
   is `No other notebook has notes yet.` A selector is
   `PARTICIPANT/WHO/SIDE`. Models receive their participant and writable
   selector in their initial prompt.
-- `notebook` selects a notebook for `list`, `history`, `read`, `diff`, `copy` or
-  `attach`; `own` is the default. A participant's name selects that
-  participant's notebook of the caller's identity and side, and a selector
-  any notebook. Writes go only to the caller's own branch. Clients retain
-  `other` as an alias for the opposite side of the same participant and
-  caller identity.
+- `notebook` selects the notebook that an action reads; `own` is the
+  default. A participant's name selects that participant's notebook of
+  the caller's identity and side, and a selector any notebook. Writes go
+  only to the caller's own branch. Clients retain `other` as an alias for
+  the opposite side of the same participant and caller identity.
+- `search` lists the lines of the selected notebook's current notes that
+  match `pattern`, as `file:line:text`. Each line of `pattern` is an
+  extended regular expression, and case is ignored.
 - `list` shows each current file once, with its byte count and blob ID.
   `history` lists changes oldest first, with full commit IDs, times, the
   lines added and removed, such as `(+3 -1)`, or `(binary)` for a change

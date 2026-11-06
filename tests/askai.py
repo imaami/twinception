@@ -10424,6 +10424,34 @@ def check_notes(binary, up):
                     ({"file": "plan.md", "text": "x" * (4 << 20)}, "The note would have more "
                      "than 4 MiB, so the text was not appended.")):
                 assert call({"action": "append"} | arguments).startswith("!" + why), why
+            # search lists the lines of the current notes that match one of
+            # the extended regular expressions of pattern, case ignored.
+            def searched(book, lines):
+                return f"Notebook {book} — lines that match the pattern " \
+                    "(file:line:text):\n\n" + lines
+            for arguments, lines in (
+                    ({"pattern": "STEP [34]"}, "plan.md:1:step 3\nplan.md:3:step 4\n"),
+                    ({"pattern": "STEP [34]\n"}, "plan.md:1:step 3\nplan.md:3:step 4\n"),
+                    ({"pattern": "^found$\nready"},
+                     "copies/f.md:1:found\nfound.md:1:found\nplan.md:2:ready\n"),
+                    ({"pattern": "nothing here"},
+                     "No line of the current notes matches the pattern.\n")):
+                said = call({"action": "search"} | arguments)
+                assert said == searched(selector, lines), said
+            assert call({"action": "search", "pattern": "FOUND", "notebook": "other"}) == \
+                searched(f"writers/{who}/upstream", "found.md:1:found\n")
+            assert call({"action": "search", "pattern": "x", "notebook": "theirs"}) == \
+                "!This notebook has no notes yet."
+            said = call({"action": "search", "pattern": "^line 07"})
+            assert said.count("\n") == 102 and call({"action": "search", "pattern": "^line 07",
+                                                      "offset": 200}) == \
+                said.encode()[200:].decode(), said
+            assert call({"action": "search", "pattern": "a\n("}) == "!A line of the pattern " \
+                "is not an extended regular expression."
+            for pattern in ("", "a\0b"):
+                assert call({"action": "search", "pattern": pattern}) == "!The pattern " \
+                    "argument must be extended regular expressions, one on each line, with " \
+                    "no NUL.", pattern
             replacement = b"\0\xffnew"
             uri = "data:;base64," + base64.b64encode(replacement).decode()
             said = call({"action": "replace", "file": "legacy.c", "content": uri})
@@ -10892,6 +10920,11 @@ def check_notes_history(binary, up):
                                    "the notes in it.")):
                     said = call(alice, action="delete", file=name)
                     assert said == "!" + why and tip() == before, (name, said)
+                # search gives each name as it is, also with UTF-8 or a quote.
+                for name in ("päivä.md", 'q"\\.md'):
+                    assert not call(alice, action="add", file=name, text="hei").startswith("!")
+                assert call(alice, action="search", pattern="^hei$").endswith(
+                    '\n\npäivä.md:1:hei\nq"\\.md:1:hei\n')
                 if object_format == "sha1":
                     # Exercise the model-facing workflow and its own writer too.
                     upstream = "refs/heads/notes/alice/anonymous/upstream"
@@ -11057,6 +11090,7 @@ def check_notes_texts(binary, up):
                         f"Self (writable): {own}\nNo other notebook has notes yet.\n"
 
                 assert call(action="list", offset=100) == none
+                assert call(action="search", pattern="x") == none
                 assert call(action="notebooks") == alone(client)
                 said, trace = results([{"action": "list"}, {"action": "list", "offset": 100},
                                        {"action": "notebooks"}])
@@ -11101,7 +11135,8 @@ def check_notes_texts(binary, up):
                         "(notebook) into yours, under as if given. list lists the current "
                         "notes. history lists the changes, oldest first, to all notes or to one "
                         "(file). read reads a note, or its version at the commit revision. diff "
-                        "shows the changes to a note between the commits from and to. notebooks "
+                        "shows the changes to a note between the commits from and to. search "
+                        "lists the lines of the current notes that match pattern. notebooks "
                         "lists the session's notebooks. The actions that read take notebook. To "
                         "recover lost text: history with file, then diff, then read or restore "
                         "with revision.",
@@ -11109,6 +11144,8 @@ def check_notes_texts(binary, up):
                         "design/locks.md. Its extension shows the format of the text. With "
                         "history, only that file's changes.",
                         "text": "The text, at most 4 MiB.",
+                        "pattern": "Extended regexes, one on each line, case ignored. A line "
+                        "of a note matches if one of them matches.",
                         "revision": "A full commit ID from the notebook's history, or "
                         "current, the default.",
                         "from": "The older commit: a full commit ID from the notebook's "
@@ -11655,7 +11692,7 @@ def check_attach(binary, up):
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
                 assert call({"action": "attach", "file": "latin1.c", "thread": thread}) \
                     == "!The action argument must be one of: add, append, replace, delete, " \
-                    "restore, notebooks, list, history, read, diff, copy."
+                    "restore, notebooks, list, search, history, read, diff, copy."
 
                 count = len(up.requests)
                 stored = len(up.uploads)
@@ -11665,8 +11702,8 @@ def check_attach(binary, up):
                 [notes_tool] = [t for t in tools(first["body"]) if t["name"] == "notes"]
                 action = notes_tool[schema]["properties"]["action"]
                 assert action["enum"] == ["add", "append", "replace", "delete", "restore",
-                                           "notebooks", "list", "history", "read", "diff",
-                                           "copy", "attach"], action
+                                           "notebooks", "list", "search", "history", "read",
+                                           "diff", "copy", "attach"], action
                 properties = notes_tool[schema]["properties"]
                 assert all(properties[name]["type"] == "string"
                            for name in ("revision", "from", "to")), properties
