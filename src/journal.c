@@ -105,7 +105,6 @@ struct journal {
 	pthread_t              thread;
 	struct journal_item   *first;
 	struct journal_item   *last;
-	char                  *ref;
 	uint64_t               seed;
 	uint64_t               clock;
 	uint64_t               recovery_bytes;
@@ -130,6 +129,7 @@ struct journal {
 	bool                   started;
 	bool                   stop;
 	char                   tip[65];
+	char                   ref[sizeof REF + UTIL_WORD_MAX];
 };
 
 static bool
@@ -1450,8 +1450,8 @@ journal_create (char const *path,
 	for (size_t k = 0; k < array_size(j->files); ++k)
 		j->files[k].fd = -1;
 	j->digest = EVP_MD_CTX_new();
-	j->ref = util_concat(REF, sizeof REF - 1, participant);
-	if (!j->ref || !j->digest)
+	(void)util_format(j->ref, sizeof j->ref, "%s%s", REF, participant);
+	if (!j->digest)
 		*e = ENOMEM;
 	if (!*e) {
 		*e = pthread_mutex_init(&j->lock, nullptr);
@@ -1526,8 +1526,6 @@ journal_destroy (struct journal **p_journal)
 		pthread_cond_destroy(&j->ready);
 	if (j->mutex_ready)
 		pthread_mutex_destroy(&j->lock);
-	free(j->ref);
-	j->ref = nullptr;
 	free(j);
 	j = nullptr;
 }

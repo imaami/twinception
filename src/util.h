@@ -383,23 +383,6 @@ util_room (void   *items,
         ((items) = util_room((items), &(cap), (n), sizeof *(items)), \
          (cap) < (n) ? ENOMEM : 0)
 
-/** The @p a_len bytes at @p a, then the string @p b, in memory of their
- *  own; nullptr if out of memory.
- */
-static inline char *
-util_concat (char const *a,
-             size_t      a_len,
-             char const *b)
-{
-	size_t b_len = strlen(b);
-	char *s = malloc(a_len + b_len + 1);
-	if (s) {
-		memcpy(s, a, a_len);
-		memcpy(s + a_len, b, b_len + 1);
-	}
-	return s;
-}
-
 /** Returns the length of the scheme of @p url with its "://", 7 for http
  *  and 8 for https, if more follows it and each byte of @p url is printable
  *  ASCII and not a space; 0 otherwise.
