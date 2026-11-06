@@ -588,25 +588,27 @@ cli_client_unique (struct json_object *names)
 }
 
 /* Call the notes tool with params and pass the text of each text block of
- * its result to parse. A result that is an error parses nothing: it fails
- * with "The notes tool rejected <what> discovery", unless lenient.
+ * its result to parse. The result is stored in *listing. The caller frees
+ * it after the last use of the views that parse stored. If the result is
+ * an error, nothing is parsed, and the call fails with "The notes tool
+ * rejected <what> discovery", unless lenient.
  */
 static int
-cli_client_notes (struct cli_client  *client,
-                  struct json_object *params,
-                  char const         *what,
-                  bool                lenient,
-                  int               (*parse) (struct cstr_view text, void *context),
-                  void               *context,
-                  struct cli_error   *error)
+cli_client_notes (struct cli_client   *client,
+                  struct json_object  *params,
+                  char const          *what,
+                  bool                 lenient,
+                  int                (*parse) (struct cstr_view text, void *context),
+                  void                *context,
+                  struct json_object **listing,
+                  struct cli_error    *error)
 {
-	cli_json_auto listing = nullptr;
-	int e = cli_client_rpc(client, "tools/call", params, nullptr, nullptr, &listing, error);
+	int e = cli_client_rpc(client, "tools/call", params, nullptr, nullptr, listing, error);
 	if (e)
 		return e;
-	if (json_object_get_boolean(jb_get(listing, "isError")))
+	if (json_object_get_boolean(jb_get(*listing, "isError")))
 		return lenient ? 0 : cli_error_set(error, EPROTO, "The notes tool rejected %s discovery", what);
-	struct json_object *content = jb_get(listing, "content");
+	struct json_object *content = jb_get(*listing, "content");
 	if (!json_object_is_type(content, json_type_array))
 		return cli_error_set(error, EPROTO, "Invalid %s discovery result", what);
 	for (size_t i = 0, n = json_object_array_length(content); !e && i < n; ++i) {
@@ -638,7 +640,10 @@ cli_client_discover_files (struct cli_client   *client,
 		                                      "arguments", jb_object("action", json_object_new_string("list"),
 		                                                             "notebook", cli_client_string(notebook), nullptr), nullptr);
 		files.count = 0;
-		e = cli_client_notes(client, params, "note filename", true, cli_client_read_files, &files, error);
+		/* The names in files are views into the listing. */
+		cli_json_auto listing = nullptr;
+		e = cli_client_notes(client, params, "note filename", true, cli_client_read_files, &files,
+		                     &listing, error);
 		if (!e)
 			e = autocomplete_set_note_files(catalog, tool,
 			                                notebook, files.data, files.count);
@@ -668,7 +673,9 @@ cli_client_discover_books (struct cli_client  *client,
 	struct json_object *params = jb_object("name", cli_client_string(tool),
 	                                       "arguments", jb_object("action", json_object_new_string("notebooks"), nullptr), nullptr);
 	struct cli_client_notebooks lists = {names, notebooks};
-	return cli_client_notes(client, params, "notebook", false, cli_client_read_notebooks, &lists, error);
+	cli_json_auto listing = nullptr;
+	return cli_client_notes(client, params, "notebook", false, cli_client_read_notebooks, &lists,
+	                        &listing, error);
 }
 
 static bool
