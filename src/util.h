@@ -443,6 +443,38 @@ util_room (void   *items,
         ((items) = util_room((items), &(cap), (n), sizeof *(items)), \
          (cap) < (n) ? ENOMEM : 0)
 
+/** Make room for @p add items at the index @p at of @p items, an array of
+ *  @p n items of @p size bytes with room for @p *cap items, in place of
+ *  the @p drop items from @p at on: grow the array with util_room() and
+ *  move the items after the dropped ones. Returns the array, which may
+ *  have moved. If out of memory, returns @p items as it is and leaves
+ *  @p *cap less than n - drop + add.
+ */
+static inline void *
+util_splice_ (void   *items,
+              size_t  n,
+              size_t *cap,
+              size_t  at,
+              size_t  drop,
+              size_t  add,
+              size_t  size)
+{
+	size_t const count = n - drop + add;
+	unsigned char *p = util_room(items, cap, count, size);
+	if (*cap >= count && at + drop < n)
+		memmove(p + (at + add) * size, p + (at + drop) * size, (n - at - drop) * size);
+	return p;
+}
+
+/** Replace the @p drop items from the index @p at of the array @p items of
+ *  @p n items with room for @p cap, all three lvalues, with room for
+ *  @p add items with util_splice_(), and set @p n to n - drop + add.
+ *  Evaluates to 0, or to ENOMEM with @p items, @p n and @p cap unchanged.
+ */
+#define util_splice(items, n, cap, at, drop, add) \
+        ((items) = util_splice_((items), (n), &(cap), (at), (drop), (add), sizeof *(items)), \
+         (cap) < (n) - (drop) + (add) ? ENOMEM : ((n) += (add) - (drop), 0))
+
 /** Returns the length of the scheme of @p url with its "://", 7 for http
  *  and 8 for https, if more follows it and each byte of @p url is printable
  *  ASCII and not a space; 0 otherwise.

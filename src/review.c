@@ -524,11 +524,9 @@ review_files_insert (struct review_files      *list,
                      struct review_file const *f,
                      size_t                    at)
 {
-	if (util_grow(list->files, list->cap, list->n + 1))
+	if (util_splice(list->files, list->n, list->cap, at, 0, 1))
 		return ENOMEM;
-	memmove(&list->files[at + 1], &list->files[at], (list->n - at) * sizeof *f);
 	list->files[at] = *f;
-	++list->n;
 	return 0;
 }
 
@@ -620,11 +618,9 @@ review_file_add_range (struct review       *r,
 	size_t const size = r->size - review_charge(f->n, 0) + review_charge(n, 0);
 	if (!review_within_max(r, size, lines.turn))
 		return 0;
-	if (util_grow(f->ranges, f->cap, n))
+	if (util_splice(f->ranges, f->n, f->cap, i, j - i, m))
 		return ENOMEM;
-	memmove(&f->ranges[i + m], &f->ranges[j], (f->n - j) * sizeof *put);
 	memcpy(&f->ranges[i], put, m * sizeof *put);
-	f->n = n;
 	if (total)
 		f->total = total;
 	r->size = size;

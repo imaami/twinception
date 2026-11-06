@@ -714,14 +714,13 @@ autocomplete_add_tool (struct autocomplete *ac,
 		error = autocomplete_entry_properties(ac, &entry, jb_get(entry.root, "properties"));
 	if (error)
 		goto fail;
-	if (!replace) {
-		error = util_grow(ac->entries, ac->capacity, ac->count + 1);
-		if (error)
-			goto fail;
-		memmove(ac->entries + position + 1, ac->entries + position, (ac->count - position) * sizeof *ac->entries);
-		++ac->count;
-	} else
+	/* A new entry in place of an old one needs no room, so the splice
+	 * does not fail then. */
+	if (replace)
 		autocomplete_entry_fini(&ac->entries[position]);
+	error = util_splice(ac->entries, ac->count, ac->capacity, position, replace, 1);
+	if (error)
+		goto fail;
 	ac->entries[position] = entry;
 	ac->storage = remaining + entry.storage;
 	return 0;
