@@ -137,8 +137,9 @@ enum {
 	                             past those, its context is full */
 	CHAT_HISTORY = 1024,      /* earlier visible messages of a chat */
 	CALLS_MAX    = 16 << 20,  /* bytes of a turn's tool calls */
-	LEND_MAX     = 64 << 10,  /* bytes of a tool's output that a turn takes,
-	                             at most */
+	WINDOW_MIN   = 2048,      /* bytes of a tool's output that a turn takes,
+	                             at least */
+	WINDOW_MAX   = 64 << 10,  /* bytes of it that a turn takes, at most */
 	JOBS_MAX     = 8,         /* jobs that an ask call's turns may start */
 	WAIT_MAX     = 600,       /* seconds that a wait may take */
 	WAIT_IDS     = 16,        /* jobs that a client's wait may name */
@@ -146,6 +147,8 @@ enum {
 	TRACE_MAX    = 48,        /* tool calls the trace tells of */
 	TRACE_ARGS   = 200,       /* bytes of a call's arguments in the trace
 	                             and in the log */
+	TRACE_TOOL   = 64,        /* bytes of a tool's name in the trace */
+	TRACE_WORD   = 16,        /* bytes of a notes call's action in it */
 	JOB_ARGS     = 100,       /* bytes of a job's arguments that the list of
 	                             the jobs shows */
 	SHOWN        = TRACE_ARGS + sizeof "...",  /* bytes of those in the log,
@@ -159,6 +162,10 @@ enum {
 	CALL_ID      = sizeof "call_4294967295_4294967295",  /* bytes of a
 	                                                        made-up call id */
 	POLL_MS      = 1000,      /* between a task's polls, as its client is asked */
+	DELTA_TEXT   = 8192,      /* bytes of the text of a delta notification,
+	                             at most */
+	DELTA_FRAME  = 256,       /* bytes of such a notification besides its
+	                             id and its text, at most */
 	ISO_TIME     = sizeof "2026-10-13T12:34:56.789Z",
 };
 
@@ -203,6 +210,9 @@ static char const meta_files[] = "io.modelcontextprotocol/files";
  * for them in base64 and FILES_ROOM bytes of the rest of the request.
  */
 enum { FILES_INLINE = 4 << 20, FILES_ROOM = 64 << 10 };
+
+/* The bytes of the upstream's answer to an upload of a file, at most. */
+enum { FILES_ANSWER = 64 << 10 };
 
 /** The header field of a JSON response. */
 #define JSON_FIELD "Content-Type: application/json\r\n"
@@ -264,6 +274,7 @@ enum mcp_lend : uint8_t {
 	LEND_WITH,     /* if the turns get a LEND_GRANTED or LEND_ALWAYS tool */
 	LEND_DETACH,   /* if the turns get a LEND_GRANTED or LEND_ALWAYS tool
 	                  with TOOL_DETACH */
+	LENDS
 };
 
 /* What the trace tells of a call besides its tool's name: its arguments'
@@ -334,7 +345,7 @@ struct mcp_offer {
  * background (TOOL_DETACH). mcp_lending_lent() selects the lent tools.
  */
 struct mcp_lending {
-	tool_mask by[LEND_DETACH + 1];
+	tool_mask by[LENDS];
 	tool_mask of[KINDS];
 	tool_mask detach;
 };
@@ -528,12 +539,12 @@ struct mcp_slot {
 static_assert(TOOL_MAX <= UINT8_MAX, "TOOL_MAX must fit in slot->tool");
 
 /* A tool-result record (mcp_slot_done()) is a window of an output of
- * LEND_MAX bytes at most, its note, the files that the turn attached, of
+ * WINDOW_MAX bytes at most, its note, the files that the turn attached, of
  * a URI and a few bytes of JSON each, and other members of less than
  * 64 KiB, its text escaped at up to 6 bytes a byte, so it always fits a
  * journal record.
  */
-static_assert(6 * (LEND_MAX + sizeof ((struct mcp_slot *)nullptr)->note.data +
+static_assert(6 * (WINDOW_MAX + sizeof ((struct mcp_slot *)nullptr)->note.data +
                    JOB_CALLS * (UPLOADS_URI + 256)) + (64 << 10) <= JOURNAL_RECORD_MAX,
               "a tool-result record must fit a journal record");
 
@@ -2227,11 +2238,11 @@ mcp_req_delta (struct mcp_req *req)
 		size_t room = loop_room(loop, LOOP_ESCAPE);
 		size_t send = loop_room(loop, LOOP_SEND);
 		/* Escaping a byte needs at most six bytes; ids are <= MAX_ID. */
-		size_t overhead = 6 * MAX_ID + 256;
+		size_t overhead = 6 * MAX_ID + DELTA_FRAME;
 		send = send > overhead ? (send - overhead) / 6 : 0;
 		room = room < send ? room : send;
 		size_t n = util_clip(text + req->delta_read, header.len - req->delta_read,
-		                    room < 8192 ? room : 8192);
+		                    room < DELTA_TEXT ? room : DELTA_TEXT);
 		if (!n) {
 			loop_ready_bulk(loop, &req->step);
 			return;
@@ -3551,15 +3562,15 @@ mcp_slot_lend (struct mcp_slot  *slot,
 
 /* Return the maximum number of bytes of a tool's output that a turn reads
  * in one result. That is an eighth of the context in bytes, at about 4
- * bytes per token, kept between 2048 and LEND_MAX. It is LEND_MAX if the
- * context size is not known.
+ * bytes per token, kept between WINDOW_MIN and WINDOW_MAX. It is
+ * WINDOW_MAX if the context size is not known.
  */
 static size_t
 mcp_req_lend_max (struct mcp_req const *req)
 {
 	size_t eighth = (size_t)req->context / 2;
-	return !req->context ? LEND_MAX : eighth < 2048 ? 2048
-	       : eighth < LEND_MAX ? eighth : LEND_MAX;
+	return !req->context ? WINDOW_MAX : eighth < WINDOW_MIN ? WINDOW_MIN
+	       : eighth < WINDOW_MAX ? eighth : WINDOW_MAX;
 }
 
 /* A job gets a turn's window, because a turn of the same request reads the
@@ -4590,7 +4601,7 @@ mcp_req_trace (struct mcp_req       *req,
 		return 0;
 	char const *name = c->name.data;
 	if (!CAT(&req->trace, "- ") ||
-	    !dstr_cat_n(&req->trace, name, jb_utf8(name, util_clip(name, c->name.len, 64))))
+	    !dstr_cat_n(&req->trace, name, jb_utf8(name, util_clip(name, c->name.len, TRACE_TOOL))))
 		return ENOMEM;
 	switch (trace) {
 	case TRACE_NAME:
@@ -4599,7 +4610,7 @@ mcp_req_trace (struct mcp_req       *req,
 		struct cstr_view action = jb_view(jb_get(args, "action"));
 		return !action.data || (CAT(&req->trace, " ") &&
 		                        dstr_cat_n(&req->trace, action.data,
-		                                   util_clip(action.data, action.len, 16)))
+		                                   util_clip(action.data, action.len, TRACE_WORD)))
 		       ? 0 : ENOMEM;
 	default:
 		char const *json = c->args.data;
@@ -6005,10 +6016,10 @@ mcp_slot_done (struct mcp_slot *slot,
 	if (*req->archive.hex && !(tool->kind->flags & KF_RERUN)) {
 		/* A resumed turn writes the window and the note again, and adds
 		 * the lines of a review read. So the window is recorded, or for a
-		 * read the whole output, if it is no more than LEND_MAX bytes and
-		 * the window reaches its end, with the size of the output for the
-		 * trace. */
-		bool const lines = slot->read && out.len <= LEND_MAX &&
+		 * read the whole output, if it is no more than WINDOW_MAX bytes
+		 * and the window reaches its end, with the size of the output for
+		 * the trace. */
+		bool const lines = slot->read && out.len <= WINDOW_MAX &&
 		                   slot->skip + slot->window == out.len;
 		size_t const base = lines ? 0 : slot->skip;
 		struct span const files = buf_peek(&req->attached);
@@ -6704,7 +6715,7 @@ mcp_slot_post_file (struct mcp_slot  *slot,
 		.url = st->files_url,
 		.body = body,
 		.accept = accept,
-		.max = 64 << 10,
+		.max = FILES_ANSWER,
 		.timeout = WEB_TIMEOUT_MAX
 	};
 	struct web_ask ask = {
@@ -7038,10 +7049,10 @@ mcp_req_tools_call (struct mcp_req     *req,
 		LOG(LOG_WARN, "tool call %s from %s refused: %s",
 		    r == 1 ? mcp_quote(quoted, sizeof quoted, name, NAME_LOG) : what.data,
 		    mcp_req_client(req), refusals[r].why);
-		char msg[32 + 6 * 100];
+		char msg[sizeof "Tool not available: " + 6 * MAX_ECHO];
 		memcpy(msg, head.data, head.len);
 		size_t n = head.len + jb_escape(msg + head.len, what.data,
-		                                util_clip(what.data, what.len, 100));
+		                                util_clip(what.data, what.len, MAX_ECHO));
 		mcp_req_error(req, 200, INVALID_PARAMS, RAW(msg, n), nullptr, 0);
 		return;
 	}
@@ -8540,9 +8551,9 @@ mcp_static_build (struct mcp_static  *st,
                   struct json_object *info,
                   struct json_object *list)
 {
-	struct mcp_lending const *l = &st->lending;
-	tool_mask lendable = l->by[LEND_GRANTED] | l->by[LEND_ALWAYS] | l->by[LEND_WITH] |
-	                     l->by[LEND_DETACH];
+	tool_mask lendable = 0;
+	for (size_t l = LEND_NEVER + 1; l < LENDS; ++l)
+		lendable |= st->lending.by[l];
 	struct registry const *reg = st->reg;
 	for (uint32_t id = 0; id < reg->n_tools; ++id) {
 		struct mcp_offer *o = &st->offers[id];
