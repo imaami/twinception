@@ -153,14 +153,20 @@ cstr_view_index (struct cstr_view const *names,
 	return i;
 }
 
+/** Whether @p c is a space, a tab, a carriage return or a line feed. */
+static inline bool
+cstr_view_space (char c)
+{
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
 /** Drop spaces, tabs, carriage returns and line feeds from the end of
  *  @p text.
  */
 static inline struct cstr_view
 cstr_view_trim_end (struct cstr_view text)
 {
-	static char const space[] = " \t\r\n";
-	while (text.len && memchr(space, text.data[text.len - 1], sizeof space - 1))
+	while (text.len && cstr_view_space(text.data[text.len - 1]))
 		--text.len;
 	return text;
 }

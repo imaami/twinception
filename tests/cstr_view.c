@@ -58,6 +58,10 @@ main (void)
 	slice = cstr_view_slice(text, 1, 0);
 	assert(slice.data == counted + 1 && !slice.len);
 
+	assert(cstr_view_space(' ') && cstr_view_space('\t') && cstr_view_space('\r') &&
+	       cstr_view_space('\n'));
+	assert(!cstr_view_space('\v') && !cstr_view_space('\f') && !cstr_view_space('\0') &&
+	       !cstr_view_space('\xa0'));
 	assert(cstr_view_equal(cstr_view_trim(CSTR_VIEW(" \t a b \r\n")), CSTR_VIEW("a b")));
 	assert(cstr_view_equal(cstr_view_trim(CSTR_VIEW("\na\t")), CSTR_VIEW("\na")));
 	assert(cstr_view_equal(cstr_view_trim(CSTR_VIEW("a\0")), CSTR_VIEW("a\0")));

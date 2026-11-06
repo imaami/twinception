@@ -1148,7 +1148,7 @@ static uint8_t
 godbolt_array_next (uint8_t s,
                     char    c)
 {
-	if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+	if (cstr_view_space(c))
 		return s;
 	if (s == GODBOLT_LIST_OPEN)
 		return c == '[' ? GODBOLT_LIST_FIRST : GODBOLT_LIST_BAD;

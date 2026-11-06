@@ -115,12 +115,6 @@ autocomplete_json_text (struct json_object *value)
 }
 
 static bool
-autocomplete_space (unsigned char byte)
-{
-	return byte == ' ' || byte == '\t' || byte == '\r' || byte == '\n';
-}
-
-static bool
 autocomplete_name_byte (unsigned char byte)
 {
 	return (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
@@ -144,7 +138,7 @@ autocomplete_safe (struct cstr_view value,
 		unsigned char byte = (unsigned char)value.data[i];
 		if (byte < 0x20 || byte == 0x7f ||
 		    (byte == 0xc2 && i + 1 < value.len && (unsigned char)value.data[i + 1] < 0xa0) ||
-		    (identifier && (autocomplete_space(byte) || byte == '=' || byte == '\'' || byte == '"' || byte == '\\')))
+		    (identifier && (cstr_view_space(byte) || byte == '=' || byte == '\'' || byte == '"' || byte == '\\')))
 			return false;
 	}
 	return true;
@@ -211,7 +205,7 @@ autocomplete_quote (struct dstr     *output,
 	size_t length = value.len + 2;
 	for (size_t i = 0; i < value.len; ++i) {
 		char byte = value.data[i];
-		needs |= autocomplete_space((unsigned char)byte) || byte == '\\' || byte == '\'' || byte == '"' ||
+		needs |= cstr_view_space(byte) || byte == '\\' || byte == '\'' || byte == '"' ||
 		         byte == '[' || byte == ']' || byte == '{' || byte == '}';
 		size_t extra = mark == '\'' && byte == '\'' ? 3 : mark == '"' && (byte == '"' || byte == '\\');
 		if (extra > SIZE_MAX - length)
@@ -251,7 +245,7 @@ autocomplete_tokenize (struct autocomplete *ac,
 {
 	ac->token_count = 0;
 	for (size_t i = 0; i < line.len;) {
-		if (autocomplete_space((unsigned char)line.data[i])) {
+		if (cstr_view_space(line.data[i])) {
 			++i;
 			continue;
 		}
@@ -290,7 +284,7 @@ autocomplete_tokenize (struct autocomplete *ac,
 					(void)dstr_erase(&ac->nesting, depth - 1, 1);
 				else if (strict)
 					return util_refuse(why, size, "Unmatched bracket in tool arguments");
-			} else if (autocomplete_space((unsigned char)byte) && !dstr_len(&ac->nesting))
+			} else if (cstr_view_space(byte) && !dstr_len(&ac->nesting))
 				break;
 		}
 		if (strict && (mark || escape || dstr_len(&ac->nesting)))
@@ -322,7 +316,7 @@ autocomplete_json_parse (struct autocomplete *autocomplete,
 		json_tokener_reset(autocomplete->parser);
 	struct json_object *parsed = json_tokener_parse_ex(autocomplete->parser, dstr_get(&autocomplete->json), (int)value.len + 1);
 	size_t end = json_tokener_get_parse_end(autocomplete->parser);
-	while (end < value.len && autocomplete_space((unsigned char)value.data[end]))
+	while (end < value.len && cstr_view_space(value.data[end]))
 		++end;
 	if (json_tokener_get_error(autocomplete->parser) != json_tokener_success || end < value.len) {
 		json_object_put(parsed);
@@ -864,7 +858,7 @@ autocomplete_replacement (struct autocomplete    *ac,
 {
 	if (ac->match_count == array_size(ac->matches))
 		return 0;
-	if (separate && end < line.len && autocomplete_space((unsigned char)line.data[end]))
+	if (separate && end < line.len && cstr_view_space(line.data[end]))
 		++end;
 	if (value.len > SIZE_MAX - line.len - 2)
 		return ENOMEM;
@@ -1126,7 +1120,7 @@ autocomplete_mentions (struct autocomplete *ac,
 		return 0;
 	bool mention = line.data[begin] == '@';
 	struct cstr_view prefix = cstr_view_slice(line, begin + mention, cursor - begin - mention);
-	bool separate = end == line.len || autocomplete_space((unsigned char)line.data[end]);
+	bool separate = end == line.len || cstr_view_space(line.data[end]);
 	struct autocomplete_names const *names = &ac->lists[AUTOCOMPLETE_CHAT_PARTICIPANTS];
 	for (size_t i = 0; i < names->count; ++i) {
 		struct cstr_view name = cstr_view_dstr(&names->values[i]);

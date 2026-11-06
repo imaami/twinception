@@ -69,8 +69,7 @@ notice_kept (char const *text,
 	size_t kept = len;
 	size_t end = len;
 	for (;;) {
-		while (end && memchr(" \t\r\n", text[end - 1], 4))
-			--end;
+		end = cstr_view_trim_end((struct cstr_view){ text, end }).len;
 		char const *nl = memrchr(text, '\n', end);
 		size_t line = nl ? (size_t)(nl - text) + 1 : 0;
 		bool notice = false;

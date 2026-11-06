@@ -847,10 +847,9 @@ static struct cli_command const *
 cli_command_parse (struct cstr_view  line,
                    struct cstr_view *rest)
 {
-	static char const space[] = " \t\r\n";
 	line = cstr_view_trim(line);
 	size_t split = 0;
-	while (split < line.len && !memchr(space, line.data[split], sizeof space - 1))
+	while (split < line.len && !cstr_view_space(line.data[split]))
 		++split;
 	*rest = cstr_view_trim(cstr_view_slice(line, split, SIZE_MAX));
 	struct cli_command const *command = cli_command_find(cstr_view_slice(line, 0, split));

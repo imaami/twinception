@@ -397,9 +397,7 @@ jb_parser_step (struct jb_parser *parser,
 	}
 
 	/* What follows the value must be white space, however it is sliced. */
-	while (parser->root && parser->off < end &&
-	       (data[parser->off] == ' ' || data[parser->off] == '\t' ||
-	        data[parser->off] == '\r' || data[parser->off] == '\n'))
+	while (parser->root && parser->off < end && cstr_view_space(data[parser->off]))
 		++parser->off;
 	if (parser->off != end)
 		return jb_parser_end(parser, EINVAL);

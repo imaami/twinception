@@ -1173,7 +1173,8 @@ config_json (struct config *cfg,
 		return config_json_fail(cfg, text, end, json_tokener_error_desc(e));
 	if (!json_object_is_type(cfg->file, json_type_object))
 		return config_json_fail(cfg, text, 0, "not one JSON object");
-	end += strspn(text + end, " \t\r\n");
+	while (end < len && cstr_view_space(text[end]))
+		++end;
 	if (end < len)
 		return config_json_fail(cfg, text, end, "not one JSON object");
 	return 0;
