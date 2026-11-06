@@ -15035,6 +15035,10 @@ def check_godbolt(binary, up, godbolt):
                         tool["annotations"]["readOnlyHint"] != shares and \
                         ("Compiler Explorer stores the source permanently" in
                          tool["description"]) == shares, tool
+                # The source of a compilation cannot include repository files.
+                for tool in tools[2:4]:
+                    assert "not to repository files" in \
+                        tool["inputSchema"]["properties"]["source"]["description"], tool
 
                 # The languages, with the User-Agent of askai and the Accept
                 # that Compiler Explorer needs for JSON.

@@ -2900,10 +2900,12 @@ godbolt_configure (void               *config,
 #define GODBOLT_DEF_LANGUAGE(what, examples)                                    \
         "\"language\":{\"type\":\"string\",\"default\":\"c\",\"description\":"  \
         "\"The Compiler Explorer id of the language of " what ", such as "       \
-        examples ". The default is c.\"}"
+        examples ".\"}"
 #define GODBOLT_DEF_SOURCE                                                      \
         "\"source\":{\"type\":\"string\",\"description\":\"The source code "    \
-        "itself, not a file name. It has at most 1 MiB of UTF-8.\"}"
+        "itself, not a file name. Includes resolve only to the headers of the " \
+        "compiler on Compiler Explorer, not to repository files. At most 1 "    \
+        "MiB of UTF-8.\"}"
 #define GODBOLT_DEF_COMPILERS                                                   \
         "\"compilers\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"     \
         "\"minItems\":1,\"maxItems\":16,\"uniqueItems\":true,\"description\":"  \
@@ -2913,11 +2915,9 @@ godbolt_configure (void               *config,
 #define GODBOLT_DEF_ARGS                                                        \
         "\"args\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"          \
         "\"minItems\":1,\"maxItems\":8,\"default\":[\"\"],\"description\":"     \
-        "\"Argument strings, such as \\\"-O2 -std=c23\\\". Each string has all " \
-        "the extra arguments of one compilation, and it is not one argument. "   \
-        "Each compiler compiles once with each string. The array has at most 8 " \
-        "strings, and each string has at most 8192 bytes. No shell interprets "  \
-        "them.\"}"
+        "\"Argument strings, such as \\\"-O2 -std=c23\\\". One string "         \
+        "contains all the extra arguments of one compilation, and no shell "    \
+        "interprets it. A string is at most 8192 bytes long.\"}"
 #define GODBOLT_DEF_OFFSET                                                      \
         "\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":\""     \
         TOOL_OFFSET_ABOUT "\"}"
@@ -2975,10 +2975,8 @@ static struct {
 		CSTR_VIEW_INIT(", the compilers of one language, or the numbers of compilers of "
 		               "each kind, family or architecture. The other godbolt tools accept "
 		               "only the exact compiler ids of this list. Each line of the output "
-		               "is one item, and tabs separate its columns. The first line names "
-		               "the columns. All filters apply together. askai uses a list that it "
-		               "received in the last hour again, so a repeated call is usually "
-		               "fast."),
+		               "is one item with tab-separated columns, and the first line "
+		               "contains the column names. All filters apply together."),
 	},
 	[GODBOLT_COMPILE] = {
 		"{\"name\":\"godbolt_compile\",\"title\":\"Compile on Compiler Explorer\","
@@ -3003,11 +3001,10 @@ static struct {
 		GODBOLT_DEF_HINTS "}",
 		CSTR_VIEW_INIT("Compiles source code on Compiler Explorer at "),
 		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "
-		               "has a record for each compilation, with the exit code, the "
-		               "assembly and the messages of the compiler, and the last line has "
+		               "contains a record for each compilation, with the exit code, the "
+		               "assembly and the messages of the compiler, and a last line with "
 		               "the counts of the results. askai sends the source to that service. "
-		               "The compiled program does not run. The compiler ids must be exact "
-		               "ids from godbolt_catalog."),
+		               "The compiled program does not run."),
 	},
 	[GODBOLT_PREPROCESS] = {
 		"{\"name\":\"godbolt_preprocess\",\"title\":\"Preprocess on Compiler "
@@ -3019,12 +3016,10 @@ static struct {
 		GODBOLT_DEF_HINTS "}",
 		CSTR_VIEW_INIT("Preprocesses source code on Compiler Explorer at "),
 		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "
-		               "has a record for each compilation, with the exit code, the "
-		               "preprocessed source and the messages of the compiler, and the last "
-		               "line has the counts of the results. Compiler Explorer resolves the "
-		               "includes with the headers of each compiler. askai sends the source "
-		               "to that service. The compiler ids must be exact ids from "
-		               "godbolt_catalog."),
+		               "contains a record for each compilation, with the exit code, the "
+		               "preprocessed source and the messages of the compiler, and a last "
+		               "line with the counts of the results. askai sends the source to "
+		               "that service."),
 	},
 	[GODBOLT_MACROS] = {
 		"{\"name\":\"godbolt_macros\",\"title\":\"Predefined macros on Compiler "
@@ -3032,19 +3027,17 @@ static struct {
 		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
 		GODBOLT_DEF_LANGUAGE("the source", "c or c++") ","
 		"\"source\":{\"type\":\"string\",\"description\":\"Source code whose "
-		"macro definitions the output also has, not a file name. It has at most "
-		"1 MiB of UTF-8. The default is no source.\"},"
+		"macro definitions the output also contains, not a file name. At most 1 "
+		"MiB of UTF-8. The default is no source.\"},"
 		GODBOLT_DEF_OFFSET "},"
 		"\"required\":[\"compilers\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
 		CSTR_VIEW_INIT("Outputs the predefined macros of each compiler with each argument "
 		               "string, from Compiler Explorer at "),
-		CSTR_VIEW_INIT(". The output has a record for each compilation, with the exit code, "
-		               "the macros and the messages of the compiler, and the last line has "
-		               "the counts of the results. The record of an MSVC compiler has no "
-		               "macros, because MSVC cannot output them. askai sends the source to "
-		               "that service. The compiler ids must be exact ids from "
-		               "godbolt_catalog."),
+		CSTR_VIEW_INIT(". The output contains a record for each compilation, with the exit "
+		               "code, the macros and the messages of the compiler, and a last line "
+		               "with the counts of the results. askai sends the source to that "
+		               "service."),
 	},
 	[GODBOLT_TARGETS] = {
 		"{\"name\":\"godbolt_targets\",\"title\":\"Target facts from Compiler "
@@ -3061,13 +3054,12 @@ static struct {
 		GODBOLT_DEF_HINTS "}",
 		CSTR_VIEW_INIT("Preprocesses a fixed probe on Compiler Explorer at "),
 		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "
-		               "has facts about each target that follow from the predefined "
+		               "contains facts about each target that follow from the predefined "
 		               "macros. The facts are the architecture, the operating system, the "
 		               "data model, the width of a pointer, the byte order, the C library "
-		               "and the versions of the compiler and of the language. The line of "
-		               "each fact lists the macros that the fact comes from, and the last "
-		               "line has the counts of the results. The compiler ids must be exact "
-		               "ids from godbolt_catalog."),
+		               "and the versions of the compiler and of the language. Each fact "
+		               "line lists the macros that the fact comes from, and the last line "
+		               "contains the counts of the results."),
 	},
 };
 
