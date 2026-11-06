@@ -2,7 +2,7 @@
  *
  * The notes tool (src/notes_tool.h).
  */
-#define _GNU_SOURCE /* memmem() */
+#define _GNU_SOURCE /* memmem(), mempcpy() */
 #include <errno.h>
 #include <inttypes.h>
 #include <json-c/json.h>
@@ -1489,8 +1489,16 @@ notes_tool_add (struct mcp_slot    *slot,
 			datauri_decode(&data, buf_peek(&call->file).ptr + call->part.data_at);
 		loop_work(mcp_slot_loop(slot), LOOP_COPY, data.size);
 	} else {
+		/* askai adds a line feed to a turn's text that lacks a final
+		 * one, if the note stays within 4 MiB. The byte after the kept
+		 * text is that line feed, or the one that notes_add_head()
+		 * writes after the text. */
+		size_t const lf = turn && kept < TOOL_TEXT_MAX && text.data[kept - 1] != '\n';
 		call->flags = kept < text.len ? CALL_STRIPPED : 0;
-		e = notes_add_file(&call->file, name, cstr_view_slice(text, 0, kept), &call->part);
+		e = notes_add_head(&call->file, name, kept + lf, &call->part);
+		if (!e)
+			*(char *)mempcpy(buf_peek(&call->file).ptr + call->part.data_at, text.data,
+			                 kept) = '\n';
 	}
 	notes_tool_check(slot, name, initialized, e);
 }

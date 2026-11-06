@@ -692,7 +692,8 @@ missing one. Concurrent branch updates fail rather than overwrite another
 writer's changes. When a turn writes text whose last lines are askai's
 own notices from tool results, such as `[askai: notebook ...]` or the
 context notices, askai leaves those lines out and says so in the result.
-Notices inside the text, and text from clients, stay as they are.
+Notices inside the text, and text from clients, stay as they are. askai
+adds a line feed to a turn's text that does not end with one.
 Names cannot contain control characters or empty parts. No part can be
 `.`, `..`, `.git` or `git~1`, in any case and also with spaces or dots after
 it, because git refuses such names. Slashes at the start are left out.

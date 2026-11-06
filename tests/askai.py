@@ -10974,7 +10974,8 @@ def check_notes_texts(binary, up):
     The check also compares the texts for an empty notebook, an unusable
     revision and a diff without differences, and the tool's definitions.
     It compares the notebook notice after a turn's diff and the last line
-    of the trace when the turns of an ask call kept notes."""
+    of the trace when the turns of an ask call kept notes, and the answer
+    to a turn's replace whose text lacks only the final line feed."""
     held = up.reply
     script = []
     up.reply = lambda request: script.pop(0)(request)
@@ -11116,10 +11117,15 @@ def check_notes_texts(binary, up):
                 thread = "1" * 32
                 said, trace = results([{"action": "add", "file": "b.md", "text": "b"}],
                                       thread=thread)
-                assert re.fullmatch(saved('Add "b.md" (1 byte)'), said[0]), said
+                assert re.fullmatch(saved('Add "b.md" (2 bytes)'), said[0]), said
                 assert trace == "The other AI made 1 tool call in 2 turns:\n" \
                     f"- notes add: {len(said[0])} bytes\nIts notes are saved in the " \
                     f"shared session repository. The ask-chain thread is {thread}.", trace
+                # A turn's text gets a final line feed, so the same text again
+                # leaves the note as it is.
+                said, _ = results([{"action": "replace", "file": "b.md", "text": "b"}])
+                assert said == [unchanged_result('"b.md"', 2, git(
+                    "rev-parse", f"refs/heads/notes/{upstream}"))], said
     finally:
         up.reply = held
     print("notes texts: the result before the first note and its offset, the "
@@ -11968,14 +11974,14 @@ def check_turns(binary, up):
             assert [(m["role"], m["tool_call_id"]) for m in results] == \
                 [("tool", "c1"), ("tool", "c2")], results
             assert re.fullmatch(r"[0-9a-f]{7} first\n", results[0]["content"]), results
-            assert re.fullmatch(saved('Add "found.md" (13 bytes)', tip()),
+            assert re.fullmatch(saved('Add "found.md" (14 bytes)', tip()),
                                 results[1]["content"]), results
             read = turns(third)[3:]
             assert read[0]["tool_calls"][0]["id"] == "call_2_0", read
             assert "reasoning_content" not in read[0], read
             listed = read[1]["content"]
             assert read[1]["tool_call_id"] == "call_2_0" and listed == note_files(
-                selector, {"found.md": b'found "first"'}), read
+                selector, {"found.md": b'found "first"\n'}), read
             text, trace = [c["text"] for c in result["content"]]
             assert text == "A", result
             thread = re.search(r"ask-chain thread is ([0-9a-f]{32})", trace).group(1)
@@ -11986,9 +11992,9 @@ def check_turns(binary, up):
             assert "found" not in trace, trace
             book = notes
             assert sh("--git-dir", book, "show", f"{branch}:found.md",
-                      cwd=d) == "found \"first\"", book
+                      cwd=d) == "found \"first\"\n", book
             assert sh("--git-dir", book, "log", "-1", "--format=%s", branch,
-                      cwd=d) == 'Add "found.md" (13 bytes)\n', book
+                      cwd=d) == 'Add "found.md" (14 bytes)\n', book
 
             # When an ask call goes on with a thread, the prompt has the list
             # of the notes of the thread and the newest note.
@@ -12017,9 +12023,9 @@ def check_turns(binary, up):
             count = len(up.requests)
             ai.ask("Q", thread=thread)
             outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
-            assert re.fullmatch(saved('Add "next.md" (1 byte)', tip()), outputs[0]), outputs
+            assert re.fullmatch(saved('Add "next.md" (2 bytes)', tip()), outputs[0]), outputs
             assert outputs[1:] == ["A note of that name exists. Use action replace to "
-                                   "update it, or add under another name.", "n" + provenance], \
+                                   "update it, or add under another name.", "n\n" + provenance], \
                 outputs
             assert not os.path.exists(f"{d}/hooked")
             assert ai.ask("Q", thread="0" * 32)["content"][0]["text"] == "A"
@@ -12120,8 +12126,9 @@ def check_turns(binary, up):
             count = len(up.requests)
             assert ai.ask("Q")["content"][0]["text"] == "A"
             outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
+            # A turn's text that does not end with a line feed gets one.
             for k, (name, (text, stored)) in enumerate(texts.items()):
-                data = stored or text
+                data = stored or text + "\n"
                 made = tip(f"{branch}~{len(texts) - 1 - k}")
                 assert re.fullmatch(saved(f'Add "{name}" ({len(data)} bytes)', made,
                                           stored is not None), outputs[k]), (name, outputs)
@@ -12142,7 +12149,7 @@ def check_turns(binary, up):
             shown = 64 << 10
             assert prompt(up.requests[count]).endswith(
                 "[askai: the current text of your most recently written note, long.md:]\n\n" + "L" * shown +
-                f"\n[askai: bytes 0 to {shown} of {size}; read the note with "
+                f"\n[askai: bytes 0 to {shown} of {size + 1}; read the note with "
                 f"\"offset\": {shown} for the rest.]\n"), prompt(up.requests[count])[-300:]
 
             # A thread that the client started with its own notes: an ask call
@@ -12181,7 +12188,7 @@ def check_turns(binary, up):
             assert outputs[0] == note_files(client, {"brief.md": b"aim"}), outputs
             want = [re.escape(f"aim\n\n[askai: notebook {client}]"),
                     re.escape("You can write notes only to your own notebook."),
-                    saved('Add "seen.md" (4 bytes)', tip(f"{branch}^")),
+                    saved('Add "seen.md" (5 bytes)', tip(f"{branch}^")),
                     re.escape("For copy, give the source notebook: a participant's name or "
                               "a selector from action notebooks."),
                     saved(f'Copy "brief.md" from {client} at '
@@ -12340,7 +12347,7 @@ def check_turns(binary, up):
             call = (lambda c: (c, "notes", json.dumps(
                         {"action": "add", "file": f"{c}.md", "text": c}))) \
                 if notes_on else (lambda c: (c, "git", log))
-            out = (r'Saved in commit [0-9a-f]{40}: Add "\w\.md" \(1 byte\)\.' if notes_on
+            out = (r'Saved in commit [0-9a-f]{40}: Add "\w\.md" \(2 bytes\)\.' if notes_on
                    else r"[0-9a-f]{7} first\n")
             with Askai(binary, *what, "--context", "8000") as ai:
                 # The tokens after each turn: 13%, 26%, 31%, 52%, 57%, 68%, 69%,

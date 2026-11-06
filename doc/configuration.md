@@ -1481,7 +1481,8 @@ update the same branch fail rather than discard another writer's changes.
 When a turn writes text whose last lines are askai's own notices from tool
 results, such as `[askai: notebook ...]` or the context notices, askai
 leaves those lines out and says so in the result. Notices inside the
-text, and text from clients, stay as they are.
+text, and text from clients, stay as they are. askai adds a line feed to
+a turn's text that does not end with one.
 `list` shows each current file once, with its byte count and blob identity;
 `history` shows changes oldest first, with full commit IDs, times, the
 lines added and removed by each change and commit messages.
