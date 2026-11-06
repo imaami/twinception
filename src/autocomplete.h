@@ -130,12 +130,6 @@ autocomplete_complete (struct autocomplete              *ac,
                        struct autocomplete_match const **matches,
                        size_t                           *count);
 
-/** Whether line, which may be empty without data, is UTF-8 without NULs,
- * as completion input must be.
- */
-extern bool
-autocomplete_line (struct cstr_view line);
-
 /** Whether text is nonempty UTF-8 without C0, DEL or C1 controls; with
  * identifier, also without spaces, quotes, backslashes or '='.
  */

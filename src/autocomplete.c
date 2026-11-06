@@ -122,13 +122,6 @@ autocomplete_name_byte (unsigned char byte)
 }
 
 bool
-autocomplete_line (struct cstr_view line)
-{
-	return line.data ? !memchr(line.data, '\0', line.len) && jb_utf8(line.data, line.len) == line.len
-	                 : !line.len;
-}
-
-bool
 autocomplete_safe (struct cstr_view value,
                    bool             identifier)
 {
@@ -1211,7 +1204,7 @@ autocomplete_complete (struct autocomplete              *ac,
 	*count = 0;
 	if (line.len > AUTOCOMPLETE_BYTES)
 		return E2BIG;
-	if (!autocomplete_line(line) || cursor > line.len ||
+	if (!jb_is_text(line) || cursor > line.len ||
 	    (cursor < line.len && ((unsigned char)line.data[cursor] & 0xc0) == 0x80))
 		return EINVAL;
 	if (!line.data)
@@ -1369,7 +1362,7 @@ autocomplete_parse_call (struct autocomplete             *ac,
 		(void)util_format(why, size, "Tool command is too long");
 		return E2BIG;
 	}
-	if (!autocomplete_line(line))
+	if (!jb_is_text(line))
 		return util_refuse(why, size, "Invalid tool command bytes");
 	if (!line.data)
 		line.data = "";

@@ -88,8 +88,7 @@ cli_read_file (struct dstr      *text,
 		e = errno;
 	file = nullptr;
 	struct cstr_view result = {(char const *)bytes.data, bytes.tail};
-	if (!e && result.len && (memchr(result.data, 0, result.len) ||
-	                         jb_utf8(result.data, result.len) != result.len))
+	if (!e && !jb_is_text(result))
 		e = cli_error_set(error, EILSEQ, "Prompt files must contain UTF-8 text without NUL bytes");
 	if (!e && cstr_view_cat(result, &contents))
 		e = ENOMEM;

@@ -11,6 +11,7 @@
 
 #include "autocomplete_file.h"
 #include "dstr.h"
+#include "jb.h"
 
 enum {
 	AUTOCOMPLETE_FILE_MATCHES = 256,
@@ -36,7 +37,7 @@ autocomplete_file_create (int *const e)
 	file->directory = dstr(nullptr);
 	file->home = dstr(nullptr);
 	struct cstr_view const home = cstr_view(getenv("HOME"));
-	*e = autocomplete_line(home) ? cstr_view_store(home, &file->home) : 0;
+	*e = jb_is_text(home) ? cstr_view_store(home, &file->home) : 0;
 	if (*e)
 		autocomplete_file_destroy(&file);
 	return file;
@@ -113,7 +114,7 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 	if (line.len > AUTOCOMPLETE_FILE_LIMIT)
 		return E2BIG;
 
-	if (!autocomplete_line(line))
+	if (!jb_is_text(line))
 		return EINVAL;
 
 	if (cursor < command.len || !cstr_view_starts(line, command))

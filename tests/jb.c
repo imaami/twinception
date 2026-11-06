@@ -122,6 +122,11 @@ main (void)
 	CHECK(!jb_escape(escaped, nullptr, 1) && !jb_escape(nullptr, raw, 1));
 	CHECK(!jb_wire(nullptr).data && !jb_wire(nullptr).len);
 
+	/* Text is UTF-8 without a NUL, or empty. */
+	CHECK(jb_is_text((struct cstr_view){}) && jb_is_text(CSTR_VIEW("\xc3\xa4")));
+	CHECK(!jb_is_text(CSTR_VIEW("a\0b")) && !jb_is_text(CSTR_VIEW("\xc3")));
+	CHECK(!jb_is_text((struct cstr_view){ nullptr, 1 }));
+
 	/* One JSON value, whole or a slice at a time. */
 	CHECK(parse("{\"a\": [1, 2, \"three\"]}", SIZE_MAX, &steps) == 0 && steps == 1);
 	CHECK(parse("{\"a\": [1, 2, \"three\"]}", 4, &steps) == 0 && steps > 1);

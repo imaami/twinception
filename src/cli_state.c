@@ -65,14 +65,6 @@ static char const cli_state_magic[] = "ASKAI-CLI-1\n";
 
 extern char **environ;
 
-static bool
-cli_state_valid (struct cstr_view text)
-{
-	return !text.len ||
-	       (text.data && !memchr(text.data, '\0', text.len)
-	        && jb_utf8(text.data, text.len) == text.len);
-}
-
 static force_inline int
 cli_state_private (int fd)
 {
@@ -444,7 +436,7 @@ static int
 cli_state_recall (struct cli_state *state,
                   struct cstr_view  text)
 {
-	if (!cli_state_valid(text))
+	if (!jb_is_text(text))
 		return EILSEQ;
 	for (size_t j = 0; j < state->input_count; ++j) {
 		if (!cstr_view_equal(cli_state_input_at(state, j), text))
@@ -746,7 +738,7 @@ cli_state_create (struct cstr_view    path,
 {
 	*e = EINVAL;
 	if (!identity.data || !identity.len || identity.len > CLI_STATE_ID_BYTES ||
-	    !cli_state_valid(path) || jb_utf8(identity.data, identity.len) != identity.len)
+	    !jb_is_text(path) || jb_utf8(identity.data, identity.len) != identity.len)
 		return nullptr;
 	struct cli_state *state = calloc(1, sizeof *state);
 	if (!state) {
@@ -887,7 +879,7 @@ int
 cli_state_add_input (struct cli_state *state,
                      struct cstr_view  text)
 {
-	if (!state || !cli_state_valid(text))
+	if (!state || !jb_is_text(text))
 		return EINVAL;
 	if (text.len > CLI_STATE_INPUT_BYTES)
 		return EFBIG;
@@ -911,7 +903,7 @@ cli_state_add_turn (struct cli_state *state,
                     int               replace)
 {
 	if (!state || (replace && !state->turn_count) ||
-	    !cli_state_valid(prompt) || !cli_state_valid(answer))
+	    !jb_is_text(prompt) || !jb_is_text(answer))
 		return EINVAL;
 	size_t index = state->turn_count - (replace != 0);
 	if (index >= array_size(state->turns))

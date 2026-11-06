@@ -358,6 +358,10 @@ extern size_t
 jb_utf8 (char const *str,
          size_t      len);
 
+/** Whether @p t is UTF-8 text without a NUL, as an empty view is. */
+extern bool
+jb_is_text (struct cstr_view t);
+
 /**
  * Make the @p n bytes at @p p UTF-8 text, in place, each byte that breaks it
  * becoming a '?', but for a character cut short at their end while more

@@ -1740,7 +1740,7 @@ cli_console_read_text_simple (struct cli_console *console,
 	struct buf bytes = {};
 	int e = cli_console_read_simple(console, &bytes, multiline, prompt);
 	struct cstr_view line = {(char const *)bytes.data, bytes.tail};
-	if (!e && line.len && (memchr(line.data, 0, line.len) || jb_utf8(line.data, line.len) != line.len))
+	if (!e && !jb_is_text(line))
 		e = EILSEQ;
 	if (!e && cstr_view_cat(line, text))
 		e = ENOMEM;

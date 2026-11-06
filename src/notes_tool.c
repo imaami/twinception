@@ -894,16 +894,6 @@ notes_tool_got_books (struct mcp_slot *slot)
 static char const view_open[] = "\xe2\x9f\xa6";   /* U+27E6 */
 static char const view_close[] = "\xe2\x9f\xa7";  /* U+27E7 */
 
-/* Returns true if @p note is UTF-8 text without a NUL. Such a note is
- * shown as it is. Any other note is shown as its view (notes_tool_view()).
- */
-static bool
-notes_tool_text (struct cstr_view note)
-{
-	return !note.len || (jb_utf8(note.data, note.len) == note.len &&
-	                     !memchr(note.data, '\0', note.len));
-}
-
 /* Appends the @p n bytes at @p p to @p d if @p *size, the length of the
  * view before them, is less than @p max. Adds @p n to @p *size in either
  * case. Returns 0 or ENOMEM.
@@ -1033,7 +1023,7 @@ notes_tool_got_diff (struct mcp_slot *slot)
 	struct cstr_view const diff = { (char const *)out.ptr, out.len };
 	if (!e)
 		e = !diff.len ? cstr_view_cat(CSTR_VIEW("No differences.\n"), call->text)
-		  : notes_tool_text(diff) ? cstr_view_cat(diff, call->text)
+		  : jb_is_text(diff) ? cstr_view_cat(diff, call->text)
 		  : notes_tool_view(d, diff, SIZE_MAX, nullptr);
 	if (!e && c->cut)
 		e = cstr_view_cat(CSTR_VIEW("\n[The diff exceeded the capture limit "
@@ -1083,7 +1073,7 @@ notes_tool_got_note (struct mcp_slot *slot)
 		                selector, (int)file.len, file.data,
 		                notes_revision_from(call->revision)) ? 0 : ENOMEM;
 	}
-	e = e ? e : notes_tool_text(body) ? cstr_view_cat(body, call->text)
+	e = e ? e : jb_is_text(body) ? cstr_view_cat(body, call->text)
 	      : notes_tool_view(call->text, body, SIZE_MAX, nullptr);
 	notes_tool_end(slot, e, false);
 }
@@ -1120,7 +1110,7 @@ notes_tool_got_attach (struct mcp_slot *slot,
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct cstr_view body = { (char const *)text.ptr, text.len };
-	bool binary = !notes_tool_text(body);
+	bool binary = !jb_is_text(body);
 	struct cstr_view const oid = { (char const *)id.ptr, id.len };
 	size_t kept = 0;
 	int e = mcp_slot_attach(slot, oid, (struct cstr_view){}, &kept, call->text);
@@ -1248,7 +1238,7 @@ notes_tool_newest (struct mcp_slot *slot)
 	 * function makes only the start of the view, a little more than the
 	 * call->most bytes that the prompt shows. */
 	dstr_auto view = DSTR_INIT;
-	if (!r && !notes_tool_text(body)) {
+	if (!r && !jb_is_text(body)) {
 		if (notes_tool_view(&view, body, call->most + 1, &len)) {
 			notes_tool_then(slot, ENOMEM);
 			return;

@@ -324,8 +324,7 @@ review_destroy (struct review **p_review)
 static bool
 review_name_valid (struct cstr_view t)
 {
-	return t.data && t.len && t.len <= REVIEW_NAME_MAX && jb_utf8(t.data, t.len) == t.len &&
-	       !memchr(t.data, '\0', t.len);
+	return t.len && t.len <= REVIEW_NAME_MAX && jb_is_text(t);
 }
 
 /** Returns the number of newlines in @p t, whose data must not be
