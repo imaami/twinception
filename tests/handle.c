@@ -65,7 +65,8 @@ test_foreign (struct loop *l)
 	loop_forget(l, h);
 }
 
-/* The generation passes UINT32_MAX to 1, never to 0. */
+/* A slot freed at generation UINT32_MAX is retired: a handle with
+ * generation 0 names nothing, and loop_handle() takes another slot. */
 static void
 test_wrap (struct loop *l)
 {
@@ -77,8 +78,11 @@ test_wrap (struct loop *l)
 	CHECK(!loop_handle(l, &a, 1, &h));
 	CHECK((uint32_t)h.bits == UINT32_MAX && loop_lookup(l, h, 1) == &a);
 	loop_forget(l, h);
+	struct handle const zero = { h.bits & ~(uint64_t)UINT32_MAX };
+	loop_forget(l, zero);
 	CHECK(!loop_handle(l, &a, 1, &h));
-	CHECK((uint32_t)h.bits == 1 && loop_lookup(l, h, 1) == &a);
+	CHECK(slot(h) != slot(zero) && loop_lookup(l, h, 1) == &a);
+	CHECK(!loop_lookup(l, zero, 1));
 	loop_forget(l, h);
 }
 

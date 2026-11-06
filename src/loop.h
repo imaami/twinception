@@ -195,7 +195,8 @@ loop_lookup (struct loop const *loop,
              uint32_t           kind);
 
 /** Free the slot @p h names, if it still does: its generation advances, so no
- *  copy of @p h names anything any more.
+ *  copy of @p h names anything any more. A slot whose generation wraps to
+ *  0 is retired: loop_handle() never uses it again.
  */
 extern void
 loop_forget (struct loop   *loop,

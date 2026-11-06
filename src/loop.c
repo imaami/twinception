@@ -40,7 +40,7 @@ enum {
 /* A slot of the table of handles. */
 struct loop_slot {
 	void    *obj;         /* what it names; nullptr while free */
-	uint32_t gen;         /* the generation its handles carry, never 0 */
+	uint32_t gen;         /* the generation its handles carry, 0 if retired */
 	union {
 		uint32_t kind;    /* while in use: the kind of obj, a number that
 		                     loop_handle() stores and loop_lookup()
@@ -416,7 +416,8 @@ loop_forget (struct loop   *loop,
 	if (!slot)
 		return;
 	slot->obj = nullptr;
-	slot->gen += 1 + (slot->gen == UINT32_MAX);
+	if (!++slot->gen)
+		return;
 	slot->vacant = loop->vacant;
 	loop->vacant = (uint32_t)(slot - loop->slots) + 1;
 }
