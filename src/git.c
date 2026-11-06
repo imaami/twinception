@@ -11,6 +11,7 @@
 
 #include "child.h"
 #include "cstr_view.h"
+#include "dstr.h"
 #include "git.h"
 #include "git_view.h"
 #include "jb.h"
@@ -42,7 +43,6 @@ enum {
 	REV_WORD  = WORD + OID_SHA256 + 1, /**< a full SHA-256 ID and the original path */
 	ROOTS     = 2 * REVISIONS + OPTIONS,
 	ENV       = 13,       /**< git's environment, its nullptr included */
-	CEILINGS  = 1,        /**< the index of GIT_CEILING_DIRECTORIES in it */
 	ATTR      = ENV - 2,  /**< the index of GIT_ATTR_SOURCE in it, which is
 	                           set when a call has a HEAD */
 };
@@ -68,6 +68,7 @@ struct git_repo {
 
 struct git {
 	char           *env[ENV];
+	struct dstr     ceilings;  /* the GIT_CEILING_DIRECTORIES entry of env */
 	uint64_t        timeout;
 	size_t          n;
 	struct git_repo repo[];
@@ -327,33 +328,22 @@ git_repo_init (struct git_repo *r,
 	return 0;
 }
 
-/* GIT_CEILING_DIRECTORIES: the listed repositories' parents, so that git
- * finds no repository above one listed, as it would look for one without
- * one there; nullptr if out of memory.
+/* Writes GIT_CEILING_DIRECTORIES to git->ceilings: the listed
+ * repositories' parents, so that git finds no repository above one listed,
+ * as it would look for one without one there. Returns 0 or ENOMEM.
  */
-static char *
-git_ceilings (struct git const *git)
+static int
+git_ceilings (struct git *git)
 {
-	static char const ceiling[] = "GIT_CEILING_DIRECTORIES=";
-	size_t size = sizeof ceiling;
-	/* Each path, and its NUL, goes before its safe.directory setting. */
-	for (size_t i = 0; i < git->n; ++i)
-		size += (size_t)(git->repo[i].safe - git->repo[i].path);
-	char *env = malloc(size);
-	if (!env)
-		return nullptr;
-	size_t at = sizeof ceiling - 1;
-	memcpy(env, ceiling, at);
-	for (size_t i = 0; i < git->n; ++i) {
+	int e = cstr_view_cat(CSTR_VIEW("GIT_CEILING_DIRECTORIES="), &git->ceilings);
+	for (size_t i = 0; !e && i < git->n; ++i) {
 		char const *p = git->repo[i].path;
-		size_t len = (size_t)(strrchr(p, '/') - p);
-		if (i)
-			env[at++] = ':';
-		memcpy(env + at, len ? p : "/", len ? len : 1);
-		at += len ? len : 1;
+		size_t const len = (size_t)(strrchr(p, '/') - p);
+		struct cstr_view const parent = len ? (struct cstr_view){ p, len } : CSTR_VIEW("/");
+		e = dstr_printf(&git->ceilings, "%s%.*s", i ? ":" : "", (int)parent.len, parent.data)
+		    ? 0 : ENOMEM;
 	}
-	env[at] = '\0';
-	return env;
+	return e;
 }
 
 /* Set @p git up for the @p n repositories at @p paths. */
@@ -367,13 +357,13 @@ git_load (struct git        *git,
 		if (e)
 			return e;
 	}
-	char *ceilings = git_ceilings(git);
-	if (!ceilings)
-		return ENOMEM;
+	int e = git_ceilings(git);
+	if (e)
+		return e;
 	/* The last but one is GIT_ATTR_SOURCE's, when a call has a HEAD. */
 	char *const vars[] = {
-		util_env_path(), ceilings, GIT_ENV_FIXED, "GIT_OPTIONAL_LOCKS=0",
-		nullptr, nullptr
+		util_env_path(), (char *)dstr_raw(&git->ceilings), GIT_ENV_FIXED,
+		"GIT_OPTIONAL_LOCKS=0", nullptr, nullptr
 	};
 	static_assert(sizeof vars == sizeof git->env);
 	memcpy(git->env, vars, sizeof vars);
@@ -391,6 +381,7 @@ git_create (char const *const paths[],
 		*e = ENOMEM;
 		return nullptr;
 	}
+	git->ceilings = (struct dstr)DSTR_INIT;
 	git->timeout = timeout;
 	if ((*e = git_load(git, paths, n)))
 		git_destroy(&git);
@@ -404,9 +395,11 @@ git_destroy (struct git **p_git)
 		return;
 	struct git *git = *p_git;
 	*p_git = nullptr;
-	for (size_t i = 0; i < git->n; ++i)
+	for (size_t i = 0; i < git->n; ++i) {
 		free(git->repo[i].path);
-	free(git->env[CEILINGS]);
+		git->repo[i].path = nullptr;
+	}
+	dstr_cleanup(&git->ceilings);
 	free(git);
 }
 
