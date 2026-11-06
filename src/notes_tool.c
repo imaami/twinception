@@ -1012,9 +1012,7 @@ notes_tool_got_note (struct mcp_slot *slot)
 	struct child const *c = call->child;
 	struct span text = {};
 	struct oid id;
-	int r = !child_ok(c) ? EIO
-	      : call->fetch & FETCH_RESTORE ? notes_read_full_out(buf_peek(&c->out), &text, &id)
-	      : notes_read_out(buf_peek(&c->out), &text, &id);
+	int r = child_ok(c) ? notes_read_out(buf_peek(&c->out), &text, &id) : EIO;
 	if (r) {
 		int e = r == ENOENT ? cstr_view_cat(CSTR_VIEW("No note has that name."), call->text)
 		      : r == EISDIR ? cstr_view_cat(CSTR_VIEW("That name is a "

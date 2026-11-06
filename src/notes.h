@@ -372,20 +372,12 @@ notes_read_input (struct buf       *in,
  * of the note in @p text, and its object id in @p id unless @p id is
  * nullptr. Returns 0, ENOENT if no note has the name,
  * EISDIR if the name is a directory of notes, and EIO if the output is not
- * what the command writes.
+ * what the command writes, also if it is incomplete.
  */
 extern int
 notes_read_out (struct span  out,
                 struct span *text,
                 struct oid  *id);
-
-/** As notes_read_out(), but rejects incomplete output with EIO. Use this
- *  before copying or restoring bytes rather than displaying a partial read.
- */
-extern int
-notes_read_full_out (struct span  out,
-                     struct span *text,
-                     struct oid  *id);
 
 /**
  * Reads the next current note from @p out, the output of NOTES_FILES, into

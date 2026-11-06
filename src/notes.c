@@ -806,11 +806,10 @@ notes_read_input (struct buf       *in,
 	return 0;
 }
 
-static int
-notes_read_decode (struct span  out,
-                   struct span *text,
-                   struct oid  *id,
-                   bool         full)
+int
+notes_read_out (struct span  out,
+                struct span *text,
+                struct oid  *id)
 {
 	*text = (struct span){};
 	if (id)
@@ -828,35 +827,18 @@ notes_read_decode (struct span  out,
 		return EISDIR;
 	if (kind != KIND_BLOB)
 		return EIO;
-	/* The size of the text is the last word of the line. The end of the
-	 * output limits the text. */
+	/* The size of the text is the last word of the line, and a line feed
+	 * comes after the text. */
 	char const *digits = (char const *)memrchr(line, ' ', n) + 1;
 	uint64_t size;
-	if (!notes_number(digits, (size_t)(nl - digits), &size))
-		return EIO;
 	size_t room = out.len - n - 1;
-	if (full && (!room || size != room - 1 || out.ptr[out.len - 1] != '\n'))
+	if (!notes_number(digits, (size_t)(nl - digits), &size) || !room || size != room - 1 ||
+	    out.ptr[out.len - 1] != '\n')
 		return EIO;
-	*text = (struct span){ out.ptr + n + 1, size < room ? (size_t)size : room };
+	*text = (struct span){ out.ptr + n + 1, (size_t)size };
 	if (id)
 		*id = oid;
 	return 0;
-}
-
-int
-notes_read_out (struct span  out,
-                struct span *text,
-                struct oid  *id)
-{
-	return notes_read_decode(out, text, id, false);
-}
-
-int
-notes_read_full_out (struct span  out,
-                     struct span *text,
-                     struct oid  *id)
-{
-	return notes_read_decode(out, text, id, true);
 }
 
 /* Returns the offset of the start of the token that ends with the NUL at
