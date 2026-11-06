@@ -23,6 +23,12 @@
 /** The most bytes of a key that jb_args() reports. */
 enum { JB_KEY_SHOWN = 64 };
 
+/** The most bytes of a JSON number or literal that askai parses, as the
+ *  scalar of a pool or of jb_scan(). json-c converts one whole, and no
+ *  valid one needs more.
+ */
+enum { JB_SCALAR_MAX = 1 << 10 };
+
 /**
  * Object from key, value pairs ending with a nullptr key. The values are
  * consumed; a nullptr value (a failed allocation) fails the whole object.

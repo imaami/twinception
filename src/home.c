@@ -33,8 +33,6 @@
 enum {
 	MAX_RESPONSE = 16 << 20,  /* the most bytes of an answer, of a streamed
 	                             one's text, and of an event of it */
-	MAX_SCALAR   = 1 << 10,   /* bytes of a JSON number or literal, which
-	                             json-c converts whole */
 	MAX_PROPS    = 1 << 20,   /* bytes of a /props answer */
 	PROPS_MS     = 10'000,    /* the most /props may take, or the timeout */
 	CANCEL_MS    = 5'000,     /* native cancellation's total lifetime */
@@ -2790,7 +2788,7 @@ home_create (struct loop         *loop,
 			[TIMER_CANCEL].fn = home_cleanup_event,
 		},
 		.pool = {
-			.scalar = MAX_SCALAR,
+			.scalar = JB_SCALAR_MAX,
 			.flags = JSON_TOKENER_VALIDATE_UTF8
 		},
 		.metrics = metrics,

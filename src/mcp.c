@@ -130,8 +130,6 @@ enum {
 enum {
 	MAX_ID       = 1 << 10,   /* string request id bytes: every reply repeats it */
 	MAX_ECHO     = 256,       /* bytes of a client's string an error repeats */
-	MAX_SCALAR   = 1 << 10,   /* bytes of a JSON number or literal, which json-c
-	                             converts whole: no valid one needs more */
 	CACHE_TTL_MS = 300'000,   /* how long modern clients may cache lists */
 	UPLOAD_MAX   = 16 << 20,  /* bytes of a conversation's upstream request:
 	                             past those, its context is full */
@@ -7863,11 +7861,12 @@ mcp_on_body (struct stream *s,
 	}
 	struct mcp_limits const *lim = &req->mcp->st->lim;
 	size_t n = jb_scan(&req->scan, (char const *)bytes.ptr, bytes.len, lim->depth,
-	                   lim->values, lim->members, MAX_SCALAR);
+	                   lim->values, lim->members, JB_SCALAR_MAX);
 	if (n < bytes.len) {
 		char c = (char)bytes.ptr[n];
 		mcp_req_http_error(req, 400,
-		                   req->scan.state == JB_SCAN_SCALAR && req->scan.run == MAX_SCALAR
+		                   req->scan.state == JB_SCAN_SCALAR &&
+		                   req->scan.run == JB_SCALAR_MAX
 		                   ? "Request JSON has too long a number"
 		                   : c == ':' ? "Request JSON object has too many members"
 		                   : (c == '{' || c == '[') && req->scan.depth == lim->depth
@@ -7985,11 +7984,11 @@ mcp_create (struct loop              *loop,
 		},
 		.pool = {
 			.depth = st->lim.depth,
-			.scalar = MAX_SCALAR,
+			.scalar = JB_SCALAR_MAX,
 			.flags = JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8
 		},
 		.answers = {
-			.scalar = MAX_SCALAR,
+			.scalar = JB_SCALAR_MAX,
 			.flags = JSON_TOKENER_VALIDATE_UTF8
 		},
 		.metrics = metrics,
