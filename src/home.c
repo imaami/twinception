@@ -226,12 +226,42 @@ static int home_provider_url (struct home *home, struct job *job,
                               bool cancel, char **out);
 static void home_timeline (struct home *home, struct job *job);
 
+/* The names that home uses for each API. llama is the end of the path of
+ * the API's endpoint at llama-server, if its background mode serves the
+ * API. type and object are the members of a native background event with
+ * its type and its object, created is the type of the event that creates
+ * the object, and update, if not nullptr, the type of an event whose
+ * status is not in its object.
+ */
+static struct home_api {
+	struct cstr_view  llama;
+	char const       *type;
+	char const       *object;
+	char const       *created;
+	char const       *update;
+} const home_apis[] = {
+	[AI_CHAT]         = { .llama = CSTR_VIEW_INIT("chat/completions") },
+	[AI_RESPONSES]    = {
+		.llama = CSTR_VIEW_INIT("responses"),
+		.type = "type",
+		.object = "response",
+		.created = "response.created"
+	},
+	[AI_MESSAGES]     = { .llama = CSTR_VIEW_INIT("messages") },
+	[AI_INTERACTIONS] = {
+		.type = "event_type",
+		.object = "interaction",
+		.created = "interaction.created",
+		.update = "interaction.status_update"
+	},
+};
+
+/* Whether the upstream is llama-server in its background mode. */
 static bool
 home_llama (struct home const *home)
 {
 	return home->ep->background && home->ep->provider == AI_LLAMA &&
-	       (home->ep->api == AI_CHAT || home->ep->api == AI_RESPONSES ||
-	        home->ep->api == AI_MESSAGES);
+	       home_apis[home->ep->api].llama.len;
 }
 
 /* Whether the provider keeps a job's generation, which askai can reattach
@@ -1836,14 +1866,12 @@ home_provider_url (struct home *home,
 	while (at && path[at - 1] == '/')
 		--at;
 	if (home_llama(home)) {
-		char const *suffix = home->ep->api == AI_CHAT ? "chat/completions" :
-		                     home->ep->api == AI_RESPONSES ? "responses" : "messages";
-		size_t n = strlen(suffix);
-		if (at < n || memcmp(path + at - n, suffix, n)) {
+		struct cstr_view const suffix = home_apis[home->ep->api].llama;
+		if (at < suffix.len || memcmp(path + at - suffix.len, suffix.data, suffix.len)) {
 			e = EINVAL;
 			goto done;
 		}
-		at -= n;
+		at -= suffix.len;
 		joined = malloc(at + sizeof "stream");
 		if (!joined)
 			goto done;
@@ -1922,23 +1950,21 @@ home_native_event (struct home        *home,
 {
 	if (!ai_background(home->ep))
 		return 0;
-	bool responses = home->ep->api == AI_RESPONSES;
-	struct json_object *kind = jb_get(root, responses ? "type" : "event_type");
-	struct json_object *object = jb_get(root, responses ? "response" : "interaction");
-	struct json_object *status = jb_get(object, "status");
-	if (!responses && jb_is(kind, "interaction.status_update"))
-		status = jb_get(root, "status");
-	if (jb_is(status, "completed") || jb_is(status, "failed") ||
-	    jb_is(status, "cancelled") || jb_is(status, "incomplete"))
+	static struct cstr_view const ends[] = {
+		CSTR_VIEW_INIT("completed"), CSTR_VIEW_INIT("failed"),
+		CSTR_VIEW_INIT("cancelled"), CSTR_VIEW_INIT("incomplete"),
+	};
+	struct home_api const *api = &home_apis[home->ep->api];
+	struct json_object *kind = jb_get(root, api->type);
+	struct json_object *object = jb_get(root, api->object);
+	struct json_object *status = api->update && jb_is(kind, api->update)
+	                           ? jb_get(root, "status") : jb_get(object, "status");
+	if (cstr_view_index(ends, array_size(ends), jb_view(status)) < array_size(ends))
 		job->flags |= PROVIDER_DONE;
-	bool created = !job->cancel_url &&
-	               jb_is(kind, responses ? "response.created" : "interaction.created");
-	if (created) {
-		int e = home_native_id(home, job, jb_get(object, "id"));
-		if (e)
-			return e;
-	}
-	return created ? home_metadata(home, job) : 0;
+	if (job->cancel_url || !jb_is(kind, api->created))
+		return 0;
+	int e = home_native_id(home, job, jb_get(object, "id"));
+	return e ? e : home_metadata(home, job);
 }
 
 /* Take what @p root, an event of @p job's stream, says (ai_event()): its
