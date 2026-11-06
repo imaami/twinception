@@ -171,6 +171,13 @@ manual_page_same (struct manual_page const *page,
 	       page->ctime.tv_nsec == st->st_ctim.tv_nsec;
 }
 
+/* Returns the section of the alias @p a, whose key is "NAME\0SECTION". */
+static char const *
+manual_entry_section (struct manual_entry const *a)
+{
+	return a->key + strlen(a->key) + 1;
+}
+
 /* Whether the key of the entry of @p node is the view at @p key. */
 static bool
 manual_match (struct htab_node const *node,
@@ -357,11 +364,10 @@ manual_entry_none (struct manual_entry const *a,
                    char                      *why,
                    size_t                     size)
 {
-	char const *name = a->key;
-	char const *section = name + strlen(name) + 1;
+	char const *section = manual_entry_section(a);
 	return *section ? util_format_view(why, size, "No manual entry for %s in section %s.",
-	                                   name, section)
-	                : util_format_view(why, size, "No manual entry for %s.", name);
+	                                   a->key, section)
+	                : util_format_view(why, size, "No manual entry for %s.", a->key);
 }
 
 /* Returns a view with data nullptr if man, @p c, ended well or its output
@@ -530,8 +536,7 @@ manual_loop_ask (struct manual_loop *ml,
 	list_append(&ml->fetches, &f->hook);
 
 	/* Man finds the file. */
-	char const *name = a->key;
-	char const *section = name + strlen(name) + 1;
+	char const *section = manual_entry_section(a);
 	char const *argv[7] = { "man", "-w" };
 	size_t i = 2;
 	if (*section) {
@@ -539,7 +544,7 @@ manual_loop_ask (struct manual_loop *ml,
 		argv[i++] = section;
 	}
 	argv[i++] = "--";
-	argv[i] = name;
+	argv[i] = a->key;
 	manual_fetch_run(f, argv, FOUND_MAX, manual_fetch_found, &m->metrics.finds);
 	return 0;
 }
