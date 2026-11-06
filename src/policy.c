@@ -300,18 +300,13 @@ policy_by_id (void const *a,
 	return (x > y) - (x < y);
 }
 
-/* @p name as a number, in @p *id, if it is one. */
+/* @p text as a decimal number below UINT32_MAX, in @p *id, if it is one. */
 static bool
-policy_number (char const *name,
-               uint32_t   *id)
+policy_number (struct cstr_view  text,
+               uint32_t         *id)
 {
-	if (*name < '0' || *name > '9')
-		return false;
-	char *end;
-	/* strtoul() leaves errno as it was on success. */
-	errno = 0;
-	unsigned long n = strtoul(name, &end, 10);
-	if (*end || errno || n >= UINT32_MAX)
+	uint64_t n;
+	if (!text.len || util_digits(text.data, text.len, UINT32_MAX - 1, &n) != text.len)
 		return false;
 	*id = (uint32_t)n;
 	return true;
@@ -472,8 +467,7 @@ policy_read_overflow (char const *path,
 	(void)fclose(f);
 	if (e)
 		return e;
-	text[strcspn(text, "\n")] = '\0';
-	return policy_number(text, id) ? 0 : EILSEQ;
+	return policy_number((struct cstr_view){ text, strcspn(text, "\n") }, id) ? 0 : EILSEQ;
 }
 
 /* Bytes of the buffer for one group entry from NSS, at most. A group
@@ -494,7 +488,7 @@ policy_build_gid (struct policy_build *b,
                   char const          *name,
                   uint32_t            *gid)
 {
-	if (policy_number(name, gid))
+	if (policy_number(cstr_view(name), gid))
 		return 0;
 	struct group gr;
 	struct group *r = nullptr;
