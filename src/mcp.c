@@ -664,6 +664,14 @@ struct mcp_req {
 	                                    client. mcp_begin() copies it from
 	                                    the stream, because s can be nullptr
 	                                    when a call is dropped. */
+	uint64_t             owner;      /* the owner of the records in the
+	                                    ledger that it opens and reads: the
+	                                    principal, or for an anonymous
+	                                    client, whose principal is 0, a hash
+	                                    of its address with LEDGER_ANONYMOUS
+	                                    set, a bit that is never set in a
+	                                    principal (src/policy.h). mcp_begin()
+	                                    sets it too. */
 	uint64_t             generation; /* The value that
 	                                    instance_table_generation() returned
 	                                    when the request began. */
@@ -1480,8 +1488,6 @@ mcp_req_args_free (struct mcp_req *req,
 		loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
-static uint64_t mcp_req_owner (struct mcp_req const *req);
-
 /* How the call of a task or a job ends: cancelled as its client asked, by a
  * cancel or a notifications/cancelled, failed if req->error is set or its
  * reply, in the record, is an error or not whole, else completed.
@@ -1506,7 +1512,7 @@ mcp_req_task_end (struct mcp_req *req)
 	struct ledger_task *task = req->task;
 	ledger_end(req->mcp->st->ledger, task, mcp_req_status(req));
 	if (req->flags & REQ_SUSPENDED)
-		(void)ledger_remove(req->mcp->st->ledger, mcp_req_owner(req), &task->id);
+		(void)ledger_remove(req->mcp->st->ledger, req->owner, &task->id);
 	loop_forget(req->mcp->loop, task->who);
 	ledger_task_put(task);
 	req->task = nullptr;
@@ -2338,7 +2344,7 @@ mcp_req_refit (struct mcp_req   *req,
                struct cstr_view  why)
 {
 	if (req->flags & REQ_FILING)
-		uploads_forget(req->mcp->st->uploads, mcp_req_owner(req));
+		uploads_forget(req->mcp->st->uploads, req->owner);
 	return req->turn > 1 && !req->forced && mcp_overflowed(why);
 }
 
@@ -2556,7 +2562,6 @@ static int
 mcp_key (struct job  *job,
          struct span  session)
 {
-	job->session = 0;
 	if (!session.ptr)
 		return 0;
 	struct span s;
@@ -2606,21 +2611,6 @@ mcp_req_key (struct mcp_req const *req,
 	buf_commit(key, total);
 	*hash = util_hash(req->mcp->st->seed, k.ptr, total);
 	return 0;
-}
-
-/** Returns the owner of the records in the ledger that @p req opens and
- *  reads: the principal of the client, or for an anonymous client, whose
- *  principal is 0, a hash of its address with the bit LEDGER_ANONYMOUS set,
- *  which is never set in a principal (src/policy.h). mcp_req_submit() uses
- *  the same hash for the jobs of an anonymous client without a session.
- */
-static uint64_t
-mcp_req_owner (struct mcp_req const *req)
-{
-	if (req->principal)
-		return req->principal;
-	struct stream const *s = req->s;
-	return util_hash(~req->mcp->st->seed, s->peer.key, sizeof s->peer.key) | LEDGER_ANONYMOUS;
 }
 
 /* A journal callback names a request rather than keeping its address: a
@@ -2754,23 +2744,13 @@ mcp_req_archive_end (struct mcp_req *req)
 	return true;
 }
 
-/* Write the call's key into @p job, and name the request by a handle for
- * the job's completion.
- */
-static int
-mcp_req_name (struct mcp_req *req,
-              struct job     *job)
-{
-	struct stream *s = req->s;
-	int e = mcp_key(job, s->ops->field(s, F_SESSION));
-	return e ? e : loop_handle(req->mcp->loop, req, HANDLE_REQ, &req->call);
-}
-
-/** Hands the upstream request of @p req to a job and submits the job to
- *  home. The principal of the job is the principal of the client, with the
- *  peer UINT64_MAX twice, the peer of no client. For an anonymous client,
- *  it is a hash of the session field or of the address. So all jobs of an
- *  identity share one principal. Returns 0 or an error number.
+/** Hands the upstream request of @p req to a job, names the request by a
+ *  handle for the job's completion and submits the job to home. The
+ *  principal of the job is the principal of the client, with the peer
+ *  UINT64_MAX twice, the peer of no client. For an anonymous client, it is
+ *  a hash of the session field, which is in the job's key then, or else
+ *  the owner of the request. So all jobs of an identity share one
+ *  principal. Returns 0 or an error number.
  */
 static int
 mcp_req_submit (struct mcp_req *req)
@@ -2792,7 +2772,22 @@ mcp_req_submit (struct mcp_req *req)
 		}
 		req->flags &= ~REQ_RECOVERING;
 	}
-	int e = mcp_req_name(req, job);
+	struct stream const *s = req->s;
+	int e = 0;
+	/* The session of the last call of a shelved job is still set. */
+	job->session = 0;
+	if (req->principal) {
+		job->principal = req->principal;
+		job->peer = (struct stream_peer){ { UINT64_MAX, UINT64_MAX } };
+	} else {
+		job->peer = s->peer;
+		e = mcp_key(job, s->ops->field(s, F_SESSION));
+		job->principal = job->session
+		               ? util_hash(mcp->st->seed, buf_peek(&job->key).ptr, job->session)
+		               : req->owner;
+	}
+	if (!e)
+		e = loop_handle(loop, req, HANDLE_REQ, &req->call);
 	if (e) {
 		mcp_shelve_job(mcp, job);
 		return e;
@@ -2807,17 +2802,6 @@ mcp_req_submit (struct mcp_req *req)
 	job->deadline = wall ? loop->now + (req->archive_deadline > wall
 	                                    ? req->archive_deadline - wall : 1)
 	              : timeout ? loop->now + timeout : 0;
-	if (req->principal) {
-		job->principal = req->principal;
-		job->session = 0;
-		job->peer = (struct stream_peer){ { UINT64_MAX, UINT64_MAX } };
-	} else {
-		job->peer = req->s->peer;
-		uint64_t seed = mcp->st->seed;
-		job->principal = job->session
-		               ? util_hash(seed, buf_peek(&job->key).ptr, job->session)
-		               : util_hash(~seed, job->peer.key, sizeof job->peer.key);
-	}
 	uint8_t asks = req->asks | (req->token && req->flags & REQ_SSE ? JOB_NOTIFY : 0);
 	if (req->task && *req->archive.hex)
 		asks |= JOB_DURABLE;
@@ -3074,7 +3058,7 @@ mcp_req_record (struct mcp_req   *req,
 	*e = loop_handle(mcp->loop, req, HANDLE_REQ, &who);
 	if (*e)
 		return nullptr;
-	struct ledger_task *task = ledger_open(mcp->st->ledger, mcp_req_owner(req), kind,
+	struct ledger_task *task = ledger_open(mcp->st->ledger, req->owner, kind,
 	                                       (uint16_t)tool, mcp->loop, who,
 	                                       mcp_on_task_cancel, e);
 	if (!task)
@@ -5039,7 +5023,7 @@ mcp_slot_client_find (struct mcp_slot    *slot,
 		                                "yours."), true);
 		return nullptr;
 	}
-	struct ledger_task *task = ledger_find(req->mcp->st->ledger, mcp_req_owner(req), &id);
+	struct ledger_task *task = ledger_find(req->mcp->st->ledger, req->owner, &id);
 	if (task && own_tool && task->tool != slot->tool) {
 		ledger_task_put(task);
 		task = nullptr;
@@ -5064,7 +5048,7 @@ mcp_slot_client_list (struct mcp_slot *slot)
 	struct mcp_static const *st = req->mcp->st;
 	struct dstr *d = &slot->answer;
 	struct ledger_look look;
-	int e = ledger_list(st->ledger, mcp_req_owner(req), &look);
+	int e = ledger_list(st->ledger, req->owner, &look);
 	if (e)
 		return e;
 	uint64_t day = clk_realtime_ns();
@@ -5165,7 +5149,7 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 			                                "a timer of yours."), true);
 			return;
 		}
-		int e = ledger_timer_cancel(req->mcp->st->ledger, mcp_req_owner(req), n);
+		int e = ledger_timer_cancel(req->mcp->st->ledger, req->owner, n);
 		size_t len = !e ? util_format(text, sizeof text, "Cancelled timer %" PRIu32 ".", n)
 		           : e == EALREADY ? util_format(text, sizeof text, "Timer %" PRIu32 " has "
 		                                         "fired, and a call of wait reports it.", n)
@@ -5383,7 +5367,7 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
 	struct mcp_req *req = slot->req;
 	struct mcp *mcp = req->mcp;
 	struct ledger *ledger = mcp->st->ledger;
-	uint64_t owner = mcp_req_owner(req);
+	uint64_t owner = req->owner;
 	struct json_object *list = jb_get(args, "jobs");
 	size_t n = !list ? 0 : json_object_is_type(list, json_type_array)
 	         ? json_object_array_length(list) : SIZE_MAX;
@@ -5573,7 +5557,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 	uint64_t due = req->mcp->loop->now + secs * NS;
 	uint32_t id;
 	int e = slot->role == ROLE_OWN
-	      ? ledger_timer_set(req->mcp->st->ledger, mcp_req_owner(req), due, note, &id)
+	      ? ledger_timer_set(req->mcp->st->ledger, req->owner, due, note, &id)
 	      : mcp_agenda_timer(req, due, note, &id);
 	if (e) {
 		mcp_slot_refused(slot, e, CSTR_VIEW("You have 8 timers set, the most at once."));
@@ -6093,7 +6077,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 	req->archive_deadline = st->timeout ? now + st->timeout : 0;
 	struct json_object *state = jb_object(
 		"version", json_object_new_int(1),
-		"owner", json_object_new_uint64(mcp_req_owner(req)),
+		"owner", json_object_new_uint64(req->owner),
 		"created", json_object_new_uint64(task ? task->created : now),
 		"tool", json_object_new_string(mcp_static_tool(st, req->self.tool)->name.data),
 		"api", json_object_new_int(st->ep->api),
@@ -6183,7 +6167,7 @@ mcp_recover_back (struct loop           *loop,
 	if (!req)
 		goto out;
 	struct mcp_static const *st = req->mcp->st;
-	uint64_t const owner = mcp_req_owner(req);
+	uint64_t const owner = req->owner;
 	struct hexid id;
 	struct ledger_task *found = hexid_init(&id, jb_view(jb_get(args, "job"))) ? nullptr
 	                          : ledger_find(st->ledger, owner, &id);
@@ -6394,7 +6378,7 @@ mcp_req_recover (struct mcp_req                 *req,
 	struct hexid id;
 	if (!req->mcp->st->journal || hexid_init(&id, jb_view(jb_get(args, "job"))))
 		return false;
-	struct ledger_task *task = ledger_find(req->mcp->st->ledger, mcp_req_owner(req), &id);
+	struct ledger_task *task = ledger_find(req->mcp->st->ledger, req->owner, &id);
 	if (task) {
 		ledger_task_put(task);
 		return false;
@@ -6630,7 +6614,7 @@ mcp_slot_attach (struct mcp_slot  *slot,
 	char uri[UPLOADS_URI];
 	size_t uri_len = 0;
 	size_t file_bytes = 0;
-	e = uploads_find(st->uploads, mcp_req_owner(req), id, clk_realtime().tv_sec, uri,
+	e = uploads_find(st->uploads, req->owner, id, clk_realtime().tv_sec, uri,
 	                     &uri_len, &file_bytes);
 	if (!e)
 		e = mcp_req_fits(req, file_bytes, out);
@@ -6673,7 +6657,7 @@ mcp_slot_attached (struct mcp_slot  *slot,
 	LOG(LOG_VERBOSE, "upstream file %s uploaded: %zu bytes", u.data, bytes);
 	e = mcp_req_attach(req, u, bytes);
 	if (!e && expires)
-		(void)uploads_keep(st->uploads, mcp_req_owner(req), id, u, bytes, expires,
+		(void)uploads_keep(st->uploads, req->owner, id, u, bytes, expires,
 		                   clk_realtime().tv_sec);
 	return e;
 }
@@ -7165,7 +7149,7 @@ mcp_req_tasks (struct mcp_req     *req,
 	}
 	struct hexid id;
 	struct ledger_task *task = hexid_init(&id, jb_view(jb_get(params, "taskId"))) ? nullptr
-	                         : ledger_find(st->ledger, mcp_req_owner(req), &id);
+	                         : ledger_find(st->ledger, req->owner, &id);
 	if (!task) {
 		mcp_req_error(req, 200, INVALID_PARAMS,
 		              FRAG("Failed to retrieve task: Task not found"), nullptr, 0);
@@ -7664,6 +7648,8 @@ mcp_begin (struct mcp           *mcp,
 		.mcp = mcp,
 		.head = loop_clock(),
 		.principal = s->grant.principal,
+		.owner = s->grant.principal ? s->grant.principal
+		       : util_hash(~mcp->st->seed, s->peer.key, sizeof s->peer.key) | LEDGER_ANONYMOUS,
 		.generation = instance_table_generation(&mcp->instances),
 		.ping_at = UINT64_MAX,
 		.promote_at = UINT64_MAX,
