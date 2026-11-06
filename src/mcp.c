@@ -212,9 +212,6 @@ enum { FILES_INLINE = 4 << 20, FILES_ROOM = 64 << 10 };
 /* The bytes of the upstream's answer to an upload of a file, at most. */
 enum { FILES_ANSWER = 64 << 10 };
 
-/** The header field of a JSON response. */
-#define JSON_FIELD "Content-Type: application/json\r\n"
-
 /** The request header fields read here, in field() order. */
 enum { F_TYPE, F_ACCEPT, F_VERSION, F_METHOD, F_NAME, F_SESSION, F_N };
 
@@ -1752,7 +1749,7 @@ mcp_req_http_error (struct mcp_req *req,
                     uint16_t        status,
                     char const     *message)
 {
-	mcp_http_error(req->s, status, message, SPAN(JSON_FIELD));
+	mcp_http_error(req->s, status, message, SPAN(STREAM_JSON_FIELD));
 	req->s = nullptr;
 	mcp_req_finish(req);
 }
@@ -1931,7 +1928,7 @@ mcp_req_error (struct mcp_req         *req,
                size_t                  n_data)
 {
 	mcp_req_log_call(req, "failed", message.bytes, true);
-	mcp_req_close(req, status, SPAN(JSON_FIELD),
+	mcp_req_close(req, status, SPAN(STREAM_JSON_FIELD),
 	              mcp_req_error_put(req, code, message, data, n_data));
 }
 
@@ -2050,7 +2047,7 @@ mcp_req_tool_close (struct mcp_req *req)
 		FRAG("}"),
 	};
 	int e = mcp_req_trace_put(req);
-	mcp_req_close(req, 200, SPAN(JSON_FIELD),
+	mcp_req_close(req, 200, SPAN(STREAM_JSON_FIELD),
 	              e ? e : mcp_req_put(req, p, array_size(p)));
 }
 
@@ -3249,7 +3246,7 @@ mcp_req_detach (struct mcp_req     *req,
 {
 	struct mcp *mcp = req->mcp;
 	struct stream *s = req->s;
-	e = mcp_req_flush(req, e ? e : mcp_req_head(req, 200, SPAN(JSON_FIELD)));
+	e = mcp_req_flush(req, e ? e : mcp_req_head(req, 200, SPAN(STREAM_JSON_FIELD)));
 	if (e) {
 		mcp_req_record_end(req, &task, LEDGER_CANCELLED);
 		mcp_req_abort(req, e);
@@ -7098,7 +7095,7 @@ static void
 mcp_req_initialize (struct mcp_req     *req,
                     struct json_object *params)
 {
-	static char const head[] = JSON_FIELD "Mcp-Session-Id: ";
+	static char const head[] = STREAM_JSON_FIELD "Mcp-Session-Id: ";
 	struct cstr_view version = jb_view(jb_get(params, "protocolVersion"));
 	if (!mcp_is_legacy(mcp_version(version)))
 		version = versions[MODERN];
@@ -7107,7 +7104,7 @@ mcp_req_initialize (struct mcp_req     *req,
 	 * IDs that a client cancels. */
 	struct hexid id;
 	char fields[sizeof head + sizeof id.hex + 1];
-	struct span f = SPAN(JSON_FIELD);
+	struct span f = SPAN(STREAM_JSON_FIELD);
 	if (!hexid_make(&id))
 		f = (struct span){ (unsigned char *)fields,
 		                   util_format(fields, sizeof fields, "%s%s\r\n", head, id.hex) };
@@ -7146,7 +7143,7 @@ mcp_req_result_of (struct mcp_req    *req,
                    struct dstr const *text)
 {
 	struct mcp_piece const p[] = { DSTR(text), FRAG("}") };
-	mcp_req_result(req, p, array_size(p), SPAN(JSON_FIELD));
+	mcp_req_result(req, p, array_size(p), SPAN(STREAM_JSON_FIELD));
 }
 
 /** Replies to the tools/list of @p req with the definitions of the tools
@@ -7168,7 +7165,7 @@ mcp_req_tools_list (struct mcp_req *req)
 	}
 	p[n++] = req->flags & REQ_MODERN ? DSTR(&st->list_tail) : FRAG("]}");
 	p[n++] = FRAG("}");
-	mcp_req_result(req, p, n, SPAN(JSON_FIELD));
+	mcp_req_result(req, p, n, SPAN(STREAM_JSON_FIELD));
 }
 
 /* Copy the result of the task that tasks/get shows into the reply, a slice
@@ -7205,7 +7202,8 @@ mcp_req_show (struct mcp_req *req)
 		tail ? DSTR(&st->modern_tail) : FRAG(""),
 		RAW("}}", (size_t)tail + (req->method == METHOD_TASKS_GET)),
 	};
-	mcp_req_close(req, 200, SPAN(JSON_FIELD), e ? e : mcp_req_put(req, p, array_size(p)));
+	mcp_req_close(req, 200, SPAN(STREAM_JSON_FIELD),
+	              e ? e : mcp_req_put(req, p, array_size(p)));
 }
 
 /** Answers the tasks/get of @p req with the status of @p task. After the
@@ -7254,7 +7252,8 @@ mcp_req_task_show (struct mcp_req     *req,
 	e = e ? e : mcp_req_put(req, p, array_size(p));
 	if (e || !whole) {
 		ledger_task_put(task);
-		mcp_req_close(req, 200, SPAN(JSON_FIELD), e ? e : mcp_req_put(req, &FRAG("}"), 1));
+		mcp_req_close(req, 200, SPAN(STREAM_JSON_FIELD),
+		              e ? e : mcp_req_put(req, &FRAG("}"), 1));
 		return;
 	}
 	req->shown = task;
@@ -7304,7 +7303,7 @@ mcp_req_tasks (struct mcp_req     *req,
 		DSTR(&st->server_meta),
 		FRAG("}}"),
 	};
-	mcp_req_result(req, p, array_size(p), SPAN(JSON_FIELD));
+	mcp_req_result(req, p, array_size(p), SPAN(STREAM_JSON_FIELD));
 }
 
 /* Answer a valid request, or start the tool call it asks for, unless its era
@@ -7346,7 +7345,7 @@ mcp_req_route (struct mcp_req     *req,
 		mcp_req_initialize(req, params);
 		return;
 	default:
-		mcp_req_result(req, &FRAG("{}}"), 1, SPAN(JSON_FIELD));
+		mcp_req_result(req, &FRAG("{}}"), 1, SPAN(STREAM_JSON_FIELD));
 	}
 }
 
@@ -7760,7 +7759,7 @@ mcp_begin (struct mcp           *mcp,
 {
 	struct mcp_req *req = mcp_spare_take(mcp);
 	if (!req) {
-		mcp_http_error(s, 500, out_of_memory, SPAN(JSON_FIELD));
+		mcp_http_error(s, 500, out_of_memory, SPAN(STREAM_JSON_FIELD));
 		return nullptr;
 	}
 	*req = (struct mcp_req){
@@ -7818,17 +7817,17 @@ mcp_on_head (void          *ctx,
 		if (s->grant.metrics)
 			(void)mcp_begin(mcp, s, PHASE_METRICS, METHOD_METRICS);
 		else
-			mcp_http_error(s, 403, "Forbidden", SPAN(JSON_FIELD));
+			mcp_http_error(s, 403, "Forbidden", SPAN(STREAM_JSON_FIELD));
 		return;
 	}
 	if (!mcp_span_is(method, CSTR_VIEW("POST"))) {
 		/* No standalone event stream (GET) and no sessions to DELETE. */
 		mcp_http_error(s, 405, "Method Not Allowed",
-		               SPAN(JSON_FIELD "Allow: POST, OPTIONS\r\n"));
+		               SPAN(STREAM_JSON_FIELD "Allow: POST, OPTIONS\r\n"));
 		return;
 	}
 	if (!mcp_is_json(s->ops->field(s, F_TYPE))) {
-		mcp_http_error(s, 415, "Unsupported Media Type", SPAN(JSON_FIELD));
+		mcp_http_error(s, 415, "Unsupported Media Type", SPAN(STREAM_JSON_FIELD));
 		return;
 	}
 	struct mcp_req *req = mcp_begin(mcp, s, PHASE_BODY, METHOD_OTHER);
@@ -7842,7 +7841,6 @@ mcp_on_head (void          *ctx,
 #undef ESC
 #undef ESC_VIEW
 #undef FRAG
-#undef JSON_FIELD
 #undef RAW
 #undef SPAN
 #undef TEXT

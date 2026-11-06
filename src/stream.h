@@ -35,6 +35,9 @@ static constexpr size_t STREAM_OPEN = SIZE_MAX;
 /** The most request header fields an application may ask for. */
 enum { STREAM_FIELDS = 8 };
 
+/** The header line of a JSON body, as head() takes it. */
+#define STREAM_JSON_FIELD "Content-Type: application/json\r\n"
+
 struct stream;
 
 /** Downward: the application's answer. */

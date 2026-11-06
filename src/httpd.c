@@ -1167,10 +1167,7 @@ httpd_conn_head (struct httpd_conn      *conn,
 	return httpd_conn_put(conn, f, n);
 }
 
-/* The field of a JSON body, and the start of a JSON-RPC error up to the
- * text of its message.
- */
-#define JSON_FIELD "Content-Type: application/json\r\n"
+/* The start of a JSON-RPC error up to the text of its message. */
 #define RPC_ERROR "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\""
 
 /* Queue a complete response of our own: @p body, which is nullptr for none
@@ -1185,7 +1182,7 @@ httpd_conn_respond (struct httpd_conn      *conn,
                     struct cstr_view const *body,
                     size_t                  n_body)
 {
-	struct cstr_view const type = body ? CSTR_VIEW(JSON_FIELD) : (struct cstr_view){};
+	struct cstr_view const type = body ? CSTR_VIEW(STREAM_JSON_FIELD) : (struct cstr_view){};
 	if (!httpd_conn_head(conn, status, type, extra, n_extra, httpd_views_len(body, n_body)))
 		(void)httpd_conn_put(conn, body, n_body);
 	conn->req.flags |= REQ_DONE;
@@ -1214,7 +1211,7 @@ httpd_conn_error (struct httpd_conn      *conn,
  * the response @p name and checks that its body has @p length bytes.
  */
 #define HEAD(length) "HTTP/1.1 403 Forbidden\r\n"                \
-                     JSON_FIELD                                  \
+                     STREAM_JSON_FIELD                           \
                      "Connection: close\r\n"                     \
                      "Content-Length: " #length "\r\n\r\n"
 #define BODY(text) RPC_ERROR "Forbidden: " text "\"}}"
@@ -1229,7 +1226,6 @@ FORBIDDEN(httpd_subordinate, 122, "the uid is a subordinate id of another "
 #undef BODY
 #undef HEAD
 #undef RPC_ERROR
-#undef JSON_FIELD
 
 /* The response to a client on a Unix socket that policy_admit_uid()
  * refuses, and the name of the refusal in the log, by the answer of
