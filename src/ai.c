@@ -563,17 +563,14 @@ fail:
 	return nullptr;
 }
 
-static char const no_answer[] = "The model returned no answer.";
-#define no_answer_reason "The model returned no answer (stop reason: %s)."
-
 size_t
 ai_no_answer (char       *buf,
               size_t      size,
               char const *reason)
 {
-	if (!reason)
-		return util_format(buf, size, "%s", no_answer);
-	return util_format(buf, size, no_answer_reason, reason);
+	return reason ? util_format(buf, size, "The model returned no answer (stop reason: %s).",
+	                            reason)
+	              : util_format(buf, size, "The model returned no answer.");
 }
 
 /* Pass @p text, a piece of the text of the answer, to sink->text, unless
@@ -1711,9 +1708,8 @@ ai_answer (enum ai_api         api,
 		return e;
 	if (!dstr_len(text)) {
 		*failed = true;
-		bool ok = reason ? dstr_printf(text, no_answer_reason, reason)
-		                 : dstr_cat_n(text, no_answer, sizeof no_answer - 1);
-		return ok ? 0 : ENOMEM;
+		char why[AI_NO_ANSWER];
+		return dstr_cat_n(text, why, ai_no_answer(why, sizeof why, reason)) ? 0 : ENOMEM;
 	}
 	if (ai_cut(api, reason))
 		return dstr_cat_n(text, AI_CUT_NOTE, sizeof AI_CUT_NOTE - 1) ? 0 : ENOMEM;
@@ -1730,5 +1726,3 @@ ai_thoughts (enum ai_api         api,
 	char const *reason;
 	return ai_bodies[api].answer(root, nullptr, text, &reason);
 }
-
-#undef no_answer_reason

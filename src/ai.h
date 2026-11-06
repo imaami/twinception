@@ -372,6 +372,11 @@ ai_uploaded (enum ai_api       api,
              int64_t          *expires,
              struct dstr      *why);
 
+/** The size of a buffer for the text of ai_no_answer(). A stop reason too
+ *  long for it is cut.
+ */
+enum { AI_NO_ANSWER = 96 };
+
 /** Say in the @p size bytes at @p buf that the model gave no answer, and
  *  why, if its stop @p reason is not nullptr; returns the length written.
  */

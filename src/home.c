@@ -933,7 +933,7 @@ home_finish_text (struct home *home,
 	struct span s;
 	if (!buf_peek(&job->result).len) {
 		char const *reason = *job->reason ? job->reason : nullptr;
-		if (!buf_reserve(&job->result, 96, SIZE_MAX, &s))
+		if (!buf_reserve(&job->result, AI_NO_ANSWER, SIZE_MAX, &s))
 			buf_commit(&job->result, ai_no_answer((char *)s.ptr, s.len, reason));
 		home_end(home, job, JOB_FAILED, completed);
 		return;
