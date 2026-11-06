@@ -218,13 +218,15 @@ enum godbolt_req : uint8_t {
 	GODBOLT_POST_SHORTEN,   /* POST /api/shortener */
 };
 
-/* The failures after which the plugin sends a request again, besides the
- * statuses 429, 502 and 503.
+/* The failures after which the plugin sends a request again. A rule
+ * selects the first three, and the plugin sends every request again after
+ * the statuses 429, 502 and 503.
  */
 enum godbolt_again : uint32_t {
 	GODBOLT_AGAIN_504      = 1u << 0,
 	GODBOLT_AGAIN_EIO      = 1u << 1,
 	GODBOLT_AGAIN_TIMEDOUT = 1u << 2,
+	GODBOLT_AGAIN_BUSY     = 1u << 3,  /* 429, 502 or 503 */
 };
 
 /* The URL and the limits of a kind of request, and the failures after
@@ -1042,11 +1044,13 @@ godbolt_result (struct godbolt *call)
 		mcp_slot_fail(call->slot, r.e);
 		return GODBOLT_ENDED;
 	}
-	uint32_t const again = godbolt_rules[call->kind_of].again;
-	bool const retry = r.e ? (r.e == EIO && again & GODBOLT_AGAIN_EIO) ||
-	                         (r.e == ETIMEDOUT && again & GODBOLT_AGAIN_TIMEDOUT)
-	                       : r.status == 429 || r.status == 502 || r.status == 503 ||
-	                         (r.status == 504 && again & GODBOLT_AGAIN_504);
+	uint32_t const cause = r.e == EIO ? GODBOLT_AGAIN_EIO
+	                     : r.e == ETIMEDOUT ? GODBOLT_AGAIN_TIMEDOUT
+	                     : r.e ? 0
+	                     : r.status == 504 ? GODBOLT_AGAIN_504
+	                     : r.status == 429 || r.status == 502 || r.status == 503
+	                     ? GODBOLT_AGAIN_BUSY : 0;
+	bool const retry = cause & (godbolt_rules[call->kind_of].again | GODBOLT_AGAIN_BUSY);
 	if (retry && r.retry > GODBOLT_RETRY_MAX) {
 		godbolt_why(call, "HTTP %" PRIu32 ", and Retry-After is %" PRIu32 " s",
 		            r.status, r.retry);
