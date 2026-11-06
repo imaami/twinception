@@ -39,6 +39,19 @@ enum {
 	CLI_NETWORK_PAUSED = 1u << 1,
 };
 
+/* The bits of a network's shared word, which both threads use. */
+enum {
+	CLI_NETWORK_PROGRESS_QUEUED = 1u << 0,  /* progress is posted to the thread */
+	CLI_NETWORK_CANCEL_QUEUED   = 1u << 1,  /* cancel is posted to the thread */
+	CLI_NETWORK_JOINED          = 1u << 2,  /* the thread has been joined */
+};
+
+/* The bits of a network's flags, which only the UI thread uses. */
+enum {
+	CLI_NETWORK_STOPPING   = 1u << 0,
+	CLI_NETWORK_DELIVERING = 1u << 1,
+};
+
 struct cli_network_call {
 	struct list                hook;
 	struct list                received;
@@ -98,16 +111,32 @@ struct cli_network {
 	size_t                      messages;
 	_Atomic int                 failure;
 	_Atomic uint32_t            posted; /* Unhandled messages to the UI, and 1 for the thread. */
-	_Atomic bool                progress_pending;
-	_Atomic bool                cancel_pending;
-	bool                        started;
-	bool                        joined;
-	bool                        stopping;
-	bool                        delivering;
+	_Atomic uint32_t            shared;
+	uint32_t                    flags;
 };
 
 static void cli_network_progress(struct cli_network *network);
 static void cli_network_call_cancel(struct cli_network *network, struct cli_network_call *call, bool force);
+
+/* Returns true once the network thread has been joined. */
+static bool
+cli_network_joined (struct cli_network const *network)
+{
+	return atomic_load(&network->shared) & CLI_NETWORK_JOINED;
+}
+
+/* Post @p message, the progress or the cancel message, to the network
+ * thread, unless its bit @p queued is set already in the shared word, or
+ * the thread has been joined.
+ */
+static void
+cli_network_queue (struct cli_network *network,
+                   struct msg         *message,
+                   uint32_t            queued)
+{
+	if (!(atomic_fetch_or(&network->shared, queued) & (queued | CLI_NETWORK_JOINED)))
+		(void)loop_post(&network->loop, message);
+}
 
 /* Free the transfer and its headers, but not the request. */
 static void
@@ -149,7 +178,7 @@ cli_network_post (struct cli_network *network,
                   struct msg         *message)
 {
 	atomic_fetch_add(&network->posted, 1);
-	if (network->joined)
+	if (cli_network_joined(network))
 		message->fn(&network->ui->loop, message);
 	else
 		(void)loop_post(&network->ui->loop, message);
@@ -212,8 +241,7 @@ cli_network_curl_fail (struct curl_loop *curl,
 	if (!request->error)
 		request->error = e;
 	atomic_store(&request->cancelled, true);
-	if (!atomic_exchange(&network->cancel_pending, true))
-		(void)loop_post(&network->loop, &network->cancel);
+	cli_network_queue(network, &network->cancel, CLI_NETWORK_CANCEL_QUEUED);
 }
 
 static void
@@ -233,7 +261,7 @@ cli_network_chunk_returned (struct loop *loop,
 static void
 cli_network_chunk_return (struct cli_network_chunk *chunk)
 {
-	if (chunk->network->joined) {
+	if (cli_network_joined(chunk->network)) {
 		free(chunk);
 		chunk = nullptr;
 	} else {
@@ -405,26 +433,19 @@ cli_network_progress_message (struct loop *loop,
                               struct msg  *message)
 {
 	struct cli_network *network = container_of(message, struct cli_network, progress);
-	atomic_store(&network->progress_pending, false);
+	atomic_fetch_and(&network->shared, ~CLI_NETWORK_PROGRESS_QUEUED);
 	if (!(loop->flags & LOOP_EXIT))
 		cli_network_progress(network);
-}
-
-static void
-cli_network_kick (struct cli_network *network)
-{
-	if (!network->joined && !atomic_exchange(&network->progress_pending, true))
-		(void)loop_post(&network->loop, &network->progress);
 }
 
 void
 cli_network_service (struct cli_network *network)
 {
-	if (!network || network->delivering || network->ui->dispatching)
+	if (!network || (network->flags & CLI_NETWORK_DELIVERING) || network->ui->dispatching)
 		return;
-	network->delivering = true;
+	network->flags |= CLI_NETWORK_DELIVERING;
 	cli_network_deliver(network);
-	network->delivering = false;
+	network->flags &= ~CLI_NETWORK_DELIVERING;
 	bool ready = !network->ready || network->ready(network->ready_context);
 	struct list *node;
 	list_foreach (node, &network->calls) {
@@ -435,7 +456,7 @@ cli_network_service (struct cli_network *network)
 			break;
 		}
 	}
-	cli_network_kick(network);
+	cli_network_queue(network, &network->progress, CLI_NETWORK_PROGRESS_QUEUED);
 }
 
 static void
@@ -443,7 +464,7 @@ cli_network_cancel_message (struct loop *loop,
                             struct msg  *message)
 {
 	struct cli_network *network = container_of(message, struct cli_network, cancel);
-	atomic_store(&network->cancel_pending, false);
+	atomic_fetch_and(&network->shared, ~CLI_NETWORK_CANCEL_QUEUED);
 	struct list *node, *next;
 	list_foreach_safe (node, next, &network->requests) {
 		struct cli_network_request *request = container_of(node, struct cli_network_request, hook);
@@ -465,8 +486,7 @@ cli_network_call_cancel (struct cli_network      *network,
 		call->error = EINTR;
 	struct cli_network_request *request = container_of(call, struct cli_network_request, call);
 	atomic_store(&request->cancelled, true);
-	if (!network->joined && !atomic_exchange(&network->cancel_pending, true))
-		(void)loop_post(&network->loop, &network->cancel);
+	cli_network_queue(network, &network->cancel, CLI_NETWORK_CANCEL_QUEUED);
 	cli_loop_wake(network->ui);
 }
 
@@ -540,27 +560,26 @@ cli_network_ended (struct loop *loop,
 void
 cli_network_stop (struct cli_network *network)
 {
-	if (!network || network->stopping)
+	if (!network || (network->flags & CLI_NETWORK_STOPPING))
 		return;
-	network->stopping = true;
-	if (network->started)
-		(void)loop_post(&network->loop, &network->stop);
+	network->flags |= CLI_NETWORK_STOPPING;
+	(void)loop_post(&network->loop, &network->stop);
 }
 
 bool
 cli_network_done (struct cli_network const *network)
 {
-	return !network || !network->started || !atomic_load(&network->posted);
+	return !network || !atomic_load(&network->posted);
 }
 
 static void
 cli_network_join (struct cli_network *network)
 {
-	if (network->started && !network->joined) {
-		cli_network_stop(network);
-		(void)pthread_join(network->thread, nullptr);
-		network->joined = true;
-	}
+	if (cli_network_joined(network))
+		return;
+	cli_network_stop(network);
+	(void)pthread_join(network->thread, nullptr);
+	atomic_fetch_or(&network->shared, CLI_NETWORK_JOINED);
 }
 
 struct cli_network *
@@ -572,10 +591,9 @@ cli_network_create (struct cli_loop *ui,
 	if (!network)
 		return nullptr;
 	loop_place(&network->loop);
-	atomic_init(&network->progress_pending, false);
-	atomic_init(&network->cancel_pending, false);
 	atomic_init(&network->failure, 0);
 	atomic_init(&network->posted, 1);
+	atomic_init(&network->shared, 0);
 	list_init(&network->requests);
 	list_init(&network->calls);
 	network->ui = ui;
@@ -584,24 +602,20 @@ cli_network_create (struct cli_loop *ui,
 	network->stop.fn = cli_network_stop_message;
 	network->ended.fn = cli_network_ended;
 	*e = loop_init(&network->loop);
-	if (*e)
-		goto fail;
-	*e = curl_loop_init(&network->curl, &network->loop, cli_network_curl_done, cli_network_curl_fail);
-	if (*e)
-		goto fail;
-	if (curl_multi_setopt(network->curl.multi, CURLMOPT_MAX_TOTAL_CONNECTIONS,
-	                      (long)(CLI_NETWORK_CALLS + CLI_NETWORK_CONTROL_CALLS)) != CURLM_OK ||
-	    curl_multi_setopt(network->curl.multi, CURLMOPT_MAXCONNECTS, 4L) != CURLM_OK) {
+	if (!*e)
+		*e = curl_loop_init(&network->curl, &network->loop, cli_network_curl_done, cli_network_curl_fail);
+	if (!*e && (curl_multi_setopt(network->curl.multi, CURLMOPT_MAX_TOTAL_CONNECTIONS,
+	                              (long)(CLI_NETWORK_CALLS + CLI_NETWORK_CONTROL_CALLS)) != CURLM_OK ||
+	            curl_multi_setopt(network->curl.multi, CURLMOPT_MAXCONNECTS, 4L) != CURLM_OK))
 		*e = EIO;
-		goto fail;
-	}
-	*e = pthread_create(&network->thread, nullptr, cli_network_run, network);
-	if (*e)
-		goto fail;
-	network->started = true;
-	return network;
-fail:
-	cli_network_destroy(&network);
+	if (!*e)
+		*e = pthread_create(&network->thread, nullptr, cli_network_run, network);
+	if (!*e)
+		return network;
+	/* No request or call exists before the thread runs. */
+	curl_loop_fini(&network->curl);
+	loop_fini(&network->loop);
+	free(network);
 	return nullptr;
 }
 
@@ -748,7 +762,8 @@ cli_network_admit (struct cli_network            *network,
 	if (!network || !post || !post->socket.data || !post->socket.len ||
 	    (post->session.len && !post->session.data) || (post->wire.len && !post->wire.data))
 		return EINVAL;
-	if (network->stopping || network->joined)
+	/* A network is stopping before it is joined. */
+	if (network->flags & CLI_NETWORK_STOPPING)
 		return ESHUTDOWN;
 	int stopped = atomic_load(&network->failure);
 	if (stopped)
@@ -810,7 +825,7 @@ cli_network_perform (struct cli_network            *network,
                      struct cli_network_result     *result)
 {
 	*result = (struct cli_network_result){};
-	if (network->waiting || network->delivering || network->ui->dispatching)
+	if (network->waiting || (network->flags & CLI_NETWORK_DELIVERING) || network->ui->dispatching)
 		return EBUSY;
 	struct cli_network_request *request;
 	int e = cli_network_admit(network, post, nullptr, result, &request);
@@ -818,26 +833,28 @@ cli_network_perform (struct cli_network            *network,
 		return e;
 	struct cli_network_call *call = &request->call;
 	network->waiting = call;
-	while (!(call->flags & CLI_NETWORK_DONE)) {
+	for (;;) {
 		cli_network_service(network);
 		if (call->flags & CLI_NETWORK_DONE)
 			break;
 		e = cli_loop_turn(network->ui, UINT64_MAX);
-		if (e) {
-			call->error = e;
-			cli_network_call_cancel(network, call, true);
-			cli_network_service(network);
-			if (!(call->flags & CLI_NETWORK_DONE)) {
-				call->flags |= CLI_NETWORK_ABANDONED;
-				call->context = nullptr;
-				call->result = nullptr;
-				network->waiting = nullptr;
-				return e;
-			}
+		if (e)
 			break;
-		}
+	}
+	/* After a failed turn, cancel the call. A call that does not end now
+	 * is abandoned, and it ends later without a waiter. */
+	if (e) {
+		call->error = e;
+		cli_network_call_cancel(network, call, true);
+		cli_network_service(network);
 	}
 	network->waiting = nullptr;
+	if (!(call->flags & CLI_NETWORK_DONE)) {
+		call->flags |= CLI_NETWORK_ABANDONED;
+		call->context = nullptr;
+		call->result = nullptr;
+		return e;
+	}
 	e = call->error;
 	cli_network_request_destroy(&request);
 	return e;
