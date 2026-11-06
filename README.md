@@ -559,22 +559,23 @@ its answers, as `llama-server` does; a strict server that refuses
 context to be counted by the request's bytes.
 
 A tool's output goes to a turn in a window of an eighth of the context, at
-most 64 KiB, cut at a line's end, with a note that names the bytes shown and
-the `offset` that reads on. A `git` `read` gives the whole lines that fit the
-window, and names the `line` to read on from instead; only a line longer than
-the window is cut by bytes. The context is what `--context` says, or else
-what `llama-server`'s `GET /props` says (`n_ctx`), which `askai` asks for even
-with `--slots`, or, with Gemini's APIs and a model, what `GET
-/v1beta/models/MODEL` at the root of Gemini's API in the URL says
-(`inputTokenLimit`); each turn asks for its usage (`stream_options.include_usage`),
-which counts the tokens. With `--notes`, `askai` adds a reminder to write
-notes to the last result of a turn's tools, once when the context is a
-quarter full, and once when it is half full. Compaction removes the
-conversation but not the notes, so notes that the model writes early are
-still there after it. From two thirds of the context on, `askai` adds the
-fill level of the context to the last result of each turn's tools, with a
-request to note what the model needs and to call `compact`. After a
-compaction, `askai` adds the reminders again as the context fills up.
+most 64 KiB, with a note that names the bytes shown and the `offset` that
+reads on. The window starts at the start of the line that contains the
+`offset`, and ends at a line's end, where these are within a quarter of the
+window. A `git` `read` gives the whole lines that fit the window, and names
+the `line` to read on from instead; only a line longer than the window is cut
+by bytes. The context is what `--context` says, or else what `llama-server`'s
+`GET /props` says (`n_ctx`), which `askai` asks for even with `--slots`, or,
+with Gemini's APIs and a model, what `GET /v1beta/models/MODEL` at the root of
+Gemini's API in the URL says (`inputTokenLimit`); each turn asks for its usage
+(`stream_options.include_usage`), which counts the tokens. With `--notes`,
+`askai` adds a reminder to write notes to the last result of a turn's tools,
+once when the context is a quarter full, and once when it is half full.
+Compaction removes the conversation but not the notes, so notes that the model
+writes early are still there after it. From two thirds of the context on,
+`askai` adds the fill level of the context to the last result of each turn's
+tools, with a request to note what the model needs and to call `compact`.
+After a compaction, `askai` adds the reminders again as the context fills up.
 
 The model need not wait for a slow call: `background` runs a call of `man`
 or `git` as a job, and answers at once with its number, 8 jobs a call at

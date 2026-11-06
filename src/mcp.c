@@ -5878,17 +5878,26 @@ mcp_req_calls_next (struct mcp_req *req)
 }
 
 /* Take the window of the output @p out of @p slot's call that the turn
- * takes into slot->skip and slot->window: from slot->skip, or the output's
- * end, a character's start, up to mcp_req_lend_max() bytes, to a line's end
- * if one is near.
+ * takes into slot->skip and slot->window: from the start of the line that
+ * contains slot->skip if that start is at most (cap - 3) / 4 bytes back,
+ * else from slot->skip, or the output's end, a character's start; up to
+ * cap = mcp_req_lend_max() bytes, to a line's end if one is near.
+ * util_clip() can make a window up to 3 bytes short, so a call from the
+ * offset in a window's note gets a window from that offset.
  */
 static void
 mcp_slot_window (struct mcp_slot *slot,
                  struct span      out)
 {
+	static_assert(WINDOW_MIN > 3, "cap - 3 does not wrap around");
 	size_t skip = util_char_start((char const *)out.ptr, out.len,
 	                              slot->skip < out.len ? slot->skip : out.len);
 	size_t cap = mcp_req_lend_max(slot->req);
+	if (skip < out.len) {
+		size_t const back = skip < (cap - 3) / 4 ? skip : (cap - 3) / 4;
+		unsigned char const *nl = memrchr(out.ptr + skip - back, '\n', back);
+		skip = nl ? (size_t)(nl - out.ptr) + 1 : back == skip ? 0 : skip;
+	}
 	size_t len = out.len - skip;
 	size_t window = len;
 	if (len > cap) {
@@ -5903,13 +5912,13 @@ mcp_slot_window (struct mcp_slot *slot,
 }
 
 /* Say in slot->note where the window is in the output of @p len bytes of
- * @p slot's call, unless it is all of it, or that slot->skip was @p past
- * its end.
+ * @p slot's call, unless it is all of it and the call's @p offset is 0, or
+ * that @p offset is past its end.
  */
 static void
 mcp_slot_note_window (struct mcp_slot *slot,
                       size_t           len,
-                      bool             past)
+                      size_t           offset)
 {
 	size_t end = slot->skip + slot->window;
 	if (end < len && mcp_slot_tool(slot)->kind->flags & TOOL_PAGED)
@@ -5919,10 +5928,10 @@ mcp_slot_note_window (struct mcp_slot *slot,
 	else if (end < len)
 		(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: the rest "
 		                       "is cut.]", slot->skip, end, len);
-	else if (past)
+	else if (offset > len)
 		(void)util_text_printf(&slot->note, "[The output has %zu bytes, fewer than the "
 		                       "offset.]", len);
-	else if (slot->skip)
+	else if (offset)
 		(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: its end.]",
 		                       slot->skip, len, len);
 }
@@ -5997,9 +6006,9 @@ mcp_slot_done (struct mcp_slot *slot,
 		loop_ready_bulk(req->mcp->loop, &req->step);
 		return;
 	}
-	bool past = slot->skip > out.len;
+	size_t const offset = slot->skip;
 	mcp_slot_window(slot, out);
-	mcp_slot_note_window(slot, out.len, past);
+	mcp_slot_note_window(slot, out.len, offset);
 	if (notebook)
 		(void)util_text_printf(&slot->note, "\n\n" NOTICE_NOTEBOOK, notebook);
 	if (*req->archive.hex && !(tool->kind->flags & KF_RERUN)) {

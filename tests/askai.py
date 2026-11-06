@@ -8192,6 +8192,19 @@ if [ "$1" = -w ]; then
 fi
 echo "$*" >> "$dir/renders"
 case ${page##*/} in
+headed)
+	cat <<-EOF
+	HEADED(3)                  Fake                  HEADED(3)
+
+	NAME
+	       headed - a page with headings
+
+	SYNOPSIS
+	       int headed(void);
+
+	Fake 1.0                 2026-11-06            HEADED(3)
+	EOF
+	;;
 echo)
 	printf '%s\n' "$@" ---
 	env | sort
@@ -8240,9 +8253,10 @@ def check_man(binary, up):
     a page's file, then to render it, with an environment, signals, a session
     and descriptors of its own; the page cut at 4 MiB and mended into UTF-8
     text, or why there is none, which a turn's call is given whole, whatever
-    its offset. Each page is rendered once and kept by its file, for every
-    name it is found by, eight at most, and given while its file is
-    unchanged; a name is found anew, in the background, once the
+    its offset, and a turn's window of a page from the start of the line
+    that contains the offset. Each page is rendered once and kept by its
+    file, for every name it is found by, eight at most, and given while its
+    file is unchanged; a name is found anew, in the background, once the
     recheck has passed; the asks for a page under way wait for its one fetch.
     16 children at most, each killed with its group at its deadline or as
     askai stops; and the real man's pages, where they are installed."""
@@ -8450,17 +8464,26 @@ def check_man(binary, up):
             assert text_of(man_call(ai, name="spare")) == "page spare\n"
             assert all(alive(p) for p in (ai.proc.pid,))
 
-        # A turn's call is given what man says whole, whatever its offset.
+        # A turn's call is given what man says whole, whatever its offset,
+        # and a page from the start of the line that contains the offset,
+        # with a note even if that is the start of the page.
         replies = [(200, turn_stream([(str(off), "man", json.dumps(
-            {"name": "missing", "offset": off})) for off in (5, 100000)]))]
+            {"name": "missing", "offset": off})) for off in (5, 100000)] +
+            [(f"h{off}", "man", json.dumps({"name": "headed", "offset": off}))
+             for off in (70, 5)]))]
         up.reply = lambda request: replies.pop() if replies else \
             (200, turn_stream(text="A"))
         with Askai(binary, "-u", up.url(), "--man", "--upstream-tools", env=env) as ai:
             count = len(up.requests)
             assert ai.ask()["content"][0]["text"] == "A"
             results = up.requests[count + 1]["body"]["messages"][2:]
-            assert [m["content"] for m in results] == \
+            assert [m["content"] for m in results[:2]] == \
                 ["No manual entry for missing."] * 2, results
+            assert results[2]["content"].startswith("       headed - a page") and \
+                "\n\n[Bytes 65 to " in results[2]["content"], results[2]
+            assert results[3]["content"].startswith("HEADED(3)") and re.search(
+                r"\n\n\[Bytes 0 to (\d+) of \1: its end\.\]$", results[3]["content"]), \
+                results[3]
         up.reply = lambda request: (200, ANSWERS["openai"])
 
         # A name is found anew once the recheck has passed, its page given
@@ -11815,7 +11838,7 @@ def check_turns(binary, up):
                 lambda r: (200, turn_stream([("a", "git", json.dumps(show))],
                                             used=(4000, 10))),
                 lambda r: (200, turn_stream([("b", "git", json.dumps(show | {
-                    "offset": 3993}))], used=(6000, 10))),
+                    "offset": 3998}))], used=(6000, 10))),
                 lambda r: (200, turn_stream([("c", "git", json.dumps(show))],
                                             used=(7900, 10))),
             ]
@@ -11829,6 +11852,7 @@ def check_turns(binary, up):
                 r"6[0-6]% full, \d+ of 8000 tokens\. Now is a good time to write "
                 r"notes of what you have learned\. Compaction removes the "
                 r"conversation, but not the notes\.\]$", out), out[-300:]
+            # An offset within a line gives the window from the line's start.
             out = turns(up.requests[count + 2])[3]["content"]
             assert out.startswith("line 00363\n") and \
                 "line 00725\n\n\n[Bytes 3993 to 7986 of 44000: for the rest" in out and \
@@ -12840,8 +12864,8 @@ def check_review(binary, up):
                                         f"{size}: its end.]"], results(sent[5])
 
             # A read gives the lines that fit in the window, and the log has
-            # all of them. From an offset, the log has the lines that the
-            # window shows whole, without the one that the offset cuts.
+            # all of them. From an offset within a line, the window starts
+            # at the line's start, and the log has that line too.
             def logged(*calls):
                 """The text of a read of src/a.c that a turn of a new ask
                 call makes with each of @p calls' arguments, and the line of
@@ -12862,21 +12886,27 @@ def check_review(binary, up):
             last = int(numbered[-1])
             assert numbered == [str(k) for k in range(1, last + 1)] and len(text) <= 4000
             assert line == f"  src/a.c  lines 1-{last}: {last} of 301 lines", line
-            skip = out.index("\n20\t") + 3
-            text, line = logged(read("src/a.c", 1, offset=skip))
-            assert text.startswith(out[skip:] + "\n\n[To read on"), text
-            numbered = re.findall(r"^(\d+)\tint x\d+;$", out[skip:].split("\n", 1)[1], re.M)
-            assert numbered[0] == "21" and line == \
-                f"  src/a.c  lines 21-{last}: {last - 20} of 301 lines", (numbered, line)
+            start = out.index("\n20\t") + 1
+            text, line = logged(read("src/a.c", 1, offset=start + 2))
+            assert text.startswith(out[start:] + "\n\n[To read on"), text
+            numbered = re.findall(r"^(\d+)\tint x\d+;$", out[start:], re.M)
+            assert numbered[0] == "20" and line == \
+                f"  src/a.c  lines 20-{last}: {last - 19} of 301 lines", (numbered, line)
             # A line longer than the window is not logged, nor scanned whole
-            # in one step.
+            # in one step, nor its rest from an offset more than a quarter
+            # window into it, where the window starts.
             work(ai)
-            script[:] = [mixed(("git", read("src/long.c", 1))), turn({"action": "show"})]
+            script[:] = [mixed(("git", read("src/long.c", 1)),
+                               ("git", read("src/long.c", 1, offset=3000))),
+                         turn({"action": "show"})]
             count = len(up.requests)
             assert ai.ask("Q")["content"][0]["text"] == "A"
             units, _ = work(ai)
             assert all(most <= bound for most, bound in units.values()), units
             assert results(up.requests[count + 2]) == [REVIEW_EMPTY]
+            assert re.fullmatch(r"y+\n\n\[Bytes 3000 to \d+ of \d+: for the rest, .*",
+                                results(up.requests[count + 1])[1], re.S), \
+                results(up.requests[count + 1])[1][-200:]
 
         # Without findings, the turns cannot call it, and a compaction adds
         # no record.
