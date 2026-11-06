@@ -956,6 +956,16 @@ notes_tool_view (struct dstr      *d,
 	return e;
 }
 
+/* Appends @p note to @p d as it is if it is UTF-8 text without NUL, else
+ * its view (notes_tool_view()). Returns 0 or ENOMEM.
+ */
+static int
+notes_tool_show (struct dstr      *d,
+                 struct cstr_view  note)
+{
+	return jb_is_text(note) ? cstr_view_cat(note, d) : notes_tool_view(d, note, SIZE_MAX, nullptr);
+}
+
 static void notes_tool_got_copy (struct mcp_slot *slot, struct span text);
 static void notes_tool_got_attach (struct mcp_slot *slot, struct span text,
                                    struct oid const *id);
@@ -1000,8 +1010,7 @@ notes_tool_got_diff (struct mcp_slot *slot)
 	struct cstr_view const diff = { (char const *)out.ptr, out.len };
 	if (!e)
 		e = !diff.len ? cstr_view_cat(CSTR_VIEW("No differences.\n"), call->text)
-		  : jb_is_text(diff) ? cstr_view_cat(diff, call->text)
-		  : notes_tool_view(d, diff, SIZE_MAX, nullptr);
+		  : notes_tool_show(d, diff);
 	if (!e && c->flags & CHILD_CUT)
 		e = cstr_view_cat(CSTR_VIEW("\n[The diff exceeded the capture limit "
 		                            "and is incomplete.]\n"), call->text);
@@ -1042,8 +1051,7 @@ notes_tool_got_note (struct mcp_slot *slot)
 	if (call->fetch & FETCH_REVISION)
 		e = dstr_printf(call->text, "Notebook %s — %s at %s:\n\n", selector,
 		                call->revision.file.data, call->revision.from.hex) ? 0 : ENOMEM;
-	e = e ? e : jb_is_text(body) ? cstr_view_cat(body, call->text)
-	      : notes_tool_view(call->text, body, SIZE_MAX, nullptr);
+	e = e ? e : notes_tool_show(call->text, body);
 	notes_tool_end(slot, e, false);
 }
 
