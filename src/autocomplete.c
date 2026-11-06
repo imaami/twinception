@@ -102,7 +102,6 @@ struct autocomplete {
 	struct dstr                   key;
 	struct dstr                   decoded;
 	struct dstr                   quoted;
-	struct dstr                   json;
 	struct autocomplete_matches   found;
 };
 
@@ -327,9 +326,6 @@ autocomplete_json_parse (struct autocomplete *autocomplete,
 	*result = nullptr;
 	if (value.len >= INT_MAX)
 		return E2BIG;
-	int error = cstr_view_store(value, &autocomplete->json);
-	if (error)
-		return error;
 	if (!autocomplete->parser) {
 		autocomplete->parser = json_tokener_new();
 		if (!autocomplete->parser)
@@ -337,11 +333,17 @@ autocomplete_json_parse (struct autocomplete *autocomplete,
 		json_tokener_set_flags(autocomplete->parser, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
 	} else
 		json_tokener_reset(autocomplete->parser);
-	struct json_object *parsed = json_tokener_parse_ex(autocomplete->parser, dstr_get(&autocomplete->json), (int)value.len + 1);
-	size_t end = json_tokener_get_parse_end(autocomplete->parser);
+	struct json_tokener *parser = autocomplete->parser;
+	struct json_object *parsed = json_tokener_parse_ex(parser, value.data, (int)value.len);
+	size_t end = json_tokener_get_parse_end(parser);
+	/* A number or a literal at the end of the value ends only at a NUL. */
+	if (json_tokener_get_error(parser) == json_tokener_continue) {
+		parsed = json_tokener_parse_ex(parser, "", 1);
+		end = value.len;
+	}
 	while (end < value.len && cstr_view_space(value.data[end]))
 		++end;
-	if (json_tokener_get_error(autocomplete->parser) != json_tokener_success || end < value.len) {
+	if (json_tokener_get_error(parser) != json_tokener_success || end < value.len) {
 		json_object_put(parsed);
 		parsed = nullptr;
 		return EINVAL;
@@ -591,7 +593,7 @@ autocomplete_create (int *e)
 	}
 	*ac = (struct autocomplete){
 		.nesting = dstr(nullptr), .key = dstr(nullptr), .decoded = dstr(nullptr),
-		.quoted = dstr(nullptr), .json = dstr(nullptr), .found.lines = dstr(nullptr),
+		.quoted = dstr(nullptr), .found.lines = dstr(nullptr),
 	};
 	*e = 0;
 	return ac;
@@ -645,7 +647,6 @@ autocomplete_destroy (struct autocomplete **pp)
 	dstr_cleanup(&ac->key);
 	dstr_cleanup(&ac->decoded);
 	dstr_cleanup(&ac->quoted);
-	dstr_cleanup(&ac->json);
 	dstr_cleanup(&ac->found.lines);
 	free(*pp);
 	*pp = nullptr;
