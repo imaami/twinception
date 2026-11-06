@@ -1269,8 +1269,8 @@ review_args_text (struct review_args *a,
 /**
  * Parses the arguments @p args of a findings call into @p a. Each argument
  * must be one that the action accepts. The id must be the id of a finding
- * of @p r. Returns 0, or EINVAL with a refusal appended to @p out, or
- * ENOMEM if the append fails.
+ * of @p r, and update needs one. Returns 0, or EINVAL with a refusal
+ * appended to @p out, or ENOMEM if the append fails.
  */
 static int
 review_args_parse (struct review_args  *a,
@@ -1299,7 +1299,7 @@ review_args_parse (struct review_args  *a,
 		       dstr_printf(out, ", not %.*s.", (int)other.len, other.data) ? EINVAL : ENOMEM;
 	struct json_object *id = of[REVIEW_ARG_ID];
 	uint64_t const n = jb_count(id, SIZE_MAX);
-	if (id && !n)
+	if (id ? !n : a->action == REVIEW_UPDATE)
 		return REFUSE(out, "The id argument must be the number of a finding, such as 3.");
 	if (n > r->n_findings) {
 		/* %.0zu writes nothing for 0. */
@@ -1715,8 +1715,6 @@ review_update (struct review            *r,
                uint32_t                  turn,
                struct dstr              *out)
 {
-	if (!a->id)
-		return REFUSE(out, "The id argument must be the number of a finding, such as 3.");
 	if (a->state == REVIEW_STATES || !a->evidence.len)
 		return REFUSE(out, "update needs state and evidence: what shows the new state, or why "
 		              "you retract the finding.");
