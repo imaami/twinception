@@ -782,11 +782,23 @@ struct mcp {
 static thread_local struct mcp *self;
 
 /* Tool output for a call refused for want of room (design section 10). */
-static char const busy[] = "Too many tool calls are under way; try again in a "
-                           "few seconds.";
+static struct cstr_view const busy = CSTR_VIEW_INIT("Too many tool calls are under way; "
+                                                    "try again in a few seconds.");
+
+/* Errors and answers that more than one place gives. */
+static char const out_of_memory[] = "Out of memory";
+static char const persist_failed[] = "Cannot persist job state";
+static char const start_failed[] = "Cannot start the upstream request";
+static struct cstr_view const not_object = CSTR_VIEW_INIT("The arguments argument must be an "
+                                                          "object.");
+static struct cstr_view const still_runs = CSTR_VIEW_INIT("That job still runs: wait for it.");
+static struct cstr_view const was_cancelled = CSTR_VIEW_INIT("That job was cancelled.");
+static struct cstr_view const runs_no_more = CSTR_VIEW_INIT("That job runs no more.");
+static struct cstr_view const bad_action = CSTR_VIEW_INIT("The action argument must be list, "
+                                                          "result or cancel.");
 
 /* A run of bytes: a piece of JSON text, or words for a client or the
- * model. mcp_slot_result() writes words as text, whatever their flag.
+ * model.
  */
 struct mcp_piece {
 	struct cstr_view bytes;
@@ -1321,8 +1333,8 @@ mcp_req_log_call (struct mcp_req   *req,
 	log_put(&sites[failed], "tool call %s from %s %s after %.1f s (%zu byte%s)%s%s%s%s%s%s",
 	        mcp_slot_tool(&req->self)->name.data, mcp_req_client(req), how,
 	        mcp_elapsed(req->self.start), out.len, util_s(out.len), record, ask,
-	        req->call_args.len ? "; arguments " : "", req->call_args.data, *text ? "; error " : "",
-	        text);
+	        req->call_args.len ? "; arguments " : "", req->call_args.data,
+	        *text ? "; error " : "", text);
 }
 
 /* Drops the call in @p slot. If the call's own word is set, the call
@@ -1818,7 +1830,7 @@ mcp_req_fail (struct mcp_req *req,
 		              nullptr, 0);
 		return;
 	}
-	mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Out of memory"), nullptr, 0);
+	mcp_req_error(req, 500, INTERNAL_ERROR, FRAG(out_of_memory), nullptr, 0);
 }
 
 /* Reply with a result made of the @p n pieces at @p result, which close
@@ -1912,11 +1924,11 @@ static void mcp_slot_done (struct mcp_slot *slot, bool failed);
 /** Ends the call in @p slot with the short text @p text, failed if
  *  @p failed is true. For a call of a turn or a job, the text becomes the
  *  answer of the slot for mcp_slot_done(). A client's call is logged and
- *  answered with the text. The text flag of @p text is ignored.
+ *  answered with the text.
  */
 static void
 mcp_slot_result (struct mcp_slot  *slot,
-                 struct mcp_piece  text,
+                 struct cstr_view  text,
                  bool              failed)
 {
 	struct mcp_req *req = slot->req;
@@ -1925,7 +1937,7 @@ mcp_slot_result (struct mcp_slot  *slot,
 		/* An offset does not apply to the answer of a failed call. */
 		if (failed)
 			slot->skip = 0;
-		if (cstr_view_store(text.bytes, &slot->answer)) {
+		if (cstr_view_store(text, &slot->answer)) {
 			mcp_req_fail(req, ENOMEM);
 			return;
 		}
@@ -1933,8 +1945,8 @@ mcp_slot_result (struct mcp_slot  *slot,
 		return;
 	}
 	mcp_req_flag(req, REQ_FAILED, failed);
-	mcp_req_log_call(req, failed ? "failed" : "answered", text.bytes, failed);
-	int e = mcp_req_tool_open(req, text.bytes);
+	mcp_req_log_call(req, failed ? "failed" : "answered", text, failed);
+	int e = mcp_req_tool_open(req, text);
 	if (e) {
 		mcp_req_abort(req, e);
 		return;
@@ -2011,9 +2023,8 @@ mcp_slot_respond (struct mcp_slot *slot,
 	size_t off = req->lent ? 0 : slot->skip;
 	if (off > text.len) {
 		char why[96];
-		size_t n = util_format(why, sizeof why, "The output has %zu bytes, fewer "
-		                       "than the offset.", text.len);
-		mcp_slot_result(slot, ESC(why, n), true);
+		mcp_slot_result(slot, util_format_view(why, sizeof why, "The output has %zu bytes, "
+		                                       "fewer than the offset.", text.len), true);
 		return;
 	}
 	mcp_req_log_call(req, failed ? "failed" : "answered",
@@ -2398,7 +2409,8 @@ static void
 mcp_req_job_done (struct mcp_req *req)
 {
 	struct job *job = req->job;
-	struct span why = buf_peek(&job->result);
+	struct span const result = buf_peek(&job->result);
+	struct cstr_view why = { (char const *)result.ptr, result.len };
 	mcp_req_log_turn(req, job);
 	buf_fini(&job->key);
 	/* job_put() drops the reference of the message. The request still owns
@@ -2424,27 +2436,27 @@ mcp_req_job_done (struct mcp_req *req)
 		req->flags |= REQ_SUSPENDED;
 		break;
 	case JOB_BUSY:
-		why = SPAN(busy);
+		why = busy;
 		break;
 	default:
 		/* The result of a failed call contains the reason, unless the call
 		 * never started. */
 		if (!why.len) {
 			mcp_req_error(req, 500, INTERNAL_ERROR,
-			              FRAG("Cannot start the upstream request"), nullptr, 0);
+			              FRAG(start_failed), nullptr, 0);
 			return;
 		}
-		if (mcp_req_refit(req, (struct cstr_view){ (char const *)why.ptr, why.len })) {
+		if (mcp_req_refit(req, why)) {
 			mcp_req_drop(req);
 			mcp_req_compact_full(req);
 			return;
 		}
 	}
 	/* The reason is copied before mcp_req_drop() releases the result. */
-	bool ok = dstr_cat_n(&req->self.answer, (char const *)why.ptr, why.len);
+	int e = cstr_view_cat(why, &req->self.answer);
 	mcp_req_drop(req);
-	if (!ok) {
-		mcp_req_fail(req, ENOMEM);
+	if (e) {
+		mcp_req_fail(req, e);
 		return;
 	}
 	mcp_slot_respond(&req->self, true);
@@ -2877,7 +2889,7 @@ mcp_req_build (struct mcp_req *req)
 	}
 	if (e) {
 		mcp_req_error(req, 500, INTERNAL_ERROR,
-		              FRAG("Cannot start the upstream request"), nullptr, 0);
+		              FRAG(start_failed), nullptr, 0);
 		return;
 	}
 	json_object_put(req->draft);
@@ -3271,7 +3283,7 @@ mcp_slot_tell (struct mcp_slot  *slot,
 	/* The output is the text whole, not lent, nor from an offset. */
 	slot->skip = 0;
 	slot->lent = (struct span){};
-	mcp_slot_result(slot, ESC(text.data, len), flags & TOOL_FAILED);
+	mcp_slot_result(slot, (struct cstr_view){ text.data, len }, flags & TOOL_FAILED);
 	return 0;
 }
 
@@ -3812,20 +3824,21 @@ mcp_req_ask (struct mcp_req     *req,
 	struct json_object *history = nullptr;
 	bool has_history = json_object_object_get_ex(args, "messages", &history);
 	char const *text = jb_view(prompt).data;
-	struct mcp_piece problem =
-		!text || !*text ? TEXT("The prompt argument must be a non-empty string.")
-		: system && !jb_view(system).data ? TEXT("The system argument must be a string.")
+	struct cstr_view problem =
+		!text || !*text ? CSTR_VIEW("The prompt argument must be a non-empty string.")
+		: system && !jb_view(system).data
+		? CSTR_VIEW("The system argument must be a string.")
 		: has_history && !mcp_history_valid(history)
-		? TEXT("The messages argument must be an array of at most 1024 earlier "
-		       "messages, each with only role (user or assistant) and string content.")
-		: !thread ? (struct mcp_piece){}
-		: !notes ? TEXT("No notes are kept for you here, so there is no thread to "
-		                "go on with.")
+		? CSTR_VIEW("The messages argument must be an array of at most 1024 earlier "
+		            "messages, each with only role (user or assistant) and string content.")
+		: !thread ? (struct cstr_view){}
+		: !notes ? CSTR_VIEW("No notes are kept for you here, so there is no thread to "
+		                     "go on with.")
 		: hexid_init(&req->thread, jb_view(thread))
-		? TEXT("The thread argument must be a thread's id, as an earlier answer "
-		       "gave it: 32 hexadecimal digits.")
-		: (struct mcp_piece){};
-	if (problem.bytes.data) {
+		? CSTR_VIEW("The thread argument must be a thread's id, as an earlier answer "
+		            "gave it: 32 hexadecimal digits.")
+		: (struct cstr_view){};
+	if (problem.data) {
 		mcp_slot_result(&req->self, problem, true);
 		return;
 	}
@@ -4161,8 +4174,8 @@ mcp_req_turn_done (struct mcp_req *req)
 	}
 	static_assert(CALLS_MAX == 16 << 20, "update the result text");
 	if (bytes > CALLS_MAX) {
-		mcp_slot_result(&req->self, TEXT("The other AI's tool calls in one turn took "
-		                              "more than 16 MiB, so none was run."), true);
+		mcp_slot_result(&req->self, CSTR_VIEW("The other AI's tool calls in one turn took "
+		                                      "more than 16 MiB, so none was run."), true);
 		return;
 	}
 	if (!n && !mcp_req_dozes(req)) {
@@ -4753,7 +4766,7 @@ mcp_slot_start (struct mcp_slot    *slot,
 	int e = instance_table_get(&mcp->instances, mcp->st->reg->plugins[tool->part].plugin,
 	                           req->principal, req->generation, &slot->inst);
 	if (e == EBUSY)
-		mcp_slot_result(slot, TEXT(busy), true);
+		mcp_slot_result(slot, busy, true);
 	else if (e)
 		mcp_req_fail(req, e);
 	else
@@ -4777,8 +4790,9 @@ static char const *const record_status[LEDGER_STATUSES] = {
 /* The answer to a client's call of background, timer or wait that the
  * ledger refuses for want of room.
  */
-static char const no_room[] = "askai has no room for more jobs, timers or waits "
-                              "now; try again later.";
+static struct cstr_view const no_room = CSTR_VIEW_INIT("askai has no room for more jobs, "
+                                                       "timers or waits now; try again "
+                                                       "later.");
 
 /* Answers a client's call in @p slot that the ledger refused with @p e:
  * with @p busy for EBUSY, and with no_room for ENOSPC. Any other error
@@ -4787,10 +4801,10 @@ static char const no_room[] = "askai has no room for more jobs, timers or waits 
 static void
 mcp_slot_refused (struct mcp_slot  *slot,
                   int               e,
-                  struct mcp_piece  busy)
+                  struct cstr_view  busy)
 {
 	if (e == EBUSY || e == ENOSPC)
-		mcp_slot_result(slot, e == EBUSY ? busy : TEXT(no_room), true);
+		mcp_slot_result(slot, e == EBUSY ? busy : no_room, true);
 	else
 		mcp_slot_fail(slot, e);
 }
@@ -4821,8 +4835,8 @@ mcp_req_background (struct mcp_req *req,
 	if (!task)
 		task = mcp_req_record(req, LEDGER_JOB, tool, &e);
 	if (!task) {
-		mcp_slot_refused(&req->self, e, TEXT("You have 8 jobs and tasks running, the most "
-		                                     "at once: wait for one to end."));
+		mcp_slot_refused(&req->self, e, CSTR_VIEW("You have 8 jobs and tasks running, the "
+		                                          "most at once: wait for one to end."));
 		return e;
 	}
 	char text[512];
@@ -4857,14 +4871,14 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	uint32_t id = registry_find(st->reg, jb_view(jb_get(args, "tool")), TOOL_MAX);
 	struct registry_tool const *tool = mcp_static_tool(st, id);
 	struct json_object *call = jb_get(args, "arguments");
-	struct mcp_piece problem =
+	struct cstr_view problem =
 		!mcp_req_granted(req, id) || tool->kind->flags & KF_AGENDA
-		? TEXT("The tool argument must name a tool of yours other than background, "
-		       "jobs, wait and timer.")
+		? CSTR_VIEW("The tool argument must name a tool of yours other than background, "
+		            "jobs, wait and timer.")
 		: call && !json_object_is_type(call, json_type_object)
-		? TEXT("The arguments argument must be an object.")
-		: (struct mcp_piece){};
-	if (problem.bytes.data) {
+		? not_object
+		: (struct cstr_view){};
+	if (problem.data) {
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
@@ -4900,14 +4914,14 @@ mcp_slot_background (struct mcp_slot    *slot,
 	struct json_object *call = jb_get(args, "arguments");
 	uint32_t id = mcp_req_lent_tool(req, registry_find(st->reg, jb_view(jb_get(args, "tool")),
 	                                                   TOOL_MAX));
-	struct mcp_piece problem =
+	struct cstr_view problem =
 		!(mcp_static_tool(st, id)->kind->flags & TOOL_DETACH)
-		? TEXT("The tool argument must name a tool of yours that may run in the "
-		       "background, such as git or man.")
+		? CSTR_VIEW("The tool argument must name a tool of yours that may run in the "
+		            "background, such as git or man.")
 		: call && !json_object_is_type(call, json_type_object)
-		? TEXT("The arguments argument must be an object.")
-		: (struct mcp_piece){};
-	if (problem.bytes.data) {
+		? not_object
+		: (struct cstr_view){};
+	if (problem.data) {
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
@@ -4918,7 +4932,7 @@ mcp_slot_background (struct mcp_slot    *slot,
 		return;
 	}
 	if (a->n_jobs == JOBS_MAX) {
-		mcp_slot_result(slot, TEXT("You have started 8 jobs, the most a task may."),
+		mcp_slot_result(slot, CSTR_VIEW("You have started 8 jobs, the most a task may."),
 		                true);
 		return;
 	}
@@ -4935,8 +4949,8 @@ mcp_slot_background (struct mcp_slot    *slot,
 	job->tool = (uint8_t)id;
 	uint32_t n = ++a->n_jobs;
 	char text[64];
-	mcp_slot_result(slot, ESC(text, util_format(text, sizeof text, "Started job %"
-	                                            PRIu32 ".", n)), false);
+	mcp_slot_result(slot, util_format_view(text, sizeof text, "Started job %" PRIu32 ".", n),
+	                false);
 	/* Last, as the job's start may end the request. */
 	mcp_slot_start(job, job->args);
 }
@@ -4986,7 +5000,7 @@ mcp_slot_jobs_result (struct mcp_slot    *slot,
                       struct json_object *args)
 {
 	if (!(job->flags & SLOT_DONE)) {
-		mcp_slot_result(slot, TEXT("That job still runs: wait for it."), true);
+		mcp_slot_result(slot, still_runs, true);
 		return;
 	}
 	if (mcp_slot_offset(slot, args))
@@ -5001,12 +5015,12 @@ mcp_slot_jobs_cancel (struct mcp_slot *slot,
                       struct mcp_slot *job)
 {
 	if (job->flags & SLOT_DONE) {
-		mcp_slot_result(slot, TEXT("That job runs no more."), true);
+		mcp_slot_result(slot, runs_no_more, true);
 		return;
 	}
 	mcp_slot_drop(job);
 	job->flags |= SLOT_DONE | SLOT_CANCELLED;
-	mcp_slot_result(slot, TEXT("Cancelled the job."), false);
+	mcp_slot_result(slot, CSTR_VIEW("Cancelled the job."), false);
 }
 
 /* Returns a reference to the record that the argument job of @p args
@@ -5021,8 +5035,8 @@ mcp_slot_client_find (struct mcp_slot    *slot,
 	struct mcp_req *req = slot->req;
 	struct hexid id;
 	if (hexid_init(&id, jb_view(jb_get(args, "job")))) {
-		mcp_slot_result(slot, TEXT("The job argument must be the id of a job of yours."),
-		                true);
+		mcp_slot_result(slot, CSTR_VIEW("The job argument must be the id of a job of "
+		                                "yours."), true);
 		return nullptr;
 	}
 	struct ledger_task *task = ledger_find(req->mcp->st->ledger, mcp_req_owner(req), &id);
@@ -5032,10 +5046,10 @@ mcp_slot_client_find (struct mcp_slot    *slot,
 	}
 	if (!task)
 		mcp_slot_result(slot, own_tool
-		                ? TEXT("No job of yours from this tool has that id; askai stores "
-		                       "a job for up to an hour after it ends.")
-		                : TEXT("No job of yours has that id; askai stores a job for "
-		                       "an hour after it ends."), true);
+		                ? CSTR_VIEW("No job of yours from this tool has that id; askai "
+		                            "stores a job for up to an hour after it ends.")
+		                : CSTR_VIEW("No job of yours has that id; askai stores a job for "
+		                            "an hour after it ends."), true);
 	return task;
 }
 
@@ -5101,16 +5115,17 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 	enum ledger_status status = atomic_load_explicit(&task->status, memory_order_acquire);
 	if (own_tool && status == LEDGER_WORKING) {
 		ledger_task_put(task);
-		mcp_slot_result(slot, TEXT("That job is still running. Call this same tool with "
-		                           "the same job id in one second for its result."), false);
+		mcp_slot_result(slot, CSTR_VIEW("That job is still running. Call this same tool "
+		                                "with the same job id in one second for its "
+		                                "result."), false);
 		return;
 	}
-	struct mcp_piece problem =
-		status == LEDGER_WORKING ? TEXT("That job still runs: wait for it.")
-		: status == LEDGER_CANCELLED ? TEXT("That job was cancelled.")
-		: !task->size ? TEXT("That job failed, and askai stored no result of it.")
-		: (struct mcp_piece){};
-	if (problem.bytes.data) {
+	struct cstr_view problem =
+		status == LEDGER_WORKING ? still_runs
+		: status == LEDGER_CANCELLED ? was_cancelled
+		: !task->size ? CSTR_VIEW("That job failed, and askai stored no result of it.")
+		: (struct cstr_view){};
+	if (problem.data) {
 		ledger_task_put(task);
 		mcp_slot_result(slot, problem, true);
 		return;
@@ -5138,16 +5153,16 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 	struct mcp_req *req = slot->req;
 	struct json_object *timer = jb_get(args, "timer");
 	if (!jb_get(args, "job") == !timer) {
-		mcp_slot_result(slot, TEXT("The job argument or the timer argument must name "
-		                           "what to cancel."), true);
+		mcp_slot_result(slot, CSTR_VIEW("The job argument or the timer argument must name "
+		                                "what to cancel."), true);
 		return;
 	}
 	char text[192];
 	if (timer) {
 		uint32_t const n = (uint32_t)jb_count(timer, UINT32_MAX);
 		if (!n) {
-			mcp_slot_result(slot, TEXT("The timer argument must be the number of a "
-			                           "timer of yours."), true);
+			mcp_slot_result(slot, CSTR_VIEW("The timer argument must be the number of "
+			                                "a timer of yours."), true);
 			return;
 		}
 		int e = ledger_timer_cancel(req->mcp->st->ledger, mcp_req_owner(req), n);
@@ -5155,7 +5170,7 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 		           : e == EALREADY ? util_format(text, sizeof text, "Timer %" PRIu32 " has "
 		                                         "fired, and a call of wait reports it.", n)
 		           : util_format(text, sizeof text, "You have no timer %" PRIu32 " set.", n);
-		mcp_slot_result(slot, ESC(text, len), e != 0);
+		mcp_slot_result(slot, (struct cstr_view){ text, len }, e != 0);
 		return;
 	}
 	struct ledger_task *task = mcp_slot_client_find(slot, args, own_tool);
@@ -5172,7 +5187,7 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 		                  : "Call wait to wait for its end.");
 	}
 	ledger_task_put(task);
-	mcp_slot_result(slot, runs ? ESC(text, len) : TEXT("That job runs no more."), !runs);
+	mcp_slot_result(slot, runs ? (struct cstr_view){ text, len } : runs_no_more, !runs);
 }
 
 /* A client's call of jobs in @p slot, the request's own: by the argument
@@ -5193,7 +5208,7 @@ mcp_slot_client_jobs (struct mcp_slot    *slot,
 		return;
 	}
 	if (!jb_is(action, "list")) {
-		mcp_slot_result(slot, TEXT("The action argument must be list, result or cancel."),
+		mcp_slot_result(slot, bad_action,
 		                true);
 		return;
 	}
@@ -5231,13 +5246,13 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 	bool result = jb_is(action, "result");
 	uint64_t const n = jb_count(jb_get(args, "job"), a ? a->n_jobs : 0);
 	struct mcp_slot *job = n ? &a->jobs[n - 1] : nullptr;
-	struct mcp_piece problem =
+	struct cstr_view problem =
 		!result && !jb_is(action, "cancel")
-		? TEXT("The action argument must be list, result or cancel.")
-		: !job ? TEXT("The job argument must be the number of a job you started.")
-		: job->flags & SLOT_CANCELLED ? TEXT("That job was cancelled.")
-		: (struct mcp_piece){};
-	if (problem.bytes.data) {
+		? bad_action
+		: !job ? CSTR_VIEW("The job argument must be the number of a job you started.")
+		: job->flags & SLOT_CANCELLED ? was_cancelled
+		: (struct cstr_view){};
+	if (problem.data) {
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
@@ -5363,8 +5378,8 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
                       uint64_t            secs)
 {
 	static_assert(WAIT_IDS == 16 && LEDGER_WAITS == 4, "update the problem texts");
-	static char const bad_list[] = "The jobs argument must list at most 16 ids of "
-	                               "jobs of yours.";
+	static struct cstr_view const bad_list = CSTR_VIEW_INIT("The jobs argument must list at "
+	                                                        "most 16 ids of jobs of yours.");
 	struct mcp_req *req = slot->req;
 	struct mcp *mcp = req->mcp;
 	struct ledger *ledger = mcp->st->ledger;
@@ -5373,7 +5388,7 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
 	size_t n = !list ? 0 : json_object_is_type(list, json_type_array)
 	         ? json_object_array_length(list) : SIZE_MAX;
 	if (n > WAIT_IDS) {
-		mcp_slot_result(slot, TEXT(bad_list), true);
+		mcp_slot_result(slot, bad_list, true);
 		return;
 	}
 	struct mcp_wait *w = malloc(sizeof *w);
@@ -5382,8 +5397,8 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
 		return;
 	}
 	char why[160];
-	struct mcp_piece problem = {};
-	for (size_t i = 0; !problem.bytes.data && i < n; ++i) {
+	struct cstr_view problem = {};
+	for (size_t i = 0; !problem.data && i < n; ++i) {
 		struct cstr_view const id = jb_view(jb_at(list, i));
 		struct ledger_task *task = hexid_init(&w->ids[i], id) ? nullptr
 		                         : ledger_find(ledger, owner, &w->ids[i]);
@@ -5391,13 +5406,12 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
 			ledger_task_put(task);
 			continue;
 		}
-		problem = !id.data ? TEXT(bad_list)
-		        : ESC(why, util_format(why, sizeof why, "No job of yours has the id %.*s; "
-		                               "askai stores a job for an hour after it ends.",
-		                               (int)util_clip(id.data, id.len, HEXID_DIGITS),
-		                               id.data));
+		problem = !id.data ? bad_list
+		        : util_format_view(why, sizeof why, "No job of yours has the id %.*s; askai "
+		                           "stores a job for an hour after it ends.",
+		                           (int)util_clip(id.data, id.len, HEXID_DIGITS), id.data);
 	}
-	if (problem.bytes.data) {
+	if (problem.data) {
 		free(w);
 		mcp_slot_result(slot, problem, true);
 		return;
@@ -5413,7 +5427,8 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
 	                                          &e);
 	if (!w->wait) {
 		free(w);
-		mcp_slot_refused(slot, e, TEXT("You have 4 waits under way, the most at once."));
+		mcp_slot_refused(slot, e, CSTR_VIEW("You have 4 waits under way, the most at "
+		                                    "once."));
 		return;
 	}
 	slot->own = w;
@@ -5456,8 +5471,8 @@ mcp_slot_wait (struct mcp_slot    *slot,
 	struct mcp_req *req = slot->req;
 	uint64_t const secs = jb_count(jb_get(args, "seconds"), WAIT_MAX);
 	if (!secs) {
-		mcp_slot_result(slot, TEXT("The seconds argument must be a whole number from 1 "
-		                           "to 600."), true);
+		mcp_slot_result(slot, CSTR_VIEW("The seconds argument must be a whole number from "
+		                                "1 to 600."), true);
 		return;
 	}
 	if (slot->role == ROLE_OWN) {
@@ -5475,8 +5490,8 @@ mcp_slot_wait (struct mcp_slot    *slot,
 		mask |= listed ? 1u << (n - 1) : 0;
 	}
 	if (!listed) {
-		mcp_slot_result(slot, TEXT("The jobs argument must list the numbers of jobs you "
-		                           "started."), true);
+		mcp_slot_result(slot, CSTR_VIEW("The jobs argument must list the numbers of jobs "
+		                                "you started."), true);
 		return;
 	}
 	int e;
@@ -5545,13 +5560,13 @@ mcp_slot_timer (struct mcp_slot    *slot,
 	uint64_t const secs = jb_count(jb_get(args, "seconds"), TIMER_MAX);
 	struct json_object *o = jb_get(args, "note");
 	struct cstr_view note = jb_view(o);
-	struct mcp_piece problem =
-		!secs ? TEXT("The seconds argument must be a whole number from 1 to 3600.")
+	struct cstr_view problem =
+		!secs ? CSTR_VIEW("The seconds argument must be a whole number from 1 to 3600.")
 		: o && (!note.data || note.len > LEDGER_NOTE ||
 		        jb_utf8(note.data, note.len) < note.len)
-		? TEXT("The note argument must be a string of at most 200 bytes.")
-		: (struct mcp_piece){};
-	if (problem.bytes.data) {
+		? CSTR_VIEW("The note argument must be a string of at most 200 bytes.")
+		: (struct cstr_view){};
+	if (problem.data) {
 		mcp_slot_result(slot, problem, true);
 		return;
 	}
@@ -5561,13 +5576,12 @@ mcp_slot_timer (struct mcp_slot    *slot,
 	      ? ledger_timer_set(req->mcp->st->ledger, mcp_req_owner(req), due, note, &id)
 	      : mcp_agenda_timer(req, due, note, &id);
 	if (e) {
-		mcp_slot_refused(slot, e, TEXT("You have 8 timers set, the most at once."));
+		mcp_slot_refused(slot, e, CSTR_VIEW("You have 8 timers set, the most at once."));
 		return;
 	}
 	char said[64];
-	mcp_slot_result(slot, ESC(said, util_format(said, sizeof said, "Timer %" PRIu32
-	                                            " will fire in %" PRIu64 " s.", id,
-	                                            secs)), false);
+	mcp_slot_result(slot, util_format_view(said, sizeof said, "Timer %" PRIu32 " will fire "
+	                                       "in %" PRIu64 " s.", id, secs), false);
 }
 
 static void mcp_req_result_begin (struct mcp_req *req, struct mcp_slot *slot);
@@ -5580,7 +5594,7 @@ mcp_slot_none (struct mcp_slot    *slot,
                struct json_object *args)
 {
 	(void)args;
-	mcp_slot_result(slot, TEXT("No tool of that name is yours to call."), true);
+	mcp_slot_result(slot, CSTR_VIEW("No tool of that name is yours to call."), true);
 }
 
 static void
@@ -5588,7 +5602,7 @@ mcp_req_intent_saved (struct mcp_req *req,
                       int             error)
 {
 	if (error) {
-		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot persist job state"), nullptr, 0);
+		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG(persist_failed), nullptr, 0);
 		return;
 	}
 	req->intents |= UINT32_C(1) << req->launched;
@@ -5618,7 +5632,7 @@ mcp_slot_replay (struct mcp_slot    *slot,
 		return e == EINVAL ? EILSEQ : e;
 	slot->start = loop_clock();
 	slot->skip = jb_uint(jb_get(saved, "skip"), 0);
-	mcp_slot_result(slot, ESC_VIEW(text), json_object_get_boolean(jb_get(saved, "failed")));
+	mcp_slot_result(slot, text, json_object_get_boolean(jb_get(saved, "failed")));
 	return 0;
 }
 
@@ -5687,10 +5701,10 @@ mcp_req_call_launch (struct mcp_req *req)
 		 * slot->start. mcp_slot_done() logs the time since slot->start. */
 		slot->start = loop_clock();
 		mcp_slot_result(slot, req->flags & REQ_CUT
-		                ? TEXT("Your answer reached the output token limit, which "
-		                       "cut these arguments short, so the call was not run.")
-		                : TEXT("Your arguments were not a JSON object, so the call "
-		                       "was not run."), true);
+		                ? CSTR_VIEW("Your answer reached the output token limit, which "
+		                            "cut these arguments short, so the call was not run.")
+		                : CSTR_VIEW("Your arguments were not a JSON object, so the call "
+		                            "was not run."), true);
 		return;
 	}
 	mcp_slot_start(slot, args);
@@ -6040,7 +6054,7 @@ mcp_req_archive_submitted (struct mcp_req *req,
 	if (!error && req->mcp->draining)
 		error = ESHUTDOWN;
 	if (error) {
-		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot persist job state"), nullptr, 0);
+		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG(persist_failed), nullptr, 0);
 		return;
 	}
 	if (req->flags & REQ_DETACH_PENDING) {
@@ -6189,15 +6203,15 @@ mcp_recover_back (struct loop           *loop,
 	}
 	struct json_object *state = mcp_archive_json(checkpoint);
 	struct cstr_view tool = jb_view(jb_get(state, "tool"));
-	struct mcp_piece problem =
-		error ? TEXT("Cannot read the durable job journal.")
+	struct cstr_view problem =
+		error ? CSTR_VIEW("Cannot read the durable job journal.")
 		: !state || jb_int(jb_get(state, "version"), 0) != 1
-		? TEXT("No recoverable job of yours has that id.")
+		? CSTR_VIEW("No recoverable job of yours has that id.")
 		: jb_uint(jb_get(state, "owner"), 0) != owner ||
 		  !cstr_view_equal(tool, mcp_static_tool(st, req->self.tool)->name)
-		? TEXT("No job of yours from this tool has that id.")
-		: (struct mcp_piece){};
-	if (problem.bytes.data)
+		? CSTR_VIEW("No job of yours from this tool has that id.")
+		: (struct cstr_view){};
+	if (problem.data)
 		goto failed;
 	uint64_t created = jb_uint(jb_get(state, "created"), 0);
 	if (end) {
@@ -6215,7 +6229,7 @@ mcp_recover_back (struct loop           *loop,
 			                       nullptr, (struct handle){}, nullptr, &e);
 		json_object_put(result);
 		if (!task && e != EEXIST) {
-			problem = TEXT("Cannot restore this job's saved result.");
+			problem = CSTR_VIEW("Cannot restore this job's saved result.");
 			goto failed;
 		}
 		ledger_task_put(task);
@@ -6226,12 +6240,13 @@ mcp_recover_back (struct loop           *loop,
 	if (jb_int(jb_get(state, "api"), 0) != st->ep->api ||
 	    jb_int(jb_get(state, "provider"), 0) != st->ep->provider ||
 	    jb_uint(jb_get(state, "endpoint"), 0) != st->endpoint) {
-		problem = TEXT("This job belongs to a different upstream endpoint, model or API.");
+		problem = CSTR_VIEW("This job belongs to a different upstream endpoint, model or "
+		                    "API.");
 		goto failed;
 	}
 	if (json_object_get_boolean(jb_get(state, "agenda"))) {
-		problem = TEXT("This interrupted job had background tools or timers. Their "
-		               "outcomes must be reconciled before continuing.");
+		problem = CSTR_VIEW("This interrupted job had background tools or timers. Their "
+		                    "outcomes must be reconciled before continuing.");
 		goto failed;
 	}
 	uint32_t intents = 0, results = 0;
@@ -6244,12 +6259,12 @@ mcp_recover_back (struct loop           *loop,
 		int64_t k = jb_int(jb_get(obj, "index"), 0);
 		problem = !obj || k < 0 || k >= JOB_CALLS ||
 		          (!intent && !jb_view(jb_get(obj, "text")).data)
-		        ? TEXT("This job's tool journal is invalid; no calls were repeated.")
+		        ? CSTR_VIEW("This job's tool journal is invalid; no calls were repeated.")
 		        : intent && json_object_get_boolean(jb_get(obj, "agenda"))
-		        ? TEXT("This interrupted turn started or used background tools or "
-		               "timers. Reconcile their outcomes before continuing.")
-		        : (struct mcp_piece){};
-		if (problem.bytes.data) {
+		        ? CSTR_VIEW("This interrupted turn started or used background tools or "
+		                    "timers. Reconcile their outcomes before continuing.")
+		        : (struct cstr_view){};
+		if (problem.data) {
 			json_object_put(obj);
 			goto failed;
 		}
@@ -6264,8 +6279,9 @@ mcp_recover_back (struct loop           *loop,
 		last_tool_result = obj;
 	}
 	if (intents & ~results) {
-		problem = TEXT("A tool call was interrupted with an unknown outcome; reconcile its "
-		               "effects before continuing. AskAI has not repeated it.");
+		problem = CSTR_VIEW("A tool call was interrupted with an unknown outcome; "
+		                    "reconcile its effects before continuing. AskAI has not "
+		                    "repeated it.");
 		goto failed;
 	}
 	/* Before the job is admitted again, a failure here leaves its
@@ -6273,7 +6289,7 @@ mcp_recover_back (struct loop           *loop,
 	struct json_object *local = last_tool_result ? last_tool_result : state;
 	struct cstr_view attached = jb_view(jb_get(local, "attached"));
 	if (buf_put(&req->attached, attached.data, attached.len, SIZE_MAX)) {
-		problem = TEXT("Cannot restore this turn's saved attachments.");
+		problem = CSTR_VIEW("Cannot restore this turn's saved attachments.");
 		goto failed;
 	}
 	struct cstr_view request = jb_view(jb_get(state, "request"));
@@ -6282,7 +6298,8 @@ mcp_recover_back (struct loop           *loop,
 	struct json_object *names = jb_get(state, "lent");
 	if (!request.len || turn < 1 || turn > UINT32_MAX || prompt_at > request.len ||
 	    !json_object_is_type(names, json_type_array)) {
-		problem = TEXT("This job's saved request is invalid; no provider request was sent.");
+		problem = CSTR_VIEW("This job's saved request is invalid; no provider request was "
+		                    "sent.");
 		goto failed;
 	}
 	/* req->lent is set only after the job is admitted (below), so a poll
@@ -6294,9 +6311,10 @@ mcp_recover_back (struct loop           *loop,
 	if (!e && req->review && review)
 		e = review_restore(req->review, review);
 	if (e) {
-		problem = e == ENOMEM ? TEXT("Cannot restore this job's saved review record now.")
-		        : TEXT("This job's saved review record is invalid; no provider request "
-		               "was sent.");
+		problem = e == ENOMEM ? CSTR_VIEW("Cannot restore this job's saved review record "
+		                                  "now.")
+		        : CSTR_VIEW("This job's saved review record is invalid; no provider "
+		                    "request was sent.");
 		goto failed;
 	}
 	e = buf_put(&req->upload, request.data, request.len, SIZE_MAX);
@@ -6313,8 +6331,8 @@ mcp_recover_back (struct loop           *loop,
 	if (!task) {
 		if (who.bits)
 			loop_forget(loop, who);
-		problem = TEXT("Cannot resume this job now; it may already be resuming on another "
-		               "request.");
+		problem = CSTR_VIEW("Cannot resume this job now; it may already be resuming on "
+		                    "another request.");
 		goto failed;
 	}
 	req->admitted = task;
@@ -6397,7 +6415,8 @@ mcp_req_recover (struct mcp_req                 *req,
 			free(wait);
 			wait = nullptr;
 		}
-		mcp_slot_result(&req->self, TEXT("Cannot load the durable job journal now."), true);
+		mcp_slot_result(&req->self, CSTR_VIEW("Cannot load the durable job journal "
+		                                      "now."), true);
 		return true;
 	}
 	req->archive_call = wait->who;
@@ -6713,8 +6732,8 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	struct mcp_req *req = slot->req;
 	struct cstr_view const summary = jb_view(jb_get(args, "summary"));
 	if (!summary.len || summary.len > TOOL_TEXT_MAX) {
-		mcp_slot_result(slot, TEXT("The summary argument must be a string of 1 "
-		                           "byte to 4 MiB."), true);
+		mcp_slot_result(slot, CSTR_VIEW("The summary argument must be a string of 1 "
+		                                "byte to 4 MiB."), true);
 		return;
 	}
 	/* The trace line shows the name of the tool that the turn called. */
@@ -6759,8 +6778,8 @@ mcp_req_compact_full (struct mcp_req *req)
 		return;
 	}
 	if (req->forced++) {
-		mcp_slot_result(&req->self, TEXT("The upstream's context cannot hold the task "
-		                              "and the notes kept for it."), true);
+		mcp_slot_result(&req->self, CSTR_VIEW("The upstream's context cannot hold the task "
+		                                      "and the notes kept for it."), true);
 		return;
 	}
 	hist_add(&req->mcp->counts->calls.compacted[1], 1);
@@ -6809,29 +6828,30 @@ mcp_slot_ask (struct mcp_slot    *slot,
 	if (has_override && (!json_object_is_type(override, json_type_boolean) ||
 	                     (json_object_get_boolean(override) &&
 	                      (!background || (req->asks & JOB_STREAM))))) {
-		mcp_slot_result(slot, TEXT("The background argument must be false, or true "
-		                           "when server background mode is enabled and live "
-		                           "streaming is not requested."), true);
+		mcp_slot_result(slot, CSTR_VIEW("The background argument must be false, or true "
+		                                "when server background mode is enabled and live "
+		                                "streaming is not requested."), true);
 		return;
 	}
 	if (background && args) {
 		bool job = json_object_object_get_ex(args, "job", nullptr);
 		struct json_object *action;
 		bool has_action = json_object_object_get_ex(args, "action", &action);
-		struct mcp_piece problem =
+		struct cstr_view problem =
 			job && (json_object_object_get_ex(args, "prompt", nullptr) ||
 			        json_object_object_get_ex(args, "system", nullptr) ||
 			        json_object_object_get_ex(args, "messages", nullptr) ||
 			        has_override || (req->asks & JOB_STREAM) ||
 			        json_object_object_get_ex(args, "thread", nullptr) ||
 			        json_object_object_get_ex(args, "timer", nullptr))
-			? TEXT("Give a job id to check or cancel, or a prompt to start a job, not both.")
+			? CSTR_VIEW("Give a job id to check or cancel, or a prompt to start a job, "
+			            "not both.")
 			: has_action && !job
-			? TEXT("The action argument requires a job id.")
+			? CSTR_VIEW("The action argument requires a job id.")
 			: has_action && !jb_is(action, "result") && !jb_is(action, "cancel")
-			? TEXT("The action argument must be result or cancel.")
-			: (struct mcp_piece){};
-		if (problem.bytes.data) {
+			? CSTR_VIEW("The action argument must be result or cancel.")
+			: (struct cstr_view){};
+		if (problem.data) {
 			mcp_slot_result(slot, problem, true);
 			return;
 		}
@@ -7627,7 +7647,7 @@ mcp_begin (struct mcp           *mcp,
 {
 	struct mcp_req *req = mcp_spare_take(mcp);
 	if (!req) {
-		mcp_http_error(s, 500, "Out of memory", SPAN(JSON_FIELD));
+		mcp_http_error(s, 500, out_of_memory, SPAN(JSON_FIELD));
 		return nullptr;
 	}
 	*req = (struct mcp_req){
@@ -7726,11 +7746,11 @@ mcp_on_body (struct stream *s,
 		                   ? "Request JSON is nested too deeply"
 		                   : req->scan.values == lim->values
 		                   ? "Request JSON has too many values"
-		                   : "Out of memory");
+		                   : out_of_memory);
 		return;
 	}
 	if (buf_put(&req->body, bytes.ptr, bytes.len, SIZE_MAX)) {
-		mcp_req_http_error(req, 500, "Out of memory");
+		mcp_req_http_error(req, 500, out_of_memory);
 		return;
 	}
 	if (last) {
@@ -8026,7 +8046,8 @@ mcp_tool_definition (void const *service)
 			  "completion. Set background false to wait for the answer on this "
 			  "connection."
 			: "", ""),
-		"inputSchema", schema_object(props, &CSTR_VIEW("prompt"), st->ep->background ? 0 : 1),
+		"inputSchema", schema_object(props, &CSTR_VIEW("prompt"),
+		                             st->ep->background ? 0 : 1),
 		"annotations", jb_object(
 			"readOnlyHint", json_object_new_boolean(!st->ep->background),
 			"openWorldHint", json_object_new_boolean(1),
