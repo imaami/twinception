@@ -230,7 +230,9 @@ main (int argc, char **argv)
 	for (unsigned k = JOURNAL_FILES + 2; k <= JOURNAL_JOBS + 1; ++k) {
 		struct hexid id;
 		journal_test_id(&id, k);
-		struct journal_job *job = journal_job_enter(j, &id, &e);
+		struct journal_job *job = journal_job_find(j, &id);
+		if (!job)
+			job = journal_job_add(j, &id, &e);
 		assert(job && !e);
 		job->flags |= JOB_TERMINAL;
 	}

@@ -647,17 +647,19 @@ journal_checkpoint_space (struct journal     *j,
 	return 0;
 }
 
+/* Add the job @p id, which is not in the table, making room for it;
+ * nullptr with the error in @p *e if there is none.
+ */
 static struct journal_job *
-journal_job_enter (struct journal     *j,
-                   struct hexid const *id,
-                   int                *e)
+journal_job_add (struct journal     *j,
+                 struct hexid const *id,
+                 int                *e)
 {
-	struct journal_job *job = journal_job_find(j, id);
-	*e = job ? 0 : journal_checkpoint_space(j, nullptr, 0, true);
-	if (job || *e)
-		return job;
+	*e = journal_checkpoint_space(j, nullptr, 0, true);
+	if (*e)
+		return nullptr;
 	for (size_t k = 0; k < array_size(j->jobs); ++k) {
-		job = &j->jobs[k];
+		struct journal_job *job = &j->jobs[k];
 		if (*job->id.hex)
 			continue;
 		job->id = *id;
@@ -764,7 +766,7 @@ journal_checkpoint_write (struct journal        *j,
 		e = errno;
 	if (!e) {
 		if (!job)
-			job = journal_job_enter(j, &record->id, &e);
+			job = journal_job_add(j, &record->id, &e);
 		if (job) {
 			j->recovery_bytes = j->recovery_bytes - job->bytes + bytes;
 			job->bytes = bytes;
@@ -897,8 +899,8 @@ journal_thought_put (struct journal            *j,
                      struct journal_item const *item)
 {
 	int e = 0;
-	struct journal_job *job = journal_job_enter(j, &item->id, &e);
-	if (!job)
+	struct journal_job *job = journal_job_find(j, &item->id);
+	if (!job && !(job = journal_job_add(j, &item->id, &e)))
 		return e;
 	bool begin = !item->offset && !item->record->len;
 	if (begin || job->thought_turn != item->turn) {
@@ -923,13 +925,14 @@ journal_thought_commit (struct journal            *j,
                         struct journal_item const *item,
                         struct journal_job        *job)
 {
-	if (job && job->thought_turn == item->turn && job->thought_error)
+	bool const turn = job && job->thought_turn == item->turn;
+	if (turn && job->thought_error)
 		return job->thought_error;
 	struct journal_file *file = nullptr;
 	int e = journal_thought_file(j, item, &file);
 	if (e || !file->size)
 		return e == ENOENT ? 0 : e;
-	uint64_t seen = job && job->thought_turn == item->turn ? job->thought_seen : 0;
+	uint64_t seen = turn ? job->thought_seen : 0;
 	if (seen < file->size)
 		return item->operation == JOURNAL_THOUGHT_FINISH ? EILSEQ : 0;
 	if (file->committed_size == file->size)
