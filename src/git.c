@@ -1136,7 +1136,7 @@ git_call_advance (struct git_call *call,
 			break;
 		}
 	}
-	bool late = c->flags & CHILD_LATE;
+	bool const late = c->flags & CHILD_LATE;
 	child_destroy(&call->child);
 	if (!e) {
 		++call->phase;
@@ -1629,9 +1629,11 @@ git_step (struct mcp_slot *slot)
 		return;
 	}
 	/* When the output goes past 4 MiB, git is killed. A read then writes
-	 * the lines before the cut. */
+	 * the lines before the cut, as it does after a git that exited in
+	 * time. */
 	if (takes & LINES) {
-		if (c->flags & CHILD_LATE || (!(c->flags & CHILD_CUT) && c->code != CLD_EXITED))
+		uint32_t const end = c->flags & (CHILD_CUT | CHILD_LATE);
+		if (end ? end != CHILD_CUT : c->code != CLD_EXITED)
 			git_ended(slot, call, takes);
 		else if (call->phase == GIT_RUN)
 			git_scan(slot, call);
