@@ -31,6 +31,16 @@ extern int
 agenda_notice_timer (struct dstr               *d,
                      struct ledger_timer const *t);
 
+/** Appends to @p d a line for each timer that is set of the @p n at
+ *  @p timers: when it fires, as seen at the loop time @p now, or when it
+ *  fired, and its note. Returns 0, or ENOMEM.
+ */
+extern int
+agenda_timer_lines (struct dstr               *d,
+                    struct ledger_timer const *timers,
+                    size_t                     n,
+                    uint64_t                   now);
+
 /** Answers the client's call in @p slot that the ledger refused with
  *  @p e: with @p busy for EBUSY, and with the lack of room for ENOSPC. Any
  *  other error fails the call.

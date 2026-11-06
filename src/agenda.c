@@ -34,6 +34,24 @@ agenda_notice_timer (struct dstr               *d,
 	                   t->len ? ": " : "", (int)t->len, t->note) ? 0 : ENOMEM;
 }
 
+int
+agenda_timer_lines (struct dstr               *d,
+                    struct ledger_timer const *timers,
+                    size_t                     n,
+                    uint64_t                   now)
+{
+	bool ok = true;
+	for (struct ledger_timer const *t = timers; ok && t < timers + n; ++t)
+		ok = !t->due ||
+		     ((t->due > now
+		       ? dstr_printf(d, "timer %" PRIu32 ": fires in %" PRIu64 " s", t->id,
+		                     (t->due - now + NS - 1) / NS)
+		       : dstr_printf(d, "timer %" PRIu32 ": fired %" PRIu64 " s ago, unread",
+		                     t->id, (now - t->due) / NS)) &&
+		      dstr_printf(d, "%s%.*s\n", t->len ? ": " : "", (int)t->len, t->note));
+	return ok ? 0 : ENOMEM;
+}
+
 void
 agenda_refused (struct mcp_slot  *slot,
                 int               e,
@@ -75,8 +93,8 @@ agenda_find (struct mcp_slot    *slot,
 		mcp_slot_tell(slot, tool != TOOL_MAX
 		              ? CSTR_VIEW("No job of yours from this tool has that id; askai "
 		                          "stores a job for up to an hour after it ends.")
-		              : CSTR_VIEW("No job of yours has that id; askai stores a job for an "
-		                          "hour after it ends."), TOOL_FAILED);
+		              : CSTR_VIEW("No job of yours has that id; askai stores a job for up "
+		                          "to an hour after it ends."), TOOL_FAILED);
 	return task;
 }
 
@@ -89,7 +107,6 @@ agenda_list (struct mcp_slot *slot)
 		return e;
 	dstr_auto d = DSTR_INIT;
 	uint64_t day = clk_realtime_ns();
-	uint64_t now = loop_clock();
 	bool ok = true;
 	for (uint32_t i = 0; ok && i < look.n_tasks; ++i) {
 		struct ledger_task const *t = look.tasks[i];
@@ -106,14 +123,7 @@ agenda_list (struct mcp_slot *slot)
 	}
 	if (ok && look.more)
 		ok = dstr_printf(&d, "and %" PRIu64 " older records\n", look.more);
-	for (uint32_t i = 0; ok && i < look.n_timers; ++i) {
-		struct ledger_timer const *t = &look.timers[i];
-		ok = (t->due > now ? dstr_printf(&d, "timer %" PRIu32 ": fires in %" PRIu64 " s",
-		                                 t->id, (t->due - now + NS - 1) / NS)
-		                   : dstr_printf(&d, "timer %" PRIu32 ": fired %" PRIu64 " s ago, "
-		                                 "unread", t->id, (now - t->due) / NS)) &&
-		     dstr_printf(&d, "%s%.*s\n", t->len ? ": " : "", (int)t->len, t->note);
-	}
+	ok = ok && !agenda_timer_lines(&d, look.timers, look.n_timers, loop_clock());
 	if (ok && !look.n_tasks && !look.n_timers)
 		ok = !cstr_view_cat(CSTR_VIEW("You have no jobs and no timers."), &d);
 	ledger_look_put(&look);
@@ -281,7 +291,7 @@ agenda_wait_start (struct mcp_slot    *slot,
 		}
 		problem = !id.data ? bad_list
 		        : util_format_view(why, sizeof why, "No job of yours has the id %.*s; "
-		                           "askai stores a job for an hour after it ends.",
+		                           "askai stores a job for up to an hour after it ends.",
 		                           (int)util_clip(id.data, id.len, HEXID_DIGITS), id.data);
 	}
 	if (problem.data) {

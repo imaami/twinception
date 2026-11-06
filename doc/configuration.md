@@ -442,8 +442,9 @@ With `upstream-tools`, the member has these meanings:
   never offers `ask_ai` and `test_task` to the upstream.
 - If `upstream` is `[]`, the upstream may call none of `man`, `git` and the
   plugin tools. With `notes`, the turns still get `notes`, `compact`,
-  `findings`, `wait` and `timer`. Without `notes`, the turns get no tool, and an
-  `ask_ai` call is one upstream request, as without `upstream-tools`.
+  `findings`, `jobs`, `wait` and `timer`. Without `notes`, the turns get no
+  tool, and an `ask_ai` call is one upstream request, as without
+  `upstream-tools`.
 - If `upstream` lists tools, the upstream may call these tools. Each name
   must be `man`, `git`, `notes` or a plugin tool whose kind has the flag
   `TOOL_LENT`, and `askai` must offer the tool in this run. For example,
@@ -455,15 +456,16 @@ With `upstream-tools`, the member has these meanings:
 In each case with `upstream-tools`, the turns also get these tools:
 
 - `notes` in every call when `notes` is set, whatever the role lists;
-- `compact`, `findings`, `wait` and `timer` when the turns get any tool;
-- `background` and `jobs` when the turns get a tool that can run in the
-  background: `man`, `git`, or a plugin tool whose kind has the flag
-  `TOOL_DETACH` (`src/tool.h`).
+- `compact`, `findings`, `jobs`, `wait` and `timer` when the turns get
+  any tool;
+- `background` when the turns get a tool that can run in the background:
+  `man`, `git`, or a plugin tool whose kind has the flag `TOOL_DETACH`
+  (`src/tool.h`).
 
 The member `tools` applies before these rules: a tool that `tools` denies
 to the upstream does not count in them. So the turns get `compact`,
-`findings`, `wait` and `timer` only beside another tool that `tools` allows,
-and `background` and `jobs` only beside such a tool that can run in the
+`findings`, `jobs`, `wait` and `timer` only beside another tool that `tools`
+allows, and `background` only beside such a tool that can run in the
 background. The turns never get a tool that `tools` denies, whatever
 `upstream` lists (section [Tools](#tools)).
 
@@ -778,7 +780,7 @@ tools:
 | `compact` | replaces the conversation after the prompt with a summary | with any other tool |
 | `findings` | keeps the call's review record of findings and of the lines read with `git` `read` | with any other tool |
 | `background` | runs a call of a tool as a job, and returns the number of the job at once | with a tool that can run in the background |
-| `jobs` | lists the jobs, returns the output of a finished job, or cancels a job | with a tool that can run in the background |
+| `jobs` | lists the jobs and the timers, returns the output of an ended job, or cancels a job or a timer | with any other tool |
 | `wait` | waits up to 10 minutes for a job or a timer | with any other tool |
 | `timer` | sets a timer of up to an hour, with a note | with any other tool |
 
@@ -1281,8 +1283,8 @@ For the upstream model, `tools` has these effects:
 - A denied tool does not count in the rules of section [What the role
   member upstream means](#what-the-role-member-upstream-means). With
   `{"deny": ["man"]}` and no other tool to lend, the turns get no
-  `compact`, `findings`, `wait` or `timer`, and an `ask_ai` call is one
-  upstream request.
+  `compact`, `findings`, `jobs`, `wait` or `timer`, and an `ask_ai` call is
+  one upstream request.
 - Without `notes` in the turns, an `ask_ai` call refuses the argument
   `thread`, and the ask tool does not list it. From two thirds of the
   context on, the notice to call `compact` comes only when the turns have

@@ -1443,7 +1443,7 @@ def check_client_jobs(binary, up):
                 assert say(ai, "jobs", headers=bob, action="list") == \
                     "You have no jobs and no timers.", ai.log
                 refused(ai, "jobs", "No job of yours has that id; askai stores a job "
-                        "for an hour after it ends.", headers=bob, action="result",
+                        "for up to an hour after it ends.", headers=bob, action="result",
                         job=jid)
                 assert say(ai, "wait", "127.0.0.2", headers=alice, seconds=10,
                            jobs=[jid]) == done(jid)
@@ -1510,6 +1510,8 @@ def check_client_jobs(binary, up):
                 assert PAGED not in tools[1]["description"], tools[1]
                 assert lent[2]["function"]["parameters"]["properties"]["job"]["type"] == \
                     "integer", lent[2]
+                assert lent[2]["function"]["parameters"]["properties"]["timer"]["type"] == \
+                    "integer", lent[2]
                 assert re.fullmatch(f"job {jid}: ask_ai: running for [0-9] s\n",
                                     say(ai, "jobs", action="list"))
                 assert say(ai, "wait", seconds=10, jobs=[jid]) == done(jid)
@@ -1567,7 +1569,7 @@ def check_client_jobs(binary, up):
                     refused(ai, "jobs", "The job argument must be the id of a job of "
                             "yours.", action="result", job=job)
                 refused(ai, "jobs", "No job of yours has that id; askai stores a job for "
-                        "an hour after it ends.", action="cancel", job="0" * 32)
+                        "up to an hour after it ends.", action="cancel", job="0" * 32)
                 for args in ({}, {"job": jid, "timer": 1}):
                     refused(ai, "jobs", "The job argument or the timer argument must "
                             "name what to cancel.", action="cancel", **args)
@@ -1580,7 +1582,7 @@ def check_client_jobs(binary, up):
                             "jobs of yours.", seconds=1, jobs=jobs)
                 assert say(ai, "wait", seconds=1, jobs=[jid] * 16) == done(jid)
                 refused(ai, "wait", 'No job of yours has the id \u00e9\\"' + "x" * 28 +
-                        "; askai stores a job for an hour after it ends.", seconds=1,
+                        "; askai stores a job for up to an hour after it ends.", seconds=1,
                         jobs=[jid, '\u00e9\\"' + "x" * 40])
 
                 # An owner runs 8 jobs and tasks at most. A wait for any job
@@ -1603,7 +1605,7 @@ def check_client_jobs(binary, up):
 
                 # Another address is another owner, also for tasks/get.
                 refused(ai, "jobs", "No job of yours has that id; askai stores a job for "
-                        "an hour after it ends.", action="result", job=ids[0])
+                        "up to an hour after it ends.", action="result", job=ids[0])
                 for source, found in (("127.0.0.1", False), ("127.0.0.2", True)):
                     body = send(ai, "tasks/get", {"taskId": ids[0]}, source, TAKES_TASKS)[2]
                     assert ("result" in body) == found and \
@@ -1821,7 +1823,7 @@ def check_client_jobs(binary, up):
                 time.sleep(1.3)
                 assert re.fullmatch(f"timer {n}: fired [0-9] s ago, unread: n\n",
                                     say(ai, "jobs", src, action="list"))
-                refused(ai, "jobs", f"Timer {n} has fired, and a call of wait reports it.",
+                refused(ai, "jobs", f"Timer {n} has already fired.",
                         src, action="cancel", timer=int(n))
                 result, took = call(ai, "wait", src, seconds=5)
                 assert text_of(result) == f"[askai: timer {n} fired: n.]\n" and took < 0.5, \
@@ -5239,7 +5241,7 @@ def check_allow(binary, up):
                 ({"allow": ["man", "compact"]}, ["ask_ai", "man"], ["man", "compact"]),
                 ({"allow": ["man", "findings"]}, ["ask_ai", "man"], ["man", "findings"]),
                 ({"deny": ["man", "compact"]}, ["ask_ai", "notes", *jobs],
-                 ["notes", "wait", "timer", "findings"]),
+                 ["notes", "jobs", "wait", "timer", "findings"]),
                 ({"deny": ["findings"]}, ["ask_ai", "man", "notes", *jobs],
                  ["man", "notes", *jobs, "compact"]),
                 ({}, ["ask_ai", "man", "notes", *jobs],
@@ -11530,6 +11532,9 @@ def check_turns(binary, up):
             assert {t["function"]["name"] for t in body["tools"]
                     if t["function"]["description"].endswith(PAGED)} == set(offsets), \
                 body["tools"]
+            # The lent jobs says that jobs and timers end with the ask call.
+            assert "Jobs and timers end with the ask call." in \
+                body["tools"][5]["function"]["description"], body["tools"][5]
             # The upstream's notes use the thread of the ask call.
             assert "thread" not in body["tools"][1]["function"]["parameters"][
                 "properties"], body["tools"][1]
@@ -12159,19 +12164,22 @@ def check_turns(binary, up):
             assert [m["tool_call_id"] for m in results] == ["p0", "p1", "p2"], results
             assert result["content"][1]["text"].count("- git ") == 3, result
 
-            # A job in the background, and a timer: background starts git and
+            # A job in the background, and timers: background starts git and
             # answers at once; a wait for the job ends as it finishes, with the
-            # notice of its end; jobs lists it and gives its output; a later
-            # wait ends as the timer fires, saying so; a wait for the ended
-            # job ends at once, with the same notice; a cancelled job runs no
+            # notice of its end; jobs lists it and the timers, which have
+            # numbers of their own, and gives its output; a later wait ends
+            # as the first timer fires, saying so; a wait for the ended job
+            # ends at once, with the same notice; a cancelled job runs no
             # more, and a wait for it ends at once, with the notice that it
-            # was cancelled.
+            # was cancelled; jobs cancels the second timer, so the call does
+            # not doze for it.
             def tool_call(cid, name, **args):
                 return (cid, name, json.dumps(args))
             script[:] = [
                 lambda r: (200, turn_stream([
                     tool_call("b1", "background", tool="git", arguments=json.loads(slow)),
-                    tool_call("t1", "timer", seconds=2, note="check it")])),
+                    tool_call("t1", "timer", seconds=2, note="check it"),
+                    tool_call("t2", "timer", seconds=60)])),
                 lambda r: (200, turn_stream([tool_call("w1", "wait", seconds=30, jobs=[1])])),
                 lambda r: (200, turn_stream([
                     tool_call("j1", "jobs", action="list"),
@@ -12184,6 +12192,10 @@ def check_turns(binary, up):
                 lambda r: (200, turn_stream([tool_call("c1", "jobs", action="cancel", job=2),
                                              tool_call("c2", "jobs", action="list"),
                                              tool_call("c3", "wait", seconds=0),
+                                             tool_call("c4", "jobs", action="cancel", timer=2),
+                                             tool_call("c5", "jobs", action="cancel", timer=2),
+                                             tool_call("c6", "jobs", action="cancel", job=2,
+                                                       timer=2),
                                              tool_call("w4", "wait", seconds=1, jobs=[2])])),
             ]
             count = len(up.requests)
@@ -12200,24 +12212,30 @@ def check_turns(binary, up):
             ended = "[askai: job 1, git, completed: call jobs with the action result and " \
                 "job 1 for its result.]\n"
             assert said(1, "b1") == "Started job 1." and \
-                said(1, "t1") == "Timer 1 will fire in 2 s.", turns(asked[1])
+                said(1, "t1") == "Timer 1 will fire in 2 s." and \
+                said(1, "t2") == "Timer 2 will fire in 60 s.", turns(asked[1])
             assert said(2, "w1") == ended, said(2, "w1")
             # The list shows the job's arguments exactly as the turn sent
             # them. The job has its own copy, which stays valid after askai
             # frees the arguments of the turn's call of background.
             wire = json.dumps(json.loads(slow), separators=(",", ":"))
-            assert re.fullmatch(r"job 1: git " + re.escape(wire) + r": completed, \d+ bytes\n",
-                                said(3, "j1")), said(3, "j1")
+            assert re.fullmatch(r"job 1: git " + re.escape(wire) + r": completed, \d+ bytes\n"
+                                r"timer 1: (fires in [12] s|fired 0 s ago, unread): check it\n"
+                                r"timer 2: fires in (59|60) s\n", said(3, "j1")), said(3, "j1")
             assert said(3, "j2") == "[No output.]", said(3, "j2")
             assert said(4, "w2") == "[askai: timer 1 fired: check it.]\n", said(4, "w2")
             assert said(5, "b2") == "Started job 2." and \
                 said(5, "b3").startswith("The tool argument must name a tool") and \
                 said(5, "w3") == ended, turns(asked[5])
             assert said(6, "c1") == "Cancelled the job." and \
-                re.fullmatch(r"job 1: git .*: completed, \d+ bytes\njob 2: git .*: cancelled\n",
-                             said(6, "c2")) and \
+                re.fullmatch(r"job 1: git .*: completed, \d+ bytes\njob 2: git .*: cancelled\n"
+                             r"timer 2: fires in \d+ s\n", said(6, "c2")) and \
                 said(6, "c3").startswith("The seconds argument") and \
-                said(6, "w4") == "[askai: job 2, git, cancelled.]\n", turns(asked[6])
+                said(6, "c4") == "Cancelled timer 2." and \
+                said(6, "c5") == "You have no timer 2 set." and \
+                said(6, "c6") == "The job argument or the timer argument must name what " \
+                "to cancel." and said(6, "w4") == "[askai: job 2, git, cancelled.]\n", \
+                turns(asked[6])
             assert 2 <= took < 6, took
             trace = result["content"][1]["text"]
             assert all(f"- {t} " in trace for t in ("background", "timer", "wait", "jobs")), \
@@ -12433,7 +12451,7 @@ def check_turns(binary, up):
         up.props = None
 
         # A role that may not call git lends the turns notes and compact, and
-        # wait and timer, but nothing to run in the background.
+        # jobs, wait and timer, but nothing to run in the background.
         path = f"{d}/askai.json"
         with open(path, "w") as f:
             json.dump({"roles": {"asker": {"tools": ["ask_ai"]}},
@@ -12443,8 +12461,19 @@ def check_turns(binary, up):
             count = len(up.requests)
             assert text_of(ai.ask("Q")) == "A"
             assert [t["function"]["name"] for t in up.requests[count]["body"]["tools"]] \
-                == ["notes", "compact", "findings", "wait", "timer"], \
+                == ["notes", "compact", "findings", "jobs", "wait", "timer"], \
                 up.requests[count]["body"]
+            # There jobs lists and cancels a timer, and the call does not
+            # doze for a cancelled one.
+            script[:] = [
+                lambda r: (200, turn_stream([("t", "timer", '{"seconds":60}')])),
+                lambda r: (200, turn_stream([("l", "jobs", '{"action":"list"}'),
+                                             ("c", "jobs", '{"action":"cancel","timer":1}')]))]
+            count = len(up.requests)
+            start = time.monotonic()
+            assert ai.ask("Q")["content"][0]["text"] == "A" and time.monotonic() - start < 5
+            assert [m["content"] for m in turns(up.requests[count + 2])[-2:]] == [
+                "timer 1: fires in 60 s\n", "Cancelled timer 1."], up.requests[count + 2]
 
         # The member "upstream" of a role lists the tools that the upstream
         # may call. This list is separate from the list of tools that the
@@ -12454,7 +12483,7 @@ def check_turns(binary, up):
                  ["git", "notes", "compact", "findings", "background", "jobs", "wait",
                   "timer"]),
                 ({"tools": ["ask_ai", "git"], "upstream": []}, ["ask_ai", "git"],
-                 ["notes", "compact", "findings", "wait", "timer"])):
+                 ["notes", "compact", "findings", "jobs", "wait", "timer"])):
             with open(path, "w") as f:
                 json.dump({"roles": {"asker": role},
                            "anonymous": {"loopback": "asker"}}, f)
@@ -13405,15 +13434,15 @@ def check_plugin(binary, up, plugin):
         up.reply = lambda request: (200, ANSWERS["openai"])
 
         # A role whose upstream may call test_echo alone, which has no
-        # TOOL_DETACH, gets no background and no jobs, and a role without
-        # the ask tool lends the upstream nothing, so no role lists man.
+        # TOOL_DETACH, gets no background, and a role without the ask tool
+        # lends the upstream nothing, so no role lists man.
         write([plugin], roles={"e": {"tools": ["ask_ai"], "upstream": ["test_echo"]},
                                "s": {"tools": ["ask_ai"], "upstream": ["test_state"]},
                                "n": {"tools": ["test_misuse"], "upstream": ["man"]}},
               anonymous={"loopback": "e"}, **{"upstream-tools": True})
         with Askai(binary, "-c", path) as ai:
             assert ai.listed("role e:")[1:-1] == ["upstream tools  test_echo"] + [
-                f"{'':14}  {name}" for name in ("compact", "findings", "wait",
+                f"{'':14}  {name}" for name in ("compact", "findings", "jobs", "wait",
                                                  "timer")], ai.log
             assert ai.listed("role s:")[1:-1] == ["upstream tools  test_state"] + [
                 f"{'':14}  {name}" for name in ("compact", "findings", "background", "jobs",

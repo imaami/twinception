@@ -530,22 +530,23 @@ With `--upstream-tools`, an `ask_ai` call offers the other model tools of its
 own, in any of the APIs (`llama-server`'s chat template must take tools, as
 with `--jinja`): those of `man` and `git` that the caller's role lets the
 upstream call (`ask_ai` itself is never offered), `notes` with `--notes`, and
-with any of those `compact` and `findings`. A plugin's tool is offered in the
-same way if its kind allows it (see Plugins below).
+with any of those `compact`, `findings`, `jobs`, `wait` and `timer`, and
+`background` beside a tool that can run in the background. A plugin's tool
+is offered in the same way if its kind allows it (see Plugins below).
 Offered none, the call asks once, as without the option. Else it runs a
 loop of turns: each turn is an upstream call, whose answer may call tools;
-`askai` runs them at once (a `notes`, `compact` or `findings` call keeps to
-itself, after the calls before it and before those after it), writes the turn
-and their results, in the calls' order, into the conversation, and asks
-again, until an answer calls none, which is the call's answer. A turn goes
-back as it came where the API asks for that: a call's `extra_content` in chat
-completions, in which Gemini's give their thought signature; the output
-items of the Responses API, its reasoning among them; the thinking blocks of
-Anthropic's Messages, with their signatures, in their places among the text
-and the calls; Gemini's parts, with their thought signatures; and the steps
-of Gemini's Interactions, thoughts and calls with their signatures among
-them. Each turn waits for an upstream slot like any call, so the
-scheduler's fairness holds
+`askai` runs them at once (a `notes`, `compact`, `findings`, `jobs` or `wait`
+call keeps to itself, after the calls before it and before those after it),
+writes the turn and their results, in the calls' order, into the
+conversation, and asks again, until an answer calls none, which is the call's
+answer. A turn goes back as it came where the API asks for that: a call's
+`extra_content` in chat completions, in which Gemini's give their thought
+signature; the output items of the Responses API, its reasoning among them;
+the thinking blocks of Anthropic's Messages, with their signatures, in their
+places among the text and the calls; Gemini's parts, with their thought
+signatures; and the steps of Gemini's Interactions, thoughts and calls with
+their signatures among them. Each turn waits for an upstream slot like any
+call, so the scheduler's fairness holds
 turn by turn. The caller gets the answer, and a second text that lists the calls the turns made, with their arguments (but
 those of `notes`, `compact` and `findings`, which are the model's own) and the bytes of
 each output. With a `progressToken`, its notifications say the turn and the
@@ -579,19 +580,20 @@ writes early are still there after it. From two thirds of the context on,
 tools, with a request to note what the model needs and to call `compact`.
 After a compaction, `askai` adds the reminders again as the context fills up.
 
-The model need not wait for a slow call: `background` runs a call of `man`
-or `git` as a job, and answers at once with its number, 8 jobs a call at
-most; `jobs` lists them, gives a finished one's output, a window at a time
-from its `offset`, or cancels one; `timer` sets a timer of up to an hour,
-with a note. A job that finishes and a timer that fires are told, in
-brackets, after the next result the turns are given; `wait`, for up to 10
-minutes, ends as soon as either happens, a job of those it names or any, and
-says what did, which takes no upstream slot while it waits, as polling
-`jobs` would. `background` and `jobs` come with a tool that can run so,
-`wait` and `timer` with any.
+The model need not wait for a slow call: `background` runs a call of `man`,
+`git` or a plugin tool that allows it, as a job, and answers at once with
+its number, 8 jobs a call at most; `timer` sets a timer of up to an hour,
+with a note. Jobs and timers have numbers of their own, each from 1. `jobs`
+lists the jobs and the timers that are set, gives an ended job's output, a
+window at a time from its `offset`, or cancels a job or a timer. A job that
+ends and a timer that fires are told, in brackets, after the next result the
+turns are given; `wait`, for up to 10 minutes, ends as soon as either
+happens, a job of those it names or any, and says what did, which takes no
+upstream slot while it waits, as polling `jobs` would. `background` comes
+with a tool that can run so, `jobs`, `wait` and `timer` with any.
 
 An answer while a job runs or a timer is set does not end the call: the
-turns doze, holding no upstream slot, until a job finishes or a timer fires,
+turns doze, holding no upstream slot, until a job ends or a timer fires,
 or at once if one did as they answered; then a message in the user's place,
 after the answer, says what happened, and they go on. The reply gives each
 answer, and what woke the turns after it. An answer with nothing under way,
@@ -1026,8 +1028,8 @@ Four more members define who may connect, and what each client may do:
   tools that the role's `tools` lists. `upstream` can name `man`, `git`, `notes` and
   the plugin tools that may be lent. Without `--upstream-tools`, `upstream`
   must be empty or left out. The turns also get `notes` whenever `--notes`
-  is given, `compact`, `findings`, `wait` and `timer` whenever they get any
-  tool, and `background` and `jobs` beside a tool that can run in the
+  is given, `compact`, `findings`, `jobs`, `wait` and `timer` whenever they
+  get any tool, and `background` beside a tool that can run in the
   background (`man`, `git`, or a plugin tool that allows it). `upstream`
   cannot name `compact`, `findings`, `background`, `jobs`, `wait` or
   `timer`, and `tools` cannot name `compact` or `findings`. With
@@ -1775,12 +1777,12 @@ Upstream AI ("upstream"):
                             man, git and the plugin tools that allow it,
                             as the role of the client allows, and notes
                             with --notes; with any of those also
-                            compact, findings, wait and timer, and
-                            beside a tool that can run in the
-                            background also background and jobs; an
-                            ask call runs the tool calls of each turn
-                            and sends the next upstream request until
-                            an answer ends the call
+                            compact, findings, jobs, wait and timer,
+                            and beside a tool that can run in the
+                            background also background; an ask call
+                            runs the tool calls of each turn and sends
+                            the next upstream request until an answer
+                            ends the call
       --max-turns N         upstream calls that an ask call makes at
                             most, with --upstream-tools (default 32)
       --context TOKENS      context size of the upstream, used with
@@ -1900,9 +1902,9 @@ Built-in tools ("tools", each in the member in parentheses):
       --client-jobs         also offer clients the tools background,
                             jobs, wait and timer, as their role allows:
                             background runs a call of another tool as a
-                            job, whose result askai stores for an hour;
-                            timer sets a timer; wait waits for jobs and
-                            timers (tools.jobs.clients)
+                            job, whose result askai stores for up to an
+                            hour; timer sets a timer; wait waits for
+                            jobs and timers (tools.jobs.clients)
 
 Test aids ("testing"):
       --test-man-recheck SECONDS

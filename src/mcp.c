@@ -5074,8 +5074,8 @@ mcp_slot_background (struct mcp_slot    *slot,
 		return;
 	}
 	if (a->n_jobs == JOBS_MAX) {
-		mcp_slot_result(slot, CSTR_VIEW("You have started 8 jobs, the most a task may."),
-		                true);
+		mcp_slot_result(slot, CSTR_VIEW("You have started 8 jobs, the most an ask call "
+		                                "may."), true);
 		return;
 	}
 	struct mcp_slot *job = &a->jobs[a->n_jobs];
@@ -5097,9 +5097,9 @@ mcp_slot_background (struct mcp_slot    *slot,
 	mcp_slot_start(job, job->args);
 }
 
-/* Writes the jobs of the turns into the answer of the jobs call in
- * @p slot: each with its tool, its arguments and where it stands. Returns
- * 0, or ENOMEM.
+/* Writes the jobs and the timers of the turns into the answer of the jobs
+ * call in @p slot: each job with its tool, its arguments and where it
+ * stands, then each timer that is set. Returns 0, or ENOMEM.
  */
 static int
 mcp_slot_turn_list (struct mcp_slot *slot)
@@ -5111,11 +5111,10 @@ mcp_slot_turn_list (struct mcp_slot *slot)
 		[SLOT_DONE | SLOT_CANCELLED] = "cancelled",
 	};
 	struct mcp_agenda const *a = slot->req->agenda;
-	uint32_t n = a ? a->n_jobs : 0;
 	struct dstr *d = &slot->answer;
-	if (!n)
-		return CAT(d, "You have started no jobs.") ? 0 : ENOMEM;
-	for (uint32_t k = 0; k < n; ++k) {
+	if (!a)
+		return cstr_view_cat(CSTR_VIEW("You have no jobs and no timers."), d);
+	for (uint32_t k = 0; k < a->n_jobs; ++k) {
 		struct mcp_slot const *job = &a->jobs[k];
 		struct cstr_view const args = jb_wire(job->args);
 		size_t const shown = util_clip(args.data, args.len, JOB_ARGS);
@@ -5131,7 +5130,9 @@ mcp_slot_turn_list (struct mcp_slot *slot)
 		if (!ok)
 			return ENOMEM;
 	}
-	return 0;
+	int e = agenda_timer_lines(d, a->timers, array_size(a->timers), slot->req->mcp->loop->now);
+	return e || dstr_len(d) ? e
+	                        : cstr_view_cat(CSTR_VIEW("You have no jobs and no timers."), d);
 }
 
 /* Returns the job of the turns that the argument job of @p args names, for
@@ -5249,8 +5250,9 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 	              mcp_slot_tool(slot)->kind->flags & KF_AGENDA ? TOOL_MAX : slot->tool);
 }
 
-/* Cancels the job or the timer of the call's owner that @p args names,
- * for a client's call of jobs in @p slot.
+/* Cancels the job or the timer that @p args names for the jobs call in
+ * @p slot: one of the turns for a turn's call, one of the call's owner
+ * for a client's call.
  */
 static void
 mcp_slot_jobs_cancel (struct mcp_slot    *slot,
@@ -5262,27 +5264,31 @@ mcp_slot_jobs_cancel (struct mcp_slot    *slot,
 		                                "what to cancel."), true);
 		return;
 	}
+	bool const own = slot->role == ROLE_OWN;
 	if (!timer) {
-		mcp_slot_client_cancel(slot, args);
+		(own ? mcp_slot_client_cancel : mcp_slot_turn_cancel)(slot, args);
 		return;
 	}
 	struct mcp_req *req = slot->req;
 	uint32_t const n = (uint32_t)jb_count(timer, UINT32_MAX);
-	int const e = n ? ledger_timer_cancel(req->mcp->st->ledger, req->owner, n) : EINVAL;
+	int const e = !n ? EINVAL
+	            : own ? ledger_timer_cancel(req->mcp->st->ledger, req->owner, n)
+	            : !req->agenda ? ENOENT
+	            : ledger_timer_drop(req->agenda->timers, n, req->mcp->loop->now);
 	char text[96];
 	struct cstr_view const said =
 		e == EINVAL ? CSTR_VIEW("The timer argument must be the number of a timer of yours.")
 		: !e ? util_format_view(text, sizeof text, "Cancelled timer %" PRIu32 ".", n)
-		: e == EALREADY ? util_format_view(text, sizeof text, "Timer %" PRIu32 " has fired, "
-		                                   "and a call of wait reports it.", n)
+		: e == EALREADY ? util_format_view(text, sizeof text, "Timer %" PRIu32 " has already "
+		                                   "fired.", n)
 		: util_format_view(text, sizeof text, "You have no timer %" PRIu32 " set.", n);
 	mcp_slot_result(slot, said, e != 0);
 }
 
 /* The jobs tool's call in @p slot: by the argument action of @p args, list
  * the jobs and the timers, give the result of a job, or cancel a job or a
- * timer. A turn's call reads the jobs of the turns, and a client's call
- * the records and the timers of the call's owner in the ledger.
+ * timer. A turn's call reads the jobs and the timers of the turns, and a
+ * client's call those of the call's owner in the ledger.
  */
 static void
 mcp_slot_jobs (struct mcp_slot    *slot,
@@ -5298,7 +5304,7 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 		(own ? mcp_slot_client_result : mcp_slot_turn_result)(slot, args);
 		return;
 	case ACTION_CANCEL:
-		(own ? mcp_slot_jobs_cancel : mcp_slot_turn_cancel)(slot, args);
+		mcp_slot_jobs_cancel(slot, args);
 		return;
 	default:
 		mcp_slot_result(slot, bad_action, true);
@@ -7949,12 +7955,10 @@ mcp_background_definition (void const *service)
 	(void)service;
 	static_assert(JOBS_MAX == 8, "update the description");
 	return schema_tool("background",
-		"Start a call of another tool as a job in the background, and go on "
-		"at once: askai answers with the job's number, and tells you when it "
-		"finishes: with a later tool result, by ending a wait, or in a "
-		"message after your answer. Then read its output with jobs. Use it "
-		"for calls that take long, while you do other work; at most 8 jobs "
-		"a task.",
+		"Start a call of another tool as a job, and go on at once. askai "
+		"answers with the job's number, and tells you when the job ends: with "
+		"a later tool result, by ending a wait, or in a message after your "
+		"answer. Read its result with jobs. At most 8 jobs an ask call.",
 		jb_object(
 			"tool", schema_property("string", "The name of the tool to call, "
 			                        "such as git or man."),
@@ -7970,13 +7974,15 @@ mcp_jobs_definition (void const *service)
 {
 	(void)service;
 	return schema_tool("jobs",
-		"The jobs you started with background: list them, read the output "
-		"of one that has finished, or cancel one that runs.",
+		"List your jobs and timers, read the output of a job that has ended, "
+		"or cancel a job or a timer. Jobs and timers end with the ask call.",
 		jb_object(
-			"action", schema_enum(schema_names(actions, ACTIONS),
-				"list the jobs, read a job's result, or cancel it."),
+			"action", schema_enum(schema_names(actions, ACTIONS), nullptr),
 			"job", schema_property("integer", "For result and cancel: the "
 			                       "job's number."),
+			"timer", schema_property("integer", "The number of the timer to cancel, "
+			                         "in place of job. Timers have numbers of "
+			                         "their own."),
 			"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 			nullptr),
 		CSTR_VIEW("action"));
@@ -7989,12 +7995,12 @@ mcp_wait_definition (void const *service)
 	(void)service;
 	static_assert(WAIT_MAX == 600, "update the description");
 	return schema_tool("wait",
-		"Wait until a job finishes, of those you name or any, or a timer "
-		"fires, or the seconds are up, whichever comes first; askai then "
-		"says what happened. Call it rather than jobs again and again.",
+		"Wait until a job ends, of those you name or any, or a timer fires, "
+		"or the seconds pass, whichever comes first. The result lists what "
+		"happened. Call it instead of calling jobs again and again.",
 		jb_object(
-			"seconds", schema_property("integer", "The longest to wait: 1 to "
-			                           "600."),
+			"seconds", schema_property("integer", "The longest time to wait, "
+			                           "from 1 to 600 seconds."),
 			"jobs", schema_array(schema_property("integer", nullptr), 0,
 			                     "The jobs to wait for; any if none."),
 			nullptr),
@@ -8010,12 +8016,13 @@ mcp_timer_definition (void const *service)
 	return schema_tool("timer",
 		"Set a timer, and go on at once: when it fires, askai tells you, "
 		"with a later tool result, by ending a wait, or in a message after "
-		"your answer.",
+		"your answer. jobs lists and cancels timers.",
 		jb_object(
-			"seconds", schema_property("integer", "When it fires: in 1 to 3600 "
-			                           "seconds."),
-			"note", schema_property("string", "What it is for, which askai "
-			                        "says as it fires; at most 200 bytes."),
+			"seconds", schema_property("integer", "The seconds until the timer "
+			                           "fires, from 1 to 3600."),
+			"note", schema_property("string", "What the timer is for, at most "
+			                        "200 bytes; askai repeats it when the timer "
+			                        "fires."),
 			nullptr),
 		CSTR_VIEW("seconds"));
 }
@@ -8242,7 +8249,7 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	                        .start = mcp_slot_jobs,
 	                        .flags = TOOL_PAGED | KF_SERIAL | KF_AGENDA },
 	                      .upstream = mcp_jobs_definition,
-	                      N("jobs"), LEND_DETACH, LENT_JOBS, .option = "--client-jobs" },
+	                      N("jobs"), LEND_WITH, LENT_JOBS, .option = "--client-jobs" },
 	[KIND_WAIT]       = { { .definition = mcp_wait_client_definition,
 	                        .start = mcp_slot_wait, .step = agenda_wait_step,
 	                        .drop = agenda_wait_drop,
