@@ -712,6 +712,16 @@ ai_chat_calls (struct ai_sink const *sink,
 	return e;
 }
 
+/* The message of @p error, an upstream's error member: its message, or
+ * itself if it is a string; nullptr if neither is a string.
+ */
+static char const *
+ai_error_text (struct json_object *error)
+{
+	char const *msg = jb_view(jb_get(error, "message")).data;
+	return msg ? msg : jb_view(error).data;
+}
+
 /* The message of an error event, or of one that carries an error. */
 static char const *
 ai_event_error (struct json_object *ev)
@@ -720,18 +730,12 @@ ai_event_error (struct json_object *ev)
 	struct json_object *error = jb_get(ev, "error");
 	if (!error && jb_is(type, "response.failed"))
 		error = jb_get(jb_get(ev, "response"), "error");
+	char const *msg = ai_error_text(error);
 	/* An event of Gemini's Interactions has its type in event_type. */
-	bool erred = error || jb_is(type, "error") ||
-	             jb_is(jb_get(ev, "event_type"), "error");
-	struct json_object *const words[] = {
-		jb_get(error, "message"), error, erred ? jb_get(ev, "message") : nullptr
-	};
-	for (size_t i = 0; i < array_size(words); ++i) {
-		char const *msg = jb_view(words[i]).data;
-		if (msg)
-			return msg;
-	}
-	return erred ? "an error event" : nullptr;
+	if (msg || !(error || jb_is(type, "error") || jb_is(jb_get(ev, "event_type"), "error")))
+		return msg;
+	msg = jb_view(jb_get(ev, "message")).data;
+	return msg ? msg : "an error event";
 }
 
 bool
@@ -1529,34 +1533,22 @@ ai_describe_error (struct dstr        *text,
                    struct json_object *root,
                    struct cstr_view    body)
 {
-	struct json_object *error = jb_get(root, "error");
-	struct json_object *const words[] = {
-		jb_get(error, "message"), error, jb_get(root, "message"),
-		jb_get(root, "detail")
-	};
 	if (!dstr_printf(text, "Upstream error (HTTP %ld): ", status))
 		return ENOMEM;
-	for (size_t i = 0; i < array_size(words); ++i) {
-		char const *msg = jb_view(words[i]).data;
-		if (msg)
-			return dstr_cat(text, msg) ? 0 : ENOMEM;
-	}
 	struct json_object *event = root ? nullptr : ai_error_event(body);
-	char const *said = ai_event_error(event);
-	if (said) {
-		bool ok = dstr_cat(text, said);
-		json_object_put(event);
-		return ok ? 0 : ENOMEM;
-	}
-	json_object_put(event);
-
-	/* Quote the start of an unparsable body, as far as it is UTF-8 text. */
-	size_t cut = jb_utf8(body.data, body.len < 512 ? body.len : 512);
+	char const *said = event ? ai_event_error(event) : ai_error_text(jb_get(root, "error"));
+	said = said ? said : jb_view(jb_get(root, "message")).data;
+	said = said ? said : jb_view(jb_get(root, "detail")).data;
+	/* Else quote the start of an unparsable body, as far as it is UTF-8
+	 * text. */
+	size_t cut = said ? 0 : jb_utf8(body.data, body.len < 512 ? body.len : 512);
 #define QUOTE(s) dstr_cat_n(text, s, sizeof s - 1)
-	bool ok = cut ? dstr_cat_n(text, body.data, cut)
+	bool ok = said ? dstr_cat(text, said)
+	        : cut ? dstr_cat_n(text, body.data, cut)
 	        : body.len ? QUOTE("a response that is not text")
-	              : QUOTE("empty response");
+	        : QUOTE("empty response");
 #undef QUOTE
+	json_object_put(event);
 	return ok ? 0 : ENOMEM;
 }
 
