@@ -78,7 +78,7 @@ buf_stash_take (struct buf_stash *stash,
 		hist_add(&stash->metrics.misses, 1);
 		size_t held = stash->held + *cap;
 		size_t room = 2 * (held > stash->peak ? held : stash->peak) - held;
-		for (unsigned d = BUF_CLASSES; d-- && hist_get(&stash->metrics.retained) > room; )
+		for (unsigned d = BUF_CLASSES; d--; )
 			while (stash->kept[d].n && hist_get(&stash->metrics.retained) > room)
 				buf_stash_drop(stash, d);
 		if (!(data = malloc(*cap)))
