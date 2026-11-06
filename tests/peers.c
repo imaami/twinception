@@ -17,8 +17,9 @@
  * the further gids. A test can change the file between connections.
  *
  * With PEERS_SUBUID, PEERS_SUBGID, PEERS_OVERFLOWUID or PEERS_OVERFLOWGID
- * set, fopen() of /etc/subuid, /etc/subgid, /proc/sys/kernel/overflowuid or
- * /proc/sys/kernel/overflowgid opens the file that the variable names.
+ * set, fopen() or open() of /etc/subuid, /etc/subgid,
+ * /proc/sys/kernel/overflowuid or /proc/sys/kernel/overflowgid opens the
+ * file that the variable names.
  *
  * With PEERS_DUMPABLE set, prctl(PR_SET_DUMPABLE) does nothing and returns
  * 0, so that a test can list /proc/PID/fd of askai.
@@ -222,3 +223,45 @@ fopen64 (char const *path,
 	}
 	return real(peers_path(path), mode);
 }
+
+/* The mode argument of open() and open64(), which comes only with O_CREAT
+ * or O_TMPFILE.
+ */
+#define PEERS_MODE(ap, flags) \
+        ((flags) & O_CREAT || ((flags) & O_TMPFILE) == O_TMPFILE ? va_arg(ap, mode_t) : 0)
+
+int
+open (char const *path,
+      int         flags,
+      ...)
+{
+	static int (*real) (char const *, int, ...);
+	if (!real) {
+		void *sym = peers_next("open");
+		memcpy(&real, &sym, sizeof real);
+	}
+	va_list ap;
+	va_start(ap, flags);
+	mode_t mode = PEERS_MODE(ap, flags);
+	va_end(ap);
+	return real(peers_path(path), flags, mode);
+}
+
+int
+open64 (char const *path,
+        int         flags,
+        ...)
+{
+	static int (*real) (char const *, int, ...);
+	if (!real) {
+		void *sym = peers_next("open64");
+		memcpy(&real, &sym, sizeof real);
+	}
+	va_list ap;
+	va_start(ap, flags);
+	mode_t mode = PEERS_MODE(ap, flags);
+	va_end(ap);
+	return real(peers_path(path), flags, mode);
+}
+
+#undef PEERS_MODE
