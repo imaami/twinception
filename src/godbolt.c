@@ -2313,6 +2313,8 @@ godbolt_facts (struct godbolt *call)
 			godbolt_putf(call, "%" PRIu64, p->pointer_bits);
 		else if (c->value)
 			godbolt_put(call, cstr_view(c->value));
+		else if (i == GODBOLT_PROBE_LIBC && !(call->args.flags & GODBOLT_WITH_HEADERS))
+			godbolt_put(call, CSTR_VIEW("unknown without headers"));
 		else
 			godbolt_put(call, CSTR_VIEW("unknown"));
 		for (uint32_t k = 0; k < c->n; ++k) {
@@ -3079,7 +3081,7 @@ static struct {
 		"\"true to include a few headers of the target too, such as limits.h and "
 		"features.h, and to output which of them the compiler has. The "
 		"compilation can then fail if a compiler on Compiler Explorer has no "
-		"headers for its target.\"},"
+		"headers for its target. Without headers, libc is unknown.\"},"
 		GODBOLT_DEF_OFFSET "},"
 		"\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",

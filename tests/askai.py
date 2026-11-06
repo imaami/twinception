@@ -14743,7 +14743,8 @@ CE_COMPILERS = {
 }
 
 # The macros in the output of the probe of godbolt_targets: those of an
-# x86_64 Linux GCC with glibc, and those of an x64 MSVC.
+# x86_64 Linux GCC with glibc, and those of an x64 MSVC. __GLIBC__ is in
+# the output only if the probe includes the target headers.
 CE_PROBE_GNU = {"__x86_64__": "1", "__linux__": "1", "__SIZEOF_INT__": "4",
                 "__SIZEOF_LONG__": "8", "__SIZEOF_POINTER__": "8",
                 "__CHAR_BIT__": "8", "__LP64__": "1", "__BYTE_ORDER__": "1234",
@@ -14929,6 +14930,8 @@ class MockCE:
         if source.startswith("#define GODBOLT_PROBE_HEADERS 1\n"):
             status = "included"
         macros = CE_PROBE_MSVC if cid == "cvc19" else CE_PROBE_GNU
+        if status != "included":
+            macros = {k: v for k, v in macros.items() if k != "__GLIBC__"}
         if cid == "longvalue":
             macros = CE_PROBE_GNU | {"__GNUC__": "1" * 257}
         return ["# 1 \"<source>\"", "GBPROBE_BEGIN_1"] + \
@@ -15387,11 +15390,11 @@ def check_godbolt(binary, up, godbolt):
                             "__SIZEOF_LONG__, __SIZEOF_POINTER__, __CHAR_BIT__)",
                             pointer_bits="64 (from __SIZEOF_POINTER__, __CHAR_BIT__)",
                             endianness="little (from __BYTE_ORDER__, "
-                            "__ORDER_LITTLE_ENDIAN__)", libc="glibc (from __GLIBC__)")
+                            "__ORDER_LITTLE_ENDIAN__)", libc="unknown without headers")
                 msvc = facts(CE_PROBE_MSVC, architecture="x86_64 (from _M_X64)",
                              os="windows (from _WIN64)", os_family="windows (from _WIN64)",
                              data_model="llp64 (from _WIN64)",
-                             pointer_bits="64 (from _WIN64)")
+                             pointer_bits="64 (from _WIN64)", libc="unknown without headers")
                 note = "The facts come from predefined macros. data_model describes " \
                     "only the sizes of int, long and pointers.\n"
                 sent = len(ce.bodies())
@@ -15413,8 +15416,9 @@ def check_godbolt(binary, up, godbolt):
                 text = ok(ai, "godbolt_targets", compilers=["cg142"], headers=True)
                 assert ce.bodies()[-1]["source"] == \
                     "#define GODBOLT_PROBE_HEADERS 1\n" + bodies[0]["source"]
-                assert gnu + "headers: limits.h included, features.h included, " \
-                    "TargetConditionals.h included, _mingw.h included\n" in text, text
+                assert gnu.replace("libc: unknown without headers", "libc: glibc (from "
+                                   "__GLIBC__)") + "headers: limits.h included, features.h " \
+                    "included, TargetConditionals.h included, _mingw.h included\n" in text, text
                 # A value of more than 256 bytes makes the probe output not
                 # valid.
                 records, _ = ce_records(ok(ai, "godbolt_targets", compilers=["longvalue"],

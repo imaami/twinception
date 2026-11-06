@@ -1350,6 +1350,8 @@ it. It has these tools:
   pointer, the byte order, the C library and the versions. The line of each
   fact lists the macros that the fact comes from. With `headers`, the probe
   also includes a few target headers, such as `limits.h` and `features.h`.
+  Without `headers`, the C library is `unknown without headers`, because
+  only a header of the library defines its macro, such as `__GLIBC__`.
   The probe and its parser come from godbolt-c, under the MIT license
   (`src/godbolt_probe.c`).
 
