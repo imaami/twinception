@@ -319,14 +319,26 @@ struct httpd {
 	uint64_t                 draining;    /* bool, widened over the padding */
 };
 
+/* What a listener is, and whether clients may wait on it. */
+enum httpd_listener_flag : uint32_t {
+	LISTENER_READY = 1u << 0,  /* clients may wait */
+	LISTENER_TLS   = 1u << 1,  /* clients shake hands (home->ctx) */
+};
+
 /* A socket home's door listens on. */
 struct httpd_listener {
 	struct loop_ref ref;
 	char const     *path;   /* a Unix socket's file, which goes as the
 	                           socket closes; nullptr: TCP */
 	int             fd;
-	uint16_t        ready;  /* bool: clients may wait */
-	uint16_t        tls;    /* bool: clients shake hands (home->ctx) */
+	uint32_t        flags;  /* enum httpd_listener_flag */
+};
+
+/* Whether home's door accepts clients, and whom. */
+enum httpd_home_flag : uint64_t {
+	HOME_OPEN   = 1u << 0,  /* accepting */
+	HOME_ANYONE = 1u << 1,  /* clients that show no token may call tools
+	                           from beyond loopback */
 };
 
 /* Home's door: the listeners, and the clients' addresses, connections and
@@ -340,7 +352,6 @@ struct httpd_home {
 	struct loop_timer       tick;       /* housekeeping */
 	struct loop            *loop;
 	struct httpd_hub       *hub;
-	struct httpd_client   **clients;    /* CLIENT_SLOTS hash chains */
 	_Atomic uint64_t const *calls;      /* jobs in flight */
 	struct httpd_listener  *listeners;
 	struct ssl_ctx_st      *ctx;        /* a reference: what TLS listeners'
@@ -371,12 +382,10 @@ struct httpd_home {
 	uint32_t                last[3];    /* The uid of the last client that
 	                                       policy_admit_uid() refused, for
 	                                       each answer. */
-	uint32_t                open;       /* bool: accepting */
-	uint32_t                anyone;     /* bool: clients that show no token
-	                                       may call tools from beyond
-	                                       loopback */
 	int                     spare_fd;   /* given up to accept a client;
 	                                       -1 while given up */
+	uint64_t                flags;      /* enum httpd_home_flag */
+	struct httpd_client    *clients[];  /* CLIENT_SLOTS hash chains */
 };
 
 /* Home's door, for the connections given back. */
@@ -2278,7 +2287,7 @@ httpd_conn_back (struct loop *loop,
 	--conn->lane->conns;
 	--home->conns;
 	shelf_put(&home->spare, &conn->hook);
-	if (home->spare_fd < 0 && home->open && !httpd_home_spare(home))
+	if (home->spare_fd < 0 && home->flags & HOME_OPEN && !httpd_home_spare(home))
 		httpd_home_watch(home, EPOLLIN);
 }
 
@@ -2739,7 +2748,7 @@ httpd_home_take (struct httpd_home             *home,
 		static char const busy[] = "HTTP/1.1 503 Service Unavailable\r\n"
 		                           "Retry-After: 1\r\nConnection: close\r\n"
 		                           "Content-Length: 0\r\n\r\n";
-		if (!l->tls)
+		if (!(l->flags & LISTENER_TLS))
 			(void)send(fd, busy, sizeof busy - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
 		close(fd);
 		++home->capped;
@@ -2750,7 +2759,7 @@ httpd_home_take (struct httpd_home             *home,
 		++home->refused;
 		return;
 	}
-	httpd_home_place(home, fd, addr, peer, user, l->tls ? home->ctx : nullptr);
+	httpd_home_place(home, fd, addr, peer, user, l->flags & LISTENER_TLS ? home->ctx : nullptr);
 }
 
 /* Accept a client from @p l, and take it as httpd_home_take() does: 0, or
@@ -2820,7 +2829,7 @@ httpd_home_accept_step (struct loop      *loop,
 	for (unsigned i = 0; loop_room(loop, LOOP_ACCEPTS) && (!i || loop_clock() < end);
 	     ++i) {
 		size_t k = 0;
-		while (k < n && !home->listeners[(home->turn + k) % n].ready)
+		while (k < n && !(home->listeners[(home->turn + k) % n].flags & LISTENER_READY))
 			++k;
 		if (k == n)
 			return;
@@ -2837,7 +2846,7 @@ httpd_home_accept_step (struct loop      *loop,
 			e = httpd_home_shed(home, l);
 		if (!e || httpd_accept_next(e))
 			continue;
-		l->ready = false;
+		l->flags &= ~LISTENER_READY;
 		if (e == EAGAIN || e == EWOULDBLOCK)
 			continue;
 		/* Out of memory or descriptors: retry on the next tick. */
@@ -2855,7 +2864,7 @@ httpd_listener_event (struct loop     *loop,
 {
 	(void)events;
 	struct httpd_home *home = ref->owner;
-	container_of(ref, struct httpd_listener, ref)->ready = true;
+	container_of(ref, struct httpd_listener, ref)->flags |= LISTENER_READY;
 	loop_ready(loop, &home->accept);
 }
 
@@ -2884,7 +2893,7 @@ httpd_home_tick (struct loop       *loop,
 	memset(home->denied, 0, sizeof home->denied);
 	if (home->spare_fd < 0)
 		(void)httpd_home_spare(home);
-	if (home->open)
+	if (home->flags & HOME_OPEN)
 		httpd_home_watch(home, EPOLLIN);
 	(void)loop_timer_set(loop, timer, loop->now + TICK_S * NS);
 }
@@ -3049,7 +3058,7 @@ httpd_listener_open (struct httpd_listener *l,
 		LOG(LOG_ERROR, "invalid listen address: %s: %s", addr, strerror(e));
 		return e;
 	}
-	l->tls = a.tls;
+	l->flags = a.tls ? LISTENER_TLS : 0;
 	if (a.path.data)
 		return httpd_listener_uds(l, a.path);
 
@@ -3085,7 +3094,7 @@ httpd_home_listen (struct httpd_home *home,
 	int e = httpd_listener_open(l, addr);
 	if (e)
 		return e;
-	if (l->tls && !home->ctx) {
+	if (l->flags & LISTENER_TLS && !home->ctx) {
 		LOG(LOG_ERROR, "cannot listen on %s: no TLS certificate", addr);
 		return EINVAL;
 	}
@@ -3137,7 +3146,7 @@ httpd_listener_announce (struct httpd_listener const *l,
 		return;
 	LOG(LOG_INFO, ss.ss_family == AF_INET6 ? "MCP endpoint http%s://[%s]:%s/mcp"
 	                                       : "MCP endpoint http%s://%s:%s/mcp",
-	    l->tls ? "s" : "", addr, port);
+	    l->flags & LISTENER_TLS ? "s" : "", addr, port);
 	if (anyone && !httpd_addr_loopback(&ss))
 		LOG(LOG_WARN, "warning: listening beyond loopback, and clients without "
 		    "a token may call tools");
@@ -3195,21 +3204,18 @@ httpd_home_create (struct loop            *loop,
                    _Atomic uint64_t const *calls,
                    int                    *e)
 {
-	struct httpd_home *home = malloc(sizeof *home);
-	struct httpd_client **clients = calloc(CLIENT_SLOTS, sizeof *clients);
-	if (!home || !clients) {
-		free(clients);
-		free(home);
-		LOG(LOG_ERROR, "cannot start the server: %s", strerror(ENOMEM));
+	struct httpd_home *home = calloc(1, sizeof *home + CLIENT_SLOTS * sizeof *home->clients);
+	if (!home) {
 		*e = ENOMEM;
-		return nullptr;
+		goto fail;
 	}
+	/* The literal leaves the hash chains, which calloc() zeroed, as they
+	 * are. */
 	*home = (struct httpd_home){
 		.accept.fn = httpd_home_accept_step,
 		.tick.fn = httpd_home_tick,
 		.loop = loop,
 		.hub = hub,
-		.clients = clients,
 		.calls = calls,
 		.ctx = cfg->tls ? tls_ctx_get(cfg->tls) : nullptr,
 		.policy = policy_get(cfg->policy),
@@ -3219,8 +3225,9 @@ httpd_home_create (struct loop            *loop,
 		.spare_fd = -1
 	};
 	struct policy_grant g;
-	home->anyone = policy_grant(cfg->policy, (struct cstr_view){}, POLICY_REMOTE, nullptr,
-	                            &g) == POLICY_GRANTED && g.tools;
+	if (policy_grant(cfg->policy, (struct cstr_view){}, POLICY_REMOTE, nullptr, &g) ==
+	    POLICY_GRANTED && g.tools)
+		home->flags = HOME_ANYONE;
 	list_init(&home->spare.list);
 	list_init(&home->gone.list);
 	httpd_home_budget(home);
@@ -3230,6 +3237,7 @@ httpd_home_create (struct loop            *loop,
 	*e = httpd_home_start(home, cfg->listen);
 	if (!*e)
 		return home;
+fail:
 	if (*e != EINVAL && *e != EADDRINUSE)
 		LOG(LOG_ERROR, "cannot start the server: %s", strerror(*e));
 	httpd_home_destroy(&home);
@@ -3246,8 +3254,7 @@ httpd_home_destroy (struct httpd_home **p_home)
 	httpd_home_drain(home);
 	loop_timer_stop(home->loop, &home->tick);
 	util_close(&home->spare_fd);
-	while (httpd_home_relieve(home, BUF_CRITICAL, SIZE_MAX))
-		;
+	(void)httpd_home_relieve(home, BUF_CRITICAL, SIZE_MAX);
 	/* Connections on their way to a loop, or back, count their client
 	 * addresses still; the loops are done with them. */
 	for (size_t i = 0; i < CLIENT_SLOTS; ++i)
@@ -3255,7 +3262,6 @@ httpd_home_destroy (struct httpd_home **p_home)
 			next = c->next;
 			free(c);
 		}
-	free(home->clients);
 	free(home->listeners);
 	tls_ctx_put(home->ctx);
 	policy_put(home->policy);
@@ -3270,11 +3276,11 @@ httpd_home_open (struct httpd_home *home)
 	if (!home->n_listeners || home->listeners->fd < 0)
 		return;
 	httpd_home_watch(home, EPOLLIN);
-	home->open = true;
+	home->flags |= HOME_OPEN;
 
 	/* The endpoints say the server is ready. */
 	for (size_t i = 0; i < home->n_listeners; ++i)
-		httpd_listener_announce(&home->listeners[i], home->anyone);
+		httpd_listener_announce(&home->listeners[i], home->flags & HOME_ANYONE);
 }
 
 int
@@ -3282,7 +3288,7 @@ httpd_home_policy (struct httpd_home *home,
                    struct policy     *policy)
 {
 	/* Once the door is open, every client loop runs. */
-	if (!home->open)
+	if (!(home->flags & HOME_OPEN))
 		return EAGAIN;
 	/* Home checks the uid of each new client on a Unix socket with this
 	 * policy (policy_admit_uid()). */
@@ -3315,7 +3321,7 @@ httpd_home_tls (struct httpd_home *home,
 void
 httpd_home_drain (struct httpd_home *home)
 {
-	home->open = false;
+	home->flags &= ~HOME_OPEN;
 	loop_unready(&home->accept);
 	for (size_t i = 0; i < home->n_listeners; ++i) {
 		struct httpd_listener *l = &home->listeners[i];
