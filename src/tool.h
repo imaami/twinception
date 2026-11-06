@@ -66,7 +66,10 @@ enum tool_out : uint32_t {
  */
 typedef struct json_object *tool_definition_fn (void const *service);
 
-/** @p args: nullptr or an object, valid until the call ends or parks. */
+/** @p args: nullptr or an object, valid until the call ends or parks. A
+ *  reference to it or to a container in it does not keep the members of
+ *  the container after a park (jb_reaper_add()), so a call copies them.
+ */
 typedef void tool_start_fn (struct mcp_slot    *slot,
                             struct json_object *args);
 

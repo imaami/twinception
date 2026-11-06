@@ -1005,10 +1005,15 @@ git_call_create (struct json_object *args,
 		return nullptr;
 	}
 	*call = (struct git_call){
-		.args = json_object_get(args),
 		.text = DSTR_INIT,
 		.deadline = deadline,
 	};
+	/* The call reads its arguments after it parks (tool.h). */
+	if (args && json_object_deep_copy(args, &call->args, nullptr)) {
+		free(call);
+		*e = ENOMEM;
+		return nullptr;
+	}
 	*e = 0;
 	return call;
 }

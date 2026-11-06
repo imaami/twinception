@@ -9747,7 +9747,7 @@ def check_git_read(binary, up):
     that says where to read on. The check also covers empty, binary, missing
     and cut files, lines past the end, a grep match used as the revision,
     the commit pinned across pages, git's warnings kept out of the lines,
-    and the work budget of each step."""
+    the work budget of each step, and a message with many values."""
     git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
     with tempfile.TemporaryDirectory() as d:
         repo = f"{d}/proj"
@@ -9796,6 +9796,13 @@ def check_git_read(binary, up):
             end = "[Line 100 is the end of the file.]"
             assert read(ai, "HEAD:lines.txt") == lines(1, 100) + end
             assert read(ai, "HEAD:lines.txt", line=100, count=5) == lines(100, 100) + end
+            # The request frees a message of many values a few at a time after
+            # the call parks, and the call reads its arguments after that.
+            status, _, body = ai.rpc("tools/call", {
+                "name": "git", "_meta": {"pad": list(range(400))}, "arguments": {
+                    "repo": "proj", "command": "read", "revisions": ["HEAD:lines.txt"],
+                    "line": 100}})
+            assert text_of(body["result"]) == lines(100, 100) + end, (status, body)
             assert read(ai, "HEAD:lines.txt", True, line=101) == \
                 "Line 101 is past the end of the file: it has 100 lines. Give a line " \
                 "from 1 to 100."
