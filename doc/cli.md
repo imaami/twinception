@@ -393,11 +393,12 @@ the existing daemon loop unchanged, with libcurl socket/timer callbacks.
 Blocking file and Git work uses the existing blocker pool; operations on one
 history instance remain serialized. There is no periodic UI tick.
 
-Mailboxes belong to explicit owner objects. Messages transfer ownership on
-successful posting, with separate capacity for control traffic. Bounded
-network credits pause streaming when the UI cannot consume output. No CLI
-mailbox or owner lookup uses file-scope or thread-local state; Readline's
-single callback bridge remains the exception for editor callbacks.
+The threads post messages to the inboxes of each other's loops, which
+belong to explicit owner objects. A message transfers ownership when it is
+posted. Bounded network credits pause streaming when the UI cannot consume
+output. No CLI inbox or owner lookup uses file-scope or thread-local state;
+Readline's single callback bridge remains the exception for editor
+callbacks.
 
 Shutdown keeps completion destinations alive until producers finish. If a
 system call remains stuck past the termination deadline, the client restores

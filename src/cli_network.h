@@ -14,7 +14,6 @@
 #define CLI_VERSION "2025-11-25"
 
 struct cli_loop;
-struct cli_mailbox;
 struct cli_network;
 
 /** Runs on the UI thread. Bytes are borrowed until the callback returns.
@@ -37,20 +36,24 @@ typedef void cli_network_done_fn (void                            *context,
                                   int                              error,
                                   struct cli_network_result const *result);
 
-/** The UI loop and its mailbox outlive the network and its queued replies. */
+/** The network posts its replies to @p ui, which outlives it. */
 extern struct cli_network *
-cli_network_create (struct cli_loop    *ui,
-                    struct cli_mailbox *mailbox,
-                    int                *e);
+cli_network_create (struct cli_loop *ui,
+                    int             *e);
 
 extern void
 cli_network_destroy (struct cli_network **network);
 
-/** Stop admission and wake the owner. Keep its mailbox alive until done. */
+/** Stop admission and the network thread, which ends its calls and then
+ * wakes the UI loop.
+ */
 extern void
 cli_network_stop (struct cli_network *network);
 
-/** UI-thread query. Destroy only after this becomes true. */
+/** UI-thread query: true once the thread has ended and the UI loop has
+ * handled every message of the network. Destroy only after this becomes
+ * true.
+ */
 extern bool
 cli_network_done (struct cli_network const *network);
 

@@ -93,15 +93,15 @@ override AUTOCOMPLETE_OBJECTS := $Otests/autocomplete_fixture.c.o \
 override AUTOCOMPLETE_WRAPS := -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
 
 override CLI_CONSOLE_OBJECTS := $Otests/src/cli_console.c.o $Otests/src/buf.c.o \
-                                $Otests/src/cli_loop.c.o $Otests/src/cli_mailbox.c.o \
+                                $Otests/src/cli_loop.c.o \
                                 $Otests/src/cli_render.c.o $Otests/src/cli_scrollback.c.o $Otests/src/cli_style.c.o $Otests/src/cli_io.c.o \
                                 $Otests/src/blocker.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
 
 $Otests/cli_io: $Otests/cli_io.c.o $Otests/src/cli_io.c.o $Otests/src/cli_loop.c.o \
-                $Otests/src/cli_mailbox.c.o $Otests/src/blocker.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
+                $Otests/src/blocker.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
 $Otests/cli_io:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
 
-$Otests/cli_loop: $Otests/cli_loop.c.o $Otests/src/cli_loop.c.o $Otests/src/cli_mailbox.c.o \
+$Otests/cli_loop: $Otests/cli_loop.c.o $Otests/src/cli_loop.c.o \
                   $Otests/src/loop.c.o $Otests/src/log.c.o
 $Otests/cli_loop:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
 

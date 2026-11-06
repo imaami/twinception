@@ -1,90 +1,30 @@
-/** @file The UI loop of askai-cli and the mailbox: ownership, ordering and
- *  wakeup tests.
+/** @file Tests of the UI loop of askai-cli: errors, turns, steps and watched
+ *  descriptors.
  */
 #include <assert.h>
 #include <errno.h>
-#include <pthread.h>
-#include <sched.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
-#include <unistd.h>
 
 #include "cli_loop.h"
-#include "cli_mailbox.h"
 #include "clk.h"
 #include "compat.h"
 #include "loop.h"
 
 struct cli_loop_test {
 	struct cli_loop loop;
-	struct cli_mailbox mailbox;
 	struct loop_step step;
-	size_t received[4];
 	size_t turns;
 	size_t steps;
 	size_t released;
-};
-
-struct cli_loop_test_msg {
-	struct cli_mailbox_msg msg;
-	size_t producer;
-	size_t sequence;
-};
-
-struct cli_loop_test_producer {
-	struct cli_mailbox *mailbox;
-	size_t number;
 };
 
 struct cli_loop_test_ref {
 	struct loop_ref ref;
 	struct cli_loop_test *test;
 };
-
-static void
-cli_loop_test_receive (struct cli_mailbox     *mailbox,
-                      struct cli_mailbox_msg *msg)
-{
-	struct cli_loop_test *test = container_of(mailbox, struct cli_loop_test, mailbox);
-	struct cli_loop_test_msg *message = container_of(msg, struct cli_loop_test_msg, msg);
-	assert(message->sequence == test->received[message->producer]++);
-	free(message);
-	message = nullptr;
-}
-
-static struct cli_loop_test_msg *
-cli_loop_test_message (size_t producer,
-                      size_t sequence)
-{
-	struct cli_loop_test_msg *message = malloc(sizeof(*message));
-	assert(message);
-	*message = (struct cli_loop_test_msg){
-		.msg.fn = cli_loop_test_receive,
-		.msg.bytes = sizeof(*message),
-		.producer = producer,
-		.sequence = sequence,
-	};
-	return message;
-}
-
-static void *
-cli_loop_test_produce (void *arg)
-{
-	struct cli_loop_test_producer *producer = arg;
-	for (size_t sequence = 0; sequence < 2000; ++sequence) {
-		struct cli_loop_test_msg *message = cli_loop_test_message(producer->number, sequence);
-		int e;
-		do {
-			e = cli_mailbox_post(producer->mailbox, &message->msg, false);
-			if (e == EAGAIN)
-				sched_yield();
-		} while (e == EAGAIN);
-		assert(!e);
-	}
-	return nullptr;
-}
 
 static void
 cli_loop_test_step (struct loop      *loop,
@@ -168,59 +108,6 @@ cli_loop_test_turns (struct cli_loop_test *test)
 	assert(test->released == 4);
 }
 
-static void
-cli_loop_test_limits (struct cli_loop_test *test)
-{
-	struct cli_mailbox_limits limits = {{
-		{.messages = 1, .bytes = sizeof(struct cli_loop_test_msg)},
-		{.messages = 1, .bytes = sizeof(struct cli_loop_test_msg)},
-	}};
-	assert(!cli_mailbox_init(&test->mailbox, &test->loop.loop, limits));
-	struct cli_loop_test_msg *first = cli_loop_test_message(0, 0);
-	struct cli_loop_test_msg *next = cli_loop_test_message(0, 1);
-	assert(!cli_mailbox_post(&test->mailbox, &first->msg, false));
-	assert(cli_mailbox_post(&test->mailbox, &next->msg, false) == EAGAIN);
-	assert(!cli_mailbox_post(&test->mailbox, &next->msg, true));
-	assert(!cli_loop_turn(&test->loop, UINT64_MAX));
-	assert(test->received[0] == 2);
-	assert(!cli_mailbox_close(&test->mailbox));
-	next = cli_loop_test_message(0, 2);
-	assert(cli_mailbox_post(&test->mailbox, &next->msg, true) == ESHUTDOWN);
-	free(next);
-	next = nullptr;
-	cli_mailbox_fini(&test->mailbox);
-	test->received[0] = 0;
-}
-
-static void
-cli_loop_test_threads (struct cli_loop_test *test)
-{
-	struct cli_mailbox_limits limits = {{
-		{.messages = 64, .bytes = 64 * sizeof(struct cli_loop_test_msg)},
-		{.messages = 1, .bytes = sizeof(struct cli_loop_test_msg)},
-	}};
-	assert(!cli_mailbox_init(&test->mailbox, &test->loop.loop, limits));
-	pthread_t threads[4];
-	struct cli_loop_test_producer producers[4];
-	for (size_t i = 0; i < array_size(threads); ++i) {
-		producers[i] = (struct cli_loop_test_producer){ &test->mailbox, i };
-		assert(!pthread_create(&threads[i], nullptr, cli_loop_test_produce, &producers[i]));
-	}
-	uint64_t deadline = loop_clock() + 10 * NS;
-	for (;;) {
-		size_t received = 0;
-		for (size_t i = 0; i < array_size(test->received); ++i)
-			received += test->received[i];
-		if (received == 8000)
-			break;
-		assert(loop_clock() < deadline);
-		assert(!cli_loop_turn(&test->loop, deadline));
-	}
-	for (size_t i = 0; i < array_size(threads); ++i)
-		assert(!pthread_join(threads[i], nullptr));
-	cli_mailbox_fini(&test->mailbox);
-}
-
 int
 main (void)
 {
@@ -228,8 +115,6 @@ main (void)
 	assert(!cli_loop_init(&test.loop));
 	cli_loop_test_errors(&test);
 	cli_loop_test_turns(&test);
-	cli_loop_test_limits(&test);
-	cli_loop_test_threads(&test);
 	cli_loop_fini(&test.loop);
 	return 0;
 }

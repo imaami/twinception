@@ -23,7 +23,6 @@
 #include "cli_console.h"
 #include "cli_io.h"
 #include "cli_loop.h"
-#include "cli_mailbox.h"
 #include "cli_network.h"
 #include "cli_signals.h"
 #include "cli_state.h"
@@ -242,7 +241,6 @@ cli_args (struct cli_options  *out,
 
 struct cli {
 	struct cli_loop           reactor;
-	struct cli_mailbox        mailbox;
 	struct cli_client         client;
 	struct cli_signals        signals;
 	struct cli_network       *network;
@@ -1234,7 +1232,6 @@ cli_run (struct cli_options const *options,
 	cli->options = options;
 	cli->tty = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
 	cli->signals.ref.fd = -1;
-	cli->mailbox.wake.fd = -1;
 	loop_place(&cli->reactor.loop);
 	int e = cli_loop_init(&cli->reactor);
 	if (!e)
@@ -1245,11 +1242,7 @@ cli_run (struct cli_options const *options,
 		curl_ready = !e;
 	}
 	if (!e)
-		e = cli_mailbox_init(&cli->mailbox, &cli->reactor.loop, (struct cli_mailbox_limits){{
-			{.messages = 256, .bytes = 1 << 20}, {.messages = 64, .bytes = 64 << 10}
-		}});
-	if (!e)
-		cli->network = cli_network_create(&cli->reactor, &cli->mailbox, &e);
+		cli->network = cli_network_create(&cli->reactor, &e);
 	if (!e)
 		cli->io = cli_io_create(&cli->reactor.loop, &e);
 	if (!e)
@@ -1319,7 +1312,6 @@ cli_run (struct cli_options const *options,
 	autocomplete_file_destroy(&cli->files);
 	cli_client_json_cleanup(&cli->history);
 	cli_client_fini(&cli->client);
-	cli_mailbox_fini(&cli->mailbox);
 	cli_signals_fini(&cli->signals);
 	cli_loop_fini(&cli->reactor);
 	if (curl_ready)
