@@ -10,7 +10,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 #include "ai.h"
 #include "buf.h"
@@ -960,14 +959,16 @@ static void
 home_head (struct home *home,
            struct job  *job)
 {
-	static char const sse[] = "text/event-stream";
 	long status;
 	char const *type;
 	http_response(job->transfer, &status, &type);
+	struct cstr_view media = cstr_view(type);
+	(void)cstr_view_cut(&media, ';', &media);
 	job->flags |= SEEN;
 	job->flags &= (uint16_t)~STREAM;
 	job->http = (uint16_t)status;
-	if (status >= 200 && status < 300 && type && !strncasecmp(type, sse, sizeof sse - 1))
+	if (status >= 200 && status < 300 &&
+	    cstr_view_equal_case(cstr_view_trim(media), CSTR_VIEW("text/event-stream")))
 		job->flags |= STREAM;
 	if (job->flags & PROBE && !home_job_failure(job, CURLE_OK))
 		home_breaker_probed(home, job, false, 0);

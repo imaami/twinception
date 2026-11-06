@@ -159,18 +159,10 @@ static int cli_client_response_line(struct cli_client_response *response, struct
 static int cli_client_response_receive(struct cstr_view bytes, void *context)
 {
 	struct cli_client_response *response = context;
-	struct buf *rest = &response->body;
-	char const *newline = nullptr;
-	if (response->sse) {
-		rest = &response->line;
-		newline = bytes.len ? memchr(bytes.data, '\n', bytes.len) : nullptr;
-	}
-	while (newline && !response->failure) {
-		size_t length = (size_t)(newline - bytes.data);
-		response->failure = cli_client_response_line(response, cstr_view_slice(bytes, 0, length));
-		bytes = cstr_view_slice(bytes, length + 1, SIZE_MAX);
-		newline = memchr(bytes.data, '\n', bytes.len);
-	}
+	struct buf *rest = response->sse ? &response->line : &response->body;
+	struct cstr_view line;
+	while (response->sse && !response->failure && cstr_view_cut(&bytes, '\n', &line))
+		response->failure = cli_client_response_line(response, line);
 	if (!response->failure)
 		response->failure = buf_put(rest, bytes.data, bytes.len, CLI_LIMIT);
 	if (response->failure == ENOBUFS)
@@ -185,16 +177,14 @@ static int cli_client_response_header(struct cstr_view line, void *context)
 		response->sse = false;
 		dstr_clear(&response->session);
 	}
-	char const *colon = memchr(line.data, ':', line.len);
-	if (!colon)
+	struct cstr_view value = line, key;
+	if (!cstr_view_cut(&value, ':', &key))
 		return 0;
-	struct cstr_view key = cstr_view_slice(line, 0, (size_t)(colon - line.data));
-	struct cstr_view value = cstr_view_trim(cstr_view_slice(line, key.len + 1, SIZE_MAX));
+	value = cstr_view_trim(value);
 	if (cstr_view_equal_case(key, CSTR_VIEW("Content-Type"))) {
-		char const *semi = memchr(value.data, ';', value.len);
-		if (semi)
-			value.len = (size_t)(semi - value.data);
-		response->sse = cstr_view_equal_case(value, CSTR_VIEW("text/event-stream"));
+		(void)cstr_view_cut(&value, ';', &value);
+		response->sse = cstr_view_equal_case(cstr_view_trim_end(value),
+		                                     CSTR_VIEW("text/event-stream"));
 	} else if (cstr_view_equal_case(key, CSTR_VIEW("Mcp-Session-Id"))) {
 		bool valid = value.len <= 1024;
 		for (size_t i = 0; valid && i < value.len; ++i)
@@ -494,28 +484,17 @@ cli_client_read_notebooks (struct cstr_view  text,
 {
 	struct cli_client_notebooks const *lists = context;
 	/* A truncated last line is never an authoritative notebook selector. */
-	while (text.len) {
-		char const *newline = memchr(text.data, '\n', text.len);
-		if (!newline)
-			break;
-		struct cstr_view line = {text.data, (size_t)(newline - text.data)};
-		text = cstr_view_slice(text, line.len + 1, SIZE_MAX);
+	struct cstr_view line;
+	while (cstr_view_cut(&text, '\n', &line)) {
 		struct cstr_view self = CSTR_VIEW("Self (writable): ");
 		struct cstr_view peer = CSTR_VIEW(" (read-only)");
 		if (cstr_view_starts(line, self))
 			line = cstr_view_slice(line, self.len, SIZE_MAX);
 		if (cstr_view_ends(line, peer))
 			line.len -= peer.len;
-		char const *first = memchr(line.data, '/', line.len);
-		if (!first)
+		struct cstr_view side = line, name, principal;
+		if (!cstr_view_cut(&side, '/', &name) || !cstr_view_cut(&side, '/', &principal))
 			continue;
-		struct cstr_view name = {line.data, (size_t)(first - line.data)};
-		struct cstr_view rest = cstr_view_slice(line, name.len + 1, SIZE_MAX);
-		char const *last = memchr(rest.data, '/', rest.len);
-		if (!last)
-			continue;
-		struct cstr_view principal = {rest.data, (size_t)(last - rest.data)};
-		struct cstr_view side = cstr_view_slice(rest, principal.len + 1, SIZE_MAX);
 		if ((!cstr_view_equal(side, CSTR_VIEW("client")) && !cstr_view_equal(side, CSTR_VIEW("upstream"))) ||
 		    !util_word(name.data, name.len, UTIL_WORD_MAX))
 			continue;
@@ -557,12 +536,8 @@ static int
 cli_client_read_files (struct cstr_view  text,
                        void             *files)
 {
-	while (text.len) {
-		char const *newline = memchr(text.data, '\n', text.len);
-		if (!newline)
-			break;
-		struct cstr_view line = {text.data, (size_t)(newline - text.data)};
-		text = cstr_view_slice(text, line.len + 1, SIZE_MAX);
+	struct cstr_view line;
+	while (cstr_view_cut(&text, '\n', &line)) {
 		if (!line.len || line.data[line.len - 1] != ')')
 			continue;
 		size_t tail = line.len - 1;
@@ -591,14 +566,11 @@ cli_client_read_files (struct cstr_view  text,
 			if (suffix.len && !cstr_view_equal(suffix, CSTR_VIEW(" line")) &&
 			    !cstr_view_equal(suffix, CSTR_VIEW(" lines")))
 				continue;
-			char const *dot = memchr(line.data, '.', line.len);
-			if (!dot)
+			struct cstr_view index;
+			if (!cstr_view_cut(&line, '.', &index) || !index.len ||
+			    !cli_client_digits(index) || !cstr_view_starts(line, CSTR_VIEW(" ")))
 				continue;
-			size_t index = (size_t)(dot - line.data);
-			if (!index || index + 1 >= line.len || line.data[index + 1] != ' ' ||
-			    !cli_client_digits(cstr_view_slice(line, 0, index)))
-				continue;
-			line = cstr_view_slice(line, index + 2, SIZE_MAX);
+			line = cstr_view_slice(line, 1, SIZE_MAX);
 			size_t const date_size = sizeof "2026-10-14 12:34 UTC  " - 1;
 			if (line.len <= date_size || !cstr_view_equal(cstr_view_slice(line, 17, 5), CSTR_VIEW("UTC  ")))
 				continue;

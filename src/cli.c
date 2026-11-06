@@ -743,9 +743,7 @@ cli_tools (struct cli       *cli,
 		struct autocomplete_tool const *entry = autocomplete_tool_at(cli->client.catalog, i);
 		struct cstr_view summary = entry->description;
 		summary.len = jb_utf8(summary.data, summary.len < 160 ? summary.len : 160);
-		char const *newline = summary.len ? memchr(summary.data, '\n', summary.len) : nullptr;
-		if (newline)
-			summary.len = (size_t)(newline - summary.data);
+		(void)cstr_view_cut(&summary, '\n', &summary);
 
 		dstr_clear(&line);
 		if (cstr_view_cat(entry->name, &line) ||

@@ -220,17 +220,15 @@ cli_scrollback_append_style (struct cli_scrollback *scrollback,
 {
 	if (style >= CLI_STYLE_COUNT)
 		return EINVAL;
-	char const *newline;
-	while (text.len && (newline = memchr(text.data, '\n', text.len))) {
-		size_t length = (size_t)(newline - text.data);
-		int e = cli_scrollback_append_part(scrollback, cstr_view_slice(text, 0, length), style);
+	struct cstr_view line;
+	while (cstr_view_cut(&text, '\n', &line)) {
+		int e = cli_scrollback_append_part(scrollback, line, style);
 		if (!e)
 			e = cli_scrollback_add_line(scrollback);
 		if (e)
 			return e;
 		if (scrollback->offset)
 			++scrollback->unread;
-		text = cstr_view_slice(text, length + 1, SIZE_MAX);
 		cli_scrollback_trim(scrollback);
 	}
 	if (!text.len)

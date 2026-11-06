@@ -70,16 +70,13 @@ datauri_init (struct datauri   *d,
 {
 	struct cstr_view const scheme = CSTR_VIEW("data:");
 	struct cstr_view const base64 = CSTR_VIEW(";base64");
-	if (!d || !cstr_view_starts_case(uri, scheme))
+	struct cstr_view rest = cstr_view_slice(uri, scheme.len, SIZE_MAX), media;
+	if (!d || !cstr_view_starts_case(uri, scheme) || !cstr_view_cut(&rest, ',', &media))
 		return EINVAL;
-	char const *comma = memchr(uri.data + scheme.len, ',', uri.len - scheme.len);
-	if (!comma)
-		return EINVAL;
-	size_t head = (size_t)(comma - uri.data);
 	*d = (struct datauri){
-		.encoded = cstr_view_slice(uri, head + 1, SIZE_MAX),
-		.base64 = head - scheme.len >= base64.len &&
-		          cstr_view_equal_case(cstr_view_slice(uri, head - base64.len, base64.len),
+		.encoded = rest,
+		.base64 = media.len >= base64.len &&
+		          cstr_view_equal_case(cstr_view_slice(media, media.len - base64.len, SIZE_MAX),
 		                               base64),
 	};
 	return d->base64 ? datauri_parse_base64(d) : datauri_parse_percent(d);

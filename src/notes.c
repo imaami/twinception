@@ -339,18 +339,13 @@ notes_select (struct cstr_view name,
 {
 	if (!name.data || !name.len || sizeof BRANCH + name.len > NOTES_REPO)
 		return EINVAL;
-	char const *slash = memchr(name.data, '/', name.len);
-	size_t const participant = slash ? (size_t)(slash - name.data) : 0;
-	if (!util_word(name.data, participant, UTIL_WORD_MAX))
-		return EINVAL;
-	struct cstr_view const rest = cstr_view_slice(name, participant + 1, SIZE_MAX);
-	slash = memchr(rest.data, '/', rest.len);
-	if (!slash)
-		return EINVAL;
 	/* who is "anonymous" or the 16 hexadecimal digits of a principal, as
 	 * notes_repo() writes it. */
-	struct cstr_view const who = { rest.data, (size_t)(slash - rest.data) };
-	struct cstr_view const side = cstr_view_slice(rest, who.len + 1, SIZE_MAX);
+	struct cstr_view side = name, participant, who;
+	if (!cstr_view_cut(&side, '/', &participant) ||
+	    !util_word(participant.data, participant.len, UTIL_WORD_MAX) ||
+	    !cstr_view_cut(&side, '/', &who))
+		return EINVAL;
 	if ((!cstr_view_equal(who, CSTR_VIEW("anonymous")) &&
 	     (who.len != 16 || !util_is_hex(who.data, who.len))) ||
 	    (!cstr_view_equal(side, CSTR_VIEW("client")) &&

@@ -807,11 +807,9 @@ mcp_is_legacy (struct cstr_view v)
 static bool
 mcp_is_json (struct span type)
 {
-	static char const json[] = "application/json";
-	size_t n = sizeof json - 1;
-	return type.len >= n && !strncasecmp((char const *)type.ptr, json, n) &&
-	       (type.len == n || type.ptr[n] == ';' || type.ptr[n] == ' ' ||
-	        type.ptr[n] == '\t');
+	struct cstr_view media = { (char const *)type.ptr, type.len };
+	(void)cstr_view_cut(&media, ';', &media);
+	return cstr_view_equal_case(cstr_view_trim_end(media), CSTR_VIEW("application/json"));
 }
 
 /* Whether a request's target is the metrics. */

@@ -1074,9 +1074,8 @@ godbolt_reason (struct godbolt *call,
 		loop_work(call->loop, LOOP_PARSE, text.len);
 		text = godbolt_or(godbolt_member(doc, "message"), text);
 	}
-	char const *nl = memchr(text.data, '\n', text.len);
-	size_t const line = nl ? (size_t)(nl - text.data) : text.len;
-	size_t const n = godbolt_cut(cstr_view_slice(text, 0, line), GODBOLT_REASON_MAX);
+	(void)cstr_view_cut(&text, '\n', &text);
+	size_t const n = godbolt_cut(text, GODBOLT_REASON_MAX);
 	godbolt_why(call, "HTTP %" PRIu32 "%s%.*s", status, n ? ": " : "", (int)n, text.data);
 	json_object_put(doc);
 }

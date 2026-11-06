@@ -881,12 +881,11 @@ review_put_finding (struct dstr          *out,
 		return false;
 	if (closed) {
 		/* The first line of the claim, cut to REVIEW_CLOSED_CLAIM bytes. */
-		struct cstr_view const head = cstr_view_slice(claim, 0, REVIEW_CLOSED_CLAIM);
-		char const *nl = memchr(head.data, '\n', head.len);
-		size_t const n = nl ? (size_t)(nl - head.data)
-		                    : util_clip(claim.data, claim.len, REVIEW_CLOSED_CLAIM);
-		return PUT(out, ": ") && !cstr_view_cat((struct cstr_view){ claim.data, n }, out) &&
-		       (n == claim.len || PUT(out, "...")) && PUT(out, "\n");
+		struct cstr_view head = cstr_view_slice(claim, 0, REVIEW_CLOSED_CLAIM);
+		if (!cstr_view_cut(&head, '\n', &head))
+			head.len = util_clip(claim.data, claim.len, REVIEW_CLOSED_CLAIM);
+		return PUT(out, ": ") && !cstr_view_cat(head, out) &&
+		       (head.len == claim.len || PUT(out, "...")) && PUT(out, "\n");
 	}
 	struct cstr_view evidence = {};
 	for (size_t i = f->n; i && !evidence.len; --i)

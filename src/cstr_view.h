@@ -139,6 +139,27 @@ cstr_view_slice (struct cstr_view text,
 	return text;
 }
 
+/**
+ * Split @p *rest at its first byte @p c: store the bytes before it in
+ * @p *head and leave the bytes after it in @p *rest. Returns false, with
+ * neither changed, if @p *rest does not contain @p c. With @p head equal
+ * to @p rest, @p *rest ends as the bytes before @p c.
+ */
+static inline bool
+cstr_view_cut (struct cstr_view *rest,
+               char              c,
+               struct cstr_view *head)
+{
+	struct cstr_view const text = *rest;
+	char const *at = text.len ? memchr(text.data, c, text.len) : nullptr;
+	if (!at)
+		return false;
+	size_t const n = (size_t)(at - text.data);
+	*rest = (struct cstr_view){ at + 1, text.len - n - 1 };
+	*head = (struct cstr_view){ text.data, n };
+	return true;
+}
+
 /** Returns the index of the first of the @p n views at @p names that equals
  *  @p key, or @p n if none does.
  */

@@ -71,6 +71,19 @@ main (void)
 	assert(cstr_view_equal(cstr_view_trim_end(CSTR_VIEW("a\0")), CSTR_VIEW("a\0")));
 	assert(!cstr_view_trim_end(empty).len);
 
+	struct cstr_view rest = CSTR_VIEW("key: a;b"), head = CSTR_VIEW("kept");
+	assert(cstr_view_cut(&rest, ':', &head));
+	assert(cstr_view_equal(head, CSTR_VIEW("key")) && cstr_view_equal(rest, CSTR_VIEW(" a;b")));
+	assert(!cstr_view_cut(&rest, ':', &head));
+	assert(cstr_view_equal(head, CSTR_VIEW("key")) && cstr_view_equal(rest, CSTR_VIEW(" a;b")));
+	assert(cstr_view_cut(&rest, ';', &rest) && cstr_view_equal(rest, CSTR_VIEW(" a")));
+	rest = text;
+	assert(cstr_view_cut(&rest, '\0', &head));
+	assert(cstr_view_equal(head, CSTR_VIEW("a")) && cstr_view_equal(rest, CSTR_VIEW("b")));
+	assert(cstr_view_cut(&rest, 'b', &head) && !head.len && !rest.len);
+	rest = empty;
+	assert(!cstr_view_cut(&rest, '\0', &head) && !rest.data);
+
 	static struct cstr_view const names[] = {
 		CSTR_VIEW_INIT("one"), CSTR_VIEW_INIT("two"), CSTR_VIEW_INIT("t\0o"),
 	};
@@ -95,5 +108,5 @@ main (void)
 	assert(cstr_view_cat(text, nullptr) == ENOMEM);
 	dstr_cleanup(&owned);
 	puts("cstr views: empty values, counted NULs, byte order, cases, bounded slices, trims, "
-	     "lookups, stores and appends: PASS");
+	     "cuts, lookups, stores and appends: PASS");
 }
