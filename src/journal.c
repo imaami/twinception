@@ -26,6 +26,7 @@
 #include "journal.h"
 #include "loop.h"
 #include "oid.h"
+#include "tally.h"
 #include "util.h"
 
 /* The header of a record on disk: the magic, the sequence number and the
@@ -151,8 +152,7 @@ struct journal {
 	unsigned char          key[POLICY_KEY];  /* the key of the principals,
 	                                            read from
 	                                            askai-journal/principal.key */
-	size_t                 queued;
-	size_t                 bytes;
+	struct tally           queue;     /* the queued items and their bytes */
 	int                    repo_fd;
 	int                    state_fd;
 	int                    jobs_fd;
@@ -1038,8 +1038,7 @@ journal_take (struct journal *j)
 	if (!j->first)
 		j->last = nullptr;
 	item->next = nullptr;
-	--j->queued;
-	j->bytes -= item->bytes;
+	tally_sub(&j->queue, item->bytes);
 	return item;
 }
 
@@ -1088,12 +1087,12 @@ journal_enqueue (struct journal      *j,
 	 * finite and cannot be used by streams, loads, or oversized records. */
 	bool control = item->record && item->record->len <= JOURNAL_CONTROL_RECORD &&
 	               item->record->type == JOURNAL_CANCEL;
-	size_t maximum = JOURNAL_QUEUE + (control ? JOURNAL_CONTROL : 0);
-	size_t bytes = JOURNAL_BYTES + (control ? JOURNAL_CONTROL_BYTES : 0);
+	struct tally const max = { JOURNAL_QUEUE + (control ? JOURNAL_CONTROL : 0),
+	                           JOURNAL_BYTES + (control ? JOURNAL_CONTROL_BYTES : 0) };
 	pthread_mutex_lock(&j->lock);
 	if (j->flags & WRITER_STOP)
 		e = ECANCELED;
-	else if (j->queued >= maximum || j->bytes > bytes || item->bytes > bytes - j->bytes)
+	else if (!tally_fits(&j->queue, max, item->bytes))
 		e = EAGAIN;
 	else {
 		if (j->last)
@@ -1101,8 +1100,7 @@ journal_enqueue (struct journal      *j,
 		else
 			j->first = item;
 		j->last = item;
-		++j->queued;
-		j->bytes += item->bytes;
+		tally_add(&j->queue, item->bytes);
 	}
 	pthread_mutex_unlock(&j->lock);
 	if (e)
