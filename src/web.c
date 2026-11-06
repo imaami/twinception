@@ -58,8 +58,11 @@ enum {
 	RUN_CANCEL = 2,  /* no call waits for the run, and its keep is 0 */
 };
 
-/* The error text of a run that askai ends as it stops. */
+/* The error texts of a run that askai ends as it stops, and of a run that
+ * ran out of memory.
+ */
 static char const stopping[] = "askai is stopping.";
+static char const no_memory[] = "askai ran out of memory.";
 
 /* The key of a request. Two requests are equal if their keys are equal.
  * The bytes of the key follow the struct that has the key. They are the
@@ -89,7 +92,6 @@ static_assert(sizeof (struct web_key) == 32);
  */
 struct web_reply {
 	char            *body;      /* nullptr if the body is empty */
-	char const      *type;      /* in text */
 	char const      *error;     /* in text */
 	size_t           len;       /* the length of the body */
 	size_t           size;      /* the bytes of the reply and its body */
@@ -110,7 +112,6 @@ struct web_entry {
 	struct web_reply *reply;    /* the table's reference */
 	uint64_t          expires;  /* the loop_clock() at which its keep
 	                               passes */
-	size_t            bytes;    /* what it counts against WEB_CACHE_MAX */
 	struct web_key    key;
 	char              data[];   /* the bytes of the key */
 };
@@ -309,21 +310,33 @@ web_find_run (struct web const     *web,
 	return nullptr;
 }
 
+/* Returns the bytes that an entry of @p key and @p reply counts against
+ * WEB_CACHE_MAX.
+ */
+static size_t
+web_entry_bytes (struct web_key const   *key,
+                 struct web_reply const *reply)
+{
+	return sizeof (struct web_entry) + web_key_size(key) + reply->size;
+}
+
 /* Removes @p entry from the table and from the list of stored responses,
  * and puts it on the chain at @p gone, which the member next links. The
  * caller has locked the mutex, and frees the chain after it has unlocked
- * the mutex.
+ * the mutex. Returns the bytes that the entry counted.
  */
-static void
+static size_t
 web_unlink (struct web        *web,
             struct web_entry  *entry,
             struct web_entry **gone)
 {
+	size_t bytes = web_entry_bytes(&entry->key, entry->reply);
 	*web_find(web, &entry->key, entry->data) = entry->next;
 	list_del(&entry->hook);
-	web->bytes -= entry->bytes;
+	web->bytes -= bytes;
 	entry->next = *gone;
 	*gone = entry;
+	return bytes;
 }
 
 /*
@@ -341,9 +354,10 @@ web_keep (struct web       *web,
 	struct web_entry *gone = nullptr;
 	struct web_entry *old = *web_find(web, &entry->key, entry->data);
 	if (old)
-		web_unlink(web, old, &gone);
-	while (web->bytes + entry->bytes > WEB_CACHE_MAX && !list_is_empty(&web->kept))
-		web_unlink(web, container_of(web->kept.next, struct web_entry, hook), &gone);
+		(void)web_unlink(web, old, &gone);
+	size_t bytes = web_entry_bytes(&entry->key, entry->reply);
+	while (web->bytes + bytes > WEB_CACHE_MAX && !list_is_empty(&web->kept))
+		(void)web_unlink(web, container_of(web->kept.next, struct web_entry, hook), &gone);
 	struct web_entry **bucket = web_bucket(web, entry->key.hash);
 	entry->next = *bucket;
 	*bucket = entry;
@@ -354,20 +368,18 @@ web_keep (struct web       *web,
 	                           entry->expires)
 		at = at->prev;
 	list_append(at->next, &entry->hook);
-	web->bytes += entry->bytes;
+	web->bytes += bytes;
 	return gone;
 }
 
 /* Makes the reply of @p run from @p end. end->type may be nullptr, and
  * end->body and end->age are not read. If the run did not fail, the body
  * that the run received moves to the reply. Otherwise the body is freed.
- * Returns the reply with one reference. On failure it returns nullptr and
- * stores ENOMEM in @p *e.
+ * Returns the reply with one reference, or nullptr if out of memory.
  */
 static struct web_reply *
 web_reply_create (struct web_run            *run,
-                  struct web_response const *end,
-                  int                       *e)
+                  struct web_response const *end)
 {
 	char const *t = end->type ? end->type : "";
 	size_t type = strlen(t);
@@ -381,7 +393,6 @@ web_reply_create (struct web_run            *run,
 	if (!reply) {
 		free(body);
 		body = nullptr;
-		*e = ENOMEM;
 		return nullptr;
 	}
 	if (end->e || !len) {
@@ -397,7 +408,6 @@ web_reply_create (struct web_run            *run,
 	reply->size = size + len;
 	memcpy(reply->text, t, type + 1);
 	memcpy(reply->text + type + 1, end->error, why + 1);
-	reply->type = reply->text;
 	reply->error = reply->text + type + 1;
 	reply->received = loop_clock();
 	atomic_init(&reply->refs, 1);
@@ -407,35 +417,20 @@ web_reply_create (struct web_run            *run,
 	return reply;
 }
 
-/* Returns the bytes that an entry for @p reply, the response to @p run,
- * counts against WEB_CACHE_MAX.
- */
-static size_t
-web_entry_bytes (struct web_run const   *run,
-                 struct web_reply const *reply)
-{
-	return sizeof (struct web_entry) + web_key_size(&run->key) + reply->size;
-}
-
 /* Makes the entry of the table for @p reply, the response to @p run, with
- * a reference to the reply. Returns the entry. On failure it returns
- * nullptr and stores ENOMEM in @p *e.
+ * a reference to the reply. Returns the entry, or nullptr if out of
+ * memory.
  */
 static struct web_entry *
 web_entry_create (struct web_run const *run,
-                  struct web_reply     *reply,
-                  int                  *e)
+                  struct web_reply     *reply)
 {
 	size_t key = web_key_size(&run->key);
-	size_t bytes = web_entry_bytes(run, reply);
 	struct web_entry *entry = malloc(sizeof *entry + key);
-	if (!entry) {
-		*e = ENOMEM;
+	if (!entry)
 		return nullptr;
-	}
 	*entry = (struct web_entry){
 		.reply = web_reply_get(reply),
-		.bytes = bytes,
 		.key = run->key
 	};
 	memcpy(entry->data, run->data, key);
@@ -458,11 +453,10 @@ web_run_end (struct web                *web,
              struct web_run            *run,
              struct web_response const *end)
 {
-	int e = 0;
-	struct web_reply *reply = web_reply_create(run, end, &e);
+	struct web_reply *reply = web_reply_create(run, end);
 	bool store = reply && run->keep && !end->e && end->status >= 200 &&
-	             end->status < 300 && web_entry_bytes(run, reply) <= WEB_CACHE_MAX / 4;
-	struct web_entry *entry = store ? web_entry_create(run, reply, &e) : nullptr;
+	             end->status < 300 && web_entry_bytes(&run->key, reply) <= WEB_CACHE_MAX / 4;
+	struct web_entry *entry = store ? web_entry_create(run, reply) : nullptr;
 	struct web_entry *gone = nullptr;
 	struct list waits;
 	list_init(&waits);
@@ -555,7 +549,8 @@ web_run_done (CURLcode    result,
 	struct web_run *run = user;
 	struct web *web = run->web;
 	run->transfer = nullptr;
-	char why[CURL_ERROR_SIZE] = "";
+	char why[64] = "";
+	char const *said = why;
 	int e = run->fault;
 	switch (e) {
 	case EFBIG:
@@ -563,7 +558,7 @@ web_run_done (CURLcode    result,
 		            " bytes.", run->key.max);
 		break;
 	case ENOMEM:
-		util_format(why, sizeof why, "askai ran out of memory.");
+		said = no_memory;
 		break;
 	case ETIMEDOUT:
 		util_format(why, sizeof why, "The request took longer than %" PRIu32 " s.",
@@ -573,12 +568,12 @@ web_run_done (CURLcode    result,
 		if (result == CURLE_OK)
 			break;
 		e = result == CURLE_OPERATION_TIMEDOUT ? ETIMEDOUT : EIO;
-		util_format(why, sizeof why, "%s", *error ? error : curl_easy_strerror(result));
+		said = *error ? error : curl_easy_strerror(result);
 	}
 	long retry = http_retry_after(web->http);
 	web_run_finish(web, run, &(struct web_response){
 		.type = http_type(web->http),
-		.error = why,
+		.error = said,
 		.status = status > 0 && status < 1000 ? (uint32_t)status : 0,
 		.retry = retry > 0 && retry <= UINT32_MAX ? (uint32_t)retry : 0,
 		.e = e
@@ -781,8 +776,7 @@ web_relieve (struct web        *web,
 		struct web_entry *first = container_of(web->kept.next, struct web_entry, hook);
 		if (level < BUF_CRITICAL && first->expires > now)
 			break;
-		units += buf_units(first->bytes);
-		web_unlink(web, first, &gone);
+		units += buf_units(web_unlink(web, first, &gone));
 	}
 	pthread_mutex_unlock(&web->lock);
 	web_entries_free(gone);
@@ -964,14 +958,14 @@ web_wait_response (struct web_wait const *wait,
 		*response = (struct web_response){
 			.body = { "", 0 },
 			.type = "",
-			.error = "askai ran out of memory.",
+			.error = no_memory,
 			.e = ENOMEM
 		};
 		return;
 	}
 	*response = (struct web_response){
 		.body = { reply->body ? reply->body : "", reply->len },
-		.type = reply->type,
+		.type = reply->text,
 		.error = reply->error,
 		.status = reply->status,
 		.age = now > reply->received ? (uint32_t)((now - reply->received) / NS) : 0,
