@@ -16,9 +16,9 @@
 
 /* The state of a findings call, which mcp_slot_own() stores in the slot. */
 struct findings_call {
-	struct json_object   *args;    /* a reference to the arguments */
-	struct dstr           out;     /* what review_call() wrote */
-	struct review_cursor  cursor;  /* the position of a show in its text */
+	struct json_object *args;    /* a reference to the arguments */
+	struct dstr         out;     /* what review_call() wrote */
+	struct tool_cursor  cursor;  /* the position of a show in its text */
 };
 
 struct json_object *

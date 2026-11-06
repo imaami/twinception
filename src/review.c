@@ -857,16 +857,16 @@ enum review_section : uint8_t {
  * finding, or to the next section if no finding of the section is left.
  */
 static bool
-review_put_finding (struct dstr          *out,
-                    struct review const  *r,
-                    struct review_cursor *cursor)
+review_put_finding (struct dstr         *out,
+                    struct review const *r,
+                    struct tool_cursor  *cursor)
 {
 	bool const closed = cursor->section == REVIEW_SECTION_CLOSED;
 	size_t k = cursor->item;
 	while (k < r->n_findings && review_finding_closed(&r->findings[k]) != closed)
 		++k;
 	if (k == r->n_findings) {
-		*cursor = (struct review_cursor){
+		*cursor = (struct tool_cursor){
 			.section = closed ? REVIEW_SECTION_LOG : REVIEW_SECTION_CLOSED,
 		};
 		return true;
@@ -987,10 +987,10 @@ review_put_change (struct dstr                *out,
  * writing anything.
  */
 static bool
-review_put_item (struct dstr          *out,
-                 struct review const  *r,
-                 size_t                id,
-                 struct review_cursor *cursor)
+review_put_item (struct dstr         *out,
+                 struct review const *r,
+                 size_t               id,
+                 struct tool_cursor  *cursor)
 {
 	static struct cstr_view const heads[] = {
 		CSTR_VIEW_INIT("[askai: your review record, which askai keeps through every "
@@ -1004,13 +1004,13 @@ review_put_item (struct dstr          *out,
 	switch (cursor->section) {
 	case REVIEW_SECTION_HEAD:
 		if (f) {
-			*cursor = (struct review_cursor){ .section = REVIEW_SECTION_CHANGES };
+			*cursor = (struct tool_cursor){ .section = REVIEW_SECTION_CHANGES };
 			return dstr_printf(out, "Finding %zu: ", id) && review_put_status(out, f) &&
 			       PUT(out, "\nclaim: ") &&
 			       !cstr_view_cat(cstr_view_dstr(&f->claim), out) && PUT(out, "\n");
 		}
 		bool const any = r && r->n_findings;
-		*cursor = (struct review_cursor){
+		*cursor = (struct tool_cursor){
 			.section = any ? REVIEW_SECTION_OPEN : REVIEW_SECTION_LOG,
 		};
 		return !cstr_view_cat(heads[any], out);
@@ -1020,7 +1020,7 @@ review_put_item (struct dstr          *out,
 	case REVIEW_SECTION_LOG:
 		if (r && cursor->item < r->log.n)
 			return review_put_logged(out, r, cursor->item++);
-		*cursor = (struct review_cursor){ .section = REVIEW_SECTION_DROPPED };
+		*cursor = (struct tool_cursor){ .section = REVIEW_SECTION_DROPPED };
 		return true;
 	case REVIEW_SECTION_DROPPED:
 		cursor->section = REVIEW_SECTION_END;
@@ -1045,24 +1045,24 @@ review_put_item (struct dstr          *out,
  * text continues, or ENOMEM.
  */
 static int
-review_put_text (struct dstr          *out,
-                 struct review const  *r,
-                 size_t                id,
-                 struct review_cursor *cursor,
-                 size_t                room)
+review_put_text (struct dstr         *out,
+                 struct review const *r,
+                 size_t               id,
+                 struct tool_cursor  *cursor,
+                 size_t               room)
 {
 	size_t const start = dstr_len(out);
 	dstr_auto item = DSTR_INIT;
 	while (cursor->section != REVIEW_SECTION_END) {
-		struct review_cursor const at = *cursor;
+		struct tool_cursor const at = *cursor;
 		size_t const before = dstr_len(out);
 		/* An item that an earlier part cut is written again into item, and
 		 * only its rest is appended. */
 		bool ok;
-		if (at.skip) {
+		if (at.byte) {
 			dstr_clear(&item);
 			ok = review_put_item(&item, r, id, cursor) &&
-			     !cstr_view_cat(cstr_view_slice(cstr_view_dstr(&item), at.skip, SIZE_MAX),
+			     !cstr_view_cat(cstr_view_slice(cstr_view_dstr(&item), at.byte, SIZE_MAX),
 			                    out);
 		} else {
 			ok = review_put_item(out, r, id, cursor);
@@ -1072,10 +1072,10 @@ review_put_text (struct dstr          *out,
 		if (dstr_len(out) - start > room) {
 			dstr_erase(out, start + room, SIZE_MAX);
 			*cursor = at;
-			cursor->skip += start + room - before;
+			cursor->byte += start + room - before;
 			return EAGAIN;
 		}
-		cursor->skip = 0;
+		cursor->byte = 0;
 	}
 	return 0;
 }
@@ -1090,7 +1090,7 @@ review_render (struct review const *r,
 	/* Every line of the text ends with a newline, and the last newline is
 	 * dropped, so the text fits if its length is at most (most + 1). */
 	size_t const start = dstr_len(out);
-	struct review_cursor cursor = {};
+	struct tool_cursor cursor = {};
 	int const e = review_put_text(out, r, 0, &cursor, most < SIZE_MAX ? most + 1 : most);
 	if (e == ENOMEM)
 		return e;
@@ -1832,13 +1832,13 @@ review_update (struct review            *r,
 #undef PUT
 
 int
-review_call (struct review        *r,
-             struct json_object   *args,
-             uint32_t              turn,
-             review_kept_fn       *kept,
-             struct review_cursor *cursor,
-             size_t                room,
-             struct dstr          *out)
+review_call (struct review      *r,
+             struct json_object *args,
+             uint32_t            turn,
+             review_kept_fn     *kept,
+             struct tool_cursor *cursor,
+             size_t              room,
+             struct dstr        *out)
 {
 	if (!r || !cursor || !out)
 		return EFAULT;

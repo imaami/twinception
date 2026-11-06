@@ -70,6 +70,16 @@ typedef void tool_step_fn (struct mcp_slot *slot);
  */
 typedef void tool_drop_fn (struct mcp_slot *slot);
 
+/** The position in a text that a call writes in parts: the section, the
+ *  item in the section, and the bytes of that item that are written. A
+ *  zeroed struct is the start of the text.
+ */
+struct tool_cursor {
+	size_t item;     /**< the next item of the section */
+	size_t byte;     /**< the bytes of that item that are written */
+	size_t section;  /**< the section of the text */
+};
+
 struct tool_kind {
 	tool_definition_fn *definition;
 	tool_start_fn      *start;

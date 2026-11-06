@@ -577,13 +577,12 @@ struct godbolt_args {
 struct godbolt_record {
 	struct json_object *secs[GODBOLT_SECTIONS];  /* the texts of the
 	                                                sections */
-	size_t              byte;       /* written bytes of the text of the
-	                                   section */
-	size_t              item;       /* written lines of the section */
+	struct tool_cursor  at;         /* the section being written, its
+	                                   written lines, and the written
+	                                   bytes of its text or of the line */
 	uint8_t             sec_of[GODBOLT_SECTIONS];  /* enum godbolt_sec
 	                                                  of secs[i] */
 	uint8_t             n_sec;      /* the number of sections */
-	uint8_t             sec;        /* the section being written */
 	uint8_t             opened;     /* 1 once the first line of the
 	                                   section is written */
 	uint8_t             headed;     /* 1 once the first line of the
@@ -2143,38 +2142,39 @@ godbolt_full (struct godbolt *call)
 
 static_assert(GODBOLT_FULL == 14 << 20, "the text of the note has 14 MiB");
 
-/* Writes as much of @p s, from call->rec.byte on, as the bounds of the
- * step and the room left in the output allow, and advances
- * call->rec.byte. If no room is left in the output, or room only for the
- * first bytes of a UTF-8 character, the function ends the record with the
- * note of godbolt_full(). Returns 0, or call->e.
+/* Writes as much of @p s, from call->rec.at.byte on, as the bounds of
+ * the step and the room left in the output allow, and advances
+ * call->rec.at.byte. If no room is left in the output, or room only for
+ * the first bytes of a UTF-8 character, the function ends the record with
+ * the note of godbolt_full(). Returns 0, or call->e.
  */
 static int
 godbolt_slice (struct godbolt   *call,
                struct cstr_view  s)
 {
-	while (call->rec.byte < s.len && !call->e) {
+	while (call->rec.at.byte < s.len && !call->e) {
 		if (call->written >= GODBOLT_FULL)
 			return godbolt_full(call);
 		size_t const left = GODBOLT_FULL - call->written;
 		uint64_t const room = loop_room(call->loop, LOOP_COPY);
-		struct cstr_view const part = cstr_view_slice(s, call->rec.byte,
+		struct cstr_view const part = cstr_view_slice(s, call->rec.at.byte,
 		                                              room < left ? room : left);
 		if (!part.len)
 			return call->e;
 		size_t taken = 0;
 		call->e = mcp_slot_write(call->slot, part,
-		                         call->rec.byte + part.len < s.len ? TOOL_MORE : 0, &taken);
+		                         call->rec.at.byte + part.len < s.len ? TOOL_MORE : 0, &taken);
 		call->written += taken;
-		call->rec.byte += taken;
+		call->rec.at.byte += taken;
 		if (!taken)
 			return part.len < left ? call->e : godbolt_full(call);
 	}
 	return call->e;
 }
 
-/* Ends the section call->rec.sec, with a note if Compiler Explorer cut
- * it, and makes call->rec.sec the next section. Returns 0, or call->e.
+/* Ends the section call->rec.at.section, with a note if Compiler
+ * Explorer cut it, and makes call->rec.at.section the next section.
+ * Returns 0, or call->e.
  */
 static int
 godbolt_section_end (struct godbolt *call)
@@ -2183,10 +2183,8 @@ godbolt_section_end (struct godbolt *call)
 		godbolt_put(call, CSTR_VIEW("[Compiler Explorer cut this output.]\n"));
 	call->rec.cut |= call->rec.marked;
 	call->rec.marked = 0;
-	++call->rec.sec;
 	call->rec.opened = 0;
-	call->rec.item = 0;
-	call->rec.byte = 0;
+	call->rec.at = (struct tool_cursor){ .section = call->rec.at.section + 1 };
 	return call->e;
 }
 
@@ -2200,7 +2198,7 @@ godbolt_section_text (struct godbolt   *call,
                       struct cstr_view  text)
 {
 	struct cstr_view const mark = CSTR_VIEW("\n[Truncated]");
-	if (godbolt_slice(call, text) || call->full || call->rec.byte < text.len)
+	if (godbolt_slice(call, text) || call->full || call->rec.at.byte < text.len)
 		return call->e;
 	call->rec.marked |= cstr_view_ends(text, mark);
 	if (text.data[text.len - 1] != '\n')
@@ -2211,51 +2209,52 @@ godbolt_section_text (struct godbolt   *call,
 /* Writes as many lines of the JSON array @p v of @p n lines as the bounds
  * of the step allow, each with a newline after it. Each line is the member
  * text of an element, and godbolt_slice() writes it, so that
- * call->rec.item is the line and call->rec.byte the byte of the line. The
- * lookups of a line count as one value of LOOP_VALUES work. After the last
- * line, the function ends the section. Returns 0, or call->e.
+ * call->rec.at.item is the line and call->rec.at.byte the byte of the
+ * line. The lookups of a line count as one value of LOOP_VALUES work.
+ * After the last line, the function ends the section. Returns 0, or
+ * call->e.
  */
 static int
 godbolt_section_lines (struct godbolt     *call,
                        struct json_object *v,
                        size_t              n)
 {
-	for (; call->rec.item < n; ++call->rec.item) {
+	for (; call->rec.at.item < n; ++call->rec.at.item) {
 		if (call->written >= GODBOLT_FULL)
 			return godbolt_full(call);
 		if (call->e || !loop_room(call->loop, LOOP_COPY) ||
 		    !loop_room(call->loop, LOOP_VALUES))
 			return call->e;
 		loop_work(call->loop, LOOP_VALUES, 1);
-		struct json_object *element = json_object_array_get_idx(v, call->rec.item);
+		struct json_object *element = json_object_array_get_idx(v, call->rec.at.item);
 		struct cstr_view const line = jb_view(jb_get(element, "text"));
-		if (godbolt_slice(call, line) || call->full || call->rec.byte < line.len)
+		if (godbolt_slice(call, line) || call->full || call->rec.at.byte < line.len)
 			return call->e;
 		godbolt_put(call, CSTR_VIEW("\n"));
 		call->rec.marked |= cstr_view_equal(line, CSTR_VIEW("[truncated; too many lines]")) ||
-		                    (call->rec.item + 1 == n &&
+		                    (call->rec.at.item + 1 == n &&
 		                     cstr_view_equal(line, CSTR_VIEW("[Truncated]")));
-		call->rec.byte = 0;
+		call->rec.at.byte = 0;
 	}
 	return godbolt_section_end(call);
 }
 
-/* Writes as much of the section call->rec.sec of the record as the bounds
- * of the step allow. A section whose text is empty is left out. After the
- * end of the section, call->rec.sec is the next section. Returns 0, or
- * call->e.
+/* Writes as much of the section call->rec.at.section of the record as
+ * the bounds of the step allow. A section whose text is empty is left
+ * out. After the end of the section, call->rec.at.section is the next
+ * section. Returns 0, or call->e.
  */
 static int
 godbolt_section (struct godbolt *call)
 {
-	struct json_object *v = call->rec.secs[call->rec.sec];
+	struct json_object *v = call->rec.secs[call->rec.at.section];
 	struct cstr_view const text = jb_view(v);
 	/* text.len is 0 for an array, and jb_len() is 0 for a string. */
 	size_t const n = text.len + jb_len(v);
 	if (!n)
 		return godbolt_section_end(call);
 	if (!call->rec.opened)
-		godbolt_put(call, godbolt_sections[call->rec.sec_of[call->rec.sec]]);
+		godbolt_put(call, godbolt_sections[call->rec.sec_of[call->rec.at.section]]);
 	call->rec.opened = 1;
 	return text.data ? godbolt_section_text(call, text) : godbolt_section_lines(call, v, n);
 }
@@ -2336,13 +2335,13 @@ godbolt_write (struct godbolt *call)
 	}
 	/* A record begins only while the output is not full, and a step that
 	 * fills the output ends the loop. */
-	while (call->rec.sec < call->rec.n_sec) {
-		uint8_t const sec = call->rec.sec;
+	while (call->rec.at.section < call->rec.n_sec) {
+		size_t const sec = call->rec.at.section;
 		if (godbolt_section(call))
 			return godbolt_fail(call);
 		if (call->full)
 			break;
-		if (call->rec.sec == sec)
+		if (call->rec.at.section == sec)
 			return GODBOLT_GO;
 	}
 	if (call->rec.truncated && !call->rec.cut)

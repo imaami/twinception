@@ -88,7 +88,7 @@ call (struct review *r,
 	struct json_object *args = json_tokener_parse(json);
 	CHECK(args || !strcmp(json, "null"));
 	dstr_clear(out);
-	int e = review_call(r, args, turn, kept, &(struct review_cursor){}, SIZE_MAX, out);
+	int e = review_call(r, args, turn, kept, &(struct tool_cursor){}, SIZE_MAX, out);
 	json_object_put(args);
 	return e;
 }
@@ -113,7 +113,7 @@ call_long (struct review *r,
 	free(s);
 	s = nullptr;
 	dstr_clear(out);
-	int e = review_call(r, args, 1, nullptr, &(struct review_cursor){}, SIZE_MAX, out);
+	int e = review_call(r, args, 1, nullptr, &(struct tool_cursor){}, SIZE_MAX, out);
 	json_object_put(args);
 	return e;
 }
@@ -586,7 +586,7 @@ test_refusals (void)
 		json_object_object_add(args, "claim", json_object_new_string("c"));
 		json_object_object_add(args, keys[i], json_object_new_string_len("a\xff", 2));
 		dstr_clear(&out);
-		CHECK(review_call(r, args, 2, nullptr, &(struct review_cursor){}, SIZE_MAX, &out) ==
+		CHECK(review_call(r, args, 2, nullptr, &(struct tool_cursor){}, SIZE_MAX, &out) ==
 		      EINVAL);
 		char want[96];
 		snprintf(want, sizeof want, "The %s must be a string of UTF-8 text, not empty.",
@@ -1076,7 +1076,7 @@ test_render (void)
 		size_t len = strlen(texts[k]);
 		for (size_t room = 1; room <= len + 1; ++room) {
 			struct dstr out = DSTR_INIT;
-			struct review_cursor cursor = {};
+			struct tool_cursor cursor = {};
 			int e = EAGAIN;
 			for (size_t parts = 1; e == EAGAIN; ++parts) {
 				e = review_call(r, args, 4, nullptr, &cursor, room, &out);
@@ -1630,9 +1630,9 @@ test_nullptr (void)
 	review_pending_drop(nullptr);
 	struct dstr d = DSTR_INIT;
 	struct json_object *args = json_tokener_parse("{\"action\":\"show\"}");
-	CHECK(review_call(nullptr, args, 1, nullptr, &(struct review_cursor){}, 1, &d) == EFAULT);
+	CHECK(review_call(nullptr, args, 1, nullptr, &(struct tool_cursor){}, 1, &d) == EFAULT);
 	CHECK(review_call(r, args, 1, nullptr, nullptr, 1, &d) == EFAULT);
-	CHECK(review_call(r, args, 1, nullptr, &(struct review_cursor){}, 1, nullptr) == EFAULT);
+	CHECK(review_call(r, args, 1, nullptr, &(struct tool_cursor){}, 1, nullptr) == EFAULT);
 	CHECK(review_render(r, nullptr, SIZE_MAX) == EFAULT);
 	CHECK(!review_json(r, nullptr));
 	CHECK(!review_json(nullptr, &e) && e == EFAULT);

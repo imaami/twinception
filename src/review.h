@@ -34,6 +34,7 @@
 #include <stdint.h>
 
 #include "cstr_view.h"
+#include "tool.h"
 
 struct dstr;
 struct json_object;
@@ -99,15 +100,6 @@ struct review_source {
 
 /** A review record. */
 struct review;
-
-/** The position of a show in its text, for a text that is written in
- *  parts. A zeroed struct is the start of the text.
- */
-struct review_cursor {
-	size_t  item;     /**< the next item of the section */
-	size_t  skip;     /**< the bytes of that item that are written */
-	uint8_t section;  /**< the section of the text */
-};
 
 /** A copy of a struct review_source in one allocation. */
 struct review_read;
@@ -234,13 +226,13 @@ review_pending_drop (struct review *r);
  * @retval ENOMEM if out of memory.
  */
 extern int
-review_call (struct review        *r,
-             struct json_object   *args,
-             uint32_t              turn,
-             review_kept_fn       *kept,
-             struct review_cursor *cursor,
-             size_t                room,
-             struct dstr          *out);
+review_call (struct review      *r,
+             struct json_object *args,
+             uint32_t            turn,
+             review_kept_fn     *kept,
+             struct tool_cursor *cursor,
+             size_t              room,
+             struct dstr        *out);
 
 /**
  * Appends to @p out the text of the record @p r, or of an empty record if
