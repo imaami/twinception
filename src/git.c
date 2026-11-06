@@ -1693,9 +1693,8 @@ git_start (struct mcp_slot    *slot,
 		                              "few seconds."), TOOL_FAILED);
 		return;
 	}
-	util_text_printf(&why, "Cannot run git: %s.", strerror(e));
-	LOG(LOG_WARN, "%s", why.data);
-	mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
+	LOG(LOG_WARN, "Cannot run git: %s.", strerror(e));
+	mcp_slot_tellf(slot, TOOL_FAILED, "Cannot run git: %s.", strerror(e));
 }
 
 /* Creates the git tool's part of @p loop for @p service, a struct git. The

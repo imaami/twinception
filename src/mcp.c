@@ -3229,6 +3229,22 @@ mcp_slot_tell (struct mcp_slot  *slot,
 }
 
 int
+mcp_slot_tellf (struct mcp_slot *slot,
+                uint32_t         flags,
+                char const      *fmt,
+                ...)
+{
+	if (!fmt)
+		return EFAULT;
+	char text[TOOL_TELL_MAX];
+	va_list ap;
+	va_start(ap, fmt);
+	size_t const len = util_vformat(text, sizeof text, fmt, ap);
+	va_end(ap);
+	return mcp_slot_tell(slot, (struct cstr_view){ text, len }, flags);
+}
+
+int
 mcp_slot_finish (struct mcp_slot *slot,
                  uint32_t         flags)
 {
@@ -3875,12 +3891,9 @@ mcp_spin_back (struct loop *loop,
 		return;
 	}
 	*mcp_slot_own(slot) = nullptr;
-	char text[96];
-	size_t n = util_format(text, sizeof text, "Ran %" PRIu64 " slices, and moved "
-	                       "%" PRIu64 " times between loops.", s->slices,
-	                       task->moves);
+	mcp_slot_tellf(slot, 0, "Ran %" PRIu64 " slices, and moved %" PRIu64 " times between "
+	               "loops.", s->slices, task->moves);
 	task_put(task, 2);
-	mcp_slot_tell(slot, (struct cstr_view){ text, n }, 0);
 }
 
 /* Run the @p slices a test_task call in @p slot asks for as a task, which

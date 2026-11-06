@@ -312,11 +312,11 @@ notes_tool_failed (struct mcp_slot *slot,
 	}
 	if (kind == FETCH_RESUME)
 		notes_tool_drop(slot);
-	char why[96];
-	mcp_slot_tell(slot, busy ? CSTR_VIEW("Too many commands are running; try again in a few "
-	                                     "seconds.")
-	                         : util_format_view(why, sizeof why, "The notes cannot be used "
-	                                            "now: %s.", strerror(e)), TOOL_FAILED);
+	if (busy)
+		mcp_slot_tell(slot, CSTR_VIEW("Too many commands are running; try again in a few "
+		                              "seconds."), TOOL_FAILED);
+	else
+		mcp_slot_tellf(slot, TOOL_FAILED, "The notes cannot be used now: %s.", strerror(e));
 }
 
 /* Returns the notebook that @p call selected, or else call->repo. */

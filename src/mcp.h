@@ -582,6 +582,19 @@ mcp_slot_tell (struct mcp_slot  *slot,
                struct cstr_view  text,
                uint32_t          flags);
 
+/** Formats a text from @p fmt and its arguments as printf() does, and ends
+ *  the call with the text as mcp_slot_tell() does. A text of more than
+ *  TOOL_TELL_MAX - 1 bytes is cut and ends with "...". Returns 0, EFAULT
+ *  if @p slot or @p fmt is nullptr, or EINVAL as mcp_slot_tell() does.
+ */
+EXPORT
+[[gnu::format(printf, 3, 4)]]
+extern int
+mcp_slot_tellf (struct mcp_slot *slot,
+                uint32_t         flags,
+                char const      *fmt,
+                ...);
+
 /** Ends the call with the output that mcp_slot_write() wrote. A client's
  *  call gets the output from the offset that mcp_slot_offset() took. A
  *  turn's call gets the part of the output that the turn takes. With

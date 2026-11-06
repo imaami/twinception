@@ -866,24 +866,11 @@ godbolt_catalog_hint (struct godbolt *call,
 	            (int)call->args.language.len, call->args.language.data);
 }
 
-/* Ends the call in @p slot as failed with the text that @p fmt and its
- * arguments format. Returns GODBOLT_ENDED.
+/* Ends the call in @p slot as failed with a text formatted from the other
+ * arguments, as mcp_slot_tellf() does. Evaluates to GODBOLT_ENDED.
  */
-[[gnu::format(printf, 2, 3)]]
-static enum godbolt_go
-godbolt_refuse (struct mcp_slot *slot,
-                char const      *fmt,
-                ...)
-{
-	char text[TOOL_TELL_MAX];
-	va_list ap;
-	va_start(ap, fmt);
-	struct cstr_view const t = godbolt_vformat(text, sizeof text, fmt, ap);
-	va_end(ap);
-	mcp_slot_tell(slot, t.data ? t : CSTR_VIEW("The plugin could not format the reason of "
-	                                           "the failure."), TOOL_FAILED);
-	return GODBOLT_ENDED;
-}
+#define godbolt_refuse(slot, ...) \
+        (mcp_slot_tellf((slot), TOOL_FAILED, __VA_ARGS__), GODBOLT_ENDED)
 
 /* Ends the call after the first failure of its output, whose error number
  * is call->e. After ENOMEM or ESHUTDOWN, the call ends with the error
@@ -1664,6 +1651,8 @@ godbolt_escape_source (struct godbolt *call)
 	call->phase = call->args.share ? GODBOLT_SHARE : GODBOLT_JOB;
 	return GODBOLT_GO;
 }
+
+#undef godbolt_refuse
 
 static_assert(TOOL_TEXT_MAX == 4U << 20, "the reason says 4 MiB");
 
@@ -2812,8 +2801,8 @@ godbolt_start (struct mcp_slot    *slot,
 	void **own = mcp_slot_own(slot);
 	if (!cfg || !loop || !own || cfg->len > GODBOLT_URL_MAX ||
 	    cfg->share >= GODBOLT_SHARES) {
-		godbolt_refuse(slot, "The call has no valid configuration of the godbolt plugin, "
-		               "no loop or no own word.");
+		mcp_slot_tellf(slot, TOOL_FAILED, "The call has no valid configuration of the "
+		               "godbolt plugin, no loop or no own word.");
 		return;
 	}
 	struct godbolt_args a;
