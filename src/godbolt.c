@@ -460,33 +460,59 @@ static struct godbolt_params const godbolt_params[] = {
 
 #undef GODBOLT_BIT
 
-/* The filters of a compilation, in the order of the request body. A
- * filter whose bit is 0 is always false. The argument filters can set
- * each of the others.
+/* The filters of a compilation, in the order of the request body: the
+ * name, whether the argument filters can set the filter, and whether the
+ * Compiler Explorer site sets it by default. A filter that the argument
+ * cannot set is always false. Bit i of a set of filters stands for
+ * godbolt_filters[i].
  */
-static struct {
-	struct cstr_view name;
-	uint8_t          bit;
-} const godbolt_filters[] = {
-	{ CSTR_VIEW_INIT("binary"), 0 },
-	{ CSTR_VIEW_INIT("binaryObject"), 0 },
-	{ CSTR_VIEW_INIT("commentOnly"), 1u << 0 },
-	{ CSTR_VIEW_INIT("debugCalls"), 0 },
-	{ CSTR_VIEW_INIT("demangle"), 1u << 1 },
-	{ CSTR_VIEW_INIT("directives"), 1u << 2 },
-	{ CSTR_VIEW_INIT("execute"), 0 },
-	{ CSTR_VIEW_INIT("intel"), 1u << 3 },
-	{ CSTR_VIEW_INIT("labels"), 1u << 4 },
-	{ CSTR_VIEW_INIT("libraryCode"), 1u << 5 },
-	{ CSTR_VIEW_INIT("trim"), 1u << 6 },
+#define GODBOLT_FILTERS_X(X)  \
+        X(binary,       0, 0) \
+        X(binaryObject, 0, 0) \
+        X(commentOnly,  1, 1) \
+        X(debugCalls,   0, 0) \
+        X(demangle,     1, 1) \
+        X(directives,   1, 1) \
+        X(execute,      0, 0) \
+        X(intel,        1, 1) \
+        X(labels,       1, 1) \
+        X(libraryCode,  1, 0) \
+        X(trim,         1, 0)
+
+enum godbolt_filter : uint8_t {
+#define GODBOLT_FILTER(name, set, site) GODBOLT_FILTER_##name,
+	GODBOLT_FILTERS_X(GODBOLT_FILTER)
+#undef GODBOLT_FILTER
+	GODBOLT_FILTERS
 };
 
-enum { GODBOLT_FILTERS = array_size(godbolt_filters) };
+static struct cstr_view const godbolt_filters[] = {
+#define GODBOLT_FILTER(name, set, site) CSTR_VIEW_INIT(#name),
+	GODBOLT_FILTERS_X(GODBOLT_FILTER)
+#undef GODBOLT_FILTER
+};
 
-/* The filters that the Compiler Explorer site sets by default:
- * commentOnly, demangle, directives, intel and labels.
- */
-static constexpr uint8_t GODBOLT_SITE_FILTERS = 0x1f;
+/* The filters that the argument filters can set. */
+#define GODBOLT_FILTER(name, set, site) | (uint32_t)set << GODBOLT_FILTER_##name
+static constexpr uint32_t GODBOLT_SETTABLE = 0 GODBOLT_FILTERS_X(GODBOLT_FILTER);
+#undef GODBOLT_FILTER
+
+/* The filters that the Compiler Explorer site sets by default. */
+#define GODBOLT_FILTER(name, set, site) | (uint32_t)site << GODBOLT_FILTER_##name
+static constexpr uint32_t GODBOLT_SITE_FILTERS = 0 GODBOLT_FILTERS_X(GODBOLT_FILTER);
+#undef GODBOLT_FILTER
+#undef GODBOLT_FILTERS_X
+
+/* The flags of the arguments of a call that are not filters. */
+enum godbolt_with : uint32_t {
+	GODBOLT_WITH_HEADERS = 1u << GODBOLT_FILTERS,        /* the argument
+	                                                        headers */
+	GODBOLT_WITH_SHARE   = 1u << (GODBOLT_FILTERS + 1),  /* the argument
+	                                                        share */
+	GODBOLT_WITH_OFFSET  = 1u << (GODBOLT_FILTERS + 2),  /* the argument
+	                                                        offset is above
+	                                                        0 */
+};
 
 /* The first line of each section of a record. */
 static struct cstr_view const godbolt_sections[] = {
@@ -564,10 +590,9 @@ struct godbolt_args {
 	uint8_t          n_strings;
 	uint8_t          n_words;
 	uint8_t          action;    /* enum godbolt_action */
-	uint8_t          filters;   /* bits of godbolt_filters[] */
-	uint8_t          headers;   /* the argument headers */
-	uint8_t          share;     /* the argument share */
-	uint8_t          paged;     /* 1 if the argument offset is above 0 */
+	uint32_t         flags;     /* the filters, bit i that of
+	                               godbolt_filters[i], and enum
+	                               godbolt_with */
 };
 
 /* The states of the record of a compilation. */
@@ -748,20 +773,19 @@ godbolt_cat_path (char             *d,
 }
 
 /* Writes the 11 filters of a compilation as a JSON object to @p d. The
- * filters that @p bits has are true. Returns the end of the text in
- * @p d.
+ * filters whose bits are set in @p flags are true. Returns the end of the
+ * text in @p d.
  */
 static char *
-godbolt_cat_filters (char    *d,
-                     uint8_t  bits)
+godbolt_cat_filters (char     *d,
+                     uint32_t  flags)
 {
 	char sep = '{';
-	for (size_t i = 0; i < GODBOLT_FILTERS; ++i) {
+	for (size_t i = 0; i < array_size(godbolt_filters); ++i) {
 		*d++ = sep;
 		*d++ = '"';
-		d = godbolt_cat(d, godbolt_filters[i].name);
-		d = godbolt_cat(d, bits & godbolt_filters[i].bit ? CSTR_VIEW("\":true")
-		                                                 : CSTR_VIEW("\":false"));
+		d = godbolt_cat(d, godbolt_filters[i]);
+		d = godbolt_cat(d, flags >> i & 1 ? CSTR_VIEW("\":true") : CSTR_VIEW("\":false"));
 		sep = ',';
 	}
 	*d++ = '}';
@@ -878,7 +902,8 @@ godbolt_request (struct godbolt   *call,
 		.accept = "application/json",
 		.max = rule->max,
 		.timeout = rule->timeout,
-		.keep = kind == GODBOLT_POST_COMPILE && !call->args.paged ? 1 : rule->keep
+		.keep = kind == GODBOLT_POST_COMPILE && !(call->args.flags & GODBOLT_WITH_OFFSET)
+		      ? 1 : rule->keep
 	};
 	call->kind_of = kind;
 	call->attempt = 0;
@@ -1502,7 +1527,7 @@ godbolt_drivers_end (struct godbolt *call)
 		                      "language %.*s: %s. %s", (int)call->args.language.len,
 		                      call->args.language.data, absent, call->why.data);
 	}
-	call->phase = call->args.share ? GODBOLT_SHARE : GODBOLT_JOB;
+	call->phase = call->args.flags & GODBOLT_WITH_SHARE ? GODBOLT_SHARE : GODBOLT_JOB;
 	return GODBOLT_GO;
 }
 
@@ -1593,7 +1618,8 @@ godbolt_escape_source (struct godbolt *call)
 	struct cstr_view const prefix = CSTR_VIEW("{\"sessions\":[{\"source\":\"");
 	if (!call->body) {
 		size_t const cap = prefix.len + 6 * call->args.source.len + GODBOLT_TAIL_MAX +
-		                   (call->args.share ? godbolt_state_size(call) : 0);
+		                   (call->args.flags & GODBOLT_WITH_SHARE ? godbolt_state_size(call)
+		                                                          : 0);
 		call->body = malloc(cap);
 		if (!call->body) {
 			mcp_slot_fail(call->slot, ENOMEM);
@@ -1614,7 +1640,7 @@ godbolt_escape_source (struct godbolt *call)
 		                      call->head - prefix.len);
 	if (call->tool != GODBOLT_COMPILE)
 		return godbolt_list_send(call);
-	call->phase = call->args.share ? GODBOLT_SHARE : GODBOLT_JOB;
+	call->phase = call->args.flags & GODBOLT_WITH_SHARE ? GODBOLT_SHARE : GODBOLT_JOB;
 	return GODBOLT_GO;
 }
 
@@ -1668,7 +1694,7 @@ godbolt_job_body (struct godbolt              *call,
 	d = godbolt_cat(d, CSTR_VIEW("\",\"options\":{\"userArguments\":\""));
 	d = godbolt_cat_arguments(call, d, r, call->args.strings[call->job % call->args.n_strings]);
 	d = godbolt_cat(d, CSTR_VIEW("\",\"filters\":"));
-	d = godbolt_cat_filters(d, call->args.filters);
+	d = godbolt_cat_filters(d, call->args.flags);
 	d = godbolt_cat(d, CSTR_VIEW(",\"compilerOptions\":"));
 	d = godbolt_cat(d, r->options);
 	d = godbolt_cat(d, CSTR_VIEW("}}"));
@@ -1756,7 +1782,7 @@ godbolt_state (struct godbolt *call)
 		d = godbolt_cat(d, CSTR_VIEW("\",\"options\":\""));
 		d = godbolt_cat_arguments(call, d, r, a);
 		d = godbolt_cat(d, CSTR_VIEW("\",\"filters\":"));
-		d = godbolt_cat_filters(d, call->args.filters);
+		d = godbolt_cat_filters(d, call->args.flags);
 		d = godbolt_cat(d, CSTR_VIEW(",\"libs\":[]}"));
 	}
 	call->len = (size_t)(d - call->body);
@@ -2265,7 +2291,7 @@ godbolt_facts (struct godbolt *call)
 		any = true;
 	}
 	godbolt_put(call, any ? CSTR_VIEW("\n") : CSTR_VIEW("versions: unknown\n"));
-	if (!call->args.headers)
+	if (!(call->args.flags & GODBOLT_WITH_HEADERS))
 		return call->e;
 	for (uint32_t k = 0; k < p->n_headers; ++k) {
 		godbolt_put(call, k ? CSTR_VIEW(", ") : CSTR_VIEW("headers: "));
@@ -2533,8 +2559,8 @@ godbolt_args_words (struct godbolt_args *a,
 	return 0;
 }
 
-/* Reads the argument filters @p v into a->filters. Returns 0, or
- * EINVAL.
+/* Reads the argument filters @p v into the filters of a->flags. Returns 0,
+ * or EINVAL.
  */
 static int
 godbolt_args_filters (struct godbolt_args *a,
@@ -2544,14 +2570,11 @@ godbolt_args_filters (struct godbolt_args *a,
 		return EINVAL;
 	struct json_object_iter it;
 	json_object_object_foreachC(v, it) {
-		size_t i = 0;
-		while (i < GODBOLT_FILTERS &&
-		       (!godbolt_filters[i].bit || strcmp(it.key, godbolt_filters[i].name.data)))
-			++i;
-		if (i == GODBOLT_FILTERS || !json_object_is_type(it.val, json_type_boolean))
+		size_t const i = cstr_view_index(godbolt_filters, array_size(godbolt_filters),
+		                                 cstr_view(it.key));
+		if (!(GODBOLT_SETTABLE >> i & 1) || !json_object_is_type(it.val, json_type_boolean))
 			return EINVAL;
-		a->filters = json_object_get_boolean(it.val) ? a->filters | godbolt_filters[i].bit
-		                                             : a->filters & ~godbolt_filters[i].bit;
+		a->flags = json_object_get_boolean(it.val) ? a->flags | 1u << i : a->flags & ~(1u << i);
 	}
 	return 0;
 }
@@ -2592,7 +2615,7 @@ godbolt_args_set (struct godbolt_args *a,
 		return a->limit ? 0 : EINVAL;
 	case GODBOLT_ARG_OFFSET:
 		/* mcp_slot_offset() checks the offset. */
-		a->paged = jb_int(v, 0) > 0;
+		a->flags |= jb_int(v, 0) > 0 ? GODBOLT_WITH_OFFSET : 0;
 		return 0;
 	case GODBOLT_ARG_ARGS:
 		return godbolt_args_strings(a, v);
@@ -2602,11 +2625,12 @@ godbolt_args_set (struct godbolt_args *a,
 	case GODBOLT_ARG_FILTERS:
 		return godbolt_args_filters(a, v);
 	case GODBOLT_ARG_HEADERS:
-		a->headers = json_object_get_boolean(v);
-		return json_object_is_type(v, json_type_boolean) ? 0 : EINVAL;
 	case GODBOLT_ARG_SHARE:
-		a->share = json_object_get_boolean(v);
-		return json_object_is_type(v, json_type_boolean) ? 0 : EINVAL;
+		if (!json_object_is_type(v, json_type_boolean))
+			return EINVAL;
+		if (json_object_get_boolean(v))
+			a->flags |= arg == GODBOLT_ARG_SHARE ? GODBOLT_WITH_SHARE : GODBOLT_WITH_HEADERS;
+		return 0;
 	case GODBOLT_ARG_COUNT:
 		break;
 	}
@@ -2636,7 +2660,7 @@ godbolt_args_read (struct godbolt_args         *a,
 		.limit = GODBOLT_LIMIT,
 		.n_strings = 1,
 		.action = GODBOLT_COMPILERS,
-		.filters = tool == GODBOLT_COMPILE ? GODBOLT_SITE_FILTERS : 0
+		.flags = tool == GODBOLT_COMPILE ? GODBOLT_SITE_FILTERS : 0
 	};
 	if (args && !json_object_is_type(args, json_type_object))
 		return util_refuse(why, len, "The arguments must be a JSON object.");
@@ -2700,8 +2724,8 @@ godbolt_create (struct godbolt_args const *a,
                 struct loop               *loop,
                 int                       *e)
 {
-	struct cstr_view const head = a->headers ? CSTR_VIEW(GODBOLT_HEADERS_LINE)
-	                                         : (struct cstr_view){};
+	struct cstr_view const head = a->flags & GODBOLT_WITH_HEADERS
+	                            ? CSTR_VIEW(GODBOLT_HEADERS_LINE) : (struct cstr_view){};
 	struct cstr_view const source = tool == GODBOLT_TARGETS ? godbolt_probe_source()
 	                              : a->source.len ? a->source : CSTR_VIEW("\n");
 	size_t bytes = a->language.len + head.len + source.len;
