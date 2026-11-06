@@ -93,6 +93,9 @@ enum { TERMINAL = KIND(JOURNAL_RESULT) | KIND(JOURNAL_CANCEL) };
  */
 enum { JOB_TERMINAL = 1, JOB_LEGACY = 2 };
 
+/* The bits of journal.flags: the writer was started, and was told to stop. */
+enum { WRITER_STARTED = 1, WRITER_STOP = 2 };
+
 struct journal_job {
 	uint64_t     bytes; /* zero until a recovery checkpoint exists */
 	uint64_t     touched;
@@ -139,10 +142,8 @@ struct journal {
 	int                    thoughts_fd;
 	int                    lock_fd;
 	int                    wal_fd;
-	bool                   mutex_ready;
-	bool                   cond_ready;
-	bool                   started;
-	bool                   stop;
+	uint8_t                flags;     /* WRITER_* bits, set before the writer
+	                                     starts or under the lock */
 	struct oid             tip;
 	char                   ref[sizeof REF + UTIL_WORD_MAX];
 };
@@ -1057,7 +1058,7 @@ journal_thread (void *arg)
 	(void)pthread_setname_np(pthread_self(), "journal");
 	for (;;) {
 		pthread_mutex_lock(&j->lock);
-		while (!j->first && !j->stop)
+		while (!j->first && !(j->flags & WRITER_STOP))
 			pthread_cond_wait(&j->ready, &j->lock);
 		struct journal_item *item = journal_take(j);
 		pthread_mutex_unlock(&j->lock);
@@ -1096,7 +1097,7 @@ journal_enqueue (struct journal      *j,
 	size_t maximum = JOURNAL_QUEUE + (control ? JOURNAL_CONTROL : 0);
 	size_t bytes = JOURNAL_BYTES + (control ? JOURNAL_CONTROL_BYTES : 0);
 	pthread_mutex_lock(&j->lock);
-	if (j->stop)
+	if (j->flags & WRITER_STOP)
 		e = ECANCELED;
 	else if (j->queued >= maximum || j->bytes > bytes || item->bytes > bytes - j->bytes)
 		e = EAGAIN;
@@ -1404,8 +1405,11 @@ journal_create (char const *path,
 		return nullptr;
 	}
 	struct journal *j = calloc(1, sizeof *j);
-	if (!j) {
-		*e = ENOMEM;
+	*e = j ? pthread_mutex_init(&j->lock, nullptr) : ENOMEM;
+	if (!*e && (*e = pthread_cond_init(&j->ready, nullptr)))
+		pthread_mutex_destroy(&j->lock);
+	if (*e) {
+		free(j);
 		util_format(why, why_len, "%s", strerror(*e));
 		return nullptr;
 	}
@@ -1414,18 +1418,7 @@ journal_create (char const *path,
 		j->files[k].fd = -1;
 	j->digest = EVP_MD_CTX_new();
 	(void)util_format(j->ref, sizeof j->ref, "%s%s", REF, participant);
-	if (!j->digest)
-		*e = ENOMEM;
-	if (!*e) {
-		*e = pthread_mutex_init(&j->lock, nullptr);
-		j->mutex_ready = !*e;
-	}
-	if (!*e) {
-		*e = pthread_cond_init(&j->ready, nullptr);
-		j->cond_ready = !*e;
-	}
-	if (!*e)
-		*e = journal_setup(j, path, participant, why, why_len);
+	*e = j->digest ? journal_setup(j, path, participant, why, why_len) : ENOMEM;
 	if (!*e) {
 		/* Creation precedes brainstem_run(), which routes asynchronous
 		 * signals through signalfd. Inherit its worker mask at creation,
@@ -1433,8 +1426,12 @@ journal_create (char const *path,
 		sigset_t old;
 		*e = util_block_async(&old);
 		if (!*e) {
+			/* The writer reads the flags, so they change before it
+			 * starts, and back if it does not. */
+			j->flags |= WRITER_STARTED;
 			*e = pthread_create(&j->thread, nullptr, journal_thread, j);
-			j->started = !*e;
+			if (*e)
+				j->flags &= ~WRITER_STARTED;
 			int restore = pthread_sigmask(SIG_SETMASK, &old, nullptr);
 			if (!*e)
 				*e = restore;
@@ -1451,14 +1448,13 @@ journal_create (char const *path,
 void
 journal_stop (struct journal *j)
 {
-	if (!j || !j->started)
+	if (!j || (j->flags & (WRITER_STARTED | WRITER_STOP)) != WRITER_STARTED)
 		return;
 	pthread_mutex_lock(&j->lock);
-	j->stop = true;
+	j->flags |= WRITER_STOP;
 	pthread_mutex_unlock(&j->lock);
 	pthread_cond_signal(&j->ready);
 	(void)pthread_join(j->thread, nullptr);
-	j->started = false;
 }
 
 void
@@ -1479,10 +1475,8 @@ journal_destroy (struct journal **p_journal)
 	util_close(&j->lock_fd);
 	util_close(&j->state_fd);
 	util_close(&j->repo_fd);
-	if (j->cond_ready)
-		pthread_cond_destroy(&j->ready);
-	if (j->mutex_ready)
-		pthread_mutex_destroy(&j->lock);
+	pthread_cond_destroy(&j->ready);
+	pthread_mutex_destroy(&j->lock);
 	free(j);
 	j = nullptr;
 }
