@@ -1294,8 +1294,8 @@ review_args_parse (struct review_args  *a,
 			"no findings yet", "only finding ", "findings 1 to ",
 		};
 		size_t const k = r->n_findings;
-		return REFUSE(out, "There is no finding %" PRIu64 "; the record has %s%.0zu.", n,
-		              have[k < 2 ? k : 2], k);
+		return REFUSE(out, "There is no finding %" PRIu64 ". The record contains %s%.0zu.",
+		              n, have[k < 2 ? k : 2], k);
 	}
 	a->id = (uint32_t)n;
 	struct json_object *state = of[REVIEW_ARG_STATE];

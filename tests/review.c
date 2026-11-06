@@ -552,11 +552,11 @@ test_refusals (void)
 		{ "{\"action\":\"update\",\"id\":\"1\"}",
 		  "The id argument must be the number of a finding, such as 3." },
 		{ "{\"action\":\"update\",\"id\":7}",
-		  "There is no finding 7; the record has no findings yet." },
+		  "There is no finding 7. The record contains no findings yet." },
 		{ "{\"action\":\"show\",\"id\":1.0}",
 		  "The id argument must be the number of a finding, such as 3." },
 		{ "{\"action\":\"show\",\"id\":2}",
-		  "There is no finding 2; the record has no findings yet." },
+		  "There is no finding 2. The record contains no findings yet." },
 	};
 	for (size_t i = 0; i < array_size(cases); ++i)
 		EXPECT(r, cases[i].json, 2, EINVAL, cases[i].want);
@@ -593,14 +593,14 @@ test_refusals (void)
 	/* Finding ids past the last. */
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\"}", 2, 0, "Added finding 1: candidate.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":2}", 2, EINVAL,
-	       "There is no finding 2; the record has only finding 1.");
+	       "There is no finding 2. The record contains only finding 1.");
 	for (unsigned i = 2; i <= 5; ++i) {
 		char want[64];
 		snprintf(want, sizeof want, "Added finding %u: candidate.", i);
 		EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\"}", 2, 0, want);
 	}
 	EXPECT(r, "{\"action\":\"show\",\"id\":9}", 2, EINVAL,
-	       "There is no finding 9; the record has findings 1 to 5.");
+	       "There is no finding 9. The record contains findings 1 to 5.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1}", 2, EINVAL,
 	       "update needs state and evidence: what shows the new state, or why you retract "
 	       "the finding.");

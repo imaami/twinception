@@ -12599,8 +12599,7 @@ def check_review(binary, up):
                 "candidate", "verified", "disproved", "retracted"], schema
             assert schema["required"] == ["action"], schema
             assert schema["additionalProperties"] is False, schema
-            assert "askai keeps your task as the user gave it through every " \
-                "compaction, so you need not copy it." in lent["findings"]["description"]
+            assert "need not copy" not in lent["findings"]["description"], lent["findings"]
             assert "After it you see the task as the user gave it, then your summary, then " \
                 "askai's review record. " in lent["compact"]["description"], lent
 
@@ -12658,7 +12657,7 @@ def check_review(binary, up):
                 "turn 2: retracted\n  evidence: R\n  the claim was: C3",
                 record[len(REVIEW):] + f"\n\n[Bytes {len(REVIEW)} to {size} of {size}: "
                 "its end.]",
-                "There is no finding 9; the record has findings 1 to 2."], results(sent[2])
+                "There is no finding 9. The record contains findings 1 to 2."], results(sent[2])
             # Each compaction puts the whole record into the prompt, and the
             # calls after the first compaction add to it.
             assert sent[3]["body"]["messages"][1:] == [], sent[3]

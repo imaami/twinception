@@ -350,16 +350,16 @@ The turns of an `ask_ai` call keep a review record with the tool
 lasts as long as the `ask_ai` call, through all of its compactions. A new
 `ask_ai` call starts with an empty record. A background job that resumes
 after a restart gets its record back from its checkpoint, and `askai` makes
-the `findings` calls of the interrupted turn again. The record holds these
-things:
+the `findings` calls of the interrupted turn again. The record contains
+these things:
 
 - The findings of the model. `add` records a finding: a claim, an optional
   location such as `src/mcp.c:120-140`, and a state. A finding is a
   `candidate` until the model checks it. `update` changes the state to
   `verified`, `disproved`, `retracted` or `candidate`, with evidence, and
   can also change the claim or the location if they were wrong. The
-  history of the finding keeps each change with its turn, its evidence and
-  the old claim or location.
+  history of the finding contains each change with its turn, its evidence
+  and the old claim or location.
 - A log of the lines of committed files that the command `read` of the
   tool `git` showed the turns whole, by repository, commit and path. The
   lines of a read in a background job count once `jobs` gives its result.
@@ -402,10 +402,10 @@ claim and its latest evidence, then the closed findings, a line each, and
 then the read log. There the record takes at most the window of a tool
 result in a turn (section [`context`](#context)). If it is longer, its
 last line names the `offset` from which `findings` `show` gives the rest.
-The header of the record says that `askai` keeps the task word for word
-through every compaction: the system text, the messages of the client and
-the prompt. So the model need not copy the task into its notes. The
-description of `compact` says this too.
+The notice before the record states that `askai` keeps the task word for
+word through every compaction: the system text, the messages of the client
+and the prompt. So the model need not copy the task into its notes. The
+description of `compact` states this too.
 
 The record's limit is 4 MiB. `askai` counts the bytes of its texts, 64
 bytes for each file and range of lines, and the size of its own structure
@@ -778,7 +778,7 @@ tools:
 | ---- | ------------ | --------------------- |
 | `notes` | writes, lists and reads shared session notebooks | in every call with `notes` |
 | `compact` | replaces the conversation after the prompt with a summary | with any other tool |
-| `findings` | keeps the call's review record of findings and of the lines read with `git` `read` | with any other tool |
+| `findings` | records findings and shows the call's review record of findings and of the lines read with `git` `read` | with any other tool |
 | `background` | runs a call of a tool as a job, and returns the number of the job at once | with a tool that can run in the background |
 | `jobs` | lists the jobs and the timers, returns the output of an ended job, or cancels a job or a timer | with any other tool |
 | `wait` | waits up to 10 minutes for a job or a timer | with any other tool |

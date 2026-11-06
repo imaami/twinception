@@ -609,12 +609,14 @@ window" error) or as the usage counts, `askai` does likewise without a
 summary, once until a turn goes through again; the next overflow is the
 call's error.
 
-`findings` keeps the call's review record, which lasts through all of its
-compactions. `add` records a finding: a claim, a location such as
-`src/mcp.c:120-140`, and a state, `candidate` until the model checks it.
+`findings` records findings in the call's review record, which lasts
+through all of its compactions. `add` records a finding: a claim, a
+location such as `src/mcp.c:120-140`, and a state, `candidate` until the
+model checks it.
 `update` changes the state to `verified`, `disproved`, `retracted` or
 `candidate` again, with evidence, and also the claim or the location if they
-were wrong; the finding's history keeps each change and the old text.
+were wrong; `askai` stores each change and the old text in the finding's
+history.
 `show` gives the record, a window at a time, or with `id` one finding's
 history. A finding becomes `verified` or `disproved` only if the lines of
 its location are in the record's log of what `git` `read` showed the turns,
@@ -624,11 +626,12 @@ The log takes the lines of a result once the upstream has answered the
 request with it, so the lines that a turn reads count from the next turn
 on, and not at all if a compaction removes the result first.
 After a compaction, the record follows the summary, within a tool's window;
-past that, its last line names the `offset` that `show` reads on from. Its
-header says that the system text, the client's messages and the prompt stay
-word for word, so the model need not copy the task into notes. The record's
-limit is 4 MiB, and a new call starts with an empty one. A background job
-that resumes after a restart gets its record back from its checkpoint.
+past that, its last line names the `offset` that `show` reads on from. The
+notice before the record states that the system text, the client's messages
+and the prompt stay word for word, so the model need not copy the task into
+notes. The record's limit is 4 MiB, and a new call starts with an empty
+one. A background job that resumes after a restart gets its record back
+from its checkpoint.
 
 With `--notes PATH`, the repository at `PATH` is the shared session.
 `askai` creates a bare Git repository there if absent, and also accepts an
