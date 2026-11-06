@@ -541,6 +541,8 @@ struct mcp_req {
 	struct mcp_splice   *splice;     /* the places of the strings of the
 	                                    client in the draft, in draft order.
 	                                    A spare request reuses the array. */
+	size_t               splices;    /* the entries of splice in use */
+	size_t               splice_max; /* the entries of splice */
 	struct mcp_slot      self;       /* its own call: its answer, the tool
 	                                    that a client calls, and the notes'
 	                                    git it reads */
@@ -651,8 +653,6 @@ struct mcp_req {
 	                                    0: unknown */
 	uint32_t             traced;     /* tool calls the turns made */
 	uint32_t             launched;   /* the turn's calls launched */
-	uint16_t             splices;    /* the entries of splice in use */
-	uint16_t             splice_max; /* the entries of splice */
 	uint16_t             next;       /* the splice to write next, or piece */
 	uint16_t             part;       /* the part of the turn being written,
 	                                    or its call under way */
@@ -3640,16 +3640,12 @@ mcp_req_draft (struct mcp_req     *req,
 {
 	struct mcp_static const *st = req->mcp->st;
 	size_t n = jb_len(history);
-	/* The draft contains a splice for each message of the history, one for
-	 * the prompt and one for the system prompt. */
-	size_t const need = n + 2;
-	if (need > req->splice_max) {
-		struct mcp_splice *splice = realloc(req->splice, need * sizeof *splice);
-		if (!splice)
-			return ENOMEM;
-		req->splice = splice;
-		req->splice_max = (uint16_t)need;
-	}
+	/* The draft contains a splice for each message of the history, at most
+	 * CHAT_HISTORY (mcp_history_valid()), one for the prompt and one for the
+	 * system prompt, and req->next counts them. */
+	static_assert(CHAT_HISTORY + 2 < 1ull << 8 * sizeof req->next, "req->next is too narrow");
+	if (util_grow(req->splice, req->splice_max, n + 2))
+		return ENOMEM;
 	for (size_t k = 0; k < n; ++k)
 		json_object_set_serializer(jb_get(jb_at(history, k), "content"),
 		                           mcp_splice_mark, req, nullptr);
