@@ -505,7 +505,7 @@ web_run_finish (struct web                *web,
 	/* The URL without a user name and a password, which askai's own
 	 * requests can have (struct web_ask). */
 	char const *url = run->data;
-	int scheme = 0;
+	int scheme;
 	char const *host = util_url_shown(url, &scheme);
 	if (end->e)
 		LOG(LOG_VERBOSE, "web request %s %.*s%s failed after %" PRIu64 " ms: %s",
