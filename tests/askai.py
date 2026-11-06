@@ -10446,6 +10446,17 @@ def check_notes(binary, up):
             assert said.count("\n") == 102 and call({"action": "search", "pattern": "^line 07",
                                                       "offset": 200}) == \
                 said.encode()[200:].decode(), said
+            # A write refuses a name in the form of a notebook selector, and a
+            # read takes it.
+            book = "writers/0123456789abcdef/client"
+            for arguments, why in (
+                    ({"action": "add", "file": book, "text": "x"}, "!That name is in the form "
+                     "of a notebook selector. A note's name goes in file or as, and a write "
+                     "always goes to your own notebook."),
+                    ({"action": "copy", "file": "found.md", "notebook": "other", "as": book},
+                     "!That name is in the form of a notebook selector."),
+                    ({"action": "read", "file": book}, "!" + NO_NOTE)):
+                assert call(arguments).startswith(why), arguments
             assert call({"action": "search", "pattern": "a\n("}) == "!A line of the pattern " \
                 "is not an extended regular expression."
             for pattern in ("", "a\0b"):

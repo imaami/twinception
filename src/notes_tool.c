@@ -143,6 +143,11 @@ static struct cstr_view const bad_name =
 static struct cstr_view const dir_name =
 	CSTR_VIEW_INIT("That name is a directory of notes. list shows the notes in it.");
 
+/* The message for a name of a written note that notes_select() accepts. */
+static struct cstr_view const selector_name =
+	CSTR_VIEW_INIT("That name is in the form of a notebook selector. A note's name goes "
+	               "in file or as, and a write always goes to your own notebook.");
+
 /* The message for a call that names a note that does not exist. */
 static struct cstr_view const no_note =
 	CSTR_VIEW_INIT("No note has that name. list shows the current notes, and add creates "
@@ -1533,6 +1538,7 @@ notes_tool_add (struct mcp_slot    *slot,
 	char big[96];
 	struct cstr_view const problem =
 		notes_name(&name) ? bad_name
+		: !notes_select(name, nullptr) ? selector_name
 		: !content ? (!text.len || text.len > TOOL_TEXT_MAX || memchr(text.data, '\0', text.len)
 		              ? CSTR_VIEW("The text argument must be a string of 1 byte to 4 MiB, "
 		                          "and no NUL.")
@@ -1832,8 +1838,11 @@ notes_tool_start (struct mcp_slot    *slot,
 		 * file. */
 		struct json_object *as = jb_get(args, "as");
 		struct cstr_view target = as ? jb_view(as) : name;
-		if (notes_name(&target)) {
-			mcp_slot_tell(slot, bad_name, TOOL_FAILED);
+		struct cstr_view const why = notes_name(&target) ? bad_name
+		                           : as && !notes_select(target, nullptr) ? selector_name
+		                           : (struct cstr_view){};
+		if (why.data) {
+			mcp_slot_tell(slot, why, TOOL_FAILED);
 			return;
 		}
 		(void)util_text_store(&call->name, target);

@@ -700,6 +700,7 @@ adds a line feed to a turn's text that does not end with one.
 Names cannot contain control characters or empty parts. No part can be
 `.`, `..`, `.git` or `git~1`, in any case and also with spaces or dots after
 it, because git refuses such names. Slashes at the start are left out.
+askai refuses the name of a written note in the form of a notebook selector.
 The optional `thread` argument remains accepted for older clients, but
 does not create another repository or notebook. A role that names
 `notes` among its `tools` gives clients their own notebooks with `--notes`
