@@ -169,7 +169,6 @@ struct notes_tool_call {
 	                                      notes_tool_fetch) */
 	uint16_t                len;       /* bytes in the union */
 	uint8_t                 action;    /* the row of notes_tool_actions[] */
-	uint8_t                 side;      /* enum notes_side of the caller */
 	bool                    stripped;  /* askai cut its notices off the
 	                                      text */
 	char                    repo[NOTES_REPO];      /* the caller's own
@@ -1341,7 +1340,7 @@ notes_tool_add (struct mcp_slot    *slot,
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	bool initialized = notes_exists(call->loop->tool->notes);
-	bool turn = call->side == NOTES_UPSTREAM;
+	bool turn = !mcp_slot_from_client(slot);
 	size_t most = call->loop->tool->files_inline;
 	struct json_object *content = jb_get(args, "content");
 	struct cstr_view const text = jb_view(jb_get(args, "text"));
@@ -1496,10 +1495,10 @@ notes_tool_start (struct mcp_slot    *slot,
 		mcp_slot_fail(slot, e);
 		return;
 	}
-	call->side = mcp_slot_from_client(slot) ? NOTES_CLIENT : NOTES_UPSTREAM;
+	enum notes_side const side = mcp_slot_from_client(slot) ? NOTES_CLIENT : NOTES_UPSTREAM;
 	struct notes const *notes = call->loop->tool->notes;
-	notes_repo(notes, mcp_slot_principal(slot), call->side, call->repo);
-	bool uploads = call->side == NOTES_UPSTREAM && call->loop->tool->attach;
+	notes_repo(notes, mcp_slot_principal(slot), side, call->repo);
+	bool uploads = side == NOTES_UPSTREAM && call->loop->tool->attach;
 	struct cstr_view const action = jb_view(jb_get(args, "action"));
 	size_t which = 0;
 	while (which < array_size(notes_tool_actions) &&
@@ -1532,7 +1531,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		              TOOL_FAILED);
 		return;
 	}
-	if (call->side == NOTES_CLIENT) {
+	if (side == NOTES_CLIENT) {
 		struct json_object *thread = jb_get(args, "thread");
 		if (thread && !hexid_valid(jb_view(thread))) {
 			mcp_slot_tell(slot, CSTR_VIEW("The optional thread must be 32 hexadecimal "
@@ -1548,7 +1547,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	struct cstr_view const selected = jb_view(notebook);
 	bool other = cstr_view_equal(selected, CSTR_VIEW("other"));
 	if (!notebook && (fetch & FETCH_COPY)) {
-		if (call->side == NOTES_UPSTREAM) {
+		if (side == NOTES_UPSTREAM) {
 			mcp_slot_tell(slot, CSTR_VIEW("For copy, give the source notebook selector "
 			                              "from action notebooks."), TOOL_FAILED);
 			return;
@@ -1556,8 +1555,8 @@ notes_tool_start (struct mcp_slot    *slot,
 		other = true;
 	}
 	if (other) {
-		enum notes_side side = call->side == NOTES_CLIENT ? NOTES_UPSTREAM : NOTES_CLIENT;
-		notes_repo(notes, mcp_slot_principal(slot), side, call->notebook);
+		notes_repo(notes, mcp_slot_principal(slot),
+		           side == NOTES_CLIENT ? NOTES_UPSTREAM : NOTES_CLIENT, call->notebook);
 	} else if (notebook && !cstr_view_equal(selected, CSTR_VIEW("own")) &&
 	           notes_select(selected, call->notebook)) {
 		mcp_slot_tell(slot, CSTR_VIEW("The notebook must be own or a selector returned by "
@@ -1591,7 +1590,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		                                        "session yet.");
 		if (fetch == FETCH_BOOKS)
 			notes_tool_end(slot, notes_tool_call_identity(call), false);
-		else if (call->side == NOTES_CLIENT)
+		else if (side == NOTES_CLIENT)
 			mcp_slot_tell(slot, none, 0);
 		else
 			notes_tool_end(slot, cstr_view_cat(none, call->text), false);
