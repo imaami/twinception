@@ -111,10 +111,8 @@ notes_open (struct notes *notes,
 		e = errno;
 	if (!e && (notes->fd = open(notes->dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0)
 		e = errno;
-	if (e) {
-		util_format(why, len, "%s", strerror(e));
-		return e;
-	}
+	if (e)
+		goto fail;
 	struct stat st;
 	if (!fstatat(notes->fd, ".git", &st, AT_SYMLINK_NOFOLLOW)) {
 		if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode))
@@ -131,16 +129,16 @@ notes_open (struct notes *notes,
 	int fd = dup(notes->fd);
 	if (fd < 0) {
 		e = errno;
-		util_format(why, len, "%s", strerror(e));
-		return e;
+		goto fail;
 	}
 	DIR *dir = fdopendir(fd);
 	if (!dir) {
 		e = errno;
-		close(fd);
-		util_format(why, len, "%s", strerror(e));
-		return e;
+		util_close(&fd);
+		goto fail;
 	}
+	/* closedir() closes the descriptor. */
+	fd = -1;
 	struct dirent *entry;
 	errno = 0; /* readdir distinguishes exhaustion from errors through errno. */
 	while ((entry = readdir(dir))) {
@@ -158,6 +156,9 @@ notes_open (struct notes *notes,
 		            "nonempty directory is not a repository. Keep the old notes "
 		            "directory and select a new repository path for the session");
 	notes->bare = true;
+	return e;
+fail:
+	util_format(why, len, "%s", strerror(e));
 	return e;
 }
 
