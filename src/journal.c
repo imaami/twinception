@@ -748,29 +748,27 @@ journal_checkpoint_write (struct journal        *j,
 	if (!e && (renameat(j->jobs_fd, ".checkpoint.tmp", j->jobs_fd, record->id.hex) ||
 	           fsync(j->jobs_fd)))
 		e = errno;
-	if (!e) {
-		if (!job)
-			job = journal_job_add(j, &record->id, &e);
-		if (job) {
-			j->recovery_bytes = j->recovery_bytes - job->bytes + bytes;
-			job->bytes = bytes;
-			uint64_t now = clk_realtime_ns();
-			if (now)
-				job->touched = now;
-			job->flags = had | (legacy ? JOB_LEGACY : 0) |
-			             (terminal ? JOB_TERMINAL : 0);
-			job->error = 0;
-			if (state) {
-				job->thought_error = 0;
-				job->thought_turn = 0;
-				job->thought_seen = 0;
-			}
-		}
-	} else if (job) {
-		job->error = e;
-	}
 	journal_records_destroy(&records);
-	return e;
+	if (!e && !job)
+		job = journal_job_add(j, &record->id, &e);
+	if (e) {
+		if (job)
+			job->error = e;
+		return e;
+	}
+	j->recovery_bytes = j->recovery_bytes - job->bytes + bytes;
+	job->bytes = bytes;
+	uint64_t now = clk_realtime_ns();
+	if (now)
+		job->touched = now;
+	job->flags = had | (legacy ? JOB_LEGACY : 0) | (terminal ? JOB_TERMINAL : 0);
+	job->error = 0;
+	if (state) {
+		job->thought_error = 0;
+		job->thought_turn = 0;
+		job->thought_seen = 0;
+	}
+	return 0;
 }
 
 static int
@@ -987,9 +985,8 @@ journal_thought_commit (struct journal            *j,
 	if (e)
 		(void)journal_unlock(j);
 	int tip = journal_tip(j);
-	if (!e && !(e = tip)) {
+	if (!e && !(e = tip))
 		file->committed_size = file->size;
-	}
 	return e;
 }
 
