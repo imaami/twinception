@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "autocomplete_file.h"
+#include "buf.h"
 #include "child.h"
 #include "cli_client.h"
 #include "cli_command.h"
@@ -34,6 +35,7 @@
 #include "jb.h"
 #include "list.h"
 #include "loop.h"
+#include "util.h"
 
 static int
 cli_read_file (struct autocomplete_file const *files,
@@ -48,36 +50,20 @@ cli_read_file (struct autocomplete_file const *files,
 	dstr_auto expanded = dstr(nullptr);
 	if (autocomplete_file_expand(files, path, &expanded))
 		return ENOMEM;
-	FILE *file = fopen(dstr_get(&expanded), "rb");
-	if (!file) {
-		int e = errno;
-		return cli_error_set(error, e, "%s: %s",
-		                     dstr_get(&expanded),
-		                     strerror(e));
-	}
-	dstr_auto contents = dstr(nullptr);
-	char chunk[8192];
-	size_t count;
-	int e = 0;
+	int fd = open(dstr_get(&expanded), O_RDONLY | O_CLOEXEC);
 	/* A file read can end inside a UTF-8 character. Assemble bytes first. */
-	while (!e && (count = fread(chunk, 1, sizeof chunk, file))) {
-		e = count > CLI_LIMIT - dstr_len(&contents)
-		  ? cli_error_set(error, EFBIG, "Prompt file exceeds the %d MiB client limit", CLI_LIMIT >> 20)
-		  : dstr_cat_n(&contents, chunk, count) ? 0 : ENOMEM;
-		if (count < sizeof chunk)
-			break;
-	}
-	if (!e && ferror(file))
-		e = cli_error_set(error, EIO, "%s: read failed", dstr_get(&expanded));
-	if (fclose(file) && !e)
-		e = errno;
-	file = nullptr;
-	if (!e && !jb_is_text(cstr_view_dstr(&contents)))
-		e = cli_error_set(error, EILSEQ, "Prompt files must contain UTF-8 text without NUL bytes");
-	if (!e) {
-		dstr_cleanup(text);
-		*text = dstr_move(&contents);
-	}
+	struct buf bytes = {};
+	int e = fd < 0 ? errno : buf_read(&bytes, fd, 0, CLI_LIMIT);
+	util_close(&fd);
+	struct span const s = buf_peek(&bytes);
+	struct cstr_view const contents = { (char const *)s.ptr, s.len };
+	e = e == ENOBUFS ? cli_error_set(error, EFBIG, "Prompt file exceeds the %d MiB client limit",
+	                                 CLI_LIMIT >> 20)
+	  : e ? cli_error_set(error, e, "%s: %s", dstr_get(&expanded), strerror(e))
+	  : !jb_is_text(contents) ? cli_error_set(error, EILSEQ, "Prompt files must contain UTF-8 "
+	                                          "text without NUL bytes")
+	  : cstr_view_store(contents, text);
+	buf_fini(&bytes);
 	return e;
 }
 
