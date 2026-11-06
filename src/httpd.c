@@ -135,23 +135,55 @@ struct httpd_field {
 	uint16_t len;
 };
 
+/* What the head of a request says, then where the request stands. */
+enum httpd_req_flag : uint32_t {
+	REQ_LENGTH   = 1u << 0,   /* Content-Length seen */
+	REQ_CHUNKED  = 1u << 1,   /* Transfer-Encoding: chunked */
+	REQ_HTTP10   = 1u << 2,
+	REQ_CLOSE    = 1u << 3,
+	REQ_EXPECT   = 1u << 4,   /* Expect: 100-continue, and no 100 Continue
+	                             sent yet */
+	REQ_PNA      = 1u << 5,   /* Access-Control-Request-Private-Network */
+	REQ_OPTIONS  = 1u << 6,   /* the method is OPTIONS */
+	REQ_HEAD     = 1u << 7,   /* the method is HEAD */
+	REQ_PARSED   = 1u << 8,
+	REQ_BODY_IN  = 1u << 9,   /* the body is all in */
+	REQ_OPEN     = 1u << 10,  /* the application has the stream */
+	REQ_WAITS    = 1u << 11,  /* and waits for something outside the loop */
+	REQ_WRITABLE = 1u << 12,  /* to tell the application once output drains */
+	REQ_REPLIED  = 1u << 13,  /* the response head is queued */
+	REQ_DONE     = 1u << 14,  /* the response is complete */
+	REQ_CHUNKS   = 1u << 15,  /* the response body goes in chunks */
+};
+
+/* Where a chunked body's decoding stands, in the flags of its request. */
+enum httpd_chunk : uint32_t {
+	CHUNK_SIZE    = 0u << 16,
+	CHUNK_DATA    = 1u << 16,
+	CHUNK_CRLF    = 2u << 16,
+	CHUNK_TRAILER = 3u << 16,
+	CHUNK_STATE   = 3u << 16,
+};
+
+/* A request, from its head on, and where the connection stands with it:
+ * httpd_conn_reset() clears it all for the next request.
+ */
 struct httpd_req {
 	size_t             body;                /* Content-Length */
-	uint32_t           head;                /* length of the request line and headers */
+	size_t             got;                 /* body bytes handed on */
+	size_t             chunk;               /* bytes left of the chunk under way */
+	uint32_t           flags;               /* enum httpd_req_flag, enum httpd_chunk */
+	uint16_t           head;                /* length of the request line and headers */
+	uint16_t           scan;                /* where to resume looking for the
+	                                           head's end */
+	uint16_t           trailer;             /* trailer bytes so far */
+	uint16_t           trailers;            /* trailer fields so far */
 	struct httpd_field target;
 	struct httpd_field host;
 	struct httpd_field origin;
 	struct httpd_field auth;
 	struct httpd_field acrh;                /* Access-Control-Request-Headers */
 	struct httpd_field app[STREAM_FIELDS];  /* those the application asked for */
-	bool               length;              /* Content-Length seen */
-	bool               chunked;             /* Transfer-Encoding: chunked */
-	bool               http10;
-	bool               close;
-	bool               expect;              /* Expect: 100-continue */
-	bool               pna;                 /* Access-Control-Request-Private-Network */
-	bool               options;             /* the method is OPTIONS */
-	bool               head_only;           /* the method is HEAD */
 };
 
 /* The connections from one client address: home's, which counts them, and
@@ -167,8 +199,17 @@ struct httpd_client {
 	                                  unused */
 };
 
-/* Where a chunked body's decoding stands. */
-enum httpd_chunk { CHUNK_SIZE, CHUNK_DATA, CHUNK_CRLF, CHUNK_TRAILER };
+/* Where a connection stands, apart from its request. */
+enum httpd_conn_flag : uint32_t {
+	CONN_CLOSING = 1u << 0,  /* ends once its response is sent */
+	CONN_EOF     = 1u << 1,
+	CONN_DOOMED  = 1u << 2,  /* to close at its next step */
+	CONN_LINGER  = 1u << 3,  /* half-closed, discarding input */
+	CONN_LOCAL   = 1u << 4,  /* home sets it: the client is on loopback, or
+	                            a Unix socket */
+	CONN_UDS     = 1u << 5,  /* home sets it: over a Unix socket */
+	CONN_IDLE    = 1u << 6,  /* on srv->idle */
+};
 
 struct httpd_conn {
 	struct msg           msg;       /* home's hand-over, then the give-back */
@@ -194,8 +235,6 @@ struct httpd_conn {
 	size_t               earlier;   /* of the output pending, the bytes of
 	                                   responses before the one under way */
 	size_t               held;      /* body bytes counted in the budgets */
-	size_t               got;       /* body bytes handed on */
-	size_t               chunk;     /* bytes left of the chunk under way */
 	size_t               room;      /* groups the groups' storage holds */
 	struct httpd_req     req;
 	uint32_t            *groups;    /* home sets them: a Unix socket's user's
@@ -207,28 +246,8 @@ struct httpd_conn {
 	                                   loop. */
 	uint32_t             n_groups;
 	uint32_t             events;    /* reported since the last step, and DEADLINE */
-	uint32_t             scan;      /* where to resume looking for the head's end */
-	uint32_t             trailer;   /* trailer bytes so far */
 	int                  fd;        /* home sets it; -1 once closed */
-	uint16_t             trailers;  /* trailer fields so far */
-	uint16_t             chunking;  /* enum httpd_chunk */
-	bool                 parsed;
-	bool                 body_in;   /* the body is all in */
-	bool                 open;      /* the application has the stream */
-	bool                 waits;     /* and waits for something outside the loop */
-	bool                 replied;   /* the response head is queued */
-	bool                 done;      /* the response is complete */
-	bool                 chunks;    /* the response body goes in chunks */
-	bool                 cont;      /* 100 Continue sent */
-	bool                 closing;
-	bool                 eof;
-	bool                 doomed;    /* to close at its next step */
-	bool                 linger;    /* half-closed, discarding input */
-	bool                 writable;  /* to tell the application once output drains */
-	bool                 local;     /* home sets it: the client is on loopback,
-	                                   or a Unix socket */
-	bool                 uds;       /* home sets it: over a Unix socket */
-	bool                 idle;      /* on srv->idle */
+	uint32_t             flags;     /* enum httpd_conn_flag */
 };
 
 /* A client loop, as its server and home's door share it. */
@@ -517,19 +536,19 @@ httpd_conn_head_length (struct httpd_conn *conn,
 {
 	char const *data = (char const *)in.ptr;
 	size_t len = in.len < conn->srv->lim.head ? in.len : conn->srv->lim.head;
-	size_t i = conn->scan;
+	size_t i = conn->req.scan;
 	for (char const *nl; i < len && (nl = memchr(data + i, '\n', len - i)); ) {
 		i = (size_t)(nl - data) + 1;
 		size_t cr = i < len && data[i] == '\r';
 		if (i + cr == len) {
 			/* The empty line may yet follow this one's end. */
-			conn->scan = (uint32_t)(i - 1);
+			conn->req.scan = (uint16_t)(i - 1);
 			return 0;
 		}
 		if (data[i + cr] == '\n')
 			return i + cr + 1;
 	}
-	conn->scan = (uint32_t)len;
+	conn->req.scan = (uint16_t)len;
 	return 0;
 }
 
@@ -580,12 +599,12 @@ httpd_req_length (struct httpd_req *req,
                   size_t            max_body)
 {
 	size_t n = strspn(value, "0123456789");
-	if (!n || value[n] || req->length)
+	if (!n || value[n] || req->flags & REQ_LENGTH)
 		return 400;
 	/* Nineteen digits fit, so the check sees the true value. */
 	if (n > 19 || (req->body = strtoull(value, nullptr, 10)) > max_body)
 		return 413;
-	req->length = true;
+	req->flags |= REQ_LENGTH;
 	return 0;
 }
 
@@ -614,25 +633,27 @@ httpd_req_header (struct httpd_req        *req,
 		return httpd_req_length(req, value, max_body);
 	case HEADER_TRANSFER_ENCODING:
 		/* Only chunked, the one coding HTTP/1.1 requires (RFC 9112). */
-		if (req->chunked)
+		if (req->flags & REQ_CHUNKED)
 			return 400;
 		if (strcasecmp(value, "chunked"))
 			return 501;
-		req->chunked = true;
+		req->flags |= REQ_CHUNKED;
 		return 0;
 	case HEADER_CONNECTION:
-		if (cstr_view_list_has(cstr_view(value), CSTR_VIEW("close")))
-			req->close = true;
-		else if (req->http10 && cstr_view_list_has(cstr_view(value), CSTR_VIEW("keep-alive")))
-			req->close = false;
+		if (cstr_view_list_has((struct cstr_view){ value, f.len }, CSTR_VIEW("close")))
+			req->flags |= REQ_CLOSE;
+		else if (req->flags & REQ_HTTP10 &&
+		         cstr_view_list_has((struct cstr_view){ value, f.len },
+		                            CSTR_VIEW("keep-alive")))
+			req->flags &= ~REQ_CLOSE;
 		return 0;
 	case HEADER_EXPECT:
 		if (strcasecmp(value, "100-continue"))
 			return 417;
-		req->expect = !req->http10;
+		req->flags |= req->flags & REQ_HTTP10 ? 0 : REQ_EXPECT;
 		return 0;
 	case HEADER_PNA:
-		req->pna = !strcasecmp(value, "true");
+		req->flags = (req->flags & ~REQ_PNA) | (strcasecmp(value, "true") ? 0 : REQ_PNA);
 		return 0;
 	default:
 		return httpd_req_app(req, app, name, f);
@@ -690,12 +711,12 @@ httpd_req_line (struct httpd_req *req,
 	*version++ = '\0';
 	if (!httpd_token(line))
 		return 400;
-	req->http10 = !strcmp(version, "HTTP/1.0");
-	if (!req->http10 && strcmp(version, "HTTP/1.1"))
+	if (!strcmp(version, "HTTP/1.0"))
+		req->flags |= REQ_HTTP10 | REQ_CLOSE;
+	else if (strcmp(version, "HTTP/1.1"))
 		return strncmp(version, "HTTP/", sizeof "HTTP/" - 1) ? 400 : 505;
-	req->close = req->http10;
-	req->options = !strcmp(line, "OPTIONS");
-	req->head_only = !strcmp(line, "HEAD");
+	req->flags |= (strcmp(line, "OPTIONS") ? 0 : REQ_OPTIONS) |
+	              (strcmp(line, "HEAD") ? 0 : REQ_HEAD);
 	return 0;
 }
 
@@ -709,7 +730,7 @@ httpd_req_parse (struct httpd_req          *req,
                  struct stream_app const   *app,
                  struct httpd_limits const *lim)
 {
-	*req = (struct httpd_req){ .head = (uint32_t)len };
+	*req = (struct httpd_req){ .head = (uint16_t)len };
 	if (memchr(data, '\0', len))
 		return 400;
 
@@ -728,7 +749,7 @@ httpd_req_parse (struct httpd_req          *req,
 
 	/* Two framings would let a proxy and us see different requests, and
 	 * an HTTP/1.0 sender of chunks frames them faultily (RFC 9112 6.1). */
-	return req->chunked && (req->length || req->http10) ? 400 : 0;
+	return req->flags & REQ_CHUNKED && req->flags & (REQ_LENGTH | REQ_HTTP10) ? 400 : 0;
 }
 
 /* The value of header @p f, empty with a null pointer if absent. */
@@ -899,9 +920,9 @@ httpd_conn_hold (struct httpd_conn *conn,
 static void
 httpd_conn_cancel (struct httpd_conn *conn)
 {
-	if (!conn->open)
+	if (!(conn->req.flags & REQ_OPEN))
 		return;
-	conn->open = conn->waits = conn->writable = false;
+	conn->req.flags &= ~(REQ_OPEN | REQ_WAITS | REQ_WRITABLE);
 	conn->srv->app->on_cancel(&conn->stream);
 	conn->stream.user = nullptr;
 }
@@ -939,7 +960,7 @@ httpd_conn_close (struct httpd_conn *conn)
 	httpd_conn_cancel(conn);
 	httpd_conn_unhold(conn);
 	list_del(&conn->hook);
-	srv->idles -= conn->idle;
+	srv->idles -= !!(conn->flags & CONN_IDLE);
 	httpd_show_idle(srv);
 	loop_unready(&conn->step);
 	loop_timer_stop(srv->loop, &conn->timer);
@@ -963,8 +984,8 @@ httpd_conn_park (struct httpd_conn *conn,
 	struct httpd *srv = conn->srv;
 	list_del(&conn->hook);
 	list_append(idle ? &srv->idle : &srv->busy, &conn->hook);
-	srv->idles += idle - conn->idle;
-	conn->idle = idle;
+	srv->idles += idle - !!(conn->flags & CONN_IDLE);
+	conn->flags = (conn->flags & ~CONN_IDLE) | (idle ? CONN_IDLE : 0);
 	httpd_show_idle(srv);
 }
 
@@ -1034,7 +1055,7 @@ httpd_conn_ready (struct httpd_conn *conn)
 static void
 httpd_conn_doom (struct httpd_conn *conn)
 {
-	conn->doomed = true;
+	conn->flags |= CONN_DOOMED;
 	httpd_conn_ready(conn);
 }
 
@@ -1046,7 +1067,7 @@ httpd_conn_put (struct httpd_conn      *conn,
                 struct cstr_view const *f,
                 size_t                  n)
 {
-	if (conn->doomed)
+	if (conn->flags & CONN_DOOMED)
 		return EPIPE;
 	size_t total = httpd_views_len(f, n);
 	if (!total)
@@ -1080,7 +1101,7 @@ httpd_conn_head (struct httpd_conn      *conn,
                  size_t                  n_extra,
                  size_t                  length)
 {
-	struct httpd_req const *req = &conn->req;
+	struct httpd_req *req = &conn->req;
 	char digits[UTIL_DECIMAL];
 	struct cstr_view framing[3] = {};
 	if (length != STREAM_OPEN) {
@@ -1091,14 +1112,15 @@ httpd_conn_head (struct httpd_conn      *conn,
 			framing[1] = (struct cstr_view){ len, (size_t)(digits + sizeof digits - len) };
 			framing[2] = CSTR_VIEW("\r\n");
 		}
-	} else if (req->http10) {
-		conn->closing = true;
+	} else if (req->flags & REQ_HTTP10) {
+		conn->flags |= CONN_CLOSING;
 	} else {
-		conn->chunks = true;
+		req->flags |= REQ_CHUNKS;
 		framing[0] = CSTR_VIEW("Transfer-Encoding: chunked\r\n");
 	}
-	conn->closing |= req->close || conn->srv->draining || !conn->body_in;
-	conn->replied = true;
+	if ((req->flags & (REQ_CLOSE | REQ_BODY_IN)) != REQ_BODY_IN || conn->srv->draining)
+		conn->flags |= CONN_CLOSING;
+	req->flags |= REQ_REPLIED;
 	conn->earlier = buf_peek(&conn->out).len;
 
 	char code[8];
@@ -1111,7 +1133,7 @@ httpd_conn_head (struct httpd_conn      *conn,
 	f[n++] = (struct cstr_view){ c, (size_t)(code + 8 - c) };
 	f[n++] = httpd_reason(status);
 	f[n++] = CSTR_VIEW("\r\n");
-	if (conn->closing)
+	if (conn->flags & CONN_CLOSING)
 		f[n++] = CSTR_VIEW("Connection: close\r\n");
 	for (size_t i = 0; i < array_size(framing); ++i)
 		f[n++] = framing[i];
@@ -1149,7 +1171,7 @@ httpd_conn_respond (struct httpd_conn      *conn,
 		head[n++] = extra[i];
 	if (!httpd_conn_head(conn, status, head, n, httpd_views_len(body, n_body)))
 		(void)httpd_conn_put(conn, body, n_body);
-	conn->done = true;
+	conn->req.flags |= REQ_DONE;
 }
 
 /* A JSON-RPC error with @p message, or with the reason phrase of @p status
@@ -1178,8 +1200,8 @@ httpd_conn_fail (struct httpd_conn *conn,
                  unsigned           status)
 {
 	httpd_conn_cancel(conn);
-	conn->closing = true;
-	if (conn->replied)
+	conn->flags |= CONN_CLOSING;
+	if (conn->req.flags & REQ_REPLIED)
 		httpd_conn_doom(conn);
 	else
 		httpd_conn_error(conn, status, (struct cstr_view){}, nullptr, 0);
@@ -1200,8 +1222,8 @@ httpd_conn_preflight (struct httpd_conn *conn)
 		          "Access-Control-Allow-Headers: "),
 		acrh.data ? acrh : CSTR_VIEW("Content-Type, Authorization"),
 		CSTR_VIEW("\r\nAccess-Control-Max-Age: 600\r\n"),
-		req->pna ? CSTR_VIEW("Access-Control-Allow-Private-Network: true\r\n")
-		         : CSTR_VIEW(""),
+		req->flags & REQ_PNA ? CSTR_VIEW("Access-Control-Allow-Private-Network: true\r\n")
+		                     : CSTR_VIEW(""),
 		CSTR_VIEW("Vary: Access-Control-Request-Headers\r\n"),
 	};
 	httpd_conn_respond(conn, 204, extra, array_size(extra), nullptr, 0);
@@ -1215,7 +1237,8 @@ httpd_stream_head (struct stream *s,
 {
 	struct httpd_conn *conn = container_of(s, struct httpd_conn, stream);
 	struct cstr_view const extra = { (char const *)fields.ptr, fields.len };
-	if (!conn->open || conn->replied || httpd_conn_head(conn, status, &extra, 1, length))
+	if ((conn->req.flags & (REQ_OPEN | REQ_REPLIED)) != REQ_OPEN ||
+	    httpd_conn_head(conn, status, &extra, 1, length))
 		return EPIPE;
 	loop_ready(conn->srv->loop, &conn->step);
 	return 0;
@@ -1234,11 +1257,11 @@ httpd_stream_data (struct stream *s,
 {
 	struct httpd_conn *conn = container_of(s, struct httpd_conn, stream);
 	struct httpd *srv = conn->srv;
-	if (!conn->open || !conn->replied)
+	if ((conn->req.flags & (REQ_OPEN | REQ_REPLIED)) != (REQ_OPEN | REQ_REPLIED))
 		return EPIPE;
 	if (!bytes.len)
 		return 0;
-	if ((conn->earlier || conn->writable) &&
+	if ((conn->earlier || conn->req.flags & REQ_WRITABLE) &&
 	    buf_peek(&conn->out).len + bytes.len > srv->lim.out_max) {
 		httpd_conn_doom(conn);
 		return EPIPE;
@@ -1248,7 +1271,7 @@ httpd_stream_data (struct stream *s,
 	 * another. */
 	char digits[20];
 	struct cstr_view f[] = { {}, { (char const *)bytes.ptr, bytes.len }, {} };
-	if (conn->chunks) {
+	if (conn->req.flags & REQ_CHUNKS) {
 		char const *size = httpd_hex(digits + sizeof digits - 2, bytes.len);
 		digits[sizeof digits - 2] = '\r';
 		digits[sizeof digits - 1] = '\n';
@@ -1261,7 +1284,7 @@ httpd_stream_data (struct stream *s,
 	loop_ready(srv->loop, &conn->step);
 	if (buf_peek(&conn->out).len < srv->lim.out_pause)
 		return 0;
-	conn->writable = true;
+	conn->req.flags |= REQ_WRITABLE;
 	return EAGAIN;
 }
 
@@ -1270,20 +1293,21 @@ httpd_stream_end (struct stream *s,
                   int            error)
 {
 	struct httpd_conn *conn = container_of(s, struct httpd_conn, stream);
-	if (!conn->open)
+	uint32_t const was = conn->req.flags;
+	if (!(was & REQ_OPEN))
 		return;
-	conn->open = conn->waits = conn->writable = false;
+	conn->req.flags &= ~(REQ_OPEN | REQ_WAITS | REQ_WRITABLE);
 	conn->stream.user = nullptr;
-	if (!conn->replied) {
+	if (!(was & REQ_REPLIED)) {
 		httpd_conn_error(conn, 500, (struct cstr_view){}, nullptr, 0);
 	} else if (error) {
 		/* The client sees the body cut short as the connection closes. */
-		conn->closing = true;
+		conn->flags |= CONN_CLOSING;
 		httpd_conn_doom(conn);
-	} else if (conn->chunks) {
+	} else if (was & REQ_CHUNKS) {
 		(void)httpd_conn_put(conn, &CSTR_VIEW("0\r\n\r\n"), 1);
 	}
-	conn->done = true;
+	conn->req.flags |= REQ_DONE;
 	loop_ready(conn->srv->loop, &conn->step);
 }
 
@@ -1291,7 +1315,7 @@ static void
 httpd_stream_waiting (struct stream *s)
 {
 	struct httpd_conn *conn = container_of(s, struct httpd_conn, stream);
-	conn->waits = conn->open;
+	conn->req.flags |= conn->req.flags & REQ_OPEN ? REQ_WAITS : 0;
 	loop_ready(conn->srv->loop, &conn->step);
 }
 
@@ -1336,8 +1360,8 @@ httpd_conn_grant (struct httpd_conn *conn)
 {
 	struct cstr_view const token = httpd_bearer(httpd_conn_field(conn, conn->req.auth));
 	char const *host = httpd_conn_field(conn, conn->req.host).data;
-	enum policy_kind const kind = conn->uds ? POLICY_UNIX
-	                            : conn->local && (!host || httpd_loopback_host(host))
+	enum policy_kind const kind = conn->flags & CONN_UDS ? POLICY_UNIX
+	                            : conn->flags & CONN_LOCAL && (!host || httpd_loopback_host(host))
 	                            ? POLICY_LOOPBACK : POLICY_REMOTE;
 	struct policy_peer const peer = {
 		.groups = conn->groups,
@@ -1377,7 +1401,8 @@ httpd_conn_admit (struct httpd_conn *conn,
 	char const *origin = httpd_conn_field(conn, req->origin).data;
 	if (origin && !httpd_origin_allowed(srv, origin))
 		return 403; /* DNS rebinding defence */
-	enum policy_verdict v = req->options ? POLICY_GRANTED : httpd_conn_grant(conn);
+	enum policy_verdict v = req->flags & REQ_OPTIONS ? POLICY_GRANTED
+	                                                 : httpd_conn_grant(conn);
 	if (v != POLICY_GRANTED) {
 		*why = refusal[v].why;
 		return refusal[v].status;
@@ -1419,6 +1444,14 @@ httpd_dechunk_line (struct httpd_dechunk *d,
 	return 0;
 }
 
+/* Set the state of @p req's chunked body to @p state. */
+static void
+httpd_req_chunking (struct httpd_req *req,
+                    enum httpd_chunk  state)
+{
+	req->flags = (req->flags & ~CHUNK_STATE) | state;
+}
+
 /* A chunk-size line: the size, in hexadecimal, and any extensions, which
  * follow it after optional white space; only the line's end may hold a
  * control character.
@@ -1447,37 +1480,38 @@ httpd_conn_chunk_size (struct httpd_conn    *conn,
 	for (size_t k = ext; k < n; ++k)
 		if (httpd_ctl(line[k]))
 			return 400;
-	if (size > conn->srv->lim.body - conn->got - d->wr)
+	struct httpd_req *req = &conn->req;
+	if (size > conn->srv->lim.body - req->got - d->wr)
 		return 413;
-	conn->chunk = size;
-	conn->chunking = size ? CHUNK_DATA : CHUNK_TRAILER;
+	req->chunk = size;
+	httpd_req_chunking(req, size ? CHUNK_DATA : CHUNK_TRAILER);
 	return 0;
 }
 
 /* As much of a chunk's data as is in. */
 static void
-httpd_conn_chunk_data (struct httpd_conn    *conn,
-                       struct httpd_dechunk *d)
+httpd_req_chunk_data (struct httpd_req     *req,
+                      struct httpd_dechunk *d)
 {
-	size_t n = d->len - d->rd < conn->chunk ? d->len - d->rd : conn->chunk;
+	size_t n = d->len - d->rd < req->chunk ? d->len - d->rd : req->chunk;
 	memmove(d->raw + d->wr, d->raw + d->rd, n);
 	d->wr += n;
 	d->rd += n;
-	conn->chunk -= n;
-	if (!conn->chunk)
-		conn->chunking = CHUNK_CRLF;
+	req->chunk -= n;
+	if (!req->chunk)
+		httpd_req_chunking(req, CHUNK_CRLF);
 }
 
 /* The CRLF that ends a chunk's data. */
 static unsigned
-httpd_conn_chunk_end (struct httpd_conn    *conn,
-                      struct httpd_dechunk *d)
+httpd_req_chunk_end (struct httpd_req     *req,
+                     struct httpd_dechunk *d)
 {
 	unsigned char const *crlf = d->raw + d->rd;
 	if (d->len - d->rd < 2)
 		return 0;
 	d->rd += 2;
-	conn->chunking = CHUNK_SIZE;
+	httpd_req_chunking(req, CHUNK_SIZE);
 	return crlf[0] == '\r' && crlf[1] == '\n' ? 0 : 400;
 }
 
@@ -1490,29 +1524,34 @@ httpd_conn_trailer (struct httpd_conn    *conn,
                     struct httpd_dechunk *d)
 {
 	struct httpd_limits const *lim = &conn->srv->lim;
+	struct httpd_req *req = &conn->req;
 	struct span line;
 	unsigned status = httpd_dechunk_line(d, lim->head, 431, &line);
 	if (!line.ptr)
 		return status;
 
+	/* The trailer section counts against lim->head, which is at most
+	 * 65535 bytes, so 16 bits count its bytes. */
+	if (line.len + 2 > lim->head - req->trailer)
+		return 431;
+	req->trailer += (uint16_t)(line.len + 2);
 	size_t name = 0;
 	while (name < line.len && httpd_tchar(line.ptr[name]))
 		++name;
-	conn->trailer += (uint32_t)line.len + 2;
 	if (!line.len)
-		conn->body_in = true;
+		req->flags |= REQ_BODY_IN;
 	else if (!name || line.ptr[name] != ':')
 		return 400;
 	else
-		++conn->trailers;
-	return conn->trailer > lim->head || conn->trailers > lim->fields ? 431 : 0;
+		++req->trailers;
+	return req->trailers > lim->fields ? 431 : 0;
 }
 
 /*
  * Decode chunks (RFC 9112 7.1) from the @p len bytes at @p raw that follow
  * the head, moving their data down to @p raw, and count the data in the
  * budgets. Sets @p *used to the bytes taken and @p *out to the data bytes
- * now at @p raw, and conn->body_in once the last chunk and the trailer
+ * now at @p raw, and REQ_BODY_IN once the last chunk and the trailer
  * section are in; returns 0 or an HTTP error. A chunk's data is taken as
  * it comes, and a line or the CRLF after the data once it is all in. Lines
  * end in CRLF only, as a lenient reading of framing is what request
@@ -1525,19 +1564,20 @@ httpd_conn_dechunk (struct httpd_conn *conn,
                     size_t            *used,
                     size_t            *out)
 {
+	struct httpd_req *req = &conn->req;
 	struct httpd_dechunk d = { raw, len, 0, 0 };
-	for (size_t was = SIZE_MAX; d.rd != was && d.rd < len && !conn->body_in; ) {
+	for (size_t was = SIZE_MAX; d.rd != was && d.rd < len && !(req->flags & REQ_BODY_IN); ) {
 		was = d.rd;
 		unsigned status;
-		switch (conn->chunking) {
+		switch (req->flags & CHUNK_STATE) {
 		case CHUNK_SIZE:
 			status = httpd_conn_chunk_size(conn, &d);
 			break;
 		case CHUNK_DATA:
-			httpd_conn_chunk_data(conn, &d);
+			httpd_req_chunk_data(req, &d);
 			continue;
 		case CHUNK_CRLF:
-			status = httpd_conn_chunk_end(conn, &d);
+			status = httpd_req_chunk_end(req, &d);
 			break;
 		default:
 			status = httpd_conn_trailer(conn, &d);
@@ -1568,7 +1608,7 @@ static enum httpd_next
 httpd_conn_body (struct httpd_conn *conn)
 {
 	struct loop *loop = conn->srv->loop;
-	struct httpd_req const *req = &conn->req;
+	struct httpd_req *req = &conn->req;
 	struct span in = buf_peek(&conn->in);
 	unsigned char *raw = in.ptr + req->head;
 	size_t avail = in.len - req->head;
@@ -1576,30 +1616,30 @@ httpd_conn_body (struct httpd_conn *conn)
 	size_t len = avail < room ? avail : room;
 	size_t used;
 	size_t out;
-	if (req->chunked) {
+	if (req->flags & REQ_CHUNKED) {
 		unsigned status = httpd_conn_dechunk(conn, raw, len, &used, &out);
 		if (status) {
 			httpd_conn_fail(conn, status);
 			return NEXT_END;
 		}
 	} else {
-		size_t left = req->body - conn->got;
+		size_t left = req->body - req->got;
 		used = out = len < left ? len : left;
-		conn->body_in = out == left;
+		req->flags |= out == left ? REQ_BODY_IN : 0;
 	}
 	loop_work(loop, LOOP_BODY, used);
-	conn->got += out;
-	if (conn->open && (out || conn->body_in))
-		conn->srv->app->on_body(&conn->stream, (struct span){ raw, out },
-		                        conn->body_in);
+	req->got += out;
+	bool last = req->flags & REQ_BODY_IN;
+	if (req->flags & REQ_OPEN && (out || last))
+		conn->srv->app->on_body(&conn->stream, (struct span){ raw, out }, last);
 	buf_cut(&conn->in, req->head, used);
-	if (conn->body_in || conn->done)
+	if (req->flags & (REQ_BODY_IN | REQ_DONE))
 		return NEXT_MORE;
 	if (len < avail)
 		return NEXT_YIELD;
-	if (req->expect && !conn->cont) {
+	if (req->flags & REQ_EXPECT) {
 		(void)httpd_conn_put(conn, &CSTR_VIEW("HTTP/1.1 100 Continue\r\n\r\n"), 1);
-		conn->cont = true;
+		req->flags &= ~REQ_EXPECT;
 	}
 	return NEXT_INPUT;
 }
@@ -1610,17 +1650,17 @@ httpd_conn_body (struct httpd_conn *conn)
 static void
 httpd_conn_begin (struct httpd_conn *conn)
 {
-	struct httpd_req const *req = &conn->req;
-	size_t length = req->chunked ? STREAM_OPEN : req->body;
-	conn->body_in = !length;
-	if (req->options) {
+	struct httpd_req *req = &conn->req;
+	size_t length = req->flags & REQ_CHUNKED ? STREAM_OPEN : req->body;
+	req->flags |= length ? 0 : REQ_BODY_IN;
+	if (req->flags & REQ_OPTIONS) {
 		httpd_conn_preflight(conn);
 		return;
 	}
 
 	/* The application's bodies would trail a HEAD response; end the stream. */
-	conn->closing |= req->head_only;
-	conn->open = true;
+	conn->flags |= req->flags & REQ_HEAD ? CONN_CLOSING : 0;
+	req->flags |= REQ_OPEN;
 	conn->stream.user = nullptr;
 	struct stream_app const *app = conn->srv->app;
 	unsigned char *head = buf_peek(&conn->in).ptr;
@@ -1629,7 +1669,7 @@ httpd_conn_begin (struct httpd_conn *conn)
 	             (struct span){ head + req->target.off, req->target.len }, length);
 	/* The text is in the policy, which a reload can free (stream.h). */
 	conn->stream.grant.who = (struct cstr_view){};
-	if (conn->open && conn->body_in)
+	if ((req->flags & (REQ_OPEN | REQ_BODY_IN)) == (REQ_OPEN | REQ_BODY_IN))
 		app->on_body(&conn->stream, (struct span){}, true);
 }
 
@@ -1641,10 +1681,6 @@ httpd_conn_reset (struct httpd_conn *conn)
 	httpd_conn_unhold(conn);
 	conn->req = (struct httpd_req){};
 	conn->since = conn->srv->loop->now;
-	conn->got = conn->chunk = conn->scan = conn->trailer = conn->trailers = 0;
-	conn->chunking = CHUNK_SIZE;
-	conn->parsed = conn->body_in = conn->replied = conn->done = false;
-	conn->chunks = conn->cont = false;
 }
 
 /* Answer a head that came to nothing with @p status and @p message, or the
@@ -1659,7 +1695,7 @@ httpd_conn_refuse (struct httpd_conn *conn,
                    struct cstr_view   message)
 {
 	loop_work(conn->srv->loop, LOOP_REQS, 1);
-	conn->closing = true;
+	conn->flags |= CONN_CLOSING;
 	switch (status) {
 	case 401:
 		httpd_conn_error(conn, status, message,
@@ -1685,7 +1721,7 @@ httpd_conn_parse (struct httpd_conn *conn,
 {
 	struct httpd *srv = conn->srv;
 	struct loop *loop = srv->loop;
-	if (conn->closing || srv->draining)
+	if (conn->flags & CONN_CLOSING || srv->draining)
 		return NEXT_END;
 	if (!loop_room(loop, LOOP_REQS) ||
 	    (loop->work[LOOP_REQS] && loop_clock() >= end))
@@ -1702,7 +1738,7 @@ httpd_conn_parse (struct httpd_conn *conn,
 	if (status)
 		return httpd_conn_refuse(conn, status, why);
 	loop_work(loop, LOOP_REQS, 1);
-	conn->parsed = true;
+	conn->req.flags |= REQ_PARSED;
 	conn->since = loop->now;
 	httpd_conn_begin(conn);
 	return NEXT_MORE;
@@ -1715,14 +1751,22 @@ static enum httpd_next
 httpd_conn_next (struct httpd_conn *conn,
                  uint64_t           end)
 {
-	if (conn->done) {
-		if (!conn->body_in)
-			return NEXT_END;
+	switch (conn->req.flags & (REQ_DONE | REQ_BODY_IN | REQ_PARSED)) {
+	case REQ_DONE:
+	case REQ_DONE | REQ_PARSED:
+		return NEXT_END;
+	case REQ_DONE | REQ_BODY_IN:
+	case REQ_DONE | REQ_BODY_IN | REQ_PARSED:
 		httpd_conn_reset(conn);
-	}
-	if (!conn->parsed)
+		[[fallthrough]];
+	case 0:
+	case REQ_BODY_IN:
 		return httpd_conn_parse(conn, end);
-	return conn->body_in ? NEXT_WAIT : httpd_conn_body(conn);
+	case REQ_PARSED | REQ_BODY_IN:
+		return NEXT_WAIT;
+	default:
+		return httpd_conn_body(conn);
+	}
 }
 
 /* The output is all sent: its storage goes back, and TLS sends what a read
@@ -1813,24 +1857,25 @@ static uint64_t
 httpd_conn_deadline (struct httpd_conn const *conn)
 {
 	struct httpd_limits const *lim = &conn->srv->lim;
-	if (conn->linger)
+	struct httpd_req const *req = &conn->req;
+	if (conn->flags & CONN_LINGER)
 		return conn->since + LINGER_S * NS;
 	if (conn->ctx)
 		return httpd_after(conn->since, conn->ssl ? lim->head_time : lim->idle_time);
 	if (conn->stall)
 		return httpd_after(conn->stall, lim->write_time);
-	if (!conn->parsed)
+	if (!(req->flags & REQ_PARSED))
 		return httpd_after(conn->since, httpd_conn_input(conn) ? lim->head_time
 		                                                       : lim->idle_time);
-	if (conn->body_in || !lim->body_rate)
+	if (req->flags & REQ_BODY_IN || !lim->body_rate)
 		return UINT64_MAX;
 
 	/* From its start, once the grace is up, the body must have come at
 	 * body_rate: the bytes so far pay for so much time. */
-	size_t secs = conn->got / lim->body_rate;
+	size_t secs = req->got / lim->body_rate;
 	if (secs > UINT32_MAX)
 		return UINT64_MAX;
-	uint64_t paid = secs * NS + conn->got % lim->body_rate * NS / lim->body_rate;
+	uint64_t paid = secs * NS + req->got % lim->body_rate * NS / lim->body_rate;
 	uint64_t grace = lim->body_grace * NS;
 	return conn->since + (paid > grace ? paid : grace);
 }
@@ -1890,14 +1935,14 @@ httpd_conn_end (struct httpd_conn *conn)
 	httpd_conn_cancel(conn);
 	tls_close(conn->ssl);
 	tls_destroy(&conn->ssl);
-	if (conn->eof || shutdown(conn->fd, SHUT_WR) ||
+	if (conn->flags & CONN_EOF || shutdown(conn->fd, SHUT_WR) ||
 	    loop_modify(srv->loop, &conn->ref, EPOLLIN)) {
 		/* Input left unread would turn the close into a reset. */
 		(void)recv(conn->fd, nullptr, srv->in_max, MSG_TRUNC | MSG_DONTWAIT);
 		httpd_conn_close(conn);
 		return;
 	}
-	conn->linger = true;
+	conn->flags |= CONN_LINGER;
 	conn->since = srv->loop->now;
 	httpd_conn_unhold(conn);
 	buf_fini(&conn->in);
@@ -1906,29 +1951,36 @@ httpd_conn_end (struct httpd_conn *conn)
 	httpd_conn_arm(conn);
 }
 
+/* How a step left a connection, besides its next and its output pending. */
+enum {
+	WAIT_BLOCKED = 1u << 0,  /* TLS waits for room to send */
+	WAIT_AGAIN   = 1u << 1,  /* a request the step left goes on next turn */
+};
+
 /*
  * After a step that ended at @p next: wait for input once no complete request
  * is left, for the application while it works on one, for output space once
- * lim.out_pause bytes are @p pending or TLS is @p blocked, and for the next
- * turn otherwise, as for a request the step left (@p again). Input that
- * ended stays readable: watching it then would spin, as it would while TLS
- * waits to send. Input TLS holds, which epoll does not report, is read in
- * the next step.
+ * lim.out_pause bytes are @p pending or TLS is blocked (@p wait), and for the
+ * next turn otherwise, as for a request the step left. Input that ended
+ * stays readable: watching it then would spin, as it would while TLS waits
+ * to send. Input TLS holds, which epoll does not report, is read in the next
+ * step.
  */
 static void
 httpd_conn_wait (struct httpd_conn *conn,
                  enum httpd_next    next,
                  size_t             pending,
-                 bool               blocked,
-                 bool               again)
+                 uint32_t           wait)
 {
 	struct httpd *srv = conn->srv;
 	bool starved = next == NEXT_INPUT;
-	bool paused = pending >= srv->lim.out_pause || conn->closing;
-	bool reads = starved && !paused && !blocked && !conn->eof && !conn->waits;
+	bool paused = pending >= srv->lim.out_pause || conn->flags & CONN_CLOSING;
+	bool waits = conn->req.flags & REQ_WAITS;
+	bool reads = starved && !paused && !(wait & WAIT_BLOCKED) && !(conn->flags & CONN_EOF) &&
+	             !waits;
 	bool held = reads && conn->events & HELD;
-	uint32_t events = pending || blocked ? EPOLLOUT : 0;
-	if (conn->waits)
+	uint32_t events = pending || wait & WAIT_BLOCKED ? EPOLLOUT : 0;
+	if (waits)
 		events |= EPOLLRDHUP;
 	else if (reads)
 		events |= EPOLLIN;
@@ -1938,8 +1990,8 @@ httpd_conn_wait (struct httpd_conn *conn,
 	}
 	if (held)
 		conn->events |= EPOLLIN;
-	bool waiting = !again && !held &&
-	               (starved || next == NEXT_WAIT || paused || blocked);
+	bool waiting = !(wait & WAIT_AGAIN) && !held &&
+	               (starved || next == NEXT_WAIT || paused || wait & WAIT_BLOCKED);
 	if (waiting)
 		loop_unready(&conn->step);
 	else
@@ -1947,7 +1999,7 @@ httpd_conn_wait (struct httpd_conn *conn,
 
 	/* An idle connection keeps no storage, and under critical memory
 	 * pressure one that waits keeps no more than its bytes need. */
-	bool idle = starved && !pending && !blocked && !httpd_conn_input(conn);
+	bool idle = starved && !pending && !(wait & WAIT_BLOCKED) && !httpd_conn_input(conn);
 	if (idle)
 		buf_fini(&conn->in);
 	else if (waiting && atomic_load_explicit(&buf_pressure, memory_order_relaxed) >=
@@ -1967,10 +2019,10 @@ httpd_conn_pump (struct httpd_conn *conn)
 	struct httpd *srv = conn->srv;
 	enum httpd_next next = NEXT_MORE;
 	uint64_t end = loop_clock() + STEP_NS;
-	while (next == NEXT_MORE && !conn->doomed &&
+	while (next == NEXT_MORE && !(conn->flags & CONN_DOOMED) &&
 	       buf_peek(&conn->out).len < srv->lim.out_pause)
 		next = httpd_conn_next(conn, end);
-	if (conn->doomed) {
+	if (conn->flags & CONN_DOOMED) {
 		httpd_conn_close(conn);
 		return;
 	}
@@ -1978,30 +2030,30 @@ httpd_conn_pump (struct httpd_conn *conn)
 		return;
 
 	size_t pending = buf_peek(&conn->out).len;
-	bool again = false;
+	uint32_t wait = 0;
 	/* Call on_writable() when the pending output is at most half of
 	 * out_pause. With an out_pause of 1, half of it is 0, so the call
 	 * happens only when no output is pending. A comparison with < would
-	 * never be true for that value. */
-	if (conn->writable && pending <= srv->lim.out_pause / 2) {
-		conn->writable = false;
-		if (conn->open)
-			srv->app->on_writable(&conn->stream);
-		if (conn->doomed) {
+	 * never be true for that value. Only a stream the application has is
+	 * writable. */
+	if (conn->req.flags & REQ_WRITABLE && pending <= srv->lim.out_pause / 2) {
+		conn->req.flags &= ~REQ_WRITABLE;
+		srv->app->on_writable(&conn->stream);
+		if (conn->flags & CONN_DOOMED) {
 			httpd_conn_close(conn);
 			return;
 		}
 		pending = buf_peek(&conn->out).len;
 		/* A response ended there leaves its request to the next step. */
-		again = conn->done;
+		wait = conn->req.flags & REQ_DONE ? WAIT_AGAIN : 0;
 	}
-	bool blocked = httpd_conn_blocked(conn);
-	if (!pending && !blocked &&
-	    (next == NEXT_END || (next == NEXT_INPUT && conn->eof))) {
+	wait |= httpd_conn_blocked(conn) ? WAIT_BLOCKED : 0;
+	if (!pending && !(wait & WAIT_BLOCKED) &&
+	    (next == NEXT_END || (next == NEXT_INPUT && conn->flags & CONN_EOF))) {
 		httpd_conn_end(conn);
 		return;
 	}
-	httpd_conn_wait(conn, next, pending, blocked, again);
+	httpd_conn_wait(conn, next, pending, wait);
 }
 
 /* One recv, or one TLS record, straight into the input's free tail. A
@@ -2015,7 +2067,7 @@ httpd_conn_read (struct httpd_conn *conn)
 	 * body is cut out as it comes, so the limit is never reached and an
 	 * error means out of memory. */
 	struct loop *loop = conn->srv->loop;
-	bool first = !conn->parsed && !httpd_conn_input(conn);
+	bool first = !(conn->req.flags & REQ_PARSED) && !httpd_conn_input(conn);
 	struct span s;
 	int e = buf_reserve(&conn->in, READ_MIN, conn->srv->in_max, &s);
 	if (e) {
@@ -2029,7 +2081,7 @@ httpd_conn_read (struct httpd_conn *conn)
 		buf_commit(&conn->in, (size_t)n);
 		loop_work(loop, LOOP_RECV, (uint64_t)n);
 	} else if (!n) {
-		conn->eof = true;
+		conn->flags |= CONN_EOF;
 	} else if (n != -EAGAIN && n != -EWOULDBLOCK && n != -EINTR) {
 		httpd_conn_close(conn);
 		return (int)-n;
@@ -2109,8 +2161,8 @@ httpd_conn_step (struct loop      *loop,
 	conn->events &= HELD;
 
 	/* A client that goes away while the application waits cancels it. */
-	if (conn->doomed || (events & (EPOLLERR | EPOLLHUP)) ||
-	    (conn->waits && (events & EPOLLRDHUP))) {
+	if (conn->flags & CONN_DOOMED || events & (EPOLLERR | EPOLLHUP) ||
+	    (conn->req.flags & REQ_WAITS && events & EPOLLRDHUP)) {
 		httpd_conn_close(conn);
 		return;
 	}
@@ -2124,7 +2176,7 @@ httpd_conn_step (struct loop      *loop,
 		return;
 	}
 	/* A lingering connection only discards what comes, until it closes. */
-	if (conn->linger) {
+	if (conn->flags & CONN_LINGER) {
 		if (due)
 			httpd_conn_close(conn);
 		else
@@ -2238,16 +2290,8 @@ httpd_conn_setup (struct httpd_conn *conn,
                   struct httpd      *srv)
 {
 	struct loop *loop = srv->loop;
-	struct httpd_lane *lane = conn->lane;
-	struct httpd_client *client = conn->client;
-	uint32_t *groups = conn->groups;
-	uint64_t principal = conn->principal;
-	uint32_t n_groups = conn->n_groups;
-	size_t room = conn->room;
-	struct ssl_ctx_st *ctx = conn->ctx;
-	int fd = conn->fd;
-	bool local = conn->local;
-	bool uds = conn->uds;
+	/* The literal is made whole before it is stored, so it can read what
+	 * home set in the connection. */
 	*conn = (struct httpd_conn){
 		.msg.fn = httpd_conn_back,
 		.ref.fd = -1,
@@ -2255,31 +2299,31 @@ httpd_conn_setup (struct httpd_conn *conn,
 		.timer.fn = httpd_conn_timer,
 		.stream = {
 			.ops = &httpd_stream_ops,
-			.peer = client->addr
+			.peer = conn->client->addr
 		},
 		.srv = srv,
-		.lane = lane,
-		.client = client,
-		.ctx = ctx,
+		.lane = conn->lane,
+		.client = conn->client,
+		.ctx = conn->ctx,
 		.since = loop->now,
-		.groups = groups,
-		.principal = principal,
-		.n_groups = n_groups,
-		.room = room,
-		.fd = fd,
-		.local = local,
-		.uds = uds
+		.room = conn->room,
+		.groups = conn->groups,
+		.principal = conn->principal,
+		.n_groups = conn->n_groups,
+		.fd = conn->fd,
+		.flags = conn->flags & (CONN_LOCAL | CONN_UDS)
 	};
-	hist_add(&lane->metrics.taken, 1);
+	hist_add(&conn->lane->metrics.taken, 1);
 	/* Replies go out whole: Nagle would hold back one that follows another
 	 * until the client, which sends nothing, acknowledges. */
 	int one = 1;
 	if (!srv->draining &&
-	    (uds || !setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one)) &&
+	    (conn->flags & CONN_UDS ||
+	     !setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one)) &&
 	    !loop_timer_set(loop, &conn->timer, httpd_after(conn->since, srv->lim.idle_time)) &&
-	    !loop_watch(loop, &conn->ref, fd, EPOLLIN, httpd_conn_event, conn)) {
+	    !loop_watch(loop, &conn->ref, conn->fd, EPOLLIN, httpd_conn_event, conn)) {
 		list_init(&conn->hook);
-		atomic_store_explicit(&lane->metrics.open, ++srv->conns,
+		atomic_store_explicit(&conn->lane->metrics.open, ++srv->conns,
 		                      memory_order_relaxed);
 		httpd_conn_park(conn, true);
 		return;
@@ -2546,7 +2590,6 @@ httpd_conn_user (struct httpd_conn   *conn,
                  struct ucred const  *cred,
                  struct policy const *policy)
 {
-	conn->uds = cred;
 	if (!cred) {
 		conn->n_groups = 0;
 		conn->principal = 0;
@@ -2572,17 +2615,17 @@ httpd_home_conn (struct httpd_home *home)
 	return conn;
 }
 
-/* Place the client on @p fd, from @p addr, on loopback if @p local, on a
- * client loop, in the storage of a connection given back if one is kept,
- * as the user @p cred says if over a Unix socket, to shake hands by @p ctx
- * if not nullptr. If out of memory, or if the principal of the user cannot
- * be computed, close @p fd.
+/* Place the client on @p fd, from @p addr, on a client loop, in the
+ * storage of a connection given back if one is kept, as @p peer says
+ * (CONN_LOCAL, CONN_UDS), as the user @p cred says if over a Unix socket,
+ * to shake hands by @p ctx if not nullptr. If out of memory, or if the
+ * principal of the user cannot be computed, close @p fd.
  */
 static void
 httpd_home_place (struct httpd_home  *home,
                   int                 fd,
                   struct stream_peer  addr,
-                  bool                local,
+                  uint32_t            peer,
                   struct ucred const *cred,
                   struct ssl_ctx_st  *ctx)
 {
@@ -2607,7 +2650,7 @@ httpd_home_place (struct httpd_home  *home,
 	conn->client = client;
 	conn->ctx = ctx ? tls_ctx_get(ctx) : nullptr;
 	conn->fd = fd;
-	conn->local = local;
+	conn->flags = peer;
 	loop_post(lane->loop, &conn->msg);
 }
 
@@ -2669,11 +2712,11 @@ httpd_home_take (struct httpd_home             *home,
 	struct stream_peer addr = { { UINT64_MAX } };
 	struct ucred cred;
 	struct ucred const *user = nullptr;
-	bool local = true;
+	uint32_t peer = CONN_LOCAL | CONN_UDS;
 	socklen_t len = sizeof cred;
 	if (ss->ss_family != AF_UNIX) {
 		httpd_addr_key(ss, &addr);
-		local = httpd_addr_loopback(ss);
+		peer = httpd_addr_loopback(ss) ? CONN_LOCAL : 0;
 	} else if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len)) {
 		close(fd);
 		++home->refused;
@@ -2707,7 +2750,7 @@ httpd_home_take (struct httpd_home             *home,
 		++home->refused;
 		return;
 	}
-	httpd_home_place(home, fd, addr, local, user, l->tls ? home->ctx : nullptr);
+	httpd_home_place(home, fd, addr, peer, user, l->tls ? home->ctx : nullptr);
 }
 
 /* Accept a client from @p l, and take it as httpd_home_take() does: 0, or
