@@ -1475,8 +1475,7 @@ journal_create (char const *path,
 	 * the others, the message is the text of the error number. */
 	*why = '\0';
 	if (!journal_word(participant, UTIL_WORD_MAX)) {
-		*e = EINVAL;
-		util_format(why, why_len, "invalid transcript participant");
+		*e = util_refuse(why, why_len, "invalid transcript participant");
 		return nullptr;
 	}
 	struct journal *j = calloc(1, sizeof *j);

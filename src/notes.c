@@ -107,14 +107,11 @@ notes_open (struct notes *notes,
 	if (!fstatat(notes->fd, ".git", &st, AT_SYMLINK_NOFOLLOW)) {
 		if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode))
 			return 0;
-		util_format(why, len, "the repository .git is not a file or directory");
-		return EINVAL;
+		return util_refuse(why, len, "the repository .git is not a file or directory");
 	}
 	if (!fstatat(notes->fd, "HEAD", &st, AT_SYMLINK_NOFOLLOW)) {
-		if (!S_ISREG(st.st_mode)) {
-			util_format(why, len, "the repository HEAD is not a regular file");
-			return EINVAL;
-		}
+		if (!S_ISREG(st.st_mode))
+			return util_refuse(why, len, "the repository HEAD is not a regular file");
 		notes->bare = true;
 		return 0;
 	}
@@ -248,9 +245,8 @@ notes_create (char const *path,
               int        *e)
 {
 	if (!participant || !util_word(participant, strlen(participant), UTIL_WORD_MAX)) {
-		*e = EINVAL;
-		util_format(why, len, "the participant must have 1 to 64 ASCII letters, "
-		            "digits, underscores or hyphens");
+		*e = util_refuse(why, len, "the participant must have 1 to 64 ASCII letters, "
+		                 "digits, underscores or hyphens");
 		return nullptr;
 	}
 	struct notes *notes = calloc(1, sizeof *notes);

@@ -431,4 +431,21 @@ util_format_view (char       *buf,
 	return (struct cstr_view){ buf, len };
 }
 
+/** Formats the reason of a refusal into the @p len bytes at @p why as
+ *  util_format() does. Returns EINVAL.
+ */
+[[gnu::format(printf, 3, 4)]]
+static inline int
+util_refuse (char       *why,
+             size_t      len,
+             char const *fmt,
+             ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	(void)util_vformat(why, len, fmt, ap);
+	va_end(ap);
+	return EINVAL;
+}
+
 #endif /* TWINCEPTION_SRC_UTIL_H_ */

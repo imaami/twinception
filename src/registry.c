@@ -68,11 +68,9 @@ registry_load (struct registry    *reg,
                char               *why,
                size_t              len)
 {
-	if (reg->n_plugins == array_size(reg->plugins)) {
-		util_format(why, len, "askai cannot load more than %zu plugins",
-		            array_size(reg->plugins));
-		return EINVAL;
-	}
+	if (reg->n_plugins == array_size(reg->plugins))
+		return util_refuse(why, len, "askai cannot load more than %zu plugins",
+		                   array_size(reg->plugins));
 	int e = 0;
 	struct plugin_loaded *loaded = plugin_loaded_create(path, options,
 	                                                    why, len, &e);
@@ -92,12 +90,10 @@ registry_load (struct registry    *reg,
 		if (!e)
 			continue;
 		if (e == EEXIST)
-			util_format(why, len, "its tool %s has the name of a tool that "
-			            "askai already has", name);
-		else
-			util_format(why, len, "its tool %s does not fit: askai offers "
-			            "at most %u tools", name, TOOL_MAX);
-		return EINVAL;
+			return util_refuse(why, len, "its tool %s has the name of a tool "
+			                   "that askai already has", name);
+		return util_refuse(why, len, "its tool %s does not fit: askai offers "
+		                   "at most %u tools", name, TOOL_MAX);
 	}
 	return 0;
 }

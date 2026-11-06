@@ -203,10 +203,7 @@ tls_ctx_load (SSL_CTX             *ctx,
 	char const *wrong = SSL_CTX_check_private_key(ctx) != 1
 	                  ? "the key is not the certificate's"
 	                  : tls_ctx_key_type(ctx, cfg);
-	if (!wrong)
-		return 0;
-	util_format(why, len, "%s", wrong);
-	return EINVAL;
+	return wrong ? util_refuse(why, len, "%s", wrong) : 0;
 }
 
 struct ssl_ctx_st *

@@ -48,6 +48,7 @@
 #include "godbolt_probe.h"
 #include "jb.h"
 #include "plugin.h"
+#include "util.h"
 
 /* The tools: the name after godbolt_, the constant of enum godbolt_tool,
  * and the flags of the kind besides TOOL_LENT, TOOL_PAGED and
@@ -2743,31 +2744,10 @@ godbolt_args_set (struct godbolt_args *a,
 	return EINVAL;
 }
 
-/* Stores the reason of a refusal in the @p len bytes at @p why, formatted
- * from @p fmt and its arguments, and its length in @p *n unless @p n is
- * nullptr. Returns EINVAL.
- */
-[[gnu::format(printf, 4, 5)]]
-static int
-godbolt_invalid (char       *why,
-                 size_t      len,
-                 size_t     *n,
-                 char const *fmt,
-                 ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-	size_t const k = godbolt_vformat(why, len, fmt, ap).len;
-	va_end(ap);
-	if (n)
-		*n = k;
-	return EINVAL;
-}
-
 /* Checks the arguments @p args of a call of the tool @p tool, and reads
  * them into @p a. If @p cfg turns links off, the function refuses the
  * argument share. Returns 0, or EINVAL with the reason of the refusal in
- * the @p len bytes at @p why and its length in @p *n.
+ * the @p len bytes at @p why.
  */
 static int
 godbolt_args_read (struct godbolt_args         *a,
@@ -2775,8 +2755,7 @@ godbolt_args_read (struct godbolt_args         *a,
                    enum godbolt_tool            tool,
                    struct godbolt_config const *cfg,
                    char                        *why,
-                   size_t                       len,
-                   size_t                      *n)
+                   size_t                       len)
 {
 	struct godbolt_params const *t = &godbolt_params[tool];
 	uint32_t const off = cfg->share == GODBOLT_SHARE_OFF ? 1u << GODBOLT_ARG_SHARE : 0;
@@ -2791,7 +2770,7 @@ godbolt_args_read (struct godbolt_args         *a,
 		.filters = tool == GODBOLT_COMPILE ? GODBOLT_SITE_FILTERS : 0
 	};
 	if (args && !json_object_is_type(args, json_type_object))
-		return godbolt_invalid(why, len, n, "The arguments must be a JSON object.");
+		return util_refuse(why, len, "The arguments must be a JSON object.");
 	uint32_t seen = 0;
 	struct json_object_iter it;
 	if (args) json_object_object_foreachC(args, it) {
@@ -2802,25 +2781,25 @@ godbolt_args_read (struct godbolt_args         *a,
 			seen |= bit;
 			if (!godbolt_args_set(a, (enum godbolt_arg)i, it.val))
 				continue;
-			return godbolt_invalid(why, len, n, "%s", godbolt_arg_rules[i].data);
+			return util_refuse(why, len, "%s", godbolt_arg_rules[i].data);
 		}
 		if (t->args & off & bit)
-			return godbolt_invalid(why, len, n, "Links are turned off on this server, so "
-			                       "the tool has no argument share.");
-		return godbolt_invalid(why, len, n, "The tool has no argument %.*s.",
-		                       (int)godbolt_cut(cstr_view(it.key), 48), it.key);
+			return util_refuse(why, len, "Links are turned off on this server, so "
+			                   "the tool has no argument share.");
+		return util_refuse(why, len, "The tool has no argument %.*s.",
+		                   (int)godbolt_cut(cstr_view(it.key), 48), it.key);
 	}
 	uint32_t const missing = t->needs & ~seen;
 	if (missing)
-		return godbolt_invalid(why, len, n, "The argument %s is required.",
-		                       godbolt_arg_names[stdc_trailing_zeros(missing)].data);
+		return util_refuse(why, len, "The argument %s is required.",
+		                   godbolt_arg_names[stdc_trailing_zeros(missing)].data);
 	/* The bits of kind, family and architecture are adjacent. */
 	if (a->action == GODBOLT_LANGUAGES && seen >> GODBOLT_ARG_KIND & 7)
-		return godbolt_invalid(why, len, n, "kind, family and architecture are not valid "
-		                       "with the action languages.");
+		return util_refuse(why, len, "kind, family and architecture are not valid "
+		                   "with the action languages.");
 	if ((uint32_t)a->n_ids * a->n_strings > GODBOLT_JOBS)
-		return godbolt_invalid(why, len, n, "The number of compilers times the number of "
-		                       "argument strings must be at most 32.");
+		return util_refuse(why, len, "The number of compilers times the number of "
+		                   "argument strings must be at most 32.");
 	return 0;
 }
 
@@ -2930,9 +2909,8 @@ godbolt_start (struct mcp_slot    *slot,
 	}
 	struct godbolt_args a;
 	char why[TOOL_TELL_MAX];
-	size_t n;
-	if (godbolt_args_read(&a, args, tool, cfg, why, sizeof why, &n)) {
-		mcp_slot_tell(slot, (struct cstr_view){ why, n }, TOOL_FAILED);
+	if (godbolt_args_read(&a, args, tool, cfg, why, sizeof why)) {
+		mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
 		return;
 	}
 	if (mcp_slot_offset(slot, args))
@@ -3020,29 +2998,29 @@ godbolt_configure (void               *config,
 	if (!why || !len)
 		return EINVAL;
 	if (!config)
-		return godbolt_invalid(why, len, nullptr, "askai passed no storage for the "
-		                       "configuration");
+		return util_refuse(why, len, "askai passed no storage for the "
+		                   "configuration");
 	struct godbolt_config *c = config;
 	*c = godbolt_defaults;
 	if (!options)
 		return 0;
 	if (!json_object_is_type(options, json_type_object))
-		return godbolt_invalid(why, len, nullptr, "not an object");
+		return util_refuse(why, len, "not an object");
 	struct json_object_iter it;
 	json_object_object_foreachC(options, it) {
 		if (!strcmp(it.key, "url")) {
 			if (godbolt_config_url(c, it.val))
-				return godbolt_invalid(why, len, nullptr, "url must be an http or "
-				                       "https URL of at most 255 bytes, "
-				                       "without a user name, a password, a "
-				                       "query or a fragment");
+				return util_refuse(why, len, "url must be an http or "
+				                   "https URL of at most 255 bytes, "
+				                   "without a user name, a password, a "
+				                   "query or a fragment");
 		} else if (!strcmp(it.key, "share")) {
 			if (godbolt_config_share(c, it.val))
-				return godbolt_invalid(why, len, nullptr, "share must be short, state "
-				                       "or off");
+				return util_refuse(why, len, "share must be short, state "
+				                   "or off");
 		} else {
-			return godbolt_invalid(why, len, nullptr, "the member %.*s is not an "
-			                       "option", (int)godbolt_cut(cstr_view(it.key), 64), it.key);
+			return util_refuse(why, len, "the member %.*s is not an "
+			                   "option", (int)godbolt_cut(cstr_view(it.key), 64), it.key);
 		}
 	}
 	return 0;

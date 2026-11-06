@@ -47,6 +47,7 @@
 #include "compat.h"
 #include "jb.h"
 #include "plugin.h"
+#include "util.h"
 
 PLUGIN_MANIFEST(.name = "test",
                 .tools = { "test_echo", "test_state", "test_misuse", "test_fetch",
@@ -700,25 +701,6 @@ test_plugin_fetch_step (struct mcp_slot *slot)
 		mcp_slot_finish(slot, 0);
 }
 
-/* Stores the reason of a refusal of the options in the @p len bytes at
- * @p why, formatted from @p fmt and its arguments. Returns EINVAL.
- */
-[[gnu::format(printf, 3, 4)]]
-static int
-test_plugin_refuse (char       *why,
-                    size_t      len,
-                    char const *fmt,
-                    ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-	int n = vsnprintf(why, len, fmt, ap);
-	va_end(ap);
-	if (n < 0)
-		*why = '\0';
-	return EINVAL;
-}
-
 /* The plugin's configure(). It stores the default greeting, and then the
  * option "greeting" if @p options has it. It refuses another member, and a
  * greeting that is not a string of at most 63 bytes.
@@ -737,16 +719,16 @@ test_plugin_configure (void               *config,
 	if (!options)
 		return 0;
 	if (!json_object_is_type(options, json_type_object))
-		return test_plugin_refuse(why, len, "not an object");
+		return util_refuse(why, len, "not an object");
 	struct json_object_iter it;
 	json_object_object_foreachC(options, it) {
 		if (strcmp(it.key, "greeting"))
-			return test_plugin_refuse(why, len, "unknown option: %s", it.key);
+			return util_refuse(why, len, "unknown option: %s", it.key);
 		size_t n = json_object_is_type(it.val, json_type_string)
 		         ? (size_t)json_object_get_string_len(it.val) : sizeof c->greeting;
 		if (n >= sizeof c->greeting)
-			return test_plugin_refuse(why, len, "greeting: not a string of at "
-			                          "most %zu bytes", sizeof c->greeting - 1);
+			return util_refuse(why, len, "greeting: not a string of at "
+			                   "most %zu bytes", sizeof c->greeting - 1);
 		memcpy(c->greeting, json_object_get_string(it.val), n + 1);
 	}
 	return 0;

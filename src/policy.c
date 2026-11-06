@@ -9,7 +9,6 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
-#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -153,18 +152,7 @@ struct policy_build {
 };
 
 /* Say what is wrong; returns EINVAL. */
-[[gnu::format(printf, 2, 3)]]
-static int
-policy_build_fail (struct policy_build *b,
-                   char const          *fmt,
-                   ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-	util_vformat(b->why, b->len, fmt, ap);
-	va_end(ap);
-	return EINVAL;
-}
+#define policy_build_fail(b, ...) util_refuse((b)->why, (b)->len, __VA_ARGS__)
 
 /* The length of @p name, a role's or an identity's; 0 if it is not a
  * valid name.
@@ -861,6 +849,8 @@ policy_build_anonymous (struct policy_build *b,
 	}
 	return 0;
 }
+
+#undef policy_build_fail
 
 /* The file's policy: its roles, identities, groups and anonymous roles. */
 static int

@@ -8,7 +8,6 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <link.h>
-#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -65,23 +64,6 @@ struct plugin_file {
 	int              fd;
 };
 
-/* Writes the reason for a refusal into the len bytes at why. Returns
- * EINVAL.
- */
-[[gnu::format(printf, 3, 4)]]
-static int
-plugin_refuse (char       *why,
-               size_t      len,
-               char const *fmt,
-               ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-	util_vformat(why, len, fmt, ap);
-	va_end(ap);
-	return EINVAL;
-}
-
 /* Reads the n bytes at offset off of the file into buf. The bytes must
  * end at or before offset end, and end must not be greater than f->size.
  * Returns 0, or EINVAL with the reason in f->why.
@@ -94,13 +76,13 @@ plugin_file_read (struct plugin_file const *f,
                   size_t                    n)
 {
 	if (off > end || n > end - off)
-		return plugin_refuse(f->why, f->len, "a truncated or malformed ELF file");
+		return util_refuse(f->why, f->len, "a truncated or malformed ELF file");
 	size_t got;
 	int e = util_read_all(f->fd, buf, n, (off_t)off, &got);
 	if (e)
-		return plugin_refuse(f->why, f->len, "cannot read it: %s", strerror(e));
+		return util_refuse(f->why, f->len, "cannot read it: %s", strerror(e));
 	if (got < n)
-		return plugin_refuse(f->why, f->len, "became shorter while it was read");
+		return util_refuse(f->why, f->len, "became shorter while it was read");
 	return 0;
 }
 
@@ -137,9 +119,9 @@ plugin_file_notes (struct plugin_file *f,
 		if (memcmp(owner, "askai", sizeof owner))
 			continue;
 		if (f->found++)
-			return plugin_refuse(f->why, f->len, "has two askai manifests");
+			return util_refuse(f->why, f->len, "has two askai manifests");
 		if (nh.n_descsz != sizeof *f->dest)
-			return plugin_refuse(f->why, f->len, "its manifest has the wrong size");
+			return util_refuse(f->why, f->len, "its manifest has the wrong size");
 		e = plugin_file_read(f, desc, end, f->dest, sizeof *f->dest);
 		if (e)
 			return e;
@@ -201,7 +183,7 @@ plugin_file_segment (struct plugin_file *f,
 {
 	if (ph->p_offset > f->size || ph->p_filesz > f->size - ph->p_offset ||
 	    ph->p_memsz > UINT64_MAX - ph->p_vaddr)
-		return plugin_refuse(f->why, f->len, "a truncated or malformed ELF file");
+		return util_refuse(f->why, f->len, "a truncated or malformed ELF file");
 	uint64_t end = ph->p_offset + ph->p_filesz;
 	uint64_t top = ph->p_vaddr + ph->p_memsz;
 	switch (ph->p_type) {
@@ -246,9 +228,9 @@ plugin_manifest_read (struct manifest *dest,
 {
 	struct stat st;
 	if (fstat(fd, &st))
-		return plugin_refuse(why, len, "cannot read it: %s", strerror(errno));
+		return util_refuse(why, len, "cannot read it: %s", strerror(errno));
 	if (!S_ISREG(st.st_mode))
-		return plugin_refuse(why, len, "not a regular file");
+		return util_refuse(why, len, "not a regular file");
 	struct plugin_file f = {
 		.size       = st.st_size > 0 ? (uint64_t)st.st_size : 0,
 		.write_from = UINT64_MAX,
@@ -270,7 +252,7 @@ plugin_manifest_read (struct manifest *dest,
 	if (memcmp(eh.e_ident, __ehdr_start.e_ident, EI_VERSION) ||
 	    eh.e_machine != __ehdr_start.e_machine || eh.e_type != ET_DYN ||
 	    eh.e_phentsize != sizeof (ElfW(Phdr)))
-		return plugin_refuse(why, len, "not a shared object of this machine");
+		return util_refuse(why, len, "not a shared object of this machine");
 
 	/* A program header that was read ends inside the file, so adding
 	 * sizeof ph to its offset does not overflow. */
@@ -285,21 +267,21 @@ plugin_manifest_read (struct manifest *dest,
 			return e;
 	}
 	if (!f.found)
-		return plugin_refuse(why, len, "has no askai manifest");
+		return util_refuse(why, len, "has no askai manifest");
 	/* Before any code of the plugin runs, the dynamic linker makes the
 	 * PT_GNU_RELRO segment read-only. It rounds both ends of the segment
 	 * down to a page, so a writable byte outside that range stays
 	 * writable. */
 	long page = sysconf(_SC_PAGESIZE);
 	if (page <= 0)
-		return plugin_refuse(why, len, "cannot check it: the page size is unknown");
+		return util_refuse(why, len, "cannot check it: the page size is unknown");
 	uint64_t mask = ~((uint64_t)page - 1);
 	if (f.write_to && (f.write_from < (f.relro_from & mask) ||
 	                   f.write_to > (f.relro_to & mask)))
 		plugin_file_state(&f, "has writable data (a plugin has no mutable "
 		                  "static and is linked with -Wl,-z,relro,-z,now)");
 	if (PLUGIN_STATE_REFUSED && f.state)
-		return plugin_refuse(why, len, "%s", f.state);
+		return util_refuse(why, len, "%s", f.state);
 	return 0;
 }
 
@@ -332,29 +314,29 @@ plugin_manifest_check (struct manifest const *m,
 {
 	static uint32_t const abi[MANIFEST_ABI] = { PLUGIN_ABI(PLUGIN_ABI_U32) };
 	if (m->epoch != PLUGIN_EPOCH)
-		return plugin_refuse(why, len, "its plugin epoch is %" PRIu32
-		                     ", askai's is %" PRIu32, m->epoch, PLUGIN_EPOCH);
+		return util_refuse(why, len, "its plugin epoch is %" PRIu32
+		                   ", askai's is %" PRIu32, m->epoch, PLUGIN_EPOCH);
 	for (size_t i = 0; i < MANIFEST_ABI; ++i)
 		if (m->abi[i] != abi[i])
-			return plugin_refuse(why, len, "its ABI value %zu is %" PRIu32
-			                     ", askai's is %" PRIu32, i, m->abi[i], abi[i]);
+			return util_refuse(why, len, "its ABI value %zu is %" PRIu32
+			                   ", askai's is %" PRIu32, i, m->abi[i], abi[i]);
 	if (!plugin_name_len(m->name))
-		return plugin_refuse(why, len, "the name in its manifest is not 1 to "
-		                     "31 characters of [-0-9_a-z]");
+		return util_refuse(why, len, "the name in its manifest is not 1 to "
+		                   "31 characters of [-0-9_a-z]");
 	uint32_t n = 0;
 	for (; n < MANIFEST_TOOLS && m->tools[n][0]; ++n) {
 		lens[n] = plugin_name_len(m->tools[n]);
 		if (!lens[n])
-			return plugin_refuse(why, len, "tool name %" PRIu32 " in its "
-			                     "manifest is not 1 to 31 characters of "
-			                     "[-0-9_a-z]", n);
+			return util_refuse(why, len, "tool name %" PRIu32 " in its "
+			                   "manifest is not 1 to 31 characters of "
+			                   "[-0-9_a-z]", n);
 	}
 	for (uint32_t i = n + 1; i < MANIFEST_TOOLS; ++i)
 		if (m->tools[i][0])
-			return plugin_refuse(why, len, "its manifest has a tool name "
-			                     "after an empty entry");
+			return util_refuse(why, len, "its manifest has a tool name "
+			                   "after an empty entry");
 	if (!n)
-		return plugin_refuse(why, len, "its manifest names no tool");
+		return util_refuse(why, len, "its manifest names no tool");
 	*n_tools = n;
 	return 0;
 }
@@ -377,8 +359,8 @@ plugin_loaded_definition (struct plugin_loaded const *loaded,
 	char const *name = jb_str(jb_get(def, "name"), &n);
 	int e = name && n == loaded->lens[i] && !memcmp(name, loaded->manifest.tools[i], n)
 	      ? 0
-	      : plugin_refuse(why, len, "the definition of its tool %s has another "
-	                      "name", loaded->manifest.tools[i]);
+	      : util_refuse(why, len, "the definition of its tool %s has another "
+	                    "name", loaded->manifest.tools[i]);
 	json_object_put(def);
 	return e;
 }
@@ -403,29 +385,29 @@ plugin_loaded_load (struct plugin_loaded *dest,
 	dest->plugin = object ? dlsym(object, "askai_plugin") : nullptr;
 	if (!dest->plugin) {
 		char const *err = dlerror();
-		return plugin_refuse(why, len, "cannot load it: %s",
-		                     err ? err : "the dynamic linker gave no reason");
+		return util_refuse(why, len, "cannot load it: %s",
+		                   err ? err : "the dynamic linker gave no reason");
 	}
 	struct plugin const *p = dest->plugin;
 	if (p->instance_init ? p->instance_size - 1 >= PLUGIN_INSTANCE_MAX
 	                     : p->instance_size || p->instance_fini || p->relieve)
-		return plugin_refuse(why, len, "the instance members of its askai_plugin "
-		                     "do not agree: instance_init() goes with an "
-		                     "instance_size of 1 to %zu, and instance_fini() and "
-		                     "relieve() need instance_init()", PLUGIN_INSTANCE_MAX);
+		return util_refuse(why, len, "the instance members of its askai_plugin "
+		                   "do not agree: instance_init() goes with an "
+		                   "instance_size of 1 to %zu, and instance_fini() and "
+		                   "relieve() need instance_init()", PLUGIN_INSTANCE_MAX);
 	for (uint32_t i = 0; i < PLUGIN_TOOLS; ++i) {
 		struct tool_kind const *kind = &dest->plugin->tools[i];
 		bool named = i < dest->n_tools;
 		if (named != !!kind->definition || named != !!kind->start)
-			return plugin_refuse(why, len, "kind %" PRIu32 " of its "
-			                     "askai_plugin and its manifest do not agree: "
-			                     "a named tool has definition() and start(), "
-			                     "another kind has neither", i);
+			return util_refuse(why, len, "kind %" PRIu32 " of its "
+			                   "askai_plugin and its manifest do not agree: "
+			                   "a named tool has definition() and start(), "
+			                   "another kind has neither", i);
 		if (kind->flags & ~TOOL_FLAGS)
-			return plugin_refuse(why, len, "kind %" PRIu32 " of its "
-			                     "askai_plugin has flags that tool.h does not "
-			                     "define for plugins: %#" PRIx64, i,
-			                     kind->flags & ~TOOL_FLAGS);
+			return util_refuse(why, len, "kind %" PRIu32 " of its "
+			                   "askai_plugin has flags that tool.h does not "
+			                   "define for plugins: %#" PRIx64, i,
+			                   kind->flags & ~TOOL_FLAGS);
 	}
 	return 0;
 }
@@ -447,12 +429,12 @@ plugin_loaded_configure (struct plugin_loaded *dest,
 	static char const prefix[] = "options: ";
 	struct plugin const *p = dest->plugin;
 	if (p->configure ? p->config_size - 1 >= PLUGIN_CONFIG_MAX : p->config_size)
-		return plugin_refuse(why, len, "its askai_plugin has configure() without a "
-		                     "config_size of 1 to %zu, or a config_size without "
-		                     "configure()", PLUGIN_CONFIG_MAX);
+		return util_refuse(why, len, "its askai_plugin has configure() without a "
+		                   "config_size of 1 to %zu, or a config_size without "
+		                   "configure()", PLUGIN_CONFIG_MAX);
 	if (!p->configure)
-		return options ? plugin_refuse(why, len, "%sthe plugin has no options",
-		                               prefix)
+		return options ? util_refuse(why, len, "%sthe plugin has no options",
+		                             prefix)
 		               : 0;
 	dest->config = calloc(1, p->config_size);
 	if (!dest->config)
@@ -460,7 +442,7 @@ plugin_loaded_configure (struct plugin_loaded *dest,
 	/* A buffer without room for a reason after the prefix gets the prefix
 	 * alone. */
 	if (len <= sizeof prefix)
-		return plugin_refuse(why, len, "%s", prefix);
+		return util_refuse(why, len, "%s", prefix);
 	/* The reason of configure() follows the prefix. The text is cut at the
 	 * end of the buffer, also if configure() stored no NUL. */
 	char *reason = why + sizeof prefix - 1;
@@ -472,11 +454,11 @@ plugin_loaded_configure (struct plugin_loaded *dest,
 	if (!e || e == ENOMEM)
 		return e;
 	if (e != EINVAL)
-		return plugin_refuse(why, len, "%sconfigure() returned the error "
-		                     "number %d", prefix, e);
+		return util_refuse(why, len, "%sconfigure() returned the error "
+		                   "number %d", prefix, e);
 	if (!*reason)
-		return plugin_refuse(why, len, "%sconfigure() refused the options "
-		                     "without a reason", prefix);
+		return util_refuse(why, len, "%sconfigure() refused the options "
+		                   "without a reason", prefix);
 	return EINVAL;
 }
 
@@ -497,7 +479,7 @@ plugin_loaded_init (struct plugin_loaded *dest,
 	/* O_NONBLOCK: opening a FIFO must not wait for a writer. */
 	int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
 	if (fd < 0)
-		return plugin_refuse(why, len, "cannot open it: %s", strerror(errno));
+		return util_refuse(why, len, "cannot open it: %s", strerror(errno));
 	int e = plugin_manifest_read(&dest->manifest, fd, why, len);
 	(void)close(fd);
 	fd = -1;
