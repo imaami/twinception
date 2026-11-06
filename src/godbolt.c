@@ -1852,8 +1852,8 @@ godbolt_next (struct godbolt *call)
  * step begins the next compilation.
  */
 static enum godbolt_go
-godbolt_record (struct godbolt       *call,
-                enum godbolt_outcome  count)
+godbolt_unanswered (struct godbolt       *call,
+                    enum godbolt_outcome  count)
 {
 	++call->counts[count];
 	if (godbolt_header(call))
@@ -1897,11 +1897,11 @@ godbolt_job (struct godbolt *call)
 	godbolt_job_body(call, r);
 	if (call->full) {
 		godbolt_why(call, "not sent, because the output is full");
-		return godbolt_record(call, GODBOLT_UNSENT);
+		return godbolt_unanswered(call, GODBOLT_UNSENT);
 	}
 	if (r->from == GODBOLT_FROM_NONE) {
 		godbolt_why(call, "not sent, because MSVC cannot output its predefined macros");
-		return godbolt_record(call, GODBOLT_UNSENT);
+		return godbolt_unanswered(call, GODBOLT_UNSENT);
 	}
 	godbolt_request(call, GODBOLT_POST_COMPILE,
 	                call->args.ids[call->job / call->args.n_strings],
@@ -1918,7 +1918,7 @@ godbolt_answer (struct godbolt *call)
 {
 	enum godbolt_go const got = godbolt_result(call);
 	if (got == GODBOLT_BAD)
-		return godbolt_record(call, GODBOLT_FAILED);
+		return godbolt_unanswered(call, GODBOLT_FAILED);
 	if (got != GODBOLT_GO)
 		return got;
 	json_tokener_reset(call->tok);
@@ -2096,7 +2096,7 @@ godbolt_parse (struct godbolt *call)
 		return GODBOLT_GO;
 	else
 		godbolt_why(call, "the response is not valid: the JSON text ends early");
-	return godbolt_record(call, GODBOLT_FAILED);
+	return godbolt_unanswered(call, GODBOLT_FAILED);
 }
 
 /* Ends the record at the limit of the output, with a note on the cut.
