@@ -340,7 +340,9 @@ notes_add_file (struct buf        *in,
  * id of the repository format for a root commit (oid_zero()).
  * notes_add_out() reads the new commit's id from the output. Returns 0,
  * EINVAL for a null argument, a @p tip without a name, a NUL in
- * @p message or a message of NOTES_MESSAGE bytes or more, or ENOMEM.
+ * @p message or a message of NOTES_MESSAGE bytes or more, or the error of
+ * buf_printf() or buf_put(), after which @p in can contain part of the
+ * input.
  */
 extern int
 notes_add_input (struct buf       *in,

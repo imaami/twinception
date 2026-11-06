@@ -725,26 +725,29 @@ notes_add_head (struct buf        *in,
                 struct notes_part *part)
 {
 	static char const m[] = "M 100644 inline \"";
-	char head[sizeof m + 2 * NOTES_NAME + sizeof "\"\ndata \n" + UTIL_DECIMAL];
 	if (!in || !name.data || name.len > NOTES_NAME || !part)
 		return EINVAL;
-	/* The name is quoted as a C string. */
+	/* The head is m, the name quoted as a C string, which at most doubles
+	 * its bytes, and the data command. Then come the text and a line
+	 * feed. */
+	struct span s;
+	int e = buf_reserve(in, sizeof m + 2 * name.len + sizeof "\"\ndata \n" + UTIL_DECIMAL + len,
+	                    SIZE_MAX, &s);
+	if (e)
+		return e;
+	char *const head = (char *)s.ptr;
 	char *p = mempcpy(head, m, sizeof m - 1);
 	for (size_t i = 0; i < name.len; ++i) {
 		if (name.data[i] == '"' || name.data[i] == '\\')
 			*p++ = '\\';
 		*p++ = name.data[i];
 	}
-	int n = snprintf(p, (size_t)(head + sizeof head - p), "\"\ndata %zu\n", len);
-	if (n < 0 || n >= head + sizeof head - p)
+	size_t const room = s.len - (size_t)(p - head);
+	int n = snprintf(p, room, "\"\ndata %zu\n", len);
+	if (n < 0 || (size_t)n >= room)
 		return EINVAL;
-	size_t h = (size_t)(p + n - head);
-	struct span s;
-	int e = buf_reserve(in, h + len + 1, SIZE_MAX, &s);
-	if (e)
-		return e;
-	memcpy(s.ptr, head, h);
-	s.ptr[h + len] = '\n';
+	size_t h = (size_t)(p - head) + (size_t)n;
+	head[h + len] = '\n';
 	/* The name runs from the last byte of m to the quote at p. */
 	size_t at = buf_peek(in).len;
 	*part = (struct notes_part){
@@ -777,28 +780,16 @@ notes_add_input (struct buf       *in,
                  struct span       file)
 {
 	static char const mark[] = "get-mark :1\n";
-	char head[NOTES_REPO + NOTES_MESSAGE + OID_SHA256 + UTIL_DECIMAL +
-	          sizeof "commit \nmark :1\ncommitter askai <askai> now\ndata \n\nfrom \n"];
 	if (!in || !repo || !tip || !oid_len(tip) || !message.ptr ||
 	    message.len >= NOTES_MESSAGE || memchr(message.ptr, '\0', message.len))
 		return EINVAL;
-	/* The count of the data includes the line feed after the message. */
-	int h = snprintf(head, sizeof head, "commit %s\nmark :1\ncommitter askai <askai> now\n"
-	                 "data %zu\n%.*s\nfrom %s\n", repo, message.len + 1,
-	                 (int)message.len, (char const *)message.ptr, tip->hex);
-	if (h < 0 || h >= (int)sizeof head)
-		return EINVAL;
-	/* get-mark ends the commit, and git writes the commit's id. */
-	size_t len = (size_t)h + file.len + sizeof mark - 1;
-	struct span s;
-	int e = buf_reserve(in, len, SIZE_MAX, &s);
-	if (e)
-		return e;
-	memcpy(s.ptr, head, (size_t)h);
-	memcpy(s.ptr + h, file.ptr, file.len);
-	memcpy(s.ptr + h + file.len, mark, sizeof mark - 1);
-	buf_commit(in, len);
-	return 0;
+	/* The count of the data includes the line feed after the message.
+	 * get-mark ends the commit, and git writes the commit's id. */
+	int e = buf_printf(in, "commit %s\nmark :1\ncommitter askai <askai> now\ndata %zu\n%.*s\n"
+	                   "from %s\n", repo, message.len + 1, (int)message.len,
+	                   (char const *)message.ptr, tip->hex);
+	e = e ? e : buf_put(in, file.ptr, file.len, SIZE_MAX);
+	return e ? e : buf_put(in, mark, sizeof mark - 1, SIZE_MAX);
 }
 
 int
