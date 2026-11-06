@@ -8766,6 +8766,8 @@ def check_git(binary, up):
                 # A client's call takes the whole output in one result.
                 assert help_text["limits"]["window_bytes"] == 16 << 20, result
                 assert help_text["pattern_required"] == (command == "grep"), result
+            help_text = json.loads(text_of(call(ai, repo="proj", command="diff", help=True)))
+            assert "--stat" in help_text["description"], help_text
             help_text = json.loads(text_of(call(ai, repo="proj", command="read", help=True)))
             assert "by its ID" in help_text["description"], help_text
             assert help_text["options"] == [] and help_text["limits"]["revisions"] == 1 and \

@@ -251,7 +251,8 @@ static struct {
 	  FILES | END | OBJECT },
 	{ CSTR_VIEW_INIT("diff"),      diff_options,      { "--no-ext-diff", "--no-textconv" },
 	  "Compare two commits: give two revisions, or one explicit A..B or A...B "
-	  "range. Paths restrict the comparison.", FILES | END | RANGE | PAIR },
+	  "range. Paths restrict the comparison. --stat or --name-status gives a "
+	  "summary instead of the patch.", FILES | END | RANGE | PAIR },
 	{ CSTR_VIEW_INIT("grep"),      grep_options,      { "--no-textconv", "-n", "-E" },
 	  "Search committed trees; defaults to HEAD. The pattern is an extended "
 	  "regex: -G makes it basic, -F plain text, -P Perl; -i ignores case. Each "
