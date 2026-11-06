@@ -161,21 +161,51 @@ ai_request_last (struct json_object *root,
 	return jb_set(root, key, val);
 }
 
-/* Append the text of @p val to @p text if @p val is a string. */
+/* Append the text of @p val to @p text if @p val is a string and @p text
+ * is not nullptr.
+ */
 static int
 ai_append (struct dstr        *text,
            struct json_object *val)
 {
 	struct cstr_view str = jb_view(val);
-	return str.data && !dstr_cat_n(text, str.data, str.len) ? ENOMEM : 0;
+	return text && str.data && !dstr_cat_n(text, str.data, str.len) ? ENOMEM : 0;
 }
 
-/* The text of chat completions' answer @p root, into @p text, and its stop
- * reason in @p *reason.
+/* Append the text of each of @p parts, an array of objects with text, as
+ * ai_append() does.
  */
+static int
+ai_append_parts (struct dstr        *text,
+                 struct json_object *parts)
+{
+	int e = 0;
+	struct json_object *part;
+	for (size_t i = 0; !e && (part = jb_at(parts, i)); ++i)
+		e = ai_append(text, jb_get(part, "text"));
+	return e;
+}
+
+/* The thinking in @p message, a message or a delta of chat completions:
+ * reasoning_content, as llama-server and DeepSeek send it, unless it is
+ * empty, else reasoning, as OpenRouter sends it.
+ */
+static struct json_object *
+ai_chat_reasoning (struct json_object *message)
+{
+	struct json_object *thinking = jb_get(message, "reasoning_content");
+	return jb_view(thinking).len ? thinking : jb_get(message, "reasoning");
+}
+
+/* These functions read a whole answer @p root of their API: they append
+ * its text to @p text and its thinking to @p thought, each unless it is
+ * nullptr, and store its stop reason in @p *reason.
+ */
+
 static int
 ai_chat_answer (struct json_object  *root,
                 struct dstr         *text,
+                struct dstr         *thought,
                 char const         **reason)
 {
 	struct json_object *choice = jb_at(jb_get(root, "choices"), 0);
@@ -184,11 +214,10 @@ ai_chat_answer (struct json_object  *root,
 	*reason = jb_view(jb_get(choice, "finish_reason")).data;
 
 	/* Some servers send content as an array of text parts. */
-	int e = ai_append(text, content);
-	struct json_object *part;
-	for (size_t i = 0; !e && (part = jb_at(content, i)); ++i)
-		e = ai_append(text, jb_get(part, "text"));
-	if (e || dstr_len(text))
+	int e = ai_append(thought, ai_chat_reasoning(msg));
+	e = e ? e : ai_append(text, content);
+	e = e ? e : ai_append_parts(text, content);
+	if (e || !text || dstr_len(text))
 		return e;
 	return ai_append(text, jb_get(msg, "refusal"));
 }
@@ -196,6 +225,7 @@ ai_chat_answer (struct json_object  *root,
 static int
 ai_responses_answer (struct json_object  *root,
                      struct dstr         *text,
+                     struct dstr         *thought,
                      char const         **reason)
 {
 	*reason = jb_view(jb_get(jb_get(root, "incomplete_details"), "reason")).data;
@@ -203,7 +233,13 @@ ai_responses_answer (struct json_object  *root,
 	int e = 0;
 	struct json_object *item;
 	for (size_t i = 0; !e && (item = jb_at(output, i)); ++i) {
-		if (!jb_is(jb_get(item, "type"), "message"))
+		struct json_object *type = jb_get(item, "type");
+		if (jb_is(type, "reasoning")) {
+			e = ai_append_parts(thought, jb_get(item, "content"));
+			e = e ? e : ai_append_parts(thought, jb_get(item, "summary"));
+			continue;
+		}
+		if (!jb_is(type, "message"))
 			continue;
 		struct json_object *content = jb_get(item, "content");
 		struct json_object *part;
@@ -218,21 +254,26 @@ ai_responses_answer (struct json_object  *root,
 static int
 ai_messages_answer (struct json_object  *root,
                     struct dstr         *text,
+                    struct dstr         *thought,
                     char const         **reason)
 {
 	*reason = jb_view(jb_get(root, "stop_reason")).data;
 	struct json_object *content = jb_get(root, "content");
 	int e = 0;
 	struct json_object *block;
-	for (size_t i = 0; !e && (block = jb_at(content, i)); ++i)
-		if (jb_is(jb_get(block, "type"), "text"))
-			e = ai_append(text, jb_get(block, "text"));
+	for (size_t i = 0; !e && (block = jb_at(content, i)); ++i) {
+		struct json_object *type = jb_get(block, "type");
+		e = jb_is(type, "text") ? ai_append(text, jb_get(block, "text"))
+		  : jb_is(type, "thinking") ? ai_append(thought, jb_get(block, "thinking"))
+		  : 0;
+	}
 	return e;
 }
 
 static int
 ai_generate_answer (struct json_object  *root,
                     struct dstr         *text,
+                    struct dstr         *thought,
                     char const         **reason)
 {
 	struct json_object *candidate = jb_at(jb_get(root, "candidates"), 0);
@@ -242,18 +283,18 @@ ai_generate_answer (struct json_object  *root,
 	int e = 0;
 	struct json_object *part;
 	for (size_t i = 0; !e && (part = jb_at(parts, i)); ++i)
-		if (!json_object_get_boolean(jb_get(part, "thought")))
-			e = ai_append(text, jb_get(part, "text"));
+		e = ai_append(json_object_get_boolean(jb_get(part, "thought")) ? thought : text,
+		              jb_get(part, "text"));
 	return e;
 }
 
-/* The text of the model_output steps of Gemini's Interactions' answer
- * @p root, into @p text, and its status, as its stop reason, in
- * @p *reason.
+/* Gemini's Interactions has the text in its model_output steps, the
+ * thinking in its thought steps, and its status as its stop reason.
  */
 static int
 ai_interactions_answer (struct json_object  *root,
                         struct dstr         *text,
+                        struct dstr         *thought,
                         char const         **reason)
 {
 	*reason = jb_view(jb_get(root, "status")).data;
@@ -261,13 +302,17 @@ ai_interactions_answer (struct json_object  *root,
 	int e = 0;
 	struct json_object *step;
 	for (size_t i = 0; !e && (step = jb_at(steps, i)); ++i) {
-		if (!jb_is(jb_get(step, "type"), "model_output"))
+		struct json_object *type = jb_get(step, "type");
+		if (jb_is(type, "thought")) {
+			e = ai_append_parts(thought, jb_get(step, "summary"));
+			continue;
+		}
+		if (!jb_is(type, "model_output"))
 			continue;
 		struct json_object *content = jb_get(step, "content");
 		struct json_object *item;
 		for (size_t j = 0; !e && (item = jb_at(content, j)); ++j)
-			if (jb_is(jb_get(item, "type"), "text"))
-				e = ai_append(text, jb_get(item, "text"));
+			e = jb_is(jb_get(item, "type"), "text") ? ai_append(text, jb_get(item, "text")) : 0;
 	}
 	return e;
 }
@@ -306,6 +351,7 @@ static struct ai_body {
 	char const      *schema;       /* the member of a tool's input schema */
 	int            (*answer) (struct json_object  *root,
 	                          struct dstr         *text,
+	                          struct dstr         *thought,
 	                          char const         **reason);
 	int32_t          max_default;
 	uint32_t         flags;
@@ -706,13 +752,9 @@ ai_chat_delta (struct ai_sink const *sink,
                struct json_object   *delta,
                struct ai_event      *out)
 {
-	/* llama-server and DeepSeek use reasoning_content, and OpenRouter uses
-	 * the alias reasoning. Thinking precedes visible text when a provider
-	 * includes both in one delta. */
-	struct cstr_view thinking = jb_view(jb_get(delta, "reasoning_content"));
-	if (!thinking.len)
-		thinking = jb_view(jb_get(delta, "reasoning"));
-	int e = ai_put_thought(sink, thinking, out);
+	/* Thinking precedes visible text when a provider includes both in one
+	 * delta. */
+	int e = ai_put_thought(sink, jb_view(ai_chat_reasoning(delta)), out);
 	if (e)
 		return e;
 	struct json_object *content = jb_get(delta, "content");
@@ -1664,7 +1706,7 @@ ai_answer (enum ai_api         api,
 	if (!api || api >= array_size(ai_bodies))
 		return EINVAL;
 	char const *reason = nullptr;
-	int e = ai_bodies[api].answer(root, text, &reason);
+	int e = ai_bodies[api].answer(root, text, nullptr, &reason);
 	if (e)
 		return e;
 	if (!dstr_len(text)) {
@@ -1678,77 +1720,15 @@ ai_answer (enum ai_api         api,
 	return 0;
 }
 
-/* Append the decoded text of @p parts, an array of text-bearing objects. */
-static int
-ai_thought_parts (struct dstr        *text,
-                  struct json_object *parts)
-{
-	int e = 0;
-	struct json_object *part;
-	for (size_t i = 0; !e && (part = jb_at(parts, i)); ++i)
-		e = ai_append(text, jb_get(part, "text"));
-	return e;
-}
-
 int
 ai_thoughts (enum ai_api         api,
              struct json_object *root,
              struct dstr        *text)
 {
-	struct json_object *items;
-	switch (api) {
-	case AI_CHAT: {
-		struct json_object *choice = jb_at(jb_get(root, "choices"), 0);
-		struct json_object *message = jb_get(choice, "message");
-		struct cstr_view thought = jb_view(jb_get(message, "reasoning_content"));
-		if (!thought.len)
-			thought = jb_view(jb_get(message, "reasoning"));
-		return thought.data && !dstr_cat_n(text, thought.data, thought.len) ? ENOMEM : 0;
-	}
-	case AI_RESPONSES:
-		items = jb_get(root, "output");
-		break;
-	case AI_MESSAGES:
-		items = jb_get(root, "content");
-		break;
-	case AI_GENERATE: {
-		struct json_object *candidate = jb_at(jb_get(root, "candidates"), 0);
-		items = jb_get(jb_get(candidate, "content"), "parts");
-		break;
-	}
-	case AI_INTERACTIONS:
-		items = jb_get(root, "steps");
-		break;
-	default:
+	if (!api || api >= array_size(ai_bodies))
 		return EINVAL;
-	}
-	int e = 0;
-	struct json_object *item;
-	for (size_t i = 0; !e && (item = jb_at(items, i)); ++i) {
-		switch (api) {
-		case AI_RESPONSES:
-			if (jb_is(jb_get(item, "type"), "reasoning")) {
-				e = ai_thought_parts(text, jb_get(item, "content"));
-				e = e ? e : ai_thought_parts(text, jb_get(item, "summary"));
-			}
-			break;
-		case AI_MESSAGES:
-			if (jb_is(jb_get(item, "type"), "thinking"))
-				e = ai_append(text, jb_get(item, "thinking"));
-			break;
-		case AI_GENERATE:
-			if (json_object_get_boolean(jb_get(item, "thought")))
-				e = ai_append(text, jb_get(item, "text"));
-			break;
-		case AI_INTERACTIONS:
-			if (jb_is(jb_get(item, "type"), "thought"))
-				e = ai_thought_parts(text, jb_get(item, "summary"));
-			break;
-		default:
-			break;
-		}
-	}
-	return e;
+	char const *reason;
+	return ai_bodies[api].answer(root, nullptr, text, &reason);
 }
 
 #undef no_answer_reason
