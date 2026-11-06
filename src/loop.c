@@ -584,6 +584,7 @@ loop_timer_stop (struct loop       *loop,
 	size_t i = timer->slot - 1;
 	timer->slot = 0;
 	struct loop_timer *last = loop->heap[--loop->timers];
+	loop->heap[loop->timers] = nullptr;
 	if (i < loop->timers) {
 		loop_heap_put(loop, last, i);
 		loop_heap_fix(loop, last);
