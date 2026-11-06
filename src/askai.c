@@ -616,14 +616,12 @@ askai_client_start (void           *ctx,
 		mine->tasks = task_pool_loop_metrics(s->tasks, i);
 	}
 	int e = askai_client_parts(app, loop, blockers);
-	if (e) {
+	if (!e)
+		app->httpd = httpd_create(loop, s->hub, i, mcp_app(app->keep.mcp),
+		                          &s->home.cfg->http, &e);
+	if (e)
 		LOG(LOG_ERROR, "cannot start client loop %" PRIu64 ": %s", loop->id,
 		    strerror(e));
-		return e;
-	}
-	/* httpd_create() logs the reason if it cannot allocate the server. */
-	app->httpd = httpd_create(loop, s->hub, i, mcp_app(app->keep.mcp),
-	                          &s->home.cfg->http, &e);
 	return e;
 }
 

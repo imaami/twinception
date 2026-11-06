@@ -3391,7 +3391,6 @@ httpd_create (struct loop             *loop,
 
 	struct httpd *srv = malloc(sizeof *srv);
 	if (!srv) {
-		LOG(LOG_ERROR, "cannot start the server: %s", strerror(ENOMEM));
 		*e = ENOMEM;
 		return nullptr;
 	}
