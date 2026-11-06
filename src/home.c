@@ -229,11 +229,9 @@ struct home {
 static thread_local struct home *self;
 
 static int home_open (struct home *home, struct job *job, bool resume);
-static void home_journal_done (struct loop *loop, void *arg, int error);
 static void home_archive_pending (struct home *home, struct job *job);
 static int home_provider_url (struct home *home, struct job *job,
                               bool cancel, char **out);
-static void home_timeline (struct home *home, struct job *job);
 
 /* The names that home uses for each API. llama is the end of the path of
  * the API's endpoint at llama-server, if its background mode serves the
@@ -1276,6 +1274,13 @@ home_open (struct home *home,
 	return e;
 }
 
+/* When @p job is due: its deadline, or never (UINT64_MAX) without one. */
+static uint64_t
+home_due (struct job const *job)
+{
+	return job->deadline ? job->deadline : UINT64_MAX;
+}
+
 /* Order by deadline: restored jobs retain their original remaining time,
  * which can be shorter than a newly started job's.
  */
@@ -1284,19 +1289,16 @@ home_timeline (struct home *home,
                struct job  *job)
 {
 	list_del(&job->due);
-	uint64_t due = job->deadline ? job->deadline : UINT64_MAX;
+	uint64_t const due = home_due(job);
 	struct list *before = &home->timeline;
 	for (struct list *p = home->timeline.prev; p != &home->timeline; p = p->prev) {
-		struct job const *prior = container_of(p, struct job, due);
-		uint64_t when = prior->deadline ? prior->deadline : UINT64_MAX;
-		if (when <= due)
+		if (home_due(container_of(p, struct job, due)) <= due)
 			break;
 		before = p;
 	}
 	list_append(before, &job->due);
-	struct job const *first = container_of(home->timeline.next, struct job, due);
 	(void)loop_timer_set(home->loop, &home->deadline,
-	                     first->deadline ? first->deadline : UINT64_MAX);
+	                     home_due(container_of(home->timeline.next, struct job, due)));
 }
 
 /* Start or replay @p job upstream; half-open, as the breaker's probe. */
@@ -1475,7 +1477,7 @@ home_overdue_step (struct loop      *loop,
 	struct home *home = container_of(step, struct home, overdue);
 	for (; !list_is_empty(&home->timeline); loop_work(loop, LOOP_REQS, 1)) {
 		struct job *job = container_of(home->timeline.next, struct job, due);
-		uint64_t due = job->deadline ? job->deadline : UINT64_MAX;
+		uint64_t const due = home_due(job);
 		if (due > loop->now) {
 			(void)loop_timer_set(loop, &home->deadline, due);
 			return;
