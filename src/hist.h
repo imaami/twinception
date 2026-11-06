@@ -72,21 +72,6 @@ hist_init (struct hist *h)
 	}
 }
 
-/** Empty @p h; only the histogram's one writer may. */
-static inline void
-hist_clear (struct hist *h)
-{
-	atomic_store_explicit(&h->count, 0U, memory_order_relaxed);
-	atomic_store_explicit(&h->sum, 0U, memory_order_relaxed);
-	atomic_store_explicit(&h->min, 0U, memory_order_relaxed);
-	atomic_store_explicit(&h->max, 0U, memory_order_relaxed);
-
-	for (size_t i = 0; i < array_size(h->bucket); ++i) {
-		atomic_store_explicit(&h->bucket[i], 0U,
-		                      memory_order_relaxed);
-	}
-}
-
 /** A relaxed load of @p p, for readers of a histogram or a single-writer
  *  counter.
  */
@@ -94,6 +79,16 @@ static inline uint64_t
 hist_get (_Atomic uint64_t const *p)
 {
 	return atomic_load_explicit(p, memory_order_relaxed);
+}
+
+/** Set @p p, which only the calling thread writes, to @p v with a relaxed
+ *  store.
+ */
+static inline void
+hist_set (_Atomic uint64_t *p,
+          uint64_t          v)
+{
+	atomic_store_explicit(p, v, memory_order_relaxed);
 }
 
 /** Add @p n to @p p, which only the calling thread writes. With one
@@ -105,7 +100,18 @@ static inline void
 hist_add (_Atomic uint64_t *p,
           uint64_t          n)
 {
-	atomic_store_explicit(p, hist_get(p) + n, memory_order_relaxed);
+	hist_set(p, hist_get(p) + n);
+}
+
+/** Raise @p p, which only the calling thread writes, to @p v if @p v is
+ *  greater.
+ */
+static inline void
+hist_max (_Atomic uint64_t *p,
+          uint64_t          v)
+{
+	if (v > hist_get(p))
+		hist_set(p, v);
 }
 
 /** Add @p n to @p p, which several threads write, with a relaxed atomic
@@ -116,6 +122,19 @@ hist_count (_Atomic uint64_t *p,
             uint64_t          n)
 {
 	atomic_fetch_add_explicit(p, n, memory_order_relaxed);
+}
+
+/** Empty @p h; only the histogram's one writer may. */
+static inline void
+hist_clear (struct hist *h)
+{
+	hist_set(&h->count, 0U);
+	hist_set(&h->sum, 0U);
+	hist_set(&h->min, 0U);
+	hist_set(&h->max, 0U);
+
+	for (size_t i = 0; i < array_size(h->bucket); ++i)
+		hist_set(&h->bucket[i], 0U);
 }
 
 #define clz64(x) (unsigned)(_Generic(*(typeof(x) *)0,               \
@@ -157,10 +176,9 @@ hist_record (struct hist *h,
 {
 	uint64_t count = hist_get(&h->count);
 	if (!count || v < hist_get(&h->min))
-		atomic_store_explicit(&h->min, v, memory_order_relaxed);
-	if (v > hist_get(&h->max))
-		atomic_store_explicit(&h->max, v, memory_order_relaxed);
-	atomic_store_explicit(&h->count, count + 1, memory_order_relaxed);
+		hist_set(&h->min, v);
+	hist_max(&h->max, v);
+	hist_set(&h->count, count + 1);
 	hist_add(&h->sum, v);
 	hist_add(&h->bucket[hist_index(v)], 1);
 }

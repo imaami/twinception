@@ -659,9 +659,7 @@ loop_run (struct loop *loop,
 		                end - t);
 		for (size_t u = 0; u < LOOP_UNITS; ++u) {
 			loop_most(&loop->stats->work[u], loop->work[u]);
-			if (loop->work[u] > hist_get(&loop->metrics->work[u]))
-				atomic_store_explicit(&loop->metrics->work[u], loop->work[u],
-				                      memory_order_relaxed);
+			hist_max(&loop->metrics->work[u], loop->work[u]);
 		}
 		t = end;
 		++steps;

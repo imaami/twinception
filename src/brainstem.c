@@ -152,14 +152,6 @@ struct brainstem_metrics brainstem_metrics;
 static _Atomic uint32_t relieving;
 static _Atomic uint64_t relieved;
 
-/* Set @p p, of brainstem_metrics, which the brainstem alone writes. */
-static void
-brainstem_metric_set (_Atomic uint64_t *p,
-                      uint64_t          v)
-{
-	atomic_store_explicit(p, v, memory_order_relaxed);
-}
-
 static uint32_t
 brainstem_thread_state (struct brainstem_thread const *t)
 {
@@ -615,7 +607,7 @@ brainstem_inputs (struct brainstem *bs,
 		while (l && fullness[i] < marks[i].down[l - 1])
 			--l;
 		bs->levels[i] = (uint8_t)l;
-		brainstem_metric_set(&brainstem_metrics.inputs[i], l);
+		hist_set(&brainstem_metrics.inputs[i], l);
 		level = l > level ? l : level;
 	}
 	return level;
@@ -636,7 +628,7 @@ brainstem_level (struct brainstem *bs,
                  uint64_t          ram)
 {
 	static char const *const names[] = { "none", "high", "critical" };
-	brainstem_metric_set(&brainstem_metrics.pressure, level);
+	hist_set(&brainstem_metrics.pressure, level);
 	atomic_store_explicit(&buf_pressure, level, memory_order_relaxed);
 	if (level != bs->level) {
 		enum log_level said = LOG_INFO;
@@ -682,11 +674,11 @@ brainstem_pressure (struct brainstem *bs,
 		[PRESSURE_TEST] = bs->cfg->pressure ? brainstem_number(bs->cfg->pressure, buf,
 		                                                       size, 0) : 0,
 	};
-	brainstem_metric_set(&brainstem_metrics.mem_high, high);
-	brainstem_metric_set(&brainstem_metrics.mem_total, total);
-	brainstem_metric_set(&brainstem_metrics.mem_avail, avail);
-	brainstem_metric_set(&brainstem_metrics.cg_usage, usage);
-	brainstem_metric_set(&brainstem_metrics.cg_limit, limit);
+	hist_set(&brainstem_metrics.mem_high, high);
+	hist_set(&brainstem_metrics.mem_total, total);
+	hist_set(&brainstem_metrics.mem_avail, avail);
+	hist_set(&brainstem_metrics.cg_usage, usage);
+	hist_set(&brainstem_metrics.cg_limit, limit);
 	brainstem_level(bs, now, brainstem_inputs(bs, fullness), rss, high,
 	                fullness[PRESSURE_SYSTEM]);
 }
@@ -726,8 +718,8 @@ brainstem_fds (struct brainstem *bs,
 	if (getrlimit(RLIMIT_NOFILE, &nofile) || brainstem_fd_count(buf, size, &fds))
 		return;
 	uint64_t limit = nofile.rlim_cur;
-	brainstem_metric_set(&brainstem_metrics.fds, fds);
-	brainstem_metric_set(&brainstem_metrics.fd_limit, limit);
+	hist_set(&brainstem_metrics.fds, fds);
+	hist_set(&brainstem_metrics.fd_limit, limit);
 	int c = brainstem_crossed(bs, HIGH_FDS, fds >= limit / 10 * 9,
 	                          fds < limit / 10 * 8);
 	if (c > 0)
@@ -754,9 +746,9 @@ brainstem_psi (struct brainstem *bs,
 		           &total) != 2)
 			continue;
 		uint64_t permyriad = (uint64_t)(avg10 * 100 + 0.5);
-		brainstem_metric_set(&brainstem_metrics.psi_ok, 1);
-		brainstem_metric_set(&brainstem_metrics.psi[i], permyriad);
-		brainstem_metric_set(&brainstem_metrics.psi_total[i], total);
+		hist_set(&brainstem_metrics.psi_ok, 1);
+		hist_set(&brainstem_metrics.psi[i], permyriad);
+		hist_set(&brainstem_metrics.psi_total[i], total);
 		int c = brainstem_crossed(bs, HIGH_PSI << i, permyriad >= 2000,
 		                          permyriad < 1000);
 		if (c > 0)
@@ -782,7 +774,7 @@ brainstem_sample (struct brainstem *bs,
 	unsigned long long resident;
 	if (page > 0 && !brainstem_read("/proc/self/statm", buf, sizeof buf) &&
 	    sscanf(buf, "%*s %llu", &resident) == 1)
-		brainstem_metric_set(&brainstem_metrics.rss, resident * (uint64_t)page);
+		hist_set(&brainstem_metrics.rss, resident * (uint64_t)page);
 	brainstem_fds(bs, buf, sizeof buf);
 	brainstem_psi(bs, buf, sizeof buf);
 	brainstem_pressure(bs, now, buf, sizeof buf);
