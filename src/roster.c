@@ -10,6 +10,7 @@
 
 #include "htab.h"
 #include "loop.h"
+#include "ref.h"
 #include "roster.h"
 
 /* The number of buckets of the table, a power of two. */
@@ -116,7 +117,7 @@ roster_cancel (struct roster *roster,
 	for (struct htab_node *n; (n = *htab_find(&roster->table, hash, roster_call_match, &key)); ) {
 		struct roster_call *c = container_of(n, struct roster_call, node);
 		c->asked = 1;
-		atomic_fetch_add_explicit(&c->refs, 1, memory_order_relaxed);
+		ref_get(&c->refs);
 		c->hit = hits;
 		hits = c;
 	}
@@ -136,6 +137,6 @@ roster_cancel (struct roster *roster,
 void
 roster_call_put (struct roster_call *call)
 {
-	if (call && atomic_fetch_sub_explicit(&call->refs, 1, memory_order_acq_rel) == 1)
+	if (call && ref_put(&call->refs, 1))
 		free(call);
 }

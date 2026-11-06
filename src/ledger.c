@@ -16,6 +16,7 @@
 #include "ledger.h"
 #include "list.h"
 #include "loop.h"
+#include "ref.h"
 #include "util.h"
 
 enum {
@@ -197,7 +198,7 @@ ledger_owner_wake (struct ledger_owner *o)
 		 * the last post of the message, and the poster of it has read hit. */
 		if (atomic_exchange_explicit(&w->posted, 1, memory_order_acquire))
 			continue;
-		atomic_fetch_add_explicit(&w->refs, 1, memory_order_relaxed);
+		ref_get(&w->refs);
 		w->hit = hits;
 		hits = w;
 	}
@@ -294,7 +295,7 @@ ledger_owner_tell (struct ledger_owner *o,
 		if (atomic_fetch_or_explicit(&t->state, LEDGER_TOLD, memory_order_relaxed) &
 		    LEDGER_TOLD && !n)
 			continue;
-		atomic_fetch_add_explicit(&t->refs, 1, memory_order_relaxed);
+		ref_get(&t->refs);
 		out->tasks[out->n_tasks++] = t;
 	}
 }
@@ -703,7 +704,7 @@ ledger_find (struct ledger      *ledger,
 	struct ledger_task *gone = ledger_sweep(ledger, nullptr, false);
 	struct ledger_task *t = ledger_mine(ledger, owner, id);
 	if (t)
-		atomic_fetch_add_explicit(&t->refs, 1, memory_order_relaxed);
+		ref_get(&t->refs);
 	pthread_mutex_unlock(&ledger->lock);
 	ledger_put_all(gone);
 	return t;
@@ -735,7 +736,7 @@ ledger_task_cancel (struct ledger_task *task)
 	if (atomic_fetch_or_explicit(&task->state, LEDGER_ASKED, memory_order_acquire) &
 	    (LEDGER_ASKED | LEDGER_STATUS))
 		return;
-	atomic_fetch_add_explicit(&task->refs, 1, memory_order_relaxed);
+	ref_get(&task->refs);
 	/* A message that loop_post() refuses never runs, so the function drops
 	 * the reference of that message itself. */
 	if (loop_post(task->loop, &task->cancel))
@@ -745,7 +746,7 @@ ledger_task_cancel (struct ledger_task *task)
 void
 ledger_task_put (struct ledger_task *task)
 {
-	if (!task || atomic_fetch_sub_explicit(&task->refs, 1, memory_order_acq_rel) != 1)
+	if (!task || !ref_put(&task->refs, 1))
 		return;
 	dstr_cleanup(&task->result);
 	free(task);
@@ -914,7 +915,7 @@ ledger_wait_leave (struct ledger       *ledger,
 void
 ledger_wait_put (struct ledger_wait *wait)
 {
-	if (wait && atomic_fetch_sub_explicit(&wait->refs, 1, memory_order_acq_rel) == 1)
+	if (wait && ref_put(&wait->refs, 1))
 		free(wait);
 }
 
@@ -939,7 +940,7 @@ ledger_list (struct ledger      *ledger,
 		     pos != &o->records && out->n_tasks < array_size(out->tasks);
 		     pos = pos->prev) {
 			struct ledger_task *t = container_of(pos, struct ledger_task, mine);
-			atomic_fetch_add_explicit(&t->refs, 1, memory_order_relaxed);
+			ref_get(&t->refs);
 			out->tasks[out->n_tasks++] = t;
 		}
 		out->more = o->n - out->n_tasks;

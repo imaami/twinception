@@ -55,6 +55,7 @@
 #include "jb.h"
 #include "list.h"
 #include "loop.h"
+#include "ref.h"
 #include "stream.h"
 
 struct home_principal;
@@ -344,19 +345,9 @@ job_post (struct job       *job,
 {
 	if (!atomic_fetch_or(word, bit)) {
 		/* The post publishes it before the handler can drop it. */
-		atomic_fetch_add_explicit(&job->refs, 1, memory_order_relaxed);
+		ref_get(&job->refs);
 		loop_post(loop, msg);
 	}
-}
-
-/** Drop @p n references; true if they were the last, which leaves the job
- *  to the caller alone.
- */
-static inline bool
-job_put (struct job *job,
-         uint32_t    n)
-{
-	return atomic_fetch_sub_explicit(&job->refs, n, memory_order_acq_rel) == n;
 }
 
 #endif /* TWINCEPTION_SRC_JOB_H_ */

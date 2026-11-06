@@ -18,6 +18,7 @@
 #include "jb.h"
 #include "log.h"
 #include "policy.h"
+#include "ref.h"
 #include "registry.h"
 #include "util.h"
 
@@ -1010,15 +1011,14 @@ policy_create (struct json_object    *file,
 struct policy *
 policy_get (struct policy *policy)
 {
-	atomic_fetch_add_explicit(&policy->refs, 1, memory_order_relaxed);
+	ref_get(&policy->refs);
 	return policy;
 }
 
 void
 policy_put (struct policy *policy)
 {
-	if (!policy || atomic_fetch_sub_explicit(&policy->refs, 1,
-	                                         memory_order_acq_rel) != 1)
+	if (!policy || !ref_put(&policy->refs, 1))
 		return;
 	free(policy);
 }

@@ -27,6 +27,7 @@
 #include "list.h"
 #include "log.h"
 #include "loop.h"
+#include "ref.h"
 #include "shelf.h"
 #include "util.h"
 
@@ -435,7 +436,7 @@ static void
 home_job_put (struct job *job,
               uint32_t    n)
 {
-	if (job_put(job, n)) {
+	if (ref_put(&job->refs, n)) {
 		atomic_store_explicit(&job->front_bits, JOB_RETURN, memory_order_relaxed);
 		loop_post(job->front, &job->to_front);
 	}
@@ -1566,7 +1567,7 @@ home_archive_pending (struct home *home,
 {
 	++job->recovery.pending;
 	++home->persisting;
-	atomic_fetch_add_explicit(&job->refs, 1, memory_order_relaxed);
+	ref_get(&job->refs);
 }
 
 /* A boundary commits the concatenated text once. A later reasoning block

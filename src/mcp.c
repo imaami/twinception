@@ -105,6 +105,7 @@
 #include "notice.h"
 #include "plugin.h"
 #include "policy.h"
+#include "ref.h"
 #include "registry.h"
 #include "review.h"
 #include "roster.h"
@@ -1484,7 +1485,7 @@ mcp_req_drop (struct mcp_req *req)
 	         (mcp->draining || req->flags & REQ_SUSPENDED) && job->asks & JOB_DURABLE
 	         ? JOB_SUSPEND : JOB_CANCEL);
 	if (!req->call.bits) {
-		if (job_put(job, 1))
+		if (ref_put(&job->refs, 1))
 			mcp_shelve_job(mcp, job);
 		return;
 	}
@@ -2542,9 +2543,9 @@ mcp_req_job_done (struct mcp_req *req)
 	struct span const result = buf_peek(&job->result);
 	struct cstr_view why = { (char const *)result.ptr, result.len };
 	buf_fini(&job->key);
-	/* job_put() drops the reference of the message. The request still owns
+	/* ref_put() drops the reference of the message. The request still owns
 	 * the reference of this loop. */
-	(void)job_put(job, 1);
+	(void)ref_put(&job->refs, 1);
 	mcp_req_wake(req);
 	if (req->lent) {
 		req->upload = job->request;
@@ -2611,7 +2612,7 @@ mcp_on_job (struct loop *loop,
 		/* The last reference frees the job: a completion brings the
 		 * front's too, as its request has gone. */
 		uint32_t refs = bits & JOB_RETURN ? 0 : bits & JOB_DONE ? 2 : 1;
-		if (refs && !job_put(job, refs))
+		if (refs && !ref_put(&job->refs, refs))
 			return;
 		job_fini(job);
 		home_job_recovery_fini(job);
@@ -2635,7 +2636,7 @@ mcp_on_job (struct loop *loop,
 	if (!(bits & JOB_DONE)) {
 		if (req)
 			mcp_req_progressed(req);
-		if (job_put(job, 1))
+		if (ref_put(&job->refs, 1))
 			mcp_shelve_job(self, job);
 		return;
 	}
@@ -2644,7 +2645,7 @@ mcp_on_job (struct loop *loop,
 		return;
 	}
 	hist_add(&self->counts->calls.dropped, 1);
-	if (job_put(job, 2))
+	if (ref_put(&job->refs, 2))
 		mcp_shelve_job(self, job);
 }
 

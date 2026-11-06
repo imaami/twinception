@@ -43,6 +43,7 @@
 #include "list.h"
 #include "log.h"
 #include "loop.h"
+#include "ref.h"
 #include "util.h"
 #include "web.h"
 
@@ -231,7 +232,7 @@ web_key_equal (struct web_key const *a,
 static struct web_reply *
 web_reply_get (struct web_reply *reply)
 {
-	atomic_fetch_add_explicit(&reply->refs, 1, memory_order_relaxed);
+	ref_get(&reply->refs);
 	return reply;
 }
 
@@ -239,7 +240,7 @@ web_reply_get (struct web_reply *reply)
 static void
 web_reply_put (struct web_reply *reply)
 {
-	if (reply && atomic_fetch_sub_explicit(&reply->refs, 1, memory_order_acq_rel) == 1) {
+	if (reply && ref_put(&reply->refs, 1)) {
 		free(reply->body);
 		free(reply);
 	}
@@ -252,7 +253,7 @@ static void
 web_run_put (struct web_run *run,
              uint32_t        n)
 {
-	if (atomic_fetch_sub_explicit(&run->refs, n, memory_order_acq_rel) == n) {
+	if (ref_put(&run->refs, n)) {
 		free(run->body);
 		free(run);
 	}
@@ -993,7 +994,7 @@ web_wait_leave (struct web_wait **p_wait)
 		 * the run is not freed before home has handled the message. */
 		cancel = !run->keep && !atomic_fetch_or(&run->bits, RUN_CANCEL);
 		if (cancel)
-			atomic_fetch_add_explicit(&run->refs, 1, memory_order_relaxed);
+			ref_get(&run->refs);
 	}
 	pthread_mutex_unlock(&web->lock);
 	/* Without a run, home has moved the wait, and the handler of the

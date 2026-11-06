@@ -21,6 +21,7 @@
 #include "manual.h"
 #include "mcp.h"
 #include "plugin.h"
+#include "ref.h"
 #include "schema.h"
 #include "util.h"
 
@@ -138,7 +139,7 @@ struct manual {
 static struct manual_page *
 manual_page_get (struct manual_page *page)
 {
-	atomic_fetch_add_explicit(&page->refs, 1, memory_order_relaxed);
+	ref_get(&page->refs);
 	return page;
 }
 
@@ -146,7 +147,7 @@ manual_page_get (struct manual_page *page)
 static void
 manual_page_put (struct manual_page *page)
 {
-	if (page && atomic_fetch_sub_explicit(&page->refs, 1, memory_order_acq_rel) == 1)
+	if (page && ref_put(&page->refs, 1))
 		free(page);
 }
 

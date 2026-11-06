@@ -9,6 +9,7 @@
 #include "hist.h"
 #include "list.h"
 #include "loop.h"
+#include "ref.h"
 #include "task.h"
 #include "util.h"
 
@@ -315,6 +316,6 @@ void
 task_put (struct task *task,
           uint32_t     n)
 {
-	if (atomic_fetch_sub_explicit(&task->refs, n, memory_order_acq_rel) == n)
+	if (ref_put(&task->refs, n))
 		free(task);
 }
