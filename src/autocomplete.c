@@ -138,6 +138,41 @@ autocomplete_safe (struct cstr_view value,
 	return true;
 }
 
+/* What a byte of an argument is: quoting, text in quotes or after a
+ * backslash, or plain text. Only plain text can end a token or nest.
+ */
+enum autocomplete_byte {
+	AUTOCOMPLETE_BYTE_QUOTE,
+	AUTOCOMPLETE_BYTE_TEXT,
+	AUTOCOMPLETE_BYTE_PLAIN,
+};
+
+/* Move the quoting state, the open quote *mark and *escape, past byte.
+ * Returns what byte is.
+ */
+static enum autocomplete_byte
+autocomplete_quote_step (char  byte,
+                         char *mark,
+                         bool *escape)
+{
+	if (*escape) {
+		*escape = false;
+		return AUTOCOMPLETE_BYTE_TEXT;
+	}
+	if (byte == '\\' && *mark != '\'') {
+		*escape = true;
+		return AUTOCOMPLETE_BYTE_QUOTE;
+	}
+	if (*mark) {
+		*mark = byte == *mark ? 0 : *mark;
+		return *mark ? AUTOCOMPLETE_BYTE_TEXT : AUTOCOMPLETE_BYTE_QUOTE;
+	}
+	if (byte != '\'' && byte != '"')
+		return AUTOCOMPLETE_BYTE_PLAIN;
+	*mark = byte;
+	return AUTOCOMPLETE_BYTE_QUOTE;
+}
+
 static int
 autocomplete_unquote (struct dstr     *output,
                       struct cstr_view value)
@@ -148,24 +183,24 @@ autocomplete_unquote (struct dstr     *output,
 		return ENOMEM;
 	char mark = 0;
 	bool escape = false;
-	for (size_t i = 0; i < value.len; ++i) {
-		char byte = value.data[i];
-		if (escape) {
-			(void)dstr_cat_n(output, &byte, 1);
-			escape = false;
-		} else if (byte == '\\' && mark != '\'')
-			escape = true;
-		else if (mark) {
-			if (byte == mark)
-				mark = 0;
-			else
-				(void)dstr_cat_n(output, &byte, 1);
-		} else if (byte == '\'' || byte == '"')
-			mark = byte;
-		else
-			(void)dstr_cat_n(output, &byte, 1);
-	}
+	for (size_t i = 0; i < value.len; ++i)
+		if (autocomplete_quote_step(value.data[i], &mark, &escape) != AUTOCOMPLETE_BYTE_QUOTE)
+			(void)dstr_cat_n(output, &value.data[i], 1);
 	return 0;
+}
+
+/* Returns the bytes that are written before byte within the quotes of
+ * mark. Within single quotes, a single quote is written as '\'', which
+ * ends the quotes, writes an escaped quote and starts the quotes again.
+ * Within double quotes, a double quote and a backslash are written after a
+ * backslash.
+ */
+static struct cstr_view
+autocomplete_escape (char mark,
+                     char byte)
+{
+	return mark == '\'' && byte == '\'' ? CSTR_VIEW("'\\'")
+	     : mark == '"' && (byte == '"' || byte == '\\') ? CSTR_VIEW("\\") : (struct cstr_view){};
 }
 
 static int
@@ -182,7 +217,7 @@ autocomplete_quote (struct dstr     *output,
 		char byte = value.data[i];
 		needs |= cstr_view_space(byte) || byte == '\\' || byte == '\'' || byte == '"' ||
 		         byte == '[' || byte == ']' || byte == '{' || byte == '}';
-		size_t extra = mark == '\'' && byte == '\'' ? 3 : mark == '"' && (byte == '"' || byte == '\\');
+		size_t extra = autocomplete_escape(mark, byte).len;
 		if (extra > SIZE_MAX - length)
 			return ENOMEM;
 		length += extra;
@@ -194,19 +229,68 @@ autocomplete_quote (struct dstr     *output,
 	(void)dstr_clear(output);
 	if (!dstr_cat_n(output, &mark, 1))
 		return ENOMEM;
-	for (size_t i = 0; i < value.len; ++i) {
-		char byte = value.data[i];
-		if (mark == '\'' && byte == '\'') {
-			if (!dstr_cat_n(output, "'\\''", 4))
-				return ENOMEM;
-		} else {
-			if (mark == '"' && (byte == '"' || byte == '\\') && !dstr_cat_n(output, "\\", 1))
-				return ENOMEM;
-			if (!dstr_cat_n(output, &byte, 1))
-				return ENOMEM;
-		}
-	}
+	for (size_t i = 0; i < value.len; ++i)
+		if (cstr_view_cat(autocomplete_escape(mark, value.data[i]), output) ||
+		    !dstr_cat_n(output, &value.data[i], 1))
+			return ENOMEM;
 	return dstr_cat_n(output, &mark, 1) ? 0 : ENOMEM;
+}
+
+/* Track the brackets and braces of a JSON value in ac->nesting. An opening
+ * byte is appended to it, and a closing byte removes the opening byte at
+ * its end. Returns 0, ENOMEM, or when strict, EINVAL for a closing byte
+ * that does not match.
+ */
+static int
+autocomplete_nest (struct autocomplete *ac,
+                   char                 byte,
+                   bool                 strict,
+                   char                *why,
+                   size_t               size)
+{
+	if (byte == '[' || byte == '{')
+		return dstr_cat_n(&ac->nesting, &byte, 1) ? 0 : ENOMEM;
+	char open = byte == ']' ? '[' : byte == '}' ? '{' : 0;
+	size_t depth = dstr_len(&ac->nesting);
+	if (!open)
+		return 0;
+	if (!depth || dstr_get(&ac->nesting)[depth - 1] != open)
+		return strict ? util_refuse(why, size, "Unmatched bracket in tool arguments") : 0;
+	(void)dstr_erase(&ac->nesting, depth - 1, 1);
+	return 0;
+}
+
+/* Set token->end to the offset of the first plain white space outside a
+ * JSON value after token->begin in line, or to the end of the line. Set
+ * token->equals to the offset of the first '=' of the token. Returns 0 or
+ * an error number.
+ */
+static int
+autocomplete_token_end (struct autocomplete       *ac,
+                        struct cstr_view           line,
+                        struct autocomplete_token *token,
+                        bool                       strict,
+                        char                      *why,
+                        size_t                     size)
+{
+	char mark = 0;
+	bool escape = false;
+	(void)dstr_clear(&ac->nesting);
+	for (token->end = token->begin; token->end < line.len; ++token->end) {
+		char byte = line.data[token->end];
+		if (token->equals == SIZE_MAX && byte == '=')
+			token->equals = token->end;
+		if (autocomplete_quote_step(byte, &mark, &escape) != AUTOCOMPLETE_BYTE_PLAIN)
+			continue;
+		if (cstr_view_space(byte) && !dstr_len(&ac->nesting))
+			break;
+		int e = autocomplete_nest(ac, byte, strict, why, size);
+		if (e)
+			return e;
+	}
+	if (strict && (mark || escape || dstr_len(&ac->nesting)))
+		return util_refuse(why, size, "Unterminated quote, escape or JSON value in tool arguments");
+	return 0;
 }
 
 static int
@@ -222,47 +306,14 @@ autocomplete_tokenize (struct autocomplete *ac,
 			++i;
 			continue;
 		}
-		size_t begin = i;
-		size_t equals = SIZE_MAX;
-		char mark = 0;
-		bool escape = false;
-		(void)dstr_clear(&ac->nesting);
-		for (; i < line.len; ++i) {
-			char byte = line.data[i];
-			if (equals == SIZE_MAX && byte == '=')
-				equals = i;
-			if (escape) {
-				escape = false;
-				continue;
-			}
-			if (byte == '\\' && mark != '\'') {
-				escape = true;
-				continue;
-			}
-			if (mark) {
-				if (byte == mark)
-					mark = 0;
-				continue;
-			}
-			if (byte == '\'' || byte == '"')
-				mark = byte;
-			else if (byte == '[' || byte == '{') {
-				if (!dstr_cat_n(&ac->nesting, &byte, 1))
-					return ENOMEM;
-			} else if (byte == ']' || byte == '}') {
-				size_t depth = dstr_len(&ac->nesting);
-				if (depth && dstr_get(&ac->nesting)[depth - 1] == (byte == ']' ? '[' : '{'))
-					(void)dstr_erase(&ac->nesting, depth - 1, 1);
-				else if (strict)
-					return util_refuse(why, size, "Unmatched bracket in tool arguments");
-			} else if (cstr_view_space(byte) && !dstr_len(&ac->nesting))
-				break;
-		}
-		if (strict && (mark || escape || dstr_len(&ac->nesting)))
-			return util_refuse(why, size, "Unterminated quote, escape or JSON value in tool arguments");
-		if (util_grow(ac->tokens, ac->token_capacity, ac->token_count + 1))
-			return ENOMEM;
-		ac->tokens[ac->token_count++] = (struct autocomplete_token){begin, i, equals};
+		struct autocomplete_token token = {.begin = i, .equals = SIZE_MAX};
+		int e = autocomplete_token_end(ac, line, &token, strict, why, size);
+		if (!e && util_grow(ac->tokens, ac->token_capacity, ac->token_count + 1))
+			e = ENOMEM;
+		if (e)
+			return e;
+		ac->tokens[ac->token_count++] = token;
+		i = token.end;
 	}
 	return 0;
 }
