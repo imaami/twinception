@@ -2303,6 +2303,7 @@ httpd_conn_destroy (struct httpd_conn **p_conn)
 	struct httpd_conn *conn = *p_conn;
 	*p_conn = nullptr;
 	free(conn->groups);
+	conn->groups = nullptr;
 	free(conn);
 }
 
@@ -2332,6 +2333,7 @@ httpd_conn_back (struct loop *loop,
 		return;
 	}
 	httpd_home_client_put(home, conn->client);
+	conn->client = nullptr;
 	--conn->lane->conns;
 	--home->conns;
 	shelf_put(&home->spare, &conn->hook);
@@ -3273,11 +3275,15 @@ httpd_home_destroy (struct httpd_home **p_home)
 	 * addresses still; the loops are done with them. */
 	for (struct htab_node *node = htab_next(&home->clients, nullptr), *next; node; node = next) {
 		next = htab_next(&home->clients, node);
+		htab_unlink(&home->clients, node);
 		free(container_of(node, struct httpd_client, node));
 	}
 	free(home->listeners);
+	home->listeners = nullptr;
 	tls_ctx_put(home->ctx);
+	home->ctx = nullptr;
 	policy_put(home->policy);
+	home->policy = nullptr;
 	door = nullptr;
 	free(home);
 }
@@ -3452,6 +3458,8 @@ httpd_destroy (struct httpd **p_httpd)
 	loop_unready(&srv->evict);
 	loop_timer_stop(srv->loop, &srv->deadline);
 	policy_put(srv->policy);
+	srv->policy = nullptr;
+	srv->lane->srv = nullptr;
 	free(srv);
 }
 
