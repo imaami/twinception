@@ -557,7 +557,7 @@ notes_tool_call_message (struct notes_tool_call const *call,
 	uint64_t after = call->part.data_len;
 	int n = before == NO_NOTE
 	      ? snprintf(msg, NOTES_MESSAGE, "%s %.*s%s%s (%" PRIu64 " byte%s)", verb, len,
-	                 name, sep, from, after, after == 1 ? "" : "s")
+	                 name, sep, from, after, util_s(after))
 	      : snprintf(msg, NOTES_MESSAGE, "%s %.*s%s%s (%" PRIu64 " to %" PRIu64 " bytes)",
 	                 verb, len, name, sep, from, before, after);
 	return n < 0 || n >= NOTES_MESSAGE ? 0 : (size_t)n;
@@ -678,7 +678,7 @@ notes_tool_unchanged (struct mcp_slot         *slot,
 	uint64_t n = note->bytes;
 	e = dstr_printf(call->text, "Unchanged: %.*s already has %s %" PRIu64 " byte%s, at "
 	                "commit %s. No commit was made.", (int)jb_utf8(name, call->part.name_len),
-	                name, n == 1 ? "this" : "these", n, n == 1 ? "" : "s", tip) ? 0 : ENOMEM;
+	                name, n == 1 ? "this" : "these", n, util_s(n), tip) ? 0 : ENOMEM;
 	notes_tool_wrote(slot, e);
 	return true;
 }
@@ -797,8 +797,7 @@ notes_tool_history (struct mcp_slot *slot,
 		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", ++k, (int)w, when) ||
 		    !dstr_cat_n(d, name, jb_utf8(name, entry.name.len)) ||
 		    !(entry.lines == NOTES_BINARY ? dstr_cat(d, "  (binary)")
-		      : dstr_printf(d, "  (%" PRIu64 " line%s)", entry.lines,
-		                    entry.lines == 1 ? "" : "s")) ||
+		      : dstr_printf(d, "  (%" PRIu64 " line%s)", entry.lines, util_s(entry.lines))) ||
 		    (history && !dstr_printf(d, "  commit %.*s%s%.*s", (int)entry.commit.len,
 		                            (char const *)entry.commit.ptr, subject_len ? "  " : "",
 		                            (int)subject_len, subject_len ? subject : "")) ||

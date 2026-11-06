@@ -117,6 +117,15 @@ util_decimal (char     *end,
 	return end;
 }
 
+/** The plural ending of a noun after the count @p n: "" if @p n is 1, else
+ *  "s".
+ */
+static inline char const *
+util_s (uint64_t n)
+{
+	return n == 1 ? "" : "s";
+}
+
 /** Parse the decimal number at the start of the @p len bytes at @p s into
  *  @p *value. Returns the number of digits. If there are no digits or the
  *  number is greater than @p max, returns 0 and sets @p *value to 0.

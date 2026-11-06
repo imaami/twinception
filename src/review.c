@@ -1540,7 +1540,7 @@ review_refuse_unread (struct review const               *r,
 	if (largest && largest->total && largest->total < loc->last)
 		return REFUSE(out, "%.*s has %" PRIu32 " line%s at %.*s, so line %" PRIu32 " is "
 		              "past its end; give a location within lines 1 to %" PRIu32 ".", len,
-		              path, largest->total, largest->total == 1 ? "" : "s", REVIEW_SHORT_OID,
+		              path, largest->total, util_s(largest->total), REVIEW_SHORT_OID,
 		              largest->commit.hex, loc->last, largest->total);
 	/* Select the read to suggest. If the best file can contain line
 	 * loc->last, the read starts at line c->end + 1 at the commit of the
@@ -1568,7 +1568,7 @@ review_refuse_unread (struct review const               *r,
 		     dstr_printf(out, " of them, read at %.*s", REVIEW_SHORT_OID,
 		                 c->best->commit.hex) &&
 		     (!shorter || dstr_printf(out, ", where the file has %" PRIu32 " line%s",
-		                              c->best->total, c->best->total == 1 ? "" : "s")) &&
+		                              c->best->total, util_s(c->best->total))) &&
 		     PUT(out, ".");
 	/* The read is logged as a new pending file after a later turn. Its
 	 * charge is estimated from the file to read, or from a file with this

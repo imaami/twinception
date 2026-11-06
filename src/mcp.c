@@ -1119,13 +1119,6 @@ mcp_row_of (struct registry_tool const *t)
 	return t->data ? t->data : &mcp_loaded_row;
 }
 
-/* "byte" or "bytes", for a count of @p n bytes in the log. */
-static char const *
-mcp_bytes (size_t n)
-{
-	return n == 1 ? "byte" : "bytes";
-}
-
 /** Writes @p text into the @p size bytes at @p buf as a JSON string on one
  *  line, followed by "..." if the string is cut, and returns @p buf. The
  *  string contains the longest prefix of whole characters whose escapes
@@ -1255,7 +1248,7 @@ mcp_shown_object (struct mcp_shown   *w,
 			continue;
 		}
 		char text[40];
-		int n = snprintf(text, sizeof text, "\"(%zu %s)\"", s.len, mcp_bytes(s.len));
+		int n = snprintf(text, sizeof text, "\"(%zu byte%s)\"", s.len, util_s(s.len));
 		if (n > 0 && n < (int)sizeof text)
 			mcp_shown_put(w, (struct cstr_view){ text, (size_t)n }, false);
 	}
@@ -1319,8 +1312,7 @@ mcp_req_log_call (struct mcp_req   *req,
 	if (req->asked)
 		util_format(ask, sizeof ask, "; ask call %" PRIu64 ".%" PRIu64 ", %" PRIu32
 		            " turn%s, %" PRIu32 " tool call%s%s", req->mcp->loop->id, req->asked,
-		            req->turn, req->turn == 1 ? "" : "s", req->traced,
-		            req->traced == 1 ? "" : "s",
+		            req->turn, util_s(req->turn), req->traced, util_s(req->traced),
 		            req->stopped ? ", stopped at --max-turns" : "");
 	char record[sizeof "; task " + LEDGER_ID] = "";
 	if (req->task)
@@ -1330,9 +1322,9 @@ mcp_req_log_call (struct mcp_req   *req,
 	char text[ERROR_LOG + 8] = "";
 	if (failed && out.len)
 		mcp_quote(text, sizeof text, out, ERROR_LOG);
-	log_put(&sites[failed], "tool call %s from %s %s after %.1f s (%zu %s)%s%s%s%s%s%s",
+	log_put(&sites[failed], "tool call %s from %s %s after %.1f s (%zu byte%s)%s%s%s%s%s%s",
 	        mcp_slot_offer(&req->self)->tool.name.data, mcp_req_client(req), how,
-	        mcp_elapsed(req->self.start), out.len, mcp_bytes(out.len), record, ask,
+	        mcp_elapsed(req->self.start), out.len, util_s(out.len), record, ask,
 	        *req->call_args ? "; arguments " : "", req->call_args, *text ? "; error " : "",
 	        text);
 }
@@ -1905,8 +1897,8 @@ mcp_req_trace_put (struct mcp_req *req)
 	if (req->traced)
 		intro = ESC(head, util_format(head, sizeof head, "The other AI made %" PRIu32
 		                              " tool call%s in %" PRIu32 " turn%s:\n",
-		                              req->traced, req->traced > 1 ? "s" : "",
-		                              req->turn, req->turn > 1 ? "s" : ""));
+		                              req->traced, util_s(req->traced),
+		                              req->turn, util_s(req->turn)));
 	struct mcp_piece const p[] = {
 		FRAG("\"},{\"type\":\"text\",\"text\":\""),
 		intro,
@@ -2387,9 +2379,9 @@ mcp_req_log_turn (struct mcp_req const *req,
 	if (status != JOB_TEXT) {
 		bool body = status == JOB_ANSWERED;
 		LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": %s, %s "
-		    "after %.1f s, %s%zu %s of %s", req->mcp->loop->id, req->asked, req->turn,
+		    "after %.1f s, %s%zu byte%s of %s", req->mcp->loop->id, req->asked, req->turn,
 		    body && job->http >= 400 ? "failed" : ends[status], http,
-		    mcp_elapsed(req->turn_at), body ? "not streamed, " : "", len, mcp_bytes(len),
+		    mcp_elapsed(req->turn_at), body ? "not streamed, " : "", len, util_s(len),
 		    body ? "body" : "error text");
 		return;
 	}
@@ -2410,9 +2402,9 @@ mcp_req_log_turn (struct mcp_req const *req,
 	for (size_t k = 0; k < JOB_CALLS; ++k)
 		calls += buf_peek(&job->calls[k]).len != 0;
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": answered, %s "
-	    "after %.1f s, %s, stop reason %s, %" PRIu32 " tool call%s, %zu %s of text",
+	    "after %.1f s, %s, stop reason %s, %" PRIu32 " tool call%s, %zu byte%s of text",
 	    req->mcp->loop->id, req->asked, req->turn, http, mcp_elapsed(req->turn_at),
-	    tokens, reason, calls, calls == 1 ? "" : "s", len, mcp_bytes(len));
+	    tokens, reason, calls, util_s(calls), len, util_s(len));
 }
 
 /** Handles the end of the job that @p req waits for. An answer that is not
@@ -3731,8 +3723,8 @@ mcp_req_log_ask (struct mcp_req const *req,
 	if (*req->thread)
 		util_format(thread, sizeof thread, "thread %s (%s)", req->thread,
 		            resume ? "resumed" : "new");
-	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " from %s: prompt %zu %s, %s, %s",
-	    req->mcp->loop->id, req->asked, mcp_req_client(req), text.len, mcp_bytes(text.len),
+	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " from %s: prompt %zu byte%s, %s, %s",
+	    req->mcp->loop->id, req->asked, mcp_req_client(req), text.len, util_s(text.len),
 	    thread, mcp_quote(quoted, sizeof quoted, text, PROMPT_LOG));
 }
 
@@ -5873,10 +5865,10 @@ mcp_slot_done (struct mcp_slot *slot,
 			mcp_quote(text, sizeof text,
 			          (struct cstr_view){ (char const *)out.ptr, out.len }, ERROR_LOG);
 		LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": %s %s %s "
-		    "after %.1f s (%zu %s); arguments %s%s%s", req->mcp->loop->id, req->asked,
+		    "after %.1f s (%zu byte%s); arguments %s%s%s", req->mcp->loop->id, req->asked,
 		    req->turn, label[slot->role], offer->tool.name.data,
 		    failed ? "failed" : "answered", mcp_elapsed(slot->start), out.len,
-		    mcp_bytes(out.len), shown, *text ? "; error " : "", text);
+		    util_s(out.len), shown, *text ? "; error " : "", text);
 	}
 	slot->failed = failed;
 	char const *notebook = !failed ? slot->shows : nullptr;
@@ -6800,8 +6792,8 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	(void)mcp_req_trace_end(req, false, len);
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": compacted by "
-	    "the upstream's compact call, summary %zu %s", req->mcp->loop->id, req->asked,
-	    req->turn, len, mcp_bytes(len));
+	    "the upstream's compact call, summary %zu byte%s", req->mcp->loop->id, req->asked,
+	    req->turn, len, util_s(len));
 	req->reminded = 0;
 	struct dstr *d = &req->self.answer;
 	dstr_clear(d);

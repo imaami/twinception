@@ -776,15 +776,6 @@ godbolt_cut (struct cstr_view t,
 	return n;
 }
 
-/* Returns "s" if @p n is not 1, for the plural of a noun after a count, and
- * "" if it is.
- */
-static char const *
-godbolt_s (uint64_t n)
-{
-	return n == 1 ? "" : "s";
-}
-
 /* Copies @p t to @p d, and returns the end of the copy. */
 static char *
 godbolt_cat (char             *d,
@@ -1564,7 +1555,7 @@ godbolt_catalog_end (struct godbolt *call)
 	if (call->malformed)
 		godbolt_putf(call, "The plugin left out %" PRIu32 " element%s of the list. An "
 		             "element must have a string member id%s.\n", call->malformed,
-		             godbolt_s(call->malformed), languages ? "" : ", at most 64 family "
+		             util_s(call->malformed), languages ? "" : ", at most 64 family "
 		             "tags, and at most 128 bytes in its kind, its architecture and each "
 		             "family tag");
 	/* The first sentence of the last line counts the listed items, and the
@@ -1574,18 +1565,18 @@ godbolt_catalog_end (struct godbolt *call)
 		godbolt_putf(call, "Listed %" PRIu32 " of the %" PRIu32 " %s of the %" PRIu32
 		             " matching compiler%s. ", call->listed, keys,
 		             keys == 1 ? act->singular : act->name.data, call->matching,
-		             godbolt_s(call->matching));
+		             util_s(call->matching));
 	else
 		godbolt_putf(call, "Listed %" PRIu32 " of %" PRIu32 " matching %s%s. ",
 		             call->listed, call->matching, act->singular,
-		             godbolt_s(call->matching));
+		             util_s(call->matching));
 	if (languages)
 		godbolt_putf(call, "Compiler Explorer has %" PRIu32 " language%s.\n", call->total,
-		             godbolt_s(call->total));
+		             util_s(call->total));
 	else
 		godbolt_putf(call, "The list of language %.*s has %" PRIu32 " compiler%s.\n",
 		             (int)call->args.language.len, call->args.language.data, call->total,
-		             godbolt_s(call->total));
+		             util_s(call->total));
 	if (call->e)
 		return godbolt_fail(call);
 	mcp_slot_finish(call->slot, 0);
@@ -1993,7 +1984,7 @@ godbolt_end (struct godbolt *call)
 	godbolt_putf(call, "Of %" PRIu32 " compilation%s, %" PRIu32 " ended with exit code "
 	             "0, %" PRIu32 " ended with another exit code or a timeout, %" PRIu32
 	             " ended with a failed request, and %" PRIu32 " ended without a "
-	             "request.\n", call->jobs, godbolt_s(call->jobs), c[GODBOLT_ZERO],
+	             "request.\n", call->jobs, util_s(call->jobs), c[GODBOLT_ZERO],
 	             c[GODBOLT_OTHER], c[GODBOLT_FAILED], c[GODBOLT_UNSENT]);
 	if (call->e)
 		return godbolt_fail(call);

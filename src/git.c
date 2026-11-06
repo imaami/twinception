@@ -1377,7 +1377,7 @@ git_read_past (struct git_read const *read,
 	else
 		git_wrong(why, "Line %zu is past the end of the file: it has %zu line%s. "
 		          "Give a line from 1 to %zu.", read->line, read->total,
-		          read->total == 1 ? "" : "s", read->total);
+		          util_s(read->total), read->total);
 }
 
 /* Writes the header line to @p slot if it fits in the LOOP_COPY room of the
