@@ -1935,6 +1935,18 @@ mcp_req_fail (struct mcp_req *req,
 	mcp_req_error(req, 500, INTERNAL_ERROR, FRAG(out_of_memory), nullptr, 0);
 }
 
+/* While the loop drains, ends @p req as mcp_req_fail() does with
+ * ESHUTDOWN and returns true; else returns false.
+ */
+static bool
+mcp_req_drained (struct mcp_req *req)
+{
+	if (!req->mcp->draining)
+		return false;
+	mcp_req_fail(req, ESHUTDOWN);
+	return true;
+}
+
 /* Reply with a result made of the @p n pieces at @p result, which close
  * it, and the header @p fields.
  */
@@ -5786,13 +5798,10 @@ mcp_req_call_launch (struct mcp_req *req)
 	uint32_t id = mcp_req_lent_tool(req, known);
 	struct registry_tool const *tool = mcp_static_tool(mcp->st, id);
 	uint64_t const flags = tool->kind->flags;
-	if (k > req->part &&
-	    (flags | mcp_slot_tool(&req->slots[k - 1])->kind->flags) & KF_SERIAL)
+	if ((k > req->part &&
+	     (flags | mcp_slot_tool(&req->slots[k - 1])->kind->flags) & KF_SERIAL) ||
+	    mcp_req_drained(req))
 		return;
-	if (mcp->draining) {
-		mcp_req_fail(req, ESHUTDOWN);
-		return;
-	}
 	/* mcp_req_args_free() frees the arguments after the result is written. */
 	struct json_object *args = req->args[k];
 	struct json_object *saved = req->saved_tools[k];
@@ -6556,10 +6565,8 @@ mcp_req_recover (struct mcp_req                 *req,
 static void
 mcp_req_turn_submit (struct mcp_req *req)
 {
-	if (req->mcp->draining) {
-		mcp_req_fail(req, ESHUTDOWN);
+	if (mcp_req_drained(req))
 		return;
-	}
 	mcp_req_wait(req);
 	int e = req->mcp->st->journal ? mcp_req_checkpoint(req) : mcp_req_submit(req);
 	/* A checkpoint too large for a journal record (JOURNAL_RECORD_MAX), as
@@ -6844,6 +6851,34 @@ mcp_req_compact_notes (struct mcp_req *req)
 	mcp_req_go_on(req, CSTR_VIEW("\n\n"));
 }
 
+/* Replaces the conversation of @p req after the prompt: lets go of the
+ * job, the calls and the arguments of the turn's calls from @p from on,
+ * makes @p head and @p summary what askai adds to the prompt, and goes on
+ * with the notes (mcp_req_compact_notes()).
+ */
+static void
+mcp_req_compact (struct mcp_req   *req,
+                 size_t            from,
+                 struct cstr_view  head,
+                 struct cstr_view  summary)
+{
+	/* The summary of a compact call is in its arguments, which the
+	 * reaper frees at once if it cannot grow, so it is copied first. */
+	struct dstr *d = &req->self.answer;
+	dstr_clear(d);
+	int e = cstr_view_cat(head, d);
+	e = e ? e : cstr_view_cat(summary, d);
+	req->reminded = 0;
+	mcp_req_drop(req);
+	mcp_req_args_free(req, from, array_size(req->args));
+	buf_fini(&req->calls);
+	if (e) {
+		mcp_req_fail(req, e);
+		return;
+	}
+	mcp_req_compact_notes(req);
+}
+
 /** Handles the compact call of a turn in @p slot with the summary in
  *  @p args. askai replaces the conversation after the prompt with the
  *  summary and the notes. Later calls of the turn do not run.
@@ -6861,6 +6896,8 @@ mcp_slot_compact (struct mcp_slot    *slot,
 		                                "byte to 4 MiB."), true);
 		return;
 	}
+	if (mcp_req_drained(req))
+		return;
 	/* The trace line shows the name of the tool that the turn called. */
 	struct registry_tool const *t = mcp_slot_tool(slot);
 	struct ai_call const c = { .name = t->name };
@@ -6869,25 +6906,11 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
 	LOG(LOG_VERBOSE, TURN_FMT "compacted by the upstream's compact call, summary %zu byte%s",
 	    TURN_ARGS(req), summary.len, util_s(summary.len));
-	req->reminded = 0;
-	struct dstr *d = &req->self.answer;
-	dstr_clear(d);
-	int e = CAT(d, "\n\n[askai: you compacted the context: the conversation since the "
-	            "task is gone, your turns and the tools' results with it. Your summary "
-	            "of it:]\n\n") &&
-	        dstr_cat_n(d, summary.data, jb_utf8(summary.data, summary.len)) ? 0 : ENOMEM;
-	mcp_req_args_free(req, req->part, array_size(req->args));
-	mcp_req_slots_drop(req);
-	buf_fini(&req->calls);
-	if (e) {
-		mcp_req_fail(req, e);
-		return;
-	}
-	if (req->mcp->draining) {
-		mcp_req_fail(req, ESHUTDOWN);
-		return;
-	}
-	mcp_req_compact_notes(req);
+	mcp_req_compact(req, req->part,
+	                CSTR_VIEW("\n\n[askai: you compacted the context: the conversation "
+	                          "since the task is gone, your turns and the tools' results "
+	                          "with it. Your summary of it:]\n\n"),
+	                (struct cstr_view){ summary.data, jb_utf8(summary.data, summary.len) });
 }
 
 /* The context is full, as the upstream said or as askai reckons: what
@@ -6897,10 +6920,8 @@ mcp_slot_compact (struct mcp_slot    *slot,
 static void
 mcp_req_compact_full (struct mcp_req *req)
 {
-	if (req->mcp->draining) {
-		mcp_req_fail(req, ESHUTDOWN);
+	if (mcp_req_drained(req))
 		return;
-	}
 	if (req->forced++) {
 		mcp_slot_result(&req->self, CSTR_VIEW("The upstream's context cannot hold the task "
 		                                      "and the notes kept for it."), true);
@@ -6908,19 +6929,9 @@ mcp_req_compact_full (struct mcp_req *req)
 	}
 	hist_add(&req->mcp->counts->calls.compacted[1], 1);
 	LOG(LOG_VERBOSE, TURN_FMT "context full, compacted by askai", TURN_ARGS(req));
-	req->reminded = 0;
-	mcp_req_drop(req);
-	mcp_req_args_free(req, 0, array_size(req->args));
-	buf_fini(&req->calls);
-	dstr_clear(&req->self.answer);
-	int e = CAT(&req->self.answer, "\n\n[askai: your context filled up, so the "
-	            "conversation since the task is gone, your turns and the tools' results "
-	            "with it.]") ? 0 : ENOMEM;
-	if (e) {
-		mcp_req_fail(req, e);
-		return;
-	}
-	mcp_req_compact_notes(req);
+	mcp_req_compact(req, 0, CSTR_VIEW("\n\n[askai: your context filled up, so the "
+	                                  "conversation since the task is gone, your turns "
+	                                  "and the tools' results with it.]"), CSTR_VIEW(""));
 }
 
 #undef CAT
@@ -7005,10 +7016,8 @@ mcp_req_tools_call (struct mcp_req     *req,
                     bool                tasks)
 {
 	struct mcp_static const *st = req->mcp->st;
-	if (req->mcp->draining) {
-		mcp_req_fail(req, ESHUTDOWN);
+	if (mcp_req_drained(req))
 		return;
-	}
 	struct cstr_view name = jb_view(jb_get(params, "name"));
 	uint32_t id = registry_find(st->reg, name, TOOL_MAX);
 	if (!mcp_req_granted(req, id)) {
