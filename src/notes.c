@@ -368,6 +368,8 @@ notes_selector (char const *repo)
 	return repo + sizeof BRANCH - 1;
 }
 
+#undef BRANCH
+
 void
 notes_argv (struct notes const *notes,
             enum notes_cmd      cmd,
