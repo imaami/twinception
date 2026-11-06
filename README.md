@@ -717,7 +717,9 @@ several files added by one commit. `list` reflects the current tree;
   `PARTICIPANT/WHO/SIDE`. Models receive their participant and writable
   selector in their initial prompt.
 - `notebook` selects a notebook for `list`, `history`, `read`, `diff`, `copy` or
-  `attach`; `own` is the default. `add`, `replace` and `restore` write only to the
+  `attach`; `own` is the default. A participant's name selects that
+  participant's notebook of the caller's identity and side, and a selector
+  any notebook. `add`, `replace` and `restore` write only to the
   caller's own branch. Clients retain `other` as an alias for the opposite
   side of the same participant and caller identity.
 - `list` shows each current file once, with its byte count and blob ID.

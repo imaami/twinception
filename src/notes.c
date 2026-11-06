@@ -43,6 +43,7 @@ struct notes {
 	char *dir;    /* the real path of the shared session repository */
 	char *participant;
 	char *directory; /* canonical Git common directory */
+	size_t named; /* the bytes of participant */
 	int   fd;     /* the repository directory, open; -1 if not open */
 	uint32_t bare;
 };
@@ -256,7 +257,8 @@ notes_create (char const *path,
               size_t      len,
               int        *e)
 {
-	if (!util_word_len(participant, UTIL_WORD_MAX)) {
+	size_t const named = util_word_len(participant, UTIL_WORD_MAX);
+	if (!named) {
 		*e = util_refuse(why, len, "the participant must have 1 to %d ASCII letters, "
 		                 "digits, underscores or hyphens", UTIL_WORD_MAX);
 		return nullptr;
@@ -271,6 +273,7 @@ notes_create (char const *path,
 	static_assert(sizeof vars == sizeof notes->env);
 	memcpy(notes->env, vars, sizeof vars);
 	notes->fd = -1;
+	notes->named = named;
 	if (!(notes->participant = strdup(participant))) {
 		*e = ENOMEM;
 		util_format(why, len, "out of memory");
@@ -320,10 +323,10 @@ notes_writer (struct notes const *notes)
 }
 
 void
-notes_repo (struct notes const *notes,
-            uint64_t            principal,
-            enum notes_side     side,
-            char                repo[NOTES_REPO])
+notes_book (struct cstr_view participant,
+            uint64_t         principal,
+            enum notes_side  side,
+            char             repo[NOTES_REPO])
 {
 	static_assert(NOTES_REPO >= sizeof BRANCH + UTIL_WORD_MAX + 1 + NOTES_WHO + 1 +
 	                            sizeof "upstream" - 1);
@@ -332,8 +335,17 @@ notes_repo (struct notes const *notes,
 	                           ? util_format_view(hex, sizeof hex, "%0*" PRIx64, NOTES_WHO,
 	                                              principal)
 	                           : notes_anonymous;
-	util_format(repo, NOTES_REPO, BRANCH "%s/%.*s/%s", notes->participant, (int)who.len,
-	            who.data, notes_sides[side].data);
+	util_format(repo, NOTES_REPO, BRANCH "%.*s/%.*s/%s", (int)participant.len,
+	            participant.data, (int)who.len, who.data, notes_sides[side].data);
+}
+
+void
+notes_repo (struct notes const *notes,
+            uint64_t            principal,
+            enum notes_side     side,
+            char                repo[NOTES_REPO])
+{
+	notes_book((struct cstr_view){ notes->participant, notes->named }, principal, side, repo);
 }
 
 int

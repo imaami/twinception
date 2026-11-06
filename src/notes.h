@@ -141,6 +141,16 @@ notes_directory (struct notes const *notes);
 extern char const *
 notes_writer (struct notes const *notes);
 
+/** Writes to @p repo the branch ref of the notebook of @p participant, a
+ *  name that util_word() accepts, for the principal @p principal and the
+ *  side @p side.
+ */
+extern void
+notes_book (struct cstr_view participant,
+            uint64_t         principal,
+            enum notes_side  side,
+            char             repo[NOTES_REPO]);
+
 /** Writes the caller's server-selected branch ref to @p repo. */
 extern void
 notes_repo (struct notes const *notes,
@@ -156,8 +166,8 @@ extern int
 notes_select (struct cstr_view name,
               char             repo[NOTES_REPO]);
 
-/** Returns the public selector within a ref made by notes_repo() or
- * notes_select(). The view borrows @p repo.
+/** Returns the public selector within a ref made by notes_book(),
+ * notes_repo() or notes_select(). The view borrows @p repo.
  */
 extern char const *
 notes_selector (char const *repo);

@@ -10261,8 +10261,10 @@ def check_notes(binary, up):
                       "notebook": "other"},
                      "!You can write notes only to your own notebook."),
                     ({"action": "list", "notebook": "theirs"},
-                     "!The notebook must be own or a selector returned "
-                     "by action notebooks (participant/principal/side).")):
+                     "!This notebook has no notes yet."),
+                    ({"action": "list", "notebook": "a/b"},
+                     "!The notebook argument must be own, a participant's name, or a "
+                     "selector from action notebooks.")):
                 assert call(arguments | {"thread": shared}) == why, (arguments, why)
             said = call({"action": "add", "file": "mine.md", "text": "m", "thread": shared})
             assert wrote(said, 'Add "mine.md" (1 byte)'), said
@@ -10570,10 +10572,13 @@ def check_shared_notes(binary, up):
                     selector = f"{peer}/anonymous/client"
                     assert f"{selector} (read-only)\n" in notebooks, notebooks
                     assert call(ai, action="read", file="plan.md", notebook=selector) == peer
+                    # A participant's name selects its notebook under the
+                    # caller's principal and side.
+                    assert call(ai, action="read", file="plan.md", notebook=peer) == peer
                     assert call(ai, action="add", file="overwrite.md", text="no",
                                 notebook=selector).startswith(
                                     "!You can write notes only to your own notebook.")
-                    copied = call(ai, action="copy", file="plan.md", notebook=selector,
+                    copied = call(ai, action="copy", file="plan.md", notebook=peer,
                                   **{"as": "peer.md"})
                     assert wrote(copied, name, f'Copy "peer.md" from {selector} '
                                  f'({len(peer)} bytes)'), copied
@@ -11000,12 +11005,13 @@ def check_notes_texts(binary, up):
                          "and compactions, and every version stays in the history. You "
                          "can read every notebook but write only your own. After a "
                          "compaction, you see your note history and your newest note.",
-                         "own, the default, or a selector from action notebooks.", PAGED),
+                         "own, the default, a participant's name, or a selector from "
+                         "action notebooks.", PAGED),
                         (listed, "inputSchema", "Notes are files, and every version stays "
                          "in the history. You can read every notebook but write only your "
-                         "own.", "own, the default, other for the other side, "
-                         "or a selector from action notebooks. other is copy's default.",
-                         "")):
+                         "own.", "own, the default, other for the other side, a "
+                         "participant's name, or a selector from action notebooks. other "
+                         "is copy's default.", "")):
                     assert definition["description"] == f"Participant: p. {side} Prefer " \
                         "small, incremental edits. Before replace, read the whole note, then " \
                         "send the whole new text and keep unrelated passages and evidence " \
@@ -12146,8 +12152,8 @@ def check_turns(binary, up):
             want = [re.escape(f"aim\n\n[askai: notebook {client}]"),
                     re.escape("You can write notes only to your own notebook."),
                     saved('Add "seen.md" (4 bytes)', tip(f"{branch}^")),
-                    re.escape("For copy, give the source notebook selector from action "
-                              "notebooks."),
+                    re.escape("For copy, give the source notebook: a participant's name or "
+                              "a selector from action notebooks."),
                     saved(f'Copy "brief.md" from {client} (3 bytes)', tip()),
                     re.escape("aim" + provenance),
                     re.escape("Only a client hands askai a file as content.")]

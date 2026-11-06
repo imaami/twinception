@@ -1598,8 +1598,9 @@ notes_tool_start (struct mcp_slot    *slot,
 	bool other = cstr_view_equal(selected, CSTR_VIEW("other"));
 	if (!notebook && (fetch & FETCH_COPY)) {
 		if (side == NOTES_UPSTREAM) {
-			mcp_slot_tell(slot, CSTR_VIEW("For copy, give the source notebook selector "
-			                              "from action notebooks."), TOOL_FAILED);
+			mcp_slot_tell(slot, CSTR_VIEW("For copy, give the source notebook: a "
+			                              "participant's name or a selector from action "
+			                              "notebooks."), TOOL_FAILED);
 			return;
 		}
 		other = true;
@@ -1607,10 +1608,13 @@ notes_tool_start (struct mcp_slot    *slot,
 	if (other) {
 		notes_repo(notes, mcp_slot_principal(slot),
 		           side == NOTES_CLIENT ? NOTES_UPSTREAM : NOTES_CLIENT, call->notebook);
-	} else if (notebook && !cstr_view_equal(selected, CSTR_VIEW("own")) &&
-	           notes_select(selected, call->notebook)) {
-		mcp_slot_tell(slot, CSTR_VIEW("The notebook must be own or a selector returned by "
-		                              "action notebooks (participant/principal/side)."),
+	} else if (!notebook || cstr_view_equal(selected, CSTR_VIEW("own"))) {
+		/* The call reads the caller's own notebook, call->repo. */
+	} else if (util_word(selected.data, selected.len, UTIL_WORD_MAX)) {
+		notes_book(selected, mcp_slot_principal(slot), side, call->notebook);
+	} else if (notes_select(selected, call->notebook)) {
+		mcp_slot_tell(slot, CSTR_VIEW("The notebook argument must be own, a participant's "
+		                              "name, or a selector from action notebooks."),
 		              TOOL_FAILED);
 		return;
 	}
@@ -1670,9 +1674,10 @@ notes_tool_schema (struct notes_tool const *tool,
 			"every notebook but write only your own.",
 	};
 	static char const *const notebooks[] = {
-		[NOTES_UPSTREAM] = "own, the default, or a selector from action notebooks.",
-		[NOTES_CLIENT] = "own, the default, other for the other side, or a selector from "
-		                 "action notebooks. other is copy's default.",
+		[NOTES_UPSTREAM] = "own, the default, a participant's name, or a selector from "
+		                   "action notebooks.",
+		[NOTES_CLIENT] = "own, the default, other for the other side, a participant's name, "
+		                 "or a selector from action notebooks. other is copy's default.",
 	};
 	/* A turn can attach a note only if its upstream accepts files. */
 	uint32_t const hidden = notes_tool_hidden(tool, side);

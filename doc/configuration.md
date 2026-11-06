@@ -1460,11 +1460,12 @@ notebook in the shared session, but can only write their own.
 `{"action":"notebooks"}` identifies the caller's writable notebook even
 before its first note, and lists peers as read-only. `notebook` selects one
 for `list`, `history`, `read`, `copy` or `attach`; `own` is the default,
-and an explicit `PARTICIPANT/WHO/SIDE` selects another notebook. Agents
-receive their participant and writable selector in their initial prompt,
-and reads identify the source notebook separately from the note's contents.
-For compatibility, clients can also use `other` for the opposite side of
-the same participant and identity.
+a participant's name selects that participant's notebook of the same
+identity and side, and an explicit `PARTICIPANT/WHO/SIDE` selects any
+notebook. Agents receive their participant and writable selector in their
+initial prompt, and reads identify the source notebook separately from
+the note's contents. For compatibility, clients can also use `other` for
+the opposite side of the same participant and identity.
 
 `add` creates a new file and refuses an existing name. `replace` updates
 an existing file in the caller's own notebook, adding a Git commit that
