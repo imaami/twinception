@@ -972,6 +972,17 @@ godbolt_fired (struct loop       *loop,
 	(void)godbolt_send(call);
 }
 
+/* Parses the body of the last response, call->resp, in one piece, and
+ * counts it as LOOP_PARSE work. Returns the parsed value, or nullptr.
+ */
+static struct json_object *
+godbolt_resp_doc (struct godbolt *call)
+{
+	json_tokener_reset(call->tok);
+	loop_work(call->loop, LOOP_PARSE, call->resp.len);
+	return json_tokener_parse_ex(call->tok, call->resp.data, (int)call->resp.len);
+}
+
 /* Stores in call->why the reason of the response in call->resp, whose
  * status @p status is an error. The reason is the member message of a
  * JSON object, or else the first line of the body, and it is at most
@@ -986,14 +997,9 @@ godbolt_reason (struct godbolt *call,
 		godbolt_catalog_hint(call, "HTTP 404: Compiler Explorer rejected this compiler id. ");
 		return;
 	}
-	struct cstr_view text = call->resp;
-	struct json_object *doc = nullptr;
-	if (text.len <= LOOP_STEP_PARSE) {
-		json_tokener_reset(call->tok);
-		doc = json_tokener_parse_ex(call->tok, text.data, (int)text.len);
-		loop_work(call->loop, LOOP_PARSE, text.len);
-		text = godbolt_or(jb_view(jb_get(doc, "message")), text);
-	}
+	struct json_object *doc = call->resp.len <= LOOP_STEP_PARSE ? godbolt_resp_doc(call)
+	                                                            : nullptr;
+	struct cstr_view text = godbolt_or(jb_view(jb_get(doc, "message")), call->resp);
 	(void)cstr_view_cut(&text, '\n', &text);
 	size_t const n = util_clip(text.data, text.len, GODBOLT_REASON_MAX);
 	godbolt_why(call, "HTTP %" PRIu32 "%s%.*s", status, n ? ": " : "", (int)n, text.data);
@@ -1792,10 +1798,7 @@ godbolt_link (struct godbolt *call)
 		return godbolt_putf(call, "Link: none. The request for a short link failed (%.*s).\n",
 		                    (int)call->why.len, call->why.data) ? godbolt_fail(call)
 		                                                        : GODBOLT_GO;
-	json_tokener_reset(call->tok);
-	struct json_object *doc = json_tokener_parse_ex(call->tok, call->resp.data,
-	                                                (int)call->resp.len);
-	loop_work(call->loop, LOOP_PARSE, call->resp.len);
+	struct json_object *doc = godbolt_resp_doc(call);
 	struct cstr_view const link = jb_view(jb_get(doc, "url"));
 	if (link.len <= GODBOLT_SHORT_MAX && util_url_scheme(link)) {
 		godbolt_put(call, CSTR_VIEW("Link: "));
