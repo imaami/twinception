@@ -205,10 +205,11 @@ The history API accepts at most 1024 earlier messages.
 Interactive clients save input and completed turns in a private bare Git
 repository, separate from the server's notes and transcript repositories.
 The default is `$XDG_STATE_HOME/askai/cli.git`, or
-`~/.local/state/askai/cli.git` when `XDG_STATE_HOME` is unset. Git must be
-installed. Use `--history-repo PATH` to select a dedicated repository and
-`--no-history` to disable client persistence. Noninteractive runs do not
-persist by default; an explicit `--history-repo` enables it for scripts.
+`~/.local/state/askai/cli.git` when `XDG_STATE_HOME` is not an absolute
+path. Git must be installed. Use `--history-repo PATH` to select a
+dedicated repository and `--no-history` to disable client persistence.
+Noninteractive runs do not persist by default; an explicit
+`--history-repo` enables it for scripts.
 
 Submitted commands and prompts are committed before execution. Completed
 answers are saved separately after success; failed and cancelled input stays

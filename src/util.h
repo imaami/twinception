@@ -272,6 +272,29 @@ util_env_path (void)
 	       ? p : "PATH=/usr/bin:/bin";
 }
 
+/** Find askai's directory of state files by the XDG Base Directory
+ *  specification: the value of XDG_STATE_HOME followed by "/askai", or, if
+ *  that variable is not an absolute path, the value of HOME followed by
+ *  "/.local/state/askai". Stores the value in @p *base and what follows it
+ *  in @p *rest. Returns 0, or ENOENT if neither variable is an absolute
+ *  path.
+ */
+static inline int
+util_state_path (char const **base,
+                 char const **rest)
+{
+	static struct { char const *name, *rest; } const homes[] = {
+		{ "XDG_STATE_HOME", "/askai" }, { "HOME", "/.local/state/askai" }
+	};
+	for (size_t i = 0; i < array_size(homes); ++i) {
+		*base = getenv(homes[i].name);
+		*rest = homes[i].rest;
+		if (*base && **base == '/')
+			return 0;
+	}
+	return ENOENT;
+}
+
 /** Close the descriptor @p *fd unless it is negative, and set it to -1. */
 static inline void
 util_close (int *fd)

@@ -353,15 +353,12 @@ cli_state_save (struct cli_state *state)
 static int
 cli_state_default_path (struct cli_state *state)
 {
-	char const *base = getenv("XDG_STATE_HOME");
-	char const *leaf = "/askai/cli.git";
-	if (!base || *base != '/') {
-		base = getenv("HOME");
-		leaf = "/.local/state/askai/cli.git";
-		if (!base || *base != '/')
-			return ENOENT;
-	}
-	if (!dstr_printf(&state->path, "%s%s", base, leaf))
+	char const *base;
+	char const *rest;
+	int e = util_state_path(&base, &rest);
+	if (e)
+		return e;
+	if (!dstr_printf(&state->path, "%s%s/cli.git", base, rest))
 		return ENOMEM;
 	/* Only the private leaf holds data. Existing parent modes are preserved. */
 	size_t len = dstr_len(&state->path);
@@ -369,7 +366,7 @@ cli_state_default_path (struct cli_state *state)
 	for (size_t i = 1; i <= len; ++i) {
 		if (i < len && path[i] != '/')
 			continue;
-		int e = cstr_view_store((struct cstr_view){ path, i }, &state->scratch);
+		e = cstr_view_store((struct cstr_view){ path, i }, &state->scratch);
 		if (e)
 			return e;
 		if (mkdir(dstr_get(&state->scratch), 0700) && errno != EEXIST)

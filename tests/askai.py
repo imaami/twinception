@@ -3331,10 +3331,16 @@ def check_shared_transcripts(binary, up):
                 assert run.returncode == 1, (ref, peer)
             subprocess.run(["git", "--git-dir", repo, "fsck", "--full", "--strict", "--no-reflogs"],
                            check=True, capture_output=True)
+            # As the XDG Base Directory specification says, a relative
+            # XDG_STATE_HOME is ignored, and the default is in HOME.
+            with Askai(binary, "-u", up.url(), "--background", "--participant", "home",
+                       env={"XDG_STATE_HOME": "state", "HOME": d}):
+                assert os.path.isdir(f"{d}/.local/state/askai/home/transcripts.git")
     finally:
         up.reply = hold
     print("shared transcripts: concurrent participants, separate branches, committed "
-          "reasoning only and intact shared Git objects: PASS")
+          "reasoning only, intact shared Git objects and the default path with a "
+          "relative XDG_STATE_HOME: PASS")
 
 
 def check_http(binary, up):

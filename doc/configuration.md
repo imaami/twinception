@@ -491,10 +491,11 @@ notes configured, its default is the notes path followed by
 `upstream.background: true` defaults to
 `$XDG_STATE_HOME/askai/PARTICIPANT/transcripts.git`, or
 `$HOME/.local/state/askai/PARTICIPANT/transcripts.git` when `XDG_STATE_HOME`
-is unset or empty. These environment paths must be absolute. Without
-notes or background mode, transcript storage is enabled by an explicit
-`transcripts` path. Startup logs show the participant and resolved path.
-The transcript repository must differ from the notes repository; the
+is not an absolute path, as the XDG Base Directory specification says;
+`HOME` must then be absolute. Without notes or background mode,
+transcript storage is enabled by an explicit `transcripts` path.
+Startup logs show the participant and resolved path. The transcript
+repository must differ from the notes repository; the
 notes tool does not expose it. Missing transcript path components are
 created with mode 0700; symbolic links and `..` components are refused.
 Two live instances cannot write to the same transcript repository as the

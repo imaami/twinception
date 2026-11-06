@@ -150,7 +150,7 @@ config_usage (struct config const *cfg,
 	        "                            <notes>.transcripts.git with --notes, else\n"
 	        "                            $XDG_STATE_HOME/askai/NAME/transcripts.git\n"
 	        "                            with --background, using $HOME/.local/state\n"
-	        "                            if XDG_STATE_HOME is unset\n"
+	        "                            if XDG_STATE_HOME is not absolute\n"
 	        "\n"
 	        "Upstream AI (\"upstream\"):\n"
 	        "  -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),\n"
@@ -1639,18 +1639,12 @@ config_session (struct config *cfg)
 		cfg->transcripts_owned = config_aprintf("%.*s.transcripts.git", (int)n,
 		                                        cfg->notes);
 	} else if (cfg->ep.background) {
-		/* In $XDG_STATE_HOME, or else in $HOME/.local/state. */
-		char const *state = getenv("XDG_STATE_HOME");
-		bool const xdg = state && *state;
-		char const *base = xdg ? state : getenv("HOME");
-		if (!base || *base != '/')
-			return config_complain(cfg, nullptr, "%s", xdg
-			                       ? "XDG_STATE_HOME must be absolute, or set "
-			                         "--transcripts explicitly"
-			                       : "--background needs --transcripts, "
-			                         "XDG_STATE_HOME or an absolute HOME");
-		cfg->transcripts_owned = config_aprintf("%s%s/askai/%s/transcripts.git", base,
-		                                        xdg ? "" : "/.local/state",
+		char const *base;
+		char const *rest;
+		if (util_state_path(&base, &rest))
+			return config_complain(cfg, nullptr, "--background needs --transcripts, "
+			                       "an absolute XDG_STATE_HOME or an absolute HOME");
+		cfg->transcripts_owned = config_aprintf("%s%s/%s/transcripts.git", base, rest,
 		                                        cfg->participant);
 	} else {
 		return 0;

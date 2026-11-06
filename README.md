@@ -506,7 +506,7 @@ neither repository may be inside the other's Git directory.
 With `--notes PATH`, it defaults to `PATH.transcripts.git`. With
 `--background` alone, it defaults to
 `$XDG_STATE_HOME/askai/PARTICIPANT/transcripts.git`, using
-`$HOME/.local/state` when `XDG_STATE_HOME` is unset or empty.
+`$HOME/.local/state` when `XDG_STATE_HOME` is not an absolute path.
 `--transcripts PATH` selects another location and also enables recording
 without notes or background mode. Startup logs show the path and
 participant. Use the same participant after restarting; distinct
@@ -1927,7 +1927,7 @@ Session (top-level configuration members):
                             <notes>.transcripts.git with --notes, else
                             $XDG_STATE_HOME/askai/NAME/transcripts.git
                             with --background, using $HOME/.local/state
-                            if XDG_STATE_HOME is unset
+                            if XDG_STATE_HOME is not absolute
 
 Upstream AI ("upstream"):
   -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),
