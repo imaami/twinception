@@ -4694,6 +4694,16 @@ mcp_req_agenda (struct mcp_req *req,
 	return req->agenda;
 }
 
+/* Swaps the texts of @p a and @p b, and their storage. */
+static void
+mcp_dstr_swap (struct dstr *a,
+               struct dstr *b)
+{
+	struct dstr const t = dstr_move(a);
+	*a = dstr_move(b);
+	*b = t;
+}
+
 /** Sets the alarm of @p a to the first time that is due, the due of a
  *  timer or the end of the wait, if any. Returns 0 or ENOMEM.
  */
@@ -4720,11 +4730,13 @@ mcp_agenda_wait_end (struct mcp_agenda *a)
 {
 	struct mcp_slot *slot = a->wait;
 	a->wait = nullptr;
-	int e = dstr_len(&a->notices)
-	      ? cstr_view_cat(cstr_view_dstr(&a->notices), &slot->answer)
-	      : dstr_printf(&slot->answer, "Nothing happened in %" PRIu32 " s.", a->waited)
-	      ? 0 : ENOMEM;
-	dstr_clear(&a->notices);
+	/* The answer of the wait's call is empty, and the notices take its
+	 * storage. */
+	int e = 0;
+	if (dstr_len(&a->notices))
+		mcp_dstr_swap(&slot->answer, &a->notices);
+	else if (!dstr_printf(&slot->answer, "Nothing happened in %" PRIu32 " s.", a->waited))
+		e = ENOMEM;
 	e = e ? e : mcp_agenda_arm(a);
 	if (e) {
 		mcp_req_fail(a->req, e);
@@ -6031,13 +6043,8 @@ mcp_req_result_begin (struct mcp_req  *req,
                       struct mcp_slot *slot)
 {
 	struct mcp_agenda *a = req->agenda;
-	if (a && dstr_len(&a->notices) && !dstr_len(&a->told)) {
-		if (cstr_view_cat(cstr_view_dstr(&a->notices), &a->told)) {
-			mcp_req_fail(req, ENOMEM);
-			return;
-		}
-		dstr_clear(&a->notices);
-	}
+	if (a && dstr_len(&a->notices) && !dstr_len(&a->told))
+		mcp_dstr_swap(&a->told, &a->notices);
 	if (req->part + 1u == req->n_calls) {
 		mcp_req_context_note(req, slot, mcp_req_tokens(req) +
 		                                (slot->window + slot->note.len) / 4);
