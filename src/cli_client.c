@@ -9,6 +9,7 @@
 #include "cli_network.h"
 #include "compat.h"
 #include "jb.h"
+#include "oid.h"
 #include "util.h"
 
 int
@@ -559,8 +560,7 @@ cli_client_read_files (struct cstr_view  text,
 		}
 		line.len = tail;
 		if (cstr_view_starts(suffix, CSTR_VIEW(" bytes, "))) {
-			struct cstr_view blob = cstr_view_slice(suffix, sizeof " bytes, " - 1, SIZE_MAX);
-			if (!util_is_oid(blob.data, blob.len))
+			if (!oid_valid(cstr_view_slice(suffix, sizeof " bytes, " - 1, SIZE_MAX)))
 				continue;
 		} else {
 			if (suffix.len && !cstr_view_equal(suffix, CSTR_VIEW(" line")) &&

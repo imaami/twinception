@@ -24,6 +24,7 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "jb.h"
+#include "oid.h"
 #include "util.h"
 
 enum {
@@ -43,7 +44,6 @@ struct cli_state {
 	struct dstr             temporary;
 	struct dstr             branch;
 	struct dstr             latest;
-	struct dstr             parent;
 	struct dstr             output;
 	struct dstr             tree;
 	struct dstr             metadata;
@@ -56,7 +56,8 @@ struct cli_state {
 	size_t                  turn_bytes;
 	int                     directory;
 	int                     lock;
-	char                    identity_blob[65]; /**< empty until hashed */
+	struct oid              identity_blob;     /**< empty until hashed */
+	struct oid              parent;
 	bool                    snapshot_pending;
 	bool                    unsaved;           /**< the last save failed */
 };
@@ -231,26 +232,26 @@ cli_state_git_ok (struct cli_state  *state,
 	return e ? e : status ? EIO : 0;
 }
 
+/* Runs git as cli_state_git_ok() does and stores the one name that it
+ * prints in @p oid. Returns 0, EINVAL if git prints anything else, or the
+ * error of cli_state_git_ok().
+ */
 static int
-cli_state_oid (struct cli_state *state,
-               char              oid[static 65])
+cli_state_git_oid (struct cli_state  *state,
+                   char const *const  args[],
+                   struct cstr_view   input,
+                   struct oid        *oid)
 {
-	struct cstr_view output = cstr_view_dstr(&state->output);
-	if (output.len && output.data[output.len - 1] == '\n')
-		--output.len;
-	if (!util_is_oid(output.data, output.len))
-		return EINVAL;
-	memcpy(oid, output.data, output.len);
-	oid[output.len] = '\0';
-	return 0;
+	int e = cli_state_git_ok(state, args, input);
+	return e ? e : oid_init_line(oid, cstr_view_dstr(&state->output));
 }
 
 static int
 cli_state_tree_entry (struct cli_state *state,
-                      char const       *oid,
+                      struct oid const *oid,
                       char const       *name)
 {
-	return dstr_printf(&state->tree, "100644 blob %s\t%s\n", oid, name) ? 0 : ENOMEM;
+	return dstr_printf(&state->tree, "100644 blob %s\t%s\n", oid->hex, name) ? 0 : ENOMEM;
 }
 
 /* Write the blob of text to the object store and name it in the tree. */
@@ -259,57 +260,47 @@ cli_state_tree_blob (struct cli_state *state,
                      char const       *name,
                      struct cstr_view  text)
 {
-	char oid[65];
-	int e = cli_state_git_ok(state, (char const *[]){ "hash-object", "-w", "--stdin", nullptr }, text);
-	if (!e)
-		e = cli_state_oid(state, oid);
-	return e ? e : cli_state_tree_entry(state, oid, name);
+	struct oid oid;
+	int e = cli_state_git_oid(state, (char const *[]){ "hash-object", "-w", "--stdin", nullptr }, text,
+	                          &oid);
+	return e ? e : cli_state_tree_entry(state, &oid, name);
 }
 
 static int
 cli_state_commit (struct cli_state *state)
 {
-	char blob[65];
-	char tree[65];
-	char commit[65];
 	(void)dstr_clear(&state->tree);
-	int e = cli_state_git_ok(state, (char const *[]){ "hash-object", "-w", "--", dstr_get(&state->name), nullptr },
-	                         (struct cstr_view){});
+	struct oid blob;
+	int e = cli_state_git_oid(state, (char const *[]){ "hash-object", "-w", "--", dstr_get(&state->name), nullptr },
+	                          (struct cstr_view){}, &blob);
 	if (!e)
-		e = cli_state_oid(state, blob);
-	if (!e)
-		e = cli_state_tree_entry(state, blob, "snapshot");
+		e = cli_state_tree_entry(state, &blob, "snapshot");
 	/* The identity of a writer never changes: write its blob once. */
-	if (!e && !state->identity_blob[0]) {
-		e = cli_state_git_ok(state, (char const *[]){ "hash-object", "-w", "--stdin", nullptr },
-		                     cstr_view_dstr(&state->metadata));
-		if (!e)
-			e = cli_state_oid(state, state->identity_blob);
-	}
+	if (!e && !oid_len(&state->identity_blob))
+		e = cli_state_git_oid(state, (char const *[]){ "hash-object", "-w", "--stdin", nullptr },
+		                      cstr_view_dstr(&state->metadata), &state->identity_blob);
 	if (!e)
-		e = cli_state_tree_entry(state, state->identity_blob, "identity.txt");
+		e = cli_state_tree_entry(state, &state->identity_blob, "identity.txt");
 	if (!e && state->input_count)
 		e = cli_state_tree_blob(state, "input.txt", cli_state_input_at(state, state->input_count - 1));
 	if (!e && state->turn_count)
 		e = cli_state_tree_blob(state, "prompt.txt", cstr_view_dstr(&state->turns[state->turn_count - 1].prompt));
 	if (!e && state->turn_count)
 		e = cli_state_tree_blob(state, "answer.txt", cstr_view_dstr(&state->turns[state->turn_count - 1].answer));
+	struct oid tree;
 	if (!e)
-		e = cli_state_git_ok(state, (char const *[]){ "mktree", nullptr }, cstr_view_dstr(&state->tree));
-
-	if (!e)
-		e = cli_state_oid(state, tree);
+		e = cli_state_git_oid(state, (char const *[]){ "mktree", nullptr }, cstr_view_dstr(&state->tree),
+		                      &tree);
 	static char const message[] = "Save CLI input history and completed conversation\n";
-	char const *args[] = { "commit-tree", tree, "-F", "-", "-p", dstr_get(&state->parent), nullptr };
-	if (!dstr_len(&state->parent))
+	char const *args[] = { "commit-tree", tree.hex, "-F", "-", "-p", state->parent.hex, nullptr };
+	if (!oid_len(&state->parent))
 		args[4] = nullptr;
+	struct oid commit;
 	if (!e)
-		e = cli_state_git_ok(state, args, (struct cstr_view){ message, sizeof message - 1 });
-	if (!e)
-		e = cli_state_oid(state, commit);
+		e = cli_state_git_oid(state, args, (struct cstr_view){ message, sizeof message - 1 }, &commit);
 	(void)dstr_clear(&state->scratch);
 	if (!e && !dstr_printf(&state->scratch, "start\nupdate %s %s\nupdate %s %s\nprepare\ncommit\n",
-	                       dstr_get(&state->branch), commit, dstr_get(&state->latest), commit))
+	                       dstr_get(&state->branch), commit.hex, dstr_get(&state->latest), commit.hex))
 		e = ENOMEM;
 	if (!e) {
 		e = cli_state_lock(state, state->lock);
@@ -320,7 +311,7 @@ cli_state_commit (struct cli_state *state)
 		}
 	}
 	if (!e)
-		e = cstr_view_store(cstr_view(commit), &state->parent);
+		state->parent = commit;
 	if (!e)
 		(void)cli_state_git_ok(state, (char const *[]){ "gc", "--auto", "--quiet", nullptr },
 		                       (struct cstr_view){});
@@ -458,12 +449,12 @@ cli_state_recall (struct cli_state *state,
 static int
 cli_state_snapshot (struct cli_state *state,
                     int               fd,
-                    struct cstr_view  rev,
+                    struct oid const *rev,
                     size_t           *inputs,
                     size_t           *turns)
 {
 	(void)dstr_clear(&state->scratch);
-	if (!dstr_printf(&state->scratch, "%.*s:snapshot", (int)rev.len, rev.data))
+	if (!dstr_printf(&state->scratch, "%s:snapshot", rev->hex))
 		return ENOMEM;
 	if (ftruncate(fd, 0) || lseek(fd, 0, SEEK_SET) < 0)
 		return errno;
@@ -533,20 +524,14 @@ cli_state_load (struct cli_state *state,
 		e = cli_state_git_ok(state, (char const *[]){ "for-each-ref", "--sort=-committerdate", "--count=32",
 		                         "--format=%(objectname)", dstr_get(&state->scratch), nullptr },
 		                         (struct cstr_view){});
-	(void)dstr_clear(&state->tree);
-	if (!e && !dstr_printf(&state->tree, "%s\n", dstr_get(&state->parent)))
-		e = ENOMEM;
-	struct cstr_view revisions = cstr_view_dstr(&state->output);
-	for (size_t start = 0; !e && start < revisions.len;) {
-		size_t end = start;
-		while (end < revisions.len && revisions.data[end] != '\n')
-			++end;
-		struct cstr_view revision = { revisions.data + start, end - start };
-		if (!cstr_view_equal(revision, cstr_view_dstr(&state->parent)) &&
-		    !dstr_printf(&state->tree, "%.*s\n", (int)revision.len, revision.data))
-			e = ENOMEM;
-		start = end + 1;
-	}
+	/* The parent, then the other tips, at most 32 (--count=32). */
+	struct oid tips[1 + 32] = { state->parent };
+	size_t n = 1;
+	for (struct cstr_view out = cstr_view_dstr(&state->output); !e && out.len; )
+		if (n == array_size(tips) || oid_init_field(&tips[n], &out, '\n'))
+			e = EIO;
+		else
+			n += !oid_equal(&tips[n], &state->parent);
 	if (e)
 		return e;
 	int fd = openat(state->directory, dstr_get(&state->temporary),
@@ -558,26 +543,18 @@ cli_state_load (struct cli_state *state,
 	/* Git lists newest tips first. Process the selected latest snapshot last
 	 * even when Git's second-resolution commit times tie. Repeated exact
 	 * inputs move to the newest position, preserving the expected Up entry. */
-	size_t end = dstr_len(&state->tree);
-	while (!e && end) {
-		if (dstr_get(&state->tree)[end - 1] == '\n')
-			--end;
-		size_t start = end;
-		while (start && dstr_get(&state->tree)[start - 1] != '\n')
-			--start;
+	for (size_t t = n; !e && t--; ) {
 		size_t count = 0, turns = 0;
-		e = cli_state_snapshot(state, fd, (struct cstr_view){ dstr_get(&state->tree) + start, end - start },
-		                       &count, &turns);
+		e = cli_state_snapshot(state, fd, &tips[t], &count, &turns);
 		size_t budget = CLI_STATE_INPUT_BYTES;
 		for (size_t i = 0; !e && i < count; ++i) {
 			e = cli_state_read_text(fd, &entry, &budget);
 			if (!e)
 				e = cli_state_recall(state, cstr_view_dstr(&entry));
 		}
-		/* The parent is the first line. */
-		if (!e && !start)
+		/* The parent is the first tip. */
+		if (!e && !t)
 			e = cli_state_read_turns(state, fd, turns);
-		end = start;
 	}
 	if (close(fd) && !e)
 		e = errno;
@@ -723,10 +700,7 @@ cli_state_repository (struct cli_state *state)
 		return e;
 	if (status)
 		return EIO;
-	char oid[65];
-	e = cli_state_oid(state, oid);
-	if (!e)
-		e = cstr_view_store(cstr_view(oid), &state->parent);
+	e = oid_init_line(&state->parent, cstr_view_dstr(&state->output));
 	return e ? e : cli_state_load(state, group);
 }
 
@@ -753,7 +727,7 @@ cli_state_create (struct cstr_view    path,
 		state->turns[i] = (struct cli_state_turn){ dstr(""), dstr("") };
 	state->pending = (struct cli_state_turn){ dstr(""), dstr("") };
 	state->identity = state->path = state->name = state->temporary = state->scratch = dstr("");
-	state->branch = state->latest = state->parent = state->output = state->tree = state->metadata = dstr("");
+	state->branch = state->latest = state->output = state->tree = state->metadata = dstr("");
 	*e = cstr_view_store(identity, &state->identity);
 	if (!*e)
 		*e = path.len ? cstr_view_store(path, &state->path) : cli_state_default_path(state);
@@ -829,7 +803,6 @@ cli_state_destroy (struct cli_state **pstate)
 	dstr_cleanup(&state->scratch);
 	dstr_cleanup(&state->branch);
 	dstr_cleanup(&state->latest);
-	dstr_cleanup(&state->parent);
 	dstr_cleanup(&state->output);
 	dstr_cleanup(&state->tree);
 	dstr_cleanup(&state->metadata);
