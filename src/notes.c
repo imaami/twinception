@@ -26,6 +26,18 @@ enum { ENV = 10 };
 /* Only this namespace is exposed by the notes tool. */
 #define BRANCH "refs/heads/notes/"
 
+/* The hexadecimal digits of a principal in a notebook's ref. */
+enum { NOTES_WHO = 16 };
+
+/* The principal in the ref of a notebook of a caller without one. */
+static struct cstr_view const notes_anonymous = CSTR_VIEW_INIT("anonymous");
+
+/* The sides in a notebook's ref. */
+static struct cstr_view const notes_sides[] = {
+	[NOTES_UPSTREAM] = CSTR_VIEW_INIT("upstream"),
+	[NOTES_CLIENT]   = CSTR_VIEW_INIT("client"),
+};
+
 struct notes {
 	char *env[ENV];
 	char *dir;    /* the real path of the shared session repository */
@@ -245,8 +257,8 @@ notes_create (char const *path,
               int        *e)
 {
 	if (!util_word_len(participant, UTIL_WORD_MAX)) {
-		*e = util_refuse(why, len, "the participant must have 1 to 64 ASCII letters, "
-		                 "digits, underscores or hyphens");
+		*e = util_refuse(why, len, "the participant must have 1 to %d ASCII letters, "
+		                 "digits, underscores or hyphens", UTIL_WORD_MAX);
 		return nullptr;
 	}
 	struct notes *notes = calloc(1, sizeof *notes);
@@ -313,12 +325,15 @@ notes_repo (struct notes const *notes,
             enum notes_side     side,
             char                repo[NOTES_REPO])
 {
-	static_assert(NOTES_REPO >= sizeof BRANCH + 64 + 1 + 16 + 1 + 8);
-	char who[17] = "anonymous";
-	if (principal)
-		util_format(who, sizeof who, "%016" PRIx64, principal);
-	util_format(repo, NOTES_REPO, BRANCH "%s/%s/%s", notes->participant, who,
-	            side == NOTES_CLIENT ? "client" : "upstream");
+	static_assert(NOTES_REPO >= sizeof BRANCH + UTIL_WORD_MAX + 1 + NOTES_WHO + 1 +
+	                            sizeof "upstream" - 1);
+	char hex[NOTES_WHO + 1];
+	struct cstr_view const who = principal
+	                           ? util_format_view(hex, sizeof hex, "%0*" PRIx64, NOTES_WHO,
+	                                              principal)
+	                           : notes_anonymous;
+	util_format(repo, NOTES_REPO, BRANCH "%s/%.*s/%s", notes->participant, (int)who.len,
+	            who.data, notes_sides[side].data);
 }
 
 int
@@ -327,17 +342,16 @@ notes_select (struct cstr_view name,
 {
 	if (!name.data || !name.len || sizeof BRANCH + name.len > NOTES_REPO)
 		return EINVAL;
-	/* who is "anonymous" or the 16 hexadecimal digits of a principal, as
-	 * notes_repo() writes it. */
+	/* who is notes_anonymous or the NOTES_WHO hexadecimal digits of a
+	 * principal, as notes_repo() writes it. */
 	struct cstr_view side = name, participant, who;
 	if (!cstr_view_cut(&side, '/', &participant) ||
 	    !util_word(participant.data, participant.len, UTIL_WORD_MAX) ||
 	    !cstr_view_cut(&side, '/', &who))
 		return EINVAL;
-	if ((!cstr_view_equal(who, CSTR_VIEW("anonymous")) &&
-	     (who.len != 16 || !util_is_hex(who.data, who.len))) ||
-	    (!cstr_view_equal(side, CSTR_VIEW("client")) &&
-	     !cstr_view_equal(side, CSTR_VIEW("upstream"))))
+	if ((!cstr_view_equal(who, notes_anonymous) &&
+	     (who.len != NOTES_WHO || !util_is_hex(who.data, who.len))) ||
+	    cstr_view_index(notes_sides, array_size(notes_sides), side) == array_size(notes_sides))
 		return EINVAL;
 	if (!repo)
 		return 0;
