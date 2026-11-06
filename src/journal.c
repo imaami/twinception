@@ -1377,10 +1377,8 @@ journal_setup (struct journal *j,
 	if (!e && (fsync(state) || fsync(j->state_fd) || fsync(j->repo_fd)))
 		e = errno;
 	util_close(&state);
-	if (init_fd >= 0) {
-		(void)flock(init_fd, LOCK_UN);
-		close(init_fd);
-	}
+	/* The close releases the lock, as no other descriptor shares it. */
+	util_close(&init_fd);
 	if (!e)
 		e = journal_unlock(j);
 	if (!e)
