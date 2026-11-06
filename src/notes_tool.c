@@ -272,13 +272,18 @@ notes_tool_loop_take (struct notes_tool_loop *loop,
                       int                    *e)
 {
 	struct list *spare = shelf_take(&loop->spare);
-	struct notes_tool_call *call = spare ? container_of(spare, struct notes_tool_call, spare)
-	                                     : malloc(sizeof *call);
-	*e = call ? 0 : ENOMEM;
-	if (call)
-		*call = (struct notes_tool_call){ .out = dstr_move(spare ? &call->out : nullptr),
-		                                  .loop = loop,
-		                                  .text = text ? text : &call->out };
+	struct notes_tool_call *call;
+	struct dstr out = DSTR_INIT;
+	if (spare) {
+		call = container_of(spare, struct notes_tool_call, spare);
+		out = dstr_move(&call->out);
+	} else if (!(call = malloc(sizeof *call))) {
+		*e = ENOMEM;
+		return nullptr;
+	}
+	*e = 0;
+	*call = (struct notes_tool_call){ .out = out, .loop = loop,
+	                                  .text = text ? text : &call->out };
 	return call;
 }
 
@@ -397,7 +402,7 @@ notes_tool_end (struct mcp_slot *slot,
 }
 
 /* Spawns git for @p fetch in the shared repository and frees @p in, the
- * input of git, unless it is nullptr. With FETCH_OTHER, git reads the
+ * input of git, which may be empty. With FETCH_OTHER, git reads the
  * notebook that the call selected. Writes always go to call->repo. If
  * @p e, the error of making @p in, is not 0, the function frees @p in and
  * ends the call with @p e instead (notes_tool_end()).
@@ -422,13 +427,11 @@ notes_tool_run (struct mcp_slot *slot,
 	 * lock file that is older than the last boot. Any other lock file
 	 * stays, because its writer can run outside askai. */
 	bool writes = notes_tool_writes(cmd);
-	if (cmd == NOTES_ADD) {
-		int64_t age;
-		int e = notes_lock(notes, call->repo, &age);
-		if (e)
-			LOG(LOG_WARN, "notes: cannot check the lock of %s: %s",
-			    notes_selector(call->repo), strerror(e));
-	}
+	int64_t age;
+	int const lock = cmd == NOTES_ADD ? notes_lock(notes, call->repo, &age) : 0;
+	if (lock)
+		LOG(LOG_WARN, "notes: cannot check the lock of %s: %s", notes_selector(call->repo),
+		    strerror(lock));
 	char const *argv[NOTES_ARGV];
 	char const *const words[] = {
 		repo, call->revision.file.len ? call->revision.file.data : nullptr
@@ -442,7 +445,7 @@ notes_tool_run (struct mcp_slot *slot,
 		.file = "git",
 		.argv = argv,
 		.envp = notes_env(notes),
-		.in = in ? buf_peek(in) : (struct span){},
+		.in = buf_peek(in),
 		.max = NOTES_MAX,
 		.deadline = loop->now + NOTES_NS,
 		.grace = writes ? NOTES_GRACE : 0,
@@ -451,8 +454,7 @@ notes_tool_run (struct mcp_slot *slot,
 	};
 	call->fetch = fetch;
 	call->child = mcp_slot_spawn(slot, &c, &e);
-	if (in)
-		buf_fini(in);
+	buf_fini(in);
 	if (!call->child) {
 		notes_tool_failed(slot, e);
 		return;
@@ -479,7 +481,7 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
 	call->most = most;
 	notes_repo(loop->tool->notes, mcp_slot_principal(slot), NOTES_UPSTREAM, call->repo);
 	notes_tool_run(slot, what == NOTES_TOOL_RESUME ? FETCH_RESUME : FETCH_COMPACT,
-	               nullptr, 0);
+	               &(struct buf){}, 0);
 }
 
 /* Returns true if git wrote a list of the notes. A list that askai cut
@@ -488,7 +490,7 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
 static bool
 notes_tool_listed (struct child const *c)
 {
-	return c && (c->flags & CHILD_CUT || child_ok(c));
+	return c && (c->flags & CHILD_CUT || !child_status(c));
 }
 
 /* Returns true if git exited with status 128. It does so if the
@@ -611,7 +613,7 @@ notes_tool_write (struct mcp_slot  *slot,
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	if (!oid_len(tip)) {
-		notes_tool_run(slot, FETCH_FORMAT, nullptr, 0);
+		notes_tool_run(slot, FETCH_FORMAT, &(struct buf){}, 0);
 		return;
 	}
 	struct span file = buf_peek(&call->file);
@@ -1531,7 +1533,7 @@ notes_tool_revision (struct mcp_slot          *slot,
 	}
 	if ((fetch & FETCH_KIND) != FETCH_LIST)
 		fetch |= FETCH_REVISION;
-	notes_tool_run(slot, fetch, nullptr, 0);
+	notes_tool_run(slot, fetch, &(struct buf){}, 0);
 }
 
 /* Starts a call of the notes tool in @p slot with the arguments @p args.
@@ -1655,7 +1657,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	if (flags & NOTE_FILE)
 		notes_tool_read(slot, name, args, fetch | selection);
 	else
-		notes_tool_run(slot, fetch | selection, nullptr, 0);
+		notes_tool_run(slot, fetch | selection, &(struct buf){}, 0);
 }
 
 /* Returns the definition of the notes tool for the side @p side. Only the
