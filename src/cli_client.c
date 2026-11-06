@@ -463,14 +463,6 @@ int cli_client_connect(struct cli_client *client, struct cli_error *error)
 	return e ? e : cli_client_refresh(client, error);
 }
 
-static bool cli_client_digits(struct cstr_view text)
-{
-	for (size_t i = 0; i < text.len; ++i)
-		if (text.data[i] < '0' || text.data[i] > '9')
-			return false;
-	return true;
-}
-
 /* The arrays that cli_client_read_notebooks() appends to. */
 struct cli_client_notebooks {
 	struct json_object *names;      /* the participant names */
@@ -521,6 +513,43 @@ struct cli_client_files {
 	size_t            capacity;
 };
 
+/* Returns the note name in line, a line of a listing of the notes tool,
+ * which is "NAME  (N bytes, OID)", or "INDEX. DATE UTC  NAME  (N lines)" or
+ * the same with "(binary)". Returns an empty view if the line is in none of
+ * these forms.
+ */
+static struct cstr_view
+cli_client_file_name (struct cstr_view line)
+{
+	if (!cstr_view_ends(line, CSTR_VIEW(")")))
+		return (struct cstr_view){};
+	size_t open = line.len - 1;
+	while (open && line.data[open] != '(')
+		--open;
+	if (open < 3 || !cstr_view_equal(cstr_view_slice(line, open - 2, 2), CSTR_VIEW("  ")))
+		return (struct cstr_view){};
+	struct cstr_view count = cstr_view_slice(line, open + 1, line.len - open - 2);
+	struct cstr_view name = cstr_view_slice(line, 0, open - 2);
+	uint64_t n;
+	size_t digits = util_digits(count.data, count.len, UINT64_MAX, &n);
+	bool binary = cstr_view_equal(count, CSTR_VIEW("binary"));
+	struct cstr_view suffix = binary ? (struct cstr_view){} : cstr_view_slice(count, digits, SIZE_MAX);
+	if (!binary && (!digits || !cstr_view_starts(suffix, CSTR_VIEW(" "))))
+		return (struct cstr_view){};
+	if (cstr_view_starts(suffix, CSTR_VIEW(" bytes, ")))
+		return oid_valid(cstr_view_slice(suffix, sizeof " bytes, " - 1, SIZE_MAX)) ? name : (struct cstr_view){};
+	if (suffix.len && !cstr_view_equal(suffix, CSTR_VIEW(" line")) && !cstr_view_equal(suffix, CSTR_VIEW(" lines")))
+		return (struct cstr_view){};
+	struct cstr_view index;
+	if (!cstr_view_cut(&name, '.', &index) || !index.len ||
+	    util_digits(index.data, index.len, UINT64_MAX, &n) != index.len || !cstr_view_starts(name, CSTR_VIEW(" ")))
+		return (struct cstr_view){};
+	size_t const date_size = sizeof " 2026-10-14 12:34 UTC  " - 1;
+	if (name.len <= date_size || !cstr_view_equal(cstr_view_slice(name, 18, 5), CSTR_VIEW("UTC  ")))
+		return (struct cstr_view){};
+	return cstr_view_slice(name, date_size, SIZE_MAX);
+}
+
 static int
 cli_client_read_files (struct cstr_view  text,
                        void             *context)
@@ -528,43 +557,9 @@ cli_client_read_files (struct cstr_view  text,
 	struct cli_client_files *found = context;
 	struct cstr_view line;
 	while (cstr_view_cut(&text, '\n', &line)) {
-		if (!line.len || line.data[line.len - 1] != ')')
+		line = cli_client_file_name(line);
+		if (!line.len)
 			continue;
-		size_t tail = line.len - 1;
-		while (tail && line.data[tail] != '(')
-			--tail;
-		if (tail < 3 || line.data[tail - 1] != ' ' || line.data[tail - 2] != ' ')
-			continue;
-		tail -= 2;
-		struct cstr_view count = cstr_view_slice(line, tail + 3, line.len - tail - 4);
-		struct cstr_view suffix = {};
-		if (!cstr_view_equal(count, CSTR_VIEW("binary"))) {
-			char const *space = memchr(count.data, ' ', count.len);
-			if (!space || space == count.data)
-				continue;
-			size_t digits = (size_t)(space - count.data);
-			suffix = cstr_view_slice(count, digits, SIZE_MAX);
-			if (!cli_client_digits(cstr_view_slice(count, 0, digits)))
-				continue;
-		}
-		line.len = tail;
-		if (cstr_view_starts(suffix, CSTR_VIEW(" bytes, "))) {
-			if (!oid_valid(cstr_view_slice(suffix, sizeof " bytes, " - 1, SIZE_MAX)))
-				continue;
-		} else {
-			if (suffix.len && !cstr_view_equal(suffix, CSTR_VIEW(" line")) &&
-			    !cstr_view_equal(suffix, CSTR_VIEW(" lines")))
-				continue;
-			struct cstr_view index;
-			if (!cstr_view_cut(&line, '.', &index) || !index.len ||
-			    !cli_client_digits(index) || !cstr_view_starts(line, CSTR_VIEW(" ")))
-				continue;
-			line = cstr_view_slice(line, 1, SIZE_MAX);
-			size_t const date_size = sizeof "2026-10-14 12:34 UTC  " - 1;
-			if (line.len <= date_size || !cstr_view_equal(cstr_view_slice(line, 17, 5), CSTR_VIEW("UTC  ")))
-				continue;
-			line = cstr_view_slice(line, date_size, SIZE_MAX);
-		}
 		if (found->count == 65536)
 			return E2BIG;
 		if (util_grow(found->names, found->capacity, found->count + 1))
