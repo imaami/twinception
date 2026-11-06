@@ -1503,20 +1503,30 @@ mcp_req_status (struct mcp_req const *req)
 	     : req->error || failed ? LEDGER_FAILED : LEDGER_COMPLETED;
 }
 
-/* The call of a task or a job ends: publish how (mcp_req_status()), and
- * drop the call's reference to the record.
+/* Ends the record @p *p_task of @p req with @p status, frees the handle
+ * of the request for the record's cancel, drops the reference and sets
+ * @p *p_task to nullptr: the counterpart of mcp_req_record().
  */
 static void
-mcp_req_task_end (struct mcp_req *req)
+mcp_req_record_end (struct mcp_req      *req,
+                    struct ledger_task **p_task,
+                    enum ledger_status   status)
 {
-	struct ledger_task *task = req->task;
-	ledger_end(req->mcp->st->ledger, task, mcp_req_status(req));
-	if (req->flags & REQ_SUSPENDED)
-		(void)ledger_remove(req->mcp->st->ledger, req->owner, &task->id);
+	struct ledger_task *task = *p_task;
+	*p_task = nullptr;
+	ledger_end(req->mcp->st->ledger, task, status);
 	loop_forget(req->mcp->loop, task->who);
 	ledger_task_put(task);
-	req->task = nullptr;
-	list_del(&req->task_hook);
+}
+
+/* Lets go of the saved results of the turn's calls. */
+static void
+mcp_req_saved_clear (struct mcp_req *req)
+{
+	for (size_t k = 0; k < JOB_CALLS; ++k) {
+		json_object_put(req->saved_tools[k]);
+		req->saved_tools[k] = nullptr;
+	}
 }
 
 /* Takes the request's tool call out of the roster, if it is in the roster,
@@ -1567,19 +1577,19 @@ mcp_req_finish (struct mcp_req *req)
 		LOG(LOG_ERROR, "cannot persist job %s: %s", req->archive.hex, strerror(e));
 		req->error = e;
 	}
-	if (req->admitted) {
-		ledger_end(mcp->st->ledger, req->admitted, LEDGER_CANCELLED);
-		loop_forget(mcp->loop, req->admitted->who);
-		ledger_task_put(req->admitted);
-		req->admitted = nullptr;
-	}
+	if (req->admitted)
+		mcp_req_record_end(req, &req->admitted, LEDGER_CANCELLED);
 	journal_records_destroy(&req->recovered);
-	for (size_t k = 0; k < JOB_CALLS; ++k) {
-		json_object_put(req->saved_tools[k]);
-		req->saved_tools[k] = nullptr;
+	mcp_req_saved_clear(req);
+	/* The call of a task or a job ends with its status in its record, and
+	 * a suspended job leaves the ledger for the resumed one. */
+	if (req->task) {
+		struct hexid const id = req->task->id;
+		mcp_req_record_end(req, &req->task, mcp_req_status(req));
+		list_del(&req->task_hook);
+		if (req->flags & REQ_SUSPENDED)
+			(void)ledger_remove(mcp->st->ledger, req->owner, &id);
 	}
-	if (req->task)
-		mcp_req_task_end(req);
 	ledger_task_put(req->shown);
 	req->shown = nullptr;
 	mcp_req_dispose(req);
@@ -3144,9 +3154,7 @@ mcp_req_detach (struct mcp_req         *req,
 	e = e ? e : mcp_req_write(req, buf_peek(&req->reply));
 	buf_clear(&req->reply);
 	if (e) {
-		ledger_end(mcp->st->ledger, task, LEDGER_CANCELLED);
-		loop_forget(mcp->loop, task->who);
-		ledger_task_put(task);
+		mcp_req_record_end(req, &task, LEDGER_CANCELLED);
 		mcp_req_abort(req, e);
 		return e;
 	}
@@ -6162,10 +6170,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 	if (task && req->review)
 		state = jb_set_or_free(state, "review", review_json(req->review, &(int){}));
 	req->intents = 0;
-	for (size_t k = 0; k < JOB_CALLS; ++k) {
-		json_object_put(req->saved_tools[k]);
-		req->saved_tools[k] = nullptr;
-	}
+	mcp_req_saved_clear(req);
 	e = mcp_req_archive(req, "state", state, mcp_req_archive_submitted);
 	if (!e) {
 		loop_unready(&req->step);
