@@ -23,6 +23,11 @@ typedef unsigned _BitInt(TOOL_MAX) tool_mask;
 
 enum {
 	TOOL_TELL_MAX   =  4U << 10U,  /**< bytes mcp_slot_tell() takes */
+	TOOL_TEXT_MAX   =  4U << 20U,  /**< bytes of one message at most, such
+	                                    as a note, a summary, a manual
+	                                    page, the output of git, the body
+	                                    of a request or the charge of a
+	                                    review record */
 	TOOL_OUTPUT_MAX = 16U << 20U,  /**< bytes a call may write */
 };
 

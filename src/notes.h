@@ -26,7 +26,6 @@ struct notes;
 struct notes_revision;
 
 enum {
-	NOTES_TEXT = 4 << 20,  /**< bytes of the text of a note, at most */
 	NOTES_NAME = 255,      /**< bytes of the name of a note, at most */
 	NOTES_MAX  = 16 << 20, /**< bytes of the output of git, at most */
 	NOTES_ID   = 32,       /**< hexadecimal digits of the id of a thread */

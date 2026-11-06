@@ -25,7 +25,6 @@
 #include "util.h"
 
 enum {
-	MANUAL_MAX     = 4 << 20,  /**< bytes of a page kept: past those, cut short */
 	MANUAL_SECONDS = 10,       /**< for man to find, or render, a page */
 	MANUAL_NAME    = 128,      /**< bytes of a page's name, at most */
 	MANUAL_SECTION = 16,       /**< and of a section's */
@@ -79,7 +78,7 @@ struct manual_loop {
 
 /* What ends a page cut short. */
 static char const cut[] = "\n\n[The page goes on past the 4 MiB shown.]\n";
-static_assert(MANUAL_MAX == 4 << 20, "the note says 4 MiB");
+static_assert(TOOL_TEXT_MAX == 4U << 20, "the note says 4 MiB");
 
 struct manual_fetch;
 
@@ -521,7 +520,7 @@ manual_fetch_found (struct child *c)
 	}
 	manual_page_put(page);
 	char const *argv[] = { "man", "-l", "--", file->key, nullptr };
-	manual_fetch_run(f, argv, MANUAL_MAX, manual_fetch_rendered, &m->metrics.renders);
+	manual_fetch_run(f, argv, TOOL_TEXT_MAX, manual_fetch_rendered, &m->metrics.renders);
 }
 
 /* Have @p w, if not nullptr, wait for the page of the alias @p key: join
@@ -858,7 +857,6 @@ static struct json_object *
 manual_definition (void const *service)
 {
 	(void)service;
-	static_assert(MANUAL_MAX == 4 << 20, "the description says 4 MiB");
 	return jb_object(
 		"name", json_object_new_string("man"),
 		"title", json_object_new_string("Manual page"),

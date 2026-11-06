@@ -140,7 +140,7 @@ room_of (struct review *r)
 {
 	struct dstr out = DSTR_INIT;
 	CHECK(call_long(r, "{\"action\":\"update\",\"id\":1,\"state\":\"candidate\"}", "evidence",
-	                REVIEW_MAX, &out) == EINVAL);
+	                TOOL_TEXT_MAX, &out) == EINVAL);
 	size_t n = left_in(got(&out));
 	dstr_cleanup(&out);
 	return n;
@@ -902,7 +902,7 @@ test_gate (void)
 }
 
 /* The pending lines that review.h describes. They count against
- * REVIEW_MAX from review_pending_add() on.
+ * TOOL_TEXT_MAX from review_pending_add() on.
  */
 static void
 test_pending (void)
@@ -940,7 +940,7 @@ test_pending (void)
 	for (int answered = 0; answered < 2; ++answered) {
 		r = fresh();
 		struct dstr out = DSTR_INIT;
-		CHECK(call_long(r, add, "claim", REVIEW_MAX, &out) == EINVAL);
+		CHECK(call_long(r, add, "claim", TOOL_TEXT_MAX, &out) == EINVAL);
 		CHECK(!call_long(r, add, "claim", left_in(got(&out)) - file, &out));
 		dstr_cleanup(&out);
 		CHECK(!shown_in(r, "p", A, "src/a.c", 1, 3, 3, 0, SIZE_MAX, 1));
@@ -1116,7 +1116,7 @@ test_render (void)
 	review_destroy(&r);
 }
 
-/* The record holds at most REVIEW_MAX charged bytes, and the refusal of a
+/* A record is charged at most TOOL_TEXT_MAX bytes, and the refusal of a
  * change that does not fit names the bytes of claim and evidence that do.
  */
 static void
@@ -1133,10 +1133,10 @@ test_full (void)
 	for (int i = 0; i < 4; ++i)
 		CHECK(call_long(r, add, "claim", big, &out) == (i < 3 ? 0 : EINVAL));
 	size_t left = left_in(got(&out));
-	size_t finding = (REVIEW_MAX - 3 * big - left) / 4;
-	CHECK(4 * finding == REVIEW_MAX - 3 * big - left);
+	size_t finding = (TOOL_TEXT_MAX - 3 * big - left) / 4;
+	CHECK(4 * finding == TOOL_TEXT_MAX - 3 * big - left);
 	CHECK(call_long(r, update, "evidence", big, &out) == EINVAL);
-	size_t change = REVIEW_MAX - 3 * (big + finding) - left_in(got(&out));
+	size_t change = TOOL_TEXT_MAX - 3 * (big + finding) - left_in(got(&out));
 	/* A change charges REVIEW_ITEM and its texts, and a finding
 	 * REVIEW_ITEM, its texts and its first change. */
 	CHECK(change == REVIEW_ITEM);
@@ -1183,7 +1183,7 @@ test_full (void)
 	 * logged lines but suggests no read of the rest. */
 	r = fresh();
 	CHECK(!seen(r, "proj", A, "src/a.c", 1, 10, 300, 1));
-	CHECK(call_long(r, add, "claim", REVIEW_MAX, &out) == EINVAL);
+	CHECK(call_long(r, add, "claim", TOOL_TEXT_MAX, &out) == EINVAL);
 	CHECK(!call_long(r, add, "claim", left_in(got(&out)) - 10, &out));
 	char const wide[] = "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	                    "\"evidence\":\"e\",\"location\":\"src/a.c:10-11\"}";
@@ -1208,7 +1208,7 @@ test_full (void)
 	for (size_t room = file - 1; room <= file; ++room) {
 		r = fresh();
 		CHECK(!seen(r, "proj", A, "src/a.c", 1, 10, 300, 1));
-		CHECK(call_long(r, add, "claim", REVIEW_MAX, &out) == EINVAL);
+		CHECK(call_long(r, add, "claim", TOOL_TEXT_MAX, &out) == EINVAL);
 		CHECK(!call_long(r, add, "claim", left_in(got(&out)) - room, &out));
 		if (room < file) {
 			snprintf(want, sizeof want, "%s The record is full,%s", some, unlogged);
@@ -1504,8 +1504,8 @@ test_json (void)
 	         __LINE__);
 	review_destroy(&grouped);
 	json_object_put(apart);
-	/* A claim over REVIEW_MAX. */
-	size_t big = REVIEW_MAX;
+	/* A claim over TOOL_TEXT_MAX. */
+	size_t big = TOOL_TEXT_MAX;
 	char *claim = malloc(big);
 	CHECK(claim);
 	if (claim) {
@@ -1576,15 +1576,15 @@ test_json (void)
 	dstr_cleanup(&out);
 }
 
-/* A record of as many files as REVIEW_MAX holds restores, and one more file
- * is too many.
+/* A record with as many files as fit in TOOL_TEXT_MAX restores, and a
+ * record with one more file is too large.
  */
 static void
 test_many (void)
 {
 	/* Each file charges 2 * REVIEW_ITEM, 1 byte of repository name and 6
 	 * bytes of path. */
-	size_t const fit = REVIEW_MAX / (2 * REVIEW_ITEM + 1 + 6);
+	size_t const fit = TOOL_TEXT_MAX / (2 * REVIEW_ITEM + 1 + 6);
 	for (size_t n = fit; n <= fit + 1; ++n) {
 		struct dstr json = DSTR_INIT;
 		bool ok = dstr_printf(&json, "{\"reads\":[");

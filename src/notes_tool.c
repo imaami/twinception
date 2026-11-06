@@ -1348,6 +1348,9 @@ notes_tool_step (struct mcp_slot *slot)
 	 : notes_tool_fetch_step(call->fetch)->out)(slot);
 }
 
+static_assert(TOOL_TEXT_MAX == 4U << 20 && NOTES_NAME == 255, "update the texts in this file "
+              "that say 4 MiB or 255 bytes");
+
 /* The message for a file argument that is not a valid name. */
 static struct cstr_view const bad_name =
 	CSTR_VIEW_INIT("The file argument must be a file name of 1 to 255 bytes, such as "
@@ -1391,7 +1394,6 @@ notes_tool_add (struct mcp_slot    *slot,
                 struct cstr_view    name,
                 struct json_object *args)
 {
-	static_assert(NOTES_TEXT == 4 << 20, "the problem says");
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	bool initialized = notes_exists(call->loop->tool->notes);
 	bool turn = call->side == NOTES_UPSTREAM;
@@ -1403,7 +1405,7 @@ notes_tool_add (struct mcp_slot    *slot,
 	char big[96];
 	struct cstr_view const problem =
 		notes_name(&name) ? bad_name
-		: !content ? (!text.len || text.len > NOTES_TEXT || memchr(text.data, '\0', text.len)
+		: !content ? (!text.len || text.len > TOOL_TEXT_MAX || memchr(text.data, '\0', text.len)
 		              ? CSTR_VIEW("The text argument must be a string of 1 byte to 4 MiB, "
 		                          "and no NUL.")
 		              : !kept ? CSTR_VIEW("The text has only askai's [askai: ...] lines, "
@@ -1443,7 +1445,7 @@ notes_tool_add (struct mcp_slot    *slot,
 
 /* Writes @p text to a note in the caller's own notebook. A copy uses the
  * name in call->name. A restore uses the file name of its revision, and
- * fails if @p text is longer than NOTES_TEXT bytes.
+ * fails if @p text is longer than TOOL_TEXT_MAX bytes.
  */
 static void
 notes_tool_got_copy (struct mcp_slot *slot,
@@ -1452,7 +1454,7 @@ notes_tool_got_copy (struct mcp_slot *slot,
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct cstr_view to = { call->name, call->len };
 	if (call->fetch & FETCH_RESTORE) {
-		if (text.len > NOTES_TEXT) {
+		if (text.len > TOOL_TEXT_MAX) {
 			int e = cstr_view_cat(CSTR_VIEW("That revision exceeds the 4 MiB note size "
 			                                "limit; it was not restored."), call->text);
 			notes_tool_end(slot, e, true);
@@ -1677,7 +1679,6 @@ static struct json_object *
 notes_tool_schema (struct notes_tool const *tool,
                    enum notes_side          side)
 {
-	static_assert(NOTES_TEXT == 4 << 20 && NOTES_NAME == 255, "the descriptions say");
 	static char const *const descriptions[] = {
 		[NOTES_UPSTREAM] =
 			"Your persistent notebook in this shared Git session. Add findings, "

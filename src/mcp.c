@@ -137,7 +137,6 @@ enum {
 	CALLS_MAX    = 16 << 20,  /* bytes of a turn's tool calls */
 	LEND_MAX     = 64 << 10,  /* bytes of a tool's output that a turn takes,
 	                             at most */
-	SUMMARY_MAX  = 4 << 20,   /* bytes of compact's summary */
 	JOBS_MAX     = 8,         /* jobs that an ask call's turns may start */
 	WAIT_MAX     = 600,       /* seconds that a wait may take */
 	WAIT_IDS     = 16,        /* jobs that a client's wait may name */
@@ -3535,7 +3534,7 @@ mcp_slot_fetch (struct mcp_slot          *slot,
 	size_t authority = scheme && url.len <= WEB_URL_MAX
 	                 ? strcspn(url.data + scheme, "/?#") : 0;
 	if (!authority || memchr(url.data + scheme, '@', authority) ||
-	    request->body.len > WEB_SEND_MAX || request->max - 1 >= WEB_BODY_MAX ||
+	    request->body.len > TOOL_TEXT_MAX || request->max - 1 >= WEB_BODY_MAX ||
 	    request->timeout - 1 >= WEB_TIMEOUT_MAX || request->keep > WEB_KEEP_MAX)
 		return EINVAL;
 	for (size_t i = 0; i < accept_len; ++i)
@@ -6707,10 +6706,11 @@ static void
 mcp_slot_compact (struct mcp_slot    *slot,
                   struct json_object *args)
 {
-	static_assert(SUMMARY_MAX == 4 << 20, "update the problem text");
+	static_assert(TOOL_TEXT_MAX == 4U << 20, "update this problem text and the description "
+	              "in mcp_compact_definition()");
 	struct mcp_req *req = slot->req;
 	struct cstr_view const summary = jb_view(jb_get(args, "summary"));
-	if (!summary.len || summary.len > SUMMARY_MAX) {
+	if (!summary.len || summary.len > TOOL_TEXT_MAX) {
 		mcp_slot_result(slot, TEXT("The summary argument must be a string of 1 "
 		                           "byte to 4 MiB."), true);
 		return;
@@ -8085,7 +8085,6 @@ static struct json_object *
 mcp_compact_definition (void const *service)
 {
 	struct mcp_static const *st = service;
-	static_assert(SUMMARY_MAX == 4 << 20, "update the description");
 	return jb_object(
 		"name", json_object_new_string("compact"),
 		"description", schema_text3(

@@ -27,10 +27,10 @@
 #include "buf.h"
 #include "cstr_view.h"
 #include "loop_export.h"
+#include "tool.h"
 
 enum {
 	WEB_URL_MAX     = 4 << 10,    /**< bytes of a URL, its NUL not counted */
-	WEB_SEND_MAX    = 4 << 20,    /**< bytes of a request body */
 	WEB_BODY_MAX    = 16 << 20,   /**< bytes of a response body */
 	WEB_ACCEPT_MAX  = 256,        /**< bytes of a value of Accept */
 	WEB_TIMEOUT_MAX = 300,        /**< seconds that a request may take */
@@ -48,7 +48,7 @@ struct web_request {
 	char const      *url;
 	/** The body of a POST, which askai sends with the Content-Type
 	 *  application/json. body.data is nullptr for a GET. body.len is at
-	 *  most WEB_SEND_MAX. askai does not check that the body is JSON. */
+	 *  most TOOL_TEXT_MAX. askai does not check that the body is JSON. */
 	struct cstr_view body;
 	/** The value of the header Accept, NUL-terminated: 1 to WEB_ACCEPT_MAX
 	 *  bytes, each of them printable ASCII or a space. If it is nullptr,
@@ -120,7 +120,7 @@ typedef void web_back_fn (struct loop     *loop,
 /** A request of a call, after mcp_slot_fetch() has checked it, and the
  *  call that waits for its response. A request of askai's own does not
  *  pass mcp_slot_fetch(): its URL may have a user name and a password,
- *  which the log leaves out, its body may be longer than WEB_SEND_MAX, and
+ *  which the log leaves out, its body may be longer than TOOL_TEXT_MAX, and
  *  it may have more header lines.
  */
 struct web_ask {

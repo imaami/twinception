@@ -538,7 +538,7 @@ review_file_set (struct review_file         *f,
 	return e ? e : cstr_view_store(key->path, &f->path);
 }
 
-/** Returns true if a record of @p size bytes is within REVIEW_MAX.
+/** Returns true if a record of @p size bytes is within TOOL_TEXT_MAX.
  *  Otherwise sets r->dropped_turn to @p turn if it is 0, and returns false.
  */
 static bool
@@ -546,7 +546,7 @@ review_within_max (struct review *r,
                    size_t         size,
                    uint32_t       turn)
 {
-	if (size <= REVIEW_MAX)
+	if (size <= TOOL_TEXT_MAX)
 		return true;
 	if (!r->dropped_turn)
 		r->dropped_turn = turn;
@@ -588,7 +588,7 @@ review_range_merge (struct review_range const *p,
 /**
  * Adds the range @p lines to the file @p f of @p r. A nonzero @p total
  * replaces the total of @p f. If the charge of @p r would exceed
- * REVIEW_MAX, nothing changes (review_within_max()). Returns 0 or ENOMEM.
+ * TOOL_TEXT_MAX, nothing changes (review_within_max()). Returns 0 or ENOMEM.
  */
 static int
 review_file_add_range (struct review       *r,
@@ -627,7 +627,7 @@ review_file_add_range (struct review       *r,
  * Adds the range @p lines to the file of @p list with the repository,
  * commit and path of @p key, and adds the file if @p list does not contain
  * it. A nonzero key->total replaces the total of the file. If the charge
- * of @p r would exceed REVIEW_MAX, nothing changes (review_within_max()).
+ * of @p r would exceed TOOL_TEXT_MAX, nothing changes (review_within_max()).
  * Returns 0 or ENOMEM.
  */
 static int
@@ -722,7 +722,7 @@ review_pending_uncharge (struct review *r)
  * Moves the pending file @p f into the read log of @p r if the log does
  * not contain the file. Otherwise adds the ranges of @p f to the logged
  * file. The charge of @p f must already be subtracted from r->size. A file
- * that would make the charge exceed REVIEW_MAX is not logged, as in
+ * that would make the charge exceed TOOL_TEXT_MAX is not logged, as in
  * review_files_add(). A moved file leaves @p f empty. Returns 0 or ENOMEM.
  */
 static int
@@ -1533,7 +1533,7 @@ review_refuse_unread (struct review const               *r,
 	 * charge is estimated from the file to read, or from a file with this
 	 * path and a 1-byte repository name. */
 	size_t const charge = to ? review_file_charge(to, 1) : review_charge(2, 1 + loc->path.len);
-	if (r->size + charge > REVIEW_MAX) {
+	if (r->size + charge > TOOL_TEXT_MAX) {
 		if (r->dropped_turn)
 			ok = ok && dstr_printf(out, " The read log has been full since turn %"
 			                       PRIu32 ",", r->dropped_turn);
@@ -1613,7 +1613,7 @@ review_check_location (struct review const          *r,
 }
 
 /**
- * Returns 0 if a record of @p size bytes is within REVIEW_MAX. Otherwise
+ * Returns 0 if a record of @p size bytes is within TOOL_TEXT_MAX. Otherwise
  * appends the refusal for the record @p r to @p out and returns EINVAL, or
  * ENOMEM if the append fails. @p fixed is the size of the record without
  * the claim and the evidence of the change.
@@ -1624,12 +1624,12 @@ review_check_size (struct review const *r,
                    size_t               fixed,
                    struct dstr         *out)
 {
-	int const mib = REVIEW_MAX >> 20;
-	if (size <= REVIEW_MAX)
+	int const mib = TOOL_TEXT_MAX >> 20;
+	if (size <= TOOL_TEXT_MAX)
 		return 0;
-	if (fixed < REVIEW_MAX)
+	if (fixed < TOOL_TEXT_MAX)
 		return REFUSE(out, "The record is full: it holds at most %d MiB. Give a claim and "
-		              "evidence of at most %zu bytes together.", mib, REVIEW_MAX - fixed);
+		              "evidence of at most %zu bytes together.", mib, TOOL_TEXT_MAX - fixed);
 	/* The smallest change is an update with 1 byte of evidence, charged
 	 * REVIEW_ITEM + 1 bytes. Pending lines can make room: a compaction
 	 * drops them, and the log may charge less for them. Without pending
@@ -1637,7 +1637,7 @@ review_check_size (struct review const *r,
 	 * because a read is charged at least 2 * REVIEW_ITEM + 2 bytes. */
 	return REFUSE(out, "The record is full: it holds at most %d MiB and %s; keep further "
 	              "findings in your notes or your summary.", mib,
-	              r->pending.n || r->size + REVIEW_ITEM < REVIEW_MAX
+	              r->pending.n || r->size + REVIEW_ITEM < TOOL_TEXT_MAX
 	              ? "has no room for this change" : "takes no more changes in this ask call");
 }
 
@@ -1962,7 +1962,7 @@ review_json (struct review const *r,
  * Parses the file @p obj of a saved list and inserts it into @p list of
  * @p r, as review_files_add() would insert it, and adds its charge to
  * r->size. The file must not be in @p list already, and its ranges must
- * fit into REVIEW_MAX. Returns 0, EINVAL or ENOMEM.
+ * fit into TOOL_TEXT_MAX. Returns 0, EINVAL or ENOMEM.
  */
 static int
 review_files_add_json (struct review            *r,
@@ -1982,7 +1982,7 @@ review_files_add_json (struct review            *r,
 	if (!review_name_valid(key.repo) || !key.commit.data ||
 	    !util_is_oid(key.commit.data, key.commit.len) || !review_name_valid(key.path) ||
 	    jb_uint_checked(jb_get(obj, "total"), UINT32_MAX, &total) || !n ||
-	    numbers % REVIEW_RANGE_NUMBERS || n > (REVIEW_MAX - r->size) / REVIEW_ITEM ||
+	    numbers % REVIEW_RANGE_NUMBERS || n > (TOOL_TEXT_MAX - r->size) / REVIEW_ITEM ||
 	    review_files_find(list, &key, &at) < list->n)
 		return EINVAL;
 	key.total = (uint32_t)total;
@@ -2059,11 +2059,11 @@ review_restore_log (struct review            *r,
 	if (e)
 		return e;
 	r->dropped_turn = (uint32_t)dropped;
-	/* The restore stops once the record exceeds REVIEW_MAX. */
+	/* The restore stops once the record exceeds TOOL_TEXT_MAX. */
 	for (size_t k = 0; !e && k < array_size(lists); ++k) {
 		struct json_object const *a = jb_get(obj, lists[k].key);
 		e = json_object_is_type(a, json_type_array) ? 0 : EINVAL;
-		for (size_t i = 0, n = jb_len(a); !e && r->size <= REVIEW_MAX && i < n; ++i)
+		for (size_t i = 0, n = jb_len(a); !e && r->size <= TOOL_TEXT_MAX && i < n; ++i)
 			e = review_files_add_json(r, lists[k].list, jb_at(a, i));
 	}
 	return e ? e : review_files_check_totals(r);
@@ -2146,7 +2146,7 @@ review_findings_add_json (struct review            *r,
 	uint64_t last;
 	if (jb_uint_checked(jb_get(obj, "first"), UINT32_MAX, &first) ||
 	    jb_uint_checked(jb_get(obj, "last"), UINT32_MAX, &last) || !n ||
-	    n > (REVIEW_MAX - r->size) / REVIEW_ITEM ||
+	    n > (TOOL_TEXT_MAX - r->size) / REVIEW_ITEM ||
 	    !(path ? review_name_valid(where) && first && first <= last : !first && !last))
 		return EINVAL;
 	if (util_grow(r->findings, r->cap_findings, r->n_findings + 1))
@@ -2180,12 +2180,12 @@ review_restore (struct review            *r,
 	struct review got = { .flags = r->flags };
 	struct json_object const *findings = jb_get(obj, "findings");
 	int e = json_object_is_type(findings, json_type_array) ? 0 : EINVAL;
-	/* The restore stops once the record exceeds REVIEW_MAX. */
-	for (size_t i = 0, n = jb_len(findings); !e && got.size <= REVIEW_MAX && i < n; ++i)
+	/* The restore stops once the record exceeds TOOL_TEXT_MAX. */
+	for (size_t i = 0, n = jb_len(findings); !e && got.size <= TOOL_TEXT_MAX && i < n; ++i)
 		e = review_findings_add_json(&got, jb_at(findings, i));
-	if (!e && got.size <= REVIEW_MAX && (got.flags & REVIEW_READ_LOG))
+	if (!e && got.size <= TOOL_TEXT_MAX && (got.flags & REVIEW_READ_LOG))
 		e = review_restore_log(&got, obj);
-	if (!e && got.size > REVIEW_MAX)
+	if (!e && got.size > TOOL_TEXT_MAX)
 		e = EINVAL;
 	if (e) {
 		review_fini(&got);

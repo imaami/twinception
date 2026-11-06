@@ -25,7 +25,7 @@ struct json_object *
 findings_definition (void const *service)
 {
 	(void)service;
-	static_assert(REVIEW_MAX == 4 << 20, "the description states the size of REVIEW_MAX");
+	static_assert(TOOL_TEXT_MAX == 4U << 20, "update the description");
 	return jb_object(
 		"name", json_object_new_string("findings"),
 		"description", json_object_new_string(

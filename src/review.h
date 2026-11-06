@@ -20,7 +20,7 @@
  * removes the result first. So the lines that a result in turn N shows are
  * in the read log from turn N + 1 on.
  *
- * A record is charged at most REVIEW_MAX bytes, pending lines included:
+ * A record is charged at most TOOL_TEXT_MAX bytes, pending lines included:
  * REVIEW_ITEM for each file, line range, finding and change, and the bytes
  * of their texts. Nothing depends on the wall clock, so a findings call
  * repeated with the same record, arguments and turn returns the same
@@ -40,7 +40,6 @@ struct dstr;
 struct json_object;
 
 enum {
-	REVIEW_MAX      = 4 << 20,  /**< the most bytes charged for a record */
 	REVIEW_ITEM     = 64,       /**< the bytes charged for each file, line
 	                                 range, finding and change */
 	REVIEW_NAME_MAX = 1024,     /**< the most bytes of a repository name or
@@ -169,7 +168,7 @@ review_read_create_json (struct json_object const *obj,
  * Adds the lines of @p read that a result in turn @p turn shows whole to
  * the pending lines of @p r. The result shows the @p window bytes of the
  * output @p out from byte @p skip on. A line that the window shows only in
- * part is not added. If the record would be charged more than REVIEW_MAX
+ * part is not added. If the record would be charged more than TOOL_TEXT_MAX
  * bytes, the lines are not added, and the record stores the first turn
  * whose lines it did not add. @p read stores the position of the window,
  * so that the next call with a later window counts the lines from there.
@@ -194,7 +193,7 @@ review_pending_add (struct review      *r,
  * Moves the pending lines of @p r into the read log (see the file
  * comment). The lines replace the lines that the log contains for them, so
  * the commit of a location is the commit of the latest read that showed
- * its lines. Lines that would make the record exceed REVIEW_MAX are
+ * its lines. Lines that would make the record exceed TOOL_TEXT_MAX are
  * dropped, as in review_pending_add(). Returns 0, EFAULT if @p r is
  * nullptr, or ENOMEM. After ENOMEM the lines that were not yet moved are
  * dropped.
@@ -264,7 +263,7 @@ review_json (struct review const *r,
  * @retval 0 on success.
  * @retval EFAULT if @p r or @p obj is nullptr.
  * @retval EINVAL if @p obj is not such a record, or if its charge exceeds
- *         REVIEW_MAX.
+ *         TOOL_TEXT_MAX.
  * @retval ENOMEM if out of memory.
  */
 extern int

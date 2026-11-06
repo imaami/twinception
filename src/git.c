@@ -27,7 +27,6 @@ static char const git_commit_suffix[] = "^{commit}";
 static char const git_ignore_rev[] = "--ignore-rev=";
 
 enum {
-	GIT_MAX   = 4 << 20,  /**< output bytes, at most */
 	GIT_ARGV  = 128,      /**< a command's argv, its nullptr included */
 	GIT_WHY   = 256,      /**< bytes of what is wrong with a call */
 	GIT_NOTE  = 256,      /**< the most bytes of the note at the end of the
@@ -54,7 +53,8 @@ static_assert((int)WORD <= (int)REVIEW_NAME_MAX, "a path that git reads fits a l
 /** From SIGTERM to SIGKILL at a git call's deadline. */
 static constexpr uint64_t GIT_GRACE_NS = NS;
 
-static_assert(GIT_MAX == 4 << 20 && GIT_GRACE_NS == NS, "git.h says");
+static_assert(TOOL_TEXT_MAX == 4U << 20 && GIT_GRACE_NS == NS, "update git.h and the texts in "
+              "this file that say 4 MiB");
 
 /* A configured repository. path, safe and name share one allocation, which
  * begins at path: the real path, the safe.directory setting for git, and
@@ -435,8 +435,7 @@ static struct json_object *
 git_definition (void const *service)
 {
 	struct git const *git = service;
-	static_assert(OPTIONS == 16 && REVISIONS == 4 && PATHS == 32 &&
-	              GIT_MAX == 4 << 20, "the description says");
+	static_assert(OPTIONS == 16 && REVISIONS == 4 && PATHS == 32, "the description says");
 	struct json_object *repos = json_object_new_array();
 	for (size_t i = 0; repos && i < git->n; ++i)
 		repos = jb_push_or_free(repos, jb_string(git->repo[i].name));
@@ -933,7 +932,7 @@ git_help (struct mcp_slot *slot,
 			                                takes & PAIR ? 2 : REVISIONS),
 			"paths", json_object_new_int(takes & FILES ? PATHS : 0),
 			"argument_bytes", json_object_new_int(WORD),
-			"capture_bytes", json_object_new_int(GIT_MAX),
+			"capture_bytes", json_object_new_int(TOOL_TEXT_MAX),
 			"window_bytes", json_object_new_int64((int64_t)mcp_slot_window_max(slot)),
 			nullptr),
 		"pattern_required", json_object_new_boolean(takes & PATTERN),
@@ -1064,7 +1063,7 @@ git_call_run (struct git_call *call,
 		.file = "git",
 		.argv = argv,
 		.envp = env,
-		.max = GIT_MAX,
+		.max = TOOL_TEXT_MAX,
 		.deadline = call->deadline,
 		.grace = GIT_GRACE_NS,
 		/* Git can warn on stderr, for example when a branch has the same
@@ -1191,7 +1190,6 @@ static void
 git_ended (struct mcp_slot *slot,
            struct git_call *call)
 {
-	static_assert(GIT_MAX == 4 << 20, "the note says 4 MiB");
 	uint64_t const takes = commands[call->command].takes;
 	struct child *c = call->child;
 	struct cstr_view out = mcp_slot_answer(slot);

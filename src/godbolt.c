@@ -1655,7 +1655,7 @@ godbolt_escape_source (struct godbolt *call)
 	loop_work(call->loop, LOOP_ESCAPE, part.len);
 	if (call->off < call->args.source.len)
 		return GODBOLT_GO;
-	if (call->head - GODBOLT_SKIP > WEB_SEND_MAX - GODBOLT_TAIL_MAX)
+	if (call->head - GODBOLT_SKIP > TOOL_TEXT_MAX - GODBOLT_TAIL_MAX)
 		return godbolt_refuse(call->slot, "The body of a request would be longer than "
 		                      "4 MiB, because the source has %zu bytes as a JSON string.",
 		                      call->head - prefix.len);
@@ -1665,7 +1665,7 @@ godbolt_escape_source (struct godbolt *call)
 	return GODBOLT_GO;
 }
 
-static_assert(WEB_SEND_MAX == 4 << 20, "the reason says 4 MiB");
+static_assert(TOOL_TEXT_MAX == 4U << 20, "the reason says 4 MiB");
 
 /* Returns the recipe of the compilation @p job of the call. */
 static struct godbolt_recipe const *
