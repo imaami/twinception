@@ -520,7 +520,10 @@ struct mcp_slot {
 	uint64_t            start;     /* loop_clock() when the call began */
 	struct handle       call;      /* the handle that mcp_slot_name() makes
 	                                  for the post that completes the call */
-	struct json_object *args;      /* the arguments of a job, for the jobs tool */
+	struct json_object *args;      /* the arguments of the call: of a turn's
+	                                  call until its result is written, or
+	                                  nullptr if they are no object; of a
+	                                  job, a copy, for the jobs tool */
 	struct mcp_slot    *of;        /* the job whose output it gives, if any */
 	struct review_read *read;      /* the lines of a file that its output
 	                                  shows, for the review record
@@ -655,9 +658,6 @@ struct mcp_req {
 	                                    client's strings, until written */
 	struct json_object  *prompt;     /* the client's prompt, which the draft
 	                                    holds, until written */
-	struct json_object  *args[JOB_CALLS];  /* a turn's tool calls' arguments,
-	                                          each until its call; nullptr
-	                                          if they are no object */
 	struct cstr_view     text;       /* the serialized draft */
 	size_t               off;        /* bytes of the next splice written, of
 	                                    the answer escaped, or metrics done */
@@ -1563,11 +1563,14 @@ mcp_req_args_free (struct mcp_req *req,
                    size_t          k,
                    size_t          end)
 {
-	for (; k < end; ++k)
-		if (req->args[k]) {
-			jb_reaper_add(&req->reaper, req->args[k]);
-			req->args[k] = nullptr;
-		}
+	if (!req->slots)
+		return;
+	for (; k < end; ++k) {
+		struct json_object **args = &req->slots[k].args;
+		if (*args)
+			jb_reaper_add(&req->reaper, *args);
+		*args = nullptr;
+	}
 	if (req->reaper.n)
 		loop_ready_bulk(req->mcp->loop, &req->step);
 }
@@ -1677,7 +1680,7 @@ mcp_req_finish (struct mcp_req *req)
 	ledger_task_put(req->shown);
 	req->shown = nullptr;
 	mcp_req_dispose(req);
-	mcp_req_args_free(req, 0, array_size(req->args));
+	mcp_req_args_free(req, 0, JOB_CALLS);
 	json_object_put(req->draft);
 	json_object_put(req->id);
 	json_object_put(req->token);
@@ -4359,22 +4362,28 @@ mcp_req_turn_done (struct mcp_req *req)
 		mcp_req_enter(req, PHASE_TEXT);
 		return;
 	}
+	e = mcp_req_slots_make(req);
+	if (e) {
+		mcp_req_fail(req, e);
+		return;
+	}
 	req->n_calls = n;
 	req->part = 0;
 	mcp_req_enter(req, PHASE_ARGS);
 }
 
-/* Parse the arguments @p args of the turn's call req->part into req->args,
- * nullptr if they are no JSON object: 0 once parsed, EAGAIN while the
- * parse goes on, or ENOMEM.
+/* Parse the arguments @p args of the turn's call req->part into the args
+ * of its slot, nullptr if they are no JSON object: 0 once parsed, EAGAIN
+ * while the parse goes on, or ENOMEM.
  */
 static int
 mcp_req_turn_arg (struct mcp_req   *req,
                   struct cstr_view  args)
 {
+	struct json_object **to = &req->slots[req->part].args;
 	if (!args.len) {
-		req->args[req->part] = json_object_new_object();
-		return req->args[req->part] ? 0 : ENOMEM;
+		*to = json_object_new_object();
+		return *to ? 0 : ENOMEM;
 	}
 	int e = mcp_req_slice(req, &req->mcp->answers, args);
 	if (e == EAGAIN || e == ENOMEM)
@@ -4385,7 +4394,7 @@ mcp_req_turn_arg (struct mcp_req   *req,
 		jb_reaper_add(&req->reaper, v);
 		v = nullptr;
 	}
-	req->args[req->part] = v;
+	*to = v;
 	return 0;
 }
 
@@ -4445,7 +4454,7 @@ mcp_req_call_args (struct mcp_req const   *req,
                    uint32_t                k,
                    struct mcp_piece       *p)
 {
-	struct json_object *v = req->args[k];
+	struct json_object *v = req->slots[k].args;
 	if (!(f->flags & AI_ARGS_RAW)) {
 		*p = v && c->args.len ? ESC_VIEW(c->args) : TEXT("{}");
 		return 0;
@@ -4579,11 +4588,6 @@ mcp_req_turn_write (struct mcp_req *req)
 	/* The usage counts the turn: what is written after it counts on. */
 	req->sent = buf_peek(&req->upload).len;
 	mcp_req_drop(req);
-	int e = mcp_req_slots_make(req);
-	if (e) {
-		mcp_req_fail(req, e);
-		return;
-	}
 	req->part = 0;
 	mcp_req_calls_next(req);
 }
@@ -5817,7 +5821,8 @@ mcp_req_call_launch (struct mcp_req *req)
 	    mcp_req_drained(req))
 		return;
 	/* mcp_req_args_free() frees the arguments after the result is written. */
-	struct json_object *args = req->args[k];
+	struct mcp_slot *slot = &req->slots[k];
+	struct json_object *args = slot->args;
 	struct json_object *saved = req->saved_tools[k];
 	if (*req->archive.hex && !(flags & KF_RERUN) && !(req->intents >> k & 1) && !saved) {
 		struct json_object *intent = jb_object(
@@ -5835,7 +5840,6 @@ mcp_req_call_launch (struct mcp_req *req)
 		req->phase = PHASE_JOURNAL;
 		return;
 	}
-	struct mcp_slot *slot = &req->slots[k];
 	slot->tool = (uint8_t)id;
 	req->launched = k + 1;
 	hist_add(&mcp->counts->calls.lent[mcp_row_of(tool)->metric], 1);
@@ -5986,7 +5990,7 @@ mcp_slot_done (struct mcp_slot *slot,
 		 * in mcp_req_call_launch(), so REQ_CUT is still the value of its
 		 * turn. */
 		struct mcp_shown shown;
-		mcp_args_shown(tool, job ? slot->args : req->args[k],
+		mcp_args_shown(tool, slot->args,
 		               job ? CSTR_VIEW("none") : mcp_req_no_args(req), &shown);
 		char text[QUOTED(ERROR_LOG)] = "";
 		if (failed && out.len)
@@ -6194,7 +6198,7 @@ mcp_req_result_write (struct mcp_req *req)
 	struct mcp_slot *slot = &req->slots[req->part];
 	/* A replayed result is a part of the output; its record gives the size. */
 	struct json_object *saved = req->saved_tools[req->part];
-	(void)mcp_req_trace(req, &c, req->args[req->part],
+	(void)mcp_req_trace(req, &c, slot->args,
 	                    mcp_row_of(mcp_slot_tool(slot))->trace);
 	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED,
 	                        saved ? jb_uint(jb_get(saved, "bytes"), 0)
@@ -6872,15 +6876,15 @@ mcp_req_compact (struct mcp_req   *req,
                  struct cstr_view  head,
                  struct cstr_view  summary)
 {
-	/* The summary of a compact call is in its arguments, which the
-	 * reaper frees at once if it cannot grow, so it is copied first. */
+	/* The summary of a compact call is in the arguments of its slot, which
+	 * the reaper frees at once if it cannot grow, so it is copied first. */
 	struct dstr *d = &req->self.answer;
 	dstr_clear(d);
 	int e = cstr_view_cat(head, d);
 	e = e ? e : cstr_view_cat(summary, d);
 	req->reminded = 0;
 	mcp_req_drop(req);
-	mcp_req_args_free(req, from, array_size(req->args));
+	mcp_req_args_free(req, from, JOB_CALLS);
 	mcp_req_calls_fini(req);
 	if (e) {
 		mcp_req_fail(req, e);
