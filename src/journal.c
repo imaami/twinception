@@ -366,7 +366,7 @@ journal_unlock (struct journal *j)
 		close(fd);
 		fd = next;
 	}
-	char name[70];
+	char name[UTIL_WORD_MAX + sizeof ".lock"];
 	int n = snprintf(name, sizeof name, "%s.lock", participant);
 	if (n < 0 || n >= (int)sizeof name)
 		e = EOVERFLOW;
@@ -835,7 +835,7 @@ journal_thought_file (struct journal            *j,
 		if (directory < 0)
 			e = errno;
 	}
-	char name[32];
+	char name[UTIL_DECIMAL + sizeof ".txt"];
 	int n = snprintf(name, sizeof name, "%" PRIu32 ".txt", item->turn);
 	if (!e && (n < 0 || n >= (int)sizeof name))
 		e = EOVERFLOW;
@@ -945,7 +945,7 @@ journal_thought_commit (struct journal            *j,
 	struct oid blob;
 	if (!e && oid_init_line(&blob, out))
 		e = EILSEQ;
-	char path[96];
+	char path[sizeof "reasoning/xx//.txt" + HEXID_DIGITS + UTIL_DECIMAL];
 	int n = snprintf(path, sizeof path, "reasoning/%.2s/%s/%" PRIu32 ".txt",
 	                 item->id.hex, item->id.hex, item->turn);
 	if (!e && (n < 0 || n >= (int)sizeof path))
