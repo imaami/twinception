@@ -182,6 +182,12 @@ policy_create (struct json_object    *file,
                size_t                 len,
                int                   *e);
 
+/** Returns whether @p key names a member of the configuration file that
+ *  the policy reads: roles, identities, unix-groups or anonymous.
+ */
+extern bool
+policy_member (char const *key);
+
 /** Another reference to @p policy, which a reload does not change, but
  *  replaces.
  */

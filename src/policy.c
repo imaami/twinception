@@ -32,6 +32,22 @@ static constexpr uint64_t POLICY_IDENTITY = UINT64_C(1) << 62;
 /* The index of no role, of a client that the policy refuses. */
 static constexpr size_t POLICY_NO_ROLE = SIZE_MAX;
 
+/* The members of the configuration file that make the policy. */
+enum policy_part : uint8_t {
+	POLICY_ROLES,
+	POLICY_IDENTITIES,
+	POLICY_GROUPS,
+	POLICY_ANONYMOUS,
+	POLICY_PARTS
+};
+
+static struct cstr_view const policy_parts[POLICY_PARTS] = {
+	[POLICY_ROLES]      = CSTR_VIEW_INIT("roles"),
+	[POLICY_IDENTITIES] = CSTR_VIEW_INIT("identities"),
+	[POLICY_GROUPS]     = CSTR_VIEW_INIT("unix-groups"),
+	[POLICY_ANONYMOUS]  = CSTR_VIEW_INIT("anonymous"),
+};
+
 /* The members of "anonymous", by the kind of client. */
 static struct cstr_view const policy_kinds[POLICY_KINDS] = {
 	[POLICY_LOOPBACK] = CSTR_VIEW_INIT("loopback"),
@@ -868,21 +884,24 @@ policy_members (struct json_object *obj)
 }
 
 /* The members of the configuration file's object @p file that make the
- * policy, each left as it is if absent; whether @p file has any of them,
- * which turns askai's own policy off.
+ * policy, in @p of by enum policy_part, each nullptr if absent; whether
+ * any of them is in @p file, which turns askai's own policy off.
  */
 static bool
 policy_file (struct json_object  *file,
-             struct json_object **roles,
-             struct json_object **ids,
-             struct json_object **groups,
-             struct json_object **anon)
+             struct json_object **of)
 {
-	/* Each looked up, so not ||. */
-	return json_object_object_get_ex(file, "roles", roles) |
-	       json_object_object_get_ex(file, "identities", ids) |
-	       json_object_object_get_ex(file, "unix-groups", groups) |
-	       json_object_object_get_ex(file, "anonymous", anon);
+	bool any = false;
+	for (size_t i = 0; i < array_size(policy_parts); ++i)
+		any |= json_object_object_get_ex(file, policy_parts[i].data, &of[i]);
+	return any;
+}
+
+bool
+policy_member (char const *key)
+{
+	return cstr_view_index(policy_parts, array_size(policy_parts), cstr_view(key)) <
+	       array_size(policy_parts);
 }
 
 struct policy *
@@ -894,18 +913,17 @@ policy_create (struct json_object    *file,
                size_t                 len,
                int                   *e)
 {
+	struct json_object *of[array_size(policy_parts)];
+	bool const from_file = policy_file(file, of);
 	struct policy_build b = {
 		.upstream = upstream,
+		.roles = of[POLICY_ROLES],
 		.reg = reg,
 		.why = why,
 		.len = len
 	};
-	struct json_object *ids = nullptr;
-	struct json_object *groups = nullptr;
-	struct json_object *anon = nullptr;
-	bool from_file = policy_file(file, &b.roles, &ids, &groups, &anon);
-	size_t n_groups = policy_members(groups);
-	size_t n_ids = policy_members(ids);
+	size_t n_groups = policy_members(of[POLICY_GROUPS]);
+	size_t n_ids = policy_members(of[POLICY_IDENTITIES]);
 	/* The sizes below are the room in the block of the policy for the
 	 * policy of the file. askai's own policy uses two roles, no names, and
 	 * the token of ASKAI_TOKEN if that is set. */
@@ -927,7 +945,7 @@ policy_create (struct json_object    *file,
 	}
 	struct json_object_iter it;
 	if (n_ids)
-		json_object_object_foreachC(ids, it)
+		json_object_object_foreachC(of[POLICY_IDENTITIES], it)
 			n_tokens += jb_len(jb_get(it.val, "tokens"));
 	/* The subordinate uids go into the policy's block, and the
 	 * subordinate gids are needed only to check unix-groups. */
@@ -967,7 +985,8 @@ policy_create (struct json_object    *file,
 		p->anonymous[k] = POLICY_NO_ROLE;
 	b.p = p;
 	if (from_file)
-		*e = policy_build_file(&b, ids, groups, anon);
+		*e = policy_build_file(&b, of[POLICY_IDENTITIES], of[POLICY_GROUPS],
+		                       of[POLICY_ANONYMOUS]);
 	else
 		policy_build_own(&b, token);
 	buf_fini(&b.nss);
@@ -1193,19 +1212,16 @@ policy_log (struct policy const   *policy,
 {
 	if (!policy || !reg)
 		return;
-	struct json_object *roles = nullptr;
-	struct json_object *ids = nullptr;
-	struct json_object *groups = nullptr;
-	struct json_object *anon = nullptr;
-	if (!policy_file(file, &roles, &ids, &groups, &anon)) {
+	struct json_object *of[array_size(policy_parts)];
+	if (!policy_file(file, of)) {
 		policy_log_own(policy, reg, lent, ctx);
 		policy_log_peers(policy);
 		return;
 	}
 	LOG_ALL(LOG_INFO, "policy: from the configuration file");
 	tool_mask listed = policy_log_roles(policy, reg, lent, ctx);
-	policy_log_identities(ids);
-	policy_log_groups(policy, groups);
+	policy_log_identities(of[POLICY_IDENTITIES]);
+	policy_log_groups(policy, of[POLICY_GROUPS]);
 	LOG_ALL(LOG_INFO, "anonymous clients:");
 	for (size_t k = 0; k < POLICY_KINDS; ++k) {
 		size_t const role = policy->anonymous[k];

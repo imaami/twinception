@@ -1180,16 +1180,6 @@ config_json (struct config *cfg,
 	return 0;
 }
 
-/* Whether the configuration file's member @p key is of its policy, who may
- * connect and what they may do (src/policy.h), rather than an option.
- */
-static bool
-config_of_policy (char const *key)
-{
-	return !strcmp(key, "roles") || !strcmp(key, "identities") ||
-	       !strcmp(key, "unix-groups") || !strcmp(key, "anonymous");
-}
-
 /* Whether option @p name takes effect on a reload: TLS's certificate, key
  * and key types.
  */
@@ -1418,7 +1408,7 @@ config_apply_file (struct config *cfg)
 {
 	struct json_object_iter it;
 	json_object_object_foreachC(cfg->file, it) {
-		if (config_of_policy(it.key) || !strcmp(it.key, "plugins") ||
+		if (policy_member(it.key) || !strcmp(it.key, "plugins") ||
 		    !strcmp(it.key, "tools"))
 			continue;
 		size_t g = config_find(group_names, array_size(group_names), it.key);
@@ -1895,7 +1885,7 @@ config_note_token (struct config const *cfg)
 		return;
 	struct json_object_iter it;
 	json_object_object_foreachC(cfg->file, it)
-		if (config_of_policy(it.key)) {
+		if (policy_member(it.key)) {
 			(void)config_complain(cfg, nullptr, "note: ASKAI_TOKEN is ignored, "
 			                      "as %s names who may connect", cfg->path);
 			return;
