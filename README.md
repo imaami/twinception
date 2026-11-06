@@ -1337,8 +1337,12 @@ it. It has these tools:
 - `godbolt_compile` compiles source code once with each of up to 16
   compilers and each of up to 8 argument strings, and at most 32 times in
   all. The output has a record for each compilation, with the exit code,
-  the assembly, and the output and the messages of the compiler. The
-  compiled program does not run.
+  the assembly, and the output and the messages of the compiler. With
+  `run` true, Compiler Explorer also runs the program on its servers,
+  without arguments and with empty standard input. The record then
+  contains a line `program: exit code N`, `program: timed out` or
+  `program: not run`, the standard output and error of the program, and
+  the messages of the build if the program did not run.
 - `godbolt_preprocess` preprocesses source code in the same way, and its
   records have the preprocessed source.
 - `godbolt_macros` outputs the predefined macros of each compiler, and of

@@ -14772,7 +14772,8 @@ class MockCE:
     Any other id compiles: each line of the source becomes a line of
     assembly, -Wall adds a warning, -DESC adds a line with escape sequences
     that are not all color codes, and -DFAIL adds an error and the exit
-    code 1. With producePp, the text of the preprocessor is the source
+    code 1. With the filter execute, the response contains the result of a run
+    (MockCE.run). With producePp, the text of the preprocessor is the source
     after a line marker, or a macro with -dM. With /EP or /clang:-dM,
     stdout has the source or a macro. The probe of godbolt_targets gets
     the block of CE_PROBE_GNU, of CE_PROBE_MSVC for cvc19, of CE_PROBE_GNU
@@ -14914,6 +14915,10 @@ class MockCE:
         if "/EP" in args or "/clang:-dM" in args:
             return 200, {"code": 0, "stdout": [{"text": line} for line in lines],
                          "stderr": [], "asm": []}, ()
+        if body["options"]["filters"]["execute"] and "-DFAIL" not in args:
+            run = {"execResult": self.run(args)}
+        else:
+            run = {}
         stderr = []
         if "-Wall" in args:
             stderr.append({"text": "\x1b[01m\x1b[K<source>:1:1:\x1b[m\x1b[K \x1b[01;35m"
@@ -14926,7 +14931,26 @@ class MockCE:
         return 200, {"code": 1 if "-DFAIL" in args else 0, "stdout": [],
                      "stderr": stderr,
                      "asm": [{"text": "asm: " + line, "source": None}
-                             for line in lines]}, ()
+                             for line in lines]} | run, ()
+
+    @staticmethod
+    def run(args):
+        """The execResult of a run: with -DNOLINK the build fails and the
+        program does not run, with -DLOOP it runs out of time, and otherwise
+        it writes a line to stdout and one with a color code to stderr, its
+        exit code is 3 with -DEXIT3 and 0 without, and its output is cut with
+        -DTRUNC."""
+        if "-DNOLINK" in args:
+            return {"code": -1, "didExecute": False, "stdout": [],
+                    "stderr": [{"text": "Build failed"}],
+                    "buildResult": {"code": 1, "stderr": [
+                        {"text": "undefined reference to `main'"}]}}
+        if "-DLOOP" in args:
+            return {"code": 143, "didExecute": True, "timedOut": True, "stdout": [],
+                    "stderr": [{"text": "Killed - processing time exceeded"}]}
+        return {"code": 3 if "-DEXIT3" in args else 0, "didExecute": True,
+                "timedOut": False, "truncated": "-DTRUNC" in args,
+                "stdout": [{"text": "ran"}], "stderr": [{"text": "\x1b[1mbold\x1b[m"}]}
 
     @staticmethod
     def probe(cid, source):
@@ -14972,11 +14996,11 @@ def check_godbolt(binary, up, godbolt):
     and checks the bodies of the requests, the records of failed requests,
     a retry after 429, cut and oversized responses, the end of the output at
     14 MiB, a long line, large and odd responses, the stored responses of a
-    call with offset, refused arguments and a cancelled call. It
-    preprocesses, outputs the predefined macros and probes the targets with
-    compilers of each kind of driver. It makes links with each value of the
-    option share. Last, it starts askai with options that the plugin
-    refuses.
+    call with offset, refused arguments, runs of the program and a cancelled
+    call. It preprocesses, outputs the predefined macros and probes the
+    targets with compilers of each kind of driver. It makes links with each
+    value of the option share. Last, it starts askai with options that the
+    plugin refuses.
     """
     godbolt = os.path.realpath(godbolt)
     ce = MockCE()
@@ -15263,6 +15287,32 @@ def check_godbolt(binary, up, godbolt):
                 assert records[0][3].endswith("--- stderr ---\n\x1b(Bkeptbold\x1b[" +
                                               "1;" * 16 + "mend\x1b[\n"), records
 
+                # With run, Compiler Explorer also runs the program, and the
+                # record contains a line about the run and the output of the
+                # program, or the messages of the build if it did not build.
+                sent = len(ce.bodies())
+                records, last = ce_records(ok(ai, "godbolt_compile", compilers=["cg142"],
+                                              source=source, run=True, args=[
+                                                  "", "-DEXIT3", "-DFAIL", "-DNOLINK",
+                                                  "-DLOOP", "-DTRUNC"]))
+                ran = "--- program stdout ---\nran\n--- program stderr ---\nbold\n"
+                assert [r[2:] for r in records] == [
+                    ("exit code 0", f"program: exit code 0\n--- asm ---\n{asm}{ran}"),
+                    ("exit code 0", f"program: exit code 3\n--- asm ---\n{asm}{ran}"),
+                    ("exit code 1", f"program: not run\n--- asm ---\n{asm}--- stderr ---\n"
+                     "<source>:1:1: error: FAIL is defined\n"),
+                    ("exit code 0", f"program: not run\n--- asm ---\n{asm}--- build stderr "
+                     "---\nundefined reference to `main'\n--- program stderr ---\nBuild "
+                     "failed\n"),
+                    ("exit code 0", f"program: timed out\n--- asm ---\n{asm}--- program "
+                     "stderr ---\nKilled - processing time exceeded\n"),
+                    ("exit code 0", f"program: exit code 0\n--- asm ---\n{asm}{ran}"
+                     "[Compiler Explorer cut this output.]\n")] and \
+                    last == summary(6, 5, 1, 0, 0), records
+                assert all(b["options"]["filters"]["execute"] and
+                           b["options"]["executeParameters"] == {"args": [], "stdin": ""}
+                           for b in ce.bodies()[sent:]), ce.bodies()[sent:]
+
                 # 429 with Retry-After 1 is sent again after 1 s. With
                 # Retry-After 120 it is a failed request at once.
                 start = time.monotonic()
@@ -15526,7 +15576,8 @@ def check_godbolt(binary, up, godbolt):
                         ({"filters": {"intel": 1}}, "filters must be"),
                         ({"source": None}, "The argument source is required."),
                         ({"offset": -1}, "The offset argument must be a whole number "
-                         "of bytes, from 0.")):
+                         "of bytes, from 0."),
+                        ({"run": 1}, "run must be true or false.")):
                     arguments = {"compilers": ["cg142"], "source": source} | arguments
                     arguments = {k: v for k, v in arguments.items() if v is not None}
                     text = refused(ai, "godbolt_compile", **arguments)
@@ -15558,7 +15609,10 @@ def check_godbolt(binary, up, godbolt):
                         ("godbolt_targets", {"compilers": ["cg142"], "source": "x"},
                          "The tool has no argument source."),
                         ("godbolt_targets", {"compilers": ["cg142"], "headers": 1},
-                         "headers must be true or false.")):
+                         "headers must be true or false."),
+                        ("godbolt_preprocess", {"compilers": ["cg142"], "source": "x",
+                                                "run": True},
+                         "The tool has no argument run.")):
                     assert refused(ai, name, **arguments) == why, (name, arguments)
                 assert len(ce.seen()) == sent, ce.seen()[sent:]
 
@@ -15600,6 +15654,10 @@ def check_godbolt(binary, up, godbolt):
                 assert link == "Link: none. The link would be longer than 8192 bytes." \
                     and ce_records(rest)[0][0][2] == "exit code 0", text
                 assert len(ce.seen("POST", "/api/shortener")) == shortened
+                # The state of a call with run sets the filter execute.
+                link = ok(ai, "godbolt_compile", **shared, run=True).partition("\n")[0]
+                assert json.loads(base64.b64decode(link.removeprefix(prefix), validate=True))[
+                    "sessions"][0]["compilers"][0]["filters"]["execute"] is True, link
 
             # The option share off removes the argument share, and a call with
             # it is refused.
@@ -15650,10 +15708,10 @@ def check_godbolt(binary, up, godbolt):
           "compilers; compilations in order with the site's filters, failed "
           "requests as records, 429 sent again, cut and oversized responses, the "
           "end of the output at 14 MiB, a long line in slices, color codes left "
-          "out, large and odd responses, stored responses for a call with offset, "
-          "refused arguments and options, cancellation; preprocessing, predefined "
-          "macros and target facts with the flags of each driver; short links, "
-          "links to the state and no links: PASS")
+          "out, runs of the program, large and odd responses, stored responses for "
+          "a call with offset, refused arguments and options, cancellation; "
+          "preprocessing, predefined macros and target facts with the flags of each "
+          "driver; short links, links to the state and no links: PASS")
 
 
 def check_classes(binary, up):

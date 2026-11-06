@@ -211,6 +211,10 @@ enum godbolt_sec : uint8_t {
 	GODBOLT_SEC_MACROS,
 	GODBOLT_SEC_STDOUT,
 	GODBOLT_SEC_STDERR,
+	GODBOLT_SEC_BUILD,       /* the messages of the build of a program
+	                            that did not run */
+	GODBOLT_SEC_RUN_STDOUT,  /* the standard output of the program */
+	GODBOLT_SEC_RUN_STDERR,  /* the standard error of the program */
 	GODBOLT_SECS
 };
 
@@ -365,7 +369,7 @@ enum godbolt_outcome : uint8_t {
         X(KIND, kind) X(FAMILY, family) X(ARCHITECTURE, architecture)          \
         X(LIMIT, limit) X(OFFSET, offset) X(COMPILERS, compilers)              \
         X(ARGS, args) X(SOURCE, source) X(FILTERS, filters)                    \
-        X(HEADERS, headers) X(SHARE, share)
+        X(HEADERS, headers) X(SHARE, share) X(RUN, run)
 
 enum godbolt_arg : uint8_t {
 #define GODBOLT_ARG(NAME, name) GODBOLT_ARG_##NAME,
@@ -421,6 +425,8 @@ static struct cstr_view const godbolt_arg_rules[] = {
 		"headers must be true or false."),
 	[GODBOLT_ARG_SHARE] = CSTR_VIEW_INIT(
 		"share must be true or false."),
+	[GODBOLT_ARG_RUN] = CSTR_VIEW_INIT(
+		"run must be true or false."),
 };
 
 #define GODBOLT_BIT(arg) (1u << GODBOLT_ARG_##arg)
@@ -443,7 +449,7 @@ static struct godbolt_params const godbolt_params[] = {
 	[GODBOLT_COMPILE] = {
 		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
 		        GODBOLT_BIT(SOURCE) | GODBOLT_BIT(FILTERS) | GODBOLT_BIT(SHARE) |
-		        GODBOLT_BIT(OFFSET),
+		        GODBOLT_BIT(RUN) | GODBOLT_BIT(OFFSET),
 		.needs = GODBOLT_BIT(SOURCE)
 	},
 	[GODBOLT_PREPROCESS] = {
@@ -466,8 +472,8 @@ static struct godbolt_params const godbolt_params[] = {
 /* The filters of a compilation, in the order of the request body: the
  * name, whether the argument filters can set the filter, and whether the
  * Compiler Explorer site sets it by default. A filter that the argument
- * cannot set is always false. Bit i of a set of filters stands for
- * godbolt_filters[i].
+ * cannot set is false, except execute, which the argument run sets. Bit i
+ * of a set of filters stands for godbolt_filters[i].
  */
 #define GODBOLT_FILTERS_X(X)  \
         X(binary,       0, 0) \
@@ -506,8 +512,10 @@ static constexpr uint32_t GODBOLT_SITE_FILTERS = 0 GODBOLT_FILTERS_X(GODBOLT_FIL
 #undef GODBOLT_FILTER
 #undef GODBOLT_FILTERS_X
 
-/* The flags of the arguments of a call that are not filters. */
+/* The flags of the arguments headers, share, run and offset. run sets the
+ * bit of the filter execute. */
 enum godbolt_with : uint32_t {
+	GODBOLT_WITH_RUN     = 1u << GODBOLT_FILTER_execute, /* the argument run */
 	GODBOLT_WITH_HEADERS = 1u << GODBOLT_FILTERS,        /* the argument
 	                                                        headers */
 	GODBOLT_WITH_SHARE   = 1u << (GODBOLT_FILTERS + 1),  /* the argument
@@ -519,11 +527,14 @@ enum godbolt_with : uint32_t {
 
 /* The first line of each section of a record. */
 static struct cstr_view const godbolt_sections[GODBOLT_SECS] = {
-	[GODBOLT_SEC_ASM]    = CSTR_VIEW_INIT("--- asm ---\n"),
-	[GODBOLT_SEC_PP]     = CSTR_VIEW_INIT("--- pp ---\n"),
-	[GODBOLT_SEC_MACROS] = CSTR_VIEW_INIT("--- macros ---\n"),
-	[GODBOLT_SEC_STDOUT] = CSTR_VIEW_INIT("--- stdout ---\n"),
-	[GODBOLT_SEC_STDERR] = CSTR_VIEW_INIT("--- stderr ---\n"),
+	[GODBOLT_SEC_ASM]        = CSTR_VIEW_INIT("--- asm ---\n"),
+	[GODBOLT_SEC_PP]         = CSTR_VIEW_INIT("--- pp ---\n"),
+	[GODBOLT_SEC_MACROS]     = CSTR_VIEW_INIT("--- macros ---\n"),
+	[GODBOLT_SEC_STDOUT]     = CSTR_VIEW_INIT("--- stdout ---\n"),
+	[GODBOLT_SEC_STDERR]     = CSTR_VIEW_INIT("--- stderr ---\n"),
+	[GODBOLT_SEC_BUILD]      = CSTR_VIEW_INIT("--- build stderr ---\n"),
+	[GODBOLT_SEC_RUN_STDOUT] = CSTR_VIEW_INIT("--- program stdout ---\n"),
+	[GODBOLT_SEC_RUN_STDERR] = CSTR_VIEW_INIT("--- program stderr ---\n"),
 };
 
 /* The note after a text that Compiler Explorer cut. */
@@ -1753,6 +1764,8 @@ godbolt_job_body (struct godbolt              *call,
 	d = godbolt_cat_arguments(call, d, r, call->args.strings[call->job % call->args.n_strings]);
 	d = godbolt_cat(d, CSTR_VIEW("\",\"filters\":"));
 	d = godbolt_cat_filters(d, call->args.flags);
+	if (call->args.flags & GODBOLT_WITH_RUN)
+		d = godbolt_cat(d, CSTR_VIEW(",\"executeParameters\":{\"args\":[],\"stdin\":\"\"}"));
 	d = godbolt_cat(d, CSTR_VIEW(",\"compilerOptions\":"));
 	d = godbolt_cat(d, r->options);
 	d = godbolt_cat(d, CSTR_VIEW("}}"));
@@ -2019,6 +2032,14 @@ godbolt_sections_find (struct godbolt *call)
 	call->rec.secs[from == GODBOLT_FROM_STDOUT ? main : GODBOLT_SEC_STDOUT] =
 		jb_get(call->doc, "stdout");
 	call->rec.secs[GODBOLT_SEC_STDERR] = jb_get(call->doc, "stderr");
+	if (!(call->args.flags & GODBOLT_WITH_RUN))
+		return;
+	struct json_object *run = jb_get(call->doc, "execResult");
+	call->rec.secs[GODBOLT_SEC_BUILD] = jb_true(jb_get(run, "didExecute")) ? nullptr
+	                                    : jb_get(jb_get(run, "buildResult"), "stderr");
+	call->rec.secs[GODBOLT_SEC_RUN_STDOUT] = jb_get(run, "stdout");
+	call->rec.secs[GODBOLT_SEC_RUN_STDERR] = jb_get(run, "stderr");
+	call->rec.marks |= jb_true(jb_get(run, "truncated")) ? GODBOLT_REC_TRUNCATED : 0;
 }
 
 /* Returns the member text of each element of the array @p v, each with a
@@ -2381,6 +2402,21 @@ godbolt_facts (struct godbolt *call)
 	return godbolt_put(call, p->n_headers ? CSTR_VIEW("\n") : CSTR_VIEW("headers: unknown\n"));
 }
 
+/* Writes the line about the run of the program of the compilation, which
+ * contains its exit code, "timed out" or "not run". Returns 0, or call->e.
+ */
+static int
+godbolt_run_line (struct godbolt *call)
+{
+	struct json_object *run = jb_get(call->doc, "execResult");
+	struct json_object *code = jb_get(run, "code");
+	if (jb_true(jb_get(run, "timedOut")))
+		return godbolt_put(call, CSTR_VIEW("program: timed out\n"));
+	if (!jb_true(jb_get(run, "didExecute")) || !json_object_is_type(code, json_type_int))
+		return godbolt_put(call, CSTR_VIEW("program: not run\n"));
+	return godbolt_putf(call, "program: exit code %" PRId64 "\n", json_object_get_int64(code));
+}
+
 /* The phase GODBOLT_WRITE. It writes the record of the compilation, as
  * much of it as the bounds of the step allow.
  */
@@ -2394,6 +2430,8 @@ godbolt_write (struct godbolt *call)
 			                            "preprocessor for this compiler.\n"));
 		if (call->rec.marks & GODBOLT_REC_PROBED)
 			godbolt_facts(call);
+		if (call->args.flags & GODBOLT_WITH_RUN)
+			godbolt_run_line(call);
 	}
 	/* A record begins only while the output is not full, and a step that
 	 * fills the output ends the loop. */
@@ -2688,10 +2726,12 @@ godbolt_args_set (struct godbolt_args *a,
 		return godbolt_args_filters(a, v);
 	case GODBOLT_ARG_HEADERS:
 	case GODBOLT_ARG_SHARE:
+	case GODBOLT_ARG_RUN:
 		if (!json_object_is_type(v, json_type_boolean))
 			return EINVAL;
 		if (json_object_get_boolean(v))
-			a->flags |= arg == GODBOLT_ARG_SHARE ? GODBOLT_WITH_SHARE : GODBOLT_WITH_HEADERS;
+			a->flags |= arg == GODBOLT_ARG_HEADERS ? GODBOLT_WITH_HEADERS
+			          : arg == GODBOLT_ARG_SHARE ? GODBOLT_WITH_SHARE : GODBOLT_WITH_RUN;
 		return 0;
 	case GODBOLT_ARG_COUNT:
 		break;
@@ -3062,6 +3102,10 @@ static struct {
 		"defaults are those of the Compiler Explorer site. The assembly has "
 		"Intel syntax and demangled names, and it has no assembler directives, "
 		"no lines with only a comment and no unused labels.\"},"
+		"\"run\":{\"type\":\"boolean\",\"default\":false,\"description\":\"true "
+		"to also run the program on Compiler Explorer, without arguments and "
+		"with empty input. Each record then contains the exit code and the "
+		"output of the program.\"},"
 		GODBOLT_DEF_OFFSET "},"
 		"\"required\":[\"source\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
@@ -3069,8 +3113,7 @@ static struct {
 		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "
 		               "contains a record for each compilation, with the exit code, the "
 		               "assembly and the messages of the compiler, and a last line with "
-		               "the counts of the results. askai sends the source to that service. "
-		               "The compiled program does not run."),
+		               "the counts of the results. askai sends the source to that service."),
 	},
 	[GODBOLT_PREPROCESS] = {
 		"{\"name\":\"godbolt_preprocess\",\"title\":\"Preprocess on Compiler "
