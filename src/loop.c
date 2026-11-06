@@ -715,15 +715,16 @@ loop_log_stats (struct loop *loop,
 		        (double)hist_pct(h, 0.99) / 1e3, (double)hist_pct(h, 0.999) / 1e3,
 		        (double)hist_get(&h->max) / 1e3);
 	}
-	char work[512];
-	size_t len = util_format(work, sizeof work, "events=%" PRIu64 "/%u timers=%" PRIu64
-	                         "/%u steps=%" PRIu64, s->events, (unsigned)EVENTS,
-	                         s->timers, (unsigned)TIMERS, s->steps);
-	/* Once cut short, with "...", the line says no more. */
-	for (size_t u = 0; u < array_size(s->work) && len < sizeof work - 1; ++u)
-		len += util_format(work + len, sizeof work - len, " %s=%" PRIu64 "/%" PRIu64,
-		                   unit_name[u], s->work[u], bound[u]);
-	log_put(nullptr, "stats %swork %s", label, work);
+	/* A text cut short ends in "...", and util_text_printf() appends nothing
+	 * after that. */
+	UTIL_TEXT(512) work = {};
+	(void)util_text_printf(&work, "events=%" PRIu64 "/%u timers=%" PRIu64 "/%u steps=%"
+	                       PRIu64, s->events, (unsigned)EVENTS, s->timers,
+	                       (unsigned)TIMERS, s->steps);
+	for (size_t u = 0; u < array_size(s->work); ++u)
+		(void)util_text_printf(&work, " %s=%" PRIu64 "/%" PRIu64, unit_name[u],
+		                       s->work[u], bound[u]);
+	log_put(nullptr, "stats %swork %s", label, work.data);
 	loop_stats_empty(s, false);
 }
 
