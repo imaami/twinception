@@ -613,8 +613,9 @@ struct mcp_req {
 	                                    git it reads */
 	struct dstr          trace;      /* the tool calls the turns made, for the
 	                                    client; likewise */
-	struct buf           calls;      /* a turn's tool calls, as its job had
-	                                    them, while they run */
+	struct buf           calls[JOB_CALLS];  /* a turn's tool calls, moved
+	                                           from its job, while they
+	                                           run */
 	struct buf           attached;   /* the files that a turn's calls
 	                                    attached, as its API's fragments
 	                                    have them, until its last result */
@@ -667,9 +668,6 @@ struct mcp_req {
 	size_t               filed;      /* bytes of the files that the turns
 	                                    attached since the last turn's usage,
 	                                    which the upload does not hold */
-	size_t               at;         /* where the call whose result is written
-	                                    next is in calls */
-	size_t               launch_at;  /* and the call launched next */
 	size_t               delta_at;   /* header of the published mailbox piece */
 	size_t               delta_read; /* bytes consumed from that piece */
 	size_t               replayed;   /* bytes of the job's replay that the
@@ -1551,6 +1549,14 @@ mcp_slot_unwait (struct mcp_slot *slot)
 		mcp_req_unwait(slot->req);
 }
 
+/* Let go of the turn's tool calls. */
+static void
+mcp_req_calls_fini (struct mcp_req *req)
+{
+	for (size_t k = 0; k < JOB_CALLS; ++k)
+		buf_fini(&req->calls[k]);
+}
+
 /* Let go of the arguments of the turn's calls @p k to @p end. */
 static void
 mcp_req_args_free (struct mcp_req *req,
@@ -1680,7 +1686,7 @@ mcp_req_finish (struct mcp_req *req)
 	buf_fini(&req->body);
 	buf_fini(&req->upload);
 	buf_fini(&req->reply);
-	buf_fini(&req->calls);
+	mcp_req_calls_fini(req);
 	buf_fini(&req->attached);
 	dstr_clear(&req->self.answer);
 	dstr_clear(&req->trace);
@@ -4566,26 +4572,19 @@ mcp_req_turn_write (struct mcp_req *req)
 		mcp_req_doze(req);
 		return;
 	}
-	int e = 0;
-	for (uint16_t k = 0; !e && k < req->n_calls; ++k) {
-		struct span c = buf_peek(&req->job->calls[k]);
-		e = buf_put(&req->calls, c.ptr, c.len, CALLS_MAX);
-		loop_work(loop, LOOP_COPY, c.len);
-	}
-	if (e) {
-		mcp_req_fail(req, e);
-		return;
+	for (uint32_t k = 0; k < req->n_calls; ++k) {
+		req->calls[k] = req->job->calls[k];
+		req->job->calls[k] = (struct buf){};
 	}
 	/* The usage counts the turn: what is written after it counts on. */
 	req->sent = buf_peek(&req->upload).len;
 	mcp_req_drop(req);
-	e = mcp_req_slots_make(req);
+	int e = mcp_req_slots_make(req);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
 	}
 	req->part = 0;
-	req->at = req->launch_at = 0;
 	mcp_req_calls_next(req);
 }
 
@@ -5808,7 +5807,7 @@ mcp_req_call_launch (struct mcp_req *req)
 	if (k == req->n_calls)
 		return;
 	struct job_call h;
-	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls).ptr + req->launch_at);
+	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls[k]).ptr);
 	uint32_t known = registry_find(mcp->st->reg, c.name, TOOL_MAX);
 	uint32_t id = mcp_req_lent_tool(req, known);
 	struct registry_tool const *tool = mcp_static_tool(mcp->st, id);
@@ -5838,7 +5837,6 @@ mcp_req_call_launch (struct mcp_req *req)
 	}
 	struct mcp_slot *slot = &req->slots[k];
 	slot->tool = (uint8_t)id;
-	req->launch_at += job_call_size(&h);
 	req->launched = k + 1;
 	hist_add(&mcp->counts->calls.lent[mcp_row_of(tool)->metric], 1);
 	mcp_req_notify_tool(req, tool->name.data);
@@ -5874,7 +5872,7 @@ mcp_req_calls_next (struct mcp_req *req)
 {
 	if (req->part == req->n_calls) {
 		mcp_req_slots_drop(req);
-		buf_fini(&req->calls);
+		mcp_req_calls_fini(req);
 		buf_fini(&req->attached);
 		if (mcp_req_full(req))
 			mcp_req_compact_full(req);
@@ -6183,7 +6181,7 @@ static void
 mcp_req_result_write (struct mcp_req *req)
 {
 	struct job_call h;
-	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls).ptr + req->at);
+	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls[req->part]).ptr);
 	int e = mcp_req_result_put(req, &c);
 	if (e == EAGAIN) {
 		loop_ready_bulk(req->mcp->loop, &req->step);
@@ -6209,7 +6207,6 @@ mcp_req_result_write (struct mcp_req *req)
 	mcp_slot_reset(slot);
 	if (req->agenda)
 		dstr_clear(&req->agenda->told);
-	req->at += job_call_size(&h);
 	mcp_req_args_free(req, req->part, req->part + 1u);
 	++req->part;
 	mcp_req_calls_next(req);
@@ -6884,7 +6881,7 @@ mcp_req_compact (struct mcp_req   *req,
 	req->reminded = 0;
 	mcp_req_drop(req);
 	mcp_req_args_free(req, from, array_size(req->args));
-	buf_fini(&req->calls);
+	mcp_req_calls_fini(req);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
