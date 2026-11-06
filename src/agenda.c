@@ -17,7 +17,11 @@
 #include "mcp.h"
 #include "util.h"
 
-struct cstr_view const agenda_runs_no_more = CSTR_VIEW_INIT("That job runs no more.");
+struct cstr_view const agenda_ended[LEDGER_STATUSES] = {
+	[LEDGER_COMPLETED] = CSTR_VIEW_INIT("That job had already completed."),
+	[LEDGER_FAILED]    = CSTR_VIEW_INIT("That job had already failed."),
+	[LEDGER_CANCELLED] = CSTR_VIEW_INIT("That job was cancelled."),
+};
 
 /* The answer to a client's call of background, timer or wait that the
  * ledger refuses for want of room.
@@ -139,8 +143,9 @@ agenda_cancel (struct mcp_slot    *slot,
 	struct ledger_task *task = agenda_find(slot, args, tool);
 	if (!task)
 		return;
-	bool const runs = ledger_task_status(task) == LEDGER_WORKING;
-	struct cstr_view said = agenda_runs_no_more;
+	enum ledger_status const status = ledger_task_status(task);
+	bool const runs = status == LEDGER_WORKING;
+	struct cstr_view said = agenda_ended[status];
 	char text[192];
 	if (runs) {
 		ledger_task_cancel(task);

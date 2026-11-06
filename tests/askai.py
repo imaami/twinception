@@ -1573,7 +1573,8 @@ def check_client_jobs(binary, up):
                 for args in ({}, {"job": jid, "timer": 1}):
                     refused(ai, "jobs", "The job argument or the timer argument must "
                             "name what to cancel.", action="cancel", **args)
-                refused(ai, "jobs", "That job runs no more.", action="cancel", job=jid)
+                refused(ai, "jobs", "That job had already completed.", action="cancel",
+                        job=jid)
                 for seconds in (0, 601, "1"):
                     refused(ai, "wait", "The seconds argument must be a whole number "
                             "from 1 to 600.", seconds=seconds)
@@ -1624,8 +1625,9 @@ def check_client_jobs(binary, up):
                 assert up.cancelled.wait(5)
                 assert say(ai, "wait", "127.0.0.3", seconds=5, jobs=[jid]) == \
                     f"[askai: job {jid}, ask_ai, cancelled.]\n"
-                refused(ai, "jobs", "That job was cancelled.", "127.0.0.3", action="result",
-                        job=jid)
+                for action in ("result", "cancel"):
+                    refused(ai, "jobs", "That job was cancelled.", "127.0.0.3", action=action,
+                            job=jid)
                 assert re.fullmatch(f"job {jid}: ask_ai: cancelled [0-9] s ago\n",
                                     say(ai, "jobs", "127.0.0.3", action="list"))
                 time.sleep(0.3)
@@ -2065,6 +2067,8 @@ def check_background(binary, up):
                 assert len(up.requests) == count
                 stream.release.set()
                 assert text_of(poll(ai, jid, **alice)) == "A"
+                refused(ai, {"job": jid, "action": "cancel"}, "That job had already completed.",
+                        **alice)
                 up.reply = lambda r: (400, {"error": {"message": "background failure"}})
                 result = poll(ai, start(ai, **alice), **alice)
                 assert result.get("isError") and "background failure" in text_of(result), result
@@ -12168,11 +12172,13 @@ def check_turns(binary, up):
             # answers at once; a wait for the job ends as it finishes, with the
             # notice of its end; jobs lists it and the timers, which have
             # numbers of their own, and gives its output; a later wait ends
-            # as the first timer fires, saying so; a wait for the ended job
-            # ends at once, with the same notice; a cancelled job runs no
-            # more, and a wait for it ends at once, with the notice that it
-            # was cancelled; jobs cancels the second timer, so the call does
-            # not doze for it.
+            # as the first timer fires, saying so; a cancel of the ended job
+            # says that it had completed; a wait for the ended job ends at
+            # once, with the same notice; a cancelled job runs no more, and a
+            # wait for it ends at once, with the notice that it was
+            # cancelled; jobs cancels the second timer, so the call does not
+            # doze for it; a cancel of a job that failed says that it had
+            # failed.
             def tool_call(cid, name, **args):
                 return (cid, name, json.dumps(args))
             script[:] = [
@@ -12183,7 +12189,8 @@ def check_turns(binary, up):
                 lambda r: (200, turn_stream([tool_call("w1", "wait", seconds=30, jobs=[1])])),
                 lambda r: (200, turn_stream([
                     tool_call("j1", "jobs", action="list"),
-                    tool_call("j2", "jobs", action="result", job=1)])),
+                    tool_call("j2", "jobs", action="result", job=1),
+                    tool_call("j3", "jobs", action="cancel", job=1)])),
                 lambda r: (200, turn_stream([tool_call("w2", "wait", seconds=10)])),
                 lambda r: (200, turn_stream([
                     tool_call("b2", "background", tool="git", arguments=json.loads(slow)),
@@ -12197,13 +12204,17 @@ def check_turns(binary, up):
                                              tool_call("c6", "jobs", action="cancel", job=2,
                                                        timer=2),
                                              tool_call("w4", "wait", seconds=1, jobs=[2])])),
+                lambda r: (200, turn_stream([
+                    tool_call("b4", "background", tool="git",
+                              arguments={"repo": "nope", "command": "log"}),
+                    tool_call("c7", "jobs", action="cancel", job=3)])),
             ]
             count = len(up.requests)
             start = time.monotonic()
             result = ai.ask("Q")
             took = time.monotonic() - start
             assert result["content"][0]["text"] == "A", result
-            asked = up.requests[count:count + 7]
+            asked = up.requests[count:count + 8]
 
             def said(k, cid):
                 """What request k of the call says call cid gave."""
@@ -12223,6 +12234,7 @@ def check_turns(binary, up):
                                 r"timer 1: (fires in [12] s|fired 0 s ago, unread): check it\n"
                                 r"timer 2: fires in (59|60) s\n", said(3, "j1")), said(3, "j1")
             assert said(3, "j2") == "[No output.]", said(3, "j2")
+            assert said(3, "j3") == "That job had already completed.", said(3, "j3")
             assert said(4, "w2") == "[askai: timer 1 fired: check it.]\n", said(4, "w2")
             assert said(5, "b2") == "Started job 2." and \
                 said(5, "b3").startswith("The tool argument must name a tool") and \
@@ -12236,6 +12248,9 @@ def check_turns(binary, up):
                 said(6, "c6") == "The job argument or the timer argument must name what " \
                 "to cancel." and said(6, "w4") == "[askai: job 2, git, cancelled.]\n", \
                 turns(asked[6])
+            assert said(7, "b4") == "Started job 3.\n\n[askai: job 3, git, failed: call jobs " \
+                "with the action result and job 3 for its result.]\n" and \
+                said(7, "c7") == "That job had already failed.", turns(asked[7])
             assert 2 <= took < 6, took
             trace = result["content"][1]["text"]
             assert all(f"- {t} " in trace for t in ("background", "timer", "wait", "jobs")), \
@@ -13337,9 +13352,9 @@ def check_plugin(binary, up, plugin):
             assert time.monotonic() - start < 1.5, "the call waited on"
 
         # With --client-jobs, background starts a call of a plugin's tool as
-        # a job. A call that fails with an error makes a failed job: a wait
-        # and the list say so, and jobs answers with the error of a direct
-        # call, in either era.
+        # a job. A call that fails with an error makes a failed job: a wait,
+        # the list and a cancel say so, and jobs answers with the error of a
+        # direct call, in either era.
         with Askai(binary, "-c", path, "--client-jobs") as ai:
             args = {"wait_ms": 200, "fail": True}
             started = text_of(call(ai, "background", {"tool": "test_state",
@@ -13355,6 +13370,9 @@ def check_plugin(binary, up, plugin):
             listed = text_of(call(ai, "jobs", {"action": "list"})["result"])
             assert re.fullmatch(f"job {jid}: test_state: failed [0-9] s ago\n", listed), \
                 listed
+            cancel = call(ai, "jobs", {"action": "cancel", "job": jid})["result"]
+            assert cancel.get("isError") is True and \
+                text_of(cancel) == "That job had already failed.", cancel
             for rpc in (ai.rpc, ai.modern):
                 direct = rpc("tools/call", {"name": "test_state", "arguments": args})[2]
                 stored = rpc("tools/call", {"name": "jobs", "arguments": {

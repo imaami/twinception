@@ -21,8 +21,8 @@ struct dstr;
 /** The ids of jobs that a client's wait may name, at most. */
 enum { AGENDA_WAIT_IDS = 16 };
 
-/** The answer to a cancel of a job that has ended. */
-extern struct cstr_view const agenda_runs_no_more;
+/** The answers to a cancel of a job that has ended, by its status. */
+extern struct cstr_view const agenda_ended[LEDGER_STATUSES];
 
 /** Appends the notice that the timer @p t fired, with its note, to @p d.
  *  Returns 0, or ENOMEM.

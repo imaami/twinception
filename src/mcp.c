@@ -815,7 +815,6 @@ static char const start_failed[] = "Cannot start the upstream request";
 static struct cstr_view const not_object = CSTR_VIEW_INIT("The arguments argument must be an "
                                                           "object.");
 static struct cstr_view const still_runs = CSTR_VIEW_INIT("That job still runs: wait for it.");
-static struct cstr_view const was_cancelled = CSTR_VIEW_INIT("That job was cancelled.");
 static struct cstr_view const bad_action = CSTR_VIEW_INIT("The action argument must be list, "
                                                           "result or cancel.");
 
@@ -5148,7 +5147,7 @@ mcp_slot_turn_job (struct mcp_slot    *slot,
 	struct mcp_slot *job = n ? &a->jobs[n - 1] : nullptr;
 	struct cstr_view const problem =
 		!job ? CSTR_VIEW("The job argument must be the number of a job you started.")
-		: job->flags & SLOT_CANCELLED ? was_cancelled
+		: job->flags & SLOT_CANCELLED ? agenda_ended[LEDGER_CANCELLED]
 		: (struct cstr_view){};
 	if (!problem.data)
 		return job;
@@ -5187,7 +5186,8 @@ mcp_slot_turn_cancel (struct mcp_slot    *slot,
 	if (!job)
 		return;
 	if (job->flags & SLOT_DONE) {
-		mcp_slot_result(slot, agenda_runs_no_more, true);
+		mcp_slot_result(slot, agenda_ended[job->flags & SLOT_FAILED
+		                                   ? LEDGER_FAILED : LEDGER_COMPLETED], true);
 		return;
 	}
 	mcp_slot_drop(job);
@@ -5218,7 +5218,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 	}
 	struct cstr_view problem =
 		status == LEDGER_WORKING ? still_runs
-		: status == LEDGER_CANCELLED ? was_cancelled
+		: status == LEDGER_CANCELLED ? agenda_ended[status]
 		: !task->size ? CSTR_VIEW("That job failed, and askai stored no result of it.")
 		: (struct cstr_view){};
 	if (problem.data) {
