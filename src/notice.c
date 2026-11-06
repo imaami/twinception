@@ -28,9 +28,8 @@ notice_arg (char        conv,
 		char const *end = memchr(s, ']', len);
 		if (!end)
 			return 0;
-		char repo[NOTES_REPO];
 		size_t const n = (size_t)(end - s);
-		return notes_select((struct cstr_view){ s, n }, repo) ? 0 : n;
+		return notes_select((struct cstr_view){ s, n }, nullptr) ? 0 : n;
 	}
 	case 'u': {
 		size_t n = 0;
