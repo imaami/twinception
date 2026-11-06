@@ -1076,24 +1076,29 @@ godbolt_result (struct godbolt *call)
 	return GODBOLT_BAD;
 }
 
-/* Returns the state of the parse of a JSON array after the byte @p c,
- * which is outside an element, in the state @p s. For a byte that begins
- * an element, the function returns GODBOLT_LIST_VALUE, and the parse of the
- * element begins with that byte.
+/* Moves the parse of the JSON array in call->resp to the state after the
+ * byte at call->off, which is outside an element, and returns the number
+ * of bytes that it consumed. A byte that begins an element is not
+ * consumed: call->list becomes GODBOLT_LIST_VALUE, and the parse of the
+ * element begins with that byte at call->start. If the text is not a
+ * JSON array, call->list is GODBOLT_LIST_BAD and call->why is the reason.
  */
-static uint8_t
-godbolt_array_next (uint8_t s,
-                    char    c)
+static size_t
+godbolt_array_next (struct godbolt *call)
 {
-	if (cstr_view_space(c))
-		return s;
-	if (s == GODBOLT_LIST_OPEN)
-		return c == '[' ? GODBOLT_LIST_FIRST : GODBOLT_LIST_BAD;
-	if (c == ']' && s != GODBOLT_LIST_COMMA)
-		return GODBOLT_LIST_END;
-	if (s == GODBOLT_LIST_NEXT)
-		return c == ',' ? GODBOLT_LIST_COMMA : GODBOLT_LIST_BAD;
-	return GODBOLT_LIST_VALUE;
+	char const c = call->resp.data[call->off];
+	uint8_t const s = call->list;
+	call->start = call->off;
+	call->list = cstr_view_space(c) ? s
+	           : s == GODBOLT_LIST_OPEN ? (c == '[' ? GODBOLT_LIST_FIRST : GODBOLT_LIST_BAD)
+	           : c == ']' && s != GODBOLT_LIST_COMMA ? GODBOLT_LIST_END
+	           : s != GODBOLT_LIST_NEXT ? GODBOLT_LIST_VALUE
+	           : c == ',' ? GODBOLT_LIST_COMMA : GODBOLT_LIST_BAD;
+	if (call->list == GODBOLT_LIST_BAD)
+		godbolt_why(call, "the text is not a JSON array");
+	size_t const consumed = call->list != GODBOLT_LIST_VALUE;
+	call->off += consumed;
+	return consumed;
 }
 
 /* Returns the bytes of JSON text that the step may still parse. */
@@ -1136,14 +1141,7 @@ godbolt_list_parse (struct godbolt *call,
 	int e = 0;
 	while (!e && call->list < GODBOLT_LIST_END && used < room && call->off < body.len) {
 		if (call->list != GODBOLT_LIST_VALUE) {
-			call->list = godbolt_array_next(call->list, body.data[call->off]);
-			call->start = call->off;
-			/* A byte that begins an element is parsed with the element. */
-			size_t const consumed = call->list != GODBOLT_LIST_VALUE;
-			call->off += consumed;
-			used += consumed;
-			if (call->list == GODBOLT_LIST_BAD)
-				godbolt_why(call, "the text is not a JSON array");
+			used += godbolt_array_next(call);
 			continue;
 		}
 		struct cstr_view const part = cstr_view_slice(body, call->off, room - used);
@@ -2070,10 +2068,11 @@ godbolt_classify (struct godbolt *call)
 		godbolt_why(call, "timed out on Compiler Explorer");
 	else
 		godbolt_why(call, "exit code %" PRId64, n);
-	++call->counts[!n && !timed ? GODBOLT_ZERO : GODBOLT_OTHER];
+	bool const zero = !n && !timed;
+	++call->counts[zero ? GODBOLT_ZERO : GODBOLT_OTHER];
 	godbolt_sections_find(call);
 	call->phase = GODBOLT_WRITE;
-	if (call->tool != GODBOLT_TARGETS || n || timed)
+	if (call->tool != GODBOLT_TARGETS || !zero)
 		return GODBOLT_GO;
 	int const e = godbolt_targets_parse(call);
 	if (!e)
