@@ -129,27 +129,39 @@ cli_commands_text (struct dstr *text)
 	return 0;
 }
 
+/* The options that the help lists. The arguments of X are the long name,
+ * the key, whether the option requires an argument, the CLI_ flag that an
+ * option without an argument sets, or 0, and the line of the help.
+ */
+#define CLI_OPTIONS(X) \
+        X("socket", 's', required_argument, 0, "--socket PATH            AskAI socket (or ASKAI_SOCKET)") \
+        X("tool", 't', required_argument, 0, "--tool NAME              Select the configured ask tool") \
+        X("prompt", 'p', required_argument, 0, "-p, --prompt TEXT        Send an initial prompt") \
+        X("file", 'f', required_argument, 0, "-f, --file FILE          Read the initial prompt from a text file") \
+        X("system", 'S', required_argument, 0, "--system TEXT            Override server system instructions") \
+        X("single-turn", '1', no_argument, CLI_SINGLE, "--single-turn            Exit after one answer") \
+        X("simple-io", 'i', no_argument, CLI_SIMPLE, "--simple-io              Basic line input; automatic for pipes") \
+        X("multiline-input", 'm', no_argument, CLI_MULTILINE, \
+          "--multiline-input        Enter adds a line; finish with a trailing /") \
+        X("color", 'c', required_argument, 0, "--color auto|on|off       Terminal colors (default auto)") \
+        X("no-reasoning", 'r', no_argument, CLI_NO_REASONING, "--no-reasoning            Hide exposed reasoning") \
+        X("history-repo", 'H', required_argument, 0, \
+          "--history-repo PATH      Separate Git repository for client history") \
+        X("session-id", 'I', required_argument, 0, \
+          "--session-id ID          Override the saved-history session identity") \
+        X("no-history", 'N', no_argument, CLI_NO_HISTORY, "--no-history             Disable saved client history") \
+        X("help", 'h', no_argument, 0, "-h, --help               Show this help")
+
 static int
 cli_help (void)
 {
+	#define CLI_OPTION_HELP(name, key, argument, flag, help) "  " help "\n"
 	if (puts("Usage: askai-cli --socket PATH [options]\n"
 	         "Chat with AskAI's upstream LLM over its Unix socket.\n\n"
-	         "  --socket PATH            AskAI socket (or ASKAI_SOCKET)\n"
-	         "  --tool NAME              Select the configured ask tool\n"
-	         "  -p, --prompt TEXT        Send an initial prompt\n"
-	         "  -f, --file FILE          Read the initial prompt from a text file\n"
-	         "  --system TEXT            Override server system instructions\n"
-	         "  --single-turn            Exit after one answer\n"
-	         "  --simple-io              Basic line input; automatic for pipes\n"
-	         "  --multiline-input        Enter adds a line; finish with a trailing /\n"
-	         "  --color auto|on|off       Terminal colors (default auto)\n"
-	         "  --no-reasoning            Hide exposed reasoning\n"
-	         "  --history-repo PATH      Separate Git repository for client history\n"
-	         "  --session-id ID          Override the saved-history session identity\n"
-	         "  --no-history             Disable saved client history\n"
-	         "  -h, --help               Show this help\n\n"
-	         "Commands:") < 0)
+	         CLI_OPTIONS(CLI_OPTION_HELP)
+	         "\nCommands:") < 0)
 		return EIO;
+	#undef CLI_OPTION_HELP
 	dstr_auto text = dstr(nullptr);
 	int e = cli_commands_text(&text);
 	if (e)
@@ -165,24 +177,16 @@ cli_args (struct cli_options  *out,
           struct cli_error    *error)
 {
 	out->socket = getenv("ASKAI_SOCKET");
+	#define CLI_OPTION_ENTRY(name, key, argument, flag, help) {name, argument, nullptr, key},
 	static struct option const options[] = {
-		{"socket", required_argument, nullptr, 's'},
-		{"tool", required_argument, nullptr, 't'},
-		{"prompt", required_argument, nullptr, 'p'},
-		{"file", required_argument, nullptr, 'f'},
-		{"system", required_argument, nullptr, 'S'},
-		{"single-turn", no_argument, nullptr, '1'},
-		{"simple-io", no_argument, nullptr, 'i'},
-		{"multiline-input", no_argument, nullptr, 'm'},
-		{"color", required_argument, nullptr, 'c'},
-		{"no-reasoning", no_argument, nullptr, 'r'},
-		{"history-repo", required_argument, nullptr, 'H'},
-		{"session-id", required_argument, nullptr, 'I'},
-		{"no-history", no_argument, nullptr, 'N'},
-		{"help", no_argument, nullptr, 'h'},
+		CLI_OPTIONS(CLI_OPTION_ENTRY)
 		{"version", no_argument, nullptr, 'v'},
 		{}
 	};
+	#undef CLI_OPTION_ENTRY
+	#define CLI_OPTION_FLAG(name, key, argument, flag, help) [key] = flag,
+	static uint32_t const flags[128] = {CLI_OPTIONS(CLI_OPTION_FLAG)};
+	#undef CLI_OPTION_FLAG
 	static struct cstr_view const colors[] = {
 		[CLI_COLOR_AUTO] = CSTR_VIEW_INIT("auto"),
 		[CLI_COLOR_ON] = CSTR_VIEW_INIT("on"),
@@ -192,20 +196,19 @@ cli_args (struct cli_options  *out,
 	size_t prompts = 0;
 	int c;
 	while ((c = getopt_long(argc, argv, "hp:f:", options, nullptr)) != -1) {
+		if (c < (int)array_size(flags) && flags[c]) {
+			out->flags |= flags[c];
+			continue;
+		}
 		switch (c) {
 		case 's': out->socket = optarg; break;
 		case 't': out->tool = optarg; break;
 		case 'p': out->prompt = optarg; ++prompts; break;
 		case 'f': out->file = optarg; ++prompts; break;
 		case 'S': out->system = optarg; break;
-		case '1': out->flags |= CLI_SINGLE; break;
-		case 'i': out->flags |= CLI_SIMPLE; break;
-		case 'm': out->flags |= CLI_MULTILINE; break;
 		case 'c': color = cstr_view_index(colors, array_size(colors), cstr_view(optarg)); break;
-		case 'r': out->flags |= CLI_NO_REASONING; break;
 		case 'H': out->history_repo = optarg; break;
 		case 'I': out->session_id = optarg; break;
-		case 'N': out->flags |= CLI_NO_HISTORY; break;
 		case 'h': out->flags |= CLI_DONE; return cli_help();
 		case 'v': out->flags |= CLI_DONE; return puts("askai-cli 1") < 0 ? EIO : 0;
 		default: return cli_error_set(error, EINVAL, "Invalid option; see --help");
@@ -230,6 +233,8 @@ cli_args (struct cli_options  *out,
 	out->flags |= isatty(STDIN_FILENO) && isatty(STDOUT_FILENO) ? CLI_TTY : 0;
 	return 0;
 }
+
+#undef CLI_OPTIONS
 
 struct cli {
 	struct cli_loop           reactor;
