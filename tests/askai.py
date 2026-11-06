@@ -15044,6 +15044,9 @@ def check_godbolt(binary, up, godbolt):
                 for tool in tools[2:]:
                     assert "Clang before 18 reject -std=c23" in \
                         tool["inputSchema"]["properties"]["args"]["description"], tool
+                # godbolt_macros points to the tools with shorter output.
+                assert "godbolt_targets is shorter" in tools[4]["description"] and \
+                    "call godbolt_preprocess with their names" in tools[4]["description"]
 
                 # The languages, with the User-Agent of askai and the Accept
                 # that Compiler Explorer needs for JSON.

@@ -3002,7 +3002,9 @@ static struct {
 		CSTR_VIEW_INIT(". The output contains a record for each compilation, with the exit "
 		               "code, the macros and the messages of the compiler, and a last line "
 		               "with the counts of the results. askai sends the source to that "
-		               "service."),
+		               "service. For the target facts, godbolt_targets is shorter. For a "
+		               "few macros, call godbolt_preprocess with their names as the "
+		               "source, such as \"__STDC_VERSION__ __SIZEOF_LONG__\"."),
 	},
 	[GODBOLT_TARGETS] = {
 		"{\"name\":\"godbolt_targets\",\"title\":\"Target facts from Compiler "
