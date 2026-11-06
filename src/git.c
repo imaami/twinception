@@ -50,11 +50,8 @@ enum {
 static_assert((int)WORD <= (int)REVIEW_NAME_MAX, "a path that git reads fits a location of "
               "the review record");
 
-/** From SIGTERM to SIGKILL at a git call's deadline. */
-static constexpr uint64_t GIT_GRACE_NS = NS;
-
-static_assert(TOOL_TEXT_MAX == 4U << 20 && GIT_GRACE_NS == NS, "update git.h and the texts in "
-              "this file that say 4 MiB");
+static_assert(TOOL_TEXT_MAX == 4U << 20, "update git.h and the texts in this file that say "
+              "4 MiB");
 
 /* A configured repository. path, safe and name share one allocation, which
  * begins at path: the real path, the safe.directory setting for git, and
@@ -1031,7 +1028,7 @@ git_call_run (struct git_call *call,
 		.envp = env,
 		.max = TOOL_TEXT_MAX,
 		.deadline = call->deadline,
-		.grace = GIT_GRACE_NS,
+		.grace = GIT_GRACE,
 		/* Git can warn on stderr, for example when a branch has the same
 		 * name as a commit ID. A read discards stderr so that a warning
 		 * does not become a line of the file. */

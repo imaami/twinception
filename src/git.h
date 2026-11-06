@@ -44,6 +44,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "clk.h"
 #include "cstr_view.h"
 
 struct git;
@@ -76,6 +77,11 @@ struct plugin;
         "-c", "protocol.allow=never", \
         "-c", "gc.auto=0", \
         "-c", "maintenance.auto=false"
+
+/** The time from SIGTERM to SIGKILL at the deadline of every git process
+ *  that askai starts, in nanoseconds: the second of the file comment.
+ */
+static constexpr uint64_t GIT_GRACE = NS;
 
 /**
  * Returns the name of the repository at @p path: the last component of the
