@@ -226,19 +226,16 @@ jb_reaper_step (struct jb_reaper *reaper,
 {
 	size_t freed = 0;
 	while (freed < values && reaper->n) {
-		struct json_object *top = reaper->stack[reaper->n - 1];
 		struct json_object *val = nullptr;
-		if (!jb_pop(top, &val)) {
-			--reaper->n;
-			json_object_put(top);
+		if (!jb_pop(reaper->stack[reaper->n - 1], &val)) {
+			json_object_put(reaper->stack[--reaper->n]);
 			++freed;
-		} else if (json_object_is_type(val, json_type_array) ||
-		           json_object_is_type(val, json_type_object)) {
-			jb_reaper_add(reaper, val);
-		} else {
-			json_object_put(val);
-			++freed;
+			continue;
 		}
+		/* A container goes onto the stack, and any other value is freed. */
+		size_t const n = reaper->n;
+		jb_reaper_add(reaper, val);
+		freed += reaper->n == n;
 	}
 	return freed;
 }
