@@ -3142,6 +3142,7 @@ httpd_hub_create (size_t  loops,
 		atomic_init(&lane->idles, 0);
 		atomic_init(&lane->evicts, 0);
 	}
+	*e = 0;
 	return hub;
 }
 
@@ -3376,6 +3377,7 @@ httpd_create (struct loop             *loop,
 	list_init(&srv->taken);
 	srv->lane->loop = loop;
 	srv->lane->srv = srv;
+	*e = 0;
 	return srv;
 }
 

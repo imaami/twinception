@@ -682,7 +682,7 @@ askai_shared_make (struct askai_shared *s,
                    struct config const *cfg,
                    size_t               n)
 {
-	int e = 0;
+	int e;
 	if (cfg->n_gits &&
 	    !(s->git = git_create(cfg->gits, cfg->n_gits, cfg->git_timeout, &e)))
 		return e;
