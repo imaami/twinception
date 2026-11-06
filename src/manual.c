@@ -746,7 +746,7 @@ manual_destroy (struct manual **p_manual)
 }
 
 struct manual_metrics const *
-manual_metrics (struct manual const *manual)
+manual_counts (struct manual const *manual)
 {
 	return &manual->metrics;
 }

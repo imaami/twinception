@@ -868,7 +868,7 @@ askai_run (struct askai_shared *s,
 		.loops = s->loops,
 		.http = &home->http,
 		.jobs = &home->jobs,
-		.man = s->manual ? manual_metrics(s->manual) : nullptr,
+		.man = s->manual ? manual_counts(s->manual) : nullptr,
 		.tasks = s->tasks ? task_pool_metrics(s->tasks) : nullptr,
 		.ledger = ledger_metrics(s->ledger),
 		.n_loops = n + 1

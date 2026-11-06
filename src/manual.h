@@ -56,8 +56,9 @@ manual_create (uint32_t  recheck,
 extern void
 manual_destroy (struct manual **p_manual);
 
+/** Returns the counts of the work of the manual. */
 extern struct manual_metrics const *
-manual_metrics (struct manual const *manual);
+manual_counts (struct manual const *manual);
 
 /** The plugin of the man tool. It is built into askai (src/plugin.h), and
  *  its service is a struct manual.
