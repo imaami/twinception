@@ -11,11 +11,13 @@
 #ifndef TWINCEPTION_SRC_CHILD_H_
 #define TWINCEPTION_SRC_CHILD_H_
 
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
 
 #include "buf.h"
+#include "cstr_view.h"
 #include "list.h"
 #include "loop.h"
 
@@ -23,6 +25,9 @@
  *  process that are not reaped.
  */
 enum { CHILD_MAX = 16 };
+
+/** The refusal of a call whose child child_create() refuses with EBUSY. */
+#define CHILD_BUSY "Too many commands are running; try again in a few seconds."
 
 /** How a child is spawned. */
 enum child_flag {
@@ -86,6 +91,39 @@ struct child {
 	                                  killed it */
 	uint32_t           flags;    /**< enum child_state */
 };
+
+/** Returns the exit status of @p c if it exited before its deadline and its
+ *  output was not cut, else -1.
+ */
+static inline int
+child_status (struct child const *c)
+{
+	return c->flags & (CHILD_CUT | CHILD_LATE) || c->code != CLD_EXITED ? -1 : c->status;
+}
+
+/** Returns true if @p c exited with status 0 before its deadline and its
+ *  output was not cut, and false if @p c is nullptr.
+ */
+static inline bool
+child_ok (struct child const *c)
+{
+	return c && !child_status(c);
+}
+
+/**
+ * Writes why @p c, a child that ran @p name, failed into the @p size bytes
+ * at @p buf: it took longer than its @p timeout, in ns, a signal killed it,
+ * it exited with a status other than 0, or the reason is unknown. Returns
+ * a view of the text, or an empty view if @p c exited with status 0 before
+ * its deadline. A cut also kills the child, so the caller tests CHILD_CUT
+ * first.
+ */
+extern struct cstr_view
+child_why (struct child const *c,
+           char const         *name,
+           uint64_t            timeout,
+           char               *buf,
+           size_t              size);
 
 /** What a child runs, and how. */
 struct child_cmd {

@@ -8377,8 +8377,8 @@ def check_man(binary, up):
             for arguments, text in (({"name": "missing", "section": "3"},
                                      "No manual entry for missing in section 3."),
                                     ({"name": "missing"}, "No manual entry for missing."),
-                                    ({"name": "fail"}, "man failed, with exit status 3."),
-                                    ({"name": "broken"}, "man failed, with exit status 3."),
+                                    ({"name": "fail"}, "man exited with status 3."),
+                                    ({"name": "broken"}, "man exited with status 3."),
                                     ({"name": "nowhere"},
                                      "man named no file for the page.")):
                 for _ in range(2):
@@ -8427,14 +8427,14 @@ def check_man(binary, up):
             wait_for(lambda: len(waiters()) == 16)
             result = man_call(ai, name="spare")
             assert result.get("isError") and text_of(result) == \
-                "Too many pages are being rendered; try again in a few seconds."
+                "Too many commands are running; try again in a few seconds."
             for sock in socks:
                 sock.close()
             assert text_of(man_call(ai, name="echo")) == page
             thread.join(15)
             result, took = late[0]
             assert result.get("isError"), result
-            assert text_of(result) == "man took longer than 10 s.", result
+            assert text_of(result) == "man took longer than 10 s, and was stopped.", result
             assert 10 <= took < 12, took
             wait_for(lambda: not any(alive(p) for line in waiters() for p in line))
             assert text_of(man_call(ai, name="spare")) == "page spare\n"

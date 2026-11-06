@@ -7,7 +7,6 @@
 #include <inttypes.h>
 #include <json-c/json.h>
 #include <openssl/sha.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -314,8 +313,7 @@ notes_tool_failed (struct mcp_slot *slot,
 	if (kind == FETCH_RESUME)
 		notes_tool_drop(slot);
 	if (busy)
-		mcp_slot_tell(slot, CSTR_VIEW("Too many commands are running; try again in a few "
-		                              "seconds."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW(CHILD_BUSY), TOOL_FAILED);
 	else
 		mcp_slot_tellf(slot, TOOL_FAILED, "The notes cannot be used now: %s.", strerror(e));
 }
@@ -405,22 +403,13 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
 	               nullptr);
 }
 
-/* Returns true if git exited with status 0 before its deadline, and askai
- * did not cut its output. @p c is nullptr if git did not start.
- */
-static bool
-notes_tool_ok (struct child const *c)
-{
-	return c && !(c->flags & (CHILD_CUT | CHILD_LATE)) && c->code == CLD_EXITED && !c->status;
-}
-
 /* Returns true if git wrote a list of the notes. A list that askai cut
- * has the newest notes.
+ * contains the newest notes. @p c is nullptr if git did not start.
  */
 static bool
 notes_tool_listed (struct child const *c)
 {
-	return c && (c->flags & CHILD_CUT || notes_tool_ok(c));
+	return c && (c->flags & CHILD_CUT || child_ok(c));
 }
 
 /* Returns true if git exited with status 128. It does so if the
@@ -429,7 +418,7 @@ notes_tool_listed (struct child const *c)
 static bool
 notes_tool_none (struct child const *c)
 {
-	return !(c->flags & CHILD_LATE) && c->code == CLD_EXITED && c->status == 128;
+	return child_status(c) == 128;
 }
 
 /* Ends the call of the notes tool in @p slot. The function destroys the
@@ -593,7 +582,7 @@ notes_tool_format (struct mcp_slot *slot)
 	struct span out = buf_peek(&call->child->out);
 	struct cstr_view const format = { (char const *)out.ptr, out.len };
 	struct oid const zero = oid_zero(oid_format(cstr_view_trim_end(format)));
-	if (!notes_tool_ok(call->child) || !oid_len(&zero)) {
+	if (!child_ok(call->child) || !oid_len(&zero)) {
 		int e = cstr_view_cat(CSTR_VIEW("Cannot determine the repository "
 		                                "object format."), call->text);
 		notes_tool_end(slot, e, true);
@@ -610,7 +599,7 @@ static void
 notes_tool_created (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	if (notes_tool_ok(call->child) ||
+	if (child_ok(call->child) ||
 	    (notes_tool_raced(call->child) && notes_exists(call->loop->tool->notes))) {
 		child_destroy(&call->child);
 		notes_tool_write(slot, &(struct oid){}, NO_NOTE);
@@ -681,7 +670,7 @@ notes_tool_checked (struct mcp_slot *slot)
 	struct child const *c = call->child;
 	struct oid tip;
 	struct notes_file note = {};
-	int r = notes_tool_ok(c) ? notes_checked(buf_peek(&c->out), &tip, &note) : EIO;
+	int r = child_ok(c) ? notes_checked(buf_peek(&c->out), &tip, &note) : EIO;
 	uint64_t before = r == EEXIST ? note.bytes : NO_NOTE;
 	uint16_t fetch = notes_tool_actions[call->action].fetch;
 	if (fetch & FETCH_REPLACE)
@@ -725,7 +714,7 @@ static void
 notes_tool_added (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	if (!notes_tool_ok(call->child)) {
+	if (!child_ok(call->child)) {
 		notes_tool_end(slot, notes_tool_call_unadded(call), true);
 		return;
 	}
@@ -973,7 +962,7 @@ static void
 notes_tool_revision_step (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	if (!notes_tool_ok(call->child) ||
+	if (!child_ok(call->child) ||
 	    notes_revision_next(call->revision, buf_peek(&call->child->out))) {
 		int e = cstr_view_cat(CSTR_VIEW("Cannot use that revision in this "
 		                                "notebook. Use a full commit ID "
@@ -1040,7 +1029,7 @@ notes_tool_got_note (struct mcp_slot *slot)
 	struct child const *c = call->child;
 	struct span text = {};
 	struct oid id;
-	int r = !notes_tool_ok(c) ? EIO
+	int r = !child_ok(c) ? EIO
 	      : call->fetch & FETCH_RESTORE ? notes_read_full_out(buf_peek(&c->out), &text, &id)
 	      : notes_read_out(buf_peek(&c->out), &text, &id);
 	if (r) {
@@ -1224,7 +1213,7 @@ notes_tool_newest (struct mcp_slot *slot)
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
 	struct span text = {};
-	int r = notes_tool_ok(c) ? notes_read_out(buf_peek(&c->out), &text, nullptr) : EIO;
+	int r = child_ok(c) ? notes_read_out(buf_peek(&c->out), &text, nullptr) : EIO;
 	struct cstr_view body = { (char const *)text.ptr, text.len };
 	size_t len = text.len;
 	/* A note that is not UTF-8 text goes into the prompt as its view. The

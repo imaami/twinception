@@ -8,7 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 
 #include "buf.h"
 #include "child.h"
@@ -364,8 +363,7 @@ manual_fetch_run (struct manual_fetch *f,
 		return;
 	}
 	if (e == EBUSY) {
-		manual_fetch_fail(f, CSTR_VIEW("Too many pages are being rendered; try again in "
-		                               "a few seconds."));
+		manual_fetch_fail(f, CSTR_VIEW(CHILD_BUSY));
 		return;
 	}
 	char buf[MANUAL_WHY];
@@ -399,20 +397,9 @@ manual_fetch_ended (struct manual_fetch const *f,
 {
 	if (c->flags & CHILD_CUT)
 		return (struct cstr_view){};
-	if (c->flags & CHILD_LATE)
-		return util_format_view(why, MANUAL_WHY, "man took longer than %d s.",
-		                        MANUAL_SECONDS);
-	switch (c->code) {
-	case CLD_EXITED:
-		return !c->status ? (struct cstr_view){}
-		     : c->status == 16 ? manual_entry_none(f->alias, why)
-		     : util_format_view(why, MANUAL_WHY, "man failed, with exit status %d.",
-		                        c->status);
-	case 0:
-		return CSTR_VIEW("man ended, and why is unknown.");
-	default:
-		return util_format_view(why, MANUAL_WHY, "man was killed by signal %d.", c->status);
-	}
+	if (child_status(c) == 16)
+		return manual_entry_none(f->alias, why);
+	return child_why(c, "man", MANUAL_SECONDS * NS, why, MANUAL_WHY);
 }
 
 /* Copy as much of the page in as the step has the share for, made UTF-8

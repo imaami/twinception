@@ -8,6 +8,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <poll.h>
 #include <signal.h>
@@ -496,6 +497,28 @@ child_run (struct child_cmd const *cmd,
 	if (!e)
 		*status = info.si_status;
 	return e;
+}
+
+struct cstr_view
+child_why (struct child const *c,
+           char const         *name,
+           uint64_t            timeout,
+           char               *buf,
+           size_t              size)
+{
+	if (c->flags & CHILD_LATE)
+		return util_format_view(buf, size, "%s took longer than %" PRIu64 " s, and was "
+		                        "stopped.", name, timeout / NS);
+	switch (c->code) {
+	case CLD_EXITED:
+		return c->status ? util_format_view(buf, size, "%s exited with status %d.", name,
+		                                    c->status)
+		                 : (struct cstr_view){};
+	case 0:
+		return util_format_view(buf, size, "%s ended, and why is unknown.", name);
+	default:
+		return util_format_view(buf, size, "%s was killed by signal %d.", name, c->status);
+	}
 }
 
 struct child *

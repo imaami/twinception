@@ -1106,9 +1106,9 @@ git_call_advance (struct git_call *call,
                   struct mcp_slot *slot)
 {
 	struct child *c = call->child;
-	int e = c->flags & (CHILD_CUT | CHILD_LATE) || c->code != CLD_EXITED ? EIO : 0;
-	if (!e && c->status && !(call->phase == GIT_META && c->status == 1))
-		e = EINVAL;
+	int const status = child_status(c);
+	int e = status < 0 ? EIO
+	      : status && !(call->phase == GIT_META && status == 1) ? EINVAL : 0;
 	if (!e) {
 		switch (call->phase) {
 		case GIT_META:
@@ -1174,48 +1174,44 @@ git_ended (struct mcp_slot *slot,
 {
 	uint64_t const takes = commands[call->command].takes;
 	struct child *c = call->child;
+	struct git_loop const *gl = mcp_slot_part(slot);
 	struct cstr_view out = mcp_slot_answer(slot);
-	char buf[GIT_NOTE - 2];  /* the blank line before the note is 2 bytes at most */
-	struct cstr_view note;
+	/* The blank line before the note and its brackets are 4 bytes at most. */
+	char buf[GIT_NOTE - 4];
+	struct cstr_view note = child_why(c, "git", gl->git->timeout, buf, sizeof buf);
+	int const status = child_status(c);
 	bool failed = true;
-	if (c->flags & CHILD_LATE) {
-		struct git_loop const *gl = mcp_slot_part(slot);
-		note = util_format_view(buf, sizeof buf, "[git took longer than %.0f s, and was "
-		                        "stopped.]", (double)gl->git->timeout / 1e9);
-	} else if (c->flags & CHILD_CUT) {
-		note = CSTR_VIEW("[The output goes on past the 4 MiB shown.]");
+	if ((c->flags & (CHILD_CUT | CHILD_LATE)) == CHILD_CUT) {
+		note = CSTR_VIEW("The output goes on past the 4 MiB shown.");
 		failed = c->code == CLD_EXITED && c->status;
-	} else if (c->code != CLD_EXITED) {
-		note = util_format_view(buf, sizeof buf, "[git was killed by signal %d.]",
-		                        c->status);
-	} else if (!c->status) {
-		note = out.len ? (struct cstr_view){} : CSTR_VIEW("[No output.]");
+	} else if (!status) {
+		note = out.len ? (struct cstr_view){} : CSTR_VIEW("No output.");
 		failed = false;
-	} else if (c->status == 1 && (takes & PATTERN)) {
-		note = CSTR_VIEW("[No matches.]");
+	} else if (status == 1 && (takes & PATTERN)) {
+		note = CSTR_VIEW("No matches.");
 		failed = false;
-	} else if (takes & LINES) {
-		static char const fmt[] = "[No file at that path in commit %s. ls-tree "
-		                          "lists the files there.%s]";
+	} else if (status > 0 && takes & (LINES | OBJECT)) {
+		static char const fmt[] = "No file at that path in commit %s. ls-tree lists "
+		                          "the files there.%s";
 		static char const hint[] = " If :N after the file name is a line number, "
 		                           "give the file alone as the revision and "
 		                           "\"line\": N.";
 		static_assert(sizeof fmt - 4 + OID_SHA256 + sizeof hint - 1 <= sizeof buf,
 		              "the note fits");
 		struct git_revision const *rev = &call->revisions[0];
-		note = util_format_view(buf, sizeof buf, fmt, call->roots[rev->root].oid.hex,
-		                        git_line_hint(rev->path.data + 1) ? hint : "");
-	} else {
-		note = util_format_view(buf, sizeof buf, takes & OBJECT
-		                        ? "[The committed object could not be read (git "
-		                          "exited with status %d).]"
-		                        : "[git exited with status %d.]", c->status);
+		note = takes & LINES
+		     ? util_format_view(buf, sizeof buf, fmt, call->roots[rev->root].oid.hex,
+		                        git_line_hint(rev->path.data + 1) ? hint : "")
+		     : util_format_view(buf, sizeof buf, "The committed object could not be "
+		                        "read (git exited with status %d).", status);
 	}
 	git_drop(slot);
 	struct cstr_view const p[] = {
 		!out.len ? CSTR_VIEW("") : out.data[out.len - 1] == '\n' ? CSTR_VIEW("\n")
 		                                                         : CSTR_VIEW("\n\n"),
+		CSTR_VIEW("["),
 		note,
+		CSTR_VIEW("]"),
 	};
 	int e = 0;
 	size_t taken;
@@ -1674,8 +1670,7 @@ git_start (struct mcp_slot    *slot,
 	}
 	git_call_destroy(&call);
 	if (e == EBUSY) {
-		mcp_slot_tell(slot, CSTR_VIEW("Too many commands are running; try again in a "
-		                              "few seconds."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW(CHILD_BUSY), TOOL_FAILED);
 		return;
 	}
 	LOG(LOG_WARN, "Cannot run git: %s.", strerror(e));
