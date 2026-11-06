@@ -319,7 +319,6 @@ enum godbolt_action : uint8_t {
 #define GODBOLT_ACTION(NAME, name, singular, header) GODBOLT_##NAME,
 	GODBOLT_ACTIONS_X(GODBOLT_ACTION)
 #undef GODBOLT_ACTION
-	GODBOLT_ACTIONS
 };
 
 static struct {
@@ -1171,10 +1170,8 @@ godbolt_tagged (struct cstr_view const *tags,
                 size_t                  n,
                 struct cstr_view        family)
 {
-	for (size_t i = 0; i < n; ++i)
-		if (cstr_view_equal(tags[i], family))
-			return true;
-	return !n && cstr_view_equal(family, CSTR_VIEW("unknown"));
+	return cstr_view_index(tags, n, family) < n ||
+	       (!n && cstr_view_equal(family, CSTR_VIEW("unknown")));
 }
 
 /* Returns whether an element of a list matches the words of the argument
@@ -1284,13 +1281,9 @@ godbolt_count_families (struct godbolt         *call,
                         struct cstr_view const *tags,
                         size_t                  n)
 {
-	for (size_t i = 0; i < n; ++i) {
-		size_t k = 0;
-		while (k < i && !cstr_view_equal(tags[i], tags[k]))
-			++k;
-		if (k == i)
+	for (size_t i = 0; i < n; ++i)
+		if (cstr_view_index(tags, i, tags[i]) == i)
 			godbolt_count(call, tags[i].data);
-	}
 	return n ? call->e : godbolt_count(call, "unknown");
 }
 
@@ -2493,16 +2486,14 @@ godbolt_args_ids (struct godbolt_args *a,
                   struct json_object  *v)
 {
 	size_t const n = jb_len(v);
-	if (!n || n > GODBOLT_IDS)
+	if (!n || n > array_size(a->ids))
 		return EINVAL;
 	for (size_t i = 0; i < n; ++i) {
 		struct cstr_view const id = godbolt_text(json_object_array_get_idx(v, i), 1,
 		                                         GODBOLT_ID_MAX, godbolt_id_bytes);
-		if (!id.data || cstr_view_equal(id, CSTR_VIEW(".")) || cstr_view_equal(id, CSTR_VIEW("..")))
+		if (!id.data || cstr_view_equal(id, CSTR_VIEW(".")) ||
+		    cstr_view_equal(id, CSTR_VIEW("..")) || cstr_view_index(a->ids, i, id) < i)
 			return EINVAL;
-		for (size_t k = 0; k < i; ++k)
-			if (cstr_view_equal(id, a->ids[k]))
-				return EINVAL;
 		a->ids[i] = id;
 	}
 	a->n_ids = (uint8_t)n;
@@ -2517,7 +2508,7 @@ godbolt_args_strings (struct godbolt_args *a,
                       struct json_object  *v)
 {
 	size_t const n = jb_len(v);
-	if (!n || n > GODBOLT_ARGS)
+	if (!n || n > array_size(a->strings))
 		return EINVAL;
 	for (size_t i = 0; i < n; ++i) {
 		a->strings[i] = godbolt_text(json_object_array_get_idx(v, i), 0, GODBOLT_ARG_MAX,
@@ -2542,7 +2533,7 @@ godbolt_args_words (struct godbolt_args *a,
 	static char const space[] = " \t\n\v\f\r";
 	a->n_words = 0;
 	for (size_t i = strspn(t.data, space); i < t.len; i += strspn(t.data + i, space)) {
-		if (a->n_words == GODBOLT_WORDS)
+		if (a->n_words == array_size(a->words))
 			return EINVAL;
 		size_t const k = strcspn(t.data + i, space);
 		a->words[a->n_words++] = (struct cstr_view){ t.data + i, k };
@@ -2582,10 +2573,11 @@ godbolt_args_set (struct godbolt_args *a,
 	switch (arg) {
 	case GODBOLT_ARG_ACTION: {
 		struct cstr_view const t = godbolt_text(v, 1, GODBOLT_ID_MAX, nullptr);
-		for (a->action = 0; a->action < GODBOLT_ACTIONS; ++a->action)
-			if (cstr_view_equal(t, godbolt_actions[a->action].name))
-				return 0;
-		return EINVAL;
+		a->action = 0;
+		while (a->action < array_size(godbolt_actions) &&
+		       !cstr_view_equal(t, godbolt_actions[a->action].name))
+			++a->action;
+		return a->action < array_size(godbolt_actions) ? 0 : EINVAL;
 	}
 	case GODBOLT_ARG_LANGUAGE:
 		a->language = godbolt_text(v, 1, GODBOLT_LANGUAGE_MAX, godbolt_language_bytes);
@@ -2785,7 +2777,7 @@ godbolt_start (struct mcp_slot    *slot,
 	struct loop *loop = mcp_slot_loop(slot);
 	void **own = mcp_slot_own(slot);
 	if (!cfg || !loop || !own || cfg->url.len >= sizeof cfg->url.data ||
-	    cfg->share >= GODBOLT_SHARES) {
+	    cfg->share >= array_size(godbolt_shares)) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "The call has no valid configuration of the "
 		               "godbolt plugin, no loop or no own word.");
 		return;
@@ -2859,8 +2851,8 @@ static int
 godbolt_config_share (struct godbolt_config *c,
                       struct json_object    *v)
 {
-	size_t const share = cstr_view_index(godbolt_shares, GODBOLT_SHARES, jb_view(v));
-	if (share == GODBOLT_SHARES)
+	size_t const share = cstr_view_index(godbolt_shares, array_size(godbolt_shares), jb_view(v));
+	if (share == array_size(godbolt_shares))
 		return EINVAL;
 	c->share = (uint32_t)share;
 	return 0;
@@ -2919,7 +2911,7 @@ godbolt_definition (void const        *service,
                     struct cstr_view   tail)
 {
 	struct godbolt_config const *cfg = service ? service : &godbolt_defaults;
-	if (cfg->url.len >= sizeof cfg->url.data || cfg->share >= GODBOLT_SHARES)
+	if (cfg->url.len >= sizeof cfg->url.data || cfg->share >= array_size(godbolt_share_notes))
 		return nullptr;
 	struct cstr_view const url = util_text_view(&cfg->url);
 	struct cstr_view const link = godbolt_params[tool].args >> GODBOLT_ARG_SHARE & 1
