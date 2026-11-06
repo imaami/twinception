@@ -29,6 +29,25 @@ struct cli_network_result {
 	char message[256];
 };
 
+/** A call that a cancel without force ends. Other calls are for control,
+ *  and only a forced cancel ends them.
+ */
+enum { CLI_NETWORK_INTERRUPTIBLE = 1u << 0 };
+
+/** A request to AskAI. Admission copies the views, and the call passes
+ *  context to header and body. socket ends in a NUL.
+ */
+struct cli_network_post {
+	struct cstr_view        socket;
+	struct cstr_view        session;
+	struct cstr_view        wire;
+	cli_network_receive_fn *header;
+	cli_network_receive_fn *body;
+	void                   *context;
+	long                    timeout;  /**< seconds, 0 for none */
+	uint64_t                flags;    /**< CLI_NETWORK_INTERRUPTIBLE or 0 */
+};
+
 /** Called once on the UI thread after this call's response bytes. The result
  * is borrowed until return. Callbacks may submit, but must not wait.
  */
@@ -88,17 +107,10 @@ cli_network_cancel_call (struct cli_network *network,
  * done, including on shutdown. An admission error does not call done.
  */
 extern int
-cli_network_submit (struct cli_network      *network,
-                    struct cstr_view         socket,
-                    struct cstr_view         session,
-                    struct cstr_view         wire,
-                    long                     timeout,
-                    bool                     interruptible,
-                    cli_network_receive_fn  *header,
-                    cli_network_receive_fn  *body,
-                    void                    *context,
-                    cli_network_done_fn     *done,
-                    uint64_t                *id);
+cli_network_submit (struct cli_network            *network,
+                    struct cli_network_post const *post,
+                    cli_network_done_fn           *done,
+                    uint64_t                      *id);
 
 /**
  * Submit copied request data, then service UI turns until completion. All
@@ -107,15 +119,8 @@ cli_network_submit (struct cli_network      *network,
  * EINTR.
  */
 extern int
-cli_network_perform (struct cli_network        *network,
-                     struct cstr_view           socket,
-                     struct cstr_view           session,
-                     struct cstr_view           wire,
-                     long                       timeout,
-                     bool                       interruptible,
-                     cli_network_receive_fn    *header,
-                     cli_network_receive_fn    *body,
-                     void                      *context,
-                     struct cli_network_result *result);
+cli_network_perform (struct cli_network            *network,
+                     struct cli_network_post const *post,
+                     struct cli_network_result     *result);
 
 #endif /* TWINCEPTION_SRC_CLI_NETWORK_H_ */

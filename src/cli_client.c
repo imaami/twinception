@@ -199,13 +199,27 @@ cli_client_response_status (struct cli_client_response      *response,
 	return 0;
 }
 
-static int cli_client_post(struct cli_client *client, struct cstr_view wire,
-                           struct cli_client_response *response, bool interruptible, long timeout)
+/* The request of @p wire to AskAI for @p response. */
+static struct cli_network_post
+cli_client_network_post (struct cli_client          *client,
+                         struct cstr_view            wire,
+                         struct cli_client_response *response,
+                         long                        timeout,
+                         uint64_t                    flags)
 {
+	return (struct cli_network_post){
+		.socket = cstr_view_dstr(&client->socket), .session = cstr_view_dstr(&client->session),
+		.wire = wire, .header = cli_client_response_header, .body = cli_client_response_receive,
+		.context = response, .timeout = timeout, .flags = flags,
+	};
+}
+
+static int cli_client_post(struct cli_client *client, struct cstr_view wire,
+                           struct cli_client_response *response, uint64_t flags, long timeout)
+{
+	struct cli_network_post const post = cli_client_network_post(client, wire, response, timeout, flags);
 	struct cli_network_result result;
-	int e = cli_network_perform(client->network, cstr_view_dstr(&client->socket),
-	                            cstr_view_dstr(&client->session), wire, timeout, interruptible,
-	                            cli_client_response_header, cli_client_response_receive, response, &result);
+	int e = cli_network_perform(client->network, &post, &result);
 	return cli_client_response_status(response, e, &result);
 }
 
@@ -218,7 +232,7 @@ static struct json_object *cli_client_packet(char const *method, struct json_obj
 }
 
 static int cli_client_notification(struct cli_client *client, char const *method,
-                                   struct json_object *params, bool interruptible,
+                                   struct json_object *params, uint64_t flags,
                                    long timeout, struct cli_error *error)
 {
 	cli_json_auto message = cli_client_packet(method, params, 0);
@@ -227,7 +241,7 @@ static int cli_client_notification(struct cli_client *client, char const *method
 	struct cstr_view wire;
 	int e = cli_client_wire(message, JB_WIRE, &wire, error);
 	if (!e)
-		e = cli_client_post(client, wire, &response, interruptible, timeout);
+		e = cli_client_post(client, wire, &response, flags, timeout);
 	cli_client_response_fini(&response);
 	return e;
 }
@@ -292,7 +306,7 @@ cli_client_cancel (struct cli_client *client,
 	                                       "reason", json_object_new_string("Interrupted by the terminal user"), nullptr);
 	struct cli_error error = {};
 	uint64_t request;
-	int e = wait ? cli_client_notification(client, "notifications/cancelled", params, false, 5, &error)
+	int e = wait ? cli_client_notification(client, "notifications/cancelled", params, 0, 5, &error)
 	             : cli_client_call_start(client, "notifications/cancelled", params,
 	                                     nullptr, nullptr, nullptr, 0, &request, &error);
 	cli_client_report_cancel(client, e, &error);
@@ -315,7 +329,7 @@ int cli_client_rpc(struct cli_client *client, char const *method,
 	int e = cli_client_wire(message, JB_WIRE, &wire, error);
 	bool call = !strcmp(method, "tools/call");
 	if (!e)
-		e = cli_client_post(client, wire, &response, true, call ? 0 : 30);
+		e = cli_client_post(client, wire, &response, CLI_NETWORK_INTERRUPTIBLE, call ? 0 : 30);
 	if (e == EINTR && call)
 		cli_client_cancel(client, id, true);
 	if (!e)
@@ -395,10 +409,9 @@ cli_client_call_start (struct cli_client    *client,
 	if (!call)
 		return e;
 	long timeout = !id ? 5 : !strcmp(method, "tools/call") ? 0 : 30;
-	e = cli_network_submit(client->network, cstr_view_dstr(&client->socket),
-	                        cstr_view_dstr(&client->session), wire, timeout, id != 0,
-	                        cli_client_response_header, cli_client_response_receive,
-	                        &call->response, cli_client_call_done, request);
+	struct cli_network_post const post = cli_client_network_post(client, wire, &call->response, timeout,
+	                                                             id ? CLI_NETWORK_INTERRUPTIBLE : 0);
+	e = cli_network_submit(client->network, &post, cli_client_call_done, request);
 	if (e) {
 		cli_client_call_destroy(&call);
 		if (e == EAGAIN || e == ENOBUFS)
@@ -444,7 +457,8 @@ int cli_client_connect(struct cli_client *client, struct cli_error *error)
 	if (!e && (!jb_is(jb_get(initialized, "protocolVersion"), CLI_VERSION) || !dstr_len(&client->session)))
 		e = cli_error_set(error, EPROTO, "AskAI did not negotiate the supported MCP session");
 	if (!e)
-		e = cli_client_notification(client, "notifications/initialized", json_object_new_object(), true, 30, error);
+		e = cli_client_notification(client, "notifications/initialized", json_object_new_object(),
+		                            CLI_NETWORK_INTERRUPTIBLE, 30, error);
 	return e ? e : cli_client_refresh(client, error);
 }
 

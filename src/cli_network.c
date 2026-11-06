@@ -14,6 +14,9 @@
 #include "loop.h"
 #include "util.h"
 
+/* Calls for control are admitted past the bounds of the other calls, by
+ * CLI_NETWORK_CONTROL_CALLS calls and CLI_NETWORK_CONTROL_BYTES bytes.
+ */
 enum {
 	CLI_NETWORK_BYTES = 256 * 1024,
 	CLI_NETWORK_DELIVERY = 64 * 1024,
@@ -21,10 +24,11 @@ enum {
 	CLI_NETWORK_CALLS = 16,
 	CLI_NETWORK_CONTROL_CALLS = 2,
 	CLI_NETWORK_REQUEST_BYTES = 32 * 1024 * 1024,
+	CLI_NETWORK_CONTROL_BYTES = 64 * 1024,
 };
 
+/* The bits of a call's flags, after CLI_NETWORK_INTERRUPTIBLE. */
 enum {
-	CLI_NETWORK_INTERRUPTIBLE = 1u << 0,
 	CLI_NETWORK_FINISHED = 1u << 1,
 	CLI_NETWORK_DONE = 1u << 2,
 	CLI_NETWORK_ABANDONED = 1u << 3,
@@ -669,38 +673,13 @@ cli_network_start (struct loop *loop,
 	curl_loop_action(&network->curl, CURL_SOCKET_TIMEOUT, 0);
 }
 
-static void
-cli_network_call_init (struct cli_network_call   *call,
-                       cli_network_receive_fn    *header,
-                       cli_network_receive_fn    *body,
-                       cli_network_done_fn       *done,
-                       void                      *context,
-                       struct cli_network_result *result,
-                       uint64_t                   id,
-                       size_t                     bytes,
-                       bool                       interruptible)
-{
-	*call = (struct cli_network_call){
-		.header = header, .body = body, .complete = done, .context = context, .result = result,
-		.id = id, .bytes = bytes, .flags = interruptible ? CLI_NETWORK_INTERRUPTIBLE : 0,
-	};
-	list_init(&call->received);
-}
-
 static struct cli_network_request *
-cli_network_request_create (struct cli_network        *network,
-                            struct cstr_view           socket,
-                            struct cstr_view           session,
-                            struct cstr_view           wire,
-                            long                       timeout,
-                            bool                       interruptible,
-                            cli_network_receive_fn    *header,
-                            cli_network_receive_fn    *body,
-                            void                      *context,
-                            cli_network_done_fn       *done,
-                            struct cli_network_result *result,
-                            size_t                     bytes,
-                            int                       *e)
+cli_network_request_create (struct cli_network            *network,
+                            struct cli_network_post const *post,
+                            cli_network_done_fn           *done,
+                            struct cli_network_result     *result,
+                            size_t                         bytes,
+                            int                           *e)
 {
 	struct cli_network_request *request = calloc(1, sizeof *request);
 	*e = request ? 0 : ENOMEM;
@@ -708,27 +687,31 @@ cli_network_request_create (struct cli_network        *network,
 		return nullptr;
 	atomic_init(&request->cancelled, false);
 	request->network = network;
-	cli_network_call_init(&request->call, header, body, done, context, result,
-	                      ++network->sequence, bytes, interruptible);
+	request->call = (struct cli_network_call){
+		.header = post->header, .body = post->body, .complete = done, .context = post->context,
+		.result = result, .id = ++network->sequence, .bytes = bytes,
+		.flags = post->flags & CLI_NETWORK_INTERRUPTIBLE,
+	};
+	list_init(&request->call.received);
 	request->start.fn = cli_network_start;
 	request->done.fn = cli_network_request_done;
 	request->easy = curl_easy_init();
-	request->socket = strndup(socket.data, socket.len);
-	request->wire = malloc(wire.len ? wire.len : 1);
+	request->socket = strndup(post->socket.data, post->socket.len);
+	request->wire = malloc(post->wire.len ? post->wire.len : 1);
 	*e = request->easy && request->socket && request->wire ? 0 : ENOMEM;
 	if (*e)
 		goto fail;
-	if (wire.len)
-		memcpy(request->wire, wire.data, wire.len);
+	if (post->wire.len)
+		memcpy(request->wire, post->wire.data, post->wire.len);
 	*e = cli_network_add_header(request, "Content-Type: application/json");
 	if (!*e)
 		*e = cli_network_add_header(request, "Accept: application/json, text/event-stream");
 	if (!*e)
 		*e = cli_network_add_header(request, "MCP-Protocol-Version: " CLI_VERSION);
-	if (!*e && session.len) {
+	if (!*e && post->session.len) {
 		/* Admission bounds the session to far less than INT_MAX bytes. */
 		dstr_auto line = dstr(nullptr);
-		*e = dstr_printf(&line, "Mcp-Session-Id: %.*s", (int)session.len, session.data)
+		*e = dstr_printf(&line, "Mcp-Session-Id: %.*s", (int)post->session.len, post->session.data)
 		   ? cli_network_add_header(request, dstr_get(&line)) : ENOMEM;
 	}
 	if (*e)
@@ -748,10 +731,10 @@ cli_network_request_create (struct cli_network        *network,
 	CLI_NETWORK_OPTION(CURLOPT_FOLLOWLOCATION, 0L);
 	CLI_NETWORK_OPTION(CURLOPT_NOSIGNAL, 1L);
 	CLI_NETWORK_OPTION(CURLOPT_CONNECTTIMEOUT, 10L);
-	CLI_NETWORK_OPTION(CURLOPT_TIMEOUT, timeout);
+	CLI_NETWORK_OPTION(CURLOPT_TIMEOUT, post->timeout);
 	CLI_NETWORK_OPTION(CURLOPT_POST, 1L);
 	CLI_NETWORK_OPTION(CURLOPT_POSTFIELDS, request->wire);
-	CLI_NETWORK_OPTION(CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)wire.len);
+	CLI_NETWORK_OPTION(CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)post->wire.len);
 	CLI_NETWORK_OPTION(CURLOPT_HTTPHEADER, request->headers);
 	CLI_NETWORK_OPTION(CURLOPT_WRITEFUNCTION, cli_network_body);
 	CLI_NETWORK_OPTION(CURLOPT_WRITEDATA, request);
@@ -767,22 +750,15 @@ fail:
 }
 
 static int
-cli_network_admit (struct cli_network          *network,
-                   struct cstr_view             socket,
-                   struct cstr_view             session,
-                   struct cstr_view             wire,
-                   long                         timeout,
-                   bool                         interruptible,
-                   cli_network_receive_fn      *header,
-                   cli_network_receive_fn      *body,
-                   void                        *context,
-                   cli_network_done_fn         *done,
-                   struct cli_network_result   *result,
-                   struct cli_network_request **out)
+cli_network_admit (struct cli_network            *network,
+                   struct cli_network_post const *post,
+                   cli_network_done_fn           *done,
+                   struct cli_network_result     *result,
+                   struct cli_network_request   **out)
 {
 	*out = nullptr;
-	if (!network || !socket.data || !socket.len || (session.len && !session.data) ||
-	    (wire.len && !wire.data))
+	if (!network || !post || !post->socket.data || !post->socket.len ||
+	    (post->session.len && !post->session.data) || (post->wire.len && !post->wire.data))
 		return EINVAL;
 	if (network->stopping || network->joined)
 		return ESHUTDOWN;
@@ -791,11 +767,13 @@ cli_network_admit (struct cli_network          *network,
 		return stopped;
 	if (network->sequence == UINT64_MAX)
 		return EOVERFLOW;
-	size_t limit = CLI_NETWORK_REQUEST_BYTES + (interruptible ? 0 : 64 * 1024);
-	if (network->call_count >= CLI_NETWORK_CALLS + (interruptible ? 0 : CLI_NETWORK_CONTROL_CALLS))
+	bool control = !(post->flags & CLI_NETWORK_INTERRUPTIBLE);
+	size_t const limit = CLI_NETWORK_REQUEST_BYTES + control * CLI_NETWORK_CONTROL_BYTES;
+	size_t const calls = CLI_NETWORK_CALLS + control * CLI_NETWORK_CONTROL_CALLS;
+	if (network->call_count >= calls)
 		return EAGAIN;
 	size_t bytes = sizeof(struct cli_network_request) + 1;
-	size_t const lengths[] = {socket.len, session.len, wire.len};
+	size_t const lengths[] = {post->socket.len, post->session.len, post->wire.len};
 	for (size_t i = 0; i < array_size(lengths); ++i) {
 		if (lengths[i] > limit - bytes)
 			return EFBIG;
@@ -804,8 +782,7 @@ cli_network_admit (struct cli_network          *network,
 	if (network->request_bytes > limit || bytes > limit - network->request_bytes)
 		return EAGAIN;
 	int e;
-	struct cli_network_request *request = cli_network_request_create(network, socket, session, wire,
-	                                       timeout, interruptible, header, body, context, done, result, bytes, &e);
+	struct cli_network_request *request = cli_network_request_create(network, post, done, result, bytes, &e);
 	if (!request)
 		return e;
 	list_append(&network->calls, &request->call.hook);
@@ -824,47 +801,31 @@ cli_network_admit (struct cli_network          *network,
 }
 
 int
-cli_network_submit (struct cli_network     *network,
-                    struct cstr_view        socket,
-                    struct cstr_view        session,
-                    struct cstr_view        wire,
-                    long                    timeout,
-                    bool                    interruptible,
-                    cli_network_receive_fn *header,
-                    cli_network_receive_fn *body,
-                    void                   *context,
-                    cli_network_done_fn    *done,
-                    uint64_t               *id)
+cli_network_submit (struct cli_network            *network,
+                    struct cli_network_post const *post,
+                    cli_network_done_fn           *done,
+                    uint64_t                      *id)
 {
 	if (!done || !id)
 		return EINVAL;
 	*id = 0;
 	struct cli_network_request *request;
-	int e = cli_network_admit(network, socket, session, wire, timeout, interruptible,
-	                          header, body, context, done, nullptr, &request);
+	int e = cli_network_admit(network, post, done, nullptr, &request);
 	if (!e)
 		*id = request->call.id;
 	return e;
 }
 
 int
-cli_network_perform (struct cli_network        *network,
-                     struct cstr_view           socket,
-                     struct cstr_view           session,
-                     struct cstr_view           wire,
-                     long                       timeout,
-                     bool                       interruptible,
-                     cli_network_receive_fn    *header,
-                     cli_network_receive_fn    *body,
-                     void                      *context,
-                     struct cli_network_result *result)
+cli_network_perform (struct cli_network            *network,
+                     struct cli_network_post const *post,
+                     struct cli_network_result     *result)
 {
 	*result = (struct cli_network_result){};
 	if (network->waiting || network->delivering || network->ui->dispatching)
 		return EBUSY;
 	struct cli_network_request *request;
-	int e = cli_network_admit(network, socket, session, wire, timeout, interruptible,
-	                          header, body, context, nullptr, result, &request);
+	int e = cli_network_admit(network, post, nullptr, result, &request);
 	if (e)
 		return e;
 	struct cli_network_call *call = &request->call;
