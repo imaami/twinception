@@ -8670,7 +8670,7 @@ def check_git(binary, up):
                 schema["required"] == ["repo", "command"], schema
             # The description has an example call that reads a file with read
             # and HEAD:path, so that a model tries that first.
-            assert '"revisions": ["HEAD:src/main.c"]' in tools[1]["description"] and \
+            assert '"revisions": ["HEAD:src/journal.c"]' in tools[1]["description"] and \
                 "HEAD:path" in schema["properties"]["revisions"]["description"], tools[1]
             assert {"line", "count"} <= set(schema["properties"]), schema
             assert text_of(call(ai, repo="proj", command="show",
@@ -8784,10 +8784,10 @@ def check_git(binary, up):
                      "Only git grep takes a pattern."),
                     ({"repo": "proj", "command": "read"},
                      "git read needs the file as its revision, such as "
-                     "\"revisions\": [\"HEAD:src/main.c\"]."),
+                     "\"revisions\": [\"HEAD:src/journal.c\"]."),
                     ({"repo": "proj", "command": "read", "revisions": ["HEAD"]},
                      "git read needs the file as its revision, such as "
-                     "\"revisions\": [\"HEAD:src/main.c\"]."),
+                     "\"revisions\": [\"HEAD:src/journal.c\"]."),
                     ({"repo": "proj", "command": "read", "paths": ["a.txt"]},
                      "git read takes no paths. To name a file, give the revision "
                      "HEAD:path."),

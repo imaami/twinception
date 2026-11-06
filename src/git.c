@@ -236,10 +236,10 @@ static struct {
 } const commands[] = {
 	{ CSTR_VIEW_INIT("read"),      read_options,      { "blob" },
 	  "Numbered lines of a committed file. Give the file as the one revision, "
-	  "commit:path such as HEAD:src/main.c, the first line as line (default 1) "
-	  "and the most lines as count (default: as many as the window holds). The "
-	  "output's first line names the commit; its last line says where to read "
-	  "on.", END | OBJECT | SINGLE | LINES },
+	  "commit:path such as HEAD:src/journal.c, the first line as line "
+	  "(default 1) and the most lines as count (default: as many as the window "
+	  "holds). The output's first line names the commit; its last line says "
+	  "where to read on.", END | OBJECT | SINGLE | LINES },
 	{ CSTR_VIEW_INIT("log"),       log_options,       { "--no-ext-diff", "--no-textconv" },
 	  "Committed history; defaults to HEAD. Paths restrict the history.",
 	  FILES | END | RANGE },
@@ -431,7 +431,7 @@ git_definition (void const *service)
 			"Commands default to "
 			"HEAD, except diff, which needs two commits or an explicit range. "
 			"To read a file, use read with the file as the revision: "
-			"{\"command\": \"read\", \"revisions\": [\"HEAD:src/main.c\"], "
+			"{\"command\": \"read\", \"revisions\": [\"HEAD:src/journal.c\"], "
 			"\"line\": 120, \"count\": 40} gives lines 120 to 159 with their "
 			"numbers and names the commit. A grep match "
 			"<commit>:<path>:<line>:<text> reads as \"revisions\": "
@@ -861,7 +861,7 @@ git_call_command (struct git_call  *call,
 	}
 	if (read && !call->revisions[0].path.len)
 		return git_wrong(why, "git read needs the file as its revision, such as "
-		                 "\"revisions\": [\"HEAD:src/main.c\"].");
+		                 "\"revisions\": [\"HEAD:src/journal.c\"].");
 	if ((takes & PAIR) && endpoints != 2)
 		return git_wrong(why, "git diff needs two commits, or one explicit "
 		                 "A..B or A...B range.");

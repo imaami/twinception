@@ -454,13 +454,13 @@ as `commit:path`, from `line` (default 1), `count` of them at most (default as
 many as the caller's window holds):
 
 ```json
-{ "repo": "proj", "command": "read", "revisions": ["HEAD:src/main.c"],
+{ "repo": "proj", "command": "read", "revisions": ["HEAD:src/journal.c"],
   "line": 120, "count": 40 }
 ```
 
 The first line of the output names the repository, the file, the full commit
 ID and the lines given:
-`[Repository proj, file src/main.c at commit ID: lines 120 to 159 of 900.]`.
+`[Repository proj, file src/journal.c at commit ID: lines 120 to 159 of 900.]`.
 Each line follows as its number, a tab and its text. The last line gives the
 revision, with the commit ID, and the `line` to read on from, or says that the
 file ends there. The `commit:path` of a `grep` match is a revision of `read`,
