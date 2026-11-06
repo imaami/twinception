@@ -16,7 +16,6 @@
 #include <unistd.h>
 
 #include "autocomplete_file.h"
-#include "buf.h"
 #include "child.h"
 #include "cli_client.h"
 #include "cli_command.h"
@@ -57,20 +56,14 @@ cli_read_file (struct autocomplete_file const *files,
 		                     strerror(e));
 	}
 	dstr_auto contents = dstr(nullptr);
-	__attribute__((cleanup(buf_fini)))
-	struct buf bytes = {};
 	char chunk[8192];
 	size_t count;
 	int e = 0;
 	/* A file read can end inside a UTF-8 character. Assemble bytes first. */
-	while ((count = fread(chunk, 1, sizeof chunk, file))) {
-		if (count > CLI_LIMIT - bytes.tail) {
-			e = cli_error_set(error, EFBIG, "Prompt file exceeds the %d MiB client limit", CLI_LIMIT >> 20);
-			break;
-		}
-		e = buf_put(&bytes, chunk, count, CLI_LIMIT);
-		if (e)
-			break;
+	while (!e && (count = fread(chunk, 1, sizeof chunk, file))) {
+		e = count > CLI_LIMIT - dstr_len(&contents)
+		  ? cli_error_set(error, EFBIG, "Prompt file exceeds the %d MiB client limit", CLI_LIMIT >> 20)
+		  : dstr_cat_n(&contents, chunk, count) ? 0 : ENOMEM;
 		if (count < sizeof chunk)
 			break;
 	}
@@ -79,11 +72,8 @@ cli_read_file (struct autocomplete_file const *files,
 	if (fclose(file) && !e)
 		e = errno;
 	file = nullptr;
-	struct cstr_view result = {(char const *)bytes.data, bytes.tail};
-	if (!e && !jb_is_text(result))
+	if (!e && !jb_is_text(cstr_view_dstr(&contents)))
 		e = cli_error_set(error, EILSEQ, "Prompt files must contain UTF-8 text without NUL bytes");
-	if (!e && cstr_view_cat(result, &contents))
-		e = ENOMEM;
 	if (!e) {
 		dstr_cleanup(text);
 		*text = dstr_move(&contents);
