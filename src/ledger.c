@@ -493,12 +493,14 @@ ledger_destroy (struct ledger **p_ledger)
 	*p_ledger = nullptr;
 	for (struct htab_node *node = htab_next(&l->tasks, nullptr), *next; node; node = next) {
 		next = htab_next(&l->tasks, node);
+		htab_unlink(&l->tasks, node);
 		struct ledger_task *t = container_of(node, struct ledger_task, node);
 		t->owner = nullptr;
 		ledger_task_put(t);
 	}
 	for (struct htab_node *node = htab_next(&l->owners, nullptr), *next; node; node = next) {
 		next = htab_next(&l->owners, node);
+		htab_unlink(&l->owners, node);
 		free(container_of(node, struct ledger_owner, node));
 	}
 	pthread_mutex_destroy(&l->lock);
@@ -962,7 +964,9 @@ ledger_look_put (struct ledger_look *look)
 {
 	if (!look)
 		return;
-	for (uint32_t i = 0; i < look->n_tasks; ++i)
+	for (uint32_t i = 0; i < look->n_tasks; ++i) {
 		ledger_task_put(look->tasks[i]);
+		look->tasks[i] = nullptr;
+	}
 	look->n_tasks = 0;
 }
