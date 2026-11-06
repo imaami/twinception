@@ -1425,9 +1425,10 @@ line longer than the window is cut by bytes. A
 successful search with no matches says `[No matches.]`;
 other nonzero Git exits are reported as errors. A revision that names no
 readable commit gets one text that lists the causes, the same for a hash that
-does not exist and one that is not reachable. Failed `read`, `show` and `cat-file`
-calls return a generic committed-object error so Git's local-file existence
-hints cannot reveal uncommitted paths.
+does not exist and one that is not reachable. A failed `read` or `cat-file` of
+a `commit:path` gets only the note that the commit has no file at that path,
+and other failed `show` and `cat-file` calls give a generic committed-object
+error, so that Git's local-file existence hints cannot reveal uncommitted paths.
 
 #### `git-timeout`
 

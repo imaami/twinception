@@ -520,17 +520,17 @@ not an operating-system sandbox.
 The reply is `git`'s output, made UTF-8 text and cut at 4 MiB with a note saying
 so, from the byte an optional `offset` names. A revision that names no readable
 commit gets one text, which lists the possible causes, so that a caller cannot
-tell a missing hash from an unreachable one. Failed `show` and `cat-file` calls
-return a generic committed-object error, and a failed `read` says only that
-the commit has no file at that path, hiding Git's hints about local files;
-other Git errors are preserved. `read` runs `git cat-file blob` with its errors
-discarded, numbers the lines within the 4 MiB that `git` reads, and refuses a
-file with a NUL byte in its first 8000 bytes as binary. Nonzero exits are tool
-errors, except that
-`grep` finding no matches succeeds with `[No matches.]`. At the
-deadline, `--git-timeout` (30 s for validation and execution together), `git` gets SIGTERM, and SIGKILL a second
-later, and the call is a tool error; a call that goes, or `askai` stopping,
-kills `git` and the processes it started.
+tell a missing hash from an unreachable one. A failed `read` or `cat-file` of a
+`commit:path` says only that the commit has no file at that path, and other
+failed `show` and `cat-file` calls return a generic committed-object error,
+hiding Git's hints about local files; other Git errors are preserved. `read`
+runs `git cat-file blob` with its errors discarded, numbers the lines within
+the 4 MiB that `git` reads, and refuses a file with a NUL byte in its first
+8000 bytes as binary. Nonzero exits are tool errors, except that `grep` finding
+no matches succeeds with `[No matches.]`. At the deadline, `--git-timeout`
+(30 s for validation and execution together), `git` gets SIGTERM, and SIGKILL a
+second later, and the call is a tool error; a call that goes, or `askai`
+stopping, kills `git` and the processes it started.
 If `git` exits while a process that it started still has the output open,
 that process is still killed at the deadline, when the client of the call
 closes the connection, or when `askai` stops. Until the output ends, that

@@ -9624,8 +9624,17 @@ def check_git_read(binary, up):
             # A path that still has a grep match's :N or :N:text gets a hint.
             for name in ("lines.txt:42", "lines.txt:42:line 42"):
                 assert read(ai, "HEAD:" + name, True) == missing + " If :N after the " \
-                    "file name is a line number, give the file alone as the revision " \
-                    "and \"line\": N.]", name
+                    "file name is a line number, call read with the file alone as the " \
+                    "revision and \"line\": N.]", name
+            # cat-file says the same of a commit:path with no file. show does
+            # not, because its options can make git fail before the lookup.
+            for options in (["-e"], ["-p"]):
+                result = call(ai, command="cat-file", options=options,
+                              revisions=["HEAD:absent.txt"])
+                assert result.get("isError") and text_of(result) == missing + "]", result
+            result = call(ai, command="show", options=["--date=bogus"],
+                          revisions=["HEAD:lines.txt"])
+            assert result.get("isError") and "No file" not in text_of(result), result
             assert read(ai, "HEAD:mend.txt").split("\n")[1:3] == ["1\tok", "2\t??"]
 
             # A grep match is commit:path:line:text. Its commit:path works as

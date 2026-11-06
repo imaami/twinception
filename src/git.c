@@ -1241,16 +1241,16 @@ git_ended (struct mcp_slot *slot,
 	} else if (status == 1 && (takes & PATTERN)) {
 		note = CSTR_VIEW("No matches.");
 		failed = false;
-	} else if (status > 0 && takes & (LINES | OBJECT)) {
+	} else if (status > 0 && takes & OBJECT) {
 		static char const fmt[] = "No file at that path in commit %s. ls-tree lists "
 		                          "the files there.%s";
 		static char const hint[] = " If :N after the file name is a line number, "
-		                           "give the file alone as the revision and "
-		                           "\"line\": N.";
+		                           "call read with the file alone as the revision "
+		                           "and \"line\": N.";
 		static_assert(sizeof fmt - 4 + OID_SHA256 + sizeof hint - 1 <= sizeof buf,
 		              "the note fits");
 		struct git_revision const *rev = &call->revisions[0];
-		note = takes & LINES
+		note = takes & (LINES | MODE) && rev->path.len
 		     ? util_format_view(buf, sizeof buf, fmt, call->roots[rev->root].hex,
 		                        git_line_hint(rev->path.data + 1) ? hint : "")
 		     : util_format_view(buf, sizeof buf, "The committed object could not be "
