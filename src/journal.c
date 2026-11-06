@@ -261,12 +261,7 @@ journal_file (int         dir,
               int        *fd)
 {
 	*fd = openat(dir, name, flags | O_CLOEXEC | O_NOFOLLOW, 0600);
-	if (*fd < 0)
-		return errno;
-	struct stat st;
-	if (fstat(*fd, &st))
-		return errno;
-	return util_private(&st) ? EACCES : 0;
+	return *fd < 0 ? errno : util_private_fd(*fd, S_IFREG);
 }
 
 /** Fixed argv and environment. Input/output are anonymous files, so a
@@ -1271,7 +1266,7 @@ journal_secret (int         dir,
 	/* journal_file() refuses a file that is not private with EACCES. */
 	char const *problem = nullptr;
 	if (e == EACCES && !fstatat(dir, name, &st, AT_SYMLINK_NOFOLLOW))
-		problem = util_private(&st);
+		problem = util_private(&st, S_IFREG);
 	char wrong[64];
 	if (!e && !st.st_size) {
 		do

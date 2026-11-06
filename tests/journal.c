@@ -224,6 +224,25 @@ journal_test_path (char const *repo)
 	free(j);
 }
 
+/* util_private_fd() on the repository @p repo, a private directory, and on
+ * a file in it: the type, the links and the mode.
+ */
+static void
+journal_test_private (char const *repo)
+{
+	int dir = open(repo, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	assert(dir >= 0 && !util_private_fd(dir, S_IFDIR) && util_private_fd(dir, S_IFREG) == EACCES);
+	int fd = openat(dir, "private.test", O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+	assert(fd >= 0 && !util_private_fd(fd, S_IFREG) && util_private_fd(fd, S_IFDIR) == EACCES);
+	assert(!linkat(dir, "private.test", dir, "private.link", 0));
+	assert(util_private_fd(fd, S_IFREG) == EACCES);
+	assert(!unlinkat(dir, "private.link", 0) && !fchmod(fd, 0640));
+	assert(util_private_fd(fd, S_IFREG) == EACCES);
+	assert(!unlinkat(dir, "private.test", 0));
+	util_close(&fd);
+	util_close(&dir);
+}
+
 /* child_run(): exit statuses, a death by a signal, and a deadline without
  * a grace, with a grace that the command honors, and with a grace that it
  * ignores.
@@ -269,8 +288,9 @@ main (int argc, char **argv)
 	assert(j->n_jobs == JOURNAL_JOBS);
 	journal_destroy(&j);
 	journal_test_path(argv[1]);
+	journal_test_private(argv[1]);
 	journal_test_child_run();
 	puts("Journal loads, write gaps, legacy migration, reasoning verification, "
-	     "path walks and child_run(): PASS");
+	     "path walks, private files and child_run(): PASS");
 	return 0;
 }

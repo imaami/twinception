@@ -65,17 +65,6 @@ enum {
 
 static char const cli_state_magic[] = "ASKAI-CLI-1\n";
 
-static force_inline int
-cli_state_private (int fd)
-{
-	struct stat s;
-	return fstat(fd, &s) ? errno
-	                     : (S_ISREG(s.st_mode) &&
-	                        !(s.st_mode & 077) &&
-	                        s.st_nlink == 1    &&
-	                        s.st_uid == geteuid() ? 0 : EACCES);
-}
-
 /* A short read is a snapshot cut short. */
 static int
 cli_state_read (int     fd,
@@ -308,7 +297,7 @@ cli_state_save (struct cli_state *state)
 	                O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
 	if (fd < 0)
 		return errno;
-	int e = cli_state_private(fd);
+	int e = util_private_fd(fd, S_IFREG);
 	if (!e && ftruncate(fd, 0))
 		e = errno;
 	if (!e)
@@ -528,7 +517,7 @@ cli_state_load (struct cli_state *state,
 	                O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
 	if (fd < 0)
 		return errno;
-	e = cli_state_private(fd);
+	e = util_private_fd(fd, S_IFREG);
 	dstr_auto entry = dstr("");
 	/* Git lists newest tips first. Process the selected latest snapshot last
 	 * even when Git's second-resolution commit times tie. Repeated exact
@@ -628,7 +617,7 @@ cli_state_repository_init (struct cli_state *state)
 	int fd = openat(state->directory, "cli-init.lock", O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
 	if (fd < 0)
 		return errno;
-	int e = cli_state_private(fd);
+	int e = util_private_fd(fd, S_IFREG);
 	if (!e)
 		e = cli_state_lock(state, fd);
 	if (!e)
@@ -675,7 +664,7 @@ cli_state_repository (struct cli_state *state)
 	                     O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
 	if (state->lock < 0)
 		return errno;
-	e = cli_state_private(state->lock);
+	e = util_private_fd(state->lock, S_IFREG);
 	if (e)
 		return e;
 	int status = 0;
@@ -723,14 +712,8 @@ cli_state_create (struct cstr_view    path,
 		if (state->directory < 0)
 			*e = errno;
 	}
-	if (!*e) {
-		struct stat status;
-		if (fstat(state->directory, &status))
-			*e = errno;
-		else if ((status.st_mode & 0077) ||
-		         status.st_uid != geteuid())
-			*e = EACCES;
-	}
+	if (!*e)
+		*e = util_private_fd(state->directory, S_IFDIR);
 	if (!*e)
 		*e = cli_state_repository(state);
 	if (*e)

@@ -339,22 +339,36 @@ util_block_async (sigset_t *old)
 }
 
 /** Returns the reason why the file that @p st describes is not a private
- *  file of the process's user, or nullptr if it is one. A private file is
- *  a regular file with one link that the user owns and that no other user
- *  may access.
+ *  file of the process's user of the type @p type, S_IFREG or S_IFDIR, or
+ *  nullptr if it is one. A private file has that type, the user owns it,
+ *  no other user may access it, and a regular one has one link.
  */
 static inline char const *
-util_private (struct stat const *st)
+util_private (struct stat const *st,
+              mode_t             type)
 {
-	if (!S_ISREG(st->st_mode))
-		return "the file is not a regular file";
+	if ((st->st_mode & S_IFMT) != type)
+		return type == S_IFDIR ? "the file is not a directory"
+		                       : "the file is not a regular file";
 	if (st->st_uid != geteuid())
 		return "askai's user does not own the file";
 	if (st->st_mode & 0077)
 		return "the mode of the file lets other users access it";
-	if (st->st_nlink != 1)
+	if (type == S_IFREG && st->st_nlink != 1)
 		return "the file has more than one hard link";
 	return nullptr;
+}
+
+/** Returns 0 if the file open as @p fd is a private file of the process's
+ *  user of the type @p type, as util_private() says, EACCES if it is not,
+ *  or the error number of fstat().
+ */
+static inline int
+util_private_fd (int    fd,
+                 mode_t type)
+{
+	struct stat st;
+	return fstat(fd, &st) ? errno : util_private(&st, type) ? EACCES : 0;
 }
 
 /** Write the @p len bytes at @p buf to @p fd, again after a signal or a
