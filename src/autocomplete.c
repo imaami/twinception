@@ -738,6 +738,19 @@ autocomplete_set_names (struct autocomplete    *ac,
 	return list < AUTOCOMPLETE_LISTS ? autocomplete_names_set(&ac->lists[list], names, count, true) : EINVAL;
 }
 
+/* Returns the index of the notebook of tool with selector, or notes_count. */
+static size_t
+autocomplete_notebook_find (struct autocomplete const *ac,
+                            struct cstr_view           tool,
+                            struct cstr_view           selector)
+{
+	size_t i = 0;
+	while (i < ac->notes_count && (!cstr_view_equal(cstr_view_dstr(&ac->notes[i].tool), tool) ||
+	                               !cstr_view_equal(cstr_view_dstr(&ac->notes[i].selector), selector)))
+		++i;
+	return i;
+}
+
 void
 autocomplete_clear_note_files (struct autocomplete *ac)
 {
@@ -769,13 +782,7 @@ autocomplete_set_note_files (struct autocomplete    *ac,
 			return E2BIG;
 		storage += paths[i].len;
 	}
-	size_t index = 0;
-	for (; index < ac->notes_count; ++index) {
-		struct autocomplete_notebook const *notes = &ac->notes[index];
-		if (cstr_view_equal(cstr_view_dstr(&notes->tool), tool) &&
-		    cstr_view_equal(cstr_view_dstr(&notes->selector), notebook))
-			break;
-	}
+	size_t index = autocomplete_notebook_find(ac, tool, notebook);
 	bool replace = index < ac->notes_count;
 	size_t remaining = ac->notes_storage - (replace ? ac->notes[index].storage : 0);
 	if ((!replace && index >= 4096) || storage > AUTOCOMPLETE_BYTES - remaining)
@@ -914,14 +921,8 @@ autocomplete_note_paths (struct autocomplete              *ac,
 			return error;
 		selector = cstr_view_dstr(&ac->key);
 	}
-	for (size_t i = 0; i < ac->notes_count; ++i) {
-		struct autocomplete_notebook const *notes = &ac->notes[i];
-		if (cstr_view_equal(cstr_view_dstr(&notes->tool), tool) &&
-		    cstr_view_equal(cstr_view_dstr(&notes->selector), selector)) {
-			*paths = &notes->paths;
-			break;
-		}
-	}
+	size_t i = autocomplete_notebook_find(ac, tool, selector);
+	*paths = i < ac->notes_count ? &ac->notes[i].paths : nullptr;
 	return 0;
 }
 
