@@ -956,11 +956,13 @@ notes_entry_before (struct span          out,
 		char const *tab = memchr(s + start, '\t', at - 1 - start);
 		char const *name = tab ? memchr(tab + 1, '\t', (size_t)(s + at - 1 - tab - 1))
 		                       : nullptr;
-		uint64_t lines = 0;
+		uint64_t added = 0, removed = 0;
 		size_t digits = tab ? (size_t)(tab - s - start) : 0;
 		bool binary = digits == 1 && s[start] == '-';
 		if (!name || name + 1 == s + at - 1 ||
-		    (!binary && util_number(s + start, digits, UINT64_MAX, &lines))) {
+		    (!binary && (util_number(s + start, digits, UINT64_MAX, &added) ||
+		                 util_number(tab + 1, (size_t)(name - tab - 1), UINT64_MAX,
+		                             &removed)))) {
 			at = stat;
 			cursor->first = 0;
 			continue;
@@ -976,7 +978,8 @@ notes_entry_before (struct span          out,
 			.commit = cursor->commit,
 			.subject = cursor->subject,
 			.time = cursor->time,
-			.lines = binary ? NOTES_BINARY : lines,
+			.added = binary ? NOTES_BINARY : added,
+			.removed = removed,
 		};
 		cursor->end = stat;
 		return true;

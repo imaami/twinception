@@ -542,9 +542,8 @@ struct cli_client_files {
 };
 
 /* Returns the note name in line, a line of a listing of the notes tool,
- * which is "NAME  (N bytes, OID)", or "INDEX. DATE UTC  NAME  (N lines)" or
- * the same with "(binary)". Returns an empty view if the line is in none of
- * these forms.
+ * which is "NAME  (N bytes, OID)". Returns an empty view if the line is not
+ * in this form.
  */
 static struct cstr_view
 cli_client_file_name (struct cstr_view line)
@@ -560,22 +559,10 @@ cli_client_file_name (struct cstr_view line)
 	struct cstr_view name = cstr_view_slice(line, 0, open - 2);
 	uint64_t n;
 	size_t digits = util_digits(count.data, count.len, UINT64_MAX, &n);
-	bool binary = cstr_view_equal(count, CSTR_VIEW("binary"));
-	struct cstr_view suffix = binary ? (struct cstr_view){} : cstr_view_slice(count, digits, SIZE_MAX);
-	if (!binary && (!digits || !cstr_view_starts(suffix, CSTR_VIEW(" "))))
+	struct cstr_view suffix = cstr_view_slice(count, digits, SIZE_MAX);
+	if (!digits || !cstr_view_starts(suffix, CSTR_VIEW(" bytes, ")))
 		return (struct cstr_view){};
-	if (cstr_view_starts(suffix, CSTR_VIEW(" bytes, ")))
-		return oid_valid(cstr_view_slice(suffix, sizeof " bytes, " - 1, SIZE_MAX)) ? name : (struct cstr_view){};
-	if (suffix.len && !cstr_view_equal(suffix, CSTR_VIEW(" line")) && !cstr_view_equal(suffix, CSTR_VIEW(" lines")))
-		return (struct cstr_view){};
-	struct cstr_view index;
-	if (!cstr_view_cut(&name, '.', &index) || util_number(index.data, index.len, UINT64_MAX, &n) ||
-	    !cstr_view_starts(name, CSTR_VIEW(" ")))
-		return (struct cstr_view){};
-	size_t const date_size = sizeof " 2026-10-14 12:34 UTC  " - 1;
-	if (name.len <= date_size || !cstr_view_equal(cstr_view_slice(name, 18, 5), CSTR_VIEW("UTC  ")))
-		return (struct cstr_view){};
-	return cstr_view_slice(name, date_size, SIZE_MAX);
+	return oid_valid(cstr_view_slice(suffix, sizeof " bytes, " - 1, SIZE_MAX)) ? name : (struct cstr_view){};
 }
 
 static int

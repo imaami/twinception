@@ -10203,14 +10203,14 @@ def check_notes(binary, up):
                 "plan.md": b"step 1", "a/b c.md": long.encode(),
                 'q"\\.txt': b"q", "x" * 255: b"t"}), listed
             history = call({"action": "history"})
-            rows = (("plan.md", "1 line", 'Add "plan.md" (6 bytes)'),
-                    ("a/b c.md", "800 lines", 'Add "a/b c.md" (8000 bytes)'),
-                    ('q"\\.txt', "1 line", 'Add "q\\"\\\\.txt" (1 byte)'),
-                    ("x" * 255, "1 line", f'Add "{"x" * 255}" (1 byte)'))
+            rows = (("plan.md", "+1 -0", 'Add "plan.md" (6 bytes)'),
+                    ("a/b c.md", "+800 -0", 'Add "a/b c.md" (8000 bytes)'),
+                    ('q"\\.txt', "+1 -0", 'Add "q\\"\\\\.txt" (1 byte)'),
+                    ("x" * 255, "+1 -0", f'Add "{"x" * 255}" (1 byte)'))
             assert re.fullmatch(
-                f"Notebook {selector} — history, oldest first \\(lines added, commit, "
-                "message\\):\n\n" + "".join(
-                    f"{k}\\. {when}  {re.escape(name)}  \\({lines}\\)  commit "
+                f"Notebook {selector} — history, oldest first \\(lines \\+added -removed, "
+                "commit, message\\):\n\n" + "".join(
+                    f"{k}\\. {when}  {re.escape(name)}  \\({re.escape(lines)}\\)  commit "
                     f"[0-9a-f]{{40}}  {re.escape(subject)}\n"
                     for k, (name, lines, subject) in enumerate(rows, 1)),
                 history), history
@@ -10383,6 +10383,7 @@ def check_notes(binary, up):
                 in listed, listed
             history = call({"action": "history"})
             assert history.count("  plan.md  (") == 2, history
+            assert "  plan.md  (+2 -1)  commit " in history, history
             before = git("rev-parse", own)
             for name, why in (("missing.md", NO_NOTE),
                               ("a", "That name is a directory of notes"),
@@ -10632,7 +10633,7 @@ def check_shared_notes(binary, up):
                     "commit", "-q", "-a", "--allow-empty-message", "-m", "")
                 silent = git("rev-parse", "refs/heads/notes/alice/anonymous/client").strip()
                 history = call(bob, action="history", notebook="alice/anonymous/client")
-                assert history.endswith(f"  manual-two.md  (1 line)  commit {silent}\n"), history
+                assert history.endswith(f"  manual-two.md  (+1 -1)  commit {silent}\n"), history
             # Restarting does not mint another notebook or lose its notes.
             with Askai(binary, "-u", up.url(), "--notes", repo,
                        "--participant", "alice") as ai:
@@ -11968,7 +11969,7 @@ def check_turns(binary, up):
                 "And now\\?" + re.escape(identity) +
                 "\n\n\\[askai: your session note history, oldest first; repeated names are updates. "
                 f"Use notes action list for current files and notebooks to discover the other participants:\\]\n\n1\\. {when}  found\\.md  "
-                "\\(1 line\\)\n\n\\[askai: the current text of your most recently written note, found\\.md:\\]\n\n"
+                "\\(\\+1 -0\\)\n\n\\[askai: the current text of your most recently written note, found\\.md:\\]\n\n"
                 "found \"first\"\n", prompt(up.requests[count])), up.requests[count]
             assert f"ask-chain thread is {thread}." in result["content"][1]["text"], result
 
@@ -12352,7 +12353,7 @@ def check_turns(binary, up):
                 "the task is gone, your turns and the tools' results with it\\. "
                 "Your summary of it:\\]\n\nS" + re.escape(identity) +
                 "\n\n" + re.escape(TASK + REVIEW_EMPTY) + "\n\n\\[askai: your note history, oldest "
-                f"first; repeated names are updates:\\]\n\n1\\. {when}  n1\\.md  \\(1 line\\)\n\n"
+                f"first; repeated names are updates:\\]\n\n1\\. {when}  n1\\.md  \\(\\+1 -0\\)\n\n"
                 "\\[askai: the current text of your most recently written note, "
                 "n1\\.md:\\]\n\nn1\n\n\\[askai: go on with the task\\.\\]",
                 prompt(again)), prompt(again)
@@ -12376,8 +12377,8 @@ def check_turns(binary, up):
                 "the task is gone, your turns and the tools' results with it\\.\\]" +
                 re.escape(identity) + "\n\n" + re.escape(TASK + REVIEW_EMPTY) +
                 f"\n\n\\[askai: your note history, oldest first; repeated names are updates:\\]\n\n1\\. {when}  n1\\.md  "
-                f"\\(1 line\\)\n2\\. {when}  n2\\.md  "
-                "\\(1 line\\)\n\n\\[askai: the current text of your most recently written note, n2\\.md:\\]\n\nn2\n\n"
+                f"\\(\\+1 -0\\)\n2\\. {when}  n2\\.md  "
+                "\\(\\+1 -0\\)\n\n\\[askai: the current text of your most recently written note, n2\\.md:\\]\n\nn2\n\n"
                 "\\[askai: go on with the task\\.\\]", prompt(again)), prompt(again)
             script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
                          lambda r: (400, full), lambda r: (400, full)]

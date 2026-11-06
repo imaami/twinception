@@ -812,8 +812,8 @@ notes_tool_history (struct mcp_slot *slot,
 		size_t subject_len = history ? jb_utf8(subject, entry.subject.len) : 0;
 		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", ++k, (int)w, when) ||
 		    !dstr_cat_n(d, name, jb_utf8(name, entry.name.len)) ||
-		    !(entry.lines == NOTES_BINARY ? dstr_cat(d, "  (binary)")
-		      : dstr_printf(d, "  (%" PRIu64 " line%s)", entry.lines, util_s(entry.lines))) ||
+		    !(entry.added == NOTES_BINARY ? dstr_cat(d, "  (binary)")
+		      : dstr_printf(d, "  (+%" PRIu64 " -%" PRIu64 ")", entry.added, entry.removed)) ||
 		    (history && !dstr_printf(d, "  commit %s%s%.*s", entry.commit.hex,
 		                            subject_len ? "  " : "",
 		                            (int)subject_len, subject_len ? subject : "")) ||
@@ -864,7 +864,8 @@ notes_tool_got_list (struct mcp_slot *slot)
 	int e = dstr_printf(call->text, "Notebook %s — %s:\n\n",
 	                    notes_selector(notes_tool_call_notebook(call)),
 	                    files ? "current files (bytes, blob)"
-	                          : "history, oldest first (lines added, commit, message)")
+	                          : "history, oldest first (lines +added -removed, commit, "
+	                            "message)")
 	      ? 0 : ENOMEM;
 	if (!e)
 		e = files ? notes_tool_files(slot, out, cut)

@@ -95,8 +95,9 @@ struct notes_entry {
 	struct span subject; /**< the commit's subject; borrows the history output */
 	uint64_t    time;    /**< when it was committed, in seconds since the
 	                          epoch */
-	uint64_t    lines;   /**< the number of lines added by this change, or
+	uint64_t    added;   /**< the number of lines added by this change, or
 	                          NOTES_BINARY if git sees no text in it */
+	uint64_t    removed; /**< the number of lines removed by it */
 	struct oid  commit;
 };
 

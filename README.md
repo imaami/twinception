@@ -723,10 +723,10 @@ several files added by one commit. `list` reflects the current tree;
   caller's own branch. Clients retain `other` as an alias for the opposite
   side of the same participant and caller identity.
 - `list` shows each current file once, with its byte count and blob ID.
-  `history` lists changes oldest first, with full commit IDs, times, lines
-  added, or `(binary)` for a change that Git sees as binary, and commit
-  messages. Give `file` to restrict history to one exact filename, including
-  deleted notes.
+  `history` lists changes oldest first, with full commit IDs, times, the
+  lines added and removed, such as `(+3 -1)`, or `(binary)` for a change
+  that Git sees as binary, and commit messages. Give `file` to restrict
+  history to one exact filename, including deleted notes.
 - `read` accepts `revision`, a full commit ID from the selected notebook's
   history, to retrieve an old version. `diff` requires `file` and `from`,
   with `to` defaulting to `current`. Historical reads and diffs identify

@@ -1482,7 +1482,7 @@ leaves those lines out and says so in the result. Notices inside the
 text, and text from clients, stay as they are.
 `list` shows each current file once, with its byte count and blob identity;
 `history` shows changes oldest first, with full commit IDs, times, the
-lines added by each change and commit messages.
+lines added and removed by each change and commit messages.
 `copy` adds a byte-for-byte copy to the caller's own notebook. Agents must
 name the source notebook explicitly; clients retain `other` as the default
 source. With the APIs `generate`

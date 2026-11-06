@@ -683,19 +683,13 @@ def check_peer_notes(cli, unused_server, current=False):
                     replaced_listed.set()
                 if restored:
                     restored_listed.set()
-            if current:
-                blob = "a" * (64 if book == selector else 40)
-                records = "".join(f"{name}  (123 bytes, {blob})\n" for name in files)
-                return result(f"Notebook {book} — current files (bytes, blob):\n\n" + records +
-                              f"nonhex.md  (123 bytes, {'g' * 40})\n"
-                              f"decimal.md  (12x bytes, {blob})\n"
-                              f"short.md  (123 bytes, abcd)\n"
-                              f"partial.md  (123 bytes, {blob})")
-            count = "2 lines" if book == "own" else "binary" if book == "other" else "1 line"
-            records = "".join(f"{index}. 2026-10-17 01:23 UTC  {name}  ({count})\n"
-                              for index, name in enumerate(files, 1))
-            return result("Selected notebook, oldest first:\n\n" + records +
-                          "77. 2026-10-17 01:23 UTC  partial.md  (1 line)")
+            blob = "a" * (64 if book == selector else 40)
+            records = "".join(f"{name}  (123 bytes, {blob})\n" for name in files)
+            return result(f"Notebook {book} — current files (bytes, blob):\n\n" + records +
+                          f"nonhex.md  (123 bytes, {'g' * 40})\n"
+                          f"decimal.md  (12x bytes, {blob})\n"
+                          f"short.md  (123 bytes, abcd)\n"
+                          f"partial.md  (123 bytes, {blob})")
         assert args["action"] in ("read", "copy", "replace", "restore"), request
         calls.append(args)
         copied |= args["action"] == "copy"
@@ -777,7 +771,7 @@ def check_peer_notes(cli, unused_server, current=False):
             completed({"action": "read", "file": "learned/server note.md"})
 
             # Truncated records and malformed metadata are not candidates.
-            for prefix in (("part", "nonhex", "decimal", "short") if current else ("part",)):
+            for prefix in ("part", "nonhex", "decimal", "short"):
                 os.write(master, f"/tool notebook_service action=read file={prefix}\t\r".encode())
                 completed({"action": "read", "file": prefix})
             os.write(master, b"/exit\r")
