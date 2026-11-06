@@ -162,6 +162,7 @@ manual_wait_destroy (struct manual_wait **p_w)
 	struct manual_wait *w = *p_w;
 	*p_w = nullptr;
 	manual_page_put(w->page);
+	w->page = nullptr;
 	free(w);
 }
 
@@ -246,6 +247,7 @@ manual_fetch_destroy (struct manual_fetch **p_f)
 	struct manual_fetch *f = *p_f;
 	*p_f = nullptr;
 	manual_page_put(f->page);
+	f->page = nullptr;
 	child_destroy(&f->child);
 	loop_unready(&f->step);
 	list_del(&f->hook);
@@ -737,7 +739,10 @@ manual_destroy (struct manual **p_manual)
 		next = htab_next(&m->table, node);
 		struct manual_entry *e = container_of(node, struct manual_entry, node);
 		/* A file's key, a path, holds no '\0'. */
-		manual_page_put(memchr(e->key, '\0', e->len) ? nullptr : e->page);
+		if (!memchr(e->key, '\0', e->len)) {
+			manual_page_put(e->page);
+			e->page = nullptr;
+		}
 		free(e);
 	}
 	htab_fini(&m->table);
@@ -809,11 +814,13 @@ manual_start (struct mcp_slot    *slot,
 		mcp_slot_park(slot);
 }
 
-/* Let go of a man call's page. */
+/* Let go of a man call's page, and set the call's own word to nullptr. */
 static void
 manual_drop (struct mcp_slot *slot)
 {
-	manual_page_put(*mcp_slot_own(slot));
+	void **own = mcp_slot_own(slot);
+	manual_page_put(*own);
+	*own = nullptr;
 }
 
 static struct json_object *
