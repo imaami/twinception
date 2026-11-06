@@ -108,12 +108,9 @@ jb_scan_open (struct jb_scan *scan,
               uint32_t        members)
 {
 	if (members != UINT32_MAX) {
-		uint32_t *m = util_room(scan->members, &scan->cap, (size_t)scan->depth + 1,
-		                        sizeof *m);
-		if (!m)
+		if (util_grow(scan->members, scan->cap, (size_t)scan->depth + 1))
 			return ENOMEM;
-		scan->members = m;
-		m[scan->depth] = 0;
+		scan->members[scan->depth] = 0;
 	}
 	++scan->depth;
 	++scan->values;
@@ -240,15 +237,11 @@ jb_reaper_add (struct jb_reaper   *reaper,
 {
 	bool container = json_object_is_type(val, json_type_array) ||
 	                 json_object_is_type(val, json_type_object);
-	struct json_object **stack = container ? util_room(reaper->stack, &reaper->cap,
-	                                                   reaper->n + 1, sizeof *stack)
-	                                       : nullptr;
-	if (!stack) {
+	if (!container || util_grow(reaper->stack, reaper->cap, reaper->n + 1)) {
 		json_object_put(val);
 		return;
 	}
-	reaper->stack = stack;
-	stack[reaper->n++] = val;
+	reaper->stack[reaper->n++] = val;
 }
 
 /* Take a value out of the container @p top, in @p *val, a reference of its

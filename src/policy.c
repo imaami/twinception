@@ -417,12 +417,9 @@ policy_build_ranges (struct policy_build  *b,
 		struct policy_range r;
 		if (!policy_range_parse(line, &r))
 			continue;
-		struct policy_range *more = util_room(ranges, &room, n + 1, sizeof *more);
-		if (!more) {
-			e = ENOMEM;
+		e = util_grow(ranges, room, n + 1);
+		if (e)
 			break;
-		}
-		ranges = more;
 		ranges[n++] = r;
 	}
 	/* getline() also fails at the end of the file, which is no error. */

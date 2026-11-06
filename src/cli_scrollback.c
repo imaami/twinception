@@ -202,13 +202,10 @@ cli_scrollback_append_part (struct cli_scrollback *scrollback,
 	enum cli_style previous = line->style_count ? line->styles[line->style_count - 1].id : CLI_STYLE_RESET;
 	bool change = part.len && style != previous;
 	if (change) {
-		struct cli_scrollback_style *styles = util_room(line->styles, &line->style_capacity,
-		                                                line->style_count + 1, sizeof *styles);
-		if (!styles)
+		if (util_grow(line->styles, line->style_capacity, line->style_count + 1))
 			return ENOMEM;
-		line->styles = styles;
 		/* The new entry is counted only after the text is appended. */
-		styles[line->style_count] = (struct cli_scrollback_style){(uint32_t)old, style};
+		line->styles[line->style_count] = (struct cli_scrollback_style){(uint32_t)old, style};
 	}
 	if (!dstr_cat_n(&line->text, part.data, part.len))
 		return ENOMEM;
@@ -298,11 +295,8 @@ cli_scrollback_line_rows (struct cli_scrollback_line *line,
 		if (wrap) {
 			if (!(line->rows % CLI_SCROLLBACK_CHECKPOINT)) {
 				size_t checkpoint = line->rows / CLI_SCROLLBACK_CHECKPOINT - 1;
-				size_t *checkpoints = util_room(line->checkpoints, &line->capacity,
-				                                checkpoint + 1, sizeof *checkpoints);
-				if (!checkpoints)
+				if (util_grow(line->checkpoints, line->capacity, checkpoint + 1))
 					return ENOMEM;
-				line->checkpoints = checkpoints;
 				line->checkpoints[checkpoint] = line->scanned;
 			}
 			++line->rows;

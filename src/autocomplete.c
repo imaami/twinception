@@ -307,12 +307,9 @@ autocomplete_tokenize (struct autocomplete *ac,
 		}
 		if (strict && (mark || escape || dstr_len(&ac->nesting)))
 			return autocomplete_diagnose(why, size, EINVAL, CSTR_VIEW("Unterminated quote, escape or JSON value in tool arguments"), CSTR_VIEW(""));
-		struct autocomplete_token *tokens = util_room(ac->tokens, &ac->token_capacity,
-		                                              ac->token_count + 1, sizeof *tokens);
-		if (!tokens)
+		if (util_grow(ac->tokens, ac->token_capacity, ac->token_count + 1))
 			return ENOMEM;
-		ac->tokens = tokens;
-		tokens[ac->token_count++] = (struct autocomplete_token){begin, i, equals};
+		ac->tokens[ac->token_count++] = (struct autocomplete_token){begin, i, equals};
 	}
 	return 0;
 }
@@ -695,14 +692,10 @@ autocomplete_add_tool (struct autocomplete *ac,
 		}
 	}
 	if (!replace) {
-		struct autocomplete_entry *entries = util_room(ac->entries, &ac->capacity,
-		                                               ac->count + 1, sizeof *entries);
-		if (!entries) {
-			error = ENOMEM;
+		error = util_grow(ac->entries, ac->capacity, ac->count + 1);
+		if (error)
 			goto fail;
-		}
-		ac->entries = entries;
-		memmove(entries + position + 1, entries + position, (ac->count - position) * sizeof *entries);
+		memmove(ac->entries + position + 1, ac->entries + position, (ac->count - position) * sizeof *ac->entries);
 		++ac->count;
 	} else
 		autocomplete_entry_fini(&ac->entries[position]);
@@ -752,10 +745,8 @@ autocomplete_names_set (struct autocomplete_names *names,
 		return EINVAL;
 	if (count > names->capacity) {
 		size_t previous = names->capacity;
-		struct dstr *grown = util_room(names->values, &names->capacity, count, sizeof *grown);
-		if (!grown)
+		if (util_grow(names->values, names->capacity, count))
 			return ENOMEM;
-		names->values = grown;
 		for (size_t i = previous; i < names->capacity; ++i)
 			names->values[i] = dstr(nullptr);
 	}
@@ -838,13 +829,10 @@ autocomplete_set_note_files (struct autocomplete    *ac,
 		return E2BIG;
 	if (!replace) {
 		size_t previous = ac->notes_capacity;
-		struct autocomplete_notebook *notes = util_room(ac->notes, &ac->notes_capacity,
-		                                                index + 1, sizeof *notes);
-		if (!notes)
+		if (util_grow(ac->notes, ac->notes_capacity, index + 1))
 			return ENOMEM;
-		ac->notes = notes;
 		for (size_t i = previous; i < ac->notes_capacity; ++i)
-			notes[i] = (struct autocomplete_notebook){.tool = dstr(nullptr), .selector = dstr(nullptr)};
+			ac->notes[i] = (struct autocomplete_notebook){.tool = dstr(nullptr), .selector = dstr(nullptr)};
 	}
 	struct autocomplete_notebook *notes = &ac->notes[index];
 	int error = cstr_view_store(tool, &notes->tool);

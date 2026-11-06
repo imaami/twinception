@@ -279,8 +279,8 @@ util_seed (void)
 
 /** Grow @p items, an array with room for @p *cap items of @p size bytes,
  *  so that it has room for @p n items, and update @p *cap. Returns the
- *  array, which may have moved. If out of memory, returns nullptr and
- *  changes neither @p items nor @p *cap.
+ *  array, which may have moved. If out of memory, returns @p items and
+ *  leaves @p *cap as it is, less than @p n.
  */
 static inline void *
 util_room (void   *items,
@@ -293,10 +293,19 @@ util_room (void   *items,
 	size_t more = *cap ? 2 * *cap : 4;
 	more = more < n || more > SIZE_MAX / size ? n : more;
 	void *p = n <= SIZE_MAX / size ? realloc(items, more * size) : nullptr;
-	if (p)
-		*cap = more;
+	if (!p)
+		return items;
+	*cap = more;
 	return p;
 }
+
+/** Grow the array @p items with room for @p cap items, both lvalues, to
+ *  room for @p n items with util_room(). Evaluates to 0, or to ENOMEM
+ *  with @p items and @p cap unchanged.
+ */
+#define util_grow(items, cap, n) \
+        ((items) = util_room((items), &(cap), (n), sizeof *(items)), \
+         (cap) < (n) ? ENOMEM : 0)
 
 /** The @p a_len bytes at @p a, then the string @p b, in memory of their
  *  own; nullptr if out of memory.

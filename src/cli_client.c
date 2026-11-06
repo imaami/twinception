@@ -568,11 +568,8 @@ static int cli_client_names_add(struct cli_client_names *names, struct cstr_view
 {
 	if (names->count == 65536)
 		return E2BIG;
-	struct cstr_view *data = util_room(names->data, &names->capacity, names->count + 1,
-	                                   sizeof *data);
-	if (!data)
+	if (util_grow(names->data, names->capacity, names->count + 1))
 		return ENOMEM;
-	names->data = data;
 	names->data[names->count++] = text;
 	return 0;
 }

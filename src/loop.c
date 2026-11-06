@@ -383,11 +383,7 @@ loop_slots_grow (struct loop *loop)
 	if (loop->used >= SLOTS_MAX)
 		return ENOMEM;
 	size_t n = loop->used < SLOTS_MIN ? SLOTS_MIN : loop->used + 1;
-	struct loop_slot *slots = util_room(loop->slots, &loop->slots_cap, n, sizeof *slots);
-	if (!slots)
-		return ENOMEM;
-	loop->slots = slots;
-	return 0;
+	return util_grow(loop->slots, loop->slots_cap, n);
 }
 
 int
@@ -588,10 +584,8 @@ loop_timer_set (struct loop       *loop,
 		return EINVAL;
 	if (!timer->slot) {
 		size_t n = loop->timers < HEAP_MIN ? HEAP_MIN : loop->timers + 1;
-		struct loop_timer **heap = util_room(loop->heap, &loop->heap_cap, n, sizeof *heap);
-		if (!heap)
+		if (util_grow(loop->heap, loop->heap_cap, n))
 			return ENOMEM;
-		loop->heap = heap;
 		loop_heap_put(loop, timer, loop->timers++);
 	} else if (loop->heap[timer->slot - 1] != timer) {
 		/* timer->slot does not index this timer in the heap, so

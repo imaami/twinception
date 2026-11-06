@@ -520,12 +520,10 @@ review_files_insert (struct review_files      *list,
                      struct review_file const *f,
                      size_t                    at)
 {
-	struct review_file *files = util_room(list->files, &list->cap, list->n + 1, sizeof *files);
-	if (!files)
+	if (util_grow(list->files, list->cap, list->n + 1))
 		return ENOMEM;
-	list->files = files;
-	memmove(&files[at + 1], &files[at], (list->n - at) * sizeof *files);
-	files[at] = *f;
+	memmove(&list->files[at + 1], &list->files[at], (list->n - at) * sizeof *f);
+	list->files[at] = *f;
 	++list->n;
 	return 0;
 }
@@ -617,12 +615,10 @@ review_file_add_range (struct review       *r,
 	size_t const size = r->size - review_charge(f->n, 0) + review_charge(n, 0);
 	if (!review_within_max(r, size, lines.turn))
 		return 0;
-	struct review_range *ranges = util_room(f->ranges, &f->cap, n, sizeof *ranges);
-	if (!ranges)
+	if (util_grow(f->ranges, f->cap, n))
 		return ENOMEM;
-	f->ranges = ranges;
-	memmove(&ranges[i + m], &ranges[j], (f->n - j) * sizeof *ranges);
-	memcpy(&ranges[i], put, m * sizeof *ranges);
+	memmove(&f->ranges[i + m], &f->ranges[j], (f->n - j) * sizeof *put);
+	memcpy(&f->ranges[i], put, m * sizeof *put);
 	f->n = n;
 	if (total)
 		f->total = total;
@@ -651,8 +647,7 @@ review_files_add (struct review              *r,
 	if (!review_within_max(r, size, lines.turn))
 		return 0;
 	struct review_file f = { REVIEW_FILE_TEXTS };
-	f.ranges = util_room(nullptr, &f.cap, 1, sizeof *f.ranges);
-	if (!f.ranges)
+	if (util_grow(f.ranges, f.cap, 1))
 		return ENOMEM;
 	f.ranges[0] = lines;
 	f.n = 1;
@@ -1719,18 +1714,6 @@ review_put_tail (struct dstr                 *out,
 	                  "finding.")));
 }
 
-/** Makes room for one more finding in @p r. Returns 0 or ENOMEM. */
-static int
-review_findings_reserve (struct review *r)
-{
-	struct review_finding *findings = util_room(r->findings, &r->cap_findings,
-	                                            r->n_findings + 1, sizeof *findings);
-	if (!findings)
-		return ENOMEM;
-	r->findings = findings;
-	return 0;
-}
-
 /** Runs the action add with the arguments @p a in turn @p turn. */
 static int
 review_add (struct review            *r,
@@ -1759,7 +1742,7 @@ review_add (struct review            *r,
 	size_t const size = r->size + review_charge(2, texts + loc.path.len);
 	e = review_check_size(r, size, size - texts, out);
 	if (!e)
-		e = review_findings_reserve(r);
+		e = util_grow(r->findings, r->cap_findings, r->n_findings + 1);
 	if (e)
 		return e;
 	struct review_finding f = {
@@ -1767,8 +1750,7 @@ review_add (struct review            *r,
 		.location = review_location(loc.first, loc.last),
 		.n        = 1,
 	};
-	f.changes = util_room(nullptr, &f.cap, 1, sizeof *f.changes);
-	if (!f.changes)
+	if (util_grow(f.changes, f.cap, 1))
 		return ENOMEM;
 	f.changes[0] = (struct review_change){
 		.evidence     = DSTR_INIT,
@@ -1833,10 +1815,8 @@ review_update (struct review            *r,
 	e = review_check_size(r, size, size - a->evidence.len - claim_len, out);
 	if (e)
 		return e;
-	struct review_change *changes = util_room(f->changes, &f->cap, f->n + 1, sizeof *changes);
-	if (!changes)
+	if (util_grow(f->changes, f->cap, f->n + 1))
 		return ENOMEM;
-	f->changes = changes;
 	struct review_change c = {
 		.evidence     = DSTR_INIT,
 		.old_claim    = DSTR_INIT,
@@ -2049,9 +2029,8 @@ review_files_add_json (struct review            *r,
 	    review_files_find(list, &key, &at) < list->n)
 		return EINVAL;
 	key.total = (uint32_t)total;
-	struct review_file f = { REVIEW_FILE_TEXTS, .cap = n };
-	f.ranges = malloc(n * sizeof *f.ranges);
-	int e = f.ranges ? review_file_set(&f, &key) : ENOMEM;
+	struct review_file f = { REVIEW_FILE_TEXTS };
+	int e = util_grow(f.ranges, f.cap, n) ? ENOMEM : review_file_set(&f, &key);
 	/* The ranges must be sorted, must not overlap and must be within the
 	 * file, and the turns of two adjoining ranges must differ. */
 	for (uint64_t next = 1; !e && f.n < n; ++f.n) {
@@ -2213,18 +2192,15 @@ review_findings_add_json (struct review            *r,
 	    n > (REVIEW_MAX - r->size) / REVIEW_ITEM ||
 	    !(path ? review_name_valid(where) && first && first <= last : !first && !last))
 		return EINVAL;
-	int e = review_findings_reserve(r);
-	if (e)
-		return e;
+	if (util_grow(r->findings, r->cap_findings, r->n_findings + 1))
+		return ENOMEM;
 	struct review_finding f = {
 		.claim    = DSTR_INIT,
 		.location = review_location((uint32_t)first, (uint32_t)last),
-		.cap      = n,
 	};
-	f.changes = malloc(n * sizeof *f.changes);
-	if (!f.changes)
+	if (util_grow(f.changes, f.cap, n))
 		return ENOMEM;
-	e = review_text_json(&f.claim, jb_view(jb_get(obj, "claim")), false);
+	int e = review_text_json(&f.claim, jb_view(jb_get(obj, "claim")), false);
 	if (!e)
 		e = cstr_view_store(where, &f.location.path);
 	for (; !e && f.n < n; ++f.n)
