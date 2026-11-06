@@ -502,6 +502,10 @@ notes_is_dotgit (char const *part,
 	return false;
 }
 
+/* A git that writes ends, at its deadline and grace at the latest, before
+ * its lock file is NOTES_STALE old. */
+static_assert(NOTES_NS + GIT_GRACE < (uint64_t)NOTES_STALE * NS);
+
 int
 notes_lock (struct notes const *notes,
             char const         *repo,

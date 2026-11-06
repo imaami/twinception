@@ -78,8 +78,9 @@ struct plugin;
         "-c", "gc.auto=0", \
         "-c", "maintenance.auto=false"
 
-/** The time from SIGTERM to SIGKILL at the deadline of every git process
- *  that askai starts, in nanoseconds: the second of the file comment.
+/** The time from SIGTERM to SIGKILL at the deadline of a git process of
+ *  the git tool, of the journal, or of the notes that writes, in
+ *  nanoseconds: the second of the file comment.
  */
 static constexpr uint64_t GIT_GRACE = NS;
 

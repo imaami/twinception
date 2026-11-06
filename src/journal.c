@@ -56,11 +56,10 @@ enum {
 	JOURNAL_TERMINAL_BYTES = JOURNAL_RECORD_MAX + JOURNAL_HEADER,
 };
 
-/* The time a git of the journal may take, and then its grace from SIGTERM,
- * which has it remove its lock files, to SIGKILL.
+/* The time a git of the journal may take. Its grace from SIGTERM, which
+ * has it remove its lock files, to SIGKILL is GIT_GRACE.
  */
 static constexpr uint64_t JOURNAL_GIT_NS = 10 * NS;
-static constexpr uint64_t JOURNAL_GRACE_NS = NS;
 
 struct journal_item {
 	struct msg             msg;
@@ -304,7 +303,7 @@ journal_git (struct journal    *j,
 		.argv     = argv,
 		.envp     = env,
 		.deadline = loop_clock() + JOURNAL_GIT_NS,
-		.grace    = JOURNAL_GRACE_NS,
+		.grace    = GIT_GRACE,
 	};
 	struct child_fds const fds = { .in = input, .out = -1, .dir = j->repo_fd,
 	                               .keep = j->lock_fd };

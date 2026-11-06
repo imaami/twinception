@@ -17,6 +17,7 @@
 #include "cstr_view.h"
 #include "datauri.h"
 #include "dstr.h"
+#include "git.h"
 #include "hexid.h"
 #include "jb.h"
 #include "list.h"
@@ -448,7 +449,7 @@ notes_tool_run (struct mcp_slot *slot,
 		.in = buf_peek(in),
 		.max = NOTES_MAX,
 		.deadline = loop->now + NOTES_NS,
-		.grace = writes ? NOTES_GRACE : 0,
+		.grace = writes ? GIT_GRACE : 0,
 		/* For the commands that write, the output includes the errors. */
 		.flags = writes ? CHILD_STDERR : 0
 	};
