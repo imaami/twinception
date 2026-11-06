@@ -18,10 +18,13 @@
 
 static char const git_view_template[] = "/tmp/askai-git-XXXXXX";
 
+/** The most bytes of a shallow file. */
+enum { GIT_VIEW_SHALLOW = 4 << 20 };
+
 struct git_view {
-	int  fd;
-	bool head;
-	char directory[sizeof git_view_template];
+	int      fd;
+	char     directory[sizeof git_view_template];
+	uint16_t head;  /**< not 0 if HEAD of the snapshot is a commit */
 };
 
 /** Consume one newline-terminated line, excluding its newline. */
@@ -38,31 +41,49 @@ git_view_line (struct span *input,
 	return 0;
 }
 
+/** Takes the next line of @p metadata, which must be an absolute path
+ *  without a NUL, and writes a NUL over its newline. Returns the path, or
+ *  nullptr if the line is not one.
+ */
+static char const *
+git_view_path (struct span *metadata)
+{
+	struct span line;
+	if (git_view_line(metadata, &line) || !line.len || line.ptr[0] != '/' ||
+	    memchr(line.ptr, '\0', line.len))
+		return nullptr;
+	line.ptr[line.len] = '\0';
+	return (char const *)line.ptr;
+}
+
+/** Validates the "OID refname" lines of @p refs: each OID is @p width
+ *  hexadecimal digits, and each name is in a namespace of GIT_VIEW_REFS,
+ *  without a space or a control character.
+ */
 static int
 git_view_refs (struct span refs,
                size_t      width)
 {
-	static struct cstr_view const prefixes[] = {
-		CSTR_VIEW_INIT("refs/heads/"), CSTR_VIEW_INIT("refs/tags/"),
-		CSTR_VIEW_INIT("refs/remotes/")
-	};
+#define GIT_VIEW_PREFIX(s) CSTR_VIEW_INIT(s),
+	static struct cstr_view const prefixes[] = { GIT_VIEW_REFS(GIT_VIEW_PREFIX) };
+#undef GIT_VIEW_PREFIX
 	while (refs.len) {
 		struct span line;
 		if (git_view_line(&refs, &line) || line.len <= width + 1 ||
 		    line.ptr[width] != ' ' ||
 		    !oid_valid((struct cstr_view){ (char const *)line.ptr, width }))
 			return EINVAL;
-		struct span name = { line.ptr + width + 1, line.len - width - 1 };
+		struct cstr_view const name = { (char const *)line.ptr + width + 1,
+		                                line.len - width - 1 };
 		size_t p = 0;
-		while (p < sizeof prefixes / sizeof *prefixes &&
-		       (name.len <= prefixes[p].len ||
-		        memcmp(name.ptr, prefixes[p].data, prefixes[p].len)))
+		while (p < array_size(prefixes) &&
+		       (name.len <= prefixes[p].len || !cstr_view_starts(name, prefixes[p])))
 			++p;
-		if (p == sizeof prefixes / sizeof *prefixes)
+		size_t i = 0;
+		while (i < name.len && (unsigned char)name.data[i] > ' ' && name.data[i] != 127)
+			++i;
+		if (p == array_size(prefixes) || i < name.len)
 			return EINVAL;
-		for (size_t i = 0; i < name.len; ++i)
-			if (name.ptr[i] <= ' ' || name.ptr[i] == 127)
-				return EINVAL;
 	}
 	return 0;
 }
@@ -84,27 +105,24 @@ git_view_file (struct git_view *view,
 	return e;
 }
 
-/** Copy only complete shallow boundaries from the discovered regular file. */
+/** Copy only complete shallow boundaries from the discovered regular file
+ *  at @p path.
+ */
 static int
 git_view_shallow (struct git_view *view,
-                  struct span      path,
+                  char const      *path,
                   size_t           width)
 {
-	char *name = strndup((char const *)path.ptr, path.len);
-	if (!name)
-		return ENOMEM;
-	int fd = open(name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
-	int e = fd < 0 && errno != ENOENT ? errno : 0;
-	free(name);
-	name = nullptr;
+	int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
 	if (fd < 0)
-		return e;
+		return errno == ENOENT ? 0 : errno;
 	struct stat st;
+	int e = 0;
 	if (fstat(fd, &st))
 		e = errno;
-	else if (!S_ISREG(st.st_mode) || st.st_size < 0 || st.st_size > 4 << 20)
+	else if (!S_ISREG(st.st_mode) || st.st_size < 0 || st.st_size > GIT_VIEW_SHALLOW)
 		e = EINVAL;
-	size_t size = e ? 0 : (size_t)st.st_size;
+	size_t const size = e ? 0 : (size_t)st.st_size;
 	unsigned char *data = e ? nullptr : malloc(size + 1);
 	if (!e && !data)
 		e = ENOMEM;
@@ -113,9 +131,7 @@ git_view_shallow (struct git_view *view,
 		e = util_read_all(fd, data, size + 1, -1, &used);
 	if (!e && used > size)
 		e = EFBIG;
-	if (close(fd) && !e)
-		e = errno;
-	fd = -1;
+	util_close(&fd);
 	struct span left = { data, used };
 	while (!e && left.len) {
 		struct span oid;
@@ -135,12 +151,12 @@ git_view_create (struct span metadata,
                  struct span refs,
                  int        *e)
 {
-	struct span objects, shallow, format, head = {};
 	*e = EINVAL;
-	if (git_view_line(&metadata, &objects) || !objects.len || objects.ptr[0] != '/' ||
-	    memchr(objects.ptr, '\0', objects.len) || git_view_line(&metadata, &shallow) ||
-	    !shallow.len || shallow.ptr[0] != '/' || memchr(shallow.ptr, '\0', shallow.len) ||
-	    git_view_line(&metadata, &format))
+	char const *objects = git_view_path(&metadata);
+	char const *shallow = git_view_path(&metadata);
+	struct span format;
+	struct span head = {};
+	if (!objects || !shallow || git_view_line(&metadata, &format))
 		return nullptr;
 	enum oid_format const width = oid_format((struct cstr_view){ (char const *)format.ptr,
 	                                                             format.len });
@@ -151,13 +167,8 @@ git_view_create (struct span metadata,
 		return nullptr;
 	if (metadata.len || git_view_refs(refs, width))
 		return nullptr;
-	char *path = strndup((char const *)objects.ptr, objects.len);
 	struct git_view *view = malloc(sizeof *view);
-	if (!path || !view) {
-		free(path);
-		path = nullptr;
-		free(view);
-		view = nullptr;
+	if (!view) {
 		*e = ENOMEM;
 		return nullptr;
 	}
@@ -170,10 +181,8 @@ git_view_create (struct span metadata,
 		view->fd = open(view->directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
 		*e = view->fd < 0 ? errno : 0;
 	}
-	if (!*e && (mkdirat(view->fd, "refs", 0700) || symlinkat(path, view->fd, "objects")))
+	if (!*e && (mkdirat(view->fd, "refs", 0700) || symlinkat(objects, view->fd, "objects")))
 		*e = errno;
-	free(path);
-	path = nullptr;
 	static char const config[] = "[core]\nrepositoryFormatVersion = 0\nbare = true\n";
 	static char const config256[] = "[core]\nrepositoryFormatVersion = 1\nbare = true\n"
 	                                "[extensions]\nobjectFormat = sha256\n";
@@ -206,7 +215,7 @@ git_view_destroy (struct git_view **p_view)
 		static char const *const files[] = {
 			"config", "HEAD", "packed-refs", "objects", "shallow"
 		};
-		for (size_t i = 0; i < sizeof files / sizeof *files; ++i)
+		for (size_t i = 0; i < array_size(files); ++i)
 			(void)unlinkat(view->fd, files[i], 0);
 		(void)unlinkat(view->fd, "refs", AT_REMOVEDIR);
 		util_close(&view->fd);

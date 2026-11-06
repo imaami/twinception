@@ -994,10 +994,11 @@ git_call_run (struct git_call *call,
 		"--git-path", "shallow", "--show-object-format", "--verify", "--quiet",
 		"HEAD^{commit}", nullptr
 	};
+#define GIT_REF(s) s,
 	static char const *const refs[] = {
-		"for-each-ref", "--format=%(objectname) %(refname)",
-		"refs/heads/", "refs/tags/", "refs/remotes/", nullptr
+		"for-each-ref", "--format=%(objectname) %(refname)", GIT_VIEW_REFS(GIT_REF) nullptr
 	};
+#undef GIT_REF
 	char const *const *words = call->argv;
 	if (call->phase == GIT_META)
 		words = meta;

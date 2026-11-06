@@ -9,15 +9,20 @@
 
 struct git_view;
 
+/** The namespaces of the refs that a snapshot takes, as X(prefix). */
+#define GIT_VIEW_REFS(X) X("refs/heads/") X("refs/tags/") X("refs/remotes/")
+
 /**
  * Create a private bare repository sharing the discovered object directory.
  * Metadata is newline-terminated: absolute objects and shallow paths, sha1 or
  * sha256, then an optional HEAD object ID. Paths come from trusted Git discovery.
  * An existing shallow file must be regular, at most 4 MiB and contain complete
  * object ID lines. Refs are newline-terminated "OID refname" records from
- * refs/heads/, refs/tags/ or refs/remotes/. No source configuration,
- * worktree, index or other refs are imported. Input storage remains the caller's.
- * Returns nullptr with EINVAL for malformed input, or a system error in @p e.
+ * the namespaces of GIT_VIEW_REFS. No source configuration, worktree, index
+ * or other refs are imported. The newlines after the two paths in
+ * @p metadata are overwritten with NULs; other input storage remains the
+ * caller's. Returns nullptr with EINVAL for malformed input, or a system
+ * error in @p e.
  */
 extern struct git_view *
 git_view_create (struct span metadata,
