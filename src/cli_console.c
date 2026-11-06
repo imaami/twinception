@@ -1379,19 +1379,20 @@ cli_console_render_draft (struct cli_console *console,
 		return ENOMEM;
 	size_t run = start;
 	size_t i = start;
-	for (; i < draft.len;) {
+	while (i < draft.len) {
 		int cells;
 		size_t bytes = cli_render_character(cstr_view_slice(draft, i, SIZE_MAX), &cells);
 		unsigned width = cells < 0 ? 1 : (unsigned)cells;
 		if (column + width >= console->columns)
 			break;
-		if (cells < 0) {
-			if (!dstr_cat_n(output, draft.data + run, i - run) || !dstr_cat(output, " "))
-				return ENOMEM;
-			run = i + bytes;
-		}
 		i += bytes;
 		column += width;
+		if (cells >= 0)
+			continue;
+		/* A character without a width is shown as a space. */
+		if (!dstr_cat_n(output, draft.data + run, i - bytes - run) || !dstr_cat(output, " "))
+			return ENOMEM;
+		run = i;
 	}
 	return dstr_cat_n(output, draft.data + run, i - run) &&
 	       dstr_printf(output, "%*s", (int)(console->columns - column), "") ? 0 : ENOMEM;
@@ -1824,42 +1825,58 @@ cli_console_output_next (struct cli_console_output *state,
 	return cstr_view_cat(bytes, dest);
 }
 
+/* Filter the first bytes of text, which is not empty, into dest. A byte
+ * that continues the character in state is added to it, and a complete
+ * character is appended, or "?" if it is unsafe. A byte that cuts the
+ * character short appends "?" and is not used. A run of printable ASCII
+ * is appended as it is, and an unsafe ASCII byte as "?". A lead byte
+ * starts a character, or appends "?" if it is not valid. Sets *used to the
+ * number of bytes used. Returns 0 or ENOMEM.
+ */
 static int
-cli_console_output_write (struct cli_console_output *state,
-                          struct dstr               *dest,
-                          struct cstr_view           text)
+cli_console_output_step (struct cli_console_output *state,
+                         struct dstr               *dest,
+                         struct cstr_view           text,
+                         size_t                    *used)
 {
-	/* UTF-8 code points may straddle provider deltas. C1 controls are unsafe. */
-	for (size_t i = 0; i < text.len; ++i) {
-		unsigned char byte = (unsigned char)text.data[i];
-		if (state->used) {
-			/* A byte that does not continue the character cuts it short. */
-			bool next = (byte & 0xc0) == 0x80;
-			int e = next ? cli_console_output_next(state, byte, dest) : cstr_view_cat(CSTR_VIEW("?"), dest);
-			if (e)
-				return e;
-			if (next)
-				continue;
-			state->used = 0;
-		}
-		if (byte < 0x80) {
-			bool safe = (byte >= 0x20 && byte != 0x7f) || byte == '\n' || byte == '\t';
-			size_t end = i + 1;
-			while (safe && end < text.len && (unsigned char)text.data[end] - 0x20u < 0x5f)
-				++end;
-			if (!dstr_cat_n(dest, safe ? text.data + i : "?", end - i))
-				return ENOMEM;
-			i = end - 1;
-			continue;
-		}
+	unsigned char byte = (unsigned char)text.data[0];
+	*used = 1;
+	if (state->used) {
+		if ((byte & 0xc0) == 0x80)
+			return cli_console_output_next(state, byte, dest);
+		/* A byte that does not continue the character cuts it short. */
+		state->used = 0;
+		*used = 0;
+		return cstr_view_cat(CSTR_VIEW("?"), dest);
+	}
+	if (byte >= 0x80) {
 		state->expected = byte >= 0xc2 && byte <= 0xdf ? 2 :
 		                  byte >= 0xe0 && byte <= 0xef ? 3 :
 		                  byte >= 0xf0 && byte <= 0xf4 ? 4 : 0;
 		state->pending[0] = byte;
 		state->used = state->expected != 0;
 		state->value = byte & (0x7f >> state->expected);
-		if (!state->expected && !dstr_cat(dest, "?"))
-			return ENOMEM;
+		return state->expected ? 0 : cstr_view_cat(CSTR_VIEW("?"), dest);
+	}
+	if ((byte < 0x20 || byte == 0x7f) && byte != '\n' && byte != '\t')
+		return cstr_view_cat(CSTR_VIEW("?"), dest);
+	while (*used < text.len && (unsigned char)text.data[*used] - 0x20u < 0x5f)
+		++*used;
+	return cstr_view_cat(cstr_view_slice(text, 0, *used), dest);
+}
+
+static int
+cli_console_output_write (struct cli_console_output *state,
+                          struct dstr               *dest,
+                          struct cstr_view           text)
+{
+	/* UTF-8 code points may straddle provider deltas. C1 controls are unsafe. */
+	for (size_t i = 0; i < text.len;) {
+		size_t used;
+		int e = cli_console_output_step(state, dest, cstr_view_slice(text, i, SIZE_MAX), &used);
+		if (e)
+			return e;
+		i += used;
 	}
 	return 0;
 }
