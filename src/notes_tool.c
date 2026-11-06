@@ -115,6 +115,16 @@ static struct {
 #undef NOTE
 };
 
+/* Returns the flags of the actions that @p side cannot use: NOTE_UPLOAD,
+ * unless the caller is a turn and its upstream accepts files.
+ */
+static uint32_t
+notes_tool_hidden (struct notes_tool const *tool,
+                   enum notes_side          side)
+{
+	return side == NOTES_UPSTREAM && tool->attach ? 0 : NOTE_UPLOAD;
+}
+
 /* The message for a file argument that is not a valid name. */
 static struct cstr_view const bad_name =
 	CSTR_VIEW_INIT("The file argument must be a file name of 1 to 255 bytes, such as "
@@ -1496,20 +1506,21 @@ notes_tool_start (struct mcp_slot    *slot,
 	enum notes_side const side = mcp_slot_from_client(slot) ? NOTES_CLIENT : NOTES_UPSTREAM;
 	struct notes const *notes = call->loop->tool->notes;
 	notes_repo(notes, mcp_slot_principal(slot), side, call->repo);
-	bool uploads = side == NOTES_UPSTREAM && call->loop->tool->attach;
+	uint32_t const hidden = notes_tool_hidden(call->loop->tool, side);
 	struct cstr_view const action = jb_view(jb_get(args, "action"));
 	size_t which = 0;
 	while (which < array_size(notes_tool_actions) &&
 	       !cstr_view_equal(action, notes_tool_actions[which].name))
 		++which;
 	if (which == array_size(notes_tool_actions) ||
-	    ((notes_tool_actions[which].flags & NOTE_UPLOAD) && !uploads)) {
+	    notes_tool_actions[which].flags & hidden) {
 		dstr_auto why = DSTR_INIT;
 		bool ok = dstr_cat(&why, "The action must be one of:");
-		for (size_t i = 0; ok && i < array_size(notes_tool_actions); ++i)
-			if (uploads || !(notes_tool_actions[i].flags & NOTE_UPLOAD))
-				ok = dstr_printf(&why, " %.*s", (int)notes_tool_actions[i].name.len,
-				                 notes_tool_actions[i].name.data);
+		for (size_t i = 0; ok && i < array_size(notes_tool_actions); ++i) {
+			struct cstr_view const name = notes_tool_actions[i].name;
+			ok = notes_tool_actions[i].flags & hidden ||
+			     dstr_printf(&why, " %.*s", (int)name.len, name.data);
+		}
 		if (!ok || !dstr_cat_n(&why, ".", 1))
 			mcp_slot_fail(slot, ENOMEM);
 		else
@@ -1628,11 +1639,12 @@ notes_tool_schema (struct notes_tool const *tool,
 			"Non-UTF-8 bytes are displayed as \xe2\x9f\xa6XX\xe2\x9f\xa7.",
 	};
 	/* A turn can attach a note only if its upstream accepts files. */
-	bool files = side == NOTES_UPSTREAM && tool->attach;
+	uint32_t const hidden = notes_tool_hidden(tool, side);
+	bool const files = !hidden;
 	size_t most = tool->files_inline;
 	struct json_object *actions = json_object_new_array();
 	for (size_t i = 0; actions && i < array_size(notes_tool_actions); ++i)
-		if (files || !(notes_tool_actions[i].flags & NOTE_UPLOAD))
+		if (!(notes_tool_actions[i].flags & hidden))
 			actions = jb_push_or_free(actions, jb_string(notes_tool_actions[i].name));
 	struct json_object *props = jb_object(
 		"action", jb_set_or_free(schema_enum(actions, nullptr), "description", schema_text3(
