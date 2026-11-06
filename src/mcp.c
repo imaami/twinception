@@ -8264,8 +8264,7 @@ mcp_jobs_definition (void const *service)
 	(void)service;
 	return schema_tool("jobs",
 		"The jobs you started with background: list them, read the output "
-		"of one that has finished, a window at a time, or cancel one that "
-		"runs.",
+		"of one that has finished, or cancel one that runs.",
 		jb_object(
 			"action", schema_enum(schema_names(actions, ACTIONS),
 				"list the jobs, read a job's result, or cancel it."),
@@ -8552,11 +8551,34 @@ static struct mcp_row const mcp_rows[KINDS] = {
 #undef N
 };
 
+/* Returns the definition of the tool @p t that the turns get: the one of the
+ * upstream function of its row, if the row defines one, else @p def, which
+ * clients list and which is serialized for them already, so that the
+ * function may change it. The description of a tool that pages its output
+ * ends with a sentence about the window. Returns nullptr if out of memory.
+ */
+static struct json_object *
+mcp_lent_definition (struct registry_tool const *t,
+                     void const                 *service,
+                     struct json_object         *def)
+{
+	static_assert(WINDOW_MAX == 64 << 10, "the sentence says 64 KiB");
+	tool_definition_fn *upstream = mcp_row_of(t)->upstream;
+	struct json_object *lent = upstream ? upstream(service) : json_object_get(def);
+	if (!lent || !(t->kind->flags & TOOL_PAGED))
+		return lent;
+	struct cstr_view const about = jb_view(jb_get(lent, "description"));
+	return jb_set_or_free(lent, "description", schema_text3(
+		about.data ? about.data : "", about.len ? " " : "",
+		"A result contains at most 64 KiB of the output; if the output is longer, "
+		"the result ends with the offset of the rest."));
+}
+
 /** Serializes the replies that never change. @p info describes askai, and
  *  @p list is the array of the supported versions. The function serializes
  *  the definition for tools/list of each tool that a role can grant, and
- *  the definition in the API of the upstream of each tool that can be lent,
- *  from the upstream function of its row if the row defines one.
+ *  the definition in the API of the upstream of each tool that can be lent
+ *  (mcp_lent_definition()).
  */
 static int
 mcp_static_build (struct mcp_static  *st,
@@ -8578,9 +8600,7 @@ mcp_static_build (struct mcp_static  *st,
 		int e = !def ? ENOMEM : id < reg->n_granted
 		      ? mcp_static_item(&o->listed, json_object_get(def)) : 0;
 		if (!e && lendable >> id & 1) {
-			tool_definition_fn *upstream = mcp_row_of(t)->upstream;
-			struct json_object *lent = upstream ? upstream(service)
-			                                    : json_object_get(def);
+			struct json_object *lent = mcp_lent_definition(t, service, def);
 			e = lent ? mcp_static_item(&o->lent, ai_tool(st->ep->api, lent)) : ENOMEM;
 			json_object_put(lent);
 		}

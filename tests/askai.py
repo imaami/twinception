@@ -53,6 +53,9 @@ REVIEW_EMPTY = REVIEW + ("[askai: you have recorded no findings; the findings to
 # The description of the offset of each tool that pages its output
 # (TOOL_OFFSET_ABOUT, src/tool.h).
 OFFSET_ABOUT = "The byte of the output to start from."
+# The sentence that ends the description of each such tool lent to the turns.
+PAGED = (" A result contains at most 64 KiB of the output; if the output is longer, "
+         "the result ends with the offset of the rest.")
 # The API that each answer format of the fake upstream is in.
 API = {"openai": "chat", "responses": "responses", "anthropic": "messages",
        "gemini": "generate", "interactions": "interactions"}
@@ -1500,6 +1503,11 @@ def check_client_jobs(binary, up):
                 lent = up.requests[count]["body"]["tools"]
                 assert [t["function"]["name"] for t in lent] == \
                     ["git", "background", "jobs", "wait", "timer", "compact", "findings"], lent
+                # The lent tools that page their output state the window; the
+                # listed ones do not.
+                assert [t["function"]["description"].endswith(PAGED) for t in lent] == \
+                    [True, False, True, False, False, False, True], lent
+                assert PAGED not in tools[1]["description"], tools[1]
                 assert lent[2]["function"]["parameters"]["properties"]["job"]["type"] == \
                     "integer", lent[2]
                 assert re.fullmatch(f"job {jid}: ask_ai: running for [0-9] s\n",
@@ -8306,7 +8314,7 @@ def check_man(binary, up):
             assert [t["name"] for t in tools] == ["ask_ai", "man"], tools
             assert tools[1]["inputSchema"]["required"] == ["name"], tools[1]
             assert tools[1]["inputSchema"]["properties"]["offset"]["description"] == \
-                OFFSET_ABOUT, tools[1]
+                OFFSET_ABOUT and PAGED not in tools[1]["description"], tools[1]
 
             # Its arguments, environment, descriptors, signals and session.
             page = text_of(man_call(ai, name="echo", section="3p"))
@@ -8492,7 +8500,7 @@ def check_man(binary, up):
             [lent] = [t["function"] for t in up.requests[count]["body"]["tools"]
                       if t["function"]["name"] == "man"]
             assert lent["parameters"]["properties"]["offset"]["description"] == \
-                OFFSET_ABOUT, lent
+                OFFSET_ABOUT and lent["description"].endswith(PAGED), lent
         up.reply = lambda request: (200, ANSWERS["openai"])
 
         # A name is found anew once the recheck has passed, its page given
@@ -11512,12 +11520,16 @@ def check_turns(binary, up):
             assert [t["function"]["name"] for t in body["tools"]] == \
                 ["git", "notes", "compact", "findings", "background", "jobs", "wait",
                  "timer"], body["tools"]
-            # The lent tools that read on from an offset describe it alike.
+            # The lent tools that read on from an offset describe it alike,
+            # and state the window.
             offsets = {t["function"]["name"]: t["function"]["parameters"]["properties"][
                 "offset"]["description"] for t in body["tools"]
                 if "offset" in t["function"]["parameters"]["properties"]}
             assert offsets == dict.fromkeys(("git", "notes", "findings", "jobs"), OFFSET_ABOUT), \
                 offsets
+            assert {t["function"]["name"] for t in body["tools"]
+                    if t["function"]["description"].endswith(PAGED)} == set(offsets), \
+                body["tools"]
             # The upstream's notes use the thread of the ask call.
             assert "thread" not in body["tools"][1]["function"]["parameters"][
                 "properties"], body["tools"][1]
