@@ -380,7 +380,7 @@ util_read_text (char const *path,
 		return errno;
 	size_t got;
 	int e = util_read_all(fd, buf, size - 1, -1, &got);
-	close(fd);
+	util_close(&fd);
 	buf[got] = '\0';
 	return e;
 }
