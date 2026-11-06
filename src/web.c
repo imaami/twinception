@@ -63,22 +63,25 @@ static char const stopping[] = "askai is stopping.";
 
 /* The key of a request. Two requests are equal if their keys are equal.
  * The bytes of the key follow the struct that has the key. They are the
- * URL, a NUL, the Accept, a NUL, the header lines, a NUL and the body. The
- * header lines are the line of User-Agent and the lines of struct
- * web_ask, each of those after a NUL. The URL, the Accept and the lines
- * have no NUL, and the key has the lengths, so the bytes have one reading.
- * The line of User-Agent has the name of the plugin, so the plugins do not
- * share responses.
+ * URL, a NUL, the header lines, a NUL and the body. The header lines are
+ * the line of User-Agent, the line of Accept if the request has an Accept,
+ * and the lines of struct web_ask, each after the first after a NUL. The
+ * URL and the lines have no NUL, and the key has the lengths, so the bytes
+ * have one reading. The line of User-Agent has the name of the plugin, so
+ * the plugins do not share responses. A key has no padding, so keys
+ * compare with memcmp().
  */
 struct web_key {
 	uint64_t hash;
-	uint64_t max;     /* the request's max */
-	uint32_t url;     /* the length of the URL */
-	uint32_t accept;  /* the length of the Accept, 0 if it has none */
-	uint32_t body;    /* the length of the body */
-	uint16_t lines;   /* the length of the header lines */
-	uint16_t post;    /* bool, widened over the padding: a POST */
+	uint64_t max;      /* the request's max */
+	uint32_t url;      /* the length of the URL */
+	uint32_t body;     /* the length of the body */
+	uint32_t lines;    /* the length of the header lines */
+	uint16_t n_lines;  /* the number of header lines */
+	uint16_t post;     /* bool, widened over the padding: a POST */
 };
+
+static_assert(sizeof (struct web_key) == 32);
 
 /* A response, or the reason why none came. No thread changes it after
  * home has made it. Each wait that has it, and the table, have a reference
@@ -194,7 +197,7 @@ struct web {
 static size_t
 web_key_size (struct web_key const *key)
 {
-	return (size_t)key->url + 1 + key->accept + 1 + key->lines + 1 + key->body;
+	return (size_t)key->url + 1 + key->lines + 1 + key->body;
 }
 
 /* Returns the hash of @p key, whose bytes are at @p data, seeded with
@@ -218,9 +221,7 @@ web_key_equal (struct web_key const *a,
                struct web_key const *b,
                char const           *bd)
 {
-	return a->hash == b->hash && a->max == b->max && a->url == b->url &&
-	       a->accept == b->accept && a->body == b->body && a->lines == b->lines &&
-	       a->post == b->post && !memcmp(ad, bd, web_key_size(a));
+	return !memcmp(a, b, sizeof *a) && !memcmp(ad, bd, web_key_size(a));
 }
 
 static struct web_reply *
@@ -622,31 +623,20 @@ static void
 web_run_start (struct web     *web,
                struct web_run *run)
 {
-	static char const name[] = "Accept: ";
 	char const *url = run->data;
-	char const *accept = url + run->key.url + 1;
-	char const *lines = accept + run->key.accept + 1;
+	char const *lines = url + run->key.url + 1;
 	char const *body = lines + run->key.lines + 1;
-	/* The header lines, the line of Accept if any, and a nullptr. */
-	size_t n = 2;
-	for (char const *l = lines; l < body; l += strlen(l) + 1)
-		++n;
+	/* The header lines and a nullptr. */
+	size_t n = run->key.n_lines;
 	char const *few[3];
-	char const **headers = n <= array_size(few) ? few : malloc(n * sizeof *headers);
+	char const **headers = n < array_size(few) ? few : malloc((n + 1) * sizeof *headers);
 	run->since = loop_clock();
 	list_append(&web->live, &run->live);
 	int e = ENOMEM;
 	if (headers) {
-		size_t k = 0;
-		for (char const *l = lines; l < body; l += strlen(l) + 1)
-			headers[k++] = l;
-		char line[sizeof name + WEB_ACCEPT_MAX];
-		if (run->key.accept) {
-			memcpy(line, name, sizeof name - 1);
-			memcpy(line + sizeof name - 1, accept, run->key.accept + 1);
-			headers[k++] = line;
-		}
-		headers[k] = nullptr;
+		for (size_t k = 0; k < n; ++k, lines += strlen(lines) + 1)
+			headers[k] = lines;
+		headers[n] = nullptr;
 		e = http_post_json(web->http, url, run->key.post ? body : nullptr,
 		                   run->key.body, false, headers, run->timeout * 1000L,
 		                   web_run_write, web_run_done, run, &run->transfer);
@@ -815,20 +805,26 @@ web_wait_create (struct web           *web,
 {
 	static char const agent[] = "User-Agent: askai";
 	static char const of[] = " (plugin ";
+	static char const accept[] = "Accept: ";
 	static char const *const none[] = { nullptr };
 	struct web_request const *r = ask->request;
 	char const *const *lines = ask->lines ? ask->lines : none;
 	size_t name = ask->plugin ? strlen(ask->plugin) : 0;
 	bool post = r->body.data != nullptr;
 	size_t body = post ? r->body.len : 0;
-	size_t line = sizeof agent - 1 + (name ? sizeof of - 1 + name + 1 : 0);
-	for (char const *const *l = lines; *l; ++l)
-		line += web_line_kept(*l) ? 1 + strlen(*l) : 0;
+	size_t line = sizeof agent - 1 + (name ? sizeof of - 1 + name + 1 : 0) +
+	              (ask->accept ? 1 + sizeof accept - 1 + ask->accept : 0);
+	size_t n = 1 + (ask->accept != 0);
+	for (char const *const *l = lines; *l; ++l) {
+		bool kept = web_line_kept(*l);
+		line += kept ? 1 + strlen(*l) : 0;
+		n += kept;
+	}
 	if (line > UINT16_MAX) {
 		*e = EINVAL;
 		return nullptr;
 	}
-	size_t key = ask->url + 1 + ask->accept + 1 + line + 1 + body;
+	size_t key = ask->url + 1 + line + 1 + body;
 	struct web_run *run = malloc(sizeof *run + key);
 	struct web_wait *wait = malloc(sizeof *wait);
 	if (!run || !wait) {
@@ -840,10 +836,6 @@ web_wait_create (struct web           *web,
 	char *p = run->data;
 	memcpy(p, r->url, ask->url + 1);
 	p += ask->url + 1;
-	if (ask->accept)
-		memcpy(p, r->accept, ask->accept);
-	p[ask->accept] = '\0';
-	p += ask->accept + 1;
 	memcpy(p, agent, sizeof agent - 1);
 	p += sizeof agent - 1;
 	if (name) {
@@ -852,6 +844,13 @@ web_wait_create (struct web           *web,
 		memcpy(p, ask->plugin, name);
 		p += name;
 		*p++ = ')';
+	}
+	if (ask->accept) {
+		*p++ = '\0';
+		memcpy(p, accept, sizeof accept - 1);
+		p += sizeof accept - 1;
+		memcpy(p, r->accept, ask->accept);
+		p += ask->accept;
 	}
 	/* stpcpy() returns the address of the NUL that it writes, which the
 	 * next '\0' overwrites. */
@@ -881,9 +880,9 @@ web_wait_create (struct web           *web,
 	run->key = (struct web_key){
 		.max = r->max,
 		.url = (uint32_t)ask->url,
-		.accept = (uint32_t)ask->accept,
 		.body = (uint32_t)body,
-		.lines = (uint16_t)line,
+		.lines = (uint32_t)line,
+		.n_lines = (uint16_t)n,
 		.post = post
 	};
 	run->key.hash = web_key_hash(web->seed, &run->key, run->data);
