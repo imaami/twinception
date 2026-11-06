@@ -55,6 +55,11 @@ enum {
 /* A loop thread's state; JOINED too before it starts, and if it cannot. */
 enum { JOINED, STARTING, RUNNING, EXITED };
 
+/* The bits of a loop thread's flags: its loop needs loop_fini(), and it was
+ * told to drain.
+ */
+enum { THREAD_CREATED = 1, THREAD_DRAINED = 2 };
+
 /* Orders to a loop: the bits of one message (design section 2). */
 enum {
 	DRAIN = 1, STATS = 2, STALL = 4, RELIEVE = 8, ALONE = 16, OPEN = 32,
@@ -111,8 +116,8 @@ struct brainstem_thread {
 	_Atomic uint32_t            orders;
 	_Atomic uint32_t            state;
 	int                         error;    /* its own, set before state */
-	uint16_t                    created;  /* bool: its loop needs loop_fini() */
-	uint16_t                    drained;  /* bool: it was told to drain */
+	uint32_t                    flags;    /* THREAD_* bits, which the
+	                                         brainstem alone touches */
 	char                        name[8];  /* the thread's: home, loop1 to
 	                                         loop255 */
 };
@@ -332,7 +337,8 @@ brainstem_force (struct brainstem *bs,
 	while (!log_done() && loop_clock() < until)
 		(void)brainstem_nap(bs, until);
 	for (size_t i = 0; i < bs->n; ++i)
-		if (bs->threads[i].created && brainstem_thread_state(&bs->threads[i]) != JOINED)
+		if (bs->threads[i].flags & THREAD_CREATED &&
+		    brainstem_thread_state(&bs->threads[i]) != JOINED)
 			(void)pthread_detach(bs->threads[i].thread);
 	_exit(BRAINSTEM_FORCED);
 }
@@ -357,8 +363,8 @@ brainstem_drain (struct brainstem *bs)
 		bs->drain_by = bs->deadline - bs->cfg->grace_ms * MS / 5;
 	for (size_t i = 0; i < bs->n; ++i) {
 		struct brainstem_thread *t = &bs->threads[i];
-		if (brainstem_thread_state(t) == RUNNING && !t->drained) {
-			t->drained = true;
+		if (brainstem_thread_state(t) == RUNNING && !(t->flags & THREAD_DRAINED)) {
+			t->flags |= THREAD_DRAINED;
 			brainstem_thread_order(t, DRAIN);
 		}
 	}
@@ -840,7 +846,7 @@ brainstem_thread_start (struct brainstem_thread *t)
 		LOG(LOG_ERROR, "cannot start %s: %s", t->name, strerror(e));
 		return e;
 	}
-	t->created = true;
+	t->flags |= THREAD_CREATED;
 	uint64_t until = loop_clock() + START_MS * MS;
 	while (brainstem_thread_state(t) == STARTING) {
 		if (loop_clock() >= until)
@@ -1171,7 +1177,7 @@ brainstem_stop_blockers (struct brainstem *bs)
 	}
 	blocker_destroy(&bs->blockers);
 	for (size_t i = 0; i < bs->n; ++i)
-		if (bs->threads[i].created)
+		if (bs->threads[i].flags & THREAD_CREATED)
 			loop_fini(&bs->threads[i].loop);
 	free(bs->threads);
 	bs->threads = nullptr;
