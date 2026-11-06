@@ -91,8 +91,8 @@ ai_conversation (enum ai_api        api,
 	size_t n = jb_len(history);
 	for (size_t k = 0; messages && k < n; ++k) {
 		struct json_object *message = jb_at(history, k);
-		messages = jb_push_or_free(messages, ai_input(api, jb_text(jb_get(message, "role")),
-		                                              jb_get(message, "content")));
+		char const *role = jb_view(jb_get(message, "role")).data;
+		messages = jb_push_or_free(messages, ai_input(api, role, jb_get(message, "content")));
 	}
 	return jb_push_or_free(messages, ai_input(api, "user", prompt));
 }
@@ -273,7 +273,7 @@ ai_chat_answer (struct json_object  *root,
 	struct json_object *choice = jb_at(jb_get(root, "choices"), 0);
 	struct json_object *msg = jb_get(choice, "message");
 	struct json_object *content = jb_get(msg, "content");
-	*reason = jb_text(jb_get(choice, "finish_reason"));
+	*reason = jb_view(jb_get(choice, "finish_reason")).data;
 
 	/* Some servers send content as an array of text parts. */
 	int e = ai_append(text, content);
@@ -290,7 +290,7 @@ ai_responses_answer (struct json_object  *root,
                      struct dstr         *text,
                      char const         **reason)
 {
-	*reason = jb_text(jb_get(jb_get(root, "incomplete_details"), "reason"));
+	*reason = jb_view(jb_get(jb_get(root, "incomplete_details"), "reason")).data;
 	struct json_object *output = jb_get(root, "output");
 	int e = 0;
 	struct json_object *item;
@@ -312,7 +312,7 @@ ai_messages_answer (struct json_object  *root,
                     struct dstr         *text,
                     char const         **reason)
 {
-	*reason = jb_text(jb_get(root, "stop_reason"));
+	*reason = jb_view(jb_get(root, "stop_reason")).data;
 	struct json_object *content = jb_get(root, "content");
 	int e = 0;
 	struct json_object *block;
@@ -329,8 +329,8 @@ ai_generate_answer (struct json_object  *root,
 {
 	struct json_object *candidate = jb_at(jb_get(root, "candidates"), 0);
 	struct json_object *parts = jb_get(jb_get(candidate, "content"), "parts");
-	*reason = jb_text(candidate ? jb_get(candidate, "finishReason")
-	                            : jb_get(jb_get(root, "promptFeedback"), "blockReason"));
+	*reason = jb_view(candidate ? jb_get(candidate, "finishReason")
+	                            : jb_get(jb_get(root, "promptFeedback"), "blockReason")).data;
 	int e = 0;
 	struct json_object *part;
 	for (size_t i = 0; !e && (part = jb_at(parts, i)); ++i)
@@ -348,7 +348,7 @@ ai_interactions_answer (struct json_object  *root,
                         struct dstr         *text,
                         char const         **reason)
 {
-	*reason = jb_text(jb_get(root, "status"));
+	*reason = jb_view(jb_get(root, "status")).data;
 	struct json_object *steps = jb_get(root, "steps");
 	int e = 0;
 	struct json_object *step;
@@ -546,7 +546,7 @@ ai_event_error (struct json_object *ev)
 		jb_get(error, "message"), error, erred ? jb_get(ev, "message") : nullptr
 	};
 	for (size_t i = 0; i < array_size(words); ++i) {
-		char const *msg = jb_text(words[i]);
+		char const *msg = jb_view(words[i]).data;
 		if (msg)
 			return msg;
 	}
@@ -1285,7 +1285,7 @@ ai_event (enum ai_api            api,
 		reason = out->end ? jb_get(jb_get(ev, "interaction"), "status") : nullptr;
 		break;
 	}
-	out->reason = jb_text(reason);
+	out->reason = jb_view(reason).data;
 	out->truncated = ai_cut(api, out->reason);
 	out->end = out->end || out->reason;
 	return e;
@@ -1491,7 +1491,7 @@ ai_describe_error (struct dstr        *text,
 	if (!dstr_printf(text, "Upstream error (HTTP %ld): ", status))
 		return ENOMEM;
 	for (size_t i = 0; i < array_size(words); ++i) {
-		char const *msg = jb_text(words[i]);
+		char const *msg = jb_view(words[i]).data;
 		if (msg)
 			return dstr_cat(text, msg) ? 0 : ENOMEM;
 	}
@@ -1635,7 +1635,7 @@ ai_uploaded (enum ai_api       api,
 		e = dstr_cat(why, "The upstream named the file with a URI that is not "
 		             "printable ASCII.") ? EIO : ENOMEM;
 	} else {
-		*expires = ai_time(jb_text(jb_get(file, "expirationTime")));
+		*expires = ai_time(jb_view(jb_get(file, "expirationTime")).data);
 		e = dstr_cat_n(uri, at.data, at.len) ? 0 : ENOMEM;
 	}
 	json_object_put(root);

@@ -879,7 +879,7 @@ git_call_command (struct git_call  *call,
 	if (takes & FILES)
 		argv[k++] = "--";
 	for (size_t i = 0; i < lens[2]; ++i) {
-		char const *s = jb_text(json_object_array_get_idx(lists[2], i));
+		char const *s = jb_view(json_object_array_get_idx(lists[2], i)).data;
 		if (!git_inside(s) || !strncmp(s, ":(", 2))
 			return git_wrong(why, "paths[%zu] must be relative to the repository's "
 			                 "top, with no .. component or :(...) pathspec magic.", i);

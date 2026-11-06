@@ -32,22 +32,6 @@ jb_list (struct json_object *val)
 	return jb_push_or_free(json_object_new_array(), val);
 }
 
-char const *
-jb_text (struct json_object *val)
-{
-	return json_object_is_type(val, json_type_string)
-		? json_object_get_string(val) : nullptr;
-}
-
-char const *
-jb_str (struct json_object *val,
-        size_t             *len)
-{
-	struct cstr_view const v = jb_view(val);
-	*len = v.len;
-	return v.data;
-}
-
 struct json_object *
 jb_parse (char const *data,
           size_t      len,

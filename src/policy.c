@@ -249,7 +249,7 @@ static int64_t
 policy_build_role (struct policy_build const *b,
                    struct json_object        *name)
 {
-	char const *s = jb_text(name);
+	char const *s = jb_view(name).data;
 	if (!s || !b->roles)
 		return -1;
 	int64_t i = 0;

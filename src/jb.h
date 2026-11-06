@@ -114,17 +114,6 @@ jb_at (struct json_object const *arr,
 	return idx < jb_len(arr) ? json_object_array_get_idx(arr, idx) : nullptr;
 }
 
-/** String value, or nullptr if @p val is no string. */
-extern char const *
-jb_text (struct json_object *val);
-
-/** @p val's text and its length in @p *len, if it is a string; else
- *  nullptr.
- */
-extern char const *
-jb_str (struct json_object *val,
-        size_t             *len);
-
 /** Returns a view of the string @p val, or an empty view with data nullptr
  *  if @p val is not a string.
  */

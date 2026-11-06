@@ -355,9 +355,8 @@ plugin_loaded_definition (struct plugin_loaded const *loaded,
 	struct json_object *def = loaded->plugin->tools[i].definition(loaded->config);
 	if (!def)
 		return ENOMEM;
-	size_t n = 0;
-	char const *name = jb_str(jb_get(def, "name"), &n);
-	int e = name && n == loaded->lens[i] && !memcmp(name, loaded->manifest.tools[i], n)
+	struct cstr_view const want = { loaded->manifest.tools[i], loaded->lens[i] };
+	int e = cstr_view_equal(jb_view(jb_get(def, "name")), want)
 	      ? 0
 	      : util_refuse(why, len, "the definition of its tool %s has another "
 	                    "name", loaded->manifest.tools[i]);

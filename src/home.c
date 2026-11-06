@@ -262,7 +262,7 @@ home_job_restore (struct job                  *job,
 			home_job_recovery_fini(job);
 			return EPROTO;
 		}
-		char const *id = jb_text(jb_get(meta, "provider_id"));
+		char const *id = jb_view(jb_get(meta, "provider_id")).data;
 		if (id && *id && !r->provider_id && !(r->provider_id = strdup(id))) {
 			json_object_put(meta);
 			home_job_recovery_fini(job);
@@ -1911,12 +1911,11 @@ home_native_id (struct home        *home,
                 struct job         *job,
                 struct json_object *value)
 {
-	size_t len = 0;
-	char const *id = jb_str(value, &len);
-	if (!id || !len || len > MAX_JOB_ID || memchr(id, '\0', len) ||
-	    (len == 1 && *id == '.') || (len == 2 && !memcmp(id, "..", 2)))
+	struct cstr_view const id = jb_view(value);
+	if (!id.len || id.len > MAX_JOB_ID || memchr(id.data, '\0', id.len) ||
+	    cstr_view_equal(id, CSTR_VIEW(".")) || cstr_view_equal(id, CSTR_VIEW("..")))
 		return EPROTO;
-	char *copy = strndup(id, len);
+	char *copy = strndup(id.data, id.len);
 	if (!copy)
 		return ENOMEM;
 	free(job->recovery->provider_id);

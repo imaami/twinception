@@ -3641,7 +3641,7 @@ mcp_req_draft (struct mcp_req     *req,
 	struct json_object *instructions = nullptr;
 	if (system) {
 		json_object_set_serializer(system, mcp_splice_mark, req, nullptr);
-		instructions = *jb_text(system) ? json_object_get(system) : nullptr;
+		instructions = *jb_view(system).data ? json_object_get(system) : nullptr;
 	} else if (sys && *sys) {
 		instructions = json_object_new_string(sys);
 		if (!instructions)
@@ -3710,7 +3710,7 @@ mcp_history_valid (struct json_object *history)
 		struct cstr_view role = jb_view(jb_get(message, "role"));
 		if (!json_object_is_type(message, json_type_object) ||
 		    json_object_object_length(message) != 2 ||
-		    !jb_text(jb_get(message, "content")) ||
+		    !jb_view(jb_get(message, "content")).data ||
 		    cstr_view_index(roles, array_size(roles), role) == array_size(roles))
 			return false;
 	}
@@ -3774,19 +3774,18 @@ mcp_req_ask (struct mcp_req     *req,
 	struct json_object *thread = jb_get(args, "thread");
 	struct json_object *history = nullptr;
 	bool has_history = json_object_object_get_ex(args, "messages", &history);
-	char const *text = jb_text(prompt);
-	size_t len = 0;
-	char const *id = jb_str(thread, &len);
+	char const *text = jb_view(prompt).data;
+	struct cstr_view const id = jb_view(thread);
 	struct mcp_piece problem =
 		!text || !*text ? TEXT("The prompt argument must be a non-empty string.")
-		: system && !jb_text(system) ? TEXT("The system argument must be a string.")
+		: system && !jb_view(system).data ? TEXT("The system argument must be a string.")
 		: has_history && !mcp_history_valid(history)
 		? TEXT("The messages argument must be an array of at most 1024 earlier "
 		       "messages, each with only role (user or assistant) and string content.")
 		: !thread ? (struct mcp_piece){}
 		: !notes ? TEXT("No notes are kept for you here, so there is no thread to "
 		                "go on with.")
-		: !notes_is_id((struct cstr_view){ id, len })
+		: !notes_is_id(id)
 		? TEXT("The thread argument must be a thread's id, as an earlier answer "
 		       "gave it: 32 hexadecimal digits.")
 		: (struct mcp_piece){};
@@ -3801,8 +3800,8 @@ mcp_req_ask (struct mcp_req     *req,
 			return;
 	}
 	/* A thread's id comes with notes only (the problems above). */
-	if (id) {
-		memcpy(req->thread, id, sizeof req->thread);
+	if (id.data) {
+		memcpy(req->thread, id.data, sizeof req->thread);
 	} else if (notes && notes_id(req->thread)) {
 		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot make a thread's id"),
 		              nullptr, 0);
@@ -3811,7 +3810,7 @@ mcp_req_ask (struct mcp_req     *req,
 	if (notes)
 		notes_repo(notes, req->principal, NOTES_UPSTREAM, req->repo);
 	req->asked = ++req->mcp->asked;
-	mcp_req_log_ask(req, prompt, id != nullptr);
+	mcp_req_log_ask(req, prompt, id.data != nullptr);
 	mcp_req_wait(req);
 	int e = mcp_req_draft(req, prompt, system, history);
 	if (!e)
@@ -5010,15 +5009,14 @@ mcp_slot_client_find (struct mcp_slot    *slot,
                       bool                own_tool)
 {
 	struct mcp_req *req = slot->req;
-	size_t len = 0;
-	char const *id = jb_str(jb_get(args, "job"), &len);
-	if (!id || len != LEDGER_ID) {
+	struct cstr_view const id = jb_view(jb_get(args, "job"));
+	if (id.len != LEDGER_ID) {
 		mcp_slot_result(slot, TEXT("The job argument must be the id of a job of yours."),
 		                true);
 		return nullptr;
 	}
-	struct ledger_task *task = ledger_find(req->mcp->st->ledger, mcp_req_owner(req), id,
-	                                       len);
+	struct ledger_task *task = ledger_find(req->mcp->st->ledger, mcp_req_owner(req),
+	                                       id.data, id.len);
 	if (task && own_tool && task->tool != slot->tool) {
 		ledger_task_put(task);
 		task = nullptr;
@@ -5382,19 +5380,18 @@ mcp_slot_client_wait (struct mcp_slot    *slot,
 	char why[160];
 	struct mcp_piece problem = {};
 	for (size_t i = 0; !problem.bytes.data && i < n; ++i) {
-		size_t len = 0;
-		char const *id = jb_str(jb_at(list, i), &len);
-		struct ledger_task *task = id && len == LEDGER_ID
-		                         ? ledger_find(ledger, owner, id, len) : nullptr;
+		struct cstr_view const id = jb_view(jb_at(list, i));
+		struct ledger_task *task = id.len == LEDGER_ID
+		                         ? ledger_find(ledger, owner, id.data, id.len) : nullptr;
 		if (task) {
 			ledger_task_put(task);
-			memcpy(w->ids[i], id, LEDGER_ID);
+			memcpy(w->ids[i], id.data, LEDGER_ID);
 			continue;
 		}
-		problem = !id ? TEXT(bad_list)
+		problem = !id.data ? TEXT(bad_list)
 		        : ESC(why, util_format(why, sizeof why, "No job of yours has the id %.*s; "
 		                               "askai stores a job for an hour after it ends.",
-		                               (int)util_clip(id, len, LEDGER_ID), id));
+		                               (int)util_clip(id.data, id.len, LEDGER_ID), id.data));
 	}
 	if (problem.bytes.data) {
 		free(w);
@@ -6193,9 +6190,8 @@ mcp_recover_back (struct loop           *loop,
 		goto out;
 	struct mcp_static const *st = req->mcp->st;
 	uint64_t const owner = mcp_req_owner(req);
-	size_t id_len = 0;
-	char const *id = jb_str(jb_get(args, "job"), &id_len);
-	struct ledger_task *found = ledger_find(st->ledger, owner, id, id_len);
+	struct cstr_view const id = jb_view(jb_get(args, "job"));
+	struct ledger_task *found = ledger_find(st->ledger, owner, id.data, id.len);
 	if (found) {
 		ledger_task_put(found);
 		handler(&req->self, args, true);
@@ -6225,17 +6221,18 @@ mcp_recover_back (struct loop           *loop,
 	uint64_t created = jb_uint(jb_get(state, "created"), 0);
 	if (end) {
 		struct json_object *result = mcp_archive_json(end);
-		size_t len = 0;
-		char const *text = jb_str(jb_get(result, "result"), &len);
+		struct cstr_view const text = jb_view(jb_get(result, "result"));
 		int64_t status = jb_int(jb_get(result, "status"), 0);
 		struct ledger_task *task = nullptr;
 		int e = EINVAL;
-		if (text && status >= LEDGER_COMPLETED && status <= LEDGER_CANCELLED)
+		if (text.data && status >= LEDGER_COMPLETED && status <= LEDGER_CANCELLED)
 			task = ledger_restore(st->ledger, owner, LEDGER_JOB, req->self.tool,
-			                       (struct span){ (unsigned char *)(uintptr_t)id, id_len },
+			                       (struct span){ (unsigned char *)(uintptr_t)id.data,
+			                                      id.len },
 			                       created, jb_uint(jb_get(result, "ended"), 0),
 			                       (enum ledger_status)status,
-			                       (struct span){ (unsigned char *)(uintptr_t)text, len },
+			                       (struct span){ (unsigned char *)(uintptr_t)text.data,
+			                                      text.len },
 			                       nullptr, (struct handle){}, nullptr, &e);
 		json_object_put(result);
 		if (!task && e != EEXIST) {
@@ -6267,7 +6264,7 @@ mcp_recover_back (struct loop           *loop,
 		struct json_object *obj = mcp_archive_json(r);
 		int64_t k = jb_int(jb_get(obj, "index"), 0);
 		problem = !obj || k < 0 || k >= JOB_CALLS ||
-		          (!intent && !jb_text(jb_get(obj, "text")))
+		          (!intent && !jb_view(jb_get(obj, "text")).data)
 		        ? TEXT("This job's tool journal is invalid; no calls were repeated.")
 		        : intent && json_object_get_boolean(jb_get(obj, "agenda"))
 		        ? TEXT("This interrupted turn started or used background tools or "
@@ -6332,7 +6329,7 @@ mcp_recover_back (struct loop           *loop,
 		e = loop_handle(loop, req, HANDLE_REQ, &who);
 	struct ledger_task *task = !e
 		? ledger_restore(st->ledger, owner, LEDGER_JOB, req->self.tool,
-		                 (struct span){ (unsigned char *)(uintptr_t)id, id_len },
+		                 (struct span){ (unsigned char *)(uintptr_t)id.data, id.len },
 		                 created, 0, LEDGER_WORKING, (struct span){}, loop, who,
 		                 mcp_on_task_cancel, &e) : nullptr;
 	if (!task) {
@@ -6343,7 +6340,7 @@ mcp_recover_back (struct loop           *loop,
 		goto failed;
 	}
 	req->admitted = task;
-	memcpy(req->archive, id, LEDGER_ID);
+	memcpy(req->archive, id.data, LEDGER_ID);
 	req->turn = (uint32_t)turn - 1;
 	req->prompt_at = prompt_at;
 	req->archive_deadline = jb_uint(jb_get(state, "deadline"), 0);
@@ -6401,11 +6398,11 @@ mcp_req_recover (struct mcp_req                 *req,
 {
 	if (!req->mcp->st->journal)
 		return false;
-	size_t len = 0;
-	char const *id = jb_str(jb_get(args, "job"), &len);
-	if (!notes_is_id((struct cstr_view){ id, len }))
+	struct cstr_view const id = jb_view(jb_get(args, "job"));
+	if (!notes_is_id(id))
 		return false;
-	struct ledger_task *task = ledger_find(req->mcp->st->ledger, mcp_req_owner(req), id, len);
+	struct ledger_task *task = ledger_find(req->mcp->st->ledger, mcp_req_owner(req), id.data,
+	                                       id.len);
 	if (task) {
 		ledger_task_put(task);
 		return false;
@@ -6415,7 +6412,7 @@ mcp_req_recover (struct mcp_req                 *req,
 	if (!e) {
 		wait->args = json_object_get(args);
 		wait->handler = handler;
-		e = journal_load_current(req->mcp->st->journal, id, req->mcp->loop,
+		e = journal_load_current(req->mcp->st->journal, id.data, req->mcp->loop,
 		                         mcp_recover_back, wait);
 	}
 	if (e) {
@@ -6739,9 +6736,8 @@ mcp_slot_compact (struct mcp_slot    *slot,
 {
 	static_assert(SUMMARY_MAX == 4 << 20, "update the problem text");
 	struct mcp_req *req = slot->req;
-	size_t len = 0;
-	char const *summary = jb_str(jb_get(args, "summary"), &len);
-	if (!summary || !len || len > SUMMARY_MAX) {
+	struct cstr_view const summary = jb_view(jb_get(args, "summary"));
+	if (!summary.len || summary.len > SUMMARY_MAX) {
 		mcp_slot_result(slot, TEXT("The summary argument must be a string of 1 "
 		                           "byte to 4 MiB."), true);
 		return;
@@ -6750,17 +6746,18 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	struct registry_tool const *t = &mcp_slot_offer(slot)->tool;
 	struct ai_call const c = { .name = t->name };
 	(void)mcp_req_trace(req, &c, args, mcp_row_of(t)->trace);
-	(void)mcp_req_trace_end(req, false, len);
+	(void)mcp_req_trace_end(req, false, summary.len);
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": compacted by "
 	    "the upstream's compact call, summary %zu byte%s", req->mcp->loop->id, req->asked,
-	    req->turn, len, util_s(len));
+	    req->turn, summary.len, util_s(summary.len));
 	req->reminded = 0;
 	struct dstr *d = &req->self.answer;
 	dstr_clear(d);
 	int e = CAT(d, "\n\n[askai: you compacted the context: the conversation since the "
 	            "task is gone, your turns and the tools' results with it. Your summary "
-	            "of it:]\n\n") && dstr_cat_n(d, summary, jb_utf8(summary, len)) ? 0 : ENOMEM;
+	            "of it:]\n\n") &&
+	        dstr_cat_n(d, summary.data, jb_utf8(summary.data, summary.len)) ? 0 : ENOMEM;
 	mcp_req_args_free(req, req->part, array_size(req->args));
 	mcp_req_slots_drop(req);
 	buf_fini(&req->calls);
@@ -7170,10 +7167,10 @@ mcp_req_tasks (struct mcp_req     *req,
 		              array_size(data));
 		return;
 	}
-	size_t len = 0;
-	char const *id = jb_str(jb_get(params, "taskId"), &len);
-	struct ledger_task *task = id ? ledger_find(st->ledger, mcp_req_owner(req), id, len)
-	                              : nullptr;
+	struct cstr_view const id = jb_view(jb_get(params, "taskId"));
+	struct ledger_task *task = id.data ? ledger_find(st->ledger, mcp_req_owner(req), id.data,
+	                                                 id.len)
+	                                   : nullptr;
 	if (!task) {
 		mcp_req_error(req, 200, INVALID_PARAMS,
 		              FRAG("Failed to retrieve task: Task not found"), nullptr, 0);
