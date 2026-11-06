@@ -137,7 +137,7 @@ cli_console_reasoning (struct cli_console *console,
 /** A run of text, and the style it is written in. */
 struct cli_console_span {
 	struct cstr_view text;
-	enum cli_style   style;
+	uint64_t         style;  /**< enum cli_style, widened over the padding */
 };
 
 /** Write the spans, each in its style, as cli_console_write() does, in one

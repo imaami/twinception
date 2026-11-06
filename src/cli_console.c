@@ -75,7 +75,6 @@ enum {
 
 struct cli_console_output {
 	uint32_t       value;
-	uint32_t       minimum;
 	unsigned       used;
 	unsigned       expected;
 	unsigned char  pending[4];
@@ -1825,6 +1824,27 @@ cli_console_read (struct cli_console *console,
 }
 
 
+/* Add the continuation byte to the character in state. Once the character
+ * is complete, append it to dest, or "?" if it is unsafe or overlong.
+ */
+static int
+cli_console_output_next (struct cli_console_output *state,
+                         unsigned char              byte,
+                         struct dstr               *dest)
+{
+	static uint32_t const minimum[] = {[2] = 0x80, [3] = 0x800, [4] = 0x10000};
+	state->pending[state->used++] = byte;
+	state->value = (state->value << 6) | (byte & 0x3f);
+	if (state->used < state->expected)
+		return 0;
+	uint32_t value = state->value;
+	bool unsafe = value < minimum[state->expected] || value > 0x10ffff ||
+	              (value >= 0xd800 && value <= 0xdfff) || (value >= 0x0080 && value <= 0x009f);
+	struct cstr_view bytes = unsafe ? CSTR_VIEW("?") : (struct cstr_view){(char const *)state->pending, state->used};
+	state->used = 0;
+	return cstr_view_cat(bytes, dest);
+}
+
 static int
 cli_console_output_write (struct cli_console_output *state,
                           struct dstr               *dest,
@@ -1834,50 +1854,33 @@ cli_console_output_write (struct cli_console_output *state,
 	for (size_t i = 0; i < text.len; ++i) {
 		unsigned char byte = (unsigned char)text.data[i];
 		if (state->used) {
-			if ((byte & 0xc0) == 0x80) {
-				state->pending[state->used++] = byte;
-				state->value = (state->value << 6) | (byte & 0x3f);
-				if (state->used == state->expected) {
-					uint32_t value = state->value;
-					bool unsafe = value < state->minimum || value > 0x10ffff ||
-					              (value >= 0xd800 && value <= 0xdfff) ||
-					              (value >= 0x0080 && value <= 0x009f);
-					struct cstr_view bytes = unsafe ? CSTR_VIEW("?") :
-					                        (struct cstr_view){(char const *)state->pending, state->used};
-					if (cstr_view_cat(bytes, dest))
-						return ENOMEM;
-					state->used = 0;
-				}
+			/* A byte that does not continue the character cuts it short. */
+			bool next = (byte & 0xc0) == 0x80;
+			int e = next ? cli_console_output_next(state, byte, dest) : cstr_view_cat(CSTR_VIEW("?"), dest);
+			if (e)
+				return e;
+			if (next)
 				continue;
-			}
-			if (!dstr_cat(dest, "?"))
-				return ENOMEM;
 			state->used = 0;
 		}
 		if (byte < 0x80) {
 			bool safe = (byte >= 0x20 && byte != 0x7f) || byte == '\n' || byte == '\t';
 			size_t end = i + 1;
-			if (safe)
-				while (end < text.len && (unsigned char)text.data[end] - 0x20u < 0x5f)
-					++end;
+			while (safe && end < text.len && (unsigned char)text.data[end] - 0x20u < 0x5f)
+				++end;
 			if (!dstr_cat_n(dest, safe ? text.data + i : "?", end - i))
 				return ENOMEM;
 			i = end - 1;
-		} else {
-			state->expected = byte >= 0xc2 && byte <= 0xdf ? 2 :
-			                  byte >= 0xe0 && byte <= 0xef ? 3 :
-			                  byte >= 0xf0 && byte <= 0xf4 ? 4 : 0;
-			if (!state->expected) {
-				if (!dstr_cat(dest, "?"))
-					return ENOMEM;
-				continue;
-			}
-			state->pending[0] = byte;
-			state->used = 1;
-			state->value = byte & (0x7f >> state->expected);
-			state->minimum = state->expected == 2 ? 0x080 :
-			                 state->expected == 3 ? 0x800 : 0x10000;
+			continue;
 		}
+		state->expected = byte >= 0xc2 && byte <= 0xdf ? 2 :
+		                  byte >= 0xe0 && byte <= 0xef ? 3 :
+		                  byte >= 0xf0 && byte <= 0xf4 ? 4 : 0;
+		state->pending[0] = byte;
+		state->used = state->expected != 0;
+		state->value = byte & (0x7f >> state->expected);
+		if (!state->expected && !dstr_cat(dest, "?"))
+			return ENOMEM;
 	}
 	return 0;
 }
