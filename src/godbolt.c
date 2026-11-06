@@ -570,31 +570,35 @@ struct godbolt_args {
 	uint8_t          paged;     /* 1 if the argument offset is above 0 */
 };
 
-/* The state of the record of the compilation that the call writes.
- * godbolt_next() resets it for the next compilation.
+/* The states of the record of a compilation. */
+enum godbolt_mark : uint32_t {
+	GODBOLT_REC_OPENED    = 1u << 0,  /* the first line of the section is
+	                                     written */
+	GODBOLT_REC_HEADED    = 1u << 1,  /* the first line of the record is
+	                                     written */
+	GODBOLT_REC_MARKED    = 1u << 2,  /* a line of the section marks a cut */
+	GODBOLT_REC_CUT       = 1u << 3,  /* a note on a cut is written */
+	GODBOLT_REC_TRUNCATED = 1u << 4,  /* the member truncated of the
+	                                     response is true */
+	GODBOLT_REC_NO_PP     = 1u << 5,  /* the response contains no text of
+	                                     the preprocessor */
+	GODBOLT_REC_PROBED    = 1u << 6,  /* probe contains the facts of the
+	                                     record */
+};
+
+/* The record of the compilation that the call writes. godbolt_next()
+ * resets it for the next compilation.
  */
 struct godbolt_record {
 	struct json_object *secs[GODBOLT_SECTIONS];  /* the texts of the
 	                                                sections */
-	struct tool_cursor  at;         /* the section being written, its
-	                                   written lines, and the written
-	                                   bytes of its text or of the line */
+	struct tool_cursor  at;     /* the section being written, its written
+	                               lines, and the written bytes of its text
+	                               or of the line */
 	uint8_t             sec_of[GODBOLT_SECTIONS];  /* enum godbolt_sec
 	                                                  of secs[i] */
-	uint8_t             n_sec;      /* the number of sections */
-	uint8_t             opened;     /* 1 once the first line of the
-	                                   section is written */
-	uint8_t             headed;     /* 1 once the first line of the
-	                                   record is written */
-	uint8_t             marked;     /* 1 if a line of the section marks a
-	                                   cut */
-	uint8_t             cut;        /* 1 once a note on a cut is written */
-	uint8_t             truncated;  /* 1 if the member truncated of the
-	                                   response is true */
-	uint8_t             no_pp;      /* 1 if the response contains no text
-	                                   of the preprocessor */
-	uint32_t            probed;     /* 1 if probe contains the facts of
-	                                   the record */
+	uint8_t             n_sec;  /* the number of sections */
+	uint32_t            marks;  /* enum godbolt_mark */
 };
 
 /* A call of a tool. The call's own word points to it, and drop() frees
@@ -1815,7 +1819,7 @@ godbolt_header (struct godbolt *call)
 	godbolt_put(call, call->escaped);
 	godbolt_put(call, CSTR_VIEW("\": "));
 	godbolt_put(call, util_text_view(&call->why));
-	call->rec.headed = 1;
+	call->rec.marks |= GODBOLT_REC_HEADED;
 	return godbolt_put(call, CSTR_VIEW(" ===\n"));
 }
 
@@ -1938,8 +1942,8 @@ godbolt_sections_find (struct godbolt *call)
 		struct json_object *text = jb_get(pp, "output");
 		struct json_object *filtered = jb_get(pp, "numberOfLinesFiltered");
 		godbolt_section_add(call, text, main);
-		call->rec.no_pp = !json_object_is_type(text, json_type_string);
-		call->rec.truncated |= jb_int(filtered, 0) != 0;
+		call->rec.marks |= (json_object_is_type(text, json_type_string) ? 0 : GODBOLT_REC_NO_PP) |
+		                   (jb_int(filtered, 0) ? GODBOLT_REC_TRUNCATED : 0);
 	}
 	godbolt_section_add(call, jb_get(call->doc, "stdout"),
 	                    from == GODBOLT_FROM_STDOUT ? main : GODBOLT_SEC_STDOUT);
@@ -2006,7 +2010,7 @@ godbolt_targets_parse (struct godbolt *call)
 		godbolt_why(call, "the probe output is not valid: %s", call->probe.why);
 		return 0;
 	}
-	call->rec.probed = 1;
+	call->rec.marks |= GODBOLT_REC_PROBED;
 	call->rec.n_sec = 0;
 	godbolt_section_add(call, jb_get(call->doc, "stderr"), GODBOLT_SEC_STDERR);
 	return 0;
@@ -2031,8 +2035,9 @@ godbolt_classify (struct godbolt *call)
 	}
 	bool const timed = json_object_is_type(timed_out, json_type_boolean) &&
 	                   json_object_get_boolean(timed_out);
-	call->rec.truncated = json_object_is_type(truncated, json_type_boolean) &&
-	                      json_object_get_boolean(truncated);
+	if (json_object_is_type(truncated, json_type_boolean) &&
+	    json_object_get_boolean(truncated))
+		call->rec.marks |= GODBOLT_REC_TRUNCATED;
 	int64_t const n = json_object_get_int64(code);
 	if (timed)
 		godbolt_why(call, "timed out on Compiler Explorer");
@@ -2087,7 +2092,7 @@ static int
 godbolt_full (struct godbolt *call)
 {
 	call->full = 1;
-	call->rec.cut = 1;
+	call->rec.marks |= GODBOLT_REC_CUT;
 	return godbolt_put(call, CSTR_VIEW("\n[The output is cut here, because it has "
 	                                   "reached 14 MiB.]\n"));
 }
@@ -2131,11 +2136,11 @@ godbolt_slice (struct godbolt   *call,
 static int
 godbolt_section_end (struct godbolt *call)
 {
-	if (call->rec.marked)
+	if (call->rec.marks & GODBOLT_REC_MARKED) {
 		godbolt_put(call, CSTR_VIEW("[Compiler Explorer cut this output.]\n"));
-	call->rec.cut |= call->rec.marked;
-	call->rec.marked = 0;
-	call->rec.opened = 0;
+		call->rec.marks |= GODBOLT_REC_CUT;
+	}
+	call->rec.marks &= ~(GODBOLT_REC_MARKED | GODBOLT_REC_OPENED);
 	call->rec.at = (struct tool_cursor){ .section = call->rec.at.section + 1 };
 	return call->e;
 }
@@ -2152,7 +2157,7 @@ godbolt_section_text (struct godbolt   *call,
 	struct cstr_view const mark = CSTR_VIEW("\n[Truncated]");
 	if (godbolt_slice(call, text) || call->full || call->rec.at.byte < text.len)
 		return call->e;
-	call->rec.marked |= cstr_view_ends(text, mark);
+	call->rec.marks |= cstr_view_ends(text, mark) ? GODBOLT_REC_MARKED : 0;
 	if (text.data[text.len - 1] != '\n')
 		godbolt_put(call, CSTR_VIEW("\n"));
 	return godbolt_section_end(call);
@@ -2183,9 +2188,9 @@ godbolt_section_lines (struct godbolt     *call,
 		if (godbolt_slice(call, line) || call->full || call->rec.at.byte < line.len)
 			return call->e;
 		godbolt_put(call, CSTR_VIEW("\n"));
-		call->rec.marked |= cstr_view_equal(line, CSTR_VIEW("[truncated; too many lines]")) ||
-		                    (call->rec.at.item + 1 == n &&
-		                     cstr_view_equal(line, CSTR_VIEW("[Truncated]")));
+		if (cstr_view_equal(line, CSTR_VIEW("[truncated; too many lines]")) ||
+		    (call->rec.at.item + 1 == n && cstr_view_equal(line, CSTR_VIEW("[Truncated]"))))
+			call->rec.marks |= GODBOLT_REC_MARKED;
 		call->rec.at.byte = 0;
 	}
 	return godbolt_section_end(call);
@@ -2205,9 +2210,9 @@ godbolt_section (struct godbolt *call)
 	size_t const n = text.len + jb_len(v);
 	if (!n)
 		return godbolt_section_end(call);
-	if (!call->rec.opened)
+	if (!(call->rec.marks & GODBOLT_REC_OPENED))
 		godbolt_put(call, godbolt_sections[call->rec.sec_of[call->rec.at.section]]);
-	call->rec.opened = 1;
+	call->rec.marks |= GODBOLT_REC_OPENED;
 	return text.data ? godbolt_section_text(call, text) : godbolt_section_lines(call, v, n);
 }
 
@@ -2277,12 +2282,12 @@ godbolt_facts (struct godbolt *call)
 static enum godbolt_go
 godbolt_write (struct godbolt *call)
 {
-	if (!call->rec.headed) {
+	if (!(call->rec.marks & GODBOLT_REC_HEADED)) {
 		godbolt_header(call);
-		if (call->rec.no_pp)
+		if (call->rec.marks & GODBOLT_REC_NO_PP)
 			godbolt_put(call, CSTR_VIEW("Compiler Explorer sent no output of the "
 			                            "preprocessor for this compiler.\n"));
-		if (call->rec.probed)
+		if (call->rec.marks & GODBOLT_REC_PROBED)
 			godbolt_facts(call);
 	}
 	/* A record begins only while the output is not full, and a step that
@@ -2296,7 +2301,7 @@ godbolt_write (struct godbolt *call)
 		if (call->rec.at.section == sec)
 			return GODBOLT_GO;
 	}
-	if (call->rec.truncated && !call->rec.cut)
+	if ((call->rec.marks & (GODBOLT_REC_TRUNCATED | GODBOLT_REC_CUT)) == GODBOLT_REC_TRUNCATED)
 		godbolt_put(call, CSTR_VIEW("[Compiler Explorer cut this output.]\n"));
 	if (call->e)
 		return godbolt_fail(call);
