@@ -739,18 +739,21 @@ config_apply_extra (struct config *cfg,
 	return 0;
 }
 
-/* How a numeric option takes its count. */
+/* How an option of stores[] takes its argument. */
 enum config_take : uint8_t {
 	TAKE_BYTES    = 1u << 0,  /* the digits may end in K, M or G for KiB,
 	                             MiB or GiB */
 	TAKE_POSITIVE = 1u << 1,  /* the count is at least 1 */
+	TAKE_TEXT     = 1u << 2,  /* the member points to the argument */
 };
 
-/* How each numeric option is taken: the member of struct config at @p at,
- * of @p width bytes, takes a count up to @p max, as @p take says, times
- * @p scale; the option also sets the CFG_ flags @p flag.
+/* Each option that only stores its argument or sets flags: the member of
+ * struct config at @p at, of @p width bytes, takes the argument with
+ * TAKE_TEXT, or else a count up to @p max, with the bits of @p take, times
+ * @p scale; the option also sets the CFG_ flags @p flag. An option
+ * without a member only sets the flags.
  */
-static struct config_number {
+static struct config_store {
 	uint64_t max;
 	uint32_t scale;
 	uint32_t flag;
@@ -758,14 +761,18 @@ static struct config_number {
 	uint16_t at;
 	uint8_t  width;
 	uint8_t  take;   /* enum config_take */
-} const numbers[] = {
+} const stores[] = {
 #define TAKE(opt, member, take, max, scale, flag)                               \
         { max, scale, flag, opt, offsetof(struct config, member),               \
           sizeof ((struct config *)nullptr)->member, take }
-/* N and B take a count from min, 0 or 1, to max; B's is in bytes. */
+/* N and B take a count from min, 0 or 1, to max; B's is in bytes. S
+ * takes the text, and F only sets a flag.
+ */
 #define N(opt, member, min, max) TAKE(opt, member, (min) ? TAKE_POSITIVE : 0, max, 1, 0)
 #define B(opt, member, min, max) \
         TAKE(opt, member, TAKE_BYTES | ((min) ? TAKE_POSITIVE : 0), max, 1, 0)
+#define S(opt, member) TAKE(opt, member, TAKE_TEXT, 0, 0, 0)
+#define F(o, bit) { .flag = bit, .opt = o }
 	B(OPT_MAX_HEAD,          http.limits.head,          1, UINT16_MAX),
 	N(OPT_MAX_FIELDS,        http.limits.fields,        0, UINT32_MAX),
 	N(OPT_HEAD_TIMEOUT,      http.limits.head_time,     0, UINT32_MAX),
@@ -799,6 +806,24 @@ static struct config_number {
 	TAKE('T',                ep.timeout_ms,             0, INT32_MAX / 1000, 1000, 0),
 	TAKE(OPT_CHUNK_TIMEOUT,  ep.chunk_ms,               0, INT32_MAX / 1000, 1000, 0),
 	N(OPT_CONTEXT,           ep.context,                0, INT32_MAX),
+	S('m',                   ep.model),
+	S('k',                   key_env),
+	S('s',                   ep.system),
+	S(OPT_TOOL_DESCRIPTION,  tool.description),
+	S(OPT_TLS_CERT,          tls_cert),
+	S(OPT_TLS_KEY,           tls_key),
+	S(OPT_NOTES,             notes),
+	S(OPT_TRANSCRIPTS,       transcripts),
+	S(OPT_TEST_PRESSURE,     brainstem.pressure),
+	F('v',                   CFG_VERBOSE),
+	F(OPT_TLS_ALLOW_RSA,     CFG_TLS_RSA),
+	F(OPT_UPSTREAM_TOOLS,    CFG_UPSTREAM_TOOLS),
+	F(OPT_CLIENT_JOBS,       CFG_CLIENT_JOBS),
+	F(OPT_TEST_FIFO,         CFG_TEST_FIFO),
+	F(OPT_TEST_TASK,         CFG_TEST_TASK),
+	F(OPT_MAN,               CFG_MAN),
+#undef F
+#undef S
 #undef B
 #undef N
 #undef TAKE
@@ -808,9 +833,9 @@ static struct config_number {
  * if it is not one.
  */
 static int
-config_parse_count (char const                 *str,
-                    struct config_number const *n,
-                    uint64_t                   *value)
+config_parse_count (char const                *str,
+                    struct config_store const *n,
+                    uint64_t                  *value)
 {
 	static char const units[] = "KMG";
 	uint64_t count;
@@ -830,28 +855,32 @@ config_parse_count (char const                 *str,
 	return 0;
 }
 
-/* Apply the numeric option @p opt with @p arg, given in the configuration
- * file @p where, or on the command line if that is nullptr; returns 0, or 2,
- * having said why if @p opt is one.
+/* Apply the option @p opt of stores[] with @p arg, given in the
+ * configuration file @p where, or on the command line if that is nullptr;
+ * returns 0, or 2, having said why if @p opt is one.
  */
 static int
-config_apply_number (struct config *cfg,
-                     int            opt,
-                     char const    *arg,
-                     char const    *where)
+config_apply_store (struct config *cfg,
+                    int            opt,
+                    char const    *arg,
+                    char const    *where)
 {
-	struct config_number const *n = numbers;
-	while (n < numbers + array_size(numbers) && n->opt != opt)
+	struct config_store const *n = stores;
+	while (n < stores + array_size(stores) && n->opt != opt)
 		++n;
-	if (n == numbers + array_size(numbers))
+	if (n == stores + array_size(stores))
 		return 2;
-	uint64_t value;
-	if (config_parse_count(arg, n, &value))
+	unsigned char *member = (unsigned char *)cfg + n->at;
+	if (n->take & TAKE_TEXT) {
+		memcpy(member, &arg, sizeof arg);
+		return 0;
+	}
+	uint64_t value = 0;
+	if (n->width && config_parse_count(arg, n, &value))
 		return config_complain(cfg, where, "invalid --%s: %s",
 		                       config_option(opt)->name, arg);
 	/* Every member is an unsigned or a nonnegative count of 32 or 64 bits. */
 	value *= n->scale;
-	unsigned char *member = (unsigned char *)cfg + n->at;
 	switch (n->width) {
 	case sizeof (uint32_t): {
 		uint32_t narrow = (uint32_t)value;
@@ -897,9 +926,6 @@ config_apply (struct config *cfg,
 			return config_complain(cfg, where, "not an http(s) URL: %s", arg);
 		ep->url = arg;
 		break;
-	case 'm': ep->model = arg; break;
-	case 'k': cfg->key_env = arg; break;
-	case 's': ep->system = arg; break;
 	case 'l':
 		/* The command line's listeners replace the file's. */
 		if (!where && cfg->flags & CFG_LISTEN_FILE)
@@ -907,22 +933,13 @@ config_apply (struct config *cfg,
 		cfg->flags = (cfg->flags & ~CFG_LISTEN_FILE) | (where ? CFG_LISTEN_FILE : 0);
 		config_push(cfg->listens, &cfg->n_listens, arg);
 		break;
-	case 'v': cfg->flags |= CFG_VERBOSE; break;
-	case OPT_TOOL_DESCRIPTION: cfg->tool.description = arg; break;
-	case OPT_TLS_CERT: cfg->tls_cert = arg; break;
-	case OPT_TLS_KEY: cfg->tls_key = arg; break;
-	case OPT_TLS_ALLOW_RSA: cfg->flags |= CFG_TLS_RSA; break;
-	case OPT_UPSTREAM_TOOLS: cfg->flags |= CFG_UPSTREAM_TOOLS; break;
-	case OPT_CLIENT_JOBS: cfg->flags |= CFG_CLIENT_JOBS; break;
 	case OPT_BACKGROUND: ep->background = 1; break;
-	case OPT_NOTES: cfg->notes = arg; break;
 	case OPT_PARTICIPANT:
 		if (!util_word_len(arg, UTIL_WORD_MAX))
 			return config_complain(cfg, where, "--participant: use 1-64 of "
 			                       "[A-Za-z0-9_-]: %s", arg);
 		cfg->participant = arg;
 		break;
-	case OPT_TRANSCRIPTS: cfg->transcripts = arg; break;
 	case 'o':
 		config_push(cfg->origins, &cfg->n_origins, arg);
 		break;
@@ -941,23 +958,11 @@ config_apply (struct config *cfg,
 			                       "[A-Za-z0-9_.-]: %s", arg);
 		cfg->tool.name = arg;
 		break;
-	case OPT_TEST_PRESSURE:
-		cfg->brainstem.pressure = arg;
-		break;
-	case OPT_TEST_FIFO:
-		cfg->flags |= CFG_TEST_FIFO;
-		break;
-	case OPT_TEST_TASK:
-		cfg->flags |= CFG_TEST_TASK;
-		break;
-	case OPT_MAN:
-		cfg->flags |= CFG_MAN;
-		break;
 	case OPT_GIT:
 		config_push(cfg->gits, &cfg->n_gits, arg);
 		break;
 	default:
-		return config_apply_number(cfg, opt, arg, where);
+		return config_apply_store(cfg, opt, arg, where);
 	}
 	return 0;
 }
