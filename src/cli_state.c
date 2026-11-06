@@ -846,12 +846,12 @@ int
 cli_state_add_turn (struct cli_state *state,
                     struct cstr_view  prompt,
                     struct cstr_view  answer,
-                    int               replace)
+                    bool              replace)
 {
 	if (!state || (replace && !state->turn_count) ||
 	    !jb_is_text(prompt) || !jb_is_text(answer))
 		return EINVAL;
-	size_t index = state->turn_count - (replace != 0);
+	size_t index = state->turn_count - replace;
 	if (index >= array_size(state->turns))
 		return EFBIG;
 	size_t bytes = state->turn_bytes;

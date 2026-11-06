@@ -37,7 +37,7 @@ main (int argc, char **argv)
 	struct cli_state *first = cli_state_create(repo, CSTR_VIEW("session\0alice\0ask"), nullptr, &e);
 	assert(first && !e);
 	assert(!cli_state_add_input(first, CSTR_VIEW("one\ntwo")));
-	assert(!cli_state_add_turn(first, CSTR_VIEW("one\ntwo"), CSTR_VIEW("answer"), 0));
+	assert(!cli_state_add_turn(first, CSTR_VIEW("one\ntwo"), CSTR_VIEW("answer"), false));
 	struct cli_state *second = cli_state_create(repo, CSTR_VIEW("session\0alice\0ask"), nullptr, &e);
 	assert(second && !e);
 	check_text(cli_state_input_at(second, 0), CSTR_VIEW("one\ntwo"));
@@ -48,7 +48,7 @@ main (int argc, char **argv)
 	assert(!cli_state_add_input(second, CSTR_VIEW("A")));
 	assert(!cli_state_add_input(second, CSTR_VIEW("B")));
 	assert(!cli_state_add_input(second, CSTR_VIEW("A")));
-	assert(!cli_state_add_turn(second, CSTR_VIEW("one\ntwo"), CSTR_VIEW("replacement"), 1));
+	assert(!cli_state_add_turn(second, CSTR_VIEW("one\ntwo"), CSTR_VIEW("replacement"), true));
 	cli_state_destroy(&first);
 	cli_state_destroy(&second);
 	first = cli_state_create(repo, CSTR_VIEW("session\0alice\0ask"), nullptr, &e);
@@ -64,7 +64,7 @@ main (int argc, char **argv)
 	assert(first && !e && !cli_state_turn_count(first));
 	assert(has_input(first, CSTR_VIEW("first writer")));
 	assert(has_input(first, CSTR_VIEW("second writer")));
-	assert(cli_state_add_turn(first, CSTR_VIEW("absent"), CSTR_VIEW("answer"), 1) == EINVAL);
+	assert(cli_state_add_turn(first, CSTR_VIEW("absent"), CSTR_VIEW("answer"), true) == EINVAL);
 	char *large = malloc((1 << 20) + 1);
 	assert(large);
 	memset(large, 'x', (1 << 20) + 1);

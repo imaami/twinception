@@ -444,7 +444,13 @@ cli_work_wait (struct cli      *cli,
 	return work->job.blocker.error;
 }
 
-enum cli_history_operation { CLI_HISTORY_OPEN, CLI_HISTORY_INPUT, CLI_HISTORY_TURN, CLI_HISTORY_CLEAR };
+enum cli_history_operation : uint64_t {
+	CLI_HISTORY_OPEN,
+	CLI_HISTORY_INPUT,
+	CLI_HISTORY_TURN,
+	CLI_HISTORY_REPLACE,  /**< replace the last turn */
+	CLI_HISTORY_CLEAR,
+};
 
 struct cli_history_work {
 	struct cli_work             work;
@@ -454,7 +460,6 @@ struct cli_history_work {
 	struct cstr_view            answer;
 	_Atomic bool const         *cancel;
 	enum cli_history_operation  operation;
-	int                         replace;
 };
 
 static int
@@ -470,7 +475,8 @@ cli_history_work (struct cli_io_job *job)
 	case CLI_HISTORY_INPUT:
 		return cli_state_add_input(work->state, work->text);
 	case CLI_HISTORY_TURN:
-		return cli_state_add_turn(work->state, work->text, work->answer, work->replace);
+	case CLI_HISTORY_REPLACE:
+		return cli_state_add_turn(work->state, work->text, work->answer, work->operation == CLI_HISTORY_REPLACE);
 	case CLI_HISTORY_CLEAR:
 		return cli_state_clear_turns(work->state);
 	}
@@ -481,12 +487,10 @@ static int
 cli_history_update (struct cli                  *cli,
                     enum cli_history_operation  operation,
                     struct cstr_view            text,
-                    struct cstr_view            answer,
-                    bool                        replace)
+                    struct cstr_view            answer)
 {
 	struct cli_history_work work = {.work.job.work = cli_history_work, .state = cli->saved,
-	                                .operation = operation, .text = text, .answer = answer,
-	                                .replace = replace};
+	                                .operation = operation, .text = text, .answer = answer};
 	return cli_work_wait(cli, &work.work);
 }
 
@@ -538,7 +542,7 @@ cli_history_input (struct cli       *cli,
 {
 	if (line && input.len && input.data[input.len - 1] == '\n')
 		--input.len;
-	return cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_INPUT, input, (struct cstr_view){}, false), error);
+	return cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_INPUT, input, (struct cstr_view){}), error);
 }
 
 /** Mark the client busy or idle; manual tool calls keep it shown busy. */
@@ -892,7 +896,7 @@ cli_command_run (struct cli               *cli,
 		size_t count = json_object_array_length(cli->history);
 		if (count)
 			(void)json_object_array_del_idx(cli->history, 0, count);
-		int e = cli->saved ? cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_CLEAR, (struct cstr_view){}, (struct cstr_view){}, false), error) : 0;
+		int e = cli->saved ? cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_CLEAR, (struct cstr_view){}, (struct cstr_view){}), error) : 0;
 		return e || !(cli->options->flags & CLI_TTY) ? e : cli_ui_info(cli->console, CSTR_VIEW("Conversation cleared."));
 	}
 	case CLI_COMMAND_REGEN: {
@@ -1040,7 +1044,8 @@ cli_turn (struct cli       *cli,
 		return ENOMEM;
 	}
 	if (cli->saved)
-		e = cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_TURN, text, jb_view(answer), regenerate), error);
+		e = cli_save_error(cli, cli_history_update(cli, regenerate ? CLI_HISTORY_REPLACE : CLI_HISTORY_TURN,
+		                                           text, jb_view(answer)), error);
 	if (cli->options->flags & CLI_SINGLE)
 		*action = CLI_ACTION_EXIT;
 	return e;

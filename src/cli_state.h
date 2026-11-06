@@ -130,14 +130,14 @@ cli_state_add_input (struct cli_state *state,
                      struct cstr_view  text);
 
 /** Retains at most CLI_STATE_TURNS completed turns and 16 MiB of text.
- * Nonzero replace replaces the last completed turn; incomplete turns
- * never enter state.
+ * With @p replace, the turn replaces the last completed turn; incomplete
+ * turns never enter state.
  */
 extern int
 cli_state_add_turn (struct cli_state *state,
                     struct cstr_view  prompt,
                     struct cstr_view  answer,
-                    int               replace);
+                    bool              replace);
 
 /** Clears completed conversation turns, preserving input recall. */
 extern int
