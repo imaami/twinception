@@ -24,6 +24,7 @@
 
 #include "ai.h"
 #include "brainstem.h"
+#include "buf.h"
 #include "config.h"
 #include "dstr.h"
 #include "git.h"
@@ -1100,8 +1101,7 @@ config_slurp_fd (struct config const *cfg,
                  int                  fd,
                  char const          *path,
                  mode_t               hide,
-                 char               **p_text,
-                 size_t              *p_len)
+                 struct buf          *text)
 {
 	struct stat st;
 	if (fstat(fd, &st))
@@ -1109,49 +1109,56 @@ config_slurp_fd (struct config const *cfg,
 		                       strerror(errno));
 	if (!S_ISREG(st.st_mode))
 		return config_complain(cfg, path, "not a regular file");
-	if (st.st_size > FILE_MAX)
-		return config_complain(cfg, path, "larger than 1 MiB");
 	if (!config_safe_path(path, &st))
 		return config_complain(cfg, path, "%s", config_unsafe);
 	if (st.st_mode & hide)
 		return config_complain(cfg, path, "others may read it");
-	char *text = malloc((size_t)st.st_size + 1);
-	if (!text)
-		return config_oom(cfg);
-	size_t len;
-	int e = util_read_all(fd, text, (size_t)st.st_size, -1, &len);
-	if (e) {
-		explicit_bzero(text, len);
-		free(text);
-		return config_complain(cfg, path, "%s", strerror(e));
-	}
-	text[len] = '\0';
-	*p_text = text;
-	*p_len = len;
-	return 0;
+	/* The storage of the size that fstat() gave never moves, so no copy
+	 * of a secret is left in storage given up, and a file that grows
+	 * meanwhile is refused. */
+	size_t const size = (size_t)st.st_size;
+	int e = buf_read(text, fd, size, size < FILE_MAX ? size : FILE_MAX);
+	if (!e)
+		return 0;
+	buf_wipe(text);
+	buf_fini(text);
+	static char const *const too_long[] = { "changed while askai read it",
+	                                        "larger than 1 MiB" };
+	return e == ENOBUFS ? config_complain(cfg, path, "%s", too_long[size > FILE_MAX])
+	     : e == ENOMEM ? config_oom(cfg) : config_complain(cfg, path, "%s", strerror(e));
 }
 
-/* Read the file at @p path whole into @p *p_text, NUL-terminated, its
- * length into @p *p_len: a regular file of FILE_MAX bytes at most that only
- * root and askai's user may change, nor replace, and that has none of the
- * permission bits @p hide, such as S_IROTH for a secret, which is wiped
- * from memory freed here. Returns 0, or the exit status, having said why.
+/* Read the file at @p path whole into @p text, an empty buffer: a regular
+ * file of FILE_MAX bytes at most that only root and askai's user may
+ * change, nor replace, and that has none of the permission bits @p hide,
+ * such as S_IROTH for a secret. On an error, the bytes read are wiped and
+ * the storage of @p text given up. Returns 0, or the exit status, having
+ * said why.
  */
 static int
 config_slurp (struct config const *cfg,
               char const          *path,
               mode_t               hide,
-              char               **p_text,
-              size_t              *p_len)
+              struct buf          *text)
 {
 	/* Not blocking, a FIFO opens at once, and fails the check. */
 	int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
 	if (fd < 0)
 		return config_complain(cfg, nullptr, "cannot open %s: %s", path,
 		                       strerror(errno));
-	int status = config_slurp_fd(cfg, fd, path, hide, p_text, p_len);
-	close(fd);
+	int status = config_slurp_fd(cfg, fd, path, hide, text);
+	util_close(&fd);
 	return status;
+}
+
+/* A view of the bytes that config_slurp() read into @p text, whose data is
+ * not nullptr even if there are none: BIO_new_mem_buf() refuses nullptr.
+ */
+static struct cstr_view
+config_text (struct buf const *text)
+{
+	struct span const s = buf_peek(text);
+	return (struct cstr_view){ s.len ? (char const *)s.ptr : "", s.len };
 }
 
 /* Say that the configuration file's @p text is not as config_json() says,
@@ -1437,13 +1444,13 @@ config_apply_file (struct config *cfg)
 static int
 config_file (struct config *cfg)
 {
-	char *text;
-	size_t len;
-	int status = config_slurp(cfg, cfg->path, 0, &text, &len);
+	struct buf text = {};
+	int status = config_slurp(cfg, cfg->path, 0, &text);
 	if (status)
 		return status;
-	status = config_json(cfg, text, len);
-	free(text);
+	struct cstr_view const json = config_text(&text);
+	status = config_json(cfg, json.data, json.len);
+	buf_fini(&text);
 	if (status)
 		return status;
 	status = config_lists(cfg);
@@ -1810,25 +1817,25 @@ config_upstream (struct config *cfg)
 	return config_headers(cfg, has_auth ? nullptr : key);
 }
 
-/* Make the TLS context from the certificate chain, the @p chain_len bytes
- * at @p chain, and from the key in the file of --tls-key, which only its
- * owner and its group may read. The key is wiped once read.
+/* Make the TLS context from the certificate chain @p chain and from the
+ * key in the file of --tls-key, which only its owner and its group may
+ * read. The key is wiped once read.
  */
 static int
-config_tls_key (struct config *cfg,
-                char const    *chain,
-                size_t         chain_len)
+config_tls_key (struct config    *cfg,
+                struct cstr_view  chain)
 {
-	char *key;
-	size_t len;
-	int status = config_slurp(cfg, cfg->tls_key, S_IROTH, &key, &len);
+	struct buf key = {};
+	int status = config_slurp(cfg, cfg->tls_key, S_IROTH, &key);
 	if (status)
 		return status;
+	struct cstr_view const pem = config_text(&key);
 	char why[256];
 	int e;
-	cfg->http.tls = tls_ctx_create(cfg, chain, chain_len, key, len, why, sizeof why, &e);
-	explicit_bzero(key, len);
-	free(key);
+	cfg->http.tls = tls_ctx_create(cfg, chain.data, chain.len, pem.data, pem.len, why,
+	                               sizeof why, &e);
+	buf_wipe(&key);
+	buf_fini(&key);
 	if (e == ENOMEM)
 		return config_oom(cfg);
 	if (e)
@@ -1845,14 +1852,13 @@ config_tls (struct config *cfg)
 	if (!cfg->tls_cert || !cfg->tls_key)
 		return config_complain(cfg, nullptr, "a tls: listener needs --tls-cert "
 		                       "and --tls-key");
-	char *chain;
-	size_t len;
-	int status = config_slurp(cfg, cfg->tls_cert, 0, &chain, &len);
+	struct buf chain = {};
+	int status = config_slurp(cfg, cfg->tls_cert, 0, &chain);
 	if (status)
 		return status;
-	status = config_tls_key(cfg, chain, len);
-	explicit_bzero(chain, len);
-	free(chain);
+	status = config_tls_key(cfg, config_text(&chain));
+	buf_wipe(&chain);
+	buf_fini(&chain);
 	return status;
 }
 
