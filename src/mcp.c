@@ -2417,15 +2417,15 @@ mcp_req_refit (struct mcp_req   *req,
 /** Logs, with --verbose, how the turn of @p req that @p job ran ended, the
  *  HTTP status, the time and the size of the result. The line of a
  *  streamed answer also contains the tokens of the context that the turn
- *  used, the stop reason and the number of tool calls.
+ *  used, the stop reason and the number of tool calls, @p calls.
  */
 static void
 mcp_req_log_turn (struct mcp_req const *req,
-                  struct job const     *job)
+                  struct job const     *job,
+                  uint32_t              calls)
 {
 	static char const *const ends[] = {
 		[JOB_ANSWERED]  = "answered",
-		[JOB_TEXT]      = "answered",
 		[JOB_FAILED]    = "failed",
 		[JOB_BUSY]      = "refused as busy",
 		[JOB_CANCELLED] = "cancelled",
@@ -2461,9 +2461,6 @@ mcp_req_log_turn (struct mcp_req const *req,
 	char reason[QUOTED(sizeof job->reason)] = "none";
 	if (*job->reason)
 		mcp_quote(reason, sizeof reason, cstr_view(job->reason), sizeof job->reason);
-	uint32_t calls = 0;
-	for (size_t k = 0; k < JOB_CALLS; ++k)
-		calls += buf_peek(&job->calls[k]).len != 0;
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " turn %" PRIu32 ": answered, %s "
 	    "after %.1f s, %s, stop reason %s, %" PRIu32 " tool call%s, %zu byte%s of text",
 	    req->mcp->loop->id, req->asked, req->turn, http, mcp_elapsed(req->turn_at),
@@ -2483,7 +2480,6 @@ mcp_req_job_done (struct mcp_req *req)
 	struct job *job = req->job;
 	struct span const result = buf_peek(&job->result);
 	struct cstr_view why = { (char const *)result.ptr, result.len };
-	mcp_req_log_turn(req, job);
 	buf_fini(&job->key);
 	/* job_put() drops the reference of the message. The request still owns
 	 * the reference of this loop. */
@@ -2494,12 +2490,15 @@ mcp_req_job_done (struct mcp_req *req)
 		job->request = (struct buf){};
 	}
 	buf_fini(&job->request);
+	/* A streamed answer's turn is logged with its calls. */
+	if (job->status == JOB_TEXT) {
+		mcp_req_turn_done(req);
+		return;
+	}
+	mcp_req_log_turn(req, job, 0);
 	switch (job->status) {
 	case JOB_ANSWERED:
 		mcp_req_enter(req, PHASE_ANSWER);
-		return;
-	case JOB_TEXT:
-		mcp_req_turn_done(req);
 		return;
 	case JOB_CANCELLED:
 		mcp_req_fail(req, ESHUTDOWN);
@@ -4269,18 +4268,19 @@ mcp_req_turn_done (struct mcp_req *req)
 	req->context = told > 0 ? (uint32_t)told : job->context;
 	mcp_req_flag(req, REQ_CUT, ai_cut(mcp->st->ep->api, job->reason));
 	req->forced = 0;
-	int e = req->review ? review_pending_log(req->review) : 0;
-	if (e) {
-		mcp_req_fail(req, e);
-		return;
-	}
 	/* The calls are in the first n buffers of job->calls. */
-	uint16_t n = 0;
+	uint32_t n = 0;
 	size_t bytes = 0;
 	for (size_t k = 0; k < JOB_CALLS; ++k) {
 		size_t len = buf_peek(&job->calls[k]).len;
 		bytes += len;
 		n += len != 0;
+	}
+	mcp_req_log_turn(req, job, n);
+	int e = req->review ? review_pending_log(req->review) : 0;
+	if (e) {
+		mcp_req_fail(req, e);
+		return;
 	}
 	static_assert(CALLS_MAX == 16 << 20, "update the result text");
 	if (bytes > CALLS_MAX) {
