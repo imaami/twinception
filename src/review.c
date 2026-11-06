@@ -111,9 +111,12 @@ review_location (uint32_t first,
 	return (struct review_location){ .path = DSTR_INIT, .first = first, .last = last };
 }
 
-/** A struct review_location whose path is a view. */
+/** A struct review_location whose path is a view, and the commit prefix
+ *  of a location argument, or empty.
+ */
 struct review_location_view {
 	struct cstr_view path;
+	struct cstr_view prefix;
 	uint32_t         first;
 	uint32_t         last;
 };
@@ -1149,8 +1152,6 @@ enum review_trimmed : uint8_t {
 struct review_args {
 	struct cstr_view            claim;     /**< empty if there is none */
 	struct cstr_view            evidence;  /**< empty if there is none */
-	struct cstr_view            prefix;    /**< the commit prefix of the
-	                                            location, or empty */
 	struct review_location_view location;  /**< location.path is empty if
 	                                            there is no location */
 	size_t                      id;        /**< 0 if there is none */
@@ -1164,14 +1165,14 @@ struct review_args {
 
 /**
  * Parses the location argument @p t, of the form [commit:]path:first[-last],
- * into a->location and a->prefix. The path is the text before the last
- * colon, and the line numbers must satisfy 1 <= first <= last. A commit is
- * REVIEW_OID_MIN to OID_SHA256 hexadecimal digits, as git grep prints it.
- * A leading "HEAD:" means no commit. Returns 0 or EINVAL.
+ * into @p *loc. The path is the text before the last colon, and the line
+ * numbers must satisfy 1 <= first <= last. A commit is REVIEW_OID_MIN to
+ * OID_SHA256 hexadecimal digits, as git grep prints it. A leading "HEAD:"
+ * means no commit. Returns 0 or EINVAL.
  */
 static int
-review_args_location (struct review_args *a,
-                      struct cstr_view    t)
+review_args_location (struct review_location_view *loc,
+                      struct cstr_view             t)
 {
 	char const *colon = memrchr(t.data, ':', t.len);
 	if (!colon)
@@ -1185,18 +1186,15 @@ review_args_location (struct review_args *a,
 		q += 1 + util_digits(q + 1, (size_t)(end - q - 1), UINT32_MAX, &last);
 	if (!first || last < first || q != end)
 		return EINVAL;
-	struct review_location_view *loc = &a->location;
-	*loc = (struct review_location_view){
-		{ t.data, (size_t)(colon - t.data) }, (uint32_t)first, (uint32_t)last,
-	};
-	struct cstr_view const path = loc->path;
+	struct cstr_view const path = { t.data, (size_t)(colon - t.data) };
+	*loc = (struct review_location_view){ .first = (uint32_t)first, .last = (uint32_t)last };
 	size_t hex = 0;
 	while (hex < path.len && hex <= OID_SHA256 && util_is_hex(path.data + hex, 1))
 		++hex;
 	size_t skip = 0;
 	if (hex >= REVIEW_OID_MIN && hex <= OID_SHA256 && hex < path.len &&
 	    path.data[hex] == ':') {
-		a->prefix = (struct cstr_view){ path.data, hex };
+		loc->prefix = (struct cstr_view){ path.data, hex };
 		skip = hex + 1;
 	} else if (cstr_view_starts(path, CSTR_VIEW("HEAD:"))) {
 		skip = sizeof "HEAD:" - 1;
@@ -1306,7 +1304,7 @@ review_args_parse (struct review_args  *a,
 	struct cstr_view text;
 	e = review_args_text(a, location, review_arg_names[REVIEW_ARG_LOCATION], nullptr, 0,
 	                     &text, out);
-	if (!e && review_args_location(a, text))
+	if (!e && review_args_location(&a->location, text))
 		e = REFUSE(out, "The location must be path:line or path:first-last, such as "
 		           "src/mcp.c:120-140.");
 	return e;
@@ -1367,7 +1365,7 @@ struct review_cover {
 
 /**
  * Selects the files of the read log of @p r with the path of @p loc and a
- * commit that starts with @p prefix. The best file contains all lines of
+ * commit that starts with its prefix. The best file contains all lines of
  * @p loc in one run of adjoining ranges, and among those files the file
  * whose oldest read of the lines is newest is best. Otherwise the best
  * file contains the longest run from loc->first, and files with a total
@@ -1375,8 +1373,7 @@ struct review_cover {
  */
 static struct review_cover
 review_log_cover (struct review const               *r,
-                  struct review_location_view const *loc,
-                  struct cstr_view                   prefix)
+                  struct review_location_view const *loc)
 {
 	struct review_cover c = {};
 	enum review_rank rank = REVIEW_RANK_NONE;
@@ -1384,7 +1381,7 @@ review_log_cover (struct review const               *r,
 	for (size_t i = 0; i < r->log.n; ++i) {
 		struct review_file const *f = &r->log.files[i];
 		if (!cstr_view_equal(cstr_view_dstr(&f->path), loc->path) ||
-		    !oid_starts(&f->commit, prefix))
+		    !oid_starts(&f->commit, loc->prefix))
 			continue;
 		if (!c.largest || (c.largest->total && (!f->total || f->total > c.largest->total)))
 			c.largest = f;
@@ -1406,7 +1403,7 @@ review_log_cover (struct review const               *r,
 
 /**
  * Resolves loc->path against the paths of the read log of @p r whose
- * commit starts with @p prefix. If a logged path equals loc->path, stores
+ * commit starts with loc->prefix. If a logged path equals loc->path, stores
  * loc->path in found[0] and returns 1. Otherwise the matches are the
  * logged paths that end with '/' and loc->path. Stores up to @p max
  * distinct matches in @p found and returns their number.
@@ -1414,7 +1411,6 @@ review_log_cover (struct review const               *r,
 static size_t
 review_log_resolve (struct review const               *r,
                     struct review_location_view const *loc,
-                    struct cstr_view                   prefix,
                     struct cstr_view                  *found,
                     size_t                             max)
 {
@@ -1422,7 +1418,7 @@ review_log_resolve (struct review const               *r,
 	size_t const tail = loc->path.len;
 	for (size_t i = 0; i < r->log.n; ++i) {
 		struct review_file const *f = &r->log.files[i];
-		if (!oid_starts(&f->commit, prefix))
+		if (!oid_starts(&f->commit, loc->prefix))
 			continue;
 		struct cstr_view const path = cstr_view_dstr(&f->path);
 		if (cstr_view_equal(path, loc->path)) {
@@ -1448,7 +1444,6 @@ review_log_resolve (struct review const               *r,
 static int
 review_refuse_unread (struct review const               *r,
                       struct review_location_view const *loc,
-                      struct cstr_view                   prefix,
                       enum review_state                  state,
                       struct review_cover const         *c,
                       size_t                             resolved,
@@ -1458,6 +1453,7 @@ review_refuse_unread (struct review const               *r,
 	int const len = (int)loc->path.len;
 	char const *path = loc->path.data;
 	struct review_file const *largest = c->largest;
+	struct cstr_view const prefix = loc->prefix;
 	if (largest && largest->total && largest->total < loc->last)
 		return REFUSE(out, "%.*s has %" PRIu32 " line%s at %.*s, so line %" PRIu32 " is "
 		              "past its end; give a location within lines 1 to %" PRIu32 ".", len,
@@ -1534,7 +1530,6 @@ review_refuse_unread (struct review const               *r,
 static int
 review_check_location (struct review const          *r,
                        struct review_location_view  *loc,
-                       struct cstr_view              prefix,
                        enum review_state             state,
                        bool                          in_args,
                        struct review_file const    **logged,
@@ -1553,7 +1548,7 @@ review_check_location (struct review const          *r,
 		              "src/mcp.c:120-140, which you read with git read.",
 		              review_state_names[state].data);
 	struct cstr_view found[4];
-	size_t const n = review_log_resolve(r, loc, prefix, found, array_size(found));
+	size_t const n = review_log_resolve(r, loc, found, array_size(found));
 	if (n == 1)
 		loc->path = found[0];
 	if (n > 1 && (in_args || requires_log)) {
@@ -1566,12 +1561,12 @@ review_check_location (struct review const          *r,
 		       PUT(out, " in your read log; give \"location\" with the whole path.")
 		       ? EINVAL : ENOMEM;
 	}
-	struct review_cover const c = review_log_cover(r, loc, prefix);
+	struct review_cover const c = review_log_cover(r, loc);
 	if (c.best && c.end >= loc->last)
 		*logged = c.best;
 	if (*logged || !requires_log)
 		return 0;
-	return review_refuse_unread(r, loc, prefix, state, &c, n, out);
+	return review_refuse_unread(r, loc, state, &c, n, out);
 }
 
 /**
@@ -1649,7 +1644,7 @@ review_add (struct review            *r,
 		                           CSTR_VIEW("; retract a finding with update."));
 	struct review_location_view loc = a->location;
 	struct review_file const *logged;
-	int e = review_check_location(r, &loc, a->prefix, state, true, &logged, out);
+	int e = review_check_location(r, &loc, state, true, &logged, out);
 	if (e)
 		return e;
 	if (review_state_logged(state) && !a->evidence.len)
@@ -1712,10 +1707,10 @@ review_update (struct review            *r,
 	struct cstr_view const old_path = cstr_view_dstr(&f->location.path);
 	bool const in_args = a->location.path.len;
 	struct review_location_view loc = in_args ? a->location : (struct review_location_view){
-		old_path, f->location.first, f->location.last,
+		.path = old_path, .first = f->location.first, .last = f->location.last,
 	};
 	struct review_file const *logged;
-	int e = review_check_location(r, &loc, a->prefix, a->state, in_args, &logged, out);
+	int e = review_check_location(r, &loc, a->state, in_args, &logged, out);
 	if (e)
 		return e;
 	/* review_check_location() can replace a short path with a logged path.
