@@ -33,46 +33,48 @@
 #include "util.h"
 
 /* A fetch value says why git runs on the notes (src/notes.h). The values
- * below FETCH_KIND are kinds, and FETCH_KIND masks them. The bits above
- * FETCH_KIND are flags.
+ * up to FETCH_KIND are kinds, and FETCH_KIND masks them. Each kind is a
+ * row of notes_tool_fetch_steps[]. The bits above FETCH_KIND are flags.
  */
-enum notes_tool_fetch : uint16_t {
-	FETCH_CREATE,      /* create the shared repository for a write */
-	FETCH_CHECK,       /* check the note name before a write */
-	FETCH_ADD,         /* commit the note of a write */
-	FETCH_LIST,        /* list the notes for list and history */
-	FETCH_READ,        /* read a note */
-	FETCH_RESUME,      /* list the notes for the prompt of an ask call */
-	FETCH_COMPACT,     /* list the notes for a compaction */
-	FETCH_KIND = 7,    /* the mask of the kinds */
-	FETCH_NEWEST = 8,  /* read the newest note, after FETCH_RESUME or
-	                      FETCH_COMPACT */
-	FETCH_OTHER = 16,  /* set with FETCH_LIST or FETCH_READ. git reads the
-	                      notebook that the call selected. */
-	FETCH_COPY = 32,   /* set with FETCH_READ for copy. The note goes to the
-	                      caller's own notebook. */
-	FETCH_BOOKS = 128, /* list the notebooks of the session */
-	FETCH_FORMAT = FETCH_BOOKS | FETCH_CHECK, /* read the object format for
-	                                             a notebook without commits */
-	FETCH_ATTACH = 64, /* set with FETCH_READ for attach. askai uploads the
-	                      note as a file for the turn. */
-	FETCH_REPLACE = 256, /* set for replace. The note must exist. */
-	FETCH_FILES = 512,   /* set with FETCH_LIST for list. git lists the
-	                        current files, not the history. */
-	FETCH_REVISION = 1024, /* check the revisions before git reads a note */
-	FETCH_DIFF = 2048,    /* compare two revisions of a note */
-	FETCH_RESTORE = 4096, /* write an old revision of a note in a new commit */
+enum notes_tool_fetch : uint32_t {
+	FETCH_CREATE,          /* create the shared repository for a write */
+	FETCH_CHECK,           /* check the note name before a write */
+	FETCH_ADD,             /* commit the note of a write */
+	FETCH_LIST,            /* list the notes for history */
+	FETCH_READ,            /* read a note */
+	FETCH_RESUME,          /* list the notes for the prompt of an ask call */
+	FETCH_COMPACT,         /* list the notes for a compaction */
+	FETCH_FORMAT,          /* read the object format for a notebook without
+	                          commits */
+	FETCH_BOOKS,           /* list the notebooks of the session */
+	FETCH_FILES,           /* list the current files for list */
+	FETCH_NEWEST,          /* read the newest note, after FETCH_RESUME or
+	                          FETCH_COMPACT */
+	FETCH_DIFF,            /* compare two revisions of a note */
+	FETCH_KIND = 15,       /* the mask of the kinds */
+	FETCH_OTHER = 16,      /* git reads the notebook that the call
+	                          selected */
+	FETCH_COPY = 32,       /* set with FETCH_READ for copy. The note goes to
+	                          the caller's own notebook. */
+	FETCH_ATTACH = 64,     /* set with FETCH_READ for attach. askai uploads
+	                          the note as a file for the turn. */
+	FETCH_REPLACE = 128,   /* set for replace. The note must exist. */
+	FETCH_REVISION = 256,  /* check the revisions before git reads a note */
+	FETCH_RESTORE = 512,   /* write an old revision of a note in a new
+	                          commit */
 };
 
-/* A row of notes_tool_fetch_steps[]. cmd is the git command for a fetch value,
- * and out is the step that reads the output of git.
+/* A row of notes_tool_fetch_steps[]: the step that reads the output of
+ * git, and the git command for a fetch value. listed is nonzero if git
+ * writes a list, and the call fails without one (notes_tool_listed()).
  */
 struct notes_tool_fetch_step {
-	enum notes_cmd  cmd;
-	tool_step_fn   *out;
+	tool_step_fn *out;
+	uint32_t      cmd;     /* enum notes_cmd, widened over the padding */
+	uint32_t      listed;
 };
 
-static struct notes_tool_fetch_step const *notes_tool_fetch_step (uint16_t fetch);
+static struct notes_tool_fetch_step const *notes_tool_fetch_step (uint32_t fetch);
 
 /* Returns true if git writes to the notes when it runs @p cmd. */
 static bool
@@ -104,10 +106,10 @@ static struct {
 	NOTE("replace",   "Replace", NOTE_WRITE | NOTE_FILE, FETCH_REPLACE),
 	NOTE("restore",   "Restore", NOTE_WRITE | NOTE_FILE | NOTE_REVISION, FETCH_READ | FETCH_RESTORE),
 	NOTE("notebooks", nullptr,   NOTE_OFFSET,            FETCH_BOOKS),
-	NOTE("list",      nullptr,   NOTE_OFFSET,            FETCH_LIST | FETCH_FILES),
+	NOTE("list",      nullptr,   NOTE_OFFSET,            FETCH_FILES),
 	NOTE("history",   nullptr,   NOTE_OFFSET,            FETCH_LIST),
 	NOTE("read",      nullptr,   NOTE_FILE | NOTE_OFFSET | NOTE_REVISION, FETCH_READ),
-	NOTE("diff",      nullptr,   NOTE_FILE | NOTE_OFFSET, FETCH_READ | FETCH_DIFF),
+	NOTE("diff",      nullptr,   NOTE_FILE | NOTE_OFFSET, FETCH_DIFF),
 	NOTE("copy",      "Copy",    NOTE_FILE,              FETCH_READ | FETCH_OTHER | FETCH_COPY),
 	NOTE("attach",    nullptr,   NOTE_FILE | NOTE_UPLOAD, FETCH_READ | FETCH_ATTACH),
 #undef NOTE
@@ -150,7 +152,7 @@ struct notes_tool_call {
 	struct notes_revision   revision;  /* the revisions of a read, diff or
 	                                      restore, or the file of a history;
 	                                      zeroed for the other calls */
-	uint16_t                fetch;     /* why git runs (enum
+	uint32_t                fetch;     /* why git runs (enum
 	                                      notes_tool_fetch) */
 	uint16_t                len;       /* bytes in the union */
 	uint8_t                 action;    /* the row of notes_tool_actions[] */
@@ -293,13 +295,15 @@ notes_tool_failed (struct mcp_slot *slot,
 	bool busy = e == EBUSY;
 	if (!busy)
 		LOG(LOG_WARN, "notes: cannot run git: %s", strerror(e));
-	uint16_t kind = call->fetch & FETCH_KIND;
-	if (call->fetch & FETCH_NEWEST || kind == FETCH_COMPACT) {
+	switch (call->fetch & FETCH_KIND) {
+	case FETCH_NEWEST:
+	case FETCH_COMPACT:
 		notes_tool_fetch_step(call->fetch)->out(slot);
 		return;
-	}
-	if (kind == FETCH_RESUME)
+	case FETCH_RESUME:
 		notes_tool_drop(slot);
+		break;
+	}
 	if (busy)
 		mcp_slot_tell(slot, CSTR_VIEW(CHILD_BUSY), TOOL_FAILED);
 	else
@@ -319,7 +323,7 @@ notes_tool_call_notebook (struct notes_tool_call const *call)
  */
 static void
 notes_tool_run (struct mcp_slot *slot,
-                uint16_t         fetch,
+                uint32_t         fetch,
                 struct buf      *in)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
@@ -343,8 +347,8 @@ notes_tool_run (struct mcp_slot *slot,
 		repo, call->revision.file.len ? call->revision.file.data : nullptr
 	};
 	if (fetch & FETCH_REVISION)
-		notes_revision_argv(&call->revision, notes, notes_tool_call_notebook(call),
-		                    fetch & FETCH_DIFF ? NOTES_DIFF : NOTES_READ, argv);
+		notes_revision_argv(&call->revision, notes, notes_tool_call_notebook(call), cmd,
+		                    argv);
 	else
 		notes_argv(notes, cmd, words, argv);
 	struct child_cmd const c = {
@@ -514,7 +518,7 @@ notes_tool_call_message (struct notes_tool_call const *call,
 {
 	static_assert(sizeof "Restore  from  ( to  bytes)" + 2 * UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
 	              NOTES_REPO <= NOTES_MESSAGE);
-	uint16_t fetch = notes_tool_actions[call->action].fetch;
+	uint32_t fetch = notes_tool_actions[call->action].fetch;
 	char const *verb = notes_tool_actions[call->action].verb;
 	char const *from = fetch & FETCH_RESTORE ? call->revision.from.hex
 	                 : fetch & FETCH_COPY ? notes_selector(notes_tool_call_notebook(call)) : "";
@@ -661,7 +665,7 @@ notes_tool_checked (struct mcp_slot *slot)
 	struct notes_file note = {};
 	int r = child_ok(c) ? notes_checked(buf_peek(&c->out), &tip, &note) : EIO;
 	uint64_t before = r == EEXIST ? note.bytes : NO_NOTE;
-	uint16_t fetch = notes_tool_actions[call->action].fetch;
+	uint32_t fetch = notes_tool_actions[call->action].fetch;
 	if (fetch & FETCH_REPLACE)
 		r = r == EEXIST ? 0 : r ? r : ENOENT;
 	if (fetch & FETCH_RESTORE) {
@@ -777,12 +781,8 @@ notes_tool_got_list (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	bool ok = notes_tool_listed(c);
-	if (!ok) {
-		notes_tool_end(slot, notes_tool_call_unread(call), true);
-		return;
-	}
-	bool files = call->fetch & FETCH_FILES;
+	bool ok = true;
+	bool files = (call->fetch & FETCH_KIND) == FETCH_FILES;
 	struct dstr *d = call->text;
 	int e = dstr_printf(d, "Notebook %s — %s:\n\n",
 	                    notes_selector(notes_tool_call_notebook(call)),
@@ -836,10 +836,6 @@ notes_tool_got_books (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	if (!notes_tool_listed(c)) {
-		notes_tool_end(slot, notes_tool_call_unread(call), true);
-		return;
-	}
 	struct span out = buf_peek(&c->out);
 	int e = cstr_view_cat(CSTR_VIEW("Session notebooks (use a selector as "
 	                                "notebook):\n"), call->text);
@@ -962,7 +958,7 @@ notes_tool_revision_step (struct mcp_slot *slot)
 	child_destroy(&call->child);
 	struct buf in = {};
 	int e = 0;
-	if (notes_revision_ready(&call->revision) && !(call->fetch & FETCH_DIFF))
+	if (notes_revision_ready(&call->revision) && (call->fetch & FETCH_KIND) != FETCH_DIFF)
 		e = notes_read_input(&in, call->revision.from.hex, util_text_view(&call->revision.file));
 	if (e) {
 		buf_fini(&in);
@@ -978,10 +974,6 @@ notes_tool_got_diff (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	if (!notes_tool_listed(c)) {
-		notes_tool_end(slot, notes_tool_call_unread(call), true);
-		return;
-	}
 	struct notes_revision const *r = &call->revision;
 	struct span out = buf_peek(&c->out);
 	struct dstr *d = call->text;
@@ -1175,7 +1167,7 @@ notes_tool_prompt_list (struct mcp_slot  *slot,
 		notes_tool_then(slot, e);
 		return;
 	}
-	notes_tool_run(slot, call->fetch | FETCH_NEWEST, &in);
+	notes_tool_run(slot, FETCH_NEWEST, &in);
 }
 
 /* Appends the newest note, which git read for the prompt, to call->text.
@@ -1264,34 +1256,27 @@ notes_tool_compacted (struct mcp_slot *slot)
 	                                              "read.]\n"), call->text));
 }
 
-/* These rows of notes_tool_fetch_steps[] follow the rows of the kinds. */
-enum { STEP_FORMAT = FETCH_COMPACT + 1, STEP_BOOKS, STEP_FILES, STEP_NEWEST };
-
 static struct notes_tool_fetch_step const notes_tool_fetch_steps[] = {
-	[FETCH_CREATE]  = { NOTES_CREATE, notes_tool_created },
-	[FETCH_CHECK]   = { NOTES_CHECK,  notes_tool_checked },
-	[FETCH_ADD]     = { NOTES_ADD,    notes_tool_added },
-	[FETCH_LIST]    = { NOTES_LIST,   notes_tool_got_list },
-	[FETCH_READ]    = { NOTES_READ,   notes_tool_got_note },
-	[FETCH_RESUME]  = { NOTES_LIST,   notes_tool_resumed },
-	[FETCH_COMPACT] = { NOTES_LIST,   notes_tool_compacted },
-	[STEP_FORMAT]   = { NOTES_FORMAT, notes_tool_format },
-	[STEP_BOOKS]    = { NOTES_BOOKS,  notes_tool_got_books },
-	[STEP_FILES]    = { NOTES_FILES,  notes_tool_got_list },
-	[STEP_NEWEST]   = { NOTES_READ,   notes_tool_newest },
+	[FETCH_CREATE]  = { notes_tool_created,   NOTES_CREATE, 0 },
+	[FETCH_CHECK]   = { notes_tool_checked,   NOTES_CHECK,  0 },
+	[FETCH_ADD]     = { notes_tool_added,     NOTES_ADD,    0 },
+	[FETCH_LIST]    = { notes_tool_got_list,  NOTES_LIST,   1 },
+	[FETCH_READ]    = { notes_tool_got_note,  NOTES_READ,   0 },
+	[FETCH_RESUME]  = { notes_tool_resumed,   NOTES_LIST,   0 },
+	[FETCH_COMPACT] = { notes_tool_compacted, NOTES_LIST,   0 },
+	[FETCH_FORMAT]  = { notes_tool_format,    NOTES_FORMAT, 0 },
+	[FETCH_BOOKS]   = { notes_tool_got_books, NOTES_BOOKS,  1 },
+	[FETCH_FILES]   = { notes_tool_got_list,  NOTES_FILES,  1 },
+	[FETCH_NEWEST]  = { notes_tool_newest,    NOTES_READ,   0 },
+	[FETCH_DIFF]    = { notes_tool_got_diff,  NOTES_DIFF,   1 },
 };
+static_assert(array_size(notes_tool_fetch_steps) <= FETCH_KIND + 1);
 
-/* Returns the row of notes_tool_fetch_steps[] for @p fetch. The flags of
- * the last four rows take precedence over the kind.
- */
+/* Returns the row of notes_tool_fetch_steps[] for the kind of @p fetch. */
 static struct notes_tool_fetch_step const *
-notes_tool_fetch_step (uint16_t fetch)
+notes_tool_fetch_step (uint32_t fetch)
 {
-	return &notes_tool_fetch_steps[fetch == FETCH_FORMAT ? STEP_FORMAT
-	                               : fetch & FETCH_BOOKS ? STEP_BOOKS
-	                               : fetch & FETCH_FILES ? STEP_FILES
-	                               : fetch & FETCH_NEWEST ? STEP_NEWEST
-	                               : fetch & FETCH_KIND];
+	return &notes_tool_fetch_steps[fetch & FETCH_KIND];
 }
 
 void
@@ -1300,11 +1285,19 @@ notes_tool_step (struct mcp_slot *slot)
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	/* Only attach reaches this step without a child. The step then handles
 	 * the answer to the upload. */
-	(!call->child ? notes_tool_uploaded
-	 : (call->fetch & FETCH_REVISION) && !notes_revision_ready(&call->revision)
-	 ? notes_tool_revision_step
-	 : call->fetch & FETCH_DIFF ? notes_tool_got_diff
-	 : notes_tool_fetch_step(call->fetch)->out)(slot);
+	if (!call->child) {
+		notes_tool_uploaded(slot);
+		return;
+	}
+	if (call->fetch & FETCH_REVISION && !notes_revision_ready(&call->revision)) {
+		notes_tool_revision_step(slot);
+		return;
+	}
+	struct notes_tool_fetch_step const *row = notes_tool_fetch_step(call->fetch);
+	if (row->listed && !notes_tool_listed(call->child))
+		notes_tool_end(slot, notes_tool_call_unread(call), true);
+	else
+		row->out(slot);
 }
 
 static_assert(TOOL_TEXT_MAX == 4U << 20 && NOTES_NAME == 255 && HEXID_DIGITS == 32,
@@ -1330,7 +1323,7 @@ notes_tool_check (struct mcp_slot  *slot,
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct buf in = {};
-	uint16_t fetch = FETCH_CREATE;
+	uint32_t fetch = FETCH_CREATE;
 	if (!e && initialized) {
 		fetch = FETCH_CHECK;
 		e = notes_check_input(&in, call->repo, name);
@@ -1439,7 +1432,7 @@ static void
 notes_tool_read (struct mcp_slot    *slot,
                  struct cstr_view    name,
                  struct json_object *args,
-                 uint16_t            fetch)
+                 uint32_t            fetch)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	if (notes_name(&name)) {
@@ -1477,10 +1470,10 @@ static void
 notes_tool_revision (struct mcp_slot          *slot,
                      struct cstr_view          file,
                      struct json_object *const revisions[2],
-                     uint16_t                  fetch)
+                     uint32_t                  fetch)
 {
 	struct oid ids[2] = {};
-	bool bad = !revisions[0] && (fetch & (FETCH_DIFF | FETCH_RESTORE));
+	bool bad = !revisions[0] && ((fetch & FETCH_KIND) == FETCH_DIFF || fetch & FETCH_RESTORE);
 	for (size_t i = 0; !bad && i < array_size(ids); ++i) {
 		struct cstr_view const v = jb_view(revisions[i]);
 		bad = revisions[i] && oid_init(&ids[i], v) &&
@@ -1543,8 +1536,8 @@ notes_tool_start (struct mcp_slot    *slot,
 	}
 	call->action = which;
 	uint32_t flags = notes_tool_actions[which].flags;
-	uint16_t fetch = notes_tool_actions[which].fetch;
-	bool diff = fetch & FETCH_DIFF;
+	uint32_t fetch = notes_tool_actions[which].fetch;
+	bool diff = fetch == FETCH_DIFF;
 	struct json_object *revision = jb_get(args, "revision");
 	struct json_object *from = jb_get(args, "from");
 	struct json_object *to = jb_get(args, "to");
@@ -1596,8 +1589,8 @@ notes_tool_start (struct mcp_slot    *slot,
 		return;
 	struct json_object *file = jb_get(args, "file");
 	struct cstr_view const name = jb_view(file);
-	uint16_t const selection = *call->notebook ? FETCH_OTHER : 0;
-	if (revision || (fetch & (FETCH_DIFF | FETCH_RESTORE)) || (fetch == FETCH_LIST && file)) {
+	uint32_t const selection = *call->notebook ? FETCH_OTHER : 0;
+	if (revision || diff || fetch & FETCH_RESTORE || (fetch == FETCH_LIST && file)) {
 		struct json_object *const revisions[] = { diff ? from : revision, to };
 		notes_tool_revision(slot, name, revisions, fetch | selection);
 		return;
