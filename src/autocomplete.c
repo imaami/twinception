@@ -522,16 +522,14 @@ autocomplete_create (int *e)
 {
 	struct autocomplete *ac = malloc(sizeof *ac);
 	if (!ac) {
-		if (e)
-			*e = ENOMEM;
+		*e = ENOMEM;
 		return nullptr;
 	}
 	*ac = (struct autocomplete){
 		.nesting = dstr(nullptr), .key = dstr(nullptr), .decoded = dstr(nullptr),
 		.quoted = dstr(nullptr), .json = dstr(nullptr), .lines = dstr(nullptr),
 	};
-	if (e)
-		*e = 0;
+	*e = 0;
 	return ac;
 }
 
@@ -596,7 +594,7 @@ autocomplete_add_tool (struct autocomplete *ac,
 	struct cstr_view name = autocomplete_json_text(jb_get(def, "name"));
 	if (!autocomplete_safe(name, true))
 		return 0;
-	size_t position = 0;
+	size_t position;
 	struct autocomplete_entry const *previous = autocomplete_entry_find(ac, name, &position);
 	bool replace = previous != nullptr;
 	struct autocomplete_entry entry = {
