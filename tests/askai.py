@@ -10935,11 +10935,11 @@ def check_notes_texts(binary, up):
     list before the first note is not a failed call. A client's offset
     does not apply to that result, and a turn's offset does. The
     notebooks action lists only the caller's own notebook before the
-    first note. The check also compares the texts for an empty notebook,
-    an unusable revision and a diff without differences, and the tool's
-    definitions. It compares the notebook notice after a turn's diff and
-    the last line of the trace when the turns of an ask call kept
-    notes."""
+    first note, and says that no other notebook has notes while none has.
+    The check also compares the texts for an empty notebook, an unusable
+    revision and a diff without differences, and the tool's definitions.
+    It compares the notebook notice after a turn's diff and the last line
+    of the trace when the turns of an ask call kept notes."""
     held = up.reply
     script = []
     up.reply = lambda request: script.pop(0)(request)
@@ -10975,15 +10975,20 @@ def check_notes_texts(binary, up):
                     return [m["content"] for m in messages if m["role"] == "tool"], \
                         result["content"][1]["text"]
 
+                def alone(own):
+                    """The notebooks without another one with notes."""
+                    return "Session notebooks (use a selector as notebook):\n" \
+                        f"Self (writable): {own}\nNo other notebook has notes yet.\n"
+
                 assert call(action="list", offset=100) == none
-                assert call(action="notebooks") == f"Self (writable): {client}\n"
+                assert call(action="notebooks") == alone(client)
                 said, trace = results([{"action": "list"}, {"action": "list", "offset": 100},
                                        {"action": "notebooks"}])
                 assert said == [none, f"[The output has {len(none)} bytes, fewer than "
-                                "the offset.]", f"Self (writable): {upstream}\n"], said
+                                "the offset.]", alone(upstream)], said
                 assert trace == "The other AI made 3 tool calls in 2 turns:\n" \
                     f"- notes list: {len(none)} bytes\n- notes list: {len(none)} bytes\n" \
-                    f"- notes notebooks: {len(upstream) + 18} bytes\n", trace
+                    f"- notes notebooks: {len(alone(upstream))} bytes\n", trace
                 # The definitions: the description, what each action does with
                 # its arguments, and what each argument is.
                 lent = next(t["function"] for t in up.requests[-1]["body"]["tools"]
@@ -11046,6 +11051,7 @@ def check_notes_texts(binary, up):
                 assert re.fullmatch(saved('Add "a.md" (6 bytes)'),
                                     call(action="add", file="a.md", text="alpha\n"))
                 first = git("rev-parse", f"refs/heads/notes/{client}")
+                assert call(action="notebooks") == alone(client)
                 assert call(action="history", notebook="other") == \
                     "!This notebook has no notes yet."
                 assert call(action="read", file="a.md", revision="0" * 40) == \

@@ -875,38 +875,39 @@ notes_tool_got_list (struct mcp_slot *slot)
 	notes_tool_end(slot, e, bad);
 }
 
-/* Appends the selector of the caller's own notebook to call->text. The
- * notebook does not need to have commits.
+/* Appends the session's notebooks to call->text: the selector of the
+ * caller's own notebook, which does not need to have commits, then the
+ * selector of each other notebook in the output of @p c, the git for
+ * NOTES_BOOKS, or the line that no other notebook has notes. @p c is
+ * nullptr before the first note of the session. git lists loose and
+ * packed refs. Returns 0 or ENOMEM.
  */
 static int
-notes_tool_call_identity (struct notes_tool_call const *call)
+notes_tool_books (struct notes_tool_call const *call,
+                  struct child const           *c)
 {
-	return dstr_printf(call->text, "Self (writable): %s\n",
-	                   notes_selector(call->repo)) ? 0 : ENOMEM;
+	struct cstr_view const own = cstr_view(notes_selector(call->repo));
+	struct span const out = c ? buf_peek(&c->out) : (struct span){};
+	bool ok = dstr_printf(call->text, "Session notebooks (use a selector as notebook):\n"
+	                      "Self (writable): %s\n", own.data);
+	size_t peers = 0;
+	struct cstr_view rest = { (char const *)out.ptr, out.len };
+	for (struct cstr_view name; ok && cstr_view_cut(&rest, '\n', &name); ) {
+		bool const peer = !cstr_view_equal(name, own) && !notes_select(name, nullptr);
+		peers += peer;
+		ok = !peer || dstr_printf(call->text, "%.*s (read-only)\n", (int)name.len, name.data);
+	}
+	char const *end = c && c->flags & CHILD_CUT ? "[The notebook list is incomplete.]\n"
+	                : peers ? nullptr : "No other notebook has notes yet.\n";
+	return ok && (!end || dstr_cat(call->text, end)) ? 0 : ENOMEM;
 }
 
-/* Handles the output of git for notebooks. The result lists the selector
- * of each notebook in the session. git lists loose and packed refs.
- */
+/* Handles the output of git for notebooks. */
 static void
 notes_tool_got_books (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	struct child const *c = call->child;
-	struct span const out = buf_peek(&c->out);
-	int e = cstr_view_cat(CSTR_VIEW("Session notebooks (use a selector as "
-	                                "notebook):\n"), call->text);
-	if (!e)
-		e = notes_tool_call_identity(call);
-	struct cstr_view const own = cstr_view(notes_selector(call->repo));
-	struct cstr_view rest = { (char const *)out.ptr, out.len };
-	for (struct cstr_view name; !e && cstr_view_cut(&rest, '\n', &name); )
-		if (!cstr_view_equal(name, own) && !notes_select(name, nullptr))
-			e = dstr_printf(call->text, "%.*s (read-only)\n", (int)name.len, name.data)
-			  ? 0 : ENOMEM;
-	if (!e && c->flags & CHILD_CUT)
-		e = cstr_view_cat(CSTR_VIEW("[The notebook list is incomplete.]\n"), call->text);
-	notes_tool_end(slot, e, false);
+	notes_tool_end(slot, notes_tool_books(call, call->child), false);
 }
 
 /* The brackets around a byte that the view of a note shows in hexadecimal. */
@@ -1636,7 +1637,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		struct cstr_view const none = CSTR_VIEW("No notes have been added to this "
 		                                        "session yet.");
 		if (fetch == FETCH_BOOKS)
-			notes_tool_end(slot, notes_tool_call_identity(call), false);
+			notes_tool_end(slot, notes_tool_books(call, nullptr), false);
 		else if (side == NOTES_CLIENT)
 			mcp_slot_tell(slot, none, 0);
 		else

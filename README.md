@@ -712,7 +712,8 @@ several files added by one commit. `list` reflects the current tree;
 `history` retains the record of changes.
 
 - `notebooks` identifies the caller's writable notebook even before its
-  first note, and lists peers as read-only. A selector is
+  first note, and lists peers as read-only. Without peers, its last line
+  is `No other notebook has notes yet.` A selector is
   `PARTICIPANT/WHO/SIDE`. Models receive their participant and writable
   selector in their initial prompt.
 - `notebook` selects a notebook for `list`, `history`, `read`, `diff`, `copy` or
