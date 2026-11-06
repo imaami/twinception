@@ -18,6 +18,7 @@
 #include "log.h"
 #include "loop.h"
 #include "mcp.h"
+#include "oid.h"
 #include "plugin.h"
 #include "review.h"
 #include "schema.h"
@@ -39,7 +40,7 @@ enum {
 	REVISIONS = 4,        /**< its revisions */
 	PATHS     = 32,       /**< its paths */
 	WORD      = 1024,     /**< bytes of an option, a revision, a path or a pattern */
-	REV_WORD  = WORD + 64 + 1, /**< a full SHA-256 ID and the original path */
+	REV_WORD  = WORD + OID_SHA256 + 1, /**< a full SHA-256 ID and the original path */
 	ROOTS     = 2 * REVISIONS + OPTIONS,
 	ENV       = 13,       /**< git's environment, its nullptr included */
 	CEILINGS  = 1,        /**< the index of GIT_CEILING_DIRECTORIES in it */
@@ -92,10 +93,16 @@ enum git_phase : uint64_t {
 	GIT_HELP,    /* the call describes its command with help:true and runs no git */
 };
 
-/** A root is resolved in place before any caller-visible command runs. */
+/** A root is resolved in place before any caller-visible command runs.
+ *  Before git_call_resolve(), name is the revision as given, and after it,
+ *  oid is its commit.
+ */
 struct git_root {
-	char name[WORD + sizeof git_commit_suffix];
-	char option[sizeof git_ignore_rev + 64];
+	union {
+		char       name[WORD + sizeof git_commit_suffix];
+		struct oid oid;
+	};
+	char option[sizeof git_ignore_rev + OID_SHA256];
 };
 
 struct git_revision {
@@ -125,7 +132,6 @@ struct git_read {
 	                   written */
 	size_t mark;    /* the offset in the output where the last line written
 	                   starts */
-	size_t oid_len; /* the length of the commit ID at the start of rev */
 	size_t rev_len; /* the length of rev, or 0 until the scan begins */
 	char   rev[6 * REV_WORD]; /* the revision as commit:path, escaped for a
 	                             JSON string */
@@ -1032,7 +1038,7 @@ git_call_run (struct git_call *call,
 		}
 		argv[k++] = "--end-of-options";
 		for (size_t i = 0; i < call->n_roots; ++i)
-			argv[k++] = call->roots[i].name;
+			argv[k++] = resolve ? call->roots[i].name : call->roots[i].oid.hex;
 		if (!resolve)
 			argv[k++] = "--";
 	} else {
@@ -1066,34 +1072,25 @@ git_call_run (struct git_call *call,
 static int
 git_call_resolve (struct git_call *call)
 {
-	struct span out = buf_peek(&call->child->out);
-	size_t width = 0;
+	struct span const s = buf_peek(&call->child->out);
+	struct cstr_view out = { (char const *)s.ptr, s.len };
 	for (size_t i = 0; i < call->n_roots; ++i) {
-		unsigned char *end = out.len ? memchr(out.ptr, '\n', out.len) : nullptr;
-		if (!end)
-			return EINVAL;
-		size_t len = (size_t)(end - out.ptr);
-		if (!util_is_oid((char const *)out.ptr, len) || (width && len != width))
-			return EINVAL;
-		width = len;
 		struct git_root *root = &call->roots[i];
-		memcpy(root->name, out.ptr, len);
-		root->name[len] = '\0';
+		if (oid_init_field(&root->oid, &out, '\n') ||
+		    oid_len(&root->oid) != oid_len(&call->roots[0].oid))
+			return EINVAL;
 		if (root->option[0])
 			util_format(root->option, sizeof root->option, "%s%s", git_ignore_rev,
-			            root->name);
-		out.ptr = end + 1;
-		out.len -= len + 1;
+			            root->oid.hex);
 	}
 	if (out.len)
 		return EINVAL;
-	call->read.oid_len = width;
 	for (size_t i = 0; i < call->n_revisions; ++i) {
 		struct git_revision *rev = &call->revisions[i];
-		char const *first = call->roots[rev->root].name;
+		char const *first = call->roots[rev->root].oid.hex;
 		rev->len = rev->dots
 		         ? util_format(rev->text, sizeof rev->text, "%s%.*s%s", first,
-		                       (int)rev->dots, "...", call->roots[rev->root + 1].name)
+		                       (int)rev->dots, "...", call->roots[rev->root + 1].oid.hex)
 		         : util_format(rev->text, sizeof rev->text, "%s%.*s", first,
 		                       (int)rev->path.len, rev->path.data);
 	}
@@ -1203,10 +1200,10 @@ git_ended (struct mcp_slot *slot,
 		static char const hint[] = " If :N after the file name is a line number, "
 		                           "give the file alone as the revision and "
 		                           "\"line\": N.";
-		static_assert(sizeof fmt - 4 + 64 + sizeof hint - 1 <= sizeof buf,
+		static_assert(sizeof fmt - 4 + OID_SHA256 + sizeof hint - 1 <= sizeof buf,
 		              "the note fits");
 		struct git_revision const *rev = &call->revisions[0];
-		note = util_format_view(buf, sizeof buf, fmt, call->roots[rev->root].name,
+		note = util_format_view(buf, sizeof buf, fmt, call->roots[rev->root].oid.hex,
 		                        git_line_hint(rev->path.data + 1) ? hint : "");
 	} else {
 		note = util_format_view(buf, sizeof buf, takes & OBJECT
@@ -1264,9 +1261,9 @@ git_write (struct mcp_slot        *slot,
 	return e;
 }
 
-/* Begins @p read of @p rev, which is commit:path with a commit ID of
- * read->oid_len bytes, in the repository @p repo. read->room is the rest
- * of the @p window bytes after the longest header and footer.
+/* Begins @p read of @p rev, which is commit:path, in the repository
+ * @p repo. read->room is the rest of the @p window bytes after the longest
+ * header and footer.
  */
 static void
 git_read_begin (struct git_read       *read,
@@ -1354,21 +1351,24 @@ git_read_past (struct git_read const *read,
 		                 util_s(read->total), read->total);
 }
 
-/* Writes the header line to @p slot if it fits in the LOOP_COPY room of the
- * step. If @p cut is true, the line total is a lower bound ("at least").
- * Returns 0, EAGAIN or the error of mcp_slot_write().
+/* Writes the header line of the read in @p call to @p slot if it fits in
+ * the LOOP_COPY room of the step. If @p cut is true, the line total is a
+ * lower bound ("at least"). Returns 0, EAGAIN or the error of
+ * mcp_slot_write().
  */
 static int
-git_read_head (struct git_read const *read,
+git_read_head (struct git_call const *call,
                struct mcp_slot       *slot,
-               struct git_repo const *repo,
                bool                   cut)
 {
+	struct git_read const *read = &call->read;
+	struct oid const *commit = &call->roots[call->revisions[0].root].oid;
+	size_t const n = oid_len(commit);
 	char lines[sizeof ": lines  to  of at least .]\n" + 3 * UTIL_DECIMAL];
 	struct cstr_view const p[] = {
-		CSTR_VIEW("[Repository "), repo->name, CSTR_VIEW(", file "),
-		{ read->rev + read->oid_len + 1, read->rev_len - read->oid_len - 1 },
-		CSTR_VIEW(" at commit "), { read->rev, read->oid_len },
+		CSTR_VIEW("[Repository "), call->repo->name, CSTR_VIEW(", file "),
+		{ read->rev + n + 1, read->rev_len - n - 1 },
+		CSTR_VIEW(" at commit "), oid_view(commit),
 		read->total ? util_format_view(lines, sizeof lines, ": lines %zu to %zu of "
 		                               "%s%zu.]\n", read->line, read->last,
 		                               cut ? "at least " : "", read->total)
@@ -1496,7 +1496,7 @@ git_read_shown (struct git_read const *read,
 	struct git_revision const *rev = &call->revisions[0];
 	struct review_source const src = {
 		.repo   = call->repo->name,
-		.commit = { call->roots[rev->root].name, read->oid_len },
+		.commit = oid_view(&call->roots[rev->root].oid),
 		.path   = cstr_view_slice(rev->path, 1, SIZE_MAX),
 		.at     = read->head,
 		.len    = (part ? read->mark : end) - read->head,
@@ -1565,7 +1565,7 @@ git_number (struct mcp_slot *slot,
 	struct span blob = buf_peek(&c->out);
 	int e = 0;
 	if (!read->head) {
-		e = git_read_head(read, slot, call->repo, c->cut);
+		e = git_read_head(call, slot, c->cut);
 		read->head = mcp_slot_answer(slot).len;
 	}
 	if (!e)

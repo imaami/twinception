@@ -13,6 +13,7 @@
 
 #include "cstr_view.h"
 #include "git_view.h"
+#include "oid.h"
 #include "util.h"
 
 static char const git_view_template[] = "/tmp/askai-git-XXXXXX";
@@ -37,13 +38,6 @@ git_view_line (struct span *input,
 	return 0;
 }
 
-static bool
-git_view_oid (struct span oid,
-              size_t      width)
-{
-	return oid.len == width && util_is_hex((char const *)oid.ptr, width);
-}
-
 static int
 git_view_refs (struct span refs,
                size_t      width)
@@ -56,7 +50,7 @@ git_view_refs (struct span refs,
 		struct span line;
 		if (git_view_line(&refs, &line) || line.len <= width + 1 ||
 		    line.ptr[width] != ' ' ||
-		    !git_view_oid((struct span){ line.ptr, width }, width))
+		    !oid_valid((struct cstr_view){ (char const *)line.ptr, width }))
 			return EINVAL;
 		struct span name = { line.ptr + width + 1, line.len - width - 1 };
 		size_t p = 0;
@@ -125,7 +119,8 @@ git_view_shallow (struct git_view *view,
 	struct span left = { data, used };
 	while (!e && left.len) {
 		struct span oid;
-		if (git_view_line(&left, &oid) || !git_view_oid(oid, width))
+		if (git_view_line(&left, &oid) || oid.len != width ||
+		    !oid_valid((struct cstr_view){ (char const *)oid.ptr, oid.len }))
 			e = EINVAL;
 	}
 	if (!e)
@@ -147,11 +142,12 @@ git_view_create (struct span metadata,
 	    !shallow.len || shallow.ptr[0] != '/' || memchr(shallow.ptr, '\0', shallow.len) ||
 	    git_view_line(&metadata, &format))
 		return nullptr;
-	bool sha256 = format.len == 6 && !memcmp(format.ptr, "sha256", 6);
-	if (!sha256 && !(format.len == 4 && !memcmp(format.ptr, "sha1", 4)))
+	enum oid_format const width = oid_format((struct cstr_view){ (char const *)format.ptr,
+	                                                             format.len });
+	if (!width)
 		return nullptr;
-	size_t width = sha256 ? 64 : 40;
-	if (metadata.len && (git_view_line(&metadata, &head) || !git_view_oid(head, width)))
+	if (metadata.len && (git_view_line(&metadata, &head) || head.len != width ||
+	                     !oid_valid((struct cstr_view){ (char const *)head.ptr, head.len })))
 		return nullptr;
 	if (metadata.len || git_view_refs(refs, width))
 		return nullptr;
@@ -181,7 +177,7 @@ git_view_create (struct span metadata,
 	static char const config[] = "[core]\nrepositoryFormatVersion = 0\nbare = true\n";
 	static char const config256[] = "[core]\nrepositoryFormatVersion = 1\nbare = true\n"
 	                                "[extensions]\nobjectFormat = sha256\n";
-	struct span cfg = sha256
+	struct span cfg = width == OID_SHA256
 		? (struct span){ (unsigned char *)config256, sizeof config256 - 1 }
 		: (struct span){ (unsigned char *)config, sizeof config - 1 };
 	static char const unborn[] = "ref: refs/askai/unborn\n";
