@@ -2399,21 +2399,25 @@ static enum godbolt_go (*const godbolt_phases[]) (struct godbolt *call) = {
 	[GODBOLT_FREE]   = godbolt_free,
 };
 
+/* Returns the own word of @p slot if it points to a call, or nullptr. */
+static void **
+godbolt_own (struct mcp_slot *slot)
+{
+	void **own = slot ? mcp_slot_own(slot) : nullptr;
+	return own && *own ? own : nullptr;
+}
+
 /* The step() of every kind of the plugin. It runs the call's phase, and it
  * queues the next step if the phase goes on.
  */
 static void
 godbolt_step (struct mcp_slot *slot)
 {
-	if (!slot)
-		return;
-	void **own = mcp_slot_own(slot);
-	if (!own || !*own)
+	void **own = godbolt_own(slot);
+	if (!own)
 		return;
 	struct godbolt *call = *own;
-	if (call->wait == GODBOLT_TIMER)
-		return;
-	if (godbolt_phases[call->phase](call) == GODBOLT_GO)
+	if (call->wait != GODBOLT_TIMER && godbolt_phases[call->phase](call) == GODBOLT_GO)
 		(void)mcp_slot_ready(slot);
 }
 
@@ -2439,10 +2443,8 @@ godbolt_destroy (struct godbolt **p_call)
 static void
 godbolt_drop (struct mcp_slot *slot)
 {
-	if (!slot)
-		return;
-	void **own = mcp_slot_own(slot);
-	if (!own || !*own)
+	void **own = godbolt_own(slot);
+	if (!own)
 		return;
 	struct godbolt *call = *own;
 	/* If the timer cannot be stopped, it can still fire, so the memory of
