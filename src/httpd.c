@@ -115,6 +115,8 @@ enum {
 	WRITE_PROGRESS = 16 << 10,  /* bytes sent that restart the write-stall clock */
 	CLIENT_SLOTS   = 1 << 16,   /* client hash chains: never resized, as that
 	                               would rehash every client in one step */
+	HEAD_EXTRA     = 8,         /* header lines that a response head adds to
+	                               ours, at most */
 };
 
 /* An event bit epoll never reports, for the timer finding a deadline passed. */
@@ -610,9 +612,10 @@ httpd_req_length (struct httpd_req *req,
 	size_t n = strspn(value, "0123456789");
 	if (!n || value[n] || req->flags & REQ_LENGTH)
 		return 400;
-	/* Nineteen digits fit, so the check sees the true value. */
-	if (n > 19 || (req->body = strtoull(value, nullptr, 10)) > max_body)
+	uint64_t body;
+	if (util_digits(value, n, max_body, &body) != n)
 		return 413;
+	req->body = body;
 	req->flags |= REQ_LENGTH;
 	return 0;
 }
@@ -850,15 +853,16 @@ httpd_home_client_put (struct httpd_home   *home,
 static bool
 httpd_addr_loopback (struct sockaddr_storage const *ss)
 {
-	struct sockaddr_in const *in = (void const *)ss;
-	struct sockaddr_in6 const *in6 = (void const *)ss;
-	struct in6_addr const *a = &in6->sin6_addr;
 	switch (ss->ss_family) {
-	case AF_INET:
+	case AF_INET: {
+		struct sockaddr_in const *in = (void const *)ss;
 		return ntohl(in->sin_addr.s_addr) >> 24 == 127;
-	case AF_INET6:
+	}
+	case AF_INET6: {
+		struct in6_addr const *a = &((struct sockaddr_in6 const *)(void const *)ss)->sin6_addr;
 		return IN6_IS_ADDR_LOOPBACK(a) ||
 		       (IN6_IS_ADDR_V4MAPPED(a) && a->s6_addr[12] == 127);
+	}
 	default:
 		return false;
 	}
@@ -1096,16 +1100,18 @@ httpd_conn_put (struct httpd_conn      *conn,
 	return 0;
 }
 
-/* Queue a response head: the status line, our headers, up to 9 @p extra
- * header lines and the framing of a body of @p length bytes, or of a body of
- * STREAM_OPEN, which to HTTP/1.1 clients goes in chunks and to others ends
- * with the connection. A response that begins before its request's body is
- * all in, or to a request that asked so, or while the server drains, ends the
+/* Queue a response head: the status line, our headers, @p field, header
+ * lines that may be empty, up to HEAD_EXTRA @p extra header lines and the
+ * framing of a body of @p length bytes, or of a body of STREAM_OPEN, which
+ * to HTTP/1.1 clients goes in chunks and to others ends with the
+ * connection. A response that begins before its request's body is all in,
+ * or to a request that asked so, or while the server drains, ends the
  * connection. Returns as httpd_conn_put() does.
  */
 static int
 httpd_conn_head (struct httpd_conn      *conn,
                  unsigned                status,
+                 struct cstr_view        field,
                  struct cstr_view const *extra,
                  size_t                  n_extra,
                  size_t                  length)
@@ -1133,13 +1139,13 @@ httpd_conn_head (struct httpd_conn      *conn,
 	conn->earlier = buf_peek(&conn->out).len;
 
 	char code[8];
-	code[7] = ' ';
-	char const *c = util_decimal(code + 7, status);
+	code[sizeof code - 1] = ' ';
+	char const *c = util_decimal(code + sizeof code - 1, status);
 	struct cstr_view const origin = httpd_conn_field(conn, req->origin);
-	struct cstr_view f[12 + 9];
+	struct cstr_view f[13 + HEAD_EXTRA];
 	size_t n = 0;
 	f[n++] = CSTR_VIEW("HTTP/1.1 ");
-	f[n++] = (struct cstr_view){ c, (size_t)(code + 8 - c) };
+	f[n++] = (struct cstr_view){ c, (size_t)(code + sizeof code - c) };
 	f[n++] = httpd_reason(status);
 	f[n++] = CSTR_VIEW("\r\n");
 	if (conn->flags & CONN_CLOSING)
@@ -1154,15 +1160,22 @@ httpd_conn_head (struct httpd_conn      *conn,
 		                   "WWW-Authenticate\r\n"
 		                   "Vary: Origin\r\n");
 	}
+	f[n++] = field;
 	for (size_t i = 0; i < n_extra; ++i)
 		f[n++] = extra[i];
 	f[n++] = CSTR_VIEW("\r\n");
 	return httpd_conn_put(conn, f, n);
 }
 
+/* The field of a JSON body, and the start of a JSON-RPC error up to the
+ * text of its message.
+ */
+#define JSON_FIELD "Content-Type: application/json\r\n"
+#define RPC_ERROR "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\""
+
 /* Queue a complete response of our own: @p body, which is nullptr for none
- * (and no Content-Type), after @p extra header lines; at most 8 of each. A
- * failure dooms the connection.
+ * (and no Content-Type), after @p extra header lines, at most HEAD_EXTRA.
+ * A failure dooms the connection.
  */
 static void
 httpd_conn_respond (struct httpd_conn      *conn,
@@ -1172,13 +1185,8 @@ httpd_conn_respond (struct httpd_conn      *conn,
                     struct cstr_view const *body,
                     size_t                  n_body)
 {
-	struct cstr_view head[9];
-	size_t n = 0;
-	if (body)
-		head[n++] = CSTR_VIEW("Content-Type: application/json\r\n");
-	for (size_t i = 0; i < n_extra; ++i)
-		head[n++] = extra[i];
-	if (!httpd_conn_head(conn, status, head, n, httpd_views_len(body, n_body)))
+	struct cstr_view const type = body ? CSTR_VIEW(JSON_FIELD) : (struct cstr_view){};
+	if (!httpd_conn_head(conn, status, type, extra, n_extra, httpd_views_len(body, n_body)))
 		(void)httpd_conn_put(conn, body, n_body);
 	conn->req.flags |= REQ_DONE;
 }
@@ -1194,12 +1202,49 @@ httpd_conn_error (struct httpd_conn      *conn,
                   size_t                  n_extra)
 {
 	struct cstr_view const body[] = {
-		CSTR_VIEW("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\""),
+		CSTR_VIEW(RPC_ERROR),
 		message.len ? message : httpd_reason(status),
 		CSTR_VIEW("\"}}"),
 	};
 	httpd_conn_respond(conn, status, extra, n_extra, body, array_size(body));
 }
+
+/* HEAD() is the head of a 403 response whose body has @p length bytes, and
+ * BODY() is the body of a JSON-RPC error with @p text. FORBIDDEN() defines
+ * the response @p name and checks that its body has @p length bytes.
+ */
+#define HEAD(length) "HTTP/1.1 403 Forbidden\r\n"                \
+                     JSON_FIELD                                  \
+                     "Connection: close\r\n"                     \
+                     "Content-Length: " #length "\r\n\r\n"
+#define BODY(text) RPC_ERROR "Forbidden: " text "\"}}"
+#define FORBIDDEN(name, length, text)                                   \
+        static char const name[] = HEAD(length) BODY(text);             \
+        static_assert(sizeof name - sizeof HEAD(length) == length)
+FORBIDDEN(httpd_unmapped, 136, "the uid cannot be mapped (no credentials, "
+                               "or the kernel's overflow uid)");
+FORBIDDEN(httpd_subordinate, 122, "the uid is a subordinate id of another "
+                                  "user (/etc/subuid)");
+#undef FORBIDDEN
+#undef BODY
+#undef HEAD
+#undef RPC_ERROR
+#undef JSON_FIELD
+
+/* The response to a client on a Unix socket that policy_admit_uid()
+ * refuses, and the name of the refusal in the log, by the answer of
+ * policy_admit_uid().
+ */
+static struct {
+	struct cstr_view response;
+	char const      *name;
+} const httpd_refusals[] = {
+	[POLICY_UNMAPPED]    = { { httpd_unmapped, sizeof httpd_unmapped - 1 },
+	                         "unmapped uid" },
+	[POLICY_SUBORDINATE] = { { httpd_subordinate, sizeof httpd_subordinate - 1 },
+	                         "subordinate uid" },
+};
+static_assert(array_size(httpd_refusals) == array_size((struct httpd_home){}.denied));
 
 /* Fail the request under way with @p status, taking the stream back from the
  * application; with a response begun already, the connection just closes.
@@ -1235,6 +1280,7 @@ httpd_conn_preflight (struct httpd_conn *conn)
 		                     : CSTR_VIEW(""),
 		CSTR_VIEW("Vary: Access-Control-Request-Headers\r\n"),
 	};
+	static_assert(array_size(extra) <= HEAD_EXTRA);
 	httpd_conn_respond(conn, 204, extra, array_size(extra), nullptr, 0);
 }
 
@@ -1245,9 +1291,9 @@ httpd_stream_head (struct stream *s,
                    size_t         length)
 {
 	struct httpd_conn *conn = container_of(s, struct httpd_conn, stream);
-	struct cstr_view const extra = { (char const *)fields.ptr, fields.len };
+	struct cstr_view const field = { (char const *)fields.ptr, fields.len };
 	if ((conn->req.flags & (REQ_OPEN | REQ_REPLIED)) != REQ_OPEN ||
-	    httpd_conn_head(conn, status, &extra, 1, length))
+	    httpd_conn_head(conn, status, field, nullptr, 0, length))
 		return EPIPE;
 	loop_ready(conn->srv->loop, &conn->step);
 	return 0;
@@ -1393,14 +1439,14 @@ httpd_conn_admit (struct httpd_conn *conn,
                   size_t             len,
                   struct cstr_view  *why)
 {
-	/* The status and the message of each verdict that refuses a client. */
+	/* The message and the status of each verdict that refuses a client. */
 	static struct {
-		unsigned         status;
 		struct cstr_view why;
+		uint64_t         status;  /* widened over the padding */
 	} const refusal[] = {
-		[POLICY_REFUSED]    = { 401, {} },
-		[POLICY_UNIX_TOKEN] = { 400, CSTR_VIEW_INIT("A Unix socket accepts no bearer "
-		                                            "token: the Unix user is the client") },
+		[POLICY_REFUSED]    = { {}, 401 },
+		[POLICY_UNIX_TOKEN] = { CSTR_VIEW_INIT("A Unix socket accepts no bearer "
+		                                       "token: the Unix user is the client"), 400 },
 	};
 	struct httpd *srv = conn->srv;
 	struct httpd_req *req = &conn->req;
@@ -1705,19 +1751,18 @@ httpd_conn_refuse (struct httpd_conn *conn,
 {
 	loop_work(conn->srv->loop, LOOP_REQS, 1);
 	conn->flags |= CONN_CLOSING;
+	struct cstr_view extra = {};
 	switch (status) {
 	case 401:
-		httpd_conn_error(conn, status, message,
-		                 &CSTR_VIEW("WWW-Authenticate: Bearer\r\n"), 1);
+		extra = CSTR_VIEW("WWW-Authenticate: Bearer\r\n");
 		break;
 	case 503:
-		conn->req = (struct httpd_req){};
-		httpd_conn_error(conn, status, message, &CSTR_VIEW("Retry-After: 1\r\n"), 1);
-		break;
+		extra = CSTR_VIEW("Retry-After: 1\r\n");
+		[[fallthrough]];
 	default:
 		conn->req = (struct httpd_req){};
-		httpd_conn_error(conn, status, message, nullptr, 0);
 	}
+	httpd_conn_error(conn, status, message, &extra, extra.len != 0);
 	return NEXT_END;
 }
 
@@ -1838,10 +1883,11 @@ httpd_conn_flush (struct httpd_conn *conn)
 			return 0;
 		ssize_t n = httpd_conn_send(conn, out.ptr, len);
 		if (n >= 0) {
-			buf_consume(&conn->out, (size_t)n);
-			conn->drained += (size_t)n;
-			conn->earlier -= conn->earlier < (size_t)n ? conn->earlier : (size_t)n;
-			loop_work(loop, LOOP_SEND, (uint64_t)n);
+			size_t sent = (size_t)n;
+			buf_consume(&conn->out, sent);
+			conn->drained += sent;
+			conn->earlier -= conn->earlier < sent ? conn->earlier : sent;
+			loop_work(loop, LOOP_SEND, sent);
 			continue;
 		}
 		if (n == -EINTR)
@@ -2087,8 +2133,9 @@ httpd_conn_read (struct httpd_conn *conn)
 	ssize_t n = httpd_conn_recv(conn, s.ptr, s.len < room ? s.len : room);
 	conn->events &= ~HELD;
 	if (n > 0) {
-		buf_commit(&conn->in, (size_t)n);
-		loop_work(loop, LOOP_RECV, (uint64_t)n);
+		size_t got = (size_t)n;
+		buf_commit(&conn->in, got);
+		loop_work(loop, LOOP_RECV, got);
 	} else if (!n) {
 		conn->flags |= CONN_EOF;
 	} else if (n != -EAGAIN && n != -EWOULDBLOCK && n != -EINTR) {
@@ -2662,42 +2709,6 @@ httpd_home_place (struct httpd_home  *home,
 	conn->flags = peer;
 	loop_post(lane->loop, &conn->msg);
 }
-
-/* HEAD() is the head of a 403 response whose body has @p length bytes, and
- * BODY() is the body of a JSON-RPC error with @p text. FORBIDDEN() defines
- * the response @p name and checks that its body has @p length bytes.
- */
-#define HEAD(length) "HTTP/1.1 403 Forbidden\r\n"                \
-                     "Content-Type: application/json\r\n"        \
-                     "Connection: close\r\n"                     \
-                     "Content-Length: " #length "\r\n\r\n"
-#define BODY(text) "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600," \
-                   "\"message\":\"Forbidden: " text "\"}}"
-#define FORBIDDEN(name, length, text)                                   \
-        static char const name[] = HEAD(length) BODY(text);             \
-        static_assert(sizeof name - sizeof HEAD(length) == length)
-FORBIDDEN(httpd_unmapped, 136, "the uid cannot be mapped (no credentials, "
-                               "or the kernel's overflow uid)");
-FORBIDDEN(httpd_subordinate, 122, "the uid is a subordinate id of another "
-                                  "user (/etc/subuid)");
-#undef FORBIDDEN
-#undef BODY
-#undef HEAD
-
-/* The response to a client on a Unix socket that policy_admit_uid()
- * refuses, and the name of the refusal in the log, by the answer of
- * policy_admit_uid().
- */
-static struct {
-	struct cstr_view response;
-	char const      *name;
-} const httpd_refusals[] = {
-	[POLICY_UNMAPPED]    = { { httpd_unmapped, sizeof httpd_unmapped - 1 },
-	                         "unmapped uid" },
-	[POLICY_SUBORDINATE] = { { httpd_subordinate, sizeof httpd_subordinate - 1 },
-	                         "subordinate uid" },
-};
-static_assert(array_size(httpd_refusals) == array_size((struct httpd_home){}.denied));
 
 /*
  * Place the client on @p fd, from listener @p l, unless its address is at
@@ -3373,7 +3384,7 @@ httpd_create (struct loop             *loop,
               struct httpd_cfg const  *cfg,
               int                     *e)
 {
-	if (app->n_fields > STREAM_FIELDS) {
+	if (app->n_fields > array_size((struct httpd_req){}.app)) {
 		*e = EINVAL;
 		return nullptr;
 	}
