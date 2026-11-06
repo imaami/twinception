@@ -1236,7 +1236,7 @@ mcp_shown_object (struct mcp_shown   *w,
 		mcp_shown_put(w, CSTR_VIEW("\":"), false);
 		struct cstr_view s = jb_view(it.val);
 		if (!s.data || !((sized && !strcmp(it.key, sized)) ||
-		                 !strncasecmp(s.data, "data:", sizeof "data:" - 1))) {
+		                 cstr_view_starts_case(s, CSTR_VIEW("data:")))) {
 			mcp_shown_value(w, it.val, nullptr);
 			continue;
 		}
@@ -2298,7 +2298,7 @@ mcp_overflow_what (struct cstr_view rest)
 		CSTR_VIEW_INIT("size"), CSTR_VIEW_INIT("length"), CSTR_VIEW_INIT("window"),
 	};
 	for (size_t k = 0; k < array_size(what); ++k)
-		if (rest.len >= what[k].len && !strncasecmp(rest.data, what[k].data, what[k].len))
+		if (cstr_view_starts_case(rest, what[k]))
 			return true;
 	return false;
 }
@@ -2312,14 +2312,13 @@ mcp_overflow_what (struct cstr_view rest)
 static bool
 mcp_overflowed (struct cstr_view why)
 {
-	static char const word[] = "context ";
 	static char const gemini[] = "exceeds the maximum number of tokens";
-	size_t n = sizeof word - 1;
+	struct cstr_view const word = CSTR_VIEW("context ");
 	if (memmem(why.data, why.len, gemini, sizeof gemini - 1))
 		return true;
-	for (size_t i = 0; i + n <= why.len; ++i)
-		if (!strncasecmp(why.data + i, word, n) &&
-		    mcp_overflow_what(cstr_view_slice(why, i + n, SIZE_MAX)))
+	for (size_t i = 0; i + word.len <= why.len; ++i)
+		if (cstr_view_starts_case(cstr_view_slice(why, i, SIZE_MAX), word) &&
+		    mcp_overflow_what(cstr_view_slice(why, i + word.len, SIZE_MAX)))
 			return true;
 	return false;
 }

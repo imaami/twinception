@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 #include "buf.h"
 #include "cli_client.h"
@@ -179,12 +178,6 @@ static int cli_client_response_receive(struct cstr_view bytes, void *context)
 	return response->failure;
 }
 
-/* Whether the ASCII text a equals the literal b, ignoring case. */
-static bool cli_client_equal_case(struct cstr_view a, struct cstr_view b)
-{
-	return a.len == b.len && !strncasecmp(a.data, b.data, a.len);
-}
-
 static int cli_client_response_header(struct cstr_view line, void *context)
 {
 	struct cli_client_response *response = context;
@@ -197,12 +190,12 @@ static int cli_client_response_header(struct cstr_view line, void *context)
 		return 0;
 	struct cstr_view key = cstr_view_slice(line, 0, (size_t)(colon - line.data));
 	struct cstr_view value = cstr_view_trim(cstr_view_slice(line, key.len + 1, SIZE_MAX));
-	if (cli_client_equal_case(key, CSTR_VIEW("Content-Type"))) {
+	if (cstr_view_equal_case(key, CSTR_VIEW("Content-Type"))) {
 		char const *semi = memchr(value.data, ';', value.len);
 		if (semi)
 			value.len = (size_t)(semi - value.data);
-		response->sse = cli_client_equal_case(value, CSTR_VIEW("text/event-stream"));
-	} else if (cli_client_equal_case(key, CSTR_VIEW("Mcp-Session-Id"))) {
+		response->sse = cstr_view_equal_case(value, CSTR_VIEW("text/event-stream"));
+	} else if (cstr_view_equal_case(key, CSTR_VIEW("Mcp-Session-Id"))) {
 		bool valid = value.len <= 1024;
 		for (size_t i = 0; valid && i < value.len; ++i)
 			valid = (unsigned char)value.data[i] >= 0x21 && (unsigned char)value.data[i] <= 0x7e;

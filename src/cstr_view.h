@@ -83,6 +83,33 @@ cstr_view_starts (struct cstr_view text,
 	       (!prefix.len || !memcmp(text.data, prefix.data, prefix.len));
 }
 
+/** Compare all bytes, as cstr_view_equal() does, but take an ASCII letter
+ *  and its other case as equal.
+ */
+static inline bool
+cstr_view_equal_case (struct cstr_view left,
+                      struct cstr_view right)
+{
+	if (left.len != right.len)
+		return false;
+	for (size_t i = 0; i < left.len; ++i) {
+		unsigned char a = (unsigned char)left.data[i] | 0x20;
+		unsigned char b = (unsigned char)right.data[i] | 0x20;
+		if (a != b || (left.data[i] != right.data[i] && (a < 'a' || a > 'z')))
+			return false;
+	}
+	return true;
+}
+
+/** Whether text begins with prefix, in any case of its ASCII letters. */
+static inline bool
+cstr_view_starts_case (struct cstr_view text,
+                       struct cstr_view prefix)
+{
+	return text.len >= prefix.len &&
+	       cstr_view_equal_case((struct cstr_view){ text.data, prefix.len }, prefix);
+}
+
 /**
  * Take up to length bytes starting at offset, clamping both to the view.
  * SIZE_MAX as length takes the remaining bytes. The result references the

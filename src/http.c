@@ -22,7 +22,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 
@@ -832,9 +831,8 @@ http_destroy (struct http **p_http)
 static bool
 http_typed (char const *const *headers)
 {
-	static char const name[] = "Content-Type:";
 	for (; headers && *headers; ++headers)
-		if (!strncasecmp(*headers, name, sizeof name - 1))
+		if (cstr_view_starts_case(cstr_view(*headers), CSTR_VIEW("Content-Type:")))
 			return true;
 	return false;
 }

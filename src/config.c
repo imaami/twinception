@@ -19,7 +19,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -447,14 +446,16 @@ config_parse_count (char const *str,
 	return 0;
 }
 
-/* Whether a header line named like @p prefix's name is among cfg->headers. */
+/* Whether a line of cfg->headers begins, in any case, with @p prefix up to
+ * its colon.
+ */
 static bool
 config_has_header (struct config const *cfg,
                    char const          *prefix)
 {
-	size_t n = strcspn(prefix, ":");
+	struct cstr_view const name = { prefix, strcspn(prefix, ":") + 1 };
 	for (char const **line = cfg->headers; *line; ++line)
-		if (!strncasecmp(*line, prefix, n) && (*line)[n] == ':')
+		if (cstr_view_starts_case(cstr_view(*line), name))
 			return true;
 	return false;
 }

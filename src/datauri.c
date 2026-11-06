@@ -4,7 +4,6 @@
  */
 #include <errno.h>
 #include <string.h>
-#include <strings.h>
 
 #include "datauri.h"
 #include "util.h"
@@ -69,19 +68,19 @@ int
 datauri_init (struct datauri   *d,
               struct cstr_view  uri)
 {
-	static char const scheme[] = "data:";
-	static char const base64[] = ";base64";
-	size_t s = sizeof scheme - 1;
-	size_t b = sizeof base64 - 1;
-	if (!uri.data || !d || uri.len < s || strncasecmp(uri.data, scheme, s))
+	struct cstr_view const scheme = CSTR_VIEW("data:");
+	struct cstr_view const base64 = CSTR_VIEW(";base64");
+	if (!d || !cstr_view_starts_case(uri, scheme))
 		return EINVAL;
-	char const *comma = memchr(uri.data + s, ',', uri.len - s);
+	char const *comma = memchr(uri.data + scheme.len, ',', uri.len - scheme.len);
 	if (!comma)
 		return EINVAL;
 	size_t head = (size_t)(comma - uri.data);
 	*d = (struct datauri){
 		.encoded = cstr_view_slice(uri, head + 1, SIZE_MAX),
-		.base64 = head - s >= b && !strncasecmp(comma - b, base64, b),
+		.base64 = head - scheme.len >= base64.len &&
+		          cstr_view_equal_case(cstr_view_slice(uri, head - base64.len, base64.len),
+		                               base64),
 	};
 	return d->base64 ? datauri_parse_base64(d) : datauri_parse_percent(d);
 }

@@ -38,7 +38,6 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 #include "http.h"
 #include "list.h"
@@ -868,8 +867,7 @@ web_relieve (struct web        *web,
 static bool
 web_line_kept (char const *line)
 {
-	static char const name[] = "User-Agent:";
-	return strncasecmp(line, name, sizeof name - 1);
+	return !cstr_view_starts_case(cstr_view(line), CSTR_VIEW("User-Agent:"));
 }
 
 struct web_wait *

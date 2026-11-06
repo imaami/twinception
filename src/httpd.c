@@ -456,8 +456,9 @@ httpd_loopback_host (char const *host)
 	static struct cstr_view const names[] = {
 		CSTR_VIEW_INIT("localhost"), CSTR_VIEW_INIT("127.0.0.1"), CSTR_VIEW_INIT("[::1]")
 	};
+	struct cstr_view const text = cstr_view(host);
 	for (size_t i = 0; i < array_size(names); ++i) {
-		if (strncasecmp(host, names[i].data, names[i].len))
+		if (!cstr_view_starts_case(text, names[i]))
 			continue;
 		char const *port = host + names[i].len;
 		if (!*port)
@@ -494,14 +495,12 @@ static struct cstr_view const httpd_headers[HEADERS] = {
 	[HEADER_PNA]               = CSTR_VIEW_INIT("access-control-request-private-network"),
 };
 
-/* Which of httpd_headers @p name, of @p len bytes, is; HEADERS if none. */
+/* Which of httpd_headers @p name is; HEADERS if none. */
 static enum httpd_header
-httpd_header (char const *name,
-              size_t      len)
+httpd_header (struct cstr_view name)
 {
 	size_t i = 0;
-	while (i < HEADERS && (len != httpd_headers[i].len ||
-	                       strncasecmp(name, httpd_headers[i].data, len)))
+	while (i < HEADERS && !cstr_view_equal_case(name, httpd_headers[i]))
 		++i;
 	return (enum httpd_header)i;
 }
@@ -584,11 +583,11 @@ httpd_field_keep (struct httpd_field *kept,
 static unsigned
 httpd_req_app (struct httpd_req        *req,
                struct stream_app const *app,
-               char const              *name,
+               struct cstr_view         name,
                struct httpd_field       f)
 {
 	for (size_t i = 0; i < app->n_fields; ++i)
-		if (!strcasecmp(name, app->fields[i]))
+		if (cstr_view_equal_case(name, cstr_view(app->fields[i])))
 			return httpd_field_keep(&req->app[i], f, app->lists >> i & 1);
 	return 0;
 }
@@ -608,21 +607,19 @@ httpd_req_length (struct httpd_req *req,
 	return 0;
 }
 
-/* Record header field @p name, of @p name_len bytes, whose value is
- * @p value, @p f in the head, if it is one that matters here or to @p app;
- * nonzero is an HTTP error. None of those read here is ever the
- * application's.
+/* Record header field @p name, whose value is @p value, @p f in the head,
+ * if it is one that matters here or to @p app; nonzero is an HTTP error.
+ * None of those read here is ever the application's.
  */
 static unsigned
 httpd_req_header (struct httpd_req        *req,
                   struct stream_app const *app,
-                  char const              *name,
-                  size_t                   name_len,
+                  struct cstr_view         name,
                   char const              *value,
                   struct httpd_field       f,
                   size_t                   max_body)
 {
-	switch (httpd_header(name, name_len)) {
+	switch (httpd_header(name)) {
 	case HEADER_HOST:
 		return httpd_field_keep(&req->host, f, false);
 	case HEADER_ORIGIN:
@@ -686,8 +683,8 @@ httpd_req_field (struct httpd_req        *req,
 	while (end > value && (end[-1] == ' ' || end[-1] == '\t'))
 		*--end = '\0';
 	struct httpd_field const f = { (uint16_t)(value - data), (uint16_t)(end - value) };
-	return httpd_req_header(req, app, line, (size_t)(colon - line), value, f,
-	                        max_body);
+	return httpd_req_header(req, app, (struct cstr_view){ line, (size_t)(colon - line) },
+	                        value, f, max_body);
 }
 
 /* The request line, which starts the head: the method stays there, as a
@@ -1340,15 +1337,11 @@ static struct stream_ops const httpd_stream_ops = {
 static struct cstr_view
 httpd_bearer (struct cstr_view auth)
 {
-	static char const scheme[] = "Bearer";
-	size_t n = sizeof scheme - 1;
-	if (auth.len < n || strncasecmp(auth.data, scheme, n))
+	struct cstr_view const scheme = CSTR_VIEW("Bearer");
+	if (!cstr_view_starts_case(auth, scheme) ||
+	    (auth.len > scheme.len && auth.data[scheme.len] != ' '))
 		return (struct cstr_view){};
-	if (auth.len == n)
-		return (struct cstr_view){ auth.data + n, 0 };
-	if (auth.data[n] != ' ')
-		return (struct cstr_view){};
-	return (struct cstr_view){ auth.data + n + 1, auth.len - n - 1 };
+	return cstr_view_slice(auth, scheme.len + 1, SIZE_MAX);
 }
 
 /* Decide with policy_grant() (src/policy.h) who the client of a freshly

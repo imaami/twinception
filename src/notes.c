@@ -11,7 +11,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -629,14 +628,14 @@ notes_is_dotgit (char const *part,
 {
 	for (size_t at = 0; at <= n; ) {
 		char const *s = part + at;
-		size_t m = n - at;
-		size_t k = m >= 4 && !strncasecmp(s, ".git", 4) ? 4
-		         : m >= 5 && !strncasecmp(s, "git~1", 5) ? 5 : 0;
-		while (k && k < m && (s[k] == ' ' || s[k] == '.'))
+		struct cstr_view const rest = { s, n - at };
+		size_t k = cstr_view_starts_case(rest, CSTR_VIEW(".git")) ? 4
+		         : cstr_view_starts_case(rest, CSTR_VIEW("git~1")) ? 5 : 0;
+		while (k && k < rest.len && (s[k] == ' ' || s[k] == '.'))
 			++k;
-		if (k && (k == m || s[k] == ':' || s[k] == '\\'))
+		if (k && (k == rest.len || s[k] == ':' || s[k] == '\\'))
 			return true;
-		char const *bs = memchr(s, '\\', m);
+		char const *bs = memchr(s, '\\', rest.len);
 		if (!bs)
 			return false;
 		at += (size_t)(bs - s) + 1;

@@ -33,6 +33,18 @@ main (void)
 	assert(cstr_view_starts(text, empty));
 	assert(cstr_view_equal(cstr_view("a\0b"), CSTR_VIEW("a")));
 
+	assert(cstr_view_equal_case(CSTR_VIEW("Content-Type"), CSTR_VIEW("content-TYPE")));
+	assert(cstr_view_equal_case(empty, CSTR_VIEW("")));
+	assert(cstr_view_equal_case(text, CSTR_VIEW("A\0B")));
+	assert(!cstr_view_equal_case(text, CSTR_VIEW("A\0C")));
+	assert(!cstr_view_equal_case(CSTR_VIEW("a"), CSTR_VIEW("ab")));
+	assert(!cstr_view_equal_case(CSTR_VIEW("@[`{"), CSTR_VIEW("`{@[")));
+	assert(!cstr_view_equal_case(CSTR_VIEW("\xc4"), CSTR_VIEW("\xe4")));
+	assert(cstr_view_starts_case(CSTR_VIEW("DATA:,x"), CSTR_VIEW("data:")));
+	assert(cstr_view_starts_case(empty, empty));
+	assert(!cstr_view_starts_case(CSTR_VIEW("dat"), CSTR_VIEW("data:")));
+	assert(!cstr_view_starts_case(text, CSTR_VIEW("a\0c")));
+
 	slice = cstr_view_slice(text, 1, SIZE_MAX);
 	assert(slice.data == counted + 1 && slice.len == 2);
 	assert(cstr_view_equal(slice, CSTR_VIEW("\0b")));
@@ -74,6 +86,6 @@ main (void)
 	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("a\0b!")));
 	assert(cstr_view_cat(text, nullptr) == ENOMEM);
 	dstr_cleanup(&owned);
-	puts("cstr views: empty values, counted NULs, byte order, bounded slices, trims, lookups, "
-	     "stores and appends: PASS");
+	puts("cstr views: empty values, counted NULs, byte order, cases, bounded slices, trims, "
+	     "lookups, stores and appends: PASS");
 }

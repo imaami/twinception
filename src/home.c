@@ -1227,7 +1227,8 @@ home_open (struct home *home,
 		}
 		size_t kept = 0;
 		for (size_t k = 0; k < n; ++k)
-			if (strncasecmp(ep->headers[k], "X-Conversation-Id:", sizeof "X-Conversation-Id:" - 1))
+			if (!cstr_view_starts_case(cstr_view(ep->headers[k]),
+			                           CSTR_VIEW("X-Conversation-Id:")))
 				headers[kept++] = ep->headers[k];
 		util_format(conversation, sizeof conversation, "X-Conversation-Id: %s", r->provider_id);
 		headers[kept] = conversation;
