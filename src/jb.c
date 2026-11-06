@@ -230,6 +230,7 @@ jb_reaper_step (struct jb_reaper *reaper,
 		struct json_object *val = nullptr;
 		if (!jb_pop(reaper->stack[reaper->n - 1], &val)) {
 			json_object_put(reaper->stack[--reaper->n]);
+			reaper->stack[reaper->n] = nullptr;
 			++freed;
 			continue;
 		}
@@ -260,6 +261,7 @@ jb_pool_release (struct jb_pool *pool,
 		if (size > keep) {
 			pool->bytes -= size;
 			pool->free[i] = pool->free[--pool->n];
+			pool->free[pool->n] = nullptr;
 			json_tokener_free(tok);
 			return size;
 		}
@@ -275,6 +277,7 @@ jb_pool_take (struct jb_pool *pool)
 {
 	if (pool->n) {
 		struct json_tokener *tok = pool->free[--pool->n];
+		pool->free[pool->n] = nullptr;
 		pool->bytes -= (size_t)tok->pb->size;
 		return tok;
 	}
