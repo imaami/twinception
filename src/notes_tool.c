@@ -317,15 +317,48 @@ notes_tool_call_notebook (struct notes_tool_call const *call)
 	return *call->notebook ? call->notebook : call->repo;
 }
 
+/* Ends the call of the notes tool in @p slot. The function destroys the
+ * child and frees the file part of the call. If @p e is not 0,
+ * mcp_slot_fail() ends the call and its request with @p e. Otherwise the
+ * call ends with its output, as a failed call if @p failed is true.
+ */
+static void
+notes_tool_end (struct mcp_slot *slot,
+                int              e,
+                bool             failed)
+{
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	child_destroy(&call->child);
+	buf_fini(&call->file);
+	if (e) {
+		mcp_slot_fail(slot, e);
+		return;
+	}
+	mcp_slot_lend(slot, cstr_view_dstr(&call->out));
+	/* The offset of a list or a read does not apply to the output of a
+	 * failed call. */
+	if (failed)
+		(void)mcp_slot_offset(slot, nullptr);
+	mcp_slot_finish(slot, failed ? TOOL_FAILED : 0);
+}
+
 /* Spawns git for @p fetch in the shared repository and frees @p in, the
- * input of git. With FETCH_OTHER, git reads the notebook that the call
- * selected. Writes always go to call->repo.
+ * input of git, unless it is nullptr. With FETCH_OTHER, git reads the
+ * notebook that the call selected. Writes always go to call->repo. If
+ * @p e, the error of making @p in, is not 0, the function frees @p in and
+ * ends the call with @p e instead (notes_tool_end()).
  */
 static void
 notes_tool_run (struct mcp_slot *slot,
                 uint32_t         fetch,
-                struct buf      *in)
+                struct buf      *in,
+                int              e)
 {
+	if (e) {
+		buf_fini(in);
+		notes_tool_end(slot, e, true);
+		return;
+	}
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct notes const *notes = call->loop->tool->notes;
 	struct loop *loop = mcp_slot_loop(slot);
@@ -363,7 +396,6 @@ notes_tool_run (struct mcp_slot *slot,
 		.flags = writes ? CHILD_STDERR : 0
 	};
 	call->fetch = fetch;
-	int e = 0;
 	call->child = mcp_slot_spawn(slot, &c, &e);
 	if (in)
 		buf_fini(in);
@@ -393,7 +425,7 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
 	call->most = most;
 	notes_repo(loop->tool->notes, mcp_slot_principal(slot), NOTES_UPSTREAM, call->repo);
 	notes_tool_run(slot, what == NOTES_TOOL_RESUME ? FETCH_RESUME : FETCH_COMPACT,
-	               nullptr);
+	               nullptr, 0);
 }
 
 /* Returns true if git wrote a list of the notes. A list that askai cut
@@ -412,31 +444,6 @@ static bool
 notes_tool_none (struct child const *c)
 {
 	return child_status(c) == 128;
-}
-
-/* Ends the call of the notes tool in @p slot. The function destroys the
- * child and frees the file part of the call. If @p e is not 0,
- * mcp_slot_fail() ends the call and its request with @p e. Otherwise the
- * call ends with its output, as a failed call if @p failed is true.
- */
-static void
-notes_tool_end (struct mcp_slot *slot,
-                int              e,
-                bool             failed)
-{
-	struct notes_tool_call *call = *mcp_slot_own(slot);
-	child_destroy(&call->child);
-	buf_fini(&call->file);
-	if (e) {
-		mcp_slot_fail(slot, e);
-		return;
-	}
-	mcp_slot_lend(slot, cstr_view_dstr(&call->out));
-	/* The offset of a list or a read does not apply to the output of a
-	 * failed call. */
-	if (failed)
-		(void)mcp_slot_offset(slot, nullptr);
-	mcp_slot_finish(slot, failed ? TOOL_FAILED : 0);
 }
 
 /* Appends to call->text why git read no notes. Exit status 128 means that
@@ -546,7 +553,7 @@ notes_tool_write (struct mcp_slot  *slot,
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	if (!oid_len(tip)) {
-		notes_tool_run(slot, FETCH_FORMAT, nullptr);
+		notes_tool_run(slot, FETCH_FORMAT, nullptr, 0);
 		return;
 	}
 	struct span file = buf_peek(&call->file);
@@ -555,12 +562,7 @@ notes_tool_write (struct mcp_slot  *slot,
 	struct span msg = { (unsigned char *)call->message, call->len };
 	int e = !msg.len ? EINVAL : notes_add_input(&in, call->repo, tip, msg, file);
 	buf_fini(&call->file);
-	if (e) {
-		buf_fini(&in);
-		notes_tool_end(slot, e, true);
-		return;
-	}
-	notes_tool_run(slot, FETCH_ADD, &in);
+	notes_tool_run(slot, FETCH_ADD, &in, e);
 }
 
 /* Reads the object format of the repository from the output of git. Then
@@ -960,12 +962,7 @@ notes_tool_revision_step (struct mcp_slot *slot)
 	int e = 0;
 	if (notes_revision_ready(&call->revision) && (call->fetch & FETCH_KIND) != FETCH_DIFF)
 		e = notes_read_input(&in, call->revision.from.hex, util_text_view(&call->revision.file));
-	if (e) {
-		buf_fini(&in);
-		notes_tool_end(slot, e, true);
-		return;
-	}
-	notes_tool_run(slot, call->fetch, &in);
+	notes_tool_run(slot, call->fetch, &in, e);
 }
 
 /* Handles the output of git for diff. */
@@ -1167,7 +1164,7 @@ notes_tool_prompt_list (struct mcp_slot  *slot,
 		notes_tool_then(slot, e);
 		return;
 	}
-	notes_tool_run(slot, FETCH_NEWEST, &in);
+	notes_tool_run(slot, FETCH_NEWEST, &in, 0);
 }
 
 /* Appends the newest note, which git read for the prompt, to call->text.
@@ -1328,12 +1325,7 @@ notes_tool_check (struct mcp_slot  *slot,
 		fetch = FETCH_CHECK;
 		e = notes_check_input(&in, call->repo, name);
 	}
-	if (e) {
-		buf_fini(&in);
-		notes_tool_end(slot, e, true);
-		return;
-	}
-	notes_tool_run(slot, fetch, &in);
+	notes_tool_run(slot, fetch, &in, e);
 }
 
 /* Starts add or replace of the note @p name with the arguments @p args.
@@ -1454,12 +1446,7 @@ notes_tool_read (struct mcp_slot    *slot,
 	}
 	struct buf in = {};
 	int e = notes_read_input(&in, notes_tool_call_notebook(call), name);
-	if (e) {
-		buf_fini(&in);
-		notes_tool_end(slot, e, true);
-		return;
-	}
-	notes_tool_run(slot, fetch, &in);
+	notes_tool_run(slot, fetch, &in, e);
 }
 
 /* Starts diff, restore, read with a revision, or history with a file. The
@@ -1492,7 +1479,7 @@ notes_tool_revision (struct mcp_slot          *slot,
 	}
 	if ((fetch & FETCH_KIND) != FETCH_LIST)
 		fetch |= FETCH_REVISION;
-	notes_tool_run(slot, fetch, nullptr);
+	notes_tool_run(slot, fetch, nullptr, 0);
 }
 
 /* Starts a call of the notes tool in @p slot with the arguments @p args.
@@ -1615,7 +1602,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	if (flags & NOTE_FILE)
 		notes_tool_read(slot, name, args, fetch | selection);
 	else
-		notes_tool_run(slot, fetch | selection, nullptr);
+		notes_tool_run(slot, fetch | selection, nullptr, 0);
 }
 
 /* Returns the definition of the notes tool for the side @p side. Only the
