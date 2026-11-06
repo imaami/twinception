@@ -484,6 +484,10 @@ deliberately added to ordinary history becomes available through that history.
 Paths are relative to the repository's top, with no `..` component
 or `:(...)` pathspec magic; a pattern follows `-e`.
 
+Once the options, revisions and paths are arrays of strings within their
+limits, a refusal names a problem with each argument and entry that has one,
+not only the first.
+
 Option errors distinguish missing or malformed attached values, options outside
 the selected command's allowlist, and unavailable index or working-tree sources.
 Only value errors suggest changing how a value is attached; source errors explain

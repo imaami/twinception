@@ -33,7 +33,7 @@ static char const git_derived[] = "(derived)";
 
 enum {
 	GIT_ARGV  = 128,      /**< a command's argv, its nullptr included */
-	GIT_WHY   = 256,      /**< bytes of what is wrong with a call */
+	GIT_WHY   = 1024,     /**< bytes of what is wrong with a call */
 	GIT_NOTE  = 256,      /**< the most bytes of the note at the end of the
 	                           output, with the blank line before it */
 	BINARY    = 8000,     /**< read refuses a file with a NUL in its first
@@ -583,9 +583,11 @@ struct git_why {
 };
 
 /* Appends to @p why a part of the message about what is wrong with the
- * arguments of a call, as util_text_printf() does. Returns EINVAL.
+ * arguments of a call, as util_text_printf() does, after a space unless
+ * the message is empty. Returns EINVAL.
  */
-#define git_wrong(why, ...) (util_text_printf((why), __VA_ARGS__), EINVAL)
+#define git_wrong(why, ...) (util_text_printf((why), "%s", (why)->len ? " " : ""), \
+                             util_text_printf((why), __VA_ARGS__), EINVAL)
 
 /** Validates the option @p opt of the command @p command, the option at
  * @p index in the options argument. Returns 0, or EINVAL with a message in
@@ -647,11 +649,12 @@ static int
 git_repos_wrong (struct git const *git,
                  struct git_why   *why)
 {
-	util_text_printf(why, "The repo argument must name one of the repositories:");
+	util_text_printf(why, "The repo argument must be ");
 	for (size_t i = 0; i < git->n; ++i)
-		util_text_printf(why, "%s %.*s", i ? "," : "", (int)git->repo[i].name.len,
-		                 git->repo[i].name.data);
-	return git_wrong(why, ".");
+		util_text_printf(why, "%s%.*s", !i ? "" : i + 1 < git->n ? ", " : " or ",
+		                 (int)git->repo[i].name.len, git->repo[i].name.data);
+	util_text_printf(why, ".");
+	return EINVAL;
 }
 
 /* The arguments of the tool, in the order of git_arg_names[]. A call with
@@ -695,7 +698,7 @@ git_call_command (struct git_call  *call,
 	uint64_t seen;
 	struct cstr_view other;
 	if (jb_args(args, git_arg_names, GIT_ARGS, UINT64_MAX, of, &seen, &other))
-		return git_wrong(why, "Unknown argument: %.*s.", (int)other.len, other.data);
+		return git_wrong(why, "The tool has no argument %.*s.", (int)other.len, other.data);
 
 	struct git_repo const *repo = git_find(git, git_word(of[GIT_ARG_REPO]));
 	if (!repo)
@@ -713,11 +716,12 @@ git_call_command (struct git_call  *call,
 			                 "options [\"-r\", \"--name-only\"] to list committed "
 			                 "files; revisions defaults to HEAD.",
 			                 (int)cmd.len, cmd.data);
-		util_text_printf(why, "The command argument must be one of:");
-		for (size_t i = 0; i < array_size(commands); ++i)
-			util_text_printf(why, "%s %.*s", i ? "," : "", (int)commands[i].name.len,
-			                 commands[i].name.data);
-		return git_wrong(why, ". Use help:true for its options.");
+		util_text_printf(why, "The command argument must be ");
+		for (size_t i = 0, n = array_size(commands); i < n; ++i)
+			util_text_printf(why, "%s%.*s", !i ? "" : i + 1 < n ? ", " : " or ",
+			                 (int)commands[i].name.len, commands[i].name.data);
+		util_text_printf(why, ". Use help:true for its options.");
+		return EINVAL;
 	}
 	call->command = c;
 	uint64_t const takes = commands[c].takes;
@@ -756,24 +760,29 @@ git_call_command (struct git_call  *call,
 			return git_wrong(why, "%s[%zu] must be a string of 1 to %d bytes with no "
 			                 "NUL.", name, i, WORD);
 	}
+	/* The counts above keep argv in bounds, so the checks below go on
+	 * after a problem. */
+	int bad = 0;
 	if ((takes & SINGLE) && lens[GIT_ARG_REVISIONS] > 1)
-		return git_wrong(why, "git %.*s takes at most one revision.", (int)cmd.len,
-		                 cmd.data);
+		bad = git_wrong(why, "git %.*s takes at most one revision.", (int)cmd.len,
+		                cmd.data);
 	if (lens[GIT_ARG_PATHS] && !(takes & FILES))
-		return git_wrong(why, "git %.*s takes no paths. To name a file, give the "
-		                 "revision HEAD:path.", (int)cmd.len, cmd.data);
+		bad = git_wrong(why, "git %.*s takes no paths. To name a file, give the "
+		                "revision HEAD:path.", (int)cmd.len, cmd.data);
 	struct json_object *pattern = of[GIT_ARG_PATTERN];
 	struct cstr_view const pat = git_word(pattern);
 	if (takes & PATTERN) {
 		if (!pat.data)
-			return git_wrong(why, "git grep needs a pattern argument: a string of "
-			                 "1 to %d bytes.", WORD);
+			bad = git_wrong(why, "git grep needs a pattern argument: a string of "
+			                "1 to %d bytes.", WORD);
 	} else if (pattern) {
-		return git_wrong(why, "Only git grep takes a pattern.");
+		bad = git_wrong(why, "Only git grep takes a pattern.");
 	}
-	uint64_t const numbers = seen & (1U << GIT_ARG_LINE | 1U << GIT_ARG_COUNT);
-	if (numbers && !read)
-		return git_wrong(why, "Only git read takes line and count.");
+	uint64_t numbers = seen & (1U << GIT_ARG_LINE | 1U << GIT_ARG_COUNT);
+	if (numbers && !read) {
+		bad = git_wrong(why, "Only git read takes line and count.");
+		numbers = 0;
+	}
 	size_t *const values[] = { &call->read.line, &call->read.count };
 	call->read.line = 1;
 	call->read.count = SIZE_MAX;
@@ -783,8 +792,8 @@ git_call_command (struct git_call  *call,
 			continue;
 		uint64_t const v = jb_count(of[k], UINT64_MAX);
 		if (!v)
-			return git_wrong(why, "The %s argument must be a whole number from 1.",
-			                 git_arg_names[k].data);
+			bad = git_wrong(why, "The %s argument must be a whole number from 1.",
+			                git_arg_names[k].data);
 		/* Where size_t is narrower than 64 bits, a larger value becomes
 		 * SIZE_MAX. That line is past the end of any file, and that count
 		 * sets no limit. */
@@ -802,17 +811,20 @@ git_call_command (struct git_call  *call,
 	for (size_t i = 0; i < lens[GIT_ARG_OPTIONS]; ++i) {
 		struct cstr_view const opt = jb_view(jb_at(of[GIT_ARG_OPTIONS], i));
 		int e = git_option_check(opt, c, i, why);
-		if (e)
-			return e;
+		if (e) {
+			bad = e;
+			continue;
+		}
 		if (strncmp(opt.data, git_ignore_rev, sizeof git_ignore_rev - 1)) {
 			argv[k++] = opt.data;
 			continue;
 		}
 		++call->n_roots;
 		e = git_commit(&call->text, cstr_view_slice(opt, sizeof git_ignore_rev - 1, SIZE_MAX));
+		if (e == ENOMEM)
+			return e;
 		if (e)
-			return e == ENOMEM ? e
-			     : git_wrong(why, "--ignore-rev needs a commit reference or hash.");
+			bad = git_wrong(why, "--ignore-rev needs a commit reference or hash.");
 		argv[k++] = git_derived;
 	}
 	if (pat.data) {
@@ -829,51 +841,56 @@ git_call_command (struct git_call  *call,
 		                                  : CSTR_VIEW("HEAD");
 		char const *path = strchr(s.data, ':');
 		size_t root = path ? (size_t)(path - s.data) : s.len;
-		if (path && (!(takes & OBJECT) || !path[1] || !git_inside(path + 1)))
-			return git_wrong(why, "revisions[%zu]: only read, show and cat-file "
-			                 "take commit:path, with a nonempty relative path.", i);
+		struct git_revision *rev = &call->revisions[i];
+		rev->path = cstr_view_slice(s, root, SIZE_MAX);
 		char const *range = strstr(s.data, "..");
 		if (range && range >= s.data + root)
 			range = nullptr;
-		if (range && (!(takes & RANGE) || ((takes & PAIR) && listed != 1)))
-			return git_wrong(why, "revisions[%zu]: ranges are allowed only by "
-			                 "log, or as diff's single A..B or A...B argument.", i);
+		endpoints += range != nullptr;
+		if (path && (!(takes & OBJECT) || !path[1] || !git_inside(path + 1))) {
+			bad = git_wrong(why, "revisions[%zu]: only read, show and cat-file "
+			                "take commit:path, with a nonempty relative path.", i);
+			continue;
+		}
+		if (range && (!(takes & RANGE) || ((takes & PAIR) && listed != 1))) {
+			bad = git_wrong(why, "revisions[%zu]: ranges are allowed only by "
+			                "log, or as diff's single A..B or A...B argument.", i);
+			continue;
+		}
 		size_t left = range ? (size_t)(range - s.data) : root;
-		struct git_revision *rev = &call->revisions[i];
 		rev->root = call->n_roots++;
-		rev->path = cstr_view_slice(s, root, SIZE_MAX);
 		int e = git_commit(&call->text, cstr_view_slice(s, 0, left));
 		if (!e && range) {
-			++endpoints;
 			++call->n_roots;
 			rev->dots = 2 + (range[2] == '.');
 			e = git_commit(&call->text, cstr_view_slice(s, left + rev->dots,
 			                                            root - left - rev->dots));
 		}
+		if (e == ENOMEM)
+			return e;
 		if (e)
-			return e == ENOMEM ? e
-			     : git_wrong(why, "revisions[%zu]: use a commit reference or hash "
-			                 "with optional ^/~ ancestry. Stash, reflogs, index "
-			                 "selectors and revision expansions are unavailable.", i);
+			bad = git_wrong(why, "revisions[%zu]: use a commit reference or hash "
+			                "with optional ^/~ ancestry. Stash, reflogs, index "
+			                "selectors and revision expansions are unavailable.", i);
 		argv[k++] = git_derived;
 	}
 	if (read && !call->revisions[0].path.len)
-		return git_wrong(why, "git read needs the file as its revision, such as "
-		                 "\"revisions\": [\"HEAD:src/journal.c\"].");
+		bad = git_wrong(why, "git read needs the file as its revision, such as "
+		                "\"revisions\": [\"HEAD:src/journal.c\"].");
 	if ((takes & PAIR) && endpoints != 2)
-		return git_wrong(why, "git diff needs two commits, or one explicit "
-		                 "A..B or A...B range.");
+		bad = git_wrong(why, "git diff needs two commits, or one explicit "
+		                "A..B or A...B range.");
 	if (takes & FILES)
 		argv[k++] = "--";
 	for (size_t i = 0; i < lens[GIT_ARG_PATHS]; ++i) {
 		char const *s = jb_view(jb_at(of[GIT_ARG_PATHS], i)).data;
 		if (!git_inside(s) || !strncmp(s, ":(", 2))
-			return git_wrong(why, "paths[%zu] must be relative to the repository's "
-			                 "top, with no .. component or :(...) pathspec magic.", i);
+			bad = git_wrong(why, "paths[%zu] must be relative to the repository's "
+			                "top, with no .. component or :(...) pathspec magic.", i);
 		argv[k++] = s;
 	}
 	argv[k] = nullptr;
-	return 0;
+	return bad;
 }
 
 #undef git_wrong

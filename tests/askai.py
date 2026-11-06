@@ -8772,8 +8772,8 @@ def check_git(binary, up):
             # What a call may ask for.
             result = call(ai, repo="proj", command="push")
             assert result.get("isError") and text_of(result) == \
-                "The command argument must be one of: " + ", ".join(commands) + \
-                ". Use help:true for its options.", result
+                "The command argument must be " + ", ".join(commands[:-1]) + " or " + \
+                commands[-1] + ". Use help:true for its options.", result
             for command in ("status", "ls-files"):
                 result = call(ai, repo="proj", command=command)
                 assert result.get("isError") and text_of(result) == \
@@ -8786,15 +8786,21 @@ def check_git(binary, up):
             for arguments, text in (
                     (["x"], "Tool arguments must be an object."),
                     ({"repo": "proj", "command": "log", "x": 1},
-                     "Unknown argument: x."),
+                     "The tool has no argument x."),
                     ({"repo": "nope", "command": "log"},
-                     "The repo argument must name one of the repositories: "
-                     "proj, other."),
+                     "The repo argument must be proj or other."),
                     ({"repo": "proj", "command": "log", "options": ["--output=/x"]},
                      bad_option("log", "--output=/x")),
                     ({"repo": "proj", "command": "log", "options": ["-n", "3"]},
                      "options[0]: '-n' needs an attached value. Use '-nNUMBER' as "
-                     "one options entry containing decimal digits."),
+                     "one options entry containing decimal digits. " + bad_option(
+                         "log", "3").replace("options[0]", "options[1]")),
+                    # Every problem is named, not only the first.
+                    ({"repo": "proj", "command": "grep", "options": ["--bogus"],
+                      "paths": ["../x"]},
+                     "git grep needs a pattern argument: a string of 1 to 1024 bytes. " +
+                     bad_option("grep", "--bogus") + " paths[0] must be relative to the "
+                     "repository's top, with no .. component or :(...) pathspec magic."),
                     ({"repo": "proj", "command": "grep", "pattern": "a",
                       "options": ["-f"]}, bad_option("grep", "-f")),
                     ({"repo": "proj", "command": "grep", "pattern": "a",
@@ -8829,7 +8835,8 @@ def check_git(binary, up):
                     ({"repo": "proj", "command": "diff", "revisions": ["/etc"]},
                      "revisions[0]: use a commit reference or hash with optional "
                      "^/~ ancestry. Stash, reflogs, index selectors and revision "
-                     "expansions are unavailable."),
+                     "expansions are unavailable. git diff needs two commits, or one "
+                     "explicit A..B or A...B range."),
                     ({"repo": "proj", "command": "diff", "revisions": ["x/../.."]},
                      "revisions[0]: use a commit reference or hash with optional "
                      "^/~ ancestry. Stash, reflogs, index selectors and revision "
@@ -8856,7 +8863,11 @@ def check_git(binary, up):
                      "\"revisions\": [\"HEAD:src/journal.c\"]."),
                     ({"repo": "proj", "command": "read", "paths": ["a.txt"]},
                      "git read takes no paths. To name a file, give the revision "
-                     "HEAD:path."),
+                     "HEAD:path. git read needs the file as its revision, such as "
+                     "\"revisions\": [\"HEAD:src/journal.c\"]."),
+                    ({"repo": "proj", "command": "read", "revisions": ["HEAD:"]},
+                     "revisions[0]: only read, show and cat-file take commit:path, "
+                     "with a nonempty relative path."),
                     ({"repo": "proj", "command": "read",
                       "revisions": ["HEAD:a.txt", "HEAD:a.txt"]},
                      "git read takes at most one revision."),
