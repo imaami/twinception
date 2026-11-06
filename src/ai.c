@@ -17,15 +17,6 @@
 /** Anthropic requires max_tokens; this fits every model's output limit. */
 enum { MESSAGES_MAX_TOKENS = 4096 };
 
-/* Each API's stop reason for an answer the output token limit cut. */
-static char const *const limits[] = {
-	[AI_CHAT] = "length",
-	[AI_RESPONSES] = "max_output_tokens",
-	[AI_MESSAGES] = "max_tokens",
-	[AI_GENERATE] = "MAX_TOKENS",
-	[AI_INTERACTIONS] = "incomplete",
-};
-
 /* The type of the open step, in Gemini's Interactions, or the end of the
  * answer, after which no event changes the replay (struct ai_reader's
  * kind). An open thought is not in the replay until it has a summary item
@@ -155,44 +146,6 @@ ai_request_common (struct ai_endpoint const *ep,
 	return 0;
 }
 
-/* How each API's body is built around its conversation, the member that
- * ai_format() names: the member of the system prompt, which chat
- * completions has in the conversation instead; the object of the
- * generation options, or the body itself; the member of the token limit,
- * and its default; and which other members it has.
- */
-enum {
-	BODY_MODEL  = 1 << 0,  /* the model, first */
-	BODY_USAGE  = 1 << 1,  /* with tools, the usage in the stream */
-	BODY_STORE  = 1 << 2,  /* "store", false */
-	BODY_KEEP   = 1 << 3,  /* "store", true with native background
-	                          execution, which needs storage */
-	BODY_STREAM = 1 << 4,  /* "stream", after --extra is merged, so that the
-	                          answer is always streamed */
-	BODY_PARTS  = 1 << 5,  /* the system prompt in an object with an array
-	                          of parts */
-};
-
-static struct ai_body {
-	char const *system;
-	char const *options;
-	char const *max;
-	int32_t     max_default;
-	uint32_t    flags;
-} const ai_bodies[] = {
-	[AI_CHAT]         = { nullptr, nullptr, "max_tokens", 0,
-	                      BODY_MODEL | BODY_USAGE | BODY_STREAM },
-	[AI_RESPONSES]    = { "instructions", nullptr, "max_output_tokens", 0,
-	                      BODY_MODEL | BODY_STORE | BODY_STREAM },
-	[AI_MESSAGES]     = { "system", nullptr, "max_tokens", MESSAGES_MAX_TOKENS,
-	                      BODY_MODEL | BODY_STREAM },
-	[AI_GENERATE]     = { "systemInstruction", "generationConfig", "maxOutputTokens", 0,
-	                      BODY_PARTS },
-	[AI_INTERACTIONS] = { "system_instruction", "generation_config",
-	                      "max_output_tokens", 0,
-	                      BODY_MODEL | BODY_STORE | BODY_KEEP | BODY_STREAM },
-};
-
 /* Move the conversation, @p root's member @p key, to its end, after what
  * --extra added, so that turns may follow it, unless --extra took it away.
  */
@@ -206,51 +159,6 @@ ai_request_last (struct json_object *root,
 	json_object_get(val);
 	json_object_object_del(root, key);
 	return jb_set(root, key, val);
-}
-
-struct json_object *
-ai_request (struct ai_endpoint const *ep,
-            struct json_object       *system,
-            struct json_object       *prompt,
-            struct json_object       *history,
-            struct json_object       *tools)
-{
-	struct json_object *root = json_object_new_object();
-	if (!root)
-		return nullptr;
-	struct ai_body const *b = &ai_bodies[ep->api];
-	char const *conversation = ai_format(ep->api)->conversation;
-	bool background = ai_background(ep);
-	if (b->flags & BODY_MODEL && ep->model &&
-	    jb_set(root, "model", json_object_new_string(ep->model)))
-		goto fail;
-	/* Chat completions has the system prompt as a message in the
-	 * conversation. The other APIs have it in the member b->system. */
-	if (b->system) {
-		if (system && jb_set(root, b->system, b->flags & BODY_PARTS
-		                                      ? ai_generate_content(nullptr, system)
-		                                      : json_object_get(system)))
-			goto fail;
-		system = nullptr;
-	}
-	if (jb_set(root, conversation, ai_conversation(ep->api, system, history, prompt)) ||
-	    (tools && (jb_set(root, "tools", json_object_get(tools)) ||
-	               (b->flags & BODY_USAGE &&
-	                jb_set(root, "stream_options",
-	                       jb_object("include_usage", json_object_new_boolean(1),
-	                                 nullptr))))) ||
-	    (b->flags & BODY_STORE &&
-	     jb_set(root, "store", json_object_new_boolean(b->flags & BODY_KEEP && background))) ||
-	    ai_request_common(ep, root, b->options, b->max,
-	                      ep->max_tokens > 0 ? ep->max_tokens : b->max_default) ||
-	    (background && jb_set(root, "background", json_object_new_boolean(1))) ||
-	    (b->flags & BODY_STREAM && jb_set(root, "stream", json_object_new_boolean(1))) ||
-	    ai_request_last(root, conversation))
-		goto fail;
-	return root;
-fail:
-	json_object_put(root);
-	return nullptr;
 }
 
 /* Append the text of @p val to @p text if @p val is a string. */
@@ -362,6 +270,251 @@ ai_interactions_answer (struct json_object  *root,
 				e = ai_append(text, jb_get(item, "text"));
 	}
 	return e;
+}
+
+/* What each API has: the format of its turns, how its body is built
+ * around its conversation, the member that the format names, and how its
+ * answers and tools are read and written. The body has the member of the
+ * system prompt, which chat completions has in the conversation instead;
+ * the object of the generation options, or the body itself; the member of
+ * the token limit, and its default; and the other members that the flags
+ * name.
+ */
+enum {
+	BODY_MODEL   = 1 << 0,  /* the model, first */
+	BODY_USAGE   = 1 << 1,  /* with tools, the usage in the stream */
+	BODY_STORE   = 1 << 2,  /* "store", false */
+	BODY_KEEP    = 1 << 3,  /* "store", true with native background
+	                           execution, which needs storage */
+	BODY_STREAM  = 1 << 4,  /* "stream", after --extra is merged, so that
+	                           the answer is always streamed */
+	BODY_PARTS   = 1 << 5,  /* the system prompt in an object with an
+	                           array of parts */
+	TOOL_TYPED   = 1 << 6,  /* a tool has "type": "function" */
+	TOOL_WRAPPED = 1 << 7,  /* a tool is the member function of an object
+	                           with "type": "function" */
+};
+
+#define B(s) CSTR_VIEW_INIT(s)
+static struct ai_body {
+	struct ai_format format;
+	char const      *system;
+	char const      *options;
+	char const      *max;
+	char const      *limit;        /* the stop reason of an answer that the
+	                                  output token limit cut */
+	char const      *schema;       /* the member of a tool's input schema */
+	int            (*answer) (struct json_object  *root,
+	                          struct dstr         *text,
+	                          char const         **reason);
+	int32_t          max_default;
+	uint32_t         flags;
+} const ai_bodies[] = {
+	[AI_CHAT] = {
+		.format = {
+			.tools        = B("["),
+			.tools_end    = B("]"),
+			.turn         = B(",{\"role\":\"assistant\""),
+			.text         = B(",\"content\":\""),
+			.thought      = B("\",\"reasoning_content\":\""),
+			.calls        = B("\",\"tool_calls\":["),
+			.call         = B("{\"id\":\""),
+			.call_next    = B(",{\"id\":\""),
+			.name         = B("\",\"type\":\"function\",\"function\":{\"name\":\""),
+			.args         = B("\",\"arguments\":\""),
+			.args_end     = B("\"}"),
+			.extra        = B(",\"extra_content\":"),
+			.call_end     = B("}"),
+			.turn_end     = B("]}"),
+			.answer_end   = B("\"}"),
+			.result       = B(",{\"role\":\"tool\",\"tool_call_id\":\""),
+			.output       = B("\",\"content\":\""),
+			.result_end   = B("\"}"),
+			.user         = B(",{\"role\":\"user\",\"content\":\""),
+			.prompt_end   = B("\"}"),
+			.end          = B("]}"),
+			.conversation = "messages",
+		},
+		.max    = "max_tokens",
+		.limit  = "length",
+		.schema = "parameters",
+		.answer = ai_chat_answer,
+		.flags  = BODY_MODEL | BODY_USAGE | BODY_STREAM | TOOL_WRAPPED,
+	},
+	/* Its turn is the replay's items, its calls among them, in the
+	 * input's list. */
+	[AI_RESPONSES] = {
+		.format = {
+			.tools        = B("["),
+			.tools_end    = B("]"),
+			.result       = B(",{\"type\":\"function_call_output\",\"call_id\":\""),
+			.output       = B("\",\"output\":\""),
+			.result_end   = B("\"}"),
+			.user         = B(",{\"role\":\"user\",\"content\":\""),
+			.prompt_end   = B("\"}"),
+			.end          = B("]}"),
+			.conversation = "input",
+		},
+		.system = "instructions",
+		.max    = "max_output_tokens",
+		.limit  = "max_output_tokens",
+		.schema = "parameters",
+		.answer = ai_responses_answer,
+		.flags  = BODY_MODEL | BODY_STORE | BODY_STREAM | TOOL_TYPED,
+	},
+	/* Its turn's text and thinking blocks are in the replay; all its
+	 * results go in one message. */
+	[AI_MESSAGES] = {
+		.format = {
+			.tools        = B("["),
+			.tools_end    = B("]"),
+			.turn         = B(",{\"role\":\"assistant\",\"content\":["),
+			.call         = B("{\"type\":\"tool_use\",\"id\":\""),
+			.call_next    = B(",{\"type\":\"tool_use\",\"id\":\""),
+			.name         = B("\",\"name\":\""),
+			.args         = B("\",\"input\":"),
+			.call_end     = B("}"),
+			.turn_end     = B("]}"),
+			.answer_end   = B("]}"),
+			.results      = B(",{\"role\":\"user\",\"content\":["),
+			.result_sep   = B(","),
+			.result       = B("{\"type\":\"tool_result\",\"tool_use_id\":\""),
+			.output       = B("\",\"content\":\""),
+			.result_end   = B("\"}"),
+			.results_end  = B("]}"),
+			.user         = B(",{\"role\":\"user\",\"content\":\""),
+			.prompt_end   = B("\"}"),
+			.end          = B("]}"),
+			.conversation = "messages",
+			.flags        = AI_ARGS_RAW,
+		},
+		.system      = "system",
+		.max         = "max_tokens",
+		.max_default = MESSAGES_MAX_TOKENS,
+		.limit       = "max_tokens",
+		.schema      = "input_schema",
+		.answer      = ai_messages_answer,
+		.flags       = BODY_MODEL | BODY_STREAM,
+	},
+	/* Its turn's parts are the replay's, its calls among them, with
+	 * their thought signatures. A file goes after the results, in
+	 * their message, as the model does not see a text file in a
+	 * result. */
+	[AI_GENERATE] = {
+		.format = {
+			.tools        = B("[{\"functionDeclarations\":["),
+			.tools_end    = B("]}]"),
+			.turn         = B(",{\"role\":\"model\",\"parts\":["),
+			.turn_end     = B("]}"),
+			.answer_end   = B("]}"),
+			.results      = B(",{\"role\":\"user\",\"parts\":["),
+			.result_sep   = B(","),
+			.result       = B("{\"functionResponse\":{\"name\":\""),
+			.result_id    = B("\",\"id\":\""),
+			.output       = B("\",\"response\":{\"output\":\""),
+			.result_end   = B("\"}}}"),
+			.results_end  = B("]}"),
+			.file         = B(",{\"fileData\":{\"mimeType\":\"text/plain\","
+			                  "\"fileUri\":\""),
+			.file_end     = B("\"}}"),
+			.user         = B(",{\"role\":\"user\",\"parts\":[{\"text\":\""),
+			.prompt_end   = B("\"}]}"),
+			.end          = B("]}"),
+			.conversation = "contents",
+			.flags        = AI_RESULT_NAMED,
+		},
+		.system  = "systemInstruction",
+		.options = "generationConfig",
+		.max     = "maxOutputTokens",
+		.limit   = "MAX_TOKENS",
+		.schema  = "parametersJsonSchema",
+		.answer  = ai_generate_answer,
+		.flags   = BODY_PARTS,
+	},
+	/* A turn is the replay's steps and the calls, in the input list,
+	 * a call with its signature. Each result is a step after them,
+	 * which the API refuses without the call's name. A file is a
+	 * user_input step after the results, as a result takes no
+	 * document. */
+	[AI_INTERACTIONS] = {
+		.format = {
+			.tools        = B("["),
+			.tools_end    = B("]"),
+			.call         = B(",{\"type\":\"function_call\",\"id\":\""),
+			.call_next    = B(",{\"type\":\"function_call\",\"id\":\""),
+			.name         = B("\",\"name\":\""),
+			.args         = B("\",\"arguments\":"),
+			.extra        = B(",\"signature\":"),
+			.call_end     = B("}"),
+			.result       = B(",{\"type\":\"function_result\",\"name\":\""),
+			.result_id    = B("\",\"call_id\":\""),
+			.output       = B("\",\"result\":\""),
+			.result_end   = B("\"}"),
+			.file         = B(",{\"type\":\"user_input\",\"content\":"
+			                  "[{\"type\":\"document\",\"mime_type\":"
+			                  "\"text/plain\",\"uri\":\""),
+			.file_end     = B("\"}]}"),
+			.user         = B(",{\"type\":\"user_input\",\"content\":"
+			                  "[{\"type\":\"text\",\"text\":\""),
+			.prompt_end   = B("\"}]}"),
+			.end          = B("]}"),
+			.conversation = "input",
+			.flags        = AI_ARGS_RAW | AI_RESULT_NAMED,
+		},
+		.system  = "system_instruction",
+		.options = "generation_config",
+		.max     = "max_output_tokens",
+		.limit   = "incomplete",
+		.schema  = "parameters",
+		.answer  = ai_interactions_answer,
+		.flags   = BODY_MODEL | BODY_STORE | BODY_KEEP | BODY_STREAM | TOOL_TYPED,
+	},
+};
+#undef B
+
+struct json_object *
+ai_request (struct ai_endpoint const *ep,
+            struct json_object       *system,
+            struct json_object       *prompt,
+            struct json_object       *history,
+            struct json_object       *tools)
+{
+	struct json_object *root = json_object_new_object();
+	if (!root)
+		return nullptr;
+	struct ai_body const *b = &ai_bodies[ep->api];
+	char const *conversation = b->format.conversation;
+	bool background = ai_background(ep);
+	if (b->flags & BODY_MODEL && ep->model &&
+	    jb_set(root, "model", json_object_new_string(ep->model)))
+		goto fail;
+	/* Chat completions has the system prompt as a message in the
+	 * conversation. The other APIs have it in the member b->system. */
+	if (b->system) {
+		if (system && jb_set(root, b->system, b->flags & BODY_PARTS
+		                                      ? ai_generate_content(nullptr, system)
+		                                      : json_object_get(system)))
+			goto fail;
+		system = nullptr;
+	}
+	if (jb_set(root, conversation, ai_conversation(ep->api, system, history, prompt)) ||
+	    (tools && (jb_set(root, "tools", json_object_get(tools)) ||
+	               (b->flags & BODY_USAGE &&
+	                jb_set(root, "stream_options",
+	                       jb_object("include_usage", json_object_new_boolean(1),
+	                                 nullptr))))) ||
+	    (b->flags & BODY_STORE &&
+	     jb_set(root, "store", json_object_new_boolean(b->flags & BODY_KEEP && background))) ||
+	    ai_request_common(ep, root, b->options, b->max,
+	                      ep->max_tokens > 0 ? ep->max_tokens : b->max_default) ||
+	    (background && jb_set(root, "background", json_object_new_boolean(1))) ||
+	    (b->flags & BODY_STREAM && jb_set(root, "stream", json_object_new_boolean(1))) ||
+	    ai_request_last(root, conversation))
+		goto fail;
+	return root;
+fail:
+	json_object_put(root);
+	return nullptr;
 }
 
 static char const no_answer[] = "The model returned no answer.";
@@ -542,7 +695,7 @@ bool
 ai_cut (enum ai_api       api,
         char const       *reason)
 {
-	return reason && !strcmp(reason, limits[api]);
+	return reason && !strcmp(reason, ai_bodies[api].limit);
 }
 
 /* Pass the pieces of @p delta of chat completions to @p sink. Set
@@ -1282,158 +1435,24 @@ ai_event (enum ai_api            api,
 struct ai_format const *
 ai_format (enum ai_api api)
 {
-#define B(s) CSTR_VIEW_INIT(s)
-	static struct ai_format const formats[] = {
-		[AI_CHAT] = {
-			.tools        = B("["),
-			.tools_end    = B("]"),
-			.turn         = B(",{\"role\":\"assistant\""),
-			.text         = B(",\"content\":\""),
-			.thought      = B("\",\"reasoning_content\":\""),
-			.calls        = B("\",\"tool_calls\":["),
-			.call         = B("{\"id\":\""),
-			.call_next    = B(",{\"id\":\""),
-			.name         = B("\",\"type\":\"function\",\"function\":{\"name\":\""),
-			.args         = B("\",\"arguments\":\""),
-			.args_end     = B("\"}"),
-			.extra        = B(",\"extra_content\":"),
-			.call_end     = B("}"),
-			.turn_end     = B("]}"),
-			.answer_end   = B("\"}"),
-			.result       = B(",{\"role\":\"tool\",\"tool_call_id\":\""),
-			.output       = B("\",\"content\":\""),
-			.result_end   = B("\"}"),
-			.user         = B(",{\"role\":\"user\",\"content\":\""),
-			.prompt_end   = B("\"}"),
-			.end          = B("]}"),
-			.conversation = "messages",
-		},
-		/* Its turn is the replay's items, its calls among them, in the
-		 * input's list. */
-		[AI_RESPONSES] = {
-			.tools        = B("["),
-			.tools_end    = B("]"),
-			.result       = B(",{\"type\":\"function_call_output\",\"call_id\":\""),
-			.output       = B("\",\"output\":\""),
-			.result_end   = B("\"}"),
-			.user         = B(",{\"role\":\"user\",\"content\":\""),
-			.prompt_end   = B("\"}"),
-			.end          = B("]}"),
-			.conversation = "input",
-		},
-		/* Its turn's text and thinking blocks are in the replay; all its
-		 * results go in one message. */
-		[AI_MESSAGES] = {
-			.tools        = B("["),
-			.tools_end    = B("]"),
-			.turn         = B(",{\"role\":\"assistant\",\"content\":["),
-			.call         = B("{\"type\":\"tool_use\",\"id\":\""),
-			.call_next    = B(",{\"type\":\"tool_use\",\"id\":\""),
-			.name         = B("\",\"name\":\""),
-			.args         = B("\",\"input\":"),
-			.call_end     = B("}"),
-			.turn_end     = B("]}"),
-			.answer_end   = B("]}"),
-			.results      = B(",{\"role\":\"user\",\"content\":["),
-			.result_sep   = B(","),
-			.result       = B("{\"type\":\"tool_result\",\"tool_use_id\":\""),
-			.output       = B("\",\"content\":\""),
-			.result_end   = B("\"}"),
-			.results_end  = B("]}"),
-			.user         = B(",{\"role\":\"user\",\"content\":\""),
-			.prompt_end   = B("\"}"),
-			.end          = B("]}"),
-			.conversation = "messages",
-			.flags        = AI_ARGS_RAW,
-		},
-		/* Its turn's parts are the replay's, its calls among them, with
-		 * their thought signatures. A file goes after the results, in
-		 * their message, as the model does not see a text file in a
-		 * result. */
-		[AI_GENERATE] = {
-			.tools        = B("[{\"functionDeclarations\":["),
-			.tools_end    = B("]}]"),
-			.turn         = B(",{\"role\":\"model\",\"parts\":["),
-			.turn_end     = B("]}"),
-			.answer_end   = B("]}"),
-			.results      = B(",{\"role\":\"user\",\"parts\":["),
-			.result_sep   = B(","),
-			.result       = B("{\"functionResponse\":{\"name\":\""),
-			.result_id    = B("\",\"id\":\""),
-			.output       = B("\",\"response\":{\"output\":\""),
-			.result_end   = B("\"}}}"),
-			.results_end  = B("]}"),
-			.file         = B(",{\"fileData\":{\"mimeType\":\"text/plain\","
-			                  "\"fileUri\":\""),
-			.file_end     = B("\"}}"),
-			.user         = B(",{\"role\":\"user\",\"parts\":[{\"text\":\""),
-			.prompt_end   = B("\"}]}"),
-			.end          = B("]}"),
-			.conversation = "contents",
-			.flags        = AI_RESULT_NAMED,
-		},
-		/* A turn is the replay's steps and the calls, in the input list,
-		 * a call with its signature. Each result is a step after them,
-		 * which the API refuses without the call's name. A file is a
-		 * user_input step after the results, as a result takes no
-		 * document. */
-		[AI_INTERACTIONS] = {
-			.tools        = B("["),
-			.tools_end    = B("]"),
-			.call         = B(",{\"type\":\"function_call\",\"id\":\""),
-			.call_next    = B(",{\"type\":\"function_call\",\"id\":\""),
-			.name         = B("\",\"name\":\""),
-			.args         = B("\",\"arguments\":"),
-			.extra        = B(",\"signature\":"),
-			.call_end     = B("}"),
-			.result       = B(",{\"type\":\"function_result\",\"name\":\""),
-			.result_id    = B("\",\"call_id\":\""),
-			.output       = B("\",\"result\":\""),
-			.result_end   = B("\"}"),
-			.file         = B(",{\"type\":\"user_input\",\"content\":"
-			                  "[{\"type\":\"document\",\"mime_type\":"
-			                  "\"text/plain\",\"uri\":\""),
-			.file_end     = B("\"}]}"),
-			.user         = B(",{\"type\":\"user_input\",\"content\":"
-			                  "[{\"type\":\"text\",\"text\":\""),
-			.prompt_end   = B("\"}]}"),
-			.end          = B("]}"),
-			.conversation = "input",
-			.flags        = AI_ARGS_RAW | AI_RESULT_NAMED,
-		},
-	};
-#undef B
-	return &formats[api];
+	return &ai_bodies[api].format;
 }
 
 struct json_object *
 ai_tool (enum ai_api               api,
          struct json_object const *def)
 {
-	static char const *const schemas[] = {
-		[AI_CHAT]         = "parameters",
-		[AI_RESPONSES]    = "parameters",
-		[AI_MESSAGES]     = "input_schema",
-		[AI_GENERATE]     = "parametersJsonSchema",
-		[AI_INTERACTIONS] = "parameters",
-	};
+	struct ai_body const *b = &ai_bodies[api];
 	struct json_object *tool = jb_object(
 		"name", json_object_get(jb_get(def, "name")),
 		"description", json_object_get(jb_get(def, "description")),
-		schemas[api], json_object_get(jb_get(def, "inputSchema")),
+		b->schema, json_object_get(jb_get(def, "inputSchema")),
 		nullptr);
-	switch (api) {
-	case AI_CHAT:
-		return jb_object("type", json_object_new_string("function"),
-		                 "function", tool, nullptr);
-	case AI_RESPONSES:
-	case AI_INTERACTIONS:
-		return jb_set_or_free(tool, "type", json_object_new_string("function"));
-	case AI_MESSAGES:
-	case AI_GENERATE:
-		break;
-	}
-	return tool;
+	return b->flags & TOOL_WRAPPED
+	       ? jb_object("type", json_object_new_string("function"), "function", tool, nullptr)
+	       : b->flags & TOOL_TYPED
+	       ? jb_set_or_free(tool, "type", json_object_new_string("function"))
+	       : tool;
 }
 
 /* The data of the first event of the event stream @p body, parsed, if it
@@ -1642,18 +1661,10 @@ ai_answer (enum ai_api         api,
 	if (*failed)
 		return ai_describe_error(text, status, root, body);
 
-	static int (*const answers[]) (struct json_object *root, struct dstr *text,
-	                               char const **reason) = {
-		[AI_CHAT]         = ai_chat_answer,
-		[AI_RESPONSES]    = ai_responses_answer,
-		[AI_MESSAGES]     = ai_messages_answer,
-		[AI_GENERATE]     = ai_generate_answer,
-		[AI_INTERACTIONS] = ai_interactions_answer,
-	};
-	if (!api || api >= array_size(answers))
+	if (!api || api >= array_size(ai_bodies))
 		return EINVAL;
 	char const *reason = nullptr;
-	int e = answers[api](root, text, &reason);
+	int e = ai_bodies[api].answer(root, text, &reason);
 	if (e)
 		return e;
 	if (!dstr_len(text)) {
