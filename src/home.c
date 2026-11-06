@@ -14,6 +14,7 @@
 #include "ai.h"
 #include "buf.h"
 #include "config.h"
+#include "dstr.h"
 #include "hexid.h"
 #include "hist.h"
 #include "home.h"
@@ -1845,75 +1846,49 @@ home_provider_url (struct home *home,
                     bool         cancel,
                     char       **out)
 {
-	struct home_recovery const *r = &job->recovery;
-	if (!r->provider_id || !*r->provider_id)
+	char const *id = job->recovery.provider_id;
+	if (!id || !*id)
 		return ENODATA;
 	if (!home_native(home))
 		return ENOTSUP;
 	CURLU *url = curl_url();
-	char *escaped = curl_easy_escape(nullptr, r->provider_id, 0);
+	char *escaped = curl_easy_escape(nullptr, id, 0);
 	char *path = nullptr;
-	char *joined = nullptr;
+	dstr_auto tail = DSTR_INIT;
+	dstr_auto query = DSTR_INIT;
 	int e = ENOMEM;
 	if (!url || !escaped)
 		goto done;
+	e = EINVAL;
 	if (curl_url_set(url, CURLUPART_URL, home->ep->url, 0) ||
-	    curl_url_get(url, CURLUPART_PATH, &path, 0)) {
-		e = EINVAL;
+	    curl_url_get(url, CURLUPART_PATH, &path, 0))
 		goto done;
-	}
-	size_t at = strlen(path);
-	while (at && path[at - 1] == '/')
-		--at;
+	struct cstr_view base = cstr_view(path);
+	while (base.len && base.data[base.len - 1] == '/')
+		--base.len;
+	bool ok;
 	if (home_llama(home)) {
 		struct cstr_view const suffix = home_apis[home->ep->api].llama;
-		if (at < suffix.len || memcmp(path + at - suffix.len, suffix.data, suffix.len)) {
-			e = EINVAL;
+		if (!cstr_view_ends(base, suffix))
 			goto done;
-		}
-		at -= suffix.len;
-		joined = malloc(at + sizeof "stream");
-		if (!joined)
-			goto done;
-		memcpy(joined, path, at);
-		memcpy(joined + at, "stream", sizeof "stream");
+		ok = dstr_cat_n(&tail, base.data, base.len - suffix.len) && dstr_cat(&tail, "stream") &&
+		     dstr_printf(&query, "conv_id=%s&from=0", escaped);
 	} else {
-		size_t n = strlen(escaped);
-		joined = malloc(at + n + sizeof "/cancel" + 1);
-		if (!joined)
-			goto done;
-		memcpy(joined, path, at);
-		joined[at++] = '/';
-		memcpy(joined + at, escaped, n);
-		memcpy(joined + at + n, cancel ? "/cancel" : "", cancel ? sizeof "/cancel" : 1);
+		ok = dstr_cat_n(&tail, base.data, base.len) &&
+		     dstr_printf(&tail, "/%s%s", escaped, cancel ? "/cancel" : "") &&
+		     (cancel || dstr_cat(&query, "stream=true"));
 	}
-	if (curl_url_set(url, CURLUPART_PATH, joined, 0)) {
-		e = EINVAL;
+	e = ENOMEM;
+	if (!ok)
 		goto done;
-	}
-	free(joined);
-	joined = nullptr;
-	if (home_llama(home)) {
-		size_t n = strlen(escaped) + 80;
-		joined = malloc(n);
-		if (!joined)
-			goto done;
-		int count = snprintf(joined, n, "conv_id=%s&from=0", escaped);
-		if (count < 0 || (size_t)count >= n) {
-			e = EOVERFLOW;
-			goto done;
-		}
-	}
-	char const *query = joined ? joined : cancel ? nullptr : "stream=true";
-	if ((query && curl_url_set(url, CURLUPART_QUERY, query, CURLU_APPENDQUERY)) ||
-	    curl_url_get(url, CURLUPART_URL, out, 0)) {
-		e = EINVAL;
+	e = EINVAL;
+	if (curl_url_set(url, CURLUPART_PATH, dstr_get(&tail), 0) ||
+	    (dstr_len(&query) &&
+	     curl_url_set(url, CURLUPART_QUERY, dstr_get(&query), CURLU_APPENDQUERY)) ||
+	    curl_url_get(url, CURLUPART_URL, out, 0))
 		goto done;
-	}
 	e = 0;
 done:
-	free(joined);
-	joined = nullptr;
 	curl_free(path);
 	path = nullptr;
 	curl_free(escaped);
