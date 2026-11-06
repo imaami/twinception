@@ -851,8 +851,7 @@ notes_tool_got_books (struct mcp_slot *slot)
 		if (!end)
 			break;
 		struct cstr_view const name = { (char const *)out.ptr, (size_t)(end - out.ptr) };
-		char repo[NOTES_REPO];
-		if (!cstr_view_equal(name, own) && !notes_select(name, repo))
+		if (!cstr_view_equal(name, own) && !notes_select(name, nullptr))
 			e = dstr_printf(call->text, "%.*s (read-only)\n", (int)name.len, name.data)
 			  ? 0 : ENOMEM;
 		size_t n = name.len + 1;

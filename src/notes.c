@@ -339,6 +339,8 @@ notes_select (struct cstr_view name,
 	    (!cstr_view_equal(side, CSTR_VIEW("client")) &&
 	     !cstr_view_equal(side, CSTR_VIEW("upstream"))))
 		return EINVAL;
+	if (!repo)
+		return 0;
 	memcpy(repo, BRANCH, sizeof BRANCH - 1);
 	memcpy(repo + sizeof BRANCH - 1, name.data, name.len);
 	repo[sizeof BRANCH - 1 + name.len] = '\0';

@@ -155,7 +155,8 @@ notes_repo (struct notes const *notes,
             char                repo[NOTES_REPO]);
 
 /** Validates an explicit PARTICIPANT/WHO/SIDE read selector and writes its
- * full branch ref to @p repo. Returns 0 or EINVAL.
+ * full branch ref to @p repo, unless @p repo is nullptr. Returns 0 or
+ * EINVAL.
  */
 extern int
 notes_select (struct cstr_view name,
