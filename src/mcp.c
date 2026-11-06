@@ -858,11 +858,21 @@ mcp_span_is (struct span      s,
 	return s.ptr && s.len == str.len && !memcmp(s.ptr, str.data, str.len);
 }
 
-/** Returns true if @p v is a supported revision older than the modern ones. */
-static bool
-mcp_is_legacy (struct cstr_view v)
+/** Returns the index of the revision @p v in versions, or
+ *  array_size(versions) if askai does not support it.
+ */
+static size_t
+mcp_version (struct cstr_view v)
 {
-	size_t i = cstr_view_index(versions, array_size(versions), v);
+	return cstr_view_index(versions, array_size(versions), v);
+}
+
+/** Returns true if @p i, an index from mcp_version(), is of a supported
+ *  revision older than the modern ones.
+ */
+static bool
+mcp_is_legacy (size_t i)
+{
 	return i >= MODERN && i < array_size(versions);
 }
 
@@ -7060,7 +7070,7 @@ mcp_req_initialize (struct mcp_req     *req,
 {
 	static char const head[] = JSON_FIELD "Mcp-Session-Id: ";
 	struct cstr_view version = jb_view(jb_get(params, "protocolVersion"));
-	if (!mcp_is_legacy(version))
+	if (!mcp_is_legacy(mcp_version(version)))
 		version = versions[MODERN];
 
 	/* askai does not store the session ID. The ID only scopes the request
@@ -7312,13 +7322,15 @@ mcp_req_route (struct mcp_req     *req,
 
 /** Validates the metadata of the modern request of @p req with the method
  *  @p method, then answers it. @p meta is the member _meta of @p params,
- *  and @p version is the protocol version in @p meta.
+ *  and @p version is the protocol version in @p meta, whose index in
+ *  versions is @p v (mcp_version()).
  */
 static void
 mcp_req_modern (struct mcp_req     *req,
                 struct json_object *params,
                 struct json_object *meta,
                 struct cstr_view    version,
+                size_t              v,
                 struct cstr_view    method)
 {
 	struct stream *s = req->s;
@@ -7335,7 +7347,7 @@ mcp_req_modern (struct mcp_req     *req,
 		                   "request _meta"), nullptr, 0);
 		return;
 	}
-	if (cstr_view_index(versions, array_size(versions), version) >= MODERN) {
+	if (v >= MODERN) {
 		struct mcp_piece const data[] = {
 			FRAG("{\"supported\":"),
 			DSTR(&req->mcp->st->versions),
@@ -7393,11 +7405,13 @@ mcp_req_request (struct mcp_req     *req,
 	}
 	struct json_object *meta = jb_get(params, "_meta");
 	struct cstr_view version = jb_view(jb_get(meta, meta_version));
+	size_t const v = mcp_version(version);
 	struct span header = s->ops->field(s, F_VERSION);
 	struct cstr_view field = { (char const *)header.ptr, header.len };
-	if ((version.data && !mcp_is_legacy(version)) || (field.data && !mcp_is_legacy(field))) {
+	if ((version.data && !mcp_is_legacy(v)) ||
+	    (field.data && !mcp_is_legacy(mcp_version(field)))) {
 		req->flags |= REQ_MODERN;
-		mcp_req_modern(req, params, meta, version, method);
+		mcp_req_modern(req, params, meta, version, v, method);
 		return;
 	}
 	/* A legacy client without the header uses the revision 2025-03-26,
