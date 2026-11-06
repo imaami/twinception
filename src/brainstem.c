@@ -1065,23 +1065,6 @@ brainstem_init (struct brainstem           *bs,
 	return blocker_start(bs->blockers);
 }
 
-/* Start home's thread, then the client loops', until a signal comes or one
- * does not run; returns whether all run, the error that kept one from
- * starting in @p *e.
- */
-static bool
-brainstem_start_all (struct brainstem *bs,
-                     int              *e)
-{
-	for (size_t i = 0; i < bs->n; ++i) {
-		struct brainstem_thread *t = &bs->threads[i];
-		if (bs->stopping || (*e = brainstem_thread_start(t)) ||
-		    brainstem_thread_state(t) != RUNNING)
-			return false;
-	}
-	return true;
-}
-
 /*
  * Start home's thread, then the client loops', unless a signal comes
  * meanwhile; until all run, the brainstem keeps every signal blocked, as they
@@ -1093,10 +1076,13 @@ static int
 brainstem_start (struct brainstem *bs)
 {
 	int e = 0;
-	bool all = brainstem_start_all(bs, &e);
+	size_t i = 0;
+	while (i < bs->n && !bs->stopping && !(e = brainstem_thread_start(&bs->threads[i])) &&
+	       brainstem_thread_state(&bs->threads[i]) == RUNNING)
+		++i;
 	if (bs->stopping)
 		brainstem_drain(bs);
-	else if (!all)
+	else if (i < bs->n)
 		brainstem_stop(bs);
 	else
 		brainstem_thread_order(&bs->threads[HOME], OPEN);
