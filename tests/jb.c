@@ -93,6 +93,12 @@ main (void)
 	CHECK(!jb_count(jb_at(counts, 6), 5) && !jb_count(nullptr, 5));
 	json_object_put(counts);
 
+	/* Only the JSON value true is true. */
+	struct json_object *flags = json_tokener_parse("[true, false, 1, \"true\", null]");
+	CHECK(jb_true(jb_at(flags, 0)) && !jb_true(jb_at(flags, 1)) && !jb_true(jb_at(flags, 2)));
+	CHECK(!jb_true(jb_at(flags, 3)) && !jb_true(jb_at(flags, 4)) && !jb_true(nullptr));
+	json_object_put(flags);
+
 	/* A nullptr value fails the set or the push. The failure frees the
 	 * container. With a nullptr container, the call returns nullptr and
 	 * frees the value. */

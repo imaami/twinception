@@ -2049,8 +2049,6 @@ static enum godbolt_go
 godbolt_classify (struct godbolt *call)
 {
 	struct json_object *code = jb_get(call->doc, "code");
-	struct json_object *timed_out = jb_get(call->doc, "timedOut");
-	struct json_object *truncated = jb_get(call->doc, "truncated");
 	if (!json_object_is_type(code, json_type_int)) {
 		godbolt_why(call, "the response is not a JSON object with an integer member "
 		            "code");
@@ -2058,10 +2056,8 @@ godbolt_classify (struct godbolt *call)
 		call->phase = GODBOLT_FREE;
 		return godbolt_header(call) ? godbolt_fail(call) : GODBOLT_GO;
 	}
-	bool const timed = json_object_is_type(timed_out, json_type_boolean) &&
-	                   json_object_get_boolean(timed_out);
-	if (json_object_is_type(truncated, json_type_boolean) &&
-	    json_object_get_boolean(truncated))
+	bool const timed = jb_true(jb_get(call->doc, "timedOut"));
+	if (jb_true(jb_get(call->doc, "truncated")))
 		call->rec.marks |= GODBOLT_REC_TRUNCATED;
 	int64_t const n = json_object_get_int64(code);
 	if (timed)

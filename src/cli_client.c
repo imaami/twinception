@@ -797,9 +797,8 @@ cli_client_scan_tool (struct cli_client      *client,
 		return EPROTO;
 	struct json_object *props = jb_get(jb_get(entry, "inputSchema"), "properties");
 	struct json_object *meta = jb_get(jb_get(entry, "_meta"), "askai");
-	struct json_object *books = jb_get(meta, "notebooks");
 	struct json_object *actions = jb_get(jb_get(props, "action"), "enum");
-	bool source = json_object_is_type(books, json_type_boolean) && json_object_get_boolean(books);
+	bool source = jb_true(jb_get(meta, "notebooks"));
 	if (!meta && cstr_view_equal(name, CSTR_VIEW("notes")) && jb_get(props, "notebook"))
 		source |= cli_client_has_action(actions, "notebooks");
 	if (source && !dstr_len(&scan->notebook_tool))

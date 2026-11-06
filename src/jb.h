@@ -320,6 +320,13 @@ jb_count (struct json_object const *val,
 	return jb_uint_checked(val, max, &n) ? 0 : n;
 }
 
+/** Returns true if @p val is the JSON value true. */
+static inline bool
+jb_true (struct json_object const *val)
+{
+	return json_object_is_type(val, json_type_boolean) && json_object_get_boolean(val);
+}
+
 /**
  * Look up each key of the object @p args among the @p n names at @p names,
  * @p n at most 64. For a key that equals names[i], store its value in
