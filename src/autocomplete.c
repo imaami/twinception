@@ -137,32 +137,13 @@ autocomplete_safe (struct cstr_view value,
 	return true;
 }
 
-/** Reserve a whole operation while retaining geometric headroom. */
-static int
-autocomplete_buffer_reserve (struct dstr *buffer,
-                             size_t       extra)
-{
-	struct dstr_info info = dstr_info(buffer);
-	if (extra <= info.space)
-		return 0;
-	if (extra > SIZE_MAX - info.length - 1)
-		return ENOMEM;
-	size_t needed = info.length + extra;
-	size_t capacity = info.length + info.space;
-	size_t next = capacity > 256 ? capacity : 256;
-	while (next < needed && next <= (SIZE_MAX - 1) / 2)
-		next *= 2;
-	if (next < needed)
-		next = needed;
-	return dstr_reserve(buffer, next - info.length) ? 0 : ENOMEM;
-}
-
 static int
 autocomplete_unquote (struct dstr     *output,
                       struct cstr_view value)
 {
 	(void)dstr_clear(output);
-	if (autocomplete_buffer_reserve(output, value.len))
+	/* The appends below fit in the room that this reserves. */
+	if (!dstr_reserve(output, value.len))
 		return ENOMEM;
 	char mark = 0;
 	bool escape = false;
@@ -210,8 +191,6 @@ autocomplete_quote (struct dstr     *output,
 	if (!needs)
 		return cstr_view_store(value, output);
 	(void)dstr_clear(output);
-	if (autocomplete_buffer_reserve(output, length))
-		return ENOMEM;
 	if (!dstr_cat_n(output, &mark, 1))
 		return ENOMEM;
 	for (size_t i = 0; i < value.len; ++i) {
@@ -267,8 +246,6 @@ autocomplete_tokenize (struct autocomplete *ac,
 			if (byte == '\'' || byte == '"')
 				mark = byte;
 			else if (byte == '[' || byte == '{') {
-				if (autocomplete_buffer_reserve(&ac->nesting, 1))
-					return ENOMEM;
 				if (!dstr_cat_n(&ac->nesting, &byte, 1))
 					return ENOMEM;
 			} else if (byte == ']' || byte == '}') {
@@ -335,7 +312,8 @@ autocomplete_resolve (struct autocomplete  *autocomplete,
 			while (end < ref.len && ref.data[end] != '/')
 				++end;
 			(void)dstr_clear(&autocomplete->key);
-			if (autocomplete_buffer_reserve(&autocomplete->key, end - begin))
+			/* The appends below fit in the room that this reserves. */
+			if (!dstr_reserve(&autocomplete->key, end - begin))
 				return ENOMEM;
 			for (size_t i = begin; i < end; ++i) {
 				char byte = ref.data[i];
@@ -859,14 +837,10 @@ autocomplete_replacement (struct autocomplete    *ac,
 	size_t length = cursor + line.len - end;
 	if (length >= AUTOCOMPLETE_BYTES - dstr_len(&ac->lines))
 		return 0;
-	if (autocomplete_buffer_reserve(&ac->lines, length + 1))
+	if (!dstr_cat_n(&ac->lines, line.data, begin) || cstr_view_cat(value, &ac->lines) ||
+	    !dstr_cat_n(&ac->lines, " ", separate) || !dstr_cat_n(&ac->lines, line.data + end, line.len - end) ||
+	    !dstr_cat_n(&ac->lines, "", 1))
 		return ENOMEM;
-	(void)dstr_cat_n(&ac->lines, line.data, begin);
-	(void)cstr_view_cat(value, &ac->lines);
-	if (separate)
-		(void)dstr_cat_n(&ac->lines, " ", 1);
-	(void)dstr_cat_n(&ac->lines, line.data + end, line.len - end);
-	(void)dstr_cat_n(&ac->lines, "", 1);
 	size_t index = ac->match_count++;
 	if (!index || begin < ac->match_begin)
 		ac->match_begin = begin;
