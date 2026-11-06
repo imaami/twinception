@@ -39,6 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "htab.h"
 #include "http.h"
 #include "list.h"
 #include "log.h"
@@ -79,7 +80,6 @@ static char const no_memory[] = "askai ran out of memory.";
  * compare with memcmp().
  */
 struct web_key {
-	uint64_t hash;
 	uint64_t max;      /* the request's max */
 	uint32_t url;      /* the length of the URL */
 	uint32_t body;     /* the length of the body */
@@ -88,7 +88,7 @@ struct web_key {
 	uint16_t post;     /* bool, widened over the padding: a POST */
 };
 
-static_assert(sizeof (struct web_key) == 32);
+static_assert(sizeof (struct web_key) == 24);
 
 /* A response, or the reason why none came. No thread changes it after
  * home has made it. Each wait that has it, and the table, have a reference
@@ -111,7 +111,8 @@ struct web_reply {
  * locked.
  */
 struct web_entry {
-	struct web_entry *next;     /* in its bucket */
+	struct htab_node  node;     /* in the table, by the hash of the key;
+	                               once out of it, on a chain to free */
 	struct list       hook;     /* on web->kept, in the order of expires */
 	struct web_reply *reply;    /* the table's reference */
 	uint64_t          expires;  /* the loop_clock() at which its keep
@@ -142,6 +143,7 @@ struct web_run {
 	size_t               cap;       /* the room in body */
 	uint64_t             since;     /* loop_clock() as home started the
 	                                   run */
+	uint64_t             hash;      /* of the key */
 	struct web_key       key;
 	_Atomic uint32_t     bits;      /* the bits for home */
 	_Atomic uint32_t     refs;      /* one for home, one for the message
@@ -185,7 +187,8 @@ struct web {
 	                                0 */
 	struct list        kept;     /* the entries, the one whose keep passes
 	                                first at the front */
-	struct web_entry  *buckets[WEB_BUCKETS];
+	struct htab        table;    /* the entries */
+	struct htab_node  *buckets[WEB_BUCKETS];  /* the table's */
 	size_t             bytes;    /* what the entries count against
 	                                WEB_CACHE_MAX */
 	uint64_t           n_runs;   /* the runs under way */
@@ -259,57 +262,52 @@ web_run_put (struct web_run *run,
 	}
 }
 
-/* Frees the entries of the list @p gone, which the member next links, and
+/* Frees the entries of the chain @p gone, which node.next links, and
  * releases their references to the replies.
  */
 static void
-web_entries_free (struct web_entry *gone)
+web_entries_free (struct htab_node *gone)
 {
-	for (struct web_entry *next; gone; gone = next) {
+	for (struct htab_node *next; gone; gone = next) {
 		next = gone->next;
-		web_reply_put(gone->reply);
-		free(gone);
+		struct web_entry *entry = container_of(gone, struct web_entry, node);
+		web_reply_put(entry->reply);
+		free(entry);
 	}
 }
 
-/* Returns the link to the first entry of the bucket of @p hash. */
-static struct web_entry **
-web_bucket (struct web *web,
-            uint64_t    hash)
-{
-	return &web->buckets[hash & (array_size(web->buckets) - 1)];
-}
-
-/* Returns the link to the entry whose key is equal to @p key, whose bytes
- * are at @p data, or the link at the end of its bucket if the table has
- * none. The caller has locked the mutex.
+/* Returns the entry with the hash @p hash whose key is equal to @p key,
+ * whose bytes are at @p data, or nullptr if the table has none. The caller
+ * has locked the mutex.
  */
-static struct web_entry **
-web_find (struct web           *web,
+static struct web_entry *
+web_find (struct web const     *web,
+          uint64_t              hash,
           struct web_key const *key,
           char const           *data)
 {
-	struct web_entry **p = web_bucket(web, key->hash);
-	while (*p && !web_key_equal(&(*p)->key, (*p)->data, key, data))
-		p = &(*p)->next;
-	return p;
+	for (struct htab_node *n = *htab_bucket(&web->table, hash); n; n = n->next) {
+		struct web_entry *entry = container_of(n, struct web_entry, node);
+		if (n->hash == hash && web_key_equal(&entry->key, entry->data, key, data))
+			return entry;
+	}
+	return nullptr;
 }
 
-/* Returns the run under way whose key is equal to @p key, whose bytes are
- * at @p data, whose timeout is @p timeout seconds and whose keep is not 0,
- * or nullptr if there is none. The caller has locked the mutex.
+/* Returns the run under way whose hash, key and timeout are those of @p run
+ * and whose keep is not 0, or nullptr if there is none. The caller has
+ * locked the mutex.
  */
 static struct web_run *
 web_find_run (struct web const     *web,
-              struct web_key const *key,
-              char const           *data,
-              uint32_t              timeout)
+              struct web_run const *run)
 {
 	struct list const *node;
 	list_foreach (node, &web->runs) {
-		struct web_run *run = container_of(node, struct web_run, hook);
-		if (run->timeout == timeout && web_key_equal(&run->key, run->data, key, data))
-			return run;
+		struct web_run *other = container_of(node, struct web_run, hook);
+		if (other->hash == run->hash && other->timeout == run->timeout &&
+		    web_key_equal(&other->key, other->data, &run->key, run->data))
+			return other;
 	}
 	return nullptr;
 }
@@ -325,21 +323,21 @@ web_entry_bytes (struct web_key const   *key,
 }
 
 /* Removes @p entry from the table and from the list of stored responses,
- * and puts it on the chain at @p gone, which the member next links. The
- * caller has locked the mutex, and frees the chain after it has unlocked
- * the mutex. Returns the bytes that the entry counted.
+ * and puts it on the chain at @p gone, which node.next links. The caller
+ * has locked the mutex, and frees the chain after it has unlocked the
+ * mutex. Returns the bytes that the entry counted.
  */
 static size_t
 web_unlink (struct web        *web,
             struct web_entry  *entry,
-            struct web_entry **gone)
+            struct htab_node **gone)
 {
 	size_t bytes = web_entry_bytes(&entry->key, entry->reply);
-	*web_find(web, &entry->key, entry->data) = entry->next;
+	htab_unlink(&web->table, &entry->node);
 	list_del(&entry->hook);
 	web->bytes -= bytes;
-	entry->next = *gone;
-	*gone = entry;
+	entry->node.next = *gone;
+	*gone = &entry->node;
 	return bytes;
 }
 
@@ -348,23 +346,21 @@ web_unlink (struct web        *web,
  * puts the entry on the list of stored responses in the order of expires.
  * While the stored responses would count more than WEB_CACHE_MAX bytes, it
  * removes the entry at the front of the list. Returns the entries that it
- * removed, which the member next links, for the caller to free after it
- * has unlocked the mutex. The caller has locked the mutex.
+ * removed, which node.next links, for the caller to free after it has
+ * unlocked the mutex. The caller has locked the mutex.
  */
-static struct web_entry *
+static struct htab_node *
 web_keep (struct web       *web,
           struct web_entry *entry)
 {
-	struct web_entry *gone = nullptr;
-	struct web_entry *old = *web_find(web, &entry->key, entry->data);
+	struct htab_node *gone = nullptr;
+	struct web_entry *old = web_find(web, entry->node.hash, &entry->key, entry->data);
 	if (old)
 		(void)web_unlink(web, old, &gone);
 	size_t bytes = web_entry_bytes(&entry->key, entry->reply);
 	while (web->bytes + bytes > WEB_CACHE_MAX && !list_is_empty(&web->kept))
 		(void)web_unlink(web, container_of(web->kept.next, struct web_entry, hook), &gone);
-	struct web_entry **bucket = web_bucket(web, entry->key.hash);
-	entry->next = *bucket;
-	*bucket = entry;
+	htab_link(&web->table, &entry->node);
 	/* The new entry's keep usually passes last, so the search begins at
 	 * the back of the list. */
 	struct list *at = web->kept.prev;
@@ -434,6 +430,7 @@ web_entry_create (struct web_run const *run,
 	if (!entry)
 		return nullptr;
 	*entry = (struct web_entry){
+		.node.hash = run->hash,
 		.reply = web_reply_get(reply),
 		.key = run->key
 	};
@@ -461,7 +458,7 @@ web_run_end (struct web                *web,
 	bool store = reply && run->keep && !end->e && end->status >= 200 &&
 	             end->status < 300 && web_entry_bytes(&run->key, reply) <= WEB_CACHE_MAX / 4;
 	struct web_entry *entry = store ? web_entry_create(run, reply) : nullptr;
-	struct web_entry *gone = nullptr;
+	struct htab_node *gone = nullptr;
 	struct list waits;
 	list_init(&waits);
 	struct list *node;
@@ -714,6 +711,7 @@ web_create (int *e)
 		free(web);
 		return nullptr;
 	}
+	web->table = htab(web->buckets, array_size(web->buckets));
 	list_init(&web->runs);
 	list_init(&web->kept);
 	list_init(&web->live);
@@ -771,7 +769,7 @@ web_relieve (struct web        *web,
              size_t             max)
 {
 	uint64_t now = loop_clock();
-	struct web_entry *gone = nullptr;
+	struct htab_node *gone = nullptr;
 	size_t units = 0;
 	pthread_mutex_lock(&web->lock);
 	while (!list_is_empty(&web->kept) && (!units || units < max)) {
@@ -879,7 +877,7 @@ web_wait_create (struct web           *web,
 		.n_lines = (uint16_t)n,
 		.post = post
 	};
-	run->key.hash = web_key_hash(web->seed, &run->key, run->data);
+	run->hash = web_key_hash(web->seed, &run->key, run->data);
 	/* One reference for home, and one for the message. */
 	atomic_init(&run->bits, RUN_SUBMIT);
 	atomic_init(&run->refs, 2);
@@ -899,7 +897,7 @@ web_wait_create (struct web           *web,
 	struct web_run *to = run;
 	pthread_mutex_lock(&web->lock);
 	if (r->keep) {
-		struct web_entry *entry = *web_find(web, &run->key, run->data);
+		struct web_entry *entry = web_find(web, run->hash, &run->key, run->data);
 		/* Only home changes a wait that is on a run's list, until home
 		 * posts it. So the function changes only a wait that has a
 		 * stored response. */
@@ -908,7 +906,7 @@ web_wait_create (struct web           *web,
 			wait->done = true;
 			to = nullptr;
 		} else {
-			struct web_run *join = web_find_run(web, &run->key, run->data, r->timeout);
+			struct web_run *join = web_find_run(web, run);
 			to = join ? join : run;
 		}
 	}
