@@ -100,7 +100,7 @@ static void
 loop_stats_empty (struct loop_stats *s,
                   bool               fresh)
 {
-	for (size_t t = 0; t < TIMINGS; ++t)
+	for (size_t t = 0; t < array_size(s->time); ++t)
 		(fresh ? hist_init : hist_clear)(&s->time[t]);
 	size_t at = offsetof(struct loop_stats, over);
 	memset((unsigned char *)s + at, 0, sizeof *s - at);
@@ -114,7 +114,7 @@ loop_metrics_init (struct loop_metrics *m)
 		hist_init(&m->step[i]);
 	hist_init(&m->late);
 	hist_init(&m->inbox);
-	for (size_t u = 0; u < LOOP_UNITS; ++u)
+	for (size_t u = 0; u < array_size(m->work); ++u)
 		atomic_init(&m->work[u], 0);
 }
 
@@ -139,7 +139,7 @@ loop_work (struct loop    *loop,
 {
 	if (!loop)
 		return EFAULT;
-	if ((size_t)u >= LOOP_UNITS)
+	if ((size_t)u >= array_size(loop->work))
 		return EINVAL;
 	loop->work[u] += n;
 	return 0;
@@ -149,7 +149,7 @@ uint64_t
 loop_room (struct loop const *loop,
            enum loop_unit     u)
 {
-	if (!loop || (size_t)u >= LOOP_UNITS)
+	if (!loop || (size_t)u >= array_size(bound))
 		return 0;
 	return loop->work[u] < bound[u] ? bound[u] - loop->work[u] : 0;
 }
@@ -651,13 +651,12 @@ loop_run (struct loop *loop,
 		struct loop_step *step = container_of(batch[i].next, struct loop_step,
 		                                      hook);
 		loop_unready(step);
-		for (size_t u = 0; u < LOOP_UNITS; ++u)
-			loop->work[u] = 0;
+		memset(loop->work, 0, sizeof loop->work);
 		step->fn(loop, step);
 		uint64_t end = loop_clock();
 		loop_stats_time(loop->stats, TIME_STEP + bulk, &loop->metrics->step[bulk],
 		                end - t);
-		for (size_t u = 0; u < LOOP_UNITS; ++u) {
+		for (size_t u = 0; u < array_size(loop->work); ++u) {
 			loop_most(&loop->stats->work[u], loop->work[u]);
 			hist_max(&loop->metrics->work[u], loop->work[u]);
 		}
@@ -706,7 +705,7 @@ loop_log_stats (struct loop *loop,
 		[TIME_LATE] = "timer_late",
 	};
 	struct loop_stats *s = loop->stats;
-	for (size_t t = 0; t < TIMINGS; ++t) {
+	for (size_t t = 0; t < array_size(s->time); ++t) {
 		struct hist const *h = &s->time[t];
 		log_put(nullptr, "stats %s%s n=%" PRIu64 " over_1ms=%" PRIu64 " p50_us=%.1f "
 		        "p90_us=%.1f p99_us=%.1f p99_9_us=%.1f max_us=%.1f", label, name[t],
@@ -720,7 +719,7 @@ loop_log_stats (struct loop *loop,
 	                         "/%u steps=%" PRIu64, s->events, (unsigned)EVENTS,
 	                         s->timers, (unsigned)TIMERS, s->steps);
 	/* Once cut short, with "...", the line says no more. */
-	for (size_t u = 0; u < LOOP_UNITS && len < sizeof work - 1; ++u)
+	for (size_t u = 0; u < array_size(s->work) && len < sizeof work - 1; ++u)
 		len += util_format(work + len, sizeof work - len, " %s=%" PRIu64 "/%" PRIu64,
 		                   unit_name[u], s->work[u], bound[u]);
 	log_put(nullptr, "stats %swork %s", label, work);
