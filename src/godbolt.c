@@ -38,7 +38,6 @@
 #include <stdarg.h>
 #include <stdbit.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -119,10 +118,9 @@ static char const godbolt_language_bytes[] =
  * returns it. It is plain data without pointers.
  */
 struct godbolt_config {
-	uint32_t len;                       /* the length of url in bytes */
-	uint32_t share;                     /* enum godbolt_share */
-	char     url[GODBOLT_URL_MAX + 1];  /* the base URL without a trailing
-	                                       '/', NUL-terminated */
+	UTIL_TEXT(GODBOLT_URL_MAX + 1) url;    /* the base URL without a trailing
+	                                          '/' */
+	uint32_t                       share;  /* enum godbolt_share */
 };
 
 /* The kinds of link for the argument share of a call. The option share
@@ -165,11 +163,12 @@ static struct cstr_view const godbolt_share_notes[GODBOLT_SHARES] = {
 /* The configuration without options. definition() uses it if askai passes
  * no configuration.
  */
+#define GODBOLT_URL "https://godbolt.org"
 static struct godbolt_config const godbolt_defaults = {
-	.len = sizeof "https://godbolt.org" - 1,
-	.share = GODBOLT_SHARE_SHORT,
-	.url = "https://godbolt.org"
+	.url = { sizeof GODBOLT_URL - 1, GODBOLT_URL },
+	.share = GODBOLT_SHARE_SHORT
 };
+#undef GODBOLT_URL
 
 /* The tools, in the order of the manifest. */
 enum godbolt_tool : uint8_t {
@@ -647,7 +646,6 @@ struct godbolt {
 	uint32_t                     malformed; /* elements that the plugin
 	                                           left out */
 	uint32_t                     attempt;   /* attempts of the request */
-	uint32_t                     why_len;   /* bytes of why */
 	uint32_t                     counts[GODBOLT_COUNTS];
 	int                          e;         /* the error number of the first
 	                                           failure of the output, after
@@ -672,7 +670,9 @@ struct godbolt {
 	                                           state */
 	uint8_t                      full;      /* 1 after godbolt_full() cut
 	                                           the output */
-	char                         why[GODBOLT_REASON_MAX + 120];
+	UTIL_TEXT(GODBOLT_REASON_MAX + 120) why;  /* the reason of a failure,
+	                                             or the status of a
+	                                             compilation */
 	char                         url[1024];
 	char                         blob[];
 };
@@ -714,23 +714,6 @@ godbolt_or (struct cstr_view t,
             struct cstr_view otherwise)
 {
 	return t.len ? t : otherwise;
-}
-
-/* Returns @p max, or t.len if @p t is shorter. The function returns less if
- * the first @p max bytes of @p t would end inside a UTF-8 character, so
- * that a cut after the returned length does not split a character. The
- * cut moves back by at most 3 bytes.
- */
-static size_t
-godbolt_cut (struct cstr_view t,
-             size_t           max)
-{
-	if (max >= t.len)
-		return t.len;
-	size_t n = max;
-	for (size_t k = 0; k < 3 && n && ((unsigned char)t.data[n] & 0xc0) == 0x80; ++k)
-		--n;
-	return n;
 }
 
 /* Copies @p t to @p d, and returns the end of the copy. */
@@ -796,28 +779,9 @@ godbolt_put (struct godbolt   *call,
 	return call->e;
 }
 
-/* Formats @p fmt and @p ap into the @p size bytes at @p buf, cut at
- * size - 1 bytes and terminated with a NUL. Returns a view of the text, or
- * an empty view whose data is nullptr, with an empty text in @p buf, if
- * vsnprintf() fails.
- */
-[[gnu::format(printf, 3, 0)]]
-static struct cstr_view
-godbolt_vformat (char       *buf,
-                 size_t      size,
-                 char const *fmt,
-                 va_list     ap)
-{
-	int const n = vsnprintf(buf, size, fmt, ap);
-	if (n < 0) {
-		*buf = '\0';
-		return (struct cstr_view){};
-	}
-	return (struct cstr_view){ buf, (size_t)n < size ? (size_t)n : size - 1 };
-}
-
 /* Appends the text that @p fmt and its arguments format to the call's
- * output. The text is cut at 511 bytes. Returns 0, or call->e.
+ * output, as util_format() formats it into 512 bytes. Returns 0, or
+ * call->e.
  */
 [[gnu::format(printf, 2, 3)]]
 static int
@@ -828,17 +792,13 @@ godbolt_putf (struct godbolt *call,
 	char text[512];
 	va_list ap;
 	va_start(ap, fmt);
-	struct cstr_view const t = godbolt_vformat(text, sizeof text, fmt, ap);
+	struct cstr_view const t = { text, util_vformat(text, sizeof text, fmt, ap) };
 	va_end(ap);
-	if (t.data)
-		return godbolt_put(call, t);
-	call->e = call->e ? call->e : EINVAL;
-	return call->e;
+	return godbolt_put(call, t);
 }
 
-/* Stores the text that @p fmt and its arguments format in call->why. Each
- * control byte of the text becomes a space. If the text cannot be
- * formatted, call->why is empty.
+/* Stores the text that @p fmt and its arguments format in call->why, as
+ * util_format() formats it. Each control byte of the text becomes a space.
  */
 [[gnu::format(printf, 2, 3)]]
 static void
@@ -848,14 +808,16 @@ godbolt_why (struct godbolt *call,
 {
 	va_list ap;
 	va_start(ap, fmt);
-	call->why_len = (uint32_t)godbolt_vformat(call->why, sizeof call->why, fmt, ap).len;
+	call->why.len = (uint32_t)util_vformat(call->why.data, sizeof call->why.data, fmt, ap);
 	va_end(ap);
-	for (uint32_t i = 0; i < call->why_len; ++i)
-		if ((unsigned char)call->why[i] < 0x20 || call->why[i] == 0x7f)
-			call->why[i] = ' ';
+	for (uint32_t i = 0; i < call->why.len; ++i)
+		if ((unsigned char)call->why.data[i] < 0x20 || call->why.data[i] == 0x7f)
+			call->why.data[i] = ' ';
 }
 
-/** Format a compiler lookup that preserves the call's language. */
+/* Stores in call->why @p reason and a hint to look the compilers of the
+ * call's language up with godbolt_catalog.
+ */
 static void
 godbolt_catalog_hint (struct godbolt *call,
                       char const     *reason)
@@ -903,7 +865,7 @@ godbolt_request (struct godbolt   *call,
                  struct cstr_view  body)
 {
 	struct godbolt_rule const *rule = &godbolt_rules[kind];
-	char *u = godbolt_cat(call->url, (struct cstr_view){ call->cfg->url, call->cfg->len });
+	char *u = godbolt_cat(call->url, util_text_view(&call->cfg->url));
 	u = godbolt_cat_path(godbolt_cat(u, rule->path), segment);
 	*godbolt_cat(u, rule->tail) = '\0';
 	call->req = (struct web_request){
@@ -1010,7 +972,7 @@ godbolt_reason (struct godbolt *call,
 		text = godbolt_or(jb_view(jb_get(doc, "message")), text);
 	}
 	(void)cstr_view_cut(&text, '\n', &text);
-	size_t const n = godbolt_cut(text, GODBOLT_REASON_MAX);
+	size_t const n = util_clip(text.data, text.len, GODBOLT_REASON_MAX);
 	godbolt_why(call, "HTTP %" PRIu32 "%s%.*s", status, n ? ": " : "", (int)n, text.data);
 	json_object_put(doc);
 }
@@ -1065,7 +1027,7 @@ godbolt_result (struct godbolt *call)
 		            call->req.max >> (mib ? 20 : 10), mib ? "MiB" : "KiB");
 	else if (r.e)
 		godbolt_why(call, "the request failed: %.*s",
-		            (int)godbolt_cut(cstr_view(r.error), GODBOLT_REASON_MAX), r.error);
+		            (int)util_clip(r.error, strlen(r.error), GODBOLT_REASON_MAX), r.error);
 	else if (r.status < 200 || r.status > 299)
 		godbolt_reason(call, r.status);
 	else
@@ -1534,7 +1496,7 @@ godbolt_drivers_end (struct godbolt *call)
 		godbolt_catalog_hint(call, "");
 		return godbolt_refuse(call->slot, "These compiler ids are not in the list of "
 		                      "language %.*s: %s. %s", (int)call->args.language.len,
-		                      call->args.language.data, absent, call->why);
+		                      call->args.language.data, absent, call->why.data);
 	}
 	call->phase = call->args.share ? GODBOLT_SHARE : GODBOLT_JOB;
 	return GODBOLT_GO;
@@ -1565,7 +1527,7 @@ godbolt_list (struct godbolt *call)
 	if (got == GODBOLT_BAD)
 		return godbolt_refuse(call->slot, "askai could not get the list of %s from "
 		                      "Compiler Explorer (%s).", call->args.action == GODBOLT_LANGUAGES
-		                      ? "languages" : "compilers", call->why);
+		                      ? "languages" : "compilers", call->why.data);
 	if (got != GODBOLT_GO)
 		return got;
 	json_tokener_reset(call->tok);
@@ -1596,7 +1558,7 @@ godbolt_rows (struct godbolt *call)
 		return godbolt_fail(call);
 	if (call->list == GODBOLT_LIST_BAD)
 		return godbolt_refuse(call->slot, "Compiler Explorer sent a list that is not "
-		                      "valid: %s.", call->why);
+		                      "valid: %s.", call->why.data);
 	if (call->list != GODBOLT_LIST_END)
 		return GODBOLT_GO;
 	return catalog ? godbolt_catalog_end(call) : godbolt_drivers_end(call);
@@ -1721,7 +1683,7 @@ godbolt_state_link (struct godbolt *call)
 	unsigned char const *s = (unsigned char const *)call->body;
 	size_t const n = call->len;
 	char link[GODBOLT_LINK_MAX];
-	char *d = godbolt_cat(link, (struct cstr_view){ call->cfg->url, call->cfg->len });
+	char *d = godbolt_cat(link, util_text_view(&call->cfg->url));
 	d = godbolt_cat(d, CSTR_VIEW("/clientstate/"));
 	if ((size_t)(d - link) + (n + 2) / 3 * 4 > sizeof link)
 		return godbolt_put(call, CSTR_VIEW("Link: none. The link would be longer than "
@@ -1822,7 +1784,8 @@ godbolt_link (struct godbolt *call)
 	call->phase = GODBOLT_JOB;
 	if (got == GODBOLT_BAD)
 		return godbolt_putf(call, "Link: none. The request for a short link failed (%.*s).\n",
-		                    (int)call->why_len, call->why) ? godbolt_fail(call) : GODBOLT_GO;
+		                    (int)call->why.len, call->why.data) ? godbolt_fail(call)
+		                                                        : GODBOLT_GO;
 	json_tokener_reset(call->tok);
 	struct json_object *doc = json_tokener_parse_ex(call->tok, call->resp.data,
 	                                                (int)call->resp.len);
@@ -1851,7 +1814,7 @@ godbolt_header (struct godbolt *call)
 	godbolt_put(call, CSTR_VIEW(" \""));
 	godbolt_put(call, call->escaped);
 	godbolt_put(call, CSTR_VIEW("\": "));
-	godbolt_put(call, (struct cstr_view){ call->why, call->why_len });
+	godbolt_put(call, util_text_view(&call->why));
 	call->rec.headed = 1;
 	return godbolt_put(call, CSTR_VIEW(" ===\n"));
 }
@@ -2799,7 +2762,7 @@ godbolt_start (struct mcp_slot    *slot,
 	struct godbolt_config const *cfg = mcp_slot_config(slot);
 	struct loop *loop = mcp_slot_loop(slot);
 	void **own = mcp_slot_own(slot);
-	if (!cfg || !loop || !own || cfg->len > GODBOLT_URL_MAX ||
+	if (!cfg || !loop || !own || cfg->url.len >= sizeof cfg->url.data ||
 	    cfg->share >= GODBOLT_SHARES) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "The call has no valid configuration of the "
 		               "godbolt plugin, no loop or no own word.");
@@ -2864,10 +2827,7 @@ godbolt_config_url (struct godbolt_config *c,
 	size_t const host = strcspn(t.data + scheme, "/");
 	if (n == scheme || !host || memchr(t.data + scheme, '@', host) || strpbrk(t.data, "?#"))
 		return EINVAL;
-	memcpy(c->url, t.data, n);
-	c->url[n] = '\0';
-	c->len = (uint32_t)n;
-	return 0;
+	return util_text_store(&c->url, cstr_view_slice(t, 0, n));
 }
 
 /* Stores the option share @p v in the configuration @p c. Returns 0, or
@@ -2937,9 +2897,9 @@ godbolt_definition (void const        *service,
                     struct cstr_view   tail)
 {
 	struct godbolt_config const *cfg = service ? service : &godbolt_defaults;
-	if (cfg->len > GODBOLT_URL_MAX || cfg->share >= GODBOLT_SHARES)
+	if (cfg->url.len >= sizeof cfg->url.data || cfg->share >= GODBOLT_SHARES)
 		return nullptr;
-	struct cstr_view const url = { cfg->url, cfg->len };
+	struct cstr_view const url = util_text_view(&cfg->url);
 	struct cstr_view const link = godbolt_params[tool].args >> GODBOLT_ARG_SHARE & 1
 	                              ? godbolt_share_notes[cfg->share] : (struct cstr_view){};
 	char text[2048];
