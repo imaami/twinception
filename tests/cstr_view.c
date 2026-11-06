@@ -84,6 +84,20 @@ main (void)
 	rest = empty;
 	assert(!cstr_view_cut(&rest, '\0', &head) && !rest.data);
 
+	/* An SSE data line gives its data, after one space, without its CR. */
+	struct cstr_view line = CSTR_VIEW("data:  {}\r");
+	assert(cstr_view_equal(cstr_view_sse_data(&line), CSTR_VIEW(" {}")));
+	assert(cstr_view_equal(line, CSTR_VIEW("data:  {}")));
+	line = CSTR_VIEW("data:\r");
+	head = cstr_view_sse_data(&line);
+	assert(head.data && !head.len && line.len == 5);
+	line = CSTR_VIEW("\r");
+	assert(!cstr_view_sse_data(&line).data && !line.len);
+	line = CSTR_VIEW("event: data:x");
+	assert(!cstr_view_sse_data(&line).data && line.len == 13);
+	line = empty;
+	assert(!cstr_view_sse_data(&line).data && !line.len);
+
 	struct cstr_view const sse = CSTR_VIEW("text/event-stream");
 	assert(cstr_view_list_has(CSTR_VIEW("text/event-stream"), sse));
 	assert(cstr_view_list_has(CSTR_VIEW("application/json, Text/Event-Stream ;q=0.5"), sse));
@@ -136,5 +150,5 @@ main (void)
 	assert(cstr_view_join(names, 3, 1, sep, last, nullptr) == ENOMEM);
 	dstr_cleanup(&owned);
 	puts("cstr views: empty values, counted NULs, byte order, cases, bounded slices, trims, "
-	     "cuts, lists, lookups, stores, appends and joins: PASS");
+	     "cuts, SSE data lines, lists, lookups, stores, appends and joins: PASS");
 }

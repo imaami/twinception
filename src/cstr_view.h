@@ -174,6 +174,23 @@ cstr_view_cut (struct cstr_view *rest,
 	return true;
 }
 
+/**
+ * Drop the carriage return at the end of @p *line, a line of an event
+ * stream (SSE) without its line feed, if it has one. Returns the data of
+ * the line if it is a data line: the bytes after "data:" and after one
+ * space that follows it, if one does. Otherwise returns an empty view
+ * with data nullptr.
+ */
+static inline struct cstr_view
+cstr_view_sse_data (struct cstr_view *line)
+{
+	line->len -= line->len && line->data[line->len - 1] == '\r';
+	if (!cstr_view_starts(*line, CSTR_VIEW("data:")))
+		return (struct cstr_view){};
+	struct cstr_view const data = cstr_view_slice(*line, sizeof "data:" - 1, SIZE_MAX);
+	return cstr_view_slice(data, data.len && *data.data == ' ', SIZE_MAX);
+}
+
 /** Returns the index of the first of the @p n views at @p names that equals
  *  @p key, or @p n if none does.
  */

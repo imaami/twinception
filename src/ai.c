@@ -1513,18 +1513,11 @@ ai_tool (enum ai_api               api,
 static struct json_object *
 ai_error_event (struct cstr_view body)
 {
-	static char const field[] = "data:";
-	size_t n = body.len < 4096 ? body.len : 4096;
-	for (size_t at = 0, end; at < n; at = end + 1) {
-		char const *nl = memchr(body.data + at, '\n', n - at);
-		if (!nl)
-			break;
-		end = (size_t)(nl - body.data);
-		if (end - at < sizeof field - 1 || memcmp(body.data + at, field, sizeof field - 1))
-			continue;
-		size_t from = at + sizeof field - 1;
-		end -= end > from && body.data[end - 1] == '\r';
-		return jb_parse(body.data + from, end - from, JSON_TOKENER_STRICT, 8);
+	struct cstr_view rest = cstr_view_slice(body, 0, 4096);
+	for (struct cstr_view line; cstr_view_cut(&rest, '\n', &line);) {
+		struct cstr_view const data = cstr_view_sse_data(&line);
+		if (data.data)
+			return jb_parse(data.data, data.len, JSON_TOKENER_STRICT, 8);
 	}
 	return nullptr;
 }

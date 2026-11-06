@@ -2058,16 +2058,11 @@ static void
 home_job_line (struct job *job,
                size_t      end)
 {
-	static char const field[] = "data:";
 	unsigned char *wire = buf_peek(&job->wire).ptr;
-	unsigned char *line = wire + job->line;
-	size_t len = end - job->line;
-	len -= len && line[len - 1] == '\r';
-	size_t skip = sizeof field - 1;
-	skip += len > skip && line[skip] == ' ';
-	uint32_t at = job->line + (uint32_t)skip;
-	uint32_t n = len > skip && !memcmp(line, field, sizeof field - 1)
-	           ? (uint32_t)(len - skip) : 0;
+	struct cstr_view line = { (char const *)wire + job->line, end - job->line };
+	/* The data of a data line ends where the line ends. */
+	uint32_t n = (uint32_t)cstr_view_sse_data(&line).len;
+	uint32_t at = job->line + (uint32_t)(line.len - n);
 	job->line = job->scan;
 	if (!job->evlen) {
 		job->ev = at;
@@ -2079,7 +2074,7 @@ home_job_line (struct job *job,
 		return;
 	}
 	if (!n) {
-		job->flags |= len ? 0 : EVENT;
+		job->flags |= line.len ? 0 : EVENT;
 		return;
 	}
 	wire[job->ev + job->evlen++] = '\n';
