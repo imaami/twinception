@@ -100,32 +100,6 @@ clk_errno (struct timespec t)
 }
 
 /**
- * Returns the time according to clock @p id, or a zeroed-out
- * `struct timespec` on failure, and writes an error value to
- * @p err.
- *
- * If `clock_gettime()` returns an error condition but leaves
- * `errno` unset, or if it reports success but writes garbage
- * into the destination object, `-1` is written to @p err.
- *
- * Always modifies @p err to guarantee zero-valued timestamps
- * are distinguishable from errors.
- */
-static force_inline struct timespec
-clk_now_or_1970_err (clockid_t const  id,
-                     int             *err)
-{
-	struct timespec t = {0};
-
-	int e = !clock_gettime(id, &t)
-	        ? -!clk_timespec_ok(t)
-	        : (errno ? errno : -1);
-	*err = e;
-
-	return e ? (typeof(t)){0} : t;
-}
-
-/**
  * Get the time, or a zeroed-out `struct timespec` on error.
  */
 static force_inline struct timespec
@@ -143,25 +117,11 @@ clk_now_or_1970_ns (clockid_t const id)
 	return clk_ns(clk_now_or_1970(id));
 }
 
-/** Boot clock time now, or 0 on error. */
-static force_inline struct timespec
-clk_boottime (void)
-{
-	return clk_now_or_1970(CLOCK_BOOTTIME);
-}
-
 /** Coarse monotonic time now, or 0 on error. */
 static force_inline struct timespec
 clk_monotonic_coarse (void)
 {
 	return clk_now_or_1970(CLOCK_MONOTONIC_COARSE);
-}
-
-/** Monotonic time now, or 0 on error. */
-static force_inline struct timespec
-clk_monotonic (void)
-{
-	return clk_now_or_1970(CLOCK_MONOTONIC);
 }
 
 /** Monotonic time now in nanoseconds, or 0 on error. */
