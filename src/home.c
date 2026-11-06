@@ -83,6 +83,16 @@ enum : uint32_t {
 /* The breaker's states, as /metrics gives them. */
 enum { CLOSED, OPEN, HALF };
 
+/* The timers of struct home, by their index in home->timers. */
+enum {
+	TIMER_DEADLINE,  /* at the deadline of the first job of the timeline */
+	TIMER_QUIET,     /* when the answer silent longest has been silent too
+	                    long */
+	TIMER_BREAKER,   /* when the breaker half-opens */
+	TIMER_CANCEL,    /* at the deadline of the first native cancellation */
+	TIMERS
+};
+
 /* The bits of home->flags. */
 enum : uint16_t {
 	HOME_DRAINING = 1u << 0,  /* home cancels the jobs in flight and
@@ -173,10 +183,7 @@ struct home {
 	struct loop_step          preempt;     /* preempts the jobs preempting */
 	struct loop_step          props;       /* reads /props */
 	struct loop_step          cleanup;     /* ends overdue native cancellations */
-	struct loop_timer         deadline;    /* the timeline's first */
-	struct loop_timer         quiet;       /* the answer silent longest */
-	struct loop_timer         breaker;     /* when the breaker half-opens */
-	struct loop_timer         cancel_due;  /* the first cancellation's deadline */
+	struct loop_timer         timers[TIMERS];
 	struct list               ring[2];     /* by class */
 	struct list               ready[2];    /* by class, by the jobs' queue
 	                                          hooks */
@@ -559,7 +566,7 @@ home_cancel_drop (struct home              *home,
 	uint64_t due = list_is_empty(&home->cancellations) ? UINT64_MAX
 	             : container_of(home->cancellations.next, struct home_cancellation,
 	                            hook)->deadline;
-	(void)loop_timer_set(home->loop, &home->cancel_due, due);
+	(void)loop_timer_set(home->loop, &home->timers[TIMER_CANCEL], due);
 	home_maybe_exit(home);
 }
 
@@ -632,8 +639,8 @@ home_native_cancel (struct home *home,
 	}
 	list_append(&home->cancellations, &cancel->hook);
 	++home->cancelling;
-	if (home->cancel_due.due == UINT64_MAX)
-		(void)loop_timer_set(home->loop, &home->cancel_due, cancel->deadline);
+	if (home->timers[TIMER_CANCEL].due == UINT64_MAX)
+		(void)loop_timer_set(home->loop, &home->timers[TIMER_CANCEL], cancel->deadline);
 }
 
 /* Bound cancellation even while the bridge waits for a resolver or slot. */
@@ -659,7 +666,7 @@ static void
 home_cleanup_event (struct loop       *loop,
                     struct loop_timer *timer)
 {
-	loop_ready_bulk(loop, &container_of(timer, struct home, cancel_due)->cleanup);
+	loop_ready_bulk(loop, &container_of(timer, struct home, timers[TIMER_CANCEL])->cleanup);
 }
 
 /* End @p job as @p status, counted in @p count, leaving the jobs in flight
@@ -759,7 +766,7 @@ home_breaker_open (struct home *home,
 	home->until = loop->now + spell;
 	home_breaker_set(home, OPEN);
 	hist_add(&home->metrics->opens, 1);
-	(void)loop_timer_set(loop, &home->breaker, home->until);
+	(void)loop_timer_set(loop, &home->timers[TIMER_BREAKER], home->until);
 	LOG(LOG_WARN, "upstream unavailable: tool calls refused for %" PRIu64 " s",
 	    spell / NS);
 	loop_ready_bulk(loop, &home->shed);
@@ -769,7 +776,7 @@ static void
 home_breaker_event (struct loop       *loop,
                     struct loop_timer *timer)
 {
-	struct home *home = container_of(timer, struct home, breaker);
+	struct home *home = container_of(timer, struct home, timers[TIMER_BREAKER]);
 	home_breaker_set(home, HALF);
 	LOG(LOG_INFO, "upstream breaker half-open: a probe goes next");
 	loop_ready_bulk(loop, &home->start);
@@ -1083,8 +1090,9 @@ home_job_write (char const *data,
 	job->active = home->loop->now;
 	list_del(&job->idle);
 	list_append(&home->idle, &job->idle);
-	if (home->silence && home->quiet.due == UINT64_MAX)
-		(void)loop_timer_set(home->loop, &home->quiet, job->active + home->silence);
+	if (home->silence && home->timers[TIMER_QUIET].due == UINT64_MAX)
+		(void)loop_timer_set(home->loop, &home->timers[TIMER_QUIET],
+		                     job->active + home->silence);
 	if (!(job->flags & STREAM))
 		return home_receive(home, job, &job->result, data, len);
 	if (job->flags & DELTA_PENDING || buf_peek(&job->wire).len - job->scan >= LOOP_STEP_RECV) {
@@ -1308,7 +1316,7 @@ home_timeline (struct home *home,
 		before = p;
 	}
 	list_append(before, &job->due);
-	(void)loop_timer_set(home->loop, &home->deadline,
+	(void)loop_timer_set(home->loop, &home->timers[TIMER_DEADLINE],
 	                     home_due(container_of(home->timeline.next, struct job, due)));
 }
 
@@ -1425,7 +1433,7 @@ static void
 home_deadline_event (struct loop       *loop,
                      struct loop_timer *timer)
 {
-	loop_ready_bulk(loop, &container_of(timer, struct home, deadline)->overdue);
+	loop_ready_bulk(loop, &container_of(timer, struct home, timers[TIMER_DEADLINE])->overdue);
 }
 
 /* Cancel @p job's transfer, if it has one: one whose request had gone
@@ -1490,21 +1498,21 @@ home_overdue_step (struct loop      *loop,
 		struct job *job = container_of(home->timeline.next, struct job, due);
 		uint64_t const due = home_due(job);
 		if (due > loop->now) {
-			(void)loop_timer_set(loop, &home->deadline, due);
+			(void)loop_timer_set(loop, &home->timers[TIMER_DEADLINE], due);
 			return;
 		}
 		if (loop_spent(loop, step, LOOP_REQS))
 			return;
 		home_expire(home, job);
 	}
-	(void)loop_timer_set(loop, &home->deadline, UINT64_MAX);
+	(void)loop_timer_set(loop, &home->timers[TIMER_DEADLINE], UINT64_MAX);
 }
 
 static void
 home_quiet_event (struct loop       *loop,
                   struct loop_timer *timer)
 {
-	loop_ready_bulk(loop, &container_of(timer, struct home, quiet)->silent);
+	loop_ready_bulk(loop, &container_of(timer, struct home, timers[TIMER_QUIET])->silent);
 }
 
 /* End the answers that sent nothing for the chunk timeout, the one silent
@@ -1520,7 +1528,7 @@ home_silent_step (struct loop      *loop,
 		struct job *job = container_of(home->idle.next, struct job, idle);
 		uint64_t due = job->active + home->silence;
 		if (due > loop->now) {
-			(void)loop_timer_set(loop, &home->quiet, due);
+			(void)loop_timer_set(loop, &home->timers[TIMER_QUIET], due);
 			return;
 		}
 		if (loop_spent(loop, step, LOOP_REQS))
@@ -1529,7 +1537,7 @@ home_silent_step (struct loop      *loop,
 		hist_add(&home->metrics->stalls, 1);
 		home_cut(home, job, CURLE_OPERATION_TIMEDOUT);
 	}
-	(void)loop_timer_set(loop, &home->quiet, UINT64_MAX);
+	(void)loop_timer_set(loop, &home->timers[TIMER_QUIET], UINT64_MAX);
 }
 
 /* Let the answers held back on, oldest first, while the step's share of
@@ -2771,11 +2779,8 @@ static int
 home_arm (struct home         *home,
           struct http_metrics *metrics)
 {
-	struct loop_timer *const timers[] = {
-		&home->deadline, &home->quiet, &home->breaker, &home->cancel_due,
-	};
-	for (size_t i = 0; i < array_size(timers); ++i) {
-		int e = loop_timer_set(home->loop, timers[i], UINT64_MAX);
+	for (size_t i = 0; i < array_size(home->timers); ++i) {
+		int e = loop_timer_set(home->loop, &home->timers[i], UINT64_MAX);
 		if (e)
 			return e;
 	}
@@ -2806,10 +2811,8 @@ home_fini (struct home *home)
 	};
 	for (size_t i = 0; i < array_size(steps); ++i)
 		loop_unready(steps[i]);
-	loop_timer_stop(home->loop, &home->breaker);
-	loop_timer_stop(home->loop, &home->quiet);
-	loop_timer_stop(home->loop, &home->deadline);
-	loop_timer_stop(home->loop, &home->cancel_due);
+	for (size_t i = 0; i < array_size(home->timers); ++i)
+		loop_timer_stop(home->loop, &home->timers[i]);
 	http_destroy(&home->http);
 	jb_parser_fini(&home->parser, &home->pool, nullptr);
 	jb_reaper_fini(&home->reaper);
@@ -2851,10 +2854,12 @@ home_create (struct loop         *loop,
 		.preempt.fn = home_preempt_step,
 		.props.fn = home_props_step,
 		.cleanup.fn = home_cleanup_step,
-		.deadline.fn = home_deadline_event,
-		.quiet.fn = home_quiet_event,
-		.breaker.fn = home_breaker_event,
-		.cancel_due.fn = home_cleanup_event,
+		.timers = {
+			[TIMER_DEADLINE].fn = home_deadline_event,
+			[TIMER_QUIET].fn = home_quiet_event,
+			[TIMER_BREAKER].fn = home_breaker_event,
+			[TIMER_CANCEL].fn = home_cleanup_event,
+		},
 		.pool = {
 			.scalar = MAX_SCALAR,
 			.flags = JSON_TOKENER_VALIDATE_UTF8
