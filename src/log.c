@@ -18,6 +18,7 @@
 
 #include "clk.h"
 #include "compat.h"
+#include "hist.h"
 #include "log.h"
 #include "util.h"
 
@@ -99,7 +100,7 @@ log_site_allow (struct log_site *site,
 		atomic_store_explicit(&site->count, 0, memory_order_relaxed);
 	if (atomic_fetch_add_explicit(&site->count, 1, memory_order_relaxed) >= BURST) {
 		atomic_fetch_add_explicit(&site->missed, 1, memory_order_relaxed);
-		atomic_fetch_add_explicit(&log_metrics.suppressed, 1, memory_order_relaxed);
+		hist_count(&log_metrics.suppressed, 1);
 		return false;
 	}
 	*missed = atomic_exchange_explicit(&site->missed, 0, memory_order_relaxed);
@@ -121,7 +122,7 @@ log_emit (char const *line,
 	}
 	size_t head = atomic_load_explicit(&r->head, memory_order_relaxed);
 	if (RING - (head - atomic_load_explicit(&r->tail, memory_order_acquire)) < len) {
-		atomic_fetch_add_explicit(&log_metrics.dropped, 1, memory_order_relaxed);
+		hist_count(&log_metrics.dropped, 1);
 		return;
 	}
 	size_t at = head % RING;
@@ -134,7 +135,7 @@ log_emit (char const *line,
 	 * the logger's last check before it sleeps reads the new head, or
 	 * this thread reads lg.asleep as 1 and wakes the logger. */
 	atomic_store(&r->head, head + len);
-	atomic_fetch_add_explicit(&log_metrics.lines, 1, memory_order_relaxed);
+	hist_count(&log_metrics.lines, 1);
 	if (atomic_load(&lg.asleep) && atomic_exchange(&lg.asleep, 0))
 		(void)eventfd_write(lg.wake_fd, 1);
 }
@@ -211,8 +212,7 @@ log_thread (void *arg)
 		struct iovec iov[2 * RINGS_MAX + 1];
 		size_t k = 0;
 		char note[160];
-		uint64_t dropped = atomic_load_explicit(&log_metrics.dropped,
-		                                        memory_order_relaxed);
+		uint64_t dropped = hist_get(&log_metrics.dropped);
 		if (dropped != reported) {
 			size_t n = util_format(note, sizeof note, "log: %" PRIu64
 			                       " lines dropped so far\n", dropped);

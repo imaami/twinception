@@ -248,7 +248,7 @@ brainstem_relieve (struct brainstem *bs)
 bool
 brainstem_relieved (uint64_t bytes)
 {
-	atomic_fetch_add_explicit(&relieved, bytes, memory_order_relaxed);
+	hist_count(&relieved, bytes);
 	return atomic_fetch_sub(&relieving, 1) == 2;
 }
 
