@@ -39,6 +39,28 @@ cli_render_token (struct cstr_view text, int *width)
 	return *width < 0 ? 0 : length;
 }
 
+/* Set *combining to whether the first character of tail, after its SGR
+ * sequences, is zero cells wide. Returns 0 or EILSEQ.
+ */
+static int
+cli_render_combining (struct cstr_view  tail,
+                      bool             *combining)
+{
+	*combining = false;
+	while (tail.len) {
+		int width;
+		size_t length = cli_render_token(tail, &width);
+		if (!length)
+			return EILSEQ;
+		if (width >= 0) {
+			*combining = !width;
+			return 0;
+		}
+		tail = cstr_view_slice(tail, length, SIZE_MAX);
+	}
+	return 0;
+}
+
 int
 cli_render_row (struct dstr *cache, struct dstr *output,
                 size_t begin, size_t row, size_t column)
@@ -74,20 +96,15 @@ cli_render_row (struct dstr *cache, struct dstr *output,
 	}
 	/* A changed combining mark also changes its preceding base cell. */
 	struct cstr_view tails[] = {cstr_view_slice(text, start, SIZE_MAX), cstr_view_slice(old, start, SIZE_MAX)};
-	for (size_t i = 0; i < sizeof tails / sizeof *tails; ++i) {
-		for (struct cstr_view tail = tails[i]; tail.len;) {
-			int width;
-			size_t length = cli_render_token(tail, &width);
-			if (!length)
-				return EILSEQ;
-			if (!width) {
-				start = base;
-				cells = base_cells;
-				style = base_style;
-			}
-			if (width >= 0)
-				break;
-			tail = cstr_view_slice(tail, length, SIZE_MAX);
+	for (size_t i = 0; i < array_size(tails); ++i) {
+		bool combining;
+		int e = cli_render_combining(tails[i], &combining);
+		if (e)
+			return e;
+		if (combining) {
+			start = base;
+			cells = base_cells;
+			style = base_style;
 		}
 	}
 	size_t end = text.len, old_end = old.len;
