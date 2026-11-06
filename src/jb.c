@@ -463,9 +463,11 @@ jb_escape (char       *dst,
            char const *src,
            size_t      len)
 {
+	if (!dst || !src)
+		return 0;
 	char *out = dst;
-	for (char const *end = src + len; src < end; ++src) {
-		unsigned char c = (unsigned char)*src;
+	for (size_t i = 0; i < len; ++i) {
+		unsigned char c = (unsigned char)src[i];
 		if (!jb_escaped(c)) {
 			*out++ = (char)c;
 			continue;

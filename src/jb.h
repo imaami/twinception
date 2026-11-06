@@ -14,6 +14,7 @@
 #include <json-c/json.h>
 
 #include "cstr_view.h"
+#include "export.h"
 
 /** Serialization flags for everything sent over the wire. */
 #define JB_WIRE (JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE)
@@ -369,8 +370,9 @@ jb_mend (char   *p,
 /**
  * Write @p len bytes of UTF-8 text to @p dst, which has room for 6 * @p len,
  * as the inside of a JSON string, escaped as json-c would with JB_WIRE.
- * Returns the bytes written.
+ * Returns the bytes written, 0 if @p dst or @p src is nullptr.
  */
+EXPORT
 extern size_t
 jb_escape (char       *dst,
            char const *src,
@@ -382,6 +384,7 @@ jb_escape (char       *dst,
  * jb_escape() writes them, take at most @p room bytes; 0 if @p src is
  * nullptr.
  */
+EXPORT
 extern size_t
 jb_escape_fit (char const *src,
                size_t      len,

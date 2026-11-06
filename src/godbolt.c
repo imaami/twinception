@@ -761,36 +761,6 @@ godbolt_cat_path (char             *d,
 	return d;
 }
 
-/* Writes @p s as the inside of a JSON string to @p d. The caller provides
- * room for 6 * s.len bytes at @p d. Each quote, backslash and control byte
- * is written as an escape sequence. Returns the end of the text in @p d.
- */
-static char *
-godbolt_escape (char             *d,
-                struct cstr_view  s)
-{
-	static char const hex[] = "0123456789abcdef";
-	static char const letter[0x20] = {
-		['\b'] = 'b', ['\t'] = 't', ['\n'] = 'n', ['\f'] = 'f', ['\r'] = 'r'
-	};
-	for (size_t i = 0; i < s.len; ++i) {
-		unsigned char const c = (unsigned char)s.data[i];
-		if (c >= 0x20 && c != '"' && c != '\\') {
-			*d++ = (char)c;
-			continue;
-		}
-		*d++ = '\\';
-		if (c >= 0x20 || letter[c]) {
-			*d++ = c >= 0x20 ? (char)c : letter[c];
-			continue;
-		}
-		d = godbolt_cat(d, CSTR_VIEW("u00"));
-		*d++ = hex[c >> 4];
-		*d++ = hex[c & 15];
-	}
-	return d;
-}
-
 /* Writes the 11 filters of a compilation as a JSON object to @p d. The
  * filters that @p bits has are true. Returns the end of the text in
  * @p d.
@@ -1681,7 +1651,7 @@ godbolt_escape_source (struct godbolt *call)
 	}
 	struct cstr_view const part = cstr_view_slice(call->args.source, call->off,
 	                                              loop_room(call->loop, LOOP_ESCAPE));
-	call->head = (size_t)(godbolt_escape(call->body + call->head, part) - call->body);
+	call->head += jb_escape(call->body + call->head, part.data, part.len);
 	call->off += part.len;
 	loop_work(call->loop, LOOP_ESCAPE, part.len);
 	if (call->off < call->args.source.len)
@@ -1725,7 +1695,7 @@ godbolt_cat_arguments (struct godbolt              *call,
 	d = godbolt_cat(d, d > flags && r->flags.len ? CSTR_VIEW(" ") : (struct cstr_view){});
 	d = godbolt_cat(d, r->flags);
 	d = godbolt_cat(d, d > flags && a.len ? CSTR_VIEW(" ") : (struct cstr_view){});
-	char *const end = godbolt_escape(d, a);
+	char *const end = d + jb_escape(d, a.data, a.len);
 	call->escaped = (struct cstr_view){ d, (size_t)(end - d) };
 	loop_work(call->loop, LOOP_ESCAPE, a.len);
 	return end;

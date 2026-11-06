@@ -111,6 +111,17 @@ main (void)
 	CHECK(jb_len(text) == 0 && jb_len(nullptr) == 0);
 	json_object_put(text);
 
+	/* jb_escape() writes the inside of the string that json-c writes. */
+	static char const raw[] = "a\"\\\n\x01\x1f/\x7f\xc3\xa4";
+	char escaped[6 * sizeof raw];
+	struct json_object *str = json_object_new_string_len(raw, sizeof raw - 1);
+	size_t wire = 0;
+	char const *json = json_object_to_json_string_length(str, JB_WIRE, &wire);
+	size_t n = jb_escape(escaped, raw, sizeof raw - 1);
+	CHECK(json && n == wire - 2 && !memcmp(escaped, json + 1, n));
+	json_object_put(str);
+	CHECK(!jb_escape(escaped, nullptr, 1) && !jb_escape(nullptr, raw, 1));
+
 	/* One JSON value, whole or a slice at a time. */
 	CHECK(parse("{\"a\": [1, 2, \"three\"]}", SIZE_MAX, &steps) == 0 && steps == 1);
 	CHECK(parse("{\"a\": [1, 2, \"three\"]}", 4, &steps) == 0 && steps > 1);
