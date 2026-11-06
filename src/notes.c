@@ -57,11 +57,10 @@ enum notes_revision_phase : uint8_t {
 
 /* The options of git before each command: GIT_OPTIONS_FIXED, which stop
  * the configuration of the repository from making git run other programs,
- * literal paths, and no signature checks.
+ * literal paths, and no worktree.
  */
 static char const *const fixed[] = {
-	GIT_OPTIONS_FIXED, "--literal-pathspecs",
-	"-c", "core.bare=true", "-c", "log.showSignature=false",
+	GIT_OPTIONS_FIXED, "--literal-pathspecs", "-c", "core.bare=true",
 };
 
 /* The place in a row of cmds[] where notes_argv() puts the next of the

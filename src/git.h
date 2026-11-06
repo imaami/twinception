@@ -63,9 +63,10 @@ struct plugin;
 
 /** The options before the command of every git process that askai starts.
  *  They turn off the pager, replacement objects, every remote protocol,
- *  automatic gc and maintenance. They also keep git from running a
- *  program that a repository's configuration names for the fsmonitor, for
- *  gpg or for hooks. The format of a log can make git run gpg.
+ *  automatic gc, maintenance and the signature checks of a log. They also
+ *  keep git from running a program that a repository's configuration
+ *  names for the fsmonitor, for gpg or for hooks. The format of a log can
+ *  make git run gpg.
  */
 #define GIT_OPTIONS_FIXED \
         "--no-pager", "--no-replace-objects", \
@@ -76,7 +77,8 @@ struct plugin;
         "-c", "gpg.x509.program=false", \
         "-c", "protocol.allow=never", \
         "-c", "gc.auto=0", \
-        "-c", "maintenance.auto=false"
+        "-c", "maintenance.auto=false", \
+        "-c", "log.showSignature=false"
 
 /** The time from SIGTERM to SIGKILL at the deadline of a git process of
  *  the git tool, of the journal, or of the notes that writes, in

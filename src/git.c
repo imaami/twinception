@@ -144,16 +144,15 @@ struct git_call {
 	struct oid             roots[ROOTS];
 };
 
-/* What git runs with whatever the call: GIT_OPTIONS_FIXED, no signature
- * checks, no implicit worktree operations, no submodule's diff (which a
- * superproject's show or log -p runs as a git of its own, without these
- * options), and path names as they are, not quoted, unless they have a
- * '"', a '\' or a control character.
+/* What git runs with whatever the call: GIT_OPTIONS_FIXED, no implicit
+ * worktree operations, no submodule's diff (which a superproject's show
+ * or log -p runs as a git of its own, without these options), and path
+ * names as they are, not quoted, unless they have a '"', a '\' or a
+ * control character.
  */
 static char const *const fixed[] = {
 	GIT_OPTIONS_FIXED,
 	"-c", "core.bare=true",
-	"-c", "log.showSignature=false",
 	"-c", "diff.submodule=short",
 	"-c", "diff.autoRefreshIndex=false",
 	"-c", "core.quotePath=false",
