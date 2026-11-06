@@ -690,21 +690,19 @@ cli_ask (struct cli          *cli,
 	cli_json_auto messages = json_object_new_array();
 	if (!messages)
 		return ENOMEM;
-	char const *keys[] = {"prompt", "answer"};
-	char const *roles[] = {"user", "assistant"};
-	for (size_t i = 0; i < turns; ++i) {
-		struct json_object *turn = jb_at(cli->history, i);
-		for (size_t j = 0; j < 2; ++j) {
-			struct json_object *value = jb_get(turn, keys[j]);
-			struct cstr_view text = jb_view(value);
-			if (text.len > CLI_LIMIT - bytes)
-				return cli_error_set(error, EFBIG, "Conversation exceeds the client limit; use /clear");
-			bytes += text.len;
-			int e = jb_push(messages, jb_object("role", json_object_new_string(roles[j]),
-			                                    "content", json_object_get(value), nullptr));
-			if (e)
-				return e;
-		}
+	/* Each turn is a message of the user and one of the assistant. */
+	static char const *const keys[] = {"prompt", "answer"};
+	static char const *const roles[] = {"user", "assistant"};
+	for (size_t k = 0; k < 2 * turns; ++k) {
+		struct json_object *value = jb_get(jb_at(cli->history, k / 2), keys[k % 2]);
+		struct cstr_view text = jb_view(value);
+		if (text.len > CLI_LIMIT - bytes)
+			return cli_error_set(error, EFBIG, "Conversation exceeds the client limit; use /clear");
+		bytes += text.len;
+		int e = jb_push(messages, jb_object("role", json_object_new_string(roles[k % 2]),
+		                                    "content", json_object_get(value), nullptr));
+		if (e)
+			return e;
 	}
 	cli_json_auto args = jb_object("prompt", cli_client_string(prompt),
 	                               "background", json_object_new_boolean(false),
