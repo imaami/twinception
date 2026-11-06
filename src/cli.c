@@ -750,31 +750,21 @@ cli_tools (struct cli       *cli,
 		return e ? e : cli_ui_message(cli->console, wire);
 	}
 
-	int ret = 0;
-	struct dstr line = DSTR_INIT;
-
+	dstr_auto line = dstr(nullptr);
 	for (size_t i = 0, count = autocomplete_tool_count(cli->client.catalog); i < count; ++i) {
 		struct autocomplete_tool const *entry = autocomplete_tool_at(cli->client.catalog, i);
 		struct cstr_view summary = entry->description;
 		summary.len = jb_utf8(summary.data, summary.len < 160 ? summary.len : 160);
 		(void)cstr_view_cut(&summary, '\n', &summary);
-
 		dstr_clear(&line);
 		if (cstr_view_cat(entry->name, &line) ||
-		    (summary.len && (!dstr_cat(&line, "  ") || cstr_view_cat(summary, &line)))) {
-			ret = ENOMEM;
-			break;
-		}
-
+		    (summary.len && (!dstr_cat(&line, "  ") || cstr_view_cat(summary, &line))))
+			return ENOMEM;
 		int e = cli_ui_message(cli->console, cstr_view_dstr(&line));
-		if (e) {
-			ret = e;
-			break;
-		}
+		if (e)
+			return e;
 	}
-
-	dstr_cleanup(&line);
-	return ret;
+	return 0;
 }
 
 static void
