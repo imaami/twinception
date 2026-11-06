@@ -1163,14 +1163,15 @@ struct review_args {
 };
 
 /**
- * Parses the text @p t of the form "path:first" or "path:first-last" into
- * @p *loc. The path is the text before the last colon, and the line
- * numbers must satisfy 1 <= first <= last. The caller checks the path.
- * Returns 0 or EINVAL.
+ * Parses the location argument @p t, of the form [commit:]path:first[-last],
+ * into a->location and a->prefix. The path is the text before the last
+ * colon, and the line numbers must satisfy 1 <= first <= last. A commit is
+ * REVIEW_OID_MIN to OID_SHA256 hexadecimal digits, as git grep prints it.
+ * A leading "HEAD:" means no commit. Returns 0 or EINVAL.
  */
 static int
-review_location_parse (struct review_location_view *loc,
-                       struct cstr_view             t)
+review_args_location (struct review_args *a,
+                      struct cstr_view    t)
 {
 	char const *colon = memrchr(t.data, ':', t.len);
 	if (!colon)
@@ -1184,25 +1185,10 @@ review_location_parse (struct review_location_view *loc,
 		q += 1 + util_digits(q + 1, (size_t)(end - q - 1), UINT32_MAX, &last);
 	if (!first || last < first || q != end)
 		return EINVAL;
+	struct review_location_view *loc = &a->location;
 	*loc = (struct review_location_view){
 		{ t.data, (size_t)(colon - t.data) }, (uint32_t)first, (uint32_t)last,
 	};
-	return 0;
-}
-
-/**
- * Parses the location argument @p t, of the form [commit:]path:first[-last],
- * into a->location and a->prefix. A commit is REVIEW_OID_MIN to
- * OID_SHA256 hexadecimal digits, as git grep prints it. A leading
- * "HEAD:" means no commit. Returns 0 or EINVAL.
- */
-static int
-review_args_location (struct review_args *a,
-                      struct cstr_view    t)
-{
-	struct review_location_view *loc = &a->location;
-	if (review_location_parse(loc, t))
-		return EINVAL;
 	struct cstr_view const path = loc->path;
 	size_t hex = 0;
 	while (hex < path.len && hex <= OID_SHA256 && util_is_hex(path.data + hex, 1))
@@ -1866,20 +1852,24 @@ review_files_json (struct review_files const *list)
 	return files;
 }
 
-/** Returns the location @p loc as a JSON string "path:first-last", or ""
- *  for a location without a path, or nullptr if out of memory.
+/**
+ * Sets the members first and last of @p obj to the lines of the location
+ * @p loc, and the member path to its path unless the path is empty.
+ * Returns @p obj, or nullptr if out of memory, and frees @p obj then.
  */
 static struct json_object *
-review_location_json (struct review_location const *loc)
+review_location_json (struct json_object           *obj,
+                      struct review_location const *loc)
 {
 	struct cstr_view const path = cstr_view_dstr(&loc->path);
-	dstr_auto text = DSTR_INIT;
-	if (path.len && !review_put_location(&text, path, loc->first, loc->last))
-		return nullptr;
-	return jb_string(cstr_view_dstr(&text));
+	obj = jb_set_or_free(obj, "first", json_object_new_uint64(loc->first));
+	obj = jb_set_or_free(obj, "last", json_object_new_uint64(loc->last));
+	return path.len ? jb_set_or_free(obj, "path", jb_string(path)) : obj;
 }
 
-/** Returns the change @p c as JSON, or nullptr if out of memory. */
+/** Returns the change @p c as JSON, or nullptr if out of memory. The old
+ *  location of a change that moved the finding is the object location.
+ */
 static struct json_object *
 review_change_json (struct review_change const *c)
 {
@@ -1892,7 +1882,8 @@ review_change_json (struct review_change const *c)
 	if (claim.len)
 		obj = jb_set_or_free(obj, "claim", jb_string(claim));
 	if (c->moved)
-		obj = jb_set_or_free(obj, "location", review_location_json(&c->old_location));
+		obj = jb_set_or_free(obj, "location", review_location_json(json_object_new_object(),
+		                                                           &c->old_location));
 	return obj;
 }
 
@@ -1900,16 +1891,12 @@ review_change_json (struct review_change const *c)
 static struct json_object *
 review_finding_json (struct review_finding const *f)
 {
-	struct cstr_view const path = cstr_view_dstr(&f->location.path);
 	struct json_object *history = json_object_new_array();
 	for (size_t i = 0; history && i < f->n; ++i)
 		history = jb_push_or_free(history, review_change_json(&f->changes[i]));
-	struct json_object *obj = jb_object("claim", jb_string(cstr_view_dstr(&f->claim)),
-	                                    "first", json_object_new_uint64(f->location.first),
-	                                    "last", json_object_new_uint64(f->location.last),
-	                                    "history", history,
-	                                    nullptr);
-	return path.len ? jb_set_or_free(obj, "path", jb_string(path)) : obj;
+	return review_location_json(jb_object("claim", jb_string(cstr_view_dstr(&f->claim)),
+	                                      "history", history,
+	                                      nullptr), &f->location);
 }
 
 struct json_object *
@@ -2059,6 +2046,28 @@ review_text_json (struct dstr      *t,
 }
 
 /**
+ * Copies the location in the members path, first and last of the saved
+ * object @p obj into the empty location @p loc. The lines of a location
+ * without a path are 0. Returns 0, EINVAL or ENOMEM.
+ */
+static int
+review_location_init_json (struct review_location   *loc,
+                           struct json_object const *obj)
+{
+	struct json_object *path = jb_get(obj, "path");
+	struct cstr_view const where = jb_view(path);
+	uint64_t first;
+	uint64_t last;
+	if (jb_uint_checked(jb_get(obj, "first"), UINT32_MAX, &first) ||
+	    jb_uint_checked(jb_get(obj, "last"), UINT32_MAX, &last) ||
+	    !(path ? review_name_valid(where) && first && first <= last : !first && !last))
+		return EINVAL;
+	loc->first = (uint32_t)first;
+	loc->last = (uint32_t)last;
+	return cstr_view_store(where, &loc->path);
+}
+
+/**
  * Initializes the change @p c from the saved change @p obj. A change to a
  * state that requires logged lines must contain evidence and a commit, and
  * it is valid only in a finding with a location (@p located). Returns 0,
@@ -2075,29 +2084,22 @@ review_change_init_json (struct review_change     *c,
 	struct cstr_view const commit = jb_view(jb_get(obj, "commit"));
 	struct cstr_view const evidence = jb_view(jb_get(obj, "evidence"));
 	struct json_object *claim = jb_get(obj, "claim");
-	/* The old location is "path:first-last", or "" for no location. */
 	struct json_object *location = jb_get(obj, "location");
-	struct cstr_view const where = jb_view(location);
-	struct review_location_view loc = {};
 	size_t const state = cstr_view_index(review_state_names, REVIEW_STATES,
 	                                     jb_view(jb_get(obj, "state")));
 	uint64_t turn;
 	if (jb_uint_checked(jb_get(obj, "turn"), UINT32_MAX, &turn) || state == REVIEW_STATES ||
 	    !commit.data || (commit.len && oid_init(&c->commit, commit)) ||
-	    (location && !where.data) ||
-	    (where.len && (review_location_parse(&loc, where) || !review_name_valid(loc.path))) ||
 	    (review_state_logged(state) && (!located || !evidence.len || !commit.len)))
 		return EINVAL;
 	c->turn = (uint32_t)turn;
 	c->state = (enum review_state)state;
 	c->moved = location;
-	c->old_location.first = loc.first;
-	c->old_location.last = loc.last;
 	int e = review_text_json(&c->evidence, evidence, true);
 	if (!e && claim)
 		e = review_text_json(&c->old_claim, jb_view(claim), false);
-	if (!e)
-		e = cstr_view_store(loc.path, &c->old_location.path);
+	if (!e && location)
+		e = review_location_init_json(&c->old_location, location);
 	if (e)
 		review_change_fini(c);
 	return e;
@@ -2105,37 +2107,27 @@ review_change_init_json (struct review_change     *c,
 
 /**
  * Parses the saved finding @p obj, appends it to the findings of @p r, and
- * adds its charge to r->size. The first and last line of a finding without
- * a location are 0. Returns 0, EINVAL or ENOMEM.
+ * adds its charge to r->size. Returns 0, EINVAL or ENOMEM.
  */
 static int
 review_findings_add_json (struct review            *r,
                           struct json_object const *obj)
 {
-	struct json_object *path = jb_get(obj, "path");
-	struct cstr_view const where = jb_view(path);
 	struct json_object const *history = jb_get(obj, "history");
 	size_t const n = jb_len(history);
-	uint64_t first;
-	uint64_t last;
-	if (jb_uint_checked(jb_get(obj, "first"), UINT32_MAX, &first) ||
-	    jb_uint_checked(jb_get(obj, "last"), UINT32_MAX, &last) || !n ||
-	    n > (TOOL_TEXT_MAX - r->size) / REVIEW_ITEM ||
-	    !(path ? review_name_valid(where) && first && first <= last : !first && !last))
+	if (!n || n > (TOOL_TEXT_MAX - r->size) / REVIEW_ITEM)
 		return EINVAL;
 	if (util_grow(r->findings, r->cap_findings, r->n_findings + 1))
 		return ENOMEM;
-	struct review_finding f = {
-		.claim    = DSTR_INIT,
-		.location = review_location((uint32_t)first, (uint32_t)last),
-	};
+	struct review_finding f = { .claim = DSTR_INIT, .location = review_location(0, 0) };
 	if (util_grow(f.changes, f.cap, n))
 		return ENOMEM;
-	int e = review_text_json(&f.claim, jb_view(jb_get(obj, "claim")), false);
+	int e = review_location_init_json(&f.location, obj);
 	if (!e)
-		e = cstr_view_store(where, &f.location.path);
+		e = review_text_json(&f.claim, jb_view(jb_get(obj, "claim")), false);
+	bool const located = dstr_len(&f.location.path);
 	for (; !e && f.n < n; ++f.n)
-		e = review_change_init_json(&f.changes[f.n], jb_at(history, f.n), path);
+		e = review_change_init_json(&f.changes[f.n], jb_at(history, f.n), located);
 	if (e) {
 		review_finding_fini(&f);
 		return e;

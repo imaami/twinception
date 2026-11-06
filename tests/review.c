@@ -1359,12 +1359,13 @@ test_json (void)
 	           "\"commit\":\"" B "\",\"path\":\"b.c\",\"total\":0,\"lines\":[2,2,2]}],"
 	           "\"pending\":[{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":\"src\\/a.c\","
 	           "\"total\":300,\"lines\":[40,41,4]}],\"full\":0,\"findings\":[{\"claim\":"
-	           "\"C3\",\"first\":2,\"last\":2,\"history\":"
+	           "\"C3\",\"history\":"
 	           "[{\"turn\":2,\"state\":\"verified\",\"commit\":\"" A "\",\"evidence\":\"E1\"},"
 	           "{\"turn\":3,\"state\":\"retracted\",\"commit\":\"" B "\",\"evidence\":\"R\","
-	           "\"claim\":\"C1\",\"location\":\"src\\/a.c:3-4\"}],\"path\":\"b.c\"},"
-	           "{\"claim\":\"C2\",\"first\":0,\"last\":0,\"history\":[{\"turn\":2,\"state\":"
-	           "\"candidate\",\"commit\":\"\",\"evidence\":\"\"}]}]}");
+	           "\"claim\":\"C1\",\"location\":{\"first\":3,\"last\":4,\"path\":\"src\\/a.c\"}}],"
+	           "\"first\":2,\"last\":2,\"path\":\"b.c\"},"
+	           "{\"claim\":\"C2\",\"history\":[{\"turn\":2,\"state\":"
+	           "\"candidate\",\"commit\":\"\",\"evidence\":\"\"}],\"first\":0,\"last\":0}]}");
 	struct review *back = fresh();
 	CHECK(!review_restore(back, obj));
 	struct dstr a = DSTR_INIT;
@@ -1384,6 +1385,21 @@ test_json (void)
 	CHECK(!review_pending_log(back));
 	lines_of(back, "lines 1-12, 20-29, 40-41: 24 of 300 lines\n"
 	               "other " B "\n  b.c  line 2: 1 of an unknown number of lines", __LINE__);
+	/* The old location of a finding without one is saved without a path
+	 * and with the lines 0 to 0, and it restores. */
+	struct json_object *moved = review_json(back, &e);
+	CHECK(moved && !e && strstr(json_object_to_json_string_ext(moved, JSON_C_TO_STRING_PLAIN),
+	                            "\"location\":{\"first\":0,\"last\":0}}"));
+	struct review *other = fresh();
+	CHECK(!review_restore(other, moved));
+	struct dstr shown = DSTR_INIT;
+	struct dstr restored = DSTR_INIT;
+	CHECK(!review_render(back, &shown, SIZE_MAX) && !review_render(other, &restored, SIZE_MAX));
+	SAME(got(&restored), got(&shown));
+	dstr_cleanup(&shown);
+	dstr_cleanup(&restored);
+	review_destroy(&other);
+	json_object_put(moved);
 
 	/* Each defect makes the restore fail and leaves the record as it was. */
 	struct {
@@ -1433,12 +1449,16 @@ test_json (void)
 		{ "\"history\":[{\"turn\":2,\"state\":\"candidate\",\"commit\":\"\",\"evidence\":\"\"}]",
 		  "\"history\":[]" },
 		{ "\"reads\":[", "\"reads\":0,\"r\":[" },
-		/* An old location that is not path:first-last. */
-		{ "\"location\":\"src\\/a.c:3-4\"", "\"location\":\"src\\/a.c:x\"" },
-		{ "\"location\":\"src\\/a.c:3-4\"", "\"location\":\"src\\/a.c\"" },
-		{ "\"location\":\"src\\/a.c:3-4\"", "\"location\":\":3-4\"" },
-		{ "\"location\":\"src\\/a.c:3-4\"", "\"location\":\"src\\/a.c:4-3\"" },
-		{ "\"location\":\"src\\/a.c:3-4\"", "\"location\":5" },
+		/* An old location in the old form of a string, and old locations
+		 * whose lines do not fit their path. */
+		{ "{\"first\":3,\"last\":4,\"path\":\"src\\/a.c\"}", "\"src\\/a.c:3-4\"" },
+		{ "{\"first\":3,\"last\":4,\"path\":\"src\\/a.c\"}", "\"\"" },
+		{ "{\"first\":3,\"last\":4,\"path\":\"src\\/a.c\"}", "5" },
+		{ "\"first\":3,\"last\":4", "\"first\":0,\"last\":4" },
+		{ "\"first\":3,\"last\":4", "\"first\":4,\"last\":3" },
+		{ "\"first\":3,\"last\":4", "\"last\":4" },
+		{ "\"last\":4,\"path\":\"src\\/a.c\"", "\"last\":4,\"path\":\"\"" },
+		{ "\"last\":4,\"path\":\"src\\/a.c\"", "\"last\":4" },
 	};
 	struct dstr before = DSTR_INIT;
 	CHECK(!review_render(back, &before, SIZE_MAX));
