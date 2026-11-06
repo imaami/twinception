@@ -1731,13 +1731,15 @@ home_put_call (void                 *user,
 	/* This loop counts the calls in n and the bytes of all calls in bytes.
 	 * It sets k to the number of the call with the index of the piece, c
 	 * to the header of the last call, and last to the parts of the last
-	 * call. */
+	 * call. most is the number of buffers, and k stays most if no stored
+	 * call is at the index of the piece. */
 	struct job_call c = {};
 	struct ai_call last = {};
+	uint32_t const most = array_size(job->calls);
 	uint32_t n = 0;
-	uint32_t k = JOB_CALLS;
+	uint32_t k = most;
 	size_t bytes = 0;
-	for (; n < JOB_CALLS; ++n) {
+	for (; n < most; ++n) {
 		struct span s = buf_peek(&job->calls[n]);
 		if (!s.len)
 			break;
@@ -1754,7 +1756,7 @@ home_put_call (void                 *user,
 	 * call and the id of the piece is empty or equal to the id of the last
 	 * call. Then its id is not stored again. Otherwise the piece begins
 	 * call n. The index of a stored call is never AI_CALL_NEXT, so k is
-	 * still JOB_CALLS for such a piece. */
+	 * still most for such a piece. */
 	if (index == AI_CALL_NEXT) {
 		index = n;
 		if (n && (!id || cstr_view_equal(last.id, call->id))) {
@@ -1774,7 +1776,7 @@ home_put_call (void                 *user,
 			name = 0;
 		if (cstr_view_equal(stored.extra, call->extra))
 			extra = 0;
-	} else if (n == JOB_CALLS) {
+	} else if (n == most) {
 		return EPROTO;
 	} else {
 		c = (struct job_call){
@@ -2871,7 +2873,7 @@ home_create (struct loop         *loop,
 		.context = ep->context > 0 ? (uint32_t)ep->context : 0,
 		.flags = cfg->flags & CFG_TEST_FIFO ? HOME_FIFO : 0
 	};
-	for (size_t c = 0; c < 2; ++c) {
+	for (size_t c = 0; c < array_size(home->ring); ++c) {
 		list_init(&home->ring[c]);
 		list_init(&home->ready[c]);
 	}
