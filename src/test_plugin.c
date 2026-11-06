@@ -37,7 +37,6 @@
  */
 #include <errno.h>
 #include <inttypes.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -59,11 +58,10 @@ struct test_plugin_config {
 
 /* The plugin's instance: what test_state stores for one user on one loop. */
 struct test_plugin_instance {
-	uint64_t principal;
-	uint64_t calls;
-	size_t   len;       /* the length of last in bytes */
-	char     last[64];  /* the first bytes of the "text" argument that a
-	                       call stored last, or "dropped" */
+	uint64_t      principal;
+	uint64_t      calls;
+	UTIL_TEXT(60) last;  /* the first bytes of the "text" argument that a
+	                        call stored last, or "dropped" */
 };
 
 /* The memory of a test_state call that waits. The pointer that
@@ -72,8 +70,9 @@ struct test_plugin_instance {
 struct test_plugin_wait {
 	struct loop_timer  timer;
 	struct mcp_slot   *slot;
-	bool               fail;  /* the timer ends the call with
-	                             mcp_slot_fail() */
+	uint64_t           fail;  /* bool: the timer ends the call with
+	                             mcp_slot_fail(); widened over the
+	                             padding */
 };
 
 /* The plugin's instance_init(). It stores the user of the instance and
@@ -162,7 +161,7 @@ test_plugin_state_tell (struct mcp_slot *slot)
 	}
 	mcp_slot_tellf(slot, 0, "principal=%016" PRIx64 " instance=%p calls=%" PRIu64
 	               " last=%.*s", inst->principal, (void const *)inst, inst->calls,
-	               (int)inst->len, inst->last);
+	               (int)inst->last.len, inst->last.data);
 }
 
 /* The timer function of a call that waits. It runs when the wait is over,
@@ -212,19 +211,14 @@ test_plugin_state_start (struct mcp_slot    *slot,
 	}
 	struct json_object *const wait = jb_get(args, "wait_ms");
 	uint64_t const ms = jb_uint(wait, 0);
-	struct cstr_view const text = jb_view(jb_get(args, "text"));
-	char now[sizeof inst->last];
-	size_t const len = text.len < sizeof now ? text.len : sizeof now;
-	if (len)
-		memcpy(now, text.data, len);
+	typeof(inst->last) now;
+	(void)util_text_store(&now, jb_view(jb_get(args, "text")));
 	if (!wait) {
 		test_plugin_state_tell(slot);
-		memcpy(inst->last, now, len);
-		inst->len = len;
+		inst->last = now;
 		return;
 	}
-	memcpy(inst->last, now, len);
-	inst->len = len;
+	inst->last = now;
 	struct loop *loop = mcp_slot_loop(slot);
 	void **own = mcp_slot_own(slot);
 	struct test_plugin_wait *w = loop && own ? malloc(sizeof *w) : nullptr;
@@ -270,10 +264,8 @@ test_plugin_state_drop (struct mcp_slot *slot)
 	*own = nullptr;
 	struct cstr_view const dropped = CSTR_VIEW("dropped");
 	struct test_plugin_instance *inst = mcp_slot_instance(slot);
-	if (inst) {
-		inst->len = dropped.len;
-		memcpy(inst->last, dropped.data, dropped.len);
-	}
+	if (inst)
+		(void)util_text_store(&inst->last, dropped);
 	mcp_slot_tell(slot, dropped, 0);
 }
 
@@ -501,7 +493,7 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 {
 	if (!slot)
 		return;
-	size_t const what = cstr_view_index(test_plugin_cases, TEST_PLUGIN_CASES,
+	size_t const what = cstr_view_index(test_plugin_cases, array_size(test_plugin_cases),
 	                                    jb_view(jb_get(args, "case")));
 	if (what == TEST_PLUGIN_READY) {
 		mcp_slot_ready(slot);
@@ -555,9 +547,8 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 	unsigned refused = 0;
 	for (size_t k = 0; k < array_size(codes); ++k)
 		refused += codes[k] == EINVAL;
-	int const n = snprintf(inst->last, sizeof inst->last, "refused %u of %zu", refused,
-	                       array_size(codes));
-	inst->len = n > 0 && n < (int)sizeof inst->last ? (size_t)n : 0;
+	util_text_clear(&inst->last);
+	(void)util_text_printf(&inst->last, "refused %u of %zu", refused, array_size(codes));
 }
 
 /* Returns the definition of test_fetch as a new reference, or nullptr if
@@ -633,16 +624,13 @@ test_plugin_fetch_step (struct mcp_slot *slot)
 		mcp_slot_tellf(slot, TOOL_FAILED, "fetched: %d", e);
 		return;
 	}
-	char head[640];
-	int const n = snprintf(head, sizeof head, "status %" PRIu32 "\ntype %.256s\nage %" PRIu32
-	                       "\nretry %" PRIu32 "\ne %d\nerror %.256s\n\n",
-	                       r.status, r.type, r.age, r.retry, r.e, r.error);
-	if (n < 0 || n >= (int)sizeof head) {
-		mcp_slot_fail(slot, ENOMEM);
-		return;
-	}
+	char buf[640];
+	struct cstr_view const head = util_format_view(buf, sizeof buf, "status %" PRIu32
+	                                               "\ntype %.256s\nage %" PRIu32 "\nretry %"
+	                                               PRIu32 "\ne %d\nerror %.256s\n\n", r.status,
+	                                               r.type, r.age, r.retry, r.e, r.error);
 	size_t taken;
-	e = mcp_slot_write(slot, (struct cstr_view){ head, (size_t)n }, 0, &taken);
+	e = mcp_slot_write(slot, head, 0, &taken);
 	if (!e)
 		e = mcp_slot_write(slot, r.body, 0, &taken);
 	if (e)
@@ -695,16 +683,15 @@ test_plugin_config_definition (void const *service)
 	struct test_plugin_config const *c = service;
 	char text[sizeof "Returns the greeting of the plugin's options ()." +
 	          sizeof c->greeting];
-	int n = snprintf(text, sizeof text, "Returns the greeting of the plugin's "
-	                 "options (%s).", c ? c->greeting : "none");
-	if (n < 0 || n >= (int)sizeof text)
-		return nullptr;
 	struct json_object *def = json_tokener_parse(
 		"{\"name\":\"test_config\","
 		"\"inputSchema\":{\"type\":\"object\","
 		"\"properties\":{},"
 		"\"additionalProperties\":false}}");
-	return jb_set_or_free(def, "description", json_object_new_string_len(text, n));
+	return jb_set_or_free(def, "description",
+	                      jb_string(util_format_view(text, sizeof text, "Returns the greeting "
+	                                                 "of the plugin's options (%s).",
+	                                                 c ? c->greeting : "none")));
 }
 
 /* Ends the call with "greeting=" and the greeting of the configuration, or
