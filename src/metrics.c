@@ -71,9 +71,11 @@ static struct {
 
 #define LOOP_HIST(name, help, labels, field) \
         { name, help, labels, offsetof(struct loop_metrics, field), LOOP, HISTOGRAM, NANO }
-#define WORK(help, unit, u) \
-        { "askai_loop_step_work_max", help, "unit=\"" unit "\"", \
-          offsetof(struct loop_metrics, work[u]), LOOP, GAUGE, ONE }
+/* The help of the family is on its first row, that of the unit 0. */
+#define WORK(id, unit, bound) \
+        { "askai_loop_step_work_max", LOOP_##id ? nullptr : "The most of a unit of " \
+          "work one step did (design section 1).", "unit=\"" unit "\"", \
+          offsetof(struct loop_metrics, work[LOOP_##id]), LOOP, GAUGE, ONE },
 #define METHOD(help, method, m) \
         { "askai_request_seconds", help, "method=\"" method "\"", \
           offsetof(struct metrics_mcp, methods[m]), MCP, HISTOGRAM, NANO }
@@ -115,20 +117,7 @@ static struct metrics_entry const table[] = {
 	          late),
 	LOOP_HIST("askai_loop_inbox_delay_seconds",
 	          "Time from a message's post to its handler.", "", inbox),
-	WORK("The most of a unit of work one step did (design section 1).", "reqs",
-	     LOOP_REQS),
-	WORK(nullptr, "recv", LOOP_RECV),
-	WORK(nullptr, "send", LOOP_SEND),
-	WORK(nullptr, "body", LOOP_BODY),
-	WORK(nullptr, "parse", LOOP_PARSE),
-	WORK(nullptr, "values", LOOP_VALUES),
-	WORK(nullptr, "escape", LOOP_ESCAPE),
-	WORK(nullptr, "copy", LOOP_COPY),
-	WORK(nullptr, "accepts", LOOP_ACCEPTS),
-	WORK(nullptr, "closes", LOOP_CLOSES),
-	WORK(nullptr, "release", LOOP_RELEASE),
-	WORK(nullptr, "tasks", LOOP_TASKS),
-	WORK(nullptr, "flights", LOOP_FLIGHTS),
+	LOOP_UNIT_LIST(WORK)
 	METHOD("Time from a request's head to its end, by MCP method.", "initialize",
 	       METHOD_INITIALIZE),
 	METHOD(nullptr, "ping", METHOD_PING),

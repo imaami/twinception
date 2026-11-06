@@ -71,37 +71,13 @@ struct loop_stats {
 	uint64_t    steps;
 };
 
-static constexpr uint64_t bound[LOOP_UNITS] = {
-	[LOOP_REQS]    = LOOP_STEP_REQS,
-	[LOOP_RECV]    = LOOP_STEP_RECV,
-	[LOOP_SEND]    = LOOP_STEP_SEND,
-	[LOOP_BODY]    = LOOP_STEP_BODY,
-	[LOOP_PARSE]   = LOOP_STEP_PARSE,
-	[LOOP_VALUES]  = LOOP_STEP_VALUES,
-	[LOOP_ESCAPE]  = LOOP_STEP_ESCAPE,
-	[LOOP_COPY]    = LOOP_STEP_COPY,
-	[LOOP_ACCEPTS] = LOOP_STEP_ACCEPTS,
-	[LOOP_CLOSES]  = LOOP_STEP_CLOSES,
-	[LOOP_RELEASE] = LOOP_STEP_RELEASE,
-	[LOOP_TASKS]   = LOOP_STEP_TASKS,
-	[LOOP_FLIGHTS] = LOOP_STEP_FLIGHTS,
-};
+#define LOOP_BOUND(id, name, bound) [LOOP_##id] = bound,
+static constexpr uint64_t bound[LOOP_UNITS] = { LOOP_UNIT_LIST(LOOP_BOUND) };
+#undef LOOP_BOUND
 
-static char const *const unit_name[LOOP_UNITS] = {
-	[LOOP_REQS]    = "reqs",
-	[LOOP_RECV]    = "recv",
-	[LOOP_SEND]    = "send",
-	[LOOP_BODY]    = "body",
-	[LOOP_PARSE]   = "parse",
-	[LOOP_VALUES]  = "values",
-	[LOOP_ESCAPE]  = "escape",
-	[LOOP_COPY]    = "copy",
-	[LOOP_ACCEPTS] = "accepts",
-	[LOOP_CLOSES]  = "closes",
-	[LOOP_RELEASE] = "release",
-	[LOOP_TASKS]   = "tasks",
-	[LOOP_FLIGHTS] = "flights",
-};
+#define LOOP_UNIT_NAME(id, name, bound) [LOOP_##id] = name,
+static char const *const unit_name[LOOP_UNITS] = { LOOP_UNIT_LIST(LOOP_UNIT_NAME) };
+#undef LOOP_UNIT_NAME
 
 /* Record @p ns as timing @p t in the statistics since the last report, and in
  * @p metric.

@@ -43,48 +43,57 @@ struct handle {
  * that a library makes, is counted in full in the step where it happens.
  * The loop's statistics record the largest count of each unit in one step.
  * That count must be within the unit's bound.
+ *
+ * LOOP_UNIT_LIST(X) lists each unit as X(ID, name, bound): LOOP_ID in enum
+ * loop_unit, its name in the log and the metrics, and its bound per step,
+ * LOOP_STEP_ID. The units count:
+ * - REQS: requests that began, or tool calls that a drain ended
+ * - RECV: bytes received
+ * - SEND: bytes sent, or bytes that an application queued for sending
+ * - BODY: bytes of a request body that were read and pre-scanned
+ * - PARSE: bytes of JSON parsed, or bytes of text split into lines, such
+ *   as an SSE stream or a file that the read command of the git tool
+ *   numbers
+ * - VALUES: JSON values parsed or freed
+ * - ESCAPE: bytes escaped into JSON
+ * - COPY: bytes copied in one piece, for example a string that json-c
+ *   parsed, or the text of an answer
+ * - ACCEPTS: connections accepted
+ * - CLOSES: connections closed
+ * - RELEASE: blocks or objects that were allocated for reuse and are freed
+ *   under memory pressure. A block counts one unit for each 128 KiB
+ *   (buf_stash_release()).
+ * - TASKS: task slices (task.h)
+ * - FLIGHTS: TLS handshake flights (tls.h)
  */
+#define LOOP_UNIT_LIST(X)                \
+        X(REQS,    "reqs",    8)         \
+        X(RECV,    "recv",    64 << 10)  \
+        X(SEND,    "send",    256 << 10) \
+        X(BODY,    "body",    64 << 10)  \
+        X(PARSE,   "parse",   16 << 10)  \
+        X(VALUES,  "values",  256)       \
+        X(ESCAPE,  "escape",  64 << 10)  \
+        X(COPY,    "copy",    1 << 20)   \
+        X(ACCEPTS, "accepts", 32)        \
+        X(CLOSES,  "closes",  32)        \
+        X(RELEASE, "release", 256)       \
+        X(TASKS,   "tasks",   1)         \
+        X(FLIGHTS, "flights", 1)
+
+#define LOOP_UNIT(id, name, bound) LOOP_##id,
 enum loop_unit {
-	LOOP_REQS,     /**< requests that began, or tool calls that a drain
-	                    ended */
-	LOOP_RECV,     /**< bytes received */
-	LOOP_SEND,     /**< bytes sent, or bytes that an application queued for
-	                    sending */
-	LOOP_BODY,     /**< bytes of a request body that were read and
-	                    pre-scanned */
-	LOOP_PARSE,    /**< bytes of JSON parsed, or bytes of text split into
-	                    lines, such as an SSE stream or a file that the
-	                    read command of the git tool numbers */
-	LOOP_VALUES,   /**< JSON values parsed or freed */
-	LOOP_ESCAPE,   /**< bytes escaped into JSON */
-	LOOP_COPY,     /**< bytes copied in one piece, for example a string
-	                    that json-c parsed, or the text of an answer */
-	LOOP_ACCEPTS,  /**< connections accepted */
-	LOOP_CLOSES,   /**< connections closed */
-	LOOP_RELEASE,  /**< blocks or objects that were allocated for reuse and
-	                    are freed under memory pressure. A block counts one
-	                    unit for each 128 KiB (buf_stash_release()). */
-	LOOP_TASKS,    /**< task slices (task.h) */
-	LOOP_FLIGHTS,  /**< TLS handshake flights (tls.h) */
+	LOOP_UNIT_LIST(LOOP_UNIT)
 	LOOP_UNITS
 };
+#undef LOOP_UNIT
 
 /** The bound of each unit per step. */
+#define LOOP_UNIT(id, name, bound) LOOP_STEP_##id = bound,
 enum {
-	LOOP_STEP_REQS    = 8,
-	LOOP_STEP_RECV    = 64 << 10,
-	LOOP_STEP_SEND    = 256 << 10,
-	LOOP_STEP_BODY    = 64 << 10,
-	LOOP_STEP_PARSE   = 16 << 10,
-	LOOP_STEP_VALUES  = 256,
-	LOOP_STEP_ESCAPE  = 64 << 10,
-	LOOP_STEP_COPY    = 1 << 20,
-	LOOP_STEP_ACCEPTS = 32,
-	LOOP_STEP_CLOSES  = 32,
-	LOOP_STEP_RELEASE = 256,
-	LOOP_STEP_TASKS   = 1,
-	LOOP_STEP_FLIGHTS = 1,
+	LOOP_UNIT_LIST(LOOP_UNIT)
 };
+#undef LOOP_UNIT
 
 /**
  * A message that another thread posts to a loop (design section 2). The
