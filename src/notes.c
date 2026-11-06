@@ -607,15 +607,6 @@ notes_check_input (struct buf       *in,
 	return 0;
 }
 
-/* Parses one unsigned decimal field without accepting a prefix of a token. */
-static bool
-notes_number (char const *s,
-              size_t      len,
-              uint64_t   *value)
-{
-	return len && util_digits(s, len, UINT64_MAX, value) == len;
-}
-
 /* Returns the kind of the object of the line of @p len bytes at @p line,
  * without its newline, in the output of git cat-file: "OID TYPE SIZE", or
  * "NAME missing". Stores OID in @p *oid, or no name if the line is
@@ -681,7 +672,7 @@ notes_checked (struct span        out,
 	struct cstr_view const size = cstr_view_slice(line, oid_len(&oid) + sizeof " blob " - 1,
 	                                              SIZE_MAX);
 	uint64_t bytes;
-	if (!notes_number(size.data, size.len, &bytes))
+	if (util_number(size.data, size.len, UINT64_MAX, &bytes))
 		return EIO;
 	*note = (struct notes_file){ .bytes = bytes, .id = oid };
 	return EEXIST;
@@ -853,7 +844,7 @@ notes_read_out (struct span  out,
 	 * comes after the text. */
 	char const *digits = (char const *)memrchr(line.data, ' ', line.len) + 1;
 	uint64_t size;
-	if (!notes_number(digits, (size_t)(line.data + line.len - digits), &size) ||
+	if (util_number(digits, (size_t)(line.data + line.len - digits), UINT64_MAX, &size) ||
 	    !rest.len || size != rest.len - 1 || rest.data[size] != '\n')
 		return EIO;
 	*text = (struct span){ out.ptr + line.len + 1, (size_t)size };
@@ -893,7 +884,7 @@ notes_file_next (struct span       *out,
 		return EIO;
 	struct cstr_view const size = cstr_view_trim(rest);
 	uint64_t bytes;
-	if (!notes_number(size.data, size.len, &bytes))
+	if (util_number(size.data, size.len, UINT64_MAX, &bytes))
 		return EIO;
 	*file = (struct notes_file){
 		.name = { out->ptr + (tab + 1 - s), (size_t)(nul - tab - 1) },
@@ -925,7 +916,7 @@ notes_cursor_header (struct span          out,
 		struct cstr_view rest = cstr_view_slice((struct cstr_view){ s + token, len },
 		                                        digits + 1, SIZE_MAX);
 		if (!oid_init_field(&cursor->commit, &rest, ' ') &&
-		    notes_number(s + token, digits, &cursor->time)) {
+		    !util_number(s + token, digits, UINT64_MAX, &cursor->time)) {
 			cursor->subject = (struct span){ out.ptr + (rest.data - s), rest.len };
 			cursor->first = before;
 			return true;
@@ -961,7 +952,7 @@ notes_entry_before (struct span          out,
 		size_t digits = tab ? (size_t)(tab - s - start) : 0;
 		bool binary = digits == 1 && s[start] == '-';
 		if (!name || name + 1 == s + at - 1 ||
-		    (!binary && !notes_number(s + start, digits, &lines))) {
+		    (!binary && util_number(s + start, digits, UINT64_MAX, &lines))) {
 			at = stat;
 			cursor->first = 0;
 			continue;

@@ -170,6 +170,19 @@ util_digits (char const *s,
 	return i;
 }
 
+/** Parse the @p len bytes at @p s, which must all be decimal digits, at
+ *  least one, into @p *value. Returns 0, or EINVAL if they are not or the
+ *  number is greater than @p max.
+ */
+static inline int
+util_number (char const *s,
+             size_t      len,
+             uint64_t    max,
+             uint64_t   *value)
+{
+	return len && util_digits(s, len, max, value) == len ? 0 : EINVAL;
+}
+
 /** Returns how many of the @p len bytes at @p s fit in @p max bytes
  *  without ending within a UTF-8 character.
  */

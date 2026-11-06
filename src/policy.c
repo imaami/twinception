@@ -322,7 +322,7 @@ policy_number (struct cstr_view  text,
                uint32_t         *id)
 {
 	uint64_t n;
-	if (!text.len || util_digits(text.data, text.len, UINT32_MAX - 1, &n) != text.len)
+	if (util_number(text.data, text.len, UINT32_MAX - 1, &n))
 		return false;
 	*id = (uint32_t)n;
 	return true;

@@ -569,8 +569,8 @@ cli_client_file_name (struct cstr_view line)
 	if (suffix.len && !cstr_view_equal(suffix, CSTR_VIEW(" line")) && !cstr_view_equal(suffix, CSTR_VIEW(" lines")))
 		return (struct cstr_view){};
 	struct cstr_view index;
-	if (!cstr_view_cut(&name, '.', &index) || !index.len ||
-	    util_digits(index.data, index.len, UINT64_MAX, &n) != index.len || !cstr_view_starts(name, CSTR_VIEW(" ")))
+	if (!cstr_view_cut(&name, '.', &index) || util_number(index.data, index.len, UINT64_MAX, &n) ||
+	    !cstr_view_starts(name, CSTR_VIEW(" ")))
 		return (struct cstr_view){};
 	size_t const date_size = sizeof " 2026-10-14 12:34 UTC  " - 1;
 	if (name.len <= date_size || !cstr_view_equal(cstr_view_slice(name, 18, 5), CSTR_VIEW("UTC  ")))
