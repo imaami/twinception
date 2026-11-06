@@ -1115,7 +1115,7 @@ mcp_take_job (struct mcp *mcp)
 		hist_add(&mcp->counts->kept.jobs, -1ULL);
 		return container_of(node, struct job, spare);
 	}
-	struct job *job = malloc(sizeof *job);
+	struct job *job = calloc(1, sizeof *job);
 	if (job)
 		job_init(job, mcp->loop, mcp_on_job);
 	return job;

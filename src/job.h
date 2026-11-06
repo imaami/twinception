@@ -274,8 +274,9 @@ home_job (struct loop *loop,
           struct msg  *msg);
 
 /**
- * Initialize @p job, storage just allocated (hist.h on atomics), for the loop
- * @p front, whose handler of the messages to it is @p done.
+ * Initialize @p job, zeroed storage just allocated (hist.h on atomics), for
+ * the loop @p front, whose handler of the messages to it is @p done. The
+ * members that this function does not set stay zero.
  */
 static inline void
 job_init (struct job  *job,
@@ -283,39 +284,15 @@ job_init (struct job  *job,
           void       (*done) (struct loop *loop,
                               struct msg  *msg))
 {
-	job->to_home = (struct msg){ .fn = home_job };
-	job->to_front = (struct msg){ .fn = done };
+	job->to_home.fn = home_job;
+	job->to_front.fn = done;
 	list_init(&job->spare);
 	list_init(&job->queue);
 	list_init(&job->due);
 	list_init(&job->held);
 	list_init(&job->idle);
 	list_init(&job->feed);
-	job->request = job->result = job->thought = job->replay = job->delta = (struct buf){};
-	for (size_t k = 0; k < JOB_CALLS; ++k)
-		job->calls[k] = (struct buf){};
-	job->key = job->wire = (struct buf){};
-	job->parser = (struct jb_parser){};
 	job->front = front;
-	job->transfer = nullptr;
-	job->cancel_url = nullptr;
-	job->who = nullptr;
-	job->delivery_error = nullptr;
-	job->recovery = nullptr;
-	job->journal = nullptr;
-	job->call = (struct handle){};
-	job->deadline = job->since = job->active = job->principal = 0;
-	job->peer = (struct stream_peer){};
-	job->session = job->ev = job->evlen = job->line = job->scan = job->chunks = 0;
-	job->used = job->context = 0;
-	job->archive_turn = 0;
-	job->reader = (struct ai_reader){};
-	job->http = job->flags = 0;
-	job->status = job->asks = 0;
-	job->provider_done = false;
-	job->delta_pending = job->delta_ended = false;
-	job->reason[0] = '\0';
-	job->archive = (struct hexid){};
 	atomic_init(&job->progress, 0);
 	atomic_init(&job->home_bits, 0);
 	atomic_init(&job->front_bits, 0);
