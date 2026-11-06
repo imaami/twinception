@@ -12478,6 +12478,9 @@ def check_turns(binary, up):
             assert [t["function"]["name"] for t in up.requests[count]["body"]["tools"]] \
                 == ["notes", "compact", "findings", "jobs", "wait", "timer"], \
                 up.requests[count]["body"]
+            # compact names what a compaction shows again.
+            assert ", then askai's review record, then your note history and your newest " \
+                "note. " in up.requests[count]["body"]["tools"][1]["function"]["description"]
             # There jobs lists and cancels a timer, and the call does not
             # doze for a cancelled one.
             script[:] = [
@@ -12598,8 +12601,8 @@ def check_review(binary, up):
             assert schema["additionalProperties"] is False, schema
             assert "askai keeps your task as the user gave it through every " \
                 "compaction, so you need not copy it." in lent["findings"]["description"]
-            assert "your notes and askai's review record are shown again; the task " \
-                "stays as the user gave it." in lent["compact"]["description"], lent
+            assert "After it you see the task as the user gave it, then your summary, then " \
+                "askai's review record. " in lent["compact"]["description"], lent
 
             # One ask call: findings calls in two turns, a compaction, a call
             # after it, and a second compaction.
@@ -13018,7 +13021,8 @@ def check_review(binary, up):
             lent = {t["function"]["name"]: t["function"] for t in sent[0]["body"]["tools"]}
             assert "findings" not in lent, lent
             assert "review record" not in lent["compact"]["description"], lent["compact"]
-            assert "the task stays as the user gave it" in lent["compact"]["description"]
+            assert "you see the task as the user gave it, then your summary. " in \
+                lent["compact"]["description"], lent["compact"]
             assert results(sent[1]) == ["No tool of that name is yours to call."], sent[1]
             assert prompt(sent[2]) == compacted("S", ""), prompt(sent[2])
 

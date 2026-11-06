@@ -7921,23 +7921,27 @@ mcp_task_definition (void const *service)
 }
 
 /* Returns the definition of the compact tool. Only turns get this tool.
- * @p service is the mcp_static. Its lending member says whether the turns
- * also get findings.
+ * @p service is the mcp_static. The description names the review record
+ * if the turns get findings, and the note history and the newest note if
+ * they get notes.
  */
 static struct json_object *
 mcp_compact_definition (void const *service)
 {
 	struct mcp_static const *st = service;
+	char about[512];
+	util_format(about, sizeof about, "Replace the conversation since the task, your turns "
+	            "and the tools' results, with your summary. After it you see the task as "
+	            "the user gave it, then your summary%s%s. Note first what you must keep. "
+	            "Call it when askai's notice states that the context fills up, or when you "
+	            "no longer need the details of finished work. Calls after it in the same "
+	            "turn do not run.",
+	            st->lending.of[KIND_FINDINGS] ? ", then askai's review record" : "",
+	            st->lending.of[KIND_NOTES] ? ", then your note history and your newest note"
+	                                       : "");
 	return jb_object(
 		"name", json_object_new_string("compact"),
-		"description", schema_text3(
-			"Free your context: the conversation since the task, your turns and "
-			"the tools' results, is replaced by your summary of it, and your notes",
-			st->lending.of[KIND_FINDINGS] ? " and askai's review record are" : " are",
-			" shown again; the task stays as the user gave it. Note first what "
-			"you must keep. Call it when askai says that the context fills up, "
-			"or once you are done with a part of the work whose details you no "
-			"longer need. Calls after it in the same turn do not run."),
+		"description", json_object_new_string(about),
 		"inputSchema", schema_object(
 			jb_object(
 				"summary", schema_property("string",
