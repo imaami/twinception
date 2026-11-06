@@ -588,9 +588,11 @@ journal_jobs_scan (struct journal *j)
 		struct stat st;
 		if (!e && fstat(input, &st))
 			e = errno;
-		if (!e && (st.st_size < 0 || (uint64_t)st.st_size > JOURNAL_LOAD_MAX ||
-		           (uint64_t)st.st_size >
-		           JOURNAL_RECOVERY_BYTES + JOURNAL_TERMINAL_BYTES - j->recovery_bytes))
+		/* A negative size, impossible for a regular file, converts to more
+		 * than any limit. */
+		uint64_t const size = e ? 0 : (uint64_t)st.st_size;
+		if (size > JOURNAL_LOAD_MAX ||
+		    size > JOURNAL_RECOVERY_BYTES + JOURNAL_TERMINAL_BYTES - j->recovery_bytes)
 			e = EFBIG;
 		struct journal_record *records = nullptr;
 		if (!e)
@@ -599,7 +601,7 @@ journal_jobs_scan (struct journal *j)
 		if (!e) {
 			struct journal_job *job = &j->jobs[j->n_jobs++];
 			job->id = id;
-			job->bytes = (uint64_t)st.st_size;
+			job->bytes = size;
 			job->touched = st.st_mtim.tv_sec < 0 ? 0 : clk_ns(st.st_mtim);
 			job->flags = journal_job_flags(records);
 			j->recovery_bytes += job->bytes;
