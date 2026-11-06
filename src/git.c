@@ -394,9 +394,10 @@ git_destroy (struct git **p_git)
 	*p_git = nullptr;
 	for (size_t i = 0; i < git->n; ++i) {
 		free(git->repo[i].path);
-		git->repo[i].path = nullptr;
+		git->repo[i] = (struct git_repo){};
 	}
 	dstr_cleanup(&git->ceilings);
+	memset(git->env, 0, sizeof git->env);
 	free(git);
 }
 
@@ -940,6 +941,7 @@ git_call_destroy (struct git_call **p_call)
 	buf_fini(&(*p_call)->metadata);
 	dstr_cleanup(&(*p_call)->text);
 	json_object_put((*p_call)->args);
+	(*p_call)->args = nullptr;
 	free(*p_call);
 	*p_call = nullptr;
 }
