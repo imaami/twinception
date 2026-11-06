@@ -427,21 +427,6 @@ ai_used (int64_t prompt,
 	return n < UINT32_MAX ? (uint32_t)n : UINT32_MAX;
 }
 
-/* Set @p *json to the JSON text of @p val, or to an empty view if @p val is
- * nullptr. Return 0, or ENOMEM if json-c cannot allocate the text.
- */
-static int
-ai_json_text (struct json_object *val,
-              struct cstr_view   *json)
-{
-	if (!val) {
-		*json = (struct cstr_view){};
-		return 0;
-	}
-	json->data = json_object_to_json_string_length(val, JB_WIRE, &json->len);
-	return json->data ? 0 : ENOMEM;
-}
-
 /* Pass @p json, a piece of JSON text, to sink->replay, unless
  * sink->replay is nullptr.
  */
@@ -461,9 +446,9 @@ ai_replay_text (struct ai_sink const *sink,
 {
 	if (!sink->replay || !json_object_is_type(val, json_type_string))
 		return 0;
-	struct cstr_view json;
-	int e = ai_json_text(val, &json);
-	return e ? e : sink->replay(sink->user, cstr_view_slice(json, 1, json.len - 2));
+	struct cstr_view const json = jb_wire(val);
+	return json.data ? sink->replay(sink->user, cstr_view_slice(json, 1, json.len - 2))
+	                 : ENOMEM;
 }
 
 /* Pass @p head and then the text of @p val, escaped as the inside of a
@@ -488,9 +473,8 @@ ai_replay_after (struct ai_sink const *sink,
 {
 	if (!sink->replay)
 		return 0;
-	struct cstr_view json;
-	int e = ai_json_text(val, &json);
-	e = e ? e : sink->replay(sink->user, head);
+	struct cstr_view const json = jb_wire(val);
+	int e = val && !json.data ? ENOMEM : sink->replay(sink->user, head);
 	return e ? e : sink->replay(sink->user, json);
 }
 
@@ -517,16 +501,17 @@ ai_chat_calls (struct ai_sink const *sink,
 	struct json_object *c;
 	for (size_t i = 0; !e && (c = jb_at(calls, i)); ++i) {
 		struct json_object *fn = jb_get(c, "function");
+		/* extra_content contains the thought signature of Gemini, which
+		 * askai sends back unchanged in the next turn. */
+		struct json_object *extra = jb_get(c, "extra_content");
 		struct ai_call call = {
 			.id    = jb_view(jb_get(c, "id")),
 			.name  = jb_view(jb_get(fn, "name")),
 			.args  = jb_view(jb_get(fn, "arguments")),
+			.extra = jb_wire(extra),
 			.index = ai_index(jb_get(c, "index")),
 		};
-		/* extra_content contains the thought signature of Gemini, which
-		 * askai sends back unchanged in the next turn. */
-		e = ai_json_text(jb_get(c, "extra_content"), &call.extra);
-		e = e ? e : sink->call(sink->user, &call);
+		e = extra && !call.extra.data ? ENOMEM : sink->call(sink->user, &call);
 	}
 	return e;
 }
@@ -684,11 +669,13 @@ ai_call_start (struct ai_sink const *sink,
 	struct ai_call call = {
 		.id    = jb_view(jb_get(item, "id")),
 		.name  = jb_view(jb_get(item, "name")),
+		.args  = jb_wire(whole ? args : nullptr),
+		.extra = jb_wire(extra),
 		.index = at,
 	};
-	int e = ai_json_text(whole ? args : nullptr, &call.args);
-	e = e ? e : ai_json_text(extra, &call.extra);
-	return e ? e : sink->call(sink->user, &call);
+	if ((whole && !call.args.data) || (extra && !call.extra.data))
+		return ENOMEM;
+	return sink->call(sink->user, &call);
 }
 
 /* Pass the start of @p block, the content block @p at of Anthropic's
@@ -868,13 +855,14 @@ ai_generate_call (struct ai_sink const *sink,
 {
 	if (!sink->call)
 		return 0;
+	struct json_object *args = jb_get(fc, "args");
 	struct ai_call call = {
 		.id    = jb_view(jb_get(fc, "id")),
 		.name  = jb_view(jb_get(fc, "name")),
+		.args  = jb_wire(args),
 		.index = reader->calls++,
 	};
-	int e = ai_json_text(jb_get(fc, "args"), &call.args);
-	return e ? e : sink->call(sink->user, &call);
+	return args && !call.args.data ? ENOMEM : sink->call(sink->user, &call);
 }
 
 /* Close the text part that is open in the replay, if there is one, and then

@@ -126,6 +126,19 @@ jb_view (struct json_object *val)
 	                           (size_t)json_object_get_string_len(val) };
 }
 
+/** Returns the JSON text of @p val, as JB_WIRE writes it, until @p val
+ *  changes or is freed; an empty view with data nullptr if @p val is
+ *  nullptr or memory runs out.
+ */
+static inline struct cstr_view
+jb_wire (struct json_object *val)
+{
+	struct cstr_view text = {};
+	if (val)
+		text.data = json_object_to_json_string_length(val, JB_WIRE, &text.len);
+	return text;
+}
+
 /** Returns a new JSON string with the bytes of @p t, or nullptr if out of
  *  memory.
  */

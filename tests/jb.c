@@ -115,12 +115,12 @@ main (void)
 	static char const raw[] = "a\"\\\n\x01\x1f/\x7f\xc3\xa4";
 	char escaped[6 * sizeof raw];
 	struct json_object *str = json_object_new_string_len(raw, sizeof raw - 1);
-	size_t wire = 0;
-	char const *json = json_object_to_json_string_length(str, JB_WIRE, &wire);
+	struct cstr_view const wire = jb_wire(str);
 	size_t n = jb_escape(escaped, raw, sizeof raw - 1);
-	CHECK(json && n == wire - 2 && !memcmp(escaped, json + 1, n));
+	CHECK(wire.data && n == wire.len - 2 && !memcmp(escaped, wire.data + 1, n));
 	json_object_put(str);
 	CHECK(!jb_escape(escaped, nullptr, 1) && !jb_escape(nullptr, raw, 1));
+	CHECK(!jb_wire(nullptr).data && !jb_wire(nullptr).len);
 
 	/* One JSON value, whole or a slice at a time. */
 	CHECK(parse("{\"a\": [1, 2, \"three\"]}", SIZE_MAX, &steps) == 0 && steps == 1);

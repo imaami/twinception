@@ -932,11 +932,9 @@ git_help (struct mcp_slot *slot,
 		mcp_slot_fail(slot, ENOMEM);
 		return;
 	}
-	size_t len;
-	char const *text = json_object_to_json_string_length(help, JB_WIRE, &len);
+	struct cstr_view const text = jb_wire(help);
 	size_t taken;
-	int e = text ? mcp_slot_write(slot, (struct cstr_view){ text, len }, 0, &taken)
-	             : ENOMEM;
+	int e = text.data ? mcp_slot_write(slot, text, 0, &taken) : ENOMEM;
 	json_object_put(help);
 	if (e)
 		mcp_slot_fail(slot, e);

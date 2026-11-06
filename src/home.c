@@ -1171,11 +1171,10 @@ home_metadata (struct home     *home,
 		"resume", json_object_new_boolean(resume), nullptr);
 	if (!meta)
 		return ENOMEM;
-	size_t len;
-	char const *json = json_object_to_json_string_length(meta, JB_WIRE, &len);
-	int e = json ? journal_put(job->journal, job->archive, "meta", json, len,
-	                           done ? home->loop : nullptr, done, done ? job : nullptr)
-	             : ENOMEM;
+	struct cstr_view const json = jb_wire(meta);
+	int e = json.data ? journal_put(job->journal, job->archive, "meta", json.data, json.len,
+	                                done ? home->loop : nullptr, done, done ? job : nullptr)
+	                  : ENOMEM;
 	json_object_put(meta);
 	if (!e && done)
 		home_archive_pending(home, job);

@@ -1187,10 +1187,9 @@ mcp_shown_value (struct mcp_shown   *w,
 		return;
 	default: {
 		/* The JSON text of a scalar is short. */
-		size_t len = 0;
-		char const *json = json_object_to_json_string_length(v, JB_WIRE, &len);
-		if (json)
-			mcp_shown_put(w, (struct cstr_view){ json, len }, false);
+		struct cstr_view const json = v ? jb_wire(v) : CSTR_VIEW("null");
+		if (json.data)
+			mcp_shown_put(w, json, false);
 		return;
 	}
 	}
@@ -1684,12 +1683,11 @@ mcp_req_open (struct mcp_req   *req,
 		return mcp_req_put(req, &key, 1);
 	struct mcp_piece id[3] = {};
 	if (req->id) {
-		size_t len = 0;
-		char const *json = json_object_to_json_string_length(req->id, JB_WIRE, &len);
-		if (!json)
+		struct cstr_view const json = jb_wire(req->id);
+		if (!json.data)
 			return ENOMEM;
 		id[0] = FRAG("\"id\":");
-		id[1] = RAW(json, len);
+		id[1] = RAW(json.data, json.len);
 		id[2] = FRAG(",");
 	}
 	struct mcp_piece const p[] = {
@@ -2038,15 +2036,13 @@ mcp_req_notify_put (struct mcp_req *req,
 	int n = snprintf(num, sizeof num, "%" PRIu64, value);
 	if (n < 0 || n >= (int)sizeof num)
 		return EOVERFLOW;
-	size_t token_len = 0;
-	char const *token = json_object_to_json_string_length(req->token, JB_WIRE,
-	                                                      &token_len);
-	if (!token)
+	struct cstr_view const token = jb_wire(req->token);
+	if (!token.data)
 		return ENOMEM;
 	struct mcp_piece const p[] = {
 		FRAG("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
 		     "\"params\":{\"progressToken\":"),
-		RAW(token, token_len),
+		RAW(token.data, token.len),
 		FRAG(",\"progress\":"),
 		RAW(num, (size_t)n),
 		FRAG(",\"message\":\""),
@@ -2085,9 +2081,8 @@ mcp_req_delta (struct mcp_req *req)
 	struct job *job = req->job;
 	struct loop *loop = req->mcp->loop;
 	struct span bytes = buf_peek(&job->delta);
-	size_t id_len;
-	char const *id = json_object_to_json_string_length(req->id, JB_WIRE, &id_len);
-	if (!id) {
+	struct cstr_view const id = jb_wire(req->id);
+	if (!id.data) {
 		mcp_req_abort(req, ENOMEM);
 		return;
 	}
@@ -2114,7 +2109,7 @@ mcp_req_delta (struct mcp_req *req)
 		struct mcp_piece const p[] = {
 			FRAG("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/askai/delta\","
 			     "\"params\":{\"requestId\":"),
-			RAW(id, id_len), FRAG(",\"turn\":"), RAW(turn, turn_len),
+			RAW(id.data, id.len), FRAG(",\"turn\":"), RAW(turn, turn_len),
 			FRAG(",\"kind\":\""), header.thought ? FRAG("reasoning") : FRAG("text"),
 			FRAG("\",\"text\":\""), ESC(text + req->delta_read, n), FRAG("\"}}\n\n"),
 		};
@@ -2565,12 +2560,11 @@ mcp_req_key (struct mcp_req const *req,
 	if (!who[0])
 		memcpy(who + 1, s->peer.key, sizeof s->peer.key);
 	struct span session = s->ops->field(s, F_SESSION);
-	size_t len = 0;
-	char const *json = json_object_to_json_string_length(id, JB_WIRE, &len);
-	if (!json)
+	struct cstr_view const json = jb_wire(id);
+	if (!json.data)
 		return ENOMEM;
 	size_t head = sizeof who + (session.ptr ? session.len + 1 : 0);
-	size_t total = head + len;
+	size_t total = head + json.len;
 	struct span k;
 	int e = buf_reserve(key, total, SIZE_MAX, &k);
 	if (e)
@@ -2580,7 +2574,7 @@ mcp_req_key (struct mcp_req const *req,
 		memcpy(k.ptr + sizeof who, session.ptr, session.len);
 		k.ptr[head - 1] = '\n';
 	}
-	memcpy(k.ptr + head, json, len);
+	memcpy(k.ptr + head, json.data, json.len);
 	buf_commit(key, total);
 	*hash = util_hash(req->mcp->st->seed, k.ptr, total);
 	return 0;
@@ -2660,16 +2654,15 @@ mcp_req_archive (struct mcp_req    *req,
 {
 	if (!obj)
 		return ENOMEM;
-	size_t len = 0;
-	char const *text = json_object_to_json_string_length(obj, JB_WIRE, &len);
+	struct cstr_view const text = jb_wire(obj);
 	struct mcp_archive_wait *wait = done ? calloc(1, sizeof *wait) : nullptr;
-	int e = !text || (done && !wait) ? ENOMEM : 0;
+	int e = !text.data || (done && !wait) ? ENOMEM : 0;
 	if (!e && done) {
 		wait->done = done;
 		e = mcp_req_archive_wait(req, &wait->who);
 	}
 	if (!e)
-		e = journal_put(req->mcp->st->journal, req->archive, kind, text, len,
+		e = journal_put(req->mcp->st->journal, req->archive, kind, text.data, text.len,
 		                done ? req->mcp->loop : nullptr,
 		                done ? mcp_archive_back : nullptr, wait);
 	json_object_put(obj);
@@ -3663,7 +3656,7 @@ mcp_req_draft (struct mcp_req     *req,
 	req->prompt = prompt;
 	if (!req->draft)
 		return ENOMEM;
-	req->text.data = json_object_to_json_string_length(req->draft, JB_WIRE, &req->text.len);
+	req->text = jb_wire(req->draft);
 	return req->text.data ? mcp_req_copy(req, 0) : ENOMEM;
 }
 
@@ -4236,11 +4229,9 @@ mcp_req_call_args (struct mcp_req const   *req,
 		*p = v && c->args.len ? ESC_VIEW(c->args) : TEXT("{}");
 		return 0;
 	}
-	size_t len = 0;
-	char const *json = v ? json_object_to_json_string_length(v, JB_WIRE, &len)
-	                     : nullptr;
-	*p = json ? RAW(json, len) : FRAG("{}");
-	return v && !json ? ENOMEM : 0;
+	struct cstr_view const json = jb_wire(v);
+	*p = json.data ? RAW(json.data, json.len) : FRAG("{}");
+	return v && !json.data ? ENOMEM : 0;
 }
 
 /** Writes the call @p c, the call req->part - 1 of the turn, into the
@@ -4948,8 +4939,7 @@ mcp_slot_jobs_list (struct mcp_slot *slot)
 		return CAT(&slot->answer, "You have started no jobs.") ? 0 : ENOMEM;
 	for (uint32_t k = 0; k < n; ++k) {
 		struct mcp_slot const *job = &a->jobs[k];
-		size_t len = 0;
-		char const *args = json_object_to_json_string_length(job->args, JB_WIRE, &len);
+		struct cstr_view const args = jb_wire(job->args);
 		char state[48];
 		if (job->cancelled)
 			util_format(state, sizeof state, "cancelled");
@@ -4958,10 +4948,10 @@ mcp_slot_jobs_list (struct mcp_slot *slot)
 		else
 			util_format(state, sizeof state, "%s, %zu bytes",
 			            job->failed ? "failed" : "finished", mcp_slot_output(job).len);
-		if (!args || !dstr_printf(&slot->answer, "job %" PRIu32 ": %s %.*s%s: %s\n",
-		                          k + 1, mcp_slot_offer(job)->tool.name.data,
-		                          (int)util_clip(args, len, 100), args,
-		                          len > 100 ? "..." : "", state))
+		if (!args.data || !dstr_printf(&slot->answer, "job %" PRIu32 ": %s %.*s%s: %s\n",
+		                               k + 1, mcp_slot_offer(job)->tool.name.data,
+		                               (int)util_clip(args.data, args.len, 100), args.data,
+		                               args.len > 100 ? "..." : "", state))
 			return ENOMEM;
 	}
 	return 0;
@@ -8348,10 +8338,8 @@ static int
 mcp_serialize (struct dstr        *text,
                struct json_object *val)
 {
-	size_t len = 0;
-	char const *json = val ? json_object_to_json_string_length(val, JB_WIRE, &len)
-	                       : nullptr;
-	int e = json && dstr_cat_n(text, json, len) ? 0 : ENOMEM;
+	struct cstr_view const json = jb_wire(val);
+	int e = json.data ? cstr_view_cat(json, text) : ENOMEM;
 	json_object_put(val);
 	return e;
 }
