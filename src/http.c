@@ -130,7 +130,9 @@ http_finish (struct curl_loop *curl,
 	memcpy(error, request->error, sizeof error);
 
 	curl_slist_free_all(request->resolve);
+	request->resolve = nullptr;
 	curl_slist_free_all(request->headers);
+	request->headers = nullptr;
 	free(request);
 	CURL *outer = http->ended;
 	http->ended = easy;
@@ -414,6 +416,7 @@ http_looked_up (struct loop *loop,
 	if (l->host)
 		http_host_found(l->host, l);
 	free(l->entry);
+	l->entry = nullptr;
 	free(l);
 }
 
@@ -559,11 +562,14 @@ http_cancel (struct http         *http,
 	if (request->easy) {
 		curl_multi_remove_handle(http->curl.multi, request->easy);
 		curl_easy_cleanup(request->easy);
+		request->easy = nullptr;
 	}
 	list_del(&request->hook);
 	list_del(&request->held);
 	curl_slist_free_all(request->resolve);
+	request->resolve = nullptr;
 	curl_slist_free_all(request->headers);
+	request->headers = nullptr;
 	free(request);
 }
 
@@ -655,6 +661,7 @@ http_destroy (struct http **p_http)
 			host->lookup->host = nullptr;
 		list_del(&host->hook);
 		free(host->entry);
+		host->entry = nullptr;
 		free(host);
 	}
 	struct list *node;
