@@ -744,8 +744,9 @@ several files added by one commit. `list` reflects the current tree;
   concurrent notebook changes. To recover only part of an old note, use
   `read` with `revision`, then `replace` with the combined text.
 - `copy` puts a note of the selected notebook into the caller's own,
-  byte for byte, under the same name or the name that `as` gives. The
-  text of the note does not pass through the model, so a file that is
+  byte for byte, under the same name or the name that `as` gives. Its
+  commit message names the source notebook and the commit that it read.
+  The text of the note does not pass through the model, so a file that is
   needed exactly, or one that is not text, keeps every byte. Models must
   select the source notebook explicitly; clients retain `other` as the
   default source.

@@ -10290,7 +10290,7 @@ def check_notes(binary, up):
             assert call({"action": "list", "thread": shared, "notebook": "other"}) == \
                 note_files(f"writers/{who}/upstream",
                            {"found.md": b"found\n", "img/raw.bin": raw})
-            source = f"from writers/{who}/upstream"
+            source = f"from writers/{who}/upstream at {git('rev-parse', other).decode().strip()}"
             for arguments, said in (
                     ({"file": "found.md"}, f'Copy "found.md" {source} (6 bytes)'),
                     ({"file": "found.md", "as": "copies/f.md"},
@@ -10587,7 +10587,8 @@ def check_shared_notes(binary, up):
                                     "!You can write notes only to your own notebook.")
                     copied = call(ai, action="copy", file="plan.md", notebook=peer,
                                   **{"as": "peer.md"})
-                    assert wrote(copied, name, f'Copy "peer.md" from {selector} '
+                    source = git("rev-parse", f"refs/heads/notes/{selector}").strip()
+                    assert wrote(copied, name, f'Copy "peer.md" from {selector} at {source} '
                                  f'({len(peer)} bytes)'), copied
                     assert call(ai, action="read", file="peer.md") == peer
                     assert call(ai, action="list") == note_files(
@@ -11077,8 +11078,8 @@ def check_notes_texts(binary, up):
                     "!This notebook has no notes yet."
                 assert call(action="read", file="a.md", revision="0" * 40) == \
                     "!Cannot use that revision in this notebook. Use a full commit ID " \
-                    "from its history; the notebook must exist and the revision must " \
-                    "belong to it."
+                    "from its history."
+                assert call(action="copy", file="a.md") == "!This notebook has no notes yet."
                 assert call(action="diff", file="a.md", **{"from": first, "to": first}) == \
                     f"Notebook {client} — a.md\nfrom {first}\nto {first}\n\nNo differences.\n"
                 assert re.fullmatch(saved('Replace "a.md" (6 to 8 bytes)'),
@@ -12169,7 +12170,8 @@ def check_turns(binary, up):
                     saved('Add "seen.md" (4 bytes)', tip(f"{branch}^")),
                     re.escape("For copy, give the source notebook: a participant's name or "
                               "a selector from action notebooks."),
-                    saved(f'Copy "brief.md" from {client} (3 bytes)', tip()),
+                    saved(f'Copy "brief.md" from {client} at '
+                          f'{tip(f"refs/heads/notes/{client}")} (3 bytes)', tip()),
                     re.escape("aim" + provenance),
                     re.escape("Only a client hands askai a file as content.")]
             assert len(outputs) == 8 and all(

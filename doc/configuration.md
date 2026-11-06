@@ -1485,7 +1485,8 @@ text, and text from clients, stay as they are.
 `list` shows each current file once, with its byte count and blob identity;
 `history` shows changes oldest first, with full commit IDs, times, the
 lines added and removed by each change and commit messages.
-`copy` adds a byte-for-byte copy to the caller's own notebook. Agents must
+`copy` adds a byte-for-byte copy to the caller's own notebook; its commit
+message names the source notebook and the commit that it read. Agents must
 name the source notebook explicitly; clients retain `other` as the default
 source. With the APIs `generate`
 and `interactions`, the model also gets the action `attach`, which uploads a

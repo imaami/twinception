@@ -578,25 +578,25 @@ static int
 notes_tool_call_message (struct notes_tool_call *call,
                          uint64_t                before)
 {
-	static_assert(sizeof "Restore  from  ( to  bytes)" + 2 * UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
-	              NOTES_REPO <= NOTES_MESSAGE);
+	static_assert(sizeof "Restore  from  at  ( to  bytes)" + 2 * UTIL_DECIMAL + 2 * NOTES_NAME +
+	              2 + NOTES_REPO + OID_SHA256 <= NOTES_MESSAGE);
 	uint32_t fetch = notes_tool_actions[call->action].fetch;
 	struct cstr_view const verb = notes_tool_actions[call->action].name;
 	char const up = (char)(verb.data[0] - 'a' + 'A');
-	char const *from = fetch & FETCH_RESTORE ? call->revision.from.hex
-	                 : fetch & FETCH_COPY ? notes_selector(notes_tool_call_notebook(call)) : "";
-	char const *sep = *from ? " from " : "";
+	/* A restore names the commit of its revision, and a copy the source
+	 * notebook and the commit it read. */
+	char const *commit = call->revision.from.hex;
+	char const *book = fetch & FETCH_COPY ? notes_selector(notes_tool_call_notebook(call)) : "";
 	int len = (int)call->part.name_len;
 	char const *name = (char const *)buf_peek(&call->file).ptr + call->part.name_at;
 	uint64_t after = call->part.data_len;
 	util_text_clear(&call->message);
-	return before == NO_NOTE
-	     ? util_text_printf(&call->message, "%c%.*s %.*s%s%s (%" PRIu64 " byte%s)", up,
-	                        (int)verb.len - 1, verb.data + 1, len, name, sep, from, after,
-	                        util_s(after))
-	     : util_text_printf(&call->message, "%c%.*s %.*s%s%s (%" PRIu64 " to %" PRIu64
-	                        " bytes)", up, (int)verb.len - 1, verb.data + 1, len, name, sep,
-	                        from, before, after);
+	int e = util_text_printf(&call->message, "%c%.*s %.*s%s%s%s%s", up, (int)verb.len - 1,
+	                         verb.data + 1, len, name, *commit ? " from " : "", book,
+	                         *book ? " at " : "", commit);
+	return e ? e : before == NO_NOTE
+	     ? util_text_printf(&call->message, " (%" PRIu64 " byte%s)", after, util_s(after))
+	     : util_text_printf(&call->message, " (%" PRIu64 " to %" PRIu64 " bytes)", before, after);
 }
 
 /* Runs git to commit the note in call->file of @p slot. The new commit has
@@ -1061,10 +1061,11 @@ notes_tool_revision_step (struct mcp_slot *slot)
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	if (!child_ok(call->child) ||
 	    notes_revision_next(&call->revision, buf_peek(&call->child->out))) {
-		mcp_slot_tell(slot, CSTR_VIEW("Cannot use that revision in this notebook. Use "
-		                              "a full commit ID from its history; the notebook "
-		                              "must exist and the revision must belong to "
-		                              "it."), TOOL_FAILED);
+		/* git pins the tip of the notebook first. */
+		mcp_slot_tell(slot, oid_len(&call->revision.tip)
+		                    ? CSTR_VIEW("Cannot use that revision in this notebook. Use a "
+		                                "full commit ID from its history.")
+		                    : notes_tool_call_unread(call), TOOL_FAILED);
 		return;
 	}
 	child_destroy(&call->child);
@@ -1510,42 +1511,29 @@ notes_tool_got_copy (struct mcp_slot *slot,
 	notes_tool_check(slot, to, notes_exists(call->loop->tool->notes), e);
 }
 
-/* Runs git to read the note @p name. @p fetch is the fetch of read,
- * attach or copy. For copy, notes_tool_got_copy() then writes the note
- * byte for byte to the caller's own notebook. The name of the copy is the
- * as argument in @p args, or else @p name. The text of a copied note does
- * not pass through the caller.
+/* Runs git to read the note @p name. @p fetch is the fetch of read or
+ * attach.
  */
 static void
-notes_tool_read (struct mcp_slot    *slot,
-                 struct cstr_view    name,
-                 struct json_object *args,
-                 uint32_t            fetch)
+notes_tool_read (struct mcp_slot  *slot,
+                 struct cstr_view  name,
+                 uint32_t          fetch)
 {
-	struct notes_tool_call *call = *mcp_slot_own(slot);
 	if (notes_name(&name)) {
 		mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 		return;
 	}
-	if (fetch & FETCH_COPY) {
-		struct json_object *as = jb_get(args, "as");
-		struct cstr_view to = jb_view(as);
-		if (!as) {
-			to = name;
-		} else if (notes_name(&to)) {
-			mcp_slot_tell(slot, bad_name, TOOL_FAILED);
-			return;
-		}
-		(void)util_text_store(&call->name, to);
-	}
 	struct buf in = {};
-	int e = notes_read_input(&in, notes_tool_call_notebook(call), name);
+	int e = notes_read_input(&in, notes_tool_call_notebook(*mcp_slot_own(slot)), name);
 	notes_tool_run(slot, fetch, &in, e);
 }
 
-/* Starts diff, restore, read with a revision, or history with a file. The
- * note is @p file. @p revisions are the values of the arguments from and
- * to for diff, or of the argument revision and nullptr otherwise.
+/* Starts diff, restore, copy, read with a revision, or history with a
+ * file. The note is @p file. @p revisions are the values of the arguments
+ * from and to for diff, or of the argument revision and nullptr otherwise.
+ * For copy, notes_tool_got_copy() then writes the note byte for byte to
+ * the caller's own notebook, and its text does not pass through the
+ * caller.
  */
 static void
 notes_tool_revision (struct mcp_slot          *slot,
@@ -1680,6 +1668,19 @@ notes_tool_start (struct mcp_slot    *slot,
 	if ((flags & NOTE_OFFSET) && mcp_slot_offset(slot, args))
 		return;
 	struct cstr_view const name = jb_view(file);
+	if (fetch & FETCH_COPY) {
+		/* The name of the copy is the as argument, or else file. */
+		struct json_object *as = jb_get(args, "as");
+		struct cstr_view target = as ? jb_view(as) : name;
+		if (notes_name(&target)) {
+			mcp_slot_tell(slot, bad_name, TOOL_FAILED);
+			return;
+		}
+		(void)util_text_store(&call->name, target);
+		notes_tool_revision(slot, name, (struct json_object *const[]){ revision, nullptr },
+		                    fetch);
+		return;
+	}
 	if (revision || diff || fetch & FETCH_RESTORE || (fetch == FETCH_LIST && file)) {
 		struct json_object *const revisions[] = { diff ? from : revision, to };
 		notes_tool_revision(slot, name, revisions, fetch);
@@ -1703,7 +1704,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		return;
 	}
 	if (flags & NOTE_FILE)
-		notes_tool_read(slot, name, args, fetch);
+		notes_tool_read(slot, name, fetch);
 	else
 		notes_tool_run(slot, fetch, &(struct buf){}, 0);
 }
