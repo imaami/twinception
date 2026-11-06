@@ -233,6 +233,15 @@ cli_console_remove_callback (struct cli_console *console)
 	}
 }
 
+/* Drop the line that Readline edits, and remove its callback. */
+static void
+cli_console_abort_line (struct cli_console *console)
+{
+	rl_free_line_state();
+	rl_callback_sigcleanup();
+	cli_console_remove_callback(console);
+}
+
 /* Returns true if bytes of the input or its end are ready to be read. */
 static bool
 cli_console_has_input (struct cli_console const *console)
@@ -1199,12 +1208,8 @@ cli_console_destroy (struct cli_console **ptr)
 		return;
 	struct cli_console *console = *ptr;
 	*ptr = nullptr;
-	if (console->flags & CLI_CONSOLE_CALLBACK_ACTIVE) {
-		rl_free_line_state();
-		rl_callback_sigcleanup();
-		rl_callback_handler_remove();
-		console->flags &= ~CLI_CONSOLE_CALLBACK_ACTIVE;
-	}
+	if (console->flags & CLI_CONSOLE_CALLBACK_ACTIVE)
+		cli_console_abort_line(console);
 	(void)cli_console_suspend(console);
 	cli_console_lines_fini(&console->queue);
 	free(console->restored_line);
@@ -1690,11 +1695,8 @@ cli_console_readline (struct cli_console *console,
 		if (e)
 			return e;
 	}
-	if (console->in.error) {
-		rl_free_line_state();
-		rl_callback_sigcleanup();
-		cli_console_remove_callback(console);
-	}
+	if (console->in.error)
+		cli_console_abort_line(console);
 	return console->in.error;
 }
 
@@ -1972,16 +1974,27 @@ cli_console_set_completion (struct cli_console      *console,
 	console->complete_context = context;
 }
 
+/* Print the spans as cli_console_print() does, and then restore the
+ * display style. Returns the first error.
+ */
+static int
+cli_console_print_kept (struct cli_console            *console,
+                        struct cli_console_span const *spans,
+                        size_t                         count)
+{
+	enum cli_style saved = console->display;
+	int e = cli_console_print(console, spans, count);
+	int reset = cli_console_set_display(console, saved);
+	return e ? e : reset;
+}
+
 int
 cli_console_error (struct cli_console *console,
                    struct cstr_view    text)
 {
 	if (!console || !(console->flags & CLI_CONSOLE_FULLSCREEN))
 		return cli_console_write_error(&text, 1);
-	enum cli_style saved = console->display;
-	int e = cli_console_print(console, &(struct cli_console_span){text, CLI_STYLE_ERROR}, 1);
-	int reset = cli_console_set_display(console, saved);
-	return e ? e : reset;
+	return cli_console_print_kept(console, &(struct cli_console_span){text, CLI_STYLE_ERROR}, 1);
 }
 
 void
@@ -2010,11 +2023,7 @@ cli_console_take_immediate (struct cli_console *console,
 		{line, CLI_STYLE_USER_INPUT},
 		{CSTR_VIEW("\n"), CLI_STYLE_USER_INPUT},
 	};
-	enum cli_style saved = console->display;
-	e = cli_console_print(console, echo, array_size(echo));
-	int reset = cli_console_set_display(console, saved);
-	if (!e)
-		e = reset;
+	e = cli_console_print_kept(console, echo, array_size(echo));
 	if (e)
 		return e;
 	free(console->immediate_line);
