@@ -258,25 +258,6 @@ journal_open_path (struct journal *j,
 	return 0;
 }
 
-/* Returns the reason why the file that @p st describes is not a private
- * file of askai's user, or nullptr if it is one. A private file is a
- * regular file with one link that askai's user owns and that no other user
- * may access.
- */
-static char const *
-journal_file_problem (struct stat const *st)
-{
-	if (!S_ISREG(st->st_mode))
-		return "the file is not a regular file";
-	if (st->st_uid != geteuid())
-		return "askai's user does not own the file";
-	if (st->st_mode & 0077)
-		return "the mode of the file lets other users access it";
-	if (st->st_nlink != 1)
-		return "the file has more than one hard link";
-	return nullptr;
-}
-
 static int
 journal_file_open (int         dir,
                    char const *name,
@@ -289,7 +270,7 @@ journal_file_open (int         dir,
 	struct stat st;
 	if (fstat(*fd, &st))
 		return errno;
-	return journal_file_problem(&st) ? EACCES : 0;
+	return util_private(&st) ? EACCES : 0;
 }
 
 static int
@@ -1295,7 +1276,7 @@ journal_zero (unsigned char const *buf,
  * other processes from making the same file at the same time. Returns 0,
  * EILSEQ if the file does not have exactly @p len bytes or has only zero
  * bytes, EACCES if it is not a private file of askai's user
- * (journal_file_problem()), or another error number. On failure, the
+ * (util_private()), or another error number. On failure, the
  * function writes to the @p why_len bytes at @p why the path of the file,
  * @p shown and @p name, and what is wrong with it.
  */
@@ -1316,7 +1297,7 @@ journal_secret (int         dir,
 	/* journal_file() refuses a file that is not private with EACCES. */
 	char const *problem = nullptr;
 	if (e == EACCES && !fstatat(dir, name, &st, AT_SYMLINK_NOFOLLOW))
-		problem = journal_file_problem(&st);
+		problem = util_private(&st);
 	char wrong[64];
 	if (!e && !st.st_size) {
 		do

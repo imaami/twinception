@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "clk.h"
@@ -282,6 +283,25 @@ util_block_async (sigset_t *old)
 	for (size_t i = 0; i < array_size(faults); ++i)
 		sigdelset(&all, faults[i]);
 	return pthread_sigmask(SIG_BLOCK, &all, old);
+}
+
+/** Returns the reason why the file that @p st describes is not a private
+ *  file of the process's user, or nullptr if it is one. A private file is
+ *  a regular file with one link that the user owns and that no other user
+ *  may access.
+ */
+static inline char const *
+util_private (struct stat const *st)
+{
+	if (!S_ISREG(st->st_mode))
+		return "the file is not a regular file";
+	if (st->st_uid != geteuid())
+		return "askai's user does not own the file";
+	if (st->st_mode & 0077)
+		return "the mode of the file lets other users access it";
+	if (st->st_nlink != 1)
+		return "the file has more than one hard link";
+	return nullptr;
 }
 
 /** Write the @p len bytes at @p buf to @p fd, again after a signal or a
