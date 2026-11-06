@@ -741,15 +741,17 @@ several files added by one commit. `list` reflects the current tree;
   bytes into a new commit in the caller's notebook, recreating a deleted
   note if necessary, and makes no commit if the note already has those
   bytes. It preserves intervening history and other files, and refuses
-  concurrent notebook changes. To recover only part of an old note, use
-  `read` with `revision`, then `replace` with the combined text.
+  concurrent notebook changes. With `as`, it writes the version as a new
+  note of that name, and its commit message names the source as
+  `COMMIT:FILE`. To recover only part of an old note, use `read` with
+  `revision`, then `replace` with the combined text.
 - `copy` puts a note of the selected notebook into the caller's own,
   byte for byte, under the same name or the name that `as` gives. Its
-  commit message names the source notebook and the commit that it read.
-  The text of the note does not pass through the model, so a file that is
-  needed exactly, or one that is not text, keeps every byte. Models must
-  select the source notebook explicitly; clients retain `other` as the
-  default source.
+  commit message names the source notebook and the commit that it read,
+  and with `as` the source file. The text of the note does not pass
+  through the model, so a file that is needed exactly, or one that is not
+  text, keeps every byte. Models must select the source notebook
+  explicitly; clients retain `other` as the default source.
 - `read` shows a note that is not UTF-8 text, such as code in an old
   encoding or in a mix of them, as a view that tells every byte: UTF-8
   where it is valid, each other byte and each NUL as `⟦XX⟧`, its value in

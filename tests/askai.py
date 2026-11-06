@@ -10294,7 +10294,7 @@ def check_notes(binary, up):
             for arguments, said in (
                     ({"file": "found.md"}, f'Copy "found.md" {source} (6 bytes)'),
                     ({"file": "found.md", "as": "copies/f.md"},
-                     f'Copy "copies/f.md" {source} (6 bytes)'),
+                     f'Copy "copies/f.md" {source}:found.md (6 bytes)'),
                     ({"file": "img/raw.bin"}, f'Copy "img/raw.bin" {source} (768 bytes)'),
                     ({"file": "found.md"}, "!A note of that name exists. Use action "
                      "replace to update it, or add under another name."),
@@ -10434,7 +10434,7 @@ def check_notes(binary, up):
                 'Add "q\\"\\\\.txt" (1 byte)', f'Add "{"x" * 255}" (1 byte)',
                 'Add "o.md" (1 byte)', 'Add "mine.md" (1 byte)',
                 f'Copy "found.md" {source} (6 bytes)',
-                f'Copy "copies/f.md" {source} (6 bytes)',
+                f'Copy "copies/f.md" {source}:found.md (6 bytes)',
                 f'Copy "img/raw.bin" {source} (768 bytes)', 'Add "legacy.c" (36 bytes)',
                 'Add "in/blob.bin" (16388 bytes)', 'Add "in/text.md" (4 bytes)',
                 'Replace "plan.md" (6 to 12 bytes)', 'Replace "plan.md" (12 to 12 bytes)',
@@ -10588,8 +10588,8 @@ def check_shared_notes(binary, up):
                     copied = call(ai, action="copy", file="plan.md", notebook=peer,
                                   **{"as": "peer.md"})
                     source = git("rev-parse", f"refs/heads/notes/{selector}").strip()
-                    assert wrote(copied, name, f'Copy "peer.md" from {selector} at {source} '
-                                 f'({len(peer)} bytes)'), copied
+                    assert wrote(copied, name, f'Copy "peer.md" from {selector} at '
+                                 f'{source}:plan.md ({len(peer)} bytes)'), copied
                     assert call(ai, action="read", file="peer.md") == peer
                     assert call(ai, action="list") == note_files(
                         f"{name}/anonymous/client", {"plan.md": name.encode(),
@@ -10795,6 +10795,20 @@ def check_notes_history(binary, up):
                 assert all(oid in history for oid in (first, second, tip())), history
                 assert history.endswith(f"  commit {current}  Restore \"plan.md\" from {first} "
                                         "(9 to 9 bytes)\n"), history
+                # With as, a restore writes the old version as a new note.
+                said = call(alice, action="restore", file="plan.md", revision=second,
+                            **{"as": "plan-old.md"})
+                assert said == f'Saved in commit {tip()}: Restore "plan-old.md" from ' \
+                    f"{second}:plan.md (9 bytes).", said
+                assert git("show", f"{own}:plan-old.md") == b"new plan\n"
+                assert git("show", f"{own}:plan.md") == b"old plan\n"
+                before = tip()
+                for name, why in (("unrelated.md", "!A note of that name exists."),
+                                  ("plan.md", "!A note of that name exists."),
+                                  ("a//b", "!A note's name must be")):
+                    said = call(alice, action="restore", file="plan.md", revision=first,
+                                **{"as": name})
+                    assert said.startswith(why) and tip() == before, (name, said)
 
                 # The source can have disappeared from the current tree.
                 before = tip()
@@ -11040,14 +11054,14 @@ def check_notes_texts(binary, up):
                     assert described == {
                         "action": "add creates a note (file) with text. replace replaces the "
                         "whole text of a note. restore writes a note's version at the commit "
-                        "revision in a new commit. copy copies a note (file) from another "
-                        "notebook (notebook) into yours, under as if given. list lists the "
-                        "current notes. history lists the changes, oldest first, to all notes "
-                        "or to one (file). read reads a note, or its version at the commit "
-                        "revision. diff shows the changes to a note between the commits from "
-                        "and to. notebooks lists the session's notebooks. The actions that read "
-                        "take notebook. To recover lost text: history with file, then diff, "
-                        "then read or restore with revision.",
+                        "revision in a new commit, under as if given. copy copies a note (file) "
+                        "from another notebook (notebook) into yours, under as if given. list "
+                        "lists the current notes. history lists the changes, oldest first, to "
+                        "all notes or to one (file). read reads a note, or its version at the "
+                        "commit revision. diff shows the changes to a note between the commits "
+                        "from and to. notebooks lists the session's notebooks. The actions that "
+                        "read take notebook. To recover lost text: history with file, then "
+                        "diff, then read or restore with revision.",
                         "file": "A note's file name, at most 255 bytes, such as plan.md or "
                         "design/locks.md. Its extension shows the format of the text. With "
                         "history, only that file's changes.",

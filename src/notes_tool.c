@@ -144,6 +144,12 @@ struct notes_tool_loop {
 	struct notes_tool const *tool;   /* the service */
 };
 
+/* The flags of a notes call (struct notes_tool_call). */
+enum {
+	CALL_STRIPPED = 1 << 0,  /* askai cut its notices off the text */
+	CALL_AS       = 1 << 1,  /* the call gave the argument as */
+};
+
 /* The state of one notes call. It is the own word of the call's slot. An
  * ask call has one in its own slot only while git reads the notes for its
  * prompt.
@@ -188,8 +194,7 @@ struct notes_tool_call {
 	uint32_t                fetch;     /* why git runs (enum
 	                                      notes_tool_fetch) */
 	uint32_t                action;    /* the row of notes_tool_actions[] */
-	uint32_t                stripped;  /* nonzero if askai cut its notices
-	                                      off the text */
+	uint32_t                flags;     /* CALL_STRIPPED and CALL_AS */
 	char                    repo[NOTES_REPO];      /* the caller's own
 	                                                  notebook */
 	char                    notebook[NOTES_REPO];  /* the notebook that the
@@ -578,22 +583,26 @@ static int
 notes_tool_call_message (struct notes_tool_call *call,
                          uint64_t                before)
 {
-	static_assert(sizeof "Restore  from  at  ( to  bytes)" + 2 * UTIL_DECIMAL + 2 * NOTES_NAME +
-	              2 + NOTES_REPO + OID_SHA256 <= NOTES_MESSAGE);
+	static_assert(sizeof "Copy  from  at : ( bytes)" + UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
+	              NOTES_REPO + OID_SHA256 + NOTES_NAME <= NOTES_MESSAGE);
+	static_assert(sizeof "Restore  from : ( to  bytes)" + 2 * UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
+	              OID_SHA256 + NOTES_NAME <= NOTES_MESSAGE);
 	uint32_t fetch = notes_tool_actions[call->action].fetch;
 	struct cstr_view const verb = notes_tool_actions[call->action].name;
 	char const up = (char)(verb.data[0] - 'a' + 'A');
 	/* A restore names the commit of its revision, and a copy the source
-	 * notebook and the commit it read. */
+	 * notebook and the commit it read. With as, the message names the
+	 * source file after the commit, as commit:file. */
 	char const *commit = call->revision.from.hex;
 	char const *book = fetch & FETCH_COPY ? notes_selector(notes_tool_call_notebook(call)) : "";
+	char const *source = call->flags & CALL_AS ? call->revision.file.data : "";
 	int len = (int)call->part.name_len;
 	char const *name = (char const *)buf_peek(&call->file).ptr + call->part.name_at;
 	uint64_t after = call->part.data_len;
 	util_text_clear(&call->message);
-	int e = util_text_printf(&call->message, "%c%.*s %.*s%s%s%s%s", up, (int)verb.len - 1,
+	int e = util_text_printf(&call->message, "%c%.*s %.*s%s%s%s%s%s%s", up, (int)verb.len - 1,
 	                         verb.data + 1, len, name, *commit ? " from " : "", book,
-	                         *book ? " at " : "", commit);
+	                         *book ? " at " : "", commit, *source ? ":" : "", source);
 	return e ? e : before == NO_NOTE
 	     ? util_text_printf(&call->message, " (%" PRIu64 " byte%s)", after, util_s(after))
 	     : util_text_printf(&call->message, " (%" PRIu64 " to %" PRIu64 " bytes)", before, after);
@@ -668,7 +677,7 @@ notes_tool_wrote (struct mcp_slot *slot,
                   int              e)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	if (!e && call->stripped)
+	if (!e && call->flags & CALL_STRIPPED)
 		e = cstr_view_cat(CSTR_VIEW(" askai left out the [askai: ...] lines at the end of "
 		                            "the text. askai adds those lines to tool results, and "
 		                            "they are not part of the note."), call->text);
@@ -729,7 +738,7 @@ notes_tool_checked (struct mcp_slot *slot)
 	if (fetch & FETCH_REPLACE)
 		r = r == EEXIST ? 0 : r ? r : ENOENT;
 	if (fetch & FETCH_RESTORE) {
-		if (r == EEXIST)
+		if (r == EEXIST && !(call->flags & CALL_AS))
 			r = 0;
 		if (!r && !oid_equal(&tip, &call->revision.tip)) {
 			mcp_slot_tell(slot, CSTR_VIEW("The notebook changed during restore. Read "
@@ -1480,30 +1489,26 @@ notes_tool_add (struct mcp_slot    *slot,
 			datauri_decode(&data, buf_peek(&call->file).ptr + call->part.data_at);
 		loop_work(mcp_slot_loop(slot), LOOP_COPY, data.size);
 	} else {
-		call->stripped = kept < text.len;
+		call->flags = kept < text.len ? CALL_STRIPPED : 0;
 		e = notes_add_file(&call->file, name, cstr_view_slice(text, 0, kept), &call->part);
 	}
 	notes_tool_check(slot, name, initialized, e);
 }
 
-/* Writes @p text to a note in the caller's own notebook. A copy uses the
- * name in call->name. A restore uses the file name of its revision, and
- * fails if @p text is longer than TOOL_TEXT_MAX bytes.
+/* Writes @p text to the note call->name in the caller's own notebook. A
+ * restore fails if @p text is longer than TOOL_TEXT_MAX bytes.
  */
 static void
 notes_tool_got_copy (struct mcp_slot *slot,
                      struct span      text)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct cstr_view to = util_text_view(&call->name);
-	if (call->fetch & FETCH_RESTORE) {
-		if (text.len > TOOL_TEXT_MAX) {
-			mcp_slot_tell(slot, CSTR_VIEW("That revision exceeds the 4 MiB note size "
-			                              "limit; it was not restored."), TOOL_FAILED);
-			return;
-		}
-		to = util_text_view(&call->revision.file);
+	if (call->fetch & FETCH_RESTORE && text.len > TOOL_TEXT_MAX) {
+		mcp_slot_tell(slot, CSTR_VIEW("That revision exceeds the 4 MiB note size limit; "
+		                              "it was not restored."), TOOL_FAILED);
+		return;
 	}
+	struct cstr_view const to = util_text_view(&call->name);
 	struct cstr_view const bytes = { (char const *)text.ptr, text.len };
 	int e = notes_add_file(&call->file, to, bytes, &call->part);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, text.len);
@@ -1668,8 +1673,9 @@ notes_tool_start (struct mcp_slot    *slot,
 	if ((flags & NOTE_OFFSET) && mcp_slot_offset(slot, args))
 		return;
 	struct cstr_view const name = jb_view(file);
-	if (fetch & FETCH_COPY) {
-		/* The name of the copy is the as argument, or else file. */
+	if (fetch & (FETCH_COPY | FETCH_RESTORE)) {
+		/* The name of the copy or restore is the as argument, or else
+		 * file. */
 		struct json_object *as = jb_get(args, "as");
 		struct cstr_view target = as ? jb_view(as) : name;
 		if (notes_name(&target)) {
@@ -1677,11 +1683,12 @@ notes_tool_start (struct mcp_slot    *slot,
 			return;
 		}
 		(void)util_text_store(&call->name, target);
+		call->flags = as ? CALL_AS : 0;
 		notes_tool_revision(slot, name, (struct json_object *const[]){ revision, nullptr },
 		                    fetch);
 		return;
 	}
-	if (revision || diff || fetch & FETCH_RESTORE || (fetch == FETCH_LIST && file)) {
+	if (revision || diff || (fetch == FETCH_LIST && file)) {
 		struct json_object *const revisions[] = { diff ? from : revision, to };
 		notes_tool_revision(slot, name, revisions, fetch);
 		return;
@@ -1746,11 +1753,12 @@ notes_tool_schema (struct notes_tool const *tool,
 		"action", jb_set_or_free(schema_enum(actions, nullptr), "description", schema_text3(
 			"add creates a note (file) with text. replace replaces the whole text of a "
 			"note. restore writes a note's version at the commit revision in a new "
-			"commit. copy copies a note (file) from another notebook (notebook) into "
-			"yours, under as if given. list lists the current notes. history lists the "
-			"changes, oldest first, to all notes or to one (file). read reads a note, "
-			"or its version at the commit revision. diff shows the changes to a note "
-			"between the commits from and to. notebooks lists the session's notebooks.",
+			"commit, under as if given. copy copies a note (file) from another notebook "
+			"(notebook) into yours, under as if given. list lists the current notes. "
+			"history lists the changes, oldest first, to all notes or to one (file). "
+			"read reads a note, or its version at the commit revision. diff shows the "
+			"changes to a note between the commits from and to. notebooks lists the "
+			"session's notebooks.",
 			files ? " attach gives you a whole note (file) as a file after the turn's "
 			        "results." : "",
 			" The actions that read take notebook. To recover lost text: history with "
