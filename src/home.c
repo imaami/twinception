@@ -17,6 +17,7 @@
 #include "hexid.h"
 #include "hist.h"
 #include "home.h"
+#include "htab.h"
 #include "http.h"
 #include "httpd.h"
 #include "jb.h"
@@ -93,12 +94,13 @@ enum : uint16_t {
  * queued, which tell who it is, and is kept for reuse after.
  */
 struct home_principal {
-	struct list            ring;    /* on home's ring of its class, or its shelf */
-	struct list            jobs;    /* queued, oldest first, by their queue hooks */
-	struct home_principal *chain;   /* the next in its bucket */
-	uint64_t               hash;
-	uint32_t               queued;
-	uint32_t               class;   /* 0 interactive, 1 background */
+	struct htab_node node;    /* in home->whom, with the hash of the
+	                             principal as its hash, or with HOME_FIFO
+	                             the class */
+	struct list      ring;    /* on home's ring of its class, or its shelf */
+	struct list      jobs;    /* queued, oldest first, by their queue hooks */
+	uint32_t         queued;
+	uint32_t         class;   /* 0 interactive, 1 background */
 };
 
 /* Best-effort cancellation outlives the local job, but not its deadline. */
@@ -150,8 +152,8 @@ enum : uint64_t {
  * those of its class, unless its front let go of it: then it is among
  * those dropped, to cancel. Messages only admit, refuse or move jobs, and bulk
  * steps start, read and cancel them, a share at a time, as each call into
- * libcurl costs some tens of µs. A seeded hash of a principal selects the
- * bucket of the principal, and each bucket is a chained list.
+ * libcurl costs some tens of µs. The principals with jobs queued are in a
+ * hash table, by the seeded hash of each principal.
  */
 struct home {
 	struct loop_step          start;       /* starts the jobs waiting */
@@ -195,13 +197,12 @@ struct home {
 	struct http              *http;
 	struct httpd_home        *door;        /* to make room for descriptors */
 	struct ai_endpoint const *ep;
-	struct home_principal   **whom;        /* the principals' buckets */
+	struct htab               whom;        /* the principals with jobs queued */
 	struct http_request      *ask;         /* GET /props, under way */
 	uint64_t                  timeout;     /* ns from a start to its deadline */
 	uint64_t                  silence;     /* ns an answer may pause */
 	uint64_t                  backoff;     /* the breaker's next open spell */
 	uint64_t                  until;       /* when the breaker half-opens */
-	size_t                    mask;        /* buckets - 1 */
 	uint32_t                  max;         /* jobs in flight at most */
 	uint32_t                  slots;       /* upstream calls at once at most */
 	uint32_t                  context;     /* tokens of the upstream's context,
@@ -295,37 +296,45 @@ home_background_slots (struct home const *home)
 	return home->slots - (home->slots >= 2);
 }
 
-/* Whether @p job is for @p p, who its first job queued is for. */
+/* Whether the job @p key is for the principal of @p node: the class and
+ * the session of the job, and its key or its peer, equal those of the first
+ * job in the principal's queue (htab_match_fn).
+ */
 static bool
-home_principal_is (struct home_principal const *p,
-                   struct job const            *job)
+home_principal_is (struct htab_node const *node,
+                   void const             *key)
 {
+	struct home_principal const *p = container_of(node, struct home_principal, node);
+	struct job const *job = key;
 	struct job const *first = container_of(p->jobs.next, struct job, queue);
-	return p->hash == job->principal && p->class == home_job_class(job) &&
-	       first->session == job->session &&
+	return p->class == home_job_class(job) && first->session == job->session &&
 	       (job->session ? !memcmp(buf_peek(&first->key).ptr,
 	                               buf_peek(&job->key).ptr, job->session)
 	                     : stream_peer_equal(first->peer, job->peer));
 }
 
-/* The link that holds the principal @p job is for, or where it would be
- * appended; for all of a class one in a queue first in first out.
+/* Whether the job @p key is of the class of the principal of @p node, as
+ * with HOME_FIFO (htab_match_fn).
  */
-static struct home_principal **
+static bool
+home_class_is (struct htab_node const *node,
+               void const             *key)
+{
+	return container_of(node, struct home_principal, node)->class == home_job_class(key);
+}
+
+/* The principal that @p job is for, or nullptr if no principal with jobs
+ * queued matches the job. With HOME_FIFO, the principal of all jobs of a
+ * class is the class.
+ */
+static struct home_principal *
 home_find_whom (struct home const *home,
                 struct job const  *job)
 {
-	struct home_principal **p = home->whom;
-	if (home->flags & HOME_FIFO) {
-		uint32_t c = home_job_class(job);
-		while (*p && (*p)->class != c)
-			p = &(*p)->chain;
-		return p;
-	}
-	p += job->principal & home->mask;
-	while (*p && !home_principal_is(*p, job))
-		p = &(*p)->chain;
-	return p;
+	struct htab_node *node = home->flags & HOME_FIFO
+	                       ? *htab_find(&home->whom, home_job_class(job), home_class_is, job)
+	                       : *htab_find(&home->whom, job->principal, home_principal_is, job);
+	return node ? container_of(node, struct home_principal, node) : nullptr;
 }
 
 /* Publish @p job's progress, and tell its front if it asked. */
@@ -353,11 +362,7 @@ home_unqueue (struct home *home,
 	job->who = nullptr;
 	hist_add(&home->metrics->queued, -1ULL);
 	if (!--p->queued) {
-		struct home_principal **link = home->whom;
-		link += home->flags & HOME_FIFO ? 0 : p->hash & home->mask;
-		while (*link != p)
-			link = &(*link)->chain;
-		*link = p->chain;
+		htab_unlink(&home->whom, &p->node);
 		list_del(&p->ring);
 		shelf_put(&home->spare, &p->ring);
 		hist_add(&home->metrics->principals, -1ULL);
@@ -2568,27 +2573,29 @@ home_vacant (struct home const *home,
 	               home->running_bg + home->readied[1] < home_background_slots(home)));
 }
 
-/* Admit @p job of class @p c to the queue of its principal, whose entry
- * @p slot holds, or else a new one, kept or allocated, at the back of its
+/* Admit @p job of class @p c to the queue of its principal @p p, or if
+ * @p p is nullptr, of a new one, kept or allocated, at the back of its
  * class's ring; ENOMEM if out of memory. An interactive job that waits with
  * one slot preempts a background one.
  */
 static int
-home_wait (struct home            *home,
-           struct job             *job,
-           uint32_t                c,
-           struct home_principal **slot)
+home_wait (struct home           *home,
+           struct job            *job,
+           uint32_t               c,
+           struct home_principal *p)
 {
-	struct home_principal *p = *slot;
 	if (!p) {
 		struct list *spare = shelf_take(&home->spare);
 		p = spare ? container_of(spare, struct home_principal, ring)
 		          : malloc(sizeof *p);
 		if (!p)
 			return ENOMEM;
-		*p = (struct home_principal){ .hash = job->principal, .class = c };
+		*p = (struct home_principal){
+			.node.hash = home->flags & HOME_FIFO ? c : job->principal,
+			.class = c
+		};
 		list_init(&p->jobs);
-		*slot = p;
+		htab_link(&home->whom, &p->node);
 		list_append(&home->ring[c], &p->ring);
 		hist_add(&home->metrics->principals, 1);
 	}
@@ -2622,9 +2629,9 @@ home_admit (struct home *home,
 		home_refuse(home, job);
 		return;
 	}
-	struct home_principal **slot = home_find_whom(home, job);
+	struct home_principal *who = home_find_whom(home, job);
 	if (hist_get(&m->in_flight) >= home->max ||
-	    (*slot && !(home->flags & HOME_FIFO) && (*slot)->queued >= JOB_QUEUED)) {
+	    (who && !(home->flags & HOME_FIFO) && who->queued >= JOB_QUEUED)) {
 		home_end(home, job, JOB_BUSY, &m->rejected);
 		return;
 	}
@@ -2634,7 +2641,7 @@ home_admit (struct home *home,
 		list_append(&home->ready[c], &job->queue);
 		job->flags |= READY;
 		++home->readied[c];
-	} else if (home_wait(home, job, c, slot)) {
+	} else if (home_wait(home, job, c, who)) {
 		home_end(home, job, JOB_FAILED, &m->rejected);
 		return;
 	}
@@ -2797,8 +2804,7 @@ home_fini (struct home *home)
 	while (home_relieve(home, BUF_CRITICAL, SIZE_MAX))
 		;
 	self = nullptr;
-	free(home->whom);
-	home->whom = nullptr;
+	htab_fini(&home->whom);
 }
 
 struct home *
@@ -2817,7 +2823,6 @@ home_create (struct loop         *loop,
 		return nullptr;
 	}
 	uint32_t max = cfg->calls;
-	size_t buckets = stdc_bit_ceil(max < KEYS_MAX ? max : (uint32_t)KEYS_MAX);
 	*home = (struct home){
 		.start.fn = home_start_step,
 		.stop.fn = home_stop_step,
@@ -2843,8 +2848,6 @@ home_create (struct loop         *loop,
 		.loop = loop,
 		.door = door,
 		.ep = ep,
-		.whom = calloc(buckets, sizeof *home->whom),
-		.mask = buckets - 1,
 		.timeout = ep->timeout_ms > 0 ? (uint64_t)ep->timeout_ms * MS : 0,
 		.silence = ep->chunk_ms > 0 ? (uint64_t)ep->chunk_ms * MS : 0,
 		.backoff = BACKOFF_MIN,
@@ -2868,7 +2871,9 @@ home_create (struct loop         *loop,
 	list_init(&home->feeding);
 	list_init(&home->cancellations);
 	list_init(&home->spare.list);
-	*e = home->whom ? home_arm(home, http) : ENOMEM;
+	*e = htab_init(&home->whom, stdc_bit_ceil(max < KEYS_MAX ? max : (uint32_t)KEYS_MAX));
+	if (!*e)
+		*e = home_arm(home, http);
 	if (*e) {
 		home_fini(home);
 		free(home);
