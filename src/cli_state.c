@@ -360,17 +360,16 @@ cli_state_default_path (struct cli_state *state)
 		return e;
 	if (!dstr_printf(&state->path, "%s%s/cli.git", base, rest))
 		return ENOMEM;
-	/* Only the private leaf holds data. Existing parent modes are preserved. */
-	size_t len = dstr_len(&state->path);
-	char const *path = dstr_get(&state->path);
-	for (size_t i = 1; i <= len; ++i) {
-		if (i < len && path[i] != '/')
-			continue;
-		e = cstr_view_store((struct cstr_view){ path, i }, &state->scratch);
+	/* Make each parent, with a NUL in place of the '/' after it for
+	 * mkdir(). Only the private leaf, which cli_state_create() makes,
+	 * holds data. Existing parent modes are preserved. */
+	char *path = (char *)dstr_raw(&state->path);
+	for (char *slash = path; (slash = strchr(slash + 1, '/')); ) {
+		*slash = '\0';
+		e = mkdir(path, 0700) && errno != EEXIST ? errno : 0;
+		*slash = '/';
 		if (e)
 			return e;
-		if (mkdir(dstr_get(&state->scratch), 0700) && errno != EEXIST)
-			return errno;
 	}
 	return 0;
 }

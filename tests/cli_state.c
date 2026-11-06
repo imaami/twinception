@@ -26,6 +26,25 @@ has_input (struct cli_state const *state, struct cstr_view text)
 	return false;
 }
 
+/* Open the default repository with XDG_STATE_HOME @p xdg and HOME @p home,
+ * and check that the directory @p expected, whose parents may be missing,
+ * is now a private one.
+ */
+static void
+check_default (char const *xdg,
+               char const *home,
+               char const *expected)
+{
+	assert(!setenv("XDG_STATE_HOME", xdg, 1) && !setenv("HOME", home, 1));
+	int e = 0;
+	struct cli_state *state = cli_state_create((struct cstr_view){}, CSTR_VIEW("session\0alice\0ask"),
+	                                           nullptr, &e);
+	assert(state && !e);
+	cli_state_destroy(&state);
+	struct stat status;
+	assert(!stat(expected, &status) && S_ISDIR(status.st_mode) && (status.st_mode & 0777) == 0700);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -97,6 +116,19 @@ main (int argc, char **argv)
 	first = cli_state_create(repo, CSTR_VIEW("session\0bob\0ask"), nullptr, &e);
 	assert(first && !e && !cli_state_input_count(first));
 	cli_state_destroy(&first);
-	puts("CLI Git history: PASS");
+	/* The default repository is in XDG_STATE_HOME if it is absolute,
+	 * else in HOME's .local/state. */
+	struct dstr xdg = dstr("");
+	struct dstr home = dstr("");
+	struct dstr expected = dstr("");
+	assert(dstr_printf(&xdg, "%s.xdg//a", argv[1]) && dstr_printf(&home, "%s.home", argv[1]) &&
+	       dstr_printf(&expected, "%s.xdg/a/askai/cli.git", argv[1]));
+	check_default(dstr_get(&xdg), "/nonexistent/askai-home", dstr_get(&expected));
+	assert(dstr_clear(&expected) && dstr_printf(&expected, "%s/.local/state/askai/cli.git", dstr_get(&home)));
+	check_default("relative", dstr_get(&home), dstr_get(&expected));
+	dstr_cleanup(&xdg);
+	dstr_cleanup(&home);
+	dstr_cleanup(&expected);
+	puts("CLI Git history and its default path: PASS");
 	return 0;
 }
