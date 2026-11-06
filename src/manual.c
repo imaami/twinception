@@ -28,7 +28,7 @@ enum {
 	MANUAL_SECONDS = 10,       /**< for man to find, or render, a page */
 	MANUAL_NAME    = 128,      /**< bytes of a page's name, at most */
 	MANUAL_SECTION = 16,       /**< and of a section's */
-	MANUAL_WHY     = 192,      /**< bytes of what says why there is no page */
+	MANUAL_WHY     = 196,      /**< bytes of what says why there is no page */
 	FOUND_MAX      = 4 << 10,  /**< bytes of man -w's answer: a path, a line break */
 	ALIASES        = 8,        /**< names a file is kept by, at most */
 	BUCKETS        = 1 << 12,  /**< the table's, to begin with */
@@ -53,17 +53,16 @@ struct manual_page {
  *  it.
  */
 struct manual_wait {
-	struct msg           msg;
-	struct manual_wait  *next;
-	struct loop         *loop;
-	struct manual_page  *page;     /**< a reference to the page, which the
-	                                    handler moves to the call, or
-	                                    nullptr with the reason in why */
-	uint64_t             since;    /**< loop_clock() when the call began to
-	                                    wait */
-	struct handle        who;      /**< the handle of the call on its loop */
-	size_t               why_len;  /**< the length of the text in why */
-	char                 why[MANUAL_WHY];
+	struct msg            msg;
+	struct manual_wait   *next;
+	struct loop          *loop;
+	struct manual_page   *page;   /**< a reference to the page, which the
+	                                   handler moves to the call, or nullptr
+	                                   with the reason in why */
+	uint64_t              since;  /**< loop_clock() when the call began to
+	                                   wait */
+	struct handle         who;    /**< the handle of the call on its loop */
+	UTIL_TEXT(MANUAL_WHY) why;
 };
 
 /** What a client loop has of the manual, the man tool's part of it: the
@@ -255,12 +254,9 @@ manual_fetch_fail (struct manual_fetch *f,
 	manual_del(m, f->alias);
 	struct manual_wait *w = f->waiters;
 	pthread_mutex_unlock(&m->lock);
-	size_t const len = util_clip(why.data, why.len, sizeof w->why - 1);
 	for (struct manual_wait *next; w; w = next) {
 		next = w->next;
-		memcpy(w->why, why.data, len);
-		w->why[len] = '\0';
-		w->why_len = len;
+		(void)util_text_store(&w->why, why);
 		loop_post(w->loop, &w->msg);
 	}
 	manual_fetch_destroy(&f);
@@ -355,32 +351,35 @@ manual_fetch_run (struct manual_fetch *f,
 }
 
 /* Writes the refusal of the alias @p a, which is not in the manual, to
- * @p why. Returns a view of the text.
+ * the @p size bytes at @p why. Returns a view of the text.
  */
 static struct cstr_view
 manual_entry_none (struct manual_entry const *a,
-                   char                      *why)
+                   char                      *why,
+                   size_t                     size)
 {
 	char const *name = a->key;
 	char const *section = name + strlen(name) + 1;
-	return *section ? util_format_view(why, MANUAL_WHY, "No manual entry for %s in "
-	                                   "section %s.", name, section)
-	                : util_format_view(why, MANUAL_WHY, "No manual entry for %s.", name);
+	return *section ? util_format_view(why, size, "No manual entry for %s in section %s.",
+	                                   name, section)
+	                : util_format_view(why, size, "No manual entry for %s.", name);
 }
 
 /* Returns a view with data nullptr if man, @p c, ended well or its output
- * was cut short. Otherwise returns the reason, which may be text in @p why.
+ * was cut short. Otherwise returns the reason, which may be text in the
+ * @p size bytes at @p why.
  */
 static struct cstr_view
 manual_fetch_ended (struct manual_fetch const *f,
                     struct child const        *c,
-                    char                      *why)
+                    char                      *why,
+                    size_t                     size)
 {
 	if (c->flags & CHILD_CUT)
 		return (struct cstr_view){};
 	if (child_status(c) == 16)
-		return manual_entry_none(f->alias, why);
-	return child_why(c, "man", MANUAL_SECONDS * NS, why, MANUAL_WHY);
+		return manual_entry_none(f->alias, why, size);
+	return child_why(c, "man", MANUAL_SECONDS * NS, why, size);
 }
 
 /* Copy as much of the page in as the step has the share for, made UTF-8
@@ -417,7 +416,7 @@ manual_fetch_rendered (struct child *c)
 {
 	struct manual_fetch *f = c->owner;
 	char buf[MANUAL_WHY];
-	struct cstr_view const why = manual_fetch_ended(f, c, buf);
+	struct cstr_view const why = manual_fetch_ended(f, c, buf, sizeof buf);
 	if (why.data) {
 		manual_fetch_fail(f, why);
 		return;
@@ -449,7 +448,7 @@ manual_fetch_found (struct child *c)
 	struct manual_fetch *f = c->owner;
 	struct manual *m = f->ml->manual;
 	char buf[MANUAL_WHY];
-	struct cstr_view const why = manual_fetch_ended(f, c, buf);
+	struct cstr_view const why = manual_fetch_ended(f, c, buf, sizeof buf);
 	if (why.data) {
 		manual_fetch_fail(f, why);
 		return;
@@ -580,8 +579,8 @@ manual_back (struct loop *loop,
 		manual_answer(slot, page);
 	} else {
 		LOG(LOG_VERBOSE, "man call failed after %.1f s: %s",
-		    (double)(loop_clock() - w->since) / 1e9, w->why);
-		mcp_slot_tell(slot, (struct cstr_view){ w->why, w->why_len }, TOOL_FAILED);
+		    (double)(loop_clock() - w->since) / 1e9, w->why.data);
+		mcp_slot_tell(slot, util_text_view(&w->why), TOOL_FAILED);
 	}
 	manual_wait_destroy(&w);
 }
