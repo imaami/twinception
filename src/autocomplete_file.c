@@ -10,19 +10,14 @@
 #include <sys/stat.h>
 
 #include "autocomplete_file.h"
+#include "compat.h"
 #include "dstr.h"
 #include "jb.h"
 
-enum {
-	AUTOCOMPLETE_FILE_MATCHES = 256,
-	AUTOCOMPLETE_FILE_LIMIT = 16 << 20,
-};
-
 struct autocomplete_file {
-	struct autocomplete_match matches[AUTOCOMPLETE_FILE_MATCHES];
-	struct dstr               lines; /**< the lines of the matches, each NUL-terminated */
-	struct dstr               directory;
-	struct dstr               home;
+	struct autocomplete_matches found;
+	struct dstr                 directory;
+	struct dstr                 home;
 };
 
 struct autocomplete_file *
@@ -33,7 +28,7 @@ autocomplete_file_create (int *const e)
 		*e = ENOMEM;
 		return nullptr;
 	}
-	file->lines = dstr(nullptr);
+	file->found.lines = dstr(nullptr);
 	file->directory = dstr(nullptr);
 	file->home = dstr(nullptr);
 	struct cstr_view const home = cstr_view(getenv("HOME"));
@@ -49,41 +44,12 @@ autocomplete_file_destroy (struct autocomplete_file **const pp)
 	if (!pp || !*pp)
 		return;
 	struct autocomplete_file *file = *pp;
-	dstr_cleanup(&file->lines);
+	dstr_cleanup(&file->found.lines);
 	dstr_cleanup(&file->directory);
 	dstr_cleanup(&file->home);
 	free(file);
 	file = nullptr;
 	*pp = nullptr;
-}
-
-/* Append the line of a match; its data is set when all lines are in place. */
-static int
-autocomplete_file_add (struct autocomplete_file *const file,
-                       size_t const                    index,
-                       struct cstr_view const          command,
-                       struct cstr_view const          directory,
-                       struct cstr_view const          name,
-                       bool const                      is_directory,
-                       struct cstr_view const          suffix)
-{
-	size_t const cursor = command.len + directory.len + name.len + 1;
-	struct dstr *const lines = &file->lines;
-	char const separator = is_directory ? '/' : ' ';
-	if (cstr_view_cat(command, lines) ||
-	    cstr_view_cat(directory, lines) ||
-	    cstr_view_cat(name, lines) ||
-	    !dstr_cat_n(lines, &separator, 1) ||
-	    cstr_view_cat(suffix, lines) ||
-	    !dstr_cat_n(lines, "", 1))
-		return ENOMEM;
-	file->matches[index] = (struct autocomplete_match){
-		.line = {nullptr, cursor + suffix.len},
-		.cursor = cursor,
-		.label_begin = (uint32_t)(command.len + directory.len),
-		.kind = AUTOCOMPLETE_FILE,
-	};
-	return 0;
 }
 
 static bool
@@ -111,7 +77,7 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 	if (!file || !command.data || !command.len || cursor > line.len)
 		return EINVAL;
 
-	if (line.len > AUTOCOMPLETE_FILE_LIMIT)
+	if (line.len > AUTOCOMPLETE_BYTES)
 		return E2BIG;
 
 	if (!jb_is_text(line))
@@ -129,15 +95,15 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 		--directory_len;
 	struct cstr_view const directory = cstr_view_slice(prefix, 0, directory_len);
 	struct cstr_view const basename = cstr_view_slice(prefix, directory_len, SIZE_MAX);
-	(void)dstr_clear(&file->lines);
+	/* The label of each match starts after the command and the directory. */
+	size_t const base = command.len + directory.len;
+	autocomplete_matches_clear(&file->found);
 	if (cstr_view_equal(prefix, CSTR_VIEW("~"))) {
-		int const e = autocomplete_file_add(file, 0, command, (struct cstr_view){},
-		                                    prefix, true, suffix);
-		if (!e) {
-			autocomplete_match_place(file->matches, 1, dstr_get(&file->lines));
-			*matches = file->matches;
-			*count = 1;
-		}
+		struct cstr_view const parts[] = { command, prefix, CSTR_VIEW("/"), suffix };
+		int const e = autocomplete_matches_add(&file->found, parts, array_size(parts),
+		                                       base + prefix.len + 1, base, AUTOCOMPLETE_FILE);
+		if (!e)
+			*matches = autocomplete_matches_finish(&file->found, count);
 		return e;
 	}
 	(void)dstr_clear(&file->directory);
@@ -159,9 +125,8 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 	DIR *dir = opendir(dstr_get(&file->directory));
 	if (!dir)
 		return errno == ENOMEM ? ENOMEM : 0;
-	size_t used = 0;
 	int e = 0;
-	while (used < AUTOCOMPLETE_FILE_MATCHES) {
+	while (file->found.count < array_size(file->found.matches)) {
 		errno = 0;
 		struct dirent *const entry = readdir(dir);
 		if (!entry) {
@@ -179,13 +144,13 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 		}
 		if (slash && !is_directory)
 			continue;
-		size_t const length = command.len + directory.len + name.len + 1 + suffix.len;
-		if (length >= AUTOCOMPLETE_FILE_LIMIT - dstr_len(&file->lines))
-			break;
-		e = autocomplete_file_add(file, used, command, directory, name, is_directory, suffix);
+		struct cstr_view const parts[] = {
+			command, directory, name, is_directory ? CSTR_VIEW("/") : CSTR_VIEW(" "), suffix,
+		};
+		e = autocomplete_matches_add(&file->found, parts, array_size(parts), base + name.len + 1,
+		                             base, AUTOCOMPLETE_FILE);
 		if (e)
 			break;
-		++used;
 	}
 
 	if (closedir(dir) && !e)
@@ -194,9 +159,6 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 	if (e)
 		return e;
 
-	autocomplete_match_place(file->matches, used, dstr_get(&file->lines));
-	autocomplete_match_sort(file->matches, used, command.len + directory.len);
-	*matches = file->matches;
-	*count = used;
+	*matches = autocomplete_matches_finish(&file->found, count);
 	return 0;
 }

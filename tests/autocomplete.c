@@ -230,6 +230,10 @@ static void autocomplete_files(void)
 	assert(!count);
 	assert(autocomplete_file_complete(files, command, command.len, (struct cstr_view){},
 	                                  &matches, &count) == EINVAL);
+	struct cstr_view const tilde = CSTR_VIEW("/read ~");
+	assert(!autocomplete_file_complete(files, tilde, tilde.len, command, &matches, &count));
+	assert(count == 1 && cstr_view_equal(matches[0].line, CSTR_VIEW("/read ~/")));
+	assert(matches[0].cursor == matches[0].line.len && matches[0].label_begin == command.len);
 
 	char directory[] = "/tmp/askai-autocomplete-XXXXXX";
 	assert(mkdtemp(directory));

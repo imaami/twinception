@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "cstr_view.h"
+#include "dstr.h"
 
 struct autocomplete;
 struct json_object;
@@ -42,6 +43,50 @@ struct autocomplete_match {
 	uint32_t               label_begin;
 	enum autocomplete_kind kind;
 };
+
+/** AUTOCOMPLETE_MATCHES is the maximum number of matches of a completion.
+ *  AUTOCOMPLETE_BYTES is the maximum size of the lines of the matches with
+ *  their NULs, of the input of a completion and of the discovery data.
+ */
+enum {
+	AUTOCOMPLETE_MATCHES = 256,
+	AUTOCOMPLETE_BYTES   = 16 << 20,
+};
+
+/** The matches of a completion and their lines. The next completion reuses
+ *  the storage.
+ */
+struct autocomplete_matches {
+	struct autocomplete_match matches[AUTOCOMPLETE_MATCHES];
+	struct dstr               lines;  /**< each line and a NUL */
+	size_t                    count;
+	size_t                    begin;  /**< the least label_begin */
+};
+
+/** Empty @p set for the next completion. */
+extern void
+autocomplete_matches_clear (struct autocomplete_matches *set);
+
+/** Add the concatenation of the @p n views at @p parts to @p set as the
+ *  line of a match, with its cursor at @p cursor and its label from
+ *  @p label_begin. A line that does not fit in the set is not added.
+ *  Returns 0 or ENOMEM.
+ */
+extern int
+autocomplete_matches_add (struct autocomplete_matches *set,
+                          struct cstr_view const      *parts,
+                          size_t                       n,
+                          size_t                       cursor,
+                          size_t                       label_begin,
+                          enum autocomplete_kind       kind);
+
+/** Point the matches at their lines, sort them by their lines from the
+ *  least label_begin, then by cursor, and drop duplicates. Returns the
+ *  matches, and their number in @p *count.
+ */
+extern struct autocomplete_match const *
+autocomplete_matches_finish (struct autocomplete_matches *set,
+                             size_t                      *count);
 
 /** Single-thread owned. Keeps scratch storage until destruction. */
 extern struct autocomplete *
@@ -136,23 +181,6 @@ autocomplete_complete (struct autocomplete              *ac,
 extern bool
 autocomplete_safe (struct cstr_view text,
                    bool             identifier);
-
-/** Sets line.data of each of the @p count elements of @p matches. The lines
- *  are stored at @p lines in the same order, each followed by a NUL. The
- *  line.len of each match must be set already.
- */
-extern void
-autocomplete_match_place (struct autocomplete_match *matches,
-                          size_t                     count,
-                          char const                *lines);
-
-/** Sort matches in place, without allocating, by their lines from begin,
- * then by cursor.
- */
-extern void
-autocomplete_match_sort (struct autocomplete_match *matches,
-                         size_t                     count,
-                         size_t                     begin);
 
 /** Parses /tool NAME key=VALUE ... or /tool NAME {JSON}. On success the
  * caller owns args and borrows tool from the catalog. On failure both

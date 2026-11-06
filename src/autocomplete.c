@@ -17,7 +17,11 @@
 #include "jb.h"
 #include "util.h"
 
-enum { AUTOCOMPLETE_BYTES = 16 * 1024 * 1024 };
+/* The most tools and the most lists of note paths of a catalog. */
+enum {
+	AUTOCOMPLETE_TOOL_COUNT = 4096,
+	AUTOCOMPLETE_NOTE_LISTS = 4096,
+};
 
 enum autocomplete_flag : uint64_t {
 	AUTOCOMPLETE_STRING       = UINT64_C(1) <<  0,
@@ -99,10 +103,7 @@ struct autocomplete {
 	struct dstr                   decoded;
 	struct dstr                   quoted;
 	struct dstr                   json;
-	struct dstr                   lines;
-	struct autocomplete_match     matches[256];
-	size_t                        match_count;
-	size_t                        match_begin;
+	struct autocomplete_matches   found;
 };
 
 /* Returns a view of the string value, or a view of "" if value is not a
@@ -590,7 +591,7 @@ autocomplete_create (int *e)
 	}
 	*ac = (struct autocomplete){
 		.nesting = dstr(nullptr), .key = dstr(nullptr), .decoded = dstr(nullptr),
-		.quoted = dstr(nullptr), .json = dstr(nullptr), .lines = dstr(nullptr),
+		.quoted = dstr(nullptr), .json = dstr(nullptr), .found.lines = dstr(nullptr),
 	};
 	*e = 0;
 	return ac;
@@ -645,7 +646,7 @@ autocomplete_destroy (struct autocomplete **pp)
 	dstr_cleanup(&ac->decoded);
 	dstr_cleanup(&ac->quoted);
 	dstr_cleanup(&ac->json);
-	dstr_cleanup(&ac->lines);
+	dstr_cleanup(&ac->found.lines);
 	free(*pp);
 	*pp = nullptr;
 }
@@ -703,7 +704,7 @@ autocomplete_add_tool (struct autocomplete *ac,
 	}
 	entry.storage = name.len + entry.tool.title.len + entry.tool.description.len + schema_size;
 	size_t remaining = ac->storage - (previous ? previous->storage : 0);
-	if ((!replace && ac->count >= 4096) || entry.storage > AUTOCOMPLETE_BYTES || remaining > AUTOCOMPLETE_BYTES - entry.storage) {
+	if ((!replace && ac->count >= AUTOCOMPLETE_TOOL_COUNT) || entry.storage > AUTOCOMPLETE_BYTES || remaining > AUTOCOMPLETE_BYTES - entry.storage) {
 		error = E2BIG;
 		goto fail;
 	}
@@ -853,7 +854,7 @@ autocomplete_set_note_files (struct autocomplete    *ac,
 	size_t index = autocomplete_notebook_find(ac, tool, notebook);
 	bool replace = index < ac->notes_count;
 	size_t remaining = ac->notes_storage - (replace ? ac->notes[index].storage : 0);
-	if ((!replace && index >= 4096) || storage > AUTOCOMPLETE_BYTES - remaining)
+	if ((!replace && index >= AUTOCOMPLETE_NOTE_LISTS) || storage > AUTOCOMPLETE_BYTES - remaining)
 		return E2BIG;
 	if (!replace) {
 		size_t previous = ac->notes_capacity;
@@ -902,30 +903,13 @@ autocomplete_replacement (struct autocomplete    *ac,
                           bool                    separate,
                           enum autocomplete_kind  kind)
 {
-	if (ac->match_count == array_size(ac->matches))
-		return 0;
 	if (separate && end < line.len && cstr_view_space(line.data[end]))
 		++end;
-	if (value.len > SIZE_MAX - line.len - 2)
-		return ENOMEM;
-	size_t cursor = begin + value.len + separate;
-	size_t length = cursor + line.len - end;
-	if (length >= AUTOCOMPLETE_BYTES - dstr_len(&ac->lines))
-		return 0;
-	if (!dstr_cat_n(&ac->lines, line.data, begin) || cstr_view_cat(value, &ac->lines) ||
-	    !dstr_cat_n(&ac->lines, " ", separate) || !dstr_cat_n(&ac->lines, line.data + end, line.len - end) ||
-	    !dstr_cat_n(&ac->lines, "", 1))
-		return ENOMEM;
-	size_t index = ac->match_count++;
-	if (!index || begin < ac->match_begin)
-		ac->match_begin = begin;
-	ac->matches[index] = (struct autocomplete_match){
-		.line = {nullptr, length},
-		.cursor = cursor,
-		.label_begin = (uint32_t)begin,
-		.kind = kind,
+	struct cstr_view const parts[] = {
+		cstr_view_slice(line, 0, begin), value, {" ", separate}, cstr_view_slice(line, end, SIZE_MAX),
 	};
-	return 0;
+	return autocomplete_matches_add(&ac->found, parts, array_size(parts), begin + value.len + separate,
+	                                begin, kind);
 }
 
 static int
@@ -1221,18 +1205,10 @@ autocomplete_match_sink (struct autocomplete_match *matches,
 	}
 }
 
-void
-autocomplete_match_place (struct autocomplete_match *matches,
-                          size_t                     count,
-                          char const                *lines)
-{
-	for (size_t i = 0; i < count; ++i) {
-		matches[i].line.data = lines;
-		lines += matches[i].line.len + 1;
-	}
-}
-
-void
+/* Sort the matches in place, without allocating, by their lines from
+ * begin, then by cursor.
+ */
+static void
 autocomplete_match_sort (struct autocomplete_match *matches,
                          size_t                     count,
                          size_t                     begin)
@@ -1263,8 +1239,7 @@ autocomplete_complete (struct autocomplete              *ac,
 		return EINVAL;
 	if (!line.data)
 		line.data = "";
-	ac->match_count = 0;
-	(void)dstr_clear(&ac->lines);
+	autocomplete_matches_clear(&ac->found);
 	int error;
 	if (line.len && line.data[0] == '/') {
 		error = autocomplete_tokenize(ac, line, false, nullptr, 0);
@@ -1284,17 +1259,67 @@ autocomplete_complete (struct autocomplete              *ac,
 		error = autocomplete_mentions(ac, line, cursor);
 	if (error)
 		return error;
-	autocomplete_match_place(ac->matches, ac->match_count, dstr_get(&ac->lines));
-	autocomplete_match_sort(ac->matches, ac->match_count, ac->match_begin);
-	size_t used = 0;
-	for (size_t i = 0; i < ac->match_count; ++i) {
-		if (used && !autocomplete_match_compare(&ac->matches[used - 1], &ac->matches[i], ac->match_begin))
-			continue;
-		ac->matches[used++] = ac->matches[i];
-	}
-	*matches = ac->matches;
-	*count = used;
+	*matches = autocomplete_matches_finish(&ac->found, count);
 	return 0;
+}
+
+void
+autocomplete_matches_clear (struct autocomplete_matches *set)
+{
+	set->count = 0;
+	(void)dstr_clear(&set->lines);
+}
+
+int
+autocomplete_matches_add (struct autocomplete_matches *set,
+                          struct cstr_view const      *parts,
+                          size_t                       n,
+                          size_t                       cursor,
+                          size_t                       label_begin,
+                          enum autocomplete_kind       kind)
+{
+	if (set->count == array_size(set->matches))
+		return 0;
+	/* The line and its NUL must fit in the room that is left. */
+	size_t room = AUTOCOMPLETE_BYTES - dstr_len(&set->lines);
+	size_t length = 0;
+	for (size_t i = 0; i < n; ++i) {
+		if (parts[i].len >= room - length)
+			return 0;
+		length += parts[i].len;
+	}
+	for (size_t i = 0; i < n; ++i)
+		if (cstr_view_cat(parts[i], &set->lines))
+			return ENOMEM;
+	if (!dstr_cat_n(&set->lines, "", 1))
+		return ENOMEM;
+	if (!set->count || label_begin < set->begin)
+		set->begin = label_begin;
+	set->matches[set->count++] = (struct autocomplete_match){
+		.line = {nullptr, length},
+		.cursor = cursor,
+		.label_begin = (uint32_t)label_begin,
+		.kind = kind,
+	};
+	return 0;
+}
+
+struct autocomplete_match const *
+autocomplete_matches_finish (struct autocomplete_matches *set,
+                             size_t                      *count)
+{
+	char const *line = dstr_get(&set->lines);
+	for (size_t i = 0; i < set->count; ++i) {
+		set->matches[i].line.data = line;
+		line += set->matches[i].line.len + 1;
+	}
+	autocomplete_match_sort(set->matches, set->count, set->begin);
+	size_t used = 0;
+	for (size_t i = 0; i < set->count; ++i)
+		if (!used || autocomplete_match_compare(&set->matches[used - 1], &set->matches[i], set->begin))
+			set->matches[used++] = set->matches[i];
+	*count = set->count = used;
+	return set->matches;
 }
 
 static int

@@ -34,13 +34,12 @@
 #include "loop.h"
 
 enum {
-	CLI_CONSOLE_INPUT_LIMIT   = 1024 * 1024 * 16,
+	CLI_CONSOLE_INPUT_LIMIT   = AUTOCOMPLETE_BYTES,
 	CLI_CONSOLE_INPUT_COUNT   = 32,
 	CLI_CONSOLE_HISTORY_LIMIT = CLI_STATE_INPUT_BYTES,
 	CLI_CONSOLE_HISTORY_COUNT = CLI_STATE_INPUTS,
 	CLI_CONSOLE_OUTPUT_LIMIT  = 32 * 1024 * 1024,
 	CLI_CONSOLE_TAB_INTERVAL  = 400 * 1000 * 1000,
-	CLI_CONSOLE_COMPLETIONS   = 256,
 	CLI_CONSOLE_ROWS          = 256,
 	CLI_CONSOLE_COLUMNS       = 512,
 };
@@ -172,7 +171,7 @@ struct cli_console {
 	struct dstr                      history_last;
 	struct termios                   initial_state;
 	struct termios                   resume_state;
-	struct cli_console_completion    completions[CLI_CONSOLE_COMPLETIONS];
+	struct cli_console_completion    completions[AUTOCOMPLETE_MATCHES];
 	enum cli_style                   display;
 	enum cli_console_pane_id         focused;
 	int                              pending_input;
@@ -597,7 +596,7 @@ cli_console_complete (char const *text,
 	                                      &console->candidates, &console->candidate_count);
 	if (console->in.error || !console->candidate_count)
 		return nullptr;
-	if (!console->candidates || console->candidate_count > CLI_CONSOLE_COMPLETIONS) {
+	if (!console->candidates || console->candidate_count > array_size(console->completions)) {
 		console->in.error = EINVAL;
 		return nullptr;
 	}
@@ -930,8 +929,8 @@ cli_console_dimensions (struct cli_console *console)
 	console->rows = size.ws_row ? size.ws_row : 24;
 	console->columns = size.ws_col ? size.ws_col : 80;
 	console->draft_start = 0;
-	if (console->rows > CLI_CONSOLE_ROWS)
-		console->rows = CLI_CONSOLE_ROWS;
+	if (console->rows > array_size(console->panes[0].rows))
+		console->rows = array_size(console->panes[0].rows);
 	if (console->columns > CLI_CONSOLE_COLUMNS)
 		console->columns = CLI_CONSOLE_COLUMNS;
 	console->dirty = CLI_CONSOLE_PAINT_ALL;
