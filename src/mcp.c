@@ -8071,6 +8071,8 @@ mcp_age (struct mcp *mcp)
 {
 	shelf_age(&mcp->spare);
 	shelf_age(&mcp->jobs);
+	if (mcp->notes)
+		notes_tool_loop_age(mcp->notes);
 }
 
 size_t
@@ -8102,8 +8104,10 @@ mcp_relieve (struct mcp        *mcp,
 		hist_add(&mcp->counts->kept.jobs, -1ULL);
 		free(container_of(shelf_drop(&mcp->jobs), struct job, spare));
 	}
-	/* Freeing one spare request can count more units than max, so done
-	 * can be greater than max here. */
+	/* Freeing one spare request or notes call can count more units than
+	 * max, so done can be greater than max here. */
+	if (done < max && mcp->notes)
+		done += notes_tool_loop_relieve(mcp->notes, level, max - done);
 	if (done < max)
 		done += instance_table_relieve(&mcp->instances, level, max - done);
 	return done;

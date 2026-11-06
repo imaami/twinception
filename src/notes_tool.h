@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "buf.h"
 #include "mcp.h"
 
 struct notes_tool_loop;
@@ -52,6 +53,24 @@ extern mcp_part_create_fn notes_tool_loop_create;
  *  to nullptr.
  */
 extern mcp_part_destroy_fn notes_tool_loop_destroy;
+
+/** Begins a window of reuse of the spare calls of @p loop, as
+ *  buf_stash_age() does for a stash.
+ */
+extern void
+notes_tool_loop_age (struct notes_tool_loop *loop);
+
+/** Frees the spare calls of @p loop and the storage of their output, at
+ *  BUF_HIGH those unused since the notes_tool_loop_age() call before the
+ *  last one, and at BUF_CRITICAL all. Counts in units of release work
+ *  (buf_units()), always frees the first call and no later one that would
+ *  make the total greater than @p max. Returns the units, 0 once none are
+ *  left to free.
+ */
+extern size_t
+notes_tool_loop_relieve (struct notes_tool_loop *loop,
+                         enum buf_pressure       level,
+                         size_t                  max);
 
 /** Returns the definition of the notes tool for the upstream. @p service
  *  is the struct notes_tool.

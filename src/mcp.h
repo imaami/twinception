@@ -195,8 +195,10 @@ mcp_age (struct mcp *mcp);
  * such request. It returns before it frees a later request that would make
  * the total greater than @p max units. It frees jobs, one unit each, while
  * the total is less than @p max. If the total is still less than @p max
- * after the jobs, it calls instance_table_relieve() for the plugins'
- * instances with the units that are left (src/instance.h).
+ * after the jobs, it calls notes_tool_loop_relieve() for the spare calls of
+ * the notes tool, and then instance_table_relieve() for the plugins'
+ * instances, each with the units that are left (src/notes_tool.h,
+ * src/instance.h).
  *
  * Returns the number of units freed. It returns 0 when nothing is left to
  * free.

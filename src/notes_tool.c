@@ -213,6 +213,43 @@ notes_tool_loop_create (void        *service,
 	return nl;
 }
 
+/* Frees the notes call at @p *p_call and its output, and sets @p *p_call
+ * to nullptr.
+ */
+static void
+notes_tool_call_destroy (struct notes_tool_call **p_call)
+{
+	dstr_cleanup(&(*p_call)->out);
+	free(*p_call);
+	*p_call = nullptr;
+}
+
+void
+notes_tool_loop_age (struct notes_tool_loop *loop)
+{
+	shelf_age(&loop->spare);
+}
+
+size_t
+notes_tool_loop_relieve (struct notes_tool_loop *loop,
+                         enum buf_pressure       level,
+                         size_t                  max)
+{
+	size_t done = 0;
+	for (size_t n = shelf_unused(&loop->spare, level); n; --n) {
+		struct notes_tool_call *call = container_of(loop->spare.list.next,
+		                                            struct notes_tool_call, spare);
+		size_t const units = buf_units(sizeof *call + DSTR_BLK_SIZE *
+		                               dstr_get_block_count(&call->out));
+		if (done && done + units > max)
+			break;
+		(void)shelf_drop(&loop->spare);
+		notes_tool_call_destroy(&call);
+		done += units;
+	}
+	return done;
+}
+
 void
 notes_tool_loop_destroy (void **p_part)
 {
@@ -220,11 +257,7 @@ notes_tool_loop_destroy (void **p_part)
 	if (!nl)
 		return;
 	*p_part = nullptr;
-	for (struct list *spare; (spare = shelf_take(&nl->spare)); ) {
-		struct notes_tool_call *call = container_of(spare, struct notes_tool_call, spare);
-		dstr_cleanup(&call->out);
-		free(call);
-	}
+	(void)notes_tool_loop_relieve(nl, BUF_CRITICAL, SIZE_MAX);
 	free(nl);
 }
 
@@ -266,13 +299,12 @@ notes_tool_loop_put (struct notes_tool_loop  *loop,
 	else
 		child_destroy(&call->child);
 	buf_fini(&call->file);
-	if (atomic_load_explicit(&buf_pressure, memory_order_relaxed) == BUF_EASY) {
-		(void)dstr_clear(&call->out);
-		shelf_put(&loop->spare, &call->spare);
-	} else {
-		dstr_cleanup(&call->out);
-		free(call);
+	if (atomic_load_explicit(&buf_pressure, memory_order_relaxed) != BUF_EASY) {
+		notes_tool_call_destroy(p_call);
+		return;
 	}
+	(void)dstr_clear(&call->out);
+	shelf_put(&loop->spare, &call->spare);
 	*p_call = nullptr;
 }
 
