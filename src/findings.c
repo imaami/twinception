@@ -8,7 +8,7 @@
 #include "dstr.h"
 #include "findings.h"
 #include "jb.h"
-#include "loop_export.h"
+#include "loop.h"
 #include "mcp.h"
 #include "notice.h"
 #include "review.h"
@@ -96,14 +96,13 @@ findings_step (struct mcp_slot *slot)
 	 * and the step has used part of its share, the call runs in the next
 	 * step. A show writes at most the room of the step, and the rest of its
 	 * text in later steps (EAGAIN). */
-	uint64_t const room = loop_room(loop, LOOP_COPY);
-	if (room < call->texts && room < LOOP_STEP_COPY) {
+	if (!loop_fits(loop, LOOP_COPY, call->texts)) {
 		mcp_slot_ready(slot);
 		return;
 	}
 	size_t const had = dstr_len(&call->out);
 	int e = review_call(mcp_slot_review(slot), call->args, mcp_slot_turn(slot), notice_kept,
-	                    &call->cursor, room, &call->out);
+	                    &call->cursor, loop_room(loop, LOOP_COPY), &call->out);
 	struct cstr_view const out = cstr_view_dstr(&call->out);
 	loop_work(loop, LOOP_COPY, call->texts + out.len - had);
 	switch (e) {

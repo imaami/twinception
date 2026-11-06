@@ -243,8 +243,7 @@ http_write_adapter (char   *ptr,
 	if (size && nmemb > SIZE_MAX / size)
 		return 0;
 	size_t len = size * nmemb;
-	uint64_t room = loop_room(loop, LOOP_RECV);
-	if (room < len && room < LOOP_STEP_RECV) {
+	if (!loop_fits(loop, LOOP_RECV, len)) {
 		http_resume(request);
 		return CURL_WRITEFUNC_PAUSE;
 	}

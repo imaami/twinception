@@ -19,6 +19,11 @@ struct loop_ref;
 struct loop_slot;
 struct loop_stats;
 
+/** The bound of each unit per step, LOOP_STEP_ID for LOOP_ID. */
+#define LOOP_BOUND(id, name, bound) [LOOP_##id] = bound,
+static constexpr uint64_t loop_bound[LOOP_UNITS] = { LOOP_UNIT_LIST(LOOP_BOUND) };
+#undef LOOP_BOUND
+
 /**
  * Reports @p events on a watched descriptor. A callback should only note
  * what happened and queue a step: the turn's budget bounds steps, and work
@@ -256,6 +261,20 @@ loop_spent (struct loop      *loop,
 		return false;
 	loop_ready_bulk(loop, step);
 	return true;
+}
+
+/** Returns whether the step that is running may do @p n units of the work
+ *  @p u now: loop_room() has room for them, or the step has done none of
+ *  that work yet, so that work over a whole bound runs in a step of its
+ *  own.
+ */
+static inline bool
+loop_fits (struct loop const *loop,
+           enum loop_unit     u,
+           uint64_t           n)
+{
+	uint64_t const room = loop_room(loop, u);
+	return room >= n || ((size_t)u < array_size(loop_bound) && room == loop_bound[u]);
 }
 
 /** Take @p step off its list, if it is on one. */

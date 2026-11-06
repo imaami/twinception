@@ -73,10 +73,6 @@ struct loop_stats {
 	uint64_t            steps;
 };
 
-#define LOOP_BOUND(id, name, bound) [LOOP_##id] = bound,
-static constexpr uint64_t bound[LOOP_UNITS] = { LOOP_UNIT_LIST(LOOP_BOUND) };
-#undef LOOP_BOUND
-
 #define LOOP_UNIT_NAME(id, name, bound) [LOOP_##id] = name,
 static char const *const unit_name[LOOP_UNITS] = { LOOP_UNIT_LIST(LOOP_UNIT_NAME) };
 #undef LOOP_UNIT_NAME
@@ -151,9 +147,9 @@ uint64_t
 loop_room (struct loop const *loop,
            enum loop_unit     u)
 {
-	if (!loop || (size_t)u >= array_size(bound))
+	if (!loop || (size_t)u >= array_size(loop_bound))
 		return 0;
-	return loop->work[u] < bound[u] ? bound[u] - loop->work[u] : 0;
+	return loop->work[u] < loop_bound[u] ? loop_bound[u] - loop->work[u] : 0;
 }
 
 uint64_t
@@ -725,7 +721,7 @@ loop_log_stats (struct loop *loop,
 	                       (unsigned)TIMERS, s->steps);
 	for (size_t u = 0; u < array_size(s->work); ++u)
 		(void)util_text_printf(&work, " %s=%" PRIu64 "/%" PRIu64, unit_name[u],
-		                       s->work[u], bound[u]);
+		                       s->work[u], loop_bound[u]);
 	log_put(nullptr, "stats %swork %s", label, work.data);
 	loop_stats_empty(s, false);
 }
