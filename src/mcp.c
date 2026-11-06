@@ -2240,8 +2240,8 @@ mcp_req_delta (struct mcp_req *req)
 		mcp_req_abort(req, ENOMEM);
 		return;
 	}
-	char turn[24];
-	size_t turn_len = util_format(turn, sizeof turn, "%" PRIu32, req->turn);
+	char digits[UTIL_DECIMAL];
+	struct cstr_view const turn = util_format_view(digits, sizeof digits, "%" PRIu32, req->turn);
 	while (req->delta_at < bytes.len) {
 		if (req->flags & REQ_BLOCKED)
 			return;
@@ -2263,7 +2263,7 @@ mcp_req_delta (struct mcp_req *req)
 		struct mcp_piece const p[] = {
 			FRAG("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/askai/delta\","
 			     "\"params\":{\"requestId\":"),
-			RAW(id.data, id.len), FRAG(",\"turn\":"), RAW(turn, turn_len),
+			RAW(id.data, id.len), FRAG(",\"turn\":"), BYTES(turn),
 			FRAG(",\"kind\":\""), header.thought ? FRAG("reasoning") : FRAG("text"),
 			FRAG("\",\"text\":\""), ESC(text + req->delta_read, n), FRAG("\"}}\n\n"),
 		};
@@ -5009,18 +5009,17 @@ mcp_req_background (struct mcp_req *req,
 		                                          "most at once: wait for one to end."));
 		return e;
 	}
-	char text[512];
-	size_t n = tool == req->self.tool
-	         ? util_format(text, sizeof text, "Started job %s. Call %s with "
-	                       "{\"job\":\"%s\"} in one second for its status or result; add "
-	                       "\"action\":\"cancel\" to cancel it.", task->id.hex,
-	                       mcp_static_tool(st, tool)->name.data, task->id.hex)
-	         : util_format(text, sizeof text, "Started job %s. Call wait to wait for "
-	                       "it, then jobs with the action result and this id.",
-	                       task->id.hex);
+	char buf[512];
+	struct cstr_view const text = tool == req->self.tool
+		? util_format_view(buf, sizeof buf, "Started job %s. Call %s with {\"job\":\"%s\"} in "
+		                   "one second for its status or result; add \"action\":\"cancel\" "
+		                   "to cancel it.", task->id.hex,
+		                   mcp_static_tool(st, tool)->name.data, task->id.hex)
+		: util_format_view(buf, sizeof buf, "Started job %s. Call wait to wait for it, then "
+		                   "jobs with the action result and this id.", task->id.hex);
 	struct mcp_piece const p[] = {
 		FRAG("{\"content\":[{\"type\":\"text\",\"text\":\""),
-		ESC(text, n),
+		ESC_VIEW(text),
 		FRAG("\"}]"),
 		req->flags & REQ_MODERN ? DSTR(&st->modern_tail) : FRAG("}"),
 		FRAG("}"),
@@ -5336,29 +5335,31 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
 			return;
 		}
 		int e = ledger_timer_cancel(req->mcp->st->ledger, req->owner, n);
-		size_t len = !e ? util_format(text, sizeof text, "Cancelled timer %" PRIu32 ".", n)
-		           : e == EALREADY ? util_format(text, sizeof text, "Timer %" PRIu32 " has "
-		                                         "fired, and a call of wait reports it.", n)
-		           : util_format(text, sizeof text, "You have no timer %" PRIu32 " set.", n);
-		mcp_slot_result(slot, (struct cstr_view){ text, len }, e != 0);
+		mcp_slot_result(slot, !e ? util_format_view(text, sizeof text, "Cancelled timer %"
+		                                            PRIu32 ".", n)
+		                : e == EALREADY ? util_format_view(text, sizeof text, "Timer %" PRIu32
+		                                                   " has fired, and a call of wait "
+		                                                   "reports it.", n)
+		                : util_format_view(text, sizeof text, "You have no timer %" PRIu32
+		                                   " set.", n), e != 0);
 		return;
 	}
 	struct ledger_task *task = mcp_slot_client_find(slot, args);
 	if (!task)
 		return;
-	bool runs = atomic_load_explicit(&task->status, memory_order_acquire) ==
-	            LEDGER_WORKING;
-	size_t len = 0;
+	bool const runs = atomic_load_explicit(&task->status, memory_order_acquire) ==
+	                  LEDGER_WORKING;
+	struct cstr_view said = runs_no_more;
 	if (runs) {
 		ledger_task_cancel(task);
-		len = util_format(text, sizeof text, "askai is cancelling %s %s. %s",
-		                  record_kinds[task->kind], task->id.hex,
-		                  !(mcp_slot_tool(slot)->kind->flags & KF_AGENDA)
-		                  ? "Call this same tool with the job id to check its status."
-		                  : "Call wait to wait for its end.");
+		said = util_format_view(text, sizeof text, "askai is cancelling %s %s. %s",
+		                        record_kinds[task->kind], task->id.hex,
+		                        !(mcp_slot_tool(slot)->kind->flags & KF_AGENDA)
+		                        ? "Call this same tool with the job id to check its status."
+		                        : "Call wait to wait for its end.");
 	}
 	ledger_task_put(task);
-	mcp_slot_result(slot, runs ? (struct cstr_view){ text, len } : runs_no_more, !runs);
+	mcp_slot_result(slot, said, !runs);
 }
 
 /* A client's call of jobs in @p slot, the request's own: by the argument
