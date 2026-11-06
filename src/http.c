@@ -4,6 +4,8 @@
  *
  * An error fails at most the transfer it belongs to, never the loop or the
  * other transfers. A done callback may ask what Retry-After its answer said.
+ * A write callback gets no more of an answer than the step's share of
+ * receiving takes: curl holds the rest back until a later step lets it on.
  *
  * With a resolver set, host names are looked up on a blocker thread rather
  * than by libcurl, whose resolver would start a thread of its own for each
@@ -40,6 +42,9 @@ static constexpr uint64_t LOOKUP_TTL_NS = 60 * NS;
 struct http_request {
 	struct list        hook;     /* on a host's waiting list, then on
 	                                http->queued, then http->requests */
+	struct list        held;     /* on http->held while curl holds the
+	                                answer back */
+	struct http       *http;
 	struct curl_slist *headers;
 	struct curl_slist *resolve;  /* the host's addresses, for CURLOPT_RESOLVE */
 	http_write_cb     *write_cb;
@@ -57,8 +62,11 @@ struct http {
 	struct curl_loop     curl;
 	struct loop_step     start;     /* hands queued requests to curl */
 	struct loop_step     fail;      /* fails requests that curl cannot run */
+	struct loop_step     resume;    /* lets the answers held back on */
 	struct list          queued;    /* requests not yet handed to curl */
 	struct list          requests;
+	struct list          held;      /* the requests whose answer curl holds
+	                                   back, the first held first */
 	struct list          hosts;     /* looked up, or being looked up */
 	struct blocker      *blockers;  /* that look host names up, or nullptr */
 	struct http_metrics *metrics;
@@ -113,6 +121,7 @@ http_finish (struct curl_loop *curl,
 	http->retry = retry > 0 && retry < LONG_MAX ? (long)retry : 0;
 	curl_multi_remove_handle(curl->multi, easy);
 	list_del(&request->hook);
+	list_del(&request->held);
 	if (request->started && http->metrics)
 		hist_record(&http->metrics->run, loop_clock() - request->started);
 
@@ -196,6 +205,34 @@ http_start_step (struct loop      *loop,
 	curl_loop_action(&http->curl, CURL_SOCKET_TIMEOUT, 0);
 }
 
+/* Let the answers held back on, the first held first, while the step's
+ * share of receiving has room for a write of curl, which may hold one back
+ * again. A request that curl cannot let on ends with curl's error.
+ */
+static void
+http_resume_step (struct loop      *loop,
+                  struct loop_step *step)
+{
+	struct http *http = container_of(step, struct http, resume);
+	while (!list_is_empty(&http->held)) {
+		if (loop_room(loop, LOOP_RECV) < CURL_MAX_WRITE_SIZE) {
+			loop_ready_bulk(loop, step);
+			return;
+		}
+		struct http_request *request = container_of(http->held.next,
+		                                            struct http_request, held);
+		list_del(&request->held);
+		CURLcode result = curl_easy_pause(request->easy, CURLPAUSE_CONT);
+		if (result)
+			http_finish(&http->curl, request, result);
+	}
+}
+
+/* Give the write callback what curl wrote, unless the step's share of
+ * receiving has no room for it: then curl holds it back until the resume
+ * step lets it on. A write over a whole share, which curl does not make,
+ * counts in full.
+ */
 static size_t
 http_write_adapter (char   *ptr,
                     size_t  size,
@@ -203,9 +240,19 @@ http_write_adapter (char   *ptr,
                     void   *user)
 {
 	struct http_request *request = user;
+	struct loop *loop = request->http->curl.loop;
 	if (size && nmemb > SIZE_MAX / size)
 		return 0;
-	return request->write_cb(ptr, size * nmemb, request->user);
+	size_t len = size * nmemb;
+	uint64_t room = loop_room(loop, LOOP_RECV);
+	if (room < len && room < LOOP_STEP_RECV) {
+		http_resume(request);
+		return CURL_WRITEFUNC_PAUSE;
+	}
+	size_t n = request->write_cb(ptr, len, request->user);
+	if (n == len)
+		loop_work(loop, LOOP_RECV, len);
+	return n;
 }
 
 /* Give the transfer of @p request the addresses in @p entry. */
@@ -490,10 +537,12 @@ http_create (struct loop         *loop,
 	*http = (struct http){
 		.start.fn = http_start_step,
 		.fail.fn = http_fail_step,
+		.resume.fn = http_resume_step,
 		.metrics = metrics
 	};
 	list_init(&http->queued);
 	list_init(&http->requests);
+	list_init(&http->held);
 	list_init(&http->hosts);
 	if ((*e = curl_loop_init(&http->curl, loop, http_finish, http_doom)))
 		http_destroy(&http);
@@ -515,6 +564,7 @@ http_cancel (struct http         *http,
 	}
 	if (request->hook.next && request->hook.prev)
 		list_del(&request->hook);
+	list_del(&request->held);
 	curl_slist_free_all(request->resolve);
 	curl_slist_free_all(request->headers);
 	free(request);
@@ -530,10 +580,13 @@ http_end (struct http         *http,
 	http_finish(&http->curl, request, result);
 }
 
-CURLcode
+void
 http_resume (struct http_request *request)
 {
-	return curl_easy_pause(request->easy, CURLPAUSE_CONT);
+	struct http *http = request->http;
+	if (list_is_empty(&request->held))
+		list_append(&http->held, &request->held);
+	loop_ready_bulk(http->curl.loop, &http->resume);
 }
 
 bool
@@ -622,6 +675,7 @@ http_destroy (struct http **p_http)
 	curl_loop_fini(&http->curl);
 	loop_unready(&http->start);
 	loop_unready(&http->fail);
+	loop_unready(&http->resume);
 	free(http);
 	curl_global_cleanup();
 }
@@ -681,6 +735,8 @@ http_post_json (struct http         *http,
 	if (!request)
 		return ENOMEM;
 	list_init(&request->hook);
+	list_init(&request->held);
+	request->http = http;
 	request->easy = curl_easy_init();
 	request->write_cb = write_cb;
 	request->done_cb = done_cb;

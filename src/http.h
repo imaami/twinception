@@ -140,12 +140,13 @@ http_end (struct http          *http,
           CURLcode              result);
 
 /**
- * Let @p request go on after its write callback returned
- * CURL_WRITEFUNC_PAUSE: the callback may take what curl held back before
- * this returns, and hold it back again. An error leaves the request to the
- * caller to end, as with http_end().
+ * Let @p request go on, in a later step that has the share of receiving
+ * for it, after its write callback returned CURL_WRITEFUNC_PAUSE: the
+ * callback may then take what curl held back, and hold it back again. If
+ * curl cannot let the request go on, the request ends with curl's error,
+ * which its done callback reports.
  */
-extern CURLcode
+extern void
 http_resume (struct http_request *request);
 
 #endif /* TWINCEPTION_SRC_HTTP_H_ */

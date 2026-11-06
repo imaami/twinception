@@ -99,8 +99,7 @@ enum : uint16_t {
 	                             refuses new ones */
 	HOME_ALONE    = 1u << 1,  /* the client loops have exited */
 	HOME_PROBING  = 1u << 2,  /* the breaker's probe is under way */
-	HOME_PAUSED   = 1u << 3,  /* /props's answer is held back */
-	HOME_FIFO     = 1u << 4,  /* all jobs of a class wait in one queue */
+	HOME_FIFO     = 1u << 3,  /* all jobs of a class wait in one queue */
 };
 
 /* Whom jobs of a class are for: an identity, a session, or a client's
@@ -176,7 +175,6 @@ struct home {
 	struct loop_step          drain;       /* cancels every job in flight */
 	struct loop_step          overdue;     /* ends the jobs past their deadline */
 	struct loop_step          silent;      /* ends the answers silent too long */
-	struct loop_step          resume;      /* lets the answers held back on */
 	struct loop_step          feed;        /* reads the streams */
 	struct loop_step          reap;        /* frees the events' values */
 	struct loop_step          shed;        /* ends the jobs waiting, the breaker
@@ -193,8 +191,6 @@ struct home {
 	struct list               preempting;  /* those to preempt, likewise */
 	struct list               timeline;
 	struct list               dropped;
-	struct list               held;        /* the jobs whose answer a step's share
-	                                          held back, by their held hooks */
 	struct list               idle;        /* the answers under way, the one
 	                                          silent longest first */
 	struct list               feeding;     /* the streams with bytes to read */
@@ -498,8 +494,8 @@ home_reap (struct home *home)
 }
 
 /* Let go of what @p job's answer under way holds: its places among the
- * answers silent, held back and to read, its event's parser, whose values
- * the reap step frees, and its wire.
+ * answers silent and to read, its event's parser, whose values the reap
+ * step frees, and its wire.
  */
 static void
 home_unstream (struct home *home,
@@ -507,7 +503,6 @@ home_unstream (struct home *home,
 {
 	list_del(&job->idle);
 	list_del(&job->feed);
-	list_del(&job->held);
 	jb_parser_fini(&job->parser, &home->pool, &home->reaper);
 	home_reap(home);
 	buf_fini(&job->wire);
@@ -582,7 +577,6 @@ home_cancel_write (char const *data,
 	if (len > MAX_CANCEL - cancel->received)
 		return 0;
 	cancel->received += len;
-	loop_work(self->loop, LOOP_RECV, len);
 	return len;
 }
 
@@ -990,16 +984,6 @@ home_cut (struct home *home,
 	home_finish(home, job, result, "", 0);
 }
 
-/* Have the resume step let @p job's answer, held back, on. */
-static void
-home_hold (struct home *home,
-           struct job  *job)
-{
-	if (list_is_empty(&job->held))
-		list_append(&home->held, &job->held);
-	loop_ready_bulk(home->loop, &home->resume);
-}
-
 /* Whether @p job's stream waits for its front to drain the delta mailbox,
  * or for a journal write.
  */
@@ -1045,30 +1029,19 @@ home_head (struct home *home,
 }
 
 /* Take the @p len bytes at @p data of @p job's answer into @p to, up to
- * MAX_RESPONSE bytes, as much a step as its share of receiving takes: curl
- * holds the rest back until a later step lets it on (home_resume_step()).
- * A write over a whole share, which curl does not make, would count in full.
- * Returns as a write callback does.
+ * MAX_RESPONSE bytes. Returns as a write callback does.
  */
 static size_t
-home_receive (struct home *home,
-              struct job  *job,
-              struct buf  *to,
-              char const  *data,
-              size_t       len)
+home_receive (struct job *job,
+              struct buf *to,
+              char const *data,
+              size_t      len)
 {
-	struct loop *loop = home->loop;
-	uint64_t room = loop_room(loop, LOOP_RECV);
-	if (room < len && room < LOOP_STEP_RECV) {
-		home_hold(home, job);
-		return CURL_WRITEFUNC_PAUSE;
-	}
 	int e = buf_put(to, data, len, MAX_RESPONSE);
 	if (e) {
 		job->flags |= e == ENOBUFS ? OVERFLOW : 0;
 		return 0;
 	}
-	loop_work(loop, LOOP_RECV, len);
 	return len;
 }
 
@@ -1095,13 +1068,13 @@ home_job_write (char const *data,
 		(void)loop_timer_set(home->loop, &home->timers[TIMER_QUIET],
 		                     job->active + home->silence);
 	if (!(job->flags & STREAM))
-		return home_receive(home, job, &job->result, data, len);
+		return home_receive(job, &job->result, data, len);
 	if (job->flags & DELTA_PENDING || buf_peek(&job->wire).len - job->scan >= LOOP_STEP_RECV) {
 		job->flags |= BACKED;
 		list_del(&job->idle);
 		return CURL_WRITEFUNC_PAUSE;
 	}
-	size_t n = home_receive(home, job, &job->wire, data, len);
+	size_t n = home_receive(job, &job->wire, data, len);
 	if (n == len)
 		home_feed(home, job);
 	return n;
@@ -1121,7 +1094,6 @@ home_job_done (CURLcode    result,
 	job->transfer = nullptr;
 	job->http = (uint16_t)status;
 	list_del(&job->idle);
-	list_del(&job->held);
 	/* An archive write under way, or the events still to read of a
 	 * native background stream, wait for the transfer's end, which the
 	 * job keeps. */
@@ -1539,28 +1511,6 @@ home_silent_step (struct loop      *loop,
 		home_cut(home, job, CURLE_OPERATION_TIMEDOUT);
 	}
 	(void)loop_timer_set(loop, &home->timers[TIMER_QUIET], UINT64_MAX);
-}
-
-/* Let the answers held back on, oldest first, while the step's share of
- * receiving has room for a write from curl, which may hold one back again;
- * curl reads on in a later step.
- */
-static void
-home_resume_step (struct loop      *loop,
-                  struct loop_step *step)
-{
-	struct home *home = container_of(step, struct home, resume);
-	while (!list_is_empty(&home->held)) {
-		if (loop_room(loop, LOOP_RECV) < CURL_MAX_WRITE_SIZE) {
-			loop_ready_bulk(loop, step);
-			return;
-		}
-		struct job *job = container_of(home->held.next, struct job, held);
-		list_del(&job->held);
-		CURLcode result = http_resume(job->transfer);
-		if (result)
-			home_cut(home, job, result);
-	}
 }
 
 /* Append @p text to @p to, the answer, the thinking or the replay of a
@@ -2182,7 +2132,7 @@ home_drained (struct home *home,
 		list_del(&job->feed);
 		if (job->flags & BACKED) {
 			job->flags &= ~BACKED;
-			home_hold(home, job);
+			http_resume(job->transfer);
 		}
 		return ENODATA;
 	}
@@ -2367,26 +2317,14 @@ home_slots (struct home *home,
 	home_preempt_excess(home);
 }
 
-/* Gather /props's answer, up to MAX_PROPS bytes, as much a step as its share
- * of receiving takes, the rest held back for the props step.
- */
+/* Gather /props's answer, up to MAX_PROPS bytes. */
 static size_t
 home_props_write (char const *data,
                   size_t      len,
                   void       *user)
 {
 	struct home *home = user;
-	if (!len)
-		return 0;
-	if (loop_room(home->loop, LOOP_RECV) < len) {
-		home->flags |= HOME_PAUSED;
-		loop_ready_bulk(home->loop, &home->props);
-		return CURL_WRITEFUNC_PAUSE;
-	}
-	if (buf_put(&home->answer, data, len, MAX_PROPS))
-		return 0;
-	loop_work(home->loop, LOOP_RECV, len);
-	return len;
+	return buf_put(&home->answer, data, len, MAX_PROPS) ? 0 : len;
 }
 
 /* /props is over: take @p n slots, saying @p why, unless told the slots,
@@ -2431,7 +2369,6 @@ home_props_done (CURLcode    result,
 {
 	struct home *home = user;
 	home->ask = nullptr;
-	home->flags &= ~HOME_PAUSED;
 	if (result)
 		home_props_fail(home, "%s",
 		                *error ? error : curl_easy_strerror(result));
@@ -2441,23 +2378,16 @@ home_props_done (CURLcode    result,
 		loop_ready_bulk(home->loop, &home->props);
 }
 
-/* Let /props's answer on, once the step has the share for it, or parse it a
- * slice a step, and take the slots its total_slots says, unless told, and
- * the context its slots' n_ctx says, likewise. The answer of Gemini's
- * model says the context in inputTokenLimit, and no slots.
+/* Parse /props's answer a slice a step, and take the slots its total_slots
+ * says, unless told, and the context its slots' n_ctx says, likewise. The
+ * answer of Gemini's model says the context in inputTokenLimit, and no
+ * slots.
  */
 static void
 home_props_step (struct loop      *loop,
                  struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, props);
-	if (home->flags & HOME_PAUSED) {
-		home->flags &= ~HOME_PAUSED;
-		CURLcode result = http_resume(home->ask);
-		if (result)
-			http_end(home->http, &home->ask, result);
-		return;
-	}
 	struct jb_parser *parser = &home->parser;
 	struct span json = buf_peek(&home->answer);
 	if (!home_parse(home, parser, json.len ? (char const *)json.ptr : "", json.len)) {
@@ -2805,8 +2735,8 @@ home_fini (struct home *home)
 	}
 	struct loop_step *const steps[] = {
 		&home->start, &home->stop, &home->drain, &home->overdue, &home->silent,
-		&home->resume, &home->feed, &home->reap, &home->shed, &home->preempt,
-		&home->props, &home->cleanup,
+		&home->feed, &home->reap, &home->shed, &home->preempt, &home->props,
+		&home->cleanup,
 	};
 	for (size_t i = 0; i < array_size(steps); ++i)
 		loop_unready(steps[i]);
@@ -2846,7 +2776,6 @@ home_create (struct loop         *loop,
 		.drain.fn = home_drain_step,
 		.overdue.fn = home_overdue_step,
 		.silent.fn = home_silent_step,
-		.resume.fn = home_resume_step,
 		.feed.fn = home_feed_step,
 		.reap.fn = home_reap_step,
 		.shed.fn = home_shed_step,
@@ -2885,7 +2814,6 @@ home_create (struct loop         *loop,
 	list_init(&home->preempting);
 	list_init(&home->timeline);
 	list_init(&home->dropped);
-	list_init(&home->held);
 	list_init(&home->idle);
 	list_init(&home->feeding);
 	list_init(&home->cancellations);

@@ -182,8 +182,6 @@ struct job {
 	                                         among the jobs dropped */
 	struct list            due;         /**< home's: among the jobs in flight, by
 	                                         deadline */
-	struct list            held;        /**< home's: among those whose answer
-	                                         waits for a step's share */
 	struct list            idle;        /**< home's: among the answers under way,
 	                                         by when they last sent */
 	struct list            feed;        /**< home's: among the streams to read */
@@ -299,7 +297,6 @@ job_init (struct job  *job,
 	list_init(&job->spare);
 	list_init(&job->queue);
 	list_init(&job->due);
-	list_init(&job->held);
 	list_init(&job->idle);
 	list_init(&job->feed);
 	job->front = front;

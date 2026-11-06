@@ -126,9 +126,8 @@ struct web_run {
 	/* Only home's thread uses the members from live to since. */
 	struct list          live;      /* on web->live while home runs the
 	                                   run */
-	struct list          held;      /* on web->held while the transfer is
-	                                   paused, or on web->late once the
-	                                   deadline has passed */
+	struct list          late;      /* on web->late once the deadline has
+	                                   passed */
 	struct loop_timer    timer;     /* the deadline */
 	struct http_request *transfer;
 	char                *body;      /* the body received so far */
@@ -186,9 +185,7 @@ struct web {
 	uint64_t           seed;     /* of the keys' hash */
 	/* Only home's thread uses the members from live to loop. */
 	struct list        live;     /* the runs that home runs */
-	struct list        held;     /* the runs whose transfer is paused */
 	struct list        late;     /* the runs whose deadline has passed */
-	struct loop_step   resume;   /* resumes the paused runs */
 	struct loop_step   overdue;  /* ends the runs on late */
 	struct http       *http;
 	struct loop       *loop;
@@ -501,7 +498,7 @@ web_run_finish (struct web                *web,
 {
 	loop_timer_stop(web->loop, &run->timer);
 	list_del(&run->live);
-	list_del(&run->held);
+	list_del(&run->late);
 	char const *method = run->key.post ? "POST" : "GET";
 	uint64_t ms = (loop_clock() - run->since) / MS;
 	/* The URL without a user name and a password, which askai's own
@@ -520,10 +517,8 @@ web_run_finish (struct web                *web,
 }
 
 /* Copies the @p len bytes at @p data to the body of the response to
- * @p user, a run. If the step's share of receiving has no room for them,
- * the function pauses the transfer, and the resume step resumes it later.
- * A body that grows past the request's max fails the run with EFBIG.
- * Returns what a write callback of curl returns.
+ * @p user, a run. A body that grows past the request's max fails the run
+ * with EFBIG. Returns what a write callback of curl returns.
  */
 static size_t
 web_run_write (char const *data,
@@ -531,20 +526,11 @@ web_run_write (char const *data,
                void       *user)
 {
 	struct web_run *run = user;
-	struct web *web = run->web;
-	struct loop *loop = web->loop;
 	if (!len)
 		return 0;
 	if (len > run->key.max - run->len) {
 		run->fault = EFBIG;
 		return 0;
-	}
-	uint64_t room = loop_room(loop, LOOP_RECV);
-	if (room < len && room < LOOP_STEP_RECV) {
-		if (list_is_empty(&run->held))
-			list_append(&web->held, &run->held);
-		loop_ready_bulk(loop, &web->resume);
-		return CURL_WRITEFUNC_PAUSE;
 	}
 	if (len > run->cap - run->len) {
 		size_t cap = run->cap ? 2 * run->cap : WEB_GROW;
@@ -560,7 +546,6 @@ web_run_write (char const *data,
 	}
 	memcpy(run->body + run->len, data, len);
 	run->len += len;
-	loop_work(loop, LOOP_RECV, len);
 	return len;
 }
 
@@ -614,8 +599,7 @@ web_run_late (struct loop       *loop,
 {
 	struct web_run *run = container_of(timer, struct web_run, timer);
 	struct web *web = run->web;
-	list_del(&run->held);
-	list_append(&web->late, &run->held);
+	list_append(&web->late, &run->late);
 	loop_ready_bulk(loop, &web->overdue);
 }
 
@@ -630,30 +614,9 @@ web_overdue_step (struct loop      *loop,
 	for (; !list_is_empty(&web->late); loop_work(loop, LOOP_REQS, 1)) {
 		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		struct web_run *run = container_of(web->late.next, struct web_run, held);
+		struct web_run *run = container_of(web->late.next, struct web_run, late);
 		run->fault = ETIMEDOUT;
 		http_end(web->http, &run->transfer, CURLE_OPERATION_TIMEDOUT);
-	}
-}
-
-/* Resumes the paused runs, the first paused first, while the step's share
- * of receiving has room for a write of curl.
- */
-static void
-web_resume_step (struct loop      *loop,
-                 struct loop_step *step)
-{
-	struct web *web = container_of(step, struct web, resume);
-	while (!list_is_empty(&web->held)) {
-		if (loop_room(loop, LOOP_RECV) < CURL_MAX_WRITE_SIZE) {
-			loop_ready_bulk(loop, step);
-			return;
-		}
-		struct web_run *run = container_of(web->held.next, struct web_run, held);
-		list_del(&run->held);
-		CURLcode result = http_resume(run->transfer);
-		if (result)
-			http_end(web->http, &run->transfer, result);
 	}
 }
 
@@ -774,9 +737,7 @@ web_create (int *e)
 	list_init(&web->runs);
 	list_init(&web->kept);
 	list_init(&web->live);
-	list_init(&web->held);
 	list_init(&web->late);
-	web->resume = (struct loop_step){ .fn = web_resume_step };
 	web->overdue = (struct loop_step){ .fn = web_overdue_step };
 	web->buckets = buckets;
 	web->http = nullptr;
@@ -830,7 +791,6 @@ web_home_stop (struct web *web)
 		http_cancel(web->http, &run->transfer);
 		web_run_finish(web, run, &(struct web_response){ .error = stopping, .e = ESHUTDOWN });
 	}
-	loop_unready(&web->resume);
 	loop_unready(&web->overdue);
 	http_destroy(&web->http);
 	web->loop = nullptr;
@@ -930,7 +890,7 @@ web_wait_create (struct web           *web,
 	list_init(&run->hook);
 	list_init(&run->waits);
 	list_init(&run->live);
-	list_init(&run->held);
+	list_init(&run->late);
 	run->timer = (struct loop_timer){ .due = UINT64_MAX, .fn = web_run_late };
 	run->web = web;
 	run->home = ask->home;
