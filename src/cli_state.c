@@ -485,6 +485,25 @@ cli_state_read_turns (struct cli_state *state,
 	return !e && got ? EINVAL : e;
 }
 
+/* Add the count inputs that follow the header of the snapshot in fd to the
+ * recall. Each input is read into entry.
+ */
+static int
+cli_state_read_inputs (struct cli_state *state,
+                       int               fd,
+                       size_t            count,
+                       struct dstr      *entry)
+{
+	size_t budget = CLI_STATE_INPUT_BYTES;
+	int e = 0;
+	for (size_t i = 0; !e && i < count; ++i) {
+		e = cli_state_read_text(fd, entry, &budget);
+		if (!e)
+			e = cli_state_recall(state, cstr_view_dstr(entry));
+	}
+	return e;
+}
+
 /** Load the turns of the latest snapshot, the parent, and merge the input
  * recall of up to 32 recent writers of the group. Completed conversations
  * from different writers never mix.
@@ -523,12 +542,8 @@ cli_state_load (struct cli_state *state,
 	for (size_t t = n; !e && t--; ) {
 		size_t count = 0, turns = 0;
 		e = cli_state_snapshot(state, fd, &tips[t], &count, &turns);
-		size_t budget = CLI_STATE_INPUT_BYTES;
-		for (size_t i = 0; !e && i < count; ++i) {
-			e = cli_state_read_text(fd, &entry, &budget);
-			if (!e)
-				e = cli_state_recall(state, cstr_view_dstr(&entry));
-		}
+		if (!e)
+			e = cli_state_read_inputs(state, fd, count, &entry);
 		/* The parent is the first tip. */
 		if (!e && !t)
 			e = cli_state_read_turns(state, fd, turns);
