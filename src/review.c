@@ -1049,8 +1049,9 @@ review_put_item (struct dstr         *out,
  * Appends the text from @p cursor on to @p out (review_put_item()), at
  * most @p room bytes, and moves @p cursor to the end of what it appended.
  * An item that does not fit is cut, and @p cursor stores the bytes of the
- * item that are written. Returns 0 at the end of the text, EAGAIN if the
- * text continues, or ENOMEM.
+ * item that are written. Every line of the text ends with a newline, and
+ * the last newline is dropped. Returns 0 at the end of the text, EAGAIN
+ * if the text continues, or ENOMEM.
  */
 static int
 review_put_text (struct dstr         *out,
@@ -1075,6 +1076,7 @@ review_put_text (struct dstr         *out,
 		}
 		cursor->byte = 0;
 	}
+	dstr_erase(out, dstr_len(out) - 1, 1);
 	return 0;
 }
 
@@ -1085,18 +1087,14 @@ review_render (struct review const *r,
 {
 	if (!out)
 		return EFAULT;
-	/* Every line of the text ends with a newline, and the last newline is
-	 * dropped, so the text fits if its length is at most (most + 1). */
+	/* The last newline is dropped, so the text fits if its length is at
+	 * most (most + 1). */
 	size_t const start = dstr_len(out);
 	struct tool_cursor cursor = {};
 	int const e = review_put_text(out, r, 0, &cursor, most < SIZE_MAX ? most + 1 : most);
-	if (e == ENOMEM)
+	if (e != EAGAIN)
 		return e;
 	struct cstr_view const text = cstr_view_slice(cstr_view_dstr(out), start, SIZE_MAX);
-	if (!e) {
-		dstr_erase(out, start + text.len - 1, 1);
-		return 0;
-	}
 	/* The text stopped at most + 1 bytes. Cut it after its last newline
 	 * within most bytes. The text is not empty, and the test of text.len
 	 * only shows that to the compiler. */
@@ -1807,11 +1805,7 @@ review_call (struct review      *r,
 		return review_add(r, &a, turn, out);
 	if (a.action == REVIEW_UPDATE)
 		return review_update(r, &a, turn, out);
-	/* A show drops the newline at the end of its last line. */
-	e = review_put_text(out, r, a.id, cursor, room);
-	if (!e)
-		dstr_erase(out, dstr_len(out) - 1, 1);
-	return e;
+	return review_put_text(out, r, a.id, cursor, room);
 }
 
 #undef REFUSE
