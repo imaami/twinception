@@ -39,6 +39,9 @@ enum {
 	PROPS_MS     = 10'000,    /* the most /props may take, or the timeout */
 	CANCEL_MS    = 5'000,     /* native cancellation's total lifetime */
 	MAX_JOB_ID   = 4096,      /* bytes of a native provider job's id */
+	MAX_CANCEL   = 64 << 10,  /* bytes of the answer to a cancellation */
+	MAX_ERROR    = 4096,      /* bytes of an event's error text that the
+	                             result shows, at most */
 	KEYS_MAX     = 1 << 16,   /* the largest number of buckets of the
 	                             principals */
 	SLOTS        = 4,         /* upstream calls at once, unless told or found */
@@ -568,7 +571,7 @@ home_cancel_write (char const *data,
 {
 	(void)data;
 	struct home_cancellation *cancel = user;
-	if (len > (64u << 10) - cancel->received)
+	if (len > MAX_CANCEL - cancel->received)
 		return 0;
 	cancel->received += len;
 	loop_work(self->loop, LOOP_RECV, len);
@@ -1999,7 +2002,7 @@ home_take (struct home        *home,
 		job->flags = ev.truncated ? job->flags | TRUNCATED : job->flags & ~TRUNCATED;
 	}
 	if (ev.error) {
-		size_t len = strnlen(ev.error, 4096);
+		size_t len = strnlen(ev.error, MAX_ERROR);
 		(void)home_job_erred(job, ev.error, (int)jb_utf8(ev.error, len));
 	} else if (e == EPROTO) {
 		(void)home_job_erred(job, "tool calls out of order, or too many", -1);
