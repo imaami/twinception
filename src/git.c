@@ -225,6 +225,8 @@ enum {
 	SINGLE  = 1 << 6,  /* at most one revision */
 	LINES   = 1 << 7,  /* the line and count arguments, and numbered lines
 	                      of one committed file that cat-file reads */
+	MODE    = 1 << 8,  /* exactly one option, which selects what to show */
+	ONEPATH = 1 << 9,  /* exactly one path, the file */
 };
 
 static struct {
@@ -257,15 +259,18 @@ static struct {
 	  "once per file. -C3 adds three lines of context, -p the function's first "
 	  "line, -W the whole function.", FILES | END | PATTERN },
 	{ CSTR_VIEW_INIT("blame"),     blame_options,     { "--no-textconv" },
-	  "Annotate a committed file; defaults to HEAD. Give one path; -L10,30 "
-	  "limits the line range.", FILES | SINGLE },
+	  "Annotate a committed file; defaults to HEAD. Give the file as the one "
+	  "path, such as \"paths\": [\"src/git.c\"], and its commit in revisions. "
+	  "-L10,30 limits the lines; -s leaves out the author and date.",
+	  FILES | SINGLE | ONEPATH },
 	{ CSTR_VIEW_INIT("ls-tree"),   ls_tree_options,   {},
 	  "Paths in a committed tree; defaults to HEAD. -r recurses.",
 	  FILES | SINGLE },
 	{ CSTR_VIEW_INIT("cat-file"),  cat_file_options,  {},
-	  "Inspect committed contents: -p for contents, -t for type, -s for bytes, "
-	  "-e for existence. Defaults to HEAD; revision:path names a committed file.",
-	  END | OBJECT | SINGLE },
+	  "Inspect a committed object; defaults to HEAD, and commit:path names a "
+	  "file. Give exactly one option: -p for its contents, -t for its type, -s "
+	  "for its size in bytes, -e to check that it exists (no output if it does).",
+	  END | OBJECT | SINGLE | MODE },
 	{ CSTR_VIEW_INIT("rev-parse"), rev_parse_options, { "--revs-only" },
 	  "Resolve commit references to immutable commit IDs; defaults to HEAD. "
 	  "--verify requires one valid revision.", 0 },
@@ -768,6 +773,13 @@ git_call_command (struct git_call  *call,
 	if (lens[GIT_ARG_PATHS] && !(takes & FILES))
 		bad = git_wrong(why, "git %.*s takes no paths. To name a file, give the "
 		                "revision HEAD:path.", (int)cmd.len, cmd.data);
+	if ((takes & ONEPATH) && lens[GIT_ARG_PATHS] != 1)
+		bad = git_wrong(why, "git blame needs the file as its one path, such as "
+		                "\"paths\": [\"src/git.c\"].");
+	if ((takes & MODE) && lens[GIT_ARG_OPTIONS] != 1)
+		bad = git_wrong(why, "git cat-file needs exactly one option: -p for the "
+		                "contents, -t for the type, -s for the size, or -e to "
+		                "check that the object exists.");
 	struct json_object *pattern = of[GIT_ARG_PATTERN];
 	struct cstr_view const pat = git_word(pattern);
 	if (takes & PATTERN) {
@@ -921,10 +933,11 @@ git_help (struct mcp_slot *slot,
 			  "a longer output ends with a footer that gives the exact next "
 			  "offset for the same arguments."),
 		"limits", jb_object(
-			"options", json_object_new_int(OPTIONS),
+			"options", json_object_new_int(takes & MODE ? 1 : OPTIONS),
 			"revisions", json_object_new_int(takes & SINGLE ? 1 :
 			                                takes & PAIR ? 2 : REVISIONS),
-			"paths", json_object_new_int(takes & FILES ? PATHS : 0),
+			"paths", json_object_new_int(takes & ONEPATH ? 1 :
+			                            takes & FILES ? PATHS : 0),
 			"argument_bytes", json_object_new_int(WORD),
 			"capture_bytes", json_object_new_int(TOOL_TEXT_MAX),
 			"window_bytes", json_object_new_int64((int64_t)mcp_slot_window_max(slot)),

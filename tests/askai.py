@@ -8716,6 +8716,12 @@ def check_git(binary, up):
                     "Index and working-tree reads are disabled. Omit this option and "
                     + source)
 
+        cat_file_mode = ("git cat-file needs exactly one option: -p for the contents, "
+                         "-t for the type, -s for the size, or -e to check that the "
+                         "object exists.")
+        blame_file = ("git blame needs the file as its one path, such as "
+                      "\"paths\": [\"src/git.c\"].")
+
         def call(ai, **arguments):
             status, _, body = ai.rpc("tools/call", {"name": "git",
                                                     "arguments": arguments})
@@ -8746,7 +8752,8 @@ def check_git(binary, up):
                 assert not result.get("isError"), result
                 help_text = json.loads(text_of(result))
                 assert help_text["command"] == command and help_text["description"], result
-                assert help_text["limits"]["options"] == 16 and \
+                assert help_text["limits"]["options"] == \
+                    (1 if command == "cat-file" else 16) and \
                     help_text["limits"]["argument_bytes"] == 1024, result
                 # The read command pages by line number. Only a line longer
                 # than the window pages by byte offset.
@@ -8759,6 +8766,12 @@ def check_git(binary, up):
             help_text = json.loads(text_of(call(ai, repo="proj", command="read", help=True)))
             assert help_text["options"] == [] and help_text["limits"]["revisions"] == 1 and \
                 help_text["limits"]["paths"] == 0, help_text
+            # help gives the limits that validation applies.
+            for command, limit, value in (("blame", "paths", 1), ("cat-file", "options", 1),
+                                          ("log", "paths", 32), ("rev-parse", "paths", 0)):
+                help_text = json.loads(text_of(call(ai, repo="proj", command=command,
+                                                    help=True)))
+                assert help_text["limits"][limit] == value, (command, help_text)
             help_text = json.loads(text_of(call(ai, repo="proj", command="grep", help=True)))
             assert {"-F", "-E", "-C#"} <= set(help_text["options"]) and not \
                 {"--cached", "--untracked"} & set(help_text["options"]), help_text
@@ -8816,8 +8829,8 @@ def check_git(binary, up):
                     ({"repo": "proj", "command": "grep", "pattern": "a",
                       "options": ["--no-index"]},
                      source_option("--no-index")),
-                    ({"repo": "proj", "command": "blame", "options": ["--contents=x"]},
-                     bad_option("blame", "--contents=x")),
+                    ({"repo": "proj", "command": "blame", "options": ["--contents=x"],
+                      "paths": ["a.txt"]}, bad_option("blame", "--contents=x")),
                     ({"repo": "proj", "command": "log", "options": "--all"},
                      "The options argument must be an array of strings "
                      "(at most 16 entries)."),
@@ -8855,9 +8868,18 @@ def check_git(binary, up):
                     ({"repo": "proj", "command": "log", "paths": ["/etc/passwd"]},
                      "paths[0] must be relative to the repository's top, with no .. "
                      "component or :(...) pathspec magic."),
-                    ({"repo": "proj", "command": "cat-file", "paths": ["a.txt"]},
+                    ({"repo": "proj", "command": "cat-file", "paths": ["a.txt"],
+                      "options": ["-p"]},
                      "git cat-file takes no paths. To name a file, give the "
                      "revision HEAD:path."),
+                    # cat-file needs one option, and blame one path.
+                    ({"repo": "proj", "command": "cat-file", "revisions": ["HEAD:a.txt"]},
+                     cat_file_mode),
+                    ({"repo": "proj", "command": "cat-file", "options": ["-t", "-p"]},
+                     cat_file_mode),
+                    ({"repo": "proj", "command": "blame"}, blame_file),
+                    ({"repo": "proj", "command": "blame", "paths": ["a.txt", "a.txt"]},
+                     blame_file),
                     ({"repo": "proj", "command": "grep"},
                      "git grep needs a pattern argument: a string of 1 to 1024 "
                      "bytes."),

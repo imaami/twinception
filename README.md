@@ -441,6 +441,9 @@ as `askai` starts. A call names its
   "revisions": ["main..topic"], "paths": ["src"] }
 ```
 
+`blame` takes its file as the one path, and `cat-file` exactly one of `-p`,
+`-t`, `-s` and `-e`.
+
 Only committed content is visible. The default revision is `HEAD`, including
 for `grep`, `blame` and `ls-tree`; a staged deletion does not hide its committed
 file, and staged additions or edits, working-tree edits, untracked and ignored
