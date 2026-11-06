@@ -60,19 +60,27 @@ static char const *const fixed[] = {
 	"-c", "core.bare=true", "-c", "log.showSignature=false",
 };
 
+/* The place in a row of cmds[] where notes_argv() puts the next of the
+ * words that the caller passes.
+ */
+static char const word[] = "";
+
 /* The words of each command after the options in fixed. */
-static char const *const cmds[][8] = {
-	[NOTES_CREATE] = { "init", "--bare", "--quiet", "--template=",
-	                   "--initial-branch=session", "--" },
-	[NOTES_CHECK]  = { "cat-file", "--batch-check" },
-	[NOTES_ADD]    = { "fast-import", "--quiet", "--date-format=now" },
-	[NOTES_LIST]   = { "log", "-z", "--no-renames", "--format=%ct %H %s", "--numstat",
-	                   nullptr },
-	[NOTES_READ]   = { "cat-file", "--batch" },
-	[NOTES_BOOKS]  = { "for-each-ref", "--format=%(refname:strip=3)", BRANCH },
-	[NOTES_FORMAT] = { "rev-parse", "--show-object-format" },
-	[NOTES_FILES]  = { "ls-tree", "-r", "-z", "-l" },
-	[NOTES_HEAD]   = { "rev-parse", "--verify", "--end-of-options" },
+static char const *const cmds[][10] = {
+	[NOTES_CREATE]   = { "init", "--bare", "--quiet", "--template=",
+	                     "--initial-branch=session", "--", "." },
+	[NOTES_CHECK]    = { "cat-file", "--batch-check" },
+	[NOTES_ADD]      = { "fast-import", "--quiet", "--date-format=now" },
+	[NOTES_LIST]     = { "log", "-z", "--no-renames", "--format=%ct %H %s", "--numstat",
+	                     word, "--", word },
+	[NOTES_READ]     = { "cat-file", "--batch" },
+	[NOTES_BOOKS]    = { "for-each-ref", "--format=%(refname:strip=3)", BRANCH },
+	[NOTES_FORMAT]   = { "rev-parse", "--show-object-format" },
+	[NOTES_FILES]    = { "ls-tree", "-r", "-z", "-l", word, "--" },
+	[NOTES_HEAD]     = { "rev-parse", "--verify", "--end-of-options", word },
+	[NOTES_ANCESTOR] = { "merge-base", "--is-ancestor", word, word },
+	[NOTES_DIFF]     = { "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+	                     "--no-color", "--submodule=short", word, word, "--", word },
 };
 
 /* The kinds of the objects in the output of git cat-file. */
@@ -351,88 +359,26 @@ notes_selector (char const *repo)
 	return repo + sizeof BRANCH - 1;
 }
 
-static size_t
-notes_argv_prefix (struct notes const *notes,
-                   bool                create,
-                   char const         *argv[NOTES_ARGV])
+void
+notes_argv (struct notes const *notes,
+            enum notes_cmd      cmd,
+            char const *const  *words,
+            char const         *argv[NOTES_ARGV])
 {
+	static_assert(4 + array_size(fixed) + array_size(cmds[0]) + 1 <= NOTES_ARGV);
 	size_t k = 0;
 	argv[k++] = "git";
 	argv[k++] = "-C";
-	argv[k++] = create ? notes->dir : notes->directory;
-	if (!create)
+	if (cmd == NOTES_CREATE) {
+		argv[k++] = notes->dir;
+	} else {
+		argv[k++] = notes->directory;
 		argv[k++] = "--git-dir=.";
+	}
 	for (size_t i = 0; i < array_size(fixed); ++i)
 		argv[k++] = fixed[i];
-	return k;
-}
-
-static size_t
-notes_argv_command (struct notes const *notes,
-                    char const         *repo,
-                    enum notes_cmd      cmd,
-                    char const         *argv[NOTES_ARGV])
-{
-	static_assert(4 + array_size(fixed) + array_size(cmds[0]) + 3 <= NOTES_ARGV);
-	size_t k = notes_argv_prefix(notes, cmd == NOTES_CREATE, argv);
 	for (size_t i = 0; i < array_size(cmds[cmd]) && cmds[cmd][i]; ++i)
-		argv[k++] = cmds[cmd][i];
-	if (cmd == NOTES_CREATE)
-		argv[k++] = ".";
-	if (cmd == NOTES_LIST || cmd == NOTES_FILES) {
-		argv[k++] = repo;
-		argv[k++] = "--";
-	}
-	if (cmd == NOTES_HEAD)
-		argv[k++] = repo;
-	argv[k] = nullptr;
-	return k;
-}
-
-void
-notes_argv (struct notes const *notes,
-            char const         *repo,
-            enum notes_cmd      cmd,
-            char const         *argv[NOTES_ARGV])
-{
-	notes_argv_command(notes, repo, cmd, argv);
-}
-
-static void
-notes_ancestor_argv (struct notes const *notes,
-                     char const         *revision,
-                     char const         *tip,
-                     char const         *argv[NOTES_ARGV])
-{
-	static_assert(4 + array_size(fixed) + 5 <= NOTES_ARGV);
-	size_t k = notes_argv_prefix(notes, false, argv);
-	argv[k++] = "merge-base";
-	argv[k++] = "--is-ancestor";
-	argv[k++] = revision;
-	argv[k++] = tip;
-	argv[k] = nullptr;
-}
-
-static void
-notes_diff_argv (struct notes const *notes,
-                 char const         *from,
-                 char const         *to,
-                 char const         *name,
-                 char const         *argv[NOTES_ARGV])
-{
-	static char const *const diff[] = {
-		"diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color",
-		"--submodule=short",
-	};
-	static_assert(4 + array_size(fixed) + array_size(diff) + 5 <= NOTES_ARGV);
-	size_t k = notes_argv_prefix(notes, false, argv);
-	for (size_t i = 0; i < array_size(diff); ++i)
-		argv[k++] = diff[i];
-	argv[k++] = from;
-	argv[k++] = to;
-	argv[k++] = "--";
-	if (name)
-		argv[k++] = name;
+		argv[k++] = cmds[cmd][i] == word ? *words++ : cmds[cmd][i];
 	argv[k] = nullptr;
 }
 
@@ -472,39 +418,22 @@ void
 notes_revision_argv (struct notes_revision const *revision,
                      struct notes const          *notes,
                      char const                  *repo,
-                     bool                         diff,
+                     enum notes_cmd               cmd,
                      char const                  *argv[NOTES_ARGV])
 {
-	switch (revision->phase) {
-	case REVISION_HEAD:
-		notes_argv(notes, repo, NOTES_HEAD, argv);
-		break;
-	case REVISION_FROM:
-		notes_ancestor_argv(notes, revision->from.hex, revision->tip.hex, argv);
-		break;
-	case REVISION_TO:
-		notes_ancestor_argv(notes, revision->to.hex, revision->tip.hex, argv);
-		break;
-	case REVISION_DATA:
-		if (diff)
-			notes_diff_argv(notes, revision->from.hex, revision->to.hex, revision->file,
-			                argv);
-		else
-			notes_argv(notes, repo, NOTES_READ, argv);
-		break;
-	}
-}
-
-void
-notes_revision_history_argv (struct notes_revision const *revision,
-                             struct notes const          *notes,
-                             char const                  *repo,
-                             char const                  *argv[NOTES_ARGV])
-{
-	static_assert(4 + array_size(fixed) + array_size(cmds[NOTES_LIST]) + 4 <= NOTES_ARGV);
-	size_t k = notes_argv_command(notes, repo, NOTES_LIST, argv);
-	argv[k++] = revision->file;
-	argv[k] = nullptr;
+	enum notes_cmd const phases[] = {
+		[REVISION_HEAD] = NOTES_HEAD,
+		[REVISION_FROM] = NOTES_ANCESTOR,
+		[REVISION_TO]   = NOTES_ANCESTOR,
+		[REVISION_DATA] = cmd,
+	};
+	char const *const words[][3] = {
+		[REVISION_HEAD] = { repo },
+		[REVISION_FROM] = { revision->from.hex, revision->tip.hex },
+		[REVISION_TO]   = { revision->to.hex, revision->tip.hex },
+		[REVISION_DATA] = { revision->from.hex, revision->to.hex, revision->file },
+	};
+	notes_argv(notes, phases[revision->phase], words[revision->phase], argv);
 }
 
 int

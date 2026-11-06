@@ -58,17 +58,21 @@ enum notes_side : uint8_t {
 
 /** The commands of git that write and read the notes. */
 enum notes_cmd : uint8_t {
-	NOTES_CREATE,  /**< initializes the shared repository */
-	NOTES_CHECK,   /**< checks the name of a new note. notes_check_input()
-	                    writes its input. */
-	NOTES_ADD,     /**< writes a note. notes_add_input() writes its input. */
-	NOTES_LIST,    /**< writes the note history, the newest first */
-	NOTES_READ,    /**< writes a note. notes_read_input() writes its
-	                    input. */
-	NOTES_BOOKS,   /**< lists all participant notebook selectors */
-	NOTES_FORMAT,  /**< writes the Git object format for an unborn branch */
-	NOTES_FILES,   /**< lists the current notes, in tree order */
-	NOTES_HEAD,    /**< resolves a notebook branch to its full commit id */
+	NOTES_CREATE,    /**< initializes the shared repository */
+	NOTES_CHECK,     /**< checks the name of a new note. notes_check_input()
+	                      writes its input. */
+	NOTES_ADD,       /**< writes a note. notes_add_input() writes its
+	                      input. */
+	NOTES_LIST,      /**< writes the note history, the newest first */
+	NOTES_READ,      /**< writes a note. notes_read_input() writes its
+	                      input. */
+	NOTES_BOOKS,     /**< lists all participant notebook selectors */
+	NOTES_FORMAT,    /**< writes the Git object format for an unborn
+	                      branch */
+	NOTES_FILES,     /**< lists the current notes, in tree order */
+	NOTES_HEAD,      /**< resolves a notebook branch to its full commit id */
+	NOTES_ANCESTOR,  /**< checks that a commit is an ancestor of another */
+	NOTES_DIFF,      /**< compares a note in two commits */
 };
 
 /** A current note in the output of NOTES_FILES or NOTES_CHECK. Views
@@ -182,13 +186,18 @@ notes_lock (struct notes const *notes,
 extern bool
 notes_exists (struct notes const *notes);
 
-/** Writes the argv of the command @p cmd for the notebook branch @p repo to
- *  @p argv. @p repo must outlive @p argv.
+/** Writes the argv of the command @p cmd to @p argv. The arguments of the
+ *  command come from @p words, in this order: for NOTES_LIST a notebook
+ *  branch or commit and a file name or nullptr, for NOTES_FILES and
+ *  NOTES_HEAD a notebook branch or commit, for NOTES_ANCESTOR two commits,
+ *  and for NOTES_DIFF two commits and a file name. The other commands do
+ *  not read @p words, which may then be nullptr. The words must outlive
+ *  @p argv.
  */
 extern void
 notes_argv (struct notes const *notes,
-            char const         *repo,
             enum notes_cmd      cmd,
+            char const *const  *words,
             char const         *argv[NOTES_ARGV]);
 
 /** Owns a historical read or diff's arguments and authorization state.
@@ -206,22 +215,16 @@ extern void
 notes_revision_destroy (struct notes_revision **p_revision);
 
 /** Builds the current stage's Git argv: pin the selected notebook tip,
- *  authorize explicit revisions by ancestry, then read or diff those exact
- *  snapshots. @p revision and @p repo must outlive the argv.
+ *  authorize explicit revisions by ancestry, then run @p cmd, NOTES_READ or
+ *  NOTES_DIFF, on those exact snapshots. @p revision and @p repo must
+ *  outlive the argv.
  */
 extern void
 notes_revision_argv (struct notes_revision const *revision,
                      struct notes const          *notes,
                      char const                  *repo,
-                     bool                         diff,
+                     enum notes_cmd               cmd,
                      char const                  *argv[NOTES_ARGV]);
-
-/** Lists only this literal filename's history, before Git's output is capped. */
-extern void
-notes_revision_history_argv (struct notes_revision const *revision,
-                             struct notes const          *notes,
-                             char const                  *repo,
-                             char const                  *argv[NOTES_ARGV]);
 
 /** Consumes a successful authorization stage's complete output and advances
  *  to the next stage. Never call after failed, cancelled or truncated Git

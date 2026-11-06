@@ -339,13 +339,14 @@ notes_tool_run (struct mcp_slot *slot,
 			    notes_selector(call->repo), strerror(e));
 	}
 	char const *argv[NOTES_ARGV];
+	char const *const words[] = {
+		repo, call->revision ? notes_revision_file(call->revision).data : nullptr
+	};
 	if (fetch & FETCH_REVISION)
 		notes_revision_argv(call->revision, notes, notes_tool_call_notebook(call),
-		                    fetch & FETCH_DIFF, argv);
-	else if (cmd == NOTES_LIST && call->revision)
-		notes_revision_history_argv(call->revision, notes, repo, argv);
+		                    fetch & FETCH_DIFF ? NOTES_DIFF : NOTES_READ, argv);
 	else
-		notes_argv(notes, repo, cmd, argv);
+		notes_argv(notes, cmd, words, argv);
 	struct child_cmd const c = {
 		.file = "git",
 		.argv = argv,
