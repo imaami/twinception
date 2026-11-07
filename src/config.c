@@ -115,257 +115,462 @@ static struct {
 	},
 };
 
+/* The objects of the configuration file that contain the options, and
+ * TOOLS for the options that an object of a built-in tool in the member
+ * tools contains.
+ */
+enum config_group : uint8_t {
+	GROUP_NONE, GROUP_UPSTREAM, GROUP_SERVICE, GROUP_TESTING, GROUP_DEBUGGING,
+	GROUP_TOOLS, GROUP_ROOT
+};
+
+static char const *const group_names[] = {
+	[GROUP_UPSTREAM]  = "upstream",
+	[GROUP_SERVICE]   = "service",
+	[GROUP_TESTING]   = "testing",
+	[GROUP_DEBUGGING] = "debugging",
+};
+
+/* How an option takes its argument: the has_arg of getopt_long() in the
+ * bits ARG_HAS, and the bits above them.
+ */
+enum config_arg : uint8_t {
+	ARG_NONE        = no_argument,
+	ARG_ONE         = required_argument,
+	ARG_HAS         = 3,
+	ARG_LIST        = 1u << 2,  /* a member of the configuration file can
+	                               list the values in an array */
+	ARG_RELOAD      = 1u << 3,  /* the option takes effect on a reload */
+	ARG_MANY        = ARG_ONE | ARG_LIST,
+	ARG_ONE_RELOAD  = ARG_ONE | ARG_RELOAD,
+	ARG_NONE_RELOAD = ARG_NONE | ARG_RELOAD,
+};
+
+/* A line feed and the indentation of the help in the usage text. */
+#define NL "\n                            "
+
+/* The options, in the order of the usage text: X(kind, ID, name, short,
+ * place, argument, ARG, help, ...). kind is the way the value is parsed
+ * and stored, ID the constant ROW_ID of enum config_row, name the long
+ * name and the name of the member in the configuration file, and short the
+ * short form, or nothing. place is the object of the configuration file
+ * that contains the option: NONE for config and help, and
+ * TOOLS("TOOL.NAME") for the member NAME of the object TOOL in the member
+ * tools. argument is ARG_ of enum config_arg, and ARG and help are the
+ * name of the argument and the help in the usage text. The columns after
+ * the help depend on the kind:
+ * - count, bytes: the member of struct config, the least and the most
+ *   value, and an optional CFG_ flag that the option sets. The digits of
+ *   bytes may end in K, M or G for KiB, MiB or GiB.
+ * - seconds: the member, the least and the most value, and the units of
+ *   the member in a second.
+ * - text: the member, which is set to point to the argument.
+ * - flag: the CFG_ flag that the option sets.
+ * - custom: none. config_apply() applies the option.
+ * H(text) is a heading of the usage text.
+ */
+#define CONFIG_OPTION_LIST(X, H)                                                                        \
+        X(custom,  CONFIG,           "config",           'c', NONE, ONE, "FILE",                        \
+          "read options from FILE before the command" NL                                                \
+          "line: a JSON object without comments.  Its" NL                                               \
+          "objects upstream, service, testing and" NL                                                   \
+          "debugging contain the options of the" NL                                                     \
+          "sections below, named as the long options." NL                                               \
+          "Its member tools can contain the objects of" NL                                              \
+          "the built-in tools, whose members the" NL                                                    \
+          "section Built-in tools names.  true sets an" NL                                              \
+          "option without argument, and an array lists" NL                                              \
+          "the values of a repeatable option.  The" NL                                                  \
+          "command line overrides the file, but adds" NL                                                \
+          "to its header, allow-origin and git lists." NL                                               \
+          "Only the last --config is read.  See" NL                                                     \
+          "doc/configuration.md and" NL                                                                 \
+          "doc/askai.example.json.")                                                                    \
+        X(custom,  HELP,             "help",             'h', NONE, NONE, "",                           \
+          "show this help")                                                                             \
+        H("Session (top-level configuration members)")                                                  \
+        X(custom,  PARTICIPANT,      "participant",      ,    ROOT, ONE, "NAME",                        \
+          "stable writer identity, 1 to 64 characters" NL                                               \
+          "from [A-Za-z0-9_-]; default: tool-name.  Use" NL                                             \
+          "distinct names for collaborating instances")                                                 \
+        X(text,    TRANSCRIPTS,      "transcripts",      ,    ROOT, ONE, "PATH",                        \
+          "separate git repository for reasoning text," NL                                              \
+          "with private job recovery state; default:" NL                                                \
+          "<notes>.transcripts.git with --notes, else" NL                                               \
+          "$XDG_STATE_HOME/askai/NAME/transcripts.git" NL                                               \
+          "with --background, using $HOME/.local/state" NL                                              \
+          "if XDG_STATE_HOME is not absolute",                                                          \
+          transcripts)                                                                                  \
+        H("Upstream AI (\"upstream\")")                                                                 \
+        X(custom,  PROVIDER,         "provider",         'p', UPSTREAM, ONE, "NAME",                    \
+          "llama (llama-server at 127.0.0.1:9931)," NL                                                  \
+          "openai, anthropic, google, deepinfra or" NL                                                  \
+          "openrouter; the provider sets the defaults" NL                                               \
+          "of --api, --url and --key-env")                                                              \
+        X(custom,  API,              "api",              ,    UPSTREAM, ONE, "NAME",                    \
+          "chat (chat completions), responses," NL                                                      \
+          "messages (Anthropic), generate (Gemini) or" NL                                               \
+          "interactions (Gemini Interactions)" NL                                                       \
+          "(default: the API of the provider, else" NL                                                  \
+          "chat)")                                                                                      \
+        X(custom,  URL,              "url",              'u', UPSTREAM, ONE, "URL",                     \
+          "endpoint URL, http:// or https:// (default:" NL                                              \
+          "the URL of the provider; required without" NL                                                \
+          "--provider)")                                                                                \
+        X(text,    MODEL,            "model",            'm', UPSTREAM, ONE, "NAME",                    \
+          "model to ask (required at the URL of a" NL                                                   \
+          "provider other than llama)",                                                                 \
+          ep.model)                                                                                     \
+        X(text,    KEY_ENV,          "key-env",          'k', UPSTREAM, ONE, "VAR",                     \
+          "environment variable that contains the API" NL                                               \
+          "key (default: at the URL of a provider, the" NL                                              \
+          "usual variable of the provider, which llama" NL                                              \
+          "may leave unset; else ASKAI_API_KEY, if set)",                                               \
+          key_env)                                                                                      \
+        X(custom,  HEADER,           "header",           'H', UPSTREAM, MANY, "LINE",                   \
+          "extra request header, Name: value" NL                                                        \
+          "(repeatable)")                                                                               \
+        X(text,    SYSTEM,           "system",           's', UPSTREAM, ONE, "TEXT",                    \
+          "default system prompt",                                                                      \
+          ep.system)                                                                                    \
+        X(custom,  TEMPERATURE,      "temperature",      't', UPSTREAM, ONE, "N",                       \
+          "sampling temperature, a number from 0" NL                                                    \
+          "(default: none sent)")                                                                       \
+        X(count,   MAX_TOKENS,       "max-tokens",       'n', UPSTREAM, ONE, "N",                       \
+          "output token limit (default: none sent, but" NL                                              \
+          "4096 with the messages API)",                                                                \
+          ep.max_tokens, 1, INT32_MAX)                                                                  \
+        X(custom,  EXTRA,            "extra",            'x', UPSTREAM, ONE, "JSON",                    \
+          "JSON object that askai merges into each" NL                                                  \
+          "request body, recursively; a null member" NL                                                 \
+          "removes that key")                                                                           \
+        X(custom,  BACKGROUND,       "background",       ,    UPSTREAM, NONE, "",                       \
+          "return ask calls immediately as jobs, and" NL                                                \
+          "keep their upstream streams alive after" NL                                                  \
+          "clients disconnect; request native background" NL                                            \
+          "execution with OpenAI Responses and Gemini" NL                                               \
+          "Interactions (default off)")                                                                 \
+        X(seconds, TIMEOUT,          "timeout",          'T', UPSTREAM, ONE, "SECONDS",                 \
+          "time limit on each upstream call: first on" NL                                               \
+          "the wait for an upstream slot, then again on" NL                                             \
+          "the call itself (default 600, 0 = none)",                                                    \
+          ep.timeout_ms, 0, INT32_MAX / 1000, 1000)                                                     \
+        X(seconds, CHUNK_TIMEOUT,    "chunk-timeout",    ,    UPSTREAM, ONE, "SECONDS",                 \
+          "longest pause in an answer once it has" NL                                                   \
+          "begun (default 60, 0 = none)",                                                               \
+          ep.chunk_ms, 0, INT32_MAX / 1000, 1000)                                                       \
+        X(count,   SLOTS,            "slots",            ,    UPSTREAM, ONE, "N",                       \
+          "upstream calls at once (default: total_slots" NL                                             \
+          "from the /props of llama-server, else 4)",                                                   \
+          ep.slots, 1, UINT16_MAX)                                                                      \
+        X(count,   MAX_CALLS,        "max-calls",        ,    UPSTREAM, ONE, "N",                       \
+          "upstream calls queued or running, at most" NL                                                \
+          "(default 256), and at most 8 queued for one" NL                                              \
+          "identity, one Unix user, or else one session" NL                                             \
+          "or client address; an ask call past those" NL                                                \
+          "fails at once with an error to try again",                                                   \
+          calls, 1, 1'000'000)                                                                          \
+        X(flag,    UPSTREAM_TOOLS,   "upstream-tools",   ,    UPSTREAM, NONE, "",                       \
+          "offer tools to the upstream in ask calls:" NL                                                \
+          "man, git and the plugin tools that allow it," NL                                             \
+          "as the role of the client allows, and notes" NL                                              \
+          "with --notes; with any of those also" NL                                                     \
+          "compact, findings, jobs, wait and timer," NL                                                 \
+          "and beside a tool that can run in the" NL                                                    \
+          "background also background; an ask call" NL                                                  \
+          "runs the tool calls of each turn and sends" NL                                               \
+          "the next upstream request until an answer" NL                                                \
+          "ends the call",                                                                              \
+          CFG_UPSTREAM_TOOLS)                                                                           \
+        X(count,   MAX_TURNS,        "max-turns",        ,    UPSTREAM, ONE, "N",                       \
+          "upstream calls that an ask call makes at" NL                                                 \
+          "most, with --upstream-tools (default 32)",                                                   \
+          turns, 1, 1000)                                                                               \
+        X(count,   CONTEXT,          "context",          ,    UPSTREAM, ONE, "TOKENS",                  \
+          "context size of the upstream, used with" NL                                                  \
+          "--upstream-tools: a tool result in a turn is" NL                                             \
+          "at most an eighth of it; at a quarter and at" NL                                             \
+          "half, the upstream is reminded to write" NL                                                  \
+          "notes, with --notes; from two thirds on, it" NL                                              \
+          "is asked to call compact; and when it is" NL                                                 \
+          "full, askai compacts the conversation" NL                                                    \
+          "(default: n_ctx from the /props of" NL                                                       \
+          "llama-server, else unknown; 0 = the default)",                                               \
+          ep.context, 0, INT32_MAX)                                                                     \
+        X(custom,  TOOL_NAME,        "tool-name",        ,    UPSTREAM, ONE, "NAME",                    \
+          "name of the ask tool, 1 to 128 characters" NL                                                \
+          "from A-Z, a-z, 0-9, _, . and - (default" NL                                                  \
+          "ask_ai)")                                                                                    \
+        X(text,    TOOL_DESCRIPTION, "tool-description", ,    UPSTREAM, ONE, "TEXT",                    \
+          "description of the ask tool (default: a text" NL                                             \
+          "built from --model, --upstream-tools and" NL                                                 \
+          "--notes)",                                                                                   \
+          tool.description)                                                                             \
+        H("MCP server (\"service\")")                                                                   \
+        X(custom,  LISTEN,           "listen",           'l', SERVICE, MANY, "ADDR",                    \
+          "[host:]port, where host is 127.0.0.1 if it" NL                                               \
+          "is left out; unix:PATH for a Unix socket; or" NL                                             \
+          "tls:[host:]port for TLS (repeatable;" NL                                                     \
+          "default 127.0.0.1:8090)")                                                                    \
+        X(text,    TLS_CERT,         "tls-cert",         ,    SERVICE, ONE_RELOAD, "FILE",              \
+          "certificate chain for tls: listeners, in" NL                                                 \
+          "PEM: the certificate of the server first," NL                                                \
+          "then the intermediate CA certificates",                                                      \
+          tls_cert)                                                                                     \
+        X(text,    TLS_KEY,          "tls-key",          ,    SERVICE, ONE_RELOAD, "FILE",              \
+          "private key of that certificate, in PEM," NL                                                 \
+          "unencrypted: ECDSA on P-256, P-384 or P-521," NL                                             \
+          "or Ed25519; others must not be able to read" NL                                              \
+          "FILE",                                                                                       \
+          tls_key)                                                                                      \
+        X(flag,    TLS_ALLOW_RSA,    "tls-allow-rsa",    ,    SERVICE, NONE_RELOAD, "",                 \
+          "allow an RSA key too",                                                                       \
+          CFG_TLS_RSA)                                                                                  \
+        X(custom,  ALLOW_ORIGIN,     "allow-origin",     'o', SERVICE, MANY, "URL",                     \
+          "allow browser requests whose Origin header" NL                                               \
+          "is exactly URL, such as https://example.com" NL                                              \
+          "(repeatable; '*' allows any; loopback" NL                                                    \
+          "Origins are always allowed)")                                                                \
+        X(count,   LOOPS,            "loops",            ,    SERVICE, ONE, "N",                        \
+          "event loops that serve clients (default 0:" NL                                               \
+          "one fewer than the CPUs askai may use, at" NL                                                \
+          "least 1, at most 255)",                                                                      \
+          loops, 0, 255) /* as many as a handle's loop field names, home being 0 */                     \
+        X(seconds, GRACE,            "grace",            ,    SERVICE, ONE, "SECONDS",                  \
+          "time to finish the requests under way after" NL                                              \
+          "SIGINT, SIGTERM or SIGHUP (default 5)",                                                      \
+          brainstem.grace_ms, 1, 3600, 1000)                                                            \
+        X(bytes,   MEMORY_HIGH,      "memory-high",      ,    SERVICE, ONE, "BYTES",                    \
+          "resident memory from which memory pressure" NL                                               \
+          "is high (default: a sixteenth of RAM, or of" NL                                              \
+          "the lowest cgroup limit, at least 256M)",                                                    \
+          brainstem.memory_high, 1, SIZE_MAX / 2)                                                       \
+        H("Limits on clients (\"service\"; BYTES and RATE may end in K, M or G for\n"                   \
+          "KiB, MiB or GiB; 0 = none where noted)")                                                     \
+        X(bytes,   MAX_HEAD,         "max-head",         ,    SERVICE, ONE, "BYTES",                    \
+          "request line and headers (default 16K," NL                                                   \
+          "at most 65535)",                                                                             \
+          http.limits.head, 1, UINT16_MAX)                                                              \
+        X(count,   MAX_FIELDS,       "max-fields",       ,    SERVICE, ONE, "N",                        \
+          "header fields (default 64)",                                                                 \
+          http.limits.fields, 0, UINT32_MAX)                                                            \
+        X(count,   HEAD_TIMEOUT,     "head-timeout",     ,    SERVICE, ONE, "SECONDS",                  \
+          "time limit for a TLS handshake, and for a" NL                                                \
+          "request line and headers, each from its" NL                                                  \
+          "first byte (default 10, 0 = none)",                                                          \
+          http.limits.head_time, 0, UINT32_MAX)                                                         \
+        X(bytes,   MAX_BODY,         "max-body",         ,    SERVICE, ONE, "BYTES",                    \
+          "request body, at most --body-budget" NL                                                      \
+          "(default 8M)",                                                                               \
+          http.limits.body, 0, SIZE_MAX / 2, CFG_BODY_GIVEN)                                            \
+        X(bytes,   MIN_BODY_RATE,    "min-body-rate",    ,    SERVICE, ONE, "RATE",                     \
+          "bytes per second that a request body must" NL                                                \
+          "average from the end of its headers, once" NL                                                \
+          "--body-grace has passed (default 4K," NL                                                     \
+          "0 = none)",                                                                                  \
+          http.limits.body_rate, 0, UINT32_MAX)                                                         \
+        X(count,   BODY_GRACE,       "body-grace",       ,    SERVICE, ONE, "SECONDS",                  \
+          "time after the headers before" NL                                                            \
+          "--min-body-rate applies (default 5)",                                                        \
+          http.limits.body_grace, 0, UINT32_MAX)                                                        \
+        X(bytes,   BODY_BUDGET,      "body-budget",      ,    SERVICE, ONE, "BYTES",                    \
+          "request bodies in memory for all clients" NL                                                 \
+          "together (default 256M)",                                                                    \
+          http.limits.bodies, 0, SIZE_MAX / 2)                                                          \
+        X(bytes,   CLIENT_BUDGET,    "client-budget",    ,    SERVICE, ONE, "BYTES",                    \
+          "the part of --body-budget for one client" NL                                                 \
+          "address (default: a quarter of it, at least" NL                                              \
+          "--max-body)",                                                                                \
+          http.limits.client_bodies, 1, SIZE_MAX / 2)                                                   \
+        X(count,   MAX_DEPTH,        "max-depth",        ,    SERVICE, ONE, "N",                        \
+          "JSON nesting in a request (default 32)",                                                     \
+          mcp.depth, 1, INT32_MAX - 1)                                                                  \
+        X(count,   MAX_VALUES,       "max-values",       ,    SERVICE, ONE, "N",                        \
+          "JSON values in a request, keys included" NL                                                  \
+          "(default 1024; json-c uses up to 0.7 KiB for" NL                                             \
+          "each value while it parses)",                                                                \
+          mcp.values, 1, UINT32_MAX)                                                                    \
+        X(count,   MAX_MEMBERS,      "max-members",      ,    SERVICE, ONE, "N",                        \
+          "members of one JSON object in a request" NL                                                  \
+          "(default 1024)",                                                                             \
+          mcp.members, 1, UINT32_MAX - 1)                                                               \
+        X(count,   SSE_KEEPALIVE,    "sse-keepalive",    ,    SERVICE, ONE, "SECONDS",                  \
+          "time between the comment lines that askai" NL                                                \
+          "writes on an idle event stream (default 15," NL                                              \
+          "0 = none)",                                                                                  \
+          mcp.keepalive, 0, UINT32_MAX / 2)                                                             \
+        X(count,   MAX_CLIENT_CONNS, "max-client-conns", ,    SERVICE, ONE, "N",                        \
+          "connections per client address: an IPv4" NL                                                  \
+          "address, an IPv6 /64, or the user of a Unix" NL                                              \
+          "socket client (default 256, 0 = none)",                                                      \
+          http.limits.clients, 0, UINT32_MAX)                                                           \
+        X(count,   IDLE_TIMEOUT,     "idle-timeout",     ,    SERVICE, ONE, "SECONDS",                  \
+          "time a connection may stay open with no" NL                                                  \
+          "request under way, before its first request" NL                                              \
+          "and between requests (default 30, 0 = none)",                                                \
+          http.limits.idle_time, 0, UINT32_MAX)                                                         \
+        X(bytes,   OUTPUT_PAUSE,     "output-pause",     ,    SERVICE, ONE, "BYTES",                    \
+          "pending output at which no more input is" NL                                                 \
+          "read from a connection, and a response is" NL                                                \
+          "paused until at most half of this is pending" NL                                             \
+          "(default 256K, at most --max-output)",                                                       \
+          http.limits.out_pause, 1, SIZE_MAX / 2)                                                       \
+        X(bytes,   MAX_OUTPUT,       "max-output",       ,    SERVICE, ONE, "BYTES",                    \
+          "close a connection whose pending output a" NL                                                \
+          "response would take past this, unless it" NL                                                 \
+          "is all that is pending (default 8M)",                                                        \
+          http.limits.out_max, 1, SIZE_MAX / 2)                                                         \
+        X(count,   SEND_TIMEOUT,     "send-timeout",     ,    SERVICE, ONE, "SECONDS",                  \
+          "longest stall of pending output" NL                                                          \
+          "(default 30, 0 = none)",                                                                     \
+          http.limits.write_time, 0, UINT32_MAX)                                                        \
+        H("Built-in tools (\"tools\", each in the member in parentheses)")                              \
+        X(flag,    MAN,              "man",              ,    TOOLS("man.enabled"), NONE, "",           \
+          "also offer the tool man, which returns a" NL                                                 \
+          "page of the manual as man(1) renders it, in" NL                                              \
+          "plain UTF-8 text; askai renders each page" NL                                                \
+          "once and stores it (tools.man.enabled)",                                                     \
+          CFG_MAN)                                                                                      \
+        X(custom,  GIT,              "git",              ,    TOOLS("git.repositories"), MANY, "PATH",  \
+          "also offer the tool git: read-only git" NL                                                   \
+          "commands in the repository at PATH, the top" NL                                              \
+          "of a work tree or a bare repository, named" NL                                               \
+          "by the last component of PATH less .git" NL                                                  \
+          "(repeatable; tools.git.repositories)")                                                       \
+        X(seconds, GIT_TIMEOUT,      "git-timeout",      ,    TOOLS("git.timeout"), ONE, "SECONDS",     \
+          "deadline of a git call, at which git gets" NL                                                \
+          "SIGTERM, and SIGKILL one second later" NL                                                    \
+          "(default 30; tools.git.timeout)",                                                            \
+          git_timeout, 1, 3600, NS)                                                                     \
+        X(text,    NOTES,            "notes",            ,    TOOLS("notes.directory"), ONE, "PATH",    \
+          "shared session's git repository, created" NL                                                 \
+          "bare if absent.  Each participant" NL                                                        \
+          "writes its own branches and reads all notes;" NL                                             \
+          "offer notes to clients as their role" NL                                                     \
+          "allows, and to the upstream with" NL                                                         \
+          "--upstream-tools (tools.notes.directory)",                                                   \
+          notes)                                                                                        \
+        X(flag,    CLIENT_JOBS,      "client-jobs",      ,    TOOLS("jobs.clients"), NONE, "",          \
+          "also offer clients the tools background," NL                                                 \
+          "jobs, wait and timer, as their role allows:" NL                                              \
+          "background runs a call of another tool as a" NL                                              \
+          "job, whose result askai stores for up to an" NL                                              \
+          "hour; timer sets a timer; wait waits for" NL                                                 \
+          "jobs and timers (tools.jobs.clients)",                                                       \
+          CFG_CLIENT_JOBS)                                                                              \
+        H("Test aids (\"testing\")")                                                                    \
+        X(count,   TEST_MAN_RECHECK, "test-man-recheck", ,    TESTING, ONE, "SECONDS",                  \
+          "once the lookup of the file of a page (man" NL                                               \
+          "-w) is older than this, the next man call" NL                                                \
+          "for the page repeats the lookup in the" NL                                                   \
+          "background (default 600, 0 = on each call)",                                                 \
+          man_recheck, 0, 86'400)                                                                       \
+        X(count,   TEST_STALL,       "test-stall",       ,    TESTING, ONE, "MS",                       \
+          "SIGUSR2 stops each event loop in one turn" NL                                                \
+          "for this long",                                                                              \
+          brainstem.stall_ms, 1, 3'600'000)                                                             \
+        X(text,    TEST_PRESSURE,    "test-pressure",    ,    TESTING, ONE, "FILE",                     \
+          "memory pressure is at least the level in" NL                                                 \
+          "FILE, 0 (none), 1 (high) or 2 (critical)," NL                                                \
+          "read each second",                                                                           \
+          brainstem.pressure)                                                                           \
+        X(flag,    TEST_FIFO,        "test-fifo",        ,    TESTING, NONE, "",                        \
+          "upstream calls wait in one queue for each" NL                                                \
+          "class, first in first out, and without the" NL                                               \
+          "limit of 8 queued calls",                                                                    \
+          CFG_TEST_FIFO)                                                                                \
+        X(flag,    TEST_TASK,        "test-task",        ,    TESTING, NONE, "",                        \
+          "also offer the tool test_task: CPU work in" NL                                               \
+          "250 us slices, run as a task on the client" NL                                               \
+          "loops; or, given a prompt, an upstream call" NL                                              \
+          "run as background work",                                                                     \
+          CFG_TEST_TASK)                                                                                \
+        H("Debugging (\"debugging\")")                                                                  \
+        X(flag,    VERBOSE,          "verbose",          'v', DEBUGGING, NONE, "",                      \
+          "log each tool call of a client as it ends," NL                                               \
+          "with its arguments, and each ask call as" NL                                                 \
+          "it starts; each upstream turn, each tool" NL                                                 \
+          "call of a turn or of a background job," NL                                                   \
+          "each compaction and each notice about the" NL                                                \
+          "context; each web request of a plugin; and" NL                                               \
+          "each man page that askai renders",                                                           \
+          CFG_VERBOSE)                                                                                  \
+        X(count,   WATCHDOG,         "watchdog",         ,    DEBUGGING, ONE, "MS",                     \
+          "log a turn of an event loop longer than" NL                                                  \
+          "this (default 20, 0 = none)",                                                                \
+          brainstem.watchdog_ms, 0, 60'000)
+
+/* A heading of the usage text, which the other expansions leave out. */
+#define CONFIG_NO_HEADING(text)
+
+/* The rows of CONFIG_OPTION_LIST, in its order. */
+enum config_row : uint8_t {
+#define CONFIG_ROW(kind, id, ...) ROW_##id,
+	CONFIG_OPTION_LIST(CONFIG_ROW, CONFIG_NO_HEADING)
+#undef CONFIG_ROW
+};
+
+/* The first of the arguments. */
+#define CONFIG_FIRST(x, ...) x
+
+/* The options for getopt_long(). The value of an option is its short form,
+ * or else 256 plus its row.
+ */
+static struct option const options[] = {
+#define CONFIG_OPTION(kind, id, name, s, place, arg, ...) \
+        { name, ARG_##arg & ARG_HAS, nullptr, CONFIG_VALUE(id, s) },
+#define CONFIG_VALUE(id, ...) CONFIG_FIRST(__VA_ARGS__ __VA_OPT__(,) 256 + ROW_##id,)
+	CONFIG_OPTION_LIST(CONFIG_OPTION, CONFIG_NO_HEADING)
+#undef CONFIG_VALUE
+#undef CONFIG_OPTION
+	{ nullptr, 0, nullptr, 0 }
+};
+
+/* The short forms for getopt_long(), each followed by ':' if the option
+ * requires an argument.
+ */
+static char const shorts[] = {
+#define CONFIG_SHORT(kind, id, name, s, place, arg, ...) CONFIG_SHORT_(arg, s)
+#define CONFIG_SHORT_(arg, ...) __VA_OPT__(__VA_ARGS__, CONFIG_COLON_##arg)
+#define CONFIG_COLON_NONE
+#define CONFIG_COLON_ONE ':',
+#define CONFIG_COLON_MANY ':',
+	CONFIG_OPTION_LIST(CONFIG_SHORT, CONFIG_NO_HEADING)
+#undef CONFIG_COLON_MANY
+#undef CONFIG_COLON_ONE
+#undef CONFIG_COLON_NONE
+#undef CONFIG_SHORT_
+#undef CONFIG_SHORT
+	'\0'
+};
+
+/* Print the usage text to @p out. Each option is printed by one fprintf()
+ * whose arguments are the short form, if there is one, and the padding
+ * after the head of the option. The help starts in column 28 after a head
+ * shorter than 27 bytes, and on the next line after a longer head.
+ */
 static void
 config_usage (struct config const *cfg,
               FILE                *out)
 {
-	char const *argv0 = cfg->argv[0];
-	fprintf(out,
-	        "Usage: %s [options]\n"
+	#define CONFIG_HELP(kind, id, name, s, place, arg, meta, help, ...) \
+	        CONFIG_HELP_(name " " meta, help, s)
+	#define CONFIG_HELP_(head, help, ...)                                         \
+	        fprintf(out, CONFIG_FIRST(__VA_OPT__("  -%c, --",) "      --",) head  \
+	                "%s" help "\n", __VA_ARGS__ __VA_OPT__(,)                     \
+	                CONFIG_PAD(sizeof "      --" head - 1));
+	#define CONFIG_PAD(n) ((n) < 27 ? &"                            "[n] \
+	                                : "\n                            ")
+	#define CONFIG_HEADING(text) fputs("\n" text ":\n", out);
+	fprintf(out, "Usage: %s [options]\n"
 	        "MCP server (Streamable HTTP) with a tool that asks another AI.\n"
-	        "\n"
-	        "  -c, --config FILE         read options from FILE before the command\n"
-	        "                            line: a JSON object without comments.  Its\n"
-	        "                            objects upstream, service, testing and\n"
-	        "                            debugging contain the options of the\n"
-	        "                            sections below, named as the long options.\n"
-	        "                            Its member tools can contain the objects of\n"
-	        "                            the built-in tools, whose members the\n"
-	        "                            section Built-in tools names.  true sets an\n"
-	        "                            option without argument, and an array lists\n"
-	        "                            the values of a repeatable option.  The\n"
-	        "                            command line overrides the file, but adds\n"
-	        "                            to its header, allow-origin and git lists.\n"
-	        "                            Only the last --config is read.  See\n"
-	        "                            doc/configuration.md and\n"
-	        "                            doc/askai.example.json.\n"
-	        "  -h, --help                show this help\n"
-	        "\n"
-	        "Session (top-level configuration members):\n"
-	        "      --participant NAME    stable writer identity, 1 to 64 characters\n"
-	        "                            from [A-Za-z0-9_-]; default: tool-name.  Use\n"
-	        "                            distinct names for collaborating instances\n"
-	        "      --transcripts PATH    separate git repository for reasoning text,\n"
-	        "                            with private job recovery state; default:\n"
-	        "                            <notes>.transcripts.git with --notes, else\n"
-	        "                            $XDG_STATE_HOME/askai/NAME/transcripts.git\n"
-	        "                            with --background, using $HOME/.local/state\n"
-	        "                            if XDG_STATE_HOME is not absolute\n"
-	        "\n"
-	        "Upstream AI (\"upstream\"):\n"
-	        "  -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),\n"
-	        "                            openai, anthropic, google, deepinfra or\n"
-	        "                            openrouter; the provider sets the defaults\n"
-	        "                            of --api, --url and --key-env\n"
-	        "      --api NAME            chat (chat completions), responses,\n"
-	        "                            messages (Anthropic), generate (Gemini) or\n"
-	        "                            interactions (Gemini Interactions)\n"
-	        "                            (default: the API of the provider, else\n"
-	        "                            chat)\n"
-	        "  -u, --url URL             endpoint URL, http:// or https:// (default:\n"
-	        "                            the URL of the provider; required without\n"
-	        "                            --provider)\n"
-	        "  -m, --model NAME          model to ask (required at the URL of a\n"
-	        "                            provider other than llama)\n"
-	        "  -k, --key-env VAR         environment variable that contains the API\n"
-	        "                            key (default: at the URL of a provider, the\n"
-	        "                            usual variable of the provider, which llama\n"
-	        "                            may leave unset; else ASKAI_API_KEY, if set)\n"
-	        "  -H, --header LINE         extra request header, Name: value\n"
-	        "                            (repeatable)\n"
-	        "  -s, --system TEXT         default system prompt\n"
-	        "  -t, --temperature N       sampling temperature, a number from 0\n"
-	        "                            (default: none sent)\n"
-	        "  -n, --max-tokens N        output token limit (default: none sent, but\n"
-	        "                            4096 with the messages API)\n", argv0);
+	        "\n", cfg->argv[0]);
+	CONFIG_OPTION_LIST(CONFIG_HELP, CONFIG_HEADING)
+	#undef CONFIG_HEADING
+	#undef CONFIG_PAD
+	#undef CONFIG_HELP_
+	#undef CONFIG_HELP
 	fprintf(out,
-	        "  -x, --extra JSON          JSON object that askai merges into each\n"
-	        "                            request body, recursively; a null member\n"
-	        "                            removes that key\n"
-	        "      --background          return ask calls immediately as jobs, and\n"
-	        "                            keep their upstream streams alive after\n"
-	        "                            clients disconnect; request native background\n"
-	        "                            execution with OpenAI Responses and Gemini\n"
-	        "                            Interactions (default off)\n"
-	        "  -T, --timeout SECONDS     time limit on each upstream call: first on\n"
-	        "                            the wait for an upstream slot, then again on\n"
-	        "                            the call itself (default 600, 0 = none)\n"
-	        "      --chunk-timeout SECONDS\n"
-	        "                            longest pause in an answer once it has\n"
-	        "                            begun (default 60, 0 = none)\n"
-	        "      --slots N             upstream calls at once (default: total_slots\n"
-	        "                            from the /props of llama-server, else 4)\n"
-	        "      --max-calls N         upstream calls queued or running, at most\n"
-	        "                            (default 256), and at most 8 queued for one\n"
-	        "                            identity, one Unix user, or else one session\n"
-	        "                            or client address; an ask call past those\n"
-	        "                            fails at once with an error to try again\n"
-	        "      --upstream-tools      offer tools to the upstream in ask calls:\n"
-	        "                            man, git and the plugin tools that allow it,\n"
-	        "                            as the role of the client allows, and notes\n"
-	        "                            with --notes; with any of those also\n"
-	        "                            compact, findings, jobs, wait and timer,\n"
-	        "                            and beside a tool that can run in the\n"
-	        "                            background also background; an ask call\n"
-	        "                            runs the tool calls of each turn and sends\n"
-	        "                            the next upstream request until an answer\n"
-	        "                            ends the call\n"
-	        "      --max-turns N         upstream calls that an ask call makes at\n"
-	        "                            most, with --upstream-tools (default 32)\n"
-	        "      --context TOKENS      context size of the upstream, used with\n"
-	        "                            --upstream-tools: a tool result in a turn is\n"
-	        "                            at most an eighth of it; at a quarter and at\n"
-	        "                            half, the upstream is reminded to write\n"
-	        "                            notes, with --notes; from two thirds on, it\n"
-	        "                            is asked to call compact; and when it is\n"
-	        "                            full, askai compacts the conversation\n"
-	        "                            (default: n_ctx from the /props of\n"
-	        "                            llama-server, else unknown; 0 = the default)\n");
-	fprintf(out,
-	        "      --tool-name NAME      name of the ask tool, 1 to 128 characters\n"
-	        "                            from A-Z, a-z, 0-9, _, . and - (default\n"
-	        "                            ask_ai)\n"
-	        "      --tool-description TEXT\n"
-	        "                            description of the ask tool (default: a text\n"
-	        "                            built from --model, --upstream-tools and\n"
-	        "                            --notes)\n"
-	        "\n"
-	        "MCP server (\"service\"):\n"
-	        "  -l, --listen ADDR         [host:]port, where host is 127.0.0.1 if it\n"
-	        "                            is left out; unix:PATH for a Unix socket; or\n"
-	        "                            tls:[host:]port for TLS (repeatable;\n"
-	        "                            default 127.0.0.1:8090)\n"
-	        "      --tls-cert FILE       certificate chain for tls: listeners, in\n"
-	        "                            PEM: the certificate of the server first,\n"
-	        "                            then the intermediate CA certificates\n"
-	        "      --tls-key FILE        private key of that certificate, in PEM,\n"
-	        "                            unencrypted: ECDSA on P-256, P-384 or P-521,\n"
-	        "                            or Ed25519; others must not be able to read\n"
-	        "                            FILE\n"
-	        "      --tls-allow-rsa       allow an RSA key too\n"
-	        "  -o, --allow-origin URL    allow browser requests whose Origin header\n"
-	        "                            is exactly URL, such as https://example.com\n"
-	        "                            (repeatable; '*' allows any; loopback\n"
-	        "                            Origins are always allowed)\n"
-	        "      --loops N             event loops that serve clients (default 0:\n"
-	        "                            one fewer than the CPUs askai may use, at\n"
-	        "                            least 1, at most 255)\n"
-	        "      --grace SECONDS       time to finish the requests under way after\n"
-	        "                            SIGINT, SIGTERM or SIGHUP (default 5)\n"
-	        "      --memory-high BYTES   resident memory from which memory pressure\n"
-	        "                            is high (default: a sixteenth of RAM, or of\n"
-	        "                            the lowest cgroup limit, at least 256M)\n"
-	        "\n"
-	        "Limits on clients (\"service\"; BYTES and RATE may end in K, M or G for\n"
-	        "KiB, MiB or GiB; 0 = none where noted):\n"
-	        "      --max-head BYTES      request line and headers (default 16K,\n"
-	        "                            at most 65535)\n"
-	        "      --max-fields N        header fields (default 64)\n"
-	        "      --head-timeout SECONDS\n"
-	        "                            time limit for a TLS handshake, and for a\n"
-	        "                            request line and headers, each from its\n"
-	        "                            first byte (default 10, 0 = none)\n"
-	        "      --max-body BYTES      request body, at most --body-budget\n"
-	        "                            (default 8M)\n"
-	        "      --min-body-rate RATE  bytes per second that a request body must\n"
-	        "                            average from the end of its headers, once\n"
-	        "                            --body-grace has passed (default 4K,\n"
-	        "                            0 = none)\n"
-	        "      --body-grace SECONDS  time after the headers before\n"
-	        "                            --min-body-rate applies (default 5)\n"
-	        "      --body-budget BYTES   request bodies in memory for all clients\n"
-	        "                            together (default 256M)\n"
-	        "      --client-budget BYTES\n"
-	        "                            the part of --body-budget for one client\n"
-	        "                            address (default: a quarter of it, at least\n"
-	        "                            --max-body)\n"
-	        "      --max-depth N         JSON nesting in a request (default 32)\n"
-	        "      --max-values N        JSON values in a request, keys included\n"
-	        "                            (default 1024; json-c uses up to 0.7 KiB for\n"
-	        "                            each value while it parses)\n"
-	        "      --max-members N       members of one JSON object in a request\n"
-	        "                            (default 1024)\n"
-	        "      --sse-keepalive SECONDS\n"
-	        "                            time between the comment lines that askai\n"
-	        "                            writes on an idle event stream (default 15,\n"
-	        "                            0 = none)\n");
-	fprintf(out,
-	        "      --max-client-conns N  connections per client address: an IPv4\n"
-	        "                            address, an IPv6 /64, or the user of a Unix\n"
-	        "                            socket client (default 256, 0 = none)\n"
-	        "      --idle-timeout SECONDS\n"
-	        "                            time a connection may stay open with no\n"
-	        "                            request under way, before its first request\n"
-	        "                            and between requests (default 30, 0 = none)\n"
-	        "      --output-pause BYTES  pending output at which no more input is\n"
-	        "                            read from a connection, and a response is\n"
-	        "                            paused until at most half of this is pending\n"
-	        "                            (default 256K, at most --max-output)\n"
-	        "      --max-output BYTES    close a connection whose pending output a\n"
-	        "                            response would take past this, unless it\n"
-	        "                            is all that is pending (default 8M)\n"
-	        "      --send-timeout SECONDS\n"
-	        "                            longest stall of pending output\n"
-	        "                            (default 30, 0 = none)\n"
-	        "\n");
-	fprintf(out,
-	        "Built-in tools (\"tools\", each in the member in parentheses):\n"
-	        "      --man                 also offer the tool man, which returns a\n"
-	        "                            page of the manual as man(1) renders it, in\n"
-	        "                            plain UTF-8 text; askai renders each page\n"
-	        "                            once and stores it (tools.man.enabled)\n"
-	        "      --git PATH            also offer the tool git: read-only git\n"
-	        "                            commands in the repository at PATH, the top\n"
-	        "                            of a work tree or a bare repository, named\n"
-	        "                            by the last component of PATH less .git\n"
-	        "                            (repeatable; tools.git.repositories)\n"
-	        "      --git-timeout SECONDS\n"
-	        "                            deadline of a git call, at which git gets\n"
-	        "                            SIGTERM, and SIGKILL one second later\n"
-	        "                            (default 30; tools.git.timeout)\n"
-	        "      --notes PATH          shared session's git repository, created\n"
-	        "                            bare if absent.  Each participant\n"
-	        "                            writes its own branches and reads all notes;\n"
-	        "                            offer notes to clients as their role\n"
-	        "                            allows, and to the upstream with\n"
-	        "                            --upstream-tools (tools.notes.directory)\n"
-	        "      --client-jobs         also offer clients the tools background,\n"
-	        "                            jobs, wait and timer, as their role allows:\n"
-	        "                            background runs a call of another tool as a\n"
-	        "                            job, whose result askai stores for up to an\n"
-	        "                            hour; timer sets a timer; wait waits for\n"
-	        "                            jobs and timers (tools.jobs.clients)\n"
-	        "\n"
-	        "Test aids (\"testing\"):\n"
-	        "      --test-man-recheck SECONDS\n"
-	        "                            once the lookup of the file of a page (man\n"
-	        "                            -w) is older than this, the next man call\n"
-	        "                            for the page repeats the lookup in the\n"
-	        "                            background (default 600, 0 = on each call)\n"
-	        "      --test-stall MS       SIGUSR2 stops each event loop in one turn\n"
-	        "                            for this long\n"
-	        "      --test-pressure FILE  memory pressure is at least the level in\n"
-	        "                            FILE, 0 (none), 1 (high) or 2 (critical),\n"
-	        "                            read each second\n"
-	        "      --test-fifo           upstream calls wait in one queue for each\n"
-	        "                            class, first in first out, and without the\n"
-	        "                            limit of 8 queued calls\n"
-	        "      --test-task           also offer the tool test_task: CPU work in\n"
-	        "                            250 us slices, run as a task on the client\n"
-	        "                            loops; or, given a prompt, an upstream call\n"
-	        "                            run as background work\n"
-	        "\n"
-	        "Debugging (\"debugging\"):\n"
-	        "  -v, --verbose             log each tool call of a client as it ends,\n"
-	        "                            with its arguments, and each ask call as\n"
-	        "                            it starts; each upstream turn, each tool\n"
-	        "                            call of a turn or of a background job,\n"
-	        "                            each compaction and each notice about the\n"
-	        "                            context; each web request of a plugin; and\n"
-	        "                            each man page that askai renders\n");
-	fprintf(out,
-	        "      --watchdog MS         log a turn of an event loop longer than\n"
-	        "                            this (default 20, 0 = none)\n"
 	        "\n"
 	        "The members roles, identities, unix-groups and anonymous of the\n"
 	        "configuration file define who may connect and what each client may do\n"
@@ -415,6 +620,9 @@ config_usage (struct config const *cfg,
 	        BRAINSTEM_FORCED);
 }
 
+#undef CONFIG_FIRST
+#undef NL
+
 /* Whether a line of cfg->headers begins, in any case, with @p prefix up to
  * its colon.
  */
@@ -442,142 +650,6 @@ config_tool_name_valid (char const *name)
 	size_t n = strspn(name, UTIL_ALNUM "_.-");
 	return n && n <= 128 && !name[n];
 }
-
-/* The options without a short form. */
-enum {
-	OPT_TOOL_NAME = 0x100, OPT_TOOL_DESCRIPTION, OPT_MAX_HEAD, OPT_MAX_FIELDS,
-	OPT_HEAD_TIMEOUT, OPT_MAX_BODY, OPT_MIN_BODY_RATE, OPT_BODY_GRACE,
-	OPT_BODY_BUDGET, OPT_CLIENT_BUDGET, OPT_MAX_DEPTH, OPT_MAX_VALUES,
-	OPT_MAX_MEMBERS, OPT_SSE_KEEPALIVE, OPT_MAX_CLIENT_CONNS,
-	OPT_IDLE_TIMEOUT, OPT_OUTPUT_PAUSE, OPT_MAX_OUTPUT, OPT_SEND_TIMEOUT,
-	OPT_GRACE, OPT_WATCHDOG, OPT_TEST_STALL, OPT_MEMORY_HIGH, OPT_TEST_PRESSURE,
-	OPT_MAX_CALLS, OPT_LOOPS, OPT_SLOTS, OPT_CHUNK_TIMEOUT, OPT_TEST_FIFO,
-	OPT_MAN, OPT_TEST_MAN_RECHECK, OPT_TEST_TASK, OPT_GIT, OPT_GIT_TIMEOUT,
-	OPT_TLS_CERT, OPT_TLS_KEY, OPT_TLS_ALLOW_RSA, OPT_UPSTREAM_TOOLS, OPT_NOTES,
-	OPT_MAX_TURNS, OPT_CONTEXT, OPT_API, OPT_CLIENT_JOBS, OPT_BACKGROUND,
-	OPT_PARTICIPANT, OPT_TRANSCRIPTS
-};
-
-static char const shorts[] = "c:p:u:m:k:H:s:t:n:x:T:l:o:vh";
-
-/* The objects of the configuration file that contain the options, and
- * TOOLS for the options that an object of a built-in tool in the member
- * tools contains.
- */
-enum config_group : uint8_t {
-	GROUP_NONE, GROUP_UPSTREAM, GROUP_SERVICE, GROUP_TESTING, GROUP_DEBUGGING,
-	GROUP_TOOLS, GROUP_ROOT
-};
-
-static char const *const group_names[] = {
-	[GROUP_UPSTREAM]  = "upstream",
-	[GROUP_SERVICE]   = "service",
-	[GROUP_TESTING]   = "testing",
-	[GROUP_DEBUGGING] = "debugging",
-};
-
-/* How an option takes its argument: the has_arg of getopt_long() in the
- * bits ARG_HAS, and the bits above them.
- */
-enum config_arg : uint8_t {
-	ARG_NONE        = no_argument,
-	ARG_ONE         = required_argument,
-	ARG_HAS         = 3,
-	ARG_LIST        = 1u << 2,  /* a member of the configuration file can
-	                               list the values in an array */
-	ARG_RELOAD      = 1u << 3,  /* the option takes effect on a reload */
-	ARG_MANY        = ARG_ONE | ARG_LIST,
-	ARG_ONE_RELOAD  = ARG_ONE | ARG_RELOAD,
-	ARG_NONE_RELOAD = ARG_NONE | ARG_RELOAD,
-};
-
-/* Each option: the object of the configuration file that contains it, NONE
- * for the two that the file cannot set; its long name; how it takes its
- * argument, ARG_ of enum config_arg; its short form or OPT_ value; and, in
- * the group TOOLS, its member "TOOL.NAME" of the member tools.
- */
-#define CONFIG_OPTIONS(X)                                                                       \
-        X(ROOT,      "participant",      ONE,         OPT_PARTICIPANT,      nullptr)            \
-        X(ROOT,      "transcripts",      ONE,         OPT_TRANSCRIPTS,      nullptr)            \
-        X(UPSTREAM,  "provider",         ONE,         'p',                  nullptr)            \
-        X(UPSTREAM,  "api",              ONE,         OPT_API,              nullptr)            \
-        X(UPSTREAM,  "url",              ONE,         'u',                  nullptr)            \
-        X(UPSTREAM,  "model",            ONE,         'm',                  nullptr)            \
-        X(UPSTREAM,  "key-env",          ONE,         'k',                  nullptr)            \
-        X(UPSTREAM,  "header",           MANY,        'H',                  nullptr)            \
-        X(UPSTREAM,  "system",           ONE,         's',                  nullptr)            \
-        X(UPSTREAM,  "temperature",      ONE,         't',                  nullptr)            \
-        X(UPSTREAM,  "max-tokens",       ONE,         'n',                  nullptr)            \
-        X(UPSTREAM,  "extra",            ONE,         'x',                  nullptr)            \
-        X(UPSTREAM,  "background",       NONE,        OPT_BACKGROUND,       nullptr)            \
-        X(UPSTREAM,  "timeout",          ONE,         'T',                  nullptr)            \
-        X(UPSTREAM,  "chunk-timeout",    ONE,         OPT_CHUNK_TIMEOUT,    nullptr)            \
-        X(UPSTREAM,  "slots",            ONE,         OPT_SLOTS,            nullptr)            \
-        X(UPSTREAM,  "max-calls",        ONE,         OPT_MAX_CALLS,        nullptr)            \
-        X(UPSTREAM,  "upstream-tools",   NONE,        OPT_UPSTREAM_TOOLS,   nullptr)            \
-        X(TOOLS,     "notes",            ONE,         OPT_NOTES,            "notes.directory")  \
-        X(UPSTREAM,  "max-turns",        ONE,         OPT_MAX_TURNS,        nullptr)            \
-        X(UPSTREAM,  "context",          ONE,         OPT_CONTEXT,          nullptr)            \
-        X(UPSTREAM,  "tool-name",        ONE,         OPT_TOOL_NAME,        nullptr)            \
-        X(UPSTREAM,  "tool-description", ONE,         OPT_TOOL_DESCRIPTION, nullptr)            \
-        X(SERVICE,   "listen",           MANY,        'l',                  nullptr)            \
-        X(SERVICE,   "tls-cert",         ONE_RELOAD,  OPT_TLS_CERT,         nullptr)            \
-        X(SERVICE,   "tls-key",          ONE_RELOAD,  OPT_TLS_KEY,          nullptr)            \
-        X(SERVICE,   "tls-allow-rsa",    NONE_RELOAD, OPT_TLS_ALLOW_RSA,    nullptr)            \
-        X(SERVICE,   "allow-origin",     MANY,        'o',                  nullptr)            \
-        X(TOOLS,     "man",              NONE,        OPT_MAN,              "man.enabled")      \
-        X(TOOLS,     "git",              MANY,        OPT_GIT,              "git.repositories") \
-        X(TOOLS,     "git-timeout",      ONE,         OPT_GIT_TIMEOUT,      "git.timeout")      \
-        X(TOOLS,     "client-jobs",      NONE,        OPT_CLIENT_JOBS,      "jobs.clients")     \
-        X(SERVICE,   "loops",            ONE,         OPT_LOOPS,            nullptr)            \
-        X(SERVICE,   "grace",            ONE,         OPT_GRACE,            nullptr)            \
-        X(SERVICE,   "memory-high",      ONE,         OPT_MEMORY_HIGH,      nullptr)            \
-        X(SERVICE,   "max-head",         ONE,         OPT_MAX_HEAD,         nullptr)            \
-        X(SERVICE,   "max-fields",       ONE,         OPT_MAX_FIELDS,       nullptr)            \
-        X(SERVICE,   "head-timeout",     ONE,         OPT_HEAD_TIMEOUT,     nullptr)            \
-        X(SERVICE,   "max-body",         ONE,         OPT_MAX_BODY,         nullptr)            \
-        X(SERVICE,   "min-body-rate",    ONE,         OPT_MIN_BODY_RATE,    nullptr)            \
-        X(SERVICE,   "body-grace",       ONE,         OPT_BODY_GRACE,       nullptr)            \
-        X(SERVICE,   "body-budget",      ONE,         OPT_BODY_BUDGET,      nullptr)            \
-        X(SERVICE,   "client-budget",    ONE,         OPT_CLIENT_BUDGET,    nullptr)            \
-        X(SERVICE,   "max-depth",        ONE,         OPT_MAX_DEPTH,        nullptr)            \
-        X(SERVICE,   "max-values",       ONE,         OPT_MAX_VALUES,       nullptr)            \
-        X(SERVICE,   "max-members",      ONE,         OPT_MAX_MEMBERS,      nullptr)            \
-        X(SERVICE,   "sse-keepalive",    ONE,         OPT_SSE_KEEPALIVE,    nullptr)            \
-        X(SERVICE,   "max-client-conns", ONE,         OPT_MAX_CLIENT_CONNS, nullptr)            \
-        X(SERVICE,   "idle-timeout",     ONE,         OPT_IDLE_TIMEOUT,     nullptr)            \
-        X(SERVICE,   "output-pause",     ONE,         OPT_OUTPUT_PAUSE,     nullptr)            \
-        X(SERVICE,   "max-output",       ONE,         OPT_MAX_OUTPUT,       nullptr)            \
-        X(SERVICE,   "send-timeout",     ONE,         OPT_SEND_TIMEOUT,     nullptr)            \
-        X(TESTING,   "test-man-recheck", ONE,         OPT_TEST_MAN_RECHECK, nullptr)            \
-        X(TESTING,   "test-stall",       ONE,         OPT_TEST_STALL,       nullptr)            \
-        X(TESTING,   "test-pressure",    ONE,         OPT_TEST_PRESSURE,    nullptr)            \
-        X(TESTING,   "test-fifo",        NONE,        OPT_TEST_FIFO,        nullptr)            \
-        X(TESTING,   "test-task",        NONE,        OPT_TEST_TASK,        nullptr)            \
-        X(DEBUGGING, "verbose",          NONE,        'v',                  nullptr)            \
-        X(DEBUGGING, "watchdog",         ONE,         OPT_WATCHDOG,         nullptr)            \
-        X(NONE,      "config",           ONE,         'c',                  nullptr)            \
-        X(NONE,      "help",             NONE,        'h',                  nullptr)
-
-#define CONFIG_OPTION(group, name, arg, val, member) { name, ARG_##arg & ARG_HAS, nullptr, val },
-static struct option const options[] = {
-	CONFIG_OPTIONS(CONFIG_OPTION)
-	{ nullptr, 0, nullptr, 0 }
-};
-#undef CONFIG_OPTION
-
-/* The place in the configuration file of each option of options[], and
- * how the option takes its argument.
- */
-#define CONFIG_PLACE(group, name, arg, val, member) { member, GROUP_##group, ARG_##arg },
-static struct {
-	char const *member;  /* "TOOL.NAME" of the member tools, in the group
-	                        TOOLS */
-	uint32_t    group;   /* enum config_group */
-	uint32_t    arg;     /* enum config_arg */
-} const places[] = { CONFIG_OPTIONS(CONFIG_PLACE) };
-#undef CONFIG_PLACE
-#undef CONFIG_OPTIONS
 
 /* Bytes of a configuration file, at most. */
 enum { FILE_MAX = 1 << 20 };
@@ -616,14 +688,18 @@ config_oom (struct config const *cfg)
 	return 1;
 }
 
-/* The option whose value is @p opt. */
-static struct option const *
-config_option (int opt)
+/* The row of the option whose value is @p opt, or the row of the
+ * terminator of options[] if there is none.
+ */
+static size_t
+config_row (int opt)
 {
-	struct option const *o = options;
-	while (o->name && o->val != opt)
-		++o;
-	return o;
+	if (opt >= 256)
+		return (size_t)opt - 256;
+	size_t row = 0;
+	while (options[row].name && options[row].val != opt)
+		++row;
+	return row;
 }
 
 /* Append @p item to the nullptr-terminated @p list of @p *n items, which
@@ -741,103 +817,74 @@ config_apply_extra (struct config *cfg,
 	return 0;
 }
 
-/* How an option of stores[] takes its argument. */
+/* How an option of rows[] takes its argument. */
 enum config_take : uint8_t {
 	TAKE_BYTES    = 1u << 0,  /* the digits may end in K, M or G for KiB,
 	                             MiB or GiB */
 	TAKE_POSITIVE = 1u << 1,  /* the count is at least 1 */
 	TAKE_TEXT     = 1u << 2,  /* the member points to the argument */
+	TAKE_CUSTOM   = 1u << 3,  /* config_apply() applies the option */
 };
 
-/* Each option that only stores its argument or sets flags: the member of
- * struct config at @p at, of @p width bytes, takes the argument with
- * TAKE_TEXT, or else a count up to @p max, with the bits of @p take, times
- * @p scale; the option also sets the CFG_ flags @p flag. An option
- * without a member only sets the flags.
+/* Each option, by its row: its place in the configuration file, its ARG_
+ * flags, and what it stores. The member of struct config at @p at, of
+ * @p width bytes, is set to point to the argument (TAKE_TEXT), or to a
+ * count up to @p max, parsed as the bits of @p take say, times @p scale.
+ * The option also sets the CFG_ flags @p flag. An option without a member
+ * only sets the flags.
  */
-static struct config_store {
-	uint64_t max;
-	uint32_t scale;
-	uint32_t flag;
-	int      opt;
-	uint16_t at;
-	uint8_t  width;
-	uint8_t  take;   /* enum config_take */
-} const stores[] = {
-#define TAKE(opt, member, take, max, scale, flag)                               \
-        { max, scale, flag, opt, offsetof(struct config, member),               \
-          sizeof ((struct config *)nullptr)->member, take }
-/* N and B take a count from min, 0 or 1, to max; B's is in bytes. S
- * takes the text, and F only sets a flag.
- */
-#define N(opt, member, min, max) TAKE(opt, member, (min) ? TAKE_POSITIVE : 0, max, 1, 0)
-#define B(opt, member, min, max) \
-        TAKE(opt, member, TAKE_BYTES | ((min) ? TAKE_POSITIVE : 0), max, 1, 0)
-#define S(opt, member) TAKE(opt, member, TAKE_TEXT, 0, 0, 0)
-#define F(o, bit) { .flag = bit, .opt = o }
-	B(OPT_MAX_HEAD,          http.limits.head,          1, UINT16_MAX),
-	N(OPT_MAX_FIELDS,        http.limits.fields,        0, UINT32_MAX),
-	N(OPT_HEAD_TIMEOUT,      http.limits.head_time,     0, UINT32_MAX),
-	TAKE(OPT_MAX_BODY,       http.limits.body,          TAKE_BYTES, SIZE_MAX / 2, 1,
-	     CFG_BODY_GIVEN),
-	B(OPT_MIN_BODY_RATE,     http.limits.body_rate,     0, UINT32_MAX),
-	N(OPT_BODY_GRACE,        http.limits.body_grace,    0, UINT32_MAX),
-	B(OPT_BODY_BUDGET,       http.limits.bodies,        0, SIZE_MAX / 2),
-	B(OPT_CLIENT_BUDGET,     http.limits.client_bodies, 1, SIZE_MAX / 2),
-	N(OPT_MAX_CLIENT_CONNS,  http.limits.clients,       0, UINT32_MAX),
-	N(OPT_IDLE_TIMEOUT,      http.limits.idle_time,     0, UINT32_MAX),
-	B(OPT_OUTPUT_PAUSE,      http.limits.out_pause,     1, SIZE_MAX / 2),
-	B(OPT_MAX_OUTPUT,        http.limits.out_max,       1, SIZE_MAX / 2),
-	N(OPT_SEND_TIMEOUT,      http.limits.write_time,    0, UINT32_MAX),
-	N(OPT_MAX_DEPTH,         mcp.depth,                 1, INT32_MAX - 1),
-	N(OPT_MAX_VALUES,        mcp.values,                1, UINT32_MAX),
-	N(OPT_MAX_MEMBERS,       mcp.members,               1, UINT32_MAX - 1),
-	N(OPT_SSE_KEEPALIVE,     mcp.keepalive,             0, UINT32_MAX / 2),
-	TAKE(OPT_GRACE,          brainstem.grace_ms,        TAKE_POSITIVE, 3600, 1000, 0),
-	N(OPT_WATCHDOG,          brainstem.watchdog_ms,     0, 60'000),
-	N(OPT_TEST_STALL,        brainstem.stall_ms,        1, 3'600'000),
-	B(OPT_MEMORY_HIGH,       brainstem.memory_high,     1, SIZE_MAX / 2),
-	N(OPT_MAX_CALLS,         calls,                     1, 1'000'000),
-	N(OPT_TEST_MAN_RECHECK,  man_recheck,               0, 86'400),
-	TAKE(OPT_GIT_TIMEOUT,    git_timeout,               TAKE_POSITIVE, 3600, NS, 0),
-	N(OPT_MAX_TURNS,         turns,                     1, 1000),
-	/* As many as a handle's loop field names, home being 0. */
-	N(OPT_LOOPS,             loops,                     0, 255),
-	N(OPT_SLOTS,             ep.slots,                  1, UINT16_MAX),
-	N('n',                   ep.max_tokens,             1, INT32_MAX),
-	TAKE('T',                ep.timeout_ms,             0, INT32_MAX / 1000, 1000, 0),
-	TAKE(OPT_CHUNK_TIMEOUT,  ep.chunk_ms,               0, INT32_MAX / 1000, 1000, 0),
-	N(OPT_CONTEXT,           ep.context,                0, INT32_MAX),
-	S('m',                   ep.model),
-	S('k',                   key_env),
-	S('s',                   ep.system),
-	S(OPT_TOOL_DESCRIPTION,  tool.description),
-	S(OPT_TLS_CERT,          tls_cert),
-	S(OPT_TLS_KEY,           tls_key),
-	S(OPT_NOTES,             notes),
-	S(OPT_TRANSCRIPTS,       transcripts),
-	S(OPT_TEST_PRESSURE,     brainstem.pressure),
-	F('v',                   CFG_VERBOSE),
-	F(OPT_TLS_ALLOW_RSA,     CFG_TLS_RSA),
-	F(OPT_UPSTREAM_TOOLS,    CFG_UPSTREAM_TOOLS),
-	F(OPT_CLIENT_JOBS,       CFG_CLIENT_JOBS),
-	F(OPT_TEST_FIFO,         CFG_TEST_FIFO),
-	F(OPT_TEST_TASK,         CFG_TEST_TASK),
-	F(OPT_MAN,               CFG_MAN),
-#undef F
-#undef S
-#undef B
-#undef N
-#undef TAKE
+static struct config_option {
+	char const *member;  /* "TOOL.NAME" of the member tools, in the group
+	                        TOOLS */
+	uint64_t    max;
+	uint32_t    scale;
+	uint32_t    flag;
+	uint32_t    at;
+	uint8_t     width;
+	uint8_t     take;    /* enum config_take */
+	uint8_t     group;   /* enum config_group */
+	uint8_t     arg;     /* enum config_arg */
+} const rows[] = {
+#define CONFIG_ROW(kind, id, name, s, place, argument, meta, help, ...)          \
+        [ROW_##id] = { CONFIG_STORE_##kind(__VA_ARGS__), .group = GROUP_##place, \
+                       .arg = ARG_##argument },
+/* The place TOOLS("TOOL.NAME"): the group TOOLS, and the member. */
+#define GROUP_TOOLS(m) GROUP_TOOLS, .member = m
+#define CONFIG_AT(m) .at = offsetof(struct config, m), \
+                     .width = sizeof ((struct config *)nullptr)->m
+#define CONFIG_STORE_custom() .take = TAKE_CUSTOM
+#define CONFIG_STORE_text(m) CONFIG_AT(m), .take = TAKE_TEXT
+#define CONFIG_STORE_flag(bit) .flag = bit
+#define CONFIG_STORE_count(m, min, max_, ...)                                  \
+        .max = max_, .scale = 1, .flag = 0 __VA_OPT__(| __VA_ARGS__),          \
+        CONFIG_AT(m), .take = (min) ? TAKE_POSITIVE : 0
+#define CONFIG_STORE_bytes(m, min, max_, ...)                                  \
+        .max = max_, .scale = 1, .flag = 0 __VA_OPT__(| __VA_ARGS__),          \
+        CONFIG_AT(m), .take = TAKE_BYTES | ((min) ? TAKE_POSITIVE : 0)
+#define CONFIG_STORE_seconds(m, min, max_, scale_)                             \
+        .max = max_, .scale = scale_, CONFIG_AT(m), .take = (min) ? TAKE_POSITIVE : 0
+	CONFIG_OPTION_LIST(CONFIG_ROW, CONFIG_NO_HEADING)
+#undef CONFIG_STORE_seconds
+#undef CONFIG_STORE_bytes
+#undef CONFIG_STORE_count
+#undef CONFIG_STORE_flag
+#undef CONFIG_STORE_text
+#undef CONFIG_STORE_custom
+#undef CONFIG_AT
+#undef GROUP_TOOLS
+#undef CONFIG_ROW
 };
+
+#undef CONFIG_NO_HEADING
+#undef CONFIG_OPTION_LIST
 
 /* @p str, a count as @p n takes it, in decimal digits, in @p *value. EINVAL
  * if it is not one.
  */
 static int
-config_parse_count (char const                *str,
-                    struct config_store const *n,
-                    uint64_t                  *value)
+config_parse_count (char const                 *str,
+                    struct config_option const *n,
+                    uint64_t                   *value)
 {
 	static char const units[] = "KMG";
 	uint64_t count;
@@ -857,21 +904,19 @@ config_parse_count (char const                *str,
 	return 0;
 }
 
-/* Apply the option @p opt of stores[] with @p arg, given in the
+/* Apply the option of the row @p row of rows[] with @p arg, given in the
  * configuration file @p where, or on the command line if that is nullptr;
- * returns 0, or 2, having said why if @p opt is one.
+ * returns 0, or 2, having said why if the option has a value.
  */
 static int
 config_apply_store (struct config *cfg,
-                    int            opt,
+                    size_t         row,
                     char const    *arg,
                     char const    *where)
 {
-	struct config_store const *n = stores;
-	while (n < stores + array_size(stores) && n->opt != opt)
-		++n;
-	if (n == stores + array_size(stores))
+	if (row >= array_size(rows) || rows[row].take & TAKE_CUSTOM)
 		return 2;
+	struct config_option const *n = &rows[row];
 	unsigned char *member = (unsigned char *)cfg + n->at;
 	if (n->take & TAKE_TEXT) {
 		memcpy(member, &arg, sizeof arg);
@@ -879,8 +924,7 @@ config_apply_store (struct config *cfg,
 	}
 	uint64_t value = 0;
 	if (n->width && config_parse_count(arg, n, &value))
-		return config_complain(cfg, where, "invalid --%s: %s",
-		                       config_option(opt)->name, arg);
+		return config_complain(cfg, where, "invalid --%s: %s", options[row].name, arg);
 	/* Every member is an unsigned or a nonnegative count of 32 or 64 bits. */
 	value *= n->scale;
 	switch (n->width) {
@@ -897,74 +941,74 @@ config_apply_store (struct config *cfg,
 	return 0;
 }
 
-/* Apply option @p opt with @p arg, given in the configuration file @p where,
- * or on the command line if that is nullptr; returns 0, or 2, having said
- * why.
+/* Apply the option of the row @p row with @p arg, given in the
+ * configuration file @p where, or on the command line if that is nullptr;
+ * returns 0, or 2, having said why.
  */
 static int
 config_apply (struct config *cfg,
-              int            opt,
+              size_t         row,
               char const    *arg,
               char const    *where)
 {
 	struct ai_endpoint *ep = &cfg->ep;
-	switch (opt) {
-	case 'p': {
+	switch (row) {
+	case ROW_PROVIDER: {
 		size_t i = config_find(provider_names, array_size(provider_names), arg);
 		if (!i)
 			return config_complain(cfg, where, "unknown provider: %s", arg);
 		ep->provider = (enum ai_provider)i;
 		break;
 	}
-	case OPT_API: {
+	case ROW_API: {
 		size_t i = config_find(api_names, array_size(api_names), arg);
 		if (!i)
 			return config_complain(cfg, where, "unknown API: %s", arg);
 		ep->api = (enum ai_api)i;
 		break;
 	}
-	case 'u':
+	case ROW_URL:
 		if (!util_url_scheme(cstr_view(arg)))
 			return config_complain(cfg, where, "not an http(s) URL: %s", arg);
 		ep->url = arg;
 		break;
-	case 'l':
+	case ROW_LISTEN:
 		/* The command line's listeners replace the file's. */
 		if (!where && cfg->flags & CFG_LISTEN_FILE)
 			cfg->n_listens = 0;
 		cfg->flags = (cfg->flags & ~CFG_LISTEN_FILE) | (where ? CFG_LISTEN_FILE : 0);
 		config_push(cfg->listens, &cfg->n_listens, arg);
 		break;
-	case OPT_BACKGROUND: ep->background = 1; break;
-	case OPT_PARTICIPANT:
+	case ROW_BACKGROUND: ep->background = 1; break;
+	case ROW_PARTICIPANT:
 		if (!util_word_len(arg, UTIL_WORD_MAX))
 			return config_complain(cfg, where, "--participant: use 1-64 of "
 			                       "[A-Za-z0-9_-]: %s", arg);
 		cfg->participant = arg;
 		break;
-	case 'o':
+	case ROW_ALLOW_ORIGIN:
 		config_push(cfg->origins, &cfg->n_origins, arg);
 		break;
-	case 'H':
+	case ROW_HEADER:
 		if (!config_header_valid(arg))
 			return config_complain(cfg, where, "invalid header line: %s", arg);
 		config_push(cfg->headers, &cfg->n_headers, arg);
 		break;
-	case 't':
+	case ROW_TEMPERATURE:
 		return config_apply_temperature(cfg, arg, where);
-	case 'x':
+	case ROW_EXTRA:
 		return config_apply_extra(cfg, arg, where);
-	case OPT_TOOL_NAME:
+	case ROW_TOOL_NAME:
 		if (!config_tool_name_valid(arg))
 			return config_complain(cfg, where, "tool names are 1-128 of "
 			                       "[A-Za-z0-9_.-]: %s", arg);
 		cfg->tool.name = arg;
 		break;
-	case OPT_GIT:
+	case ROW_GIT:
 		config_push(cfg->gits, &cfg->n_gits, arg);
 		break;
 	default:
-		return config_apply_store(cfg, opt, arg, where);
+		return config_apply_store(cfg, row, arg, where);
 	}
 	return 0;
 }
@@ -1018,12 +1062,12 @@ config_apply_value (struct config       *cfg,
 			return config_invalid(cfg, o, val);
 		if (!json_object_get_boolean(val))
 			return 0;
-		return config_apply(cfg, o->val, nullptr, cfg->path);
+		return config_apply(cfg, (size_t)(o - options), nullptr, cfg->path);
 	}
 	char const *arg = config_value_arg(o, val);
 	if (!arg)
 		return config_invalid(cfg, o, val);
-	return config_apply(cfg, o->val, arg, cfg->path);
+	return config_apply(cfg, (size_t)(o - options), arg, cfg->path);
 }
 
 /* Apply @p val, a member of the configuration file, as option @p o: a value
@@ -1034,7 +1078,7 @@ config_apply_member (struct config       *cfg,
                      struct option const *o,
                      struct json_object  *val)
 {
-	if (!(places[o - options].arg & ARG_LIST) || !json_object_is_type(val, json_type_array))
+	if (!(rows[o - options].arg & ARG_LIST) || !json_object_is_type(val, json_type_array))
 		return config_apply_value(cfg, o, val);
 	size_t n = json_object_array_length(val);
 	for (size_t i = 0; i < n; ++i) {
@@ -1218,7 +1262,7 @@ static struct json_object *
 config_file_value (struct config const *cfg,
                    struct option const *o)
 {
-	enum config_group const g = places[o - options].group;
+	enum config_group const g = rows[o - options].group;
 	struct json_object *group = g == GROUP_ROOT ? cfg->file
 	                           : json_object_object_get(cfg->file, group_names[g]);
 	return json_object_object_get(group, o->name);
@@ -1234,9 +1278,9 @@ config_same_options (struct config const *cfg,
 {
 	/* The options of the group TOOLS are in the member tools, which is
 	 * compared whole. */
-	for (size_t i = 0; i < array_size(places); ++i)
-		if (places[i].group && places[i].group != GROUP_TOOLS &&
-		    !(places[i].arg & ARG_RELOAD) &&
+	for (size_t i = 0; i < array_size(rows); ++i)
+		if (rows[i].group && rows[i].group != GROUP_TOOLS &&
+		    !(rows[i].arg & ARG_RELOAD) &&
 		    !json_object_equal(config_file_value(cfg, &options[i]),
 		                       config_file_value(from, &options[i])))
 			return false;
@@ -1301,7 +1345,7 @@ static struct option const *
 config_named (char const *name)
 {
 	for (struct option const *o = options; o->name; ++o)
-		if (places[o - options].group && !strcmp(o->name, name))
+		if (rows[o - options].group && !strcmp(o->name, name))
 			return o;
 	return nullptr;
 }
@@ -1313,13 +1357,13 @@ static int
 config_misplaced (struct config const *cfg,
                   struct option const *o)
 {
-	enum config_group const g = places[o - options].group;
+	enum config_group const g = rows[o - options].group;
 	switch (g) {
 	case GROUP_ROOT:
 		return config_complain(cfg, cfg->path, "%s must be at the top level", o->name);
 	case GROUP_TOOLS:
 		return config_complain(cfg, cfg->path, "%s must be tools.%s", o->name,
-		                       places[o - options].member);
+		                       rows[o - options].member);
 	default:
 		return config_complain(cfg, cfg->path, "%s must be in %s", o->name,
 		                       group_names[g]);
@@ -1336,8 +1380,8 @@ config_tool_option (char const *tool,
                     char const *key)
 {
 	size_t const len = strlen(tool);
-	for (size_t i = 0; i < array_size(places); ++i) {
-		char const *m = places[i].member;
+	for (size_t i = 0; i < array_size(rows); ++i) {
+		char const *m = rows[i].member;
 		if (m && !strncmp(m, tool, len) && m[len] == '.' &&
 		    (!key || !strcmp(m + len + 1, key)))
 			return &options[i];
@@ -1404,8 +1448,8 @@ config_apply_group (struct config      *cfg,
 		if (!o)
 			return config_complain(cfg, cfg->path, "%s: unknown member %s",
 			                       group_names[g], it.key);
-		int status = places[o - options].group != g ? config_misplaced(cfg, o)
-		                                            : config_apply_member(cfg, o, it.val);
+		int status = rows[o - options].group != g ? config_misplaced(cfg, o)
+		                                          : config_apply_member(cfg, o, it.val);
 		if (status)
 			return status;
 	}
@@ -1428,7 +1472,7 @@ config_apply_file (struct config *cfg)
 		size_t g = config_find(group_names, array_size(group_names), it.key);
 		struct option const *o = config_named(it.key);
 		int status = g ? config_apply_group(cfg, (enum config_group)g, it.val)
-		           : o && places[o - options].group == GROUP_ROOT
+		           : o && rows[o - options].group == GROUP_ROOT
 		             ? config_apply_member(cfg, o, it.val)
 		           : o ? config_misplaced(cfg, o)
 		               : config_complain(cfg, cfg->path, "unknown member %s", it.key);
@@ -2294,7 +2338,7 @@ config_argv (struct config *cfg)
 			return config_misuse(cfg);
 		if (opt == 'c')
 			continue;
-		int status = config_apply(cfg, opt, optarg, nullptr);
+		int status = config_apply(cfg, config_row(opt), optarg, nullptr);
 		if (status)
 			return status;
 	}
