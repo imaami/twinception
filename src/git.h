@@ -44,10 +44,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "buf.h"
 #include "clk.h"
 #include "cstr_view.h"
+#include "dstr.h"
+#include "oid.h"
 
+struct child;
 struct git;
+struct git_view;
+struct mcp_slot;
 struct plugin;
 
 /** The environment entries after PATH of every git process that askai
@@ -85,6 +91,86 @@ struct plugin;
  *  nanoseconds: the second of the file comment.
  */
 static constexpr uint64_t GIT_GRACE = NS;
+
+enum {
+	GIT_ARGV  = 128,  /**< words in the argv of a git command, with nullptr */
+	GIT_ENV   = 13,   /**< entries in git's environment, with nullptr */
+	GIT_ROOTS = 24,   /**< revisions in a pin, at most */
+};
+
+/** A repository of the git tool: its name, its real path, and the git
+ *  setting safe.directory=<path>, in one allocation that starts at path.
+ */
+struct git_repo {
+	struct cstr_view name;
+	char            *path;
+	char            *safe;
+};
+
+/** The phases of a pin, in their order. */
+enum git_pin_phase : uint64_t {
+	GIT_PIN_META, GIT_PIN_REFS, GIT_PIN_RESOLVE, GIT_PIN_CHECK, GIT_PIN_DONE,
+};
+
+/**
+ * The revisions that a tool call reads from a repository of the git tool,
+ * resolved to commits that HEAD, a branch, a tag or a remote-tracking ref
+ * reaches, in a private view of the repository (git_view.h). Each phase
+ * runs one git process as a child of the call, before one deadline.
+ */
+struct git_pin {
+	struct buf             metadata;  /**< the output of GIT_PIN_META */
+	struct dstr            text;      /**< the roots, each with a NUL */
+	struct child          *child;     /**< the git of the phase, and after
+	                                       GIT_PIN_DONE the caller's child */
+	struct git_view       *view;
+	struct git const      *git;
+	struct git_repo const *repo;      /**< nullptr for an unknown name */
+	uint64_t               deadline;  /**< a loop_clock() time */
+	size_t                 n_roots;
+	enum git_pin_phase     phase;
+	struct oid             roots[GIT_ROOTS];  /**< the commit IDs */
+};
+
+/** Initializes @p pin for the repository named @p repo in @p git and the
+ *  deadline @p deadline.
+ */
+extern void
+git_pin_init (struct git_pin   *pin,
+              struct git const *git,
+              struct cstr_view  repo,
+              uint64_t          deadline);
+
+/** Kills the child of @p pin if it runs, and frees the view and the
+ *  buffers of @p pin.
+ */
+extern void
+git_pin_fini (struct git_pin *pin);
+
+/** Adds the revision @p word, a ref name or a hash with ^ and ~ suffixes,
+ *  to the roots of @p pin. Returns 0, EINVAL or ENOMEM.
+ */
+extern int
+git_pin_add (struct git_pin   *pin,
+             struct cstr_view  word);
+
+/** Takes the output of the ended git of @p pin, if any, and spawns the git
+ *  of the next phase in @p slot, which it parks. Returns 0, also when the
+ *  pin is done and no child runs; EINVAL, EACCES or EIO with the git
+ *  tool's text in @p *why; ENOMEM; or the error of mcp_slot_spawn().
+ */
+extern int
+git_pin_step (struct git_pin   *pin,
+              struct mcp_slot  *slot,
+              struct cstr_view *why);
+
+/** Writes to @p argv git and its options for @p pin up to the subcommand,
+ *  and to @p env git's environment. Returns the number of words.
+ */
+extern size_t
+git_pin_argv (struct git_pin const *pin,
+              char const          **argv,
+              char                **env);
 
 /**
  * Returns the name of the repository at @p path: the last component of the

@@ -27,13 +27,12 @@
 static char const git_commit_suffix[] = "^{commit}";
 static char const git_ignore_rev[] = "--ignore-rev=";
 
-/* In the argv of a call, a word that git_call_resolve() writes to the
- * text of the call. Only its address counts.
+/* In the argv of a call, a word that git_call_spawn() writes to the text
+ * of the pin. Only its address counts.
  */
 static char const git_derived[] = "(derived)";
 
 enum {
-	GIT_ARGV  = 128,      /**< a command's argv, its nullptr included */
 	GIT_WHY   = 1024,     /**< bytes of what is wrong with a call */
 	GIT_NOTE  = 256,      /**< the most bytes of the note at the end of the
 	                           output, with the blank line before it */
@@ -45,11 +44,12 @@ enum {
 	REVISIONS = 4,        /**< its revisions */
 	PATHS     = 32,       /**< its paths */
 	WORD      = 1024,     /**< bytes of an option, a revision, a path or a pattern */
-	ROOTS     = 2 * REVISIONS + OPTIONS,  /**< the commits that a call names */
-	ENV       = 13,       /**< git's environment, its nullptr included */
-	ATTR      = ENV - 2,  /**< the index of GIT_ATTR_SOURCE in it, which is
-	                           set when a call has a HEAD */
+	ATTR      = GIT_ENV - 2,  /**< the index of GIT_ATTR_SOURCE in git's
+	                               environment, which is set only if the
+	                               view contains HEAD */
 };
+
+static_assert(2 * REVISIONS + OPTIONS <= GIT_ROOTS, "the commits that a call names fit a pin");
 
 static_assert((int)WORD <= (int)REVIEW_NAME_MAX, "a path that git reads fits a location of "
               "the review record");
@@ -57,18 +57,8 @@ static_assert((int)WORD <= (int)REVIEW_NAME_MAX, "a path that git reads fits a l
 static_assert(TOOL_TEXT_MAX == 4U << 20, "update git.h and the texts in this file that say "
               "4 MiB");
 
-/* A configured repository. path, safe and name share one allocation, which
- * begins at path: the real path, the safe.directory setting for git, and
- * the name. Each of the three ends in a NUL.
- */
-struct git_repo {
-	struct cstr_view name;
-	char            *path;
-	char            *safe;
-};
-
 struct git {
-	char           *env[ENV];
+	char           *env[GIT_ENV];
 	struct dstr     ceilings;  /* the GIT_CEILING_DIRECTORIES entry of env */
 	uint64_t        timeout;
 	size_t          n;
@@ -76,10 +66,6 @@ struct git {
 };
 
 enum git_phase : uint64_t {
-	GIT_META,
-	GIT_REFS,
-	GIT_RESOLVE,
-	GIT_CHECK,
 	GIT_RUN,
 	GIT_NUMBER,  /* read has scanned the file and writes the numbered lines */
 	GIT_HELP,    /* the call describes its command with help:true and runs no git */
@@ -95,7 +81,7 @@ struct git_revision {
 };
 
 /* The lines that a read asks for, and how far the scan and then the
- * writing have come. Offsets are into git's output, call->child->out,
+ * writing have come. Offsets are into git's output, call->pin.child->out,
  * except head and mark, which are into the call's output (mcp_slot_answer()).
  */
 struct git_read {
@@ -120,29 +106,21 @@ struct git_read {
 };
 
 /**
- * One deadline and one immutable history view span every subprocess. The
- * roots are the commits that the call names, in the order of the options
- * and the revisions; git_call_resolve() resolves them. The text is the
- * words of the phase to come, each ending in a NUL: the roots for rev-parse,
- * then the words that stand in for the git_derived words of argv, then the
- * revision of a read.
+ * All git processes of a call use the deadline and the view of its pin.
+ * The roots of the pin are the commits in the options and in the
+ * revisions of the call, in that order. Once the pin is done, the text of
+ * the pin contains the words that replace the git_derived words of argv,
+ * each followed by a NUL, and then the revision of a read call.
  */
 struct git_call {
-	struct child          *child;
-	struct git_view       *view;
-	struct git_repo const *repo;
+	struct git_pin         pin;
 	struct json_object    *args;
-	struct buf             metadata;
-	struct dstr            text;
 	char const            *argv[GIT_ARGV];
-	uint64_t               deadline;
 	size_t                 command;
-	size_t                 n_roots;
 	size_t                 n_revisions;
 	struct git_revision    revisions[REVISIONS];
 	struct git_read        read;
 	enum git_phase         phase;
-	struct oid             roots[ROOTS];
 };
 
 /* What git runs with whatever the call: GIT_OPTIONS_FIXED, no implicit
@@ -291,7 +269,7 @@ static struct cstr_view const git_command_names[] = { GIT_COMMAND_LIST(XL_VIEW) 
 
 static_assert(1 + array_size(fixed) + 5 + 3 + OPTIONS + 2 + 1 + REVISIONS + 1 +
               PATHS + 1 <= GIT_ARGV, "a command fits argv");
-static_assert(1 + array_size(fixed) + 5 + 10 + ROOTS + 1 <= GIT_ARGV,
+static_assert(1 + array_size(fixed) + 5 + 10 + GIT_ROOTS + 1 <= GIT_ARGV,
               "history validation fits argv");
 
 struct cstr_view
@@ -672,6 +650,211 @@ git_repos_wrong (struct git const *git,
 	return EINVAL;
 }
 
+/* Returns the word at @p *next in a sequence of words that each end in a
+ * NUL, and advances @p *next past the word and its NUL.
+ */
+static char const *
+git_text_next (char const **next)
+{
+	char const *word = *next;
+	*next += strlen(word) + 1;
+	return word;
+}
+
+void
+git_pin_init (struct git_pin   *pin,
+              struct git const *git,
+              struct cstr_view  repo,
+              uint64_t          deadline)
+{
+	*pin = (struct git_pin){
+		.text = DSTR_INIT,
+		.git = git,
+		.repo = git_find(git, repo),
+		.deadline = deadline,
+	};
+}
+
+void
+git_pin_fini (struct git_pin *pin)
+{
+	child_destroy(&pin->child);
+	git_view_destroy(&pin->view);
+	buf_fini(&pin->metadata);
+	dstr_cleanup(&pin->text);
+}
+
+int
+git_pin_add (struct git_pin   *pin,
+             struct cstr_view  word)
+{
+	if (pin->n_roots == GIT_ROOTS)
+		return EINVAL;
+	int e = git_commit(&pin->text, word);
+	pin->n_roots += !e;
+	return e;
+}
+
+size_t
+git_pin_argv (struct git_pin const *pin,
+              char const          **argv,
+              char                **env)
+{
+	size_t k = 0;
+	argv[k++] = "git";
+	for (size_t i = 0; i < array_size(fixed); ++i)
+		argv[k++] = fixed[i];
+	argv[k++] = "-c";
+	argv[k++] = pin->repo->safe;
+	argv[k++] = "-C";
+	argv[k++] = pin->view ? git_view_directory(pin->view) : pin->repo->path;
+	if (pin->view)
+		argv[k++] = "--git-dir=.";
+	memcpy(env, pin->git->env, sizeof pin->git->env);
+	if (pin->view && git_view_has_head(pin->view))
+		env[ATTR] = "GIT_ATTR_SOURCE=HEAD";
+	return k;
+}
+
+/* Spawns in @p slot the git of the current phase of @p pin, or once the
+ * pin is done, the command @p run of a git call with the child flags
+ * @p flags, whose git_derived words are taken from the text of the pin.
+ * Then parks the call. Returns 0 or the error of mcp_slot_spawn().
+ */
+static int
+git_pin_spawn (struct git_pin           *pin,
+               struct mcp_slot          *slot,
+               char const *const        *run,
+               uint32_t                  flags)
+{
+	static char const *const meta[] = {
+		"rev-parse", "--path-format=absolute", "--git-path", "objects",
+		"--git-path", "shallow", "--show-object-format", "--verify", "--quiet",
+		"HEAD^{commit}", nullptr
+	};
+#define GIT_REF(s) s,
+	static char const *const refs[] = {
+		"for-each-ref", "--format=%(objectname) %(refname)", GIT_VIEW_REF_LIST(GIT_REF) nullptr
+	};
+#undef GIT_REF
+	static char const *const resolve[] = {
+		"rev-parse", "--revs-only", "--end-of-options", nullptr
+	};
+	static char const *const check[] = {
+		"rev-list", "--max-count=1", "--not", "--branches", "--tags", "--remotes", nullptr
+	};
+	char const *const *const words[] = {
+		[GIT_PIN_META] = meta, [GIT_PIN_REFS] = refs, [GIT_PIN_RESOLVE] = resolve,
+		[GIT_PIN_CHECK] = check, [GIT_PIN_DONE] = run,
+	};
+	char const *argv[GIT_ARGV];
+	char *env[GIT_ENV];
+	size_t k = git_pin_argv(pin, argv, env);
+	char const *next = dstr_get(&pin->text);
+	for (char const *const *w = words[pin->phase]; *w; ++w)
+		argv[k++] = *w == git_derived ? git_text_next(&next) : *w;
+	/* rev-parse resolves the roots. rev-list prints a commit that is
+	 * reachable from a root but not from HEAD or the refs of the view. */
+	switch (pin->phase) {
+	case GIT_PIN_RESOLVE:
+		for (size_t i = 0; i < pin->n_roots; ++i)
+			argv[k++] = git_text_next(&next);
+		break;
+	case GIT_PIN_CHECK:
+		if (git_view_has_head(pin->view))
+			argv[k++] = "HEAD";
+		argv[k++] = "--not";
+		argv[k++] = "--end-of-options";
+		for (size_t i = 0; i < pin->n_roots; ++i)
+			argv[k++] = pin->roots[i].hex;
+		argv[k++] = "--";
+		break;
+	default:
+		break;
+	}
+	argv[k] = nullptr;
+	struct child_cmd const cmd = {
+		.file = "git",
+		.argv = argv,
+		.envp = env,
+		.max = TOOL_TEXT_MAX,
+		.deadline = pin->deadline,
+		.grace = GIT_GRACE,
+		.flags = flags,
+	};
+	int e = 0;
+	pin->child = mcp_slot_spawn(slot, &cmd, &e);
+	if (!e)
+		mcp_slot_park(slot);
+	return e;
+}
+
+/* Replaces each root of @p pin with a commit ID from @p out, the output of
+ * rev-parse. Returns 0, or EINVAL if @p out does not contain exactly one
+ * ID of the same length for each root.
+ */
+static int
+git_pin_resolve (struct git_pin *pin,
+                 struct span     out)
+{
+	struct cstr_view text = { (char const *)out.ptr, out.len };
+	struct oid *roots = pin->roots;
+	for (size_t i = 0; i < pin->n_roots; ++i)
+		if (oid_init_field(&roots[i], &text, '\n') || oid_len(&roots[i]) != oid_len(&roots[0]))
+			return EINVAL;
+	return text.len ? EINVAL : 0;
+}
+
+int
+git_pin_step (struct git_pin   *pin,
+              struct mcp_slot  *slot,
+              struct cstr_view *why)
+{
+	struct child *c = pin->child;
+	if (!c)
+		return git_pin_spawn(pin, slot, nullptr, 0);
+	int const status = child_status(c);
+	int e = status < 0 ? EIO
+	      : status && !(pin->phase == GIT_PIN_META && status == 1) ? EINVAL : 0;
+	if (!e) {
+		switch (pin->phase) {
+		case GIT_PIN_META:
+			pin->metadata = c->out;
+			c->out = (struct buf){};
+			break;
+		case GIT_PIN_REFS:
+			pin->view = git_view_create(buf_peek(&pin->metadata), buf_peek(&c->out), &e);
+			buf_fini(&pin->metadata);
+			break;
+		case GIT_PIN_RESOLVE:
+			e = git_pin_resolve(pin, buf_peek(&c->out));
+			break;
+		case GIT_PIN_CHECK:
+			e = buf_peek(&c->out).len ? EACCES : 0;
+			break;
+		case GIT_PIN_DONE:
+			break;
+		}
+	}
+	bool const late = c->flags & CHILD_LATE;
+	child_destroy(&pin->child);
+	if (!e)
+		return ++pin->phase == GIT_PIN_DONE ? 0 : git_pin_spawn(pin, slot, nullptr, 0);
+	/* rev-parse fails (EINVAL) for a root that is not a commit, and rev-list
+	 * prints a commit that is not reachable from the refs (EACCES). Both
+	 * errors use the same text, so that a caller cannot tell from the text
+	 * whether an unreachable object exists. */
+	bool const revision = pin->phase >= GIT_PIN_RESOLVE && (e == EINVAL || e == EACCES);
+	*why = late ? CSTR_VIEW("Git history validation timed out.")
+	     : revision ? CSTR_VIEW("A revision names no commit that the git tool can read: a "
+	                            "name or hash that does not exist, ~N past the first "
+	                            "commit, a blob or tree hash (use commit:path), or a "
+	                            "commit that HEAD, branches, tags and remote-tracking "
+	                            "refs do not reach.")
+	     : CSTR_VIEW("Git cannot read the repository.");
+	return e;
+}
+
 /* The arguments of the tool, in the order of git_arg_names[]. A call with
  * help:true uses those before GIT_ARG_OPTIONS only.
  */
@@ -715,10 +898,8 @@ git_call_command (struct git_call  *call,
 	if (jb_args(args, git_arg_names, GIT_ARGS, UINT64_MAX, of, &seen, &other))
 		return git_wrong(why, "The tool has no argument %.*s.", (int)other.len, other.data);
 
-	struct git_repo const *repo = git_find(git, git_word(of[GIT_ARG_REPO]));
-	if (!repo)
+	if (!call->pin.repo)
 		return git_repos_wrong(git, why);
-	call->repo = repo;
 	struct cstr_view const cmd = git_word(of[GIT_ARG_COMMAND]);
 	size_t const c = cstr_view_index(git_command_names, array_size(git_command_names), cmd);
 	if (c == array_size(git_command_names)) {
@@ -835,8 +1016,7 @@ git_call_command (struct git_call  *call,
 			argv[k++] = opt.data;
 			continue;
 		}
-		++call->n_roots;
-		e = git_commit(&call->text, cstr_view_slice(opt, sizeof git_ignore_rev - 1, SIZE_MAX));
+		e = git_pin_add(&call->pin, cstr_view_slice(opt, sizeof git_ignore_rev - 1, SIZE_MAX));
 		if (e == ENOMEM)
 			return e;
 		if (e)
@@ -880,13 +1060,12 @@ git_call_command (struct git_call  *call,
 			continue;
 		}
 		size_t left = range ? (size_t)(range - s.data) : root;
-		rev->root = call->n_roots++;
-		int e = git_commit(&call->text, cstr_view_slice(s, 0, left));
+		rev->root = call->pin.n_roots;
+		int e = git_pin_add(&call->pin, cstr_view_slice(s, 0, left));
 		if (!e && range) {
-			++call->n_roots;
 			rev->dots = 2 + (range[2] == '.');
-			e = git_commit(&call->text, cstr_view_slice(s, left + rev->dots,
-			                                            root - left - rev->dots));
+			e = git_pin_add(&call->pin, cstr_view_slice(s, left + rev->dots,
+			                                           root - left - rev->dots));
 		}
 		if (e == ENOMEM)
 			return e;
@@ -975,10 +1154,7 @@ git_call_destroy (struct git_call **p_call)
 {
 	if (!*p_call)
 		return;
-	child_destroy(&(*p_call)->child);
-	git_view_destroy(&(*p_call)->view);
-	buf_fini(&(*p_call)->metadata);
-	dstr_cleanup(&(*p_call)->text);
+	git_pin_fini(&(*p_call)->pin);
 	json_object_put((*p_call)->args);
 	(*p_call)->args = nullptr;
 	free(*p_call);
@@ -996,8 +1172,12 @@ git_drop (struct mcp_slot *slot)
 	*mcp_slot_own(slot) = nullptr;
 }
 
+/* Returns a new call of @p git with the arguments @p args, whose pin ends
+ * at @p deadline.
+ */
 static struct git_call *
 git_call_create (struct json_object *args,
+                 struct git const   *git,
                  uint64_t            deadline,
                  int                *e)
 {
@@ -1006,10 +1186,8 @@ git_call_create (struct json_object *args,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*call = (struct git_call){
-		.text = DSTR_INIT,
-		.deadline = deadline,
-	};
+	*call = (struct git_call){};
+	git_pin_init(&call->pin, git, git_word(jb_get(args, "repo")), deadline);
 	/* The call reads its arguments after it parks (tool.h). */
 	if (args && json_object_deep_copy(args, &call->args, nullptr)) {
 		free(call);
@@ -1020,125 +1198,19 @@ git_call_create (struct json_object *args,
 	return call;
 }
 
-/* Returns the word at @p *next in the text of a call, and moves @p *next
- * past it and its NUL.
- */
-static char const *
-git_text_next (char const **next)
-{
-	char const *word = *next;
-	*next += strlen(word) + 1;
-	return word;
-}
-
-/** Starts the next phase of @p call without extending its deadline, then
- *  parks the call, or ends it if git does not start. */
-static void
-git_call_run (struct git_call *call,
-              struct mcp_slot *slot)
-{
-	static char const *const meta[] = {
-		"rev-parse", "--path-format=absolute", "--git-path", "objects",
-		"--git-path", "shallow", "--show-object-format", "--verify", "--quiet",
-		"HEAD^{commit}", nullptr
-	};
-#define GIT_REF(s) s,
-	static char const *const refs[] = {
-		"for-each-ref", "--format=%(objectname) %(refname)", GIT_VIEW_REF_LIST(GIT_REF) nullptr
-	};
-#undef GIT_REF
-	static char const *const resolve[] = {
-		"rev-parse", "--revs-only", "--end-of-options", nullptr
-	};
-	static char const *const check[] = {
-		"rev-list", "--max-count=1", "--not", "--branches", "--tags", "--remotes", nullptr
-	};
-	char const *const *const words[] = {
-		[GIT_META] = meta, [GIT_REFS] = refs, [GIT_RESOLVE] = resolve, [GIT_CHECK] = check,
-		[GIT_RUN] = call->argv,
-	};
-	bool const head = call->view && git_view_has_head(call->view);
-	char const *argv[GIT_ARGV] = { "git" };
-	size_t k = 1;
-	for (size_t i = 0; i < array_size(fixed); ++i)
-		argv[k++] = fixed[i];
-	argv[k++] = "-c";
-	argv[k++] = call->repo->safe;
-	argv[k++] = "-C";
-	argv[k++] = call->view ? git_view_directory(call->view) : call->repo->path;
-	if (call->view)
-		argv[k++] = "--git-dir=.";
-	char const *next = dstr_get(&call->text);
-	for (char const *const *w = words[call->phase]; *w; ++w)
-		argv[k++] = *w == git_derived ? git_text_next(&next) : *w;
-	/* rev-parse resolves the roots, and rev-list shows a commit of theirs
-	 * that HEAD and the refs of the view do not reach. */
-	switch (call->phase) {
-	case GIT_RESOLVE:
-		for (size_t i = 0; i < call->n_roots; ++i)
-			argv[k++] = git_text_next(&next);
-		break;
-	case GIT_CHECK:
-		if (head)
-			argv[k++] = "HEAD";
-		argv[k++] = "--not";
-		argv[k++] = "--end-of-options";
-		for (size_t i = 0; i < call->n_roots; ++i)
-			argv[k++] = call->roots[i].hex;
-		argv[k++] = "--";
-		break;
-	default:
-		break;
-	}
-	argv[k] = nullptr;
-	struct git const *git = mcp_slot_part(slot);
-	char *env[ENV];
-	memcpy(env, git->env, sizeof env);
-	if (head)
-		env[ATTR] = "GIT_ATTR_SOURCE=HEAD";
-	struct child_cmd const cmd = {
-		.file = "git",
-		.argv = argv,
-		.envp = env,
-		.max = TOOL_TEXT_MAX,
-		.deadline = call->deadline,
-		.grace = GIT_GRACE,
-		/* Git can warn on stderr, for example when a branch has the same
-		 * name as a commit ID. A read discards stderr so that a warning
-		 * does not become a line of the file. */
-		.flags = call->phase == GIT_RUN && !(commands[call->command].takes & LINES)
-		         ? CHILD_STDERR : 0,
-	};
-	int e = 0;
-	call->child = mcp_slot_spawn(slot, &cmd, &e);
-	if (!e) {
-		mcp_slot_park(slot);
-		return;
-	}
-	git_drop(slot);
-	char buf[GIT_WHY];
-	mcp_slot_tell(slot, child_spawn_why(e, "git", buf, sizeof buf), TOOL_FAILED);
-}
-
 /**
- * Replace every validated root with exactly one immutable commit ID. Then
- * write to the text of @p call the words that the command takes for the
- * --ignore-rev options and for the revisions, in the order of argv: the
- * option with the commit, and the commit with the path or the range.
- * Returns 0, EINVAL or ENOMEM.
+ * Writes to the text of the pin of @p call the words that replace the
+ * git_derived words of argv, in the order of argv: an --ignore-rev option
+ * with its commit ID, and for each revision its commit ID with the path,
+ * or the range of two commit IDs. Then spawns the command of the call.
+ * Returns 0, ENOMEM or the error of mcp_slot_spawn().
  */
 static int
-git_call_resolve (struct git_call *call)
+git_call_spawn (struct git_call *call,
+                struct mcp_slot *slot)
 {
-	struct span const s = buf_peek(&call->child->out);
-	struct cstr_view out = { (char const *)s.ptr, s.len };
-	struct oid *roots = call->roots;
-	for (size_t i = 0; i < call->n_roots; ++i)
-		if (oid_init_field(&roots[i], &out, '\n') || oid_len(&roots[i]) != oid_len(&roots[0]))
-			return EINVAL;
-	if (out.len)
-		return EINVAL;
-	struct dstr *text = &call->text;
+	struct oid const *roots = call->pin.roots;
+	struct dstr *text = &call->pin.text;
 	dstr_clear(text);
 	bool ok = true;
 	for (size_t i = 0; ok && i < call->revisions[0].root; ++i)
@@ -1151,68 +1223,36 @@ git_call_resolve (struct git_call *call)
 		               : dstr_printf(text, "%s%.*s%c", root->hex, (int)rev->path.len,
 		                             rev->path.data, '\0');
 	}
-	return ok ? 0 : ENOMEM;
+	/* Git can warn on stderr, for example when a branch has the same name
+	 * as a commit ID. A read discards stderr so that a warning does not
+	 * become a line of the file. */
+	return !ok ? ENOMEM : git_pin_spawn(&call->pin, slot, call->argv,
+	                                    commands[call->command].takes & LINES ? 0
+	                                                                         : CHILD_STDERR);
 }
 
-/** Handles the output of an internal phase of @p call and starts the next
- *  phase. The output of the discovery and authorization phases never goes
- *  to the caller.
+/** Takes the output of the ended git of the pin of @p call, if any, and
+ *  spawns the next git: a phase of the pin, or the command of the call once
+ *  the pin is done. Ends the call if that fails. The output of the pin is
+ *  never sent to the caller.
  */
 static void
 git_call_advance (struct git_call *call,
                   struct mcp_slot *slot)
 {
-	struct child *c = call->child;
-	int const status = child_status(c);
-	int e = status < 0 ? EIO
-	      : status && !(call->phase == GIT_META && status == 1) ? EINVAL : 0;
-	if (!e) {
-		switch (call->phase) {
-		case GIT_META:
-			call->metadata = c->out;
-			c->out = (struct buf){};
-			break;
-		case GIT_REFS:
-			call->view = git_view_create(buf_peek(&call->metadata), buf_peek(&c->out), &e);
-			buf_fini(&call->metadata);
-			break;
-		case GIT_RESOLVE:
-			e = git_call_resolve(call);
-			break;
-		case GIT_CHECK:
-			e = buf_peek(&c->out).len ? EACCES : 0;
-			break;
-		case GIT_RUN:
-		case GIT_NUMBER:
-		case GIT_HELP:
-			break;
-		}
-	}
-	bool const late = c->flags & CHILD_LATE;
-	child_destroy(&call->child);
-	if (!e) {
-		++call->phase;
-		git_call_run(call, slot);
+	struct cstr_view why = {};
+	int e = git_pin_step(&call->pin, slot, &why);
+	if (!e && !call->pin.child)
+		e = git_call_spawn(call, slot);
+	if (!e)
 		return;
-	}
-	/* rev-parse fails (EINVAL) for a root that names no commit, and rev-list
-	 * lists one that the refs do not reach (EACCES). Both get one text, so
-	 * that a caller cannot learn from it whether an unreachable object
-	 * exists. */
-	bool const revision = call->phase >= GIT_RESOLVE && (e == EINVAL || e == EACCES);
 	git_drop(slot);
-	if (e == ENOMEM) {
+	char buf[GIT_WHY];
+	if (e == ENOMEM)
 		mcp_slot_fail(slot, e);
-		return;
-	}
-	mcp_slot_tell(slot, late ? CSTR_VIEW("Git history validation timed out.")
-	                  : revision ? CSTR_VIEW("A revision names no commit that the git tool "
-	                                         "can read: a name or hash that does not exist, "
-	                                         "~N past the first commit, a blob or tree hash "
-	                                         "(use commit:path), or a commit that HEAD, "
-	                                         "branches, tags and remote-tracking refs do not "
-	                                         "reach.")
-	                  : CSTR_VIEW("Git cannot read the repository."), TOOL_FAILED);
+	else
+		mcp_slot_tell(slot, why.data ? why : child_spawn_why(e, "git", buf, sizeof buf),
+		              TOOL_FAILED);
 }
 
 /* Returns true if the string @p path contains a ':' and digits after it
@@ -1241,7 +1281,7 @@ git_ended (struct mcp_slot *slot,
            struct git_call *call,
            uint64_t         takes)
 {
-	struct child *c = call->child;
+	struct child *c = call->pin.child;
 	struct git const *git = mcp_slot_part(slot);
 	struct cstr_view out = mcp_slot_answer(slot);
 	/* The blank line before the note and its brackets are 4 bytes at most. */
@@ -1268,7 +1308,7 @@ git_ended (struct mcp_slot *slot,
 		              "the note fits");
 		struct git_revision const *rev = &call->revisions[0];
 		note = takes & (LINES | MODE) && rev->path.len
-		     ? util_format_view(buf, sizeof buf, fmt, call->roots[rev->root].hex,
+		     ? util_format_view(buf, sizeof buf, fmt, call->pin.roots[rev->root].hex,
 		                        git_line_hint(rev->path.data + 1) ? hint : "")
 		     : util_format_view(buf, sizeof buf, "The committed object could not be "
 		                        "read (git exited with status %d).", status);
@@ -1336,18 +1376,19 @@ git_read_begin (struct git_call *call,
 {
 	struct git_read *read = &call->read;
 	struct git_revision const *rev = &call->revisions[0];
-	dstr_clear(&call->text);
-	int e = cstr_view_cat(oid_view(&call->roots[rev->root]), &call->text);
+	struct dstr *text = &call->pin.text;
+	dstr_clear(text);
+	int e = cstr_view_cat(oid_view(&call->pin.roots[rev->root]), text);
 	if (!e)
-		e = jb_escape_cat(rev->path, &call->text);
-	read->rev_len = dstr_len(&call->text);
+		e = jb_escape_cat(rev->path, text);
+	read->rev_len = dstr_len(text);
 	/* The header contains the repository name, the commit ID and path from
 	 * the revision, and three numbers. The longest footer contains the
 	 * revision and one number. */
 	size_t reserve = sizeof "[Repository , file  at commit : lines  to  of at least .]\n" +
 	                 sizeof "\n\n[To read on, call again with \"revisions\": "
 	                        "[\"\"] and \"line\": .]" +
-	                 call->repo->name.len + 2 * read->rev_len + 4 * UTIL_DECIMAL;
+	                 call->pin.repo->name.len + 2 * read->rev_len + 4 * UTIL_DECIMAL;
 	read->room = window > reserve ? window - reserve : 0;
 	read->last = read->line - 1;
 	return e;
@@ -1423,12 +1464,12 @@ git_read_head (struct git_call const *call,
                bool                   cut)
 {
 	struct git_read const *read = &call->read;
-	struct oid const *commit = &call->roots[call->revisions[0].root];
+	struct oid const *commit = &call->pin.roots[call->revisions[0].root];
 	size_t const n = oid_len(commit);
 	char lines[sizeof ": lines  to  of at least .]\n" + 3 * UTIL_DECIMAL];
 	struct cstr_view const p[] = {
-		CSTR_VIEW("[Repository "), call->repo->name, CSTR_VIEW(", file "),
-		{ dstr_get(&call->text) + n + 1, read->rev_len - n - 1 },
+		CSTR_VIEW("[Repository "), call->pin.repo->name, CSTR_VIEW(", file "),
+		{ dstr_get(&call->pin.text) + n + 1, read->rev_len - n - 1 },
 		CSTR_VIEW(" at commit "), oid_view(commit),
 		read->total ? util_format_view(lines, sizeof lines, ": lines %zu to %zu of "
 		                               "%s%zu.]\n", read->line, read->last,
@@ -1517,7 +1558,7 @@ git_read_foot (struct git_call const *call,
 	 * before the line number, and the text after it. */
 	struct cstr_view const notes[][4] = {
 		{ CSTR_VIEW("[To read on, call again with \"revisions\": [\""),
-		  { dstr_get(&call->text), read->rev_len }, CSTR_VIEW("\"] and \"line\": "),
+		  { dstr_get(&call->pin.text), read->rev_len }, CSTR_VIEW("\"] and \"line\": "),
 		  CSTR_VIEW(".]") },
 		{ CSTR_VIEW("[Line "), {}, {}, CSTR_VIEW(" is the end of the file.]") },
 		{ CSTR_VIEW("[Line "), {}, {},
@@ -1558,8 +1599,8 @@ git_read_shown (struct git_call const *call,
 		return 0;
 	struct git_revision const *rev = &call->revisions[0];
 	struct review_source const src = {
-		.repo   = call->repo->name,
-		.commit = oid_view(&call->roots[rev->root]),
+		.repo   = call->pin.repo->name,
+		.commit = oid_view(&call->pin.roots[rev->root]),
 		.path   = cstr_view_slice(rev->path, 1, SIZE_MAX),
 		.at     = read->head,
 		.len    = (part ? read->mark : end) - read->head,
@@ -1580,7 +1621,7 @@ git_scan (struct mcp_slot *slot,
           struct git_call *call)
 {
 	struct git_read *read = &call->read;
-	struct child *c = call->child;
+	struct child *c = call->pin.child;
 	struct span blob = buf_peek(&c->out);
 	if (!read->rev_len) {
 		size_t head = blob.len < BINARY ? blob.len : BINARY;
@@ -1626,7 +1667,7 @@ git_number (struct mcp_slot *slot,
             struct git_call *call)
 {
 	struct git_read *read = &call->read;
-	struct child *c = call->child;
+	struct child *c = call->pin.child;
 	struct span blob = buf_peek(&c->out);
 	bool const cut = c->flags & CHILD_CUT;
 	bool const newline = read->to && blob.ptr[read->to - 1] == '\n';
@@ -1664,11 +1705,11 @@ static void
 git_step (struct mcp_slot *slot)
 {
 	struct git_call *call = *mcp_slot_own(slot);
-	if (call->phase < GIT_RUN) {
+	if (call->pin.phase < GIT_PIN_DONE) {
 		git_call_advance(call, slot);
 		return;
 	}
-	struct child *c = call->child;
+	struct child *c = call->pin.child;
 	uint64_t const takes = commands[call->command].takes;
 	/* Git's failed object lookup may disclose whether a path exists on disk. */
 	if ((takes & OBJECT) && c->code == CLD_EXITED && c->status) {
@@ -1714,8 +1755,8 @@ git_start (struct mcp_slot    *slot,
 {
 	struct git const *git = mcp_slot_part(slot);
 	int e = 0;
-	struct git_call *call = git_call_create(args, mcp_slot_loop(slot)->now + git->timeout,
-	                                        &e);
+	struct git_call *call = git_call_create(args, git,
+	                                        mcp_slot_loop(slot)->now + git->timeout, &e);
 	if (e) {
 		mcp_slot_fail(slot, e);
 		return;
@@ -1740,7 +1781,7 @@ git_start (struct mcp_slot    *slot,
 		return;
 	}
 	*mcp_slot_own(slot) = call;
-	git_call_run(call, slot);
+	git_call_advance(call, slot);
 }
 
 struct plugin const git_plugin = {
