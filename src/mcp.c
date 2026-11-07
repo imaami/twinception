@@ -117,6 +117,7 @@
 #include "uploads.h"
 #include "util.h"
 #include "web.h"
+#include "xlist.h"
 
 enum {
 	PARSE_ERROR         = -32700,
@@ -815,24 +816,20 @@ static char const start_failed[] = "Cannot start the upstream request";
 static struct cstr_view const not_object = CSTR_VIEW_INIT("The arguments argument must be an "
                                                           "object.");
 static struct cstr_view const still_runs = CSTR_VIEW_INIT("That job still runs: wait for it.");
-static struct cstr_view const bad_action = CSTR_VIEW_INIT("The action argument must be list, "
-                                                          "result or cancel.");
 
-/* The actions of the jobs tool. An ask call that names a job in background
- * mode takes the last two.
+/* The actions of the jobs tool: X(ID, name), the constant ACTION_ID and the
+ * name. An ask call that names a job in background mode takes the last two.
  */
+#define MCP_JOB_ACTION_LIST(X) X(RESULT, "result") X(CANCEL, "cancel")
+#define MCP_ACTION_LIST(X) X(LIST, "list") MCP_JOB_ACTION_LIST(X)
+
 enum mcp_action : uint8_t {
-	ACTION_LIST,
-	ACTION_RESULT,
-	ACTION_CANCEL,
-	ACTIONS
+#define MCP_ACTION_ENUM(id, ...) ACTION_##id,
+	MCP_ACTION_LIST(MCP_ACTION_ENUM)
+#undef MCP_ACTION_ENUM
 };
 
-static struct cstr_view const actions[ACTIONS] = {
-	[ACTION_LIST]   = CSTR_VIEW_INIT("list"),
-	[ACTION_RESULT] = CSTR_VIEW_INIT("result"),
-	[ACTION_CANCEL] = CSTR_VIEW_INIT("cancel"),
-};
+static struct cstr_view const actions[] = { MCP_ACTION_LIST(XL_VIEW) };
 
 /* A run of bytes: a piece of JSON text, or words for a client or the
  * model.
@@ -5323,7 +5320,7 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 {
 	bool const own = slot->role == ROLE_OWN;
 	int e = 0;
-	switch (cstr_view_index(actions, ACTIONS, jb_view(jb_get(args, "action")))) {
+	switch (cstr_view_index(actions, array_size(actions), jb_view(jb_get(args, "action")))) {
 	case ACTION_LIST:
 		e = own ? agenda_list(slot) : mcp_slot_turn_list(slot);
 		break;
@@ -5334,7 +5331,8 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 		mcp_slot_jobs_cancel(slot, args);
 		return;
 	default:
-		mcp_slot_result(slot, bad_action, true);
+		mcp_slot_result(slot, CSTR_VIEW("The action argument must be " XL_JOIN(", ", " or ",
+		                                MCP_ACTION_LIST(XL_TEXT)) "."), true);
 		return;
 	}
 	if (e)
@@ -5342,6 +5340,7 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 	else
 		mcp_slot_respond(slot, false);
 }
+#undef MCP_ACTION_LIST
 
 /* The wait tool's call in @p slot: until a job of those @p args names, or
  * any, finishes, a timer fires, or its seconds are up. What happened and
@@ -6715,8 +6714,7 @@ mcp_slot_ask (struct mcp_slot    *slot,
 	/* In background mode, a call names a job to read or cancel it. */
 	bool const job = background && json_object_object_get_ex(args, "job", nullptr);
 	bool const has_action = background && json_object_object_get_ex(args, "action", &action);
-	size_t const act = ACTION_RESULT + cstr_view_index(actions + ACTION_RESULT,
-	                                                   ACTIONS - ACTION_RESULT, jb_view(action));
+	size_t const act = cstr_view_index(actions, array_size(actions), jb_view(action));
 	struct cstr_view const problem =
 		has_override && (!json_object_is_type(override, json_type_boolean) ||
 		                 (want && (!background || stream)))
@@ -6732,8 +6730,9 @@ mcp_slot_ask (struct mcp_slot    *slot,
 		            "not both.")
 		: has_action && !job
 		? CSTR_VIEW("The action argument requires a job id.")
-		: has_action && act == ACTIONS
-		? CSTR_VIEW("The action argument must be result or cancel.")
+		: has_action && (act == ACTION_LIST || act == array_size(actions))
+		? CSTR_VIEW("The action argument must be "
+		            XL_JOIN(", ", " or ", MCP_JOB_ACTION_LIST(XL_TEXT)) ".")
 		: (struct cstr_view){};
 	if (problem.data) {
 		mcp_slot_result(slot, problem, true);
@@ -6751,6 +6750,7 @@ mcp_slot_ask (struct mcp_slot    *slot,
 	if (!mcp_req_recover(req, args, handler))
 		handler(slot, args);
 }
+#undef MCP_JOB_ACTION_LIST
 
 /** Starts the client's tool call in @p req with the members name,
  *  arguments and _meta.progressToken of @p params. The role of the client
@@ -7896,7 +7896,7 @@ mcp_tool_definition (void const *service)
 			"The job id returned by this tool. Give job instead of prompt, "
 			"system or thread to check its status or read its completed result."));
 		props = jb_set_or_free(props, "action", jb_set_or_free(schema_enum(
-			schema_names(actions + ACTION_RESULT, ACTIONS - ACTION_RESULT),
+			schema_names(actions + ACTION_RESULT, array_size(actions) - ACTION_RESULT),
 			"With job: result checks its status or returns its completed "
 			"answer; cancel stops the job. Omit action to use result."),
 			"default", json_object_new_string("result")));
@@ -8010,7 +8010,7 @@ mcp_jobs_definition (void const *service)
 		"List your jobs and timers, read the output of a job that has ended, "
 		"or cancel a job or a timer. Jobs and timers end with the ask call.",
 		jb_object(
-			"action", schema_enum(schema_names(actions, ACTIONS), nullptr),
+			"action", schema_enum(schema_names(actions, array_size(actions)), nullptr),
 			"job", schema_property("integer", "For result and cancel: the "
 			                       "job's number."),
 			"timer", schema_property("integer", "The number of the timer to cancel, "
@@ -8099,7 +8099,7 @@ mcp_jobs_client_definition (void const *service)
 		"the result of a job that has ended; or cancel a job that runs or a "
 		"timer that has not fired.",
 		jb_object(
-			"action", schema_enum(schema_names(actions, ACTIONS),
+			"action", schema_enum(schema_names(actions, array_size(actions)),
 				"list lists your jobs and timers, result returns the "
 				"result of a job, and cancel cancels a job or a timer."),
 			"job", schema_property("string", "The id of the job for result and "
