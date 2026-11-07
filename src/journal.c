@@ -28,6 +28,7 @@
 #include "oid.h"
 #include "tally.h"
 #include "util.h"
+#include "xlist.h"
 
 /* The header of a record on disk: the magic, the sequence number and the
  * length of the data, both big-endian, the job's id and the kind, then the
@@ -96,9 +97,7 @@ enum {
 };
 
 /* The names of the kinds of records, by enum journal_kind. */
-#define JOURNAL_KIND_NAME(id, name) CSTR_VIEW_INIT(name),
-static struct cstr_view const kind_names[] = { JOURNAL_KIND_LIST(JOURNAL_KIND_NAME) };
-#undef JOURNAL_KIND_NAME
+static struct cstr_view const kind_names[] = { JOURNAL_KIND_LIST(XL_VIEW) };
 
 /* The bit of the kind @p k in a mask of kinds, and the mask of the kinds
  * after which a job runs no more.

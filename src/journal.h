@@ -43,7 +43,7 @@ enum {
         X(CANCEL,      "cancel")      \
         X(LEGACY,      "legacy")
 
-#define JOURNAL_KIND_ID(id, name) JOURNAL_##id,
+#define JOURNAL_KIND_ID(id, ...) JOURNAL_##id,
 enum journal_kind : uint8_t {
 	JOURNAL_KIND_LIST(JOURNAL_KIND_ID)
 	JOURNAL_OTHER  /**< a kind that is in no checkpoint */
