@@ -190,7 +190,7 @@ test_invalid (struct ledger *l)
 	      ledger_timer_add(timers, 1, 1, (struct cstr_view){ note, sizeof note }) == EINVAL);
 	for (uint32_t i = 0; i < LEDGER_TIMERS; ++i)
 		CHECK(!ledger_timer_add(timers, 1, i + 1, CSTR_VIEW("n")) && timers[i].id == i + 1 &&
-		      timers[i].len == 1 && timers[i].note[0] == 'n');
+		      cstr_view_equal(util_text_view(&timers[i].note), CSTR_VIEW("n")));
 	CHECK(ledger_timer_add(timers, 1, 9, none) == EBUSY && ledger_timer_any(timers));
 	/* ledger_timer_drop() removes a timer that has not fired, once, and
 	 * leaves a fired one. */
@@ -603,8 +603,8 @@ test_timers (struct ledger *l)
 	      !look.n_tasks && !look.more && look.due == start + 2 * NS);
 	for (uint32_t k = 0; k < look.n_timers; ++k)
 		CHECK(look.timers[k].id == base + (k < 2 ? k + 1 : k + 2));
-	CHECK(look.timers[1].len == 3 && !memcmp(look.timers[1].note, "two", 3) &&
-	      !look.timers[0].len);
+	CHECK(cstr_view_equal(util_text_view(&look.timers[1].note), CSTR_VIEW("two")) &&
+	      !look.timers[0].note.len);
 
 	/* Timer base + 8 fires. A cancel cannot remove it and returns
 	 * EALREADY, and a list still returns it, but not as the first that has
@@ -705,8 +705,9 @@ test_waits (struct ledger *l)
 	      look.due == clock_ns + NS);
 	clock_ns += NS;
 	CHECK(!ledger_tell(l, w[0], &ids[2], 1, &look) && look.n_timers == 1 &&
-	      look.timers[0].id == one && look.timers[0].len == 1 &&
-	      look.timers[0].note[0] == 'n' && look.due == clock_ns + 4 * NS && !look.n_tasks);
+	      look.timers[0].id == one &&
+	      cstr_view_equal(util_text_view(&look.timers[0].note), CSTR_VIEW("n")) &&
+	      look.due == clock_ns + 4 * NS && !look.n_tasks);
 	CHECK(!ledger_tell(l, w[1], nullptr, 0, &look) && !look.n_timers &&
 	      look.due == clock_ns + 4 * NS);
 	CHECK(ledger_timer_cancel(l, A, one) == ENOENT && !ledger_timer_cancel(l, A, two));

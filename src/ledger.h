@@ -58,6 +58,7 @@
 #include "htab.h"
 #include "list.h"
 #include "loop.h"
+#include "util.h"
 
 enum {
 	LEDGER_MAX     = 1024,  /**< records in the ledger at most */
@@ -145,11 +146,17 @@ struct ledger_owner;
 
 /** A timer: the time it fires at, its number, and its note. */
 struct ledger_timer {
-	uint64_t due;                /**< loop_clock() when it fires; 0: no timer */
-	uint32_t id;                 /**< its number, from 1, from one counter
-	                                  for the timers of all owners */
-	uint32_t len;                /**< bytes of note */
-	char     note[LEDGER_NOTE];
+	uint64_t                   due;   /**< the loop_clock() time when the
+	                                       timer fires, or 0 if this entry
+	                                       is unused */
+	uint32_t                   id;    /**< the number of the timer, from 1.
+	                                       ledger_timer_set() numbers the
+	                                       timers of all owners with one
+	                                       counter. */
+	UTIL_TEXT(LEDGER_NOTE + 8) note;  /**< the note, with 8 more bytes than
+	                                       LEDGER_NOTE for the NUL and for 7
+	                                       bytes that would otherwise be
+	                                       padding */
 };
 
 /** A call of an owner that waits for the owner's records' calls to end

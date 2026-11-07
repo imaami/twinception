@@ -9,7 +9,6 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "clk.h"
 #include "hist.h"
@@ -742,9 +741,8 @@ ledger_timer_add (struct ledger_timer timers[static LEDGER_TIMERS],
 		++i;
 	if (i == LEDGER_TIMERS)
 		return EBUSY;
-	timers[i] = (struct ledger_timer){ .due = due, .id = id, .len = (uint32_t)note.len };
-	if (note.len)
-		memcpy(timers[i].note, note.data, note.len);
+	timers[i] = (struct ledger_timer){ .due = due, .id = id };
+	(void)util_text_store(&timers[i].note, note);
 	return 0;
 }
 

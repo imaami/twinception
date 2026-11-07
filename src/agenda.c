@@ -34,8 +34,8 @@ int
 agenda_notice_timer (struct dstr               *d,
                      struct ledger_timer const *t)
 {
-	return dstr_printf(d, "[askai: timer %" PRIu32 " fired%s%.*s.]\n", t->id,
-	                   t->len ? ": " : "", (int)t->len, t->note) ? 0 : ENOMEM;
+	return dstr_printf(d, "[askai: timer %" PRIu32 " fired%s%s.]\n", t->id,
+	                   t->note.len ? ": " : "", t->note.data) ? 0 : ENOMEM;
 }
 
 int
@@ -52,7 +52,7 @@ agenda_timer_lines (struct dstr               *d,
 		                     (t->due - now + NS - 1) / NS)
 		       : dstr_printf(d, "timer %" PRIu32 ": fired %" PRIu64 " s ago, unread",
 		                     t->id, (now - t->due) / NS)) &&
-		      dstr_printf(d, "%s%.*s\n", t->len ? ": " : "", (int)t->len, t->note));
+		      dstr_printf(d, "%s%s\n", t->note.len ? ": " : "", t->note.data));
 	return ok ? 0 : ENOMEM;
 }
 
