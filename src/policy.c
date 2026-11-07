@@ -872,14 +872,6 @@ policy_build_own (struct policy_build *b,
 	p->unix_token = true;
 }
 
-/* The members of @p obj, if an object. */
-static size_t
-policy_members (struct json_object *obj)
-{
-	return json_object_is_type(obj, json_type_object)
-	     ? (size_t)json_object_object_length(obj) : 0;
-}
-
 /* The members of the configuration file's object @p file that make the
  * policy, in @p of by enum policy_part, each nullptr if absent; whether
  * any of them is in @p file, which turns askai's own policy off.
@@ -919,8 +911,8 @@ policy_create (struct json_object    *file,
 		.why = why,
 		.len = len
 	};
-	size_t n_groups = policy_members(of[POLICY_GROUPS]);
-	size_t n_ids = policy_members(of[POLICY_IDENTITIES]);
+	size_t n_groups = jb_members(of[POLICY_GROUPS]);
+	size_t n_ids = jb_members(of[POLICY_IDENTITIES]);
 	/* The sizes below are the room in the block of the policy for the
 	 * policy of the file. askai's own policy uses two roles, no names, and
 	 * the token of ASKAI_TOKEN if that is set. */
@@ -929,7 +921,7 @@ policy_create (struct json_object    *file,
 	size_t n_roles = 2;
 	size_t n_names = 0;
 	if (from_file) {
-		n_roles = policy_members(b.roles);
+		n_roles = jb_members(b.roles);
 		/* Room for the longest name of each role, identity and kind of
 		 * anonymous client. */
 		n_names = n_roles * (sizeof "role " - 1 + POLICY_NAME) +
@@ -1092,7 +1084,7 @@ policy_width (struct json_object *obj)
 static void
 policy_log_identities (struct json_object *ids)
 {
-	if (!policy_members(ids)) {
+	if (!jb_members(ids)) {
 		LOG_ALL(LOG_INFO, "identities: none");
 		return;
 	}

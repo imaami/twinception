@@ -2423,16 +2423,6 @@ godbolt_write (struct godbolt *call)
 	return GODBOLT_GO;
 }
 
-/* Returns the number of the children of the JSON value @p v: the elements
- * of an array, the members of an object, or 0.
- */
-static size_t
-godbolt_json_size (struct json_object *v)
-{
-	return json_object_is_type(v, json_type_object) ? (size_t)json_object_object_length(v)
-	                                                : jb_len(v);
-}
-
 /* Returns the child of @p v that godbolt_json_cut() removes: the last
  * element of an array, or the first member of an object. @p v has
  * children.
@@ -2474,7 +2464,7 @@ godbolt_free (struct godbolt *call)
 	while (call->doc && freed < room) {
 		struct json_object *parent = nullptr;
 		struct json_object *v = call->doc;
-		while (godbolt_json_size(v)) {
+		while (jb_members(v) || jb_len(v)) {
 			parent = v;
 			v = godbolt_json_child(v);
 		}

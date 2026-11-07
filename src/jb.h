@@ -116,6 +116,16 @@ jb_len (struct json_object const *val)
 	                                                 : 0;
 }
 
+/** Returns the number of members of the object @p val, or 0 if @p val is
+ *  not an object.
+ */
+static inline size_t
+jb_members (struct json_object const *val)
+{
+	return json_object_is_type(val, json_type_object) ? (size_t)json_object_object_length(val)
+	                                                  : 0;
+}
+
 /** Element @p idx, or nullptr if out of range or @p arr is no array. */
 static inline struct json_object *
 jb_at (struct json_object const *arr,

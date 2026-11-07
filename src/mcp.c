@@ -3953,8 +3953,7 @@ mcp_history_valid (struct json_object *history)
 	for (size_t k = 0; k < n; ++k) {
 		struct json_object *message = json_object_array_get_idx(history, k);
 		struct cstr_view role = jb_view(jb_get(message, "role"));
-		if (!json_object_is_type(message, json_type_object) ||
-		    json_object_object_length(message) != 2 ||
+		if (jb_members(message) != 2 ||
 		    !jb_view(jb_get(message, "content")).data ||
 		    cstr_view_index(roles, array_size(roles), role) == array_size(roles))
 			return false;

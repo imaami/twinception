@@ -661,8 +661,7 @@ autocomplete_entry_properties (struct autocomplete       *ac,
                                struct autocomplete_entry *entry,
                                struct json_object        *properties)
 {
-	size_t count = json_object_is_type(properties, json_type_object)
-	               ? (size_t)json_object_object_length(properties) : 0;
+	size_t count = jb_members(properties);
 	if (!count)
 		return 0;
 	entry->properties = malloc(count * sizeof *entry->properties);

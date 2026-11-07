@@ -860,8 +860,7 @@ ai_call_start (struct ai_sink const *sink,
 	if (!sink->call)
 		return 0;
 	struct json_object *args = jb_get(item, key);
-	bool whole = json_object_is_type(args, json_type_object) &&
-	             json_object_object_length(args);
+	bool whole = jb_members(args);
 	struct ai_call call = {
 		.id    = jb_view(jb_get(item, "id")),
 		.name  = jb_view(jb_get(item, "name")),
