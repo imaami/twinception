@@ -1390,11 +1390,6 @@ cxi_valid (struct cxi *x)
 		if (!name || (*rest && (!digits || rest[1 + digits])))
 			break;
 	}
-	struct cstr_view rest = path;
-	struct cstr_view part = {};
-	int e = !path.len || *path.data == '/' ? EINVAL : 0;
-	while (!e && !(e = util_path_next(&rest, &part)) && part.len)
-		;
 	char const *why = x->action == CXI_ACTIONS
 	                  ? "action must be " XL_JOIN(", ", " or ", CXI_ACTION_LIST(XL_TEXT)) "."
 	                : describe && !x->key[CXI_KEY_NAME].data
@@ -1416,7 +1411,7 @@ cxi_valid (struct cxi *x)
 		cxi_out_printf(&x->out, ".");
 	} else if (memchr(path.data, ':', path.len)) {
 		cxi_out_printf(&x->out, "Give the commit as revision and the path alone.");
-	} else if (e) {
+	} else if (!util_path_inside(path)) {
 		cxi_out_printf(&x->out, "path must be relative to the repository's top, with no .. "
 		               "component.");
 	} else if (!cstr_view_ends(path, CSTR_VIEW(".c")) && !cstr_view_ends(path, CSTR_VIEW(".h"))) {

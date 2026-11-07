@@ -309,6 +309,19 @@ util_path_next (struct cstr_view *rest,
 	return cstr_view_equal(*part, CSTR_VIEW("..")) ? EINVAL : 0;
 }
 
+/** Returns true if @p path is not empty, does not begin with '/' and
+ *  contains no ".." part between slashes (util_path_next()).
+ */
+static inline bool
+util_path_inside (struct cstr_view path)
+{
+	struct cstr_view part;
+	int e = !path.len || *path.data == '/' ? EINVAL : 0;
+	while (!e && !(e = util_path_next(&path, &part)) && part.len)
+		;
+	return !e;
+}
+
 /** Block every signal but those that faults raise in the calling thread,
  *  whose threads to come inherit its mask, and store the mask before in
  *  @p old. Returns 0, or the error number of pthread_sigmask().

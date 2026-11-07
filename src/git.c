@@ -511,20 +511,6 @@ git_option_find (struct cstr_view const *allowed,
 	return e;
 }
 
-/* Whether @p path is relative, with no ".." component. */
-static bool
-git_inside (char const *path)
-{
-	if (*path == '/')
-		return false;
-	for (char const *p = path; p; p = strchr(p, '/')) {
-		p += *p == '/';
-		if (!strncmp(p, "..", 2) && (p[2] == '/' || !p[2]))
-			return false;
-	}
-	return true;
-}
-
 /**
  * Appends to @p text the reference or hash @p word, which may have ^/~
  * ancestry and commit peels, then "^{commit}" and a NUL: the word with
@@ -1035,7 +1021,8 @@ git_call_command (struct git_call  *call,
 		if (range && range >= s.data + root)
 			range = nullptr;
 		endpoints += range != nullptr;
-		if (path && (!(takes & OBJECT) || !path[1] || !git_inside(path + 1))) {
+		if (path && (!(takes & OBJECT) ||
+		             !util_path_inside(cstr_view_slice(rev->path, 1, SIZE_MAX)))) {
 			bad = git_wrong(why, takes & OBJECT
 			                ? "revisions[%zu]: git %.*s needs a nonempty relative "
 			                  "path after the colon, with no .. component."
@@ -1076,11 +1063,11 @@ git_call_command (struct git_call  *call,
 	if (takes & FILES)
 		argv[k++] = "--";
 	for (size_t i = 0; i < lens[GIT_ARG_PATHS]; ++i) {
-		char const *s = jb_view(jb_at(of[GIT_ARG_PATHS], i)).data;
-		if (!git_inside(s) || !strncmp(s, ":(", 2))
+		struct cstr_view const s = jb_view(jb_at(of[GIT_ARG_PATHS], i));
+		if (!util_path_inside(s) || cstr_view_starts(s, CSTR_VIEW(":(")))
 			bad = git_wrong(why, "paths[%zu] must be relative to the repository's "
 			                "top, with no .. component or :(...) pathspec magic.", i);
-		argv[k++] = s;
+		argv[k++] = s.data;
 	}
 	argv[k] = nullptr;
 	return bad;
