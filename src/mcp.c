@@ -3983,8 +3983,8 @@ mcp_req_notes_identity (struct mcp_req *req)
 }
 
 /* Create req->review if the tool mask @p lent contains findings. The record
- * is created with REVIEW_READ_LOG if @p lent also contains git or code.
- * Returns 0 or ENOMEM.
+ * is created with REVIEW_READ_LOG if @p lent also contains git or code, and
+ * with REVIEW_GIT if it contains git. Returns 0 or ENOMEM.
  */
 static int
 mcp_req_review_make (struct mcp_req *req,
@@ -3993,8 +3993,9 @@ mcp_req_review_make (struct mcp_req *req,
 	struct mcp_lending const *l = &req->mcp->st->lending;
 	int e = 0;
 	if (lent & l->of[KIND_FINDINGS])
-		req->review = review_create(lent & (l->of[KIND_GIT] | l->of[KIND_CODE])
-		                            ? REVIEW_READ_LOG : 0, &e);
+		req->review = review_create((lent & l->of[KIND_GIT] ? REVIEW_GIT | REVIEW_READ_LOG
+		                                                    : 0) |
+		                            (lent & l->of[KIND_CODE] ? REVIEW_READ_LOG : 0), &e);
 	return e;
 }
 

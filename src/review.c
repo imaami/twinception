@@ -1454,7 +1454,7 @@ review_log_resolve (struct review const               *r,
 /**
  * Appends to @p out the refusal of the state @p state for the location
  * @p loc, whose lines are not all in the read log of @p r, with the read
- * that adds them. @p c is the cover of @p loc (review_log_cover()), and
+ * that adds them if the flags of @p r contain REVIEW_GIT. @p c is the cover of @p loc (review_log_cover()), and
  * @p resolved is the number of logged paths that loc->path resolved to.
  * Returns EINVAL, or ENOMEM if the append fails.
  */
@@ -1518,6 +1518,10 @@ review_refuse_unread (struct review const               *r,
 		                          "the log has, or keep the finding a candidate.")
 		       ? ENOMEM : EINVAL;
 	}
+	if (!(r->flags & REVIEW_GIT))
+		return failed || PUT(out, " Without the git tool, the log takes only the lines "
+		                          "that code describe shows, once you have seen them.")
+		       ? ENOMEM : EINVAL;
 	static char const *const hints[] = {
 		", where the path is the file's whole path from the top of the repository", "",
 		", in as many calls as it takes",

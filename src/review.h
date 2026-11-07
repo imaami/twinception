@@ -58,6 +58,8 @@ enum review_flag : uint16_t {
 	REVIEW_READ_LOG = 1U << 0U,  /**< the turns of the ask call can call the
 	                                  git tool or the code tool, so the
 	                                  record contains a read log */
+	REVIEW_GIT      = 1U << 1U,  /**< they can call the git tool, whose
+	                                  read a refusal suggests */
 };
 
 /** The states of a finding: X(ID, name), the constant REVIEW_ID of enum

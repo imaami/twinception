@@ -260,7 +260,7 @@ static struct review *
 fresh (void)
 {
 	int e;
-	struct review *r = review_create(REVIEW_READ_LOG, &e);
+	struct review *r = review_create(REVIEW_READ_LOG | REVIEW_GIT, &e);
 	CHECK(r && !e);
 	return r;
 }
@@ -1275,6 +1275,8 @@ test_full (void)
 
 /* Without REVIEW_READ_LOG the read log stays empty, verified and disproved
  * are refused, and no result suggests a git read, also after a restore.
+ * With REVIEW_READ_LOG but not REVIEW_GIT, a refusal names describe of the
+ * code tool instead of a git read.
  */
 static void
 test_no_git (void)
@@ -1338,6 +1340,14 @@ test_no_git (void)
 	                                    JSON_C_TO_STRING_PLAIN), "[]");
 	json_object_put(obj);
 	review_destroy(&back);
+	review_destroy(&r);
+
+	r = review_create(REVIEW_READ_LOG, &e);
+	CHECK(r && !e);
+	EXPECT(r, verify, 1, EINVAL,
+	       "verified needs the lines of its location in your read log, and src/a.c line 3 is "
+	       "not in it. Without the git tool, the log takes only the lines that code "
+	       "describe shows, once you have seen them.");
 	review_destroy(&r);
 }
 

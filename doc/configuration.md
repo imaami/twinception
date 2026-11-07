@@ -385,7 +385,9 @@ again. The record contains these things:
 A finding can be `verified` or `disproved` only if the lines of its
 location are in the read log. Otherwise `askai` refuses the call, and the
 answer names the `read` call that shows the lines, or the rest of them if
-the log has the first of them. If the location goes past the end of the
+the log has the first of them. Without the tool `git`, it names no read
+and says that only the lines that `code` `describe` shows count. If the
+location goes past the end of the
 file at each commit that the log has the file at, the answer gives the
 number of lines of the file instead. If it goes past the end only at the
 commit of the lines that the log has, the answer names a read at a commit
