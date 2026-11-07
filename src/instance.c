@@ -58,8 +58,7 @@ instance_table_retire (struct instance_table *t,
                        struct instance       *inst)
 {
 	htab_unlink(&t->listed, &inst->node);
-	list_del(&inst->hook);
-	list_append(&t->gone, &inst->hook);
+	list_move(&t->gone, &inst->hook);
 	loop_ready_bulk(t->loop, &t->reap);
 }
 
@@ -176,8 +175,7 @@ instance_table_get (struct instance_table  *t,
 	inst = instance_table_find(t, &key);
 	if (inst) {
 		++inst->calls;
-		list_del(&inst->hook);
-		list_append(&t->busy, &inst->hook);
+		list_move(&t->busy, &inst->hook);
 		*p_instance = inst->bytes;
 		return 0;
 	}
@@ -210,14 +208,13 @@ instance_table_put (struct instance_table  *t,
 	if (--inst->calls)
 		return;
 	inst->idle = t->loop->now;
-	list_del(&inst->hook);
 	/* An instance in the buckets waits for the next call of its user; a
 	 * flush emptied the buckets of those before it. */
 	if (instance_table_find(t, inst) == inst) {
-		list_append(&t->idle, &inst->hook);
+		list_move(&t->idle, &inst->hook);
 		return;
 	}
-	list_append(&t->gone, &inst->hook);
+	list_move(&t->gone, &inst->hook);
 	loop_ready_bulk(t->loop, &t->reap);
 }
 

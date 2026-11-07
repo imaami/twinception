@@ -313,8 +313,7 @@ cli_network_deliver (struct cli_network *network)
 	for (size_t count = network->load.n;
 	     count && delivered < CLI_NETWORK_DELIVERY && !list_is_empty(&network->calls); --count) {
 		struct cli_network_call *call = container_of(network->calls.next, struct cli_network_call, hook);
-		list_del(&call->hook);
-		list_append(&network->calls, &call->hook);
+		list_move(&network->calls, &call->hook);
 		cli_network_deliver_chunks(network, call, &delivered);
 		if (!(call->flags & CLI_NETWORK_FINISHED) || !list_is_empty(&call->received))
 			continue;
@@ -412,8 +411,7 @@ cli_network_progress (struct cli_network *network)
 	list_transplant(&pending, &network->requests);
 	while (!list_is_empty(&pending) && tally_fits(&network->credit, cli_network_credit, 1)) {
 		struct cli_network_request *request = container_of(pending.next, struct cli_network_request, hook);
-		list_del(&request->hook);
-		list_append(&network->requests, &request->hook);
+		list_move(&network->requests, &request->hook);
 		if (!(request->flags & CLI_NETWORK_PAUSED))
 			continue;
 		request->flags &= ~CLI_NETWORK_PAUSED;

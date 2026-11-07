@@ -51,6 +51,15 @@ list_del (struct list *node)
 	list_init(node);
 }
 
+/** Moves @p node from its list to the end of @p dest. */
+static force_inline void
+list_move (struct list *dest,
+           struct list *node)
+{
+	list_del(node);
+	list_append(dest, node);
+}
+
 /** Move every node of @p src to the end of @p dest, leaving @p src empty. */
 static inline void
 list_transplant (struct list *dest,

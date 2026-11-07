@@ -190,8 +190,7 @@ http_start_step (struct loop      *loop,
 	for (unsigned n = 0; n < START_BATCH && !list_is_empty(&http->queued); ++n) {
 		struct http_request *request = container_of(http->queued.next,
 		                                           struct http_request, hook);
-		list_del(&request->hook);
-		list_append(&http->requests, &request->hook);
+		list_move(&http->requests, &request->hook);
 		request->started = loop_clock();
 		if (http->metrics)
 			hist_record(&http->metrics->wait, request->started - request->since);

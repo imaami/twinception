@@ -822,8 +822,7 @@ home_preempt_excess (struct home *home)
 		if (!home_job_cuttable(home, job) || job->flags & PREEMPTED)
 			continue;
 		job->flags |= PREEMPTED;
-		list_del(&job->queue);
-		list_append(&home->preempting, &job->queue);
+		list_move(&home->preempting, &job->queue);
 		loop_ready_bulk(home->loop, &home->preempt);
 		--over;
 	}
@@ -1061,8 +1060,7 @@ home_job_write (char const *data,
 	if (!(job->flags & SEEN))
 		home_head(home, job);
 	job->active = home->loop->now;
-	list_del(&job->idle);
-	list_append(&home->idle, &job->idle);
+	list_move(&home->idle, &job->idle);
 	if (home->silence && home->timers[TIMER_QUIET].due == UINT64_MAX)
 		(void)loop_timer_set(home->loop, &home->timers[TIMER_QUIET],
 		                     job->active + home->silence);
@@ -1391,8 +1389,7 @@ home_start_step (struct loop      *loop,
 			--home->readied[home_job_class(job)];
 			list_del(&job->queue);
 		} else {
-			list_del(&job->who->ring);
-			list_append(&home->ring[home_job_class(job)], &job->who->ring);
+			list_move(&home->ring[home_job_class(job)], &job->who->ring);
 			home_unqueue(home, job);
 		}
 		home_start(home, job);
@@ -2182,8 +2179,7 @@ home_feed_step (struct loop      *loop,
 		struct job *job = container_of(home->feeding.next, struct job, feed);
 		if (home_read_stream(home, job))
 			continue;
-		list_del(&job->feed);
-		list_append(&home->feeding, &job->feed);
+		list_move(&home->feeding, &job->feed);
 		loop_ready_bulk(loop, step);
 		return;
 	}
@@ -2464,8 +2460,7 @@ static void
 home_drop (struct home *home,
            struct job  *job)
 {
-	list_del(&job->queue);
-	list_append(&home->dropped, &job->queue);
+	list_move(&home->dropped, &job->queue);
 	loop_ready_bulk(home->loop, &home->stop);
 }
 

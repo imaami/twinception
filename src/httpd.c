@@ -1000,8 +1000,7 @@ httpd_conn_park (struct httpd_conn *conn,
                  bool               idle)
 {
 	struct httpd *srv = conn->srv;
-	list_del(&conn->hook);
-	list_append(idle ? &srv->idle : &srv->busy, &conn->hook);
+	list_move(idle ? &srv->idle : &srv->busy, &conn->hook);
 	srv->idles += idle - !!(conn->flags & CONN_IDLE);
 	conn->flags = (conn->flags & ~CONN_IDLE) | (idle ? CONN_IDLE : 0);
 	httpd_show_idle(srv);
