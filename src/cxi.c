@@ -1313,17 +1313,9 @@ cxi_dir (char         *path,
          char const  **why)
 {
 	*fd = -1;
-	int e = 0;
-	for (char *p = path + 1; !e; ++p) {
-		if (*p && *p != '/')
-			continue;
-		char const c = *p;
-		*p = '\0';
-		e = mkdir(path, 0700) && errno != EEXIST ? errno : 0;
-		*p = c;
-		if (!c)
-			break;
-	}
+	int e = util_mkdir_parents(path);
+	if (!e && mkdir(path, 0700) && errno != EEXIST)
+		e = errno;
 	struct stat st;
 	if (!e && ((*fd = open(path, O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)) < 0 ||
 	           fstat(*fd, &st)))

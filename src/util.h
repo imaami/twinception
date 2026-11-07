@@ -322,6 +322,21 @@ util_path_inside (struct cstr_view path)
 	return !e;
 }
 
+/** Make each missing directory above @p path with the mode 0700. Returns 0
+ *  or the error number of mkdir().
+ */
+static inline int
+util_mkdir_parents (char *path)
+{
+	int e = 0;
+	for (char *slash = path; !e && (slash = strchr(slash + 1, '/')); ) {
+		*slash = '\0';
+		e = mkdir(path, 0700) && errno != EEXIST ? errno : 0;
+		*slash = '/';
+	}
+	return e;
+}
+
 /** Block every signal but those that faults raise in the calling thread,
  *  whose threads to come inherit its mask, and store the mask before in
  *  @p old. Returns 0, or the error number of pthread_sigmask().

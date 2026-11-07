@@ -349,18 +349,10 @@ cli_state_default_path (struct cli_state *state)
 		return e;
 	if (!dstr_printf(&state->path, "%s%s/cli.git", base, rest))
 		return ENOMEM;
-	/* Make each parent, with a NUL in place of the '/' after it for
-	 * mkdir(). Only the private leaf, which cli_state_create() makes,
-	 * holds data. Existing parent modes are preserved. */
-	char *path = (char *)dstr_raw(&state->path);
-	for (char *slash = path; (slash = strchr(slash + 1, '/')); ) {
-		*slash = '\0';
-		e = mkdir(path, 0700) && errno != EEXIST ? errno : 0;
-		*slash = '/';
-		if (e)
-			return e;
-	}
-	return 0;
+	/* Only cli.git, which cli_state_create() creates with the mode 0700,
+	 * contains data. util_mkdir_parents() does not change the mode of the
+	 * parent directories that exist. */
+	return util_mkdir_parents((char *)dstr_raw(&state->path));
 }
 
 static int
