@@ -33,7 +33,6 @@ static char const git_ignore_rev[] = "--ignore-rev=";
 static char const git_derived[] = "(derived)";
 
 enum {
-	GIT_WHY   = 1024,     /**< bytes of what is wrong with a call */
 	GIT_NOTE  = 256,      /**< the most bytes of the note at the end of the
 	                           output, with the blank line before it */
 	BINARY    = 8000,     /**< read refuses a file with a NUL in its first
@@ -546,13 +545,6 @@ git_commit (struct dstr      *text,
 	}
 	return dstr_cat_n(text, git_commit_suffix, sizeof git_commit_suffix) ? 0 : ENOMEM;
 }
-
-/* A message about what is wrong with a call. The message starts empty,
- * and git_wrong() appends to it.
- */
-struct git_why {
-	UTIL_TEXT(GIT_WHY);
-};
 
 /* Appends to @p why a part of the message about what is wrong with the
  * arguments of a call, as util_text_printf() does, after a space unless

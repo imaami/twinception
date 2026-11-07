@@ -49,6 +49,7 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "oid.h"
+#include "util.h"
 
 struct child;
 struct git;
@@ -96,6 +97,7 @@ enum {
 	GIT_ARGV  = 128,  /**< words in the argv of a git command, with nullptr */
 	GIT_ENV   = 13,   /**< entries in git's environment, with nullptr */
 	GIT_ROOTS = 24,   /**< revisions in a pin, at most */
+	GIT_WHY   = 1024, /**< bytes of an error message about a call, NUL included */
 };
 
 /** A repository of the git tool: its name, its real path, and the git
@@ -105,6 +107,13 @@ struct git_repo {
 	struct cstr_view name;
 	char            *path;
 	char            *safe;
+};
+
+/** A message about what is wrong with a tool call. The message starts
+ *  empty, and util_text_printf() appends to it.
+ */
+struct git_why {
+	UTIL_TEXT(GIT_WHY);
 };
 
 /** The phases of a pin, in their order. */

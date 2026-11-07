@@ -31,7 +31,6 @@
 enum {
 	CODE_WORD  = 1024,  /* the maximum length of a string argument */
 	CODE_CHECK = 4096,  /* the maximum length of the --check output */
-	CODE_WHY   = 1024,  /* the size of the error text of a call */
 };
 
 /* The arguments: X(ID, name). */
@@ -53,11 +52,6 @@ static struct cstr_view const code_arg_names[] = { CODE_ARG_LIST(XL_VIEW) };
 struct code_call {
 	struct git_pin pin;
 	struct dstr    words;
-};
-
-/* The error text of a call with invalid arguments. */
-struct code_why {
-	UTIL_TEXT(CODE_WHY);
 };
 
 /* Sets @p *str to a new string that @p fmt and its arguments format, as
@@ -340,7 +334,7 @@ code_ended (struct mcp_slot  *slot,
 	struct code const *code = mcp_slot_part(slot);
 	struct child *c = call->pin.child;
 	int const status = child_status(c);
-	char buf[CODE_WHY];
+	char buf[GIT_WHY];
 	if (status != 0 && status != 1) {
 		mcp_slot_tell(slot, (c->flags & (CHILD_CUT | CHILD_LATE)) == CHILD_CUT
 		                    ? CSTR_VIEW("askai-code wrote more than 4 MiB.")
@@ -385,7 +379,7 @@ code_step (struct mcp_slot *slot)
 	int e = git_pin_step(pin, slot, &why);
 	if (!e && !pin->child)
 		e = code_spawn(call, slot);
-	char buf[CODE_WHY];
+	char buf[GIT_WHY];
 	if (e == ENOMEM)
 		mcp_slot_fail(slot, e);
 	else if (e)
@@ -403,7 +397,7 @@ static int
 code_args (struct code const  *code,
            struct code_call   *call,
            struct json_object *args,
-           struct code_why    *why)
+           struct git_why     *why)
 {
 	struct json_object *of[CODE_ARGS] = {};
 	uint64_t seen;
@@ -489,7 +483,7 @@ code_start (struct mcp_slot    *slot,
 	git_pin_init(&call->pin, code->git, jb_view(jb_get(args, "repo")),
 	             mcp_slot_loop(slot)->now + code->cfg->git_timeout);
 	*mcp_slot_own(slot) = call;
-	struct code_why why = {};
+	struct git_why why = {};
 	int e = code_args(code, call, args, &why);
 	if (e == EINVAL)
 		mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
