@@ -597,11 +597,12 @@ member as `struct.member`. The output contains the kind and the type, the
 places of the declaration and the definition, the functions that a
 function calls, the members of a struct or union with their offsets, sizes
 and padding, including the members of anonymous members, and at most 40
-numbered lines of the declaration with its comment. These lines count as
-read for the review record of `findings` (below). With `line`, `describe`
-uses the name on that line of `path`, such as a local variable or a macro
-use. For a macro use, it also prints the type and the value of the
-expression. This is `describe` of `struct review_file` in `src/review.c`:
+numbered lines of the declaration with its comment, a function's without
+its body. These lines count as read for the review record of `findings`
+(below). With `line`, `describe` uses the name on that line of `path`,
+such as a local variable or a macro use. For a macro use, it also prints
+the type and the value of the expression. This is `describe` of
+`struct review_file` in `src/review.c`:
 
 ```text
 [proj at 1095916a86bd9dc0585d261ec87762fe6134de44: struct review_file in the translation unit of src/review.c.]
@@ -789,14 +790,15 @@ them before it answers: a commit with the file `review.json` on
 of the commit that the call started with. The trace names the thread. An
 ask call with that `thread` starts with those findings, after the notes,
 but with an empty read log, so a finding becomes `verified` or `disproved`
-again only after a new `git` `read` of its lines. Any other ask call
-starts with an empty record. If another ask call of the thread saved
-first, git refuses the commit, and the findings of this call are not
-saved. A call cancelled before its last answer saves nothing, and neither
-does a call that fails because the tool calls of one turn take more than
-16 MiB or because the context cannot hold the task and the notes. A
-stored record that cannot be read ends the ask call as failed and stays
-as it is. Nothing prunes these refs; `git update-ref -d` removes one.
+again only after a new `git` `read` of its lines, or a `code` `describe`
+that shows them. Any other ask call starts with an empty record. If
+another ask call of the thread saved first, git refuses the commit, and
+the findings of this call are not saved. A call cancelled before its last
+answer saves nothing, and neither does a call that fails because the tool
+calls of one turn take more than 16 MiB or because the context cannot
+hold the task and the notes. A stored record that cannot be read ends the
+ask call as failed and stays as it is. Nothing prunes these refs; `git
+update-ref -d` removes one.
 
 With `--notes PATH`, the repository at `PATH` is the shared session.
 `askai` creates a bare Git repository there if absent, and also accepts an

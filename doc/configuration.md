@@ -688,7 +688,9 @@ The value is an integer from 1 to 2147483647. The default is none, and
 With `messages`, the default is 4096.
 
 `max-tokens` sets the limit of output tokens of each upstream request.
-`askai` marks an answer that the limit cuts off.
+`askai` marks an answer that the limit cuts off. A model's thinking is
+output too, and it keeps `chunk-timeout` from ending a turn, so without
+this limit a turn whose model thinks without end lasts until `timeout`.
 
 #### `extra`
 

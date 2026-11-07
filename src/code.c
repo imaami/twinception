@@ -186,15 +186,16 @@ code_definition (void const *service)
 			"in the translation unit of path: the type of a variable, the signature "
 			"and calls of a function, the value of an enumerator, or a macro and its "
 			"value where line uses it. It prints the places where name is declared "
-			"and defined, and the numbered lines of its declaration, which count as "
-			"read for findings. For a struct or union it lists the members with "
-			"their offsets, sizes and padding, inside anonymous members too. outline "
-			"lists the names that path declares, each with the line where it is "
-			"written, which can be passed to describe as line. diagnostics lists "
-			"clang's errors and warnings for path. Places are path:line; git read "
-			"accepts the commit and the path. Only committed files are visible. A .c "
-			"file must be in the compile commands; a header is parsed with the flags "
-			"of the .c file nearest to it."),
+			"and defined, and the numbered lines of its declaration, a function's "
+			"without its body, which count as read for findings. For a struct or "
+			"union it lists the members with their offsets, sizes and padding, "
+			"inside anonymous members too. outline lists the names that path "
+			"declares, each with the line where it is written, which can be passed "
+			"to describe as line. diagnostics lists clang's errors and warnings for "
+			"path. Places are path:line; git read accepts the commit and the path. "
+			"Only committed files are visible. A .c file must be in the compile "
+			"commands; a header is parsed with the flags of the .c file nearest to "
+			"it."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),

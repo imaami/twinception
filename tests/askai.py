@@ -64,9 +64,12 @@ def findings_head(counts):
 # The description of the offset of each tool that pages its output
 # (TOOL_OFFSET_ABOUT, src/tool.h).
 OFFSET_ABOUT = "The byte of the output to start from."
+# The header of the read log in the review record (src/review.c).
+READS = "[askai: the lines that git read and code describe showed you in this call:]"
 # The sentence that ends the description of each such tool lent to the turns.
-PAGED = (" A result contains at most 64 KiB of the output; if the output is longer, "
-         "the result ends with the offset of the rest.")
+PAGED = (" A result contains at most 64 KiB of the output, from the start of the line "
+         "that contains offset if that start is less than a quarter of the limit before "
+         "it; if the output is longer, the result ends with the offset of the rest.")
 # The API that each answer format of the fake upstream is in.
 API = {"openai": "chat", "responses": "responses", "anthropic": "messages",
        "gemini": "generate", "interactions": "interactions"}
@@ -3005,7 +3008,8 @@ def check_recovery_review(binary, up):
                 "candidate.", said
             assert output(creates[3], "show") == REVIEW + findings_head("1 finding: 1 verified") + (
                 f"1. verified, src/a.c:5 at {head[:12]}\n   claim: C\n"
-                "   evidence: E\n[askai: what you read with git read in this call:]\n"
+                "   evidence: E\n[askai: the lines that git read and code describe showed "
+                "you in this call:]\n"
                 f"proj {head}\n  src/a.c  lines 1-20: 20 of 300 lines"), creates[3]
             # The call made again has the turn of the first.
             assert output(creates[3], "history") == \
@@ -9078,7 +9082,7 @@ def check_git(binary, up):
             result = call(ai, repo="proj", command="push")
             assert result.get("isError") and text_of(result) == \
                 "The command argument must be " + ", ".join(commands[:-1]) + " or " + \
-                commands[-1] + ". Use help:true for its options.", result
+                commands[-1] + ". Use help:true with one of them for its options.", result
             for command in ("status", "ls-files"):
                 result = call(ai, repo="proj", command=command)
                 assert result.get("isError") and text_of(result) == \
@@ -11956,8 +11960,8 @@ def check_notes_texts(binary, up):
                          "and compactions, and every version stays in the history. You "
                          "can read every notebook but write only your own. After a "
                          "compaction, you see your note history and your newest note.",
-                         "own, the default, a participant's name, or a selector from "
-                         "action notebooks.", PAGED),
+                         "own, the default except for copy, which needs this, a "
+                         "participant's name, or a selector from action notebooks.", PAGED),
                         (listed, "inputSchema", "Notes are files, and every version stays "
                          "in the history. You can read every notebook but write only your "
                          "own.", "own, the default, other for the other side, a "
@@ -11982,12 +11986,12 @@ def check_notes_texts(binary, up):
                         "notes. history lists the changes, oldest first, to all notes or to one "
                         "(file). read reads a note, or its version at the commit revision. diff "
                         "shows the changes to a note between the commits from and to. search "
-                        "lists the lines of the current notes that match pattern. notebooks "
-                        "lists the session's notebooks. The actions that read take notebook. To "
-                        "recover lost text: history with file, then diff, then read or restore "
-                        "with revision.",
-                        "file": "A note's file name, at most 255 bytes, such as plan.md or "
-                        "design/locks.md. Its extension shows the format of the text. With "
+                        "lists the lines of the current notes, not their names, that match "
+                        "pattern. notebooks lists the session's notebooks. The actions that "
+                        "read take notebook. To recover lost text: history with file, then "
+                        "diff, then read or restore with revision.",
+                        "file": "A note's file name, at most 255 bytes in all, such as plan.md "
+                        "or design/locks.md. Its extension shows the format of the text. With "
                         "history, only that file's changes.",
                         "text": "The text, at most 4 MiB.",
                         "pattern": "Extended regexes, one on each line, case ignored. A line "
@@ -12615,7 +12619,8 @@ def check_attach(binary, up):
                 again = up.requests[count + 2]["body"][key]
                 assert "files.test" not in json.dumps(again)
                 prompt = again[0]["parts" if api == "generate" else "content"][0]["text"]
-                assert prompt.count(f"Your writable notebook is {api}/anonymous/upstream.") == 1, prompt
+                assert prompt.count(f"Your writable notebook is {api}/anonymous/upstream, a "
+                                    "selector") == 1, prompt
                 script[:] = [lambda r: (200, calls(attach[1:])), lambda r: (200, answer("F"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "F"
                 assert len(up.uploads) == stored + 1
@@ -12832,8 +12837,10 @@ def check_turns(binary, up):
         branch = f"refs/heads/notes/{selector}"
         provenance = f"\n\n[askai: notebook {selector}]"
         identity = ("\n\n[askai: participant turns. Your writable notebook is "
-                    f"{selector}. Use notes action notebooks to discover "
-                    "peers; selectors identify their authors.]\n")
+                    f"{selector}, a selector for the notes argument notebook, not a note; "
+                    "own, its default except for copy, is the same notebook. Use notes "
+                    "action notebooks to discover peers; selectors identify their "
+                    "authors.]\n")
         sessions = 0
 
         def isolated(*options):
@@ -13992,8 +13999,8 @@ def check_review(binary, up):
                      "1. candidate, src/a.c:3-4, not read\n   claim: C1\n"
                      "2. candidate\n   claim: C3\n   evidence: E")
             assert results(sent[1]) == [
-                "Added finding 1: candidate, src/a.c:3-4, not read. Read its lines with "
-                "git read before you verify it.",
+                "Added finding 1: candidate, src/a.c:3-4, not read. Read its lines before "
+                "you verify it.",
                 "verified needs the lines of its location in your read log, and src/a.c "
                 "line 5 is not in it. Read them with the git tool's read command, with "
                 "\"revisions\": [\"HEAD:src/a.c\"] and \"line\": 5, where the path is the "
@@ -14002,8 +14009,8 @@ def check_review(binary, up):
                 "Added finding 2: candidate. askai left out the [askai: ...] lines at "
                 "the end of the evidence. askai adds those lines to tool results, and "
                 "they are not part of the finding.",
-                "update needs state and evidence: what shows the new state, or why you "
-                "retract the finding.",
+                "update needs state and evidence: what shows the new state, why you "
+                "retract the finding, or why it is a candidate again.",
                 "The action argument must be add, update or show.",
                 "add takes no argument id.",
                 REVIEW + first], results(sent[1])
@@ -14177,7 +14184,7 @@ def check_review(binary, up):
                 f"4. verified, src/a.c:3 at {later[:12]}\n   claim: C4\n   evidence: EC4\n"
                 f"5. verified, src/a.c:8 at {head[:12]}\n   claim: C5\n   evidence: EC5\n" +
                 CLOSING + f"2. disproved, src/a.c:50 at {head[:12]}: C2\n"
-                f"[askai: what you read with git read in this call:]\nproj {head}\n"
+                f"{READS}\nproj {head}\n"
                 f"  src/a.c  lines 1-10, 45-60: 26 of 300 lines\nproj {later}\n"
                 "  src/a.c  lines 1-5: 5 of 301 lines\n  src/x.c  lines 1-2: all 2 lines\n"
                 "  tests/x.c  lines 1-2: all 2 lines"], results(sent[5])
@@ -14284,9 +14291,8 @@ def check_review(binary, up):
                 f"Added finding 1: verified, src/cut.c:4194 at {later[:12]}.",
                 REVIEW + findings_head("1 finding: 1 verified") +
                 f"1. verified, src/cut.c:4194 at {later[:12]}\n   claim: C7\n"
-                "   evidence: EC7\n[askai: what you read with git read in "
-                f"this call:]\nproj {later}\n  src/cut.c  lines 4190-4194: 5 of an unknown "
-                "number of lines"], shown
+                f"   evidence: EC7\n{READS}\nproj {later}\n  src/cut.c  lines 4190-4194: 5 "
+                "of an unknown number of lines"], shown
             # A client's read is unchanged.
             status, _, body = ai.rpc("tools/call", {"name": "git",
                                                     "arguments": read("src/a.c", 300)})
@@ -14337,7 +14343,7 @@ def check_review(binary, up):
                 sent = up.requests[count:]
                 shown = results(sent[2])[0].split("\n")
                 assert shown[-3:-1] == [
-                    "[askai: what you read with git read in this call:]",
+                    READS,
                     f"proj {later}"], shown
                 return results(sent[1])[0], shown[-1]
 
@@ -14406,8 +14412,9 @@ def check_review(binary, up):
             sent = up.requests[count:]
             lent = {t["function"]["name"] for t in sent[0]["body"]["tools"]}
             assert "findings" in lent and "git" not in lent, lent
-            no_git = ("This ask call has no git tool, so a finding cannot be verified or "
-                      "disproved here; keep it a candidate, or retract it.")
+            no_git = ("This ask call has neither the git tool nor the code tool, so a "
+                      "finding cannot be verified or disproved here; keep it a candidate, "
+                      "or retract it.")
             assert results(sent[1]) == [no_git, "Added finding 1: candidate, src/a.c:3, not "
                                         "read.", no_git], results(sent[1])
 
@@ -14465,7 +14472,7 @@ def check_review(binary, up):
             result = ai.ask("Q", thread=thread)
             sent = up.requests[count:]
             assert prompt(sent[0]).endswith("\n\n" + record) and \
-                "[askai: what you read with git read" not in prompt(sent[0]), prompt(sent[0])
+                READS not in prompt(sent[0]), prompt(sent[0])
             assert results(sent[1]) == [
                 missing("verified", "src/a.c line 5 is", "src/a.c", 5, False),
                 "There is no finding 9. The record contains findings 1 to 2."], results(sent[1])

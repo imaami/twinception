@@ -952,7 +952,8 @@ review_put_logged (struct dstr         *out,
 	struct review_file const *f = &r->log.files[i];
 	bool const group = !i || !review_file_commit_equal(f, cstr_view_dstr(&f[-1].repo),
 	                                                    oid_view(&f[-1].commit));
-	return (!i && PUT(out, "[askai: what you read with git read in this call:]\n")) ||
+	return (!i && PUT(out, "[askai: the lines that git read and code describe showed you "
+	                       "in this call:]\n")) ||
 	       (group && (cstr_view_cat(cstr_view_dstr(&f->repo), out) || PUT(out, " ") ||
 	                  cstr_view_cat(oid_view(&f->commit), out) || PUT(out, "\n"))) ||
 	       review_put_file(out, f) ? ENOMEM : 0;
@@ -1559,12 +1560,13 @@ review_check_location (struct review const          *r,
 	*commit = (struct oid){};
 	bool const requires_log = review_state_logged(state);
 	if (requires_log && !(r->flags & REVIEW_READ_LOG))
-		return REFUSE(out, "This ask call has no git tool, so a finding cannot be verified "
-		              "or disproved here; keep it a candidate, or retract it.");
+		return REFUSE(out, "This ask call has neither the git tool nor the code tool, so a "
+		              "finding cannot be verified or disproved here; keep it a candidate, "
+		              "or retract it.");
 	if (!loc->path.len)
 		return !requires_log ? 0
-		     : REFUSE(out, "%s needs a location: the lines that show it, such as "
-		              "src/mcp.c:120-140, which you read with git read.",
+		     : REFUSE(out, "%s needs a location: lines of your read log that show it, "
+		              "such as src/mcp.c:120-140.",
 		              review_state_names[state].data);
 	struct cstr_view found[4];
 	size_t const n = review_log_resolve(r, loc, found, array_size(found));
@@ -1619,8 +1621,8 @@ review_check_size (struct review const *r,
 
 /**
  * Appends the end of an add or update result for the finding @p f of @p r
- * to @p out. The end requests a git read if @p f is a candidate whose
- * lines were not read and the flags of @p r contain REVIEW_READ_LOG. If
+ * to @p out. The end requests a read if @p f is a candidate whose lines
+ * were not read and the flags of @p r contain REVIEW_READ_LOG. If
  * @p trimmed is not 0, the end lists the texts whose trailing notices were
  * removed.
  */
@@ -1639,7 +1641,7 @@ review_put_tail (struct dstr                 *out,
 	struct review_change const *c = &f->changes[f->n - 1];
 	bool const unread = c->state == REVIEW_CANDIDATE && dstr_len(&f->location.path) &&
 	                    !oid_len(&c->commit) && (r->flags & REVIEW_READ_LOG);
-	return (unread && PUT(out, " Read its lines with git read before you verify it.")) ||
+	return (unread && PUT(out, " Read its lines before you verify it.")) ||
 	       (trimmed &&
 	        (PUT(out, " askai left out the [askai: ...] lines at the end of ") ||
 	         cstr_view_cat(texts[trimmed], out) ||
@@ -1706,8 +1708,8 @@ review_update (struct review            *r,
                struct dstr              *out)
 {
 	if (a->state == REVIEW_STATES || !a->evidence.len)
-		return REFUSE(out, "update needs state and evidence: what shows the new state, or why "
-		              "you retract the finding.");
+		return REFUSE(out, "update needs state and evidence: what shows the new state, why "
+		              "you retract the finding, or why it is a candidate again.");
 	struct review_finding *f = &r->findings[a->id - 1];
 	struct cstr_view const old_claim = cstr_view_dstr(&f->claim);
 	struct cstr_view const old_path = cstr_view_dstr(&f->location.path);

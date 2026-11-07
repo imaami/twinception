@@ -237,7 +237,8 @@ enum {
           "match is commit:path:line:text with the full commit ID; read takes "            \
           "commit:path as its revision and that line. --heading gives commit:path "        \
           "once per file. -C3 adds three lines of context, -p the function's first "       \
-          "line, -W the whole function.", "--no-textconv", "-n", "-E")                     \
+          "line, -W the whole function. --max-count=N caps the matches per file, and "     \
+          "-l lists only the files.", "--no-textconv", "-n", "-E")                         \
         X(BLAME,     "blame",     blame_options,     FILES | SINGLE | ONEPATH,             \
           "Annotate a committed file; defaults to HEAD. Give the file as the one "         \
           "path, such as \"paths\": [\"src/git.c\"], and its commit in revisions. "        \
@@ -912,7 +913,7 @@ git_call_command (struct git_call  *call,
 			                 (int)cmd.len, cmd.data);
 		return git_wrong(why, "The command argument must be "
 		                 XL_JOIN(", ", " or ", GIT_COMMAND_LIST(XL_TEXT))
-		                 ". Use help:true for its options.");
+		                 ". Use help:true with one of them for its options.");
 	}
 	call->command = c;
 	uint64_t const takes = commands[c].takes;

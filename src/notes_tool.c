@@ -2010,8 +2010,8 @@ notes_tool_schema (struct notes_tool const *tool,
 			"every notebook but write only your own.",
 	};
 	static char const *const notebooks[] = {
-		[NOTES_UPSTREAM] = "own, the default, a participant's name, or a selector from "
-		                   "action notebooks.",
+		[NOTES_UPSTREAM] = "own, the default except for copy, which needs this, a "
+		                   "participant's name, or a selector from action notebooks.",
 		[NOTES_CLIENT] = "own, the default, other for the other side, a participant's name, "
 		                 "or a selector from action notebooks. other is copy's default.",
 	};
@@ -2030,16 +2030,16 @@ notes_tool_schema (struct notes_tool const *tool,
 			"if given. list lists the current notes. history lists the changes, oldest "
 			"first, to all notes or to one (file). read reads a note, or its version at "
 			"the commit revision. diff shows the changes to a note between the commits "
-			"from and to. search lists the lines of the current notes that match "
-			"pattern. notebooks lists the session's notebooks.",
+			"from and to. search lists the lines of the current notes, not their "
+			"names, that match pattern. notebooks lists the session's notebooks.",
 			files ? " attach gives you a whole note (file) as a file after the turn's "
 			        "results." : "",
 			" The actions that read take notebook. To recover lost text: history with "
 			"file, then diff, then read or restore with revision.")),
 		"file", schema_property("string",
-			"A note's file name, at most 255 bytes, such as plan.md or design/locks.md. "
-			"Its extension shows the format of the text. With history, only that "
-			"file's changes."),
+			"A note's file name, at most 255 bytes in all, such as plan.md or "
+			"design/locks.md. Its extension shows the format of the text. With "
+			"history, only that file's changes."),
 		"revision", schema_property("string",
 			"A full commit ID from the notebook's history, or current, the default."),
 		"from", schema_property("string",

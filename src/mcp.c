@@ -3977,8 +3977,11 @@ mcp_req_notes_identity (struct mcp_req *req)
 	notes_repo(notes, req->principal, NOTES_UPSTREAM, repo);
 	return dstr_printf(&req->self.answer,
 	                   "\n\n[askai: participant %s. Your writable notebook "
-	                   "is %s. Use notes action notebooks to discover "
-	                   "peers; selectors identify their authors.]\n",
+	                   "is %s, a selector for the notes argument notebook, "
+	                   "not a note; own, its default except for copy, is the "
+	                   "same notebook. "
+	                   "Use notes action notebooks to discover peers; "
+	                   "selectors identify their authors.]\n",
 	                   notes_writer(notes), notes_selector(repo)) ? 0 : ENOMEM;
 }
 
@@ -8326,8 +8329,10 @@ mcp_lent_definition (struct registry_tool const *t,
 	struct cstr_view const about = jb_view(jb_get(lent, "description"));
 	return jb_set_or_free(lent, "description", schema_text3(
 		about.data ? about.data : "", about.len ? " " : "",
-		"A result contains at most 64 KiB of the output; if the output is longer, "
-		"the result ends with the offset of the rest."));
+		"A result contains at most 64 KiB of the output, from the start of the "
+		"line that contains offset if that start is less than a quarter of the "
+		"limit before it; if the output is longer, the result ends with the "
+		"offset of the rest."));
 }
 
 /** Serializes the replies that never change. @p info describes askai, and

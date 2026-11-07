@@ -41,9 +41,10 @@ findings_definition (void const *service)
 		"location if they were wrong. askai stores the old text in the "
 		"finding's history. verified and disproved need the lines of the "
 		"location in the read log, so they need the git tool or the code tool, "
-		"and askai records the commit that the lines were read at. show gives "
-		"the record, or with id one finding's history. The record's limit is "
-		"4 MiB.",
+		"and askai records the commit that the lines were read at. The log "
+		"takes the lines of a result from your next turn on, so verify or "
+		"disprove in a later turn than the read. show gives the record, or with "
+		"id one finding's history. The record's limit is 4 MiB.",
 		jb_object(
 			"action", schema_enum(
 				schema_names(review_action_names, REVIEW_ACTIONS),
@@ -65,8 +66,9 @@ findings_definition (void const *service)
 				"the same."),
 			"evidence", schema_property("string",
 				"Required for update, and for add with verified or "
-				"disproved: what you read that shows the state, or "
-				"why you retract the finding."),
+				"disproved: what you read that shows the state, why "
+				"you retract the finding, or why it is a candidate "
+				"again."),
 			"id", schema_count(1,
 				"Required for update, and for show to give one "
 				"finding's history: the number of the finding."),
