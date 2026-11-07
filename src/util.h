@@ -59,21 +59,6 @@ util_random (void   *dst,
 	return (size_t)got == n ? 0 : EIO;
 }
 
-/** Write @p n random bytes, at most UTIL_RANDOM_MAX, from the kernel to
- *  @p dst as 2 @p n lowercase hexadecimal digits, without a NUL. Returns 0,
- *  or the error number.
- */
-static inline int
-util_random_hex (char   *dst,
-                 size_t  n)
-{
-	unsigned char bits[UTIL_RANDOM_MAX];
-	int e = util_random(bits, n);
-	if (!e)
-		util_hex(dst, bits, n);
-	return e;
-}
-
 /** Whether the @p n bytes at @p s are lowercase hexadecimal digits. */
 static inline bool
 util_is_hex (char const *s,

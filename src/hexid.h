@@ -36,8 +36,12 @@ hexid_valid (struct cstr_view hex)
 static inline int
 hexid_make (struct hexid *id)
 {
+	unsigned char bits[HEXID_DIGITS / 2];
 	*id = (struct hexid){};
-	return util_random_hex(id->hex, HEXID_DIGITS / 2);
+	int e = util_random(bits, sizeof bits);
+	if (!e)
+		util_hex(id->hex, bits, sizeof bits);
+	return e;
 }
 
 /** Copies the id @p hex into @p id. Returns 0, or EINVAL with no id in
