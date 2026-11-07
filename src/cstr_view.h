@@ -205,6 +205,17 @@ cstr_view_index (struct cstr_view const *names,
 	return i;
 }
 
+/** Returns the sum of the lengths of the @p n views at @p views. */
+static inline size_t
+cstr_view_total (struct cstr_view const *views,
+                 size_t                  n)
+{
+	size_t len = 0;
+	for (size_t i = 0; i < n; ++i)
+		len += views[i].len;
+	return len;
+}
+
 /** Whether @p c is a space, a tab, a carriage return or a line feed. */
 static inline bool
 cstr_view_space (char c)

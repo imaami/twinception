@@ -1320,10 +1320,7 @@ git_write (struct mcp_slot        *slot,
            struct cstr_view const *p,
            size_t                  n)
 {
-	size_t len = 0;
-	for (size_t i = 0; i < n; ++i)
-		len += p[i].len;
-	if (loop_room(mcp_slot_loop(slot), LOOP_COPY) < len)
+	if (loop_room(mcp_slot_loop(slot), LOOP_COPY) < cstr_view_total(p, n))
 		return EAGAIN;
 	int e = 0;
 	size_t taken;

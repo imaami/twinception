@@ -1007,16 +1007,6 @@ httpd_conn_park (struct httpd_conn *conn,
 	httpd_show_idle(srv);
 }
 
-static size_t
-httpd_views_len (struct cstr_view const *f,
-                 size_t                  n)
-{
-	size_t len = 0;
-	for (size_t i = 0; i < n; ++i)
-		len += f[i].len;
-	return len;
-}
-
 /* Whether the client's bytes wait, in the input or in TLS: a head begun. */
 static bool
 httpd_conn_input (struct httpd_conn const *conn)
@@ -1087,7 +1077,7 @@ httpd_conn_put (struct httpd_conn      *conn,
 {
 	if (conn->flags & CONN_DOOMED)
 		return EPIPE;
-	size_t total = httpd_views_len(f, n);
+	size_t total = cstr_view_total(f, n);
 	if (!total)
 		return 0;
 	struct span s;
@@ -1186,7 +1176,7 @@ httpd_conn_respond (struct httpd_conn      *conn,
                     size_t                  n_body)
 {
 	struct cstr_view const type = body ? CSTR_VIEW(STREAM_JSON_FIELD) : (struct cstr_view){};
-	if (!httpd_conn_head(conn, status, type, extra, n_extra, httpd_views_len(body, n_body)))
+	if (!httpd_conn_head(conn, status, type, extra, n_extra, cstr_view_total(body, n_body)))
 		(void)httpd_conn_put(conn, body, n_body);
 	conn->req.flags |= REQ_DONE;
 }
