@@ -268,11 +268,9 @@ code_spawn (struct code_call *call,
 	struct code const *code = mcp_slot_part(slot);
 	struct git_pin *pin = &call->pin;
 	char digits[UTIL_DECIMAL];
-	char *const end = digits + sizeof digits;
-	char const *deadline = util_decimal(end, pin->deadline);
 	int e = code_word(call, CXI_KEY_COMMIT, oid_view(&pin->roots[0]));
-	e = e ? e : code_word(call, CXI_KEY_DEADLINE, (struct cstr_view){
-		deadline, (size_t)(end - deadline) });
+	e = e ? e : code_word(call, CXI_KEY_DEADLINE,
+	                      util_decimal(digits + sizeof digits, pin->deadline, 0));
 	e = e ? e : code_word(call, CXI_KEY_TOP, cstr_view(pin->repo->path));
 	if (e)
 		return e;
@@ -458,14 +456,13 @@ code_args (struct code const  *code,
 		return util_text_printf(why, "The revision argument must be a commit reference or "
 		                        "hash with ^ or ~, such as HEAD~1."), EINVAL;
 	char digits[UTIL_DECIMAL];
-	char *const end = digits + sizeof digits;
-	char const *number = util_decimal(end, line);
 	e = e ? e : code_word(call, CXI_KEY_ACTION, action);
 	e = e ? e : code_word(call, CXI_KEY_REPO, repo);
 	e = e ? e : code_word(call, CXI_KEY_PATH, path);
 	e = e ? e : code_word(call, CXI_KEY_NAME, name);
-	e = e ? e : code_word(call, CXI_KEY_LINE, (struct cstr_view){ line ? number : nullptr,
-	                                                              (size_t)(end - number) });
+	e = e ? e : code_word(call, CXI_KEY_LINE,
+	                      line ? util_decimal(digits + sizeof digits, line, 0)
+	                           : (struct cstr_view){});
 	for (i = 0; !e && i < n; ++i)
 		e = code_word(call, CXI_KEY_WARNING, jb_view(jb_at(warnings, i)));
 	e = e ? e : code_word(call, CXI_KEY_CDB, cstr_view(strchr(cfg->codes[r], '=') + 1));

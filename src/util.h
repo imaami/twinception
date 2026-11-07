@@ -85,15 +85,18 @@ util_hex_digit (unsigned char c)
 enum { UTIL_DECIMAL = 20 };
 
 /** Write @p n in decimal into the bytes before @p end, at most UTIL_DECIMAL
- *  of them. Returns a pointer to the first digit.
+ *  of them. Returns a view that starts at the first digit and ends @p tail
+ *  bytes after @p end.
  */
-static inline char *
+static inline struct cstr_view
 util_decimal (char     *end,
-              uint64_t  n)
+              uint64_t  n,
+              size_t    tail)
 {
-	do *--end = (char)('0' + n % 10);
+	char *p = end;
+	do *--p = (char)('0' + n % 10);
 	while (n /= 10);
-	return end;
+	return (struct cstr_view){ p, (size_t)(end - p) + tail };
 }
 
 /** The plural ending of a noun after the count @p n: "" if @p n is 1, else

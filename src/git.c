@@ -1324,18 +1324,6 @@ git_ended (struct mcp_slot *slot,
 	mcp_slot_finish(slot, failed ? TOOL_FAILED : 0);
 }
 
-/* Write @p n in decimal into the bytes before @p end. Return the text from
- * the first digit to @p end, and @p tail bytes more.
- */
-static struct cstr_view
-git_digits (char   *end,
-            size_t  n,
-            size_t  tail)
-{
-	char *p = util_decimal(end, n);
-	return (struct cstr_view){ p, (size_t)(end - p) + tail };
-}
-
 /* Write the @p n texts at @p p to the output of @p slot if the step has
  * LOOP_COPY room for all of them. Return 0, EAGAIN if the room is too
  * small, or the error of mcp_slot_write().
@@ -1402,7 +1390,7 @@ git_read_line (struct git_read *read,
 		read->from = start;
 	char digits[UTIL_DECIMAL];
 	size_t size = n == read->last + 1 && n - read->line < read->count
-	              ? git_digits(digits + sizeof digits, n, 1).len + len + 1
+	              ? util_decimal(digits + sizeof digits, n, 1).len + len + 1
 	              : SIZE_MAX;
 	if (n == read->line || size <= read->room) {
 		read->room -= size < read->room ? size : read->room;
@@ -1489,7 +1477,7 @@ git_read_lines (struct git_read *read,
 	while (read->scan.at < read->to) {
 		size_t room = loop_room(loop, LOOP_COPY);
 		struct cstr_view num = read->scan.at == read->scan.start
-		                       ? git_digits(tab, read->lines + 1, 1)
+		                       ? util_decimal(tab, read->lines + 1, 1)
 		                       : CSTR_VIEW("");
 		/* Write a piece only if the number, LINE_COST and 4 bytes fit in
 		 * the room of the step. The piece then contains at least 4 bytes of
@@ -1566,7 +1554,7 @@ git_read_foot (struct git_call const *call,
 	struct cstr_view const p[] = {
 		newline ? CSTR_VIEW("\n") : CSTR_VIEW("\n\n"),
 		note[0], note[1], note[2],
-		git_digits(n + sizeof n, read->last + !kind, 0),
+		util_decimal(n + sizeof n, read->last + !kind, 0),
 		note[3],
 	};
 	return git_write(slot, p, array_size(p));

@@ -1127,9 +1127,8 @@ httpd_conn_head (struct httpd_conn      *conn,
 	if (length != STREAM_OPEN) {
 		/* A 204 has no body to give the length of. */
 		if (status != 204) {
-			char const *len = util_decimal(digits + sizeof digits, length);
 			framing[0] = CSTR_VIEW("Content-Length: ");
-			framing[1] = (struct cstr_view){ len, (size_t)(digits + sizeof digits - len) };
+			framing[1] = util_decimal(digits + sizeof digits, length, 0);
 			framing[2] = CSTR_VIEW("\r\n");
 		}
 	} else if (req->flags & REQ_HTTP10) {
@@ -1145,12 +1144,11 @@ httpd_conn_head (struct httpd_conn      *conn,
 
 	char code[8];
 	code[sizeof code - 1] = ' ';
-	char const *c = util_decimal(code + sizeof code - 1, status);
 	struct cstr_view const origin = httpd_conn_field(conn, req->origin);
 	struct cstr_view f[13 + HEAD_EXTRA];
 	size_t n = 0;
 	f[n++] = CSTR_VIEW("HTTP/1.1 ");
-	f[n++] = (struct cstr_view){ c, (size_t)(code + sizeof code - c) };
+	f[n++] = util_decimal(code + sizeof code - 1, status, 1);
 	f[n++] = httpd_reason(status);
 	f[n++] = CSTR_VIEW("\r\n");
 	if (conn->flags & CONN_CLOSING)
