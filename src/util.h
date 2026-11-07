@@ -387,6 +387,23 @@ util_private_fd (int    fd,
 	return fstat(fd, &st) ? errno : util_private(&st, type) ? EACCES : 0;
 }
 
+/** Open the file @p name in the directory @p dir with @p flags, and store
+ *  the file descriptor in @p *fd. A new file is created with the mode
+ *  0600. Returns 0, the error number of openat(), or the error of
+ *  util_private_fd(), which is EACCES if the file is not a private regular
+ *  file of the process's user. @p *fd remains open after an error of
+ *  util_private_fd().
+ */
+static inline int
+util_private_open (int         dir,
+                   char const *name,
+                   int         flags,
+                   int        *fd)
+{
+	*fd = openat(dir, name, flags | O_CLOEXEC | O_NOFOLLOW, 0600);
+	return *fd < 0 ? errno : util_private_fd(*fd, S_IFREG);
+}
+
 /** Write the @p len bytes at @p buf to @p fd, again after a signal or a
  *  partial write. Returns 0, or the error number, EIO if no byte could be
  *  written.

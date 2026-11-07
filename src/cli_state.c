@@ -293,11 +293,11 @@ static int
 cli_state_save (struct cli_state *state)
 {
 	state->flags |= CLI_STATE_UNSAVED;
-	int fd = openat(state->directory, dstr_get(&state->temporary),
-	                O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+	int fd = -1;
+	int e = util_private_open(state->directory, dstr_get(&state->temporary),
+	                          O_WRONLY | O_CREAT, &fd);
 	if (fd < 0)
-		return errno;
-	int e = util_private_fd(fd, S_IFREG);
+		return e;
 	if (!e && ftruncate(fd, 0))
 		e = errno;
 	if (!e)
@@ -505,11 +505,11 @@ cli_state_load (struct cli_state *state,
 			n += !oid_equal(&tips[n], &state->parent);
 	if (e)
 		return e;
-	int fd = openat(state->directory, dstr_get(&state->temporary),
-	                O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+	int fd = -1;
+	e = util_private_open(state->directory, dstr_get(&state->temporary),
+	                      O_RDWR | O_CREAT | O_EXCL, &fd);
 	if (fd < 0)
-		return errno;
-	e = util_private_fd(fd, S_IFREG);
+		return e;
 	dstr_auto entry = dstr("");
 	/* Git lists newest tips first. Process the selected latest snapshot last
 	 * even when Git's second-resolution commit times tie. Repeated exact
@@ -606,10 +606,10 @@ cli_state_repository_open (struct cli_state *state)
 static int
 cli_state_repository_init (struct cli_state *state)
 {
-	int fd = openat(state->directory, "cli-init.lock", O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+	int fd = -1;
+	int e = util_private_open(state->directory, "cli-init.lock", O_RDWR | O_CREAT, &fd);
 	if (fd < 0)
-		return errno;
-	int e = util_private_fd(fd, S_IFREG);
+		return e;
 	if (!e)
 		e = cli_state_lock(state, fd);
 	if (!e)
@@ -652,11 +652,8 @@ cli_state_repository (struct cli_state *state)
 	    !dstr_printf(&state->temporary, "cli-%s.snapshot.tmp", writer.hex) ||
 	    !dstr_printf(&state->scratch, "cli-%016" PRIx64 ".lock", group))
 		return ENOMEM;
-	state->lock = openat(state->directory, dstr_get(&state->scratch),
-	                     O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
-	if (state->lock < 0)
-		return errno;
-	e = util_private_fd(state->lock, S_IFREG);
+	e = util_private_open(state->directory, dstr_get(&state->scratch), O_RDWR | O_CREAT,
+	                      &state->lock);
 	if (e)
 		return e;
 	int status = 0;
