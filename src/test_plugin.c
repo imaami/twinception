@@ -652,8 +652,7 @@ test_plugin_configure (void               *config,
 	if (!config || !why || !len)
 		return EINVAL;
 	struct test_plugin_config *c = config;
-	static char const hello[] = "hello";
-	memcpy(c->greeting, hello, sizeof hello);
+	*c = (struct test_plugin_config){ .greeting = "hello" };
 	if (!options)
 		return 0;
 	if (!json_object_is_type(options, json_type_object))

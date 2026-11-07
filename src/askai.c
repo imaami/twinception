@@ -431,15 +431,14 @@ askai_home_start (void           *ctx,
                   struct loop    *loop,
                   struct blocker *blockers)
 {
-	static char const name[] = "home";
 	struct askai_home *app = ctx;
 	struct askai_shared *s = container_of(app, struct askai_shared, home);
-	struct metrics_loop *mine = &s->metrics.loops[s->metrics.n_loops - 1];
-	static_assert(sizeof name <= sizeof mine->name);
 	app->loop = loop;
-	memcpy(mine->name, name, sizeof name);
-	mine->loop = loop->metrics;
-	mine->stash = &app->keep.stash.metrics;
+	s->metrics.loops[s->metrics.n_loops - 1] = (struct metrics_loop){
+		.name = "home",
+		.loop = loop->metrics,
+		.stash = &app->keep.stash.metrics
+	};
 	s->metrics.blockers = blocker_counts(blockers);
 	int e = askai_home_parts(app, s->hub, loop, blockers);
 	if (e)

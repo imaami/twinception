@@ -16,14 +16,14 @@
 #include "oid.h"
 #include "util.h"
 
-static char const git_view_template[] = "/tmp/askai-git-XXXXXX";
+#define GIT_VIEW_TEMPLATE "/tmp/askai-git-XXXXXX"
 
 /** The most bytes of a shallow file. */
 enum { GIT_VIEW_SHALLOW = 4 << 20 };
 
 struct git_view {
 	int      fd;
-	char     directory[sizeof git_view_template];
+	char     directory[sizeof GIT_VIEW_TEMPLATE];
 	uint16_t head;  /**< not 0 if HEAD of the snapshot is a commit */
 };
 
@@ -140,8 +140,7 @@ git_view_create (struct span metadata,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*view = (struct git_view){ .fd = -1, .head = !!head.len };
-	memcpy(view->directory, git_view_template, sizeof git_view_template);
+	*view = (struct git_view){ .fd = -1, .directory = GIT_VIEW_TEMPLATE, .head = !!head.len };
 	if (!mkdtemp(view->directory)) {
 		*e = errno;
 		view->directory[0] = '\0';
@@ -170,6 +169,8 @@ git_view_create (struct span metadata,
 		git_view_destroy(&view);
 	return view;
 }
+
+#undef GIT_VIEW_TEMPLATE
 
 void
 git_view_destroy (struct git_view **p_view)
