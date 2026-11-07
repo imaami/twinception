@@ -15,19 +15,11 @@
 #include "oid.h"
 #include "review.h"
 #include "util.h"
+#include "xlist.h"
 
-struct cstr_view const review_state_names[REVIEW_STATES] = {
-	[REVIEW_CANDIDATE] = CSTR_VIEW_INIT("candidate"),
-	[REVIEW_VERIFIED]  = CSTR_VIEW_INIT("verified"),
-	[REVIEW_DISPROVED] = CSTR_VIEW_INIT("disproved"),
-	[REVIEW_RETRACTED] = CSTR_VIEW_INIT("retracted"),
-};
+struct cstr_view const review_state_names[REVIEW_STATES] = { REVIEW_STATE_LIST(XL_VIEW) };
 
-struct cstr_view const review_action_names[REVIEW_ACTIONS] = {
-	[REVIEW_ADD]    = CSTR_VIEW_INIT("add"),
-	[REVIEW_UPDATE] = CSTR_VIEW_INIT("update"),
-	[REVIEW_SHOW]   = CSTR_VIEW_INIT("show"),
-};
+struct cstr_view const review_action_names[REVIEW_ACTIONS] = { REVIEW_ACTION_LIST(XL_VIEW) };
 
 enum {
 	REVIEW_OID_MIN       = 7,    /* the fewest digits of a commit prefix in a
@@ -1137,44 +1129,27 @@ review_render (struct review const *r,
  */
 #define REFUSE(out, ...) (dstr_printf(out, __VA_ARGS__) ? EINVAL : ENOMEM)
 
-/** Appends @p head, the names @p names[i] whose bit i is set in @p mask as
- *  "a, b or c", and @p tail to @p out. Returns EINVAL, or ENOMEM if the
- *  append fails.
+/** The arguments of the findings tool: X(ID, name), the constant
+ *  REVIEW_ARG_ID of enum review_arg and the name.
  */
-static int
-review_refuse_names (struct dstr            *out,
-                     struct cstr_view        head,
-                     struct cstr_view const *names,
-                     size_t                  n,
-                     uint64_t                mask,
-                     struct cstr_view        tail)
-{
-	return cstr_view_cat(head, out) ||
-	       cstr_view_join(names, n, mask, CSTR_VIEW(", "), CSTR_VIEW(" or "), out) ||
-	       cstr_view_cat(tail, out) ? ENOMEM : EINVAL;
-}
+#define REVIEW_ARG_LIST(X)      \
+        X(ACTION,   "action")   \
+        X(ID,       "id")       \
+        X(CLAIM,    "claim")    \
+        X(LOCATION, "location") \
+        X(STATE,    "state")    \
+        X(EVIDENCE, "evidence") \
+        X(OFFSET,   "offset")
 
-/** The arguments of the findings tool. */
 enum review_arg : uint8_t {
-	REVIEW_ARG_ACTION,
-	REVIEW_ARG_ID,
-	REVIEW_ARG_CLAIM,
-	REVIEW_ARG_LOCATION,
-	REVIEW_ARG_STATE,
-	REVIEW_ARG_EVIDENCE,
-	REVIEW_ARG_OFFSET,
+#define REVIEW_ARG_ENUM(id, ...) REVIEW_ARG_##id,
+	REVIEW_ARG_LIST(REVIEW_ARG_ENUM)
+#undef REVIEW_ARG_ENUM
 	REVIEW_ARGS
 };
 
-static struct cstr_view const review_arg_names[REVIEW_ARGS] = {
-	[REVIEW_ARG_ACTION]   = CSTR_VIEW_INIT("action"),
-	[REVIEW_ARG_ID]       = CSTR_VIEW_INIT("id"),
-	[REVIEW_ARG_CLAIM]    = CSTR_VIEW_INIT("claim"),
-	[REVIEW_ARG_LOCATION] = CSTR_VIEW_INIT("location"),
-	[REVIEW_ARG_STATE]    = CSTR_VIEW_INIT("state"),
-	[REVIEW_ARG_EVIDENCE] = CSTR_VIEW_INIT("evidence"),
-	[REVIEW_ARG_OFFSET]   = CSTR_VIEW_INIT("offset"),
-};
+static struct cstr_view const review_arg_names[] = { REVIEW_ARG_LIST(XL_VIEW) };
+#undef REVIEW_ARG_LIST
 
 /** The arguments of each action, as bit masks of enum review_arg. */
 #define A(x) (1U << REVIEW_ARG_##x)
@@ -1299,18 +1274,18 @@ review_args_parse (struct review_args  *a,
 	a->action = (enum review_action)cstr_view_index(review_action_names, REVIEW_ACTIONS,
 	                                                 jb_view(jb_get(args, "action")));
 	if (a->action == REVIEW_ACTIONS)
-		return review_refuse_names(out, CSTR_VIEW("The action argument must be "),
-		                           review_action_names, REVIEW_ACTIONS, ~0U, CSTR_VIEW("."));
+		return REFUSE(out, "The action argument must be "
+		              XL_JOIN(", ", " or ", REVIEW_ACTION_LIST(XL_TEXT)) ".");
 	/* Refuse the first argument that the action does not accept. */
-	uint32_t const accepted = review_action_args[a->action];
 	struct json_object *of[REVIEW_ARGS] = {};
 	uint64_t seen;
 	struct cstr_view other;
-	if (jb_args(args, review_arg_names, REVIEW_ARGS, accepted, of, &seen, &other))
-		return cstr_view_cat(review_action_names[a->action], out) || PUT(out, " takes ") ||
-		       cstr_view_join(review_arg_names + 1, REVIEW_ARGS - 1, accepted >> 1,
-		                      CSTR_VIEW(", "), CSTR_VIEW(" and "), out) ||
-		       !dstr_printf(out, ", not %.*s.", (int)other.len, other.data) ? ENOMEM : EINVAL;
+	if (jb_args(args, review_arg_names, REVIEW_ARGS, review_action_args[a->action], of, &seen,
+	            &other))
+		return cstr_view_index(review_arg_names, REVIEW_ARGS, other) == REVIEW_ARGS
+		       ? REFUSE(out, "The tool has no argument %.*s.", (int)other.len, other.data)
+		       : REFUSE(out, "%s takes no argument %.*s.", review_action_names[a->action].data,
+		                (int)other.len, other.data);
 	struct json_object *id = of[REVIEW_ARG_ID];
 	uint64_t const n = jb_count(id, SIZE_MAX);
 	if (id ? !n : a->action == REVIEW_UPDATE)
@@ -1330,9 +1305,8 @@ review_args_parse (struct review_args  *a,
 		a->state = (enum review_state)cstr_view_index(review_state_names, REVIEW_STATES,
 		                                               jb_view(state));
 		if (a->state == REVIEW_STATES)
-			return review_refuse_names(out, CSTR_VIEW("The state argument must be "),
-			                           review_state_names, REVIEW_STATES, ~0U,
-			                           CSTR_VIEW("."));
+			return REFUSE(out, "The state argument must be "
+			              XL_JOIN(", ", " or ", REVIEW_STATE_LIST(XL_TEXT)) ".");
 	}
 	struct json_object *location = of[REVIEW_ARG_LOCATION];
 	int e = 0;
@@ -1581,10 +1555,8 @@ review_check_location (struct review const          *r,
 	*commit = (struct oid){};
 	bool const requires_log = review_state_logged(state);
 	if (requires_log && !(r->flags & REVIEW_READ_LOG))
-		return review_refuse_names(out, CSTR_VIEW("This ask call has no git tool, so a "
-		                                          "finding cannot be "),
-		                           review_state_names, REVIEW_STATES, REVIEW_LOGGED_STATES,
-		                           CSTR_VIEW(" here; keep it a candidate, or retract it."));
+		return REFUSE(out, "This ask call has no git tool, so a finding cannot be verified "
+		              "or disproved here; keep it a candidate, or retract it.");
 	if (!loc->path.len)
 		return !requires_log ? 0
 		     : REFUSE(out, "%s needs a location: the lines that show it, such as "
@@ -1682,9 +1654,8 @@ review_add (struct review            *r,
 		return REFUSE(out, "add needs a claim: what you found.");
 	enum review_state const state = a->state == REVIEW_STATES ? REVIEW_CANDIDATE : a->state;
 	if (state == REVIEW_RETRACTED)
-		return review_refuse_names(out, CSTR_VIEW("add takes the state "), review_state_names,
-		                           REVIEW_STATES, ~(1U << REVIEW_RETRACTED),
-		                           CSTR_VIEW("; retract a finding with update."));
+		return REFUSE(out, "add takes the state candidate, verified or disproved; retract a "
+		              "finding with update.");
 	struct review_location_view loc = a->location;
 	struct oid commit;
 	int e = review_check_location(r, &loc, state, true, &commit, out);

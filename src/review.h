@@ -59,24 +59,35 @@ enum review_flag : uint16_t {
 	                                  log */
 };
 
-/** The states of a finding. Candidate and verified findings are open.
- *  Disproved and retracted findings are closed.
+/** The states of a finding: X(ID, name), the constant REVIEW_ID of enum
+ *  review_state and the name in the findings tool. Candidate and verified
+ *  findings are open. Disproved and retracted findings are closed.
  */
+#define REVIEW_STATE_LIST(X)      \
+        X(CANDIDATE, "candidate") \
+        X(VERIFIED,  "verified")  \
+        X(DISPROVED, "disproved") \
+        X(RETRACTED, "retracted")
+
+/** The actions of the findings tool: X(ID, name), the constant REVIEW_ID of
+ *  enum review_action and the name.
+ */
+#define REVIEW_ACTION_LIST(X) \
+        X(ADD,    "add")      \
+        X(UPDATE, "update")   \
+        X(SHOW,   "show")
+
+#define REVIEW_ENUM(id, ...) REVIEW_##id,
 enum review_state : uint8_t {
-	REVIEW_CANDIDATE,
-	REVIEW_VERIFIED,
-	REVIEW_DISPROVED,
-	REVIEW_RETRACTED,
+	REVIEW_STATE_LIST(REVIEW_ENUM)
 	REVIEW_STATES
 };
 
-/** The actions of the findings tool. */
 enum review_action : uint8_t {
-	REVIEW_ADD,
-	REVIEW_UPDATE,
-	REVIEW_SHOW,
+	REVIEW_ACTION_LIST(REVIEW_ENUM)
 	REVIEW_ACTIONS
 };
+#undef REVIEW_ENUM
 
 /** The names of the states in the findings tool. Each is NUL-terminated. */
 extern struct cstr_view const review_state_names[REVIEW_STATES];

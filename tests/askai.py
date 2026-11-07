@@ -13292,7 +13292,7 @@ def check_review(binary, up):
                 "update needs state and evidence: what shows the new state, or why you "
                 "retract the finding.",
                 "The action argument must be add, update or show.",
-                "add takes claim, location, state and evidence, not id.",
+                "add takes no argument id.",
                 REVIEW + first], results(sent[1])
             record = (REVIEW + findings_head("2 findings: 1 candidate, 1 retracted") +
                       "1. candidate, src/a.c:3-4, not read\n   claim: C1\n" + CLOSING +
