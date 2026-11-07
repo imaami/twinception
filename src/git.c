@@ -22,6 +22,7 @@
 #include "review.h"
 #include "schema.h"
 #include "util.h"
+#include "xlist.h"
 
 static char const git_commit_suffix[] = "^{commit}";
 static char const git_ignore_rev[] = "--ignore-rev=";
@@ -230,55 +231,63 @@ enum {
 	ONEPATH = 1 << 9,  /* exactly one path, the file */
 };
 
+/* The commands: X(ID, name, options, takes, description, forced...), an
+ * ID that no code uses, the name, the options that it accepts, the flags
+ * above for what it takes, its help, and the options that askai adds.
+ */
+#define GIT_COMMAND_LIST(X)                                                                \
+        X(READ,      "read",      read_options,      END | OBJECT | SINGLE | LINES,        \
+          "Numbered lines of a committed file. Give the file as the one revision, "        \
+          "commit:path such as HEAD:src/journal.c, the first line as line "                \
+          "(default 1) and the most lines as count (default: as many as fit in one "       \
+          "result). The output's first line names the commit. Its last line gives "        \
+          "the revision and line to read on from; the revision names the commit by "       \
+          "its ID, so every part comes from the same commit.", "blob")                     \
+        X(LOG,       "log",       log_options,       FILES | END | RANGE,                  \
+          "Committed history; defaults to HEAD. Paths restrict the history.",              \
+          "--no-ext-diff", "--no-textconv")                                                \
+        X(SHOW,      "show",      show_options,      FILES | END | OBJECT,                 \
+          "Committed contents; defaults to HEAD. HEAD:path reads a committed file.",       \
+          "--no-ext-diff", "--no-textconv")                                                \
+        X(DIFF,      "diff",      diff_options,      FILES | END | RANGE | PAIR,           \
+          "Compare two commits: give two revisions, or one explicit A..B or A...B "        \
+          "range. Paths restrict the comparison. --stat or --name-status gives a "         \
+          "summary instead of the patch.", "--no-ext-diff", "--no-textconv")               \
+        X(GREP,      "grep",      grep_options,      FILES | END | PATTERN,                \
+          "Search committed trees; defaults to HEAD. The pattern is an extended "          \
+          "regex: -G makes it basic, -F plain text, -P Perl; -i ignores case. Each "       \
+          "match is commit:path:line:text with the full commit ID; read takes "            \
+          "commit:path as its revision and that line. --heading gives commit:path "        \
+          "once per file. -C3 adds three lines of context, -p the function's first "       \
+          "line, -W the whole function.", "--no-textconv", "-n", "-E")                     \
+        X(BLAME,     "blame",     blame_options,     FILES | SINGLE | ONEPATH,             \
+          "Annotate a committed file; defaults to HEAD. Give the file as the one "         \
+          "path, such as \"paths\": [\"src/git.c\"], and its commit in revisions. "        \
+          "-L10,30 limits the lines; -s leaves out the author and date.", "--no-textconv") \
+        X(LS_TREE,   "ls-tree",   ls_tree_options,   FILES | SINGLE,                       \
+          "Entries of a committed tree; defaults to HEAD. Paths [\"src/\"] list the "      \
+          "entries in src, and [\"src\"] only src itself. -r recurses into "               \
+          "subtrees, and -d lists only trees.")                                            \
+        X(CAT_FILE,  "cat-file",  cat_file_options,  END | OBJECT | SINGLE | MODE,         \
+          "Inspect a committed object; defaults to HEAD, and commit:path names a "         \
+          "file. Give exactly one option: -p for its contents, -t for its type, -s "       \
+          "for its size in bytes, -e to check that it exists (no output if it does).")     \
+        X(REV_PARSE, "rev-parse", rev_parse_options, 0,                                    \
+          "Resolve commit references to immutable commit IDs; defaults to HEAD. "          \
+          "--verify requires one valid revision.", "--revs-only")
+
 static struct {
-	struct cstr_view        name;
 	struct cstr_view const *options;
 	char const             *forced[3];  /* options askai gives it */
 	char const             *description;
 	uint64_t                takes;
 } const commands[] = {
-	{ CSTR_VIEW_INIT("read"),      read_options,      { "blob" },
-	  "Numbered lines of a committed file. Give the file as the one revision, "
-	  "commit:path such as HEAD:src/journal.c, the first line as line "
-	  "(default 1) and the most lines as count (default: as many as fit in one "
-	  "result). The output's first line names the commit. Its last line gives "
-	  "the revision and line to read on from; the revision names the commit by "
-	  "its ID, so every part comes from the same commit.", END | OBJECT | SINGLE | LINES },
-	{ CSTR_VIEW_INIT("log"),       log_options,       { "--no-ext-diff", "--no-textconv" },
-	  "Committed history; defaults to HEAD. Paths restrict the history.",
-	  FILES | END | RANGE },
-	{ CSTR_VIEW_INIT("show"),      show_options,      { "--no-ext-diff", "--no-textconv" },
-	  "Committed contents; defaults to HEAD. HEAD:path reads a committed file.",
-	  FILES | END | OBJECT },
-	{ CSTR_VIEW_INIT("diff"),      diff_options,      { "--no-ext-diff", "--no-textconv" },
-	  "Compare two commits: give two revisions, or one explicit A..B or A...B "
-	  "range. Paths restrict the comparison. --stat or --name-status gives a "
-	  "summary instead of the patch.", FILES | END | RANGE | PAIR },
-	{ CSTR_VIEW_INIT("grep"),      grep_options,      { "--no-textconv", "-n", "-E" },
-	  "Search committed trees; defaults to HEAD. The pattern is an extended "
-	  "regex: -G makes it basic, -F plain text, -P Perl; -i ignores case. Each "
-	  "match is commit:path:line:text with the full commit ID; read takes "
-	  "commit:path as its revision and that line. --heading gives commit:path "
-	  "once per file. -C3 adds three lines of context, -p the function's first "
-	  "line, -W the whole function.", FILES | END | PATTERN },
-	{ CSTR_VIEW_INIT("blame"),     blame_options,     { "--no-textconv" },
-	  "Annotate a committed file; defaults to HEAD. Give the file as the one "
-	  "path, such as \"paths\": [\"src/git.c\"], and its commit in revisions. "
-	  "-L10,30 limits the lines; -s leaves out the author and date.",
-	  FILES | SINGLE | ONEPATH },
-	{ CSTR_VIEW_INIT("ls-tree"),   ls_tree_options,   {},
-	  "Entries of a committed tree; defaults to HEAD. Paths [\"src/\"] list the "
-	  "entries in src, and [\"src\"] only src itself. -r recurses into "
-	  "subtrees, and -d lists only trees.", FILES | SINGLE },
-	{ CSTR_VIEW_INIT("cat-file"),  cat_file_options,  {},
-	  "Inspect a committed object; defaults to HEAD, and commit:path names a "
-	  "file. Give exactly one option: -p for its contents, -t for its type, -s "
-	  "for its size in bytes, -e to check that it exists (no output if it does).",
-	  END | OBJECT | SINGLE | MODE },
-	{ CSTR_VIEW_INIT("rev-parse"), rev_parse_options, { "--revs-only" },
-	  "Resolve commit references to immutable commit IDs; defaults to HEAD. "
-	  "--verify requires one valid revision.", 0 },
+#define GIT_COMMAND_ROW(id, name, options, takes, text, ...) { options, { __VA_ARGS__ }, text, takes },
+	GIT_COMMAND_LIST(GIT_COMMAND_ROW)
+#undef GIT_COMMAND_ROW
 };
+
+static struct cstr_view const git_command_names[] = { GIT_COMMAND_LIST(XL_VIEW) };
 
 static_assert(1 + array_size(fixed) + 5 + 3 + OPTIONS + 2 + 1 + REVISIONS + 1 +
               PATHS + 1 <= GIT_ARGV, "a command fits argv");
@@ -424,9 +433,7 @@ git_definition (void const *service)
 	struct json_object *repos = json_object_new_array();
 	for (size_t i = 0; repos && i < git->n; ++i)
 		repos = jb_push_or_free(repos, jb_string(git->repo[i].name));
-	struct json_object *cmds = json_object_new_array();
-	for (size_t i = 0; cmds && i < array_size(commands); ++i)
-		cmds = jb_push_or_free(cmds, jb_string(commands[i].name));
+	struct json_object *cmds = schema_names(git_command_names, array_size(git_command_names));
 	struct cstr_view const required[] = { CSTR_VIEW("repo"), CSTR_VIEW("command") };
 	return jb_object(
 		"name", json_object_new_string("git"),
@@ -632,10 +639,9 @@ git_option_check (struct cstr_view  opt,
 		                 "source. Index and working-tree reads are disabled. "
 		                 "Omit this option and %s", index, quoted, opt.data, source);
 	}
-	return git_wrong(why, "options[%zu]: '%.*s' is not available for git %.*s in "
+	return git_wrong(why, "options[%zu]: '%.*s' is not available for git %s in "
 	                 "this tool. Omit it; use help:true for this command's options.",
-	                 index, quoted, opt.data, (int)commands[command].name.len,
-	                 commands[command].name.data);
+	                 index, quoted, opt.data, git_command_names[command].data);
 }
 
 /* Returns the repository whose name is @p name, or nullptr if there is
@@ -714,10 +720,8 @@ git_call_command (struct git_call  *call,
 		return git_repos_wrong(git, why);
 	call->repo = repo;
 	struct cstr_view const cmd = git_word(of[GIT_ARG_COMMAND]);
-	size_t c = 0;
-	while (c < array_size(commands) && !cstr_view_equal(cmd, commands[c].name))
-		++c;
-	if (c == array_size(commands)) {
+	size_t const c = cstr_view_index(git_command_names, array_size(git_command_names), cmd);
+	if (c == array_size(git_command_names)) {
 		if (cstr_view_equal(cmd, CSTR_VIEW("status")) ||
 		    cstr_view_equal(cmd, CSTR_VIEW("ls-files")))
 			return git_wrong(why, "git %.*s is unavailable: index and working-tree "
@@ -725,12 +729,9 @@ git_call_command (struct git_call  *call,
 			                 "options [\"-r\", \"--name-only\"] to list committed "
 			                 "files; revisions defaults to HEAD.",
 			                 (int)cmd.len, cmd.data);
-		util_text_printf(why, "The command argument must be ");
-		for (size_t i = 0, n = array_size(commands); i < n; ++i)
-			util_text_printf(why, "%s%.*s", !i ? "" : i + 1 < n ? ", " : " or ",
-			                 (int)commands[i].name.len, commands[i].name.data);
-		util_text_printf(why, ". Use help:true for its options.");
-		return EINVAL;
+		return git_wrong(why, "The command argument must be "
+		                 XL_JOIN(", ", " or ", GIT_COMMAND_LIST(XL_TEXT))
+		                 ". Use help:true for its options.");
 	}
 	call->command = c;
 	uint64_t const takes = commands[c].takes;
@@ -914,6 +915,7 @@ git_call_command (struct git_call  *call,
 	return bad;
 }
 
+#undef GIT_COMMAND_LIST
 #undef git_wrong
 
 /** Describe exactly the command and options that validation accepts. */
@@ -926,7 +928,7 @@ git_help (struct mcp_slot *slot,
 		options = jb_push_or_free(options, jb_string(*o));
 	uint64_t takes = commands[command].takes;
 	struct json_object *help = jb_object(
-		"command", jb_string(commands[command].name),
+		"command", jb_string(git_command_names[command]),
 		"description", json_object_new_string(commands[command].description),
 		"options", options,
 		"option_values", json_object_new_string(
