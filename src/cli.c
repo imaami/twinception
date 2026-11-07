@@ -36,6 +36,7 @@
 #include "list.h"
 #include "loop.h"
 #include "util.h"
+#include "xlist.h"
 
 static int
 cli_read_file (struct autocomplete_file const *files,
@@ -67,7 +68,14 @@ cli_read_file (struct autocomplete_file const *files,
 	return e;
 }
 
-enum cli_color : uint32_t { CLI_COLOR_AUTO, CLI_COLOR_ON, CLI_COLOR_OFF };
+/* The values of --color: X(ID, name), the constant CLI_COLOR_ID and the
+ * name.
+ */
+#define CLI_COLOR_LIST(X) X(AUTO, "auto") X(ON, "on") X(OFF, "off")
+
+#define CLI_COLOR_ENUM(id, ...) CLI_COLOR_##id,
+enum cli_color : uint32_t { CLI_COLOR_LIST(CLI_COLOR_ENUM) };
+#undef CLI_COLOR_ENUM
 
 /** The flags of struct cli_options: the options without an argument,
  *  whether --help or --version ran, and whether stdin and stdout are a
@@ -95,65 +103,52 @@ struct cli_options {
 	enum cli_color  color;
 };
 
-static int
-cli_commands_text (struct dstr *text)
-{
-	for (unsigned i = 0; i < CLI_COMMAND_COUNT; ++i) {
-		struct cli_command const *command = cli_command_at(i);
-		if (cstr_view_cat(command->usage, text) ||
-		    !dstr_cat(text, "  ") ||
-		    cstr_view_cat(command->description, text) ||
-		    !dstr_cat(text, "\n"))
-			return ENOMEM;
-	}
-	if (!dstr_cat(text, "Tab completes; press twice to list choices.\n"
-	                   "PgUp/PgDn search history; Alt-Up/Down or Ctrl-PgUp/PgDn scroll.\n"
-	                   "Alt-Left/Right selects a pane; Ctrl-End follows; Ctrl-R searches history.\n"
-	                   "End a line with \\ to continue it, or / to submit multiline input.\n"
-	                   "Ctrl-C cancels an answer or tool call. Direct tool results stay out of chat history."))
-		return ENOMEM;
-	return 0;
-}
+/* The help of the commands and of the editing keys, for --help and /help. */
+#define CLI_COMMAND_LINE(id, word, args, policy, syntax, description) \
+        "/" #word syntax "  " description "\n"
+static struct cstr_view const cli_commands_text = CSTR_VIEW_INIT(
+	CLI_COMMAND_LIST(CLI_COMMAND_LINE)
+	"Tab completes; press twice to list choices.\n"
+	"PgUp/PgDn search history; Alt-Up/Down or Ctrl-PgUp/PgDn scroll.\n"
+	"Alt-Left/Right selects a pane; Ctrl-End follows; Ctrl-R searches history.\n"
+	"End a line with \\ to continue it, or / to submit multiline input.\n"
+	"Ctrl-C cancels an answer or tool call. Direct tool results stay out of chat history.");
+#undef CLI_COMMAND_LINE
 
-/* The options that the help lists. The arguments of X are the long name,
- * the key, whether the option requires an argument, the CLI_ flag that an
- * option without an argument sets, or 0, and the line of the help.
+/* The options that the help lists: X(name, key, ARG, flag, help, short),
+ * the long name, the value that getopt_long() returns, the name of the
+ * argument, or "" for an option without one, the CLI_ flag that an option
+ * without an argument sets, or 0, the help, and the short form, if the key
+ * is also one.
  */
-#define CLI_OPTIONS(X) \
-        X("socket", 's', required_argument, 0, "--socket PATH            AskAI socket (or ASKAI_SOCKET)") \
-        X("tool", 't', required_argument, 0, "--tool NAME              Select the configured ask tool") \
-        X("prompt", 'p', required_argument, 0, "-p, --prompt TEXT        Send an initial prompt") \
-        X("file", 'f', required_argument, 0, "-f, --file FILE          Read the initial prompt from a text file") \
-        X("system", 'S', required_argument, 0, "--system TEXT            Override server system instructions") \
-        X("single-turn", '1', no_argument, CLI_SINGLE, "--single-turn            Exit after one answer") \
-        X("simple-io", 'i', no_argument, CLI_SIMPLE, "--simple-io              Basic line input; automatic for pipes") \
-        X("multiline-input", 'm', no_argument, CLI_MULTILINE, \
-          "--multiline-input        Enter adds a line; finish with a trailing /") \
-        X("color", 'c', required_argument, 0, "--color auto|on|off       Terminal colors (default auto)") \
-        X("no-reasoning", 'r', no_argument, CLI_NO_REASONING, "--no-reasoning            Hide exposed reasoning") \
-        X("history-repo", 'H', required_argument, 0, \
-          "--history-repo PATH      Separate Git repository for client history") \
-        X("session-id", 'I', required_argument, 0, \
-          "--session-id ID          Override the saved-history session identity") \
-        X("no-history", 'N', no_argument, CLI_NO_HISTORY, "--no-history             Disable saved client history") \
-        X("help", 'h', no_argument, 0, "-h, --help               Show this help")
+#define CLI_OPTION_LIST(X)                                                                                   \
+        X("socket",          's', "PATH", 0,                "AskAI socket (or ASKAI_SOCKET)")                \
+        X("tool",            't', "NAME", 0,                "Select the configured ask tool")                \
+        X("prompt",          'p', "TEXT", 0,                "Send an initial prompt", "p")                   \
+        X("file",            'f', "FILE", 0,                "Read the initial prompt from a text file", "f") \
+        X("system",          'S', "TEXT", 0,                "Override server system instructions")           \
+        X("single-turn",     '1', "",     CLI_SINGLE,       "Exit after one answer")                         \
+        X("simple-io",       'i', "",     CLI_SIMPLE,       "Basic line input; automatic for pipes")         \
+        X("multiline-input", 'm', "",     CLI_MULTILINE,    "Enter adds a line; finish with a trailing /")   \
+        X("color",           'c', XL_JOIN("|", "|", CLI_COLOR_LIST(XL_TEXT)),                                \
+                                          0,                "Terminal colors (default auto)")                \
+        X("no-reasoning",    'r', "",     CLI_NO_REASONING, "Hide exposed reasoning")                        \
+        X("history-repo",    'H', "PATH", 0,                "Separate Git repository for client history")    \
+        X("session-id",      'I', "ID",   0,                "Override the saved-history session identity")   \
+        X("no-history",      'N', "",     CLI_NO_HISTORY,   "Disable saved client history")                  \
+        X("help",            'h', "",     0,                "Show this help", "h")
 
+/* The help of an option starts in column 28. */
 static int
 cli_help (void)
 {
-	#define CLI_OPTION_HELP(name, key, argument, flag, help) "  " help "\n"
-	if (puts("Usage: askai-cli --socket PATH [options]\n"
-	         "Chat with AskAI's upstream LLM over its Unix socket.\n\n"
-	         CLI_OPTIONS(CLI_OPTION_HELP)
-	         "\nCommands:") < 0)
-		return EIO;
+	#define CLI_OPTION_HELP(name, key, meta, flag, help, ...)                                 \
+	        printf("  %-25s" help "\n", __VA_OPT__("-" __VA_ARGS__ ", ") "--" name " " meta) < 0 ||
+	return puts("Usage: askai-cli --socket PATH [options]\n"
+	            "Chat with AskAI's upstream LLM over its Unix socket.\n") < 0 ||
+	       CLI_OPTION_LIST(CLI_OPTION_HELP)
+	       printf("\nCommands:\n%s\n", cli_commands_text.data) < 0 ? EIO : 0;
 	#undef CLI_OPTION_HELP
-	dstr_auto text = dstr(nullptr);
-	int e = cli_commands_text(&text);
-	if (e)
-		return e;
-	struct cstr_view output = cstr_view_dstr(&text);
-	return fwrite(output.data, 1, output.len, stdout) == output.len && putchar('\n') != EOF ? 0 : EIO;
 }
 
 static int
@@ -163,21 +158,18 @@ cli_args (struct cli_options  *out,
           struct cli_error    *error)
 {
 	out->socket = getenv("ASKAI_SOCKET");
-	#define CLI_OPTION_ENTRY(name, key, argument, flag, help) {name, argument, nullptr, key},
+	#define CLI_OPTION_ENTRY(name, key, meta, ...) \
+	        {name, sizeof meta > 1 ? required_argument : no_argument, nullptr, key},
 	static struct option const options[] = {
-		CLI_OPTIONS(CLI_OPTION_ENTRY)
+		CLI_OPTION_LIST(CLI_OPTION_ENTRY)
 		{"version", no_argument, nullptr, 'v'},
 		{}
 	};
 	#undef CLI_OPTION_ENTRY
-	#define CLI_OPTION_FLAG(name, key, argument, flag, help) [key] = flag,
-	static uint32_t const flags[128] = {CLI_OPTIONS(CLI_OPTION_FLAG)};
+	#define CLI_OPTION_FLAG(name, key, meta, flag, ...) [key] = flag,
+	static uint32_t const flags[128] = {CLI_OPTION_LIST(CLI_OPTION_FLAG)};
 	#undef CLI_OPTION_FLAG
-	static struct cstr_view const colors[] = {
-		[CLI_COLOR_AUTO] = CSTR_VIEW_INIT("auto"),
-		[CLI_COLOR_ON] = CSTR_VIEW_INIT("on"),
-		[CLI_COLOR_OFF] = CSTR_VIEW_INIT("off"),
-	};
+	static struct cstr_view const colors[] = { CLI_COLOR_LIST(XL_VIEW) };
 	size_t color = CLI_COLOR_AUTO;
 	size_t prompts = 0;
 	int c;
@@ -214,13 +206,15 @@ cli_args (struct cli_options  *out,
 	if ((out->flags & CLI_NO_HISTORY) && out->history_repo && *out->history_repo)
 		return cli_error_set(error, EINVAL, "--history-repo and --no-history are mutually exclusive");
 	if (color == array_size(colors))
-		return cli_error_set(error, EINVAL, "--color must be auto, on or off");
+		return cli_error_set(error, EINVAL, "--color must be "
+		                     XL_JOIN(", ", " or ", CLI_COLOR_LIST(XL_TEXT)));
 	out->color = color;
 	out->flags |= isatty(STDIN_FILENO) && isatty(STDOUT_FILENO) ? CLI_TTY : 0;
 	return 0;
 }
 
-#undef CLI_OPTIONS
+#undef CLI_OPTION_LIST
+#undef CLI_COLOR_LIST
 
 struct cli {
 	struct cli_loop           reactor;
@@ -837,14 +831,6 @@ cli_command_parse (struct cstr_view  line,
 }
 
 static int
-cli_commands_help (struct cli *cli)
-{
-	dstr_auto text = dstr(nullptr);
-	int e = cli_commands_text(&text);
-	return e ? e : cli_ui_message(cli->console, cstr_view_dstr(&text));
-}
-
-static int
 cli_command_run (struct cli               *cli,
                  struct dstr              *prompt,
                  struct cli_command const *command,
@@ -862,7 +848,7 @@ cli_command_run (struct cli               *cli,
 		*action = CLI_ACTION_EXIT;
 		return 0;
 	case CLI_COMMAND_HELP:
-		return cli_commands_help(cli);
+		return cli_ui_message(cli->console, cli_commands_text);
 	case CLI_COMMAND_TOOLS:
 		return cli_tools(cli, rest, error);
 	case CLI_COMMAND_NAMES:

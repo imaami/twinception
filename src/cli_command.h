@@ -9,8 +9,13 @@
 
 #include "cstr_view.h"
 
-/** Keep commands in C-locale order: lookup narrows a sorted prefix range. */
-#define CLI_COMMANDS(X) \
+/** The commands: X(ID, word, args, policy, syntax, description), the
+ *  constant CLI_COMMAND_ID, the word after the slash, the arguments
+ *  (CLI_COMMAND_ARGS_), the policy (CLI_COMMAND_), the syntax after the
+ *  word, and the help. Keep commands in C-locale order: lookup narrows a
+ *  sorted prefix range.
+ */
+#define CLI_COMMAND_LIST(X) \
         X(CLEAR, clear, NONE, INTERRUPT, "", "starts a new conversation;") \
         X(EXIT, exit, NONE, LOCAL, "", "leaves the chat.") \
         X(HELP, help, NONE, LOCAL, "", "lists commands and editing keys.") \
@@ -24,8 +29,8 @@
         X(TOOLS, tools, TOOL, LOCAL, " [NAME]", "lists accessible tools or shows a tool's schema.")
 
 enum cli_command_id {
-#define CLI_COMMAND_ID(id, word, args, policy, syntax, description) CLI_COMMAND_##id,
-	CLI_COMMANDS(CLI_COMMAND_ID)
+#define CLI_COMMAND_ID(id, ...) CLI_COMMAND_##id,
+	CLI_COMMAND_LIST(CLI_COMMAND_ID)
 #undef CLI_COMMAND_ID
 	CLI_COMMAND_COUNT,
 };
@@ -48,7 +53,6 @@ struct cli_command {
 	struct cstr_view        name;
 	struct cstr_view        completion;
 	struct cstr_view        usage;
-	struct cstr_view        description;
 	enum cli_command_policy policy;
 	enum cli_command_id     id;
 	enum cli_command_args   args;

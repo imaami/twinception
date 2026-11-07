@@ -91,6 +91,12 @@ def check_options(cli, unused_server):
                                  timeout=5)
     assert help_result.returncode == 0, help_result
     assert "--socket" in help_result.stdout, help_result.stdout
+    # Each help starts in column 28, and each command follows "Commands:".
+    options, _, commands = help_result.stdout.partition("\nCommands:\n")
+    heads = [line for line in options.splitlines() if line.startswith("  -")]
+    assert len(heads) == 14 and all(h[26] == " " != h[27] for h in heads) and \
+        "  -p, --prompt TEXT  " in options, options
+    assert sum(line.startswith("/") for line in commands.splitlines()) == 11, commands
     for option in ("--model", "--gpu-layers", "--ctx-size"):
         result = subprocess.run([cli, option, "1"], capture_output=True, text=True,
                                 timeout=5)
