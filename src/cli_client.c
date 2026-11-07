@@ -680,7 +680,7 @@ cli_client_has_action (struct json_object *actions,
                        enum notes_action   action)
 {
 	for (size_t i = 0, count = jb_len(actions); i < count; ++i)
-		if (jb_is(jb_at(actions, i), notes_action_names[action].data))
+		if (cstr_view_equal(jb_view(jb_at(actions, i)), notes_action_names[action]))
 			return true;
 	return false;
 }

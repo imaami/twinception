@@ -185,16 +185,11 @@ jb_string (struct cstr_view t)
 	return json_object_new_string_len(t.data, (int)t.len);
 }
 
-/** Returns true if @p val is a string equal to @p str. All bytes of the
- *  string count, so a string with a NUL inside does not equal its start.
+/** Evaluates to true if @p val is a string equal to the string literal
+ *  @p lit. The comparison includes every byte, so a string with a NUL
+ *  inside does not equal the part before the NUL.
  */
-static inline bool
-jb_is (struct json_object *val,
-       char const         *str)
-{
-	return cstr_view_equal(jb_view(val), cstr_view(str));
-}
-
+#define jb_is(val, lit) cstr_view_equal(jb_view(val), CSTR_VIEW(lit))
 
 /**
  * Parse exactly one JSON value spanning @p len bytes; nullptr on error. At

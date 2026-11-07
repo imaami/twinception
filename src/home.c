@@ -243,29 +243,29 @@ static int home_provider_url (struct home *home, struct job *job,
  * the API's endpoint at llama-server, if its background mode serves the
  * API. type and object are the members of a native background event with
  * its type and its object, created is the type of the event that creates
- * the object, and update, if not nullptr, the type of an event whose
- * status is not in its object.
+ * the object. If update is not empty, it is the type of an event that
+ * contains the status as a top-level member instead of in its object.
  */
 static struct home_api {
 	struct cstr_view  llama;
+	struct cstr_view  created;
+	struct cstr_view  update;
 	char const       *type;
 	char const       *object;
-	char const       *created;
-	char const       *update;
 } const home_apis[] = {
 	[AI_CHAT]         = { .llama = CSTR_VIEW_INIT("chat/completions") },
 	[AI_RESPONSES]    = {
 		.llama = CSTR_VIEW_INIT("responses"),
 		.type = "type",
 		.object = "response",
-		.created = "response.created"
+		.created = CSTR_VIEW_INIT("response.created")
 	},
 	[AI_MESSAGES]     = { .llama = CSTR_VIEW_INIT("messages") },
 	[AI_INTERACTIONS] = {
 		.type = "event_type",
 		.object = "interaction",
-		.created = "interaction.created",
-		.update = "interaction.status_update"
+		.created = CSTR_VIEW_INIT("interaction.created"),
+		.update = CSTR_VIEW_INIT("interaction.status_update")
 	},
 };
 
@@ -1900,11 +1900,11 @@ home_native_event (struct home        *home,
 	struct home_api const *api = &home_apis[home->ep->api];
 	struct json_object *kind = jb_get(root, api->type);
 	struct json_object *object = jb_get(root, api->object);
-	struct json_object *status = api->update && jb_is(kind, api->update)
+	struct json_object *status = api->update.len && cstr_view_equal(jb_view(kind), api->update)
 	                           ? jb_get(root, "status") : jb_get(object, "status");
 	if (cstr_view_index(ends, array_size(ends), jb_view(status)) < array_size(ends))
 		job->flags |= PROVIDER_DONE;
-	if (job->cancel_url || !jb_is(kind, api->created))
+	if (job->cancel_url || !cstr_view_equal(jb_view(kind), api->created))
 		return 0;
 	int e = home_native_id(home, job, jb_get(object, "id"));
 	return e ? e : home_metadata(home, job);
