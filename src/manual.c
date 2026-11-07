@@ -903,13 +903,12 @@ manual_create (uint32_t  recheck,
 	}
 	/* man's environment is askai's PATH and MANPATH, and UTF-8 text, 80
 	 * columns wide, neither hyphenated nor justified, for a model to read. */
-	static char const manpath[] = "MANPATH=";
 	char *env[array_size(m->env)] = {
 		util_env_path(),
 		"LC_ALL=C.UTF-8",
 		"MANWIDTH=80",
 		"MANROFFOPT=-rHY=0 -dAD=l",
-		util_env(manpath, sizeof manpath - 1)
+		util_env("MANPATH=", sizeof "MANPATH=" - 1)
 	};
 	memcpy(m->env, env, sizeof env);
 	m->table = table;
