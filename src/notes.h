@@ -38,6 +38,8 @@ enum {
 	                            included */
 	NOTES_MESSAGE = 1024,  /**< bytes of the commit message of a note
 	                            write, NUL included, at most */
+	NOTES_WHO  = 16,       /**< hexadecimal digits of a principal in a
+	                            notebook's ref */
 };
 
 /** The time from the start of git to its deadline, in nanoseconds. */
@@ -52,6 +54,17 @@ static constexpr int64_t NOTES_STALE = 60;
 enum notes_side : uint8_t {
 	NOTES_UPSTREAM,  /**< the upstream in ask calls */
 	NOTES_CLIENT,    /**< a client */
+};
+
+/** The text that notes_book() writes for WHO in a notebook ref if the
+ *  principal is 0.
+ */
+static struct cstr_view const notes_anonymous = CSTR_VIEW_INIT("anonymous");
+
+/** The SIDE names in a notebook ref, indexed by enum notes_side. */
+static struct cstr_view const notes_sides[] = {
+	[NOTES_UPSTREAM] = CSTR_VIEW_INIT("upstream"),
+	[NOTES_CLIENT]   = CSTR_VIEW_INIT("client"),
 };
 
 /** The commands of git that write and read the notes. */
@@ -193,6 +206,22 @@ notes_repo (struct notes const *notes,
             uint64_t            principal,
             enum notes_side     side,
             char                repo[NOTES_REPO]);
+
+/** Returns true if @p name is a notebook selector PARTICIPANT/WHO/SIDE in
+ *  the form that notes_repo() writes. WHO is notes_anonymous or NOTES_WHO
+ *  hexadecimal digits of a principal.
+ */
+static inline bool
+notes_selector_valid (struct cstr_view name)
+{
+	struct cstr_view side = name, participant, who;
+	return cstr_view_cut(&side, '/', &participant) &&
+	       util_word(participant.data, participant.len, UTIL_WORD_MAX) &&
+	       cstr_view_cut(&side, '/', &who) &&
+	       (cstr_view_equal(who, notes_anonymous) ||
+	        (who.len == NOTES_WHO && util_is_hex(who.data, who.len))) &&
+	       cstr_view_index(notes_sides, array_size(notes_sides), side) < array_size(notes_sides);
+}
 
 /** Validates an explicit PARTICIPANT/WHO/SIDE read selector and writes its
  * full branch ref to @p repo, unless @p repo is nullptr. Returns 0 or

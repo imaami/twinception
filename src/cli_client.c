@@ -515,14 +515,8 @@ cli_client_read_notebooks (struct cstr_view  text,
 			line = cstr_view_slice(line, self.len, SIZE_MAX);
 		if (cstr_view_ends(line, peer))
 			line.len -= peer.len;
-		struct cstr_view side = line, name, principal;
-		if (!cstr_view_cut(&side, '/', &name) || !cstr_view_cut(&side, '/', &principal))
-			continue;
-		if ((!cstr_view_equal(side, CSTR_VIEW("client")) && !cstr_view_equal(side, CSTR_VIEW("upstream"))) ||
-		    !util_word(name.data, name.len, UTIL_WORD_MAX))
-			continue;
-		if (!cstr_view_equal(principal, CSTR_VIEW("anonymous")) &&
-		    (principal.len != 16 || !util_is_hex(principal.data, principal.len)))
+		struct cstr_view rest = line, name;
+		if (!notes_selector_valid(line) || !cstr_view_cut(&rest, '/', &name))
 			continue;
 		int e = jb_push(lists->names, cli_client_string(name));
 		if (!e)

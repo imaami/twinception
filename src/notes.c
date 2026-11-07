@@ -24,18 +24,6 @@
 /* Only this namespace is exposed by the notes tool. */
 #define BRANCH "refs/heads/notes/"
 
-/* The hexadecimal digits of a principal in a notebook's ref. */
-enum { NOTES_WHO = 16 };
-
-/* The principal in the ref of a notebook of a caller without one. */
-static struct cstr_view const notes_anonymous = CSTR_VIEW_INIT("anonymous");
-
-/* The sides in a notebook's ref. */
-static struct cstr_view const notes_sides[] = {
-	[NOTES_UPSTREAM] = CSTR_VIEW_INIT("upstream"),
-	[NOTES_CLIENT]   = CSTR_VIEW_INIT("client"),
-};
-
 struct notes {
 	char *dir;    /* the real path of the shared session repository */
 	char *participant;
@@ -341,18 +329,7 @@ int
 notes_select (struct cstr_view name,
               char             repo[NOTES_REPO])
 {
-	if (!name.data || !name.len || sizeof BRANCH + name.len > NOTES_REPO)
-		return EINVAL;
-	/* who is notes_anonymous or the NOTES_WHO hexadecimal digits of a
-	 * principal, as notes_repo() writes it. */
-	struct cstr_view side = name, participant, who;
-	if (!cstr_view_cut(&side, '/', &participant) ||
-	    !util_word(participant.data, participant.len, UTIL_WORD_MAX) ||
-	    !cstr_view_cut(&side, '/', &who))
-		return EINVAL;
-	if ((!cstr_view_equal(who, notes_anonymous) &&
-	     (who.len != NOTES_WHO || !util_is_hex(who.data, who.len))) ||
-	    cstr_view_index(notes_sides, array_size(notes_sides), side) == array_size(notes_sides))
+	if (!name.data || sizeof BRANCH + name.len > NOTES_REPO || !notes_selector_valid(name))
 		return EINVAL;
 	if (!repo)
 		return 0;
