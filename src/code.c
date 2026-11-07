@@ -148,18 +148,19 @@ code_report (struct config const *cfg)
 	LOG_ALL(LOG_INFO, "  cache        %s", cfg->code_cache);
 	int width = 0;
 	for (size_t i = 0; i < cfg->n_codes; ++i) {
-		int const len = (int)strcspn(cfg->codes[i], "=");
+		int const len = (int)git_name(cfg->code_repos[i]).len;
 		width = len > width ? len : width;
 	}
 	LOG_ALL(LOG_INFO, "code repositories:");
 	for (size_t i = 0; i < cfg->n_codes; ++i) {
-		int const len = (int)strcspn(cfg->codes[i], "=");
-		LOG_ALL(LOG_INFO, "  %-*.*s  %s", width, len, cfg->codes[i], cfg->codes[i] + len + 1);
+		struct cstr_view const name = git_name(cfg->code_repos[i]);
+		LOG_ALL(LOG_INFO, "  %-*.*s  %s", width, (int)name.len, name.data,
+		        strchr(cfg->codes[i], '=') + 1);
 	}
 }
 
 /* Returns the definition of the code tool for @p service, a struct code.
- * The repo argument accepts the names of the repositories in --code.
+ * The repo argument accepts the names of the repositories of --code.
  * Returns nullptr if out of memory.
  */
 static struct json_object *
@@ -169,8 +170,7 @@ code_definition (void const *service)
 	struct config const *cfg = code->cfg;
 	struct json_object *repos = json_object_new_array();
 	for (size_t i = 0; repos && i < cfg->n_codes; ++i)
-		repos = jb_push_or_free(repos, jb_string((struct cstr_view){
-			cfg->codes[i], strcspn(cfg->codes[i], "=") }));
+		repos = jb_push_or_free(repos, jb_string(git_name(cfg->code_repos[i])));
 	static struct cstr_view const actions[] = { CXI_ACTION_LIST(XL_VIEW) };
 	static struct cstr_view const required[] = {
 		CSTR_VIEW_INIT("repo"), CSTR_VIEW_INIT("action"), CSTR_VIEW_INIT("path"),
@@ -425,14 +425,15 @@ code_args (struct code const  *code,
 	struct config const *cfg = code->cfg;
 	struct cstr_view const repo = code_string(of[CODE_ARG_REPO]);
 	size_t r = repo.data ? 0 : cfg->n_codes;
-	while (r < cfg->n_codes &&
-	       (strncmp(cfg->codes[r], repo.data, repo.len) || cfg->codes[r][repo.len] != '='))
+	while (r < cfg->n_codes && !cstr_view_equal(git_name(cfg->code_repos[r]), repo))
 		++r;
 	if (r == cfg->n_codes) {
 		util_text_printf(why, "The repo argument must be ");
-		for (size_t i = 0; i < cfg->n_codes; ++i)
+		for (size_t i = 0; i < cfg->n_codes; ++i) {
+			struct cstr_view const name = git_name(cfg->code_repos[i]);
 			util_text_printf(why, "%s%.*s", !i ? "" : i + 1 < cfg->n_codes ? ", " : " or ",
-			                 (int)strcspn(cfg->codes[i], "="), cfg->codes[i]);
+			                 (int)name.len, name.data);
+		}
 		return util_text_printf(why, "."), EINVAL;
 	}
 	struct cstr_view const action = code_string(of[CODE_ARG_ACTION]);
@@ -475,7 +476,7 @@ code_args (struct code const  *code,
 	                                                              (size_t)(end - number) });
 	for (i = 0; !e && i < n; ++i)
 		e = code_word(call, CXI_KEY_WARNING, jb_view(jb_at(warnings, i)));
-	e = e ? e : code_word(call, CXI_KEY_CDB, cstr_view(cfg->codes[r] + repo.len + 1));
+	e = e ? e : code_word(call, CXI_KEY_CDB, cstr_view(strchr(cfg->codes[r], '=') + 1));
 	e = e ? e : code_word(call, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
 	return e ? e : code_word(call, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
 	                         ? CSTR_VIEW("1") : (struct cstr_view){});

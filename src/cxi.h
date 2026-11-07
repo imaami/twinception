@@ -3,8 +3,9 @@
  * askai runs askai-code, the helper of the code tool (src/code.h), once a
  * call as "askai-code KEY=VALUE ... -- GIT...", GIT being the git tool's
  * command line up to the subcommand (src/git.h). It answers with exit
- * status 0, or a tool error with status 1. "askai-code --check cache=DIR
- * [unconfined=1]" prints the version of libclang and the confinement.
+ * status 0, or a tool error with status 1. A relative cdb is relative to
+ * top. "askai-code --check cache=DIR [unconfined=1]" prints the version
+ * of libclang and the confinement.
  */
 #ifndef ASKAI_SRC_CXI_H_
 #define ASKAI_SRC_CXI_H_

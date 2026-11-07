@@ -559,15 +559,19 @@ closes the connection, or when `askai` stops. Until the output ends, that
 
 ## Asking clang about C code
 
-With `--code NAME=FILE`, which can be repeated, or the list
+With `--code REPO=FILE`, which can be repeated, or the list
 `tools.code.compile-commands` of a configuration file, `askai` also offers
 the tool `code`, which runs clang on the committed C code of the
-repository `NAME` of `--git`. `FILE` is the `compile_commands.json` of the
-repository, such as the one that `make compile_commands.json` writes into
-`build/`. The tool requires `askai-code`, the helper program that `make`
-builds next to `askai` if an `llvm-config` of libclang 19 or later is
-installed. [`doc/configuration.md`](doc/configuration.md#code) describes
-the options, the cache, the startup check and `--code-unconfined`.
+repository `REPO` of `--git`, given by its name or by its absolute path
+exactly as `--git` gives it. `FILE` is the `compile_commands.json` of the
+repository, such as `build/compile_commands.json`, which `make
+compile_commands.json` writes. A relative `FILE` is relative to the
+directory of the repository. The tool requires `askai-code`, the helper
+program that `make` builds next to `askai` if an `llvm-config` of libclang
+19 or later is installed. A role whose tools a configuration file lists
+gets the tool only if the list names `code`.
+[`doc/configuration.md`](doc/configuration.md#code) describes the options,
+the cache, the startup check and `--code-unconfined`.
 
 The arguments of a call are `repo`, `action` and `path`, a `.c` or `.h`
 file of the commit relative to the top of the repository, and optionally a
@@ -2095,11 +2099,12 @@ Built-in tools ("tools", each in the member in parentheses):
                             deadline of a git call, at which git gets
                             SIGTERM, and SIGKILL one second later
                             (default 30; tools.git.timeout)
-      --code NAME=FILE      also offer the tool code, which runs
+      --code REPO=FILE      also offer the tool code, which runs
                             clang on the committed C code of the
-                            git repository NAME, with the flags of
-                            the compile commands in FILE; askai runs
-                            askai-code for each call
+                            git repository REPO, a name or absolute
+                            path of --git, with the flags of the
+                            compile commands in FILE, relative to
+                            REPO; askai runs askai-code for each call
                             (repeatable; tools.code.compile-commands)
       --code-unconfined     run askai-code without Landlock and
                             seccomp, which the tool code needs

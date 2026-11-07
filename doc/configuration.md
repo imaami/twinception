@@ -1320,7 +1320,7 @@ table:
 | `--man` | `tools.man.enabled` |
 | `--git PATH` | `tools.git.repositories` |
 | `--git-timeout SECONDS` | `tools.git.timeout` |
-| `--code NAME=FILE` | `tools.code.compile-commands` |
+| `--code REPO=FILE` | `tools.code.compile-commands` |
 | `--code-unconfined` | `tools.code.unconfined` |
 | `--notes DIR` | `tools.notes.directory` |
 | `--client-jobs` | `tools.jobs.clients` |
@@ -1457,26 +1457,27 @@ uses the same deadline, at which `askai-code` is killed with SIGKILL.
 #### `code`
 
 The member of the file is `tools.code.compile-commands`. The value is a
-string `NAME=FILE`, or an array of them. The default is none. The command
+string `REPO=FILE`, or an array of them. The default is none. The command
 line adds to the values of the file.
 
 With `code`, `askai` offers the tool `code`, which runs clang on the
-committed C code of the repository `NAME` of `git`, with the flags of the
-compile commands in `FILE`, a `compile_commands.json`. A relative `FILE` is
-relative to the working directory of `askai`. `askai-code`, the helper
-program in the directory of the executable of `askai`, reads it at each
-call. Section [Asking clang about C
-code](../README.md#asking-clang-about-c-code) of `README.md` describes the
-tool.
+committed C code of the repository `REPO` of `git`, with the flags of the
+compile commands in `FILE`, a `compile_commands.json`. `REPO` is the name
+of the repository, or an absolute path that is exactly one of the values
+of `git`. A relative `FILE` is relative to the directory of the
+repository. `askai-code`, the helper program in the directory of the
+executable of `askai`, reads it at each call. Section [Asking clang about
+C code](../README.md#asking-clang-about-c-code) of `README.md` describes
+the tool.
 
-`askai` stops with exit status 2 for a value whose `NAME` is not the name of
-a repository of `git`, for a value without `FILE`, and for two values of
-one repository:
+`askai` stops with exit status 2 for a value without exactly one `=`, a
+value whose `REPO` is not a repository of `git`, a value without `FILE`,
+and for two values of one repository:
 
 | Message | Cause |
 | ------- | ----- |
-| `--code: NAME=FILE needs the name of a --git repository: nope=/x/compile_commands.json` | no repository of `git` is named `nope`, or `FILE` is empty |
-| `--code: two compile commands for proj` | two values are for `proj` |
+| `--code: REPO=FILE needs the name or the path of a --git repository, one '=' and a file: nope=/x/compile_commands.json` | no repository of `git` is named `nope`; or `REPO` begins with `/` and is not a value of `git`; or the value has no `=` or more than one, or no `FILE` |
+| `--code: two compile commands for proj` | two values are for `proj`, by its name or by its path |
 
 At startup, `askai` runs `askai-code --check`. The tool is off, and the
 startup report states the reason, if `askai-code` is not next to `askai` or
@@ -1774,7 +1775,7 @@ use:
 | `test-stall` and `test-pressure` in `testing` | `100` and `"/run/askai/pressure"` | remove them: they are test aids |
 | `path` of the plugin in `plugins` | `"/usr/libexec/askai/godbolt.so"` | set the real path of `godbolt.so`, or remove the plugin and the names of its tools in `tools` and `roles` |
 | `repositories` in `tools.git` | `"/srv/git/proj"` | set repositories that exist |
-| `compile-commands` in `tools.code` | `"proj=/srv/build/proj/compile_commands.json"` | name a repository of `tools.git` and its compile commands, or remove the object |
+| `compile-commands` in `tools.code` | `"proj=/srv/build/proj/compile_commands.json"` | name a repository of `tools.git`, or give its absolute path, and its compile commands, or remove the object |
 | `participant` | `"local-model"` | choose a distinct stable name for each instance |
 | `transcripts` | `"/var/lib/askai/transcripts.git"` | choose the separate transcript repository |
 | `directory` in `tools.notes` | `"/var/lib/askai/notes.git"` | set the shared session repository path whose parent exists |

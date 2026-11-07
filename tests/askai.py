@@ -5772,7 +5772,7 @@ def check_logs(binary, up):
                 "files     off (the API takes none)"], told(ai)
             assert ai.listed("built-in tools for clients:") == [
                 "ask_ai      on", "man         off (--man)", "git         off (--git PATH)",
-                "code        off (--code NAME=FILE)", "notes       off (--notes DIR)"] + [
+                "code        off (--code REPO=FILE)", "notes       off (--notes DIR)"] + [
                 f"{name:<10}  off (--client-jobs)"
                 for name in ("background", "jobs", "wait", "timer")], told(ai)
             has(ai, "plugins: none", "upstream tools: off (--upstream-tools)")
@@ -5819,7 +5819,7 @@ def check_logs(binary, up):
                 f"URL       {up.url()}", "files     off (the API takes none)"], told(ai)
             assert ai.listed("built-in tools for clients:") == [
                 f"{name:<10}  on" for name in ("bro", "man", "test_task", "git")
-            ] + ["code        off (--code NAME=FILE)", "notes       on"] + [
+            ] + ["code        off (--code REPO=FILE)", "notes       on"] + [
                 f"{name:<10}  off (--client-jobs)"
                 for name in ("background", "jobs", "wait", "timer")], told(ai)
             has(ai, f"notes directory: {notes}")
@@ -10154,7 +10154,7 @@ static int lay_dup;
 
 
 def check_code(binary, up):
-    """The code tool with --code NAME=FILE. With a fake helper next to a copy
+    """The code tool with --code REPO=FILE. With a fake helper next to a copy
     of askai: the definition, the refusals of askai, the revision resolved as
     the git tool resolves it, the request to askai-code, the exit statuses,
     the deadline and the output limit, the startup report and the reasons
@@ -10241,14 +10241,23 @@ def check_code(binary, up):
             return subprocess.run([binary, "-u", up.url(), *args], capture_output=True,
                                   text=True, timeout=10, env=os.environ | (env or {}))
 
-        # askai exits with status 2 for a NAME that is not a repository of
-        # --git, and for two values for one repository.
+        # askai exits with status 2 for a REPO that is neither the name of a
+        # repository of --git nor its path as --git gives it, for a value
+        # without exactly one '=' or without FILE, and for two values for
+        # one repository, by its name or by its path.
+        refused = "--code: REPO=FILE needs the name or the path of a --git repository, " \
+                  "one '=' and a file: "
         for args, message in (
-                (("--code", f"nope={cdb}"), "--code: NAME=FILE needs the name of a --git "
-                 f"repository: nope={cdb}"),
-                (("--code", "proj="), "--code: NAME=FILE needs the name of a --git "
-                 "repository: proj="),
+                (("--code", f"nope={cdb}"), f"{refused}nope={cdb}"),
+                (("--code", "proj="), f"{refused}proj="),
+                (("--code", "proj"), f"{refused}proj"),
+                (("--code", f"proj={cdb}=x"), f"{refused}proj={cdb}=x"),
+                (("--code", f"{repo}/={cdb}"), f"{refused}{repo}/={cdb}"),
+                (("--code", f"{d}/./proj={cdb}"), f"{refused}{d}/./proj={cdb}"),
+                (("--code", f"proj/={cdb}"), f"{refused}proj/={cdb}"),
                 (("--code", f"proj={cdb}", "--code", "proj=x"),
+                 "--code: two compile commands for proj"),
+                (("--code", f"proj={cdb}", "--code", f"{repo}=x"),
                  "--code: two compile commands for proj")):
             proc = run(binary, "--git", repo, *args)
             assert proc.returncode == 2 and message in proc.stderr, (args, proc)
@@ -10262,8 +10271,8 @@ def check_code(binary, up):
         os.chmod(f"{bin}/askai-code", 0o755)
         lib = f"{d}/lib"
         subprocess.run(["git", "init", "-q", lib], check=True, env=os.environ | git)
-        args = ("--git", repo, "--git", lib, "--code", f"proj={cdb}", "--code",
-                f"lib={d}/lib.json")
+        args = ("--git", repo, "--git", lib, "--code", f"{repo}=../build/compile_commands.json",
+                "--code", f"lib={d}/lib.json")
         with Askai(fake, "-u", up.url(), *args, env={"CPATH": f"{d}/cpath"}) as ai:
             cache = f"{ai.state.name}/askai/code"
             assert ai.listed("built-in tools for clients:")[3] == "code        on", ai.log
@@ -10271,7 +10280,7 @@ def check_code(binary, up):
                 f"helper       {bin}/askai-code", "libclang     fake clang version 1",
                 "confinement  none (fake)", f"cache        {cache}"], ai.log
             assert ai.listed("code repositories:") == [
-                f"proj  {cdb}", f"lib   {d}/lib.json"], ai.log
+                "proj  ../build/compile_commands.json", f"lib   {d}/lib.json"], ai.log
             tools = ai.rpc("tools/list")[2]["result"]["tools"]
             assert [t["name"] for t in tools] == ["ask_ai", "git", "code"], tools
             schema = tools[2]["inputSchema"]
@@ -10328,7 +10337,8 @@ def check_code(binary, up):
             at = argv.index("--")
             assert argv[:at] == [
                 f"{bin}/askai-code", "action=outline", "repo=proj", "path=src/a.c",
-                f"cdb={cdb}", f"cache={cache}", f"commit={head}", argv[7], f"top={repo}"], argv
+                "cdb=../build/compile_commands.json", f"cache={cache}", f"commit={head}",
+                argv[7], f"top={repo}"], argv
             # The deadline is that of the call, 30 s after its start.
             deadline = int(argv[7].removeprefix("deadline="))
             assert 0 < deadline - time.monotonic_ns() <= 30 * 10**9, argv
@@ -10400,8 +10410,9 @@ def check_code(binary, up):
             print("code: SKIP real helper (no askai-code)")
             print("code: off reasons, refusals, request, statuses, deadline, cap: PASS")
             return
-        with Askai(binary, "-u", up.url(), "--git", repo, "--code", f"proj={cdb}",
-                   env={"CPATH": f"{d}/cpath"}) as ai:
+        # A relative FILE is relative to the directory of the repository.
+        with Askai(binary, "-u", up.url(), "--git", repo, "--code",
+                   "proj=../build/compile_commands.json", env={"CPATH": f"{d}/cpath"}) as ai:
             state = ai.listed("built-in tools for clients:")[3]
             if state != "code        on":
                 print(f"code: SKIP real helper ({state.split('(', 1)[1][:-1]})")
@@ -14808,7 +14819,7 @@ def check_plugin(binary, up, plugin):
                  "test_fetch", "test_config"], tools
             assert ai.listed("built-in tools for clients:") == [
                 "ask_ai      on", "man         on", "git         off (--git PATH)",
-                "code        off (--code NAME=FILE)", "notes       off (--notes DIR)"] + [
+                "code        off (--code REPO=FILE)", "notes       off (--notes DIR)"] + [
                 f"{name:<10}  off (--client-jobs)"
                 for name in ("background", "jobs", "wait", "timer")], ai.log
             assert ai.listed("plugin test:") == [

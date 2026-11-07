@@ -8265,7 +8265,7 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	[KIND_GIT]        = { .plugin = &git_plugin, N("git"), .metric = LENT_GIT,
 	                      .option = "--git PATH" },
 	[KIND_CODE]       = { .plugin = &code_plugin, N("code"), .metric = LENT_CODE,
-	                      .option = "--code NAME=FILE" },
+	                      .option = "--code REPO=FILE" },
 	[KIND_NOTES]      = { .plugin = &notes_tool_plugin,
 	                      .upstream = notes_tool_upstream_definition,
 	                      N("notes"), LEND_ALWAYS, LENT_NOTES, TRACE_ACTION,

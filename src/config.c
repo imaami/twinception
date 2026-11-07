@@ -436,12 +436,13 @@ enum config_arg : uint8_t {
           "(default 30; tools.git.timeout)",                                                            \
           git_timeout, 1, 3600, NS)                                                                     \
         X(custom,  CODE,             "code",             ,                                              \
-          TOOLS("code.compile-commands"), MANY, "NAME=FILE",                                            \
+          TOOLS("code.compile-commands"), MANY, "REPO=FILE",                                            \
           "also offer the tool code, which runs" NL                                                     \
           "clang on the committed C code of the" NL                                                     \
-          "git repository NAME, with the flags of" NL                                                   \
-          "the compile commands in FILE; askai runs" NL                                                 \
-          "askai-code for each call" NL                                                                 \
+          "git repository REPO, a name or absolute" NL                                                  \
+          "path of --git, with the flags of the" NL                                                     \
+          "compile commands in FILE, relative to" NL                                                    \
+          "REPO; askai runs askai-code for each call" NL                                                \
           "(repeatable; tools.code.compile-commands)")                                                  \
         X(flag,    CODE_UNCONFINED,  "code-unconfined",  ,    TOOLS("code.unconfined"), NONE, "",       \
           "run askai-code without Landlock and" NL                                                      \
@@ -1333,7 +1334,7 @@ config_lists (struct config *cfg)
 	if (json_object_is_type(tools, json_type_object))
 		json_object_object_foreachC(tools, it)
 			room += config_values(it.val);
-	char const **block = malloc(5 * room * sizeof *block);
+	char const **block = malloc(6 * room * sizeof *block);
 	if (!block)
 		return config_oom(cfg);
 	cfg->headers = block;
@@ -1341,6 +1342,7 @@ config_lists (struct config *cfg)
 	cfg->listens = block + 2 * room;
 	cfg->gits = block + 3 * room;
 	cfg->codes = block + 4 * room;
+	cfg->code_repos = block + 5 * room;
 	*cfg->headers = *cfg->origins = *cfg->listens = *cfg->gits = *cfg->codes = nullptr;
 	cfg->ep.headers = cfg->headers;
 	cfg->http.origins = cfg->origins;
@@ -1589,29 +1591,38 @@ config_check_gits (struct config *cfg)
 	return 0;
 }
 
-/* Check that each value of --code is NAME=FILE with the name of a --git
- * repository and a nonempty FILE, and that no two values are for the same
- * repository. Then run askai-code --check (code_check()). If the check
- * fails, the code tool is off, and cfg->code_check contains the reason.
+/* Check that each value of --code is REPO=FILE with one '=', a nonempty
+ * FILE, and as REPO the name of a --git repository or, if it begins with
+ * '/', the path of one as --git gives it. No two values may be for the
+ * same repository. Then run askai-code --check (code_check()). If the
+ * check fails, the code tool is off, and cfg->code_check contains the
+ * reason.
  */
 static int
 config_check_codes (struct config *cfg)
 {
 	for (size_t i = 0; i < cfg->n_codes; ++i) {
 		char const *code = cfg->codes[i];
-		struct cstr_view const name = { code, strcspn(code, "=") };
+		char const *file = strchr(code, '=');
+		struct cstr_view const repo = { code, file ? (size_t)(file - code) : 0 };
+		bool const path = *code == '/';
 		size_t g = 0;
-		while (g < cfg->n_gits && !cstr_view_equal(git_name(cfg->gits[g]), name))
+		while (g < cfg->n_gits &&
+		       !cstr_view_equal(path ? cstr_view(cfg->gits[g]) : git_name(cfg->gits[g]), repo))
 			++g;
+		if (g == cfg->n_gits || !file[1] || strchr(file + 1, '='))
+			return config_complain(cfg, nullptr, "--code: REPO=FILE needs the name or "
+			                       "the path of a --git repository, one '=' and a "
+			                       "file: %s", code);
 		size_t j = 0;
-		while (j < i && strncmp(cfg->codes[j], code, name.len + 1))
+		while (j < i && cfg->code_repos[j] != cfg->gits[g])
 			++j;
-		if (g == cfg->n_gits || !code[name.len] || !code[name.len + 1])
-			return config_complain(cfg, nullptr, "--code: NAME=FILE needs the name "
-			                       "of a --git repository: %s", code);
-		if (j < i)
+		if (j < i) {
+			struct cstr_view const name = git_name(cfg->gits[g]);
 			return config_complain(cfg, nullptr, "--code: two compile commands for "
-			                       "%.*s", (int)name.len, code);
+			                       "%.*s", (int)name.len, name.data);
+		}
+		cfg->code_repos[i] = cfg->gits[g];
 	}
 	return cfg->n_codes && code_check(cfg) ? config_oom(cfg) : 0;
 }

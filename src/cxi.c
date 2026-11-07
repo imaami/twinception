@@ -1429,7 +1429,8 @@ cxi_valid (struct cxi *x)
 }
 
 /* Writes the clang command line of the file to @p words (cdb_command())
- * and points x->file at its last word, the file in @p tree.
+ * and points x->file at its last word, the file in @p tree. A relative
+ * path of the compile commands is relative to the repository's directory.
  */
 static int
 cxi_command (struct cxi       *x,
@@ -1438,7 +1439,9 @@ cxi_command (struct cxi       *x,
 {
 	char const *const repo = x->key[CXI_KEY_REPO].data;
 	char const *const file = x->key[CXI_KEY_CDB].data;
-	int fd = open(file, O_RDONLY | O_CLOEXEC);
+	int dir = open(x->key[CXI_KEY_TOP].data, O_PATH | O_DIRECTORY | O_CLOEXEC);
+	int fd = openat(dir, file, O_RDONLY | O_CLOEXEC);
+	util_close(&dir);
 	struct stat st;
 	int e = fd < 0 || fstat(fd, &st) ? errno
 	      : !S_ISREG(st.st_mode) || st.st_size > CXI_CDB ? EFBIG : 0;
