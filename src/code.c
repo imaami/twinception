@@ -396,16 +396,6 @@ code_step (struct mcp_slot *slot)
 		                                                     sizeof buf), TOOL_FAILED);
 }
 
-/* Returns a view of the string @p val if it is 1 to CODE_WORD bytes long
- * without a NUL, or else an empty view with data nullptr.
- */
-static struct cstr_view
-code_string (struct json_object *val)
-{
-	struct cstr_view const s = jb_view(val);
-	return s.len && s.len <= CODE_WORD && !memchr(s.data, '\0', s.len) ? s : (struct cstr_view){};
-}
-
 /* Checks the types of the arguments @p args of @p call, a call of @p code,
  * whose values askai-code checks. Adds the revision to the pin of the call
  * and appends the words of the request to askai-code. Returns 0, EINVAL
@@ -424,7 +414,7 @@ code_args (struct code const  *code,
 		return util_text_printf(why, "The tool has no argument %.*s.", (int)other.len,
 		                        other.data), EINVAL;
 	struct config const *cfg = code->cfg;
-	struct cstr_view const repo = code_string(of[CODE_ARG_REPO]);
+	struct cstr_view const repo = jb_text(of[CODE_ARG_REPO], 1, CODE_WORD, nullptr);
 	size_t r = repo.data ? 0 : cfg->n_codes;
 	while (r < cfg->n_codes && !cstr_view_equal(git_name(cfg->code_repos[r]), repo))
 		++r;
@@ -437,11 +427,12 @@ code_args (struct code const  *code,
 		}
 		return util_text_printf(why, "."), EINVAL;
 	}
-	struct cstr_view const action = code_string(of[CODE_ARG_ACTION]);
-	struct cstr_view const path = code_string(of[CODE_ARG_PATH]);
-	struct cstr_view const name = code_string(of[CODE_ARG_NAME]);
-	struct cstr_view const revision = of[CODE_ARG_REVISION] ? code_string(of[CODE_ARG_REVISION])
-	                                                        : CSTR_VIEW("HEAD");
+	struct cstr_view const action = jb_text(of[CODE_ARG_ACTION], 1, CODE_WORD, nullptr);
+	struct cstr_view const path = jb_text(of[CODE_ARG_PATH], 1, CODE_WORD, nullptr);
+	struct cstr_view const name = jb_text(of[CODE_ARG_NAME], 1, CODE_WORD, nullptr);
+	struct cstr_view const revision = of[CODE_ARG_REVISION]
+	                                  ? jb_text(of[CODE_ARG_REVISION], 1, CODE_WORD, nullptr)
+	                                  : CSTR_VIEW("HEAD");
 	char const *bad = !action.data ? "action" : !path.data ? "path"
 	                : of[CODE_ARG_NAME] && !name.data ? "name"
 	                : !revision.data ? "revision" : nullptr;
@@ -456,7 +447,7 @@ code_args (struct code const  *code,
 	struct json_object *warnings = of[CODE_ARG_WARNINGS];
 	size_t const n = jb_len(warnings);
 	size_t i = 0;
-	while (i < n && code_string(jb_at(warnings, i)).data)
+	while (i < n && jb_text(jb_at(warnings, i), 1, CODE_WORD, nullptr).data)
 		++i;
 	if (warnings && (!json_object_is_type(warnings, json_type_array) || n > CXI_WARNINGS ||
 	                 i < n))

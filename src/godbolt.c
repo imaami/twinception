@@ -749,24 +749,6 @@ godbolt_or (struct cstr_view t,
 	return t.len ? t : otherwise;
 }
 
-/* Returns the string @p v if it is @p min to @p max bytes long, if it
- * contains no NUL byte, and if each of its bytes is in @p set, unless
- * @p set is nullptr. Otherwise it returns an empty view whose data is
- * nullptr.
- */
-static struct cstr_view
-godbolt_text (struct json_object *v,
-              size_t              min,
-              size_t              max,
-              char const         *set)
-{
-	struct cstr_view const t = jb_view(v);
-	if (!t.data || t.len < min || t.len > max ||
-	    (set ? strspn(t.data, set) : strlen(t.data)) != t.len)
-		return (struct cstr_view){};
-	return t;
-}
-
 /* Returns the string @p v if it is a valid compiler id: 1 to
  * GODBOLT_ID_MAX bytes of godbolt_id_bytes, other than "." and "..".
  * Otherwise it returns an empty view whose data is nullptr.
@@ -774,7 +756,7 @@ godbolt_text (struct json_object *v,
 static struct cstr_view
 godbolt_id (struct json_object *v)
 {
-	struct cstr_view const id = godbolt_text(v, 1, GODBOLT_ID_MAX, godbolt_id_bytes);
+	struct cstr_view const id = jb_text(v, 1, GODBOLT_ID_MAX, godbolt_id_bytes);
 	return cstr_view_equal(id, CSTR_VIEW(".")) || cstr_view_equal(id, CSTR_VIEW(".."))
 	       ? (struct cstr_view){} : id;
 }
@@ -2616,8 +2598,8 @@ godbolt_args_strings (struct godbolt_args *a,
 	if (!n || n > array_size(a->strings))
 		return EINVAL;
 	for (size_t i = 0; i < n; ++i) {
-		a->strings[i] = godbolt_text(json_object_array_get_idx(v, i), 0, GODBOLT_ARG_MAX,
-		                             nullptr);
+		a->strings[i] = jb_text(json_object_array_get_idx(v, i), 0, GODBOLT_ARG_MAX,
+		                        nullptr);
 		if (!a->strings[i].data)
 			return EINVAL;
 	}
@@ -2632,7 +2614,7 @@ static int
 godbolt_args_words (struct godbolt_args *a,
                     struct json_object  *v)
 {
-	struct cstr_view const t = godbolt_text(v, 0, GODBOLT_MATCH_MAX, nullptr);
+	struct cstr_view const t = jb_text(v, 0, GODBOLT_MATCH_MAX, nullptr);
 	if (!t.data)
 		return EINVAL;
 	static char const space[] = " \t\n\v\f\r";
@@ -2677,7 +2659,7 @@ godbolt_args_set (struct godbolt_args *a,
 {
 	switch (arg) {
 	case GODBOLT_ARG_ACTION: {
-		struct cstr_view const t = godbolt_text(v, 1, GODBOLT_ID_MAX, nullptr);
+		struct cstr_view const t = jb_text(v, 1, GODBOLT_ID_MAX, nullptr);
 		a->action = 0;
 		while (a->action < array_size(godbolt_actions) &&
 		       !cstr_view_equal(t, godbolt_actions[a->action].name))
@@ -2685,7 +2667,7 @@ godbolt_args_set (struct godbolt_args *a,
 		return a->action < array_size(godbolt_actions) ? 0 : EINVAL;
 	}
 	case GODBOLT_ARG_LANGUAGE:
-		a->language = godbolt_text(v, 1, GODBOLT_LANGUAGE_MAX, godbolt_language_bytes);
+		a->language = jb_text(v, 1, GODBOLT_LANGUAGE_MAX, godbolt_language_bytes);
 		return a->language.data ? 0 : EINVAL;
 	case GODBOLT_ARG_IDS:
 	case GODBOLT_ARG_COMPILERS:
@@ -2696,7 +2678,7 @@ godbolt_args_set (struct godbolt_args *a,
 	case GODBOLT_ARG_FAMILY:
 	case GODBOLT_ARG_ARCHITECTURE: {
 		struct cstr_view *const value = &a->values[arg - GODBOLT_ARG_KIND];
-		*value = godbolt_text(v, 1, GODBOLT_VALUE_MAX, nullptr);
+		*value = jb_text(v, 1, GODBOLT_VALUE_MAX, nullptr);
 		return value->data ? 0 : EINVAL;
 	}
 	case GODBOLT_ARG_LIMIT:
@@ -2709,7 +2691,7 @@ godbolt_args_set (struct godbolt_args *a,
 	case GODBOLT_ARG_ARGS:
 		return godbolt_args_strings(a, v);
 	case GODBOLT_ARG_SOURCE:
-		a->source = godbolt_text(v, 0, GODBOLT_SOURCE_MAX, nullptr);
+		a->source = jb_text(v, 0, GODBOLT_SOURCE_MAX, nullptr);
 		return a->source.data ? 0 : EINVAL;
 	case GODBOLT_ARG_FILTERS:
 		return godbolt_args_filters(a, v);
@@ -2928,7 +2910,7 @@ static int
 godbolt_config_url (struct godbolt_config *c,
                     struct json_object    *v)
 {
-	struct cstr_view const t = godbolt_text(v, 1, GODBOLT_URL_MAX, nullptr);
+	struct cstr_view const t = jb_text(v, 1, GODBOLT_URL_MAX, nullptr);
 	size_t const origin = util_url_origin(t);
 	if (!origin || strpbrk(t.data, "?#"))
 		return EINVAL;

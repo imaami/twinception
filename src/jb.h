@@ -136,6 +136,23 @@ jb_view (struct json_object *val)
 	                           (size_t)json_object_get_string_len(val) };
 }
 
+/** Returns jb_view(@p val) if the string is @p min to @p max bytes long,
+ *  contains no NUL and, if @p set is not nullptr, contains only bytes of
+ *  @p set. Otherwise returns an empty view with data nullptr. json-c
+ *  writes a NUL after each string, so strlen() and strspn() stop at the
+ *  end of the string at the latest.
+ */
+static inline struct cstr_view
+jb_text (struct json_object *val,
+         size_t              min,
+         size_t              max,
+         char const         *set)
+{
+	struct cstr_view const t = jb_view(val);
+	return t.data && t.len >= min && t.len <= max &&
+	       (set ? strspn(t.data, set) : strlen(t.data)) == t.len ? t : (struct cstr_view){};
+}
+
 /** Returns the JSON text of @p val, as JB_WIRE writes it, until @p val
  *  changes or is freed; an empty view with data nullptr if @p val is
  *  nullptr or memory runs out.

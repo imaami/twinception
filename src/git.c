@@ -473,23 +473,14 @@ git_definition (void const *service)
 		nullptr);
 }
 
-/* Returns a view of the string @p val if it is 1 to WORD bytes long and
- * contains no NUL, or else an empty view with data nullptr. The bytes of
- * the view are followed by the NUL that json-c stores after each string.
- */
-static struct cstr_view
-git_word (struct json_object *val)
-{
-	struct cstr_view const s = jb_view(val);
-	return s.len && s.len <= WORD && !memchr(s.data, '\0', s.len) ? s : (struct cstr_view){};
-}
-
-/** Looks up the option @p opt, a word of git_word(), in @p allowed, the
- * spellings that help lists. Stores the spelling that matches in @p *match
- * and returns 0, ENODATA for a missing value, EINVAL for nondecimal
- * digits, or ENOENT if no spelling matches. A spelling that accepts @p opt
- * is preferred over one whose value is malformed, such as --abbrev beside
- * --abbrev=.
+/** Looks up the option @p opt in @p allowed and stores the spelling that
+ * matches in @p *match. @p allowed is an array of option spellings that ends
+ * with a view whose data is nullptr. @p opt is an options entry that
+ * jb_text() checked, so a NUL comes after its bytes. Returns 0, ENODATA for a
+ * missing value, EINVAL for nondecimal digits, or ENOENT if no spelling
+ * matches. A spelling that matches @p opt with a valid value is preferred
+ * over one whose value is missing or malformed, such as --abbrev over
+ * --abbrev= for the option --abbrev.
  */
 static int
 git_option_find (struct cstr_view const *allowed,
@@ -901,7 +892,7 @@ git_call_command (struct git_call  *call,
 
 	if (!call->pin.repo)
 		return git_repos_wrong(git, why);
-	struct cstr_view const cmd = git_word(of[GIT_ARG_COMMAND]);
+	struct cstr_view const cmd = jb_text(of[GIT_ARG_COMMAND], 1, WORD, nullptr);
 	size_t const c = cstr_view_index(git_command_names, array_size(git_command_names), cmd);
 	if (c == array_size(git_command_names)) {
 		if (cstr_view_equal(cmd, CSTR_VIEW("status")) ||
@@ -943,7 +934,7 @@ git_call_command (struct git_call  *call,
 			return git_wrong(why, "The %s argument has %zu entries; its limit is "
 			                 "%zu.", name, lens[l], most[l]);
 		size_t i = 0;
-		while (i < lens[l] && git_word(jb_at(of[l], i)).data)
+		while (i < lens[l] && jb_text(jb_at(of[l], i), 1, WORD, nullptr).data)
 			++i;
 		if (i < lens[l])
 			return git_wrong(why, "%s[%zu] must be a string of 1 to %d bytes with no "
@@ -967,7 +958,7 @@ git_call_command (struct git_call  *call,
 		                "contents, -t for the type, -s for the size, or -e to "
 		                "check that the object exists.");
 	struct json_object *pattern = of[GIT_ARG_PATTERN];
-	struct cstr_view const pat = git_word(pattern);
+	struct cstr_view const pat = jb_text(pattern, 1, WORD, nullptr);
 	if (takes & PATTERN) {
 		if (!pat.data)
 			bad = git_wrong(why, "git grep needs a pattern argument: a string of "
@@ -1188,7 +1179,7 @@ git_call_create (struct json_object *args,
 		return nullptr;
 	}
 	*call = (struct git_call){};
-	git_pin_init(&call->pin, git, git_word(jb_get(args, "repo")), deadline);
+	git_pin_init(&call->pin, git, jb_text(jb_get(args, "repo"), 1, WORD, nullptr), deadline);
 	/* The call reads its arguments after it parks (tool.h). */
 	if (args && json_object_deep_copy(args, &call->args, nullptr)) {
 		free(call);

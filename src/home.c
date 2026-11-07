@@ -1872,9 +1872,8 @@ home_native_id (struct home        *home,
                 struct job         *job,
                 struct json_object *value)
 {
-	struct cstr_view const id = jb_view(value);
-	if (!id.len || id.len > MAX_JOB_ID || memchr(id.data, '\0', id.len) ||
-	    cstr_view_equal(id, CSTR_VIEW(".")) || cstr_view_equal(id, CSTR_VIEW("..")))
+	struct cstr_view const id = jb_text(value, 1, MAX_JOB_ID, nullptr);
+	if (!id.data || cstr_view_equal(id, CSTR_VIEW(".")) || cstr_view_equal(id, CSTR_VIEW("..")))
 		return EPROTO;
 	char *copy = strndup(id.data, id.len);
 	if (!copy)
