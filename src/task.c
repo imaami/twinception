@@ -291,7 +291,7 @@ task_init (struct task      *task,
 	task->owner = loop;
 	task->moves = 0;
 	atomic_init(&task->cancel, 0);
-	atomic_init(&task->refs, 0);
+	atomic_init(&task->refs, 2);
 }
 
 void
@@ -300,7 +300,6 @@ task_submit (struct task *task,
 {
 	struct task_pool *pool = task->pool;
 	struct task_lane *self = task_pool_lane(pool, loop);
-	atomic_store_explicit(&task->refs, 2, memory_order_relaxed);
 	atomic_fetch_add_explicit(&pool->metrics.submitted, 1, memory_order_relaxed);
 	task_lane_place(self, task_pool_choose(pool, self, false), task, loop);
 }
