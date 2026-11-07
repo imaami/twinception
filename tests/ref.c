@@ -33,11 +33,8 @@ test_broken (void)
 	CHECK(!ref_put(&refs, 2));
 	CHECK(atomic_load(&refs) >> 31 && !ref_tryget(&refs));
 	CHECK(!ref_put(&refs, 1));
-	_Atomic uint64_t wide;
-	atomic_init(&wide, 0);
-	CHECK(!ref_put(&wide, 1) && !ref_tryget(&wide));
-	atomic_store(&wide, UINT64_MAX >> 1);
-	CHECK(ref_tryget(&wide) && !ref_tryget(&wide));
+	atomic_store(&refs, UINT32_MAX >> 1);
+	CHECK(ref_tryget(&refs) && !ref_tryget(&refs));
 }
 
 enum { ROUNDS = 1 << 17, READERS = 3 };

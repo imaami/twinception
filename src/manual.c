@@ -55,8 +55,9 @@ struct manual_page {
 	dev_t            dev;
 	ino_t            ino;
 	off_t            size;
-	size_t           len;
-	_Atomic uint64_t refs;   /**< widened over the padding */
+	uint32_t         len;    /**< the length of text, at most TOOL_TEXT_MAX
+	                              plus the length of the cut note */
+	_Atomic uint32_t refs;
 	char             text[];
 };
 
@@ -323,7 +324,7 @@ manual_fetch_done (struct manual_fetch *f,
 		old = file->page;
 		file->page = manual_page_get(page);
 		hist_count(&m->metrics.pages, !old);
-		hist_count(&m->metrics.bytes, page->len - (old ? old->len : 0));
+		hist_count(&m->metrics.bytes, (uint64_t)page->len - (old ? old->len : 0));
 	}
 	if (a->file != file) {
 		if (a->file)
@@ -342,7 +343,8 @@ manual_fetch_done (struct manual_fetch *f,
 
 	if (rendered)
 		LOG(LOG_VERBOSE, old ? "man page %s rendered anew: %zu bytes"
-		                     : "man page %s rendered: %zu bytes", file->key, page->len);
+		                     : "man page %s rendered: %zu bytes",
+		    file->key, (size_t)page->len);
 	for (struct manual_wait *next; w; w = next) {
 		next = w->next;
 		loop_post(w->loop, &w->msg);
@@ -433,7 +435,7 @@ manual_fetch_rendered (struct child *c)
 	page->dev = f->st.st_dev;
 	page->ino = f->st.st_ino;
 	page->size = f->st.st_size;
-	page->len = len + note;
+	page->len = (uint32_t)(len + note);
 	atomic_init(&page->refs, 1);
 	memcpy(page->text + len, cut, note);
 	f->page = page;
