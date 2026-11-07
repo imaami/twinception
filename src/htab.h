@@ -60,7 +60,7 @@ htab_init (struct htab *dest,
 	struct htab_node **buckets = calloc(n, sizeof *buckets);
 	if (!buckets)
 		return ENOMEM;
-	*dest = (struct htab){ .buckets = buckets, .mask = n - 1 };
+	*dest = htab(buckets, n);
 	return 0;
 }
 

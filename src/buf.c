@@ -205,7 +205,7 @@ buf_wipe (struct buf *buf)
 {
 	if (buf->data)
 		memset_explicit(buf->data, 0, buf->cap);
-	buf->head = buf->tail = 0;
+	buf_clear(buf);
 }
 
 void

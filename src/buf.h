@@ -237,6 +237,13 @@ buf_peek (struct buf const *buf)
 	       : (struct span){};
 }
 
+/** Drop all readable bytes, rewinding the buffer. */
+static inline void
+buf_clear (struct buf *buf)
+{
+	buf->head = buf->tail = 0;
+}
+
 /** Drop @p len readable bytes from the head, rewinding once none are left. */
 static inline void
 buf_consume (struct buf *buf,
@@ -244,14 +251,7 @@ buf_consume (struct buf *buf,
 {
 	buf->head += len;
 	if (buf->head == buf->tail)
-		buf->head = buf->tail = 0;
-}
-
-/** Drop all readable bytes, rewinding the buffer. */
-static inline void
-buf_clear (struct buf *buf)
-{
-	buf->head = buf->tail = 0;
+		buf_clear(buf);
 }
 
 /**
