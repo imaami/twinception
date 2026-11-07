@@ -96,45 +96,18 @@ enum {
 	NOTE_WRITE  = 1 << 0,    /* writes to the caller's own notebook */
 	NOTE_FILE   = 1 << 1,    /* takes the file argument */
 	NOTE_OFFSET = 1 << 2,    /* takes the offset argument */
-	NOTE_UPLOAD = 1 << 3,    /* offered only if the upstream takes files */
-	NOTE_REVISION = 1 << 4,  /* takes the revision argument */
+	NOTE_REVISION = 1 << 3,  /* takes the revision argument */
 };
 
-/* The actions of the notes tool. notes_tool_start() looks up the action of a
- * call here, and notes_tool_schema() lists the names. The commit message of
- * a write begins with the name, in upper case at the first letter.
- */
+/* The flags and the fetch value of each action (NOTES_ALL_ACTION_LIST). */
 static struct {
-	struct cstr_view      name;
 	uint32_t              flags;
 	enum notes_tool_fetch fetch;
 } const notes_tool_actions[] = {
-#define NOTE(name, flags, fetch) { CSTR_VIEW_INIT(name), flags, fetch }
-	NOTE("add",       NOTE_WRITE | NOTE_FILE,                  0),
-	NOTE("append",    NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE | FETCH_APPEND),
-	NOTE("replace",   NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE),
-	NOTE("delete",    NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE | FETCH_DELETE),
-	NOTE("restore",   NOTE_WRITE | NOTE_FILE | NOTE_REVISION,  FETCH_READ | FETCH_RESTORE),
-	NOTE("notebooks", NOTE_OFFSET,                             FETCH_BOOKS),
-	NOTE("list",      NOTE_OFFSET,                             FETCH_FILES),
-	NOTE("search",    NOTE_OFFSET,                             FETCH_GREP),
-	NOTE("history",   NOTE_OFFSET,                             FETCH_LIST),
-	NOTE("read",      NOTE_FILE | NOTE_OFFSET | NOTE_REVISION, FETCH_READ),
-	NOTE("diff",      NOTE_FILE | NOTE_OFFSET,                 FETCH_DIFF),
-	NOTE("copy",      NOTE_FILE,                               FETCH_READ | FETCH_COPY),
-	NOTE("attach",    NOTE_FILE | NOTE_UPLOAD,                 FETCH_READ | FETCH_ATTACH),
-#undef NOTE
+#define NOTES_ACTION_ROW(id, name, flags, fetch) { flags, fetch },
+	NOTES_ALL_ACTION_LIST(NOTES_ACTION_ROW)
+#undef NOTES_ACTION_ROW
 };
-
-/* Returns the flags of the actions that @p side cannot use: NOTE_UPLOAD,
- * unless the caller is a turn and its upstream accepts files.
- */
-static uint32_t
-notes_tool_hidden (struct notes_tool const *tool,
-                   enum notes_side          side)
-{
-	return side == NOTES_UPSTREAM && tool->attach ? 0 : NOTE_UPLOAD;
-}
 
 /* The message for a file or as argument that is not a valid name. */
 static struct cstr_view const bad_name =
@@ -640,7 +613,7 @@ notes_tool_call_message (struct notes_tool_call *call,
 	static_assert(sizeof "Restore  from : ( to  bytes)" + 2 * UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
 	              OID_SHA256 + NOTES_NAME <= NOTES_MESSAGE);
 	uint32_t fetch = notes_tool_actions[call->action].fetch;
-	struct cstr_view const verb = notes_tool_actions[call->action].name;
+	struct cstr_view const verb = notes_action_names[call->action];
 	char const up = (char)(verb.data[0] - 'a' + 'A');
 	/* A restore names the commit of its revision, and a copy the source
 	 * notebook and the commit it read. With as, the message names the
@@ -1883,25 +1856,18 @@ notes_tool_start (struct mcp_slot    *slot,
 	enum notes_side const side = mcp_slot_from_client(slot) ? NOTES_CLIENT : NOTES_UPSTREAM;
 	struct notes const *notes = call->loop->tool->notes;
 	notes_repo(notes, mcp_slot_principal(slot), side, call->repo);
-	uint32_t const hidden = notes_tool_hidden(call->loop->tool, side);
-	struct cstr_view const action = jb_view(jb_get(args, "action"));
-	size_t which = 0;
-	while (which < array_size(notes_tool_actions) &&
-	       !cstr_view_equal(action, notes_tool_actions[which].name))
-		++which;
-	if (which == array_size(notes_tool_actions) ||
-	    notes_tool_actions[which].flags & hidden) {
-		dstr_auto why = DSTR_INIT;
-		bool ok = dstr_cat(&why, "The action argument must be one of:");
-		for (size_t i = 0; ok && i < array_size(notes_tool_actions); ++i) {
-			struct cstr_view const name = notes_tool_actions[i].name;
-			ok = notes_tool_actions[i].flags & hidden ||
-			     dstr_printf(&why, "%s%.*s", i ? ", " : " ", (int)name.len, name.data);
-		}
-		if (!ok || !dstr_cat_n(&why, ".", 1))
-			mcp_slot_fail(slot, ENOMEM);
-		else
-			mcp_slot_tell(slot, cstr_view_dstr(&why), TOOL_FAILED);
+	/* A turn can attach a note only if its upstream accepts files. */
+	bool const files = side == NOTES_UPSTREAM && call->loop->tool->attach;
+	size_t const offered = files ? array_size(notes_action_names) : NOTES_ACTION_ATTACH;
+	size_t const which = cstr_view_index(notes_action_names, offered,
+	                                     jb_view(jb_get(args, "action")));
+	if (which == offered) {
+		mcp_slot_tell(slot, files
+		              ? CSTR_VIEW("The action argument must be one of: "
+		                          XL_JOIN(", ", ", ", NOTES_ALL_ACTION_LIST(XL_TEXT)) ".")
+		              : CSTR_VIEW("The action argument must be one of: "
+		                          XL_JOIN(", ", ", ", NOTES_COMMON_ACTION_LIST(XL_TEXT)) "."),
+		              TOOL_FAILED);
 		return;
 	}
 	call->action = which;
@@ -2050,13 +2016,10 @@ notes_tool_schema (struct notes_tool const *tool,
 		                 "or a selector from action notebooks. other is copy's default.",
 	};
 	/* A turn can attach a note only if its upstream accepts files. */
-	uint32_t const hidden = notes_tool_hidden(tool, side);
-	bool const files = !hidden;
+	bool const files = side == NOTES_UPSTREAM && tool->attach;
+	size_t const offered = files ? array_size(notes_action_names) : NOTES_ACTION_ATTACH;
 	size_t most = tool->files_inline;
-	struct json_object *actions = json_object_new_array();
-	for (size_t i = 0; actions && i < array_size(notes_tool_actions); ++i)
-		if (!(notes_tool_actions[i].flags & hidden))
-			actions = jb_push_or_free(actions, jb_string(notes_tool_actions[i].name));
+	struct json_object *actions = schema_names(notes_action_names, offered);
 	struct json_object *props = jb_object(
 		"action", jb_set_or_free(schema_enum(actions, nullptr), "description", schema_text3(
 			"add creates a note (file) with text. append adds text to the end of a "

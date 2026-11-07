@@ -9,6 +9,7 @@
 #include "cli_network.h"
 #include "compat.h"
 #include "jb.h"
+#include "notes.h"
 #include "oid.h"
 #include "sse.h"
 #include "util.h"
@@ -633,7 +634,7 @@ cli_client_discover_files (struct cli_client   *client,
 	for (size_t i = 0; !e && i < count; ++i) {
 		struct cstr_view notebook = autocomplete_list_at(catalog, AUTOCOMPLETE_NOTEBOOKS, i);
 		struct json_object *params = jb_object("name", cli_client_string(tool),
-		                                      "arguments", jb_object("action", json_object_new_string("list"),
+		                                      "arguments", jb_object("action", jb_string(notes_action_names[NOTES_ACTION_LIST]),
 		                                                             "notebook", cli_client_string(notebook), nullptr), nullptr);
 		files.count = 0;
 		/* The names in files are views into the listing. */
@@ -667,7 +668,7 @@ cli_client_discover_books (struct cli_client  *client,
                            struct cli_error   *error)
 {
 	struct json_object *params = jb_object("name", cli_client_string(tool),
-	                                       "arguments", jb_object("action", json_object_new_string("notebooks"), nullptr), nullptr);
+	                                       "arguments", jb_object("action", jb_string(notes_action_names[NOTES_ACTION_NOTEBOOKS]), nullptr), nullptr);
 	struct cli_client_notebooks lists = {names, notebooks};
 	cli_json_auto listing = nullptr;
 	return cli_client_notes(client, params, "notebook", false, cli_client_read_notebooks, &lists,
@@ -676,10 +677,10 @@ cli_client_discover_books (struct cli_client  *client,
 
 static bool
 cli_client_has_action (struct json_object *actions,
-                       char const         *name)
+                       enum notes_action   action)
 {
 	for (size_t i = 0, count = jb_len(actions); i < count; ++i)
-		if (jb_is(jb_at(actions, i), name))
+		if (jb_is(jb_at(actions, i), notes_action_names[action].data))
 			return true;
 	return false;
 }
@@ -765,7 +766,7 @@ cli_client_scan_notes (struct cli_client_scan *scan,
 	struct json_object *identity = jb_get(meta, "session");
 	if (!e && json_object_is_type(identity, json_type_string))
 		e = cstr_view_store(jb_view(identity), &scan->session);
-	scan->files = jb_get(props, "file") && jb_get(props, "notebook") && cli_client_has_action(actions, "list");
+	scan->files = jb_get(props, "file") && jb_get(props, "notebook") && cli_client_has_action(actions, NOTES_ACTION_LIST);
 	return e;
 }
 
@@ -787,7 +788,7 @@ cli_client_scan_tool (struct cli_client      *client,
 	struct json_object *actions = jb_get(jb_get(props, "action"), "enum");
 	bool source = jb_true(jb_get(meta, "notebooks"));
 	if (!meta && cstr_view_equal(name, CSTR_VIEW("notes")) && jb_get(props, "notebook"))
-		source |= cli_client_has_action(actions, "notebooks");
+		source |= cli_client_has_action(actions, NOTES_ACTION_NOTEBOOKS);
 	if (source && !dstr_len(&scan->notebook_tool))
 		e = cli_client_scan_notes(scan, name, meta, props, actions);
 	bool candidate = dstr_len(&client->tool) ? cstr_view_equal(name, cstr_view_dstr(&client->tool))

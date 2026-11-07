@@ -25,6 +25,7 @@
 #include "cstr_view.h"
 #include "oid.h"
 #include "util.h"
+#include "xlist.h"
 
 struct hexid;
 struct notes;
@@ -73,6 +74,39 @@ enum notes_cmd : uint8_t {
 	NOTES_GREP,      /**< finds the lines of the current notes that match
 	                      the patterns of its input */
 };
+
+/** The actions of the notes tool: X(ID, name, flags, fetch), the constant
+ *  NOTES_ACTION_ID of enum notes_action, the name, and the flags and the
+ *  fetch value of the action, which only notes_tool.c uses. Every caller
+ *  can use the actions of NOTES_COMMON_ACTION_LIST, the first
+ *  NOTES_ACTION_ATTACH actions of NOTES_ALL_ACTION_LIST. Only a turn whose
+ *  upstream takes files can use attach. The commit message of a write
+ *  begins with the name, in upper case at the first letter.
+ */
+#define NOTES_COMMON_ACTION_LIST(X)                                                                      \
+        X(ADD,       "add",       NOTE_WRITE | NOTE_FILE,                  0)                            \
+        X(APPEND,    "append",    NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE | FETCH_APPEND) \
+        X(REPLACE,   "replace",   NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE)                \
+        X(DELETE,    "delete",    NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE | FETCH_DELETE) \
+        X(RESTORE,   "restore",   NOTE_WRITE | NOTE_FILE | NOTE_REVISION,  FETCH_READ | FETCH_RESTORE)   \
+        X(NOTEBOOKS, "notebooks", NOTE_OFFSET,                             FETCH_BOOKS)                  \
+        X(LIST,      "list",      NOTE_OFFSET,                             FETCH_FILES)                  \
+        X(SEARCH,    "search",    NOTE_OFFSET,                             FETCH_GREP)                   \
+        X(HISTORY,   "history",   NOTE_OFFSET,                             FETCH_LIST)                   \
+        X(READ,      "read",      NOTE_FILE | NOTE_OFFSET | NOTE_REVISION, FETCH_READ)                   \
+        X(DIFF,      "diff",      NOTE_FILE | NOTE_OFFSET,                 FETCH_DIFF)                   \
+        X(COPY,      "copy",      NOTE_FILE,                               FETCH_READ | FETCH_COPY)
+#define NOTES_ALL_ACTION_LIST(X) NOTES_COMMON_ACTION_LIST(X)                                             \
+        X(ATTACH,    "attach",    NOTE_FILE,                               FETCH_READ | FETCH_ATTACH)
+
+enum notes_action : uint8_t {
+#define NOTES_ACTION_ENUM(id, ...) NOTES_ACTION_##id,
+	NOTES_ALL_ACTION_LIST(NOTES_ACTION_ENUM)
+#undef NOTES_ACTION_ENUM
+};
+
+/** The names of the actions. Each is NUL-terminated. */
+static struct cstr_view const notes_action_names[] = { NOTES_ALL_ACTION_LIST(XL_VIEW) };
 
 /** A current note in the output of NOTES_FILES or NOTES_CHECK. Views
  *  borrow that output. From NOTES_CHECK, the name is empty.

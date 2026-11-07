@@ -15,6 +15,7 @@
 #include "compat.h"
 #include "dstr.h"
 #include "jb.h"
+#include "notes.h"
 #include "util.h"
 
 /* The most tools and the most lists of note paths of a catalog. */
@@ -963,10 +964,9 @@ autocomplete_note_paths (struct autocomplete              *ac,
 		int error = autocomplete_unquote(&ac->key, cstr_view_slice(line, action.equals + 1, action.end - action.equals - 1));
 		if (error)
 			return error;
-		struct cstr_view value = cstr_view_dstr(&ac->key);
-		copy = cstr_view_equal(value, CSTR_VIEW("copy"));
-		if (!copy && !cstr_view_equal(value, CSTR_VIEW("read")) &&
-		    !cstr_view_equal(value, CSTR_VIEW("attach")))
+		size_t which = cstr_view_index(notes_action_names, array_size(notes_action_names), cstr_view_dstr(&ac->key));
+		copy = which == NOTES_ACTION_COPY;
+		if (!copy && which != NOTES_ACTION_READ && which != NOTES_ACTION_ATTACH)
 			return 0;
 	}
 	struct cstr_view selector = copy ? CSTR_VIEW("other") : CSTR_VIEW("own");

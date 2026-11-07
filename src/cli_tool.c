@@ -13,6 +13,7 @@
 #include "compat.h"
 #include "jb.h"
 #include "list.h"
+#include "notes.h"
 
 struct cli_tool {
 	struct cli_stream   stream;
@@ -39,9 +40,8 @@ cli_tool_create (struct cli_client  *client,
                  struct cli_error   *error,
                  int                *e)
 {
-	static struct cstr_view const writes[] = {
-		CSTR_VIEW_INIT("add"), CSTR_VIEW_INIT("copy"), CSTR_VIEW_INIT("replace"), CSTR_VIEW_INIT("restore")
-	};
+	static constexpr uint32_t writes = 1U << NOTES_ACTION_ADD | 1U << NOTES_ACTION_COPY |
+	                                   1U << NOTES_ACTION_REPLACE | 1U << NOTES_ACTION_RESTORE;
 	struct autocomplete_tool const *entry = nullptr;
 	cli_json_auto arguments = nullptr;
 	*e = autocomplete_parse_call(client->catalog, command, &entry, &arguments,
@@ -51,8 +51,8 @@ cli_tool_create (struct cli_client  *client,
 		return nullptr;
 	}
 	uint64_t dirty = cstr_view_equal(entry->name, cstr_view_dstr(&client->notes_tool)) &&
-	                 cstr_view_index(writes, array_size(writes),
-	                                 jb_view(jb_get(arguments, "action"))) < array_size(writes)
+	                 writes >> cstr_view_index(notes_action_names, array_size(notes_action_names),
+	                                           jb_view(jb_get(arguments, "action"))) & 1
 	                 ? CLI_CLIENT_NOTES_DIRTY : 0;
 	struct cstr_view const token = CSTR_VIEW("tool");
 	cli_json_auto params = jb_object("name", cli_client_string(entry->name),

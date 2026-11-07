@@ -11823,9 +11823,12 @@ def check_attach(binary, up):
                 assert re.fullmatch(saved(f'Add "latin1.c" ({len(latin1)} bytes)'), said), said
                 thread = "1" * 32
                 script[:] = [lambda r: (200, calls([{"action": "add", "file": "own.c",
-                                                     "text": code}])),
+                                                     "text": code}, {"action": "bogus"}])),
                              lambda r: (200, answer("A"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
+                assert "The action argument must be one of: add, append, replace, delete, " \
+                    "restore, notebooks, list, search, history, read, diff, copy, attach." \
+                    in json.dumps(up.requests[-1]["body"][key])
                 assert call({"action": "attach", "file": "latin1.c", "thread": thread}) \
                     == "!The action argument must be one of: add, append, replace, delete, " \
                     "restore, notebooks, list, search, history, read, diff, copy."
