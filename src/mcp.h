@@ -432,9 +432,10 @@ extern uint32_t
 mcp_slot_turn (struct mcp_slot const *slot);
 
 /** Stores a copy of @p src, which describes the numbered lines of a
- *  committed file in the call's output, for the review record of the ask
- *  call (review_pending_add()). It stores nothing if mcp_slot_review() is
- *  nullptr or @p src is a single line longer than mcp_slot_window_max().
+ *  committed file in the call's output, written or lent, for the review
+ *  record of the ask call (review_pending_add()). It stores nothing if
+ *  mcp_slot_review() is nullptr or @p src is a single line longer than
+ *  mcp_slot_window_max().
  *  Returns 0, EFAULT for nullptr, EINVAL if the call has ended or @p src
  *  does not fit the output (review_read_create()), or ENOMEM. This function
  *  is not exported yet.

@@ -593,10 +593,11 @@ member as `struct.member`. The output contains the kind and the type, the
 places of the declaration and the definition, the functions that a
 function calls, the members of a struct or union with their offsets, sizes
 and padding, including the members of anonymous members, and at most 40
-numbered lines of the declaration with its comment. With `line`,
-`describe` uses the name on that line of `path`, such as a local variable
-or a macro use. For a macro use, it also prints the type and the value of
-the expression. This is `describe` of `struct review_file` in `src/review.c`:
+numbered lines of the declaration with its comment. These lines count as
+read for the review record of `findings` (below). With `line`, `describe`
+uses the name on that line of `path`, such as a local variable or a macro
+use. For a macro use, it also prints the type and the value of the
+expression. This is `describe` of `struct review_file` in `src/review.c`:
 
 ```text
 [proj at 1095916a86bd9dc0585d261ec87762fe6134de44: struct review_file in the translation unit of src/review.c.]
@@ -764,9 +765,9 @@ were wrong; `askai` stores each change and the old text in the finding's
 history.
 `show` gives the record, a window at a time, or with `id` one finding's
 history. A finding becomes `verified` or `disproved` only if the lines of
-its location are in the record's log of what `git` `read` showed the turns,
-and the record, not the model, names the commit of the latest read that
-showed them.
+its location are in the read log of the record, which lists the lines that
+`git` `read` and `code` `describe` returned to the turns. The record, not
+the model, stores the commit of the latest read of those lines.
 The log takes the lines of a result once the upstream has answered the
 request with it, so the lines that a turn reads count from the next turn
 on, and not at all if a compaction removes the result first.

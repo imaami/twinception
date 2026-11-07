@@ -3,7 +3,8 @@
  * The review record of an ask call. It consists of two parts:
  *
  * - The read log. It records which lines of committed files the results of
- *   git read calls showed to the turns of the call.
+ *   git read calls and code describe calls returned to the turns of the
+ *   call.
  * - The findings, which the turns record with the findings tool. A finding
  *   consists of a claim, an optional location (a path and a line range), a
  *   state and its changes. Each change is stored with the turn, the
@@ -55,8 +56,8 @@ enum {
 /** The flags of review_create(). */
 enum review_flag : uint16_t {
 	REVIEW_READ_LOG = 1U << 0U,  /**< the turns of the ask call can call the
-	                                  git tool, so the record keeps a read
-	                                  log */
+	                                  git tool or the code tool, so the
+	                                  record contains a read log */
 };
 
 /** The states of a finding: X(ID, name), the constant REVIEW_ID of enum
@@ -95,8 +96,8 @@ extern struct cstr_view const review_state_names[REVIEW_STATES];
 /** The names of the actions of the findings tool. Each is NUL-terminated. */
 extern struct cstr_view const review_action_names[REVIEW_ACTIONS];
 
-/** The numbered lines of a committed file in the output of a git read. The
- *  texts are views of the caller's storage.
+/** The numbered lines of a committed file in the output of a git read or a
+ *  code describe. The texts are views of the caller's storage.
  */
 struct review_source {
 	struct cstr_view repo;    /**< repository name */

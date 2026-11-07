@@ -30,19 +30,20 @@ findings_definition (void const *service)
 	return schema_tool("findings",
 		"Keep your findings in askai's review record. askai shows the record "
 		"again after every compaction, with its log of the lines that you "
-		"read in this call with the read command of the git tool, if you have "
-		"it. An ask call that continues a thread starts with that thread's "
-		"record, without its read log; any other ask call starts with an empty "
-		"record. add records a claim, a candidate until you check it. update "
-		"changes its state: verified when source that you read shows it true, "
-		"disproved when it shows it false, retracted when you withdraw it, or "
-		"candidate again. Each update needs evidence and can also change the "
-		"claim or the location if they were wrong. askai stores the old text "
-		"in the finding's history. verified and disproved need the lines of "
-		"the location in the read log, so they need the git tool, and askai "
-		"records the commit that the lines were read at. show gives the "
-		"record, or with id one finding's history. The record's "
-		"limit is 4 MiB.",
+		"read in this call with the read command of the git tool or saw in "
+		"describe of the code tool, if you have them. An ask call that "
+		"continues a thread starts with that thread's record, without its read "
+		"log; any other ask call starts with an empty record. add records a "
+		"claim, a candidate until you check it. update changes its state: "
+		"verified when source that you read shows it true, disproved when it "
+		"shows it false, retracted when you withdraw it, or candidate again. "
+		"Each update needs evidence and can also change the claim or the "
+		"location if they were wrong. askai stores the old text in the "
+		"finding's history. verified and disproved need the lines of the "
+		"location in the read log, so they need the git tool or the code tool, "
+		"and askai records the commit that the lines were read at. show gives "
+		"the record, or with id one finding's history. The record's limit is "
+		"4 MiB.",
 		jb_object(
 			"action", schema_enum(
 				schema_names(review_action_names, REVIEW_ACTIONS),

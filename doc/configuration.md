@@ -369,10 +369,11 @@ again. The record contains these things:
   history of the finding contains each change with its turn, its evidence
   and the old claim or location.
 - A log of the lines of committed files that the command `read` of the
-  tool `git` showed the turns whole, by repository, commit and path. The
-  lines of a read in a background job count once `jobs` gives its result.
-  A line that the 4 MiB limit of `git` cuts does not count. Only `read`
-  counts: the output of `show`, `cat-file`, `grep` and `blame` does not.
+  tool `git`, or the numbered lines of `describe` of the tool `code`,
+  showed the turns whole, by repository, commit and path. The lines of a
+  read in a background job count once `jobs` gives its result. A line that
+  the 4 MiB limit of `git` cuts does not count. Only `read` and `describe`
+  count: the output of `show`, `cat-file`, `grep` and `blame` does not.
   The log takes the lines of a result once the upstream has answered the
   request with the result, so the lines that a turn reads count from the
   next turn on. The lines of a result that a compaction removes before
@@ -399,10 +400,10 @@ colon, as `git grep` prints it, and then only reads at that commit count;
 finding that got a short path before such a read gets the whole path in
 its next `update`. If two paths of the log end with it by then, an
 `update` to `verified` or `disproved` needs a `location` with the whole
-path. Without the tool `git`, nothing fills the read log, so `askai`
-refuses `verified` and `disproved`, and a finding stays a `candidate`
-until the model retracts it. `askai` leaves its own notices out of the
-end of a claim or of evidence, as it does for the text of a note.
+path. Without the tools `git` and `code`, nothing fills the read log, so
+`askai` refuses `verified` and `disproved`, and a finding stays a
+`candidate` until the model retracts it. `askai` leaves its own notices out of
+the end of a claim or of evidence, as it does for the text of a note.
 
 After each compaction, `askai` adds the record to the prompt, after the
 summary and before the notes. A line gives the number of findings and the

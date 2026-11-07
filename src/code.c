@@ -23,6 +23,7 @@
 #include "loop.h"
 #include "mcp.h"
 #include "plugin.h"
+#include "review.h"
 #include "schema.h"
 #include "util.h"
 #include "xlist.h"
@@ -185,15 +186,15 @@ code_definition (void const *service)
 			"in the translation unit of path: the type of a variable, the signature "
 			"and calls of a function, the value of an enumerator, or a macro and its "
 			"value where line uses it. It prints the places where name is declared "
-			"and defined, and the numbered lines of its declaration. For a struct or "
-			"union it lists the members with their offsets, sizes and padding, "
-			"inside anonymous members too. outline lists the names that path "
-			"declares, each with the line where it is written, which can be passed "
-			"to describe as line. diagnostics lists clang's errors and warnings for "
-			"path. Places are path:line; git read accepts the commit and the path. "
-			"Only committed files are visible. A .c file must be in the compile "
-			"commands; a header is parsed with the flags of the .c file nearest to "
-			"it."),
+			"and defined, and the numbered lines of its declaration, which count as "
+			"read for findings. For a struct or union it lists the members with "
+			"their offsets, sizes and padding, inside anonymous members too. outline "
+			"lists the names that path declares, each with the line where it is "
+			"written, which can be passed to describe as line. diagnostics lists "
+			"clang's errors and warnings for path. Places are path:line; git read "
+			"accepts the commit and the path. Only committed files are visible. A .c "
+			"file must be in the compile commands; a header is parsed with the flags "
+			"of the .c file nearest to it."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
@@ -288,7 +289,9 @@ code_spawn (struct code_call *call,
 		.file = code->cfg->code_helper,
 		.argv = argv,
 		.envp = env,
-		.max = TOOL_TEXT_MAX,
+		/* The output can contain the record line of describe in addition
+		 * to a result of TOOL_TEXT_MAX bytes. */
+		.max = TOOL_TEXT_MAX + 4096,
 		.deadline = pin->deadline,
 	};
 	pin->child = mcp_slot_spawn(slot, &cmd, &e);
@@ -297,9 +300,39 @@ code_spawn (struct code_call *call,
 	return e;
 }
 
+/* Parses the record line "lines FIRST LAST TOTAL AT LEN PATH" at the start
+ * of @p *text, the output of describe, into @p src, and removes the line
+ * from @p *text. Returns false if @p *text does not start with a valid
+ * record line.
+ */
+static bool
+code_record (struct cstr_view      *text,
+             struct review_source  *src)
+{
+	struct cstr_view rest = *text;
+	struct cstr_view line = {};
+	if (!cstr_view_starts(rest, CSTR_VIEW("lines ")) || !cstr_view_cut(&rest, '\n', &line))
+		return false;
+	line = cstr_view_slice(line, sizeof "lines " - 1, SIZE_MAX);
+	uint64_t v[5];
+	for (size_t i = 0; i < array_size(v); ++i) {
+		size_t const n = util_digits(line.data, line.len, UINT32_MAX, &v[i]);
+		if (!n || n == line.len || line.data[n] != ' ')
+			return false;
+		line = cstr_view_slice(line, n + 1, SIZE_MAX);
+	}
+	*text = rest;
+	*src = (struct review_source){
+		.path = line, .total = v[2], .at = v[3], .len = v[4],
+		.first = (uint32_t)v[0], .last = (uint32_t)v[1],
+	};
+	return true;
+}
+
 /* Ends the call in @p slot after askai-code has exited. With exit status
- * 0, the output is the result. With exit status 1, the output is a tool
- * error. Otherwise the call fails with the reason.
+ * 0, the output is the result, and the numbered lines that describe
+ * printed are added to the review record. With exit status 1, the output
+ * is a tool error. Otherwise the call fails with the reason.
  */
 static void
 code_ended (struct mcp_slot  *slot,
@@ -319,10 +352,20 @@ code_ended (struct mcp_slot  *slot,
 	struct span const out = buf_peek(&c->out);
 	/* askai-code writes valid UTF-8. jb_mend() replaces invalid bytes in
 	 * case the helper is broken. */
-	size_t const len = jb_mend((char *)out.ptr, out.len, true);
+	struct cstr_view text = { (char const *)out.ptr, jb_mend((char *)out.ptr, out.len, true) };
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
-	mcp_slot_lend(slot, (struct cstr_view){ (char const *)out.ptr, len });
-	mcp_slot_finish(slot, status ? TOOL_FAILED : 0);
+	struct review_source src;
+	bool const record = !status && code_record(&text, &src);
+	mcp_slot_lend(slot, text);
+	src.repo = call->pin.repo->name;
+	src.commit = oid_view(&call->pin.roots[0]);
+	/* mcp_slot_source() returns EINVAL for a record line that does not
+	 * match the output. The record is then not added, and the call still
+	 * succeeds. */
+	if (record && mcp_slot_source(slot, &src) == ENOMEM)
+		mcp_slot_fail(slot, ENOMEM);
+	else
+		mcp_slot_finish(slot, status ? TOOL_FAILED : 0);
 }
 
 /* Runs the call in @p slot on: after the exit of a git of the pin, or at

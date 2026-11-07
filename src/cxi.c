@@ -67,10 +67,13 @@ struct cxi_out {
 };
 
 /* A call of askai-code: the request from its arguments, the answer, and the
- * parse of the file.
+ * parse of the file. For describe, the record line "lines FIRST LAST TOTAL
+ * AT LEN PATH" comes before the answer: it names the numbered lines of a
+ * file of the repository in the answer, at the offset AT for LEN bytes.
  */
 struct cxi {
 	struct cxi_out     out;
+	struct dstr        record;
 	struct cstr_view   key[CXI_KEYS];  /* each value, or data nullptr */
 	char const        *file;           /* the path of the file in the tree */
 	char const        *warning[CXI_WARNINGS];
@@ -447,7 +450,8 @@ cxi_body (CXCursor     c,
 }
 
 /* Appends the numbered lines of the declaration @p c, from its comment if
- * that ends next to it, and to the head of a function.
+ * that ends next to it, and to the head of a function, and sets the record
+ * line for them.
  */
 static void
 cxi_declaration (struct cxi *x,
@@ -487,13 +491,13 @@ cxi_declaration (struct cxi *x,
 	CXString name = clang_getFileName(file);
 	char const *path = clang_getCString(name);
 	struct dstr norm = DSTR_INIT;
-	cxi_out_path(&x->out, cxi_out_rel(&x->out, path ? path : "", &norm));
-	dstr_cleanup(&norm);
-	clang_disposeString(name);
+	struct cstr_view const rel = cxi_out_rel(&x->out, path ? path : "", &norm);
+	cxi_out_path(&x->out, rel);
 	if (first == last)
 		cxi_out_printf(&x->out, " line %u of %zu:\n", first, total);
 	else
 		cxi_out_printf(&x->out, " lines %u to %u of %zu:\n", first, last, total);
+	size_t const at = dstr_len(&x->out.text);
 	for (unsigned n = first; n <= last; ++n) {
 		cxi_out_printf(&x->out, "%u\t", n);
 		cxi_out_line(&x->out, here);
@@ -502,6 +506,17 @@ cxi_declaration (struct cxi *x,
 		char const *nl = memchr(next, '\n', (size_t)(end - next));
 		here = (struct cstr_view){ next, nl ? (size_t)(nl - next) : (size_t)(end - next) };
 	}
+	/* The record names a file of the tree that is UTF-8 without control
+	 * bytes, so that askai can read it. */
+	size_t i = 0;
+	for (size_t k; i < rel.len && (k = cxi_char(rel.data + i, rel.len - i)); i += k)
+		;
+	if (rel.len && *rel.data != '/' && i == rel.len &&
+	    !dstr_printf(&x->record, "lines %u %u %zu %zu %zu %s\n", first, last, total, at,
+	                 dstr_len(&x->out.text) - at, rel.data))
+		x->out.e = ENOMEM;
+	dstr_cleanup(&norm);
+	clang_disposeString(name);
 }
 
 static enum CXChildVisitResult
@@ -1768,7 +1783,7 @@ int
 main (int    argc,
       char **argv)
 {
-	struct cxi x = { .out.text = DSTR_INIT };
+	struct cxi x = { .out.text = DSTR_INIT, .record = DSTR_INIT };
 	bool const check = argc > 1 && !strcmp(argv[1], "--check");
 	int at = 1 + check;
 	int fd = 1;
@@ -1794,8 +1809,11 @@ main (int    argc,
 		char const *end = memrchr(text, '\n', TOOL_TEXT_MAX - (sizeof cut - 1));
 		len = end ? (size_t)(end - text) : 0;
 	}
-	if (util_write_all(fd, text, len) || (over && util_write_all(fd, cut, sizeof cut - 1)))
+	struct cstr_view const record = e ? (struct cstr_view){} : cstr_view_dstr(&x.record);
+	if (util_write_all(fd, record.data, record.len) || util_write_all(fd, text, len) ||
+	    (over && util_write_all(fd, cut, sizeof cut - 1)))
 		e = EIO;
+	dstr_cleanup(&x.record);
 	dstr_cleanup(&x.out.text);
 	return e ? 1 : 0;
 }

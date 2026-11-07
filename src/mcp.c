@@ -3647,7 +3647,9 @@ mcp_slot_source (struct mcp_slot            *slot,
 	if (!slot->req->review ||
 	    (src->first == src->last && src->len > mcp_slot_window_max(slot)))
 		return 0;
-	slot->read = review_read_create(src, mcp_slot_answer(slot), &e);
+	struct span const out = mcp_slot_output(slot);
+	slot->read = review_read_create(src, (struct cstr_view){ (char const *)out.ptr, out.len },
+	                                &e);
 	if (slot->read)
 		loop_work(slot->req->mcp->loop, LOOP_COPY, src->len);
 	return e;
@@ -3981,8 +3983,8 @@ mcp_req_notes_identity (struct mcp_req *req)
 }
 
 /* Create req->review if the tool mask @p lent contains findings. The record
- * is created with REVIEW_READ_LOG if @p lent also contains git. Returns 0 or
- * ENOMEM.
+ * is created with REVIEW_READ_LOG if @p lent also contains git or code.
+ * Returns 0 or ENOMEM.
  */
 static int
 mcp_req_review_make (struct mcp_req *req,
@@ -3991,7 +3993,8 @@ mcp_req_review_make (struct mcp_req *req,
 	struct mcp_lending const *l = &req->mcp->st->lending;
 	int e = 0;
 	if (lent & l->of[KIND_FINDINGS])
-		req->review = review_create(lent & l->of[KIND_GIT] ? REVIEW_READ_LOG : 0, &e);
+		req->review = review_create(lent & (l->of[KIND_GIT] | l->of[KIND_CODE])
+		                            ? REVIEW_READ_LOG : 0, &e);
 	return e;
 }
 

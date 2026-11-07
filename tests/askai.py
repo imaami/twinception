@@ -10066,6 +10066,10 @@ if path == "hang.c":
 if path == "big.c":
     sys.stdout.write("x" * ((4 << 20) + 4097))
     sys.exit(0)
+if path == "record.c":
+    answer = f"[{words['repo']} at {words['commit']}: lines]\n1\tint a;\n2\tint b;\n"
+    sys.stdout.write(f"lines 1 2 2 {answer.index(chr(9)) - 1} 18 record.c\n{answer}")
+    sys.exit(0)
 sys.stdout.write(f"[{words['repo']} at {words['commit']}: {path}, 0 names.]\n")
 """
 
@@ -10277,7 +10281,7 @@ def check_code(binary, up):
                 schema["properties"]["repo"]["enum"] == ["proj", "lib"] and \
                 schema["properties"]["action"]["enum"] == [
                     "describe", "outline", "diagnostics"] and \
-                "Only committed files are visible" in tools[2]["description"], tools[2]
+                "count as read for findings" in tools[2]["description"], tools[2]
 
             # askai checks the types of the arguments, and askai-code checks
             # their values.
@@ -10348,6 +10352,9 @@ def check_code(binary, up):
             assert call(ai, error=True, **outline) == \
                 "Cannot run askai-code: No such file or directory."
             os.rename(f"{bin}/gone", f"{bin}/askai-code")
+            # The record line of describe is removed from the result.
+            assert call(ai, **{**outline, "path": "record.c"}) == \
+                f"[proj at {head}: lines]\n1\tint a;\n2\tint b;\n"
         # At the deadline, askai-code and its child process are killed.
         with Askai(fake, "-u", up.url(), *args, "--git-timeout", "1") as ai:
             assert call(ai, error=True, repo="proj", action="outline", path="hang.c") == \
@@ -10688,6 +10695,37 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # stays invisible.
         assert call(ai, error=True, repo="proj", action="describe", path="src/wt.c",
                     name="wt_uncommitted").startswith("No symbol wt_uncommitted ")
+
+    # The numbered lines that describe prints are added to the read log of
+    # the review record.
+    def turn(name, *calls):
+        return lambda r: (200, turn_stream([(f"f{k}", name, json.dumps(c))
+                                            for k, c in enumerate(calls)]))
+    script = [
+        turn("code", {"repo": "proj", "action": "describe", "path": "src/lay.c",
+                      "name": "lay_sum"},
+             {"repo": "proj", "action": "describe", "path": "src/lay.c", "name": "strlen"},
+             {"repo": "proj", "action": "describe", "path": "src/far.c",
+              "name": "far_value"}),
+        turn("findings", *({"action": "add", "claim": "C", "state": "verified",
+                            "evidence": "E", "location": where}
+                           for where in ("src/lay.c:16-18", "src/sub/far.h:2", "src/lay.c:19",
+                                         "/usr/include/string.h:1")))]
+    up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
+    with Askai(binary, "-u", up.url(), "--upstream-tools", "--git", f"{d}/proj",
+               "--code", f"proj={cdb}") as ai:
+        count = len(up.requests)
+        assert ai.ask("Q")["content"][0]["text"] == "A"
+        messages = up.requests[count + 2]["body"]["messages"]
+        last = max(k for k, m in enumerate(messages) if m["role"] == "assistant")
+        results = [m["content"] for m in messages[last + 1:]]
+        assert results[0] == f"Added finding 1: verified, src/lay.c:16-18 at {head[:12]}.", \
+            results
+        assert results[1] == f"Added finding 2: verified, src/sub/far.h:2 at {head[:12]}.", \
+            results
+        assert all(r.startswith("verified needs the lines of its location in your read log")
+                   for r in results[2:]), results
+    up.reply = lambda request: (200, ANSWERS["openai"])
 
 
 def turn_stream(calls=(), text="", reasoning="", used=None, order=(),
