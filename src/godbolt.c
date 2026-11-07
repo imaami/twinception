@@ -48,21 +48,22 @@
 #include "jb.h"
 #include "plugin.h"
 #include "util.h"
+#include "xlist.h"
 
-/* The tools: the name after godbolt_, the constant of enum godbolt_tool,
- * and the flags of the kind besides TOOL_LENT, TOOL_PAGED and
- * TOOL_STREAM.
+/* The tools: X(ID, name, flags), the constant of enum godbolt_tool, the
+ * name after godbolt_, and the flags of the kind besides TOOL_LENT,
+ * TOOL_PAGED and TOOL_STREAM.
  */
-#define GODBOLT_TOOLS_X(X)                      \
-        X(catalog, CATALOG, 0)                  \
-        X(compile, COMPILE, TOOL_DETACH)        \
-        X(preprocess, PREPROCESS, TOOL_DETACH)  \
-        X(macros, MACROS, TOOL_DETACH)          \
-        X(targets, TARGETS, TOOL_DETACH)
+#define GODBOLT_TOOL_LIST(X)                   \
+        X(CATALOG,    catalog,    0)           \
+        X(COMPILE,    compile,    TOOL_DETACH) \
+        X(PREPROCESS, preprocess, TOOL_DETACH) \
+        X(MACROS,     macros,     TOOL_DETACH) \
+        X(TARGETS,    targets,    TOOL_DETACH)
 
-#define GODBOLT_NAME(name, NAME, extra) "godbolt_" #name,
-PLUGIN_MANIFEST(.name = "godbolt", .tools = { GODBOLT_TOOLS_X(GODBOLT_NAME) });
-#undef GODBOLT_NAME
+#define GODBOLT_TOOL_NAME(id, name, flags) "godbolt_" #name,
+PLUGIN_MANIFEST(.name = "godbolt", .tools = { GODBOLT_TOOL_LIST(GODBOLT_TOOL_NAME) });
+#undef GODBOLT_TOOL_NAME
 
 /* The beginning of the state of a call, which the body of a compilation
  * leaves out.
@@ -130,42 +131,37 @@ struct godbolt_config {
 	uint32_t                       share;  /* enum godbolt_share */
 };
 
-/* The kinds of link for the argument share of a call. The option share
- * selects the kind.
+/* The kinds of link for the argument share of a call, which the option
+ * share selects: X(ID, name, note), the constant of enum godbolt_share,
+ * the value of the option, and the sentence on links that ends the
+ * description of a tool with the argument share. SHORT is a link /z/ID
+ * that Compiler Explorer makes and stores permanently. STATE is a link
+ * /clientstate/BASE64 that contains the state, so that Compiler Explorer
+ * stores nothing. With OFF, there is no link and the tools do not accept
+ * the argument share.
  */
-enum godbolt_share : uint32_t {
-	GODBOLT_SHARE_SHORT,  /* a link /z/ID that Compiler Explorer makes and
-	                         stores permanently */
-	GODBOLT_SHARE_STATE,  /* a link /clientstate/BASE64 that has the state,
-	                         so that Compiler Explorer stores nothing */
-	GODBOLT_SHARE_OFF,    /* no link, and the tools have no argument share */
-	GODBOLT_SHARES
-};
+#define GODBOLT_SHARE_LIST(X)                                                        \
+        X(SHORT, "short",                                                            \
+          " With share true, the first line of the output is a link to the same "    \
+          "source, compilers and arguments on Compiler Explorer. For the link, "     \
+          "Compiler Explorer stores the source permanently, and anyone with the "    \
+          "link can read it. Set share only if the user asks for a link.")           \
+        X(STATE, "state",                                                            \
+          " With share true, the first line of the output is a link to the same "    \
+          "source, compilers and arguments on Compiler Explorer. The link contains " \
+          "the source, and Compiler Explorer stores nothing. Set share only if the " \
+          "user asks for a link.")                                                   \
+        X(OFF,   "off", "")
 
-/* Each entry is the name of a value of the option share. */
-static struct cstr_view const godbolt_shares[GODBOLT_SHARES] = {
-	[GODBOLT_SHARE_SHORT] = CSTR_VIEW_INIT("short"),
-	[GODBOLT_SHARE_STATE] = CSTR_VIEW_INIT("state"),
-	[GODBOLT_SHARE_OFF]   = CSTR_VIEW_INIT("off"),
-};
+#define GODBOLT_SHARE_ENUM(id, ...) GODBOLT_SHARE_##id,
+enum godbolt_share : uint32_t { GODBOLT_SHARE_LIST(GODBOLT_SHARE_ENUM) };
+#undef GODBOLT_SHARE_ENUM
 
-/* Each entry is the sentence on links that ends the description of a tool
- * with the argument share, for a value of the option share. With share
- * off, the tools do not accept the argument share, and the sentence is
- * empty.
- */
-static struct cstr_view const godbolt_share_notes[GODBOLT_SHARES] = {
-	[GODBOLT_SHARE_SHORT] = CSTR_VIEW_INIT(
-		" With share true, the first line of the output is a link to the same "
-		"source, compilers and arguments on Compiler Explorer. For the link, "
-		"Compiler Explorer stores the source permanently, and anyone with the "
-		"link can read it. Set share only if the user asks for a link."),
-	[GODBOLT_SHARE_STATE] = CSTR_VIEW_INIT(
-		" With share true, the first line of the output is a link to the same "
-		"source, compilers and arguments on Compiler Explorer. The link contains "
-		"the source, and Compiler Explorer stores nothing. Set share only if the "
-		"user asks for a link."),
-};
+static struct cstr_view const godbolt_shares[] = { GODBOLT_SHARE_LIST(XL_VIEW) };
+
+#define GODBOLT_SHARE_NOTE(id, name, note) CSTR_VIEW_INIT(note),
+static struct cstr_view const godbolt_share_notes[] = { GODBOLT_SHARE_LIST(GODBOLT_SHARE_NOTE) };
+#undef GODBOLT_SHARE_NOTE
 
 /* The configuration without options. definition() uses it if askai passes
  * no configuration.
@@ -179,9 +175,9 @@ static struct godbolt_config const godbolt_defaults = {
 
 /* The tools, in the order of the manifest. */
 enum godbolt_tool : uint8_t {
-#define GODBOLT_TOOL(name, NAME, extra) GODBOLT_##NAME,
-	GODBOLT_TOOLS_X(GODBOLT_TOOL)
-#undef GODBOLT_TOOL
+#define GODBOLT_TOOL_ENUM(id, ...) GODBOLT_##id,
+	GODBOLT_TOOL_LIST(GODBOLT_TOOL_ENUM)
+#undef GODBOLT_TOOL_ENUM
 	GODBOLT_TOOLS
 };
 
@@ -319,21 +315,22 @@ enum godbolt_array : uint8_t {
 	GODBOLT_LIST_BAD,    /* the text is not a JSON array */
 };
 
-/* The actions of godbolt_catalog: the constant of enum godbolt_action, the
- * name, the singular of the noun, and the first line of the output.
+/* The actions of godbolt_catalog: X(ID, name, singular, header), the
+ * constant of enum godbolt_action, the name, the singular of the noun, and
+ * the first line of the output.
  */
-#define GODBOLT_ACTIONS_X(X)                                          \
-        X(LANGUAGES, "languages", "language", "id\tname\tdefault\n")  \
-        X(COMPILERS, "compilers", "compiler",                         \
-          "id\tname\tkind\tversion\tarchitecture\ttrack\tfamilies\n") \
-        X(KINDS, "kinds", "kind", "kind\tcompilers\n")                \
-        X(FAMILIES, "families", "family", "family\tcompilers\n")      \
+#define GODBOLT_ACTION_LIST(X)                                                   \
+        X(LANGUAGES,     "languages",     "language",     "id\tname\tdefault\n") \
+        X(COMPILERS,     "compilers",     "compiler",                            \
+          "id\tname\tkind\tversion\tarchitecture\ttrack\tfamilies\n")            \
+        X(KINDS,         "kinds",         "kind",         "kind\tcompilers\n")   \
+        X(FAMILIES,      "families",      "family",       "family\tcompilers\n") \
         X(ARCHITECTURES, "architectures", "architecture", "architecture\tcompilers\n")
 
 enum godbolt_action : uint8_t {
-#define GODBOLT_ACTION(NAME, name, singular, header) GODBOLT_##NAME,
-	GODBOLT_ACTIONS_X(GODBOLT_ACTION)
-#undef GODBOLT_ACTION
+#define GODBOLT_ACTION_ENUM(id, ...) GODBOLT_##id,
+	GODBOLT_ACTION_LIST(GODBOLT_ACTION_ENUM)
+#undef GODBOLT_ACTION_ENUM
 };
 
 static struct {
@@ -341,13 +338,11 @@ static struct {
 	struct cstr_view header;
 	char const      *singular;
 } const godbolt_actions[] = {
-#define GODBOLT_ACTION(NAME, name, singular, header) \
+#define GODBOLT_ACTION_ROW(id, name, singular, header) \
         { CSTR_VIEW_INIT(name), CSTR_VIEW_INIT(header), singular },
-	GODBOLT_ACTIONS_X(GODBOLT_ACTION)
-#undef GODBOLT_ACTION
+	GODBOLT_ACTION_LIST(GODBOLT_ACTION_ROW)
+#undef GODBOLT_ACTION_ROW
 };
-
-#undef GODBOLT_ACTIONS_X
 
 /* The ends of the compilations, which the last line of the output
  * counts.
@@ -360,74 +355,92 @@ enum godbolt_outcome : uint8_t {
 	GODBOLT_COUNTS
 };
 
-/* The arguments of the tools: the constant of enum godbolt_arg and the
- * name. Bit i of a mask of struct godbolt_params stands for the argument
- * godbolt_arg_names[i].
+/* The filters of a compilation, in the order of the request body: X(ID,
+ * name, set, site), the constant of enum godbolt_filter, the name, whether
+ * the argument filters can set the filter, and whether the Compiler
+ * Explorer site sets it by default. A filter that the argument cannot set
+ * is false, except execute, which the argument run sets. Bit i of a set of
+ * filters stands for godbolt_filters[i].
  */
-#define GODBOLT_ARGS_X(X)                                                      \
-        X(ACTION, action) X(LANGUAGE, language) X(IDS, ids) X(MATCH, match)    \
-        X(KIND, kind) X(FAMILY, family) X(ARCHITECTURE, architecture)          \
-        X(LIMIT, limit) X(OFFSET, offset) X(COMPILERS, compilers)              \
-        X(ARGS, args) X(SOURCE, source) X(FILTERS, filters)                    \
-        X(HEADERS, headers) X(SHARE, share) X(RUN, run)
+#define GODBOLT_FILTER_LIST(X)                         \
+        X(INTEL,         "intel",        true,  true)  \
+        X(DEMANGLE,      "demangle",     true,  true)  \
+        X(DIRECTIVES,    "directives",   true,  true)  \
+        X(COMMENT_ONLY,  "commentOnly",  true,  true)  \
+        X(LABELS,        "labels",       true,  true)  \
+        X(LIBRARY_CODE,  "libraryCode",  true,  false) \
+        X(TRIM,          "trim",         true,  false) \
+        X(BINARY,        "binary",       false, false) \
+        X(BINARY_OBJECT, "binaryObject", false, false) \
+        X(DEBUG_CALLS,   "debugCalls",   false, false) \
+        X(EXECUTE,       "execute",      false, false)
+
+/* The names of the filters that the argument filters can set, each with
+ * a comma after it for XL_JOIN().
+ */
+#define GODBOLT_FILTER_SET(id, name, set, site) GODBOLT_IF_##set(name,)
+#define GODBOLT_IF_true(...) __VA_ARGS__
+#define GODBOLT_IF_false(...)
+
+/* The arguments of the tools: X(ID, name, rule), the constant of enum
+ * godbolt_arg, the name, and the rest of the refusal of a value that breaks
+ * the rule of the argument, after its name. Bit i of a mask of struct
+ * godbolt_params stands for the argument godbolt_arg_names[i]. The rule of
+ * OFFSET is empty, because mcp_slot_offset() checks the offset.
+ */
+#define GODBOLT_ARG_LIST(X)                                                             \
+        X(ACTION,       "action",                                                       \
+          "must be " XL_JOIN(", ", " or ", GODBOLT_ACTION_LIST(XL_TEXT)) ".")           \
+        X(LANGUAGE,     "language", "must have 1 to 64 bytes of a-z, 0-9, +, - and _.") \
+        X(IDS,          "ids",                                                          \
+          "must be an array of 1 to 16 different ids. An id has 1 to 128 bytes of "     \
+          "A-Z, a-z, 0-9, +, -, . and _, and it is not . or ..")                        \
+        X(MATCH,        "match", "must be a string of at most 256 bytes with at most "  \
+          "8 words.")                                                                   \
+        X(KIND,         "kind",         GODBOLT_VALUE_RULE)                             \
+        X(FAMILY,       "family",       GODBOLT_VALUE_RULE)                             \
+        X(ARCHITECTURE, "architecture", GODBOLT_VALUE_RULE)                             \
+        X(LIMIT,        "limit",        "must be a whole number from 1 to 2000.")       \
+        X(OFFSET,       "offset",       "")                                             \
+        X(COMPILERS,    "compilers",                                                    \
+          "must be an array of 1 to 16 different compiler ids. A compiler id has 1 "    \
+          "to 128 bytes of A-Z, a-z, 0-9, +, -, . and _, and it is not . or ..")        \
+        X(ARGS,         "args",                                                         \
+          "must be an array of 1 to 8 strings. Each string has at most 8192 bytes "     \
+          "and no NUL byte.")                                                           \
+        X(SOURCE,       "source", "must be a string of at most 1 MiB without a NUL "    \
+          "byte.")                                                                      \
+        X(FILTERS,      "filters",                                                      \
+          "must be an object whose members are among "                                  \
+          XL_JOIN(", ", " and ", GODBOLT_FILTER_LIST(GODBOLT_FILTER_SET))               \
+          ". Each member is true or false.")                                            \
+        X(HEADERS,      "headers",      "must be true or false.")                       \
+        X(SHARE,        "share",        "must be true or false.")                       \
+        X(RUN,          "run",          "must be true or false.")
+#define GODBOLT_VALUE_RULE "must be a string of 1 to 128 bytes without a NUL byte."
 
 enum godbolt_arg : uint8_t {
-#define GODBOLT_ARG(NAME, name) GODBOLT_ARG_##NAME,
-	GODBOLT_ARGS_X(GODBOLT_ARG)
-#undef GODBOLT_ARG
+#define GODBOLT_ARG_ENUM(id, ...) GODBOLT_ARG_##id,
+	GODBOLT_ARG_LIST(GODBOLT_ARG_ENUM)
+#undef GODBOLT_ARG_ENUM
 	GODBOLT_ARG_COUNT
 };
-
-static struct cstr_view const godbolt_arg_names[] = {
-#define GODBOLT_ARG(NAME, name) CSTR_VIEW_INIT(#name),
-	GODBOLT_ARGS_X(GODBOLT_ARG)
-#undef GODBOLT_ARG
-};
-
-#undef GODBOLT_ARGS_X
 
 static_assert(GODBOLT_ARG_FAMILY == GODBOLT_ARG_KIND + 1 &&
               GODBOLT_ARG_ARCHITECTURE == GODBOLT_ARG_KIND + 2, "the order of values[]");
 
-/* The reason of the refusal of each argument. */
+static struct cstr_view const godbolt_arg_names[] = { GODBOLT_ARG_LIST(XL_VIEW) };
+
+/* The refusal of a value of each argument. */
 static struct cstr_view const godbolt_arg_rules[] = {
-	[GODBOLT_ARG_ACTION] = CSTR_VIEW_INIT(
-		"action must be languages, compilers, kinds, families or architectures."),
-	[GODBOLT_ARG_LANGUAGE] = CSTR_VIEW_INIT(
-		"language must have 1 to 64 bytes of a-z, 0-9, +, - and _."),
-	[GODBOLT_ARG_IDS] = CSTR_VIEW_INIT(
-		"ids must be an array of 1 to 16 different ids. An id has 1 to 128 "
-		"bytes of A-Z, a-z, 0-9, +, -, . and _, and it is not . or .."),
-	[GODBOLT_ARG_MATCH] = CSTR_VIEW_INIT(
-		"match must be a string of at most 256 bytes with at most 8 words."),
-	[GODBOLT_ARG_KIND] = CSTR_VIEW_INIT(
-		"kind must be a string of 1 to 128 bytes without a NUL byte."),
-	[GODBOLT_ARG_FAMILY] = CSTR_VIEW_INIT(
-		"family must be a string of 1 to 128 bytes without a NUL byte."),
-	[GODBOLT_ARG_ARCHITECTURE] = CSTR_VIEW_INIT(
-		"architecture must be a string of 1 to 128 bytes without a NUL byte."),
-	[GODBOLT_ARG_LIMIT] = CSTR_VIEW_INIT(
-		"limit must be a whole number from 1 to 2000."),
-	[GODBOLT_ARG_COMPILERS] = CSTR_VIEW_INIT(
-		"compilers must be an array of 1 to 16 different compiler ids. A "
-		"compiler id has 1 to 128 bytes of A-Z, a-z, 0-9, +, -, . and _, and "
-		"it is not . or .."),
-	[GODBOLT_ARG_ARGS] = CSTR_VIEW_INIT(
-		"args must be an array of 1 to 8 strings. Each string has at most "
-		"8192 bytes and no NUL byte."),
-	[GODBOLT_ARG_SOURCE] = CSTR_VIEW_INIT(
-		"source must be a string of at most 1 MiB without a NUL byte."),
-	[GODBOLT_ARG_FILTERS] = CSTR_VIEW_INIT(
-		"filters must be an object whose members are among intel, demangle, "
-		"directives, commentOnly, labels, libraryCode and trim. Each member "
-		"is true or false."),
-	[GODBOLT_ARG_HEADERS] = CSTR_VIEW_INIT(
-		"headers must be true or false."),
-	[GODBOLT_ARG_SHARE] = CSTR_VIEW_INIT(
-		"share must be true or false."),
-	[GODBOLT_ARG_RUN] = CSTR_VIEW_INIT(
-		"run must be true or false."),
+#define GODBOLT_ARG_RULE(id, name, rule) CSTR_VIEW_INIT(name " " rule),
+	GODBOLT_ARG_LIST(GODBOLT_ARG_RULE)
+#undef GODBOLT_ARG_RULE
 };
+
+#undef GODBOLT_VALUE_RULE
+#undef GODBOLT_ARG_LIST
+#undef GODBOLT_FILTER_SET
 
 #define GODBOLT_BIT(arg) (1u << GODBOLT_ARG_##arg)
 
@@ -469,53 +482,29 @@ static struct godbolt_params const godbolt_params[] = {
 
 #undef GODBOLT_BIT
 
-/* The filters of a compilation, in the order of the request body: the
- * name, whether the argument filters can set the filter, and whether the
- * Compiler Explorer site sets it by default. A filter that the argument
- * cannot set is false, except execute, which the argument run sets. Bit i
- * of a set of filters stands for godbolt_filters[i].
- */
-#define GODBOLT_FILTERS_X(X)  \
-        X(binary,       0, 0) \
-        X(binaryObject, 0, 0) \
-        X(commentOnly,  1, 1) \
-        X(debugCalls,   0, 0) \
-        X(demangle,     1, 1) \
-        X(directives,   1, 1) \
-        X(execute,      0, 0) \
-        X(intel,        1, 1) \
-        X(labels,       1, 1) \
-        X(libraryCode,  1, 0) \
-        X(trim,         1, 0)
-
 enum godbolt_filter : uint8_t {
-#define GODBOLT_FILTER(name, set, site) GODBOLT_FILTER_##name,
-	GODBOLT_FILTERS_X(GODBOLT_FILTER)
-#undef GODBOLT_FILTER
+#define GODBOLT_FILTER_ENUM(id, ...) GODBOLT_FILTER_##id,
+	GODBOLT_FILTER_LIST(GODBOLT_FILTER_ENUM)
+#undef GODBOLT_FILTER_ENUM
 	GODBOLT_FILTERS
 };
 
-static struct cstr_view const godbolt_filters[] = {
-#define GODBOLT_FILTER(name, set, site) CSTR_VIEW_INIT(#name),
-	GODBOLT_FILTERS_X(GODBOLT_FILTER)
-#undef GODBOLT_FILTER
-};
+static struct cstr_view const godbolt_filters[] = { GODBOLT_FILTER_LIST(XL_VIEW) };
 
 /* The filters that the argument filters can set. */
-#define GODBOLT_FILTER(name, set, site) | (uint32_t)set << GODBOLT_FILTER_##name
-static constexpr uint32_t GODBOLT_SETTABLE = 0 GODBOLT_FILTERS_X(GODBOLT_FILTER);
-#undef GODBOLT_FILTER
+#define GODBOLT_FILTER_BIT(id, name, set, site) | (uint32_t)set << GODBOLT_FILTER_##id
+static constexpr uint32_t GODBOLT_SETTABLE = 0 GODBOLT_FILTER_LIST(GODBOLT_FILTER_BIT);
+#undef GODBOLT_FILTER_BIT
 
 /* The filters that the Compiler Explorer site sets by default. */
-#define GODBOLT_FILTER(name, set, site) | (uint32_t)site << GODBOLT_FILTER_##name
-static constexpr uint32_t GODBOLT_SITE_FILTERS = 0 GODBOLT_FILTERS_X(GODBOLT_FILTER);
-#undef GODBOLT_FILTER
-#undef GODBOLT_FILTERS_X
+#define GODBOLT_FILTER_BIT(id, name, set, site) | (uint32_t)site << GODBOLT_FILTER_##id
+static constexpr uint32_t GODBOLT_SITE_FILTERS = 0 GODBOLT_FILTER_LIST(GODBOLT_FILTER_BIT);
+#undef GODBOLT_FILTER_BIT
 
 /* The flags of the arguments headers, share, run and offset. run sets the
  * bit of the filter execute. */
 enum godbolt_with : uint32_t {
-	GODBOLT_WITH_RUN     = 1u << GODBOLT_FILTER_execute, /* the argument run */
+	GODBOLT_WITH_RUN     = 1u << GODBOLT_FILTER_EXECUTE, /* the argument run */
 	GODBOLT_WITH_HEADERS = 1u << GODBOLT_FILTERS,        /* the argument
 	                                                        headers */
 	GODBOLT_WITH_SHARE   = 1u << (GODBOLT_FILTERS + 1),  /* the argument
@@ -2995,7 +2984,8 @@ godbolt_configure (void               *config,
 		                   "bytes, without a user name, a password, a query or a "
 		                   "fragment");
 	if (seen & 2 && godbolt_config_share(c, of[1]))
-		return util_refuse(why, len, "share must be short, state or off");
+		return util_refuse(why, len, "share must be "
+		                   XL_JOIN(", ", " or ", GODBOLT_SHARE_LIST(XL_TEXT)));
 	return 0;
 }
 
@@ -3026,6 +3016,8 @@ godbolt_configure (void               *config,
 #define GODBOLT_DEF_OFFSET                                                      \
         "\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":\""     \
         TOOL_OFFSET_ABOUT "\"}"
+#define GODBOLT_FILTER_SCHEMA(id, name, set, site) \
+        GODBOLT_IF_##set("\"" name "\":{\"type\":\"boolean\",\"default\":" #site "}",)
 #define GODBOLT_DEF_HINTS                                                       \
         "\"annotations\":{\"readOnlyHint\":true,\"destructiveHint\":false,"      \
         "\"idempotentHint\":true,\"openWorldHint\":true}"
@@ -3041,8 +3033,8 @@ static struct {
 	[GODBOLT_CATALOG] = {
 		"{\"name\":\"godbolt_catalog\",\"title\":\"Compiler Explorer catalog\","
 		"\"inputSchema\":{\"type\":\"object\",\"properties\":{"
-		"\"action\":{\"type\":\"string\",\"enum\":[\"languages\",\"compilers\","
-		"\"kinds\",\"families\",\"architectures\"],\"description\":\"The action "
+		"\"action\":{\"type\":\"string\",\"enum\":["
+		XL_JOIN(",", ",", GODBOLT_ACTION_LIST(XL_JSON)) "],\"description\":\"The action "
 		"selects what the call lists: languages, compilers, or numbers of "
 		"compilers. kinds counts the compilers of each compilerType, families "
 		"counts the compilers of each family tag, and architectures counts the "
@@ -3091,13 +3083,7 @@ static struct {
 		GODBOLT_DEF_LANGUAGE("the source", "c, c++ or rust") ","
 		GODBOLT_DEF_SOURCE ","
 		"\"filters\":{\"type\":\"object\",\"additionalProperties\":false,"
-		"\"properties\":{\"intel\":{\"type\":\"boolean\",\"default\":true},"
-		"\"demangle\":{\"type\":\"boolean\",\"default\":true},"
-		"\"directives\":{\"type\":\"boolean\",\"default\":true},"
-		"\"commentOnly\":{\"type\":\"boolean\",\"default\":true},"
-		"\"labels\":{\"type\":\"boolean\",\"default\":true},"
-		"\"libraryCode\":{\"type\":\"boolean\",\"default\":false},"
-		"\"trim\":{\"type\":\"boolean\",\"default\":false}},"
+		"\"properties\":{" XL_JOIN(",", ",", GODBOLT_FILTER_LIST(GODBOLT_FILTER_SCHEMA)) "},"
 		"\"description\":\"How Compiler Explorer filters the assembly. The "
 		"defaults are those of the Compiler Explorer site. The assembly has "
 		"Intel syntax and demangled names, and it has no assembler directives, "
@@ -3174,6 +3160,12 @@ static struct {
 	},
 };
 
+#undef GODBOLT_FILTER_SCHEMA
+#undef GODBOLT_IF_false
+#undef GODBOLT_IF_true
+#undef GODBOLT_FILTER_LIST
+#undef GODBOLT_ACTION_LIST
+#undef GODBOLT_SHARE_LIST
 #undef GODBOLT_DEF_HINTS
 #undef GODBOLT_DEF_OFFSET
 #undef GODBOLT_DEF_ARGS
@@ -3226,25 +3218,25 @@ godbolt_definition (void const        *service,
 }
 
 /* The start() and definition() of each kind. */
-#define GODBOLT_ENTRIES(name, NAME, extra)                              \
+#define GODBOLT_TOOL_ENTRIES(id, name, flags)                           \
         static void                                                     \
         godbolt_##name##_start (struct mcp_slot    *slot,               \
                                 struct json_object *args)               \
         {                                                               \
-                godbolt_start(slot, args, GODBOLT_##NAME);              \
+                godbolt_start(slot, args, GODBOLT_##id);                \
         }                                                               \
                                                                         \
         static struct json_object *                                     \
         godbolt_##name##_definition (void const *service)               \
         {                                                               \
-                return godbolt_definition(service, GODBOLT_##NAME);     \
+                return godbolt_definition(service, GODBOLT_##id);       \
         }
 
-GODBOLT_TOOLS_X(GODBOLT_ENTRIES)
+GODBOLT_TOOL_LIST(GODBOLT_TOOL_ENTRIES)
 
-#undef GODBOLT_ENTRIES
+#undef GODBOLT_TOOL_ENTRIES
 
-#define GODBOLT_KIND(name, NAME, extra)                                 \
+#define GODBOLT_TOOL_KIND(id, name, extra)                              \
         {                                                               \
                 .definition = godbolt_##name##_definition,              \
                 .start = godbolt_##name##_start,                        \
@@ -3254,10 +3246,10 @@ GODBOLT_TOOLS_X(GODBOLT_ENTRIES)
         },
 
 struct plugin const askai_plugin = {
-	.tools = { GODBOLT_TOOLS_X(GODBOLT_KIND) },
+	.tools = { GODBOLT_TOOL_LIST(GODBOLT_TOOL_KIND) },
 	.configure = godbolt_configure,
 	.config_size = sizeof (struct godbolt_config)
 };
 
-#undef GODBOLT_KIND
-#undef GODBOLT_TOOLS_X
+#undef GODBOLT_TOOL_KIND
+#undef GODBOLT_TOOL_LIST
