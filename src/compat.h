@@ -44,7 +44,6 @@ diag_clang(ignored "-Wpre-c23-compat")
 #endif // __STDC_VERSION__ >= 202000L
 
 #define array_size(x) (sizeof (x) / sizeof (x)[0])
-#define last_index(x) (array_size(x) - 1U)
 #define container_of(ptr, T, member) \
         ((T *)(void *)((unsigned char *)(ptr) - offsetof(T, member)))
 
