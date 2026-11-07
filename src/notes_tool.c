@@ -467,10 +467,11 @@ notes_tool_run (struct mcp_slot *slot,
 		notes_revision_argv(&call->revision, notes, repo, cmd, argv);
 	else
 		notes_argv(notes, cmd, words, argv);
+	char *const env[] = { util_env_path(), GIT_ENV_FIXED, nullptr };
 	struct child_cmd const c = {
 		.file = "git",
 		.argv = argv,
-		.envp = notes_env(notes),
+		.envp = env,
 		.in = buf_peek(in),
 		.max = NOTES_MAX,
 		.deadline = loop->now + NOTES_NS,

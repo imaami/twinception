@@ -169,10 +169,6 @@ notes_create (char const *path,
 extern void
 notes_destroy (struct notes **p_notes);
 
-/** Returns the environment that git runs in. */
-extern char *const *
-notes_env (struct notes const *notes);
-
 /** The canonical Git common directory, resolving worktree indirections. */
 extern char const *
 notes_directory (struct notes const *notes);

@@ -21,9 +21,6 @@
 #include "oid.h"
 #include "util.h"
 
-/* The variables of the environment, its nullptr included. */
-enum { ENV = 10 };
-
 /* Only this namespace is exposed by the notes tool. */
 #define BRANCH "refs/heads/notes/"
 
@@ -40,7 +37,6 @@ static struct cstr_view const notes_sides[] = {
 };
 
 struct notes {
-	char *env[ENV];
 	char *dir;    /* the real path of the shared session repository */
 	char *participant;
 	char *directory; /* canonical Git common directory */
@@ -271,9 +267,6 @@ notes_create (char const *path,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	char *const vars[] = { util_env_path(), GIT_ENV_FIXED, nullptr };
-	static_assert(sizeof vars == sizeof notes->env);
-	memcpy(notes->env, vars, sizeof vars);
 	notes->fd = -1;
 	notes->named = named;
 	if (!(notes->participant = strdup(participant))) {
@@ -304,12 +297,6 @@ notes_destroy (struct notes **p_notes)
 	notes->directory = nullptr;
 	util_close(&notes->fd);
 	free(notes);
-}
-
-char *const *
-notes_env (struct notes const *notes)
-{
-	return notes->env;
 }
 
 char const *
