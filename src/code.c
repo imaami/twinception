@@ -36,7 +36,8 @@ enum {
 /* The arguments: X(ID, name). */
 #define CODE_ARG_LIST(X)                                                   \
         X(REPO, "repo") X(ACTION, "action") X(PATH, "path") X(NAME, "name") \
-        X(LINE, "line") X(REVISION, "revision") X(OFFSET, "offset")
+        X(LINE, "line") X(WARNINGS, "warnings") X(REVISION, "revision")      \
+        X(OFFSET, "offset")
 
 #define CODE_ARG_ENUM(id, ...) CODE_ARG_##id,
 enum code_arg : uint8_t { CODE_ARG_LIST(CODE_ARG_ENUM) CODE_ARGS };
@@ -188,10 +189,11 @@ code_definition (void const *service)
 			"union it lists the members with their offsets, sizes and padding, "
 			"inside anonymous members too. outline lists the names that path "
 			"declares, each with the line where it is written, which can be passed "
-			"to describe as line. Places are path:line; git read accepts the commit "
-			"and the path. Only committed files are visible. A .c file must be in "
-			"the compile commands; a header is parsed with the flags of the .c file "
-			"nearest to it."),
+			"to describe as line. diagnostics lists clang's errors and warnings for "
+			"path. Places are path:line; git read accepts the commit and the path. "
+			"Only committed files are visible. A .c file must be in the compile "
+			"commands; a header is parsed with the flags of the .c file nearest to "
+			"it."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
@@ -208,6 +210,10 @@ code_definition (void const *service)
 				"line", schema_count(1,
 					"For describe: the line of path where name is written, such "
 					"as the line of a local variable or of a macro use."),
+				"warnings", schema_array(schema_property("string", nullptr),
+					CXI_WARNINGS,
+					"For diagnostics: warning options to add to the build's, "
+					"such as -Wpadded or -Wsign-conversion."),
 				"revision", schema_property("string",
 					"The commit, in a form that the git tool accepts: HEAD "
 					"(the default), a branch, a tag or a commit ID, with ^ "
@@ -394,7 +400,7 @@ code_args (struct code const  *code,
 	char const *bad = !action.data ? "action" : !path.data ? "path"
 	                : of[CODE_ARG_NAME] && !name.data ? "name"
 	                : !revision.data ? "revision" : nullptr;
-	static_assert(CODE_WORD == 1024, "update the text of the limit");
+	static_assert(CODE_WORD == 1024 && CXI_WARNINGS == 16, "update the texts of the limits");
 	if (bad)
 		return util_text_printf(why, "The %s argument must be a string of 1 to 1024 bytes "
 		                        "without a NUL.", bad), EINVAL;
@@ -402,6 +408,15 @@ code_args (struct code const  *code,
 	if (of[CODE_ARG_LINE] && !line)
 		return util_text_printf(why, "The line argument must be a whole number from 1."),
 		       EINVAL;
+	struct json_object *warnings = of[CODE_ARG_WARNINGS];
+	size_t const n = jb_len(warnings);
+	size_t i = 0;
+	while (i < n && code_string(jb_at(warnings, i)).data)
+		++i;
+	if (warnings && (!json_object_is_type(warnings, json_type_array) || n > CXI_WARNINGS ||
+	                 i < n))
+		return util_text_printf(why, "The warnings argument must be an array of at most 16 "
+		                        "strings of 1 to 1024 bytes without a NUL."), EINVAL;
 	int e = git_pin_add(&call->pin, revision);
 	if (e == EINVAL)
 		return util_text_printf(why, "The revision argument must be a commit reference or "
@@ -415,6 +430,8 @@ code_args (struct code const  *code,
 	e = e ? e : code_word(call, CXI_KEY_NAME, name);
 	e = e ? e : code_word(call, CXI_KEY_LINE, (struct cstr_view){ line ? number : nullptr,
 	                                                              (size_t)(end - number) });
+	for (i = 0; !e && i < n; ++i)
+		e = code_word(call, CXI_KEY_WARNING, jb_view(jb_at(warnings, i)));
 	e = e ? e : code_word(call, CXI_KEY_CDB, cstr_view(cfg->codes[r] + repo.len + 1));
 	e = e ? e : code_word(call, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
 	return e ? e : code_word(call, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED

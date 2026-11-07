@@ -622,6 +622,13 @@ contain it. The layout of a record is cut at 2,000 rows, and the padding of
 a cut layout counts only those rows. `describe` of `struct.member` prints
 any one member.
 
+`diagnostics` lists clang's errors and warnings for `path` in clang's order,
+one per line as `path:line: warning: text [-Wflag]`, including those in the
+headers that it includes, without notes or columns. `warnings` adds up to
+16 warning options to those of the build, each `-W` or `-Wno-` and the
+name of a warning, optionally with `=DIGITS`. A file outside the tree that
+cannot be opened is reported as not found.
+
 Every result starts with the repository and the full ID of the commit.
 Places are `path:line`, relative to the top of the repository, or absolute
 for a system header. The `read` command of the git tool accepts the commit

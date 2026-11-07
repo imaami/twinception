@@ -12,9 +12,10 @@
 #include <stdint.h>
 
 /** The actions of the code tool: X(ID, name). */
-#define CXI_ACTION_LIST(X)      \
-        X(DESCRIBE, "describe") \
-        X(OUTLINE,  "outline")
+#define CXI_ACTION_LIST(X)            \
+        X(DESCRIBE,    "describe")    \
+        X(OUTLINE,     "outline")     \
+        X(DIAGNOSTICS, "diagnostics")
 
 #define CXI_ACTION_ENUM(id, ...) CXI_ACTION_##id,
 enum cxi_action : uint8_t { CXI_ACTION_LIST(CXI_ACTION_ENUM) CXI_ACTIONS };
@@ -27,6 +28,7 @@ enum cxi_action : uint8_t { CXI_ACTION_LIST(CXI_ACTION_ENUM) CXI_ACTIONS };
         X(PATH,       "path")      \
         X(NAME,       "name")      \
         X(LINE,       "line")      \
+        X(WARNING,    "warning")   \
         X(COMMIT,     "commit")    \
         X(DEADLINE,   "deadline")  \
         X(TOP,        "top")       \
@@ -37,5 +39,8 @@ enum cxi_action : uint8_t { CXI_ACTION_LIST(CXI_ACTION_ENUM) CXI_ACTIONS };
 #define CXI_KEY_ENUM(id, ...) CXI_KEY_##id,
 enum cxi_key : uint8_t { CXI_KEY_LIST(CXI_KEY_ENUM) CXI_KEYS };
 #undef CXI_KEY_ENUM
+
+/** The most warning options of a request. */
+enum { CXI_WARNINGS = 16 };
 
 #endif /* ASKAI_SRC_CXI_H_ */

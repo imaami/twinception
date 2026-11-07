@@ -73,7 +73,9 @@ struct cxi {
 	struct cxi_out     out;
 	struct cstr_view   key[CXI_KEYS];  /* each value, or data nullptr */
 	char const        *file;           /* the path of the file in the tree */
+	char const        *warning[CXI_WARNINGS];
 	CXTranslationUnit  tu;
+	uint64_t           n_warnings;
 	uint64_t           action;         /* enum cxi_action */
 	uint64_t           line;           /* the value of line, or 0 */
 };
@@ -1188,6 +1190,69 @@ cxi_describe (struct cxi *x)
 	return (int)x->out.e;
 }
 
+static void
+cxi_out_diagnostic (struct cxi_out            *out,
+                    CXDiagnostic               d,
+                    enum CXDiagnosticSeverity  severity)
+{
+	CXSourceLocation const loc = clang_getDiagnosticLocation(d);
+	CXFile file;
+	clang_getExpansionLocation(loc, &file, nullptr, nullptr, nullptr);
+	if (file)
+		cxi_out_place(out, "", loc, ": ");
+	cxi_out_printf(out, "%s: ", severity >= CXDiagnostic_Error ? "error" : "warning");
+	cxi_out_clang(out, clang_getDiagnosticSpelling(d));
+	CXString option = clang_getDiagnosticOption(d, nullptr);
+	char const *o = clang_getCString(option);
+	if (o && *o) {
+		cxi_out_printf(out, " [");
+		cxi_out_text(out, o);
+		cxi_out_printf(out, "]");
+	}
+	clang_disposeString(option);
+	cxi_out_printf(out, "\n");
+}
+
+/* Appends the errors and warnings, but not the error that clang cannot
+ * open a file: every file of the tree can be opened, and for one outside
+ * it the reason, such as "Permission denied", would show whether it exists.
+ * The error that the file is not found follows it.
+ */
+static int
+cxi_diagnostics (struct cxi *x)
+{
+	static char const unopened[] = "cannot open file '";
+	struct cxi_out rows = { .text = DSTR_INIT, .tree = x->out.tree };
+	unsigned errors = 0;
+	unsigned warnings = 0;
+	for (unsigned i = 0, n = clang_getNumDiagnostics(x->tu); i < n; ++i) {
+		CXDiagnostic d = clang_getDiagnostic(x->tu, i);
+		CXString text = clang_getDiagnosticSpelling(d);
+		char const *s = clang_getCString(text);
+		enum CXDiagnosticSeverity const severity =
+			s && !strncmp(s, unopened, sizeof unopened - 1)
+			? CXDiagnostic_Ignored : clang_getDiagnosticSeverity(d);
+		clang_disposeString(text);
+		errors += severity >= CXDiagnostic_Error;
+		warnings += severity == CXDiagnostic_Warning;
+		if (severity >= CXDiagnostic_Warning)
+			cxi_out_diagnostic(&rows, d, severity);
+		clang_disposeDiagnostic(d);
+	}
+	cxi_head(x);
+	cxi_out_printf(&x->out, "diagnostics of ");
+	cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
+	cxi_out_printf(&x->out, " with the build's flags");
+	for (size_t i = 0; i < x->n_warnings; ++i)
+		cxi_out_printf(&x->out, "%s%s", i ? " " : " and ", x->warning[i]);
+	cxi_out_printf(&x->out, ": %u error%s, %u warning%s.]\n", errors, util_s(errors),
+	               warnings, util_s(warnings));
+	cxi_out_put(&x->out, dstr_get(&rows.text), dstr_len(&rows.text));
+	x->out.e = x->out.e ? x->out.e : rows.e;
+	dstr_cleanup(&rows.text);
+	return (int)x->out.e;
+}
+
 /* Reads the words KEY=VALUE from @p *at up to "--", and moves past it. */
 static int
 cxi_words (struct cxi  *x,
@@ -1200,7 +1265,8 @@ cxi_words (struct cxi  *x,
 		struct cstr_view key = {};
 		size_t const k = cstr_view_cut(&value, '=', &key)
 		                 ? cstr_view_index(cxi_keys, CXI_KEYS, key) : CXI_KEYS;
-		bool const once = k < CXI_KEYS && !x->key[k].data &&
+		bool const warning = k == CXI_KEY_WARNING && x->n_warnings < CXI_WARNINGS;
+		bool const once = k < CXI_KEYS && (!x->key[k].data || warning) &&
 		                  (k != CXI_KEY_UNCONFINED || cstr_view_equal(value, CSTR_VIEW("1")));
 		size_t i = 0;
 		while (i < value.len && (unsigned char)value.data[i] >= 0x20 && value.data[i] != 0x7f)
@@ -1208,7 +1274,7 @@ cxi_words (struct cxi  *x,
 		if (!once) {
 			cxi_out_path(&x->out, cstr_view(argv[*at]));
 			cxi_out_printf(&x->out, " is not a word that askai-code takes: it takes each "
-			               "key once and unconfined=1.");
+			               "key once, warning up to 16 times, and unconfined=1.");
 			return EINVAL;
 		}
 		if (i < value.len) {
@@ -1216,6 +1282,8 @@ cxi_words (struct cxi  *x,
 			return EINVAL;
 		}
 		x->key[k] = value;
+		if (warning)
+			x->warning[x->n_warnings++] = value.data;
 	}
 	*at += *at < argc;
 	return 0;
@@ -1287,7 +1355,9 @@ cxi_check (struct cxi *x)
 	return 0;
 }
 
-/* Checks the action, the keys of the action and the path. */
+/* Checks the action, the keys of the action and the path. A warning is
+ * -W or -Wno-, a name of a-z, 0-9 and '-', and maybe =DIGITS.
+ */
 static int
 cxi_valid (struct cxi *x)
 {
@@ -1295,6 +1365,16 @@ cxi_valid (struct cxi *x)
 	struct cstr_view const path = x->key[CXI_KEY_PATH];
 	x->action = cstr_view_index(cxi_actions, CXI_ACTIONS, x->key[CXI_KEY_ACTION]);
 	bool const describe = x->action == CXI_ACTION_DESCRIBE;
+	size_t i = 0;
+	for (; i < x->n_warnings; ++i) {
+		char const *w = x->warning[i];
+		size_t const at = !strncmp(w, "-Wno-", 5) ? 5 : !strncmp(w, "-W", 2) ? 2 : 0;
+		size_t const name = at ? strspn(w + at, "abcdefghijklmnopqrstuvwxyz0123456789-") : 0;
+		char const *rest = w + at + name;
+		size_t const digits = *rest == '=' ? strspn(rest + 1, "0123456789") : 0;
+		if (!name || (*rest && (!digits || rest[1 + digits])))
+			break;
+	}
 	struct cstr_view rest = path;
 	struct cstr_view part = {};
 	int e = !path.len || *path.data == '/' ? EINVAL : 0;
@@ -1309,9 +1389,16 @@ cxi_valid (struct cxi *x)
 	                  ? "name and line are only for describe."
 	                : line.data && (util_number(line.data, line.len, UINT32_MAX, &x->line) ||
 	                                !x->line)
-	                  ? "line must be a whole number from 1." : nullptr;
+	                  ? "line must be a whole number from 1."
+	                : x->n_warnings && x->action != CXI_ACTION_DIAGNOSTICS
+	                  ? "warnings is only for diagnostics." : nullptr;
 	if (why) {
 		cxi_out_printf(&x->out, "%s", why);
+	} else if (i < x->n_warnings) {
+		cxi_out_printf(&x->out, "Each warning must be -W or -Wno- and the name of a warning, "
+		               "such as -Wpadded: ");
+		cxi_out_path(&x->out, cstr_view(x->warning[i]));
+		cxi_out_printf(&x->out, ".");
 	} else if (memchr(path.data, ':', path.len)) {
 		cxi_out_printf(&x->out, "Give the commit as revision and the path alone.");
 	} else if (e) {
@@ -1558,6 +1645,7 @@ cxi_parse (struct cxi        *x,
 	static int (*const action[CXI_ACTIONS])(struct cxi *) = {
 		[CXI_ACTION_DESCRIBE] = cxi_describe,
 		[CXI_ACTION_OUTLINE] = cxi_outline,
+		[CXI_ACTION_DIAGNOSTICS] = cxi_diagnostics,
 	};
 	/* -fparse-all-comments gives describe the plain comments of a
 	 * declaration; with it, -Wdocumentation would warn about them. */
@@ -1568,7 +1656,7 @@ cxi_parse (struct cxi        *x,
 	size_t n = 0;
 	for (size_t i = 0; i < dstr_len(words); ++i)
 		n += !dstr_get(words)[i];
-	size_t const argc = n + n_extra;
+	size_t const argc = n + n_extra + x->n_warnings;
 	char const **argv = malloc(argc * sizeof *argv);
 	if (!argv)
 		return ENOMEM;
@@ -1576,6 +1664,7 @@ cxi_parse (struct cxi        *x,
 	for (size_t i = 0; i < n; ++i, word += strlen(word) + 1)
 		argv[i] = word;
 	memcpy(argv + n, extra, n_extra * sizeof *argv);
+	memcpy(argv + n + n_extra, x->warning, x->n_warnings * sizeof *argv);
 	int const copy = fcntl(1, F_DUPFD_CLOEXEC, 3);
 	int null = open("/dev/null", O_WRONLY | O_CLOEXEC);
 	int e = copy < 0 || null < 0 || dup2(null, 1) < 0 || chdir(tree) || clearenv() ? errno : 0;

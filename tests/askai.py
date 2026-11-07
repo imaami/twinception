@@ -10197,6 +10197,9 @@ def check_code(binary, up):
         write("src/sub/far.h", "#define FAR_ONE 1\nint far_value;\n")
         write("src/wt.c", '#include "proj/src/wt.h"\nint wt_c;\n')
         write("src/wt.h", "int wt_committed;\n")
+        write("src/warn.c", '#include "lay.h"\n#pragma message "first line\\n[forged line]"\n'
+                            "unsigned long w (int i) { return i; }\nint broken = missing;\n"
+                            "int used = sizeof (struct holes);\n")
         os.makedirs(f"{d}/outside")
         with open(f"{d}/outside/secret.h", "w") as f:
             f.write("int SECRET_TOKEN_7f3a;\n")
@@ -10222,7 +10225,7 @@ def check_code(binary, up):
             json.dump([{"directory": f"{d}/build", "file": f"{repo}/src/{c}",
                         "arguments": ["cc", f"-I{repo}", f"-I{d}", "-c", f"{repo}/src/{c}"]}
                        for c in ("a.c", "b.c", "pragma.c", "deep.c", "lay.c", "big.c",
-                                 "leak.c", "far.c", "wt.c")], f)
+                                 "leak.c", "far.c", "wt.c", "warn.c")], f)
 
         def call(ai, error=False, **arguments):
             status, _, body = ai.rpc("tools/call", {"name": "code", "arguments": arguments})
@@ -10269,10 +10272,11 @@ def check_code(binary, up):
             assert [t["name"] for t in tools] == ["ask_ai", "git", "code"], tools
             schema = tools[2]["inputSchema"]
             assert list(schema["properties"]) == [
-                "repo", "action", "path", "name", "line", "revision", "offset"] and \
-                schema["required"] == ["repo", "action", "path"] and \
+                "repo", "action", "path", "name", "line", "warnings", "revision",
+                "offset"] and schema["required"] == ["repo", "action", "path"] and \
                 schema["properties"]["repo"]["enum"] == ["proj", "lib"] and \
-                schema["properties"]["action"]["enum"] == ["describe", "outline"] and \
+                schema["properties"]["action"]["enum"] == [
+                    "describe", "outline", "diagnostics"] and \
                 "Only committed files are visible" in tools[2]["description"], tools[2]
 
             # askai checks the types of the arguments, and askai-code checks
@@ -10291,6 +10295,9 @@ def check_code(binary, up):
                     ({**outline, "name": "x" * 1025}, string.format("name")),
                     ({**outline, "line": "1"}, "The line argument must be a whole number "
                      "from 1."),
+                    *(({**outline, "warnings": w}, "The warnings argument must be an array "
+                       "of at most 16 strings of 1 to 1024 bytes without a NUL.")
+                      for w in ("-Wpadded", ["-W"] * 17, [1])),
                     ({**outline, "revision": "main..x"},
                      "The revision argument must be a commit reference or hash with ^ "
                      "or ~, such as HEAD~1."),
@@ -10328,11 +10335,12 @@ def check_code(binary, up):
                 last["env"]["GIT_CEILING_DIRECTORIES"] == f"{d}:{d}", last["env"]
             assert call(ai, **outline, revision="HEAD~1") == \
                 f"[proj at {parent}: src/a.c, 0 names.]\n"
-            call(ai, repo="proj", action="describe", path="src/a.c", name="count", line=12)
+            call(ai, repo="proj", action="describe", path="src/a.c", name="count", line=12,
+                 warnings=["-Wpadded", "-Wextra"])
             with open(f"{bin}/last.json") as f:
-                assert json.load(f)["argv"][1:7] == [
+                assert json.load(f)["argv"][1:8] == [
                     "action=describe", "repo=proj", "path=src/a.c", "name=count", "line=12",
-                    f"cdb={cdb}"]
+                    "warning=-Wpadded", "warning=-Wextra"]
             assert call(ai, **outline, revision="HEAD", offset=6) == \
                 f"at {head}: src/a.c, 0 names.]\n"
             # A helper that is gone after the start fails the call.
@@ -10488,7 +10496,7 @@ def check_code(binary, up):
                 f"[proj at {head}: src/b.c, 2 names.]\n"
                 "1 variable b_value: int\n2 variable b_more: int\n")
     print("code: off reasons, refusals, request, statuses, deadline, cap, outline of "
-          "an export, its cache, its limits, describe and confinement: PASS")
+          "an export, its cache, its limits, describe, diagnostics and confinement: PASS")
 
 
 def check_code_describe(binary, up, call, head, d, cdb):
@@ -10619,6 +10627,34 @@ def check_code_describe(binary, up, call, head, d, cdb):
             assert describe(error=True, **arguments) == text, (arguments, text)
         assert call(ai, error=True, repo="proj", action="outline", path="src/lay.c",
                     name="x") == "name and line are only for describe."
+        # diagnostics: errors and warnings without notes or columns,
+        # including those in headers, and a message with a newline printed
+        # on one line.
+        diagnostics = {"repo": "proj", "action": "diagnostics", "path": "src/warn.c"}
+        assert call(ai, **diagnostics) == (
+            f"{at}diagnostics of src/warn.c with the build's flags: 1 error, 1 warning.]\n"
+            "src/warn.c:2: warning: first line\\n[forged line] [-W#pragma-messages]\n"
+            "src/warn.c:4: error: use of undeclared identifier 'missing'\n")
+        assert call(ai, **diagnostics, warnings=["-Wpadded", "-Wsign-conversion"]) == (
+            f"{at}diagnostics of src/warn.c with the build's flags and -Wpadded "
+            "-Wsign-conversion: 1 error, 5 warnings.]\n"
+            "src/lay.h:25: warning: padding size of 'struct trail::(anonymous at "
+            "src/lay.h:25)' with 3 bytes to alignment boundary [-Wpadded]\n"
+            "src/warn.c:2: warning: first line\\n[forged line] [-W#pragma-messages]\n"
+            "src/warn.c:3: warning: implicit conversion changes signedness: 'int' to "
+            "'unsigned long' [-Wsign-conversion]\n"
+            "src/warn.c:4: error: use of undeclared identifier 'missing'\n"
+            "src/lay.h:5: warning: padding struct 'struct holes' with 3 bytes to align 'b' "
+            "[-Wpadded]\n"
+            "src/lay.h:3: warning: padding size of 'struct holes' with 3 bytes to alignment "
+            "boundary [-Wpadded]\n"), call(ai, **diagnostics, warnings=["-Wpadded",
+                                                                       "-Wsign-conversion"])
+        for warning in ("-Wl,x", "-fplugin=x"):
+            assert call(ai, error=True, **diagnostics, warnings=[warning]) == (
+                "Each warning must be -W or -Wno- and the name of a warning, such as "
+                f"-Wpadded: {warning}.")
+        assert call(ai, error=True, repo="proj", action="outline", path="src/lay.c",
+                    warnings=["-Wpadded"]) == "warnings is only for diagnostics."
         # The layout of a record of 20,000 members is cut at 2,000 rows, and
         # its padding is that of the rows shown.
         text = call(ai, repo="proj", action="describe", path="src/big.c", name="struct big")
@@ -10638,6 +10674,11 @@ def check_code_describe(binary, up, call, head, d, cdb):
         assert call(ai, error=True, **leak) == (
             "No symbol SECRET_TOKEN_7f3a in the translation unit of src/leak.c, and no "
             "name of the repository contains it.")
+        # diagnostics reports a file outside the tree as not found, as if it
+        # did not exist.
+        text = call(ai, repo="proj", action="diagnostics", path="src/leak.c")
+        assert "1 error, 0 warnings.]\n" in text and "secret.h' file not found" in text and \
+            "Permission denied" not in text and "SECRET" not in text, text
     with Askai(binary, "-u", up.url(), "--git", f"{d}/proj", "--code", f"proj={cdb}",
                "--code-unconfined") as ai:
         assert ai.listed("code tool:")[2] == "confinement  none (--code-unconfined)"
