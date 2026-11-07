@@ -57,7 +57,7 @@ static constexpr uint64_t MEMORY_HIGH_MIN = 256 << 20;
  * cache, against its limit; PSI the memory pressure stall information; and
  * TEST the test aid's file.
  */
-#define BRAINSTEM_INPUTS(X)     \
+#define BRAINSTEM_INPUT_LIST(X) \
         X(RESIDENT, "resident") \
         X(SYSTEM,   "system")   \
         X(CGROUP,   "cgroup")   \
@@ -66,7 +66,7 @@ static constexpr uint64_t MEMORY_HIGH_MIN = 256 << 20;
 
 #define BRAINSTEM_INPUT(id, name) PRESSURE_##id,
 enum brainstem_input {
-	BRAINSTEM_INPUTS(BRAINSTEM_INPUT)
+	BRAINSTEM_INPUT_LIST(BRAINSTEM_INPUT)
 	PRESSURE_INPUTS
 };
 #undef BRAINSTEM_INPUT
@@ -75,14 +75,14 @@ enum brainstem_input {
  *  in enum brainstem_psi, and the name of its file in /proc/pressure, also
  *  its label in the metrics.
  */
-#define BRAINSTEM_PSI(X)    \
-        X(CPU,    "cpu")    \
-        X(MEMORY, "memory") \
+#define BRAINSTEM_PSI_LIST(X) \
+        X(CPU,    "cpu")      \
+        X(MEMORY, "memory")   \
         X(IO,     "io")
 
 #define BRAINSTEM_PSI_ID(id, name) PSI_##id,
 enum brainstem_psi {
-	BRAINSTEM_PSI(BRAINSTEM_PSI_ID)
+	BRAINSTEM_PSI_LIST(BRAINSTEM_PSI_ID)
 	PSI_RESOURCES
 };
 #undef BRAINSTEM_PSI_ID

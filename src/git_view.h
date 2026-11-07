@@ -10,7 +10,7 @@
 struct git_view;
 
 /** The namespaces of the refs that a snapshot takes, as X(prefix). */
-#define GIT_VIEW_REFS(X) X("refs/heads/") X("refs/tags/") X("refs/remotes/")
+#define GIT_VIEW_REF_LIST(X) X("refs/heads/") X("refs/tags/") X("refs/remotes/")
 
 /**
  * Create a private bare repository sharing the discovered object directory.
@@ -18,8 +18,8 @@ struct git_view;
  * sha256, then an optional HEAD object ID. Paths come from trusted Git discovery.
  * An existing shallow file must be regular, at most 4 MiB and contain complete
  * object ID lines. Refs are newline-terminated "OID refname" records from
- * the namespaces of GIT_VIEW_REFS. No source configuration, worktree, index
- * or other refs are imported. The newlines after the two paths in
+ * the namespaces of GIT_VIEW_REF_LIST. No source configuration, worktree,
+ * index or other refs are imported. The newlines after the two paths in
  * @p metadata are overwritten with NULs; other input storage remains the
  * caller's. Returns nullptr with EINVAL for malformed input, ENOBUFS for
  * a shallow file over 4 MiB, or a system error in @p e.

@@ -71,14 +71,14 @@ static struct {
 
 #define LOOP_HIST(name, help, labels, field) \
         { name, help, labels, offsetof(struct loop_metrics, field), LOOP, HISTOGRAM, NANO }
-/* WORK, METHOD and LENT expand a list into the rows of a family, whose
- * help is on the row of the value 0, the first.
+/* Each METRICS_*_ROW expands a list into the rows of a family, whose help
+ * is on the row of the value 0, the first.
  */
-#define WORK(id, unit, bound) \
+#define METRICS_WORK_ROW(id, unit, bound) \
         { "askai_loop_step_work_max", LOOP_##id ? nullptr : "The most of a unit of " \
           "work one step did (design section 1).", "unit=\"" unit "\"", \
           offsetof(struct loop_metrics, work[LOOP_##id]), LOOP, GAUGE, ONE },
-#define METHOD(id, method, eras) \
+#define METRICS_METHOD_ROW(id, method, eras) \
         { "askai_request_seconds", METHOD_##id ? nullptr : "Time from a request's head " \
           "to its end, by MCP method.", "method=\"" method "\"", \
           offsetof(struct metrics_mcp, methods[METHOD_##id]), MCP, HISTOGRAM, NANO },
@@ -90,7 +90,7 @@ static struct {
         VALUE(name, help, labels, struct metrics_mcp, kept.field, MCP, GAUGE, ONE)
 #define CALLS(name, help, field) \
         VALUE(name, help, "", struct metrics_mcp, calls.field, MCP, COUNTER, ONE)
-#define LENT(id, tool) \
+#define METRICS_LENT_ROW(id, tool) \
         VALUE("askai_turn_tool_calls_total", LENT_##id ? nullptr : "Tool calls the turns " \
               "made, by tool; unknown: one not lent, or of no tool's name.", \
               "tool=\"" tool "\"", struct metrics_mcp, calls.lent[LENT_##id], MCP, \
@@ -107,17 +107,17 @@ static struct {
         VALUE(name, help, labels, struct task_pool_metrics, field, TASKS_ALL, COUNTER, ONE)
 #define LEDGERS(name, help, labels, field, kind) \
         VALUE(name, help, labels, struct ledger_metrics, field, LEDGER, kind, ONE)
-#define PSI_RATIO(id, resource) \
+#define METRICS_PSI_RATIO_ROW(id, resource) \
         VALUE("askai_pressure_ratio", PSI_##id ? nullptr : "Share of the last 10 s in " \
               "which some task stalled on the resource (PSI some avg10).", \
               "resource=\"" resource "\"", struct brainstem_metrics, psi[PSI_##id], PSI, \
               GAUGE, PERMYRIAD),
-#define PSI_STALLED(id, resource) \
+#define METRICS_PSI_STALLED_ROW(id, resource) \
         VALUE("askai_pressure_stalled_seconds_total", PSI_##id ? nullptr : "Time some " \
               "task stalled on the resource (PSI some total).", \
               "resource=\"" resource "\"", struct brainstem_metrics, \
               psi_total[PSI_##id], PSI, COUNTER, MICRO),
-#define INPUT(id, input) \
+#define METRICS_INPUT_ROW(id, input) \
         VALUE("askai_memory_pressure_input_level", PRESSURE_##id ? nullptr : "The " \
               "memory pressure level each input gives.", "input=\"" input "\"", \
               struct brainstem_metrics, inputs[PRESSURE_##id], BRAINSTEM, GAUGE, ONE),
@@ -133,8 +133,8 @@ static struct metrics_entry const table[] = {
 	          late),
 	LOOP_HIST("askai_loop_inbox_delay_seconds",
 	          "Time from a message's post to its handler.", "", inbox),
-	LOOP_UNIT_LIST(WORK)
-	METRICS_METHODS(METHOD)
+	LOOP_UNIT_LIST(METRICS_WORK_ROW)
+	METRICS_METHOD_LIST(METRICS_METHOD_ROW)
 	CALLS("askai_calls_cancelled_total", "Tool calls that a loop cancelled while "
 	      "their job ran, for a hang-up, a closed stream, a drain or a "
 	      "notifications/cancelled.", cancelled),
@@ -142,7 +142,7 @@ static struct metrics_entry const table[] = {
 	      "call gone (a stale handle).", dropped),
 	CALLS("askai_turns_total", "Upstream calls made as turns of ask calls that "
 	      "lend the upstream tools (--upstream-tools).", turns),
-	METRICS_LENT(LENT)
+	METRICS_LENT_LIST(METRICS_LENT_ROW)
 	VALUE("askai_compactions_total", "Contexts of ask calls' turns compacted: "
 	      "by the upstream's compact call, or by askai, the context full.",
 	      "by=\"upstream\"", struct metrics_mcp, calls.compacted[0], MCP, COUNTER,
@@ -274,12 +274,12 @@ static struct metrics_entry const table[] = {
 	      BRAINSTEM, GAUGE, ONE),
 	VALUE("askai_max_fds", "The descriptor limit.", "", struct brainstem_metrics,
 	      fd_limit, BRAINSTEM, GAUGE, ONE),
-	BRAINSTEM_PSI(PSI_RATIO)
-	BRAINSTEM_PSI(PSI_STALLED)
+	BRAINSTEM_PSI_LIST(METRICS_PSI_RATIO_ROW)
+	BRAINSTEM_PSI_LIST(METRICS_PSI_STALLED_ROW)
 	VALUE("askai_memory_pressure_level", "Memory pressure: 0 none, 1 high, 2 "
 	      "critical (design section 5).", "", struct brainstem_metrics, pressure,
 	      BRAINSTEM, GAUGE, ONE),
-	BRAINSTEM_INPUTS(INPUT)
+	BRAINSTEM_INPUT_LIST(METRICS_INPUT_ROW)
 	VALUE("askai_memory_high_bytes", "Resident memory from which memory pressure "
 	      "is high.", "", struct brainstem_metrics, mem_high, BRAINSTEM, GAUGE, ONE),
 	VALUE("askai_memory_total_bytes", "The system's memory (MemTotal).", "",
@@ -318,21 +318,21 @@ static struct metrics_entry const table[] = {
 	        COUNTER, NANO),
 };
 
-#undef INPUT
-#undef PSI_STALLED
-#undef PSI_RATIO
+#undef METRICS_INPUT_ROW
+#undef METRICS_PSI_STALLED_ROW
+#undef METRICS_PSI_RATIO_ROW
 #undef TASKS_ALL
 #undef TASKS
 #undef MAN
 #undef JOBS
 #undef CONNS
-#undef LENT
+#undef METRICS_LENT_ROW
 #undef CALLS
 #undef KEPT
 #undef STASHED
 #undef VALUE
-#undef METHOD
-#undef WORK
+#undef METRICS_METHOD_ROW
+#undef METRICS_WORK_ROW
 #undef LOOP_HIST
 
 /* A histogram's cumulative buckets, to its own resolution, then its sum and

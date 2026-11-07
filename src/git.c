@@ -1044,7 +1044,7 @@ git_call_run (struct git_call *call,
 	};
 #define GIT_REF(s) s,
 	static char const *const refs[] = {
-		"for-each-ref", "--format=%(objectname) %(refname)", GIT_VIEW_REFS(GIT_REF) nullptr
+		"for-each-ref", "--format=%(objectname) %(refname)", GIT_VIEW_REF_LIST(GIT_REF) nullptr
 	};
 #undef GIT_REF
 	static char const *const resolve[] = {

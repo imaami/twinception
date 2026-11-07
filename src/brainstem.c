@@ -719,7 +719,7 @@ brainstem_psi (struct brainstem *bs,
 {
 #define PSI "/proc/pressure/"
 #define PSI_FILE(id, name) [PSI_##id] = PSI name,
-	static char const *const files[] = { BRAINSTEM_PSI(PSI_FILE) };
+	static char const *const files[] = { BRAINSTEM_PSI_LIST(PSI_FILE) };
 #undef PSI_FILE
 	for (size_t i = 0; i < array_size(files); ++i) {
 		char const *name = files[i] + sizeof PSI - 1;

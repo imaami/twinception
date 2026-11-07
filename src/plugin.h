@@ -67,8 +67,8 @@
 #include "web.h"
 
 /** The version of the plugin interface. Increase it whenever the
- *  interface changes and no PLUGIN_ABI() value changes. An example is a
- *  function whose behavior changes while its declaration stays the same.
+ *  interface changes and no PLUGIN_ABI_LIST() value changes. An example is
+ *  a function whose behavior changes while its declaration stays the same.
  *  PLUGIN_MANIFEST() stores it in the manifest so that askai does not load
  *  a plugin that was built with a different value.
  */
@@ -173,7 +173,7 @@ struct plugin {
  *  PLUGIN_MANIFEST() stores the plugin's values in the manifest so that
  *  askai can compare them with its own.
  */
-#define PLUGIN_ABI(X)                                                      \
+#define PLUGIN_ABI_LIST(X)                                                 \
         X(sizeof (void *)) X(sizeof (long)) X(alignof (max_align_t))       \
         X(sizeof (enum buf_pressure)) X(sizeof (struct cstr_view))         \
         X(sizeof (struct tool_kind)) X(offsetof (struct tool_kind, flags)) \
@@ -184,7 +184,7 @@ struct plugin {
         X(sizeof (struct web_response)) X(offsetof (struct plugin, configure))
 #define PLUGIN_ABI_U32(x) (uint32_t)(x),
 #define PLUGIN_ABI_N(x) + 1
-static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);
+static_assert(0 PLUGIN_ABI_LIST(PLUGIN_ABI_N) <= MANIFEST_ABI);
 #undef PLUGIN_ABI_N
 
 /**
@@ -199,19 +199,19 @@ static_assert(0 PLUGIN_ABI(PLUGIN_ABI_N) <= MANIFEST_ABI);
  * source file is a compile error. A second use in another source file of
  * the plugin is a link error.
  */
-#define PLUGIN_MANIFEST(...)                                         \
-        MANIFEST_NO_ASAN                                             \
-        [[gnu::section(".note.askai"), gnu::used, gnu::aligned(4),   \
-          gnu::visibility("hidden")]]                                \
-        struct manifest_note const plugin_manifest = {               \
-                .namesz = sizeof "askai",                            \
-                .descsz = sizeof (struct manifest),                  \
-                .type   = MANIFEST_TYPE,                             \
-                .owner  = "askai",                                   \
-                .desc   = { .epoch = PLUGIN_EPOCH,                   \
-                            .abi = { PLUGIN_ABI(PLUGIN_ABI_U32) },   \
-                            __VA_ARGS__ }                            \
-        };                                                           \
+#define PLUGIN_MANIFEST(...)                                            \
+        MANIFEST_NO_ASAN                                                \
+        [[gnu::section(".note.askai"), gnu::used, gnu::aligned(4),      \
+          gnu::visibility("hidden")]]                                   \
+        struct manifest_note const plugin_manifest = {                  \
+                .namesz = sizeof "askai",                               \
+                .descsz = sizeof (struct manifest),                     \
+                .type   = MANIFEST_TYPE,                                \
+                .owner  = "askai",                                      \
+                .desc   = { .epoch = PLUGIN_EPOCH,                      \
+                            .abi = { PLUGIN_ABI_LIST(PLUGIN_ABI_U32) }, \
+                            __VA_ARGS__ }                               \
+        };                                                              \
         EXPORT extern struct plugin const askai_plugin
 
 /* The rest of this file is askai's side. A plugin does not use it. */
@@ -239,7 +239,7 @@ struct plugin_loaded {
  * Loads the plugin in the file at @p path.
  *
  * It reads the manifest from the file first. The epoch and the
- * PLUGIN_ABI() values in the manifest must equal askai's own. The plugin's
+ * PLUGIN_ABI_LIST() values in the manifest must equal askai's. The plugin's
  * name and each tool name must be 1 to 31 characters of [-0-9_a-z]. The
  * file must have no thread-local storage, no constructor or destructor,
  * and no data that is still writable when the plugin's code runs, because

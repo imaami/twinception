@@ -312,7 +312,7 @@ plugin_manifest_check (struct manifest const *m,
                        char                  *why,
                        size_t                 len)
 {
-	static uint32_t const abi[MANIFEST_ABI] = { PLUGIN_ABI(PLUGIN_ABI_U32) };
+	static uint32_t const abi[MANIFEST_ABI] = { PLUGIN_ABI_LIST(PLUGIN_ABI_U32) };
 	if (m->epoch != PLUGIN_EPOCH)
 		return util_refuse(why, len, "its plugin epoch is %" PRIu32
 		                   ", askai's is %" PRIu32, m->epoch, PLUGIN_EPOCH);

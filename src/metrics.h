@@ -45,7 +45,7 @@ struct task_pool_metrics;
  * JSON-RPC methods come before NOTIFY, which is the notifications and the
  * responses. METRICS is GET /metrics.
  */
-#define METRICS_METHODS(X)                    \
+#define METRICS_METHOD_LIST(X)                \
         X(OTHER,        "other",           0) \
         X(INITIALIZE,   "initialize",      1) \
         X(PING,         "ping",            1) \
@@ -61,7 +61,7 @@ struct task_pool_metrics;
 /** MCP methods, whose request times are kept apart. */
 #define METRICS_METHOD(id, name, eras) METHOD_##id,
 enum metrics_method {
-	METRICS_METHODS(METRICS_METHOD)
+	METRICS_METHOD_LIST(METRICS_METHOD)
 	METHOD_N
 };
 #undef METRICS_METHOD
@@ -82,7 +82,7 @@ struct metrics_kept {
  *  not lent, or of no tool's name, and PLUGIN a tool of a plugin that
  *  askai loaded from a file.
  */
-#define METRICS_LENT(X)             \
+#define METRICS_LENT_LIST(X)        \
         X(NONE,       "unknown")    \
         X(MAN,        "man")        \
         X(GIT,        "git")        \
@@ -97,7 +97,7 @@ struct metrics_kept {
 
 #define METRICS_LENT_ID(id, label) LENT_##id,
 enum metrics_lent {
-	METRICS_LENT(METRICS_LENT_ID)
+	METRICS_LENT_LIST(METRICS_LENT_ID)
 	LENT_N
 };
 #undef METRICS_LENT_ID

@@ -29,7 +29,7 @@ enum {
  */
 struct manifest {
 	uint32_t epoch;               //!< PLUGIN_EPOCH
-	uint32_t abi[MANIFEST_ABI];   //!< PLUGIN_ABI() followed by zeros
+	uint32_t abi[MANIFEST_ABI];   //!< PLUGIN_ABI_LIST() followed by zeros
 	char     name[MANIFEST_NAME]; //!< Plugin name followed by NULs
 
 	/** Names of other plugins this plugin depends on; can be empty */

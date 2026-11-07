@@ -39,7 +39,7 @@ git_view_path (struct cstr_view *rest,
 }
 
 /** Validates the "OID refname" lines of @p refs: each OID is @p width
- *  hexadecimal digits, and each name is in a namespace of GIT_VIEW_REFS,
+ *  hexadecimal digits, and each name is in a namespace of GIT_VIEW_REF_LIST,
  *  without a space or a control character.
  */
 static int
@@ -47,7 +47,7 @@ git_view_refs (struct cstr_view refs,
                size_t           width)
 {
 #define GIT_VIEW_PREFIX(s) CSTR_VIEW_INIT(s),
-	static struct cstr_view const prefixes[] = { GIT_VIEW_REFS(GIT_VIEW_PREFIX) };
+	static struct cstr_view const prefixes[] = { GIT_VIEW_REF_LIST(GIT_VIEW_PREFIX) };
 #undef GIT_VIEW_PREFIX
 	while (refs.len) {
 		struct cstr_view line;

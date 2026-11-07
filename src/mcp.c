@@ -902,7 +902,7 @@ static uint8_t
 mcp_method_index (struct cstr_view method)
 {
 	#define MCP_METHOD(id, name, eras) [METHOD_##id] = CSTR_VIEW_INIT(name),
-	static struct cstr_view const names[METHOD_N] = { METRICS_METHODS(MCP_METHOD) };
+	static struct cstr_view const names[METHOD_N] = { METRICS_METHOD_LIST(MCP_METHOD) };
 	#undef MCP_METHOD
 	/* The JSON-RPC methods come before METHOD_NOTIFY. */
 	size_t i = cstr_view_index(names, METHOD_NOTIFY, method);
@@ -7053,7 +7053,7 @@ mcp_req_route (struct mcp_req     *req,
                bool                tasks)
 {
 	#define MCP_ERAS(id, name, eras) [METHOD_##id] = eras,
-	static uint8_t const eras[METHOD_N] = { METRICS_METHODS(MCP_ERAS) };
+	static uint8_t const eras[METHOD_N] = { METRICS_METHOD_LIST(MCP_ERAS) };
 	#undef MCP_ERAS
 	struct mcp_static const *st = req->mcp->st;
 	uint32_t const modern = req->flags & REQ_MODERN;
