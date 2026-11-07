@@ -13,16 +13,23 @@
 struct dstr;
 struct json_object;
 
-/** How the upstream's requests and answers are written: 0 only until the
- *  configuration has chosen.
+/** How the upstream's requests and answers are written: X(ID, name, auth),
+ *  the constant AI_ID, the name that --api takes, and the start of the
+ *  header line of the API key. CHAT is chat completions, OpenAI's and the
+ *  many copies, RESPONSES OpenAI's Responses, MESSAGES Anthropic's
+ *  Messages, and GENERATE and INTERACTIONS Gemini's generateContent and
+ *  Interactions. AI_NO_API stands only until the configuration has chosen.
  */
-enum ai_api : uint16_t {
-	AI_CHAT = 1,      /**< chat completions, OpenAI's and the many copies */
-	AI_RESPONSES,     /**< OpenAI's Responses */
-	AI_MESSAGES,      /**< Anthropic's Messages */
-	AI_GENERATE,      /**< Gemini's generateContent */
-	AI_INTERACTIONS,  /**< Gemini's Interactions */
-};
+#define AI_API_LIST(X)                                            \
+        X(CHAT,         "chat",         "Authorization: Bearer ") \
+        X(RESPONSES,    "responses",    "Authorization: Bearer ") \
+        X(MESSAGES,     "messages",     "x-api-key: ")            \
+        X(GENERATE,     "generate",     "x-goog-api-key: ")       \
+        X(INTERACTIONS, "interactions", "x-goog-api-key: ")
+
+#define AI_API_ENUM(id, ...) AI_##id,
+enum ai_api : uint16_t { AI_NO_API, AI_API_LIST(AI_API_ENUM) };
+#undef AI_API_ENUM
 
 /** Who serves the upstream, as askai knows them: their URLs, the variables
  *  of their keys and their default API.

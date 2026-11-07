@@ -18,18 +18,10 @@
 #include "loop.h"
 #include "ref.h"
 #include "util.h"
+#include "xlist.h"
 
-char const *const ledger_kinds[LEDGER_KINDS] = {
-	[LEDGER_TASK] = "task",
-	[LEDGER_JOB]  = "job",
-};
-
-struct cstr_view const ledger_statuses[LEDGER_STATUSES] = {
-	[LEDGER_WORKING]   = CSTR_VIEW_INIT("working"),
-	[LEDGER_COMPLETED] = CSTR_VIEW_INIT("completed"),
-	[LEDGER_FAILED]    = CSTR_VIEW_INIT("failed"),
-	[LEDGER_CANCELLED] = CSTR_VIEW_INIT("cancelled"),
-};
+char const *const ledger_kinds[] = { LEDGER_KIND_LIST(XL_TEXT) };
+struct cstr_view const ledger_statuses[] = { LEDGER_STATUS_LIST(XL_VIEW) };
 
 enum {
 	BUCKETS       = LEDGER_MAX,     /* the table's, a power of two */

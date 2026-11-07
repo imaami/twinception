@@ -82,14 +82,18 @@ static constexpr size_t LEDGER_BYTES = 64 << 20;
  */
 static constexpr uint64_t LEDGER_ANONYMOUS = UINT64_C(1) << 63;
 
-/** Where a task stands: working, or how its call ended. */
-enum ledger_status {
-	LEDGER_WORKING,
-	LEDGER_COMPLETED,  /**< its result is the call's */
-	LEDGER_FAILED,     /**< with an error: its result, if it has one */
-	LEDGER_CANCELLED,  /**< as its client asked */
-	LEDGER_STATUSES
-};
+/** Where a task stands, working or how its call ended: X(ID, name), the
+ *  constant LEDGER_ID and its word, as MCP's tasks extension names it.
+ */
+#define LEDGER_STATUS_LIST(X)                                                     \
+        X(WORKING,   "working")                                                   \
+        X(COMPLETED, "completed")  /* its result is the call's */                 \
+        X(FAILED,    "failed")     /* with an error: its result, if it has one */ \
+        X(CANCELLED, "cancelled")  /* as its client asked */
+
+#define LEDGER_STATUS_ENUM(id, ...) LEDGER_##id,
+enum ledger_status { LEDGER_STATUS_LIST(LEDGER_STATUS_ENUM) LEDGER_STATUSES };
+#undef LEDGER_STATUS_ENUM
 
 /** The bits of the state of a record besides its status, an enum
  *  ledger_status in the bits LEDGER_STATUS.
@@ -103,13 +107,15 @@ enum ledger_state : uint64_t {
 
 static_assert(LEDGER_STATUSES - 1 <= LEDGER_STATUS);
 
-/** What made a record. */
-enum ledger_kind : uint8_t {
-	LEDGER_TASK,  /**< a tool call that became a task of MCP's tasks
-	                   extension */
-	LEDGER_JOB,   /**< a client's background wrapper or detached ask call */
-	LEDGER_KINDS
-};
+/** What made a record: X(ID, name), the constant LEDGER_ID and its word.
+ *  TASK is a tool call that became a task of MCP's tasks extension, and
+ *  JOB a client's background wrapper or detached ask call.
+ */
+#define LEDGER_KIND_LIST(X) X(TASK, "task") X(JOB, "job")
+
+#define LEDGER_KIND_ENUM(id, ...) LEDGER_##id,
+enum ledger_kind : uint8_t { LEDGER_KIND_LIST(LEDGER_KIND_ENUM) LEDGER_KINDS };
+#undef LEDGER_KIND_ENUM
 
 /** The words for the kinds and the statuses of records, which the log,
  *  the answers of a client's jobs and wait, and tasks/get use; the

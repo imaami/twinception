@@ -1474,6 +1474,8 @@ ai_event (enum ai_api            api,
 		reason = out->flags & AI_EV_END ? jb_get(jb_get(ev, "interaction"), "status")
 		                                : nullptr;
 		break;
+	case AI_NO_API:
+		break;
 	}
 	out->reason = jb_view(reason).data;
 	if (out->reason)

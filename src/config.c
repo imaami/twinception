@@ -37,22 +37,14 @@
 #include "util.h"
 
 
-static char const *const api_names[] = {
-	[AI_CHAT]         = "chat",
-	[AI_RESPONSES]    = "responses",
-	[AI_MESSAGES]     = "messages",
-	[AI_GENERATE]     = "generate",
-	[AI_INTERACTIONS] = "interactions",
-};
+#define CONFIG_API_NAME(id, name, auth) [AI_##id] = name,
+static char const *const api_names[] = { AI_API_LIST(CONFIG_API_NAME) };
+#undef CONFIG_API_NAME
 
 /* Each API's header line prefix for the API key. */
-static char const *const auths[] = {
-	[AI_CHAT]         = "Authorization: Bearer ",
-	[AI_RESPONSES]    = "Authorization: Bearer ",
-	[AI_MESSAGES]     = "x-api-key: ",
-	[AI_GENERATE]     = "x-goog-api-key: ",
-	[AI_INTERACTIONS] = "x-goog-api-key: ",
-};
+#define CONFIG_API_AUTH(id, name, auth) [AI_##id] = auth,
+static char const *const auths[] = { AI_API_LIST(CONFIG_API_AUTH) };
+#undef CONFIG_API_AUTH
 
 static char const *const provider_names[] = {
 	[AI_LLAMA]      = "llama",
