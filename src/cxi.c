@@ -321,15 +321,9 @@ static bool
 cxi_list_push (struct cxi_list *list,
                CXCursor         c)
 {
-	if (list->n == list->cap) {
-		size_t const cap = list->cap ? 2 * list->cap : 64;
-		CXCursor *more = realloc(list->c, cap * sizeof *more);
-		if (!more) {
-			list->out->e = ENOMEM;
-			return false;
-		}
-		list->c = more;
-		list->cap = cap;
+	if (util_grow(list->c, list->cap, list->n + 1)) {
+		list->out->e = ENOMEM;
+		return false;
 	}
 	list->c[list->n++] = c;
 	return true;
