@@ -43,8 +43,8 @@ override TEST_FLAGS := -std=gnu23 -O2 -g -Wall -Wextra -Wpedantic -pthread
 # the rules in this makefile only. They are defined below the tab-completion
 # guard, so the root makefile does not import them and tab completion does
 # not offer them.
-.PHONY: askai askai-cli godbolt.so test_plugin.so
-askai askai-cli godbolt.so test_plugin.so:
+.PHONY: all askai askai-cli godbolt.so test_plugin.so
+all askai askai-cli godbolt.so test_plugin.so:
 	+$(MAKE) -C "$(TEST_DIR)../src" $@ O="$O"
 
 # Compares the targets that bash tab completion offers for make in the
@@ -53,8 +53,9 @@ check-completion:
 	$(PYTHON) $(TEST_DIR)completion.py $(TEST_DIR)..
 
 # askai.py loads the test plugin in check_plugin() and the godbolt plugin in
-# check_godbolt().
-check-askai: | askai test_plugin.so godbolt.so
+# check_godbolt(). check_code() runs askai-code if src/ builds it, which
+# depends on all.
+check-askai: | all
 	$(PYTHON) $(TEST_DIR)askai.py $Oaskai $Otest_plugin.so $Ogodbolt.so
 
 # Terminal editing, the Unix-socket CLI, and its argument handling.

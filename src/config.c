@@ -25,6 +25,7 @@
 #include "ai.h"
 #include "brainstem.h"
 #include "buf.h"
+#include "code.h"
 #include "config.h"
 #include "dstr.h"
 #include "git.h"
@@ -174,8 +175,8 @@ enum config_arg : uint8_t {
           "option without argument, and an array lists" NL                                              \
           "the values of a repeatable option.  The" NL                                                  \
           "command line overrides the file, but adds" NL                                                \
-          "to its header, allow-origin and git lists." NL                                               \
-          "Only the last --config is read.  See" NL                                                     \
+          "to its header, allow-origin, git and code" NL                                                \
+          "lists.  Only the last --config is read.  See" NL                                             \
           "doc/configuration.md and" NL                                                                 \
           "doc/askai.example.json.")                                                                    \
         X(custom,  HELP,             "help",             'h', NONE, NONE, "",                           \
@@ -434,6 +435,19 @@ enum config_arg : uint8_t {
           "SIGTERM, and SIGKILL one second later" NL                                                    \
           "(default 30; tools.git.timeout)",                                                            \
           git_timeout, 1, 3600, NS)                                                                     \
+        X(custom,  CODE,             "code",             ,                                              \
+          TOOLS("code.compile-commands"), MANY, "NAME=FILE",                                            \
+          "also offer the tool code, which runs" NL                                                     \
+          "clang on the committed C code of the" NL                                                     \
+          "git repository NAME, with the flags of" NL                                                   \
+          "the compile commands in FILE; askai runs" NL                                                 \
+          "askai-code for each call" NL                                                                 \
+          "(repeatable; tools.code.compile-commands)")                                                  \
+        X(flag,    CODE_UNCONFINED,  "code-unconfined",  ,    TOOLS("code.unconfined"), NONE, "",       \
+          "run askai-code without Landlock and" NL                                                      \
+          "seccomp, which the tool code needs" NL                                                       \
+          "otherwise (tools.code.unconfined)",                                                          \
+          CFG_UNCONFINED)                                                                               \
         X(text,    NOTES,            "notes",            ,    TOOLS("notes.directory"), ONE, "PATH",    \
           "shared session's git repository, created" NL                                                 \
           "bare if absent.  Each participant" NL                                                        \
@@ -588,7 +602,7 @@ config_usage (struct config const *cfg,
 	        "for all, a list of the tools it allows, an object with a list allow or a\n"
 	        "list deny, or an object whose members client and upstream each have one\n"
 	        "of those forms (see doc/configuration.md).  As an object, it also has\n"
-	        "the objects man, git, notes and jobs of the built-in tools.\n"
+	        "the objects man, git, code, notes and jobs of the built-in tools.\n"
 	        "SIGUSR1 prints to stderr, for each event loop, the times of its turns and\n"
 	        "steps, the lateness of its timers and the most work that one step did\n"
 	        "since the previous SIGUSR1.  The lines name the loops: loop1 to loopN\n"
@@ -999,6 +1013,9 @@ config_apply (struct config *cfg,
 	case ROW_GIT:
 		config_push(cfg->gits, &cfg->n_gits, arg);
 		break;
+	case ROW_CODE:
+		config_push(cfg->codes, &cfg->n_codes, arg);
+		break;
 	default:
 		return config_apply_store(cfg, row, arg, where);
 	}
@@ -1297,13 +1314,13 @@ config_values (struct json_object *obj)
 	return n;
 }
 
-/* Make room for the lists of headers, origins, listeners and repositories,
- * in one block, and point ep.headers, http.origins and http.listen at their
- * lists: each has room for every argument, every value of an option in
- * the configuration file, in its four objects of options and in the
- * objects of the tools in its member tools, and the three headers askai
- * adds, and ends in nullptr. Returns 0, or 1 if out of memory, having said
- * so.
+/* Make room for the lists of headers, origins, listeners, repositories and
+ * compile commands, in one block, and point ep.headers, http.origins and
+ * http.listen at their lists: each has room for every argument, every
+ * value of an option in the configuration file, in its four objects of
+ * options and in the objects of the tools in its member tools, and the
+ * three headers askai adds, and ends in nullptr. Returns 0, or 1 if out of
+ * memory, having said so.
  */
 static int
 config_lists (struct config *cfg)
@@ -1316,14 +1333,15 @@ config_lists (struct config *cfg)
 	if (json_object_is_type(tools, json_type_object))
 		json_object_object_foreachC(tools, it)
 			room += config_values(it.val);
-	char const **block = malloc(4 * room * sizeof *block);
+	char const **block = malloc(5 * room * sizeof *block);
 	if (!block)
 		return config_oom(cfg);
 	cfg->headers = block;
 	cfg->origins = block + room;
 	cfg->listens = block + 2 * room;
 	cfg->gits = block + 3 * room;
-	*cfg->headers = *cfg->origins = *cfg->listens = *cfg->gits = nullptr;
+	cfg->codes = block + 4 * room;
+	*cfg->headers = *cfg->origins = *cfg->listens = *cfg->gits = *cfg->codes = nullptr;
 	cfg->ep.headers = cfg->headers;
 	cfg->http.origins = cfg->origins;
 	cfg->http.listen = cfg->listens;
@@ -1569,6 +1587,33 @@ config_check_gits (struct config *cfg)
 			return status;
 	}
 	return 0;
+}
+
+/* Check that each value of --code is NAME=FILE with the name of a --git
+ * repository and a nonempty FILE, and that no two values are for the same
+ * repository. Then run askai-code --check (code_check()). If the check
+ * fails, the code tool is off, and cfg->code_check contains the reason.
+ */
+static int
+config_check_codes (struct config *cfg)
+{
+	for (size_t i = 0; i < cfg->n_codes; ++i) {
+		char const *code = cfg->codes[i];
+		struct cstr_view const name = { code, strcspn(code, "=") };
+		size_t g = 0;
+		while (g < cfg->n_gits && !cstr_view_equal(git_name(cfg->gits[g]), name))
+			++g;
+		size_t j = 0;
+		while (j < i && strncmp(cfg->codes[j], code, name.len + 1))
+			++j;
+		if (g == cfg->n_gits || !code[name.len] || !code[name.len + 1])
+			return config_complain(cfg, nullptr, "--code: NAME=FILE needs the name "
+			                       "of a --git repository: %s", code);
+		if (j < i)
+			return config_complain(cfg, nullptr, "--code: two compile commands for "
+			                       "%.*s", (int)name.len, code);
+	}
+	return cfg->n_codes && code_check(cfg) ? config_oom(cfg) : 0;
 }
 
 /* Settle the upstream's API, unless --api chose it: its provider's default.
@@ -2289,9 +2334,9 @@ static int
 config_finish (struct config *cfg)
 {
 	static int (*const steps[]) (struct config *cfg) = {
-		config_fit_limits, config_check_gits, config_api, config_check_upstream,
-		config_check_notes, config_session, config_upstream, config_listens,
-		config_registry, config_allow, config_description, config_policy,
+		config_fit_limits, config_check_gits, config_check_codes, config_api,
+		config_check_upstream, config_check_notes, config_session, config_upstream,
+		config_listens, config_registry, config_allow, config_description, config_policy,
 	};
 	for (size_t i = 0; i < array_size(steps); ++i) {
 		int status = steps[i](cfg);
@@ -2506,6 +2551,9 @@ config_fini (struct config *cfg)
 	free(cfg->url);
 	free(cfg->auth);
 	free(cfg->description);
+	free(cfg->code_helper);
+	free(cfg->code_cache);
+	free(cfg->code_check);
 	free(cfg->transcripts_owned);
 	free(cfg->headers);
 	*cfg = (struct config){};

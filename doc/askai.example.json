@@ -96,6 +96,12 @@
       ],
       "timeout": 30
     },
+    "code": {
+      "compile-commands": [
+        "proj=/srv/build/proj/compile_commands.json"
+      ],
+      "unconfined": false
+    },
     "notes": {
       "directory": "/var/lib/askai/notes.git"
     },

@@ -6,6 +6,7 @@ override SRC_askai := \
   brainstem.c         \
   buf.c               \
   child.c             \
+  code.c              \
   config.c            \
   cstr_view.c         \
   curl_loop.c         \

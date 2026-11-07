@@ -47,6 +47,8 @@ enum config_flag {
 	                                    restart */
 	CFG_LISTEN_FILE    = 1u << 10, /**< the listeners so far are the
 	                                    file's */
+	CFG_CODE           = 1u << 11, /**< the code tool is on (code_check()) */
+	CFG_UNCONFINED     = 1u << 12, /**< --code-unconfined */
 };
 
 /**
@@ -77,15 +79,19 @@ struct config {
 	char                **argv;         /**< the command line, as reloads
 	                                         read it again */
 	char const          **headers;      /**< ep.headers, at the start of the
-	                                         block origins, listens and gits
-	                                         are in */
+	                                         block that also contains origins,
+	                                         listens, gits and codes */
 	char const          **origins;      /**< http.origins */
 	char const          **listens;      /**< http.listen */
 	char const          **gits;         /**< the git tool's repositories */
+	char const          **codes;        /**< the NAME=FILE values of --code */
 	char                 *url;          /**< ep.url, when askai makes it:
 	                                         Gemini's */
 	char                 *auth;         /**< the API key's header line */
 	char                 *description;  /**< tool.description, by default */
+	char                 *code_helper;  /**< the path of askai-code */
+	char                 *code_cache;   /**< the code tool's cache */
+	char                 *code_check;   /**< see code_check() */
 	char                 *transcripts_owned; /**< transcripts, when derived */
 	struct config const  *running;      /**< on a reload, the configuration
 	                                         askai runs with, whose tools the
@@ -105,6 +111,7 @@ struct config {
 	size_t                n_origins;
 	size_t                n_listens;
 	size_t                n_gits;
+	size_t                n_codes;
 	uint32_t              flags;        /**< enum config_flag */
 	uint32_t              calls;        /**< tool calls in flight, at most */
 	uint32_t              man_recheck;  /**< seconds that man's finding of a

@@ -32,18 +32,24 @@ direction for shared notes, stable participants, and multiple execution routes.
 - OpenSSL 3.5 or later (libssl, libcrypto), and its `openssl` command for the
   tests' certificates
 - Linux epoll + timerfd
+- libclang 19 or later, with its headers and `llvm-config`, for `askai-code`
+  and the tool `code` (optional)
 
 ## Build
 
 ```sh
-make            # builds askai, askai-cli and askai's plugins
+make            # builds askai, askai-cli, askai's plugins and askai-code
 make askai-cli  # only the client
+make askai-code # only the helper of the tool code
 make check      # end-to-end tests, the dstr trials and check-load
 make check-cli # only the terminal client's checks
 make check-dstr # only the dstr trials
 make check-load # only askai's load verdict on a light mix (10-20 s)
 make load       # askai's load verdict on the storm (doc/core-measurements.md)
 ```
+
+`make` builds `askai-code` only where an `llvm-config` of libclang 19 or later
+is found; `make LLVM_CONFIG=llvm-config-19` picks one.
 
 To chat directly with the model configured in an existing AskAI configuration:
 
@@ -551,13 +557,78 @@ that process is still killed at the deadline, when the client of the call
 closes the connection, or when `askai` stops. Until the output ends, that
 `git` still counts toward the limit of 16 processes.
 
+## Asking clang about C code
+
+With `--code NAME=FILE`, which can be repeated, or the list
+`tools.code.compile-commands` of a configuration file, `askai` also offers
+the tool `code`, which runs clang on the committed C code of the
+repository `NAME` of `--git`. `FILE` is the `compile_commands.json` of the
+repository, such as the one that `make compile_commands.json` writes into
+`build/`. The tool requires `askai-code`, the helper program that `make`
+builds next to `askai` if an `llvm-config` of libclang 19 or later is
+installed. [`doc/configuration.md`](doc/configuration.md#code) describes
+the options, the cache, the startup check and `--code-unconfined`.
+
+The arguments of a call are `repo`, `action` and `path`, a `.c` or `.h`
+file of the commit relative to the top of the repository, and optionally a
+`revision` (in the form that the git tool accepts, `HEAD` by default) and
+an `offset`.
+
+`outline` lists the names that the file declares, one per line: the line
+of the name, its kind, the type of a function, variable or typedef, and the
+first and last line of the declaration if they differ:
+
+```text
+[proj at 1095916a86bd9dc0585d261ec87762fe6134de44: src/git_view.c, 13 names.]
+5 macro _GNU_SOURCE
+19 static variable git_view_template: const char[22]
+24 struct git_view (24-28)
+34 static function git_view_path: int (struct cstr_view *, struct cstr_view *) (33-39)
+```
+
+Every result starts with the repository and the full ID of the commit.
+
+Only committed files are visible. A call resolves its revision as the git
+tool does, and `askai-code` exports the commit into a tree in its cache.
+The files of the tree contain the bytes of the blobs: no attribute, filter
+or hook applies, and a symbolic link is a file that contains its target.
+An export of another commit rewrites only the files that differ, and the
+cache can be removed while `askai` is not running. A commit of more than
+100,000 files and directories, or 1 GiB, is refused.
+
+`askai-code` reads `FILE` at each call, so the results use the flags of the
+last build. Only entries with `arguments` are used, as written by the build
+of `askai`. A path at or under the top of the repository, including the
+value of `-I` or `-include`, is mapped to the same path in the tree, and an
+option with a path above the top is removed. The options that write files
+(`-o`, the `-M` options, and `-Wp,` with anything but one `-D` or `-U`),
+`-Xclang`, `-Xpreprocessor` and `-mllvm` with their values, and response
+files are removed. A `.c` file that is not in `FILE` is refused. A header
+is parsed with the command of the listed file nearest to it and
+`-x c-header`.
+
+`askai-code` runs once per call with the environment of the git tool, and
+clears the environment before the parse. Before the parse, it also
+confines itself. It sets no_new_privs, disables core files and file
+writes, and limits its memory to 1 GiB. With Landlock, it can read only
+`/usr`, a few system files and the tree, and write only `/dev/null`. With
+seccomp, it cannot open a socket, run a program, signal or change another
+process, or change the attributes of a file. A committed `#include` of a
+file outside the tree fails, but the commit can learn whether the file
+exists. clang's debug pragmas are disabled. A parse that crashes, such as
+one of deeply nested expressions, ends the call with the signal. At
+`--git-timeout` (30 s for resolving the revision and the parse together),
+`askai-code` is killed with SIGKILL, and its git processes shortly before.
+The result is at most 4 MiB, and `offset` continues past the end of one
+result.
+
 ## Lending tools to the upstream
 
 With `--upstream-tools`, an `ask_ai` call offers the other model tools of its
 own, in any of the APIs (`llama-server`'s chat template must take tools, as
-with `--jinja`): those of `man` and `git` that the caller's role lets the
-upstream call (`ask_ai` itself is never offered), `notes` with `--notes`, and
-with any of those `compact`, `findings`, `jobs`, `wait` and `timer`, and
+with `--jinja`): those of `man`, `git` and `code` that the caller's role lets
+the upstream call (`ask_ai` itself is never offered), `notes` with `--notes`,
+and with any of those `compact`, `findings`, `jobs`, `wait` and `timer`, and
 `background` beside a tool that can run in the background. A plugin's tool
 is offered in the same way if its kind allows it (see Plugins below).
 Offered none, the call asks once, as without the option. Else it runs a
@@ -928,7 +999,10 @@ can take in a user namespace, uid 4294967295, and the kernel's overflow uid
 (usually 65534, so a process that runs as `nobody` is refused). It reads
 `/etc/subuid` at start and on each reload, and the startup report lists the
 refused uids. With `--git`, whoever may call the tool may read the repositories
-listed, and with `--upstream-tools`, so may the model that answers them. An
+listed, and with `--upstream-tools`, so may the model that answers them. With
+`--code`, whoever may call the tool can read the committed C code of the
+listed repositories through clang. `askai-code` runs under Landlock and
+seccomp unless `--code-unconfined` is set (see Asking clang about C code). An
 session's notes are readable by everyone allowed to call `notes`, including
 anonymous clients if the policy grants it. Each caller writes only its own
 notebook. Tokens cross the network in the clear but over TLS (below), or a
@@ -1004,6 +1078,8 @@ in parentheses:
 - `--man` is `tools.man.enabled`.
 - `--git` is `tools.git.repositories`.
 - `--git-timeout` is `tools.git.timeout`.
+- `--code` is `tools.code.compile-commands`.
+- `--code-unconfined` is `tools.code.unconfined`.
 - `--notes` is `tools.notes.directory`.
 - `--client-jobs` is `tools.jobs.clients`.
 
@@ -1018,13 +1094,14 @@ these forms:
 - `extra` takes an object, or a string of JSON text.
 - An option without an argument takes `true`. `false` changes nothing, and
   the command line cannot turn off an option that the file sets.
-- A repeatable option (`header`, `allow-origin`, `listen` and
-  `tools.git.repositories`) is one value or an array of values.
+- A repeatable option (`header`, `allow-origin`, `listen`,
+  `tools.git.repositories` and `tools.code.compile-commands`) is one value
+  or an array of values.
 
 The command line overrides the file. It adds to the lists of headers,
-allowed origins and git repositories of the file, but any `-l` replaces the
-`listen` list of the file, and `-x` replaces its `extra`. Besides the four
-objects, the top level of the file can have six members:
+allowed origins, git repositories and compile commands of the file, but any
+`-l` replaces the `listen` list of the file, and `-x` replaces its `extra`.
+Besides the four objects, the top level of the file can have six members:
 
 - `roles`, `identities`, `unix-groups` and `anonymous` are the policy below.
 - `plugins` lists the plugins that `askai` loads, each by its path or as an
@@ -1073,12 +1150,12 @@ Four more members define who may connect, and what each client may do:
 
 - A **role** lists in `tools` the tools that its clients may list and call,
   as clients see them: the tool that `--tool-name` names, `man`, `git`,
-  `notes`, `test_task`, the tools of the plugins, and with `--client-jobs`
-  `background`, `jobs`, `wait` and `timer`. `metrics` sets whether
-  the clients may read `GET /metrics`. A role name has 1 to 64 characters
-  from `A-Z`, `a-z`, `0-9`, `_`, `.`, `@` and `-`. A role without `tools`
-  grants no tool, and `metrics` is `false` unless the role sets it. A name in
-  `tools` that `askai` does not offer in this run, such as `man` without
+  `code`, `notes`, `test_task`, the tools of the plugins, and with
+  `--client-jobs` `background`, `jobs`, `wait` and `timer`. `metrics` sets
+  whether the clients may read `GET /metrics`. A role name has 1 to 64
+  characters from `A-Z`, `a-z`, `0-9`, `_`, `.`, `@` and `-`. A role without
+  `tools` grants no tool, and `metrics` is `false` unless the role sets it. A
+  name in `tools` that `askai` does not offer in this run, such as `man` without
   `--man`, stops `askai`, and the error lists the tools that it offers.
   `tools/list` shows a client the tools of its role only, and a call of
   another tool is an error, "Tool not available: NAME".
@@ -1087,12 +1164,12 @@ Four more members define who may connect, and what each client may do:
   can differ from the tools that the clients of the role may call. In the
   example, a client of the role `user` cannot call `man`, but the upstream
   can call it for the client. Without `upstream`, the upstream may call the
-  tools that the role's `tools` lists. `upstream` can name `man`, `git`, `notes` and
-  the plugin tools that may be lent. Without `--upstream-tools`, `upstream`
-  must be empty or left out. The turns also get `notes` whenever `--notes`
-  is given, `compact`, `findings`, `jobs`, `wait` and `timer` whenever they
-  get any tool, and `background` beside a tool that can run in the
-  background (`man`, `git`, or a plugin tool that allows it). `upstream`
+  tools that the role's `tools` lists. `upstream` can name `man`, `git`, `code`,
+  `notes` and the plugin tools that may be lent. Without `--upstream-tools`,
+  `upstream` must be empty or left out. The turns also get `notes` whenever
+  `--notes` is given, `compact`, `findings`, `jobs`, `wait` and `timer` whenever
+  they get any tool, and `background` beside a tool that can run in the
+  background (`man`, `git`, `code`, or a plugin tool that allows it). `upstream`
   cannot name `compact`, `findings`, `background`, `jobs`, `wait` or
   `timer`, and `tools` cannot name `compact` or `findings`. With
   `--client-jobs`, `tools` can name `background`, `jobs`, `wait` and
@@ -1153,11 +1230,11 @@ no tool on:
   the forms above, sets clients and the upstream apart. A missing member
   allows all.
 
-As an object, `tools` can also contain the objects `man`, `git`, `notes`
-and `jobs` with the options of the built-in tools, which turn these tools on as
-the options on the command line do. These objects are members of `tools`
-itself, not of `client` or `upstream`. An object without `allow`, `deny`,
-`client` and `upstream` allows all tools.
+As an object, `tools` can also contain the objects `man`, `git`, `code`,
+`notes` and `jobs` with the options of the built-in tools, which turn these
+tools on as the options on the command line do. These objects are members of
+`tools` itself, not of `client` or `upstream`. An object without `allow`,
+`deny`, `client` and `upstream` allows all tools.
 
 ```json
 {
@@ -1787,8 +1864,8 @@ tool call bro from anonymous loopback (role user) answered after 3.9 s (30 bytes
                             option without argument, and an array lists
                             the values of a repeatable option.  The
                             command line overrides the file, but adds
-                            to its header, allow-origin and git lists.
-                            Only the last --config is read.  See
+                            to its header, allow-origin, git and code
+                            lists.  Only the last --config is read.  See
                             doc/configuration.md and
                             doc/askai.example.json.
   -h, --help                show this help
@@ -1971,6 +2048,15 @@ Built-in tools ("tools", each in the member in parentheses):
                             deadline of a git call, at which git gets
                             SIGTERM, and SIGKILL one second later
                             (default 30; tools.git.timeout)
+      --code NAME=FILE      also offer the tool code, which runs
+                            clang on the committed C code of the
+                            git repository NAME, with the flags of
+                            the compile commands in FILE; askai runs
+                            askai-code for each call
+                            (repeatable; tools.code.compile-commands)
+      --code-unconfined     run askai-code without Landlock and
+                            seccomp, which the tool code needs
+                            otherwise (tools.code.unconfined)
       --notes PATH          shared session's git repository, created
                             bare if absent.  Each participant
                             writes its own branches and reads all notes;

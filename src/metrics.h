@@ -86,6 +86,7 @@ struct metrics_kept {
         X(NONE,       "unknown")    \
         X(MAN,        "man")        \
         X(GIT,        "git")        \
+        X(CODE,       "code")       \
         X(NOTES,      "notes")      \
         X(COMPACT,    "compact")    \
         X(FINDINGS,   "findings")   \

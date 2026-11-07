@@ -68,11 +68,11 @@ mcp_limits (void)
 
 /**
  * Adds the tools of askai's own that @p cfg offers to the registry @p reg
- * (src/registry.h). The ask tool, the man tool, test_task, the git tool and
- * the notes tool are added in that order as tools that a role can grant,
- * and with CFG_CLIENT_JOBS background, jobs, wait and timer after them.
- * The tools that only the turns of an ask call use are added after them.
- * Returns 0, or the error number of registry_add().
+ * (src/registry.h). The ask tool, the man tool, test_task, the git tool, the
+ * code tool and the notes tool are added in that order as tools that a role
+ * can grant, and with CFG_CLIENT_JOBS background, jobs, wait and timer after
+ * them. The tools that only the turns of an ask call use are added after
+ * them. Returns 0, or the error number of registry_add().
  */
 extern int
 mcp_register (struct registry     *reg,
@@ -153,7 +153,7 @@ mcp_static_destroy (struct mcp_static **p_static);
  * function on the thread of @p loop. @p home is the loop of home, which
  * runs the upstream calls of the client loops as jobs (src/job.h). The
  * function creates the part of each built-in plugin that has parts, in the
- * order of the plugins. These plugins are man, git and notes. The new
+ * order of the plugins. These plugins are man, git, code and notes. The new
  * object records its statistics in @p counts, whose atomic members must be
  * valid. It answers GET /metrics from @p metrics.
  *

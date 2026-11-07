@@ -465,6 +465,7 @@ class Askai:
         self.state = tempfile.TemporaryDirectory(prefix="askai-state-")
         child_env = {k: v for k, v in os.environ.items() if k not in KEY_VARS}
         child_env["XDG_STATE_HOME"] = self.state.name
+        child_env["XDG_CACHE_HOME"] = self.state.name
         child_env.update(env or {})
         if preload:
             # A sanitizer runtime insists on coming first otherwise.
@@ -766,7 +767,8 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "doc",
 # The member of the configuration file's member tools that sets each option
 # of a built-in tool: the object of the tool, and its name in that object.
 TOOL_MEMBERS = {"man": ("man", "enabled"), "git": ("git", "repositories"),
-                "git-timeout": ("git", "timeout"), "notes": ("notes", "directory"),
+                "git-timeout": ("git", "timeout"), "code": ("code", "compile-commands"),
+                "code-unconfined": ("code", "unconfined"), "notes": ("notes", "directory"),
                 "client-jobs": ("jobs", "clients")}
 ROOT_MEMBERS = {"participant", "transcripts"}
 
@@ -5015,6 +5017,7 @@ def check_configuration(binary, up, godbolt):
         members["transcripts"] = f"{d}/transcripts.git"
         members["tools"]["notes"]["directory"] = f"{d}/notes"
         members["tools"]["git"]["repositories"] = [f"{d}/proj"]
+        members["tools"]["code"]["compile-commands"] = [f"proj={d}/build/compile_commands.json"]
         members["plugins"][0]["path"] = os.path.realpath(godbolt)
         with open(f"{d}/askai.json", "w") as f:
             json.dump(members, f)
@@ -5769,7 +5772,7 @@ def check_logs(binary, up):
                 "files     off (the API takes none)"], told(ai)
             assert ai.listed("built-in tools for clients:") == [
                 "ask_ai      on", "man         off (--man)", "git         off (--git PATH)",
-                "notes       off (--notes DIR)"] + [
+                "code        off (--code NAME=FILE)", "notes       off (--notes DIR)"] + [
                 f"{name:<10}  off (--client-jobs)"
                 for name in ("background", "jobs", "wait", "timer")], told(ai)
             has(ai, "plugins: none", "upstream tools: off (--upstream-tools)")
@@ -5815,9 +5818,10 @@ def check_logs(binary, up):
                 "context   8000 tokens",
                 f"URL       {up.url()}", "files     off (the API takes none)"], told(ai)
             assert ai.listed("built-in tools for clients:") == [
-                f"{name:<10}  on" for name in ("bro", "man", "test_task", "git", "notes")
-            ] + [f"{name:<10}  off (--client-jobs)"
-                 for name in ("background", "jobs", "wait", "timer")], told(ai)
+                f"{name:<10}  on" for name in ("bro", "man", "test_task", "git")
+            ] + ["code        off (--code NAME=FILE)", "notes       on"] + [
+                f"{name:<10}  off (--client-jobs)"
+                for name in ("background", "jobs", "wait", "timer")], told(ai)
             has(ai, f"notes directory: {notes}")
             assert ai.listed("git repositories:") == [f"proj  {repo}"], told(ai)
             assert ai.listed("policy: built in, with ASKAI_TOKEN") == [
@@ -10029,6 +10033,362 @@ def check_git_read(binary, up):
           "and cut files, grep matches, pinned commits, no warnings, work: PASS")
 
 
+FAKE_CODE = r"""#!PYTHON -I
+# A fake askai-code. --check succeeds unless the file check-fails exists in
+# its directory, and prints one line if the file check-short exists. A call
+# writes its argv and environment to last.json, and its output depends on
+# the path argument.
+import json, os, signal, subprocess, sys, time
+here = os.path.dirname(os.path.abspath(sys.argv[0]))
+if sys.argv[1:2] == ["--check"]:
+    if os.path.exists(here + "/check-fails"):
+        print("no Landlock; --code-unconfined runs askai-code without Landlock and seccomp")
+        sys.exit(1)
+    short = os.path.exists(here + "/check-short")
+    print("one line only" if short else "fake clang version 1\nnone (fake)")
+    sys.exit(0)
+words = dict(w.split("=", 1) for w in sys.argv[1:sys.argv.index("--")])
+with open(here + "/last.json", "w") as f:
+    json.dump({"argv": sys.argv, "env": dict(os.environ)}, f)
+path = words["path"]
+if path == "fail.c":
+    sys.stdout.write("The fake refuses fail.c.")
+    sys.exit(1)
+if path == "exit3.c":
+    sys.exit(3)
+if path == "segv.c":
+    os.kill(os.getpid(), signal.SIGSEGV)
+if path == "hang.c":
+    child = subprocess.Popen(["sleep", "60"])
+    with open(here + "/child.pid", "w") as f:
+        f.write(str(child.pid))
+    time.sleep(60)
+if path == "big.c":
+    sys.stdout.write("x" * ((4 << 20) + 4097))
+    sys.exit(0)
+sys.stdout.write(f"[{words['repo']} at {words['commit']}: {path}, 0 names.]\n")
+"""
+
+
+def check_code(binary, up):
+    """The code tool with --code NAME=FILE. With a fake helper next to a copy
+    of askai: the definition, the refusals of askai, the revision resolved as
+    the git tool resolves it, the request to askai-code, the exit statuses,
+    the deadline and the output limit, the startup report and the reasons
+    why the tool is off. With the real askai-code next to askai, if the
+    build produced it: outline of an export of the commit, and the
+    confinement of askai-code to that export."""
+    git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+    with tempfile.TemporaryDirectory() as d:
+        d = os.path.realpath(d)
+        repo = f"{d}/proj"
+        os.makedirs(f"{repo}/src")
+
+        def sh(*args, cwd=repo):
+            return subprocess.run(["git", "-C", cwd, "-c", "user.name=t", "-c",
+                                   "user.email=t@t", *args], check=True,
+                                  env=os.environ | git, capture_output=True,
+                                  text=True).stdout
+
+        def write(name, text):
+            os.makedirs(os.path.dirname(f"{repo}/{name}"), exist_ok=True)
+            with open(f"{repo}/{name}", "w") as f:
+                f.write(text)
+
+        # a.c includes a header that is not committed, and its declarations
+        # depend on flags that are set only by compile_flags.txt and CPATH.
+        write("src/a.c", '#include "local.h"\n#include "a.h"\n'
+                         "#ifdef FROM_FLAGS\nint from_flags;\n#endif\n"
+                         '#if __has_include("cpath.h")\nint from_cpath;\n#endif\n'
+                         "#ifdef FROM_LOCAL\nint from_local;\n#endif\n"
+                         "static int\ncount (int n)\n{\n\treturn n + A_ONE;\n}\n")
+        write("src/a.h", "#define A_ONE 1\nstruct pair {\n\tint a;\n\tint b;\n};\n")
+        write("src/b.c", "int b_value = 2;\n")
+        write("src/pragma.c", "".join(f"#pragma clang __debug {p}\n" for p in (
+            "crash", "parser_crash", "assert", "llvm_unreachable", "llvm_fatal_error",
+            "overflow_stack")) + "int survived;\n")
+        write("src/deep.c", "int deep = " + "!" * 3000 + "1;\n")
+        write("src/unlisted.c", "int unlisted;\n")
+        sh("init", "-q", "-b", "main")
+        sh("add", "src")
+        sh("commit", "-q", "-m", "first")
+        write("src/b.c", "int b_value = 3;\nint b_more;\n")
+        sh("commit", "-q", "-am", "second")
+        head = sh("rev-parse", "HEAD").strip()
+        parent = sh("rev-parse", "HEAD~1").strip()
+        # Not committed: an edit, a header and a flag file.
+        write("src/a.c", "int uncommitted;\n")
+        write("local.h", "#define FROM_LOCAL 1\n")
+        os.makedirs(f"{d}/build")
+        with open(f"{d}/build/compile_flags.txt", "w") as f:
+            f.write("-DFROM_FLAGS\n")
+        os.makedirs(f"{d}/cpath")
+        with open(f"{d}/cpath/cpath.h", "w") as f:
+            f.write("int cpath;\n")
+        cdb = f"{d}/build/compile_commands.json"
+        with open(cdb, "w") as f:
+            json.dump([{"directory": f"{d}/build", "file": f"{repo}/src/{c}",
+                        "arguments": ["cc", f"-I{repo}", "-c", f"{repo}/src/{c}"]}
+                       for c in ("a.c", "b.c", "pragma.c", "deep.c")], f)
+
+        def call(ai, error=False, **arguments):
+            status, _, body = ai.rpc("tools/call", {"name": "code", "arguments": arguments})
+            assert status == 200 and bool(body["result"].get("isError")) == error, \
+                (arguments, body)
+            return text_of(body["result"])
+
+        def run(binary, *args, env=None):
+            return subprocess.run([binary, "-u", up.url(), *args], capture_output=True,
+                                  text=True, timeout=10, env=os.environ | (env or {}))
+
+        # askai exits with status 2 for a NAME that is not a repository of
+        # --git, and for two values for one repository.
+        for args, message in (
+                (("--code", f"nope={cdb}"), "--code: NAME=FILE needs the name of a --git "
+                 f"repository: nope={cdb}"),
+                (("--code", "proj="), "--code: NAME=FILE needs the name of a --git "
+                 "repository: proj="),
+                (("--code", f"proj={cdb}", "--code", "proj=x"),
+                 "--code: two compile commands for proj")):
+            proc = run(binary, "--git", repo, *args)
+            assert proc.returncode == 2 and message in proc.stderr, (args, proc)
+
+        # The fake helper next to a copy of askai.
+        bin = f"{d}/bin"
+        os.mkdir(bin)
+        fake = shutil.copy(binary, f"{bin}/askai")
+        with open(f"{bin}/askai-code", "w") as f:
+            f.write(FAKE_CODE.replace("PYTHON", sys.executable))
+        os.chmod(f"{bin}/askai-code", 0o755)
+        lib = f"{d}/lib"
+        subprocess.run(["git", "init", "-q", lib], check=True, env=os.environ | git)
+        args = ("--git", repo, "--git", lib, "--code", f"proj={cdb}", "--code",
+                f"lib={d}/lib.json")
+        with Askai(fake, "-u", up.url(), *args, env={"CPATH": f"{d}/cpath"}) as ai:
+            cache = f"{ai.state.name}/askai/code"
+            assert ai.listed("built-in tools for clients:")[3] == "code        on", ai.log
+            assert ai.listed("code tool:") == [
+                f"helper       {bin}/askai-code", "libclang     fake clang version 1",
+                "confinement  none (fake)", f"cache        {cache}"], ai.log
+            assert ai.listed("code repositories:") == [
+                f"proj  {cdb}", f"lib   {d}/lib.json"], ai.log
+            tools = ai.rpc("tools/list")[2]["result"]["tools"]
+            assert [t["name"] for t in tools] == ["ask_ai", "git", "code"], tools
+            schema = tools[2]["inputSchema"]
+            assert list(schema["properties"]) == [
+                "repo", "action", "path", "revision", "offset"] and \
+                schema["required"] == ["repo", "action", "path"] and \
+                schema["properties"]["repo"]["enum"] == ["proj", "lib"] and \
+                schema["properties"]["action"]["enum"] == ["outline"] and \
+                "Only committed files are visible" in tools[2]["description"], tools[2]
+
+            # askai checks the types of the arguments, and askai-code checks
+            # their values.
+            outline = {"repo": "proj", "action": "outline", "path": "src/a.c"}
+            string = "The {} argument must be a string of 1 to 1024 bytes without a NUL."
+            for arguments, text in (
+                    ({**outline, "bogus": 1}, "The tool has no argument bogus."),
+                    ({**outline, "repo": "nope"}, "The repo argument must be proj or lib."),
+                    ({"action": "outline", "path": "a.c"},
+                     "The repo argument must be proj or lib."),
+                    ({**outline, "action": 1}, string.format("action")),
+                    ({"repo": "proj", "path": "a.c"}, string.format("action")),
+                    ({**outline, "path": "a\0.c"}, string.format("path")),
+                    ({**outline, "revision": 7}, string.format("revision")),
+                    ({**outline, "revision": "main..x"},
+                     "The revision argument must be a commit reference or hash with ^ "
+                     "or ~, such as HEAD~1."),
+                    ({**outline, "revision": "nope"},
+                     "A revision names no commit that the git tool can read: a name or "
+                     "hash that does not exist, ~N past the first commit, a blob or tree "
+                     "hash (use commit:path), or a commit that HEAD, branches, tags and "
+                     "remote-tracking refs do not reach."),
+                    ({**outline, "offset": -1},
+                     "The offset argument must be a whole number of bytes, from 0."),
+                    ({**outline, "path": "fail.c"}, "The fake refuses fail.c."),
+                    ({**outline, "path": "exit3.c"}, "askai-code exited with status 3."),
+                    ({**outline, "path": "segv.c"}, "askai-code was killed by signal 11."),
+                    ({**outline, "path": "big.c"}, "askai-code wrote more than 4 MiB.")):
+                assert call(ai, error=True, **arguments) == text, (arguments, text)
+
+            # The request: the KEY=VALUE words with the resolved commit, then
+            # the git command line of the git tool for the private view, and
+            # the environment of the git tool.
+            assert call(ai, **outline) == f"[proj at {head}: src/a.c, 0 names.]\n"
+            with open(f"{bin}/last.json") as f:
+                last = json.load(f)
+            argv = last["argv"]
+            at = argv.index("--")
+            assert argv[:at] == [
+                f"{bin}/askai-code", "action=outline", "repo=proj", "path=src/a.c",
+                f"cdb={cdb}", f"cache={cache}", f"commit={head}", argv[7], f"top={repo}"], argv
+            # The deadline is that of the call, 30 s after its start.
+            deadline = int(argv[7].removeprefix("deadline="))
+            assert 0 < deadline - time.monotonic_ns() <= 30 * 10**9, argv
+            assert argv[at + 1:at + 3] == ["git", "--no-pager"] and \
+                f"safe.directory={repo}" in argv and argv[-1] == "--git-dir=." and \
+                argv[-3] == "-C", argv
+            assert "CPATH" not in last["env"] and \
+                last["env"]["GIT_CEILING_DIRECTORIES"] == f"{d}:{d}", last["env"]
+            assert call(ai, **outline, revision="HEAD~1") == \
+                f"[proj at {parent}: src/a.c, 0 names.]\n"
+            assert call(ai, **outline, revision="HEAD", offset=6) == \
+                f"at {head}: src/a.c, 0 names.]\n"
+            # A helper that is gone after the start fails the call.
+            os.rename(f"{bin}/askai-code", f"{bin}/gone")
+            assert call(ai, error=True, **outline) == \
+                "Cannot run askai-code: No such file or directory."
+            os.rename(f"{bin}/gone", f"{bin}/askai-code")
+        # At the deadline, askai-code and its child process are killed.
+        with Askai(fake, "-u", up.url(), *args, "--git-timeout", "1") as ai:
+            assert call(ai, error=True, repo="proj", action="outline", path="hang.c") == \
+                "askai-code took longer than 1 s, and was stopped."
+            with open(f"{bin}/child.pid") as f:
+                child = int(f.read())
+
+            def gone():
+                try:
+                    with open(f"/proc/{child}/stat") as f:
+                        return f.read().split(")")[-1].split()[0] == "Z"
+                except FileNotFoundError:
+                    return True
+            wait_for(gone)
+
+        # The reasons why the tool is off.
+        with open(f"{bin}/check-short", "w"):
+            pass
+        with Askai(fake, "-u", up.url(), *args) as ai:
+            assert ai.listed("built-in tools for clients:")[3] == \
+                "code        off (one line only)", ai.log
+        os.remove(f"{bin}/check-short")
+        with open(f"{bin}/check-fails", "w"):
+            pass
+        for env, reason in (
+                ({}, "no Landlock; --code-unconfined runs askai-code without Landlock and "
+                 "seccomp"),
+                ({"XDG_CACHE_HOME": "rel", "HOME": "rel"},
+                 "no cache directory: XDG_CACHE_HOME and HOME are not absolute")):
+            with Askai(fake, "-u", up.url(), *args, env=env) as ai:
+                assert ai.listed("built-in tools for clients:")[3] == \
+                    f"code        off ({reason})", ai.log
+                tools = ai.rpc("tools/list")[2]["result"]["tools"]
+                assert [t["name"] for t in tools] == ["ask_ai", "git"], tools
+        os.remove(f"{bin}/askai-code")
+        with Askai(fake, "-u", up.url(), *args) as ai:
+            assert ai.listed("built-in tools for clients:")[3] == \
+                "code        off (no askai-code beside askai)", ai.log
+
+        # The real askai-code next to askai, if the build produced it.
+        helper = os.path.join(os.path.dirname(binary), "askai-code")
+        if not os.path.exists(helper):
+            print("code: SKIP real helper (no askai-code)")
+            print("code: off reasons, refusals, request, statuses, deadline, cap: PASS")
+            return
+        with Askai(binary, "-u", up.url(), "--git", repo, "--code", f"proj={cdb}",
+                   env={"CPATH": f"{d}/cpath"}) as ai:
+            state = ai.listed("built-in tools for clients:")[3]
+            if state != "code        on":
+                print(f"code: SKIP real helper ({state.split('(', 1)[1][:-1]})")
+                print("code: off reasons, refusals, request, statuses, deadline, cap: PASS")
+                return
+            tree = f"{ai.state.name}/askai/code/proj"
+            outline = {"repo": "proj", "action": "outline"}
+
+            def times():
+                with open(f"{tree}/commit") as f:
+                    return (f.read(), os.stat(f"{tree}/tree/src/a.c").st_mtime_ns,
+                            os.stat(f"{tree}/tree/src/b.c").st_mtime_ns)
+            assert call(ai, **outline, path="src/b.c", revision="HEAD~1") == (
+                f"[proj at {parent}: src/b.c, 1 name.]\n"
+                "1 variable b_value: int\n")
+            first = times()
+            assert first[0] == parent, first
+            # A second call at the same commit does not export again, and
+            # an export of another commit rewrites only the files that differ.
+            call(ai, **outline, path="src/b.c", revision="HEAD~1")
+            assert times() == first
+            assert call(ai, **outline, path="src/b.c") == (
+                f"[proj at {head}: src/b.c, 2 names.]\n"
+                "1 variable b_value: int\n2 variable b_more: int\n")
+            now = times()
+            assert now[0] == head and now[1] == first[1] and now[2] != first[2], now
+            # Only committed files are used: the uncommitted header and the
+            # flags in compile_flags.txt and CPATH change nothing.
+            assert call(ai, **outline, path="src/a.c") == (
+                f"[proj at {head}: src/a.c, 1 name.]\n"
+                "13 static function count: int (int) (12-16)\n")
+            assert call(ai, **outline, path="src/a.h") == (
+                f"[proj at {head}: src/a.h, 2 names.]\n"
+                "1 macro A_ONE\n2 struct pair (2-5)\n")
+            # An export that did not finish is done again.
+            with open(f"{tree}/commit", "w") as f:
+                f.write("-")
+            with open(f"{tree}/tree/planted.c", "w") as f:
+                f.write("int planted;\n")
+            call(ai, **outline, path="src/b.c")
+            assert not os.path.exists(f"{tree}/tree/planted.c")
+            # clang's debug pragmas have no effect, a stack overflow kills
+            # the helper, and a .c file that is not in the compile commands
+            # is refused.
+            assert call(ai, **outline, path="src/pragma.c") == (
+                f"[proj at {head}: src/pragma.c, 1 name.]\n"
+                "7 variable survived: int\n")
+            assert call(ai, error=True, **outline, path="src/deep.c") == \
+                "askai-code was killed by signal 11."
+            assert call(ai, error=True, **outline, path="src/unlisted.c") == \
+                "src/unlisted.c is not in the compile commands of proj."
+            for path, text in (
+                    ("src/none.h", f"src/none.h is not a file of commit {head}."),
+                    ("README", "README is not a C file; path must be a .c or .h file."),
+                    ("../a.c", "path must be relative to the repository's top, with no "
+                               ".. component."),
+                    ("HEAD:src/a.c", "Give the commit as revision and the path alone.")):
+                assert call(ai, error=True, **outline, path=path) == text, path
+            # A commit with more files than the limit is refused before the
+            # export: 100,001 files, five levels of ten trees of ten, and one
+            # more file.
+            blob = subprocess.run(["git", "-C", repo, "hash-object", "-w", "--stdin"],
+                                  input="x\n", capture_output=True, text=True,
+                                  check=True).stdout.strip()
+            entry, kind = blob, "blob"
+            for _ in range(5):
+                listing = "".join(f"{'100644' if kind == 'blob' else '040000'} {kind} "
+                                  f"{entry}\tf{i}\n" for i in range(10))
+                entry = subprocess.run(["git", "-C", repo, "mktree"], input=listing,
+                                       capture_output=True, text=True,
+                                       check=True).stdout.strip()
+                kind = "tree"
+            top = subprocess.run(["git", "-C", repo, "mktree"],
+                                 input=f"040000 tree {entry}\td\n100644 blob {blob}\tx.c\n",
+                                 capture_output=True, text=True, check=True).stdout.strip()
+            bomb = sh("commit-tree", top, "-m", "bomb").strip()
+            sh("branch", "bomb", bomb)
+            assert call(ai, error=True, **outline, path="src/a.c", revision="bomb") == (
+                f"Commit {bomb} has more than 100000 files and directories or more than "
+                "1 GiB, which the code tool reads at most.")
+            with open(f"{tree}/commit") as f:
+                assert f.read() == head
+        # git cannot list a commit of seven levels of ten trees of ten before
+        # the deadline. It is killed in time for the next call to export.
+        for _ in range(2):
+            entry = subprocess.run(["git", "-C", repo, "mktree"], input="".join(
+                f"040000 tree {entry}\tf{i}\n" for i in range(10)), capture_output=True,
+                text=True, check=True).stdout.strip()
+        top = subprocess.run(["git", "-C", repo, "mktree"], input=f"040000 tree {entry}\td\n",
+                             capture_output=True, text=True, check=True).stdout.strip()
+        slow = sh("commit-tree", top, "-m", "slow").strip()
+        sh("branch", "slow", slow)
+        with Askai(binary, "-u", up.url(), "--git", repo, "--code", f"proj={cdb}",
+                   "--git-timeout", "2") as ai:
+            assert call(ai, error=True, **outline, path="src/a.c", revision="slow") == \
+                f"git cannot export commit {slow} in time."
+            assert call(ai, **outline, path="src/b.c") == (
+                f"[proj at {head}: src/b.c, 2 names.]\n"
+                "1 variable b_value: int\n2 variable b_more: int\n")
+    print("code: off reasons, refusals, request, statuses, deadline, cap, outline of "
+          "an export, its cache, its limits: PASS")
+
+
 def turn_stream(calls=(), text="", reasoning="", used=None, order=(),
                 index=True, reason=None, extras=None):
     """Return a streamed chat completion that contains the reasoning
@@ -14109,7 +14469,7 @@ def check_plugin(binary, up, plugin):
                  "test_fetch", "test_config"], tools
             assert ai.listed("built-in tools for clients:") == [
                 "ask_ai      on", "man         on", "git         off (--git PATH)",
-                "notes       off (--notes DIR)"] + [
+                "code        off (--code NAME=FILE)", "notes       off (--notes DIR)"] + [
                 f"{name:<10}  off (--client-jobs)"
                 for name in ("background", "jobs", "wait", "timer")], ai.log
             assert ai.listed("plugin test:") == [
@@ -16302,7 +16662,8 @@ def main():
                       check_metrics,
                       check_memory, check_lookups, check_jobs, check_streaming,
                       check_scheduler, check_breaker, check_slots, check_progress,
-                      check_man, check_git, check_git_scope, check_git_read, check_turns,
+                      check_man, check_git, check_git_scope, check_git_read, check_code,
+                      check_turns,
                       check_review,
                       check_notes, check_shared_notes,
                       check_notes_history, check_notes_cancel, check_notes_texts,

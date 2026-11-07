@@ -30,12 +30,12 @@ The object of the file can have these members:
   the options. The name of a member of one of these objects is the long
   name of an option without the two dashes: `"max-turns": 8` in `upstream`
   is `--max-turns 8` on the command line. Each option but `config`,
-  `help`, the session options and the five options of the built-in tools
+  `help`, the session options and the seven options of the built-in tools
   is a member of one of the four objects.
   Section [Members](#members) lists the options of each object, and
   `askai --help` lists them in a section for each object.
-- `tools` can contain the objects `man`, `git`, `notes` and `jobs` of the
-  built-in tools, whose members are the five options of these tools
+- `tools` can contain the objects `man`, `git`, `code`, `notes` and `jobs` of
+  the built-in tools, whose members are the seven options of these tools
   (section [Built-in tools, in `tools`](#built-in-tools-in-tools)).
   `tools.git.timeout` is the member `timeout` of the object `git` in
   `tools`, and `"timeout": 60` there is `--git-timeout 60` on the command
@@ -83,8 +83,9 @@ A value has one of these forms:
   size with a unit must be a string: `"max-body": "4M"` is 4194304 bytes.
 - The value of an option without an argument is `true`. `false` changes
   nothing. Any other value is refused, also the string `"true"`.
-- The value of a repeatable option (`header`, `allow-origin`, `listen` and
-  `tools.git.repositories`) is one value or an array of values.
+- The value of a repeatable option (`header`, `allow-origin`, `listen`,
+  `tools.git.repositories` and `tools.code.compile-commands`) is one value
+  or an array of values.
 - The value of `extra` is an object, or a string that contains a JSON object.
 - `null` is refused as the value of an option.
 
@@ -99,9 +100,9 @@ combine as follows.
 
 - An option with one value on the command line replaces the value of the
   file.
-- `--header`, `--allow-origin` and `--git` on the command line add to the
-  lists of the file: `header`, `allow-origin` and
-  `tools.git.repositories`.
+- `--header`, `--allow-origin`, `--git` and `--code` on the command line
+  add to the lists of the file: `header`, `allow-origin`,
+  `tools.git.repositories` and `tools.code.compile-commands`.
 - Any `--listen` on the command line replaces the whole `listen` list of
   the file.
 - `--extra` on the command line replaces the whole `extra` object of the
@@ -189,6 +190,7 @@ The first set is the tools of the clients. A client lists them with
 | `ask_ai`, or the name that `tool-name` sets | always |
 | `man` | with `"enabled": true` in `tools.man` |
 | `git` | with `repositories` in `tools.git` |
+| `code` | with `compile-commands` in `tools.code`, when `askai-code` runs |
 | `notes` | with `directory` in `tools.notes` |
 | `test_task` | with `"test-task": true` in `testing` |
 | `background`, `jobs`, `wait` and `timer` | with `"clients": true` in `tools.jobs` |
@@ -198,14 +200,14 @@ The second set is the tools of the upstream model. `askai` offers them
 only with `"upstream-tools": true`, and only in the turns of an `ask_ai`
 call (section [Tools for the upstream model, in
 `upstream`](#tools-for-the-upstream-model-in-upstream)).
-They are `man`, `git`, `notes` and the plugin tools whose kind has the flag
-`TOOL_LENT` (`src/tool.h`), and `compact`, `findings`, `background`, `jobs`,
-`wait` and `timer`. `compact` and `findings` never appear in `tools/list`,
-and a role cannot name them. `background`, `jobs`, `wait` and `timer`
-appear in `tools/list` only with `client-jobs`, as tools of the clients. A
-role can then name them in `tools`, but never in `upstream`. The turns of
-an `ask_ai` call get these four tools with a definition of their own, and
-their jobs and timers are not those of the client.
+They are `man`, `git`, `code`, `notes` and the plugin tools whose kind has the
+flag `TOOL_LENT` (`src/tool.h`), and `compact`, `findings`, `background`,
+`jobs`, `wait` and `timer`. `compact` and `findings` never appear in
+`tools/list`, and a role cannot name them. `background`, `jobs`, `wait` and
+`timer` appear in `tools/list` only with `client-jobs`, as tools of the clients.
+A role can then name them in `tools`, but never in `upstream`. The turns of an
+`ask_ai` call get these four tools with a definition of their own, and their
+jobs and timers are not those of the client.
 
 Without any of these options, `askai` offers only `ask_ai`. In a file, the
 objects of the built-in tools in the member `tools` turn tools on as their
@@ -267,7 +269,7 @@ are true:
 
 1. `upstream-tools` is `true`.
 2. The turns get at least one other tool that `tools` allows the upstream:
-   `man`, `git` or a plugin tool that the role of the client allows the
+   `man`, `git`, `code` or a plugin tool that the role of the client allows the
    upstream to call, or `notes`, which the turns get in every call when
    `notes` is set.
 3. The member `tools` allows `compact` to the upstream. Without `tools`,
@@ -446,15 +448,15 @@ With `upstream-tools`, the member has these meanings:
 
 - If a role has no `upstream`, the upstream may call the tools in the
   `tools` of the role that `askai` can offer to the upstream: `man`, `git`,
-  `notes` and the plugin tools whose kind has the flag `TOOL_LENT`. `askai`
-  never offers `ask_ai` and `test_task` to the upstream.
-- If `upstream` is `[]`, the upstream may call none of `man`, `git` and the
-  plugin tools. With `notes`, the turns still get `notes`, `compact`,
+  `code`, `notes` and the plugin tools whose kind has the flag `TOOL_LENT`.
+  `askai` never offers `ask_ai` and `test_task` to the upstream.
+- If `upstream` is `[]`, the upstream may call none of `man`, `git`, `code`
+  and the plugin tools. With `notes`, the turns still get `notes`, `compact`,
   `findings`, `jobs`, `wait` and `timer`. Without `notes`, the turns get no
   tool, and an `ask_ai` call is one upstream request, as without
   `upstream-tools`.
 - If `upstream` lists tools, the upstream may call these tools. Each name
-  must be `man`, `git`, `notes` or a plugin tool whose kind has the flag
+  must be `man`, `git`, `code`, `notes` or a plugin tool whose kind has the flag
   `TOOL_LENT`, and `askai` must offer the tool in this run. For example,
   `"upstream": ["man"]` needs `"enabled": true` in `tools.man`. The list
   may name tools that the `tools` of the role does not list. The clients
@@ -467,7 +469,7 @@ In each case with `upstream-tools`, the turns also get these tools:
 - `compact`, `findings`, `jobs`, `wait` and `timer` when the turns get
   any tool;
 - `background` when the turns get a tool that can run in the background:
-  `man`, `git`, or a plugin tool whose kind has the flag `TOOL_DETACH`
+  `man`, `git`, `code`, or a plugin tool whose kind has the flag `TOOL_DETACH`
   (`src/tool.h`).
 
 The member `tools` applies before these rules: a tool that `tools` denies
@@ -779,7 +781,7 @@ last, and the context is not full, `askai` waits while a job of
 such an event has not been reported to the model yet, `askai` sends the next
 request at once. `askai` uses no upstream slot while it waits.
 
-Besides `man`, `git` and the tools of plugins, the turns can get these
+Besides `man`, `git`, `code` and the tools of plugins, the turns can get these
 tools:
 
 | Tool | What it does | When the turns get it |
@@ -1224,8 +1226,8 @@ The value has one of these forms:
 | `{}` | all |
 
 An object of these forms can also contain the objects `man`, `git`,
-`notes` and `jobs` of the built-in tools. The forms `true`, `false` and a
-list cannot contain them. An object without `allow`, `deny`, `client` and
+`code`, `notes` and `jobs` of the built-in tools. The forms `true`, `false` and
+a list cannot contain them. An object without `allow`, `deny`, `client` and
 `upstream` allows all tools, as `{}` does, also when it contains objects
 of the built-in tools.
 
@@ -1248,7 +1250,7 @@ gets every tool but `godbolt_compile`:
 ```
 
 A name in a list must be a tool that `askai` offers in this run, other
-than the ask tool: `man`, `git`, `notes`, `test_task`, `background`,
+than the ask tool: `man`, `git`, `code`, `notes`, `test_task`, `background`,
 `jobs`, `wait`, `timer`, `compact`, `findings` or a tool of a plugin, each
 only when `askai` offers it. `compact` and `findings` exist with
 `upstream-tools`, and
@@ -1263,7 +1265,7 @@ begins with the path of the file and `tools:`, or `tools: client:` or
 | `tools: ask_ai is the ask tool, which is always on` | the name of the ask tool |
 | `tools: not a list of tools` | `allow` or `deny` is not an array |
 | `tools: not true, false, a list or an object` | a value of another type |
-| `tools: unknown member x` | a member other than `allow`, `deny`, `client`, `upstream`, `man`, `git`, `notes` and `jobs` |
+| `tools: unknown member x` | a member other than `allow`, `deny`, `client`, `upstream`, `man`, `git`, `code`, `notes` and `jobs` |
 | `tools: client: unknown member man` | a member of `client` or `upstream` other than `allow` and `deny`, also an object of a built-in tool |
 | `tools: allow and deny together` | an object with both |
 | `tools: allow and deny go into client and upstream` | `allow` or `deny` beside `client` or `upstream` |
@@ -1308,14 +1310,17 @@ checks the names of `tools` against the tools of the running `askai`.
 
 ### Built-in tools, in `tools`
 
-These options are members of the objects `man`, `git`, `notes` and `jobs`
-of the built-in tools in the member `tools`, with the names in this table:
+These options are members of the objects `man`, `git`, `code`, `notes` and
+`jobs` of the built-in tools in the member `tools`, with the names in this
+table:
 
 | Option | Member of the file |
 | ------ | ------------------ |
 | `--man` | `tools.man.enabled` |
 | `--git PATH` | `tools.git.repositories` |
 | `--git-timeout SECONDS` | `tools.git.timeout` |
+| `--code NAME=FILE` | `tools.code.compile-commands` |
+| `--code-unconfined` | `tools.code.unconfined` |
 | `--notes DIR` | `tools.notes.directory` |
 | `--client-jobs` | `tools.jobs.clients` |
 
@@ -1445,7 +1450,59 @@ number of seconds from 1 to 3600. The default is 30.
 
 The deadline spans history discovery, authorization and execution. At this
 deadline, `askai` sends SIGTERM to the process group of `git`, and
-SIGKILL one second later, and the call fails.
+SIGKILL one second later, and the call fails. A call of the tool `code`
+uses the same deadline, at which `askai-code` is killed with SIGKILL.
+
+#### `code`
+
+The member of the file is `tools.code.compile-commands`. The value is a
+string `NAME=FILE`, or an array of them. The default is none. The command
+line adds to the values of the file.
+
+With `code`, `askai` offers the tool `code`, which runs clang on the
+committed C code of the repository `NAME` of `git`, with the flags of the
+compile commands in `FILE`, a `compile_commands.json`. A relative `FILE` is
+relative to the working directory of `askai`. `askai-code`, the helper
+program in the directory of the executable of `askai`, reads it at each
+call. Section [Asking clang about C
+code](../README.md#asking-clang-about-c-code) of `README.md` describes the
+tool.
+
+`askai` stops with exit status 2 for a value whose `NAME` is not the name of
+a repository of `git`, for a value without `FILE`, and for two values of
+one repository:
+
+| Message | Cause |
+| ------- | ----- |
+| `--code: NAME=FILE needs the name of a --git repository: nope=/x/compile_commands.json` | no repository of `git` is named `nope`, or `FILE` is empty |
+| `--code: two compile commands for proj` | two values are for `proj` |
+
+At startup, `askai` runs `askai-code --check`. The tool is off, and the
+startup report states the reason, if `askai-code` is not next to `askai` or
+does not run, for example because its libclang is missing, if the kernel
+does not support Landlock or `askai-code` contains no seccomp filter for
+the architecture and `code-unconfined` is off, or if there is no cache
+directory. The cache is `$XDG_CACHE_HOME/askai/code`, or
+`$HOME/.cache/askai/code` if `XDG_CACHE_HOME` is not an absolute path. If
+`HOME` is not an absolute path either, there is no cache directory.
+`askai-code` creates the cache with mode 0700 and refuses to use it if
+other users can access it. The cache contains one tree of a commit for each
+repository. While the tool is off, a role that names `code` stops `askai`
+with exit status 2, as a name of any tool that `askai` does not offer does.
+
+#### `code-unconfined`
+
+The member of the file is `tools.code.unconfined`. The value is `true`.
+The default is off.
+
+With `code-unconfined`, `askai-code` parses without Landlock and seccomp. It
+still sets no_new_privs, limits its memory to 1 GiB and the size of the
+files that it writes to 0, clears its environment and disables clang's
+debug pragmas. A committed `#include` of an absolute path can then read any
+file that the user of `askai` can read, such as `/proc/PID/environ` of the
+user's processes, and committed code can make clang create empty files,
+such as the temporary files of modules in `/tmp`. Use it only for
+repositories whose code you trust.
 
 #### `notes`
 
@@ -1546,7 +1603,7 @@ optional. There is no default.
 
 - `tools` is an array of the tools that the clients of the role may list
   and call. The default is `[]`, no tool. Each name must be a tool that
-  `askai` offers in this run: the ask tool, `man`, `git`, `notes`,
+  `askai` offers in this run: the ask tool, `man`, `git`, `code`, `notes`,
   `test_task`, `background`, `jobs`, `wait`, `timer` or a tool of a
   plugin. With any other name, `askai` stops with exit status 2, for
   example with `man` without `"enabled": true` in `tools.man`, or with
@@ -1700,8 +1757,8 @@ the built-in tools in the member `tools`, and it has a plugin, the members
 `client` and `upstream` of `tools`, and a policy. So it shows the form of
 each member in one file. The numbers and sizes are the defaults, except
 `temperature`, `max-tokens`, `slots`, `context`, `memory-high` and
-`test-stall`. The file turns on `upstream-tools`, `man`, `git`, `notes`
-and `client-jobs`.
+`test-stall`. The file turns on `upstream-tools`, `man`, `git`, `code`,
+`notes` and `client-jobs`.
 
 The file does not work as it is. Change or remove these members before
 use:
@@ -1716,6 +1773,7 @@ use:
 | `test-stall` and `test-pressure` in `testing` | `100` and `"/run/askai/pressure"` | remove them: they are test aids |
 | `path` of the plugin in `plugins` | `"/usr/libexec/askai/godbolt.so"` | set the real path of `godbolt.so`, or remove the plugin and the names of its tools in `tools` and `roles` |
 | `repositories` in `tools.git` | `"/srv/git/proj"` | set repositories that exist |
+| `compile-commands` in `tools.code` | `"proj=/srv/build/proj/compile_commands.json"` | name a repository of `tools.git` and its compile commands, or remove the object |
 | `participant` | `"local-model"` | choose a distinct stable name for each instance |
 | `transcripts` | `"/var/lib/askai/transcripts.git"` | choose the separate transcript repository |
 | `directory` in `tools.notes` | `"/var/lib/askai/notes.git"` | set the shared session repository path whose parent exists |
@@ -1727,13 +1785,14 @@ change nothing. `tls-allow-rsa` is `false` too.
 
 The file has these effects on the tools and the policy:
 
-- `tools` turns on `man`, `git`, `notes` and the tools of `client-jobs`
-  with its objects of the built-in tools, allows clients every tool, and
-  denies `godbolt_compile` to the upstream model.
-- The role `admin` grants every tool and `GET /metrics`. It has no
-  `upstream`, so the upstream may call each tool of the role that `askai`
-  can lend, but not `godbolt_compile`, which the member `tools` denies to
-  the upstream.
+- `tools` turns on `man`, `git`, `code`, `notes` and the tools of
+  `client-jobs` with its objects of the built-in tools, allows clients
+  every tool, and denies `godbolt_compile` to the upstream model. `code` is
+  on only where `askai-code` runs.
+- The role `admin` grants every tool but `code`, which no role lists, and
+  `GET /metrics`. It has no `upstream`, so the upstream may call each tool of
+  the role that `askai` can lend, but not `godbolt_compile`, which the member
+  `tools` denies to the upstream.
 - The role `user` grants `ask_ai`, `man` and `notes`. Its `upstream`
   allows the upstream to call `man`, `git`, `notes`, `godbolt_catalog` and
   `godbolt_targets`.

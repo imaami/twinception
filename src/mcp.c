@@ -84,6 +84,7 @@
 #include "buf.h"
 #include "child.h"
 #include "clk.h"
+#include "code.h"
 #include "config.h"
 #include "dstr.h"
 #include "findings.h"
@@ -240,6 +241,7 @@ enum mcp_kind : uint32_t {
 	KIND_MAN,
 	KIND_TASK,
 	KIND_GIT,
+	KIND_CODE,
 	KIND_NOTES,
 	KIND_COMPACT,
 	KIND_FINDINGS,
@@ -397,6 +399,7 @@ struct mcp_static {
 	struct task_pool         *tasks;        /**< test_task's, if askai offers
 	                                             it */
 	struct notes_tool         notes_tool;   /**< the notes tool's service */
+	struct code               code;         /**< the code tool's service */
 	struct journal           *journal;      /**< reasoning and recovery state */
 	struct ledger            *ledger;       /**< the tasks' */
 	struct roster            *roster;       /**< the tool calls that run and
@@ -8258,6 +8261,8 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	                      N("test_task"), LEND_NEVER, LENT_NONE },
 	[KIND_GIT]        = { .plugin = &git_plugin, N("git"), .metric = LENT_GIT,
 	                      .option = "--git PATH" },
+	[KIND_CODE]       = { .plugin = &code_plugin, N("code"), .metric = LENT_CODE,
+	                      .option = "--code NAME=FILE" },
 	[KIND_NOTES]      = { .plugin = &notes_tool_plugin,
 	                      .upstream = notes_tool_upstream_definition,
 	                      N("notes"), LEND_ALWAYS, LENT_NOTES, TRACE_ACTION,
@@ -8409,6 +8414,7 @@ mcp_offered_clients (struct config const *cfg)
 	return 1u << KIND_ASK | (cfg->flags & CFG_MAN ? 1u << KIND_MAN : 0) |
 	       (cfg->flags & CFG_TEST_TASK ? 1u << KIND_TASK : 0) |
 	       (cfg->n_gits ? 1u << KIND_GIT : 0) | (cfg->notes ? 1u << KIND_NOTES : 0) |
+	       (cfg->flags & CFG_CODE ? 1u << KIND_CODE : 0) |
 	       (cfg->flags & CFG_CLIENT_JOBS ? KINDS_AGENDA : 0);
 }
 
@@ -8490,7 +8496,8 @@ mcp_report_own (struct registry const *reg,
 			LOG_ALL(LOG_INFO, "  %-*s  %s", width, names[k].data,
 			        mcp_allowed(reg, cfg, names[k]) ? "on" : "off (tools)");
 		else if (option)
-			LOG_ALL(LOG_INFO, "  %-*s  off (%s)", width, names[k].data, option);
+			LOG_ALL(LOG_INFO, "  %-*s  off (%s)", width, names[k].data,
+			        k == KIND_CODE && cfg->n_codes ? cfg->code_check : option);
 	}
 }
 
@@ -8538,6 +8545,8 @@ mcp_report (struct registry const *reg,
 	mcp_report_own(reg, cfg);
 	if (cfg->n_gits)
 		mcp_report_gits(cfg);
+	if (cfg->flags & CFG_CODE)
+		code_report(cfg);
 	if (cfg->notes)
 		LOG_ALL(LOG_INFO, "notes directory: %s", cfg->notes);
 	uint32_t loaded = 0;
@@ -8570,9 +8579,9 @@ mcp_lent (void const *cfg,
  *  for a built-in plugin, its service and its part functions, if any, and
  *  for a loaded plugin, nothing. The service of askai's own kinds is @p st,
  *  the service of the plugin of the man tool is @p manual, the service of
- *  the plugin of the git tool is @p git, and the service of the plugin of
- *  the notes tool is st->notes_tool. The plugins of the man and notes tools
- *  create a part on every client loop.
+ *  the plugin of the git tool is @p git, and the services of the plugins of
+ *  the code and notes tools are st->code and st->notes_tool. The plugins of
+ *  the man and notes tools create a part on every client loop.
  */
 static struct mcp_plugin
 mcp_static_plugin (struct mcp_static   *st,
@@ -8587,6 +8596,7 @@ mcp_static_plugin (struct mcp_static   *st,
 		{ &mcp_host_plugin, { .service = st } },
 		{ &manual_plugin, { manual, manual_loop_create, manual_loop_destroy } },
 		{ &git_plugin, { .service = git } },
+		{ &code_plugin, { .service = &st->code } },
 		{ &notes_tool_plugin,
 		  { &st->notes_tool, notes_tool_loop_create, notes_tool_loop_destroy } },
 	};
@@ -8678,6 +8688,7 @@ mcp_static_create (struct config const *cfg,
 		.versions = DSTR_INIT,
 		.files_url = DSTR_INIT,
 		.tasks = tasks,
+		.code = { git, cfg },
 		.journal = journal,
 		.ledger = ledger,
 		.roster = roster,
