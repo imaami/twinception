@@ -35,6 +35,7 @@
 #define ASKAI_SRC_HIST_H_
 
 #include <stdatomic.h>
+#include <stdbit.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -137,25 +138,16 @@ hist_clear (struct hist *h)
 		hist_set(&h->bucket[i], 0U);
 }
 
-#define clz64(x) (unsigned)(_Generic(*(typeof(x) *)0,               \
-        long: __builtin_clzl, unsigned long long: __builtin_clzll,  \
-        unsigned long: __builtin_clzl, long long: __builtin_clzll)) \
-        (_Generic(*(typeof(x) *)0,                                  \
-                  unsigned long: (x), long long: (typeof(1ULL))(x), \
-                  unsigned long long: (x), long: (typeof(1UL))(x)))
-
 /** The bucket index a value falls in: a linear floor, then octave + offset. */
 static const_inline size_t
 hist_index (uint64_t v)
 {
 	if (v < HIST_SUB)
 		return (size_t)v;
-	unsigned const x = 63U - clz64(v) - HIST_SIG_BITS;
+	unsigned const x = (unsigned)stdc_bit_width(v) - 1U - HIST_SIG_BITS;
 	uint64_t const y = (v - ((uint64_t)HIST_SUB << x)) >> x;
 	return (size_t)((x + 1U) * (uint64_t)HIST_SUB + y);
 }
-
-#undef clz64
 
 /** Midpoint of a bucket's value range, for reporting a percentile. */
 static const_inline uint64_t
