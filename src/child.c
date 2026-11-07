@@ -569,38 +569,31 @@ child_create (struct loop            *loop,
               void                   *owner,
               int                    *e)
 {
-	if (atomic_fetch_add_explicit(&alive, 1, memory_order_relaxed) >= CHILD_MAX) {
-		atomic_fetch_sub_explicit(&alive, 1, memory_order_relaxed);
-		*e = EBUSY;
-		return nullptr;
-	}
+	struct child *c = nullptr;
 	/* A spawn costs far more than an allocation, so children are not kept
 	 * for reuse; their output's storage goes back to the stash. */
-	struct child *c = malloc(sizeof *c);
-	if (!c) {
-		atomic_fetch_sub_explicit(&alive, 1, memory_order_relaxed);
-		*e = ENOMEM;
-		return nullptr;
-	}
-	*c = (struct child){
-		.proc.fd = -1,
-		.pipe.fd = -1,
-		.step.fn = child_step,
-		.timer.fn = child_late,
-		.loop = loop,
-		.done = done,
-		.owner = owner,
-		.max = cmd->max,
-		.grace = cmd->grace
-	};
-	list_init(&c->hook);
-	if ((*e = child_start(c, cmd))) {
-		atomic_fetch_sub_explicit(&alive, 1, memory_order_relaxed);
+	*e = atomic_fetch_add_explicit(&alive, 1, memory_order_relaxed) >= CHILD_MAX ? EBUSY
+	   : (c = malloc(sizeof *c)) ? 0 : ENOMEM;
+	if (!*e) {
+		*c = (struct child){
+			.proc.fd = -1,
+			.pipe.fd = -1,
+			.step.fn = child_step,
+			.timer.fn = child_late,
+			.loop = loop,
+			.done = done,
+			.owner = owner,
+			.max = cmd->max,
+			.grace = cmd->grace
+		};
+		list_append(list, &c->hook);
+		if (!(*e = child_start(c, cmd)))
+			return c;
+		/* c->pid is still 0, so child_reap() does not decrement alive. */
 		child_dispose(c);
-		return nullptr;
 	}
-	list_append(list, &c->hook);
-	return c;
+	atomic_fetch_sub_explicit(&alive, 1, memory_order_relaxed);
+	return nullptr;
 }
 
 void
