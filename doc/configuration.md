@@ -347,11 +347,17 @@ model can still call `compact`.
 The turns of an `ask_ai` call keep a review record with the tool
 `findings`. The turns get `findings` under the same conditions as
 `compact`, and the member `tools` can deny it to the upstream. The record
-lasts as long as the `ask_ai` call, through all of its compactions. A new
-`ask_ai` call starts with an empty record. A background job that resumes
-after a restart gets its record back from its checkpoint, and `askai` makes
-the `findings` calls of the interrupted turn again. The record contains
-these things:
+lasts through all compactions of the `ask_ai` call. With `notes` in the
+turns, a call whose turns added or updated findings saves them in the
+notes repository before it answers, and the next `ask_ai` call with the
+same `thread` starts with them, with an empty read log. If another call of
+the thread saved first, the findings of this call are not saved, and
+neither are those of a call that fails because the tool calls of one turn
+take more than 16 MiB or because the context cannot hold the task and the
+notes. Any other `ask_ai` call starts with an empty record. A background
+job that resumes after a restart gets its record back from its
+checkpoint, and `askai` makes the `findings` calls of the interrupted turn
+again. The record contains these things:
 
 - The findings of the model. `add` records a finding: a claim, an optional
   location such as `src/mcp.c:120-140`, and a state. A finding is a

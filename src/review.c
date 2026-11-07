@@ -200,6 +200,10 @@ struct review {
 	uint32_t               dropped_turn;  /**< the first turn whose lines did
 	                                           not fit into the record, or 0 */
 	enum review_flag       flags;
+	bool                   changed;       /**< an add or update changed the
+	                                           findings (review_changed()) */
+	struct oid             base;          /**< the commit that review_carry()
+	                                           stored, or no name */
 };
 
 /** Returns the bytes charged for @p items items with @p text bytes of
@@ -1713,6 +1717,7 @@ review_add (struct review            *r,
 	}
 	r->findings[r->n_findings++] = f;
 	r->size = size;
+	r->changed = true;
 	return !dstr_printf(out, "Added finding %zu: ", r->n_findings) ||
 	       review_put_status(out, &f) || PUT(out, ".") ||
 	       review_put_tail(out, r, &f, a->trimmed) ? ENOMEM : 0;
@@ -1790,6 +1795,7 @@ review_update (struct review            *r,
 	f->location.last = loc.last;
 	f->changes[f->n++] = c;
 	r->size = size;
+	r->changed = true;
 	static char const *const verbs[] = { "is now", "stays" };
 	static struct cstr_view const history[] = {
 		CSTR_VIEW_INIT(""), CSTR_VIEW_INIT(" Its old claim is in its history."),
@@ -1910,23 +1916,40 @@ review_finding_json (struct review_finding const *f)
 }
 
 struct json_object *
-review_json (struct review const *r,
-             int                 *e)
+review_carry_json (struct review const *r,
+                   struct oid          *base,
+                   int                 *e)
 {
 	if (!e)
 		return nullptr;
-	if (!r) {
+	if (!r || !base) {
 		*e = EFAULT;
 		return nullptr;
 	}
+	*base = r->base;
 	struct json_object *findings = json_object_new_array();
 	for (size_t i = 0; findings && i < r->n_findings; ++i)
 		findings = jb_push_or_free(findings, review_finding_json(&r->findings[i]));
-	struct json_object *obj = jb_object("reads", review_files_json(&r->log),
-	                                    "pending", review_files_json(&r->pending),
-	                                    "full", json_object_new_uint64(r->dropped_turn),
-	                                    "findings", findings,
-	                                    nullptr);
+	struct json_object *obj = jb_object("findings", findings, nullptr);
+	*e = obj ? 0 : ENOMEM;
+	return obj;
+}
+
+struct json_object *
+review_json (struct review const *r,
+             int                 *e)
+{
+	struct oid base;
+	struct json_object *obj = review_carry_json(r, &base, e);
+	if (!obj)
+		return nullptr;
+	obj = jb_set_or_free(obj, "reads", review_files_json(&r->log));
+	obj = jb_set_or_free(obj, "pending", review_files_json(&r->pending));
+	obj = jb_set_or_free(obj, "full", json_object_new_uint64(r->dropped_turn));
+	if (oid_len(&base))
+		obj = jb_set_or_free(obj, "base", jb_string(oid_view(&base)));
+	if (r->changed)
+		obj = jb_set_or_free(obj, "changed", json_object_new_boolean(1));
 	*e = obj ? 0 : ENOMEM;
 	return obj;
 }
@@ -2146,19 +2169,25 @@ review_findings_add_json (struct review            *r,
 	return 0;
 }
 
-int
-review_restore (struct review            *r,
-                struct json_object const *obj)
+/**
+ * Replaces the contents of @p r with the findings of the saved record
+ * @p obj, and with its read log and pending lines if @p flags contains
+ * REVIEW_READ_LOG. The function sets the base of @p r to no name and
+ * changed to false. On error @p r is unchanged. Returns 0, EINVAL or
+ * ENOMEM.
+ */
+static int
+review_load (struct review            *r,
+             struct json_object const *obj,
+             enum review_flag          flags)
 {
-	if (!r || !obj)
-		return EFAULT;
 	struct review got = { .flags = r->flags };
 	struct json_object const *findings = jb_get(obj, "findings");
 	int e = json_object_is_type(findings, json_type_array) ? 0 : EINVAL;
 	/* The restore stops once the record exceeds TOOL_TEXT_MAX. */
 	for (size_t i = 0, n = jb_len(findings); !e && got.size <= TOOL_TEXT_MAX && i < n; ++i)
 		e = review_findings_add_json(&got, jb_at(findings, i));
-	if (!e && (got.flags & REVIEW_READ_LOG))
+	if (!e && (flags & REVIEW_READ_LOG))
 		e = review_restore_log(&got, obj);
 	if (!e && got.size > TOOL_TEXT_MAX)
 		e = EINVAL;
@@ -2169,4 +2198,39 @@ review_restore (struct review            *r,
 	review_fini(r);
 	*r = got;
 	return 0;
+}
+
+int
+review_restore (struct review            *r,
+                struct json_object const *obj)
+{
+	if (!r || !obj)
+		return EFAULT;
+	struct json_object *saved = jb_get(obj, "base");
+	struct oid base = {};
+	int e = saved && oid_init(&base, jb_view(saved)) ? EINVAL : review_load(r, obj, r->flags);
+	if (e)
+		return e;
+	r->base = base;
+	r->changed = jb_true(jb_get(obj, "changed"));
+	return 0;
+}
+
+int
+review_carry (struct review            *r,
+              struct json_object const *obj,
+              struct oid const         *base)
+{
+	if (!r || !obj || !base)
+		return EFAULT;
+	int e = review_load(r, obj, 0);
+	if (!e)
+		r->base = *base;
+	return e;
+}
+
+bool
+review_changed (struct review const *r)
+{
+	return r && r->changed;
 }

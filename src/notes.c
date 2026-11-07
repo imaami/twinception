@@ -16,6 +16,7 @@
 
 #include "clk.h"
 #include "git.h"
+#include "hexid.h"
 #include "notes.h"
 #include "oid.h"
 #include "util.h"
@@ -825,18 +826,19 @@ notes_delete_file (struct buf        *in,
 int
 notes_add_input (struct buf       *in,
                  char const       *repo,
+                 char const       *book,
                  struct oid const *tip,
                  struct span       message,
                  struct span       file)
 {
 	static char const mark[] = "get-mark :1\n";
-	if (!in || !repo || !tip || !message.ptr ||
+	if (!in || !repo || !book || !tip || !message.ptr ||
 	    message.len >= NOTES_MESSAGE || memchr(message.ptr, '\0', message.len))
 		return EINVAL;
 	/* The count of the data includes the line feed after the message.
 	 * get-mark ends the commit, and git writes the commit's id. */
 	int e = buf_printf(in, "commit %s\nmark :1\ncommitter %s <askai> now\ndata %zu\n%.*s\n",
-	                   repo, notes_selector(repo), message.len + 1, (int)message.len,
+	                   repo, notes_selector(book), message.len + 1, (int)message.len,
 	                   (char const *)message.ptr);
 	if (!e && oid_len(tip))
 		e = buf_printf(in, "from %s\n", tip->hex);
@@ -908,6 +910,39 @@ notes_read_out (struct span  out,
 	if (id)
 		*id = oid;
 	return 0;
+}
+
+void
+notes_review (char const         *repo,
+              struct hexid const *thread,
+              char                ref[NOTES_REPO])
+{
+	static_assert(NOTES_REPO >= sizeof "refs/review/" + UTIL_WORD_MAX + 1 + NOTES_WHO + 1 +
+	                            HEXID_DIGITS);
+	char const *who = notes_selector(repo);
+	util_format(ref, NOTES_REPO, "refs/review/%.*s/%s", (int)(strrchr(who, '/') - who), who,
+	            thread->hex);
+}
+
+int
+notes_review_out (struct span  out,
+                  struct oid  *tip,
+                  struct span *text)
+{
+	struct cstr_view rest = { (char const *)out.ptr, out.len };
+	struct cstr_view line, size;
+	if (!cstr_view_cut(&rest, '\n', &line))
+		return EIO;
+	enum notes_kind kind = notes_kind(line, tip, &size);
+	if (kind == KIND_MISSING)
+		return ENOENT;
+	/* The commit's text and a line feed come before the line of the blob. */
+	uint64_t n;
+	if (kind != KIND_COMMIT || util_number(size.data, size.len, UINT64_MAX, &n) ||
+	    n >= rest.len || rest.data[n] != '\n')
+		return EIO;
+	size_t const at = line.len + 1 + (size_t)n + 1;
+	return notes_read_out((struct span){ out.ptr + at, out.len - at }, text, nullptr) ? EIO : 0;
 }
 
 /* Returns the offset of the start of the token that ends with the NUL at

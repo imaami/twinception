@@ -29,6 +29,7 @@
 #include "notice.h"
 #include "oid.h"
 #include "plugin.h"
+#include "review.h"
 #include "schema.h"
 #include "shelf.h"
 #include "util.h"
@@ -52,6 +53,9 @@ enum notes_tool_fetch : uint32_t {
 	FETCH_DIFF,            /* compare two revisions of a note */
 	FETCH_STAT,            /* count the lines that a write changed */
 	FETCH_GREP,            /* find the lines that match a pattern */
+	FETCH_RECORD,          /* read the review record of a thread for the
+	                          prompt of an ask call */
+	FETCH_SAVE,            /* commit the review record of an ask call */
 	FETCH_KIND = 15,       /* the mask of the kinds */
 	FETCH_APPEND = 16,     /* set for append, also with FETCH_READ to read
 	                          the note to append to */
@@ -64,6 +68,8 @@ enum notes_tool_fetch : uint32_t {
 	FETCH_RESTORE = 512,   /* write an old revision of a note in a new
 	                          commit */
 	FETCH_DELETE = 1024,   /* set for delete */
+	FETCH_SAVING = 2048,   /* set on each git run of the save of a review
+	                          record */
 };
 
 /* A row of notes_tool_fetch_steps[]: the step that reads the output of
@@ -151,6 +157,9 @@ static struct cstr_view const no_note =
 	CSTR_VIEW_INIT("No note has that name. list shows the current notes, and add creates "
 	               "a note.");
 
+/* The name of the file of a review record in its commit. */
+static struct cstr_view const review_file = CSTR_VIEW_INIT("review.json");
+
 /* The part of the notes tool on one loop. */
 struct notes_tool_loop {
 	struct shelf             spare;  /* finished calls, kept for reuse with
@@ -165,8 +174,12 @@ enum {
 };
 
 /* The state of one notes call. It is the own word of the call's slot. An
- * ask call has one in its own slot only while git reads the notes for its
- * prompt.
+ * ask call has one in its own slot while git reads the notes and the
+ * review record for its prompt, and while git saves its review record.
+ * For the record read, notebook is the ref of the record. For a save,
+ * repo is that ref, notebook the caller's own notebook, revision.tip the
+ * parent of the commit, text the trace of the ask call and then the step
+ * after the save.
  */
 struct notes_tool_call {
 	struct buf              file;      /* the input of git, such as a
@@ -187,6 +200,9 @@ struct notes_tool_call {
 	                                      askai adds to the prompt. */
 	tool_step_fn           *then;      /* the step that goes on with the ask
 	                                      call after the prompt notes */
+	struct hexid const     *thread;    /* the thread whose review record
+	                                      git reads after the prompt notes,
+	                                      or nullptr */
 	size_t                  upload;    /* bytes of the file that attach
 	                                      uploads */
 	size_t                  note;      /* bytes of the note that attach
@@ -344,16 +360,29 @@ notes_tool_drop (struct mcp_slot *slot)
 	*mcp_slot_own(slot) = nullptr;
 }
 
+static void notes_tool_run (struct mcp_slot *slot, uint32_t fetch, struct buf *in, int e);
+static void notes_tool_committed (struct mcp_slot *slot);
+
 /* Releases the notes call in @p slot, the ask call's own slot, after git
- * has read the notes for the prompt. If @p e is not 0, mcp_slot_fail()
- * ends the ask call with @p e. Otherwise the function calls call->then,
- * which goes on with the ask call.
+ * has read the notes for the prompt or saved the review record. If @p e is
+ * not 0, mcp_slot_fail() ends the ask call with @p e. Otherwise, if
+ * call->thread is set, git first reads the review record of the thread.
+ * Then the function calls call->then, which goes on with the ask call.
  */
 static void
 notes_tool_then (struct mcp_slot *slot,
                  int              e)
 {
-	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	if (!e && call->thread) {
+		notes_review(call->repo, call->thread, call->notebook);
+		call->thread = nullptr;
+		child_destroy(&call->child);
+		struct buf in = {};
+		notes_tool_run(slot, FETCH_RECORD, &in,
+		               notes_check_input(&in, call->notebook, review_file));
+		return;
+	}
 	tool_step_fn *then = call->then;
 	notes_tool_drop(slot);
 	if (e)
@@ -365,9 +394,10 @@ notes_tool_then (struct mcp_slot *slot,
 /* Handles the error @p e of spawning git for the call in @p slot. For a
  * compaction, for the newest note and for the lines of a write, the step
  * runs with no child, as if git had failed. The ask call then goes on
- * without those notes, and the write's result without those lines. A call
- * of the notes tool, and the list for the start of an ask call, end with
- * the error.
+ * without those notes, and the write's result without those lines. A
+ * save ends with the sentence that its findings could not be saved. A call
+ * of the notes tool, and the list and the review record for the start of
+ * an ask call, end with the error.
  */
 static void
 notes_tool_failed (struct mcp_slot *slot,
@@ -376,6 +406,10 @@ notes_tool_failed (struct mcp_slot *slot,
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	char buf[96];
 	struct cstr_view const why = child_spawn_why(e, "git", buf, sizeof buf);
+	if (call->fetch & FETCH_SAVING) {
+		notes_tool_committed(slot);
+		return;
+	}
 	switch (call->fetch & FETCH_KIND) {
 	case FETCH_NEWEST:
 	case FETCH_COMPACT:
@@ -383,6 +417,7 @@ notes_tool_failed (struct mcp_slot *slot,
 		notes_tool_fetch_step(call->fetch)->out(slot);
 		return;
 	case FETCH_RESUME:
+	case FETCH_RECORD:
 		notes_tool_drop(slot);
 		break;
 	}
@@ -450,8 +485,7 @@ notes_tool_run (struct mcp_slot *slot,
 	int64_t age;
 	int const lock = cmd == NOTES_ADD ? notes_lock(notes, call->repo, &age) : 0;
 	if (lock)
-		LOG(LOG_WARN, "notes: cannot check the lock of %s: %s", notes_selector(call->repo),
-		    strerror(lock));
+		LOG(LOG_WARN, "notes: cannot check the lock of %s: %s", call->repo, strerror(lock));
 	char const *argv[NOTES_ARGV];
 	char const *const words[] = {
 		repo, call->revision.file.len ? call->revision.file.data : nullptr
@@ -487,6 +521,7 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
                         struct dstr            *prompt,
                         enum notes_tool_prompt  what,
                         size_t                  most,
+                        struct hexid const     *thread,
                         tool_step_fn           *then)
 {
 	int e = 0;
@@ -497,6 +532,7 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
 		return;
 	}
 	call->then = then;
+	call->thread = thread;
 	call->most = most;
 	notes_repo(loop->tool->notes, mcp_slot_principal(slot), NOTES_UPSTREAM, call->repo);
 	notes_tool_run(slot, what == NOTES_TOOL_RESUME ? FETCH_RESUME : FETCH_COMPACT,
@@ -638,9 +674,26 @@ notes_tool_write (struct mcp_slot  *slot,
 	struct buf in = {};
 	int e = notes_tool_call_message(call, before);
 	struct span const msg = { (unsigned char *)call->message.data, call->message.len };
-	e = e ? e : notes_add_input(&in, call->repo, tip, msg, file);
+	e = e ? e : notes_add_input(&in, call->repo, call->repo, tip, msg, file);
 	buf_fini(&call->file);
 	notes_tool_run(slot, FETCH_ADD, &in, e);
+}
+
+/* Runs git to commit call->file, the review record of the ask call in
+ * @p slot, on call->repo, the ref of its thread, with the parent
+ * call->revision.tip.
+ */
+static void
+notes_tool_write_record (struct mcp_slot *slot)
+{
+	static char const message[] = "Save the review record";
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	struct buf in = {};
+	int e = notes_add_input(&in, call->repo, call->notebook, &call->revision.tip,
+	                        (struct span){ (unsigned char *)message, sizeof message - 1 },
+	                        buf_peek(&call->file));
+	buf_fini(&call->file);
+	notes_tool_run(slot, FETCH_SAVE | FETCH_SAVING, &in, e);
 }
 
 /* Handles the end of git init for a write. The function writes the note,
@@ -650,6 +703,13 @@ static void
 notes_tool_created (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
+	/* A save runs the commit even if git init failed, because the commit
+	 * then fails too. */
+	if (call->fetch & FETCH_SAVING) {
+		child_destroy(&call->child);
+		notes_tool_write_record(slot);
+		return;
+	}
 	if (child_ok(call->child) ||
 	    (notes_tool_raced(call->child) && notes_exists(call->loop->tool->notes))) {
 		child_destroy(&call->child);
@@ -1419,6 +1479,108 @@ notes_tool_compacted (struct mcp_slot *slot)
 	                                              "read.]\n"), call->text));
 }
 
+/* Handles the output of git for the review record of a thread. Without the
+ * ref, the ask call starts with an empty record. Otherwise the findings of
+ * the record go into the record of the ask call, and its text is appended
+ * to the prompt after the notes. A record that askai cannot read ends the
+ * ask call as failed, and the ref stays as it is.
+ */
+static void
+notes_tool_carried (struct mcp_slot *slot)
+{
+	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	struct child const *c = call->child;
+	struct review *r = mcp_slot_review(slot);
+	struct oid tip;
+	struct span json = {};
+	int e = child_ok(c) ? notes_review_out(buf_peek(&c->out), &tip, &json) : EIO;
+	if (e == ENOENT) {
+		notes_tool_then(slot, 0);
+		return;
+	}
+	struct json_object *obj = e ? nullptr
+	                        : jb_parse((char const *)json.ptr, json.len, JSON_TOKENER_STRICT, 0);
+	loop_work(mcp_slot_loop(slot), LOOP_PARSE, json.len);
+	e = e ? e : obj ? review_carry(r, obj, &tip) : EINVAL;
+	json_object_put(obj);
+	e = e ? e : cstr_view_cat(CSTR_VIEW("\n\n"), call->text) ? ENOMEM
+	  : review_render(r, call->text, call->most);
+	if (!e || e == ENOMEM) {
+		notes_tool_then(slot, e);
+		return;
+	}
+	LOG(LOG_WARN, "notes: cannot read the review record %s: %s", call->notebook, strerror(e));
+	notes_tool_drop(slot);
+	mcp_slot_tell(slot, CSTR_VIEW("Cannot read the review record of this thread."),
+	              TOOL_FAILED);
+}
+
+/* Ends the save of the review record in @p slot. The function appends a
+ * sentence about the save to call->text, the trace of the ask call, and
+ * goes on with the ask call. call->child is nullptr if git did not start.
+ */
+static void
+notes_tool_committed (struct mcp_slot *slot)
+{
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	struct child const *c = call->child;
+	if (child_ok(c)) {
+		child_destroy(&call->child);
+		notes_tool_then(slot, dstr_printf(call->text, "Its review record is saved; an ask "
+		                                  "call with thread %s starts with it.\n",
+		                                  strrchr(call->repo, '/') + 1) ? 0 : ENOMEM);
+		return;
+	}
+	struct cstr_view why = CSTR_VIEW("This call's findings could not be saved.\n");
+	if (c) {
+		struct span const out = buf_peek(&c->out);
+		char const *text = (char const *)out.ptr;
+		LOG(LOG_WARN, "notes: git could not save %s: %.*s", call->repo,
+		    (int)util_clip(text, out.len, 300), text);
+		if (notes_tool_raced(c))
+			why = CSTR_VIEW("Another ask call of this thread saved its record first; "
+			                "this call's findings were not saved.\n");
+	}
+	child_destroy(&call->child);
+	notes_tool_then(slot, cstr_view_cat(why, call->text));
+}
+
+void
+notes_tool_loop_save (struct notes_tool_loop *loop,
+                      struct mcp_slot        *slot,
+                      struct dstr            *told,
+                      struct hexid const     *thread,
+                      tool_step_fn           *then)
+{
+	int e = 0;
+	struct notes_tool_call *call = notes_tool_loop_take(loop, told, &e);
+	*mcp_slot_own(slot) = call;
+	if (!call) {
+		mcp_slot_fail(slot, e);
+		return;
+	}
+	call->then = then;
+	notes_repo(loop->tool->notes, mcp_slot_principal(slot), NOTES_UPSTREAM, call->notebook);
+	notes_review(call->notebook, thread, call->repo);
+	/* review_carry_json() writes the parent of the commit to
+	 * call->revision.tip. */
+	struct json_object *record = review_carry_json(mcp_slot_review(slot), &call->revision.tip,
+	                                               &e);
+	struct cstr_view const json = jb_wire(record);
+	e = e ? e : json.data ? notes_add_file(&call->file, review_file, json, &call->part)
+	  : ENOMEM;
+	loop_work(mcp_slot_loop(slot), LOOP_COPY, json.len);
+	json_object_put(record);
+	if (e) {
+		notes_tool_then(slot, e);
+		return;
+	}
+	if (notes_exists(loop->tool->notes))
+		notes_tool_write_record(slot);
+	else
+		notes_tool_run(slot, FETCH_CREATE | FETCH_SAVING, &(struct buf){}, 0);
+}
+
 static struct notes_tool_fetch_step const notes_tool_fetch_steps[] = {
 	[FETCH_CREATE]  = { notes_tool_created,   NOTES_CREATE, 0 },
 	[FETCH_CHECK]   = { notes_tool_checked,   NOTES_CHECK,  0 },
@@ -1433,6 +1595,8 @@ static struct notes_tool_fetch_step const notes_tool_fetch_steps[] = {
 	[FETCH_DIFF]    = { notes_tool_got_diff,  NOTES_DIFF,   1 },
 	[FETCH_STAT]    = { notes_tool_stated,    NOTES_STAT,   0 },
 	[FETCH_GREP]    = { notes_tool_got_grep,  NOTES_GREP,   0 },
+	[FETCH_RECORD]  = { notes_tool_carried,   NOTES_READ,   0 },
+	[FETCH_SAVE]    = { notes_tool_committed, NOTES_ADD,    0 },
 };
 static_assert(array_size(notes_tool_fetch_steps) <= FETCH_KIND + 1);
 

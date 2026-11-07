@@ -11,6 +11,8 @@
  * adds no commit.
  * Existing repositories can have worktrees; Git resolves their packed refs.
  * Concurrent changes to one branch fail rather than overwrite another writer.
+ * The review record of a thread is a commit on
+ * refs/review/PARTICIPANT/WHO/THREAD, outside the notebook branches.
  */
 #ifndef ASKAI_SRC_NOTES_H_
 #define ASKAI_SRC_NOTES_H_
@@ -24,6 +26,7 @@
 #include "oid.h"
 #include "util.h"
 
+struct hexid;
 struct notes;
 
 enum {
@@ -360,10 +363,10 @@ notes_delete_file (struct buf        *in,
                    struct notes_part *part);
 
 /**
- * Writes to @p in the input of the command NOTES_ADD. The input is a
- * commit with the message @p message, one line without its line feed, and
- * with @p file, the part that notes_add_file() wrote. The committer's name
- * is the selector of the notebook branch @p repo. A file replaces any
+ * Writes to @p in the input of the command NOTES_ADD. The input is a commit
+ * on @p repo with the message @p message, one line without its line feed,
+ * and with @p file, the part that notes_add_file() wrote. The committer's
+ * name is the selector of the notebook branch @p book. A file replaces any
  * existing note with the same name. The parent is @p tip. A @p tip without
  * a name makes a root commit, which git refuses if the branch exists.
  * notes_add_out() reads the new commit's id from the output. Returns 0,
@@ -374,6 +377,7 @@ notes_delete_file (struct buf        *in,
 extern int
 notes_add_input (struct buf       *in,
                  char const       *repo,
+                 char const       *book,
                  struct oid const *tip,
                  struct span       message,
                  struct span       file);
@@ -408,6 +412,28 @@ extern int
 notes_read_out (struct span  out,
                 struct span *text,
                 struct oid  *id);
+
+/** Writes to @p ref the ref of the review record of @p thread for the
+ *  participant and principal of the notebook branch @p repo, which
+ *  notes_repo() wrote.
+ */
+extern void
+notes_review (char const         *repo,
+              struct hexid const *thread,
+              char                ref[NOTES_REPO]);
+
+/**
+ * Reads @p out, the output of the command NOTES_READ for the input that
+ * notes_check_input() writes for a ref of notes_review() and the name
+ * review.json. Stores the commit of the ref in @p tip and the text of
+ * review.json in @p text. Returns 0, ENOENT if the ref does not exist, or
+ * EIO for any other output, such as a ref that is not a commit or a commit
+ * without review.json.
+ */
+extern int
+notes_review_out (struct span  out,
+                  struct oid  *tip,
+                  struct span *text);
 
 /**
  * Reads the next current note from @p out, the output of NOTES_FILES, into

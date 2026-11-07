@@ -1993,9 +1993,8 @@ mcp_req_trace_put (struct mcp_req *req)
 	static char const none[] = "The other AI called no tools.\n";
 	if (!req->lent || (!dstr_len(&req->trace) && !(req->flags & (REQ_BRANCH | REQ_STOPPED))))
 		return mcp_req_put(req, &FRAG("\"}"), 1);
+	static_assert(TRACE_MAX == 48, "update the first line of the trace");
 	UTIL_TEXT(256) tail = {};
-	if (req->traced > TRACE_MAX)
-		(void)util_text_printf(&tail, "- and %" PRIu32 " more\n", req->traced - TRACE_MAX);
 	if (req->flags & REQ_STOPPED)
 		(void)util_text_printf(&tail, "It was stopped after %" PRIu32 " turns, still "
 		                       "calling tools.\n", req->turn);
@@ -2006,9 +2005,10 @@ mcp_req_trace_put (struct mcp_req *req)
 	struct mcp_piece intro = TEXT(none);
 	if (req->traced)
 		intro = ESC(head, util_format(head, sizeof head, "The other AI made %" PRIu32
-		                              " tool call%s in %" PRIu32 " turn%s:\n",
+		                              " tool call%s in %" PRIu32 " turn%s%s:\n",
 		                              req->traced, util_s(req->traced),
-		                              req->turn, util_s(req->turn)));
+		                              req->turn, util_s(req->turn),
+		                              req->traced > TRACE_MAX ? "; the first 48 are" : ""));
 	struct mcp_piece const p[] = {
 		FRAG("\"},{\"type\":\"text\",\"text\":\""),
 		intro,
@@ -2121,6 +2121,8 @@ mcp_req_reply (struct mcp_req *req)
 	mcp_req_tool_close(req);
 }
 
+static void mcp_slot_saved (struct mcp_slot *slot);
+
 /** Ends the call in @p slot with its output, failed if @p failed is true.
  *  mcp_slot_done() handles the call of a turn or a job. The reply to a
  *  client's call is written a slice in each step. It begins with
@@ -2131,12 +2133,24 @@ static void
 mcp_slot_respond (struct mcp_slot *slot,
                   bool             failed)
 {
-	slot->flags |= SLOT_DONE;
+	struct mcp_req *req = slot->req;
 	if (slot->role != ROLE_OWN) {
+		slot->flags |= SLOT_DONE;
 		mcp_slot_done(slot, failed);
 		return;
 	}
-	struct mcp_req *req = slot->req;
+	/* An ask call of a thread saves the findings that its turns changed
+	 * before it answers, so that the next ask call of the thread starts
+	 * with them. A suspended job saves them once it ends. SLOT_DONE is set
+	 * after the save, because git runs in the slot. */
+	if (req->mcp->notes && *req->thread.hex && !(req->flags & REQ_SUSPENDED) &&
+	    review_changed(req->review)) {
+		mcp_req_flag(req, REQ_FAILED, failed);
+		notes_tool_loop_save(req->mcp->notes, slot, &req->trace, &req->thread,
+		                     mcp_slot_saved);
+		return;
+	}
+	slot->flags |= SLOT_DONE;
 	struct span text = mcp_req_output(req);
 	loop_timer_stop(req->mcp->loop, &req->timer);
 	size_t off = req->lent ? 0 : slot->skip;
@@ -2158,6 +2172,17 @@ mcp_slot_respond (struct mcp_slot *slot,
 		return;
 	}
 	mcp_req_reply(req);
+}
+
+/* Answers the ask call in @p slot, req->self, after the save of its review
+ * record. The function destroys the record first, so that
+ * mcp_slot_respond() does not save it again.
+ */
+static void
+mcp_slot_saved (struct mcp_slot *slot)
+{
+	review_destroy(&slot->req->review);
+	mcp_slot_respond(slot, slot->req->flags & REQ_FAILED);
 }
 
 /* Write a notification of progress @p value, saying @p text, which needs
@@ -4050,7 +4075,9 @@ mcp_req_ask (struct mcp_req     *req,
 	mcp_req_dispose(req);
 	if (resume) {
 		notes_tool_loop_prompt(req->mcp->notes, &req->self, &req->self.answer,
-		                       NOTES_TOOL_RESUME, mcp_req_lend_max(req), mcp_slot_resumed);
+		                       NOTES_TOOL_RESUME, mcp_req_lend_max(req),
+		                       thread && req->review ? &req->thread : nullptr,
+		                       mcp_slot_resumed);
 		return;
 	}
 	mcp_req_enter(req, PHASE_BUILD);
@@ -6565,7 +6592,8 @@ mcp_req_compact_notes (struct mcp_req *req)
 	}
 	if (req->flags & REQ_BRANCH && req->mcp->notes) {
 		notes_tool_loop_prompt(req->mcp->notes, &req->self, &req->self.answer,
-		                       NOTES_TOOL_COMPACT, mcp_req_lend_max(req), mcp_slot_compacted);
+		                       NOTES_TOOL_COMPACT, mcp_req_lend_max(req), nullptr,
+		                       mcp_slot_compacted);
 		return;
 	}
 	mcp_req_go_on(req, CSTR_VIEW("\n\n"));
@@ -7860,8 +7888,9 @@ mcp_tool_definition (void const *service)
 	if (st->lending.of[KIND_NOTES])
 		props = jb_set_or_free(props, "thread", schema_property("string",
 			"Optional ask-chain id from an earlier answer: 32 hexadecimal "
-			"digits. Notes are shared by repository path and loaded at the "
-			"start of every ask, independently of this argument."));
+			"digits. The call starts with the chain's review record, if it has "
+			"one. Notes are shared by repository path and loaded at the start "
+			"of every ask, independently of this argument."));
 	if (st->ep->background) {
 		props = jb_set_or_free(props, "job", schema_property("string",
 			"The job id returned by this tool. Give job instead of prompt, "

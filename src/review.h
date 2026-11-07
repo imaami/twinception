@@ -26,6 +26,11 @@
  * repeated with the same record, arguments and turn returns the same
  * result. A function with an int *e parameter returns nullptr if e is
  * nullptr.
+ *
+ * With --notes, an ask call of a thread saves the findings of its record
+ * if an add or update changed them, and the next ask call of the thread
+ * starts with those findings (review_carry_json(), review_carry()). The
+ * read log is not saved.
  */
 #ifndef ASKAI_SRC_REVIEW_H_
 #define ASKAI_SRC_REVIEW_H_
@@ -38,6 +43,7 @@
 
 struct dstr;
 struct json_object;
+struct oid;
 
 enum {
 	REVIEW_ITEM     = 64,       /**< the bytes charged for each file, line
@@ -47,7 +53,7 @@ enum {
 };
 
 /** The flags of review_create(). */
-enum review_flag : uint32_t {
+enum review_flag : uint16_t {
 	REVIEW_READ_LOG = 1U << 0U,  /**< the turns of the ask call can call the
 	                                  git tool, so the record keeps a read
 	                                  log */
@@ -258,7 +264,8 @@ review_json (struct review const *r,
  * that review_json() made, pending lines included. The flags of @p r do not
  * change. If @p r was created without REVIEW_READ_LOG, the read
  * log and the pending lines of @p obj are not restored. On error @p r is
- * unchanged.
+ * unchanged. The function also restores the commit that review_carry()
+ * stored and the value that review_changed() returns.
  *
  * @retval 0 on success.
  * @retval EFAULT if @p r or @p obj is nullptr.
@@ -269,5 +276,33 @@ review_json (struct review const *r,
 extern int
 review_restore (struct review            *r,
                 struct json_object const *obj);
+
+/** Returns the findings of @p r as the JSON object {"findings": [...]},
+ *  and writes the commit that review_carry() stored to @p base, or no name.
+ *  Returns nullptr with EFAULT (for a nullptr @p r or @p base) or ENOMEM in
+ *  @p *e.
+ */
+extern struct json_object *
+review_carry_json (struct review const *r,
+                   struct oid          *base,
+                   int                 *e);
+
+/** Replaces the contents of @p r with the findings of @p obj, a JSON object
+ *  from review_carry_json() or review_json(), and an empty read log, and
+ *  stores the commit @p base. Other members of @p obj are ignored. The flags
+ *  of @p r do not change, and review_changed() returns false. Returns 0,
+ *  EFAULT for a nullptr argument, EINVAL as review_restore(), or ENOMEM. On
+ *  error @p r is unchanged.
+ */
+extern int
+review_carry (struct review            *r,
+              struct json_object const *obj,
+              struct oid const         *base);
+
+/** Returns true if an add or update changed the findings of @p r after
+ *  review_create() or review_carry(), and false for a nullptr @p r.
+ */
+extern bool
+review_changed (struct review const *r);
 
 #endif /* ASKAI_SRC_REVIEW_H_ */

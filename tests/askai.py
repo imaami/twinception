@@ -3011,10 +3011,124 @@ def check_recovery_review(binary, up):
                 f"candidate\nturn 2: verified at {head[:12]}\n  evidence: E", creates[3]
             with open(reads) as f:
                 assert f.read() == "read\nread\n", "a saved read ran again"
+
+            # With --notes, a job of a thread starts with the record that an
+            # earlier call of the thread saved. Its checkpoint contains the
+            # commit of that record and whether the job changed the
+            # findings, and the job resumed after a restart saves on top of
+            # that commit.
+            notes = f"{d}/notes"
+            git_env = os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null",
+                                    "GIT_CONFIG_NOSYSTEM": "1"}
+
+            def notes_git(*words):
+                return subprocess.run(["git", "--git-dir", notes, *words], check=True,
+                                      env=git_env, capture_output=True, text=True).stdout
+            held_turn = threading.Event()
+
+            class Held(Stream):
+                def pieces(self):
+                    yield self.wire
+                    assert held_turn.wait(30), "the held turn was not released"
+            asked = []
+
+            def carry(request):
+                asked.append(request)
+                turns = [(items(("c0", "findings", {"action": "add", "claim": "C0"})),
+                          "carry_add"), ([], "carry_end"),
+                         (items(("c1", "findings", {"action": "add", "claim": "C1"})),
+                          "carry_job")]
+                if len(asked) > len(turns):
+                    return 200, Held(wire=sse_wire([(None, {
+                        "type": "response.created", "sequence_number": 0,
+                        "response": {"id": "carry_held", "status": "in_progress"}})]))
+                calls, response_id = turns[len(asked) - 1]
+                return 200, responses_turn(calls, text="" if calls else "stored",
+                                           response_id=response_id)
+
+            def resumed(request):
+                if request["path"] == "/props":
+                    return 404, {}
+                return 200, responses_turn([], text="carried", response_id="carry_held")
+            up.reply, up.retrieve = carry, resumed
+            ai = Askai(binary, *args, "--notes", notes)
+            try:
+                result = ai.ask("Store.", background=False)
+                thread = re.search(r"thread ([0-9a-f]{32}) starts with it\.\n$",
+                                   result["content"][1]["text"])[1]
+                ref = f"refs/review/review-recovery/anonymous/{thread}"
+                first = notes_git("rev-parse", ref).strip()
+                jid = re.search(r"Started job ([0-9a-f]{32})\.", text_of(
+                    ai.ask("Review.", thread=thread))).group(1)
+
+                def captured():
+                    with open(f"{jobs}/{jid}", "rb") as f:
+                        return b"carry_held" in f.read()
+                wait_for(lambda: os.path.exists(f"{jobs}/{jid}") and captured(), seconds=10)
+                given = json.dumps(asked[2]["body"]["input"])
+                assert "claim: C0" in given and "claim: C1" not in given, given
+                with open(f"{jobs}/{jid}", "rb") as f:
+                    [state] = [value for _, kind, value in records(f.read()) if kind == "state"]
+                assert state["review"]["base"] == first and state["review"]["changed"] is True, \
+                    state["review"]
+                ai.proc.kill()
+                assert ai.proc.wait(timeout=5) == -signal.SIGKILL
+                ai.state.cleanup()
+            finally:
+                held_turn.set()
+                if ai.proc.poll() is None:
+                    ai.proc.kill()
+                    ai.proc.wait(timeout=5)
+            stored = f"Its review record is saved; an ask call with thread {thread} starts " \
+                "with it.\n"
+            with Askai(binary, *args, "--notes", notes) as restarted:
+                def done(text):
+                    result = ask_result(restarted, {"job": jid})
+                    assert not result.get("isError"), result
+                    return result["content"][0]["text"] == text
+                wait_for(lambda: done("carried"), seconds=15)
+                result = ask_result(restarted, {"job": jid})
+                assert result["content"][1]["text"].endswith(stored), result
+                assert notes_git("rev-list", "--parents", "-n", "1", ref).split()[1:] == [first]
+
+                # A job whose stream breaks after the upstream named its
+                # response is suspended until a poll resumes it. It saves
+                # its findings once, when it ends.
+                class Cut(Stream):
+                    def pieces(self):
+                        yield self.wire
+                        raise ConnectionResetError
+                cut = []
+
+                def suspend(request):
+                    cut.append(request)
+                    if len(cut) == 1:
+                        return 200, responses_turn(items(("c2", "findings", {
+                            "action": "add", "claim": "C2"})), response_id="cut_add")
+                    if len(cut) == 2:
+                        return 200, Cut(wire=sse_wire([(None, {
+                            "type": "response.created", "sequence_number": 0,
+                            "response": {"id": "cut_held", "status": "in_progress"}})]))
+                    return 200, responses_turn([], text="resumed", response_id="cut_end")
+
+                def retrieved(request):
+                    if request["path"] == "/props":
+                        return 404, {}
+                    return 200, responses_turn(items(("c3", "findings", {
+                        "action": "add", "claim": "C3"})), response_id="cut_held")
+                up.reply, up.retrieve = suspend, retrieved
+                jid = re.search(r"Started job ([0-9a-f]{32})\.", text_of(
+                    restarted.ask("Review.", thread=thread))).group(1)
+                wait_for(lambda: done("resumed"), seconds=15)
+                result = ask_result(restarted, {"job": jid})
+                assert result["content"][1]["text"].endswith(stored), result
+            assert notes_git("rev-list", "--count", ref) == "3\n"
+            saved = json.loads(notes_git("show", f"{ref}:review.json"))
+            assert [f["claim"] for f in saved["findings"]] == ["C0", "C1", "C2", "C3"], saved
     finally:
         up.reply, up.retrieve = held
-    print("review recovery: the checkpoint's review record, a saved read's lines "
-          "and a findings call made again: PASS")
+    print("review recovery: the checkpoint's review record, a saved read's lines, "
+          "a findings call made again and the record of a thread: PASS")
 
 
 def check_durable_cancel(binary, up):
@@ -13583,8 +13697,145 @@ def check_review(binary, up):
                       "disproved here; keep it a candidate, or retract it.")
             assert results(sent[1]) == [no_git, "Added finding 1: candidate, src/a.c:3, not "
                                         "read.", no_git], results(sent[1])
+
+        # With --notes, an ask call of a thread saves the findings that its
+        # turns added or updated before it answers, and the next ask call
+        # with the thread starts with them, without the read log. The first
+        # save also makes the repository.
+        session = f"{d}/session"
+        os.mkdir(session)
+
+        def notes(*args):
+            return subprocess.run(["git", "--git-dir", session, *args], check=True,
+                                  env=os.environ | git, capture_output=True,
+                                  text=True).stdout
+
+        def stored(thread):
+            return ("Its review record is saved; an ask call with thread "
+                    f"{thread} starts with it.\n")
+        raced = ("Another ask call of this thread saved its record first; this call's "
+                 "findings were not saved.\n")
+        up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
+        with Askai(binary, "-u", up.url(), "--upstream-tools", "--git", repo, "--notes",
+                   session, "--slots", "2") as ai:
+            [tool] = [t for t in ai.rpc("tools/list")[2]["result"]["tools"]
+                      if t["name"] == "ask_ai"]
+            assert tool["inputSchema"]["properties"]["thread"]["description"] == (
+                "Optional ask-chain id from an earlier answer: 32 hexadecimal digits. The "
+                "call starts with the chain's review record, if it has one. Notes are "
+                "shared by repository path and loaded at the start of every ask, "
+                "independently of this argument."), tool
+            script[:] = [mixed(("git", read("src/a.c", 1, 20))),
+                         mixed(("findings", add("C1", "src/a.c:5")),
+                               ("findings", {"action": "add", "claim": "C2"}))]
+            trace = ai.ask("Q")["content"][1]["text"]
+            thread = re.search(r"thread ([0-9a-f]{32}) starts with it\.\n$", trace)[1]
+            assert trace.endswith(stored(thread)), trace
+            ref = f"refs/review/ask_ai/anonymous/{thread}"
+            assert notes("for-each-ref", "--format=%(refname)", "refs/review/") == ref + "\n"
+            saved = json.loads(notes("show", f"{ref}:review.json"))
+            assert list(saved) == ["findings"] and \
+                [f["claim"] for f in saved["findings"]] == ["C1", "C2"], saved
+            assert notes("log", "-1", "--format=%P|%cn", ref) == \
+                "|ask_ai/anonymous/upstream\n"
+            first = notes("rev-parse", ref).strip()
+
+            # The next call of the thread starts with the findings, but a
+            # finding becomes verified again only after a new read.
+            record = (REVIEW + findings_head("2 findings: 1 candidate, 1 verified") +
+                      f"1. verified, src/a.c:5 at {later[:12]}\n   claim: C1\n"
+                      "   evidence: EC1\n2. candidate\n   claim: C2")
+            verify = {"action": "update", "id": 1, "state": "verified", "evidence": "E2"}
+            script[:] = [mixed(("findings", verify), ("findings", verify | {"id": 9})),
+                         mixed(("git", read("src/a.c", 1, 20))), mixed(("findings", verify))]
+            count = len(up.requests)
+            result = ai.ask("Q", thread=thread)
+            sent = up.requests[count:]
+            assert prompt(sent[0]).endswith("\n\n" + record) and \
+                "[askai: what you read with git read" not in prompt(sent[0]), prompt(sent[0])
+            assert results(sent[1]) == [
+                missing("verified", "src/a.c line 5 is", "src/a.c", 5, False),
+                "There is no finding 9. The record contains findings 1 to 2."], results(sent[1])
+            assert results(sent[3]) == [f"Finding 1 stays verified, src/a.c:5 at {later[:12]}; "
+                                        "the new evidence is in its history."], sent[3]
+            assert result["content"][1]["text"].endswith(stored(thread)), result
+            second = notes("rev-parse", ref).strip()
+            assert notes("rev-list", "--parents", "-n", "1", ref).split() == [second, first]
+
+            # A call whose turns change no finding saves nothing, and a call
+            # without thread starts with an empty record.
+            script[:] = [turn({"action": "show"})]
+            result = ai.ask("Q", thread=thread)
+            assert not result["content"][1]["text"].endswith(stored(thread)), result
+            assert notes("rev-parse", ref).strip() == second
+            script[:] = [turn({"action": "show"})]
+            count = len(up.requests)
+            result = ai.ask("Q")
+            sent = up.requests[count:]
+            assert REVIEW not in prompt(sent[0]) and results(sent[1]) == [REVIEW_EMPTY], sent
+            assert "saved" not in result["content"][1]["text"], result
+            assert notes("for-each-ref", "--format=%(refname)", "refs/review/") == ref + "\n"
+
+            # The first line of a trace that is cut counts the calls that it
+            # leaves out, and the sentence about the save follows the list.
+            script[:] = [turn(*[{"action": "show"}] * 16)] * 3 + [
+                turn({"action": "add", "claim": "C3"})]
+            lines = ai.ask("Q", thread=thread)["content"][1]["text"].split("\n")
+            assert lines[0] == "The other AI made 49 tool calls in 5 turns; the first 48 " \
+                "are:" and len(lines) == 51 and \
+                all(line.startswith("- findings show: ") for line in lines[1:49]) and \
+                lines[49:] == [stored(thread)[:-1], ""], lines
+
+            # Two calls of the thread that started from the same record both
+            # save. git refuses the second commit, and the record stays as
+            # the first call saved it.
+            barrier = threading.Barrier(2, timeout=10)
+
+            def both(request):
+                if any(m["role"] == "assistant" for m in request["body"]["messages"]):
+                    return 200, turn_stream(text="A")
+                barrier.wait()
+                claim = {"action": "add", "claim": "claim of " + prompt(request)[:2]}
+                return 200, turn_stream([("b", "findings", json.dumps(claim))])
+            up.reply = both
+            traces = {}
+            calls = [threading.Thread(target=lambda q=q: traces.update(
+                {q: ai.ask(q, thread=thread)["content"][1]["text"]})) for q in ("Qa", "Qb")]
+            for call in calls:
+                call.start()
+            for call in calls:
+                call.join(30)
+            won = [q for q, text in traces.items() if text.endswith(stored(thread))]
+            lost = [q for q, text in traces.items() if text.endswith(raced)]
+            assert len(won) == len(lost) == 1, traces
+            last = json.loads(notes("show", f"{ref}:review.json"))["findings"][-1]
+            assert last["claim"] == "claim of " + won[0], last
+            for commit in notes("rev-list", "--glob=refs/review/").split():
+                assert "claim of " + lost[0] not in notes("show", f"{commit}:review.json")
+            up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
+
+            # A record that askai cannot read ends the call as failed before
+            # any upstream request, and the ref stays as it is.
+            now = int(time.time())
+            for unread, files in (("a" * 32, {"review.json": b"not json"}),
+                                  ("b" * 32, {"other.txt": b"x"}),
+                                  ("c" * 32, {"review.json": b'{"findings":[{"claim":"C"}]}'})):
+                bad = f"refs/review/ask_ai/anonymous/{unread}"
+                subprocess.run(["git", "--git-dir", session, "fast-import", "--quiet"],
+                               input=f"commit {bad}\ncommitter t <t> {now} +0000\ndata 0\n"
+                               .encode() + b"".join(f"M 100644 inline {name}\ndata "
+                                                    f"{len(data)}\n".encode() + data + b"\n"
+                                                    for name, data in files.items()),
+                               check=True, env=os.environ | git)
+                before = notes("rev-parse", bad)
+                count = len(up.requests)
+                result = ai.ask("Q", thread=unread)
+                assert result.get("isError") and result["content"][0]["text"] == \
+                    "Cannot read the review record of this thread.", result
+                assert len(up.requests) == count and notes("rev-parse", bad) == before
     up.reply = lambda request: (200, ANSWERS["openai"])
-    print("review: findings, the review record, its render after compaction: PASS")
+    print("review: findings, the review record, its render after compaction, the record "
+          "of a thread's next ask call: PASS")
 
 
 def check_tasks(binary, up):

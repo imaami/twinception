@@ -637,9 +637,10 @@ summary, once until a turn goes through again; the next overflow is the
 call's error.
 
 `findings` records findings in the call's review record, which lasts
-through all of its compactions. `add` records a finding: a claim, a
-location such as `src/mcp.c:120-140` unless no lines of a committed file
-show the claim, and a state, `candidate` until the model checks it.
+through all of its compactions, and with `--notes` into the next ask call
+of its thread. `add` records a finding: a claim, a location such as
+`src/mcp.c:120-140` unless no lines of a committed file show the claim,
+and a state, `candidate` until the model checks it.
 `update` changes the state to `verified`, `disproved`, `retracted` or
 `candidate` again, with evidence, and also the claim or the location if they
 were wrong; `askai` stores each change and the old text in the finding's
@@ -656,9 +657,24 @@ After a compaction, the record follows the summary, within a tool's window;
 past that, its last line names the `offset` that `show` reads on from. The
 notice before the record states that the system text, the client's messages
 and the prompt stay word for word, so the model need not copy the task into
-notes. The record's limit is 4 MiB, and a new call starts with an empty
-one. A background job that resumes after a restart gets its record back
-from its checkpoint.
+notes. The record's limit is 4 MiB, the findings of the thread's earlier
+calls included. A background job that resumes after a restart gets its
+record back from its checkpoint.
+
+With `--notes`, an ask call whose turns added or updated findings saves
+them before it answers: a commit with the file `review.json` on
+`refs/review/PARTICIPANT/WHO/THREAD`, outside the notebook branches, on top
+of the commit that the call started with. The trace names the thread. An
+ask call with that `thread` starts with those findings, after the notes,
+but with an empty read log, so a finding becomes `verified` or `disproved`
+again only after a new `git` `read` of its lines. Any other ask call
+starts with an empty record. If another ask call of the thread saved
+first, git refuses the commit, and the findings of this call are not
+saved. A call cancelled before its last answer saves nothing, and neither
+does a call that fails because the tool calls of one turn take more than
+16 MiB or because the context cannot hold the task and the notes. A
+stored record that cannot be read ends the ask call as failed and stays
+as it is. Nothing prunes these refs; `git update-ref -d` removes one.
 
 With `--notes PATH`, the repository at `PATH` is the shared session.
 `askai` creates a bare Git repository there if absent, and also accepts an

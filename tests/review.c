@@ -9,6 +9,7 @@
 
 #include "check.h"
 #include "dstr.h"
+#include "oid.h"
 #include "review.h"
 
 /* Check that the text @p got is @p want. */
@@ -1365,18 +1366,18 @@ test_json (void)
 	struct json_object *obj = review_json(r, &e);
 	CHECK(obj && !e);
 	char const *json = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PLAIN);
-	SAME(json, "{\"reads\":[{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":\"src\\/a.c\","
-	           "\"total\":300,\"lines\":[1,9,1,10,12,3,20,29,1]},{\"repo\":\"other\","
-	           "\"commit\":\"" B "\",\"path\":\"b.c\",\"total\":0,\"lines\":[2,2,2]}],"
-	           "\"pending\":[{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":\"src\\/a.c\","
-	           "\"total\":300,\"lines\":[40,41,4]}],\"full\":0,\"findings\":[{\"claim\":"
-	           "\"C3\",\"history\":"
+	SAME(json, "{\"findings\":[{\"claim\":\"C3\",\"history\":"
 	           "[{\"turn\":2,\"state\":\"verified\",\"commit\":\"" A "\",\"evidence\":\"E1\"},"
 	           "{\"turn\":3,\"state\":\"retracted\",\"commit\":\"" B "\",\"evidence\":\"R\","
 	           "\"claim\":\"C1\",\"location\":{\"first\":3,\"last\":4,\"path\":\"src\\/a.c\"}}],"
 	           "\"first\":2,\"last\":2,\"path\":\"b.c\"},"
 	           "{\"claim\":\"C2\",\"history\":[{\"turn\":2,\"state\":"
-	           "\"candidate\",\"commit\":\"\",\"evidence\":\"\"}],\"first\":0,\"last\":0}]}");
+	           "\"candidate\",\"commit\":\"\",\"evidence\":\"\"}],\"first\":0,\"last\":0}],"
+	           "\"reads\":[{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":\"src\\/a.c\","
+	           "\"total\":300,\"lines\":[1,9,1,10,12,3,20,29,1]},{\"repo\":\"other\","
+	           "\"commit\":\"" B "\",\"path\":\"b.c\",\"total\":0,\"lines\":[2,2,2]}],"
+	           "\"pending\":[{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":\"src\\/a.c\","
+	           "\"total\":300,\"lines\":[40,41,4]}],\"full\":0,\"changed\":true}");
 	struct review *back = fresh();
 	CHECK(!review_restore(back, obj));
 	struct dstr a = DSTR_INIT;
@@ -1553,7 +1554,7 @@ test_json (void)
 	struct review *empty = fresh();
 	struct json_object *none = review_json(empty, &e);
 	SAME(json_object_to_json_string_ext(none, JSON_C_TO_STRING_PLAIN),
-	     "{\"reads\":[],\"pending\":[],\"full\":0,\"findings\":[]}");
+	     "{\"findings\":[],\"reads\":[],\"pending\":[],\"full\":0}");
 	CHECK(!review_restore(back, none));
 	RENDER(back, HEADER NONE);
 	json_object_put(none);
@@ -1599,6 +1600,141 @@ test_json (void)
 	json_object_put(rj);
 	review_read_destroy(&read);
 	dstr_cleanup(&out);
+}
+
+/* Check that the renders of @p a and @p b are the same. */
+static void
+same_render (struct review const *a,
+             struct review const *b,
+             int                  line)
+{
+	struct dstr x = DSTR_INIT;
+	struct dstr y = DSTR_INIT;
+	CHECK(!review_render(a, &x, SIZE_MAX) && !review_render(b, &y, SIZE_MAX));
+	same(__FILE__, line, dstr_get(&y), dstr_get(&x));
+	dstr_cleanup(&x);
+	dstr_cleanup(&y);
+}
+
+/* review_carry_json() writes the findings alone, and review_carry() reads
+ * them into a record with an empty read log, so a carried finding becomes
+ * verified again only after a new read. A checkpoint contains the commit
+ * that the findings were read from and whether an add or update changed
+ * them.
+ */
+static void
+test_carry (void)
+{
+	struct review *r = fresh();
+	CHECK(!review_changed(r) && !review_changed(nullptr));
+	CHECK(!seen(r, "proj", A, "src/a.c", 1, 9, 300, 1));
+	EXPECT(r, "{\"action\":\"add\",\"claim\":\"C1\",\"state\":\"verified\",\"evidence\":"
+	          "\"E1\",\"location\":\"src/a.c:5\"}", 2, 0,
+	       "Added finding 1: verified, src/a.c:5 at " A12 ".");
+	EXPECT(r, "{\"action\":\"add\",\"claim\":\"C2\"}", 3, 0, "Added finding 2: candidate.");
+	CHECK(review_changed(r));
+	int e;
+	struct oid base;
+	struct json_object *obj = review_carry_json(r, &base, &e);
+	CHECK(obj && !e && !oid_len(&base));
+	SAME(json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PLAIN),
+	     "{\"findings\":[{\"claim\":\"C1\",\"history\":[{\"turn\":2,\"state\":\"verified\","
+	     "\"commit\":\"" A "\",\"evidence\":\"E1\"}],\"first\":5,\"last\":5,\"path\":"
+	     "\"src\\/a.c\"},{\"claim\":\"C2\",\"history\":[{\"turn\":3,\"state\":\"candidate\","
+	     "\"commit\":\"\",\"evidence\":\"\"}],\"first\":0,\"last\":0}]}");
+	struct oid b;
+	CHECK(!oid_init(&b, CSTR_VIEW(B)));
+	struct review *next = fresh();
+	CHECK(!review_carry(next, obj, &b) && !review_changed(next));
+	char const carried[] = HEADER FINDINGS("2 findings: 1 candidate, 1 verified")
+	                       "1. verified, src/a.c:5 at " A12 "\n   claim: C1\n   evidence: E1\n"
+	                       "2. candidate\n   claim: C2";
+	RENDER(next, carried);
+	/* The read log is empty, so verified needs a new read. */
+	char const verify[] = "{\"action\":\"update\",\"id\":1,\"state\":\"verified\","
+	                      "\"evidence\":\"E2\"}";
+	EXPECT(next, verify, 1, EINVAL,
+	       "verified needs the lines of its location in your read log, and src/a.c line 5 is "
+	       "not in it. Read them with the git tool's read command, with \"revisions\": "
+	       "[\"HEAD:src/a.c\"] and \"line\": 5" WHOLE "." LATER);
+	CHECK(!review_changed(next));
+	CHECK(!seen(next, "proj", A, "src/a.c", 1, 9, 300, 1));
+	EXPECT(next, verify, 2, 0, "Finding 1 stays verified, src/a.c:5 at " A12 "; the new "
+	       "evidence is in its history.");
+	EXPECT(next, "{\"action\":\"update\",\"id\":3,\"state\":\"retracted\",\"evidence\":"
+	             "\"R\"}", 2, EINVAL,
+	       "There is no finding 3. The record contains findings 1 to 2.");
+	CHECK(review_changed(next));
+	struct json_object *again = review_carry_json(next, &base, &e);
+	CHECK(again && !e && oid_equal(&base, &b));
+	json_object_put(again);
+
+	/* A checkpoint contains the base and the change, and an old checkpoint
+	 * without them restores without a base, unchanged. */
+	struct json_object *saved = review_json(next, &e);
+	char const *text = json_object_to_json_string_ext(saved, JSON_C_TO_STRING_PLAIN);
+	CHECK(saved && !e && strstr(text, ",\"base\":\"" B "\"") &&
+	      strstr(text, ",\"changed\":true}"));
+	struct review *back = fresh();
+	CHECK(!review_restore(back, saved) && review_changed(back));
+	same_render(next, back, __LINE__);
+	again = review_carry_json(back, &base, &e);
+	CHECK(again && !e && oid_equal(&base, &b));
+	json_object_put(again);
+	json_object_object_add(saved, "base", json_object_new_string("x"));
+	CHECK(review_restore(back, saved) == EINVAL && review_changed(back));
+	json_object_object_del(saved, "base");
+	json_object_object_del(saved, "changed");
+	CHECK(!review_restore(back, saved) && !review_changed(back));
+	again = review_carry_json(back, &base, &e);
+	CHECK(again && !e && !oid_len(&base));
+	json_object_put(again);
+	json_object_put(saved);
+
+	/* review_carry() reads only the findings of a checkpoint. */
+	saved = review_json(r, &e);
+	struct review *only = fresh();
+	CHECK(saved && !e && !review_carry(only, saved, &b) && !review_changed(only));
+	RENDER(only, carried);
+	json_object_put(saved);
+
+	/* Refusals leave the record as it was. */
+	char const *const bad[] = {
+		"{}", "{\"findings\":1}", "{\"findings\":[{\"claim\":\"C\"}]}",
+		("{\"findings\":[{\"claim\":\"C\",\"history\":[{\"turn\":1,\"state\":\"open\","
+		 "\"commit\":\"\",\"evidence\":\"\"}],\"first\":0,\"last\":0}]}"),
+	};
+	for (size_t i = 0; i < array_size(bad); ++i) {
+		struct json_object *o = json_tokener_parse(bad[i]);
+		CHECK(o && review_carry(only, o, &b) == EINVAL);
+		json_object_put(o);
+	}
+	char *claim = malloc(TOOL_TEXT_MAX);
+	CHECK(claim);
+	if (claim) {
+		memset(claim, 'c', TOOL_TEXT_MAX);
+		struct json_object *huge = json_tokener_parse(json_object_to_json_string(obj));
+		json_object_object_add(json_object_array_get_idx(json_object_object_get(huge,
+		                                                                        "findings"), 1),
+		                       "claim", json_object_new_string_len(claim, TOOL_TEXT_MAX));
+		CHECK(review_carry(only, huge, &b) == EINVAL);
+		json_object_put(huge);
+		free(claim);
+		claim = nullptr;
+	}
+	RENDER(only, carried);
+	CHECK(review_carry(nullptr, obj, &b) == EFAULT);
+	CHECK(review_carry(only, nullptr, &b) == EFAULT);
+	CHECK(review_carry(only, obj, nullptr) == EFAULT);
+	CHECK(!review_carry_json(nullptr, &base, &e) && e == EFAULT);
+	e = 0;
+	CHECK(!review_carry_json(only, nullptr, &e) && e == EFAULT);
+	CHECK(!review_carry_json(only, &base, nullptr));
+	json_object_put(obj);
+	review_destroy(&only);
+	review_destroy(&back);
+	review_destroy(&next);
+	review_destroy(&r);
 }
 
 /* A record with as many files as fit in TOOL_TEXT_MAX restores, and a
@@ -1688,6 +1824,7 @@ main (void)
 	test_full();
 	test_no_git();
 	test_json();
+	test_carry();
 	test_many();
 	test_nullptr();
 	return check_report("review");

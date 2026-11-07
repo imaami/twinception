@@ -5,7 +5,8 @@
  * caller can read every notebook in the repository. The tool is a built-in
  * plugin with a part on each client loop. The part also runs the git
  * commands that read the notes for the prompt of an ask call
- * (notes_tool_loop_prompt()).
+ * (notes_tool_loop_prompt()) and that save the review record of an ask
+ * call (notes_tool_loop_save()).
  */
 #ifndef ASKAI_SRC_NOTES_TOOL_H_
 #define ASKAI_SRC_NOTES_TOOL_H_
@@ -16,6 +17,7 @@
 #include "buf.h"
 #include "mcp.h"
 
+struct hexid;
 struct notes_tool_loop;
 struct plugin;
 
@@ -95,9 +97,12 @@ extern tool_drop_fn notes_tool_drop;
  * list of the notes and the newest note go into @p prompt, the text that
  * askai adds to the prompt. The prompt shows at most @p most bytes of the
  * newest note. @p what says whether the ask call starts or compacts its
- * context. Once the notes are in @p prompt, the function calls @p then,
- * which goes on with the ask call. If git cannot list the notes for
- * NOTES_TOOL_RESUME, the ask call ends as failed.
+ * context. If @p thread is not nullptr, git then reads the review record of
+ * the thread into the record of the ask call (mcp_slot_review()), and the
+ * text of the record is appended to @p prompt after the notes. Once the
+ * notes are in @p prompt, the function calls @p then, which goes on with
+ * the ask call. If git cannot list the notes for NOTES_TOOL_RESUME, or
+ * cannot read the review record, the ask call ends as failed.
  */
 extern void
 notes_tool_loop_prompt (struct notes_tool_loop *loop,
@@ -105,6 +110,21 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
                         struct dstr            *prompt,
                         enum notes_tool_prompt  what,
                         size_t                  most,
+                        struct hexid const     *thread,
                         tool_step_fn           *then);
+
+/**
+ * Commits the findings of the review record of the ask call in @p slot,
+ * the ask call's own slot, on the ref of the review record of @p thread.
+ * git runs on the loop of the part @p loop. The function appends a
+ * sentence about the save to @p told, the trace of the ask call, and then
+ * calls @p then. Only ENOMEM ends the ask call.
+ */
+extern void
+notes_tool_loop_save (struct notes_tool_loop *loop,
+                      struct mcp_slot        *slot,
+                      struct dstr            *told,
+                      struct hexid const     *thread,
+                      tool_step_fn           *then);
 
 #endif /* ASKAI_SRC_NOTES_TOOL_H_ */
