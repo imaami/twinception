@@ -3,11 +3,11 @@ override TEST_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
-.PHONY: default check check-ai check-askai check-buf check-cli check-completion check-cstr-view \
-        check-datauri check-dstr check-jb check-handle check-instance check-journal check-ledger check-load \
+.PHONY: default check check-ai check-askai check-buf check-cdb check-cli check-completion \
+        check-cstr-view check-datauri check-dstr check-jb check-handle check-instance check-journal check-ledger check-load \
         check-ref check-review check-turn load load-build
 default:; @:
-check: | check-completion check-askai check-cli check-ai check-jb check-buf \
+check: | check-completion check-askai check-cli check-ai check-jb check-cdb check-buf \
          check-datauri check-handle check-turn check-instance check-journal check-ledger \
          check-ref check-review check-dstr check-load
 
@@ -156,6 +156,15 @@ $Otests/jb: $Otests/jb.c.o $Otests/src/jb.c.o $Otests/src/dstr.c.o
 	-Wl,--wrap=json_tokener_new,--wrap=json_tokener_new_ex -o "$@" $^ $(JSON_LIBS)
 
 $Otests/jb.c.o: CPPFLAGS += $(JSON_INCLUDES)
+
+# Unit tests of the compile commands of the code tool, src/cdb.c.
+check-cdb: $Otests/cdb
+	$<
+
+$Otests/cdb: $Otests/cdb.c.o $Otests/src/cdb.c.o $Otests/src/cstr_view.c.o $Otests/src/dstr.c.o
+	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
+
+$Otests/cdb.c.o $Otests/src/cdb.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
 # Unit tests of the review record of an ask call, src/review.c.
 check-review: $Otests/review

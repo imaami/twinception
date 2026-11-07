@@ -31,12 +31,18 @@ SRC = """
 
 TESTS = """
     default
-    check check-ai check-askai check-buf check-cli check-completion check-cstr-view check-datauri
+    check check-ai check-askai check-buf check-cdb check-cli check-completion check-cstr-view
+    check-datauri
     check-dstr check-jb
     check-handle check-instance check-journal check-ledger check-load check-ref check-review
     check-turn
     load load-build
 """.split()
+
+# The targets of askai-code, which make offers in src/ only if an
+# llvm-config of libclang 19 or later is installed (src/askai-code.mk): all
+# three or none.
+OPTIONAL = "askai-code clean-askai-code purge-askai-code".split()
 
 # The expected targets by directory. The root makefile imports the targets of
 # the makefiles in src/ and in tests/, so the root must offer both lists.
@@ -83,6 +89,8 @@ def main():
         where = "the repository root" if sub == "." else sub + "/"
         got = offered(database(os.path.join(root, sub)))
         assert len(got) == len(set(got)), got
+        if sub != "tests" and set(OPTIONAL) & set(got):
+            expected = expected + OPTIONAL
         for name in sorted(set(got) - set(expected)):
             print(f"make tab completion in {where} offers a target that is "
                   f"not expected: {name}")
