@@ -35,8 +35,8 @@ enum {
 
 /* The arguments: X(ID, name). */
 #define CODE_ARG_LIST(X)                                                   \
-        X(REPO, "repo") X(ACTION, "action") X(PATH, "path")                \
-        X(REVISION, "revision") X(OFFSET, "offset")
+        X(REPO, "repo") X(ACTION, "action") X(PATH, "path") X(NAME, "name") \
+        X(LINE, "line") X(REVISION, "revision") X(OFFSET, "offset")
 
 #define CODE_ARG_ENUM(id, ...) CODE_ARG_##id,
 enum code_arg : uint8_t { CODE_ARG_LIST(CODE_ARG_ENUM) CODE_ARGS };
@@ -180,10 +180,18 @@ code_definition (void const *service)
 			"Ask clang about the C code of a commit of one of the server's "
 			"repositories. clang parses the file in path, as committed, with the "
 			"flags of the repository's compile commands, so the answers come from "
-			"the compiler and not from a text search. outline lists the names that "
-			"path declares, each with the line where it is written. Only committed "
-			"files are visible. A .c file must be in the compile commands; a header "
-			"is parsed with the flags of the .c file nearest to it."),
+			"the compiler and not from a text search. describe prints what name is "
+			"in the translation unit of path: the type of a variable, the signature "
+			"and calls of a function, the value of an enumerator, or a macro and its "
+			"value where line uses it. It prints the places where name is declared "
+			"and defined, and the numbered lines of its declaration. For a struct or "
+			"union it lists the members with their offsets, sizes and padding, "
+			"inside anonymous members too. outline lists the names that path "
+			"declares, each with the line where it is written, which can be passed "
+			"to describe as line. Places are path:line; git read accepts the commit "
+			"and the path. Only committed files are visible. A .c file must be in "
+			"the compile commands; a header is parsed with the flags of the .c file "
+			"nearest to it."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
@@ -192,6 +200,14 @@ code_definition (void const *service)
 				"path", schema_property("string",
 					"A .c or .h file of the commit, relative to the "
 					"repository's top, such as src/git.c."),
+				"name", schema_property("string",
+					"For describe: a function, variable, type, struct, union, "
+					"enum, enumerator, typedef or macro, such as git_start, or a "
+					"member as struct.member, such as child.flags. struct, union "
+					"or enum before a name picks the type, as in struct dstr."),
+				"line", schema_count(1,
+					"For describe: the line of path where name is written, such "
+					"as the line of a local variable or of a macro use."),
 				"revision", schema_property("string",
 					"The commit, in a form that the git tool accepts: HEAD "
 					"(the default), a branch, a tag or a commit ID, with ^ "
@@ -372,21 +388,33 @@ code_args (struct code const  *code,
 	}
 	struct cstr_view const action = code_string(of[CODE_ARG_ACTION]);
 	struct cstr_view const path = code_string(of[CODE_ARG_PATH]);
+	struct cstr_view const name = code_string(of[CODE_ARG_NAME]);
 	struct cstr_view const revision = of[CODE_ARG_REVISION] ? code_string(of[CODE_ARG_REVISION])
 	                                                        : CSTR_VIEW("HEAD");
 	char const *bad = !action.data ? "action" : !path.data ? "path"
+	                : of[CODE_ARG_NAME] && !name.data ? "name"
 	                : !revision.data ? "revision" : nullptr;
 	static_assert(CODE_WORD == 1024, "update the text of the limit");
 	if (bad)
 		return util_text_printf(why, "The %s argument must be a string of 1 to 1024 bytes "
 		                        "without a NUL.", bad), EINVAL;
+	uint64_t const line = jb_count(of[CODE_ARG_LINE], UINT32_MAX);
+	if (of[CODE_ARG_LINE] && !line)
+		return util_text_printf(why, "The line argument must be a whole number from 1."),
+		       EINVAL;
 	int e = git_pin_add(&call->pin, revision);
 	if (e == EINVAL)
 		return util_text_printf(why, "The revision argument must be a commit reference or "
 		                        "hash with ^ or ~, such as HEAD~1."), EINVAL;
+	char digits[UTIL_DECIMAL];
+	char *const end = digits + sizeof digits;
+	char const *number = util_decimal(end, line);
 	e = e ? e : code_word(call, CXI_KEY_ACTION, action);
 	e = e ? e : code_word(call, CXI_KEY_REPO, repo);
 	e = e ? e : code_word(call, CXI_KEY_PATH, path);
+	e = e ? e : code_word(call, CXI_KEY_NAME, name);
+	e = e ? e : code_word(call, CXI_KEY_LINE, (struct cstr_view){ line ? number : nullptr,
+	                                                              (size_t)(end - number) });
 	e = e ? e : code_word(call, CXI_KEY_CDB, cstr_view(cfg->codes[r] + repo.len + 1));
 	e = e ? e : code_word(call, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
 	return e ? e : code_word(call, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED

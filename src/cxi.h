@@ -12,8 +12,9 @@
 #include <stdint.h>
 
 /** The actions of the code tool: X(ID, name). */
-#define CXI_ACTION_LIST(X) \
-        X(OUTLINE, "outline")
+#define CXI_ACTION_LIST(X)      \
+        X(DESCRIBE, "describe") \
+        X(OUTLINE,  "outline")
 
 #define CXI_ACTION_ENUM(id, ...) CXI_ACTION_##id,
 enum cxi_action : uint8_t { CXI_ACTION_LIST(CXI_ACTION_ENUM) CXI_ACTIONS };
@@ -24,6 +25,8 @@ enum cxi_action : uint8_t { CXI_ACTION_LIST(CXI_ACTION_ENUM) CXI_ACTIONS };
         X(ACTION,     "action")    \
         X(REPO,       "repo")      \
         X(PATH,       "path")      \
+        X(NAME,       "name")      \
+        X(LINE,       "line")      \
         X(COMMIT,     "commit")    \
         X(DEADLINE,   "deadline")  \
         X(TOP,        "top")       \

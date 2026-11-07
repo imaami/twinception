@@ -10069,6 +10069,85 @@ if path == "big.c":
 sys.stdout.write(f"[{words['repo']} at {words['commit']}: {path}, 0 names.]\n")
 """
 
+# The source files for the tests of describe: records with padding, a
+# function with calls, a macro and its use, an enumerator, a name of two
+# symbols, a struct of 20,000 members, and an #include of a file outside
+# the repository.
+CODE_LAY_H = """#include <stdint.h>
+
+struct holes {
+\tchar a;
+\tint  b;
+\tchar c;
+};
+
+struct bits {
+\tunsigned a : 3;
+\tunsigned b : 5;
+\tuint32_t c;
+\tunsigned d : 1;
+\tunion {
+\t\tuint8_t  small;
+\t\tuint64_t big;
+\t};
+\tstruct {
+\t\tchar x;
+\t\tint  y;
+\t} inner;
+};
+
+struct trail {
+\tstruct {
+\t\tint  a;
+\t\tchar b;
+\t};
+\tchar c;
+};
+
+typedef struct {
+\tint  member;
+\tlong other;
+} foo_t;
+
+typedef struct bar {
+\tchar member;
+} bar_t;
+
+enum lay_kind { LAY_A, LAY_B = 5 };
+
+struct lay_dup { int x; };
+
+/* Adds a and b. */
+int lay_add (int a, int b);
+"""
+
+CODE_LAY_C = """#include <string.h>
+
+#include "lay.h"
+
+#define LAY_COUNT (sizeof (struct holes) / 4)
+
+static int lay_count = LAY_COUNT;
+
+int
+lay_add (int a,
+         int b)
+{
+\treturn a + b;
+}
+
+/* Sums the holes. */
+int
+lay_sum (struct holes *h)
+{
+\tint total = lay_add(h->b, 1);
+\ttotal += (int)strlen("x") + lay_add(2, 3) + lay_count;
+\treturn total;
+}
+
+static int lay_dup;
+"""
+
 
 def check_code(binary, up):
     """The code tool with --code NAME=FILE. With a fake helper next to a copy
@@ -10109,6 +10188,18 @@ def check_code(binary, up):
             "overflow_stack")) + "int survived;\n")
         write("src/deep.c", "int deep = " + "!" * 3000 + "1;\n")
         write("src/unlisted.c", "int unlisted;\n")
+        write("src/lay.h", CODE_LAY_H)
+        write("src/lay.c", CODE_LAY_C)
+        write("src/big.c", "struct big {\n" + "".join(f"\tint m{i};\n" for i in range(20000))
+              + "};\nint big_size = sizeof (struct big);\n")
+        write("src/leak.c", f'#include "{d}/outside/secret.h"\n')
+        write("src/far.c", '#include "sub/../sub/./far.h"\nint far_use = FAR_ONE;\n')
+        write("src/sub/far.h", "#define FAR_ONE 1\nint far_value;\n")
+        write("src/wt.c", '#include "proj/src/wt.h"\nint wt_c;\n')
+        write("src/wt.h", "int wt_committed;\n")
+        os.makedirs(f"{d}/outside")
+        with open(f"{d}/outside/secret.h", "w") as f:
+            f.write("int SECRET_TOKEN_7f3a;\n")
         sh("init", "-q", "-b", "main")
         sh("add", "src")
         sh("commit", "-q", "-m", "first")
@@ -10116,8 +10207,9 @@ def check_code(binary, up):
         sh("commit", "-q", "-am", "second")
         head = sh("rev-parse", "HEAD").strip()
         parent = sh("rev-parse", "HEAD~1").strip()
-        # Not committed: an edit, a header and a flag file.
+        # Not committed: edits, a header and a flag file.
         write("src/a.c", "int uncommitted;\n")
+        write("src/wt.h", "int wt_uncommitted;\n")
         write("local.h", "#define FROM_LOCAL 1\n")
         os.makedirs(f"{d}/build")
         with open(f"{d}/build/compile_flags.txt", "w") as f:
@@ -10128,8 +10220,9 @@ def check_code(binary, up):
         cdb = f"{d}/build/compile_commands.json"
         with open(cdb, "w") as f:
             json.dump([{"directory": f"{d}/build", "file": f"{repo}/src/{c}",
-                        "arguments": ["cc", f"-I{repo}", "-c", f"{repo}/src/{c}"]}
-                       for c in ("a.c", "b.c", "pragma.c", "deep.c")], f)
+                        "arguments": ["cc", f"-I{repo}", f"-I{d}", "-c", f"{repo}/src/{c}"]}
+                       for c in ("a.c", "b.c", "pragma.c", "deep.c", "lay.c", "big.c",
+                                 "leak.c", "far.c", "wt.c")], f)
 
         def call(ai, error=False, **arguments):
             status, _, body = ai.rpc("tools/call", {"name": "code", "arguments": arguments})
@@ -10176,10 +10269,10 @@ def check_code(binary, up):
             assert [t["name"] for t in tools] == ["ask_ai", "git", "code"], tools
             schema = tools[2]["inputSchema"]
             assert list(schema["properties"]) == [
-                "repo", "action", "path", "revision", "offset"] and \
+                "repo", "action", "path", "name", "line", "revision", "offset"] and \
                 schema["required"] == ["repo", "action", "path"] and \
                 schema["properties"]["repo"]["enum"] == ["proj", "lib"] and \
-                schema["properties"]["action"]["enum"] == ["outline"] and \
+                schema["properties"]["action"]["enum"] == ["describe", "outline"] and \
                 "Only committed files are visible" in tools[2]["description"], tools[2]
 
             # askai checks the types of the arguments, and askai-code checks
@@ -10195,6 +10288,9 @@ def check_code(binary, up):
                     ({"repo": "proj", "path": "a.c"}, string.format("action")),
                     ({**outline, "path": "a\0.c"}, string.format("path")),
                     ({**outline, "revision": 7}, string.format("revision")),
+                    ({**outline, "name": "x" * 1025}, string.format("name")),
+                    ({**outline, "line": "1"}, "The line argument must be a whole number "
+                     "from 1."),
                     ({**outline, "revision": "main..x"},
                      "The revision argument must be a commit reference or hash with ^ "
                      "or ~, such as HEAD~1."),
@@ -10232,6 +10328,11 @@ def check_code(binary, up):
                 last["env"]["GIT_CEILING_DIRECTORIES"] == f"{d}:{d}", last["env"]
             assert call(ai, **outline, revision="HEAD~1") == \
                 f"[proj at {parent}: src/a.c, 0 names.]\n"
+            call(ai, repo="proj", action="describe", path="src/a.c", name="count", line=12)
+            with open(f"{bin}/last.json") as f:
+                assert json.load(f)["argv"][1:7] == [
+                    "action=describe", "repo=proj", "path=src/a.c", "name=count", "line=12",
+                    f"cdb={cdb}"]
             assert call(ai, **outline, revision="HEAD", offset=6) == \
                 f"at {head}: src/a.c, 0 names.]\n"
             # A helper that is gone after the start fails the call.
@@ -10368,6 +10469,7 @@ def check_code(binary, up):
                 "1 GiB, which the code tool reads at most.")
             with open(f"{tree}/commit") as f:
                 assert f.read() == head
+            check_code_describe(binary, up, call, head, d, cdb)
         # git cannot list a commit of seven levels of ten trees of ten before
         # the deadline. It is killed in time for the next call to export.
         for _ in range(2):
@@ -10386,7 +10488,165 @@ def check_code(binary, up):
                 f"[proj at {head}: src/b.c, 2 names.]\n"
                 "1 variable b_value: int\n2 variable b_more: int\n")
     print("code: off reasons, refusals, request, statuses, deadline, cap, outline of "
-          "an export, its cache, its limits: PASS")
+          "an export, its cache, its limits, describe and confinement: PASS")
+
+
+def check_code_describe(binary, up, call, head, d, cdb):
+    """describe with the real askai-code: record layouts at the offsets that
+    gcc uses, functions with their calls, macros with their values at a use,
+    enumerators, locals, names of several symbols or of none, the limit on
+    rows, and a file outside the repository that only --code-unconfined
+    can read."""
+    with Askai(binary, "-u", up.url(), "--git", f"{d}/proj", "--code", f"proj={cdb}") as ai:
+        def describe(error=False, **arguments):
+            return call(ai, error=error, repo="proj", action="describe", path="src/lay.c",
+                        **arguments)
+        at = f"[proj at {head}: "
+        assert describe(name="struct holes") == (
+            f"{at}struct holes in the translation unit of src/lay.c.]\n"
+            "struct holes: 12 bytes, alignment 4, 6 bytes of padding, " +
+            describe(name="struct holes").split("padding, ")[1].split("\n")[0] + "\n"
+            "defined src/lay.h:3\n"
+            " offset   size  align   line  member: type\n"
+            "      0      1      1      4  a: char\n"
+            "      1      3                (padding)\n"
+            "      4      4      4      5  b: int\n"
+            "      8      1      1      6  c: char\n"
+            "      9      3                (padding at the end)\n"
+            "src/lay.h lines 3 to 7 of 46:\n" +
+            "".join(f"{n}\t{line}\n" for n, line in
+                    enumerate(CODE_LAY_H.split("\n")[2:7], 3)))
+        assert "struct bits: 32 bytes, alignment 8, 13 bytes and 7 bits of padding" in \
+            describe(name="struct bits")
+        rows = describe(name="struct bits").split("member: type\n")[1].split("src/")[0]
+        assert rows == (
+            "      0     3b      4     10  a: unsigned int : 3\n"
+            "   0+3b     5b      4     11  b: unsigned int : 5\n"
+            "      1      3                (padding)\n"
+            "      4      4      4     12  c: uint32_t\n"
+            "      8     1b      4     13  d: unsigned int : 1\n"
+            "   8+1b    63b                (padding)\n"
+            "     16      8      8     14  (anonymous union)\n"
+            "     16      1      1     15    small: uint8_t\n"
+            "     16      8      8     16    big: uint64_t\n"
+            "     24      8      4     21  inner: struct (unnamed)\n"
+            "     24      1      1     19    x: char\n"
+            "     25      3                  (padding)\n"
+            "     28      4      4     20    y: int\n"), rows
+        rows = describe(name="struct trail").split("member: type\n")[1].split("src/")[0]
+        assert rows == (
+            "      0      8      4     25  (anonymous struct)\n"
+            "      0      4      4     26    a: int\n"
+            "      4      1      1     27    b: char\n"
+            "      5      3                  (padding at the end of this member)\n"
+            "      8      1      1     29  c: char\n"
+            "      9      3                (padding at the end)\n"), rows
+        # gcc places the members at the same offsets.
+        probe = f"{d}/probe.c"
+        with open(probe, "w") as f:
+            f.write('#include <stddef.h>\n#include <stdio.h>\n#include "lay.h"\n'
+                    "#define O(s, m) printf(\"%zu \", offsetof(s, m))\n"
+                    "int main(void) { O(struct holes, b); O(struct holes, c); "
+                    "O(struct bits, c); O(struct bits, small); O(struct bits, big); "
+                    "O(struct bits, inner); O(struct bits, inner.y); O(struct trail, b); "
+                    "O(struct trail, c); O(foo_t, other); "
+                    "printf(\"%zu %zu\", sizeof (struct bits), sizeof (foo_t)); }\n")
+        subprocess.run(["gcc", "-I", f"{d}/proj/src", "-o", f"{d}/probe", probe], check=True)
+        gcc = subprocess.run([f"{d}/probe"], capture_output=True, text=True,
+                             check=True).stdout.split()
+        assert gcc == ["4", "8", "4", "16", "16", "24", "28", "4", "8", "8", "32", "16"], gcc
+        # describe of a typedef prints the layout of its record, and members
+        # are looked up through a typedef and through anonymous members.
+        assert describe(name="foo_t").split("\n")[1:4] == [
+            "typedef foo_t: struct foo_t",
+            "struct foo_t: 16 bytes, alignment 8, 4 bytes of padding, " +
+            describe(name="foo_t").split("padding, ")[1].split("\n")[0],
+            "defined src/lay.h:35"]
+        assert describe(name="foo_t.other").split("\n")[1:4] == [
+            "field other of foo_t: long", "offset 8, size 8, alignment 8",
+            "defined src/lay.h:34"]
+        assert describe(name="bits.big").split("\n")[1:3] == [
+            "field big of struct bits, in an anonymous union: uint64_t",
+            "offset 16, size 8, alignment 8"]
+        assert describe(name="bar_t.member").split("\n")[1] == "field member of struct bar: char"
+        assert describe(error=True, name="holes.d") == "struct holes has no member d."
+        # A function: the places of its declaration and definition, its
+        # calls, and the lines of its head with its comment.
+        text = describe(name="lay_sum")
+        assert re.fullmatch(
+            re.escape(f"{at}function lay_sum in the translation unit of src/lay.c.]\n"
+                      "function lay_sum: int (struct holes *)\n"
+                      "defined src/lay.c:18\ncalls:\n"
+                      "  src/lay.c:20,21 lay_add (src/lay.h:46)\n"
+                      "  src/lay.c:21 strlen (") + r"/usr/include/[^:)]+:\d+\)\n" +
+            re.escape("src/lay.c lines 16 to 18 of 25:\n16\t/* Sums the holes. */\n"
+                      "17\tint\n18\tlay_sum (struct holes *h)\n"), text), text
+        assert describe(name="lay_add").split("\n")[2:4] == [
+            "declared src/lay.h:46", "defined src/lay.c:10"]
+        assert describe(name="LAY_B").split("\n")[1:3] == [
+            "enumerator LAY_B of enum lay_kind: 5", "defined src/lay.h:41"]
+        # A macro, and its value at the use on a given line. A local
+        # variable by its line.
+        assert re.fullmatch(
+            re.escape(f"{at}macro LAY_COUNT in the translation unit of src/lay.c.]\n"
+                      "macro LAY_COUNT\ndefined src/lay.c:5\nat src/lay.c:7: an "
+                      "expression of type ") + "(__size_t|unsigned long)" +
+            re.escape(", value 3\nsrc/lay.c line 5 of 25:\n"
+                      "5\t#define LAY_COUNT (sizeof (struct holes) / 4)\n"),
+            describe(name="LAY_COUNT", line=7)), describe(name="LAY_COUNT", line=7)
+        assert describe(name="total", line=20).split("\n")[1:3] == [
+            "local variable total in lay_sum: int", "defined src/lay.c:20"]
+        # A name of several symbols or of none, and other refusals.
+        for arguments, text in (
+                ({"name": "lay_dup"}, "2 symbols in the translation unit of src/lay.c are "
+                 "named lay_dup; give struct lay_dup for the type, or line:\n"
+                 "  src/lay.h:43 struct lay_dup\n  src/lay.c:25 static variable lay_dup\n"),
+                ({"name": "lay_su"}, "No symbol lay_su in the translation unit of src/lay.c. "
+                 "These names of the repository contain it:\n  src/lay.c:18 function "
+                 "lay_sum\n"),
+                ({"name": "nowhere"}, "No symbol nowhere in the translation unit of "
+                 "src/lay.c, and no name of the repository contains it."),
+                ({"name": "struct foo_t"}, "No symbol struct foo_t in the translation unit "
+                 "of src/lay.c. These names of the repository contain it:\n"
+                 "  src/lay.h:35 typedef foo_t\n"),
+                ({"name": "a-b"}, "name must be a name of C, such as git_start, struct "
+                 "dstr or child.flags."),
+                ({"name": "x", "line": 99}, "Line 99 is past the end of src/lay.c, which "
+                 "has 25 lines."),
+                ({"name": "x", "line": 1}, "Line 1 of src/lay.c has no word x."),
+                ({}, "describe needs name: a symbol such as git_start, or struct.member "
+                 "such as child.flags.")):
+            assert describe(error=True, **arguments) == text, (arguments, text)
+        assert call(ai, error=True, repo="proj", action="outline", path="src/lay.c",
+                    name="x") == "name and line are only for describe."
+        # The layout of a record of 20,000 members is cut at 2,000 rows, and
+        # its padding is that of the rows shown.
+        text = call(ai, repo="proj", action="describe", path="src/big.c", name="struct big")
+        rows = text.split("member: type\n")[1].split("\nsrc/big.c lines")[0].split("\n")
+        assert len(rows) == 2001 and rows[-1] == \
+            "[18000 more members; describe struct.member.]", rows[-3:]
+        assert "struct big: 80000 bytes, alignment 4, at least 0 bytes of padding" in text
+        # Places and lines are named by the path of the file, without the .
+        # and .. of the #include.
+        text = call(ai, repo="proj", action="describe", path="src/far.c", name="far_value")
+        assert "declared src/sub/far.h:2\nnot defined in this translation unit\n" \
+            "src/sub/far.h line 2 of 2:\n" in text, text
+        # An #include of a file outside the repository fails unless
+        # --code-unconfined is set.
+        leak = {"repo": "proj", "action": "describe", "path": "src/leak.c",
+                "name": "SECRET_TOKEN_7f3a"}
+        assert call(ai, error=True, **leak) == (
+            "No symbol SECRET_TOKEN_7f3a in the translation unit of src/leak.c, and no "
+            "name of the repository contains it.")
+    with Askai(binary, "-u", up.url(), "--git", f"{d}/proj", "--code", f"proj={cdb}",
+               "--code-unconfined") as ai:
+        assert ai.listed("code tool:")[2] == "confinement  none (--code-unconfined)"
+        assert call(ai, **leak).split("\n")[1:3] == [
+            "variable SECRET_TOKEN_7f3a: int", f"declared {d}/outside/secret.h:1"]
+        # -I of a directory above the top is removed, so the working tree
+        # stays invisible.
+        assert call(ai, error=True, repo="proj", action="describe", path="src/wt.c",
+                    name="wt_uncommitted").startswith("No symbol wt_uncommitted ")
 
 
 def turn_stream(calls=(), text="", reasoning="", used=None, order=(),

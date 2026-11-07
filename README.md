@@ -586,7 +586,46 @@ first and last line of the declaration if they differ:
 34 static function git_view_path: int (struct cstr_view *, struct cstr_view *) (33-39)
 ```
 
+`describe` prints what `name` is in the translation unit of `path`. `name`
+is a function, variable, type, struct, union, enum, enumerator, typedef or
+macro, with `struct`, `union` or `enum` before it to select the type, or a
+member as `struct.member`. The output contains the kind and the type, the
+places of the declaration and the definition, the functions that a
+function calls, the members of a struct or union with their offsets, sizes
+and padding, including the members of anonymous members, and at most 40
+numbered lines of the declaration with its comment. With `line`,
+`describe` uses the name on that line of `path`, such as a local variable
+or a macro use. For a macro use, it also prints the type and the value of
+the expression. This is `describe` of `struct review_file` in `src/review.c`:
+
+```text
+[proj at 1095916a86bd9dc0585d261ec87762fe6134de44: struct review_file in the translation unit of src/review.c.]
+struct review_file: 144 bytes, alignment 8, 3 bytes of padding, x86_64-pc-linux-gnu
+defined src/review.c:64
+ offset   size  align   line  member: type
+      0     24      8     65  repo: struct dstr
+     24     24      8     66  path: struct dstr
+     48      8      8     67  ranges: struct review_range *
+     56      8      8     68  n: size_t
+     64      8      8     69  cap: size_t
+     72      4      4     70  total: uint32_t
+     76     65      1     72  commit: struct oid
+    141      3                (padding at the end)
+src/review.c lines 59 to 73 of 2207:
+59	/**
+...
+```
+
+If a name matches several symbols, the call fails with a list of them. If
+it matches none, the call fails with the names in the repository that
+contain it. The layout of a record is cut at 2,000 rows, and the padding of
+a cut layout counts only those rows. `describe` of `struct.member` prints
+any one member.
+
 Every result starts with the repository and the full ID of the commit.
+Places are `path:line`, relative to the top of the repository, or absolute
+for a system header. The `read` command of the git tool accepts the commit
+and the path.
 
 Only committed files are visible. A call resolves its revision as the git
 tool does, and `askai-code` exports the commit into a tree in its cache.
