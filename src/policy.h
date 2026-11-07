@@ -117,12 +117,14 @@ typedef tool_mask policy_lent_fn (void const *ctx,
  *  SO_PEERGROUPS).
  */
 struct policy_peer {
-	uint32_t const *groups;     /**< its groups, sorted (policy_sort_ids()) */
-	uint64_t        principal;  /**< the principal of its uid
-	                                 (policy_principal_uid()) */
-	uint64_t        n_groups;   /**< the number of groups, at most
-	                                 UINT32_MAX, in a uint64_t that fills
-	                                 the padding at the end of the struct */
+	uint32_t *groups;     /**< the group ids of the user, sorted with
+	                           policy_sort_ids() */
+	uint64_t  principal;  /**< the principal of the uid of the user, from
+	                           policy_principal_uid() */
+	uint64_t  n_groups;   /**< the number of entries in groups, at most
+	                           UINT32_MAX. The type is uint64_t so that
+	                           the member fills the padding at the end of
+	                           the struct. */
 };
 
 /** What a client may see and do, and whose share of the upstream its calls

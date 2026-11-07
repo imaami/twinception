@@ -203,7 +203,7 @@ struct httpd_client {
 };
 
 /* Where a connection stands, apart from its request. */
-enum httpd_conn_flag : uint32_t {
+enum httpd_conn_flag : uint64_t {
 	CONN_CLOSING = 1u << 0,  /* ends once its response is sent */
 	CONN_EOF     = 1u << 1,
 	CONN_DOOMED  = 1u << 2,  /* to close at its next step */
@@ -240,17 +240,14 @@ struct httpd_conn {
 	size_t               held;      /* body bytes counted in the budgets */
 	size_t               room;      /* groups the groups' storage holds */
 	struct httpd_req     req;
-	uint32_t            *groups;    /* home sets them: a Unix socket's user's
-	                                   groups, sorted, in storage kept with
-	                                   the connection's */
-	uint64_t             principal; /* The principal of the uid of a
-	                                   client on a Unix socket.
-	                                   httpd_conn_user() sets it on home's
-	                                   loop. */
-	uint32_t             n_groups;
+	struct policy_peer   user;      /* the user of a client on a Unix
+	                                   socket. httpd_conn_user() sets it
+	                                   on home's loop. user.groups is an
+	                                   array of room entries, which
+	                                   httpd_conn_destroy() frees. */
 	uint32_t             events;    /* reported since the last step, and DEADLINE */
 	int                  fd;        /* home sets it; -1 once closed */
-	uint32_t             flags;     /* enum httpd_conn_flag */
+	uint64_t             flags;     /* enum httpd_conn_flag */
 };
 
 /* A client loop, as its server and home's door share it. */
@@ -1406,13 +1403,8 @@ httpd_conn_grant (struct httpd_conn *conn)
 	enum policy_kind const kind = conn->flags & CONN_UDS ? POLICY_UNIX
 	                            : conn->flags & CONN_LOCAL && (!host || httpd_loopback_host(host))
 	                            ? POLICY_LOOPBACK : POLICY_REMOTE;
-	struct policy_peer const peer = {
-		.groups = conn->groups,
-		.principal = conn->principal,
-		.n_groups = conn->n_groups
-	};
 	conn->stream.grant = (struct policy_grant){};
-	return policy_grant(conn->srv->policy, token, kind, &peer, &conn->stream.grant);
+	return policy_grant(conn->srv->policy, token, kind, &conn->user, &conn->stream.grant);
 }
 
 /* Parse the head of @p len bytes at @p data, the input's start, and check it
@@ -2289,8 +2281,8 @@ httpd_conn_destroy (struct httpd_conn **p_conn)
 		return;
 	struct httpd_conn *conn = *p_conn;
 	*p_conn = nullptr;
-	free(conn->groups);
-	conn->groups = nullptr;
+	free(conn->user.groups);
+	conn->user.groups = nullptr;
 	free(conn);
 }
 
@@ -2353,9 +2345,7 @@ httpd_conn_setup (struct httpd_conn *conn,
 		.ctx = conn->ctx,
 		.since = loop->now,
 		.room = conn->room,
-		.groups = conn->groups,
-		.principal = conn->principal,
-		.n_groups = conn->n_groups,
+		.user = conn->user,
 		.fd = conn->fd,
 		.flags = conn->flags & (CONN_LOCAL | CONN_UDS)
 	};
@@ -2611,18 +2601,18 @@ httpd_conn_groups (struct httpd_conn *conn,
 	size_t n = 0;
 	int e = ERANGE;
 	while (e == ERANGE) {
-		if (util_grow(conn->groups, conn->room, n + 1))
+		if (util_grow(conn->user.groups, conn->room, n + 1))
 			return ENOMEM;
-		socklen_t size = (socklen_t)((conn->room - 1) * sizeof *conn->groups);
-		e = getsockopt(fd, SOL_SOCKET, SO_PEERGROUPS, conn->groups, &size) ? errno : 0;
-		n = size / sizeof *conn->groups;
+		socklen_t size = (socklen_t)((conn->room - 1) * sizeof *conn->user.groups);
+		e = getsockopt(fd, SOL_SOCKET, SO_PEERGROUPS, conn->user.groups, &size) ? errno : 0;
+		n = size / sizeof *conn->user.groups;
 	}
 	/* Those the kernel cannot tell are none. */
 	if (e)
 		n = 0;
-	conn->groups[n] = gid;
-	conn->n_groups = (uint32_t)n + 1;
-	policy_sort_ids(conn->groups, n + 1);
+	conn->user.groups[n] = gid;
+	conn->user.n_groups = n + 1;
+	policy_sort_ids(conn->user.groups, n + 1);
 	return 0;
 }
 
@@ -2637,12 +2627,12 @@ httpd_conn_user (struct httpd_conn   *conn,
                  struct policy const *policy)
 {
 	if (!cred) {
-		conn->n_groups = 0;
-		conn->principal = 0;
+		conn->user.n_groups = 0;
+		conn->user.principal = 0;
 		return 0;
 	}
 	int e = 0;
-	conn->principal = policy_principal_uid(policy, cred->uid, &e);
+	conn->user.principal = policy_principal_uid(policy, cred->uid, &e);
 	return e ? e : httpd_conn_groups(conn, fd, cred->gid);
 }
 
@@ -2671,7 +2661,7 @@ static void
 httpd_home_place (struct httpd_home  *home,
                   int                 fd,
                   struct stream_peer  addr,
-                  uint32_t            peer,
+                  uint64_t            peer,
                   struct ucred const *cred,
                   struct ssl_ctx_st  *ctx)
 {
@@ -2722,7 +2712,7 @@ httpd_home_take (struct httpd_home             *home,
 	struct stream_peer addr = { { UINT64_MAX } };
 	struct ucred cred;
 	struct ucred const *user = nullptr;
-	uint32_t peer = CONN_LOCAL | CONN_UDS;
+	uint64_t peer = CONN_LOCAL | CONN_UDS;
 	socklen_t len = sizeof cred;
 	if (ss->ss_family != AF_UNIX) {
 		httpd_addr_key(ss, &addr);
