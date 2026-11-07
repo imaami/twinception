@@ -11,6 +11,7 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "jb.h"
+#include "util.h"
 
 /* The options whose value is a path, as the next word or joined. The value
  * of --sysroot=, the last one, can only be joined.
@@ -40,18 +41,15 @@ cdb_walk (struct dstr      *out,
           struct cstr_view  rest)
 {
 	bool ok = true;
-	for (struct cstr_view part; ok && rest.len; ) {
-		part = rest;
-		if (!cstr_view_cut(&rest, '/', &part))
-			rest.len = 0;
-		if (!part.len || cstr_view_equal(part, CSTR_VIEW(".")))
-			continue;
-		if (!cstr_view_equal(part, CSTR_VIEW(".."))) {
+	for (struct cstr_view part; ok; ) {
+		if (util_path_next(&rest, &part)) {
+			char const *slash = memrchr(dstr_get(out), '/', dstr_len(out));
+			ok = !slash || dstr_erase(out, (size_t)(slash - dstr_get(out)), SIZE_MAX);
+		} else if (!part.len) {
+			break;
+		} else {
 			ok = dstr_cat_n(out, "/", 1) && dstr_cat_n(out, part.data, part.len);
-			continue;
 		}
-		char const *slash = memrchr(dstr_get(out), '/', dstr_len(out));
-		ok = !slash || dstr_erase(out, (size_t)(slash - dstr_get(out)), SIZE_MAX);
 	}
 	return ok;
 }
