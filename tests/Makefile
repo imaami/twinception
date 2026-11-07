@@ -5,11 +5,11 @@ $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-ai check-askai check-buf check-cli check-completion check-cstr-view \
         check-datauri check-dstr check-jb check-handle check-instance check-journal check-ledger check-load \
-        check-review check-turn load load-build
+        check-ref check-review check-turn load load-build
 default:; @:
 check: | check-completion check-askai check-cli check-ai check-jb check-buf \
          check-datauri check-handle check-turn check-instance check-journal check-ledger \
-         check-review check-dstr check-load
+         check-ref check-review check-dstr check-load
 
 # Nothing below this comment is defined when tab-completing.
 
@@ -199,6 +199,10 @@ check-instance: $Otests/instance
 check-ledger: $Otests/ledger
 	$<
 
+# Unit tests of the reference counts, src/ref.h.
+check-ref: $Otests/ref
+	$<
+
 check-journal: $Otests/journal
 	@directory=$$(mktemp -d) || exit 1; \
 	trap 'rm -rf "$$directory"' EXIT; \
@@ -210,7 +214,7 @@ $Otests/journal:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lcrypto -
 
 # The unit tests. Each test links the object of its own source and the
 # objects of the files of src/ that the lines below list.
-override UNIT := buf datauri handle instance ledger turn
+override UNIT := buf datauri handle instance ledger ref turn
 
 $Otests/buf: $Otests/src/buf.c.o
 $Otests/datauri: $Otests/src/datauri.c.o

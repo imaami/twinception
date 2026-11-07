@@ -33,7 +33,8 @@ TESTS = """
     default
     check check-ai check-askai check-buf check-cli check-completion check-cstr-view check-datauri
     check-dstr check-jb
-    check-handle check-instance check-journal check-ledger check-load check-review check-turn
+    check-handle check-instance check-journal check-ledger check-load check-ref check-review
+    check-turn
     load load-build
 """.split()
 
