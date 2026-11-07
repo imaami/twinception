@@ -122,15 +122,4 @@ oid_format (struct cstr_view name)
 	     : cstr_view_equal(name, CSTR_VIEW("sha256")) ? OID_SHA256 : OID_NONE;
 }
 
-/** Returns the name of @p format zeros, which git fast-import takes as the
- *  parent of a root commit, or no name for OID_NONE.
- */
-static inline struct oid
-oid_zero (enum oid_format format)
-{
-	struct oid oid = {};
-	memset(oid.hex, '0', format);
-	return oid;
-}
-
 #endif /* ASKAI_SRC_OID_H_ */

@@ -79,7 +79,6 @@ static char const *const cmds[][10] = {
 	                     word, "--", word },
 	[NOTES_READ]     = { "cat-file", "--batch" },
 	[NOTES_BOOKS]    = { "for-each-ref", "--format=%(refname:strip=3)", BRANCH },
-	[NOTES_FORMAT]   = { "rev-parse", "--show-object-format" },
 	[NOTES_FILES]    = { "ls-tree", "-r", "-z", "-l", word, "--" },
 	[NOTES_HEAD]     = { "rev-parse", "--verify", "--end-of-options", word },
 	[NOTES_ANCESTOR] = { "merge-base", "--is-ancestor", word, word },
@@ -831,14 +830,16 @@ notes_add_input (struct buf       *in,
                  struct span       file)
 {
 	static char const mark[] = "get-mark :1\n";
-	if (!in || !repo || !tip || !oid_len(tip) || !message.ptr ||
+	if (!in || !repo || !tip || !message.ptr ||
 	    message.len >= NOTES_MESSAGE || memchr(message.ptr, '\0', message.len))
 		return EINVAL;
 	/* The count of the data includes the line feed after the message.
 	 * get-mark ends the commit, and git writes the commit's id. */
-	int e = buf_printf(in, "commit %s\nmark :1\ncommitter %s <askai> now\ndata %zu\n%.*s\n"
-	                   "from %s\n", repo, notes_selector(repo), message.len + 1,
-	                   (int)message.len, (char const *)message.ptr, tip->hex);
+	int e = buf_printf(in, "commit %s\nmark :1\ncommitter %s <askai> now\ndata %zu\n%.*s\n",
+	                   repo, notes_selector(repo), message.len + 1, (int)message.len,
+	                   (char const *)message.ptr);
+	if (!e && oid_len(tip))
+		e = buf_printf(in, "from %s\n", tip->hex);
 	e = e ? e : buf_put(in, file.ptr, file.len, SIZE_MAX);
 	return e ? e : buf_put(in, mark, sizeof mark - 1, SIZE_MAX);
 }

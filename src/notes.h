@@ -61,8 +61,6 @@ enum notes_cmd : uint8_t {
 	NOTES_READ,      /**< writes a note. notes_read_input() writes its
 	                      input. */
 	NOTES_BOOKS,     /**< lists all participant notebook selectors */
-	NOTES_FORMAT,    /**< writes the Git object format for an unborn
-	                      branch */
 	NOTES_FILES,     /**< lists the current notes, in tree order */
 	NOTES_HEAD,      /**< resolves a notebook branch to its full commit id */
 	NOTES_ANCESTOR,  /**< checks that a commit is an ancestor of another */
@@ -366,13 +364,12 @@ notes_delete_file (struct buf        *in,
  * commit with the message @p message, one line without its line feed, and
  * with @p file, the part that notes_add_file() wrote. The committer's name
  * is the selector of the notebook branch @p repo. A file replaces any
- * existing note with the same name. The parent is @p tip, or a zero object
- * id of the repository format for a root commit (oid_zero()).
+ * existing note with the same name. The parent is @p tip. A @p tip without
+ * a name makes a root commit, which git refuses if the branch exists.
  * notes_add_out() reads the new commit's id from the output. Returns 0,
- * EINVAL for a null argument, a @p tip without a name, a NUL in
- * @p message or a message of NOTES_MESSAGE bytes or more, or the error of
- * buf_printf() or buf_put(), after which @p in can contain part of the
- * input.
+ * EINVAL for a null argument, a NUL in @p message or a message of
+ * NOTES_MESSAGE bytes or more, or the error of buf_printf() or buf_put(),
+ * after which @p in can contain part of the input.
  */
 extern int
 notes_add_input (struct buf       *in,

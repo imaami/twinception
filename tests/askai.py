@@ -10172,6 +10172,8 @@ def check_notes(binary, up):
             assert not os.path.exists(f"{notes}/HEAD")
             said = call({"action": "add", "file": "//plan.md", "text": "step 1"})
             assert wrote(said, 'Add "plan.md" (6 bytes)'), said
+            # The first commit of a notebook has no parent.
+            assert len(git("rev-list", "--parents", "-n", "1", own).split()) == 1, own
             thread = "2" * 32
             notebooks = call({"action": "notebooks"})
             assert f"Self (writable): {selector}" in notebooks, notebooks

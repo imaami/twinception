@@ -45,8 +45,6 @@ enum notes_tool_fetch : uint32_t {
 	FETCH_READ,            /* read a note */
 	FETCH_RESUME,          /* list the notes for the prompt of an ask call */
 	FETCH_COMPACT,         /* list the notes for a compaction */
-	FETCH_FORMAT,          /* read the object format for a notebook without
-	                          commits */
 	FETCH_BOOKS,           /* list the notebooks of the session */
 	FETCH_FILES,           /* list the current files for list */
 	FETCH_NEWEST,          /* read the newest note, after FETCH_RESUME or
@@ -627,9 +625,8 @@ notes_tool_call_message (struct notes_tool_call *call,
 }
 
 /* Runs git to commit the note in call->file of @p slot. The new commit has
- * the parent @p tip. If @p tip is no name, the notebook has no commits,
- * and git first reads the object format for notes_tool_format(). The note
- * had @p before bytes, or there was none if @p before is NO_NOTE.
+ * the parent @p tip, or no parent if @p tip is no name. The note had
+ * @p before bytes, or there was none if @p before is NO_NOTE.
  */
 static void
 notes_tool_write (struct mcp_slot  *slot,
@@ -637,10 +634,6 @@ notes_tool_write (struct mcp_slot  *slot,
                   uint64_t          before)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	if (!oid_len(tip)) {
-		notes_tool_run(slot, FETCH_FORMAT, &(struct buf){}, 0);
-		return;
-	}
 	struct span file = buf_peek(&call->file);
 	struct buf in = {};
 	int e = notes_tool_call_message(call, before);
@@ -648,27 +641,6 @@ notes_tool_write (struct mcp_slot  *slot,
 	e = e ? e : notes_add_input(&in, call->repo, tip, msg, file);
 	buf_fini(&call->file);
 	notes_tool_run(slot, FETCH_ADD, &in, e);
-}
-
-/* Reads the object format of the repository from the output of git. Then
- * the function writes the first commit of the notebook with a parent of
- * zeros. That parent makes the commit a root commit even if another writer
- * creates the branch after the name check.
- */
-static void
-notes_tool_format (struct mcp_slot *slot)
-{
-	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct span out = buf_peek(&call->child->out);
-	struct cstr_view const format = { (char const *)out.ptr, out.len };
-	struct oid const zero = oid_zero(oid_format(cstr_view_trim_end(format)));
-	if (!child_ok(call->child) || !oid_len(&zero)) {
-		mcp_slot_tell(slot, CSTR_VIEW("Cannot determine the repository object format."),
-		              TOOL_FAILED);
-		return;
-	}
-	child_destroy(&call->child);
-	notes_tool_write(slot, &zero, NO_NOTE);
 }
 
 /* Handles the end of git init for a write. The function writes the note,
@@ -1455,7 +1427,6 @@ static struct notes_tool_fetch_step const notes_tool_fetch_steps[] = {
 	[FETCH_READ]    = { notes_tool_got_note,  NOTES_READ,   0 },
 	[FETCH_RESUME]  = { notes_tool_resumed,   NOTES_LIST,   0 },
 	[FETCH_COMPACT] = { notes_tool_compacted, NOTES_LIST,   0 },
-	[FETCH_FORMAT]  = { notes_tool_format,    NOTES_FORMAT, 0 },
 	[FETCH_BOOKS]   = { notes_tool_got_books, NOTES_BOOKS,  1 },
 	[FETCH_FILES]   = { notes_tool_got_list,  NOTES_FILES,  1 },
 	[FETCH_NEWEST]  = { notes_tool_newest,    NOTES_READ,   0 },
