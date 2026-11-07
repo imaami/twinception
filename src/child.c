@@ -599,11 +599,10 @@ child_create (struct loop            *loop,
 void
 child_destroy (struct child **p_c)
 {
-	if (!p_c || !*p_c)
+	struct child *c = p_c ? *p_c : nullptr;
+	child_release(p_c);
+	if (!c)
 		return;
-	struct child *c = *p_c;
-	*p_c = nullptr;
-	c->done = nullptr;
 	if (c->proc.fd < 0) {
 		child_dispose(c);
 		return;
