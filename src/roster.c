@@ -117,7 +117,8 @@ roster_cancel (struct roster *roster,
 	for (struct htab_node *n; (n = *htab_find(&roster->table, hash, roster_call_match, &key)); ) {
 		struct roster_call *c = container_of(n, struct roster_call, node);
 		c->asked = 1;
-		ref_get(&c->refs);
+		if (!ref_tryget(&c->refs))
+			continue;
 		c->hit = hits;
 		hits = c;
 	}

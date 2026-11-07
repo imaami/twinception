@@ -904,8 +904,9 @@ web_wait_create (struct web           *web,
 		/* Only home changes a wait that is on a run's list, until home
 		 * posts it. So the function changes only a wait that has a
 		 * stored response. */
-		if (entry && entry->reply->received + r->keep * NS > now) {
-			wait->reply = web_reply_get(entry->reply);
+		if (entry && entry->reply->received + r->keep * NS > now &&
+		    ref_tryget(&entry->reply->refs)) {
+			wait->reply = entry->reply;
 			wait->done = true;
 			to = nullptr;
 		} else {
@@ -994,9 +995,8 @@ web_wait_leave (struct web_wait **p_wait)
 		/* A run whose keep is 0 has one wait. The call posts the message
 		 * with a reference if CANCEL makes the word of bits non-zero, so
 		 * the run is not freed before home has handled the message. */
-		cancel = !run->keep && !atomic_fetch_or(&run->bits, RUN_CANCEL);
-		if (cancel)
-			ref_get(&run->refs);
+		cancel = !run->keep && !atomic_fetch_or(&run->bits, RUN_CANCEL) &&
+		         ref_tryget(&run->refs);
 	}
 	pthread_mutex_unlock(&web->lock);
 	/* Without a run, home has moved the wait, and the handler of the

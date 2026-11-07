@@ -569,8 +569,8 @@ manual_fetch_found (struct child *c)
 	struct manual_entry *file = manual_lookup(m, path.data, path.len, hash);
 	if (!file)
 		file = manual_add(m, path.data, path.len, hash);
-	struct manual_page *page = file && file->page ? manual_page_get(file->page)
-	                                              : nullptr;
+	struct manual_page *page = file && file->page && ref_tryget(&file->page->refs)
+	                           ? file->page : nullptr;
 	pthread_mutex_unlock(&m->lock);
 	child_destroy(&f->child);
 	f->file = file;
@@ -814,8 +814,8 @@ manual_find (struct manual_loop  *ml,
 	pthread_mutex_lock(&m->lock);
 	struct manual_entry *a = manual_lookup(m, key, len, hash);
 	struct manual_entry *file = a ? a->file : nullptr;
-	struct manual_page *page = file && file->page ? manual_page_get(file->page)
-	                                              : nullptr;
+	struct manual_page *page = file && file->page && ref_tryget(&file->page->refs)
+	                           ? file->page : nullptr;
 	bool recheck = page && !a->fetch && a->found + m->recheck < ml->loop->now;
 	pthread_mutex_unlock(&m->lock);
 	struct stat st;

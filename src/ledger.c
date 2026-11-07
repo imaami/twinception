@@ -182,9 +182,9 @@ ledger_owner_wake (struct ledger_owner *o)
 		struct ledger_wait *w = container_of(pos, struct ledger_wait, hook);
 		/* Acquire, as ledger_wait_heard() releases: the loop has delivered
 		 * the last post of the message, and the poster of it has read hit. */
-		if (atomic_exchange_explicit(&w->posted, 1, memory_order_acquire))
+		if (atomic_exchange_explicit(&w->posted, 1, memory_order_acquire) ||
+		    !ref_tryget(&w->refs))
 			continue;
-		ref_get(&w->refs);
 		w->hit = hits;
 		hits = w;
 	}
@@ -278,10 +278,9 @@ ledger_owner_tell (struct ledger_owner *o,
 		if (!(atomic_load_explicit(&t->state, memory_order_relaxed) & LEDGER_STATUS) ||
 		    (n && !ledger_listed(ids, n, &t->id)))
 			continue;
-		if (atomic_fetch_or_explicit(&t->state, LEDGER_TOLD, memory_order_relaxed) &
-		    LEDGER_TOLD && !n)
+		if ((atomic_fetch_or_explicit(&t->state, LEDGER_TOLD, memory_order_relaxed) &
+		     LEDGER_TOLD && !n) || !ref_tryget(&t->refs))
 			continue;
-		ref_get(&t->refs);
 		out->tasks[out->n_tasks++] = t;
 	}
 }
@@ -689,8 +688,8 @@ ledger_find (struct ledger      *ledger,
 	pthread_mutex_lock(&ledger->lock);
 	struct htab_node *gone = ledger_sweep(ledger, nullptr, false);
 	struct ledger_task *t = ledger_mine(ledger, owner, id);
-	if (t)
-		ref_get(&t->refs);
+	if (t && !ref_tryget(&t->refs))
+		t = nullptr;
 	pthread_mutex_unlock(&ledger->lock);
 	ledger_put_all(gone);
 	return t;
@@ -940,8 +939,8 @@ ledger_list (struct ledger      *ledger,
 		     pos != &o->records && out->n_tasks < array_size(out->tasks);
 		     pos = pos->prev) {
 			struct ledger_task *t = container_of(pos, struct ledger_task, mine);
-			ref_get(&t->refs);
-			out->tasks[out->n_tasks++] = t;
+			if (ref_tryget(&t->refs))
+				out->tasks[out->n_tasks++] = t;
 		}
 		out->more = o->n - out->n_tasks;
 		ledger_owner_gc(ledger, o);
