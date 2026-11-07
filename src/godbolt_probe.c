@@ -48,13 +48,6 @@ godbolt_probe_source (void)
 	return (struct cstr_view){ godbolt_probe_text, sizeof godbolt_probe_text - 1 };
 }
 
-/* Returns whether @p c is ASCII white space. */
-static bool
-godbolt_probe_space (char c)
-{
-	return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r';
-}
-
 /* Stores in @p *result the value of the integer expansion @p text of a
  * macro. The expansion can have parentheses around the number and C
  * suffixes after it. Returns whether @p text is such a number.
@@ -66,7 +59,7 @@ godbolt_probe_number (char const *text,
 	if (!text)
 		return false;
 	size_t open = 0;
-	while (godbolt_probe_space(*text) || *text == '(')
+	while (cstr_view_space(*text) || *text == '(')
 		open += *text++ == '(';
 	if (*text == '-')
 		return false;
@@ -82,7 +75,7 @@ godbolt_probe_number (char const *text,
 		u += *end == 'u' || *end == 'U';
 		l += *end == 'l' || *end == 'L';
 	}
-	while (godbolt_probe_space(*end) || (*end == ')' && open))
+	while (cstr_view_space(*end) || (*end == ')' && open))
 		open -= *end++ == ')';
 	if (*end || open || u > 1 || l > 2)
 		return false;
@@ -487,7 +480,7 @@ static void
 godbolt_probe_skip (char const **c,
                     char const  *end)
 {
-	while (*c < end && godbolt_probe_space(**c))
+	while (*c < end && cstr_view_space(**c))
 		++*c;
 }
 
@@ -720,12 +713,8 @@ godbolt_probe_parse (struct godbolt_probe *p,
 	while (text.len) {
 		char const *nl = memchr(text.data, '\n', text.len);
 		size_t const end = nl ? (size_t)(nl - text.data) : text.len;
-		struct cstr_view line = cstr_view_slice(text, 0, end);
+		struct cstr_view const line = cstr_view_trim(cstr_view_slice(text, 0, end));
 		text = cstr_view_slice(text, end + 1, SIZE_MAX);
-		while (line.len && godbolt_probe_space(*line.data))
-			line = cstr_view_slice(line, 1, SIZE_MAX);
-		while (line.len && godbolt_probe_space(line.data[line.len - 1]))
-			--line.len;
 		int const e = godbolt_probe_line(p, line, &state, &out);
 		if (e)
 			return e;
