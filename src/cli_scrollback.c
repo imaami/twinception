@@ -1,10 +1,7 @@
-#define _GNU_SOURCE
-
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "cli_render.h"
 #include "cli_scrollback.h"

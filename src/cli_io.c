@@ -6,7 +6,6 @@
 #include <stdlib.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
-#include <unistd.h>
 
 #include "cli_io.h"
 #include "compat.h"
