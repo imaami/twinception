@@ -678,38 +678,32 @@ http_destroy (struct http **p_http)
 	curl_global_cleanup();
 }
 
-/* Whether @p headers, nullptr-terminated, unless nullptr, has a line of
- * Content-Type.
- */
-static bool
-http_typed (char const *const *headers)
-{
-	for (; headers && *headers; ++headers)
-		if (cstr_view_starts_case(cstr_view(*headers), CSTR_VIEW("Content-Type:")))
-			return true;
-	return false;
-}
-
-/* Give @p request its header lines: a body's Content-Type, application/json
- * unless @p headers has one, and @p headers, nullptr-terminated, unless
- * nullptr. Appending keeps the list's head, the request's. 0 or ENOMEM.
+/* Appends the lines of @p headers to request->headers. @p headers is
+ * nullptr or a nullptr-terminated array. If @p body is not nullptr and no
+ * line of @p headers begins with "Content-Type:" in any letter case, the
+ * function also appends "Content-Type: application/json". Returns 0 or
+ * ENOMEM.
  */
 static int
 http_request_headers (struct http_request *request,
                       char const          *body,
                       char const *const   *headers)
 {
-	static char const json[] = "Content-Type: application/json";
-	if (body && !http_typed(headers) &&
-	    !(request->headers = curl_slist_append(nullptr, json)))
-		return ENOMEM;
+	bool typed = !body;
 	for (; headers && *headers; ++headers) {
+		typed |= cstr_view_starts_case(cstr_view(*headers), CSTR_VIEW("Content-Type:"));
 		struct curl_slist *list = curl_slist_append(request->headers, *headers);
 		if (!list)
 			return ENOMEM;
-		if (!request->headers)
-			request->headers = list;
+		request->headers = list;
 	}
+	if (typed)
+		return 0;
+	struct curl_slist *list = curl_slist_append(request->headers,
+	                                            "Content-Type: application/json");
+	if (!list)
+		return ENOMEM;
+	request->headers = list;
 	return 0;
 }
 
