@@ -1040,26 +1040,6 @@ ai_generate_close (struct ai_sink const *sink,
 	return ai_replay(sink, CSTR_VIEW("\"}"));
 }
 
-/* Pass the function call @p fc of Gemini to sink->call with the index
- * reader->calls, and increment reader->calls.
- */
-static int
-ai_generate_call (struct ai_sink const *sink,
-                  struct ai_reader     *reader,
-                  struct json_object   *fc)
-{
-	if (!sink->call)
-		return 0;
-	struct json_object *args = jb_get(fc, "args");
-	struct ai_call call = {
-		.id    = jb_view(jb_get(fc, "id")),
-		.name  = jb_view(jb_get(fc, "name")),
-		.args  = jb_wire(args),
-		.index = reader->calls++,
-	};
-	return args && !call.args.data ? ENOMEM : sink->call(sink->user, &call);
-}
-
 /* Close the text part that is open in the replay, if there is one, and then
  * pass @p part whole to the replay.
  */
@@ -1088,7 +1068,7 @@ ai_generate_part (struct ai_sink const *sink,
 	struct json_object *fc = jb_get(part, "functionCall");
 	if (fc) {
 		int e = ai_generate_close(sink, reader);
-		e = e ? e : ai_generate_call(sink, reader, fc);
+		e = e ? e : ai_call_start(sink, reader->calls++, fc, "args", nullptr);
 		return e ? e : ai_replay_item(sink, part);
 	}
 	struct json_object *text = jb_get(part, "text");
