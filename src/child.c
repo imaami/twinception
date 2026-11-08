@@ -258,35 +258,15 @@ child_attr (posix_spawnattr_t *attr)
 	sigemptyset(&none);
 	sigfillset(&all);
 	int e = posix_spawnattr_setsigmask(attr, &none);
-	if (e)
-		return e;
-	if ((e = posix_spawnattr_setsigdefault(attr, &all)))
-		return e;
-	return posix_spawnattr_setflags(attr, POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGMASK |
-	                                      POSIX_SPAWN_SETSIGDEF);
+	if (!e)
+		e = posix_spawnattr_setsigdefault(attr, &all);
+	return e ? e : posix_spawnattr_setflags(attr, POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGMASK |
+	                                              POSIX_SPAWN_SETSIGDEF);
 }
 
-/* Spawn @p cmd's file into @p pidfd, with the descriptors @p fds, through
- * @p fa and @p attr, fresh.
+/* Spawn a process that runs cmd->file with cmd->argv and cmd->envp, set up
+ * its descriptors from @p fds, and store its pidfd in @p *pidfd.
  */
-static int
-child_cmd_spawn (struct child_cmd const     *cmd,
-                 posix_spawn_file_actions_t *fa,
-                 posix_spawnattr_t          *attr,
-                 struct child_fds const     *fds,
-                 int                        *pidfd)
-{
-	int e = child_fds_actions(fds, fa, cmd->flags);
-	if (e)
-		return e;
-	if ((e = child_attr(attr)))
-		return e;
-	/* POSIX declares the vectors without const. */
-	return pidfd_spawnp(pidfd, cmd->file, fa, attr, (char *const *)cmd->argv,
-	                    (char *const *)cmd->envp);
-}
-
-/* As child_cmd_spawn(), with file actions and attributes of its own. */
 static int
 child_cmd_exec (struct child_cmd const *cmd,
                 struct child_fds const *fds,
@@ -298,7 +278,11 @@ child_cmd_exec (struct child_cmd const *cmd,
 		return e;
 	posix_spawnattr_t attr;
 	if (!(e = posix_spawnattr_init(&attr))) {
-		e = child_cmd_spawn(cmd, &fa, &attr, fds, pidfd);
+		e = child_fds_actions(fds, &fa, cmd->flags);
+		/* POSIX declares the vectors without const. */
+		if (!e && !(e = child_attr(&attr)))
+			e = pidfd_spawnp(pidfd, cmd->file, &fa, &attr, (char *const *)cmd->argv,
+			                 (char *const *)cmd->envp);
 		posix_spawnattr_destroy(&attr);
 	}
 	posix_spawn_file_actions_destroy(&fa);
@@ -379,23 +363,6 @@ child_pipe (struct child *c,
 	return 0;
 }
 
-/* Time @p c, and spawn its process as @p cmd says, with the descriptors
- * @p fds.
- */
-static int
-child_launch (struct child           *c,
-              struct child_cmd const *cmd,
-              struct child_fds const *fds)
-{
-	int e = cmd->deadline ? loop_timer_set(c->loop, &c->timer, cmd->deadline) : 0;
-	if (e)
-		return e;
-	int pidfd = -1;
-	if ((e = child_cmd_exec(cmd, fds, &pidfd)))
-		return e;
-	return child_watch(c, pidfd);
-}
-
 /* Spawn @p c's process as @p cmd says, reading its output and timing it;
  * on an error, its pipe and timer may be left for child_dispose().
  */
@@ -405,11 +372,14 @@ child_start (struct child           *c,
 {
 	struct child_fds fds = child_fds();
 	int e = cmd->in.len ? child_input(cmd->in, &fds.in) : 0;
-	if (e)
-		return e;
-	if (!(e = child_pipe(c, &fds.out))) {
-		e = child_launch(c, cmd, &fds);
+	if (!e && cmd->deadline)
+		e = loop_timer_set(c->loop, &c->timer, cmd->deadline);
+	if (!e && !(e = child_pipe(c, &fds.out))) {
+		int pidfd = -1;
+		e = child_cmd_exec(cmd, &fds, &pidfd);
 		close(fds.out);
+		if (!e)
+			e = child_watch(c, pidfd);
 	}
 	util_close(&fds.in);
 	return e;
