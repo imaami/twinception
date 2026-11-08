@@ -603,17 +603,12 @@ home_native_cancel (struct home *home,
 		return;
 	if (!job->cancel_url && job->recovery.provider_id)
 		(void)home_provider_url(home, job, true, &job->cancel_url);
-	if (!job->cancel_url) {
-		LOG(LOG_WARN, "native background cancellation unavailable: no provider job id");
-		return;
-	}
-	if (home->cancelling >= home->max) {
-		LOG(LOG_WARN, "native background cancellation unavailable: cleanup queue full");
-		return;
-	}
-	struct home_cancellation *cancel = calloc(1, sizeof *cancel);
+	char const *why = !job->cancel_url ? "no provider job id"
+	                : home->cancelling >= home->max ? "cleanup queue full" : nullptr;
+	struct home_cancellation *cancel = why ? nullptr : calloc(1, sizeof *cancel);
 	if (!cancel) {
-		LOG(LOG_WARN, "native background cancellation unavailable: out of memory");
+		LOG(LOG_WARN, "native background cancellation unavailable: %s",
+		    why ? why : "out of memory");
 		return;
 	}
 	cancel->deadline = home->loop->now + CANCEL_MS * MS;
