@@ -28,15 +28,13 @@ enum autocomplete_flag : uint64_t {
 	AUTOCOMPLETE_STRING       = UINT64_C(1) <<  0,
 	AUTOCOMPLETE_QUOTED       = UINT64_C(1) <<  1,
 	AUTOCOMPLETE_VALID        = UINT64_C(1) <<  2,
-	AUTOCOMPLETE_STRUCTURED   = UINT64_C(1) <<  3,
-	AUTOCOMPLETE_USE_STRING   = UINT64_C(1) <<  4,
-	AUTOCOMPLETE_TYPED        = UINT64_C(1) <<  5,
-	AUTOCOMPLETE_UNION        = UINT64_C(1) <<  6,
-	AUTOCOMPLETE_CONSTANT     = UINT64_C(1) <<  7,
-	AUTOCOMPLETE_ENUMERATED   = UINT64_C(1) <<  8,
-	AUTOCOMPLETE_NAMES        = UINT64_C(1) <<  9,
+	AUTOCOMPLETE_TYPED        = UINT64_C(1) <<  3,
+	AUTOCOMPLETE_UNION        = UINT64_C(1) <<  4,
+	AUTOCOMPLETE_CONSTANT     = UINT64_C(1) <<  5,
+	AUTOCOMPLETE_ENUMERATED   = UINT64_C(1) <<  6,
+	AUTOCOMPLETE_NAMES        = UINT64_C(1) <<  7,
 	/* The flag of each JSON type is the flag of null shifted by the type. */
-	AUTOCOMPLETE_TYPE_NULL    = UINT64_C(1) << 10,
+	AUTOCOMPLETE_TYPE_NULL    = UINT64_C(1) <<  8,
 	AUTOCOMPLETE_TYPE_BOOLEAN = AUTOCOMPLETE_TYPE_NULL << json_type_boolean,
 	AUTOCOMPLETE_TYPE_NUMBER  = AUTOCOMPLETE_TYPE_NULL << json_type_double,
 	AUTOCOMPLETE_TYPE_INTEGER = AUTOCOMPLETE_TYPE_NULL << json_type_int,
@@ -1346,25 +1344,20 @@ autocomplete_convert (struct autocomplete *autocomplete,
                       struct json_object **converted)
 {
 	*converted = nullptr;
-	if (raw.len) {
-		if (raw.data[0] == '{' || raw.data[0] == '[')
-			flags |= AUTOCOMPLETE_STRUCTURED;
-		else if (raw.data[0] == '\'' || raw.data[0] == '"')
-			flags |= AUTOCOMPLETE_QUOTED;
-	}
-	int error = flags & AUTOCOMPLETE_STRUCTURED ? cstr_view_store(raw, &autocomplete->decoded)
-	                                            : autocomplete_unquote(&autocomplete->decoded, raw);
+	char const first = raw.len ? raw.data[0] : '\0';
+	int error = first == '{' || first == '[' ? cstr_view_store(raw, &autocomplete->decoded)
+	                                         : autocomplete_unquote(&autocomplete->decoded, raw);
 	if (error)
 		return error;
 	struct cstr_view decoded = cstr_view_dstr(&autocomplete->decoded);
-	if ((flags & (AUTOCOMPLETE_QUOTED | AUTOCOMPLETE_TYPED)) == AUTOCOMPLETE_QUOTED ||
-	    (flags & (AUTOCOMPLETE_STRING | AUTOCOMPLETE_QUOTED)) == (AUTOCOMPLETE_STRING | AUTOCOMPLETE_QUOTED) ||
-	    (flags & (AUTOCOMPLETE_STRING | AUTOCOMPLETE_UNION)) == AUTOCOMPLETE_STRING)
-		flags |= AUTOCOMPLETE_USE_STRING;
-	if (!(flags & AUTOCOMPLETE_USE_STRING)) {
+	/* The value may be a string if the schema of the property contains no
+	 * type or if AUTOCOMPLETE_STRING is set in flags. */
+	bool const string_ok = (flags & (AUTOCOMPLETE_STRING | AUTOCOMPLETE_TYPED)) != AUTOCOMPLETE_TYPED;
+	if (!((first == '\'' || first == '"') && string_ok) &&
+	    (flags & (AUTOCOMPLETE_STRING | AUTOCOMPLETE_UNION)) != AUTOCOMPLETE_STRING) {
 		/* A value that is not JSON of its type is a string, if it may be. */
 		error = autocomplete_json_parse(autocomplete, decoded, converted);
-		bool string = error ? error == EINVAL && (flags & (AUTOCOMPLETE_STRING | AUTOCOMPLETE_TYPED)) != AUTOCOMPLETE_TYPED
+		bool string = error ? error == EINVAL && string_ok
 		                    : (flags & AUTOCOMPLETE_STRING) && !autocomplete_accepted_type(flags, *converted);
 		if (!string)
 			return error;
