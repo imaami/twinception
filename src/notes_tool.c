@@ -1341,7 +1341,7 @@ notes_tool_prompt_list (struct mcp_slot  *slot,
 	bool named = !notes_name(&checked) && checked.len == name.len;
 	if (!e && named) {
 		struct cstr_view const p[] = {
-			CSTR_VIEW("\n[askai: the current text of your most recently written note, "),
+			CSTR_VIEW("\n[askai: the current text of your newest note, "),
 			{ name.data, jb_utf8(name.data, name.len) },
 			CSTR_VIEW(":]\n\n"),
 		};
@@ -1391,7 +1391,7 @@ notes_tool_newest (struct mcp_slot *slot)
 	body = cstr_view_slice(body, 0, util_clip(body.data, body.len, call->most));
 	char buf[128];
 	struct cstr_view const more = body.len < len ? util_format_view(buf, sizeof buf,
-	                              "\n[askai: bytes 0 to %zu of %zu; read the note with "
+	                              "\n[askai: bytes 0 to %zu of %zu. Read the note with "
 	                              "\"offset\": %zu for the rest.]", body.len, len, body.len)
 	                            : (struct cstr_view){};
 	struct cstr_view const p[] = {
@@ -1424,11 +1424,11 @@ notes_tool_resumed (struct mcp_slot *slot)
 		return;
 	}
 	(void)mcp_slot_noted(slot);
-	notes_tool_prompt_list(slot, CSTR_VIEW("\n\n[askai: your session note history, "
-	                                       "oldest first; repeated names are updates. "
-	                                       "Use notes action list for current files and "
-	                                       "notebooks to discover the other "
-	                                       "participants:]\n\n"));
+	notes_tool_prompt_list(slot, CSTR_VIEW("\n\n[askai: call notes with action list for "
+	                                       "your current notes. Call notes with action "
+	                                       "notebooks for the other participants. A "
+	                                       "repeated name in the history is an update. "
+	                                       "Your note history, oldest first:]\n\n"));
 }
 
 /* Handles the list of the notes for a compaction. The list goes into the
@@ -1440,8 +1440,9 @@ notes_tool_compacted (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	if (notes_tool_listed(call->child)) {
-		notes_tool_prompt_list(slot, CSTR_VIEW("\n\n[askai: your note history, oldest "
-		                                       "first; repeated names are updates:]\n\n"));
+		notes_tool_prompt_list(slot, CSTR_VIEW("\n\n[askai: a repeated name in the "
+		                                       "history is an update. Your note history, "
+		                                       "oldest first:]\n\n"));
 		return;
 	}
 	notes_tool_then(slot, cstr_view_cat(CSTR_VIEW("\n\n[askai: your "
@@ -1481,7 +1482,7 @@ notes_tool_carried (struct mcp_slot *slot)
 	}
 	LOG(LOG_WARN, "notes: cannot read the review record %s: %s", call->notebook, strerror(e));
 	notes_tool_drop(slot);
-	mcp_slot_tell(slot, CSTR_VIEW("Cannot read the review record of this thread."),
+	mcp_slot_tell(slot, CSTR_VIEW("Cannot read the review record of the thread."),
 	              TOOL_FAILED);
 }
 
@@ -1496,20 +1497,21 @@ notes_tool_committed (struct mcp_slot *slot)
 	struct child const *c = call->child;
 	if (child_ok(c)) {
 		child_destroy(&call->child);
-		notes_tool_then(slot, dstr_printf(call->text, "Its review record is saved; an ask "
-		                                  "call with thread %s starts with it.\n",
-		                                  strrchr(call->repo, '/') + 1) ? 0 : ENOMEM);
+		notes_tool_then(slot, dstr_printf(call->text, "The review record is saved. An ask "
+		                                  "call with thread %s starts with the saved "
+		                                  "record.\n", strrchr(call->repo, '/') + 1)
+		                      ? 0 : ENOMEM);
 		return;
 	}
-	struct cstr_view why = CSTR_VIEW("This call's findings could not be saved.\n");
+	struct cstr_view why = CSTR_VIEW("The findings of the ask call could not be saved.\n");
 	if (c) {
 		struct span const out = buf_peek(&c->out);
 		char const *text = (char const *)out.ptr;
 		LOG(LOG_WARN, "notes: git could not save %s: %.*s", call->repo,
 		    (int)util_clip(text, out.len, 300), text);
 		if (notes_tool_raced(c))
-			why = CSTR_VIEW("Another ask call of this thread saved its record first; "
-			                "this call's findings were not saved.\n");
+			why = CSTR_VIEW("The findings of the ask call were not saved. Another ask "
+			                "call of the thread saved a review record first.\n");
 	}
 	child_destroy(&call->child);
 	notes_tool_then(slot, cstr_view_cat(why, call->text));

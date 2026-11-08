@@ -3070,7 +3070,7 @@ def check_recovery_review(binary, up):
             ai = Askai(binary, *args, "--notes", notes)
             try:
                 result = ai.ask("Store.", background=False)
-                thread = re.search(r"thread ([0-9a-f]{32}) starts with it\.\n$",
+                thread = re.search(r"thread ([0-9a-f]{32}) starts with the saved record\.\n$",
                                    result["content"][1]["text"])[1]
                 ref = f"refs/review/review-recovery/anonymous/{thread}"
                 first = notes_git("rev-parse", ref).strip()
@@ -3095,8 +3095,8 @@ def check_recovery_review(binary, up):
                 if ai.proc.poll() is None:
                     ai.proc.kill()
                     ai.proc.wait(timeout=5)
-            stored = f"Its review record is saved; an ask call with thread {thread} starts " \
-                "with it.\n"
+            stored = f"The review record is saved. An ask call with thread {thread} starts " \
+                "with the saved record.\n"
             with Askai(binary, *args, "--notes", notes) as restarted:
                 def done(text):
                     result = ask_result(restarted, {"job": jid})
@@ -13025,9 +13025,11 @@ def check_turns(binary, up):
             result = ai.ask("And now?", thread=thread)
             assert re.fullmatch(
                 "And now\\?" + re.escape(identity) +
-                "\n\n\\[askai: your session note history, oldest first; repeated names are updates. "
-                f"Use notes action list for current files and notebooks to discover the other participants:\\]\n\n1\\. {when}  found\\.md  "
-                "\\(\\+1 -0\\)\n\n\\[askai: the current text of your most recently written note, found\\.md:\\]\n\n"
+                "\n\n\\[askai: call notes with action list for your current notes\\. Call "
+                "notes with action notebooks for the other participants\\. A repeated name in "
+                "the history is an update\\. Your note history, oldest first:\\]\n\n"
+                f"1\\. {when}  found\\.md  "
+                "\\(\\+1 -0\\)\n\n\\[askai: the current text of your newest note, found\\.md:\\]\n\n"
                 "found \"first\"\n", prompt(up.requests[count])), up.requests[count]
             assert f"ask-chain thread is {thread}." in result["content"][1]["text"], result
 
@@ -13173,8 +13175,8 @@ def check_turns(binary, up):
             ai.ask("Again?", thread=thread)
             shown = 64 << 10
             assert prompt(up.requests[count]).endswith(
-                "[askai: the current text of your most recently written note, long.md:]\n\n" + "L" * shown +
-                f"\n[askai: bytes 0 to {shown} of {size + 1}; read the note with "
+                "[askai: the current text of your newest note, long.md:]\n\n" + "L" * shown +
+                f"\n[askai: bytes 0 to {shown} of {size + 1}. Read the note with "
                 f"\"offset\": {shown} for the rest.]\n"), prompt(up.requests[count])[-300:]
 
             # A thread that the client started with its own notes: an ask call
@@ -13207,7 +13209,7 @@ def check_turns(binary, up):
             result = ai.ask("Go on", thread=mine)
             assert prompt(up.requests[count]).startswith(
                 "Go on" + identity +
-                "\n\n[askai: your session note history, oldest first; repeated names are updates."), \
+                "\n\n[askai: call notes with action list for your current notes."), \
                 prompt(up.requests[count])
             outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
             assert outputs[0] == note_files(client, {"brief.md": b"aim"}), outputs
@@ -13236,7 +13238,7 @@ def check_turns(binary, up):
             ai.ask("Again", thread=mine)
             assert prompt(up.requests[count]).startswith(
                 "Again" + identity +
-                "\n\n[askai: your session note history, oldest first; repeated names are updates."), \
+                "\n\n[askai: call notes with action list for your current notes."), \
                 prompt(up.requests[count])
             # A newest note that is not text goes into the prompt as its view.
             book = notes
@@ -13249,7 +13251,7 @@ def check_turns(binary, up):
             count = len(up.requests)
             ai.ask("Once more", thread=mine)
             assert prompt(up.requests[count]).endswith(
-                "[askai: the current text of your most recently written note, z.bin:]\n\n" + note_view(b"\xff\x00\xfe")
+                "[askai: the current text of your newest note, z.bin:]\n\n" + note_view(b"\xff\x00\xfe")
                 + "\n"), prompt(up.requests[count])[-400:]
             # A view longer than the prompt's window of 64 KiB is cut there,
             # with the length of the whole view and the offset to read on.
@@ -13265,9 +13267,9 @@ def check_turns(binary, up):
             count = len(up.requests)
             ai.ask("Last", thread=mine)
             shown = prompt(up.requests[count]).encode()
-            marker = b"[askai: the current text of your most recently written note, y.bin:]\n\n"
+            marker = b"[askai: the current text of your newest note, y.bin:]\n\n"
             head = shown.index(marker) + len(marker)
-            cut = re.search(rb"\n\[askai: bytes 0 to (\d+) of (\d+); read the note with "
+            cut = re.search(rb"\n\[askai: bytes 0 to (\d+) of (\d+)\. Read the note with "
                             rb'"offset": (\d+) for the rest\.\]', shown)
             n = int(cut.group(1))
             assert n <= 64 << 10 and int(cut.group(2)) == len(whole) and \
@@ -13414,9 +13416,10 @@ def check_turns(binary, up):
                 "Q\n\n\\[askai: you compacted the context\\. Your turns and the tool "
                 "results since the task are gone\\. "
                 "Your summary:\\]\n\nS" + re.escape(identity) +
-                "\n\n" + re.escape(TASK + REVIEW_EMPTY) + "\n\n\\[askai: your note history, oldest "
-                f"first; repeated names are updates:\\]\n\n1\\. {when}  n1\\.md  \\(\\+1 -0\\)\n\n"
-                "\\[askai: the current text of your most recently written note, "
+                "\n\n" + re.escape(TASK + REVIEW_EMPTY) + "\n\n\\[askai: a repeated name in the "
+                "history is an update\\. Your note history, oldest first:\\]\n\n"
+                f"1\\. {when}  n1\\.md  \\(\\+1 -0\\)\n\n"
+                "\\[askai: the current text of your newest note, "
                 "n1\\.md:\\]\n\nn1\n\n\\[askai: go on with the task\\.\\]",
                 prompt(again)), prompt(again)
             assert "- compact: 1 bytes\n" in result["content"][1]["text"], result
@@ -13438,9 +13441,10 @@ def check_turns(binary, up):
                 "Q\n\n\\[askai: your context filled up\\. Your turns and the tool "
                 "results since the task are gone\\.\\]" +
                 re.escape(identity) + "\n\n" + re.escape(TASK + REVIEW_EMPTY) +
-                f"\n\n\\[askai: your note history, oldest first; repeated names are updates:\\]\n\n1\\. {when}  n1\\.md  "
+                "\n\n\\[askai: a repeated name in the history is an update\\. Your note history, "
+                f"oldest first:\\]\n\n1\\. {when}  n1\\.md  "
                 f"\\(\\+1 -0\\)\n2\\. {when}  n2\\.md  "
-                "\\(\\+1 -0\\)\n\n\\[askai: the current text of your most recently written note, n2\\.md:\\]\n\nn2\n\n"
+                "\\(\\+1 -0\\)\n\n\\[askai: the current text of your newest note, n2\\.md:\\]\n\nn2\n\n"
                 "\\[askai: go on with the task\\.\\]", prompt(again)), prompt(again)
             # After a delete, the prompt says that the newest note was deleted.
             script[:] = [lambda r: (200, turn_stream([("a", "notes", json.dumps(
@@ -13450,7 +13454,7 @@ def check_turns(binary, up):
             assert ai.ask("Q")["content"][0]["text"] == "A"
             again = up.requests[count + 2]
             assert re.search(f"\n3\\. {when}  n2\\.md  \\(\\+0 -1\\)\n\n\\[askai: the current "
-                             "text of your most recently written note, n2\\.md:\\]\n\n\\[askai: "
+                             "text of your newest note, n2\\.md:\\]\n\n\\[askai: "
                              "the note was deleted\\.\\]\n\n\\[askai: go on with the task\\.\\]$",
                              prompt(again)), prompt(again)
             script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
@@ -14520,10 +14524,10 @@ def check_review(binary, up):
                                   text=True).stdout
 
         def stored(thread):
-            return ("Its review record is saved; an ask call with thread "
-                    f"{thread} starts with it.\n")
-        raced = ("Another ask call of this thread saved its record first; this call's "
-                 "findings were not saved.\n")
+            return ("The review record is saved. An ask call with thread "
+                    f"{thread} starts with the saved record.\n")
+        raced = ("The findings of the ask call were not saved. Another ask call of the "
+                 "thread saved a review record first.\n")
         up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
         with Askai(binary, "-u", up.url(), "--upstream-tools", "--git", repo, "--notes",
                    session, "--slots", "2") as ai:
@@ -14538,7 +14542,8 @@ def check_review(binary, up):
                          mixed(("findings", add("C1", "src/a.c:5")),
                                ("findings", {"action": "add", "claim": "C2"}))]
             trace = ai.ask("Q")["content"][1]["text"]
-            thread = re.search(r"thread ([0-9a-f]{32}) starts with it\.\n$", trace)[1]
+            thread = re.search(r"thread ([0-9a-f]{32}) starts with the saved record\.\n$",
+                               trace)[1]
             assert trace.endswith(stored(thread)), trace
             ref = f"refs/review/ask_ai/anonymous/{thread}"
             assert notes("for-each-ref", "--format=%(refname)", "refs/review/") == ref + "\n"
@@ -14640,7 +14645,7 @@ def check_review(binary, up):
                 count = len(up.requests)
                 result = ai.ask("Q", thread=unread)
                 assert result.get("isError") and result["content"][0]["text"] == \
-                    "Cannot read the review record of this thread.", result
+                    "Cannot read the review record of the thread.", result
                 assert len(up.requests) == count and notes("rev-parse", bad) == before
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("review: findings, the review record, its render after compaction, the record "
