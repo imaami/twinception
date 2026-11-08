@@ -1093,10 +1093,6 @@ git_help (struct mcp_slot *slot,
 			nullptr),
 		"pattern_required", json_object_new_boolean(takes & PATTERN),
 		nullptr);
-	if (!help) {
-		mcp_slot_fail(slot, ENOMEM);
-		return;
-	}
 	struct cstr_view const text = jb_wire(help);
 	size_t taken;
 	int e = text.data ? mcp_slot_write(slot, text, 0, &taken) : ENOMEM;
