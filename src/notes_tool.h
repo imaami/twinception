@@ -1,10 +1,12 @@
 /** @file notes_tool.h
  *
- * The notes tool. Its calls write and read notes in the shared git
- * repository of src/notes.h. A caller writes only to its own notebook. A
- * caller can read every notebook in the repository. The tool is a built-in
- * plugin with a part on each client loop. The part also runs the git
- * commands that read the notes for the prompt of an ask call
+ * The notes tool. Its calls write and read the notebooks of the members of
+ * the session (src/notes.h, src/member.h). The turns of an ask call write
+ * as the agent of askai. A client writes as the member of its login. A
+ * caller writes only its own notebook, and can read every notebook. The
+ * tool is a built-in plugin with a part on each client loop, and each part
+ * contains the table of the members of its loop. The part also runs the
+ * git commands that read the notes for the prompt of an ask call
  * (notes_tool_loop_prompt()) and that save the review record of an ask
  * call (notes_tool_loop_save()).
  */
@@ -21,13 +23,15 @@ struct hexid;
 struct member_registry;
 struct notes_tool_loop;
 struct plugin;
+struct store;
 
 /** The service of the notes tool. All loops share it. mcp_static_create()
  *  fills it before mcp_static_build() reads it.
  */
 struct notes_tool {
-	struct notes const           *notes;         /**< nullptr without
-	                                                  --notes */
+	struct store const           *store;         /**< the repository of
+	                                                  the session, nullptr
+	                                                  without --notes */
 	struct member_registry const *members;       /**< the registry of the
 	                                                  session, nullptr
 	                                                  without --notes */
@@ -60,8 +64,10 @@ enum notes_tool_prompt : uint8_t {
  */
 extern struct plugin const notes_tool_plugin;
 
-/** Creates the part of the notes tool for @p service, a struct notes_tool.
- *  Returns the part, or nullptr with ENOMEM in @p *e.
+/** Creates the part of the notes tool for @p service, a struct notes_tool,
+ *  with the table of the members of the loop (src/member.h) if askai runs
+ *  with --notes. Returns the part, or nullptr with ENOMEM or the error of
+ *  member_table_create() in @p *e.
  */
 extern mcp_part_create_fn notes_tool_loop_create;
 
@@ -106,17 +112,22 @@ extern tool_step_fn notes_tool_step;
 extern tool_drop_fn notes_tool_drop;
 
 /**
- * Reads the notes of the caller for the prompt of the ask call in @p slot,
- * the ask call's own slot. git runs on the loop of the part @p loop. The
- * list of the notes and the newest note go into @p prompt, the text that
- * askai adds to the prompt. The prompt shows at most @p most bytes of the
- * newest note. @p what says whether the ask call starts or compacts its
- * context. If @p thread is not nullptr, git then reads the review record of
- * the thread into the record of the ask call (mcp_slot_review()), and the
- * text of the record is appended to @p prompt after the notes. Once the
- * notes are in @p prompt, the function calls @p then, which goes on with
- * the ask call. If git cannot list the notes for NOTES_TOOL_RESUME, or
- * cannot read the review record, the ask call ends as failed.
+ * Writes the notices of the notes for the prompt of the ask call in
+ * @p slot, the ask call's own slot, to @p prompt, the text that askai adds
+ * to the prompt. git runs on the loop of the part @p loop. The notices say
+ * who the agent is and who made the ask call, list the members, and show
+ * the note history of the agent and the newest note, at most @p most bytes
+ * of it. @p what says whether the ask call starts or compacts its context.
+ * As the ask call starts, the function claims the member of the login of
+ * its client (member_table_claim()) and lists the members again. The
+ * member is the asker, and with a new ask ID it goes into the struct
+ * member_call of the request (mcp_slot_member()) for the commits of the
+ * turns. If @p thread is not nullptr, git then reads the review record of
+ * @p thread into the record of the ask call (mcp_slot_review()), and the
+ * text of the record follows the notes. Once the notices are in @p prompt,
+ * the function calls @p then, which goes on with the ask call. If git
+ * cannot list the notes for NOTES_TOOL_RESUME, or cannot read the review
+ * record, the ask call ends as failed.
  */
 extern void
 notes_tool_loop_prompt (struct notes_tool_loop *loop,

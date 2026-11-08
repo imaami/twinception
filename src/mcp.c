@@ -100,6 +100,7 @@
 #include "loop.h"
 #include "manual.h"
 #include "mcp.h"
+#include "member.h"
 #include "metrics.h"
 #include "notes.h"
 #include "notes_tool.h"
@@ -517,10 +518,10 @@ struct mcp_slot {
 	struct review_read *read;      /* the lines of a file that its output
 	                                  shows, for the review record
 	                                  (mcp_slot_source()), if any */
-	char const         *shows;     /* the selector of the notebook that a
-	                                  notes read or diff shows, or nullptr.
-	                                  mcp_slot_done() puts it in the notice
-	                                  and the journal and then clears it. */
+	char const         *shows;     /* the notebook that a notes read or diff
+	                                  shows, or nullptr. mcp_slot_done()
+	                                  puts it in the notice and the journal
+	                                  and then clears it. */
 	UTIL_TEXT(512)      note;      /* text appended to the tool output */
 	uint8_t             tool;      /* the id of the tool, or TOOL_MAX */
 	uint8_t             role;      /* enum mcp_role */
@@ -650,6 +651,7 @@ struct mcp_req {
 	struct json_object  *prompt;     /* the client's prompt, which the draft
 	                                    holds, until written */
 	struct cstr_view     text;       /* the serialized draft */
+	struct cstr_view     structured; /* its own call's structuredContent */
 	size_t               off;        /* bytes of the next splice written, of
 	                                    the answer escaped, or metrics done */
 	size_t               values;     /* of msg */
@@ -670,6 +672,8 @@ struct mcp_req {
 	uint64_t             noted;      /* when the last notification went */
 	uint64_t             base;       /* what the progress was as the turn
 	                                    began */
+	uint64_t             next_note;  /* 1 + the last progress it gave; 0:
+	                                    none */
 	uint64_t             principal;  /* The principal of the request's
 	                                    client. mcp_begin() copies it from
 	                                    the stream, because s can be nullptr
@@ -701,8 +705,6 @@ struct mcp_req {
 	uint32_t             flags;      /* enum mcp_req_flag */
 	uint32_t             place;      /* its first place in the queue that a
 	                                    notification gave */
-	uint32_t             next_note;  /* 1 + the last progress it gave; 0:
-	                                    none */
 	uint32_t             turn;       /* upstream calls made */
 	uint32_t             used;       /* tokens of the last turn's request and
 	                                    answer, as its usage says; 0: unknown */
@@ -713,6 +715,7 @@ struct mcp_req {
 	uint32_t             part;       /* the part of the turn being written,
 	                                    or its call under way */
 	uint32_t             n_calls;    /* the turn's tool calls */
+	struct member_call   member;     /* its client's login and asker */
 	uint16_t             next;       /* the splice to write next, or piece */
 	uint8_t              phase;      /* enum mcp_phase */
 	uint8_t              method;     /* enum metrics_method */
@@ -2002,6 +2005,8 @@ mcp_req_tool_close (struct mcp_req *req)
 	struct mcp_static const *st = req->mcp->st;
 	struct mcp_piece const p[] = {
 		FRAG("]"),
+		req->structured.len ? FRAG(",\"structuredContent\":") : FRAG(""),
+		BYTES(req->structured),
 		req->flags & REQ_FAILED ? FRAG(",\"isError\":true") : FRAG(""),
 		req->flags & REQ_MODERN && !req->task ? DSTR(&st->modern_tail) : FRAG("}"),
 		FRAG("}"),
@@ -3612,11 +3617,27 @@ mcp_slot_source (struct mcp_slot            *slot,
 
 int
 mcp_slot_shows (struct mcp_slot *slot,
-                char const      *selector)
+                char const      *notebook)
 {
-	int e = !selector ? EFAULT : mcp_slot_live(slot, 0, 0);
+	int e = !notebook ? EFAULT : mcp_slot_live(slot, 0, 0);
 	if (!e)
-		slot->shows = selector;
+		slot->shows = notebook;
+	return e;
+}
+
+struct member_call *
+mcp_slot_member (struct mcp_slot *slot)
+{
+	return slot ? &slot->req->member : nullptr;
+}
+
+int
+mcp_slot_structured (struct mcp_slot  *slot,
+                     struct cstr_view  json)
+{
+	int e = !json.data ? EFAULT : mcp_slot_live(slot, 0, 0);
+	if (!e && slot == &slot->req->self)
+		slot->req->structured = json;
 	return e;
 }
 
@@ -3918,27 +3939,6 @@ mcp_history_valid (struct json_object *history)
 	return true;
 }
 
-/** Keep the writer's identity in both initial and compacted prompts, if
- *  the turns are lent the notes tool: the caller's own notes branch.
- */
-static int
-mcp_req_notes_identity (struct mcp_req *req)
-{
-	struct mcp_static const *st = req->mcp->st;
-	struct notes const *notes = req->lent & st->lending.of[KIND_NOTES]
-	                          ? st->notes_tool.notes : nullptr;
-	if (!notes)
-		return 0;
-	char repo[NOTES_REPO];
-	notes_repo(notes, req->principal, NOTES_UPSTREAM, repo);
-	return dstr_printf(&req->self.answer,
-	                   "\n\n[askai: you are participant %s. The selector of your "
-	                   "writable notebook is %s. Give a selector in the notebook "
-	                   "argument of notes, not as a note name. Call notes with "
-	                   "action notebooks to list all notebooks.]\n",
-	                   notes_writer(notes), notes_selector(repo)) ? 0 : ENOMEM;
-}
-
 /* Create req->review if the tool mask @p lent contains findings. The record
  * is created with REVIEW_READ_LOG if @p lent also contains git or code, and
  * with REVIEW_GIT if it contains git. Returns 0 or ENOMEM.
@@ -3977,8 +3977,7 @@ mcp_req_ask (struct mcp_req     *req,
 {
 	static_assert(HEXID_DIGITS == 32, "update the problem text of the thread argument");
 	struct mcp_static const *st = req->mcp->st;
-	struct notes const *notes = req->lent & st->lending.of[KIND_NOTES]
-	                          ? st->notes_tool.notes : nullptr;
+	bool const notes = req->lent & st->lending.of[KIND_NOTES];
 	/* Argument problems go back to the model so it can correct itself. */
 	struct json_object *prompt = jb_get(args, "prompt");
 	struct json_object *system = jb_get(args, "system");
@@ -4017,12 +4016,11 @@ mcp_req_ask (struct mcp_req     *req,
 		              nullptr, 0);
 		return;
 	}
+	req->member.conversation = req->thread;
 	req->asked = ++req->mcp->asked;
 	mcp_req_log_ask(req, prompt, thread != nullptr);
 	mcp_req_wait(req);
 	int e = mcp_req_draft(req, prompt, system, history);
-	if (!e)
-		e = mcp_req_notes_identity(req);
 	if (!e)
 		e = mcp_req_review_make(req, req->lent);
 	if (e) {
@@ -4032,10 +4030,9 @@ mcp_req_ask (struct mcp_req     *req,
 	req->s->ops->waiting(req->s);
 	if ((req->flags & (REQ_SSE_OK | REQ_DETACH_PENDING)) == REQ_SSE_OK)
 		mcp_req_stream(req);
-	/* Every ask starts with this participant's session notes. */
-	bool resume = store_exists(notes_store(notes));
+	/* Every ask starts with the notes of the agent. */
 	mcp_req_dispose(req);
-	if (resume) {
+	if (notes) {
 		notes_tool_loop_prompt(req->mcp->notes, &req->self, &req->self.answer,
 		                       NOTES_TOOL_RESUME, mcp_req_lend_max(req),
 		                       thread && req->review ? &req->thread : nullptr,
@@ -6174,6 +6171,7 @@ mcp_recover_back (struct loop           *loop,
 	req->replay_filed = last_tool_result ? req->filed : 0;
 	/* A saved thread that is not an id, such as "", is no thread. */
 	(void)hexid_init(&req->thread, jb_view(jb_get(state, "thread")));
+	req->member.conversation = req->thread;
 	req->intents = intents;
 	req->flags |= REQ_RECOVERING;
 	req->asked = ++req->mcp->asked;
@@ -6500,15 +6498,15 @@ mcp_slot_step (struct loop      *loop,
  * prompt. review_pending_drop() drops the pending lines of the review record
  * (see src/review.h). If there is a record, a notice about the task of the
  * ask call and the record follow the summary, cut to mcp_req_lend_max()
- * bytes. The caller's notes follow if REQ_BRANCH is set. They are left out
- * for a job resumed without --notes.
+ * bytes. The notices of the notes follow if the turns are lent the notes
+ * tool. They are left out for a job resumed without --notes.
  */
 static void
 mcp_req_compact_notes (struct mcp_req *req)
 {
 	review_pending_drop(req->review);
-	int e = mcp_req_notes_identity(req);
-	if (!e && req->review)
+	int e = 0;
+	if (req->review)
 		e = cstr_view_cat(CSTR_VIEW("\n\n[askai: compaction does not change the task. "
 		                            "The task is all text before the first [askai: ...] "
 		                            "line: the system text, the earlier messages and the "
@@ -6519,7 +6517,7 @@ mcp_req_compact_notes (struct mcp_req *req)
 		mcp_req_fail(req, e);
 		return;
 	}
-	if (req->flags & REQ_BRANCH && req->mcp->notes) {
+	if (req->lent & req->mcp->st->lending.of[KIND_NOTES]) {
 		notes_tool_loop_prompt(req->mcp->notes, &req->self, &req->self.answer,
 		                       NOTES_TOOL_COMPACT, mcp_req_lend_max(req), nullptr,
 		                       mcp_slot_compacted);
@@ -7432,10 +7430,11 @@ mcp_begin (struct mcp           *mcp,
 		.method = method
 	};
 	/* The client's name is in the policy, which a reload can free after
-	 * the head, so it is copied. The log names a client on a Unix socket
-	 * by its uid, which is in peer.key[1] (src/stream.h), with the name from
-	 * the policy after it in parentheses. */
+	 * the head, so it is copied, and so is the login. The log names a client
+	 * on a Unix socket by its uid, which is in peer.key[1] (src/stream.h),
+	 * with the name from the policy after it in parentheses. */
 	struct cstr_view const who = s->grant.who;
+	(void)member_call_init(&req->member, mcp->st->notes_tool.members, &s->grant, &s->peer);
 	if (s->peer.key[0] != UINT64_MAX) {
 		if (who.len)
 			memcpy(req->client, who.data, who.len < sizeof req->client
@@ -7603,6 +7602,7 @@ mcp_destroy_parts (struct mcp *mcp,
 struct mcp *
 mcp_create (struct loop              *loop,
             struct loop              *home,
+            struct blocker           *blockers,
             struct mcp_static const  *st,
             struct metrics_src const *metrics,
             struct metrics_mcp       *counts,
@@ -7662,7 +7662,7 @@ mcp_create (struct loop              *loop,
 		int pe = 0;
 		mcp->parts[i] = p->service;
 		if (p->part_create &&
-		    !(mcp->parts[i] = p->part_create(p->service, loop, &mcp->children, &pe))) {
+		    !(mcp->parts[i] = p->part_create(p->service, loop, blockers, &mcp->children, &pe))) {
 			*e = pe ? pe : ENOMEM;
 			mcp_destroy_parts(mcp, i);
 			instance_table_fini(&mcp->instances);
@@ -7801,7 +7801,7 @@ mcp_tool_definition (void const *service)
 			"An ask-chain thread ID from an earlier answer, 32 hexadecimal "
 			"digits. The call starts with the review record of the thread, if a "
 			"review record exists for the thread. Every call starts with the "
-			"notes from your earlier calls, with or without thread."));
+			"notes of the agent, with or without thread."));
 	if (st->ep->background) {
 		props = jb_set_or_free(props, "job", schema_property("string",
 			"A job ID that an earlier call returned. Give job instead of prompt "
@@ -8553,7 +8553,7 @@ mcp_static_create (struct config const          *cfg,
                    struct manual                *manual,
                    struct task_pool             *tasks,
                    struct git                   *git,
-                   struct notes                 *notes,
+                   struct store const           *store,
                    struct member_registry const *members,
                    struct ledger                *ledger,
                    struct roster                *roster,
@@ -8586,7 +8586,7 @@ mcp_static_create (struct config const          *cfg,
 		.versions = DSTR_INIT,
 		.files_url = DSTR_INIT,
 		.tasks = tasks,
-		.notes_tool = { .notes = notes, .members = members,
+		.notes_tool = { .store = store, .members = members,
 		                .files_inline = mcp_files_inline(cfg->http.limits.body) },
 		.code = { git, cfg },
 		.journal = journal,
@@ -8606,7 +8606,7 @@ mcp_static_create (struct config const          *cfg,
 	/* A zeroed dstr is not an empty string (dstr.h). */
 	for (uint32_t id = 0; id < reg->n_tools; ++id)
 		st->offers[id] = (struct mcp_offer){ DSTR_INIT, DSTR_INIT };
-	if (cfg->flags & CFG_UPSTREAM_TOOLS && notes && (*e = mcp_static_uploads(st))) {
+	if (cfg->flags & CFG_UPSTREAM_TOOLS && store && (*e = mcp_static_uploads(st))) {
 		mcp_static_destroy(&st);
 		return nullptr;
 	}

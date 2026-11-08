@@ -302,8 +302,9 @@ context. The upstream must accept tools in the request. With
 
 The model calls `compact` with a summary of at most 4 MiB. `askai` then
 removes the conversation after the prompt, and adds the summary, the review
-record (section [The review record](#the-review-record)), the list of the
-notes and the newest note to the prompt. A newest note longer than a
+record (section [The review record](#the-review-record)), the notices of
+the agent and of the members of the session, the note history of the agent
+and the newest note to the prompt. A newest note longer than a
 tool result in a turn (section [`context`](#context)) is cut there, with the
 offset from which the model reads on with `notes`.
 
@@ -513,14 +514,17 @@ record, and a later service of an agent adopts it. If the record of the
 name belongs to a person, `askai` stops with a message such as `agent bro:
 the name bro belongs to the person with login uid 1000 in this session`. A
 session of a later format than `askai` writes stops `askai` too. The
-startup log lists the session, with its repository, ID, name, agent and
-service, and the members that the records name, each with its kind and
-logins.
+startup log lists the session, with its repository, ID, name, agent,
+service and the number of notebooks of the old layout under
+`refs/heads/notes/`, as `legacy`, if there are any, and the members that
+the records name, each with its kind and logins.
 
-A person becomes a member on the first lookup of a login: a Unix user of a
-Unix socket, named like the user, or `uid-N` if the user has no such name;
-an identity, named like the identity; or `ASKAI_TOKEN` over TCP under
-`askai`'s own policy, which is the user who runs `askai`. An identity with
+A person becomes a member with the first write of `notes`, or with the
+first ask call whose turns get `notes`: a Unix user of a Unix socket,
+named like the user, or `uid-N` if the user has no such name; an
+identity, named like the identity; or `ASKAI_TOKEN` over TCP under
+`askai`'s own policy, which is the user who runs `askai`. A call that only
+reads notes names the member of its login, and writes no record. An identity with
 `"agent": true` is an agent. An identity and a Unix user of one name are one
 person. A client over TCP without a token has no member name.
 
@@ -909,12 +913,21 @@ The value is a string. `askai` computes the default from `model`,
 With `model` set to M, the first sentence ends with "to the AI model M". If
 the turns of an `ask_ai` call can get a tool, `askai` adds "The other AI can
 call some tools of this server. The result lists the tool calls after the
-answer." after the third sentence. If they can get `notes`,
-it then also adds "The other AI writes notes in the shared session
-repository. Each call starts with the notes from your earlier calls. The
-other AI can read the notes of other participants." The turns can get
-a tool with `upstream-tools`, when `askai` offers a tool that it can lend
-and `tools` allows the upstream that tool.
+answer." after the third sentence. With an [`agent`](#agent) NAME, every
+sentence names the agent instead:
+
+> Send a question or a task to the agent NAME, on the AI model M. NAME
+> cannot see this conversation, your files or your tools. Write a complete
+> prompt. NAME can call some tools of this server. The result lists the
+> tool calls after the answer. NAME keeps notes in the session. Each call
+> starts with the notes of NAME. Ask NAME for a second opinion, for hard
+> problems, or for knowledge you lack.
+
+Without `model`, the first sentence ends after NAME. The sentences about
+tools are there if the turns can get a tool, and the sentences about notes
+if they can get `notes`. The turns can get a tool with `upstream-tools`,
+when `askai` offers a tool that it can lend and `tools` allows the
+upstream that tool.
 
 ### MCP server and listeners, in `service`
 
@@ -927,12 +940,12 @@ form as [`agent`](#agent). The default is the name of the agent, or without
 `agent` the name of the ask tool, `upstream.tool-name`. The name of the
 service names this `askai` in its transcript repository, the directory
 `askai-journal/SERVICE` and the branch `reasoning/SERVICE`, and it is the
-committer of the records of the session. Keep the name of a service the
-same across restarts to keep its transcripts and recover its background
-jobs. Set it to the old value of `participant` to keep the transcripts of
-an older `askai`. A name that `upstream.tool-name` gives must have the form
-of a member name, or `askai` stops with exit status 2 and asks to set
-`service-name`.
+committer of the records and of the notebook commits of the session. Keep
+the name of a service the same across restarts to keep its transcripts and
+recover its background jobs. Set it to the old value of `participant` to
+keep the transcripts of an older `askai`. A name that `upstream.tool-name`
+gives must have the form of a member name, or `askai` stops with exit status
+2 and asks to set `service-name`.
 
 #### `listen`
 

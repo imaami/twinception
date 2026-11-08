@@ -15,6 +15,7 @@
 #include "loop_export.h"
 #include "tool.h"
 
+struct blocker;
 struct child;
 struct child_cmd;
 struct config;
@@ -27,14 +28,15 @@ struct roster;
 struct manual;
 struct mcp;
 struct mcp_static;
+struct member_call;
 struct member_registry;
 struct metrics_mcp;
 struct metrics_src;
-struct notes;
 struct oid;
 struct registry;
 struct review;
 struct review_source;
+struct store;
 struct stream_app;
 struct task_pool;
 struct web;
@@ -116,9 +118,9 @@ mcp_lent (void const *cfg,
  * contains the tools of the plugins that askai loaded. @p manual is the
  * service of the man tool (src/manual.h), @p tasks runs the calls of the
  * test aid test_task (src/task.h), @p git is the service of the git tool
- * (src/git.h), @p notes contains the notes of the notes tool
- * (src/notes_tool.h), and @p members is the registry of the session of the
- * notes (src/member.h). With CFG_UPSTREAM_TOOLS, an ask call runs turns,
+ * (src/git.h), @p store is the repository of the session of the notes
+ * tool (src/store.h), and @p members is the registry of the session
+ * (src/member.h). With CFG_UPSTREAM_TOOLS, an ask call runs turns,
  * each an upstream call, and the tool calls of each turn, until an answer
  * calls no tool.
  *
@@ -140,7 +142,7 @@ mcp_static_create (struct config const          *cfg,
                    struct manual                *manual,
                    struct task_pool             *tasks,
                    struct git                   *git,
-                   struct notes                 *notes,
+                   struct store const           *store,
                    struct member_registry const *members,
                    struct ledger                *ledger,
                    struct roster                *roster,
@@ -156,9 +158,10 @@ mcp_static_destroy (struct mcp_static **p_static);
  * function on the thread of @p loop. @p home is the loop of home, which
  * runs the upstream calls of the client loops as jobs (src/job.h). The
  * function creates the part of each built-in plugin that has parts, in the
- * order of the plugins. These plugins are man, git, code and notes. The new
- * object records its statistics in @p counts, whose atomic members must be
- * valid. It answers GET /metrics from @p metrics.
+ * order of the plugins. These plugins are man and notes. The parts run
+ * blocking work on @p blockers (src/blocker.h). The new object records its
+ * statistics in @p counts, whose atomic members must be valid. It answers
+ * GET /metrics from @p metrics.
  *
  * Returns the new object. On failure it returns nullptr and stores the
  * error number in @p *e. The error number is ENOMEM, or the error number
@@ -167,6 +170,7 @@ mcp_static_destroy (struct mcp_static **p_static);
 extern struct mcp *
 mcp_create (struct loop              *loop,
             struct loop              *home,
+            struct blocker           *blockers,
             struct mcp_static const  *st,
             struct metrics_src const *metrics,
             struct metrics_mcp       *counts,
@@ -248,16 +252,18 @@ mcp_app (struct mcp *mcp);
 
 /** Creates the part of a built-in plugin for the client loop @p loop.
  *  @p service is the plugin's service, the object that all loops share.
+ *  @p blockers run the work of the part that blocks (src/blocker.h).
  *  @p children is the list of the children (src/child.h) of the loop,
  *  which askai frees after the parts. askai calls the function on the
  *  thread of @p loop, before the loop's first call. Returns the part. On
  *  failure it returns nullptr and stores the error number in @p *e. Parts
  *  exist only for the built-in plugins.
  */
-typedef void *mcp_part_create_fn (void        *service,
-                                  struct loop *loop,
-                                  struct list *children,
-                                  int         *e);
+typedef void *mcp_part_create_fn (void           *service,
+                                  struct loop    *loop,
+                                  struct blocker *blockers,
+                                  struct list    *children,
+                                  int            *e);
 
 /** Destroys the part @p *p_part and sets @p *p_part to nullptr. askai
  *  calls the function when the loop stops, after it has dropped every call
@@ -448,16 +454,35 @@ extern int
 mcp_slot_source (struct mcp_slot            *slot,
                  struct review_source const *src);
 
-/** Sets the selector of the notebook that the call's output shows to
- *  @p selector, which must stay valid until the kind's drop(). After the
- *  result of a turn's call that does not fail, askai adds a notice that
- *  names the notebook, and the journal records the selector. Returns 0,
- *  EFAULT for nullptr, or EINVAL if the call has ended. This function is
- *  not exported.
+/** Sets the notebook that the call's output shows to @p notebook, the
+ *  name of a member and its kind, such as "bro (agent)", which must stay
+ *  valid until the kind's drop(). After the result of a turn's call that
+ *  does not fail, askai adds a notice that names the notebook, and the
+ *  journal records the notice. Returns 0, EFAULT for nullptr, or EINVAL if
+ *  the call has ended. This function is not exported.
  */
 extern int
 mcp_slot_shows (struct mcp_slot *slot,
-                char const      *selector);
+                char const      *notebook);
+
+/** Returns the struct member_call of the request of the call
+ *  (src/member.h): the login of its client, and for an ask call, the IDs
+ *  and the asker that the commits of its turns name. Returns nullptr for a
+ *  null @p slot. This function is not exported.
+ */
+extern struct member_call *
+mcp_slot_member (struct mcp_slot *slot);
+
+/** Sets the structured content of the result of a client's call to the
+ *  JSON object @p json, whose bytes must stay valid until the kind's
+ *  drop(). The result then carries the object as structuredContent beside
+ *  its text. The function does nothing for the call of a turn or a job.
+ *  Returns 0, EFAULT for nullptr, or EINVAL if the call has ended. This
+ *  function is not exported.
+ */
+extern int
+mcp_slot_structured (struct mcp_slot  *slot,
+                     struct cstr_view  json);
 
 /** Records that the caller's own notebook has notes. The trace of the ask
  *  call then says where the notes are. The journal and the checkpoint keep

@@ -2296,7 +2296,8 @@ config_allow (struct config *cfg)
 
 /* The ask tool's description, unless one is given: with the sentences
  * about tools and notes if the turns of a role that grants every tool get
- * any tool and the tool notes.
+ * any tool and the tool notes. With --agent, every sentence names the
+ * agent of this askai (config_session()).
  */
 static int
 config_description (struct config *cfg)
@@ -2307,22 +2308,40 @@ config_description (struct config *cfg)
 	tool_mask lent = mcp_lent(run, ~(tool_mask)0, ~(tool_mask)0);
 	tool_mask notes = config_tool_bit(&run->registry, CSTR_VIEW("notes"));
 	char const *who = "another AI model";
+	char const *on = "";
 	char const *model = "";
 	if (cfg->ep.model) {
 		who = "the AI model ";
+		on = ", on the AI model ";
 		model = cfg->ep.model;
 	}
-	if (config_aprintf(&cfg->description, "Send a question or a task to %s%s. The other "
-	                   "AI cannot see this conversation, your files or your tools. Write "
-	                   "a complete prompt.%s%s Use the other AI for a second opinion, for "
-	                   "hard problems, or for knowledge you lack.", who, model,
-	                   lent ? " The other AI can call some tools of this server. The result "
-	                          "lists the tool calls after the answer." : "",
-	                   lent & notes
-	                   ? " The other AI writes notes in the shared session repository. "
-	                     "Each call starts with the notes from your earlier calls. The "
-	                     "other AI can read the notes of other participants."
-	                   : ""))
+	char const *agent = cfg->agent;
+	int e = 0;
+	if (!agent) {
+		e = config_aprintf(&cfg->description, "Send a question or a task to %s%s. The other "
+		                   "AI cannot see this conversation, your files or your tools. Write "
+		                   "a complete prompt.%s Use the other AI for a second opinion, for "
+		                   "hard problems, or for knowledge you lack.", who, model,
+		                   lent ? " The other AI can call some tools of this server. The "
+		                          "result lists the tool calls after the answer." : "");
+	} else {
+		static char const tools_format[] = " %s can call some tools of this server. The "
+		                                   "result lists the tool calls after the answer.";
+		static char const notes_format[] = " %s keeps notes in the session. Each call starts "
+		                                   "with the notes of %s.";
+		char tools_text[sizeof tools_format + UTIL_WORD_MAX] = "";
+		char notes_text[sizeof notes_format + 2 * UTIL_WORD_MAX] = "";
+		if (lent)
+			util_format(tools_text, sizeof tools_text, tools_format, agent);
+		if (lent & notes)
+			util_format(notes_text, sizeof notes_text, notes_format, agent, agent);
+		e = config_aprintf(&cfg->description, "Send a question or a task to the agent %s%s%s. "
+		                   "%s cannot see this conversation, your files or your tools. Write "
+		                   "a complete prompt.%s%s Ask %s for a second opinion, for hard "
+		                   "problems, or for knowledge you lack.", agent, on, model, agent,
+		                   tools_text, notes_text, agent);
+	}
+	if (e)
 		return config_oom(cfg);
 	cfg->tool.description = cfg->description;
 	return 0;

@@ -1,20 +1,17 @@
 /** @file notes.h
  *
- * Shared session notes. --notes names one Git repository, shared by
- * every participating askai instance. Each askai writes its own
- * refs/heads/notes/PARTICIPANT/WHO/SIDE branches, where PARTICIPANT is the
- * name of its agent (--agent). WHO is the client principal
- * or anonymous; SIDE is client or upstream. All notebooks can be read, but a
- * tool call's write branch is chosen by the server. Threads identify ask chains
- * and do not partition the notes. Each write that changes a note adds a
- * commit whose message says what the write did; earlier contents remain in
- * the notebook's history. A write that leaves a note's bytes as they are
- * adds no commit.
- * Existing repositories can have worktrees; Git resolves their packed refs.
- * Concurrent changes to one branch fail rather than overwrite another writer.
- * The review record of a thread is a commit on
- * refs/review/PARTICIPANT/WHO/THREAD, outside the notebook branches. The
- * repository is a store of src/store.h.
+ * The notes of the session. --notes names one git repository, the session
+ * of every askai that names it (src/member.h). Each member of the session
+ * has one notebook, the branch refs/heads/KIND/NAME/notes, where KIND is
+ * person or agent and NAME is the name of the member. Every member can
+ * read every notebook, and only the member writes its notebook. Each write
+ * that changes a note adds a commit whose message says what the write did.
+ * Earlier contents stay in the history of the notebook. A write that
+ * leaves the bytes of a note as they are adds no commit. A repository can
+ * have worktrees, and git resolves their packed refs. Concurrent changes
+ * to one branch fail rather than overwrite another writer. The review
+ * record of a thread is a commit on refs/review/AGENT/WHO/THREAD, outside
+ * the notebooks. The repository is a store of src/store.h.
  */
 #ifndef ASKAI_SRC_NOTES_H_
 #define ASKAI_SRC_NOTES_H_
@@ -31,35 +28,12 @@
 #include "xlist.h"
 
 struct hexid;
-struct notes;
 
 enum {
 	NOTES_NAME = STORE_PATH, /**< bytes of the name of a note, at most */
-	NOTES_REPO = 128,        /**< bytes of a full notebook branch ref, NUL
-	                              included */
-	NOTES_WHO  = 16,         /**< hexadecimal digits of a principal in a
-	                              notebook's ref */
+	NOTES_REF  = 128,        /**< bytes of the ref of a notebook or of a
+	                              review record, NUL included */
 };
-
-/** The two authors within a participant and principal. */
-enum notes_side : uint8_t {
-	NOTES_UPSTREAM,  /**< the upstream in ask calls */
-	NOTES_CLIENT,    /**< a client */
-};
-
-/** The text that notes_book() writes for WHO in a notebook ref if the
- *  principal is 0.
- */
-static struct cstr_view const notes_anonymous = CSTR_VIEW_INIT("anonymous");
-
-/** The SIDE names in a notebook ref, indexed by enum notes_side. */
-static struct cstr_view const notes_sides[] = {
-	[NOTES_UPSTREAM] = CSTR_VIEW_INIT("upstream"),
-	[NOTES_CLIENT]   = CSTR_VIEW_INIT("client"),
-};
-
-/** The words of STORE_REFS that list the selectors of all notebooks. */
-extern char const *const notes_books[2];
 
 /** The actions of the notes tool: X(ID, name, flags, fetch), the constant
  *  NOTES_ACTION_ID of enum notes_action, the name, and the flags and the
@@ -69,21 +43,21 @@ extern char const *const notes_books[2];
  *  upstream takes files can use attach. The commit message of a write
  *  begins with the name, in upper case at the first letter.
  */
-#define NOTES_COMMON_ACTION_LIST(X)                                                                      \
-        X(ADD,       "add",       NOTE_WRITE | NOTE_FILE,                  0)                            \
-        X(APPEND,    "append",    NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE | FETCH_APPEND) \
-        X(REPLACE,   "replace",   NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE)                \
-        X(DELETE,    "delete",    NOTE_WRITE | NOTE_FILE,                  FETCH_REPLACE | FETCH_DELETE) \
-        X(RESTORE,   "restore",   NOTE_WRITE | NOTE_FILE | NOTE_REVISION,  FETCH_READ | FETCH_RESTORE)   \
-        X(NOTEBOOKS, "notebooks", NOTE_OFFSET,                             FETCH_BOOKS)                  \
-        X(LIST,      "list",      NOTE_OFFSET,                             FETCH_FILES)                  \
-        X(SEARCH,    "search",    NOTE_OFFSET,                             FETCH_GREP)                   \
-        X(HISTORY,   "history",   NOTE_OFFSET,                             FETCH_LIST)                   \
-        X(READ,      "read",      NOTE_FILE | NOTE_OFFSET | NOTE_REVISION, FETCH_READ)                   \
-        X(DIFF,      "diff",      NOTE_FILE | NOTE_OFFSET,                 FETCH_DIFF)                   \
-        X(COPY,      "copy",      NOTE_FILE,                               FETCH_READ | FETCH_COPY)
-#define NOTES_ALL_ACTION_LIST(X) NOTES_COMMON_ACTION_LIST(X)                                             \
-        X(ATTACH,    "attach",    NOTE_FILE,                               FETCH_READ | FETCH_ATTACH)
+#define NOTES_COMMON_ACTION_LIST(X)                                                                               \
+        X(ADD,     "add",     NOTE_AUTHOR | NOTE_WRITE | NOTE_FILE,                 0)                            \
+        X(APPEND,  "append",  NOTE_AUTHOR | NOTE_WRITE | NOTE_FILE,                 FETCH_REPLACE | FETCH_APPEND) \
+        X(REPLACE, "replace", NOTE_AUTHOR | NOTE_WRITE | NOTE_FILE,                 FETCH_REPLACE)                \
+        X(DELETE,  "delete",  NOTE_AUTHOR | NOTE_WRITE | NOTE_FILE,                 FETCH_REPLACE | FETCH_DELETE) \
+        X(RESTORE, "restore", NOTE_AUTHOR | NOTE_WRITE | NOTE_FILE | NOTE_REVISION, FETCH_READ | FETCH_RESTORE)   \
+        X(MEMBERS, "members", NOTE_OFFSET,                                          FETCH_MEMBERS)                \
+        X(LIST,    "list",    NOTE_OFFSET,                                          FETCH_FILES)                  \
+        X(SEARCH,  "search",  NOTE_OFFSET,                                          FETCH_GREP)                   \
+        X(HISTORY, "history", NOTE_OFFSET,                                          FETCH_LIST)                   \
+        X(READ,    "read",    NOTE_FILE | NOTE_OFFSET | NOTE_REVISION,              FETCH_READ)                   \
+        X(DIFF,    "diff",    NOTE_FILE | NOTE_OFFSET,                              FETCH_DIFF)                   \
+        X(COPY,    "copy",    NOTE_AUTHOR | NOTE_FILE,                              FETCH_READ | FETCH_COPY)
+#define NOTES_ALL_ACTION_LIST(X) NOTES_COMMON_ACTION_LIST(X)                                                      \
+        X(ATTACH,  "attach",  NOTE_FILE,                                            FETCH_READ | FETCH_ATTACH)
 
 enum notes_action : uint8_t {
 #define NOTES_ACTION_ENUM(id, ...) NOTES_ACTION_##id,
@@ -132,75 +106,12 @@ struct notes_cursor {
 /** The lines of a note that git sees as binary (struct notes_entry). */
 static constexpr uint64_t NOTES_BINARY = UINT64_MAX;
 
-/** Opens the shared session repository at @p path for the agent @p agent,
- * a member name (src/member.h), as store_create() does. Returns nullptr
- * and an error number and message on failure.
- */
-extern struct notes *
-notes_create (char const *path,
-              char const *agent,
-              char       *why,
-              size_t      len,
-              int        *e);
-
-extern void
-notes_destroy (struct notes **p_notes);
-
-/** Returns the store of the shared session repository, or nullptr if
- *  @p notes is nullptr.
- */
-extern struct store const *
-notes_store (struct notes const *notes);
-
-/** The configured writer identity, shared by this instance's notebooks. */
-extern char const *
-notes_writer (struct notes const *notes);
-
-/** Writes to @p repo the branch ref of the notebook of @p participant, a
- *  member name (src/member.h), for the principal @p principal and the side
- *  @p side.
+/** Writes to @p ref the ref of the notebook of @p member, a member with a
+ *  name: refs/heads/KIND/NAME/notes.
  */
 extern void
-notes_book (struct cstr_view participant,
-            uint64_t         principal,
-            enum notes_side  side,
-            char             repo[NOTES_REPO]);
-
-/** Writes the caller's server-selected branch ref to @p repo. */
-extern void
-notes_repo (struct notes const *notes,
-            uint64_t            principal,
-            enum notes_side     side,
-            char                repo[NOTES_REPO]);
-
-/** Returns true if @p name is a notebook selector PARTICIPANT/WHO/SIDE in
- *  the form that notes_repo() writes. WHO is notes_anonymous or NOTES_WHO
- *  hexadecimal digits of a principal.
- */
-static inline bool
-notes_selector_valid (struct cstr_view name)
-{
-	struct cstr_view side = name, participant, who;
-	return cstr_view_cut(&side, '/', &participant) && member_name_valid(participant) &&
-	       cstr_view_cut(&side, '/', &who) &&
-	       (cstr_view_equal(who, notes_anonymous) ||
-	        (who.len == NOTES_WHO && util_is_hex(who.data, who.len))) &&
-	       cstr_view_index(notes_sides, array_size(notes_sides), side) < array_size(notes_sides);
-}
-
-/** Validates an explicit PARTICIPANT/WHO/SIDE read selector and writes its
- * full branch ref to @p repo, unless @p repo is nullptr. Returns 0 or
- * EINVAL.
- */
-extern int
-notes_select (struct cstr_view name,
-              char             repo[NOTES_REPO]);
-
-/** Returns the public selector within a ref made by notes_book(),
- * notes_repo() or notes_select(). The view borrows @p repo.
- */
-extern char const *
-notes_selector (char const *repo);
+notes_ref (struct member const *member,
+           char                 ref[NOTES_REF]);
 
 /** The stage of a historical read or diff (notes.c). */
 enum notes_revision_phase : uint8_t;
@@ -336,13 +247,15 @@ notes_read_out (struct span  out,
                 struct oid  *id);
 
 /** Writes to @p ref the ref of the review record of @p thread for the
- *  participant and principal of the notebook branch @p repo, which
- *  notes_repo() wrote.
+ *  agent @p agent and the principal @p principal of the client of the ask
+ *  call (src/policy.h): refs/review/AGENT/WHO/THREAD, where WHO is the
+ *  principal in 16 hexadecimal digits, or anonymous for 0.
  */
 extern void
-notes_review (char const         *repo,
+notes_review (char const         *agent,
+              uint64_t            principal,
               struct hexid const *thread,
-              char                ref[NOTES_REPO]);
+              char                ref[NOTES_REF]);
 
 /**
  * Reads @p out, the output of the command STORE_READ for the input that

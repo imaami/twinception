@@ -799,7 +799,8 @@ record back from its checkpoint.
 
 With `--notes`, an ask call whose turns added or updated findings saves
 them before it answers: a commit with the file `review.json` on
-`refs/review/PARTICIPANT/WHO/THREAD`, outside the notebook branches, on top
+`refs/review/AGENT/WHO/THREAD`, outside the notebook branches, where `WHO`
+is the principal of the client or `anonymous`, on top
 of the commit that the call started with. The trace names the thread. An
 ask call with that `thread` starts with those findings, after the notes,
 but with an empty read log, so a finding becomes `verified` or `disproved`
@@ -828,14 +829,34 @@ the ID and the name of the session, and the member record
 `refs/askai/members/NAME` of its agent, if they do not exist. A member
 record is a create-only ref: the first writer of a name creates it, and a
 later service of the same agent adopts it. A person becomes a member with
-the first lookup of the person's Unix user or identity. The `_meta` of the
-tool `notes` has the ID of the session as `session`.
+the first write of `notes`, or with the first ask call whose turns get
+`notes`. The `_meta` of the tool `notes` has the ID of the session as
+`session`, the name of the agent as `agent`, and `members`, which says that
+the tool lists the members.
 
-Each agent writes only its own notebook branches,
-`notes/AGENT/WHO/client` and `notes/AGENT/WHO/upstream`, where `WHO` is
-the caller's identity hash or `anonymous`. Every agent can read the other
-notebooks. The repository, rather than an ask call or
-transport connection, determines which session a note belongs to.
+Each member has one notebook, the branch `refs/heads/person/NAME/notes` or
+`refs/heads/agent/NAME/notes`, and writes only that notebook. Every member
+can read every notebook. The member of a call depends on the caller:
+
+- The turns of an ask call write as the agent of the instance. Every
+  service of one agent writes the notebook of the agent.
+- A client on a Unix socket writes as the person of its Unix user, named
+  like the user, or `uid-N` if the user has no valid name. If the lookup
+  of the name fails in another way, such as after 10 s, the write fails
+  and asks to try again. The record of the person names the login, so a
+  renamed user keeps the notebook.
+- A client over TCP with the token of an identity writes as a person named
+  like the identity, or as an agent if the identity has `"agent": true`.
+  An identity and a Unix user of the same name are one person.
+- A client over TCP with `ASKAI_TOKEN` under `askai`'s own policy writes as
+  the user who runs `askai`.
+- A client over TCP without a token has no member name. It reads, but it
+  cannot write notes.
+
+A login whose name is the name of a member of another kind is refused,
+such as a Unix user named like an agent, and the refusal says so. The
+repository, rather than an ask call or transport connection, determines
+which session a note belongs to.
 
 A note is a file. The model chooses its name, such as `plan.md` or
 `design/locks.md`, and writes its text, at most 4 MiB. The extension of
@@ -844,33 +865,35 @@ The tool `notes` creates a file with `add` or updates an existing file with
 `replace`, or with `append`, which adds text at its end, on a new line if
 the file does not end with a line feed. `delete` removes a file; `restore`
 with the commit before the deletion brings it back. Each write that changes
-a note adds a commit to the caller's branch with `git fast-import`, with
-the notebook's selector as the committer. Its message says what the write
-did, the note's name and its size before and after, such as
-`Replace "plan.md" (1234 to 1302 bytes)`; previous versions remain in
-history. The result names the new commit and repeats its message. If the
-write changed a note, the result also names the commit of the previous
-version, after the lines that a `replace` or `restore` removed and added,
-such as `1 line removed, 2 added.`, unless Git sees the note as binary. A
-`replace` or `restore` that would leave the note's bytes as they are
-makes no commit; its result says `Unchanged` and names the notebook's
-newest commit. `add` refuses an existing name, and `replace`, `append` and
-`delete` a missing one. Concurrent branch updates fail rather than overwrite
-another writer's changes. When a turn writes text whose last lines are
-askai's own notices from tool results, such as `[askai: notebook ...]` or
-the context notices, askai leaves those lines out and says so in the result.
-Notices inside the text, and text from clients, stay as they are. askai
-adds a line feed to a turn's text that does not end with one.
-Names cannot contain control characters or empty parts. No part can be
-`.`, `..`, `.git` or `git~1`, in any case and also with spaces or dots after
-it, because git refuses such names. Slashes at the start are left out.
-askai refuses the name of a written note in the form of a notebook selector.
-The optional `thread` argument remains accepted for older clients, but
-does not create another repository or notebook. A role that names
-`notes` among its `tools` gives clients their own notebooks with `--notes`
-alone. With `--upstream-tools`, the model gets `notes` whatever the role
-lists. `git` runs without hooks. Nothing prunes the repository; run
-`git gc` as needed.
+a note adds a commit to the notebook of the caller with `git fast-import`.
+The author is the member, such as `bro <agent/bro>` or
+`imaami <person/imaami>`, and the committer is the service, such as
+`gpu1 <askai>`, so `git log --author='^bro <'` lists the changes of a
+member. The message says what the write did, the note's name and its size
+before and after, such as `Replace "plan.md" (1234 to 1302 bytes)`;
+previous versions remain in history. The commit of a turn ends with the
+trailer lines `Ask:`, the ID of the ask call, `Conversation:`, its thread,
+and `Asked-by:`, the member whose client made the ask call, if it has a
+name. `history` and the prompt show the asker as `, asked by NAME`. The
+result names the new commit and repeats its message. If the write changed a
+note, the result also names the commit of the previous version, after the
+lines that a `replace` or `restore` removed and added, such as `1 line
+removed, 2 added.`, unless Git sees the note as binary. A `replace` or
+`restore` that would leave the note's bytes as they are makes no commit; its
+result says `Unchanged` and names the notebook's newest commit. `add`
+refuses an existing name, and `replace`, `append` and `delete` a missing
+one. Concurrent branch updates fail rather than overwrite another writer's
+changes. When a turn writes text whose last lines are askai's own notices
+from tool results, such as `[askai: notebook ...]` or the context notices,
+askai leaves those lines out and says so in the result. Notices inside the
+text, and text from clients, stay as they are. askai adds a line feed to a
+turn's text that does not end with one. Names cannot contain control
+characters or empty parts. No part can be `.`, `..`, `.git` or `git~1`, in
+any case and also with spaces or dots after it, because git refuses such
+names. Slashes at the start are left out. A role that names `notes` among
+its `tools` gives clients their notebooks with `--notes` alone. With
+`--upstream-tools`, the model gets `notes` whatever the role lists. `git`
+runs without hooks. Nothing prunes the repository; run `git gc` as needed.
 
 Branches can have separate Git worktrees. Writes made through the notes
 tool update Git objects and the branch; they do not update files in an
@@ -883,16 +906,24 @@ Files committed through a worktree appear in the notebook, including
 several files added by one commit. `list` reflects the current tree;
 `history` retains the record of changes.
 
-- `notebooks` identifies the caller's writable notebook even before its
-  first note, and lists peers as read-only. Without peers, its last line
-  is `No other notebook contains notes yet.` A selector is
-  `PARTICIPANT/WHO/SIDE`. Models receive their participant and writable
-  selector in their initial prompt.
-- `notebook` selects the notebook that an action reads; `own` is the
-  default. A participant's name selects that participant's notebook of
-  the caller's identity and side, and a selector any notebook. Writes go
-  only to the caller's own branch. Clients retain `other` as an alias for
-  the opposite side of the same participant and caller identity.
+- `members` lists the members of the session, persons first, each with its
+  kind and the newest change of its notebook, or `no notes yet`. Its last
+  line says who the caller is. For a client, the result also has
+  `structuredContent`: `members`, each with `name`, `kind`, and for a
+  notebook with notes `time` and `change`, and for a caller with a member
+  name `you`, with the name and the kind of the caller. A notebook without
+  a member record, such as a notebook moved from the old layout, lists its
+  member with the kind of its branch.
+- `notebook` names the member whose notebook an action reads. The default
+  is the notebook of the caller. A name that no member has is refused with
+  the names of the members. A notebook without notes answers that the
+  notebook contains no notes yet; for `list`, `history` and `search` the
+  answer is not a failure. Writes go only to the notebook of the caller.
+- The prompt of an ask call begins its notes with who the agent is and who
+  made the ask call, then the members of the session and their kinds,
+  then the note history of the agent and its newest note, or a line that
+  the notebook contains no notes yet. After a compaction, the same notices
+  follow the summary.
 - `search` lists the lines of the selected notebook's current notes that
   match `pattern`, as `file:line:text`. Each line of `pattern` is an
   extended regular expression, and case is ignored.
@@ -916,22 +947,23 @@ several files added by one commit. `list` reflects the current tree;
   note of that name, and its commit message names the source as
   `COMMIT:FILE`. To recover only part of an old note, use `read` with
   `revision`, then `replace` with the combined text.
-- `copy` puts a note of the selected notebook into the caller's own,
-  byte for byte, under the same name or the name that `as` gives. Its
-  commit message names the source notebook and the commit that it read,
-  and with `as` the source file. The text of the note does not pass
-  through the model, so a file that is needed exactly, or one that is not
-  text, keeps every byte. Models must select the source notebook
-  explicitly; clients retain `other` as the default source.
+- `copy` puts a note of the notebook that `notebook` names into the
+  caller's own, byte for byte, under the same name or the name that `as`
+  gives. Its result and its commit message, such as
+  `Copy "plan.md" from the notebook of bro at COMMIT (412 bytes)`, name the
+  source member and the commit that it read, and with `as` the source
+  file. The text of the note does not pass through the model, so a file
+  that is needed exactly, or one that is not text, keeps every byte.
 - `read` shows a note that is not UTF-8 text, such as code in an old
   encoding or in a mix of them, as a view that tells every byte: UTF-8
   where it is valid, each other byte and each NUL as `⟦XX⟧`, its value in
   hexadecimal, and a `⟦` of the text as `⟦⟦`, after a line that says so.
   A prompt that has the newest note has the same view. The note itself
   is never converted, so the bytes of a string literal that an old
-  protocol needs stay as they are. Reads are paged by `offset`; model
-  results identify the source notebook separately from the contents,
-  without changing the pagination offsets.
+  protocol needs stay as they are. Reads are paged by `offset`. After a
+  turn's `read` or `diff`, a notice such as `[askai: notebook imaami
+  (person)]` names the notebook, separately from the contents, without
+  changing the pagination offsets.
 - The model's `attach`, with Gemini's APIs `generate` and `interactions`,
   gives it a whole note from the selected notebook as a file, where `read`
   shows a large note in parts. `askai` uploads the note as it is if it is UTF-8
@@ -964,11 +996,34 @@ For example, both instances below share one notes session:
   --notes /var/lib/askai/session.git --listen 127.0.0.1:8091
 ```
 
-Each calls `{"action":"notebooks"}` to discover the other's notebook,
-then reads it to follow the progress of the other agent. Automatic provider
-transcripts go to a separate repository, by default
+Each calls `{"action":"members"}` to see the other agent and its newest
+change, then reads the notebook `reviewer` or `researcher` to follow the
+progress of the other agent. Automatic provider transcripts go to a
+separate repository, by default
 `/var/lib/askai/session.git.transcripts.git`; `--transcripts PATH` changes
 that location.
+
+### Moving old notebooks
+
+Earlier versions of `askai` wrote the branches
+`refs/heads/notes/PARTICIPANT/WHO/SIDE`. `askai` neither reads nor
+rewrites them, and the startup report counts them under `session:` as
+`legacy`. The trees of the notes are the same, so one `git update-ref`
+moves a notebook with its whole history. Choose the member of each old
+branch, and run, for example:
+
+```sh
+git -C /git/askai-notes7 update-ref refs/heads/agent/bro/notes \
+  refs/heads/notes/bro/172b86b746968586/upstream
+git -C /git/askai-notes7 update-ref refs/heads/person/imaami/notes \
+  refs/heads/notes/cuh/172b86b746968586/client
+```
+
+A moved notebook is readable at once by the name of its member. The
+member record appears with the first start of the agent's service, or the
+first write or ask call of the person. The committer of an old commit
+does not change. The old review records under `refs/review/` stay where
+they are.
 
 A client keeps a file that the user gave it, such as an attachment, with an
 `add`, `append` or `replace` that has `content` instead of `text`. The
@@ -1081,14 +1136,15 @@ listed, and with `--upstream-tools`, so may the model that answers them. With
 listed repositories through clang. `askai-code` runs under Landlock and
 seccomp unless `--code-unconfined` is set (see Asking clang about C code). An
 session's notes are readable by everyone allowed to call `notes`, including
-anonymous clients if the policy grants it. Each caller writes only its own
-notebook. Tokens cross the network in the clear but over TLS (below), or a
-proxy that ends it. A plugin is code that runs inside `askai` with all of
-`askai`'s rights. Whoever may change the configuration file decides which
-files `askai` loads as plugins. Whoever may change one of those files, or a
-directory above it, decides which code runs. `askai` refuses a
-configuration file or a plugin's file that others than root and `askai`'s user
-may change, or that is in a directory that they may change (below).
+anonymous clients if the policy grants it. Each member writes only its own
+notebook, and a client without a member name writes none. Tokens cross the
+network in the clear but over TLS (below), or a proxy that ends it. A plugin
+is code that runs inside `askai` with all of `askai`'s rights. Whoever may
+change the configuration file decides which files `askai` loads as plugins.
+Whoever may change one of those files, or a directory above it, decides
+which code runs. `askai` refuses a configuration file or a plugin's file
+that others than root and `askai`'s user may change, or that is in a
+directory that they may change (below).
 
 `askai` makes itself non-dumpable as it starts (`PR_SET_DUMPABLE`), before it
 reads any token or key. Other processes of its user cannot read its memory or
@@ -1284,20 +1340,20 @@ on a Unix socket is refused with 400. An identity's calls are one principal of
 the scheduler's, whichever of its tokens they show, and each user of a Unix
 socket is one; anonymous TCP clients are their sessions or addresses, as before.
 The principal of an identity or of a Unix user is also the owner of its tasks,
-jobs, timers and notes branch. `askai` derives it with HMAC-SHA-256 from the
+jobs and timers. `askai` derives it with HMAC-SHA-256 from the
 name of the identity or the uid of the user, keyed with the file
 `askai-journal/principal.key` of the transcripts repository, so it stays the
 same across restarts and in every instance that uses that repository (see
-"Principals and their key" in doc/configuration.md). Notes branches and stored
-jobs from versions of `askai` without the key are no longer anyone's own, but
-stay readable by their selectors. Group names are looked up as the file is
-read, which with a directory service such as SSSD may wait on it. Without those
-four members, `askai`'s own policy applies. With `ASKAI_TOKEN` set, clients
-must send it and may do everything. Else clients on loopback that name it so,
-or on a Unix socket, may do everything, and other clients may call the tools.
-Any of the four members, also with the value `null`, turns `askai`'s own policy
-off, and `askai` then ignores `ASKAI_TOKEN` and logs that. So a file with
-`roles` alone refuses every client.
+"Principals and their key" in doc/configuration.md). Stored jobs from
+versions of `askai` without the key are no longer anyone's own. Group names
+are looked up as the file is read, which with a directory service such as
+SSSD may wait on it. Without those four members, `askai`'s own policy
+applies. With `ASKAI_TOKEN` set, clients must send it and may do everything.
+Else clients on loopback that name it so, or on a Unix socket, may do
+everything, and other clients may call the tools. Any of the four members,
+also with the value `null`, turns `askai`'s own policy off, and `askai` then
+ignores `ASKAI_TOKEN` and logs that. So a file with `roles` alone refuses
+every client.
 
 The member `tools` allows or denies the tools other than `ask_ai`, to
 clients and to the upstream. Its value has one of these forms, which turn

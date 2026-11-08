@@ -504,6 +504,25 @@ struct cli_client_scan {
 	uint64_t             files;          /* 1 if notebook_tool lists note files, else 0 */
 };
 
+/* The action that lists the notebooks of an askai that lists notebooks. */
+static struct cstr_view const cli_client_notebooks = CSTR_VIEW_INIT("notebooks");
+
+/* Returns true if @p name is a notebook selector PARTICIPANT/WHO/SIDE of
+ * an askai that lists notebooks: WHO is anonymous or 16 hexadecimal
+ * digits, and SIDE is client or upstream.
+ */
+static bool
+cli_client_selector (struct cstr_view name)
+{
+	struct cstr_view side = name, participant, who;
+	return cstr_view_cut(&side, '/', &participant) && member_name_valid(participant) &&
+	       cstr_view_cut(&side, '/', &who) &&
+	       (cstr_view_equal(who, CSTR_VIEW("anonymous")) ||
+	        (who.len == 16 && util_is_hex(who.data, who.len))) &&
+	       (cstr_view_equal(side, CSTR_VIEW("client")) ||
+	        cstr_view_equal(side, CSTR_VIEW("upstream")));
+}
+
 /* Parse the notebook selectors in @p text. Append the PARTICIPANT part of
  * each selector to the names array and the selector to the notebooks array
  * of the struct cli_client_scan at @p context.
@@ -523,7 +542,7 @@ cli_client_read_notebooks (struct cstr_view  text,
 		if (cstr_view_ends(line, peer))
 			line.len -= peer.len;
 		struct cstr_view rest = line, name;
-		if (!notes_selector_valid(line) || !cstr_view_cut(&rest, '/', &name))
+		if (!cli_client_selector(line) || !cstr_view_cut(&rest, '/', &name))
 			continue;
 		int e = jb_push(scan->names, cli_client_string(name));
 		if (!e)
@@ -665,7 +684,7 @@ cli_client_discover_books (struct cli_client      *client,
                            struct cli_error       *error)
 {
 	struct json_object *params = jb_object("name", cli_client_string(cstr_view_dstr(&scan->notebook_tool)),
-	                                       "arguments", jb_object("action", jb_string(notes_action_names[NOTES_ACTION_NOTEBOOKS]), nullptr), nullptr);
+	                                       "arguments", jb_object("action", jb_string(cli_client_notebooks), nullptr), nullptr);
 	cli_json_auto listing = nullptr;
 	return cli_client_notes(client, params, "notebook", false, cli_client_read_notebooks, scan,
 	                        &listing, error);
@@ -673,10 +692,10 @@ cli_client_discover_books (struct cli_client      *client,
 
 static bool
 cli_client_has_action (struct json_object *actions,
-                       enum notes_action   action)
+                       struct cstr_view    action)
 {
 	for (size_t i = 0, count = jb_len(actions); i < count; ++i)
-		if (cstr_view_equal(jb_view(json_object_array_get_idx(actions, i)), notes_action_names[action]))
+		if (cstr_view_equal(jb_view(json_object_array_get_idx(actions, i)), action))
 			return true;
 	return false;
 }
@@ -750,7 +769,7 @@ cli_client_scan_notes (struct cli_client_scan *scan,
 	struct cstr_view const session = jb_view(jb_get(meta, "session"));
 	if (!e && session.data)
 		e = cstr_view_store(session, &scan->session);
-	scan->files = jb_get(props, "file") && jb_get(props, "notebook") && cli_client_has_action(actions, NOTES_ACTION_LIST);
+	scan->files = jb_get(props, "file") && jb_get(props, "notebook") && cli_client_has_action(actions, notes_action_names[NOTES_ACTION_LIST]);
 	return e;
 }
 
@@ -772,7 +791,7 @@ cli_client_scan_tool (struct cli_client      *client,
 	struct json_object *actions = jb_get(jb_get(props, "action"), "enum");
 	bool source = jb_true(jb_get(meta, "notebooks"));
 	if (!meta && cstr_view_equal(name, CSTR_VIEW("notes")) && jb_get(props, "notebook"))
-		source |= cli_client_has_action(actions, NOTES_ACTION_NOTEBOOKS);
+		source |= cli_client_has_action(actions, cli_client_notebooks);
 	if (source && !dstr_len(&scan->notebook_tool))
 		e = cli_client_scan_notes(scan, name, meta, props, actions);
 	bool candidate = dstr_len(&client->tool) ? cstr_view_equal(name, cstr_view_dstr(&client->tool))

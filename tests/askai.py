@@ -450,16 +450,32 @@ class Upstream:
         self.server.server_close()
 
 
+def member_name(name):
+    """Whether @p name is a valid member name (src/member.h)."""
+    return re.fullmatch(r"[A-Za-z0-9_.@-]{1,64}", name) is not None and \
+        name[0] not in ".-" and ".." not in name and not name.endswith((".", ".lock")) and \
+        name != "@" and re.fullmatch(r"[A-Za-z][0-9]+", name) is None
+
+
+# The person who runs the tests: the user of a Unix socket, and of
+# ASKAI_TOKEN over TCP under askai's own policy.
+ME = pwd.getpwuid(os.geteuid()).pw_name
+if not member_name(ME):
+    ME = f"uid-{os.geteuid()}"
+
+
 class Askai:
     """An askai process on an ephemeral port; stop() expects a clean exit.
     It serves clients on that many loops, or with loops=None as many as it
     has CPUs. With nofile, it starts with that descriptor limit, soft and
     hard; with preload, with that library preloaded; with ignore, with those
     signals ignored; with default, with those signals at their default
-    action; with data, with that data segment limit."""
+    action; with data, with that data segment limit. With token, it runs
+    with that ASKAI_TOKEN, and post() sends the token unless the headers
+    name another, so that the calls are those of the person ME."""
 
     def __init__(self, binary, *args, loops=4, env=None, nofile=None,
-                 preload=None, ignore=(), default=(), data=None):
+                 preload=None, ignore=(), default=(), data=None, token=None):
         # Background jobs default to private recovery checkpoints. Every
         # independent process gets a private repository; restart tests give
         # an explicit repository shared by their processes.
@@ -467,6 +483,9 @@ class Askai:
         child_env = {k: v for k, v in os.environ.items() if k not in KEY_VARS}
         child_env["XDG_STATE_HOME"] = self.state.name
         child_env["XDG_CACHE_HOME"] = self.state.name
+        self.token = token
+        if token:
+            child_env["ASKAI_TOKEN"] = token
         child_env.update(env or {})
         if preload:
             # A sanitizer runtime insists on coming first otherwise.
@@ -529,7 +548,8 @@ class Askai:
         """(status, Content-Type, text) of a GET, from @p source if given."""
         conn = http.client.HTTPConnection(self.host, self.port, timeout=10,
                                           source_address=source)
-        conn.request("GET", path, headers=headers or {})
+        token = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        conn.request("GET", path, headers=token | (headers or {}))
         response = conn.getresponse()
         text = response.read().decode()
         conn.close()
@@ -577,6 +597,8 @@ class Askai:
         conn = conn or self.connect()
         all_headers = {"Content-Type": "application/json",
                        "Accept": "application/json, text/event-stream"}
+        if self.token:
+            all_headers["Authorization"] = f"Bearer {self.token}"
         all_headers.update(headers or {})
         wire = body if isinstance(body, bytes) else json.dumps(body).encode()
         conn.request("POST", "/mcp", body=wire, headers=all_headers)
@@ -805,9 +827,10 @@ def note_view(data):
             "\u27e6 in the text shows as \u27e6\u27e6.]\n\n" + "".join(out))
 
 
-def note_files(selector, contents, algorithm="sha1"):
-    """Expected current files, with independently computed Git blob identities."""
-    rows = [f"Notebook {selector} — current files (bytes, blob):\n\n"]
+def note_files(book, contents, algorithm="sha1"):
+    """Expected current notes of the notebook @p book, such as "bro (agent)",
+    with independently computed Git blob identities."""
+    rows = [f"Notebook {book}: current notes (bytes, blob):\n\n"]
     for name, data in sorted(contents.items()):
         blob = hashlib.new(algorithm, f"blob {len(data)}\0".encode() + data).hexdigest()
         rows.append(f"{name}  ({len(data)} bytes, {blob})\n")
@@ -836,6 +859,13 @@ def saved(message, commit="[0-9a-f]{40}|[0-9a-f]{64}", stripped=False):
         if re.search(r" to \d+ bytes\)$", message) else ""
     return f"Saved in commit (?:{commit}): " + re.escape(f"{message}.") + previous + \
         re.escape(LEFT_OUT if stripped else "")
+
+
+def copied(name, book, source, target, commit="[0-9a-f]{40}|[0-9a-f]{64}"):
+    """A regular expression for the result of a copy of the note @p name of
+    the notebook @p book at the commit @p source to the note @p target."""
+    return re.escape(f"Copied note {name} of notebook {book} at {source} into your notebook "
+                     f"as {target}. ") + f"Saved in commit (?:{commit})\\."
 
 
 def unchanged_result(name, size, commit, stripped=False):
@@ -893,7 +923,11 @@ def check_legacy_session(binary, up):
                                                  "result": {}}
         _, _, body = ai.rpc("tools/list", headers=hdr)
         tool, = body["result"]["tools"]
-        assert tool["name"] == "ask_ai" and "m" in tool["description"]
+        # Without --agent, the description names the other AI.
+        assert tool["name"] == "ask_ai" and tool["description"] == (
+            "Send a question or a task to the AI model m. The other AI cannot see this "
+            "conversation, your files or your tools. Write a complete prompt. Use the other "
+            "AI for a second opinion, for hard problems, or for knowledge you lack."), tool
         assert tool["inputSchema"]["required"] == ["prompt"]
 
         assert text_of(ai.ask("What is 6*7?")) == "A"
@@ -2633,8 +2667,10 @@ def check_recovery_notes(binary, up):
             subprocess.run(["git", "-C", repo, "-c", "user.name=test", "-c", "user.email=t@t",
                             "commit", "--allow-empty", "-q", "-m", "harmless"], check=True)
             subprocess.run(["git", "init", "--bare", "-q", notes], check=True)
-            selector = "peer/anonymous/upstream"
-            ref = f"refs/heads/notes/{selector}"
+            # The notebook of an agent without a record, as a notebook moved
+            # from the old layout is.
+            selector = "peer (agent)"
+            ref = "refs/heads/agent/peer/notes"
             original = "omit\n" + "".join(f"{i:04}: original note\n" for i in range(500))
             def write_note(text, parent):
                 subprocess.run(["git", "--git-dir", notes, "fast-import", "--quiet",
@@ -2655,7 +2691,7 @@ def check_recovery_notes(binary, up):
                       "name": tool, "arguments": json.dumps(arguments), "status": "completed"}
                      for name, tool, arguments in (
                          ("read", "notes", {"action": "read", "file": "source.md",
-                                           "notebook": selector, "offset": 5}),
+                                           "notebook": "peer", "offset": 5}),
                          ("gate", "git", {"repo": "proj", "command": "diff",
                                           "revisions": ["HEAD", "HEAD"]}))]
             creates, resumes = [], []
@@ -5480,9 +5516,9 @@ def check_allow(binary, up):
                 # The default description of the ask tool, and its argument
                 # thread, follow what the turns get.
                 ask = listed[0]
-                assert ("The other AI can call some tools of this server" in ask["description"],
-                        "The other AI writes notes in the shared session repository" in
-                        ask["description"],
+                assert ("ask_ai can call some tools of this server" in ask["description"],
+                        " ask_ai keeps notes in the session. Each call starts with the notes "
+                        "of ask_ai." in ask["description"],
                         "thread" in ask["inputSchema"]["properties"]) == \
                     (bool(turns), "notes" in turns, "notes" in turns), (tools, ask)
                 if turns and "notes" not in turns:
@@ -5878,12 +5914,12 @@ def check_logs(binary, up):
         # but without its arguments.
         with Askai(binary, "-u", up.url(), "--agent", "ask_ai", "--notes", notes) as ai:
             ai.rpc("tools/call", {"name": "notes", "arguments": {
-                "action": "read", "file": "SECRETFILE", "thread": "x"}})
+                "action": "read", "file": "SECRETFILE"}})
             line = ai.wait_log(r"^tool call notes from anonymous failed ")
             assert re.fullmatch(
-                r'tool call notes from anonymous failed after \d+\.\d s \(85 bytes\); '
-                r'error "The thread argument must be 32 hexadecimal digits\. '
-                r'The notes do not depend on thread\."\n', line), line
+                r'tool call notes from anonymous failed after \d+\.\d s \(111 bytes\); '
+                r'error "You have no notebook, because you have no member name\. Give a '
+                r'name as notebook\. Action members lists the names\."\n', line), line
             assert "SECRETFILE" not in "".join(ai.log), ai.log
 
         # A provider by name, a context of unknown size, and no API key in
@@ -6073,21 +6109,22 @@ def check_logs(binary, up):
         # With --verbose, the line of a client's call of notes has only the
         # size of the text. An ask call logs its start, its turns, the calls
         # of its turns, the notices about its context, its compactions, and
-        # its end with its arguments cut to 200 bytes.
+        # its end with its arguments cut to 200 bytes. The client sends
+        # ASKAI_TOKEN, so that it can write notes.
         with Askai(binary, "-u", up.url(), "--verbose", "--upstream-tools", "--agent", "ask_ai",
                    "--notes",
-                   notes, "--context", "8000") as ai:
+                   notes, "--context", "8000", token="logs-1") as ai:
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
                 "action": "add", "file": "a.md", "text": "NOTETEXT" * 10}})
             assert status == 200 and not body["result"].get("isError"), body
-            ai.wait_log(r'^tool call notes from anonymous answered after \d+\.\d s '
+            ai.wait_log(r'^tool call notes from identity ASKAI_TOKEN answered after \d+\.\d s '
                         r'\(\d+ bytes\); arguments \{"action":"add","file":"a\.md",'
                         r'"text":"\(80 bytes\)"\}$')
             # A data: URI, a file, is shown by its size only, in any argument.
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
                 "action": "add", "file": "b.bin", "content": "data:;base64,SECRETdata"}})
             assert status == 200 and not body["result"].get("isError"), body
-            ai.wait_log(r'^tool call notes from anonymous answered after \d+\.\d s '
+            ai.wait_log(r'^tool call notes from identity ASKAI_TOKEN answered after \d+\.\d s '
                         r'\(\d+ bytes\); arguments \{"action":"add","file":"b\.bin",'
                         r'"content":"\(23 bytes\)"\}$')
             assert not any("SECRET" in line for line in ai.log), ai.log
@@ -6097,11 +6134,11 @@ def check_logs(binary, up):
                    "n": [1, 2.5, True, None, {"k": "v"}, []], "o": {}}
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": odd})
             assert status == 200 and body["result"].get("isError"), body
-            line = ai.wait_log(r"^tool call notes from anonymous failed ")
-            assert line.endswith("; arguments " + json.dumps(odd, separators=(",", ":"),
-                                                             ensure_ascii=False) +
-                                 '; error "The thread argument must be 32 hexadecimal digits. '
-                                 'The notes do not depend on thread."\n'), line
+            line = ai.wait_log(r"^tool call notes from identity ASKAI_TOKEN failed ")
+            assert ("; arguments " + json.dumps(odd, separators=(",", ":"),
+                                                ensure_ascii=False) +
+                    '; error "A note name must be 1 to 255 bytes without control '
+                    'characters.') in line and line.endswith('"...\n'), line
             script[:] = [
                 lambda r: (200, turn_stream([("a", "notes", json.dumps(
                     {"action": "add", "file": "n.md", "text": "NOTETEXT"}))],
@@ -6112,7 +6149,7 @@ def check_logs(binary, up):
                                             used=(7990, 10))),
             ]
             assert ai.ask("x" * 300)["content"][0]["text"] == "A"
-            start = ai.wait_log(r'^ask call \d+\.\d+ from anonymous: prompt 300 '
+            start = ai.wait_log(r'^ask call \d+\.\d+ from identity ASKAI_TOKEN: prompt 300 '
                                 r'bytes, thread [0-9a-f]{32} \(new\), "x{100}"\.\.\.$')
             call = re.escape(re.search(r"ask call (\d+\.\d+)", start).group(1))
             for pattern in (
@@ -6127,7 +6164,7 @@ def check_logs(binary, up):
                     r'turn 4: answered, HTTP 200 after \d+\.\d s, tokens unknown, stop '
                     r'reason "stop", 0 tool calls, 1 byte of text'):
                 ai.wait_log(f"^ask call {call} " + pattern + "$")
-            ai.wait_log(r"^tool call ask_ai from anonymous answered after \d+\.\d s "
+            ai.wait_log(r"^tool call ask_ai from identity ASKAI_TOKEN answered after \d+\.\d s "
                         rf"\(1 byte\); ask call {call}, 4 turns, 3 tool calls; arguments "
                         r'\{"prompt":"x{189}\.\.\.$')
             log = "".join(ai.log)
@@ -6137,7 +6174,7 @@ def check_logs(binary, up):
                                   ('x' * 187, None)):
                 ai.log.clear()
                 ai.ask(prompt)
-                line = ai.wait_log(r"^tool call ask_ai from anonymous answered ")
+                line = ai.wait_log(r"^tool call ask_ai from identity ASKAI_TOKEN answered ")
                 got = line.rstrip("\n").split("; arguments ", 1)[1]
                 assert got == ('{"prompt":"' + "x" * 187 + '"}' if shown is None else
                                '{"prompt":"' + shown + "..."), got
@@ -6170,7 +6207,7 @@ def check_logs(binary, up):
             ai.ask("Q")
             ai.wait_log(r"^ask call \d+\.\d+ turn 1: failed, HTTP 401 after \d+\.\d s, "
                         r"not streamed, \d+ bytes of body$")
-            ai.wait_log(r'^tool call ask_ai from anonymous failed after \d+\.\d s '
+            ai.wait_log(r'^tool call ask_ai from identity ASKAI_TOKEN failed after \d+\.\d s '
                         r'\(\d+ bytes\); ask call \d+\.\d+, 1 turn, 0 tool calls; arguments '
                         r'\{"prompt":"Q"\}; error "Upstream error \(HTTP 401\): no"$')
             # A new thread, a reminder to write notes, and the thread resumed.
@@ -6178,7 +6215,7 @@ def check_logs(binary, up):
                                                      used=(2100, 10)))]
             ai.log.clear()
             ai.ask("Q")
-            start = ai.wait_log(r'^ask call \d+\.\d+ from anonymous: prompt 1 byte, '
+            start = ai.wait_log(r'^ask call \d+\.\d+ from identity ASKAI_TOKEN: prompt 1 byte, '
                                 r'thread [0-9a-f]{32} \(new\), "Q"$')
             call = re.escape(re.search(r"ask call (\S+) ", start).group(1))
             thread = re.search(r"thread (\w{32})", start).group(1)
@@ -6186,7 +6223,7 @@ def check_logs(binary, up):
                         r"8000 tokens: a reminder to write notes$")
             ai.log.clear()
             ai.ask("Q", thread=thread)
-            ai.wait_log(rf'^ask call \d+\.\d+ from anonymous: prompt 1 byte, thread '
+            ai.wait_log(rf'^ask call \d+\.\d+ from identity ASKAI_TOKEN: prompt 1 byte, thread '
                         rf'{thread} \(resumed\), "Q"$')
 
         # Without notes an ask call has no thread. A call that the turns
@@ -6338,21 +6375,23 @@ def check_unix(binary, up):
             assert names(uds_rpc(sock)) == ["ask_ai", "man"]
 
         # Under askai's own policy with ASKAI_TOKEN, a client on the socket
-        # must send the token. Its calls stay those of its Unix user: its
-        # notebook is the one it has without ASKAI_TOKEN. Over TCP, the
-        # token's calls are those of the identity ASKAI_TOKEN.
+        # must send the token. Its calls stay those of its Unix user: the
+        # person is the one it is without ASKAI_TOKEN. Over TCP, the token
+        # proves the user who runs askai, so its calls are those of the same
+        # person.
         uid = os.getuid()
         notes = f"{d}/notes"
-        notebooks = {"name": "notes", "arguments": {"action": "notebooks"}}
+        notebooks = {"name": "notes", "arguments": {"action": "members"}}
 
         def own(reply):
             status, body = reply
             assert status == 200 and not body["result"].get("isError"), reply
-            return re.search(r"^Self \(writable\): (\S+)$", text_of(body["result"]),
+            return re.search(r"^You write as the person (\S+)\. ", text_of(body["result"]),
                              re.M).group(1)
         with Askai(binary, "-u", up.url(), "--agent", "ask_ai", "--notes", notes, "-l",
                    f"unix:{sock}") as ai:
             mine = own(uds_rpc(sock, "tools/call", notebooks))
+            assert mine == ME, mine
         with Askai(binary, "-u", up.url(), "--man", "--agent", "ask_ai", "--notes", notes, "-l",
                    f"unix:{sock}", "--verbose", env={"ASKAI_TOKEN": "s3cret"}) as ai:
             assert names(uds_rpc(sock)) == 401
@@ -6360,7 +6399,7 @@ def check_unix(binary, up):
             assert names(uds_rpc(sock, headers=bearer("s3cret"))) == ["ask_ai", "man", "notes"]
             assert own(uds_rpc(sock, "tools/call", notebooks, headers=bearer("s3cret"))) == mine
             status, _, body = ai.rpc("tools/call", notebooks, headers=bearer("s3cret"))
-            assert own((status, body)) != mine
+            assert own((status, body)) == mine
             assert uds_rpc(sock, "tools/call", {"name": "ask_ai", "arguments": {
                 "prompt": "Q"}}, headers=bearer("s3cret"))[0] == 200
             ai.wait_log(rf"^tool call ask_ai from uid {uid} \(identity ASKAI_TOKEN\) "
@@ -6587,19 +6626,19 @@ def check_principals(binary, up):
     """Principals are HMAC-SHA-256 values keyed with askai-journal/
     principal.key of the transcripts repository. Bit 62 is set for an
     identity and clear for a Unix user, and bit 63 is never set. A Unix
-    user keeps its principal across a restart and in every participant
-    that shares the notes directory, but not with another notes directory.
-    An identity keeps its principal across a reload. The notebook
-    selectors show the principals."""
-    notebooks = {"name": "notes", "arguments": {"action": "notebooks"}}
+    user keeps its principal across a restart and in every service that
+    shares the notes directory, but not with another notes directory. An
+    identity keeps its principal across a reload. The tool test_state of
+    the test plugin, which is built beside askai, shows the principals. No
+    name of a notebook contains a principal."""
+    plugin = os.path.realpath(os.path.join(os.path.dirname(binary), "test_plugin.so"))
+    notebooks = {"name": "test_state", "arguments": {}}
 
     def principal(reply):
         status, body = reply
         assert status == 200 and not body["result"].get("isError"), reply
-        selector = re.search(r"^Self \(writable\): (\S+)$", text_of(body["result"]),
-                             re.M).group(1)
-        hex_digits = selector.split("/")[1]
-        assert re.fullmatch(r"[0-9a-f]{16}", hex_digits), selector
+        hex_digits = re.match(r"principal=(\w+) ", text_of(body["result"])).group(1)
+        assert re.fullmatch(r"[0-9a-f]{16}", hex_digits), body
         return int(hex_digits, 16)
 
     def bearer(token):
@@ -6617,13 +6656,24 @@ def check_principals(binary, up):
         sock = f"{d}/askai.sock"
         notes = f"{d}/notes"
         key = f"{notes}.transcripts.git/askai-journal/principal.key"
+        loaded = f"{d}/plugin.json"
+        with open(loaded, "w") as f:
+            json.dump(grouped({"url": up.url(), "plugins": [plugin]}), f)
 
         def start(participant, *args, directory=notes, env=None):
-            return Askai(binary, "-u", up.url(), "--notes", directory, "--agent",
+            return Askai(binary, "-c", loaded, "--notes", directory, "--agent",
                          participant, "-l", f"unix:{sock}", *args, env=env)
 
         with start("alice"):
             uid = principal(uds_rpc(sock, "tools/call", notebooks))
+            # The notebook of the Unix user is named after the user.
+            status, body = uds_rpc(sock, "tools/call", {"name": "notes", "arguments": {
+                "action": "add", "file": "p.md", "text": "p"}})
+            assert status == 200 and not body["result"].get("isError"), body
+            refs = subprocess.run(["git", "--git-dir", notes, "for-each-ref",
+                                   "--format=%(refname)", "refs/heads/"], check=True,
+                                  capture_output=True, text=True).stdout
+            assert refs == f"refs/heads/person/{ME}/notes\n", refs
         assert uid >> 62 == 0, hex(uid)
         st = os.stat(key)
         assert st.st_size == 32 and st.st_mode & 0o777 == 0o600, st
@@ -6650,7 +6700,8 @@ def check_principals(binary, up):
         # An identity of the file keeps its principal across a reload.
         path = f"{d}/askai.json"
         with open(path, "w") as f:
-            json.dump(grouped({"url": up.url(), "roles": {"a": {"tools": ["notes"]}},
+            json.dump(grouped({"url": up.url(), "roles": {"a": {"tools": ["test_state"]}},
+                               "plugins": [plugin],
                                "identities": {"i": {"role": "a", "tokens": [
                                    "sha256:" + hashlib.sha256(b"t").hexdigest()]}}}), f)
         os.chmod(path, 0o600)
@@ -6683,7 +6734,7 @@ def check_principals(binary, up):
             with open(name, "wb") as f:
                 f.write(data)
             os.chmod(name, mode)
-            run = subprocess.run([binary, "-u", up.url(), "--notes", notes, "--agent",
+            run = subprocess.run([binary, "-c", loaded, "--notes", notes, "--agent",
                                   "alice", "-l", "127.0.0.1:0"],
                                  stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                  timeout=10)
@@ -6696,8 +6747,9 @@ def check_principals(binary, up):
         with start("alice"):
             assert principal(uds_rpc(sock, "tools/call", notebooks)) == uid
     print("principals: HMAC-SHA-256 with the key of the transcripts repository, "
-          "tagged by kind, the same across restarts and participants, an identity's "
-          "across a reload, a bad key or owner seed named: PASS")
+          "tagged by kind, the same across restarts and services, an identity's "
+          "across a reload, a bad key or owner seed named, no principal in the name "
+          "of a notebook: PASS")
 
 
 def tls_files(d, name, kind="ec"):
@@ -11117,11 +11169,13 @@ def check_notes(binary, up):
                                "identities": {
                                    "alice": {"role": "writer", "tokens": [digest("alice-1")]},
                                    "bob": {"role": "writer", "tokens": [digest("bob-1")]},
+                                   "writers": {"role": "writer",
+                                               "tokens": [digest("writers-1")]},
                                    "carol": {"role": "asker", "tokens": [digest("carol-1")]}}}),
                       f)
         os.chmod(path, 0o600)
         with Askai(binary, "-c", path) as ai:
-            def call(arguments, token="alice-1"):
+            def call(arguments, token="alice-1", whole=False):
                 status, _, body = ai.rpc("tools/call", {"name": "notes",
                                                         "arguments": arguments},
                                          headers=auth(token))
@@ -11129,31 +11183,11 @@ def check_notes(binary, up):
                 if "error" in body:
                     return body["error"]["message"]
                 result = body["result"]
+                if whole:
+                    return result
                 assert len(result["content"]) == 1, result
                 return ("!" if result.get("isError") else "") + text_of(result)
 
-            for token, tools in (("alice-1", ["notes"]), ("carol-1", ["ask_ai"])):
-                listed = ai.rpc("tools/list", headers=auth(token))[2]["result"]["tools"]
-                assert [t["name"] for t in listed] == tools, listed
-                if token == "alice-1":
-                    # The session is the ID of the session record.
-                    session = subprocess.run(
-                        ["git", "--git-dir", notes, "log", "-1",
-                         "--format=%(trailers:key=Session,valueonly)", "refs/askai/session"],
-                        check=True, capture_output=True, text=True).stdout.strip()
-                    assert re.fullmatch(r"[0-9a-f]{32}", session), session
-                    assert listed[0]["_meta"]["askai"] == {
-                        "session": session, "participant": "writers", "notebooks": True}, listed
-                else:
-                    assert all("askai" not in t.get("_meta", {}) for t in listed), listed
-            assert call({"action": "list"}, "carol-1") == "Tool not available: notes"
-
-            notebooks = call({"action": "notebooks"})
-            who = re.search(r"Self \(writable\): writers/([0-9a-f]{16})/client",
-                            notebooks).group(1)
-            selector = f"writers/{who}/client"
-            own = f"refs/heads/notes/{selector}"
-            other = f"refs/heads/notes/writers/{who}/upstream"
             git_env = os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null",
                                     "GIT_CONFIG_NOSYSTEM": "1"}
 
@@ -11161,35 +11195,101 @@ def check_notes(binary, up):
                 return subprocess.check_output(["git", "--git-dir", notes, *args],
                                                env=git_env)
 
+            for token, tools in (("alice-1", ["notes"]), ("carol-1", ["ask_ai"])):
+                listed = ai.rpc("tools/list", headers=auth(token))[2]["result"]["tools"]
+                assert [t["name"] for t in listed] == tools, listed
+                if token == "alice-1":
+                    # The session is the ID of the session record.
+                    session = git("log", "-1", "--format=%(trailers:key=Session,valueonly)",
+                                  "refs/askai/session").decode().strip()
+                    assert re.fullmatch(r"[0-9a-f]{32}", session), session
+                    assert listed[0]["_meta"]["askai"] == {
+                        "session": session, "agent": "writers", "members": True}, listed
+                    description = listed[0]["description"]
+                    assert description.startswith(
+                        "Notes are files in notebooks. Each member of this session has one "
+                        "notebook. The notebook has the name of the member. A member is a "
+                        "person or an agent. Your calls write to the notebook of the member "
+                        "that your login or your token names. Action members shows your "
+                        "member name. The notebook of a person can contain text from every "
+                        "client program of the person. You can read every notebook. Every "
+                        "version of a note stays in the history. Prefer small edits."), \
+                        description
+                    props = listed[0]["inputSchema"]["properties"]
+                    assert "thread" not in props and props["notebook"]["description"] == (
+                        "The notebook to read: the name of a member, such as writers. "
+                        "Action members lists the names. The default is your notebook. "
+                        "copy needs notebook."), props
+                    assert "members" in props["action"]["enum"] and \
+                        "notebooks" not in props["action"]["enum"], props
+                else:
+                    assert all("askai" not in t.get("_meta", {}) for t in listed), listed
+            # askai made the repository, the session record and the record
+            # of its agent as it started, and no notebook yet.
+            assert git("for-each-ref", "--format=%(refname)").decode().split() == [
+                "refs/askai/members/writers", "refs/askai/session"]
+            assert git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B",
+                       "refs/askai/members/writers").decode() == \
+                "askai <askai>|writers <askai>|Add the agent writers\n\nKind: agent\n\n"
+            assert call({"action": "list"}, "carol-1") == "Tool not available: notes"
+            # A call that only reads names the member of its login and
+            # writes no record, so the identity is no member yet.
+            result = call({"action": "members"}, whole=True)
+            assert text_of(result) == (
+                "Members of the session notes (name, kind, newest change of the notebook):\n"
+                "writers  agent   no notes yet\n"
+                "You write as the person alice. To read another notebook, give the "
+                "member name as notebook.\n"), result
+            assert result["structuredContent"] == {
+                "you": {"name": "alice", "kind": "person"},
+                "members": [{"name": "writers", "kind": "agent"}]}, result
+            assert git("for-each-ref", "--format=%(refname)").decode().split() == [
+                "refs/askai/members/writers", "refs/askai/session"]
+            own = "refs/heads/person/alice/notes"
+            agent = "refs/heads/agent/writers/notes"
+            book = "alice (person)"
+
             def wrote(said, message, ref=own):
                 """Whether @p said is the result of a write that made the
                 tip of @p ref, with the commit message @p message."""
                 return re.fullmatch(saved(message, git("rev-parse", ref).decode().strip()),
                                     said)
-            # askai made the repository, the session record and the record
-            # of its agent as it started, and no notebook yet.
-            assert git("for-each-ref", "--format=%(refname)").decode().split() == [
-                "refs/askai/members/writers", "refs/askai/session"], notebooks
-            assert git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B",
-                       "refs/askai/members/writers").decode() == \
-                "askai <askai>|writers <askai>|Add the agent writers\n\nKind: agent\n\n"
+            # The notebook of alice does not exist yet. list, history and
+            # search say so without failing. A read fails.
+            for action in ("list", "history"):
+                assert call({"action": action}) == \
+                    "Your notebook alice contains no notes yet.", action
+            assert call({"action": "search", "pattern": "x"}) == \
+                "Your notebook alice contains no notes yet."
+            assert call({"action": "list", "notebook": "writers"}) == \
+                "The notebook writers contains no notes yet."
+            assert call({"action": "read", "file": "x.md"}) == "!" + NO_NOTE
+            assert call({"action": "read", "file": "x.md", "revision": "current"}) == \
+                "!Your notebook alice contains no notes yet."
+            assert not git("for-each-ref", "--format=%(refname)", "refs/askai/members/alice")
+            # The first write of the identity makes the identity a person of
+            # the session, also a write that fails.
             for action in ("replace", "append", "delete"):
                 assert call({"action": action, "file": "missing.md", "text": "x"}) == \
                     "!" + NO_NOTE, action
             assert not git("for-each-ref", "--format=%(refname)", "refs/heads/")
+            assert git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B",
+                       "refs/askai/members/alice").decode() == \
+                "askai <askai>|writers <askai>|Add the person alice\n\nKind: person\n" \
+                "Login: identity alice\n\n"
             said = call({"action": "add", "file": "//plan.md", "text": "step 1"})
             assert wrote(said, 'Add "plan.md" (6 bytes)'), said
-            # The first commit of a notebook has no parent.
+            # The first commit of a notebook has no parent. The author is
+            # the person, the committer is the service, and a client's
+            # commit has no trailer.
             assert len(git("rev-list", "--parents", "-n", "1", own).split()) == 1, own
-            thread = "2" * 32
-            notebooks = call({"action": "notebooks"})
-            assert f"Self (writable): {selector}" in notebooks, notebooks
+            assert git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B", own).decode() == \
+                'alice <person/alice>|writers <askai>|Add "plan.md" (6 bytes)\n\n'
             assert os.path.isfile(f"{notes}/HEAD"), notes
-            assert not os.path.exists(f"{notes}/{who}"), notes
             long = "".join(f"line {i:04}\n" for i in range(800))
-            said = call({"action": "add", "file": "a/b c.md", "text": long, "thread": thread})
+            said = call({"action": "add", "file": "a/b c.md", "text": long})
             assert wrote(said, 'Add "a/b c.md" (8000 bytes)'), said
-            said = call({"action": "add", "file": 'q"\\.txt', "text": "q", "thread": thread})
+            said = call({"action": "add", "file": 'q"\\.txt', "text": "q"})
             assert wrote(said, 'Add "q\\"\\\\.txt" (1 byte)'), said
             for name, why in (("plan.md", "The note already exists"),
                               ("a", "The note name is a directory of notes"),
@@ -11210,131 +11310,138 @@ def check_notes(binary, up):
                               ("a\\.git", "A note name must be"),
                               ("a\tb", "A note name must be"),
                               ("x" * 256, "A note name must be")):
-                said = call({"action": "add", "file": name, "text": "t",
-                             "thread": thread})
+                said = call({"action": "add", "file": name, "text": "t"})
                 assert said.startswith("!" + why), (name, said)
             for text in ("", "x" * ((4 << 20) + 1), "a\0b"):
-                assert call({"action": "add", "file": "t.md", "text": text,
-                             "thread": thread}).startswith("!The text argument"), text
-            said = call({"action": "add", "file": "x" * 255, "text": "t", "thread": thread})
+                assert call({"action": "add", "file": "t.md",
+                             "text": text}).startswith("!The text argument"), text
+            said = call({"action": "add", "file": "x" * 255, "text": "t"})
             assert wrote(said, f'Add "{"x" * 255}" (1 byte)'), said
 
-            listed = call({"action": "list", "thread": thread})
+            listed = call({"action": "list"})
             when = r"\d{4}-\d\d-\d\d \d\d:\d\d UTC"
-            assert listed == note_files(selector, {
+            assert listed == note_files(book, {
                 "plan.md": b"step 1", "a/b c.md": long.encode(),
                 'q"\\.txt': b"q", "x" * 255: b"t"}), listed
+            assert call({"action": "list", "notebook": "alice"}) == listed
             history = call({"action": "history"})
             rows = (("plan.md", "+1 -0", 'Add "plan.md" (6 bytes)'),
                     ("a/b c.md", "+800 -0", 'Add "a/b c.md" (8000 bytes)'),
                     ('q"\\.txt', "+1 -0", 'Add "q\\"\\\\.txt" (1 byte)'),
                     ("x" * 255, "+1 -0", f'Add "{"x" * 255}" (1 byte)'))
             assert re.fullmatch(
-                f"Notebook {selector} — history, oldest first \\(lines \\+added -removed, "
-                "commit, message\\):\n\n" + "".join(
+                f"Notebook {re.escape(book)}: changes, oldest first \\(lines \\+added "
+                "-removed, commit, message\\):\n\n" + "".join(
                     f"{k}\\. {when}  {re.escape(name)}  \\({re.escape(lines)}\\)  commit "
                     f"[0-9a-f]{{40}}  {re.escape(subject)}\n"
                     for k, (name, lines, subject) in enumerate(rows, 1)),
                 history), history
-            assert call({"action": "read", "file": "/plan.md", "thread": thread}) == \
-                "step 1"
-            assert call({"action": "read", "file": 'q"\\.txt', "thread": thread}) == "q"
-            assert call({"action": "read", "file": "a/b c.md", "thread": thread,
-                         "offset": 7990}) == long[7990:]
-            assert call({"action": "read", "file": "a", "thread": thread}) == \
+            assert call({"action": "read", "file": "/plan.md"}) == "step 1"
+            assert call({"action": "read", "file": 'q"\\.txt'}) == "q"
+            assert call({"action": "read", "file": "a/b c.md", "offset": 7990}) == long[7990:]
+            assert call({"action": "read", "file": "a"}) == \
                 "!The note name is a directory of notes. list shows the notes in the " \
                 "directory."
-            assert call({"action": "read", "file": "b", "thread": thread}) == "!" + NO_NOTE
-            assert call({"action": "read", "file": "b", "thread": thread,
-                         "offset": -1}).startswith("!The offset argument")
+            assert call({"action": "read", "file": "b"}) == "!" + NO_NOTE
+            assert call({"action": "read", "file": "b", "offset": -1}).startswith(
+                "!The offset argument")
             # Only list and read take an offset, and the answer of a call
             # that failed is whole.
             said = call({"action": "add", "file": "o.md", "text": "o", "offset": 500})
             assert wrote(said, 'Add "o.md" (1 byte)'), said
-            assert call({"action": "read", "file": "b", "thread": thread,
-                         "offset": 5}) == "!" + NO_NOTE
+            assert call({"action": "read", "file": "b", "offset": 5}) == "!" + NO_NOTE
 
             assert "plan.md" in call({"action": "list"})
             assert call({"action": "read", "file": "plan.md"}) == "step 1"
-            assert call({"action": "list", "thread": "xyz"}).startswith(
-                "!The thread argument must be 32 hexadecimal digits.")
             assert call({"action": "remove"}).startswith("!The action argument must")
+            assert call({"action": "notebooks"}).startswith("!The action argument must be one "
+                                                            "of: add, append, replace, delete, "
+                                                            "restore, members, list,")
             for action in ("add", "read", "diff", "restore"):
                 assert call({"action": action, "text": "x", "file": None}) == "!The file " \
                     "argument is missing. Give the name of a note, such as plan.md.", action
-            # The opposite side's branch is a convenience alias. Its
-            # files share the repository, but an add still writes only to
-            # the caller's own branch.
-            shared = "1" * 32
-            book = notes
+            # The notebook of the agent shares the repository. A client can
+            # read it, but writes only its own notebook.
+            book_git = notes
             now = int(time.time())
-            subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
-                           input=(f"commit {other}\ncommitter askai <askai> "
+            subprocess.run(["git", "--git-dir", book_git, "fast-import", "--quiet"],
+                           input=(f"commit {agent}\ncommitter askai <askai> "
                                   f"{now} +0000\ndata 0\nM 100644 inline found.md\n"
                                   "data 6\nfound\n\n").encode(), check=True, env=git_env)
-            assert call({"action": "list", "thread": shared, "notebook": "other"}) == \
-                note_files(f"writers/{who}/upstream", {"found.md": b"found\n"})
-            assert call({"action": "read", "file": "found.md", "thread": shared,
-                         "notebook": "other"}) == "found\n"
-            assert "found.md" not in call({"action": "list", "thread": shared})
+            assert call({"action": "list", "notebook": "writers"}) == \
+                note_files("writers (agent)", {"found.md": b"found\n"})
+            assert call({"action": "read", "file": "found.md", "notebook": "writers"}) == \
+                "found\n"
+            assert "found.md" not in call({"action": "list"})
             for arguments, why in (
-                    ({"action": "add", "file": "z.md", "text": "z", "notebook": "other"},
-                     "!You can write notes only to your own notebook."),
+                    ({"action": "add", "file": "z.md", "text": "z", "notebook": "writers"},
+                     "!You can write only your notebook, alice."),
                     ({"action": "replace", "file": "found.md", "text": "z",
-                      "notebook": "other"},
-                     "!You can write notes only to your own notebook."),
+                      "notebook": "writers"},
+                     "!You can write only your notebook, alice."),
                     ({"action": "list", "notebook": "theirs"},
-                     "!The notebook contains no notes yet."),
-                    ({"action": "list", "notebook": "a/b"},
-                     "!The notebook argument must be own, a participant's name, or a "
-                     "selector from action notebooks.")):
-                assert call(arguments | {"thread": shared}) == why, (arguments, why)
-            said = call({"action": "add", "file": "mine.md", "text": "m", "thread": shared})
+                     "!No member is named theirs. The members are alice and writers."),
+                    ({"action": "list", "notebook": "own"},
+                     "!No member is named own. The members are alice and writers."),
+                    ({"action": "list", "notebook": "other"},
+                     "!No member is named other. The members are alice and writers."),
+                    ({"action": "list", "notebook": "writers/0123456789abcdef/client"},
+                     "!No member is named writers/0123456789abcdef/client. The members are "
+                     "alice and writers."),
+                    ({"action": "copy", "file": "found.md"},
+                     "!copy needs notebook: the name of the member whose note you copy. "
+                     "Action members lists the names."),
+                    ({"action": "list", "notebook": ""},
+                     "!The notebook argument must be the name of a member. Action members "
+                     "lists the names."),
+                    ({"action": "read", "file": "found.md", "notebook": 7},
+                     "!The notebook argument must be the name of a member. Action members "
+                     "lists the names.")):
+                assert call(arguments) == why, (arguments, why)
+            said = call({"action": "add", "file": "mine.md", "text": "m"})
             assert wrote(said, 'Add "mine.md" (1 byte)'), said
-            assert "mine.md" in call({"action": "list", "thread": thread})
-            assert "mine.md" in call({"action": "list", "thread": shared})
-            assert "mine.md" not in call({"action": "list", "thread": shared,
-                                          "notebook": "other"})
-            assert "found.md" in call({"action": "list", "thread": thread,
-                                       "notebook": "other"})
-            # copy puts a note of the other notebook into the client's, byte
+            assert "mine.md" in call({"action": "list"})
+            assert "mine.md" not in call({"action": "list", "notebook": "writers"})
+            # copy puts a note of another notebook into the client's, byte
             # for byte, without its text in a call: also a file that is not
             # text, which read renders as a byte-preserving view.
             raw = bytes(range(256)) * 3
-            subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
-                           input=(f"commit {other}\ncommitter askai <askai> "
-                                  f"{now} +0000\ndata 0\nfrom {other}^0\n"
+            subprocess.run(["git", "--git-dir", book_git, "fast-import", "--quiet"],
+                           input=(f"commit {agent}\ncommitter askai <askai> "
+                                  f"{now} +0000\ndata 0\nfrom {agent}^0\n"
                                   f"M 100644 inline img/raw.bin\ndata {len(raw)}\n"
                                   ).encode() + raw + b"\n", check=True, env=git_env)
-            assert call({"action": "list", "thread": shared, "notebook": "other"}) == \
-                note_files(f"writers/{who}/upstream",
-                           {"found.md": b"found\n", "img/raw.bin": raw})
-            source = f"from writers/{who}/upstream at {git('rev-parse', other).decode().strip()}"
+            assert call({"action": "list", "notebook": "writers"}) == \
+                note_files("writers (agent)", {"found.md": b"found\n", "img/raw.bin": raw})
+            tip = git("rev-parse", agent).decode().strip()
+            source = f"from the notebook of writers at {tip}"
             for arguments, said in (
-                    ({"file": "found.md"}, f'Copy "found.md" {source} (6 bytes)'),
-                    ({"file": "found.md", "as": "copies/f.md"},
-                     f'Copy "copies/f.md" {source}:found.md (6 bytes)'),
-                    ({"file": "img/raw.bin"}, f'Copy "img/raw.bin" {source} (768 bytes)'),
+                    ({"file": "found.md"}, ("found.md", "found.md")),
+                    ({"file": "found.md", "as": "copies/f.md"}, ("found.md", "copies/f.md")),
+                    ({"file": "img/raw.bin"}, ("img/raw.bin", "img/raw.bin")),
                     ({"file": "found.md"}, "!The note already exists. Change the note with "
                      "replace or append, or choose another name."),
                     ({"file": "none.md"}, "!" + NO_NOTE),
                     ({"file": "found.md", "as": "a//b"}, "!A note name must be"),
                     ({"file": "../x"}, "!A note name must be")):
-                got = call({"action": "copy", "thread": shared} | arguments)
-                assert got.startswith(said) if said[0] == "!" else wrote(got, said), \
-                    (arguments, got)
+                got = call({"action": "copy", "notebook": "writers"} | arguments)
+                if isinstance(said, str):
+                    assert got.startswith(said), (arguments, got)
+                else:
+                    assert re.fullmatch(copied(said[0], "writers", tip, said[1],
+                                               git("rev-parse", own).decode().strip()),
+                                        got), (arguments, got)
             for name in ("found.md", "copies/f.md"):
-                assert call({"action": "read", "file": name, "thread": shared}) == "found\n"
-            assert call({"action": "read", "file": "img/raw.bin", "thread": shared}) == \
-                note_view(raw)
+                assert call({"action": "read", "file": name}) == "found\n"
+            assert call({"action": "read", "file": "img/raw.bin"}) == note_view(raw)
             # A C source in Latin-1, with a string literal whose bytes matter
             # and an escape of C: the view shows each byte, and the copy keeps
             # them.
             latin = b'char *s = "caf\xe9 \xab\x00"; /* \\x41 \xe2\x9f\xa6 */\n'
-            said = call({"action": "add", "file": "legacy.c", "thread": shared,
+            said = call({"action": "add", "file": "legacy.c",
                          "content": "data:;base64," + base64.b64encode(latin).decode()})
             assert wrote(said, 'Add "legacy.c" (36 bytes)'), said
-            view = call({"action": "read", "file": "legacy.c", "thread": shared})
+            view = call({"action": "read", "file": "legacy.c"})
             assert view == note_view(latin) and view.endswith(
                 'char *s = "caf\u27e6E9\u27e7 \u27e6AB\u27e7\u27e600\u27e7"; '
                 '/* \\x41 \u27e6\u27e6 */\n'), view
@@ -11356,14 +11463,13 @@ def check_notes(binary, up):
             for name, uri, size in (("in/blob.bin", "data:application/octet-stream;base64,"
                                      + base64.b64encode(blob).decode(), len(blob)),
                                     ("in/text.md", "data:text/markdown,a%20b%0A", 4)):
-                said = call({"action": "add", "file": name, "thread": shared, "content": uri})
+                said = call({"action": "add", "file": name, "content": uri})
                 assert wrote(said, f'Add "{name}" ({size} bytes)'), said
-            mine = notes
             for name, want in (("in/blob.bin", blob), ("in/text.md", b"a b\n")):
                 assert subprocess.run(["git", "--git-dir", mine, "cat-file", "blob",
                                        f"{own}:{name}"], capture_output=True,
                                       check=True, env=git_env).stdout == want, name
-            assert call({"action": "history", "thread": shared}).count("(binary)") >= 2
+            assert call({"action": "history"}).count("(binary)") >= 2
             big = base64.b64encode(b"x" * ((4 << 20) + 1)).decode()
             for arguments, why in (
                     ({"content": "https://example.com/a.png"},
@@ -11376,23 +11482,43 @@ def check_notes(binary, up):
                      "!Give text or content, not both."),
                     ({"content": "data:;base64," + big},
                      f"!The content file is larger than the limit of {4 << 20} bytes")):
-                said = call({"action": "add", "file": "in/z.bin", "thread": shared}
-                            | arguments)
+                said = call({"action": "add", "file": "in/z.bin"} | arguments)
                 assert said.startswith(why), (arguments, said[:200])
-            # Explicit selectors expose every notebook for reading,
-            # while each authenticated identity still has its own writer.
-            selector = f"writers/{who}/client"
-            books = call({"action": "notebooks"}, "bob-1")
-            assert selector in books, books
-            bob = re.search(r"Self \(writable\): (\S+)\n", books).group(1)
-            assert call({"action": "read", "file": "plan.md",
-                         "notebook": selector}, "bob-1") == "step 1"
+            # A person whose login name is the name of an agent has no member
+            # name, so it reads but cannot write. The name keeps one kind.
+            refused = "Your login name writers is the name of an agent of this " \
+                "session. Ask the operator to rename the agent."
+            assert call({"action": "add", "file": "x.md", "text": "x"}, "writers-1") == \
+                "!" + refused
+            assert call({"action": "list"}, "writers-1") == "!" + refused
+            result = call({"action": "members"}, "writers-1", whole=True)
+            assert text_of(result).endswith(
+                "\nYou have no member name, so you cannot write notes. To read another "
+                "notebook, give the member name as notebook.\n") and \
+                "you" not in result["structuredContent"], result
+            assert call({"action": "read", "file": "found.md", "notebook": "writers"},
+                        "writers-1") == "found\n"
+            assert not git("for-each-ref", "refs/heads/person/writers")
+            # Every notebook can be read by the name of its member, and each
+            # identity writes its own notebook.
+            assert call({"action": "read", "file": "plan.md", "notebook": "alice"},
+                        "bob-1") == "step 1"
             assert call({"action": "add", "file": "forbidden.md", "text": "x",
-                         "notebook": selector}, "bob-1").startswith(
-                             "!You can write notes only to your own notebook.")
+                         "notebook": "alice"}, "bob-1") == \
+                "!You can write only your notebook, bob."
             said = call({"action": "add", "file": "bob.md", "text": "b"}, "bob-1")
-            assert wrote(said, 'Add "bob.md" (1 byte)', f"refs/heads/notes/{bob}"), said
+            assert wrote(said, 'Add "bob.md" (1 byte)', "refs/heads/person/bob/notes"), said
+            assert git("log", "-1", "--format=%an <%ae>", "refs/heads/person/bob/notes") == \
+                b"bob <person/bob>\n"
             assert "bob.md" not in call({"action": "list"})
+            members = call({"action": "members"}, "bob-1")
+            assert re.fullmatch(
+                r"Members of the session notes \(name, kind, newest change of the notebook\):\n"
+                rf"alice    person  {when}  Add \"in/text\.md\" \(4 bytes\)\n"
+                rf"bob      person  {when}  Add \"bob\.md\" \(1 byte\)\n"
+                rf"writers  agent   {when}  \n"
+                r"You write as the person bob\. To read another notebook, give the member "
+                r"name as notebook\.\n", members), members
             # Replacements extend the branch, preserving each previous blob.
             before = git("rev-parse", own).decode().strip()
             said = call({"action": "replace", "file": "plan.md", "text": "step 2\nready"})
@@ -11403,7 +11529,7 @@ def check_notes(binary, up):
             assert call({"action": "read", "file": "plan.md"}) == "step 2\nready"
             listed = call({"action": "list"})
             assert listed.count("plan.md") == 1, listed
-            assert note_files(selector, {"plan.md": b"step 2\nready"}).split("\n\n")[1] \
+            assert note_files(book, {"plan.md": b"step 2\nready"}).split("\n\n")[1] \
                 in listed, listed
             history = call({"action": "history"})
             assert history.count("  plan.md  (") == 2, history
@@ -11445,7 +11571,7 @@ def check_notes(binary, up):
             # search lists the lines of the current notes that match one of
             # the extended regular expressions of pattern, case ignored.
             def searched(book, lines):
-                return f"Notebook {book} — lines that match the pattern " \
+                return f"Notebook {book}: lines that match the pattern " \
                     "(file:line:text):\n\n" + lines
             for arguments, lines in (
                     ({"pattern": "STEP [34]"}, "plan.md:1:step 3\nplan.md:3:step 4\n"),
@@ -11455,26 +11581,19 @@ def check_notes(binary, up):
                     ({"pattern": "nothing here"},
                      "No line of the current notes matches the pattern.\n")):
                 said = call({"action": "search"} | arguments)
-                assert said == searched(selector, lines), said
-            assert call({"action": "search", "pattern": "FOUND", "notebook": "other"}) == \
-                searched(f"writers/{who}/upstream", "found.md:1:found\n")
-            assert call({"action": "search", "pattern": "x", "notebook": "theirs"}) == \
-                "!The notebook contains no notes yet."
+                assert said == searched(book, lines), said
+            assert call({"action": "search", "pattern": "FOUND", "notebook": "writers"}) == \
+                searched("writers (agent)", "found.md:1:found\n")
             said = call({"action": "search", "pattern": "^line 07"})
             assert said.count("\n") == 102 and call({"action": "search", "pattern": "^line 07",
                                                       "offset": 200}) == \
                 said.encode()[200:].decode(), said
-            # A write refuses a name in the form of a notebook selector, and a
-            # read takes it.
-            book = "writers/0123456789abcdef/client"
-            for arguments, why in (
-                    ({"action": "add", "file": book, "text": "x"}, "!A note name cannot be in "
-                     "the form PARTICIPANT/WHO/SIDE of a notebook selector. Writes always go "
-                     "to your own notebook."),
-                    ({"action": "copy", "file": "found.md", "notebook": "other", "as": book},
-                     "!A note name cannot be in the form PARTICIPANT/WHO/SIDE"),
-                    ({"action": "read", "file": book}, "!" + NO_NOTE)):
-                assert call(arguments).startswith(why), arguments
+            # A note name can contain slashes, as the old notebook selectors
+            # do, and is no notebook.
+            selector = "writers/0123456789abcdef/client"
+            said = call({"action": "add", "file": selector, "text": "x"})
+            assert wrote(said, f'Add "{selector}" (1 byte)'), said
+            assert call({"action": "read", "file": selector}) == "x"
             assert call({"action": "search", "pattern": "a\n("}) == "!A line of the pattern " \
                 "is not an extended regular expression."
             for pattern in ("", "a\0b"):
@@ -11499,7 +11618,8 @@ def check_notes(binary, up):
             said = call({"action": "replace", "file": "legacy.c", "content": "data:,"})
             assert kept(said, '"legacy.c"', 0), said
             # Each commit message is one line: the action, the name as the
-            # fast-import file part quotes it, and the sizes.
+            # fast-import file part quotes it, and the sizes. A copy names
+            # the notebook of the member that it copies.
             subjects = git("log", "--reverse", "--format=%s", own).decode().splitlines()
             assert subjects == [
                 'Add "plan.md" (6 bytes)', 'Add "a/b c.md" (8000 bytes)',
@@ -11510,14 +11630,15 @@ def check_notes(binary, up):
                 f'Copy "img/raw.bin" {source} (768 bytes)', 'Add "legacy.c" (36 bytes)',
                 'Add "in/blob.bin" (16388 bytes)', 'Add "in/text.md" (4 bytes)',
                 'Replace "plan.md" (6 to 12 bytes)', 'Replace "plan.md" (12 to 12 bytes)',
-                'Append "plan.md" (12 to 19 bytes)',
+                'Append "plan.md" (12 to 19 bytes)', f'Add "{selector}" (1 byte)',
                 'Replace "legacy.c" (36 to 5 bytes)', 'Replace "legacy.c" (5 to 0 bytes)'], \
                 subjects
             assert git("cat-file", "commit", own).endswith(
                 b'\n\nReplace "legacy.c" (5 to 0 bytes)\n')
-            # The committer is the notebook's selector.
-            assert git("log", "-1", "--format=%cn <%ce>", own) == f"{selector} <askai>\n".encode()
-        # When two adds to one thread run at once, one of them fails, and its
+            # The committer is the service, and the author the person.
+            assert git("log", "-1", "--format=%an <%ae>|%cn <%ce>", own) == \
+                b"alice <person/alice>|writers <askai>\n"
+        # When two adds to one notebook run at once, one of them fails, and its
         # answer asks to add the note again. A git that sleeps before
         # fast-import makes both adds check the same newest note.
         os.mkdir(f"{d}/bin")
@@ -11530,7 +11651,7 @@ def check_notes(binary, up):
             for k in range(3):
                 said = []
                 adds = [threading.Thread(target=lambda name=name: said.append(call(
-                    {"action": "add", "file": name, "text": "r", "thread": thread})))
+                    {"action": "add", "file": name, "text": "r"})))
                     for name in (f"race/{k}a.md", f"race/{k}b.md")]
                 for add in adds:
                     add.start()
@@ -11560,12 +11681,12 @@ def check_notes(binary, up):
             # An add whose client goes while git writes still adds the note.
             sock = socket.create_connection(("127.0.0.1", ai.port), 10)
             sock.sendall(rpc_request(1, {"name": "notes", "arguments": {
-                "action": "add", "file": "dropped.md", "text": "d",
-                "thread": thread}}, "tools/call", headers=auth("alice-1")))
+                "action": "add", "file": "dropped.md", "text": "d"}}, "tools/call",
+                headers=auth("alice-1")))
             time.sleep(0.2)
             sock.close()
             time.sleep(1)
-            assert "dropped.md" in call({"action": "list", "thread": thread})
+            assert "dropped.md" in call({"action": "list"})
             # An old lock can still belong to another process using this
             # shared repository. Age alone must not authorize deleting it,
             # but the answer says how long the notebook has been locked.
@@ -11574,9 +11695,8 @@ def check_notes(binary, up):
                 with open(f"{book}/{lock}", "w"):
                     pass
                 os.utime(f"{book}/{lock}", (time.time() - 120,) * 2)
-            said = call({"action": "add", "file": "unlocked.md", "text": "u",
-                         "thread": thread})
-            assert re.fullmatch(r"!Could not write the note\. The notebook has been "
+            said = call({"action": "add", "file": "unlocked.md", "text": "u"})
+            assert re.fullmatch(r"!Could not write the note\. Your notebook alice has been "
                                 r"locked for 1[2-3]\d s\.", said), said
             assert any(f"{own}.lock is " in line for line in ai.log), ai.log
             for lock in ("HEAD.lock", f"{own}.lock"):
@@ -11585,7 +11705,7 @@ def check_notes(binary, up):
             # crash leaves one: the next write removes it.
             boot = time.time() - time.clock_gettime(time.CLOCK_BOOTTIME)
             os.utime(f"{book}/{own}.lock", (boot - 120,) * 2)
-            said = call({"action": "add", "file": "unlocked.md", "text": "u", "thread": thread})
+            said = call({"action": "add", "file": "unlocked.md", "text": "u"})
             assert wrote(said, 'Add "unlocked.md" (1 byte)'), said
             assert not os.path.exists(f"{book}/{own}.lock")
             assert os.path.exists(f"{book}/HEAD.lock")
@@ -11596,23 +11716,28 @@ def check_notes(binary, up):
         with Askai(binary, "-c", path, ignore=(signal.SIGCHLD,)) as ai:
             said = call({"action": "add", "file": "y.md", "text": "y"})
             assert wrote(said, 'Add "y.md" (1 byte)'), said
-    print("notes: shared repository, separate identity branches, discovery, "
-          "read-only cross-notebook access, versioned files, copy, binary data, "
-          "offsets, races, drops, preservation of external locks and removal of "
+    print("notes: one notebook per member, members and their kinds, reads of every "
+          "notebook by member name, author and committer, versioned files, copy, binary "
+          "data, offsets, races, drops, preservation of external locks and removal of "
           "locks from before the boot: PASS")
 
 
 def check_shared_notes(binary, up):
-    """Independent instances use one repository as their session, including
-    a normal working repository; discovery crosses participant branches,
-    but writing and copying always update only the caller's own branch."""
-    def call(ai, **arguments):
-        status, _, body = ai.rpc("tools/call", {"name": "notes",
-                                               "arguments": arguments})
+    """Independent services use one repository as their session, including
+    a normal working repository. Each member writes only its own notebook,
+    through every service, and reads every notebook by the name of its
+    member."""
+    def digest(token):
+        return "sha256:" + hashlib.sha256(token.encode()).hexdigest()
+
+    def call(ai, person, **arguments):
+        status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": arguments},
+                                 headers={"Authorization": f"Bearer {person}-1"})
         assert status == 200 and "result" in body, (status, body)
         result = body["result"]
         return ("!" if result.get("isError") else "") + text_of(result)
 
+    when = r"\d{4}-\d\d-\d\d \d\d:\d\d UTC"
     for working, object_format in ((False, "sha1"), (True, "sha1"), (True, "sha256")):
         with tempfile.TemporaryDirectory() as d:
             repo = f"{d}/session"
@@ -11621,9 +11746,18 @@ def check_shared_notes(binary, up):
             def git(*args):
                 return subprocess.run(["git", "-C", repo, *args], check=True,
                                       capture_output=True, text=True).stdout
-            with Askai(binary, "-u", up.url(), "--notes", repo,
+            def tip(person):
+                return git("rev-parse", f"refs/heads/person/{person}/notes").strip()
+            path = f"{d}/askai.json"
+            with open(path, "w") as f:
+                json.dump({"roles": {"writer": {"tools": ["notes"]}},
+                           "identities": {
+                               "ann": {"role": "writer", "tokens": [digest("ann-1")]},
+                               "ben": {"role": "writer", "tokens": [digest("ben-1")]}}}, f)
+            os.chmod(path, 0o600)
+            with Askai(binary, "-c", path, "-u", up.url(), "--notes", repo,
                        "--agent", "alice") as alice, \
-                    Askai(binary, "-u", up.url(), "--notes", repo,
+                    Askai(binary, "-c", path, "-u", up.url(), "--notes", repo,
                           "--agent", "bob") as bob:
                 # The services joined one session, and each agent has a
                 # member record.
@@ -11634,111 +11768,145 @@ def check_shared_notes(binary, up):
                     "Create the session session\n\nSession: ")
                 assert "\nName: session\nFormat: 1\n" in git("log", "-1", "--format=%B",
                                                               "refs/askai/session")
-                sessions = {next(t for t in ai.rpc("tools/list")[2]["result"]["tools"]
+                sessions = {next(t for t in ai.rpc("tools/list", headers={
+                    "Authorization": "Bearer ann-1"})[2]["result"]["tools"]
                                  if t["name"] == "notes")["_meta"]["askai"]["session"]
                             for ai in (alice, bob)}
                 assert len(sessions) == 1 and \
                     f"Session: {next(iter(sessions))}\n" in git(
                         "log", "-1", "--format=%B", "refs/askai/session"), sessions
                 said = {}
-                def add(name, ai):
-                    said[name] = call(ai, action="add", file="plan.md", text=name)
-                threads = [threading.Thread(target=add, args=(name, ai))
-                           for name, ai in (("alice", alice), ("bob", bob))]
+                def add(person, ai):
+                    said[person] = call(ai, person, action="add", file="plan.md", text=person)
+                threads = [threading.Thread(target=add, args=(person, ai))
+                           for person, ai in (("ann", alice), ("ben", bob))]
                 for thread in threads:
                     thread.start()
                 for thread in threads:
                     thread.join(10)
-                assert said.keys() == {"alice", "bob"}, said
-                def wrote(said, name, message):
-                    tip = git("rev-parse", f"refs/heads/notes/{name}/anonymous/client").strip()
-                    return re.fullmatch(saved(message, tip), said)
-                for name, ai in (("alice", alice), ("bob", bob)):
+                assert said.keys() == {"ann", "ben"}, said
+                def wrote(said, person, message):
+                    return re.fullmatch(saved(message, tip(person)), said)
+                for person, ai in (("ann", alice), ("ben", bob)):
                     # Distinct branch transactions can still contend on a
                     # repository-wide lock; the reported retry is safe.
-                    if "retry" in said[name]:
-                        said[name] = call(ai, action="add", file="plan.md", text=name)
-                    assert wrote(said[name], name, f'Add "plan.md" ({len(name)} bytes)'), said
-                for name, ai in (("alice", alice), ("bob", bob)):
-                    assert call(ai, action="read", file="plan.md") == name
-                    notebooks = call(ai, action="notebooks")
-                    assert "alice/anonymous/client" in notebooks and \
-                        "bob/anonymous/client" in notebooks, notebooks
-                    assert f"Self (writable): {name}/anonymous/client\n" in notebooks, notebooks
-                    peer = "bob" if name == "alice" else "alice"
-                    selector = f"{peer}/anonymous/client"
-                    assert f"{selector} (read-only)\n" in notebooks, notebooks
-                    assert call(ai, action="read", file="plan.md", notebook=selector) == peer
-                    # A participant's name selects its notebook under the
-                    # caller's principal and side.
-                    assert call(ai, action="read", file="plan.md", notebook=peer) == peer
-                    assert call(ai, action="add", file="overwrite.md", text="no",
-                                notebook=selector).startswith(
-                                    "!You can write notes only to your own notebook.")
-                    copied = call(ai, action="copy", file="plan.md", notebook=peer,
+                    if "retry" in said[person]:
+                        said[person] = call(ai, person, action="add", file="plan.md",
+                                            text=person)
+                    assert wrote(said[person], person, 'Add "plan.md" (3 bytes)'), said
+                # Each service lists the same members: the persons of the
+                # calls and the agents of the services.
+                for person, ai in (("ann", alice), ("ben", bob)):
+                    members = call(ai, person, action="members")
+                    assert re.fullmatch(
+                        r"Members of the session session \(name, kind, newest change of the "
+                        r"notebook\):\n"
+                        rf"ann    person  {when}  Add \"plan\.md\" \(3 bytes\)\n"
+                        rf"ben    person  {when}  Add \"plan\.md\" \(3 bytes\)\n"
+                        r"alice  agent   no notes yet\n"
+                        r"bob    agent   no notes yet\n"
+                        rf"You write as the person {person}\. To read another notebook, give "
+                        r"the member name as notebook\.\n", members), members
+                for person, peer, ai in (("ann", "ben", alice), ("ben", "ann", bob)):
+                    assert call(ai, person, action="read", file="plan.md") == person
+                    assert call(ai, person, action="read", file="plan.md",
+                                notebook=peer) == peer
+                    assert call(ai, person, action="add", file="overwrite.md", text="no",
+                                notebook=peer) == f"!You can write only your notebook, {person}."
+                    result = call(ai, person, action="copy", file="plan.md", notebook=peer,
                                   **{"as": "peer.md"})
-                    source = git("rev-parse", f"refs/heads/notes/{selector}").strip()
-                    assert wrote(copied, name, f'Copy "peer.md" from {selector} at '
-                                 f'{source}:plan.md ({len(peer)} bytes)'), copied
-                    assert call(ai, action="read", file="peer.md") == peer
-                    assert call(ai, action="list") == note_files(
-                        f"{name}/anonymous/client", {"plan.md": name.encode(),
-                                                     "peer.md": peer.encode()},
+                    source = tip(peer)
+                    assert re.fullmatch(copied("plan.md", peer, source, "peer.md",
+                                               tip(person)), result), result
+                    assert git("log", "-1", "--format=%s|%an <%ae>",
+                               f"refs/heads/person/{person}/notes") == \
+                        f'Copy "peer.md" from the notebook of {peer} at {source}:plan.md ' \
+                        f"(3 bytes)|{person} <person/{person}>\n"
+                    assert call(ai, person, action="read", file="peer.md") == peer
+                    assert call(ai, person, action="list") == note_files(
+                        f"{person} (person)", {"plan.md": person.encode(),
+                                               "peer.md": peer.encode()},
                         object_format)
-                    assert call(ai, action="read", file="plan.md", notebook="../HEAD").startswith("!")
+                    assert call(ai, person, action="read", file="plan.md",
+                                notebook="../HEAD").startswith("!No member is named ../HEAD.")
+                # A person writes one notebook through every service. The
+                # committer is the service.
+                said = call(bob, "ann", action="add", file="via-bob.md", text="b")
+                assert wrote(said, "ann", 'Add "via-bob.md" (1 byte)'), said
+                assert git("log", "-1", "--format=%an <%ae>|%cn <%ce>",
+                           "refs/heads/person/ann/notes") == \
+                    "ann <person/ann>|bob <askai>\n"
+                assert call(alice, "ann", action="read", file="via-bob.md") == "b"
                 branches = set(git("for-each-ref", "--format=%(refname)",
-                                   "refs/heads/notes/").splitlines())
-                assert branches == {f"refs/heads/notes/{name}/anonymous/client"
-                                    for name in ("alice", "bob")}, branches
-                git("update-ref", b"refs/heads/notes/foreign/anonymous/client\xff",
-                    git("rev-parse", "refs/heads/notes/alice/anonymous/client").strip())
+                                   "refs/heads/").splitlines())
+                assert branches == {f"refs/heads/person/{person}/notes"
+                                    for person in ("ann", "ben")}, branches
+                git("update-ref", b"refs/heads/person/foreign\xff/notes",
+                    tip("ann"))
                 git("pack-refs", "--all")
-                for ai in (alice, bob):
-                    notebooks = call(ai, action="notebooks")
-                    assert "foreign/anonymous/client" not in notebooks, notebooks
-                added = call(alice, action="add", file="after-pack.md", text="packed")
-                assert wrote(added, "alice", 'Add "after-pack.md" (6 bytes)'), added
-                assert call(bob, action="read", file="after-pack.md",
-                            notebook="alice/anonymous/client") == "packed"
-                git("worktree", "add", "--quiet", f"{d}/alice-worktree",
-                    "notes/alice/anonymous/client")
-                with open(f"{d}/alice-worktree/plan.md") as f:
-                    assert f.read() == "alice"
-                with open(f"{d}/alice-worktree/peer.md") as f:
-                    assert f.read() == "bob"
+                for person, ai in (("ann", alice), ("ben", bob)):
+                    members = call(ai, person, action="members")
+                    assert "foreign" not in members, members
+                added = call(alice, "ann", action="add", file="after-pack.md", text="packed")
+                assert wrote(added, "ann", 'Add "after-pack.md" (6 bytes)'), added
+                assert call(bob, "ben", action="read", file="after-pack.md",
+                            notebook="ann") == "packed"
+                git("worktree", "add", "--quiet", f"{d}/ann-worktree", "person/ann/notes")
+                with open(f"{d}/ann-worktree/plan.md") as f:
+                    assert f.read() == "ann"
+                with open(f"{d}/ann-worktree/peer.md") as f:
+                    assert f.read() == "ben"
                 for name, value in (("manual-one.md", "first manual note"),
                                     ("manual-two.md", "second manual note")):
-                    with open(f"{d}/alice-worktree/{name}", "w") as f:
+                    with open(f"{d}/ann-worktree/{name}", "w") as f:
                         f.write(value)
-                git("-C", f"{d}/alice-worktree", "add", "manual-one.md", "manual-two.md")
-                git("-C", f"{d}/alice-worktree", "-c", "user.name=test", "-c", "user.email=t@t",
+                git("-C", f"{d}/ann-worktree", "add", "manual-one.md", "manual-two.md")
+                git("-C", f"{d}/ann-worktree", "-c", "user.name=test", "-c", "user.email=t@t",
                     "commit", "-q", "-m", "Two notes from a worktree")
-                manual = git("rev-parse", "refs/heads/notes/alice/anonymous/client").strip()
-                history = call(bob, action="history", notebook="alice/anonymous/client")
+                manual = tip("ann")
+                history = call(bob, "ben", action="history", notebook="ann")
+                assert history.startswith("Notebook ann (person): changes, oldest first"), \
+                    history
                 assert history.count(manual) == 2, history
                 assert history.count(f"{manual}  Two notes from a worktree\n") == 2, history
                 assert all(name in history for name in ("manual-one.md", "manual-two.md")), history
-                listed = call(bob, action="list", notebook="alice/anonymous/client")
+                listed = call(bob, "ben", action="list", notebook="ann")
                 assert all(name in listed for name in ("plan.md", "manual-one.md", "manual-two.md")), listed
-                assert call(alice, action="read", file="manual-one.md") == "first manual note"
-                assert call(bob, action="read", file="manual-two.md",
-                            notebook="alice/anonymous/client") == "second manual note"
+                assert call(alice, "ann", action="read", file="manual-one.md") == \
+                    "first manual note"
+                assert call(bob, "ben", action="read", file="manual-two.md",
+                            notebook="ann") == "second manual note"
                 # A commit with an empty message ends its row at its id.
-                with open(f"{d}/alice-worktree/manual-two.md", "a") as f:
+                with open(f"{d}/ann-worktree/manual-two.md", "a") as f:
                     f.write(", changed")
-                git("-C", f"{d}/alice-worktree", "-c", "user.name=test", "-c", "user.email=t@t",
+                git("-C", f"{d}/ann-worktree", "-c", "user.name=test", "-c", "user.email=t@t",
                     "commit", "-q", "-a", "--allow-empty-message", "-m", "")
-                silent = git("rev-parse", "refs/heads/notes/alice/anonymous/client").strip()
-                history = call(bob, action="history", notebook="alice/anonymous/client")
+                silent = tip("ann")
+                history = call(bob, "ben", action="history", notebook="ann")
                 assert history.endswith(f"  manual-two.md  (+1 -1)  commit {silent}\n"), history
             # Restarting does not mint another notebook or lose its notes,
-            # and the agent adopts its record.
+            # and the agent and the persons keep their records.
             records = git("for-each-ref", "refs/askai/")
-            with Askai(binary, "-u", up.url(), "--notes", repo,
+            assert "refs/askai/members/ann\n" in records and \
+                "refs/askai/members/ben\n" in records, records
+            # A notebook of the old layout stays where it is, and the report
+            # counts it. The operator moves it with git update-ref, and the
+            # moved notebook names a member without a record.
+            old = "refs/heads/notes/carl/172b86b746968586/upstream"
+            git("update-ref", old, tip("ben"))
+            with Askai(binary, "-c", path, "-u", up.url(), "--notes", repo,
                        "--agent", "alice") as ai:
-                assert call(ai, action="read", file="plan.md") == "alice"
-                assert call(ai, action="read", file="plan.md",
-                            notebook="bob/anonymous/client") == "bob"
+                assert ai.listed("session:")[-1] == \
+                    "legacy      1 notebook under refs/heads/notes/", ai.log
+                assert call(ai, "ann", action="read", file="plan.md") == "ann"
+                assert call(ai, "ann", action="read", file="plan.md", notebook="ben") == "ben"
+                assert "carl" not in call(ai, "ann", action="members")
+                assert call(ai, "ann", action="list", notebook="carl") == "!No member is " \
+                    "named carl. The members are ann, ben, alice and bob."
+                git("update-ref", "refs/heads/agent/carl/notes", old)
+                assert call(ai, "ann", action="read", file="plan.md", notebook="carl") == "ben"
+                assert re.search(rf"^carl   agent   {when}  ",
+                                 call(ai, "ann", action="members"), re.M)
             assert git("for-each-ref", "refs/askai/") == records
             # An agent cannot take the name of a person.
             subprocess.run(["git", "-C", repo, "fast-import", "--quiet"], check=True,
@@ -11750,14 +11918,74 @@ def check_shared_notes(binary, up):
                                  capture_output=True, text=True, timeout=10)
             assert run.returncode == 1 and run.stderr == f"--notes: {repo}: agent carol: the " \
                 "name carol belongs to the person with login uid 4343 in this session\n", run
-    print("shared notes: two instances, bare and working repositories, one session with "
-          "a member record for each agent, branch isolation, discovery, cross-participant "
-          "copy, packed refs and worktrees: PASS")
+            if working:
+                continue
+            # An identity with "agent": true is an agent. It writes its own
+            # agent notebook, and the turns of its ask calls name it. An
+            # agent identity of the name of the agent of a service is
+            # refused.
+            path = f"{d}/agents.json"
+            with open(path, "w") as f:
+                json.dump({"roles": {"agent": {"tools": ["notes", "ask_ai"]}},
+                           "identities": {
+                               "claude": {"role": "agent", "agent": True,
+                                          "tokens": [digest("claude-1")]},
+                               "alice": {"role": "agent", "agent": True,
+                                         "tokens": [digest("alice-1")]}}}, f)
+            os.chmod(path, 0o600)
+            held = up.reply
+            bodies = []
+            script = [lambda r: (200, turn_stream([("n", "notes", json.dumps(
+                          {"action": "add", "file": "turn.md", "text": "T"}))])),
+                      lambda r: (200, turn_stream(text="A"))]
+            def reply(request):
+                bodies.append(json.dumps(request["body"]))
+                return script.pop(0)(request) if script else (200, turn_stream(text="A"))
+            up.reply = reply
+            try:
+                with Askai(binary, "-c", path, "-u", up.url(), "--upstream-tools", "--notes",
+                           repo, "--agent", "cuh") as cuh:
+                    said = call(cuh, "claude", action="add", file="mine.md", text="C")
+                    mine = git("rev-parse", "refs/heads/agent/claude/notes").strip()
+                    assert re.fullmatch(saved('Add "mine.md" (1 byte)', mine), said), said
+                    assert git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B",
+                               "refs/heads/agent/claude/notes") == \
+                        'claude <agent/claude>|cuh <askai>|Add "mine.md" (1 byte)\n\n'
+                    assert "Kind: agent\nLogin: identity claude\n" in git(
+                        "log", "-1", "--format=%B", "refs/askai/members/claude")
+                    members = call(cuh, "claude", action="members")
+                    assert re.search(rf'^claude  agent   {when}  Add "mine\.md" \(1 byte\)$',
+                                     members, re.M), members
+                    assert members.endswith("\nYou write as the agent claude. To read another "
+                                            "notebook, give the member name as notebook.\n"), \
+                        members
+                    assert call(cuh, "alice", action="add", file="x.md", text="x") == \
+                        "!Your login name alice is the name of another agent of this session."
+                    assert "Login:" not in git("log", "-1", "--format=%B",
+                                               "refs/askai/members/alice")
+                    status, _, body = cuh.rpc("tools/call", {"name": "ask_ai", "arguments": {
+                        "prompt": "Q"}}, headers={"Authorization": "Bearer claude-1"})
+                    assert status == 200 and body["result"]["content"][0]["text"] == "A", \
+                        body
+                    assert "[askai: You are the agent cuh. The agent claude made this ask " \
+                        "call.]" in bodies[0], bodies[0]
+                    message = git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B",
+                                  "refs/heads/agent/cuh/notes")
+                    assert re.fullmatch(r'cuh <agent/cuh>\|cuh <askai>\|Add "turn\.md" \(2 '
+                                        r"bytes\)\n\nAsk: [0-9a-f]{32}\nConversation: "
+                                        r"[0-9a-f]{32}\nAsked-by: claude\n\n", message), message
+            finally:
+                up.reply = held
+    print("shared notes: two services, bare and working repositories, one session with "
+          "a member record for each agent and person, one notebook per person on every "
+          "service, reads by member name, copies that name the source member, packed "
+          "refs and worktrees, agent identities: PASS")
 
 
 def check_notes_history(binary, up):
-    """Agents can inspect and restore old notes without losing newer history;
-    a revision belongs to the selected notebook, not merely its repository."""
+    """Members can inspect and restore old notes without losing newer
+    history; a revision belongs to the selected notebook, not merely its
+    repository."""
     def call(ai, **arguments):
         status, _, body = ai.rpc("tools/call", {"name": "notes",
                                                "arguments": arguments})
@@ -11786,8 +12014,8 @@ def check_notes_history(binary, up):
                 return subprocess.run(["git", "--git-dir", repo, *args], input=data,
                                       capture_output=True, check=True, env=env).stdout
 
-            selector = "alice/anonymous/client"
-            own = f"refs/heads/notes/{selector}"
+            book = f"{ME} (person)"
+            own = f"refs/heads/person/{ME}/notes"
 
             def tip(ref=own):
                 return git("rev-parse", ref).decode().strip()
@@ -11796,7 +12024,7 @@ def check_notes_history(binary, up):
                 return re.fullmatch(saved(message, tip(ref)), said)
 
             with Askai(binary, "-u", up.url(), "--notes", repo,
-                       "--agent", "alice", "--upstream-tools",
+                       "--agent", "alice", "--upstream-tools", token="history-1",
                        env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as alice, \
                     Askai(binary, "-u", up.url(), "--notes", repo,
                           "--agent", "bob") as bob:
@@ -11819,7 +12047,7 @@ def check_notes_history(binary, up):
                                             ("current", "new plan\n")):
                     actual = call(alice, action="read", file="plan.md", revision=revision)
                     oid = third if revision == "current" else revision
-                    assert actual == f"Notebook {selector} — plan.md at {oid}:\n\n" + expected, actual
+                    assert actual == f"Notebook {book}: plan.md at {oid}:\n\n" + expected, actual
                 old = call(alice, action="read", file="plan.md", revision=first)
                 assert call(alice, action="read", file="plan.md", revision=first,
                             offset=4) == old[4:]
@@ -11836,20 +12064,25 @@ def check_notes_history(binary, up):
                                  **{"from": first, "to": first})
                 assert not unchanged.startswith("!") and "@@" not in unchanged, unchanged
 
-                # Selecting a peer permits its history and blobs, never its writes.
+                # Selecting a peer permits its history and blobs, never its
+                # writes. A client without a member name writes nothing.
                 assert call(bob, action="read", file="plan.md", revision=first,
-                            notebook=selector) == old
-                peer_diff = call(bob, action="diff", file="plan.md", notebook=selector,
+                            notebook=ME) == old
+                peer_diff = call(bob, action="diff", file="plan.md", notebook=ME,
                                  **{"from": first, "to": second})
                 assert not peer_diff.startswith("!") and \
                     peer_diff.split("\n\n", 1)[1] == diff.split("\n\n", 1)[1], peer_diff
-                assert call(bob, action="restore", file="plan.md", revision=first,
-                            notebook=selector).startswith(
-                                "!You can write notes only to your own notebook.")
-                said = call(bob, action="add", file="plan.md", text="foreign note")
-                assert wrote(said, 'Add "plan.md" (12 bytes)',
-                             "refs/heads/notes/bob/anonymous/client"), said
-                foreign = tip("refs/heads/notes/bob/anonymous/client")
+                for arguments in ({"notebook": ME}, {}):
+                    assert call(bob, action="restore", file="plan.md", revision=first,
+                                **arguments) == "!Writing notes needs a member name. Connect " \
+                        "through the Unix socket, or with the token of an identity."
+                assert call(bob, action="read", file="plan.md") == "!You have no notebook, " \
+                    "because you have no member name. Give a name as notebook. Action " \
+                    "members lists the names."
+                git("fast-import", "--quiet", "--date-format=now", data=(
+                    "commit refs/heads/agent/bob/notes\ncommitter test <t@t> now\n"
+                    "data 0\nM 100644 inline plan.md\ndata 12\nforeign note\n").encode())
+                foreign = tip("refs/heads/agent/bob/notes")
                 stash = git("commit-tree", f"{own}^{{tree}}", "-p", third,
                             data=b"unpublished saved work\n").decode().strip()
                 git("update-ref", "refs/stash", stash)
@@ -11987,7 +12220,7 @@ def check_notes_history(binary, up):
                     '\n\npäivä.md:1:hei\nq"\\.md:1:hei\n')
                 if object_format == "sha1":
                     # Exercise the model-facing workflow and its own writer too.
-                    upstream = "refs/heads/notes/alice/anonymous/upstream"
+                    upstream = "refs/heads/agent/alice/notes"
                     git("update-ref", upstream, second)
                     before = tip()
                     actions = [{"action": "history", "file": "plan.md"},
@@ -12020,6 +12253,19 @@ def check_notes_history(binary, up):
                                  upstream), outputs
                     assert tip() == before and tip(f"{upstream}^") == second
                     assert git("show", f"{upstream}:plan.md") == b"old plan\n"
+                    # The agent writes its own notebook. The commit names the
+                    # ask call, the conversation and the person who asked,
+                    # and history prints the asker.
+                    message = git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B",
+                                  upstream).decode()
+                    assert re.fullmatch(
+                        rf'alice <agent/alice>\|alice <askai>\|Restore "plan\.md" from {first} '
+                        r"\(9 to 9 bytes\)\n\nAsk: [0-9a-f]{32}\nConversation: [0-9a-f]{32}\n"
+                        rf"Asked-by: {re.escape(ME)}\n\n", message), message
+                    assert call(alice, action="history", file="plan.md",
+                                notebook="alice").endswith(
+                        f'  commit {tip(upstream)}  Restore "plan.md" from {first} (9 to 9 '
+                        f"bytes), asked by {ME}\n")
                     # A writer changing the notebook after the snapshot wins;
                     # restoration must request a retry, not replace its update.
                     results = []
@@ -12049,8 +12295,8 @@ def check_notes_history(binary, up):
 
 def check_notes_cancel(binary, up):
     """A notes call that the client cancels stops its git at once when that
-    git only reads. The notebooks action, which lists the session's
-    notebooks, is such a call."""
+    git only reads. The members action, which lists the members of the
+    session and their notebooks, is such a call."""
     with tempfile.TemporaryDirectory() as d:
         notes, path = f"{d}/notes", f"{d}/askai.json"
         digest = "sha256:" + hashlib.sha256(b"alice-1").hexdigest()
@@ -12070,7 +12316,9 @@ def check_notes_cancel(binary, up):
                     f'  fi;;\nesac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
         os.chmod(f"{d}/bin/git", 0o755)
         auth = {"Authorization": "Bearer alice-1"}
-        with Askai(binary, "-c", path,
+        # One loop: the add makes alice known to the table of the loop, so
+        # the listing runs the only git that reads the members.
+        with Askai(binary, "-c", path, loops=1,
                    env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as ai:
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
                 "action": "add", "file": "a.md", "text": "x"}}, headers=auth)
@@ -12082,7 +12330,7 @@ def check_notes_cancel(binary, up):
                               "MCP-Protocol-Version": LEGACY}
             open(armed, "w").close()
             listing = threading.Thread(target=lambda: ai.rpc(
-                "tools/call", {"name": "notes", "arguments": {"action": "notebooks"}},
+                "tools/call", {"name": "notes", "arguments": {"action": "members"}},
                 rpc_id=42, headers=session))
             listing.start()
             try:
@@ -12095,25 +12343,26 @@ def check_notes_cancel(binary, up):
             finally:
                 os.unlink(armed)
                 listing.join(10)
-    print("notes: a cancelled notebooks listing stops its git at once: PASS")
+    print("notes: a cancelled members listing stops its git at once: PASS")
 
 
 def check_notes_texts(binary, up):
     """Compare the notes results that the other checks do not compare. The
-    session exists as askai starts, so a list or a search before the first
-    note says that the notebook has no notes yet, and fails. The
-    notebooks action lists only the caller's own notebook before the
-    first note, and says that no other notebook has notes while none has.
-    The check also compares the texts for an empty notebook, an unusable
-    revision and a diff without differences, and the tool's definitions.
-    It compares the notebook notice after a turn's diff and the last line
-    of the trace when the turns of an ask call kept notes, and the answer
-    to a turn's replace whose text lacks only the final line feed."""
+    session exists as askai starts. Before the first note, list, history
+    and search say that the notebook of the caller has no notes yet, and do
+    not fail, and members lists the members without notes. The check also
+    compares the three answers for a notebook argument, the texts for an
+    unusable revision and a diff without differences, the tool's
+    definitions for clients and turns, the notebook notice after a turn's
+    diff and read, the last line of the trace when the turns of an ask
+    call kept notes, and the answer to a turn's replace whose text lacks
+    only the final line feed."""
     held = up.reply
     script = []
     up.reply = lambda request: script.pop(0)(request)
-    none = "The notebook contains no notes yet."
-    client, upstream = "p/anonymous/client", "p/anonymous/upstream"
+    mine, agent = f"Your notebook {ME} contains no notes yet.", \
+        "Your notebook p contains no notes yet."
+    client, upstream = f"refs/heads/person/{ME}/notes", "refs/heads/agent/p/notes"
     try:
         with tempfile.TemporaryDirectory() as d:
             notes = f"{d}/notes"
@@ -12123,7 +12372,7 @@ def check_notes_texts(binary, up):
                                       capture_output=True, text=True).stdout.strip()
 
             with Askai(binary, "-u", up.url(), "--notes", notes, "--agent", "p",
-                       "--upstream-tools") as ai:
+                       "--upstream-tools", token="texts-1") as ai:
                 def call(**arguments):
                     status, _, body = ai.rpc("tools/call", {"name": "notes",
                                                             "arguments": arguments})
@@ -12144,42 +12393,52 @@ def check_notes_texts(binary, up):
                     return [m["content"] for m in messages if m["role"] == "tool"], \
                         result["content"][1]["text"]
 
-                def alone(own):
-                    """The notebooks without another one with notes."""
-                    return "Session notebooks (use a selector as notebook):\n" \
-                        f"Self (writable): {own}\nNo other notebook contains notes yet.\n"
+                def members(last, rows=(), kinds=((ME, "person"), ("p", "agent"))):
+                    """The answer of members with the lines @p rows of
+                    members with notes, the members @p kinds, and the last
+                    line @p last."""
+                    lines = dict(rows)
+                    wide = max(len(name) for name, _ in kinds)
+                    return "Members of the session notes (name, kind, newest change of " \
+                        "the notebook):\n" + "".join(
+                            f"{name:<{wide}}  {kind:<6}  {lines.get(name, 'no notes yet')}\n"
+                            for name, kind in kinds) + \
+                        f"{last} To read another notebook, give the member name as notebook.\n"
 
-                assert call(action="list", offset=100) == "!" + none
-                assert call(action="search", pattern="x") == "!" + none
-                assert call(action="notebooks") == alone(client)
-                said, trace = results([{"action": "list"}, {"action": "list", "offset": 100},
-                                       {"action": "notebooks"}])
-                assert said == [none, none, alone(upstream)], said
+                assert call(action="list", offset=100) == mine
+                assert call(action="history") == mine
+                assert call(action="search", pattern="x") == mine
+                # The reads of the person make no record, and the first ask
+                # call whose turns get notes makes the person a member.
+                assert call(action="members") == members(f"You write as the person {ME}.",
+                                                         kinds=(("p", "agent"),))
+                said, trace = results([{"action": "list"}, {"action": "history"},
+                                       {"action": "members"}])
+                assert said == [agent, agent, members("You are the agent p.")], said
                 assert trace == "The other AI made 3 tool calls in 2 turns:\n" \
-                    f"- notes list: failed\n- notes list: failed\n" \
-                    f"- notes notebooks: {len(alone(upstream))} bytes\n", trace
+                    f"- notes list: {len(agent)} bytes\n- notes history: {len(agent)} " \
+                    f"bytes\n- notes members: {len(said[2])} bytes\n", trace
                 # The definitions: the description, what each action does with
                 # its arguments, and what each argument is.
                 lent = next(t["function"] for t in up.requests[-1]["body"]["tools"]
                             if t["function"]["name"] == "notes")
                 listed = next(t for t in ai.rpc("tools/list")[2]["result"]["tools"]
                               if t["name"] == "notes")
-                for definition, schema, side, notebook, tail in (
-                        (lent, "parameters", "Notes are files in notebooks. Every version "
-                         "of a note stays in the history. You can read every notebook. You "
-                         "can write only your own notebook. Each ask call and each "
+                head = "Notes are files in notebooks. Each member of this session has one " \
+                    "notebook. The notebook has the name of the member. A member is a " \
+                    "person or an agent. "
+                for definition, schema, who, tail in (
+                        (lent, "parameters", "You are the agent p. Your notebook is p. You "
+                         "can read every notebook. You can write only your notebook. Every "
+                         "version of a note stays in the history. Each ask call and each "
                          "compaction starts with your note history and your newest note.",
-                         "The notebook to read: own, a participant's name, or a selector "
-                         "from action notebooks. The default is own. copy needs notebook.",
                          PAGED),
-                        (listed, "inputSchema", "Notes are files in notebooks. Every version "
-                         "of a note stays in the history. You can read every notebook. You "
-                         "can write only your own notebook.", "The notebook to read: own, "
-                         "other, "
-                         "a participant's name, or a selector from action notebooks. other "
-                         "is the notebook of your ask_ai calls. The default is own, or other "
-                         "for copy.", "")):
-                    assert definition["description"] == f"Participant: p. {side} Prefer " \
+                        (listed, "inputSchema", "Your calls write to the notebook of the "
+                         "member that your login or your token names. Action members shows "
+                         "your member name. The notebook of a person can contain text from "
+                         "every client program of the person. You can read every notebook. "
+                         "Every version of a note stays in the history.", "")):
+                    assert definition["description"] == head + who + " Prefer " \
                         "small edits. Before replace, read the whole note. Send the whole new " \
                         "text. Copy unrelated passages and evidence word for word. To rewrite " \
                         "most of a note, add a new file such as plan-v2.md. Keep the old file. " \
@@ -12192,13 +12451,14 @@ def check_notes_texts(binary, up):
                         "text to the end of the note, on a new line. replace replaces the "
                         "note with text. delete deletes the note. restore writes the note at "
                         "the commit revision in a new commit. copy copies the note from "
-                        "notebook to your own notebook. list lists the current notes. "
-                        "history lists the changes, oldest first. read reads the note, or "
-                        "the note at the commit revision. diff shows the changes to the note "
-                        "between the commits from and to. search finds the lines of the "
-                        "current notes that match pattern. Note names are not searched. "
-                        "notebooks lists the notebooks of the session. To recover lost text: "
-                        "history with file, then diff, then read or restore with revision.",
+                        "notebook to your notebook. list lists the current notes. history "
+                        "lists the changes, oldest first. read reads the note, or the note "
+                        "at the commit revision. diff shows the changes to the note between "
+                        "the commits from and to. search finds the lines of the current "
+                        "notes that match pattern. Note names are not searched. members "
+                        "lists the members of this session and the newest change of each "
+                        "notebook. To recover lost text: history with file, then diff, then "
+                        "read or restore with revision.",
                         "file": "The note name, 1 to 255 bytes, such as plan.md or "
                         "design/locks.md. Pick an extension that matches the format of the "
                         "text. With file, history lists only the changes to the note.",
@@ -12213,43 +12473,59 @@ def check_notes_texts(binary, up):
                         "current. With offset, give the commit IDs from the diff output as "
                         "from and to.",
                         "as": "The name for the new note of copy or restore, instead of file.",
-                        "notebook": notebook, "offset": OFFSET_ABOUT} | ({
+                        "notebook": "The notebook to read: the name of a member, such as p. "
+                        "Action members lists the names. The default is your notebook. copy "
+                        "needs notebook.", "offset": OFFSET_ABOUT} | ({
                             "content": "A file from the user for add, append or replace, "
                             "instead of text. Your client fills in content. Do not write "
-                            "content yourself.",
-                            "thread": "A legacy argument of 32 hexadecimal digits. The notes "
-                            "do not depend on thread."} if not tail else {}), described
-                assert call(action="copy", file="a.md", notebook=upstream, **{"from": "x"}) == \
+                            "content yourself."} if not tail else {}), described
+                    # No agent text says client or upstream.
+                    text = json.dumps(definition)
+                    assert "upstream" not in text and "client\"" not in text and \
+                        "participant" not in text and "selector" not in text, text
+                assert call(action="copy", file="a.md", notebook="p", **{"from": "x"}) == \
                     "!Give revision only with read or restore. Give from and to only " \
                     "with diff."
 
                 assert re.fullmatch(saved('Add "a.md" (6 bytes)'),
                                     call(action="add", file="a.md", text="alpha\n"))
-                first = git("rev-parse", f"refs/heads/notes/{client}")
-                assert call(action="notebooks") == alone(client)
-                assert call(action="history", notebook="other") == \
-                    "!The notebook contains no notes yet."
+                first = git("rev-parse", client)
+                # The three answers for a notebook argument: a member with no
+                # notes, the caller, and a name that no member has.
+                assert call(action="history", notebook="p") == \
+                    "The notebook p contains no notes yet."
+                assert call(action="read", file="a.md", notebook="p") == "!" + NO_NOTE
+                assert call(action="read", file="a.md", notebook="p", revision="current") == \
+                    "!The notebook p contains no notes yet."
+                assert call(action="list", notebook="cuh2") == \
+                    f"!No member is named cuh2. The members are {ME} and p."
                 assert call(action="read", file="a.md", revision="0" * 40) == \
                     "!The commit in revision, from or to is not in the notebook history. " \
                     "Use a full commit ID from action history."
-                assert call(action="copy", file="a.md") == "!The notebook contains no notes yet."
+                assert call(action="copy", file="a.md", notebook="p") == \
+                    "!The notebook p contains no notes yet."
                 assert call(action="diff", file="a.md", **{"from": first, "to": first}) == \
-                    f"Notebook {client} — a.md\nfrom {first}\nto {first}\n\nNo differences.\n"
+                    f"Notebook {ME} (person): a.md\nfrom {first}\nto {first}\n\n" \
+                    "No differences.\n"
                 assert re.fullmatch(saved('Replace "a.md" (6 to 8 bytes)'),
                                     call(action="replace", file="a.md", text="alpha 2\n"))
-                tip = git("rev-parse", f"refs/heads/notes/{client}")
+                tip = git("rev-parse", client)
                 old, new = (git("rev-parse", "--short", f"{c}:a.md") for c in (first, tip))
+                when = r"\d{4}-\d\d-\d\d \d\d:\d\d UTC"
                 said, trace = results([
-                    {"action": "notebooks"}, {"action": "list"},
-                    {"action": "diff", "file": "a.md", "notebook": client, "from": first}])
-                assert said == [
-                    "Session notebooks (use a selector as notebook):\n"
-                    f"Self (writable): {upstream}\n{client} (read-only)\n",
-                    "The notebook contains no notes yet.",
-                    f"Notebook {client} — a.md\nfrom {first}\nto {tip}\n\n"
+                    {"action": "members"}, {"action": "list"},
+                    {"action": "diff", "file": "a.md", "notebook": ME, "from": first},
+                    {"action": "read", "file": "a.md", "notebook": ME}])
+                assert re.fullmatch(re.escape(members("You are the agent p.", (
+                    (ME, "@WHEN@  Replace \"a.md\" (6 to 8 bytes)"),))).replace(
+                        "@WHEN@", when), said[0]), said
+                assert said[1:] == [
+                    agent,
+                    f"Notebook {ME} (person): a.md\nfrom {first}\nto {tip}\n\n"
                     f"diff --git a/a.md b/a.md\nindex {old}..{new} 100644\n--- a/a.md\n"
                     "+++ b/a.md\n@@ -1 +1 @@\n-alpha\n+alpha 2\n\n\n"
-                    f"[askai: notebook {client}]"], said
+                    f"[askai: notebook {ME} (person)]",
+                    f"alpha 2\n\n\n[askai: notebook {ME} (person)]"], said
                 assert "The other AI saved notes" not in trace, trace
 
                 thread = "1" * 32
@@ -12259,20 +12535,40 @@ def check_notes_texts(binary, up):
                 assert trace == "The other AI made 1 tool call in 2 turns:\n" \
                     f"- notes add: {len(said[0])} bytes\nThe other AI saved notes in the " \
                     f"shared session repository. The ask-chain thread is {thread}.", trace
+                assert re.fullmatch(
+                    r'p <agent/p>\|p <askai>\|Add "b\.md" \(2 bytes\)\n\nAsk: [0-9a-f]{32}\n'
+                    rf"Conversation: {thread}\nAsked-by: {re.escape(ME)}",
+                    git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B", upstream)), \
+                    git("log", "-1", "--format=%B", upstream)
                 # A turn's text gets a final line feed, so the same text again
                 # leaves the note as it is.
                 said, _ = results([{"action": "replace", "file": "b.md", "text": "b"}])
                 assert said == [unchanged_result('"b.md"', 2, git(
-                    "rev-parse", f"refs/heads/notes/{upstream}"))], said
+                    "rev-parse", upstream))], said
                 said, _ = results([{"action": "append", "file": "b.md", "text": "c"}])
                 assert re.fullmatch(saved('Append "b.md" (2 to 4 bytes)'), said[0]) and \
-                    git("show", f"refs/heads/notes/{upstream}:b.md") == "b\nc", said
+                    git("show", f"{upstream}:b.md") == "b\nc", said
+                # members gives clients the names and the kinds as structured
+                # content, and the newest change of each notebook.
+                status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
+                    "action": "members"}})
+                stamp = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ"
+                structured = body["result"]["structuredContent"]
+                assert structured["you"] == {"name": ME, "kind": "person"} and \
+                    [(m["name"], m["kind"], m["change"]) for m in structured["members"]] == [
+                        (ME, "person", 'Replace "a.md" (6 to 8 bytes)'),
+                        ("p", "agent", 'Append "b.md" (2 to 4 bytes)')] and \
+                    all(re.fullmatch(stamp, m["time"]) for m in structured["members"]), body
+                assert re.fullmatch(re.escape(members(f"You write as the person {ME}.", (
+                    (ME, "@WHEN@  Replace \"a.md\" (6 to 8 bytes)"),
+                    ("p", f"@WHEN@  Append \"b.md\" (2 to 4 bytes), asked by {ME}")))).replace(
+                        "@WHEN@", when), text_of(body["result"])), body
     finally:
         up.reply = held
-    print("notes texts: the result before the first note and its offset, the "
-          "notebooks before and after it, an empty notebook, an unusable revision, "
-          "a diff without differences, the notice after a turn's diff and the end "
-          "of the trace: PASS")
+    print("notes texts: the answers before the first note, the members and their "
+          "newest changes, the three answers for a notebook argument, an unusable "
+          "revision, a diff without differences, the definitions, the notice after "
+          "a turn's diff and read, the commit of a turn and the end of the trace: PASS")
 
 
 def check_turn_apis(binary, up):
@@ -12682,7 +12978,7 @@ def check_turn_apis(binary, up):
 
 def check_attach(binary, up):
     """In Gemini's generateContent and Interactions, a turn's notes call with
-    the action attach uploads a note of either notebook to the Files API at
+    the action attach uploads a note of any notebook to the Files API at
     the origin of the upstream's URL, with the upstream's header lines: the
     note as it is if it is UTF-8 text, else its view. The next request has
     the file after the turn's results: a fileData part in their message, or
@@ -12701,7 +12997,7 @@ def check_attach(binary, up):
     up.reply = lambda request: script.pop(0)(request)
     latin1 = b'char s[] = "caf\xe9";\n'
     code = "int main(void) { return 0; }\n"
-    attach = [{"action": "attach", "file": "latin1.c", "notebook": "other"},
+    attach = [{"action": "attach", "file": "latin1.c", "notebook": ME},
               {"action": "attach", "file": "own.c"}]
     apis = {
         "generate": ("/v1beta/models/m:generateContent", "contents",
@@ -12728,7 +13024,8 @@ def check_attach(binary, up):
         for api, (path, key, tools, schema, calls, answer, file, split) in apis.items():
             with Askai(binary, "--api", api, "-u", up.url(path), "-m", "m",
                        "-k", "TEST_KEY", "--header", "X-Gate: g", "--upstream-tools",
-                       "--notes", notes, "--agent", api, env={"TEST_KEY": "secret"}) as ai:
+                       "--notes", f"{notes}/{api}", "--agent", api,
+                       env={"TEST_KEY": "secret"}, token="attach-1") as ai:
                 assert ai.listed("upstream:")[-1] == \
                     f"files     {up.url('/upload/v1beta/files')}", ai.log
 
@@ -12739,8 +13036,8 @@ def check_attach(binary, up):
                     result = body["result"]
                     return ("!" if result.get("isError") else "") + text_of(result)
 
-                # The client keeps a note that is not UTF-8 text in a thread,
-                # and the upstream one of its own.
+                # The person keeps a note that is not UTF-8 text, and the
+                # agent one of its own.
                 said = call({"action": "add", "file": "latin1.c", "content":
                              "data:;base64," + base64.b64encode(latin1).decode()})
                 assert re.fullmatch(saved(f'Add "latin1.c" ({len(latin1)} bytes)'), said), said
@@ -12750,11 +13047,11 @@ def check_attach(binary, up):
                              lambda r: (200, answer("A"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
                 assert "The action argument must be one of: add, append, replace, delete, " \
-                    "restore, notebooks, list, search, history, read, diff, copy, attach." \
+                    "restore, members, list, search, history, read, diff, copy, attach." \
                     in json.dumps(up.requests[-1]["body"][key])
-                assert call({"action": "attach", "file": "latin1.c", "thread": thread}) \
+                assert call({"action": "attach", "file": "latin1.c"}) \
                     == "!The action argument must be one of: add, append, replace, delete, " \
-                    "restore, notebooks, list, search, history, read, diff, copy."
+                    "restore, members, list, search, history, read, diff, copy."
 
                 count = len(up.requests)
                 stored = len(up.uploads)
@@ -12764,7 +13061,7 @@ def check_attach(binary, up):
                 [notes_tool] = [t for t in tools(first["body"]) if t["name"] == "notes"]
                 action = notes_tool[schema]["properties"]["action"]
                 assert action["enum"] == ["add", "append", "replace", "delete", "restore",
-                                           "notebooks", "list", "search", "history", "read",
+                                           "members", "list", "search", "history", "read",
                                            "diff", "copy", "attach"], action
                 properties = notes_tool[schema]["properties"]
                 assert all(properties[name]["type"] == "string"
@@ -12829,8 +13126,8 @@ def check_attach(binary, up):
                 again = up.requests[count + 2]["body"][key]
                 assert "files.test" not in json.dumps(again)
                 prompt = again[0]["parts" if api == "generate" else "content"][0]["text"]
-                assert prompt.count("The selector of your writable notebook is "
-                                    f"{api}/anonymous/upstream. Give a selector") == 1, prompt
+                assert prompt.count(f"[askai: You are the agent {api}. A client program of "
+                                    f"the person {ME} made this ask call.]") == 1, prompt
                 script[:] = [lambda r: (200, calls(attach[1:])), lambda r: (200, answer("F"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "F"
                 assert len(up.uploads) == stored + 1
@@ -12871,17 +13168,18 @@ def check_attach(binary, up):
         "http://", "http://user:PASSWORD@")
     with tempfile.TemporaryDirectory() as notes, \
             Askai(binary, "--api", "generate", "-u", url, "--context", "1000",
-                  "--upstream-tools", "--agent", "ask_ai", "--notes", notes, "--verbose") as ai:
+                  "--upstream-tools", "--agent", "ask_ai", "--notes", notes, "--verbose",
+                  token="attach-1") as ai:
         status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
             "action": "add", "file": "big.c", "text": "x" * 8000}})
         assert re.fullmatch(saved('Add "big.c" (8000 bytes)'), text_of(body["result"])), body
         thread = "2" * 32
         status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
-            "action": "add", "file": "small.c", "text": "y", "thread": thread}})
+            "action": "add", "file": "small.c", "text": "y"}})
         # A view of more than 16 MiB is not uploaded, nor made whole.
         huge = b"\xff" * ((2 << 20) + 4096)
         status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
-            "action": "add", "file": "huge.bin", "thread": thread,
+            "action": "add", "file": "huge.bin",
             "content": "data:;base64," + base64.b64encode(huge).decode()}})
         assert re.fullmatch(saved(f'Add "huge.bin" ({len(huge)} bytes)'),
                             text_of(body["result"])), body
@@ -12902,7 +13200,7 @@ def check_attach(binary, up):
             script[:] = [lambda r: (200, generate_turn([[{"functionCall": {
                              "name": "notes", "id": "c0", "args": {
                                  "action": "attach", "file": name,
-                                 "notebook": "other"}}}]])),
+                                 "notebook": ME}}}]])),
                          lambda r: (200, generate_turn([[{"text": "A"}]]))]
             try:
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
@@ -12923,7 +13221,8 @@ def check_attach(binary, up):
     with tempfile.TemporaryDirectory() as notes:
         with Askai(binary, "--api", "generate", "-u",
                    up.url("/gw/v1beta/models/m:generateContent?alt=sse&key=QK"),
-                   "--upstream-tools", "--agent", "ask_ai", "--notes", notes) as ai:
+                   "--upstream-tools", "--agent", "ask_ai", "--notes", notes,
+                   token="attach-1") as ai:
             assert ai.listed("upstream:")[-1] == \
                 f"files     {up.url('/gw/upload/v1beta/files')}", ai.log
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
@@ -12933,7 +13232,7 @@ def check_attach(binary, up):
             script[:] = [lambda r: (200, generate_turn([[{"functionCall": {
                              "name": "notes", "id": "c0", "args": {
                                  "action": "attach", "file": "g.c",
-                                 "notebook": "other"}}}]])),
+                                 "notebook": ME}}}]])),
                          lambda r: (200, generate_turn([[{"text": "A"}]]))]
             assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
             assert up.uploads[-1]["path"] == "/gw/upload/v1beta/files?key=QK", \
@@ -12978,8 +13277,10 @@ def check_turns(binary, up):
     window that offset moves, writes the turn and the results into the
     conversation, and asks on until an answer calls none, --max-turns turns
     at most; the client gets the answer and the calls' trace. Notes are
-    files on the participant branch of the shared repository, listed and
-    read back; their list and the newest note go with every ask prompt. compact has the conversation start again from the prompt, the
+    files in the notebook of the agent in the session, listed and read
+    back; the notices of the agent and the members, the note history and
+    the newest note go with every ask prompt. compact has the conversation
+    start again from the prompt, the
     summary and the notes, and a context that is full, as the upstream
     reports or as askai counts, has it start again from the prompt and the
     notes."""
@@ -13043,13 +13344,22 @@ def check_turns(binary, up):
         up.reply = reply
         args = ("-u", up.url(), "--upstream-tools", "--git", repo,
                 "--agent", "turns", "--notes", notes)
-        selector = "turns/anonymous/upstream"
-        branch = f"refs/heads/notes/{selector}"
+        selector = "turns (agent)"
+        branch = "refs/heads/agent/turns/notes"
         provenance = f"\n\n[askai: notebook {selector}]"
-        identity = ("\n\n[askai: you are participant turns. The selector of your writable "
-                    f"notebook is {selector}. Give a selector in the notebook argument of "
-                    "notes, not as a note name. Call notes with action notebooks to list all "
-                    "notebooks.]\n")
+        # The notices of a prompt of the main askai, whose client is the
+        # person ME, and of the other askai instances, whose clients have no
+        # member name.
+        identity = ("\n\n[askai: You are the agent turns. A client program of the person "
+                    f"{ME} made this ask call.]\n[askai: Members of this session: {ME} "
+                    "(person), turns (agent, you). Call notes with action members to see "
+                    "what each member wrote last.]\n")
+        nobody = ("\n\n[askai: You are the agent turns. A client without a member name made "
+                  "this ask call.]\n[askai: Members of this session: turns (agent, you). "
+                  "Call notes with action members to see what each member wrote last.]\n")
+        empty = "[askai: Your notebook turns contains no notes yet.]\n"
+        history = ("[askai: Your notebook is turns. Your note history, oldest first. A "
+                   "repeated name is an update:]\n")
         sessions = 0
 
         def isolated(*options):
@@ -13059,10 +13369,10 @@ def check_turns(binary, up):
 
         def tip(ref=branch, book=notes):
             return sh("--git-dir", book, "rev-parse", ref, cwd=d).strip()
-        with Askai(binary, *args) as ai:
+        with Askai(binary, *args, token="turns-1") as ai:
             tools = {t["name"]: t for t in ai.rpc("tools/list")[2]["result"]["tools"]}
             assert "thread" in tools["ask_ai"]["inputSchema"]["properties"], tools
-            assert "thread" in tools["notes"]["inputSchema"]["properties"], tools
+            assert "thread" not in tools["notes"]["inputSchema"]["properties"], tools
             for name in ("git", "notes"):
                 assert tools[name]["inputSchema"]["properties"]["offset"][
                     "description"] == OFFSET_ABOUT, tools[name]
@@ -13106,12 +13416,13 @@ def check_turns(binary, up):
             assert "thread" not in body["tools"][1]["function"]["parameters"][
                 "properties"], body["tools"][1]
             notes_tool = body["tools"][1]["function"]
-            assert "Participant: turns." in notes_tool["description"], notes_tool
+            assert "You are the agent turns. Your notebook is turns." in \
+                notes_tool["description"], notes_tool
             assert not re.search(r"\bother\b", notes_tool["parameters"]["properties"][
                 "notebook"]["description"]), notes_tool
             assert body["stream_options"] == {"include_usage": True}, body
             assert list(body)[-1] == "messages" and turns(first) == [], body
-            assert prompt(first) == "What is there?" + identity, prompt(first)
+            assert prompt(first) == "What is there?" + identity + empty, prompt(first)
             head, *results = turns(second)
             assert head["role"] == "assistant" and head["content"] == "Looking." and \
                 head["reasoning_content"] == "hmm", head
@@ -13149,13 +13460,9 @@ def check_turns(binary, up):
             count = len(up.requests)
             result = ai.ask("And now?", thread=thread)
             assert re.fullmatch(
-                "And now\\?" + re.escape(identity) +
-                "\n\n\\[askai: call notes with action list to list your current notes\\. "
-                "Call notes with action notebooks to list the notebooks of the other "
-                "participants\\. A repeated name in the history is an update\\. Your note "
-                "history, oldest first:\\]\n\n"
-                f"1\\. {when}  found\\.md  "
-                "\\(\\+1 -0\\)\n\n\\[askai: the current text of your newest note, found\\.md:\\]\n\n"
+                "And now\\?" + re.escape(identity + history) +
+                f"1\\. {when}  found\\.md  \\(\\+1 -0\\), asked by {re.escape(ME)}\n"
+                "\\[askai: The current text of your newest note, found\\.md:\\]\n"
                 "found \"first\"\n", prompt(up.requests[count])), up.requests[count]
             assert f"ask-chain thread is {thread}." in result["content"][1]["text"], result
 
@@ -13301,71 +13608,65 @@ def check_turns(binary, up):
             ai.ask("Again?", thread=thread)
             shown = 64 << 10
             assert prompt(up.requests[count]).endswith(
-                "[askai: the current text of your newest note, long.md:]\n\n" + "L" * shown +
+                "[askai: The current text of your newest note, long.md:]\n" + "L" * shown +
                 f"\n[askai: bytes 0 to {shown} of {size + 1}. Read the note with "
                 f"\"offset\": {shown} for the remaining bytes.]\n"), \
                 prompt(up.requests[count])[-300:]
 
-            # A thread that the client started with its own notes: an ask call
-            # goes on with it, its turns read the client's notebook and start
-            # their own, and the client reads that one.
+            # The person keeps notes of its own: the turns of an ask call
+            # read the notebook of the person by name and write their own,
+            # and the person reads that one.
             def client_notes(arguments):
                 body = ai.rpc("tools/call", {"name": "notes",
                                              "arguments": arguments})[2]
                 return text_of(body["result"])
-            client = "turns/anonymous/client"
+            client = f"refs/heads/person/{ME}/notes"
             said = client_notes({"action": "add", "file": "brief.md", "text": "aim"})
-            assert re.fullmatch(saved('Add "brief.md" (3 bytes)',
-                                      tip(f"refs/heads/notes/{client}")), said), said
+            assert re.fullmatch(saved('Add "brief.md" (3 bytes)', tip(client)), said), said
             mine = "3" * 32
             script[:] = [lambda r: (200, turn_stream([
-                ("m", "notes", json.dumps({"action": "list", "notebook": client})),
+                ("m", "notes", json.dumps({"action": "list", "notebook": ME})),
                 ("n", "notes", json.dumps({"action": "read", "file": "brief.md",
-                                           "notebook": client})),
+                                           "notebook": ME})),
                 ("o", "notes", json.dumps({"action": "add", "file": "brief.md",
-                                           "text": "seen", "notebook": client})),
+                                           "text": "seen", "notebook": ME})),
                 ("p", "notes", json.dumps({"action": "add", "file": "seen.md",
                                            "text": "seen"})),
                 ("q0", "notes", json.dumps({"action": "copy", "file": "brief.md"})),
                 ("q", "notes", json.dumps({"action": "copy", "file": "brief.md",
-                                           "notebook": client})),
+                                           "notebook": ME})),
                 ("r", "notes", json.dumps({"action": "read", "file": "brief.md"})),
                 ("s", "notes", json.dumps({"action": "add", "file": "c.bin",
                                            "content": "data:,x"}))]))]
             count = len(up.requests)
             result = ai.ask("Go on", thread=mine)
-            assert prompt(up.requests[count]).startswith(
-                "Go on" + identity +
-                "\n\n[askai: call notes with action list to list your current notes."), \
+            assert prompt(up.requests[count]).startswith("Go on" + identity + history), \
                 prompt(up.requests[count])
             outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
-            assert outputs[0] == note_files(client, {"brief.md": b"aim"}), outputs
-            want = [re.escape(f"aim\n\n[askai: notebook {client}]"),
-                    re.escape("You can write notes only to your own notebook."),
+            assert outputs[0] == note_files(f"{ME} (person)", {"brief.md": b"aim"}), outputs
+            want = [re.escape(f"aim\n\n[askai: notebook {ME} (person)]"),
+                    re.escape("You can write only your notebook, turns."),
                     saved('Add "seen.md" (5 bytes)', tip(f"{branch}^")),
-                    re.escape("copy needs notebook. Give the source notebook as a "
-                              "participant's name or a selector from action notebooks."),
-                    saved(f'Copy "brief.md" from {client} at '
-                          f'{tip(f"refs/heads/notes/{client}")} (3 bytes)', tip()),
+                    re.escape("copy needs notebook: the name of the member whose note you "
+                              "copy. Action members lists the names."),
+                    copied("brief.md", ME, tip(client), "brief.md", tip()),
                     re.escape("aim" + provenance),
                     re.escape("Only a client can give content. Give text instead.")]
             assert len(outputs) == 8 and all(
                 re.fullmatch(w, o) for w, o in zip(want, outputs[1:])), outputs
             assert f"ask-chain thread is {mine}." in result["content"][1]["text"], result
-            assert "seen.md" in client_notes({"action": "list", "thread": mine,
-                                              "notebook": "other"})
+            assert "seen.md" in client_notes({"action": "list", "notebook": "turns"})
+            assert sh("--git-dir", notes, "log", "-1", "--format=%s", branch, cwd=d) == \
+                f'Copy "brief.md" from the notebook of {ME} at {tip(client)} (3 bytes)\n'
             # A client's text keeps a notice at its end.
             text = "aim2" + provenance
             said = client_notes({"action": "add", "file": "aim2.md", "text": text})
-            assert re.fullmatch(saved(f'Add "aim2.md" ({len(text)} bytes)',
-                                      tip(f"refs/heads/notes/{client}")), said), said
-            assert sh("--git-dir", notes, "show", f"refs/heads/notes/{client}:aim2.md",
-                      cwd=d) == text
+            assert re.fullmatch(saved(f'Add "aim2.md" ({len(text)} bytes)', tip(client)),
+                                said), said
+            assert sh("--git-dir", notes, "show", f"{client}:aim2.md", cwd=d) == text
             count = len(up.requests)
             ai.ask("Again", thread=mine)
-            assert prompt(up.requests[count]).startswith(
-                "Again" + identity +
-                "\n\n[askai: call notes with action list to list your current notes."), \
+            assert prompt(up.requests[count]).startswith("Again" + identity + history), \
                 prompt(up.requests[count])
             # A newest note that is not text goes into the prompt as its view.
             book = notes
@@ -13378,7 +13679,7 @@ def check_turns(binary, up):
             count = len(up.requests)
             ai.ask("Once more", thread=mine)
             assert prompt(up.requests[count]).endswith(
-                "[askai: the current text of your newest note, z.bin:]\n\n" + note_view(b"\xff\x00\xfe")
+                "[askai: The current text of your newest note, z.bin:]\n" + note_view(b"\xff\x00\xfe")
                 + "\n"), prompt(up.requests[count])[-400:]
             # A view longer than the prompt's window of 64 KiB is cut there,
             # with the length of the whole view and the offset to read on.
@@ -13394,7 +13695,7 @@ def check_turns(binary, up):
             count = len(up.requests)
             ai.ask("Last", thread=mine)
             shown = prompt(up.requests[count]).encode()
-            marker = b"[askai: the current text of your newest note, y.bin:]\n\n"
+            marker = b"[askai: The current text of your newest note, y.bin:]\n"
             head = shown.index(marker) + len(marker)
             cut = re.search(rb"\n\[askai: bytes 0 to (\d+) of (\d+)\. Read the note with "
                             rb'"offset": (\d+) for the remaining bytes\.\]', shown)
@@ -13472,9 +13773,9 @@ def check_turns(binary, up):
             again = up.requests[count + 3]
             assert turns(again) == [] and prompt(again) == (
                 "Q\n\n[askai: your context filled up. Your turns and the tool results "
-                "since the task are gone.]" + identity +
-                "\n\n" + TASK + REVIEW_EMPTY + "\n\n[askai: go on with the task.]"), again
-            # Explicit compaction also keeps identity before the first note.
+                "since the task are gone.]\n\n" + TASK + REVIEW_EMPTY + nobody + empty +
+                "\n[askai: go on with the task.]"), prompt(again)
+            # Explicit compaction also gives the notices before the first note.
             script[:] = [lambda r: (200, turn_stream([("c", "compact", json.dumps(
                 {"summary": "S"}))]))]
             count = len(up.requests)
@@ -13482,9 +13783,9 @@ def check_turns(binary, up):
             again = up.requests[count + 1]
             assert turns(again) == [] and prompt(again) == (
                 "Q\n\n[askai: you compacted the context. Your turns and the tool "
-                "results since the task are gone. Your summary:]\n\nS" + identity +
-                "\n\n" + TASK + REVIEW_EMPTY +
-                "\n\n[askai: go on with the task.]"), again
+                "results since the task are gone. Your summary:]\n\nS\n\n" + TASK +
+                REVIEW_EMPTY + nobody + empty + "\n[askai: go on with the task.]"), \
+                prompt(again)
 
         # The reminders to write notes: one at a quarter of the context and
         # one at half, each only once. From two thirds on, each turn's last
@@ -13518,7 +13819,7 @@ def check_turns(binary, up):
                 assert ai.ask("Q")["content"][0]["text"] == "A"
                 sent = up.requests[count + 1:]
                 assert len(sent) == 9 and turns(sent[7]) == [], sent
-                assert prompt(sent[7]).count(identity) == int(notes_on), prompt(sent[7])
+                assert prompt(sent[7]).count(nobody) == int(notes_on), prompt(sent[7])
                 results = [turns(r)[-1]["content"] for r in sent[:7] + sent[8:]]
                 half = remind.replace("2\\d%", "5\\d%")
                 want = ["", remind, "", half, "", warn, warn, remind]
@@ -13542,12 +13843,10 @@ def check_turns(binary, up):
             assert turns(again) == [] and re.fullmatch(
                 "Q\n\n\\[askai: you compacted the context\\. Your turns and the tool "
                 "results since the task are gone\\. "
-                "Your summary:\\]\n\nS" + re.escape(identity) +
-                "\n\n" + re.escape(TASK + REVIEW_EMPTY) + "\n\n\\[askai: a repeated name in the "
-                "history is an update\\. Your note history, oldest first:\\]\n\n"
-                f"1\\. {when}  n1\\.md  \\(\\+1 -0\\)\n\n"
-                "\\[askai: the current text of your newest note, "
-                "n1\\.md:\\]\n\nn1\n\n\\[askai: go on with the task\\.\\]",
+                "Your summary:\\]\n\nS\n\n" + re.escape(TASK + REVIEW_EMPTY + nobody + history) +
+                f"1\\. {when}  n1\\.md  \\(\\+1 -0\\)\n"
+                "\\[askai: The current text of your newest note, "
+                "n1\\.md:\\]\nn1\n\n\\[askai: go on with the task\\.\\]",
                 prompt(again)), prompt(again)
             assert "- compact: 1 bytes\n" in result["content"][1]["text"], result
             assert "git" not in result["content"][1]["text"], result
@@ -13566,12 +13865,10 @@ def check_turns(binary, up):
             again = up.requests[count + 2]
             assert turns(again) == [] and re.fullmatch(
                 "Q\n\n\\[askai: your context filled up\\. Your turns and the tool "
-                "results since the task are gone\\.\\]" +
-                re.escape(identity) + "\n\n" + re.escape(TASK + REVIEW_EMPTY) +
-                "\n\n\\[askai: a repeated name in the history is an update\\. Your note history, "
-                f"oldest first:\\]\n\n1\\. {when}  n1\\.md  "
-                f"\\(\\+1 -0\\)\n2\\. {when}  n2\\.md  "
-                "\\(\\+1 -0\\)\n\n\\[askai: the current text of your newest note, n2\\.md:\\]\n\nn2\n\n"
+                "results since the task are gone\\.\\]\n\n" +
+                re.escape(TASK + REVIEW_EMPTY + nobody + history) +
+                f"1\\. {when}  n1\\.md  \\(\\+1 -0\\)\n2\\. {when}  n2\\.md  "
+                "\\(\\+1 -0\\)\n\\[askai: The current text of your newest note, n2\\.md:\\]\nn2\n\n"
                 "\\[askai: go on with the task\\.\\]", prompt(again)), prompt(again)
             # After a delete, the prompt says that the newest note was deleted.
             script[:] = [lambda r: (200, turn_stream([("a", "notes", json.dumps(
@@ -13580,9 +13877,9 @@ def check_turns(binary, up):
             count = len(up.requests)
             assert ai.ask("Q")["content"][0]["text"] == "A"
             again = up.requests[count + 2]
-            assert re.search(f"\n3\\. {when}  n2\\.md  \\(\\+0 -1\\)\n\n\\[askai: the current "
-                             "text of your newest note, n2\\.md:\\]\n\n\\[askai: "
-                             "the note was deleted\\.\\]\n\n\\[askai: go on with the task\\.\\]$",
+            assert re.search(f"\n3\\. {when}  n2\\.md  \\(\\+0 -1\\)\n\\[askai: The current "
+                             "text of your newest note, n2\\.md:\\]\n\\[askai: "
+                             "The note was deleted\\.\\]\n\n\\[askai: go on with the task\\.\\]$",
                              prompt(again)), prompt(again)
             script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
                          lambda r: (400, full), lambda r: (400, full)]
@@ -13957,9 +14254,13 @@ def check_turns(binary, up):
             ai.wait_log(r"upstream context: 6000 tokens \(llama-server's /props\)")
             assert any("upstream slots: 1 (--slots)" in line for line in ai.log), ai.log
             description = ai.rpc("tools/list")[2]["result"]["tools"][0]["description"]
-            assert "The other AI can call some tools of this server." in description and \
-                "The other AI writes notes in the shared session repository." in description, \
-                description
+            assert description == (
+                "Send a question or a task to the agent turns. turns cannot see this "
+                "conversation, your files or your tools. Write a complete prompt. turns can "
+                "call some tools of this server. The result lists the tool calls after the "
+                "answer. turns keeps notes in the session. Each call starts with the notes "
+                "of turns. Ask turns for a second opinion, for hard problems, or for "
+                "knowledge you lack."), description
             # help names the window that the turn takes.
             script[:] = [lambda r: (200, turn_stream([
                 ("a", "git", json.dumps(show)),
@@ -14664,8 +14965,8 @@ def check_review(binary, up):
             assert tool["inputSchema"]["properties"]["thread"]["description"] == (
                 "An ask-chain thread ID from an earlier answer, 32 hexadecimal digits. The "
                 "call starts with the review record of the thread, if a review record "
-                "exists for the thread. Every call starts with the notes from your "
-                "earlier calls, with or without thread."), tool
+                "exists for the thread. Every call starts with the notes of the agent, "
+                "with or without thread."), tool
             script[:] = [mixed(("git", read("src/a.c", 1, 20))),
                          mixed(("findings", add("C1", "src/a.c:5")),
                                ("findings", {"action": "add", "claim": "C2"}))]
@@ -14678,8 +14979,8 @@ def check_review(binary, up):
             saved = json.loads(notes("show", f"{ref}:review.json"))
             assert list(saved) == ["findings"] and \
                 [f["claim"] for f in saved["findings"]] == ["C1", "C2"], saved
-            assert notes("log", "-1", "--format=%P|%cn", ref) == \
-                "|ask_ai/anonymous/upstream\n"
+            # The ref keeps the old layout, and the committer is the service.
+            assert notes("log", "-1", "--format=%P|%cn", ref) == "|ask_ai\n"
             first = notes("rev-parse", ref).strip()
 
             # The next call of the thread starts with the findings, but a

@@ -6,7 +6,7 @@
 #include <string.h>
 
 #include "cstr_view.h"
-#include "notes.h"
+#include "member.h"
 #include "notice.h"
 
 /* The notices that a turn's result can end with. */
@@ -16,7 +16,8 @@ static char const *const notice_formats[] = {
 
 /* Returns the length of the argument of the printf conversion @p conv at
  * the start of the @p len bytes at @p s, or 0 if there is none: one or
- * more digits for 'u', and a notebook selector up to the next ']' for 's'.
+ * more digits for 'u', and for 's' the name of a member and its kind in
+ * parentheses, such as "bro (agent)", up to the next ']'.
  */
 static size_t
 notice_arg (char        conv,
@@ -29,7 +30,14 @@ notice_arg (char        conv,
 		if (!end)
 			return 0;
 		size_t const n = (size_t)(end - s);
-		return notes_select((struct cstr_view){ s, n }, nullptr) ? 0 : n;
+		struct cstr_view kind = { s, n }, name;
+		if (!cstr_view_cut(&kind, ' ', &name) || !member_name_valid(name))
+			return 0;
+		if (!cstr_view_starts(kind, CSTR_VIEW("(")) || !cstr_view_ends(kind, CSTR_VIEW(")")))
+			return 0;
+		struct cstr_view const word = cstr_view_slice(kind, 1, kind.len - 2);
+		return cstr_view_index(member_kinds, array_size(member_kinds), word) <
+		       array_size(member_kinds) ? n : 0;
 	}
 	case 'u': {
 		size_t n = 0;

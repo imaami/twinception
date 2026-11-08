@@ -1,6 +1,6 @@
 /** @file notes.c
  *
- * The notes tool.
+ * The notes of the session (src/notes.h).
  */
 #define _GNU_SOURCE /* memrchr() */
 #include <errno.h>
@@ -15,15 +15,6 @@
 #include "oid.h"
 #include "store.h"
 #include "util.h"
-
-/* Only this namespace is exposed by the notes tool. */
-#define BRANCH "refs/heads/notes/"
-
-struct notes {
-	struct store *store;  /* the shared session repository */
-	char         *agent;  /* the PARTICIPANT of the refs of this askai */
-	size_t        named;  /* the bytes of agent */
-};
 
 /* The stages of a historical read or diff, in their order. */
 enum notes_revision_phase : uint8_t {
@@ -42,104 +33,14 @@ enum notes_kind {
 	KIND_OTHER,
 };
 
-struct notes *
-notes_create (char const *path,
-              char const *agent,
-              char       *why,
-              size_t      len,
-              int        *e)
-{
-	if (!agent || !member_name_valid(cstr_view(agent))) {
-		*e = util_refuse(why, len, "the agent needs a member name");
-		return nullptr;
-	}
-	size_t const named = strlen(agent);
-	struct notes *notes = malloc(sizeof *notes);
-	char *copy = strdup(agent);
-	if (!notes || !copy) {
-		free(notes);
-		free(copy);
-		util_format(why, len, "out of memory");
-		*e = ENOMEM;
-		return nullptr;
-	}
-	*notes = (struct notes){ .agent = copy, .named = named };
-	if (!(notes->store = store_create(path, why, len, e)))
-		notes_destroy(&notes);
-	return notes;
-}
-
 void
-notes_destroy (struct notes **p_notes)
+notes_ref (struct member const *member,
+           char                 ref[NOTES_REF])
 {
-	if (!p_notes || !*p_notes)
-		return;
-	struct notes *notes = *p_notes;
-	*p_notes = nullptr;
-	store_destroy(&notes->store);
-	free(notes->agent);
-	notes->agent = nullptr;
-	free(notes);
+	static_assert(NOTES_REF >= sizeof "refs/heads/person/" + UTIL_WORD_MAX + sizeof "/notes");
+	util_format(ref, NOTES_REF, "refs/heads/%s/%s/notes", member_kinds[member->kind].data,
+	            member->name);
 }
-
-struct store const *
-notes_store (struct notes const *notes)
-{
-	return notes ? notes->store : nullptr;
-}
-
-char const *
-notes_writer (struct notes const *notes)
-{
-	return notes->agent;
-}
-
-void
-notes_book (struct cstr_view participant,
-            uint64_t         principal,
-            enum notes_side  side,
-            char             repo[NOTES_REPO])
-{
-	static_assert(NOTES_REPO >= sizeof BRANCH + UTIL_WORD_MAX + 1 + NOTES_WHO + 1 +
-	                            sizeof "upstream" - 1);
-	char hex[NOTES_WHO + 1];
-	struct cstr_view const who = principal
-	                           ? util_format_view(hex, sizeof hex, "%0*" PRIx64, NOTES_WHO,
-	                                              principal)
-	                           : notes_anonymous;
-	util_format(repo, NOTES_REPO, BRANCH "%.*s/%.*s/%s", (int)participant.len,
-	            participant.data, (int)who.len, who.data, notes_sides[side].data);
-}
-
-void
-notes_repo (struct notes const *notes,
-            uint64_t            principal,
-            enum notes_side     side,
-            char                repo[NOTES_REPO])
-{
-	notes_book((struct cstr_view){ notes->agent, notes->named }, principal, side, repo);
-}
-
-int
-notes_select (struct cstr_view name,
-              char             repo[NOTES_REPO])
-{
-	if (!name.data || sizeof BRANCH + name.len > NOTES_REPO || !notes_selector_valid(name))
-		return EINVAL;
-	if (repo)
-		util_format(repo, NOTES_REPO, BRANCH "%.*s", (int)name.len, name.data);
-	return 0;
-}
-
-char const *
-notes_selector (char const *repo)
-{
-	return repo + sizeof BRANCH - 1;
-}
-
-char const *const notes_books[] = { "--format=%(refname:strip=3)", BRANCH };
-
-#undef BRANCH
 
 int
 notes_revision_init (struct notes_revision *dest,
@@ -446,15 +347,17 @@ notes_read_out (struct span  out,
 }
 
 void
-notes_review (char const         *repo,
+notes_review (char const         *agent,
+              uint64_t            principal,
               struct hexid const *thread,
-              char                ref[NOTES_REPO])
+              char                ref[NOTES_REF])
 {
-	static_assert(NOTES_REPO >= sizeof "refs/review/" + UTIL_WORD_MAX + 1 + NOTES_WHO + 1 +
-	                            HEXID_DIGITS);
-	char const *who = notes_selector(repo);
-	util_format(ref, NOTES_REPO, "refs/review/%.*s/%s", (int)(strrchr(who, '/') - who), who,
-	            thread->hex);
+	static_assert(NOTES_REF >= sizeof "refs/review//" + UTIL_WORD_MAX + 16 + HEXID_DIGITS);
+	if (principal)
+		util_format(ref, NOTES_REF, "refs/review/%s/%016" PRIx64 "/%s", agent, principal,
+		            thread->hex);
+	else
+		util_format(ref, NOTES_REF, "refs/review/%s/anonymous/%s", agent, thread->hex);
 }
 
 int

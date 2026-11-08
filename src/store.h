@@ -85,11 +85,11 @@ enum store_cmd : uint8_t {
 };
 
 /** Opens the repository at @p path. An empty directory or a missing one
- *  becomes a bare repository on the first write (STORE_CREATE). A nonempty
- *  directory that is not a repository is refused, so that askai never
- *  starts a session over the old per-thread layout. Returns the store, or
- *  returns nullptr with an error number in @p *e and a message in the
- *  @p len bytes at @p why.
+ *  becomes a bare repository when store_init() runs as askai starts. A
+ *  nonempty directory that is not a repository is refused, so that askai
+ *  never starts a session over the old per-thread layout. Returns the
+ *  store, or returns nullptr with an error number in @p *e and a message
+ *  in the @p len bytes at @p why.
  */
 extern struct store *
 store_create (char const *path,

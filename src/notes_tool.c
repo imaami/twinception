@@ -38,14 +38,14 @@
  * row of notes_tool_fetch_steps[]. The bits above FETCH_KIND are flags.
  */
 enum notes_tool_fetch : uint32_t {
-	FETCH_CREATE,          /* create the shared repository for a write */
 	FETCH_CHECK,           /* check the note name before a write */
 	FETCH_ADD,             /* commit the note of a write */
 	FETCH_LIST,            /* list the notes for history */
 	FETCH_READ,            /* read a note */
 	FETCH_RESUME,          /* list the notes for the prompt of an ask call */
 	FETCH_COMPACT,         /* list the notes for a compaction */
-	FETCH_BOOKS,           /* list the notebooks of the session */
+	FETCH_MEMBERS,         /* list the members of the session and their
+	                          notebooks */
 	FETCH_FILES,           /* list the current files for list */
 	FETCH_NEWEST,          /* read the newest note, after FETCH_RESUME or
 	                          FETCH_COMPACT */
@@ -69,6 +69,11 @@ enum notes_tool_fetch : uint32_t {
 	FETCH_DELETE = 1024,   /* set for delete */
 	FETCH_SAVING = 2048,   /* set on each git run of the save of a review
 	                          record */
+	FETCH_RESOLVE = 4096,  /* set with FETCH_MEMBERS to find the member
+	                          that the notebook argument names */
+	FETCH_PROMPT = 8192,   /* set for the prompt of an ask call, with
+	                          FETCH_MEMBERS or while the prompt waits for
+	                          the asker */
 };
 
 /* A row of notes_tool_fetch_steps[]: the step that reads the output of
@@ -85,10 +90,12 @@ static struct notes_tool_fetch_step const *notes_tool_fetch_step (uint32_t fetch
 
 /* The flags of an action in notes_tool_actions[]. */
 enum {
-	NOTE_WRITE  = 1 << 0,    /* writes to the caller's own notebook */
-	NOTE_FILE   = 1 << 1,    /* takes the file argument */
-	NOTE_OFFSET = 1 << 2,    /* takes the offset argument */
+	NOTE_WRITE    = 1 << 0,  /* writes to the caller's own notebook */
+	NOTE_FILE     = 1 << 1,  /* takes the file argument */
+	NOTE_OFFSET   = 1 << 2,  /* takes the offset argument */
 	NOTE_REVISION = 1 << 3,  /* takes the revision argument */
+	NOTE_AUTHOR   = 1 << 4,  /* writes a note as the caller, which needs
+	                            the member name of the caller */
 };
 
 /* The flags and the fetch value of each action (NOTES_ALL_ACTION_LIST). */
@@ -113,11 +120,6 @@ static struct cstr_view const dir_name =
 	CSTR_VIEW_INIT("The note name is a directory of notes. list shows the notes in the "
 	               "directory.");
 
-/* The message for a name of a written note that notes_select() accepts. */
-static struct cstr_view const selector_name =
-	CSTR_VIEW_INIT("A note name cannot be in the form PARTICIPANT/WHO/SIDE of a notebook "
-	               "selector. Writes always go to your own notebook.");
-
 /* The message for a call that names a note that does not exist. */
 static struct cstr_view const no_note =
 	CSTR_VIEW_INIT("The note does not exist. list shows the current notes. add creates a "
@@ -128,24 +130,27 @@ static struct cstr_view const review_file = CSTR_VIEW_INIT("review.json");
 
 /* The part of the notes tool on one loop. */
 struct notes_tool_loop {
-	struct shelf             spare;  /* finished calls, kept for reuse with
-	                                    the storage of their output */
-	struct notes_tool const *tool;   /* the service */
+	struct shelf             spare;    /* finished calls, kept for reuse
+	                                      with the storage of their output */
+	struct notes_tool const *tool;     /* the service */
+	struct member_table     *members;  /* the members of the session, or
+	                                      nullptr without --notes */
 };
 
 /* The flags of a notes call (struct notes_tool_call). */
 enum {
 	CALL_STRIPPED = 1 << 0,  /* askai cut its notices off the text */
 	CALL_AS       = 1 << 1,  /* the call gave the argument as */
+	CALL_LOGIN    = 1 << 2,  /* the call waits for the member of the login
+	                            of its client, without git */
 };
 
 /* The state of one notes call. It is the own word of the call's slot. An
  * ask call has one in its own slot while git reads the notes and the
  * review record for its prompt, and while git saves its review record.
  * For the record read, notebook is the ref of the record. For a save,
- * repo is that ref, notebook the caller's own notebook, revision.tip the
- * parent of the commit, text the trace of the ask call and then the step
- * after the save.
+ * repo is that ref, revision.tip the parent of the commit, text the trace
+ * of the ask call and then the step after the save.
  */
 struct notes_tool_call {
 	struct buf              file;      /* the input of git, such as a
@@ -158,9 +163,12 @@ struct notes_tool_call {
 	struct store_part       part;      /* the offsets of the name and the
 	                                      text in file */
 	struct list             spare;     /* the call's node on loop->spare */
+	struct member_wait      wait;      /* the lookup of the member of the
+	                                      login of a client */
 	struct child           *child;     /* the call's git, until a step has
 	                                      read its output */
 	struct notes_tool_loop *loop;      /* the part of the call's loop */
+	struct mcp_slot        *slot;      /* the slot of the call */
 	struct dstr            *text;      /* &out for a tool call. For the
 	                                      prompt notes, it is the text that
 	                                      askai adds to the prompt. */
@@ -188,33 +196,57 @@ struct notes_tool_call {
 		struct oid                id;       /* the object id of an
 		                                       attached note, until the
 		                                       upload's answer */
+		char                      shows[MEMBER_NAME + sizeof " (person)"];
+		                                    /* book and its kind, such as
+		                                       "bro (agent)", for the
+		                                       result of a read
+		                                       (notes_tool_shows()) */
 	};
 	uint32_t                fetch;     /* why git runs (enum
 	                                      notes_tool_fetch) */
+	uint32_t                first;     /* the fetch value of the first git
+	                                      run of a tool call, which runs
+	                                      once the caller and the notebook
+	                                      are known */
 	uint32_t                action;    /* the row of notes_tool_actions[] */
-	uint32_t                flags;     /* CALL_STRIPPED and CALL_AS */
-	char                    repo[NOTES_REPO];      /* the caller's own
-	                                                  notebook */
-	char                    notebook[NOTES_REPO];  /* the notebook that the
-	                                                  call selected, or ""
-	                                                  for repo */
+	uint32_t                flags;     /* CALL_STRIPPED, CALL_AS and
+	                                      CALL_LOGIN */
+	struct member           self;      /* the caller: the agent for a turn,
+	                                      the member of the login for a
+	                                      client, or no name */
+	struct member           book;      /* the member whose notebook the
+	                                      call reads. Until
+	                                      notes_tool_resolve() finds the
+	                                      member, the name is the notebook
+	                                      argument, or "" for the notebook
+	                                      of the caller. */
+	char                    repo[NOTES_REF];      /* the notebook of the
+	                                                 caller, or "" */
+	char                    notebook[NOTES_REF];  /* the notebook that the
+	                                                 call selected, or ""
+	                                                 for repo */
 };
 
 void *
-notes_tool_loop_create (void        *service,
-                        struct loop *loop,
-                        struct list *children,
-                        int         *e)
+notes_tool_loop_create (void           *service,
+                        struct loop    *loop,
+                        struct blocker *blockers,
+                        struct list    *children,
+                        int            *e)
 {
-	(void)loop;
-	(void)children;
+	struct notes_tool const *tool = service;
 	struct notes_tool_loop *nl = malloc(sizeof *nl);
 	if (!nl) {
 		*e = ENOMEM;
 		return nullptr;
 	}
 	*e = 0;
-	*nl = (struct notes_tool_loop){ .spare.list = list(&nl->spare.list), .tool = service };
+	*nl = (struct notes_tool_loop){ .spare.list = list(&nl->spare.list), .tool = tool };
+	if (tool->members &&
+	    !(nl->members = member_table_create(tool->members, loop, blockers, children, e))) {
+		free(nl);
+		return nullptr;
+	}
 	return nl;
 }
 
@@ -263,7 +295,17 @@ notes_tool_loop_destroy (void **p_part)
 		return;
 	*p_part = nullptr;
 	(void)notes_tool_loop_relieve(nl, BUF_CRITICAL, SIZE_MAX);
+	member_table_destroy(&nl->members);
 	free(nl);
+}
+
+/* Called on the loop once the lookup of the member of the login of a
+ * notes call ends. The step of the call then goes on.
+ */
+static void
+notes_tool_waited (struct member_wait *wait)
+{
+	(void)mcp_slot_ready(container_of(wait, struct notes_tool_call, wait)->slot);
 }
 
 /* Returns a notes call that uses the part @p loop and writes to @p text,
@@ -291,8 +333,10 @@ notes_tool_loop_take (struct notes_tool_loop *loop,
 	*call = (struct notes_tool_call){
 		.out   = out,
 		.loop  = loop,
+		.slot  = slot,
 		.text  = text ? text : &call->out,
 		.spare = list(&call->spare),
+		.wait  = { .hook = list(&call->wait.hook), .done = notes_tool_waited },
 	};
 	*mcp_slot_own(slot) = call;
 	return call;
@@ -309,6 +353,7 @@ notes_tool_loop_put (struct notes_tool_loop  *loop,
                      struct notes_tool_call **p_call)
 {
 	struct notes_tool_call *call = *p_call;
+	member_table_cancel(&call->wait);
 	store_drop(&call->child);
 	buf_fini(&call->file);
 	if (atomic_load_explicit(&buf_pressure, memory_order_relaxed) != BUF_EASY) {
@@ -331,6 +376,23 @@ notes_tool_drop (struct mcp_slot *slot)
 
 static void notes_tool_run (struct mcp_slot *slot, uint32_t fetch, struct buf *in, int e);
 static void notes_tool_committed (struct mcp_slot *slot);
+static void notes_tool_resolve (struct mcp_slot *slot);
+static void notes_tool_logged_in (struct mcp_slot *slot);
+
+/* Returns the session of the notes and the agent of askai in it. */
+static struct member_session const *
+notes_tool_session (struct notes_tool_call const *call)
+{
+	return member_registry_session(call->loop->tool->members);
+}
+
+/* Makes the agent of askai the caller of @p call. */
+static void
+notes_tool_agent (struct notes_tool_call *call)
+{
+	call->self.kind = MEMBER_AGENT;
+	util_format(call->self.name, sizeof call->self.name, "%s", notes_tool_session(call)->agent);
+}
 
 /* Releases the notes call in @p slot, the ask call's own slot, after git
  * has read the notes for the prompt or saved the review record. If @p e is
@@ -344,7 +406,8 @@ notes_tool_then (struct mcp_slot *slot,
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	if (!e && call->thread) {
-		notes_review(call->repo, call->thread, call->notebook);
+		notes_review(notes_tool_session(call)->agent, mcp_slot_principal(slot),
+		             call->thread, call->notebook);
 		call->thread = nullptr;
 		child_destroy(&call->child);
 		struct buf in = {};
@@ -361,12 +424,13 @@ notes_tool_then (struct mcp_slot *slot,
 }
 
 /* Handles the error @p e of spawning git for the call in @p slot. For a
- * compaction, for the newest note and for the lines of a write, the step
- * runs with no child, as if git had failed. The ask call then goes on
- * without those notes, and the write's result without those lines. A
- * save ends with the sentence that its findings could not be saved. A call
- * of the notes tool, and the list and the review record for the start of
- * an ask call, end with the error.
+ * compaction, for the newest note, for the members of a prompt and for the
+ * lines of a write, the step runs with no child, as if git had failed. The
+ * ask call then goes on without those notes or with the members that the
+ * table lists, and the write's result without those lines. A save ends
+ * with the sentence that its findings could not be saved. A call of the
+ * notes tool, and the list and the review record for the start of an ask
+ * call, end with the error.
  */
 static void
 notes_tool_failed (struct mcp_slot *slot,
@@ -375,8 +439,8 @@ notes_tool_failed (struct mcp_slot *slot,
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	char buf[96];
 	struct cstr_view const why = child_spawn_why(e, "git", buf, sizeof buf);
-	if (call->fetch & FETCH_SAVING) {
-		notes_tool_committed(slot);
+	if (call->fetch & (FETCH_SAVING | FETCH_PROMPT)) {
+		notes_tool_fetch_step(call->fetch)->out(slot);
 		return;
 	}
 	switch (call->fetch & FETCH_KIND) {
@@ -391,6 +455,19 @@ notes_tool_failed (struct mcp_slot *slot,
 		break;
 	}
 	mcp_slot_tell(slot, why, TOOL_FAILED);
+}
+
+/* Writes the name and the kind of the member whose notebook @p call reads
+ * to call->shows, such as "bro (agent)", and returns call->shows. Only a
+ * call that writes no note and attaches no note can use call->shows,
+ * which shares its storage.
+ */
+static char const *
+notes_tool_shows (struct notes_tool_call *call)
+{
+	util_format(call->shows, sizeof call->shows, "%s (%s)", call->book.name,
+	            member_kinds[call->book.kind].data);
+	return call->shows;
 }
 
 /* Returns the notebook that @p call selected, or else call->repo. */
@@ -452,12 +529,29 @@ notes_tool_run (struct mcp_slot *slot,
 	if (fetch & FETCH_REVISION)
 		cmd = notes_revision_words(&call->revision, repo, cmd, words);
 	call->fetch = fetch;
-	call->child = store_spawn(notes_store(call->loop->tool->notes), slot, cmd,
-	                          cmd == STORE_REFS ? notes_books : words, call->repo,
+	call->child = store_spawn(call->loop->tool->store, slot, cmd,
+	                          cmd == STORE_REFS ? member_list : words, call->repo,
 	                          buf_peek(in), &e);
 	buf_fini(in);
 	if (!call->child)
 		notes_tool_failed(slot, e);
+}
+
+/* Appends the notices of the agent and of the members to the prompt of the
+ * ask call in @p slot, and runs git to list the notes of the agent.
+ */
+static void
+notes_tool_prompt_notices (struct mcp_slot *slot)
+{
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	int e = cstr_view_cat(CSTR_VIEW("\n\n"), call->text);
+	e = e ? e : member_notice(&call->self, mcp_slot_member(slot), call->text);
+	e = e ? e : member_table_notice(call->loop->members, &call->self, call->text);
+	if (e) {
+		notes_tool_then(slot, e);
+		return;
+	}
+	notes_tool_run(slot, call->first, &(struct buf){}, 0);
 }
 
 void
@@ -472,12 +566,32 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
 	struct notes_tool_call *call = notes_tool_loop_take(loop, slot, prompt);
 	if (!call)
 		return;
+	struct member_call *member = mcp_slot_member(slot);
 	call->then = then;
 	call->thread = thread;
 	call->most = most;
-	notes_repo(loop->tool->notes, mcp_slot_principal(slot), NOTES_UPSTREAM, call->repo);
-	notes_tool_run(slot, what == NOTES_TOOL_RESUME ? FETCH_RESUME : FETCH_COMPACT,
-	               &(struct buf){}, 0);
+	notes_tool_agent(call);
+	call->book = call->self;
+	notes_ref(&call->self, call->repo);
+	if (what == NOTES_TOOL_COMPACT) {
+		call->first = FETCH_COMPACT;
+		notes_tool_prompt_notices(slot);
+		return;
+	}
+	call->first = FETCH_RESUME;
+	int e = hexid_make(&member->ask);
+	if (e) {
+		notes_tool_then(slot, e);
+		return;
+	}
+	/* The asker of an ask call whose turns get the notes becomes a member. */
+	call->fetch = FETCH_PROMPT;
+	if (member_table_claim(loop->members, &member->login, &call->wait) == EINPROGRESS) {
+		call->flags |= CALL_LOGIN;
+		(void)mcp_slot_park(slot);
+		return;
+	}
+	notes_tool_logged_in(slot);
 }
 
 /* Returns true if git wrote a list of the notes. A list that askai cut
@@ -498,14 +612,31 @@ notes_tool_none (struct child const *c)
 	return child_status(c) == 128;
 }
 
-/* Returns why git read no notes for @p call. Exit status 128 means that
- * the notebook does not exist yet.
+/* Ends the call in @p slot with why git read no notes. Exit status 128
+ * means that the notebook does not exist yet. For list, history and
+ * search, a notebook without notes is an answer, not a failure. A turn's
+ * offset applies to the answer, and a client's offset does not.
  */
-static struct cstr_view
-notes_tool_call_unread (struct notes_tool_call const *call)
+static void
+notes_tool_unread (struct mcp_slot *slot)
 {
-	return notes_tool_none(call->child) ? CSTR_VIEW("The notebook contains no notes yet.")
-	                                    : CSTR_VIEW("The notes could not be read.");
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	if (!notes_tool_none(call->child)) {
+		mcp_slot_tell(slot, CSTR_VIEW("The notes could not be read."), TOOL_FAILED);
+		return;
+	}
+	static char const yours[] = "Your notebook %s contains no notes yet.";
+	static char const other[] = "The notebook %s contains no notes yet.";
+	char buf[sizeof yours + MEMBER_NAME];
+	struct cstr_view const none = util_format_view(buf, sizeof buf,
+	                                               *call->notebook ? other : yours,
+	                                               call->book.name);
+	if (notes_tool_actions[call->action].flags & NOTE_FILE)
+		mcp_slot_tell(slot, none, TOOL_FAILED);
+	else if (mcp_slot_from_client(slot))
+		mcp_slot_tell(slot, none, 0);
+	else
+		notes_tool_end(slot, cstr_view_cat(none, call->text), false);
 }
 
 /* Fails the write in @p slot with why git did not write the note. The
@@ -524,7 +655,7 @@ notes_tool_unadded (struct mcp_slot *slot)
 		return;
 	}
 	if (store_raced(buf_peek(&c->out))) {
-		struct store const *store = notes_store(call->loop->tool->notes);
+		struct store const *store = call->loop->tool->store;
 		char const *repo = call->repo;
 		int64_t age = 0;
 		if (store_lock(store, repo, &age) || age <= STORE_STALE) {
@@ -536,8 +667,8 @@ notes_tool_unadded (struct mcp_slot *slot)
 		}
 		LOG(LOG_WARN, "notes: %s/%s.lock is %" PRId64 " s old; remove it if no "
 		    "git process uses the repository", store_directory(store), repo, age);
-		mcp_slot_tellf(slot, TOOL_FAILED, "Could not write the note. The notebook has been "
-		               "locked for %" PRId64 " s.", age);
+		mcp_slot_tellf(slot, TOOL_FAILED, "Could not write the note. Your notebook %s has "
+		               "been locked for %" PRId64 " s.", call->self.name, age);
 		return;
 	}
 	struct span out = buf_peek(&c->out);
@@ -558,8 +689,8 @@ static int
 notes_tool_call_message (struct notes_tool_call *call,
                          uint64_t                before)
 {
-	static_assert(sizeof "Copy  from  at : ( bytes)" + UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
-	              NOTES_REPO + OID_SHA256 + NOTES_NAME <= STORE_MESSAGE);
+	static_assert(sizeof "Copy  from the notebook of  at : ( bytes)" + UTIL_DECIMAL +
+	              2 * NOTES_NAME + 2 + MEMBER_NAME + OID_SHA256 + NOTES_NAME <= STORE_MESSAGE);
 	static_assert(sizeof "Restore  from : ( to  bytes)" + 2 * UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
 	              OID_SHA256 + NOTES_NAME <= STORE_MESSAGE);
 	uint32_t fetch = notes_tool_actions[call->action].fetch;
@@ -569,15 +700,19 @@ notes_tool_call_message (struct notes_tool_call *call,
 	 * notebook and the commit it read. With as, the message names the
 	 * source file after the commit, as commit:file. */
 	char const *commit = call->revision.from.hex;
-	char const *book = fetch & FETCH_COPY ? notes_selector(notes_tool_call_notebook(call)) : "";
+	char from[sizeof " from the notebook of  at " + MEMBER_NAME + OID_SHA256] = "";
+	if (fetch & FETCH_COPY)
+		util_format(from, sizeof from, " from the notebook of %s at %s", call->book.name,
+		            commit);
+	else if (*commit)
+		util_format(from, sizeof from, " from %s", commit);
 	char const *source = call->flags & CALL_AS ? call->revision.file.data : "";
 	int len = (int)call->part.name_len;
 	char const *name = (char const *)buf_peek(&call->file).ptr + call->part.name_at;
 	uint64_t after = call->part.data_len;
 	util_text_clear(&call->message);
-	int e = util_text_printf(&call->message, "%c%.*s %.*s%s%s%s%s%s%s", up, (int)verb.len - 1,
-	                         verb.data + 1, len, name, *commit ? " from " : "", book,
-	                         *book ? " at " : "", commit, *source ? ":" : "", source);
+	int e = util_text_printf(&call->message, "%c%.*s %.*s%s%s%s", up, (int)verb.len - 1,
+	                         verb.data + 1, len, name, from, *source ? ":" : "", source);
 	return e ? e : before == NO_NOTE
 	     ? util_text_printf(&call->message, " (%" PRIu64 " byte%s)", after, util_s(after))
 	     : util_text_printf(&call->message, " (%" PRIu64 " to %" PRIu64 " bytes)", before, after);
@@ -593,13 +728,31 @@ notes_tool_write (struct mcp_slot  *slot,
                   uint64_t          before)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
+	struct member_call const *member = mcp_slot_member(slot);
+	/* The author is the caller, and the committer is this askai. The
+	 * commit of a turn names the ask call, the conversation and the
+	 * asker. The request of a call of a client contains none of them. */
+	char email[sizeof "person/" + UTIL_WORD_MAX];
+	util_format(email, sizeof email, "%s/%s", member_kinds[call->self.kind].data,
+	            call->self.name);
+	struct store_trailer t[3];
+	size_t n = 0;
+	if (*member->ask.hex)
+		t[n++] = (struct store_trailer){ CSTR_VIEW("Ask"), hexid_view(&member->ask) };
+	if (*member->conversation.hex)
+		t[n++] = (struct store_trailer){ CSTR_VIEW("Conversation"),
+		                                 hexid_view(&member->conversation) };
+	if (*member->asker.name)
+		t[n++] = (struct store_trailer){ CSTR_VIEW("Asked-by"), cstr_view(member->asker.name) };
 	struct buf in = {};
 	int e = notes_tool_call_message(call, before);
-	/* The committer is the selector of the caller's own notebook. */
 	struct store_commit const commit = {
-		.committer = { cstr_view(notes_selector(call->repo)), CSTR_VIEW("askai") },
+		.author = { cstr_view(call->self.name), cstr_view(email) },
+		.committer = { cstr_view(notes_tool_session(call)->service), CSTR_VIEW("askai") },
 		.message = util_text_view(&call->message),
 		.files = buf_peek(&call->file),
+		.trailers = t,
+		.n_trailers = n,
 		.ref = call->repo,
 		.tip = tip,
 	};
@@ -617,9 +770,8 @@ notes_tool_write_record (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct buf in = {};
-	/* The committer is the selector of the caller's own notebook. */
 	struct store_commit const commit = {
-		.committer = { cstr_view(notes_selector(call->notebook)), CSTR_VIEW("askai") },
+		.committer = { cstr_view(notes_tool_session(call)->service), CSTR_VIEW("askai") },
 		.message = CSTR_VIEW("Save the review record"),
 		.files = buf_peek(&call->file),
 		.ref = call->repo,
@@ -628,29 +780,6 @@ notes_tool_write_record (struct mcp_slot *slot)
 	int e = store_commit_input(&commit, &in);
 	buf_fini(&call->file);
 	notes_tool_run(slot, FETCH_SAVE | FETCH_SAVING, &in, e);
-}
-
-/* Handles the end of git init for a write. The function writes the note,
- * or ends the call if git failed.
- */
-static void
-notes_tool_created (struct mcp_slot *slot)
-{
-	struct notes_tool_call *call = *mcp_slot_own(slot);
-	/* A save runs the commit even if git init failed, because the commit
-	 * then fails too. */
-	if (call->fetch & FETCH_SAVING) {
-		child_destroy(&call->child);
-		notes_tool_write_record(slot);
-		return;
-	}
-	if (child_ok(call->child) ||
-	    (store_raced(buf_peek(&call->child->out)) && store_exists(notes_store(call->loop->tool->notes)))) {
-		child_destroy(&call->child);
-		notes_tool_write(slot, &(struct oid){}, NO_NOTE);
-		return;
-	}
-	notes_tool_unadded(slot);
 }
 
 /* Ends the write in @p slot after it saved the note or left the note
@@ -745,14 +874,17 @@ notes_tool_checked (struct mcp_slot *slot)
 		}
 		return;
 	}
+	if (r == EIO) {
+		notes_tool_unread(slot);
+		return;
+	}
 	mcp_slot_tell(slot,
 	              r == EEXIST ? CSTR_VIEW("The note already exists. Change the note with "
 	                                      "replace or append, or choose another name.")
 	              : r == ENOENT ? no_note
 	              : r == EISDIR ? dir_name
-	              : r == ENOTDIR ? CSTR_VIEW("A part of the note name before a slash is a "
-	                                         "note.")
-	              : notes_tool_call_unread(call), TOOL_FAILED);
+	              : CSTR_VIEW("A part of the note name before a slash is a note."),
+	              TOOL_FAILED);
 }
 
 /* Ends the write in @p slot after its result named the new commit. If the
@@ -793,9 +925,10 @@ notes_tool_stated (struct mcp_slot *slot)
 
 /* Handles the end of git fast-import. The result contains the id of the
  * new commit and the commit message, or the reason why git did not save
- * the note. The caller's own notebook contains notes then, and the
- * function calls mcp_slot_noted(). After a replace or restore of an
- * existing note, git counts the lines that the write changed.
+ * the note. The result of a copy names the copy before the commit
+ * (notes_tool_got_copy()). The caller's own notebook contains notes then,
+ * and the function calls mcp_slot_noted(). After a replace or restore of
+ * an existing note, git counts the lines that the write changed.
  */
 static void
 notes_tool_added (struct mcp_slot *slot)
@@ -809,11 +942,17 @@ notes_tool_added (struct mcp_slot *slot)
 	struct oid commit;
 	if (store_committed(buf_peek(&call->child->out), &commit))
 		LOG(LOG_WARN, "notes: git fast-import gave no commit id");
+	/* The result of a copy names the copy instead of the message. */
+	struct cstr_view colon = CSTR_VIEW(": ");
+	struct cstr_view message = { call->message.data,
+	                             jb_utf8(call->message.data, call->message.len) };
+	if (notes_tool_actions[call->action].fetch & FETCH_COPY)
+		colon = message = CSTR_VIEW("");
 	struct cstr_view const p[] = {
 		oid_len(&commit) ? CSTR_VIEW("Saved in commit ") : CSTR_VIEW("Saved"),
 		oid_view(&commit),
-		CSTR_VIEW(": "),
-		{ call->message.data, jb_utf8(call->message.data, call->message.len) },
+		colon,
+		message,
 		CSTR_VIEW("."),
 	};
 	int e = cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""),
@@ -862,6 +1001,8 @@ notes_tool_history (struct mcp_slot *slot,
 		                                        &tm) : 0;
 		char const *subject = (char const *)entry.subject.ptr;
 		size_t subject_len = history ? jb_utf8(subject, entry.subject.len) : 0;
+		char const *asker = (char const *)entry.asker.ptr;
+		size_t const asker_len = jb_utf8(asker, entry.asker.len);
 		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", ++k, (int)w, when) ||
 		    !dstr_cat_n(d, name, jb_utf8(name, entry.name.len)) ||
 		    !(entry.added == NOTES_BINARY ? dstr_cat(d, "  (binary)")
@@ -869,6 +1010,7 @@ notes_tool_history (struct mcp_slot *slot,
 		    (history && !dstr_printf(d, "  commit %s%s%.*s", entry.commit.hex,
 		                            subject_len ? "  " : "",
 		                            (int)subject_len, subject_len ? subject : "")) ||
+		    (asker_len && !dstr_printf(d, ", asked by %.*s", (int)asker_len, asker)) ||
 		    !dstr_cat_n(d, "\n", 1))
 			return ENOMEM;
 		*newest = entry.name;
@@ -906,16 +1048,15 @@ notes_tool_files (struct mcp_slot *slot,
 static void
 notes_tool_got_list (struct mcp_slot *slot)
 {
-	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
 	bool const files = (call->fetch & FETCH_KIND) == FETCH_FILES;
 	bool const cut = c->end.flags & CHILD_CUT;
 	struct span const out = buf_peek(&c->out);
 	struct span newest;
-	int e = dstr_printf(call->text, "Notebook %s — %s:\n\n",
-	                    notes_selector(notes_tool_call_notebook(call)),
-	                    files ? "current files (bytes, blob)"
-	                          : "history, oldest first (lines +added -removed, commit, "
+	int e = dstr_printf(call->text, "Notebook %s: %s:\n\n", notes_tool_shows(call),
+	                    files ? "current notes (bytes, blob)"
+	                          : "changes, oldest first (lines +added -removed, commit, "
 	                            "message)")
 	      ? 0 : ENOMEM;
 	if (!e)
@@ -927,39 +1068,137 @@ notes_tool_got_list (struct mcp_slot *slot)
 	notes_tool_end(slot, e, bad);
 }
 
-/* Appends the session's notebooks to call->text: the selector of the
- * caller's own notebook, which does not need to have commits, then the
- * selector of each other notebook in the output of @p c, the git for
- * STORE_REFS, or the line that no other notebook has notes. @p c is
- * nullptr before the first note of the session. git lists loose and
- * packed refs. Returns 0 or ENOMEM.
+/* Appends to call->text the members of the session, each with the newest
+ * change of the notebook, and who the caller is. Returns 0 or ENOMEM.
  */
 static int
-notes_tool_books (struct notes_tool_call const *call,
-                  struct child const           *c)
+notes_tool_members_text (struct notes_tool_call *call)
 {
-	struct cstr_view const own = cstr_view(notes_selector(call->repo));
-	struct span const out = c ? buf_peek(&c->out) : (struct span){};
-	bool ok = dstr_printf(call->text, "Session notebooks (use a selector as notebook):\n"
-	                      "Self (writable): %s\n", own.data);
-	size_t peers = 0;
-	struct cstr_view rest = { (char const *)out.ptr, out.len };
-	for (struct cstr_view name; ok && cstr_view_cut(&rest, '\n', &name); ) {
-		bool const peer = !cstr_view_equal(name, own) && !notes_select(name, nullptr);
-		peers += peer;
-		ok = !peer || dstr_printf(call->text, "%.*s (read-only)\n", (int)name.len, name.data);
+	struct member_table const *table = call->loop->members;
+	struct member_session const *session = notes_tool_session(call);
+	int const width = member_table_width(table);
+	bool ok = dstr_printf(call->text, "Members of the session %.*s (name, kind, newest change "
+	                      "of the notebook):\n", (int)session->name.len, session->name.data);
+	struct member_info const *info;
+	for (size_t i = 0; ok && (info = member_table_info(table, i)); ++i) {
+		ok = dstr_printf(call->text, "%-*.*s  %-6s  ", width, (int)info->name.len,
+		                 info->name.data, member_kinds[info->kind].data);
+		char when[sizeof "2026-10-14 12:34 UTC"];
+		struct tm tm;
+		time_t const t = (time_t)info->time;
+		if (!(info->flags & MEMBER_NOTES) || !gmtime_r(&t, &tm) ||
+		    !strftime(when, sizeof when, "%Y-%m-%d %H:%M UTC", &tm)) {
+			ok = ok && dstr_cat(call->text, "no notes yet\n");
+			continue;
+		}
+		int const change = (int)jb_utf8(info->change.data, info->change.len);
+		int const asker = (int)jb_utf8(info->asker.data, info->asker.len);
+		ok = ok && dstr_printf(call->text, "%s  %.*s%s%.*s\n", when, change, info->change.data,
+		                       asker ? ", asked by " : "", asker, info->asker.data);
 	}
-	char const *end = c && c->end.flags & CHILD_CUT ? "[The notebook list is incomplete.]\n"
-	                : peers ? nullptr : "No other notebook contains notes yet.\n";
-	return ok && (!end || dstr_cat(call->text, end)) ? 0 : ENOMEM;
+	struct member const *self = &call->self;
+	char const *kind = member_kinds[self->kind].data;
+	if (!mcp_slot_from_client(call->slot))
+		ok = ok && dstr_printf(call->text, "You are the %s %s.", kind, self->name);
+	else if (*self->name)
+		ok = ok && dstr_printf(call->text, "You write as the %s %s.", kind, self->name);
+	else
+		ok = ok && dstr_cat(call->text, "You have no member name, so you cannot write notes.");
+	ok = ok && dstr_cat(call->text, " To read another notebook, give the member name as "
+	                    "notebook.\n");
+	return ok ? 0 : ENOMEM;
 }
 
-/* Handles the output of git for notebooks. */
-static void
-notes_tool_got_books (struct mcp_slot *slot)
+/* Appends to call->out the JSON object of the structured content of the
+ * members for a client: "members", each with its name and kind, and the
+ * time and the subject of the newest change of its notebook, and "you",
+ * the member of a caller with a member name. Stores the length of the
+ * object in @p *json. Returns 0 or ENOMEM.
+ */
+static int
+notes_tool_members_json (struct notes_tool_call *call,
+                         size_t                 *json)
 {
-	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	notes_tool_end(slot, notes_tool_books(call, call->child), false);
+	struct json_object *list = json_object_new_array();
+	struct member_info const *info;
+	for (size_t i = 0; list && (info = member_table_info(call->loop->members, i)); ++i) {
+		struct json_object *member = jb_object(
+			"name", jb_string(info->name),
+			"kind", json_object_new_string(member_kinds[info->kind].data),
+			nullptr);
+		char stamp[sizeof "2026-10-14T12:34:56Z"];
+		struct tm tm;
+		time_t const t = (time_t)info->time;
+		if (info->flags & MEMBER_NOTES && gmtime_r(&t, &tm) &&
+		    strftime(stamp, sizeof stamp, "%Y-%m-%dT%H:%M:%SZ", &tm)) {
+			struct cstr_view const change = { info->change.data,
+			                                  jb_utf8(info->change.data, info->change.len) };
+			member = jb_set_or_free(member, "time", json_object_new_string(stamp));
+			member = jb_set_or_free(member, "change", jb_string(change));
+		}
+		list = jb_push_or_free(list, member);
+	}
+	struct member const *self = &call->self;
+	struct json_object *structured = jb_object("members", list, nullptr);
+	if (*self->name)
+		structured = jb_set_or_free(structured, "you", jb_object(
+			"name", json_object_new_string(self->name),
+			"kind", json_object_new_string(member_kinds[self->kind].data),
+			nullptr));
+	if (!structured)
+		return ENOMEM;
+	struct cstr_view const wire = jb_wire(structured);
+	int e = wire.data ? cstr_view_cat(wire, &call->out) : ENOMEM;
+	*json = e ? 0 : wire.len;
+	json_object_put(structured);
+	return e;
+}
+
+/* Handles the output of git for the members of the session: for members,
+ * for the notebook argument of a call, or for the prompt of an ask call.
+ * member_table_refresh() reads the output into the table of the members.
+ * The prompt and the notebook argument go on with the table as it is if
+ * git failed.
+ */
+static void
+notes_tool_got_members (struct mcp_slot *slot)
+{
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	struct child const *c = call->child;
+	int e = child_ok(c) ? member_table_refresh(call->loop->members, buf_peek(&c->out)) : EIO;
+	if (e == EIO)
+		LOG(LOG_WARN, "notes: cannot read the members of the session");
+	child_destroy(&call->child);
+	if (e == ENOMEM) {
+		notes_tool_end(slot, ENOMEM, true);
+		return;
+	}
+	if (call->fetch & FETCH_PROMPT) {
+		notes_tool_prompt_notices(slot);
+		return;
+	}
+	if (call->fetch & FETCH_RESOLVE) {
+		notes_tool_resolve(slot);
+		return;
+	}
+	if (e) {
+		mcp_slot_tell(slot, CSTR_VIEW("The members could not be read."), TOOL_FAILED);
+		return;
+	}
+	/* The output is the text, then the JSON of a client. */
+	size_t json = 0;
+	e = notes_tool_members_text(call);
+	if (!e && mcp_slot_from_client(slot))
+		e = notes_tool_members_json(call, &json);
+	if (e) {
+		mcp_slot_fail(slot, e);
+		return;
+	}
+	struct cstr_view const out = cstr_view_dstr(&call->out);
+	mcp_slot_lend(slot, cstr_view_slice(out, 0, out.len - json));
+	if (json)
+		(void)mcp_slot_structured(slot, cstr_view_slice(out, out.len - json, SIZE_MAX));
+	mcp_slot_finish(slot, 0);
 }
 
 /* The brackets around a byte that the view of a note shows in hexadecimal. */
@@ -1061,11 +1300,12 @@ notes_tool_revision_step (struct mcp_slot *slot)
 	if (!child_ok(call->child) ||
 	    notes_revision_next(&call->revision, buf_peek(&call->child->out))) {
 		/* git pins the tip of the notebook first. */
-		mcp_slot_tell(slot, oid_len(&call->revision.tip)
-		                    ? CSTR_VIEW("The commit in revision, from or to is not in the "
-		                                "notebook history. Use a full commit ID from "
-		                                "action history.")
-		                    : notes_tool_call_unread(call), TOOL_FAILED);
+		if (oid_len(&call->revision.tip))
+			mcp_slot_tell(slot, CSTR_VIEW("The commit in revision, from or to is not in "
+			                              "the notebook history. Use a full commit ID "
+			                              "from action history."), TOOL_FAILED);
+		else
+			notes_tool_unread(slot);
 		return;
 	}
 	child_destroy(&call->child);
@@ -1080,14 +1320,13 @@ notes_tool_revision_step (struct mcp_slot *slot)
 static void
 notes_tool_got_diff (struct mcp_slot *slot)
 {
-	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
 	struct notes_revision const *r = &call->revision;
 	struct span out = buf_peek(&c->out);
 	struct dstr *d = call->text;
-	char const *selector = notes_selector(notes_tool_call_notebook(call));
-	(void)mcp_slot_shows(slot, selector);
-	int e = dstr_printf(d, "Notebook %s — %s\nfrom %s\nto %s\n\n", selector, r->file.data,
+	(void)mcp_slot_shows(slot, notes_tool_shows(call));
+	int e = dstr_printf(d, "Notebook %s: %s\nfrom %s\nto %s\n\n", call->shows, r->file.data,
 	                    r->from.hex, r->to.hex) ? 0 : ENOMEM;
 	struct cstr_view const diff = { (char const *)out.ptr, out.len };
 	if (!e)
@@ -1109,7 +1348,7 @@ notes_tool_got_diff (struct mcp_slot *slot)
 static void
 notes_tool_got_grep (struct mcp_slot *slot)
 {
-	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
 	bool const cut = c->end.flags & CHILD_CUT;
 	int const status = child_status(c);
@@ -1134,10 +1373,9 @@ notes_tool_got_grep (struct mcp_slot *slot)
 		    !dstr_cat_n(&found, "\n", 1) ? ENOMEM : 0;
 	}
 	struct cstr_view const lines = cstr_view_dstr(&found);
-	char const *repo = notes_tool_call_notebook(call);
 	if (!e)
-		e = dstr_printf(call->text, "Notebook %s — lines that match the pattern "
-		                "(file:line:text):\n\n", notes_selector(repo)) ? 0 : ENOMEM;
+		e = dstr_printf(call->text, "Notebook %s: lines that match the pattern "
+		                "(file:line:text):\n\n", notes_tool_shows(call)) ? 0 : ENOMEM;
 	if (!e)
 		e = lines.len ? notes_tool_show(call->text, lines)
 		  : cstr_view_cat(CSTR_VIEW("No line of the current notes matches the "
@@ -1154,14 +1392,17 @@ notes_tool_got_grep (struct mcp_slot *slot)
 static void
 notes_tool_got_note (struct mcp_slot *slot)
 {
-	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
 	struct span text = {};
 	struct oid id;
 	int r = child_ok(c) ? notes_read_out(buf_peek(&c->out), &text, &id) : EIO;
+	if (r == EIO) {
+		notes_tool_unread(slot);
+		return;
+	}
 	if (r) {
-		mcp_slot_tell(slot, r == ENOENT ? no_note : r == EISDIR ? dir_name
-		                  : notes_tool_call_unread(call), TOOL_FAILED);
+		mcp_slot_tell(slot, r == ENOENT ? no_note : dir_name, TOOL_FAILED);
 		return;
 	}
 	switch (call->fetch & (FETCH_COPY | FETCH_RESTORE | FETCH_APPEND | FETCH_ATTACH)) {
@@ -1177,11 +1418,10 @@ notes_tool_got_note (struct mcp_slot *slot)
 		return;
 	}
 	struct cstr_view const body = { (char const *)text.ptr, text.len };
-	char const *selector = notes_selector(notes_tool_call_notebook(call));
-	(void)mcp_slot_shows(slot, selector);
+	(void)mcp_slot_shows(slot, notes_tool_shows(call));
 	int e = 0;
 	if (call->fetch & FETCH_REVISION)
-		e = dstr_printf(call->text, "Notebook %s — %s at %s:\n\n", selector,
+		e = dstr_printf(call->text, "Notebook %s: %s at %s:\n\n", call->shows,
 		                call->revision.file.data, call->revision.from.hex) ? 0 : ENOMEM;
 	if (!e)
 		e = notes_tool_show(call->text, body);
@@ -1305,16 +1545,16 @@ notes_tool_prompt_list (struct mcp_slot  *slot,
 	bool named = !notes_name(&checked) && checked.len == name.len;
 	if (!e && named) {
 		struct cstr_view const p[] = {
-			CSTR_VIEW("\n[askai: the current text of your newest note, "),
+			CSTR_VIEW("[askai: The current text of your newest note, "),
 			{ name.data, jb_utf8(name.data, name.len) },
-			CSTR_VIEW(":]\n\n"),
+			CSTR_VIEW(":]\n"),
 		};
 		e = cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""),
 		                   call->text);
 		e = e ? e : notes_read_input(&in, call->repo, name);
 	} else if (!e && name.len) {
-		e = cstr_view_cat(CSTR_VIEW("\n[askai: the newest note could not "
-		                            "be read.]\n"), call->text);
+		e = cstr_view_cat(CSTR_VIEW("[askai: The newest note could not be read.]\n"),
+		                  call->text);
 	}
 	child_destroy(&call->child);
 	if (e || !named) {
@@ -1360,8 +1600,8 @@ notes_tool_newest (struct mcp_slot *slot)
 	                              body.len)
 	                            : (struct cstr_view){};
 	struct cstr_view const p[] = {
-		r == ENOENT ? CSTR_VIEW("[askai: the note was deleted.]")
-		: r ? CSTR_VIEW("[askai: the note could not be read.]") : body,
+		r == ENOENT ? CSTR_VIEW("[askai: The note was deleted.]")
+		: r ? CSTR_VIEW("[askai: The note could not be read.]") : body,
 		more,
 		CSTR_VIEW("\n"),
 	};
@@ -1370,50 +1610,34 @@ notes_tool_newest (struct mcp_slot *slot)
 	                                     UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""), call->text));
 }
 
-/* Handles the list of the notes for the start of an ask call. The list
- * goes into the prompt. If the notebook does not exist, the ask call goes
- * on without notes. If git failed otherwise, the ask call ends as failed.
+/* Handles the list of the notes of the agent for the prompt of an ask
+ * call, as it starts or after a compaction. The history goes into the
+ * prompt. A notebook without notes goes in as a notice that says so. If
+ * git failed otherwise, the start of an ask call ends as failed, and a
+ * compaction goes on with a notice that says so.
  */
 static void
 notes_tool_resumed (struct mcp_slot *slot)
 {
+	static char const history[] = "[askai: Your notebook is %s. Your note history, oldest "
+	                              "first. A repeated name is an update:]\n";
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	if (!notes_tool_listed(c)) {
-		if (notes_tool_none(c)) {
-			notes_tool_then(slot, 0);
-			return;
-		}
+	char head[sizeof history + MEMBER_NAME];
+	if (notes_tool_listed(c)) {
+		(void)mcp_slot_noted(slot);
+		notes_tool_prompt_list(slot, util_format_view(head, sizeof head, history,
+		                                              call->self.name));
+	} else if (c && notes_tool_none(c)) {
+		notes_tool_then(slot, dstr_printf(call->text, "[askai: Your notebook %s contains "
+		                                  "no notes yet.]\n", call->self.name) ? 0 : ENOMEM);
+	} else if ((call->fetch & FETCH_KIND) == FETCH_COMPACT) {
+		notes_tool_then(slot, cstr_view_cat(CSTR_VIEW("[askai: Your notes could not be "
+		                                              "read.]\n"), call->text));
+	} else {
 		notes_tool_drop(slot);
 		mcp_slot_tell(slot, CSTR_VIEW("Cannot read the session notes."), TOOL_FAILED);
-		return;
 	}
-	(void)mcp_slot_noted(slot);
-	notes_tool_prompt_list(slot, CSTR_VIEW("\n\n[askai: call notes with action list to "
-	                                       "list your current notes. Call notes with "
-	                                       "action notebooks to list the notebooks of the "
-	                                       "other participants. A repeated name in the "
-	                                       "history is an update. Your note history, "
-	                                       "oldest first:]\n\n"));
-}
-
-/* Handles the list of the notes for a compaction. The list goes into the
- * prompt. If git failed, the function appends the line "[askai: your
- * notes could not be read.]" instead.
- */
-static void
-notes_tool_compacted (struct mcp_slot *slot)
-{
-	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	if (notes_tool_listed(call->child)) {
-		notes_tool_prompt_list(slot, CSTR_VIEW("\n\n[askai: a repeated name in the "
-		                                       "history is an update. Your note history, "
-		                                       "oldest first:]\n\n"));
-		return;
-	}
-	notes_tool_then(slot, cstr_view_cat(CSTR_VIEW("\n\n[askai: your "
-	                                              "notes could not be "
-	                                              "read.]\n"), call->text));
 }
 
 /* Handles the output of git for the review record of a thread. Without the
@@ -1494,8 +1718,8 @@ notes_tool_loop_save (struct notes_tool_loop *loop,
 	if (!call)
 		return;
 	call->then = then;
-	notes_repo(loop->tool->notes, mcp_slot_principal(slot), NOTES_UPSTREAM, call->notebook);
-	notes_review(call->notebook, thread, call->repo);
+	notes_review(notes_tool_session(call)->agent, mcp_slot_principal(slot), thread,
+	             call->repo);
 	/* review_carry_json() writes the parent of the commit to
 	 * call->revision.tip. */
 	int e;
@@ -1510,28 +1734,24 @@ notes_tool_loop_save (struct notes_tool_loop *loop,
 		notes_tool_then(slot, e);
 		return;
 	}
-	if (store_exists(notes_store(loop->tool->notes)))
-		notes_tool_write_record(slot);
-	else
-		notes_tool_run(slot, FETCH_CREATE | FETCH_SAVING, &(struct buf){}, 0);
+	notes_tool_write_record(slot);
 }
 
 static struct notes_tool_fetch_step const notes_tool_fetch_steps[] = {
-	[FETCH_CREATE]  = { notes_tool_created,   STORE_CREATE, 0 },
-	[FETCH_CHECK]   = { notes_tool_checked,   STORE_CHECK,  0 },
-	[FETCH_ADD]     = { notes_tool_added,     STORE_COMMIT, 0 },
-	[FETCH_LIST]    = { notes_tool_got_list,  STORE_LOG,    1 },
-	[FETCH_READ]    = { notes_tool_got_note,  STORE_READ,   0 },
-	[FETCH_RESUME]  = { notes_tool_resumed,   STORE_LOG,    0 },
-	[FETCH_COMPACT] = { notes_tool_compacted, STORE_LOG,    0 },
-	[FETCH_BOOKS]   = { notes_tool_got_books, STORE_REFS,   1 },
-	[FETCH_FILES]   = { notes_tool_got_list,  STORE_FILES,  1 },
-	[FETCH_NEWEST]  = { notes_tool_newest,    STORE_READ,   0 },
-	[FETCH_DIFF]    = { notes_tool_got_diff,  STORE_DIFF,   1 },
-	[FETCH_STAT]    = { notes_tool_stated,    STORE_STAT,   0 },
-	[FETCH_GREP]    = { notes_tool_got_grep,  STORE_GREP,   0 },
-	[FETCH_RECORD]  = { notes_tool_carried,   STORE_READ,   0 },
-	[FETCH_SAVE]    = { notes_tool_committed, STORE_COMMIT, 0 },
+	[FETCH_CHECK]   = { notes_tool_checked,     STORE_CHECK,  0 },
+	[FETCH_ADD]     = { notes_tool_added,       STORE_COMMIT, 0 },
+	[FETCH_LIST]    = { notes_tool_got_list,    STORE_LOG,    1 },
+	[FETCH_READ]    = { notes_tool_got_note,    STORE_READ,   0 },
+	[FETCH_RESUME]  = { notes_tool_resumed,     STORE_LOG,    0 },
+	[FETCH_COMPACT] = { notes_tool_resumed,     STORE_LOG,    0 },
+	[FETCH_MEMBERS] = { notes_tool_got_members, STORE_REFS,   0 },
+	[FETCH_FILES]   = { notes_tool_got_list,    STORE_FILES,  1 },
+	[FETCH_NEWEST]  = { notes_tool_newest,      STORE_READ,   0 },
+	[FETCH_DIFF]    = { notes_tool_got_diff,    STORE_DIFF,   1 },
+	[FETCH_STAT]    = { notes_tool_stated,      STORE_STAT,   0 },
+	[FETCH_GREP]    = { notes_tool_got_grep,    STORE_GREP,   0 },
+	[FETCH_RECORD]  = { notes_tool_carried,     STORE_READ,   0 },
+	[FETCH_SAVE]    = { notes_tool_committed,   STORE_COMMIT, 0 },
 };
 static_assert(array_size(notes_tool_fetch_steps) <= FETCH_KIND + 1);
 
@@ -1546,10 +1766,13 @@ void
 notes_tool_step (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	/* Only attach reaches this step without a child. The step then handles
-	 * the answer to the upload. */
+	/* The lookup of a login and attach reach this step without a child.
+	 * For attach, the step handles the answer to the upload. */
 	if (!call->child) {
-		notes_tool_uploaded(slot);
+		if (call->flags & CALL_LOGIN)
+			notes_tool_logged_in(slot);
+		else
+			notes_tool_uploaded(slot);
 		return;
 	}
 	if (call->fetch & FETCH_REVISION && !notes_revision_ready(&call->revision)) {
@@ -1558,7 +1781,7 @@ notes_tool_step (struct mcp_slot *slot)
 	}
 	struct notes_tool_fetch_step const *row = notes_tool_fetch_step(call->fetch);
 	if (row->listed && !notes_tool_listed(call->child))
-		mcp_slot_tell(slot, notes_tool_call_unread(call), TOOL_FAILED);
+		notes_tool_unread(slot);
 	else
 		row->out(slot);
 }
@@ -1568,8 +1791,7 @@ static_assert(TOOL_TEXT_MAX == 4U << 20 && NOTES_NAME == 255 && HEXID_DIGITS == 
               "digits");
 
 /* Runs git to check the name @p name of the note in call->file before the
- * write, or to create the shared repository if it does not exist. If
- * @p e is not 0, the function ends the call with @p e instead.
+ * write. If @p e is not 0, the function ends the call with @p e instead.
  */
 static void
 notes_tool_check (struct mcp_slot  *slot,
@@ -1578,18 +1800,165 @@ notes_tool_check (struct mcp_slot  *slot,
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct buf in = {};
-	uint32_t fetch = FETCH_CREATE;
-	if (!e && store_exists(notes_store(call->loop->tool->notes))) {
-		fetch = FETCH_CHECK;
+	if (!e)
 		e = notes_check_input(&in, call->repo, name);
+	notes_tool_run(slot, FETCH_CHECK, &in, e);
+}
+
+/* Runs call->first, the first git run of the call in @p slot, once the
+ * caller and the notebook are known. For a check of a write and for a
+ * read without a revision, the input of git names the note
+ * call->revision.file.
+ */
+static void
+notes_tool_launch (struct mcp_slot *slot)
+{
+	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	struct cstr_view const name = util_text_view(&call->revision.file);
+	struct buf in = {};
+	int e = 0;
+	if ((call->first & FETCH_KIND) == FETCH_CHECK)
+		e = notes_check_input(&in, call->repo, name);
+	else if ((call->first & (FETCH_KIND | FETCH_REVISION)) == FETCH_READ)
+		e = notes_read_input(&in, notes_tool_call_notebook(call), name);
+	notes_tool_run(slot, call->first, &in, e);
+}
+
+/* Finds the notebook of the call in @p slot once the caller is known, and
+ * runs the first git of the call. A call that writes a note as the caller
+ * (NOTE_AUTHOR) needs a caller with a member name, and a write writes only
+ * the notebook of the caller. The notebook argument names a member of the
+ * table. For a name without a member in the table, git lists the members
+ * once, and the call looks again.
+ */
+static void
+notes_tool_resolve (struct mcp_slot *slot)
+{
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	uint32_t const fetch = notes_tool_actions[call->action].fetch;
+	uint32_t const flags = notes_tool_actions[call->action].flags;
+	bool const own = !*call->book.name || !strcmp(call->book.name, call->self.name);
+	if (!*call->self.name) {
+		/* The refusal of a login by a record comes with a reason. */
+		struct cstr_view const why = cstr_view(call->wait.why);
+		if (flags & NOTE_AUTHOR) {
+			mcp_slot_tell(slot, why.len ? why
+			              : CSTR_VIEW("Writing notes needs a member name. Connect through "
+			                          "the Unix socket, or with the token of an "
+			                          "identity."), TOOL_FAILED);
+			return;
+		}
+		if (own && fetch != FETCH_MEMBERS) {
+			mcp_slot_tell(slot, why.len ? why
+			              : CSTR_VIEW("You have no notebook, because you have no member "
+			                          "name. Give a name as notebook. Action members "
+			                          "lists the names."), TOOL_FAILED);
+			return;
+		}
+	} else {
+		notes_ref(&call->self, call->repo);
+		if (flags & NOTE_WRITE && !own) {
+			mcp_slot_tellf(slot, TOOL_FAILED, "You can write only your notebook, %s.",
+			               call->self.name);
+			return;
+		}
 	}
-	notes_tool_run(slot, fetch, &in, e);
+	if (fetch == FETCH_MEMBERS) {
+		notes_tool_launch(slot);
+		return;
+	}
+	int e = own ? 0 : member_table_name(call->loop->members, cstr_view(call->book.name),
+	                                    &call->book);
+	if (e && !(call->fetch & FETCH_RESOLVE)) {
+		notes_tool_run(slot, FETCH_MEMBERS | FETCH_RESOLVE, &(struct buf){}, 0);
+		return;
+	}
+	if (e) {
+		e = member_table_unknown(call->loop->members, cstr_view(call->book.name), call->text);
+		notes_tool_end(slot, e, true);
+		return;
+	}
+	if (own)
+		call->book = call->self;
+	else
+		notes_ref(&call->book, call->notebook);
+	notes_tool_launch(slot);
+}
+
+/* Goes on with the call in @p slot once the lookup of the member of the
+ * login of its client has ended. A login without a member (ENOENT) and a
+ * login that a record refuses (EPERM) go on without a member name. Any
+ * other error of the lookup, such as EAGAIN for a busy askai, ends the
+ * call with the reason. For the prompt of an ask call, the member is then
+ * the asker, and git lists the members. A call of the notes tool finds its
+ * notebook.
+ */
+static void
+notes_tool_logged_in (struct mcp_slot *slot)
+{
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	call->flags &= ~CALL_LOGIN;
+	int const e = call->wait.e;
+	if (e && e != ENOENT && e != EPERM) {
+		char why[MEMBER_WHY];
+		memcpy(why, call->wait.why, sizeof why);
+		notes_tool_drop(slot);
+		if (*why)
+			mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
+		else
+			mcp_slot_fail(slot, e);
+		return;
+	}
+	if (call->fetch & FETCH_PROMPT) {
+		mcp_slot_member(slot)->asker = call->wait.member;
+		notes_tool_run(slot, FETCH_MEMBERS | FETCH_PROMPT, &(struct buf){}, 0);
+		return;
+	}
+	if (!e)
+		call->self = call->wait.member;
+	notes_tool_resolve(slot);
+}
+
+/* Stages @p fetch as the first git run of the call in @p slot. The caller
+ * of a turn is the agent of askai. For a client, the function first finds
+ * the member of its login. A call that writes a note as the caller
+ * (NOTE_AUTHOR) claims the member, which makes the record of a new member
+ * (member_table_claim()). Any other call only finds the member
+ * (member_table_find()). If @p e is not 0, the function ends the call with
+ * @p e instead.
+ */
+static void
+notes_tool_stage (struct mcp_slot *slot,
+                  uint32_t         fetch,
+                  int              e)
+{
+	if (e) {
+		notes_tool_end(slot, e, true);
+		return;
+	}
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	call->first = fetch;
+	if (!mcp_slot_from_client(slot)) {
+		notes_tool_agent(call);
+		notes_tool_resolve(slot);
+		return;
+	}
+	struct member_login const *login = &mcp_slot_member(slot)->login;
+	if (notes_tool_actions[call->action].flags & NOTE_AUTHOR)
+		e = member_table_claim(call->loop->members, login, &call->wait);
+	else
+		e = member_table_find(call->loop->members, login, &call->wait);
+	if (e == EINPROGRESS) {
+		call->flags |= CALL_LOGIN;
+		(void)mcp_slot_park(slot);
+		return;
+	}
+	notes_tool_logged_in(slot);
 }
 
 /* Starts add, append or replace of the note @p name with the arguments
  * @p args. For append, the file part contains the text to append. The note
- * goes to the caller's own notebook. git creates the shared repository
- * first if it does not exist. A turn's text is cut before its
+ * goes to the caller's own notebook. A turn's text is cut before its
  * trailing notices (notice_kept()), because askai adds those notices only
  * to the results of a turn's calls.
  */
@@ -1608,7 +1977,6 @@ notes_tool_add (struct mcp_slot    *slot,
 	char big[96];
 	struct cstr_view const problem =
 		notes_name(&name) ? bad_name
-		: !notes_select(name, nullptr) ? selector_name
 		: !content ? (!text.len || text.len > TOOL_TEXT_MAX || memchr(text.data, '\0', text.len)
 		              ? CSTR_VIEW("The text argument must be a string of 1 byte to 4 MiB "
 		                          "without NUL bytes.")
@@ -1650,11 +2018,12 @@ notes_tool_add (struct mcp_slot    *slot,
 			*(char *)mempcpy(buf_peek(&call->file).ptr + call->part.data_at, text.data,
 			                 kept) = '\n';
 	}
-	notes_tool_check(slot, name, e);
+	notes_tool_stage(slot, FETCH_CHECK, e);
 }
 
 /* Writes @p text to the note call->name in the caller's own notebook. A
- * restore fails if @p text is longer than TOOL_TEXT_MAX bytes.
+ * restore fails if @p text is longer than TOOL_TEXT_MAX bytes. The result
+ * of a copy begins with the note and the notebook that it copies.
  */
 static void
 notes_tool_got_copy (struct mcp_slot *slot,
@@ -1669,6 +2038,10 @@ notes_tool_got_copy (struct mcp_slot *slot,
 	struct cstr_view const to = util_text_view(&call->name);
 	struct cstr_view const bytes = { (char const *)text.ptr, text.len };
 	int e = store_part_file(&call->part, &call->file, to, bytes);
+	if (!e && call->fetch & FETCH_COPY)
+		e = dstr_printf(call->text, "Copied note %s of notebook %s at %s into your notebook "
+		                "as %s. ", call->revision.file.data, call->book.name,
+		                call->revision.from.hex, to.data) ? 0 : ENOMEM;
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, text.len);
 	child_destroy(&call->child);
 	notes_tool_check(slot, to, e);
@@ -1684,8 +2057,8 @@ notes_tool_delete (struct mcp_slot  *slot,
 		mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 		return;
 	}
-	int e = store_part_delete(&call->part, &call->file, name);
-	notes_tool_check(slot, name, e);
+	(void)util_text_store(&call->revision.file, name);
+	notes_tool_stage(slot, FETCH_CHECK, store_part_delete(&call->part, &call->file, name));
 }
 
 /* Writes the note @p old, which git read at call->revision.tip, and the
@@ -1742,11 +2115,11 @@ notes_tool_search (struct mcp_slot  *slot,
 		                              "regular expression."), TOOL_FAILED);
 		return;
 	}
-	notes_tool_run(slot, FETCH_GREP | FETCH_REVISION, &(struct buf){},
-	               buf_put(&call->file, pattern.data, pattern.len, SIZE_MAX));
+	notes_tool_stage(slot, FETCH_GREP | FETCH_REVISION,
+	                 buf_put(&call->file, pattern.data, pattern.len, SIZE_MAX));
 }
 
-/* Runs git to read the note @p name. @p fetch is the fetch of read or
+/* Starts the read of the note @p name. @p fetch is the fetch of read or
  * attach.
  */
 static void
@@ -1758,9 +2131,9 @@ notes_tool_read (struct mcp_slot  *slot,
 		mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 		return;
 	}
-	struct buf in = {};
-	int e = notes_read_input(&in, notes_tool_call_notebook(*mcp_slot_own(slot)), name);
-	notes_tool_run(slot, fetch, &in, e);
+	struct notes_tool_call *call = *mcp_slot_own(slot);
+	(void)util_text_store(&call->revision.file, name);
+	notes_tool_stage(slot, fetch, 0);
 }
 
 /* Starts diff, restore, copy, read with a revision, or history with a
@@ -1796,13 +2169,15 @@ notes_tool_revision (struct mcp_slot          *slot,
 	}
 	if ((fetch & FETCH_KIND) != FETCH_LIST)
 		fetch |= FETCH_REVISION;
-	notes_tool_run(slot, fetch, &(struct buf){}, 0);
+	notes_tool_stage(slot, fetch, 0);
 }
 
 /* Starts a call of the notes tool in @p slot with the arguments @p args.
- * This is the start() of the notes kind. All instances of askai that use
- * the same repository share the notes. Every write goes to call->repo,
- * the branch that notes_repo() makes for the caller.
+ * This is the start() of the notes kind. The function checks the
+ * arguments and copies the parts of the arguments that the call needs,
+ * because a client's arguments can be gone once the call waits. Then the
+ * call finds the caller and the notebook (notes_tool_stage()). Every write
+ * goes to call->repo, the notebook of the caller.
  */
 static void
 notes_tool_start (struct mcp_slot    *slot,
@@ -1811,12 +2186,8 @@ notes_tool_start (struct mcp_slot    *slot,
 	struct notes_tool_call *call = notes_tool_loop_take(mcp_slot_part(slot), slot, nullptr);
 	if (!call)
 		return;
-	enum notes_side const side = mcp_slot_from_client(slot) ? NOTES_CLIENT : NOTES_UPSTREAM;
-	struct notes const *notes = call->loop->tool->notes;
-	struct store const *store = notes_store(notes);
-	notes_repo(notes, mcp_slot_principal(slot), side, call->repo);
-	size_t const offered = side == NOTES_UPSTREAM ? call->loop->tool->actions
-	                                              : NOTES_ACTION_ATTACH;
+	size_t const offered = mcp_slot_from_client(slot) ? NOTES_ACTION_ATTACH
+	                                                  : call->loop->tool->actions;
 	size_t const which = cstr_view_index(notes_action_names, offered,
 	                                     jb_view(jb_get(args, "action")));
 	if (which == offered) {
@@ -1843,49 +2214,28 @@ notes_tool_start (struct mcp_slot    *slot,
 		                              "and to only with diff."), TOOL_FAILED);
 		return;
 	}
-	if (side == NOTES_CLIENT) {
-		struct json_object *thread = jb_get(args, "thread");
-		if (thread && !hexid_valid(jb_view(thread))) {
-			mcp_slot_tell(slot, CSTR_VIEW("The thread argument must be 32 hexadecimal "
-			                              "digits. The notes do not depend on "
-			                              "thread."), TOOL_FAILED);
-			return;
-		}
-	}
-	/* A copy without a notebook argument reads the notebook of the other
-	 * side if the caller is a client. A turn must give the notebook
-	 * argument for a copy. */
-	struct json_object *notebook = jb_get(args, "notebook");
+	/* The notebook argument is the name of a member. members lists them
+	 * all, without the notebook argument. */
+	struct json_object *notebook = fetch == FETCH_MEMBERS ? nullptr : jb_get(args, "notebook");
 	struct cstr_view const selected = jb_view(notebook);
-	bool other = cstr_view_equal(selected, CSTR_VIEW("other"));
-	if (!notebook && (fetch & FETCH_COPY)) {
-		if (side == NOTES_UPSTREAM) {
-			mcp_slot_tell(slot, CSTR_VIEW("copy needs notebook. Give the source "
-			                              "notebook as a participant's name or a "
-			                              "selector from action notebooks."),
-			              TOOL_FAILED);
-			return;
-		}
-		other = true;
+	if (notebook && !selected.len) {
+		mcp_slot_tell(slot, CSTR_VIEW("The notebook argument must be the name of a member. "
+		                              "Action members lists the names."), TOOL_FAILED);
+		return;
 	}
-	if (other) {
-		notes_repo(notes, mcp_slot_principal(slot),
-		           side == NOTES_CLIENT ? NOTES_UPSTREAM : NOTES_CLIENT, call->notebook);
-	} else if (!notebook || cstr_view_equal(selected, CSTR_VIEW("own"))) {
-		/* The call reads the caller's own notebook, call->repo. */
-	} else if (member_name_valid(selected)) {
-		notes_book(selected, mcp_slot_principal(slot), side, call->notebook);
-	} else if (notes_select(selected, call->notebook)) {
-		mcp_slot_tell(slot, CSTR_VIEW("The notebook argument must be own, a participant's "
-		                              "name, or a selector from action notebooks."),
+	if (notebook && !member_name_valid(selected)) {
+		notes_tool_end(slot, member_table_unknown(call->loop->members, selected, call->text),
+		               true);
+		return;
+	}
+	if (!notebook && fetch & FETCH_COPY) {
+		mcp_slot_tell(slot, CSTR_VIEW("copy needs notebook: the name of the member whose "
+		                              "note you copy. Action members lists the names."),
 		              TOOL_FAILED);
 		return;
 	}
-	if ((flags & NOTE_WRITE) && *call->notebook && strcmp(call->notebook, call->repo)) {
-		mcp_slot_tell(slot, CSTR_VIEW("You can write notes only to your own notebook."),
-		              TOOL_FAILED);
-		return;
-	}
+	util_format(call->book.name, sizeof call->book.name, "%.*s", (int)selected.len,
+	            notebook ? selected.data : "");
 	if ((flags & NOTE_OFFSET) && mcp_slot_offset(slot, args))
 		return;
 	struct cstr_view const name = jb_view(file);
@@ -1894,11 +2244,8 @@ notes_tool_start (struct mcp_slot    *slot,
 		 * file. */
 		struct json_object *as = jb_get(args, "as");
 		struct cstr_view target = as ? jb_view(as) : name;
-		struct cstr_view const why = notes_name(&target) ? bad_name
-		                           : as && !notes_select(target, nullptr) ? selector_name
-		                           : (struct cstr_view){};
-		if (why.data) {
-			mcp_slot_tell(slot, why, TOOL_FAILED);
+		if (notes_name(&target)) {
+			mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 			return;
 		}
 		(void)util_text_store(&call->name, target);
@@ -1912,79 +2259,49 @@ notes_tool_start (struct mcp_slot    *slot,
 		notes_tool_revision(slot, name, revisions, fetch);
 		return;
 	}
-	if (fetch & FETCH_REPLACE && !store_exists(store)) {
-		mcp_slot_tell(slot, no_note, TOOL_FAILED);
-		return;
-	}
-	if (fetch & FETCH_DELETE) {
+	if (fetch & FETCH_DELETE)
 		notes_tool_delete(slot, name);
-		return;
-	}
-	if (flags & NOTE_WRITE) {
+	else if (flags & NOTE_WRITE)
 		notes_tool_add(slot, name, args);
-		return;
-	}
-	if (!store_exists(store)) {
-		/* This answer does not fail the call. A turn's offset applies to it,
-		 * and a client's offset does not. */
-		struct cstr_view const none = CSTR_VIEW("The session contains no notes yet.");
-		if (fetch == FETCH_BOOKS)
-			notes_tool_end(slot, notes_tool_books(call, nullptr), false);
-		else if (side == NOTES_CLIENT)
-			mcp_slot_tell(slot, none, 0);
-		else
-			notes_tool_end(slot, cstr_view_cat(none, call->text), false);
-		return;
-	}
-	if (flags & NOTE_FILE)
+	else if (flags & NOTE_FILE)
 		notes_tool_read(slot, name, fetch);
 	else if (fetch == FETCH_GREP)
 		notes_tool_search(slot, jb_view(jb_get(args, "pattern")));
 	else
-		notes_tool_run(slot, fetch, &(struct buf){}, 0);
+		notes_tool_stage(slot, fetch, 0);
 }
 
-/* Returns the definition of the notes tool for the side @p side. Only the
- * definition for clients contains the content and thread arguments. The
- * definition for the upstream contains only the first tool->actions
- * entries of notes_action_names in the enum of the action argument.
+/* Returns the definition of the notes tool for a turn if @p turn is true,
+ * or else for clients. Only the definition for clients contains the
+ * content argument. The definition for a turn contains only the first
+ * tool->actions entries of notes_action_names in the enum of the action
+ * argument.
  */
 static struct json_object *
 notes_tool_schema (struct notes_tool const *tool,
-                   enum notes_side          side)
+                   bool                     turn)
 {
-	static char const *const descriptions[] = {
-		[NOTES_UPSTREAM] =
-			"Notes are files in notebooks. Every version of a note stays in the "
-			"history. You can read every notebook. You can write only your own "
-			"notebook. Each ask call and each compaction starts with your note history "
-			"and your newest note.",
-		[NOTES_CLIENT] =
-			"Notes are files in notebooks. Every version of a note stays in the "
-			"history. You can read every notebook. You can write only your own "
-			"notebook.",
-	};
-	static char const *const notebooks[] = {
-		[NOTES_UPSTREAM] = "The notebook to read: own, a participant's name, or a "
-		                   "selector from action notebooks. The default is own. copy "
-		                   "needs notebook.",
-		[NOTES_CLIENT] = "The notebook to read: own, other, a participant's name, or a "
-		                 "selector from action notebooks. other is the notebook of your "
-		                 "ask_ai calls. The default is own, or other for copy.",
-	};
-	size_t const offered = side == NOTES_UPSTREAM ? tool->actions : NOTES_ACTION_ATTACH;
+	struct member_session const *session = member_registry_session(tool->members);
+	char const *agent = session ? session->agent : "";
+	dstr_auto notebook = DSTR_INIT;
+	if (!dstr_printf(&notebook, "The notebook to read: the name of a member, such as %s. "
+	                 "Action members lists the names. The default is your notebook. copy "
+	                 "needs notebook.", agent))
+		return nullptr;
+	size_t const offered = turn ? tool->actions : NOTES_ACTION_ATTACH;
 	struct json_object *actions = schema_names(notes_action_names, offered);
 	struct json_object *props = jb_object(
 		"action", jb_set_or_free(schema_enum(actions, nullptr), "description", schema_text3(
 			"add creates the note named file with text. append adds text to the end of "
 			"the note, on a new line. replace replaces the note with text. delete "
 			"deletes the note. restore writes the note at the commit revision in a new "
-			"commit. copy copies the note from notebook to your own notebook. list "
-			"lists the current notes. history lists the changes, oldest first. read "
-			"reads the note, or the note at the commit revision. diff shows the "
-			"changes to the note between the commits from and to. search finds the "
-			"lines of the current notes that match pattern. Note names are not "
-			"searched. notebooks lists the notebooks of the session.",
+			"commit. copy copies the note from notebook to your notebook. list lists "
+			"the current notes. history lists the changes, oldest first. read reads "
+			"the note, or the note at the commit revision. diff shows the changes to "
+			"the note between the commits from and to. search finds the lines of the "
+			"current notes that match pattern. Note names are not searched. members "
+			"lists the members of this session and the newest change of each "
+			"notebook.",
 			offered > NOTES_ACTION_ATTACH ? " attach sends you the whole note as a "
 			                                "file after the results of the turn." : "",
 			" To recover lost text: history with file, then diff, then read or restore "
@@ -2010,9 +2327,9 @@ notes_tool_schema (struct notes_tool const *tool,
 			"Each line of pattern is an extended regular expression. Case is ignored. "
 			"A line of a note matches if any expression matches."),
 		"offset", schema_count(0, TOOL_OFFSET_ABOUT),
-		"notebook", schema_property("string", notebooks[side]),
+		"notebook", schema_property("string", dstr_get(&notebook)),
 		nullptr);
-	if (side == NOTES_CLIENT) {
+	if (!turn) {
 		/* The client program, not the model, fills in content with a
 		 * file (the extension io.modelcontextprotocol/files). */
 		props = jb_set_or_free(props, "content", jb_object(
@@ -2026,18 +2343,28 @@ notes_tool_schema (struct notes_tool const *tool,
 			                        json_object_new_int64((int64_t)tool->files_inline),
 			                        nullptr),
 			nullptr));
-		props = jb_set_or_free(props, "thread", schema_property("string",
-			"A legacy argument of 32 hexadecimal digits. The notes do not depend on "
-			"thread."));
 	}
 	dstr_auto description = DSTR_INIT;
-	if (!dstr_printf(&description, "Participant: %s. %s Prefer small edits. Before "
-	                 "replace, read the whole note. Send the whole new text. Copy "
-	                 "unrelated passages and evidence word for word. To rewrite most of a "
-	                 "note, add a new file such as plan-v2.md. Keep the old file. In the "
-	                 "new file, name the old file and the changes. NUL bytes and bytes of "
-	                 "invalid UTF-8 show as \xe2\x9f\xa6XX\xe2\x9f\xa7.",
-	                 notes_writer(tool->notes), descriptions[side])) {
+	bool ok = dstr_cat(&description, "Notes are files in notebooks. Each member of this "
+	                   "session has one notebook. The notebook has the name of the member. A "
+	                   "member is a person or an agent. ");
+	ok = ok && (turn ? dstr_printf(&description, "You are the agent %s. Your notebook is %s. "
+	                               "You can read every notebook. You can write only your "
+	                               "notebook. Every version of a note stays in the history. "
+	                               "Each ask call and each compaction starts with your note "
+	                               "history and your newest note.", agent, agent)
+	                 : dstr_cat(&description, "Your calls write to the notebook of the member "
+	                            "that your login or your token names. Action members shows "
+	                            "your member name. The notebook of a person can contain text from "
+	                            "every client program of the person. You can read every "
+	                            "notebook. Every version of a note stays in the history."));
+	ok = ok && dstr_cat(&description, " Prefer small edits. Before replace, read the whole "
+	                    "note. Send the whole new text. Copy unrelated passages and evidence "
+	                    "word for word. To rewrite most of a note, add a new file such as "
+	                    "plan-v2.md. Keep the old file. In the new file, name the old file and "
+	                    "the changes. NUL bytes and bytes of invalid UTF-8 show as "
+	                    "\xe2\x9f\xa6XX\xe2\x9f\xa7.");
+	if (!ok) {
 		json_object_put(props);
 		return nullptr;
 	}
@@ -2058,19 +2385,17 @@ static struct json_object *
 notes_tool_definition (void const *service)
 {
 	struct notes_tool const *tool = service;
-	struct json_object *def = notes_tool_schema(tool, NOTES_CLIENT);
-	/* The session record names the session with its ID, which stays the
-	 * same when askai or the client restarts. Clients use the notebooks
-	 * action to find the participants with notes. The branch of a new
-	 * writer does not exist yet, so the definition names the
-	 * participant. */
+	struct json_object *def = notes_tool_schema(tool, false);
+	/* The session ID stays the same when askai or the client restarts.
+	 * Clients find the members with the action members. */
 	struct member_session const *session = member_registry_session(tool->members);
-	struct cstr_view const id = session ? session->id : (struct cstr_view){};
+	if (!session)
+		return def;
 	return jb_set_or_free(def, "_meta", jb_object(
 		"askai", jb_object(
-			"session", json_object_new_string_len(id.data, (int)id.len),
-			"participant", json_object_new_string(notes_writer(tool->notes)),
-			"notebooks", json_object_new_boolean(1),
+			"session", jb_string(session->id),
+			"agent", json_object_new_string(session->agent),
+			"members", json_object_new_boolean(1),
 			nullptr),
 		nullptr));
 }
@@ -2078,7 +2403,7 @@ notes_tool_definition (void const *service)
 struct json_object *
 notes_tool_upstream_definition (void const *service)
 {
-	return notes_tool_schema(service, NOTES_UPSTREAM);
+	return notes_tool_schema(service, true);
 }
 
 struct plugin const notes_tool_plugin = {

@@ -894,10 +894,11 @@ manual_find (struct manual_loop  *ml,
  * @p children. Returns the part, or nullptr with ENOMEM in @p *e.
  */
 void *
-manual_loop_create (void        *service,
-                    struct loop *loop,
-                    struct list *children,
-                    int         *e)
+manual_loop_create (void           *service,
+                    struct loop    *loop,
+                    struct blocker *,
+                    struct list    *children,
+                    int            *e)
 {
 	struct manual_loop *ml = malloc(sizeof *ml);
 	if (!ml) {
