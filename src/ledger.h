@@ -93,7 +93,10 @@ static constexpr uint64_t LEDGER_ANONYMOUS = UINT64_C(1) << 63;
         X(CANCELLED, "cancelled")  /* as its client asked */
 
 #define LEDGER_STATUS_ENUM(id, ...) LEDGER_##id,
-enum ledger_status { LEDGER_STATUS_LIST(LEDGER_STATUS_ENUM) LEDGER_STATUSES };
+enum ledger_status {
+	LEDGER_STATUS_LIST(LEDGER_STATUS_ENUM)
+	LEDGER_STATUSES
+};
 #undef LEDGER_STATUS_ENUM
 
 /** The bits of the state of a record besides its status, an enum
@@ -108,14 +111,19 @@ enum ledger_state : uint64_t {
 
 static_assert(LEDGER_STATUSES - 1 <= LEDGER_STATUS);
 
-/** What made a record: X(ID, name), the constant LEDGER_ID and its word.
- *  TASK is a tool call that became a task of MCP's tasks extension, and
- *  JOB a client's background wrapper or detached ask call.
+/** The kinds of records, one X(ID, name) row per kind. The kind of a
+ *  record is what made the record. The enum constant of a kind is
+ *  LEDGER_ID, and name is the word for the kind.
  */
-#define LEDGER_KIND_LIST(X) X(TASK, "task") X(JOB, "job")
+#define LEDGER_KIND_LIST(X)                                                       \
+        X(TASK, "task")  /* a tool call that became an MCP task */                \
+        X(JOB,  "job")   /* a client's background wrapper or detached ask call */
 
 #define LEDGER_KIND_ENUM(id, ...) LEDGER_##id,
-enum ledger_kind : uint8_t { LEDGER_KIND_LIST(LEDGER_KIND_ENUM) LEDGER_KINDS };
+enum ledger_kind : uint8_t {
+	LEDGER_KIND_LIST(LEDGER_KIND_ENUM)
+	LEDGER_KINDS
+};
 #undef LEDGER_KIND_ENUM
 
 /** The words for the kinds and the statuses of records, which the log,
