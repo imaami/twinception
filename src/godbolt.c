@@ -852,6 +852,11 @@ godbolt_why (struct godbolt *call,
 #define godbolt_refuse(slot, ...) \
         (mcp_slot_tellf((slot), TOOL_FAILED, __VA_ARGS__), GODBOLT_ENDED)
 
+/* Ends the call with the error number @p e, as mcp_slot_fail() does.
+ * Evaluates to GODBOLT_ENDED.
+ */
+#define godbolt_abort(call, e) (mcp_slot_fail((call)->slot, (e)), GODBOLT_ENDED)
+
 /* Ends the call. After ENOMEM or ESHUTDOWN in call->e, the error number
  * of the first failure of the output, the call ends with the error number.
  * After any other error, for example EFBIG when the output has reached its
@@ -863,9 +868,8 @@ godbolt_finish (struct godbolt *call,
                 uint32_t        flags)
 {
 	if (call->e == ENOMEM || call->e == ESHUTDOWN)
-		mcp_slot_fail(call->slot, call->e);
-	else
-		mcp_slot_finish(call->slot, call->e ? TOOL_FAILED : flags);
+		return godbolt_abort(call, call->e);
+	mcp_slot_finish(call->slot, call->e ? TOOL_FAILED : flags);
 	return GODBOLT_ENDED;
 }
 
@@ -922,10 +926,8 @@ godbolt_later (struct godbolt *call,
 {
 	int const e = loop_timer_set(call->loop, &call->timer,
 	                             loop_now(call->loop) + seconds * NS);
-	if (e == ENOMEM) {
-		mcp_slot_fail(call->slot, ENOMEM);
-		return GODBOLT_ENDED;
-	}
+	if (e == ENOMEM)
+		return godbolt_abort(call, ENOMEM);
 	if (e) {
 		godbolt_why(call, "askai could not set the timer to send the request again");
 		return godbolt_refused(call);
@@ -947,10 +949,8 @@ godbolt_send (struct godbolt *call)
 		return GODBOLT_WAIT;
 	if (e == EAGAIN && call->attempt < GODBOLT_ATTEMPTS)
 		return godbolt_later(call, 1);
-	if (e == ENOMEM) {
-		mcp_slot_fail(call->slot, ENOMEM);
-		return GODBOLT_ENDED;
-	}
+	if (e == ENOMEM)
+		return godbolt_abort(call, ENOMEM);
 	godbolt_why(call, "%s", e == EAGAIN ? "askai sends too many requests at once"
 	                                    : "askai refused the request");
 	return godbolt_refused(call);
@@ -1022,10 +1022,8 @@ godbolt_result (struct godbolt *call)
 		godbolt_why(call, "askai has no response to the request");
 		return GODBOLT_BAD;
 	}
-	if (r.e == ESHUTDOWN || r.e == ENOMEM) {
-		mcp_slot_fail(call->slot, r.e);
-		return GODBOLT_ENDED;
-	}
+	if (r.e == ESHUTDOWN || r.e == ENOMEM)
+		return godbolt_abort(call, r.e);
 	uint32_t const cause = r.e == EIO ? GODBOLT_AGAIN_EIO
 	                     : r.e == ETIMEDOUT ? GODBOLT_AGAIN_TIMEDOUT
 	                     : r.e ? 0
@@ -1582,10 +1580,8 @@ godbolt_list (struct godbolt *call)
 	call->phase = GODBOLT_ROWS;
 	if (call->tool != GODBOLT_CATALOG)
 		return GODBOLT_GO;
-	if (call->args.action > GODBOLT_COMPILERS && !(call->doc = json_object_new_object())) {
-		mcp_slot_fail(call->slot, ENOMEM);
-		return GODBOLT_ENDED;
-	}
+	if (call->args.action > GODBOLT_COMPILERS && !(call->doc = json_object_new_object()))
+		return godbolt_abort(call, ENOMEM);
 	return godbolt_put(call, godbolt_actions[call->args.action].header)
 	       ? godbolt_finish(call, TOOL_FAILED) : GODBOLT_GO;
 }
@@ -1649,10 +1645,8 @@ godbolt_escape_source (struct godbolt *call)
 		                   (call->args.flags & GODBOLT_WITH_SHARE ? godbolt_state_size(call)
 		                                                          : 0);
 		call->body = malloc(cap);
-		if (!call->body) {
-			mcp_slot_fail(call->slot, ENOMEM);
-			return GODBOLT_ENDED;
-		}
+		if (!call->body)
+			return godbolt_abort(call, ENOMEM);
 		call->head = (size_t)(godbolt_cat(call->body, prefix) - call->body);
 	}
 	struct cstr_view const part = cstr_view_slice(call->args.source, call->off,
@@ -2091,11 +2085,10 @@ godbolt_classify (struct godbolt *call)
 	if (call->tool != GODBOLT_TARGETS || !zero)
 		return GODBOLT_GO;
 	int const e = godbolt_targets_parse(call);
-	if (!e)
-		return GODBOLT_GO;
-	mcp_slot_fail(call->slot, e);
-	return GODBOLT_ENDED;
+	return e ? godbolt_abort(call, e) : GODBOLT_GO;
 }
+
+#undef godbolt_abort
 
 /* The phase GODBOLT_PARSE. It parses the next slice of the response to
  * the compilation. A response that is not valid JSON gets a record with
