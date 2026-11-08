@@ -587,12 +587,12 @@ godbolt_probe_literal (char const **c,
 	godbolt_probe_skip(c, end);
 	if (*c == end || **c != '"')
 		return nullptr;
-	while (*c < end && **c == '"') {
+	do {
 		++*c;
 		if (godbolt_probe_string(c, end, out))
 			return nullptr;
 		godbolt_probe_skip(c, end);
-	}
+	} while (*c < end && **c == '"');
 	*(*out)++ = '\0';
 	return text;
 }
