@@ -749,7 +749,7 @@ git_pin_spawn (struct git_pin           *pin,
 		.grace = GIT_GRACE,
 		.flags = flags,
 	};
-	int e = 0;
+	int e;
 	pin->child = mcp_slot_spawn(slot, &cmd, &e);
 	return e;
 }
@@ -1688,7 +1688,7 @@ git_start (struct mcp_slot    *slot,
            struct json_object *args)
 {
 	struct git const *git = mcp_slot_part(slot);
-	int e = 0;
+	int e;
 	struct git_call *call = git_call_create(args, git,
 	                                        mcp_slot_loop(slot)->now + git->timeout, &e);
 	if (e) {
