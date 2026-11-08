@@ -27,7 +27,7 @@ datauri_digit (unsigned char c)
 static int
 datauri_parse_base64 (struct datauri *d)
 {
-	char const *s = d->encoded.data;
+	unsigned char const *s = (unsigned char const *)d->encoded.data;
 	size_t n = d->encoded.len;
 	size_t pad = 0;
 	while (n && s[n - 1] == '=' && pad < 2) {
@@ -37,7 +37,7 @@ datauri_parse_base64 (struct datauri *d)
 	if (n % 4 == 1 || (pad && (n + pad) % 4))
 		return EINVAL;
 	for (size_t i = 0; i < n; ++i)
-		if (datauri_digit((unsigned char)s[i]) > 63)
+		if (datauri_digit(s[i]) > 63)
 			return EINVAL;
 	d->encoded.len = n;
 	d->size = n / 4 * 3 + (n % 4 ? n % 4 - 1 : 0);
@@ -48,7 +48,7 @@ datauri_parse_base64 (struct datauri *d)
 static int
 datauri_parse_percent (struct datauri *d)
 {
-	char const *s = d->encoded.data;
+	unsigned char const *s = (unsigned char const *)d->encoded.data;
 	size_t const len = d->encoded.len;
 	size_t size = 0;
 	for (size_t i = 0; i < len; ++size) {
@@ -56,10 +56,7 @@ datauri_parse_percent (struct datauri *d)
 			++i;
 			continue;
 		}
-		if (len - i < 3)
-			return EINVAL;
-		if (util_hex_digit((unsigned char)s[i + 1]) > 15 ||
-		    util_hex_digit((unsigned char)s[i + 2]) > 15)
+		if (len - i < 3 || util_hex_digit(s[i + 1]) > 15 || util_hex_digit(s[i + 2]) > 15)
 			return EINVAL;
 		i += 3;
 	}
@@ -92,14 +89,13 @@ static void
 datauri_decode_percent (struct datauri const *d,
                         unsigned char        *out)
 {
-	char const *s = d->encoded.data;
+	unsigned char const *s = (unsigned char const *)d->encoded.data;
 	for (size_t i = 0, len = d->encoded.len; i < len; ++out) {
 		if (s[i] != '%') {
-			*out = (unsigned char)s[i++];
+			*out = s[i++];
 			continue;
 		}
-		*out = (unsigned char)(util_hex_digit((unsigned char)s[i + 1]) << 4 |
-		                       util_hex_digit((unsigned char)s[i + 2]));
+		*out = (unsigned char)(util_hex_digit(s[i + 1]) << 4 | util_hex_digit(s[i + 2]));
 		i += 3;
 	}
 }
@@ -109,11 +105,11 @@ static void
 datauri_decode_base64 (struct datauri const *d,
                        unsigned char        *out)
 {
-	char const *s = d->encoded.data;
+	unsigned char const *s = (unsigned char const *)d->encoded.data;
 	size_t const len = d->encoded.len;
 	uint32_t v = 0;
 	for (size_t i = 0; i < len; ++i) {
-		v = v << 6 | datauri_digit((unsigned char)s[i]);
+		v = v << 6 | datauri_digit(s[i]);
 		if (i % 4 == 3) {
 			*out++ = (unsigned char)(v >> 16);
 			*out++ = (unsigned char)(v >> 8);
