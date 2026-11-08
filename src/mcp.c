@@ -2809,6 +2809,8 @@ mcp_req_archive (struct mcp_req     *req,
 	struct cstr_view const text = jb_wire(obj);
 	int e = text.data ? 0 : ENOMEM;
 	struct mcp_journal_wait *w = e || !done ? nullptr : mcp_req_journal_wait(req, &e);
+	if (w)
+		w->done = done;
 	if (!e)
 		e = journal_put(req->mcp->st->journal, &req->archive, kind, text.data, text.len,
 		                w ? req->mcp->loop : nullptr, w ? mcp_archive_back : nullptr, w);
@@ -2816,7 +2818,6 @@ mcp_req_archive (struct mcp_req     *req,
 	if (e) {
 		mcp_req_journal_unwait(req, &w);
 	} else if (w) {
-		w->done = done;
 		req->archive_call = w->who;
 		loop_unready(&req->step);
 		req->phase = PHASE_JOURNAL;
