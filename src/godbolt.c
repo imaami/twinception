@@ -852,19 +852,20 @@ godbolt_why (struct godbolt *call,
 #define godbolt_refuse(slot, ...) \
         (mcp_slot_tellf((slot), TOOL_FAILED, __VA_ARGS__), GODBOLT_ENDED)
 
-/* Ends the call after the first failure of its output, whose error number
- * is call->e. After ENOMEM or ESHUTDOWN, the call ends with the error
- * number. After any other error, for example EFBIG when the output has
- * reached its largest length, the call fails with the output that it has.
- * Returns GODBOLT_ENDED.
+/* Ends the call. After ENOMEM or ESHUTDOWN in call->e, the error number
+ * of the first failure of the output, the call ends with the error number.
+ * After any other error, for example EFBIG when the output has reached its
+ * largest length, the call fails with the output that it has. Without an
+ * error, the call finishes with @p flags. Returns GODBOLT_ENDED.
  */
 static enum godbolt_go
-godbolt_fail (struct godbolt *call)
+godbolt_finish (struct godbolt *call,
+                uint32_t        flags)
 {
 	if (call->e == ENOMEM || call->e == ESHUTDOWN)
 		mcp_slot_fail(call->slot, call->e);
 	else
-		mcp_slot_finish(call->slot, TOOL_FAILED);
+		mcp_slot_finish(call->slot, call->e ? TOOL_FAILED : flags);
 	return GODBOLT_ENDED;
 }
 
@@ -1466,10 +1467,7 @@ godbolt_catalog_end (struct godbolt *call)
 		godbolt_putf(call, "The list of language %.*s has %" PRIu32 " compiler%s.\n",
 		             (int)call->args.language.len, call->args.language.data, call->total,
 		             util_s(call->total));
-	if (call->e)
-		return godbolt_fail(call);
-	mcp_slot_finish(call->slot, 0);
-	return GODBOLT_ENDED;
+	return godbolt_finish(call, 0);
 }
 
 static_assert(GODBOLT_TAGS == 64 && GODBOLT_VALUE_MAX == 128 && GODBOLT_KEYS == 256,
@@ -1588,8 +1586,8 @@ godbolt_list (struct godbolt *call)
 		mcp_slot_fail(call->slot, ENOMEM);
 		return GODBOLT_ENDED;
 	}
-	return godbolt_put(call, godbolt_actions[call->args.action].header) ? godbolt_fail(call)
-	                                                                    : GODBOLT_GO;
+	return godbolt_put(call, godbolt_actions[call->args.action].header)
+	       ? godbolt_finish(call, TOOL_FAILED) : GODBOLT_GO;
 }
 
 /* Indexed by [the tool compiles][the list is the list of languages]. */
@@ -1614,7 +1612,7 @@ godbolt_rows (struct godbolt *call)
 	bool const languages = call->args.action == GODBOLT_LANGUAGES;
 	typeof(godbolt_lists[0][0]) const *f = &godbolt_lists[compiles][languages];
 	if (godbolt_list_parse(call, f->row))
-		return godbolt_fail(call);
+		return godbolt_finish(call, TOOL_FAILED);
 	if (call->list == GODBOLT_LIST_BAD)
 		return godbolt_refuse(call->slot, "Compiler Explorer sent a list that is not "
 		                      "valid: %s.", call->why.data);
@@ -1779,7 +1777,7 @@ godbolt_state_begin (struct godbolt *call)
 	call->phase = GODBOLT_JOB;
 	if (!sent)
 		return godbolt_put(call, CSTR_VIEW("Link: none. The call sends no compilation.\n"))
-		       ? godbolt_fail(call) : GODBOLT_GO;
+		       ? godbolt_finish(call, TOOL_FAILED) : GODBOLT_GO;
 	char *d = godbolt_cat(call->body + call->head, CSTR_VIEW("\",\"id\":1,\"language\":\""));
 	d = godbolt_cat(d, call->args.language);
 	d = godbolt_cat(d, CSTR_VIEW("\",\"compilers\":["));
@@ -1822,7 +1820,7 @@ godbolt_state (struct godbolt *call)
 	call->job = 0;
 	call->phase = GODBOLT_JOB;
 	if (call->cfg->share == GODBOLT_SHARE_STATE)
-		return godbolt_state_link(call) ? godbolt_fail(call) : GODBOLT_GO;
+		return godbolt_state_link(call) ? godbolt_finish(call, TOOL_FAILED) : GODBOLT_GO;
 	godbolt_request(call, GODBOLT_POST_SHORTEN, (struct cstr_view){},
 	                (struct cstr_view){ call->body, call->len });
 	call->phase = GODBOLT_LINK;
@@ -1844,8 +1842,8 @@ godbolt_link (struct godbolt *call)
 	call->phase = GODBOLT_JOB;
 	if (got == GODBOLT_BAD)
 		return godbolt_putf(call, "Link: none. The request for a short link failed (%.*s).\n",
-		                    (int)call->why.len, call->why.data) ? godbolt_fail(call)
-		                                                        : GODBOLT_GO;
+		                    (int)call->why.len, call->why.data)
+		       ? godbolt_finish(call, TOOL_FAILED) : GODBOLT_GO;
 	struct json_object *doc = godbolt_resp_doc(call);
 	struct cstr_view const link = jb_view(jb_get(doc, "url"));
 	if (link.len <= GODBOLT_SHORT_MAX && util_url_scheme(link)) {
@@ -1857,7 +1855,7 @@ godbolt_link (struct godbolt *call)
 		                            "no valid link.\n"));
 	}
 	json_object_put(doc);
-	return call->e ? godbolt_fail(call) : GODBOLT_GO;
+	return call->e ? godbolt_finish(call, TOOL_FAILED) : GODBOLT_GO;
 }
 
 /* Writes the first line of the record of the compilation call->job, with
@@ -1896,7 +1894,7 @@ godbolt_unanswered (struct godbolt       *call,
 {
 	++call->counts[count];
 	if (godbolt_header(call))
-		return godbolt_fail(call);
+		return godbolt_finish(call, TOOL_FAILED);
 	godbolt_next(call);
 	return GODBOLT_GO;
 }
@@ -1917,10 +1915,7 @@ godbolt_end (struct godbolt *call)
 	             " ended with a failed request, and %" PRIu32 " ended without a "
 	             "request.\n", call->jobs, util_s(call->jobs), c[GODBOLT_ZERO],
 	             c[GODBOLT_OTHER], c[GODBOLT_FAILED], c[GODBOLT_UNSENT]);
-	if (call->e)
-		return godbolt_fail(call);
-	mcp_slot_finish(call->slot, c[GODBOLT_ZERO] || c[GODBOLT_OTHER] ? 0 : TOOL_FAILED);
-	return GODBOLT_ENDED;
+	return godbolt_finish(call, c[GODBOLT_ZERO] || c[GODBOLT_OTHER] ? 0 : TOOL_FAILED);
 }
 
 /* The phase GODBOLT_JOB. It sends the request of the compilation
@@ -2079,7 +2074,7 @@ godbolt_classify (struct godbolt *call)
 		            "code");
 		++call->counts[GODBOLT_FAILED];
 		call->phase = GODBOLT_FREE;
-		return godbolt_header(call) ? godbolt_fail(call) : GODBOLT_GO;
+		return godbolt_header(call) ? godbolt_finish(call, TOOL_FAILED) : GODBOLT_GO;
 	}
 	bool const timed = jb_true(jb_get(call->doc, "timedOut"));
 	if (jb_true(jb_get(call->doc, "truncated")))
@@ -2396,7 +2391,7 @@ godbolt_write (struct godbolt *call)
 	while (call->rec.at.section < array_size(call->rec.secs)) {
 		size_t const sec = call->rec.at.section;
 		if (godbolt_section(call))
-			return godbolt_fail(call);
+			return godbolt_finish(call, TOOL_FAILED);
 		if (call->full)
 			break;
 		if (call->rec.at.section == sec)
@@ -2405,7 +2400,7 @@ godbolt_write (struct godbolt *call)
 	if ((call->rec.marks & (GODBOLT_REC_TRUNCATED | GODBOLT_REC_CUT)) == GODBOLT_REC_TRUNCATED)
 		godbolt_put(call, godbolt_cut_note);
 	if (call->e)
-		return godbolt_fail(call);
+		return godbolt_finish(call, TOOL_FAILED);
 	call->phase = GODBOLT_FREE;
 	return GODBOLT_GO;
 }
