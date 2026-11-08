@@ -16341,9 +16341,7 @@ def check_godbolt(binary, up, godbolt):
             f"{unsent} not sent.\n"
 
     def left(n):
-        return f"Left out {n} list element{'s' * (n != 1)} without a string id, with " \
-            "more than 64 family tags, or with more than 128 bytes in the kind, the " \
-            "architecture or a family tag."
+        return f"Left out {n} invalid list element{'s' * (n != 1)}."
 
     def compiler_hint(language="c"):
         return 'Call godbolt_catalog with {"action":"compilers","language":' + \
@@ -16439,14 +16437,17 @@ def check_godbolt(binary, up, godbolt):
                 assert ids(ids=["cti", "cg142"]) == ["cg142", "cti"]
                 assert refused(ai, "godbolt_catalog", action="compilers",
                                ids=["cvc19", "nope", "cti"], kind="default") == \
-                    "Ids not selected: cvc19, nope, cti. Retry with action " \
-                    "\"compilers\" and without ids or other filters."
+                    "Ids not in the list or excluded by another filter: cvc19, nope, " \
+                    "cti. For the exact ids, retry with action \"compilers\" and " \
+                    "without ids or other filters."
                 assert refused(ai, "godbolt_catalog", action="languages", ids=["c", "d"]) \
-                    == "Ids not selected: d. Retry with action \"languages\" " \
-                    "and without ids or other filters."
+                    == "Ids not in the list or excluded by another filter: d. For the " \
+                    "exact ids, retry with action \"languages\" and without ids or " \
+                    "other filters."
                 assert refused(ai, "godbolt_catalog", action="families", ids=["nope"]) == \
-                    "Ids not selected: nope. Retry with action \"compilers\" " \
-                    "and without ids or other filters."
+                    "Ids not in the list or excluded by another filter: nope. For the " \
+                    "exact ids, retry with action \"compilers\" and without ids or " \
+                    "other filters."
                 assert refused(ai, "godbolt_catalog", action="languages", kind="x") == \
                     "kind, family and architecture are not valid with action languages."
                 assert ok(ai, "godbolt_catalog", action="kinds") == \
@@ -16766,8 +16767,7 @@ def check_godbolt(binary, up, godbolt):
                              os="windows (from _WIN64)", os_family="windows (from _WIN64)",
                              data_model="llp64 (from _WIN64)",
                              pointer_bits="64 (from _WIN64)", libc="unknown without headers")
-                note = "The facts come from predefined macros. data_model describes " \
-                    "only the sizes of int, long and pointers.\n"
+                note = "data_model describes only the sizes of int, long and pointers.\n"
                 sent = len(ce.bodies())
                 text = ok(ai, "godbolt_targets", compilers=["cg142", "cvc19", "cti"],
                           args=["-m64"])
@@ -16871,8 +16871,8 @@ def check_godbolt(binary, up, godbolt):
                          "args must be an array of 1 to 8 strings. Each string must be "
                          "at most 8192 bytes without a NUL byte."),
                         ({"compilers": ["a", "b", "c", "d", "e"], "args": [""] * 7},
-                         "The number of compilers times the number of args must be at "
-                         "most 32."),
+                         "The number of compilers times the number of strings in args "
+                         "must be at most 32."),
                         ({"args": ["x" * 8193]}, "args must be"),
                         ({"source": "a\0b"}, "source must be a string of at most 1 MiB "
                          "without a NUL byte."),

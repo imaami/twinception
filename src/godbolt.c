@@ -1270,6 +1270,8 @@ godbolt_count (struct godbolt *call,
 	return call->e;
 }
 
+static_assert(GODBOLT_KEYS == 256, "the reason says 256");
+
 /* Counts each of the @p n family tags @p tags once, or the family unknown
  * if there is no tag. Returns 0, or call->e.
  */
@@ -1419,18 +1421,17 @@ godbolt_catalog_end (struct godbolt *call)
 {
 	bool const languages = call->args.action == GODBOLT_LANGUAGES;
 	if (call->missing)
-		return godbolt_refuse(call->slot, "Ids not selected: %s. Retry with action "
-		                      "\"%s\" and without ids or other filters.",
+		return godbolt_refuse(call->slot, "Ids not in the list or excluded by another "
+		                      "filter: %s. For the exact ids, retry with action \"%s\" "
+		                      "and without ids or other filters.",
 		                      godbolt_absent(call).ids, languages ? "languages" : "compilers");
 	bool const counts = call->args.action > GODBOLT_COMPILERS;
 	uint32_t const keys = counts ? (uint32_t)json_object_object_length(call->doc) : 0;
 	if (keys)
 		godbolt_tallies(call, keys);
 	if (call->malformed)
-		godbolt_putf(call, "Left out %" PRIu32 " list element%s without a string id%s.\n",
-		             call->malformed, util_s(call->malformed), languages ? "" : ", with "
-		             "more than 64 family tags, or with more than 128 bytes in the kind, "
-		             "the architecture or a family tag");
+		godbolt_putf(call, "Left out %" PRIu32 " invalid list element%s.\n",
+		             call->malformed, util_s(call->malformed));
 	/* The first sentence of the last line counts the listed items, and the
 	 * second sentence counts all items of the list. */
 	char const *const singular = godbolt_actions[call->args.action].singular;
@@ -1451,9 +1452,6 @@ godbolt_catalog_end (struct godbolt *call)
 		             (int)call->args.language.len, call->args.language.data);
 	return godbolt_finish(call, 0);
 }
-
-static_assert(GODBOLT_TAGS == 64 && GODBOLT_VALUE_MAX == 128 && GODBOLT_KEYS == 256,
-              "the texts of the catalog have these numbers");
 
 /* Stores the kind of driver of a compiler of the call, if the element of
  * the list of compilers is one of them. When the list has had each
@@ -1891,9 +1889,8 @@ godbolt_end (struct godbolt *call)
 {
 	uint32_t const *c = call->counts;
 	if (call->tool == GODBOLT_TARGETS)
-		godbolt_put(call, CSTR_VIEW("The facts come from predefined macros. data_model "
-		                            "describes only the sizes of int, long and "
-		                            "pointers.\n"));
+		godbolt_put(call, CSTR_VIEW("data_model describes only the sizes of int, long "
+		                            "and pointers.\n"));
 	godbolt_putf(call, "%" PRIu32 " compilation%s: %" PRIu32 " with exit code 0, %" PRIu32
 	             " with another exit code or a timeout, %" PRIu32 " with a failed request, "
 	             "%" PRIu32 " not sent.\n", call->jobs, util_s(call->jobs), c[GODBOLT_ZERO],
@@ -2713,7 +2710,7 @@ godbolt_args_read (struct godbolt_args         *a,
 		                   "with action languages.");
 	if ((uint32_t)a->n_ids * a->n_strings > GODBOLT_JOBS)
 		return util_refuse(why, len, "The number of compilers times the number of "
-		                   "args must be at most 32.");
+		                   "strings in args must be at most 32.");
 	/* ids[0] is filled from the list of languages. */
 	if (tool != GODBOLT_CATALOG && !a->n_ids) {
 		a->n_ids = 1;
@@ -2813,8 +2810,8 @@ godbolt_start (struct mcp_slot    *slot,
 	void **own = mcp_slot_own(slot);
 	if (!cfg || !loop || !own || cfg->url.len >= sizeof cfg->url.data ||
 	    cfg->share >= array_size(godbolt_shares)) {
-		mcp_slot_tellf(slot, TOOL_FAILED, "The godbolt plugin is missing a valid "
-		               "configuration, loop or own word.");
+		mcp_slot_tellf(slot, TOOL_FAILED, "The godbolt plugin cannot start the call "
+		               "because of an internal error.");
 		return;
 	}
 	struct godbolt_args a;
