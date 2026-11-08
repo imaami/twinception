@@ -590,7 +590,6 @@ cli_path_work (struct cli_io_job *job)
 	int e = dstr_cat(work->identity, "socket=") &&
 	        dstr_cat(work->identity, path) ? 0 : ENOMEM;
 	free(path);
-	path = nullptr;
 	return e;
 }
 
@@ -1009,7 +1008,6 @@ cli_turn (struct cli       *cli,
 	 * if allocation or the request fails. */
 	if (json_object_array_put_idx(cli->history, count - regenerate, turn)) {
 		json_object_put(turn);
-		turn = nullptr;
 		return ENOMEM;
 	}
 	if (cli->saved)
@@ -1293,7 +1291,6 @@ cli_run (struct cli_options const *options,
 		(void)cli_error_set(error, e, "Cannot write the client output: %s", strerror(e));
 	*exit_signal = cli->exit_signal;
 	free(cli);
-	cli = nullptr;
 	return e;
 }
 

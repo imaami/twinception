@@ -333,7 +333,6 @@ autocomplete_json_parse (struct autocomplete *autocomplete,
 		++end;
 	if (json_tokener_get_error(parser) != json_tokener_success || end < value.len) {
 		json_object_put(parsed);
-		parsed = nullptr;
 		return EINVAL;
 	}
 	*result = parsed;
@@ -490,9 +489,7 @@ autocomplete_entry_fini (struct autocomplete_entry *entry)
 		property->values = nullptr;
 	}
 	free(entry->properties);
-	entry->properties = nullptr;
 	json_object_put(entry->definition);
-	entry->definition = nullptr;
 	*entry = (struct autocomplete_entry){};
 }
 

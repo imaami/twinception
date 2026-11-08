@@ -478,7 +478,6 @@ cli_console_accept (char *line)
 	struct cstr_view text = cstr_view(line);
 	if (!text.len && (console->flags & CLI_CONSOLE_BUSY)) {
 		free(line);
-		line = nullptr;
 		return;
 	}
 	bool immediate = cli_console_is_immediate(console, text);
@@ -640,7 +639,6 @@ cli_console_complete (char const *text,
 			free(listing);
 			listing = nullptr;
 			free(empty);
-			empty = nullptr;
 			free(matches[0]);
 			matches[0] = nullptr;
 			console->in.error = ENOMEM;

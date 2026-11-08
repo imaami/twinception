@@ -45,7 +45,6 @@ autocomplete_file_destroy (struct autocomplete_file **const pp)
 	dstr_cleanup(&file->found.lines);
 	dstr_cleanup(&file->directory);
 	free(file);
-	file = nullptr;
 	*pp = nullptr;
 }
 
@@ -147,7 +146,6 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 
 	if (closedir(dir) && !e)
 		e = errno;
-	dir = nullptr;
 	if (e)
 		return e;
 

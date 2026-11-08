@@ -73,7 +73,6 @@ cli_io_create (struct loop *ui,
 	if (*e) {
 		util_close(&fd);
 		free(io);
-		io = nullptr;
 		return nullptr;
 	}
 	io->blocker = blocker_create(fd, e);

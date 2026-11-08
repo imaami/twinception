@@ -319,7 +319,6 @@ cli_state_save (struct cli_state *state)
 		e = errno;
 	if (close(fd) && !e)
 		e = errno;
-	fd = -1;
 	if (!e) {
 		if (renameat(state->directory, dstr_get(&state->temporary),
 		             state->directory, dstr_get(&state->name)))
@@ -525,7 +524,6 @@ cli_state_load (struct cli_state *state,
 	}
 	if (close(fd) && !e)
 		e = errno;
-	fd = -1;
 	if (unlinkat(state->directory, dstr_get(&state->temporary), 0) && !e)
 		e = errno;
 	return e;
@@ -616,7 +614,6 @@ cli_state_repository_init (struct cli_state *state)
 		e = cli_state_repository_open(state);
 	if (close(fd) && !e)
 		e = errno;
-	fd = -1;
 	return e;
 }
 
@@ -748,7 +745,6 @@ cli_state_destroy (struct cli_state **pstate)
 	dstr_cleanup(&state->tree);
 	dstr_cleanup(&state->metadata);
 	free(state);
-	state = nullptr;
 	*pstate = nullptr;
 }
 
