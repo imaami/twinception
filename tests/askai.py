@@ -8450,9 +8450,9 @@ AFTER = "followed by a space, a comma, =, [ or the line's end."
 
 
 # The description of the man tool.
-MAN_ABOUT = ("Read one of the server's Unix manual pages, as `man [section] name` shows "
-             "it, in plain text, to check the exact interface of a system call, library "
-             "function, command, file format or convention.")
+MAN_ABOUT = ("Print a Unix manual page of the server in plain text, like "
+             "`man [section] name`. Use the page to check the exact interface of a system "
+             "call, library function, command or file format.")
 
 
 def man_call(ai, **arguments):

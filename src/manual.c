@@ -1073,25 +1073,26 @@ manual_definition (void const *service)
 		"name", json_object_new_string("man"),
 		"title", json_object_new_string("Manual page"),
 		"description", json_object_new_string(
-			"Read one of the server's Unix manual pages, as `man [section] name` "
-			"shows it, in plain text, to check the exact interface of a system "
-			"call, library function, command, file format or convention."),
+			"Print a Unix manual page of the server in plain text, like "
+			"`man [section] name`. Use the page to check the exact interface "
+			"of a system call, library function, command or file format."),
 		"inputSchema", schema_object(
 			jb_object(
 				"name", schema_property("string",
-					"The page's name, such as printf, pthread_create, epoll "
+					"The page name, such as printf, pthread_create, epoll "
 					"or git-grep."),
 				"section", schema_property("string",
-					"Optional section: 1 commands, 2 system calls, 3 library "
-					"functions, 3p POSIX, 4 devices, 5 file formats, 7 "
-					"overviews and conventions, 8 administration. Without "
-					"it, the first page man finds, or for a name with pages in "
-					"two or more single-digit sections, a list of those pages."),
+					"The manual section, such as 1 commands, 2 system calls, "
+					"3 library functions, 3p POSIX, 5 file formats or 7 "
+					"overviews. Without section, the output is the first "
+					"page that man finds. A name with pages in two or more "
+					"single-digit sections fails with a list of the pages."),
 				"heading", schema_property("string",
-					"Optional: the first words of a line of the page, such as "
-					"SYNOPSIS, RETURN VALUE, EINVAL or -Wall. The output is "
-					"then that line and the more deeply indented lines after "
-					"it."),
+					"The first words of a line of the page, such as SYNOPSIS, "
+					"RETURN VALUE, EINVAL or -Wall. With heading, the output "
+					"is the line that begins with heading, followed by the "
+					"more deeply indented lines. If no line matches, the "
+					"error lists the headings of the page."),
 				"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 				nullptr),
 			&CSTR_VIEW("name"), 1),
