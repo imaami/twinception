@@ -40,12 +40,6 @@ task_pool_lane (struct task_pool  *pool,
 	return &pool->lane[loop->id - 1];
 }
 
-static uint64_t
-task_lane_load (struct task_lane const *lane)
-{
-	return atomic_load_explicit(&lane->load, memory_order_relaxed);
-}
-
 /* @p task has come to loop @p loop's lane @p lane: queue it. */
 static void
 task_lane_take (struct task_lane *lane,
@@ -64,7 +58,7 @@ task_lane_leave (struct task_lane *lane,
 {
 	list_del(&task->hook);
 	hist_add(&lane->metrics.held, -1ULL);
-	atomic_fetch_sub_explicit(&lane->load, 1, memory_order_relaxed);
+	hist_count(&lane->load, -1ULL);
 }
 
 /* The lighter of two lanes picked at random by @p self's loop, none of them
@@ -97,14 +91,14 @@ task_pool_choose (struct task_pool *pool,
 	}
 	struct task_lane *x = &pool->lane[a];
 	struct task_lane *y = &pool->lane[b];
-	return task_lane_load(y) < task_lane_load(x) ? y : x;
+	return hist_get(&y->load) < hist_get(&x->load) ? y : x;
 }
 
 /* Lets go of @p task, which never runs again, as abandoned. */
 static void
 task_abandon (struct task *task)
 {
-	atomic_fetch_add_explicit(&task->pool->metrics.abandoned, 1, memory_order_relaxed);
+	hist_count(&task->pool->metrics.abandoned, 1);
 	task_put(task, 1);
 }
 
@@ -133,13 +127,13 @@ task_lane_place (struct task_lane *self,
                  struct task      *task,
                  struct loop      *loop)
 {
-	atomic_fetch_add_explicit(&to->load, 1, memory_order_relaxed);
+	hist_count(&to->load, 1);
 	if (to != self) {
 		task->msg.fn = task_arrive;
 		if (!loop_post(atomic_load_explicit(&to->loop, memory_order_acquire), &task->msg))
 			return;
-		atomic_fetch_sub_explicit(&to->load, 1, memory_order_relaxed);
-		atomic_fetch_add_explicit(&self->load, 1, memory_order_relaxed);
+		hist_count(&to->load, -1ULL);
+		hist_count(&self->load, 1);
 	}
 	task_lane_take(self, task, loop);
 }
@@ -153,10 +147,10 @@ task_lane_next (struct task_lane *lane,
                 struct task      *task,
                 struct loop      *loop)
 {
-	uint64_t load = task_lane_load(lane);
+	uint64_t load = hist_get(&lane->load);
 	struct task_lane *to = load > TASK_BACKLOG ? task_pool_choose(task->pool, lane, true)
 	                                           : lane;
-	if (to == lane || task_lane_load(to) + 2 > load) {
+	if (to == lane || hist_get(&to->load) + 2 > load) {
 		loop_ready_bulk(loop, &task->step);
 		return;
 	}
@@ -188,7 +182,7 @@ task_step (struct loop      *loop,
 		ended = &pool->metrics.done;
 	}
 	task_lane_leave(self, task);
-	atomic_fetch_add_explicit(ended, 1, memory_order_relaxed);
+	hist_count(ended, 1);
 	task->msg.fn = task->back;
 	/* A message that the owner's loop refuses never runs, so the runner's
 	 * reference goes here. */
@@ -300,7 +294,7 @@ task_submit (struct task *task,
 {
 	struct task_pool *pool = task->pool;
 	struct task_lane *self = task_pool_lane(pool, loop);
-	atomic_fetch_add_explicit(&pool->metrics.submitted, 1, memory_order_relaxed);
+	hist_count(&pool->metrics.submitted, 1);
 	task_lane_place(self, task_pool_choose(pool, self, false), task, loop);
 }
 

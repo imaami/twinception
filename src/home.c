@@ -386,7 +386,7 @@ static void
 home_job_progress (struct job *job,
                    uint64_t    progress)
 {
-	atomic_store_explicit(&job->progress, progress, memory_order_relaxed);
+	hist_set(&job->progress, progress);
 	if (job->asks & JOB_NOTIFY && !(job->flags & DROPPED))
 		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_PROGRESS);
 }
@@ -416,8 +416,7 @@ home_unqueue (struct home *home,
 		return;
 	for (; node != &p->jobs; node = node->next) {
 		struct job *next = container_of(node, struct job, queue);
-		home_job_progress(next, atomic_load_explicit(&next->progress,
-		                                             memory_order_relaxed) - 1);
+		home_job_progress(next, hist_get(&next->progress) - 1);
 	}
 }
 
@@ -741,7 +740,7 @@ home_breaker_set (struct home *home,
                   uint16_t     state)
 {
 	home->state = state;
-	atomic_store_explicit(&home->metrics->breaker, state, memory_order_relaxed);
+	hist_set(&home->metrics->breaker, state);
 }
 
 /* Refuse the upstream jobs for a spell: what Retry-After asked for, @p retry
@@ -2293,7 +2292,7 @@ home_slots (struct home *home,
             char const  *why)
 {
 	home->slots = n;
-	atomic_store_explicit(&home->metrics->slots, n, memory_order_relaxed);
+	hist_set(&home->metrics->slots, n);
 	http_connections(home->http, n);
 	if (why)
 		LOG(LOG_INFO, "upstream slots: %" PRIu32 " (%s)", n, why);
