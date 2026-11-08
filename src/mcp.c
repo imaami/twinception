@@ -2752,8 +2752,7 @@ struct mcp_journal_wait {
 	struct json_object  *args;
 	void               (*done) (struct mcp_req *req,
 	                            int             error);
-	void               (*handler) (struct mcp_slot    *slot,
-	                               struct json_object *args);
+	tool_start_fn       *handler;
 };
 
 /* The request that @p who names on @p loop, or nullptr if the request has
@@ -6260,9 +6259,9 @@ out:
  * and cancels a resumed job if @p handler is mcp_slot_client_cancel().
  */
 static bool
-mcp_req_recover (struct mcp_req                 *req,
-                 struct json_object             *args,
-                 typeof(mcp_slot_client_result) *handler)
+mcp_req_recover (struct mcp_req     *req,
+                 struct json_object *args,
+                 tool_start_fn      *handler)
 {
 	struct hexid id;
 	if (!req->mcp->st->journal || hexid_init(&id, jb_view(jb_get(args, "job"))))
@@ -6728,8 +6727,8 @@ mcp_slot_ask (struct mcp_slot    *slot,
 		mcp_req_ask(req, args, want);
 		return;
 	}
-	typeof(mcp_slot_client_result) *handler = act == ACTION_CANCEL ? mcp_slot_client_cancel
-	                                                               : mcp_slot_client_result;
+	tool_start_fn *handler = act == ACTION_CANCEL ? mcp_slot_client_cancel
+	                                              : mcp_slot_client_result;
 	req->promote_at = UINT64_MAX;
 	mcp_req_arm(req);
 	if (!mcp_req_recover(req, args, handler))
