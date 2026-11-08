@@ -985,12 +985,17 @@ mcp_req_dispose (struct mcp_req *req)
 	}
 }
 
-/* Enter @p phase, in a bulk step. */
+/* Set the phase of @p req to @p phase, start it at the first byte of the
+ * first piece (req->next and req->off are 0), and queue req->step for a
+ * bulk step.
+ */
 static void
 mcp_req_enter (struct mcp_req *req,
                enum mcp_phase  phase)
 {
 	req->phase = phase;
+	req->next = 0;
+	req->off = 0;
 	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
@@ -3054,7 +3059,6 @@ mcp_req_build (struct mcp_req *req)
 	}
 	json_object_put(req->draft);
 	req->draft = req->prompt = nullptr;
-	req->next = 0;
 	mcp_req_turn_ready(req);
 }
 
@@ -4452,8 +4456,6 @@ mcp_req_turn_args (struct mcp_req *req)
 	buf_cut(&req->upload, buf_peek(&req->upload).len - end.len, end.len);
 	req->part = 0;
 	req->replayed = 0;
-	req->next = 0;
-	req->off = 0;
 	mcp_req_enter(req, PHASE_TURN);
 }
 
@@ -4854,8 +4856,6 @@ mcp_agenda_wake (struct mcp_agenda *a)
 		mcp_req_fail(req, ENOMEM);
 		return;
 	}
-	req->next = 0;
-	req->off = 0;
 	mcp_req_enter(req, PHASE_WAKE);
 }
 
@@ -5259,7 +5259,6 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 	atomic_fetch_or_explicit(&task->state, LEDGER_TOLD, memory_order_relaxed);
 	slot->flags |= SLOT_DONE;
 	req->shown = task;
-	req->off = 0;
 	int e = mcp_req_open(req, FRAG(""));
 	if (e) {
 		mcp_req_abort(req, e);
@@ -5837,8 +5836,6 @@ mcp_req_result_begin (struct mcp_req  *req,
 		if (req->turn + 1u == req->mcp->st->turns)
 			(void)util_text_printf(&slot->note, "\n\n" NOTICE_LAST);
 	}
-	req->next = 0;
-	req->off = 0;
 	mcp_req_enter(req, PHASE_RESULT);
 }
 
@@ -6353,8 +6350,6 @@ mcp_req_add_start (struct mcp_req *req)
 	buf_fini(&req->attached);
 	req->filed = 0;
 	req->flags &= ~REQ_FILING;
-	req->next = 0;
-	req->off = 0;
 	mcp_req_enter(req, PHASE_ADD);
 }
 
@@ -7000,7 +6995,6 @@ mcp_req_task_show (struct mcp_req     *req,
 		return;
 	}
 	req->shown = task;
-	req->off = 0;
 	mcp_req_enter(req, PHASE_SHOW);
 }
 
