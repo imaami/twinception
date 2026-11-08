@@ -244,20 +244,16 @@ notes_create (char const *path,
 		                 "digits, underscores or hyphens", UTIL_WORD_MAX);
 		return nullptr;
 	}
-	struct notes *notes = calloc(1, sizeof *notes);
-	if (!notes) {
+	struct notes *notes = malloc(sizeof *notes);
+	char *copy = strdup(participant);
+	if (!notes || !copy) {
+		free(notes);
+		free(copy);
 		util_format(why, len, "out of memory");
 		*e = ENOMEM;
 		return nullptr;
 	}
-	notes->fd = -1;
-	notes->named = named;
-	if (!(notes->participant = strdup(participant))) {
-		*e = ENOMEM;
-		util_format(why, len, "out of memory");
-		notes_destroy(&notes);
-		return nullptr;
-	}
+	*notes = (struct notes){ .participant = copy, .named = named, .fd = -1 };
 	if (!(*e = notes_open(notes, path, why, len)) && (*e = notes_common(notes)))
 		util_format(why, len, "cannot resolve the Git common directory: %s", strerror(*e));
 	if (*e)
