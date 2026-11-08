@@ -644,7 +644,8 @@ httpd_req_header (struct httpd_req        *req,
 		struct cstr_view const list = { value, f.len };
 		if (cstr_view_list_has(list, CSTR_VIEW("close")))
 			req->flags |= REQ_CLOSE;
-		else if (req->flags & REQ_HTTP10 && cstr_view_list_has(list, CSTR_VIEW("keep-alive")))
+		else if (req->flags & REQ_HTTP10 &&
+		         cstr_view_list_has(list, CSTR_VIEW("keep-alive")))
 			req->flags &= ~REQ_CLOSE;
 		return 0;
 	case HEADER_EXPECT:
