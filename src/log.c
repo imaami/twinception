@@ -90,8 +90,7 @@ static bool
 log_site_allow (struct log_site *site,
                 uint32_t        *missed)
 {
-	struct timespec ts = clk_monotonic_coarse();
-	uint64_t now = (uint64_t)ts.tv_sec;
+	uint64_t now = (uint64_t)clk_monotonic_coarse().tv_sec;
 	uint64_t second = atomic_load_explicit(&site->second, memory_order_relaxed);
 	if (second != now &&
 	    atomic_compare_exchange_strong_explicit(&site->second, &second, now,
