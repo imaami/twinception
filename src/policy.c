@@ -658,6 +658,9 @@ policy_build_role_one (struct policy_build *b,
 	return 0;
 }
 
+/* Builds the roles of b->roles into b->p->roles. b->roles must be nullptr
+ * or a JSON object. policy_build_file() tests the type before the call.
+ */
 static int
 policy_build_roles (struct policy_build *b)
 {
@@ -716,6 +719,10 @@ policy_build_identity (struct policy_build *b,
 	return 0;
 }
 
+/* Builds the tokens of @p identities into b->p->tokens and sorts the
+ * tokens. @p identities must be nullptr or a JSON object.
+ * policy_build_file() tests the type before the call.
+ */
 static int
 policy_build_identities (struct policy_build *b,
                          struct json_object  *identities)
@@ -736,6 +743,10 @@ policy_build_identities (struct policy_build *b,
 	return 0;
 }
 
+/* Builds the groups of @p groups into b->p->groups. @p groups must be
+ * nullptr or a JSON object. policy_build_file() tests the type before the
+ * call.
+ */
 static int
 policy_build_groups (struct policy_build *b,
                      struct json_object  *groups)
@@ -769,6 +780,10 @@ policy_build_groups (struct policy_build *b,
 	return 0;
 }
 
+/* Builds the roles and the names of the anonymous clients in @p anonymous
+ * into b->p->anonymous and b->p->strangers. @p anonymous must be nullptr or
+ * a JSON object. policy_build_file() tests the type before the call.
+ */
 static int
 policy_build_anonymous (struct policy_build *b,
                         struct json_object  *anonymous)
