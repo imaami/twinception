@@ -918,17 +918,15 @@ review_put_file (struct dstr              *out,
 	uint64_t lines = 0;
 	for (size_t k = 0; k < f->ranges.n; ++k)
 		lines += (uint64_t)(f->ranges.items[k].last - f->ranges.items[k].first) + 1;
-	if (PUT(out, "  ") || cstr_view_cat(cstr_view_dstr(&f->path), out) ||
-	    !dstr_printf(out, "  line%s ", util_s(lines)) || review_put_ranges(out, f))
-		return ENOMEM;
 	/* The ranges are within the file and do not overlap, so they cover
 	 * the whole file if lines is f->total. */
-	if (lines == f->total)
-		return dstr_printf(out, ": all %" PRIu64 " line%s\n", lines, util_s(lines)) ? 0 : ENOMEM;
-	if (f->total)
-		return dstr_printf(out, ": %" PRIu64 " of %" PRIu32 " lines\n", lines, f->total)
-		       ? 0 : ENOMEM;
-	return dstr_printf(out, ": %" PRIu64 " of an unknown number of lines\n", lines) ? 0 : ENOMEM;
+	return PUT(out, "  ") || cstr_view_cat(cstr_view_dstr(&f->path), out) ||
+	       !dstr_printf(out, "  line%s ", util_s(lines)) || review_put_ranges(out, f) ||
+	       !(lines == f->total
+	         ? dstr_printf(out, ": all %" PRIu64 " line%s\n", lines, util_s(lines))
+	         : f->total ? dstr_printf(out, ": %" PRIu64 " of %" PRIu32 " lines\n", lines, f->total)
+	         : dstr_printf(out, ": %" PRIu64 " of an unknown number of lines\n", lines))
+	       ? ENOMEM : 0;
 }
 
 /**
