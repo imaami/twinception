@@ -66,9 +66,9 @@ OFFSET_ABOUT = "The byte of the output to start from. The default is 0."
 # The header of the read log in the review record (src/review.c).
 READS = "[askai: the lines that git read and code describe showed you in this call:]"
 # The sentence that ends the description of each such tool lent to the turns.
-PAGED = (" A result is at most 64 KiB. The result starts at the line that contains the "
-         "offset, unless the line starts more than 16 KiB earlier. If the output is "
-         "longer, the result ends with a note with the next offset.")
+PAGED = (" A result is at most 64 KiB. The result can start up to 16 KiB before the "
+         "offset, at the beginning of the line that contains the offset. If the output "
+         "does not fit in one result, the result ends with the next offset in a note.")
 # The API that each answer format of the fake upstream is in.
 API = {"openai": "chat", "responses": "responses", "anthropic": "messages",
        "gemini": "generate", "interactions": "interactions"}
@@ -2714,8 +2714,8 @@ def check_recovery_notes(binary, up):
                             if item.get("call_id") == "read" and
                             item.get("type") == "function_call_output"]
                 match = re.fullmatch(
-                    r"(.*)\n\n\[Bytes 5 to (\d+) of (\d+)\. For the rest, call again "
-                    r'with the same arguments and "offset": (\d+)\.\]' +
+                    r"(.*)\n\n\[Bytes 5 to (\d+) of (\d+)\. To read on, call the tool "
+                    r'again with the same arguments and "offset": (\d+)\.\]' +
                     re.escape(f"\n\n[askai: notebook {selector}]"), output, re.S)
                 assert match, output
                 end, total, offset = map(int, match.groups()[1:])
@@ -13322,15 +13322,15 @@ def check_turns(binary, up):
             out = turns(up.requests[count + 1])[1]["content"]
             # Lines of 11 bytes: 363 of them in an eighth of 8000 tokens.
             assert out.startswith("line 00000\n") and re.search(
-                r"line 00362\n\n\n\[Bytes 0 to 3993 of 44000\. For the rest, call "
-                r"again with the same arguments and \"offset\": 3993\.\]\n\n\[askai: "
+                r"line 00362\n\n\n\[Bytes 0 to 3993 of 44000\. To read on, call the "
+                r"tool again with the same arguments and \"offset\": 3993\.\]\n\n\[askai: "
                 r"your context is 6[0-6]% full, \d+ of 8000 tokens\. Write notes now "
                 r"of what you have learned\. Compaction removes the conversation but "
                 r"not the notes\.\]$", out), out[-300:]
             # An offset within a line gives the window from the line's start.
             out = turns(up.requests[count + 2])[3]["content"]
             assert out.startswith("line 00363\n") and \
-                "line 00725\n\n\n[Bytes 3993 to 7986 of 44000. For the rest" in out and \
+                "line 00725\n\n\n[Bytes 3993 to 7986 of 44000. To read on" in out and \
                 re.search(r"\[askai: your context is \d+% full, \d+ of 8000 "
                           r"tokens\. Note what you need to keep, then call "
                           r"compact\.\]$", out), out[-300:]
@@ -13886,7 +13886,8 @@ def check_turns(binary, up):
             assert reads[0] == note_files(selector, {
                 f"{c}/{c}.txt": (f"{c * 1199}\n" * 6).encode() for c in "abc"}), reads[0]
             assert reads[1] == f"{'c' * 1199}\n" * 2 + "\n\n[Bytes 0 to 2400 of 7200. " \
-                "For the rest, call again with the same arguments and \"offset\": 2400.]" + \
+                "To read on, call the tool again with the same arguments and " \
+                "\"offset\": 2400.]" + \
                 provenance, reads[1][-200:]
             assert reads[2] == f"{'c' * 1199}\n\n\n[Bytes 6000 to 7200 of 7200. End " \
                 "of the output.]" + provenance, reads[2][-200:]
@@ -14160,8 +14161,9 @@ def check_review(binary, up):
             text = REVIEW + findings_head("3 findings: 3 candidate") + "\n".join(
                 f"{k + 1}. candidate\n   claim: {k} " + "x" * (600 << 10) for k in range(3))
             shown = results(up.requests[count + 4])[0]
-            found = re.fullmatch(r"(.*)\n\n\[Bytes 0 to (\d+) of (\d+)\. For the rest, call "
-                                 r"again with the same arguments and \"offset\": \2\.\]",
+            found = re.fullmatch(r"(.*)\n\n\[Bytes 0 to (\d+) of (\d+)\. To read on, call "
+                                 r"the tool again with the same arguments and "
+                                 r"\"offset\": \2\.\]",
                                  shown, re.S)
             assert found and int(found[3]) == len(text) and found[1] == text[:int(found[2])], \
                 shown[-200:]
@@ -14453,7 +14455,7 @@ def check_review(binary, up):
             units, _ = work(ai)
             assert all(most <= bound for most, bound in units.values()), units
             assert results(up.requests[count + 2]) == [REVIEW_EMPTY]
-            assert re.fullmatch(r"y+\n\n\[Bytes 3000 to \d+ of \d+\. For the rest, .*",
+            assert re.fullmatch(r"y+\n\n\[Bytes 3000 to \d+ of \d+\. To read on, .*",
                                 results(up.requests[count + 1])[1], re.S), \
                 results(up.requests[count + 1])[1][-200:]
 

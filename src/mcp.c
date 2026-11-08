@@ -5603,9 +5603,9 @@ mcp_slot_note_window (struct mcp_slot *slot,
 	size_t end = slot->skip + slot->window;
 	if (end < len) {
 		if (mcp_slot_tool(slot)->kind->flags & TOOL_PAGED)
-			(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu. For the "
-			                       "rest, call again with the same arguments and "
-			                       "\"offset\": %zu.]", slot->skip, end, len, end);
+			(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu. To read "
+			                       "on, call the tool again with the same arguments "
+			                       "and \"offset\": %zu.]", slot->skip, end, len, end);
 		else
 			(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu. The rest "
 			                       "of the output is cut.]", slot->skip, end, len);
@@ -8223,9 +8223,10 @@ mcp_lent_definition (struct registry_tool const *t,
 	struct cstr_view const about = jb_view(jb_get(lent, "description"));
 	return jb_set_or_free(lent, "description", schema_text3(
 		about.data ? about.data : "", about.len ? " " : "",
-		"A result is at most 64 KiB. The result starts at the line that contains "
-		"the offset, unless the line starts more than 16 KiB earlier. If the "
-		"output is longer, the result ends with a note with the next offset."));
+		"A result is at most 64 KiB. The result can start up to 16 KiB before "
+		"the offset, at the beginning of the line that contains the offset. If "
+		"the output does not fit in one result, the result ends with the next "
+		"offset in a note."));
 }
 
 /** Serializes the replies that never change. @p info describes askai, and
