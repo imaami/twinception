@@ -377,7 +377,7 @@ child_start (struct child           *c,
 	if (!e && !(e = child_pipe(c, &fds.out))) {
 		int pidfd = -1;
 		e = child_cmd_exec(cmd, &fds, &pidfd);
-		close(fds.out);
+		util_close(&fds.out);
 		if (!e)
 			e = child_watch(c, pidfd);
 	}
