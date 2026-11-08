@@ -765,18 +765,13 @@ http_post_json (struct http         *http,
 	/* A host by name waits for its addresses, unless they are fresh. */
 	request->since = loop_clock();
 	struct http_host *host = http_named_host(http, url);
-	if (!host) {
+	int e = 0;
+	if (!host)
 		http_queue(http, request);
-		*p_request = request;
-		return 0;
-	}
-	int e = http_host_take(host, request);
-	if (e) {
+	else if ((e = http_host_take(host, request)))
 		http_cancel(http, &request);
-		return e;
-	}
 	*p_request = request;
-	return 0;
+	return e;
 }
 
 int
