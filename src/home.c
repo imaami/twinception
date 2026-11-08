@@ -1962,16 +1962,15 @@ home_event (struct home *home,
 	struct jb_parser *parser = &job->parser;
 	uint32_t n = parser->cut.values;
 	struct json_object *root = jb_parser_take(parser);
+	bool const memory = parser->error == ENOMEM;
+	jb_parser_fini(parser, &home->pool, &home->reaper);
 	if (!root) {
-		bool memory = parser->error == ENOMEM;
-		jb_parser_fini(parser, &home->pool, &home->reaper);
 		home_reap(home);
 		if (memory)
 			return ENOMEM;
 		(void)home_job_erred(job, "an event that is not JSON text", -1);
 		return 0;
 	}
-	jb_parser_fini(parser, &home->pool, &home->reaper);
 	int e = home_take(home, job, root);
 	if (n <= loop_room(loop, LOOP_VALUES)) {
 		json_object_put(root);
