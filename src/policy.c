@@ -667,8 +667,6 @@ policy_build_roles (struct policy_build *b)
 {
 	if (!b->roles)
 		return 0;
-	if (!json_object_is_type(b->roles, json_type_object))
-		return policy_build_fail(b, "roles must be an object");
 	struct policy_grant *r = b->p->roles;
 	struct json_object_iter it;
 	json_object_object_foreachC(b->roles, it) {
@@ -728,8 +726,6 @@ policy_build_identities (struct policy_build *b,
 {
 	if (!identities)
 		return 0;
-	if (!json_object_is_type(identities, json_type_object))
-		return policy_build_fail(b, "identities must be an object");
 	struct json_object_iter it;
 	json_object_object_foreachC(identities, it) {
 		int e = policy_build_identity(b, it.key, it.val);
@@ -751,8 +747,6 @@ policy_build_groups (struct policy_build *b,
 {
 	if (!groups)
 		return 0;
-	if (!json_object_is_type(groups, json_type_object))
-		return policy_build_fail(b, "unix-groups must be an object");
 	struct policy_gid *g = b->p->groups;
 	struct json_object_iter it;
 	json_object_object_foreachC(groups, it) {
@@ -805,8 +799,6 @@ policy_build_anonymous (struct policy_build *b,
 {
 	if (!anonymous)
 		return 0;
-	if (!json_object_is_type(anonymous, json_type_object))
-		return policy_build_fail(b, "anonymous must be an object");
 	struct policy *p = b->p;
 	struct json_object_iter it;
 	json_object_object_foreachC(anonymous, it) {
@@ -828,24 +820,26 @@ policy_build_anonymous (struct policy_build *b,
 	return 0;
 }
 
-#undef policy_build_fail
-
-/* The file's policy: its roles, identities, groups and anonymous roles. */
+/* Builds the policy of the configuration file into b->p. @p of contains
+ * the policy members of the file, indexed by enum policy_part, and each
+ * member that is not nullptr must be a JSON object. The function builds the
+ * roles, the identities, the groups and the anonymous roles in this order.
+ * Returns 0 or the error number of the first step that fails.
+ */
 static int
 policy_build_file (struct policy_build *b,
-                   struct json_object  *identities,
-                   struct json_object  *groups,
-                   struct json_object  *anonymous)
+                   struct json_object **of)
 {
+	for (size_t i = 0; i < array_size(policy_parts); ++i)
+		if (of[i] && !json_object_is_type(of[i], json_type_object))
+			return policy_build_fail(b, "%s must be an object", policy_parts[i].data);
 	int e = policy_build_roles(b);
-	if (e)
-		return e;
-	if ((e = policy_build_identities(b, identities)))
-		return e;
-	if ((e = policy_build_groups(b, groups)))
-		return e;
-	return policy_build_anonymous(b, anonymous);
+	e = e ? e : policy_build_identities(b, of[POLICY_IDENTITIES]);
+	e = e ? e : policy_build_groups(b, of[POLICY_GROUPS]);
+	return e ? e : policy_build_anonymous(b, of[POLICY_ANONYMOUS]);
 }
+
+#undef policy_build_fail
 
 /* Build askai's own policy. With ASKAI_TOKEN, @p token, every client must
  * send the token, also on a Unix socket, and may do everything. Without
@@ -974,8 +968,7 @@ policy_create (struct json_object    *file,
 		p->anonymous[k] = POLICY_NO_ROLE;
 	b.p = p;
 	if (from_file)
-		*e = policy_build_file(&b, of[POLICY_IDENTITIES], of[POLICY_GROUPS],
-		                       of[POLICY_ANONYMOUS]);
+		*e = policy_build_file(&b, of);
 	else
 		policy_build_own(&b, token);
 	buf_fini(&b.nss);
