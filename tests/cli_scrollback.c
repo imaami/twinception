@@ -372,7 +372,6 @@ cli_scrollback_test_prefix_eviction (void)
 	assert(cstr_view_equal(cstr_view_dstr(&before), cstr_view_dstr(&after)));
 	assert(scrollback.used.bytes <= length);
 	free(text);
-	text = nullptr;
 	cli_scrollback_fini(&scrollback);
 }
 
@@ -406,7 +405,6 @@ cli_scrollback_test_long_line (void)
 	assert(strchr(dstr_get(&frame), 'z'));
 	assert(dstr_len(&frame) < 100);
 	free(text);
-	text = nullptr;
 	cli_scrollback_fini(&scrollback);
 }
 

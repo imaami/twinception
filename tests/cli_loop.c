@@ -59,7 +59,6 @@ cli_loop_test_event (struct loop     *loop,
 	assert(ref->fd < 0 && !loop->error);
 	++watch->test->released;
 	free(watch);
-	watch = nullptr;
 }
 
 /* loop_fail() stores the first error number in loop->error and ignores 0

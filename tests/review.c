@@ -118,7 +118,6 @@ call_long (struct review *r,
 		memset(s, 'c', len);
 	json_object_object_add(args, key, json_object_new_string_len(s ? s : "", s ? (int)len : 0));
 	free(s);
-	s = nullptr;
 	return run(r, args, 1, nullptr, out);
 }
 
@@ -1726,7 +1725,6 @@ test_carry (void)
 		CHECK(review_carry(only, huge, &b) == EINVAL);
 		json_object_put(huge);
 		free(claim);
-		claim = nullptr;
 	}
 	RENDER(only, carried);
 	CHECK(review_carry(nullptr, obj, &b) == EFAULT);

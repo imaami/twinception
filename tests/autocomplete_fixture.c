@@ -41,7 +41,6 @@ int autocomplete_fixture (struct autocomplete *autocomplete)
 	for (size_t i = 0; i < count && !error; ++i)
 		error = autocomplete_add_tool(autocomplete, json_object_array_get_idx(tools, i));
 	json_object_put(tools);
-	tools = nullptr;
 	if (error)
 		return error;
 

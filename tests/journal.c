@@ -83,7 +83,6 @@ journal_test_load (struct journal *j)
 		assert(!journal_checkpoint_write(j, record));
 	}
 	free(record);
-	record = nullptr;
 	assert(j->recovery_bytes > JOURNAL_LOAD_MAX);
 	struct journal_item load = {};
 	journal_test_id(&load.id, 2);

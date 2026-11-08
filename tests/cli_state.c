@@ -89,7 +89,6 @@ main (int argc, char **argv)
 	memset(large, 'x', (1 << 20) + 1);
 	assert(cli_state_add_input(first, (struct cstr_view){ large, (1 << 20) + 1 }) == EFBIG);
 	free(large);
-	large = nullptr;
 	char *saved_path = strdup(getenv("PATH"));
 	assert(saved_path && !setenv("PATH", "/nonexistent/askai-git", 1));
 	/* A saved input that repeats needs no Git; an unsaved one retries. */
@@ -98,7 +97,6 @@ main (int argc, char **argv)
 	assert(cli_state_add_input(first, CSTR_VIEW("recoverable after Git failure")) == ENOENT);
 	assert(!setenv("PATH", saved_path, 1));
 	free(saved_path);
-	saved_path = nullptr;
 	struct cstr_view recovery = cli_state_recovery_file(first);
 	assert(recovery.len);
 	char *recovery_path = malloc(repo.len + recovery.len + 2);
@@ -112,7 +110,6 @@ main (int argc, char **argv)
 	assert(!stat(recovery_path, &status));
 	assert((status.st_mode & 0777) == 0600 && status.st_size > 0);
 	free(recovery_path);
-	recovery_path = nullptr;
 	first = cli_state_create(repo, CSTR_VIEW("session\0bob\0ask"), nullptr, &e);
 	assert(first && !e && !cli_state_input_count(first));
 	cli_state_destroy(&first);
