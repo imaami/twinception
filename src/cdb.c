@@ -178,15 +178,17 @@ cdb_command (struct cdb_map const *map,
 	struct dstr tmp = DSTR_INIT;
 	int e = cdb_norm(&want, map->top, rel);
 	struct cstr_view const w = cstr_view_dstr(&want);
-	struct json_object *best = nullptr;
+	struct json_object *args = nullptr;
+	struct cstr_view dir = {};
 	size_t common = 0;
 	bool usable = false;
-	for (size_t i = 0; !e && i < jb_len(cmds); ++i) {
+	for (size_t i = 0, n = jb_len(cmds); !e && i < n; ++i) {
 		struct json_object *entry = jb_at(cmds, i);
-		struct cstr_view const dir = jb_view(jb_get(entry, "directory"));
+		struct json_object *a = cdb_arguments(entry);
+		struct cstr_view const d = jb_view(jb_get(entry, "directory"));
 		struct cstr_view const name = jb_view(jb_get(entry, "file"));
-		if (!dir.data || !name.data || !cdb_arguments(entry) ||
-		    (e = cdb_norm(&tmp, dir, name)) || !cdb_under(cstr_view_dstr(&tmp), map->top))
+		if (!d.data || !name.data || !a ||
+		    (e = cdb_norm(&tmp, d, name)) || !cdb_under(cstr_view_dstr(&tmp), map->top))
 			continue;
 		/* A header takes the entry with the longest common directory. */
 		struct cstr_view const path = cstr_view_dstr(&tmp);
@@ -194,18 +196,17 @@ cdb_command (struct cdb_map const *map,
 		for (size_t k = 0; k < path.len && k < w.len && path.data[k] == w.data[k]; ++k)
 			c = path.data[k] == '/' ? k : c;
 		usable = true;
-		if (header ? !best || c > common : cstr_view_equal(path, w)) {
-			best = entry;
+		if (header ? !args || c > common : cstr_view_equal(path, w)) {
+			args = a;
+			dir = d;
 			common = c;
+			e = cstr_view_store(path, &file);
 		}
 	}
-	if (!e && !best)
+	if (!e && !args)
 		e = usable ? ENOENT : EINVAL;
-	struct cstr_view const dir = jb_view(jb_get(best, "directory"));
 	if (!e)
-		e = cdb_norm(&file, dir, jb_view(jb_get(best, "file")));
-	if (!e)
-		e = cdb_words(map, cdb_arguments(best), dir, cstr_view_dstr(&file), &tmp, words);
+		e = cdb_words(map, args, dir, cstr_view_dstr(&file), &tmp, words);
 	if (!e && header && !dstr_cat_n(words, "-x\0c-header", sizeof "-x\0c-header"))
 		e = ENOMEM;
 	if (!e)
