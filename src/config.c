@@ -1137,28 +1137,28 @@ config_safe_path (char const        *path,
 /* The reason to refuse a file that config_safe_path() does not accept. */
 static char const config_unsafe[] = "others than root and askai's user may change it";
 
-/* As config_slurp() says, the file at @p path being open as @p fd. */
+/* Check the file at @p path and read it into @p text, as the comment of
+ * config_slurp() describes. The file is open as @p fd, and @p st contains
+ * its status from fstat().
+ */
 static int
 config_slurp_fd (struct config const *cfg,
                  int                  fd,
+                 struct stat const   *st,
                  char const          *path,
                  mode_t               hide,
                  struct buf          *text)
 {
-	struct stat st;
-	if (fstat(fd, &st))
-		return config_complain(cfg, nullptr, "cannot open %s: %s", path,
-		                       strerror(errno));
-	if (!S_ISREG(st.st_mode))
+	if (!S_ISREG(st->st_mode))
 		return config_complain(cfg, path, "not a regular file");
-	if (!config_safe_path(path, &st))
+	if (!config_safe_path(path, st))
 		return config_complain(cfg, path, "%s", config_unsafe);
-	if (st.st_mode & hide)
+	if (st->st_mode & hide)
 		return config_complain(cfg, path, "others may read it");
 	/* The storage of the size that fstat() gave never moves, so no copy
 	 * of a secret is left in storage given up, and a file that grows
 	 * meanwhile is refused. */
-	size_t const size = (size_t)st.st_size;
+	size_t const size = (size_t)st->st_size;
 	int e = buf_read(text, fd, size, size < FILE_MAX ? size : FILE_MAX);
 	if (!e)
 		return 0;
@@ -1185,10 +1185,10 @@ config_slurp (struct config const *cfg,
 {
 	/* Not blocking, a FIFO opens at once, and fails the check. */
 	int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-	if (fd < 0)
-		return config_complain(cfg, nullptr, "cannot open %s: %s", path,
-		                       strerror(errno));
-	int status = config_slurp_fd(cfg, fd, path, hide, text);
+	struct stat st;
+	int status = fd < 0 || fstat(fd, &st)
+	           ? config_complain(cfg, nullptr, "cannot open %s: %s", path, strerror(errno))
+	           : config_slurp_fd(cfg, fd, &st, path, hide, text);
 	util_close(&fd);
 	return status;
 }
