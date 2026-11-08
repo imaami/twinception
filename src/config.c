@@ -2064,21 +2064,6 @@ config_tool_bit (struct registry const *reg,
 	return id < TOOL_MAX ? (tool_mask)1 << id : 0;
 }
 
-/* Say that @p v, in the member tools of the configuration file, is no
- * name of a tool of @p reg that it may name: all but the ask tool, the
- * first. Returns 2.
- */
-static int
-config_allow_none (struct config const   *cfg,
-                   char const            *where,
-                   struct registry const *reg,
-                   struct json_object    *v)
-{
-	return config_complain(cfg, cfg->path, "%s: askai has no tool %s; the tools "
-	                       "are %s", where, json_object_to_json_string(v),
-	                       registry_names(reg, ~(tool_mask)1).data);
-}
-
 /* The mask, in @p *mask, of the tools of @p reg that @p list names, an
  * array of names, the ask tool aside.
  */
@@ -2097,7 +2082,9 @@ config_allow_names (struct config const   *cfg,
 		struct json_object *v = json_object_array_get_idx(list, i);
 		uint32_t id = registry_find(reg, jb_view(v), reg->n_tools);
 		if (id == reg->n_tools)
-			return config_allow_none(cfg, where, reg, v);
+			return config_complain(cfg, cfg->path, "%s: askai has no tool %s; the "
+			                       "tools are %s", where, json_object_to_json_string(v),
+			                       registry_names(reg, ~(tool_mask)1).data);
 		if (!id)
 			return config_complain(cfg, cfg->path, "%s: %s is the ask tool, which "
 			                       "is always on", where, reg->tools[0].name.data);
