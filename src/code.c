@@ -159,18 +159,19 @@ code_definition (void const *service)
 			"Ask clang about the C code in a commit of a repository of the server. "
 			"clang parses the committed file in path with the flags from the compile "
 			"commands of the repository. outline lists the names declared in path. "
-			"Each outline row starts with the line number of the name. Give the line "
-			"number to describe as line. describe prints the kind, the type, and the "
-			"places of the declaration and the definition of name in the translation "
-			"unit of path. describe also lists the calls of a function, the value of "
-			"an enumerator, and the members of a struct or union with offsets, sizes "
-			"and padding. describe prints up to 40 numbered lines of the declaration, "
-			"without the body of a function. The numbered lines count as read for "
-			"findings. diagnostics lists the errors and warnings of clang for path. A "
-			"place is path:line. To read the code at a place, call git read with "
-			"\"revisions\": [\"<commit>:<path>\"] and \"line\": <line>. Only "
-			"committed files are visible. A .c file must be in the compile commands. "
-			"A header is parsed with the flags of the nearest .c file."),
+			"Each outline row starts with the line number of the name. describe "
+			"accepts the line number as the line argument. describe prints the kind, "
+			"the type, and the places of the declaration and the definition of name "
+			"in the translation unit of path. describe also lists the calls of a "
+			"function, the value of an enumerator, and the members of a struct or "
+			"union with offsets, sizes and padding. describe prints up to 40 "
+			"numbered lines of the declaration, without the body of a function. The "
+			"numbered lines count as read for findings. diagnostics lists the errors "
+			"and warnings of clang for path. A place is path:line. To read the code "
+			"at a place, call git read with \"revisions\": [\"<commit>:<path>\"] and "
+			"\"line\": <line>. Only committed files are visible. A .c file must be "
+			"in the compile commands. A header is parsed with the flags of the "
+			"nearest .c file."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
