@@ -1103,6 +1103,7 @@ cxi_summary (struct cxi     *x,
              CXCursor        c)
 {
 	enum CXCursorKind const k = clang_getCursorKind(c);
+	bool const alias = k == CXCursor_TypedefDecl;
 	CXCursor const parent = clang_getCursorSemanticParent(c);
 	bool const local = clang_getCursorKind(parent) == CXCursor_FunctionDecl;
 	cxi_out_printf(&x->out, "%s%s%s ", cxi_static(c),
@@ -1123,7 +1124,7 @@ cxi_summary (struct cxi     *x,
 		else
 			cxi_out_printf(&x->out, ": %lld", clang_getEnumConstantDeclValue(c));
 	}
-	CXType const type = k == CXCursor_TypedefDecl ? clang_getTypedefDeclUnderlyingType(c)
+	CXType const type = alias ? clang_getTypedefDeclUnderlyingType(c)
 	                  : k == CXCursor_EnumDecl ? clang_getEnumDeclIntegerType(c)
 	                  : clang_getCursorType(c);
 	if (k != CXCursor_EnumConstantDecl && k != CXCursor_MacroDefinition &&
@@ -1132,15 +1133,15 @@ cxi_summary (struct cxi     *x,
 		cxi_out_clang(&x->out, clang_getTypeSpelling(type));
 	}
 	CXCursor const record = cxi_record_of(c);
-	if (!clang_Cursor_isNull(record) && k == CXCursor_TypedefDecl) {
+	if (clang_Cursor_isNull(record) || (!alias && !clang_equalCursors(record, c))) {
+		cxi_out_printf(&x->out, "\n");
+		return;
+	}
+	if (alias) {
 		cxi_out_printf(&x->out, "\n");
 		cxi_out_clang(&x->out, clang_getTypeSpelling(type));
 	}
-	if (!clang_Cursor_isNull(record) && (k == CXCursor_TypedefDecl ||
-	                                     clang_equalCursors(record, c)))
-		cxi_layout(x, rows, clang_getCursorType(record));
-	else
-		cxi_out_printf(&x->out, "\n");
+	cxi_layout(x, rows, clang_getCursorType(record));
 }
 
 static int
