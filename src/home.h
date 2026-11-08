@@ -56,7 +56,6 @@
 
 #include "buf.h"
 
-struct ai_endpoint;
 struct blocker;
 struct config;
 struct home;

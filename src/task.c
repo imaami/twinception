@@ -11,7 +11,6 @@
 #include "loop.h"
 #include "ref.h"
 #include "task.h"
-#include "util.h"
 
 /* A client loop's part. */
 struct task_lane {

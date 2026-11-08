@@ -5,9 +5,9 @@
 #define _GNU_SOURCE /* memrchr() */
 #include <string.h>
 
+#include "cstr_view.h"
 #include "notes.h"
 #include "notice.h"
-#include "util.h"
 
 /* The notices that a turn's result can end with. */
 static char const *const notice_formats[] = {

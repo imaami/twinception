@@ -14,7 +14,6 @@
 #include "blocker.h"
 #include "hist.h"
 #include "log.h"
-#include "util.h"
 
 enum { QUEUE = 256 }; /* jobs waiting at most */
 
