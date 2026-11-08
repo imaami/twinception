@@ -388,14 +388,14 @@ journal_record_read (struct journal         *j,
 		return ENOMEM;
 	r->sequence = util_be_get(header + JOURNAL_AT_SEQUENCE, sizeof r->sequence);
 	r->len = (size_t)length;
-	memcpy(r->kind, header + JOURNAL_AT_KIND, JOURNAL_KIND);
 	struct cstr_view const id = { (char const *)header + JOURNAL_AT_ID, HEXID_DIGITS };
-	size_t const kind_len = util_word_len(r->kind, JOURNAL_KIND);
-	if (hexid_init(&r->id, id) || !kind_len) {
+	char const *kind = (char const *)header + JOURNAL_AT_KIND;
+	size_t const kind_len = strnlen(kind, JOURNAL_KIND);
+	if (hexid_init(&r->id, id) || !util_word(kind, kind_len, JOURNAL_KIND)) {
 		journal_records_destroy(&r);
 		return EILSEQ;
 	}
-	r->type = journal_kind((struct cstr_view){ r->kind, kind_len });
+	r->type = journal_kind((struct cstr_view){ kind, kind_len });
 	e = util_read_all(fd, r->data, r->len, *offset + (off_t)sizeof header, &got);
 	if (e || got != r->len) {
 		journal_records_destroy(&r);
@@ -638,7 +638,7 @@ journal_record_write (struct journal              *j,
 	util_be_put(header + JOURNAL_AT_SEQUENCE, sequence, sizeof sequence);
 	util_be_put(header + JOURNAL_AT_LENGTH, r->len, sizeof (uint64_t));
 	memcpy(header + JOURNAL_AT_ID, r->id.hex, HEXID_DIGITS);
-	memcpy(header + JOURNAL_AT_KIND, r->kind, JOURNAL_KIND);
+	memcpy(header + JOURNAL_AT_KIND, kind_names[r->type].data, kind_names[r->type].len);
 	int e = journal_digest(j, header, r->data, r->len, header + JOURNAL_SIGNED);
 	if (!e)
 		e = util_write_all(fd, header, sizeof header);
@@ -682,8 +682,6 @@ journal_checkpoint_write (struct journal        *j,
 			e = ENOMEM;
 		else {
 			mark->id = record->id;
-			memcpy(mark->kind, kind_names[JOURNAL_LEGACY].data,
-			       kind_names[JOURNAL_LEGACY].len);
 			mark->type = JOURNAL_LEGACY;
 			mark->next = records;
 			records = mark;
@@ -1098,7 +1096,7 @@ journal_enqueue (struct journal      *j,
 static int
 journal_submit (struct journal     *j,
                 struct hexid const *id,
-                char const         *kind,
+                enum journal_kind   type,
                 uint32_t            turn,
                 uint64_t            offset,
                 uint8_t             operation,
@@ -1110,8 +1108,7 @@ journal_submit (struct journal     *j,
 {
 	if (!j)
 		return 0;
-	size_t const kind_len = util_word_len(kind, JOURNAL_KIND);
-	if (!id || !*id->hex || !kind_len || (len && !data) || (!!loop != !!done))
+	if (!id || !*id->hex || (len && !data) || (!!loop != !!done))
 		return EINVAL;
 	if (len > JOURNAL_RECORD_MAX)
 		return EFBIG;
@@ -1134,8 +1131,7 @@ journal_submit (struct journal     *j,
 	item->id = *id;
 	item->record->len = len;
 	item->record->id = *id;
-	memcpy(item->record->kind, kind, kind_len);
-	item->record->type = journal_kind((struct cstr_view){ kind, kind_len });
+	item->record->type = type;
 	if (len)
 		memcpy(item->record->data, data, len);
 	return journal_enqueue(j, item);
@@ -1151,8 +1147,10 @@ journal_put (struct journal     *j,
              journal_done_cb    *done,
              void               *arg)
 {
-	return journal_submit(j, id, kind, 0, 0, JOURNAL_CONTROL_PUT,
-	                      data, len, loop, done, arg);
+	size_t const n = util_word_len(kind, JOURNAL_KIND);
+	return j && !n ? EINVAL
+	               : journal_submit(j, id, journal_kind((struct cstr_view){ kind, n }), 0, 0,
+	                                JOURNAL_CONTROL_PUT, data, len, loop, done, arg);
 }
 
 int
@@ -1168,7 +1166,7 @@ journal_thought (struct journal     *j,
 {
 	if (!turn)
 		return EINVAL;
-	return journal_submit(j, id, "thought", turn, offset, JOURNAL_THOUGHT_PUT,
+	return journal_submit(j, id, JOURNAL_OTHER, turn, offset, JOURNAL_THOUGHT_PUT,
 	                      data, len, loop, done, arg);
 }
 
@@ -1183,7 +1181,7 @@ journal_thought_end (struct journal     *j,
 {
 	if (!turn)
 		return EINVAL;
-	return journal_submit(j, id, "thought-end", turn, 0,
+	return journal_submit(j, id, JOURNAL_OTHER, turn, 0,
 	                      final ? JOURNAL_THOUGHT_FINISH : JOURNAL_THOUGHT_END,
 	                      nullptr, 0, loop, done, arg);
 }

@@ -55,7 +55,6 @@ struct journal_record {
 	uint64_t               sequence;
 	size_t                 len;
 	struct hexid           id;
-	char                   kind[JOURNAL_KIND + 1];
 	enum journal_kind      type;  /**< the kind's enum journal_kind */
 	unsigned char          data[];
 };

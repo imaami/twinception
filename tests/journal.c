@@ -20,16 +20,6 @@ journal_test_id (struct hexid *id, unsigned number)
 	assert(snprintf(id->hex, sizeof id->hex, "%032x", number) == (int)sizeof id->hex - 1);
 }
 
-/* Give @p r the kind @p name. */
-static void
-journal_test_kind (struct journal_record *r,
-                   char const            *name)
-{
-	struct cstr_view const kind = cstr_view(name);
-	memcpy(r->kind, kind.data, kind.len + 1);
-	r->type = journal_kind(kind);
-}
-
 static void
 journal_test_thoughts (struct journal *j)
 {
@@ -85,10 +75,10 @@ journal_test_load (struct journal *j)
 	assert(record);
 	for (unsigned k = 1; k <= 4; ++k) {
 		journal_test_id(&record->id, k);
-		journal_test_kind(record, "state");
+		record->type = JOURNAL_STATE;
 		record->len = JOURNAL_RECORD_MAX;
 		assert(!journal_checkpoint_write(j, record));
-		journal_test_kind(record, "meta");
+		record->type = JOURNAL_META;
 		record->len = 1;
 		assert(!journal_checkpoint_write(j, record));
 	}
@@ -99,8 +89,8 @@ journal_test_load (struct journal *j)
 	journal_test_id(&load.id, 2);
 	assert(!journal_load_records(j, &load));
 	struct journal_record const *r = load.record;
-	assert(r && !strcmp(r->kind, "state") && r->len == JOURNAL_RECORD_MAX);
-	assert(r->next && !strcmp(r->next->kind, "meta") && !r->next->next);
+	assert(r && r->type == JOURNAL_STATE && r->len == JOURNAL_RECORD_MAX);
+	assert(r->next && r->next->type == JOURNAL_META && !r->next->next);
 	journal_records_destroy(&load.record);
 }
 
@@ -113,27 +103,27 @@ journal_test_gap (struct journal *j)
 	struct journal_record other = {};
 	journal_test_id(&r.id, 100);
 	journal_test_id(&other.id, 101);
-	journal_test_kind(&other, "state");
-	journal_test_kind(&r, "state");
+	other.type = JOURNAL_STATE;
+	r.type = JOURNAL_STATE;
 	assert(!journal_checkpoint_write(j, &r));
 	int jobs = j->jobs_fd;
 	j->jobs_fd = -1;
-	journal_test_kind(&r, "tool-intent");
+	r.type = JOURNAL_TOOL_INTENT;
 	assert(journal_checkpoint_write(j, &r) == EBADF);
 	j->jobs_fd = jobs;
-	journal_test_kind(&r, "tool-result");
+	r.type = JOURNAL_TOOL_RESULT;
 	assert(journal_checkpoint_write(j, &r) == EBADF);
 	assert(!journal_checkpoint_write(j, &other));
-	journal_test_kind(&other, "meta");
+	other.type = JOURNAL_META;
 	assert(!journal_checkpoint_write(j, &other));
-	journal_test_kind(&r, "state");
+	r.type = JOURNAL_STATE;
 	assert(!journal_checkpoint_write(j, &r));
-	journal_test_kind(&r, "tool-intent");
+	r.type = JOURNAL_TOOL_INTENT;
 	assert(!journal_checkpoint_write(j, &r));
 	j->jobs_fd = -1;
 	assert(journal_checkpoint_write(j, &r) == EBADF);
 	j->jobs_fd = jobs;
-	journal_test_kind(&r, "result");
+	r.type = JOURNAL_RESULT;
 	assert(!journal_checkpoint_write(j, &r));
 	assert(!journal_job_find(j, &r.id)->error &&
 	       journal_job_find(j, &r.id)->flags & JOB_TERMINAL);
@@ -143,24 +133,32 @@ static void
 journal_test_legacy (struct journal *j)
 {
 	struct journal_record record = {};
-	journal_test_kind(&record, "state");
+	record.type = JOURNAL_STATE;
 	journal_test_id(&record.id, JOURNAL_FILES + 1);
 	j->wal_fd = memfd_create("journal-legacy-test", MFD_CLOEXEC);
 	assert(j->wal_fd >= 0);
 	assert(!journal_record_write(j, j->wal_fd, &record, 1));
-	journal_test_kind(&record, "stream");
-	assert(!journal_record_write(j, j->wal_fd, &record, 2));
+	/* "stream" is not in JOURNAL_KIND_LIST, so journal_record_write() cannot
+	 * write a record of that kind, and the test writes it with
+	 * util_write_all(). journal_load_records() reads the record as
+	 * JOURNAL_OTHER and skips it. */
+	unsigned char header[JOURNAL_HEADER] = "ASKAIJ1\n";
+	util_be_put(header + JOURNAL_AT_SEQUENCE, 2, sizeof (uint64_t));
+	memcpy(header + JOURNAL_AT_ID, record.id.hex, HEXID_DIGITS);
+	memcpy(header + JOURNAL_AT_KIND, "stream", sizeof "stream" - 1);
+	assert(!journal_digest(j, header, record.data, 0, header + JOURNAL_SIGNED));
+	assert(!util_write_all(j->wal_fd, header, sizeof header));
 	struct journal_item load = { .id = record.id };
 	assert(!journal_load_records(j, &load));
-	assert(load.record && !load.record->next && !strcmp(load.record->kind, "state"));
+	assert(load.record && !load.record->next && load.record->type == JOURNAL_STATE);
 	journal_records_destroy(&load.record);
-	journal_test_kind(&record, "meta");
+	record.type = JOURNAL_META;
 	assert(!journal_checkpoint_write(j, &record));
 	assert(journal_job_find(j, &record.id)->flags & JOB_LEGACY);
 	assert(!journal_load_records(j, &load));
 	unsigned count = 0;
 	for (struct journal_record *r = load.record; r; r = r->next) {
-		assert(strcmp(r->kind, "stream"));
+		assert(r->type != JOURNAL_OTHER);
 		++count;
 	}
 	assert(count == 3); /* state, migration marker, and new metadata */
