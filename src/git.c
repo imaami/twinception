@@ -1121,18 +1121,6 @@ git_help (struct mcp_slot *slot,
 		mcp_slot_finish(slot, 0);
 }
 
-static void
-git_call_destroy (struct git_call **p_call)
-{
-	if (!*p_call)
-		return;
-	git_pin_fini(&(*p_call)->pin);
-	json_object_put((*p_call)->args);
-	(*p_call)->args = nullptr;
-	free(*p_call);
-	*p_call = nullptr;
-}
-
 /* Destroy the git call of @p slot and clear its own word. This kills git
  * if it still runs.
  */
@@ -1140,7 +1128,10 @@ static void
 git_drop (struct mcp_slot *slot)
 {
 	struct git_call *call = *mcp_slot_own(slot);
-	git_call_destroy(&call);
+	git_pin_fini(&call->pin);
+	json_object_put(call->args);
+	call->args = nullptr;
+	free(call);
 	*mcp_slot_own(slot) = nullptr;
 }
 
@@ -1718,27 +1709,19 @@ git_start (struct mcp_slot    *slot,
 		mcp_slot_fail(slot, e);
 		return;
 	}
+	*mcp_slot_own(slot) = call;
 	struct git_why why = {};
 	e = git_call_command(call, git, &why);
-	if (e) {
-		git_call_destroy(&call);
-		if (e == EINVAL)
-			mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
-		else
-			mcp_slot_fail(slot, e);
+	if (e == EINVAL)
+		mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
+	else if (e)
+		mcp_slot_fail(slot, e);
+	else if (mcp_slot_offset(slot, args))
 		return;
-	}
-	if (mcp_slot_offset(slot, args)) {
-		git_call_destroy(&call);
-		return;
-	}
-	if (call->phase == GIT_HELP) {
+	else if (call->phase == GIT_HELP)
 		git_help(slot, call->command);
-		git_call_destroy(&call);
-		return;
-	}
-	*mcp_slot_own(slot) = call;
-	git_call_advance(call, slot);
+	else
+		git_call_advance(call, slot);
 }
 
 struct plugin const git_plugin = {
