@@ -75,7 +75,6 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <json-c/printbuf.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1693,14 +1692,10 @@ mcp_http_error (struct stream *s,
                 struct span    fields)
 {
 	char body[160];
-	int n = snprintf(body, sizeof body, "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":"
-	                 "-32600,\"message\":\"%s\"}}", message);
-	if (n < 0 || n >= (int)sizeof body) {
-		s->ops->end(s, EOVERFLOW);
-		return;
-	}
-	if (!s->ops->head(s, status, fields, (size_t)n))
-		(void)s->ops->data(s, (struct span){ (unsigned char *)body, (size_t)n });
+	size_t const n = util_format(body, sizeof body, "{\"jsonrpc\":\"2.0\",\"error\":"
+	                             "{\"code\":-32600,\"message\":\"%s\"}}", message);
+	if (!s->ops->head(s, status, fields, n))
+		(void)s->ops->data(s, (struct span){ (unsigned char *)body, n });
 	s->ops->end(s, 0);
 }
 
