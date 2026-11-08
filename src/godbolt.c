@@ -2929,8 +2929,8 @@ godbolt_configure (void               *config,
         "\"minItems\":1,\"maxItems\":16,\"uniqueItems\":true,\"description\":"  \
         "\"Exact compiler ids from godbolt_catalog, not display names. "        \
         "Without compilers, the call uses the default compiler of the "         \
-        "language. The number of compilers times the number of args must be "   \
-        "at most 32.\"}"
+        "language. The number of compilers times the number of strings in "     \
+        "args must be at most 32.\"}"
 #define GODBOLT_DEF_ARGS                                                        \
         "\"args\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"          \
         "\"minItems\":1,\"maxItems\":8,\"default\":[\"\"],\"description\":"     \
@@ -2960,10 +2960,10 @@ static struct {
 		"\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		"\"action\":{\"type\":\"string\",\"enum\":["
 		XL_JOIN(",", ",", GODBOLT_ACTION_LIST(XL_JSON)) "],\"description\":\"languages "
-		"lists each language with the default compiler. compilers lists the "
-		"compilers of the language. kinds counts compilers per compilerType. "
-		"families counts compilers per family tag. architectures counts "
-		"compilers per instruction set.\"},"
+		"lists each language and the default compiler of the language. "
+		"compilers lists the compilers for the language argument. kinds counts "
+		"compilers per compilerType. families counts compilers per family tag. "
+		"architectures counts compilers per instruction set.\"},"
 		GODBOLT_DEF_LANGUAGE("the compilers", "c, c++ or rust") ","
 		"\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
 		"\"minItems\":1,\"maxItems\":16,\"uniqueItems\":true,\"description\":"
@@ -2971,8 +2971,8 @@ static struct {
 		"list or another filter excludes the id.\"},"
 		"\"match\":{\"type\":\"string\",\"description\":\"Words to find in any "
 		"letter case, such as \\\"gcc 14\\\". Each word must occur in a column of "
-		"the item. The column default does not count. match is at most 8 words "
-		"and 256 bytes.\"},"
+		"the item. For action languages, the default column does not count. "
+		"match is at most 8 words and 256 bytes.\"},"
 		"\"kind\":{\"type\":\"string\",\"description\":\"The exact compilerType "
 		"of the compilers to list, such as clang or win32-vc. The kind default "
 		"means no compilerType and a GCC-style driver. Action kinds lists the "
@@ -3008,10 +3008,10 @@ static struct {
 		"\"description\":\"Assembly filters. The defaults match the Compiler "
 		"Explorer site: Intel syntax, demangled names, no assembler directives, "
 		"no comment-only lines and no unused labels.\"},"
-		"\"run\":{\"type\":\"boolean\",\"default\":false,\"description\":\"true "
-		"also runs the program on Compiler Explorer without arguments and with "
-		"empty input. Each record then contains the exit code and the output of "
-		"the program.\"},"
+		"\"run\":{\"type\":\"boolean\",\"default\":false,\"description\":\"With "
+		"true, Compiler Explorer also runs the program without arguments and "
+		"with empty input. Each record then contains the exit code and the "
+		"output of the program.\"},"
 		GODBOLT_DEF_OFFSET "},"
 		"\"required\":[\"source\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
@@ -3050,9 +3050,11 @@ static struct {
 		CSTR_VIEW_INIT(", once for each compiler and each argument string. The output "
 		               "contains a record per compilation with the exit code, the macros "
 		               "and the compiler messages. askai sends the source to Compiler "
-		               "Explorer. For target facts, the output of godbolt_targets is "
-		               "shorter. For a few macros, call godbolt_preprocess with the macro "
-		               "names as the source, such as \"__STDC_VERSION__ __SIZEOF_LONG__\"."),
+		               "Explorer. Compilers of kind win32-vc (MSVC) cannot output the "
+		               "predefined macros. For target facts, the output of godbolt_targets "
+		               "is shorter. For a few macros, call godbolt_preprocess with the "
+		               "macro names as the source, such as \"__STDC_VERSION__ "
+		               "__SIZEOF_LONG__\"."),
 	},
 	[GODBOLT_TARGETS] = {
 		"{\"name\":\"godbolt_targets\",\"title\":\"Target facts from Compiler "
@@ -3060,10 +3062,10 @@ static struct {
 		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
 		GODBOLT_DEF_LANGUAGE("the probe", "c or c++") ","
 		"\"headers\":{\"type\":\"boolean\",\"default\":false,\"description\":"
-		"\"true also includes target headers, such as limits.h and features.h. "
-		"The output then contains a headers line. The compilation can fail when "
-		"the target headers are missing on Compiler Explorer. Without headers, "
-		"libc is unknown.\"},"
+		"\"With true, the probe also includes target headers, such as limits.h "
+		"and features.h. The output then contains a headers line. The "
+		"compilation can fail when the target headers are missing on Compiler "
+		"Explorer. Without headers, libc is unknown.\"},"
 		GODBOLT_DEF_OFFSET "},"
 		"\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
@@ -3071,7 +3073,7 @@ static struct {
 		               "Compiler Explorer at "),
 		CSTR_VIEW_INIT(", once for each compiler and each argument string. The facts are "
 		               "architecture, os, os_family, data_model, pointer_bits, endianness, "
-		               "libc and versions. Each fact line ends with the source macros, such "
+		               "libc and versions. Each fact line ends with the macros used, such "
 		               "as \"(from __x86_64__)\"."),
 	},
 };
@@ -3122,8 +3124,8 @@ godbolt_definition (void const        *service,
 		return def;
 	struct json_object *props = jb_get(jb_get(def, "inputSchema"), "properties");
 	int e = jb_set(props, "share", json_tokener_parse(
-		"{\"type\":\"boolean\",\"default\":false,\"description\":\"true starts "
-		"the output with a Compiler Explorer link.\"}"));
+		"{\"type\":\"boolean\",\"default\":false,\"description\":\"With true, "
+		"the first line of the output is a Compiler Explorer link.\"}"));
 	e = e ? e : jb_set(jb_get(def, "annotations"), "readOnlyHint",
 	                   json_object_new_boolean(cfg->share != GODBOLT_SHARE_SHORT));
 	if (!e)

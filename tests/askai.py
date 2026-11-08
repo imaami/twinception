@@ -16404,7 +16404,7 @@ def check_godbolt(binary, up, godbolt):
                 assert query == "fields=id,name,defaultCompiler" and \
                     headers["User-Agent"] == "askai (plugin godbolt)" and \
                     headers["Accept"] == "application/json", (query, dict(headers))
-                assert "with the default compiler" in \
+                assert "the default compiler of the language" in \
                     tools[1]["inputSchema"]["properties"]["action"]["description"]
 
                 # The compilers of a language, with filters. The list has
