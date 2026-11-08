@@ -686,9 +686,10 @@ cli_network_request_create (struct cli_network            *network,
                             int                           *e)
 {
 	struct cli_network_request *request = calloc(1, sizeof *request);
-	*e = request ? 0 : ENOMEM;
-	if (!request)
+	if (!request) {
+		*e = ENOMEM;
 		return nullptr;
+	}
 	atomic_init(&request->cancelled, false);
 	request->network = network;
 	request->call = (struct cli_network_call){

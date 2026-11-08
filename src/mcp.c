@@ -4736,9 +4736,11 @@ mcp_agenda_create (struct mcp_req *req,
                    int            *e)
 {
 	struct mcp_agenda *a = malloc(sizeof *a);
-	*e = a ? 0 : ENOMEM;
-	if (!a)
+	if (!a) {
+		*e = ENOMEM;
 		return nullptr;
+	}
+	*e = 0;
 	*a = (struct mcp_agenda){
 		.alarm.fn = mcp_agenda_alarm,
 		.notices = DSTR_INIT,

@@ -216,9 +216,11 @@ notes_tool_loop_create (void        *service,
 	(void)loop;
 	(void)children;
 	struct notes_tool_loop *nl = malloc(sizeof *nl);
-	*e = nl ? 0 : ENOMEM;
-	if (!nl)
+	if (!nl) {
+		*e = ENOMEM;
 		return nullptr;
+	}
+	*e = 0;
 	*nl = (struct notes_tool_loop){ .tool = service };
 	list_init(&nl->spare.list);
 	return nl;
