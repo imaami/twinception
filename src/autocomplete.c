@@ -497,13 +497,12 @@ autocomplete_candidate_init (struct autocomplete_candidate *candidate,
                              uint64_t                       flags)
 {
 	*candidate = (struct autocomplete_candidate){.value = dstr(nullptr)};
-	if (json_object_is_type(value, json_type_string)) {
+	struct cstr_view text = jb_view(value);
+	if (text.data) {
 		candidate->flags = AUTOCOMPLETE_STRING;
 		if ((flags & (AUTOCOMPLETE_UNION | AUTOCOMPLETE_STRING)) != AUTOCOMPLETE_STRING)
 			candidate->flags |= AUTOCOMPLETE_QUOTED;
-	}
-	struct cstr_view text = autocomplete_json_text(value);
-	if (!(candidate->flags & AUTOCOMPLETE_STRING)) {
+	} else {
 		text.data = json_object_to_json_string_length(value, JSON_C_TO_STRING_PLAIN, &text.len);
 		if (!text.data)
 			return ENOMEM;

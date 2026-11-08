@@ -747,9 +747,9 @@ cli_client_scan_notes (struct cli_client_scan *scan,
 		if (!e)
 			e = cstr_view_store(jb_view(self), &scan->participant);
 	}
-	struct json_object *identity = jb_get(meta, "session");
-	if (!e && json_object_is_type(identity, json_type_string))
-		e = cstr_view_store(jb_view(identity), &scan->session);
+	struct cstr_view const session = jb_view(jb_get(meta, "session"));
+	if (!e && session.data)
+		e = cstr_view_store(session, &scan->session);
 	scan->files = jb_get(props, "file") && jb_get(props, "notebook") && cli_client_has_action(actions, NOTES_ACTION_LIST);
 	return e;
 }
