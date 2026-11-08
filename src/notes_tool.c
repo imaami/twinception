@@ -412,7 +412,7 @@ notes_tool_then (struct mcp_slot *slot,
 		child_destroy(&call->child);
 		struct buf in = {};
 		notes_tool_run(slot, FETCH_RECORD, &in,
-		               notes_check_input(&in, call->notebook, review_file));
+		               store_check_input(&in, call->notebook, review_file));
 		return;
 	}
 	tool_step_fn *then = call->then;
@@ -846,7 +846,7 @@ notes_tool_checked (struct mcp_slot *slot)
 	struct child const *c = call->child;
 	struct oid tip;
 	struct notes_file note = {};
-	int r = child_ok(c) ? notes_checked(buf_peek(&c->out), &tip, &note) : EIO;
+	int r = child_ok(c) ? store_checked(buf_peek(&c->out), &tip, &note.id, &note.bytes) : EIO;
 	uint64_t before = r == EEXIST ? note.bytes : NO_NOTE;
 	uint32_t fetch = notes_tool_actions[call->action].fetch;
 	if (fetch & FETCH_REPLACE)
@@ -1801,7 +1801,7 @@ notes_tool_check (struct mcp_slot  *slot,
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct buf in = {};
 	if (!e)
-		e = notes_check_input(&in, call->repo, name);
+		e = store_check_input(&in, call->repo, name);
 	notes_tool_run(slot, FETCH_CHECK, &in, e);
 }
 
@@ -1818,7 +1818,7 @@ notes_tool_launch (struct mcp_slot *slot)
 	struct buf in = {};
 	int e = 0;
 	if ((call->first & FETCH_KIND) == FETCH_CHECK)
-		e = notes_check_input(&in, call->repo, name);
+		e = store_check_input(&in, call->repo, name);
 	else if ((call->first & (FETCH_KIND | FETCH_REVISION)) == FETCH_READ)
 		e = notes_read_input(&in, notes_tool_call_notebook(call), name);
 	notes_tool_run(slot, call->first, &in, e);

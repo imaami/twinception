@@ -24,15 +24,6 @@ enum notes_revision_phase : uint8_t {
 	REVISION_DATA,  /* git reads the note at from, or compares it with to */
 };
 
-/* The kinds of the objects in the output of git cat-file. */
-enum notes_kind {
-	KIND_MISSING,
-	KIND_BLOB,
-	KIND_TREE,
-	KIND_COMMIT,
-	KIND_OTHER,
-};
-
 void
 notes_ref (struct member const *member,
            char                 ref[NOTES_REF])
@@ -189,88 +180,6 @@ notes_name (struct cstr_view *name)
 }
 
 int
-notes_check_input (struct buf       *in,
-                   char const       *repo,
-                   struct cstr_view  name)
-{
-	if (!in || !repo || !name.data)
-		return EINVAL;
-	/* Write a line for the branch, a line for each directory in the name,
-	 * and a line for the name. */
-	int e = buf_printf(in, "%s\n", repo);
-	for (size_t i = 0; !e && i <= name.len; ++i)
-		if (i == name.len || name.data[i] == '/')
-			e = buf_printf(in, "%s:%.*s\n", repo, (int)i, name.data);
-	return e;
-}
-
-/* Returns the kind of the object of @p line, a line without its newline in
- * the output of git cat-file: "OID TYPE SIZE", or "NAME missing". Stores
- * OID in @p *oid, or no name if the line is KIND_MISSING or OID is not a
- * name, which makes the line KIND_OTHER. Stores SIZE in @p *size if the
- * line has a TYPE.
- */
-static enum notes_kind
-notes_kind (struct cstr_view  line,
-            struct oid       *oid,
-            struct cstr_view *size)
-{
-	static struct cstr_view const types[] = {
-		[KIND_BLOB] = CSTR_VIEW_INIT("blob"), [KIND_TREE] = CSTR_VIEW_INIT("tree"),
-		[KIND_COMMIT] = CSTR_VIEW_INIT("commit"),
-	};
-	*oid = (struct oid){};
-	if (cstr_view_ends(line, CSTR_VIEW(" missing")))
-		return KIND_MISSING;
-	struct cstr_view type;
-	if (oid_init_field(oid, &line, ' ') || !cstr_view_cut(&line, ' ', &type))
-		return KIND_OTHER;
-	*size = line;
-	return KIND_BLOB + cstr_view_index(types + KIND_BLOB, KIND_OTHER - KIND_BLOB, type);
-}
-
-int
-notes_checked (struct span        out,
-               struct oid        *tip,
-               struct notes_file *note)
-{
-	if (!tip || !note)
-		return EINVAL;
-	*tip = (struct oid){};
-	*note = (struct notes_file){};
-	/* The first line is about the branch, the last line is about the name,
-	 * and the lines between are about the directories in the name. */
-	size_t lines = 0;
-	bool dir_note = false;
-	enum notes_kind kind = KIND_OTHER;
-	struct cstr_view rest = { (char const *)out.ptr, out.len };
-	struct cstr_view line, size = {};
-	struct oid oid;
-	for (; rest.len; ++lines) {
-		if (!cstr_view_cut(&rest, '\n', &line))
-			return EIO;
-		dir_note |= lines > 1 && kind == KIND_BLOB;
-		kind = notes_kind(line, &oid, &size);
-		if (lines || kind == KIND_MISSING)
-			continue;
-		if (kind != KIND_COMMIT)
-			return EIO;
-		*tip = oid;
-	}
-	int r = lines < 2 || kind == KIND_OTHER || kind == KIND_COMMIT ? EIO
-	      : dir_note ? ENOTDIR : kind == KIND_TREE ? EISDIR
-	      : kind == KIND_BLOB ? EEXIST : 0;
-	if (r != EEXIST)
-		return r;
-	/* The last line is "OID blob SIZE". */
-	uint64_t bytes;
-	if (util_number(size.data, size.len, UINT64_MAX, &bytes))
-		return EIO;
-	*note = (struct notes_file){ .bytes = bytes, .id = oid };
-	return EEXIST;
-}
-
-int
 notes_file_same (struct notes_file const *file,
                  struct span              data,
                  bool                    *same)
@@ -328,12 +237,12 @@ notes_read_out (struct span  out,
 		return EIO;
 	struct oid oid;
 	struct cstr_view digits;
-	enum notes_kind kind = notes_kind(line, &oid, &digits);
-	if (kind == KIND_MISSING)
+	enum store_kind kind = store_kind(line, &oid, &digits);
+	if (kind == STORE_KIND_MISSING)
 		return ENOENT;
-	if (kind == KIND_TREE)
+	if (kind == STORE_KIND_TREE)
 		return EISDIR;
-	if (kind != KIND_BLOB)
+	if (kind != STORE_KIND_BLOB)
 		return EIO;
 	/* A line feed comes after the text. */
 	uint64_t size;
@@ -369,12 +278,12 @@ notes_review_out (struct span  out,
 	struct cstr_view line, size;
 	if (!cstr_view_cut(&rest, '\n', &line))
 		return EIO;
-	enum notes_kind kind = notes_kind(line, tip, &size);
-	if (kind == KIND_MISSING)
+	enum store_kind kind = store_kind(line, tip, &size);
+	if (kind == STORE_KIND_MISSING)
 		return ENOENT;
 	/* The commit's text and a line feed come before the line of the blob. */
 	uint64_t n;
-	if (kind != KIND_COMMIT || util_number(size.data, size.len, UINT64_MAX, &n) ||
+	if (kind != STORE_KIND_COMMIT || util_number(size.data, size.len, UINT64_MAX, &n) ||
 	    n >= rest.len || rest.data[n] != '\n')
 		return EIO;
 	size_t const at = line.len + 1 + (size_t)n + 1;

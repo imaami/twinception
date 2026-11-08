@@ -229,6 +229,57 @@ store_drop (struct child **p_c);
 extern bool
 store_raced (struct span out);
 
+/** The kinds of the objects in the output of STORE_CHECK and STORE_READ
+ *  (store_kind()).
+ */
+enum store_kind : uint8_t {
+	STORE_KIND_MISSING,  /**< no object has the name */
+	STORE_KIND_BLOB,
+	STORE_KIND_TREE,
+	STORE_KIND_COMMIT,
+	STORE_KIND_OTHER,    /**< another kind, or a line that is not valid */
+};
+
+/** Returns the kind of the object of @p line, a line of the output of
+ *  STORE_CHECK or the first line of an object in the output of STORE_READ,
+ *  without its line feed: "OID KIND SIZE", or "NAME missing". Stores OID
+ *  in @p *oid, or no name for STORE_KIND_MISSING and for a line whose OID
+ *  is not a name, which is STORE_KIND_OTHER. For a line with a KIND, the
+ *  function stores SIZE in @p *size.
+ */
+extern enum store_kind
+store_kind (struct cstr_view  line,
+            struct oid       *oid,
+            struct cstr_view *size);
+
+/** Writes to @p in the input of STORE_CHECK for the path @p name at
+ *  @p ref, a ref or a commit: a line for @p ref, a line for each directory
+ *  in the path, and a line for the path. Returns 0, EINVAL for a null
+ *  argument, or the error number that buf_printf() returns.
+ */
+extern int
+store_check_input (struct buf       *in,
+                   char const       *ref,
+                   struct cstr_view  name);
+
+/**
+ * Reads @p out, the output of STORE_CHECK for the input that
+ * store_check_input() writes. If the ref is a commit, the function writes
+ * the commit to @p tip, else no name. If a file has the path, the function
+ * writes the id and the size of the blob to @p id and @p bytes. Otherwise
+ * @p id is no name and @p bytes is 0. Returns 0 if a file of the path can
+ * be added, EEXIST if a file has the path, EISDIR if files are in a
+ * directory of the path, ENOTDIR if a directory in the path is a file, EIO
+ * if the output is not what the command writes, also for a ref that names
+ * an object other than a commit, and EINVAL for a null @p tip, @p id or
+ * @p bytes.
+ */
+extern int
+store_checked (struct span  out,
+               struct oid  *tip,
+               struct oid  *id,
+               uint64_t    *bytes);
+
 /** Writes to @p *age how many seconds ago the lock file of the ref @p ref
  *  was last changed, or 0 without a lock file. A lock file last changed
  *  more than STORE_STALE before the system booted belongs to no running

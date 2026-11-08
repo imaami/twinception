@@ -45,6 +45,9 @@ same (int         line,
 /* A commit id that no repository of the test contains. */
 #define A "55aca1e8682351e4c39a92b040721def3f005402"
 
+/* Another object id. */
+#define B "d00491fd7e5bb6fa28c517a0bb32b8b506539d4d"
+
 /* Writes the words of @p argv up to its nullptr to @p text, each after a
  * space, and returns the number of words.
  */
@@ -445,6 +448,103 @@ test_trailer (void)
 	c = commit;
 	c.trailers = nullptr;
 	CHECK(refused(c));
+}
+
+/* Returns true if store_kind() reads @p line as an object of the kind
+ * @p kind with the name @p oid and the size @p size. The size stays "-" for
+ * a line without a size.
+ */
+static bool
+object (char const      *line,
+        enum store_kind  kind,
+        char const      *oid,
+        char const      *size)
+{
+	struct oid id;
+	CHECK(!oid_init(&id, CSTR_VIEW(A)));
+	struct cstr_view got = CSTR_VIEW("-");
+	return store_kind(cstr_view(line), &id, &got) == kind && !strcmp(id.hex, oid) &&
+	       cstr_view_equal(got, cstr_view(size));
+}
+
+/* The lines of git cat-file. */
+static void
+test_object (void)
+{
+	CHECK(object(A " blob 3", STORE_KIND_BLOB, A, "3"));
+	CHECK(object(A " tree 70", STORE_KIND_TREE, A, "70"));
+	CHECK(object(A " commit 250", STORE_KIND_COMMIT, A, "250"));
+	CHECK(object(A " tag 140", STORE_KIND_OTHER, A, "140"));
+	CHECK(object(A A A " blob 3", STORE_KIND_OTHER, "", "-"));
+	CHECK(object("refs/heads/n:a b missing", STORE_KIND_MISSING, "", "-"));
+	CHECK(object(A ":blob 3 missing", STORE_KIND_MISSING, "", "-"));
+	CHECK(object("x blob 3", STORE_KIND_OTHER, "", "-"));
+	CHECK(object(A " blob", STORE_KIND_OTHER, A, "-"));
+	CHECK(object("", STORE_KIND_OTHER, "", "-"));
+}
+
+/* Returns what store_checked() returns for the output @p out. Checks that
+ * the tip is @p tip and that the id and the size of the blob are @p id and
+ * @p bytes, or no name and 0.
+ */
+static int
+checked (char const *out,
+         char const *tip,
+         char const *id,
+         uint64_t    bytes)
+{
+	struct oid t, i;
+	uint64_t n = 1;
+	int r = store_checked((struct span){ (unsigned char *)out, strlen(out) }, &t, &i, &n);
+	CHECK(!strcmp(t.hex, tip) && !strcmp(i.hex, id) && n == bytes);
+	return r;
+}
+
+/* The input and the output of STORE_CHECK for a path. */
+static void
+test_check (void)
+{
+	struct buf in = {};
+	CHECK(!store_check_input(&in, "refs/heads/n", CSTR_VIEW("a/b c/d")));
+	struct span s = buf_peek(&in);
+	SAME(s.ptr, s.len, "refs/heads/n\nrefs/heads/n:a\nrefs/heads/n:a/b c\n"
+	     "refs/heads/n:a/b c/d\n");
+	buf_clear(&in);
+	CHECK(!store_check_input(&in, A, CSTR_VIEW("x")));
+	s = buf_peek(&in);
+	SAME(s.ptr, s.len, A "\n" A ":x\n");
+	CHECK(store_check_input(nullptr, "r", CSTR_VIEW("x")) == EINVAL);
+	CHECK(store_check_input(&in, nullptr, CSTR_VIEW("x")) == EINVAL);
+	CHECK(store_check_input(&in, "r", (struct cstr_view){}) == EINVAL);
+	buf_fini(&in);
+
+	/* A missing path can be added, also in a missing directory, in a
+	 * tree and on a missing ref. */
+	CHECK(!checked(A " commit 9\nr:x missing\n", A, "", 0));
+	CHECK(!checked(A " commit 9\nr:d missing\nr:d/x missing\n", A, "", 0));
+	CHECK(!checked(A " commit 9\n" B " tree 30\nr:d/x missing\n", A, "", 0));
+	CHECK(!checked("r missing\nr:x missing\n", "", "", 0));
+	/* A blob, a tree as the path and a blob as a directory. */
+	CHECK(checked(A " commit 9\n" B " blob 3\n", A, B, 3) == EEXIST);
+	CHECK(checked(A " commit 9\n" B " tree 30\n", A, "", 0) == EISDIR);
+	CHECK(checked(A " commit 9\n" B " blob 3\nr:d/x missing\n", A, "", 0) == ENOTDIR);
+	CHECK(checked(A " commit 9\n" B " blob 3\n" B " tree 30\nr:d/e/x missing\n", A, "",
+	              0) == ENOTDIR);
+	/* Output that git does not write for the input. */
+	CHECK(checked(A " commit 9\n", A, "", 0) == EIO);
+	CHECK(checked("", "", "", 0) == EIO);
+	CHECK(checked(A " blob 9\nr:x missing\n", "", "", 0) == EIO);
+	CHECK(checked(A " commit 9\nr:x missing", A, "", 0) == EIO);
+	CHECK(checked(A " commit 9\n" B " blob x\n", A, "", 0) == EIO);
+	CHECK(checked(A " commit 9\n" B " commit 9\n", A, "", 0) == EIO);
+	CHECK(checked(A " commit 9\n" B " tag 9\n", A, "", 0) == EIO);
+	static char const none[] = "r missing\nr:x missing\n";
+	struct span const out = { (unsigned char *)none, sizeof none - 1 };
+	struct oid t;
+	uint64_t n;
+	CHECK(store_checked(out, nullptr, &t, &n) == EINVAL);
+	CHECK(store_checked(out, &t, nullptr, &n) == EINVAL);
+	CHECK(store_checked(out, &t, &t, nullptr) == EINVAL);
 }
 
 static void
@@ -943,6 +1043,8 @@ main (int    argc,
 	}
 	test_input();
 	test_trailer();
+	test_object();
+	test_check();
 	test_git(argv[1]);
 	return check_report("store");
 }

@@ -190,30 +190,6 @@ notes_revision_ready (struct notes_revision const *revision);
 extern int
 notes_name (struct cstr_view *name);
 
-/** Writes the input of the command STORE_CHECK for the valid name @p name
- *  in the notebook branch @p repo to @p in. Returns 0, EINVAL for a null
- *  argument, or the error number that buf_printf() returns.
- */
-extern int
-notes_check_input (struct buf       *in,
-                   char const       *repo,
-                   struct cstr_view  name);
-
-/**
- * Reads @p out, the output of the command STORE_CHECK. If the branch has
- * notes, the function writes the name of the newest commit to @p tip, else
- * no name. If a note has the name, it writes the note's blob id and size
- * to @p note, else it zeroes @p note. Returns 0 if a note of the
- * name can be added. Returns EEXIST if a note of the name exists, EISDIR
- * if notes are in a directory of the name, ENOTDIR if a directory in the
- * name is a note, EIO if the output is not what the command writes, and
- * EINVAL for a null @p tip or @p note.
- */
-extern int
-notes_checked (struct span        out,
-               struct oid        *tip,
-               struct notes_file *note);
-
 /**
  * Sets @p *same to whether @p data are the bytes of the blob whose id and
  * size @p file has. It hashes the bytes only if their number is the size.
@@ -259,7 +235,7 @@ notes_review (char const         *agent,
 
 /**
  * Reads @p out, the output of the command STORE_READ for the input that
- * notes_check_input() writes for a ref of notes_review() and the name
+ * store_check_input() writes for a ref of notes_review() and the name
  * review.json. Stores the commit of the ref in @p tip and the text of
  * review.json in @p text. Returns 0, ENOENT if the ref does not exist, or
  * EIO for any other output, such as a ref that is not a commit or a commit

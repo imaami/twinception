@@ -387,6 +387,87 @@ store_raced (struct span out)
 	return false;
 }
 
+enum store_kind
+store_kind (struct cstr_view  line,
+            struct oid       *oid,
+            struct cstr_view *size)
+{
+	static struct cstr_view const kinds[] = {
+		[STORE_KIND_BLOB]   = CSTR_VIEW_INIT("blob"),
+		[STORE_KIND_TREE]   = CSTR_VIEW_INIT("tree"),
+		[STORE_KIND_COMMIT] = CSTR_VIEW_INIT("commit"),
+	};
+	*oid = (struct oid){};
+	if (cstr_view_ends(line, CSTR_VIEW(" missing")))
+		return STORE_KIND_MISSING;
+	struct cstr_view kind;
+	if (oid_init_field(oid, &line, ' ') || !cstr_view_cut(&line, ' ', &kind))
+		return STORE_KIND_OTHER;
+	*size = line;
+	return STORE_KIND_BLOB + cstr_view_index(kinds + STORE_KIND_BLOB,
+	                                         STORE_KIND_OTHER - STORE_KIND_BLOB, kind);
+}
+
+int
+store_check_input (struct buf       *in,
+                   char const       *ref,
+                   struct cstr_view  name)
+{
+	if (!in || !ref || !name.data)
+		return EINVAL;
+	/* Write a line for the ref, a line for each directory in the name,
+	 * and a line for the name. */
+	int e = buf_printf(in, "%s\n", ref);
+	for (size_t i = 0; !e && i <= name.len; ++i)
+		if (i == name.len || name.data[i] == '/')
+			e = buf_printf(in, "%s:%.*s\n", ref, (int)i, name.data);
+	return e;
+}
+
+int
+store_checked (struct span  out,
+               struct oid  *tip,
+               struct oid  *id,
+               uint64_t    *bytes)
+{
+	if (!tip || !id || !bytes)
+		return EINVAL;
+	*tip = (struct oid){};
+	*id = (struct oid){};
+	*bytes = 0;
+	/* The first line is about the ref, the last line is about the name,
+	 * and the lines between are about the directories in the name. */
+	size_t lines = 0;
+	bool dir_file = false;
+	enum store_kind kind = STORE_KIND_OTHER;
+	struct cstr_view rest = { (char const *)out.ptr, out.len };
+	struct cstr_view line, size = {};
+	struct oid oid;
+	for (; rest.len; ++lines) {
+		if (!cstr_view_cut(&rest, '\n', &line))
+			return EIO;
+		dir_file |= lines > 1 && kind == STORE_KIND_BLOB;
+		kind = store_kind(line, &oid, &size);
+		if (lines || kind == STORE_KIND_MISSING)
+			continue;
+		if (kind != STORE_KIND_COMMIT)
+			return EIO;
+		*tip = oid;
+	}
+	int r = lines < 2 || kind == STORE_KIND_OTHER || kind == STORE_KIND_COMMIT ? EIO
+	      : dir_file ? ENOTDIR : kind == STORE_KIND_TREE ? EISDIR
+	      : kind == STORE_KIND_BLOB ? EEXIST : 0;
+	if (r != EEXIST)
+		return r;
+	/* The last line is "OID blob SIZE". */
+	uint64_t n;
+	if (util_number(size.data, size.len, UINT64_MAX, &n))
+		return EIO;
+	*id = oid;
+	*bytes = n;
+	return EEXIST;
+}
+
 int
 store_lock (struct store const *store,
             char const         *ref,
