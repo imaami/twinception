@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "cli_client.h"
+#include "cli_console.h"
 #include "cli_stream.h"
 #include "cli_tool.h"
 #include "cli_ui.h"
@@ -97,19 +98,6 @@ cli_tool_begin (struct cli_tool *tool)
 	return cli_ui_action(&tool->stream.ui, CSTR_VIEW("you"), cstr_view_dstr(&action));
 }
 
-/* Show a block of tool content whose type is not text as a label with the
- * type.
- */
-static int
-cli_tool_label (struct cli_console *console,
-                struct cstr_view    kind)
-{
-	dstr_auto label = dstr("[");
-	if (cstr_view_cat(kind, &label) || !dstr_cat(&label, " content]"))
-		return ENOMEM;
-	return cli_ui_message(console, cstr_view_dstr(&label));
-}
-
 static int
 cli_tool_content (struct cli_tool    *tool,
                   struct json_object *result,
@@ -132,7 +120,12 @@ cli_tool_content (struct cli_tool    *tool,
 		bool is_text = cstr_view_equal(kind, CSTR_VIEW("text"));
 		if (!kind.data || (is_text && !text.data))
 			return cli_error_set(error, EPROTO, "Malformed tool content");
-		int e = is_text ? cli_ui_message(console, text) : cli_tool_label(console, kind);
+		struct cli_console_span const label[] = {
+			{CSTR_VIEW("["), CLI_STYLE_RESET}, {kind, CLI_STYLE_RESET},
+			{CSTR_VIEW(" content]\n"), CLI_STYLE_RESET},
+		};
+		int e = is_text ? cli_ui_message(console, text)
+		                : cli_console_print(console, label, array_size(label));
 		if (e)
 			return e;
 	}
