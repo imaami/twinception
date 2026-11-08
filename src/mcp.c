@@ -197,8 +197,8 @@ static struct cstr_view const versions[] = {
 };
 enum { MODERN = 1, PRE_STREAMS = array_size(versions) - 1 };
 
-static char const meta_server[] = "io.modelcontextprotocol/serverInfo";
-static char const meta_tasks[] = "io.modelcontextprotocol/tasks";
+#define META_SERVER "io.modelcontextprotocol/serverInfo"
+#define META_TASKS "io.modelcontextprotocol/tasks"
 
 /* The bytes of the files that one request may hand askai inline, at most,
  * once decoded (maxInlineBytes of the extension), if --max-body has room
@@ -6938,14 +6938,10 @@ mcp_req_tasks (struct mcp_req     *req,
 {
 	struct mcp_static const *st = req->mcp->st;
 	if (!tasks) {
-		struct mcp_piece const data[] = {
-			FRAG("{\"requiredCapabilities\":{\"extensions\":{\""),
-			FRAG(meta_tasks),
-			FRAG("\":{}}}}"),
-		};
 		mcp_req_error(req, 400, MISSING_CAPABILITY,
-		              FRAG("Missing required client capability"), data,
-		              array_size(data));
+		              FRAG("Missing required client capability"),
+		              &FRAG("{\"requiredCapabilities\":{\"extensions\":{\"" META_TASKS
+		                    "\":{}}}}"), 1);
 		return;
 	}
 	struct hexid id;
@@ -7072,7 +7068,7 @@ mcp_req_modern (struct mcp_req     *req,
 		return;
 	}
 	mcp_req_flag(req, REQ_SSE_OK, mcp_accepts_sse(s->ops->field(s, F_ACCEPT)));
-	struct json_object *ext = jb_get(jb_get(caps, "extensions"), meta_tasks);
+	struct json_object *ext = jb_get(jb_get(caps, "extensions"), META_TASKS);
 	mcp_req_route(req, params, json_object_is_type(ext, json_type_object));
 }
 
@@ -8103,7 +8099,7 @@ mcp_modern_list (struct json_object *result,
 	result = jb_set_or_free(result, "ttlMs", json_object_new_int(CACHE_TTL_MS));
 	result = jb_set_or_free(result, "cacheScope", json_object_new_string("public"));
 	result = jb_set_or_free(result, "resultType", json_object_new_string("complete"));
-	return jb_set_or_free(result, "_meta", jb_object(meta_server, json_object_get(info),
+	return jb_set_or_free(result, "_meta", jb_object(META_SERVER, json_object_get(info),
 	                                                 nullptr));
 }
 
@@ -8135,7 +8131,7 @@ mcp_static_tails (struct mcp_static  *st,
 		"capabilities", jb_object(
 			"tools", jb_object(nullptr),
 			"extensions", jb_object(
-				meta_tasks, jb_object(nullptr),
+				META_TASKS, jb_object(nullptr),
 				/* With this extension, a client sends askai a file that
 				 * the model does not write, as a data: URI in an argument
 				 * whose schema contains x-mcp-file. */
@@ -8150,8 +8146,7 @@ mcp_static_tails (struct mcp_static  *st,
 		return e;
 	if (!dstr_printf(&st->init_tail, "\",\"capabilities\":{\"tools\":{}},"
 	                 "\"serverInfo\":%s}", dstr_get(&text)) ||
-	    !dstr_printf(&st->server_meta, "\"_meta\":{\"%s\":%s}", meta_server,
-	                 dstr_get(&text)) ||
+	    !dstr_printf(&st->server_meta, "\"_meta\":{\"" META_SERVER "\":%s}", dstr_get(&text)) ||
 	    !dstr_printf(&st->modern_tail, ",\"resultType\":\"complete\",%s}",
 	                 dstr_get(&st->server_meta)))
 		return ENOMEM;
@@ -8160,6 +8155,9 @@ mcp_static_tails (struct mcp_static  *st,
 	return dstr_printf(&st->list_tail, "],\"ttlMs\":%d,\"cacheScope\":\"private\"%s",
 	                   CACHE_TTL_MS, dstr_get(&st->modern_tail)) ? 0 : ENOMEM;
 }
+
+#undef META_SERVER
+#undef META_TASKS
 
 /* mcp_host_plugin is the plugin of askai's own kinds. It has no instances
  * and no part_create(). Its service is the mcp_static, and mcp_create()
