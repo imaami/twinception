@@ -1204,26 +1204,25 @@ notes_tool_got_note (struct mcp_slot *slot)
 		                  : notes_tool_call_unread(call), TOOL_FAILED);
 		return;
 	}
-	if (call->fetch & (FETCH_COPY | FETCH_RESTORE)) {
+	switch (call->fetch & (FETCH_COPY | FETCH_RESTORE | FETCH_APPEND | FETCH_ATTACH)) {
+	case FETCH_COPY:
+	case FETCH_RESTORE:
 		notes_tool_got_copy(slot, text);
 		return;
-	}
-	if (call->fetch & FETCH_APPEND) {
+	case FETCH_APPEND:
 		notes_tool_got_append(slot, text);
 		return;
-	}
-	if (call->fetch & FETCH_ATTACH) {
+	case FETCH_ATTACH:
 		notes_tool_got_attach(slot, text, &id);
 		return;
 	}
 	struct cstr_view const body = { (char const *)text.ptr, text.len };
 	char const *selector = notes_selector(notes_tool_call_notebook(call));
 	(void)mcp_slot_shows(slot, selector);
-	int e = 0;
-	if (call->fetch & FETCH_REVISION)
-		e = dstr_printf(call->text, "Notebook %s — %s at %s:\n\n", selector,
-		                call->revision.file.data, call->revision.from.hex) ? 0 : ENOMEM;
-	e = e ? e : notes_tool_show(call->text, body);
+	int const e = (call->fetch & FETCH_REVISION) &&
+	              !dstr_printf(call->text, "Notebook %s — %s at %s:\n\n", selector,
+	                           call->revision.file.data, call->revision.from.hex)
+	              ? ENOMEM : notes_tool_show(call->text, body);
 	notes_tool_end(slot, e, false);
 }
 
