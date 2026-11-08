@@ -406,8 +406,7 @@ cli_network_header (char   *bytes,
 static void
 cli_network_progress (struct cli_network *network)
 {
-	struct list pending;
-	list_init(&pending);
+	struct list pending = list(&pending);
 	list_transplant(&pending, &network->requests);
 	while (!list_is_empty(&pending) && tally_fits(&network->credit, cli_network_credit, 1)) {
 		struct cli_network_request *request = container_of(pending.next, struct cli_network_request, hook);
@@ -693,11 +692,10 @@ cli_network_request_create (struct cli_network            *network,
 	atomic_init(&request->cancelled, false);
 	request->network = network;
 	request->call = (struct cli_network_call){
-		.header = post->header, .body = post->body, .complete = done, .context = post->context,
-		.result = result, .id = ++network->sequence, .bytes = bytes,
-		.flags = post->flags & CLI_NETWORK_INTERRUPTIBLE,
+		.received = list(&request->call.received), .header = post->header, .body = post->body,
+		.complete = done, .context = post->context, .result = result, .id = ++network->sequence,
+		.bytes = bytes, .flags = post->flags & CLI_NETWORK_INTERRUPTIBLE,
 	};
-	list_init(&request->call.received);
 	request->start.fn = cli_network_start;
 	request->done.fn = cli_network_request_done;
 	request->easy = curl_easy_init();

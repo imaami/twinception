@@ -64,10 +64,9 @@ cli_tool_create (struct cli_client  *client,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*tool = (struct cli_tool){.client = client,
+	*tool = (struct cli_tool){.hook = list(&tool->hook), .client = client,
 	                          .name = json_object_get(jb_get(params, "name")),
 	                          .params = json_object_get(params), .dirty = dirty};
-	list_init(&tool->hook);
 	/* The stream views the name that the tool owns. */
 	tool->stream = cli_stream(console, cli_tool_name(tool), token, 0);
 	return tool;

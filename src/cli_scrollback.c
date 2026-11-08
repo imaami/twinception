@@ -41,8 +41,7 @@ struct cli_scrollback_line {
 void
 cli_scrollback_init (struct cli_scrollback *scrollback)
 {
-	*scrollback = (struct cli_scrollback){};
-	list_init(&scrollback->lines);
+	*scrollback = (struct cli_scrollback){.lines = list(&scrollback->lines)};
 }
 
 static void
@@ -77,7 +76,6 @@ cli_scrollback_add_line (struct cli_scrollback *scrollback)
 	if (!line)
 		return ENOMEM;
 	*line = (struct cli_scrollback_line){.text = dstr(nullptr)};
-	list_init(&line->hook);
 	list_append(&scrollback->lines, &line->hook);
 	tally_add(&scrollback->used, 0);
 	return 0;
