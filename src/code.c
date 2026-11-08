@@ -41,6 +41,7 @@ enum code_arg : uint8_t { CODE_ARG_LIST(CODE_ARG_ENUM) CODE_ARGS };
 #undef CODE_ARG_ENUM
 
 static struct cstr_view const code_arg_names[] = { CODE_ARG_LIST(XL_VIEW) };
+#undef CODE_ARG_LIST
 
 /* A call of the code tool. pin resolves the revision, and pin.child is the
  * askai-code process once the pin is done. words contains the KEY=VALUE
