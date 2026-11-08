@@ -63,13 +63,13 @@ def findings_head(counts):
 
 # The description of the offset of each tool that pages its output
 # (TOOL_OFFSET_ABOUT, src/tool.h).
-OFFSET_ABOUT = "The byte of the output to start from."
+OFFSET_ABOUT = "The byte of the output to start from. The default is 0."
 # The header of the read log in the review record (src/review.c).
 READS = "[askai: the lines that git read and code describe showed you in this call:]"
 # The sentence that ends the description of each such tool lent to the turns.
-PAGED = (" A result contains at most 64 KiB of the output, from the start of the line "
-         "that contains offset if that start is less than a quarter of the limit before "
-         "it; if the output is longer, the result ends with the offset of the rest.")
+PAGED = (" A result is at most 64 KiB. The result starts at the beginning of the line "
+         "that contains the offset byte, unless the line starts more than 16 KiB earlier. "
+         "If the output is longer, the result ends with a note with the next offset.")
 # The API that each answer format of the fake upstream is in.
 API = {"openai": "chat", "responses": "responses", "anthropic": "messages",
        "gemini": "generate", "interactions": "interactions"}
@@ -2709,7 +2709,7 @@ def check_recovery_notes(binary, up):
                             if item.get("call_id") == "read" and
                             item.get("type") == "function_call_output"]
                 match = re.fullmatch(
-                    r"(.*)\n\n\[Bytes 5 to (\d+) of (\d+): for the rest, call again "
+                    r"(.*)\n\n\[Bytes 5 to (\d+) of (\d+)\. For the rest, call again "
                     r'with the same arguments and "offset": (\d+)\.\]' +
                     re.escape(f"\n\n[askai: notebook {selector}]"), output, re.S)
                 assert match, output
@@ -8793,7 +8793,7 @@ def check_man(binary, up):
             assert results[2]["content"].startswith("       headed - a page") and \
                 "\n\n[Bytes 65 to " in results[2]["content"], results[2]
             assert results[3]["content"].startswith("HEADED(3)") and re.search(
-                r"\n\n\[Bytes 0 to (\d+) of \1: its end\.\]$", results[3]["content"]), \
+                r"\n\n\[Bytes 0 to (\d+) of \1\. End of the output\.\]$", results[3]["content"]), \
                 results[3]
             assert results[4]["content"] == synopsis, results[4]
             [lent] = [t["function"] for t in up.requests[count]["body"]["tools"]
@@ -9139,7 +9139,7 @@ def check_git(binary, up):
                     ({"repo": "proj", "command": "log", "help": None},
                      "The help argument must be a boolean."),
                     ({"repo": "proj", "command": "grep", "help": True, "offset": -1},
-                     "The offset argument must be a whole number of bytes, from 0."),
+                     "The offset argument must be a whole number of bytes, 0 or more."),
                     ({"repo": "proj", "command": "log", "revisions": ["a\u0000b"]},
                      "revisions[0] must be a string of 1 to 1024 bytes with no NUL."),
                     ({"repo": "proj", "command": "show", "revisions": ["--help"]},
@@ -10398,7 +10398,7 @@ def check_code(binary, up):
                      "hash (use commit:path), or a commit that HEAD, branches, tags and "
                      "remote-tracking refs do not reach."),
                     ({**outline, "offset": -1},
-                     "The offset argument must be a whole number of bytes, from 0."),
+                     "The offset argument must be a whole number of bytes, 0 or more."),
                     ({**outline, "path": "fail.c"}, "The fake refuses fail.c."),
                     ({**outline, "path": "exit3.c"}, "askai-code exited with status 3."),
                     ({**outline, "path": "segv.c"}, "askai-code was killed by signal 11."),
@@ -13065,7 +13065,8 @@ def check_turns(binary, up):
             outputs = [m["content"] for m in results]
             with open(f"{repo}/big.txt") as f:
                 assert outputs[0] == f.read(), outputs[0][-200:]
-            assert outputs[1] == "[The output has 44000 bytes, fewer than the offset.]", \
+            assert outputs[1] == "[The offset is past the end of the output. The output is " \
+                "44000 bytes.]", \
                 outputs[1]
             assert outputs[2] == "The text argument must be a string of 1 byte to " \
                 "4 MiB, and no NUL.", outputs[2]
@@ -13077,7 +13078,7 @@ def check_turns(binary, up):
             _, _, body = ai.rpc("tools/call", {"name": "git", "arguments": {
                 "repo": "proj", "command": "log", "offset": 999999}})
             assert body["result"].get("isError") and re.fullmatch(
-                r"The output has \d+ bytes, fewer than the offset\.",
+                r"The offset is past the end of the output\. The output is \d+ bytes\.",
                 text_of(body["result"])), body
 
             # Calls with no index, as some servers send them; arguments the
@@ -13315,7 +13316,7 @@ def check_turns(binary, up):
             out = turns(up.requests[count + 1])[1]["content"]
             # Lines of 11 bytes: 363 of them in an eighth of 8000 tokens.
             assert out.startswith("line 00000\n") and re.search(
-                r"line 00362\n\n\n\[Bytes 0 to 3993 of 44000: for the rest, call "
+                r"line 00362\n\n\n\[Bytes 0 to 3993 of 44000\. For the rest, call "
                 r"again with the same arguments and \"offset\": 3993\.\]\n\n\[askai: "
                 r"your context is 6[0-6]% full, \d+ of 8000 tokens\. Now is a good "
                 r"time to write notes of what you have learned\. Compaction removes "
@@ -13323,7 +13324,7 @@ def check_turns(binary, up):
             # An offset within a line gives the window from the line's start.
             out = turns(up.requests[count + 2])[3]["content"]
             assert out.startswith("line 00363\n") and \
-                "line 00725\n\n\n[Bytes 3993 to 7986 of 44000: for the rest" in out and \
+                "line 00725\n\n\n[Bytes 3993 to 7986 of 44000. For the rest" in out and \
                 re.search(r"\[askai: your context is \d+% full, \d+ of 8000 "
                           r"tokens\. Note what you need to keep, then call "
                           r"compact\.\]$", out), out[-300:]
@@ -13823,7 +13824,7 @@ def check_turns(binary, up):
             count = len(up.requests)
             ai.ask("Q")
             results = turns(up.requests[count + 1])
-            assert "[Bytes 0 to 2992 of 44000:" in results[1]["content"], results
+            assert "[Bytes 0 to 2992 of 44000." in results[1]["content"], results
             assert '"window_bytes":3000' in results[2]["content"], results
 
             # A read gives the whole lines that fit in the turn's window. Its
@@ -13877,11 +13878,11 @@ def check_turns(binary, up):
             reads = [m["content"] for m in turns(up.requests[count + 2])[5:]]
             assert reads[0] == note_files(selector, {
                 f"{c}/{c}.txt": (f"{c * 1199}\n" * 6).encode() for c in "abc"}), reads[0]
-            assert reads[1] == f"{'c' * 1199}\n" * 2 + "\n\n[Bytes 0 to 2400 of 7200: " \
-                "for the rest, call again with the same arguments and \"offset\": 2400.]" + \
+            assert reads[1] == f"{'c' * 1199}\n" * 2 + "\n\n[Bytes 0 to 2400 of 7200. " \
+                "For the rest, call again with the same arguments and \"offset\": 2400.]" + \
                 provenance, reads[1][-200:]
-            assert reads[2] == f"{'c' * 1199}\n\n\n[Bytes 6000 to 7200 of 7200: its " \
-                "end.]" + provenance, reads[2][-200:]
+            assert reads[2] == f"{'c' * 1199}\n\n\n[Bytes 6000 to 7200 of 7200. End " \
+                "of the output.]" + provenance, reads[2][-200:]
             # The result of the last call also has the warning that the context
             # is full.
             assert reads[3] == "That name is a directory of notes. list shows the " \
@@ -14098,8 +14099,8 @@ def check_review(binary, up):
                 "history.",
                 "Finding 2: retracted\nclaim: C3b\nturn 1: candidate\n  evidence: E\n"
                 "turn 2: retracted\n  evidence: R\n  the claim was: C3",
-                record[len(REVIEW):] + f"\n\n[Bytes {len(REVIEW)} to {size} of {size}: "
-                "its end.]",
+                record[len(REVIEW):] + f"\n\n[Bytes {len(REVIEW)} to {size} of {size}. "
+                "End of the output.]",
                 "There is no finding 9. The record contains findings 1 to 2."], results(sent[2])
             # Each compaction puts the whole record into the prompt, and the
             # calls after the first compaction add to it.
@@ -14152,7 +14153,7 @@ def check_review(binary, up):
             text = REVIEW + findings_head("3 findings: 3 candidate") + "\n".join(
                 f"{k + 1}. candidate\n   claim: {k} " + "x" * (600 << 10) for k in range(3))
             shown = results(up.requests[count + 4])[0]
-            found = re.fullmatch(r"(.*)\n\n\[Bytes 0 to (\d+) of (\d+): for the rest, call "
+            found = re.fullmatch(r"(.*)\n\n\[Bytes 0 to (\d+) of (\d+)\. For the rest, call "
                                  r"again with the same arguments and \"offset\": \2\.\]",
                                  shown, re.S)
             assert found and int(found[3]) == len(text) and found[1] == text[:int(found[2])], \
@@ -14402,7 +14403,7 @@ def check_review(binary, up):
                 prompt(sent[4])[-600:]
             size = len(record)
             assert results(sent[5]) == [record[keep:] + f"\n\n[Bytes {keep} to {size} of "
-                                        f"{size}: its end.]"], results(sent[5])
+                                        f"{size}. End of the output.]"], results(sent[5])
 
             # A read gives the lines that fit in the window, and the log has
             # all of them. From an offset within a line, the window starts
@@ -14445,7 +14446,7 @@ def check_review(binary, up):
             units, _ = work(ai)
             assert all(most <= bound for most, bound in units.values()), units
             assert results(up.requests[count + 2]) == [REVIEW_EMPTY]
-            assert re.fullmatch(r"y+\n\n\[Bytes 3000 to \d+ of \d+: for the rest, .*",
+            assert re.fullmatch(r"y+\n\n\[Bytes 3000 to \d+ of \d+\. For the rest, .*",
                                 results(up.requests[count + 1])[1], re.S), \
                 results(up.requests[count + 1])[1][-200:]
 

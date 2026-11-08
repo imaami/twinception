@@ -2128,8 +2128,9 @@ mcp_slot_respond (struct mcp_slot *slot,
 	size_t off = req->lent ? 0 : slot->skip;
 	if (off > text.len) {
 		char why[96];
-		mcp_slot_result(slot, util_format_view(why, sizeof why, "The output has %zu bytes, "
-		                                       "fewer than the offset.", text.len), true);
+		mcp_slot_result(slot, util_format_view(why, sizeof why, "The offset is past the end "
+		                                       "of the output. The output is %zu bytes.",
+		                                       text.len), true);
 		return;
 	}
 	mcp_req_log_call(req, failed ? "failed" : "answered",
@@ -3494,7 +3495,7 @@ mcp_slot_offset (struct mcp_slot    *slot,
 	if (!e)
 		return 0;
 	mcp_slot_tell(slot, CSTR_VIEW("The offset argument must be a whole number of bytes, "
-	                              "from 0."), TOOL_FAILED);
+	                              "0 or more."), TOOL_FAILED);
 	return EINVAL;
 }
 
@@ -5598,18 +5599,18 @@ mcp_slot_note_window (struct mcp_slot *slot,
 	size_t end = slot->skip + slot->window;
 	if (end < len) {
 		if (mcp_slot_tool(slot)->kind->flags & TOOL_PAGED)
-			(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: for the "
+			(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu. For the "
 			                       "rest, call again with the same arguments and "
 			                       "\"offset\": %zu.]", slot->skip, end, len, end);
 		else
-			(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: the rest "
-			                       "is cut.]", slot->skip, end, len);
+			(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu. The rest "
+			                       "of the output is cut.]", slot->skip, end, len);
 	} else if (offset > len)
-		(void)util_text_printf(&slot->note, "[The output has %zu bytes, fewer than the "
-		                       "offset.]", len);
+		(void)util_text_printf(&slot->note, "[The offset is past the end of the output. "
+		                       "The output is %zu bytes.]", len);
 	else if (offset)
-		(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: its end.]",
-		                       slot->skip, len, len);
+		(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu. End of the "
+		                       "output.]", slot->skip, len, len);
 }
 
 static void mcp_agenda_job_done (struct mcp_slot *slot);
@@ -8222,10 +8223,10 @@ mcp_lent_definition (struct registry_tool const *t,
 	struct cstr_view const about = jb_view(jb_get(lent, "description"));
 	return jb_set_or_free(lent, "description", schema_text3(
 		about.data ? about.data : "", about.len ? " " : "",
-		"A result contains at most 64 KiB of the output, from the start of the "
-		"line that contains offset if that start is less than a quarter of the "
-		"limit before it; if the output is longer, the result ends with the "
-		"offset of the rest."));
+		"A result is at most 64 KiB. The result starts at the beginning of the "
+		"line that contains the offset byte, unless the line starts more than "
+		"16 KiB earlier. If the output is longer, the result ends with a note "
+		"with the next offset."));
 }
 
 /** Serializes the replies that never change. @p info describes askai, and

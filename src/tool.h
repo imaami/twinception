@@ -42,7 +42,7 @@ enum tool_flag : uint64_t {
 /** The description of the argument offset of each tool whose kind has
  *  TOOL_PAGED.
  */
-#define TOOL_OFFSET_ABOUT "The byte of the output to start from."
+#define TOOL_OFFSET_ABOUT "The byte of the output to start from. The default is 0."
 
 /** A plugin's kinds may have these; askai's have more. */
 static constexpr uint64_t TOOL_FLAGS = TOOL_LENT | TOOL_PAGED | TOOL_DETACH |
