@@ -1918,20 +1918,14 @@ home_take (struct home        *home,
 		(void)home_job_erred(job, "cannot retain the native background job id", -1);
 		return e;
 	}
-	static struct ai_sink const plain = {
-		.text = home_put_text,
-		.call = home_put_call
+	struct ai_sink const sink = {
+		.text    = home_put_text,
+		.thought = job->asks & (JOB_TOOLS | JOB_STREAM) || job->journal
+		         ? home_put_thought : nullptr,
+		.call    = home_put_call,
+		.replay  = job->asks & JOB_TOOLS ? home_put_replay : nullptr,
+		.user    = job,
 	};
-	static struct ai_sink const tools = {
-		.text = home_put_text,
-		.thought = home_put_thought,
-		.call = home_put_call,
-		.replay = home_put_replay
-	};
-	struct ai_sink sink = job->asks & JOB_TOOLS ? tools : plain;
-	if (job->asks & JOB_STREAM || job->journal)
-		sink.thought = home_put_thought;
-	sink.user = job;
 	size_t had = buf_peek(&job->result).len;
 	struct ai_event ev = {};
 	e = ai_event(home->ep->api, &job->reader, root, &sink, &ev);
