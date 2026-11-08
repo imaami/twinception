@@ -278,9 +278,12 @@ test_plugin_state_drop (struct mcp_slot *slot)
  * case in enum test_plugin_case is TEST_PLUGIN_ followed by ID. A call
  * with the argument "case" set to name runs the case.
  */
-#define TEST_PLUGIN_CASE_LIST(X)                                        \
-        X(READY, "ready") X(OWN, "own") X(AFTER, "after")               \
-        X(INVALID, "invalid") X(HANDLES, "handles")
+#define TEST_PLUGIN_CASE_LIST(X) \
+        X(READY,   "ready")      \
+        X(OWN,     "own")        \
+        X(AFTER,   "after")      \
+        X(INVALID, "invalid")    \
+        X(HANDLES, "handles")
 
 #define TEST_PLUGIN_CASE_ENUM(id, ...) TEST_PLUGIN_##id,
 enum test_plugin_case : uint8_t { TEST_PLUGIN_CASE_LIST(TEST_PLUGIN_CASE_ENUM) };
