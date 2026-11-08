@@ -271,11 +271,7 @@ instance_table_relieve (struct instance_table *t,
 	}
 	size_t done = instance_table_reap(t, max);
 	/* instance_list_relieve() returns at most max - done, so done never
-	 * passes max. The comparisons skip a list when no unit of max is
-	 * left. */
-	if (done < max)
-		done += instance_list_relieve(&t->busy, level, max - done);
-	if (done < max)
-		done += instance_list_relieve(&t->idle, level, max - done);
-	return done;
+	 * passes max. */
+	done += instance_list_relieve(&t->busy, level, max - done);
+	return done + instance_list_relieve(&t->idle, level, max - done);
 }
