@@ -11252,8 +11252,8 @@ def check_notes(binary, up):
             notes_tool = next(t for t in ai.rpc("tools/list", headers=auth(
                 "alice-1"))[2]["result"]["tools"] if t["name"] == "notes")
             assert notes_tool["inputSchema"]["properties"]["content"] == {
-                "type": "string", "format": "uri", "description": "For add, append and "
-                "replace, instead of text: a file from the user. Your client fills in "
+                "type": "string", "format": "uri", "description": "A file from the user "
+                "for add, append or replace, instead of text. Your client fills in "
                 "content. Do not write content yourself.",
                 "x-mcp-file": {"maxSize": 4 << 20}}, notes_tool
             blob = bytes(range(256)) * 64 + b"\0end"
@@ -11383,8 +11383,8 @@ def check_notes(binary, up):
                 "is not an extended regular expression."
             for pattern in ("", "a\0b"):
                 assert call({"action": "search", "pattern": pattern}) == "!The pattern " \
-                    "argument must be extended regular expressions, one on each line, " \
-                    "without NUL bytes.", pattern
+                    "argument must be 1 or more lines without NUL bytes. Each line is an " \
+                    "extended regular expression.", pattern
             replacement = b"\0\xffnew"
             uri = "data:;base64," + base64.b64encode(replacement).decode()
             said = call({"action": "replace", "file": "legacy.c", "content": uri})
@@ -12042,15 +12042,16 @@ def check_notes_texts(binary, up):
                               if t["name"] == "notes")
                 for definition, schema, side, notebook, tail in (
                         (lent, "parameters", "Notes are files in notebooks. Every version "
-                         "of a note stays in the history. You can read every notebook but "
-                         "write only your own notebook. Each ask call and each compaction "
-                         "starts with your note history and your newest note.",
+                         "of a note stays in the history. You can read every notebook. You "
+                         "can write only your own notebook. Each ask call and each "
+                         "compaction starts with your note history and your newest note.",
                          "The notebook to read: own, a participant's name, or a selector "
                          "from action notebooks. The default is own. copy needs notebook.",
                          PAGED),
                         (listed, "inputSchema", "Notes are files in notebooks. Every version "
-                         "of a note stays in the history. You can read every notebook but "
-                         "write only your own notebook.", "The notebook to read: own, other, "
+                         "of a note stays in the history. You can read every notebook. You "
+                         "can write only your own notebook.", "The notebook to read: own, "
+                         "other, "
                          "a participant's name, or a selector from action notebooks. other "
                          "is the notebook of your ask_ai calls. The default is own, or other "
                          "for copy.", "")):
@@ -12075,25 +12076,25 @@ def check_notes_texts(binary, up):
                         "notebooks lists the notebooks of the session. To recover lost text: "
                         "history with file, then diff, then read or restore with revision.",
                         "file": "The note name, 1 to 255 bytes, such as plan.md or "
-                        "design/locks.md. Use the extension for the format of the text. With "
-                        "file, history lists only the changes to the note.",
-                        "text": "The text, 1 byte to 4 MiB.",
-                        "pattern": "Extended regular expressions, one on each line. Case is "
-                        "ignored. A line of a note matches if any expression matches.",
+                        "design/locks.md. Pick an extension that matches the format of the "
+                        "text. With file, history lists only the changes to the note.",
+                        "text": "The text for add, append or replace, 1 byte to 4 MiB.",
+                        "pattern": "Each line of pattern is an extended regular expression. "
+                        "Case is ignored. A line of a note matches if any expression matches.",
                         "revision": "A full commit ID from the notebook history, or current. "
-                        "The default is current.",
+                        "The default for read is current. restore needs revision.",
                         "from": "The older commit: a full commit ID from the notebook "
-                        "history, or current.",
+                        "history, or current. diff needs from.",
                         "to": "The newer commit: a full commit ID, or current. The default is "
                         "current. With offset, give the commit IDs from the diff output as "
                         "from and to.",
                         "as": "The name for the new note of copy or restore, instead of file.",
                         "notebook": notebook, "offset": OFFSET_ABOUT} | ({
-                            "content": "For add, append and replace, instead of text: a "
-                            "file from the user. Your client fills in content. Do not write "
+                            "content": "A file from the user for add, append or replace, "
+                            "instead of text. Your client fills in content. Do not write "
                             "content yourself.",
-                            "thread": "Legacy, 32 hexadecimal digits. The notes do not "
-                            "depend on thread."} if not tail else {}), described
+                            "thread": "A legacy argument of 32 hexadecimal digits. The notes "
+                            "do not depend on thread."} if not tail else {}), described
                 assert call(action="copy", file="a.md", notebook=upstream, **{"from": "x"}) == \
                     "!Give revision only with read or restore. Give from and to only " \
                     "with diff."

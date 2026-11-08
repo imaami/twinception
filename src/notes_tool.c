@@ -1770,10 +1770,9 @@ notes_tool_search (struct mcp_slot  *slot,
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	if (!pattern.len || memchr(pattern.data, '\0', pattern.len)) {
-		mcp_slot_tell(slot, CSTR_VIEW("The pattern argument must be extended regular "
-		                              "expressions, one on each line, without NUL "
-		                              "bytes."),
-		              TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("The pattern argument must be 1 or more lines "
+		                              "without NUL bytes. Each line is an extended "
+		                              "regular expression."), TOOL_FAILED);
 		return;
 	}
 	notes_tool_run(slot, FETCH_GREP | FETCH_REVISION, &(struct buf){},
@@ -1989,12 +1988,13 @@ notes_tool_schema (struct notes_tool const *tool,
 	static char const *const descriptions[] = {
 		[NOTES_UPSTREAM] =
 			"Notes are files in notebooks. Every version of a note stays in the "
-			"history. You can read every notebook but write only your own notebook. "
-			"Each ask call and each compaction starts with your note history and your "
-			"newest note.",
+			"history. You can read every notebook. You can write only your own "
+			"notebook. Each ask call and each compaction starts with your note history "
+			"and your newest note.",
 		[NOTES_CLIENT] =
 			"Notes are files in notebooks. Every version of a note stays in the "
-			"history. You can read every notebook but write only your own notebook.",
+			"history. You can read every notebook. You can write only your own "
+			"notebook.",
 	};
 	static char const *const notebooks[] = {
 		[NOTES_UPSTREAM] = "The notebook to read: own, a participant's name, or a "
@@ -2022,24 +2022,25 @@ notes_tool_schema (struct notes_tool const *tool,
 			" To recover lost text: history with file, then diff, then read or restore "
 			"with revision.")),
 		"file", schema_property("string",
-			"The note name, 1 to 255 bytes, such as plan.md or design/locks.md. Use "
-			"the extension for the format of the text. With file, history lists only "
-			"the changes to the note."),
+			"The note name, 1 to 255 bytes, such as plan.md or design/locks.md. Pick "
+			"an extension that matches the format of the text. With file, history "
+			"lists only the changes to the note."),
 		"revision", schema_property("string",
-			"A full commit ID from the notebook history, or current. The default is "
-			"current."),
+			"A full commit ID from the notebook history, or current. The default for "
+			"read is current. restore needs revision."),
 		"from", schema_property("string",
 			"The older commit: a full commit ID from the notebook history, or "
-			"current."),
+			"current. diff needs from."),
 		"to", schema_property("string",
 			"The newer commit: a full commit ID, or current. The default is current. "
 			"With offset, give the commit IDs from the diff output as from and to."),
 		"as", schema_property("string",
 			"The name for the new note of copy or restore, instead of file."),
-		"text", schema_property("string", "The text, 1 byte to 4 MiB."),
+		"text", schema_property("string",
+			"The text for add, append or replace, 1 byte to 4 MiB."),
 		"pattern", schema_property("string",
-			"Extended regular expressions, one on each line. Case is ignored. A line "
-			"of a note matches if any expression matches."),
+			"Each line of pattern is an extended regular expression. Case is ignored. "
+			"A line of a note matches if any expression matches."),
 		"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 		"notebook", schema_property("string", notebooks[side]),
 		nullptr);
@@ -2050,15 +2051,16 @@ notes_tool_schema (struct notes_tool const *tool,
 			"type", json_object_new_string("string"),
 			"format", json_object_new_string("uri"),
 			"description", json_object_new_string(
-				"For add, append and replace, instead of text: a file from the "
-				"user. Your client fills in content. Do not write content "
+				"A file from the user for add, append or replace, instead of "
+				"text. Your client fills in content. Do not write content "
 				"yourself."),
 			"x-mcp-file", jb_object("maxSize",
 			                        json_object_new_int64((int64_t)tool->files_inline),
 			                        nullptr),
 			nullptr));
 		props = jb_set_or_free(props, "thread", schema_property("string",
-			"Legacy, 32 hexadecimal digits. The notes do not depend on thread."));
+			"A legacy argument of 32 hexadecimal digits. The notes do not depend on "
+			"thread."));
 	}
 	dstr_auto description = DSTR_INIT;
 	if (!dstr_printf(&description, "Participant: %s. %s Prefer small edits. Before "
