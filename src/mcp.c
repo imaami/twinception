@@ -808,7 +808,8 @@ static char const persist_failed[] = "Cannot persist job state";
 static char const start_failed[] = "Cannot start the upstream request";
 static struct cstr_view const not_object = CSTR_VIEW_INIT("The arguments argument must be an "
                                                           "object.");
-static struct cstr_view const still_runs = CSTR_VIEW_INIT("That job still runs: wait for it.");
+static struct cstr_view const still_runs = CSTR_VIEW_INIT("The job is still running. Call "
+                                                          "wait to wait for the job.");
 
 /* The actions of the jobs tool: X(ID, name), the constant ACTION_ID and the
  * name. An ask call that names a job in background mode takes the last two.
@@ -4835,9 +4836,9 @@ mcp_agenda_job_notice (struct mcp_agenda *a,
 	bool const ok = job->flags & SLOT_CANCELLED
 	              ? dstr_printf(&a->notices, "[askai: job %" PRIu32 ", %s, cancelled.]\n",
 	                            k + 1, tool)
-	              : dstr_printf(&a->notices, "[askai: job %" PRIu32 ", %s, %s: call jobs "
-	                            "with the action result and job %" PRIu32 " for its "
-	                            "result.]\n", k + 1, tool,
+	              : dstr_printf(&a->notices, "[askai: job %" PRIu32 ", %s, %s. Call jobs "
+	                            "with action result and job %" PRIu32 " for the "
+	                            "output.]\n", k + 1, tool,
 	                            job->flags & SLOT_FAILED ? "failed" : "completed", k + 1);
 	return ok ? 0 : ENOMEM;
 }
@@ -4945,18 +4946,18 @@ mcp_req_background (struct mcp_req *req,
 	                         : mcp_req_record(req, LEDGER_JOB, tool, &e);
 	req->admitted = nullptr;
 	if (!task) {
-		agenda_refused(&req->self, e, CSTR_VIEW("You have 8 jobs and tasks running, the "
-		                                        "most at once: wait for one to end."));
+		agenda_refused(&req->self, e, CSTR_VIEW("You have 8 jobs and tasks running. The "
+		                                        "limit is 8. Wait until a job ends."));
 		return e;
 	}
 	char buf[512];
 	struct cstr_view const text = tool == req->self.tool
-		? util_format_view(buf, sizeof buf, "Started job %s. Call %s with {\"job\":\"%s\"} in "
-		                   "one second for its status or result; add \"action\":\"cancel\" "
-		                   "to cancel it.", task->id.hex,
+		? util_format_view(buf, sizeof buf, "Started job %s. For the status or the result, "
+		                   "call %s with {\"job\":\"%s\"} after one second. To cancel the "
+		                   "job, add \"action\":\"cancel\".", task->id.hex,
 		                   mcp_static_tool(st, tool)->name.data, task->id.hex)
-		: util_format_view(buf, sizeof buf, "Started job %s. Call wait to wait for it, then "
-		                   "jobs with the action result and this id.", task->id.hex);
+		: util_format_view(buf, sizeof buf, "Started job %s. Call wait to wait for the job. "
+		                   "Then call jobs with action result and the job ID.", task->id.hex);
 	struct mcp_piece const p[] = {
 		FRAG("\"}]"),
 		req->flags & REQ_MODERN ? DSTR(&st->modern_tail) : FRAG("}"),
@@ -4981,8 +4982,8 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	struct json_object *call = jb_get(args, "arguments");
 	struct cstr_view problem =
 		!mcp_req_granted(req, id) || tool->kind->flags & KF_AGENDA
-		? CSTR_VIEW("The tool argument must name a tool of yours other than background, "
-		            "jobs, wait and timer.")
+		? CSTR_VIEW("The tool argument must name a tool that you may call, other than "
+		            "background, jobs, wait and timer.")
 		: call && !json_object_is_type(call, json_type_object)
 		? not_object
 		: (struct cstr_view){};
@@ -5024,8 +5025,8 @@ mcp_slot_background (struct mcp_slot    *slot,
 	                                                   TOOL_MAX));
 	struct cstr_view problem =
 		!(mcp_static_tool(st, id)->kind->flags & TOOL_DETACH)
-		? CSTR_VIEW("The tool argument must name a tool of yours that may run in the "
-		            "background, such as git or man.")
+		? CSTR_VIEW("The tool argument must name a tool that can run in the background, "
+		            "such as git or man.")
 		: call && !json_object_is_type(call, json_type_object)
 		? not_object
 		: (struct cstr_view){};
@@ -5040,8 +5041,8 @@ mcp_slot_background (struct mcp_slot    *slot,
 		return;
 	}
 	if (a->n_jobs == JOBS_MAX) {
-		mcp_slot_result(slot, CSTR_VIEW("You have started 8 jobs, the most an ask call "
-		                                "may."), true);
+		mcp_slot_result(slot, CSTR_VIEW("You have started 8 jobs. An ask call can start "
+		                                "at most 8 jobs."), true);
 		return;
 	}
 	struct mcp_slot *job = &a->jobs[a->n_jobs];
@@ -5113,7 +5114,7 @@ mcp_slot_turn_job (struct mcp_slot    *slot,
 	uint64_t const n = jb_count(jb_get(args, "job"), a ? a->n_jobs : 0);
 	struct mcp_slot *job = n ? &a->jobs[n - 1] : nullptr;
 	struct cstr_view const problem =
-		!job ? CSTR_VIEW("The job argument must be the number of a job you started.")
+		!job ? CSTR_VIEW("The job argument must be the number of a job that you started.")
 		: job->flags & SLOT_CANCELLED ? agenda_ended[LEDGER_CANCELLED]
 		: (struct cstr_view){};
 	if (!problem.data)
@@ -5178,15 +5179,15 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 	enum ledger_status status = ledger_task_status(task);
 	if (of != TOOL_MAX && status == LEDGER_WORKING) {
 		ledger_task_put(task);
-		mcp_slot_result(slot, CSTR_VIEW("That job is still running. Call this same tool "
-		                                "with the same job id in one second for its "
+		mcp_slot_result(slot, CSTR_VIEW("The job is still running. Call the same tool with "
+		                                "the same job ID after one second for the "
 		                                "result."), false);
 		return;
 	}
 	struct cstr_view problem =
 		status == LEDGER_WORKING ? still_runs
 		: status == LEDGER_CANCELLED ? agenda_ended[status]
-		: !task->size ? CSTR_VIEW("That job failed, and askai stored no result of it.")
+		: !task->size ? CSTR_VIEW("The job failed. askai stored no result of the job.")
 		: (struct cstr_view){};
 	if (problem.data) {
 		ledger_task_put(task);
@@ -5226,8 +5227,8 @@ mcp_slot_jobs_cancel (struct mcp_slot    *slot,
 {
 	struct json_object *timer = jb_get(args, "timer");
 	if (!jb_get(args, "job") == !timer) {
-		mcp_slot_result(slot, CSTR_VIEW("The job argument or the timer argument must name "
-		                                "what to cancel."), true);
+		mcp_slot_result(slot, CSTR_VIEW("For cancel, give either job or timer, not both."),
+		                true);
 		return;
 	}
 	bool const own = slot->role == ROLE_OWN;
@@ -5243,7 +5244,8 @@ mcp_slot_jobs_cancel (struct mcp_slot    *slot,
 	            : ledger_timer_drop(req->agenda->timers, n, req->mcp->loop->now);
 	char text[96];
 	struct cstr_view const said =
-		e == EINVAL ? CSTR_VIEW("The timer argument must be the number of a timer of yours.")
+		e == EINVAL ? CSTR_VIEW("The timer argument must be the number of a timer that you "
+		                        "set.")
 		: !e ? util_format_view(text, sizeof text, "Cancelled timer %" PRIu32 ".", n)
 		: e == EALREADY ? util_format_view(text, sizeof text, "Timer %" PRIu32 " has already "
 		                                   "fired.", n)
@@ -5316,8 +5318,8 @@ mcp_slot_wait (struct mcp_slot    *slot,
 		mask |= listed ? 1u << (n - 1) : 0;
 	}
 	if (!listed) {
-		mcp_slot_result(slot, CSTR_VIEW("The jobs argument must list the numbers of jobs "
-		                                "you started."), true);
+		mcp_slot_result(slot, CSTR_VIEW("The jobs argument must be a list of numbers of jobs "
+		                                "that you started."), true);
 		return;
 	}
 	int e;
@@ -5404,7 +5406,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 	      ? ledger_timer_set(req->mcp->st->ledger, req->owner, due, note, &id)
 	      : mcp_agenda_timer(req, due, note, &id);
 	if (e) {
-		agenda_refused(slot, e, CSTR_VIEW("You have 8 timers set, the most at once."));
+		agenda_refused(slot, e, CSTR_VIEW("You have 8 timers set. The limit is 8."));
 		return;
 	}
 	char said[64];

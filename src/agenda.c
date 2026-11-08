@@ -18,17 +18,16 @@
 #include "util.h"
 
 struct cstr_view const agenda_ended[LEDGER_STATUSES] = {
-	[LEDGER_COMPLETED] = CSTR_VIEW_INIT("That job had already completed."),
-	[LEDGER_FAILED]    = CSTR_VIEW_INIT("That job had already failed."),
-	[LEDGER_CANCELLED] = CSTR_VIEW_INIT("That job was cancelled."),
+	[LEDGER_COMPLETED] = CSTR_VIEW_INIT("The job had already completed."),
+	[LEDGER_FAILED]    = CSTR_VIEW_INIT("The job had already failed."),
+	[LEDGER_CANCELLED] = CSTR_VIEW_INIT("The job was cancelled."),
 };
 
 /* The answer to a client's call of background, timer or wait that the
  * ledger refuses for want of room.
  */
-static struct cstr_view const no_room = CSTR_VIEW_INIT("askai has no room for more jobs, "
-                                                       "timers or waits now; try again "
-                                                       "later.");
+static struct cstr_view const no_room = CSTR_VIEW_INIT("The server is at the limit of jobs, "
+                                                       "timers and waits. Try again later.");
 
 int
 agenda_notice_timer (struct dstr               *d,
@@ -84,8 +83,8 @@ agenda_find (struct mcp_slot    *slot,
 {
 	struct hexid id;
 	if (hexid_init(&id, jb_view(jb_get(args, "job")))) {
-		mcp_slot_tell(slot, CSTR_VIEW("The job argument must be the id of a job of yours."),
-		              TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("The job argument must be the ID of a job that you "
+		                              "started."), TOOL_FAILED);
 		return nullptr;
 	}
 	struct ledger_task *task = ledger_find(mcp_slot_ledger(slot), mcp_slot_owner(slot), &id);
@@ -95,10 +94,11 @@ agenda_find (struct mcp_slot    *slot,
 	}
 	if (!task)
 		mcp_slot_tell(slot, tool != TOOL_MAX
-		              ? CSTR_VIEW("No job of yours from this tool has that id; askai "
-		                          "stores a job for up to an hour after it ends.")
-		              : CSTR_VIEW("No job of yours has that id; askai stores a job for up "
-		                          "to an hour after it ends."), TOOL_FAILED);
+		              ? CSTR_VIEW("You have no job with the given ID from this tool. "
+		                          "askai stores a job for up to an hour after the job "
+		                          "ends.")
+		              : CSTR_VIEW("You have no job with the given ID. askai stores a job "
+		                          "for up to an hour after the job ends."), TOOL_FAILED);
 	return task;
 }
 
@@ -151,8 +151,8 @@ agenda_cancel (struct mcp_slot    *slot,
 		ledger_task_cancel(task);
 		said = util_format_view(text, sizeof text, "askai is cancelling %s %s. %s",
 		                        ledger_kinds[task->kind], task->id.hex, tool != TOOL_MAX
-		                        ? "Call this same tool with the job id to check its status."
-		                        : "Call wait to wait for its end.");
+		                        ? "Call the same tool with the job ID to check the status."
+		                        : "Call wait to wait for the end of the job.");
 	}
 	ledger_task_put(task);
 	mcp_slot_tell(slot, said, runs ? 0 : TOOL_FAILED);
@@ -193,8 +193,8 @@ agenda_wait_report (struct agenda_wait const *w,
 		char const *tool = mcp_slot_tool_name(w->slot, t->tool);
 		ok = status == LEDGER_CANCELLED
 		   ? dstr_printf(&d, "[askai: %s %s, %s, cancelled.]\n", kind, t->id.hex, tool)
-		   : dstr_printf(&d, "[askai: %s %s, %s, %s: call jobs with the action result "
-		                 "and job %s for its result.]\n", kind, t->id.hex, tool,
+		   : dstr_printf(&d, "[askai: %s %s, %s, %s. Call jobs with action result and "
+		                 "job %s for the result.]\n", kind, t->id.hex, tool,
 		                 ledger_statuses[status].data, t->id.hex);
 	}
 	for (uint32_t i = 0; ok && i < look->n_timers; ++i)
@@ -268,8 +268,8 @@ agenda_wait_start (struct mcp_slot    *slot,
                    uint64_t            secs)
 {
 	static_assert(AGENDA_WAIT_IDS == 16 && LEDGER_WAITS == 4, "update the problem texts");
-	static struct cstr_view const bad_list = CSTR_VIEW_INIT("The jobs argument must list at "
-	                                                        "most 16 ids of jobs of yours.");
+	static struct cstr_view const bad_list = CSTR_VIEW_INIT("The jobs argument must be a list "
+	                                                        "of at most 16 IDs of your jobs.");
 	struct ledger *ledger = mcp_slot_ledger(slot);
 	uint64_t owner = mcp_slot_owner(slot);
 	struct json_object *list = jb_get(args, "jobs");
@@ -303,8 +303,9 @@ agenda_wait_start (struct mcp_slot    *slot,
 			continue;
 		}
 		problem = !id.data ? bad_list
-		        : util_format_view(why, sizeof why, "No job of yours has the id %.*s; "
-		                           "askai stores a job for up to an hour after it ends.",
+		        : util_format_view(why, sizeof why, "You have no job with the ID %.*s. "
+		                           "askai stores a job for up to an hour after the job "
+		                           "ends.",
 		                           (int)util_clip(id.data, id.len, HEXID_DIGITS), id.data);
 	}
 	if (problem.data) {
@@ -317,7 +318,7 @@ agenda_wait_start (struct mcp_slot    *slot,
 	w->wait = e ? nullptr : ledger_wait_enter(ledger, owner, loop, who, agenda_wait_wake, &e);
 	if (!w->wait) {
 		free(w);
-		agenda_refused(slot, e, CSTR_VIEW("You have 4 waits under way, the most at once."));
+		agenda_refused(slot, e, CSTR_VIEW("You have 4 waits under way. The limit is 4."));
 		return;
 	}
 	*mcp_slot_own(slot) = w;
