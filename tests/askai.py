@@ -14400,11 +14400,11 @@ def check_review(binary, up):
                 f"{k + 1}. candidate\n   claim: {c}\n" for k, c in enumerate(claims))
             record = record[:-1]
             keep = record.rindex("\n", 0, 4000) + 1
-            cut = (f"[askai: the record is longer than these {keep} bytes. Call findings "
-                   f"with action show and \"offset\": {keep} for the rest.]")
+            cut = (f"[askai: the record continues at byte {keep}. Call findings with action "
+                   f"show and \"offset\": {keep}.]")
 
             def show(request):
-                found = re.search(r'"offset": (\d+) for the rest', prompt(request))
+                found = re.search(r'"offset": (\d+)\.\]', prompt(request))
                 return turn({"action": "show", "offset": int(found[1])})(request)
             script.append(show)
             count = len(up.requests)

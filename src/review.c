@@ -1113,8 +1113,8 @@ review_render (struct review const *r,
 	char const *nl = text.len ? memrchr(text.data, '\n', text.len - 1) : nullptr;
 	size_t const keep = nl ? (size_t)(nl - text.data) + 1 : 0;
 	dstr_erase(out, start + keep, SIZE_MAX);
-	return dstr_printf(out, "[askai: the record is longer than these %zu bytes. Call findings "
-	                   "with action show and \"offset\": %zu for the rest.]", keep, keep)
+	return dstr_printf(out, "[askai: the record continues at byte %zu. Call findings with "
+	                   "action show and \"offset\": %zu.]", keep, keep)
 	       ? 0 : ENOMEM;
 }
 

@@ -1088,8 +1088,8 @@ test_render (void)
 		for (size_t i = 0; i < most; ++i)
 			keep = want[i] == '\n' ? i + 1 : keep;
 		char tail[160];
-		snprintf(tail, sizeof tail, "[askai: the record is longer than these %zu bytes. Call "
-		         "findings with action show and \"offset\": %zu for the rest.]", keep, keep);
+		snprintf(tail, sizeof tail, "[askai: the record continues at byte %zu. Call findings "
+		         "with action show and \"offset\": %zu.]", keep, keep);
 		CHECK(!strncmp(s, want, keep) && !strcmp(s + keep, tail));
 		dstr_cleanup(&out);
 	}
