@@ -204,11 +204,7 @@ loop_wake (struct loop     *loop,
 struct loop
 loop (void)
 {
-	struct loop ret = {
-		.wake.fd = -1,
-		.epfd = -1
-	};
-	return ret;
+	return (struct loop){ .wake.fd = -1, .epfd = -1 };
 }
 
 /* Blank all but @p loop's atomic members, which come first (loop.h). */
