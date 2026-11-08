@@ -251,14 +251,13 @@ web_reply_put (struct web_reply *reply)
 	}
 }
 
-/* Releases @p n references to @p run, and frees the run if they were the
- * last.
+/* Releases one reference to @p run. If that was the last reference, the
+ * function frees the run.
  */
 static void
-web_run_put (struct web_run *run,
-             uint32_t        n)
+web_run_put (struct web_run *run)
 {
-	if (ref_put(&run->refs, n)) {
+	if (ref_put(&run->refs, 1)) {
 		free(run->body);
 		run->body = nullptr;
 		free(run);
@@ -487,7 +486,7 @@ web_run_end (struct web                *web,
 	}
 	web_entries_free(gone);
 	web_reply_put(reply);
-	web_run_put(run, 1);
+	web_run_put(run);
 }
 
 /* Ends @p run, which home runs, with the result @p end, and logs the end
@@ -690,7 +689,7 @@ web_run_mail (struct loop *loop,
 		}
 	}
 
-	web_run_put(run, 1);
+	web_run_put(run);
 }
 
 /* Handles @p msg, the message of a wait, on the wait's loop, when the wait
