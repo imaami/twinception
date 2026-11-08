@@ -1163,9 +1163,7 @@ ai_interactions_text (struct ai_sink const *sink,
                       struct json_object   *text)
 {
 	struct cstr_view piece = jb_view(text);
-	if (!piece.data)
-		return 0;
-	int e = sink->text(sink->user, piece);
+	int e = ai_put_text(sink, piece);
 	if (e)
 		return e;
 	if (reader->open == at + 1)
