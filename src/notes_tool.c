@@ -2064,10 +2064,11 @@ notes_tool_definition (void const *service)
 	 * action to find the participants with notes. The branch of a new
 	 * writer does not exist yet, so the definition names the
 	 * participant. */
-	struct cstr_view const session = member_registry_session(tool->members);
+	struct member_session const *session = member_registry_session(tool->members);
+	struct cstr_view const id = session ? session->id : (struct cstr_view){};
 	return jb_set_or_free(def, "_meta", jb_object(
 		"askai", jb_object(
-			"session", json_object_new_string_len(session.data, (int)session.len),
+			"session", json_object_new_string_len(id.data, (int)id.len),
 			"participant", json_object_new_string(notes_writer(tool->notes)),
 			"notebooks", json_object_new_boolean(1),
 			nullptr),

@@ -1878,8 +1878,8 @@ session:
   agent       bro
   service     bro
 session members:
-  bro     agent
   imaami  person  uid 1000
+  bro     agent
 MCP endpoint http://127.0.0.1:8090/mcp
 ```
 

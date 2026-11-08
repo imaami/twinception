@@ -1,10 +1,11 @@
 /** @file Unit tests of the members of the session, src/member.c: the name
  *  rule, the logins of clients, the session record and the record of the
  *  agent that the registry writes as askai starts, also for services that
- *  start at the same time, and the lookups of a table, with git on a loop
- *  and names from blockers, which find, create, adopt, extend and refuse
- *  member records in new repositories. The test replaces mcp_slot_spawn()
- *  and mcp_slot_loop(), which src/store.c calls.
+ *  start at the same time, the lookups of a table, with git on a loop and
+ *  names from blockers, which find, create, adopt, extend and refuse member
+ *  records in new repositories, and the list of the members and their
+ *  notebooks with its notices. The test replaces mcp_slot_spawn() and
+ *  mcp_slot_loop(), which src/store.c calls.
  */
 #define _GNU_SOURCE /* memmem() */
 #include <errno.h>
@@ -23,12 +24,14 @@
 #include "buf.h"
 #include "check.h"
 #include "child.h"
+#include "dstr.h"
 #include "hexid.h"
 #include "list.h"
 #include "loop.h"
 #include "mcp.h"
 #include "member.h"
 #include "store.h"
+#include "stream.h"
 #include "util.h"
 
 struct loop *
@@ -178,6 +181,23 @@ test_logins (struct member_registry const *reg)
 	CHECK(member_login(nullptr, reg, &grant, nullptr) == EINVAL);
 	CHECK(member_login(&login, nullptr, &grant, nullptr) == EINVAL);
 	CHECK(member_login(&login, reg, nullptr, nullptr) == EINVAL);
+	/* A request starts with the login of its client and no asker. The
+	 * second word of the key of a Unix socket's peer is the uid. */
+	struct member_call call;
+	struct stream_peer const unix_peer = { { UINT64_MAX, 1000 } };
+	struct stream_peer const tcp_peer = { { 1, 2 } };
+	grant = (struct policy_grant){ .who = CSTR_VIEW("identity alice") };
+	memset(&call, 'x', sizeof call);
+	CHECK(!member_call_init(&call, reg, &grant, &unix_peer));
+	CHECK(!strcmp(call.login.text, "uid 1000") && !*call.ask.hex &&
+	      !*call.conversation.hex && !*call.asker.name);
+	CHECK(!member_call_init(&call, reg, &grant, &tcp_peer));
+	CHECK(!strcmp(call.login.text, "identity alice") && !*call.asker.name);
+	memset(&call, 'x', sizeof call);
+	CHECK(member_call_init(&call, nullptr, &grant, &unix_peer) == EINVAL);
+	CHECK(!*call.login.text && !*call.asker.name);
+	CHECK(member_call_init(&call, reg, &grant, nullptr) == EINVAL && !*call.login.text);
+	CHECK(member_call_init(nullptr, reg, &grant, &unix_peer) == EINVAL);
 }
 
 /* A login of the kind @p kind with the text @p text and the name @p name. */
@@ -390,6 +410,171 @@ test_table (struct store const           *store,
 		CHECK(!loop_turn(&test_loop, loop_clock() + NS / 100));
 	CHECK(ended == after && wait.e == EINPROGRESS);
 	CHECK(!test_exists(store, "refs/askai/members/erin"));
+}
+
+/* Commits the note @p name to the ref @p ref of @p store, with the
+ * subject @p subject and the trailer line Asked-by @p asker, or none for
+ * nullptr.
+ */
+static void
+test_note (struct store const *store,
+           char const         *ref,
+           char const         *subject,
+           char const         *asker)
+{
+	struct buf files = {};
+	struct store_part part;
+	CHECK(!store_part_file(&part, &files, CSTR_VIEW("plan.md"), CSTR_VIEW("x")));
+	struct store_trailer const t[] = { { CSTR_VIEW("Asked-by"), asker ? cstr_view(asker)
+	                                                                  : CSTR_VIEW("") } };
+	struct store_commit const commit = {
+		.author = { CSTR_VIEW("bro"), CSTR_VIEW("agent/bro") },
+		.committer = { CSTR_VIEW("gpu1"), CSTR_VIEW("askai") },
+		.message = cstr_view(subject),
+		.files = buf_peek(&files),
+		.trailers = asker ? t : nullptr,
+		.n_trailers = asker ? 1 : 0,
+		.ref = ref,
+		.tip = &(struct oid){},
+	};
+	struct buf in = {};
+	struct buf out = {};
+	int status = -1;
+	CHECK(!store_commit_input(&commit, &in));
+	CHECK(!store_run(store, STORE_COMMIT, nullptr, ref, buf_peek(&in), &out, &status) &&
+	      !status);
+	buf_fini(&files);
+	buf_fini(&in);
+	buf_fini(&out);
+}
+
+/* Checks that @p d contains the text @p want, and clears @p d. */
+static void
+test_text (struct dstr *d,
+           char const  *want)
+{
+	bool const same = !strcmp(dstr_get(d), want);
+	if (!same)
+		fprintf(stderr, "got:  %s\nwant: %s\n", dstr_get(d), want);
+	CHECK(same);
+	dstr_clear(d);
+}
+
+/* The list of the members of @p store and their notebooks in a table of
+ * @p reg, the notices of the list, and the lookup of a notebook by name.
+ */
+static void
+test_list (struct store const           *store,
+           struct member_registry const *reg,
+           struct blocker               *blockers,
+           struct list                  *children)
+{
+	int e = -1;
+	struct member_table *table = member_table_create(reg, &test_loop, blockers, children, &e);
+	CHECK(table && !e);
+	/* The notebook of bro, a notebook moved from the old layout without a
+	 * record, a notebook of a kind that the record of the name does not
+	 * have, and a branch that is no notebook. */
+	test_note(store, "refs/heads/agent/bro/notes", "Add \"plan.md\" (1 byte)", "alice");
+	test_note(store, "refs/heads/person/moved/notes", "Add \"a.md\" (1 byte)", nullptr);
+	test_note(store, "refs/heads/person/bro/notes", "Add \"b.md\" (1 byte)", nullptr);
+	test_note(store, "refs/heads/agent/bro/findings", "Add bro#1", nullptr);
+	test_note(store, "refs/heads/notes/bro/anonymous/upstream", "Add \"c.md\" (1 byte)",
+	          nullptr);
+	struct buf out = {};
+	int status = -1;
+	CHECK(!store_run(store, STORE_REFS, member_list, nullptr, (struct span){}, &out, &status) &&
+	      !status);
+	CHECK(member_table_refresh(nullptr, buf_peek(&out)) == EINVAL);
+	CHECK(member_table_refresh(table, (struct span){ (unsigned char *)"x", 1 }) == EIO);
+	CHECK(!member_table_refresh(table, buf_peek(&out)));
+	buf_fini(&out);
+	/* The persons come first, then the agents, each by name. The user who
+	 * runs the test is a person of the table too. */
+	char user[MEMBER_NAME];
+	struct passwd const *pw = getpwuid(geteuid());
+	if (pw && member_name_valid(cstr_view(pw->pw_name)))
+		CHECK(snprintf(user, sizeof user, "%s", pw->pw_name) > 0);
+	else
+		CHECK(snprintf(user, sizeof user, "uid-%" PRIu32, (uint32_t)geteuid()) > 0);
+	char const *names[] = {
+		"alice", "carol", "dave", "frank", "moved", "uid-4242420042", user, "bro", "claude",
+		"cuh",
+	};
+	for (size_t i = 1; i < 7; ++i)
+		for (size_t j = i; j && strcmp(names[j - 1], names[j]) > 0; --j) {
+			char const *t = names[j];
+			names[j] = names[j - 1];
+			names[j - 1] = t;
+		}
+	size_t n = 0;
+	struct member_info const *info;
+	dstr_auto notice = dstr("[askai: Members of this session: ");
+	dstr_auto unknown = dstr("No member is named own. The members are ");
+	for (; (info = member_table_info(table, n)) && n < array_size(names); ++n) {
+		CHECK(cstr_view_equal(info->name, cstr_view(names[n])));
+		bool const bro = !strcmp(names[n], "bro");
+		bool const moved = !strcmp(names[n], "moved");
+		CHECK(info->kind == (n < 7 ? MEMBER_PERSON : MEMBER_AGENT));
+		CHECK(info->flags == (moved ? MEMBER_NOTES : bro ? MEMBER_RECORD | MEMBER_NOTES
+		                                                 : MEMBER_RECORD));
+		CHECK(dstr_printf(&notice, "%s%s (%s%s)", n ? ", " : "", names[n],
+		                  n < 7 ? "person" : "agent", bro ? ", you" : ""));
+		CHECK(dstr_printf(&unknown, "%s%s", !n ? "" : n + 1 < array_size(names) ? ", "
+		                                                                        : " and ",
+		                  names[n]));
+		if (!bro)
+			continue;
+		CHECK(cstr_view_equal(info->change, CSTR_VIEW("Add \"plan.md\" (1 byte)")));
+		CHECK(cstr_view_equal(info->asker, CSTR_VIEW("alice")) && info->time > 1'700'000'000);
+	}
+	CHECK(n == array_size(names) && !member_table_info(table, n));
+	CHECK(!member_table_info(nullptr, 0));
+	size_t width = 0;
+	for (size_t i = 0; i < array_size(names); ++i) {
+		size_t const len = strlen(names[i]);
+		width = len > width ? len : width;
+	}
+	CHECK(member_table_width(table) == (int)width && !member_table_width(nullptr));
+	CHECK(dstr_cat(&notice, ". Call notes with action members to see what each member wrote "
+	               "last.]\n") && dstr_cat(&unknown, "."));
+	struct member member;
+	CHECK(!member_table_name(table, CSTR_VIEW("bro"), &member));
+	CHECK(member.kind == MEMBER_AGENT && !strcmp(member.name, "bro"));
+	CHECK(!member_table_name(table, CSTR_VIEW("moved"), &member));
+	CHECK(member.kind == MEMBER_PERSON && !strcmp(member.name, "moved"));
+	CHECK(member_table_name(table, CSTR_VIEW("nobody"), &member) == ENOENT);
+	CHECK(member_table_name(table, CSTR_VIEW("anonymous"), &member) == ENOENT);
+	CHECK(member_table_name(nullptr, CSTR_VIEW("bro"), &member) == EINVAL);
+	CHECK(member_table_name(table, CSTR_VIEW("bro"), nullptr) == EINVAL);
+
+	dstr_auto d = DSTR_INIT;
+	struct member const bro = { MEMBER_AGENT, "bro" };
+	CHECK(!member_table_notice(table, &bro, &d));
+	test_text(&d, dstr_get(&notice));
+	CHECK(!member_table_unknown(table, CSTR_VIEW("own"), &d));
+	test_text(&d, dstr_get(&unknown));
+	struct member_call call = { .asker = { MEMBER_PERSON, "alice" } };
+	CHECK(!member_notice(&bro, &call, &d));
+	test_text(&d, "[askai: You are the agent bro. A client program of the person alice made "
+	          "this ask call.]\n");
+	call.asker = (struct member){ MEMBER_AGENT, "claude" };
+	CHECK(!member_notice(&bro, &call, &d));
+	test_text(&d, "[askai: You are the agent bro. The agent claude made this ask call.]\n");
+	call.asker = (struct member){ MEMBER_AGENT, "" };
+	CHECK(!member_notice(&bro, &call, &d));
+	test_text(&d, "[askai: You are the agent bro. A client without a member name made this "
+	          "ask call.]\n");
+	CHECK(member_table_notice(nullptr, &bro, &d) == EINVAL);
+	CHECK(member_table_notice(table, nullptr, &d) == EINVAL);
+	CHECK(member_table_notice(table, &bro, nullptr) == EINVAL);
+	CHECK(member_table_unknown(nullptr, CSTR_VIEW("own"), &d) == EINVAL);
+	CHECK(member_table_unknown(table, CSTR_VIEW("own"), nullptr) == EINVAL);
+	CHECK(member_notice(nullptr, &call, &d) == EINVAL);
+	CHECK(member_notice(&bro, nullptr, &d) == EINVAL);
+	CHECK(member_notice(&bro, &call, nullptr) == EINVAL);
+	CHECK(!*dstr_get(&d));
+	member_table_destroy(&table);
 }
 
 /* The eventfd that the jobs of test_hold() read, and the number of those
@@ -708,8 +893,10 @@ main (int    argc,
 	CHECK(test_has(store, "refs/askai/session", "\n\nCreate the session test1\n\n"));
 	CHECK(test_has(store, "refs/askai/session", "\ncommitter gpu1 <askai> "));
 	CHECK(test_has(store, "refs/askai/members/bro", "\n\nAdd the agent bro\n\nKind: agent\n"));
-	struct cstr_view const session = member_registry_session(reg);
-	CHECK(hexid_valid(session) && !member_registry_session(nullptr).len);
+	struct member_session const *session = member_registry_session(reg);
+	CHECK(session && hexid_valid(session->id) && !member_registry_session(nullptr));
+	CHECK(cstr_view_equal(session->name, CSTR_VIEW("test1")) &&
+	      !strcmp(session->service, "gpu1") && !strcmp(session->agent, "bro"));
 	member_registry_report(reg);
 
 	/* Another service of the agent adopts its record, and another agent
@@ -724,7 +911,7 @@ main (int    argc,
 	CHECK(heads.len == 2 * (OID_SHA1 + 1) && !memcmp(heads.ptr, heads.ptr + OID_SHA1 + 1,
 	                                                  OID_SHA1));
 	buf_fini(&head);
-	CHECK(cstr_view_equal(member_registry_session(again), session));
+	CHECK(cstr_view_equal(member_registry_session(again)->id, session->id));
 	member_registry_destroy(&again);
 	CHECK(!again);
 	member_registry_destroy(&again);
@@ -744,6 +931,7 @@ main (int    argc,
 	struct list children;
 	list_init(&children);
 	test_table(store, reg, blockers, &children);
+	test_list(store, reg, blockers, &children);
 	test_blocked(store, reg, &children);
 
 	/* The agent of a service adopts the record of an agent identity. */

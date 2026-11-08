@@ -13,6 +13,7 @@
 #include "blocker.h"
 #include "buf.h"
 #include "child.h"
+#include "dstr.h"
 #include "hexid.h"
 #include "list.h"
 #include "log.h"
@@ -21,36 +22,48 @@
 #include "oid.h"
 #include "policy.h"
 #include "store.h"
+#include "stream.h"
 #include "util.h"
 
-/* The refs of the records. */
+/* The refs of the records and of the notebooks. */
 #define RECORDS "refs/askai/"
 #define MEMBERS RECORDS "members/"
 #define SESSION RECORDS "session"
+#define HEADS   "refs/heads/"
+#define LEGACY  HEADS "notes/"
 
 enum {
 	MEMBER_REF   = sizeof MEMBERS + UTIL_WORD_MAX,  /* bytes of the ref of a
 	                                                   record, NUL included */
 	MEMBER_TRIES = 4,                               /* writes of a record in
 	                                                   a claim, at most */
+	MEMBER_SHOWN = 32,                              /* members that a notice
+	                                                   names, at most */
 };
 
-/* The words of STORE_REFS that list the records. git writes a line for
- * each record: the ref, the commit, and the values of the trailer lines
- * Kind, Login, Session, Name and Format, each field followed by a NUL. The
- * values of several Login lines are one field, separated by commas.
+/* git writes a line for each ref: the ref, the commit, the values of the
+ * trailer lines Kind, Login, Session, Name and Format, the commit time, the
+ * value of the trailer line Asked-by and the subject, each field followed
+ * by a NUL. The values of several lines of one key are one field,
+ * separated by commas.
  */
-static char const *const member_refs[STORE_WORDS] = {
+static_assert(array_size(member_kinds) == 2, "list the notebooks of the new kind in member_list");
+char const *const member_list[STORE_WORDS] = {
 	"--format=%(refname)%00%(objectname)%00"
 	"%(trailers:key=Kind,valueonly,separator=%x2C)%00"
 	"%(trailers:key=Login,valueonly,separator=%x2C)%00"
 	"%(trailers:key=Session,valueonly,separator=%x2C)%00"
 	"%(trailers:key=Name,valueonly,separator=%x2C)%00"
-	"%(trailers:key=Format,valueonly,separator=%x2C)%00",
+	"%(trailers:key=Format,valueonly,separator=%x2C)%00"
+	"%(committerdate:unix)%00"
+	"%(trailers:key=Asked-by,valueonly,separator=%x2C)%00"
+	"%(contents:subject)%00",
 	RECORDS,
+	HEADS "person/",
+	HEADS "agent/",
 };
 
-/* The fields of a line of the output of member_refs. */
+/* The fields of a line of the output of member_list. */
 enum member_field : uint8_t {
 	FIELD_REF,
 	FIELD_TIP,
@@ -59,21 +72,22 @@ enum member_field : uint8_t {
 	FIELD_SESSION,
 	FIELD_NAME,
 	FIELD_FORMAT,
+	FIELD_TIME,
+	FIELD_ASKER,
+	FIELD_SUBJECT,
 	FIELDS
 };
 
-/* A member record in the output of member_refs. The views borrow the
- * output.
+/* A member in the output of member_list: a member record, a notebook, or
+ * both. The views borrow the output.
  */
 struct member_entry {
-	struct cstr_view name;
-	struct cstr_view logins;  /* the Login lines, separated by commas */
-	struct cstr_view tip;     /* the commit of the record */
-	uint64_t         kind;    /* enum member_kind, widened over the
-	                             padding */
+	struct member_info info;
+	struct cstr_view   logins;  /* the Login lines, separated by commas */
+	struct cstr_view   tip;     /* the commit of the record */
 };
 
-/* The records of the session, as one run of member_refs lists them. */
+/* The records of the session, as git lists them with member_list. */
 struct member_records {
 	struct buf                      out;      /* the output of git */
 	UTIL_ARRAY(struct member_entry) all;      /* the member records, by
@@ -90,9 +104,11 @@ struct member_registry {
 	struct member_records  records;  /* the records that askai read as it
 	                                    started, with the session ID and
 	                                    name */
+	struct member_session  session;  /* views of records, and the names of
+	                                    this askai */
 	struct store const    *store;
-	char const            *agent;
-	char const            *service;
+	size_t                 legacy;   /* notebooks of the old layout under
+	                                    LEGACY */
 	struct member_login    own;      /* the user who runs askai */
 };
 
@@ -140,10 +156,6 @@ struct member_lookup {
 	struct list            waits;              /* struct member_wait */
 	struct loop_timer      timer;              /* the deadline of the job
 	                                              name */
-	struct member_records  records;            /* the records that git
-	                                              reads, which then
-	                                              replace the records of
-	                                              the table */
 	struct member_table   *table;              /* nullptr once off the
 	                                              table */
 	struct child          *git;                /* the git that reads or
@@ -171,9 +183,77 @@ member_records_fini (struct member_records *r)
 	*r = (struct member_records){};
 }
 
+/* Returns the member named @p name in @p r, or nullptr. */
+static struct member_entry *
+member_records_find (struct member_records const *r,
+                     struct cstr_view             name)
+{
+	for (size_t i = 0; i < r->all.n; ++i)
+		if (cstr_view_equal(r->all.items[i].info.name, name))
+			return &r->all.items[i];
+	return nullptr;
+}
+
+/* Adds the notebook of the line @p f of the output of member_list to
+ * @p r, if the line is the ref of a notebook: to the member of a record of
+ * the name, or as a member without a record. A notebook of a name whose
+ * record is of another kind is left out. Returns 0 or ENOMEM.
+ */
+static int
+member_records_notebook (struct member_records  *r,
+                         struct cstr_view const  f[FIELDS])
+{
+	struct cstr_view rest = cstr_view_slice(f[FIELD_REF], sizeof HEADS - 1, SIZE_MAX);
+	struct cstr_view kind_name, name;
+	uint64_t time = 0;
+	if (!cstr_view_cut(&rest, '/', &kind_name) || !cstr_view_cut(&rest, '/', &name) ||
+	    !cstr_view_equal(rest, CSTR_VIEW("notes")) || !member_name_valid(name) ||
+	    util_number(f[FIELD_TIME].data, f[FIELD_TIME].len, UINT64_MAX, &time))
+		return 0;
+	size_t const kind = cstr_view_index(member_kinds, array_size(member_kinds), kind_name);
+	struct member_entry *entry = member_records_find(r, name);
+	if (kind == array_size(member_kinds) || (entry && entry->info.kind != kind))
+		return 0;
+	if (!entry) {
+		if (util_grow(r->all.items, r->all.cap, r->all.n + 1))
+			return ENOMEM;
+		entry = &r->all.items[r->all.n++];
+		*entry = (struct member_entry){ .info = { .name = name, .kind = (uint32_t)kind } };
+	}
+	entry->info.change = f[FIELD_SUBJECT];
+	entry->info.asker = f[FIELD_ASKER];
+	entry->info.time = time;
+	entry->info.flags |= MEMBER_NOTES;
+	return 0;
+}
+
+/* Returns the length of the longest name of the members of @p r. */
+static int
+member_records_width (struct member_records const *r)
+{
+	size_t width = 0;
+	for (size_t i = 0; i < r->all.n; ++i)
+		if (r->all.items[i].info.name.len > width)
+			width = r->all.items[i].info.name.len;
+	return (int)width;
+}
+
+/* Orders the persons before the agents, each by name. */
+static int
+member_entry_order (void const *a,
+                    void const *b)
+{
+	struct member_info const *x = &((struct member_entry const *)a)->info;
+	struct member_info const *y = &((struct member_entry const *)b)->info;
+	return x->kind != y->kind ? (x->kind > y->kind) - (x->kind < y->kind)
+	                          : cstr_view_compare(x->name, y->name);
+}
+
 /* Parses r->out into the records of @p r. A member record whose ref,
- * commit, kind or name is not valid is left out. Returns 0, EIO for output
- * that is not in the form of member_refs, or ENOMEM.
+ * commit, kind or name is not valid is left out. git lists the records
+ * before the notebooks, so a notebook joins the record of its member.
+ * Returns 0, EIO for output that is not in the form of member_list, or
+ * ENOMEM.
  */
 static int
 member_records_parse (struct member_records *r)
@@ -196,6 +276,11 @@ member_records_parse (struct member_records *r)
 			r->format = f[FIELD_FORMAT];
 			continue;
 		}
+		if (cstr_view_starts(f[FIELD_REF], CSTR_VIEW(HEADS))) {
+			if (member_records_notebook(r, f))
+				return ENOMEM;
+			continue;
+		}
 		struct cstr_view const name = cstr_view_slice(f[FIELD_REF], sizeof MEMBERS - 1,
 		                                              SIZE_MAX);
 		size_t const kind = cstr_view_index(member_kinds, array_size(member_kinds),
@@ -206,9 +291,13 @@ member_records_parse (struct member_records *r)
 		if (util_grow(r->all.items, r->all.cap, r->all.n + 1))
 			return ENOMEM;
 		r->all.items[r->all.n++] = (struct member_entry){
-			.name = name, .logins = f[FIELD_LOGIN], .tip = f[FIELD_TIP], .kind = kind
+			.info = { .name = name, .kind = (uint32_t)kind, .flags = MEMBER_RECORD },
+			.logins = f[FIELD_LOGIN],
+			.tip = f[FIELD_TIP],
 		};
 	}
+	if (r->all.n)
+		qsort(r->all.items, r->all.n, sizeof *r->all.items, member_entry_order);
 	return 0;
 }
 
@@ -296,7 +385,7 @@ member_records_read (struct member_records *r,
 {
 	buf_clear(&r->out);
 	int status = -1;
-	int const e = store_run(store, STORE_REFS, member_refs, nullptr, (struct span){}, &r->out,
+	int const e = store_run(store, STORE_REFS, member_list, nullptr, (struct span){}, &r->out,
 	                        &status);
 	char text[MEMBER_WHY];
 	struct cstr_view const because = member_run_why(e, status, text, sizeof text);
@@ -337,20 +426,18 @@ static struct member_entry const *
 member_records_name (struct member_records const *r,
                      struct cstr_view             name)
 {
-	for (size_t i = 0; i < r->all.n; ++i)
-		if (cstr_view_equal(r->all.items[i].name, name))
-			return &r->all.items[i];
-	return nullptr;
+	struct member_entry const *entry = member_records_find(r, name);
+	return entry && entry->info.flags & MEMBER_RECORD ? entry : nullptr;
 }
 
-/* Writes the member of the record @p entry to @p member. */
+/* Writes the member of @p info to @p member. */
 static void
-member_of (struct member             *member,
-           struct member_entry const *entry)
+member_of (struct member            *member,
+           struct member_info const *info)
 {
-	member->kind = (enum member_kind)entry->kind;
-	util_format(member->name, sizeof member->name, "%.*s", (int)entry->name.len,
-	            entry->name.data);
+	member->kind = (enum member_kind)info->kind;
+	util_format(member->name, sizeof member->name, "%.*s", (int)info->name.len,
+	            info->name.data);
 }
 
 /* Writes to @p in the input of git for a commit of a record of @p reg:
@@ -369,7 +456,7 @@ member_commit_input (struct member_registry const *reg,
 {
 	struct store_commit const commit = {
 		.author = { CSTR_VIEW("askai"), CSTR_VIEW("askai") },
-		.committer = { cstr_view(reg->service), CSTR_VIEW("askai") },
+		.committer = { cstr_view(reg->session.service), CSTR_VIEW("askai") },
 		.message = message,
 		.files = {},
 		.trailers = t,
@@ -512,7 +599,7 @@ member_adopt (struct member_entry const *entry,
 		same = same || (member_login_kind(item) == kind && !memcmp(item.data, text.data, kind));
 	}
 	/* The kind of the login, then the kind of the record. */
-	switch (login->kind << 1 | (enum member_kind)entry->kind) {
+	switch (login->kind << 1 | (enum member_kind)entry->info.kind) {
 	case MEMBER_AGENT << 1 | MEMBER_AGENT:
 		if (!text.len)
 			return 0;
@@ -568,7 +655,7 @@ member_decide (struct member_records const  *r,
 		e = entry ? member_adopt(entry, login, why, len) : ENOENT;
 	}
 	if (!e && entry)
-		member_of(member, entry);
+		member_of(member, &entry->info);
 	*p_entry = entry;
 	return e;
 }
@@ -672,6 +759,23 @@ member_login (struct member_login          *dest,
 	return 0;
 }
 
+int
+member_call_init (struct member_call           *dest,
+                  struct member_registry const *registry,
+                  struct policy_grant const    *grant,
+                  struct stream_peer const     *peer)
+{
+	if (!dest)
+		return EINVAL;
+	*dest = (struct member_call){};
+	if (!peer)
+		return EINVAL;
+	/* The key of a Unix socket's peer is { UINT64_MAX, uid }. */
+	uint32_t const uid = (uint32_t)peer->key[1];
+	return member_login(&dest->login, registry, grant,
+	                    peer->key[0] == UINT64_MAX ? &uid : nullptr);
+}
+
 /* Writes to @p name the name of the session in the repository at @p path:
  * the last part of the path less .git, or of the directory that contains
  * a .git directory, or "session" if member_name_valid() refuses that.
@@ -765,11 +869,29 @@ member_registry_start (struct member_registry *reg,
 	if (e)
 		return e;
 	struct member_login agent = { .kind = MEMBER_AGENT };
-	util_format(agent.name, sizeof agent.name, "%s", reg->agent);
+	util_format(agent.name, sizeof agent.name, "%s", reg->session.agent);
 	struct member member;
 	e = member_claim(reg, &agent, &reg->records, &member, why, len);
 	if (e)
 		return e == EPERM ? EINVAL : e;
+	/* The records stay as they are from here on. */
+	reg->session.id = reg->records.session;
+	reg->session.name = reg->records.name;
+	/* askai reads no notebook of the old layout, and the report counts
+	 * them. */
+	char const *const legacy[STORE_WORDS] = { "--format=%(refname)", LEGACY };
+	status = -1;
+	e = store_run(reg->store, STORE_REFS, legacy, nullptr, (struct span){}, &out, &status);
+	because = member_run_why(e, status, text, sizeof text);
+	if (because.len)
+		e = member_failed(why, len, "list the notebooks under " LEGACY, (struct span){},
+		                  because);
+	struct span const refs = buf_peek(&out);
+	for (size_t i = 0; i < refs.len; ++i)
+		reg->legacy += refs.ptr[i] == '\n';
+	buf_fini(&out);
+	if (e)
+		return e;
 	/* A table looks up the name of the user, as for a Unix login. */
 	uint32_t const uid = (uint32_t)geteuid();
 	reg->own = (struct member_login){ .uid = uid, .kind = MEMBER_PERSON };
@@ -801,7 +923,10 @@ member_registry_create (struct store const *store,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*reg = (struct member_registry){ .store = store, .agent = agent, .service = service };
+	*reg = (struct member_registry){
+		.session = { .agent = agent, .service = service },
+		.store = store,
+	};
 	*e = member_registry_start(reg, why, len);
 	if (*e)
 		member_registry_destroy(&reg);
@@ -819,10 +944,10 @@ member_registry_destroy (struct member_registry **p_registry)
 	free(reg);
 }
 
-struct cstr_view
+struct member_session const *
 member_registry_session (struct member_registry const *registry)
 {
-	return registry ? registry->records.session : (struct cstr_view){};
+	return registry ? &registry->session : nullptr;
 }
 
 void
@@ -833,16 +958,21 @@ member_registry_report (struct member_registry const *registry)
 	LOG_ALL(LOG_INFO, "session:");
 	LOG_ALL(LOG_INFO, "  repository  %s", store_directory(registry->store));
 	struct member_records const *r = &registry->records;
-	LOG_ALL(LOG_INFO, "  id          %.*s", (int)r->session.len, r->session.data);
-	LOG_ALL(LOG_INFO, "  name        %.*s", (int)r->name.len, r->name.data);
-	LOG_ALL(LOG_INFO, "  agent       %s", registry->agent);
-	LOG_ALL(LOG_INFO, "  service     %s", registry->service);
-	int width = 0;
-	for (size_t i = 0; i < r->all.n; ++i)
-		width = (int)r->all.items[i].name.len > width ? (int)r->all.items[i].name.len : width;
+	struct member_session const *session = &registry->session;
+	LOG_ALL(LOG_INFO, "  id          %.*s", (int)session->id.len, session->id.data);
+	LOG_ALL(LOG_INFO, "  name        %.*s", (int)session->name.len, session->name.data);
+	LOG_ALL(LOG_INFO, "  agent       %s", session->agent);
+	LOG_ALL(LOG_INFO, "  service     %s", session->service);
+	if (registry->legacy)
+		LOG_ALL(LOG_INFO, "  legacy      %zu notebook%s under " LEGACY, registry->legacy,
+		        util_s(registry->legacy));
+	int const width = member_records_width(r);
 	LOG_ALL(LOG_INFO, "session members:");
 	for (size_t i = 0; i < r->all.n; ++i) {
 		struct member_entry const *entry = &r->all.items[i];
+		struct member_info const *info = &entry->info;
+		if (!(info->flags & MEMBER_RECORD))
+			continue;
 		char logins[MEMBER_LOGINS * (MEMBER_LOGIN + 1)] = "";
 		size_t at = 0;
 		struct cstr_view rest = entry->logins;
@@ -853,11 +983,11 @@ member_registry_report (struct member_registry const *registry)
 			                  (int)item.len, item.data);
 		}
 		if (at)
-			LOG_ALL(LOG_INFO, "  %-*.*s  %-6s  %s", width, (int)entry->name.len,
-			        entry->name.data, member_kinds[entry->kind].data, logins);
+			LOG_ALL(LOG_INFO, "  %-*.*s  %-6s  %s", width, (int)info->name.len, info->name.data,
+			        member_kinds[info->kind].data, logins);
 		else
-			LOG_ALL(LOG_INFO, "  %-*.*s  %s", width, (int)entry->name.len, entry->name.data,
-			        member_kinds[entry->kind].data);
+			LOG_ALL(LOG_INFO, "  %-*.*s  %s", width, (int)info->name.len, info->name.data,
+			        member_kinds[info->kind].data);
 	}
 }
 
@@ -876,10 +1006,8 @@ member_lookup_drop (struct member_lookup *lookup)
 	while (!list_is_empty(&lookup->waits))
 		list_del(lookup->waits.next);
 	store_drop(&lookup->git);
-	if (lookup->flags & LOOKUP_NAME)
-		return;
-	member_records_fini(&lookup->records);
-	free(lookup);
+	if (!(lookup->flags & LOOKUP_NAME))
+		free(lookup);
 }
 
 /* Writes the result @p e of @p lookup to @p wait: the member for 0, or
@@ -1000,7 +1128,7 @@ static void member_lookup_wrote (struct child *c);
 static int
 member_lookup_read (struct member_lookup *lookup)
 {
-	return member_lookup_git(lookup, STORE_REFS, member_refs, nullptr, &(struct buf){},
+	return member_lookup_git(lookup, STORE_REFS, member_list, nullptr, &(struct buf){},
 	                         member_lookup_read_done);
 }
 
@@ -1082,29 +1210,18 @@ static void
 member_lookup_read_done (struct child *c)
 {
 	struct member_lookup *lookup = c->owner;
-	struct member_records *r = &lookup->records;
 	char text[MEMBER_WHY];
 	struct cstr_view const because = member_child_why(c, text, sizeof text);
-	int e = 0;
-	if (because.len) {
+	int e;
+	if (because.len)
 		e = member_failed(lookup->why, sizeof lookup->why, "read the member records",
 		                  (struct span){}, because);
-	} else {
-		struct span const out = buf_peek(&c->out);
-		buf_clear(&r->out);
-		e = buf_put(&r->out, out.ptr, out.len, STORE_MAX);
-		if (!e)
-			e = member_records_invalid(member_records_parse(r), lookup->why,
-			                           sizeof lookup->why);
-	}
+	else
+		e = member_records_invalid(member_table_refresh(lookup->table, buf_peek(&c->out)),
+		                           lookup->why, sizeof lookup->why);
 	child_destroy(&lookup->git);
-	if (!e) {
-		struct member_table *table = lookup->table;
-		struct member_records const newer = *r;
-		*r = table->records;
-		table->records = newer;
+	if (!e)
 		e = member_lookup_decide(lookup);
-	}
 	if (e != EINPROGRESS)
 		member_lookup_end(lookup, e);
 }
@@ -1316,7 +1433,7 @@ member_table_lookup (struct member_table       *table,
 		return wait->e = ENOENT;
 	struct member_entry const *entry = member_records_login(&table->records, text);
 	if (entry) {
-		member_of(&wait->member, entry);
+		member_of(&wait->member, &entry->info);
 		return wait->e = 0;
 	}
 	struct member_lookup *lookup = nullptr;
@@ -1379,4 +1496,115 @@ member_table_cancel (struct member_wait *wait)
 {
 	if (wait)
 		list_del(&wait->hook);
+}
+
+struct member_info const *
+member_table_info (struct member_table const *table,
+                   size_t                     i)
+{
+	return table && i < table->records.all.n ? &table->records.all.items[i].info : nullptr;
+}
+
+int
+member_table_refresh (struct member_table *table,
+                      struct span          out)
+{
+	if (!table)
+		return EINVAL;
+	struct member_records r = {};
+	int e = buf_put(&r.out, out.ptr, out.len, STORE_MAX);
+	if (!e)
+		e = member_records_parse(&r);
+	if (!e) {
+		struct member_records const old = table->records;
+		table->records = r;
+		r = old;
+	}
+	member_records_fini(&r);
+	return e;
+}
+
+int
+member_table_name (struct member_table const *table,
+                   struct cstr_view           name,
+                   struct member             *dest)
+{
+	if (!table || !dest)
+		return EINVAL;
+	struct member_entry const *entry = member_records_find(&table->records, name);
+	if (!entry)
+		return ENOENT;
+	member_of(dest, &entry->info);
+	return 0;
+}
+
+int
+member_table_width (struct member_table const *table)
+{
+	return table ? member_records_width(&table->records) : 0;
+}
+
+int
+member_table_notice (struct member_table const *table,
+                     struct member const       *you,
+                     struct dstr               *d)
+{
+	if (!table || !you || !d)
+		return EINVAL;
+	size_t const n = table->records.all.n;
+	bool ok = dstr_cat(d, "[askai: Members of this session: ");
+	for (size_t i = 0; ok && i < n && i < MEMBER_SHOWN; ++i) {
+		struct member_info const *info = &table->records.all.items[i].info;
+		bool const self = info->kind == you->kind &&
+		                  cstr_view_equal(info->name, cstr_view(you->name));
+		ok = dstr_printf(d, "%s%.*s (%s%s)", i ? ", " : "", (int)info->name.len,
+		                 info->name.data, member_kinds[info->kind].data, self ? ", you" : "");
+	}
+	if (ok && n > MEMBER_SHOWN)
+		ok = dstr_printf(d, " and %zu more", n - MEMBER_SHOWN);
+	ok = ok && dstr_cat(d, ". Call notes with action members to see what each member wrote "
+	                       "last.]\n");
+	return ok ? 0 : ENOMEM;
+}
+
+int
+member_table_unknown (struct member_table const *table,
+                      struct cstr_view           name,
+                      struct dstr               *d)
+{
+	if (!table || !d)
+		return EINVAL;
+	size_t const n = table->records.all.n;
+	size_t const shown = n < MEMBER_SHOWN ? n : MEMBER_SHOWN;
+	bool ok = dstr_printf(d, "No member is named %.*s. %s ",
+	                      (int)util_clip(name.data, name.len, 2 * UTIL_WORD_MAX), name.data,
+	                      n == 1 ? "The only member is" : "The members are");
+	for (size_t i = 0; ok && i < shown; ++i) {
+		struct member_info const *info = &table->records.all.items[i].info;
+		char const *sep = !i ? "" : i + 1 < shown || n > shown ? ", " : " and ";
+		ok = dstr_printf(d, "%s%.*s", sep, (int)info->name.len, info->name.data);
+	}
+	if (ok && n > shown)
+		ok = dstr_printf(d, " and %zu more", n - shown);
+	return ok && dstr_cat(d, ".") ? 0 : ENOMEM;
+}
+
+int
+member_notice (struct member const      *you,
+               struct member_call const *call,
+               struct dstr              *d)
+{
+	if (!you || !call || !d)
+		return EINVAL;
+	struct member const *asker = &call->asker;
+	bool ok = dstr_printf(d, "[askai: You are the %s %s. ", member_kinds[you->kind].data,
+	                      you->name);
+	if (!*asker->name)
+		ok = ok && dstr_cat(d, "A client without a member name made this ask call.]\n");
+	else if (asker->kind == MEMBER_AGENT)
+		ok = ok && dstr_printf(d, "The agent %s made this ask call.]\n", asker->name);
+	else
+		ok = ok && dstr_printf(d, "A client program of the person %s made this ask "
+		                       "call.]\n", asker->name);
+	return ok ? 0 : ENOMEM;
 }

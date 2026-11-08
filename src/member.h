@@ -22,6 +22,11 @@
  * lookup finds the login in the records first, so a person keeps the name
  * after the Unix user is renamed. Otherwise the name of a Unix login is
  * the name of the user, which a blocker looks up with getpwuid_r().
+ *
+ * Each member has one notebook (src/notes.h), the branch
+ * refs/heads/KIND/NAME/notes. A table lists the records and the notebooks
+ * together, so a notebook without a record, such as a notebook that the
+ * operator moved from the old layout, still names a member.
  */
 #ifndef ASKAI_SRC_MEMBER_H_
 #define ASKAI_SRC_MEMBER_H_
@@ -31,13 +36,17 @@
 
 #include "clk.h"
 #include "cstr_view.h"
+#include "hexid.h"
 #include "list.h"
 #include "policy.h"
+#include "store.h"
 #include "util.h"
 
 struct blocker;
+struct dstr;
 struct list;
 struct loop;
+struct stream_peer;
 struct member_registry;
 struct member_table;
 struct store;
@@ -85,6 +94,40 @@ struct member {
 	char             name[MEMBER_NAME];  /**< "" for no member */
 };
 
+/** The flags of a member in a table (struct member_info). */
+enum {
+	MEMBER_RECORD = 1u << 0,  /**< a record names the member */
+	MEMBER_NOTES  = 1u << 1,  /**< the notebook of the member contains
+	                               notes */
+};
+
+/** A member in a table, and the newest change of the notebook of the
+ *  member. The views borrow the records of the table, which a lookup or
+ *  member_table_refresh() can replace.
+ */
+struct member_info {
+	struct cstr_view name;
+	struct cstr_view change;  /**< the subject of the newest commit of the
+	                               notebook */
+	struct cstr_view asker;   /**< the trailer line Asked-by of that commit,
+	                               or empty */
+	uint64_t         time;    /**< the time of that commit, in seconds
+	                               since the epoch */
+	uint32_t         kind;    /**< enum member_kind */
+	uint32_t         flags;   /**< MEMBER_RECORD and MEMBER_NOTES */
+};
+
+/** The session of a registry, and this askai in it. The views borrow the
+ *  registry.
+ */
+struct member_session {
+	struct cstr_view id;       /**< the session ID, 32 hexadecimal digits */
+	struct cstr_view name;     /**< the name of the session */
+	char const      *agent;    /**< the name of the agent of this askai */
+	char const      *service;  /**< the name of this askai, the committer of
+	                                its commits */
+};
+
 /** A login: how a client proves who it is, and the member that the login
  *  makes if the records do not name the member of the login yet.
  */
@@ -98,6 +141,39 @@ struct member_login {
 	                                           "" for a Unix login whose
 	                                           name a lookup finds */
 };
+
+/** The member of the client of a request, and the IDs that the commits of
+ *  the turns of an ask call name. Each request of mcp.c contains one
+ *  (mcp_slot_member()), and the notes tool fills in the rest.
+ */
+struct member_call {
+	struct member_login login;         /**< the login of the client, from
+	                                        the head of the request */
+	struct hexid        ask;           /**< the ID of the ask call, or
+	                                        empty */
+	struct hexid        conversation;  /**< the thread of the ask call, or
+	                                        empty */
+	struct member       asker;         /**< the member of the login that
+	                                        made the ask call, or the name
+	                                        "" for no such member */
+};
+
+/** Initializes @p dest for a request of a client with the grant @p grant
+ *  and the address @p peer (src/stream.h): the login of the client, as
+ *  member_login() writes it, no IDs, and no asker. grant->who must be
+ *  valid. Returns 0, or the error of member_login(), such as EINVAL for a
+ *  null @p registry, as without --notes, with no login in @p dest.
+ */
+extern int
+member_call_init (struct member_call           *dest,
+                  struct member_registry const *registry,
+                  struct policy_grant const    *grant,
+                  struct stream_peer const     *peer);
+
+/** The words of STORE_REFS that list the records of the session and the
+ *  notebooks of the members, for member_table_refresh().
+ */
+extern char const *const member_list[STORE_WORDS];
 
 /**
  * Returns true if @p name can be the name of a member: 1 to UTIL_WORD_MAX
@@ -156,11 +232,11 @@ member_login (struct member_login          *dest,
  * @p service is the name of this askai, the committer of the records.
  * Both are names that member_name_valid() accepts. @p store, @p agent and
  * @p service must outlive the registry. The function then reads all
- * records. Returns the registry, or returns nullptr with an error number
- * in @p *e and a message in the @p len bytes at @p why: EINVAL for a null
- * or invalid argument, a session of a later format than MEMBER_FORMAT, or
- * a record of the name of the agent that belongs to a person; EIO if git
- * fails; or ENOMEM.
+ * records and counts the notebooks of the old layout. Returns the
+ * registry, or returns nullptr with an error number in @p *e and a message
+ * in the @p len bytes at @p why: EINVAL for a null or invalid argument, a
+ * session of a later format than MEMBER_FORMAT, or a record of the name of
+ * the agent that belongs to a person; EIO if git fails; or ENOMEM.
  */
 extern struct member_registry *
 member_registry_create (struct store const *store,
@@ -176,15 +252,16 @@ member_registry_create (struct store const *store,
 extern void
 member_registry_destroy (struct member_registry **p_registry);
 
-/** Returns the ID of the session, 32 hexadecimal digits from the session
- *  record, or an empty view for a null @p registry.
+/** Returns the session of @p registry and this askai in it, or nullptr
+ *  for a null @p registry.
  */
-extern struct cstr_view
+extern struct member_session const *
 member_registry_session (struct member_registry const *registry);
 
 /** Logs @p registry at LOG_INFO as two lists: the session, with its
- *  repository, ID, name, agent and service, and the members as askai read
- *  them at the start, each with its kind and logins.
+ *  repository, ID, name, agent, service and the number of notebooks of the
+ *  old layout under refs/heads/notes/ if there are any, and the members as
+ *  askai read them at the start, each with its kind and logins.
  */
 extern void
 member_registry_report (struct member_registry const *registry);
@@ -277,5 +354,63 @@ member_table_claim (struct member_table       *table,
 /** Stops @p wait from waiting, if it waits. Its done does not run. */
 extern void
 member_table_cancel (struct member_wait *wait);
+
+/** Returns the member at the index @p i of @p table, or nullptr past the
+ *  last member. The persons come first, then the agents, each by name.
+ */
+extern struct member_info const *
+member_table_info (struct member_table const *table,
+                   size_t                     i);
+
+/** Replaces the records of @p table with the records in @p out, the whole
+ *  output of STORE_REFS for member_list. Returns 0, EINVAL for a null
+ *  @p table, EIO for output that is not in that form, or ENOMEM. On
+ *  failure the records stay as they are.
+ */
+extern int
+member_table_refresh (struct member_table *table,
+                      struct span          out);
+
+/** Writes to @p dest the member named @p name: the member of a record of
+ *  the name, or else of a notebook of the name. Returns 0, ENOENT if
+ *  @p table names no such member, or EINVAL for a null argument.
+ */
+extern int
+member_table_name (struct member_table const *table,
+                   struct cstr_view           name,
+                   struct member             *dest);
+
+/** Returns the length of the longest name of the members of @p table, or
+ *  0 for a null @p table.
+ */
+extern int
+member_table_width (struct member_table const *table);
+
+/** Appends to @p d the notice of the members for a turn of the agent
+ *  @p you: "[askai: Members of this session: ...]" and a line feed.
+ *  Returns 0, EINVAL for a null argument, or ENOMEM.
+ */
+extern int
+member_table_notice (struct member_table const *table,
+                     struct member const       *you,
+                     struct dstr               *d);
+
+/** Appends to @p d that no member is named @p name, and the names of the
+ *  members. Returns 0, EINVAL for a null @p table or @p d, or ENOMEM.
+ */
+extern int
+member_table_unknown (struct member_table const *table,
+                      struct cstr_view           name,
+                      struct dstr               *d);
+
+/** Appends to @p d the notice of who the agent @p you is and who made the
+ *  ask call @p call: call->asker, or a client without a member name if
+ *  the name of call->asker is "". Returns 0, EINVAL for a null argument,
+ *  or ENOMEM.
+ */
+extern int
+member_notice (struct member const      *you,
+               struct member_call const *call,
+               struct dstr              *d);
 
 #endif /* ASKAI_SRC_MEMBER_H_ */
