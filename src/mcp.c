@@ -1120,12 +1120,13 @@ mcp_shelve_job (struct mcp *mcp,
 	hist_add(&mcp->counts->kept.jobs, 1);
 }
 
-/* Free the request's handle: what it waited for finds no request. */
+/* Frees the handle @p *h on the loop of @p mcp and sets @p *h to zero. */
 static void
-mcp_req_forget (struct mcp_req *req)
+mcp_forget (struct mcp    *mcp,
+            struct handle *h)
 {
-	loop_forget(req->mcp->loop, req->call);
-	req->call = (struct handle){};
+	loop_forget(mcp->loop, *h);
+	*h = (struct handle){};
 }
 
 static void mcp_slot_step (struct loop *loop, struct loop_step *step);
@@ -1440,8 +1441,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 	review_read_destroy(&slot->read);
 	slot->shows = nullptr;
 	loop_unready(&slot->step);
-	loop_forget(slot->req->mcp->loop, slot->call);
-	slot->call = (struct handle){};
+	mcp_forget(slot->req->mcp, &slot->call);
 }
 
 /* Let go of the request's job, if it has one: cancel it while the request
@@ -1457,7 +1457,7 @@ mcp_req_drop (struct mcp_req *req)
 	mcp_slot_drop(&req->self);
 	mcp_req_slots_drop(req);
 	if (!job) {
-		mcp_req_forget(req);
+		mcp_forget(mcp, &req->call);
 		return;
 	}
 	req->job = nullptr;
@@ -1471,7 +1471,7 @@ mcp_req_drop (struct mcp_req *req)
 		return;
 	}
 	/* A job that waits keeps the front's reference for its completion. */
-	mcp_req_forget(req);
+	mcp_forget(mcp, &req->call);
 	hist_add(&mcp->counts->calls.cancelled, 1);
 }
 
@@ -1616,8 +1616,7 @@ mcp_req_finish (struct mcp_req *req)
 	 * end, and the obsolete callback must not launch any more work. */
 	mcp_req_leave(req);
 	mcp_req_unwait(req);
-	loop_forget(mcp->loop, req->archive_call);
-	req->archive_call = (struct handle){};
+	mcp_forget(mcp, &req->archive_call);
 	jb_parser_fini(&req->parser, req->phase == PHASE_ANSWER || req->phase == PHASE_ARGS
 	                             ? &mcp->answers : &mcp->pool,
 	               &req->reaper);
@@ -2517,7 +2516,7 @@ mcp_req_job_done (struct mcp_req *req)
 	/* ref_put() drops the reference of the message. The request still owns
 	 * the reference of this loop. */
 	(void)ref_put(&job->refs, 1);
-	mcp_req_forget(req);
+	mcp_forget(req->mcp, &req->call);
 	mcp_req_unwait(req);
 	if (req->lent) {
 		req->upload = job->request;
@@ -3397,8 +3396,7 @@ mcp_slot_wake (struct mcp_slot *slot)
 {
 	if (slot->web && !web_wait_done(slot->web))
 		web_wait_leave(&slot->web);
-	loop_forget(slot->req->mcp->loop, slot->call);
-	slot->call = (struct handle){};
+	mcp_forget(slot->req->mcp, &slot->call);
 	loop_unready(&slot->step);
 	mcp_slot_unwait(slot);
 }
