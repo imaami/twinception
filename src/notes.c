@@ -208,11 +208,11 @@ notes_common (struct notes *notes)
 	if (S_ISDIR(st.st_mode))
 		e = notes_resolve(notes->dir, ".git", &git);
 	else {
-		static char const gitdir[] = "gitdir: ";
+		struct cstr_view const gitdir = CSTR_VIEW("gitdir: ");
 		e = notes_line(notes->dir, ".git", &line);
 		if (!e)
-			e = strncmp(line, gitdir, sizeof gitdir - 1) ? EINVAL
-			  : notes_resolve(notes->dir, line + sizeof gitdir - 1, &git);
+			e = !cstr_view_starts(cstr_view(line), gitdir) ? EINVAL
+			  : notes_resolve(notes->dir, line + gitdir.len, &git);
 		free(line);
 		line = nullptr;
 	}
