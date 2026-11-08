@@ -367,13 +367,12 @@ git_create (char const *const paths[],
             uint64_t           timeout,
             int               *e)
 {
-	struct git *git = calloc(1, sizeof *git + n * sizeof *git->repo);
+	struct git *git = malloc(sizeof *git + n * sizeof *git->repo);
 	if (!git) {
 		*e = ENOMEM;
 		return nullptr;
 	}
-	git->ceilings = (struct dstr)DSTR_INIT;
-	git->timeout = timeout;
+	*git = (struct git){ .ceilings = DSTR_INIT, .timeout = timeout };
 	if ((*e = git_load(git, paths, n)))
 		git_destroy(&git);
 	return git;
