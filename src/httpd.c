@@ -2117,7 +2117,7 @@ httpd_conn_read (struct httpd_conn *conn)
 		conn->since = loop->now;
 	/* After a read that gave bytes, or that waits to send, what TLS holds
 	 * is read again; a part of a record waits for the rest. */
-	if (conn->ssl && (n > 0 || httpd_conn_blocked(conn)) && tls_pending(conn->ssl))
+	if (conn->ssl && (n > 0 || tls_blocked(conn->ssl)) && tls_pending(conn->ssl))
 		conn->events |= HELD;
 	return 0;
 }
