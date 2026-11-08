@@ -16778,7 +16778,7 @@ def check_godbolt(binary, up, godbolt):
                     ("cg142", "-m64", "exit code 0", gnu),
                     ("cvc19", "-m64", "exit code 0", msvc),
                     ("cti", "-m64", "the probe output is not valid (the output contains no "
-                     "complete block)", "--- pp ---\nGBPROBE_BEGIN_1\n")], records
+                     "complete GBPROBE block)", "--- pp ---\nGBPROBE_BEGIN_1\n")], records
                 bodies = ce.bodies()[sent:]
                 assert [b["options"]["userArguments"] for b in bodies] == \
                     ["-E -m64", "/TC /EP -m64", "-E -m64"], bodies
@@ -16794,8 +16794,8 @@ def check_godbolt(binary, up, godbolt):
                 # valid.
                 records, _ = ce_records(ok(ai, "godbolt_targets", compilers=["longvalue"],
                                            language="probe").removesuffix(note))
-                assert records[0][2] == "the probe output is not valid (a name or a value " \
-                    "of a record is longer than 256 bytes)", records
+                assert records[0][2] == "the probe output is not valid (a GBPROBE name or " \
+                    "value is longer than 256 bytes)", records
 
                 # With share, the first line is a short link to the state of the
                 # call, which Compiler Explorer stores. A call with offset sends

@@ -630,15 +630,15 @@ godbolt_probe_parse_record (struct godbolt_probe         *p,
 	bool const closed = value && c < end && *c++ == ')';
 	godbolt_probe_skip(&c, end);
 	if (!closed || c != end)
-		return GODBOLT_PROBE_BAD("a record of the block is not valid");
+		return GODBOLT_PROBE_BAD("a GBPROBE record is not valid");
 	if ((size_t)(value - name) > GODBOLT_PROBE_TEXT_MAX + 1 ||
 	    (size_t)(*out - value) > GODBOLT_PROBE_TEXT_MAX + 1)
-		return GODBOLT_PROBE_BAD("a name or a value of a record is longer than 256 bytes");
+		return GODBOLT_PROBE_BAD("a GBPROBE name or value is longer than 256 bytes");
 	for (uint32_t i = 0; i < *n; ++i)
 		if (!strcmp(list[i].name, name))
-			return GODBOLT_PROBE_BAD("the block contains a record twice");
+			return GODBOLT_PROBE_BAD("a GBPROBE record occurs twice");
 	if (*n == max)
-		return GODBOLT_PROBE_BAD("the block contains too many records");
+		return GODBOLT_PROBE_BAD("the GBPROBE block contains too many records");
 	list[(*n)++] = (struct godbolt_probe_record){ name, value };
 	return 0;
 }
@@ -679,7 +679,7 @@ godbolt_probe_line (struct godbolt_probe  *p,
 		                                  array_size(p->headers), *state,
 		                                  cstr_view_slice(line, header.len, SIZE_MAX), out);
 	if (*state == 1 && line.len && *line.data != '#')
-		return GODBOLT_PROBE_BAD("the block contains a line that is not a record");
+		return GODBOLT_PROBE_BAD("the GBPROBE block contains a line that is not a record");
 	return 0;
 }
 
@@ -699,7 +699,7 @@ godbolt_probe_parse (struct godbolt_probe *p,
 		if (e)
 			return e;
 	}
-	return state == 2 ? 0 : GODBOLT_PROBE_BAD("the output contains no complete block");
+	return state == 2 ? 0 : GODBOLT_PROBE_BAD("the output contains no complete GBPROBE block");
 }
 
 #undef GODBOLT_PROBE_BAD
