@@ -170,8 +170,9 @@ enum : uint64_t {
  */
 struct home {
 	struct loop_step          start;       /* starts the jobs waiting */
-	struct loop_step          stop;        /* cancels the jobs dropped */
-	struct loop_step          drain;       /* cancels every job in flight */
+	struct loop_step          stop;        /* cancels the jobs on dropped, or
+	                                          every job on timeline while
+	                                          HOME_DRAINING is set */
 	struct loop_step          overdue;     /* ends the jobs past their deadline */
 	struct loop_step          silent;      /* ends the answers silent too long */
 	struct loop_step          feed;        /* reads the streams */
@@ -2237,31 +2238,23 @@ home_preempt_step (struct loop      *loop,
 	}
 }
 
-/* Cancel the jobs dropped, as many a step as its share of requests
- * allows.
+/* Cancel the jobs on home->dropped, or every job on home->timeline while
+ * HOME_DRAINING is set. The dropped jobs run upstream, so the timeline
+ * contains them too. The function returns when loop_spent() returns true
+ * for LOOP_REQS, and the step continues in a later bulk step.
  */
 static void
 home_stop_step (struct loop      *loop,
                 struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, stop);
-	for (; !list_is_empty(&home->dropped); loop_work(loop, LOOP_REQS, 1)) {
+	bool const all = home->flags & HOME_DRAINING;
+	struct list *jobs = all ? &home->timeline : &home->dropped;
+	for (; !list_is_empty(jobs); loop_work(loop, LOOP_REQS, 1)) {
 		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		home_cancel(home, container_of(home->dropped.next, struct job, queue));
-	}
-}
-
-/* Draining: cancel every job in flight, likewise. */
-static void
-home_drain_step (struct loop      *loop,
-                 struct loop_step *step)
-{
-	struct home *home = container_of(step, struct home, drain);
-	for (; !list_is_empty(&home->timeline); loop_work(loop, LOOP_REQS, 1)) {
-		if (loop_spent(loop, step, LOOP_REQS))
-			return;
-		home_cancel(home, container_of(home->timeline.next, struct job, due));
+		home_cancel(home, all ? container_of(jobs->next, struct job, due)
+		                      : container_of(jobs->next, struct job, queue));
 	}
 }
 
@@ -2697,7 +2690,7 @@ home_fini (struct home *home)
 		free(cancel);
 	}
 	struct loop_step *const steps[] = {
-		&home->start, &home->stop, &home->drain, &home->overdue, &home->silent,
+		&home->start, &home->stop, &home->overdue, &home->silent,
 		&home->feed, &home->reap, &home->shed, &home->preempt, &home->props,
 		&home->cleanup,
 	};
@@ -2736,7 +2729,6 @@ home_create (struct loop         *loop,
 	*home = (struct home){
 		.start.fn = home_start_step,
 		.stop.fn = home_stop_step,
-		.drain.fn = home_drain_step,
 		.overdue.fn = home_overdue_step,
 		.silent.fn = home_silent_step,
 		.feed.fn = home_feed_step,
@@ -2845,7 +2837,7 @@ void
 home_drain (struct home *home)
 {
 	home->flags |= HOME_DRAINING;
-	loop_ready_bulk(home->loop, &home->drain);
+	loop_ready_bulk(home->loop, &home->stop);
 }
 
 void
