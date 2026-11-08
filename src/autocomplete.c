@@ -675,11 +675,12 @@ autocomplete_add_tool (struct autocomplete *ac,
 	size_t position;
 	struct autocomplete_entry const *previous = autocomplete_entry_find(ac, name, &position);
 	bool replace = previous != nullptr;
+	struct json_object *schema = jb_get(def, "inputSchema");
 	struct autocomplete_entry entry = {
 		.tool = {name, autocomplete_json_text(jb_get(def, "title")),
-		         autocomplete_json_text(jb_get(def, "description")), jb_get(def, "inputSchema")},
+		         autocomplete_json_text(jb_get(def, "description")), schema},
 		.definition = json_object_get(def),
-		.root = jb_get(def, "inputSchema"),
+		.root = schema,
 	};
 	size_t schema_size = 0;
 	int error = 0;
