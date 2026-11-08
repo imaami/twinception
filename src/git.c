@@ -229,52 +229,46 @@ enum {
  */
 #define GIT_COMMAND_LIST(X)                                                                \
         X(READ,      "read",      read_options,      END | OBJECT | SINGLE | LINES,        \
-          "Numbered lines of a committed file. Give the file as the one revision, in "     \
-          "the form commit:path, such as HEAD:src/journal.c. line is the number of the "   \
-          "first line. The default is 1. count is the maximum number of lines. The "       \
-          "default is as many lines as fit in one result. The first line of the output "   \
-          "names the commit. The last line of the output shows the revision and the "      \
-          "line for the next call. The revision in the last line contains the commit ID "  \
-          "in place of a name such as HEAD. Every page then comes from the same commit.",  \
-          "blob")                                                                          \
+          "Numbered lines of a committed file. Give the file as the one revision "         \
+          "commit:path, such as HEAD:src/journal.c. line is the first line, 1 by "         \
+          "default. count is the most lines, as many as fit by default. The first line "   \
+          "names the commit. The last line shows the next call, with the commit ID in "    \
+          "place of HEAD.", "blob")                                                        \
         X(LOG,       "log",       log_options,       FILES | END | RANGE,                  \
-          "Committed history. The default revision is HEAD. Paths limit the history to "   \
-          "the commits that change the paths.", "--no-ext-diff", "--no-textconv")          \
+          "Committed history. The default revision is HEAD. Paths limit the history.",     \
+          "--no-ext-diff", "--no-textconv")                                                \
         X(SHOW,      "show",      show_options,      FILES | END | OBJECT,                 \
-          "Show a commit message and the patch. The default revision is HEAD. The "        \
-          "revision commit:path shows the committed file.", "--no-ext-diff",               \
-          "--no-textconv")                                                                 \
+          "A commit with the patch. The default revision is HEAD. The revision "           \
+          "commit:path shows a file.", "--no-ext-diff", "--no-textconv")                   \
         X(DIFF,      "diff",      diff_options,      FILES | END | RANGE | PAIR,           \
           "Compare two commits. Give two revisions, or one range A..B or A...B. Paths "    \
-          "limit the comparison. --stat or --name-status prints a summary instead of the " \
-          "patch.", "--no-ext-diff", "--no-textconv")                                      \
+          "limit the comparison. --stat or --name-status prints a summary.",               \
+          "--no-ext-diff", "--no-textconv")                                                \
         X(GREP,      "grep",      grep_options,      FILES | END | PATTERN,                \
           "Search committed files. The default revision is HEAD. The pattern is an "       \
-          "extended regex. -G, -F and -P make the pattern a basic regex, plain text or a " \
-          "Perl regex. -i ignores case. With one revision, the first line of the output "  \
-          "names the commit. Each file path is on a separate line. Each match is on a "    \
-          "line below the file path, as line:text. With several revisions, each path "     \
-          "starts with the commit ID and a colon. To read around a match, call read with " \
-          "the revision commit:path and the line number of the match as line. "            \
-          "--no-heading puts the path before each match. -l lists the files with a "       \
-          "match. -L lists the files without a match. -c counts the matches in each "      \
-          "file. -C3 adds three lines of context. -p adds the first line of the function " \
-          "around a match. -W adds the whole function. --max-count=N stops after N "       \
-          "matches in a file.", "--no-textconv", "-n", "-E", "--heading", "--break",       \
-          "--threads=1")                                                                   \
+          "extended regex. -G, -F and -P select basic regex, plain text and Perl regex. "  \
+          "-i ignores case. With one revision, the first line names the commit. Each "     \
+          "file path is on a separate line, above the matches as line:text. With several " \
+          "revisions, each path starts with the commit ID and a colon. To read a match, "  \
+          "call read with commit:path and the line of the match. --no-heading puts the "   \
+          "path before each match. -l lists the files with a match. -L lists the files "   \
+          "without a match. -c counts the matches in each file. -C3 adds three lines of "  \
+          "context. -p adds the first line of the function around a match. -W adds the "   \
+          "whole function. --max-count=N stops after N matches in a file.",                \
+          "--no-textconv", "-n", "-E", "--heading", "--break", "--threads=1")              \
         X(BLAME,     "blame",     blame_options,     FILES | SINGLE | ONEPATH,             \
-          "Show the commit that last changed each line of a committed file. The default "  \
+          "The commit that last changed each line of a committed file. The default "       \
           "revision is HEAD. Give the file as the one path, such as \"paths\": "           \
-          "[\"src/git.c\"]. Give the commit in revisions. -L10,30 limits the output to "   \
-          "lines 10 to 30. -s leaves out the author and the date.", "--no-textconv")       \
+          "[\"src/git.c\"]. -L10,30 limits the lines. -s leaves out the author and the "   \
+          "date.", "--no-textconv")                                                        \
         X(LS_TREE,   "ls-tree",   ls_tree_options,   FILES | SINGLE,                       \
-          "List the entries of a committed tree. The default revision is HEAD. The path "  \
-          "\"src/\" lists the entries in src. The path \"src\" lists only the entry src. " \
-          "-r lists the subtrees recursively. -d lists only trees.")                       \
+          "Entries of a committed tree. The default revision is HEAD. The path \"src/\" "  \
+          "lists the entries in src. The path \"src\" lists only src. -r recurses. -d "    \
+          "lists only trees.")                                                             \
         X(CAT_FILE,  "cat-file",  cat_file_options,  END | OBJECT | SINGLE | MODE,         \
           "Inspect a committed object. The default revision is HEAD. commit:path names a " \
           "file. Give exactly one option: -p prints the contents, -t the type, -s the "    \
-          "size in bytes. -e prints nothing and succeeds if the object exists.")           \
+          "size in bytes. -e only checks that the object exists.")                         \
         X(REV_PARSE, "rev-parse", rev_parse_options, 0,                                    \
           "Print the commit ID of each revision. The default revision is HEAD. --verify "  \
           "requires exactly one valid revision.", "--revs-only")
@@ -441,53 +435,46 @@ git_definition (void const *service)
 			"Run a read-only git command in a repository of the server. The "
 			"result is the output of git, errors included, cut at 4 MiB. "
 			"help:true lists the options and limits of a command. Only "
-			"committed files are visible. The index and the working tree are "
-			"not available. A commit must be reachable from HEAD, a branch, a "
-			"tag or a remote-tracking ref. The default revision is HEAD. Give "
-			"diff two commits or one range. To read a file, give read the file "
-			"as the revision. Example: {\"command\": \"read\", \"revisions\": "
-			"[\"HEAD:src/journal.c\"], \"line\": 120, \"count\": 40} returns "
-			"lines 120 to 159 with line numbers. The last line of the read "
-			"output shows the next call, with the commit ID in place of HEAD. "
-			"The first line of the grep output names the commit. Each file path "
-			"is on a separate line. Each match is on a line below the file path, "
-			"as <line>:<text>. For a match, call read with \"revisions\": "
-			"[\"<commit>:<path>\"] and \"line\": <line>. Attach the value to "
-			"the option: --max-count=20, not -n 20."),
+			"committed files are visible. A commit must be reachable from HEAD, "
+			"a branch, a tag or a remote-tracking ref. The default revision is "
+			"HEAD. Give diff two commits or one range. To read a file, give read "
+			"the file as the revision. Example: {\"command\": \"read\", "
+			"\"revisions\": [\"HEAD:src/journal.c\"], \"line\": 120, \"count\": "
+			"40} returns lines 120 to 159 with line numbers. The last line of "
+			"the read output shows the next call, with the commit ID in place of "
+			"HEAD. The first line of the grep output names the commit. Each file "
+			"path is on a separate line, above the matches as <line>:<text>. For "
+			"a match, call read with \"revisions\": [\"<commit>:<path>\"] and "
+			"\"line\": <line>. Attach the value to the option: --max-count=20, "
+			"not -n 20."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
 				"command", schema_enum(cmds, nullptr),
 				"help", schema_property("boolean",
-					"If true, return the options and limits of the command "
-					"instead of running git."),
+					"Describe the command instead of running git."),
 				"options", schema_array(schema_property("string", nullptr), OPTIONS,
-					"Options of the command, such as --oneline or "
-					"--max-count=20. Each entry is one option with the value "
-					"attached. help:true lists the allowed options."),
+					"Options, such as --oneline or --max-count=20, each with "
+					"the value attached. help:true lists the allowed options."),
 				"revisions", schema_array(schema_property("string", nullptr), REVISIONS,
-					"Commits, such as main, HEAD~3 or a commit hash. ^ and ~ "
-					"suffixes and ^{commit} are allowed. Only log and diff "
-					"accept a range, such as main..topic. For read, show and "
-					"cat-file, HEAD:path names a file in the commit. Reflogs, "
-					"stash, the index and blob or tree hashes are not "
-					"available."),
+					"Commits, such as main, HEAD~3 or a commit hash. Only log "
+					"and diff accept a range, such as main..topic. For read, "
+					"show and cat-file, HEAD:path names a file. Stash, reflogs "
+					"and blob hashes are not available."),
 				"paths", schema_array(schema_property("string", nullptr), PATHS,
-					"Paths relative to the top of the repository, such as src/ "
-					"or src/git.c. Paths limit the output of log, show, diff, "
-					"grep and ls-tree. Give blame exactly one path, the file. "
-					"Paths are not allowed for read, cat-file and rev-parse."),
+					"Paths relative to the top of the repository, such as "
+					"src/. Paths limit the output. Give blame exactly one "
+					"path, the file. read, cat-file and rev-parse accept no "
+					"paths."),
 				"pattern", schema_property("string",
-					"The grep pattern. The default syntax is extended regex. "
-					"The options -G, -F and -P select basic regex, plain text "
-					"and Perl regex."),
+					"The grep pattern, an extended regex. -G, -F and -P select "
+					"basic regex, plain text and Perl regex."),
 				"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 				"line", schema_count(1,
-					"The number of the first line that read returns. The "
-					"default is 1."),
+					"The first line that read returns. The default is 1."),
 				"count", schema_count(1,
-					"The maximum number of lines that read returns. The "
-					"default is as many lines as fit in one result."),
+					"The most lines that read returns. The default is as many "
+					"as fit in one result."),
 				nullptr),
 			required, array_size(required)),
 		"annotations", jb_object(
@@ -1116,20 +1103,18 @@ git_help (struct mcp_slot *slot,
 		"description", json_object_new_string(commands[command].description),
 		"options", options,
 		"option_values", json_object_new_string(
-			"Each option is one array entry. For an option that ends in =, append "
-			"the value after the =. In an option that ends in #, replace # with "
-			"digits. In an option that ends in *, replace * with a value. Examples: "
-			"--max-count=20, -n20, -C3. Never split an option and the value into "
-			"two entries."),
+			"Each option is one array entry, with the value attached. Append the "
+			"value after a trailing =. Replace a trailing # with digits, and a "
+			"trailing * with a value. Examples: --max-count=20, -n20, -C3."),
 		"pagination", json_object_new_string(takes & LINES
-			? "The output of git is cut at 4 MiB. read returns whole lines, each "
-			  "after the line number and a tab. read returns at most count lines and "
-			  "at most window_bytes. The last line of the output shows the revision "
-			  "and the line to read on from. Only a line longer than window_bytes is "
-			  "cut. The note after a cut line contains the next offset."
-			: "The output of git is cut at 4 MiB. A result is at most window_bytes. "
-			  "A longer output ends with a note. The note contains the exact next "
-			  "offset for the same arguments."),
+			? "git output is cut at 4 MiB. read returns at most count whole lines in "
+			  "at most window_bytes. Each line starts with the line number and a "
+			  "tab. The last line shows the revision and the line to read on from. "
+			  "A line longer than window_bytes is cut, with a note that names the "
+			  "next offset."
+			: "git output is cut at 4 MiB. A result is at most window_bytes. A "
+			  "longer output ends with a note that names the exact next offset for "
+			  "the same arguments."),
 		"limits", jb_object(
 			"options", json_object_new_int(takes & MODE ? 1 : OPTIONS),
 			"revisions", json_object_new_int(takes & SINGLE ? 1 :
