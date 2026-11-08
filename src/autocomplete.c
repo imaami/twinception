@@ -3,7 +3,6 @@
  */
 #include <errno.h>
 #include <json-c/json.h>
-#include <limits.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -315,8 +314,6 @@ autocomplete_json_parse (struct autocomplete *autocomplete,
                          struct json_object **result)
 {
 	*result = nullptr;
-	if (value.len >= INT_MAX)
-		return E2BIG;
 	if (!autocomplete->parser) {
 		autocomplete->parser = json_tokener_new();
 		if (!autocomplete->parser)
@@ -1363,10 +1360,7 @@ autocomplete_convert (struct autocomplete *autocomplete,
 			return error;
 	}
 	json_object_put(*converted);
-	*converted = nullptr;
-	if (decoded.len > INT_MAX)
-		return E2BIG;
-	*converted = json_object_new_string_len(decoded.data, (int)decoded.len);
+	*converted = jb_string(decoded);
 	return *converted ? 0 : ENOMEM;
 }
 
