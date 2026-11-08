@@ -1474,10 +1474,9 @@ config_apply_file (struct config *cfg)
 		struct option const *o = config_named(it.key);
 		int status = g < array_size(group_names)
 		             ? config_apply_group(cfg, (enum config_group)g, it.val)
-		           : o && rows[o - options].group == GROUP_ROOT
-		             ? config_apply_member(cfg, o, it.val)
-		           : o ? config_misplaced(cfg, o)
-		               : config_complain(cfg, cfg->path, "unknown member %s", it.key);
+		           : !o ? config_complain(cfg, cfg->path, "unknown member %s", it.key)
+		           : rows[o - options].group != GROUP_ROOT ? config_misplaced(cfg, o)
+		           : config_apply_member(cfg, o, it.val);
 		if (status)
 			return status;
 	}
