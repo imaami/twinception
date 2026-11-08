@@ -1632,7 +1632,8 @@ optional. There is no default.
 #### `identities`
 
 The value is an object. Each member is an identity: its name, and an
-object with the members `role` and `tokens`. There is no default.
+object with the members `role` and `tokens`, and optionally `agent`. There
+is no default.
 
 - `role` is the name of a role. It is required.
 - `tokens` is an array of tokens, which must not be empty. `"sha256:HEX"`
@@ -1641,6 +1642,9 @@ object with the members `role` and `tokens`. There is no default.
   `"env:NAME"` names an environment variable of `askai` that contains the
   token. If the variable is not set or is empty, `askai` stops with exit
   status 2.
+- `agent` is `true` or `false`. The default is `false`. With `true`, the
+  identity is an agent of the session of [`notes`](#notes), such as an AI
+  client program with a token of its own. Any other identity is a person.
 
 An identity has no other members. A client over TCP authenticates as an
 identity with `Authorization: Bearer TOKEN`. If the policy has any token,
@@ -1790,7 +1794,7 @@ use:
 | `participant` | `"local-model"` | choose a distinct stable name for each instance |
 | `transcripts` | `"/var/lib/askai/transcripts.git"` | choose the separate transcript repository |
 | `directory` in `tools.notes` | `"/var/lib/askai/notes.git"` | set the shared session repository path whose parent exists |
-| `tokens` of the identity `ci` | `"sha256:"` and 64 zeros | set the SHA-256 digest of a long random token; no token has the digest in the file |
+| `tokens` of the identities `ci` and `claude` | `"sha256:"` and 64 zeros, and `"sha256:"` and 64 ones | set the SHA-256 digest of a long random token; no token has the digest in the file |
 | `unix-groups` | `{ "root": "admin", "users": "user" }` | set your groups, or remove the member; the first group of a client that the member names gives the client its role |
 
 `test-fifo` and `test-task` are `false`, and `verbose` is `false`, so they
@@ -1809,7 +1813,8 @@ The file has these effects on the tools and the policy:
 - The role `user` grants `ask_ai`, `man` and `notes`. Its `upstream`
   allows the upstream to call `man`, `git`, `notes`, `godbolt_catalog` and
   `godbolt_targets`.
-- The identity `ci` has the role `user`. On the Unix socket, the members
+- The identities `ci` and `claude` have the role `user`. `claude` is an
+  agent, such as an AI client program. On the Unix socket, the members
   of the Unix group `root` get the role `admin`, and the members of the
   Unix group `users` get the role `user`. A member of both groups gets
   `admin`, because `root` comes first.

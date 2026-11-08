@@ -63,6 +63,8 @@ struct policy_token {
 	struct cstr_view who;        /* "identity NAME", for the log */
 	uint64_t         principal;
 	size_t           role;
+	uint64_t         flags;      /* POLICY_AGENT and POLICY_OPERATOR of
+	                                enum policy_flag */
 };
 
 /* A Unix group, by gid first, and its role. */
@@ -280,19 +282,22 @@ policy_build_role (struct policy_build const *b,
 	return POLICY_NO_ROLE;
 }
 
-/* Append a token of @p digest for the identity @p who of @p role.
- * policy_principals() computes its principal.
+/* Append a token of @p digest for the identity @p who of @p role, with the
+ * flags @p flags of enum policy_flag. policy_principals() computes its
+ * principal.
  */
 static void
 policy_token_add (struct policy       *p,
                   unsigned char const *digest,
                   struct cstr_view     who,
-                  size_t               role)
+                  size_t               role,
+                  uint64_t             flags)
 {
 	struct policy_token *t = &p->tokens[p->n_tokens++];
 	memcpy(t->digest, digest, DIGEST);
 	t->who = who;
 	t->role = role;
+	t->flags = flags;
 }
 
 static int
@@ -627,7 +632,7 @@ policy_build_member (struct policy_build *b,
 		return policy_build_fail(b, "role %s: unknown member %s", name, key);
 	if (!json_object_is_type(val, json_type_boolean))
 		return policy_build_fail(b, "role %s: metrics must be true or false", name);
-	r->metrics = json_object_get_boolean(val);
+	r->flags = json_object_get_boolean(val) ? POLICY_METRICS : 0;
 	return 0;
 }
 
@@ -689,15 +694,20 @@ policy_build_identity (struct policy_build *b,
 		return policy_build_fail(b, "identity %s must be an object", who);
 	struct json_object *role = nullptr;
 	struct json_object *tokens = nullptr;
+	struct json_object *agent = nullptr;
 	struct json_object_iter m;
 	json_object_object_foreachC(id, m) {
 		if (!strcmp(m.key, "role"))
 			role = m.val;
 		else if (!strcmp(m.key, "tokens"))
 			tokens = m.val;
+		else if (!strcmp(m.key, "agent"))
+			agent = m.val;
 		else
 			return policy_build_fail(b, "identity %s: unknown member %s", who, m.key);
 	}
+	if (agent && !json_object_is_type(agent, json_type_boolean))
+		return policy_build_fail(b, "identity %s: agent must be true or false", who);
 	size_t const r = policy_build_role(b, role);
 	if (r == POLICY_NO_ROLE)
 		return policy_build_fail(b, "identity %s: no role %s", who,
@@ -709,12 +719,13 @@ policy_build_identity (struct policy_build *b,
 		return policy_build_fail(b, "identity %s needs tokens", who);
 	struct cstr_view const parts[] = { CSTR_VIEW("identity "), { who, len } };
 	struct cstr_view name = policy_build_who(b, array_size(parts), parts);
+	uint64_t const flags = json_object_get_boolean(agent) ? POLICY_AGENT : 0;
 	for (size_t i = 0; i < n; ++i) {
 		unsigned char digest[DIGEST];
 		int e = policy_build_token(b, who, json_object_array_get_idx(tokens, i), digest);
 		if (e)
 			return e;
-		policy_token_add(b->p, digest, name, r);
+		policy_token_add(b->p, digest, name, r, flags);
 	}
 	return 0;
 }
@@ -844,7 +855,7 @@ policy_build_own (struct policy_build *b,
 {
 	struct policy *p = b->p;
 	tool_mask all = policy_all(b->reg);
-	p->roles[0] = (struct policy_grant){ .tools = all, .upstream = all, .metrics = true };
+	p->roles[0] = (struct policy_grant){ .tools = all, .upstream = all, .flags = POLICY_METRICS };
 	p->roles[1] = (struct policy_grant){ .tools = all, .upstream = all };
 	if (!token) {
 		p->anonymous[POLICY_LOOPBACK] = 0;
@@ -854,7 +865,7 @@ policy_build_own (struct policy_build *b,
 	}
 	unsigned char digest[DIGEST];
 	SHA256((unsigned char const *)token, strlen(token), digest);
-	policy_token_add(p, digest, CSTR_VIEW("identity ASKAI_TOKEN"), 0);
+	policy_token_add(p, digest, CSTR_VIEW("identity ASKAI_TOKEN"), 0, POLICY_OPERATOR);
 	p->unix_token = true;
 }
 
@@ -1042,7 +1053,7 @@ policy_log_roles (struct policy const   *policy,
 			up = lent(ctx, r->tools, r->upstream);
 			policy_log_tools("upstream tools", 14, reg, up);
 		}
-		LOG_ALL(LOG_INFO, "  metrics         %s", r->metrics ? "yes" : "no");
+		LOG_ALL(LOG_INFO, "  metrics         %s", r->flags & POLICY_METRICS ? "yes" : "no");
 		listed |= r->tools | up;
 	}
 	return listed;
@@ -1076,7 +1087,9 @@ policy_log_identities (struct json_object *ids)
 	struct json_object_iter it;
 	json_object_object_foreachC(ids, it) {
 		char const *name = json_object_get_string(jb_get(it.val, "role"));
-		LOG_ALL(LOG_INFO, "  %-*s  role %s", width, it.key, name ? name : "none");
+		bool const agent = json_object_get_boolean(jb_get(it.val, "agent"));
+		LOG_ALL(LOG_INFO, "  %-*s  role %s%s", width, it.key, name ? name : "none",
+		        agent ? ", agent" : "");
 	}
 }
 
@@ -1280,9 +1293,10 @@ policy_grant_token (struct policy const *policy,
 	SHA256((unsigned char const *)token.data, token.len, digest);
 	struct policy_token const *t = bsearch(digest, policy->tokens, policy->n_tokens,
 	                                       sizeof *policy->tokens, policy_by_digest);
-	if (!t)
+	if (!t || policy_grant_role(policy, t->role, t->principal, t->who, g) != POLICY_GRANTED)
 		return POLICY_REFUSED;
-	return policy_grant_role(policy, t->role, t->principal, t->who, g);
+	g->flags |= t->flags;
+	return POLICY_GRANTED;
 }
 
 /* Grant Unix user @p peer, who shows no token, the role of the first group

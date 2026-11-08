@@ -5468,8 +5468,8 @@ def check_identities(binary, up):
     identities = {
         "alice": {"role": "admin", "tokens": [digest("alice-1")]},
         "bob": {"role": "asker", "tokens": ["env:BOB_TOKEN", digest("bob-2")]},
-        "carol": {"role": "reader", "tokens": [digest("carol-1")]},
-        "dave.d@x": {"role": "none", "tokens": [digest("dave-1")]}}
+        "carol": {"role": "reader", "tokens": [digest("carol-1")], "agent": True},
+        "dave.d@x": {"role": "none", "tokens": [digest("dave-1")], "agent": False}}
     env = {"BOB_TOKEN": "bob-1", "ASKAI_TOKEN": "ignored"}
     with tempfile.TemporaryDirectory() as d:
         path = f"{d}/askai.json"
@@ -5483,6 +5483,10 @@ def check_identities(binary, up):
               anonymous={"loopback": "reader", "remote": None})
         with Askai(binary, "-c", path, "--slots", "1", env=env) as ai:
             assert any("ASKAI_TOKEN is ignored" in line for line in ai.log), ai.log
+            # An identity whose member agent is true is an agent.
+            assert ai.listed("identities:") == [
+                "alice     role admin", "bob       role asker",
+                "carol     role reader, agent", "dave.d@x  role none"], ai.log
             for token, tools in (("alice-1", ["ask_ai", "man"]),
                                  ("bob-1", ["ask_ai"]), ("bob-2", ["ask_ai"]),
                                  ("carol-1", ["man"]), ("dave-1", []),
@@ -5591,6 +5595,9 @@ def check_identities(binary, up):
                 ({"roles": roles, "identities": {"e": {"role": "admin", "uid": 0,
                                                        "tokens": ["env:BOB_TOKEN"]}}},
                  "identity e: unknown member uid"),
+                ({"roles": roles, "identities": {"e": {"role": "admin", "agent": "yes",
+                                                       "tokens": ["env:BOB_TOKEN"]}}},
+                 "identity e: agent must be true or false"),
                 ({"roles": roles, "anonymous": {"local": "admin"}},
                  "anonymous: unknown member local"),
                 ({"roles": roles, "anonymous": {"remote": "root"}},
@@ -5608,8 +5615,8 @@ def check_identities(binary, up):
                              capture_output=True, text=True, timeout=5)
         assert run.returncode == 2 and 'askai offers no tool "man"' in run.stderr
 
-    print("identities: roles' tools and metrics, tokens, anonymous clients, one "
-          "principal per identity, mistakes named: PASS")
+    print("identities: roles' tools and metrics, tokens, agents, anonymous clients, "
+          "one principal per identity, mistakes named: PASS")
 
 
 def check_reload(binary, up):

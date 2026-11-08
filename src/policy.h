@@ -14,7 +14,9 @@
  * The member "identities" names the clients that prove who they are with
  * a token. Each identity has a role and a list of tokens. A token is
  * given as its SHA-256 digest ("sha256:HEX") or as the name of an
- * environment variable that holds it ("env:NAME").
+ * environment variable that holds it ("env:NAME"). An identity whose
+ * member "agent" is true is an agent of the session of --notes, such as an
+ * AI client program (src/member.h).
  *
  * The member "unix-groups" gives a client on a Unix socket the role of the
  * first of its groups that the member names. The member "anonymous" names
@@ -126,6 +128,16 @@ struct policy_peer {
 	                           the struct. */
 };
 
+/** The bits of the member flags of struct policy_grant. */
+enum policy_flag : uint32_t {
+	POLICY_METRICS  = 1u << 0,  /**< the client may read the metrics */
+	POLICY_AGENT    = 1u << 1,  /**< the identity of the client is an agent:
+	                                 its member "agent" is true */
+	POLICY_OPERATOR = 1u << 2,  /**< the client sent ASKAI_TOKEN under
+	                                 askai's own policy, which proves the
+	                                 user who runs askai */
+};
+
 /** What a client may see and do, and whose share of the upstream its calls
  *  take.
  */
@@ -147,8 +159,8 @@ struct policy_grant {
 	                                  anonymous client over TCP. Bit 63 is
 	                                  never set, and bit 62 is set for an
 	                                  identity. */
-	uint64_t         metrics;    /**< bool: it may read the metrics; widened
-	                                  over the padding */
+	uint64_t         flags;      /**< enum policy_flag, widened over the
+	                                  padding */
 };
 
 /**
@@ -236,6 +248,9 @@ policy_log (struct policy const   *policy,
  * or else the role of "unix" in "anonymous". A token on a Unix socket is
  * accepted only under askai's own policy with ASKAI_TOKEN. It then grants
  * the role of ASKAI_TOKEN, and the principal stays that of the Unix user.
+ * The flags of the grant of ASKAI_TOKEN under askai's own policy include
+ * POLICY_OPERATOR, and the flags of the grant of an identity whose member
+ * "agent" is true include POLICY_AGENT.
  *
  * Returns POLICY_GRANTED with the grant in @p *grant, or the reason why
  * the client may not connect. Returns POLICY_REFUSED if @p policy or

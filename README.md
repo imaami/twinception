@@ -1245,7 +1245,9 @@ Four more members define who may connect, and what each client may do:
   token, but the environment of a running `askai` does not change, so a new
   `env:` token needs a restart. The same token in two places stops `askai`.
   No Unix user is an identity, and a client of a Unix socket cannot send a
-  token.
+  token. An identity with `"agent": true` is an agent of the session of
+  `--notes`, such as an AI client program with a token of its own. Any
+  other identity is a person.
 - **`unix-groups`** gives the users of a Unix socket the role of the first
   of their groups it names. Their groups are the effective gid
   (`SO_PEERCRED`) and the supplementary groups (`SO_PEERGROUPS`) that they
@@ -1736,10 +1738,10 @@ with one item a line:
 - the policy. `askai`'s own policy is listed with whether `ASKAI_TOKEN` is
   set and what each kind of client may do. The policy of a configuration
   file is listed as each role with its tools and `metrics`; each identity
-  and each Unix group with its role; and the role of each kind of anonymous
-  client. With `--upstream-tools`, the policy also lists the tools that
-  the upstream may call in the turns of an `ask_ai` call, and none for a
-  role without `ask_ai`.
+  with its role, and `agent` for an agent; each Unix group with its role;
+  and the role of each kind of anonymous client. With `--upstream-tools`,
+  the policy also lists the tools that the upstream may call in the turns of
+  an `ask_ai` call, and none for a role without `ask_ai`.
 - a warning with the tools that are on and that `tools` allows clients,
   but that no role grants or lends to the upstream, because nothing can
   call them.

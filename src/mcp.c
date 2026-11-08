@@ -7460,7 +7460,7 @@ mcp_on_head (void          *ctx,
 {
 	struct mcp *mcp = ctx;
 	if (mcp_span_is(method, CSTR_VIEW("GET")) && mcp_is_metrics(target)) {
-		if (s->grant.metrics)
+		if (s->grant.flags & POLICY_METRICS)
 			(void)mcp_begin(mcp, s, PHASE_METRICS, METHOD_METRICS);
 		else
 			mcp_http_error(s, 403, "Forbidden", SPAN(STREAM_JSON_FIELD));
