@@ -820,29 +820,21 @@ git_pin_step (struct git_pin   *pin,
 	return e;
 }
 
-/* The arguments of the tool, in the order of git_arg_names[]. A call with
- * help:true uses those before GIT_ARG_OPTIONS only.
+/* GIT_ARG_LIST(X) expands to X(ID, name) for each argument of the git
+ * tool. With help:true, git_call_command() returns before it reads OPTIONS
+ * and the arguments after it.
  */
-enum git_arg : uint8_t {
-	GIT_ARG_REPO,
-	GIT_ARG_COMMAND,
-	GIT_ARG_HELP,
-	GIT_ARG_OFFSET,
-	GIT_ARG_OPTIONS,
-	GIT_ARG_REVISIONS,
-	GIT_ARG_PATHS,
-	GIT_ARG_PATTERN,
-	GIT_ARG_LINE,
-	GIT_ARG_COUNT,
-	GIT_ARGS
-};
+#define GIT_ARG_LIST(X)                                                           \
+        X(REPO, "repo") X(COMMAND, "command") X(HELP, "help") X(OFFSET, "offset") \
+        X(OPTIONS, "options") X(REVISIONS, "revisions") X(PATHS, "paths")         \
+        X(PATTERN, "pattern") X(LINE, "line") X(COUNT, "count")
 
-static struct cstr_view const git_arg_names[GIT_ARGS] = {
-	CSTR_VIEW_INIT("repo"), CSTR_VIEW_INIT("command"), CSTR_VIEW_INIT("help"),
-	CSTR_VIEW_INIT("offset"), CSTR_VIEW_INIT("options"), CSTR_VIEW_INIT("revisions"),
-	CSTR_VIEW_INIT("paths"), CSTR_VIEW_INIT("pattern"), CSTR_VIEW_INIT("line"),
-	CSTR_VIEW_INIT("count"),
-};
+#define GIT_ARG_ENUM(id, ...) GIT_ARG_##id,
+enum git_arg : uint8_t { GIT_ARG_LIST(GIT_ARG_ENUM) GIT_ARGS };
+#undef GIT_ARG_ENUM
+
+static struct cstr_view const git_arg_names[] = { GIT_ARG_LIST(XL_VIEW) };
+#undef GIT_ARG_LIST
 
 /*
  * Validate the call and retain its arguments and revision roots. Returns 0,
