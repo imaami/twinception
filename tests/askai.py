@@ -11169,6 +11169,7 @@ def check_notes(binary, up):
                                "identities": {
                                    "alice": {"role": "writer", "tokens": [digest("alice-1")]},
                                    "bob": {"role": "writer", "tokens": [digest("bob-1")]},
+                                   "dave": {"role": "writer", "tokens": [digest("dave-1")]},
                                    "writers": {"role": "writer",
                                                "tokens": [digest("writers-1")]},
                                    "carol": {"role": "asker", "tokens": [digest("carol-1")]}}}),
@@ -11638,45 +11639,155 @@ def check_notes(binary, up):
             # The committer is the service, and the author the person.
             assert git("log", "-1", "--format=%an <%ae>|%cn <%ce>", own) == \
                 b"alice <person/alice>|writers <askai>\n"
-        # When two adds to one notebook run at once, one of them fails, and its
-        # answer asks to add the note again. A git that sleeps before
-        # fast-import makes both adds check the same newest note.
+        # Two writes to one notebook at once check the same newest commit, and
+        # the commit of the later write races the commit of the earlier one.
+        # askai then checks the note of the later write at the new tip. If the
+        # note and the directories in its name are the same there, askai
+        # makes the same commit on the new tip, at most 3 tries in all.
+        # Otherwise the write fails and asks to read the note again. A git
+        # that sleeps before fast-import makes both writes check the same
+        # newest commit. The git counts its fast-import runs in the file
+        # imports, which shows that the later write raced and committed
+        # again. While the file steal exists, the git also moves the
+        # notebook ahead before each fast-import.
+        five = git("rev-parse", f"{own}^").decode().strip()
+        steal, imports = f"{d}/steal", f"{d}/imports"
+        real, repo = shlex.quote(shutil.which("git")), shlex.quote(notes)
         os.mkdir(f"{d}/bin")
         with open(f"{d}/bin/git", "w") as f:
-            f.write('#!/bin/sh\ncase " $* " in *" fast-import "*) sleep 0.5;; esac\n'
-                    f'exec {shutil.which("git")} "$@"\n')
+            f.write('#!/bin/sh\ncase " $* " in *" fast-import "*)\n'
+                    f'  echo >> {shlex.quote(imports)}\n  sleep 0.5\n'
+                    f'  if [ -e {shlex.quote(steal)} ]; then\n'
+                    f'    t=$({real} --git-dir {repo} rev-parse {own})\n'
+                    '    c=$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t GIT_COMMITTER_NAME=t '
+                    f'GIT_COMMITTER_EMAIL=t {real} --git-dir {repo} commit-tree -p "$t" '
+                    '-m steal "$t^{tree}")\n'
+                    f'    {real} --git-dir {repo} update-ref {own} "$c" "$t"\n'
+                    f'  fi;;\nesac\nexec {real} "$@"\n')
         os.chmod(f"{d}/bin/git", 0o755)
         with Askai(binary, "-c", path,
                    env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as ai:
+            def imported():
+                """The number of runs of git fast-import so far."""
+                try:
+                    with open(imports) as f:
+                        return len(f.read())
+                except FileNotFoundError:
+                    return 0
+
+            def race(*calls, token="alice-1", runs=3):
+                """The results of the notes calls with the arguments @p calls
+                and the token @p token, made at once, in the order of
+                @p calls. Checks that git fast-import ran @p runs times: once
+                for each call, and once more for a write that raced and
+                committed again."""
+                said = [None] * len(calls)
+                start = imported()
+
+                def run(i):
+                    said[i] = call(calls[i], token)
+                threads = [threading.Thread(target=run, args=(i,)) for i in range(len(calls))]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(10)
+                assert imported() - start == runs, (said, imported() - start)
+                return said
+
+            def commit_of(said, pattern):
+                """The commit that @p said names if @p said matches the
+                regular expression @p pattern, whose group c is the commit,
+                or None."""
+                match = re.fullmatch(pattern, said)
+                return match and match["c"]
+
+            def commits(*ids, ref=own):
+                """Whether @p ids are the tip of the notebook @p ref and its
+                first parents, in any order."""
+                return sorted(git("rev-list", "-n", str(len(ids)), ref).decode().split()) == \
+                    sorted(ids)
+            c = "(?P<c>[0-9a-f]{40})"
+            raced = ("!Could not write the note. Another call changed the notebook at the "
+                     "same time. Read the current note and retry.")
+            # Two adds of different files both succeed, also when the first
+            # add makes the directory of both files.
             for k in range(3):
-                said = []
-                adds = [threading.Thread(target=lambda name=name: said.append(call(
-                    {"action": "add", "file": name, "text": "r"})))
-                    for name in (f"race/{k}a.md", f"race/{k}b.md")]
-                for add in adds:
-                    add.start()
-                for add in adds:
-                    add.join(10)
-                retry = ("!Could not write the note. Another call changed the notebook at "
-                         "the same time. Read the current note and retry.")
-                assert len(said) == 2 and retry in said, said
-                added = said[1 - said.index(retry)]
-                assert any(wrote(added, f'Add "race/{k}{x}.md" (1 byte)') for x in "ab"), said
-            said = []
+                names = (f"race/{k}a.md", f"race/{k}b.md")
+                said = race(*({"action": "add", "file": name, "text": "r"} for name in names))
+                ids = [commit_of(r, saved(f'Add "{name}" (1 byte)', c))
+                       for r, name in zip(said, names)]
+                assert all(ids) and commits(*ids), said
+                assert all(git("show", f"{own}:{name}") == b"r" for name in names), said
+            # The first two writes of a new notebook both succeed. The later
+            # one makes its commit on the first commit of the notebook. A
+            # delete of a missing note first writes the record of the new
+            # member, so that no fast-import of the record runs in the race.
+            dave = "refs/heads/person/dave/notes"
+            names = ("d1.md", "d2.md")
+            assert call({"action": "delete", "file": "d1.md"}, "dave-1") == "!" + NO_NOTE
+            assert not git("for-each-ref", dave)
+            said = race(*({"action": "add", "file": name, "text": "d"} for name in names),
+                        token="dave-1")
+            ids = [commit_of(r, saved(f'Add "{name}" (1 byte)', c))
+                   for r, name in zip(said, names)]
+            assert all(ids) and commits(*ids, ref=dave), said
+            assert git("rev-list", "--count", dave) == b"2\n"
+            # Two replaces of one note: the note changed for the later one,
+            # which fails.
             before = git("rev-parse", own).decode().strip()
-            writers = [threading.Thread(target=lambda text=text: said.append(call(
-                {"action": "replace", "file": "plan.md", "text": text})))
-                for text in ("first contender", "second contender")]
-            for writer in writers:
-                writer.start()
-            for writer in writers:
-                writer.join(10)
+            said = race(*({"action": "replace", "file": "plan.md", "text": text}
+                          for text in ("first contender", "second contender")), runs=2)
             text = call({"action": "read", "file": "plan.md"})
             assert text in ("first contender", "second contender"), text
             won = [r for r in said if wrote(r, f'Replace "plan.md" (19 to {len(text)} bytes)')]
-            assert len(said) == 2 and len(won) == 1, said
-            assert any("retry" in result for result in said), said
+            assert len(won) == 1 and raced in said, said
             assert git("rev-parse", f"{own}^").decode().strip() == before
+            # An append writes the note as it read the note, with the text
+            # after it. The later of two appends to one note fails.
+            said = race(*({"action": "append", "file": "plan.md", "text": text}
+                          for text in ("x", "y")), runs=2)
+            note = call({"action": "read", "file": "plan.md"})
+            assert note in (f"{text}\nx", f"{text}\ny") and raced in said, (note, said)
+            assert wrote(said[1 - said.index(raced)],
+                         f'Append "plan.md" ({len(text)} to {len(note)} bytes)'), said
+            # An append and a copy of other notes both succeed. So do a
+            # restore and a delete.
+            book = git("rev-parse", agent).decode().strip()
+            said = race({"action": "append", "file": "plan.md", "text": "z"},
+                        {"action": "copy", "notebook": "writers", "file": "found.md",
+                         "as": "race/found.md"})
+            ids = [commit_of(said[0], saved(f'Append "plan.md" ({len(note)} to '
+                                            f'{len(note) + 2} bytes)', c)),
+                   commit_of(said[1], copied("found.md", "writers", book, "race/found.md", c))]
+            assert all(ids) and commits(*ids), said
+            assert call({"action": "read", "file": "plan.md"}) == f"{note}\nz"
+            assert call({"action": "read", "file": "race/found.md"}) == "found\n"
+            said = race({"action": "restore", "file": "legacy.c", "revision": five},
+                        {"action": "delete", "file": "race/0a.md"})
+            ids = [commit_of(said[0], saved(f'Restore "legacy.c" from {five} (0 to 5 bytes)', c)),
+                   commit_of(said[1], saved('Delete "race/0a.md" (1 to 0 bytes)', c))]
+            assert all(ids) and commits(*ids), said
+            assert git("show", f"{own}:legacy.c") == b"\0\xffnew"
+            assert "race/0a.md" not in call({"action": "list"})
+            # A note where the other write makes a directory, or a directory
+            # where the other write makes a note, is not the same: git would
+            # replace the one with the other. One of the two adds fails.
+            before = git("rev-parse", own).decode().strip()
+            said = race({"action": "add", "file": "pair", "text": "p"},
+                        {"action": "add", "file": "pair/x.md", "text": "p"}, runs=2)
+            assert raced in said and git("rev-parse", f"{own}^").decode().strip() == before, said
+            files = git("ls-tree", "-r", "--name-only", own).decode().split()
+            assert ("pair" in files) != ("pair/x.md" in files), files
+            # After 3 tries, the write fails, and nothing is written.
+            open(steal, "w").close()
+            before, start = git("rev-parse", own).decode().strip(), imported()
+            assert call({"action": "add", "file": "stolen.md", "text": "s"}) == raced
+            os.unlink(steal)
+            assert imported() - start == 3
+            assert git("log", "--format=%s", f"{before}..{own}") == b"steal\n" * 3
+            assert "stolen.md" not in call({"action": "list"})
+            said = call({"action": "add", "file": "stolen.md", "text": "s"})
+            assert wrote(said, 'Add "stolen.md" (1 byte)'), said
             assert not any("could not write" in line for line in ai.log), ai.log
             # An add whose client goes while git writes still adds the note.
             sock = socket.create_connection(("127.0.0.1", ai.port), 10)
@@ -12266,28 +12377,47 @@ def check_notes_history(binary, up):
                                 notebook="alice").endswith(
                         f'  commit {tip(upstream)}  Restore "plan.md" from {first} (9 to 9 '
                         f"bytes), asked by {ME}\n")
-                    # A writer changing the notebook after the snapshot wins;
-                    # restoration must request a retry, not replace its update.
-                    results = []
-                    with open(armed, "w"):
-                        pass
-                    restoring = threading.Thread(target=lambda: results.append(call(
-                        alice, action="restore", file="plan.md", revision=first)))
-                    restoring.start()
-                    try:
-                        wait_for(lambda: os.path.exists(blocked), seconds=5)
-                        raw = b"concurrent writer's note\n"
-                        git("fast-import", "--quiet", "--date-format=now", data=(
-                            f"commit {own}\ncommitter test <t@t> now\ndata 0\n"
-                            f"from {before}\nM 100644 inline plan.md\ndata {len(raw)}\n"
-                            ).encode() + raw + b"\n")
-                        updated = tip()
-                    finally:
-                        os.unlink(armed)
-                        restoring.join(10)
-                    assert len(results) == 1 and results[0].startswith("!") and \
-                        "retry" in results[0], results
+                    # A writer that changes the notebook while git reads the
+                    # revision races the restore. If the writer changed the
+                    # note, the restore fails and asks to read the note again.
+                    # If the writer changed another note, the restore makes
+                    # its commit on the commit of the writer.
+                    def restore_during(name, raw):
+                        """The result of a restore of plan.md at first while
+                        a writer commits @p raw as the note @p name, and the
+                        commit of the writer."""
+                        results = []
+                        with open(armed, "w"):
+                            pass
+                        restoring = threading.Thread(target=lambda: results.append(call(
+                            alice, action="restore", file="plan.md", revision=first)))
+                        restoring.start()
+                        try:
+                            wait_for(lambda: os.path.exists(blocked), seconds=5)
+                            os.unlink(blocked)
+                            git("fast-import", "--quiet", "--date-format=now", data=(
+                                f"commit {own}\ncommitter test <t@t> now\ndata 0\n"
+                                f"from {tip()}\nM 100644 inline {name}\ndata {len(raw)}\n"
+                                ).encode() + raw + b"\n")
+                            updated = tip()
+                        finally:
+                            os.unlink(armed)
+                            restoring.join(10)
+                        assert len(results) == 1, results
+                        return results[0], updated
+
+                    raw = b"concurrent writer's note\n"
+                    said, updated = restore_during("plan.md", raw)
+                    assert said == "!Could not write the note. Another call changed the " \
+                        "notebook at the same time. Read the current note and retry.", said
                     assert tip() == updated and git("show", f"{own}:plan.md") == raw
+                    said, updated = restore_during("other.md", b"other\n")
+                    assert wrote(said, f'Restore "plan.md" from {first} ({len(raw)} to 9 '
+                                 f"bytes)") and said.endswith(
+                                     f" The previous version is in commit {updated}."), said
+                    assert tip(f"{own}^") == updated
+                    assert git("show", f"{own}:plan.md") == b"old plan\n"
+                    assert git("show", f"{own}:other.md") == b"other\n"
     print("notes history: revision IDs, historical reads and diffs, byte-exact "
           "restoration without rewind, deleted notes, peer access and revision "
           "confinement, concurrent writes, SHA-1 and SHA-256: PASS")

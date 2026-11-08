@@ -882,11 +882,15 @@ removed, 2 added.`, unless Git sees the note as binary. A `replace` or
 `restore` that would leave the note's bytes as they are makes no commit; its
 result says `Unchanged` and names the notebook's newest commit. `add`
 refuses an existing name, and `replace`, `append` and `delete` a missing
-one. Concurrent branch updates fail rather than overwrite another writer's
-changes. When a turn writes text whose last lines are askai's own notices
-from tool results, such as `[askai: notebook ...]` or the context notices,
-askai leaves those lines out and says so in the result. Notices inside the
-text, and text from clients, stay as they are. askai adds a line feed to a
+one. If another call changes the notebook during a write, askai reads the
+notebook again. If the note and each directory in its name are as the write
+found them, askai makes the same commit on top of the other change, with at
+most 3 tries in all. Otherwise the write fails, and its result says to read
+the current note and retry. No write overwrites another writer's changes.
+When a turn writes text whose last lines are askai's own notices from tool
+results, such as `[askai: notebook ...]` or the context notices, askai
+leaves those lines out and says so in the result. Notices inside the text,
+and text from clients, stay as they are. askai adds a line feed to a
 turn's text that does not end with one. askai refuses a turn's text that
 contains `</function>` and later `</tool_call>` or `<tool_call>`, and writes
 nothing. The text argument of such a call ended early, and the next tool
@@ -946,8 +950,10 @@ several files added by one commit. `list` reflects the current tree;
 - `restore` requires `file` and `revision`. It copies that version's exact
   bytes into a new commit in the caller's notebook, recreating a deleted
   note if necessary, and makes no commit if the note already has those
-  bytes. It preserves intervening history and other files, and refuses
-  concurrent notebook changes. With `as`, it writes the version as a new
+  bytes. It preserves intervening history and other files. If another
+  call changes the notebook during the restore, askai makes the
+  restore on the new tip as it makes the other writes, and the restore
+  fails if the note changed. With `as`, it writes the version as a new
   note of that name, and its commit message names the source as
   `COMMIT:FILE`. To recover only part of an old note, use `read` with
   `revision`, then `replace` with the combined text.

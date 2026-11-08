@@ -8,10 +8,12 @@
  * that changes a note adds a commit whose message says what the write did.
  * Earlier contents stay in the history of the notebook. A write that
  * leaves the bytes of a note as they are adds no commit. A repository can
- * have worktrees, and git resolves their packed refs. Concurrent changes
- * to one branch fail rather than overwrite another writer. The review
- * record of a thread is a commit on refs/review/AGENT/WHO/THREAD, outside
- * the notebooks. The repository is a store of src/store.h.
+ * have worktrees, and git resolves their packed refs. If another writer
+ * changes the branch during a write, the write is made again on the new
+ * tip if its note is the same there, and fails otherwise. No write
+ * overwrites the change of another writer. The review record of a thread
+ * is a commit on refs/review/AGENT/WHO/THREAD, outside the notebooks. The
+ * repository is a store of src/store.h.
  */
 #ifndef ASKAI_SRC_NOTES_H_
 #define ASKAI_SRC_NOTES_H_
