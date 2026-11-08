@@ -50,31 +50,18 @@ static void cli_input_service(struct cli_loop *loop)
 
 static int cli_input_record(int fd, char const *kind, struct cstr_view text)
 {
-	static char const digits[] = "0123456789abcdef";
 	dstr_auto record = dstr(nullptr);
 	if (!dstr_cat(&record, kind) || !dstr_reserve(&record, 2 * text.len + 1))
 		return ENOMEM;
 	for (size_t i = 0; i < text.len; ++i) {
-		unsigned char byte = (unsigned char)text.data[i];
-		char pair[] = {digits[byte >> 4], digits[byte & 15]};
+		char pair[2];
+		util_hex(pair, text.data + i, 1);
 		if (!dstr_cat_n(&record, pair, sizeof pair))
 			return ENOMEM;
 	}
 	if (!dstr_cat(&record, "\n"))
 		return ENOMEM;
-	struct cstr_view remaining = cstr_view_dstr(&record);
-	while (remaining.len) {
-		ssize_t count = write(fd, remaining.data, remaining.len);
-		if (count < 0) {
-			if (errno == EINTR)
-				continue;
-			return errno;
-		}
-		if (!count)
-			return EIO;
-		remaining = cstr_view_slice(remaining, (size_t)count, SIZE_MAX);
-	}
-	return 0;
+	return util_write_all(fd, dstr_get(&record), dstr_len(&record));
 }
 
 struct cli_input {
