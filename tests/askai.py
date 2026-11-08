@@ -8634,12 +8634,17 @@ def check_man(binary, up):
                     result = man_call(ai, **arguments)
                     assert result.get("isError") and text_of(result) == text, result
             assert runs("missing") == (4, 0) and runs("broken") == (2, 2)
-            # A list longer than the reason's room is cut.
+            # A list of pages longer than the room of the reason ends with
+            # "and more pages." after the last whole page that fits.
             result = man_call(ai, name="lots")
-            assert result.get("isError") and text_of(result).startswith(
-                "No manual entry for lots. Pages whose names begin with lots: lots_1(3), "
-                "lots_2(3), ") and text_of(result).endswith("...") and \
-                len(text_of(result)) == 1019, result
+            text = text_of(result)
+            cut = re.fullmatch(r"No manual entry for lots\. Pages whose names begin with "
+                               r"lots:((?: lots_\d+\(3\),)+) and more pages\.", text)
+            assert result.get("isError") and cut, result
+            pages = cut[1].split()
+            assert pages == [f"lots_{k}(3)," for k in range(1, len(pages) + 1)], pages
+            assert len(text) <= 1019 < len(text) + len(f" lots_{len(pages) + 1}(3),"), \
+                len(text)
             assert lines("searches") == ["-k -- ^missing"] * 4 + ["-k -- ^absent"] * 2 + \
                 ["-k -- ^c\\+\\+x"] * 2 + ["-k -- ^a\\.b"] * 2 + ["-k -- ^lots"], \
                 lines("searches")
@@ -8705,11 +8710,12 @@ def check_man(binary, up):
             result = man_call(ai, name="endless")
             assert text_of(result) == "y\n" * (2 << 20) + note, len(text_of(result))
             assert text_of(man_call(ai, name="bytes")) == "a?b?(c€"
-            # A list of headings that fills its room ends in "...".
+            # A list of headings longer than its room ends with "and more
+            # headings." after the last whole heading that fits.
             result = man_call(ai, name="endless", heading="z")
             assert result.get("isError") and text_of(result) == \
                 f"No line of the page begins with z {AFTER} Its headings: " + \
-                ", ".join(["y"] * 680) + ",...", result
+                ", ".join(["y"] * 674) + ", and more headings.", result
             assert runs("big") == (1, 1), runs("big")
             # A heading's scan of a page of one 4 MiB line takes steps. The
             # note after the cut is a line of the page.

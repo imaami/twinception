@@ -411,7 +411,8 @@ With an optional `heading`, such as `SYNOPSIS`, `EINVAL` or `-Wall`, the
 output is the part of the page under the least indented line that begins
 with the heading followed by a space, a comma, `=`, `[` or the line's end,
 and `offset` counts within the part; a page without such a line is a tool
-error that lists the page's headings.
+error that lists the page's headings, up to some 2 KiB. A longer list ends
+with "and more headings." after the last heading that fits.
 
 Without a section, a name with pages in two or more sections that are a
 single digit, such as `open` in `1` and `2`, is a tool error that lists the
@@ -433,7 +434,8 @@ A missing page is a tool error, "No manual entry for NAME in section S.", and
 so are `man`'s other failures and a page that takes more than 10 s to find or
 render; none of those is kept. For a missing page, `askai` also runs
 `man -k -- '^NAME'` and names the pages whose names begin with the name, up
-to some 1 KiB. At most 16 `man` and `git` processes run at
+to some 1 KiB. A longer list ends with "and more pages." after the last page
+that fits. At most 16 `man` and `git` processes run at
 once; a call past those is answered as busy. A call that goes, as when its client closes
 the connection, leaves the page to be rendered and kept; stopping `askai`
 kills `man` and the processes it started.

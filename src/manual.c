@@ -119,6 +119,9 @@ static_assert(TOOL_TEXT_MAX == 4U << 20, "the note says 4 MiB");
 /* The reason of a fetch that ran out of memory. */
 static struct cstr_view const manual_oom = CSTR_VIEW_INIT("Out of memory.");
 
+/* What ends a list of pages that does not fit (manual_list_add()). */
+static struct cstr_view const manual_more_pages = CSTR_VIEW_INIT(" and more pages.");
+
 struct manual_fetch;
 
 /*
@@ -443,22 +446,49 @@ manual_fetch_rendered (struct child *c)
 	manual_fetch_copy(f->ml->loop, &f->step);
 }
 
-/* Ends the list of @p *len bytes at @p data, in which each item ends in a
- * comma: the comma of the last item becomes a period. A list that fills
- * the @p size bytes may have lost items, and its end becomes "..." instead.
+/* Adds the item that @p fmt formats to the list of @p *len bytes in the
+ * @p size bytes at @p data. Each item ends in a comma. An item goes in only
+ * whole, with room for @p more after it. The first item that does not fit
+ * ends the list with @p more, such as " and more pages.", after the comma
+ * of the last item. Later items are then left out.
  */
+[[gnu::format(printf, 5, 6)]]
 static void
-manual_list_end (uint32_t *len,
-                 char     *data,
-                 size_t    size)
+manual_list_add (uint32_t         *len,
+                 char             *data,
+                 size_t            size,
+                 struct cstr_view  more,
+                 char const       *fmt,
+                 ...)
 {
-	if (*len + 1 < size) {
-		data[*len - 1] = '.';
+	uint32_t const at = *len;
+	if (at && data[at - 1] == '.')
+		return;
+	size_t const room = size - at > more.len ? size - at - more.len : 0;
+	va_list ap;
+	va_start(ap, fmt);
+	size_t const n = util_vformat(data + at, room, fmt, ap);
+	va_end(ap);
+	if (n + 1 < room) {
+		*len = at + (uint32_t)n;
 		return;
 	}
-	*len = (uint32_t)util_clip(data, *len, *len - 3);
-	memcpy(data + *len, "...", 4);
-	*len += 3;
+	if (at + more.len < size) {
+		memcpy(data + at, more.data, more.len);
+		*len = at + (uint32_t)more.len;
+	}
+	data[*len] = '\0';
+}
+
+/* Ends the list of @p len bytes at @p data, unless manual_list_add() has
+ * ended it: the comma of the last item becomes a period.
+ */
+static void
+manual_list_end (uint32_t  len,
+                 char     *data)
+{
+	if (len && data[len - 1] == ',')
+		data[len - 1] = '.';
 }
 
 /* Fails the fetch of @p c, a man -k run, with the miss and the pages whose
@@ -484,10 +514,11 @@ manual_fetch_searched (struct child *c)
 	for (struct cstr_view line, page; cstr_view_cut(&rest, '\n', &line); ) {
 		if (cstr_view_cut(&line, ' ', &page) && cstr_view_starts_case(page, name) &&
 		    cstr_view_starts(line, CSTR_VIEW("(")) && cstr_view_cut(&line, ')', &line))
-			(void)util_text_printf(&why, " %.*s%.*s),", (int)page.len, page.data,
-			                       (int)line.len, line.data);
+			manual_list_add(&why.len, why.data, sizeof why.data, manual_more_pages,
+			                " %.*s%.*s),", (int)page.len, page.data, (int)line.len,
+			                line.data);
 	}
-	manual_list_end(&why.len, why.data, sizeof why.data);
+	manual_list_end(why.len, why.data);
 	manual_fetch_fail(f, why.len > lead ? util_text_view(&why) : miss);
 }
 
@@ -558,11 +589,12 @@ manual_fetch_found (struct child *c)
 		if (s.len == 1)
 			digits |= 1u << (*s.data - '0');
 		if (s.len)
-			(void)util_text_printf(&several, " %s(%.*s),", f->alias->key, (int)s.len,
-			                       s.data);
+			manual_list_add(&several.len, several.data, sizeof several.data,
+			                manual_more_pages, " %s(%.*s),", f->alias->key,
+			                (int)s.len, s.data);
 	}
 	if (digits & (digits - 1)) {
-		manual_list_end(&several.len, several.data, sizeof several.data);
+		manual_list_end(several.len, several.data);
 		(void)util_text_printf(&several, " Give section.");
 		manual_fetch_fail(f, util_text_view(&several));
 		return;
@@ -719,7 +751,9 @@ manual_call_line (struct manual_call *call,
 	}
 	if (depth <= HEAD_INDENT && rest.len <= MANUAL_HEADING &&
 	    !memmem(rest.data, rest.len, "  ", 2))
-		(void)util_text_printf(&call->heads, " %.*s,", (int)rest.len, rest.data);
+		manual_list_add(&call->heads.len, call->heads.data, sizeof call->heads.data,
+		                CSTR_VIEW(" and more headings."), " %.*s,", (int)rest.len,
+		                rest.data);
 	return !call->depth;
 }
 
@@ -748,7 +782,7 @@ manual_step (struct mcp_slot *slot)
 		mcp_slot_lend(slot, cstr_view_slice(text, call->from, to - call->from));
 		mcp_slot_finish(slot, 0);
 	} else if (call->heads.len) {
-		manual_list_end(&call->heads.len, call->heads.data, sizeof call->heads.data);
+		manual_list_end(call->heads.len, call->heads.data);
 		mcp_slot_tellf(slot, TOOL_FAILED, "No line of the page begins with %.*s "
 		               "followed by a space, a comma, =, [ or the line's end. Its "
 		               "headings:%s", (int)heading.len, heading.data, call->heads.data);
