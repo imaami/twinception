@@ -662,10 +662,8 @@ home_end (struct home      *home,
           enum job_status   status,
           _Atomic uint64_t *count)
 {
-	bool durable = job->asks & JOB_DURABLE;
-	bool explicit_cancel = job->recovery.flags & RECOVERY_CANCEL;
 	if ((status == JOB_CANCELLED || status == JOB_FAILED) &&
-	    (!durable || explicit_cancel))
+	    (!(job->asks & JOB_DURABLE) || job->recovery.flags & RECOVERY_CANCEL))
 		home_native_cancel(home, job);
 	if (!list_is_empty(&job->due))
 		home_retire(home, job);
