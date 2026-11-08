@@ -649,16 +649,14 @@ notes_file_same (struct notes_file const *file,
 	/* The id of a blob is the digest of "blob SIZE", a NUL and the bytes:
 	 * SHA-1 for 40 digits, SHA-256 for 64. */
 	char head[sizeof "blob " + UTIL_DECIMAL];
-	int h = snprintf(head, sizeof head, "blob %zu", data.len);
-	if (h < 0 || h >= (int)sizeof head)
-		return EINVAL;
+	size_t const h = util_format(head, sizeof head, "blob %zu", data.len);
 	unsigned char digest[EVP_MAX_MD_SIZE];
 	unsigned n = 0;
 	EVP_MD_CTX *ctx = EVP_MD_CTX_new();
 	bool ok = ctx &&
 	          EVP_DigestInit_ex(ctx, oid_len(&file->id) == OID_SHA1 ? EVP_sha1() : EVP_sha256(),
 	                            nullptr) == 1 &&
-	          EVP_DigestUpdate(ctx, head, (size_t)h + 1) == 1 &&
+	          EVP_DigestUpdate(ctx, head, h + 1) == 1 &&
 	          EVP_DigestUpdate(ctx, data.ptr, data.len) == 1 &&
 	          EVP_DigestFinal_ex(ctx, digest, &n) == 1 && 2 * n == oid_len(&file->id);
 	EVP_MD_CTX_free(ctx);
@@ -708,10 +706,7 @@ notes_add_head (struct buf        *in,
 	char *const head = (char *)s.ptr;
 	char *p = notes_quote(mempcpy(head, m, sizeof m - 1), name);
 	size_t const room = s.len - (size_t)(p - head);
-	int n = snprintf(p, room, "\ndata %zu\n", len);
-	if (n < 0 || (size_t)n >= room)
-		return EINVAL;
-	size_t h = (size_t)(p - head) + (size_t)n;
+	size_t const h = (size_t)(p - head) + util_format(p, room, "\ndata %zu\n", len);
 	head[h + len] = '\n';
 	/* The quoted name runs from the end of m to p. */
 	size_t at = buf_peek(in).len;
