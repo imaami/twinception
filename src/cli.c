@@ -641,10 +641,9 @@ cli_history_open (struct cli       *cli,
 	size_t turns = json_object_array_length(cli->history);
 	if (e || !(options->flags & CLI_TTY) || !turns)
 		return e;
-	dstr_auto message = dstr(nullptr);
-	if (!dstr_printf(&message, "Restored %zu completed turns. /history displays them; /clear starts over.", turns))
-		return ENOMEM;
-	return cli_ui_info(cli->console, cstr_view_dstr(&message));
+	char text[96];
+	return cli_ui_info(cli->console, util_format_view(text, sizeof text, "Restored %zu completed turns. "
+	                                                  "/history displays them; /clear starts over.", turns));
 }
 
 static int
@@ -722,17 +721,17 @@ cli_tools (struct cli       *cli,
 		return e ? e : cli_ui_message(cli->console, wire);
 	}
 
-	dstr_auto line = dstr(nullptr);
 	for (size_t i = 0, count = autocomplete_tool_count(cli->client.catalog); i < count; ++i) {
 		struct autocomplete_tool const *entry = autocomplete_tool_at(cli->client.catalog, i);
 		struct cstr_view summary = entry->description;
 		summary.len = jb_utf8(summary.data, summary.len < 160 ? summary.len : 160);
 		(void)cstr_view_cut(&summary, '\n', &summary);
-		dstr_clear(&line);
-		if (cstr_view_cat(entry->name, &line) ||
-		    (summary.len && (!dstr_cat(&line, "  ") || cstr_view_cat(summary, &line))))
-			return ENOMEM;
-		int e = cli_ui_message(cli->console, cstr_view_dstr(&line));
+		struct cli_console_span const spans[] = {
+			{entry->name, CLI_STYLE_RESET},
+			{summary.len ? CSTR_VIEW("  ") : (struct cstr_view){}, CLI_STYLE_RESET},
+			{summary, CLI_STYLE_RESET}, {CSTR_VIEW("\n"), CLI_STYLE_RESET},
+		};
+		int e = cli_console_print(cli->console, spans, array_size(spans));
 		if (e)
 			return e;
 	}
@@ -780,18 +779,16 @@ cli_manual_call (struct cli       *cli,
 static int
 cli_history_show (struct cli *cli)
 {
-	dstr_auto label = dstr(nullptr);
-	if (!dstr_printf(&label, "%s:", dstr_get(&cli->client.tool)))
-		return ENOMEM;
+	struct cstr_view const tool = cstr_view_dstr(&cli->client.tool);
 	for (size_t i = 0, count = json_object_array_length(cli->history); i < count; ++i) {
 		struct json_object *turn = json_object_array_get_idx(cli->history, i);
-		int e = cli_ui_info(cli->console, CSTR_VIEW("you:"));
-		if (!e)
-			e = cli_ui_message(cli->console, jb_view(jb_get(turn, "prompt")));
-		if (!e)
-			e = cli_ui_info(cli->console, cstr_view_dstr(&label));
-		if (!e)
-			e = cli_ui_message(cli->console, jb_view(jb_get(turn, "answer")));
+		struct cli_console_span const spans[] = {
+			{CSTR_VIEW("you:\n"), CLI_STYLE_INFO},
+			{jb_view(jb_get(turn, "prompt")), CLI_STYLE_RESET}, {CSTR_VIEW("\n"), CLI_STYLE_RESET},
+			{tool, CLI_STYLE_INFO}, {CSTR_VIEW(":\n"), CLI_STYLE_INFO},
+			{jb_view(jb_get(turn, "answer")), CLI_STYLE_RESET}, {CSTR_VIEW("\n"), CLI_STYLE_RESET},
+		};
+		int e = cli_console_print(cli->console, spans, array_size(spans));
 		if (e)
 			return e;
 	}
@@ -1242,11 +1239,12 @@ cli_run (struct cli_options const *options,
 	if (!e)
 		cli_console_set_completion(cli->console, cli_complete, cli);
 	if (!e && (options->flags & CLI_TTY)) {
-		dstr_auto message = dstr(nullptr);
-		if (!dstr_printf(&message, "Connected to %s. /help lists commands; Ctrl-C cancels an answer.", dstr_get(&cli->client.tool)))
-			e = ENOMEM;
-		else
-			e = cli_ui_info(cli->console, cstr_view_dstr(&message));
+		struct cli_console_span const spans[] = {
+			{CSTR_VIEW("Connected to "), CLI_STYLE_INFO},
+			{cstr_view_dstr(&cli->client.tool), CLI_STYLE_INFO},
+			{CSTR_VIEW(". /help lists commands; Ctrl-C cancels an answer.\n"), CLI_STYLE_INFO},
+		};
+		e = cli_console_print(cli->console, spans, array_size(spans));
 	}
 	if (!e)
 		e = cli_history_open(cli, error);
