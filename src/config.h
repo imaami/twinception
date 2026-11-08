@@ -166,6 +166,16 @@ config_log (struct config const *cfg);
 extern void
 config_log_policy (struct config const *cfg);
 
+/** Formats @p fmt and its arguments into a new string, as printf() does,
+ *  and sets @p *str to the string. If out of memory, sets @p *str to
+ *  nullptr. Returns 0 or ENOMEM.
+ */
+[[gnu::format(printf, 2, 3)]]
+extern int
+config_aprintf (char       **str,
+                char const  *fmt,
+                ...);
+
 extern void
 config_fini (struct config *cfg);
 

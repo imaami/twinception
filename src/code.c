@@ -2,12 +2,9 @@
  *
  * The code tool.
  */
-#define _GNU_SOURCE /* asprintf() */
 #include <errno.h>
 #include <json-c/json.h>
 #include <libgen.h>
-#include <stdarg.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -54,45 +51,26 @@ struct code_call {
 	struct dstr    words;
 };
 
-/* Sets @p *str to a new string that @p fmt and its arguments format, as
- * printf() does, or to nullptr if out of memory. Returns 0 or ENOMEM.
- */
-[[gnu::format(printf, 2, 3)]]
-static int
-code_aprintf (char       **str,
-              char const  *fmt,
-              ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-	int n = vasprintf(str, fmt, ap);
-	va_end(ap);
-	if (n >= 0)
-		return 0;
-	*str = nullptr;
-	return ENOMEM;
-}
-
 int
 code_check (struct config *cfg)
 {
 	char *exe = realpath("/proc/self/exe", nullptr);
 	if (!exe)
-		return code_aprintf(&cfg->code_check, "askai's executable is not found: %s",
-		                    strerror(errno));
+		return config_aprintf(&cfg->code_check, "askai's executable is not found: %s",
+		                      strerror(errno));
 	char const *xdg = getenv("XDG_CACHE_HOME");
 	char const *home = getenv("HOME");
 	char const *top = xdg && *xdg == '/' ? xdg : home && *home == '/' ? home : nullptr;
-	int e = code_aprintf(&cfg->code_helper, "%s/askai-code", dirname(exe));
+	int e = config_aprintf(&cfg->code_helper, "%s/askai-code", dirname(exe));
 	free(exe);
 	exe = nullptr;
 	if (!e && !top)
-		return code_aprintf(&cfg->code_check, "no cache directory: XDG_CACHE_HOME and HOME "
-		                    "are not absolute");
+		return config_aprintf(&cfg->code_check, "no cache directory: XDG_CACHE_HOME and HOME "
+		                      "are not absolute");
 	char *cache = nullptr;
-	e = e ? e : code_aprintf(&cfg->code_cache, "%s%s/askai/code", top, top == xdg ? ""
-	                                                                              : "/.cache");
-	e = e ? e : code_aprintf(&cache, "cache=%s", cfg->code_cache);
+	e = e ? e : config_aprintf(&cfg->code_cache, "%s%s/askai/code", top,
+	                           top == xdg ? "" : "/.cache");
+	e = e ? e : config_aprintf(&cache, "cache=%s", cfg->code_cache);
 	if (e)
 		return e;
 	char const *argv[] = {
@@ -114,20 +92,20 @@ code_check (struct config *cfg)
 	free(cache);
 	cache = nullptr;
 	if (e == ENOENT)
-		return code_aprintf(&cfg->code_check, "no askai-code beside askai");
+		return config_aprintf(&cfg->code_check, "no askai-code beside askai");
 	if (e)
-		return code_aprintf(&cfg->code_check, "askai-code --check failed: %s", strerror(e));
+		return config_aprintf(&cfg->code_check, "askai-code --check failed: %s", strerror(e));
 	/* After a successful check the output is the version of libclang and
 	 * the confinement, one line each. Otherwise its first line is the
 	 * reason why the tool is off. */
 	char const *nl = memchr(out, '\n', len);
 	size_t const first = nl ? (size_t)(nl - out) : len;
 	if (status || first + 1 >= len)
-		return first ? code_aprintf(&cfg->code_check, "%.*s", (int)first, out)
-		             : code_aprintf(&cfg->code_check, "askai-code --check exited with "
-		                            "status %d", status);
+		return first ? config_aprintf(&cfg->code_check, "%.*s", (int)first, out)
+		             : config_aprintf(&cfg->code_check, "askai-code --check exited with "
+		                              "status %d", status);
 	cfg->flags |= CFG_CODE;
-	return code_aprintf(&cfg->code_check, "%.*s", (int)(len - (out[len - 1] == '\n')), out);
+	return config_aprintf(&cfg->code_check, "%.*s", (int)(len - (out[len - 1] == '\n')), out);
 }
 
 void

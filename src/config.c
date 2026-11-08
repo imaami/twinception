@@ -721,19 +721,19 @@ config_push (char const **list,
 	list[*n] = nullptr;
 }
 
-/* A string of its own, printed as @p fmt says; nullptr if out of memory. */
-[[gnu::format(printf, 1, 2)]]
-static char *
-config_aprintf (char const *fmt,
+int
+config_aprintf (char       **str,
+                char const  *fmt,
                 ...)
 {
-	char *str;
 	va_list ap;
 	va_start(ap, fmt);
-	if (vasprintf(&str, fmt, ap) < 0)
-		str = nullptr;
+	int n = vasprintf(str, fmt, ap);
 	va_end(ap);
-	return str;
+	if (n >= 0)
+		return 0;
+	*str = nullptr;
+	return ENOMEM;
 }
 
 /* The index of @p name among the @p n @p names, which begin at 1; 0 if it
@@ -1728,21 +1728,21 @@ config_session (struct config *cfg)
 			--n;
 		if (n > INT_MAX)
 			return config_complain(cfg, nullptr, "--notes: path too long");
-		cfg->transcripts_owned = config_aprintf("%.*s.transcripts.git", (int)n,
-		                                        cfg->notes);
+		if (config_aprintf(&cfg->transcripts_owned, "%.*s.transcripts.git", (int)n,
+		                   cfg->notes))
+			return config_oom(cfg);
 	} else if (cfg->ep.background) {
 		char const *base;
 		char const *rest;
 		if (util_state_path(&base, &rest))
 			return config_complain(cfg, nullptr, "--background needs --transcripts, "
 			                       "an absolute XDG_STATE_HOME or an absolute HOME");
-		cfg->transcripts_owned = config_aprintf("%s%s/%s/transcripts.git", base, rest,
-		                                        cfg->participant);
+		if (config_aprintf(&cfg->transcripts_owned, "%s%s/%s/transcripts.git", base,
+		                   rest, cfg->participant))
+			return config_oom(cfg);
 	} else {
 		return 0;
 	}
-	if (!cfg->transcripts_owned)
-		return config_oom(cfg);
 	cfg->transcripts = cfg->transcripts_owned;
 	return 0;
 }
@@ -1810,9 +1810,8 @@ config_url_own (struct config *cfg)
 	ep->url = providers[ep->provider].url[ep->api];
 	if (ep->api != AI_GENERATE)
 		return 0;
-	cfg->url = config_aprintf("%s%s:streamGenerateContent?alt=sse", ep->url,
-	                          ep->model);
-	if (!cfg->url)
+	if (config_aprintf(&cfg->url, "%s%s:streamGenerateContent?alt=sse", ep->url,
+	                   ep->model))
 		return config_oom(cfg);
 	ep->url = cfg->url;
 	return 0;
@@ -1852,15 +1851,13 @@ config_url_generate (struct config *cfg)
 	char const *alt = config_url_alt(query);
 	if (alt) {
 		char const *value = alt + sizeof "?alt=" - 1;
-		cfg->url = config_aprintf("%.*s%s%.*salt=sse%s", (int)path, url, stream,
-		                          (int)(alt + 1 - query), query,
-		                          value + strcspn(value, "&"));
-	} else {
-		cfg->url = config_aprintf("%.*s%s%s%salt=sse", (int)path, url, stream,
-		                          query, *query ? "&" : "?");
-	}
-	if (!cfg->url)
+		if (config_aprintf(&cfg->url, "%.*s%s%.*salt=sse%s", (int)path, url, stream,
+		                   (int)(alt + 1 - query), query, value + strcspn(value, "&")))
+			return config_oom(cfg);
+	} else if (config_aprintf(&cfg->url, "%.*s%s%s%salt=sse", (int)path, url, stream,
+	                          query, *query ? "&" : "?")) {
 		return config_oom(cfg);
+	}
 	cfg->ep.url = cfg->url;
 	return 0;
 }
@@ -1874,8 +1871,7 @@ config_headers (struct config *cfg,
                 char const    *key)
 {
 	if (key) {
-		cfg->auth = config_aprintf("%s%s", auths[cfg->ep.api], key);
-		if (!cfg->auth)
+		if (config_aprintf(&cfg->auth, "%s%s", auths[cfg->ep.api], key))
 			return config_oom(cfg);
 		config_push(cfg->headers, &cfg->n_headers, cfg->auth);
 	}
@@ -2289,20 +2285,17 @@ config_description (struct config *cfg)
 		who = "the AI model ";
 		model = cfg->ep.model;
 	}
-	cfg->description = config_aprintf("Ask %s%s a question or give it a task, and get "
-	                                  "its answer. It cannot see this conversation, your "
-	                                  "files or your tools, so write a complete, "
-	                                  "self-contained prompt.%s%s Use it for a second "
-	                                  "opinion, for hard problems, or for knowledge you "
-	                                  "lack.", who, model,
-	                                  lent ? " It may use some of this server's tools "
-	                                         "itself, and its answer lists the calls it "
-	                                         "made." : "",
-	                                  lent & notes
-	                                  ? " It keeps notes in the shared session repository. "
-	                                    "Each call loads its notes and can read the other "
-	                                    "participants' notes." : "");
-	if (!cfg->description)
+	if (config_aprintf(&cfg->description, "Ask %s%s a question or give it a task, and "
+	                   "get its answer. It cannot see this conversation, your files or "
+	                   "your tools, so write a complete, self-contained prompt.%s%s Use "
+	                   "it for a second opinion, for hard problems, or for knowledge "
+	                   "you lack.", who, model,
+	                   lent ? " It may use some of this server's tools itself, and its "
+	                          "answer lists the calls it made." : "",
+	                   lent & notes
+	                   ? " It keeps notes in the shared session repository. Each call "
+	                     "loads its notes and can read the other participants' notes."
+	                   : ""))
 		return config_oom(cfg);
 	cfg->tool.description = cfg->description;
 	return 0;
