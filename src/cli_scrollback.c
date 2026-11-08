@@ -72,7 +72,7 @@ cli_scrollback_add_line (struct cli_scrollback *scrollback)
 	struct cli_scrollback_line *line = malloc(sizeof *line);
 	if (!line)
 		return ENOMEM;
-	*line = (struct cli_scrollback_line){.text = dstr(nullptr)};
+	*line = (struct cli_scrollback_line){.hook = list(&line->hook), .text = dstr(nullptr)};
 	list_append(&scrollback->lines, &line->hook);
 	tally_add(&scrollback->used, 0);
 	return 0;
