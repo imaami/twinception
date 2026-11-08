@@ -3105,9 +3105,7 @@ httpd_home_start (struct httpd_home *home,
 			return e;
 	}
 	int e = httpd_home_spare(home);
-	if (e)
-		return e;
-	return loop_timer_set(home->loop, &home->tick, home->loop->now + TICK_S * NS);
+	return e ? e : loop_timer_set(home->loop, &home->tick, home->loop->now + TICK_S * NS);
 }
 
 /* Say where clients find the endpoint of @p l; warn if clients that show no
