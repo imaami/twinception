@@ -905,18 +905,23 @@ web_wait_create (struct web           *web,
 			to = join ? join : run;
 		}
 	}
-	bool full = to == run && web->n_runs >= WEB_RUNS;
-	to = full ? nullptr : to;
+	bool const fresh = to == run;
+	if (fresh) {
+		if (web->n_runs >= WEB_RUNS) {
+			pthread_mutex_unlock(&web->lock);
+			free(run);
+			free(wait);
+			*e = EAGAIN;
+			return nullptr;
+		}
+		++web->n_runs;
+		if (r->keep)
+			list_append(&web->runs, &run->hook);
+	}
 	if (to) {
 		list_append(&to->waits, &wait->hook);
 		wait->run = to;
 		to->most = r->keep > to->most ? r->keep : to->most;
-	}
-	bool fresh = to == run;
-	if (fresh) {
-		++web->n_runs;
-		if (r->keep)
-			list_append(&web->runs, &run->hook);
 	}
 	pthread_mutex_unlock(&web->lock);
 
@@ -924,11 +929,7 @@ web_wait_create (struct web           *web,
 		loop_post(ask->home, &run->to_home);
 	else
 		free(run);
-	if (full) {
-		free(wait);
-		wait = nullptr;
-	}
-	*e = full ? EAGAIN : 0;
+	*e = 0;
 	return wait;
 }
 
