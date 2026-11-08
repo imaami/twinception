@@ -81,7 +81,6 @@ git_view_file (struct git_view  *view,
 	int e = util_write_all(fd, data.data, data.len);
 	if (close(fd) && !e)
 		e = errno;
-	fd = -1;
 	return e;
 }
 
@@ -190,7 +189,6 @@ git_view_destroy (struct git_view **p_view)
 	if (*view->directory)
 		(void)rmdir(view->directory);
 	free(view);
-	view = nullptr;
 	*p_view = nullptr;
 }
 
