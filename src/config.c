@@ -1802,16 +1802,6 @@ config_url_own (struct config *cfg)
 	return 0;
 }
 
-/* The '?' or '&' that begins the alt parameter of @p query, a URL's query
- * or ""; nullptr if it has none.
- */
-static char const *
-config_url_alt (char const *query)
-{
-	char const *alt = strstr(query, "?alt=");
-	return alt ? alt : strstr(query, "&alt=");
-}
-
 /* Gemini streams from :streamGenerateContent, in SSE with alt=sse, whatever
  * alt the URL that --url gives had.
  */
@@ -1833,7 +1823,8 @@ config_url_generate (struct config *cfg)
 	}
 	/* The query up to its alt's value, and what follows that; or all of it,
 	 * and alt. */
-	char const *alt = config_url_alt(query);
+	char const *alt = strstr(query, "?alt=");
+	alt = alt ? alt : strstr(query, "&alt=");
 	if (alt) {
 		char const *value = alt + sizeof "?alt=" - 1;
 		if (config_aprintf(&cfg->url, "%.*s%s%.*salt=sse%s", (int)path, url, stream,
