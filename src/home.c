@@ -1998,10 +1998,9 @@ static int
 home_read_event (struct home *home,
                  struct job  *job)
 {
-	static char const done[] = "[DONE]";
 	char const *data = (char const *)buf_peek(&job->wire).ptr + job->ev;
 	int e = 0;
-	if (job->evlen == sizeof done - 1 && !memcmp(data, done, sizeof done - 1)) {
+	if (cstr_view_equal((struct cstr_view){ data, job->evlen }, CSTR_VIEW("[DONE]"))) {
 		job->flags |= home->ep->api == AI_INTERACTIONS ? 0 : ENDED;
 		if (job->flags & ENDED)
 			e = home_thought_end(home, job, true);
