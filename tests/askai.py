@@ -7564,7 +7564,7 @@ def check_scheduler(binary, up):
                 start = time.monotonic()
                 sock.sendall(session_call(1, 99, "SLOW F99"))
                 busy = Replies(sock).next()[1]["result"]
-                assert busy["isError"] and "try again" in text_of(busy), busy
+                assert busy["isError"] and "Try again" in text_of(busy), busy
                 assert time.monotonic() - start < 0.5
         with socket.create_connection(("127.0.0.1", ai.port), 10) as sock:
             start = time.monotonic()
@@ -7646,7 +7646,7 @@ def check_scheduler(binary, up):
             if i == 8:
                 wait_for(lambda: ai.metrics()["askai_jobs_queued"] == 8)
         busy = Replies(socks.pop()).next()[1]["result"]
-        assert busy["isError"] and "try again" in text_of(busy), busy
+        assert busy["isError"] and "Try again" in text_of(busy), busy
         with socket.create_connection(("127.0.0.1", ai.port), 10,
                                       source_address=("127.0.0.2", 0)) as sock:
             sock.sendall(rpc_request(99, {"name": "ask_ai", "arguments": {
@@ -8094,7 +8094,7 @@ def check_jobs(binary, up):
         _, headers, body = ai.modern("tools/call", call)
         assert time.monotonic() - start < 1, "a busy call waited"
         for busy in (result, body["result"]):
-            assert busy["isError"] is True and "try again" in text_of(busy), busy
+            assert busy["isError"] is True and "Try again" in text_of(busy), busy
         assert headers["content-type"] == "text/event-stream"
         for thread in threads:
             thread.join(5)
@@ -12025,8 +12025,8 @@ def check_notes_texts(binary, up):
                 assert call(action="notebooks") == alone(client)
                 said, trace = results([{"action": "list"}, {"action": "list", "offset": 100},
                                        {"action": "notebooks"}])
-                assert said == [none, f"[The output has {len(none)} bytes, fewer than "
-                                "the offset.]", alone(upstream)], said
+                assert said == [none, "[The offset is past the end of the output. The "
+                                f"output is {len(none)} bytes.]", alone(upstream)], said
                 assert trace == "The other AI made 3 tool calls in 2 turns:\n" \
                     f"- notes list: {len(none)} bytes\n- notes list: {len(none)} bytes\n" \
                     f"- notes notebooks: {len(alone(upstream))} bytes\n", trace
