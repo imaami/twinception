@@ -637,8 +637,10 @@ cxi_layout_field (CXCursor     c,
 	--l->rows;
 	CXType const type = clang_getCursorType(c);
 	long long const offset = clang_Cursor_getOffsetOfField(c);
-	long long const size = clang_Cursor_isBitField(c) ? clang_getFieldDeclBitWidth(c)
-	                     : 8 * clang_Type_getSizeOf(type);
+	bool const bitfield = clang_Cursor_isBitField(c);
+	long long const n = bitfield ? clang_getFieldDeclBitWidth(c)
+	                  : 8 * clang_Type_getSizeOf(type);
+	uint64_t const size = n > 0 ? (uint64_t)n : 0;
 	long long const align = clang_Type_getAlignOf(type);
 	uint64_t const at = l->base + (uint64_t)(offset > 0 ? offset : 0);
 	if (!l->is_union)
@@ -650,7 +652,7 @@ cxi_layout_field (CXCursor     c,
 	char const *what = k == CXCursor_UnionDecl ? "union" : "struct";
 	char bits[2][CXI_BITS];
 	cxi_out_printf(l->out, "%7s%7s%7lld%7u  %*s", cxi_offset(bits[0], at),
-	               cxi_size(bits[1], size > 0 ? (uint64_t)size : 0), align > 0 ? align : 0,
+	               cxi_size(bits[1], size), align > 0 ? align : 0,
 	               cxi_line(clang_getCursorLocation(c)), (int)(2 * l->depth), "");
 	if (clang_Cursor_isAnonymousRecordDecl(decl)) {
 		cxi_out_printf(l->out, "(anonymous %s)\n", what);
@@ -661,13 +663,13 @@ cxi_layout_field (CXCursor     c,
 			cxi_out_printf(l->out, "%s (unnamed)", what);
 		else
 			cxi_out_clang(l->out, clang_getTypeSpelling(type));
-		if (clang_Cursor_isBitField(c))
-			cxi_out_printf(l->out, " : %d", clang_getFieldDeclBitWidth(c));
+		if (bitfield)
+			cxi_out_printf(l->out, " : %lld", n);
 		cxi_out_printf(l->out, "\n");
 	}
 	if (nested)
 		cxi_layout_record(l, clang_getCanonicalType(type), at, l->depth + 1);
-	uint64_t const end = at + (size > 0 ? (uint64_t)size : 0);
+	uint64_t const end = at + size;
 	l->end = !l->is_union || end > l->end ? end : l->end;
 	return CXVisit_Continue;
 }
