@@ -2137,13 +2137,13 @@ mcp_slot_respond (struct mcp_slot *slot,
 		mcp_slot_done(slot, failed);
 		return;
 	}
+	mcp_req_flag(req, REQ_FAILED, failed);
 	/* An ask call of a thread saves the findings that its turns changed
 	 * before it answers, so that the next ask call of the thread starts
 	 * with them. A suspended job saves them once it ends. SLOT_DONE is set
 	 * after the save, because git runs in the slot. */
 	if (req->mcp->notes && *req->thread.hex && !(req->flags & REQ_SUSPENDED) &&
 	    review_changed(req->review)) {
-		mcp_req_flag(req, REQ_FAILED, failed);
 		notes_tool_loop_save(req->mcp->notes, slot, &req->trace, &req->thread,
 		                     mcp_slot_saved);
 		return;
@@ -2160,7 +2160,6 @@ mcp_slot_respond (struct mcp_slot *slot,
 	}
 	mcp_req_log_call(req, failed ? "failed" : "answered",
 	                 (struct cstr_view){ (char const *)text.ptr, text.len }, failed);
-	mcp_req_flag(req, REQ_FAILED, failed);
 	req->phase = PHASE_REPLY;
 	req->off = util_char_start((char const *)text.ptr, text.len, off);
 	int e = mcp_req_tool_open(req, req->agenda ? cstr_view_dstr(&req->agenda->said)
