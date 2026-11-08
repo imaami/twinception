@@ -186,19 +186,18 @@ static void autocomplete_reuse (struct autocomplete *catalog)
 	 * A long suffix also verifies that completion retains text after point. */
 	char long_line[8192];
 	memset(long_line, ' ', sizeof long_line);
-	memcpy(long_line, "/tool git com", sizeof("/tool git com") - 1);
+	struct cstr_view const head = CSTR_VIEW("/tool git com");
+	memcpy(long_line, head.data, head.len);
 	struct cstr_view long_input = {long_line, sizeof long_line};
 	struct autocomplete_match const *matches = nullptr;
 	size_t count = 0;
-	assert(!autocomplete_complete(catalog, long_input, sizeof("/tool git com") - 1,
-	                              &matches, &count));
+	assert(!autocomplete_complete(catalog, long_input, head.len, &matches, &count));
 	assert(count);
 	for (size_t i = 0; i < sizeof inputs / sizeof *inputs; ++i)
 		assert(!autocomplete_complete(catalog, inputs[i], inputs[i].len, &matches, &count));
 	for (size_t i = 0; i < 128; ++i) {
 		autocomplete_count_allocations = true;
-		assert(!autocomplete_complete(catalog, long_input, sizeof("/tool git com") - 1,
-		                              &matches, &count));
+		assert(!autocomplete_complete(catalog, long_input, head.len, &matches, &count));
 		for (size_t j = 0; j < sizeof inputs / sizeof *inputs; ++j)
 			assert(!autocomplete_complete(catalog, inputs[j], inputs[j].len, &matches, &count));
 		autocomplete_count_allocations = false;
@@ -353,9 +352,9 @@ static void autocomplete_limits (struct autocomplete *catalog)
 	char *line = malloc(length);
 	assert(line);
 	memset(line, ' ', length);
-	memcpy(line, "/tool ", sizeof("/tool ") - 1);
-	assert(!autocomplete_complete(catalog, (struct cstr_view){line, length},
-	                              sizeof("/tool ") - 1, &matches, &count));
+	struct cstr_view const head = CSTR_VIEW("/tool ");
+	memcpy(line, head.data, head.len);
+	assert(!autocomplete_complete(catalog, (struct cstr_view){line, length}, head.len, &matches, &count));
 	assert(count >= 2 && count < autocomplete_tool_count(catalog));
 	size_t bytes = 0;
 	for (size_t i = 0; i < count; ++i) {
@@ -403,6 +402,9 @@ static void autocomplete_commands (void)
 	assert(!cli_command_at((enum cli_command_id)-1));
 }
 
+#define HAS(input, expected) autocomplete_has(catalog, CSTR_VIEW(input), CSTR_VIEW(expected), sizeof(input) - 1)
+#define EMPTY(input) autocomplete_empty(catalog, CSTR_VIEW(input), sizeof(input) - 1)
+
 static void autocomplete_schema_flags (void)
 {
 	int error = 0;
@@ -420,15 +422,15 @@ static void autocomplete_schema_flags (void)
 	json_object_put(definition);
 	struct cstr_view name = CSTR_VIEW("alice");
 	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_PARTICIPANTS, &name, 1));
-	autocomplete_empty(catalog, CSTR_VIEW("/tool flags participant="), sizeof("/tool flags participant=") - 1);
-	autocomplete_empty(catalog, CSTR_VIEW("/tool flags recipient="), sizeof("/tool flags recipient=") - 1);
-	autocomplete_has(catalog, CSTR_VIEW("/tool flags author="), CSTR_VIEW("/tool flags author='alice'"), sizeof("/tool flags author=") - 1);
-	autocomplete_has(catalog, CSTR_VIEW("/tool flags union="), CSTR_VIEW("/tool flags union='42'"), sizeof("/tool flags union=") - 1);
-	autocomplete_has(catalog, CSTR_VIEW("/tool flags union="), CSTR_VIEW("/tool flags union=42"), sizeof("/tool flags union=") - 1);
-	autocomplete_has(catalog, CSTR_VIEW("/tool flags constant="), CSTR_VIEW("/tool flags constant=null"), sizeof("/tool flags constant=") - 1);
-	autocomplete_empty(catalog, CSTR_VIEW("/tool flags constant=t"), sizeof("/tool flags constant=t") - 1);
-	autocomplete_has(catalog, CSTR_VIEW("/tool flags nullable="), CSTR_VIEW("/tool flags nullable=true"), sizeof("/tool flags nullable=") - 1);
-	autocomplete_has(catalog, CSTR_VIEW("/tool flags nullable="), CSTR_VIEW("/tool flags nullable=null"), sizeof("/tool flags nullable=") - 1);
+	EMPTY("/tool flags participant=");
+	EMPTY("/tool flags recipient=");
+	HAS("/tool flags author=", "/tool flags author='alice'");
+	HAS("/tool flags union=", "/tool flags union='42'");
+	HAS("/tool flags union=", "/tool flags union=42");
+	HAS("/tool flags constant=", "/tool flags constant=null");
+	EMPTY("/tool flags constant=t");
+	HAS("/tool flags nullable=", "/tool flags nullable=true");
+	HAS("/tool flags nullable=", "/tool flags nullable=null");
 	struct json_object *arguments = autocomplete_parse(catalog,
 		CSTR_VIEW("/tool flags union=42 integer=2.0 number=2 any='true'"), CSTR_VIEW("flags"));
 	struct json_object *value = nullptr;
@@ -456,11 +458,10 @@ static void autocomplete_chat_names (void)
 	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, names, 1));
 	autocomplete_only(catalog, CSTR_VIEW("@rx"), 3, CSTR_VIEW("@rx6900xt "), 10);
 	autocomplete_only(catalog, CSTR_VIEW("rx"), 2, CSTR_VIEW("rx6900xt: "), 10);
-	autocomplete_empty(catalog, CSTR_VIEW("@rx9"), 4);
+	EMPTY("@rx9");
 	assert(autocomplete_list_count(catalog, AUTOCOMPLETE_PARTICIPANTS) == 2);
 	assert(cstr_view_equal(autocomplete_list_at(catalog, AUTOCOMPLETE_PARTICIPANTS, 1), names[1]));
-	autocomplete_has(catalog, CSTR_VIEW("/tool git participant=rx9"),
-	                 CSTR_VIEW("/tool git participant=rx9070xt"), sizeof("/tool git participant=rx9") - 1);
+	HAS("/tool git participant=rx9", "/tool git participant=rx9070xt");
 	/* A chat roster can contain several upstreams, independently of stored
 	 * notebook identities. Clearing it must not fall back to those identities. */
 	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, names, sizeof names / sizeof *names));
@@ -470,7 +471,7 @@ static void autocomplete_chat_names (void)
 	assert(count == 2);
 	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, nullptr, 0));
 	assert(autocomplete_set_names(catalog, AUTOCOMPLETE_LISTS, nullptr, 0) == EINVAL);
-	autocomplete_empty(catalog, CSTR_VIEW("@rx"), 3);
+	EMPTY("@rx");
 	assert(autocomplete_list_count(catalog, AUTOCOMPLETE_PARTICIPANTS) == 2);
 	autocomplete_destroy(&catalog);
 }
@@ -492,9 +493,7 @@ int main(void)
 	autocomplete_only(catalog, CSTR_VIEW("/he after"), 3, CSTR_VIEW("/help after"), 6);
 	autocomplete_only(catalog, CSTR_VIEW("/tools gi tail"), 9, CSTR_VIEW("/tools git tail"), 11);
 
-#define HAS(input, expected) autocomplete_has(catalog, CSTR_VIEW(input), CSTR_VIEW(expected), sizeof(input) - 1)
 #define AT(input, expected, cursor) autocomplete_has(catalog, CSTR_VIEW(input), CSTR_VIEW(expected), cursor)
-#define EMPTY(input) autocomplete_empty(catalog, CSTR_VIEW(input), sizeof(input) - 1)
 	HAS("/to", "/tool");
 	HAS("/to", "/tools");
 	HAS("/qu", "/quit");
