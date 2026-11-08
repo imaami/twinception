@@ -2424,12 +2424,12 @@ static void
 config_log_files (struct config const *cfg)
 {
 	dstr_auto url = DSTR_INIT;
-	char const *off = !ai_upload(cfg->ep.api) ? "the API takes none"
-	                : ai_upload_url(&cfg->ep, &url) ? "the URL has no /v1beta/"
-	                : !cfg->notes || !(cfg->flags & CFG_UPSTREAM_TOOLS)
-	                ? "--notes and --upstream-tools" : nullptr;
-	if (off)
-		LOG_ALL(LOG_INFO, "  files     off (%s)", off);
+	if (!ai_upload(cfg->ep.api))
+		LOG_ALL(LOG_INFO, "  files     off (the API takes none)");
+	else if (ai_upload_url(&cfg->ep, &url))
+		LOG_ALL(LOG_INFO, "  files     off (the URL has no /v1beta/)");
+	else if (!cfg->notes || !(cfg->flags & CFG_UPSTREAM_TOOLS))
+		LOG_ALL(LOG_INFO, "  files     off (--notes and --upstream-tools)");
 	else
 		config_log_url("files", dstr_get(&url));
 }
@@ -2456,9 +2456,12 @@ config_log (struct config const *cfg)
 	bool asked = !ep->slots || cfg->flags & CFG_UPSTREAM_TOOLS;
 	if (ep->context > 0)
 		LOG_ALL(LOG_INFO, "  context   %ld tokens", ep->context);
+	else if (props && asked)
+		LOG_ALL(LOG_INFO, "  context   from llama-server");
+	else if (gemini && asked)
+		LOG_ALL(LOG_INFO, "  context   from the model");
 	else
-		LOG_ALL(LOG_INFO, "  context   %s", !asked ? "unknown"
-		        : props ? "from llama-server" : gemini ? "from the model" : "unknown");
+		LOG_ALL(LOG_INFO, "  context   unknown");
 	config_log_url("URL", ep->url);
 	config_log_files(cfg);
 	if (cfg->notes || cfg->transcripts)
