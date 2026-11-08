@@ -3015,8 +3015,7 @@ def check_recovery_review(binary, up):
                           item.get("type") == "function_call_output"]
                 return text
             said = output(creates[2], "update")
-            assert said == f"Finding 1 is now verified, src/a.c:5 at {head[:12]}; it was " \
-                "candidate.", said
+            assert said == f"Updated finding 1: verified, src/a.c:5 at {head[:12]}.", said
             assert output(creates[3], "show") == REVIEW + findings_head("1 finding: 1 verified") + (
                 f"1. verified, src/a.c:5 at {head[:12]}\n   claim: C\n"
                 f"   evidence: E\n{READS}\n"
@@ -14087,17 +14086,16 @@ def check_review(binary, up):
                      "1. candidate, src/a.c:3-4, not read\n   claim: C1\n"
                      "2. candidate\n   claim: C3\n   evidence: E")
             assert results(sent[1]) == [
-                "Added finding 1: candidate, src/a.c:3-4, not read. Read its lines before "
-                "you verify it.",
+                "Added finding 1: candidate, src/a.c:3-4, not read. Read the lines of the "
+                "location before you verify the finding.",
                 "verified requires the lines of the location in your read log. The read log "
                 "does not contain src/a.c line 5. To read the lines, call the git tool with "
                 "\"command\": \"read\", \"revisions\": [\"HEAD:src/a.c\"] and \"line\": 5. The "
                 "path in revisions must be the whole path from the top of the repository. The "
                 "lines of a read enter the read log in your next turn. Call findings again in "
                 "a later turn.",
-                "Added finding 2: candidate. askai left out the [askai: ...] lines at "
-                "the end of the evidence. askai adds those lines to tool results, and "
-                "they are not part of the finding.",
+                "Added finding 2: candidate. askai removed the [askai: ...] lines at the "
+                "end of the evidence.",
                 "update requires the state and evidence arguments.",
                 "The action argument must be add, update or show.",
                 "The argument id is not valid with action add.",
@@ -14108,8 +14106,7 @@ def check_review(binary, up):
             paged = record
             size = len(record.encode())
             assert results(sent[2]) == [
-                "Finding 2 is now retracted; it was candidate. Its old claim is in its "
-                "history.",
+                "Updated finding 2: retracted.",
                 "Finding 2: retracted\nclaim: C3b\nturn 1: candidate\n  evidence: E\n"
                 "turn 2: retracted\n  evidence: R\n  old claim: C3",
                 record[len(REVIEW):] + f"\n\n[Bytes {len(REVIEW)} to {size} of {size}. "
@@ -14315,7 +14312,7 @@ def check_review(binary, up):
             assert results(up.requests[count + 3]) == [
                 "x.c matches src/x.c and tests/x.c in your read log. Give the whole path in "
                 "location.",
-                "Finding 1 is now retracted, x.c:1, not read; it was candidate."], \
+                "Updated finding 1: retracted, x.c:1, not read."], \
                 results(up.requests[count + 3])
 
             # A compaction removes a read's result before the upstream sees
@@ -14567,8 +14564,8 @@ def check_review(binary, up):
             assert results(sent[1]) == [
                 missing("verified", "src/a.c line 5", "src/a.c", 5, False),
                 "There is no finding 9. The record contains findings 1 to 2."], results(sent[1])
-            assert results(sent[3]) == [f"Finding 1 stays verified, src/a.c:5 at {later[:12]}; "
-                                        "the new evidence is in its history."], sent[3]
+            assert results(sent[3]) == [f"Updated finding 1: verified, src/a.c:5 at "
+                                        f"{later[:12]}."], sent[3]
             assert result["content"][1]["text"].endswith(stored(thread)), result
             second = notes("rev-parse", ref).strip()
             assert notes("rev-list", "--parents", "-n", "1", ref).split() == [second, first]

@@ -42,6 +42,7 @@ same (char const *file,
               "again in a later turn."
 #define WHOLE " The path in revisions must be the whole path from the top of the repository."
 #define SEVERAL " A long range can need several reads."
+#define UNREAD " Read the lines of the location before you verify the finding."
 /* The start of the refusal of the state s for lines that are not in the read log. */
 #define NEED(s) s " requires the lines of the location in your read log. "
 /* The suggestion of a git read of what at the revision rev from line n of path. */
@@ -391,8 +392,7 @@ test_seen (void)
 	{
 		struct review *r = fresh();
 		EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"deadbee:12\"}", 1, 0,
-		       "Added finding 1: candidate, deadbee:12, not read. Read its lines before you "
-		       "verify it.");
+		       "Added finding 1: candidate, deadbee:12, not read." UNREAD);
 		review_destroy(&r);
 	}
 	/* Windows that hold no whole line. */
@@ -643,11 +643,9 @@ test_paths (void)
 	       "Added finding 1: candidate, src/a.c:3 at " A12 ".");
 	/* Neither "c" nor "/a.c" follows a '/' at the end of a logged path. */
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"c:3\"}", 2, 0,
-	       "Added finding 2: candidate, c:3, not read. Read its lines before you "
-	       "verify it.");
+	       "Added finding 2: candidate, c:3, not read." UNREAD);
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"/a.c:3\"}", 2, 0,
-	       "Added finding 3: candidate, /a.c:3, not read. Read its lines before you "
-	       "verify it.");
+	       "Added finding 3: candidate, /a.c:3, not read." UNREAD);
 	CHECK(!seen(r, "proj", B, "tests/x.c", 1, 10, 10, 2));
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"x.c:3\"}", 3, EINVAL,
 	       "x.c matches src/x.c and tests/x.c in your read log. Give the whole path in "
@@ -679,37 +677,35 @@ test_paths (void)
 	 * logged path at its next update. */
 	r = fresh();
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"a.c:3\"}", 1, 0,
-	       "Added finding 1: candidate, a.c:3, not read. Read its lines before you verify it.");
+	       "Added finding 1: candidate, a.c:3, not read." UNREAD);
 	CHECK(!seen(r, "proj", A, "src/a.c", 1, 10, 10, 1));
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"verified\",\"evidence\":\"e\"}",
-	       2, 0, "Finding 1 is now verified, src/a.c:3 at " A12 "; it was candidate.");
+	       2, 0, "Updated finding 1: verified, src/a.c:3 at " A12 ".");
 	EXPECT(r, "{\"action\":\"show\",\"id\":1}", 2, 0,
 	       "Finding 1: verified, src/a.c:3 at " A12 "\nclaim: c\nturn 1: candidate\n"
 	       "turn 2: verified at " A12 "\n  evidence: e");
 	CHECK(!seen(r, "proj", A, "tests/a.c", 1, 10, 10, 2));
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"candidate\",\"evidence\":\"f\"}",
-	       3, 0, "Finding 1 is now candidate, src/a.c:3 at " A12 "; it was verified.");
+	       3, 0, "Updated finding 1: candidate, src/a.c:3 at " A12 ".");
 	review_destroy(&r);
 
 	/* A short path that later reads make ambiguous stays as it is in an
 	 * update without a location. An update to verified is refused. */
 	r = fresh();
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"a.c:3\"}", 1, 0,
-	       "Added finding 1: candidate, a.c:3, not read. Read its lines before you verify it.");
+	       "Added finding 1: candidate, a.c:3, not read." UNREAD);
 	CHECK(!seen(r, "proj", A, "src/a.c", 1, 10, 10, 1));
 	CHECK(!seen(r, "proj", A, "tests/a.c", 1, 10, 10, 1));
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"verified\",\"evidence\":\"e\"}",
 	       2, EINVAL, "a.c matches src/a.c and tests/a.c in your read log. Give the whole "
 	       "path in location.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"candidate\",\"evidence\":\"f\"}",
-	       2, 0, "Finding 1 stays candidate, a.c:3, not read; the new evidence is in its "
-	       "history. Read its lines before you verify it.");
+	       2, 0, "Updated finding 1: candidate, a.c:3, not read." UNREAD);
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"retracted\",\"evidence\":\"w\"}",
-	       2, 0, "Finding 1 is now retracted, a.c:3, not read; it was candidate.");
+	       2, 0, "Updated finding 1: retracted, a.c:3, not read.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"verified\",\"evidence\":\"e\","
 	          "\"location\":\"src/a.c:3\"}", 2, 0,
-	       "Finding 1 is now verified, src/a.c:3 at " A12 "; it was retracted. Its old location "
-	       "is in its history.");
+	       "Updated finding 1: verified, src/a.c:3 at " A12 ".");
 	review_destroy(&r);
 }
 
@@ -943,7 +939,7 @@ test_pending (void)
 		} else {
 			review_pending_drop(r);
 			EXPECT(r, more, 2, 0,
-			       "Finding 1 stays candidate; the new evidence is in its history.");
+			       "Updated finding 1: candidate.");
 		}
 		review_destroy(&r);
 	}
@@ -958,36 +954,28 @@ test_history (void)
 	struct review *r = fresh();
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"C1\",\"location\":\"src/a.c:5\","
 	          "\"evidence\":\"seen in a grep\\n\\n[askai: x]\"}", 1, 0,
-	       "Added finding 1: candidate, src/a.c:5, not read. Read its lines before you "
-	       "verify it. askai left out the [askai: ...] lines at the end of the "
-	       "evidence. askai adds those lines to tool results, and they are not part of "
-	       "the finding.");
+	       "Added finding 1: candidate, src/a.c:5, not read." UNREAD " askai removed the "
+	       "[askai: ...] lines at the end of the evidence.");
 	CHECK(!seen(r, "proj", A, "src/a.c", 1, 9, 9, 2));
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"verified\",\"evidence\":\"E2\"}",
-	       3, 0, "Finding 1 is now verified, src/a.c:5 at " A12 "; it was candidate.");
+	       3, 0, "Updated finding 1: verified, src/a.c:5 at " A12 ".");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"verified\",\"evidence\":\"E3\","
 	          "\"claim\":\"C1\",\"location\":\"src/a.c:5\"}", 4, 0,
-	       "Finding 1 stays verified, src/a.c:5 at " A12 "; the new evidence is in its "
-	       "history.");
+	       "Updated finding 1: verified, src/a.c:5 at " A12 ".");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"verified\",\"evidence\":\"E4\","
 	          "\"claim\":\"C2\\n\\n[askai: x]\",\"location\":\"a.c:6-7\"}", 5, 0,
-	       "Finding 1 stays verified, src/a.c:6-7 at " A12 "; the new evidence is in its "
-	       "history. Its old claim and location are in its history. askai left out the "
-	       "[askai: ...] lines at the end of the claim. askai adds those lines to tool "
-	       "results, and they are not part of the finding.");
+	       "Updated finding 1: verified, src/a.c:6-7 at " A12 ". askai removed the "
+	       "[askai: ...] lines at the end of the claim.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"retracted\",\"evidence\":\"E5\","
 	          "\"claim\":\"C3\"}", 6, 0,
-	       "Finding 1 is now retracted, src/a.c:6-7 at " A12 "; it was verified. Its old "
-	       "claim is in its history.");
+	       "Updated finding 1: retracted, src/a.c:6-7 at " A12 ".");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"candidate\",\"evidence\":\"E6\","
 	          "\"location\":\"src/b.c:1\"}", 7, 0,
-	       "Finding 1 is now candidate, src/b.c:1, not read; it was retracted. Its old "
-	       "location is in its history. Read its lines before you verify it.");
+	       "Updated finding 1: candidate, src/b.c:1, not read." UNREAD);
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"D\"}", 7, 0, "Added finding 2: candidate.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":2,\"state\":\"candidate\",\"evidence\":\"F\","
 	          "\"location\":\"src/a.c:1\"}", 8, 0,
-	       "Finding 2 stays candidate, src/a.c:1 at " A12 "; the new evidence is in its "
-	       "history. Its old location is in its history.");
+	       "Updated finding 2: candidate, src/a.c:1 at " A12 ".");
 	EXPECT(r, "{\"action\":\"show\",\"id\":1}", 8, 0,
 	       "Finding 1: candidate, src/b.c:1, not read\n"
 	       "claim: C3\n"
@@ -1033,7 +1021,7 @@ test_render (void)
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"first line\\nsecond line\"}", 2, 0,
 	       "Added finding 2: candidate.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":2,\"state\":\"retracted\",\"evidence\":\"R\"}",
-	       3, 0, "Finding 2 is now retracted; it was candidate.");
+	       3, 0, "Updated finding 2: retracted.");
 	char long_claim[CLOSED + 50];
 	memset(long_claim, 'x', sizeof long_claim - 1);
 	long_claim[sizeof long_claim - 1] = '\0';
@@ -1044,8 +1032,7 @@ test_render (void)
 	         "\"disproved\",\"evidence\":\"E3\",\"location\":\"src/a.c:9\"}", long_claim);
 	EXPECT(r, json, 3, 0, "Added finding 3: disproved, src/a.c:9 at " A12 ".");
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"C4\",\"location\":\"src/z.c:2-3\"}", 4, 0,
-	       "Added finding 4: candidate, src/z.c:2-3, not read. Read its lines before you "
-	       "verify it.");
+	       "Added finding 4: candidate, src/z.c:2-3, not read." UNREAD);
 	char want[2048];
 	snprintf(want, sizeof want,
 	         HEADER FINDINGS("4 findings: 1 candidate, 1 verified, 1 disproved, 1 retracted")
@@ -1167,7 +1154,7 @@ test_full (void)
 	CHECK(!call_long(r, add, "claim", left - change - 1, &out));
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\"}", 1, EINVAL, NO_ROOM);
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"candidate\",\"evidence\":\"e\"}",
-	       1, 0, "Finding 1 stays candidate; the new evidence is in its history.");
+	       1, 0, "Updated finding 1: candidate.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"candidate\",\"evidence\":\"e\"}",
 	       1, EINVAL, NO_MORE);
 	review_destroy(&r);
@@ -1221,7 +1208,7 @@ test_full (void)
 	r = fresh();
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\"}", 1, 0, "Added finding 1: candidate.");
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"a.c:3\"}", 1, 0,
-	       "Added finding 2: candidate, a.c:3, not read. Read its lines before you verify it.");
+	       "Added finding 2: candidate, a.c:3, not read." UNREAD);
 	CHECK(!seen(r, "proj", A, "src/a.c", 1, 10, 300, 1));
 	struct {
 		char const *json;
@@ -1229,19 +1216,15 @@ test_full (void)
 		char const *want;
 	} const updates[] = {
 		{ "{\"action\":\"update\",\"id\":2,\"state\":\"candidate\",\"evidence\":\"e\"}", 4,
-		  "Finding 2 stays candidate, src/a.c:3 at " A12 "; the new evidence is in its "
-		  "history." },
+		  "Updated finding 2: candidate, src/a.c:3 at " A12 "." },
 		{ "{\"action\":\"update\",\"id\":2,\"state\":\"candidate\",\"evidence\":\"e\","
 		  "\"location\":\"src/a.c:5\"}", 7,
-		  "Finding 2 stays candidate, src/a.c:5 at " A12 "; the new evidence is in its "
-		  "history. Its old location is in its history." },
+		  "Updated finding 2: candidate, src/a.c:5 at " A12 "." },
 		{ "{\"action\":\"update\",\"id\":2,\"state\":\"candidate\",\"evidence\":\"e\","
 		  "\"claim\":\"C2\"}", 2,
-		  "Finding 2 stays candidate, src/a.c:5 at " A12 "; the new evidence is in its "
-		  "history. Its old claim is in its history." },
+		  "Updated finding 2: candidate, src/a.c:5 at " A12 "." },
 		{ "{\"action\":\"update\",\"id\":2,\"state\":\"candidate\",\"evidence\":\"e\"}", 0,
-		  "Finding 2 stays candidate, src/a.c:5 at " A12 "; the new evidence is in its "
-		  "history." },
+		  "Updated finding 2: candidate, src/a.c:5 at " A12 "." },
 	};
 	for (size_t i = 0; i < array_size(updates); ++i) {
 		size_t had = room_of(r);
@@ -1288,8 +1271,7 @@ test_no_git (void)
 	CHECK(back && !e && !review_restore(back, obj));
 	EXPECT(back, verify, 2, EINVAL, no_git);
 	EXPECT(back, "{\"action\":\"update\",\"id\":1,\"state\":\"retracted\",\"evidence\":"
-	             "\"e\"}", 2, 0, "Finding 1 is now retracted, src/a.c:3, not read; it was "
-	                          "candidate.");
+	             "\"e\"}", 2, 0, "Updated finding 1: retracted, src/a.c:3, not read.");
 	/* review_restore() does not change the REVIEW_READ_LOG flag of the
 	 * target. */
 	struct review *reads = fresh();
@@ -1353,8 +1335,7 @@ test_json (void)
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"C2\"}", 2, 0, "Added finding 2: candidate.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"retracted\",\"evidence\":\"R\","
 	          "\"claim\":\"C3\",\"location\":\"b.c:2\"}", 3, 0,
-	       "Finding 1 is now retracted, b.c:2 at " B12 "; it was verified. Its old claim and "
-	       "location are in its history.");
+	       "Updated finding 1: retracted, b.c:2 at " B12 ".");
 	CHECK(!seen(r, "proj", A, "src/a.c", 10, 12, 300, 3));
 	CHECK(!shown_in(r, "proj", A, "src/a.c", 40, 41, 300, 0, SIZE_MAX, 4));
 	int e;
@@ -1387,8 +1368,7 @@ test_json (void)
 	 * its restored pending lines. */
 	EXPECT(back, "{\"action\":\"update\",\"id\":2,\"state\":\"verified\",\"evidence\":\"E\","
 	             "\"location\":\"a.c:25\"}", 5, 0,
-	       "Finding 2 is now verified, src/a.c:25 at " A12 "; it was candidate. Its old "
-	       "location is in its history.");
+	       "Updated finding 2: verified, src/a.c:25 at " A12 ".");
 	CHECK(!review_pending_log(back));
 	lines_of(back, "lines 1-12, 20-29, 40-41: 24 of 300 lines\n"
 	               "other " B "\n  b.c  line 2: 1 of an unknown number of lines", __LINE__);
@@ -1653,8 +1633,7 @@ test_carry (void)
 	       GIT_READ("the lines", "HEAD", "src/a.c", "5") WHOLE LATER);
 	CHECK(!review_changed(next));
 	CHECK(!seen(next, "proj", A, "src/a.c", 1, 9, 300, 1));
-	EXPECT(next, verify, 2, 0, "Finding 1 stays verified, src/a.c:5 at " A12 "; the new "
-	       "evidence is in its history.");
+	EXPECT(next, verify, 2, 0, "Updated finding 1: verified, src/a.c:5 at " A12 ".");
 	EXPECT(next, "{\"action\":\"update\",\"id\":3,\"state\":\"retracted\",\"evidence\":"
 	             "\"R\"}", 2, EINVAL,
 	       "There is no finding 3. The record contains findings 1 to 2.");

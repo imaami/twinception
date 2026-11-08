@@ -1637,12 +1637,10 @@ review_put_tail (struct dstr                 *out,
 	struct review_change const *c = &f->changes.items[f->changes.n - 1];
 	bool const unread = c->state == REVIEW_CANDIDATE && dstr_len(&f->location.path) &&
 	                    !oid_len(&c->commit) && (r->flags & REVIEW_READ_LOG);
-	return (unread && PUT(out, " Read its lines before you verify it.")) ||
-	       (trimmed &&
-	        (PUT(out, " askai left out the [askai: ...] lines at the end of ") ||
-	         cstr_view_cat(texts[trimmed], out) ||
-	         PUT(out, ". askai adds those lines to tool results, and they are not part of the "
-	                  "finding."))) ? ENOMEM : 0;
+	return (unread && PUT(out, " Read the lines of the location before you verify the "
+	                           "finding.")) ||
+	       (trimmed && (PUT(out, " askai removed the [askai: ...] lines at the end of ") ||
+	                    cstr_view_cat(texts[trimmed], out) || PUT(out, "."))) ? ENOMEM : 0;
 }
 
 /** Runs the action add with the arguments @p a in turn @p turn. */
@@ -1762,24 +1760,13 @@ review_update (struct review            *r,
 	}
 	if (!moved)
 		dstr_cleanup(&c.old_location.path);
-	enum review_state const old = f->changes.items[f->changes.n - 1].state;
 	f->location.first = loc.first;
 	f->location.last = loc.last;
 	f->changes.items[f->changes.n++] = c;
 	r->size = size;
 	r->changed = true;
-	static char const *const verbs[] = { "is now", "stays" };
-	static struct cstr_view const history[] = {
-		CSTR_VIEW_INIT(""), CSTR_VIEW_INIT(" Its old claim is in its history."),
-		CSTR_VIEW_INIT(" Its old location is in its history."),
-		CSTR_VIEW_INIT(" Its old claim and location are in its history."),
-	};
-	bool const same = old == a->state;
-	return !dstr_printf(out, "Finding %" PRIu32 " %s ", a->id, verbs[same]) ||
-	       review_put_status(out, f) ||
-	       (same ? PUT(out, "; the new evidence is in its history.")
-	             : !dstr_printf(out, "; it was %s.", review_state_names[old].data)) ||
-	       cstr_view_cat(history[new_claim | moved << 1], out) ||
+	return !dstr_printf(out, "Updated finding %" PRIu32 ": ", a->id) ||
+	       review_put_status(out, f) || PUT(out, ".") ||
 	       review_put_tail(out, r, f, a->trimmed) ? ENOMEM : 0;
 }
 
