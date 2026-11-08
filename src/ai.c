@@ -1552,16 +1552,15 @@ ai_gemini_url (char const  *url,
 	if (!root)
 		return ENOENT;
 	/* The last parameter key of the query, as the API reads it. */
-	char const *found = nullptr;
+	struct cstr_view found = { "", 0 };
 	for (char const *p = host + end; *p == '?' || *p == '&'; ) {
 		size_t len = strcspn(p + 1, "&#");
-		if (len >= sizeof key - 1 && !strncmp(p + 1, key, sizeof key - 1))
-			found = p + 1;
+		if (!strncmp(p + 1, key, sizeof key - 1))
+			found = (struct cstr_view){ p + 1, len };
 		p += 1 + len;
 	}
-	int key_len = found ? (int)strcspn(found, "&#") : 0;
 	return dstr_printf(out, "%.*s%s%s%s%.*s", (int)(root - url), url, path,
-	                   tail ? tail : "", found ? "?" : "", key_len, found ? found : "")
+	                   tail ? tail : "", found.len ? "?" : "", (int)found.len, found.data)
 	       ? 0 : ENOMEM;
 }
 
