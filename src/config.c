@@ -1650,14 +1650,13 @@ config_check_notes_parent (struct config const *cfg)
 		return config_oom(cfg);
 	char const *dir = dirname(copy);
 	struct stat st;
-	int status = 0;
-	if (stat(dir, &st))
-		status = config_complain(cfg, nullptr, "--notes: %s: %s", cfg->notes,
-		                         strerror(errno));
-	else if (!S_ISDIR(st.st_mode) || !config_safe_path(dir, &st))
-		status = config_complain(cfg, nullptr, "--notes: %s: others than root "
-		                         "and askai's user may change the directory it "
-		                         "would be made in", cfg->notes);
+	int status = stat(dir, &st)
+	           ? config_complain(cfg, nullptr, "--notes: %s: %s", cfg->notes, strerror(errno))
+	           : !S_ISDIR(st.st_mode) || !config_safe_path(dir, &st)
+	           ? config_complain(cfg, nullptr, "--notes: %s: others than root and "
+	                             "askai's user may change the directory it would be "
+	                             "made in", cfg->notes)
+	           : 0;
 	free(copy);
 	return status;
 }
