@@ -387,7 +387,7 @@ git_create (char const *const paths[],
             uint64_t           timeout,
             int               *e)
 {
-	struct git *git = malloc(sizeof *git + n * sizeof *git->repo);
+	struct git *git = calloc(1, sizeof *git + n * sizeof *git->repo);
 	if (!git) {
 		*e = ENOMEM;
 		return nullptr;
