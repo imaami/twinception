@@ -2028,8 +2028,10 @@ godbolt_targets_parse (struct godbolt *call)
 		text.data = joined;
 	}
 	int const e = godbolt_probe_init(&call->probe, text);
-	free(joined);
 	loop_work(call->loop, LOOP_PARSE, text.len);
+	free(joined);
+	joined = nullptr;
+	text = (struct cstr_view){};
 	if (e == ENOMEM)
 		return ENOMEM;
 	if (e) {
