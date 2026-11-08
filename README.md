@@ -20,7 +20,7 @@ tools to clients or to the other model (below).
 other model, `askai`'s upstream, connected to `askai` through a Unix socket.
 
 The [session architecture memo](doc/session-architecture.md) records the
-direction for shared notes, stable participants, and multiple execution routes.
+direction for shared notes, stable members, and multiple execution routes.
 
 ## Dependencies
 

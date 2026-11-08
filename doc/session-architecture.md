@@ -1,9 +1,12 @@
-# Sessions, participants, and execution routes
+# Sessions, members, and execution routes
 
-Status: architectural direction, not a description of implemented behavior.
-Recorded 2026-10-17; revised 2026-10-27 to keep one upstream per daemon.
-Near-term changes need not implement this design, but should preserve the
-ability to evolve toward it.
+Status: architectural direction. Only the section [Steps done](#steps-done)
+describes implemented behavior. Recorded 2026-10-17; revised 2026-10-27 to
+keep one upstream per daemon; revised 2026-11-08 to name the participants
+members, after steps 1 and 6 of [Evolution and
+compatibility](#evolution-and-compatibility) were done. Near-term changes
+need not implement this design, but should preserve the ability to evolve
+toward it.
 
 ## Required deployment flexibility
 
@@ -39,18 +42,18 @@ collaborator or notebook.
 - A **session** is a durable shared workspace with an explicit membership
   policy and a portable persistent ID. It is independent of an HTTP/MCP
   session, a process, a repository pathname, and a conversation.
-- A **participant** is a person or a logical agent taking part in a session.
-  It has a stable ID and a readable name. An agent is a continuing
-  collaborator, not an inference endpoint or an AskAI process.
+- A **member** is a person or a logical agent taking part in a session.
+  It has a stable, readable name and a kind, person or agent. An agent is a
+  continuing collaborator, not an inference endpoint or an AskAI process.
 - A **conversation or task** scopes ongoing work within a session. Several
   conversations can share notes without sharing their entire context.
 - A **run** records a particular execution, including the responsible user,
-  participant, executing service, upstream, and model. Concurrent runs and
+  member, executing service, upstream, and model. Concurrent runs and
   retries do not implicitly create notebooks.
 
 Model selection and allowed capabilities follow the selected service's
-configuration and policy. A participant can use different services without
-necessarily changing identity; distinct participants can use the same service.
+configuration and policy. A member can use different services without
+necessarily changing identity; distinct members can use the same service.
 
 A possible session roster is the user, a researcher, a reviewer, and a
 senior reviewer. The researcher might use the workstation GPU, the reviewer
@@ -58,19 +61,20 @@ the standard remote endpoint, and the senior reviewer the central service.
 This is an explicit collaboration arrangement, not a roster mechanically
 derived from the available endpoints.
 
-Opening a second UI or reconnecting preserves the selected participant and
+Opening a second UI or reconnecting preserves the selected member and
 conversation. Starting an independent collaborator is an explicit operation.
 Keep service writer IDs for journal locking and recovery separate from
-participant IDs and from user-visible authorship.
+member names and from user-visible authorship.
 
 ## Shared notes with author and task views
 
-A session contains one shared collection of notes. A participant's notes are
+A session contains one shared collection of notes. A member's notes are
 a filtered view, not a storage partition exposed as a notebook address.
-The current `participant/principal/{client,upstream}` namespace encodes
-connection topology and should not become the permanent public contract.
-`client`, `upstream`, `own`, and `other` are relative to a connection and do
-not reliably describe authors across proxies, services, or client connections.
+The former `participant/principal/{client,upstream}` namespace encoded
+connection topology, and it is no longer written. `client`, `upstream`,
+`own`, and `other` were relative to a connection and did not reliably
+describe authors across proxies, services, or client connections. A
+notebook is now named after the member who writes it.
 
 Each note has an immutable unique ID, author, title, content, and optional
 task/conversation and reply-to or supersedes references. Titles and original
@@ -78,9 +82,9 @@ attachment filenames need not be unique. Several people can write a
 `plan.md`. Updates can append new notes referencing earlier versions,
 preserving history rather than overwriting it.
 
-The service binds the session and authorized writing participant to an
+The service binds the session and authorized writing member to an
 operation and stamps its author. A tool caller cannot impersonate another
-participant merely by supplying an author field. Readers address notes by
+member merely by supplying an author field. Readers address notes by
 ID and discover them by author, task, references, and incremental cursor.
 For example, the eventual interface could support:
 
@@ -113,26 +117,26 @@ defined independently of the filesystem layout and host clocks.
 ## Forwarding and delegation
 
 Forwarding preserves an existing operation's session, conversation,
-participant, and operation IDs. A forwarding hop does not become the author
+member, and operation IDs. A forwarding hop does not become the author
 and does not duplicate notes. Stable operation IDs support retry
 deduplication. Pure proxy mode must be distinguishable from asking a new
 agent to perform work.
 
-Delegation selects another participant and records the relationship to the
+Delegation selects another member and records the relationship to the
 requesting task or run. For example, the researcher can ask the senior
 reviewer to check a finding. Do not infer this distinction from whether an
 upstream happens to be another AskAI service.
 
 Every hop distinguishes the authenticated user authorizing work, the
-participant performing it, and the service forwarding or executing it.
+member performing it, and the service forwarding or executing it.
 `SO_PEERCRED` authenticates the process at the Unix-socket hop; it does not
-authenticate the original UI or prove arbitrary forwarded participant
-claims. The receiver validates membership, authority to act for a
-participant, and permission to use its model and tools.
+authenticate the original UI or prove arbitrary forwarded member claims.
+The receiver validates membership, authority to act for a member, and
+permission to use its model and tools.
 
 Forwarded IDs are context, not credentials. Network delegation may use
 scoped token exchange or another explicitly trusted mechanism. Neither
-session membership nor a claimed participant may elevate model or tool
+session membership nor a claimed member may elevate model or tool
 permissions. Secure the ingress of a per-user proxy as well as its egress.
 
 ## Storage and synchronization
@@ -157,10 +161,10 @@ Git merging is not an initial distributed-session protocol.
 
 ## Evolution and compatibility
 
-1. Introduce session and participant records independent of daemon
+1. Introduce session and member records independent of daemon
    configuration and authentication method.
 2. Address notes by ID and expose author/task views.
-3. Define request context carrying session, conversation, participant, and
+3. Define request context carrying session, conversation, member, and
    operation IDs alongside separately validated authorization.
 4. Preserve that context through forwarding; make delegation explicit.
 5. Support multiple connections in `askai-cli`, selecting among AskAI services
@@ -176,6 +180,44 @@ Until these features exist, avoid choices that make notebook ownership
 depend permanently on sockets, connection counts, process names, service
 selection, or model names. A common user identity does not itself make quotas,
 jobs, or conversations global; those are separate scope decisions.
+
+### Steps done
+
+Step 1 is done. The session repository of `--notes` contains a session
+record and a member registry, as Git refs outside the notebook branches:
+
+- `refs/askai/session` is the session record: a commit whose message
+  names the session ID (32 hexadecimal digits, generated once), the name
+  of the session and the format of the records. `askai` creates it at
+  startup if it is absent. The ID, not a hash of the repository path, is
+  the session in `_meta` and in the history key of `askai-cli`.
+- `refs/askai/members/NAME` is the record of one member: its kind, person
+  or agent, and its logins, such as `uid 1000` or `identity alice`. The
+  first writer of a name creates the record. Later commits on the record
+  only add logins. The first service of an agent creates the agent's
+  record at startup. The record of a person appears with the first call
+  of the person.
+- A member writes only the notebook `refs/heads/person/NAME/notes` or
+  `refs/heads/agent/NAME/notes`. The member of a call comes from its
+  login, never from the socket, the connection, the process or the model.
+  A person keeps the notebook when the Unix account is renamed, because
+  the record names the login.
+- The author of a notebook commit is the member, and the committer is the
+  service. The legacy branches `refs/heads/notes/PARTICIPANT/WHO/SIDE`
+  stay readable with Git, and `askai` never writes them.
+
+Step 6 is done. The service name (`service.name`, `--service-name`) names
+the journal writer, its lock, the branch `reasoning/SERVICE` and the
+committer of notebook commits. The agent name (`agent`, `--agent`) names
+the author of the notes. The service name defaults to the agent name.
+With the old participant name as the service name, `askai` finds the
+transcripts and the background jobs of the old participant. Two services
+of one agent need two service names when they share a transcript
+repository.
+
+Steps 2 and 3 are partly done. The notebook of a member is the author
+view, and the commits of the turns name the ask call, the conversation and
+the asker. Note IDs are not done. Steps 4 and 5 are not done.
 
 ## References
 
