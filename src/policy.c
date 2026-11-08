@@ -774,25 +774,6 @@ policy_build_groups (struct policy_build *b,
 	return 0;
 }
 
-/* The role, if any, of a client that shows no token and connects as
- * @p kind, which @p val, null for none, names.
- */
-static int
-policy_build_kind (struct policy_build *b,
-                   char const          *kind,
-                   struct json_object  *val,
-                   size_t              *role)
-{
-	*role = POLICY_NO_ROLE;
-	if (!val)
-		return 0;
-	*role = policy_build_role(b, val);
-	if (*role == POLICY_NO_ROLE)
-		return policy_build_fail(b, "anonymous: %s: no role %s", kind,
-		                         json_object_to_json_string(val));
-	return 0;
-}
-
 static int
 policy_build_anonymous (struct policy_build *b,
                         struct json_object  *anonymous)
@@ -805,12 +786,13 @@ policy_build_anonymous (struct policy_build *b,
 		size_t k = cstr_view_index(policy_kinds, POLICY_KINDS, cstr_view(it.key));
 		if (k == POLICY_KINDS)
 			return policy_build_fail(b, "anonymous: unknown member %s", it.key);
-		int e = policy_build_kind(b, it.key, it.val, &p->anonymous[k]);
-		if (e)
-			return e;
-		size_t const role = p->anonymous[k];
-		if (role == POLICY_NO_ROLE)
+		if (!it.val)
 			continue;
+		size_t const role = policy_build_role(b, it.val);
+		if (role == POLICY_NO_ROLE)
+			return policy_build_fail(b, "anonymous: %s: no role %s", it.key,
+			                         json_object_to_json_string(it.val));
+		p->anonymous[k] = role;
 		struct cstr_view const parts[] = {
 			CSTR_VIEW("anonymous "), policy_kinds[k], CSTR_VIEW(" ("),
 			p->roles[role].who, CSTR_VIEW(")")
