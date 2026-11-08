@@ -399,10 +399,6 @@ struct mcp_static {
 	struct roster            *roster;       /**< the tool calls that run and
 	                                             are not tasks */
 	struct web               *web;          /**< the plugins' HTTP requests */
-	size_t                    files_inline; /**< bytes of a file that a client
-	                                             hands askai inline, at most:
-	                                             FILES_INLINE, or less, as
-	                                             --max-body says */
 	struct uploads           *uploads;      /**< the files that turns
 	                                             attached, if the upstream
 	                                             takes files (ai_upload()) */
@@ -8160,7 +8156,8 @@ mcp_static_tails (struct mcp_static  *st,
 				 * the model does not write, as a data: URI in an argument
 				 * whose schema contains x-mcp-file. */
 				"io.modelcontextprotocol/files", jb_object("maxInlineBytes",
-					json_object_new_int64((int64_t)st->files_inline), nullptr),
+					json_object_new_int64((int64_t)st->notes_tool.files_inline),
+					nullptr),
 				nullptr),
 			nullptr),
 		nullptr);
@@ -8619,12 +8616,13 @@ mcp_static_create (struct config const *cfg,
 		.versions = DSTR_INIT,
 		.files_url = DSTR_INIT,
 		.tasks = tasks,
+		.notes_tool = { .notes = notes,
+		                .files_inline = mcp_files_inline(cfg->http.limits.body) },
 		.code = { git, cfg },
 		.journal = journal,
 		.ledger = ledger,
 		.roster = roster,
 		.web = web,
-		.files_inline = mcp_files_inline(cfg->http.limits.body),
 		.seed = journal ? journal_seed(journal) : util_seed(),
 		.timeout = ep->timeout_ms > 0 ? (uint64_t)ep->timeout_ms * MS : 0,
 		.lending = mcp_lending(cfg),
@@ -8642,10 +8640,7 @@ mcp_static_create (struct config const *cfg,
 		mcp_static_destroy(&st);
 		return nullptr;
 	}
-	st->notes_tool = (struct notes_tool){
-		.notes = notes, .files_inline = st->files_inline,
-		.actions = st->uploads ? array_size(notes_action_names) : NOTES_ACTION_ATTACH
-	};
+	st->notes_tool.actions = st->uploads ? array_size(notes_action_names) : NOTES_ACTION_ATTACH;
 
 	/* Built with json-c, which escapes as replies need, then kept as text. */
 	struct json_object *info = jb_object("name", json_object_new_string("askai"),
