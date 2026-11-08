@@ -17,7 +17,6 @@
 #include "manual.h"
 #include "metrics.h"
 #include "task.h"
-#include "util.h"
 
 /* What a call renders at most, a histogram costing 8 and a value 1: a
  * histogram's buckets take a pass over all of its own.
