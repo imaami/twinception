@@ -532,7 +532,7 @@ autocomplete_property_init (struct autocomplete_property *property,
 		return error;
 	struct json_object *constant = nullptr;
 	uint64_t flags = autocomplete_type_flags(jb_get(schema, "type"));
-	if (schema && json_object_object_get_ex(schema, "const", &constant))
+	if (json_object_object_get_ex(schema, "const", &constant))
 		flags |= AUTOCOMPLETE_CONSTANT;
 	struct json_object *enumeration = jb_get(schema, "enum");
 	size_t count = 0;
@@ -1327,8 +1327,7 @@ autocomplete_entry_validate (struct autocomplete_entry const *entry,
 	struct json_object *required = jb_get(entry->root, "required");
 	for (size_t i = 0, count = jb_len(required); i < count; ++i) {
 		struct cstr_view key = autocomplete_json_text(json_object_array_get_idx(required, i));
-		struct json_object *unused = nullptr;
-		if (!json_object_object_get_ex(arguments, key.data, &unused))
+		if (!json_object_object_get_ex(arguments, key.data, nullptr))
 			return util_refuse(why, size, "Missing required tool argument: %.*s", (int)key.len, key.data);
 	}
 	return 0;
