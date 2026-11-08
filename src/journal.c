@@ -1106,6 +1106,7 @@ journal_submit (struct journal     *j,
 	}
 	*item = (struct journal_item){
 		.msg.fn    = journal_complete,
+		.hook      = list(&item->hook),
 		.record    = record,
 		.loop      = loop,
 		.done      = done,
@@ -1187,6 +1188,7 @@ journal_load_current (struct journal     *j,
 		return ENOMEM;
 	*item = (struct journal_item){
 		.msg.fn    = journal_complete,
+		.hook      = list(&item->hook),
 		.loop      = loop,
 		.loaded    = done,
 		.arg       = arg,
