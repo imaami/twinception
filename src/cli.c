@@ -448,7 +448,7 @@ cli_history_work (struct cli_io_job *job)
 	struct cli_history_work *work = container_of(job, struct cli_history_work, work.job);
 	switch (work->operation) {
 	case CLI_HISTORY_OPEN: {
-		int e = 0;
+		int e;
 		work->state = cli_state_create(work->path, work->text, work->cancel, &e);
 		return e;
 	}

@@ -680,7 +680,7 @@ autocomplete_add_tool (struct autocomplete *ac,
 		.root = schema,
 	};
 	size_t schema_size = 0;
-	int error = 0;
+	int error;
 	if (entry.root && !json_object_to_json_string_length(entry.root, JSON_C_TO_STRING_PLAIN, &schema_size)) {
 		error = ENOMEM;
 		goto fail;
@@ -1385,7 +1385,7 @@ autocomplete_parse_pairs (struct autocomplete             *ac,
 			return util_refuse(why, size, "Unknown tool argument: %.*s", (int)key.len, key.data);
 		/* Without a property, flags is 0, and every type is valid. */
 		uint64_t flags = property ? property->flags : 0;
-		struct json_object *converted = nullptr;
+		struct json_object *converted;
 		error = autocomplete_convert(ac, cstr_view_slice(line, token.equals + 1, token.end - token.equals - 1),
 		                             flags, &converted);
 		if (error) {
@@ -1441,7 +1441,7 @@ autocomplete_parse_call (struct autocomplete             *ac,
 	}
 	struct cstr_view rest = ac->tokens.n > 2 ? cstr_view_slice(line, tokens[2].begin, SIZE_MAX)
 	                                         : (struct cstr_view){};
-	struct json_object *result = nullptr;
+	struct json_object *result;
 	if (rest.len && rest.data[0] == '{') {
 		error = autocomplete_json_parse(ac, rest, &result);
 		if (error) {

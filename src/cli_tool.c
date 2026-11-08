@@ -43,7 +43,7 @@ cli_tool_create (struct cli_client  *client,
 {
 	static constexpr uint32_t writes = 1U << NOTES_ACTION_ADD | 1U << NOTES_ACTION_COPY | 1U << NOTES_ACTION_DELETE |
 	                                   1U << NOTES_ACTION_REPLACE | 1U << NOTES_ACTION_RESTORE;
-	struct autocomplete_tool const *entry = nullptr;
+	struct autocomplete_tool const *entry;
 	cli_json_auto arguments = nullptr;
 	*e = autocomplete_parse_call(client->catalog, command, &entry, &arguments,
 	                             error->data, sizeof error->data);

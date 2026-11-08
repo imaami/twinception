@@ -452,8 +452,8 @@ cli_state_read_turns (struct cli_state *state,
 
 	state->turns_used = (struct tally){ count, CLI_STATE_TURN_BYTES - budget };
 
-	char trailing = '\0';
-	size_t got = 0;
+	char trailing;
+	size_t got;
 	int e = util_read_all(fd, &trailing, 1, -1, &got);
 
 	return !e && got ? EINVAL : e;
