@@ -34,7 +34,8 @@ TESTS = """
     check check-ai check-askai check-buf check-cdb check-cli check-completion check-cstr-view
     check-datauri
     check-dstr check-git-run check-jb
-    check-handle check-instance check-journal check-ledger check-load check-ref check-review
+    check-handle check-instance check-journal check-ledger check-load check-member check-ref
+    check-review
     check-store check-turn
     load load-build
 """.split()

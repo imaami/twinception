@@ -5,11 +5,11 @@ $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-ai check-askai check-buf check-cdb check-cli check-completion \
         check-cstr-view check-datauri check-dstr check-git-run check-jb check-handle check-instance check-journal check-ledger check-load \
-        check-ref check-review check-store check-turn load load-build
+        check-member check-ref check-review check-store check-turn load load-build
 default:; @:
 check: | check-completion check-askai check-cli check-ai check-jb check-cdb check-buf \
          check-datauri check-handle check-turn check-instance check-git-run check-journal check-ledger \
-         check-ref check-review check-store check-dstr check-load
+         check-member check-ref check-review check-store check-dstr check-load
 
 # Nothing below this comment is defined when tab-completing.
 
@@ -246,6 +246,20 @@ $Otests/store: $Otests/store.c.o $Otests/src/store.c.o $Otests/src/child.c.o \
                $Otests/src/loop.c.o $Otests/src/log.c.o $Otests/src/buf.c.o \
                $Otests/src/cstr_view.c.o $Otests/src/dstr.c.o $Otests/src/git_run.c.o
 $Otests/store:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
+
+# Unit tests of the members of the session, src/member.c. The test runs
+# git in new repositories in a temporary directory, runs a loop and
+# blockers, and replaces mcp_slot_spawn() and mcp_slot_loop().
+check-member: $Otests/member
+	@directory=$$(mktemp -d) || exit 1; \
+	trap 'rm -rf "$$directory"' EXIT; \
+	"$<" "$$directory"
+
+$Otests/member: $Otests/member.c.o $Otests/src/member.c.o $Otests/src/store.c.o \
+                $Otests/src/blocker.c.o $Otests/src/child.c.o $Otests/src/loop.c.o \
+                $Otests/src/log.c.o $Otests/src/buf.c.o $Otests/src/cstr_view.c.o \
+                $Otests/src/dstr.c.o $Otests/src/git_run.c.o
+$Otests/member:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
 
 # The unit tests. Each test links the object of its own source and the
 # objects of the files of src/ that the lines below list.
