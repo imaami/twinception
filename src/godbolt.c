@@ -649,8 +649,7 @@ struct godbolt {
 	                                           of a compilation */
 	struct godbolt_record        rec;       /* the record being written */
 	struct godbolt_args          args;      /* the arguments, copied to
-	                                           blob, with the words in lower
-	                                           case */
+	                                           blob */
 	struct cstr_view             resp;      /* the body of the last response,
 	                                           valid until the next request.
 	                                           resp.data is not nullptr after
@@ -716,27 +715,16 @@ static_assert(GODBOLT_URL_MAX + sizeof "/api/compilers/" + 3 * GODBOLT_LANGUAGE_
 
 #undef GODBOLT_FIELDS
 
-/* Returns the lower-case form of the ASCII letter @p c, or @p c. */
-static char
-godbolt_lower (char c)
-{
-	return c >= 'A' && c <= 'Z' ? (char)(c | 0x20) : c;
-}
-
-/* Returns whether @p text contains @p word in any letter case. @p word is
- * in lower case and not empty.
+/* Returns whether @p text contains @p word. The comparison ignores the case
+ * of ASCII letters.
  */
 static bool
 godbolt_has (struct cstr_view text,
              struct cstr_view word)
 {
-	for (size_t i = 0; i + word.len <= text.len; ++i) {
-		size_t k = 0;
-		while (k < word.len && godbolt_lower(text.data[i + k]) == word.data[k])
-			++k;
-		if (k == word.len)
+	for (size_t i = 0; i + word.len <= text.len; ++i)
+		if (cstr_view_starts_case(cstr_view_slice(text, i, SIZE_MAX), word))
 			return true;
-	}
 	return false;
 }
 
@@ -2774,11 +2762,11 @@ godbolt_copy (char             **p,
 
 /* Allocates the state of a call of the tool @p tool on the loop @p loop,
  * with copies of the texts of @p a, and counts the copies as LOOP_COPY
- * work. The words of match are copied in lower case. An empty source
- * becomes "\n", as in godbolt-c. The source of godbolt_targets is the
- * probe, after a line that makes the compiler include the target headers
- * if the argument headers is true. Returns the state. On failure it
- * returns nullptr and stores ENOMEM in @p *e.
+ * work. The function replaces an empty source with "\n", as godbolt-c
+ * does. The source of godbolt_targets is the probe. If the argument
+ * headers is true, GODBOLT_HEADERS_LINE comes before the probe, so that
+ * the compiler includes the target headers. Returns the state. On failure
+ * the function returns nullptr and stores ENOMEM in @p *e.
  */
 static struct godbolt *
 godbolt_create (struct godbolt_args const *a,
@@ -2790,15 +2778,11 @@ godbolt_create (struct godbolt_args const *a,
 	                            ? CSTR_VIEW(GODBOLT_HEADERS_LINE) : (struct cstr_view){};
 	struct cstr_view const source = tool == GODBOLT_TARGETS ? godbolt_probe_source()
 	                              : a->source.len ? a->source : CSTR_VIEW("\n");
-	size_t bytes = a->language.len + head.len + source.len;
-	for (size_t i = 0; i < array_size(a->values); ++i)
-		bytes += a->values[i].len;
-	for (uint8_t i = 0; i < a->n_ids; ++i)
-		bytes += a->ids[i].len;
-	for (uint8_t i = 0; i < a->n_strings; ++i)
-		bytes += a->strings[i].len;
-	for (uint8_t i = 0; i < a->n_words; ++i)
-		bytes += a->words[i].len;
+	size_t const bytes = a->language.len + head.len + source.len +
+	                     cstr_view_total(a->values, array_size(a->values)) +
+	                     cstr_view_total(a->ids, a->n_ids) +
+	                     cstr_view_total(a->strings, a->n_strings) +
+	                     cstr_view_total(a->words, a->n_words);
 	struct godbolt *call = malloc(sizeof *call + bytes);
 	struct json_tokener *tok = call ? json_tokener_new() : nullptr;
 	if (!tok) {
@@ -2821,11 +2805,8 @@ godbolt_create (struct godbolt_args const *a,
 		call->args.ids[i] = godbolt_copy(&p, a->ids[i]);
 	for (uint8_t i = 0; i < a->n_strings; ++i)
 		call->args.strings[i] = godbolt_copy(&p, a->strings[i]);
-	for (uint8_t i = 0; i < a->n_words; ++i) {
-		call->args.words[i] = (struct cstr_view){ p, a->words[i].len };
-		for (size_t k = 0; k < a->words[i].len; ++k)
-			*p++ = godbolt_lower(a->words[i].data[k]);
-	}
+	for (uint8_t i = 0; i < a->n_words; ++i)
+		call->args.words[i] = godbolt_copy(&p, a->words[i]);
 	call->args.language = godbolt_copy(&p, a->language);
 	call->args.source = (struct cstr_view){ p, head.len + source.len };
 	p = godbolt_cat(godbolt_cat(p, head), source);
