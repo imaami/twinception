@@ -2227,16 +2227,17 @@ config_description (struct config *cfg)
 		who = "the AI model ";
 		model = cfg->ep.model;
 	}
-	if (config_aprintf(&cfg->description, "Ask %s%s a question or give it a task, and "
-	                   "get its answer. It cannot see this conversation, your files or "
-	                   "your tools, so write a complete, self-contained prompt.%s%s Use "
-	                   "it for a second opinion, for hard problems, or for knowledge "
-	                   "you lack.", who, model,
-	                   lent ? " It may use some of this server's tools itself, and its "
-	                          "answer lists the calls it made." : "",
+	if (config_aprintf(&cfg->description, "Send a question or a task to %s%s. The other "
+	                   "AI cannot see this conversation, your files or your tools. Write "
+	                   "a complete prompt with all context.%s%s Use the tool for a second "
+	                   "opinion, for hard problems, or for knowledge that you lack.", who,
+	                   model,
+	                   lent ? " The other AI can call some tools of this server. After the "
+	                          "answer, the result lists the tool calls of the other AI." : "",
 	                   lent & notes
-	                   ? " It keeps notes in the shared session repository. Each call "
-	                     "loads its notes and can read the other participants' notes."
+	                   ? " The other AI writes notes in the shared session repository. "
+	                     "Each call starts with the notes from your earlier calls. The "
+	                     "other AI can read the notes of other participants."
 	                   : ""))
 		return config_oom(cfg);
 	cfg->tool.description = cfg->description;

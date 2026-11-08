@@ -5404,8 +5404,9 @@ def check_allow(binary, up):
                 # The default description of the ask tool, and its argument
                 # thread, follow what the turns get.
                 ask = listed[0]
-                assert ("It may use some of this server's tools" in ask["description"],
-                        "It keeps notes in the shared session repository" in ask["description"],
+                assert ("The other AI can call some tools of this server" in ask["description"],
+                        "The other AI writes notes in the shared session repository" in
+                        ask["description"],
                         "thread" in ask["inputSchema"]["properties"]) == \
                     (bool(turns), "notes" in turns, "notes" in turns), (tools, ask)
                 if turns and "notes" not in turns:
@@ -13815,8 +13816,9 @@ def check_turns(binary, up):
             ai.wait_log(r"upstream context: 6000 tokens \(llama-server's /props\)")
             assert any("upstream slots: 1 (--slots)" in line for line in ai.log), ai.log
             description = ai.rpc("tools/list")[2]["result"]["tools"][0]["description"]
-            assert "It may use some of this server's tools itself" in description and \
-                "It keeps notes in the shared session repository" in description, description
+            assert "The other AI can call some tools of this server." in description and \
+                "The other AI writes notes in the shared session repository." in description, \
+                description
             # help names the window that the turn takes.
             script[:] = [lambda r: (200, turn_stream([
                 ("a", "git", json.dumps(show)),
@@ -14516,10 +14518,10 @@ def check_review(binary, up):
             [tool] = [t for t in ai.rpc("tools/list")[2]["result"]["tools"]
                       if t["name"] == "ask_ai"]
             assert tool["inputSchema"]["properties"]["thread"]["description"] == (
-                "Optional ask-chain id from an earlier answer: 32 hexadecimal digits. The "
-                "call starts with the chain's review record, if it has one. Notes are "
-                "shared by repository path and loaded at the start of every ask, "
-                "independently of this argument."), tool
+                "An ask-chain thread ID from an earlier answer, 32 hexadecimal digits. The "
+                "call starts with the review record of the thread, if a review record "
+                "exists for the thread. Every call loads the notes, with or without "
+                "thread."), tool
             script[:] = [mixed(("git", read("src/a.c", 1, 20))),
                          mixed(("findings", add("C1", "src/a.c:5")),
                                ("findings", {"action": "add", "claim": "C2"}))]

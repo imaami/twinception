@@ -7766,8 +7766,8 @@ mcp_tool_definition (void const *service)
 	struct cstr_view const keys[] = { CSTR_VIEW("role"), CSTR_VIEW("content") };
 	struct json_object *props = jb_object(
 		"prompt", schema_property("string",
-			"The new question or task. Include the context it needs, or supply "
-			"earlier user and assistant turns in messages for a continuing chat."),
+			"The question or the task. Include all context that the other AI "
+			"needs. For a continuing chat, give the earlier turns in messages."),
 		"system", schema_property("string",
 			"Optional system instructions for the other AI, such as a role "
 			"or an answer format."),
@@ -7779,40 +7779,41 @@ mcp_tool_definition (void const *service)
 				          nullptr),
 				keys, array_size(keys)),
 			CHAT_HISTORY,
-			"Earlier visible chat messages, in order, before the new prompt. "
-			"Each has role user or assistant and plain string content. The "
-			"client retains this history; thread does not retain messages."),
+			"Earlier chat messages before the prompt, oldest first. Each message "
+			"is an object with role (user or assistant) and content (a string). "
+			"askai does not store messages. Give the whole history in every "
+			"call."),
 		"background", schema_property("boolean",
-			"False waits for the answer on this connection. True requires server "
-			"background mode and returns a job id. Omission follows the server "
-			"setting, unless live streaming is requested."),
+			"With false, the call waits for the answer. With true, the call "
+			"starts a job and returns the job ID at once. true works only in "
+			"server background mode and without live streaming. The default is "
+			"true in server background mode without live streaming, else false."),
 		nullptr);
 	if (st->lending.of[KIND_NOTES])
 		props = jb_set_or_free(props, "thread", schema_property("string",
-			"Optional ask-chain id from an earlier answer: 32 hexadecimal "
-			"digits. The call starts with the chain's review record, if it has "
-			"one. Notes are shared by repository path and loaded at the start "
-			"of every ask, independently of this argument."));
+			"An ask-chain thread ID from an earlier answer, 32 hexadecimal "
+			"digits. The call starts with the review record of the thread, if a "
+			"review record exists for the thread. Every call loads the notes, "
+			"with or without thread."));
 	if (st->ep->background) {
 		props = jb_set_or_free(props, "job", schema_property("string",
-			"The job id returned by this tool. Give job instead of prompt, "
-			"system or thread to check its status or read its completed result."));
+			"A job ID that an earlier call returned. Give job instead of prompt "
+			"to get the status or the result of the job."));
 		props = jb_set_or_free(props, "action", jb_set_or_free(schema_enum(
 			schema_names(actions + ACTION_RESULT, array_size(actions) - ACTION_RESULT),
-			"With job: result checks its status or returns its completed "
-			"answer; cancel stops the job. Omit action to use result."),
+			"What to do with the job. result returns the status or the answer of "
+			"the job. cancel stops the job. The default is result."),
 			"default", json_object_new_string("result")));
 	}
 	return jb_object(
 		"name", json_object_new_string(st->tool->name),
 		"title", json_object_new_string("Ask AI"),
 		"description", schema_text3(st->tool->description, st->ep->background
-			? "\n\nWith prompt, start a job and return its id immediately. The job "
-			  "keeps running after this connection closes. Later call this same "
-			  "tool with job and no prompt to check its status or read its result; "
-			  "action cancel stops it. Results are kept for up to an hour after "
-			  "completion. Set background false to wait for the answer on this "
-			  "connection."
+			? "\n\nA call with prompt starts a job and returns the job ID at once. "
+			  "The job continues after the connection closes. For the status or "
+			  "the answer, call the tool again with job and without prompt. action "
+			  "cancel stops the job. askai stores the answer for up to an hour "
+			  "after the job ends. Give background false to wait for the answer."
 			: "", ""),
 		"inputSchema", schema_object(props, &CSTR_VIEW("prompt"),
 		                             st->ep->background ? 0 : 1),

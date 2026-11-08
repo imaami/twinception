@@ -863,17 +863,18 @@ offer a model a choice, such as `ask_reasoner` and `ask_coder`.
 The value is a string. `askai` computes the default from `model`,
 `upstream-tools` and `tools.notes.directory`:
 
-> Ask another AI model a question or give it a task, and get its answer. It
-> cannot see this conversation, your files or your tools, so write a
-> complete, self-contained prompt. Use it for a second opinion, for hard
-> problems, or for knowledge you lack.
+> Send a question or a task to another AI model. The other AI cannot see
+> this conversation, your files or your tools. Write a complete prompt with
+> all context. Use the tool for a second opinion, for hard problems, or for
+> knowledge that you lack.
 
-With `model` set to M, the text begins with "Ask the AI model M". If the
-turns of an `ask_ai` call can get a tool, `askai` adds "It may use some of
-this server's tools itself, and its answer lists the calls it made." after
-the second sentence. If they can get `notes`, it then also adds "It keeps
-notes in the shared session repository. Each call loads its notes and can
-read the other participants' notes." The turns can get
+With `model` set to M, the first sentence ends with "to the AI model M". If
+the turns of an `ask_ai` call can get a tool, `askai` adds "The other AI can
+call some tools of this server. After the answer, the result lists the tool
+calls of the other AI." after the third sentence. If they can get `notes`,
+it then also adds "The other AI writes notes in the shared session
+repository. Each call starts with the notes from your earlier calls. The
+other AI can read the notes of other participants." The turns can get
 a tool with `upstream-tools`, when `askai` offers a tool that it can lend
 and `tools` allows the upstream that tool.
 
