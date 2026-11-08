@@ -1335,13 +1335,15 @@ mcp_shown_object (struct mcp_shown   *w,
 		bool const size = s.data && ((sized && !strcmp(it.key, sized)) ||
 		                             cstr_view_starts_case(s, CSTR_VIEW("data:")));
 		char text[40];
+		struct cstr_view const note = size ? util_format_view(text, sizeof text,
+		                                                      "\"(%zu byte%s)\"",
+		                                                      s.len, util_s(s.len))
+		                                   : (struct cstr_view){};
 		bool const fits = mcp_shown_put(w, sep) &&
 		                  mcp_shown_put(w, ESC_VIEW(cstr_view(it.key))) &&
 		                  mcp_shown_put(w, FRAG("\":")) &&
 		                  (!size ? mcp_shown_value(w, it.val, nullptr)
-		                   : mcp_shown_put(w, BYTES(util_format_view(text, sizeof text,
-		                                                             "\"(%zu byte%s)\"",
-		                                                             s.len, util_s(s.len)))));
+		                   : mcp_shown_put(w, BYTES(note)));
 		if (!fits)
 			return false;
 		sep = FRAG(",\"");
