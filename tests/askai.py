@@ -10511,7 +10511,7 @@ def check_code(binary, up):
                     return (f.read(), os.stat(f"{tree}/tree/src/a.c").st_mtime_ns,
                             os.stat(f"{tree}/tree/src/b.c").st_mtime_ns)
             assert call(ai, **outline, path="src/b.c", revision="HEAD~1") == (
-                f"[proj at {parent}: src/b.c, 1 name.]\n"
+                f"[Repository proj, file src/b.c at commit {parent}. 1 name.]\n"
                 "1 variable b_value: int\n")
             first = times()
             assert first[0] == parent, first
@@ -10520,17 +10520,17 @@ def check_code(binary, up):
             call(ai, **outline, path="src/b.c", revision="HEAD~1")
             assert times() == first
             assert call(ai, **outline, path="src/b.c") == (
-                f"[proj at {head}: src/b.c, 2 names.]\n"
+                f"[Repository proj, file src/b.c at commit {head}. 2 names.]\n"
                 "1 variable b_value: int\n2 variable b_more: int\n")
             now = times()
             assert now[0] == head and now[1] == first[1] and now[2] != first[2], now
             # Only committed files are used: the uncommitted header and the
             # flags in compile_flags.txt and CPATH change nothing.
             assert call(ai, **outline, path="src/a.c") == (
-                f"[proj at {head}: src/a.c, 1 name.]\n"
+                f"[Repository proj, file src/a.c at commit {head}. 1 name.]\n"
                 "13 static function count: int (int) (12-16)\n")
             assert call(ai, **outline, path="src/a.h") == (
-                f"[proj at {head}: src/a.h, 2 names.]\n"
+                f"[Repository proj, file src/a.h at commit {head}. 2 names.]\n"
                 "1 macro A_ONE\n2 struct pair (2-5)\n")
             # An export that did not finish is done again.
             with open(f"{tree}/commit", "w") as f:
@@ -10543,7 +10543,7 @@ def check_code(binary, up):
             # the helper, and a .c file that is not in the compile commands
             # is refused.
             assert call(ai, **outline, path="src/pragma.c") == (
-                f"[proj at {head}: src/pragma.c, 1 name.]\n"
+                f"[Repository proj, file src/pragma.c at commit {head}. 1 name.]\n"
                 "7 variable survived: int\n")
             assert call(ai, error=True, **outline, path="src/deep.c") == \
                 "askai-code was killed by signal 11."
@@ -10596,7 +10596,7 @@ def check_code(binary, up):
             assert call(ai, error=True, **outline, path="src/a.c", revision="slow") == \
                 f"git cannot export commit {slow} in time."
             assert call(ai, **outline, path="src/b.c") == (
-                f"[proj at {head}: src/b.c, 2 names.]\n"
+                f"[Repository proj, file src/b.c at commit {head}. 2 names.]\n"
                 "1 variable b_value: int\n2 variable b_more: int\n")
     print("code: off reasons, refusals, request, statuses, deadline, cap, outline of "
           "an export, its cache, its limits, describe, diagnostics and confinement: PASS")
@@ -10612,9 +10612,9 @@ def check_code_describe(binary, up, call, head, d, cdb):
         def describe(error=False, **arguments):
             return call(ai, error=error, repo="proj", action="describe", path="src/lay.c",
                         **arguments)
-        at = f"[proj at {head}: "
+        at = f"[Repository proj, file src/lay.c at commit {head}. "
         assert describe(name="struct holes") == (
-            f"{at}struct holes in the translation unit of src/lay.c.]\n"
+            f"{at}struct holes in the translation unit.]\n"
             "struct holes: 12 bytes, alignment 4, 6 bytes of padding, " +
             describe(name="struct holes").split("padding, ")[1].split("\n")[0] + "\n"
             "defined src/lay.h:3\n"
@@ -10649,7 +10649,7 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "      0      8      4     25  (anonymous struct)\n"
             "      0      4      4     26    a: int\n"
             "      4      1      1     27    b: char\n"
-            "      5      3                  (padding at the end of this member)\n"
+            "      5      3                  (padding at the end of the member)\n"
             "      8      1      1     29  c: char\n"
             "      9      3                (padding at the end)\n"), rows
         # gcc places the members at the same offsets.
@@ -10685,7 +10685,7 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # calls, and the lines of its head with its comment.
         text = describe(name="lay_sum")
         assert re.fullmatch(
-            re.escape(f"{at}function lay_sum in the translation unit of src/lay.c.]\n"
+            re.escape(f"{at}function lay_sum in the translation unit.]\n"
                       "function lay_sum: int (struct holes *)\n"
                       "defined src/lay.c:18\ncalls:\n"
                       "  src/lay.c:20,21 lay_add (src/lay.h:46)\n"
@@ -10699,7 +10699,7 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # A macro, and its value at the use on a given line. A local
         # variable by its line.
         assert re.fullmatch(
-            re.escape(f"{at}macro LAY_COUNT in the translation unit of src/lay.c.]\n"
+            re.escape(f"{at}macro LAY_COUNT in the translation unit.]\n"
                       "macro LAY_COUNT\ndefined src/lay.c:5\nat src/lay.c:7: an "
                       "expression of type ") + "(__size_t|unsigned long)" +
             re.escape(", value 3\nsrc/lay.c line 5 of 25:\n"
@@ -10734,13 +10734,14 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # including those in headers, and a message with a newline printed
         # on one line.
         diagnostics = {"repo": "proj", "action": "diagnostics", "path": "src/warn.c"}
+        warn = f"[Repository proj, file src/warn.c at commit {head}. "
         assert call(ai, **diagnostics) == (
-            f"{at}diagnostics of src/warn.c with the build's flags: 1 error, 1 warning.]\n"
+            f"{warn}1 error and 1 warning with the flags of the build.]\n"
             "src/warn.c:2: warning: first line\\n[forged line] [-W#pragma-messages]\n"
             "src/warn.c:4: error: use of undeclared identifier 'missing'\n")
         assert call(ai, **diagnostics, warnings=["-Wpadded", "-Wsign-conversion"]) == (
-            f"{at}diagnostics of src/warn.c with the build's flags and -Wpadded "
-            "-Wsign-conversion: 1 error, 5 warnings.]\n"
+            f"{warn}1 error and 5 warnings with the flags of the build and -Wpadded "
+            "-Wsign-conversion.]\n"
             "src/lay.h:25: warning: padding size of 'struct trail::(anonymous at "
             "src/lay.h:25)' with 3 bytes to alignment boundary [-Wpadded]\n"
             "src/warn.c:2: warning: first line\\n[forged line] [-W#pragma-messages]\n"
@@ -10763,12 +10764,13 @@ def check_code_describe(binary, up, call, head, d, cdb):
         text = call(ai, repo="proj", action="describe", path="src/big.c", name="struct big")
         rows = text.split("member: type\n")[1].split("\nsrc/big.c lines")[0].split("\n")
         assert len(rows) == 2001 and rows[-1] == \
-            "[18000 more members; describe struct.member.]", rows[-3:]
+            "[18000 more members. Call describe with name struct.member for one member.]", \
+            rows[-3:]
         assert "struct big: 80000 bytes, alignment 4, at least 0 bytes of padding" in text
         # Places and lines are named by the path of the file, without the .
         # and .. of the #include.
         text = call(ai, repo="proj", action="describe", path="src/far.c", name="far_value")
-        assert "declared src/sub/far.h:2\nnot defined in this translation unit\n" \
+        assert "declared src/sub/far.h:2\nnot defined in the translation unit\n" \
             "src/sub/far.h line 2 of 2:\n" in text, text
         # An #include of a file outside the repository fails unless
         # --code-unconfined is set.
@@ -10780,7 +10782,7 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # diagnostics reports a file outside the tree as not found, as if it
         # did not exist.
         text = call(ai, repo="proj", action="diagnostics", path="src/leak.c")
-        assert "1 error, 0 warnings.]\n" in text and "secret.h' file not found" in text and \
+        assert "1 error and 0 warnings with" in text and "secret.h' file not found" in text and \
             "Permission denied" not in text and "SECRET" not in text, text
     with Askai(binary, "-u", up.url(), "--git", f"{d}/proj", "--code", f"proj={cdb}",
                "--code-unconfined") as ai:

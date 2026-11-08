@@ -301,11 +301,15 @@ cxi_shown (CXCursor c)
 	return clang_Cursor_isNull(d) ? c : d;
 }
 
+/* Appends the start of the first line of the answer: the repository, the
+ * file and the commit.
+ */
 static void
 cxi_head (struct cxi *x)
 {
-	cxi_out_printf(&x->out, "[%s at %s: ", x->key[CXI_KEY_REPO].data,
-	               x->key[CXI_KEY_COMMIT].data);
+	cxi_out_printf(&x->out, "[Repository %s, file ", x->key[CXI_KEY_REPO].data);
+	cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
+	cxi_out_printf(&x->out, " at commit %s. ", x->key[CXI_KEY_COMMIT].data);
 }
 
 /* Cursors that a visitor collects; a failed push sets out->e. */
@@ -362,8 +366,7 @@ cxi_outline (struct cxi *x)
 	if (list.n)
 		qsort(list.items, list.n, sizeof *list.items, cxi_order);
 	cxi_head(x);
-	cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-	cxi_out_printf(&x->out, ", %zu name%s.]\n", list.n, util_s(list.n));
+	cxi_out_printf(&x->out, "%zu name%s.]\n", list.n, util_s(list.n));
 	for (size_t i = 0; i < list.n; ++i) {
 		CXCursor const c = list.items[i];
 		enum CXCursorKind const k = clang_getCursorKind(c);
@@ -690,7 +693,7 @@ cxi_layout_record (struct cxi_layout *l,
 	long long const size = clang_Type_getSizeOf(type);
 	if (in.rows && size > 0)
 		cxi_layout_padding(&in, in.end, base + 8 * (uint64_t)size, depth
-		                   ? "padding at the end of this member" : "padding at the end");
+		                   ? "padding at the end of the member" : "padding at the end");
 	l->padding = in.padding;
 	l->rows = in.rows;
 	l->hidden = in.hidden;
@@ -708,8 +711,8 @@ cxi_layout (struct cxi     *x,
 	cxi_out_printf(rows, " offset   size  align   line  member: type\n");
 	cxi_layout_record(&l, type, 0, 0);
 	if (l.hidden)
-		cxi_out_printf(rows, "[%" PRIu64 " more members; describe struct.member.]\n",
-		               l.hidden);
+		cxi_out_printf(rows, "[%" PRIu64 " more members. Call describe with name "
+		               "struct.member for one member.]\n", l.hidden);
 	cxi_out_printf(&x->out, ": %lld bytes, alignment %lld, %s%" PRIu64 " byte%s",
 	               clang_Type_getSizeOf(type), clang_Type_getAlignOf(type),
 	               l.rows ? "" : "at least ", l.padding / 8, util_s(l.padding / 8));
@@ -1176,9 +1179,7 @@ cxi_describe (struct cxi *x)
 		cxi_out_printf(&x->out, "%s.%s", name, member);
 	else
 		cxi_out_name(&x->out, c);
-	cxi_out_printf(&x->out, " in the translation unit of ");
-	cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-	cxi_out_printf(&x->out, ".]\n");
+	cxi_out_printf(&x->out, " in the translation unit.]\n");
 	struct cxi_out rows = { .text = DSTR_INIT, .tree = x->out.tree };
 	if (k == CXCursor_FieldDecl)
 		cxi_member(x, shown);
@@ -1186,7 +1187,7 @@ cxi_describe (struct cxi *x)
 		cxi_summary(x, &rows, shown);
 	if (!defined) {
 		cxi_out_place(&x->out, "declared ", clang_getCursorLocation(first), "\n");
-		cxi_out_printf(&x->out, "not defined in this translation unit\n");
+		cxi_out_printf(&x->out, "not defined in the translation unit\n");
 	} else {
 		if (!clang_equalCursors(shown, first))
 			cxi_out_place(&x->out, "declared ", clang_getCursorLocation(first), "\n");
@@ -1252,13 +1253,11 @@ cxi_diagnostics (struct cxi *x)
 		clang_disposeDiagnostic(d);
 	}
 	cxi_head(x);
-	cxi_out_printf(&x->out, "diagnostics of ");
-	cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-	cxi_out_printf(&x->out, " with the build's flags");
+	cxi_out_printf(&x->out, "%u error%s and %u warning%s with the flags of the build",
+	               errors, util_s(errors), warnings, util_s(warnings));
 	for (size_t i = 0; i < x->n_warnings; ++i)
 		cxi_out_printf(&x->out, "%s%s", i ? " " : " and ", x->warning[i]);
-	cxi_out_printf(&x->out, ": %u error%s, %u warning%s.]\n", errors, util_s(errors),
-	               warnings, util_s(warnings));
+	cxi_out_printf(&x->out, ".]\n");
 	cxi_out_put(&x->out, dstr_get(&rows.text), dstr_len(&rows.text));
 	x->out.e = x->out.e ? x->out.e : rows.e;
 	dstr_cleanup(&rows.text);

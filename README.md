@@ -591,7 +591,7 @@ of the name, its kind, the type of a function, variable or typedef, and the
 first and last line of the declaration if they differ:
 
 ```text
-[proj at 1095916a86bd9dc0585d261ec87762fe6134de44: src/git_view.c, 13 names.]
+[Repository proj, file src/git_view.c at commit 1095916a86bd9dc0585d261ec87762fe6134de44. 13 names.]
 5 macro _GNU_SOURCE
 19 static variable git_view_template: const char[22]
 24 struct git_view (24-28)
@@ -613,7 +613,7 @@ the type and the value of the expression. This is `describe` of
 `struct review_file` in `src/review.c`:
 
 ```text
-[proj at 1095916a86bd9dc0585d261ec87762fe6134de44: struct review_file in the translation unit of src/review.c.]
+[Repository proj, file src/review.c at commit 1095916a86bd9dc0585d261ec87762fe6134de44. struct review_file in the translation unit.]
 struct review_file: 144 bytes, alignment 8, 3 bytes of padding, x86_64-pc-linux-gnu
 defined src/review.c:64
  offset   size  align   line  member: type
