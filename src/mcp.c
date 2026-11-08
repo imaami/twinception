@@ -998,6 +998,17 @@ mcp_req_enter (struct mcp_req *req,
 	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
+/* Queue the next slice of @p req if @p e is EAGAIN. Returns true if it did. */
+static bool
+mcp_req_again (struct mcp_req *req,
+               int             e)
+{
+	if (e != EAGAIN)
+		return false;
+	loop_ready_bulk(req->mcp->loop, &req->step);
+	return true;
+}
+
 /* Set the bits @p bits of req->flags if @p on is true, else clear them. */
 static void
 mcp_req_flag (struct mcp_req *req,
@@ -3001,10 +3012,8 @@ static void
 mcp_req_build (struct mcp_req *req)
 {
 	int e = mcp_req_build_slice(req);
-	if (e == EAGAIN) {
-		loop_ready_bulk(req->mcp->loop, &req->step);
+	if (mcp_req_again(req, e))
 		return;
-	}
 	if (e) {
 		mcp_req_error(req, 500, INTERNAL_ERROR,
 		              FRAG(start_failed), nullptr, 0);
@@ -4396,10 +4405,8 @@ mcp_req_turn_args (struct mcp_req *req)
 		struct job_call h;
 		struct ai_call c = job_call_parts(&h, buf_peek(&req->job->calls[req->part]).ptr);
 		int e = mcp_req_turn_arg(req, c.args);
-		if (e == EAGAIN) {
-			loop_ready_bulk(req->mcp->loop, &req->step);
+		if (mcp_req_again(req, e))
 			return;
-		}
 		if (e) {
 			mcp_req_fail(req, e);
 			return;
@@ -4551,13 +4558,10 @@ static void mcp_req_doze (struct mcp_req *req);
 static void
 mcp_req_turn_write (struct mcp_req *req)
 {
-	struct loop *loop = req->mcp->loop;
 	for (; req->part <= req->n_calls + 1u; ++req->part) {
 		int e = mcp_req_turn_part(req);
-		if (e == EAGAIN) {
-			loop_ready_bulk(loop, &req->step);
+		if (mcp_req_again(req, e))
 			return;
-		}
 		if (e) {
 			mcp_req_upload_failed(req, e);
 			return;
@@ -5876,10 +5880,8 @@ mcp_req_result_write (struct mcp_req *req)
 	struct job_call h;
 	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls[req->part]).ptr);
 	int e = mcp_req_result_put(req, &c);
-	if (e == EAGAIN) {
-		loop_ready_bulk(req->mcp->loop, &req->step);
+	if (mcp_req_again(req, e))
 		return;
-	}
 	if (e) {
 		mcp_req_upload_failed(req, e);
 		return;
@@ -6325,10 +6327,8 @@ mcp_req_add_write (struct mcp_req *req)
 		BYTES(f->end),
 	};
 	int e = mcp_req_upload(req, p, array_size(p));
-	if (e == EAGAIN) {
-		loop_ready_bulk(req->mcp->loop, &req->step);
+	if (mcp_req_again(req, e))
 		return;
-	}
 	if (e == ENOBUFS && !wake) {
 		mcp_req_error(req, 500, INTERNAL_ERROR,
 		              FRAG("The task and its notes do not fit the upstream request"),
@@ -7233,15 +7233,12 @@ mcp_req_slice (struct mcp_req   *req,
 static void
 mcp_req_parse (struct mcp_req *req)
 {
-	struct loop *loop = req->mcp->loop;
 	bool whole = !req->parser.off;
 	struct span body = buf_peek(&req->body);
 	int e = mcp_req_slice(req, &req->mcp->pool,
 	                      (struct cstr_view){ (char const *)body.ptr, body.len });
-	if (e == EAGAIN) {
-		loop_ready_bulk(loop, &req->step);
+	if (mcp_req_again(req, e))
 		return;
-	}
 	buf_fini(&req->body);
 	if (e == ENOMEM) {
 		mcp_req_fail(req, e);
@@ -7251,7 +7248,7 @@ mcp_req_parse (struct mcp_req *req)
 	if (whole)
 		mcp_req_dispatch(req);
 	else
-		loop_ready_bulk(loop, &req->step);
+		loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
 static void
@@ -7371,10 +7368,8 @@ static void
 mcp_req_metrics (struct mcp_req *req)
 {
 	int e = metrics_render(req->mcp->metrics, &req->off, &req->reply);
-	if (e == EAGAIN) {
-		loop_ready_bulk(req->mcp->loop, &req->step);
+	if (mcp_req_again(req, e))
 		return;
-	}
 	mcp_req_close(req, 200, SPAN("Content-Type: text/plain; version=0.0.4; "
 	                             "charset=utf-8\r\n"), e);
 }
