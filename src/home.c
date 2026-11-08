@@ -2471,9 +2471,8 @@ home_wait (struct home           *home,
 			return ENOMEM;
 		*p = (struct home_principal){
 			.node.hash = home->flags & HOME_FIFO ? c : job->principal,
-			.class = c
+			.jobs = list(&p->jobs), .class = c
 		};
-		list_init(&p->jobs);
 		htab_link(&home->whom, &p->node);
 		list_append(&home->ring[c], &p->ring);
 		hist_add(&home->metrics->principals, 1);

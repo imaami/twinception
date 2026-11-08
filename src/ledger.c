@@ -152,9 +152,8 @@ ledger_owner_get (struct ledger *l,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*o = (struct ledger_owner){ .node.hash = key };
-	list_init(&o->records);
-	list_init(&o->waits);
+	*o = (struct ledger_owner){ .records = list(&o->records), .waits = list(&o->waits),
+	                            .node.hash = key };
 	htab_link(&l->owners, &o->node);
 	l->n_anonymous += (key & LEDGER_ANONYMOUS) != 0;
 	return o;
