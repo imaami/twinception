@@ -1066,9 +1066,7 @@ policy_log_identities (struct json_object *ids)
 	LOG_ALL(LOG_INFO, "identities:");
 	struct json_object_iter it;
 	json_object_object_foreachC(ids, it) {
-		struct json_object *role = nullptr;
-		json_object_object_get_ex(it.val, "role", &role);
-		char const *name = json_object_get_string(role);
+		char const *name = json_object_get_string(jb_get(it.val, "role"));
 		LOG_ALL(LOG_INFO, "  %-*s  role %s", width, it.key, name ? name : "none");
 	}
 }
