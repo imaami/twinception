@@ -1169,11 +1169,13 @@ notes_tool_got_grep (struct mcp_slot *slot)
 	}
 	struct cstr_view const lines = cstr_view_dstr(&found);
 	char const *repo = notes_tool_call_notebook(call);
-	e = e ? e : !dstr_printf(call->text, "Notebook %s — lines that match the pattern "
-	                         "(file:line:text):\n\n", notes_selector(repo)) ? ENOMEM
-	  : lines.len ? notes_tool_show(call->text, lines)
-	  : cstr_view_cat(CSTR_VIEW("No line of the current notes matches the pattern.\n"),
-	                  call->text);
+	if (!e)
+		e = dstr_printf(call->text, "Notebook %s — lines that match the pattern "
+		                "(file:line:text):\n\n", notes_selector(repo)) ? 0 : ENOMEM;
+	if (!e)
+		e = lines.len ? notes_tool_show(call->text, lines)
+		  : cstr_view_cat(CSTR_VIEW("No line of the current notes matches the "
+		                            "pattern.\n"), call->text);
 	if (!e && cut)
 		e = cstr_view_cat(CSTR_VIEW("[The search output exceeded the capture limit and "
 		                            "is incomplete.]\n"), call->text);
