@@ -527,17 +527,20 @@ cxi_callee (CXCursor c)
 	return clang_getCanonicalCursor(clang_getCursorReferenced(c));
 }
 
-/* Appends the row of the function of call @p i: the place of the call,
- * the lines of its other calls, its name and its place.
+/* Appends the row of the function @p f to @p out. @p f is the callee of
+ * calls->items[i]. The row contains the place of that call, the lines of
+ * the later calls to @p f, the name of @p f and the place of its
+ * declaration.
  */
 static void
 cxi_out_call (struct cxi_out        *out,
               struct cxi_list const *calls,
-              size_t                 i)
+              size_t                 i,
+              CXCursor               f)
 {
-	CXCursor const f = cxi_callee(calls->items[i]);
-	unsigned line = cxi_line(clang_getCursorLocation(calls->items[i]));
-	cxi_out_place(out, "  ", clang_getCursorLocation(calls->items[i]), "");
+	CXSourceLocation const at = clang_getCursorLocation(calls->items[i]);
+	unsigned line = cxi_line(at);
+	cxi_out_place(out, "  ", at, "");
 	for (unsigned l; ++i < calls->n; ) {
 		l = cxi_line(clang_getCursorLocation(calls->items[i]));
 		if (!clang_equalCursors(cxi_callee(calls->items[i]), f) || l == line)
@@ -559,10 +562,11 @@ cxi_out_calls (struct cxi_out *out,
 	if (calls.n)
 		cxi_out_printf(out, "calls:\n");
 	for (size_t i = 0, j = 0; i < calls.n; ++i, j = 0) {
-		while (!clang_equalCursors(cxi_callee(calls.items[j]), cxi_callee(calls.items[i])))
+		CXCursor const f = cxi_callee(calls.items[i]);
+		while (!clang_equalCursors(cxi_callee(calls.items[j]), f))
 			++j;
 		if (j == i)
-			cxi_out_call(out, &calls, i);
+			cxi_out_call(out, &calls, i, f);
 	}
 	free(calls.items);
 }
