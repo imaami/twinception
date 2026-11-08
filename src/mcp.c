@@ -3933,11 +3933,11 @@ mcp_req_notes_identity (struct mcp_req *req)
 	notes_repo(notes, req->principal, NOTES_UPSTREAM, repo);
 	return dstr_printf(&req->self.answer,
 	                   "\n\n[askai: participant %s. Your writable notebook "
-	                   "is %s, a selector for the notes argument notebook, "
-	                   "not a note; own, its default except for copy, is the "
-	                   "same notebook. "
-	                   "Use notes action notebooks to discover peers; "
-	                   "selectors identify their authors.]\n",
+	                   "is %s. Give the notebook selector as the notebook "
+	                   "argument of notes, not as a note name. own is the same "
+	                   "notebook. own is the default, except for copy. Call "
+	                   "notes with action notebooks to list the notebooks of "
+	                   "the session.]\n",
 	                   notes_writer(notes), notes_selector(repo)) ? 0 : ENOMEM;
 }
 
