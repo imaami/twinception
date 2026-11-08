@@ -163,6 +163,7 @@ curl_loop_init (struct curl_loop  *cl,
                 curl_loop_fail_cb *fail)
 {
 	*cl = (struct curl_loop){
+		.sockets = list(&cl->sockets),
 		.timeout.fn = curl_loop_timeout_step,
 		.timer.fn = curl_loop_timer_event,
 		.loop = loop,
@@ -170,7 +171,6 @@ curl_loop_init (struct curl_loop  *cl,
 		.done = done,
 		.fail = fail
 	};
-	list_init(&cl->sockets);
 	int e = !cl->multi || loop_timer_set(loop, &cl->timer, UINT64_MAX) ? ENOMEM : 0;
 	/* Each callback's data first, as a cleanup after a refused option may
 	 * call the callbacks set before it. */

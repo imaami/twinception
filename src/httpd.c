@@ -2325,6 +2325,7 @@ httpd_conn_setup (struct httpd_conn *conn,
 	 * home set in the connection. */
 	*conn = (struct httpd_conn){
 		.msg.fn = httpd_conn_back,
+		.hook = list(&conn->hook),
 		.ref.fd = -1,
 		.step.fn = httpd_conn_step,
 		.timer.fn = httpd_conn_timer,
@@ -2351,7 +2352,6 @@ httpd_conn_setup (struct httpd_conn *conn,
 	     !setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one)) &&
 	    !loop_timer_set(loop, &conn->timer, httpd_after(conn->since, srv->lim.idle_time)) &&
 	    !loop_watch(loop, &conn->ref, conn->fd, EPOLLIN, httpd_conn_event, conn)) {
-		list_init(&conn->hook);
 		atomic_store_explicit(&conn->lane->metrics.open, ++srv->conns,
 		                      memory_order_relaxed);
 		httpd_conn_park(conn, true);
@@ -3197,6 +3197,8 @@ httpd_home_create (struct loop            *loop,
 	/* The literal leaves the buckets, which calloc() zeroed, as they
 	 * are. */
 	*home = (struct httpd_home){
+		.spare.list = list(&home->spare.list),
+		.gone.list = list(&home->gone.list),
 		.accept.fn = httpd_home_accept_step,
 		.tick.fn = httpd_home_tick,
 		.loop = loop,
@@ -3214,8 +3216,6 @@ httpd_home_create (struct loop            *loop,
 	if (policy_grant(cfg->policy, (struct cstr_view){}, POLICY_REMOTE, nullptr, &g) ==
 	    POLICY_GRANTED && g.tools)
 		home->flags = HOME_ANYONE;
-	list_init(&home->spare.list);
-	list_init(&home->gone.list);
 	httpd_home_budget(home);
 	hub->home = loop;
 	door = home;
@@ -3378,6 +3378,9 @@ httpd_create (struct loop             *loop,
 	if (!lim.client_bodies)
 		lim.client_bodies = lim.bodies / 4 > lim.body ? lim.bodies / 4 : lim.body;
 	*srv = (struct httpd){
+		.idle = list(&srv->idle),
+		.busy = list(&srv->busy),
+		.taken = list(&srv->taken),
 		.take.fn = httpd_take_step,
 		.drain.fn = httpd_drain_step,
 		.evict.fn = httpd_evict_step,
@@ -3392,9 +3395,6 @@ httpd_create (struct loop             *loop,
 		.idle_since = UINT64_MAX,
 		.in_max = lim.head + lim.body + READ_MIN
 	};
-	list_init(&srv->idle);
-	list_init(&srv->busy);
-	list_init(&srv->taken);
 	srv->lane->loop = loop;
 	srv->lane->srv = srv;
 	*e = 0;

@@ -461,8 +461,7 @@ web_run_end (struct web                *web,
 	             end->status < 300 && web_entry_bytes(&run->key, reply) <= WEB_CACHE_MAX / 4;
 	struct web_entry *entry = store ? web_entry_create(run, reply) : nullptr;
 	struct htab_node *gone = nullptr;
-	struct list waits;
-	list_init(&waits);
+	struct list waits = list(&waits);
 	struct list *node;
 	pthread_mutex_lock(&web->lock);
 	list_del(&run->hook);
@@ -879,12 +878,12 @@ web_wait_create (struct web           *web,
 	run->hash = web_key_hash(web->seed, &run->key, run->data);
 	*wait = (struct web_wait){
 		.msg.fn = web_wait_mail,
+		.hook = list(&wait->hook),
 		.web = web,
 		.loop = ask->loop,
 		.back = ask->back,
 		.who = ask->who
 	};
-	list_init(&wait->hook);
 
 	uint64_t const now = ask->loop->now;
 	struct web_run *to = run;

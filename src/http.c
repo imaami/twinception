@@ -463,11 +463,11 @@ http_find_host (struct http *http,
 	if (!host)
 		return nullptr;
 	*host = (struct http_host){
+		.waiting = list(&host->waiting),
 		.http = http,
 		.name = n - 1,
 		.len = n + p
 	};
-	list_init(&host->waiting);
 	memcpy(host->key, name, n);
 	memcpy(host->key + n, port, p);
 	list_append(&http->hosts, &host->hook);
@@ -532,12 +532,12 @@ http_create (struct loop         *loop,
 		.start.fn = http_start_step,
 		.fail.fn = http_fail_step,
 		.resume.fn = http_resume_step,
+		.queued = list(&http->queued),
+		.requests = list(&http->requests),
+		.held = list(&http->held),
+		.hosts = list(&http->hosts),
 		.metrics = metrics
 	};
-	list_init(&http->queued);
-	list_init(&http->requests);
-	list_init(&http->held);
-	list_init(&http->hosts);
 	if ((*e = curl_loop_init(&http->curl, loop, http_finish, http_doom)))
 		http_destroy(&http);
 	return http;
