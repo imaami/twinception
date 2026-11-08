@@ -10382,7 +10382,7 @@ def check_code(binary, up):
             outline = {"repo": "proj", "action": "outline", "path": "src/a.c"}
             string = "The {} argument must be a string of 1 to 1024 bytes without a NUL."
             for arguments, text in (
-                    ({**outline, "bogus": 1}, "The tool has no argument bogus."),
+                    ({**outline, "bogus": 1}, "bogus is not an argument of the code tool."),
                     ({**outline, "repo": "nope"}, "The repo argument must be proj or lib."),
                     ({"action": "outline", "path": "a.c"},
                      "The repo argument must be proj or lib."),
@@ -10397,8 +10397,8 @@ def check_code(binary, up):
                        "of at most 16 strings of 1 to 1024 bytes without a NUL.")
                       for w in ("-Wpadded", ["-W"] * 17, [1])),
                     ({**outline, "revision": "main..x"},
-                     "The revision argument must be a commit reference or hash with ^ "
-                     "or ~, such as HEAD~1."),
+                     "The revision argument must be a commit name or hash, with optional "
+                     "^ and ~ suffixes, such as HEAD~1."),
                     ({**outline, "revision": "nope"},
                      "A revision names no commit that the git tool can read. Possible "
                      "causes: a name or hash that does not exist, ~N past the first commit, "

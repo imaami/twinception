@@ -156,23 +156,20 @@ code_definition (void const *service)
 		"name", json_object_new_string("code"),
 		"title", json_object_new_string("C code"),
 		"description", json_object_new_string(
-			"Ask clang about the C code of a commit of one of the server's "
-			"repositories. clang parses the file in path, as committed, with the "
-			"flags of the repository's compile commands, so the answers come from "
-			"the compiler and not from a text search. describe prints what name is "
-			"in the translation unit of path: the type of a variable, the signature "
-			"and calls of a function, the value of an enumerator, or a macro and its "
-			"value where line uses it. It prints the places where name is declared "
-			"and defined, and the numbered lines of its declaration, a function's "
-			"without its body, which count as read for findings. For a struct or "
-			"union it lists the members with their offsets, sizes and padding, "
-			"inside anonymous members too. outline lists the names that path "
-			"declares, each with the line where it is written, which can be passed "
-			"to describe as line. diagnostics lists clang's errors and warnings for "
-			"path. Places are path:line; git read accepts the commit and the path. "
-			"Only committed files are visible. A .c file must be in the compile "
-			"commands; a header is parsed with the flags of the .c file nearest to "
-			"it."),
+			"Ask clang about the C code in a commit of a repository of the server. "
+			"clang parses the committed file in path with the flags from the compile "
+			"commands of the repository. outline lists the names that path declares. "
+			"Each row starts with the line of the name, a valid line for describe. "
+			"describe prints what name is in the translation unit of path: the kind, "
+			"the type, and the places of the declaration and the definition. describe "
+			"also lists the calls of a function, the value of an enumerator, and the "
+			"members of a struct or union with offsets, sizes and padding. describe "
+			"prints up to 40 numbered lines of the declaration, without the body of a "
+			"function. The numbered lines count as read for findings. diagnostics "
+			"lists the errors and warnings of clang for path. A place is path:line. "
+			"git read accepts the commit and the path of a place. Only committed files "
+			"are visible. A .c file must be in the compile commands. A header is "
+			"parsed with the flags of the nearest .c file."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
@@ -182,21 +179,24 @@ code_definition (void const *service)
 					"A .c or .h file of the commit, relative to the "
 					"repository's top, such as src/git.c."),
 				"name", schema_property("string",
-					"For describe: a function, variable, type, struct, union, "
-					"enum, enumerator, typedef or macro, such as git_start, or a "
-					"member as struct.member, such as child.flags. struct, union "
-					"or enum before a name picks the type, as in struct dstr."),
+					"The symbol for describe, such as git_start. A symbol "
+					"is a function, variable, type, enumerator, typedef or "
+					"macro. Give a member as struct.member, such as "
+					"child.flags. Put struct, union or enum before a name "
+					"to select the type, as in struct dstr."),
 				"line", schema_count(1,
-					"For describe: the line of path where name is written, such "
-					"as the line of a local variable or of a macro use."),
+					"For describe, the line of path where name is written. "
+					"Give line for a local variable or for the value of a "
+					"macro at a use."),
 				"warnings", schema_array(schema_property("string", nullptr),
 					CXI_WARNINGS,
-					"For diagnostics: warning options to add to the build's, "
-					"such as -Wpadded or -Wsign-conversion."),
+					"Warning options that diagnostics adds to the flags of "
+					"the build, such as -Wpadded or -Wsign-conversion. Each "
+					"entry is -W or -Wno- and the name of a warning."),
 				"revision", schema_property("string",
-					"The commit, in a form that the git tool accepts: HEAD "
-					"(the default), a branch, a tag or a commit ID, with ^ "
-					"and ~ as in HEAD~1."),
+					"The commit, such as HEAD, a branch, a tag or a commit "
+					"ID. ^ and ~ suffixes are allowed, as in HEAD~1. The "
+					"default is HEAD."),
 				"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 				nullptr),
 			required, array_size(required)),
@@ -385,8 +385,8 @@ code_args (struct code const  *code,
 	uint64_t seen;
 	struct cstr_view other;
 	if (jb_args(args, code_arg_names, CODE_ARGS, UINT64_MAX, of, &seen, &other))
-		return util_text_printf(why, "The tool has no argument %.*s.", (int)other.len,
-		                        other.data), EINVAL;
+		return util_text_printf(why, "%.*s is not an argument of the code tool.",
+		                        (int)other.len, other.data), EINVAL;
 	struct config const *cfg = code->cfg;
 	struct cstr_view const repo = jb_text(of[CODE_ARG_REPO], 1, CODE_WORD, nullptr);
 	size_t r = repo.data ? 0 : cfg->n_codes;
@@ -429,8 +429,8 @@ code_args (struct code const  *code,
 		                        "strings of 1 to 1024 bytes without a NUL."), EINVAL;
 	int e = git_pin_add(&call->pin, revision);
 	if (e == EINVAL)
-		return util_text_printf(why, "The revision argument must be a commit reference or "
-		                        "hash with ^ or ~, such as HEAD~1."), EINVAL;
+		return util_text_printf(why, "The revision argument must be a commit name or hash, "
+		                        "with optional ^ and ~ suffixes, such as HEAD~1."), EINVAL;
 	char digits[UTIL_DECIMAL];
 	e = e ? e : code_word(call, CXI_KEY_ACTION, action);
 	e = e ? e : code_word(call, CXI_KEY_REPO, repo);
