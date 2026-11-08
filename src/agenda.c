@@ -200,7 +200,8 @@ agenda_wait_report (struct agenda_wait const *w,
 	for (uint32_t i = 0; ok && i < look->n_timers; ++i)
 		ok = !agenda_notice_timer(&d, &look->timers[i]);
 	if (ok && !look->n_tasks && !look->n_timers)
-		ok = dstr_printf(&d, "Nothing happened in %" PRIu32 " s.", w->secs);
+		ok = dstr_printf(&d, "No job ended and no timer fired in %" PRIu32 " s.",
+		                 w->secs);
 	size_t taken;
 	return ok ? mcp_slot_write(w->slot, cstr_view_dstr(&d), 0, &taken) : ENOMEM;
 }

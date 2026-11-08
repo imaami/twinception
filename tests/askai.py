@@ -1670,14 +1670,15 @@ def check_client_jobs(binary, up):
                 assert text_of(result) == f"[askai: timer {n} fired: n.]\n" and \
                     0.7 <= took < 2, (result, took)
                 result, took = call(ai, "wait", "127.0.0.4", seconds=1)
-                assert text_of(result) == "Nothing happened in 1 s." and \
+                assert text_of(result) == "No job ended and no timer fired in 1 s." and \
                     0.9 <= took < 2, (result, took)
                 # A wait that waits answers on an event stream, which the
                 # client accepts.
                 _, headers, body = send(ai, "tools/call", {"name": "wait", "arguments": {
                     "seconds": 1}}, "127.0.0.4")
                 assert headers["content-type"] == "text/event-stream" and \
-                    text_of(body["result"]) == "Nothing happened in 1 s.", (headers, body)
+                    text_of(body["result"]) == "No job ended and no timer fired in 1 s.", \
+                    (headers, body)
                 n = re.fullmatch(r"Timer (\d+) will fire in 60 s\.",
                                  say(ai, "timer", "127.0.0.4", seconds=60)).group(1)
                 assert say(ai, "jobs", "127.0.0.4", action="cancel", timer=int(n)) == \
@@ -1713,7 +1714,8 @@ def check_client_jobs(binary, up):
                 jid = start(ai, "127.0.0.6")
                 for thread in threads:
                     thread.join()
-                assert sorted(said) == sorted([done(jid), "Nothing happened in 3 s."]), said
+                assert sorted(said) == sorted([done(jid), "No job ended and no timer fired "
+                                                          "in 3 s."]), said
 
                 # An owner has 4 waits at once at most.
                 socks = []
@@ -1762,8 +1764,8 @@ def check_client_jobs(binary, up):
                                  say(ai, "jobs", "127.0.0.8", action="list"), re.M)
                 result, took = call(ai, "wait", "127.0.0.9", meta=TAKES_TASKS, seconds=2)
                 assert result["resultType"] == "complete" and \
-                    text_of(result) == "Nothing happened in 2 s." and 1.8 <= took < 3, \
-                    (result, took)
+                    text_of(result) == "No job ended and no timer fired in 2 s." and \
+                    1.8 <= took < 3, (result, took)
                 assert say(ai, "wait", "127.0.0.8", seconds=5, jobs=[task["taskId"]]) == \
                     f"[askai: task {task['taskId']}, ask_ai, completed. Call jobs with " \
                     f"action result and job {task['taskId']} for the result.]\n"
@@ -1802,7 +1804,7 @@ def check_client_jobs(binary, up):
                 assert say(ai, "jobs", src, action="result", job=jid) == "A"
                 assert re.fullmatch(f"job {jid}: ask_ai: completed [0-9] s ago\n",
                                     say(ai, "jobs", src, action="list"))
-                assert say(ai, "wait", src, seconds=1) == "Nothing happened in 1 s."
+                assert say(ai, "wait", src, seconds=1) == "No job ended and no timer fired in 1 s."
 
                 # A wait that names a job that runs ends when a timer of the
                 # owner fires.

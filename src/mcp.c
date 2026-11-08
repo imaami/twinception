@@ -4769,7 +4769,8 @@ mcp_agenda_wait_end (struct mcp_agenda *a)
 	int e = 0;
 	if (dstr_len(&a->notices))
 		mcp_dstr_swap(&slot->answer, &a->notices);
-	else if (!dstr_printf(&slot->answer, "Nothing happened in %" PRIu32 " s.", a->waited))
+	else if (!dstr_printf(&slot->answer, "No job ended and no timer fired in %" PRIu32 " s.",
+	                      a->waited))
 		e = ENOMEM;
 	e = e ? e : mcp_agenda_arm(a);
 	if (e) {
