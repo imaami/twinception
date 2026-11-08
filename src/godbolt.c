@@ -837,11 +837,12 @@ godbolt_why (struct godbolt *call,
  */
 #define godbolt_abort(call, e) (mcp_slot_fail((call)->slot, (e)), GODBOLT_ENDED)
 
-/* Ends the call. After ENOMEM or ESHUTDOWN in call->e, the error number
- * of the first failure of the output, the call ends with the error number.
- * After any other error, for example EFBIG when the output has reached its
- * largest length, the call fails with the output that it has. Without an
- * error, the call finishes with @p flags. Returns GODBOLT_ENDED.
+/* Ends the call. call->e is 0 or the error number of the first failed
+ * write to the output. If call->e is ENOMEM or ESHUTDOWN, the function
+ * passes that error number to mcp_slot_fail(). If call->e is another
+ * error, such as EFBIG when a write would make the output longer than
+ * TOOL_OUTPUT_MAX, the call ends as failed with the output written so far.
+ * If call->e is 0, the call finishes with @p flags. Returns GODBOLT_ENDED.
  */
 static enum godbolt_go
 godbolt_finish (struct godbolt *call,
