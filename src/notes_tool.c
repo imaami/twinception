@@ -699,9 +699,9 @@ notes_tool_wrote (struct mcp_slot *slot,
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	if (!e && call->flags & CALL_STRIPPED)
-		e = cstr_view_cat(CSTR_VIEW(" askai left out the [askai: ...] lines at the end of "
-		                            "the text. askai adds those lines to tool results, and "
-		                            "they are not part of the note."), call->text);
+		e = cstr_view_cat(CSTR_VIEW(" askai removed the [askai: ...] lines from the end of "
+		                            "the text. askai adds [askai: ...] lines to tool "
+		                            "results, not to notes."), call->text);
 	notes_tool_end(slot, e, false);
 }
 
@@ -730,10 +730,10 @@ notes_tool_unchanged (struct mcp_slot         *slot,
 		return false;
 	char const *name = (char const *)file.ptr + call->part.name_at;
 	uint64_t n = note->bytes;
-	e = dstr_printf(call->text, "Unchanged: %.*s already has %s %" PRIu64 " byte%s at the "
-	                "notebook's newest commit %s. No commit was made.",
-	                (int)jb_utf8(name, call->part.name_len),
-	                name, n == 1 ? "this" : "these", n, util_s(n), tip->hex) ? 0 : ENOMEM;
+	e = dstr_printf(call->text, "Unchanged: %.*s already contains the same %" PRIu64
+	                " byte%s at the newest commit %s. No commit was made.",
+	                (int)jb_utf8(name, call->part.name_len), name, n, util_s(n),
+	                tip->hex) ? 0 : ENOMEM;
 	(void)mcp_slot_noted(slot);
 	notes_tool_wrote(slot, e);
 	return true;
@@ -878,8 +878,8 @@ notes_tool_history (struct mcp_slot *slot,
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct dstr *d = call->text;
 	*newest = (struct span){};
-	if (cut && cstr_view_cat(CSTR_VIEW("[The oldest notes are not in "
-	                                   "this list.]\n"), call->text))
+	if (cut && cstr_view_cat(CSTR_VIEW("[The oldest changes are not in the list.]\n"),
+	                         call->text))
 		return ENOMEM;
 	struct notes_cursor cursor = { .end = out.len };
 	struct notes_entry entry;
@@ -935,8 +935,7 @@ notes_tool_files (struct mcp_slot *slot,
 	}
 	if (!cut)
 		return r ? EIO : 0;
-	return cstr_view_cat(CSTR_VIEW("[The file list exceeded the capture limit and is "
-	                               "incomplete.]\n"), call->text);
+	return cstr_view_cat(CSTR_VIEW("[The file list is incomplete.]\n"), call->text);
 }
 
 /* Handles the output of git for list and history. */
@@ -987,7 +986,7 @@ notes_tool_books (struct notes_tool_call const *call,
 		ok = !peer || dstr_printf(call->text, "%.*s (read-only)\n", (int)name.len, name.data);
 	}
 	char const *end = c && c->flags & CHILD_CUT ? "[The notebook list is incomplete.]\n"
-	                : peers ? nullptr : "No other notebook has notes yet.\n";
+	                : peers ? nullptr : "No other notebook contains notes yet.\n";
 	return ok && (!end || dstr_cat(call->text, end)) ? 0 : ENOMEM;
 }
 
@@ -1041,11 +1040,10 @@ notes_tool_view (struct dstr      *d,
 	char head[320];
 	size_t w = 0;
 	int e = notes_tool_put(d, &w, max, head, util_format(head, sizeof head,
-	        "[askai: the note is not UTF-8 text: %zu bytes.  Each byte that is not "
-	        "part of UTF-8 text, and each NUL, is shown as %sXX%s, its value in "
-	        "hexadecimal, and a %s of the text as %s%s.  The note itself is not "
-	        "changed.]\n\n", note.len, view_open, view_close, view_open, view_open,
-	        view_open));
+	        "[askai: the note is %zu byte%s and not UTF-8 text. Each byte outside UTF-8 "
+	        "text and each NUL byte shows as %sXX%s in hexadecimal. A %s in the text "
+	        "shows as %s%s. The note itself is unchanged.]\n\n", note.len,
+	        util_s(note.len), view_open, view_close, view_open, view_open, view_open));
 	for (size_t i = 0; !e && i < note.len; ) {
 		size_t run = jb_utf8(note.data + i, note.len - i);
 		char const *nul = memchr(note.data + i, '\0', run);
@@ -1131,8 +1129,7 @@ notes_tool_got_diff (struct mcp_slot *slot)
 		e = !diff.len ? cstr_view_cat(CSTR_VIEW("No differences.\n"), call->text)
 		  : notes_tool_show(d, diff);
 	if (!e && c->flags & CHILD_CUT)
-		e = cstr_view_cat(CSTR_VIEW("\n[The diff exceeded the capture limit "
-		                            "and is incomplete.]\n"), call->text);
+		e = cstr_view_cat(CSTR_VIEW("\n[The diff is incomplete.]\n"), call->text);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
 	notes_tool_end(slot, e, false);
 }
@@ -1181,8 +1178,7 @@ notes_tool_got_grep (struct mcp_slot *slot)
 		  : cstr_view_cat(CSTR_VIEW("No line of the current notes matches the "
 		                            "pattern.\n"), call->text);
 	if (!e && cut)
-		e = cstr_view_cat(CSTR_VIEW("[The search output exceeded the capture limit and "
-		                            "is incomplete.]\n"), call->text);
+		e = cstr_view_cat(CSTR_VIEW("[The search output is incomplete.]\n"), call->text);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len + lines.len);
 	notes_tool_end(slot, e, false);
 }
@@ -1237,13 +1233,16 @@ notes_tool_call_attached (struct notes_tool_call const *call,
                           size_t                        bytes,
                           bool                          view)
 {
-	bool ok = view ? dstr_printf(call->text, "The note, %zu bytes, is not UTF-8 text, so "
-	                             "its view, %zu bytes, about %zu tokens, in which each "
-	                             "other byte is %sXX%s, follows the results of this turn "
-	                             "as a file.", len, bytes, bytes / 4, view_open, view_close)
-	               : dstr_printf(call->text, "The note, %zu bytes, about %zu tokens, "
-	                             "follows the results of this turn as a file.", len,
-	                             bytes / 4);
+	bool ok = view ? dstr_printf(call->text, "The note is %zu byte%s and not UTF-8 text. "
+	                             "askai attaches a view of the note as a file after the "
+	                             "results of this turn. The view is %zu bytes, about %zu "
+	                             "tokens. The view shows each byte outside UTF-8 text as "
+	                             "%sXX%s.", len, util_s(len), bytes, bytes / 4, view_open,
+	                             view_close)
+	               : dstr_printf(call->text, "The note is %zu byte%s, about %zu token%s. "
+	                             "askai attaches the note as a file after the results of "
+	                             "this turn.", len, util_s(len), bytes / 4,
+	                             util_s(bytes / 4));
 	return ok ? 0 : ENOMEM;
 }
 
@@ -1960,8 +1959,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	if (!notes_exists(notes)) {
 		/* This answer does not fail the call. A turn's offset applies to it,
 		 * and a client's offset does not. */
-		struct cstr_view const none = CSTR_VIEW("No notes have been added to this "
-		                                        "session yet.");
+		struct cstr_view const none = CSTR_VIEW("The session contains no notes yet.");
 		if (fetch == FETCH_BOOKS)
 			notes_tool_end(slot, notes_tool_books(call, nullptr), false);
 		else if (side == NOTES_CLIENT)

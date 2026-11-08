@@ -869,7 +869,7 @@ several files added by one commit. `list` reflects the current tree;
 
 - `notebooks` identifies the caller's writable notebook even before its
   first note, and lists peers as read-only. Without peers, its last line
-  is `No other notebook has notes yet.` A selector is
+  is `No other notebook contains notes yet.` A selector is
   `PARTICIPANT/WHO/SIDE`. Models receive their participant and writable
   selector in their initial prompt.
 - `notebook` selects the notebook that an action reads; `own` is the

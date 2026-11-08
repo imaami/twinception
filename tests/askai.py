@@ -794,10 +794,11 @@ def note_view(data):
         else:
             out.append("\u27e6%02X\u27e7" % data[i])
             i += 1
-    return (f"[askai: the note is not UTF-8 text: {len(data)} bytes.  Each byte that "
-            "is not part of UTF-8 text, and each NUL, is shown as \u27e6XX\u27e7, its "
-            "value in hexadecimal, and a \u27e6 of the text as \u27e6\u27e6.  The note "
-            "itself is not changed.]\n\n" + "".join(out))
+    size = "1 byte" if len(data) == 1 else f"{len(data)} bytes"
+    return (f"[askai: the note is {size} and not UTF-8 text. Each byte outside UTF-8 "
+            "text and each NUL byte shows as \u27e6XX\u27e7 in hexadecimal. A \u27e6 in "
+            "the text shows as \u27e6\u27e6. The note itself is unchanged.]\n\n" +
+            "".join(out))
 
 
 def note_files(selector, contents, algorithm="sha1"):
@@ -814,8 +815,8 @@ NO_NOTE = "The note does not exist. list shows the current notes. add creates a 
 
 # What the result of a turn's note write adds if askai left its notices out
 # of the end of the text.
-LEFT_OUT = (" askai left out the [askai: ...] lines at the end of the text. askai "
-            "adds those lines to tool results, and they are not part of the note.")
+LEFT_OUT = (" askai removed the [askai: ...] lines from the end of the text. askai "
+            "adds [askai: ...] lines to tool results, not to notes.")
 
 
 def saved(message, commit="[0-9a-f]{40}|[0-9a-f]{64}", stripped=False):
@@ -836,9 +837,9 @@ def saved(message, commit="[0-9a-f]{40}|[0-9a-f]{64}", stripped=False):
 def unchanged_result(name, size, commit, stripped=False):
     """The result of a note write that leaves the note @p name, quoted as in
     a commit message, with its @p size bytes, at the commit @p commit."""
-    these = "this 1 byte" if size == 1 else f"these {size} bytes"
-    return (f"Unchanged: {name} already has {these} at the notebook's newest commit {commit}. "
-            "No commit was made." + (LEFT_OUT if stripped else ""))
+    bytes_ = "1 byte" if size == 1 else f"{size} bytes"
+    return (f"Unchanged: {name} already contains the same {bytes_} at the newest commit "
+            f"{commit}. No commit was made." + (LEFT_OUT if stripped else ""))
 
 
 def grouped(members):
@@ -11987,7 +11988,7 @@ def check_notes_texts(binary, up):
     held = up.reply
     script = []
     up.reply = lambda request: script.pop(0)(request)
-    none = "No notes have been added to this session yet."
+    none = "The session contains no notes yet."
     client, upstream = "p/anonymous/client", "p/anonymous/upstream"
     try:
         with tempfile.TemporaryDirectory() as d:
@@ -12022,7 +12023,7 @@ def check_notes_texts(binary, up):
                 def alone(own):
                     """The notebooks without another one with notes."""
                     return "Session notebooks (use a selector as notebook):\n" \
-                        f"Self (writable): {own}\nNo other notebook has notes yet.\n"
+                        f"Self (writable): {own}\nNo other notebook contains notes yet.\n"
 
                 assert call(action="list", offset=100) == none
                 assert call(action="search", pattern="x") == none
@@ -12660,9 +12661,9 @@ def check_attach(binary, up):
                 results, files = split(second["body"][key])
                 assert files == [file(u) for u in uris], files
                 results = json.dumps(results)
-                assert "is not UTF-8 text, so its view" in results and \
-                    f"The note, {len(code)} bytes, about {len(code) // 4} tokens, " \
-                    "follows the results" in results, results
+                assert "and not UTF-8 text. askai attaches a view of the note" in results \
+                    and f"The note is {len(code)} bytes, about {len(code) // 4} tokens. " \
+                    "askai attaches the note as a file after the results" in results, results
 
                 # Again: the same files, with no upload.
                 count = len(up.requests)
@@ -12769,7 +12770,8 @@ def check_attach(binary, up):
                 ("small.c", lambda request: (200, {"file": {"uri": "files/a b"}}),
                  "The upload of the note failed. The upstream named the "
                  "file with a URI that is not printable ASCII."),
-                ("small.c", up.stored, "The note, 1 bytes, about 0 tokens, follows")):
+                ("small.c", up.stored, "The note is 1 byte, about 0 tokens. askai "
+                 "attaches")):
             up.upload = upload
             count = len(up.requests)
             script[:] = [lambda r: (200, generate_turn([[{"functionCall": {
