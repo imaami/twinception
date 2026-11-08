@@ -8446,7 +8446,7 @@ esac
 
 
 # What follows the heading in the refusal of a heading that no line has.
-AFTER = "followed by a space, a comma, =, [ or the line's end."
+AFTER = "followed by a space, a comma, =, [ or the end of the line."
 
 
 # The description of the man tool.

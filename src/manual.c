@@ -615,7 +615,7 @@ manual_fetch_found (struct child *c)
 	}
 	if (stat(file->key, &f->st)) {
 		struct cstr_view const text = util_format_view(buf, sizeof buf, "Cannot read the "
-		                                               "page file: %s.", strerror(errno));
+		                                               "page file (%s).", strerror(errno));
 		manual_page_put(page);
 		manual_fetch_fail(f, text);
 		return;
@@ -784,12 +784,12 @@ manual_step (struct mcp_slot *slot)
 	} else if (call->heads.len) {
 		manual_list_end(call->heads.len, call->heads.data);
 		mcp_slot_tellf(slot, TOOL_FAILED, "No line of the page begins with %.*s "
-		               "followed by a space, a comma, =, [ or the line's end. "
+		               "followed by a space, a comma, =, [ or the end of the line. "
 		               "Headings of the page:%s", (int)heading.len, heading.data,
 		               call->heads.data);
 	} else {
 		mcp_slot_tellf(slot, TOOL_FAILED, "No line of the page begins with %.*s "
-		               "followed by a space, a comma, =, [ or the line's end.",
+		               "followed by a space, a comma, =, [ or the end of the line.",
 		               (int)heading.len, heading.data);
 	}
 }
@@ -1083,16 +1083,17 @@ manual_definition (void const *service)
 					"The page name, such as printf, pthread_create, epoll "
 					"or git-grep."),
 				"section", schema_property("string",
-					"The manual section, such as 1 commands, 2 system calls, "
-					"3 library functions, 3p POSIX or 7 overviews. Without "
-					"section, the output is the first page that man finds. "
-					"For a name with pages in several single-digit sections, "
-					"the call fails with a list of the pages."),
+					"The manual section, such as 1 (commands), 2 (system "
+					"calls), 3 (library functions), 3p (POSIX) or 7 "
+					"(overviews). Without section, the output is the first "
+					"page that man finds. For a name with pages in several "
+					"single-digit sections, the call fails with a list of "
+					"the pages."),
 				"heading", schema_property("string",
 					"The first words of a line of the page, such as SYNOPSIS, "
 					"RETURN VALUE, EINVAL or -Wall. The output is then the "
 					"line that begins with heading and the more deeply "
-					"indented lines below."),
+					"indented lines below. heading is case-sensitive."),
 				"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 				nullptr),
 			&CSTR_VIEW("name"), 1),

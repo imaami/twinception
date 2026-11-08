@@ -409,10 +409,10 @@ bytes, starts the reply further on in the page.
 
 With an optional `heading`, such as `SYNOPSIS`, `EINVAL` or `-Wall`, the
 output is the part of the page under the least indented line that begins
-with the heading followed by a space, a comma, `=`, `[` or the line's end,
-and `offset` counts within the part; a page without such a line is a tool
-error that lists the page's headings, up to some 2 KiB. A longer list ends
-with "and more headings." after the last heading that fits.
+with the heading followed by a space, a comma, `=`, `[` or the end of the
+line, and `offset` counts within the part; a page without such a line is a
+tool error that lists the page's headings, up to some 2 KiB. A longer list
+ends with "and more headings." after the last heading that fits.
 
 Without a section, a name with pages in two or more sections that are a
 single digit, such as `open` in `1` and `2`, is a tool error that lists the
