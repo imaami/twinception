@@ -124,11 +124,9 @@ git_view_create (struct span metadata,
 	    !cstr_view_cut(&rest, '\n', &format))
 		return nullptr;
 	enum oid_format const width = oid_format(format);
-	if (!width)
-		return nullptr;
-	if (cstr_view_cut(&rest, '\n', &head) && (head.len != width || !oid_valid(head)))
-		return nullptr;
-	if (rest.len || git_view_refs(packed, width))
+	if (!width ||
+	    (cstr_view_cut(&rest, '\n', &head) && (head.len != width || !oid_valid(head))) ||
+	    rest.len || git_view_refs(packed, width))
 		return nullptr;
 	/* The objects path starts the metadata, and the shallow path follows
 	 * its newline. */
