@@ -66,7 +66,7 @@ static constexpr uint64_t JOURNAL_GIT_NS = 10 * NS;
 
 struct journal_item {
 	struct msg             msg;
-	struct journal_item   *next;
+	struct list            hook;
 	struct journal_record *record;
 	struct loop           *loop;
 	union {
@@ -138,8 +138,7 @@ struct journal {
 	pthread_mutex_t        lock;
 	pthread_cond_t         ready;
 	pthread_t              thread;
-	struct journal_item   *first;
-	struct journal_item   *last;
+	struct list            items;
 	uint64_t               seed;
 	uint64_t               clock;
 	uint64_t               recovery_bytes;
@@ -1014,13 +1013,10 @@ journal_finish (struct journal_item *item,
 static struct journal_item *
 journal_take (struct journal *j)
 {
-	struct journal_item *item = j->first;
-	if (!item)
+	if (list_is_empty(&j->items))
 		return nullptr;
-	j->first = item->next;
-	if (!j->first)
-		j->last = nullptr;
-	item->next = nullptr;
+	struct journal_item *item = container_of(j->items.next, struct journal_item, hook);
+	list_del(&item->hook);
 	tally_sub(&j->queue, item->bytes);
 	return item;
 }
@@ -1032,7 +1028,7 @@ journal_thread (void *arg)
 	(void)pthread_setname_np(pthread_self(), "journal");
 	for (;;) {
 		pthread_mutex_lock(&j->lock);
-		while (!j->first && !(j->flags & WRITER_STOP))
+		while (list_is_empty(&j->items) && !(j->flags & WRITER_STOP))
 			pthread_cond_wait(&j->ready, &j->lock);
 		struct journal_item *item = journal_take(j);
 		pthread_mutex_unlock(&j->lock);
@@ -1078,11 +1074,7 @@ journal_enqueue (struct journal      *j,
 	else if (!tally_fits(&j->queue, max, item->bytes))
 		e = EAGAIN;
 	else {
-		if (j->last)
-			j->last->next = item;
-		else
-			j->first = item;
-		j->last = item;
+		list_append(&j->items, &item->hook);
 		tally_add(&j->queue, item->bytes);
 	}
 	pthread_mutex_unlock(&j->lock);
@@ -1386,6 +1378,7 @@ journal_create (char const *path,
 	j->repo_fd = j->state_fd = j->jobs_fd = j->thoughts_fd = j->lock_fd = j->wal_fd = -1;
 	for (size_t k = 0; k < array_size(j->files); ++k)
 		j->files[k].fd = -1;
+	list_init(&j->items);
 	j->digest = EVP_MD_CTX_new();
 	(void)util_format(j->ref, sizeof j->ref, "%s%s", REF, participant);
 	*e = j->digest ? journal_setup(j, path, participant, why, why_len) : ENOMEM;
