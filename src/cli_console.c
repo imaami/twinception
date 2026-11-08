@@ -1182,10 +1182,9 @@ cli_console_resume (struct cli_console *console)
 		(void)cli_console_streams_set(console, 0);
 		return e;
 	}
-	console->flags &= ~CLI_CONSOLE_SUSPENDED;
-	cli_loop_wake(console->loop);
-	console->flags |= CLI_CONSOLE_RESIZE_PENDING;
+	console->flags = (console->flags & ~CLI_CONSOLE_SUSPENDED) | CLI_CONSOLE_RESIZE_PENDING;
 	console->dirty = CLI_CONSOLE_PAINT_ALL;
+	cli_loop_wake(console->loop);
 	if ((console->flags & CLI_CONSOLE_TERMINAL_SAVED) &&
 	    tcsetattr(STDIN_FILENO, TCSANOW, &console->resume_state) < 0)
 		return errno;
