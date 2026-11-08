@@ -651,11 +651,10 @@ httpd_req_header (struct httpd_req        *req,
 		req->flags |= REQ_CHUNKED;
 		return 0;
 	case HEADER_CONNECTION:
-		if (cstr_view_list_has((struct cstr_view){ value, f.len }, CSTR_VIEW("close")))
+		struct cstr_view const list = { value, f.len };
+		if (cstr_view_list_has(list, CSTR_VIEW("close")))
 			req->flags |= REQ_CLOSE;
-		else if (req->flags & REQ_HTTP10 &&
-		         cstr_view_list_has((struct cstr_view){ value, f.len },
-		                            CSTR_VIEW("keep-alive")))
+		else if (req->flags & REQ_HTTP10 && cstr_view_list_has(list, CSTR_VIEW("keep-alive")))
 			req->flags &= ~REQ_CLOSE;
 		return 0;
 	case HEADER_EXPECT:
