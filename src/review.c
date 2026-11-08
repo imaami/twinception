@@ -1281,7 +1281,8 @@ review_args_parse (struct review_args  *a,
 	struct json_object *id = of[REVIEW_ARG_ID];
 	uint64_t const n = jb_count(id, SIZE_MAX);
 	if (id ? !n : a->action == REVIEW_UPDATE)
-		return REFUSE(out, "The id argument must be the number of a finding, such as 3.");
+		return REFUSE(out, id ? "The id argument must be the number of a finding, such as 3."
+		                      : "update requires the id argument.");
 	if (n > r->findings.n) {
 		/* %.0zu writes nothing for 0. */
 		static char const *const have[] = {

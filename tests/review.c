@@ -555,8 +555,7 @@ test_refusals (void)
 		  "\"location\":\"a\\\"b.c:3\"}",
 		  NEED("verified") "The read log does not contain a\"b.c line 3."
 		  GIT_READ("the lines", "HEAD", "a\\\"b.c", "3") WHOLE LATER },
-		{ "{\"action\":\"update\"}",
-		  "The id argument must be the number of a finding, such as 3." },
+		{ "{\"action\":\"update\"}", "update requires the id argument." },
 		{ "{\"action\":\"update\",\"id\":0}",
 		  "The id argument must be the number of a finding, such as 3." },
 		{ "{\"action\":\"update\",\"id\":\"1\"}",
