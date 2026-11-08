@@ -275,14 +275,15 @@ notes_tool_loop_destroy (void **p_part)
 }
 
 /* Returns a notes call that uses the part @p loop and writes to @p text,
- * or to its own output if @p text is nullptr. The call is the last one
- * put on loop->spare, or a new one. Returns nullptr with ENOMEM in @p *e
- * if a new call does not fit in memory.
+ * or to call->out if @p text is nullptr, and stores the call in the own
+ * word of @p slot. The call is the last one put on loop->spare, or a new
+ * one from malloc(). If malloc() fails, the function stores nullptr in the
+ * own word, calls mcp_slot_fail(slot, ENOMEM) and returns nullptr.
  */
 static struct notes_tool_call *
 notes_tool_loop_take (struct notes_tool_loop *loop,
-                      struct dstr            *text,
-                      int                    *e)
+                      struct mcp_slot        *slot,
+                      struct dstr            *text)
 {
 	struct list *spare = shelf_take(&loop->spare);
 	struct notes_tool_call *call;
@@ -291,12 +292,13 @@ notes_tool_loop_take (struct notes_tool_loop *loop,
 		call = container_of(spare, struct notes_tool_call, spare);
 		out = dstr_move(&call->out);
 	} else if (!(call = malloc(sizeof *call))) {
-		*e = ENOMEM;
+		*mcp_slot_own(slot) = nullptr;
+		mcp_slot_fail(slot, ENOMEM);
 		return nullptr;
 	}
-	*e = 0;
 	*call = (struct notes_tool_call){ .out = out, .loop = loop,
 	                                  .text = text ? text : &call->out };
+	*mcp_slot_own(slot) = call;
 	return call;
 }
 
@@ -497,13 +499,9 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
                         struct hexid const     *thread,
                         tool_step_fn           *then)
 {
-	int e = 0;
-	struct notes_tool_call *call = notes_tool_loop_take(loop, prompt, &e);
-	*mcp_slot_own(slot) = call;
-	if (!call) {
-		mcp_slot_fail(slot, e);
+	struct notes_tool_call *call = notes_tool_loop_take(loop, slot, prompt);
+	if (!call)
 		return;
-	}
 	call->then = then;
 	call->thread = thread;
 	call->most = most;
@@ -1525,18 +1523,15 @@ notes_tool_loop_save (struct notes_tool_loop *loop,
                       struct hexid const     *thread,
                       tool_step_fn           *then)
 {
-	int e = 0;
-	struct notes_tool_call *call = notes_tool_loop_take(loop, told, &e);
-	*mcp_slot_own(slot) = call;
-	if (!call) {
-		mcp_slot_fail(slot, e);
+	struct notes_tool_call *call = notes_tool_loop_take(loop, slot, told);
+	if (!call)
 		return;
-	}
 	call->then = then;
 	notes_repo(loop->tool->notes, mcp_slot_principal(slot), NOTES_UPSTREAM, call->notebook);
 	notes_review(call->notebook, thread, call->repo);
 	/* review_carry_json() writes the parent of the commit to
 	 * call->revision.tip. */
+	int e;
 	struct json_object *record = review_carry_json(mcp_slot_review(slot), &call->revision.tip,
 	                                               &e);
 	struct cstr_view const json = jb_wire(record);
@@ -1846,13 +1841,9 @@ static void
 notes_tool_start (struct mcp_slot    *slot,
                   struct json_object *args)
 {
-	int e = 0;
-	struct notes_tool_call *call = notes_tool_loop_take(mcp_slot_part(slot), nullptr, &e);
-	*mcp_slot_own(slot) = call;
-	if (!call) {
-		mcp_slot_fail(slot, e);
+	struct notes_tool_call *call = notes_tool_loop_take(mcp_slot_part(slot), slot, nullptr);
+	if (!call)
 		return;
-	}
 	enum notes_side const side = mcp_slot_from_client(slot) ? NOTES_CLIENT : NOTES_UPSTREAM;
 	struct notes const *notes = call->loop->tool->notes;
 	notes_repo(notes, mcp_slot_principal(slot), side, call->repo);
