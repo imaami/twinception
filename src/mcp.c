@@ -1508,28 +1508,6 @@ mcp_req_unwait (struct mcp_req *req)
 	}
 }
 
-/* What the request waited for has come: free its handle, and take it off the
- * calls under way.
- */
-static void
-mcp_req_wake (struct mcp_req *req)
-{
-	mcp_req_forget(req);
-	mcp_req_unwait(req);
-}
-
-/* The request waits for its tool's call: on the calls that a drain ends,
- * its stream told so, its message freed.
- */
-static void
-mcp_req_park (struct mcp_req *req)
-{
-	mcp_req_wait(req);
-	req->s->ops->waiting(req->s);
-	mcp_req_dispose(req);
-	req->phase = PHASE_TOOL;
-}
-
 /* @p slot's call waits no more: its request, if the slot is its own; a
  * turn's call leaves it among the calls a drain ends.
  */
@@ -2550,7 +2528,8 @@ mcp_req_job_done (struct mcp_req *req)
 	/* ref_put() drops the reference of the message. The request still owns
 	 * the reference of this loop. */
 	(void)ref_put(&job->refs, 1);
-	mcp_req_wake(req);
+	mcp_req_forget(req);
+	mcp_req_unwait(req);
 	if (req->lent) {
 		req->upload = job->request;
 		job->request = (struct buf){};
@@ -3664,10 +3643,12 @@ mcp_slot_park (struct mcp_slot *slot)
 	if (mcp_slot_tool(slot)->kind->flags & TOOL_STREAM &&
 	    (req->flags & (REQ_SSE_OK | REQ_SSE)) == REQ_SSE_OK)
 		mcp_req_stream(req);
-	if (slot == &req->self)
-		mcp_req_park(req);
-	else
-		mcp_req_wait(req);
+	mcp_req_wait(req);
+	if (slot == &req->self) {
+		req->s->ops->waiting(req->s);
+		mcp_req_dispose(req);
+		req->phase = PHASE_TOOL;
+	}
 	return 0;
 }
 
