@@ -829,6 +829,31 @@ web_wait_create (struct web           *web,
 		*e = ENOMEM;
 		return nullptr;
 	}
+	*run = (struct web_run){
+		.to_home.fn = web_run_mail,
+		.web = web,
+		.home = ask->home,
+		.hook = list(&run->hook),
+		.waits = list(&run->waits),
+		.live = list(&run->live),
+		.late = list(&run->late),
+		.timer = { .due = UINT64_MAX, .fn = web_run_late },
+		.key = {
+			.max = r->max,
+			.url = (uint32_t)ask->url,
+			.body = (uint32_t)body,
+			.lines = (uint32_t)line,
+			.n_lines = (uint16_t)n,
+			.post = post
+		},
+		.keep = r->keep,
+		.most = r->keep,
+		.timeout = r->timeout
+	};
+	/* refs starts at 2, one reference for home and one for the message
+	 * to_home. */
+	atomic_init(&run->bits, RUN_SUBMIT);
+	atomic_init(&run->refs, 2);
 	char *p = mempcpy(run->data, r->url, ask->url + 1);
 	p = mempcpy(p, agent, sizeof agent - 1);
 	if (name) {
@@ -852,33 +877,7 @@ web_wait_create (struct web           *web,
 		memcpy(p, r->body.data, body);
 	loop_work(ask->loop, LOOP_COPY, key);
 
-	run->to_home = (struct msg){ .fn = web_run_mail };
-	list_init(&run->hook);
-	list_init(&run->waits);
-	list_init(&run->live);
-	list_init(&run->late);
-	run->timer = (struct loop_timer){ .due = UINT64_MAX, .fn = web_run_late };
-	run->web = web;
-	run->home = ask->home;
-	run->transfer = nullptr;
-	run->body = nullptr;
-	run->len = run->cap = 0;
-	run->since = 0;
-	run->key = (struct web_key){
-		.max = r->max,
-		.url = (uint32_t)ask->url,
-		.body = (uint32_t)body,
-		.lines = (uint32_t)line,
-		.n_lines = (uint16_t)n,
-		.post = post
-	};
 	run->hash = web_key_hash(web->seed, &run->key, run->data);
-	/* One reference for home, and one for the message. */
-	atomic_init(&run->bits, RUN_SUBMIT);
-	atomic_init(&run->refs, 2);
-	run->keep = run->most = r->keep;
-	run->timeout = r->timeout;
-	run->fault = 0;
 	*wait = (struct web_wait){
 		.msg.fn = web_wait_mail,
 		.web = web,
