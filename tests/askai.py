@@ -2076,15 +2076,15 @@ def check_background(binary, up):
                 for args, message in (
                         ({}, "The prompt argument must be a non-empty string."),
                         ({"prompt": ""}, "The prompt argument must be a non-empty string."),
-                        ({"action": "cancel"}, "The action argument requires a job id."),
+                        ({"action": "cancel"}, "Give action only together with job."),
                         ({"job": jid, "action": "bogus"},
                          "The action argument must be result or cancel."),
                         ({"job": jid, "action": None},
                          "The action argument must be result or cancel."),
                         *[({"job": value}, "The job argument must be the id of a job of yours.")
                           for value in (None, 2, "short")],
-                        *[({"job": jid, key: None}, "Give a job id to check or cancel, or "
-                           "a prompt to start a job, not both.")
+                        *[({"job": jid, key: None}, "With job, give no argument other than "
+                           "action. A call with job cannot stream.")
                           for key in ("prompt", "system", "thread", "timer")]):
                     refused(ai, args, message, **alice)
                 assert len(up.requests) == count
@@ -5412,7 +5412,7 @@ def check_allow(binary, up):
                 if turns and "notes" not in turns:
                     _, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": {
                         "prompt": "Q", "thread": "0" * 32}})
-                    assert "No notes are kept for you here" in text_of(body["result"]), \
+                    assert "The thread argument requires notes." in text_of(body["result"]), \
                         (tools, body)
                 report = [item.split() for item in ai.listed("built-in tools for clients:")]
                 off = [item[0] for item in report if item[1:] == ["off", "(tools)"]]
@@ -12116,14 +12116,14 @@ def check_notes_texts(binary, up):
                     f"diff --git a/a.md b/a.md\nindex {old}..{new} 100644\n--- a/a.md\n"
                     "+++ b/a.md\n@@ -1 +1 @@\n-alpha\n+alpha 2\n\n\n"
                     f"[askai: notebook {client}]"], said
-                assert "Its notes are saved" not in trace, trace
+                assert "The other AI saved notes" not in trace, trace
 
                 thread = "1" * 32
                 said, trace = results([{"action": "add", "file": "b.md", "text": "b"}],
                                       thread=thread)
                 assert re.fullmatch(saved('Add "b.md" (2 bytes)'), said[0]), said
                 assert trace == "The other AI made 1 tool call in 2 turns:\n" \
-                    f"- notes add: {len(said[0])} bytes\nIts notes are saved in the " \
+                    f"- notes add: {len(said[0])} bytes\nThe other AI saved notes in the " \
                     f"shared session repository. The ask-chain thread is {thread}.", trace
                 # A turn's text gets a final line feed, so the same text again
                 # leaves the note as it is.
@@ -13043,7 +13043,7 @@ def check_turns(binary, up):
                 outputs
             assert not os.path.exists(f"{d}/hooked")
             assert ai.ask("Q", thread="0" * 32)["content"][0]["text"] == "A"
-            for value, message in (("xyz", "must be a thread's id"),):
+            for value, message in (("xyz", "must be a thread ID"),):
                 result = ai.ask("Q", thread=value)
                 assert result.get("isError") and message in text_of(result), result
 
@@ -13459,7 +13459,7 @@ def check_turns(binary, up):
                 "[askai: your next turn is your last: answer then, without calling "
                 "tools.]"), up.requests[count + 2]
             assert result.get("isError") and result["content"][0]["text"] == "" and \
-                "It was stopped after 3 turns, still calling tools." in \
+                "The other AI was still calling tools at the limit of 3 turns." in \
                 result["content"][1]["text"], result
 
             # Turns that doze are told, as they wake, if their next is their
@@ -14578,8 +14578,8 @@ def check_review(binary, up):
             script[:] = [turn(*[{"action": "show"}] * 16)] * 3 + [
                 turn({"action": "add", "claim": "C3"})]
             lines = ai.ask("Q", thread=thread)["content"][1]["text"].split("\n")
-            assert lines[0] == "The other AI made 49 tool calls in 5 turns; the first 48 " \
-                "are:" and len(lines) == 51 and \
+            assert lines[0] == "The other AI made 49 tool calls in 5 turns. The first 48 " \
+                "calls:" and len(lines) == 51 and \
                 all(line.startswith("- findings show: ") for line in lines[1:49]) and \
                 lines[49:] == [stored(thread)[:-1], ""], lines
 

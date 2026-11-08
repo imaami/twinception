@@ -1968,10 +1968,10 @@ mcp_req_trace_put (struct mcp_req *req)
 	static_assert(TRACE_MAX == 48, "update the first line of the trace");
 	UTIL_TEXT(256) tail = {};
 	if (req->flags & REQ_STOPPED)
-		(void)util_text_printf(&tail, "It was stopped after %" PRIu32 " turns, still "
-		                       "calling tools.\n", req->turn);
+		(void)util_text_printf(&tail, "The other AI was still calling tools at the limit "
+		                       "of %" PRIu32 " turns.\n", req->turn);
 	if (req->flags & REQ_BRANCH)
-		(void)util_text_printf(&tail, "Its notes are saved in the shared session "
+		(void)util_text_printf(&tail, "The other AI saved notes in the shared session "
 		                       "repository. The ask-chain thread is %s.", req->thread.hex);
 	char head[160];
 	struct mcp_piece intro = TEXT("The other AI called no tools.\n");
@@ -1980,7 +1980,7 @@ mcp_req_trace_put (struct mcp_req *req)
 		                              " tool call%s in %" PRIu32 " turn%s%s:\n",
 		                              req->traced, util_s(req->traced),
 		                              req->turn, util_s(req->turn),
-		                              req->traced > TRACE_MAX ? "; the first 48 are" : ""));
+		                              req->traced > TRACE_MAX ? ". The first 48 calls" : ""));
 	struct mcp_piece const p[] = {
 		FRAG("\"},{\"type\":\"text\",\"text\":\""),
 		intro,
@@ -3992,14 +3992,15 @@ mcp_req_ask (struct mcp_req     *req,
 		: system && !jb_view(system).data
 		? CSTR_VIEW("The system argument must be a string.")
 		: has_history && !mcp_history_valid(history)
-		? CSTR_VIEW("The messages argument must be an array of at most 1024 earlier "
-		            "messages, each with only role (user or assistant) and string content.")
+		? CSTR_VIEW("The messages argument must be an array of at most 1024 messages. "
+		            "Each message must be an object with only role (user or assistant) "
+		            "and content (a string).")
 		: !thread ? (struct cstr_view){}
-		: !notes ? CSTR_VIEW("No notes are kept for you here, so there is no thread to "
-		                     "go on with.")
+		: !notes ? CSTR_VIEW("The thread argument requires notes. The server stores no "
+		                     "notes for your calls.")
 		: hexid_init(&req->thread, jb_view(thread))
-		? CSTR_VIEW("The thread argument must be a thread's id, as an earlier answer "
-		            "gave it: 32 hexadecimal digits.")
+		? CSTR_VIEW("The thread argument must be a thread ID from an earlier answer. A "
+		            "thread ID is 32 hexadecimal digits.")
 		: (struct cstr_view){};
 	if (problem.data) {
 		mcp_slot_result(&req->self, problem, true);
@@ -4013,7 +4014,7 @@ mcp_req_ask (struct mcp_req     *req,
 	}
 	/* A thread's id comes with notes only (the problems above). */
 	if (!thread && notes && hexid_make(&req->thread)) {
-		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot make a thread's id"),
+		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot make a thread ID"),
 		              nullptr, 0);
 		return;
 	}
@@ -6639,18 +6640,18 @@ mcp_slot_ask (struct mcp_slot    *slot,
 	struct cstr_view const problem =
 		has_override && (!json_object_is_type(override, json_type_boolean) ||
 		                 (want && (!background || stream)))
-		? CSTR_VIEW("The background argument must be false, or true when server "
-		            "background mode is enabled and live streaming is not requested.")
+		? CSTR_VIEW("The background argument must be a boolean. true works only in "
+		            "server background mode and without live streaming.")
 		: job && (json_object_object_get_ex(args, "prompt", nullptr) ||
 		          json_object_object_get_ex(args, "system", nullptr) ||
 		          json_object_object_get_ex(args, "messages", nullptr) ||
 		          has_override || stream ||
 		          json_object_object_get_ex(args, "thread", nullptr) ||
 		          json_object_object_get_ex(args, "timer", nullptr))
-		? CSTR_VIEW("Give a job id to check or cancel, or a prompt to start a job, "
-		            "not both.")
+		? CSTR_VIEW("With job, give no argument other than action. A call with job "
+		            "cannot stream.")
 		: has_action && !job
-		? CSTR_VIEW("The action argument requires a job id.")
+		? CSTR_VIEW("Give action only together with job.")
 		: has_action && (act == ACTION_LIST || act == array_size(actions))
 		? CSTR_VIEW("The action argument must be "
 		            XL_JOIN(", ", " or ", MCP_JOB_ACTION_LIST(XL_TEXT)) ".")
@@ -6723,8 +6724,8 @@ mcp_req_tools_call (struct mcp_req     *req,
 	if (has_stream && (!json_object_is_type(stream, json_type_boolean) ||
 	                   (streamed && (!(req->flags & REQ_SSE_OK) || !ask)))) {
 		mcp_req_error(req, 200, INVALID_PARAMS,
-		              FRAG("askai.stream must be boolean; true requires the ask tool "
-		                   "and an SSE-capable client"), nullptr, 0);
+		              FRAG("askai.stream must be a boolean. askai.stream true works only "
+		                   "with the ask tool and a client that accepts SSE"), nullptr, 0);
 		return;
 	}
 	if (streamed)
