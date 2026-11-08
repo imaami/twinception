@@ -45,7 +45,6 @@
 #ifndef ASKAI_SRC_POLICY_H_
 #define ASKAI_SRC_POLICY_H_
 
-#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
