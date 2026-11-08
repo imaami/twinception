@@ -155,13 +155,11 @@ notes_resolve (char const *base,
                char      **resolved)
 {
 	char *path = nullptr;
-	if (asprintf(&path, "%s%s%s", *name == '/' ? "" : base,
-	             *name == '/' ? "" : "/", name) < 0)
+	if (*name != '/' && asprintf(&path, "%s/%s", base, name) < 0)
 		return ENOMEM;
-	*resolved = realpath(path, nullptr);
+	*resolved = realpath(path ? path : name, nullptr);
 	int e = *resolved ? 0 : errno;
 	free(path);
-	path = nullptr;
 	return e;
 }
 
@@ -177,7 +175,6 @@ notes_line (char const *base,
 	FILE *file = fopen(path, "re");
 	int e = file ? 0 : errno;
 	free(path);
-	path = nullptr;
 	if (e)
 		return e;
 	size_t size = 0;
@@ -230,9 +227,7 @@ notes_common (struct notes *notes)
 		}
 	}
 	free(line);
-	line = nullptr;
 	free(git);
-	git = nullptr;
 	return e;
 }
 
@@ -522,7 +517,6 @@ notes_lock (struct notes const *notes,
 	else if (unlink(path) && errno != ENOENT)
 		e = errno;
 	free(path);
-	path = nullptr;
 	return e;
 }
 
