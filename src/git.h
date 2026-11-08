@@ -118,7 +118,11 @@ struct git_why {
 
 /** The phases of a pin, in their order. */
 enum git_pin_phase : uint64_t {
-	GIT_PIN_META, GIT_PIN_REFS, GIT_PIN_RESOLVE, GIT_PIN_CHECK, GIT_PIN_DONE,
+	GIT_PIN_META,
+	GIT_PIN_REFS,
+	GIT_PIN_RESOLVE,
+	GIT_PIN_CHECK,
+	GIT_PIN_DONE,
 };
 
 /**

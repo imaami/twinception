@@ -848,10 +848,17 @@ git_pin_step (struct git_pin   *pin,
  * tool. With help:true, git_call_command() returns before it reads OPTIONS
  * and the arguments after it.
  */
-#define GIT_ARG_LIST(X)                                                           \
-        X(REPO, "repo") X(COMMAND, "command") X(HELP, "help") X(OFFSET, "offset") \
-        X(OPTIONS, "options") X(REVISIONS, "revisions") X(PATHS, "paths")         \
-        X(PATTERN, "pattern") X(LINE, "line") X(COUNT, "count")
+#define GIT_ARG_LIST(X)           \
+        X(REPO,      "repo")      \
+        X(COMMAND,   "command")   \
+        X(HELP,      "help")      \
+        X(OFFSET,    "offset")    \
+        X(OPTIONS,   "options")   \
+        X(REVISIONS, "revisions") \
+        X(PATHS,     "paths")     \
+        X(PATTERN,   "pattern")   \
+        X(LINE,      "line")      \
+        X(COUNT,     "count")
 
 #define GIT_ARG_ENUM(id, ...) GIT_ARG_##id,
 enum git_arg : uint8_t { GIT_ARG_LIST(GIT_ARG_ENUM) GIT_ARGS };
