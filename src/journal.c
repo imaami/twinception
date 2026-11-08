@@ -34,9 +34,9 @@
  * length of the data, both big-endian, the job's id and the kind, then the
  * SHA-256 digest of all of that and the data.
  */
-static char const MAGIC[] = "ASKAIJ1\n";
+#define JOURNAL_MAGIC "ASKAIJ1\n"
 enum {
-	JOURNAL_AT_SEQUENCE = sizeof MAGIC - 1,
+	JOURNAL_AT_SEQUENCE = sizeof JOURNAL_MAGIC - 1,
 	JOURNAL_AT_LENGTH   = JOURNAL_AT_SEQUENCE + sizeof (uint64_t),
 	JOURNAL_AT_ID       = JOURNAL_AT_LENGTH + sizeof (uint64_t),
 	JOURNAL_AT_KIND     = JOURNAL_AT_ID + HEXID_DIGITS,
@@ -378,7 +378,7 @@ journal_record_read (struct journal         *j,
 		return e;
 	if (got != sizeof header)
 		goto incomplete;
-	if (memcmp(header, MAGIC, sizeof MAGIC - 1))
+	if (memcmp(header, JOURNAL_MAGIC, sizeof JOURNAL_MAGIC - 1))
 		return EILSEQ;
 	uint64_t length = util_be_get(header + JOURNAL_AT_LENGTH, sizeof length);
 	if (length > JOURNAL_RECORD_MAX)
@@ -634,8 +634,7 @@ journal_record_write (struct journal              *j,
                       struct journal_record const *r,
                       uint64_t                     sequence)
 {
-	unsigned char header[JOURNAL_HEADER] = {};
-	memcpy(header, MAGIC, sizeof MAGIC - 1);
+	unsigned char header[JOURNAL_HEADER] = JOURNAL_MAGIC;
 	util_be_put(header + JOURNAL_AT_SEQUENCE, sequence, sizeof sequence);
 	util_be_put(header + JOURNAL_AT_LENGTH, r->len, sizeof (uint64_t));
 	memcpy(header + JOURNAL_AT_ID, r->id.hex, HEXID_DIGITS);
@@ -1470,4 +1469,5 @@ journal_key (struct journal const *j,
 	return 0;
 }
 
+#undef JOURNAL_MAGIC
 #undef KIND
