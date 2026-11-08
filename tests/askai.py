@@ -1911,7 +1911,7 @@ def check_background(binary, up):
     owner's jobs; supported providers also get native background mode."""
     pending = ("The job is still running. Call the same tool with the same job ID "
                "after one second for the result.")
-    unknown = "No job of yours from this tool has that id."
+    unknown = "You have no job with the given ID from this tool."
     gates = []
 
     class Gated(Stream):
@@ -2074,7 +2074,8 @@ def check_background(binary, up):
                 assert stream.entered.wait(5)
                 for action in ("result", "cancel"):
                     refused(ai, {"job": jid, "action": action}, unknown, **bob)
-                refused(ai, {"job": "0" * 32}, "No recoverable job of yours has that id.", **alice)
+                refused(ai, {"job": "0" * 32}, "You have no recoverable job with the given ID.",
+                        **alice)
                 count = len(up.requests)
                 for args, message in (
                         ({}, "The prompt argument must be a non-empty string."),
@@ -2590,7 +2591,7 @@ def check_recovery_tools(binary, up):
                     wait_for(ended, seconds=15)
                     result = results[-1]
                     if ambiguous:
-                        said = "background tools or timers" if agenda else "unknown outcome"
+                        said = "background jobs or timers" if agenda else "unknown outcome"
                         assert result.get("isError") and said in result["content"][0]["text"], result
                         assert len(creates) == 1 and not resumes, (creates, resumes)
                     else:
@@ -2951,8 +2952,8 @@ def check_recovery_review(binary, up):
                 status, _, body = restarted.rpc("tools/call", {"name": "ask_ai",
                                                                "arguments": {"job": jid}})
                 assert status == 200 and body["result"].get("isError") and \
-                    text_of(body["result"]) == "This job's saved review record is " \
-                    "invalid; no provider request was sent.", (status, body)
+                    text_of(body["result"]) == "The saved review record of the job is " \
+                    "invalid. No provider request was sent.", (status, body)
             with open(f"{jobs}/{jid}", "rb") as f:
                 assert f.read() == bad and not resumes and len(creates) == 2
             with open(f"{jobs}/{jid}", "wb") as f:
@@ -2968,8 +2969,8 @@ def check_recovery_review(binary, up):
                 status, _, body = restarted.rpc("tools/call", {"name": "ask_ai",
                                                                "arguments": {"job": jid}})
                 assert status == 200 and body["result"].get("isError") and \
-                    text_of(body["result"]) == "Cannot resume this job now; it may " \
-                    "already be resuming on another request.", (status, body)
+                    text_of(body["result"]) == "Cannot resume the job now. Another " \
+                    "request may be resuming the job.", (status, body)
 
                 def idle(job):
                     status, _, body = restarted.rpc("tools/call", {

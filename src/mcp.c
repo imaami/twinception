@@ -6022,10 +6022,10 @@ mcp_recover_back (struct loop           *loop,
 	struct cstr_view problem =
 		error ? CSTR_VIEW("Cannot read the durable job journal.")
 		: !state || jb_int(jb_get(state, "version"), 0) != 2
-		? CSTR_VIEW("No recoverable job of yours has that id.")
+		? CSTR_VIEW("You have no recoverable job with the given ID.")
 		: jb_uint(jb_get(state, "owner"), 0) != owner ||
 		  !cstr_view_equal(tool, mcp_static_tool(st, req->self.tool)->name)
-		? CSTR_VIEW("No job of yours from this tool has that id.")
+		? CSTR_VIEW("You have no job with the given ID from this tool.")
 		: (struct cstr_view){};
 	if (problem.data)
 		goto failed;
@@ -6045,7 +6045,7 @@ mcp_recover_back (struct loop           *loop,
 			                       nullptr, (struct handle){}, nullptr, &e);
 		json_object_put(result);
 		if (!task && e != EEXIST) {
-			problem = CSTR_VIEW("Cannot restore this job's saved result.");
+			problem = CSTR_VIEW("Cannot restore the saved result of the job.");
 			goto failed;
 		}
 		ledger_task_put(task);
@@ -6056,13 +6056,13 @@ mcp_recover_back (struct loop           *loop,
 	if (jb_int(jb_get(state, "api"), 0) != st->ep->api ||
 	    jb_int(jb_get(state, "provider"), 0) != st->ep->provider ||
 	    jb_uint(jb_get(state, "endpoint"), 0) != st->endpoint) {
-		problem = CSTR_VIEW("This job belongs to a different upstream endpoint, model or "
-		                    "API.");
+		problem = CSTR_VIEW("The job is for a different upstream endpoint, model or API.");
 		goto failed;
 	}
 	if (json_object_get_boolean(jb_get(state, "agenda"))) {
-		problem = CSTR_VIEW("This interrupted job had background tools or timers. Their "
-		                    "outcomes must be reconciled before continuing.");
+		problem = CSTR_VIEW("The interrupted job used background jobs or timers. Check the "
+		                    "outcomes of the background jobs and timers before you "
+		                    "continue.");
 		goto failed;
 	}
 	uint32_t intents = 0, results = 0;
@@ -6076,10 +6076,12 @@ mcp_recover_back (struct loop           *loop,
 		problem = !obj || k < 0 || k >= JOB_CALLS ||
 		          (!intent && (!jb_view(jb_get(obj, "text")).data ||
 		                       !jb_view(jb_get(obj, "note")).data))
-		        ? CSTR_VIEW("This job's tool journal is invalid; no calls were repeated.")
+		        ? CSTR_VIEW("The tool journal of the job is invalid. No tool call was "
+		                    "repeated.")
 		        : intent && json_object_get_boolean(jb_get(obj, "agenda"))
-		        ? CSTR_VIEW("This interrupted turn started or used background tools or "
-		                    "timers. Reconcile their outcomes before continuing.")
+		        ? CSTR_VIEW("The interrupted turn used background jobs or timers. Check the "
+		                    "outcomes of the background jobs and timers before you "
+		                    "continue.")
 		        : (struct cstr_view){};
 		if (problem.data) {
 			json_object_put(obj);
@@ -6096,9 +6098,9 @@ mcp_recover_back (struct loop           *loop,
 		last_tool_result = obj;
 	}
 	if (intents & ~results) {
-		problem = CSTR_VIEW("A tool call was interrupted with an unknown outcome; "
-		                    "reconcile its effects before continuing. AskAI has not "
-		                    "repeated it.");
+		problem = CSTR_VIEW("A tool call was interrupted with an unknown outcome. askai did "
+		                    "not repeat the tool call. Check the effects of the tool call "
+		                    "before you continue.");
 		goto failed;
 	}
 	/* Before the job is admitted again, a failure here leaves its
@@ -6106,7 +6108,7 @@ mcp_recover_back (struct loop           *loop,
 	struct json_object *local = last_tool_result ? last_tool_result : state;
 	struct cstr_view attached = jb_view(jb_get(local, "attached"));
 	if (buf_put(&req->attached, attached.data, attached.len, SIZE_MAX)) {
-		problem = CSTR_VIEW("Cannot restore this turn's saved attachments.");
+		problem = CSTR_VIEW("Cannot restore the saved attachments of the turn.");
 		goto failed;
 	}
 	struct cstr_view request = jb_view(jb_get(state, "request"));
@@ -6115,8 +6117,8 @@ mcp_recover_back (struct loop           *loop,
 	struct json_object *names = jb_get(state, "lent");
 	if (!request.len || turn < 1 || turn > UINT32_MAX || prompt_at > request.len ||
 	    !json_object_is_type(names, json_type_array)) {
-		problem = CSTR_VIEW("This job's saved request is invalid; no provider request was "
-		                    "sent.");
+		problem = CSTR_VIEW("The saved request of the job is invalid. No provider request "
+		                    "was sent.");
 		goto failed;
 	}
 	/* req->lent is set only after the job is admitted (below), so a poll
@@ -6128,9 +6130,9 @@ mcp_recover_back (struct loop           *loop,
 	if (!e && req->review && review)
 		e = review_restore(req->review, review);
 	if (e) {
-		problem = e == ENOMEM ? CSTR_VIEW("Cannot restore this job's saved review record "
-		                                  "now.")
-		        : CSTR_VIEW("This job's saved review record is invalid; no provider "
+		problem = e == ENOMEM ? CSTR_VIEW("Cannot restore the saved review record of the "
+		                                  "job now.")
+		        : CSTR_VIEW("The saved review record of the job is invalid. No provider "
 		                    "request was sent.");
 		goto failed;
 	}
@@ -6147,8 +6149,8 @@ mcp_recover_back (struct loop           *loop,
 		                 &e) : nullptr;
 	if (!task) {
 		loop_forget(loop, who);
-		problem = CSTR_VIEW("Cannot resume this job now; it may already be resuming on "
-		                    "another request.");
+		problem = CSTR_VIEW("Cannot resume the job now. Another request may be resuming "
+		                    "the job.");
 		goto failed;
 	}
 	req->admitted = task;
@@ -6867,10 +6869,10 @@ mcp_req_task_show (struct mcp_req     *req,
 {
 #define S(s) { CSTR_VIEW_INIT(s), false }
 	static struct mcp_piece const said[LEDGER_STATUSES] = {
-		[LEDGER_FAILED]    = S(",\"statusMessage\":\"The tool call failed: its error "
-		                       "says why.\""),
-		[LEDGER_CANCELLED] = S(",\"statusMessage\":\"The tool call was cancelled, "
-		                       "as asked.\""),
+		[LEDGER_FAILED]    = S(",\"statusMessage\":\"The tool call failed. See the "
+		                       "error for the reason.\""),
+		[LEDGER_CANCELLED] = S(",\"statusMessage\":\"The tool call was "
+		                       "cancelled.\""),
 	};
 #undef S
 	enum ledger_status status = ledger_task_status(task);
