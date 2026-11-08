@@ -937,10 +937,11 @@ cxi_lookup_line (struct cxi *x,
 	size_t const len = strlen(name);
 	/* A cursor inside a longer word refers to a name that is not @p name. */
 	for (size_t i = 0; i + len <= words.len; ++i) {
+		if (memcmp(words.data + i, name, len))
+			continue;
 		*column = (unsigned)i + 1;
 		CXSourceLocation const loc = clang_getLocation(x->tu, file, line, *column);
-		CXCursor const at = memcmp(words.data + i, name, len) ? clang_getNullCursor()
-		                                                      : clang_getCursor(x->tu, loc);
+		CXCursor const at = clang_getCursor(x->tu, loc);
 		CXCursor const referenced = clang_getCursorReferenced(at);
 		*c = clang_Cursor_isNull(referenced) ? at : referenced;
 		if (cxi_is_named(*c, name))
