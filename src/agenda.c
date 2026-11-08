@@ -126,7 +126,7 @@ agenda_list (struct mcp_slot *slot)
 		                    agenda_seconds(t->ended, day), told ? "" : ", unread"));
 	}
 	if (ok && look.more)
-		ok = dstr_printf(&d, "and %" PRIu64 " older records\n", look.more);
+		ok = dstr_printf(&d, "and %" PRIu64 " older jobs and tasks\n", look.more);
 	ok = ok && !agenda_timer_lines(&d, look.timers, look.n_timers, loop_clock());
 	if (ok && !look.n_tasks && !look.n_timers)
 		ok = !cstr_view_cat(CSTR_VIEW("You have no jobs and no timers."), &d);
