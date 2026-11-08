@@ -40,7 +40,7 @@ enum {
  * Kind, Login, Session, Name and Format, each field followed by a NUL. The
  * values of several Login lines are one field, separated by commas.
  */
-static char const *const member_refs[] = {
+static char const *const member_refs[STORE_WORDS] = {
 	"--format=%(refname)%00%(objectname)%00"
 	"%(trailers:key=Kind,valueonly,separator=%x2C)%00"
 	"%(trailers:key=Login,valueonly,separator=%x2C)%00"

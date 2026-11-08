@@ -27,7 +27,7 @@ struct mcp_slot;
 struct store;
 
 enum {
-	STORE_WORDS   = 3,         /**< words of a command of enum store_cmd, at
+	STORE_WORDS   = 4,         /**< words of a command of enum store_cmd, at
 	                                most */
 	STORE_MAX     = 16 << 20,  /**< bytes of the output of git, at most */
 	STORE_PATH    = 255,       /**< bytes of the path of a file in a
@@ -55,16 +55,16 @@ enum store_cmd : uint8_t {
 	STORE_COMMIT,    /**< Runs git fast-import with the input that
 	                      store_commit_input() writes. The caller passes no
 	                      words. */
-	STORE_LOG,       /**< Runs git log. The output lists the time, the id
-	                      and the subject of each commit, and the number of
-	                      lines added and deleted in each file. The caller
-	                      passes a ref or a commit, then a path or
-	                      nullptr. */
+	STORE_LOG,       /**< Runs git log. The output lists the time, the id,
+	                      the trailer lines Asked-by and the subject of each
+	                      commit, and the number of lines added and deleted
+	                      in each file. The caller passes a ref or a commit,
+	                      then a path or nullptr. */
 	STORE_READ,      /**< Runs git cat-file --batch. The output contains
 	                      each object that the input names. The caller
 	                      passes no words. */
 	STORE_REFS,      /**< Runs git for-each-ref. The caller passes the
-	                      --format option, then a pattern. */
+	                      --format option, then one to three patterns. */
 	STORE_FILES,     /**< Runs git ls-tree -r. The output lists the files of
 	                      a tree in tree order. The caller passes a ref or a
 	                      commit. */

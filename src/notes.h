@@ -107,6 +107,8 @@ struct notes_file {
 struct notes_entry {
 	struct span name;
 	struct span subject; /**< the commit's subject; borrows the history output */
+	struct span asker;   /**< the trailer line Asked-by of the commit, or
+	                          empty; borrows the history output */
 	uint64_t    time;    /**< when it was committed, in seconds since the
 	                          epoch */
 	uint64_t    added;   /**< the number of lines added by this change, or
@@ -120,6 +122,7 @@ struct notes_entry {
  */
 struct notes_cursor {
 	struct span subject;
+	struct span asker;
 	size_t      end;
 	size_t      first;
 	uint64_t    time;

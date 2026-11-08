@@ -523,9 +523,9 @@ notes_file_next (struct span       *out,
 }
 
 /* Finds the header of the commit before the numstat token at @p stat in
- * @p out, the output of STORE_LOG, and stores its commit, time, subject
- * and end in @p cursor. Returns false if no header precedes @p stat, as in
- * an output cut short.
+ * @p out, the output of STORE_LOG, and stores its commit, time, asker,
+ * subject and end in @p cursor. Returns false if no header precedes
+ * @p stat, as in an output cut short.
  */
 static bool
 notes_cursor_header (struct span          out,
@@ -540,8 +540,10 @@ notes_cursor_header (struct span          out,
 		size_t digits = space ? (size_t)(space - s - token) : len;
 		struct cstr_view rest = cstr_view_slice((struct cstr_view){ s + token, len },
 		                                        digits + 1, SIZE_MAX);
-		if (!oid_init_field(&cursor->commit, &rest, ' ') &&
+		struct cstr_view asker;
+		if (!oid_init_field(&cursor->commit, &rest, ' ') && cstr_view_cut(&rest, ' ', &asker) &&
 		    !util_number(s + token, digits, UINT64_MAX, &cursor->time)) {
+			cursor->asker = (struct span){ out.ptr + (asker.data - s), asker.len };
 			cursor->subject = (struct span){ out.ptr + (rest.data - s), rest.len };
 			cursor->first = before;
 			return true;
@@ -558,11 +560,11 @@ notes_entry_before (struct span          out,
 {
 	char const *s = (char const *)out.ptr;
 	size_t at = cursor->end;
-	/* Git emits TIMESTAMP SPACE COMMIT SPACE SUBJECT\0, then one numstat
-	 * token per file. Only the first file token starts with a newline. A
-	 * numstat token has no space before its first tab, and a header has
-	 * one, so neither can pass as the other. A cut output may end within
-	 * a token. */
+	/* Git emits TIMESTAMP SPACE COMMIT SPACE ASKER SPACE SUBJECT\0, then
+	 * one numstat token per file. ASKER can be empty. Only the first file
+	 * token starts with a newline. A numstat token has no space before its
+	 * first tab, and a header has one, so neither can pass as the other. A
+	 * cut output may end within a token. */
 	if (at && s[at - 1]) {
 		char const *nul = memrchr(s, '\0', at);
 		at = nul ? (size_t)(nul - s) + 1 : 0;
@@ -594,6 +596,7 @@ notes_entry_before (struct span          out,
 			          (size_t)(s + at - 1 - name - 1) },
 			.commit = cursor->commit,
 			.subject = cursor->subject,
+			.asker = cursor->asker,
 			.time = cursor->time,
 			.added = binary ? NOTES_BINARY : added,
 			.removed = removed,

@@ -459,13 +459,18 @@ test_argv (struct store const *store)
 		                                      " --initial-branch=session -- ." },
 		{ STORE_CHECK,    {},                 " cat-file --batch-check" },
 		{ STORE_COMMIT,   {},                 " fast-import --quiet --date-format=now" },
-		{ STORE_LOG,      { "R", "p" },       " log -z --no-renames --format=%ct %H %s --numstat R"
-		                                      " -- p" },
-		{ STORE_LOG,      { "R" },            " log -z --no-renames --format=%ct %H %s --numstat R"
-		                                      " --" },
+		{ STORE_LOG,      { "R", "p" },       " log -z --no-renames --format=%ct %H "
+		                                      "%(trailers:key=Asked-by,valueonly,separator=%x2C)"
+		                                      " %s --numstat R -- p" },
+		{ STORE_LOG,      { "R" },            " log -z --no-renames --format=%ct %H "
+		                                      "%(trailers:key=Asked-by,valueonly,separator=%x2C)"
+		                                      " %s --numstat R --" },
 		{ STORE_READ,     {},                 " cat-file --batch" },
 		{ STORE_REFS,     { "--format=%(refname)", "refs/heads/" },
 		                                      " for-each-ref --format=%(refname) refs/heads/" },
+		{ STORE_REFS,     { "--format=%(refname)", "refs/a/", "refs/b/", "refs/c/" },
+		                                      " for-each-ref --format=%(refname) refs/a/ refs/b/"
+		                                      " refs/c/" },
 		{ STORE_FILES,    { "R" },            " ls-tree -r -z -l R --" },
 		{ STORE_HEAD,     { "R" },            " rev-parse --verify --end-of-options R" },
 		{ STORE_ANCESTOR, { "A", "B" },       " merge-base --is-ancestor A B" },
