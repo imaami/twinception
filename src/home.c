@@ -1100,11 +1100,7 @@ home_job_done (CURLcode    result,
 		job->recovery.flags |= RECOVERY_DEFERRED;
 		return;
 	}
-	if (d) {
-		home_feed(home, job);
-		return;
-	}
-	if (result == CURLE_OK && job->flags & STREAM) {
+	if (d || (result == CURLE_OK && job->flags & STREAM)) {
 		job->flags |= DELIVERED;
 		home_feed(home, job);
 		return;
