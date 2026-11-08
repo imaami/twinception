@@ -1152,12 +1152,11 @@ cxi_describe (struct cxi *x)
 	unsigned column = 0;
 	CXCursor c = clang_getNullCursor();
 	int e = cxi_parse_name(x, name, member, &kind);
-	if (!e && x->line)
-		e = cxi_lookup_line(x, *member ? member : name, &c, &column);
-	else if (!e && *member)
-		e = cxi_lookup_member(x, name, member, &c);
-	else if (!e)
-		e = cxi_lookup(x, name, kind, &c);
+	if (e)
+		return e;
+	e = x->line ? cxi_lookup_line(x, *member ? member : name, &c, &column)
+	  : *member ? cxi_lookup_member(x, name, member, &c)
+	  : cxi_lookup(x, name, kind, &c);
 	if (e)
 		return e;
 	enum CXCursorKind const k = clang_getCursorKind(c);
