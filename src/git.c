@@ -24,8 +24,7 @@
 #include "util.h"
 #include "xlist.h"
 
-static char const git_commit_suffix[] = "^{commit}";
-static char const git_ignore_rev[] = "--ignore-rev=";
+static struct cstr_view const git_ignore_rev = CSTR_VIEW_INIT("--ignore-rev=");
 
 /* In the argv of a call, a word that git_call_spawn() writes to the text
  * of the pin. Only its address counts.
@@ -515,6 +514,7 @@ static int
 git_commit (struct dstr      *text,
             struct cstr_view  word)
 {
+	struct cstr_view const suffix = CSTR_VIEW("^{commit}");
 	size_t const at = dstr_len(text);
 	if (cstr_view_cat(word, text))
 		return ENOMEM;
@@ -527,9 +527,8 @@ git_commit (struct dstr      *text,
 	    cstr_view_equal(ref, CSTR_VIEW("stash")) || cstr_view_equal(ref, CSTR_VIEW("refs/stash")))
 		return EINVAL;
 	for (size_t i = base; i < len;) {
-		if (len - i >= sizeof git_commit_suffix - 1 &&
-		    !memcmp(dest + i, git_commit_suffix, sizeof git_commit_suffix - 1)) {
-			i += sizeof git_commit_suffix - 1;
+		if (cstr_view_starts((struct cstr_view){ dest + i, len - i }, suffix)) {
+			i += suffix.len;
 			continue;
 		}
 		if (dest[i] != '^' && dest[i] != '~')
@@ -538,7 +537,7 @@ git_commit (struct dstr      *text,
 		while (dest[i] >= '0' && dest[i] <= '9')
 			++i;
 	}
-	return dstr_cat_n(text, git_commit_suffix, sizeof git_commit_suffix) ? 0 : ENOMEM;
+	return dstr_cat_n(text, suffix.data, suffix.len + 1) ? 0 : ENOMEM;
 }
 
 /* Appends to @p why a part of the message about what is wrong with the
@@ -978,11 +977,11 @@ git_call_command (struct git_call  *call,
 			bad = e;
 			continue;
 		}
-		if (strncmp(opt.data, git_ignore_rev, sizeof git_ignore_rev - 1)) {
+		if (!cstr_view_starts(opt, git_ignore_rev)) {
 			argv[k++] = opt.data;
 			continue;
 		}
-		e = git_pin_add(&call->pin, cstr_view_slice(opt, sizeof git_ignore_rev - 1, SIZE_MAX));
+		e = git_pin_add(&call->pin, cstr_view_slice(opt, git_ignore_rev.len, SIZE_MAX));
 		if (e == ENOMEM)
 			return e;
 		if (e)
@@ -1172,7 +1171,7 @@ git_call_spawn (struct git_call *call,
 	dstr_clear(text);
 	bool ok = true;
 	for (size_t i = 0; ok && i < call->revisions[0].root; ++i)
-		ok = dstr_printf(text, "%s%s%c", git_ignore_rev, roots[i].hex, '\0');
+		ok = dstr_printf(text, "%s%s%c", git_ignore_rev.data, roots[i].hex, '\0');
 	for (size_t i = 0; ok && i < call->n_revisions; ++i) {
 		struct git_revision const *rev = &call->revisions[i];
 		struct oid const *root = &roots[rev->root];
