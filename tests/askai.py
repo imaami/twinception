@@ -16861,7 +16861,7 @@ def check_godbolt(binary, up, godbolt):
                         ({"filters": {"intel": 1}}, "filters must be"),
                         ({"source": None}, "The argument source is required."),
                         ({"offset": -1}, "The offset argument must be a whole number "
-                         "of bytes, from 0."),
+                         "of bytes, 0 or more."),
                         ({"run": 1}, "run must be true or false.")):
                     arguments = {"compilers": ["cg142"], "source": source} | arguments
                     arguments = {k: v for k, v in arguments.items() if v is not None}
