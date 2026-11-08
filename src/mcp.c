@@ -4209,9 +4209,6 @@ static int mcp_req_slice (struct mcp_req *req, struct jb_pool *pool,
 static void mcp_req_turn_submit (struct mcp_req *req);
 static void mcp_req_add_start (struct mcp_req *req);
 
-/* Append the literal @p s to @p d. */
-#define CAT(d, s) dstr_cat_n(d, s, sizeof s - 1)
-
 /* Write piece @p q into the upload from its byte req->off on, as far as the
  * step's shares allow.
  */
@@ -4641,7 +4638,7 @@ mcp_req_trace (struct mcp_req       *req,
 	if (req->traced++ >= TRACE_MAX)
 		return 0;
 	char const *name = c->name.data;
-	if (!CAT(&req->trace, "- ") ||
+	if (cstr_view_cat(CSTR_VIEW("- "), &req->trace) ||
 	    !dstr_cat_n(&req->trace, name, jb_utf8(name, util_clip(name, c->name.len, TRACE_TOOL))))
 		return ENOMEM;
 	switch (trace) {
@@ -4649,16 +4646,17 @@ mcp_req_trace (struct mcp_req       *req,
 		return 0;
 	case TRACE_ACTION:
 		struct cstr_view action = jb_view(jb_get(args, "action"));
-		return !action.data || (CAT(&req->trace, " ") &&
+		return !action.data || (!cstr_view_cat(CSTR_VIEW(" "), &req->trace) &&
 		                        dstr_cat_n(&req->trace, action.data,
 		                                   util_clip(action.data, action.len, TRACE_WORD)))
 		       ? 0 : ENOMEM;
 	default:
 		char const *json = c->args.data;
 		size_t n = jb_utf8(json, util_clip(json, c->args.len, TRACE_ARGS));
-		if (n && !(CAT(&req->trace, " ") && dstr_cat_n(&req->trace, json, n)))
+		if (n && (cstr_view_cat(CSTR_VIEW(" "), &req->trace) ||
+		          !dstr_cat_n(&req->trace, json, n)))
 			return ENOMEM;
-		return n < c->args.len && !CAT(&req->trace, "...") ? ENOMEM : 0;
+		return n < c->args.len && cstr_view_cat(CSTR_VIEW("..."), &req->trace) ? ENOMEM : 0;
 	}
 }
 
@@ -4673,7 +4671,7 @@ mcp_req_trace_end (struct mcp_req *req,
 	if (req->traced > TRACE_MAX)
 		return 0;
 	if (failed)
-		return CAT(&req->trace, ": failed\n") ? 0 : ENOMEM;
+		return cstr_view_cat(CSTR_VIEW(": failed\n"), &req->trace);
 	return dstr_printf(&req->trace, ": %zu bytes\n", bytes) ? 0 : ENOMEM;
 }
 
@@ -4848,9 +4846,9 @@ mcp_agenda_wake (struct mcp_agenda *a)
 	struct mcp_req *req = a->req;
 	bool ok = !cstr_view_cat(cstr_view_dstr(&a->notices), &a->told) &&
 	          !cstr_view_cat(cstr_view_dstr(&a->told), &a->said) &&
-	          CAT(&a->said, "\n") &&
+	          !cstr_view_cat(CSTR_VIEW("\n"), &a->said) &&
 	          (req->turn + 1u < req->mcp->st->turns ||
-	           CAT(&a->told, NOTICE_LAST "\n"));
+	           !cstr_view_cat(CSTR_VIEW(NOTICE_LAST "\n"), &a->told));
 	dstr_clear(&a->notices);
 	if (!ok) {
 		mcp_req_fail(req, ENOMEM);
@@ -4871,7 +4869,7 @@ mcp_req_doze (struct mcp_req *req)
 	struct mcp_agenda *a = req->agenda;
 	struct span text = buf_peek(&req->job->result);
 	if (!dstr_cat_n(&a->said, (char const *)text.ptr, text.len) ||
-	    !CAT(&a->said, "\n\n")) {
+	    cstr_view_cat(CSTR_VIEW("\n\n"), &a->said)) {
 		mcp_req_fail(req, ENOMEM);
 		return;
 	}
@@ -5159,7 +5157,7 @@ mcp_slot_turn_list (struct mcp_slot *slot)
 		                            mcp_slot_tool(job)->name.data, (int)shown, args.data,
 		                            shown < args.len ? "..." : "", states[state]) &&
 		                (!sized || dstr_printf(d, ", %zu bytes", mcp_slot_output(job).len)) &&
-		                CAT(d, "\n");
+		                !cstr_view_cat(CSTR_VIEW("\n"), d);
 		if (!ok)
 			return ENOMEM;
 	}
@@ -6409,7 +6407,7 @@ mcp_req_go_on (struct mcp_req   *req,
 {
 	struct dstr *d = &req->self.answer;
 	if (cstr_view_cat(text, d) ||
-	    !CAT(d, "[askai: go on with the task.]")) {
+	    cstr_view_cat(CSTR_VIEW("[askai: go on with the task.]"), d)) {
 		mcp_req_fail(req, ENOMEM);
 		return;
 	}
@@ -6512,8 +6510,9 @@ mcp_slot_attach (struct mcp_slot  *slot,
 		e = mcp_req_fits(req, file.len, out);
 		e = e ? e : mcp_slot_post_file(slot, file);
 		if (e == EAGAIN)
-			return CAT(out, "askai sends too many requests at once to upload the "
-			           "note now. Try again later.") ? EAGAIN : ENOMEM;
+			return cstr_view_cat(CSTR_VIEW("askai sends too many requests at once to "
+			                               "upload the note now. Try again later."),
+			                     out) ? ENOMEM : EAGAIN;
 		return e ? e : EINPROGRESS;
 	}
 	struct uploads_uri uri;
@@ -6554,8 +6553,8 @@ mcp_slot_attached (struct mcp_slot  *slot,
 		e = dstr_printf(&why, "The upstream named the file with a URI of more "
 		                "than %d bytes.", UPLOADS_URI - 1) ? EIO : ENOMEM;
 	if (e == EIO)
-		return CAT(out, "The upload of the note as a file failed: ") &&
-		       !cstr_view_cat(cstr_view_dstr(&why), out) ? EIO : ENOMEM;
+		return cstr_view_cat(CSTR_VIEW("The upload of the note as a file failed: "), out) ||
+		       cstr_view_cat(cstr_view_dstr(&why), out) ? ENOMEM : EIO;
 	if (e)
 		return e;
 	LOG(LOG_VERBOSE, "upstream file %s uploaded: %zu bytes", u.data, bytes);
@@ -6589,12 +6588,13 @@ mcp_req_compact_notes (struct mcp_req *req)
 	review_pending_drop(req->review);
 	int e = mcp_req_notes_identity(req);
 	if (!e && req->review)
-		e = CAT(&req->self.answer, "\n\n[askai: askai keeps your task word for word "
-		        "through every compaction of this ask call: the system text, the earlier "
-		        "messages and the prompt, which is all that comes before askai's first "
-		        "[askai: ...] line. You need not copy the task into notes or a summary.]\n")
-		    ? review_render(req->review, &req->self.answer, mcp_req_lend_max(req))
-		    : ENOMEM;
+		e = cstr_view_cat(CSTR_VIEW("\n\n[askai: askai keeps your task word for word "
+		                            "through every compaction of this ask call: the system "
+		                            "text, the earlier messages and the prompt, which is "
+		                            "all that comes before askai's first [askai: ...] "
+		                            "line. You need not copy the task into notes or a "
+		                            "summary.]\n"), &req->self.answer)
+		    ? ENOMEM : review_render(req->review, &req->self.answer, mcp_req_lend_max(req));
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -6691,7 +6691,6 @@ mcp_req_compact_full (struct mcp_req *req)
 	                                  "and the tools' results with it.]"), CSTR_VIEW(""));
 }
 
-#undef CAT
 #undef TURN_ARGS
 #undef TURN_FMT
 
