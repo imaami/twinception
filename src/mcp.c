@@ -197,14 +197,8 @@ static struct cstr_view const versions[] = {
 };
 enum { MODERN = 1, PRE_STREAMS = array_size(versions) - 1 };
 
-static char const meta_version[] = "io.modelcontextprotocol/protocolVersion";
-static char const meta_caps[] = "io.modelcontextprotocol/clientCapabilities";
 static char const meta_server[] = "io.modelcontextprotocol/serverInfo";
 static char const meta_tasks[] = "io.modelcontextprotocol/tasks";
-/* The extension by which a client hands askai a file that a model does not
- * write: a data: URI in an argument that x-mcp-file marks.
- */
-static char const meta_files[] = "io.modelcontextprotocol/files";
 
 /* The bytes of the files that one request may hand askai inline, at most,
  * once decoded (maxInlineBytes of the extension), if --max-body has room
@@ -7054,7 +7048,7 @@ mcp_req_modern (struct mcp_req     *req,
                 struct cstr_view    method)
 {
 	struct stream *s = req->s;
-	struct json_object *caps = jb_get(meta, meta_caps);
+	struct json_object *caps = jb_get(meta, "io.modelcontextprotocol/clientCapabilities");
 	if (!version.data || !json_object_is_type(caps, json_type_object)) {
 		mcp_req_error(req, 400, INVALID_PARAMS,
 		              FRAG("Request _meta must carry protocolVersion and "
@@ -7124,7 +7118,7 @@ mcp_req_request (struct mcp_req     *req,
 		return;
 	}
 	struct json_object *meta = jb_get(params, "_meta");
-	struct cstr_view version = jb_view(jb_get(meta, meta_version));
+	struct cstr_view version = jb_view(jb_get(meta, "io.modelcontextprotocol/protocolVersion"));
 	size_t const v = mcp_version(version);
 	struct span header = s->ops->field(s, F_VERSION);
 	struct cstr_view field = { (char const *)header.ptr, header.len };
@@ -8162,8 +8156,11 @@ mcp_static_tails (struct mcp_static  *st,
 			"tools", jb_object(nullptr),
 			"extensions", jb_object(
 				meta_tasks, jb_object(nullptr),
-				meta_files, jb_object("maxInlineBytes", json_object_new_int64(
-				                              (int64_t)st->files_inline), nullptr),
+				/* With this extension, a client sends askai a file that
+				 * the model does not write, as a data: URI in an argument
+				 * whose schema contains x-mcp-file. */
+				"io.modelcontextprotocol/files", jb_object("maxInlineBytes",
+					json_object_new_int64((int64_t)st->files_inline), nullptr),
 				nullptr),
 			nullptr),
 		nullptr);
