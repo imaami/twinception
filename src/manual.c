@@ -597,14 +597,16 @@ manual_fetch_found (struct child *c)
 	manual_fetch_run(f, argv, TOOL_TEXT_MAX, manual_fetch_rendered, &m->metrics.renders);
 }
 
-/* Have @p w, if not nullptr, wait for the page of the alias @p key: join
- * the fetch under way, or begin one; without a waiter, begin one only if
- * none is under way. Returns 0 or ENOMEM.
+/* Begins a fetch of the page of the alias @p key, unless a fetch of that
+ * page is under way. @p key points to the @p len bytes NAME\0SECTION, and
+ * NAME is the first @p name_len bytes of @p key. If @p w is not nullptr,
+ * the function adds @p w to the waiters of the fetch. Returns 0 or ENOMEM.
  */
 static int
 manual_loop_ask (struct manual_loop *ml,
                  char const         *key,
                  size_t              len,
+                 size_t              name_len,
                  uint64_t            hash,
                  struct manual_wait *w)
 {
@@ -639,7 +641,7 @@ manual_loop_ask (struct manual_loop *ml,
 
 	/* Man finds the file, and without a section every page of the name:
 	 * -s SECTION takes the place of -a. */
-	char const *section = a->key + strlen(a->key) + 1;
+	char const *section = a->key + name_len + 1;
 	char const *argv[7] = { "man", "-w", "-a" };
 	size_t i = 3;
 	if (*section) {
@@ -828,7 +830,7 @@ manual_find (struct manual_loop  *ml,
 		 * the stored page, and manual_loop_ask() starts a new fetch
 		 * unless one is under way. */
 		if (recheck)
-			(void)manual_loop_ask(ml, key, len, hash, nullptr);
+			(void)manual_loop_ask(ml, key, len, name.len, hash, nullptr);
 		return 0;
 	}
 	manual_page_put(page);
@@ -842,7 +844,7 @@ manual_find (struct manual_loop  *ml,
 		.since = loop_clock(),
 		.who = who
 	};
-	int e = manual_loop_ask(ml, key, len, hash, w);
+	int e = manual_loop_ask(ml, key, len, name.len, hash, w);
 	if (e)
 		free(w);
 	else
