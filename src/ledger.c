@@ -556,8 +556,6 @@ ledger_restore (struct ledger      *ledger,
 	}
 	t->cancel.fn = fn;
 	list_init(&t->hook);
-	list_init(&t->mine);
-	t->owner = nullptr;
 	t->loop = loop;
 	t->result = (struct dstr)DSTR_INIT;
 	t->size = result.len;
@@ -842,9 +840,6 @@ ledger_wait_enter (struct ledger  *ledger,
 		return nullptr;
 	}
 	w->wake = (struct msg){ .fn = fn };
-	list_init(&w->hook);
-	w->hit = nullptr;
-	w->owner = nullptr;
 	w->loop = loop;
 	w->who = who;
 	atomic_init(&w->refs, 1);
