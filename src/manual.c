@@ -418,15 +418,15 @@ static void
 manual_fetch_rendered (struct child *c)
 {
 	struct manual_fetch *f = c->owner;
+	size_t const note = c->flags & CHILD_CUT ? manual_cut.len : 0;
 	char buf[MANUAL_WHY];
-	struct cstr_view const why = c->flags & CHILD_CUT ? (struct cstr_view){}
+	struct cstr_view const why = note ? (struct cstr_view){}
 	                             : child_why(c, "man", MANUAL_SECONDS * NS, buf, sizeof buf);
 	if (why.data) {
 		manual_fetch_fail(f, why);
 		return;
 	}
-	size_t len = buf_peek(&c->out).len;
-	size_t note = c->flags & CHILD_CUT ? manual_cut.len : 0;
+	size_t const len = buf_peek(&c->out).len;
 	struct manual_page *page = malloc(sizeof *page + len + note);
 	if (!page) {
 		manual_fetch_fail(f, manual_oom);
