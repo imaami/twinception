@@ -895,8 +895,7 @@ ai_messages_start (struct ai_sink const *sink,
 	case TOOL:
 		return ai_call_start(sink, at, block, "input", nullptr);
 	case THINKING:
-		reader->open = at + 1;
-		reader->calls = at + 1;
+		reader->open = reader->calls = at + 1;
 		return ai_replay(sink, CSTR_VIEW(",{\"type\":\"thinking\",\"thinking\":\""));
 	case REDACTED:
 		return ai_replay_item(sink, block);
@@ -1000,8 +999,7 @@ ai_messages_event (struct ai_sink const *sink,
 		if (reader->open != at + 1)
 			return 0;
 		out->flags |= reader->calls == at + 1 ? AI_EV_THOUGHT_END : 0;
-		reader->calls = 0;
-		reader->open = 0;
+		reader->calls = reader->open = 0;
 		return ai_replay(sink, CSTR_VIEW("\"}"));
 	case MESSAGE: {
 		struct json_object *usage = jb_get(jb_get(ev, "message"), "usage");

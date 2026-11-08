@@ -989,11 +989,8 @@ brainstem_init (struct brainstem           *bs,
                 struct brainstem_cfg const *cfg,
                 sigset_t const             *mine)
 {
-	uint64_t now = loop_clock();
 	bs->cfg = cfg;
-	bs->tick = now;
-	bs->resumed = now;
-	bs->sample = now;
+	bs->tick = bs->resumed = bs->sample = loop_clock();
 	int e = brainstem_place_threads(bs);
 	if (e)
 		return e;
