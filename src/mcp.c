@@ -5599,14 +5599,15 @@ mcp_slot_note_window (struct mcp_slot *slot,
                       size_t           offset)
 {
 	size_t end = slot->skip + slot->window;
-	if (end < len && mcp_slot_tool(slot)->kind->flags & TOOL_PAGED)
-		(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: for the "
-		                       "rest, call again with the same arguments and "
-		                       "\"offset\": %zu.]", slot->skip, end, len, end);
-	else if (end < len)
-		(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: the rest "
-		                       "is cut.]", slot->skip, end, len);
-	else if (offset > len)
+	if (end < len) {
+		if (mcp_slot_tool(slot)->kind->flags & TOOL_PAGED)
+			(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: for the "
+			                       "rest, call again with the same arguments and "
+			                       "\"offset\": %zu.]", slot->skip, end, len, end);
+		else
+			(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu: the rest "
+			                       "is cut.]", slot->skip, end, len);
+	} else if (offset > len)
 		(void)util_text_printf(&slot->note, "[The output has %zu bytes, fewer than the "
 		                       "offset.]", len);
 	else if (offset)
