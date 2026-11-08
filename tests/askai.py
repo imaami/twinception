@@ -16391,7 +16391,7 @@ def check_godbolt(binary, up, godbolt):
                         tool["inputSchema"]["properties"]["args"]["description"], tool
                 # godbolt_macros points to the tools with shorter output.
                 assert "godbolt_targets is shorter" in tools[4]["description"] and \
-                    "call godbolt_preprocess with their names" in tools[4]["description"]
+                    "call godbolt_preprocess with the macro names" in tools[4]["description"]
 
                 # The languages and their default compilers, with the
                 # User-Agent of askai and the Accept that Compiler Explorer
@@ -16404,7 +16404,8 @@ def check_godbolt(binary, up, godbolt):
                 assert query == "fields=id,name,defaultCompiler" and \
                     headers["User-Agent"] == "askai (plugin godbolt)" and \
                     headers["Accept"] == "application/json", (query, dict(headers))
-                assert "with their default compilers" in tools[1]["description"]
+                assert "with the default compiler" in \
+                    tools[1]["inputSchema"]["properties"]["action"]["description"]
 
                 # The compilers of a language, with filters. The list has
                 # one element without an id, which the footer counts.

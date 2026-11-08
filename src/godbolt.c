@@ -133,7 +133,7 @@ struct godbolt_config {
 
 /* The kinds of link for the argument share of a call, which the option
  * share selects: X(ID, name, note), the constant of enum godbolt_share,
- * the value of the option, and the sentence on links that ends the
+ * the value of the option, and the sentences on links at the end of the
  * description of a tool with the argument share. SHORT is a link /z/ID
  * that Compiler Explorer makes and stores permanently. STATE is a link
  * /clientstate/BASE64 that contains the state, so that Compiler Explorer
@@ -143,13 +143,13 @@ struct godbolt_config {
 #define GODBOLT_SHARE_LIST(X)                                                        \
         X(SHORT, "short",                                                            \
           " With share true, the first line of the output is a link to the same "    \
-          "source, compilers and arguments on Compiler Explorer. For the link, "     \
-          "Compiler Explorer stores the source permanently, and anyone with the "    \
-          "link can read it. Set share only if the user asks for a link.")           \
+          "source, compilers and arguments on Compiler Explorer. Compiler Explorer " \
+          "stores the source permanently for the link. Anyone with the link can "    \
+          "read the source. Set share only if the user asks for a link.")            \
         X(STATE, "state",                                                            \
           " With share true, the first line of the output is a link to the same "    \
           "source, compilers and arguments on Compiler Explorer. The link contains " \
-          "the source, and Compiler Explorer stores nothing. Set share only if the " \
+          "the source. Compiler Explorer stores nothing. Set share only if the "     \
           "user asks for a link.")                                                   \
         X(OFF,   "off", "")
 
@@ -2924,23 +2924,23 @@ godbolt_configure (void               *config,
         examples ".\"}"
 #define GODBOLT_DEF_SOURCE                                                      \
         "\"source\":{\"type\":\"string\",\"description\":\"The source code "    \
-        "itself, not a file name. Includes resolve only to the headers of the " \
-        "compiler on Compiler Explorer, not to repository files. At most 1 "    \
-        "MiB of UTF-8.\"}"
+        "itself, not a file name. Includes resolve only to the compiler "       \
+        "headers on Compiler Explorer, not to repository files. The source "    \
+        "is at most 1 MiB of UTF-8.\"}"
 #define GODBOLT_DEF_COMPILERS                                                   \
         "\"compilers\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"     \
         "\"minItems\":1,\"maxItems\":16,\"uniqueItems\":true,\"description\":"  \
         "\"Exact compiler ids from godbolt_catalog, not display names. "        \
         "Without compilers, the call uses the default compiler of the "         \
-        "language. The number of ids times the number of argument strings "     \
-        "must be at most 32.\"}"
+        "language. The number of compilers times the number of args must be "   \
+        "at most 32.\"}"
 #define GODBOLT_DEF_ARGS                                                        \
         "\"args\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"          \
         "\"minItems\":1,\"maxItems\":8,\"default\":[\"\"],\"description\":"     \
-        "\"Argument strings, such as \\\"-O2 -std=c23\\\". One string "         \
-        "contains all the extra arguments of one compilation, and no shell "    \
-        "interprets it. A string is at most 8192 bytes long. GCC before 14 "    \
-        "and Clang before 18 reject -std=c23.\"}"
+        "\"Argument strings, such as \\\"-O2 -std=c23\\\". Each string is "     \
+        "the argument list of one compilation, without shell processing. A "    \
+        "string is at most 8192 bytes. GCC before 14 and Clang before 18 "      \
+        "reject -std=c23.\"}"
 #define GODBOLT_DEF_OFFSET                                                      \
         "\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":\""     \
         TOOL_OFFSET_ABOUT "\"}"
@@ -2962,47 +2962,43 @@ static struct {
 		"{\"name\":\"godbolt_catalog\",\"title\":\"Compiler Explorer catalog\","
 		"\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		"\"action\":{\"type\":\"string\",\"enum\":["
-		XL_JOIN(",", ",", GODBOLT_ACTION_LIST(XL_JSON)) "],\"description\":\"The action "
-		"selects what the call lists: languages, compilers, or numbers of "
-		"compilers. kinds counts the compilers of each compilerType, families "
-		"counts the compilers of each family tag, and architectures counts the "
-		"compilers of each instruction set.\"},"
+		XL_JOIN(",", ",", GODBOLT_ACTION_LIST(XL_JSON)) "],\"description\":\"languages "
+		"lists each language with the default compiler. compilers lists the "
+		"compilers of the language. kinds counts compilers per compilerType. "
+		"families counts compilers per family tag. architectures counts "
+		"compilers per instruction set.\"},"
 		GODBOLT_DEF_LANGUAGE("the compilers", "c, c++ or rust") ","
 		"\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
 		"\"minItems\":1,\"maxItems\":16,\"uniqueItems\":true,\"description\":"
 		"\"Exact ids of the items to list. The call fails if an id is not in the "
-		"list, or if another filter excludes it.\"},"
-		"\"match\":{\"type\":\"string\",\"description\":\"Words that each item "
-		"contains, in any letter case. For a compiler, each word must be part of "
-		"its id, name, kind, version, architecture, release track or one of its "
-		"family tags. For a language, each word must be part of its id or name. "
-		"At most 8 words and 256 bytes.\"},"
-		"\"kind\":{\"type\":\"string\",\"description\":\"The exact kind of the "
-		"compilers to list. The kind is the compilerType of Compiler Explorer, or "
-		"default if a compiler has no compilerType. A compiler of the kind default "
-		"has a GCC-style driver. The action kinds lists the kinds. It is not valid "
-		"with the action languages.\"},"
+		"list or another filter excludes the id.\"},"
+		"\"match\":{\"type\":\"string\",\"description\":\"Words to find in any "
+		"letter case, such as \\\"gcc 14\\\". Each word must occur in a column of "
+		"the item. The column default does not count. match is at most 8 words "
+		"and 256 bytes.\"},"
+		"\"kind\":{\"type\":\"string\",\"description\":\"The exact compilerType "
+		"of the compilers to list, such as clang or win32-vc. The kind default "
+		"means no compilerType and a GCC-style driver. Action kinds lists the "
+		"kinds.\"},"
 		"\"family\":{\"type\":\"string\",\"description\":\"The exact family tag "
-		"of the compilers to list. The action families lists the tags. It is not "
-		"valid with the action languages.\"},"
+		"of the compilers to list, such as gcc or clang. Action families lists "
+		"the tags.\"},"
 		"\"architecture\":{\"type\":\"string\",\"description\":\"The exact "
-		"instruction set of the compilers to list, such as amd64 or aarch64. The "
-		"action architectures lists the instruction sets. It is not valid with "
-		"the action languages.\"},"
+		"instruction set of the compilers to list, such as amd64 or aarch64. "
+		"Action architectures lists the instruction sets.\"},"
 		"\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":2000,"
-		"\"default\":100,\"description\":\"The largest number of items in the "
-		"output. The last line of the output has the number of items that "
-		"match.\"},"
+		"\"default\":100,\"description\":\"The maximum number of items in the "
+		"output. The last output line contains the number of matching "
+		"items.\"},"
 		GODBOLT_DEF_OFFSET "},"
 		"\"required\":[\"action\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
-		CSTR_VIEW_INIT("Lists the languages of Compiler Explorer at "),
-		CSTR_VIEW_INIT(" with their default compilers, the compilers of one language, or "
-		               "the numbers of compilers of each kind, family or architecture. The "
-		               "other godbolt tools accept only the exact compiler ids of this "
-		               "list. Each line of the output is one item with tab-separated "
-		               "columns, and the first line contains the column names. All "
-		               "filters apply together."),
+		CSTR_VIEW_INIT("List the languages, the compilers or the compiler counts of "
+		               "Compiler Explorer at "),
+		CSTR_VIEW_INIT(". The output is tab-separated, with the column names on the first "
+		               "line. All filters apply together. kind, family and architecture "
+		               "are not valid with action languages. Give the other godbolt tools "
+		               "exact compiler ids from action compilers."),
 	},
 	[GODBOLT_COMPILE] = {
 		"{\"name\":\"godbolt_compile\",\"title\":\"Compile on Compiler Explorer\","
@@ -3012,22 +3008,21 @@ static struct {
 		GODBOLT_DEF_SOURCE ","
 		"\"filters\":{\"type\":\"object\",\"additionalProperties\":false,"
 		"\"properties\":{" XL_JOIN(",", ",", GODBOLT_FILTER_LIST(GODBOLT_FILTER_SCHEMA)) "},"
-		"\"description\":\"How Compiler Explorer filters the assembly. The "
-		"defaults are those of the Compiler Explorer site. The assembly has "
-		"Intel syntax and demangled names, and it has no assembler directives, "
-		"no lines with only a comment and no unused labels.\"},"
+		"\"description\":\"Assembly filters. The defaults match the Compiler "
+		"Explorer site: Intel syntax, demangled names, no assembler directives, "
+		"no comment-only lines and no unused labels.\"},"
 		"\"run\":{\"type\":\"boolean\",\"default\":false,\"description\":\"true "
-		"to also run the program on Compiler Explorer, without arguments and "
-		"with empty input. Each record then contains the exit code and the "
-		"output of the program.\"},"
+		"also runs the program on Compiler Explorer without arguments and with "
+		"empty input. Each record then contains the exit code and the output of "
+		"the program.\"},"
 		GODBOLT_DEF_OFFSET "},"
 		"\"required\":[\"source\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
-		CSTR_VIEW_INIT("Compiles source code on Compiler Explorer at "),
-		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "
-		               "contains a record for each compilation, with the exit code, the "
-		               "assembly and the messages of the compiler, and a last line with "
-		               "the counts of the results. askai sends the source to that service."),
+		CSTR_VIEW_INIT("Compile source code on Compiler Explorer at "),
+		CSTR_VIEW_INIT(", once for each compiler and each argument string. The output "
+		               "contains a record per compilation with the exit code, the assembly "
+		               "and the compiler messages. askai sends the source to Compiler "
+		               "Explorer."),
 	},
 	[GODBOLT_PREPROCESS] = {
 		"{\"name\":\"godbolt_preprocess\",\"title\":\"Preprocess on Compiler "
@@ -3037,32 +3032,30 @@ static struct {
 		GODBOLT_DEF_SOURCE "," GODBOLT_DEF_OFFSET "},"
 		"\"required\":[\"source\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
-		CSTR_VIEW_INIT("Preprocesses source code on Compiler Explorer at "),
-		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "
-		               "contains a record for each compilation, with the exit code, the "
-		               "preprocessed source and the messages of the compiler, and a last "
-		               "line with the counts of the results. askai sends the source to "
-		               "that service."),
+		CSTR_VIEW_INIT("Preprocess source code on Compiler Explorer at "),
+		CSTR_VIEW_INIT(", once for each compiler and each argument string. The output "
+		               "contains a record per compilation with the exit code, the "
+		               "preprocessed source and the compiler messages. askai sends the "
+		               "source to Compiler Explorer."),
 	},
 	[GODBOLT_MACROS] = {
 		"{\"name\":\"godbolt_macros\",\"title\":\"Predefined macros on Compiler "
 		"Explorer\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
 		GODBOLT_DEF_LANGUAGE("the source", "c or c++") ","
-		"\"source\":{\"type\":\"string\",\"description\":\"Source code whose "
-		"macro definitions the output also contains, not a file name. At most 1 "
-		"MiB of UTF-8. The default is no source.\"},"
+		"\"source\":{\"type\":\"string\",\"description\":\"Optional source code, "
+		"not a file name. The output also contains the macros that the source "
+		"defines. The source is at most 1 MiB of UTF-8.\"},"
 		GODBOLT_DEF_OFFSET "},"
 		"\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
-		CSTR_VIEW_INIT("Outputs the predefined macros of each compiler with each argument "
-		               "string, from Compiler Explorer at "),
-		CSTR_VIEW_INIT(". The output contains a record for each compilation, with the exit "
-		               "code, the macros and the messages of the compiler, and a last line "
-		               "with the counts of the results. askai sends the source to that "
-		               "service. For the target facts, godbolt_targets is shorter. For a "
-		               "few macros, call godbolt_preprocess with their names as the "
-		               "source, such as \"__STDC_VERSION__ __SIZEOF_LONG__\"."),
+		CSTR_VIEW_INIT("Print the predefined macros of compilers on Compiler Explorer at "),
+		CSTR_VIEW_INIT(", once for each compiler and each argument string. The output "
+		               "contains a record per compilation with the exit code, the macros "
+		               "and the compiler messages. askai sends the source to Compiler "
+		               "Explorer. For target facts, the output of godbolt_targets is "
+		               "shorter. For a few macros, call godbolt_preprocess with the macro "
+		               "names as the source, such as \"__STDC_VERSION__ __SIZEOF_LONG__\"."),
 	},
 	[GODBOLT_TARGETS] = {
 		"{\"name\":\"godbolt_targets\",\"title\":\"Target facts from Compiler "
@@ -3070,21 +3063,19 @@ static struct {
 		GODBOLT_DEF_COMPILERS "," GODBOLT_DEF_ARGS ","
 		GODBOLT_DEF_LANGUAGE("the probe", "c or c++") ","
 		"\"headers\":{\"type\":\"boolean\",\"default\":false,\"description\":"
-		"\"true to include a few headers of the target too, such as limits.h and "
-		"features.h, and to output which of them the compiler has. The "
-		"compilation can then fail if a compiler on Compiler Explorer has no "
-		"headers for its target. Without headers, libc is unknown.\"},"
+		"\"true also includes target headers, such as limits.h and features.h. "
+		"The output then contains a headers line. The compilation can fail when "
+		"the target headers are missing on Compiler Explorer. Without headers, "
+		"libc is unknown.\"},"
 		GODBOLT_DEF_OFFSET "},"
 		"\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",
-		CSTR_VIEW_INIT("Preprocesses a fixed probe on Compiler Explorer at "),
-		CSTR_VIEW_INIT(", once with each compiler and each argument string. The output "
-		               "contains facts about each target that follow from the predefined "
-		               "macros. The facts are the architecture, the operating system, the "
-		               "data model, the width of a pointer, the byte order, the C library "
-		               "and the versions of the compiler and of the language. Each fact "
-		               "line lists the macros that the fact comes from, and the last line "
-		               "contains the counts of the results."),
+		CSTR_VIEW_INIT("Get target facts from the predefined macros of compilers on "
+		               "Compiler Explorer at "),
+		CSTR_VIEW_INIT(", once for each compiler and each argument string. The facts are "
+		               "architecture, os, os_family, data_model, pointer_bits, endianness, "
+		               "libc and versions. Each fact line ends with the source macros, such "
+		               "as \"(from __x86_64__)\"."),
 	},
 };
 
@@ -3105,7 +3096,7 @@ static struct {
  * reference, with the base URL of the configuration @p service in its
  * description. If the tool accepts the argument share and the
  * configuration does not turn links off, the function adds the property
- * share and a sentence on links to the definition. With short links,
+ * share and the sentences on links to the definition. With short links,
  * readOnlyHint is false, because Compiler Explorer stores the source of a
  * link. Returns nullptr if json-c runs out of memory, or if the
  * configuration is not valid.
@@ -3134,9 +3125,8 @@ godbolt_definition (void const        *service,
 		return def;
 	struct json_object *props = jb_get(jb_get(def, "inputSchema"), "properties");
 	int e = jb_set(props, "share", json_tokener_parse(
-		"{\"type\":\"boolean\",\"default\":false,\"description\":\"true to begin "
-		"the output with a link to the same source, compilers and arguments on "
-		"Compiler Explorer.\"}"));
+		"{\"type\":\"boolean\",\"default\":false,\"description\":\"true starts "
+		"the output with a Compiler Explorer link.\"}"));
 	e = e ? e : jb_set(jb_get(def, "annotations"), "readOnlyHint",
 	                   json_object_new_boolean(cfg->share != GODBOLT_SHARE_SHORT));
 	if (!e)
