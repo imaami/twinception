@@ -81,10 +81,8 @@ cli_tool_destroy (struct cli_tool **pp)
 	*pp = nullptr;
 	list_del(&tool->hook);
 	cli_stream_fini(&tool->stream);
-	json_object_put(tool->name);
-	tool->name = nullptr;
-	json_object_put(tool->params);
-	tool->params = nullptr;
+	cli_client_json_cleanup(&tool->name);
+	cli_client_json_cleanup(&tool->params);
 	free(tool);
 }
 
