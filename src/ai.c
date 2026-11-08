@@ -1111,24 +1111,16 @@ ai_generate_part (struct ai_sink const *sink,
 	return ai_replay_open(sink, CSTR_VIEW(",{\"text\":\""), text);
 }
 
-/* Return true if the open thought of @p reader is in the replay, which is
- * the case once a summary item or a signature of the thought is written.
- * The API refuses a thought with neither.
- */
-static bool
-ai_interactions_written (struct ai_reader const *reader)
-{
-	return reader->state & (SUMMARY_OPEN | SUMMARY_CLOSED | SIGNED);
-}
-
 /* Write the start of the open thought of @p reader into the replay of
- * @p sink, unless the start is there already.
+ * @p sink, unless the start is in the replay already. The start is in the
+ * replay once a summary item or the signature of the thought is written.
+ * The API rejects a thought without a summary or a signature.
  */
 static int
 ai_interactions_head (struct ai_sink const   *sink,
                       struct ai_reader const *reader)
 {
-	if (ai_interactions_written(reader))
+	if (reader->state & (SUMMARY_OPEN | SUMMARY_CLOSED | SIGNED))
 		return 0;
 	return ai_replay(sink, CSTR_VIEW(",{\"type\":\"thought\""));
 }
