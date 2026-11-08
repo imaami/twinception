@@ -28,9 +28,12 @@ struct notes_tool {
 	struct notes const *notes;         /**< nullptr without --notes */
 	size_t              files_inline;  /**< the most bytes of a file that a
 	                                        client hands askai inline */
-	uint64_t            attach;        /**< nonzero if the upstream takes
-	                                        files (ai_upload()). It is wider
-	                                        than a bool to fill the padding. */
+	size_t              actions;       /**< the number of leading entries of
+	                                        notes_action_names that are valid
+	                                        actions for the upstream. It is
+	                                        NOTES_ACTION_ATTACH, or all of
+	                                        them if the upstream supports
+	                                        file uploads (ai_upload()). */
 };
 
 /** The reason why notes_tool_loop_prompt() reads the notes. */

@@ -1859,13 +1859,12 @@ notes_tool_start (struct mcp_slot    *slot,
 	enum notes_side const side = mcp_slot_from_client(slot) ? NOTES_CLIENT : NOTES_UPSTREAM;
 	struct notes const *notes = call->loop->tool->notes;
 	notes_repo(notes, mcp_slot_principal(slot), side, call->repo);
-	/* A turn can attach a note only if its upstream accepts files. */
-	bool const files = side == NOTES_UPSTREAM && call->loop->tool->attach;
-	size_t const offered = files ? array_size(notes_action_names) : NOTES_ACTION_ATTACH;
+	size_t const offered = side == NOTES_UPSTREAM ? call->loop->tool->actions
+	                                              : NOTES_ACTION_ATTACH;
 	size_t const which = cstr_view_index(notes_action_names, offered,
 	                                     jb_view(jb_get(args, "action")));
 	if (which == offered) {
-		mcp_slot_tell(slot, files
+		mcp_slot_tell(slot, offered > NOTES_ACTION_ATTACH
 		              ? CSTR_VIEW("The action argument must be one of: "
 		                          XL_JOIN(", ", ", ", NOTES_ALL_ACTION_LIST(XL_TEXT)) ".")
 		              : CSTR_VIEW("The action argument must be one of: "
@@ -1995,8 +1994,8 @@ notes_tool_start (struct mcp_slot    *slot,
 
 /* Returns the definition of the notes tool for the side @p side. Only the
  * definition for clients contains the content and thread arguments. The
- * definition for the upstream contains the action attach if tool->attach
- * is set, which means that the upstream accepts files.
+ * definition for the upstream contains only the first tool->actions
+ * entries of notes_action_names in the enum of the action argument.
  */
 static struct json_object *
 notes_tool_schema (struct notes_tool const *tool,
@@ -2018,9 +2017,7 @@ notes_tool_schema (struct notes_tool const *tool,
 		[NOTES_CLIENT] = "own, the default, other for the other side, a participant's name, "
 		                 "or a selector from action notebooks. other is copy's default.",
 	};
-	/* A turn can attach a note only if its upstream accepts files. */
-	bool const files = side == NOTES_UPSTREAM && tool->attach;
-	size_t const offered = files ? array_size(notes_action_names) : NOTES_ACTION_ATTACH;
+	size_t const offered = side == NOTES_UPSTREAM ? tool->actions : NOTES_ACTION_ATTACH;
 	size_t most = tool->files_inline;
 	struct json_object *actions = schema_names(notes_action_names, offered);
 	struct json_object *props = jb_object(
@@ -2035,8 +2032,8 @@ notes_tool_schema (struct notes_tool const *tool,
 			"the commit revision. diff shows the changes to a note between the commits "
 			"from and to. search lists the lines of the current notes, not their "
 			"names, that match pattern. notebooks lists the session's notebooks.",
-			files ? " attach gives you a whole note (file) as a file after the turn's "
-			        "results." : "",
+			offered > NOTES_ACTION_ATTACH ? " attach gives you a whole note (file) "
+			                                "as a file after the turn's results." : "",
 			" The actions that read take notebook. To recover lost text: history with "
 			"file, then diff, then read or restore with revision.")),
 		"file", schema_property("string",

@@ -8717,8 +8717,10 @@ mcp_static_create (struct config const *cfg,
 		mcp_static_destroy(&st);
 		return nullptr;
 	}
-	st->notes_tool = (struct notes_tool){ .notes = notes, .files_inline = st->files_inline,
-	                                      .attach = st->uploads != nullptr };
+	st->notes_tool = (struct notes_tool){
+		.notes = notes, .files_inline = st->files_inline,
+		.actions = st->uploads ? array_size(notes_action_names) : NOTES_ACTION_ATTACH
+	};
 
 	/* Built with json-c, which escapes as replies need, then kept as text. */
 	struct json_object *info = jb_object("name", json_object_new_string("askai"),
