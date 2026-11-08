@@ -587,14 +587,13 @@ repository.
 
 #### Principals and their key
 
-A principal tells whose calls they are: the owner of a notes branch, of
-jobs, tasks and timers, and of plugin instances, and the queue of the
-scheduler. `askai` derives the principal of a Unix user from its uid, and
-the principal of an identity from its name, with HMAC-SHA-256 and a secret
-key of 32 random bytes. Bit 62 of a principal is set for an identity and
-clear for a Unix user, and bit 63 is never set, so a Unix user and an
-identity never share a principal. Notebook selectors show principals as
-16 hexadecimal digits.
+A principal tells whose calls they are: the owner of jobs, tasks and
+timers, and of plugin instances, and the queue of the scheduler. `askai`
+derives the principal of a Unix user from its uid, and the principal of an
+identity from its name, with HMAC-SHA-256 and a secret key of 32 random
+bytes. Bit 62 of a principal is set for an identity and clear for a Unix
+user, and bit 63 is never set, so a Unix user and an identity never share a
+principal. Notebooks are named after members, not after principals.
 
 The key is the file `askai-journal/principal.key` in the transcript
 repository, with mode 0600. `askai` makes it with random bytes at the
@@ -611,9 +610,8 @@ file and the problem, such as `--transcripts: PATH:
 askai-journal/principal.key: the file has 31 bytes, not 32`.
 
 Principals from versions of `askai` without the key differ from the new
-ones. Notes branches and stored jobs made by those versions are no longer
-anyone's own, but their selectors still read them. Removing or replacing
-`principal.key` has the same effect.
+ones. Stored jobs made by those versions are no longer anyone's own.
+Removing or replacing `principal.key` has the same effect.
 
 ## Members
 
@@ -1595,19 +1593,19 @@ mode 0700 when it starts. The directory above it must exist, or `askai`
 stops with exit status 2. Clients get `notes` as their role allows. With
 `upstream-tools`, the turns of every `ask_ai` call get `notes`.
 
-The configured [`agent`](#agent), as the PARTICIPANT part of the
-notebook selectors, the caller identity and the client/upstream side
-select the caller's writable notebook branch. Callers can read every
-notebook in the shared session, but can only write their own.
-`{"action":"notebooks"}` identifies the caller's writable notebook even
-before its first note, and lists peers as read-only. `notebook`
-selects the notebook that an action reads; `own` is the default, a
-participant's name selects that participant's notebook of the same
-identity and side, and an explicit `PARTICIPANT/WHO/SIDE` selects any
-notebook. Agents receive their participant and writable selector in their
-initial prompt, and reads identify the source notebook separately from
-the note's contents. For compatibility, clients can also use `other` for
-the opposite side of the same participant and identity.
+Each member of the session (section [`agent`](#agent)) has one notebook,
+named like the member, and writes only that notebook. The turns of an
+`ask_ai` call write as the configured agent. A client writes as the
+person or the agent of its login, and a client over TCP without a token
+writes no notes. Every caller can read every notebook.
+`{"action":"members"}` lists the members, each with its kind and the
+newest change of its notebook, and says who the caller is; for a client,
+the result also has `structuredContent` with the caller and the members.
+`notebook` names the member whose notebook an action reads. The default is
+the notebook of the caller. A name that no member has is refused with the
+names of the members. Agents get who they are, who made the ask call and the
+members of the session at the start of their prompt, and reads name the
+source notebook separately from the note's contents.
 
 `add` creates a new file and refuses an existing name. `replace` updates
 an existing file in the caller's own notebook, adding a Git commit that
@@ -1633,9 +1631,8 @@ lines are extended regular expressions, case ignored.
 `history` shows changes oldest first, with full commit IDs, times, the
 lines added and removed by each change and commit messages.
 `copy` adds a byte-for-byte copy to the caller's own notebook; its commit
-message names the source notebook and the commit that it read. Agents must
-name the source notebook explicitly; clients retain `other` as the default
-source. With the APIs `generate`
+message names the source notebook and the commit that it read. `copy`
+needs `notebook`. With the APIs `generate`
 and `interactions`, the model also gets the action `attach`, which uploads a
 note to Gemini's Files API at the root of the API in the upstream's URL,
 the part before `/v1beta/`, and gives it to the model as a file. A client
