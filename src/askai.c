@@ -433,6 +433,7 @@ askai_home_start (void           *ctx,
 	struct askai_home *app = ctx;
 	struct askai_shared *s = container_of(app, struct askai_shared, home);
 	app->loop = loop;
+	static_assert(sizeof "home" <= sizeof s->metrics.loops->name);
 	s->metrics.loops[s->metrics.n_loops - 1] = (struct metrics_loop){
 		.name = "home",
 		.loop = loop->metrics,
