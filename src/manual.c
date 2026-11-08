@@ -1084,16 +1084,15 @@ manual_definition (void const *service)
 					"or git-grep."),
 				"section", schema_property("string",
 					"The manual section, such as 1 commands, 2 system calls, "
-					"3 library functions, 3p POSIX, 5 file formats or 7 "
-					"overviews. Without section, the output is the first "
-					"page that man finds. A name with pages in two or more "
-					"single-digit sections fails with a list of the pages."),
+					"3 library functions, 3p POSIX or 7 overviews. Without "
+					"section, the output is the first page that man finds. "
+					"For a name with pages in several single-digit sections, "
+					"the call fails with a list of the pages."),
 				"heading", schema_property("string",
 					"The first words of a line of the page, such as SYNOPSIS, "
-					"RETURN VALUE, EINVAL or -Wall. With heading, the output "
-					"is the line that begins with heading, followed by the "
-					"more deeply indented lines. If no line matches, the "
-					"error lists the headings of the page."),
+					"RETURN VALUE, EINVAL or -Wall. The output is then the "
+					"line that begins with heading and the more deeply "
+					"indented lines below."),
 				"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 				nullptr),
 			&CSTR_VIEW("name"), 1),
