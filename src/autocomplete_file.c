@@ -82,13 +82,9 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 	*matches = nullptr;
 	*count = 0;
 
-	if (!file || !command.data || !command.len || cursor > line.len)
-		return EINVAL;
-
 	if (line.len > AUTOCOMPLETE_BYTES)
 		return E2BIG;
-
-	if (!jb_is_text(line))
+	if (!file || !command.data || !command.len || cursor > line.len || !jb_is_text(line))
 		return EINVAL;
 
 	if (cursor < command.len || !cstr_view_starts(line, command))
