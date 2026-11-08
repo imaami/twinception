@@ -677,12 +677,15 @@ git_pin_argv (struct git_pin const *pin,
 	argv[k++] = "-c";
 	argv[k++] = pin->repo->safe;
 	argv[k++] = "-C";
-	argv[k++] = pin->view ? git_view_directory(pin->view) : pin->repo->path;
-	if (pin->view)
-		argv[k++] = "--git-dir=.";
 	memcpy(env, pin->git->env, sizeof pin->git->env);
-	if (pin->view && git_view_has_head(pin->view))
-		env[ATTR] = "GIT_ATTR_SOURCE=HEAD";
+	if (!pin->view) {
+		argv[k++] = pin->repo->path;
+	} else {
+		argv[k++] = git_view_directory(pin->view);
+		argv[k++] = "--git-dir=.";
+		if (git_view_has_head(pin->view))
+			env[ATTR] = "GIT_ATTR_SOURCE=HEAD";
+	}
 	return k;
 }
 
@@ -731,7 +734,7 @@ git_pin_spawn (struct git_pin           *pin,
 			argv[k++] = git_text_next(&next);
 		break;
 	case GIT_PIN_CHECK:
-		if (git_view_has_head(pin->view))
+		if (env[ATTR])
 			argv[k++] = "HEAD";
 		argv[k++] = "--not";
 		argv[k++] = "--end-of-options";
