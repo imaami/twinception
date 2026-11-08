@@ -1100,7 +1100,7 @@ config_safe (struct stat const *st)
 {
 	return (!st->st_uid || st->st_uid == geteuid()) &&
 	       (!(st->st_mode & (S_IWGRP | S_IWOTH)) ||
-	        (S_ISDIR(st->st_mode) && st->st_mode & S_ISVTX));
+	        (st->st_mode & (S_IFMT | S_ISVTX)) == (S_IFDIR | S_ISVTX));
 }
 
 /* Whether every directory above @p real, a path that realpath() made, is
