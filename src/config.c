@@ -1497,12 +1497,8 @@ config_file (struct config *cfg)
 	struct cstr_view const json = config_text(&text);
 	status = config_json(cfg, json.data, json.len);
 	buf_fini(&text);
-	if (status)
-		return status;
-	status = config_lists(cfg);
-	if (status)
-		return status;
-	status = config_apply_file(cfg);
+	status = status ? status : config_lists(cfg);
+	status = status ? status : config_apply_file(cfg);
 	return status ? status : config_apply_tools(cfg);
 }
 
@@ -1862,9 +1858,7 @@ config_upstream (struct config *cfg)
 	if (key && strpbrk(key, "\r\n"))
 		return config_complain(cfg, nullptr, "the API key contains a line break");
 	status = cfg->ep.url ? config_url_generate(cfg) : config_url_own(cfg);
-	if (status)
-		return status;
-	return config_headers(cfg, has_auth ? nullptr : key);
+	return status ? status : config_headers(cfg, has_auth ? nullptr : key);
 }
 
 /* Make the TLS context from the certificate chain @p chain and from the
@@ -2399,12 +2393,8 @@ config_parse (struct config *cfg)
 			cfg->path = optarg;
 	}
 	int status = cfg->path ? config_file(cfg) : config_lists(cfg);
-	if (status)
-		return status;
-	status = config_argv(cfg);
-	if (status)
-		return status;
-	status = config_finish(cfg);
+	status = status ? status : config_argv(cfg);
+	status = status ? status : config_finish(cfg);
 	return status ? status : -1;
 }
 
