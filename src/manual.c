@@ -867,8 +867,8 @@ manual_loop_create (void        *service,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*ml = (struct manual_loop){ .children = children, .manual = service, .loop = loop };
-	list_init(&ml->fetches);
+	*ml = (struct manual_loop){ .fetches = list(&ml->fetches), .children = children,
+	                            .manual = service, .loop = loop };
 	*e = 0;
 	return ml;
 }

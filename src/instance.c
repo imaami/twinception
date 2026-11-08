@@ -98,10 +98,9 @@ int
 instance_table_init (struct instance_table *dest,
                      struct loop           *loop)
 {
-	*dest = (struct instance_table){ .reap.fn = instance_table_step, .loop = loop };
-	list_init(&dest->busy);
-	list_init(&dest->idle);
-	list_init(&dest->gone);
+	*dest = (struct instance_table){ .reap.fn = instance_table_step, .busy = list(&dest->busy),
+	                                 .idle = list(&dest->idle), .gone = list(&dest->gone),
+	                                 .loop = loop };
 	return htab_init(&dest->listed, INSTANCE_MAX);
 }
 
