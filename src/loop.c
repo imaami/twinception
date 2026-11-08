@@ -472,7 +472,7 @@ loop_unwatch (struct loop     *loop,
 	    errno != ENOENT && errno != EBADF)
 		loop_fail(loop, errno);
 
-	if (ref->hook.next)
+	if (ref->hook.next && ref->hook.prev)
 		list_del(&ref->hook);
 	*ref = (struct loop_ref){ .fd = -1 };
 }
