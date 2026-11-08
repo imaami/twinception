@@ -2461,10 +2461,10 @@ config_log (struct config const *cfg)
 		        : props ? "from llama-server" : gemini ? "from the model" : "unknown");
 	config_log_url("URL", ep->url);
 	config_log_files(cfg);
-	if (cfg->notes || cfg->transcripts)
+	if (cfg->transcripts) {
 		LOG_ALL(LOG_INFO, "participant: %s", cfg->participant);
-	if (cfg->transcripts)
 		LOG_ALL(LOG_INFO, "transcripts repository: %s", cfg->transcripts);
+	}
 	mcp_report(&cfg->registry, cfg);
 	config_log_policy(cfg);
 }
