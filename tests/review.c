@@ -38,9 +38,16 @@ same (char const *file,
 /* The most bytes of the claim of a closed finding in the record text. */
 #define CLOSED 200
 #define NONE "[askai: no findings yet. Record findings with the findings tool.]"
-#define LATER " The log takes the lines of a read once you have seen them, so call again in " \
-              "a later turn."
-#define WHOLE ", where the path is the file's whole path from the top of the repository"
+#define LATER " The lines of a read enter the read log in your next turn. Call findings " \
+              "again in a later turn."
+#define WHOLE " The path in revisions must be the whole path from the top of the repository."
+#define SEVERAL " A long range can need several reads."
+/* The start of the refusal of the state s for lines that are not in the read log. */
+#define NEED(s) s " requires the lines of the location in your read log. "
+/* The suggestion of a git read of what at the revision rev from line n of path. */
+#define GIT_READ(what, rev, path, n) " To read " what ", call the git tool with " \
+                                     "\"command\": \"read\", \"revisions\": [\"" rev ":" \
+                                     path "\"] and \"line\": " n "."
 #define NO_MORE "The record is limited to 4 MiB. No further change fits in the record " \
                 "of this ask call. Keep further findings in your notes or your summary."
 #define NO_ROOM "The record is limited to 4 MiB. This change does not fit in the record. " \
@@ -484,7 +491,8 @@ test_refusals (void)
 		{ "null", "The action argument must be add, update or show." },
 		{ "{\"action\":\"remove\"}", "The action argument must be add, update or show." },
 		{ "{\"action\":3}", "The action argument must be add, update or show." },
-		{ "{\"action\":\"add\",\"claim\":\"c\",\"id\":1}", "The argument id is not valid with action add." },
+		{ "{\"action\":\"add\",\"claim\":\"c\",\"id\":1}",
+		  "The argument id is not valid with action add." },
 		{ "{\"action\":\"update\",\"id\":1,\"offset\":0}",
 		  "The argument offset is not valid with action update." },
 		{ "{\"action\":\"show\",\"claim\":\"x\"}",
@@ -522,37 +530,31 @@ test_refusals (void)
 		  "src/mcp.c:120-140." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"evidence\":\"e\","
 		  "\"location\":\"src/a.c:50-60\"}",
-		  "verified needs the lines of its location in your read log, and src/a.c lines "
-		  "50-60 are not in it. Read them with the git tool's read command, with "
-		  "\"revisions\": [\"HEAD:src/a.c\"] and \"line\": 50." LATER },
+		  NEED("verified") "The read log does not contain src/a.c lines 50-60."
+		  GIT_READ("the lines", "HEAD", "src/a.c", "50") LATER },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"disproved\",\"evidence\":\"e\","
 		  "\"location\":\"src/a.c:11\"}",
-		  "disproved needs the lines of its location in your read log, and src/a.c line "
-		  "11 is not in it. Read them with the git tool's read command, with "
-		  "\"revisions\": [\"HEAD:src/a.c\"] and \"line\": 11." LATER },
+		  NEED("disproved") "The read log does not contain src/a.c line 11."
+		  GIT_READ("the lines", "HEAD", "src/a.c", "11") LATER },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"evidence\":\"e\","
 		  "\"location\":\"src/a.c:10-11\"}",
-		  "verified needs the lines of its location in your read log, and src/a.c lines "
-		  "10-11 are not all in it: it has line 10 of them, read at " A12 ". Read the rest "
-		  "with the git tool's read command, with \"revisions\": [\"" A12 ":src/a.c\"] and "
-		  "\"line\": 11, in as many calls as it takes." LATER },
+		  NEED("verified") "Of src/a.c lines 10-11, the read log contains only line 10, "
+		  "read at " A12 "." GIT_READ("the missing lines", A12, "src/a.c", "11") SEVERAL
+		  LATER },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"evidence\":\"e\","
 		  "\"location\":\"1111111:src/a.c:3\"}",
-		  "verified needs the lines of its location in your read log, and src/a.c at "
-		  "1111111 line 3 is not in it. Read them with the git tool's read command, with "
-		  "\"revisions\": [\"1111111:src/a.c\"] and \"line\": 3" WHOLE "." LATER },
+		  NEED("verified") "The read log does not contain src/a.c line 3 at 1111111."
+		  GIT_READ("the lines", "1111111", "src/a.c", "3") WHOLE LATER },
 		/* A HEAD: prefix means no commit. */
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"evidence\":\"e\","
 		  "\"location\":\"HEAD:src/a.c:50\"}",
-		  "verified needs the lines of its location in your read log, and src/a.c line "
-		  "50 is not in it. Read them with the git tool's read command, with "
-		  "\"revisions\": [\"HEAD:src/a.c\"] and \"line\": 50." LATER },
+		  NEED("verified") "The read log does not contain src/a.c line 50."
+		  GIT_READ("the lines", "HEAD", "src/a.c", "50") LATER },
 		/* The path in the read call is escaped as in a JSON string. */
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"evidence\":\"e\","
 		  "\"location\":\"a\\\"b.c:3\"}",
-		  "verified needs the lines of its location in your read log, and a\"b.c line 3 is "
-		  "not in it. Read them with the git tool's read command, with \"revisions\": "
-		  "[\"HEAD:a\\\"b.c\"] and \"line\": 3" WHOLE "." LATER },
+		  NEED("verified") "The read log does not contain a\"b.c line 3."
+		  GIT_READ("the lines", "HEAD", "a\\\"b.c", "3") WHOLE LATER },
 		{ "{\"action\":\"update\"}",
 		  "The id argument must be the number of a finding, such as 3." },
 		{ "{\"action\":\"update\",\"id\":0}",
@@ -773,9 +775,8 @@ test_gate (void)
 	char const verify[] = "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	                      "\"evidence\":\"e\",\"location\":\"src/a.c:50\"}";
 	EXPECT(r, verify, 2, EINVAL,
-	       "verified needs the lines of its location in your read log, and src/a.c line 50 "
-	       "is not in it. Read them with the git tool's read command, with \"revisions\": "
-	       "[\"HEAD:src/a.c\"] and \"line\": 50." LATER);
+	       NEED("verified") "The read log does not contain src/a.c line 50."
+	       GIT_READ("the lines", "HEAD", "src/a.c", "50") LATER);
 	CHECK(!seen(r, "proj", A, "src/a.c", 45, 60, 300, 2));
 	EXPECT(r, verify, 3, 0, "Added finding 1: verified, src/a.c:50 at " A12 ".");
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
@@ -808,16 +809,14 @@ test_gate (void)
 	CHECK(!seen(r, "proj", B, "src/a.c", 1, 150, 300, 1));
 	CHECK(!seen(r, "proj", A, "src/a.c", 160, 300, 300, 1));
 	EXPECT(r, wide, 2, EINVAL,
-	       "verified needs the lines of its location in your read log, and src/a.c lines 1-300 "
-	       "are not all in it: it has lines 1-150 of them, read at " B12 ". Read the rest with "
-	       "the git tool's read command, with \"revisions\": [\"" B12 ":src/a.c\"] and "
-	       "\"line\": 151, in as many calls as it takes." LATER);
+	       NEED("verified") "Of src/a.c lines 1-300, the read log contains only lines 1-150, "
+	       "read at " B12 "." GIT_READ("the missing lines", B12, "src/a.c", "151") SEVERAL
+	       LATER);
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	          "\"evidence\":\"e\",\"location\":\"" A12 ":src/a.c:100-300\"}", 2, EINVAL,
-	       "verified needs the lines of its location in your read log, and src/a.c at " A12 " "
-	       "lines 100-300 are not all in it: it has line 100 of them, read at " A12 ". Read "
-	       "the rest with the git tool's read command, with \"revisions\": [\"" A12
-	       ":src/a.c\"] and \"line\": 101, in as many calls as it takes." LATER);
+	       NEED("verified") "Of src/a.c lines 100-300 at " A12 ", the read log contains only "
+	       "line 100, read at " A12 "." GIT_READ("the missing lines", A12, "src/a.c", "101")
+	       SEVERAL LATER);
 	CHECK(!seen(r, "proj", B, "src/a.c", 151, 300, 300, 2));
 	EXPECT(r, wide, 3, 0, "Added finding 1: verified, src/a.c:1-300 at " B12 ".");
 	review_destroy(&r);
@@ -861,8 +860,8 @@ test_gate (void)
 	/* A location past the end of the file, by the totals in the log. */
 	r = fresh();
 	CHECK(!seen(r, "proj", A, "src/a.c", 295, 300, 300, 1));
-	char const past[] = "src/a.c has 300 lines at " A12 ", so line 305 is past its end; give "
-	                    "a location within lines 1 to 300.";
+	char const past[] = "At " A12 ", src/a.c ends at line 300. Give a location within lines "
+	                    "1 to 300.";
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	          "\"evidence\":\"e\",\"location\":\"src/a.c:299-305\"}", 2, EINVAL, past);
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
@@ -871,32 +870,27 @@ test_gate (void)
 	CHECK(!seen(r, "proj", B, "src/a.c", 1, 5, 302, 2));
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	          "\"evidence\":\"e\",\"location\":\"src/a.c:305\"}", 3, EINVAL,
-	       "src/a.c has 302 lines at " B12 ", so line 305 is past its end; give a location "
-	       "within lines 1 to 302.");
+	       "At " B12 ", src/a.c ends at line 302. Give a location within lines 1 to 302.");
 	/* No such refusal if a file has an unknown total or at least the last
 	 * line. If the file that holds the first lines is too short, the read
 	 * starts at the first line, at the commit of the longest file. */
 	char const ends[] = "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	                    "\"evidence\":\"e\",\"location\":\"src/a.c:299-301\"}";
 	EXPECT(r, ends, 3, EINVAL,
-	       "verified needs the lines of its location in your read log, and src/a.c lines "
-	       "299-301 are not all in it: it has lines 299-300 of them, read at " A12 ", where "
-	       "the file has 300 lines. Read them with the git tool's read command, with "
-	       "\"revisions\": [\"" B12 ":src/a.c\"] and \"line\": 299, in as many calls as it "
-	       "takes." LATER);
+	       NEED("verified") "Of src/a.c lines 299-301, the read log contains only lines "
+	       "299-300, read at " A12 ". At " A12 ", src/a.c ends at line 300."
+	       GIT_READ("the lines", B12, "src/a.c", "299") SEVERAL LATER);
 	/* A file that can have the last line beats one that reaches further. */
 	CHECK(!seen(r, "proj", B, "src/a.c", 299, 299, 302, 3));
 	EXPECT(r, ends, 3, EINVAL,
-	       "verified needs the lines of its location in your read log, and src/a.c lines "
-	       "299-301 are not all in it: it has line 299 of them, read at " B12 ". Read the "
-	       "rest with the git tool's read command, with \"revisions\": [\"" B12 ":src/a.c\"] "
-	       "and \"line\": 300, in as many calls as it takes." LATER);
+	       NEED("verified") "Of src/a.c lines 299-301, the read log contains only line 299, "
+	       "read at " B12 "." GIT_READ("the missing lines", B12, "src/a.c", "300") SEVERAL
+	       LATER);
 	CHECK(!seen(r, "other", A, "src/a.c", 1, 5, 0, 3));
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	          "\"evidence\":\"e\",\"location\":\"src/a.c:305\"}", 4, EINVAL,
-	       "verified needs the lines of its location in your read log, and src/a.c line 305 "
-	       "is not in it. Read them with the git tool's read command, with \"revisions\": "
-	       "[\"HEAD:src/a.c\"] and \"line\": 305." LATER);
+	       NEED("verified") "The read log does not contain src/a.c line 305."
+	       GIT_READ("the lines", "HEAD", "src/a.c", "305") LATER);
 	review_destroy(&r);
 }
 
@@ -909,10 +903,8 @@ test_pending (void)
 	struct review *r = fresh();
 	char const verify[] = "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	                      "\"evidence\":\"e\",\"location\":\"src/a.c:3\"}";
-	char const unread[] = "verified needs the lines of its location in your read log, and "
-	                      "src/a.c line 3 is not in it. Read them with the git tool's read "
-	                      "command, with \"revisions\": [\"HEAD:src/a.c\"] and \"line\": 3"
-	                      WHOLE "." LATER;
+	char const unread[] = NEED("verified") "The read log does not contain src/a.c line 3."
+	                      GIT_READ("the lines", "HEAD", "src/a.c", "3") WHOLE LATER;
 	CHECK(!shown_in(r, "proj", A, "src/a.c", 1, 10, 300, 0, SIZE_MAX, 1));
 	EXPECT(r, verify, 1, EINVAL, unread);
 	RENDER(r, HEADER NONE);
@@ -1163,9 +1155,9 @@ test_full (void)
 	/* The refusal of verified then suggests no git read. */
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"evidence\":"
 	          "\"e\",\"location\":\"src/a.c:3\"}", 11, EINVAL,
-	       "verified needs the lines of its location in your read log, and src/a.c line 3 "
-	       "is not in it. The read log has been full since turn 9, so a read of them would "
-	       "not be logged: cite lines that the log has, or keep the finding a candidate.");
+	       NEED("verified") "The read log does not contain src/a.c line 3. The read log has "
+	       "been full since turn 9. A new read does not enter the read log. Give a location "
+	       "with lines from your read log, or keep the finding a candidate.");
 	review_destroy(&r);
 
 	/* Room for an update with a byte of evidence, but not for a finding. */
@@ -1188,16 +1180,15 @@ test_full (void)
 	CHECK(!call_long(r, add, "claim", left_in(dstr_get(&out)) - 10, &out));
 	char const wide[] = "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	                    "\"evidence\":\"e\",\"location\":\"src/a.c:10-11\"}";
-	char const some[] = "verified needs the lines of its location in your read log, and "
-	                    "src/a.c lines 10-11 are not all in it: it has line 10 of them, read at "
-	                    A12 ".";
-	char const unlogged[] = " so a read of them would not be logged: cite lines that the log "
-	                        "has, or keep the finding a candidate.";
+	char const some[] = NEED("verified") "Of src/a.c lines 10-11, the read log contains only "
+	                    "line 10, read at " A12 ".";
+	char const unlogged[] = " A new read does not enter the read log. Give a location with "
+	                        "lines from your read log, or keep the finding a candidate.";
 	char want[512];
-	snprintf(want, sizeof want, "%s The record is full,%s", some, unlogged);
+	snprintf(want, sizeof want, "%s The record is full.%s", some, unlogged);
 	EXPECT(r, wide, 2, EINVAL, want);
 	CHECK(!seen(r, "proj", A, "src/a.c", 20, 30, 300, 2));
-	snprintf(want, sizeof want, "%s The read log has been full since turn 2,%s", some, unlogged);
+	snprintf(want, sizeof want, "%s The read log has been full since turn 2.%s", some, unlogged);
 	EXPECT(r, wide, 3, EINVAL, want);
 	review_destroy(&r);
 
@@ -1212,12 +1203,11 @@ test_full (void)
 		CHECK(call_long(r, add, "claim", TOOL_TEXT_MAX, &out) == EINVAL);
 		CHECK(!call_long(r, add, "claim", left_in(dstr_get(&out)) - room, &out));
 		if (room < file) {
-			snprintf(want, sizeof want, "%s The record is full,%s", some, unlogged);
+			snprintf(want, sizeof want, "%s The record is full.%s", some, unlogged);
 			EXPECT(r, wide, 2, EINVAL, want);
 		} else {
-			snprintf(want, sizeof want, "%s Read the rest with the git tool's read command, "
-			         "with \"revisions\": [\"" A12 ":src/a.c\"] and \"line\": 11, in as many "
-			         "calls as it takes." LATER, some);
+			snprintf(want, sizeof want, "%s" GIT_READ("the missing lines", A12, "src/a.c",
+			         "11") SEVERAL LATER, some);
 			EXPECT(r, wide, 2, EINVAL, want);
 			CHECK(!seen(r, "proj", A, "src/a.c", 11, 20, 300, 2));
 			lines_of(r, "lines 1-20: 20 of 300 lines", __LINE__);
@@ -1305,9 +1295,8 @@ test_no_git (void)
 	struct review *reads = fresh();
 	CHECK(!review_restore(reads, obj));
 	EXPECT(reads, verify, 2, EINVAL,
-	       "verified needs the lines of its location in your read log, and src/a.c line 3 is "
-	       "not in it. Read them with the git tool's read command, with \"revisions\": "
-	       "[\"HEAD:src/a.c\"] and \"line\": 3" WHOLE "." LATER);
+	       NEED("verified") "The read log does not contain src/a.c line 3."
+	       GIT_READ("the lines", "HEAD", "src/a.c", "3") WHOLE LATER);
 	json_object_put(obj);
 	review_destroy(&reads);
 	review_destroy(&back);
@@ -1342,9 +1331,9 @@ test_no_git (void)
 	r = review_create(REVIEW_READ_LOG, &e);
 	CHECK(r && !e);
 	EXPECT(r, verify, 1, EINVAL,
-	       "verified needs the lines of its location in your read log, and src/a.c line 3 is "
-	       "not in it. Without the git tool, the log takes only the lines that code "
-	       "describe shows, once you have seen them.");
+	       NEED("verified") "The read log does not contain src/a.c line 3. The git tool is "
+	       "not available in this ask call. Lines from the describe action of the code tool "
+	       "enter the read log in your next turn.");
 	review_destroy(&r);
 }
 
@@ -1660,9 +1649,8 @@ test_carry (void)
 	char const verify[] = "{\"action\":\"update\",\"id\":1,\"state\":\"verified\","
 	                      "\"evidence\":\"E2\"}";
 	EXPECT(next, verify, 1, EINVAL,
-	       "verified needs the lines of its location in your read log, and src/a.c line 5 is "
-	       "not in it. Read them with the git tool's read command, with \"revisions\": "
-	       "[\"HEAD:src/a.c\"] and \"line\": 5" WHOLE "." LATER);
+	       NEED("verified") "The read log does not contain src/a.c line 5."
+	       GIT_READ("the lines", "HEAD", "src/a.c", "5") WHOLE LATER);
 	CHECK(!review_changed(next));
 	CHECK(!seen(next, "proj", A, "src/a.c", 1, 9, 300, 1));
 	EXPECT(next, verify, 2, 0, "Finding 1 stays verified, src/a.c:5 at " A12 "; the new "

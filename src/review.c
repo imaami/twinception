@@ -1466,10 +1466,9 @@ review_refuse_unread (struct review const               *r,
 	struct review_file const *largest = c->largest;
 	struct cstr_view const prefix = loc->prefix;
 	if (largest && largest->total && largest->total < loc->last)
-		return REFUSE(out, "%.*s has %" PRIu32 " line%s at %.*s, so line %" PRIu32 " is "
-		              "past its end; give a location within lines 1 to %" PRIu32 ".", len,
-		              path, largest->total, util_s(largest->total), REVIEW_SHORT_OID,
-		              largest->commit.hex, loc->last, largest->total);
+		return REFUSE(out, "At %.*s, %.*s ends at line %" PRIu32 ". Give a location within "
+		              "lines 1 to %" PRIu32 ".", REVIEW_SHORT_OID, largest->commit.hex, len,
+		              path, largest->total, largest->total);
 	/* Select the read to suggest. If the best file can contain line
 	 * loc->last, the read starts at line c->end + 1 at the commit of the
 	 * best file. If the best file contains fewer lines, no file that can
@@ -1481,23 +1480,23 @@ review_refuse_unread (struct review const               *r,
 	bool const rest = to && !shorter;
 	struct cstr_view const rev = to ? (struct cstr_view){ to->commit.hex, REVIEW_SHORT_OID }
 	                           : prefix.len ? prefix : CSTR_VIEW("HEAD");
-	bool const one = loc->first == loc->last;
-	bool failed = !dstr_printf(out, "%s needs the lines of its location in your read log, and "
-	                           "%.*s", name, len, path) ||
-	              (prefix.len && !dstr_printf(out, " at %.*s", (int)prefix.len, prefix.data)) ||
-	              !dstr_printf(out, " line%s ", one ? "" : "s") ||
-	              review_put_lines(out, loc->first, loc->last);
+	bool failed = !dstr_printf(out, "%s requires the lines of the location in your read log. "
+	                           "%s%.*s line%s ", name,
+	                           c->best ? "Of " : "The read log does not contain ", len, path,
+	                           loc->first == loc->last ? "" : "s") ||
+	              review_put_lines(out, loc->first, loc->last) ||
+	              (prefix.len && !dstr_printf(out, " at %.*s", (int)prefix.len, prefix.data));
 	if (!c->best)
-		failed = failed || !dstr_printf(out, " %s not in it.", one ? "is" : "are");
+		failed = failed || PUT(out, ".");
 	else
-		failed = failed || !dstr_printf(out, " are not all in it: it has line%s ",
+		failed = failed || !dstr_printf(out, ", the read log contains only line%s ",
 		                                c->end > loc->first ? "s" : "") ||
 		         review_put_lines(out, loc->first, c->end) ||
-		         !dstr_printf(out, " of them, read at %.*s", REVIEW_SHORT_OID,
+		         !dstr_printf(out, ", read at %.*s.", REVIEW_SHORT_OID,
 		                      c->best->commit.hex) ||
-		         (shorter && !dstr_printf(out, ", where the file has %" PRIu32 " line%s",
-		                                  c->best->total, util_s(c->best->total))) ||
-		         PUT(out, ".");
+		         (shorter && !dstr_printf(out, " At %.*s, %.*s ends at line %" PRIu32 ".",
+		                                  REVIEW_SHORT_OID, c->best->commit.hex, len, path,
+		                                  c->best->total));
 	/* The read is logged as a new pending file after a later turn. Its
 	 * charge is estimated from the file to read, or from a file with this
 	 * path and a 1-byte repository name. */
@@ -1505,27 +1504,31 @@ review_refuse_unread (struct review const               *r,
 	if (r->size + charge > TOOL_TEXT_MAX) {
 		if (r->dropped_turn)
 			failed = failed || !dstr_printf(out, " The read log has been full since turn %"
-			                                PRIu32 ",", r->dropped_turn);
+			                                PRIu32 ".", r->dropped_turn);
 		else
-			failed = failed || PUT(out, " The record is full,");
-		return failed || PUT(out, " so a read of them would not be logged: cite lines that "
-		                          "the log has, or keep the finding a candidate.")
+			failed = failed || PUT(out, " The record is full.");
+		return failed || PUT(out, " A new read does not enter the read log. Give a "
+		                          "location with lines from your read log, or keep the "
+		                          "finding a candidate.")
 		       ? ENOMEM : EINVAL;
 	}
 	if (!(r->flags & REVIEW_GIT))
-		return failed || PUT(out, " Without the git tool, the log takes only the lines "
-		                          "that code describe shows, once you have seen them.")
+		return failed || PUT(out, " The git tool is not available in this ask call. "
+		                          "Lines from the describe action of the code tool enter "
+		                          "the read log in your next turn.")
 		       ? ENOMEM : EINVAL;
 	static char const *const hints[] = {
-		", where the path is the file's whole path from the top of the repository", "",
-		", in as many calls as it takes",
+		" The path in revisions must be the whole path from the top of the repository.",
+		"",
+		" A long range can need several reads.",
 	};
-	return failed || !dstr_printf(out, " Read %s with the git tool's read command, with "
-	                              "\"revisions\": [\"%.*s:", rest ? "the rest" : "them",
-	                              (int)rev.len, rev.data) ||
+	return failed || !dstr_printf(out, " To read %s, call the git tool with \"command\": "
+	                              "\"read\", \"revisions\": [\"%.*s:",
+	                              rest ? "the missing lines" : "the lines", (int)rev.len,
+	                              rev.data) ||
 	       jb_escape_cat(loc->path, out) ||
-	       !dstr_printf(out, "\"] and \"line\": %" PRIu32 "%s. The log takes the lines of a "
-	                    "read once you have seen them, so call again in a later turn.",
+	       !dstr_printf(out, "\"] and \"line\": %" PRIu32 ".%s The lines of a read enter the "
+	                    "read log in your next turn. Call findings again in a later turn.",
 	                    rest ? c->end + 1 : loc->first, hints[to ? 2 : resolved != 0])
 	       ? ENOMEM : EINVAL;
 }

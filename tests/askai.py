@@ -10824,7 +10824,7 @@ def check_code_describe(binary, up, call, head, d, cdb):
             results
         assert results[1] == f"Added finding 2: verified, src/sub/far.h:2 at {head[:12]}.", \
             results
-        assert all(r.startswith("verified needs the lines of its location in your read log")
+        assert all(r.startswith("verified requires the lines of the location in your read log")
                    for r in results[2:]), results
     up.reply = lambda request: (200, ANSWERS["openai"])
 
@@ -14089,11 +14089,12 @@ def check_review(binary, up):
             assert results(sent[1]) == [
                 "Added finding 1: candidate, src/a.c:3-4, not read. Read its lines before "
                 "you verify it.",
-                "verified needs the lines of its location in your read log, and src/a.c "
-                "line 5 is not in it. Read them with the git tool's read command, with "
-                "\"revisions\": [\"HEAD:src/a.c\"] and \"line\": 5, where the path is the "
-                "file's whole path from the top of the repository. The log takes the lines "
-                "of a read once you have seen them, so call again in a later turn.",
+                "verified requires the lines of the location in your read log. The read log "
+                "does not contain src/a.c line 5. To read the lines, call the git tool with "
+                "\"command\": \"read\", \"revisions\": [\"HEAD:src/a.c\"] and \"line\": 5. The "
+                "path in revisions must be the whole path from the top of the repository. The "
+                "lines of a read enter the read log in your next turn. Call findings again in "
+                "a later turn.",
                 "Added finding 2: candidate. askai left out the [askai: ...] lines at "
                 "the end of the evidence. askai adds those lines to tool results, and "
                 "they are not part of the finding.",
@@ -14187,17 +14188,18 @@ def check_review(binary, up):
             return {"action": "add", "claim": claim, "location": location, "state": state,
                     "evidence": "E" + claim}
 
-        later_turn = (" The log takes the lines of a read once you have seen them, so call "
-                      "again in a later turn.")
+        later_turn = (" The lines of a read enter the read log in your next turn. Call "
+                      "findings again in a later turn.")
 
         def missing(state, location, path, line, logged=True):
             """The refusal of lines that are not in the log, of a path that
             it has if @p logged is true."""
-            return (f"{state} needs the lines of its location in your read log, and "
-                    f"{location} not in it. Read them with the git tool's read command, "
-                    f"with \"revisions\": [\"HEAD:{path}\"] and \"line\": {line}" +
-                    ("" if logged else ", where the path is the file's whole path from the "
-                     "top of the repository") + "." + later_turn)
+            return (f"{state} requires the lines of the location in your read log. The read "
+                    f"log does not contain {location}. To read the lines, call the git tool "
+                    f"with \"command\": \"read\", \"revisions\": [\"HEAD:{path}\"] and "
+                    f"\"line\": {line}." +
+                    ("" if logged else " The path in revisions must be the whole path from "
+                     "the top of the repository.") + later_turn)
 
         def second(request):
             """Commit src/x.c, tests/x.c, a line more of src/a.c, a file of
@@ -14243,20 +14245,20 @@ def check_review(binary, up):
             assert shown[0].startswith(f"[Repository proj, file src/a.c at commit {head}: "
                                        "lines 1 to 10 of 300.]\n1\tint x0;\n"), shown
             # The turn that reads the lines has not seen them yet.
-            assert shown[1:] == [missing("verified", "src/a.c lines 3-4 are", "src/a.c", 3,
+            assert shown[1:] == [missing("verified", "src/a.c lines 3-4", "src/a.c", 3,
                                          False)], shown
             assert results(sent[2])[1:] == [
                 f"Added finding 1: verified, src/a.c:3-4 at {head[:12]}.",
-                missing("disproved", "src/a.c line 50 is", "src/a.c", 50)], sent[2]
+                missing("disproved", "src/a.c line 50", "src/a.c", 50)], sent[2]
             # When the log has only some of the lines of the location, the
             # refusal names the line after the logged lines, and their commit.
             assert results(sent[3]) == [
                 f"Added finding 2: disproved, src/a.c:50 at {head[:12]}.",
-                "verified needs the lines of its location in your read log, and src/a.c "
-                f"lines 60-61 are not all in it: it has line 60 of them, read at {head[:12]}. "
-                "Read the rest with the git tool's read command, with \"revisions\": "
-                f"[\"{head[:12]}:src/a.c\"] and \"line\": 61, in as many calls as it takes." +
-                later_turn], sent[3]
+                "verified requires the lines of the location in your read log. Of src/a.c "
+                f"lines 60-61, the read log contains only line 60, read at {head[:12]}. To "
+                "read the missing lines, call the git tool with \"command\": \"read\", "
+                f"\"revisions\": [\"{head[:12]}:src/a.c\"] and \"line\": 61. A long range can "
+                "need several reads." + later_turn], sent[3]
             # The latest read that showed a location's lines gives its
             # commit, and a commit's prefix picks the reads at that commit.
             assert results(sent[4])[3:] == [f"Added finding 3: verified, src/a.c:3 at "
@@ -14293,8 +14295,8 @@ def check_review(binary, up):
             assert ai.ask("Q")["content"][0]["text"] == "A"
             assert results(up.requests[count + 4]) == [
                 f"Added finding 1: verified, src/a.c:3 at {later[:12]}.",
-                f"src/a.c has 301 lines at {later[:12]}, so line 305 is past its end; give a "
-                "location within lines 1 to 301.",
+                f"At {later[:12]}, src/a.c ends at line 301. Give a location within lines 1 "
+                "to 301.",
                 f"Added finding 2: verified, src/a.c:4 at {later[:12]}."], \
                 results(up.requests[count + 4])
 
@@ -14324,7 +14326,7 @@ def check_review(binary, up):
             assert ai.ask("Q")["content"][0]["text"] == "A"
             sent = up.requests[count:]
             assert prompt(sent[1]) == compacted("S", "\n\n" + TASK + REVIEW_EMPTY), prompt(sent[1])
-            assert results(sent[2]) == [missing("verified", "src/a.c line 3 is", "src/a.c", 3,
+            assert results(sent[2]) == [missing("verified", "src/a.c line 3", "src/a.c", 3,
                                                 False)], sent[2]
             # So does the compaction that askai makes when the context fills
             # up.
@@ -14340,7 +14342,7 @@ def check_review(binary, up):
                 "Q\n\n[askai: your context filled up. Your turns and the tool results since "
                 "the task are gone.]\n\n" + TASK + REVIEW_EMPTY +
                 "\n\n[askai: go on with the task.]"), prompt(sent[2])
-            assert results(sent[3]) == [missing("verified", "src/a.c line 3 is", "src/a.c", 3,
+            assert results(sent[3]) == [missing("verified", "src/a.c line 3", "src/a.c", 3,
                                                 False)], sent[3]
 
             # A job's read counts once jobs gives its result.
@@ -14353,7 +14355,7 @@ def check_review(binary, up):
             count = len(up.requests)
             assert ai.ask("Q")["content"][0]["text"] == "A"
             sent = up.requests[count:]
-            assert results(sent[2])[1] == missing("verified", "src/a.c line 101 is",
+            assert results(sent[2])[1] == missing("verified", "src/a.c line 101",
                                                   "src/a.c", 101, False), sent[2]
             shown = results(sent[3])
             assert shown[0].startswith(f"[Repository proj, file src/a.c at commit {later}: "
@@ -14375,7 +14377,7 @@ def check_review(binary, up):
                                   "tool reads.]"), read_cut[-300:]
             shown = results(up.requests[count + 2])
             assert shown == [
-                missing("verified", "src/cut.c line 4195 is", "src/cut.c", 4195),
+                missing("verified", "src/cut.c line 4195", "src/cut.c", 4195),
                 f"Added finding 1: verified, src/cut.c:4194 at {later[:12]}.",
                 REVIEW + findings_head("1 finding: 1 verified") +
                 f"1. verified, src/cut.c:4194 at {later[:12]}\n   claim: C7\n"
@@ -14563,7 +14565,7 @@ def check_review(binary, up):
             assert prompt(sent[0]).endswith("\n\n" + record) and \
                 READS not in prompt(sent[0]), prompt(sent[0])
             assert results(sent[1]) == [
-                missing("verified", "src/a.c line 5 is", "src/a.c", 5, False),
+                missing("verified", "src/a.c line 5", "src/a.c", 5, False),
                 "There is no finding 9. The record contains findings 1 to 2."], results(sent[1])
             assert results(sent[3]) == [f"Finding 1 stays verified, src/a.c:5 at {later[:12]}; "
                                         "the new evidence is in its history."], sent[3]
