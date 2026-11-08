@@ -60,7 +60,7 @@ build/askai-cli --socket /path/to/askai.sock
 
 The client uses GNU Readline for terminal input, with searchable history,
 PgUp/PgDn prefix matching, and completion of commands, file paths, exposed
-tools, tool parameters and known session participants. `/tools` lists the
+tools, tool parameters and the members of the session. `/tools` lists the
 client's permitted tools; `/tool NAME key=VALUE ...` calls one directly.
 Tool activity appears as IRC-style action lines. It sends each chat turn
 to AskAI, where tools and notes run, and contains no local inference engine.

@@ -7,6 +7,7 @@ import http.server
 import json
 import os
 import pty
+import re
 import select
 import signal
 import socket
@@ -19,7 +20,7 @@ import termios
 import threading
 import time
 
-from askai import Askai, Stream, Upstream, sse_wire, turn_stream
+from askai import ME, Askai, Stream, Upstream, sse_wire, turn_stream
 
 
 def command(binary, path, *args):
@@ -176,6 +177,38 @@ def check_commands(cli, server):
     finally:
         upstream.close()
     print("cli commands: regenerate the last turn and clear local history: PASS")
+
+
+def check_members(cli, server):
+    """The members of a real session, and the history key of the session."""
+    upstream = Upstream()
+    try:
+        upstream.reply = lambda request: (200, answer("member-answer"))
+        with tempfile.TemporaryDirectory(prefix="askai-cli-notes-") as directory:
+            notes = directory + "/session.git"
+            history = directory + "/history.git"
+            with Session(server, upstream, "--agent", "bro", "--notes", notes) as session:
+                # The person becomes a member with the first write of notes.
+                output = succeeded(run(cli, session.socket, "--history-repo", history,
+                                       text="/names\n/tool notes action=add file=a.md text=x\n"
+                                            "/refresh\n/names\nQ\n/exit\n"))
+                names = re.findall(r"^(?:People: .*\. )?Agents: .*\.$", output, re.M)
+                assert names == ["Agents: bro.", f"People: {ME}. Agents: bro."], output
+                assert "member-answer" in output, output
+            stored = subprocess.run(["git", "--git-dir=" + notes, "log", "-1",
+                                     "--format=%(trailers:key=Session,valueonly)",
+                                     "refs/askai/session"],
+                                    check=True, capture_output=True, text=True, timeout=5)
+            identity = subprocess.run(["git", "--git-dir=" + history, "log", "--all", "-1",
+                                       "--format=", "-p", "--", "identity.txt"],
+                                      check=True, capture_output=True, text=True, timeout=5)
+            # The key of the history is the stored session ID. The key
+            # participant keeps its name, with the agent as the value.
+            assert f"+session={stored.stdout.strip()}\n+participant=bro\n+tool=ask_ai\n" in \
+                identity.stdout, (stored.stdout, identity.stdout)
+    finally:
+        upstream.close()
+    print("cli members: a real session lists persons and agents, and keys the history: PASS")
 
 
 def read_until(proc, needle, timeout, descriptor=None):
@@ -538,8 +571,8 @@ def check_peer_catalog(cli, unused_server):
             "count": {"type": "integer"}, "recursive": {"type": "boolean"},
             "message": {"type": "string"}}}}
     notes = {"name": "notebook_service", "_meta": {"askai": {
-        "participant": "self", "notebooks": True}}, "inputSchema": {
-            "type": "object", "properties": {"action": {"enum": ["notebooks"]}}}}
+        "agent": "self", "members": True}}, "inputSchema": {
+            "type": "object", "properties": {"action": {"enum": ["members"]}}}}
     lookup = {"name": "lookup", "inputSchema": {"type": "object", "properties": {
         "query": {"type": "string"}}}}
 
@@ -561,13 +594,16 @@ def check_peer_catalog(cli, unused_server):
         params = request["params"]
         name = params["name"]
         if name == "notebook_service":
-            assert params["arguments"] == {"action": "notebooks"}, request
-            names = ("Self (writable): alice/anonymous/client\n"
-                     "bob/0123456789abcdef/upstream (read-only)\n"
-                     "alice/anonymous/upstream\nmalformed line\n"
-                     "bad/invalid/client\ntruncated/anonymous/clien") if generation == 1 else \
-                    "Self (writable): carol/anonymous/client\n"
-            return result({"content": [{"type": "text", "text": names}]})
+            assert params["arguments"] == {"action": "members"}, request
+            # Entries without a name, or with a name that is not safe to
+            # complete, are skipped. The text is not parsed.
+            members = [{"name": "alice", "kind": "person"}, {"name": "bob", "kind": "agent"},
+                       {"name": "alice", "kind": "person"}, {"kind": "agent"},
+                       {"name": 5, "kind": "agent"}, {"name": "bad name", "kind": "agent"},
+                       {"name": "carl", "kind": "person"}] if generation == 1 else \
+                      [{"name": "carol", "kind": "person"}]
+            return result({"content": [{"type": "text", "text": "malformed text"}],
+                           "structuredContent": {"you": members[0], "members": members}})
         if name == "git":
             assert params["arguments"] == {"command": "log", "count": 2,
                                             "recursive": True, "message": "hello world"}, request
@@ -594,16 +630,18 @@ def check_peer_catalog(cli, unused_server):
                "Q\n/refresh\n/names\n/tools\n/tool lookup query=latest\n/exit\n")
     with Peer(reply, methods) as peer:
         output = succeeded(run(cli, peer.socket, text=entered))
-        for marker in ("TOOL-RESULT", "CLI-RESULT", "REFRESHED-TOOL", "alice", "bob", "carol", "self"):
+        for marker in ("TOOL-RESULT", "CLI-RESULT", "REFRESHED-TOOL",
+                       "People: alice, carl. Agents: bob, self.\n",
+                       "People: carol. Agents: self.\n"):
             assert marker in output, (marker, output)
-        assert "malformed" not in output and "truncated" not in output, output
+        assert "malformed" not in output and "bad name" not in output, output
         assert "* you call git" in output and "* git reading history" in output, output
         assert "* git completed" in output and "WRONG-PROGRESS" not in output, output
         calls = [request["params"]["name"] for request in peer.requests
                  if request["method"] == "tools/call"]
         assert calls == ["notebook_service", "git", "ask_ai", "notebook_service", "lookup"], calls
         assert generation == 2, (generation, peer.requests)
-    print("cli catalog: paginated tools, typed invocation, notes participants and refresh: PASS")
+    print("cli catalog: paginated tools, typed invocation, members and refresh: PASS")
 
 
 def check_peer_catalog_changed(cli, unused_server):
@@ -630,13 +668,12 @@ def check_peer_catalog_changed(cli, unused_server):
     print("cli catalog: tools/list_changed refreshes before the next prompt: PASS")
 
 
-def check_peer_notes(cli, unused_server, current=False):
-    """Discover server note paths, then exercise the actual Readline callback."""
+def check_peer_notes(cli, unused_server):
+    """Discover the members and their note paths, then exercise the actual
+    Readline callback."""
     own = "design/äiti (1 line).md"
     other = "thoughts/next.md"
     selected = "reviews/note  (1 line).md"
-    selector = "bob/anonymous/upstream"
-    self_selector = "self/anonymous/client"
     copied, learned, replaced, restored = False, False, False, False
     calls = []
     held, release = threading.Event(), threading.Event()
@@ -646,11 +683,13 @@ def check_peer_notes(cli, unused_server, current=False):
         "type": "object", "properties": {"prompt": {"type": "string"},
         "messages": {"type": "array"}, "background": {"type": "boolean"}}}}
     notes = {"name": "notebook_service", "_meta": {"askai": {
-        "participant": "self", "notebooks": True}}, "inputSchema": {
-            "type": "object", "properties": {
-                "action": {"type": "string", "enum": ["notebooks", "list", "read", "copy", "add",
-                                                      "replace", "restore"]},
-                "notebook": {"type": "string"}, "file": {"type": "string"}}}}
+        "session": "6f0c2b9a41d8e3f75a2c1b0d9e8f7a6b", "agent": "self", "members": True}},
+             "inputSchema": {"type": "object", "properties": {
+                 "action": {"type": "string", "enum": ["members", "list", "read", "copy", "add",
+                                                       "replace", "restore"]},
+                 "notebook": {"type": "string"}, "file": {"type": "string"}}}}
+    members = [{"name": "ann", "kind": "person"}, {"name": "bob", "kind": "agent"},
+               {"name": "self", "kind": "agent"}]
 
     def result(text):
         return 200, "application/json", {"result": {"content": [
@@ -669,16 +708,17 @@ def check_peer_notes(cli, unused_server, current=False):
             return result("MODEL-NOTED")
         assert params["name"] == "notebook_service", request
         args = params["arguments"]
-        if args["action"] == "notebooks":
-            if current:
-                return result(f"Self (writable): {self_selector}\n\n"
-                              f"Other notebooks:\n{selector} (read-only)\n")
-            return result("Session notebooks (use a selector as notebook):\n" + selector + "\n")
+        if args["action"] == "members":
+            assert args == {"action": "members"}, request
+            return 200, "application/json", {"result": {
+                "content": [{"type": "text", "text": "Members of the session test1"}],
+                "structuredContent": {"you": members[0], "members": members}}}
         if args["action"] == "list":
-            book = args["notebook"]
-            assert book in ("own", "other", selector, self_selector), request
-            files = [other] if book == "other" else [selected] if book == selector else [own]
-            if book in ("own", self_selector):
+            # Without notebook, the notes tool lists the notebook of ann.
+            book = args.get("notebook", "ann")
+            assert book in ("ann", "bob", "self"), request
+            files = {"ann": [own], "bob": [selected], "self": [other]}[book]
+            if book == "ann" and "notebook" not in args:
                 files += (["copied/new note.md"] if copied else [])
                 files += (["learned/server note.md"] if learned else [])
                 if copied:
@@ -689,9 +729,9 @@ def check_peer_notes(cli, unused_server, current=False):
                     replaced_listed.set()
                 if restored:
                     restored_listed.set()
-            blob = "a" * (64 if book == selector else 40)
+            blob = "a" * (64 if book == "bob" else 40)
             records = "".join(f"{name}  (123 bytes, {blob})\n" for name in files)
-            return result(f"Notebook {book} — current files (bytes, blob):\n\n" + records +
+            return result(f"Notebook {book} (person): current notes (bytes, blob):\n\n" + records +
                           f"nonhex.md  (123 bytes, {'g' * 40})\n"
                           f"decimal.md  (12x bytes, {blob})\n"
                           f"short.md  (123 bytes, abcd)\n"
@@ -736,7 +776,17 @@ def check_peer_notes(cli, unused_server, current=False):
             os.write(master, b"\r")
 
         try:
-            read_until(proc, b"> ", 5, master)
+            output = read_until(proc, b"> ", 5, master)
+            assert b"older" not in output, output
+            # One members call, then one list call for each member and one
+            # without notebook.
+            listed = [request["params"]["arguments"] for request in peer.requests
+                      if request["method"] == "tools/call"]
+            assert listed == [{"action": "members"}] + [
+                {"action": "list", "notebook": name} for name in ("ann", "bob", "self")] + [
+                {"action": "list"}], listed
+            os.write(master, b"/names\r")
+            read_until(proc, b"People: ann. Agents: bob, self.", 5, master)
             before_tab = len(peer.requests)
             os.write(master, b"/tool notebook_service action=read file=des\t")
             read_until(proc, own.encode(), 5, master)
@@ -745,30 +795,29 @@ def check_peer_notes(cli, unused_server, current=False):
             completed({"action": "read", "file": own})
 
             prefix = "/tool notebook_service action=read file=re"
-            line = prefix + " notebook='" + selector + "'"
+            line = prefix + " notebook='bob'"
             os.write(master, line.encode() + b"\x01" + b"\x1b[C" * len(prefix) + b"\t\r")
-            completed({"action": "read", "file": selected, "notebook": selector})
+            completed({"action": "read", "file": selected, "notebook": "bob"})
 
             os.write(master, b"/tool notebook_service action=read file=held.md\r")
             assert held.wait(5), "overlapping read did not start"
-            os.write(master, b"/tool notebook_service action=copy file=th\t\r")
-            completed({"action": "copy", "file": other})
+            os.write(master, b"/tool notebook_service action=copy notebook=se\tfile=th\t\r")
+            completed({"action": "copy", "notebook": "self", "file": other})
             assert not copied_listed.is_set(), "discovery interrupted an active tool"
             release.set()
             completed()
 
-            complete_refreshed(b"/tool notebook_service action=read notebook=ow\tfile=cop",
+            complete_refreshed(b"/tool notebook_service action=read file=cop",
                                "copied/new note.md", copied_listed)
-            completed({"action": "read", "notebook": "own", "file": "copied/new note.md"})
+            completed({"action": "read", "file": "copied/new note.md"})
 
-            if current:
-                os.write(master, f"/tool notebook_service action=replace file='{own}'\r".encode())
-                completed({"action": "replace", "file": own})
-                assert replaced_listed.wait(5), "note replacement did not refresh filenames"
-                # A restore can bring back a note that is gone from the tree.
-                os.write(master, f"/tool notebook_service action=restore file='{own}'\r".encode())
-                completed({"action": "restore", "file": own})
-                assert restored_listed.wait(5), "note restoration did not refresh filenames"
+            os.write(master, f"/tool notebook_service action=replace file='{own}'\r".encode())
+            completed({"action": "replace", "file": own})
+            assert replaced_listed.wait(5), "note replacement did not refresh filenames"
+            # A restore can bring back a note that is gone from the tree.
+            os.write(master, f"/tool notebook_service action=restore file='{own}'\r".encode())
+            completed({"action": "restore", "file": own})
+            assert restored_listed.wait(5), "note restoration did not refresh filenames"
 
             os.write(master, b"Write a note\r")
             read_until(proc, b"MODEL-NOTED", 5, master)
@@ -776,10 +825,13 @@ def check_peer_notes(cli, unused_server, current=False):
                                "learned/server note.md", learned_listed)
             completed({"action": "read", "file": "learned/server note.md"})
 
-            # Truncated records and malformed metadata are not candidates.
+            # Truncated records and malformed metadata are not candidates, and
+            # copy without notebook completes no file.
             for prefix in ("part", "nonhex", "decimal", "short"):
                 os.write(master, f"/tool notebook_service action=read file={prefix}\t\r".encode())
                 completed({"action": "read", "file": prefix})
+            os.write(master, b"/tool notebook_service action=copy file=th\t\r")
+            completed({"action": "copy", "file": "th"})
             os.write(master, b"/exit\r")
             assert proc.wait(timeout=5) == 0, proc.returncode
             assert termios.tcgetattr(slave) == before, "terminal settings were not restored"
@@ -790,8 +842,59 @@ def check_peer_notes(cli, unused_server, current=False):
             proc.wait()
             os.close(master)
             os.close(slave)
-    format_name = "current" if current else "legacy"
-    print(f"cli notes ({format_name}): paths, selectors, UTF-8, mutation refresh and offline Tab: PASS")
+    print("cli notes: members, paths of each notebook, UTF-8, mutation refresh and offline Tab: PASS")
+
+
+def check_peer_older(cli, unused_server):
+    """An askai that lists notebooks instead of members is older than
+    askai-cli: chat works, and notebook completion is off."""
+    ask = {"name": "ask_ai", "title": "Ask AI", "inputSchema": {
+        "type": "object", "properties": {"prompt": {"type": "string"},
+        "messages": {"type": "array"}, "background": {"type": "boolean"}}}}
+    for meta in ({"askai": {"participant": "self", "notebooks": True, "session": "a" * 16}}, {}):
+        notes = {"name": "notes", "_meta": meta, "inputSchema": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["notebooks", "list", "read"]},
+            "notebook": {"type": "string"}, "file": {"type": "string"}}}}
+
+        def methods(request):
+            if request["method"] == "tools/list":
+                return 200, "application/json", {"result": {"tools": [ask, notes]}}
+            return None
+
+        def reply(request):
+            assert request["params"]["name"] == "ask_ai", request
+            return 200, "application/json", {"result": {"content": [
+                {"type": "text", "text": "OLDER-ANSWER"}]}}
+
+        with Peer(reply, methods) as peer:
+            master, slave = pty.openpty()
+            environment = os.environ | {"TERM": "dumb", "LC_ALL": "C.UTF-8",
+                                        "INPUTRC": os.devnull}
+            proc = subprocess.Popen([cli, "--socket", peer.socket, "--color", "off", "--no-history"],
+                                    stdin=slave, stdout=slave, stderr=slave, env=environment)
+            try:
+                read_until(proc, b"This askai is older than askai-cli. Notebook completion is off.",
+                           5, master)
+                os.write(master, b"/names\r")
+                read_until(proc, b"No members discovered.", 5, master)
+                os.write(master, b"Q\r")
+                read_until(proc, b"OLDER-ANSWER", 5, master)
+                os.write(master, b"/exit\r")
+                assert proc.wait(timeout=5) == 0, proc.returncode
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait()
+                os.close(master)
+                os.close(slave)
+            calls = [request["params"]["name"] for request in peer.requests
+                     if request["method"] == "tools/call"]
+            assert calls == ["ask_ai"], calls
+        # Without a terminal, the notice stays out of the output.
+        with Peer(reply, methods) as peer:
+            output = succeeded(run(cli, peer.socket, "--single-turn", "--prompt", "Q"))
+            assert output.strip() == "OLDER-ANSWER", output
+    print("cli notes: an older askai gets a notice, chat and no notebook completion: PASS")
 
 
 def check_peer_history(cli, unused_server):
@@ -882,13 +985,12 @@ def main():
     check_options(cli, server)
     if not unix_available():
         return
-    for check in (check_history, check_input, check_commands, check_stream,
+    for check in (check_history, check_input, check_commands, check_members, check_stream,
                   check_tools, check_cancel, check_broken_pipe, check_peer_errors, check_peer_stream,
                   check_peer_progress,
                   check_peer_catalog, check_peer_catalog_changed, check_peer_autocomplete_error,
-                  check_peer_notes, check_peer_history, check_peer_input_history):
+                  check_peer_notes, check_peer_older, check_peer_history, check_peer_input_history):
         check(cli, server)
-    check_peer_notes(cli, server, True)
 
 
 if __name__ == "__main__":

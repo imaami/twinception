@@ -113,7 +113,7 @@ static void autocomplete_labels (struct autocomplete *catalog)
 		{CSTR_VIEW_INIT("/tool git repo=other"), CSTR_VIEW_INIT("/tool git repo='other project' "), CSTR_VIEW_INIT("'other project'"), 20, AUTOCOMPLETE_VALUE, 15},
 		{CSTR_VIEW_INIT("hello @al"), CSTR_VIEW_INIT("hello @alice "), CSTR_VIEW_INIT("@alice"), 9, AUTOCOMPLETE_NAME, 6},
 		{CSTR_VIEW_INIT("ää @al"), CSTR_VIEW_INIT("ää @alice "), CSTR_VIEW_INIT("@alice"), 8, AUTOCOMPLETE_NAME, 5},
-		{CSTR_VIEW_INIT("/tool git participant=al"), CSTR_VIEW_INIT("/tool git participant=alice "), CSTR_VIEW_INIT("alice"), 24, AUTOCOMPLETE_NAME, 22},
+		{CSTR_VIEW_INIT("/tool git member=al"), CSTR_VIEW_INIT("/tool git member=alice "), CSTR_VIEW_INIT("alice"), 19, AUTOCOMPLETE_NAME, 17},
 		{CSTR_VIEW_INIT("/tool notes file=des"), CSTR_VIEW_INIT("/tool notes file='design docs/first.md' "), CSTR_VIEW_INIT("'design docs/first.md'"), 20, AUTOCOMPLETE_FILE, 17},
 		{CSTR_VIEW_INIT("/tool git command=stale count=2"), CSTR_VIEW_INIT("/tool git command=status count=2"), CSTR_VIEW_INIT("status"), 20, AUTOCOMPLETE_VALUE, 18},
 	};
@@ -176,10 +176,10 @@ static void autocomplete_reuse (struct autocomplete *catalog)
 {
 	static struct cstr_view const inputs[] = {
 		CSTR_VIEW_INIT("/tool "), CSTR_VIEW_INIT("/tool git "), CSTR_VIEW_INIT("/tool lookup mixed="),
-		CSTR_VIEW_INIT("/tool lookup structured="), CSTR_VIEW_INIT("/tool git participant="),
+		CSTR_VIEW_INIT("/tool lookup structured="), CSTR_VIEW_INIT("/tool git member="),
 		CSTR_VIEW_INIT("/tool git notebook="), CSTR_VIEW_INIT("@"), CSTR_VIEW_INIT("/tool git command=stale count=2"),
 		CSTR_VIEW_INIT("/tool notes action=read file="), CSTR_VIEW_INIT("/tool notes action=copy file="),
-		CSTR_VIEW_INIT("/tool notes notebook=bob/0123456789abcdef/upstream file="),
+		CSTR_VIEW_INIT("/tool notes notebook=bob file="),
 		CSTR_VIEW_INIT("/tool notes action=read file='design docs/"), CSTR_VIEW_INIT("/tool notes file=o")
 	};
 	/* Grow the line workspace first, then alternate long and short requests.
@@ -301,17 +301,18 @@ static void autocomplete_note_cache(struct autocomplete *catalog)
 	assert(!autocomplete_complete(catalog, input, input.len, &matches, &count));
 	assert(count == 4); /* Unsafe paths omitted; duplicates removed. */
 	struct cstr_view const paths[] = {CSTR_VIEW("updated plan.md"), CSTR_VIEW("new/entry.md")};
-	assert(!autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW("own"), paths, 2));
+	assert(!autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW(""), paths, 2));
 	autocomplete_has(catalog, input, CSTR_VIEW("/tool notes file='updated plan.md'"), input.len);
 	input = CSTR_VIEW("/tool notes file=find");
 	autocomplete_empty(catalog, input, input.len);
-	input = CSTR_VIEW("/tool notes action=copy file=");
-	autocomplete_has(catalog, input, CSTR_VIEW("/tool notes action=copy file=model/thoughts.md"), input.len);
-	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("absent"), CSTR_VIEW("own"), paths, 2) == EINVAL);
-	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW("own"), nullptr, 1) == EINVAL);
-	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW("own"), paths, (size_t)-1) == E2BIG);
+	input = CSTR_VIEW("/tool notes action=copy notebook=alice file=");
+	autocomplete_has(catalog, input, CSTR_VIEW("/tool notes action=copy notebook=alice file=model/thoughts.md"), input.len);
+	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("absent"), CSTR_VIEW(""), paths, 2) == EINVAL);
+	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW(""), nullptr, 1) == EINVAL);
+	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW("bad\x1b[31m"), paths, 2) == EINVAL);
+	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW(""), paths, (size_t)-1) == E2BIG);
 	struct cstr_view huge = {"", 16 * 1024 * 1024};
-	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW("own"), &huge, 1) == E2BIG);
+	assert(autocomplete_set_note_files(catalog, CSTR_VIEW("notes"), CSTR_VIEW(""), &huge, 1) == E2BIG);
 	input = CSTR_VIEW("/tool notes file=new");
 	autocomplete_has(catalog, input, CSTR_VIEW("/tool notes file=new/entry.md"), input.len);
 	/* Clearing and refilling reuses capacity, including path strings. */
@@ -412,7 +413,7 @@ static void autocomplete_schema_flags (void)
 	assert(catalog && !error);
 	struct json_object *definition = json_tokener_parse(
 		"{\"name\":\"flags\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
-		"\"participant\":{\"enum\":[]},\"recipient\":{\"enum\":true},"
+		"\"member\":{\"enum\":[]},\"recipient\":{\"enum\":true},"
 		"\"author\":{\"type\":null,\"enum\":null},"
 		"\"union\":{\"type\":[\"string\",\"integer\"],\"enum\":[\"42\",42]},"
 		"\"constant\":{\"type\":[\"boolean\",\"null\"],\"const\":null},"
@@ -422,8 +423,8 @@ static void autocomplete_schema_flags (void)
 	json_object_put(definition);
 	definition = nullptr;
 	struct cstr_view name = CSTR_VIEW("alice");
-	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_PARTICIPANTS, &name, 1));
-	EMPTY("/tool flags participant=");
+	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_MEMBERS, &name, 1));
+	EMPTY("/tool flags member=");
 	EMPTY("/tool flags recipient=");
 	HAS("/tool flags author=", "/tool flags author='alice'");
 	HAS("/tool flags union=", "/tool flags union='42'");
@@ -455,26 +456,31 @@ static void autocomplete_chat_names (void)
 	struct autocomplete *catalog = autocomplete_create(&error);
 	assert(catalog && !error);
 	assert(!autocomplete_fixture(catalog));
-	static struct cstr_view const names[] = {CSTR_VIEW_INIT("rx6900xt"), CSTR_VIEW_INIT("rx9070xt")};
-	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_PARTICIPANTS, names, array_size(names)));
-	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, names, 1));
+	/* rxuser is a person: a member, but not an agent. */
+	static struct cstr_view const names[] = {CSTR_VIEW_INIT("rx6900xt"), CSTR_VIEW_INIT("rx9070xt"),
+	                                         CSTR_VIEW_INIT("rxuser")};
+	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_MEMBERS, names, array_size(names)));
+	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_AGENTS, names, 1));
 	autocomplete_only(catalog, CSTR_VIEW("@rx"), 3, CSTR_VIEW("@rx6900xt "), 10);
 	autocomplete_only(catalog, CSTR_VIEW("rx"), 2, CSTR_VIEW("rx6900xt: "), 10);
 	EMPTY("@rx9");
-	assert(autocomplete_list_count(catalog, AUTOCOMPLETE_PARTICIPANTS) == 2);
-	assert(cstr_view_equal(autocomplete_list_at(catalog, AUTOCOMPLETE_PARTICIPANTS, 1), names[1]));
-	HAS("/tool git participant=rx9", "/tool git participant=rx9070xt");
-	/* A chat roster can contain several upstreams, independently of stored
-	 * notebook identities. Clearing it must not fall back to those identities. */
-	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, names, array_size(names)));
+	EMPTY("@rxu");
+	assert(autocomplete_list_count(catalog, AUTOCOMPLETE_MEMBERS) == 3);
+	assert(cstr_view_equal(autocomplete_list_at(catalog, AUTOCOMPLETE_MEMBERS, 1), names[1]));
+	HAS("/tool git member=rx9", "/tool git member=rx9070xt");
+	HAS("/tool git notebook=rxu", "/tool git notebook=rxuser");
+	HAS("/tool notes notebook=rx", "/tool notes notebook=rxuser");
+	/* Mentions complete every agent, and never fall back to the members
+	 * when the agent list is empty. */
+	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_AGENTS, names, 2));
 	struct autocomplete_match const *matches = nullptr;
 	size_t count = 0;
 	assert(!autocomplete_complete(catalog, CSTR_VIEW("@rx"), 3, &matches, &count));
 	assert(count == 2);
-	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, nullptr, 0));
+	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_AGENTS, nullptr, 0));
 	assert(autocomplete_set_names(catalog, AUTOCOMPLETE_LISTS, nullptr, 0) == EINVAL);
 	EMPTY("@rx");
-	assert(autocomplete_list_count(catalog, AUTOCOMPLETE_PARTICIPANTS) == 2);
+	assert(autocomplete_list_count(catalog, AUTOCOMPLETE_MEMBERS) == 3);
 	autocomplete_destroy(&catalog);
 }
 
@@ -506,19 +512,22 @@ int main(void)
 	HAS("/tool git com", "/tool git command=");
 	HAS("/tool git command=lo", "/tool git command=log");
 	HAS("/tool git recursive=t", "/tool git recursive=true");
-	HAS("/tool git participant=al", "/tool git participant=alice");
-	HAS("/tool git notebook=ali", "/tool git notebook=alice/anonymous/client");
+	HAS("/tool git member=al", "/tool git member=alice");
+	HAS("/tool git notebook=ali", "/tool git notebook=alice");
 	HAS("/tool notes action=read file=find", "/tool notes action=read file=findings/locks.md");
 	HAS("/tool notes file=find", "/tool notes file=findings/locks.md");
-	HAS("/tool notes notebook=own file=find", "/tool notes notebook=own file=findings/locks.md");
-	HAS("/tool notes action=copy file=mo", "/tool notes action=copy file=model/thoughts.md");
-	HAS("/tool notes action=copy notebook=own file=find", "/tool notes action=copy notebook=own file=findings/locks.md");
-	HAS("/tool notes action=attach notebook=other file=mo", "/tool notes action=attach notebook=other file=model/thoughts.md");
-	HAS("/tool notes notebook=bob/0123456789abcdef/upstream file=re", "/tool notes notebook=bob/0123456789abcdef/upstream file=reviews/reply.md");
-	AT("/tool notes file=re notebook='bob/0123456789abcdef/upstream' action=read",
-	   "/tool notes file=reviews/reply.md notebook='bob/0123456789abcdef/upstream' action=read",
+	EMPTY("/tool notes notebook=own file=find");
+	/* copy needs notebook. */
+	EMPTY("/tool notes action=copy file=");
+	HAS("/tool notes action=copy notebook=bob file=re", "/tool notes action=copy notebook=bob file=reviews/reply.md");
+	HAS("/tool notes action=attach notebook=alice file=mo", "/tool notes action=attach notebook=alice file=model/thoughts.md");
+	HAS("/tool notes notebook=bob file=re", "/tool notes notebook=bob file=reviews/reply.md");
+	AT("/tool notes file=re notebook='bob' action=read",
+	   "/tool notes file=reviews/reply.md notebook='bob' action=read",
 	   sizeof("/tool notes file=re") - 1);
-	AT("/tool notes file=mo action=copy", "/tool notes file=model/thoughts.md action=copy", sizeof("/tool notes file=mo") - 1);
+	AT("/tool notes file=mo action=copy notebook=alice", "/tool notes file=model/thoughts.md action=copy notebook=alice",
+	   sizeof("/tool notes file=mo") - 1);
+	autocomplete_empty(catalog, CSTR_VIEW("/tool notes file=mo action=copy"), sizeof("/tool notes file=mo") - 1);
 	HAS("/tool notes file=des", "/tool notes file='design docs/first.md'");
 	HAS("/tool notes file=\"design docs/", "/tool notes file=\"design docs/first.md\"");
 	HAS("/tool notes file=design\\ docs/", "/tool notes file='design docs/first.md'");
@@ -528,9 +537,9 @@ int main(void)
 	EMPTY("/tool notes file=bad");
 	EMPTY("/tool notes action=add file=");
 	EMPTY("/tool notes action=list file=");
-	EMPTY("/tool notes action=notebooks file=");
+	EMPTY("/tool notes action=members file=");
 	EMPTY("/tool notes action=read action=copy file=");
-	EMPTY("/tool notes notebook=own notebook=other file=");
+	EMPTY("/tool notes notebook=alice notebook=bob file=");
 	EMPTY("/tool notes notebook=absent file=");
 	EMPTY("/tool notes notebook='' file=");
 	HAS("/tool lookup mode=ex", "/tool lookup mode=exact");
@@ -553,7 +562,7 @@ int main(void)
 	EMPTY("/tool absent ");
 	EMPTY("/tool git recipient=");
 	EMPTY("/tool git command=log com");
-	assert(autocomplete_list_count(catalog, AUTOCOMPLETE_PARTICIPANTS) == 3);
+	assert(autocomplete_list_count(catalog, AUTOCOMPLETE_MEMBERS) == 3);
 	assert(autocomplete_tool_count(catalog) == 5);
 	assert(autocomplete_find_tool(catalog, (struct cstr_view){"gitJUNK", 3}));
 	char counted[] = {'@', 'a', 'l'};
@@ -668,8 +677,8 @@ int main(void)
 	struct autocomplete *other = autocomplete_create(&error);
 	assert(other && !error);
 	struct cstr_view carol = CSTR_VIEW("carol");
-	assert(!autocomplete_set_names(other, AUTOCOMPLETE_PARTICIPANTS, &carol, 1));
-	assert(!autocomplete_set_names(other, AUTOCOMPLETE_CHAT_PARTICIPANTS, &carol, 1));
+	assert(!autocomplete_set_names(other, AUTOCOMPLETE_MEMBERS, &carol, 1));
+	assert(!autocomplete_set_names(other, AUTOCOMPLETE_AGENTS, &carol, 1));
 	autocomplete_empty(other, CSTR_VIEW("/tool gi"), sizeof("/tool gi") - 1);
 	autocomplete_empty(other, CSTR_VIEW("@al"), sizeof("@al") - 1);
 	autocomplete_has(other, CSTR_VIEW("@ca"), CSTR_VIEW("@carol"), sizeof("@ca") - 1);

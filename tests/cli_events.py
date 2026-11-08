@@ -749,9 +749,9 @@ def check_chat_completion(cli):
         "type": "object", "properties": {"prompt": {"type": "string"},
         "messages": {"type": "array"}, "background": {"type": "boolean"}}}}
     notes = {"name": "notebook_service", "_meta": {"askai": {
-        "participant": "rx6900xt", "notebooks": True}}, "inputSchema": {
-            "type": "object", "properties": {"action": {"enum": ["notebooks"]},
-                                              "participant": {"type": "string"}}}}
+        "session": "6f0c2b9a41d8e3f75a2c1b0d9e8f7a6b", "agent": "rx6900xt", "members": True}},
+             "inputSchema": {"type": "object", "properties": {"action": {"enum": ["members"]},
+                                                              "member": {"type": "string"}}}}
 
     def methods(request):
         if request["method"] == "tools/list":
@@ -760,8 +760,11 @@ def check_chat_completion(cli):
 
     def reply(request):
         assert request["params"]["name"] == "notebook_service", request
-        assert request["params"]["arguments"] == {"action": "notebooks"}, request
-        return response("rx6900xt/anonymous/upstream\nrx9070xt/anonymous/upstream\n")
+        assert request["params"]["arguments"] == {"action": "members"}, request
+        members = [{"name": "imaami", "kind": "person"}, {"name": "rx9070xt", "kind": "agent"}]
+        return 200, "application/json", {"result": {
+            "content": [{"type": "text", "text": "Members of the session test1"}],
+            "structuredContent": {"you": members[0], "members": members}}}
 
     with Peer(reply, methods) as peer:
         terminal, master, slave, before = Terminal.spawn(
@@ -771,11 +774,13 @@ def check_chat_completion(cli):
         try:
             terminal.update(b"\x1b[?2004h", b"\x1b[24;3H")
             os.write(master, b"/names\r")
-            terminal.expect(b"Known session participants: rx6900xt rx9070xt")
-            for prefix, completed in ((b"@rx", b"@rx6900xt "),
-                                      (b"rx", b"rx6900xt: "),
-                                      (b"/tool notebook_service participant=rx9",
-                                       b"/tool notebook_service participant=rx9070xt ")):
+            terminal.expect(b"People: imaami. Agents: rx6900xt, rx9070xt.")
+            # Mentions complete agents, not persons.
+            for prefix, completed in ((b"@rx6", b"@rx6900xt "),
+                                      (b"rx9", b"rx9070xt: "),
+                                      (b"@ima", b"@ima"),
+                                      (b"/tool notebook_service member=ima",
+                                       b"/tool notebook_service member=imaami ")):
                 os.write(master, prefix)
                 terminal.draft(prefix, point=len(prefix))
                 os.write(master, b"\t")
@@ -791,7 +796,7 @@ def check_chat_completion(cli):
             assert len(calls) == 1, calls
         finally:
             terminal.close(slave)
-    print("cli events: chat mentions use the connected GPU while notebook completion retains all participants: PASS", flush=True)
+    print("cli events: chat mentions complete agents, and arguments complete every member: PASS", flush=True)
 
 
 def check_fullscreen_colors(cli):
@@ -1115,8 +1120,8 @@ def check_busy_commands(cli):
                "prompt": {"type": "string"}, "messages": {"type": "array"},
                "background": {"type": "boolean"}}}}
     notes = {"name": "notebook_service", "_meta": {"askai": {
-        "participant": "cached-person", "notebooks": True}}, "inputSchema": {
-            "type": "object", "properties": {"action": {"enum": ["notebooks"]}}}}
+        "agent": "cached-agent", "members": True}}, "inputSchema": {
+            "type": "object", "properties": {"action": {"enum": ["members"]}}}}
 
     def methods(request):
         if request["method"] == "tools/list":
@@ -1125,7 +1130,8 @@ def check_busy_commands(cli):
 
     def reply(request):
         if request["params"]["name"] == "notebook_service":
-            return response("")
+            return 200, "application/json", {"result": {
+                "content": [], "structuredContent": {"members": []}}}
         prompts.append(request["params"]["arguments"]["prompt"])
         if len(prompts) == 1:
             return response("history-answer-visible")
@@ -1152,7 +1158,7 @@ def check_busy_commands(cli):
                     terminal.expect(b"1 queued")
                 for name, marker in ((b"/help", b"/regen"),
                                      (b"/history", b"history-answer-visible"),
-                                     (b"/names", b"cached-person"),
+                                     (b"/names", b"Agents: cached-agent."),
                                      (b"/tools", b"cached-tool-description")):
                     # A distinct second-round echo avoids matching the same
                     # command's older output while the screen is redrawn.

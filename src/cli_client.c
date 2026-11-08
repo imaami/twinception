@@ -57,7 +57,7 @@ struct cli_client cli_client(char const *socket, char const *tool,
                              struct cli_network *network, int *e)
 {
 	struct cli_client client = {.socket = DSTR_INIT, .session = DSTR_INIT, .tool = DSTR_INIT,
-	                            .session_key = DSTR_INIT, .participant = DSTR_INIT,
+	                            .session_key = DSTR_INIT, .agent = DSTR_INIT,
 	                            .notes_tool = DSTR_INIT, .network = network};
 	*e = dstr_cat(&client.socket, socket) && dstr_cat(&client.tool, tool) ? 0 : ENOMEM;
 	return client;
@@ -69,7 +69,7 @@ void cli_client_fini(struct cli_client *client)
 	dstr_cleanup(&client->session);
 	dstr_cleanup(&client->tool);
 	dstr_cleanup(&client->session_key);
-	dstr_cleanup(&client->participant);
+	dstr_cleanup(&client->agent);
 	dstr_cleanup(&client->notes_tool);
 	autocomplete_destroy(&client->catalog);
 }
@@ -490,68 +490,24 @@ int cli_client_connect(struct cli_client *client, struct cli_error *error)
 	return e ? e : cli_client_refresh(client, error);
 }
 
-/* cli_client_refresh() fills this struct from the tool list and the
- * notebook list.
- */
-struct cli_client_scan {
-	struct dstr          notebook_tool;  /* the name of the tool that lists the notebooks */
-	struct dstr          session;        /* the session in the askai _meta of notebook_tool */
-	struct dstr          participant;    /* the participant in the askai _meta of notebook_tool */
-	struct dstr          chosen;         /* the name of the ask tool */
-	struct autocomplete *catalog;
-	struct json_object  *names;          /* a JSON array of the participant names */
-	struct json_object  *notebooks;      /* a JSON array of the notebook selectors */
-	uint64_t             files;          /* 1 if notebook_tool lists note files, else 0 */
+/* The flags of struct cli_client_scan. */
+enum {
+	CLI_CLIENT_SCAN_FILES = 1u << 0,  /* notes_tool lists note files */
+	CLI_CLIENT_SCAN_OLDER = 1u << 1,  /* a tool lists notebooks, as the notes
+	                                     tool of an older askai does */
 };
 
-/* The action that lists the notebooks of an askai that lists notebooks. */
-static struct cstr_view const cli_client_notebooks = CSTR_VIEW_INIT("notebooks");
-
-/* Returns true if @p name is a notebook selector PARTICIPANT/WHO/SIDE of
- * an askai that lists notebooks: WHO is anonymous or 16 hexadecimal
- * digits, and SIDE is client or upstream.
+/* cli_client_refresh() fills this struct from the tool list and the
+ * members of the session.
  */
-static bool
-cli_client_selector (struct cstr_view name)
-{
-	struct cstr_view side = name, participant, who;
-	return cstr_view_cut(&side, '/', &participant) && member_name_valid(participant) &&
-	       cstr_view_cut(&side, '/', &who) &&
-	       (cstr_view_equal(who, CSTR_VIEW("anonymous")) ||
-	        (who.len == 16 && util_is_hex(who.data, who.len))) &&
-	       (cstr_view_equal(side, CSTR_VIEW("client")) ||
-	        cstr_view_equal(side, CSTR_VIEW("upstream")));
-}
-
-/* Parse the notebook selectors in @p text. Append the PARTICIPANT part of
- * each selector to the names array and the selector to the notebooks array
- * of the struct cli_client_scan at @p context.
- */
-static int
-cli_client_read_notebooks (struct cstr_view  text,
-                           void             *context)
-{
-	struct cli_client_scan const *scan = context;
-	/* A truncated last line is never an authoritative notebook selector. */
-	struct cstr_view line;
-	while (cstr_view_cut(&text, '\n', &line)) {
-		struct cstr_view self = CSTR_VIEW("Self (writable): ");
-		struct cstr_view peer = CSTR_VIEW(" (read-only)");
-		if (cstr_view_starts(line, self))
-			line = cstr_view_slice(line, self.len, SIZE_MAX);
-		if (cstr_view_ends(line, peer))
-			line.len -= peer.len;
-		struct cstr_view rest = line, name;
-		if (!cli_client_selector(line) || !cstr_view_cut(&rest, '/', &name))
-			continue;
-		int e = jb_push(scan->names, cli_client_string(name));
-		if (!e)
-			e = jb_push(scan->notebooks, cli_client_string(line));
-		if (e)
-			return e;
-	}
-	return 0;
-}
+struct cli_client_scan {
+	struct dstr          notes_tool;  /* the name of the tool that lists the members */
+	struct dstr          session;     /* the session ID in the askai _meta of notes_tool */
+	struct dstr          agent;       /* the agent in the askai _meta of notes_tool */
+	struct dstr          chosen;      /* the name of the ask tool */
+	struct autocomplete *catalog;
+	uint64_t             flags;       /* CLI_CLIENT_SCAN_ bits */
+};
 
 /* The note names that cli_client_read_files() parses, as views into the
  * text that it parses.
@@ -585,11 +541,13 @@ cli_client_file_name (struct cstr_view line)
 	return oid_valid(cstr_view_slice(suffix, unit.len, SIZE_MAX)) ? name : (struct cstr_view){};
 }
 
+/* Add the note names in text, a listing of the notes tool, to found. A
+ * truncated last line adds no name.
+ */
 static int
-cli_client_read_files (struct cstr_view  text,
-                       void             *context)
+cli_client_read_files (struct cstr_view         text,
+                       struct cli_client_files *found)
 {
-	struct cli_client_files *found = context;
 	struct cstr_view line;
 	while (cstr_view_cut(&text, '\n', &line)) {
 		line = cli_client_file_name(line);
@@ -604,62 +562,61 @@ cli_client_read_files (struct cstr_view  text,
 	return 0;
 }
 
-/* Call the notes tool with params and pass the text of each text block of
- * its result to parse. The result is stored in *listing. The caller frees
- * it after the last use of the views that parse stored. If the result is
- * an error, nothing is parsed, and the call fails with "The notes tool
- * rejected <what> discovery", unless lenient.
+/* Call the notes tool with params, the action list, and add the note names
+ * in the text blocks of the result to found. The result is stored in
+ * *listing. The caller frees it after the last use of the names. A result
+ * that is an error adds no name.
  */
 static int
-cli_client_notes (struct cli_client   *client,
-                  struct json_object  *params,
-                  char const          *what,
-                  bool                 lenient,
-                  int                (*parse) (struct cstr_view text, void *context),
-                  void                *context,
-                  struct json_object **listing,
-                  struct cli_error    *error)
+cli_client_list_files (struct cli_client        *client,
+                       struct json_object       *params,
+                       struct cli_client_files  *found,
+                       struct json_object      **listing,
+                       struct cli_error         *error)
 {
 	int e = cli_client_rpc(client, CLI_TOOLS_CALL, params, nullptr, nullptr, listing, error);
-	if (e)
+	if (e || jb_true(jb_get(*listing, "isError")))
 		return e;
-	if (json_object_get_boolean(jb_get(*listing, "isError")))
-		return lenient ? 0 : cli_error_set(error, EPROTO, "The notes tool rejected %s discovery", what);
 	struct json_object *content = jb_get(*listing, "content");
 	if (!json_object_is_type(content, json_type_array))
-		return cli_error_set(error, EPROTO, "Invalid %s discovery result", what);
+		return cli_error_set(error, EPROTO, "Invalid note filename discovery result");
 	for (size_t i = 0, n = json_object_array_length(content); !e && i < n; ++i) {
 		struct json_object *block = json_object_array_get_idx(content, i);
 		if (!jb_is(jb_get(block, "type"), "text"))
 			continue;
 		struct cstr_view text = jb_view(jb_get(block, "text"));
-		e = text.data ? parse(text, context) : EPROTO;
+		e = text.data ? cli_client_read_files(text, found) : EPROTO;
 	}
 	return e;
 }
 
-/* Discover the note files of the notebooks of the catalog. */
+/* Discover the note files of the notebook of each member of the catalog,
+ * and of the notebook that the notes tool reads when the argument notebook
+ * is left out: the notebook of the caller.
+ */
 static int
 cli_client_discover_files (struct cli_client   *client,
                            struct autocomplete *catalog,
                            struct cstr_view     tool,
                            struct cli_error    *error)
 {
-	size_t count = autocomplete_list_count(catalog, AUTOCOMPLETE_NOTEBOOKS);
+	size_t count = autocomplete_list_count(catalog, AUTOCOMPLETE_MEMBERS);
 	if (count > 128)
-		return cli_error_set(error, E2BIG, "More than 128 notebooks; filename discovery is bounded to 128");
+		return cli_error_set(error, E2BIG, "More than 128 members; filename discovery is bounded to 128");
 	struct cli_client_files files = {};
 	int e = 0;
-	for (size_t i = 0; !e && i < count; ++i) {
-		struct cstr_view notebook = autocomplete_list_at(catalog, AUTOCOMPLETE_NOTEBOOKS, i);
-		struct json_object *params = jb_object("name", cli_client_string(tool),
-		                                      "arguments", jb_object("action", jb_string(notes_action_names[NOTES_ACTION_LIST]),
-		                                                             "notebook", cli_client_string(notebook), nullptr), nullptr);
+	/* The name after the last member is empty: the last call leaves out
+	 * notebook. */
+	for (size_t i = 0; !e && i <= count; ++i) {
+		struct cstr_view notebook = autocomplete_list_at(catalog, AUTOCOMPLETE_MEMBERS, i);
+		struct json_object *arguments = jb_object("action", jb_string(notes_action_names[NOTES_ACTION_LIST]), nullptr);
+		if (notebook.len)
+			arguments = jb_set_or_free(arguments, "notebook", cli_client_string(notebook));
+		struct json_object *params = jb_object("name", cli_client_string(tool), "arguments", arguments, nullptr);
 		files.n = 0;
 		/* The names in files are views into the listing. */
 		cli_json_auto listing = nullptr;
-		e = cli_client_notes(client, params, "note filename", true, cli_client_read_files, &files,
-		                     &listing, error);
+		e = cli_client_list_files(client, params, &files, &listing, error);
 		if (!e)
 			e = autocomplete_set_note_files(catalog, tool, notebook, files.items, files.n);
 	}
@@ -678,16 +635,64 @@ cli_client_refresh_notes (struct cli_client *client,
 	return cli_client_discover_files(client, client->catalog, cstr_view_dstr(&client->notes_tool), error);
 }
 
+/* Call the action members of the notes tool of scan. On success, *listing
+ * is the result, and the member members of its structuredContent is an
+ * array.
+ */
 static int
-cli_client_discover_books (struct cli_client      *client,
-                           struct cli_client_scan *scan,
-                           struct cli_error       *error)
+cli_client_discover_members (struct cli_client       *client,
+                             struct cli_client_scan  *scan,
+                             struct json_object     **listing,
+                             struct cli_error        *error)
 {
-	struct json_object *params = jb_object("name", cli_client_string(cstr_view_dstr(&scan->notebook_tool)),
-	                                       "arguments", jb_object("action", jb_string(cli_client_notebooks), nullptr), nullptr);
-	cli_json_auto listing = nullptr;
-	return cli_client_notes(client, params, "notebook", false, cli_client_read_notebooks, scan,
-	                        &listing, error);
+	struct json_object *params = jb_object("name", cli_client_string(cstr_view_dstr(&scan->notes_tool)),
+	                                       "arguments", jb_object("action", jb_string(notes_action_names[NOTES_ACTION_MEMBERS]), nullptr), nullptr);
+	int e = cli_client_rpc(client, CLI_TOOLS_CALL, params, nullptr, nullptr, listing, error);
+	if (!e && jb_true(jb_get(*listing, "isError")))
+		e = cli_error_set(error, EPROTO, "The notes tool rejected member discovery");
+	if (!e && !json_object_is_type(jb_get(jb_get(*listing, "structuredContent"), "members"), json_type_array))
+		e = cli_error_set(error, EPROTO, "Invalid member discovery result");
+	if (e)
+		cli_client_json_cleanup(listing);
+	return e;
+}
+
+/* Set the member list and the agent list of the catalog of scan to the
+ * agent of the notes tool and to the members of members, the array in the
+ * structuredContent of the action members, or nullptr.
+ */
+static int
+cli_client_read_members (struct cli_client_scan *scan,
+                         struct json_object     *members)
+{
+	size_t const count = jb_len(members);
+	/* Room for the agent of the notes tool and the members, twice: first
+	 * the names of the members, then the names of the agents. */
+	struct cstr_view *names = calloc(2 * count + 2, sizeof *names);
+	if (!names)
+		return ENOMEM;
+	struct cstr_view *agents = names + count + 1;
+	size_t n = 0;
+	size_t k = 0;
+	struct cstr_view const agent = cstr_view_dstr(&scan->agent);
+	if (agent.len) {
+		names[n++] = agent;
+		agents[k++] = agent;
+	}
+	for (size_t i = 0; i < count; ++i) {
+		struct json_object *member = json_object_array_get_idx(members, i);
+		struct cstr_view const name = jb_view(jb_get(member, "name"));
+		if (!name.data)
+			continue;
+		names[n++] = name;
+		if (jb_is(jb_get(member, "kind"), "agent"))
+			agents[k++] = name;
+	}
+	int e = autocomplete_set_names(scan->catalog, AUTOCOMPLETE_MEMBERS, names, n);
+	if (!e)
+		e = autocomplete_set_names(scan->catalog, AUTOCOMPLETE_AGENTS, agents, k);
+	free(names);
+	return e;
 }
 
 static bool
@@ -698,23 +703,6 @@ cli_client_has_action (struct json_object *actions,
 		if (cstr_view_equal(jb_view(json_object_array_get_idx(actions, i)), action))
 			return true;
 	return false;
-}
-
-/* Set list of the catalog to the strings of names, a JSON array. */
-static int
-cli_client_catalog_names (struct autocomplete    *catalog,
-                          enum autocomplete_list  list,
-                          struct json_object     *names)
-{
-	size_t count = json_object_array_length(names);
-	struct cstr_view *views = calloc(count ? count : 1, sizeof *views);
-	if (!views)
-		return ENOMEM;
-	for (size_t i = 0; i < count; ++i)
-		views[i] = jb_view(json_object_array_get_idx(names, i));
-	int e = autocomplete_set_names(catalog, list, views, count);
-	free(views);
-	return e;
 }
 
 /* Report the failure e of an optional discovery and go on, unless it was
@@ -737,20 +725,18 @@ cli_client_report_optional (struct cli_client *client,
 static void
 cli_client_scan_fini (struct cli_client_scan *scan)
 {
-	dstr_cleanup(&scan->notebook_tool);
+	dstr_cleanup(&scan->notes_tool);
 	dstr_cleanup(&scan->session);
-	dstr_cleanup(&scan->participant);
+	dstr_cleanup(&scan->agent);
 	dstr_cleanup(&scan->chosen);
 	autocomplete_destroy(&scan->catalog);
-	cli_client_json_cleanup(&scan->names);
-	cli_client_json_cleanup(&scan->notebooks);
 }
 
-/* Store name in scan->notebook_tool as the tool that lists the notebooks.
- * meta is the askai _meta of the tool definition. Add its participant to
- * scan->names and copy it to scan->participant, and copy its session to
- * scan->session. Set scan->files if the input properties props contain
- * file and notebook, and the actions contain list.
+/* Store name in scan->notes_tool as the tool that lists the members. meta
+ * is the askai _meta of the tool definition. Copy its agent to scan->agent
+ * and its session to scan->session. Set CLI_CLIENT_SCAN_FILES if the input
+ * properties props contain file and notebook, and the actions contain
+ * list.
  */
 static int
 cli_client_scan_notes (struct cli_client_scan *scan,
@@ -759,17 +745,14 @@ cli_client_scan_notes (struct cli_client_scan *scan,
                        struct json_object     *props,
                        struct json_object     *actions)
 {
-	int e = cstr_view_store(name, &scan->notebook_tool);
-	struct json_object *self = jb_get(meta, "participant");
-	if (!e && json_object_is_type(self, json_type_string)) {
-		e = jb_push(scan->names, json_object_get(self));
-		if (!e)
-			e = cstr_view_store(jb_view(self), &scan->participant);
-	}
-	struct cstr_view const session = jb_view(jb_get(meta, "session"));
-	if (!e && session.data)
-		e = cstr_view_store(session, &scan->session);
-	scan->files = jb_get(props, "file") && jb_get(props, "notebook") && cli_client_has_action(actions, notes_action_names[NOTES_ACTION_LIST]);
+	int e = cstr_view_store(name, &scan->notes_tool);
+	if (!e)
+		e = cstr_view_store(jb_view(jb_get(meta, "agent")), &scan->agent);
+	if (!e)
+		e = cstr_view_store(jb_view(jb_get(meta, "session")), &scan->session);
+	if (jb_get(props, "file") && jb_get(props, "notebook") &&
+	    cli_client_has_action(actions, notes_action_names[NOTES_ACTION_LIST]))
+		scan->flags |= CLI_CLIENT_SCAN_FILES;
 	return e;
 }
 
@@ -789,11 +772,12 @@ cli_client_scan_tool (struct cli_client      *client,
 	struct json_object *props = jb_get(jb_get(entry, "inputSchema"), "properties");
 	struct json_object *meta = jb_get(jb_get(entry, "_meta"), "askai");
 	struct json_object *actions = jb_get(jb_get(props, "action"), "enum");
-	bool source = jb_true(jb_get(meta, "notebooks"));
-	if (!meta && cstr_view_equal(name, CSTR_VIEW("notes")) && jb_get(props, "notebook"))
-		source |= cli_client_has_action(actions, cli_client_notebooks);
-	if (source && !dstr_len(&scan->notebook_tool))
+	bool const members = jb_true(jb_get(meta, "members"));
+	if (members && !dstr_len(&scan->notes_tool))
 		e = cli_client_scan_notes(scan, name, meta, props, actions);
+	if (!members && (jb_true(jb_get(meta, "notebooks")) ||
+	                 cli_client_has_action(actions, CSTR_VIEW("notebooks"))))
+		scan->flags |= CLI_CLIENT_SCAN_OLDER;
 	bool candidate = dstr_len(&client->tool) ? cstr_view_equal(name, cstr_view_dstr(&client->tool))
 	                                       : jb_is(jb_get(entry, "title"), "Ask AI");
 	if (e || !candidate)
@@ -848,54 +832,48 @@ cli_client_refresh (struct cli_client *client,
 	int e = 0;
 	__attribute__((cleanup(cli_client_scan_fini)))
 	struct cli_client_scan scan = {
-		.notebook_tool = DSTR_INIT, .session = DSTR_INIT, .participant = DSTR_INIT, .chosen = DSTR_INIT,
+		.notes_tool = DSTR_INIT, .session = DSTR_INIT, .agent = DSTR_INIT, .chosen = DSTR_INIT,
 		.catalog = autocomplete_create(&e),
-		.names = json_object_new_array(), .notebooks = json_object_new_array(),
 	};
-	if (!scan.catalog || !scan.names || !scan.notebooks)
-		return ENOMEM;
+	if (!scan.catalog)
+		return e;
 	e = cli_client_scan_tools(client, &scan, error);
 	if (!e && !dstr_len(&scan.chosen))
 		e = cli_error_set(error, EPROTO, "No accessible AskAI chat tool was found");
-	if (!e && dstr_len(&scan.notebook_tool))
-		e = cli_client_report_optional(client, CSTR_VIEW("Participant discovery failed"), error,
-		                               cli_client_discover_books(client, &scan, error));
-	if (!e && scan.files) {
-		e = jb_push(scan.notebooks, json_object_new_string("own"));
-		if (!e)
-			e = jb_push(scan.notebooks, json_object_new_string("other"));
-	}
+	/* The result of the action members, or nullptr. Without one, the
+	 * agent of the notes tool is the only member. */
+	cli_json_auto listing = nullptr;
+	if (!e && dstr_len(&scan.notes_tool))
+		e = cli_client_report_optional(client, CSTR_VIEW("Member discovery failed"), error,
+		                               cli_client_discover_members(client, &scan, &listing, error));
 	if (!e)
-		e = cli_client_catalog_names(scan.catalog, AUTOCOMPLETE_PARTICIPANTS, scan.names);
-	if (!e)
-		e = cli_client_catalog_names(scan.catalog, AUTOCOMPLETE_NOTEBOOKS, scan.notebooks);
-	if (!e) {
-		struct cstr_view current = cstr_view_dstr(&scan.participant);
-		e = autocomplete_set_names(scan.catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, &current, current.len ? 1 : 0);
-	}
-	if (!e && scan.files)
+		e = cli_client_read_members(&scan, jb_get(jb_get(listing, "structuredContent"), "members"));
+	if (!e && (scan.flags & CLI_CLIENT_SCAN_FILES))
 		e = cli_client_report_optional(client, CSTR_VIEW("Note filename discovery failed"), error,
 		                               cli_client_discover_files(client, scan.catalog,
-		                                                         cstr_view_dstr(&scan.notebook_tool), error));
+		                                                         cstr_view_dstr(&scan.notes_tool), error));
 	if (e)
 		return e;
 	if (client->catalog && (!cstr_view_equal(cstr_view_dstr(&client->session_key), cstr_view_dstr(&scan.session)) ||
-	                        !cstr_view_equal(cstr_view_dstr(&client->participant), cstr_view_dstr(&scan.participant)) ||
+	                        !cstr_view_equal(cstr_view_dstr(&client->agent), cstr_view_dstr(&scan.agent)) ||
 	                        !cstr_view_equal(cstr_view_dstr(&client->tool), cstr_view_dstr(&scan.chosen)))) {
 		client->flags |= CLI_CLIENT_IDENTITY_CHANGED;
-		return cli_error_set(error, ESTALE, "AskAI changed its session, participant or ask tool; restart the client to select its history");
+		return cli_error_set(error, ESTALE, "AskAI changed its session, agent or ask tool; restart the client to select its history");
 	}
+	client->flags &= ~CLI_CLIENT_OLDER;
+	if ((scan.flags & CLI_CLIENT_SCAN_OLDER) && !dstr_len(&scan.notes_tool))
+		client->flags |= CLI_CLIENT_OLDER;
 	autocomplete_destroy(&client->catalog);
 	client->catalog = scan.catalog;
 	scan.catalog = nullptr;
 	dstr_cleanup(&client->tool);
 	client->tool = dstr_move(&scan.chosen);
 	dstr_cleanup(&client->notes_tool);
-	if (scan.files)
-		client->notes_tool = dstr_move(&scan.notebook_tool);
+	if (scan.flags & CLI_CLIENT_SCAN_FILES)
+		client->notes_tool = dstr_move(&scan.notes_tool);
 	dstr_cleanup(&client->session_key);
 	client->session_key = dstr_move(&scan.session);
-	dstr_cleanup(&client->participant);
-	client->participant = dstr_move(&scan.participant);
+	dstr_cleanup(&client->agent);
+	client->agent = dstr_move(&scan.agent);
 	return 0;
 }

@@ -614,8 +614,11 @@ cli_history_open (struct cli       *cli,
 		if (e)
 			return cli_error_set(error, e, "Cannot identify history connection: %s", strerror(e));
 	}
+	/* The value of the key participant is the agent. The key is still
+	 * named participant, so --session-id with the session of an older
+	 * askai opens the history of its participant of the same name. */
 	struct cstr_view const parts[] = {
-		CSTR_VIEW("\0participant="), cstr_view_dstr(&cli->client.participant),
+		CSTR_VIEW("\0participant="), cstr_view_dstr(&cli->client.agent),
 		CSTR_VIEW("\0tool="), cstr_view_dstr(&cli->client.tool),
 		CSTR_VIEW("\0system-policy="), options->system ? CSTR_VIEW("override") : CSTR_VIEW("default"),
 		CSTR_VIEW("\0system="), cstr_view(options->system)
@@ -794,20 +797,37 @@ cli_history_show (struct cli *cli)
 	return 0;
 }
 
+/* Print the members of the session, such as "People: imaami. Agents:
+ * bro, cuh.", from the member list and the agent list of the catalog.
+ */
 static int
 cli_names (struct cli *cli)
 {
-	size_t count = autocomplete_list_count(cli->client.catalog, AUTOCOMPLETE_PARTICIPANTS);
+	struct autocomplete const *catalog = cli->client.catalog;
+	size_t const count = autocomplete_list_count(catalog, AUTOCOMPLETE_MEMBERS);
 	if (!count)
-		return cli_ui_message(cli->console, CSTR_VIEW("No participants discovered. /refresh reloads the shared notebooks."));
+		return cli_ui_message(cli->console, CSTR_VIEW("No members discovered. /refresh reloads the members of the session."));
+	size_t const agents = autocomplete_list_count(catalog, AUTOCOMPLETE_AGENTS);
 	dstr_auto names = dstr(nullptr);
-	if (!dstr_cat(&names, "Known session participants:"))
-		return ENOMEM;
-	for (size_t i = 0; i < count; ++i) {
-		struct cstr_view name = autocomplete_list_at(cli->client.catalog, AUTOCOMPLETE_PARTICIPANTS, i);
-		if (!dstr_cat(&names, " ") || cstr_view_cat(name, &names))
+	size_t people = 0;
+	/* Both lists are sorted. A member that is not in the agent list is a
+	 * person. */
+	for (size_t i = 0, a = 0; i < count; ++i) {
+		struct cstr_view const name = autocomplete_list_at(catalog, AUTOCOMPLETE_MEMBERS, i);
+		while (a < agents && cstr_view_compare(autocomplete_list_at(catalog, AUTOCOMPLETE_AGENTS, a), name) < 0)
+			++a;
+		if (cstr_view_equal(autocomplete_list_at(catalog, AUTOCOMPLETE_AGENTS, a), name))
+			continue;
+		if (!dstr_cat(&names, people++ ? ", " : "People: ") || cstr_view_cat(name, &names))
 			return ENOMEM;
 	}
+	for (size_t a = 0; a < agents; ++a) {
+		struct cstr_view const name = autocomplete_list_at(catalog, AUTOCOMPLETE_AGENTS, a);
+		if (!dstr_cat(&names, a ? ", " : people ? ". Agents: " : "Agents: ") || cstr_view_cat(name, &names))
+			return ENOMEM;
+	}
+	if (!dstr_cat(&names, "."))
+		return ENOMEM;
 	return cli_ui_message(cli->console, cstr_view_dstr(&names));
 }
 
@@ -851,7 +871,7 @@ cli_command_run (struct cli               *cli,
 		return cli_names(cli);
 	case CLI_COMMAND_REFRESH: {
 		int e = cli_client_refresh(&cli->client, error);
-		return e ? e : cli_ui_info(cli->console, CSTR_VIEW("Tools and session participants refreshed."));
+		return e ? e : cli_ui_info(cli->console, CSTR_VIEW("Tools and session members refreshed."));
 	}
 	case CLI_COMMAND_TOOL:
 		if (cli->options->flags & CLI_SINGLE)
@@ -1243,6 +1263,8 @@ cli_run (struct cli_options const *options,
 			{CSTR_VIEW(". /help lists commands; Ctrl-C cancels an answer.\n"), CLI_STYLE_INFO},
 		};
 		e = cli_console_print(cli->console, spans, array_size(spans));
+		if (!e && (cli->client.flags & CLI_CLIENT_OLDER))
+			e = cli_ui_info(cli->console, CSTR_VIEW("This askai is older than askai-cli. Notebook completion is off."));
 	}
 	if (!e)
 		e = cli_history_open(cli, error);

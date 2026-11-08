@@ -75,8 +75,9 @@ prompts: the client does not retain or send a `previous_interaction_id`.
 
 The model can call the same tools that AskAI lends it for an ordinary ask
 request. Enable those tools in the server configuration, for example
-`--upstream-tools --notes /path/to/session.git`. Notes and automatic
-transcripts use the server's configured repositories and participant.
+`--upstream-tools --agent bro --notes /path/to/session.git`. Notes and
+automatic transcripts use the server's configured repositories, agent and
+service name.
 
 | Command | Effect |
 | --- | --- |
@@ -86,8 +87,8 @@ transcripts use the server's configured repositories and participant.
 | `/read PATH` | Read a UTF-8 prompt from a file. |
 | `/tools [NAME]` | List accessible tools, or show a tool's description and input schema. |
 | `/tool NAME key=VALUE ...` | Call a tool directly; a JSON object is also accepted. |
-| `/names` | List cached known session participants. |
-| `/refresh` | Refresh accessible tools, participants and notebook filenames. |
+| `/names` | List the cached members of the session, people and agents. |
+| `/refresh` | Refresh accessible tools, members and note filenames. |
 | `/help` | Show commands. |
 | `/exit`, `/quit` | Leave the client. |
 
@@ -110,7 +111,7 @@ default:
 | Ctrl-W / Alt-D | Cut the preceding/following word. |
 | Ctrl-Y | Paste the last cut text. |
 | Alt-. | Insert the last argument from the previous history entry. |
-| Tab | Complete commands, paths, tools, parameters, values and participant names; press twice to list choices. |
+| Tab | Complete commands, paths, tools, parameters, values and member names; press twice to list choices. |
 
 Type `Explain` and press PgUp to recall
 earlier prompts with that prefix, skipping unrelated entries. Up and Ctrl-R include saved input
@@ -153,7 +154,7 @@ Redirected input, `--simple-io`, and `--single-turn` retain sequential execution
 Completion choices show only the word or value being completed, without
 repeating earlier words or a parameter's `name=` prefix. Choices appear
 across each row, wrapping at the conversation pane's width, and remain in
-scrollback across redraws. Commands, tools, parameters, values, participants
+scrollback across redraws. Commands, tools, parameters, values, names
 and files have separate palette styles. Every listing requires a fresh pair
 of Tab presses within 400 ms; repeated single Tabs do not repeatedly print
 the choices. A unique completed word gets one separating space, with the
@@ -228,7 +229,7 @@ contents as the prompt. `/regen` keeps the previous successful answer until
 its replacement succeeds. `/clear` saves an empty conversation while retaining
 input recall and prior Git commits.
 
-History is associated with the server's session and participant, the selected
+History is associated with the server's session and agent, the selected
 ask tool, and the system-instruction override. Each terminal gets its own
 writer branch under `refs/heads/cli/`; a `latest` ref selects the snapshot used
 to restore a conversation. Concurrent terminals keep separate conversations.
@@ -236,20 +237,24 @@ Startup recall combines exact-text-deduplicated input from up to 32 recent
 writer tips. The active snapshot holds at most 512 completed turns and 16 MiB
 of prompt/answer text. Older entries remain reachable through Git history.
 
-The server advertises a hash of its canonical shared notes repository path as
-the session key, so instances sharing that path share a session. This is a
-path identity, not a portable repository UUID: moving the repository changes
-it, while identical paths on different hosts can collide. Older servers and
-servers without notes fall back to the canonical socket path. Participant
-names are also identifiers, not authentication; changing a name selects
-different client history.
+The `_meta` of the notes tool names the ID of the session, which the
+server stores in the session repository (`refs/askai/session`), and the
+name of the server's agent. The history key is `session=ID`, so instances
+that share the repository share a session, also when the repository moves.
+Servers without notes, and servers older than the client, fall back to the
+canonical socket path. The agent name is the value of the key
+`participant`, the name of the key in older clients. Agent names are
+identifiers, not authentication; changing a name selects different client
+history.
 
-Use `--session-id ID` to supply a stable explicit session key when relocating
-a repository or distinguishing otherwise identical paths on different hosts.
-Use the same value in clients that should share history. A metadata refresh
-that changes the server's session, participant or selected ask tool stops the
-client and requests a restart, preventing old conversation context from being
-sent into the newly identified session.
+Use `--session-id ID` to supply a stable explicit session key. Clients that
+use the same value share history. Older servers advertised a hash of the
+repository path as the session. `--session-id HASH`, with that hash, opens
+the history of an older server's participant when the agent has the name of
+that participant. A metadata refresh that changes the server's session,
+agent or selected ask tool stops the client and requests a restart,
+preventing old conversation context from being sent into the newly
+identified session.
 
 Each commit includes a bounded binary `snapshot` plus readable `identity.txt`,
 `input.txt`, and, when available, `prompt.txt` and `answer.txt`. For example,
@@ -274,7 +279,7 @@ This favors durable input before side effects; slow storage can delay those
 boundaries. It is not a suitable per-token persistence strategy. The server's
 stream journal has a different workload and remains separate.
 
-## Tools and participant autocomplete
+## Tools and member autocomplete
 
 Tool completion uses the definitions returned by `tools/list`, including
 the access restrictions of the current connection. For example:
@@ -289,16 +294,18 @@ the access restrictions of the current connection. For example:
 
 After `/tool `, Tab completes tool names. After the name it completes
 top-level parameter names as `name=`, omitting parameters already supplied.
-After `=`, it completes schema enum and constant values, booleans, known
-participant names for `participant`, `recipient` and `author`, and discovered
-selectors for `notebook`. `/tools ` also completes tool names. Completion
-preserves the other arguments when editing in the middle of a line.
+After `=`, it completes schema enum and constant values, booleans, and the
+names of the members of the session for `notebook`, `member`, `recipient`
+and `author`. `/tools ` also completes tool names. Completion preserves the
+other arguments when editing in the middle of a line.
 
-For notes tools, `file=` completes names from the selected notebook, including
-when `notebook=` follows the cursor. Read and attach default to `own`; copy
-defaults to `other`. Add, list and notebooks actions do not offer existing
-filenames. Local filesystem completion is limited to `/read PATH`, which
-reads a local prompt file; it does not supply notes paths.
+For notes tools, `file=` completes names from the notebook that `notebook=`
+names, including when `notebook=` follows the cursor. Without `notebook=`,
+read and attach complete names from the caller's own notebook. Copy needs
+`notebook=`, and completes no name without it. Add, list and members
+actions do not offer existing filenames. Local filesystem completion is
+limited to `/read PATH`, which reads a local prompt file; it does not supply
+notes paths.
 
 The `key=VALUE` form accepts single or double quotes and backslash escaping;
 it performs no shell expansion or execution. String parameters remain
@@ -310,27 +317,30 @@ types; full JSON objects go to the server for validation. For a string/null
 union, unquoted `null` is JSON null and quoted `'null'` is a string. Direct
 tool calls and their results do not enter the conversation sent to the model.
 
-The participant list comes from the shared notes repository. The client
-reads the notes tool's notebook selectors and deduplicates their participant
-component; principal hashes and the `client`/`upstream` sides are not names.
-The server also advertises its own configured participant before it has
-written a note. These are known contributors, not an online-presence roster.
-Without access to the notes tool there is no participant discovery. Older
-AskAI servers can supply contributors through their existing `notebooks`
-action, but cannot advertise themselves before their first note.
+The member list comes from the shared notes repository. The client finds
+the notes tool by `members` in the tool's `_meta.askai`, calls the action
+`members`, and reads the name and the kind of each member from the
+`structuredContent` of the result; it does not parse the text. A member is
+a person or an agent. The agent of the server, `agent` in the tool's
+`_meta.askai`, is a member even before the action answers. `/names` prints
+the list, such as `People: imaami. Agents: bro, cuh, unc.` These are the
+members of the session, not an online-presence roster. Without access to
+the notes tool there is no member discovery. When the notes tool of the
+server lists notebooks instead of members, the server is older than the
+client, and an interactive client prints `This askai is older than
+askai-cli. Notebook completion is off.` as it starts. Chat still works.
 
-At the start of a prompt, typing `ali` and pressing Tab can produce
-`alice: `; `@ali` completes to `@alice ` anywhere in the prompt. Chat name
-completion uses only participants advertised as present by the connected
-service. Currently that is its configured participant from notes metadata;
-servers without that metadata supply no chat name candidates. Notebook
-contributors remain available for tool argument completion and `/names`.
-These completions do not route messages. Use `/refresh` to pick up another
-instance's newly written notes.
+At the start of a prompt, typing `br` and pressing Tab can produce `bro: `;
+`@br` completes to `@bro ` anywhere in the prompt. Chat name completion
+offers the agents of the session, not the people. These completions do not
+route messages. Use `/refresh` to pick up new members and the notes that
+another instance wrote.
 
-Discovery runs at connection time and on `/refresh`. Notes filenames refresh
-before the next prompt after an ask or a direct note mutation. Use `/refresh`
-to see changes made by another client. A server's
+Discovery runs at connection time and on `/refresh`. It lists the files of
+each member's notebook, and of the notebook that the notes tool reads when
+`notebook` is left out. Notes filenames refresh before the next prompt after
+an ask or a direct note mutation. Use `/refresh` to see changes made by
+another client. A server's
 `notifications/tools/list_changed` triggers a refresh before the next prompt.
 Each connection owns its completion data; pressing Tab never makes an MCP
 request. `/read` completion reads the local filesystem.

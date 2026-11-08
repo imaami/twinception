@@ -48,7 +48,10 @@ enum {
 	CLI_CLIENT_CATALOG_DIRTY    = 1u << 0,  /**< the tools may have changed */
 	CLI_CLIENT_NOTES_DIRTY      = 1u << 1,  /**< the note files may have changed */
 	CLI_CLIENT_IDENTITY_CHANGED = 1u << 2,  /**< AskAI changed its session,
-	                                             participant or ask tool */
+	                                             agent or ask tool */
+	CLI_CLIENT_OLDER            = 1u << 3,  /**< AskAI is older than askai-cli:
+	                                             its notes tool lists notebooks,
+	                                             not members */
 };
 
 /** Strings and the catalog are owned; network is borrowed. The client and
@@ -59,7 +62,7 @@ struct cli_client {
 	struct dstr            session;
 	struct dstr            tool;
 	struct dstr            session_key;
-	struct dstr            participant;
+	struct dstr            agent;
 	struct dstr            notes_tool;
 	struct autocomplete   *catalog;
 	struct cli_network    *network;

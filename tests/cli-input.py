@@ -245,7 +245,8 @@ def check_catalog(binary):
     with Console(binary, "--catalog") as console:
         console.line(b"/tool gi\tcommand=lo\t\r", "/tool git command=log \n")
         console.line(b"/tool git rec\tt\t\r", "/tool git recursive=true \n")
-        console.line(b"/tool git participant=al\t\r", "/tool git participant=alice \n")
+        console.line(b"/tool git member=al\t\r", "/tool git member=alice \n")
+        console.line(b"/tool notes notebook=bo\tfile=re\t\r", "/tool notes notebook=bob file=reviews/reply.md \n")
         console.line(b"al\thello\r", "alice: hello\n")
         console.line(b"hello @al\tthere\r", "hello @alice there\n")
         console.line(b"hello @al, next" + LEFT * 6 + b"\t\r", "hello @alice, next\n")

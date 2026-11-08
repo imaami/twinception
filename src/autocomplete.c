@@ -68,7 +68,7 @@ struct autocomplete_names {
 
 struct autocomplete_notebook {
 	struct dstr               tool;
-	struct dstr               selector;
+	struct dstr               notebook;  /* a member name, empty for the caller */
 	struct autocomplete_names paths;
 	size_t                    storage;
 };
@@ -620,7 +620,7 @@ autocomplete_destroy (struct autocomplete **pp)
 		autocomplete_names_fini(&ac->lists[i]);
 	for (size_t i = 0; i < ac->notes.cap; ++i) {
 		dstr_cleanup(&ac->notes.items[i].tool);
-		dstr_cleanup(&ac->notes.items[i].selector);
+		dstr_cleanup(&ac->notes.items[i].notebook);
 		autocomplete_names_fini(&ac->notes.items[i].paths);
 	}
 	free(ac->notes.items);
@@ -792,18 +792,18 @@ autocomplete_set_names (struct autocomplete    *ac,
 	return list < array_size(ac->lists) ? autocomplete_names_set(&ac->lists[list], names, count, true) : EINVAL;
 }
 
-/* Returns the index of the entry of ac->notes whose tool and selector
- * members equal the arguments tool and selector, or ac->notes.n if no
+/* Returns the index of the entry of ac->notes whose tool and notebook
+ * members equal the arguments tool and notebook, or ac->notes.n if no
  * entry matches.
  */
 static size_t
 autocomplete_notebook_find (struct autocomplete const *ac,
                             struct cstr_view           tool,
-                            struct cstr_view           selector)
+                            struct cstr_view           notebook)
 {
 	size_t i = 0;
 	while (i < ac->notes.n && (!cstr_view_equal(cstr_view_dstr(&ac->notes.items[i].tool), tool) ||
-	                           !cstr_view_equal(cstr_view_dstr(&ac->notes.items[i].selector), selector)))
+	                           !cstr_view_equal(cstr_view_dstr(&ac->notes.items[i].notebook), notebook)))
 		++i;
 	return i;
 }
@@ -822,12 +822,10 @@ autocomplete_set_note_files (struct autocomplete    *ac,
                              struct cstr_view const *paths,
                              size_t                  count)
 {
-	if (!notebook.len)
-		notebook = CSTR_VIEW("own");
 	if (tool.len > AUTOCOMPLETE_BYTES || notebook.len > AUTOCOMPLETE_BYTES - tool.len ||
 	    count > AUTOCOMPLETE_BYTES / sizeof(struct dstr))
 		return E2BIG;
-	if (!autocomplete_safe(tool, true) || !autocomplete_safe(notebook, true) ||
+	if (!autocomplete_safe(tool, true) || (notebook.len && !autocomplete_safe(notebook, true)) ||
 	    (count && !paths) || !autocomplete_find_tool(ac, tool))
 		return EINVAL;
 	size_t storage = tool.len + notebook.len + count * sizeof(struct dstr);
@@ -848,12 +846,12 @@ autocomplete_set_note_files (struct autocomplete    *ac,
 		if (util_grow(ac->notes.items, ac->notes.cap, index + 1))
 			return ENOMEM;
 		for (size_t i = previous; i < ac->notes.cap; ++i)
-			ac->notes.items[i] = (struct autocomplete_notebook){.tool = dstr(nullptr), .selector = dstr(nullptr)};
+			ac->notes.items[i] = (struct autocomplete_notebook){.tool = dstr(nullptr), .notebook = dstr(nullptr)};
 	}
 	struct autocomplete_notebook *notes = &ac->notes.items[index];
 	int error = cstr_view_store(tool, &notes->tool);
 	if (!error)
-		error = cstr_view_store(notebook, &notes->selector);
+		error = cstr_view_store(notebook, &notes->notebook);
 	if (!error)
 		error = autocomplete_names_set(&notes->paths, paths, count, false);
 	if (error) {
@@ -955,14 +953,20 @@ autocomplete_note_paths (struct autocomplete              *ac,
 		if (!copy && which != NOTES_ACTION_READ && which != NOTES_ACTION_ATTACH)
 			return 0;
 	}
-	struct cstr_view selector = copy ? CSTR_VIEW("other") : CSTR_VIEW("own");
+	/* Without notebook, the notes tool reads the notebook of the caller,
+	 * the entry with the empty name. copy needs notebook. */
+	struct cstr_view name = {};
 	if (notebook.equals != SIZE_MAX) {
 		int error = autocomplete_unquote(&ac->key, cstr_view_slice(line, notebook.equals + 1, notebook.end - notebook.equals - 1));
 		if (error)
 			return error;
-		selector = cstr_view_dstr(&ac->key);
+		name = cstr_view_dstr(&ac->key);
+		if (!name.len)
+			return 0;
+	} else if (copy) {
+		return 0;
 	}
-	size_t i = autocomplete_notebook_find(ac, tool, selector);
+	size_t i = autocomplete_notebook_find(ac, tool, name);
 	*paths = i < ac->notes.n ? &ac->notes.items[i].paths : nullptr;
 	return 0;
 }
@@ -1012,20 +1016,15 @@ autocomplete_values (struct autocomplete                *ac,
 	}
 	if (!(flags & AUTOCOMPLETE_NAMES))
 		return 0;
-	/* The properties whose values are the names of a list. */
-	static struct {
-		struct cstr_view property;
-		uint64_t         list;  /* enum autocomplete_list */
-	} const lists[] = {
-		{CSTR_VIEW_INIT("participant"), AUTOCOMPLETE_PARTICIPANTS},
-		{CSTR_VIEW_INIT("recipient"), AUTOCOMPLETE_PARTICIPANTS},
-		{CSTR_VIEW_INIT("author"), AUTOCOMPLETE_PARTICIPANTS},
-		{CSTR_VIEW_INIT("notebook"), AUTOCOMPLETE_NOTEBOOKS},
+	/* The properties whose values are member names. */
+	static struct cstr_view const members[] = {
+		CSTR_VIEW_INIT("member"),
+		CSTR_VIEW_INIT("recipient"),
+		CSTR_VIEW_INIT("author"),
+		CSTR_VIEW_INIT("notebook"),
 	};
-	struct autocomplete_names const *names = nullptr;
-	for (size_t i = 0; !names && i < array_size(lists); ++i)
-		if (cstr_view_equal(property->name, lists[i].property))
-			names = &ac->lists[lists[i].list];
+	bool const member = cstr_view_index(members, array_size(members), property->name) < array_size(members);
+	struct autocomplete_names const *names = member ? &ac->lists[AUTOCOMPLETE_MEMBERS] : nullptr;
 	enum autocomplete_kind kind = AUTOCOMPLETE_NAME;
 	if (!names && cstr_view_equal(property->name, CSTR_VIEW("file"))) {
 		kind = AUTOCOMPLETE_FILE;
@@ -1144,7 +1143,7 @@ autocomplete_mentions (struct autocomplete *ac,
 	bool mention = line.data[begin] == '@';
 	struct cstr_view prefix = cstr_view_slice(line, begin + mention, cursor - begin - mention);
 	bool separate = end == line.len || cstr_view_space(line.data[end]);
-	struct autocomplete_names const *names = &ac->lists[AUTOCOMPLETE_CHAT_PARTICIPANTS];
+	struct autocomplete_names const *names = &ac->lists[AUTOCOMPLETE_AGENTS];
 	for (size_t i = 0; i < names->n; ++i) {
 		struct cstr_view name = cstr_view_dstr(&names->items[i]);
 		if (!cstr_view_starts(name, prefix))

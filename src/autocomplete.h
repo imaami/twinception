@@ -117,13 +117,11 @@ autocomplete_find_tool (struct autocomplete const *ac,
                         struct cstr_view           name);
 
 enum autocomplete_list : uint32_t {
-	/** Names for chat mentions: only the participants present in this
-	 * chat, not identities discovered in storage. */
-	AUTOCOMPLETE_CHAT_PARTICIPANTS,
-	/** Known notebook participants, for tool arguments and the listing. */
-	AUTOCOMPLETE_PARTICIPANTS,
-	/** Notebook selectors, for tool arguments. */
-	AUTOCOMPLETE_NOTEBOOKS,
+	/** The agents of the session, for chat mentions. */
+	AUTOCOMPLETE_AGENTS,
+	/** The members of the session, persons and agents, for tool arguments
+	 *  and the listing. */
+	AUTOCOMPLETE_MEMBERS,
 	AUTOCOMPLETE_LISTS,
 };
 
@@ -142,9 +140,9 @@ autocomplete_set_names (struct autocomplete    *ac,
 extern void
 autocomplete_clear_note_files (struct autocomplete *ac);
 
-/** Replace a notes tool's file names in one notebook. Empty notebook and
- * "own" select the caller's notebook; "other" selects the opposite side.
- * Other selectors are those returned by the server. Copies, sorts and
+/** Replace a notes tool's file names in one notebook. The notebook is the
+ * name of a member, or empty for the caller's notebook, which the notes
+ * tool reads when the argument notebook is left out. Copies, sorts and
  * deduplicates safe UTF-8 paths, including spaces and quotes. All cached
  * notebook lists together are limited to 16 MiB and 4096 lists. Returns
  * 0, EINVAL, ENOMEM or E2BIG. No I/O is performed during completion.

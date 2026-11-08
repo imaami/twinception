@@ -14,7 +14,7 @@ int autocomplete_fixture (struct autocomplete *autocomplete)
 	"\t\t\t\t\"command\":{\"type\":\"string\",\"enum\":[\"log\",\"status\"]},"
 	"\t\t\t\t\"repo\":{\"type\":\"string\",\"enum\":[\"project\",\"other project\"]},"
 	"\t\t\t\t\"recursive\":{\"type\":\"boolean\"},\"count\":{\"type\":\"integer\"},"
-	"\t\t\t\t\"message\":{\"type\":\"string\"},\"participant\":{\"type\":\"string\"},"
+	"\t\t\t\t\"message\":{\"type\":\"string\"},\"member\":{\"type\":\"string\"},"
 	"\t\t\t\t\"file\":{\"type\":\"string\"},"
 	"\t\t\t\t\"notebook\":{\"type\":\"string\"},"
 	"\t\t\t\t\"options\":{\"type\":\"array\"},\"config\":{\"type\":\"object\"}}}},"
@@ -28,7 +28,7 @@ int autocomplete_fixture (struct autocomplete *autocomplete)
 	"\t\t{\"name\":\"required\",\"inputSchema\":{\"type\":\"object\",\"required\":[\"text\"],"
 	"\t\t\t\"properties\":{\"text\":{\"type\":[\"string\",\"null\"]}}}},"
 	"\t\t{\"name\":\"notes\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
-	"\t\t\t\"action\":{\"type\":\"string\",\"enum\":[\"add\",\"list\",\"read\",\"copy\",\"attach\",\"notebooks\"]},"
+	"\t\t\t\"action\":{\"type\":\"string\",\"enum\":[\"add\",\"list\",\"read\",\"copy\",\"attach\",\"members\"]},"
 	"\t\t\t\"file\":{\"type\":\"string\"},\"notebook\":{\"type\":\"string\"}}}},"
 	"\t\t{\"name\":\"help\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
 	"\t\t{\"name\":\"bad\\u001b[31m\",\"inputSchema\":{\"type\":\"object\"}}"
@@ -45,13 +45,10 @@ int autocomplete_fixture (struct autocomplete *autocomplete)
 	if (error)
 		return error;
 
-	static struct cstr_view const participants[] = {
+	static struct cstr_view const members[] = {
 		CSTR_VIEW_INIT("alice"), CSTR_VIEW_INIT("bob"), CSTR_VIEW_INIT("äiti"), CSTR_VIEW_INIT("alice"),
 		CSTR_VIEW_INIT("bad\x1b[31m"), CSTR_VIEW_INIT("bad\xc2\x9b"), CSTR_VIEW_INIT("bad\xc0\xaf"),
 		CSTR_VIEW_INIT("bad\0name")
-	};
-	static struct cstr_view const notebooks[] = {
-		CSTR_VIEW_INIT("alice/anonymous/client"), CSTR_VIEW_INIT("bob/0123456789abcdef/upstream")
 	};
 	static struct cstr_view const own[] = {
 		CSTR_VIEW_INIT("findings/locks.md"), CSTR_VIEW_INIT("design docs/first.md"), CSTR_VIEW_INIT("äiti.md"),
@@ -61,21 +58,15 @@ int autocomplete_fixture (struct autocomplete *autocomplete)
 	static struct cstr_view const other[] = {CSTR_VIEW_INIT("model/thoughts.md")};
 	static struct cstr_view const peer[] = {CSTR_VIEW_INIT("reviews/reply.md")};
 	struct cstr_view const tool = CSTR_VIEW("notes");
-	struct cstr_view const empty = CSTR_VIEW("");
-	struct cstr_view const opposite = CSTR_VIEW("other");
-	error = autocomplete_set_names(autocomplete, AUTOCOMPLETE_PARTICIPANTS, participants,
-	                               array_size(participants));
+	error = autocomplete_set_names(autocomplete, AUTOCOMPLETE_MEMBERS, members, array_size(members));
 	if (!error)
-		error = autocomplete_set_names(autocomplete, AUTOCOMPLETE_CHAT_PARTICIPANTS, participants,
-		                               array_size(participants));
-	if (error)
-		return error;
-	error = autocomplete_set_names(autocomplete, AUTOCOMPLETE_NOTEBOOKS, notebooks, array_size(notebooks));
+		error = autocomplete_set_names(autocomplete, AUTOCOMPLETE_AGENTS, members, array_size(members));
+	/* The empty name is the notebook of the caller. */
 	if (!error)
-		error = autocomplete_set_note_files(autocomplete, tool, empty, own, array_size(own));
+		error = autocomplete_set_note_files(autocomplete, tool, CSTR_VIEW(""), own, array_size(own));
 	if (!error)
-		error = autocomplete_set_note_files(autocomplete, tool, opposite, other, array_size(other));
+		error = autocomplete_set_note_files(autocomplete, tool, members[0], other, array_size(other));
 	if (!error)
-		error = autocomplete_set_note_files(autocomplete, tool, notebooks[1], peer, array_size(peer));
+		error = autocomplete_set_note_files(autocomplete, tool, members[1], peer, array_size(peer));
 	return error;
 }
