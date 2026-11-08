@@ -444,6 +444,12 @@ static struct cstr_view const godbolt_arg_rules[] = {
 
 #define GODBOLT_BIT(arg) (1u << GODBOLT_ARG_##arg)
 
+/* The argument bits that are common to every tool except GODBOLT_CATALOG,
+ * which sends no compilation.
+ */
+#define GODBOLT_JOB_ARGS \
+        (GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) | GODBOLT_BIT(OFFSET))
+
 /* The arguments of a tool. */
 struct godbolt_params {
 	uint32_t args;   /* bit i is set if the tool has the argument
@@ -460,26 +466,19 @@ static struct godbolt_params const godbolt_params[] = {
 		.needs = GODBOLT_BIT(ACTION)
 	},
 	[GODBOLT_COMPILE] = {
-		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
-		        GODBOLT_BIT(SOURCE) | GODBOLT_BIT(FILTERS) | GODBOLT_BIT(SHARE) |
-		        GODBOLT_BIT(RUN) | GODBOLT_BIT(OFFSET),
+		.args = GODBOLT_JOB_ARGS | GODBOLT_BIT(SOURCE) | GODBOLT_BIT(FILTERS) |
+		        GODBOLT_BIT(SHARE) | GODBOLT_BIT(RUN),
 		.needs = GODBOLT_BIT(SOURCE)
 	},
 	[GODBOLT_PREPROCESS] = {
-		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
-		        GODBOLT_BIT(SOURCE) | GODBOLT_BIT(SHARE) | GODBOLT_BIT(OFFSET),
+		.args = GODBOLT_JOB_ARGS | GODBOLT_BIT(SOURCE) | GODBOLT_BIT(SHARE),
 		.needs = GODBOLT_BIT(SOURCE)
 	},
-	[GODBOLT_MACROS] = {
-		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
-		        GODBOLT_BIT(SOURCE) | GODBOLT_BIT(SHARE) | GODBOLT_BIT(OFFSET)
-	},
-	[GODBOLT_TARGETS] = {
-		.args = GODBOLT_BIT(COMPILERS) | GODBOLT_BIT(ARGS) | GODBOLT_BIT(LANGUAGE) |
-		        GODBOLT_BIT(HEADERS) | GODBOLT_BIT(OFFSET)
-	},
+	[GODBOLT_MACROS] = { .args = GODBOLT_JOB_ARGS | GODBOLT_BIT(SOURCE) | GODBOLT_BIT(SHARE) },
+	[GODBOLT_TARGETS] = { .args = GODBOLT_JOB_ARGS | GODBOLT_BIT(HEADERS) },
 };
 
+#undef GODBOLT_JOB_ARGS
 #undef GODBOLT_BIT
 
 enum godbolt_filter : uint8_t {
