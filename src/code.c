@@ -158,18 +158,19 @@ code_definition (void const *service)
 		"description", json_object_new_string(
 			"Ask clang about the C code in a commit of a repository of the server. "
 			"clang parses the committed file in path with the flags from the compile "
-			"commands of the repository. outline lists the names that path declares. "
-			"Each row starts with the line of the name, a valid line for describe. "
-			"describe prints what name is in the translation unit of path: the kind, "
-			"the type, and the places of the declaration and the definition. describe "
-			"also lists the calls of a function, the value of an enumerator, and the "
-			"members of a struct or union with offsets, sizes and padding. describe "
-			"prints up to 40 numbered lines of the declaration, without the body of a "
-			"function. The numbered lines count as read for findings. diagnostics "
-			"lists the errors and warnings of clang for path. A place is path:line. "
-			"git read accepts the commit and the path of a place. Only committed files "
-			"are visible. A .c file must be in the compile commands. A header is "
-			"parsed with the flags of the nearest .c file."),
+			"commands of the repository. outline lists the names declared in path. "
+			"Each outline row starts with the line number of the name. Give the line "
+			"number to describe as line. describe prints the kind, the type, and the "
+			"places of the declaration and the definition of name in the translation "
+			"unit of path. describe also lists the calls of a function, the value of "
+			"an enumerator, and the members of a struct or union with offsets, sizes "
+			"and padding. describe prints up to 40 numbered lines of the declaration, "
+			"without the body of a function. The numbered lines count as read for "
+			"findings. diagnostics lists the errors and warnings of clang for path. A "
+			"place is path:line. To read the code at a place, call git read with "
+			"\"revisions\": [\"<commit>:<path>\"] and \"line\": <line>. Only "
+			"committed files are visible. A .c file must be in the compile commands. "
+			"A header is parsed with the flags of the nearest .c file."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
@@ -179,12 +180,15 @@ code_definition (void const *service)
 					"A .c or .h file of the commit, relative to the "
 					"repository's top, such as src/git.c."),
 				"name", schema_property("string",
-					"The symbol for describe, such as git_start, struct "
-					"dstr or the member child.flags. struct, union or enum "
-					"before a name selects the type."),
+					"The symbol for describe, such as git_start or struct "
+					"dstr. Give a member as TYPE.MEMBER, such as "
+					"child.flags. struct, union or enum before a name "
+					"selects the type."),
 				"line", schema_count(1,
-					"For describe, the line of path where name is written, "
-					"such as a local variable or a macro use."),
+					"For describe, the line of path that contains name. "
+					"Give line for a local variable, a parameter or a macro "
+					"use. For a macro use, describe also prints the type and "
+					"the value of the expression."),
 				"warnings", schema_array(schema_property("string", nullptr),
 					CXI_WARNINGS,
 					"Warning options that diagnostics adds to the flags of "
