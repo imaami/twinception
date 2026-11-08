@@ -388,7 +388,7 @@ cxi_outline (struct cxi *x)
 		cxi_out_printf(&x->out, "\n");
 	}
 	free(list.items);
-	return (int)x->out.e;
+	return x->out.e;
 }
 
 /* Writes line @p n of @p text to @p *line, data nullptr if there is none,
@@ -793,7 +793,7 @@ cxi_lookup (struct cxi *x,
 	if (n == 1) {
 		*c = cxi_shown(find.list.items[0]);
 		free(find.list.items);
-		return (int)x->out.e;
+		return x->out.e;
 	}
 	if (n) {
 		size_t tag = 0;
@@ -828,7 +828,7 @@ cxi_lookup (struct cxi *x,
 		cxi_out_printf(&x->out, "\n");
 	}
 	free(find.list.items);
-	return x->out.e ? (int)x->out.e : EINVAL;
+	return x->out.e ? x->out.e : EINVAL;
 }
 
 /* The search for the expression of a macro use at from to to in file. */
@@ -1015,7 +1015,7 @@ cxi_lookup_member (struct cxi *x,
 	clang_Type_visitFields(clang_getCursorType(record), cxi_seek, &seek);
 	*c = seek.found;
 	if (!clang_Cursor_isNull(*c))
-		return (int)x->out.e;
+		return x->out.e;
 	cxi_out_clang(&x->out, clang_getTypeSpelling(clang_getCursorType(record)));
 	cxi_out_printf(&x->out, " has no member %s.", member);
 	return EINVAL;
@@ -1199,7 +1199,7 @@ cxi_describe (struct cxi *x)
 	cxi_declaration(x, shown);
 	x->out.e = x->out.e ? x->out.e : rows.e;
 	dstr_cleanup(&rows.text);
-	return (int)x->out.e;
+	return x->out.e;
 }
 
 static void
@@ -1262,7 +1262,7 @@ cxi_diagnostics (struct cxi *x)
 	cxi_out_put(&x->out, dstr_get(&rows.text), dstr_len(&rows.text));
 	x->out.e = x->out.e ? x->out.e : rows.e;
 	dstr_cleanup(&rows.text);
-	return (int)x->out.e;
+	return x->out.e;
 }
 
 /* Reads the words KEY=VALUE from @p *at up to "--", and moves past it. */
@@ -1782,7 +1782,7 @@ main (int    argc,
 		e = check ? cxi_check(&x)
 		          : cxi_run(&x, (char const *const *)argv + at, argc - at, &fd);
 	if (x.out.e || e == ENOMEM || (e && !dstr_len(&x.out.text))) {
-		int const why = x.out.e ? (int)x.out.e : e;
+		int const why = x.out.e ? x.out.e : e;
 		dstr_clear(&x.out.text);
 		x.out.e = 0;
 		cxi_out_printf(&x.out, "askai-code failed: %s.", strerror(why));
