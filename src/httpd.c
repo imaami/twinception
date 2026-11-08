@@ -1483,25 +1483,23 @@ static unsigned
 httpd_conn_chunk_size (struct httpd_conn    *conn,
                        struct httpd_dechunk *d)
 {
-	struct span s;
-	unsigned status = httpd_dechunk_line(d, CHUNK_LINE, 400, &s);
-	if (!s.ptr)
+	struct span line;
+	unsigned status = httpd_dechunk_line(d, CHUNK_LINE, 400, &line);
+	if (!line.ptr)
 		return status;
-	unsigned char const *line = s.ptr;
-	size_t n = s.len;
 
 	size_t size = 0;
 	size_t i = 0;
 	bool over = false;
-	for (unsigned v; i < n && (v = util_hex_digit(line[i])) < 16; ++i) {
+	for (unsigned v; i < line.len && (v = util_hex_digit(line.ptr[i])) < 16; ++i) {
 		over |= size > SIZE_MAX >> 4;
 		size = size << 4 | v;
 	}
-	size_t ext = i + strspn((char const *)line + i, " \t");
-	if (!i || over || (ext < n && line[ext] != ';'))
+	size_t ext = i + strspn((char const *)line.ptr + i, " \t");
+	if (!i || over || (ext < line.len && line.ptr[ext] != ';'))
 		return 400;
-	for (size_t k = ext; k < n; ++k)
-		if (httpd_ctl(line[k]))
+	for (size_t k = ext; k < line.len; ++k)
+		if (httpd_ctl(line.ptr[k]))
 			return 400;
 	struct httpd_req *req = &conn->req;
 	if (size > conn->srv->lim.body - req->got - d->wr)

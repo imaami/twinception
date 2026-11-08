@@ -885,7 +885,6 @@ web_wait_create (struct web           *web,
 		.who = ask->who
 	};
 
-	uint64_t const now = ask->loop->now;
 	struct web_run *to = run;
 	pthread_mutex_lock(&web->lock);
 	if (r->keep) {
@@ -893,7 +892,7 @@ web_wait_create (struct web           *web,
 		/* Only home changes a wait that is on a run's list, until home
 		 * posts it. So the function changes only a wait that has a
 		 * stored response. */
-		if (entry && entry->reply->received + r->keep * NS > now &&
+		if (entry && entry->reply->received + r->keep * NS > ask->loop->now &&
 		    ref_tryget(&entry->reply->refs)) {
 			wait->reply = entry->reply;
 			wait->done = true;
