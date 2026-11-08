@@ -116,9 +116,11 @@ enum { WRITER_STARTED = 1, WRITER_STOP = 2 };
 struct journal_job {
 	uint64_t     bytes; /* zero until a recovery checkpoint exists */
 	uint64_t     touched;
-	uint64_t     thought_seen;
-	uint32_t     thought_turn;
-	int          thought_error;
+	struct {
+		uint64_t seen;
+		uint32_t turn;
+		int      error;
+	}            thought;
 	int          error;   /* the error of a lost record; the job's later
 	                         appends fail with it */
 	uint16_t     flags;   /* JOB_* bits */
@@ -733,11 +735,8 @@ journal_checkpoint_write (struct journal        *j,
 		job->touched = now;
 	job->flags = had | (legacy ? JOB_LEGACY : 0) | (terminal ? JOB_TERMINAL : 0);
 	job->error = 0;
-	if (state) {
-		job->thought_error = 0;
-		job->thought_turn = 0;
-		job->thought_seen = 0;
-	}
+	if (state)
+		job->thought = (typeof(job->thought)){};
 	return 0;
 }
 
@@ -855,17 +854,14 @@ journal_thought_put (struct journal            *j,
 	if (!job && !(job = journal_job_add(j, &item->id, &e)))
 		return e;
 	bool begin = !item->offset && !item->record->len;
-	if (begin || job->thought_turn != item->turn) {
-		job->thought_turn = item->turn;
-		job->thought_seen = 0;
-		job->thought_error = 0;
-	}
-	e = begin ? 0 : job->thought_error ? job->thought_error : journal_thought_write(j, item);
-	job->thought_error = e;
+	if (begin || job->thought.turn != item->turn)
+		job->thought = (typeof(job->thought)){ .turn = item->turn };
+	e = begin ? 0 : job->thought.error ? job->thought.error : journal_thought_write(j, item);
+	job->thought.error = e;
 	if (!job->bytes)
 		job->flags &= ~JOB_TERMINAL;
 	if (!e)
-		job->thought_seen = item->offset + item->record->len;
+		job->thought.seen = item->offset + item->record->len;
 	return e;
 }
 
@@ -877,14 +873,14 @@ journal_thought_commit (struct journal            *j,
                         struct journal_item const *item,
                         struct journal_job        *job)
 {
-	bool const turn = job && job->thought_turn == item->turn;
-	if (turn && job->thought_error)
-		return job->thought_error;
+	bool const turn = job && job->thought.turn == item->turn;
+	if (turn && job->thought.error)
+		return job->thought.error;
 	struct journal_file *file = nullptr;
 	int e = journal_thought_file(j, item, &file);
 	if (e || !file->size)
 		return e == ENOENT ? 0 : e;
-	uint64_t seen = turn ? job->thought_seen : 0;
+	uint64_t seen = turn ? job->thought.seen : 0;
 	if (seen < file->size)
 		return item->operation == JOURNAL_THOUGHT_FINISH ? EILSEQ : 0;
 	if (file->committed_size == file->size)

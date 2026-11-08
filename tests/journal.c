@@ -60,7 +60,7 @@ journal_test_thoughts (struct journal *j)
 	journal_stop(j);
 	loop_fini(&events);
 	assert(journal_test_completed == 2 * (JOURNAL_FILES + 1) + 9);
-	assert(!journal_job_find(j, &id)->thought_error);
+	assert(!journal_job_find(j, &id)->thought.error);
 	assert(!(journal_job_find(j, &id)->flags & JOB_TERMINAL));
 	struct journal_item load = { .id = id };
 	assert(!journal_load_records(j, &load) && !load.record);
