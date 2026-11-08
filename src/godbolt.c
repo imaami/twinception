@@ -333,13 +333,13 @@ enum godbolt_action : uint8_t {
 #undef GODBOLT_ACTION_ENUM
 };
 
+static struct cstr_view const godbolt_action_names[] = { GODBOLT_ACTION_LIST(XL_VIEW) };
+
 static struct {
-	struct cstr_view name;
 	struct cstr_view header;
 	char const      *singular;
 } const godbolt_actions[] = {
-#define GODBOLT_ACTION_ROW(id, name, singular, header) \
-        { CSTR_VIEW_INIT(name), CSTR_VIEW_INIT(header), singular },
+#define GODBOLT_ACTION_ROW(id, name, singular, header) { CSTR_VIEW_INIT(header), singular },
 	GODBOLT_ACTION_LIST(GODBOLT_ACTION_ROW)
 #undef GODBOLT_ACTION_ROW
 };
@@ -1287,7 +1287,7 @@ godbolt_count (struct godbolt *call,
 	}
 	if (json_object_object_length(call->doc) == GODBOLT_KEYS) {
 		godbolt_why(call, "the list has more than 256 different %s",
-		            godbolt_actions[call->args.action].name.data);
+		            godbolt_action_names[call->args.action].data);
 		call->list = GODBOLT_LIST_BAD;
 		return call->e;
 	}
@@ -1460,16 +1460,15 @@ godbolt_catalog_end (struct godbolt *call)
 		             "family tag");
 	/* The first sentence of the last line counts the listed items, and the
 	 * second sentence counts all items of the list. */
-	typeof(godbolt_actions[0]) *const act = &godbolt_actions[call->args.action];
+	char const *const singular = godbolt_actions[call->args.action].singular;
 	if (counts)
 		godbolt_putf(call, "Listed %" PRIu32 " of the %" PRIu32 " %s of the %" PRIu32
 		             " matching compiler%s. ", call->listed, keys,
-		             keys == 1 ? act->singular : act->name.data, call->matching,
-		             util_s(call->matching));
+		             keys == 1 ? singular : godbolt_action_names[call->args.action].data,
+		             call->matching, util_s(call->matching));
 	else
 		godbolt_putf(call, "Listed %" PRIu32 " of %" PRIu32 " matching %s%s. ",
-		             call->listed, call->matching, act->singular,
-		             util_s(call->matching));
+		             call->listed, call->matching, singular, util_s(call->matching));
 	if (languages)
 		godbolt_putf(call, "Compiler Explorer has %" PRIu32 " language%s.\n", call->total,
 		             util_s(call->total));
@@ -2647,14 +2646,10 @@ godbolt_args_set (struct godbolt_args *a,
                   struct json_object  *v)
 {
 	switch (arg) {
-	case GODBOLT_ARG_ACTION: {
-		struct cstr_view const t = jb_text(v, 1, GODBOLT_ID_MAX, nullptr);
-		a->action = 0;
-		while (a->action < array_size(godbolt_actions) &&
-		       !cstr_view_equal(t, godbolt_actions[a->action].name))
-			++a->action;
-		return a->action < array_size(godbolt_actions) ? 0 : EINVAL;
-	}
+	case GODBOLT_ARG_ACTION:
+		a->action = (uint8_t)cstr_view_index(godbolt_action_names,
+		                                     array_size(godbolt_action_names), jb_view(v));
+		return a->action < array_size(godbolt_action_names) ? 0 : EINVAL;
 	case GODBOLT_ARG_LANGUAGE:
 		a->language = jb_text(v, 1, GODBOLT_LANGUAGE_MAX, godbolt_language_bytes);
 		return a->language.data ? 0 : EINVAL;
