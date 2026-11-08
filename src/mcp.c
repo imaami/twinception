@@ -4461,10 +4461,7 @@ mcp_req_call_put (struct mcp_req         *req,
 		BYTES(c->extra),
 		BYTES(f->call_end),
 	};
-	e = mcp_req_upload(req, p, array_size(p));
-	if (!e)
-		req->flags |= REQ_LISTED;
-	return e;
+	return mcp_req_upload(req, p, array_size(p));
 }
 
 /* Write the turn's call under way, after the items of the replay before
@@ -4481,7 +4478,7 @@ mcp_req_turn_call (struct mcp_req         *req,
 	                    : mcp_req_upload(req, &items, 1);
 	if (e)
 		return e;
-	if (items.bytes.len)
+	if (f->call.len || items.bytes.len)
 		req->flags |= REQ_LISTED;
 	req->replayed = h.replay;
 	return 0;
