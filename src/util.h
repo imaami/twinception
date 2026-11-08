@@ -205,7 +205,7 @@ util_char_start (char const *s,
 /** The ASCII letters and digits, as a string: A to Z, a to z, then 0 to 9. */
 #define UTIL_ALNUM "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
-/** The most bytes of a word in askai's Git refs, such as a participant. */
+/** The most bytes of a word in askai's Git refs, such as a member name. */
 enum { UTIL_WORD_MAX = 64 };
 
 /** Whether the @p n bytes at @p s, 1 to @p max of them, are ASCII letters,

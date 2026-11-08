@@ -237,7 +237,8 @@ in its job ledger. The same live limits apply as to
 per owner and results retained for up to an hour, subject to the memory
 and record limits. Background mode also enables automatic transcript
 storage, described below. After a restart, poll the same job ID using the
-same participant, transcript repository and caller identity. AskAI loads
+same service name (`--service-name`), transcript repository and caller
+identity. AskAI loads
 the saved state on that check; retained completed checkpoints remain
 recoverable after the live ledger has forgotten them.
 
@@ -303,22 +304,26 @@ The transcript repository is separate from the shared notes repository;
 neither repository may be inside the other's Git directory.
 With `--notes PATH`, it defaults to `PATH.transcripts.git`. With
 `--background` alone, it defaults to
-`$XDG_STATE_HOME/askai/PARTICIPANT/transcripts.git`, using
+`$XDG_STATE_HOME/askai/SERVICE/transcripts.git`, using
 `$HOME/.local/state` when `XDG_STATE_HOME` is not an absolute path.
-`--transcripts PATH` selects another location and also enables recording
-without notes or background mode. Startup logs show the path and
-participant. Use the same participant after restarting; distinct
-participants may share a transcript repository, but two live instances
-cannot both write as the same participant there.
+SERVICE is the name of the service, `--service-name`, which defaults to
+`--agent`, or else to `--tool-name`. `--transcripts PATH` selects another
+location and also enables recording without notes or background mode.
+Startup logs show the path and the service. Use the same service name
+after restarting; services of distinct names may share a transcript
+repository, but two live instances cannot both write with the same
+service name there. The second one stops with the message `the service
+name NAME is in use in this repository; give this askai another
+--service-name`.
 
 Only decoded, concatenated reasoning text enters the branch
-`reasoning/PARTICIPANT`. No raw provider JSON, SSE envelopes, client
+`reasoning/SERVICE`. No raw provider JSON, SSE envelopes, client
 notifications, prompts, answers or tool results are added to Git.
 Reasoning capture is independent of whether the client requests or displays
 thought deltas, and also handles complete, non-streaming provider responses.
 
 The writer appends each thought piece to a private plaintext file under
-`askai-journal/PARTICIPANT/reasoning/JOB_ID/TURN.txt`. It preserves the exact
+`askai-journal/SERVICE/reasoning/JOB_ID/TURN.txt`. It preserves the exact
 decoded bytes, without adding separators between chunks. When the provider
 closes a reasoning block, reasoning gives way to answer text or a tool call,
 or the provider turn ends, the writer synchronizes the file and commits it.
@@ -335,15 +340,15 @@ that recovery and preserves the original file. A full writer queue applies
 backpressure; storage errors are reported instead of silently losing text.
 
 The file `askai-journal/principal.key`, outside Git and with mode 0600,
-contains the 32-byte key of the principals. Every participant of the
+contains the 32-byte key of the principals. Every service of the
 repository reads the same key (section Configuration file, identities and
 roles, below).
 
 Job recovery uses separate, private checkpoints under
-`askai-journal/PARTICIPANT/jobs/`, outside Git. They retain current request
+`askai-journal/SERVICE/jobs/`, outside Git. They retain current request
 state, provider identifiers, tool intents/results and terminal status;
 superseded turn state and metadata are replaced. Checkpoints are bounded
-to 64 MiB per job, 256 MiB per participant and 1024 jobs, with space reserved
+to 64 MiB per job, 256 MiB per service and 1024 jobs, with space reserved
 for one additional terminal record of up to 16 MiB plus its header. Atomic
 replacement can temporarily use another 64 MiB. When space is needed, the oldest
 completed checkpoints may be removed; unfinished jobs and checkpoints
@@ -811,14 +816,25 @@ update-ref -d` removes one.
 With `--notes PATH`, the repository at `PATH` is the shared session.
 `askai` creates a bare Git repository there if absent, and also accepts an
 existing ordinary repository or worktree. All instances
-using that repository collaborate on its notes. Give each instance a
-stable, distinct `--participant NAME`; the default is `--tool-name`, or
-`ask_ai`. Names have 1 to 64 characters from `[A-Za-z0-9_-]`.
+using that repository collaborate on its notes. `--notes` needs `--agent
+NAME`, the name of the agent of the instance in the session. A member of
+the session is a person or an agent. Persons and agents share the names
+of a session: 1 to 64 characters from `[A-Za-z0-9_.@-]`, not starting
+with `.` or `-`, without `..`, not ending with `.` or `.lock`, not `@`,
+and not a letter followed only by digits, such as `c7`.
 
-Each participant writes only its own notebook branches,
-`notes/PARTICIPANT/WHO/client` and `notes/PARTICIPANT/WHO/upstream`, where
-`WHO` is the caller's identity hash or `anonymous`. Every participant can
-read the other notebooks. The repository, rather than an ask call or
+As it starts, `askai` writes the session record `refs/askai/session`, with
+the ID and the name of the session, and the member record
+`refs/askai/members/NAME` of its agent, if they do not exist. A member
+record is a create-only ref: the first writer of a name creates it, and a
+later service of the same agent adopts it. A person becomes a member with
+the first lookup of the person's Unix user or identity. The `_meta` of the
+tool `notes` has the ID of the session as `session`.
+
+Each agent writes only its own notebook branches,
+`notes/AGENT/WHO/client` and `notes/AGENT/WHO/upstream`, where `WHO` is
+the caller's identity hash or `anonymous`. Every agent can read the other
+notebooks. The repository, rather than an ask call or
 transport connection, determines which session a note belongs to.
 
 A note is a file. The model chooses its name, such as `plan.md` or
@@ -941,15 +957,15 @@ For example, both instances below share one notes session:
 
 ```sh
 ./askai -p llama --background --upstream-tools \
-  --participant researcher --tool-name ask_researcher \
+  --agent researcher --tool-name ask_researcher \
   --notes /var/lib/askai/session.git --listen 127.0.0.1:8090
 ./askai -p google -m MODEL --background --upstream-tools \
-  --participant reviewer --tool-name ask_reviewer \
+  --agent reviewer --tool-name ask_reviewer \
   --notes /var/lib/askai/session.git --listen 127.0.0.1:8091
 ```
 
 Each calls `{"action":"notebooks"}` to discover the other's notebook,
-then reads it to follow that participant's progress. Automatic provider
+then reads it to follow the progress of the other agent. Automatic provider
 transcripts go to a separate repository, by default
 `/var/lib/askai/session.git.transcripts.git`; `--transcripts PATH` changes
 that location.
@@ -1119,16 +1135,17 @@ times their flights, mostly CPU (`askai_tls_handshakes_total`,
 
 `--config FILE` (`-c`) reads options from a JSON object before the command
 line. The file must be strict JSON, so that tools such as `jq` can read it:
-comments and trailing commas are errors. `participant` and `transcripts`
+comments and trailing commas are errors. `agent` and `transcripts`
 are top-level members. The other options but those of the
 built-in tools are members of four objects, and each member is named as a
-long option is:
+long option is, but `--service-name` is `service.name`:
 
 - `upstream` has the options of the upstream AI, the tools of the upstream
   and the ask tool: the options under "Upstream AI" in `askai --help`, such
   as `url`, `upstream-tools`, `max-turns` and `tool-name`.
-- `service` has the options of the MCP server and the limits on clients,
-  such as `listen`, `tls-cert`, `allow-origin` and `max-body`.
+- `service` has the name of the service and the options of the MCP server
+  and the limits on clients, such as `name`, `listen`, `tls-cert`,
+  `allow-origin` and `max-body`.
 - `testing` has the test aids, such as `test-fifo`.
 - `debugging` has `verbose` and `watchdog`.
 
@@ -1144,7 +1161,7 @@ in parentheses:
 - `--notes` is `tools.notes.directory`.
 - `--client-jobs` is `tools.jobs.clients`.
 
-An option other than `participant` or `transcripts` at the top level of the
+An option other than `agent` or `transcripts` at the top level of the
 file, or an option in another object than its own,
 stops `askai` with a message such as "url must be in upstream", or "man must
 be tools.man.enabled" for an option of a built-in tool. The values have
@@ -1730,7 +1747,7 @@ with one item a line:
   that is off, the option that turns it on, or `tools` if the member
   `tools` of the configuration file denies it to clients. The test aid
   `test_task` is listed only when it is on.
-- `git repositories:` and `notes directory:`, when those tools are on.
+- `git repositories:`, when that tool is on.
 - `plugin NAME:` for each plugin that `askai` loaded: its file, whether the
   configuration gives it options, and its tools. A tool that the member
   `tools` denies to clients has `off (tools)` after its name.
@@ -1745,6 +1762,11 @@ with one item a line:
 - a warning with the tools that are on and that `tools` allows clients,
   but that no role grants or lends to the upstream, because nothing can
   call them.
+- `session:` with `--notes`: the repository, the ID and the name of the
+  session, the agent and the service. `session members:` lists each member
+  that the records of the session name as `askai` starts, with its kind
+  and its logins, such as `uid 1000`. Without `--notes` and with
+  a transcript repository, `service:` names the service instead.
 
 A reload logs the policy again. `askai` does not log client tokens, its
 API key or the headers that it sends. It logs the error text of an upstream
@@ -1754,6 +1776,7 @@ plugin:
 
 ```json
 {
+  "agent": "bro",
   "upstream": {
     "url": "http://127.0.0.1:8081/v1/chat/completions",
     "tool-name": "bro",
@@ -1796,7 +1819,6 @@ built-in tools for clients:
   timer       off (--client-jobs)
 git repositories:
   proj  /srv/git/proj
-notes directory: /var/lib/askai/notes
 plugin godbolt:
   file     /usr/libexec/askai/godbolt.so
   options  given
@@ -1849,6 +1871,15 @@ warning: no role lists these tools:
   godbolt_preprocess
   godbolt_macros
   godbolt_targets
+session:
+  repository  /var/lib/askai/notes
+  id          6f0c2b9a41d8e3f75a2c1b0d9e8f7a6b
+  name        notes
+  agent       bro
+  service     bro
+session members:
+  bro     agent
+  imaami  person  uid 1000
 MCP endpoint http://127.0.0.1:8090/mcp
 ```
 
@@ -1920,8 +1951,9 @@ tool call bro from anonymous loopback (role user) answered after 3.9 s (30 bytes
                             line: a JSON object without comments.  Its
                             objects upstream, service, testing and
                             debugging contain the options of the
-                            sections below, named as the long options.
-                            Its member tools can contain the objects of
+                            sections below, named as the long options,
+                            but --service-name is service.name.  Its
+                            member tools can contain the objects of
                             the built-in tools, whose members the
                             section Built-in tools names.  true sets an
                             option without argument, and an array lists
@@ -1934,15 +1966,18 @@ tool call bro from anonymous loopback (role user) answered after 3.9 s (30 bytes
   -h, --help                show this help
 
 Session (top-level configuration members):
-      --participant NAME    stable writer identity, 1 to 64 characters
-                            from [A-Za-z0-9_-]; default: tool-name.  Use
-                            distinct names for collaborating instances
+      --agent NAME          name of the agent of this askai in the
+                            session of --notes, a member name of 1 to
+                            64 characters from [A-Za-z0-9_.@-] (see
+                            doc/configuration.md); required with
+                            --notes
       --transcripts PATH    separate git repository for reasoning text,
                             with private job recovery state; default:
                             <notes>.transcripts.git with --notes, else
                             $XDG_STATE_HOME/askai/NAME/transcripts.git
-                            with --background, using $HOME/.local/state
-                            if XDG_STATE_HOME is not absolute
+                            with --background, where NAME is
+                            --service-name, using $HOME/.local/state if
+                            XDG_STATE_HOME is not absolute
 
 Upstream AI ("upstream"):
   -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),
@@ -2021,6 +2056,10 @@ Upstream AI ("upstream"):
                             --notes)
 
 MCP server ("service"):
+      --service-name NAME   name of this askai in its transcripts,
+                            its background jobs and its commits, a
+                            name as for --agent (default: --agent, else
+                            --tool-name; service.name)
   -l, --listen ADDR         [host:]port, where host is 127.0.0.1 if it
                             is left out; unix:PATH for a Unix socket; or
                             tls:[host:]port for TLS (repeatable;
@@ -2122,7 +2161,8 @@ Built-in tools ("tools", each in the member in parentheses):
                             seccomp, which the tool code needs
                             otherwise (tools.code.unconfined)
       --notes PATH          shared session's git repository, created
-                            bare if absent.  Each participant
+                            bare if absent, with the session record and
+                            the member record of --agent.  Each agent
                             writes its own branches and reads all notes;
                             offer notes to clients as their role
                             allows, and to the upstream with

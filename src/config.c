@@ -33,6 +33,7 @@
 #include "jb.h"
 #include "log.h"
 #include "mcp.h"
+#include "member.h"
 #include "policy.h"
 #include "tls.h"
 #include "util.h"
@@ -168,8 +169,9 @@ enum config_arg : uint8_t {
           "line: a JSON object without comments.  Its" NL                                               \
           "objects upstream, service, testing and" NL                                                   \
           "debugging contain the options of the" NL                                                     \
-          "sections below, named as the long options." NL                                               \
-          "Its member tools can contain the objects of" NL                                              \
+          "sections below, named as the long options," NL                                               \
+          "but --service-name is service.name.  Its" NL                                                 \
+          "member tools can contain the objects of" NL                                                  \
           "the built-in tools, whose members the" NL                                                    \
           "section Built-in tools names.  true sets an" NL                                              \
           "option without argument, and an array lists" NL                                              \
@@ -182,17 +184,20 @@ enum config_arg : uint8_t {
         X(custom,  HELP,             "help",             'h', NONE, NONE, "",                           \
           "show this help")                                                                             \
         H("Session (top-level configuration members)")                                                  \
-        X(custom,  PARTICIPANT,      "participant",      ,    ROOT, ONE, "NAME",                        \
-          "stable writer identity, 1 to 64 characters" NL                                               \
-          "from [A-Za-z0-9_-]; default: tool-name.  Use" NL                                             \
-          "distinct names for collaborating instances")                                                 \
+        X(custom,  AGENT,            "agent",            ,    ROOT, ONE, "NAME",                        \
+          "name of the agent of this askai in the" NL                                                   \
+          "session of --notes, a member name of 1 to" NL                                                \
+          "64 characters from [A-Za-z0-9_.@-] (see" NL                                                  \
+          "doc/configuration.md); required with" NL                                                     \
+          "--notes")                                                                                    \
         X(text,    TRANSCRIPTS,      "transcripts",      ,    ROOT, ONE, "PATH",                        \
           "separate git repository for reasoning text," NL                                              \
           "with private job recovery state; default:" NL                                                \
           "<notes>.transcripts.git with --notes, else" NL                                               \
           "$XDG_STATE_HOME/askai/NAME/transcripts.git" NL                                               \
-          "with --background, using $HOME/.local/state" NL                                              \
-          "if XDG_STATE_HOME is not absolute",                                                          \
+          "with --background, where NAME is" NL                                                         \
+          "--service-name, using $HOME/.local/state if" NL                                              \
+          "XDG_STATE_HOME is not absolute",                                                             \
           transcripts)                                                                                  \
         H("Upstream AI (\"upstream\")")                                                                 \
         X(custom,  PROVIDER,         "provider",         'p', UPSTREAM, ONE, "NAME",                    \
@@ -300,6 +305,11 @@ enum config_arg : uint8_t {
           "--notes)",                                                                                   \
           tool.description)                                                                             \
         H("MCP server (\"service\")")                                                                   \
+        X(custom,  SERVICE_NAME,     "service-name",     ,    SERVICE("name"), ONE, "NAME",             \
+          "name of this askai in its transcripts," NL                                                   \
+          "its background jobs and its commits, a" NL                                                   \
+          "name as for --agent (default: --agent, else" NL                                              \
+          "--tool-name; service.name)")                                                                 \
         X(custom,  LISTEN,           "listen",           'l', SERVICE, MANY, "ADDR",                    \
           "[host:]port, where host is 127.0.0.1 if it" NL                                               \
           "is left out; unix:PATH for a Unix socket; or" NL                                             \
@@ -451,7 +461,8 @@ enum config_arg : uint8_t {
           CFG_UNCONFINED)                                                                               \
         X(text,    NOTES,            "notes",            ,    TOOLS("notes.directory"), ONE, "PATH",    \
           "shared session's git repository, created" NL                                                 \
-          "bare if absent.  Each participant" NL                                                        \
+          "bare if absent, with the session record and" NL                                              \
+          "the member record of --agent.  Each agent" NL                                                \
           "writes its own branches and reads all notes;" NL                                             \
           "offer notes to clients as their role" NL                                                     \
           "allows, and to the upstream with" NL                                                         \
@@ -510,11 +521,15 @@ enum config_arg : uint8_t {
 /* A heading of the usage text, which the other expansions leave out. */
 #define CONFIG_NO_HEADING(text)
 
-/* The rows of CONFIG_OPTION_LIST, in its order. */
+/* The rows of CONFIG_OPTION_LIST, in its order, and after them the retired
+ * options. These stay in the table of getopt_long(), so that config_apply()
+ * refuses them with the options that replace them.
+ */
 enum config_row : uint8_t {
 #define CONFIG_ROW(kind, id, ...) ROW_##id,
 	CONFIG_OPTION_LIST(CONFIG_ROW, CONFIG_NO_HEADING)
 #undef CONFIG_ROW
+	ROW_PARTICIPANT,
 };
 
 /* The first of the arguments. */
@@ -530,8 +545,23 @@ static struct option const options[] = {
 	CONFIG_OPTION_LIST(CONFIG_OPTION, CONFIG_NO_HEADING)
 #undef CONFIG_VALUE
 #undef CONFIG_OPTION
+	[ROW_PARTICIPANT] = { "participant", required_argument, nullptr, 256 + ROW_PARTICIPANT },
 	{ nullptr, 0, nullptr, 0 }
 };
+
+/* The refusal of the option participant, which agent and service.name
+ * replace.
+ */
+static char const participant_retired[] =
+	"participant was replaced by agent and service.name. Set agent to the name of the agent "
+	"in the session. Set service.name to the old participant value to keep the transcripts "
+	"and the background jobs.";
+
+/* The form of a member name (src/member.h), for the refusal of a name. */
+#define CONFIG_NAME_RULE                                                                  \
+        "a name is 1 to 64 characters from [A-Za-z0-9_.@-], does not start with . or -, " \
+        "contains no .., does not end with . or .lock, is not @ and is not a letter "     \
+        "followed only by digits"
 
 /* The short forms for getopt_long(), each followed by ':' if the option
  * requires an argument.
@@ -828,7 +858,9 @@ enum config_take : uint8_t {
  */
 static struct config_option {
 	char const *member;  /* "TOOL.NAME" of the member tools, in the group
-	                        TOOLS */
+	                        TOOLS; in another group, the name of the member
+	                        if it is not the long name of the option; or
+	                        nullptr */
 	uint64_t    max;
 	uint32_t    scale;
 	uint32_t    flag;
@@ -841,8 +873,10 @@ static struct config_option {
 #define CONFIG_ROW(kind, id, name, s, place, argument, meta, help, ...)          \
         [ROW_##id] = { CONFIG_STORE_##kind(__VA_ARGS__), .group = GROUP_##place, \
                        .arg = ARG_##argument },
-/* The place TOOLS("TOOL.NAME"): the group TOOLS, and the member. */
+/* The place TOOLS("TOOL.NAME"): the group TOOLS, and the member. The
+ * place SERVICE("NAME"): the group SERVICE, and the member NAME. */
 #define GROUP_TOOLS(m) GROUP_TOOLS, .member = m
+#define GROUP_SERVICE(m) GROUP_SERVICE, .member = m
 #define CONFIG_AT(m) .at = offsetof(struct config, m), \
                      .width = sizeof ((struct config *)nullptr)->m
 #define CONFIG_STORE_custom() .take = TAKE_CUSTOM
@@ -864,6 +898,7 @@ static struct config_option {
 #undef CONFIG_STORE_text
 #undef CONFIG_STORE_custom
 #undef CONFIG_AT
+#undef GROUP_SERVICE
 #undef GROUP_TOOLS
 #undef CONFIG_ROW
 };
@@ -975,12 +1010,18 @@ config_apply (struct config *cfg,
 		config_push(cfg->listens, &cfg->n_listens, arg);
 		break;
 	case ROW_BACKGROUND: ep->background = 1; break;
-	case ROW_PARTICIPANT:
-		if (!util_word_len(arg, UTIL_WORD_MAX))
-			return config_complain(cfg, where, "--participant: use 1-64 of "
-			                       "[A-Za-z0-9_-]: %s", arg);
-		cfg->participant = arg;
+	case ROW_AGENT:
+	case ROW_SERVICE_NAME:
+		if (!member_name_valid(cstr_view(arg)))
+			return config_complain(cfg, where, "--%s: " CONFIG_NAME_RULE ": %s",
+			                       options[row].name, arg);
+		if (row == ROW_AGENT)
+			cfg->agent = arg;
+		else
+			cfg->service = arg;
 		break;
+	case ROW_PARTICIPANT:
+		return config_complain(cfg, where, "%s", participant_retired);
 	case ROW_ALLOW_ORIGIN:
 		config_push(cfg->origins, &cfg->n_origins, arg);
 		break;
@@ -1253,6 +1294,17 @@ config_json (struct config *cfg,
 	return 0;
 }
 
+/* The name of the member of the configuration file that sets option @p o
+ * in the object of its group, or for the group TOOLS the long name of the
+ * option.
+ */
+static char const *
+config_key (struct option const *o)
+{
+	struct config_option const *row = &rows[o - options];
+	return row->group != GROUP_TOOLS && row->member ? row->member : o->name;
+}
+
 /* The value of option @p o, which the file can set, in @p cfg's
  * configuration file, if it has one; nullptr if none.
  */
@@ -1263,7 +1315,7 @@ config_file_value (struct config const *cfg,
 	enum config_group const g = rows[o - options].group;
 	struct json_object *group = g == GROUP_ROOT ? cfg->file
 	                           : json_object_object_get(cfg->file, group_names[g].data);
-	return json_object_object_get(group, o->name);
+	return json_object_object_get(group, config_key(o));
 }
 
 /* Whether @p cfg's configuration file and @p from's, if either has one, set
@@ -1338,35 +1390,40 @@ config_lists (struct config *cfg)
 	return 0;
 }
 
-/* The option named @p name that the configuration file can set; nullptr
- * if there is none.
+/* The option that the configuration file can set whose member or long
+ * name is @p name; nullptr if there is none.
  */
 static struct option const *
 config_named (char const *name)
 {
-	for (struct option const *o = options; o->name; ++o)
-		if (rows[o - options].group && !strcmp(o->name, name))
-			return o;
+	for (size_t i = 0; i < array_size(rows); ++i)
+		if (rows[i].group && (!strcmp(config_key(&options[i]), name) ||
+		                      !strcmp(options[i].name, name)))
+			return &options[i];
 	return nullptr;
 }
 
-/* Say that the configuration file has option @p o outside the object that
- * contains it; returns 2.
+/* Say that option @p o is the member @p key of the configuration file
+ * outside the object of the option, or under another name than its own;
+ * returns 2.
  */
 static int
 config_misplaced (struct config const *cfg,
-                  struct option const *o)
+                  struct option const *o,
+                  char const          *key)
 {
-	enum config_group const g = rows[o - options].group;
-	switch (g) {
+	struct config_option const *row = &rows[o - options];
+	switch (row->group) {
 	case GROUP_ROOT:
-		return config_complain(cfg, cfg->path, "%s must be at the top level", o->name);
+		return config_complain(cfg, cfg->path, "%s must be at the top level", key);
 	case GROUP_TOOLS:
-		return config_complain(cfg, cfg->path, "%s must be tools.%s", o->name,
-		                       rows[o - options].member);
+		return config_complain(cfg, cfg->path, "%s must be tools.%s", key, row->member);
 	default:
-		return config_complain(cfg, cfg->path, "%s must be in %s", o->name,
-		                       group_names[g].data);
+		if (row->member)
+			return config_complain(cfg, cfg->path, "%s must be %s.%s", key,
+			                       group_names[row->group].data, row->member);
+		return config_complain(cfg, cfg->path, "%s must be in %s", key,
+		                       group_names[row->group].data);
 	}
 }
 
@@ -1382,7 +1439,7 @@ config_tool_option (char const *tool,
 	size_t const len = strlen(tool);
 	for (size_t i = 0; i < array_size(rows); ++i) {
 		char const *m = rows[i].member;
-		if (m && !strncmp(m, tool, len) && m[len] == '.' &&
+		if (rows[i].group == GROUP_TOOLS && !strncmp(m, tool, len) && m[len] == '.' &&
 		    (!key || !strcmp(m + len + 1, key)))
 			return &options[i];
 	}
@@ -1448,8 +1505,8 @@ config_apply_group (struct config      *cfg,
 		if (!o)
 			return config_complain(cfg, cfg->path, "%s: unknown member %s",
 			                       group_names[g].data, it.key);
-		int status = rows[o - options].group != g ? config_misplaced(cfg, o)
-		                                          : config_apply_member(cfg, o, it.val);
+		int status = rows[o - options].group != g || strcmp(config_key(o), it.key)
+		           ? config_misplaced(cfg, o, it.key) : config_apply_member(cfg, o, it.val);
 		if (status)
 			return status;
 	}
@@ -1469,13 +1526,15 @@ config_apply_file (struct config *cfg)
 		if (policy_member(it.key) || !strcmp(it.key, "plugins") ||
 		    !strcmp(it.key, "tools"))
 			continue;
+		if (!strcmp(it.key, options[ROW_PARTICIPANT].name))
+			return config_apply(cfg, ROW_PARTICIPANT, nullptr, cfg->path);
 		size_t g = 1 + cstr_view_index(group_names + 1, array_size(group_names) - 1,
 		                               cstr_view(it.key));
 		struct option const *o = config_named(it.key);
 		int status = g < array_size(group_names)
 		             ? config_apply_group(cfg, (enum config_group)g, it.val)
 		           : !o ? config_complain(cfg, cfg->path, "unknown member %s", it.key)
-		           : rows[o - options].group != GROUP_ROOT ? config_misplaced(cfg, o)
+		           : rows[o - options].group != GROUP_ROOT ? config_misplaced(cfg, o, it.key)
 		           : config_apply_member(cfg, o, it.val);
 		if (status)
 			return status;
@@ -1684,21 +1743,47 @@ config_check_notes (struct config *cfg)
 	return 0;
 }
 
-/* A repository is the session; a participant keeps the same writer identity
- * across restarts. Resolve the transcript location once, before any service
- * opens it. The journal validates and creates its parent directories.
+/* Checks that the name of each identity of the configuration file is a
+ * member name, as the session of --notes needs.
+ */
+static int
+config_identities (struct config const *cfg)
+{
+	struct json_object *ids = json_object_object_get(cfg->file, "identities");
+	struct json_object_iter it;
+	if (json_object_is_type(ids, json_type_object))
+		json_object_object_foreachC(ids, it)
+			if (!member_name_valid(cstr_view(it.key)))
+				return config_complain(cfg, cfg->path, "identity %s: with notes, the "
+				                       "name of an identity is a member name, and "
+				                       CONFIG_NAME_RULE, it.key);
+	return 0;
+}
+
+/* A repository is the session, in which --agent names the agent of this
+ * askai. --service-name names this askai in its transcripts. Restarts with
+ * the same name continue the transcripts and the background jobs. Resolve
+ * the transcript location once, before any service opens it. The journal
+ * validates and creates its parent directories.
  */
 static int
 config_session (struct config *cfg)
 {
-	if (!cfg->participant)
-		cfg->participant = cfg->tool.name;
-	if (!cfg->notes && !cfg->transcripts && !cfg->ep.background)
+	if (cfg->notes && !cfg->agent)
+		return config_complain(cfg, nullptr, "--notes needs --agent NAME: the name of this "
+		                       "askai's agent in the session.");
+	if (!cfg->service)
+		cfg->service = cfg->agent ? cfg->agent : cfg->tool.name;
+	if (cfg->notes) {
+		int status = config_identities(cfg);
+		if (status)
+			return status;
+	} else if (!cfg->transcripts && !cfg->ep.background) {
 		return 0;
-	if (!util_word_len(cfg->participant, UTIL_WORD_MAX))
-		return config_complain(cfg, nullptr, "--participant: use 1-64 of "
-		                       "[A-Za-z0-9_-]; set it explicitly if --tool-name "
-		                       "does not fit: %s", cfg->participant);
+	}
+	if (!member_name_valid(cstr_view(cfg->service)))
+		return config_complain(cfg, nullptr, "--service-name: " CONFIG_NAME_RULE "; set it "
+		                       "if --tool-name is not such a name: %s", cfg->service);
 	if (cfg->transcripts)
 		return *cfg->transcripts ? 0
 		       : config_complain(cfg, nullptr, "--transcripts: empty path");
@@ -1718,7 +1803,7 @@ config_session (struct config *cfg)
 			return config_complain(cfg, nullptr, "--background needs --transcripts, "
 			                       "an absolute XDG_STATE_HOME or an absolute HOME");
 		if (config_aprintf(&cfg->transcripts_owned, "%s%s/%s/transcripts.git", base,
-		                   rest, cfg->participant))
+		                   rest, cfg->service))
 			return config_oom(cfg);
 	}
 	cfg->transcripts = cfg->transcripts_owned;
@@ -2464,8 +2549,10 @@ config_log (struct config const *cfg)
 		LOG_ALL(LOG_INFO, "  context   unknown");
 	config_log_url("URL", ep->url);
 	config_log_files(cfg);
-	if (cfg->notes || cfg->transcripts)
-		LOG_ALL(LOG_INFO, "participant: %s", cfg->participant);
+	/* With --notes, member_registry_report() logs the service with the
+	 * session. */
+	if (!cfg->notes && cfg->transcripts)
+		LOG_ALL(LOG_INFO, "service: %s", cfg->service);
 	if (cfg->transcripts)
 		LOG_ALL(LOG_INFO, "transcripts repository: %s", cfg->transcripts);
 	mcp_report(&cfg->registry, cfg);

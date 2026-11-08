@@ -8446,8 +8446,6 @@ mcp_report (struct registry const *reg,
 		mcp_report_gits(cfg);
 	if (cfg->flags & CFG_CODE)
 		code_report(cfg);
-	if (cfg->notes)
-		LOG_ALL(LOG_INFO, "notes directory: %s", cfg->notes);
 	uint32_t loaded = 0;
 	for (uint32_t i = 0; i < reg->n_plugins; ++i) {
 		struct plugin_loaded const *p = reg->plugins[i].loaded;
@@ -8551,16 +8549,17 @@ mcp_files_inline (size_t body)
 }
 
 struct mcp_static *
-mcp_static_create (struct config const *cfg,
-                   struct manual       *manual,
-                   struct task_pool    *tasks,
-                   struct git          *git,
-                   struct notes        *notes,
-                   struct ledger       *ledger,
-                   struct roster       *roster,
-                   struct web          *web,
-                   struct journal      *journal,
-                   int                 *e)
+mcp_static_create (struct config const          *cfg,
+                   struct manual                *manual,
+                   struct task_pool             *tasks,
+                   struct git                   *git,
+                   struct notes                 *notes,
+                   struct member_registry const *members,
+                   struct ledger                *ledger,
+                   struct roster                *roster,
+                   struct web                   *web,
+                   struct journal               *journal,
+                   int                          *e)
 {
 	struct registry const *reg = &cfg->registry;
 	struct mcp_static *st = malloc(sizeof *st);
@@ -8587,7 +8586,7 @@ mcp_static_create (struct config const *cfg,
 		.versions = DSTR_INIT,
 		.files_url = DSTR_INIT,
 		.tasks = tasks,
-		.notes_tool = { .notes = notes,
+		.notes_tool = { .notes = notes, .members = members,
 		                .files_inline = mcp_files_inline(cfg->http.limits.body) },
 		.code = { git, cfg },
 		.journal = journal,

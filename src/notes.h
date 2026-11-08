@@ -1,8 +1,9 @@
 /** @file notes.h
  *
  * Shared session notes. --notes names one Git repository, shared by
- * every participating askai instance. Each configured participant writes its
- * own refs/heads/notes/PARTICIPANT/WHO/SIDE branches. WHO is the client principal
+ * every participating askai instance. Each askai writes its own
+ * refs/heads/notes/PARTICIPANT/WHO/SIDE branches, where PARTICIPANT is the
+ * name of its agent (--agent). WHO is the client principal
  * or anonymous; SIDE is client or upstream. All notebooks can be read, but a
  * tool call's write branch is chosen by the server. Threads identify ask chains
  * and do not partition the notes. Each write that changes a note adds a
@@ -23,6 +24,7 @@
 
 #include "buf.h"
 #include "cstr_view.h"
+#include "member.h"
 #include "oid.h"
 #include "store.h"
 #include "util.h"
@@ -127,13 +129,13 @@ struct notes_cursor {
 /** The lines of a note that git sees as binary (struct notes_entry). */
 static constexpr uint64_t NOTES_BINARY = UINT64_MAX;
 
-/** Opens the shared session repository at @p path for @p participant, as
- * store_create() does. Returns nullptr and an error number and message on
- * failure.
+/** Opens the shared session repository at @p path for the agent @p agent,
+ * a member name (src/member.h), as store_create() does. Returns nullptr
+ * and an error number and message on failure.
  */
 extern struct notes *
 notes_create (char const *path,
-              char const *participant,
+              char const *agent,
               char       *why,
               size_t      len,
               int        *e);
@@ -152,8 +154,8 @@ extern char const *
 notes_writer (struct notes const *notes);
 
 /** Writes to @p repo the branch ref of the notebook of @p participant, a
- *  name that util_word() accepts, for the principal @p principal and the
- *  side @p side.
+ *  member name (src/member.h), for the principal @p principal and the side
+ *  @p side.
  */
 extern void
 notes_book (struct cstr_view participant,
@@ -176,8 +178,7 @@ static inline bool
 notes_selector_valid (struct cstr_view name)
 {
 	struct cstr_view side = name, participant, who;
-	return cstr_view_cut(&side, '/', &participant) &&
-	       util_word(participant.data, participant.len, UTIL_WORD_MAX) &&
+	return cstr_view_cut(&side, '/', &participant) && member_name_valid(participant) &&
 	       cstr_view_cut(&side, '/', &who) &&
 	       (cstr_view_equal(who, notes_anonymous) ||
 	        (who.len == NOTES_WHO && util_is_hex(who.data, who.len))) &&

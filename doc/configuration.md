@@ -23,13 +23,15 @@ it accepts a member name in single quotes, and the values `NaN` and
 
 The object of the file can have these members:
 
-- `participant` and `transcripts` set the session's writer identity and
-  the separate repository for automatic transcripts. They correspond to
-  `--participant` and `--transcripts` (section [Session](#session)).
+- `agent` and `transcripts` set the name of the agent of this `askai` in
+  the session and the separate repository for automatic transcripts. They
+  correspond to `--agent` and `--transcripts` (section
+  [Session](#session)).
 - `upstream`, `service`, `testing` and `debugging` are objects that contain
   the options. The name of a member of one of these objects is the long
   name of an option without the two dashes: `"max-turns": 8` in `upstream`
-  is `--max-turns 8` on the command line. Each option but `config`,
+  is `--max-turns 8` on the command line. The one exception is `name` in
+  `service`, which is `--service-name`. Each option but `config`,
   `help`, the session options and the seven options of the built-in tools
   is a member of one of the four objects.
   Section [Members](#members) lists the options of each object, and
@@ -487,15 +489,46 @@ can offer to the upstream.
 
 ## Session
 
-#### `participant`
+#### `agent`
 
-The top-level member `participant` (`--participant NAME`) is a stable
-writer identity, with 1 to 64 characters from `[A-Za-z0-9_-]`. It defaults
-to `upstream.tool-name`, normally `ask_ai`. Set it explicitly if the tool
-name does not fit this form. Collaborating instances use distinct
-participants and the same `tools.notes.directory`: the repository at that
-path is their session. Keep the participant unchanged across restarts to
-continue its notes and recover its jobs.
+The top-level member `agent` (`--agent NAME`) is the name of the agent of
+this `askai` in the session of [`notes`](#notes). The agent is the AI member
+of the session that answers the `ask_ai` calls of this `askai`. It is
+required with `notes`, and `askai` stops with exit status 2 and the message
+`--notes needs --agent NAME: the name of this askai's agent in the
+session.` without it. Several `askai` services can run one agent.
+
+The name is a member name: 1 to 64 characters from `[A-Za-z0-9_.@-]`. It
+does not start with `.` or `-`, contains no `..`, does not end with `.` or
+`.lock`, is not `@`, and is not a letter followed only by digits, such as
+`c7`. Persons and agents share the names of a session.
+
+As it starts, `askai` creates the session in the repository of `notes`:
+the repository, if it does not exist, the session record
+`refs/askai/session` with the ID, the name and the format of the session,
+and the member record `refs/askai/members/NAME` of its agent. A member
+record is a commit with the empty tree, whose message has the kind of the
+member and the logins of a person. The first service of a name creates its
+record, and a later service of an agent adopts it. If the record of the
+name belongs to a person, `askai` stops with a message such as `agent bro:
+the name bro belongs to the person with login uid 1000 in this session`. A
+session of a later format than `askai` writes stops `askai` too. The
+startup log lists the session, with its repository, ID, name, agent and
+service, and the members that the records name, each with its kind and
+logins.
+
+A person becomes a member on the first lookup of a login: a Unix user of a
+Unix socket, named like the user, or `uid-N` if the user has no such name;
+an identity, named like the identity; or `ASKAI_TOKEN` over TCP under
+`askai`'s own policy, which is the user who runs `askai`. An identity with
+`"agent": true` is an agent. An identity and a Unix user of one name are one
+person. A client over TCP without a token has no member name.
+
+The top-level member `participant` (`--participant`) stops `askai` with exit
+status 2 and the message `participant was replaced by agent and
+service.name. Set agent to the name of the agent in the session. Set
+service.name to the old participant value to keep the transcripts and the
+background jobs.`
 
 #### `transcripts`
 
@@ -504,22 +537,25 @@ bare Git repository for decoded upstream reasoning text. With
 notes configured, its default is the notes path followed by
 `.transcripts.git`; trailing slashes are removed first. Without notes,
 `upstream.background: true` defaults to
-`$XDG_STATE_HOME/askai/PARTICIPANT/transcripts.git`, or
-`$HOME/.local/state/askai/PARTICIPANT/transcripts.git` when `XDG_STATE_HOME`
+`$XDG_STATE_HOME/askai/SERVICE/transcripts.git`, or
+`$HOME/.local/state/askai/SERVICE/transcripts.git` when `XDG_STATE_HOME`
 is not an absolute path, as the XDG Base Directory specification says;
-`HOME` must then be absolute. Without notes or background mode,
+`HOME` must then be absolute. SERVICE is the name of the service
+([`service-name`](#service-name)). Without notes or background mode,
 transcript storage is enabled by an explicit `transcripts` path.
-Startup logs show the participant and resolved path. The transcript
+Startup logs show the service and the resolved path. The transcript
 repository must differ from the notes repository; the
 notes tool does not expose it. Missing transcript path components are
 created with mode 0700; symbolic links and `..` components are refused.
-Two live instances cannot write to the same transcript repository as the
-same participant. Both options need a restart.
+Two live instances cannot write to the same transcript repository with the
+same service name: the second stops with the message `the service name
+NAME is in use in this repository; give this askai another
+--service-name`. Both options need a restart.
 
 Thought deltas append to private plaintext files while reasoning is in
 progress. The writer syncs and commits a file when reasoning ends, rather
 than committing each event. Git contains only concatenated reasoning text
-on `reasoning/PARTICIPANT`; raw JSON, answer text and protocol envelopes
+on `reasoning/SERVICE`; raw JSON, answer text and protocol envelopes
 are not archived. Interrupted files remain available on disk.
 
 Background recovery keeps bounded private checkpoints alongside the
@@ -533,15 +569,17 @@ For two instances sharing one notes session:
 
 ```json
 {
-  "participant": "researcher",
+  "agent": "researcher",
   "transcripts": "/var/lib/askai/session-transcripts.git",
   "upstream": { "provider": "llama", "background": true },
   "tools": { "notes": { "directory": "/var/lib/askai/session-notes.git" } }
 }
 ```
 
-The second instance uses another `participant`, such as `reviewer`, and
-another listen address. It can use the same transcript repository.
+The second instance uses another `agent`, such as `reviewer`, and another
+listen address. It can use the same transcript repository. Two instances of
+one agent need different service names to share the transcript
+repository.
 
 #### Principals and their key
 
@@ -556,8 +594,8 @@ identity never share a principal. Notebook selectors show principals as
 
 The key is the file `askai-journal/principal.key` in the transcript
 repository, with mode 0600. `askai` makes it with random bytes at the
-first start, while it holds the lock of the repository. Every participant
-and every instance that uses the same transcript repository reads the same
+first start, while it holds the lock of the repository. Every service that
+uses the same transcript repository reads the same
 key, so a user has the same principal in all of them and across restarts.
 Instances that share a notes directory share the key only if they also
 share the transcript repository, which is the default. With notes, there
@@ -881,6 +919,20 @@ and `tools` allows the upstream that tool.
 ### MCP server and listeners, in `service`
 
 These options are members of the object `service`.
+
+#### `service-name`
+
+The member of the file is `service.name`. The value is a name of the same
+form as [`agent`](#agent). The default is the name of the agent, or without
+`agent` the name of the ask tool, `upstream.tool-name`. The name of the
+service names this `askai` in its transcript repository, the directory
+`askai-journal/SERVICE` and the branch `reasoning/SERVICE`, and it is the
+committer of the records of the session. Keep the name of a service the
+same across restarts to keep its transcripts and recover its background
+jobs. Set it to the old value of `participant` to keep the transcripts of
+an older `askai`. A name that `upstream.tool-name` gives must have the form
+of a member name, or `askai` stops with exit status 2 and asks to set
+`service-name`.
 
 #### `listen`
 
@@ -1530,7 +1582,8 @@ mode 0700 when it starts. The directory above it must exist, or `askai`
 stops with exit status 2. Clients get `notes` as their role allows. With
 `upstream-tools`, the turns of every `ask_ai` call get `notes`.
 
-The configured `participant`, caller identity and client/upstream side
+The configured [`agent`](#agent), as the PARTICIPANT part of the
+notebook selectors, the caller identity and the client/upstream side
 select the caller's writable notebook branch. Callers can read every
 notebook in the shared session, but can only write their own.
 `{"action":"notebooks"}` identifies the caller's writable notebook even
@@ -1791,7 +1844,8 @@ use:
 | `path` of the plugin in `plugins` | `"/usr/libexec/askai/godbolt.so"` | set the real path of `godbolt.so`, or remove the plugin and the names of its tools in `tools` and `roles` |
 | `repositories` in `tools.git` | `"/srv/git/proj"` | set repositories that exist |
 | `compile-commands` in `tools.code` | `"proj=/srv/build/proj/compile_commands.json"` | name a repository of `tools.git`, or give its absolute path, and its compile commands, or remove the object |
-| `participant` | `"local-model"` | choose a distinct stable name for each instance |
+| `agent` | `"bro"` | name the agent of the instance, which every member of the session sees |
+| `name` in `service` | `"gpu1"` | choose a distinct stable name for each instance of the agent |
 | `transcripts` | `"/var/lib/askai/transcripts.git"` | choose the separate transcript repository |
 | `directory` in `tools.notes` | `"/var/lib/askai/notes.git"` | set the shared session repository path whose parent exists |
 | `tokens` of the identities `ci` and `claude` | `"sha256:"` and 64 zeros, and `"sha256:"` and 64 ones | set the SHA-256 digest of a long random token; no token has the digest in the file |

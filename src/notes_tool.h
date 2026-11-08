@@ -18,6 +18,7 @@
 #include "mcp.h"
 
 struct hexid;
+struct member_registry;
 struct notes_tool_loop;
 struct plugin;
 
@@ -25,15 +26,25 @@ struct plugin;
  *  fills it before mcp_static_build() reads it.
  */
 struct notes_tool {
-	struct notes const *notes;         /**< nullptr without --notes */
-	size_t              files_inline;  /**< the most bytes of a file that a
-	                                        client hands askai inline */
-	size_t              actions;       /**< the number of leading entries of
-	                                        notes_action_names that are valid
-	                                        actions for the upstream. It is
-	                                        NOTES_ACTION_ATTACH, or all of
-	                                        them if the upstream supports
-	                                        file uploads (ai_upload()). */
+	struct notes const           *notes;         /**< nullptr without
+	                                                  --notes */
+	struct member_registry const *members;       /**< the registry of the
+	                                                  session, nullptr
+	                                                  without --notes */
+	size_t                        files_inline;  /**< the most bytes of a
+	                                                  file that a client
+	                                                  hands askai inline */
+	size_t                        actions;       /**< the number of leading
+	                                                  entries of
+	                                                  notes_action_names
+	                                                  that are valid
+	                                                  actions for the
+	                                                  upstream. It is
+	                                                  NOTES_ACTION_ATTACH,
+	                                                  or all of them if the
+	                                                  upstream supports
+	                                                  file uploads
+	                                                  (ai_upload()). */
 };
 
 /** The reason why notes_tool_loop_prompt() reads the notes. */

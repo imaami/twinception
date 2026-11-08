@@ -133,7 +133,7 @@ def check_tools(binary, up):
         up.reply = lambda request: (200, replies.pop(0))
         archive = os.path.join(directory, "transcripts.git")
         with Askai(binary, "-u", up.url(), "--git", repo, "--upstream-tools",
-                   "--transcripts", archive, "--participant", "tools") as ai:
+                   "--transcripts", archive, "--service-name", "tools") as ai:
             conn, response = begin(ai, progress=True)
             messages = finish(response)
             conn.close()
@@ -155,12 +155,12 @@ def check_tools(binary, up):
     print("chat stream: tool execution continues through distinct streamed turns: PASS")
 
 
-def reasoning_files(repo, participant):
-    return sorted(Path(repo, "askai-journal", participant, "reasoning").rglob("*.txt"))
+def reasoning_files(repo, service):
+    return sorted(Path(repo, "askai-journal", service, "reasoning").rglob("*.txt"))
 
 
-def reasoning_tree(repo, participant):
-    ref = f"refs/heads/reasoning/{participant}"
+def reasoning_tree(repo, service):
+    ref = f"refs/heads/reasoning/{service}"
     names = subprocess.run(["git", "--git-dir", repo, "ls-tree", "-r", "--name-only", ref],
                            capture_output=True, text=True)
     if names.returncode:
@@ -240,7 +240,7 @@ def check_journal(binary, up):
             repo = os.path.join(directory, "transcripts.git")
             try:
                 with Askai(binary, "--api", api, "-u", up.url(paths[protocol]), "-m", "m",
-                           "--transcripts", repo, "--participant", "archive") as ai:
+                           "--transcripts", repo, "--service-name", "archive") as ai:
                     conn, response = begin(ai)
                     seen = []
                     while "".join(d["text"] for d in deltas(seen, "reasoning")) != thought:
@@ -333,7 +333,7 @@ def check_journal_stops(binary, up):
             repo = os.path.join(directory, "transcripts.git")
             try:
                 with Askai(binary, "-u", up.url(path), "--api", API[protocol],
-                           "--transcripts", repo, "--participant", "stops") as ai:
+                           "--transcripts", repo, "--service-name", "stops") as ai:
                     conn, response = begin(ai)
                     seen = []
                     while "".join(d["text"] for d in deltas(seen, "reasoning")) != thought:
@@ -360,7 +360,7 @@ def check_journal_stops(binary, up):
 def check_reasoning_alias(binary, up):
     with tempfile.TemporaryDirectory() as directory:
         repo = os.path.join(directory, "transcripts.git")
-        with Askai(binary, "-u", up.url(), "--transcripts", repo, "--participant", "aliases") as ai:
+        with Askai(binary, "-u", up.url(), "--transcripts", repo, "--service-name", "aliases") as ai:
             expected = []
             for plain in (False, True):
                 up.plain = plain
@@ -395,7 +395,7 @@ def check_journal_growth(binary, up):
     up.reply = lambda request: (200, Stream(wire=sse_wire(events)))
     with tempfile.TemporaryDirectory() as directory:
         repo = os.path.join(directory, "transcripts.git")
-        with Askai(binary, "-u", up.url(), "--transcripts", repo, "--participant", "growth") as ai:
+        with Askai(binary, "-u", up.url(), "--transcripts", repo, "--service-name", "growth") as ai:
             assert text_of(ai.ask()) == "A" * 200_000
         assert list(reasoning_tree(repo, "growth").values()) == ["".join(pieces).encode()]
         run = subprocess.run(["git", "--git-dir", repo, "rev-list", "--count",
@@ -422,7 +422,7 @@ def check_journal_crash(binary, up):
     up.reply = lambda request: (200, gate)
     with tempfile.TemporaryDirectory() as directory:
         repo = os.path.join(directory, "transcripts.git")
-        args = ("-u", up.url(), "--transcripts", repo, "--participant", "partial")
+        args = ("-u", up.url(), "--transcripts", repo, "--service-name", "partial")
         ai = Askai(binary, *args)
         conn = None
         try:

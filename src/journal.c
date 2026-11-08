@@ -26,6 +26,7 @@
 #include "git_run.h"
 #include "journal.h"
 #include "loop.h"
+#include "member.h"
 #include "oid.h"
 #include "tally.h"
 #include "util.h"
@@ -78,7 +79,7 @@ struct journal_item {
 	struct hexid           id;
 };
 
-/* The prefix of the participant's reasoning branch. */
+/* The prefix of the reasoning branch of the service. */
 static char const REF[] = "refs/heads/reasoning/";
 
 /* The options of the git processes of the journal, which
@@ -304,8 +305,9 @@ journal_tip (struct journal *j)
 static int
 journal_unlock (struct journal *j)
 {
-	/* Our participant lock excludes both other writers and their surviving
-	 * Git children. Only this participant's loose-ref lock is ours. */
+	/* The writer lock of the service excludes both other writers and their
+	 * surviving Git children. Only the loose-ref lock of this service is
+	 * ours. */
 	char path[sizeof j->ref + sizeof ".lock"];
 	int n = snprintf(path, sizeof path, "%s.lock", j->ref);
 	if (n < 0 || n >= (int)sizeof path)
@@ -1240,7 +1242,7 @@ journal_secret (int         dir,
 static int
 journal_setup (struct journal *j,
                char const     *path,
-               char const     *participant,
+               char const     *service,
                char           *why,
                size_t          why_len)
 {
@@ -1277,13 +1279,17 @@ journal_setup (struct journal *j,
 	if (!e)
 		e = journal_private(state);
 	if (!e)
-		e = journal_directory(state, participant, &j->state_fd);
+		e = journal_directory(state, service, &j->state_fd);
 	if (!e)
 		e = journal_private(j->state_fd);
 	if (!e)
 		e = util_private_open(j->state_fd, "writer.lock", O_RDWR | O_CREAT, &j->lock_fd);
-	if (!e && flock(j->lock_fd, LOCK_EX | LOCK_NB))
+	if (!e && flock(j->lock_fd, LOCK_EX | LOCK_NB)) {
 		e = errno;
+		if (e == EWOULDBLOCK)
+			util_format(why, why_len, "the service name %s is in use in this repository; "
+			            "give this askai another --service-name", service);
+	}
 	if (!e)
 		e = journal_directory(j->state_fd, "jobs", &j->jobs_fd);
 	if (!e)
@@ -1293,10 +1299,10 @@ journal_setup (struct journal *j,
 		if (e == ENOENT)
 			e = 0;
 	}
-	/* Every participant of the repository reads the same principal.key.
-	 * Each participant has its own owner.seed. */
+	/* Every service of the repository reads the same principal.key. Each
+	 * service reads its own owner.seed. */
 	char shown[sizeof "askai-journal/" + UTIL_WORD_MAX];
-	(void)util_format(shown, sizeof shown, "askai-journal/%s", participant);
+	(void)util_format(shown, sizeof shown, "askai-journal/%s", service);
 	if (!e)
 		e = journal_secret(state, "askai-journal", "principal.key", j->key,
 		                   sizeof j->key, why, why_len);
@@ -1317,7 +1323,7 @@ journal_setup (struct journal *j,
 
 struct journal *
 journal_create (char const *path,
-                char const *participant,
+                char const *service,
                 char       *why,
                 size_t      why_len,
                 int        *e)
@@ -1330,8 +1336,8 @@ journal_create (char const *path,
 	/* journal_setup() writes a message of its own for some errors. For
 	 * the others, the message is the text of the error number. */
 	*why = '\0';
-	if (!util_word_len(participant, UTIL_WORD_MAX)) {
-		*e = util_refuse(why, why_len, "invalid transcript participant");
+	if (!service || !member_name_valid(cstr_view(service))) {
+		*e = util_refuse(why, why_len, "invalid service name");
 		return nullptr;
 	}
 	struct journal *j = calloc(1, sizeof *j);
@@ -1348,8 +1354,8 @@ journal_create (char const *path,
 		j->files[k].fd = -1;
 	list_init(&j->items);
 	j->digest = EVP_MD_CTX_new();
-	(void)util_format(j->ref, sizeof j->ref, "%s%s", REF, participant);
-	*e = j->digest ? journal_setup(j, path, participant, why, why_len) : ENOMEM;
+	(void)util_format(j->ref, sizeof j->ref, "%s%s", REF, service);
+	*e = j->digest ? journal_setup(j, path, service, why, why_len) : ENOMEM;
 	if (!*e) {
 		/* Creation precedes brainstem_run(), which routes asynchronous
 		 * signals through signalfd. Inherit its worker mask at creation,

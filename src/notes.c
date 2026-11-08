@@ -20,9 +20,9 @@
 #define BRANCH "refs/heads/notes/"
 
 struct notes {
-	struct store *store;        /* the shared session repository */
-	char         *participant;
-	size_t        named;        /* the bytes of participant */
+	struct store *store;  /* the shared session repository */
+	char         *agent;  /* the PARTICIPANT of the refs of this askai */
+	size_t        named;  /* the bytes of agent */
 };
 
 /* The stages of a historical read or diff, in their order. */
@@ -44,19 +44,18 @@ enum notes_kind {
 
 struct notes *
 notes_create (char const *path,
-              char const *participant,
+              char const *agent,
               char       *why,
               size_t      len,
               int        *e)
 {
-	size_t const named = util_word_len(participant, UTIL_WORD_MAX);
-	if (!named) {
-		*e = util_refuse(why, len, "the participant must have 1 to %d ASCII letters, "
-		                 "digits, underscores or hyphens", UTIL_WORD_MAX);
+	if (!agent || !member_name_valid(cstr_view(agent))) {
+		*e = util_refuse(why, len, "the agent needs a member name");
 		return nullptr;
 	}
+	size_t const named = strlen(agent);
 	struct notes *notes = malloc(sizeof *notes);
-	char *copy = strdup(participant);
+	char *copy = strdup(agent);
 	if (!notes || !copy) {
 		free(notes);
 		free(copy);
@@ -64,7 +63,7 @@ notes_create (char const *path,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*notes = (struct notes){ .participant = copy, .named = named };
+	*notes = (struct notes){ .agent = copy, .named = named };
 	if (!(notes->store = store_create(path, why, len, e)))
 		notes_destroy(&notes);
 	return notes;
@@ -78,8 +77,8 @@ notes_destroy (struct notes **p_notes)
 	struct notes *notes = *p_notes;
 	*p_notes = nullptr;
 	store_destroy(&notes->store);
-	free(notes->participant);
-	notes->participant = nullptr;
+	free(notes->agent);
+	notes->agent = nullptr;
 	free(notes);
 }
 
@@ -92,7 +91,7 @@ notes_store (struct notes const *notes)
 char const *
 notes_writer (struct notes const *notes)
 {
-	return notes->participant;
+	return notes->agent;
 }
 
 void
@@ -118,7 +117,7 @@ notes_repo (struct notes const *notes,
             enum notes_side     side,
             char                repo[NOTES_REPO])
 {
-	notes_book((struct cstr_view){ notes->participant, notes->named }, principal, side, repo);
+	notes_book((struct cstr_view){ notes->agent, notes->named }, principal, side, repo);
 }
 
 int

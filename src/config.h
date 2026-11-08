@@ -107,8 +107,12 @@ struct config {
 	char const           *tls_key;      /**< its key's */
 	char const           *notes;        /**< the notes repository's path
 	                                         (src/notes.h), or nullptr */
-	char const           *participant;  /**< stable writer identity in the
-	                                         shared notes and transcript repos */
+	char const           *agent;        /**< the name of the agent of askai
+	                                         in the session of notes
+	                                         (src/member.h), or nullptr */
+	char const           *service;      /**< the name of askai in the
+	                                         transcripts and in the commits
+	                                         of the session */
 	char const           *transcripts;  /**< durable transcripts repository's
 	                                         path, or nullptr */
 	size_t                n_headers;

@@ -27,6 +27,7 @@ struct roster;
 struct manual;
 struct mcp;
 struct mcp_static;
+struct member_registry;
 struct metrics_mcp;
 struct metrics_src;
 struct notes;
@@ -115,8 +116,9 @@ mcp_lent (void const *cfg,
  * contains the tools of the plugins that askai loaded. @p manual is the
  * service of the man tool (src/manual.h), @p tasks runs the calls of the
  * test aid test_task (src/task.h), @p git is the service of the git tool
- * (src/git.h), and @p notes contains the notes of the notes tool
- * (src/notes_tool.h). With CFG_UPSTREAM_TOOLS, an ask call runs turns,
+ * (src/git.h), @p notes contains the notes of the notes tool
+ * (src/notes_tool.h), and @p members is the registry of the session of the
+ * notes (src/member.h). With CFG_UPSTREAM_TOOLS, an ask call runs turns,
  * each an upstream call, and the tool calls of each turn, until an answer
  * calls no tool.
  *
@@ -134,16 +136,17 @@ mcp_lent (void const *cfg,
  * error number in @p *e.
  */
 extern struct mcp_static *
-mcp_static_create (struct config const *cfg,
-                   struct manual       *manual,
-                   struct task_pool    *tasks,
-                   struct git          *git,
-                   struct notes        *notes,
-                   struct ledger       *ledger,
-                   struct roster       *roster,
-                   struct web          *web,
-                   struct journal      *journal,
-                   int                 *e);
+mcp_static_create (struct config const          *cfg,
+                   struct manual                *manual,
+                   struct task_pool             *tasks,
+                   struct git                   *git,
+                   struct notes                 *notes,
+                   struct member_registry const *members,
+                   struct ledger                *ledger,
+                   struct roster                *roster,
+                   struct web                   *web,
+                   struct journal               *journal,
+                   int                          *e);
 
 extern void
 mcp_static_destroy (struct mcp_static **p_static);

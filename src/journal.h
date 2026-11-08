@@ -7,8 +7,10 @@
  * Completed checkpoints expire when the private recovery cache reaches its
  * 1024-job or 256 MiB limit. A terminal-record reserve adds at most 16 MiB
  * plus framing; atomic replacement uses at most 64 MiB of staging space.
- * Active and legacy-migrated jobs are retained. Each participant has an
- * exclusive writer lock. No disk or Git operation runs on an event loop.
+ * Active and legacy-migrated jobs are retained. Each service, an askai named
+ * by --service-name, writes with an exclusive writer lock to its directory
+ * askai-journal/SERVICE and its branch reasoning/SERVICE. No disk or Git
+ * operation runs on an event loop.
  */
 #ifndef ASKAI_SRC_JOURNAL_H_
 #define ASKAI_SRC_JOURNAL_H_
@@ -70,20 +72,21 @@ journal_load_cb (struct loop           *loop,
                  int                    error,
                  struct journal_record *records);
 
-/** Opens or creates a bare repository and starts its writer. Called at
- * startup, off the loops. Participant is 1..64 ASCII letters, digits,
- * underscores or hyphens. Missing path components are made with 0700;
- * symbolic links and parent-directory components are refused. On failure
- * the function returns nullptr, stores the error number in @p *e, and
- * writes a message of at most @p why_len bytes to @p why. A problem with
- * askai-journal/principal.key or with the owner.seed of the participant
- * is named in the message, such as "askai-journal/principal.key: the file
- * has 31 bytes, not 32". The error number is EINVAL if @p why is nullptr
- * or @p why_len is 0.
+/** Opens or creates a bare repository and starts its writer for the
+ * service @p service. Called at startup, off the loops. @p service is a
+ * name that member_name_valid() accepts (src/member.h). Missing path
+ * components are made with 0700; symbolic links and parent-directory
+ * components are refused. On failure the function returns nullptr, stores
+ * the error number in @p *e, and writes a message of at most @p why_len
+ * bytes to @p why. A problem with askai-journal/principal.key or with the
+ * owner.seed of the service is named in the message, such as
+ * "askai-journal/principal.key: the file has 31 bytes, not 32". The error
+ * number is EWOULDBLOCK if another askai with the same service name uses
+ * the repository, and EINVAL if @p why is nullptr or @p why_len is 0.
  */
 extern struct journal *
 journal_create (char const *path,
-                char const *participant,
+                char const *service,
                 char       *why,
                 size_t      why_len,
                 int        *e);
@@ -181,8 +184,8 @@ journal_seed (struct journal const *journal);
  * Copies the principal key of the repository of @p journal to @p key. The
  * key is the file askai-journal/principal.key of the repository: 32 random
  * bytes with mode 0600, which journal_create() makes if the file is empty.
- * Every participant and every daemon that uses the repository reads the
- * same key. Returns 0, or EINVAL if an argument is nullptr.
+ * Every service that uses the repository reads the same key. Returns 0,
+ * or EINVAL if an argument is nullptr.
  */
 extern int
 journal_key (struct journal const *journal,

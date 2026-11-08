@@ -29,6 +29,7 @@
 #include "loop.h"
 #include "manual.h"
 #include "mcp.h"
+#include "member.h"
 #include "metrics.h"
 #include "notes.h"
 #include "policy.h"
@@ -170,20 +171,21 @@ struct askai_client {
  * until the process exits (askai_serve()).
  */
 struct askai_shared {
-	struct askai_home    home;
-	struct metrics_src   metrics;
-	struct manual       *manual;
-	struct mcp_static   *st;
-	struct httpd_hub    *hub;
-	struct git          *git;
-	struct notes        *notes;
-	struct journal      *journal;
-	struct ledger       *ledger;
-	struct roster       *roster;
-	struct web          *web;
-	struct task_pool    *tasks;
-	struct askai_client *clients;
-	struct metrics_loop *loops;
+	struct askai_home       home;
+	struct metrics_src      metrics;
+	struct manual          *manual;
+	struct mcp_static      *st;
+	struct httpd_hub       *hub;
+	struct git             *git;
+	struct notes           *notes;
+	struct member_registry *members;  /* the session of the notes */
+	struct journal         *journal;
+	struct ledger          *ledger;
+	struct roster          *roster;
+	struct web             *web;
+	struct task_pool       *tasks;
+	struct askai_client    *clients;
+	struct metrics_loop    *loops;
 };
 
 /* Free the relief's kept objects, as much a step as its share of release
@@ -456,6 +458,7 @@ askai_home_open (void        *ctx,
 	(void)loop;
 	struct askai_home *app = ctx;
 	config_log(app->cfg);
+	member_registry_report(container_of(app, struct askai_shared, home)->members);
 	httpd_home_open(app->keep.door);
 }
 
@@ -693,7 +696,7 @@ askai_shared_make (struct askai_shared *s,
 	if (!(s->ledger = ledger_create(&e)) || !(s->roster = roster_create(&e)) ||
 	    !(s->web = web_create(&e)))
 		return e;
-	if (!(s->st = mcp_static_create(cfg, s->manual, s->tasks, s->git, s->notes,
+	if (!(s->st = mcp_static_create(cfg, s->manual, s->tasks, s->git, s->notes, s->members,
 	                                s->ledger, s->roster, s->web, s->journal, &e)))
 		return e;
 	s->hub = httpd_hub_create(n, &e);
@@ -743,7 +746,7 @@ askai_shared_init (struct askai_shared *s,
 	int e;
 	if (cfg->notes) {
 		char why[256];
-		if (!(s->notes = notes_create(cfg->notes, cfg->participant, why, sizeof why, &e))) {
+		if (!(s->notes = notes_create(cfg->notes, cfg->agent, why, sizeof why, &e))) {
 			fprintf(stderr, "--notes: %s: %s\n", cfg->notes, why);
 			return e;
 		}
@@ -755,9 +758,19 @@ askai_shared_init (struct askai_shared *s,
 			fprintf(stderr, "notes and transcripts require separate, nonnested repositories\n");
 			return e;
 		}
-		if (!(s->journal = journal_create(cfg->transcripts, cfg->participant,
+		if (!(s->journal = journal_create(cfg->transcripts, cfg->service,
 		                                  why, sizeof why, &e))) {
 			fprintf(stderr, "--transcripts: %s: %s\n", cfg->transcripts, why);
+			return e;
+		}
+	}
+	/* The session and the record of the agent exist before any loop
+	 * starts, so that every member sees the agent. */
+	if (cfg->notes) {
+		char why[512];
+		if (!(s->members = member_registry_create(notes_store(s->notes), cfg->agent,
+		                                          cfg->service, why, sizeof why, &e))) {
+			fprintf(stderr, "--notes: %s: %s\n", cfg->notes, why);
 			return e;
 		}
 	}
@@ -787,6 +800,7 @@ askai_shared_fini (struct askai_shared *s)
 	task_pool_destroy(&s->tasks);
 	httpd_hub_destroy(&s->hub);
 	git_destroy(&s->git);
+	member_registry_destroy(&s->members);
 	notes_destroy(&s->notes);
 	mcp_static_destroy(&s->st);
 	ledger_destroy(&s->ledger);

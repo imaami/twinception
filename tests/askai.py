@@ -757,11 +757,16 @@ def total(values, name, **labels):
     return found
 
 
+# The options whose member in the object of their group has another name.
+GROUP_MEMBERS = {"service-name": "name"}
+
 # The object of the configuration file that each option is in, as
 # doc/askai.example.json has it.
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "doc",
                        "askai.example.json")) as _f:
-    GROUPS = {name: group for group, members in json.load(_f).items()
+    GROUPS = {next((option for option, member in GROUP_MEMBERS.items() if member == name),
+                   name): group
+              for group, members in json.load(_f).items()
               if group in ("upstream", "service", "testing", "debugging")
               for name in members}
 
@@ -771,7 +776,7 @@ TOOL_MEMBERS = {"man": ("man", "enabled"), "git": ("git", "repositories"),
                 "git-timeout": ("git", "timeout"), "code": ("code", "compile-commands"),
                 "code-unconfined": ("code", "unconfined"), "notes": ("notes", "directory"),
                 "client-jobs": ("jobs", "clients")}
-ROOT_MEMBERS = {"participant", "transcripts"}
+ROOT_MEMBERS = {"agent", "transcripts"}
 
 
 def note_view(data):
@@ -849,7 +854,7 @@ def grouped(members):
     file = {}
     for name, value in members.items():
         if name in GROUPS:
-            file.setdefault(GROUPS[name], {})[name] = value
+            file.setdefault(GROUPS[name], {})[GROUP_MEMBERS.get(name, name)] = value
         elif name in TOOL_MEMBERS:
             tool, member = TOOL_MEMBERS[name]
             file.setdefault("tools", {}).setdefault(tool, {})[member] = value
@@ -1098,7 +1103,8 @@ def check_modern(binary, up):
     # below the default --max-body lowers it, and askai starts.
     most = ((1 << 20) - (64 << 10)) // 4 * 3
     with tempfile.TemporaryDirectory() as notes, \
-            Askai(binary, "-u", up.url(), "--max-body", "1M", "--notes", notes) as ai:
+            Askai(binary, "-u", up.url(), "--max-body", "1M", "--agent", "ask_ai", "--notes",
+                  notes) as ai:
         result = ai.modern("server/discover")[2]["result"]
         assert result["capabilities"]["extensions"][
             "io.modelcontextprotocol/files"] == {"maxInlineBytes": most}, result
@@ -2367,7 +2373,7 @@ def check_recovery(binary, up):
             with tempfile.TemporaryDirectory() as d:
                 repo = f"{d}/transcripts.git"
                 args = ("-u", up.url(endpoint) + "?tenant=test", "--api", API[fmt],
-                        "--background", "--slots", "2", "--participant", "recovery",
+                        "--background", "--slots", "2", "--service-name", "recovery",
                         "--transcripts", repo, "--header", "X-Recovery-Test: retained",
                         "-k", "RECOVERY_API_KEY")
                 if fmt == "openai":
@@ -2545,7 +2551,7 @@ def check_recovery_tools(binary, up):
                 up.reply, up.retrieve = reply, retrieve
                 args = ("-u", up.url("/v1/responses"), "--api", "responses", "--background",
                         "--upstream-tools", "--git", repo, "--slots", "2", "--context", "8000",
-                        "--participant", "tool-recovery", "--transcripts", archive) + \
+                        "--service-name", "tool-recovery", "--transcripts", archive) + \
                        (("--client-jobs",) if agenda else ())
                 env = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
                 ai = Askai(binary, *args, env=env)
@@ -2666,7 +2672,7 @@ def check_recovery_notes(binary, up):
             up.reply, up.retrieve = reply, retrieve
             args = ("-u", up.url("/v1/responses"), "--api", "responses", "--background",
                     "--upstream-tools", "--git", repo, "--notes", notes, "--context", "8000",
-                    "--participant", "note-recovery", "--transcripts", archive)
+                    "--agent", "note-recovery", "--transcripts", archive)
             env = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
             ai = Askai(binary, *args, env=env)
             try:
@@ -2781,7 +2787,7 @@ def check_recovery_compact(binary, up):
             up.reply, up.retrieve = reply, retrieve
             args = ("-u", up.url("/v1/responses"), "--api", "responses", "--background",
                     "--upstream-tools", "--git", repo, "--context", "8000",
-                    "--participant", "compact-recovery", "--transcripts", archive)
+                    "--agent", "compact-recovery", "--transcripts", archive)
             ai = Askai(binary, *args, "--notes", f"{d}/notes")
             try:
                 result = ai.ask("Write a note, then compact.")
@@ -2903,7 +2909,7 @@ def check_recovery_review(binary, up):
                 return 200, responses_turn(second, response_id="review_second")
             up.reply, up.retrieve = reply, retrieve
             args = ("-u", up.url("/v1/responses"), "--api", "responses", "--background",
-                    "--upstream-tools", "--git", repo, "--participant", "review-recovery",
+                    "--upstream-tools", "--git", repo, "--agent", "review-recovery",
                     "--transcripts", archive)
             env = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
             ai = Askai(binary, *args, env=env)
@@ -3203,7 +3209,7 @@ def check_durable_cancel(binary, up):
                 up.delete = lambda request: (cancels.append(request) or 200, {})
                 up.retrieve = lambda request: (resumes.append(request) or 404, {})
                 args = ("-u", up.url(endpoint), "--api", API[fmt], "--background", "--slots", "2",
-                        "--participant", "cancel", "--transcripts", f"{d}/transcripts.git")
+                        "--service-name", "cancel", "--transcripts", f"{d}/transcripts.git")
                 if fmt == "openai":
                     args += ("-p", "llama")
                 with Askai(binary, *args) as ai:
@@ -3272,7 +3278,7 @@ def check_withdrawn_end(binary, up):
                     offset += 120 + size
                 return found
 
-            with Askai(binary, "-u", up.url(), "--background", "--participant", "withdrawn",
+            with Askai(binary, "-u", up.url(), "--background", "--service-name", "withdrawn",
                        "--transcripts", f"{d}/transcripts.git") as ai:
                 _, headers, _ = ai.rpc("initialize", {"protocolVersion": LEGACY})
                 session = {"Mcp-Session-Id": headers["mcp-session-id"],
@@ -3320,7 +3326,7 @@ def check_archive_failure(binary, up):
                         f'esac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
             os.chmod(f"{d}/bin/git", 0o755)
             with Askai(binary, "-u", up.url(), "--background", "--slots", "2",
-                       "--participant", "archive-failure", "--transcripts", f"{d}/transcripts.git",
+                       "--service-name", "archive-failure", "--transcripts", f"{d}/transcripts.git",
                        env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as ai:
                 with open(flag, "w"):
                     pass
@@ -3384,7 +3390,7 @@ def check_journal_repair(binary, up):
         with tempfile.TemporaryDirectory() as d:
             repo = f"{d}/transcripts.git"
             ref = "refs/heads/reasoning/integrity"
-            args = ("-u", up.url(), "--background", "--slots", "2", "--participant", "integrity",
+            args = ("-u", up.url(), "--background", "--slots", "2", "--service-name", "integrity",
                     "--transcripts", repo)
             def completed(ai, jid):
                 result = ask_result(ai, {"job": jid})
@@ -3428,7 +3434,7 @@ def check_journal_repair(binary, up):
 
 
 def check_shared_transcripts(binary, up):
-    """Two participants archive thoughts on independent branches of the same
+    """Two services archive thoughts on independent branches of the same
     default repository, with requests and answers excluded from Git."""
     hold = up.reply
     def reply(request):
@@ -3444,14 +3450,15 @@ def check_shared_transcripts(binary, up):
             notes = f"{d}/session"
             repo = notes + ".transcripts.git"
             nested = notes + "/logs.git"
-            run = subprocess.run([binary, "-l", "127.0.0.1:0", "-u", up.url(), "--notes", notes,
+            run = subprocess.run([binary, "-l", "127.0.0.1:0", "-u", up.url(), "--agent", "bro",
+                                  "--notes", notes,
                                   "--transcripts", nested], stdin=subprocess.DEVNULL,
                                  capture_output=True, text=True, timeout=5)
             assert run.returncode != 0 and "nonnested" in run.stderr, (run.returncode, run.stderr)
             assert not os.path.exists(nested), "rejected transcript path was initialized"
             args = ("-u", up.url(), "--background", "--slots", "2", "--notes", notes)
-            with Askai(binary, *args, "--participant", "alice") as alice, \
-                    Askai(binary, *args, "--participant", "bob") as bob:
+            with Askai(binary, *args, "--agent", "alice") as alice, \
+                    Askai(binary, *args, "--agent", "bob") as bob:
                 barrier = threading.Barrier(2)
                 results, errors = {}, []
                 def ask(name, ai):
@@ -3496,14 +3503,35 @@ def check_shared_transcripts(binary, up):
                            check=True, capture_output=True)
             # As the XDG Base Directory specification says, a relative
             # XDG_STATE_HOME is ignored, and the default is in HOME.
-            with Askai(binary, "-u", up.url(), "--background", "--participant", "home",
+            with Askai(binary, "-u", up.url(), "--background", "--service-name", "home",
                        env={"XDG_STATE_HOME": "state", "HOME": d}):
                 assert os.path.isdir(f"{d}/.local/state/askai/home/transcripts.git")
+            # The service name is service.name, else the agent, else the
+            # tool name. Two services of one name cannot share a transcript
+            # repository.
+            path = f"{d}/askai.json"
+            with open(path, "w") as f:
+                json.dump(grouped({"url": up.url(), "transcripts": repo,
+                                   "service-name": "gpu.1@x"}), f)
+            os.chmod(path, 0o600)
+            with Askai(binary, "-c", path) as ai:
+                assert "service: gpu.1@x" in [line.rstrip("\n") for line in ai.log], ai.log
+                assert os.path.isdir(f"{repo}/askai-journal/gpu.1@x")
+                run = subprocess.run([binary, "-l", "127.0.0.1:0", "-u", up.url(),
+                                      "--transcripts", repo, "--agent", "gpu.1@x"],
+                                     stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                     timeout=5)
+                assert run.returncode == 1 and run.stderr == f"--transcripts: {repo}: the " \
+                    "service name gpu.1@x is in use in this repository; give this askai " \
+                    "another --service-name\n", run
+            for args, name in ((("--agent", "cuh"), "cuh"), (("--tool-name", "ask_x"), "ask_x")):
+                with Askai(binary, "-u", up.url(), "--transcripts", repo, *args):
+                    assert os.path.isdir(f"{repo}/askai-journal/{name}"), name
     finally:
         up.reply = hold
-    print("shared transcripts: concurrent participants, separate branches, committed "
-          "reasoning only, intact shared Git objects and the default path with a "
-          "relative XDG_STATE_HOME: PASS")
+    print("shared transcripts: concurrent services, separate branches, committed "
+          "reasoning only, intact shared Git objects, the default path with a "
+          "relative XDG_STATE_HOME, and the service name: PASS")
 
 
 def check_http(binary, up):
@@ -5098,6 +5126,29 @@ def check_configuration(binary, up, godbolt):
           message="--tool-name: askai has another tool named wait")
     fails("-u", up.url(), "--client-jobs", "--tool-name", "timer",
           message="--tool-name: askai has another tool named timer")
+    # The session of --notes needs the name of its agent, and the option
+    # participant is refused with the options that replace it. An agent and
+    # a service have member names.
+    retired = ("participant was replaced by agent and service.name. Set agent to the name of "
+               "the agent in the session. Set service.name to the old participant value to "
+               "keep the transcripts and the background jobs.")
+    fails("--participant", "x", message=retired)
+    fails("--parti", "x", message=retired)
+    with tempfile.TemporaryDirectory() as d:
+        fails("-u", up.url(), "--notes", f"{d}/notes", message="--notes needs --agent NAME: "
+              "the name of this askai's agent in the session.")
+        fails("-u", up.url(), "--transcripts", f"{d}/t.git", "--tool-name", "c7",
+              message="--service-name: a name is 1 to 64 characters from [A-Za-z0-9_.@-], "
+              "does not start with . or -, contains no .., does not end with . or .lock, is not "
+              "@ and is not a letter followed only by digits; set it if --tool-name is not "
+              "such a name: c7")
+        assert not os.listdir(d), os.listdir(d)
+    for name in ("c7", ".x", "-x", "a..b", "x.", "x.lock", "@", "a/b", "a#5", "a b", "x" * 65):
+        for option in ("--agent", "--service-name"):
+            fails(option, name, message=f"{option}: a name is 1 to 64 characters from "
+                  f"[A-Za-z0-9_.@-], does not start with . or -, contains no .., does not end "
+                  f"with . or .lock, is not @ and is not a letter followed only by digits: "
+                  f"{name}")
     fails("--max-body", "1X", message="invalid --max-body")
     fails("--max-head", "65536", message="invalid --max-head")
     fails("--max-depth", "0", message="invalid --max-depth")
@@ -5280,6 +5331,21 @@ def check_configuration(binary, up, godbolt):
                 ('{%s, "config": "x"}' % url, "unknown member config"),
                 ('{%s, "service": {"help": true}}' % url, "service: unknown member help"),
                 ('{%s, "loops": 1}' % url, f"{path}: loops must be in service"),
+                ('{%s, "participant": "x"}' % url, f"{path}: {retired}"),
+                ('{%s, "name": "x"}' % url, f"{path}: name must be service.name"),
+                ('{%s, "service-name": "x"}' % url,
+                 f"{path}: service-name must be service.name"),
+                ('{%s, "service": {"service-name": "x"}}' % url,
+                 f"{path}: service-name must be service.name"),
+                ('{%s, "upstream": {"name": "x"}}' % url, f"{path}: name must be service.name"),
+                ('{%s, "service": {"name": "c7"}}' % url,
+                 f"{path}: --service-name: a name is 1 to 64 characters"),
+                ('{%s, "agent": "a.lock"}' % url, f"{path}: --agent: a name is 1 to 64"),
+                ('{%s, "agent": "a", "tools": {"notes": {"directory": "%s/notes"}}, '
+                 '"roles": {"r": {"tools": ["ask_ai"]}}, "identities": {"x..y": '
+                 '{"role": "r", "tokens": ["sha256:%s"]}}}' % (url, d, "2" * 64),
+                 f"{path}: identity x..y: with notes, the name of an identity is a member "
+                 "name, and a name is 1 to 64 characters"),
                 ('{"upstream": {"url": "%s", "verbose": true}}' % up.url(),
                  f"{path}: verbose must be in debugging"),
                 ('{"url": "%s"}' % up.url(), f"{path}: url must be in upstream"),
@@ -5379,11 +5445,11 @@ def check_allow(binary, up):
 
     with tempfile.TemporaryDirectory() as d:
         path = f"{d}/askai.json"
-        on = {"url": up.url(), "upstream-tools": True, "notes": f"{d}/notes",
+        on = {"url": up.url(), "upstream-tools": True, "agent": "ask_ai", "notes": f"{d}/notes",
               "man": True, "client-jobs": True}
         # A member tools that is no object has no objects of the tools, so
         # the command line turns them on.
-        cli = ["--notes", f"{d}/notes", "--man", "--client-jobs"]
+        cli = ["--agent", "ask_ai", "--notes", f"{d}/notes", "--man", "--client-jobs"]
         jobs = ["background", "jobs", "wait", "timer"]
         for tools, clients, turns in (
                 (True, ["ask_ai", "man", "notes", *jobs],
@@ -5801,7 +5867,7 @@ def check_logs(binary, up):
             assert ai.listed("policy: built in, without ASKAI_TOKEN") == [
                 "loopback        all tools and metrics", "remote          all tools",
                 "unix            all tools and metrics"], told(ai)
-            assert not any(line.startswith(("git repositories", "notes directory"))
+            assert not any(line.startswith(("git repositories", "session", "service"))
                            for line in told(ai)), told(ai)
         # With --slots and no tools for the upstream, askai asks no /props,
         # and the context is unknown.
@@ -5810,7 +5876,7 @@ def check_logs(binary, up):
 
         # Without --verbose, a failed call is still logged, with its error
         # but without its arguments.
-        with Askai(binary, "-u", up.url(), "--notes", notes) as ai:
+        with Askai(binary, "-u", up.url(), "--agent", "ask_ai", "--notes", notes) as ai:
             ai.rpc("tools/call", {"name": "notes", "arguments": {
                 "action": "read", "file": "SECRETFILE", "thread": "x"}})
             line = ai.wait_log(r"^tool call notes from anonymous failed ")
@@ -5833,7 +5899,7 @@ def check_logs(binary, up):
         # call of a client with ASKAI_TOKEN names that identity.
         url = up.url().replace("http://", "http://user:PASSWORD@") + "?key=SECRET"
         with Askai(binary, "-u", url, "-m", "M", "--context", "8000", "--tool-name",
-                   "bro", "--man", "--test-task", "--git", repo, "--notes", notes,
+                   "bro", "--man", "--test-task", "--git", repo, "--agent", "bro", "--notes", notes,
                    "--upstream-tools", "--verbose", env={"ASKAI_TOKEN": "tok-31415"}) as ai:
             assert ai.listed("upstream:") == [
                 "provider  none", "API       chat", "model     M", "background off",
@@ -5844,7 +5910,13 @@ def check_logs(binary, up):
             ] + ["code        off (--code REPO=FILE)", "notes       on"] + [
                 f"{name:<10}  off (--client-jobs)"
                 for name in ("background", "jobs", "wait", "timer")], told(ai)
-            has(ai, f"notes directory: {notes}")
+            session = ai.listed("session:")
+            assert session[0] == f"repository  {notes}" and \
+                re.fullmatch(r"id          [0-9a-f]{32}", session[1]) and session[2:] == [
+                    "name        notes", "agent       bro", "service     bro"], told(ai)
+            # The earlier askai of the session ran the agent ask_ai.
+            assert ai.listed("session members:") == ["ask_ai  agent", "bro     agent"], told(ai)
+            assert not any(line.startswith("service:") for line in told(ai)), told(ai)
             assert ai.listed("git repositories:") == [f"proj  {repo}"], told(ai)
             assert ai.listed("policy: built in, with ASKAI_TOKEN") == [
                 "clients with the token  all tools and metrics",
@@ -5965,7 +6037,8 @@ def check_logs(binary, up):
         # A tool that a role lends to the upstream is listed, and notes,
         # which every ask call lends, needs no role.
         write(roles={"user": {"tools": ["ask_ai"], "upstream": ["man"]}},
-              anonymous={"loopback": "user"}, notes=notes, **{"upstream-tools": True})
+              anonymous={"loopback": "user"}, notes=notes, agent="ask_ai",
+              **{"upstream-tools": True})
         with Askai(binary, "-c", path) as ai:
             assert ai.listed("role user:") == [
                 "tools           ask_ai", "upstream tools  man"] + [
@@ -6001,7 +6074,8 @@ def check_logs(binary, up):
         # size of the text. An ask call logs its start, its turns, the calls
         # of its turns, the notices about its context, its compactions, and
         # its end with its arguments cut to 200 bytes.
-        with Askai(binary, "-u", up.url(), "--verbose", "--upstream-tools", "--notes",
+        with Askai(binary, "-u", up.url(), "--verbose", "--upstream-tools", "--agent", "ask_ai",
+                   "--notes",
                    notes, "--context", "8000") as ai:
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
                 "action": "add", "file": "a.md", "text": "NOTETEXT" * 10}})
@@ -6276,9 +6350,10 @@ def check_unix(binary, up):
             assert status == 200 and not body["result"].get("isError"), reply
             return re.search(r"^Self \(writable\): (\S+)$", text_of(body["result"]),
                              re.M).group(1)
-        with Askai(binary, "-u", up.url(), "--notes", notes, "-l", f"unix:{sock}") as ai:
+        with Askai(binary, "-u", up.url(), "--agent", "ask_ai", "--notes", notes, "-l",
+                   f"unix:{sock}") as ai:
             mine = own(uds_rpc(sock, "tools/call", notebooks))
-        with Askai(binary, "-u", up.url(), "--man", "--notes", notes, "-l",
+        with Askai(binary, "-u", up.url(), "--man", "--agent", "ask_ai", "--notes", notes, "-l",
                    f"unix:{sock}", "--verbose", env={"ASKAI_TOKEN": "s3cret"}) as ai:
             assert names(uds_rpc(sock)) == 401
             assert names(uds_rpc(sock, headers=bearer("wrong"))) == 401
@@ -6544,7 +6619,7 @@ def check_principals(binary, up):
         key = f"{notes}.transcripts.git/askai-journal/principal.key"
 
         def start(participant, *args, directory=notes, env=None):
-            return Askai(binary, "-u", up.url(), "--notes", directory, "--participant",
+            return Askai(binary, "-u", up.url(), "--notes", directory, "--agent",
                          participant, "-l", f"unix:{sock}", *args, env=env)
 
         with start("alice"):
@@ -6579,7 +6654,7 @@ def check_principals(binary, up):
                                "identities": {"i": {"role": "a", "tokens": [
                                    "sha256:" + hashlib.sha256(b"t").hexdigest()]}}}), f)
         os.chmod(path, 0o600)
-        with Askai(binary, "-c", path, "--notes", notes, "--participant", "alice") as ai:
+        with Askai(binary, "-c", path, "--notes", notes, "--agent", "alice") as ai:
             status, _, body = ai.rpc("tools/call", notebooks, headers=bearer("t"))
             identity = principal((status, body))
             assert identity >> 62 == 1 and identity != token, hex(identity)
@@ -6608,7 +6683,7 @@ def check_principals(binary, up):
             with open(name, "wb") as f:
                 f.write(data)
             os.chmod(name, mode)
-            run = subprocess.run([binary, "-u", up.url(), "--notes", notes, "--participant",
+            run = subprocess.run([binary, "-u", up.url(), "--notes", notes, "--agent",
                                   "alice", "-l", "127.0.0.1:0"],
                                  stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                  timeout=10)
@@ -11036,7 +11111,7 @@ def check_notes(binary, up):
         notes = f"{d}/notes"
         path = f"{d}/askai.json"
         with open(path, "w") as f:
-            json.dump(grouped({"url": up.url(), "notes": notes, "participant": "writers",
+            json.dump(grouped({"url": up.url(), "notes": notes, "agent": "writers",
                                "roles": {"writer": {"tools": ["notes"]},
                                          "asker": {"tools": ["ask_ai"]}},
                                "identities": {
@@ -11061,9 +11136,14 @@ def check_notes(binary, up):
                 listed = ai.rpc("tools/list", headers=auth(token))[2]["result"]["tools"]
                 assert [t["name"] for t in listed] == tools, listed
                 if token == "alice-1":
+                    # The session is the ID of the session record.
+                    session = subprocess.run(
+                        ["git", "--git-dir", notes, "log", "-1",
+                         "--format=%(trailers:key=Session,valueonly)", "refs/askai/session"],
+                        check=True, capture_output=True, text=True).stdout.strip()
+                    assert re.fullmatch(r"[0-9a-f]{32}", session), session
                     assert listed[0]["_meta"]["askai"] == {
-                        "session": hashlib.sha256(os.path.realpath(notes).encode()).hexdigest(),
-                        "participant": "writers", "notebooks": True}, listed
+                        "session": session, "participant": "writers", "notebooks": True}, listed
                 else:
                     assert all("askai" not in t.get("_meta", {}) for t in listed), listed
             assert call({"action": "list"}, "carol-1") == "Tool not available: notes"
@@ -11086,11 +11166,17 @@ def check_notes(binary, up):
                 tip of @p ref, with the commit message @p message."""
                 return re.fullmatch(saved(message, git("rev-parse", ref).decode().strip()),
                                     said)
-            assert not os.path.exists(f"{notes}/HEAD"), notebooks
+            # askai made the repository, the session record and the record
+            # of its agent as it started, and no notebook yet.
+            assert git("for-each-ref", "--format=%(refname)").decode().split() == [
+                "refs/askai/members/writers", "refs/askai/session"], notebooks
+            assert git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B",
+                       "refs/askai/members/writers").decode() == \
+                "askai <askai>|writers <askai>|Add the agent writers\n\nKind: agent\n\n"
             for action in ("replace", "append", "delete"):
                 assert call({"action": action, "file": "missing.md", "text": "x"}) == \
                     "!" + NO_NOTE, action
-            assert not os.path.exists(f"{notes}/HEAD")
+            assert not git("for-each-ref", "--format=%(refname)", "refs/heads/")
             said = call({"action": "add", "file": "//plan.md", "text": "step 1"})
             assert wrote(said, 'Add "plan.md" (6 bytes)'), said
             # The first commit of a notebook has no parent.
@@ -11536,9 +11622,24 @@ def check_shared_notes(binary, up):
                 return subprocess.run(["git", "-C", repo, *args], check=True,
                                       capture_output=True, text=True).stdout
             with Askai(binary, "-u", up.url(), "--notes", repo,
-                       "--participant", "alice") as alice, \
+                       "--agent", "alice") as alice, \
                     Askai(binary, "-u", up.url(), "--notes", repo,
-                          "--participant", "bob") as bob:
+                          "--agent", "bob") as bob:
+                # The services joined one session, and each agent has a
+                # member record.
+                assert git("for-each-ref", "--format=%(refname)", "refs/askai/").split() == [
+                    "refs/askai/members/alice", "refs/askai/members/bob",
+                    "refs/askai/session"]
+                assert git("log", "-1", "--format=%B", "refs/askai/session").startswith(
+                    "Create the session session\n\nSession: ")
+                assert "\nName: session\nFormat: 1\n" in git("log", "-1", "--format=%B",
+                                                              "refs/askai/session")
+                sessions = {next(t for t in ai.rpc("tools/list")[2]["result"]["tools"]
+                                 if t["name"] == "notes")["_meta"]["askai"]["session"]
+                            for ai in (alice, bob)}
+                assert len(sessions) == 1 and \
+                    f"Session: {next(iter(sessions))}\n" in git(
+                        "log", "-1", "--format=%B", "refs/askai/session"), sessions
                 said = {}
                 def add(name, ai):
                     said[name] = call(ai, action="add", file="plan.md", text=name)
@@ -11630,14 +11731,28 @@ def check_shared_notes(binary, up):
                 silent = git("rev-parse", "refs/heads/notes/alice/anonymous/client").strip()
                 history = call(bob, action="history", notebook="alice/anonymous/client")
                 assert history.endswith(f"  manual-two.md  (+1 -1)  commit {silent}\n"), history
-            # Restarting does not mint another notebook or lose its notes.
+            # Restarting does not mint another notebook or lose its notes,
+            # and the agent adopts its record.
+            records = git("for-each-ref", "refs/askai/")
             with Askai(binary, "-u", up.url(), "--notes", repo,
-                       "--participant", "alice") as ai:
+                       "--agent", "alice") as ai:
                 assert call(ai, action="read", file="plan.md") == "alice"
                 assert call(ai, action="read", file="plan.md",
                             notebook="bob/anonymous/client") == "bob"
-    print("shared notes: two instances, bare and working repositories, branch "
-          "isolation, discovery, cross-participant copy, packed refs and worktrees: PASS")
+            assert git("for-each-ref", "refs/askai/") == records
+            # An agent cannot take the name of a person.
+            subprocess.run(["git", "-C", repo, "fast-import", "--quiet"], check=True,
+                           input="commit refs/askai/members/carol\ncommitter old <askai> 0 +0000\n"
+                           "data <<EOF\nAdd the person carol\n\nKind: person\n"
+                           "Login: uid 4343\nEOF\n", text=True)
+            run = subprocess.run([binary, "-l", "127.0.0.1:0", "-u", up.url(), "--notes", repo,
+                                  "--agent", "carol"], stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, timeout=10)
+            assert run.returncode == 1 and run.stderr == f"--notes: {repo}: agent carol: the " \
+                "name carol belongs to the person with login uid 4343 in this session\n", run
+    print("shared notes: two instances, bare and working repositories, one session with "
+          "a member record for each agent, branch isolation, discovery, cross-participant "
+          "copy, packed refs and worktrees: PASS")
 
 
 def check_notes_history(binary, up):
@@ -11681,10 +11796,10 @@ def check_notes_history(binary, up):
                 return re.fullmatch(saved(message, tip(ref)), said)
 
             with Askai(binary, "-u", up.url(), "--notes", repo,
-                       "--participant", "alice", "--upstream-tools",
+                       "--agent", "alice", "--upstream-tools",
                        env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as alice, \
                     Askai(binary, "-u", up.url(), "--notes", repo,
-                          "--participant", "bob") as bob:
+                          "--agent", "bob") as bob:
                 said = call(alice, action="add", file="plan.md", text="old plan\n")
                 assert wrote(said, 'Add "plan.md" (9 bytes)'), said
                 first = tip()
@@ -11940,7 +12055,7 @@ def check_notes_cancel(binary, up):
         notes, path = f"{d}/notes", f"{d}/askai.json"
         digest = "sha256:" + hashlib.sha256(b"alice-1").hexdigest()
         with open(path, "w") as f:
-            json.dump(grouped({"url": up.url(), "notes": notes, "participant": "p",
+            json.dump(grouped({"url": up.url(), "notes": notes, "agent": "p",
                                "roles": {"writer": {"tools": ["notes"]}},
                                "identities": {"alice": {"role": "writer",
                                                         "tokens": [digest]}}}), f)
@@ -11984,9 +12099,9 @@ def check_notes_cancel(binary, up):
 
 
 def check_notes_texts(binary, up):
-    """Compare the notes results that the other checks do not compare. A
-    list before the first note is not a failed call. A client's offset
-    does not apply to that result, and a turn's offset does. The
+    """Compare the notes results that the other checks do not compare. The
+    session exists as askai starts, so a list or a search before the first
+    note says that the notebook has no notes yet, and fails. The
     notebooks action lists only the caller's own notebook before the
     first note, and says that no other notebook has notes while none has.
     The check also compares the texts for an empty notebook, an unusable
@@ -11997,7 +12112,7 @@ def check_notes_texts(binary, up):
     held = up.reply
     script = []
     up.reply = lambda request: script.pop(0)(request)
-    none = "The session contains no notes yet."
+    none = "The notebook contains no notes yet."
     client, upstream = "p/anonymous/client", "p/anonymous/upstream"
     try:
         with tempfile.TemporaryDirectory() as d:
@@ -12007,7 +12122,7 @@ def check_notes_texts(binary, up):
                 return subprocess.run(["git", "--git-dir", notes, *args], check=True,
                                       capture_output=True, text=True).stdout.strip()
 
-            with Askai(binary, "-u", up.url(), "--notes", notes, "--participant", "p",
+            with Askai(binary, "-u", up.url(), "--notes", notes, "--agent", "p",
                        "--upstream-tools") as ai:
                 def call(**arguments):
                     status, _, body = ai.rpc("tools/call", {"name": "notes",
@@ -12034,15 +12149,14 @@ def check_notes_texts(binary, up):
                     return "Session notebooks (use a selector as notebook):\n" \
                         f"Self (writable): {own}\nNo other notebook contains notes yet.\n"
 
-                assert call(action="list", offset=100) == none
-                assert call(action="search", pattern="x") == none
+                assert call(action="list", offset=100) == "!" + none
+                assert call(action="search", pattern="x") == "!" + none
                 assert call(action="notebooks") == alone(client)
                 said, trace = results([{"action": "list"}, {"action": "list", "offset": 100},
                                        {"action": "notebooks"}])
-                assert said == [none, "[The offset is past the end of the output. The "
-                                f"output is {len(none)} bytes.]", alone(upstream)], said
+                assert said == [none, none, alone(upstream)], said
                 assert trace == "The other AI made 3 tool calls in 2 turns:\n" \
-                    f"- notes list: {len(none)} bytes\n- notes list: {len(none)} bytes\n" \
+                    f"- notes list: failed\n- notes list: failed\n" \
                     f"- notes notebooks: {len(alone(upstream))} bytes\n", trace
                 # The definitions: the description, what each action does with
                 # its arguments, and what each argument is.
@@ -12614,7 +12728,7 @@ def check_attach(binary, up):
         for api, (path, key, tools, schema, calls, answer, file, split) in apis.items():
             with Askai(binary, "--api", api, "-u", up.url(path), "-m", "m",
                        "-k", "TEST_KEY", "--header", "X-Gate: g", "--upstream-tools",
-                       "--notes", notes, "--participant", api, env={"TEST_KEY": "secret"}) as ai:
+                       "--notes", notes, "--agent", api, env={"TEST_KEY": "secret"}) as ai:
                 assert ai.listed("upstream:")[-1] == \
                     f"files     {up.url('/upload/v1beta/files')}", ai.log
 
@@ -12757,7 +12871,7 @@ def check_attach(binary, up):
         "http://", "http://user:PASSWORD@")
     with tempfile.TemporaryDirectory() as notes, \
             Askai(binary, "--api", "generate", "-u", url, "--context", "1000",
-                  "--upstream-tools", "--notes", notes, "--verbose") as ai:
+                  "--upstream-tools", "--agent", "ask_ai", "--notes", notes, "--verbose") as ai:
         status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
             "action": "add", "file": "big.c", "text": "x" * 8000}})
         assert re.fullmatch(saved('Add "big.c" (8000 bytes)'), text_of(body["result"])), body
@@ -12809,7 +12923,7 @@ def check_attach(binary, up):
     with tempfile.TemporaryDirectory() as notes:
         with Askai(binary, "--api", "generate", "-u",
                    up.url("/gw/v1beta/models/m:generateContent?alt=sse&key=QK"),
-                   "--upstream-tools", "--notes", notes) as ai:
+                   "--upstream-tools", "--agent", "ask_ai", "--notes", notes) as ai:
             assert ai.listed("upstream:")[-1] == \
                 f"files     {up.url('/gw/upload/v1beta/files')}", ai.log
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
@@ -12826,7 +12940,7 @@ def check_attach(binary, up):
                 up.uploads[-1]
         with Askai(binary, "--api", "generate", "-u",
                    up.url("/v1/models/m:generateContent"), "--upstream-tools",
-                   "--notes", notes) as ai:
+                   "--agent", "ask_ai", "--notes", notes) as ai:
             assert ai.listed("upstream:")[-1] == \
                 "files     off (the URL has no /v1beta/)", ai.log
             script[:] = [lambda r: (200, generate_turn([[{"text": "A"}]]))]
@@ -12844,7 +12958,7 @@ def check_attach(binary, up):
                            ("anthropic", "/v1/messages")):
         with tempfile.TemporaryDirectory() as notes, \
                 Askai(binary, "--api", API[protocol], "-u", up.url(path), "-m", "m",
-                      "--upstream-tools", "--notes", notes) as ai:
+                      "--upstream-tools", "--agent", "ask_ai", "--notes", notes) as ai:
             script[:] = [lambda r, p=protocol: (200, ANSWERS[p])]
             ai.ask("Q")
             tools = json.dumps(up.last()["body"]["tools"])
@@ -12910,7 +13024,7 @@ def check_turns(binary, up):
         os.mkdir(f"{d}/old/anonymous")
         for path, message in ((f"{d}/file", "not a directory"),
                               (f"{d}/old", "nonempty directory is not a repository")):
-            proc = run("--upstream-tools", "--notes", path)
+            proc = run("--upstream-tools", "--agent", "ask_ai", "--notes", path)
             assert proc.returncode and message in proc.stderr, (path, proc)
         # A time in a list of notes.
         when = r"\d{4}-\d\d-\d\d \d\d:\d\d UTC"
@@ -12928,7 +13042,7 @@ def check_turns(binary, up):
             return script.pop(0)(request) if script else (200, turn_stream(text="A"))
         up.reply = reply
         args = ("-u", up.url(), "--upstream-tools", "--git", repo,
-                "--participant", "turns", "--notes", notes)
+                "--agent", "turns", "--notes", notes)
         selector = "turns/anonymous/upstream"
         branch = f"refs/heads/notes/{selector}"
         provenance = f"\n\n[askai: notebook {selector}]"
@@ -14542,7 +14656,8 @@ def check_review(binary, up):
         raced = ("The findings of the ask call were not saved. Another ask call of the "
                  "thread saved a review record first.\n")
         up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
-        with Askai(binary, "-u", up.url(), "--upstream-tools", "--git", repo, "--notes",
+        with Askai(binary, "-u", up.url(), "--upstream-tools", "--git", repo, "--agent", "ask_ai",
+                   "--notes",
                    session, "--slots", "2") as ai:
             [tool] = [t for t in ai.rpc("tools/list")[2]["result"]["tools"]
                       if t["name"] == "ask_ai"]

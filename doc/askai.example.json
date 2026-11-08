@@ -1,5 +1,5 @@
 {
-  "participant": "local-model",
+  "agent": "bro",
   "transcripts": "/var/lib/askai/transcripts.git",
   "upstream": {
     "provider": "llama",
@@ -28,6 +28,7 @@
     "tool-description": "Ask the local model a question or give it a task, and get its answer."
   },
   "service": {
+    "name": "gpu1",
     "listen": [
       "127.0.0.1:8090",
       "tls:8443",

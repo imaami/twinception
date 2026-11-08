@@ -6,7 +6,6 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <json-c/json.h>
-#include <openssl/sha.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -22,6 +21,7 @@
 #include "log.h"
 #include "loop.h"
 #include "mcp.h"
+#include "member.h"
 #include "notes.h"
 #include "notes_tool.h"
 #include "notice.h"
@@ -1873,7 +1873,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		           side == NOTES_CLIENT ? NOTES_UPSTREAM : NOTES_CLIENT, call->notebook);
 	} else if (!notebook || cstr_view_equal(selected, CSTR_VIEW("own"))) {
 		/* The call reads the caller's own notebook, call->repo. */
-	} else if (util_word(selected.data, selected.len, UTIL_WORD_MAX)) {
+	} else if (member_name_valid(selected)) {
 		notes_book(selected, mcp_slot_principal(slot), side, call->notebook);
 	} else if (notes_select(selected, call->notebook)) {
 		mcp_slot_tell(slot, CSTR_VIEW("The notebook argument must be own, a participant's "
@@ -2059,24 +2059,15 @@ notes_tool_definition (void const *service)
 {
 	struct notes_tool const *tool = service;
 	struct json_object *def = notes_tool_schema(tool, NOTES_CLIENT);
-	/* The canonical common directory of the repository names the session,
-	 * also for attached worktrees. The definition has a hash of the path
-	 * instead of the path. The hash stays the same when askai or the client
-	 * restarts. */
-	char const *directory = store_directory(notes_store(tool->notes));
-	unsigned char digest[SHA256_DIGEST_LENGTH];
-	if (!SHA256((unsigned char const *)directory, strlen(directory), digest)) {
-		json_object_put(def);
-		return nullptr;
-	}
-	char session[2 * sizeof digest];
-	util_hex(session, digest, sizeof digest);
-	/* Clients use the notebooks action to find the participants that have
-	 * notes. A new writer has no branch yet, so the definition names the
+	/* The session record names the session with its ID, which stays the
+	 * same when askai or the client restarts. Clients use the notebooks
+	 * action to find the participants with notes. The branch of a new
+	 * writer does not exist yet, so the definition names the
 	 * participant. */
+	struct cstr_view const session = member_registry_session(tool->members);
 	return jb_set_or_free(def, "_meta", jb_object(
 		"askai", jb_object(
-			"session", json_object_new_string_len(session, sizeof session),
+			"session", json_object_new_string_len(session.data, (int)session.len),
 			"participant", json_object_new_string(notes_writer(tool->notes)),
 			"notebooks", json_object_new_boolean(1),
 			nullptr),
