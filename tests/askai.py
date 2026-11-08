@@ -8609,9 +8609,9 @@ def check_man(binary, up):
             assert runs("slow") == (1, 1), runs("slow")
 
             # Arguments a model gets back to correct.
-            name = "The name argument must name a manual page, such as printf or " \
-                "git-grep: 1 to 128 letters, digits and _.:+@- characters, the first not -."
-            section = "The section argument must name a section"
+            name = "The name argument must be 1 to 128 letters, digits and _.:+@- " \
+                "characters, such as printf or git-grep. The first character must not be -."
+            section = "The section argument must be 1 to 16 letters and digits"
             for arguments, problem in (({"name": "-l"}, name), ({"name": "a/b"}, name),
                                        ({"name": ""}, name), ({"name": "x" * 129}, name),
                                        ({"name": "a\u0000b"}, name), ({"section": "1"}, name),
@@ -8640,7 +8640,7 @@ def check_man(binary, up):
                                     ({"name": "fail"}, "man exited with status 3."),
                                     ({"name": "broken"}, "man exited with status 3."),
                                     ({"name": "nowhere"},
-                                     "man named no file for the page.")):
+                                     "man -w printed no file path for the page.")):
                 for _ in range(2):
                     result = man_call(ai, **arguments)
                     assert result.get("isError") and text_of(result) == text, result
@@ -8667,7 +8667,7 @@ def check_man(binary, up):
                 result = man_call(ai, name="several")
                 assert result.get("isError") and text_of(result) == \
                     "Pages named several are in more than one section: several(1), " \
-                    "several(2), several(3posix). Give section.", result
+                    "several(2), several(3posix). Give the section argument.", result
             assert text_of(man_call(ai, name="several", section="2")) == "page several.2\n"
             assert text_of(man_call(ai, name="suffixed")) == "page suffixed.1\n"
             assert lines("finds")[-4:] == ["-w -a -- several"] * 2 + \
@@ -8702,18 +8702,18 @@ def check_man(binary, up):
             for heading in ("Synopsis", "HEADED", "SYN"):
                 result = man_call(ai, name="headed", heading=heading)
                 assert result.get("isError") and text_of(result) == \
-                    f"No line of the page begins with {heading} {AFTER} Its headings: " \
-                    "NAME, SYNOPSIS, ERRORS, Sub heading, OPTIONS.", result
+                    f"No line of the page begins with {heading} {AFTER} Headings of the " \
+                    "page: NAME, SYNOPSIS, ERRORS, Sub heading, OPTIONS.", result
             for heading in ("", " NAME", "a\nb", "x" * 129, 1):
                 result = man_call(ai, name="headed", heading=heading)
                 assert result.get("isError") and text_of(result) == \
-                    "The heading argument must be the first words of a line of the " \
-                    "page: 1 to 128 bytes without a line feed, the first not a space.", \
+                    "The heading argument must be 1 to 128 bytes without a line feed, " \
+                    "such as SYNOPSIS. The first byte must not be a space.", \
                     (heading, result)
             assert runs("headed") == (1, 1), runs("headed")
 
             # A page is cut at 4 MiB, and made UTF-8 text.
-            note = "\n\n[The page goes on past the 4 MiB shown.]\n"
+            note = "\n\n[The page is cut at 4 MiB.]\n"
             for _ in range(2):
                 result = man_call(ai, name="big")
                 assert not result.get("isError") and text_of(result) == \
@@ -8725,15 +8725,15 @@ def check_man(binary, up):
             # headings." after the last whole heading that fits.
             result = man_call(ai, name="endless", heading="z")
             assert result.get("isError") and text_of(result) == \
-                f"No line of the page begins with z {AFTER} Its headings: " + \
+                f"No line of the page begins with z {AFTER} Headings of the page: " + \
                 ", ".join(["y"] * 674) + ", and more headings.", result
             assert runs("big") == (1, 1), runs("big")
             # A heading's scan of a page of one 4 MiB line takes steps. The
             # note after the cut is a line of the page.
             result = man_call(ai, name="big", heading="x")
             assert result.get("isError") and text_of(result) == \
-                f"No line of the page begins with x {AFTER} Its headings: " \
-                "[The page goes on past the 4 MiB shown.].", result
+                f"No line of the page begins with x {AFTER} Headings of the page: " \
+                "[The page is cut at 4 MiB.].", result
             # A part that runs into the cut ends with the note.
             assert text_of(man_call(ai, name="huge", heading="HUGE")) == \
                 "HUGE\n" + "  line\n" * 599184 + "  l" + note
@@ -8869,7 +8869,7 @@ def check_man(binary, up):
         # The longest page of many a system comes through whole.
         if not subprocess.run(["man", "-w", "1", "gcc"], capture_output=True).returncode:
             text = text_of(man_call(ai, name="gcc", section="1"))
-            assert "SYNOPSIS" in text and not text.endswith("shown.]\n"), len(text)
+            assert "SYNOPSIS" in text and not text.endswith("at 4 MiB.]\n"), len(text)
     print("man: the real man's pages, UTF-8 text 80 columns wide, kept: PASS")
 
 

@@ -113,7 +113,7 @@ struct manual_call {
 
 /* What ends a page cut short. */
 static struct cstr_view const manual_cut =
-	CSTR_VIEW_INIT("\n\n[The page goes on past the 4 MiB shown.]\n");
+	CSTR_VIEW_INIT("\n\n[The page is cut at 4 MiB.]\n");
 static_assert(TOOL_TEXT_MAX == 4U << 20, "the note says 4 MiB");
 
 /* The reason of a fetch that ran out of memory. */
@@ -576,7 +576,7 @@ manual_fetch_found (struct child *c)
 	struct cstr_view path = paths;
 	if (!cstr_view_cut(&path, '\n', &path) || !cstr_view_starts(path, CSTR_VIEW("/")) ||
 	    memchr(path.data, '\0', path.len)) {
-		manual_fetch_fail(f, CSTR_VIEW("man named no file for the page."));
+		manual_fetch_fail(f, CSTR_VIEW("man -w printed no file path for the page."));
 		return;
 	}
 	loop_work(f->ml->loop, LOOP_PARSE, paths.len);
@@ -595,7 +595,7 @@ manual_fetch_found (struct child *c)
 	}
 	if (digits & (digits - 1)) {
 		manual_list_end(several.len, several.data);
-		(void)util_text_printf(&several, " Give section.");
+		(void)util_text_printf(&several, " Give the section argument.");
 		manual_fetch_fail(f, util_text_view(&several));
 		return;
 	}
@@ -615,7 +615,7 @@ manual_fetch_found (struct child *c)
 	}
 	if (stat(file->key, &f->st)) {
 		struct cstr_view const text = util_format_view(buf, sizeof buf, "Cannot read the "
-		                                               "page's file: %s.", strerror(errno));
+		                                               "page file: %s.", strerror(errno));
 		manual_page_put(page);
 		manual_fetch_fail(f, text);
 		return;
@@ -784,8 +784,9 @@ manual_step (struct mcp_slot *slot)
 	} else if (call->heads.len) {
 		manual_list_end(call->heads.len, call->heads.data);
 		mcp_slot_tellf(slot, TOOL_FAILED, "No line of the page begins with %.*s "
-		               "followed by a space, a comma, =, [ or the line's end. Its "
-		               "headings:%s", (int)heading.len, heading.data, call->heads.data);
+		               "followed by a space, a comma, =, [ or the line's end. "
+		               "Headings of the page:%s", (int)heading.len, heading.data,
+		               call->heads.data);
 	} else {
 		mcp_slot_tellf(slot, TOOL_FAILED, "No line of the page begins with %.*s "
 		               "followed by a space, a comma, =, [ or the line's end.",
@@ -1013,16 +1014,16 @@ manual_start (struct mcp_slot    *slot,
 	}
 	struct cstr_view const problem =
 		!page.data || *page.data == '-'
-		? CSTR_VIEW("The name argument must name a manual page, such as printf or "
-		            "git-grep: 1 to 128 letters, digits and _.:+@- characters, the "
-		            "first not -.")
+		? CSTR_VIEW("The name argument must be 1 to 128 letters, digits and _.:+@- "
+		            "characters, such as printf or git-grep. The first character "
+		            "must not be -.")
 		: section && !sect.data
-		? CSTR_VIEW("The section argument must name a section, such as 1, 3 or 3p: "
-		            "1 to 16 letters and digits.")
+		? CSTR_VIEW("The section argument must be 1 to 16 letters and digits, such "
+		            "as 1, 3 or 3p.")
 		: heading && !(head.len && head.len <= MANUAL_HEADING && *head.data != ' ' &&
 		               !memchr(head.data, '\n', head.len))
-		? CSTR_VIEW("The heading argument must be the first words of a line of the "
-		            "page: 1 to 128 bytes without a line feed, the first not a space.")
+		? CSTR_VIEW("The heading argument must be 1 to 128 bytes without a line "
+		            "feed, such as SYNOPSIS. The first byte must not be a space.")
 		: (struct cstr_view){};
 	static_assert(MANUAL_NAME == 128 && MANUAL_SECTION == 16 && MANUAL_HEADING == 128,
 	              "the problems say");
