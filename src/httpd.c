@@ -1444,14 +1444,14 @@ httpd_conn_admit (struct httpd_conn *conn,
 	return httpd_conn_hold(conn, req->body) ? 503 : 0;
 }
 
-/* A chunked body as it is decoded in place: the @p len bytes at @p raw are
- * read from @p rd on, and their data moved down to @p wr.
+/* The state of a chunked body that httpd_conn_dechunk() decodes in place.
+ * The function reads the bytes of in from offset rd, and moves the data of
+ * the chunks down to offset wr.
  */
 struct httpd_dechunk {
-	unsigned char *raw;
-	size_t         len;
-	size_t         rd;
-	size_t         wr;
+	struct span in;
+	size_t      rd;
+	size_t      wr;
 };
 
 /* Take the line @p d reads next, which must end in CRLF within @p max bytes,
@@ -1465,8 +1465,8 @@ httpd_dechunk_line (struct httpd_dechunk *d,
                     unsigned              too_long,
                     struct span          *line)
 {
-	unsigned char *start = d->raw + d->rd;
-	size_t avail = d->len - d->rd;
+	unsigned char *start = d->in.ptr + d->rd;
+	size_t avail = d->in.len - d->rd;
 	unsigned char *nl = memchr(start, '\n', avail < max ? avail : max);
 	*line = (struct span){};
 	if (!nl)
@@ -1527,8 +1527,8 @@ static void
 httpd_req_chunk_data (struct httpd_req     *req,
                       struct httpd_dechunk *d)
 {
-	size_t n = d->len - d->rd < req->chunk ? d->len - d->rd : req->chunk;
-	memmove(d->raw + d->wr, d->raw + d->rd, n);
+	size_t n = d->in.len - d->rd < req->chunk ? d->in.len - d->rd : req->chunk;
+	memmove(d->in.ptr + d->wr, d->in.ptr + d->rd, n);
 	d->wr += n;
 	d->rd += n;
 	req->chunk -= n;
@@ -1541,8 +1541,8 @@ static unsigned
 httpd_req_chunk_end (struct httpd_req     *req,
                      struct httpd_dechunk *d)
 {
-	unsigned char const *crlf = d->raw + d->rd;
-	if (d->len - d->rd < 2)
+	unsigned char const *crlf = d->in.ptr + d->rd;
+	if (d->in.len - d->rd < 2)
 		return 0;
 	d->rd += 2;
 	httpd_req_chunking(req, CHUNK_SIZE);
@@ -1582,25 +1582,29 @@ httpd_conn_trailer (struct httpd_conn    *conn,
 }
 
 /*
- * Decode chunks (RFC 9112 7.1) from the @p len bytes at @p raw that follow
- * the head, moving their data down to @p raw, and count the data in the
- * budgets. Sets @p *used to the bytes taken and @p *out to the data bytes
- * now at @p raw, and REQ_BODY_IN once the last chunk and the trailer
- * section are in; returns 0 or an HTTP error. A chunk's data is taken as
- * it comes, and a line or the CRLF after the data once it is all in. Lines
- * end in CRLF only, as a lenient reading of framing is what request
- * smuggling exploits. Chunk extensions and trailer fields are ignored.
+ * Decode the chunks (RFC 9112 7.1) in @p body, the bytes after the head.
+ * Move the data of the chunks down to the start of @p body, and count the
+ * data in the budgets with httpd_conn_hold(). Set REQ_BODY_IN in
+ * conn->req.flags when the last chunk and the trailer section are
+ * complete. Return 0 or an HTTP error status. On success, set @p *used to
+ * the number of bytes read from @p body, and @p *out to the number of data
+ * bytes at the start of @p body.
+ *
+ * The data of a chunk is moved as soon as it is in @p body. A line, or the
+ * CRLF after the data of a chunk, is read only when all of its bytes are
+ * in @p body. Lines must end in CRLF, because request smuggling exploits a
+ * lenient parse of the framing. Chunk extensions and trailer fields are
+ * ignored.
  */
 static unsigned
 httpd_conn_dechunk (struct httpd_conn *conn,
-                    unsigned char     *raw,
-                    size_t             len,
+                    struct span        body,
                     size_t            *used,
                     size_t            *out)
 {
 	struct httpd_req *req = &conn->req;
-	struct httpd_dechunk d = { raw, len, 0, 0 };
-	for (size_t was = SIZE_MAX; d.rd != was && d.rd < len && !(req->flags & REQ_BODY_IN); ) {
+	struct httpd_dechunk d = { .in = body };
+	for (size_t was = SIZE_MAX; d.rd != was && d.rd < body.len && !(req->flags & REQ_BODY_IN); ) {
 		was = d.rd;
 		unsigned status;
 		switch (req->flags & CHUNK_STATE) {
@@ -1644,32 +1648,31 @@ httpd_conn_body (struct httpd_conn *conn)
 	struct loop *loop = conn->srv->loop;
 	struct httpd_req *req = &conn->req;
 	struct span in = buf_peek(&conn->in);
-	unsigned char *raw = in.ptr + req->head;
 	size_t avail = in.len - req->head;
 	size_t room = loop_room(loop, LOOP_BODY);
-	size_t len = avail < room ? avail : room;
+	struct span body = { in.ptr + req->head, avail < room ? avail : room };
 	size_t used;
 	size_t out;
 	if (req->flags & REQ_CHUNKED) {
-		unsigned status = httpd_conn_dechunk(conn, raw, len, &used, &out);
+		unsigned status = httpd_conn_dechunk(conn, body, &used, &out);
 		if (status) {
 			httpd_conn_fail(conn, status);
 			return NEXT_END;
 		}
 	} else {
 		size_t left = req->body - req->got;
-		used = out = len < left ? len : left;
+		used = out = body.len < left ? body.len : left;
 		req->flags |= out == left ? REQ_BODY_IN : 0;
 	}
 	loop_work(loop, LOOP_BODY, used);
 	req->got += out;
 	bool last = req->flags & REQ_BODY_IN;
 	if (req->flags & REQ_OPEN && (out || last))
-		conn->srv->app->on_body(&conn->stream, (struct span){ raw, out }, last);
+		conn->srv->app->on_body(&conn->stream, (struct span){ body.ptr, out }, last);
 	buf_cut(&conn->in, req->head, used);
 	if (req->flags & (REQ_BODY_IN | REQ_DONE))
 		return NEXT_MORE;
-	if (len < avail)
+	if (body.len < avail)
 		return NEXT_YIELD;
 	if (req->flags & REQ_EXPECT) {
 		(void)httpd_conn_put(conn, &CSTR_VIEW("HTTP/1.1 100 Continue\r\n\r\n"), 1);
