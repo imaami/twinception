@@ -173,7 +173,8 @@ test_plugin_wait_fired (struct loop       *loop,
                         struct loop_timer *timer)
 {
 	(void)loop;
-	struct test_plugin_wait *w = (struct test_plugin_wait *)timer;
+	struct test_plugin_wait *w = timer ? container_of(timer, struct test_plugin_wait, timer)
+	                                   : nullptr;
 	if (!w || !w->slot)
 		return;
 	if (w->fail)
@@ -256,10 +257,13 @@ test_plugin_state_drop (struct mcp_slot *slot)
 	struct test_plugin_wait *w = own ? *own : nullptr;
 	if (!w)
 		return;
-	/* If the timer cannot be stopped, it can still fire, so the function
-	 * keeps the memory that the timer is in. */
-	if (loop_timer_stop(mcp_slot_loop(slot), &w->timer))
+	/* If the timer cannot be stopped, it can still fire, so w must not be
+	 * freed. The timer function then returns at once, because w->slot is
+	 * nullptr. */
+	if (loop_timer_stop(mcp_slot_loop(slot), &w->timer)) {
+		w->slot = nullptr;
 		return;
+	}
 	free(w);
 	*own = nullptr;
 	struct cstr_view const dropped = CSTR_VIEW("dropped");
