@@ -32,6 +32,7 @@
  * that list. So it frees the responses whose keep has passed first, and
  * then those whose keep passes next.
  */
+#define _GNU_SOURCE /* mempcpy() */
 #include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
@@ -829,31 +830,23 @@ web_wait_create (struct web           *web,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	char *p = run->data;
-	memcpy(p, r->url, ask->url + 1);
-	p += ask->url + 1;
-	memcpy(p, agent, sizeof agent - 1);
-	p += sizeof agent - 1;
+	char *p = mempcpy(run->data, r->url, ask->url + 1);
+	p = mempcpy(p, agent, sizeof agent - 1);
 	if (name) {
-		memcpy(p, of, sizeof of - 1);
-		p += sizeof of - 1;
-		memcpy(p, ask->plugin, name);
-		p += name;
+		p = mempcpy(p, of, sizeof of - 1);
+		p = mempcpy(p, ask->plugin, name);
 		*p++ = ')';
 	}
 	if (ask->accept) {
 		*p++ = '\0';
-		memcpy(p, accept, sizeof accept - 1);
-		p += sizeof accept - 1;
-		memcpy(p, r->accept, ask->accept);
-		p += ask->accept;
+		p = mempcpy(p, accept, sizeof accept - 1);
+		p = mempcpy(p, r->accept, ask->accept);
 	}
 	for (size_t i = 0; i < ask->n_lines; ++i) {
 		if (!web_line_kept(lines[i]))
 			continue;
 		*p++ = '\0';
-		memcpy(p, lines[i].data, lines[i].len);
-		p += lines[i].len;
+		p = mempcpy(p, lines[i].data, lines[i].len);
 	}
 	*p++ = '\0';
 	if (body)
