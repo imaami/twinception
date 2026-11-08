@@ -179,20 +179,16 @@ code_definition (void const *service)
 					"A .c or .h file of the commit, relative to the "
 					"repository's top, such as src/git.c."),
 				"name", schema_property("string",
-					"The symbol for describe, such as git_start. A symbol "
-					"is a function, variable, type, enumerator, typedef or "
-					"macro. Give a member as struct.member, such as "
-					"child.flags. Put struct, union or enum before a name "
-					"to select the type, as in struct dstr."),
+					"The symbol for describe, such as git_start, struct "
+					"dstr or the member child.flags. struct, union or enum "
+					"before a name selects the type."),
 				"line", schema_count(1,
-					"For describe, the line of path where name is written. "
-					"Give line for a local variable or for the value of a "
-					"macro at a use."),
+					"For describe, the line of path where name is written, "
+					"such as a local variable or a macro use."),
 				"warnings", schema_array(schema_property("string", nullptr),
 					CXI_WARNINGS,
 					"Warning options that diagnostics adds to the flags of "
-					"the build, such as -Wpadded or -Wsign-conversion. Each "
-					"entry is -W or -Wno- and the name of a warning."),
+					"the build, such as -Wpadded or -Wno-sign-compare."),
 				"revision", schema_property("string",
 					"The commit, such as HEAD, a branch, a tag or a commit "
 					"ID. ^ and ~ suffixes are allowed, as in HEAD~1. The "
