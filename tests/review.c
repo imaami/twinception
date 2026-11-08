@@ -1725,6 +1725,7 @@ test_carry (void)
 		CHECK(review_carry(only, huge, &b) == EINVAL);
 		json_object_put(huge);
 		free(claim);
+		claim = nullptr;
 	}
 	RENDER(only, carried);
 	CHECK(review_carry(nullptr, obj, &b) == EFAULT);

@@ -420,6 +420,7 @@ static void autocomplete_schema_flags (void)
 		"\"nullable\":{\"type\":[\"boolean\",\"null\"]},\"any\":{},\"empty\":{\"type\":[]}}}}");
 	assert(definition && !autocomplete_add_tool(catalog, definition));
 	json_object_put(definition);
+	definition = nullptr;
 	struct cstr_view name = CSTR_VIEW("alice");
 	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_PARTICIPANTS, &name, 1));
 	EMPTY("/tool flags participant=");
@@ -442,6 +443,7 @@ static void autocomplete_schema_flags (void)
 	arguments = autocomplete_parse(catalog, CSTR_VIEW("/tool flags union='42'"), CSTR_VIEW("flags"));
 	autocomplete_string(arguments, "union", CSTR_VIEW("42"));
 	json_object_put(arguments);
+	arguments = nullptr;
 	autocomplete_bad(catalog, CSTR_VIEW("/tool flags integer=2.5"));
 	autocomplete_bad(catalog, CSTR_VIEW("/tool flags empty=true"));
 	autocomplete_destroy(&catalog);
@@ -580,42 +582,53 @@ int main(void)
 	assert(json_object_object_get_ex(arguments, "config", &value));
 	assert(json_object_is_type(value, json_type_object));
 	json_object_put(arguments);
+	arguments = nullptr;
 
 	arguments = PARSE("/tool git message=true", "git");
 	autocomplete_string(arguments, "message", CSTR_VIEW("true"));
 	json_object_put(arguments);
+	arguments = nullptr;
 	arguments = PARSE("/tool git {\"message\":\"hello \\\"world\\\"\",\"options\":[1,null]}", "git");
 	autocomplete_string(arguments, "message", CSTR_VIEW("hello \"world\""));
 	json_object_put(arguments);
+	arguments = nullptr;
 	arguments = PARSE("/tool git repo=other\\ project", "git");
 	autocomplete_string(arguments, "repo", CSTR_VIEW("other project"));
 	json_object_put(arguments);
+	arguments = nullptr;
 	arguments = PARSE("/tool lookup code=001 depth=2", "lookup");
 	autocomplete_string(arguments, "code", CSTR_VIEW("001"));
 	assert(json_object_object_get_ex(arguments, "depth", &value));
 	assert(json_object_get_int(value) == 2);
 	json_object_put(arguments);
+	arguments = nullptr;
 	arguments = PARSE("/tool required {\"text\":null}", "required");
 	assert(json_object_object_get_ex(arguments, "text", &value) && !value);
 	json_object_put(arguments);
+	arguments = nullptr;
 	arguments = PARSE("/tool required text=null", "required");
 	assert(json_object_object_get_ex(arguments, "text", &value) && !value);
 	json_object_put(arguments);
+	arguments = nullptr;
 	arguments = PARSE("/tool required text='null'", "required");
 	autocomplete_string(arguments, "text", CSTR_VIEW("null"));
 	json_object_put(arguments);
+	arguments = nullptr;
 	arguments = PARSE("/tool git {\"message\":\"a\\u0000b\"}", "git");
 	autocomplete_string(arguments, "message", CSTR_VIEW("a\0b"));
 	json_object_put(arguments);
+	arguments = nullptr;
 	static char const bounded[] = "/tool git message=tailJUNK";
 	arguments = autocomplete_parse(catalog,
 		(struct cstr_view){bounded, sizeof("/tool git message=tail") - 1}, CSTR_VIEW("git"));
 	autocomplete_string(arguments, "message", CSTR_VIEW("tail"));
 	json_object_put(arguments);
+	arguments = nullptr;
 	/* The server owns validation of full JSON, including complex schemas. */
 	arguments = PARSE("/tool git {\"extension\":true}", "git");
 	assert(json_object_object_get_ex(arguments, "extension", &value) && json_object_get_boolean(value));
 	json_object_put(arguments);
+	arguments = nullptr;
 	static struct cstr_view const roundtrips[] = {
 		CSTR_VIEW_INIT("/tool lookup mixed="), CSTR_VIEW_INIT("/tool lookup structured=")
 	};
@@ -635,6 +648,7 @@ int main(void)
 			else
 				assert(json_object_is_type(value, json_type_array));
 			json_object_put(arguments);
+			arguments = nullptr;
 		}
 	}
 	static struct cstr_view const invalid[] = {
