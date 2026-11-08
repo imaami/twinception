@@ -2836,24 +2836,9 @@ mcp_archive_back (struct loop *loop,
 
 /* Copies @p obj, recovery state of @p req, as a record of @p kind into the
  * writer's bounded queue, and frees @p obj; this control data does not
- * enter Git. Returns 0, or why the copy failed: ENOMEM for no @p obj.
- */
-static int
-mcp_req_archive_put (struct mcp_req     *req,
-                     char const         *kind,
-                     struct json_object *obj)
-{
-	struct cstr_view const text = jb_wire(obj);
-	int e = text.data ? journal_put(req->mcp->st->journal, &req->archive, kind, text.data,
-	                                text.len, nullptr, nullptr, nullptr)
-	                  : ENOMEM;
-	json_object_put(obj);
-	return e;
-}
-
-/* As mcp_req_archive_put() does, and the request waits for the write: a
- * callback follows the durable private checkpoint, and @p done goes on
- * with the request then.
+ * enter Git. With @p done, the request waits for the write: a callback
+ * follows the durable private checkpoint, and @p done goes on with the
+ * request then. Returns 0, or why the copy failed: ENOMEM for no @p obj.
  */
 static int
 mcp_req_archive (struct mcp_req     *req,
@@ -2863,17 +2848,17 @@ mcp_req_archive (struct mcp_req     *req,
 {
 	struct cstr_view const text = jb_wire(obj);
 	int e = text.data ? 0 : ENOMEM;
-	struct mcp_journal_wait *w = e ? nullptr : mcp_req_journal_wait(req, &e);
-	if (w) {
-		w->done = done;
+	struct mcp_journal_wait *w = e || !done ? nullptr : mcp_req_journal_wait(req, &e);
+	if (!e)
 		e = journal_put(req->mcp->st->journal, &req->archive, kind, text.data, text.len,
-		                req->mcp->loop, mcp_archive_back, w);
-	}
+		                w ? req->mcp->loop : nullptr, w ? mcp_archive_back : nullptr, w);
 	json_object_put(obj);
-	if (e)
+	if (e) {
 		mcp_req_journal_unwait(req, &w);
-	else
+	} else if (w) {
+		w->done = done;
 		req->archive_call = w->who;
+	}
 	return e;
 }
 
@@ -2915,8 +2900,7 @@ mcp_req_archive_end (struct mcp_req *req)
 	char const *kind = status == LEDGER_CANCELLED ? "cancel" : "result";
 	/* The writer drains after the loops; no request must wait for it on a
 	 * loop which is itself being dismantled. */
-	int e = draining ? mcp_req_archive_put(req, kind, obj)
-	                 : mcp_req_archive(req, kind, obj, mcp_req_archive_finished);
+	int e = mcp_req_archive(req, kind, obj, draining ? nullptr : mcp_req_archive_finished);
 	if (e || draining)
 		return e;
 	loop_unready(&req->step);
@@ -5781,7 +5765,7 @@ mcp_slot_done (struct mcp_slot *slot,
 			nullptr);
 		if (lines)
 			result = jb_set_or_free(result, "source", review_read_json(slot->read, &(int){}));
-		int e = mcp_req_archive_put(req, "tool-result", result);
+		int e = mcp_req_archive(req, "tool-result", result, nullptr);
 		if (e)
 			req->archive_error = e;
 	}
