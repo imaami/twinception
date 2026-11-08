@@ -285,9 +285,13 @@ agenda_wait_start (struct mcp_slot    *slot,
 		mcp_slot_fail(slot, ENOMEM);
 		return;
 	}
-	*w = (struct agenda_wait){ .alarm.fn = agenda_wait_alarm, .slot = slot,
-	                           .end = loop->now + secs * NS, .secs = (uint32_t)secs,
-	                           .n = (uint32_t)n };
+	*w = (struct agenda_wait){
+		.alarm.fn = agenda_wait_alarm,
+		.slot     = slot,
+		.end      = loop->now + secs * NS,
+		.secs     = (uint32_t)secs,
+		.n        = (uint32_t)n,
+	};
 	char why[160];
 	struct cstr_view problem = {};
 	for (size_t i = 0; !problem.data && i < n; ++i) {

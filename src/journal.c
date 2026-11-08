@@ -1105,9 +1105,16 @@ journal_submit (struct journal     *j,
 		return ENOMEM;
 	}
 	*item = (struct journal_item){
-		.msg.fn = journal_complete, .record = record, .loop = loop, .done = done, .arg = arg,
-		.bytes = sizeof *item + sizeof *record + len + 1, .offset = offset, .turn = turn,
-		.operation = operation, .id = *id,
+		.msg.fn    = journal_complete,
+		.record    = record,
+		.loop      = loop,
+		.done      = done,
+		.arg       = arg,
+		.bytes     = sizeof *item + sizeof *record + len + 1,
+		.offset    = offset,
+		.turn      = turn,
+		.operation = operation,
+		.id        = *id,
 	};
 	record->len = len;
 	record->id = *id;
@@ -1178,9 +1185,15 @@ journal_load_current (struct journal     *j,
 	struct journal_item *item = malloc(sizeof *item);
 	if (!item)
 		return ENOMEM;
-	*item = (struct journal_item){ .msg.fn = journal_complete, .loop = loop, .loaded = done,
-	                               .arg = arg, .bytes = sizeof *item, .operation = JOURNAL_LOAD,
-	                               .id = *id };
+	*item = (struct journal_item){
+		.msg.fn    = journal_complete,
+		.loop      = loop,
+		.loaded    = done,
+		.arg       = arg,
+		.bytes     = sizeof *item,
+		.operation = JOURNAL_LOAD,
+		.id        = *id,
+	};
 	return journal_enqueue(j, item);
 }
 
