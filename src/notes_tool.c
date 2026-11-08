@@ -110,24 +110,24 @@ static struct {
 
 /* The message for a file or as argument that is not a valid name. */
 static struct cstr_view const bad_name =
-	CSTR_VIEW_INIT("A note's name must be 1 to 255 bytes, such as plan.md or "
-	               "design/locks.md. It cannot have control characters or empty parts, "
-	               "and no part can be ., .., .git or git~1, in any case and also with "
-	               "spaces or dots after it.");
+	CSTR_VIEW_INIT("A note name must be 1 to 255 bytes without control characters, such as "
+	               "plan.md or design/locks.md. No part between slashes can be empty, ., .., "
+	               ".git or git~1. Letter case and spaces or dots at the end of a part do not "
+	               "matter for .git and git~1.");
 
 /* The message for a call that names a directory of notes. */
 static struct cstr_view const dir_name =
-	CSTR_VIEW_INIT("That name is a directory of notes. list shows the notes in it.");
+	CSTR_VIEW_INIT("The name is a directory of notes. list shows the notes in the directory.");
 
 /* The message for a name of a written note that notes_select() accepts. */
 static struct cstr_view const selector_name =
-	CSTR_VIEW_INIT("That name is in the form of a notebook selector. A note's name goes "
-	               "in file or as, and a write always goes to your own notebook.");
+	CSTR_VIEW_INIT("A note name cannot be in the form PARTICIPANT/WHO/SIDE of a notebook "
+	               "selector. Writes always go to your own notebook.");
 
 /* The message for a call that names a note that does not exist. */
 static struct cstr_view const no_note =
-	CSTR_VIEW_INIT("No note has that name. list shows the current notes, and add creates "
-	               "a note.");
+	CSTR_VIEW_INIT("The note does not exist. list shows the current notes. add creates a "
+	               "note.");
 
 /* The name of the file of a review record in its commit. */
 static struct cstr_view const review_file = CSTR_VIEW_INIT("review.json");
@@ -536,7 +536,7 @@ notes_tool_none (struct child const *c)
 static struct cstr_view
 notes_tool_call_unread (struct notes_tool_call const *call)
 {
-	return notes_tool_none(call->child) ? CSTR_VIEW("This notebook has no notes yet.")
+	return notes_tool_none(call->child) ? CSTR_VIEW("The notebook contains no notes yet.")
 	                                    : CSTR_VIEW("The notes could not be read.");
 }
 
@@ -569,7 +569,7 @@ notes_tool_unadded (struct mcp_slot *slot)
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
 	if (c->flags & CHILD_LATE) {
-		mcp_slot_tell(slot, CSTR_VIEW("Could not write the note: it took too long."),
+		mcp_slot_tell(slot, CSTR_VIEW("Could not write the note. The write timed out."),
 		              TOOL_FAILED);
 		return;
 	}
@@ -578,15 +578,15 @@ notes_tool_unadded (struct mcp_slot *slot)
 		char const *repo = call->repo;
 		int64_t age = 0;
 		if (notes_lock(notes, repo, &age) || age <= NOTES_STALE) {
-			mcp_slot_tell(slot, CSTR_VIEW("Could not write the note, because another "
-			                              "call changed this notebook at the same "
-			                              "time. Read its current state and retry."),
+			mcp_slot_tell(slot, CSTR_VIEW("Could not write the note. Another call "
+			                              "changed the notebook at the same time. "
+			                              "Read the current note and retry."),
 			              TOOL_FAILED);
 			return;
 		}
 		LOG(LOG_WARN, "notes: %s/%s.lock is %" PRId64 " s old; remove it if no "
 		    "git process uses the repository", notes_directory(notes), repo, age);
-		mcp_slot_tellf(slot, TOOL_FAILED, "Could not write the note: its notebook has been "
+		mcp_slot_tellf(slot, TOOL_FAILED, "Could not write the note. The notebook has been "
 		               "locked for %" PRId64 " s.", age);
 		return;
 	}
@@ -764,7 +764,7 @@ notes_tool_checked (struct mcp_slot *slot)
 			r = 0;
 		if (!r && !oid_equal(&tip, &call->revision.tip)) {
 			mcp_slot_tell(slot, CSTR_VIEW("The notebook changed during restore. Read "
-			                              "its current state and retry."), TOOL_FAILED);
+			                              "the history again and retry."), TOOL_FAILED);
 			return;
 		}
 	}
@@ -783,11 +783,11 @@ notes_tool_checked (struct mcp_slot *slot)
 		return;
 	}
 	mcp_slot_tell(slot,
-	              r == EEXIST ? CSTR_VIEW("A note of that name exists. Use replace or append "
-	                                      "to change it, or give another name.")
+	              r == EEXIST ? CSTR_VIEW("The note already exists. Change the note with "
+	                                      "replace or append, or choose another name.")
 	              : r == ENOENT ? no_note
 	              : r == EISDIR ? dir_name
-	              : r == ENOTDIR ? CSTR_VIEW("A directory in that name is a note.")
+	              : r == ENOTDIR ? CSTR_VIEW("A part of the name before a slash is a note.")
 	              : notes_tool_call_unread(call), TOOL_FAILED);
 }
 
@@ -1100,8 +1100,8 @@ notes_tool_revision_step (struct mcp_slot *slot)
 	    notes_revision_next(&call->revision, buf_peek(&call->child->out))) {
 		/* git pins the tip of the notebook first. */
 		mcp_slot_tell(slot, oid_len(&call->revision.tip)
-		                    ? CSTR_VIEW("Cannot use that revision in this notebook. Use a "
-		                                "full commit ID from its history.")
+		                    ? CSTR_VIEW("The revision is not a commit of the notebook. Use "
+		                                "a full commit ID from action history.")
 		                    : notes_tool_call_unread(call), TOOL_FAILED);
 		return;
 	}
@@ -1276,8 +1276,8 @@ notes_tool_got_attach (struct mcp_slot  *slot,
 		size_t len = 0;
 		(void)notes_tool_view(&view, body, 0, &len);
 		if (len > NOTES_MAX) {
-			mcp_slot_tellf(slot, TOOL_FAILED, "The note is too large to attach: its file "
-			               "would have %zu bytes, and askai uploads %d MiB at most.", len,
+			mcp_slot_tellf(slot, TOOL_FAILED, "The note is too large to attach. The "
+			               "file would be %zu bytes. The upload limit is %d MiB.", len,
 			               NOTES_MAX >> 20);
 			return;
 		}
@@ -1643,22 +1643,22 @@ notes_tool_add (struct mcp_slot    *slot,
 		notes_name(&name) ? bad_name
 		: !notes_select(name, nullptr) ? selector_name
 		: !content ? (!text.len || text.len > TOOL_TEXT_MAX || memchr(text.data, '\0', text.len)
-		              ? CSTR_VIEW("The text argument must be a string of 1 byte to 4 MiB, "
-		                          "and no NUL.")
-		              : !kept ? CSTR_VIEW("The text has only askai's [askai: ...] lines, "
-		                                  "which askai adds to tool results. Give the text "
-		                                  "of the note itself.")
+		              ? CSTR_VIEW("The text argument must be a string of 1 byte to 4 MiB "
+		                          "without NUL bytes.")
+		              : !kept ? CSTR_VIEW("The text contains only [askai: ...] lines. "
+		                                  "askai adds [askai: ...] lines to tool results. "
+		                                  "Give the text of the note.")
 		              : (struct cstr_view){})
-		: turn ? CSTR_VIEW("Only a client hands askai a file as content.")
-		: text.data ? CSTR_VIEW("Give the text or the content of a note, not both.")
+		: turn ? CSTR_VIEW("Only a client can give content. Give text instead.")
+		: text.data ? CSTR_VIEW("Give text or content, not both.")
 		: datauri_init(&data, jb_view(content))
-		? CSTR_VIEW("The content argument must be a data: URI, which the client fills "
-		            "in with a file that the user gave it.")
+		? CSTR_VIEW("The content argument must be a data: URI. Your client fills in "
+		            "content with a file from the user.")
 		: data.size > most
-		? util_format_view(big, sizeof big, "The file has more than %zu bytes, which "
-		                   "this server takes at most in one request.", most)
+		? util_format_view(big, sizeof big, "The file is larger than the limit of %zu "
+		                   "bytes for one request.", most)
 		: !data.size && notes_tool_actions[call->action].fetch & FETCH_APPEND
-		? CSTR_VIEW("The file to append must have at least 1 byte.")
+		? CSTR_VIEW("The file to append is empty.")
 		: (struct cstr_view){};
 	if (problem.data) {
 		mcp_slot_tell(slot, problem, TOOL_FAILED);
@@ -1695,8 +1695,8 @@ notes_tool_got_copy (struct mcp_slot *slot,
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	if (call->fetch & FETCH_RESTORE && text.len > TOOL_TEXT_MAX) {
-		mcp_slot_tell(slot, CSTR_VIEW("That revision exceeds the 4 MiB note size limit; "
-		                              "it was not restored."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("The note at revision is larger than the 4 MiB "
+		                              "limit. Nothing was restored."), TOOL_FAILED);
 		return;
 	}
 	struct cstr_view const to = util_text_view(&call->name);
@@ -1734,8 +1734,8 @@ notes_tool_got_append (struct mcp_slot *slot,
 	                          call->part.data_len };
 	size_t const lf = old.len && old.ptr[old.len - 1] != '\n';
 	if (old.len + lf + add.len > TOOL_TEXT_MAX) {
-		mcp_slot_tell(slot, CSTR_VIEW("The note would have more than 4 MiB, so the text "
-		                              "was not appended."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("The note would be larger than the 4 MiB limit. "
+		                              "The text was not appended."), TOOL_FAILED);
 		return;
 	}
 	struct buf file = {};
@@ -1771,7 +1771,8 @@ notes_tool_search (struct mcp_slot  *slot,
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	if (!pattern.len || memchr(pattern.data, '\0', pattern.len)) {
 		mcp_slot_tell(slot, CSTR_VIEW("The pattern argument must be extended regular "
-		                              "expressions, one on each line, with no NUL."),
+		                              "expressions, one on each line, without NUL "
+		                              "bytes."),
 		              TOOL_FAILED);
 		return;
 	}
@@ -1817,9 +1818,9 @@ notes_tool_revision (struct mcp_slot          *slot,
 		      !cstr_view_equal(v, CSTR_VIEW("current"));
 	}
 	if (bad) {
-		mcp_slot_tell(slot, CSTR_VIEW("Use a full commit ID from action history, or "
-		                              "current. diff requires from; restore requires "
-		                              "revision."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("revision, from and to must be a full commit ID "
+		                              "from action history, or current. diff needs "
+		                              "from. restore needs revision."), TOOL_FAILED);
 		return;
 	}
 	struct notes_tool_call *call = *mcp_slot_own(slot);
@@ -1863,7 +1864,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	bool diff = fetch == FETCH_DIFF;
 	struct json_object *file = jb_get(args, "file");
 	if ((flags & NOTE_FILE) && !file) {
-		mcp_slot_tell(slot, CSTR_VIEW("The file argument is missing: give the name of a "
+		mcp_slot_tell(slot, CSTR_VIEW("The file argument is missing. Give the name of a "
 		                              "note, such as plan.md."), TOOL_FAILED);
 		return;
 	}
@@ -1871,17 +1872,16 @@ notes_tool_start (struct mcp_slot    *slot,
 	struct json_object *from = jb_get(args, "from");
 	struct json_object *to = jb_get(args, "to");
 	if ((revision && !(flags & NOTE_REVISION)) || ((from || to) && !diff)) {
-		mcp_slot_tell(slot, CSTR_VIEW("revision is for read and restore, and from and to are "
-		                              "for diff. The description of action lists the "
-		                              "arguments of each action."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("Give revision only with read or restore. Give from "
+		                              "and to only with diff."), TOOL_FAILED);
 		return;
 	}
 	if (side == NOTES_CLIENT) {
 		struct json_object *thread = jb_get(args, "thread");
 		if (thread && !hexid_valid(jb_view(thread))) {
 			mcp_slot_tell(slot, CSTR_VIEW("The thread argument must be 32 hexadecimal "
-			                              "digits. It does not select the notes "
-			                              "session."), TOOL_FAILED);
+			                              "digits. The notes do not depend on "
+			                              "thread."), TOOL_FAILED);
 			return;
 		}
 	}
@@ -1893,9 +1893,10 @@ notes_tool_start (struct mcp_slot    *slot,
 	bool other = cstr_view_equal(selected, CSTR_VIEW("other"));
 	if (!notebook && (fetch & FETCH_COPY)) {
 		if (side == NOTES_UPSTREAM) {
-			mcp_slot_tell(slot, CSTR_VIEW("For copy, give the source notebook: a "
-			                              "participant's name or a selector from action "
-			                              "notebooks."), TOOL_FAILED);
+			mcp_slot_tell(slot, CSTR_VIEW("copy needs notebook. Give the source "
+			                              "notebook as a participant's name or a "
+			                              "selector from action notebooks."),
+			              TOOL_FAILED);
 			return;
 		}
 		other = true;
