@@ -53,7 +53,7 @@ PLUGIN_MANIFEST(.name = "test",
 
 /* The plugin's configuration. */
 struct test_plugin_config {
-	char greeting[64];  /* the option "greeting", NUL-terminated */
+	UTIL_TEXT(64) greeting;  /* the option "greeting" */
 };
 
 /* The plugin's instance: what test_state stores for one user on one loop. */
@@ -652,7 +652,7 @@ test_plugin_configure (void               *config,
 	if (!config || !why || !len)
 		return EINVAL;
 	struct test_plugin_config *c = config;
-	*c = (struct test_plugin_config){ .greeting = "hello" };
+	*c = (struct test_plugin_config){ .greeting = { sizeof "hello" - 1, "hello" } };
 	if (!options)
 		return 0;
 	if (!json_object_is_type(options, json_type_object))
@@ -661,12 +661,10 @@ test_plugin_configure (void               *config,
 	json_object_object_foreachC(options, it) {
 		if (strcmp(it.key, "greeting"))
 			return util_refuse(why, len, "unknown option: %s", it.key);
-		size_t n = json_object_is_type(it.val, json_type_string)
-		         ? (size_t)json_object_get_string_len(it.val) : sizeof c->greeting;
-		if (n >= sizeof c->greeting)
-			return util_refuse(why, len, "greeting: not a string of at "
-			                   "most %zu bytes", sizeof c->greeting - 1);
-		memcpy(c->greeting, json_object_get_string(it.val), n + 1);
+		struct cstr_view const g = jb_view(it.val);
+		if (!g.data || util_text_store(&c->greeting, g))
+			return util_refuse(why, len, "greeting: not a string of at most %zu bytes",
+			                   sizeof c->greeting.data - 1);
 	}
 	return 0;
 }
@@ -681,7 +679,7 @@ test_plugin_config_definition (void const *service)
 {
 	struct test_plugin_config const *c = service;
 	char text[sizeof "Returns the greeting of the plugin's options ()." +
-	          sizeof c->greeting];
+	          sizeof c->greeting.data];
 	struct json_object *def = json_tokener_parse(
 		"{\"name\":\"test_config\","
 		"\"inputSchema\":{\"type\":\"object\","
@@ -690,7 +688,7 @@ test_plugin_config_definition (void const *service)
 	return jb_set_or_free(def, "description",
 	                      jb_string(util_format_view(text, sizeof text, "Returns the greeting "
 	                                                 "of the plugin's options (%s).",
-	                                                 c ? c->greeting : "none")));
+	                                                 c ? c->greeting.data : "none")));
 }
 
 /* Ends the call with "greeting=" and the greeting of the configuration, or
@@ -708,7 +706,7 @@ test_plugin_config_start (struct mcp_slot    *slot,
 		mcp_slot_tell(slot, CSTR_VIEW("none"), 0);
 		return;
 	}
-	mcp_slot_tellf(slot, 0, "greeting=%s", c->greeting);
+	mcp_slot_tellf(slot, 0, "greeting=%s", c->greeting.data);
 }
 
 struct plugin const askai_plugin = {
