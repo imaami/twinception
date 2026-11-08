@@ -1546,37 +1546,30 @@ config_git_repo (char const *path)
 	return repo;
 }
 
-/* Check that repository @p i is one config_git_repo() is true of, named
- * apart from those before it.
+/* Check each repository of --git. git_name() must return a name for it
+ * that is not empty and differs from the names of the repositories before
+ * it, and config_git_repo() must return true for its path.
  */
-static int
-config_check_git (struct config const *cfg,
-                  size_t               i)
-{
-	char const *path = cfg->gits[i];
-	struct cstr_view const name = git_name(path);
-	if (!name.len)
-		return config_complain(cfg, nullptr, "--git: %s names no repository: "
-		                       "its last component, less a .git suffix, must "
-		                       "be 1 to 64 of [A-Za-z0-9_.-], not beginning "
-		                       "with a dot", path);
-	if (!config_git_repo(path))
-		return config_complain(cfg, nullptr, "--git: not a git repository: %s",
-		                       path);
-	for (size_t j = 0; j < i; ++j)
-		if (cstr_view_equal(git_name(cfg->gits[j]), name))
-			return config_complain(cfg, nullptr, "--git: two repositories "
-			                       "named %.*s", (int)name.len, name.data);
-	return 0;
-}
-
 static int
 config_check_gits (struct config *cfg)
 {
 	for (size_t i = 0; i < cfg->n_gits; ++i) {
-		int status = config_check_git(cfg, i);
-		if (status)
-			return status;
+		char const *path = cfg->gits[i];
+		struct cstr_view const name = git_name(path);
+		if (!name.len)
+			return config_complain(cfg, nullptr, "--git: %s names no repository: "
+			                       "its last component, less a .git suffix, must "
+			                       "be 1 to 64 of [A-Za-z0-9_.-], not beginning "
+			                       "with a dot", path);
+		if (!config_git_repo(path))
+			return config_complain(cfg, nullptr, "--git: not a git repository: %s",
+			                       path);
+		size_t j = 0;
+		while (j < i && !cstr_view_equal(git_name(cfg->gits[j]), name))
+			++j;
+		if (j < i)
+			return config_complain(cfg, nullptr, "--git: two repositories "
+			                       "named %.*s", (int)name.len, name.data);
 	}
 	return 0;
 }
