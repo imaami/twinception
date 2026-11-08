@@ -998,7 +998,8 @@ godbolt_result (struct godbolt *call)
 	int e = mcp_slot_fetched(call->slot, &r);
 	if (e == EINPROGRESS)
 		return GODBOLT_WAIT;
-	if (e ||(!r.body.data && r.body.len) || !r.error) {
+	call->wait = GODBOLT_IDLE;
+	if (e || (!r.body.data && r.body.len) || !r.error) {
 		godbolt_why(call, "askai has no response to the request");
 		return GODBOLT_BAD;
 	}
