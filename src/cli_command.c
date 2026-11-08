@@ -1,4 +1,5 @@
 #include "cli_command.h"
+#include "compat.h"
 
 #define CLI_COMMAND_ENTRY(id, word, args, policy, syntax, ...) \
         {CSTR_VIEW_INIT("/" #word), CSTR_VIEW_INIT("/" #word " "), \
@@ -12,7 +13,7 @@ static struct cli_command const cli_command_table[] = {
 struct cli_command const *
 cli_command_at (enum cli_command_id id)
 {
-	return (unsigned)id < CLI_COMMAND_COUNT ? &cli_command_table[id] : nullptr;
+	return (unsigned)id < array_size(cli_command_table) ? &cli_command_table[id] : nullptr;
 }
 
 static unsigned char
@@ -25,7 +26,7 @@ cli_command_byte (struct cli_command const *command,
 struct cli_command_matches
 cli_command_prefix (struct cstr_view prefix)
 {
-	size_t first = 0, end = CLI_COMMAND_COUNT;
+	size_t first = 0, end = array_size(cli_command_table);
 	for (size_t offset = 0; offset < prefix.len && first < end; ++offset) {
 		unsigned char byte = (unsigned char)prefix.data[offset];
 		if (!byte)

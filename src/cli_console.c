@@ -1417,7 +1417,7 @@ cli_console_frame (struct cli_console *console,
 		                 (int)caption.len, caption.data, frame_style, (int)(width - caption.len) * 3, rule))
 			return ENOMEM;
 	}
-	return dstr_cat(output, border[CLI_CONSOLE_PANES]) ? 0 : ENOMEM;
+	return dstr_cat(output, border[array_size(console->panes)]) ? 0 : ENOMEM;
 }
 
 static int
