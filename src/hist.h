@@ -155,7 +155,7 @@ hist_value (size_t i)
 {
 	if (i < HIST_SUB)
 		return i;
-	unsigned const x = i / HIST_SUB - 1U;
+	size_t const x = i / HIST_SUB - 1U;
 	return ((uint64_t)(i % HIST_SUB) << x)
 	     + ((uint64_t)     HIST_SUB  << x)
 	     + ((uint64_t)1              << x) / 2U;
