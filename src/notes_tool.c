@@ -1847,12 +1847,9 @@ notes_tool_start (struct mcp_slot    *slot,
 	size_t const which = cstr_view_index(notes_action_names, offered,
 	                                     jb_view(jb_get(args, "action")));
 	if (which == offered) {
-		mcp_slot_tell(slot, offered > NOTES_ACTION_ATTACH
-		              ? CSTR_VIEW("The action argument must be one of: "
-		                          XL_JOIN(", ", ", ", NOTES_ALL_ACTION_LIST(XL_TEXT)) ".")
-		              : CSTR_VIEW("The action argument must be one of: "
-		                          XL_JOIN(", ", ", ", NOTES_COMMON_ACTION_LIST(XL_TEXT)) "."),
-		              TOOL_FAILED);
+		mcp_slot_tellf(slot, TOOL_FAILED, "The action argument must be one of: "
+		               XL_JOIN(", ", ", ", NOTES_COMMON_ACTION_LIST(XL_TEXT)) "%s.",
+		               offered > NOTES_ACTION_ATTACH ? ", attach" : "");
 		return;
 	}
 	call->action = which;
