@@ -411,6 +411,8 @@ plugin_loaded_load (struct plugin_loaded *dest,
 	return 0;
 }
 
+#define PLUGIN_OPTIONS "options: "
+
 /* Checks configure and config_size of dest->plugin, and stores the
  * plugin's configuration in dest->config: config_size zeroed bytes that
  * configure() fills from options. options is the member "options" of the
@@ -425,41 +427,40 @@ plugin_loaded_configure (struct plugin_loaded *dest,
                          char                 *why,
                          size_t                len)
 {
-	static char const prefix[] = "options: ";
 	struct plugin const *p = dest->plugin;
 	if (p->configure ? p->config_size - 1 >= PLUGIN_CONFIG_MAX : p->config_size)
 		return util_refuse(why, len, "its askai_plugin has configure() without a "
 		                   "config_size of 1 to %zu, or a config_size without "
 		                   "configure()", PLUGIN_CONFIG_MAX);
 	if (!p->configure)
-		return options ? util_refuse(why, len, "%sthe plugin has no options",
-		                             prefix)
+		return options ? util_refuse(why, len, PLUGIN_OPTIONS "the plugin has no options")
 		               : 0;
 	dest->config = calloc(1, p->config_size);
 	if (!dest->config)
 		return ENOMEM;
 	/* A buffer without room for a reason after the prefix gets the prefix
 	 * alone. */
-	if (len <= sizeof prefix)
-		return util_refuse(why, len, "%s", prefix);
+	if (len <= sizeof PLUGIN_OPTIONS)
+		return util_refuse(why, len, PLUGIN_OPTIONS);
 	/* The reason of configure() follows the prefix. The text is cut at the
 	 * end of the buffer, also if configure() stored no NUL. */
-	char *reason = why + sizeof prefix - 1;
-	size_t room = len - (sizeof prefix - 1);
-	memcpy(why, prefix, sizeof prefix - 1);
-	*reason = '\0';
+	char *reason = why + sizeof PLUGIN_OPTIONS - 1;
+	size_t room = len - (sizeof PLUGIN_OPTIONS - 1);
+	memcpy(why, PLUGIN_OPTIONS, sizeof PLUGIN_OPTIONS);
 	int e = p->configure(dest->config, options, reason, room);
 	reason[room - 1] = '\0';
 	if (!e || e == ENOMEM)
 		return e;
 	if (e != EINVAL)
-		return util_refuse(why, len, "%sconfigure() returned the error "
-		                   "number %d", prefix, e);
+		return util_refuse(why, len, PLUGIN_OPTIONS "configure() returned the error "
+		                   "number %d", e);
 	if (!*reason)
-		return util_refuse(why, len, "%sconfigure() refused the options "
-		                   "without a reason", prefix);
+		return util_refuse(why, len, PLUGIN_OPTIONS "configure() refused the options "
+		                   "without a reason");
 	return EINVAL;
 }
+
+#undef PLUGIN_OPTIONS
 
 /* Fills *dest for the plugin in the file at path: reads and checks the
  * manifest, then loads the shared object, then stores the plugin's
