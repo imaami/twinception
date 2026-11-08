@@ -7888,15 +7888,16 @@ mcp_background_definition (void const *service)
 	(void)service;
 	static_assert(JOBS_MAX == 8, "update the description");
 	return schema_tool("background",
-		"Start a call of another tool as a job, and go on at once. askai "
-		"answers with the job's number, and tells you when the job ends: with "
-		"a later tool result, by ending a wait, or in a message after your "
-		"answer. Read its result with jobs. At most 8 jobs an ask call.",
+		"Run a call of another tool as a job in the background. The call "
+		"returns the job number at once. When the job ends, a notice appears "
+		"in a later tool result, in the result of wait, or in a message after "
+		"your answer. Read the output of the job with jobs. You can start at "
+		"most 8 jobs.",
 		jb_object(
 			"tool", schema_property("string", "The name of the tool to call, "
 			                        "such as git or man."),
 			"arguments", schema_property("object",
-				"Its arguments, as you would give them to it."),
+				"The arguments for the tool, as in a direct call."),
 			nullptr),
 		CSTR_VIEW("tool"));
 }
@@ -7907,15 +7908,15 @@ mcp_jobs_definition (void const *service)
 {
 	(void)service;
 	return schema_tool("jobs",
-		"List your jobs and timers, read the output of a job that has ended, "
-		"or cancel a job or a timer. Jobs and timers end with the ask call.",
+		"List your jobs and timers, read the output of a finished job, or "
+		"cancel a job or a timer. Jobs and timers end when the ask call ends.",
 		jb_object(
 			"action", schema_enum(schema_names(actions, array_size(actions)), nullptr),
-			"job", schema_property("integer", "For result and cancel: the "
-			                       "job's number."),
-			"timer", schema_property("integer", "The number of the timer to cancel, "
-			                         "in place of job. Timers have numbers of "
-			                         "their own."),
+			"job", schema_property("integer", "The job number, for result and "
+			                       "cancel."),
+			"timer", schema_property("integer", "The timer number, for cancel "
+			                         "instead of job. Timer numbers are separate "
+			                         "from job numbers."),
 			"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 			nullptr),
 		CSTR_VIEW("action"));
@@ -7928,14 +7929,15 @@ mcp_wait_definition (void const *service)
 	(void)service;
 	static_assert(WAIT_MAX == 600, "update the description");
 	return schema_tool("wait",
-		"Wait until a job ends, of those you name or any, or a timer fires, "
-		"or the seconds pass, whichever comes first. The result lists what "
-		"happened. Call it instead of calling jobs again and again.",
+		"Wait until a job ends, a timer fires, or the seconds pass. The result "
+		"lists the jobs that ended and the timers that fired. Call wait instead "
+		"of calling jobs again and again.",
 		jb_object(
 			"seconds", schema_property("integer", "The longest time to wait, "
 			                           "from 1 to 600 seconds."),
 			"jobs", schema_array(schema_property("integer", nullptr), 0,
-			                     "The jobs to wait for; any if none."),
+			                     "The job numbers to wait for. Without jobs, any "
+			                     "job ends the wait."),
 			nullptr),
 		CSTR_VIEW("seconds"));
 }
@@ -7947,15 +7949,15 @@ mcp_timer_definition (void const *service)
 	(void)service;
 	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "update the description");
 	return schema_tool("timer",
-		"Set a timer, and go on at once: when it fires, askai tells you, "
-		"with a later tool result, by ending a wait, or in a message after "
-		"your answer. jobs lists and cancels timers.",
+		"Set a timer and continue at once. When the timer fires, a notice "
+		"appears in a later tool result, in the result of wait, or in a "
+		"message after your answer. jobs lists and cancels timers.",
 		jb_object(
 			"seconds", schema_property("integer", "The seconds until the timer "
 			                           "fires, from 1 to 3600."),
 			"note", schema_property("string", "What the timer is for, at most "
-			                        "200 bytes; askai repeats it when the timer "
-			                        "fires."),
+			                        "200 bytes. The notice of the timer contains "
+			                        "the note."),
 			nullptr),
 		CSTR_VIEW("seconds"));
 }
@@ -7970,21 +7972,20 @@ mcp_background_client_definition (void const *service)
 	static_assert(LEDGER_RUNNING == 8 && LEDGER_KEEP == 3600, "update the description");
 	struct mcp_static const *st = service;
 	char about[1024];
-	util_format(about, sizeof about, "Start a call of another of your tools, such as %s, "
-	            "as a job in the background, and continue at once: the result contains "
-	            "the id of the job. The job runs without this request and without your "
-	            "connection. A call of wait ends when the job ends, and jobs returns "
-	            "the result of the job or cancels the job. At most 8 of your jobs and "
-	            "tasks run at once, and askai stores the result of a job for up to an "
-	            "hour after the job ends.", st->tool->name);
+	util_format(about, sizeof about, "Run a call of another of your tools, such as %s, "
+	            "as a job in the background. The call returns the job ID at once. The "
+	            "job continues after the request and the connection end. wait returns "
+	            "when the job ends. jobs returns the result of the job or cancels the "
+	            "job. At most 8 of your jobs and tasks run at once. askai stores the "
+	            "result of a job for up to an hour after the job ends.", st->tool->name);
 	char tool[256];
-	util_format(tool, sizeof tool, "The name of the tool to call, such as %s; not "
-	            "background, jobs, wait or timer.", st->tool->name);
+	util_format(tool, sizeof tool, "The name of the tool to call, such as %s. background, "
+	            "jobs, wait and timer are not allowed.", st->tool->name);
 	return schema_tool("background", about,
 		jb_object(
 			"tool", schema_property("string", tool),
 			"arguments", schema_property("object", "The arguments for the tool, "
-			                             "the same as in a direct call."),
+			                             "as in a direct call."),
 			nullptr),
 		CSTR_VIEW("tool"));
 }
@@ -7995,17 +7996,16 @@ mcp_jobs_client_definition (void const *service)
 {
 	(void)service;
 	return schema_tool("jobs",
-		"List your jobs, which background started, and your timers; return "
-		"the result of a job that has ended; or cancel a job that runs or a "
-		"timer that has not fired.",
+		"List your jobs and timers, return the result of a finished job, or "
+		"cancel a running job or a pending timer.",
 		jb_object(
 			"action", schema_enum(schema_names(actions, array_size(actions)),
-				"list lists your jobs and timers, result returns the "
-				"result of a job, and cancel cancels a job or a timer."),
-			"job", schema_property("string", "The id of the job for result and "
-			                       "cancel, from the result of background."),
-			"timer", schema_property("integer", "The number of the timer for "
-			                         "cancel, from the result of timer."),
+				"list lists your jobs and timers. result returns the "
+				"result of a job. cancel cancels a job or a timer."),
+			"job", schema_property("string", "The job ID from background, for "
+			                       "result and cancel."),
+			"timer", schema_property("integer", "The timer number from timer, "
+			                         "for cancel."),
 			nullptr),
 		CSTR_VIEW("action"));
 }
@@ -8017,18 +8017,17 @@ mcp_wait_client_definition (void const *service)
 	(void)service;
 	static_assert(WAIT_MAX == 600 && AGENDA_WAIT_IDS == 16, "update the description");
 	return schema_tool("wait",
-		"Wait until one of your jobs ends, of those that you name or any, or "
-		"one of your timers fires, or the seconds pass, whichever comes "
-		"first. The result then lists what happened. A wait uses no upstream "
-		"slot: call it instead of calling jobs again and again. If your "
-		"client has a timeout for requests, wait for fewer seconds than "
-		"that.",
+		"Wait until a job of yours ends, a timer of yours fires, or the "
+		"seconds pass. The result lists the jobs that ended and the timers "
+		"that fired. A wait uses no upstream slot. Call wait instead of "
+		"calling jobs again and again. Give fewer seconds than the request "
+		"timeout of your client.",
 		jb_object(
 			"seconds", schema_property("integer", "The longest time to wait, "
 			                           "from 1 to 600 seconds."),
 			"jobs", schema_array(schema_property("string", nullptr), 0,
-				"The ids of the jobs to wait for, at most 16; without ids, "
-				"any job."),
+				"The IDs of the jobs to wait for, at most 16. Without jobs, "
+				"any job ends the wait."),
 			nullptr),
 		CSTR_VIEW("seconds"));
 }
@@ -8040,15 +8039,15 @@ mcp_timer_client_definition (void const *service)
 	(void)service;
 	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "update the description");
 	return schema_tool("timer",
-		"Set a timer, and continue at once: the result contains the number of "
-		"the timer. When the timer fires, a call of wait ends, and its result "
+		"Set a timer and continue at once. The result contains the timer "
+		"number. When the timer fires, wait returns. The result of wait "
 		"contains the number and the note of the timer.",
 		jb_object(
 			"seconds", schema_property("integer", "The seconds until the timer "
 			                           "fires, from 1 to 3600."),
 			"note", schema_property("string", "What the timer is for, at most "
-			                        "200 bytes; the result of a wait contains it "
-			                        "when the timer fires."),
+			                        "200 bytes. The result of wait contains the "
+			                        "note when the timer fires."),
 			nullptr),
 		CSTR_VIEW("seconds"));
 }

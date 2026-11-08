@@ -12965,8 +12965,8 @@ def check_turns(binary, up):
             assert {t["function"]["name"] for t in body["tools"]
                     if t["function"]["description"].endswith(PAGED)} == set(offsets), \
                 body["tools"]
-            # The lent jobs says that jobs and timers end with the ask call.
-            assert "Jobs and timers end with the ask call." in \
+            # The lent jobs states that jobs and timers end with the ask call.
+            assert "Jobs and timers end when the ask call ends." in \
                 body["tools"][5]["function"]["description"], body["tools"][5]
             # The upstream's notes use the thread of the ask call.
             assert "thread" not in body["tools"][1]["function"]["parameters"][
