@@ -278,10 +278,11 @@ extern void *
 mcp_slot_part (struct mcp_slot const *slot);
 
 /** Spawns @p cmd for the call on the call's loop, as child_create()
- *  (src/child.h) does. Once the child is reaped and its output is all in,
- *  askai queues the step() of the call's kind, unless the kind has
- *  destroyed or released the child. Returns the child, or nullptr with the
- *  error in @p *e. Only the built-in plugins run children, so askai does
+ *  (src/child.h) does, and parks the call (mcp_slot_park()). When the
+ *  child is reaped and askai has read all of its output, askai queues the
+ *  step() of the call's kind, unless the kind has destroyed or released
+ *  the child. Returns the child, or returns nullptr and stores the error
+ *  number in @p *e. Only the built-in plugins run children, so askai does
  *  not export this function.
  */
 extern struct child *

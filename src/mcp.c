@@ -3372,7 +3372,10 @@ mcp_slot_spawn (struct mcp_slot        *slot,
                 int                    *e)
 {
 	struct mcp *mcp = slot->req->mcp;
-	return child_create(mcp->loop, &mcp->children, cmd, mcp_slot_child_done, slot, e);
+	struct child *c = child_create(mcp->loop, &mcp->children, cmd, mcp_slot_child_done, slot, e);
+	if (c)
+		(void)mcp_slot_park(slot);
+	return c;
 }
 
 void *

@@ -754,8 +754,6 @@ git_pin_spawn (struct git_pin           *pin,
 	};
 	int e = 0;
 	pin->child = mcp_slot_spawn(slot, &cmd, &e);
-	if (!e)
-		mcp_slot_park(slot);
 	return e;
 }
 

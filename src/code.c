@@ -265,8 +265,6 @@ code_spawn (struct code_call *call,
 		.deadline = pin->deadline,
 	};
 	pin->child = mcp_slot_spawn(slot, &cmd, &e);
-	if (!e)
-		mcp_slot_park(slot);
 	return e;
 }
 

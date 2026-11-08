@@ -484,11 +484,8 @@ notes_tool_run (struct mcp_slot *slot,
 	call->fetch = fetch;
 	call->child = mcp_slot_spawn(slot, &c, &e);
 	buf_fini(in);
-	if (!call->child) {
+	if (!call->child)
 		notes_tool_failed(slot, e);
-		return;
-	}
-	mcp_slot_park(slot);
 }
 
 void
