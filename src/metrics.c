@@ -69,21 +69,21 @@ static struct {
 	{ 300'000'000'000, "300" },
 };
 
+#define VALUE(name, help, labels, type, field, source, kind, scale) \
+        { name, help, labels, offsetof(type, field), source, kind, scale }
 #define LOOP_HIST(name, help, labels, field) \
-        { name, help, labels, offsetof(struct loop_metrics, field), LOOP, HISTOGRAM, NANO }
+        VALUE(name, help, labels, struct loop_metrics, field, LOOP, HISTOGRAM, NANO)
 /* Each METRICS_*_ROW expands a list into the rows of a family, whose help
  * is on the row of the value 0, the first.
  */
 #define METRICS_WORK_ROW(id, unit, bound) \
-        { "askai_loop_step_work_max", LOOP_##id ? nullptr : "The most of a unit of " \
-          "work one step did (design section 1).", "unit=\"" unit "\"", \
-          offsetof(struct loop_metrics, work[LOOP_##id]), LOOP, GAUGE, ONE },
+        VALUE("askai_loop_step_work_max", LOOP_##id ? nullptr : "The most of a unit of " \
+              "work one step did (design section 1).", "unit=\"" unit "\"", \
+              struct loop_metrics, work[LOOP_##id], LOOP, GAUGE, ONE),
 #define METRICS_METHOD_ROW(id, method, eras) \
-        { "askai_request_seconds", METHOD_##id ? nullptr : "Time from a request's head " \
-          "to its end, by MCP method.", "method=\"" method "\"", \
-          offsetof(struct metrics_mcp, methods[METHOD_##id]), MCP, HISTOGRAM, NANO },
-#define VALUE(name, help, labels, type, field, source, kind, scale) \
-        { name, help, labels, offsetof(type, field), source, kind, scale }
+        VALUE("askai_request_seconds", METHOD_##id ? nullptr : "Time from a request's head " \
+              "to its end, by MCP method.", "method=\"" method "\"", \
+              struct metrics_mcp, methods[METHOD_##id], MCP, HISTOGRAM, NANO),
 #define STASHED(name, help, labels, field, kind, scale) \
         VALUE(name, help, labels, struct buf_stash_metrics, field, STASH, kind, scale)
 #define KEPT(name, help, labels, field) \
