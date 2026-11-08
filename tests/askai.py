@@ -10711,16 +10711,17 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # A name of several symbols or of none, and other refusals.
         for arguments, text in (
                 ({"name": "lay_dup"}, "2 symbols in the translation unit of src/lay.c are "
-                 "named lay_dup. Give struct lay_dup for the type, or give line. The "
-                 "symbols:\n"
+                 "named lay_dup. Give the name struct lay_dup for the type, or give the "
+                 "line argument. The symbols:\n"
                  "  src/lay.h:43 struct lay_dup\n  src/lay.c:25 static variable lay_dup\n"),
                 ({"name": "lay_su"}, "No symbol lay_su in the translation unit of src/lay.c. "
-                 "Names in the repository that contain lay_su:\n  src/lay.c:18 function "
-                 "lay_sum\n"),
+                 "Repository names in the translation unit that contain lay_su:\n"
+                 "  src/lay.c:18 function lay_sum\n"),
                 ({"name": "nowhere"}, "No symbol nowhere in the translation unit of "
-                 "src/lay.c. No name in the repository contains nowhere."),
+                 "src/lay.c. No repository name in the translation unit contains nowhere."),
                 ({"name": "struct foo_t"}, "No symbol struct foo_t in the translation unit "
-                 "of src/lay.c. Names in the repository that contain foo_t:\n"
+                 "of src/lay.c. Repository names in the translation unit that contain "
+                 "foo_t:\n"
                  "  src/lay.h:35 typedef foo_t\n"),
                 ({"name": "a-b"}, "The name argument must be a C name, such as git_start, "
                  "struct dstr or child.flags."),
@@ -10765,7 +10766,8 @@ def check_code_describe(binary, up, call, head, d, cdb):
         text = call(ai, repo="proj", action="describe", path="src/big.c", name="struct big")
         rows = text.split("member: type\n")[1].split("\nsrc/big.c lines")[0].split("\n")
         assert len(rows) == 2001 and rows[-1] == \
-            "[18000 more members. Call describe with name struct.member for one member.]", \
+            "[18000 more members. To describe one member, give name as TYPE.MEMBER, such " \
+            "as child.flags.]", \
             rows[-3:]
         assert "struct big: 80000 bytes, alignment 4, at least 0 bytes of padding" in text
         # Places and lines are named by the path of the file, without the .
@@ -10778,8 +10780,8 @@ def check_code_describe(binary, up, call, head, d, cdb):
         leak = {"repo": "proj", "action": "describe", "path": "src/leak.c",
                 "name": "SECRET_TOKEN_7f3a"}
         assert call(ai, error=True, **leak) == (
-            "No symbol SECRET_TOKEN_7f3a in the translation unit of src/leak.c. No name "
-            "in the repository contains SECRET_TOKEN_7f3a.")
+            "No symbol SECRET_TOKEN_7f3a in the translation unit of src/leak.c. No "
+            "repository name in the translation unit contains SECRET_TOKEN_7f3a.")
         # diagnostics reports a file outside the tree as not found, as if it
         # did not exist.
         text = call(ai, repo="proj", action="diagnostics", path="src/leak.c")

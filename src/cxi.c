@@ -711,8 +711,8 @@ cxi_layout (struct cxi     *x,
 	cxi_out_printf(rows, " offset   size  align   line  member: type\n");
 	cxi_layout_record(&l, type, 0, 0);
 	if (l.hidden)
-		cxi_out_printf(rows, "[%" PRIu64 " more members. Call describe with name "
-		               "struct.member for one member.]\n", l.hidden);
+		cxi_out_printf(rows, "[%" PRIu64 " more members. To describe one member, give "
+		               "name as TYPE.MEMBER, such as child.flags.]\n", l.hidden);
 	cxi_out_printf(&x->out, ": %lld bytes, alignment %lld, %s%" PRIu64 " byte%s",
 	               clang_Type_getSizeOf(type), clang_Type_getAlignOf(type),
 	               l.rows ? "" : "at least ", l.padding / 8, util_s(l.padding / 8));
@@ -806,10 +806,11 @@ cxi_lookup (struct cxi *x,
 		cxi_out_printf(&x->out, " are named ");
 		cxi_out_text(&x->out, x->key[CXI_KEY_NAME].data);
 		if (tag < n)
-			cxi_out_printf(&x->out, ". Give %s %s for the type, or give line. The "
-			               "symbols:\n", cxi_kind(find.list.items[tag]), name);
+			cxi_out_printf(&x->out, ". Give the name %s %s for the type, or give the "
+			               "line argument. The symbols:\n", cxi_kind(find.list.items[tag]),
+			               name);
 		else
-			cxi_out_printf(&x->out, ". Give line. The symbols:\n");
+			cxi_out_printf(&x->out, ". Give the line argument. The symbols:\n");
 	} else {
 		find.part = 1;
 		find.kind = 0;
@@ -818,8 +819,10 @@ cxi_lookup (struct cxi *x,
 		cxi_out_text(&x->out, x->key[CXI_KEY_NAME].data);
 		cxi_out_printf(&x->out, " in the translation unit of ");
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-		cxi_out_printf(&x->out, find.list.n ? ". Names in the repository that contain "
-		                                    : ". No name in the repository contains ");
+		cxi_out_printf(&x->out, find.list.n ? ". Repository names in the translation unit "
+		                                      "that contain "
+		                                    : ". No repository name in the translation unit "
+		                                      "contains ");
 		cxi_out_text(&x->out, name);
 		cxi_out_printf(&x->out, find.list.n ? ":\n" : ".");
 	}
