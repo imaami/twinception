@@ -8427,22 +8427,13 @@ mcp_offered_clients (struct config const *cfg)
 	       (cfg->flags & CFG_CLIENT_JOBS ? KINDS_AGENDA : 0);
 }
 
-/* The kinds of askai's own tools that @p cfg offers to clients or to the
- * turns, as bits.
- */
-static uint32_t
-mcp_offered (struct config const *cfg)
-{
-	uint32_t turns = KINDS_TURNS | KINDS_AGENDA;
-	return mcp_offered_clients(cfg) | (cfg->flags & CFG_UPSTREAM_TOOLS ? turns : 0);
-}
-
 int
 mcp_register (struct registry     *reg,
               struct config const *cfg)
 {
-	uint32_t offered = mcp_offered(cfg);
-	uint32_t granted = mcp_offered_clients(cfg);
+	uint32_t const granted = mcp_offered_clients(cfg);
+	uint32_t const offered =
+		granted | (cfg->flags & CFG_UPSTREAM_TOOLS ? KINDS_TURNS | KINDS_AGENDA : 0);
 	/* registry_add() inserts each tool that a role can grant before the
 	 * kinds in KINDS_TURNS. */
 	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
