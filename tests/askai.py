@@ -6075,8 +6075,8 @@ def check_logs(binary, up):
                         r'\d+\.\d s \(\d+ bytes\); arguments \{"seconds":0\}; error "The '
                         r'seconds argument must be a whole number from 1 to 3600\."$')
             ai.wait_log(r'^ask call \d+\.\d+ turn 1: tool call timer failed after '
-                        r'\d+\.\d s \(\d+ bytes\); arguments not a JSON object; error "Your '
-                        r'arguments were not a JSON object, so the call was not run\."$')
+                        r'\d+\.\d s \(\d+ bytes\); arguments not a JSON object; error "The '
+                        r'arguments were not a JSON object\. The call was not run\."$')
             # An answer that is not streamed, such as an HTTP error's body, has
             # no tokens, stop reason or tool calls.
             script[:] = [lambda r: (401, {"error": {"message": "no"}})]
@@ -7775,7 +7775,7 @@ def check_breaker(binary, up):
         assert texts[0] == "Upstream error (HTTP 503): down", texts
         assert sorted(texts[1:]) == \
             ["The upstream is unavailable; try again in 2 s."] * 8 + \
-            ["Too many tool calls are under way; try again in a few seconds."] * 2, texts
+            ["Too many tool calls are under way. Try again in a few seconds."] * 2, texts
         assert len(up.requests) == count + 1
         for sock in [first] + socks:
             sock.close()
@@ -12219,8 +12219,8 @@ def check_turn_apis(binary, up):
             assert [(g["type"], g["call_id"]) for g in given[5:]] == \
                 [("function_call_output", "c1"), ("function_call_output", "c2")], given
             assert re.fullmatch(logged, given[5]["output"]), given
-            assert given[6]["output"] == "Your arguments were not a JSON object, " \
-                "so the call was not run.", given
+            assert given[6]["output"] == "The arguments were not a JSON object. " \
+                "The call was not run.", given
             timer = {"type": "function_call", "id": "fc_3", "call_id": "t1",
                      "name": "timer", "arguments": "{\"seconds\":1}",
                      "status": "completed"}
@@ -12459,8 +12459,8 @@ def check_turn_apis(binary, up):
             assert [(g["type"], g["name"], g["call_id"]) for g in given[6:]] == \
                 [("function_result", "git", c) for c in ("c1", "c2", "c3")], given
             assert re.fullmatch(logged, given[6]["result"]), given
-            assert given[7]["result"] == "Your arguments were not a JSON object, " \
-                "so the call was not run.", given
+            assert given[7]["result"] == "The arguments were not a JSON object. " \
+                "The call was not run.", given
             assert re.fullmatch(logged, given[8]["result"]), given
             assert [sorted(g) for g in given[6:]] == \
                 [["call_id", "name", "result", "type"]] * 3, given
@@ -12681,7 +12681,7 @@ def check_attach(binary, up):
                 finally:
                     up.upload = up.stored
                 last = json.dumps(up.requests[count + 2]["body"][key][-2:])
-                assert "The upload of the note as a file failed: Upstream error " \
+                assert "The upload of the note failed. Upstream error " \
                     "(HTTP 500): store down" in last and "files.test" not in last, last
 
                 # The upstream refuses the turn after an attach as too large:
@@ -12760,11 +12760,10 @@ def check_attach(binary, up):
                 ("huge.bin", up.stored, "The note is too large to attach: its file "
                  f"would have {len(note_view(huge).encode())} bytes, and askai uploads "
                  "16 MiB at most."),
-                ("big.c", up.stored, "The note is too large to attach: its file of "
-                 "8000 bytes, about 2000 tokens, does not fit the context of 1000 "
-                 "tokens"),
+                ("big.c", up.stored, "The note is too large to attach. The file is "
+                 "8000 bytes, about 2000 tokens. The context is 1000 tokens"),
                 ("small.c", lambda request: (200, {"file": {"uri": "files/a b"}}),
-                 "The upload of the note as a file failed: The upstream named the "
+                 "The upload of the note failed. The upstream named the "
                  "file with a URI that is not printable ASCII."),
                 ("small.c", up.stored, "The note, 1 bytes, about 0 tokens, follows")):
             up.upload = upload
@@ -13076,9 +13075,10 @@ def check_turns(binary, up):
                 outputs[1]
             assert outputs[2] == "The text argument must be a string of 1 byte to " \
                 "4 MiB, and no NUL.", outputs[2]
-            assert outputs[3] == "No tool of that name is yours to call.", outputs[3]
-            assert outputs[4] == outputs[5] == "Your arguments were not a JSON " \
-                "object, so the call was not run.", outputs[4:]
+            assert outputs[3] == "The tool name is unknown, or the tool is not available " \
+                "to you.", outputs[3]
+            assert outputs[4] == outputs[5] == "The arguments were not a JSON " \
+                "object. The call was not run.", outputs[4:]
             assert [c["function"]["arguments"] for c in calls["tool_calls"][4:]] == \
                 ["{}", "{}"], calls
             _, _, body = ai.rpc("tools/call", {"name": "git", "arguments": {
@@ -13101,8 +13101,8 @@ def check_turns(binary, up):
             outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
             assert len(outputs) == 2 and outputs[0] == outputs[1], outputs
             assert turns(up.requests[count + 2])[-1]["content"] == "Your answer " \
-                "reached the output token limit, which cut these arguments short, " \
-                "so the call was not run.", up.requests[count + 2]
+                "reached the output token limit. The limit cut the arguments short. " \
+                "The call was not run.", up.requests[count + 2]
             assert turns(up.requests[count + 3])[-1]["content"].startswith(
                 "A note's name must be 1 to 255 bytes"), up.requests[count + 3]
 
@@ -13743,8 +13743,8 @@ def check_turns(binary, up):
             assert ai.ask("Q")["content"][0]["text"] == "A"
             ai.wait_log(r"^ask call \d+\.\d+ turn 1: tool call git failed after "
                         r"0\.\d s \(\d+ bytes\); arguments cut short by the output token "
-                        r'limit; error "Your answer reached the output token limit, which '
-                        r'cut these arguments short, so the call was not run\."$')
+                        r'limit; error "Your answer reached the output token limit\. The '
+                        r'limit cut the arguments short\. The call was not run\."$')
 
             # An answer while a timer is set, or a job runs, leaves the call
             # open: the turns doze until it fires, or ends, which a message of
@@ -14474,7 +14474,8 @@ def check_review(binary, up):
             assert "review record" not in lent["compact"]["description"], lent["compact"]
             assert "you see the original task, then your summary. " in \
                 lent["compact"]["description"], lent["compact"]
-            assert results(sent[1]) == ["No tool of that name is yours to call."], sent[1]
+            assert results(sent[1]) == ["The tool name is unknown, or the tool is not "
+                                        "available to you."], sent[1]
             assert prompt(sent[2]) == compacted("S", ""), prompt(sent[2])
 
         # Without the git tool, the turns get findings beside man, but the
@@ -14680,13 +14681,13 @@ def check_tasks(binary, up):
                                 ({"slices": 100001}, slices), ({"slices": "3"}, slices),
                                 ({"slices": 1.5}, slices),
                                 ({"slices": 1, "prompt": "Q"},
-                                 "Give slices or a prompt, not both."),
+                                 "Give slices or prompt, not both."),
                                 ({"prompt": ""},
                                  "The prompt argument must be a non-empty string.")):
             result = call(ai, arguments)
             assert result.get("isError") and text_of(result) == text, (arguments, result)
         assert text_of(call(ai, {"slices": 3})) == \
-            "Ran 3 slices, and moved 0 times between loops.", ai.log
+            "Ran 3 slices. The task moved 0 times between loops.", ai.log
 
         # Calls of mixed lengths at once spread their tasks over every loop,
         # and a loop left holding more than eight moves some off.
@@ -14702,7 +14703,7 @@ def check_tasks(binary, up):
             for thread in threads:
                 thread.join(30)
             assert len(texts) == 40, texts
-            moves += sum(int(re.fullmatch(r"Ran \d+ slices, and moved (\d+) times "
+            moves += sum(int(re.fullmatch(r"Ran \d+ slices\. The task moved (\d+) times "
                                           r"between loops\.", t).group(1)) for t in texts)
         values = ai.metrics()
         ran = [v for k, v in values.items() if k.startswith("askai_task_slices_total{")]
@@ -15475,7 +15476,7 @@ def check_instances(binary, up, plugin):
                     headers=auth("u256"))
                 assert status == 200 and "result" in body, (status, body)
                 return body["result"].get("isError") and text_of(body["result"]) == \
-                    "Too many tool calls are under way; try again in a few seconds."
+                    "Too many tool calls are under way. Try again in a few seconds."
 
             wait_for(refused)
             for sock in held:

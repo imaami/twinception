@@ -1398,7 +1398,7 @@ instance, with these exceptions:
 - A loop thread has at most 256 instances that later calls of their users can
   get. When a call of a user needs one more, `askai` destroys the one that
   has been unused for the longest time. If calls use all 256 instances, the
-  call fails with the text "Too many tool calls are under way; try again in a
+  call fails with the text "Too many tool calls are under way. Try again in a
   few seconds."
 - Under memory pressure, `askai` destroys instances that no call uses.
 - After a successful reload, the calls of new requests get new instances. A

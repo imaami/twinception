@@ -799,8 +799,8 @@ struct mcp {
 static thread_local struct mcp *self;
 
 /* Tool output for a call refused for want of room (design section 10). */
-static struct cstr_view const busy = CSTR_VIEW_INIT("Too many tool calls are under way; "
-                                                    "try again in a few seconds.");
+static struct cstr_view const busy = CSTR_VIEW_INIT("Too many tool calls are under way. "
+                                                    "Try again in a few seconds.");
 
 /* Errors and answers that more than one place gives. */
 static char const out_of_memory[] = "Out of memory";
@@ -3658,8 +3658,8 @@ mcp_slot_ready (struct mcp_slot *slot)
 	if (e)
 		return e;
 	if (!mcp_slot_tool(slot)->kind->step) {
-		(void)mcp_slot_tell(slot, CSTR_VIEW("The tool's kind has no step(), so the "
-		                                    "call cannot go on."), TOOL_FAILED);
+		(void)mcp_slot_tell(slot, CSTR_VIEW("The tool cannot continue the call. The tool "
+		                                    "defines no step function."), TOOL_FAILED);
 		return EINVAL;
 	}
 	loop_ready_bulk(slot->req->mcp->loop, &slot->step);
@@ -4095,8 +4095,8 @@ mcp_spin_back (struct loop *loop,
 		return;
 	}
 	*mcp_slot_own(slot) = nullptr;
-	mcp_slot_tellf(slot, 0, "Ran %" PRIu64 " slices, and moved %" PRIu64 " times between "
-	               "loops.", s->slices, task->moves);
+	mcp_slot_tellf(slot, 0, "Ran %" PRIu64 " slices. The task moved %" PRIu64 " times "
+	               "between loops.", s->slices, task->moves);
 	task_put(task, 2);
 }
 
@@ -4146,7 +4146,7 @@ mcp_slot_task (struct mcp_slot    *slot,
 		return;
 	}
 	if (slices) {
-		mcp_slot_tell(slot, CSTR_VIEW("Give slices or a prompt, not both."), TOOL_FAILED);
+		mcp_slot_tell(slot, CSTR_VIEW("Give slices or prompt, not both."), TOOL_FAILED);
 		return;
 	}
 	slot->req->asks = JOB_BACKGROUND;
@@ -4329,8 +4329,9 @@ mcp_req_turn_done (struct mcp_req *req)
 	}
 	static_assert(CALLS_MAX == 16 << 20, "update the result text");
 	if (bytes > CALLS_MAX) {
-		mcp_slot_result(&req->self, CSTR_VIEW("The other AI's tool calls in one turn took "
-		                                      "more than 16 MiB, so none was run."), true);
+		mcp_slot_result(&req->self, CSTR_VIEW("The tool calls of the other AI in one turn "
+		                                      "were larger than 16 MiB. No tool call was "
+		                                      "run."), true);
 		return;
 	}
 	if (!n && !mcp_req_dozes(req)) {
@@ -5424,7 +5425,8 @@ mcp_slot_none (struct mcp_slot    *slot,
                struct json_object *args)
 {
 	(void)args;
-	mcp_slot_result(slot, CSTR_VIEW("No tool of that name is yours to call."), true);
+	mcp_slot_result(slot, CSTR_VIEW("The tool name is unknown, or the tool is not "
+	                                "available to you."), true);
 }
 
 static void
@@ -5521,10 +5523,10 @@ mcp_req_call_launch (struct mcp_req *req)
 		 * slot->start. mcp_slot_done() logs the time since slot->start. */
 		slot->start = loop_clock();
 		mcp_slot_result(slot, req->flags & REQ_CUT
-		                ? CSTR_VIEW("Your answer reached the output token limit, which "
-		                            "cut these arguments short, so the call was not run.")
-		                : CSTR_VIEW("Your arguments were not a JSON object, so the call "
-		                            "was not run."), true);
+		                ? CSTR_VIEW("Your answer reached the output token limit. The "
+		                            "limit cut the arguments short. The call was not run.")
+		                : CSTR_VIEW("The arguments were not a JSON object. The call was "
+		                            "not run."), true);
 		return;
 	}
 	mcp_slot_start(slot, args);
@@ -6400,10 +6402,10 @@ mcp_req_fits (struct mcp_req const *req,
 	size_t used = mcp_req_tokens(req);
 	if (!req->context || used + bytes / 4 < req->context)
 		return 0;
-	return dstr_printf(out, "The note is too large to attach: its file of %zu bytes, "
-	                   "about %zu tokens, does not fit the context of %" PRIu32
-	                   " tokens, of which about %zu are used. read shows it in "
-	                   "parts.", bytes, bytes / 4, req->context, used) ? EFBIG : ENOMEM;
+	return dstr_printf(out, "The note is too large to attach. The file is %zu bytes, "
+	                   "about %zu tokens. The context is %" PRIu32 " tokens, and "
+	                   "about %zu tokens are in use. Read the note in parts with "
+	                   "action read.", bytes, bytes / 4, req->context, used) ? EFBIG : ENOMEM;
 }
 
 int
@@ -6427,8 +6429,8 @@ mcp_slot_attach (struct mcp_slot  *slot,
 		e = mcp_req_fits(req, file.len, out);
 		e = e ? e : mcp_slot_post_file(slot, file);
 		if (e == EAGAIN)
-			return cstr_view_cat(CSTR_VIEW("askai sends too many requests at once to "
-			                               "upload the note now. Try again later."),
+			return cstr_view_cat(CSTR_VIEW("askai cannot upload the note now. Too many "
+			                               "requests are under way. Try again later."),
 			                     out) ? ENOMEM : EAGAIN;
 		return e ? e : EINPROGRESS;
 	}
@@ -6467,10 +6469,10 @@ mcp_slot_attached (struct mcp_slot  *slot,
 	    : ai_uploaded(st->ep->api, r.status, r.body, &uri, &expires, &why);
 	struct cstr_view const u = cstr_view_dstr(&uri);
 	if (!e && u.len >= UPLOADS_URI)
-		e = dstr_printf(&why, "The upstream named the file with a URI of more "
-		                "than %d bytes.", UPLOADS_URI - 1) ? EIO : ENOMEM;
+		e = dstr_printf(&why, "The upstream returned a file URI longer than %d "
+		                "bytes.", UPLOADS_URI - 1) ? EIO : ENOMEM;
 	if (e == EIO)
-		return cstr_view_cat(CSTR_VIEW("The upload of the note as a file failed: "), out) ||
+		return cstr_view_cat(CSTR_VIEW("The upload of the note failed. "), out) ||
 		       cstr_view_cat(cstr_view_dstr(&why), out) ? ENOMEM : EIO;
 	if (e)
 		return e;
@@ -7836,11 +7838,11 @@ mcp_task_definition (void const *service)
 		"name", json_object_new_string("test_task"),
 		"title", json_object_new_string("Test task"),
 		"description", json_object_new_string(
-			"A test aid: CPU work of the slices asked for, 250 us each, run "
-			"as a task on the server's event loops, which says how many "
-			"slices ran and how often the task moved between loops; or, "
-			"given a prompt instead, a question to the upstream AI as "
-			"background work, which interactive calls go before."),
+			"A test aid. With slices, the call runs the given number of 250 us "
+			"slices of CPU work as a task on the event loops of the server. "
+			"The result contains the number of slices that ran and the number "
+			"of moves between loops. With prompt instead, the call asks the "
+			"upstream AI as background work. Interactive calls run first."),
 		"inputSchema", schema_object(
 			jb_object(
 				"slices", jb_set_or_free(schema_count(1, nullptr), "maximum",
