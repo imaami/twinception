@@ -813,8 +813,13 @@ static struct cstr_view const still_runs = CSTR_VIEW_INIT("That job still runs: 
 /* The actions of the jobs tool: X(ID, name), the constant ACTION_ID and the
  * name. An ask call that names a job in background mode takes the last two.
  */
-#define MCP_JOB_ACTION_LIST(X) X(RESULT, "result") X(CANCEL, "cancel")
-#define MCP_ACTION_LIST(X) X(LIST, "list") MCP_JOB_ACTION_LIST(X)
+#define MCP_JOB_ACTION_LIST(X) \
+        X(RESULT, "result")    \
+        X(CANCEL, "cancel")
+
+#define MCP_ACTION_LIST(X)     \
+        X(LIST,   "list")      \
+        MCP_JOB_ACTION_LIST(X)
 
 enum mcp_action : uint8_t {
 #define MCP_ACTION_ENUM(id, ...) ACTION_##id,
