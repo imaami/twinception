@@ -23,10 +23,7 @@ cli_ui (struct cli_console *console)
  * of the output in that state. Index 0 is the state out of the reasoning,
  * and index 1 the state in the reasoning.
  */
-static struct {
-	struct cstr_view mark;
-	uint64_t         style;  /* enum cli_style */
-} const cli_ui_modes[] = {
+static struct cli_console_span const cli_ui_modes[] = {
 	{CSTR_VIEW_INIT("[End thinking]\n\n"), CLI_STYLE_RESET},
 	{CSTR_VIEW_INIT("[Start thinking]\n\n"), CLI_STYLE_REASONING},
 };
@@ -59,7 +56,7 @@ cli_ui_push (struct cli_ui    *ui,
 		if (!e)
 			e = cli_console_set_display(ui->console, CLI_STYLE_REASONING);
 		if (!e)
-			e = cli_console_write(ui->console, true, cli_ui_modes[thinking].mark);
+			e = cli_console_write(ui->console, true, cli_ui_modes[thinking].text);
 		if (!e)
 			e = cli_console_set_display(ui->console, cli_ui_modes[thinking].style);
 		if (!e)
