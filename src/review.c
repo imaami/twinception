@@ -1231,8 +1231,8 @@ review_args_text (struct review_args *a,
 	struct cstr_view const s = jb_view(v);
 	int const len = (int)name.len;
 	if (!s.len || jb_utf8(s.data, s.len) != s.len)
-		return REFUSE(out, "The %.*s argument must be a string of UTF-8 text, not "
-		              "empty.", len, name.data);
+		return REFUSE(out, "The %.*s argument must be a non-empty string of UTF-8 text.",
+		              len, name.data);
 	size_t const n = kept ? kept(s.data, s.len) : s.len;
 	*t = s;
 	if (n >= s.len)
@@ -1240,9 +1240,8 @@ review_args_text (struct review_args *a,
 	/* Also drop the spaces and line ends before the notices. */
 	*t = cstr_view_trim_end((struct cstr_view){ s.data, n });
 	if (!t->len)
-		return REFUSE(out, "The %.*s has only askai's [askai: ...] lines, which askai adds "
-		              "to tool results. Give the %.*s itself.", len, name.data, len,
-		              name.data);
+		return REFUSE(out, "The %.*s argument contains only [askai: ...] lines from tool "
+		              "results. Give the actual %.*s.", len, name.data, len, name.data);
 	a->trimmed |= bit;
 	return 0;
 }
@@ -1275,9 +1274,10 @@ review_args_parse (struct review_args  *a,
 	if (jb_args(args, review_arg_names, REVIEW_ARGS, review_action_args[a->action], of, &seen,
 	            &other))
 		return cstr_view_index(review_arg_names, REVIEW_ARGS, other) == REVIEW_ARGS
-		       ? REFUSE(out, "The tool has no argument %.*s.", (int)other.len, other.data)
-		       : REFUSE(out, "%s takes no argument %.*s.", review_action_names[a->action].data,
-		                (int)other.len, other.data);
+		       ? REFUSE(out, "Unknown argument %.*s for the findings tool.", (int)other.len,
+		                other.data)
+		       : REFUSE(out, "The argument %.*s is not valid with action %s.",
+		                (int)other.len, other.data, review_action_names[a->action].data);
 	struct json_object *id = of[REVIEW_ARG_ID];
 	uint64_t const n = jb_count(id, SIZE_MAX);
 	if (id ? !n : a->action == REVIEW_UPDATE)
@@ -1315,8 +1315,8 @@ review_args_parse (struct review_args  *a,
 	                     &text, out);
 	if (!e && review_args_location(&a->location, text))
 		e = REFUSE(out, "The location argument must be path:line or path:first-last, "
-		           "such as src/mcp.c:120-140. Leave it out if no file's lines show the "
-		           "claim.");
+		           "such as src/mcp.c:120-140. Leave out location if no lines of a file "
+		           "show the claim.");
 	return e;
 }
 
@@ -1553,14 +1553,13 @@ review_check_location (struct review const          *r,
 	*commit = (struct oid){};
 	bool const requires_log = review_state_logged(state);
 	if (requires_log && !(r->flags & REVIEW_READ_LOG))
-		return REFUSE(out, "This ask call has neither the git tool nor the code tool, so a "
-		              "finding cannot be verified or disproved here; keep it a candidate, "
-		              "or retract it.");
+		return REFUSE(out, "verified and disproved need the git tool or the code tool. "
+		              "Neither tool is available in this ask call. Keep the finding a "
+		              "candidate, or retract the finding.");
 	if (!loc->path.len)
 		return !requires_log ? 0
-		     : REFUSE(out, "%s needs a location: lines of your read log that show it, "
-		              "such as src/mcp.c:120-140.",
-		              review_state_names[state].data);
+		     : REFUSE(out, "%s requires a location with lines from your read log, such as "
+		              "src/mcp.c:120-140.", review_state_names[state].data);
 	struct cstr_view found[4];
 	size_t const n = review_log_resolve(r, loc, found, array_size(found));
 	if (n == 1)
@@ -1572,7 +1571,7 @@ review_check_location (struct review const          *r,
 		       cstr_view_join(found, shown, UINT64_MAX, CSTR_VIEW(", "),
 		                      n == shown ? CSTR_VIEW(" and ") : CSTR_VIEW(", "), out) ||
 		       (n > shown && PUT(out, " and others")) ||
-		       PUT(out, " in your read log; give \"location\" with the whole path.")
+		       PUT(out, " in your read log. Give the whole path in location.")
 		       ? ENOMEM : EINVAL;
 	}
 	struct review_cover const c = review_log_cover(r, loc);
@@ -1599,17 +1598,18 @@ review_check_size (struct review const *r,
 	if (size <= TOOL_TEXT_MAX)
 		return 0;
 	if (fixed < TOOL_TEXT_MAX)
-		return REFUSE(out, "The record's limit is %d MiB. Give a claim and "
-		              "evidence of at most %zu bytes together.", mib, TOOL_TEXT_MAX - fixed);
+		return REFUSE(out, "The record is limited to %d MiB. Give a claim and evidence of "
+		              "at most %zu bytes together.", mib, TOOL_TEXT_MAX - fixed);
 	/* The smallest change is an update with 1 byte of evidence, charged
 	 * REVIEW_ITEM + 1 bytes. Pending lines can make room: a compaction
 	 * drops them, and the log may charge less for them. Without pending
 	 * lines no room becomes free, and a new read cannot become pending,
 	 * because a read is charged at least 2 * REVIEW_ITEM + 2 bytes. */
-	return REFUSE(out, "The record's limit is %d MiB, and %s. Keep further "
-	              "findings in your notes or your summary.", mib,
+	return REFUSE(out, "The record is limited to %d MiB. %s Keep further findings in your "
+	              "notes or your summary.", mib,
 	              r->pending.n || r->size + REVIEW_ITEM < TOOL_TEXT_MAX
-	              ? "this change does not fit" : "no further change fits in this ask call");
+	              ? "This change does not fit in the record."
+	              : "No further change fits in the record of this ask call.");
 }
 
 /**
@@ -1650,20 +1650,20 @@ review_add (struct review            *r,
             struct dstr              *out)
 {
 	if (!a->claim.len)
-		return REFUSE(out, "add needs a claim: what you found.");
+		return REFUSE(out, "add requires the claim argument.");
 	enum review_state const state = a->state == REVIEW_STATES ? REVIEW_CANDIDATE : a->state;
 	if (state == REVIEW_RETRACTED)
-		return REFUSE(out, "add takes the state candidate, verified or disproved; retract a "
-		              "finding with update.");
+		return REFUSE(out, "add accepts only the states candidate, verified and disproved. "
+		              "Retract a finding with update.");
 	struct review_location_view loc = a->location;
 	struct oid commit;
 	int e = review_check_location(r, &loc, state, true, &commit, out);
 	if (e)
 		return e;
 	if (review_state_logged(state) && !a->evidence.len)
-		return REFUSE(out, "%s needs evidence: what you read that shows it%s.",
-		              review_state_names[state].data,
-		              state == REVIEW_DISPROVED ? " false" : "");
+		return REFUSE(out, "%s requires the evidence argument. Give what you read that "
+		              "shows the claim %s.", review_state_names[state].data,
+		              state == REVIEW_DISPROVED ? "false" : "true");
 	/* The finding and its first change are charged REVIEW_ITEM each. */
 	size_t const texts = a->claim.len + a->evidence.len;
 	size_t const size = r->size + review_charge(2, texts + loc.path.len);
@@ -1701,8 +1701,7 @@ review_update (struct review            *r,
                struct dstr              *out)
 {
 	if (a->state == REVIEW_STATES || !a->evidence.len)
-		return REFUSE(out, "update needs state and evidence: what shows the new state, why "
-		              "you retract the finding, or why it is a candidate again.");
+		return REFUSE(out, "update requires the state and evidence arguments.");
 	struct review_finding *f = &r->findings.items[a->id - 1];
 	struct cstr_view const old_claim = cstr_view_dstr(&f->claim);
 	struct cstr_view const old_path = cstr_view_dstr(&f->location.path);

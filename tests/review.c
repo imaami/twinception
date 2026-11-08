@@ -41,9 +41,9 @@ same (char const *file,
 #define LATER " The log takes the lines of a read once you have seen them, so call again in " \
               "a later turn."
 #define WHOLE ", where the path is the file's whole path from the top of the repository"
-#define NO_MORE "The record's limit is 4 MiB, and no further change fits in " \
-                "this ask call. Keep further findings in your notes or your summary."
-#define NO_ROOM "The record's limit is 4 MiB, and this change does not fit. " \
+#define NO_MORE "The record is limited to 4 MiB. No further change fits in the record " \
+                "of this ask call. Keep further findings in your notes or your summary."
+#define NO_ROOM "The record is limited to 4 MiB. This change does not fit in the record. " \
                 "Keep further findings in your notes or your summary."
 /* The line before the findings, with the counts n, such as
  * "1 finding: 1 verified".
@@ -126,7 +126,7 @@ call_long (struct review *r,
 static size_t
 left_in (char const *text)
 {
-	static char const lead[] = "The record's limit is 4 MiB. Give a claim and "
+	static char const lead[] = "The record is limited to 4 MiB. Give a claim and "
 	                           "evidence of at most ";
 	size_t n = 0;
 	CHECK(text && !strncmp(text, lead, sizeof lead - 1) &&
@@ -484,36 +484,41 @@ test_refusals (void)
 		{ "null", "The action argument must be add, update or show." },
 		{ "{\"action\":\"remove\"}", "The action argument must be add, update or show." },
 		{ "{\"action\":3}", "The action argument must be add, update or show." },
-		{ "{\"action\":\"add\",\"claim\":\"c\",\"id\":1}", "add takes no argument id." },
-		{ "{\"action\":\"update\",\"id\":1,\"offset\":0}", "update takes no argument offset." },
-		{ "{\"action\":\"show\",\"claim\":\"x\"}", "show takes no argument claim." },
-		{ "{\"action\":\"show\",\"name\":\"x\"}", "The tool has no argument name." },
-		{ "{\"action\":\"add\"}", "add needs a claim: what you found." },
+		{ "{\"action\":\"add\",\"claim\":\"c\",\"id\":1}", "The argument id is not valid with action add." },
+		{ "{\"action\":\"update\",\"id\":1,\"offset\":0}",
+		  "The argument offset is not valid with action update." },
+		{ "{\"action\":\"show\",\"claim\":\"x\"}",
+		  "The argument claim is not valid with action show." },
+		{ "{\"action\":\"show\",\"name\":\"x\"}",
+		  "Unknown argument name for the findings tool." },
+		{ "{\"action\":\"add\"}", "add requires the claim argument." },
 		{ "{\"action\":\"add\",\"claim\":\"\"}",
-		  "The claim argument must be a string of UTF-8 text, not empty." },
+		  "The claim argument must be a non-empty string of UTF-8 text." },
 		{ "{\"action\":\"add\",\"claim\":5}",
-		  "The claim argument must be a string of UTF-8 text, not empty." },
+		  "The claim argument must be a non-empty string of UTF-8 text." },
 		{ "{\"action\":\"add\",\"claim\":\"[askai: x]\"}",
-		  "The claim has only askai's [askai: ...] lines, which askai adds to tool "
-		  "results. Give the claim itself." },
+		  "The claim argument contains only [askai: ...] lines from tool results. Give "
+		  "the actual claim." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"\"}",
-		  "The location argument must be a string of UTF-8 text, not empty." },
+		  "The location argument must be a non-empty string of UTF-8 text." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"evidence\":[]}",
-		  "The evidence argument must be a string of UTF-8 text, not empty." },
+		  "The evidence argument must be a non-empty string of UTF-8 text." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"evidence\":\"\\n\\n[askai: x]\"}",
-		  "The evidence has only askai's [askai: ...] lines, which askai adds to tool "
-		  "results. Give the evidence itself." },
+		  "The evidence argument contains only [askai: ...] lines from tool results. Give "
+		  "the actual evidence." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"open\"}",
 		  "The state argument must be candidate, verified, disproved or retracted." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"retracted\"}",
-		  "add takes the state candidate, verified or disproved; retract a finding with "
-		  "update." },
+		  "add accepts only the states candidate, verified and disproved. Retract a "
+		  "finding with update." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"location\":\"src/a.c:3\"}",
-		  "verified needs evidence: what you read that shows it." },
+		  "verified requires the evidence argument. Give what you read that shows the "
+		  "claim true." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"disproved\",\"location\":\"src/a.c:3\"}",
-		  "disproved needs evidence: what you read that shows it false." },
+		  "disproved requires the evidence argument. Give what you read that shows the "
+		  "claim false." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"evidence\":\"e\"}",
-		  "verified needs a location: lines of your read log that show it, such as "
+		  "verified requires a location with lines from your read log, such as "
 		  "src/mcp.c:120-140." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"evidence\":\"e\","
 		  "\"location\":\"src/a.c:50-60\"}",
@@ -575,8 +580,8 @@ test_refusals (void)
 		snprintf(json, sizeof json, "{\"action\":\"add\",\"claim\":\"c\",\"location\":"
 		         "\"%s\"}", places[i]);
 		EXPECT(r, json, 2, EINVAL, "The location argument must be path:line or "
-		                           "path:first-last, such as src/mcp.c:120-140. Leave it "
-		                           "out if no file's lines show the claim.");
+		                           "path:first-last, such as src/mcp.c:120-140. Leave out "
+		                           "location if no lines of a file show the claim.");
 	}
 
 	/* Texts that are not UTF-8. */
@@ -589,8 +594,8 @@ test_refusals (void)
 		json_object_object_add(args, keys[i], json_object_new_string_len("a\xff", 2));
 		CHECK(run(r, args, 2, nullptr, &out) == EINVAL);
 		char want[96];
-		snprintf(want, sizeof want, "The %s argument must be a string of UTF-8 text, "
-		         "not empty.", keys[i]);
+		snprintf(want, sizeof want, "The %s argument must be a non-empty string of UTF-8 "
+		         "text.", keys[i]);
 		SAME(dstr_get(&out), want);
 	}
 
@@ -606,22 +611,19 @@ test_refusals (void)
 	EXPECT(r, "{\"action\":\"show\",\"id\":9}", 2, EINVAL,
 	       "There is no finding 9. The record contains findings 1 to 5.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1}", 2, EINVAL,
-	       "update needs state and evidence: what shows the new state, why you retract the "
-	       "finding, or why it is a candidate again.");
+	       "update requires the state and evidence arguments.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"verified\"}", 2, EINVAL,
-	       "update needs state and evidence: what shows the new state, why you retract the "
-	       "finding, or why it is a candidate again.");
+	       "update requires the state and evidence arguments.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"evidence\":\"e\"}", 2, EINVAL,
-	       "update needs state and evidence: what shows the new state, why you retract the "
-	       "finding, or why it is a candidate again.");
+	       "update requires the state and evidence arguments.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"fixed\",\"evidence\":\"e\"}", 2,
 	       EINVAL, "The state argument must be candidate, verified, disproved or retracted.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"verified\",\"evidence\":\"e\"}", 2,
-	       EINVAL, "verified needs a location: lines of your read log that show it, such as "
+	       EINVAL, "verified requires a location with lines from your read log, such as "
 	               "src/mcp.c:120-140.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"candidate\",\"evidence\":\"e\","
 	          "\"claim\":\"\"}", 2,
-	       EINVAL, "The claim argument must be a string of UTF-8 text, not empty.");
+	       EINVAL, "The claim argument must be a non-empty string of UTF-8 text.");
 	dstr_cleanup(&out);
 	review_destroy(&r);
 }
@@ -646,8 +648,8 @@ test_paths (void)
 	       "verify it.");
 	CHECK(!seen(r, "proj", B, "tests/x.c", 1, 10, 10, 2));
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"x.c:3\"}", 3, EINVAL,
-	       "x.c matches src/x.c and tests/x.c in your read log; give \"location\" with the "
-	       "whole path.");
+	       "x.c matches src/x.c and tests/x.c in your read log. Give the whole path in "
+	       "location.");
 	/* A commit narrows the paths, and the whole path is never ambiguous. */
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"1111111:x.c:3\"}", 3, 0,
 	       "Added finding 4: candidate, tests/x.c:3 at " B12 ".");
@@ -656,12 +658,12 @@ test_paths (void)
 	       "Added finding 5: verified, src/x.c:3 at " A12 ".");
 	CHECK(!seen(r, "other", A, "doc/x.c", 1, 10, 10, 3));
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"x.c:3\"}", 4, EINVAL,
-	       "x.c matches src/x.c, tests/x.c and doc/x.c in your read log; give \"location\" "
-	       "with the whole path.");
+	       "x.c matches src/x.c, tests/x.c and doc/x.c in your read log. Give the whole "
+	       "path in location.");
 	CHECK(!seen(r, "other", A, "lib/x.c", 1, 10, 10, 3));
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"x.c:3\"}", 4, EINVAL,
-	       "x.c matches src/x.c, tests/x.c, doc/x.c and others in your read log; give "
-	       "\"location\" with the whole path.");
+	       "x.c matches src/x.c, tests/x.c, doc/x.c and others in your read log. Give the "
+	       "whole path in location.");
 	/* The same path in two repositories is one path. */
 	CHECK(!seen(r, "other", A, "src/a.c", 1, 10, 10, 4));
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"location\":\"a.c:3\"}", 5, 0,
@@ -695,8 +697,8 @@ test_paths (void)
 	CHECK(!seen(r, "proj", A, "src/a.c", 1, 10, 10, 1));
 	CHECK(!seen(r, "proj", A, "tests/a.c", 1, 10, 10, 1));
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"verified\",\"evidence\":\"e\"}",
-	       2, EINVAL, "a.c matches src/a.c and tests/a.c in your read log; give \"location\" "
-	       "with the whole path.");
+	       2, EINVAL, "a.c matches src/a.c and tests/a.c in your read log. Give the whole "
+	       "path in location.");
 	EXPECT(r, "{\"action\":\"update\",\"id\":1,\"state\":\"candidate\",\"evidence\":\"f\"}",
 	       2, 0, "Finding 1 stays candidate, a.c:3, not read; the new evidence is in its "
 	       "history. Read its lines before you verify it.");
@@ -1278,9 +1280,9 @@ test_no_git (void)
 	int e;
 	struct review *r = review_create(0, &e);
 	CHECK(r && !e);
-	char const no_git[] = "This ask call has neither the git tool nor the code tool, so a "
-	                      "finding cannot be verified or disproved here; keep it a "
-	                      "candidate, or retract it.";
+	char const no_git[] = "verified and disproved need the git tool or the code tool. "
+	                      "Neither tool is available in this ask call. Keep the finding a "
+	                      "candidate, or retract the finding.";
 	char const verify[] = "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	                      "\"evidence\":\"e\",\"location\":\"src/a.c:3\"}";
 	EXPECT(r, verify, 1, EINVAL, no_git);

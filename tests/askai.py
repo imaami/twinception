@@ -14097,10 +14097,9 @@ def check_review(binary, up):
                 "Added finding 2: candidate. askai left out the [askai: ...] lines at "
                 "the end of the evidence. askai adds those lines to tool results, and "
                 "they are not part of the finding.",
-                "update needs state and evidence: what shows the new state, why you "
-                "retract the finding, or why it is a candidate again.",
+                "update requires the state and evidence arguments.",
                 "The action argument must be add, update or show.",
-                "add takes no argument id.",
+                "The argument id is not valid with action add.",
                 REVIEW + first], results(sent[1])
             record = (REVIEW + findings_head("2 findings: 1 candidate, 1 retracted") +
                       "1. candidate, src/a.c:3-4, not read\n   claim: C1\n" + CLOSING +
@@ -14263,8 +14262,8 @@ def check_review(binary, up):
             assert results(sent[4])[3:] == [f"Added finding 3: verified, src/a.c:3 at "
                                             f"{head[:12]}."], results(sent[4])
             assert results(sent[5]) == [
-                "x.c matches src/x.c and tests/x.c in your read log; give \"location\" with "
-                "the whole path.",
+                "x.c matches src/x.c and tests/x.c in your read log. Give the whole path in "
+                "location.",
                 f"Added finding 4: verified, src/a.c:3 at {later[:12]}.",
                 f"Added finding 5: verified, src/a.c:8 at {head[:12]}.",
                 REVIEW + findings_head("5 findings: 4 verified, 1 disproved") +
@@ -14312,8 +14311,8 @@ def check_review(binary, up):
             count = len(up.requests)
             assert ai.ask("Q")["content"][0]["text"] == "A"
             assert results(up.requests[count + 3]) == [
-                "x.c matches src/x.c and tests/x.c in your read log; give \"location\" with "
-                "the whole path.",
+                "x.c matches src/x.c and tests/x.c in your read log. Give the whole path in "
+                "location.",
                 "Finding 1 is now retracted, x.c:1, not read; it was candidate."], \
                 results(up.requests[count + 3])
 
@@ -14502,9 +14501,9 @@ def check_review(binary, up):
             sent = up.requests[count:]
             lent = {t["function"]["name"] for t in sent[0]["body"]["tools"]}
             assert "findings" in lent and "git" not in lent, lent
-            no_git = ("This ask call has neither the git tool nor the code tool, so a "
-                      "finding cannot be verified or disproved here; keep it a candidate, "
-                      "or retract it.")
+            no_git = ("verified and disproved need the git tool or the code tool. Neither "
+                      "tool is available in this ask call. Keep the finding a candidate, or "
+                      "retract the finding.")
             assert results(sent[1]) == [no_git, "Added finding 1: candidate, src/a.c:3, not "
                                         "read.", no_git], results(sent[1])
 
