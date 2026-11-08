@@ -1609,7 +1609,7 @@ cxi_cache_open (struct cxi_cache *cache,
                 struct cstr_view  commit,
                 struct cxi_out   *out)
 {
-	char const *why;
+	char const *why = nullptr;
 	int const flags = O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC;
 	struct dstr index = DSTR_INIT;
 	int e = cxi_dir((char *)dstr_raw(&cache->dir), &cache->fd, &why);
