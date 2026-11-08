@@ -12702,8 +12702,8 @@ def check_attach(binary, up):
                 again = up.requests[count + 2]["body"][key]
                 assert "files.test" not in json.dumps(again)
                 prompt = again[0]["parts" if api == "generate" else "content"][0]["text"]
-                assert prompt.count(f"Your writable notebook is {api}/anonymous/upstream. "
-                                    "Use the selector") == 1, prompt
+                assert prompt.count("The selector of your writable notebook is "
+                                    f"{api}/anonymous/upstream. Give a selector") == 1, prompt
                 script[:] = [lambda r: (200, calls(attach[1:])), lambda r: (200, answer("F"))]
                 assert ai.ask("Q", thread=thread)["content"][0]["text"] == "F"
                 assert len(up.uploads) == stored + 1
@@ -12918,10 +12918,10 @@ def check_turns(binary, up):
         selector = "turns/anonymous/upstream"
         branch = f"refs/heads/notes/{selector}"
         provenance = f"\n\n[askai: notebook {selector}]"
-        identity = ("\n\n[askai: participant turns. Your writable notebook is "
-                    f"{selector}. Use the selector in the notebook argument of notes, not "
-                    "as a note name. own means the same notebook and is the default, except "
-                    "for copy. Call notes with action notebooks to list all notebooks.]\n")
+        identity = ("\n\n[askai: you are participant turns. The selector of your writable "
+                    f"notebook is {selector}. Give a selector in the notebook argument of "
+                    "notes, not as a note name. Call notes with action notebooks to list all "
+                    "notebooks.]\n")
         sessions = 0
 
         def isolated(*options):
