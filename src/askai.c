@@ -728,7 +728,6 @@ askai_separate_repos (char const *notes,
 			apart = apart || (!util_path_next(&rest, &other) && other.len &&
 			                  !cstr_view_equal(part, other));
 	free(cwd);
-	cwd = nullptr;
 	return e ? e : apart ? 0 : EINVAL;
 }
 
