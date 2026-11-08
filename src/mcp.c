@@ -606,11 +606,12 @@ struct mcp_req {
 	struct buf           reply;      /* our response body, until sent */
 	struct jb_parser     parser;     /* of the body, then of the answer */
 	struct jb_reaper     reaper;     /* what is freed a slice a step */
-	struct mcp_splice   *splice;     /* the places of the strings of the
-	                                    client in the draft, in draft order.
-	                                    A spare request reuses the array. */
-	size_t               splices;    /* the entries of splice in use */
-	size_t               splice_max; /* the entries of splice */
+	UTIL_ARRAY(struct mcp_splice) splice;  /* the strings of the client and
+	                                          their offsets in the draft, in
+	                                          draft order. When mcp_begin()
+	                                          reuses a spare request, it
+	                                          leaves items and cap as they
+	                                          are. */
 	struct mcp_slot      self;       /* its own call: its answer, the tool
 	                                    that a client calls, and the notes'
 	                                    git it reads */
@@ -1009,8 +1010,8 @@ mcp_req_kept (struct mcp_req const *req)
 	uint64_t bytes = sizeof *req + dstr_get_block_count(&req->self.answer) * DSTR_BLK_SIZE +
 	                 dstr_get_block_count(&req->trace) * DSTR_BLK_SIZE +
 	                 req->scan.cap * sizeof *req->scan.members +
-	                 req->reaper.cap * sizeof *req->reaper.stack +
-	                 req->splice_max * sizeof *req->splice;
+	                 req->reaper.cap * sizeof *req->reaper.items +
+	                 req->splice.cap * sizeof *req->splice.items;
 	size_t const slots = req->slots ? JOB_CALLS : 0;
 	for (size_t k = 0; k < slots; ++k)
 		bytes += sizeof *req->slots +
@@ -1073,8 +1074,8 @@ mcp_spare_drop (struct mcp *mcp)
 	jb_scan_fini(&req->scan);
 	dstr_cleanup(&req->self.answer);
 	dstr_cleanup(&req->trace);
-	free(req->splice);
-	req->splice = nullptr;
+	free(req->splice.items);
+	req->splice.items = nullptr;
 	size_t const slots = req->slots ? JOB_CALLS : 0;
 	for (size_t k = 0; k < slots; ++k)
 		dstr_cleanup(&req->slots[k].answer);
@@ -2671,10 +2672,10 @@ mcp_splice_mark (struct json_object *str,
 	(void)level;
 	(void)flags;
 	struct mcp_req *req = json_object_get_userdata(str);
-	if (req->splices == req->splice_max ||
+	if (req->splice.n == req->splice.cap ||
 	    printbuf_strappend(pb, "\"\"") < 0)
 		return -1;
-	req->splice[req->splices++] = (struct mcp_splice){ str, (size_t)pb->bpos - 1 };
+	req->splice.items[req->splice.n++] = (struct mcp_splice){ str, (size_t)pb->bpos - 1 };
 	return 0;
 }
 
@@ -2685,8 +2686,8 @@ static int
 mcp_req_copy (struct mcp_req *req,
               size_t          k)
 {
-	size_t from = k ? req->splice[k - 1].at : 0;
-	size_t len = (k < req->splices ? req->splice[k].at : req->text.len) - from;
+	size_t from = k ? req->splice.items[k - 1].at : 0;
+	size_t len = (k < req->splice.n ? req->splice.items[k].at : req->text.len) - from;
 	return buf_put(&req->upload, req->text.data + from, len, SIZE_MAX);
 }
 
@@ -3013,9 +3014,9 @@ static int
 mcp_req_build_slice (struct mcp_req *req)
 {
 	struct loop *loop = req->mcp->loop;
-	if (req->next == req->splices)
+	if (req->next == req->splice.n)
 		return 0;
-	struct json_object *str = req->splice[req->next].str;
+	struct json_object *str = req->splice.items[req->next].str;
 	size_t all = (size_t)json_object_get_string_len(str);
 	size_t len = all - req->off;
 	size_t room = loop_room(loop, LOOP_ESCAPE);
@@ -3036,7 +3037,7 @@ mcp_req_build_slice (struct mcp_req *req)
 	int e = mcp_req_copy(req, ++req->next);
 	if (e)
 		return e;
-	return req->next < req->splices ? EAGAIN : 0;
+	return req->next < req->splice.n ? EAGAIN : 0;
 }
 
 /* Write the upstream request, a slice a step; once all is written, submit
@@ -3877,7 +3878,7 @@ mcp_req_draft (struct mcp_req     *req,
 	 * CHAT_HISTORY (mcp_history_valid()), one for the prompt and one for the
 	 * system prompt, and req->next counts them. */
 	static_assert(CHAT_HISTORY + 2 < 1ull << 8 * sizeof req->next, "req->next is too narrow");
-	if (util_grow(req->splice, req->splice_max, n + 2))
+	if (util_grow(req->splice.items, req->splice.cap, n + 2))
 		return ENOMEM;
 	for (size_t k = 0; k < n; ++k)
 		json_object_set_serializer(jb_get(jb_at(history, k), "content"),
@@ -7516,8 +7517,8 @@ mcp_begin (struct mcp           *mcp,
 		.self = { .step.fn = mcp_slot_step, .answer = req->self.answer, .req = req,
 		          .tool = TOOL_MAX },
 		.trace = req->trace,
-		.splice = req->splice,
-		.splice_max = req->splice_max,
+		.splice.items = req->splice.items,
+		.splice.cap = req->splice.cap,
 		.slots = req->slots,
 		.s = s,
 		.mcp = mcp,

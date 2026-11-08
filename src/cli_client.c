@@ -531,9 +531,7 @@ cli_client_read_notebooks (struct cstr_view  text,
  * text that it parses.
  */
 struct cli_client_files {
-	struct cstr_view *names;
-	size_t            count;
-	size_t            capacity;
+	UTIL_ARRAY(struct cstr_view);
 };
 
 /* Returns the note name in line, a line of a listing of the notes tool,
@@ -570,11 +568,11 @@ cli_client_read_files (struct cstr_view  text,
 		line = cli_client_file_name(line);
 		if (!line.len)
 			continue;
-		if (found->count == 65536)
+		if (found->n == 65536)
 			return E2BIG;
-		if (util_grow(found->names, found->capacity, found->count + 1))
+		if (util_grow(found->items, found->cap, found->n + 1))
 			return ENOMEM;
-		found->names[found->count++] = line;
+		found->items[found->n++] = line;
 	}
 	return 0;
 }
@@ -630,16 +628,15 @@ cli_client_discover_files (struct cli_client   *client,
 		struct json_object *params = jb_object("name", cli_client_string(tool),
 		                                      "arguments", jb_object("action", jb_string(notes_action_names[NOTES_ACTION_LIST]),
 		                                                             "notebook", cli_client_string(notebook), nullptr), nullptr);
-		files.count = 0;
+		files.n = 0;
 		/* The names in files are views into the listing. */
 		cli_json_auto listing = nullptr;
 		e = cli_client_notes(client, params, "note filename", true, cli_client_read_files, &files,
 		                     &listing, error);
 		if (!e)
-			e = autocomplete_set_note_files(catalog, tool, notebook, files.names, files.count);
+			e = autocomplete_set_note_files(catalog, tool, notebook, files.items, files.n);
 	}
-	free(files.names);
-	files.names = nullptr;
+	free(files.items);
 	return e;
 }
 

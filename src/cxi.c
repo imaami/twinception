@@ -311,9 +311,7 @@ cxi_head (struct cxi *x)
 
 /* Cursors that a visitor collects; a failed push sets out->e. */
 struct cxi_list {
-	CXCursor       *c;
-	size_t          n;
-	size_t          cap;
+	UTIL_ARRAY(CXCursor);
 	struct cxi_out *out;
 };
 
@@ -321,11 +319,11 @@ static bool
 cxi_list_push (struct cxi_list *list,
                CXCursor         c)
 {
-	if (util_grow(list->c, list->cap, list->n + 1)) {
+	if (util_grow(list->items, list->cap, list->n + 1)) {
 		list->out->e = ENOMEM;
 		return false;
 	}
-	list->c[list->n++] = c;
+	list->items[list->n++] = c;
 	return true;
 }
 
@@ -363,12 +361,12 @@ cxi_outline (struct cxi *x)
 	struct cxi_list list = { .out = &x->out };
 	clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_declared, &list);
 	if (list.n)
-		qsort(list.c, list.n, sizeof *list.c, cxi_order);
+		qsort(list.items, list.n, sizeof *list.items, cxi_order);
 	cxi_head(x);
 	cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
 	cxi_out_printf(&x->out, ", %zu name%s.]\n", list.n, util_s(list.n));
 	for (size_t i = 0; i < list.n; ++i) {
-		CXCursor const c = list.c[i];
+		CXCursor const c = list.items[i];
 		enum CXCursorKind const k = clang_getCursorKind(c);
 		CXSourceRange const extent = clang_getCursorExtent(c);
 		unsigned const first = cxi_line(clang_getRangeStart(extent));
@@ -389,7 +387,7 @@ cxi_outline (struct cxi *x)
 			cxi_out_printf(&x->out, " (%u-%u)", first, last);
 		cxi_out_printf(&x->out, "\n");
 	}
-	free(list.c);
+	free(list.items);
 	return (int)x->out.e;
 }
 
@@ -537,12 +535,12 @@ cxi_out_call (struct cxi_out        *out,
               struct cxi_list const *calls,
               size_t                 i)
 {
-	CXCursor const f = cxi_callee(calls->c[i]);
-	unsigned line = cxi_line(clang_getCursorLocation(calls->c[i]));
-	cxi_out_place(out, "  ", clang_getCursorLocation(calls->c[i]), "");
+	CXCursor const f = cxi_callee(calls->items[i]);
+	unsigned line = cxi_line(clang_getCursorLocation(calls->items[i]));
+	cxi_out_place(out, "  ", clang_getCursorLocation(calls->items[i]), "");
 	for (unsigned l; ++i < calls->n; ) {
-		l = cxi_line(clang_getCursorLocation(calls->c[i]));
-		if (!clang_equalCursors(cxi_callee(calls->c[i]), f) || l == line)
+		l = cxi_line(clang_getCursorLocation(calls->items[i]));
+		if (!clang_equalCursors(cxi_callee(calls->items[i]), f) || l == line)
 			continue;
 		cxi_out_printf(out, ",%u", l);
 		line = l;
@@ -561,12 +559,12 @@ cxi_out_calls (struct cxi_out *out,
 	if (calls.n)
 		cxi_out_printf(out, "calls:\n");
 	for (size_t i = 0, j = 0; i < calls.n; ++i, j = 0) {
-		while (!clang_equalCursors(cxi_callee(calls.c[j]), cxi_callee(calls.c[i])))
+		while (!clang_equalCursors(cxi_callee(calls.items[j]), cxi_callee(calls.items[i])))
 			++j;
 		if (j == i)
 			cxi_out_call(out, &calls, i);
 	}
-	free(calls.c);
+	free(calls.items);
 }
 
 /* A record in a layout. padding, rows (left to print) and hidden (members
@@ -768,7 +766,7 @@ cxi_match (CXCursor     c,
 	CXCursor const canonical = clang_getCanonicalCursor(c);
 	size_t i = 0;
 	while (match && i < find->list.n &&
-	       !clang_equalCursors(clang_getCanonicalCursor(find->list.c[i]), canonical))
+	       !clang_equalCursors(clang_getCanonicalCursor(find->list.items[i]), canonical))
 		++i;
 	if (match && i == find->list.n && !cxi_list_push(&find->list, c))
 		return CXChildVisit_Break;
@@ -788,13 +786,13 @@ cxi_lookup (struct cxi *x,
 	clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_match, &find);
 	size_t const n = find.list.n;
 	if (n == 1) {
-		*c = cxi_shown(find.list.c[0]);
-		free(find.list.c);
+		*c = cxi_shown(find.list.items[0]);
+		free(find.list.items);
 		return (int)x->out.e;
 	}
 	if (n) {
 		size_t tag = 0;
-		while (tag < n && !cxi_tag(clang_getCursorKind(find.list.c[tag])))
+		while (tag < n && !cxi_tag(clang_getCursorKind(find.list.items[tag])))
 			++tag;
 		cxi_out_printf(&x->out, "%zu symbols in the translation unit of ", n);
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
@@ -802,7 +800,7 @@ cxi_lookup (struct cxi *x,
 		cxi_out_text(&x->out, x->key[CXI_KEY_NAME].data);
 		if (tag < n)
 			cxi_out_printf(&x->out, "; give %s %s for the type, or line:\n",
-			               cxi_kind(find.list.c[tag]), name);
+			               cxi_kind(find.list.items[tag]), name);
 		else
 			cxi_out_printf(&x->out, "; give line:\n");
 	} else {
@@ -818,13 +816,13 @@ cxi_lookup (struct cxi *x,
 		               : ", and no name of the repository contains it.");
 	}
 	for (size_t i = 0; i < find.list.n; ++i) {
-		CXCursor const at = cxi_shown(find.list.c[i]);
+		CXCursor const at = cxi_shown(find.list.items[i]);
 		cxi_out_place(&x->out, "  ", clang_getCursorLocation(at), " ");
 		cxi_out_printf(&x->out, "%s%s ", cxi_static(at), cxi_kind(at));
 		cxi_out_name(&x->out, at);
 		cxi_out_printf(&x->out, "\n");
 	}
-	free(find.list.c);
+	free(find.list.items);
 	return x->out.e ? (int)x->out.e : EINVAL;
 }
 
@@ -998,8 +996,8 @@ cxi_lookup_member (struct cxi *x,
 	clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_match, &find);
 	CXCursor record = clang_getNullCursor();
 	for (size_t i = 0; clang_Cursor_isNull(record) && i < find.list.n; ++i)
-		record = cxi_record_of(find.list.c[i]);
-	free(find.list.c);
+		record = cxi_record_of(find.list.items[i]);
+	free(find.list.items);
 	if (clang_Cursor_isNull(record)) {
 		cxi_out_printf(&x->out, "No struct, union or typedef of one named %s in the "
 		               "translation unit of ", name);

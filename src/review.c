@@ -64,9 +64,7 @@ struct review_range {
 struct review_file {
 	struct dstr          repo;
 	struct dstr          path;
-	struct review_range *ranges;
-	size_t               n;
-	size_t               cap;
+	UTIL_ARRAY(struct review_range) ranges;
 	uint32_t             total;   /**< line count of the file, or 0 if
 	                                   unknown */
 	struct oid           commit;
@@ -83,9 +81,7 @@ review_file (void)
  *  each other, in the order in which they were added.
  */
 struct review_files {
-	struct review_file *files;
-	size_t              n;
-	size_t              cap;
+	UTIL_ARRAY(struct review_file);
 };
 
 /** Lines first to last of the file at path. The path is empty if there is
@@ -155,9 +151,7 @@ review_change (uint32_t          turn,
 struct review_finding {
 	struct dstr            claim;
 	struct review_location location;
-	struct review_change  *changes;
-	size_t                 n;
-	size_t                 cap;
+	UTIL_ARRAY(struct review_change) changes;
 };
 
 /** Returns a finding without a claim and without changes, at the lines
@@ -183,10 +177,8 @@ struct review_read {
 struct review {
 	struct review_files    log;           /**< the read log */
 	struct review_files    pending;       /**< the pending lines (review.h) */
-	struct review_finding *findings;      /**< findings[i] is the finding with
-	                                           the id i + 1 */
-	size_t                 n_findings;
-	size_t                 cap_findings;
+	UTIL_ARRAY(struct review_finding) findings;  /**< items[i] is the finding
+	                                                  with the id i + 1 */
 	size_t                 size;          /**< charged bytes, pending lines
 	                                           included */
 	uint32_t               dropped_turn;  /**< the first turn whose lines did
@@ -229,8 +221,8 @@ static size_t
 review_finding_charge (struct review_finding const *f)
 {
 	size_t n = review_charge(1, dstr_len(&f->claim) + dstr_len(&f->location.path));
-	for (size_t i = 0; i < f->n; ++i)
-		n += review_change_charge(&f->changes[i]);
+	for (size_t i = 0; i < f->changes.n; ++i)
+		n += review_change_charge(&f->changes.items[i]);
 	return n;
 }
 
@@ -239,7 +231,7 @@ review_file_fini (struct review_file *f)
 {
 	dstr_cleanup(&f->repo);
 	dstr_cleanup(&f->path);
-	free(f->ranges);
+	free(f->ranges.items);
 	*f = review_file();
 }
 
@@ -250,7 +242,7 @@ static void
 review_files_clear (struct review_files *list)
 {
 	for (size_t i = 0; i < list->n; ++i)
-		review_file_fini(&list->files[i]);
+		review_file_fini(&list->items[i]);
 	list->n = 0;
 }
 
@@ -258,7 +250,7 @@ static void
 review_files_fini (struct review_files *list)
 {
 	review_files_clear(list);
-	free(list->files);
+	free(list->items);
 	*list = (struct review_files){};
 }
 
@@ -275,9 +267,9 @@ review_finding_fini (struct review_finding *f)
 {
 	dstr_cleanup(&f->claim);
 	dstr_cleanup(&f->location.path);
-	for (size_t i = 0; i < f->n; ++i)
-		review_change_fini(&f->changes[i]);
-	free(f->changes);
+	for (size_t i = 0; i < f->changes.n; ++i)
+		review_change_fini(&f->changes.items[i]);
+	free(f->changes.items);
 	*f = review_finding(0, 0);
 }
 
@@ -287,9 +279,9 @@ review_fini (struct review *r)
 {
 	review_files_fini(&r->log);
 	review_files_fini(&r->pending);
-	for (size_t i = 0; i < r->n_findings; ++i)
-		review_finding_fini(&r->findings[i]);
-	free(r->findings);
+	for (size_t i = 0; i < r->findings.n; ++i)
+		review_finding_fini(&r->findings.items[i]);
+	free(r->findings.items);
 	*r = (struct review){};
 }
 
@@ -502,7 +494,7 @@ review_files_find (struct review_files const  *list,
 {
 	*at = list->n;
 	for (size_t i = 0; i < list->n; ++i) {
-		struct review_file const *f = &list->files[i];
+		struct review_file const *f = &list->items[i];
 		if (!review_file_commit_equal(f, key->repo, key->commit))
 			continue;
 		if (cstr_view_equal(cstr_view_dstr(&f->path), key->path))
@@ -520,9 +512,9 @@ review_files_insert (struct review_files      *list,
                      struct review_file const *f,
                      size_t                    at)
 {
-	if (util_splice(list->files, list->n, list->cap, at, 0, 1))
+	if (util_splice(list->items, list->n, list->cap, at, 0, 1))
 		return ENOMEM;
-	list->files[at] = *f;
+	list->items[at] = *f;
 	return 0;
 }
 
@@ -598,25 +590,25 @@ review_file_add_range (struct review       *r,
                        uint32_t             total,
                        struct review_range  lines)
 {
-	struct review_range const *p = f->ranges;
+	struct review_range const *p = f->ranges.items;
 	/* The ranges before i end before line lines.first - 1, the ranges from
 	 * j on start after line lines.last + 1, and the ranges from i to j - 1
 	 * overlap or adjoin lines. */
 	size_t i = 0;
-	while (i < f->n && (uint64_t)p[i].last + 1 < lines.first)
+	while (i < f->ranges.n && (uint64_t)p[i].last + 1 < lines.first)
 		++i;
 	size_t j = i;
-	while (j < f->n && p[j].first <= (uint64_t)lines.last + 1)
+	while (j < f->ranges.n && p[j].first <= (uint64_t)lines.last + 1)
 		++j;
 	struct review_range put[3];
 	size_t const m = review_range_merge(p + i, j - i, lines, put);
-	size_t const n = f->n - (j - i) + m;
-	size_t const size = r->size - review_charge(f->n, 0) + review_charge(n, 0);
+	size_t const n = f->ranges.n - (j - i) + m;
+	size_t const size = r->size - review_charge(f->ranges.n, 0) + review_charge(n, 0);
 	if (!review_within_max(r, size, lines.turn))
 		return 0;
-	if (util_splice(f->ranges, f->n, f->cap, i, j - i, m))
+	if (util_splice(f->ranges.items, f->ranges.n, f->ranges.cap, i, j - i, m))
 		return ENOMEM;
-	memcpy(&f->ranges[i], put, m * sizeof *put);
+	memcpy(&f->ranges.items[i], put, m * sizeof *put);
 	if (total)
 		f->total = total;
 	r->size = size;
@@ -639,15 +631,15 @@ review_files_add (struct review              *r,
 	size_t at;
 	size_t const k = review_files_find(list, key, &at);
 	if (k < list->n)
-		return review_file_add_range(r, &list->files[k], (uint32_t)key->total, lines);
+		return review_file_add_range(r, &list->items[k], (uint32_t)key->total, lines);
 	size_t const size = r->size + review_charge(2, key->repo.len + key->path.len);
 	if (!review_within_max(r, size, lines.turn))
 		return 0;
 	struct review_file f = review_file();
-	if (util_grow(f.ranges, f.cap, 1))
+	if (util_grow(f.ranges.items, f.ranges.cap, 1))
 		return ENOMEM;
-	f.ranges[0] = lines;
-	f.n = 1;
+	f.ranges.items[0] = lines;
+	f.ranges.n = 1;
 	int e = review_file_set(&f, key);
 	if (!e)
 		e = review_files_insert(list, &f, at);
@@ -715,7 +707,7 @@ static void
 review_pending_uncharge (struct review *r)
 {
 	for (size_t i = 0; i < r->pending.n; ++i)
-		r->size -= review_file_charge(&r->pending.files[i], r->pending.files[i].n);
+		r->size -= review_file_charge(&r->pending.items[i], r->pending.items[i].ranges.n);
 }
 
 /**
@@ -734,12 +726,12 @@ review_log_file (struct review      *r,
 	size_t const k = review_files_find(&r->log, &key, &at);
 	if (k < r->log.n) {
 		int e = 0;
-		for (size_t i = 0; !e && i < f->n; ++i)
-			e = review_file_add_range(r, &r->log.files[k], f->total, f->ranges[i]);
+		for (size_t i = 0; !e && i < f->ranges.n; ++i)
+			e = review_file_add_range(r, &r->log.items[k], f->total, f->ranges.items[i]);
 		return e;
 	}
-	size_t const size = r->size + review_file_charge(f, f->n);
-	if (!review_within_max(r, size, f->ranges[0].turn))
+	size_t const size = r->size + review_file_charge(f, f->ranges.n);
+	if (!review_within_max(r, size, f->ranges.items[0].turn))
 		return 0;
 	int e = review_files_insert(&r->log, f, at);
 	if (e)
@@ -757,7 +749,7 @@ review_pending_log (struct review *r)
 	review_pending_uncharge(r);
 	int e = 0;
 	for (size_t i = 0; !e && i < r->pending.n; ++i)
-		e = review_log_file(r, &r->pending.files[i]);
+		e = review_log_file(r, &r->pending.items[i]);
 	review_files_clear(&r->pending);
 	return e;
 }
@@ -821,7 +813,7 @@ static int
 review_put_status (struct dstr                 *out,
                    struct review_finding const *f)
 {
-	struct review_change const *c = &f->changes[f->n - 1];
+	struct review_change const *c = &f->changes.items[f->changes.n - 1];
 	struct cstr_view const path = cstr_view_dstr(&f->location.path);
 	if (cstr_view_cat(review_state_names[c->state], out))
 		return ENOMEM;
@@ -836,7 +828,7 @@ review_put_status (struct dstr                 *out,
 static bool
 review_finding_closed (struct review_finding const *f)
 {
-	return REVIEW_CLOSED_STATES >> f->changes[f->n - 1].state & 1U;
+	return REVIEW_CLOSED_STATES >> f->changes.items[f->changes.n - 1].state & 1U;
 }
 
 /** The sections of the text of a record or of a history, in the order of
@@ -866,15 +858,15 @@ review_put_finding (struct dstr         *out,
 {
 	bool const closed = cursor->section == REVIEW_SECTION_CLOSED;
 	size_t k = cursor->item;
-	while (k < r->n_findings && review_finding_closed(&r->findings[k]) != closed)
+	while (k < r->findings.n && review_finding_closed(&r->findings.items[k]) != closed)
 		++k;
-	if (k == r->n_findings) {
+	if (k == r->findings.n) {
 		*cursor = (struct tool_cursor){
 			.section = closed ? REVIEW_SECTION_LOG : REVIEW_SECTION_CLOSED,
 		};
 		return 0;
 	}
-	struct review_finding const *f = &r->findings[k];
+	struct review_finding const *f = &r->findings.items[k];
 	struct cstr_view const claim = cstr_view_dstr(&f->claim);
 	if ((closed && !cursor->item && PUT(out, "[askai: disproved and retracted findings:]\n")) ||
 	    !dstr_printf(out, "%zu. ", k + 1) || review_put_status(out, f))
@@ -889,8 +881,8 @@ review_put_finding (struct dstr         *out,
 		       (head.len < claim.len && PUT(out, "...")) || PUT(out, "\n") ? ENOMEM : 0;
 	}
 	struct cstr_view evidence = {};
-	for (size_t i = f->n; i && !evidence.len; --i)
-		evidence = cstr_view_dstr(&f->changes[i - 1].evidence);
+	for (size_t i = f->changes.n; i && !evidence.len; --i)
+		evidence = cstr_view_dstr(&f->changes.items[i - 1].evidence);
 	return PUT(out, "\n   claim: ") || cstr_view_cat(claim, out) ||
 	       (evidence.len && (PUT(out, "\n   evidence: ") || cstr_view_cat(evidence, out))) ||
 	       PUT(out, "\n") ? ENOMEM : 0;
@@ -904,12 +896,12 @@ review_put_ranges (struct dstr              *out,
                    struct review_file const *f)
 {
 	int e = 0;
-	for (size_t k = 0; !e && k < f->n;) {
-		uint32_t const first = f->ranges[k].first;
-		uint32_t last = f->ranges[k].last;
-		while (++k < f->n && f->ranges[k].first == (uint64_t)last + 1)
-			last = f->ranges[k].last;
-		e = review_put_lines(out, first, last) || (k < f->n && PUT(out, ", ")) ? ENOMEM : 0;
+	for (size_t k = 0; !e && k < f->ranges.n;) {
+		uint32_t const first = f->ranges.items[k].first;
+		uint32_t last = f->ranges.items[k].last;
+		while (++k < f->ranges.n && f->ranges.items[k].first == (uint64_t)last + 1)
+			last = f->ranges.items[k].last;
+		e = review_put_lines(out, first, last) || (k < f->ranges.n && PUT(out, ", ")) ? ENOMEM : 0;
 	}
 	return e;
 }
@@ -924,8 +916,8 @@ review_put_file (struct dstr              *out,
                  struct review_file const *f)
 {
 	uint64_t lines = 0;
-	for (size_t k = 0; k < f->n; ++k)
-		lines += (uint64_t)(f->ranges[k].last - f->ranges[k].first) + 1;
+	for (size_t k = 0; k < f->ranges.n; ++k)
+		lines += (uint64_t)(f->ranges.items[k].last - f->ranges.items[k].first) + 1;
 	if (PUT(out, "  ") || cstr_view_cat(cstr_view_dstr(&f->path), out) ||
 	    !dstr_printf(out, "  line%s ", util_s(lines)) || review_put_ranges(out, f))
 		return ENOMEM;
@@ -949,7 +941,7 @@ review_put_logged (struct dstr         *out,
                    struct review const *r,
                    size_t               i)
 {
-	struct review_file const *f = &r->log.files[i];
+	struct review_file const *f = &r->log.items[i];
 	bool const group = !i || !review_file_commit_equal(f, cstr_view_dstr(&f[-1].repo),
 	                                                    oid_view(&f[-1].commit));
 	return (!i && PUT(out, "[askai: the lines that git read and code describe showed you "
@@ -992,9 +984,9 @@ review_put_counts (struct dstr         *out,
                    struct review const *r)
 {
 	size_t n[REVIEW_STATES] = {};
-	for (size_t k = 0; k < r->n_findings; ++k)
-		++n[r->findings[k].changes[r->findings[k].n - 1].state];
-	if (!dstr_printf(out, "[askai: your %zu finding%s", r->n_findings, util_s(r->n_findings)))
+	for (size_t k = 0; k < r->findings.n; ++k)
+		++n[r->findings.items[k].changes.items[r->findings.items[k].changes.n - 1].state];
+	if (!dstr_printf(out, "[askai: your %zu finding%s", r->findings.n, util_s(r->findings.n)))
 		return ENOMEM;
 	char const *sep = ": ";
 	for (size_t k = 0; k < REVIEW_STATES; ++k) {
@@ -1021,7 +1013,7 @@ review_put_item (struct dstr         *out,
                  size_t               id,
                  struct tool_cursor  *cursor)
 {
-	struct review_finding const *f = id ? &r->findings[id - 1] : nullptr;
+	struct review_finding const *f = id ? &r->findings.items[id - 1] : nullptr;
 	switch (cursor->section) {
 	case REVIEW_SECTION_HEAD:
 		if (f) {
@@ -1033,7 +1025,7 @@ review_put_item (struct dstr         *out,
 		if (PUT(out, "[askai: your review record, which askai keeps through every "
 		             "compaction of this ask call.]\n"))
 			return ENOMEM;
-		if (!r || !r->n_findings) {
+		if (!r || !r->findings.n) {
 			*cursor = (struct tool_cursor){ .section = REVIEW_SECTION_LOG };
 			return PUT(out, "[askai: you have recorded no findings; the findings tool "
 			                "records them.]\n") ? ENOMEM : 0;
@@ -1055,8 +1047,8 @@ review_put_item (struct dstr         *out,
 		                    PRIu32 " on may be missing from it.]\n", r->dropped_turn)
 		       ? ENOMEM : 0;
 	case REVIEW_SECTION_CHANGES:
-		if (cursor->item < f->n)
-			return review_put_change(out, &f->changes[cursor->item++]);
+		if (cursor->item < f->changes.n)
+			return review_put_change(out, &f->changes.items[cursor->item++]);
 		cursor->section = REVIEW_SECTION_END;
 		return 0;
 	default:
@@ -1291,12 +1283,12 @@ review_args_parse (struct review_args  *a,
 	uint64_t const n = jb_count(id, SIZE_MAX);
 	if (id ? !n : a->action == REVIEW_UPDATE)
 		return REFUSE(out, "The id argument must be the number of a finding, such as 3.");
-	if (n > r->n_findings) {
+	if (n > r->findings.n) {
 		/* %.0zu writes nothing for 0. */
 		static char const *const have[] = {
 			"no findings yet", "only finding ", "findings 1 to ",
 		};
-		size_t const k = r->n_findings;
+		size_t const k = r->findings.n;
 		return REFUSE(out, "There is no finding %" PRIu64 ". The record contains %s%.0zu.",
 		              n, have[k < 2 ? k : 2], k);
 	}
@@ -1342,18 +1334,18 @@ review_file_run_end (struct review_file const *f,
                      uint32_t                 *turn)
 {
 	size_t lo = 0;
-	size_t hi = f->n;
+	size_t hi = f->ranges.n;
 	while (lo < hi) {
 		size_t const mid = lo + (hi - lo) / 2;
-		if (f->ranges[mid].first <= a)
+		if (f->ranges.items[mid].first <= a)
 			lo = mid + 1;
 		else
 			hi = mid;
 	}
-	if (!lo || f->ranges[lo - 1].last < a)
+	if (!lo || f->ranges.items[lo - 1].last < a)
 		return 0;
-	struct review_range const *g = &f->ranges[lo - 1];
-	struct review_range const *end = f->ranges + f->n;
+	struct review_range const *g = &f->ranges.items[lo - 1];
+	struct review_range const *end = f->ranges.items + f->ranges.n;
 	uint32_t last = g->last;
 	*turn = g->turn;
 	while (last < b && ++g < end && g->first == (uint64_t)last + 1) {
@@ -1398,7 +1390,7 @@ review_log_cover (struct review const               *r,
 	struct review_cover c = {};
 	enum review_rank rank = REVIEW_RANK_NONE;
 	for (size_t i = 0; i < r->log.n; ++i) {
-		struct review_file const *f = &r->log.files[i];
+		struct review_file const *f = &r->log.items[i];
 		if (!cstr_view_equal(cstr_view_dstr(&f->path), loc->path) ||
 		    !oid_starts(&f->commit, loc->prefix))
 			continue;
@@ -1435,7 +1427,7 @@ review_log_resolve (struct review const               *r,
 	size_t n = 0;
 	size_t const tail = loc->path.len;
 	for (size_t i = 0; i < r->log.n; ++i) {
-		struct review_file const *f = &r->log.files[i];
+		struct review_file const *f = &r->log.items[i];
 		if (!oid_starts(&f->commit, loc->prefix))
 			continue;
 		struct cstr_view const path = cstr_view_dstr(&f->path);
@@ -1638,7 +1630,7 @@ review_put_tail (struct dstr                 *out,
 		[REVIEW_TRIMMED_CLAIM | REVIEW_TRIMMED_EVIDENCE] =
 			CSTR_VIEW_INIT("the claim and the evidence"),
 	};
-	struct review_change const *c = &f->changes[f->n - 1];
+	struct review_change const *c = &f->changes.items[f->changes.n - 1];
 	bool const unread = c->state == REVIEW_CANDIDATE && dstr_len(&f->location.path) &&
 	                    !oid_len(&c->commit) && (r->flags & REVIEW_READ_LOG);
 	return (unread && PUT(out, " Read its lines before you verify it.")) ||
@@ -1676,26 +1668,26 @@ review_add (struct review            *r,
 	size_t const size = r->size + review_charge(2, texts + loc.path.len);
 	e = review_check_size(r, size, size - texts, out);
 	if (!e)
-		e = util_grow(r->findings, r->cap_findings, r->n_findings + 1);
+		e = util_grow(r->findings.items, r->findings.cap, r->findings.n + 1);
 	if (e)
 		return e;
 	struct review_finding f = review_finding(loc.first, loc.last);
-	if (util_grow(f.changes, f.cap, 1))
+	if (util_grow(f.changes.items, f.changes.cap, 1))
 		return ENOMEM;
-	f.changes[f.n++] = review_change(turn, state, commit);
+	f.changes.items[f.changes.n++] = review_change(turn, state, commit);
 	e = cstr_view_store(a->claim, &f.claim);
 	if (!e)
 		e = cstr_view_store(loc.path, &f.location.path);
 	if (!e)
-		e = cstr_view_store(a->evidence, &f.changes[0].evidence);
+		e = cstr_view_store(a->evidence, &f.changes.items[0].evidence);
 	if (e) {
 		review_finding_fini(&f);
 		return e;
 	}
-	r->findings[r->n_findings++] = f;
+	r->findings.items[r->findings.n++] = f;
 	r->size = size;
 	r->changed = true;
-	return !dstr_printf(out, "Added finding %zu: ", r->n_findings) ||
+	return !dstr_printf(out, "Added finding %zu: ", r->findings.n) ||
 	       review_put_status(out, &f) || PUT(out, ".") ||
 	       review_put_tail(out, r, &f, a->trimmed) ? ENOMEM : 0;
 }
@@ -1710,7 +1702,7 @@ review_update (struct review            *r,
 	if (a->state == REVIEW_STATES || !a->evidence.len)
 		return REFUSE(out, "update needs state and evidence: what shows the new state, why "
 		              "you retract the finding, or why it is a candidate again.");
-	struct review_finding *f = &r->findings[a->id - 1];
+	struct review_finding *f = &r->findings.items[a->id - 1];
 	struct cstr_view const old_claim = cstr_view_dstr(&f->claim);
 	struct cstr_view const old_path = cstr_view_dstr(&f->location.path);
 	bool const in_args = a->location.path.len;
@@ -1737,7 +1729,7 @@ review_update (struct review            *r,
 	e = review_check_size(r, size, size - a->evidence.len - claim_len, out);
 	if (e)
 		return e;
-	if (util_grow(f->changes, f->cap, f->n + 1))
+	if (util_grow(f->changes.items, f->changes.cap, f->changes.n + 1))
 		return ENOMEM;
 	struct review_change c = review_change(turn, a->state, commit);
 	c.old_location = review_location(f->location.first, f->location.last);
@@ -1767,10 +1759,10 @@ review_update (struct review            *r,
 	}
 	if (!moved)
 		dstr_cleanup(&c.old_location.path);
-	enum review_state const old = f->changes[f->n - 1].state;
+	enum review_state const old = f->changes.items[f->changes.n - 1].state;
 	f->location.first = loc.first;
 	f->location.last = loc.last;
-	f->changes[f->n++] = c;
+	f->changes.items[f->changes.n++] = c;
 	r->size = size;
 	r->changed = true;
 	static char const *const verbs[] = { "is now", "stays" };
@@ -1819,8 +1811,8 @@ static struct json_object *
 review_file_json (struct review_file const *f)
 {
 	struct json_object *lines = json_object_new_array();
-	for (size_t i = 0; lines && i < f->n; ++i) {
-		struct review_range const *g = &f->ranges[i];
+	for (size_t i = 0; lines && i < f->ranges.n; ++i) {
+		struct review_range const *g = &f->ranges.items[i];
 		lines = jb_push_or_free(lines, json_object_new_uint64(g->first));
 		lines = jb_push_or_free(lines, json_object_new_uint64(g->last));
 		lines = jb_push_or_free(lines, json_object_new_uint64(g->turn));
@@ -1841,7 +1833,7 @@ review_files_json (struct review_files const *list)
 {
 	struct json_object *files = json_object_new_array();
 	for (size_t i = 0; files && i < list->n; ++i)
-		files = jb_push_or_free(files, review_file_json(&list->files[i]));
+		files = jb_push_or_free(files, review_file_json(&list->items[i]));
 	return files;
 }
 
@@ -1885,8 +1877,8 @@ static struct json_object *
 review_finding_json (struct review_finding const *f)
 {
 	struct json_object *history = json_object_new_array();
-	for (size_t i = 0; history && i < f->n; ++i)
-		history = jb_push_or_free(history, review_change_json(&f->changes[i]));
+	for (size_t i = 0; history && i < f->changes.n; ++i)
+		history = jb_push_or_free(history, review_change_json(&f->changes.items[i]));
 	return review_location_json(jb_object("claim", jb_string(cstr_view_dstr(&f->claim)),
 	                                      "history", history,
 	                                      nullptr), &f->location);
@@ -1905,8 +1897,8 @@ review_carry_json (struct review const *r,
 	}
 	*base = r->base;
 	struct json_object *findings = json_object_new_array();
-	for (size_t i = 0; findings && i < r->n_findings; ++i)
-		findings = jb_push_or_free(findings, review_finding_json(&r->findings[i]));
+	for (size_t i = 0; findings && i < r->findings.n; ++i)
+		findings = jb_push_or_free(findings, review_finding_json(&r->findings.items[i]));
 	struct json_object *obj = jb_object("findings", findings, nullptr);
 	*e = obj ? 0 : ENOMEM;
 	return obj;
@@ -1959,23 +1951,23 @@ review_files_add_json (struct review            *r,
 		return EINVAL;
 	key.total = total;
 	struct review_file f = review_file();
-	int e = util_grow(f.ranges, f.cap, n) ? ENOMEM : review_file_set(&f, &key);
+	int e = util_grow(f.ranges.items, f.ranges.cap, n) ? ENOMEM : review_file_set(&f, &key);
 	/* The ranges must be sorted, must not overlap and must be within the
 	 * file, and the turns of two adjoining ranges must differ. */
-	for (uint64_t next = 1; !e && f.n < n; ++f.n) {
+	for (uint64_t next = 1; !e && f.ranges.n < n; ++f.ranges.n) {
 		uint64_t first;
 		uint64_t last;
 		uint64_t turn;
-		size_t const k = REVIEW_RANGE_NUMBERS * f.n;
+		size_t const k = REVIEW_RANGE_NUMBERS * f.ranges.n;
 		if (jb_uint_checked(jb_at(lines, k), UINT32_MAX, &first) ||
 		    jb_uint_checked(jb_at(lines, k + 1), UINT32_MAX, &last) ||
 		    jb_uint_checked(jb_at(lines, k + 2), UINT32_MAX, &turn) || first < next ||
 		    last < first || (key.total && last > key.total) ||
-		    (f.n && first == next && turn == f.ranges[f.n - 1].turn)) {
+		    (f.ranges.n && first == next && turn == f.ranges.items[f.ranges.n - 1].turn)) {
 			e = EINVAL;
 			break;
 		}
-		f.ranges[f.n] = (struct review_range){
+		f.ranges.items[f.ranges.n] = (struct review_range){
 			(uint32_t)first, (uint32_t)last, (uint32_t)turn
 		};
 		next = last + 1;
@@ -1986,7 +1978,7 @@ review_files_add_json (struct review            *r,
 		review_file_fini(&f);
 		return e;
 	}
-	r->size += review_file_charge(&f, f.n);
+	r->size += review_file_charge(&f, f.ranges.n);
 	return 0;
 }
 
@@ -2000,16 +1992,17 @@ static int
 review_files_check_totals (struct review const *r)
 {
 	for (size_t i = 0; i < r->pending.n; ++i) {
-		struct review_file const *p = &r->pending.files[i];
+		struct review_file const *p = &r->pending.items[i];
 		struct review_source const key = review_file_source(p);
 		size_t at;
 		size_t const k = review_files_find(&r->log, &key, &at);
 		if (k == r->log.n)
 			continue;
-		struct review_file const *f = &r->log.files[k];
+		struct review_file const *f = &r->log.items[k];
 		uint32_t const total = f->total > p->total ? f->total : p->total;
 		if ((f->total && p->total && f->total != p->total) ||
-		    (total && (f->ranges[f->n - 1].last > total || p->ranges[p->n - 1].last > total)))
+		    (total && (f->ranges.items[f->ranges.n - 1].last > total ||
+		               p->ranges.items[p->ranges.n - 1].last > total)))
 			return EINVAL;
 	}
 	return 0;
@@ -2124,24 +2117,24 @@ review_findings_add_json (struct review            *r,
 	size_t const n = jb_len(history);
 	if (!n || n > (TOOL_TEXT_MAX - r->size) / REVIEW_ITEM)
 		return EINVAL;
-	if (util_grow(r->findings, r->cap_findings, r->n_findings + 1))
+	if (util_grow(r->findings.items, r->findings.cap, r->findings.n + 1))
 		return ENOMEM;
 	struct review_finding f = review_finding(0, 0);
-	if (util_grow(f.changes, f.cap, n))
+	if (util_grow(f.changes.items, f.changes.cap, n))
 		return ENOMEM;
 	int e = review_location_init_json(&f.location, obj);
 	if (!e)
 		e = review_text_json(&f.claim, jb_view(jb_get(obj, "claim")), false);
 	bool const located = dstr_len(&f.location.path);
 	for (size_t i = 0; !e && i < n; ++i) {
-		e = review_change_init_json(&f.changes[i], jb_at(history, i), located);
-		f.n += !e;
+		e = review_change_init_json(&f.changes.items[i], jb_at(history, i), located);
+		f.changes.n += !e;
 	}
 	if (e) {
 		review_finding_fini(&f);
 		return e;
 	}
-	r->findings[r->n_findings++] = f;
+	r->findings.items[r->findings.n++] = f;
 	r->size += review_finding_charge(&f);
 	return 0;
 }

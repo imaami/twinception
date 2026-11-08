@@ -246,11 +246,11 @@ jb_scan_reset (struct jb_scan *scan)
 	*scan = (struct jb_scan){ .members = scan->members, .cap = scan->cap };
 }
 
-/** json-c values to free a few at a time; zeroed to begin. */
+/** A stack of json-c containers that jb_reaper_step() frees a few values
+ *  at a time, the innermost container first. A zeroed jb_reaper is empty.
+ */
 struct jb_reaper {
-	struct json_object **stack;  /**< containers being taken apart */
-	size_t               n;
-	size_t               cap;
+	UTIL_ARRAY(struct json_object *);
 };
 
 /**

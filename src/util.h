@@ -530,6 +530,12 @@ util_room (void   *items,
         ((items) = util_room((items), &(cap), (n), sizeof *(items)), \
          (cap) < (n) ? ENOMEM : 0)
 
+/** A struct for an array that util_grow() and util_splice() grow. items
+ *  points to room for cap elements of type @p T, and the first n elements
+ *  are in use. A zeroed array is empty.
+ */
+#define UTIL_ARRAY(T) struct { T *items; size_t n; size_t cap; }
+
 /** Make room for @p add items at the index @p at of @p items, an array of
  *  @p n items of @p size bytes with room for @p *cap items, in place of
  *  the @p drop items from @p at on: grow the array with util_room() and

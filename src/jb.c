@@ -186,11 +186,11 @@ jb_reaper_add (struct jb_reaper   *reaper,
 {
 	bool container = json_object_is_type(val, json_type_array) ||
 	                 json_object_is_type(val, json_type_object);
-	if (!container || util_grow(reaper->stack, reaper->cap, reaper->n + 1)) {
+	if (!container || util_grow(reaper->items, reaper->cap, reaper->n + 1)) {
 		json_object_put(val);
 		return;
 	}
-	reaper->stack[reaper->n++] = val;
+	reaper->items[reaper->n++] = val;
 }
 
 /* Take a value out of the container @p top, in @p *val, a reference of its
@@ -228,9 +228,9 @@ jb_reaper_step (struct jb_reaper *reaper,
 	size_t freed = 0;
 	while (freed < values && reaper->n) {
 		struct json_object *val = nullptr;
-		if (!jb_pop(reaper->stack[reaper->n - 1], &val)) {
-			json_object_put(reaper->stack[--reaper->n]);
-			reaper->stack[reaper->n] = nullptr;
+		if (!jb_pop(reaper->items[reaper->n - 1], &val)) {
+			json_object_put(reaper->items[--reaper->n]);
+			reaper->items[reaper->n] = nullptr;
 			++freed;
 			continue;
 		}
@@ -246,8 +246,8 @@ void
 jb_reaper_fini (struct jb_reaper *reaper)
 {
 	while (reaper->n)
-		json_object_put(reaper->stack[--reaper->n]);
-	free(reaper->stack);
+		json_object_put(reaper->items[--reaper->n]);
+	free(reaper->items);
 	*reaper = (struct jb_reaper){};
 }
 

@@ -29,15 +29,13 @@ static_assert(sizeof(struct cli_scrollback_style) == 8);
 struct cli_scrollback_line {
 	struct list                  hook;
 	struct dstr                  text;
-	struct cli_scrollback_style *styles;
+	UTIL_ARRAY(struct cli_scrollback_style) styles;
 	size_t                      *checkpoints;
 	size_t                       capacity;
 	size_t                       scanned;
 	size_t                       column;
 	size_t                       columns;
 	size_t                       rows;
-	size_t                       style_count;
-	size_t                       style_capacity;
 };
 
 void
@@ -55,8 +53,8 @@ cli_scrollback_line_destroy (struct cli_scrollback_line **ptr)
 	dstr_cleanup(&line->text);
 	free(line->checkpoints);
 	line->checkpoints = nullptr;
-	free(line->styles);
-	line->styles = nullptr;
+	free(line->styles.items);
+	line->styles.items = nullptr;
 	free(line);
 	*ptr = nullptr;
 }
@@ -96,7 +94,7 @@ cli_scrollback_trim (struct cli_scrollback *scrollback)
 		if (line->columns == scrollback->columns)
 			scrollback->discarded += line->rows;
 		tally_sub(&scrollback->used, dstr_len(&line->text));
-		scrollback->styles -= line->style_count;
+		scrollback->styles -= line->styles.n;
 		cli_scrollback_line_destroy(&line);
 	}
 }
@@ -111,10 +109,10 @@ cli_scrollback_style_after (struct cli_scrollback_line const *line,
                             size_t                           offset)
 {
 	size_t low = 0;
-	size_t high = line->style_count;
+	size_t high = line->styles.n;
 	while (low < high) {
 		size_t middle = low + (high - low) / 2;
-		if (line->styles[middle].offset <= offset)
+		if (line->styles.items[middle].offset <= offset)
 			low = middle + 1;
 		else
 			high = middle;
@@ -143,11 +141,11 @@ cli_scrollback_line_trim (struct cli_scrollback      *scrollback,
 	if (first && skip < old)
 		--first;
 	scrollback->styles -= first;
-	line->style_count -= first;
-	for (size_t i = 0; i < line->style_count; ++i) {
-		struct cli_scrollback_style style = line->styles[first + i];
+	line->styles.n -= first;
+	for (size_t i = 0; i < line->styles.n; ++i) {
+		struct cli_scrollback_style style = line->styles.items[first + i];
 		style.offset = style.offset > skip ? style.offset - (uint32_t)skip : 0;
-		line->styles[i] = style;
+		line->styles.items[i] = style;
 	}
 	return 0;
 }
@@ -180,10 +178,10 @@ cli_scrollback_append_part (struct cli_scrollback *scrollback,
 		size_t skip = util_char_start(part.data, part.len, part.len - CLI_SCROLLBACK_BYTES);
 		part = cstr_view_slice(part, skip, SIZE_MAX);
 	}
-	if (part.len && line->style_count == CLI_SCROLLBACK_STYLES &&
-	    style != line->styles[line->style_count - 1].id) {
+	if (part.len && line->styles.n == CLI_SCROLLBACK_STYLES &&
+	    style != line->styles.items[line->styles.n - 1].id) {
 		int e = cli_scrollback_line_trim(scrollback, line,
-		                                 line->styles[line->style_count / 2].offset);
+		                                 line->styles.items[line->styles.n / 2].offset);
 		if (e)
 			return e;
 	}
@@ -194,17 +192,17 @@ cli_scrollback_append_part (struct cli_scrollback *scrollback,
 			return e;
 		old = dstr_len(&line->text);
 	}
-	enum cli_style previous = line->style_count ? line->styles[line->style_count - 1].id : CLI_STYLE_RESET;
+	enum cli_style previous = line->styles.n ? line->styles.items[line->styles.n - 1].id : CLI_STYLE_RESET;
 	bool change = part.len && style != previous;
 	if (change) {
-		if (util_grow(line->styles, line->style_capacity, line->style_count + 1))
+		if (util_grow(line->styles.items, line->styles.cap, line->styles.n + 1))
 			return ENOMEM;
 		/* The new entry is counted only after the text is appended. */
-		line->styles[line->style_count] = (struct cli_scrollback_style){(uint32_t)old, style};
+		line->styles.items[line->styles.n] = (struct cli_scrollback_style){(uint32_t)old, style};
 	}
 	if (cstr_view_cat(part, &line->text))
 		return ENOMEM;
-	line->style_count += change;
+	line->styles.n += change;
 	scrollback->styles += change;
 	scrollback->used.bytes += part.len;
 	if (scrollback->offset && !scrollback->unread)
@@ -442,18 +440,18 @@ cli_scrollback_line_write (struct cli_scrollback_line const *line,
                            struct cli_scrollback_frame     *frame)
 {
 	size_t next = cli_scrollback_style_after(line, start);
-	enum cli_style id = next ? line->styles[next - 1].id : CLI_STYLE_RESET;
+	enum cli_style id = next ? line->styles.items[next - 1].id : CLI_STYLE_RESET;
 	while (start < end) {
-		size_t stop = next < line->style_count && line->styles[next].offset < end
-		              ? line->styles[next].offset : end;
+		size_t stop = next < line->styles.n && line->styles.items[next].offset < end
+		              ? line->styles.items[next].offset : end;
 		int e = cli_scrollback_frame_style(frame, id);
 		if (e)
 			return e;
 		if (!dstr_cat_n(frame->output, dstr_get(&line->text) + start, stop - start))
 			return ENOMEM;
 		start = stop;
-		if (next < line->style_count)
-			id = line->styles[next++].id;
+		if (next < line->styles.n)
+			id = line->styles.items[next++].id;
 	}
 	return 0;
 }
@@ -497,7 +495,7 @@ cli_scrollback_cell_write (struct cli_scrollback_line const *line,
 	*start = offset + cell.bytes;
 	size_t next = cli_scrollback_style_after(line, offset);
 	if (!e)
-		e = cli_scrollback_frame_style(frame, next ? line->styles[next - 1].id : CLI_STYLE_RESET);
+		e = cli_scrollback_frame_style(frame, next ? line->styles.items[next - 1].id : CLI_STYLE_RESET);
 	bool replace = cell.flags & CLI_SCROLLBACK_REPLACE;
 	if (!e && !dstr_cat_n(frame->output, replace ? "?" : "        ", replace ? 1 : cell.width))
 		e = ENOMEM;
