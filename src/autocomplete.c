@@ -1229,8 +1229,7 @@ autocomplete_complete (struct autocomplete              *ac,
 	*count = 0;
 	if (line.len > AUTOCOMPLETE_BYTES)
 		return E2BIG;
-	if (!jb_is_text(line) || cursor > line.len ||
-	    (cursor < line.len && ((unsigned char)line.data[cursor] & 0xc0) == 0x80))
+	if (!jb_is_text(line) || cursor > line.len || util_char_start(line.data, line.len, cursor) != cursor)
 		return EINVAL;
 	if (!line.data)
 		line.data = "";

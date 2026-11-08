@@ -604,8 +604,7 @@ cli_console_complete (char const *text,
 		if (!replacement.data || !candidate->cursor || candidate->cursor > replacement.len ||
 		    candidate->label_begin >= candidate->cursor || candidate->kind >= AUTOCOMPLETE_KIND_COUNT ||
 		    replacement.len >= CLI_CONSOLE_INPUT_LIMIT || memchr(replacement.data, 0, replacement.len) ||
-		    (candidate->cursor < replacement.len &&
-		     ((unsigned char)replacement.data[candidate->cursor] & 0xc0) == 0x80))
+		    util_char_start(replacement.data, replacement.len, candidate->cursor) != candidate->cursor)
 			return nullptr;
 		struct cstr_view tail = cstr_view_slice(replacement, candidate->cursor, SIZE_MAX);
 		if (!i)
@@ -1357,9 +1356,7 @@ cli_console_render_draft (struct cli_console *console,
 	size_t before = 0;
 	size_t start = point;
 	for (size_t next = point; next;) {
-		size_t previous = next - 1;
-		while (previous && ((unsigned char)draft.data[previous] & 0xc0) == 0x80)
-			--previous;
+		size_t previous = util_clip(draft.data, draft.len, next - 1);
 		size_t width = cli_console_text_width(cstr_view_slice(draft, previous, next - previous));
 		if (width > available - scanned)
 			break;
