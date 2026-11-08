@@ -392,16 +392,6 @@ struct httpd_home {
 /* Home's door, for the connections given back. */
 static thread_local struct httpd_home *door;
 
-/* Hexadecimal @p n written backwards from @p end; returns its first digit. */
-static char *
-httpd_hex (char   *end,
-           size_t  n)
-{
-	do *--end = "0123456789abcdef"[n % 16];
-	while (n /= 16);
-	return end;
-}
-
 /* @p s seconds after @p since; never, if @p s is 0. */
 static uint64_t
 httpd_after (uint64_t since,
@@ -1311,9 +1301,10 @@ httpd_stream_data (struct stream *s,
 	char digits[20];
 	struct cstr_view f[] = { {}, { (char const *)bytes.ptr, bytes.len }, {} };
 	if (conn->req.flags & REQ_CHUNKS) {
-		char const *size = httpd_hex(digits + sizeof digits - 2, bytes.len);
-		digits[sizeof digits - 2] = '\r';
-		digits[sizeof digits - 1] = '\n';
+		char *size = digits + sizeof digits - 2;
+		for (size_t n = bytes.len; n; n /= 16)
+			*--size = "0123456789abcdef"[n % 16];
+		memcpy(digits + sizeof digits - 2, "\r\n", 2);
 		f[0] = (struct cstr_view){ size, (size_t)(digits + sizeof digits - size) };
 		f[2] = CSTR_VIEW("\r\n");
 	}
