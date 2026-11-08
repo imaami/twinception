@@ -775,26 +775,6 @@ godbolt_cat_path (char             *d,
 	return d;
 }
 
-/* Writes the 11 filters of a compilation as a JSON object to @p d. The
- * filters whose bits are set in @p flags are true. Returns the end of the
- * text in @p d.
- */
-static char *
-godbolt_cat_filters (char     *d,
-                     uint32_t  flags)
-{
-	char sep = '{';
-	for (size_t i = 0; i < array_size(godbolt_filters); ++i) {
-		*d++ = sep;
-		*d++ = '"';
-		d = godbolt_cat(d, godbolt_filters[i]);
-		d = godbolt_cat(d, flags >> i & 1 ? CSTR_VIEW("\":true") : CSTR_VIEW("\":false"));
-		sep = ',';
-	}
-	*d++ = '}';
-	return d;
-}
-
 /* Appends @p t to the call's output, unless an earlier write failed.
  * Returns 0, or call->e, the error number of the call's first failed
  * write.
@@ -1680,7 +1660,10 @@ godbolt_job_recipe (struct godbolt const *call,
  * argument string @p a to @p d, which is in the body, as the inside of a
  * JSON string. The arguments are the flags of the recipe and the argument
  * string, separated by spaces. Stores the escaped argument string in
- * call->escaped. Returns the end of the text in @p d.
+ * call->escaped. The function then ends the string and writes the member
+ * filters as a JSON object with the 11 filters of godbolt_filters. A
+ * filter is true if its bit is set in call->args.flags, and false
+ * otherwise. Returns the end of the text in @p d.
  */
 static char *
 godbolt_cat_arguments (struct godbolt              *call,
@@ -1698,7 +1681,15 @@ godbolt_cat_arguments (struct godbolt              *call,
 	char *const end = d + jb_escape(d, a.data, a.len);
 	call->escaped = (struct cstr_view){ d, (size_t)(end - d) };
 	loop_work(call->loop, LOOP_ESCAPE, a.len);
-	return end;
+	d = godbolt_cat(end, CSTR_VIEW("\",\"filters\":{"));
+	for (size_t i = 0; i < array_size(godbolt_filters); ++i) {
+		*d++ = '"';
+		d = godbolt_cat(d, godbolt_filters[i]);
+		d = godbolt_cat(d, call->args.flags >> i & 1 ? CSTR_VIEW("\":true,")
+		                                             : CSTR_VIEW("\":false,"));
+	}
+	d[-1] = '}';
+	return d;
 }
 
 /* Writes the language, the arguments, the filters and the compiler options
@@ -1713,8 +1704,6 @@ godbolt_job_body (struct godbolt              *call,
 	d = godbolt_cat(d, call->args.language);
 	d = godbolt_cat(d, CSTR_VIEW("\",\"options\":{\"userArguments\":\""));
 	d = godbolt_cat_arguments(call, d, r, call->args.strings[call->job % call->args.n_strings]);
-	d = godbolt_cat(d, CSTR_VIEW("\",\"filters\":"));
-	d = godbolt_cat_filters(d, call->args.flags);
 	if (call->args.flags & GODBOLT_WITH_RUN)
 		d = godbolt_cat(d, CSTR_VIEW(",\"executeParameters\":{\"args\":[],\"stdin\":\"\"}"));
 	d = godbolt_cat(d, CSTR_VIEW(",\"compilerOptions\":"));
@@ -1803,8 +1792,6 @@ godbolt_state (struct godbolt *call)
 		d = godbolt_cat(d, call->args.ids[call->job / call->args.n_strings]);
 		d = godbolt_cat(d, CSTR_VIEW("\",\"options\":\""));
 		d = godbolt_cat_arguments(call, d, r, a);
-		d = godbolt_cat(d, CSTR_VIEW("\",\"filters\":"));
-		d = godbolt_cat_filters(d, call->args.flags);
 		d = godbolt_cat(d, CSTR_VIEW(",\"libs\":[]}"));
 	}
 	call->len = (size_t)(d - call->body);
