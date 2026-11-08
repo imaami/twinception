@@ -22,6 +22,20 @@
 #include <sys/socket.h>
 #include <time.h>
 
+/* Store the address of the next definition of @p name after this library
+ * (RTLD_NEXT) in the @p size bytes of the function pointer at @p real.
+ * POSIX requires the same representation for void * and function
+ * pointers, so the memcpy() works. ISO C does not require this.
+ */
+static void
+epfail_next (void       *real,
+             size_t      size,
+             char const *name)
+{
+	void *sym = dlsym(RTLD_NEXT, name);
+	memcpy(real, &sym, size);
+}
+
 int
 accept4 (int              fd,
          struct sockaddr *addr,
@@ -30,10 +44,8 @@ accept4 (int              fd,
 {
 	static int (*real) (int, struct sockaddr *, socklen_t *, int);
 	static int fail;
-	if (!real) {
-		void *sym = dlsym(RTLD_NEXT, "accept4");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		epfail_next(&real, sizeof real, "accept4");
 	if (getenv("EPFAIL_ACCEPT") && (fail = !fail)) {
 		errno = EPROTO;
 		return -1;
@@ -46,10 +58,8 @@ epoll_create1 (int flags)
 {
 	static int (*real) (int);
 	static long calls;
-	if (!real) {
-		void *sym = dlsym(RTLD_NEXT, "epoll_create1");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		epfail_next(&real, sizeof real, "epoll_create1");
 	char const *n = getenv("EPFAIL_EPOLL");
 	if (n && ++calls == atol(n)) {
 		errno = EMFILE;
@@ -66,11 +76,8 @@ epoll_ctl (int                 epfd,
 {
 	static int (*real) (int, int, int, struct epoll_event *);
 	static in_port_t listener;
-	if (!real) {
-		/* POSIX makes function and object pointers alike; ISO C does not. */
-		void *sym = dlsym(RTLD_NEXT, "epoll_ctl");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		epfail_next(&real, sizeof real, "epoll_ctl");
 
 	/* The port lies at the same offset in either address family. */
 	struct sockaddr_in6 addr;
@@ -92,10 +99,8 @@ int
 curl_multi_cleanup (void *multi)
 {
 	static int (*real) (void *);
-	if (!real) {
-		void *sym = dlsym(RTLD_NEXT, "curl_multi_cleanup");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		epfail_next(&real, sizeof real, "curl_multi_cleanup");
 	char const *ms = getenv("EPFAIL_CLEANUP_MS");
 	if (ms) {
 		long n = atol(ms);
@@ -118,10 +123,8 @@ json_tokener_new_ex (int depth)
 	static struct json_tokener *(*real) (int);
 	if (getenv("EPFAIL_TOKENER"))
 		return nullptr;
-	if (!real) {
-		void *sym = dlsym(RTLD_NEXT, "json_tokener_new_ex");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		epfail_next(&real, sizeof real, "json_tokener_new_ex");
 	return real(depth);
 }
 
@@ -131,9 +134,7 @@ json_tokener_new (void)
 	static struct json_tokener *(*real) (void);
 	if (getenv("EPFAIL_TOKENER"))
 		return nullptr;
-	if (!real) {
-		void *sym = dlsym(RTLD_NEXT, "json_tokener_new");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		epfail_next(&real, sizeof real, "json_tokener_new");
 	return real();
 }

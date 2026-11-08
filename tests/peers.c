@@ -39,14 +39,21 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-/* The next definition of the function @p name, after this library's. */
-static void *
-peers_next (char const *name)
+/* Store the address of the next definition of the function @p name after
+ * this library (RTLD_NEXT) in the @p size bytes of the function pointer at
+ * @p real, or abort() if dlsym() returns nullptr. POSIX requires the same
+ * representation for void * and function pointers, so the memcpy() works.
+ * ISO C does not require this.
+ */
+static void
+peers_next (void       *real,
+            size_t      size,
+            char const *name)
 {
 	void *sym = dlsym(RTLD_NEXT, name);
 	if (!sym)
 		abort();
-	return sym;
+	memcpy(real, &sym, size);
 }
 
 int
@@ -60,11 +67,8 @@ getgrnam_r (char const    *name,
 	                    struct group **);
 	static char none[] = "";
 	static char *members[] = { NULL };
-	if (!real) {
-		/* POSIX makes function and object pointers alike; ISO C does not. */
-		void *sym = peers_next("getgrnam_r");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		peers_next(&real, sizeof real, "getgrnam_r");
 	*result = NULL;
 	if (!strcmp(name, "peers-eio"))
 		return EIO;
@@ -93,10 +97,8 @@ prctl (int option,
        ...)
 {
 	static int (*real) (int, ...);
-	if (!real) {
-		void *sym = peers_next("prctl");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		peers_next(&real, sizeof real, "prctl");
 	/* The C library's prctl() reads four more arguments, as this does. */
 	va_list ap;
 	va_start(ap, option);
@@ -146,10 +148,8 @@ getsockopt (int        fd,
             socklen_t *len)
 {
 	static int (*real) (int, int, int, void *, socklen_t *);
-	if (!real) {
-		void *sym = peers_next("getsockopt");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		peers_next(&real, sizeof real, "getsockopt");
 	unsigned long ids[64];
 	long n = level != SOL_SOCKET || (name != SO_PEERCRED && name != SO_PEERGROUPS)
 	       ? -1 : peers_cred(ids, sizeof ids / sizeof *ids);
@@ -205,10 +205,8 @@ fopen (char const *path,
        char const *mode)
 {
 	static FILE *(*real) (char const *, char const *);
-	if (!real) {
-		void *sym = peers_next("fopen");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		peers_next(&real, sizeof real, "fopen");
 	return real(peers_path(path), mode);
 }
 
@@ -217,10 +215,8 @@ fopen64 (char const *path,
          char const *mode)
 {
 	static FILE *(*real) (char const *, char const *);
-	if (!real) {
-		void *sym = peers_next("fopen64");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		peers_next(&real, sizeof real, "fopen64");
 	return real(peers_path(path), mode);
 }
 
@@ -236,10 +232,8 @@ open (char const *path,
       ...)
 {
 	static int (*real) (char const *, int, ...);
-	if (!real) {
-		void *sym = peers_next("open");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		peers_next(&real, sizeof real, "open");
 	va_list ap;
 	va_start(ap, flags);
 	mode_t mode = PEERS_MODE(ap, flags);
@@ -253,10 +247,8 @@ open64 (char const *path,
         ...)
 {
 	static int (*real) (char const *, int, ...);
-	if (!real) {
-		void *sym = peers_next("open64");
-		memcpy(&real, &sym, sizeof real);
-	}
+	if (!real)
+		peers_next(&real, sizeof real, "open64");
 	va_list ap;
 	va_start(ap, flags);
 	mode_t mode = PEERS_MODE(ap, flags);
