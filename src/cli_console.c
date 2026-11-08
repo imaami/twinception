@@ -1409,7 +1409,7 @@ cli_console_frame (struct cli_console *console,
 	static char const *const names[] = {"Conversation", "Reasoning"};
 	char const *const *border = corners[edge];
 	char const *frame_style = cli_console_style(console, CLI_STYLE_FRAME);
-	for (unsigned pane = 0; pane < CLI_CONSOLE_PANES; ++pane) {
+	for (unsigned pane = 0; pane < array_size(console->panes); ++pane) {
 		struct cli_scrollback const *scrollback = &console->panes[pane].scrollback;
 		bool focused = console->focused == pane;
 		char buffer[64];
@@ -1432,7 +1432,7 @@ static int
 cli_console_panels (struct cli_console *console,
                     struct dstr        *output)
 {
-	for (unsigned i = 0; i < CLI_CONSOLE_PANES; ++i) {
+	for (unsigned i = 0; i < array_size(console->panes); ++i) {
 		if (!(console->dirty & (1u << i)))
 			continue;
 		struct cli_console_pane *pane = &console->panes[i];

@@ -619,7 +619,7 @@ autocomplete_destroy (struct autocomplete **pp)
 	ac->entries.items = nullptr;
 	free(ac->tokens.items);
 	ac->tokens.items = nullptr;
-	for (size_t i = 0; i < AUTOCOMPLETE_LISTS; ++i)
+	for (size_t i = 0; i < array_size(ac->lists); ++i)
 		autocomplete_names_fini(&ac->lists[i]);
 	for (size_t i = 0; i < ac->notes.cap; ++i) {
 		dstr_cleanup(&ac->notes.items[i].tool);
@@ -791,7 +791,7 @@ autocomplete_set_names (struct autocomplete    *ac,
                         struct cstr_view const *names,
                         size_t                  count)
 {
-	return list < AUTOCOMPLETE_LISTS ? autocomplete_names_set(&ac->lists[list], names, count, true) : EINVAL;
+	return list < array_size(ac->lists) ? autocomplete_names_set(&ac->lists[list], names, count, true) : EINVAL;
 }
 
 /* Returns the index of the entry of ac->notes whose tool and selector
@@ -874,7 +874,7 @@ size_t
 autocomplete_list_count (struct autocomplete const *ac,
                          enum autocomplete_list     list)
 {
-	return list < AUTOCOMPLETE_LISTS ? ac->lists[list].n : 0;
+	return list < array_size(ac->lists) ? ac->lists[list].n : 0;
 }
 
 struct cstr_view
