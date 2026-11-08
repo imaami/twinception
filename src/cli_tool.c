@@ -126,7 +126,7 @@ cli_tool_content (struct cli_tool    *tool,
 		return e ? e : cli_ui_message(console, wire);
 	}
 	for (size_t i = 0, count = json_object_array_length(content); i < count; ++i) {
-		struct json_object *block = jb_at(content, i);
+		struct json_object *block = json_object_array_get_idx(content, i);
 		struct cstr_view kind = jb_view(jb_get(block, "type"));
 		struct cstr_view text = jb_view(jb_get(block, "text"));
 		bool is_text = cstr_view_equal(kind, CSTR_VIEW("text"));

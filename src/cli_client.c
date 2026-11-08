@@ -610,7 +610,7 @@ cli_client_notes (struct cli_client   *client,
 	if (!json_object_is_type(content, json_type_array))
 		return cli_error_set(error, EPROTO, "Invalid %s discovery result", what);
 	for (size_t i = 0, n = json_object_array_length(content); !e && i < n; ++i) {
-		struct json_object *block = jb_at(content, i);
+		struct json_object *block = json_object_array_get_idx(content, i);
 		if (!jb_is(jb_get(block, "type"), "text"))
 			continue;
 		struct cstr_view text = jb_view(jb_get(block, "text"));
@@ -676,7 +676,7 @@ cli_client_has_action (struct json_object *actions,
                        enum notes_action   action)
 {
 	for (size_t i = 0, count = jb_len(actions); i < count; ++i)
-		if (cstr_view_equal(jb_view(jb_at(actions, i)), notes_action_names[action]))
+		if (cstr_view_equal(jb_view(json_object_array_get_idx(actions, i)), notes_action_names[action]))
 			return true;
 	return false;
 }
@@ -692,7 +692,7 @@ cli_client_catalog_names (struct autocomplete    *catalog,
 	if (!views)
 		return ENOMEM;
 	for (size_t i = 0; i < count; ++i)
-		views[i] = jb_view(jb_at(names, i));
+		views[i] = jb_view(json_object_array_get_idx(names, i));
 	int e = autocomplete_set_names(catalog, list, views, count);
 	free(views);
 	return e;
@@ -807,7 +807,7 @@ cli_client_scan_tools (struct cli_client      *client,
 		if (!json_object_is_type(tools, json_type_array))
 			return cli_error_set(error, EPROTO, "AskAI returned an invalid tool list");
 		for (size_t i = 0, count = json_object_array_length(tools); !e && i < count; ++i)
-			e = cli_client_scan_tool(client, scan, jb_at(tools, i), error);
+			e = cli_client_scan_tool(client, scan, json_object_array_get_idx(tools, i), error);
 		struct json_object *next = jb_get(result, "nextCursor");
 		if (e || !next)
 			return e;

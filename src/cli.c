@@ -784,7 +784,7 @@ cli_history_show (struct cli *cli)
 	if (!dstr_printf(&label, "%s:", dstr_get(&cli->client.tool)))
 		return ENOMEM;
 	for (size_t i = 0, count = json_object_array_length(cli->history); i < count; ++i) {
-		struct json_object *turn = jb_at(cli->history, i);
+		struct json_object *turn = json_object_array_get_idx(cli->history, i);
 		int e = cli_ui_info(cli->console, CSTR_VIEW("you:"));
 		if (!e)
 			e = cli_ui_message(cli->console, jb_view(jb_get(turn, "prompt")));
