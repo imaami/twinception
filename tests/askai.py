@@ -4285,7 +4285,8 @@ def check_limits(binary, up):
         number = b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{"n":0.%s}}'
         assert ai.post(number % (b"1" * 1022))[0] == 200
         status, _, body = ai.post(number % (b"1" * 1023))
-        assert status == 400 and "too long a number" in body["error"]["message"]
+        assert status == 400 and "number in the request JSON is too long" in \
+            body["error"]["message"]
 
     # A client that never reads is closed once its output stalls, or once
     # it would exceed the output limit.

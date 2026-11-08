@@ -7016,7 +7016,7 @@ mcp_req_modern (struct mcp_req     *req,
 	struct json_object *caps = jb_get(meta, "io.modelcontextprotocol/clientCapabilities");
 	if (!version.data || !json_object_is_type(caps, json_type_object)) {
 		mcp_req_error(req, 400, INVALID_PARAMS,
-		              FRAG("Request _meta must carry protocolVersion and "
+		              FRAG("Request _meta must contain protocolVersion and "
 		                   "clientCapabilities"), nullptr, 0);
 		return;
 	}
@@ -7509,12 +7509,13 @@ mcp_on_body (struct stream *s,
 		mcp_req_http_error(req, 400,
 		                   req->scan.state == JB_SCAN_SCALAR &&
 		                   req->scan.run == JB_SCALAR_MAX
-		                   ? "Request JSON has too long a number"
-		                   : c == ':' ? "Request JSON object has too many members"
+		                   ? "A number in the request JSON is too long"
+		                   : c == ':'
+		                   ? "An object in the request JSON contains too many members"
 		                   : (c == '{' || c == '[') && req->scan.depth == lim->depth
 		                   ? "Request JSON is nested too deeply"
 		                   : req->scan.values == lim->values
-		                   ? "Request JSON has too many values"
+		                   ? "The request JSON contains too many values"
 		                   : out_of_memory);
 		return;
 	}
