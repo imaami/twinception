@@ -1878,13 +1878,13 @@ home_native_event (struct home        *home,
 		CSTR_VIEW_INIT("cancelled"), CSTR_VIEW_INIT("incomplete"),
 	};
 	struct home_api const *api = &home_apis[home->ep->api];
-	struct json_object *kind = jb_get(root, api->type);
+	struct cstr_view const kind = jb_view(jb_get(root, api->type));
 	struct json_object *object = jb_get(root, api->object);
-	struct json_object *status = api->update.len && cstr_view_equal(jb_view(kind), api->update)
-	                           ? jb_get(root, "status") : jb_get(object, "status");
+	struct json_object *status = jb_get(api->update.len && cstr_view_equal(kind, api->update)
+	                                    ? root : object, "status");
 	if (cstr_view_index(ends, array_size(ends), jb_view(status)) < array_size(ends))
 		job->flags |= PROVIDER_DONE;
-	if (job->cancel_url || !cstr_view_equal(jb_view(kind), api->created))
+	if (job->cancel_url || !cstr_view_equal(kind, api->created))
 		return 0;
 	int e = home_native_id(home, job, jb_get(object, "id"));
 	return e ? e : home_metadata(home, job);
