@@ -1203,8 +1203,8 @@ home_metadata (struct home *home,
  */
 static int
 home_connect (struct home *home,
-               struct job  *job,
-               bool         resume)
+              struct job  *job,
+              bool         resume)
 {
 	if (!job->journal)
 		return home_open(home, job, resume);
@@ -1221,8 +1221,8 @@ home_connect (struct home *home,
 
 static int
 home_open (struct home *home,
-            struct job  *job,
-            bool         resume)
+           struct job  *job,
+           bool         resume)
 {
 	struct ai_endpoint const *ep = home->ep;
 	char const *const *headers = ep->headers;
@@ -1793,9 +1793,9 @@ home_parse (struct home      *home,
  */
 static int
 home_provider_url (struct home *home,
-                    struct job  *job,
-                    bool         cancel,
-                    char       **out)
+                   struct job  *job,
+                   bool         cancel,
+                   char       **out)
 {
 	char const *id = job->recovery.provider_id;
 	if (!id || !*id)
