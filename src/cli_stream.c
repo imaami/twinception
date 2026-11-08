@@ -55,14 +55,13 @@ cli_stream_notify (void               *context,
 		return cli_stream_progress(stream, params);
 	if (!(stream->flags & CLI_STREAM_DELTAS) || !cstr_view_equal(method, CSTR_VIEW("notifications/askai/delta")))
 		return 0;
-	struct json_object *request = jb_get(params, "requestId");
-	if (!json_object_is_type(request, json_type_int) || json_object_get_int64(request) != request_id)
+	if (jb_int(jb_get(params, "requestId"), -1) != request_id)
 		return cli_error_set(error, EPROTO, "Unexpected streaming request id");
 	struct cstr_view text = jb_view(jb_get(params, "text"));
 	struct cstr_view kind = jb_view(jb_get(params, "kind"));
 	if (!text.data || !kind.data)
 		return cli_error_set(error, EPROTO, "Expected a JSON string from AskAI");
-	int64_t current = json_object_get_int64(jb_get(params, "turn"));
+	int64_t current = jb_int(jb_get(params, "turn"), 0);
 	int e = 0;
 	if (current != stream->turn) {
 		if (dstr_len(&stream->text))

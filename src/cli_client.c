@@ -108,8 +108,7 @@ static int cli_client_response_event(char const *data, size_t len, void *user)
 		return cli_error_set(response->error, EPROTO, "Malformed JSON response from AskAI");
 	struct json_object *id = jb_get(event, "id");
 	if (id) {
-		if (!response->id || !json_object_is_type(id, json_type_int) ||
-		    json_object_get_int64(id) != response->id || response->result)
+		if (!response->id || jb_int(id, 0) != response->id || response->result)
 			return cli_error_set(response->error, EPROTO, "Unexpected JSON-RPC response id");
 		response->result = json_object_get(event);
 		return 0;
