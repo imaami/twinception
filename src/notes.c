@@ -601,10 +601,7 @@ notes_kind (struct cstr_view  line,
 	if (oid_init_field(oid, &line, ' ') || !cstr_view_cut(&line, ' ', &type))
 		return KIND_OTHER;
 	*size = line;
-	for (enum notes_kind k = KIND_BLOB; k < KIND_OTHER; ++k)
-		if (cstr_view_equal(type, types[k]))
-			return k;
-	return KIND_OTHER;
+	return KIND_BLOB + cstr_view_index(types + KIND_BLOB, KIND_OTHER - KIND_BLOB, type);
 }
 
 int
