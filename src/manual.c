@@ -955,18 +955,6 @@ manual_counts (struct manual const *manual)
 	return &manual->metrics;
 }
 
-/* Returns true if @p s, which ends in a NUL, is 1 to @p max of the
- * characters of @p set, and its first character is not the '-' that man
- * would read as the start of an option.
- */
-static bool
-manual_word (struct cstr_view  s,
-             size_t            max,
-             char const       *set)
-{
-	return s.len && s.len <= max && *s.data != '-' && strspn(s.data, set) == s.len;
-}
-
 /* Starts a man call in @p slot for the page in the name argument of
  * @p args, in the section of the section argument if it is given. If the
  * manual stores the page, the function gives it to the call. Otherwise
@@ -979,8 +967,9 @@ manual_start (struct mcp_slot    *slot,
 	struct json_object *section = jb_get(args, "section");
 	struct json_object *heading = jb_get(args, "heading");
 	struct cstr_view const head = jb_view(heading);
-	struct cstr_view const page = jb_view(jb_get(args, "name"));
-	struct cstr_view sect = jb_view(section);
+	struct cstr_view const page = jb_text(jb_get(args, "name"), 1, MANUAL_NAME,
+	                                      UTIL_ALNUM "_.:+@-");
+	struct cstr_view sect = jb_text(section, 0, MANUAL_SECTION, UTIL_ALNUM);
 	/* A small model may give a section as a number. */
 	int64_t number = jb_int(section, -1);
 	char digit[2] = "";
@@ -989,11 +978,11 @@ manual_start (struct mcp_slot    *slot,
 		sect = (struct cstr_view){ digit, 1 };
 	}
 	struct cstr_view const problem =
-		!manual_word(page, MANUAL_NAME, UTIL_ALNUM "_.:+@-")
+		!page.data || *page.data == '-'
 		? CSTR_VIEW("The name argument must name a manual page, such as printf or "
 		            "git-grep: 1 to 128 letters, digits and _.:+@- characters, the "
 		            "first not -.")
-		: section && !(sect.data && (!sect.len || manual_word(sect, MANUAL_SECTION, UTIL_ALNUM)))
+		: section && !sect.data
 		? CSTR_VIEW("The section argument must name a section, such as 1, 3 or 3p: "
 		            "1 to 16 letters and digits.")
 		: heading && !(head.len && head.len <= MANUAL_HEADING && *head.data != ' ' &&
