@@ -4535,6 +4535,10 @@ mcp_req_turn_write (struct mcp_req *req)
 			return;
 		}
 	}
+	/* req->used is the token count of the upload up to this point. Store
+	 * the length of the upload in req->sent, so that mcp_req_tokens()
+	 * estimates only the bytes written after it, at 4 bytes a token. */
+	req->sent = buf_peek(&req->upload).len;
 	if (!req->n_calls) {
 		mcp_req_doze(req);
 		return;
@@ -4543,8 +4547,6 @@ mcp_req_turn_write (struct mcp_req *req)
 		req->calls[k] = req->job->calls[k];
 		req->job->calls[k] = (struct buf){};
 	}
-	/* The usage counts the turn: what is written after it counts on. */
-	req->sent = buf_peek(&req->upload).len;
 	mcp_req_drop(req);
 	req->part = 0;
 	mcp_req_calls_next(req);
@@ -4800,8 +4802,6 @@ mcp_req_doze (struct mcp_req *req)
 		return;
 	}
 	loop_work(req->mcp->loop, LOOP_COPY, text.len);
-	/* The usage counts the turn: what is written after it counts on. */
-	req->sent = buf_peek(&req->upload).len;
 	mcp_req_drop(req);
 	if (dstr_len(&a->notices) || dstr_len(&a->told)) {
 		mcp_agenda_wake(a);
