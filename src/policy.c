@@ -2,6 +2,7 @@
  *
  * Identities and roles.
  */
+#define _GNU_SOURCE /* mempcpy() */
 #include <errno.h>
 #include <grp.h>
 #include <inttypes.h>
@@ -254,13 +255,9 @@ policy_build_who (struct policy_build    *b,
                   struct cstr_view const  parts[static n])
 {
 	char *who = b->names;
-	size_t len = 0;
-	for (size_t i = 0; i < n; ++i) {
-		memcpy(who + len, parts[i].data, parts[i].len);
-		len += parts[i].len;
-	}
-	b->names += len;
-	return (struct cstr_view){ who, len };
+	for (size_t i = 0; i < n; ++i)
+		b->names = mempcpy(b->names, parts[i].data, parts[i].len);
+	return (struct cstr_view){ who, (size_t)(b->names - who) };
 }
 
 /* Return the index of the role whose name is the string @p name, or

@@ -68,7 +68,7 @@
  * With none idle, the client is turned away, after a spare descriptor has
  * let it be accepted, and home accepts no more until it has the spare again.
  */
-#define _GNU_SOURCE /* accept4(), struct ucred */
+#define _GNU_SOURCE /* accept4(), mempcpy(), struct ucred */
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -1071,11 +1071,9 @@ httpd_conn_put (struct httpd_conn      *conn,
 		httpd_conn_doom(conn);
 		return e;
 	}
-	for (size_t i = 0; i < n; ++i) {
+	for (size_t i = 0; i < n; ++i)
 		if (f[i].len)
-			memcpy(s.ptr, f[i].data, f[i].len);
-		s.ptr += f[i].len;
-	}
+			s.ptr = mempcpy(s.ptr, f[i].data, f[i].len);
 	buf_commit(&conn->out, total);
 	return 0;
 }
