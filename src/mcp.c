@@ -7977,17 +7977,13 @@ mcp_compact_definition (void const *service)
 	            st->lending.of[KIND_FINDINGS] ? ", then askai's review record" : "",
 	            st->lending.of[KIND_NOTES] ? ", then your note history and your newest note"
 	                                       : "");
-	return jb_object(
-		"name", json_object_new_string("compact"),
-		"description", json_object_new_string(about),
-		"inputSchema", schema_object(
-			jb_object(
-				"summary", schema_property("string",
-					"Where the task stands: what is done, what you found, "
-					"and what you will do next; at most 4 MiB."),
-				nullptr),
-			&CSTR_VIEW("summary"), 1),
-		nullptr);
+	return schema_tool("compact", about,
+		jb_object(
+			"summary", schema_property("string",
+				"Where the task stands: what is done, what you found, "
+				"and what you will do next; at most 4 MiB."),
+			nullptr),
+		CSTR_VIEW("summary"));
 }
 
 /* Returns the definition of background for the turns. */

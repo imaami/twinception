@@ -2085,17 +2085,14 @@ notes_tool_schema (struct notes_tool const *tool,
 		json_object_put(props);
 		return nullptr;
 	}
-	return jb_object(
-		"name", json_object_new_string("notes"),
-		"description", jb_string(cstr_view_dstr(&description)),
-		"inputSchema", schema_object(props, &CSTR_VIEW("action"), 1),
-		"annotations", jb_object(
-			"readOnlyHint", json_object_new_boolean(0),
-			"destructiveHint", json_object_new_boolean(0),
-			"idempotentHint", json_object_new_boolean(0),
-			"openWorldHint", json_object_new_boolean(0),
-			nullptr),
-		nullptr);
+	struct json_object *def = schema_tool("notes", dstr_get(&description), props,
+	                                      CSTR_VIEW("action"));
+	return jb_set_or_free(def, "annotations", jb_object(
+		"readOnlyHint", json_object_new_boolean(0),
+		"destructiveHint", json_object_new_boolean(0),
+		"idempotentHint", json_object_new_boolean(0),
+		"openWorldHint", json_object_new_boolean(0),
+		nullptr));
 }
 
 /* Returns the definition of the notes tool for clients. @p service is the
