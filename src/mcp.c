@@ -7867,10 +7867,10 @@ mcp_compact_definition (void const *service)
 	char about[512];
 	util_format(about, sizeof about, "Replace your turns and the tool results since the "
 	            "task with your summary. After compact, you see the original task, then "
-	            "your summary%s%s. The summary must contain everything that you need to "
-	            "continue. Call compact when an askai notice asks for compact, or when you "
-	            "no longer need the details of finished work. Tool calls after compact in "
-	            "the same turn do not run.",
+	            "your summary%s%s. Put all that you need to continue into the summary. "
+	            "Call compact when an askai notice asks for compact, or when you no longer "
+	            "need the details of finished work. Tool calls after compact in the same "
+	            "turn do not run.",
 	            st->lending.of[KIND_FINDINGS] ? ", then the review record" : "",
 	            st->lending.of[KIND_NOTES] ? ", then your note history and your newest note"
 	                                       : "");
@@ -7890,11 +7890,10 @@ mcp_background_definition (void const *service)
 	(void)service;
 	static_assert(JOBS_MAX == 8, "update the description");
 	return schema_tool("background",
-		"Run a call of another tool as a job in the background. The call "
-		"returns the job number at once. When the job ends, a notice appears "
-		"in a later tool result, in the result of wait, or in a message after "
-		"your answer. Read the output of the job with jobs. You can start at "
-		"most 8 jobs.",
+		"Run a call of another tool as a job. The call returns the job number "
+		"at once. When the job ends, a notice appears in a later tool result, "
+		"in the result of wait, or in a message after your answer. Read the "
+		"output with jobs. You can start at most 8 jobs.",
 		jb_object(
 			"tool", schema_property("string", "The name of the tool to call, "
 			                        "such as git or man."),
@@ -7933,13 +7932,13 @@ mcp_wait_definition (void const *service)
 	return schema_tool("wait",
 		"Wait until a job ends, a timer fires, or the seconds pass. The result "
 		"lists the jobs that ended and the timers that fired. Call wait instead "
-		"of calling jobs again and again.",
+		"of polling jobs.",
 		jb_object(
 			"seconds", schema_property("integer", "The longest time to wait, "
 			                           "from 1 to 600 seconds."),
 			"jobs", schema_array(schema_property("integer", nullptr), 0,
-			                     "The job numbers to wait for. Without jobs, any "
-			                     "job ends the wait."),
+			                     "The job numbers to wait for. The default is any "
+			                     "job."),
 			nullptr),
 		CSTR_VIEW("seconds"));
 }
@@ -7975,14 +7974,14 @@ mcp_background_client_definition (void const *service)
 	struct mcp_static const *st = service;
 	char about[1024];
 	util_format(about, sizeof about, "Run a call of another of your tools, such as %s, "
-	            "as a job in the background. The call returns the job ID at once. The "
-	            "job continues after the request and the connection end. wait returns "
-	            "when the job ends. jobs returns the result of the job or cancels the "
-	            "job. At most 8 of your jobs and tasks run at once. askai stores the "
-	            "result of a job for up to an hour after the job ends.", st->tool->name);
+	            "as a job. The call returns the job ID at once. The job continues after "
+	            "the connection closes. wait returns when the job ends. jobs returns the "
+	            "result or cancels the job. At most 8 of your jobs and tasks run at once. "
+	            "askai stores the result for up to an hour after the job ends.",
+	            st->tool->name);
 	char tool[256];
-	util_format(tool, sizeof tool, "The name of the tool to call, such as %s. background, "
-	            "jobs, wait and timer are not allowed.", st->tool->name);
+	util_format(tool, sizeof tool, "The name of the tool to call, such as %s, but not "
+	            "background, jobs, wait or timer.", st->tool->name);
 	return schema_tool("background", about,
 		jb_object(
 			"tool", schema_property("string", tool),
@@ -8022,14 +8021,14 @@ mcp_wait_client_definition (void const *service)
 		"Wait until a job of yours ends, a timer of yours fires, or the "
 		"seconds pass. The result lists the jobs that ended and the timers "
 		"that fired. A wait uses no upstream slot. Call wait instead of "
-		"calling jobs again and again. Give fewer seconds than the request "
-		"timeout of your client.",
+		"polling jobs. Give fewer seconds than the request timeout of your "
+		"client.",
 		jb_object(
 			"seconds", schema_property("integer", "The longest time to wait, "
 			                           "from 1 to 600 seconds."),
 			"jobs", schema_array(schema_property("string", nullptr), 0,
-				"The IDs of the jobs to wait for, at most 16. Without jobs, "
-				"any job ends the wait."),
+				"The IDs of the jobs to wait for, at most 16. The default is "
+				"any job."),
 			nullptr),
 		CSTR_VIEW("seconds"));
 }
@@ -8041,15 +8040,14 @@ mcp_timer_client_definition (void const *service)
 	(void)service;
 	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "update the description");
 	return schema_tool("timer",
-		"Set a timer and continue at once. The result contains the timer "
-		"number. When the timer fires, wait returns. The result of wait "
-		"contains the number and the note of the timer.",
+		"Set a timer. The call returns the timer number at once. When the "
+		"timer fires, wait returns with the number and the note of the timer.",
 		jb_object(
 			"seconds", schema_property("integer", "The seconds until the timer "
 			                           "fires, from 1 to 3600."),
 			"note", schema_property("string", "What the timer is for, at most "
 			                        "200 bytes. The result of wait contains the "
-			                        "note when the timer fires."),
+			                        "note."),
 			nullptr),
 		CSTR_VIEW("seconds"));
 }
