@@ -249,17 +249,6 @@ http_write_adapter (char   *ptr,
 	return n;
 }
 
-/* Give the transfer of @p request the addresses in @p entry. */
-static int
-http_request_pin (struct http_request *request,
-                  char const          *entry)
-{
-	request->resolve = curl_slist_append(nullptr, entry);
-	if (!request->resolve)
-		return ENOMEM;
-	return curl_easy_setopt(request->easy, CURLOPT_RESOLVE, request->resolve) ? EIO : 0;
-}
-
 /* Append the address of @p ai, if it is one, to the @p len bytes of
  * @p l's entry, as libcurl takes it: IPv6 in brackets, after a comma but for
  * the first, which follows the ':' that ends "name:port:". There is room
@@ -346,6 +335,22 @@ http_queue (struct http         *http,
 	loop_ready_bulk(http->curl.loop, &http->start);
 }
 
+/* Sets CURLOPT_RESOLVE of the transfer of @p request to the address entry
+ * of @p host, and queues the request. Returns 0, ENOMEM or EIO.
+ */
+static int
+http_request_pin (struct http_request    *request,
+                  struct http_host const *host)
+{
+	request->resolve = curl_slist_append(nullptr, host->entry);
+	if (!request->resolve)
+		return ENOMEM;
+	if (curl_easy_setopt(request->easy, CURLOPT_RESOLVE, request->resolve))
+		return EIO;
+	http_queue(host->http, request);
+	return 0;
+}
+
 /* Start @p request, which waited for @p host's addresses, or fail it, saying
  * @p why if the host has none.
  */
@@ -357,11 +362,9 @@ http_host_resume (struct http_host    *host,
 	struct http *http = host->http;
 	list_del(&request->hook);
 	if (host->entry) {
-		int e = http_request_pin(request, host->entry);
-		if (!e) {
-			http_queue(http, request);
+		int e = http_request_pin(request, host);
+		if (!e)
 			return;
-		}
 		why = strerror(e);
 	}
 	request->fail = CURLE_COULDNT_RESOLVE_HOST;
@@ -504,12 +507,8 @@ static int
 http_host_take (struct http_host    *host,
                 struct http_request *request)
 {
-	if (host->entry && host->expires > request->since) {
-		int e = http_request_pin(request, host->entry);
-		if (!e)
-			http_queue(host->http, request);
-		return e;
-	}
+	if (host->entry && host->expires > request->since)
+		return http_request_pin(request, host);
 	list_append(&host->waiting, &request->hook);
 	return host->lookup ? 0 : http_host_lookup(host);
 }
