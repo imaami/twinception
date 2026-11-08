@@ -3,7 +3,6 @@
  * RFC 2397 data: URIs.
  */
 #include <errno.h>
-#include <string.h>
 
 #include "datauri.h"
 #include "util.h"
