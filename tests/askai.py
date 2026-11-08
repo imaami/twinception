@@ -9003,20 +9003,19 @@ def check_git(binary, up):
                "GIT_DIR": "/nowhere", "GIT_EXTERNAL_DIFF": "x", "HOME": d}
 
         def bad_option(command, option):
-            return (f"options[0]: '{option}' is not available for git {command} in "
-                    "this tool. Omit it; use help:true for this command's options.")
+            return (f"options[0] '{option}' is not allowed for git {command}. help:true "
+                    "lists the allowed options.")
 
         def source_option(option, index=0, pair=False):
-            source = "supply two commits or one A..B/A...B range in revisions." if pair else \
-                "select a commit with revisions (default HEAD)."
-            return (f"options[{index}]: '{option}' requests an unavailable data source. "
-                    "Index and working-tree reads are disabled. Omit this option and "
-                    + source)
+            source = "two commits or one range A..B or A...B in revisions." if pair else \
+                "a commit in revisions. The default revision is HEAD."
+            return (f"options[{index}] '{option}' is not allowed. Only committed files are "
+                    "available, not the index or the working tree. Remove the option and "
+                    "give " + source)
 
-        cat_file_mode = ("git cat-file needs exactly one option: -p for the contents, "
-                         "-t for the type, -s for the size, or -e to check that the "
-                         "object exists.")
-        blame_file = ("git blame needs the file as its one path, such as "
+        cat_file_mode = ("Give git cat-file exactly one option: -p prints the contents, "
+                         "-t the type, -s the size. -e checks that the object exists.")
+        blame_file = ("Give git blame the file as the one path, such as "
                       "\"paths\": [\"src/git.c\"].")
 
         def call(ai, **arguments):
@@ -9025,10 +9024,10 @@ def check_git(binary, up):
             assert status == 200, (status, body)
             return body["result"]
 
-        history = ("A revision names no commit that the git tool can read: a name or "
-                   "hash that does not exist, ~N past the first commit, a blob or tree "
-                   "hash (use commit:path), or a commit that HEAD, branches, tags and "
-                   "remote-tracking refs do not reach.")
+        history = ("A revision names no commit that the git tool can read. Possible "
+                   "causes: a name or hash that does not exist, ~N past the first commit, "
+                   "a blob or tree hash, or a commit that no branch, tag, remote-tracking "
+                   "ref or HEAD reaches. Give a file as commit:path, not as a blob hash.")
 
         with Askai(binary, "-u", up.url(), "--git", repo, "--git", f"{d}/other",
                    "--git-timeout", "1", env=env) as ai:
@@ -9100,34 +9099,35 @@ def check_git(binary, up):
             result = call(ai, repo="proj", command="push")
             assert result.get("isError") and text_of(result) == \
                 "The command argument must be " + ", ".join(commands[:-1]) + " or " + \
-                commands[-1] + ". Use help:true with one of them for its options.", result
+                commands[-1] + ". help:true lists the options of a command.", result
             for command in ("status", "ls-files"):
                 result = call(ai, repo="proj", command=command)
                 assert result.get("isError") and text_of(result) == \
-                    f"git {command} is unavailable: index and working-tree reads are " \
-                    "disabled. Use git ls-tree with options [\"-r\", \"--name-only\"] " \
-                    "to list committed files; revisions defaults to HEAD.", result
+                    f"git {command} is not available. Only committed files are visible. " \
+                    "To list the committed files, call ls-tree with \"options\": " \
+                    "[\"-r\", \"--name-only\"].", result
             result = call(ai, repo="proj", command="ls-tree", options=["-r", "--name-only"])
             assert not result.get("isError") and text_of(result) == \
                 "a.txt\nbig.txt\ndeleted.txt\n", result
             for arguments, text in (
                     (["x"], "Tool arguments must be an object."),
                     ({"repo": "proj", "command": "log", "x": 1},
-                     "The tool has no argument x."),
+                     "x is not an argument of the git tool."),
                     ({"repo": "nope", "command": "log"},
                      "The repo argument must be proj or other."),
                     ({"repo": "proj", "command": "log", "options": ["--output=/x"]},
                      bad_option("log", "--output=/x")),
                     ({"repo": "proj", "command": "log", "options": ["-n", "3"]},
-                     "options[0]: '-n' needs an attached value. Use '-nNUMBER' as "
-                     "one options entry containing decimal digits. " + bad_option(
+                     "The value of options[0] '-n' is missing. Give '-nNUMBER' as one "
+                     "entry, with decimal digits for NUMBER. " + bad_option(
                          "log", "3").replace("options[0]", "options[1]")),
                     # Every problem is named, not only the first.
                     ({"repo": "proj", "command": "grep", "options": ["--bogus"],
                       "paths": ["../x"]},
-                     "git grep needs a pattern argument: a string of 1 to 1024 bytes. " +
+                     "Give git grep a pattern argument of 1 to 1024 bytes. " +
                      bad_option("grep", "--bogus") + " paths[0] must be relative to the "
-                     "repository's top, with no .. component or :(...) pathspec magic."),
+                     "top of the repository, with no .. component and no :(...) pathspec "
+                     "magic."),
                     ({"repo": "proj", "command": "grep", "pattern": "a",
                       "options": ["-f"]}, bad_option("grep", "-f")),
                     ({"repo": "proj", "command": "grep", "pattern": "a",
@@ -9136,13 +9136,11 @@ def check_git(binary, up):
                     ({"repo": "proj", "command": "blame", "options": ["--contents=x"],
                       "paths": ["a.txt"]}, bad_option("blame", "--contents=x")),
                     ({"repo": "proj", "command": "log", "options": "--all"},
-                     "The options argument must be an array of strings "
-                     "(at most 16 entries)."),
+                     "The options argument must be an array of at most 16 strings."),
                     ({"repo": "proj", "command": "log", "options": None},
-                     "The options argument must be an array of strings "
-                     "(at most 16 entries)."),
+                     "The options argument must be an array of at most 16 strings."),
                     ({"repo": "proj", "command": "log", "paths": ["a.txt"] * 33},
-                     "The paths argument has 33 entries; its limit is 32."),
+                     "The paths argument can contain at most 32 entries, not 33."),
                     ({"repo": "proj", "command": "log", "options": ["-n3", 3]},
                      "options[1] must be a string of 1 to 1024 bytes with no NUL."),
                     ({"repo": "proj", "command": "log", "help": "yes"},
@@ -9154,27 +9152,27 @@ def check_git(binary, up):
                     ({"repo": "proj", "command": "log", "revisions": ["a\u0000b"]},
                      "revisions[0] must be a string of 1 to 1024 bytes with no NUL."),
                     ({"repo": "proj", "command": "show", "revisions": ["--help"]},
-                     "revisions[0]: use a commit reference or hash with optional "
-                     "^/~ ancestry. Stash, reflogs, index selectors and revision "
-                     "expansions are unavailable."),
+                     "revisions[0] must be a commit name or hash, with optional ^ and ~ "
+                     "suffixes. Stash, reflogs, index selectors and revision expansions "
+                     "are not available."),
                     ({"repo": "proj", "command": "diff", "revisions": ["/etc"]},
-                     "revisions[0]: use a commit reference or hash with optional "
-                     "^/~ ancestry. Stash, reflogs, index selectors and revision "
-                     "expansions are unavailable. git diff needs two commits, or one "
-                     "explicit A..B or A...B range."),
+                     "revisions[0] must be a commit name or hash, with optional ^ and ~ "
+                     "suffixes. Stash, reflogs, index selectors and revision expansions "
+                     "are not available. Give git diff two commits, or one range A..B or "
+                     "A...B."),
                     ({"repo": "proj", "command": "diff", "revisions": ["x/../.."]},
-                     "revisions[0]: use a commit reference or hash with optional "
-                     "^/~ ancestry. Stash, reflogs, index selectors and revision "
-                     "expansions are unavailable."),
+                     "revisions[0] must be a commit name or hash, with optional ^ and ~ "
+                     "suffixes. Stash, reflogs, index selectors and revision expansions "
+                     "are not available."),
                     ({"repo": "proj", "command": "log", "paths": ["../x"]},
-                     "paths[0] must be relative to the repository's top, with no .. "
-                     "component or :(...) pathspec magic."),
+                     "paths[0] must be relative to the top of the repository, with no .. "
+                     "component and no :(...) pathspec magic."),
                     ({"repo": "proj", "command": "log", "paths": ["/etc/passwd"]},
-                     "paths[0] must be relative to the repository's top, with no .. "
-                     "component or :(...) pathspec magic."),
+                     "paths[0] must be relative to the top of the repository, with no .. "
+                     "component and no :(...) pathspec magic."),
                     ({"repo": "proj", "command": "cat-file", "paths": ["a.txt"],
                       "options": ["-p"]},
-                     "git cat-file takes no paths. To name a file, give the "
+                     "Paths are not allowed for git cat-file. To name a file, give the "
                      "revision HEAD:path."),
                     # cat-file needs one option, and blame one path.
                     ({"repo": "proj", "command": "cat-file", "revisions": ["HEAD:a.txt"]},
@@ -9185,26 +9183,25 @@ def check_git(binary, up):
                     ({"repo": "proj", "command": "blame", "paths": ["a.txt", "a.txt"]},
                      blame_file),
                     ({"repo": "proj", "command": "grep"},
-                     "git grep needs a pattern argument: a string of 1 to 1024 "
-                     "bytes."),
+                     "Give git grep a pattern argument of 1 to 1024 bytes."),
                     ({"repo": "proj", "command": "log", "pattern": "a"},
-                     "Only git grep takes a pattern."),
+                     "The pattern argument is only for git grep."),
                     ({"repo": "proj", "command": "read"},
-                     "git read needs the file as its revision, such as "
+                     "Give git read the file as the revision, such as "
                      "\"revisions\": [\"HEAD:src/journal.c\"]."),
                     ({"repo": "proj", "command": "read", "revisions": ["HEAD"]},
-                     "git read needs the file as its revision, such as "
+                     "Give git read the file as the revision, such as "
                      "\"revisions\": [\"HEAD:src/journal.c\"]."),
                     ({"repo": "proj", "command": "read", "paths": ["a.txt"]},
-                     "git read takes no paths. To name a file, give the revision "
-                     "HEAD:path. git read needs the file as its revision, such as "
+                     "Paths are not allowed for git read. To name a file, give the "
+                     "revision HEAD:path. Give git read the file as the revision, such as "
                      "\"revisions\": [\"HEAD:src/journal.c\"]."),
                     ({"repo": "proj", "command": "read", "revisions": ["HEAD:"]},
-                     "revisions[0]: git read needs a nonempty relative path after the "
-                     "colon, with no .. component."),
+                     "In revisions[0], give git read a relative path after the colon, "
+                     "with no .. component."),
                     ({"repo": "proj", "command": "read",
                       "revisions": ["HEAD:a.txt", "HEAD:a.txt"]},
-                     "git read takes at most one revision."),
+                     "Give git read at most one revision."),
                     ({"repo": "proj", "command": "read", "revisions": ["HEAD:a.txt"],
                       "options": ["-p"]}, bad_option("read", "-p")),
                     ({"repo": "proj", "command": "read", "revisions": ["HEAD:a.txt"],
@@ -9214,26 +9211,26 @@ def check_git(binary, up):
                     ({"repo": "proj", "command": "read", "revisions": ["HEAD:a.txt"],
                       "count": -1}, "The count argument must be a whole number from 1."),
                     ({"repo": "proj", "command": "show", "revisions": ["HEAD:a.txt"],
-                      "line": 2}, "Only git read takes line and count. For lines of a "
-                     "file, call read with commit:path as the revision."),
+                      "line": 2}, "The line and count arguments are only for git read. To "
+                     "get lines of a file, call read with the revision commit:path."),
                     # A path in a revision goes where the command takes it.
                     ({"repo": "proj", "command": "log", "revisions": ["HEAD:a.txt"]},
-                     "revisions[0]: git log takes the commit in revisions and the path "
-                     "in paths."),
+                     "In revisions[0], give git log only the commit. Give the path in "
+                     "paths."),
                     ({"repo": "proj", "command": "blame", "revisions": ["HEAD:a.txt"],
                       "paths": ["a.txt"]},
-                     "revisions[0]: git blame takes the commit in revisions and the "
-                     "path in paths."),
+                     "In revisions[0], give git blame only the commit. Give the path in "
+                     "paths."),
                     ({"repo": "proj", "command": "ls-tree", "revisions": ["HEAD:src"]},
-                     "revisions[0]: git ls-tree takes the commit in revisions and the "
-                     "path in paths."),
+                     "In revisions[0], give git ls-tree only the commit. Give the path in "
+                     "paths."),
                     ({"repo": "proj", "command": "rev-parse", "revisions": ["HEAD:a.txt"]},
-                     "revisions[0]: git rev-parse takes commits, not commit:path."),
+                     "In revisions[0], give git rev-parse a commit, not commit:path."),
                     ({"repo": "proj", "command": "rev-parse", "paths": ["a.txt"]},
-                     "git rev-parse takes no paths."),
+                     "Paths are not allowed for git rev-parse."),
                     ({"repo": "proj", "command": "show", "revisions": ["HEAD:"]},
-                     "revisions[0]: git show needs a nonempty relative path after the "
-                     "colon, with no .. component.")):
+                     "In revisions[0], give git show a relative path after the colon, "
+                     "with no .. component.")):
                 result = call(ai, **arguments) if isinstance(arguments, dict) else \
                     ai.rpc("tools/call", {"name": "git", "arguments": arguments})[2][
                         "result"]
@@ -9243,11 +9240,11 @@ def check_git(binary, up):
             # Repair instructions follow the selected command's spelling,
             # including flags whose meaning differs between commands.
             for command, option, fragments in (
-                    ("log", "--max-count", ("needs an attached value", "--max-count=VALUE")),
-                    ("log", "--max-count=", ("needs an attached value", "--max-count=VALUE")),
-                    ("log", "-n3x", ("nonnumeric attached value", "-nNUMBER", "decimal digits")),
-                    ("grep", "-C", ("needs an attached value", "-CNUMBER")),
-                    ("blame", "-L", ("needs an attached value", "-LVALUE"))):
+                    ("log", "--max-count", ("is missing", "--max-count=VALUE")),
+                    ("log", "--max-count=", ("is missing", "--max-count=VALUE")),
+                    ("log", "-n3x", ("is not a decimal number", "-nNUMBER", "decimal digits")),
+                    ("grep", "-C", ("is missing", "-CNUMBER")),
+                    ("blame", "-L", ("is missing", "-LVALUE"))):
                 extra = {"pattern": "alpha"} if command == "grep" else {}
                 result = call(ai, repo="proj", command=command, options=[option], **extra)
                 assert result.get("isError") and all(s in text_of(result) for s in fragments), \
@@ -9987,18 +9984,17 @@ def check_git_read(binary, up):
                     "line": 100}})
             assert text_of(body["result"]) == lines(100, 100) + end, (status, body)
             assert read(ai, "HEAD:lines.txt", True, line=101) == \
-                "Line 101 is past the end of the file: it has 100 lines. Give a line " \
-                "from 1 to 100."
+                "Line 101 is past the end of the file. Give a line from 1 to 100."
             assert read(ai, "HEAD:empty.txt", True, line=2) == \
-                "Line 2 is past the end of the file: the file is empty."
+                "Line 2 is past the end of the file. The file is empty."
             assert read(ai, "HEAD:empty.txt") == \
                 f"[Repository proj, file empty.txt at commit {head}: the file is empty.]"
             assert read(ai, "HEAD:nonl.txt") == \
                 f"[Repository proj, file nonl.txt at commit {head}: lines 1 to 2 of 2.]\n" \
                 "1\tone\n2\ttwo\n\n[Line 2 is the end of the file, which has no newline " \
                 "after it.]"
-            assert read(ai, "HEAD:bin.dat", True) == "The file has a NUL byte, so it is " \
-                "binary, and read gives text only. cat-file with -s gives its size."
+            assert read(ai, "HEAD:bin.dat", True) == "The file contains a NUL byte. read " \
+                "accepts only text files. cat-file with -s prints the size of the file."
             missing = f"[No file at that path in commit {head}. ls-tree lists the files there."
             for name in ("dir", "absent.txt"):
                 assert read(ai, "HEAD:" + name, True) == missing + "]", name
@@ -10054,7 +10050,7 @@ def check_git_read(binary, up):
                 f"[Repository proj, file cut.txt at commit {head}: lines 4096 to 4096 " \
                 "of at least 4096.]\n4096\t" + "z" * 1023 + "\n" + cut
             assert read(ai, "HEAD:cut.txt", True, line=4097) == "Line 4097 is past the " \
-                "first 4 MiB of the file, which is as far as the git tool reads."
+                "first 4 MiB of the file. The git tool reads at most 4 MiB of a file."
             # A whole read takes many steps, and a line can go on from one
             # step to the next. No step goes over its work budget.
             work(ai)
@@ -10404,10 +10400,10 @@ def check_code(binary, up):
                      "The revision argument must be a commit reference or hash with ^ "
                      "or ~, such as HEAD~1."),
                     ({**outline, "revision": "nope"},
-                     "A revision names no commit that the git tool can read: a name or "
-                     "hash that does not exist, ~N past the first commit, a blob or tree "
-                     "hash (use commit:path), or a commit that HEAD, branches, tags and "
-                     "remote-tracking refs do not reach."),
+                     "A revision names no commit that the git tool can read. Possible "
+                     "causes: a name or hash that does not exist, ~N past the first commit, "
+                     "a blob or tree hash, or a commit that no branch, tag, remote-tracking "
+                     "ref or HEAD reaches. Give a file as commit:path, not as a blob hash."),
                     ({**outline, "offset": -1},
                      "The offset argument must be a whole number of bytes, 0 or more."),
                     ({**outline, "path": "fail.c"}, "The fake refuses fail.c."),

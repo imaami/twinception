@@ -597,24 +597,23 @@ git_option_check (struct cstr_view  opt,
 		char last = match.data[match.len - 1];
 		size_t at = match.len - (last != '=');
 		char const *value = last == '#' ? "NUMBER" : "VALUE";
-		char const *digits = last == '#' ? " containing decimal digits" : "";
-		return git_wrong(why, "options[%zu]: '%.*s' %s. Use '%.*s%s' as one "
-		                 "options entry%s.", index, quoted, opt.data,
-		                 e == ENODATA ? "needs an attached value"
-		                              : "has a nonnumeric attached value",
+		char const *digits = last == '#' ? ", with decimal digits for NUMBER" : "";
+		return git_wrong(why, "The value of options[%zu] '%.*s' %s. Give '%.*s%s' as "
+		                 "one entry%s.", index, quoted, opt.data,
+		                 e == ENODATA ? "is missing" : "is not a decimal number",
 		                 (int)at, match.data, value, digits);
 	}
 	if (!git_option_find(source_options, opt, &match)) {
 		char const *source = commands[command].takes & PAIR
-			? "supply two commits or one A..B/A...B range in revisions."
-			: "select a commit with revisions (default HEAD).";
-		return git_wrong(why, "options[%zu]: '%.*s' requests an unavailable data "
-		                 "source. Index and working-tree reads are disabled. "
-		                 "Omit this option and %s", index, quoted, opt.data, source);
+			? "two commits or one range A..B or A...B in revisions."
+			: "a commit in revisions. The default revision is HEAD.";
+		return git_wrong(why, "options[%zu] '%.*s' is not allowed. Only committed "
+		                 "files are available, not the index or the working tree. "
+		                 "Remove the option and give %s", index, quoted, opt.data, source);
 	}
-	return git_wrong(why, "options[%zu]: '%.*s' is not available for git %s in "
-	                 "this tool. Omit it; use help:true for this command's options.",
-	                 index, quoted, opt.data, git_command_names[command].data);
+	return git_wrong(why, "options[%zu] '%.*s' is not allowed for git %s. help:true "
+	                 "lists the allowed options.", index, quoted, opt.data,
+	                 git_command_names[command].data);
 }
 
 /* Returns the repository whose name is @p name, or nullptr if there is
@@ -841,12 +840,13 @@ git_pin_step (struct git_pin   *pin,
 	 * errors use the same text, so that a caller cannot tell from the text
 	 * whether an unreachable object exists. */
 	bool const revision = pin->phase >= GIT_PIN_RESOLVE && (e == EINVAL || e == EACCES);
-	*why = late ? CSTR_VIEW("Git history validation timed out.")
-	     : revision ? CSTR_VIEW("A revision names no commit that the git tool can read: a "
-	                            "name or hash that does not exist, ~N past the first "
-	                            "commit, a blob or tree hash (use commit:path), or a "
-	                            "commit that HEAD, branches, tags and remote-tracking "
-	                            "refs do not reach.")
+	*why = late ? CSTR_VIEW("git took too long to check the revisions.")
+	     : revision ? CSTR_VIEW("A revision names no commit that the git tool can read. "
+	                            "Possible causes: a name or hash that does not exist, ~N "
+	                            "past the first commit, a blob or tree hash, or a commit "
+	                            "that no branch, tag, remote-tracking ref or HEAD "
+	                            "reaches. Give a file as commit:path, not as a blob "
+	                            "hash.")
 	     : CSTR_VIEW("Git cannot read the repository.");
 	return e;
 }
@@ -891,7 +891,8 @@ git_call_command (struct git_call  *call,
 	uint64_t seen;
 	struct cstr_view other;
 	if (jb_args(args, git_arg_names, GIT_ARGS, UINT64_MAX, of, &seen, &other))
-		return git_wrong(why, "The tool has no argument %.*s.", (int)other.len, other.data);
+		return git_wrong(why, "%.*s is not an argument of the git tool.", (int)other.len,
+		                 other.data);
 
 	if (!call->pin.repo)
 		return git_repos_wrong(git, why);
@@ -900,14 +901,13 @@ git_call_command (struct git_call  *call,
 	if (c == array_size(git_command_names)) {
 		if (cstr_view_equal(cmd, CSTR_VIEW("status")) ||
 		    cstr_view_equal(cmd, CSTR_VIEW("ls-files")))
-			return git_wrong(why, "git %.*s is unavailable: index and working-tree "
-			                 "reads are disabled. Use git ls-tree with "
-			                 "options [\"-r\", \"--name-only\"] to list committed "
-			                 "files; revisions defaults to HEAD.",
+			return git_wrong(why, "git %.*s is not available. Only committed files "
+			                 "are visible. To list the committed files, call "
+			                 "ls-tree with \"options\": [\"-r\", \"--name-only\"].",
 			                 (int)cmd.len, cmd.data);
 		return git_wrong(why, "The command argument must be "
 		                 XL_JOIN(", ", " or ", GIT_COMMAND_LIST(XL_TEXT))
-		                 ". Use help:true with one of them for its options.");
+		                 ". help:true lists the options of a command.");
 	}
 	call->command = c;
 	uint64_t const takes = commands[c].takes;
@@ -930,12 +930,12 @@ git_call_command (struct git_call  *call,
 			continue;
 		char const *const name = git_arg_names[l].data;
 		if (!json_object_is_type(of[l], json_type_array))
-			return git_wrong(why, "The %s argument must be an array of strings "
-			                 "(at most %zu entries).", name, most[l]);
+			return git_wrong(why, "The %s argument must be an array of at most %zu "
+			                 "strings.", name, most[l]);
 		lens[l] = json_object_array_length(of[l]);
 		if (lens[l] > most[l])
-			return git_wrong(why, "The %s argument has %zu entries; its limit is "
-			                 "%zu.", name, lens[l], most[l]);
+			return git_wrong(why, "The %s argument can contain at most %zu entries, "
+			                 "not %zu.", name, most[l], lens[l]);
 		size_t i = 0;
 		while (i < lens[l] && jb_text(jb_at(of[l], i), 1, WORD, nullptr).data)
 			++i;
@@ -947,32 +947,33 @@ git_call_command (struct git_call  *call,
 	 * after a problem. */
 	int bad = 0;
 	if ((takes & SINGLE) && lens[GIT_ARG_REVISIONS] > 1)
-		bad = git_wrong(why, "git %.*s takes at most one revision.", (int)cmd.len,
+		bad = git_wrong(why, "Give git %.*s at most one revision.", (int)cmd.len,
 		                cmd.data);
 	if (lens[GIT_ARG_PATHS] && !(takes & FILES))
-		bad = git_wrong(why, "git %.*s takes no paths.%s", (int)cmd.len, cmd.data,
-		                takes & OBJECT ? " To name a file, give the revision HEAD:path."
-		                               : "");
+		bad = git_wrong(why, "Paths are not allowed for git %.*s.%s", (int)cmd.len,
+		                cmd.data, takes & OBJECT ? " To name a file, give the revision "
+		                                           "HEAD:path." : "");
 	if ((takes & ONEPATH) && lens[GIT_ARG_PATHS] != 1)
-		bad = git_wrong(why, "git blame needs the file as its one path, such as "
+		bad = git_wrong(why, "Give git blame the file as the one path, such as "
 		                "\"paths\": [\"src/git.c\"].");
 	if ((takes & MODE) && lens[GIT_ARG_OPTIONS] != 1)
-		bad = git_wrong(why, "git cat-file needs exactly one option: -p for the "
-		                "contents, -t for the type, -s for the size, or -e to "
-		                "check that the object exists.");
+		bad = git_wrong(why, "Give git cat-file exactly one option: -p prints the "
+		                "contents, -t the type, -s the size. -e checks that the "
+		                "object exists.");
 	struct json_object *pattern = of[GIT_ARG_PATTERN];
 	struct cstr_view const pat = jb_text(pattern, 1, WORD, nullptr);
 	if (takes & PATTERN) {
 		if (!pat.data)
-			bad = git_wrong(why, "git grep needs a pattern argument: a string of "
-			                "1 to %d bytes.", WORD);
+			bad = git_wrong(why, "Give git grep a pattern argument of 1 to %d "
+			                "bytes.", WORD);
 	} else if (pattern) {
-		bad = git_wrong(why, "Only git grep takes a pattern.");
+		bad = git_wrong(why, "The pattern argument is only for git grep.");
 	}
 	uint64_t numbers = seen & (1U << GIT_ARG_LINE | 1U << GIT_ARG_COUNT);
 	if (numbers && !read) {
-		bad = git_wrong(why, "Only git read takes line and count. For lines of a "
-		                "file, call read with commit:path as the revision.");
+		bad = git_wrong(why, "The line and count arguments are only for git read. To "
+		                "get lines of a file, call read with the revision "
+		                "commit:path.");
 		numbers = 0;
 	}
 	size_t *const values[] = { &call->read.line, &call->read.count };
@@ -1021,7 +1022,8 @@ git_call_command (struct git_call  *call,
 		if (e == ENOMEM)
 			return e;
 		if (e)
-			bad = git_wrong(why, "--ignore-rev needs a commit reference or hash.");
+			bad = git_wrong(why, "The value of --ignore-rev must be a commit name or "
+			                "hash.");
 		argv[k++] = git_derived;
 	}
 	if (pat.data) {
@@ -1047,18 +1049,18 @@ git_call_command (struct git_call  *call,
 		if (path && (!(takes & OBJECT) ||
 		             !util_path_inside(cstr_view_slice(rev->path, 1, SIZE_MAX)))) {
 			bad = git_wrong(why, takes & OBJECT
-			                ? "revisions[%zu]: git %.*s needs a nonempty relative "
-			                  "path after the colon, with no .. component."
+			                ? "In revisions[%zu], give git %.*s a relative path "
+			                  "after the colon, with no .. component."
 			                : takes & FILES
-			                ? "revisions[%zu]: git %.*s takes the commit in "
-			                  "revisions and the path in paths."
-			                : "revisions[%zu]: git %.*s takes commits, not "
+			                ? "In revisions[%zu], give git %.*s only the commit. "
+			                  "Give the path in paths."
+			                : "In revisions[%zu], give git %.*s a commit, not "
 			                  "commit:path.", i, (int)cmd.len, cmd.data);
 			continue;
 		}
 		if (range && (!(takes & RANGE) || ((takes & PAIR) && listed != 1))) {
-			bad = git_wrong(why, "revisions[%zu]: ranges are allowed only by "
-			                "log, or as diff's single A..B or A...B argument.", i);
+			bad = git_wrong(why, "In revisions[%zu], a range is allowed only for "
+			                "log, and for diff as the one revision A..B or A...B.", i);
 			continue;
 		}
 		size_t left = range ? (size_t)(range - s.data) : root;
@@ -1072,24 +1074,25 @@ git_call_command (struct git_call  *call,
 		if (e == ENOMEM)
 			return e;
 		if (e)
-			bad = git_wrong(why, "revisions[%zu]: use a commit reference or hash "
-			                "with optional ^/~ ancestry. Stash, reflogs, index "
-			                "selectors and revision expansions are unavailable.", i);
+			bad = git_wrong(why, "revisions[%zu] must be a commit name or hash, with "
+			                "optional ^ and ~ suffixes. Stash, reflogs, index "
+			                "selectors and revision expansions are not available.", i);
 		argv[k++] = git_derived;
 	}
 	if (read && !call->revisions[0].path.len)
-		bad = git_wrong(why, "git read needs the file as its revision, such as "
+		bad = git_wrong(why, "Give git read the file as the revision, such as "
 		                "\"revisions\": [\"HEAD:src/journal.c\"].");
 	if ((takes & PAIR) && endpoints != 2)
-		bad = git_wrong(why, "git diff needs two commits, or one explicit "
-		                "A..B or A...B range.");
+		bad = git_wrong(why, "Give git diff two commits, or one range A..B or "
+		                "A...B.");
 	if (takes & FILES)
 		argv[k++] = "--";
 	for (size_t i = 0; i < lens[GIT_ARG_PATHS]; ++i) {
 		struct cstr_view const s = jb_view(jb_at(of[GIT_ARG_PATHS], i));
 		if (!util_path_inside(s) || cstr_view_starts(s, CSTR_VIEW(":(")))
-			bad = git_wrong(why, "paths[%zu] must be relative to the repository's "
-			                "top, with no .. component or :(...) pathspec magic.", i);
+			bad = git_wrong(why, "paths[%zu] must be relative to the top of the "
+			                "repository, with no .. component and no :(...) pathspec "
+			                "magic.", i);
 		argv[k++] = s.data;
 	}
 	argv[k] = nullptr;
@@ -1426,15 +1429,14 @@ git_read_past (struct git_read const *read,
                struct git_why        *why)
 {
 	if (!read->total)
-		util_text_printf(why, "Line %zu is past the end of the file: the file is empty.",
+		util_text_printf(why, "Line %zu is past the end of the file. The file is empty.",
 		                 read->line);
 	else if (cut)
-		util_text_printf(why, "Line %zu is past the first 4 MiB of the file, which is as "
-		                 "far as the git tool reads.", read->line);
+		util_text_printf(why, "Line %zu is past the first 4 MiB of the file. The git tool "
+		                 "reads at most 4 MiB of a file.", read->line);
 	else
-		util_text_printf(why, "Line %zu is past the end of the file: it has %zu line%s. "
-		                 "Give a line from 1 to %zu.", read->line, read->total,
-		                 util_s(read->total), read->total);
+		util_text_printf(why, "Line %zu is past the end of the file. Give a line from 1 "
+		                 "to %zu.", read->line, read->total);
 }
 
 /* Writes the header line of the read in @p call to @p slot if it fits in
@@ -1611,9 +1613,9 @@ git_scan (struct mcp_slot *slot,
 		size_t head = blob.len < BINARY ? blob.len : BINARY;
 		if (head && memchr(blob.ptr, '\0', head)) {
 			git_drop(slot);
-			mcp_slot_tell(slot, CSTR_VIEW("The file has a NUL byte, so it is "
-			                              "binary, and read gives text only. "
-			                              "cat-file with -s gives its size."),
+			mcp_slot_tell(slot, CSTR_VIEW("The file contains a NUL byte. read "
+			                              "accepts only text files. cat-file with "
+			                              "-s prints the size of the file."),
 			              TOOL_FAILED);
 			return;
 		}
