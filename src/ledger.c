@@ -554,8 +554,10 @@ ledger_restore (struct ledger      *ledger,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	t->cancel.fn = fn;
+	t->cancel = (struct msg){ .fn = fn };
 	list_init(&t->hook);
+	list_init(&t->mine);
+	t->owner = nullptr;
 	t->loop = loop;
 	t->result = (struct dstr)DSTR_INIT;
 	t->size = result.len;
@@ -573,7 +575,7 @@ ledger_restore (struct ledger      *ledger,
 	t->tool = tool;
 	t->kind = kind;
 	t->id = *id;
-	t->node.hash = util_hash(0, t->id.hex, HEXID_DIGITS);
+	t->node = (struct htab_node){ .hash = util_hash(0, t->id.hex, HEXID_DIGITS) };
 
 	struct ledger_metrics *m = &ledger->metrics;
 	struct htab_node *gone = nullptr;
@@ -840,6 +842,9 @@ ledger_wait_enter (struct ledger  *ledger,
 		return nullptr;
 	}
 	w->wake = (struct msg){ .fn = fn };
+	list_init(&w->hook);
+	w->hit = nullptr;
+	w->owner = nullptr;
 	w->loop = loop;
 	w->who = who;
 	atomic_init(&w->refs, 1);

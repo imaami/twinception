@@ -65,7 +65,8 @@ roster_enter (struct roster  *roster,
 		return nullptr;
 	}
 	c->cancel = (struct msg){ .fn = fn };
-	c->node.hash = hash;
+	c->node = (struct htab_node){ .hash = hash };
+	c->hit = nullptr;
 	c->loop = loop;
 	c->len = key.len;
 	c->who = who;
