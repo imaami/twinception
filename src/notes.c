@@ -175,6 +175,7 @@ notes_line (char const *base,
 	FILE *file = fopen(path, "re");
 	int e = file ? 0 : errno;
 	free(path);
+	path = nullptr;
 	if (e)
 		return e;
 	size_t size = 0;
