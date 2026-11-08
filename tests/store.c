@@ -338,6 +338,115 @@ test_input (void)
 }
 
 static void
+test_trailer (void)
+{
+	struct oid tip;
+	CHECK(!oid_init(&tip, CSTR_VIEW(A)));
+	struct oid const root = {};
+
+	/* The author line comes before the committer line. The trailer comes
+	 * after a blank line, and the data count includes the line feed after
+	 * the message, the blank line and each line of the trailer. */
+	struct store_trailer const trailers[] = {
+		{ CSTR_VIEW("Asked-by"), CSTR_VIEW("imaami") },
+		{ CSTR_VIEW("Ask"),      CSTR_VIEW("") },
+	};
+	struct store_commit const commit = {
+		.author = { CSTR_VIEW("bro"), CSTR_VIEW("agent/bro") },
+		.committer = { CSTR_VIEW("gpu1"), CSTR_VIEW("askai") },
+		.message = CSTR_VIEW(""),
+		.trailers = trailers,
+		.n_trailers = array_size(trailers),
+		.ref = "refs/heads/notes/t",
+		.tip = &root,
+	};
+	struct buf in = {};
+	CHECK(!store_commit_input(&commit, &in));
+	struct span s = buf_peek(&in);
+	SAME(s.ptr, s.len, "commit refs/heads/notes/t\nmark :1\nauthor bro <agent/bro> now\n"
+	     "committer gpu1 <askai> now\ndata 25\n\n\nAsked-by: imaami\nAsk: \n"
+	     "get-mark :1\n");
+	buf_fini(&in);
+
+	/* A member record: no author, a message, a trailer and a parent. */
+	struct store_trailer const record[] = {
+		{ CSTR_VIEW("Kind"),  CSTR_VIEW("agent") },
+		{ CSTR_VIEW("Login"), CSTR_VIEW("imaami") },
+	};
+	struct store_commit c = commit;
+	c.author = (struct store_ident){};
+	c.message = CSTR_VIEW("Add the member bro");
+	c.trailers = record;
+	c.n_trailers = array_size(record);
+	c.ref = "refs/askai/members/bro";
+	c.tip = &tip;
+	CHECK(!store_commit_input(&c, &in));
+	s = buf_peek(&in);
+	SAME(s.ptr, s.len, "commit refs/askai/members/bro\nmark :1\ncommitter gpu1 <askai> now\n"
+	     "data 46\nAdd the member bro\n\nKind: agent\nLogin: imaami\nfrom " A "\n"
+	     "get-mark :1\n");
+	buf_fini(&in);
+
+	/* An author without a name and trailers without a count are left
+	 * out. */
+	c = commit;
+	c.author = (struct store_ident){ {}, CSTR_VIEW("x<y") };
+	c.n_trailers = 0;
+	CHECK(!store_commit_input(&c, &in));
+	s = buf_peek(&in);
+	SAME(s.ptr, s.len, "commit refs/heads/notes/t\nmark :1\ncommitter gpu1 <askai> now\n"
+	     "data 1\n\nget-mark :1\n");
+	buf_fini(&in);
+
+	struct cstr_view const idents[] = {
+		{}, { nullptr, 5 }, CSTR_VIEW("a\0b"), CSTR_VIEW("a<b"), CSTR_VIEW("a>b"),
+		CSTR_VIEW("a\nb"),
+	};
+	for (size_t i = 0; i < array_size(idents); ++i) {
+		c = commit;
+		c.author.email = idents[i];
+		CHECK(refused(c));
+		c = commit;
+		c.author.name = idents[i];
+		/* An author without a name is left out. */
+		CHECK(refused(c) == (idents[i].len != 0));
+	}
+	char word[UTIL_WORD_MAX + 1];
+	memset(word, 'k', sizeof word);
+	struct cstr_view const keys[] = {
+		{}, { nullptr, 5 }, CSTR_VIEW(""), CSTR_VIEW("Asked by"), CSTR_VIEW("Ask:"),
+		CSTR_VIEW("a\nb"), CSTR_VIEW("a\0b"), CSTR_VIEW("Ask\xc3\xa4"),
+		{ word, UTIL_WORD_MAX + 1 },
+	};
+	for (size_t i = 0; i < array_size(keys); ++i) {
+		struct store_trailer const pair[] = { trailers[0], { keys[i], CSTR_VIEW("v") } };
+		c = commit;
+		c.trailers = pair;
+		CHECK(refused(c));
+	}
+	struct store_trailer t[] = { trailers[0], { { word, UTIL_WORD_MAX }, CSTR_VIEW("v") } };
+	c = commit;
+	c.trailers = t;
+	CHECK(!store_commit_input(&c, &in));
+	buf_fini(&in);
+	char big[STORE_MESSAGE];
+	memset(big, 'v', sizeof big);
+	struct cstr_view const values[] = {
+		{}, { nullptr, 5 }, CSTR_VIEW("x\ny"), CSTR_VIEW("x\0y"), { big, STORE_MESSAGE },
+	};
+	for (size_t i = 0; i < array_size(values); ++i) {
+		t[1] = (struct store_trailer){ CSTR_VIEW("Key"), values[i] };
+		CHECK(refused(c));
+	}
+	t[1] = (struct store_trailer){ CSTR_VIEW("Key"), { big, STORE_MESSAGE - 1 } };
+	CHECK(!store_commit_input(&c, &in));
+	buf_fini(&in);
+	c = commit;
+	c.trailers = nullptr;
+	CHECK(refused(c));
+}
+
+static void
 test_argv (struct store const *store)
 {
 	struct {
@@ -622,6 +731,62 @@ test_git (char const *path)
 	           sizeof out, &len));
 	CHECK(len == OID_SHA1 + 1 && !memcmp(out, c3.hex, OID_SHA1));
 
+	/* git reads the author, the committer and the trailer of a commit
+	 * with a parent and a file part. */
+	struct store_trailer const asked[] = {
+		{ CSTR_VIEW("Ask"),      CSTR_VIEW("6f0c2b9a41d8e3f75a2c1b0d9e8f7a6b") },
+		{ CSTR_VIEW("Asked-by"), CSTR_VIEW("imaami") },
+	};
+	CHECK(!store_part_file(&part, &files, CSTR_VIEW("b"), CSTR_VIEW("x")));
+	commit.author = (struct store_ident){ CSTR_VIEW("bro"), CSTR_VIEW("agent/bro") };
+	commit.message = CSTR_VIEW("Add b (1 byte)");
+	commit.files = buf_peek(&files);
+	commit.trailers = asked;
+	commit.n_trailers = array_size(asked);
+	commit.tip = &c3;
+	struct oid c5;
+	CHECK(!commit_run(store, &commit, &c5, out, sizeof out, &len));
+	buf_fini(&files);
+	char const *const log[] = {
+		"log", "-1",
+		"--format=%(trailers:key=Asked-by,valueonly)|%an <%ae>|%cn <%ce>|%P|%B", c5.hex,
+		nullptr
+	};
+	char want[512];
+	CHECK(snprintf(want, sizeof want, "imaami\n|bro <agent/bro>|gpu1 <askai>|%s|Add b (1 byte)\n\n"
+	               "Ask: 6f0c2b9a41d8e3f75a2c1b0d9e8f7a6b\nAsked-by: imaami\n\n", c3.hex) > 0);
+	CHECK(!run_words(store_directory(store), log, out, sizeof out, &len));
+	SAME(out, len, want);
+	CHECK(!run(store, STORE_FILES, (char const *const[]){ c5.hex }, (struct span){}, out,
+	           sizeof out, &len));
+	CHECK(len > tree_len && !memcmp(out, tree, tree_len) && memmem(out, len, "\tb", 3));
+
+	/* A member record is a root commit with the empty tree, and git reads
+	 * its trailer. */
+	struct store_trailer const record[] = {
+		{ CSTR_VIEW("Kind"),  CSTR_VIEW("agent") },
+		{ CSTR_VIEW("Login"), CSTR_VIEW("imaami") },
+	};
+	struct store_commit const member = {
+		.author = { CSTR_VIEW("bro"), CSTR_VIEW("agent/bro") },
+		.committer = { CSTR_VIEW("gpu1"), CSTR_VIEW("askai") },
+		.message = CSTR_VIEW("Add the member bro"),
+		.trailers = record,
+		.n_trailers = array_size(record),
+		.ref = "refs/askai/members/bro",
+		.tip = &root,
+	};
+	struct oid m;
+	CHECK(!commit_run(store, &member, &m, out, sizeof out, &len));
+	CHECK(!run(store, STORE_FILES, (char const *const[]){ m.hex }, (struct span){}, out,
+	           sizeof out, &len) && !len);
+	char const *const show[] = {
+		"log", "-1", "--format=%(trailers:only)|%an <%ae>|%cn <%ce>|%P|%B", m.hex, nullptr
+	};
+	CHECK(!run_words(store_directory(store), show, out, sizeof out, &len));
+	SAME(out, len, "Kind: agent\nLogin: imaami\n|bro <agent/bro>|gpu1 <askai>||"
+	     "Add the member bro\n\nKind: agent\nLogin: imaami\n\n");
+
 	test_argv(store);
 	test_spawn(store);
 	store_destroy(&store);
@@ -650,6 +815,7 @@ main (int    argc,
 		return 2;
 	}
 	test_input();
+	test_trailer();
 	test_git(argv[1]);
 	return check_report("store");
 }

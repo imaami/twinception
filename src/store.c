@@ -462,7 +462,7 @@ store_clean (struct cstr_view  v,
 	return true;
 }
 
-/* Returns true if @p id can be the committer of a commit. */
+/* Returns true if @p id can be the author or the committer of a commit. */
 static bool
 store_ident_valid (struct store_ident const *id)
 {
@@ -474,19 +474,42 @@ store_commit_input (struct store_commit const *commit,
                     struct buf                *in)
 {
 	if (!commit || !in || !commit->ref || strchr(commit->ref, '\n') || !commit->tip ||
-	    !store_clean(commit->message, "") || !store_ident_valid(&commit->committer))
+	    !store_clean(commit->message, "") || !store_ident_valid(&commit->committer) ||
+	    (commit->author.name.len && !store_ident_valid(&commit->author)) ||
+	    (commit->n_trailers && !commit->trailers))
 		return EINVAL;
+	/* The count of the data includes the line feed after the message, and
+	 * with a trailer the blank line before the trailer. */
+	size_t data = commit->message.len + 1 + (commit->n_trailers != 0);
+	for (size_t i = 0; i < commit->n_trailers; ++i) {
+		struct store_trailer const *t = &commit->trailers[i];
+		if (!util_word(t->key.data, t->key.len, UTIL_WORD_MAX) || !store_clean(t->value, "\n"))
+			return EINVAL;
+		data += t->key.len + sizeof ": \n" - 1 + t->value.len;
+	}
+	struct store_ident const *a = &commit->author;
 	struct store_ident const *c = &commit->committer;
-	/* The count of the data includes the line feed after the message.
-	 * get-mark ends the commit, and git writes the commit's id. */
-	int e = buf_printf(in, "commit %s\nmark :1\ncommitter %.*s <%.*s> now\ndata %zu\n%.*s\n",
-	                   commit->ref, (int)c->name.len, c->name.data, (int)c->email.len,
-	                   c->email.data, commit->message.len + 1, (int)commit->message.len,
-	                   commit->message.data);
+	/* get-mark ends the commit, and git writes the commit's id. */
+	int e = buf_printf(in, "commit %s\nmark :1\n", commit->ref);
+	if (!e && a->name.len)
+		e = buf_printf(in, "author %.*s <%.*s> now\n", (int)a->name.len, a->name.data,
+		               (int)a->email.len, a->email.data);
+	if (!e)
+		e = buf_printf(in, "committer %.*s <%.*s> now\ndata %zu\n%.*s\n", (int)c->name.len,
+		               c->name.data, (int)c->email.len, c->email.data, data,
+		               (int)commit->message.len, commit->message.data);
+	for (size_t i = 0; !e && i < commit->n_trailers; ++i) {
+		struct store_trailer const *t = &commit->trailers[i];
+		e = buf_printf(in, "%s%.*s: %.*s\n", i ? "" : "\n", (int)t->key.len, t->key.data,
+		               (int)t->value.len, t->value.data);
+	}
 	if (!e && oid_len(commit->tip))
 		e = buf_printf(in, "from %s\n", commit->tip->hex);
-	e = e ? e : buf_put(in, commit->files.ptr, commit->files.len, SIZE_MAX);
-	return e ? e : buf_printf(in, "get-mark :1\n");
+	if (!e)
+		e = buf_put(in, commit->files.ptr, commit->files.len, SIZE_MAX);
+	if (!e)
+		e = buf_printf(in, "get-mark :1\n");
+	return e;
 }
 
 int

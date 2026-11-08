@@ -30,8 +30,9 @@ enum {
 	STORE_MAX     = 16 << 20,  /**< bytes of the output of git, at most */
 	STORE_PATH    = 255,       /**< bytes of the path of a file in a
 	                                commit, at most */
-	STORE_MESSAGE = 1024,      /**< bytes of the message of a commit,
-	                                NUL included, at most */
+	STORE_MESSAGE = 1024,      /**< bytes of the message of a commit
+	                                without its trailer, NUL included, at
+	                                most */
 };
 
 /** The age in seconds past which a lock file of a ref is older than every
@@ -231,10 +232,16 @@ store_part_delete (struct store_part *part,
                    struct buf        *in,
                    struct cstr_view   name);
 
-/** The name and the email address of the committer of a commit, written
- *  as NAME <EMAIL>. Neither contains <, >, a line feed or a NUL. The data
- *  pointer of neither view is nullptr, so an empty email address is
- *  CSTR_VIEW("").
+/** One line of the trailer of a commit message, written as KEY: VALUE. */
+struct store_trailer {
+	struct cstr_view key;    /**< letters, digits, underscores and hyphens */
+	struct cstr_view value;  /**< one line */
+};
+
+/** The name and the email address of the author or the committer of a
+ *  commit, written as NAME <EMAIL>. Neither contains <, >, a line feed or a
+ *  NUL. The data pointer of neither view is nullptr, so an empty email
+ *  address is CSTR_VIEW("").
  */
 struct store_ident {
 	struct cstr_view name;
@@ -243,27 +250,39 @@ struct store_ident {
 
 /** A commit, as store_commit_input() writes it for STORE_COMMIT. */
 struct store_commit {
-	struct store_ident  committer;  /**< also the author */
-	struct cstr_view    message;    /**< without a final line feed */
-	struct span         files;      /**< zero or more file parts, one after
-	                                     another, from store_part_head(),
-	                                     store_part_file() and
-	                                     store_part_delete() */
-	char const         *ref;        /**< the ref that the commit updates */
-	struct oid const   *tip;        /**< the parent, or no name for a root
-	                                     commit, which git refuses if the
-	                                     ref exists */
+	struct store_ident          author;      /**< without a name, git
+	                                              writes the committer as the
+	                                              author */
+	struct store_ident          committer;
+	struct cstr_view            message;     /**< without a final line
+	                                              feed */
+	struct span                 files;       /**< zero or more file parts,
+	                                              one after another, from
+	                                              store_part_head(),
+	                                              store_part_file() and
+	                                              store_part_delete() */
+	struct store_trailer const *trailers;    /**< the trailer after the
+	                                              message, or nullptr */
+	size_t                      n_trailers;  /**< lines of the trailer */
+	char const                 *ref;         /**< the ref that the commit
+	                                              updates */
+	struct oid const           *tip;         /**< the parent, or no name for
+	                                              a root commit, which git
+	                                              refuses if the ref
+	                                              exists */
 };
 
 /**
- * Writes to @p in the input of STORE_COMMIT for @p commit. Without file
- * parts, the tree of a root commit is empty, and the tree of any other
- * commit is the tree of its parent. store_committed() reads the id of the
- * new commit from the output. Returns 0, EINVAL for a null argument, a
- * message with a null data pointer, of STORE_MESSAGE bytes or more or
- * with a NUL, a ref with a line feed, a committer that is not valid, or
- * the error of buf_printf() or buf_put(), after which @p in can contain
- * part of the input.
+ * Writes to @p in the input of STORE_COMMIT for @p commit. The commit
+ * message is commit->message, then a blank line and the trailer if
+ * commit->n_trailers is not 0. Without file parts, the tree of a root
+ * commit is empty, and the tree of any other commit is the tree of its
+ * parent. store_committed() reads the id of the new commit from the
+ * output. Returns 0, EINVAL for a null argument, a message with a null
+ * data pointer, of STORE_MESSAGE bytes or more or with a NUL, a ref with
+ * a line feed, an ident or a trailer line that is not valid, or the error
+ * of buf_printf() or buf_put(), after which @p in can contain part of the
+ * input.
  */
 extern int
 store_commit_input (struct store_commit const *commit,
