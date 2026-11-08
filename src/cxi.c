@@ -12,7 +12,6 @@
 #include <inttypes.h>
 #include <json-c/json.h>
 #include <stdarg.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
