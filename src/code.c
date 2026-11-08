@@ -268,11 +268,13 @@ code_spawn (struct code_call *call,
 
 /* Parses the record line "lines FIRST LAST TOTAL AT LEN PATH" at the start
  * of @p *text, the output of describe, into @p src, and removes the line
- * from @p *text. Returns false if @p *text does not start with a valid
- * record line.
+ * from @p *text. Sets src->repo to the name of pin->repo and src->commit
+ * to a view of pin->roots[0]. Returns false if @p *text does not start
+ * with a valid record line.
  */
 static bool
 code_record (struct cstr_view      *text,
+             struct git_pin const  *pin,
              struct review_source  *src)
 {
 	struct cstr_view rest = *text;
@@ -289,6 +291,7 @@ code_record (struct cstr_view      *text,
 	}
 	*text = rest;
 	*src = (struct review_source){
+		.repo = pin->repo->name, .commit = oid_view(&pin->roots[0]),
 		.path = line, .total = v[2], .at = v[3], .len = v[4],
 		.first = (uint32_t)v[0], .last = (uint32_t)v[1],
 	};
@@ -321,10 +324,8 @@ code_ended (struct mcp_slot  *slot,
 	struct cstr_view text = { (char const *)out.ptr, jb_mend((char *)out.ptr, out.len, true) };
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
 	struct review_source src;
-	bool const record = !status && code_record(&text, &src);
+	bool const record = !status && code_record(&text, &call->pin, &src);
 	mcp_slot_lend(slot, text);
-	src.repo = call->pin.repo->name;
-	src.commit = oid_view(&call->pin.roots[0]);
 	/* mcp_slot_source() returns EINVAL for a record line that does not
 	 * match the output. The record is then not added, and the call still
 	 * succeeds. */
