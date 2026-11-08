@@ -1098,10 +1098,9 @@ autocomplete_commands (struct autocomplete      *ac,
 	struct cli_command const *command = cli_command_find(cstr_view_slice(line, command_token.begin, command_token.end - command_token.begin));
 	if (!command || (command->args != CLI_COMMAND_ARGS_TOOL && command->args != CLI_COMMAND_ARGS_TOOL_CALL))
 		return 0;
-	bool call = command->args == CLI_COMMAND_ARGS_TOOL_CALL;
 	if (index == 1 || ac->tokens.n == 1)
 		return autocomplete_tool_names(ac, line, current, prefix);
-	if (!call || ac->tokens.n < 2 || (prefix.len && prefix.data[0] == '{'))
+	if (command->args != CLI_COMMAND_ARGS_TOOL_CALL || (prefix.len && prefix.data[0] == '{'))
 		return 0;
 	struct autocomplete_token tool_token = ac->tokens.items[1];
 	struct autocomplete_entry const *entry = autocomplete_entry_find(ac, cstr_view_slice(line, tool_token.begin, tool_token.end - tool_token.begin), nullptr);
