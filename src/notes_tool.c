@@ -294,8 +294,12 @@ notes_tool_loop_take (struct notes_tool_loop *loop,
 		mcp_slot_fail(slot, ENOMEM);
 		return nullptr;
 	}
-	*call = (struct notes_tool_call){ .out = out, .loop = loop,
-	                                  .text = text ? text : &call->out };
+	*call = (struct notes_tool_call){
+		.out   = out,
+		.loop  = loop,
+		.text  = text ? text : &call->out,
+		.spare = list(&call->spare),
+	};
 	*mcp_slot_own(slot) = call;
 	return call;
 }
