@@ -1159,7 +1159,6 @@ notes_tool_got_grep (struct mcp_slot *slot)
 		              TOOL_FAILED);
 		return;
 	}
-	char const *repo = notes_tool_call_notebook(call);
 	size_t const skip = oid_len(&call->revision.from) + 1;
 	struct span const out = buf_peek(&c->out);
 	struct cstr_view rest = { (char const *)out.ptr, out.len }, line;
@@ -1174,13 +1173,12 @@ notes_tool_got_grep (struct mcp_slot *slot)
 		    !dstr_cat_n(&found, "\n", 1) ? ENOMEM : 0;
 	}
 	struct cstr_view const lines = cstr_view_dstr(&found);
-	if (!e)
-		e = dstr_printf(call->text, "Notebook %s — lines that match the pattern "
-		                "(file:line:text):\n\n", notes_selector(repo)) ? 0 : ENOMEM;
-	if (!e)
-		e = lines.len ? notes_tool_show(call->text, lines)
-		  : cstr_view_cat(CSTR_VIEW("No line of the current notes matches the "
-		                            "pattern.\n"), call->text);
+	char const *repo = notes_tool_call_notebook(call);
+	e = e ? e : !dstr_printf(call->text, "Notebook %s — lines that match the pattern "
+	                         "(file:line:text):\n\n", notes_selector(repo)) ? ENOMEM
+	  : lines.len ? notes_tool_show(call->text, lines)
+	  : cstr_view_cat(CSTR_VIEW("No line of the current notes matches the pattern.\n"),
+	                  call->text);
 	if (!e && cut)
 		e = cstr_view_cat(CSTR_VIEW("[The search output exceeded the capture limit and "
 		                            "is incomplete.]\n"), call->text);
@@ -2005,7 +2003,6 @@ notes_tool_schema (struct notes_tool const *tool,
 		                 "or a selector from action notebooks. other is copy's default.",
 	};
 	size_t const offered = side == NOTES_UPSTREAM ? tool->actions : NOTES_ACTION_ATTACH;
-	size_t most = tool->files_inline;
 	struct json_object *actions = schema_names(notes_action_names, offered);
 	struct json_object *props = jb_object(
 		"action", jb_set_or_free(schema_enum(actions, nullptr), "description", schema_text3(
@@ -2053,7 +2050,8 @@ notes_tool_schema (struct notes_tool const *tool,
 				"For add, append and replace, instead of text: a file that the user "
 				"gave, which your client attaches as it is. Do not write it "
 				"yourself."),
-			"x-mcp-file", jb_object("maxSize", json_object_new_int64((int64_t)most),
+			"x-mcp-file", jb_object("maxSize",
+			                        json_object_new_int64((int64_t)tool->files_inline),
 			                        nullptr),
 			nullptr));
 		props = jb_set_or_free(props, "thread", schema_property("string",
@@ -2099,15 +2097,14 @@ notes_tool_definition (void const *service)
 		json_object_put(def);
 		return nullptr;
 	}
-	char session[2 * sizeof digest + 1];
+	char session[2 * sizeof digest];
 	util_hex(session, digest, sizeof digest);
-	session[sizeof session - 1] = '\0';
 	/* Clients use the notebooks action to find the participants that have
 	 * notes. A new writer has no branch yet, so the definition names the
 	 * participant. */
 	return jb_set_or_free(def, "_meta", jb_object(
 		"askai", jb_object(
-			"session", json_object_new_string_len(session, sizeof session - 1),
+			"session", json_object_new_string_len(session, sizeof session),
 			"participant", json_object_new_string(notes_writer(tool->notes)),
 			"notebooks", json_object_new_boolean(1),
 			nullptr),
