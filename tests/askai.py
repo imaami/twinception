@@ -15551,7 +15551,8 @@ def check_misuse(binary, up, plugin):
     tools = ["ask_ai", "test_echo", "test_state", "test_misuse"]
     # The text and the error flag of each case's result.
     expected = {
-        "ready": ("The tool's kind has no step(), so the call cannot go on.", True),
+        "ready": ("The tool cannot continue the call. The tool defines no step function.",
+                  True),
         "own": ("own", False),
         "after": ("first", False),
     }
