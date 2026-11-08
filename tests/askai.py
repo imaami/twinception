@@ -66,9 +66,9 @@ OFFSET_ABOUT = "The byte of the output to start from. The default is 0."
 # The header of the read log in the review record (src/review.c).
 READS = "[askai: the lines that git read and code describe showed you in this call:]"
 # The sentence that ends the description of each such tool lent to the turns.
-PAGED = (" A result is at most 64 KiB. The result starts at the beginning of the line "
-         "that contains the offset byte, unless the line starts more than 16 KiB earlier. "
-         "If the output is longer, the result ends with a note with the next offset.")
+PAGED = (" A result is at most 64 KiB. The result starts at the line that contains the "
+         "offset, unless the line starts more than 16 KiB earlier. If the output is "
+         "longer, the result ends with a note with the next offset.")
 # The API that each answer format of the fake upstream is in.
 API = {"openai": "chat", "responses": "responses", "anthropic": "messages",
        "gemini": "generate", "interactions": "interactions"}

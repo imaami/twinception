@@ -8229,10 +8229,9 @@ mcp_lent_definition (struct registry_tool const *t,
 	struct cstr_view const about = jb_view(jb_get(lent, "description"));
 	return jb_set_or_free(lent, "description", schema_text3(
 		about.data ? about.data : "", about.len ? " " : "",
-		"A result is at most 64 KiB. The result starts at the beginning of the "
-		"line that contains the offset byte, unless the line starts more than "
-		"16 KiB earlier. If the output is longer, the result ends with a note "
-		"with the next offset."));
+		"A result is at most 64 KiB. The result starts at the line that contains "
+		"the offset, unless the line starts more than 16 KiB earlier. If the "
+		"output is longer, the result ends with a note with the next offset."));
 }
 
 /** Serializes the replies that never change. @p info describes askai, and
