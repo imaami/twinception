@@ -277,10 +277,13 @@ child_cmd_exec (struct child_cmd const *cmd,
 	if (e)
 		return e;
 	posix_spawnattr_t attr;
-	if (!(e = posix_spawnattr_init(&attr))) {
+	e = posix_spawnattr_init(&attr);
+	if (!e) {
 		e = child_fds_actions(fds, &fa, cmd->flags);
+		if (!e)
+			e = child_attr(&attr);
 		/* POSIX declares the vectors without const. */
-		if (!e && !(e = child_attr(&attr)))
+		if (!e)
 			e = pidfd_spawnp(pidfd, cmd->file, &fa, &attr, (char *const *)cmd->argv,
 			                 (char *const *)cmd->envp);
 		posix_spawnattr_destroy(&attr);
