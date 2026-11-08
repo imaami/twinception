@@ -552,6 +552,7 @@ home_cancel_drop (struct home              *home,
 {
 	list_del(&cancel->hook);
 	free(cancel);
+	cancel = nullptr;
 	--home->cancelling;
 	uint64_t due = list_is_empty(&home->cancellations) ? UINT64_MAX
 	             : container_of(home->cancellations.next, struct home_cancellation,
@@ -617,6 +618,7 @@ home_native_cancel (struct home *home,
 	if (e) {
 		http_cancel(home->http, &cancel->transfer);
 		free(cancel);
+		cancel = nullptr;
 		LOG(LOG_WARN, "native background cancellation unavailable: %s", strerror(e));
 		return;
 	}

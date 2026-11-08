@@ -941,6 +941,7 @@ journal_thought_commit (struct journal            *j,
 	if (output) {
 		if (fclose(output) && !e)
 			e = errno;
+		output = nullptr;
 		fd = -1;
 	}
 	util_close(&fd);
