@@ -1218,10 +1218,12 @@ notes_tool_got_note (struct mcp_slot *slot)
 	struct cstr_view const body = { (char const *)text.ptr, text.len };
 	char const *selector = notes_selector(notes_tool_call_notebook(call));
 	(void)mcp_slot_shows(slot, selector);
-	int const e = (call->fetch & FETCH_REVISION) &&
-	              !dstr_printf(call->text, "Notebook %s — %s at %s:\n\n", selector,
-	                           call->revision.file.data, call->revision.from.hex)
-	              ? ENOMEM : notes_tool_show(call->text, body);
+	int e = 0;
+	if (call->fetch & FETCH_REVISION)
+		e = dstr_printf(call->text, "Notebook %s — %s at %s:\n\n", selector,
+		                call->revision.file.data, call->revision.from.hex) ? 0 : ENOMEM;
+	if (!e)
+		e = notes_tool_show(call->text, body);
 	notes_tool_end(slot, e, false);
 }
 
