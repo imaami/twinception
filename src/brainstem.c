@@ -704,11 +704,9 @@ brainstem_fds (struct brainstem *bs,
 	hist_set(&brainstem_metrics.fds, fds);
 	hist_set(&brainstem_metrics.fd_limit, limit);
 	int c = brainstem_crossed(bs, HIGH_FDS, fds, limit / 10 * 9, limit / 10 * 8);
-	if (c > 0)
-		LOG(LOG_WARN, "descriptors open: %" PRIu64 " of %" PRIu64, fds, limit);
-	if (c < 0)
-		LOG(LOG_INFO, "descriptors open: %" PRIu64 " of %" PRIu64 ", fewer again",
-		    fds, limit);
+	if (c)
+		LOG(c > 0 ? LOG_WARN : LOG_INFO, "descriptors open: %" PRIu64 " of %" PRIu64 "%s",
+		    fds, limit, c > 0 ? "" : ", fewer again");
 }
 
 /* The pressure stall information, where the kernel has it. */
@@ -734,12 +732,9 @@ brainstem_psi (struct brainstem *bs,
 		hist_set(&brainstem_metrics.psi[i], permyriad);
 		hist_set(&brainstem_metrics.psi_total[i], total);
 		int c = brainstem_crossed(bs, HIGH_PSI << i, permyriad, 2000, 1000);
-		if (c > 0)
-			LOG(LOG_WARN, "pressure on %s: some task stalled %.2f %% of the last "
-			    "10 s", name, avg10);
-		if (c < 0)
-			LOG(LOG_INFO, "pressure on %s: some task stalled %.2f %% of the last "
-			    "10 s, less again", name, avg10);
+		if (c)
+			LOG(c > 0 ? LOG_WARN : LOG_INFO, "pressure on %s: some task stalled "
+			    "%.2f %% of the last 10 s%s", name, avg10, c > 0 ? "" : ", less again");
 	}
 #undef PSI
 }
