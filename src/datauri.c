@@ -55,7 +55,10 @@ datauri_parse_percent (struct datauri *d)
 			++i;
 			continue;
 		}
-		if (len - i < 3 || util_hex_digit(s[i + 1]) > 15 || util_hex_digit(s[i + 2]) > 15)
+		if (len - i < 3)
+			return EINVAL;
+		if (util_hex_digit(s[i + 1]) > 15 ||
+		    util_hex_digit(s[i + 2]) > 15)
 			return EINVAL;
 		i += 3;
 	}
@@ -94,7 +97,8 @@ datauri_decode_percent (struct datauri const *d,
 			*out = s[i++];
 			continue;
 		}
-		*out = (unsigned char)(util_hex_digit(s[i + 1]) << 4 | util_hex_digit(s[i + 2]));
+		*out = (unsigned char)(util_hex_digit(s[i + 1]) << 4 |
+		                       util_hex_digit(s[i + 2]));
 		i += 3;
 	}
 }
