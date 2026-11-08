@@ -893,10 +893,9 @@ mcp_is_json (struct span type)
 static bool
 mcp_is_metrics (struct span target)
 {
-	static char const path[] = "/metrics";
-	size_t n = sizeof path - 1;
-	return target.len >= n && !memcmp(target.ptr, path, n) &&
-	       (target.len == n || target.ptr[n] == '?');
+	struct cstr_view path = { (char const *)target.ptr, target.len };
+	(void)cstr_view_cut(&path, '?', &path);
+	return cstr_view_equal(path, CSTR_VIEW("/metrics"));
 }
 
 /** Returns the enum metrics_method of the JSON-RPC method @p method, which
@@ -1993,7 +1992,6 @@ mcp_req_tool_open (struct mcp_req   *req,
 static int
 mcp_req_trace_put (struct mcp_req *req)
 {
-	static char const none[] = "The other AI called no tools.\n";
 	if (!req->lent || (!dstr_len(&req->trace) && !(req->flags & (REQ_BRANCH | REQ_STOPPED))))
 		return mcp_req_put(req, &FRAG("\"}"), 1);
 	static_assert(TRACE_MAX == 48, "update the first line of the trace");
@@ -2005,7 +2003,7 @@ mcp_req_trace_put (struct mcp_req *req)
 		(void)util_text_printf(&tail, "Its notes are saved in the shared session "
 		                       "repository. The ask-chain thread is %s.", req->thread.hex);
 	char head[160];
-	struct mcp_piece intro = TEXT(none);
+	struct mcp_piece intro = TEXT("The other AI called no tools.\n");
 	if (req->traced)
 		intro = ESC(head, util_format(head, sizeof head, "The other AI made %" PRIu32
 		                              " tool call%s in %" PRIu32 " turn%s%s:\n",
@@ -2457,9 +2455,9 @@ mcp_overflow_what (struct cstr_view rest)
 static bool
 mcp_overflowed (struct cstr_view why)
 {
-	static char const gemini[] = "exceeds the maximum number of tokens";
+	struct cstr_view const gemini = CSTR_VIEW("exceeds the maximum number of tokens");
 	struct cstr_view const word = CSTR_VIEW("context ");
-	if (memmem(why.data, why.len, gemini, sizeof gemini - 1))
+	if (memmem(why.data, why.len, gemini.data, gemini.len))
 		return true;
 	for (size_t i = 0; i + word.len <= why.len; ++i)
 		if (cstr_view_starts_case(cstr_view_slice(why, i, SIZE_MAX), word) &&
@@ -3052,12 +3050,11 @@ mcp_req_build (struct mcp_req *req)
 static void
 mcp_req_stream (struct mcp_req *req)
 {
-	static char const fields[] = "Content-Type: text/event-stream\r\n"
-	                             "Cache-Control: no-cache\r\n"
-	                             "X-Accel-Buffering: no\r\n";
 	struct mcp *mcp = req->mcp;
 	struct stream *s = req->s;
-	bool const sse = !s->ops->head(s, 200, SPAN(fields), STREAM_OPEN);
+	bool const sse = !s->ops->head(s, 200, SPAN("Content-Type: text/event-stream\r\n"
+	                                            "Cache-Control: no-cache\r\n"
+	                                            "X-Accel-Buffering: no\r\n"), STREAM_OPEN);
 	mcp_req_flag(req, REQ_SSE, sse);
 	uint32_t keepalive = mcp->st->lim.keepalive;
 	if (sse && keepalive)
@@ -6816,7 +6813,6 @@ static void
 mcp_req_initialize (struct mcp_req     *req,
                     struct json_object *params)
 {
-	static char const head[] = STREAM_JSON_FIELD "Mcp-Session-Id: ";
 	struct cstr_view version = jb_view(jb_get(params, "protocolVersion"));
 	if (!mcp_is_legacy(mcp_version(version)))
 		version = versions[MODERN];
@@ -6824,11 +6820,12 @@ mcp_req_initialize (struct mcp_req     *req,
 	/* askai does not store the session ID. The ID only scopes the request
 	 * IDs that a client cancels. */
 	struct hexid id;
-	char fields[sizeof head + sizeof id.hex + 1];
+	char fields[sizeof STREAM_JSON_FIELD "Mcp-Session-Id: \r\n" - 1 + sizeof id.hex];
 	struct span f = SPAN(STREAM_JSON_FIELD);
 	if (!hexid_make(&id))
 		f = (struct span){ (unsigned char *)fields,
-		                   util_format(fields, sizeof fields, "%s%s\r\n", head, id.hex) };
+		                   util_format(fields, sizeof fields,
+		                               STREAM_JSON_FIELD "Mcp-Session-Id: %s\r\n", id.hex) };
 
 	struct mcp_piece const p[] = {
 		FRAG("{\"protocolVersion\":\""),
@@ -6900,13 +6897,13 @@ mcp_req_tools_list (struct mcp_req *req)
 static void
 mcp_req_show (struct mcp_req *req)
 {
-	static char const key[] = "\"result\":";
+	struct cstr_view const key = CSTR_VIEW("\"result\":");
 	struct mcp_static const *st = req->mcp->st;
 	struct loop *loop = req->mcp->loop;
 	struct ledger_task *task = req->shown;
 	struct cstr_view const reply = cstr_view_dstr(&task->result);
-	bool tail = req->flags & REQ_MODERN && reply.len > sizeof key &&
-	            cstr_view_starts(reply, (struct cstr_view){ key, sizeof key - 1 });
+	bool tail = req->flags & REQ_MODERN && reply.len > key.len + 1 &&
+	            cstr_view_starts(reply, key);
 	size_t left = (tail ? reply.len - 2 : reply.len) - req->off;
 	size_t room = loop_room(loop, LOOP_COPY);
 	size_t n = left < room ? left : room;
@@ -7399,14 +7396,13 @@ mcp_req_text (struct mcp_req *req)
 static void
 mcp_req_metrics (struct mcp_req *req)
 {
-	static char const fields[] = "Content-Type: text/plain; version=0.0.4; "
-	                             "charset=utf-8\r\n";
 	int e = metrics_render(req->mcp->metrics, &req->off, &req->reply);
 	if (e == EAGAIN) {
 		loop_ready_bulk(req->mcp->loop, &req->step);
 		return;
 	}
-	mcp_req_close(req, 200, SPAN(fields), e);
+	mcp_req_close(req, 200, SPAN("Content-Type: text/plain; version=0.0.4; "
+	                             "charset=utf-8\r\n"), e);
 }
 
 /* The work of each phase that works in steps; the others wait. */
