@@ -38,8 +38,8 @@
 #include "util.h"
 
 
-#define CONFIG_API_NAME(id, name, auth) [AI_##id] = name,
-static char const *const api_names[] = { AI_API_LIST(CONFIG_API_NAME) };
+#define CONFIG_API_NAME(id, name, auth) [AI_##id] = CSTR_VIEW_INIT(name),
+static struct cstr_view const api_names[] = { AI_API_LIST(CONFIG_API_NAME) };
 #undef CONFIG_API_NAME
 
 /* Each API's header line prefix for the API key. */
@@ -47,13 +47,13 @@ static char const *const api_names[] = { AI_API_LIST(CONFIG_API_NAME) };
 static char const *const auths[] = { AI_API_LIST(CONFIG_API_AUTH) };
 #undef CONFIG_API_AUTH
 
-static char const *const provider_names[] = {
-	[AI_LLAMA]      = "llama",
-	[AI_OPENAI]     = "openai",
-	[AI_ANTHROPIC]  = "anthropic",
-	[AI_GOOGLE]     = "google",
-	[AI_DEEPINFRA]  = "deepinfra",
-	[AI_OPENROUTER] = "openrouter",
+static struct cstr_view const provider_names[] = {
+	[AI_LLAMA]      = CSTR_VIEW_INIT("llama"),
+	[AI_OPENAI]     = CSTR_VIEW_INIT("openai"),
+	[AI_ANTHROPIC]  = CSTR_VIEW_INIT("anthropic"),
+	[AI_GOOGLE]     = CSTR_VIEW_INIT("google"),
+	[AI_DEEPINFRA]  = CSTR_VIEW_INIT("deepinfra"),
+	[AI_OPENROUTER] = CSTR_VIEW_INIT("openrouter"),
 };
 
 /* What each provider has: its URL for each API it serves, Gemini's
@@ -117,11 +117,11 @@ enum config_group : uint8_t {
 	GROUP_TOOLS, GROUP_ROOT
 };
 
-static char const *const group_names[] = {
-	[GROUP_UPSTREAM]  = "upstream",
-	[GROUP_SERVICE]   = "service",
-	[GROUP_TESTING]   = "testing",
-	[GROUP_DEBUGGING] = "debugging",
+static struct cstr_view const group_names[] = {
+	[GROUP_UPSTREAM]  = CSTR_VIEW_INIT("upstream"),
+	[GROUP_SERVICE]   = CSTR_VIEW_INIT("service"),
+	[GROUP_TESTING]   = CSTR_VIEW_INIT("testing"),
+	[GROUP_DEBUGGING] = CSTR_VIEW_INIT("debugging"),
 };
 
 /* How an option takes its argument: the has_arg of getopt_long() in the
@@ -736,20 +736,6 @@ config_aprintf (char       **str,
 	return ENOMEM;
 }
 
-/* The index of @p name among the @p n @p names, which begin at 1; 0 if it
- * is none of them.
- */
-static size_t
-config_find (char const *const *names,
-             size_t             n,
-             char const        *name)
-{
-	size_t i = n;
-	while (--i && strcmp(names[i], name))
-		;
-	return i;
-}
-
 /* Check a number in the object of --extra, as a json_c_visit() callback.
  * The function returns JSON_C_VISIT_RETURN_ERROR for a double that is NaN
  * or infinite. For a finite double, it resets the serializer to the
@@ -961,15 +947,17 @@ config_apply (struct config *cfg,
 	struct ai_endpoint *ep = &cfg->ep;
 	switch (row) {
 	case ROW_PROVIDER: {
-		size_t i = config_find(provider_names, array_size(provider_names), arg);
-		if (!i)
+		size_t i = 1 + cstr_view_index(provider_names + 1, array_size(provider_names) - 1,
+		                               cstr_view(arg));
+		if (i == array_size(provider_names))
 			return config_complain(cfg, where, "unknown provider: %s", arg);
 		ep->provider = (enum ai_provider)i;
 		break;
 	}
 	case ROW_API: {
-		size_t i = config_find(api_names, array_size(api_names), arg);
-		if (!i)
+		size_t i = 1 + cstr_view_index(api_names + 1, array_size(api_names) - 1,
+		                               cstr_view(arg));
+		if (i == array_size(api_names))
 			return config_complain(cfg, where, "unknown API: %s", arg);
 		ep->api = (enum ai_api)i;
 		break;
@@ -1274,7 +1262,7 @@ config_file_value (struct config const *cfg,
 {
 	enum config_group const g = rows[o - options].group;
 	struct json_object *group = g == GROUP_ROOT ? cfg->file
-	                           : json_object_object_get(cfg->file, group_names[g]);
+	                           : json_object_object_get(cfg->file, group_names[g].data);
 	return json_object_object_get(group, o->name);
 }
 
@@ -1328,7 +1316,7 @@ config_lists (struct config *cfg)
 {
 	size_t room = (size_t)cfg->argc + 4;
 	for (size_t g = 1; g < array_size(group_names); ++g)
-		room += config_values(json_object_object_get(cfg->file, group_names[g]));
+		room += config_values(json_object_object_get(cfg->file, group_names[g].data));
 	struct json_object *tools = json_object_object_get(cfg->file, "tools");
 	struct json_object_iter it;
 	if (json_object_is_type(tools, json_type_object))
@@ -1378,7 +1366,7 @@ config_misplaced (struct config const *cfg,
 		                       rows[o - options].member);
 	default:
 		return config_complain(cfg, cfg->path, "%s must be in %s", o->name,
-		                       group_names[g]);
+		                       group_names[g].data);
 	}
 }
 
@@ -1453,13 +1441,13 @@ config_apply_group (struct config      *cfg,
 {
 	if (!json_object_is_type(obj, json_type_object))
 		return config_complain(cfg, cfg->path, "%s must be an object",
-		                       group_names[g]);
+		                       group_names[g].data);
 	struct json_object_iter it;
 	json_object_object_foreachC(obj, it) {
 		struct option const *o = config_named(it.key);
 		if (!o)
 			return config_complain(cfg, cfg->path, "%s: unknown member %s",
-			                       group_names[g], it.key);
+			                       group_names[g].data, it.key);
 		int status = rows[o - options].group != g ? config_misplaced(cfg, o)
 		                                          : config_apply_member(cfg, o, it.val);
 		if (status)
@@ -1481,9 +1469,11 @@ config_apply_file (struct config *cfg)
 		if (policy_member(it.key) || !strcmp(it.key, "plugins") ||
 		    !strcmp(it.key, "tools"))
 			continue;
-		size_t g = config_find(group_names, array_size(group_names), it.key);
+		size_t g = 1 + cstr_view_index(group_names + 1, array_size(group_names) - 1,
+		                               cstr_view(it.key));
 		struct option const *o = config_named(it.key);
-		int status = g ? config_apply_group(cfg, (enum config_group)g, it.val)
+		int status = g < array_size(group_names)
+		             ? config_apply_group(cfg, (enum config_group)g, it.val)
 		           : o && rows[o - options].group == GROUP_ROOT
 		             ? config_apply_member(cfg, o, it.val)
 		           : o ? config_misplaced(cfg, o)
@@ -1644,7 +1634,7 @@ config_api (struct config *cfg)
 	if (providers[ep->provider].url[ep->api])
 		return 0;
 	return config_complain(cfg, nullptr, "%s has no %s API",
-	                       provider_names[ep->provider], api_names[ep->api]);
+	                       provider_names[ep->provider].data, api_names[ep->api].data);
 }
 
 /* Check that the upstream may call tools, if it is to. */
@@ -1808,7 +1798,7 @@ config_url_own (struct config *cfg)
 	struct ai_endpoint *ep = &cfg->ep;
 	if (!ep->model && !ai_llama_like(ep->provider))
 		return config_complain(cfg, nullptr, "--model is required for %s's "
-		                       "own API", provider_names[ep->provider]);
+		                       "own API", provider_names[ep->provider].data);
 	ep->url = providers[ep->provider].url[ep->api];
 	if (ep->api != AI_GENERATE)
 		return 0;
@@ -2505,8 +2495,9 @@ config_log (struct config const *cfg)
 		return;
 	struct ai_endpoint const *ep = &cfg->ep;
 	LOG_ALL(LOG_INFO, "upstream:");
-	LOG_ALL(LOG_INFO, "  provider  %s", ep->provider ? provider_names[ep->provider] : "none");
-	LOG_ALL(LOG_INFO, "  API       %s", api_names[ep->api]);
+	LOG_ALL(LOG_INFO, "  provider  %s",
+	        ep->provider ? provider_names[ep->provider].data : "none");
+	LOG_ALL(LOG_INFO, "  API       %s", api_names[ep->api].data);
 	LOG_ALL(LOG_INFO, "  model     %s", ep->model ? ep->model : "none");
 	LOG_ALL(LOG_INFO, "  background %s", !ep->background ? "off"
 	        : ai_background(ep) ? "on (upstream and local)" : "on (local)");
