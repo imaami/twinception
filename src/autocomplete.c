@@ -827,10 +827,9 @@ autocomplete_set_note_files (struct autocomplete    *ac,
 	if (!autocomplete_safe(tool, true) || !autocomplete_safe(notebook, true) ||
 	    (count && !paths) || !autocomplete_find_tool(ac, tool))
 		return EINVAL;
-	size_t storage = tool.len + notebook.len;
-	if (count * sizeof(struct dstr) > AUTOCOMPLETE_BYTES - storage)
+	size_t storage = tool.len + notebook.len + count * sizeof(struct dstr);
+	if (storage > AUTOCOMPLETE_BYTES)
 		return E2BIG;
-	storage += count * sizeof(struct dstr);
 	for (size_t i = 0; i < count; ++i) {
 		if (paths[i].len > AUTOCOMPLETE_BYTES - storage)
 			return E2BIG;
