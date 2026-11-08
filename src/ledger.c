@@ -266,8 +266,7 @@ ledger_owner_tell (struct ledger_owner *o,
 	for (struct list *pos = o->records.next;
 	     pos != &o->records && out->n_tasks < array_size(out->tasks); pos = pos->next) {
 		struct ledger_task *t = container_of(pos, struct ledger_task, mine);
-		if (!(atomic_load_explicit(&t->state, memory_order_relaxed) & LEDGER_STATUS) ||
-		    (n && !ledger_listed(ids, n, &t->id)))
+		if (!ledger_task_status(t) || (n && !ledger_listed(ids, n, &t->id)))
 			continue;
 		if ((atomic_fetch_or_explicit(&t->state, LEDGER_TOLD, memory_order_relaxed) &
 		     LEDGER_TOLD && !n) || !ref_tryget(&t->refs))
@@ -295,7 +294,7 @@ ledger_owner_ended (struct ledger_owner const *o)
 	struct list *pos;
 	list_foreach(pos, &o->records) {
 		struct ledger_task *t = container_of(pos, struct ledger_task, mine);
-		if (atomic_load_explicit(&t->state, memory_order_relaxed) & LEDGER_STATUS)
+		if (ledger_task_status(t))
 			return t;
 	}
 	return nullptr;
@@ -418,7 +417,7 @@ ledger_insert (struct ledger       *l,
 	struct ledger_owner *o = ledger_owner_get(l, key, &e);
 	if (!o)
 		return e;
-	bool working = !(atomic_load_explicit(&t->state, memory_order_relaxed) & LEDGER_STATUS);
+	bool working = !ledger_task_status(t);
 	if (working && t->kind == LEDGER_JOB && o->running >= LEDGER_RUNNING)
 		return EBUSY;
 	struct ledger_task *old = o->n >= LEDGER_MINE ? ledger_owner_ended(o) : nullptr;
@@ -642,7 +641,7 @@ ledger_end (struct ledger      *ledger,
             enum ledger_status  status)
 {
 	if (!ledger || !task || status == LEDGER_WORKING || status >= LEDGER_STATUSES ||
-	    atomic_load_explicit(&task->state, memory_order_relaxed) & LEDGER_STATUS)
+	    ledger_task_status(task))
 		return;
 	/* Only a whole reply is kept, so task->size is the bytes of the kept
 	 * reply. */
@@ -694,8 +693,7 @@ ledger_remove (struct ledger      *ledger,
 	struct htab_node *gone = nullptr;
 	pthread_mutex_lock(&ledger->lock);
 	struct ledger_task *t = ledger_mine(ledger, owner, id);
-	int e = !t ? ENOENT
-	      : atomic_load_explicit(&t->state, memory_order_relaxed) & LEDGER_STATUS ? 0 : EBUSY;
+	int e = !t ? ENOENT : ledger_task_status(t) ? 0 : EBUSY;
 	if (!e)
 		ledger_drop(ledger, t, &gone);
 	pthread_mutex_unlock(&ledger->lock);
