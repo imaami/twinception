@@ -442,7 +442,6 @@ loop_watch (struct loop     *loop,
 		.events = events,
 		.fd = fd
 	};
-	list_init(&ref->hook);
 	list_append(&loop->refs, &ref->hook);
 	return 0;
 }
