@@ -1655,8 +1655,8 @@ review_add (struct review            *r,
 		return REFUSE(out, "add requires the claim argument.");
 	enum review_state const state = a->state == REVIEW_STATES ? REVIEW_CANDIDATE : a->state;
 	if (state == REVIEW_RETRACTED)
-		return REFUSE(out, "add accepts only the states candidate, verified and disproved. "
-		              "Retract a finding with update.");
+		return REFUSE(out, "The state retracted is not valid with action add. Retract a "
+		              "finding with update.");
 	struct review_location_view loc = a->location;
 	struct oid commit;
 	int e = review_check_location(r, &loc, state, true, &commit, out);

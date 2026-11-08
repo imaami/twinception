@@ -517,8 +517,8 @@ test_refusals (void)
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"open\"}",
 		  "The state argument must be candidate, verified, disproved or retracted." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"retracted\"}",
-		  "add accepts only the states candidate, verified and disproved. Retract a "
-		  "finding with update." },
+		  "The state retracted is not valid with action add. Retract a finding with "
+		  "update." },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"location\":\"src/a.c:3\"}",
 		  "verified requires the evidence argument. Give what you read that shows the "
 		  "claim true." },
