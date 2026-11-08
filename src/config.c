@@ -1986,14 +1986,11 @@ config_check_plugin (struct config const *cfg,
                      char const          *path)
 {
 	char *real = realpath(path, nullptr);
-	if (!real)
-		return config_complain(cfg, path, "cannot open it: %s", strerror(errno));
 	struct stat st;
-	int status = strcmp(real, path)
-	           ? config_complain(cfg, path, "not the file's real path, which "
-	                             "is %s", real)
-	           : stat(path, &st)
+	int status = !real || stat(real, &st)
 	           ? config_complain(cfg, path, "cannot open it: %s", strerror(errno))
+	           : strcmp(real, path)
+	           ? config_complain(cfg, path, "not the file's real path, which is %s", real)
 	           : !config_safe(&st) || !config_safe_dirs(real)
 	           ? config_complain(cfg, path, "%s", config_unsafe)
 	           : 0;
