@@ -310,8 +310,9 @@ home_job_restore (struct job                  *job,
 		struct json_object *meta = jb_parse((char const *)records->data,
 		                                    records->len, 0, 8);
 		char const *id = jb_view(jb_get(meta, "provider_id")).data;
-		int e = !meta ? EPROTO
-		      : id && *id && !r->provider_id && !(r->provider_id = strdup(id)) ? ENOMEM : 0;
+		int e = meta ? 0 : EPROTO;
+		if (!e && id && *id && !r->provider_id && !(r->provider_id = strdup(id)))
+			e = ENOMEM;
 		json_object_put(meta);
 		if (e) {
 			home_job_recovery_fini(job);
