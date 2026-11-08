@@ -1331,14 +1331,13 @@ mcp_shown_object (struct mcp_shown   *w,
 		bool const size = s.data && ((sized && !strcmp(it.key, sized)) ||
 		                             cstr_view_starts_case(s, CSTR_VIEW("data:")));
 		char text[40];
-		int const n = size ? snprintf(text, sizeof text, "\"(%zu byte%s)\"", s.len,
-		                              util_s(s.len)) : 0;
 		bool const fits = mcp_shown_put(w, sep) &&
 		                  mcp_shown_put(w, ESC_VIEW(cstr_view(it.key))) &&
 		                  mcp_shown_put(w, FRAG("\":")) &&
 		                  (!size ? mcp_shown_value(w, it.val, nullptr)
-		                   : n < 0 || n >= (int)sizeof text ||
-		                     mcp_shown_put(w, RAW(text, (size_t)n)));
+		                   : mcp_shown_put(w, BYTES(util_format_view(text, sizeof text,
+		                                                             "\"(%zu byte%s)\"",
+		                                                             s.len, util_s(s.len)))));
 		if (!fits)
 			return false;
 		sep = FRAG(",\"");
@@ -1860,12 +1859,9 @@ mcp_req_error_put (struct mcp_req         *req,
                    size_t                  n_data)
 {
 	char num[16];
-	int n = snprintf(num, sizeof num, "%d", code);
-	if (n < 0 || n >= (int)sizeof num)
-		return EOVERFLOW;
 	struct mcp_piece const p[] = {
 		FRAG("{\"code\":"),
-		RAW(num, (size_t)n),
+		BYTES(util_format_view(num, sizeof num, "%d", code)),
 		FRAG(",\"message\":\""),
 		message,
 		n_data ? FRAG("\",\"data\":") : FRAG("\""),
@@ -4242,27 +4238,19 @@ mcp_req_tokens (struct mcp_req const *req)
 	                 : (len + req->filed) / 4;
 }
 
-/** Stores the id of the call @p c, the call @p k of the turn of @p req, in
- *  @p *id. For a call without an id, the function makes up an id in the
- *  CALL_ID bytes at @p made. Returns 0, or EOVERFLOW if the made-up id
- *  does not fit.
+/** Returns the id of the call @p c, which is call @p k of the turn of
+ *  @p req. If c->id is empty, the function formats an id from the turn and
+ *  @p k into the CALL_ID bytes at @p made and returns that id.
  */
-static int
+static struct mcp_piece
 mcp_req_call_id (struct mcp_req const *req,
                  struct ai_call const *c,
                  uint32_t              k,
-                 char                 *made,
-                 struct mcp_piece     *id)
+                 char                 *made)
 {
-	if (c->id.len) {
-		*id = ESC_VIEW(c->id);
-		return 0;
-	}
-	int n = snprintf(made, CALL_ID, "call_%" PRIu32 "_%" PRIu32, req->turn, k);
-	if (n < 0 || n >= CALL_ID)
-		return EOVERFLOW;
-	*id = ESC(made, (size_t)n);
-	return 0;
+	return c->id.len ? ESC_VIEW(c->id)
+	                 : ESC_VIEW(util_format_view(made, CALL_ID, "call_%" PRIu32 "_%" PRIu32,
+	                                             req->turn, k));
 }
 
 /* Whether the conversation fills the upstream's context, as far as known. */
@@ -4450,7 +4438,7 @@ mcp_req_call_args (struct mcp_req const   *req,
 /** Writes the call @p c, the call req->part - 1 of the turn, into the
  *  upload of @p req in the form of the API @p f, after @p items, the items
  *  of the replay before the call. Returns 0, or the error of
- *  mcp_req_call_id(), mcp_req_call_args() or mcp_req_upload().
+ *  mcp_req_call_args() or mcp_req_upload().
  */
 static int
 mcp_req_call_put (struct mcp_req         *req,
@@ -4460,10 +4448,10 @@ mcp_req_call_put (struct mcp_req         *req,
 {
 	uint32_t k = req->part - 1u;
 	char made[CALL_ID];
-	struct mcp_piece id;
+	struct mcp_piece const id = mcp_req_call_id(req, c, k, made);
 	struct mcp_piece args;
-	int e = mcp_req_call_id(req, c, k, made, &id);
-	if (e || (e = mcp_req_call_args(req, f, c, k, &args)))
+	int e = mcp_req_call_args(req, f, c, k, &args);
+	if (e)
 		return e;
 	struct mcp_piece const p[] = {
 		items,
@@ -5802,10 +5790,7 @@ mcp_req_result_put (struct mcp_req       *req,
 	struct cstr_view told = req->agenda ? cstr_view_dstr(&req->agenda->told)
 	                                    : (struct cstr_view){};
 	char made[CALL_ID];
-	struct mcp_piece id;
-	int e = mcp_req_call_id(req, c, req->part, made, &id);
-	if (e)
-		return e;
+	struct mcp_piece const id = mcp_req_call_id(req, c, req->part, made);
 	/* With AI_RESULT_NAMED, the key of a result is the name of the tool,
 	 * and the id is appended if the call came with an id or askai made one
 	 * up. */
