@@ -1248,13 +1248,11 @@ mcp_quote (char             *buf,
 	}
 	size_t n = jb_escape_fit(text.data, text.len, max < size - frame ? max : size - frame);
 	buf[0] = '"';
-	size_t end = 1 + jb_escape(buf + 1, text.data, n);
-	buf[end++] = '"';
-	if (n < text.len) {
-		memcpy(buf + end, "...", sizeof "..." - 1);
-		end += sizeof "..." - 1;
-	}
-	buf[end] = '\0';
+	char *at = buf + 1 + jb_escape(buf + 1, text.data, n);
+	*at++ = '"';
+	if (n < text.len)
+		at = mempcpy(at, "...", sizeof "..." - 1);
+	*at = '\0';
 	return buf;
 }
 
