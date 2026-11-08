@@ -561,9 +561,10 @@ cli_client_file_name (struct cstr_view line)
 	uint64_t n;
 	size_t digits = util_digits(count.data, count.len, UINT64_MAX, &n);
 	struct cstr_view suffix = cstr_view_slice(count, digits, SIZE_MAX);
-	if (!digits || !cstr_view_starts(suffix, CSTR_VIEW(" bytes, ")))
+	struct cstr_view const unit = CSTR_VIEW(" bytes, ");
+	if (!digits || !cstr_view_starts(suffix, unit))
 		return (struct cstr_view){};
-	return oid_valid(cstr_view_slice(suffix, sizeof " bytes, " - 1, SIZE_MAX)) ? name : (struct cstr_view){};
+	return oid_valid(cstr_view_slice(suffix, unit.len, SIZE_MAX)) ? name : (struct cstr_view){};
 }
 
 static int
