@@ -2440,9 +2440,8 @@ godbolt_free (struct godbolt *call)
 		++freed;
 	}
 	loop_work(call->loop, LOOP_VALUES, freed);
-	if (call->doc)
-		return GODBOLT_GO;
-	godbolt_next(call);
+	if (!call->doc)
+		godbolt_next(call);
 	return GODBOLT_GO;
 }
 
