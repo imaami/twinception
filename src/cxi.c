@@ -1233,7 +1233,6 @@ cxi_out_diagnostic (struct cxi_out            *out,
 static int
 cxi_diagnostics (struct cxi *x)
 {
-	static char const unopened[] = "cannot open file '";
 	struct cxi_out rows = { .text = DSTR_INIT, .tree = x->out.tree };
 	unsigned errors = 0;
 	unsigned warnings = 0;
@@ -1242,7 +1241,7 @@ cxi_diagnostics (struct cxi *x)
 		CXString text = clang_getDiagnosticSpelling(d);
 		char const *s = clang_getCString(text);
 		enum CXDiagnosticSeverity const severity =
-			s && !strncmp(s, unopened, sizeof unopened - 1)
+			cstr_view_starts(cstr_view(s), CSTR_VIEW("cannot open file '"))
 			? CXDiagnostic_Ignored : clang_getDiagnosticSeverity(d);
 		clang_disposeString(text);
 		errors += severity >= CXDiagnostic_Error;
