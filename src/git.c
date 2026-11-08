@@ -36,8 +36,9 @@ enum {
 	                           output, with the blank line before it */
 	BINARY    = 8000,     /**< read refuses a file with a NUL in its first
 	                           BINARY bytes, as git's binary test does */
-	LINE_COST = 32,       /**< LOOP_COPY work that read counts for each line
-	                           it writes, in addition to its bytes */
+	LINE_COST = 32,       /**< LOOP_COPY work that read and grep count for
+	                           each line they write, in addition to the
+	                           bytes of the line */
 	OPTIONS   = 16,       /**< a call's options, at most */
 	REVISIONS = 4,        /**< its revisions */
 	PATHS     = 32,       /**< its paths */
@@ -67,6 +68,17 @@ enum git_phase : uint64_t {
 	GIT_RUN,
 	GIT_NUMBER,  /* read has scanned the file and writes the numbered lines */
 	GIT_HELP,    /* the call describes its command with help:true and runs no git */
+	GIT_LINE,    /* a grep of one commit has written the header, and the
+	                next byte of the output of git starts a line */
+	GIT_COPY,    /* as GIT_LINE, but the next byte is inside a line */
+};
+
+/* The bits of git_call.grep: the options -L and -v of a grep call. They
+ * are the index of the note when git exits with status 1.
+ */
+enum {
+	GREP_WITHOUT = 1 << 0,  /* -L or --files-without-match */
+	GREP_INVERT  = 1 << 1,  /* -v or --invert-match */
 };
 
 /* A revision argument: a commit, a range of two commits, or a commit and
@@ -119,6 +131,7 @@ struct git_call {
 	struct git_revision    revisions[REVISIONS];
 	struct git_read        read;
 	enum git_phase         phase;
+	uint64_t               grep;  /* GREP_WITHOUT and GREP_INVERT */
 };
 
 /* What git runs with whatever the call: GIT_OPTIONS_FIXED, no implicit
@@ -166,8 +179,8 @@ static struct cstr_view const grep_options[] = {
 	O("-P"), O("--perl-regexp"), O("-G"), O("--basic-regexp"), O("-h"), O("-H"),
 	O("--full-name"), O("-o"), O("--only-matching"), O("-C#"), O("-A#"), O("-B#"),
 	O("--context="), O("--after-context="), O("--before-context="), O("--max-depth="),
-	O("--max-count="), O("-m#"), O("--break"), O("--heading"), O("-p"),
-	O("--show-function"), O("-W"), O("--function-context"), O("--all-match"), {}
+	O("--max-count="), O("-m#"), O("--break"), O("--heading"), O("--no-heading"),
+	O("-p"), O("--show-function"), O("-W"), O("--function-context"), O("--all-match"), {}
 };
 static struct cstr_view const blame_options[] = {
 	O("-w"), O("-M"), O("-C"), O("-s"), O("-e"), O("-l"), O("-t"), O("-f"),
@@ -210,6 +223,9 @@ enum {
 /* The commands: X(ID, name, options, takes, description, forced...), an
  * ID that no code uses, the name, the options that it accepts, the flags
  * above for what it takes, its help, and the options that askai adds.
+ * grep runs in one thread: with --break, -C or -W, a grep in threads
+ * drops the line "Binary file ... matches" if that line comes first
+ * (git 2.55).
  */
 #define GIT_COMMAND_LIST(X)                                                                \
         X(READ,      "read",      read_options,      END | OBJECT | SINGLE | LINES,        \
@@ -230,13 +246,18 @@ enum {
           "range. Paths restrict the comparison. --stat or --name-status gives a "         \
           "summary instead of the patch.", "--no-ext-diff", "--no-textconv")               \
         X(GREP,      "grep",      grep_options,      FILES | END | PATTERN,                \
-          "Search committed trees; defaults to HEAD. The pattern is an extended "          \
-          "regex: -G makes it basic, -F plain text, -P Perl; -i ignores case. Each "       \
-          "match is commit:path:line:text with the full commit ID; read takes "            \
-          "commit:path as its revision and that line. --heading gives commit:path "        \
-          "once per file. -C3 adds three lines of context, -p the function's first "       \
-          "line, -W the whole function. --max-count=N caps the matches per file, and "     \
-          "-l lists only the files.", "--no-textconv", "-n", "-E")                         \
+          "Search committed files; defaults to HEAD. The pattern is an extended "          \
+          "regex. -G, -F and -P make the pattern basic, plain text or Perl. -i "           \
+          "ignores case. With one revision, the first line names the commit. Each "        \
+          "file path is on a separate line, and the matches in the file follow as "        \
+          "line:text. With several revisions, the commit ID and a colon come before "      \
+          "each path. read takes commit:path as the revision and the number of a "         \
+          "match as line. --no-heading puts the path before each match. -l lists "         \
+          "the files with a match. -L lists the files without a match. -c counts "         \
+          "the matches in each file. -C3 adds three lines of context. -p adds the "        \
+          "first line of the function around a match. -W adds the whole function. "        \
+          "--max-count=N stops after N matches in a file.", "--no-textconv", "-n",         \
+          "-E", "--heading", "--break", "--threads=1")                                     \
         X(BLAME,     "blame",     blame_options,     FILES | SINGLE | ONEPATH,             \
           "Annotate a committed file; defaults to HEAD. Give the file as the one "         \
           "path, such as \"paths\": [\"src/git.c\"], and its commit in revisions. "        \
@@ -255,7 +276,7 @@ enum {
 
 static struct {
 	struct cstr_view const *options;
-	char const             *forced[3];  /* options askai gives it */
+	char const             *forced[6];  /* the options that askai adds */
 	char const             *description;
 	uint64_t                takes;
 } const commands[] = {
@@ -266,8 +287,8 @@ static struct {
 
 static struct cstr_view const git_command_names[] = { GIT_COMMAND_LIST(XL_VIEW) };
 
-static_assert(1 + array_size(fixed) + 5 + 3 + OPTIONS + 2 + 1 + REVISIONS + 1 +
-              PATHS + 1 <= GIT_ARGV, "a command fits argv");
+static_assert(1 + array_size(fixed) + 5 + array_size(commands[0].forced) + OPTIONS + 2 + 1 +
+              REVISIONS + 1 + PATHS + 1 <= GIT_ARGV, "a command fits argv");
 static_assert(1 + array_size(fixed) + 5 + 10 + GIT_ROOTS + 1 <= GIT_ARGV,
               "history validation fits argv");
 
@@ -424,10 +445,12 @@ git_definition (void const *service)
 			"{\"command\": \"read\", \"revisions\": [\"HEAD:src/journal.c\"], "
 			"\"line\": 120, \"count\": 40} gives lines 120 to 159 with their "
 			"numbers and names the commit. The output's last line gives the next "
-			"call, with the commit's ID in place of HEAD. A grep match "
-			"<commit>:<path>:<line>:<text> reads as \"revisions\": "
-			"[\"<commit>:<path>\"] and \"line\": <line>. Give each option with "
-			"its value attached (--max-count=20, not -n 20)."),
+			"call, with the commit's ID in place of HEAD. The first line of the "
+			"output of grep names the commit, and each file path is on a "
+			"separate line above the matches in the file. A match "
+			"<line>:<text> reads as \"revisions\": [\"<commit>:<path>\"] and "
+			"\"line\": <line>. Give each option with its value attached "
+			"(--max-count=20, not -n 20)."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
@@ -969,6 +992,12 @@ git_call_command (struct git_call  *call,
 			bad = e;
 			continue;
 		}
+		if (cstr_view_equal(opt, CSTR_VIEW("-L")) ||
+		    cstr_view_equal(opt, CSTR_VIEW("--files-without-match")))
+			call->grep |= GREP_WITHOUT;
+		if (cstr_view_equal(opt, CSTR_VIEW("-v")) ||
+		    cstr_view_equal(opt, CSTR_VIEW("--invert-match")))
+			call->grep |= GREP_INVERT;
 		if (!cstr_view_starts(opt, git_ignore_rev)) {
 			argv[k++] = opt.data;
 			continue;
@@ -1218,8 +1247,7 @@ git_line_hint (char const *path)
 /* Destroys @p call after git has ended and its output is copied. @p takes
  * is the takes bits of its command. If git failed, if the output was cut,
  * or if there was no output, the function then writes a note about it
- * after the output. Then it finishes the call. Exit status 1 from grep
- * means no matches.
+ * after the output. Then it finishes the call.
  */
 static void
 git_ended (struct mcp_slot *slot,
@@ -1241,7 +1269,16 @@ git_ended (struct mcp_slot *slot,
 		note = out.len ? (struct cstr_view){} : CSTR_VIEW("No output.");
 		failed = false;
 	} else if (status == 1 && (takes & PATTERN)) {
-		note = CSTR_VIEW("No matches.");
+		/* grep exits with status 1 when it writes no line. The meaning
+		 * of no line depends on -L and -v. */
+		static struct cstr_view const none[] = {
+			[0]                          = CSTR_VIEW_INIT("No matches."),
+			[GREP_WITHOUT]               = CSTR_VIEW_INIT("Every file contains a match."),
+			[GREP_INVERT]                = CSTR_VIEW_INIT("Every line matches."),
+			[GREP_WITHOUT | GREP_INVERT] = CSTR_VIEW_INIT("Every file contains a line "
+			                                              "that does not match."),
+		};
+		note = none[call->grep];
 		failed = false;
 	} else if (status > 0 && takes & OBJECT) {
 		static char const fmt[] = "No file at that path in commit %s. ls-tree lists "
@@ -1625,11 +1662,100 @@ git_number (struct mcp_slot *slot,
 	mcp_slot_finish(slot, 0);
 }
 
-/* Copy the output of git to the output of the call in @p slot, as far as
- * the LOOP_COPY room of the step goes, and make it UTF-8 text. A character
- * that the end of the room cuts is left to the next step. When all of the
- * output is copied, end the call, in the next step if the room left is too
- * small for the note. A read numbers the lines of its file instead.
+/* Copy the output of git in @p c to the output of the call in @p slot, as
+ * far as the LOOP_COPY room of the step goes, and make it UTF-8 text. A
+ * character that the end of the room cuts is left to the next step.
+ * Return 0 once all of the output is copied, EAGAIN, or the error of
+ * mcp_slot_write().
+ */
+static int
+git_copy (struct mcp_slot *slot,
+          struct child    *c)
+{
+	struct span left = buf_peek(&c->out);
+	size_t room = loop_room(c->loop, LOOP_COPY);
+	size_t n = left.len < room ? left.len : room;
+	int e = mcp_slot_write(slot, (struct cstr_view){ (char const *)left.ptr, n },
+	                       n < left.len ? TOOL_MORE : 0, &n);
+	if (e)
+		return e;
+	buf_consume(&c->out, n);
+	return n < left.len ? EAGAIN : 0;
+}
+
+/* Copy the output of the grep of one commit in @p call to @p slot as
+ * git_copy() does, after a header line that names the repository and the
+ * commit. The commit ID and the colon after it are left out at the start
+ * of each line, and after "Binary file " at the start of a line. Each line
+ * counts LINE_COST in addition to the bytes of the line, and a line can go
+ * on from one step to the next, as in git_read_lines(). Return 0 once all
+ * of the output is copied, EAGAIN, or the error of mcp_slot_write().
+ */
+static int
+git_grep_copy (struct git_call *call,
+               struct mcp_slot *slot)
+{
+	static struct cstr_view const binary = CSTR_VIEW_INIT("Binary file ");
+	struct oid const *commit = &call->pin.roots[call->revisions[0].root];
+	if (call->phase == GIT_RUN) {
+		struct cstr_view const p[] = {
+			CSTR_VIEW("[Repository "), call->pin.repo->name, CSTR_VIEW(", commit "),
+			oid_view(commit), CSTR_VIEW("]\n"),
+		};
+		int e = git_write(slot, p, array_size(p));
+		if (e)
+			return e;
+		call->phase = GIT_LINE;
+	}
+	char id[sizeof commit->hex + 1];
+	struct cstr_view const prefix = util_format_view(id, sizeof id, "%s:", commit->hex);
+	struct child *c = call->pin.child;
+	struct loop *loop = c->loop;
+	for (struct span left; (left = buf_peek(&c->out)).len; ) {
+		/* Write a piece only if LINE_COST, "Binary file " and 4 more bytes
+		 * fit in the room of the step. The work of the step then stays
+		 * within the bound, and the piece contains at least one byte of
+		 * the line, as in git_read_lines(). */
+		size_t room = loop_room(loop, LOOP_COPY);
+		if (room < LINE_COST + binary.len + 4)
+			return EAGAIN;
+		room -= LINE_COST;
+		struct cstr_view text = { (char const *)left.ptr, left.len };
+		size_t taken;
+		if (call->phase == GIT_LINE) {
+			call->phase = GIT_COPY;
+			size_t const at = cstr_view_starts(text, binary) ? binary.len : 0;
+			if (cstr_view_starts(cstr_view_slice(text, at, SIZE_MAX), prefix)) {
+				int e = at ? mcp_slot_write(slot, binary, 0, &taken) : 0;
+				if (e)
+					return e;
+				buf_consume(&c->out, at + prefix.len);
+				text = cstr_view_slice(text, at + prefix.len, SIZE_MAX);
+				room -= at;
+			}
+		}
+		size_t n = text.len < room ? text.len : room;
+		char const *nl = memchr(text.data, '\n', n);
+		if (nl)
+			n = (size_t)(nl - text.data) + 1;
+		bool const ends = nl || n == text.len;
+		int e = mcp_slot_write(slot, (struct cstr_view){ text.data, n },
+		                       ends ? 0 : TOOL_MORE, &taken);
+		if (e)
+			return e;
+		buf_consume(&c->out, taken);
+		if (!ends)
+			return EAGAIN;
+		loop_work(loop, LOOP_COPY, LINE_COST);
+		call->phase = GIT_LINE;
+	}
+	return 0;
+}
+
+/* Copy the output of git to the output of the call in @p slot with
+ * git_copy(), or with git_grep_copy() for a grep of one commit. When all
+ * of the output is copied, end the call, in the next step if the room left
+ * is too small for the note. A read numbers the lines of the file instead.
  */
 static void
 git_step (struct mcp_slot *slot)
@@ -1659,18 +1785,14 @@ git_step (struct mcp_slot *slot)
 			git_number(slot, call);
 		return;
 	}
-	struct span left = buf_peek(&c->out);
-	size_t room = loop_room(c->loop, LOOP_COPY);
-	size_t n = left.len < room ? left.len : room;
-	int e = mcp_slot_write(slot, (struct cstr_view){ (char const *)left.ptr, n },
-	                       n < left.len ? TOOL_MORE : 0, &n);
-	if (e) {
-		mcp_slot_fail(slot, e);
+	int e = (takes & PATTERN) && call->n_revisions == 1 ? git_grep_copy(call, slot)
+	                                                    : git_copy(slot, c);
+	if (e == EAGAIN || (!e && loop_room(c->loop, LOOP_COPY) < GIT_NOTE)) {
+		mcp_slot_ready(slot);
 		return;
 	}
-	buf_consume(&c->out, n);
-	if (n < left.len || loop_room(c->loop, LOOP_COPY) < GIT_NOTE) {
-		mcp_slot_ready(slot);
+	if (e) {
+		mcp_slot_fail(slot, e);
 		return;
 	}
 	git_ended(slot, call, takes);

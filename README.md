@@ -468,11 +468,14 @@ for `grep`, `blame` and `ls-tree`; a staged deletion does not hide its committed
 file, and staged additions or edits, working-tree edits, untracked and ignored
 files are absent. Use `ls-tree -r --name-only` to list committed paths. A `grep`
 pattern is an extended regular expression (`-E`) unless the options give `-G`,
-`-F` or `-P`. `grep` gives each match as `git grep` prints it:
-`commit:path:line:text`, with the full commit ID. `--heading` gives
-`commit:path` once above each file's matches. A commit ID can replace `HEAD` for
-repeatable reads. `diff` requires two commit revisions or one explicit range
-such as `main..topic` or `main...topic`.
+`-F` or `-P`. With one revision, the first line of the output of `grep` names
+the repository and the commit: `[Repository proj, commit ID]`. Each file path
+is on a line of its own, the matches in the file follow as `line:text`, and an
+empty line separates the files. With several revisions, the commit ID and a
+colon come before each path. `--no-heading` gives `path:line:text` for each
+match instead. `-l` and `-L` list paths, and `-c` gives `path:count`. A commit
+ID can replace `HEAD` for repeatable reads. `diff` requires two commit
+revisions or one explicit range such as `main..topic` or `main...topic`.
 
 `read` gives numbered lines of a committed file, which the one revision names
 as `commit:path`, from `line` (default 1), `count` of them at most (default as
@@ -489,9 +492,10 @@ ID and the lines given:
 Each line follows as its number, a tab and its text. The last line gives the
 revision, with the commit ID in place of a name such as `HEAD`, and the `line`
 to read on from, or says that the file ends there. The next part then comes
-from the same commit, even if `HEAD` has moved. The `commit:path` of a `grep`
-match is a revision of `read`, and its number the `line`. `show` with the same
-revision gives the file as it is.
+from the same commit, even if `HEAD` has moved. The commit that a `grep` names
+and the path of a match make the `commit:path` revision of a `read`, and the
+number of the match is the `line`. `show` with the same revision gives the file
+as it is.
 
 Use `"help": true` with a command to list its options, source selection and
 argument limits, and the bytes of output that one result of the caller takes
@@ -547,11 +551,13 @@ failed `show` and `cat-file` calls return a generic committed-object error,
 hiding Git's hints about local files; other Git errors are preserved. `read`
 runs `git cat-file blob` with its errors discarded, numbers the lines within
 the 4 MiB that `git` reads, and refuses a file with a NUL byte in its first
-8000 bytes as binary. Nonzero exits are tool errors, except that `grep` finding
-no matches succeeds with `[No matches.]`. At the deadline, `--git-timeout`
-(30 s for validation and execution together), `git` gets SIGTERM, and SIGKILL a
-second later, and the call is a tool error; a call that goes, or `askai`
-stopping, kills `git` and the processes it started.
+8000 bytes as binary. Nonzero exits are tool errors, except that a `grep` that
+writes no line succeeds with a note: `[No matches.]`, with `-L`
+`[Every file contains a match.]`, with `-v` `[Every line matches.]`, and with
+both `[Every file contains a line that does not match.]`. At the deadline,
+`--git-timeout` (30 s for validation and execution together), `git` gets
+SIGTERM, and SIGKILL a second later, and the call is a tool error; a call that
+goes, or `askai` stopping, kills `git` and the processes it started.
 If `git` exits while a process that it started still has the output open,
 that process is still killed at the deadline, when the client of the call
 closes the connection, or when `askai` stops. Until the output ends, that

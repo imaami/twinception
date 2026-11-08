@@ -9061,7 +9061,8 @@ def check_git(binary, up):
             help_text = json.loads(text_of(call(ai, repo="proj", command="grep", help=True)))
             assert {"-F", "-E", "-C#"} <= set(help_text["options"]) and not \
                 {"--cached", "--untracked"} & set(help_text["options"]), help_text
-            assert "commit:path:line:text" in help_text["description"], help_text
+            assert "line:text" in help_text["description"] and \
+                "--no-heading" in help_text["description"], help_text
             # The help and the pattern property say that a pattern is an
             # extended regex.
             assert "extended regex" in help_text["description"] and \
@@ -9254,7 +9255,7 @@ def check_git(binary, up):
                           options=["-n", "--cached"])
             assert result.get("isError") and text_of(result) == source_option("--cached", 1), result
             result = call(ai, repo="proj", command="grep", pattern="alpha", options=["-n"])
-            assert not result.get("isError") and ":a.txt:1:alpha\n" in text_of(result), result
+            assert not result.get("isError") and "\na.txt\n1:alpha\n" in text_of(result), result
 
             # Its argv, environment, descriptors, signals and session.
             out = text_of(call(ai, repo="proj", command="log",
@@ -9303,13 +9304,14 @@ def check_git(binary, up):
                 "cat-file", "blob", "--end-of-options", "1" * 40 + ":a.txt"], argv
             assert "2>&1" not in numbered, numbered
             # grep's -E comes before the call's options, so that -G, -F or -P
-            # can follow it.
+            # can follow it. The header line names the commit.
             out = text_of(call(ai, repo="proj", command="grep", pattern="a|b",
                                options=["-F"], revisions=["echo"]))
+            assert out.startswith(f"[Repository proj, commit {'1' * 40}]\n"), out
             argv = out.split("---\n")[0].splitlines()
             assert argv[argv.index("--git-dir=.") + 1:] == [
-                "grep", "--no-textconv", "-n", "-E", "-F", "-e", "a|b",
-                "--end-of-options", "1" * 40, "--"], argv
+                "grep", "--no-textconv", "-n", "-E", "--heading", "--break", "--threads=1",
+                "-F", "-e", "a|b", "--end-of-options", "1" * 40, "--"], argv
 
             # The real git: output, errors, mending, the cut, and grep's none.
             head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], text=True,
@@ -9317,23 +9319,47 @@ def check_git(binary, up):
                                   env=os.environ | git).stdout.strip()
             assert text_of(call(ai, repo="proj", command="log",
                                 options=["--format=%s"])) == "first\n"
+            # A grep of one commit names the commit in the first line. The
+            # path of a file is on a line of its own, followed by the
+            # matches as line:text.
+            named = f"[Repository proj, commit {head}]\n"
             assert text_of(call(ai, repo="proj", command="grep", pattern="beta",
-                                options=["-n"])) == f"{head}:a.txt:2:beta ?? gamma\n"
+                                options=["-n"])) == named + "a.txt\n2:beta ?? gamma\n"
             # Every match has its line's number, -n or not.
             assert text_of(call(ai, repo="proj", command="grep", pattern="beta")) == \
-                f"{head}:a.txt:2:beta ?? gamma\n"
+                named + "a.txt\n2:beta ?? gamma\n"
             # A pattern is an extended regex unless the options give -G, -F or -P.
             assert text_of(call(ai, repo="proj", command="grep", pattern="beta|nothing")) \
-                == f"{head}:a.txt:2:beta ?? gamma\n"
+                == named + "a.txt\n2:beta ?? gamma\n"
             assert text_of(call(ai, repo="proj", command="grep", pattern="beta|nothing",
-                                options=["-G"])) == "[No matches.]"
-            # --heading gives commit:path once, above the file's matches.
+                                options=["-G"])) == named + "\n[No matches.]"
+            # --no-heading gives the path before each match.
             assert text_of(call(ai, repo="proj", command="grep", pattern="a",
-                                options=["--heading"], paths=["a.txt"])) == \
-                f"{head}:a.txt\n1:alpha\n2:beta ?? gamma\n"
-            result = call(ai, repo="proj", command="grep", pattern="nothing here")
-            assert not result.get("isError") and \
-                text_of(result) == "[No matches.]", result
+                                options=["--no-heading"], paths=["a.txt"])) == \
+                named + "a.txt:1:alpha\na.txt:2:beta ?? gamma\n"
+            # -l and -L list paths, and -c gives a count after each path.
+            assert text_of(call(ai, repo="proj", command="grep", pattern="alpha",
+                                options=["-l"])) == named + "a.txt\n"
+            assert text_of(call(ai, repo="proj", command="grep", pattern="alpha",
+                                options=["-L"])) == named + "big.txt\ndeleted.txt\n"
+            assert text_of(call(ai, repo="proj", command="grep", pattern="alpha|beta",
+                                options=["-c"])) == named + "a.txt:2\n"
+            # grep writes no line and exits with status 1 when nothing
+            # matches, and also when -L finds a match in every file or -v
+            # finds that every line matches.
+            for pattern, options, paths, note in (
+                    ("nothing here", [], [], "No matches."),
+                    (".", ["-L"], [], "Every file contains a match."),
+                    (".", ["--files-without-match"], ["a.txt"],
+                     "Every file contains a match."),
+                    (".", ["-v"], ["a.txt"], "Every line matches."),
+                    (".", ["-c", "--invert-match"], ["a.txt"], "Every line matches."),
+                    ("alpha", ["-L", "-v"], ["a.txt"],
+                     "Every file contains a line that does not match.")):
+                result = call(ai, repo="proj", command="grep", pattern=pattern,
+                              options=options, paths=paths)
+                assert not result.get("isError") and \
+                    text_of(result) == named + f"\n[{note}]", (options, result)
             result = call(ai, repo="proj", command="show", revisions=["nosuch"])
             assert result.get("isError") and text_of(result) == history, result
             result = call(ai, repo="proj", command="cat-file", options=["-p"],
@@ -9363,7 +9389,24 @@ def check_git(binary, up):
                 "a.txt\nbig.txt\ndeleted.txt\nä.txt\n"
             assert text_of(call(ai, repo="proj", command="grep", pattern="alpha",
                                 options=["-n"], revisions=["topic"])) == \
-                f"{topic}:ä.txt:1:alpha\n"
+                f"[Repository proj, commit {topic}]\nä.txt\n1:alpha\n"
+            # An empty line comes between the files, and the commit ID is left
+            # out also in a list of files.
+            assert text_of(call(ai, repo="proj", command="grep", pattern="alpha|committed",
+                                revisions=["topic"])) == \
+                f"[Repository proj, commit {topic}]\na.txt\n1:committed topic text\n\n" \
+                "deleted.txt\n1:committed deletion candidate\n\nä.txt\n1:alpha\n"
+            assert text_of(call(ai, repo="proj", command="grep", pattern="committed",
+                                options=["-l"], revisions=["topic"])) == \
+                f"[Repository proj, commit {topic}]\na.txt\ndeleted.txt\n"
+            # With two revisions, the commit ID and a colon come before each
+            # path, and no header names a commit.
+            assert text_of(call(ai, repo="proj", command="grep", pattern="alpha",
+                                revisions=["HEAD", "topic"])) == \
+                f"{head}:a.txt\n1:alpha\n\n{topic}:ä.txt\n1:alpha\n"
+            assert text_of(call(ai, repo="proj", command="grep", pattern="alpha",
+                                options=["--no-heading"], revisions=["HEAD", "topic"])) == \
+                f"{head}:a.txt:1:alpha\n\n{topic}:ä.txt:1:alpha\n"
             assert text_of(call(ai, repo="proj", command="rev-parse",
                                 revisions=["HEAD"])) == head + "\n"
             # Every revision that names no readable commit gets one text.
@@ -9417,11 +9460,12 @@ def check_git(binary, up):
                     ("diff", {"revisions": ["HEAD...HEAD"]})):
                 result = call(ai, repo="proj", command=command, **arguments)
                 assert not result.get("isError") and text_of(result) == \
-                    ("[No matches.]" if command == "grep" else "[No output.]"), result
+                    (named + "\n[No matches.]" if command == "grep" else "[No output.]"), \
+                    result
             result = call(ai, repo="proj", command="grep", pattern="alpha",
                           paths=["a.txt"], options=["-F", "-n"])
             assert not result.get("isError") and text_of(result) == \
-                f"{head}:a.txt:1:alpha\n", result
+                named + "a.txt\n1:alpha\n", result
             for revisions in (["HEAD", "topic"], ["HEAD..topic"], ["HEAD...topic"]):
                 result = call(ai, repo="proj", command="diff", revisions=revisions)
                 assert not result.get("isError") and "+committed topic text" in \
@@ -9577,7 +9621,7 @@ def check_git(binary, up):
         with Askai(binary, "-u", up.url(), "--git", bare) as ai:
             for command, arguments, expected in (
                     ("grep", {"pattern": "alpha", "options": ["-n"]},
-                     f"{head}:a.txt:1:alpha\n"),
+                     f"[Repository snapshot, commit {head}]\na.txt\n1:alpha\n"),
                     ("ls-tree", {"options": ["-r", "--name-only"]},
                      "a.txt\nbig.txt\ndeleted.txt\n"),
                     ("show", {"revisions": ["HEAD:deleted.txt"]},
@@ -9957,23 +10001,34 @@ def check_git_read(binary, up):
             assert result.get("isError") and "No file" not in text_of(result), result
             assert read(ai, "HEAD:mend.txt").split("\n")[1:3] == ["1\tok", "2\t??"]
 
-            # A grep match is commit:path:line:text. Its commit:path works as
-            # the revision of a read, also for a non-ASCII file name.
-            match = text_of(call(ai, command="grep", pattern="line 42", options=["-F"]))
-            assert match == f"{head}:lines.txt:42:line 42\n", match
-            commit, path, number, _ = match.split(":", 3)
-            assert read(ai, f"{commit}:{path}", line=int(number), count=1) == \
+            # The first line of a grep names the commit, the next line the
+            # file, and the line after that a match as line:text. The commit
+            # and the path make the revision of a read, also for a non-ASCII
+            # file name.
+            def match(pattern):
+                text = text_of(call(ai, command="grep", pattern=pattern, options=["-F"]))
+                header, path, line, end = text.split("\n")
+                commit = re.fullmatch(r"\[Repository proj, commit (\w+)\]", header)[1]
+                assert commit == head and not end, text
+                return f"{commit}:{path}", int(line.split(":")[0])
+            revision, number = match("line 42")
+            assert revision == f"{head}:lines.txt" and number == 42, revision
+            assert read(ai, revision, line=number, count=1) == \
                 lines(42, 42) + f'[To read on, call again with "revisions": ' \
                 f'["{head}:lines.txt"] and "line": 43.]'
             assert text_of(call(ai, command="ls-tree", options=["-r", "--name-only"])) == \
                 "bin.dat\nblank.txt\ncut.txt\ndir/x\nempty.txt\nlines.txt\nmend.txt\n" \
                 "nonl.txt\nutf.txt\nä.txt\n"
-            match = text_of(call(ai, command="grep", pattern="alpha", options=["-F"]))
-            assert match == f"{head}:ä.txt:1:alpha\n", match
-            commit, path, number, _ = match.split(":", 3)
-            assert read(ai, f"{commit}:{path}", line=int(number)) == \
+            revision, number = match("alpha")
+            assert revision == f"{head}:ä.txt" and number == 1, revision
+            assert read(ai, revision, line=number) == \
                 f"[Repository proj, file ä.txt at commit {head}: lines 1 to 1 of 1.]\n" \
                 "1\talpha\n\n[Line 1 is the end of the file.]"
+            # A binary file that matches is named without the commit ID too.
+            # The line is there when the file is the first match, which a grep
+            # in threads leaves out with --break.
+            assert text_of(call(ai, command="grep", pattern="b", paths=["bin.dat"])) == \
+                f"[Repository proj, commit {head}]\nBinary file bin.dat matches\n"
 
             # The 4 MiB cut falls after line 4096 of 1024 bytes.
             cut = "\n[The file goes on after line 4096, past the 4 MiB that the git " \
@@ -10009,6 +10064,19 @@ def check_git_read(binary, up):
             units, _ = work(ai)
             assert text == blank + "1 to 1048576 of 1048576.]\n" + "".join(
                 f"{k}\t\n" for k in range(1, 1 << 20)) + "1048576\t" + end, len(text)
+            assert all(units[u][0] <= units[u][1] for u in ("copy", "parse")), units
+            # A grep of one commit leaves the commit ID out line by line,
+            # within the work budget of each step, up to the 4 MiB cut.
+            text = text_of(call(ai, command="grep", pattern="^", options=["--no-heading"],
+                                paths=["blank.txt"]))
+            units, _ = work(ai)
+            prefix = f"{head}:"
+            captured = "".join(f"{prefix}blank.txt:{k}:\n" for k in range(1, 80000))
+            shown = "".join(line.removeprefix(prefix)
+                            for line in captured[:4 << 20].splitlines(True))
+            assert text == f"[Repository proj, commit {head}]\n" + shown + \
+                ("\n" if shown.endswith("\n") else "\n\n") + \
+                "[The output goes on past the 4 MiB shown.]", len(text)
             assert all(units[u][0] <= units[u][1] for u in ("copy", "parse")), units
             assert read(ai, "HEAD:utf.txt") == f"[Repository proj, file utf.txt at commit " \
                 f"{head}: lines 1 to 2000 of 2000.]\n" + "".join(

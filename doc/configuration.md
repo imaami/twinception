@@ -1409,15 +1409,19 @@ with both endpoints, such as `main..topic` or `main...topic`.
 
 A `grep` pattern is an extended regex unless the options give `-G` (basic),
 `-F` (literal) or `-P` (Perl); `-C3` gives three lines of context.
-Every match is numbered: `commit:path:line:text`, with the full commit ID;
-`--heading` gives `commit:path` once above the matches of each file.
+With one revision, the first line of the output names the commit:
+`[Repository proj, commit ID]`. Each file path is on a line of its own, the
+matches in the file follow as `line:text`, and an empty line separates the
+files. With several revisions, the commit ID and a colon come before each
+path. `--no-heading` gives `path:line:text` for each match.
 Option values stay attached in one array entry. To read a committed file, use
 `command: "read"` with `"revisions":["HEAD:src/journal.c"]`, and optionally
 `line`, the first line (default 1), and `count`, the most lines (default as
 many as fit in one result). Each line comes after its number and a tab. The
 first line of the output names the full commit ID, and the last line gives the
-revision and the `line` to read on from. The `commit:path` of a `grep` match
-reads as the revision, and its number as the `line`. `show` with the same
+revision and the `line` to read on from. The commit that a `grep` names and
+the path of a match read as the `commit:path` revision, and the number of the
+match as the `line`. `show` with the same
 revision gives the file as it is. An immutable commit
 ID can replace `HEAD` for repeatable reads. Index selectors such as
 `":src/journal.c"`, raw blob or tree IDs, stash and reflog selectors, and
@@ -1439,8 +1443,10 @@ Git output is captured up to 4 MiB. A result for an agent may take less;
 `help: true` gives the most it takes as `window_bytes`, and the note of a
 longer output gives the exact next `offset` to use with the same arguments.
 `read` gives the whole lines that fit the window and pages by `line`
-instead; only a line longer than the window is cut by bytes. A
-successful search with no matches says `[No matches.]`;
+instead; only a line longer than the window is cut by bytes. A search
+that writes no line says `[No matches.]`, with `-L`
+`[Every file contains a match.]`, with `-v` `[Every line matches.]`, and
+with both `[Every file contains a line that does not match.]`;
 other nonzero Git exits are reported as errors. A revision that names no
 readable commit gets one text that lists the causes, the same for a hash that
 does not exist and one that is not reachable. A failed `read` or `cat-file` of
