@@ -2799,10 +2799,11 @@ mcp_archive_back (struct loop *loop,
 }
 
 /* Copies @p obj, recovery state of @p req, as a record of @p kind into the
- * writer's bounded queue, and frees @p obj; this control data does not
- * enter Git. With @p done, the request waits for the write: a callback
- * follows the durable private checkpoint, and @p done goes on with the
- * request then. Returns 0, or why the copy failed: ENOMEM for no @p obj.
+ * writer's bounded queue and frees @p obj. The record is not written to
+ * Git. If @p done is not nullptr, the function removes the request from
+ * the step queue and sets PHASE_JOURNAL, and mcp_archive_back() calls
+ * @p done with the request after the write. Returns ENOMEM if @p obj is
+ * nullptr, and otherwise 0 or an error number.
  */
 static int
 mcp_req_archive (struct mcp_req     *req,
@@ -2822,6 +2823,8 @@ mcp_req_archive (struct mcp_req     *req,
 	} else if (w) {
 		w->done = done;
 		req->archive_call = w->who;
+		loop_unready(&req->step);
+		req->phase = PHASE_JOURNAL;
 	}
 	return e;
 }
@@ -2867,7 +2870,6 @@ mcp_req_archive_end (struct mcp_req *req)
 	int e = mcp_req_archive(req, kind, obj, draining ? nullptr : mcp_req_archive_finished);
 	if (e || draining)
 		return e;
-	loop_unready(&req->step);
 	list_append(&req->mcp->ending, &req->hook);
 	req->phase = PHASE_END;
 	return EINPROGRESS;
@@ -5494,12 +5496,8 @@ mcp_req_call_launch (struct mcp_req *req)
 			"arguments", args ? json_object_get(args) : json_object_new_object(),
 			nullptr);
 		int e = mcp_req_archive(req, "tool-intent", intent, mcp_req_intent_saved);
-		if (e) {
+		if (e)
 			mcp_req_fail(req, e);
-			return;
-		}
-		loop_unready(&req->step);
-		req->phase = PHASE_JOURNAL;
 		return;
 	}
 	slot->tool = (uint8_t)id;
@@ -5954,12 +5952,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 		state = jb_set_or_free(state, "review", review_json(req->review, &(int){}));
 	req->intents = 0;
 	mcp_req_saved_clear(req);
-	e = mcp_req_archive(req, "state", state, mcp_req_archive_submitted);
-	if (!e) {
-		loop_unready(&req->step);
-		req->phase = PHASE_JOURNAL;
-	}
-	return e;
+	return mcp_req_archive(req, "state", state, mcp_req_archive_submitted);
 }
 
 /** Returns the tools in the array of names @p names that mcp_req_lent()
