@@ -6300,7 +6300,7 @@ mcp_req_add_write (struct mcp_req *req)
 		return;
 	if (e == ENOBUFS && !wake) {
 		mcp_req_error(req, 500, INTERNAL_ERROR,
-		              FRAG("The task and its notes do not fit the upstream request"),
+		              FRAG("The task and the notes do not fit in the upstream request"),
 		              nullptr, 0);
 		return;
 	}
@@ -6503,12 +6503,11 @@ mcp_req_compact_notes (struct mcp_req *req)
 	review_pending_drop(req->review);
 	int e = mcp_req_notes_identity(req);
 	if (!e && req->review)
-		e = cstr_view_cat(CSTR_VIEW("\n\n[askai: askai keeps your task word for word "
-		                            "through every compaction of this ask call: the system "
-		                            "text, the earlier messages and the prompt, which is "
-		                            "all that comes before askai's first [askai: ...] "
-		                            "line. You need not copy the task into notes or a "
-		                            "summary.]\n"), &req->self.answer)
+		e = cstr_view_cat(CSTR_VIEW("\n\n[askai: compaction does not change the task. "
+		                            "The task is all text before the first [askai: ...] "
+		                            "line: the system text, the earlier messages and the "
+		                            "prompt. You do not need to copy the task into notes "
+		                            "or a summary.]\n"), &req->self.answer)
 		    ? ENOMEM : review_render(req->review, &req->self.answer, mcp_req_lend_max(req));
 	if (e) {
 		mcp_req_fail(req, e);
@@ -6579,9 +6578,8 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	LOG(LOG_VERBOSE, TURN_FMT "compacted by the upstream's compact call, summary %zu byte%s",
 	    TURN_ARGS(req), summary.len, util_s(summary.len));
 	mcp_req_compact(req, req->part,
-	                CSTR_VIEW("\n\n[askai: you compacted the context: the conversation "
-	                          "since the task is gone, your turns and the tools' results "
-	                          "with it. Your summary of it:]\n\n"),
+	                CSTR_VIEW("\n\n[askai: you compacted the context. Your turns and the "
+	                          "tool results since the task are gone. Your summary:]\n\n"),
 	                (struct cstr_view){ summary.data, jb_utf8(summary.data, summary.len) });
 }
 
@@ -6595,15 +6593,15 @@ mcp_req_compact_full (struct mcp_req *req)
 	if (mcp_req_drained(req))
 		return;
 	if (req->forced++) {
-		mcp_slot_result(&req->self, CSTR_VIEW("The upstream's context cannot hold the task "
-		                                      "and the notes kept for it."), true);
+		mcp_slot_result(&req->self, CSTR_VIEW("The task and the notes do not fit in the "
+		                                      "context of the upstream model."), true);
 		return;
 	}
 	hist_add(&req->mcp->counts->calls.compacted[1], 1);
 	LOG(LOG_VERBOSE, TURN_FMT "context full, compacted by askai", TURN_ARGS(req));
-	mcp_req_compact(req, 0, CSTR_VIEW("\n\n[askai: your context filled up, so the "
-	                                  "conversation since the task is gone, your turns "
-	                                  "and the tools' results with it.]"), CSTR_VIEW(""));
+	mcp_req_compact(req, 0, CSTR_VIEW("\n\n[askai: your context filled up. Your turns and "
+	                                  "the tool results since the task are gone.]"),
+	                CSTR_VIEW(""));
 }
 
 #undef TURN_ARGS
@@ -7865,20 +7863,20 @@ mcp_compact_definition (void const *service)
 {
 	struct mcp_static const *st = service;
 	char about[512];
-	util_format(about, sizeof about, "Replace the conversation since the task, your turns "
-	            "and the tools' results, with your summary. After it you see the task as "
-	            "the user gave it, then your summary%s%s. Note first what you must keep. "
-	            "Call it when askai's notice states that the context fills up, or when you "
-	            "no longer need the details of finished work. Calls after it in the same "
-	            "turn do not run.",
-	            st->lending.of[KIND_FINDINGS] ? ", then askai's review record" : "",
+	util_format(about, sizeof about, "Replace your turns and the tool results since the "
+	            "task with your summary. After compact, you see the original task, then "
+	            "your summary%s%s. The summary must contain everything that you need to "
+	            "continue. Call compact when an askai notice asks for compact, or when you "
+	            "no longer need the details of finished work. Tool calls after compact in "
+	            "the same turn do not run.",
+	            st->lending.of[KIND_FINDINGS] ? ", then the review record" : "",
 	            st->lending.of[KIND_NOTES] ? ", then your note history and your newest note"
 	                                       : "");
 	return schema_tool("compact", about,
 		jb_object(
 			"summary", schema_property("string",
-				"Where the task stands: what is done, what you found, "
-				"and what you will do next; at most 4 MiB."),
+				"The state of the task: what is done, what you found, "
+				"and what you will do next. At most 4 MiB."),
 			nullptr),
 		CSTR_VIEW("summary"));
 }
