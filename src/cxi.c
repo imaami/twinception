@@ -1153,9 +1153,9 @@ cxi_describe (struct cxi *x)
 {
 	char name[CXI_NAME + 1];
 	char member[CXI_NAME + 1];
-	uint32_t kind = 0;
+	uint32_t kind;
 	unsigned column = 0;
-	CXCursor c = clang_getNullCursor();
+	CXCursor c;
 	int e = cxi_parse_name(x, name, member, &kind);
 	if (e)
 		return e;
@@ -1272,7 +1272,7 @@ cxi_words (struct cxi  *x,
 {
 	for (; *at < argc && strcmp(argv[*at], "--"); ++*at) {
 		struct cstr_view value = cstr_view(argv[*at]);
-		struct cstr_view key = {};
+		struct cstr_view key;
 		size_t const k = cstr_view_cut(&value, '=', &key)
 		                 ? cstr_view_index(cxi_keys, CXI_KEYS, key) : CXI_KEYS;
 		bool const warning = k == CXI_KEY_WARNING && x->n_warnings < CXI_WARNINGS;
@@ -1491,7 +1491,7 @@ cxi_cache_git (struct cxi_cache const *cache,
 	};
 	struct child_fds fds = child_fds();
 	fds.keep = cache->lock;
-	int status = 0;
+	int status;
 	if (!e)
 		e = buf ? child_capture(&cmd, fds, buf, size, len, &status)
 		        : child_run(&cmd, fds, &status);
@@ -1584,7 +1584,7 @@ cxi_cache_lock (struct cxi_cache *cache,
 {
 	for (int op = LOCK_SH, e;; op = op == LOCK_SH ? LOCK_EX : LOCK_SH) {
 		char now[OID_SHA256 + 3];
-		size_t n = 0;
+		size_t n;
 		if (flock(cache->lock, op))
 			return errno;
 		if ((e = util_read_all(cache->state, now, sizeof now, 0, &n)))
@@ -1607,7 +1607,7 @@ cxi_cache_open (struct cxi_cache *cache,
                 struct cstr_view  commit,
                 struct cxi_out   *out)
 {
-	char const *why = nullptr;
+	char const *why;
 	int const flags = O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC;
 	struct dstr index = DSTR_INIT;
 	int e = cxi_dir((char *)dstr_raw(&cache->dir), &cache->fd, &why);
@@ -1712,7 +1712,7 @@ cxi_run (struct cxi         *x,
 	struct cstr_view const *key = x->key;
 	struct cstr_view const repo = key[CXI_KEY_REPO];
 	struct cstr_view const commit = key[CXI_KEY_COMMIT];
-	uint64_t deadline = 0;
+	uint64_t deadline;
 	/* The name of the repository is a directory of the cache. */
 	if (!key[CXI_KEY_ACTION].data || !repo.len || repo.len > 64 || *repo.data == '.' ||
 	    strspn(repo.data, UTIL_ALNUM "_.-") < repo.len || !key[CXI_KEY_PATH].data ||

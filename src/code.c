@@ -85,8 +85,8 @@ code_check (struct config *cfg)
 		.flags = CHILD_STDERR,
 	};
 	char out[CODE_CHECK];
-	size_t len = 0;
-	int status = 0;
+	size_t len;
+	int status;
 	e = child_capture(&cmd, child_fds(), out, sizeof out, &len, &status);
 	free(cache);
 	if (e == ENOENT)
@@ -278,7 +278,7 @@ code_record (struct cstr_view      *text,
              struct review_source  *src)
 {
 	struct cstr_view rest = *text;
-	struct cstr_view line = {};
+	struct cstr_view line;
 	if (!cstr_view_starts(rest, CSTR_VIEW("lines ")) || !cstr_view_cut(&rest, '\n', &line))
 		return false;
 	line = cstr_view_slice(line, sizeof "lines " - 1, SIZE_MAX);
