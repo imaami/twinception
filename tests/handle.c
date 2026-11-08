@@ -36,7 +36,6 @@ test_reuse (struct loop *l)
 	CHECK(!loop_lookup(l, hb, 1));
 }
 
-/* Another loop's handle, a slot never used, and no handle name nothing. */
 /* A handle names its object only for the kind that it was made with. */
 static void
 test_kind (struct loop *l)
@@ -50,6 +49,9 @@ test_kind (struct loop *l)
 	CHECK(!loop_lookup(l, h, 2));
 }
 
+/* loop_lookup() returns nullptr for a handle of another loop, a handle of
+ * a slot that was never used, and the zero handle. loop_forget() does
+ * nothing for a handle of another loop. */
 static void
 test_foreign (struct loop *l)
 {
