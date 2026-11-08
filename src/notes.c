@@ -570,28 +570,13 @@ notes_check_input (struct buf       *in,
 {
 	if (!in || !repo || !name.data)
 		return EINVAL;
-	size_t branch = strlen(repo);
-	/* The input consists of a line for the branch, a line for each
-	 * directory in the name, and a line for the name. */
-	size_t lines = 1;
-	for (size_t i = 0; i < name.len; ++i)
-		lines += name.data[i] == '/';
-	struct span s;
-	int e = buf_reserve(in, branch + 1 + lines * (branch + 2 + name.len), SIZE_MAX, &s);
-	if (e)
-		return e;
-	char *p = mempcpy(s.ptr, repo, branch);
-	*p++ = '\n';
-	for (size_t i = 0; i <= name.len; ++i) {
-		if (i < name.len && name.data[i] != '/')
-			continue;
-		p = mempcpy(p, repo, branch);
-		*p++ = ':';
-		p = mempcpy(p, name.data, i);
-		*p++ = '\n';
-	}
-	buf_commit(in, (size_t)(p - (char *)s.ptr));
-	return 0;
+	/* Write a line for the branch, a line for each directory in the name,
+	 * and a line for the name. */
+	int e = buf_printf(in, "%s\n", repo);
+	for (size_t i = 0; !e && i <= name.len; ++i)
+		if (i == name.len || name.data[i] == '/')
+			e = buf_printf(in, "%s:%.*s\n", repo, (int)i, name.data);
+	return e;
 }
 
 /* Returns the kind of the object of @p line, a line without its newline in
@@ -830,18 +815,7 @@ notes_read_input (struct buf       *in,
 {
 	if (!in || !repo || !name.data)
 		return EINVAL;
-	size_t branch = strlen(repo);
-	size_t len = branch + name.len + 2;
-	struct span s;
-	int e = buf_reserve(in, len, SIZE_MAX, &s);
-	if (e)
-		return e;
-	char *p = mempcpy(s.ptr, repo, branch);
-	*p++ = ':';
-	p = mempcpy(p, name.data, name.len);
-	*p = '\n';
-	buf_commit(in, len);
-	return 0;
+	return buf_printf(in, "%s:%.*s\n", repo, (int)name.len, name.data);
 }
 
 int

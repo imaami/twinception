@@ -348,7 +348,7 @@ notes_name (struct cstr_view *name);
 
 /** Writes the input of the command NOTES_CHECK for the valid name @p name
  *  in the notebook branch @p repo to @p in. Returns 0, EINVAL for a null
- *  argument, or ENOMEM.
+ *  argument, or the error number that buf_printf() returns.
  */
 extern int
 notes_check_input (struct buf       *in,
@@ -453,7 +453,7 @@ notes_add_out (struct span  out,
 
 /** Writes the input of the command NOTES_READ for the valid name @p name
  *  in the notebook branch or commit @p repo to @p in. Returns 0, EINVAL
- *  for a null argument, or ENOMEM.
+ *  for a null argument, or the error number that buf_printf() returns.
  */
 extern int
 notes_read_input (struct buf       *in,
