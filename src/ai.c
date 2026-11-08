@@ -283,7 +283,7 @@ ai_generate_answer (struct json_object  *root,
 	int e = 0;
 	struct json_object *part;
 	for (size_t i = 0; !e && (part = jb_at(parts, i)); ++i)
-		e = ai_append(json_object_get_boolean(jb_get(part, "thought")) ? thought : text,
+		e = ai_append(jb_true(jb_get(part, "thought")) ? thought : text,
 		              jb_get(part, "text"));
 	return e;
 }
@@ -1093,17 +1093,13 @@ ai_generate_part (struct ai_sink const *sink,
 	}
 	struct json_object *text = jb_get(part, "text");
 	struct cstr_view piece = jb_view(text);
-	struct json_object *signature = jb_get(part, "thoughtSignature");
-	if (json_object_get_boolean(jb_get(part, "thought"))) {
-		int e = ai_put_thought(sink, piece, out);
-		return e ? e : signature ? ai_generate_whole(sink, reader, part) : 0;
-	}
-	int e = ai_put_text(sink, piece);
+	bool const thought = jb_true(jb_get(part, "thought"));
+	int e = thought ? ai_put_thought(sink, piece, out) : ai_put_text(sink, piece);
 	if (e)
 		return e;
-	if (signature)
+	if (jb_get(part, "thoughtSignature"))
 		return ai_generate_whole(sink, reader, part);
-	if (!piece.len)
+	if (thought || !piece.len)
 		return 0;
 	if (reader->open)
 		return ai_replay_text(sink, text);
