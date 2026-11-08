@@ -117,7 +117,7 @@ static void autocomplete_labels (struct autocomplete *catalog)
 		{CSTR_VIEW_INIT("/tool notes file=des"), CSTR_VIEW_INIT("/tool notes file='design docs/first.md' "), CSTR_VIEW_INIT("'design docs/first.md'"), 20, AUTOCOMPLETE_FILE, 17},
 		{CSTR_VIEW_INIT("/tool git command=stale count=2"), CSTR_VIEW_INIT("/tool git command=status count=2"), CSTR_VIEW_INIT("status"), 20, AUTOCOMPLETE_VALUE, 18},
 	};
-	for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+	for (size_t i = 0; i < array_size(cases); ++i) {
 		struct autocomplete_match const *matches = nullptr;
 		size_t count = 0;
 		assert(!autocomplete_complete(catalog, cases[i].input, cases[i].cursor, &matches, &count));
@@ -193,12 +193,12 @@ static void autocomplete_reuse (struct autocomplete *catalog)
 	size_t count = 0;
 	assert(!autocomplete_complete(catalog, long_input, head.len, &matches, &count));
 	assert(count);
-	for (size_t i = 0; i < sizeof inputs / sizeof *inputs; ++i)
+	for (size_t i = 0; i < array_size(inputs); ++i)
 		assert(!autocomplete_complete(catalog, inputs[i], inputs[i].len, &matches, &count));
 	for (size_t i = 0; i < 128; ++i) {
 		autocomplete_count_allocations = true;
 		assert(!autocomplete_complete(catalog, long_input, head.len, &matches, &count));
-		for (size_t j = 0; j < sizeof inputs / sizeof *inputs; ++j)
+		for (size_t j = 0; j < array_size(inputs); ++j)
 			assert(!autocomplete_complete(catalog, inputs[j], inputs[j].len, &matches, &count));
 		autocomplete_count_allocations = false;
 	}
@@ -243,7 +243,7 @@ static void autocomplete_files(void)
 	assert(!symlinkat("folder", fd, "link-dir"));
 	assert(!symlinkat("normal", fd, "link-file"));
 	static char const *const names[] = {"normal", "bad\xc0\xaf", "bad\xc2\x9b", "bad\x1b[31m"};
-	for (size_t i = 0; i < sizeof names / sizeof *names; ++i) {
+	for (size_t i = 0; i < array_size(names); ++i) {
 		int file = openat(fd, names[i], O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
 		assert(file >= 0);
 		assert(!close(file));
@@ -257,7 +257,7 @@ static void autocomplete_files(void)
 	static struct cstr_view const expected[] = {
 		CSTR_VIEW_INIT("dangling "), CSTR_VIEW_INIT("folder/"), CSTR_VIEW_INIT("link-dir/"), CSTR_VIEW_INIT("link-file "), CSTR_VIEW_INIT("normal "),
 	};
-	assert(count == sizeof expected / sizeof *expected);
+	assert(count == array_size(expected));
 	for (size_t i = 0; i < count; ++i) {
 		assert(matches[i].line.len == input.len + expected[i].len);
 		assert(matches[i].cursor == matches[i].line.len);
@@ -269,7 +269,7 @@ static void autocomplete_files(void)
 	autocomplete_count_allocations = true;
 	for (size_t i = 0; i < 128; ++i) {
 		assert(!autocomplete_file_complete(files, input, input.len, command, &matches, &count));
-		assert(count == sizeof expected / sizeof *expected);
+		assert(count == array_size(expected));
 	}
 	autocomplete_count_allocations = false;
 	assert(!autocomplete_allocations && !autocomplete_frees);
@@ -280,7 +280,7 @@ static void autocomplete_files(void)
 	assert(!autocomplete_file_complete(files, completed, completed.len - 1, command, &matches, &count));
 	assert(count == 1 && cstr_view_equal(matches[0].line, completed));
 	assert(matches[0].cursor == completed.len);
-	for (size_t i = 0; i < sizeof names / sizeof *names; ++i)
+	for (size_t i = 0; i < array_size(names); ++i)
 		assert(!unlinkat(fd, names[i], 0));
 	assert(!unlinkat(fd, "dangling", 0));
 	assert(!unlinkat(fd, "link-dir", 0));
@@ -454,7 +454,7 @@ static void autocomplete_chat_names (void)
 	assert(catalog && !error);
 	assert(!autocomplete_fixture(catalog));
 	static struct cstr_view const names[] = {CSTR_VIEW_INIT("rx6900xt"), CSTR_VIEW_INIT("rx9070xt")};
-	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_PARTICIPANTS, names, sizeof names / sizeof *names));
+	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_PARTICIPANTS, names, array_size(names)));
 	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, names, 1));
 	autocomplete_only(catalog, CSTR_VIEW("@rx"), 3, CSTR_VIEW("@rx6900xt "), 10);
 	autocomplete_only(catalog, CSTR_VIEW("rx"), 2, CSTR_VIEW("rx6900xt: "), 10);
@@ -464,7 +464,7 @@ static void autocomplete_chat_names (void)
 	HAS("/tool git participant=rx9", "/tool git participant=rx9070xt");
 	/* A chat roster can contain several upstreams, independently of stored
 	 * notebook identities. Clearing it must not fall back to those identities. */
-	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, names, sizeof names / sizeof *names));
+	assert(!autocomplete_set_names(catalog, AUTOCOMPLETE_CHAT_PARTICIPANTS, names, array_size(names)));
 	struct autocomplete_match const *matches = nullptr;
 	size_t count = 0;
 	assert(!autocomplete_complete(catalog, CSTR_VIEW("@rx"), 3, &matches, &count));
@@ -619,7 +619,7 @@ int main(void)
 	static struct cstr_view const roundtrips[] = {
 		CSTR_VIEW_INIT("/tool lookup mixed="), CSTR_VIEW_INIT("/tool lookup structured=")
 	};
-	for (size_t i = 0; i < sizeof roundtrips / sizeof *roundtrips; ++i) {
+	for (size_t i = 0; i < array_size(roundtrips); ++i) {
 		assert(!autocomplete_complete(catalog, roundtrips[i], roundtrips[i].len, &matches, &count));
 		assert(count);
 		for (size_t j = 0; j < count; ++j) {
@@ -645,7 +645,7 @@ int main(void)
 		CSTR_VIEW_INIT("/tool git {\"message\":\"hello\"} trailing"), CSTR_VIEW_INIT("/tool git message"),
 		CSTR_VIEW_INIT("/tool required"), CSTR_VIEW_INIT("/tool git\0 message=ignored")
 	};
-	for (size_t i = 0; i < sizeof invalid / sizeof *invalid; ++i)
+	for (size_t i = 0; i < array_size(invalid); ++i)
 		autocomplete_bad(catalog, invalid[i]);
 	autocomplete_reuse(catalog);
 	autocomplete_note_cache(catalog);

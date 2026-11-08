@@ -76,7 +76,7 @@ cli_ui_test_colors (void)
 	};
 	struct cli_style_entry const *palette = cli_style_palette(true);
 	struct cstr_view remaining = cstr_view_dstr(&output);
-	for (size_t i = 0; i < sizeof expected / sizeof *expected; ++i) {
+	for (size_t i = 0; i < array_size(expected); ++i) {
 		struct cli_style_entry const *entry = &palette[expected[i].style];
 		struct cstr_view style = {entry->bytes, entry->length};
 		assert(cstr_view_starts(remaining, style));

@@ -63,18 +63,18 @@ int autocomplete_fixture (struct autocomplete *autocomplete)
 	struct cstr_view const empty = CSTR_VIEW("");
 	struct cstr_view const opposite = CSTR_VIEW("other");
 	error = autocomplete_set_names(autocomplete, AUTOCOMPLETE_PARTICIPANTS, participants,
-	                               sizeof participants / sizeof *participants);
+	                               array_size(participants));
 	if (!error)
 		error = autocomplete_set_names(autocomplete, AUTOCOMPLETE_CHAT_PARTICIPANTS, participants,
-		                               sizeof participants / sizeof *participants);
+		                               array_size(participants));
 	if (error)
 		return error;
-	error = autocomplete_set_names(autocomplete, AUTOCOMPLETE_NOTEBOOKS, notebooks, sizeof notebooks / sizeof *notebooks);
+	error = autocomplete_set_names(autocomplete, AUTOCOMPLETE_NOTEBOOKS, notebooks, array_size(notebooks));
 	if (!error)
-		error = autocomplete_set_note_files(autocomplete, tool, empty, own, sizeof own / sizeof *own);
+		error = autocomplete_set_note_files(autocomplete, tool, empty, own, array_size(own));
 	if (!error)
-		error = autocomplete_set_note_files(autocomplete, tool, opposite, other, sizeof other / sizeof *other);
+		error = autocomplete_set_note_files(autocomplete, tool, opposite, other, array_size(other));
 	if (!error)
-		error = autocomplete_set_note_files(autocomplete, tool, notebooks[1], peer, sizeof peer / sizeof *peer);
+		error = autocomplete_set_note_files(autocomplete, tool, notebooks[1], peer, array_size(peer));
 	return error;
 }

@@ -43,7 +43,7 @@ cli_scrollback_test_sgr (enum cli_style style)
 
 #define CLI_SCROLLBACK_FRAME(frame, ...) do { \
         struct cstr_view const parts[] = {__VA_ARGS__}; \
-        cli_scrollback_test_parts(frame, parts, sizeof parts / sizeof *parts); \
+        cli_scrollback_test_parts(frame, parts, array_size(parts)); \
 } while (0)
 
 static void
@@ -82,7 +82,7 @@ cli_scrollback_test_characters (void)
 		{CSTR_VIEW("\xf0\x9f\x98"), 1, -1},
 		{CSTR_VIEW("\xff"), 1, -1},
 	};
-	for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+	for (size_t i = 0; i < array_size(cases); ++i) {
 		int width;
 		assert(cli_render_character(cases[i].text, &width) == cases[i].bytes);
 		assert(width == cases[i].width);
