@@ -1032,14 +1032,16 @@ godbolt_result (struct godbolt *call)
 	                     : r.status == 429 || r.status == 502 || r.status == 503
 	                     ? GODBOLT_AGAIN_BUSY : 0;
 	bool const retry = cause & (godbolt_rules[call->kind_of].again | GODBOLT_AGAIN_BUSY);
-	if (retry && r.retry > GODBOLT_RETRY_MAX) {
-		godbolt_why(call, "HTTP %" PRIu32 ", and Retry-After is %" PRIu32 " s",
-		            r.status, r.retry);
-		return GODBOLT_BAD;
-	}
-	if (retry && call->attempt < GODBOLT_ATTEMPTS) {
-		uint32_t const wait = 1u << (call->attempt - 1);
-		return godbolt_later(call, r.retry > wait ? r.retry : wait);
+	if (retry) {
+		if (r.retry > GODBOLT_RETRY_MAX) {
+			godbolt_why(call, "HTTP %" PRIu32 ", and Retry-After is %" PRIu32 " s",
+			            r.status, r.retry);
+			return GODBOLT_BAD;
+		}
+		if (call->attempt < GODBOLT_ATTEMPTS) {
+			uint32_t const wait = 1u << (call->attempt - 1);
+			return godbolt_later(call, r.retry > wait ? r.retry : wait);
+		}
 	}
 	call->resp = r.body.data ? r.body : CSTR_VIEW("");
 	/* The largest body of each rule is a whole number of KiB or MiB. */
