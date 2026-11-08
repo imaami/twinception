@@ -1034,18 +1034,19 @@ cxi_parse_name (struct cxi *x,
                 char        member[static CXI_NAME + 1],
                 uint32_t   *kind)
 {
-	static struct cstr_view const tags[] = {
-		CSTR_VIEW_INIT("struct "), CSTR_VIEW_INIT("union "), CSTR_VIEW_INIT("enum "),
-	};
-	static uint32_t const kinds[] = {
-		CXCursor_StructDecl, CXCursor_UnionDecl, CXCursor_EnumDecl
+	/* The empty tag of the last row matches any name. */
+	static struct { struct cstr_view tag; uint64_t kind; } const tags[] = {
+		{ CSTR_VIEW_INIT("struct "), CXCursor_StructDecl },
+		{ CSTR_VIEW_INIT("union "), CXCursor_UnionDecl },
+		{ CSTR_VIEW_INIT("enum "), CXCursor_EnumDecl },
+		{ CSTR_VIEW_INIT(""), 0 },
 	};
 	struct cstr_view rest = x->key[CXI_KEY_NAME];
 	size_t t = 0;
-	while (t < array_size(tags) && !cstr_view_starts(rest, tags[t]))
+	while (!cstr_view_starts(rest, tags[t].tag))
 		++t;
-	*kind = t < array_size(tags) ? kinds[t] : 0;
-	rest = cstr_view_slice(rest, t < array_size(tags) ? tags[t].len : 0, SIZE_MAX);
+	*kind = tags[t].kind;
+	rest = cstr_view_slice(rest, tags[t].tag.len, SIZE_MAX);
 	size_t const a = cxi_ident(rest);
 	struct cstr_view const dot = cstr_view_slice(rest, a, SIZE_MAX);
 	size_t const b = dot.len && *dot.data == '.' ? cxi_ident(cstr_view_slice(dot, 1, SIZE_MAX))
