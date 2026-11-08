@@ -220,8 +220,7 @@ notes_tool_loop_create (void        *service,
 		return nullptr;
 	}
 	*e = 0;
-	*nl = (struct notes_tool_loop){ .tool = service };
-	list_init(&nl->spare.list);
+	*nl = (struct notes_tool_loop){ .spare.list = list(&nl->spare.list), .tool = service };
 	return nl;
 }
 
