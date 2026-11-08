@@ -110,14 +110,15 @@ static struct {
 
 /* The message for a file or as argument that is not a valid name. */
 static struct cstr_view const bad_name =
-	CSTR_VIEW_INIT("A note name must be 1 to 255 bytes without control characters, such as "
-	               "plan.md or design/locks.md. No part between slashes can be empty, ., .., "
+	CSTR_VIEW_INIT("A note name must be 1 to 255 bytes without control characters. Examples: "
+	               "plan.md, design/locks.md. No part between slashes can be empty, ., .., "
 	               ".git or git~1. Letter case and spaces or dots at the end of a part do not "
 	               "matter for .git and git~1.");
 
 /* The message for a call that names a directory of notes. */
 static struct cstr_view const dir_name =
-	CSTR_VIEW_INIT("The name is a directory of notes. list shows the notes in the directory.");
+	CSTR_VIEW_INIT("The note name is a directory of notes. list shows the notes in the "
+	               "directory.");
 
 /* The message for a name of a written note that notes_select() accepts. */
 static struct cstr_view const selector_name =
@@ -730,10 +731,10 @@ notes_tool_unchanged (struct mcp_slot         *slot,
 		return false;
 	char const *name = (char const *)file.ptr + call->part.name_at;
 	uint64_t n = note->bytes;
-	e = dstr_printf(call->text, "Unchanged: %.*s already contains the same %" PRIu64
-	                " byte%s at the newest commit %s. No commit was made.",
-	                (int)jb_utf8(name, call->part.name_len), name, n, util_s(n),
-	                tip->hex) ? 0 : ENOMEM;
+	e = dstr_printf(call->text, "Unchanged. %.*s at the newest commit %s already contains "
+	                "the same %" PRIu64 " byte%s. No commit was made.",
+	                (int)jb_utf8(name, call->part.name_len), name, tip->hex, n,
+	                util_s(n)) ? 0 : ENOMEM;
 	(void)mcp_slot_noted(slot);
 	notes_tool_wrote(slot, e);
 	return true;
@@ -787,7 +788,8 @@ notes_tool_checked (struct mcp_slot *slot)
 	                                      "replace or append, or choose another name.")
 	              : r == ENOENT ? no_note
 	              : r == EISDIR ? dir_name
-	              : r == ENOTDIR ? CSTR_VIEW("A part of the name before a slash is a note.")
+	              : r == ENOTDIR ? CSTR_VIEW("A part of the note name before a slash is a "
+	                                         "note.")
 	              : notes_tool_call_unread(call), TOOL_FAILED);
 }
 
@@ -1098,8 +1100,9 @@ notes_tool_revision_step (struct mcp_slot *slot)
 	    notes_revision_next(&call->revision, buf_peek(&call->child->out))) {
 		/* git pins the tip of the notebook first. */
 		mcp_slot_tell(slot, oid_len(&call->revision.tip)
-		                    ? CSTR_VIEW("The revision is not a commit of the notebook. Use "
-		                                "a full commit ID from action history.")
+		                    ? CSTR_VIEW("The commit in revision, from or to is not in the "
+		                                "notebook history. Use a full commit ID from "
+		                                "action history.")
 		                    : notes_tool_call_unread(call), TOOL_FAILED);
 		return;
 	}
@@ -1274,9 +1277,9 @@ notes_tool_got_attach (struct mcp_slot  *slot,
 		size_t len = 0;
 		(void)notes_tool_view(&view, body, 0, &len);
 		if (len > NOTES_MAX) {
-			mcp_slot_tellf(slot, TOOL_FAILED, "The note is too large to attach. The "
-			               "file would be %zu bytes. The upload limit is %d MiB.", len,
-			               NOTES_MAX >> 20);
+			mcp_slot_tellf(slot, TOOL_FAILED, "The note is too large to attach. The view "
+			               "of the note would be %zu bytes. The upload limit is %d MiB. "
+			               "read shows the note in parts.", len, NOTES_MAX >> 20);
 			return;
 		}
 		if (notes_tool_view(&view, body, SIZE_MAX, nullptr)) {
@@ -1391,7 +1394,8 @@ notes_tool_newest (struct mcp_slot *slot)
 	char buf[128];
 	struct cstr_view const more = body.len < len ? util_format_view(buf, sizeof buf,
 	                              "\n[askai: bytes 0 to %zu of %zu. Read the note with "
-	                              "\"offset\": %zu for the rest.]", body.len, len, body.len)
+	                              "\"offset\": %zu for the remaining bytes.]", body.len, len,
+	                              body.len)
 	                            : (struct cstr_view){};
 	struct cstr_view const p[] = {
 		r == ENOENT ? CSTR_VIEW("[askai: the note was deleted.]")
@@ -1423,11 +1427,12 @@ notes_tool_resumed (struct mcp_slot *slot)
 		return;
 	}
 	(void)mcp_slot_noted(slot);
-	notes_tool_prompt_list(slot, CSTR_VIEW("\n\n[askai: call notes with action list for "
-	                                       "your current notes. Call notes with action "
-	                                       "notebooks for the other participants. A "
-	                                       "repeated name in the history is an update. "
-	                                       "Your note history, oldest first:]\n\n"));
+	notes_tool_prompt_list(slot, CSTR_VIEW("\n\n[askai: call notes with action list to "
+	                                       "list your current notes. Call notes with "
+	                                       "action notebooks to list the notebooks of the "
+	                                       "other participants. A repeated name in the "
+	                                       "history is an update. Your note history, "
+	                                       "oldest first:]\n\n"));
 }
 
 /* Handles the list of the notes for a compaction. The list goes into the
@@ -1655,10 +1660,10 @@ notes_tool_add (struct mcp_slot    *slot,
 		? CSTR_VIEW("The content argument must be a data: URI. Your client fills in "
 		            "content with a file from the user.")
 		: data.size > most
-		? util_format_view(big, sizeof big, "The file is larger than the limit of %zu "
-		                   "bytes for one request.", most)
+		? util_format_view(big, sizeof big, "The content file is larger than the limit "
+		                   "of %zu bytes.", most)
 		: !data.size && notes_tool_actions[call->action].fetch & FETCH_APPEND
-		? CSTR_VIEW("The file to append is empty.")
+		? CSTR_VIEW("The content file to append is empty.")
 		: (struct cstr_view){};
 	if (problem.data) {
 		mcp_slot_tell(slot, problem, TOOL_FAILED);

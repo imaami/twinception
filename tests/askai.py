@@ -837,8 +837,8 @@ def unchanged_result(name, size, commit, stripped=False):
     """The result of a note write that leaves the note @p name, quoted as in
     a commit message, with its @p size bytes, at the commit @p commit."""
     bytes_ = "1 byte" if size == 1 else f"{size} bytes"
-    return (f"Unchanged: {name} already contains the same {bytes_} at the newest commit "
-            f"{commit}. No commit was made." + (LEFT_OUT if stripped else ""))
+    return (f"Unchanged. {name} at the newest commit {commit} already contains the same "
+            f"{bytes_}. No commit was made." + (LEFT_OUT if stripped else ""))
 
 
 def grouped(members):
@@ -1109,8 +1109,8 @@ def check_modern(binary, up):
         _, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
             "action": "add", "file": "f.bin", "content": "data:;base64," +
             base64.b64encode(b"x" * (most + 1)).decode()}})
-        assert text_of(body["result"]) == "The file is larger than the limit of " \
-            f"{most} bytes for one request.", body
+        assert text_of(body["result"]) == "The content file is larger than the limit " \
+            f"of {most} bytes.", body
     for budget in (("--client-budget", "4M"), ("--body-budget", "2M")):
         with Askai(binary, "-u", up.url(), *budget):
             pass
@@ -11098,8 +11098,9 @@ def check_notes(binary, up):
             said = call({"action": "add", "file": 'q"\\.txt', "text": "q", "thread": thread})
             assert wrote(said, 'Add "q\\"\\\\.txt" (1 byte)'), said
             for name, why in (("plan.md", "The note already exists"),
-                              ("a", "The name is a directory of notes"),
-                              ("plan.md/x", "A part of the name before a slash is a note"),
+                              ("a", "The note name is a directory of notes"),
+                              ("plan.md/x", "A part of the note name before a slash is a "
+                               "note"),
                               ("", "A note name must be"),
                               ("/", "A note name must be"),
                               ("a//b", "A note name must be"),
@@ -11147,7 +11148,8 @@ def check_notes(binary, up):
             assert call({"action": "read", "file": "a/b c.md", "thread": thread,
                          "offset": 7990}) == long[7990:]
             assert call({"action": "read", "file": "a", "thread": thread}) == \
-                "!The name is a directory of notes. list shows the notes in the directory."
+                "!The note name is a directory of notes. list shows the notes in the " \
+                "directory."
             assert call({"action": "read", "file": "b", "thread": thread}) == "!" + NO_NOTE
             assert call({"action": "read", "file": "b", "thread": thread,
                          "offset": -1}).startswith("!The offset argument")
@@ -11279,7 +11281,7 @@ def check_notes(binary, up):
                     ({"content": "data:,x", "text": "x"},
                      "!Give text or content, not both."),
                     ({"content": "data:;base64," + big},
-                     f"!The file is larger than the limit of {4 << 20} bytes")):
+                     f"!The content file is larger than the limit of {4 << 20} bytes")):
                 said = call({"action": "add", "file": "in/z.bin", "thread": shared}
                             | arguments)
                 assert said.startswith(why), (arguments, said[:200])
@@ -11314,7 +11316,7 @@ def check_notes(binary, up):
             assert "  plan.md  (+2 -1)  commit " in history, history
             before = git("rev-parse", own)
             for name, why in (("missing.md", NO_NOTE),
-                              ("a", "The name is a directory of notes"),
+                              ("a", "The note name is a directory of notes"),
                               ("plan.md/x", NO_NOTE)):
                 assert call({"action": "replace", "file": name, "text": "x"}).startswith(
                     "!" + why), name
@@ -11341,8 +11343,8 @@ def check_notes(binary, up):
             for arguments, why in (
                     ({"file": "missing.md", "text": "x"}, NO_NOTE),
                     ({"file": "plan.md", "text": ""}, "The text argument"),
-                    ({"file": "plan.md", "content": "data:,"}, "The file to append is "
-                     "empty."),
+                    ({"file": "plan.md", "content": "data:,"}, "The content file to "
+                     "append is empty."),
                     ({"file": "plan.md", "text": "x" * (4 << 20)}, "The note would be larger "
                      "than the 4 MiB limit. The text was not appended.")):
                 assert call({"action": "append"} | arguments).startswith("!" + why), why
@@ -11851,8 +11853,8 @@ def check_notes_history(binary, up):
                 assert not call(alice, action="add", file="dir/x.md", text="x").startswith("!")
                 before = tip()
                 for name, why in (("missing.md", NO_NOTE), ("dir/x.md/y", NO_NOTE),
-                                  ("dir", "The name is a directory of notes. list shows "
-                                   "the notes in the directory.")):
+                                  ("dir", "The note name is a directory of notes. list "
+                                   "shows the notes in the directory.")):
                     said = call(alice, action="delete", file=name)
                     assert said == "!" + why and tip() == before, (name, said)
                 # search gives each name as it is, also with UTF-8 or a quote.
@@ -12106,8 +12108,8 @@ def check_notes_texts(binary, up):
                 assert call(action="history", notebook="other") == \
                     "!The notebook contains no notes yet."
                 assert call(action="read", file="a.md", revision="0" * 40) == \
-                    "!The revision is not a commit of the notebook. Use a full commit ID " \
-                    "from action history."
+                    "!The commit in revision, from or to is not in the notebook history. " \
+                    "Use a full commit ID from action history."
                 assert call(action="copy", file="a.md") == "!The notebook contains no notes yet."
                 assert call(action="diff", file="a.md", **{"from": first, "to": first}) == \
                     f"Notebook {client} — a.md\nfrom {first}\nto {first}\n\nNo differences.\n"
@@ -12763,9 +12765,9 @@ def check_attach(binary, up):
                             text_of(body["result"])), body
         stored = len(up.uploads)
         for name, upload, said in (
-                ("huge.bin", up.stored, "The note is too large to attach. The file "
-                 f"would be {len(note_view(huge).encode())} bytes. The upload limit is "
-                 "16 MiB."),
+                ("huge.bin", up.stored, "The note is too large to attach. The view of "
+                 f"the note would be {len(note_view(huge).encode())} bytes. The upload "
+                 "limit is 16 MiB. read shows the note in parts."),
                 ("big.c", up.stored, "The note is too large to attach. The file is "
                  "8000 bytes, about 2000 tokens. The context is 1000 tokens. About "),
                 ("small.c", lambda request: (200, {"file": {"uri": "files/a b"}}),
@@ -13026,9 +13028,10 @@ def check_turns(binary, up):
             result = ai.ask("And now?", thread=thread)
             assert re.fullmatch(
                 "And now\\?" + re.escape(identity) +
-                "\n\n\\[askai: call notes with action list for your current notes\\. Call "
-                "notes with action notebooks for the other participants\\. A repeated name in "
-                "the history is an update\\. Your note history, oldest first:\\]\n\n"
+                "\n\n\\[askai: call notes with action list to list your current notes\\. "
+                "Call notes with action notebooks to list the notebooks of the other "
+                "participants\\. A repeated name in the history is an update\\. Your note "
+                "history, oldest first:\\]\n\n"
                 f"1\\. {when}  found\\.md  "
                 "\\(\\+1 -0\\)\n\n\\[askai: the current text of your newest note, found\\.md:\\]\n\n"
                 "found \"first\"\n", prompt(up.requests[count])), up.requests[count]
@@ -13178,7 +13181,8 @@ def check_turns(binary, up):
             assert prompt(up.requests[count]).endswith(
                 "[askai: the current text of your newest note, long.md:]\n\n" + "L" * shown +
                 f"\n[askai: bytes 0 to {shown} of {size + 1}. Read the note with "
-                f"\"offset\": {shown} for the rest.]\n"), prompt(up.requests[count])[-300:]
+                f"\"offset\": {shown} for the remaining bytes.]\n"), \
+                prompt(up.requests[count])[-300:]
 
             # A thread that the client started with its own notes: an ask call
             # goes on with it, its turns read the client's notebook and start
@@ -13210,7 +13214,7 @@ def check_turns(binary, up):
             result = ai.ask("Go on", thread=mine)
             assert prompt(up.requests[count]).startswith(
                 "Go on" + identity +
-                "\n\n[askai: call notes with action list for your current notes."), \
+                "\n\n[askai: call notes with action list to list your current notes."), \
                 prompt(up.requests[count])
             outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
             assert outputs[0] == note_files(client, {"brief.md": b"aim"}), outputs
@@ -13239,7 +13243,7 @@ def check_turns(binary, up):
             ai.ask("Again", thread=mine)
             assert prompt(up.requests[count]).startswith(
                 "Again" + identity +
-                "\n\n[askai: call notes with action list for your current notes."), \
+                "\n\n[askai: call notes with action list to list your current notes."), \
                 prompt(up.requests[count])
             # A newest note that is not text goes into the prompt as its view.
             book = notes
@@ -13271,7 +13275,7 @@ def check_turns(binary, up):
             marker = b"[askai: the current text of your newest note, y.bin:]\n\n"
             head = shown.index(marker) + len(marker)
             cut = re.search(rb"\n\[askai: bytes 0 to (\d+) of (\d+)\. Read the note with "
-                            rb'"offset": (\d+) for the rest\.\]', shown)
+                            rb'"offset": (\d+) for the remaining bytes\.\]', shown)
             n = int(cut.group(1))
             assert n <= 64 << 10 and int(cut.group(2)) == len(whole) and \
                 int(cut.group(3)) == n and shown[head:head + n] == whole[:n], cut
@@ -13903,8 +13907,8 @@ def check_turns(binary, up):
                 "of the output.]" + provenance, reads[2][-200:]
             # The result of the last call also has the warning that the context
             # is full.
-            assert reads[3] == "The name is a directory of notes. list shows the " \
-                "notes in the directory." and re.fullmatch(
+            assert reads[3] == "The note name is a directory of notes. list shows " \
+                "the notes in the directory." and re.fullmatch(
                     re.escape(NO_NOTE) + r"\n\n\[askai: your context is \d+% full, "
                     r"\d+ of 6000 tokens\. Note what you need to keep, then call "
                     r"compact\.\]", reads[4]), reads[3:]
