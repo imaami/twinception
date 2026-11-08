@@ -918,15 +918,17 @@ review_put_file (struct dstr              *out,
 	uint64_t lines = 0;
 	for (size_t k = 0; k < f->ranges.n; ++k)
 		lines += (uint64_t)(f->ranges.items[k].last - f->ranges.items[k].first) + 1;
+	if (PUT(out, "  ") || cstr_view_cat(cstr_view_dstr(&f->path), out) ||
+	    !dstr_printf(out, "  line%s ", util_s(lines)) || review_put_ranges(out, f))
+		return ENOMEM;
 	/* The ranges are within the file and do not overlap, so they cover
 	 * the whole file if lines is f->total. */
-	return PUT(out, "  ") || cstr_view_cat(cstr_view_dstr(&f->path), out) ||
-	       !dstr_printf(out, "  line%s ", util_s(lines)) || review_put_ranges(out, f) ||
-	       !(lines == f->total
-	         ? dstr_printf(out, ": all %" PRIu64 " line%s\n", lines, util_s(lines))
-	         : f->total ? dstr_printf(out, ": %" PRIu64 " of %" PRIu32 " lines\n", lines, f->total)
-	         : dstr_printf(out, ": %" PRIu64 " of an unknown number of lines\n", lines))
-	       ? ENOMEM : 0;
+	if (lines == f->total)
+		return dstr_printf(out, ": all %" PRIu64 " line%s\n", lines, util_s(lines)) ? 0 : ENOMEM;
+	if (f->total)
+		return dstr_printf(out, ": %" PRIu64 " of %" PRIu32 " lines\n", lines, f->total)
+		       ? 0 : ENOMEM;
+	return dstr_printf(out, ": %" PRIu64 " of an unknown number of lines\n", lines) ? 0 : ENOMEM;
 }
 
 /**
@@ -1483,28 +1485,32 @@ review_refuse_unread (struct review const               *r,
 	                           "%.*s", name, len, path) ||
 	              (prefix.len && !dstr_printf(out, " at %.*s", (int)prefix.len, prefix.data)) ||
 	              !dstr_printf(out, " line%s ", one ? "" : "s") ||
-	              review_put_lines(out, loc->first, loc->last) ||
-	              (!c->best ? !dstr_printf(out, " %s not in it.", one ? "is" : "are")
-	               : !dstr_printf(out, " are not all in it: it has line%s ",
-	                              c->end > loc->first ? "s" : "") ||
-	                 review_put_lines(out, loc->first, c->end) ||
-	                 !dstr_printf(out, " of them, read at %.*s", REVIEW_SHORT_OID,
-	                              c->best->commit.hex) ||
-	                 (shorter && !dstr_printf(out, ", where the file has %" PRIu32 " line%s",
-	                                          c->best->total, util_s(c->best->total))) ||
-	                 PUT(out, "."));
+	              review_put_lines(out, loc->first, loc->last);
+	if (!c->best)
+		failed = failed || !dstr_printf(out, " %s not in it.", one ? "is" : "are");
+	else
+		failed = failed || !dstr_printf(out, " are not all in it: it has line%s ",
+		                                c->end > loc->first ? "s" : "") ||
+		         review_put_lines(out, loc->first, c->end) ||
+		         !dstr_printf(out, " of them, read at %.*s", REVIEW_SHORT_OID,
+		                      c->best->commit.hex) ||
+		         (shorter && !dstr_printf(out, ", where the file has %" PRIu32 " line%s",
+		                                  c->best->total, util_s(c->best->total))) ||
+		         PUT(out, ".");
 	/* The read is logged as a new pending file after a later turn. Its
 	 * charge is estimated from the file to read, or from a file with this
 	 * path and a 1-byte repository name. */
 	size_t const charge = to ? review_file_charge(to, 1) : review_charge(2, 1 + loc->path.len);
-	if (r->size + charge > TOOL_TEXT_MAX)
-		return failed || (r->dropped_turn
-		                  ? !dstr_printf(out, " The read log has been full since turn %"
-		                                 PRIu32 ",", r->dropped_turn)
-		                  : PUT(out, " The record is full,")) ||
-		       PUT(out, " so a read of them would not be logged: cite lines that the log "
-		                "has, or keep the finding a candidate.")
+	if (r->size + charge > TOOL_TEXT_MAX) {
+		if (r->dropped_turn)
+			failed = failed || !dstr_printf(out, " The read log has been full since turn %"
+			                                PRIu32 ",", r->dropped_turn);
+		else
+			failed = failed || PUT(out, " The record is full,");
+		return failed || PUT(out, " so a read of them would not be logged: cite lines that "
+		                          "the log has, or keep the finding a candidate.")
 		       ? ENOMEM : EINVAL;
+	}
 	if (!(r->flags & REVIEW_GIT))
 		return failed || PUT(out, " Without the git tool, the log takes only the lines "
 		                          "that code describe shows, once you have seen them.")
