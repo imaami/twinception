@@ -556,7 +556,6 @@ home_cancel_drop (struct home              *home,
 {
 	list_del(&cancel->hook);
 	free(cancel);
-	cancel = nullptr;
 	--home->cancelling;
 	uint64_t due = list_is_empty(&home->cancellations) ? UINT64_MAX
 	             : container_of(home->cancellations.next, struct home_cancellation,
@@ -627,7 +626,6 @@ home_native_cancel (struct home *home,
 	if (e) {
 		http_cancel(home->http, &cancel->transfer);
 		free(cancel);
-		cancel = nullptr;
 		LOG(LOG_WARN, "native background cancellation unavailable: %s", strerror(e));
 		return;
 	}
@@ -1258,7 +1256,6 @@ home_open (struct home *home,
 	int e = http_post_json(home->http, url ? url : ep->url, (char const *)body.ptr, body.len,
 	                       headers, 0, home_job_write, home_job_done, job, &job->transfer);
 	curl_free(url);
-	url = nullptr;
 	return e;
 }
 
@@ -1856,9 +1853,7 @@ home_provider_url (struct home *home,
 	e = 0;
 done:
 	curl_free(path);
-	path = nullptr;
 	curl_free(escaped);
-	escaped = nullptr;
 	curl_url_cleanup(url);
 	return e;
 }
@@ -2719,7 +2714,6 @@ home_fini (struct home *home)
 		http_cancel(home->http, &cancel->transfer);
 		list_del(&cancel->hook);
 		free(cancel);
-		cancel = nullptr;
 	}
 	struct loop_step *const steps[] = {
 		&home->start, &home->stop, &home->drain, &home->overdue, &home->silent,

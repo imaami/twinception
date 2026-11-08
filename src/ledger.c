@@ -565,7 +565,6 @@ ledger_restore (struct ledger      *ledger,
 	t->size = result.len;
 	if (result.len && !dstr_cat_n(&t->result, (char const *)result.ptr, result.len)) {
 		free(t);
-		t = nullptr;
 		*e = ENOMEM;
 		return nullptr;
 	}
@@ -611,7 +610,6 @@ ledger_restore (struct ledger      *ledger,
 			hist_count(*e == EBUSY ? &m->refused : &m->full, 1);
 		dstr_cleanup(&t->result);
 		free(t);
-		t = nullptr;
 		return nullptr;
 	}
 	return t;

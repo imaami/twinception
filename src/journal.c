@@ -357,7 +357,6 @@ journal_records_destroy (struct journal_record **p_records)
 		struct journal_record *record = *p_records;
 		*p_records = record->next;
 		free(record);
-		record = nullptr;
 	}
 }
 
@@ -942,7 +941,6 @@ journal_thought_commit (struct journal            *j,
 	if (output) {
 		if (fclose(output) && !e)
 			e = errno;
-		output = nullptr;
 		fd = -1;
 	}
 	util_close(&fd);
@@ -977,7 +975,6 @@ journal_item_destroy (struct journal_item **p_item)
 	*p_item = nullptr;
 	journal_records_destroy(&item->record);
 	free(item);
-	item = nullptr;
 }
 
 static void
@@ -1437,7 +1434,6 @@ journal_destroy (struct journal **p_journal)
 	pthread_cond_destroy(&j->ready);
 	pthread_mutex_destroy(&j->lock);
 	free(j);
-	j = nullptr;
 }
 
 uint64_t
