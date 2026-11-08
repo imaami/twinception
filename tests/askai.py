@@ -795,10 +795,9 @@ def note_view(data):
             out.append("\u27e6%02X\u27e7" % data[i])
             i += 1
     size = "1 byte" if len(data) == 1 else f"{len(data)} bytes"
-    return (f"[askai: the note is {size} and not UTF-8 text. Each byte outside UTF-8 "
-            "text and each NUL byte shows as \u27e6XX\u27e7 in hexadecimal. A \u27e6 in "
-            "the text shows as \u27e6\u27e6. The note itself is unchanged.]\n\n" +
-            "".join(out))
+    return (f"[askai: a view of {size} with NUL bytes or invalid UTF-8. Each NUL byte "
+            "and each byte of invalid UTF-8 shows as \u27e6XX\u27e7 in hexadecimal. A "
+            "\u27e6 in the text shows as \u27e6\u27e6.]\n\n" + "".join(out))
 
 
 def note_files(selector, contents, algorithm="sha1"):
@@ -11702,7 +11701,7 @@ def check_notes_history(binary, up):
                 diff = call(alice, action="diff", file="plan.md", **{"from": first})
                 assert not diff.startswith("!") and "-old plan\n" in diff and \
                     "+new plan\n" in diff and "unrelated.md" not in diff, diff
-                assert "not UTF-8" not in diff, diff
+                assert "[askai: a view of" not in diff, diff
                 assert call(alice, action="diff", file="plan.md",
                             **{"from": first, "to": "current"}) == diff
                 backwards = call(alice, action="diff", file="plan.md",
@@ -12059,8 +12058,8 @@ def check_notes_texts(binary, up):
                         "small edits. Before replace, read the whole note. Send the whole new " \
                         "text. Copy unrelated passages and evidence word for word. To rewrite " \
                         "most of a note, add a new file such as plan-v2.md. Keep the old file. " \
-                        "In the new file, name the old file and the changes. Bytes that are " \
-                        "not UTF-8 show as \u27e6XX\u27e7." + tail, definition
+                        "In the new file, name the old file and the changes. NUL bytes and " \
+                        "bytes of invalid UTF-8 show as \u27e6XX\u27e7." + tail, definition
                     described = {name: p["description"] for name, p in
                                  definition[schema]["properties"].items()}
                     assert described == {
@@ -12661,7 +12660,8 @@ def check_attach(binary, up):
                 results, files = split(second["body"][key])
                 assert files == [file(u) for u in uris], files
                 results = json.dumps(results)
-                assert "and not UTF-8 text. askai attaches a view of the note" in results \
+                assert "with NUL bytes or invalid UTF-8. askai attaches a view of the note" \
+                    in results \
                     and f"The note is {len(code)} bytes, about {len(code) // 4} tokens. " \
                     "askai attaches the note as a file after the results" in results, results
 

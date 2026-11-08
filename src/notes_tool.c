@@ -1040,10 +1040,10 @@ notes_tool_view (struct dstr      *d,
 	char head[320];
 	size_t w = 0;
 	int e = notes_tool_put(d, &w, max, head, util_format(head, sizeof head,
-	        "[askai: the note is %zu byte%s and not UTF-8 text. Each byte outside UTF-8 "
-	        "text and each NUL byte shows as %sXX%s in hexadecimal. A %s in the text "
-	        "shows as %s%s. The note itself is unchanged.]\n\n", note.len,
-	        util_s(note.len), view_open, view_close, view_open, view_open, view_open));
+	        "[askai: a view of %zu byte%s with NUL bytes or invalid UTF-8. Each NUL byte "
+	        "and each byte of invalid UTF-8 shows as %sXX%s in hexadecimal. A %s in the "
+	        "text shows as %s%s.]\n\n", note.len, util_s(note.len), view_open, view_close,
+	        view_open, view_open, view_open));
 	for (size_t i = 0; !e && i < note.len; ) {
 		size_t run = jb_utf8(note.data + i, note.len - i);
 		char const *nul = memchr(note.data + i, '\0', run);
@@ -1233,12 +1233,11 @@ notes_tool_call_attached (struct notes_tool_call const *call,
                           size_t                        bytes,
                           bool                          view)
 {
-	bool ok = view ? dstr_printf(call->text, "The note is %zu byte%s and not UTF-8 text. "
-	                             "askai attaches a view of the note as a file after the "
-	                             "results of the turn. The view is %zu bytes, about %zu "
-	                             "tokens. The view shows each byte outside UTF-8 text as "
-	                             "%sXX%s.", len, util_s(len), bytes, bytes / 4, view_open,
-	                             view_close)
+	bool ok = view ? dstr_printf(call->text, "The note is %zu byte%s with NUL bytes or "
+	                             "invalid UTF-8. askai attaches a view of the note as a "
+	                             "file after the results of the turn. The view is %zu "
+	                             "bytes, about %zu tokens.", len, util_s(len), bytes,
+	                             bytes / 4)
 	               : dstr_printf(call->text, "The note is %zu byte%s, about %zu token%s. "
 	                             "askai attaches the note as a file after the results of "
 	                             "the turn.", len, util_s(len), bytes / 4,
@@ -2066,8 +2065,8 @@ notes_tool_schema (struct notes_tool const *tool,
 	                 "replace, read the whole note. Send the whole new text. Copy "
 	                 "unrelated passages and evidence word for word. To rewrite most of a "
 	                 "note, add a new file such as plan-v2.md. Keep the old file. In the "
-	                 "new file, name the old file and the changes. Bytes that are not "
-	                 "UTF-8 show as \xe2\x9f\xa6XX\xe2\x9f\xa7.",
+	                 "new file, name the old file and the changes. NUL bytes and bytes of "
+	                 "invalid UTF-8 show as \xe2\x9f\xa6XX\xe2\x9f\xa7.",
 	                 notes_writer(tool->notes), descriptions[side])) {
 		json_object_put(props);
 		return nullptr;
