@@ -279,11 +279,15 @@ agenda_wait_start (struct mcp_slot    *slot,
 		mcp_slot_tell(slot, bad_list, TOOL_FAILED);
 		return;
 	}
+	struct loop *loop = mcp_slot_loop(slot);
 	struct agenda_wait *w = malloc(sizeof *w);
 	if (!w) {
 		mcp_slot_fail(slot, ENOMEM);
 		return;
 	}
+	*w = (struct agenda_wait){ .alarm.fn = agenda_wait_alarm, .slot = slot,
+	                           .end = loop->now + secs * NS, .secs = (uint32_t)secs,
+	                           .n = (uint32_t)n };
 	char why[160];
 	struct cstr_view problem = {};
 	for (size_t i = 0; !problem.data && i < n; ++i) {
@@ -304,12 +308,6 @@ agenda_wait_start (struct mcp_slot    *slot,
 		mcp_slot_tell(slot, problem, TOOL_FAILED);
 		return;
 	}
-	struct loop *loop = mcp_slot_loop(slot);
-	w->alarm = (struct loop_timer){ .fn = agenda_wait_alarm };
-	w->slot = slot;
-	w->end = loop->now + secs * NS;
-	w->secs = (uint32_t)secs;
-	w->n = (uint32_t)n;
 	struct handle who;
 	int e = mcp_slot_name(slot, &who);
 	w->wait = e ? nullptr : ledger_wait_enter(ledger, owner, loop, who, agenda_wait_wake, &e);
