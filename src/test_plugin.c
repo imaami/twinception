@@ -46,6 +46,7 @@
 #include "jb.h"
 #include "plugin.h"
 #include "util.h"
+#include "xlist.h"
 
 PLUGIN_MANIFEST(.name = "test",
                 .tools = { "test_echo", "test_state", "test_misuse", "test_fetch",
@@ -273,6 +274,20 @@ test_plugin_state_drop (struct mcp_slot *slot)
 	mcp_slot_tell(slot, dropped, 0);
 }
 
+/* Each row X(ID, name) is one case of test_misuse. The constant of the
+ * case in enum test_plugin_case is TEST_PLUGIN_ followed by ID. A call
+ * with the argument "case" set to name runs the case.
+ */
+#define TEST_PLUGIN_CASE_LIST(X)                                        \
+        X(READY, "ready") X(OWN, "own") X(AFTER, "after")               \
+        X(INVALID, "invalid") X(HANDLES, "handles")
+
+#define TEST_PLUGIN_CASE_ENUM(id, ...) TEST_PLUGIN_##id,
+enum test_plugin_case : uint8_t { TEST_PLUGIN_CASE_LIST(TEST_PLUGIN_CASE_ENUM) };
+#undef TEST_PLUGIN_CASE_ENUM
+
+static struct cstr_view const test_plugin_cases[] = { TEST_PLUGIN_CASE_LIST(XL_VIEW) };
+
 /* Returns the definition of test_misuse as a new reference, or nullptr if
  * json-c cannot allocate memory.
  */
@@ -285,10 +300,11 @@ test_plugin_misuse_definition (void const *service)
 		"\"description\":\"Uses the call API in ways that it does not allow.\","
 		"\"inputSchema\":{\"type\":\"object\","
 		"\"properties\":{\"case\":{\"type\":\"string\","
-		"\"enum\":[\"ready\",\"own\",\"after\",\"invalid\",\"handles\"]}},"
+		"\"enum\":[" XL_JOIN(",", ",", TEST_PLUGIN_CASE_LIST(XL_JSON)) "]}},"
 		"\"required\":[\"case\"],"
 		"\"additionalProperties\":false}}");
 }
+#undef TEST_PLUGIN_CASE_LIST
 
 /* The timer function of the timers that test_plugin_misuse_invalid()
  * passes. askai must never call it.
@@ -454,25 +470,6 @@ test_plugin_misuse_handles (struct mcp_slot *slot,
 		}
 	mcp_slot_tellf(slot, 0, "foreign %u own %u", foreign, found);
 }
-
-/* The cases of test_misuse, which the argument "case" selects. */
-enum test_plugin_case : uint8_t {
-	TEST_PLUGIN_READY,
-	TEST_PLUGIN_OWN,
-	TEST_PLUGIN_AFTER,
-	TEST_PLUGIN_INVALID,
-	TEST_PLUGIN_HANDLES,
-	TEST_PLUGIN_CASES
-};
-
-/* Each entry is the value of the argument "case" that selects a case. */
-static struct cstr_view const test_plugin_cases[TEST_PLUGIN_CASES] = {
-	[TEST_PLUGIN_READY]   = CSTR_VIEW_INIT("ready"),
-	[TEST_PLUGIN_OWN]     = CSTR_VIEW_INIT("own"),
-	[TEST_PLUGIN_AFTER]   = CSTR_VIEW_INIT("after"),
-	[TEST_PLUGIN_INVALID] = CSTR_VIEW_INIT("invalid"),
-	[TEST_PLUGIN_HANDLES] = CSTR_VIEW_INIT("handles"),
-};
 
 /* Starts a test_misuse call. The kind of test_misuse has no step() and no
  * drop(). The argument "case" selects what the call does:
