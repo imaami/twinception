@@ -1655,14 +1655,15 @@ cxi_parse (struct cxi        *x,
 		"-Xclang", "-disable-pragma-debug-crash", "-fparse-all-comments",
 	};
 	size_t const n_extra = array_size(extra) - (x->action != CXI_ACTION_DESCRIBE);
+	struct cstr_view const w = cstr_view_dstr(words);
 	size_t n = 0;
-	for (size_t i = 0; i < dstr_len(words); ++i)
-		n += !dstr_get(words)[i];
+	for (size_t i = 0; i < w.len; ++i)
+		n += !w.data[i];
 	size_t const argc = n + n_extra + x->n_warnings;
 	char const **argv = malloc(argc * sizeof *argv);
 	if (!argv)
 		return ENOMEM;
-	char const *word = dstr_get(words);
+	char const *word = w.data;
 	for (size_t i = 0; i < n; ++i, word += strlen(word) + 1)
 		argv[i] = word;
 	memcpy(argv + n, extra, n_extra * sizeof *argv);
