@@ -160,7 +160,8 @@ struct ai_call {
 	                              in chat completions, the signature in
 	                              Gemini's Interactions */
 	struct cstr_view args;   /**< a piece of the JSON text of the arguments */
-	uint32_t         index;
+	uint64_t         index;  /**< a uint64_t to fill the padding, but every
+	                              value fits in a uint32_t */
 };
 
 /** Receives @p text, a piece of a streamed answer. */
