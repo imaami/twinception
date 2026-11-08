@@ -255,6 +255,7 @@ cli_network_chunk_returned (struct loop *loop,
 	struct cli_network *network = container_of(loop, struct cli_network, loop);
 	tally_sub(&network->credit, chunk->length);
 	free(chunk);
+	chunk = nullptr;
 	if (!(loop->flags & LOOP_EXIT))
 		cli_network_progress(network);
 }

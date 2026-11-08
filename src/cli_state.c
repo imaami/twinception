@@ -319,6 +319,7 @@ cli_state_save (struct cli_state *state)
 		e = errno;
 	if (close(fd) && !e)
 		e = errno;
+	fd = -1;
 	if (!e) {
 		if (renameat(state->directory, dstr_get(&state->temporary),
 		             state->directory, dstr_get(&state->name)))
@@ -524,6 +525,7 @@ cli_state_load (struct cli_state *state,
 	}
 	if (close(fd) && !e)
 		e = errno;
+	fd = -1;
 	if (unlinkat(state->directory, dstr_get(&state->temporary), 0) && !e)
 		e = errno;
 	return e;

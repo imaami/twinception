@@ -639,6 +639,7 @@ cli_console_complete (char const *text,
 			free(listing);
 			listing = nullptr;
 			free(empty);
+			empty = nullptr;
 			free(matches[0]);
 			matches[0] = nullptr;
 			console->in.error = ENOMEM;

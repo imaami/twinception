@@ -145,6 +145,7 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 
 	if (closedir(dir) && !e)
 		e = errno;
+	dir = nullptr;
 	if (e)
 		return e;
 
