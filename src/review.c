@@ -2,7 +2,7 @@
  *
  * The review record of an ask call (src/review.h).
  */
-#define _GNU_SOURCE /* memrchr() */
+#define _GNU_SOURCE /* memrchr(), mempcpy() */
 
 #include <errno.h>
 #include <inttypes.h>

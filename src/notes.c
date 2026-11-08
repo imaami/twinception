@@ -2,7 +2,7 @@
  *
  * The notes tool.
  */
-#define _GNU_SOURCE /* memrchr(), mempcpy() */
+#define _GNU_SOURCE /* asprintf(), memrchr(), mempcpy() */
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
