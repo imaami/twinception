@@ -1171,8 +1171,8 @@ autocomplete_match_compare (struct autocomplete_match const *a,
                             struct autocomplete_match const *b,
                             size_t                           begin)
 {
-	int difference = cstr_view_compare(cstr_view_slice(a->line, begin, a->line.len - begin),
-	                                   cstr_view_slice(b->line, begin, b->line.len - begin));
+	int difference = cstr_view_compare(cstr_view_slice(a->line, begin, SIZE_MAX),
+	                                   cstr_view_slice(b->line, begin, SIZE_MAX));
 	return difference ? difference : (a->cursor > b->cursor) - (a->cursor < b->cursor);
 }
 
