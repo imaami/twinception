@@ -1443,9 +1443,11 @@ review_log_resolve (struct review const               *r,
 }
 
 /**
- * Appends to @p out the refusal of the state @p state for the location
- * @p loc, whose lines are not all in the read log of @p r, with the read
- * that adds them if the flags of @p r contain REVIEW_GIT. @p c is the cover of @p loc (review_log_cover()), and
+ * Appends a refusal of the state @p state to @p out. The lines of the
+ * location @p loc are not all in the read log of @p r. If the flags of
+ * @p r contain REVIEW_GIT and the record is not full, the refusal also
+ * contains the arguments of a git tool read that adds the lines to the
+ * log. @p c is the result of review_log_cover() for @p loc, and
  * @p resolved is the number of logged paths that loc->path resolved to.
  * Returns EINVAL, or ENOMEM if the append fails.
  */
@@ -1483,32 +1485,28 @@ review_refuse_unread (struct review const               *r,
 	                           "%.*s", name, len, path) ||
 	              (prefix.len && !dstr_printf(out, " at %.*s", (int)prefix.len, prefix.data)) ||
 	              !dstr_printf(out, " line%s ", one ? "" : "s") ||
-	              review_put_lines(out, loc->first, loc->last);
-	if (!c->best)
-		failed = failed || !dstr_printf(out, " %s not in it.", one ? "is" : "are");
-	else
-		failed = failed || !dstr_printf(out, " are not all in it: it has line%s ",
-		                                c->end > loc->first ? "s" : "") ||
-		         review_put_lines(out, loc->first, c->end) ||
-		         !dstr_printf(out, " of them, read at %.*s", REVIEW_SHORT_OID,
-		                      c->best->commit.hex) ||
-		         (shorter && !dstr_printf(out, ", where the file has %" PRIu32 " line%s",
-		                                  c->best->total, util_s(c->best->total))) ||
-		         PUT(out, ".");
+	              review_put_lines(out, loc->first, loc->last) ||
+	              (!c->best ? !dstr_printf(out, " %s not in it.", one ? "is" : "are")
+	               : !dstr_printf(out, " are not all in it: it has line%s ",
+	                              c->end > loc->first ? "s" : "") ||
+	                 review_put_lines(out, loc->first, c->end) ||
+	                 !dstr_printf(out, " of them, read at %.*s", REVIEW_SHORT_OID,
+	                              c->best->commit.hex) ||
+	                 (shorter && !dstr_printf(out, ", where the file has %" PRIu32 " line%s",
+	                                          c->best->total, util_s(c->best->total))) ||
+	                 PUT(out, "."));
 	/* The read is logged as a new pending file after a later turn. Its
 	 * charge is estimated from the file to read, or from a file with this
 	 * path and a 1-byte repository name. */
 	size_t const charge = to ? review_file_charge(to, 1) : review_charge(2, 1 + loc->path.len);
-	if (r->size + charge > TOOL_TEXT_MAX) {
-		if (r->dropped_turn)
-			failed = failed || !dstr_printf(out, " The read log has been full since turn %"
-			                                PRIu32 ",", r->dropped_turn);
-		else
-			failed = failed || PUT(out, " The record is full,");
-		return failed || PUT(out, " so a read of them would not be logged: cite lines that "
-		                          "the log has, or keep the finding a candidate.")
+	if (r->size + charge > TOOL_TEXT_MAX)
+		return failed || (r->dropped_turn
+		                  ? !dstr_printf(out, " The read log has been full since turn %"
+		                                 PRIu32 ",", r->dropped_turn)
+		                  : PUT(out, " The record is full,")) ||
+		       PUT(out, " so a read of them would not be logged: cite lines that the log "
+		                "has, or keep the finding a candidate.")
 		       ? ENOMEM : EINVAL;
-	}
 	if (!(r->flags & REVIEW_GIT))
 		return failed || PUT(out, " Without the git tool, the log takes only the lines "
 		                          "that code describe shows, once you have seen them.")
