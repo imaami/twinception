@@ -13,7 +13,6 @@
 #ifndef ASKAI_SRC_GODBOLT_PROBE_H_
 #define ASKAI_SRC_GODBOLT_PROBE_H_
 
-#include <stddef.h>
 #include <stdint.h>
 
 #include "cstr_view.h"
