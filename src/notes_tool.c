@@ -766,15 +766,14 @@ notes_tool_checked (struct mcp_slot *slot)
 	}
 	if (!r) {
 		call->revision.tip = before == NO_NOTE ? (struct oid){} : tip;
+		child_destroy(&call->child);
 		if (fetch & FETCH_APPEND) {
 			/* git reads the note at the tip that the write builds on. */
 			struct buf in = {};
 			int e = notes_read_input(&in, tip.hex, util_text_view(&call->revision.file));
-			child_destroy(&call->child);
 			notes_tool_run(slot, FETCH_READ | FETCH_APPEND, &in, e);
 		} else if (before == NO_NOTE || fetch & FETCH_DELETE ||
 		           !notes_tool_unchanged(slot, &note, &tip)) {
-			child_destroy(&call->child);
 			notes_tool_write(slot, &tip, before);
 		}
 		return;
