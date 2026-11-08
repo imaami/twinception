@@ -14526,9 +14526,8 @@ def check_review(binary, up):
                       if t["name"] == "ask_ai"]
             assert tool["inputSchema"]["properties"]["thread"]["description"] == (
                 "An ask-chain thread ID from an earlier answer, 32 hexadecimal digits. The "
-                "call starts with the review record of the thread, if a review record "
-                "exists for the thread. Every call loads the notes, with or without "
-                "thread."), tool
+                "call starts with the review record of the thread, if any. Every call "
+                "loads the notes, also without thread."), tool
             script[:] = [mixed(("git", read("src/a.c", 1, 20))),
                          mixed(("findings", add("C1", "src/a.c:5")),
                                ("findings", {"action": "add", "claim": "C2"}))]

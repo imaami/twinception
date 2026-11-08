@@ -7772,8 +7772,8 @@ mcp_tool_definition (void const *service)
 	struct cstr_view const keys[] = { CSTR_VIEW("role"), CSTR_VIEW("content") };
 	struct json_object *props = jb_object(
 		"prompt", schema_property("string",
-			"The question or the task. Include all context that the other AI "
-			"needs. For a continuing chat, give the earlier turns in messages."),
+			"The question or the task. Include all context. For a continuing "
+			"chat, give the earlier turns in messages."),
 		"system", schema_property("string",
 			"Optional system instructions for the other AI, such as a role "
 			"or an answer format."),
@@ -7785,30 +7785,28 @@ mcp_tool_definition (void const *service)
 				          nullptr),
 				keys, array_size(keys)),
 			CHAT_HISTORY,
-			"Earlier chat messages before the prompt, oldest first. Each message "
-			"is an object with role (user or assistant) and content (a string). "
-			"askai does not store messages. Give the whole history in every "
-			"call."),
+			"Earlier chat messages, oldest first. Each message is an object with "
+			"role (user or assistant) and content (a string). askai does not "
+			"store messages between calls."),
 		"background", schema_property("boolean",
-			"With false, the call waits for the answer. With true, the call "
-			"starts a job and returns the job ID at once. true works only in "
-			"server background mode and without live streaming. The default is "
-			"true in server background mode without live streaming, else false."),
+			"With true, the call returns a job ID at once. With false, the call "
+			"waits for the answer. true requires server background mode and no "
+			"live streaming. The default is true in server background mode "
+			"without live streaming."),
 		nullptr);
 	if (st->lending.of[KIND_NOTES])
 		props = jb_set_or_free(props, "thread", schema_property("string",
 			"An ask-chain thread ID from an earlier answer, 32 hexadecimal "
-			"digits. The call starts with the review record of the thread, if a "
-			"review record exists for the thread. Every call loads the notes, "
-			"with or without thread."));
+			"digits. The call starts with the review record of the thread, if "
+			"any. Every call loads the notes, also without thread."));
 	if (st->ep->background) {
 		props = jb_set_or_free(props, "job", schema_property("string",
 			"A job ID that an earlier call returned. Give job instead of prompt "
 			"to get the status or the result of the job."));
 		props = jb_set_or_free(props, "action", jb_set_or_free(schema_enum(
 			schema_names(actions + ACTION_RESULT, array_size(actions) - ACTION_RESULT),
-			"What to do with the job. result returns the status or the answer of "
-			"the job. cancel stops the job. The default is result."),
+			"What to do with the job. result returns the status or the answer. "
+			"cancel stops the job. The default is result."),
 			"default", json_object_new_string("result")));
 	}
 	return jb_object(
@@ -7817,9 +7815,9 @@ mcp_tool_definition (void const *service)
 		"description", schema_text3(st->tool->description, st->ep->background
 			? "\n\nA call with prompt starts a job and returns the job ID at once. "
 			  "The job continues after the connection closes. For the status or "
-			  "the answer, call the tool again with job and without prompt. action "
-			  "cancel stops the job. askai stores the answer for up to an hour "
-			  "after the job ends. Give background false to wait for the answer."
+			  "the answer, call again with job instead of prompt. action cancel "
+			  "stops the job. askai stores the answer for up to an hour after the "
+			  "job ends. Give background false to wait for the answer."
 			: "", ""),
 		"inputSchema", schema_object(props, &CSTR_VIEW("prompt"),
 		                             st->ep->background ? 0 : 1),
@@ -7839,11 +7837,10 @@ mcp_task_definition (void const *service)
 		"name", json_object_new_string("test_task"),
 		"title", json_object_new_string("Test task"),
 		"description", json_object_new_string(
-			"A test aid. With slices, the call runs the given number of 250 us "
-			"slices of CPU work as a task on the event loops of the server. "
-			"The result contains the number of slices that ran and the number "
-			"of moves between loops. With prompt instead, the call asks the "
-			"upstream AI as background work. Interactive calls run first."),
+			"A test aid. With slices, the call runs slices of CPU work, 250 us "
+			"each, as a task on the event loops. The result contains the number "
+			"of slices and the number of moves between loops. With prompt "
+			"instead, the call asks the upstream AI as background work."),
 		"inputSchema", schema_object(
 			jb_object(
 				"slices", jb_set_or_free(schema_count(1, nullptr), "maximum",

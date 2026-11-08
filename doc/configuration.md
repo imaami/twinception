@@ -864,14 +864,14 @@ The value is a string. `askai` computes the default from `model`,
 `upstream-tools` and `tools.notes.directory`:
 
 > Send a question or a task to another AI model. The other AI cannot see
-> this conversation, your files or your tools. Write a complete prompt with
-> all context. Use the tool for a second opinion, for hard problems, or for
-> knowledge that you lack.
+> this conversation, your files or your tools. Write a complete prompt. Use
+> the tool for a second opinion, for hard problems, or for knowledge you
+> lack.
 
 With `model` set to M, the first sentence ends with "to the AI model M". If
 the turns of an `ask_ai` call can get a tool, `askai` adds "The other AI can
-call some tools of this server. After the answer, the result lists the tool
-calls of the other AI." after the third sentence. If they can get `notes`,
+call some tools of this server. The result lists the tool calls after the
+answer." after the third sentence. If they can get `notes`,
 it then also adds "The other AI writes notes in the shared session
 repository. Each call starts with the notes from your earlier calls. The
 other AI can read the notes of other participants." The turns can get
