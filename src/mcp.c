@@ -7681,6 +7681,13 @@ mcp_create (struct loop              *loop,
 		return nullptr;
 	}
 	*mcp = (struct mcp){
+		.calls = list(&mcp->calls),
+		.tasks = list(&mcp->tasks),
+		.freeing = list(&mcp->freeing),
+		.ending = list(&mcp->ending),
+		.children = list(&mcp->children),
+		.spare.list = list(&mcp->spare.list),
+		.jobs.list = list(&mcp->jobs.list),
 		.drain.fn = mcp_drain_step,
 		.app = {
 			.fields = field_names,
@@ -7708,13 +7715,6 @@ mcp_create (struct loop              *loop,
 		.st = st,
 		.counts = counts
 	};
-	list_init(&mcp->calls);
-	list_init(&mcp->tasks);
-	list_init(&mcp->freeing);
-	list_init(&mcp->ending);
-	list_init(&mcp->children);
-	list_init(&mcp->spare.list);
-	list_init(&mcp->jobs.list);
 	*e = instance_table_init(&mcp->instances, loop);
 	if (*e) {
 		free(mcp);
