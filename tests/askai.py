@@ -16438,16 +16438,16 @@ def check_godbolt(binary, up, godbolt):
                 assert ids(ids=["cti", "cg142"]) == ["cg142", "cti"]
                 assert refused(ai, "godbolt_catalog", action="compilers",
                                ids=["cvc19", "nope", "cti"], kind="default") == \
-                    "These ids were not selected: cvc19, nope, cti. Retry with action " \
+                    "Ids not selected: cvc19, nope, cti. Retry with action " \
                     "\"compilers\" and without ids or other filters."
                 assert refused(ai, "godbolt_catalog", action="languages", ids=["c", "d"]) \
-                    == "These ids were not selected: d. Retry with action \"languages\" " \
+                    == "Ids not selected: d. Retry with action \"languages\" " \
                     "and without ids or other filters."
                 assert refused(ai, "godbolt_catalog", action="families", ids=["nope"]) == \
-                    "These ids were not selected: nope. Retry with action \"compilers\" " \
+                    "Ids not selected: nope. Retry with action \"compilers\" " \
                     "and without ids or other filters."
                 assert refused(ai, "godbolt_catalog", action="languages", kind="x") == \
-                    "kind, family and architecture are not valid with the action languages."
+                    "kind, family and architecture are not valid with action languages."
                 assert ok(ai, "godbolt_catalog", action="kinds") == \
                     "kind\tcompilers\nclang\t1\nclang-cl\t1\ndefault\t13\nticlang\t1\n" \
                     "win32-vc\t1\n" + left(1) + "\nListed 5 of the 5 kinds of the 17 " \
@@ -16486,8 +16486,8 @@ def check_godbolt(binary, up, godbolt):
                                language="broken") == "askai could not get the list of " \
                     "compilers from Compiler Explorer (HTTP 500: No list today)."
                 assert refused(ai, "godbolt_catalog", action="kinds", language="odd") == \
-                    "Compiler Explorer sent a list that is not valid: the text is not a " \
-                    "JSON array."
+                    "Compiler Explorer sent a list that is not valid (the text is not a " \
+                    "JSON array)."
                 assert ok(ai, "godbolt_catalog", action="compilers", language="none") \
                     .endswith("families\nListed 0 of 0 matching compilers. The list of "
                               "language none has 0 compilers.\n")
@@ -16501,11 +16501,11 @@ def check_godbolt(binary, up, godbolt):
                     "families of the 1 matching compiler. The list of language tags has 1 " \
                     "compiler.\n"
                 assert refused(ai, "godbolt_catalog", action="compilers", language="huge") \
-                    == "Compiler Explorer sent a list that is not valid: an element has " \
-                    "more than 4 KiB."
+                    == "Compiler Explorer sent a list that is not valid (an element has " \
+                    "more than 4 KiB)."
                 assert refused(ai, "godbolt_catalog", action="kinds", language="keys") == \
-                    "Compiler Explorer sent a list that is not valid: the list has more " \
-                    "than 256 different kinds."
+                    "Compiler Explorer sent a list that is not valid (the list has more " \
+                    "than 256 different kinds)."
 
                 # Compilations in the order of the compilers, and then of the
                 # argument strings. The bodies have the 11 filters of the
@@ -16548,8 +16548,8 @@ def check_godbolt(binary, up, godbolt):
                 for language in ("x" * 64, "c++"):
                     text = refused(ai, "godbolt_compile", compilers=["gone"],
                                    language=language, source=source)
-                    assert text == "These compiler ids are not in the list of language " \
-                        f"{language}: gone. " + compiler_hint(language), text
+                    assert text == f"Unknown compiler ids for language {language}: " \
+                        "gone. " + compiler_hint(language), text
                 assert len(ce.bodies()) == sent
                 recovery = json.loads(re.search(r"with (\{.*?\})", text)[1])
                 found = ok(ai, "godbolt_catalog", **recovery, match="g++ 14.2 gcc")
@@ -16572,13 +16572,13 @@ def check_godbolt(binary, up, godbolt):
                 sent = len(ce.bodies())
                 for language in ("none", "bad", "tags"):
                     text = refused(ai, "godbolt_compile", language=language, source=source)
-                    assert text == "The list of languages contains no valid default " \
-                        f"compiler for language {language}. Call godbolt_catalog with " \
-                        '{"action":"languages"} for the languages and their default ' \
+                    assert text == "Compiler Explorer lists no valid default compiler " \
+                        f"for language {language}. Call godbolt_catalog with " \
+                        '{"action":"languages"} for the language ids and the default ' \
                         "compilers.", text
                 text = refused(ai, "godbolt_compile", language="keys", source=source)
-                assert text == "These compiler ids are not in the list of language keys: " \
-                    "zz. " + compiler_hint("keys"), text
+                assert text == "Unknown compiler ids for language keys: zz. " + \
+                    compiler_hint("keys"), text
                 assert len(ce.bodies()) == sent
                 records, last = ce_records(ok(ai, "godbolt_compile", compilers=["cg142"],
                                               args=["-DFAIL"], source=source))
@@ -16717,11 +16717,11 @@ def check_godbolt(binary, up, godbolt):
                 assert len(ce.seen("GET")) == listed, ce.seen("GET")[listed:]
                 sent = len(ce.bodies())
                 assert refused(ai, "godbolt_preprocess", compilers=["cg142", "nope"],
-                               source=source) == "These compiler ids are not in the " \
-                    "list of language c: nope. " + compiler_hint()
+                               source=source) == "Unknown compiler ids for language " \
+                    "c: nope. " + compiler_hint()
                 for name in ("godbolt_macros", "godbolt_targets"):
                     assert refused(ai, name, language="c++", compilers=["cg142"]) == \
-                        "These compiler ids are not in the list of language c++: cg142. " + \
+                        "Unknown compiler ids for language c++: cg142. " + \
                         compiler_hint("c++")
                 assert len(ce.bodies()) == sent
 
@@ -16856,28 +16856,28 @@ def check_godbolt(binary, up, godbolt):
                 # Refused arguments send no request.
                 sent = len(ce.seen())
                 for arguments, why in (
-                        ({"colour": 1}, "The tool has no argument colour."),
+                        ({"colour": 1}, "colour is not an argument of the tool."),
                         ({"compilers": [f"c{i}" for i in range(17)]},
                          "compilers must be an array of 1 to 16 different compiler "
-                         "ids. A compiler id has 1 to 128 bytes of A-Z, a-z, 0-9, +, "
-                         "-, . and _, and it is not . or .."),
+                         "ids. Each id must be 1 to 128 bytes of A-Z, a-z, 0-9, +, "
+                         "-, . and _. An id of only . or .. is not valid."),
                         ({"compilers": ["cg142", "cg142"]}, "compilers must be"),
                         ({"compilers": ["a/b"]}, "compilers must be"),
                         ({"compilers": [".."]}, "compilers must be"),
                         ({"compilers": ["a", "b", "c", "d"], "args": [""] * 9},
-                         "args must be an array of 1 to 8 strings. Each string has at "
-                         "most 8192 bytes and no NUL byte."),
+                         "args must be an array of 1 to 8 strings. Each string must be "
+                         "at most 8192 bytes without a NUL byte."),
                         ({"compilers": ["a", "b", "c", "d", "e"], "args": [""] * 7},
-                         "The number of compilers times the number of argument strings "
-                         "must be at most 32."),
+                         "The number of compilers times the number of args must be at "
+                         "most 32."),
                         ({"args": ["x" * 8193]}, "args must be"),
                         ({"source": "a\0b"}, "source must be a string of at most 1 MiB "
                          "without a NUL byte."),
-                        ({"language": "c?"}, "language must have 1 to 64 bytes of a-z, "
+                        ({"language": "c?"}, "language must be 1 to 64 bytes of a-z, "
                          "0-9, +, - and _."),
-                        ({"filters": {"colour": True}}, "filters must be an object whose "
-                         "members are among intel, demangle, directives, commentOnly, "
-                         "labels, libraryCode and trim. Each member is true or false."),
+                        ({"filters": {"colour": True}}, "filters must be an object with "
+                         "true or false members. The allowed members are intel, demangle, "
+                         "directives, commentOnly, labels, libraryCode and trim."),
                         ({"filters": {"intel": 1}}, "filters must be"),
                         ({"source": None}, "The argument source is required."),
                         ({"offset": -1}, "The offset argument must be a whole number "
@@ -16899,8 +16899,8 @@ def check_godbolt(binary, up, godbolt):
                          "words."),
                         ({"action": "compilers", "kind": ""}, "kind must be a string of "
                          "1 to 128 bytes without a NUL byte."),
-                        ({"action": "compilers", "source": "x"}, "The tool has no "
-                         "argument source.")):
+                        ({"action": "compilers", "source": "x"}, "source is not an "
+                         "argument of the tool.")):
                     assert refused(ai, "godbolt_catalog", **arguments).startswith(why), \
                         arguments
                 for name, arguments, why in (
@@ -16908,16 +16908,16 @@ def check_godbolt(binary, up, godbolt):
                          "The argument source is required."),
                         ("godbolt_preprocess", {"compilers": ["cg142"], "source": "x",
                                                 "filters": {}},
-                         "The tool has no argument filters."),
+                         "filters is not an argument of the tool."),
                         ("godbolt_macros", {"compilers": ["cg142"], "headers": True},
-                         "The tool has no argument headers."),
+                         "headers is not an argument of the tool."),
                         ("godbolt_targets", {"compilers": ["cg142"], "source": "x"},
-                         "The tool has no argument source."),
+                         "source is not an argument of the tool."),
                         ("godbolt_targets", {"compilers": ["cg142"], "headers": 1},
                          "headers must be true or false."),
                         ("godbolt_preprocess", {"compilers": ["cg142"], "source": "x",
                                                 "run": True},
-                         "The tool has no argument run.")):
+                         "run is not an argument of the tool.")):
                     assert refused(ai, name, **arguments) == why, (name, arguments)
                 assert len(ce.seen()) == sent, ce.seen()[sent:]
 
@@ -16975,7 +16975,7 @@ def check_godbolt(binary, up, godbolt):
                         "share" not in tool["description"], tool
                 sent = len(ce.seen())
                 assert refused(ai, "godbolt_compile", **shared) == "Links are turned " \
-                    "off on this server, so the tool has no argument share."
+                    "off on this server. Call the tool without share."
                 assert len(ce.seen()) == sent
 
         # The plugin refuses options that it does not know, and a url that is

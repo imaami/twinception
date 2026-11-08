@@ -391,10 +391,10 @@ enum godbolt_outcome : uint8_t {
 #define GODBOLT_ARG_LIST(X)                                                             \
         X(ACTION,       "action",                                                       \
           "must be " XL_JOIN(", ", " or ", GODBOLT_ACTION_LIST(XL_TEXT)) ".")           \
-        X(LANGUAGE,     "language", "must have 1 to 64 bytes of a-z, 0-9, +, - and _.") \
+        X(LANGUAGE,     "language", "must be 1 to 64 bytes of a-z, 0-9, +, - and _.")   \
         X(IDS,          "ids",                                                          \
-          "must be an array of 1 to 16 different ids. An id has 1 to 128 bytes of "     \
-          "A-Z, a-z, 0-9, +, -, . and _, and it is not . or ..")                        \
+          "must be an array of 1 to 16 different ids. Each id must be 1 to 128 bytes "  \
+          "of A-Z, a-z, 0-9, +, -, . and _. An id of only . or .. is not valid.")       \
         X(MATCH,        "match", "must be a string of at most 256 bytes with at most "  \
           "8 words.")                                                                   \
         X(KIND,         "kind",         GODBOLT_VALUE_RULE)                             \
@@ -403,17 +403,17 @@ enum godbolt_outcome : uint8_t {
         X(LIMIT,        "limit",        "must be a whole number from 1 to 2000.")       \
         X(OFFSET,       "offset",       "")                                             \
         X(COMPILERS,    "compilers",                                                    \
-          "must be an array of 1 to 16 different compiler ids. A compiler id has 1 "    \
-          "to 128 bytes of A-Z, a-z, 0-9, +, -, . and _, and it is not . or ..")        \
+          "must be an array of 1 to 16 different compiler ids. Each id must be 1 to "   \
+          "128 bytes of A-Z, a-z, 0-9, +, -, . and _. An id of only . or .. is not "    \
+          "valid.")                                                                     \
         X(ARGS,         "args",                                                         \
-          "must be an array of 1 to 8 strings. Each string has at most 8192 bytes "     \
-          "and no NUL byte.")                                                           \
+          "must be an array of 1 to 8 strings. Each string must be at most 8192 "       \
+          "bytes without a NUL byte.")                                                  \
         X(SOURCE,       "source", "must be a string of at most 1 MiB without a NUL "    \
           "byte.")                                                                      \
         X(FILTERS,      "filters",                                                      \
-          "must be an object whose members are among "                                  \
-          XL_JOIN(", ", " and ", GODBOLT_FILTER_LIST(GODBOLT_FILTER_SET))               \
-          ". Each member is true or false.")                                            \
+          "must be an object with true or false members. The allowed members are "      \
+          XL_JOIN(", ", " and ", GODBOLT_FILTER_LIST(GODBOLT_FILTER_SET)) ".")          \
         X(HEADERS,      "headers",      "must be true or false.")                       \
         X(SHARE,        "share",        "must be true or false.")                       \
         X(RUN,          "run",          "must be true or false.")
@@ -1419,8 +1419,8 @@ godbolt_catalog_end (struct godbolt *call)
 {
 	bool const languages = call->args.action == GODBOLT_LANGUAGES;
 	if (call->missing)
-		return godbolt_refuse(call->slot, "These ids were not selected: %s. Retry with "
-		                      "action \"%s\" and without ids or other filters.",
+		return godbolt_refuse(call->slot, "Ids not selected: %s. Retry with action "
+		                      "\"%s\" and without ids or other filters.",
 		                      godbolt_absent(call).ids, languages ? "languages" : "compilers");
 	bool const counts = call->args.action > GODBOLT_COMPILERS;
 	uint32_t const keys = counts ? (uint32_t)json_object_object_length(call->doc) : 0;
@@ -1489,8 +1489,8 @@ godbolt_drivers_end (struct godbolt *call)
 {
 	if (call->missing) {
 		struct cstr_view const lang = call->args.language;
-		return godbolt_refuse(call->slot, "These compiler ids are not in the list of language "
-		                      "%.*s: %s. Call godbolt_catalog with {\"action\":\"compilers\","
+		return godbolt_refuse(call->slot, "Unknown compiler ids for language %.*s: %s. "
+		                      "Call godbolt_catalog with {\"action\":\"compilers\","
 		                      "\"language\":\"%.*s\"} for the exact ids.", (int)lang.len,
 		                      lang.data, godbolt_absent(call).ids, (int)lang.len, lang.data);
 	}
@@ -1537,9 +1537,9 @@ static enum godbolt_go
 godbolt_default_end (struct godbolt *call)
 {
 	if (!call->args.ids[0].len)
-		return godbolt_refuse(call->slot, "The list of languages contains no valid "
-		                      "default compiler for language %.*s. Call godbolt_catalog "
-		                      "with {\"action\":\"languages\"} for the languages and their "
+		return godbolt_refuse(call->slot, "Compiler Explorer lists no valid default "
+		                      "compiler for language %.*s. Call godbolt_catalog with "
+		                      "{\"action\":\"languages\"} for the language ids and the "
 		                      "default compilers.", (int)call->args.language.len,
 		                      call->args.language.data);
 	call->args.action = GODBOLT_COMPILERS;
@@ -1596,7 +1596,7 @@ godbolt_rows (struct godbolt *call)
 		return godbolt_finish(call, TOOL_FAILED);
 	if (call->list == GODBOLT_LIST_BAD)
 		return godbolt_refuse(call->slot, "Compiler Explorer sent a list that is not "
-		                      "valid: %s.", call->why.data);
+		                      "valid (%s).", call->why.data);
 	if (call->list != GODBOLT_LIST_END)
 		return GODBOLT_GO;
 	return f->end(call);
@@ -1642,8 +1642,8 @@ godbolt_escape_source (struct godbolt *call)
 	if (call->off < call->args.source.len)
 		return GODBOLT_GO;
 	if (call->head - GODBOLT_SKIP > TOOL_TEXT_MAX - GODBOLT_TAIL_MAX)
-		return godbolt_refuse(call->slot, "The body of a request would be longer than "
-		                      "4 MiB, because the source has %zu bytes as a JSON string.",
+		return godbolt_refuse(call->slot, "The source is %zu bytes as a JSON string. A "
+		                      "request body must be at most 4 MiB. Shorten the source.",
 		                      call->head - prefix.len);
 	return godbolt_list_send(call);
 }
@@ -2697,10 +2697,10 @@ godbolt_args_read (struct godbolt_args         *a,
 	if (jb_args(args, godbolt_arg_names, array_size(godbolt_arg_names), t->args & ~off, of,
 	            &seen, &other))
 		return t->args & off && cstr_view_equal(other, godbolt_arg_names[GODBOLT_ARG_SHARE])
-		       ? util_refuse(why, len, "Links are turned off on this server, so the tool "
-		                     "has no argument share.")
-		       : util_refuse(why, len, "The tool has no argument %.*s.", (int)other.len,
-		                     other.data);
+		       ? util_refuse(why, len, "Links are turned off on this server. Call the "
+		                     "tool without share.")
+		       : util_refuse(why, len, "%.*s is not an argument of the tool.",
+		                     (int)other.len, other.data);
 	for (uint64_t m = seen; m; m &= m - 1) {
 		size_t const i = stdc_trailing_zeros(m);
 		if (godbolt_args_set(a, (enum godbolt_arg)i, of[i]))
@@ -2713,10 +2713,10 @@ godbolt_args_read (struct godbolt_args         *a,
 	/* The bits of kind, family and architecture are adjacent. */
 	if (a->action == GODBOLT_LANGUAGES && seen >> GODBOLT_ARG_KIND & 7)
 		return util_refuse(why, len, "kind, family and architecture are not valid "
-		                   "with the action languages.");
+		                   "with action languages.");
 	if ((uint32_t)a->n_ids * a->n_strings > GODBOLT_JOBS)
 		return util_refuse(why, len, "The number of compilers times the number of "
-		                   "argument strings must be at most 32.");
+		                   "args must be at most 32.");
 	/* ids[0] is filled from the list of languages. */
 	if (tool != GODBOLT_CATALOG && !a->n_ids) {
 		a->n_ids = 1;
@@ -2816,8 +2816,8 @@ godbolt_start (struct mcp_slot    *slot,
 	void **own = mcp_slot_own(slot);
 	if (!cfg || !loop || !own || cfg->url.len >= sizeof cfg->url.data ||
 	    cfg->share >= array_size(godbolt_shares)) {
-		mcp_slot_tellf(slot, TOOL_FAILED, "The call has no valid configuration of the "
-		               "godbolt plugin, no loop or no own word.");
+		mcp_slot_tellf(slot, TOOL_FAILED, "The godbolt plugin is missing a valid "
+		               "configuration, loop or own word.");
 		return;
 	}
 	struct godbolt_args a;
