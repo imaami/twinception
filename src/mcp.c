@@ -5179,9 +5179,11 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 	enum ledger_status status = ledger_task_status(task);
 	if (of != TOOL_MAX && status == LEDGER_WORKING) {
 		ledger_task_put(task);
-		mcp_slot_result(slot, CSTR_VIEW("The job is still running. Call the same tool with "
-		                                "the same job ID after one second for the "
-		                                "result."), false);
+		char text[256];
+		mcp_slot_result(slot, util_format_view(text, sizeof text, "The job is still running. "
+		                                       "Call %s with the job ID again after one "
+		                                       "second for the result.",
+		                                       mcp_slot_tool(slot)->name.data), false);
 		return;
 	}
 	struct cstr_view problem =

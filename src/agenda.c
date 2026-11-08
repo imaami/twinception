@@ -146,13 +146,16 @@ agenda_cancel (struct mcp_slot    *slot,
 	enum ledger_status const status = ledger_task_status(task);
 	bool const runs = status == LEDGER_WORKING;
 	struct cstr_view said = agenda_ended[status];
-	char text[192];
+	char text[256];
 	if (runs) {
 		ledger_task_cancel(task);
-		said = util_format_view(text, sizeof text, "askai is cancelling %s %s. %s",
-		                        ledger_kinds[task->kind], task->id.hex, tool != TOOL_MAX
-		                        ? "Call the same tool with the job ID to check the status."
-		                        : "Call wait to wait for the end of the job.");
+		char const *kind = ledger_kinds[task->kind];
+		said = tool != TOOL_MAX
+		     ? util_format_view(text, sizeof text, "askai is cancelling %s %s. Call %s with "
+		                        "the job ID to get the status.", kind, task->id.hex,
+		                        mcp_slot_tool_name(slot, tool))
+		     : util_format_view(text, sizeof text, "askai is cancelling %s %s. Call wait to "
+		                        "wait for the end of the job.", kind, task->id.hex);
 	}
 	ledger_task_put(task);
 	mcp_slot_tell(slot, said, runs ? 0 : TOOL_FAILED);

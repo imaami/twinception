@@ -1911,8 +1911,10 @@ def check_background(binary, up):
     """An ordinary ask can detach immediately, keeping its upstream stream
     alive after the client leaves. The same tool polls and cancels its
     owner's jobs; supported providers also get native background mode."""
-    pending = ("The job is still running. Call the same tool with the same job ID "
-               "after one second for the result.")
+    def pending(name="ask_ai"):
+        return (f"The job is still running. Call {name} with the job ID again after one "
+                "second for the result.")
+
     unknown = "You have no job with the given ID from this tool."
     gates = []
 
@@ -1961,7 +1963,8 @@ def check_background(binary, up):
         def ended():
             result = call(ai, {"job": jid}, **kwargs)
             results.append(result)
-            return text_of(result) != pending and not text_of(result).startswith(f"Started job {jid}.")
+            return text_of(result) != pending(kwargs.get("name", "ask_ai")) and \
+                not text_of(result).startswith(f"Started job {jid}.")
         wait_for(ended)
         return results[-1]
 
@@ -2044,11 +2047,11 @@ def check_background(binary, up):
                             request["body"]["store"] is (fmt == "interactions"), request
                 for jid in (first, second):
                     result = call(ai, {"job": jid})
-                    assert not result.get("isError") and text_of(result) == pending, result
+                    assert not result.get("isError") and text_of(result) == pending(), result
                 streams[1].release.set()
                 result = poll(ai, second, modern=True)
                 assert not result.get("isError") and text_of(result) == "second answer", result
-                assert text_of(call(ai, {"job": first})) == pending
+                assert text_of(call(ai, {"job": first})) == pending()
                 streams[0].release.set()
                 result = poll(ai, first)
                 assert not result.get("isError") and text_of(result) == "first answer", result
@@ -2151,7 +2154,9 @@ def check_background(binary, up):
                 jid = start(ai)
                 wait_for(lambda: ai.metrics()["askai_upstream_chunks_total"] > chunks)
                 result = call(ai, {"job": jid, "action": "cancel"})
-                assert not result.get("isError") and "cancelling job " + jid in text_of(result)
+                assert not result.get("isError") and text_of(result) == \
+                    f"askai is cancelling job {jid}. Call ask_ai with the job ID to get " \
+                    "the status.", result
                 wait_for(lambda: len(up.requests) == count + 2)
                 request, cancel = up.requests[count:]
                 assert request["body"]["background"] is True, request
