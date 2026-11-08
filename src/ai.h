@@ -83,11 +83,9 @@ struct ai_endpoint {
 static inline bool
 ai_background (struct ai_endpoint const *ep)
 {
-	return ep->background &&
-	       ((ep->api == AI_RESPONSES &&
-	         (ep->provider == AI_NO_PROVIDER || ep->provider == AI_OPENAI)) ||
-	        (ep->api == AI_INTERACTIONS &&
-	         (ep->provider == AI_NO_PROVIDER || ep->provider == AI_GOOGLE)));
+	enum ai_provider const own = ep->api == AI_RESPONSES ? AI_OPENAI
+	                           : ep->api == AI_INTERACTIONS ? AI_GOOGLE : AI_NO_PROVIDER;
+	return ep->background && own && (!ep->provider || ep->provider == own);
 }
 
 /** The APIs of Gemini, a bit for each enum ai_api. */
