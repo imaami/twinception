@@ -1003,12 +1003,11 @@ home_head (struct home *home,
 	http_response(job->transfer, &status, &type);
 	struct cstr_view media = cstr_view(type);
 	(void)cstr_view_cut(&media, ';', &media);
-	job->flags |= SEEN;
-	job->flags &= ~STREAM;
+	bool const stream = status >= 200 && status < 300 &&
+	                    cstr_view_equal_case(cstr_view_trim(media),
+	                                         CSTR_VIEW("text/event-stream"));
+	job->flags = (job->flags & ~STREAM) | SEEN | (stream ? STREAM : 0);
 	job->http = (uint16_t)status;
-	if (status >= 200 && status < 300 &&
-	    cstr_view_equal_case(cstr_view_trim(media), CSTR_VIEW("text/event-stream")))
-		job->flags |= STREAM;
 	if (job->flags & PROBE && !home_job_failure(job, CURLE_OK))
 		home_breaker_probed(home, job, false, 0);
 }
