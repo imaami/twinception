@@ -263,13 +263,13 @@ cli_state_commit (struct cli_state *state)
 	if (!e)
 		e = cli_state_git_oid(state, (char const *[]){ "mktree", nullptr }, cstr_view_dstr(&state->tree),
 		                      &tree);
-	static char const message[] = "Save CLI input history and completed conversation\n";
 	char const *args[] = { "commit-tree", tree.hex, "-F", "-", "-p", state->parent.hex, nullptr };
 	if (!oid_len(&state->parent))
 		args[4] = nullptr;
 	struct oid commit;
 	if (!e)
-		e = cli_state_git_oid(state, args, (struct cstr_view){ message, sizeof message - 1 }, &commit);
+		e = cli_state_git_oid(state, args, CSTR_VIEW("Save CLI input history and completed conversation\n"),
+		                      &commit);
 	(void)dstr_clear(&state->scratch);
 	if (!e && !dstr_printf(&state->scratch, "start\nupdate %s %s\nupdate %s %s\nprepare\ncommit\n",
 	                       dstr_get(&state->branch), commit.hex, dstr_get(&state->latest), commit.hex))
