@@ -1258,29 +1258,27 @@ mcp_quote (char             *buf,
 	return buf;
 }
 
-/** Appends @p s to @p w, up to TRACE_ARGS bytes in all, in whole
- *  characters and whole escapes, and a NUL. @p s is JSON text, or the
- *  inside of a JSON string if @p text is true, and then the function
- *  escapes it into @p w. Returns false if @p s was cut.
+/** Appends p.bytes to @p w, escaped if p.text is set, and then a NUL. The
+ *  function appends only whole characters and whole escapes, and stops
+ *  before w->len exceeds TRACE_ARGS. Returns false if it cut the bytes.
  */
 static bool
 mcp_shown_put (struct mcp_shown *w,
-               struct cstr_view  s,
-               bool              text)
+               struct mcp_piece  p)
 {
 	size_t const room = TRACE_ARGS - w->len;
 	char *at = w->data + w->len;
 	size_t k;
-	if (text) {
-		k = jb_escape_fit(s.data, s.len, room);
-		at += jb_escape(at, s.data, k);
+	if (p.text) {
+		k = jb_escape_fit(p.bytes.data, p.bytes.len, room);
+		at += jb_escape(at, p.bytes.data, k);
 	} else {
-		k = util_clip(s.data, s.len, room);
-		at = mempcpy(at, s.data, k);
+		k = util_clip(p.bytes.data, p.bytes.len, room);
+		at = mempcpy(at, p.bytes.data, k);
 	}
 	*at = '\0';
 	w->len = (uint32_t)(at - w->data);
-	return k == s.len;
+	return k == p.bytes.len;
 }
 
 static bool mcp_shown_object (struct mcp_shown *w, struct json_object *v, char const *sized);
@@ -1298,20 +1296,19 @@ mcp_shown_value (struct mcp_shown   *w,
 	case json_type_object:
 		return mcp_shown_object(w, v, sized);
 	case json_type_array: {
-		bool fits = mcp_shown_put(w, CSTR_VIEW("["), false);
+		bool fits = mcp_shown_put(w, FRAG("["));
 		for (size_t i = 0, n = json_object_array_length(v); fits && i < n; ++i)
-			fits = mcp_shown_put(w, (struct cstr_view){ ",", i != 0 }, false) &&
+			fits = mcp_shown_put(w, RAW(",", i != 0)) &&
 			       mcp_shown_value(w, json_object_array_get_idx(v, i), nullptr);
-		return fits && mcp_shown_put(w, CSTR_VIEW("]"), false);
+		return fits && mcp_shown_put(w, FRAG("]"));
 	}
 	case json_type_string:
-		return mcp_shown_put(w, CSTR_VIEW("\""), false) &&
-		       mcp_shown_put(w, jb_view(v), true) &&
-		       mcp_shown_put(w, CSTR_VIEW("\""), false);
+		return mcp_shown_put(w, FRAG("\"")) && mcp_shown_put(w, ESC_VIEW(jb_view(v))) &&
+		       mcp_shown_put(w, FRAG("\""));
 	default: {
 		/* The JSON text of a scalar is short. */
 		struct cstr_view const json = v ? jb_wire(v) : CSTR_VIEW("null");
-		return !json.data || mcp_shown_put(w, json, false);
+		return !json.data || mcp_shown_put(w, BYTES(json));
 	}
 	}
 }
@@ -1325,9 +1322,9 @@ mcp_shown_object (struct mcp_shown   *w,
                   struct json_object *v,
                   char const         *sized)
 {
-	struct cstr_view sep = CSTR_VIEW("\"");
+	struct mcp_piece sep = FRAG("\"");
 	struct json_object_iter it;
-	if (!mcp_shown_put(w, CSTR_VIEW("{"), false))
+	if (!mcp_shown_put(w, FRAG("{")))
 		return false;
 	json_object_object_foreachC(v, it) {
 		struct cstr_view const s = jb_view(it.val);
@@ -1336,17 +1333,17 @@ mcp_shown_object (struct mcp_shown   *w,
 		char text[40];
 		int const n = size ? snprintf(text, sizeof text, "\"(%zu byte%s)\"", s.len,
 		                              util_s(s.len)) : 0;
-		bool const fits = mcp_shown_put(w, sep, false) &&
-		                  mcp_shown_put(w, cstr_view(it.key), true) &&
-		                  mcp_shown_put(w, CSTR_VIEW("\":"), false) &&
+		bool const fits = mcp_shown_put(w, sep) &&
+		                  mcp_shown_put(w, ESC_VIEW(cstr_view(it.key))) &&
+		                  mcp_shown_put(w, FRAG("\":")) &&
 		                  (!size ? mcp_shown_value(w, it.val, nullptr)
 		                   : n < 0 || n >= (int)sizeof text ||
-		                     mcp_shown_put(w, (struct cstr_view){ text, (size_t)n }, false));
+		                     mcp_shown_put(w, RAW(text, (size_t)n)));
 		if (!fits)
 			return false;
-		sep = CSTR_VIEW(",\"");
+		sep = FRAG(",\"");
 	}
-	return mcp_shown_put(w, CSTR_VIEW("}"), false);
+	return mcp_shown_put(w, FRAG("}"));
 }
 
 /** Writes @p args, the arguments of a call of @p tool, or @p none without
@@ -1363,7 +1360,7 @@ mcp_args_shown (struct registry_tool const *tool,
 {
 	util_text_clear(w);
 	bool const fits = args ? mcp_shown_value(w, args, mcp_row_of(tool)->sized)
-	                       : mcp_shown_put(w, none, false);
+	                       : mcp_shown_put(w, BYTES(none));
 	if (!fits)
 		(void)util_text_printf(w, "...");
 }
