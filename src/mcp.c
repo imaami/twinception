@@ -5656,8 +5656,6 @@ mcp_slot_done (struct mcp_slot *slot,
 	struct registry_tool const *tool = mcp_slot_tool(slot);
 	struct span out = mcp_slot_output(slot);
 	bool job = slot->role == ROLE_JOB;
-	/* A job is not in req->slots, so its k is -1. */
-	ptrdiff_t const k = job ? -1 : slot - req->slots;
 	if (log_threshold >= LOG_VERBOSE && slot->tool != TOOL_MAX) {
 		/* A turn's call whose arguments are not a JSON object ends at once
 		 * in mcp_req_call_launch(), so REQ_CUT is still the value of its
@@ -5681,6 +5679,7 @@ mcp_slot_done (struct mcp_slot *slot,
 		mcp_agenda_job_done(slot);
 		return;
 	}
+	ptrdiff_t const k = slot - req->slots;
 	/* The window and the note of a replayed result come from its record. */
 	if (req->saved_tools[k]) {
 		loop_ready_bulk(req->mcp->loop, &req->step);
