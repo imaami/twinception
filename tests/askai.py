@@ -16336,14 +16336,14 @@ def check_godbolt(binary, up, godbolt):
     asm = "".join(f"asm: {line}\n" for line in source.splitlines())
     warning = "<source>:1:1: warning: a warning [-Wall]\n"
     def summary(n, zero, other, failed, unsent):
-        return f"Of {n} compilation{'s' * (n != 1)}, {zero} ended with exit code 0, " \
-            f"{other} ended with another exit code or a timeout, {failed} ended with a " \
-            f"failed request, and {unsent} ended without a request.\n"
+        return f"{n} compilation{'s' * (n != 1)}: {zero} with exit code 0, {other} " \
+            f"with another exit code or a timeout, {failed} with a failed request, " \
+            f"{unsent} not sent.\n"
 
     def left(n):
-        return f"The plugin left out {n} element{'s' * (n != 1)} of the list. An " \
-            "element must have a string member id, at most 64 family tags, and at most " \
-            "128 bytes in its kind, its architecture and each family tag."
+        return f"Left out {n} list element{'s' * (n != 1)} without a string id, with " \
+            "more than 64 family tags, or with more than 128 bytes in the kind, the " \
+            "architecture or a family tag."
 
     def compiler_hint(language="c"):
         return 'Call godbolt_catalog with {"action":"compilers","language":' + \
@@ -16399,7 +16399,7 @@ def check_godbolt(binary, up, godbolt):
                 assert ok(ai, "godbolt_catalog", action="languages") == \
                     "id\tname\tdefault\nc\tC\tcg142\nc++\tC++\tcppg142\nnone\tNo " \
                     "compilers\tnone\nbad\tBad default\ta/b\nkeys\tKeys\tzz\nListed 5 " \
-                    "of 5 matching languages. Compiler Explorer has 5 languages.\n"
+                    "of 5 matching languages. Compiler Explorer lists 5 languages.\n"
                 (_, _, query, headers, _), = ce.seen("GET", "/api/languages")
                 assert query == "fields=id,name,defaultCompiler" and \
                     headers["User-Agent"] == "askai (plugin godbolt)" and \
@@ -16421,8 +16421,9 @@ def check_godbolt(binary, up, godbolt):
                         "cclang19\tx86-64 clang 19.1\tclang\t19.1\tamd64\tstable\tclang,llvm"] \
                     and lines[4] == "cclangcl19\tx64 clang-cl 19.1\tclang-cl\t19.1\tamd64\t" \
                     "stable\tunknown" and lines[-3:] == [left(1), "Listed 17 of 17 matching "
-                                                          "compilers. The list of language c "
-                                                          "has 17 compilers.", ""], text
+                                                          "compilers. Compiler Explorer lists "
+                                                          "17 compilers for language c.", ""], \
+                    text
 
                 def ids(**arguments):
                     text = ok(ai, "godbolt_catalog", action="compilers", **arguments)
@@ -16451,23 +16452,24 @@ def check_godbolt(binary, up, godbolt):
                 assert ok(ai, "godbolt_catalog", action="kinds") == \
                     "kind\tcompilers\nclang\t1\nclang-cl\t1\ndefault\t13\nticlang\t1\n" \
                     "win32-vc\t1\n" + left(1) + "\nListed 5 of the 5 kinds of the 17 " \
-                    "matching compilers. The list of language c has 17 compilers.\n"
+                    "matching compilers. Compiler Explorer lists 17 compilers for language " \
+                    "c.\n"
                 assert ok(ai, "godbolt_catalog", action="families", limit=2,
                           match="x86-64") == \
                     "family\tcompilers\nclang\t1\ngcc\t2\n" + left(1) + "\nListed 2 of " \
-                    "the 3 families of the 3 matching compilers. The list of language c " \
-                    "has 17 compilers.\n"
+                    "the 3 families of the 3 matching compilers. Compiler Explorer lists 17 " \
+                    "compilers for language c.\n"
                 assert ok(ai, "godbolt_catalog", action="architectures", kind="ticlang") \
                     .endswith("\nListed 1 of the 1 architecture of the 1 matching compiler. "
-                              "The list of language c has 17 compilers.\n")
+                              "Compiler Explorer lists 17 compilers for language c.\n")
 
                 # limit cuts the rows, and an offset reads on from a byte.
                 full = ok(ai, "godbolt_catalog", action="compilers", limit=2)
                 assert full.split("\n")[1:5] == [
                     "cg142\tx86-64 gcc 14.2\tdefault\t14.2\tamd64\tstable\tgcc",
                     "cclang19\tx86-64 clang 19.1\tclang\t19.1\tamd64\tstable\tclang,llvm",
-                    left(1), "Listed 2 of 17 matching compilers. The list of language c has "
-                    "17 compilers."], full
+                    left(1), "Listed 2 of 17 matching compilers. Compiler Explorer lists 17 "
+                    "compilers for language c."], full
                 half = len(full.encode()) // 2
                 assert ok(ai, "godbolt_catalog", action="compilers", limit=2,
                           offset=half) == full.encode()[half:].decode()
@@ -16489,8 +16491,8 @@ def check_godbolt(binary, up, godbolt):
                     "Compiler Explorer sent a list that is not valid (the text is not a " \
                     "JSON array)."
                 assert ok(ai, "godbolt_catalog", action="compilers", language="none") \
-                    .endswith("families\nListed 0 of 0 matching compilers. The list of "
-                              "language none has 0 compilers.\n")
+                    .endswith("families\nListed 0 of 0 matching compilers. Compiler "
+                              "Explorer lists 0 compilers for language none.\n")
 
                 # An element with more than 64 family tags, or with a kind of
                 # more than 128 bytes, is left out, and a tag that repeats
@@ -16498,14 +16500,14 @@ def check_godbolt(binary, up, godbolt):
                 # and so do more than 256 different kinds.
                 assert ok(ai, "godbolt_catalog", action="families", language="tags") == \
                     "family\tcompilers\na\t1\nb\t1\n" + left(2) + "\nListed 2 of the 2 " \
-                    "families of the 1 matching compiler. The list of language tags has 1 " \
-                    "compiler.\n"
+                    "families of the 1 matching compiler. Compiler Explorer lists 1 " \
+                    "compiler for language tags.\n"
                 assert refused(ai, "godbolt_catalog", action="compilers", language="huge") \
-                    == "Compiler Explorer sent a list that is not valid (an element has " \
-                    "more than 4 KiB)."
+                    == "Compiler Explorer sent a list that is not valid (an element is " \
+                    "larger than 4 KiB)."
                 assert refused(ai, "godbolt_catalog", action="kinds", language="keys") == \
-                    "Compiler Explorer sent a list that is not valid (the list has more " \
-                    "than 256 different kinds)."
+                    "Compiler Explorer sent a list that is not valid (the list contains " \
+                    "more than 256 different kinds)."
 
                 # Compilations in the order of the compilers, and then of the
                 # argument strings. The bodies have the 11 filters of the
@@ -16612,7 +16614,7 @@ def check_godbolt(binary, up, godbolt):
                     ("exit code 0", f"program: timed out\n--- asm ---\n{asm}--- program "
                      "stderr ---\nKilled - processing time exceeded\n"),
                     ("exit code 0", f"program: exit code 0\n--- asm ---\n{asm}{ran}"
-                     "[Compiler Explorer cut this output.]\n")] and \
+                     "[Compiler Explorer cut the output of the compilation.]\n")] and \
                     last == summary(6, 5, 1, 0, 0), records
                 assert all(b["options"]["filters"]["execute"] and
                            b["options"]["executeParameters"] == {"args": [], "stdin": ""}
@@ -16630,7 +16632,7 @@ def check_godbolt(binary, up, godbolt):
                 records, _ = ce_records(refused(ai, "godbolt_compile", compilers=["later"],
                                                 source=source))
                 took = time.monotonic() - start
-                assert records[0][2] == "HTTP 429, and Retry-After is 120 s" and \
+                assert records[0][2] == "HTTP 429 with Retry-After 120 s" and \
                     len(ce.bodies("later")) == 1 and took < 2, (records, took)
 
                 # Cut output has a note, and a response larger than 4 MiB is a
@@ -16639,7 +16641,8 @@ def check_godbolt(binary, up, godbolt):
                                            compilers=["trunc", "big", "cg142"]))
                 assert records[0][2:] == ("exit code 0", "--- asm ---\nmov eax, 1\n"
                                           "[truncated; too many lines]\n[Compiler "
-                                          "Explorer cut this output.]\n") and \
+                                          "Explorer cut the output of the compilation.]\n") \
+                    and \
                     records[1][2:] == ("the response is larger than 4 MiB", "") and \
                     records[2][2:] == ("exit code 0", f"--- asm ---\n{asm}"), records
 
@@ -16650,7 +16653,7 @@ def check_godbolt(binary, up, godbolt):
                     text = ok(ai, "godbolt_compile", compilers=["euro"],
                               args=["-x" + "y" * k + str(i) for i in range(4)],
                               source=source)
-                    note = "\n[The output is cut here, because it has reached 14 MiB.]\n"
+                    note = "\n[The output is cut here at 14 MiB.]\n"
                     head, _, last = text.rpartition(note)
                     assert len(head.encode()) <= 14 << 20 and \
                         last == summary(4, 4, 0, 0, 0), (k, text[-300:])
@@ -16731,7 +16734,7 @@ def check_godbolt(binary, up, godbolt):
                                               compilers=["cg142", "cvc19", "cclangcl19"]))
                 assert records == [
                     ("cg142", "", "exit code 0", "--- macros ---\n#define __GNUC__ 14\n"),
-                    ("cvc19", "", "not sent, because MSVC cannot output its predefined "
+                    ("cvc19", "", "not sent because MSVC cannot output the predefined "
                      "macros", ""),
                     ("cclangcl19", "", "exit code 0",
                      "--- macros ---\n#define _MSC_VER 1940\n")] and \
@@ -16774,8 +16777,8 @@ def check_godbolt(binary, up, godbolt):
                 assert records == [
                     ("cg142", "-m64", "exit code 0", gnu),
                     ("cvc19", "-m64", "exit code 0", msvc),
-                    ("cti", "-m64", "the probe output is not valid: the output has no "
-                     "complete block", "--- pp ---\nGBPROBE_BEGIN_1\n")], records
+                    ("cti", "-m64", "the probe output is not valid (the output contains no "
+                     "complete block)", "--- pp ---\nGBPROBE_BEGIN_1\n")], records
                 bodies = ce.bodies()[sent:]
                 assert [b["options"]["userArguments"] for b in bodies] == \
                     ["-E -m64", "/TC /EP -m64", "-E -m64"], bodies
@@ -16791,8 +16794,8 @@ def check_godbolt(binary, up, godbolt):
                 # valid.
                 records, _ = ce_records(ok(ai, "godbolt_targets", compilers=["longvalue"],
                                            language="probe").removesuffix(note))
-                assert records[0][2] == "the probe output is not valid: a name or a value " \
-                    "of a record has more than 256 bytes", records
+                assert records[0][2] == "the probe output is not valid (a name or a value " \
+                    "of a record is longer than 256 bytes)", records
 
                 # With share, the first line is a short link to the state of the
                 # call, which Compiler Explorer stores. A call with offset sends

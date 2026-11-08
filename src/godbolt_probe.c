@@ -599,7 +599,7 @@ godbolt_probe_literal (char const **c,
 
 /* The reason for a mark or a record outside of the block. */
 static char const godbolt_probe_misplaced[] =
-	"the output has a line of the block outside of one block";
+	"a GBPROBE line is out of place";
 
 /* Stores @p reason in p->why. Evaluates to EPROTO. */
 #define GODBOLT_PROBE_BAD(reason) (p->why = (reason), EPROTO)
@@ -633,12 +633,12 @@ godbolt_probe_parse_record (struct godbolt_probe         *p,
 		return GODBOLT_PROBE_BAD("a record of the block is not valid");
 	if ((size_t)(value - name) > GODBOLT_PROBE_TEXT_MAX + 1 ||
 	    (size_t)(*out - value) > GODBOLT_PROBE_TEXT_MAX + 1)
-		return GODBOLT_PROBE_BAD("a name or a value of a record has more than 256 bytes");
+		return GODBOLT_PROBE_BAD("a name or a value of a record is longer than 256 bytes");
 	for (uint32_t i = 0; i < *n; ++i)
 		if (!strcmp(list[i].name, name))
-			return GODBOLT_PROBE_BAD("the block has a record twice");
+			return GODBOLT_PROBE_BAD("the block contains a record twice");
 	if (*n == max)
-		return GODBOLT_PROBE_BAD("the block has too many records");
+		return GODBOLT_PROBE_BAD("the block contains too many records");
 	list[(*n)++] = (struct godbolt_probe_record){ name, value };
 	return 0;
 }
@@ -679,7 +679,7 @@ godbolt_probe_line (struct godbolt_probe  *p,
 		                                  array_size(p->headers), *state,
 		                                  cstr_view_slice(line, header.len, SIZE_MAX), out);
 	if (*state == 1 && line.len && *line.data != '#')
-		return GODBOLT_PROBE_BAD("the block has a line that is not a record");
+		return GODBOLT_PROBE_BAD("the block contains a line that is not a record");
 	return 0;
 }
 
@@ -699,7 +699,7 @@ godbolt_probe_parse (struct godbolt_probe *p,
 		if (e)
 			return e;
 	}
-	return state == 2 ? 0 : GODBOLT_PROBE_BAD("the output has no complete block");
+	return state == 2 ? 0 : GODBOLT_PROBE_BAD("the output contains no complete block");
 }
 
 #undef GODBOLT_PROBE_BAD

@@ -531,7 +531,7 @@ static struct cstr_view const godbolt_sections[GODBOLT_SECS] = {
 
 /* The note after a text that Compiler Explorer cut. */
 static struct cstr_view const godbolt_cut_note =
-	CSTR_VIEW_INIT("[Compiler Explorer cut this output.]\n");
+	CSTR_VIEW_INIT("[Compiler Explorer cut the output of the compilation.]\n");
 
 /* How a tool compiles with a kind of driver. */
 struct godbolt_recipe {
@@ -1004,7 +1004,7 @@ godbolt_result (struct godbolt *call)
 		return GODBOLT_WAIT;
 	call->wait = GODBOLT_IDLE;
 	if (e || (!r.body.data && r.body.len) || !r.error) {
-		godbolt_why(call, "askai has no response to the request");
+		godbolt_why(call, "askai got no response to the request");
 		return GODBOLT_BAD;
 	}
 	if (r.e == ESHUTDOWN || r.e == ENOMEM)
@@ -1018,7 +1018,7 @@ godbolt_result (struct godbolt *call)
 	bool const retry = cause & (godbolt_rules[call->kind_of].again | GODBOLT_AGAIN_BUSY);
 	if (retry) {
 		if (r.retry > GODBOLT_RETRY_MAX) {
-			godbolt_why(call, "HTTP %" PRIu32 ", and Retry-After is %" PRIu32 " s",
+			godbolt_why(call, "HTTP %" PRIu32 " with Retry-After %" PRIu32 " s",
 			            r.status, r.retry);
 			return GODBOLT_BAD;
 		}
@@ -1034,7 +1034,7 @@ godbolt_result (struct godbolt *call)
 		godbolt_why(call, "the response is larger than %zu %s",
 		            call->req.max >> (mib ? 20 : 10), mib ? "MiB" : "KiB");
 	else if (r.e)
-		godbolt_why(call, "the request failed: %.*s",
+		godbolt_why(call, "the request failed (%.*s)",
 		            (int)util_clip(r.error, strlen(r.error), GODBOLT_REASON_MAX), r.error);
 	else if (r.status < 200 || r.status > 299)
 		godbolt_reason(call, r.status);
@@ -1122,7 +1122,7 @@ godbolt_list_parse (struct godbolt *call,
 			godbolt_why(call, "%s", json_tokener_error_desc(err));
 			call->list = GODBOLT_LIST_BAD;
 		} else if (call->off - call->start > GODBOLT_ELEMENT_MAX) {
-			godbolt_why(call, "an element has more than 4 KiB");
+			godbolt_why(call, "an element is larger than 4 KiB");
 			call->list = GODBOLT_LIST_BAD;
 		} else if (err == json_tokener_success) {
 			json_tokener_reset(call->tok);
@@ -1260,7 +1260,7 @@ godbolt_count (struct godbolt *call,
 		return call->e;
 	}
 	if (json_object_object_length(call->doc) == GODBOLT_KEYS) {
-		godbolt_why(call, "the list has more than 256 different %s",
+		godbolt_why(call, "the list contains more than 256 different %s",
 		            godbolt_action_names[call->args.action].data);
 		call->list = GODBOLT_LIST_BAD;
 		return call->e;
@@ -1427,11 +1427,10 @@ godbolt_catalog_end (struct godbolt *call)
 	if (keys)
 		godbolt_tallies(call, keys);
 	if (call->malformed)
-		godbolt_putf(call, "The plugin left out %" PRIu32 " element%s of the list. An "
-		             "element must have a string member id%s.\n", call->malformed,
-		             util_s(call->malformed), languages ? "" : ", at most 64 family "
-		             "tags, and at most 128 bytes in its kind, its architecture and each "
-		             "family tag");
+		godbolt_putf(call, "Left out %" PRIu32 " list element%s without a string id%s.\n",
+		             call->malformed, util_s(call->malformed), languages ? "" : ", with "
+		             "more than 64 family tags, or with more than 128 bytes in the kind, "
+		             "the architecture or a family tag");
 	/* The first sentence of the last line counts the listed items, and the
 	 * second sentence counts all items of the list. */
 	char const *const singular = godbolt_actions[call->args.action].singular;
@@ -1444,12 +1443,12 @@ godbolt_catalog_end (struct godbolt *call)
 		godbolt_putf(call, "Listed %" PRIu32 " of %" PRIu32 " matching %s%s. ",
 		             call->listed, call->matching, singular, util_s(call->matching));
 	if (languages)
-		godbolt_putf(call, "Compiler Explorer has %" PRIu32 " language%s.\n", call->total,
-		             util_s(call->total));
+		godbolt_putf(call, "Compiler Explorer lists %" PRIu32 " language%s.\n",
+		             call->total, util_s(call->total));
 	else
-		godbolt_putf(call, "The list of language %.*s has %" PRIu32 " compiler%s.\n",
-		             (int)call->args.language.len, call->args.language.data, call->total,
-		             util_s(call->total));
+		godbolt_putf(call, "Compiler Explorer lists %" PRIu32 " compiler%s for language "
+		             "%.*s.\n", call->total, util_s(call->total),
+		             (int)call->args.language.len, call->args.language.data);
 	return godbolt_finish(call, 0);
 }
 
@@ -1837,8 +1836,7 @@ godbolt_link (struct godbolt *call)
 		godbolt_put(call, link);
 		godbolt_put(call, CSTR_VIEW("\n"));
 	} else {
-		godbolt_put(call, CSTR_VIEW("Link: none. The response of Compiler Explorer has "
-		                            "no valid link.\n"));
+		godbolt_put(call, CSTR_VIEW("Link: none. Compiler Explorer sent no valid link.\n"));
 	}
 	json_object_put(doc);
 	return call->e ? godbolt_finish(call, TOOL_FAILED) : GODBOLT_GO;
@@ -1896,10 +1894,9 @@ godbolt_end (struct godbolt *call)
 		godbolt_put(call, CSTR_VIEW("The facts come from predefined macros. data_model "
 		                            "describes only the sizes of int, long and "
 		                            "pointers.\n"));
-	godbolt_putf(call, "Of %" PRIu32 " compilation%s, %" PRIu32 " ended with exit code "
-	             "0, %" PRIu32 " ended with another exit code or a timeout, %" PRIu32
-	             " ended with a failed request, and %" PRIu32 " ended without a "
-	             "request.\n", call->jobs, util_s(call->jobs), c[GODBOLT_ZERO],
+	godbolt_putf(call, "%" PRIu32 " compilation%s: %" PRIu32 " with exit code 0, %" PRIu32
+	             " with another exit code or a timeout, %" PRIu32 " with a failed request, "
+	             "%" PRIu32 " not sent.\n", call->jobs, util_s(call->jobs), c[GODBOLT_ZERO],
 	             c[GODBOLT_OTHER], c[GODBOLT_FAILED], c[GODBOLT_UNSENT]);
 	return godbolt_finish(call, c[GODBOLT_ZERO] || c[GODBOLT_OTHER] ? 0 : TOOL_FAILED);
 }
@@ -1916,11 +1913,11 @@ godbolt_job (struct godbolt *call)
 	struct godbolt_recipe const *r = godbolt_job_recipe(call, call->job);
 	godbolt_job_body(call, r);
 	if (call->full) {
-		godbolt_why(call, "not sent, because the output is full");
+		godbolt_why(call, "not sent because the output is full");
 		return godbolt_unanswered(call, GODBOLT_UNSENT);
 	}
 	if (r->from == GODBOLT_FROM_NONE) {
-		godbolt_why(call, "not sent, because MSVC cannot output its predefined macros");
+		godbolt_why(call, "not sent because MSVC cannot output the predefined macros");
 		return godbolt_unanswered(call, GODBOLT_UNSENT);
 	}
 	godbolt_request(call, GODBOLT_POST_COMPILE,
@@ -2040,7 +2037,7 @@ godbolt_targets_parse (struct godbolt *call)
 	if (e == ENOMEM)
 		return ENOMEM;
 	if (e) {
-		godbolt_why(call, "the probe output is not valid: %s", call->probe.why);
+		godbolt_why(call, "the probe output is not valid (%s)", call->probe.why);
 		return 0;
 	}
 	call->rec.marks |= GODBOLT_REC_PROBED;
@@ -2106,11 +2103,12 @@ godbolt_parse (struct godbolt *call)
 		return godbolt_classify(call);
 	}
 	if (err != json_tokener_continue)
-		godbolt_why(call, "the response is not valid: %s", json_tokener_error_desc(err));
+		godbolt_why(call, "the response is not valid JSON (%s)",
+		            json_tokener_error_desc(err));
 	else if (call->off < body.len)
 		return GODBOLT_GO;
 	else
-		godbolt_why(call, "the response is not valid: the JSON text ends early");
+		godbolt_why(call, "the response is not valid JSON (the text ends early)");
 	return godbolt_unanswered(call, GODBOLT_FAILED);
 }
 
@@ -2122,8 +2120,7 @@ godbolt_full (struct godbolt *call)
 {
 	call->full = 1;
 	call->rec.marks |= GODBOLT_REC_CUT;
-	return godbolt_put(call, CSTR_VIEW("\n[The output is cut here, because it has "
-	                                   "reached 14 MiB.]\n"));
+	return godbolt_put(call, CSTR_VIEW("\n[The output is cut here at 14 MiB.]\n"));
 }
 
 static_assert(GODBOLT_FULL == 14 << 20, "the text of the note has 14 MiB");
@@ -2366,8 +2363,8 @@ godbolt_write (struct godbolt *call)
 	if (!(call->rec.marks & GODBOLT_REC_HEADED)) {
 		godbolt_header(call);
 		if (call->rec.marks & GODBOLT_REC_NO_PP)
-			godbolt_put(call, CSTR_VIEW("Compiler Explorer sent no output of the "
-			                            "preprocessor for this compiler.\n"));
+			godbolt_put(call, CSTR_VIEW("Compiler Explorer sent no preprocessor output "
+			                            "for the compiler.\n"));
 		if (call->rec.marks & GODBOLT_REC_PROBED)
 			godbolt_facts(call);
 		if (call->args.flags & GODBOLT_WITH_RUN)
