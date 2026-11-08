@@ -12041,60 +12041,59 @@ def check_notes_texts(binary, up):
                 listed = next(t for t in ai.rpc("tools/list")[2]["result"]["tools"]
                               if t["name"] == "notes")
                 for definition, schema, side, notebook, tail in (
-                        (lent, "parameters", "Notes are files that last across ask calls "
-                         "and compactions, and every version stays in the history. You "
-                         "can read every notebook but write only your own. After a "
-                         "compaction, you see your note history and your newest note.",
-                         "own, the default except for copy, which needs this, a "
-                         "participant's name, or a selector from action notebooks.", PAGED),
-                        (listed, "inputSchema", "Notes are files, and every version stays "
-                         "in the history. You can read every notebook but write only your "
-                         "own.", "own, the default, other for the other side, a "
-                         "participant's name, or a selector from action notebooks. other "
-                         "is copy's default.", "")):
+                        (lent, "parameters", "Notes are files in notebooks. Every version "
+                         "of a note stays in the history. You can read every notebook but "
+                         "write only your own notebook. Each ask call and each compaction "
+                         "starts with your note history and your newest note.",
+                         "The notebook to read: own, a participant's name, or a selector "
+                         "from action notebooks. The default is own. copy needs notebook.",
+                         PAGED),
+                        (listed, "inputSchema", "Notes are files in notebooks. Every version "
+                         "of a note stays in the history. You can read every notebook but "
+                         "write only your own notebook.", "The notebook to read: own, other, "
+                         "a participant's name, or a selector from action notebooks. other "
+                         "is the notebook of your ask_ai calls. The default is own, or other "
+                         "for copy.", "")):
                     assert definition["description"] == f"Participant: p. {side} Prefer " \
-                        "small, incremental edits. Before replace, read the whole note, then " \
-                        "send the whole new text and keep unrelated passages and evidence " \
-                        "word for word. For an overhaul of most of a note, add a new " \
-                        "versioned file, keep the old one, and name the predecessor and what " \
-                        "changed. Bytes that are not UTF-8 show as \u27e6XX\u27e7." + tail, \
-                        definition
+                        "small edits. Before replace, read the whole note. Send the whole new " \
+                        "text. Copy unrelated passages and evidence word for word. To rewrite " \
+                        "most of a note, add a new file such as plan-v2.md. Keep the old file. " \
+                        "In the new file, name the old file and the changes. Bytes that are " \
+                        "not UTF-8 show as \u27e6XX\u27e7." + tail, definition
                     described = {name: p["description"] for name, p in
                                  definition[schema]["properties"].items()}
                     assert described == {
-                        "action": "add creates a note (file) with text. append adds text to the "
-                        "end of a note, on a new line. replace replaces the whole text of a "
-                        "note. delete removes a note; its versions stay in the history. restore "
-                        "writes a note's version at the commit revision in a new commit, under "
-                        "as if given. copy copies a note (file) from another notebook "
-                        "(notebook) into yours, under as if given. list lists the current "
-                        "notes. history lists the changes, oldest first, to all notes or to one "
-                        "(file). read reads a note, or its version at the commit revision. diff "
-                        "shows the changes to a note between the commits from and to. search "
-                        "lists the lines of the current notes, not their names, that match "
-                        "pattern. notebooks lists the session's notebooks. The actions that "
-                        "read take notebook. To recover lost text: history with file, then "
-                        "diff, then read or restore with revision.",
-                        "file": "A note's file name, at most 255 bytes in all, such as plan.md "
-                        "or design/locks.md. Its extension shows the format of the text. With "
-                        "history, only that file's changes.",
-                        "text": "The text, at most 4 MiB.",
-                        "pattern": "Extended regexes, one on each line, case ignored. A line "
-                        "of a note matches if one of them matches.",
-                        "revision": "A full commit ID from the notebook's history, or "
-                        "current, the default.",
-                        "from": "The older commit: a full commit ID from the notebook's "
+                        "action": "add creates the note named file with text. append adds "
+                        "text to the end of the note, on a new line. replace replaces the "
+                        "note with text. delete deletes the note. restore writes the note at "
+                        "the commit revision in a new commit. copy copies the note from "
+                        "notebook to your own notebook. list lists the current notes. "
+                        "history lists the changes, oldest first. read reads the note, or "
+                        "the note at the commit revision. diff shows the changes to the note "
+                        "between the commits from and to. search finds the lines of the "
+                        "current notes that match pattern. Note names are not searched. "
+                        "notebooks lists the notebooks of the session. To recover lost text: "
+                        "history with file, then diff, then read or restore with revision.",
+                        "file": "The note name, 1 to 255 bytes, such as plan.md or "
+                        "design/locks.md. Use the extension for the format of the text. With "
+                        "file, history lists only the changes to the note.",
+                        "text": "The text, 1 byte to 4 MiB.",
+                        "pattern": "Extended regular expressions, one on each line. Case is "
+                        "ignored. A line of a note matches if any expression matches.",
+                        "revision": "A full commit ID from the notebook history, or current. "
+                        "The default is current.",
+                        "from": "The older commit: a full commit ID from the notebook "
                         "history, or current.",
-                        "to": "The newer commit: a full commit ID, or current, the default. "
-                        "The output names both commits; give those IDs with offset.",
-                        "as": "The name to write the note under, instead of file.",
+                        "to": "The newer commit: a full commit ID, or current. The default is "
+                        "current. With offset, give the commit IDs from the diff output as "
+                        "from and to.",
+                        "as": "The name for the new note of copy or restore, instead of file.",
                         "notebook": notebook, "offset": OFFSET_ABOUT} | ({
                             "content": "For add, append and replace, instead of text: a "
-                            "file that the user gave, which your client attaches as it is. "
-                            "Do not write it yourself.",
-                            "thread": "Optional legacy ask-chain id (32 hexadecimal "
-                            "digits). Notes belong to the configured shared repository, "
-                            "independent of this value."} if not tail else {}), described
+                            "file from the user. Your client fills in content. Do not write "
+                            "content yourself.",
+                            "thread": "Legacy, 32 hexadecimal digits. The notes do not "
+                            "depend on thread."} if not tail else {}), described
                 assert call(action="copy", file="a.md", notebook=upstream, **{"from": "x"}) == \
                     "!revision is for read and restore, and from and to are for diff. The " \
                     "description of action lists the arguments of each action."
@@ -12645,8 +12644,8 @@ def check_attach(binary, up):
                 properties = notes_tool[schema]["properties"]
                 assert all(properties[name]["type"] == "string"
                            for name in ("revision", "from", "to")), properties
-                assert "attach gives you a whole note (file) as a file after the turn's " \
-                    "results. The actions" in action["description"], action
+                assert "attach sends you the whole note as a file after the results " \
+                    "of the turn. To recover" in action["description"], action
                 view, plain = up.uploads[stored:]
                 assert view["raw"] == note_view(latin1).encode() and \
                     plain["raw"] == code.encode(), (view, plain)

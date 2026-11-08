@@ -1988,55 +1988,58 @@ notes_tool_schema (struct notes_tool const *tool,
 {
 	static char const *const descriptions[] = {
 		[NOTES_UPSTREAM] =
-			"Notes are files that last across ask calls and compactions, and every "
-			"version stays in the history. You can read every notebook but write only "
-			"your own. After a compaction, you see your note history and your newest "
-			"note.",
+			"Notes are files in notebooks. Every version of a note stays in the "
+			"history. You can read every notebook but write only your own notebook. "
+			"Each ask call and each compaction starts with your note history and your "
+			"newest note.",
 		[NOTES_CLIENT] =
-			"Notes are files, and every version stays in the history. You can read "
-			"every notebook but write only your own.",
+			"Notes are files in notebooks. Every version of a note stays in the "
+			"history. You can read every notebook but write only your own notebook.",
 	};
 	static char const *const notebooks[] = {
-		[NOTES_UPSTREAM] = "own, the default except for copy, which needs this, a "
-		                   "participant's name, or a selector from action notebooks.",
-		[NOTES_CLIENT] = "own, the default, other for the other side, a participant's name, "
-		                 "or a selector from action notebooks. other is copy's default.",
+		[NOTES_UPSTREAM] = "The notebook to read: own, a participant's name, or a "
+		                   "selector from action notebooks. The default is own. copy "
+		                   "needs notebook.",
+		[NOTES_CLIENT] = "The notebook to read: own, other, a participant's name, or a "
+		                 "selector from action notebooks. other is the notebook of your "
+		                 "ask_ai calls. The default is own, or other for copy.",
 	};
 	size_t const offered = side == NOTES_UPSTREAM ? tool->actions : NOTES_ACTION_ATTACH;
 	struct json_object *actions = schema_names(notes_action_names, offered);
 	struct json_object *props = jb_object(
 		"action", jb_set_or_free(schema_enum(actions, nullptr), "description", schema_text3(
-			"add creates a note (file) with text. append adds text to the end of a "
-			"note, on a new line. replace replaces the whole text of a note. delete "
-			"removes a note; its versions stay in the history. restore writes a note's "
-			"version at the commit revision in a new commit, under as if given. copy "
-			"copies a note (file) from another notebook (notebook) into yours, under as "
-			"if given. list lists the current notes. history lists the changes, oldest "
-			"first, to all notes or to one (file). read reads a note, or its version at "
-			"the commit revision. diff shows the changes to a note between the commits "
-			"from and to. search lists the lines of the current notes, not their "
-			"names, that match pattern. notebooks lists the session's notebooks.",
-			offered > NOTES_ACTION_ATTACH ? " attach gives you a whole note (file) "
-			                                "as a file after the turn's results." : "",
-			" The actions that read take notebook. To recover lost text: history with "
-			"file, then diff, then read or restore with revision.")),
+			"add creates the note named file with text. append adds text to the end of "
+			"the note, on a new line. replace replaces the note with text. delete "
+			"deletes the note. restore writes the note at the commit revision in a new "
+			"commit. copy copies the note from notebook to your own notebook. list "
+			"lists the current notes. history lists the changes, oldest first. read "
+			"reads the note, or the note at the commit revision. diff shows the "
+			"changes to the note between the commits from and to. search finds the "
+			"lines of the current notes that match pattern. Note names are not "
+			"searched. notebooks lists the notebooks of the session.",
+			offered > NOTES_ACTION_ATTACH ? " attach sends you the whole note as a "
+			                                "file after the results of the turn." : "",
+			" To recover lost text: history with file, then diff, then read or restore "
+			"with revision.")),
 		"file", schema_property("string",
-			"A note's file name, at most 255 bytes in all, such as plan.md or "
-			"design/locks.md. Its extension shows the format of the text. With "
-			"history, only that file's changes."),
+			"The note name, 1 to 255 bytes, such as plan.md or design/locks.md. Use "
+			"the extension for the format of the text. With file, history lists only "
+			"the changes to the note."),
 		"revision", schema_property("string",
-			"A full commit ID from the notebook's history, or current, the default."),
+			"A full commit ID from the notebook history, or current. The default is "
+			"current."),
 		"from", schema_property("string",
-			"The older commit: a full commit ID from the notebook's history, or "
+			"The older commit: a full commit ID from the notebook history, or "
 			"current."),
 		"to", schema_property("string",
-			"The newer commit: a full commit ID, or current, the default. The output "
-			"names both commits; give those IDs with offset."),
-		"as", schema_property("string", "The name to write the note under, instead of file."),
-		"text", schema_property("string", "The text, at most 4 MiB."),
+			"The newer commit: a full commit ID, or current. The default is current. "
+			"With offset, give the commit IDs from the diff output as from and to."),
+		"as", schema_property("string",
+			"The name for the new note of copy or restore, instead of file."),
+		"text", schema_property("string", "The text, 1 byte to 4 MiB."),
 		"pattern", schema_property("string",
-			"Extended regexes, one on each line, case ignored. A line of a note "
-			"matches if one of them matches."),
+			"Extended regular expressions, one on each line. Case is ignored. A line "
+			"of a note matches if any expression matches."),
 		"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 		"notebook", schema_property("string", notebooks[side]),
 		nullptr);
@@ -2047,25 +2050,24 @@ notes_tool_schema (struct notes_tool const *tool,
 			"type", json_object_new_string("string"),
 			"format", json_object_new_string("uri"),
 			"description", json_object_new_string(
-				"For add, append and replace, instead of text: a file that the user "
-				"gave, which your client attaches as it is. Do not write it "
+				"For add, append and replace, instead of text: a file from the "
+				"user. Your client fills in content. Do not write content "
 				"yourself."),
 			"x-mcp-file", jb_object("maxSize",
 			                        json_object_new_int64((int64_t)tool->files_inline),
 			                        nullptr),
 			nullptr));
 		props = jb_set_or_free(props, "thread", schema_property("string",
-			"Optional legacy ask-chain id (32 hexadecimal digits). Notes belong "
-			"to the configured shared repository, independent of this value."));
+			"Legacy, 32 hexadecimal digits. The notes do not depend on thread."));
 	}
 	dstr_auto description = DSTR_INIT;
-	if (!dstr_printf(&description, "Participant: %s. %s Prefer small, incremental edits. "
-	                 "Before replace, read the whole note, then send the whole new text and "
-	                 "keep unrelated passages and evidence word for word. For an overhaul of "
-	                 "most of a note, add a new versioned file, keep the old one, and name "
-	                 "the predecessor and what changed. Bytes that are not UTF-8 show as "
-	                 "\xe2\x9f\xa6XX\xe2\x9f\xa7.", notes_writer(tool->notes),
-	                 descriptions[side])) {
+	if (!dstr_printf(&description, "Participant: %s. %s Prefer small edits. Before "
+	                 "replace, read the whole note. Send the whole new text. Copy "
+	                 "unrelated passages and evidence word for word. To rewrite most of a "
+	                 "note, add a new file such as plan-v2.md. Keep the old file. In the "
+	                 "new file, name the old file and the changes. Bytes that are not "
+	                 "UTF-8 show as \xe2\x9f\xa6XX\xe2\x9f\xa7.",
+	                 notes_writer(tool->notes), descriptions[side])) {
 		json_object_put(props);
 		return nullptr;
 	}
