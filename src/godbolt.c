@@ -222,15 +222,17 @@ enum godbolt_req : uint8_t {
 	GODBOLT_POST_SHORTEN,   /* POST /api/shortener */
 };
 
-/* The failures after which the plugin sends a request again. A rule
- * selects the first three, and the plugin sends every request again after
- * the statuses 429, 502 and 503.
+/* The failures after which the plugin sends a request again. The member
+ * again of each rule in godbolt_rules is a mask of some of the first three
+ * bits. The plugin sends every request again after the statuses 429, 502
+ * and 503. GODBOLT_AGAIN_GET is the mask of the two GET requests.
  */
 enum godbolt_again : uint32_t {
 	GODBOLT_AGAIN_504      = 1u << 0,
 	GODBOLT_AGAIN_EIO      = 1u << 1,
 	GODBOLT_AGAIN_TIMEDOUT = 1u << 2,
 	GODBOLT_AGAIN_BUSY     = 1u << 3,  /* 429, 502 or 503 */
+	GODBOLT_AGAIN_GET      = GODBOLT_AGAIN_504 | GODBOLT_AGAIN_EIO | GODBOLT_AGAIN_TIMEDOUT,
 };
 
 /* The URL and the limits of a kind of request, and the failures after
@@ -255,12 +257,10 @@ struct godbolt_rule {
 static struct godbolt_rule const godbolt_rules[] = {
 	[GODBOLT_GET_LANGUAGES] = { CSTR_VIEW_INIT("/api/languages"),
 	                            CSTR_VIEW_INIT("?fields=id,name,defaultCompiler"),
-	                            1 << 20, 30, 86400, GODBOLT_AGAIN_504 | GODBOLT_AGAIN_EIO |
-	                                                GODBOLT_AGAIN_TIMEDOUT },
+	                            1 << 20, 30, 86400, GODBOLT_AGAIN_GET },
 	[GODBOLT_GET_COMPILERS] = { CSTR_VIEW_INIT("/api/compilers/"),
 	                            CSTR_VIEW_INIT("?fields=" GODBOLT_FIELDS),
-	                            4 << 20, 30, 3600, GODBOLT_AGAIN_504 | GODBOLT_AGAIN_EIO |
-	                                               GODBOLT_AGAIN_TIMEDOUT },
+	                            4 << 20, 30, 3600, GODBOLT_AGAIN_GET },
 	[GODBOLT_POST_COMPILE]  = { CSTR_VIEW_INIT("/api/compiler/"), CSTR_VIEW_INIT("/compile"),
 	                            4 << 20, 60, 300, 0 },
 	[GODBOLT_POST_SHORTEN]  = { CSTR_VIEW_INIT("/api/shortener"), CSTR_VIEW_INIT(""),
