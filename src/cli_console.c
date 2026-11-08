@@ -763,12 +763,7 @@ static int
 cli_console_output_work (struct cli_io_job *job)
 {
 	struct cli_console_io *output = container_of(job, struct cli_console_io, job);
-	ssize_t count;
-	do {
-		count = write(STDOUT_FILENO, output->bytes, (size_t)output->count);
-	} while (count < 0 && errno == EINTR);
-	output->count = count;
-	return count < 0 ? errno : count ? 0 : EIO;
+	return util_write_all(STDOUT_FILENO, output->bytes, (size_t)output->count);
 }
 
 static void
