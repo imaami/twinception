@@ -2011,10 +2011,11 @@ httpd_conn_wait (struct httpd_conn *conn,
 	bool starved = next == NEXT_INPUT;
 	bool paused = pending >= srv->lim.out_pause || conn->flags & CONN_CLOSING;
 	bool waits = conn->req.flags & REQ_WAITS;
-	bool reads = starved && !paused && !(wait & WAIT_BLOCKED) && !(conn->flags & CONN_EOF) &&
-	             !waits;
+	bool blocked = wait & WAIT_BLOCKED;
+	bool sends = pending || blocked;
+	bool reads = starved && !paused && !blocked && !(conn->flags & CONN_EOF) && !waits;
 	bool held = reads && conn->events & HELD;
-	uint32_t events = pending || wait & WAIT_BLOCKED ? EPOLLOUT : 0;
+	uint32_t events = sends ? EPOLLOUT : 0;
 	if (waits)
 		events |= EPOLLRDHUP;
 	else if (reads)
@@ -2026,7 +2027,7 @@ httpd_conn_wait (struct httpd_conn *conn,
 	if (held)
 		conn->events |= EPOLLIN;
 	bool waiting = !(wait & WAIT_AGAIN) && !held &&
-	               (starved || next == NEXT_WAIT || paused || wait & WAIT_BLOCKED);
+	               (starved || next == NEXT_WAIT || paused || blocked);
 	if (waiting)
 		loop_unready(&conn->step);
 	else
@@ -2034,7 +2035,7 @@ httpd_conn_wait (struct httpd_conn *conn,
 
 	/* An idle connection keeps no storage, and under critical memory
 	 * pressure one that waits keeps no more than its bytes need. */
-	bool idle = starved && !pending && !(wait & WAIT_BLOCKED) && !httpd_conn_input(conn);
+	bool idle = starved && !sends && !httpd_conn_input(conn);
 	if (idle)
 		buf_fini(&conn->in);
 	else if (waiting && atomic_load_explicit(&buf_pressure, memory_order_relaxed) >=
@@ -2082,8 +2083,9 @@ httpd_conn_pump (struct httpd_conn *conn)
 		/* A response ended there leaves its request to the next step. */
 		wait = conn->req.flags & REQ_DONE ? WAIT_AGAIN : 0;
 	}
-	wait |= httpd_conn_blocked(conn) ? WAIT_BLOCKED : 0;
-	if (!pending && !(wait & WAIT_BLOCKED) &&
+	bool blocked = httpd_conn_blocked(conn);
+	wait |= blocked ? WAIT_BLOCKED : 0;
+	if (!pending && !blocked &&
 	    (next == NEXT_END || (next == NEXT_INPUT && conn->flags & CONN_EOF))) {
 		httpd_conn_end(conn);
 		return;
