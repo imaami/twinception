@@ -1794,15 +1794,14 @@ config_url_generate (struct config *cfg)
 {
 	if (cfg->ep.api != AI_GENERATE)
 		return 0;
-	static char const method[] = ":generateContent";
-	size_t const m = sizeof method - 1;
+	struct cstr_view const method = CSTR_VIEW(":generateContent");
 	char const *url = cfg->ep.url;
 	char const *query = url + strcspn(url, "?");
 	/* The path, less its method if that is the one that does not stream. */
 	size_t path = (size_t)(query - url);
 	char const *stream = "";
-	if (path >= m && !memcmp(query - m, method, m)) {
-		path -= m;
+	if (cstr_view_ends((struct cstr_view){ url, path }, method)) {
+		path -= method.len;
 		stream = ":streamGenerateContent";
 	}
 	/* The query up to its alt's value, and what follows that; or all of it,
