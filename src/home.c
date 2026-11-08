@@ -309,17 +309,14 @@ home_job_restore (struct job                  *job,
 			continue;
 		struct json_object *meta = jb_parse((char const *)records->data,
 		                                    records->len, 0, 8);
-		if (!meta) {
-			home_job_recovery_fini(job);
-			return EPROTO;
-		}
 		char const *id = jb_view(jb_get(meta, "provider_id")).data;
-		if (id && *id && !r->provider_id && !(r->provider_id = strdup(id))) {
-			json_object_put(meta);
-			home_job_recovery_fini(job);
-			return ENOMEM;
-		}
+		int e = !meta ? EPROTO
+		      : id && *id && !r->provider_id && !(r->provider_id = strdup(id)) ? ENOMEM : 0;
 		json_object_put(meta);
+		if (e) {
+			home_job_recovery_fini(job);
+			return e;
+		}
 	}
 	return 0;
 }
