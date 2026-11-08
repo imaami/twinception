@@ -12355,8 +12355,9 @@ def check_notes_texts(binary, up):
     unusable revision and a diff without differences, the tool's
     definitions for clients and turns, the notebook notice after a turn's
     diff and read, the last line of the trace when the turns of an ask
-    call kept notes, and the answer to a turn's replace whose text lacks
-    only the final line feed."""
+    call kept notes, the answer to a turn's replace whose text lacks only
+    the final line feed, and the refusal of a turn's text that contains the
+    markup of the next tool call."""
     held = up.reply
     script = []
     up.reply = lambda request: script.pop(0)(request)
@@ -12563,12 +12564,52 @@ def check_notes_texts(binary, up):
                     (ME, "@WHEN@  Replace \"a.md\" (6 to 8 bytes)"),
                     ("p", f"@WHEN@  Append \"b.md\" (2 to 4 bytes), asked by {ME}")))).replace(
                         "@WHEN@", when), text_of(body["result"])), body
+
+                # A turn's text with </function> and later </tool_call> or
+                # <tool_call> contains the next tool call of the turn. add,
+                # append and replace refuse such a text and make no commit.
+                def leaked(tag):
+                    return f"The text contains </function> and then {tag}. The text of " \
+                        "the call ended early. The next tool call became part of the note " \
+                        "text. Nothing was written. Write the note again with the text " \
+                        "parameter closed correctly."
+                end = "</text></function></tool_call><tool_call><function=notes>" \
+                    "<parameter=action>list"
+                middle = "```\n</function></tool_call><tool_call><function=git>" \
+                    "<parameter=repo>askai"
+                before = git("rev-parse", upstream)
+                said, _ = results([
+                    {"action": "add", "file": "team-design.md", "text": "# Team\n\nLast.\n" + end},
+                    {"action": "replace", "file": "b.md", "text": f"plan\n{middle}\nmore\n"},
+                    {"action": "append", "file": "b.md", "text": end + "\n\n[askai: notebook p "
+                     "(agent)]"},
+                    {"action": "add", "file": "_probe.md", "text": "x</function>\n<tool_call>"},
+                    {"action": "replace", "file": "b.md", "text": "</function><tool_call>"
+                     "</tool_call>"}])
+                assert said == [leaked("</tool_call>")] * 3 + [leaked("<tool_call>")] + \
+                    [leaked("</tool_call>")], said
+                assert git("rev-parse", upstream) == before and \
+                    git("ls-tree", "--name-only", upstream) == "b.md", before
+                # Each tag alone, and the tags before </function>, stay as they
+                # are. A client's text is not checked.
+                alone = {"function.md": "a </function> b\n", "call.md": "<tool_call>\n",
+                         "text.md": "c</text>\n", "order.md": "<tool_call></tool_call> x "
+                         "</function>\n", "close.md": "</tool_call>\n</function>\n"}
+                said, _ = results([{"action": "add", "file": name, "text": text}
+                                   for name, text in alone.items()])
+                for k, (name, text) in enumerate(alone.items()):
+                    assert re.fullmatch(saved(f'Add "{name}" ({len(text)} bytes)'), said[k]) and \
+                        git("show", f"{upstream}:{name}") == text.strip(), (name, said)
+                assert re.fullmatch(saved(f'Add "leak.md" ({len(end)} bytes)'),
+                                    call(action="add", file="leak.md", text=end)) and \
+                    git("show", f"{client}:leak.md") == end
     finally:
         up.reply = held
     print("notes texts: the answers before the first note, the members and their "
           "newest changes, the three answers for a notebook argument, an unusable "
           "revision, a diff without differences, the definitions, the notice after "
-          "a turn's diff and read, the commit of a turn and the end of the trace: PASS")
+          "a turn's diff and read, the commit of a turn, the end of the trace and "
+          "leaked tool-call markup: PASS")
 
 
 def check_turn_apis(binary, up):

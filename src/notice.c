@@ -1,8 +1,9 @@
 /** @file notice.c
  *
- * The [askai: ...] notices and their matcher.
+ * The [askai: ...] notices and their matcher, and the check for the markup
+ * of a tool call in the text of a turn.
  */
-#define _GNU_SOURCE /* memrchr() */
+#define _GNU_SOURCE /* memmem(), memrchr() */
 #include <string.h>
 
 #include "cstr_view.h"
@@ -98,4 +99,24 @@ notice_kept (char const *text,
 	/* A removed line starts after a line feed, or at the start. */
 	return kept == len ? len : !end ? 0
 	     : (size_t)((char const *)memchr(text + end, '\n', kept - end) - text) + 1;
+}
+
+char const *
+notice_markup (char const *text,
+               size_t      len)
+{
+	static struct cstr_view const end = CSTR_VIEW_INIT("</function>");
+	static struct cstr_view const tags[] = {
+		CSTR_VIEW_INIT("</tool_call>"),
+		CSTR_VIEW_INIT("<tool_call>"),
+	};
+	char const *at = text ? memmem(text, len, end.data, end.len) : nullptr;
+	if (!at)
+		return nullptr;
+	at += end.len;
+	size_t const rest = len - (size_t)(at - text);
+	for (size_t i = 0; i < array_size(tags); ++i)
+		if (memmem(at, rest, tags[i].data, tags[i].len))
+			return tags[i].data;
+	return nullptr;
 }

@@ -1624,7 +1624,11 @@ When a turn writes text whose last lines are askai's own notices from tool
 results, such as `[askai: notebook ...]` or the context notices, askai
 leaves those lines out and says so in the result. Notices inside the
 text, and text from clients, stay as they are. askai adds a line feed to
-a turn's text that does not end with one.
+a turn's text that does not end with one. askai refuses a turn's text that
+contains `</function>` and later `</tool_call>` or `<tool_call>`, and
+writes nothing. The text argument of such a call ended early, and the next
+tool call of the turn became part of the text. Text from clients is not
+checked.
 `search` lists the lines of the current notes that match `pattern`, whose
 lines are extended regular expressions, case ignored.
 `list` shows each current file once, with its byte count and blob identity;

@@ -4,7 +4,8 @@
  * tool calls, after a blank line: the notebook of a read, the two notices
  * about the context, and the notice of the last turn. A turn can copy a
  * result into a note, and notice_kept() finds the notices at the end of
- * such a text by the same formats.
+ * such a text by the same formats. notice_markup() finds the markup of a
+ * tool call in the text of a turn.
  */
 #ifndef ASKAI_SRC_NOTICE_H_
 #define ASKAI_SRC_NOTICE_H_
@@ -34,5 +35,16 @@
 extern size_t
 notice_kept (char const *text,
              size_t      len);
+
+/**
+ * Returns "</tool_call>" or "<tool_call>" if the @p len bytes at @p text
+ * contain "</function>" and later that tag, or else nullptr. "</tool_call>"
+ * is checked first. Such a text is the text argument of a tool call whose
+ * text ended early: the next tool call of the turn became part of the
+ * text. Returns nullptr for a null @p text.
+ */
+extern char const *
+notice_markup (char const *text,
+               size_t      len);
 
 #endif /* ASKAI_SRC_NOTICE_H_ */

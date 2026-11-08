@@ -1960,7 +1960,8 @@ notes_tool_stage (struct mcp_slot *slot,
  * @p args. For append, the file part contains the text to append. The note
  * goes to the caller's own notebook. A turn's text is cut before its
  * trailing notices (notice_kept()), because askai adds those notices only
- * to the results of a turn's calls.
+ * to the results of a turn's calls. A turn's text with the markup of a
+ * later tool call (notice_markup()) is refused, and nothing is written.
  */
 static void
 notes_tool_add (struct mcp_slot    *slot,
@@ -1997,6 +1998,14 @@ notes_tool_add (struct mcp_slot    *slot,
 		: (struct cstr_view){};
 	if (problem.data) {
 		mcp_slot_tell(slot, problem, TOOL_FAILED);
+		return;
+	}
+	char const *tag = turn ? notice_markup(text.data, kept) : nullptr;
+	if (tag) {
+		mcp_slot_tellf(slot, TOOL_FAILED, "The text contains </function> and then %s. The "
+		               "text of the call ended early. The next tool call became part of the "
+		               "note text. Nothing was written. Write the note again with the text "
+		               "parameter closed correctly.", tag);
 		return;
 	}
 	(void)util_text_store(&call->revision.file, name);
