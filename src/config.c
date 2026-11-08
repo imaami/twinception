@@ -1694,8 +1694,9 @@ config_session (struct config *cfg)
 {
 	if (!cfg->participant)
 		cfg->participant = cfg->tool.name;
-	if (!util_word_len(cfg->participant, UTIL_WORD_MAX) &&
-	    (cfg->notes || cfg->transcripts || cfg->ep.background))
+	if (!cfg->notes && !cfg->transcripts && !cfg->ep.background)
+		return 0;
+	if (!util_word_len(cfg->participant, UTIL_WORD_MAX))
 		return config_complain(cfg, nullptr, "--participant: use 1-64 of "
 		                       "[A-Za-z0-9_-]; set it explicitly if --tool-name "
 		                       "does not fit: %s", cfg->participant);
@@ -1711,7 +1712,7 @@ config_session (struct config *cfg)
 		if (config_aprintf(&cfg->transcripts_owned, "%.*s.transcripts.git", (int)n,
 		                   cfg->notes))
 			return config_oom(cfg);
-	} else if (cfg->ep.background) {
+	} else {
 		char const *base;
 		char const *rest;
 		if (util_state_path(&base, &rest))
@@ -1720,8 +1721,6 @@ config_session (struct config *cfg)
 		if (config_aprintf(&cfg->transcripts_owned, "%s%s/%s/transcripts.git", base,
 		                   rest, cfg->participant))
 			return config_oom(cfg);
-	} else {
-		return 0;
 	}
 	cfg->transcripts = cfg->transcripts_owned;
 	return 0;
