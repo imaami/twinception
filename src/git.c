@@ -459,8 +459,9 @@ git_definition (void const *service)
 				"revisions", schema_array(schema_property("string", nullptr), REVISIONS,
 					"Commits, such as main, HEAD~3 or a commit hash. Only log "
 					"and diff accept a range, such as main..topic. For read, "
-					"show and cat-file, HEAD:path names a file. Stash, reflogs "
-					"and blob hashes are not available."),
+					"show and cat-file, HEAD:path names a file. Stash, reflogs, "
+					"the index (:path) and blob or tree hashes are not "
+					"available."),
 				"paths", schema_array(schema_property("string", nullptr), PATHS,
 					"Paths relative to the top of the repository, such as "
 					"src/. Paths limit the output. Give blame exactly one "
