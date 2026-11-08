@@ -1097,28 +1097,22 @@ journal_submit (struct journal     *j,
 		return EINVAL;
 	if (len > JOURNAL_RECORD_MAX)
 		return EFBIG;
-	struct journal_item *item = calloc(1, sizeof *item);
-	if (!item)
-		return ENOMEM;
-	item->record = calloc(1, sizeof *item->record + len + 1);
-	if (!item->record) {
-		journal_item_destroy(&item);
+	struct journal_item *item = malloc(sizeof *item);
+	struct journal_record *record = item ? calloc(1, sizeof *record + len + 1) : nullptr;
+	if (!record) {
+		free(item);
 		return ENOMEM;
 	}
-	item->msg.fn = journal_complete;
-	item->loop = loop;
-	item->done = done;
-	item->arg = arg;
-	item->bytes = sizeof *item + sizeof *item->record + len + 1;
-	item->operation = operation;
-	item->turn = turn;
-	item->offset = offset;
-	item->id = *id;
-	item->record->len = len;
-	item->record->id = *id;
-	item->record->type = type;
+	*item = (struct journal_item){
+		.msg.fn = journal_complete, .record = record, .loop = loop, .done = done, .arg = arg,
+		.bytes = sizeof *item + sizeof *record + len + 1, .offset = offset, .turn = turn,
+		.operation = operation, .id = *id,
+	};
+	record->len = len;
+	record->id = *id;
+	record->type = type;
 	if (len)
-		memcpy(item->record->data, data, len);
+		memcpy(record->data, data, len);
 	return journal_enqueue(j, item);
 }
 
@@ -1180,16 +1174,12 @@ journal_load_current (struct journal     *j,
 {
 	if (!j || !loop || !done || !id || !*id->hex)
 		return EINVAL;
-	struct journal_item *item = calloc(1, sizeof *item);
+	struct journal_item *item = malloc(sizeof *item);
 	if (!item)
 		return ENOMEM;
-	item->msg.fn = journal_complete;
-	item->loop = loop;
-	item->loaded = done;
-	item->arg = arg;
-	item->bytes = sizeof *item;
-	item->operation = JOURNAL_LOAD;
-	item->id = *id;
+	*item = (struct journal_item){ .msg.fn = journal_complete, .loop = loop, .loaded = done,
+	                               .arg = arg, .bytes = sizeof *item, .operation = JOURNAL_LOAD,
+	                               .id = *id };
 	return journal_enqueue(j, item);
 }
 
