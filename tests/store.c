@@ -678,10 +678,7 @@ test_run (struct store const *store,
 	      status == 1);
 	buf_fini(&in);
 	CHECK(access(lock, F_OK) && errno == ENOENT);
-	struct child c = {};
-	s = buf_peek(&out);
-	CHECK(!buf_put(&c.out, s.ptr, s.len, SIZE_MAX) && store_raced(&c));
-	buf_fini(&c.out);
+	CHECK(store_raced(buf_peek(&out)));
 	buf_fini(&out);
 
 	/* Refusals run no git. */
@@ -840,14 +837,16 @@ test_git (char const *path)
 	commit.message = CSTR_VIEW("Race");
 	commit.tip = &c2;
 	CHECK(commit_run(store, &commit, &c4, out, sizeof out, &len) > 0);
-	struct child c = {};
-	CHECK(!buf_put(&c.out, out, len, SIZE_MAX) && store_raced(&c));
-	buf_fini(&c.out);
+	CHECK(store_raced((struct span){ (unsigned char *)out, len }));
 	commit.tip = &root;
 	CHECK(commit_run(store, &commit, &c4, out, sizeof out, &len) > 0);
-	CHECK(!buf_put(&c.out, out, len, SIZE_MAX) && store_raced(&c));
-	buf_fini(&c.out);
-	CHECK(!store_raced(nullptr) && !store_raced(&c));
+	CHECK(store_raced((struct span){ (unsigned char *)out, len }));
+	CHECK(!store_raced((struct span){}));
+	CHECK(!store_raced((struct span){ (unsigned char *)"Saved", 5 }));
+	/* Two root commits of one ref at the same time make git say this. */
+	static char const exists[] = "error: cannot lock ref 'refs/askai/members/bro': reference "
+	                             "already exists\n";
+	CHECK(store_raced((struct span){ (unsigned char *)exists, sizeof exists - 1 }));
 	CHECK(!run(store, STORE_HEAD, (char const *const[]){ commit.ref }, (struct span){}, out,
 	           sizeof out, &len));
 	CHECK(len == OID_SHA1 + 1 && !memcmp(out, c3.hex, OID_SHA1));

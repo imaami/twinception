@@ -523,7 +523,7 @@ notes_tool_unadded (struct mcp_slot *slot)
 		              TOOL_FAILED);
 		return;
 	}
-	if (store_raced(c)) {
+	if (store_raced(buf_peek(&c->out))) {
 		struct store const *store = notes_store(call->loop->tool->notes);
 		char const *repo = call->repo;
 		int64_t age = 0;
@@ -645,7 +645,7 @@ notes_tool_created (struct mcp_slot *slot)
 		return;
 	}
 	if (child_ok(call->child) ||
-	    (store_raced(call->child) && store_exists(notes_store(call->loop->tool->notes)))) {
+	    (store_raced(buf_peek(&call->child->out)) && store_exists(notes_store(call->loop->tool->notes)))) {
 		child_destroy(&call->child);
 		notes_tool_write(slot, &(struct oid){}, NO_NOTE);
 		return;
@@ -1475,7 +1475,7 @@ notes_tool_committed (struct mcp_slot *slot)
 		char const *text = (char const *)out.ptr;
 		LOG(LOG_WARN, "notes: git could not save %s: %.*s", call->repo,
 		    (int)util_clip(text, out.len, 300), text);
-		if (store_raced(c))
+		if (store_raced(out))
 			why = CSTR_VIEW("The findings of the ask call were not saved. Another ask "
 			                "call of the thread saved a review record first.\n");
 	}

@@ -222,12 +222,12 @@ store_init (struct store const *store,
 extern void
 store_drop (struct child **p_c);
 
-/** Returns true if the output of @p c, a git that writes, shows that
+/** Returns true if @p out, the output of a git that writes, shows that
  *  another writer changed the ref, or created the repository, at the same
  *  time. Other instances of askai can share the repository.
  */
 extern bool
-store_raced (struct child const *c);
+store_raced (struct span out);
 
 /** Writes to @p *age how many seconds ago the lock file of the ref @p ref
  *  was last changed, or 0 without a lock file. A lock file last changed

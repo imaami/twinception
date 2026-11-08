@@ -373,13 +373,13 @@ store_drop (struct child **p_c)
 }
 
 bool
-store_raced (struct child const *c)
+store_raced (struct span out)
 {
 	struct cstr_view const raced[] = {
 		CSTR_VIEW("Not updating "), CSTR_VIEW("not updating "),
 		CSTR_VIEW(" but expected "), CSTR_VIEW("File exists"),
+		CSTR_VIEW("reference already exists"),
 	};
-	struct span out = c ? buf_peek(&c->out) : (struct span){};
 	for (size_t i = 0; i < array_size(raced) && out.len; ++i)
 		if (memmem(out.ptr, out.len, raced[i].data, raced[i].len))
 			return true;
