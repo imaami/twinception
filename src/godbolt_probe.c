@@ -692,12 +692,10 @@ godbolt_probe_parse (struct godbolt_probe *p,
 {
 	char *out = p->store;
 	unsigned state = 0;
-	while (text.len) {
-		char const *nl = memchr(text.data, '\n', text.len);
-		size_t const end = nl ? (size_t)(nl - text.data) : text.len;
-		struct cstr_view const line = cstr_view_trim(cstr_view_slice(text, 0, end));
-		text = cstr_view_slice(text, end + 1, SIZE_MAX);
-		int const e = godbolt_probe_line(p, line, &state, &out);
+	for (bool last = false; !last;) {
+		struct cstr_view line = text;
+		last = !cstr_view_cut(&text, '\n', &line);
+		int const e = godbolt_probe_line(p, cstr_view_trim(line), &state, &out);
 		if (e)
 			return e;
 	}
