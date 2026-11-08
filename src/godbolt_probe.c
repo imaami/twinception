@@ -601,6 +601,9 @@ godbolt_probe_literal (char const **c,
 static char const godbolt_probe_misplaced[] =
 	"the output has a line of the block outside of one block";
 
+/* Stores @p reason in p->why. Evaluates to EPROTO. */
+#define GODBOLT_PROBE_BAD(reason) (p->why = (reason), EPROTO)
+
 /* Parses @p rest, the text ("NAME", "VALUE") after the tag of a record
  * line, into the next record of @p list. @p list is an array of @p max
  * records, and its first *@p n records are in use. A record is valid only
@@ -616,10 +619,8 @@ godbolt_probe_parse_record (struct godbolt_probe         *p,
                             struct cstr_view              rest,
                             char                        **out)
 {
-	if (state != 1) {
-		p->why = godbolt_probe_misplaced;
-		return EPROTO;
-	}
+	if (state != 1)
+		return GODBOLT_PROBE_BAD(godbolt_probe_misplaced);
 	char const *c = rest.data;
 	char const *const end = rest.data + rest.len;
 	godbolt_probe_skip(&c, end);
@@ -628,25 +629,16 @@ godbolt_probe_parse_record (struct godbolt_probe         *p,
 	                  ? godbolt_probe_literal(&c, end, out) : nullptr;
 	bool const closed = value && c < end && *c++ == ')';
 	godbolt_probe_skip(&c, end);
-	if (!closed || c != end) {
-		p->why = "a record of the block is not valid";
-		return EPROTO;
-	}
+	if (!closed || c != end)
+		return GODBOLT_PROBE_BAD("a record of the block is not valid");
 	if ((size_t)(value - name) > GODBOLT_PROBE_TEXT_MAX + 1 ||
-	    (size_t)(*out - value) > GODBOLT_PROBE_TEXT_MAX + 1) {
-		p->why = "a name or a value of a record has more than 256 bytes";
-		return EPROTO;
-	}
-	for (uint32_t i = 0; i < *n; ++i) {
-		if (!strcmp(list[i].name, name)) {
-			p->why = "the block has a record twice";
-			return EPROTO;
-		}
-	}
-	if (*n == max) {
-		p->why = "the block has too many records";
-		return EPROTO;
-	}
+	    (size_t)(*out - value) > GODBOLT_PROBE_TEXT_MAX + 1)
+		return GODBOLT_PROBE_BAD("a name or a value of a record has more than 256 bytes");
+	for (uint32_t i = 0; i < *n; ++i)
+		if (!strcmp(list[i].name, name))
+			return GODBOLT_PROBE_BAD("the block has a record twice");
+	if (*n == max)
+		return GODBOLT_PROBE_BAD("the block has too many records");
 	list[(*n)++] = (struct godbolt_probe_record){ name, value };
 	return 0;
 }
@@ -673,10 +665,8 @@ godbolt_probe_line (struct godbolt_probe  *p,
 	unsigned const mark = cstr_view_equal(line, CSTR_VIEW("GBPROBE_BEGIN_1")) ? 1
 	                    : cstr_view_equal(line, CSTR_VIEW("GBPROBE_END_1")) ? 2 : 0;
 	if (mark) {
-		if (mark != *state + 1) {
-			p->why = godbolt_probe_misplaced;
-			return EPROTO;
-		}
+		if (mark != *state + 1)
+			return GODBOLT_PROBE_BAD(godbolt_probe_misplaced);
 		*state = mark;
 		return 0;
 	}
@@ -688,10 +678,8 @@ godbolt_probe_line (struct godbolt_probe  *p,
 		return godbolt_probe_parse_record(p, p->headers, &p->n_headers,
 		                                  array_size(p->headers), *state,
 		                                  cstr_view_slice(line, header.len, SIZE_MAX), out);
-	if (*state == 1 && line.len && *line.data != '#') {
-		p->why = "the block has a line that is not a record";
-		return EPROTO;
-	}
+	if (*state == 1 && line.len && *line.data != '#')
+		return GODBOLT_PROBE_BAD("the block has a line that is not a record");
 	return 0;
 }
 
@@ -713,11 +701,10 @@ godbolt_probe_parse (struct godbolt_probe *p,
 		if (e)
 			return e;
 	}
-	if (state == 2)
-		return 0;
-	p->why = "the output has no complete block";
-	return EPROTO;
+	return state == 2 ? 0 : GODBOLT_PROBE_BAD("the output has no complete block");
 }
+
+#undef GODBOLT_PROBE_BAD
 
 int
 godbolt_probe_init (struct godbolt_probe *dest,
