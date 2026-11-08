@@ -4929,10 +4929,9 @@ mcp_req_background (struct mcp_req *req,
 	static_assert(LEDGER_RUNNING == 8, "update the problem text");
 	struct mcp_static const *st = req->mcp->st;
 	int e;
-	struct ledger_task *task = req->admitted;
+	struct ledger_task *task = req->admitted ? req->admitted
+	                         : mcp_req_record(req, LEDGER_JOB, tool, &e);
 	req->admitted = nullptr;
-	if (!task)
-		task = mcp_req_record(req, LEDGER_JOB, tool, &e);
 	if (!task) {
 		agenda_refused(&req->self, e, CSTR_VIEW("You have 8 jobs and tasks running, the "
 		                                        "most at once: wait for one to end."));
