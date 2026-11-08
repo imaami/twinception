@@ -11253,8 +11253,8 @@ def check_notes(binary, up):
                 "alice-1"))[2]["result"]["tools"] if t["name"] == "notes")
             assert notes_tool["inputSchema"]["properties"]["content"] == {
                 "type": "string", "format": "uri", "description": "For add, append and "
-                "replace, instead of text: a file that the user gave, which your client "
-                "attaches as it is. Do not write it yourself.",
+                "replace, instead of text: a file from the user. Your client fills in "
+                "content. Do not write content yourself.",
                 "x-mcp-file": {"maxSize": 4 << 20}}, notes_tool
             blob = bytes(range(256)) * 64 + b"\0end"
             for name, uri, size in (("in/blob.bin", "data:application/octet-stream;base64,"
