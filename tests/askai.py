@@ -9379,12 +9379,12 @@ def check_git(binary, up):
             result = call(ai, repo="proj", command="cat-file", options=["-p"],
                           revisions=["HEAD:big.txt"])
             assert not result.get("isError") and text_of(result) == "x" * (4 << 20) + \
-                "\n\n[The output goes on past the 4 MiB shown.]", len(text_of(result))
+                "\n\n[The output is cut at 4 MiB.]", len(text_of(result))
             result = call(ai, repo="proj", command="read", revisions=["HEAD:big.txt"])
             assert not result.get("isError") and text_of(result) == \
-                f"[Repository proj, file big.txt at commit {head}: lines 1 to 1 of at " \
-                "least 1.]\n1\t" + "x" * (4 << 20) + "\n\n[Line 1 goes on past the 4 MiB " \
-                "that the git tool reads.]", len(text_of(result))
+                f"[Repository proj, file big.txt at commit {head}. Lines 1 to 1 of at " \
+                "least 1.]\n1\t" + "x" * (4 << 20) + "\n\n[Line 1 is cut at the 4 MiB " \
+                "limit of the git tool.]", len(text_of(result))
             result = call(ai, repo="other", command="log")
             assert result.get("isError"), result
             assert text_of(call(ai, repo="proj", command="ls-tree",
@@ -9780,7 +9780,7 @@ def check_git_scope(binary, up):
                         command
                 # A read's header and footer have the whole path and commit.
                 assert ok(ai, "scope", "read", revisions=[long_revision], count=1) == \
-                    f"[Repository scope, file {long_path} at commit {long_commit}: lines " \
+                    f"[Repository scope, file {long_path} at commit {long_commit}. Lines " \
                     "1 to 1 of 2.]\n1\tcomplete long path\n\n[To read on, call again " \
                     f"with \"revisions\": [\"{long_commit}:{long_path}\"] and \"line\": " \
                     "2.]"
@@ -9965,7 +9965,7 @@ def check_git_read(binary, up):
             return text_of(result)
 
         def lines(start, end, of=100):
-            return (f"[Repository proj, file lines.txt at commit {head}: lines {start} "
+            return (f"[Repository proj, file lines.txt at commit {head}. Lines {start} "
                     f"to {end} of {of}.]\n" +
                     "".join(f"{k}\tline {k}\n" for k in range(start, end + 1)) + "\n")
 
@@ -9988,21 +9988,22 @@ def check_git_read(binary, up):
             assert read(ai, "HEAD:empty.txt", True, line=2) == \
                 "Line 2 is past the end of the file. The file is empty."
             assert read(ai, "HEAD:empty.txt") == \
-                f"[Repository proj, file empty.txt at commit {head}: the file is empty.]"
+                f"[Repository proj, file empty.txt at commit {head}. The file is empty.]"
             assert read(ai, "HEAD:nonl.txt") == \
-                f"[Repository proj, file nonl.txt at commit {head}: lines 1 to 2 of 2.]\n" \
-                "1\tone\n2\ttwo\n\n[Line 2 is the end of the file, which has no newline " \
-                "after it.]"
+                f"[Repository proj, file nonl.txt at commit {head}. Lines 1 to 2 of 2.]\n" \
+                "1\tone\n2\ttwo\n\n[Line 2 is the end of the file. The file does not end " \
+                "in a newline.]"
             assert read(ai, "HEAD:bin.dat", True) == "The file contains a NUL byte. read " \
                 "accepts only text files. cat-file with -s prints the size of the file."
-            missing = f"[No file at that path in commit {head}. ls-tree lists the files there."
+            missing = (f"[No file at the path in commit {head}. ls-tree lists the files of the "
+                       "commit.")
             for name in ("dir", "absent.txt"):
                 assert read(ai, "HEAD:" + name, True) == missing + "]", name
             # A path that still has a grep match's :N or :N:text gets a hint.
             for name in ("lines.txt:42", "lines.txt:42:line 42"):
                 assert read(ai, "HEAD:" + name, True) == missing + " If :N after the " \
-                    "file name is a line number, call read with the file alone as the " \
-                    "revision and \"line\": N.]", name
+                    "file name is a line number, give the revision without :N and " \
+                    "\"line\": N.]", name
             # cat-file says the same of a commit:path with no file. show does
             # not, because its options can make git fail before the lookup.
             for options in (["-e"], ["-p"]):
@@ -10035,7 +10036,7 @@ def check_git_read(binary, up):
             revision, number = match("alpha")
             assert revision == f"{head}:ä.txt" and number == 1, revision
             assert read(ai, revision, line=number) == \
-                f"[Repository proj, file ä.txt at commit {head}: lines 1 to 1 of 1.]\n" \
+                f"[Repository proj, file ä.txt at commit {head}. Lines 1 to 1 of 1.]\n" \
                 "1\talpha\n\n[Line 1 is the end of the file.]"
             # A binary file that matches is named without the commit ID too.
             # The line is there when the file is the first match, which a grep
@@ -10044,19 +10045,18 @@ def check_git_read(binary, up):
                 f"[Repository proj, commit {head}]\nBinary file bin.dat matches\n"
 
             # The 4 MiB cut falls after line 4096 of 1024 bytes.
-            cut = "\n[The file goes on after line 4096, past the 4 MiB that the git " \
-                "tool reads.]"
+            cut = "\n[The file is cut after line 4096, at the 4 MiB limit of the git tool.]"
             assert read(ai, "HEAD:cut.txt", line=4096, count=1) == \
-                f"[Repository proj, file cut.txt at commit {head}: lines 4096 to 4096 " \
+                f"[Repository proj, file cut.txt at commit {head}. Lines 4096 to 4096 " \
                 "of at least 4096.]\n4096\t" + "z" * 1023 + "\n" + cut
             assert read(ai, "HEAD:cut.txt", True, line=4097) == "Line 4097 is past the " \
-                "first 4 MiB of the file. The git tool reads at most 4 MiB of a file."
+                "4 MiB limit of the git tool."
             # A whole read takes many steps, and a line can go on from one
             # step to the next. No step goes over its work budget.
             work(ai)
             text = read(ai, "HEAD:cut.txt")
             units, _ = work(ai)
-            assert text == f"[Repository proj, file cut.txt at commit {head}: lines 1 to " \
+            assert text == f"[Repository proj, file cut.txt at commit {head}. Lines 1 to " \
                 "4096 of at least 4096.]\n" + "".join(f"{k}\t" + "z" * 1023 + "\n"
                                                       for k in range(1, 4097)) + cut, \
                 len(text)
@@ -10064,7 +10064,7 @@ def check_git_read(binary, up):
                        for u in ("copy", "escape", "parse", "recv")), units
             # The scan counts the bytes of the file as parsing, so a step of
             # the scan of 1 MiB of empty lines reads 16 KiB of it.
-            blank = f"[Repository proj, file blank.txt at commit {head}: lines "
+            blank = f"[Repository proj, file blank.txt at commit {head}. Lines "
             end = "\n\n[Line 1048576 is the end of the file.]"
             work(ai)
             assert read(ai, "HEAD:blank.txt", line=1 << 20) == \
@@ -10089,10 +10089,10 @@ def check_git_read(binary, up):
                             for line in captured[:4 << 20].splitlines(True))
             assert text == f"[Repository proj, commit {head}]\n" + shown + \
                 ("\n" if shown.endswith("\n") else "\n\n") + \
-                "[The output goes on past the 4 MiB shown.]", len(text)
+                "[The output is cut at 4 MiB.]", len(text)
             assert all(units[u][0] <= units[u][1] for u in ("copy", "parse")), units
             assert read(ai, "HEAD:utf.txt") == f"[Repository proj, file utf.txt at commit " \
-                f"{head}: lines 1 to 2000 of 2000.]\n" + "".join(
+                f"{head}. Lines 1 to 2000 of 2000.]\n" + "".join(
                     f"{k}\t" + "ä" * 600 + "\n" for k in range(1, 2001)) + \
                 "\n[Line 2000 is the end of the file.]"
 
@@ -10112,7 +10112,7 @@ def check_git_read(binary, up):
             now = sh("rev-parse", "HEAD").strip()
             sh("branch", now, now)
             assert read(ai, "HEAD:lines.txt", count=1).startswith(
-                f"[Repository proj, file lines.txt at commit {now}: lines 1 to 1 of 3.]\n"
+                f"[Repository proj, file lines.txt at commit {now}. Lines 1 to 1 of 3.]\n"
                 "1\tchanged\n"), now
     print("git read: numbered lines, header, footer, paging, empty, binary, missing "
           "and cut files, grep matches, pinned commits, no warnings, work: PASS")
@@ -13126,7 +13126,7 @@ def check_turns(binary, up):
             ai.ask("Q")
             text = turns(up.requests[count + 1])[1]["content"]
             commit = sh("rev-parse", "HEAD").strip()
-            assert text == f"[Repository proj, file big.txt at commit {commit}: lines 1 " \
+            assert text == f"[Repository proj, file big.txt at commit {commit}. Lines 1 " \
                 "to 4000 of 4000.]\n" + "".join(f"{k}\tline {k - 1:05}\n"
                                                 for k in range(1, 4001)) + \
                 "\n[Line 4000 is the end of the file.]", text[-200:]
@@ -13867,8 +13867,8 @@ def check_turns(binary, up):
                 page = page[:footer.end()]
                 assert len(page.encode()) <= 3000, len(page.encode())
                 last = int(footer[2]) - 1
-                assert page == f"[Repository proj, file big.txt at commit {commit}: " \
-                    f"lines {start} to {last} of 4000.]\n" + "".join(
+                assert page == f"[Repository proj, file big.txt at commit {commit}. " \
+                    f"Lines {start} to {last} of 4000.]\n" + "".join(
                         f"{k}\tline {k - 1:05}\n" for k in range(start, last + 1)) + \
                     footer[0], page
                 assert json.loads(footer[1]) == [f"{commit}:big.txt"], footer[0]
@@ -14245,8 +14245,8 @@ def check_review(binary, up):
             assert len(sent) == 6, sent
             later = sh("rev-parse", "HEAD").strip()
             shown = results(sent[1])
-            assert shown[0].startswith(f"[Repository proj, file src/a.c at commit {head}: "
-                                       "lines 1 to 10 of 300.]\n1\tint x0;\n"), shown
+            assert shown[0].startswith(f"[Repository proj, file src/a.c at commit {head}. "
+                                       "Lines 1 to 10 of 300.]\n1\tint x0;\n"), shown
             # The turn that reads the lines has not seen them yet.
             assert shown[1:] == [missing("verified", "src/a.c lines 3-4", "src/a.c", 3,
                                          False)], shown
@@ -14361,8 +14361,8 @@ def check_review(binary, up):
             assert results(sent[2])[1] == missing("verified", "src/a.c line 101",
                                                   "src/a.c", 101, False), sent[2]
             shown = results(sent[3])
-            assert shown[0].startswith(f"[Repository proj, file src/a.c at commit {later}: "
-                                       "lines 100 to 104 of 301.]\n100\tint x99;\n"), shown
+            assert shown[0].startswith(f"[Repository proj, file src/a.c at commit {later}. "
+                                       "Lines 100 to 104 of 301.]\n100\tint x99;\n"), shown
             assert results(sent[4]) == [f"Added finding 1: verified, src/a.c:101 at "
                                         f"{later[:12]}."], sent[4]
             # The 4 MiB cut ends line 4195 of src/cut.c, which the log leaves
@@ -14374,10 +14374,10 @@ def check_review(binary, up):
             count = len(up.requests)
             assert ai.ask("Q")["content"][0]["text"] == "A"
             [read_cut] = results(up.requests[count + 1])
-            assert read_cut.startswith(f"[Repository proj, file src/cut.c at commit {later}: "
-                                       "lines 4190 to 4195 of at least 4195.]\n") and \
-                read_cut.endswith("\n\n[Line 4195 goes on past the 4 MiB that the git "
-                                  "tool reads.]"), read_cut[-300:]
+            assert read_cut.startswith(f"[Repository proj, file src/cut.c at commit {later}. "
+                                       "Lines 4190 to 4195 of at least 4195.]\n") and \
+                read_cut.endswith("\n\n[Line 4195 is cut at the 4 MiB limit of the git "
+                                  "tool.]"), read_cut[-300:]
             shown = results(up.requests[count + 2])
             assert shown == [
                 missing("verified", "src/cut.c line 4195", "src/cut.c", 4195),
@@ -14390,7 +14390,7 @@ def check_review(binary, up):
             status, _, body = ai.rpc("tools/call", {"name": "git",
                                                     "arguments": read("src/a.c", 300)})
             assert status == 200 and text_of(body["result"]) == (
-                f"[Repository proj, file src/a.c at commit {later}: lines 300 to 301 of "
+                f"[Repository proj, file src/a.c at commit {later}. Lines 300 to 301 of "
                 "301.]\n300\tint x299;\n301\tint y;\n\n[Line 301 is the end of the file.]"), \
                 body
 

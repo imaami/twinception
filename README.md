@@ -490,7 +490,7 @@ many as fit in one result):
 
 The first line of the output names the repository, the file, the full commit
 ID and the lines given:
-`[Repository proj, file src/journal.c at commit ID: lines 120 to 159 of 900.]`.
+`[Repository proj, file src/journal.c at commit ID. Lines 120 to 159 of 900.]`.
 Each line follows as its number, a tab and its text. The last line gives the
 revision, with the commit ID in place of a name such as `HEAD`, and the `line`
 to read on from, or says that the file ends there. The next part then comes

@@ -1283,7 +1283,7 @@ git_ended (struct mcp_slot *slot,
 	int const status = child_status(c);
 	bool failed = true;
 	if ((c->flags & (CHILD_CUT | CHILD_LATE)) == CHILD_CUT) {
-		note = CSTR_VIEW("The output goes on past the 4 MiB shown.");
+		note = CSTR_VIEW("The output is cut at 4 MiB.");
 		failed = c->code == CLD_EXITED && c->status;
 	} else if (!status) {
 		note = out.len ? (struct cstr_view){} : CSTR_VIEW("No output.");
@@ -1301,19 +1301,18 @@ git_ended (struct mcp_slot *slot,
 		note = none[call->grep];
 		failed = false;
 	} else if (status > 0 && takes & OBJECT) {
-		static char const fmt[] = "No file at that path in commit %s. ls-tree lists "
-		                          "the files there.%s";
+		static char const fmt[] = "No file at the path in commit %s. ls-tree lists "
+		                          "the files of the commit.%s";
 		static char const hint[] = " If :N after the file name is a line number, "
-		                           "call read with the file alone as the revision "
-		                           "and \"line\": N.";
+		                           "give the revision without :N and \"line\": N.";
 		static_assert(sizeof fmt - 4 + OID_SHA256 + sizeof hint - 1 <= sizeof buf,
 		              "the note fits");
 		struct git_revision const *rev = &call->revisions[0];
 		note = takes & (LINES | MODE) && rev->path.len
 		     ? util_format_view(buf, sizeof buf, fmt, call->pin.roots[rev->root].hex,
 		                        git_line_hint(rev->path.data + 1) ? hint : "")
-		     : util_format_view(buf, sizeof buf, "The committed object could not be "
-		                        "read (git exited with status %d).", status);
+		     : util_format_view(buf, sizeof buf, "git could not read the committed "
+		                        "object. git exited with status %d.", status);
 	}
 	git_drop(slot);
 	struct cstr_view const p[] = {
@@ -1372,7 +1371,7 @@ git_read_begin (struct git_call *call,
 	/* The header contains the repository name, the commit ID and path from
 	 * the revision, and three numbers. The longest footer contains the
 	 * revision and one number. */
-	size_t reserve = sizeof "[Repository , file  at commit : lines  to  of at least .]\n" +
+	size_t reserve = sizeof "[Repository , file  at commit . Lines  to  of at least .]\n" +
 	                 sizeof "\n\n[To read on, call again with \"revisions\": "
 	                        "[\"\"] and \"line\": .]" +
 	                 call->pin.repo->name.len + 2 * read->rev_len + 4 * UTIL_DECIMAL;
@@ -1432,8 +1431,8 @@ git_read_past (struct git_read const *read,
 		util_text_printf(why, "Line %zu is past the end of the file. The file is empty.",
 		                 read->line);
 	else if (cut)
-		util_text_printf(why, "Line %zu is past the first 4 MiB of the file. The git tool "
-		                 "reads at most 4 MiB of a file.", read->line);
+		util_text_printf(why, "Line %zu is past the 4 MiB limit of the git tool.",
+		                 read->line);
 	else
 		util_text_printf(why, "Line %zu is past the end of the file. Give a line from 1 "
 		                 "to %zu.", read->line, read->total);
@@ -1452,15 +1451,15 @@ git_read_head (struct git_call const *call,
 	struct git_read const *read = &call->read;
 	struct oid const *commit = &call->pin.roots[call->revisions[0].root];
 	size_t const n = oid_len(commit);
-	char lines[sizeof ": lines  to  of at least .]\n" + 3 * UTIL_DECIMAL];
+	char lines[sizeof ". Lines  to  of at least .]\n" + 3 * UTIL_DECIMAL];
 	struct cstr_view const p[] = {
 		CSTR_VIEW("[Repository "), call->pin.repo->name, CSTR_VIEW(", file "),
 		{ dstr_get(&call->pin.text) + n + 1, read->rev_len - n - 1 },
 		CSTR_VIEW(" at commit "), oid_view(commit),
-		read->total ? util_format_view(lines, sizeof lines, ": lines %zu to %zu of "
+		read->total ? util_format_view(lines, sizeof lines, ". Lines %zu to %zu of "
 		                               "%s%zu.]\n", read->line, read->last,
 		                               cut ? "at least " : "", read->total)
-		            : CSTR_VIEW(": the file is empty.]"),
+		            : CSTR_VIEW(". The file is empty.]"),
 	};
 	return git_write(slot, p, array_size(p));
 }
@@ -1548,11 +1547,11 @@ git_read_foot (struct git_call const *call,
 		  CSTR_VIEW(".]") },
 		{ CSTR_VIEW("[Line "), {}, {}, CSTR_VIEW(" is the end of the file.]") },
 		{ CSTR_VIEW("[Line "), {}, {},
-		  CSTR_VIEW(" is the end of the file, which has no newline after it.]") },
-		{ CSTR_VIEW("[The file goes on after line "), {}, {},
-		  CSTR_VIEW(", past the 4 MiB that the git tool reads.]") },
+		  CSTR_VIEW(" is the end of the file. The file does not end in a newline.]") },
+		{ CSTR_VIEW("[The file is cut after line "), {}, {},
+		  CSTR_VIEW(", at the 4 MiB limit of the git tool.]") },
 		{ CSTR_VIEW("[Line "), {}, {},
-		  CSTR_VIEW(" goes on past the 4 MiB that the git tool reads.]") },
+		  CSTR_VIEW(" is cut at the 4 MiB limit of the git tool.]") },
 	};
 	size_t kind = read->last < read->total ? 0 : 1 + 2 * cut + !newline;
 	struct cstr_view const *note = notes[kind];
