@@ -1235,13 +1235,13 @@ notes_tool_call_attached (struct notes_tool_call const *call,
 {
 	bool ok = view ? dstr_printf(call->text, "The note is %zu byte%s and not UTF-8 text. "
 	                             "askai attaches a view of the note as a file after the "
-	                             "results of this turn. The view is %zu bytes, about %zu "
+	                             "results of the turn. The view is %zu bytes, about %zu "
 	                             "tokens. The view shows each byte outside UTF-8 text as "
 	                             "%sXX%s.", len, util_s(len), bytes, bytes / 4, view_open,
 	                             view_close)
 	               : dstr_printf(call->text, "The note is %zu byte%s, about %zu token%s. "
 	                             "askai attaches the note as a file after the results of "
-	                             "this turn.", len, util_s(len), bytes / 4,
+	                             "the turn.", len, util_s(len), bytes / 4,
 	                             util_s(bytes / 4));
 	return ok ? 0 : ENOMEM;
 }
