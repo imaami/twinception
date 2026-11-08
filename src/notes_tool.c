@@ -7,7 +7,6 @@
 #include <inttypes.h>
 #include <json-c/json.h>
 #include <openssl/sha.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
