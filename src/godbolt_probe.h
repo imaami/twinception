@@ -41,8 +41,9 @@ enum {
 	                                    name or the value of a record */
 };
 
-/** A record of the block. The name and the value are NUL-terminated, in the
- *  memory of the probe.
+/** A pointer to a name and a pointer to a value, both NUL-terminated. In
+ *  the records that godbolt_probe_init() parses from the block, both texts
+ *  are in the member store of struct godbolt_probe.
  */
 struct godbolt_probe_record {
 	char const *name;

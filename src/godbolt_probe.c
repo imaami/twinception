@@ -284,10 +284,7 @@ godbolt_probe_darwin (struct godbolt_probe *p)
 static void
 godbolt_probe_system (struct godbolt_probe *p)
 {
-	static struct {
-		char const *macro;
-		char const *os;
-	} const names[] = {
+	static struct godbolt_probe_record const names[] = {
 		{ "__FreeBSD__", "freebsd" }, { "__NetBSD__", "netbsd" },
 		{ "__OpenBSD__", "openbsd" }, { "__DragonFly__", "dragonfly" },
 		{ "_AIX", "aix" }, { "__HAIKU__", "haiku" }, { "__QNX__", "qnx" },
@@ -307,8 +304,8 @@ godbolt_probe_system (struct godbolt_probe *p)
 	else if (godbolt_probe_on(p, "_WIN32"))
 		godbolt_probe_os(p, "windows", "windows", "_WIN32");
 	for (size_t i = 0; i < array_size(names); ++i)
-		if (godbolt_probe_on(p, names[i].macro))
-			godbolt_probe_os(p, names[i].os, names[i].os, names[i].macro);
+		if (godbolt_probe_on(p, names[i].name))
+			godbolt_probe_os(p, names[i].value, names[i].value, names[i].name);
 	if (godbolt_probe_on(p, "__sun") && godbolt_probe_on(p, "__SVR4")) {
 		godbolt_probe_os(p, "solaris", "solaris", "__sun");
 		godbolt_probe_cite(p, GODBOLT_PROBE_OS, "__SVR4");
@@ -437,10 +434,7 @@ godbolt_probe_layout (struct godbolt_probe *p)
 static void
 godbolt_probe_endianness (struct godbolt_probe *p)
 {
-	static struct {
-		char const *key;
-		char const *value;
-	} const orders[] = {
+	static struct godbolt_probe_record const orders[] = {
 		{ "__ORDER_LITTLE_ENDIAN__", "little" },
 		{ "__ORDER_BIG_ENDIAN__", "big" },
 		{ "__ORDER_PDP_ENDIAN__", "pdp" },
@@ -449,10 +443,10 @@ godbolt_probe_endianness (struct godbolt_probe *p)
 	bool const known = godbolt_probe_integer(p, "__BYTE_ORDER__", &order);
 	for (size_t i = 0; known && i < array_size(orders); ++i) {
 		uint64_t value = 0;
-		if (!godbolt_probe_integer(p, orders[i].key, &value) || value != order)
+		if (!godbolt_probe_integer(p, orders[i].name, &value) || value != order)
 			continue;
 		godbolt_probe_add_claim(p, GODBOLT_PROBE_ENDIANNESS, orders[i].value, "__BYTE_ORDER__");
-		godbolt_probe_cite(p, GODBOLT_PROBE_ENDIANNESS, orders[i].key);
+		godbolt_probe_cite(p, GODBOLT_PROBE_ENDIANNESS, orders[i].name);
 	}
 	GODBOLT_PROBE_ANY(ENDIANNESS, "little", "__LITTLE_ENDIAN__", "__ARMEL__",
 	                  "__AARCH64EL__", "__MIPSEL__");
