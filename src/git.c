@@ -334,6 +334,7 @@ git_repo_init (struct git_repo *r,
 	}
 	char *copy = mempcpy(mempcpy(mempcpy(s, real, size), safe, sizeof safe - 1), real, size);
 	free(real);
+	real = nullptr;
 	*(char *)mempcpy(copy, name.data, name.len) = '\0';
 	*r = (struct git_repo){ .name = { copy, name.len }, .path = s, .safe = s + size };
 	return 0;

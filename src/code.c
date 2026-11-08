@@ -64,6 +64,7 @@ code_check (struct config *cfg)
 	char const *top = xdg && *xdg == '/' ? xdg : home && *home == '/' ? home : nullptr;
 	int e = config_aprintf(&cfg->code_helper, "%s/askai-code", dirname(exe));
 	free(exe);
+	exe = nullptr;
 	if (!e && !top)
 		return config_aprintf(&cfg->code_check, "no cache directory: XDG_CACHE_HOME and HOME "
 		                      "are not absolute");
@@ -90,6 +91,7 @@ code_check (struct config *cfg)
 	int status;
 	e = child_capture(&cmd, child_fds(), out, sizeof out, &len, &status);
 	free(cache);
+	cache = nullptr;
 	if (e == ENOENT)
 		return config_aprintf(&cfg->code_check, "no askai-code beside askai");
 	if (e)
