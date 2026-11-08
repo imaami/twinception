@@ -5022,13 +5022,11 @@ mcp_req_background (struct mcp_req *req,
 		: util_format_view(buf, sizeof buf, "Started job %s. Call wait to wait for it, then "
 		                   "jobs with the action result and this id.", task->id.hex);
 	struct mcp_piece const p[] = {
-		FRAG("{\"content\":[{\"type\":\"text\",\"text\":\""),
-		ESC_VIEW(text),
 		FRAG("\"}]"),
 		req->flags & REQ_MODERN ? DSTR(&st->modern_tail) : FRAG("}"),
 		FRAG("}"),
 	};
-	e = mcp_req_open(req, FRAG("\"result\":"));
+	e = mcp_req_tool_open(req, text);
 	return mcp_req_detach(req, task, e ? e : mcp_req_put(req, p, array_size(p)));
 }
 
