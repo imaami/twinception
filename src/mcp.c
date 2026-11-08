@@ -3002,6 +3002,7 @@ mcp_req_build (struct mcp_req *req)
 	}
 	json_object_put(req->draft);
 	req->draft = req->prompt = nullptr;
+	req->next = 0;
 	mcp_req_turn_ready(req);
 }
 
