@@ -14251,9 +14251,9 @@ def check_review(binary, up):
             # refusal names the line after the logged lines, and their commit.
             assert results(sent[3]) == [
                 f"Added finding 2: disproved, src/a.c:50 at {head[:12]}.",
-                "verified requires the lines of the location in your read log. Of src/a.c "
-                f"lines 60-61, the read log contains only line 60, read at {head[:12]}. To "
-                "read the missing lines, call the git tool with \"command\": \"read\", "
+                "verified requires the lines of the location in your read log. The read log "
+                f"contains src/a.c line 60 at {head[:12]}, but not line 61. To read the "
+                "missing lines, call the git tool with \"command\": \"read\", "
                 f"\"revisions\": [\"{head[:12]}:src/a.c\"] and \"line\": 61. A long range can "
                 "need several reads." + later_turn], sent[3]
             # The latest read that showed a location's lines gives its

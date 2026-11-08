@@ -538,8 +538,8 @@ test_refusals (void)
 		  GIT_READ("the lines", "HEAD", "src/a.c", "11") LATER },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"evidence\":\"e\","
 		  "\"location\":\"src/a.c:10-11\"}",
-		  NEED("verified") "Of src/a.c lines 10-11, the read log contains only line 10, "
-		  "read at " A12 "." GIT_READ("the missing lines", A12, "src/a.c", "11") SEVERAL
+		  NEED("verified") "The read log contains src/a.c line 10 at " A12 ", but not "
+		  "line 11." GIT_READ("the missing lines", A12, "src/a.c", "11") SEVERAL
 		  LATER },
 		{ "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\",\"evidence\":\"e\","
 		  "\"location\":\"1111111:src/a.c:3\"}",
@@ -805,13 +805,13 @@ test_gate (void)
 	CHECK(!seen(r, "proj", B, "src/a.c", 1, 150, 300, 1));
 	CHECK(!seen(r, "proj", A, "src/a.c", 160, 300, 300, 1));
 	EXPECT(r, wide, 2, EINVAL,
-	       NEED("verified") "Of src/a.c lines 1-300, the read log contains only lines 1-150, "
-	       "read at " B12 "." GIT_READ("the missing lines", B12, "src/a.c", "151") SEVERAL
+	       NEED("verified") "The read log contains src/a.c lines 1-150 at " B12 ", but not "
+	       "lines 151-300." GIT_READ("the missing lines", B12, "src/a.c", "151") SEVERAL
 	       LATER);
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	          "\"evidence\":\"e\",\"location\":\"" A12 ":src/a.c:100-300\"}", 2, EINVAL,
-	       NEED("verified") "Of src/a.c lines 100-300 at " A12 ", the read log contains only "
-	       "line 100, read at " A12 "." GIT_READ("the missing lines", A12, "src/a.c", "101")
+	       NEED("verified") "The read log contains src/a.c line 100 at " A12 ", but not "
+	       "lines 101-300." GIT_READ("the missing lines", A12, "src/a.c", "101")
 	       SEVERAL LATER);
 	CHECK(!seen(r, "proj", B, "src/a.c", 151, 300, 300, 2));
 	EXPECT(r, wide, 3, 0, "Added finding 1: verified, src/a.c:1-300 at " B12 ".");
@@ -873,14 +873,14 @@ test_gate (void)
 	char const ends[] = "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	                    "\"evidence\":\"e\",\"location\":\"src/a.c:299-301\"}";
 	EXPECT(r, ends, 3, EINVAL,
-	       NEED("verified") "Of src/a.c lines 299-301, the read log contains only lines "
-	       "299-300, read at " A12 ". At " A12 ", src/a.c ends at line 300."
+	       NEED("verified") "The read log contains src/a.c lines 299-300 at " A12 ", but not "
+	       "line 301. At " A12 ", src/a.c ends at line 300."
 	       GIT_READ("the lines", B12, "src/a.c", "299") SEVERAL LATER);
 	/* A file that can have the last line beats one that reaches further. */
 	CHECK(!seen(r, "proj", B, "src/a.c", 299, 299, 302, 3));
 	EXPECT(r, ends, 3, EINVAL,
-	       NEED("verified") "Of src/a.c lines 299-301, the read log contains only line 299, "
-	       "read at " B12 "." GIT_READ("the missing lines", B12, "src/a.c", "300") SEVERAL
+	       NEED("verified") "The read log contains src/a.c line 299 at " B12 ", but not "
+	       "lines 300-301." GIT_READ("the missing lines", B12, "src/a.c", "300") SEVERAL
 	       LATER);
 	CHECK(!seen(r, "other", A, "src/a.c", 1, 5, 0, 3));
 	EXPECT(r, "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
@@ -1167,8 +1167,8 @@ test_full (void)
 	CHECK(!call_long(r, add, "claim", left_in(dstr_get(&out)) - 10, &out));
 	char const wide[] = "{\"action\":\"add\",\"claim\":\"c\",\"state\":\"verified\","
 	                    "\"evidence\":\"e\",\"location\":\"src/a.c:10-11\"}";
-	char const some[] = NEED("verified") "Of src/a.c lines 10-11, the read log contains only "
-	                    "line 10, read at " A12 ".";
+	char const some[] = NEED("verified") "The read log contains src/a.c line 10 at " A12
+	                    ", but not line 11.";
 	char const unlogged[] = " A new read does not enter the read log. Give a location with "
 	                        "lines from your read log, or keep the finding a candidate.";
 	char want[512];

@@ -1480,20 +1480,20 @@ review_refuse_unread (struct review const               *r,
 	bool const rest = to && !shorter;
 	struct cstr_view const rev = to ? (struct cstr_view){ to->commit.hex, REVIEW_SHORT_OID }
 	                           : prefix.len ? prefix : CSTR_VIEW("HEAD");
+	uint32_t const end = c->best ? c->end : loc->last;
 	bool failed = !dstr_printf(out, "%s requires the lines of the location in your read log. "
-	                           "%s%.*s line%s ", name,
-	                           c->best ? "Of " : "The read log does not contain ", len, path,
-	                           loc->first == loc->last ? "" : "s") ||
-	              review_put_lines(out, loc->first, loc->last) ||
-	              (prefix.len && !dstr_printf(out, " at %.*s", (int)prefix.len, prefix.data));
+	                           "The read log %s %.*s line%s ", name,
+	                           c->best ? "contains" : "does not contain", len, path,
+	                           loc->first == end ? "" : "s") ||
+	              review_put_lines(out, loc->first, end);
 	if (!c->best)
-		failed = failed || PUT(out, ".");
+		failed = failed ||
+		         (prefix.len && (PUT(out, " at ") || cstr_view_cat(prefix, out))) ||
+		         PUT(out, ".");
 	else
-		failed = failed || !dstr_printf(out, ", the read log contains only line%s ",
-		                                c->end > loc->first ? "s" : "") ||
-		         review_put_lines(out, loc->first, c->end) ||
-		         !dstr_printf(out, ", read at %.*s.", REVIEW_SHORT_OID,
-		                      c->best->commit.hex) ||
+		failed = failed || review_put_oid(out, &c->best->commit) ||
+		         !dstr_printf(out, ", but not line%s ", end + 1 < loc->last ? "s" : "") ||
+		         review_put_lines(out, end + 1, loc->last) || PUT(out, ".") ||
 		         (shorter && !dstr_printf(out, " At %.*s, %.*s ends at line %" PRIu32 ".",
 		                                  REVIEW_SHORT_OID, c->best->commit.hex, len, path,
 		                                  c->best->total));
