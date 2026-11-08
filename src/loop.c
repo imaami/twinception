@@ -429,11 +429,8 @@ loop_watch (struct loop     *loop,
 	if (!ref || !cb || fd < 0)
 		return EINVAL;
 
-	struct epoll_event event = {
-		.events = events,
-		.data.ptr = ref
-	};
-	if (epoll_ctl(loop->epfd, EPOLL_CTL_ADD, fd, &event))
+	if (epoll_ctl(loop->epfd, EPOLL_CTL_ADD, fd,
+	              &(struct epoll_event){ .events = events, .data.ptr = ref }))
 		return errno;
 
 	*ref = (struct loop_ref){
@@ -456,11 +453,8 @@ loop_modify (struct loop     *loop,
 	if (ref->events == events)
 		return 0;
 
-	struct epoll_event event = {
-		.events = events,
-		.data.ptr = ref
-	};
-	if (epoll_ctl(loop->epfd, EPOLL_CTL_MOD, ref->fd, &event))
+	if (epoll_ctl(loop->epfd, EPOLL_CTL_MOD, ref->fd,
+	              &(struct epoll_event){ .events = events, .data.ptr = ref }))
 		return errno;
 
 	ref->events = events;
