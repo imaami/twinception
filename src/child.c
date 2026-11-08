@@ -539,11 +539,11 @@ child_create (struct loop            *loop,
               void                   *owner,
               int                    *e)
 {
-	struct child *c = nullptr;
+	bool const room = atomic_fetch_add_explicit(&alive, 1, memory_order_relaxed) < CHILD_MAX;
 	/* A spawn costs far more than an allocation, so children are not kept
 	 * for reuse; their output's storage goes back to the stash. */
-	*e = atomic_fetch_add_explicit(&alive, 1, memory_order_relaxed) >= CHILD_MAX ? EBUSY
-	   : (c = malloc(sizeof *c)) ? 0 : ENOMEM;
+	struct child *c = room ? malloc(sizeof *c) : nullptr;
+	*e = !room ? EBUSY : !c ? ENOMEM : 0;
 	if (!*e) {
 		*c = (struct child){
 			.proc.fd = -1,
