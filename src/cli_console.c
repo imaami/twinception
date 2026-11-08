@@ -1084,28 +1084,21 @@ cli_console_create (uint32_t         flags,
 		*e = cli_console_active ? EBUSY : EINVAL;
 		return nullptr;
 	}
-	struct cli_console *console = calloc(1, sizeof *console);
+	struct cli_console *console = malloc(sizeof *console);
 	if (!console) {
 		*e = ENOMEM;
 		return nullptr;
 	}
-	list_init(&console->queue.lines);
-	console->in = (struct cli_console_stream){.ref.fd = -1, .flags = -1,
-	                                          .job.job.work = cli_console_input_work,
-	                                          .job.job.done = cli_console_input_done};
-	console->out = (struct cli_console_stream){.ref.fd = -1, .flags = -1,
-	                                           .job.job.work = cli_console_output_work,
-	                                           .job.job.done = cli_console_output_done};
-	console->rows = 24;
-	console->columns = 80;
-	console->loop = loop;
-	console->io = io;
-	console->history_last = dstr(nullptr);
-	console->draft = dstr(nullptr);
-	console->prompt = dstr("\n> ");
-	console->completion_labels = dstr(nullptr);
-	console->clean = dstr(nullptr);
-	console->screen = dstr(nullptr);
+	*console = (struct cli_console){
+		.loop = loop, .io = io, .palette = cli_style_palette(flags & CLI_CONSOLE_COLOR),
+		.in = {.ref.fd = -1, .flags = -1,
+		       .job.job = {.work = cli_console_input_work, .done = cli_console_input_done}},
+		.out = {.ref.fd = -1, .flags = -1,
+		        .job.job = {.work = cli_console_output_work, .done = cli_console_output_done}},
+		.draft = dstr(nullptr), .prompt = dstr("\n> "), .completion_labels = dstr(nullptr),
+		.clean = dstr(nullptr), .screen = dstr(nullptr), .history_last = dstr(nullptr),
+		.queue.lines = list(&console->queue.lines), .rows = 24, .columns = 80,
+	};
 	for (size_t i = 0; i < array_size(console->decorations); ++i)
 		console->decorations[i] = dstr(nullptr);
 	for (size_t i = 0; i < array_size(console->panes); ++i) {
@@ -1113,7 +1106,6 @@ cli_console_create (uint32_t         flags,
 		for (size_t row = 0; row < array_size(console->panes[i].rows); ++row)
 			console->panes[i].rows[row] = dstr(nullptr);
 	}
-	console->palette = cli_style_palette(flags & CLI_CONSOLE_COLOR);
 	char const *term = getenv("TERM");
 	console->flags = (flags & CLI_CONSOLE_SIMPLE) || !isatty(STDOUT_FILENO) || !isatty(STDIN_FILENO)
 	               ? CLI_CONSOLE_SIMPLE : term && *term && strcmp(term, "dumb") ? CLI_CONSOLE_FULLSCREEN : 0;

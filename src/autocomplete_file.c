@@ -28,10 +28,9 @@ autocomplete_file_create (int *const e)
 		*e = ENOMEM;
 		return nullptr;
 	}
-	file->found.lines = dstr(nullptr);
-	file->directory = dstr(nullptr);
 	struct cstr_view const home = cstr_view(getenv("HOME"));
-	file->home = jb_is_text(home) ? home : (struct cstr_view){};
+	*file = (struct autocomplete_file){.found.lines = dstr(nullptr), .directory = dstr(nullptr),
+	                                   .home = jb_is_text(home) ? home : (struct cstr_view){}};
 	*e = 0;
 	return file;
 }

@@ -61,13 +61,12 @@ struct cli_io *
 cli_io_create (struct loop *ui,
                int         *e)
 {
-	struct cli_io *io = calloc(1, sizeof *io);
+	struct cli_io *io = malloc(sizeof *io);
 	if (!io) {
 		*e = ENOMEM;
 		return nullptr;
 	}
-	io->ui = ui;
-	io->notify.fd = -1;
+	*io = (struct cli_io){.ui = ui, .notify.fd = -1};
 	int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 	*e = fd < 0 ? errno : loop_watch(ui, &io->notify, fd, EPOLLIN, cli_io_notify, nullptr);
 	if (*e) {
