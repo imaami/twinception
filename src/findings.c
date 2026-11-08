@@ -38,7 +38,8 @@ findings_definition (void const *service)
 		"of the code tool showed you. Verify or disprove a finding in a later "
 		"turn than the read of the lines. The history of a finding lists every "
 		"change. A record can start with findings from an earlier ask call. "
-		"The read log always starts empty. The record is limited to 4 MiB.",
+		"The read log of each ask call starts empty. The record is limited to "
+		"4 MiB.",
 		jb_object(
 			"action", schema_enum(
 				schema_names(review_action_names, REVIEW_ACTIONS),
@@ -50,7 +51,8 @@ findings_definition (void const *service)
 				"The lines of a committed file that show the claim, as "
 				"path:line or path:first-last, such as src/mcp.c:120-140. "
 				"A commit ID and a colon can come first, as in git grep "
-				"output. HEAD: is the same as no commit. Leave out "
+				"output. HEAD: is the same as no commit. For update, "
+				"give location only to correct the location. Leave out "
 				"location if no lines of a file show the claim."),
 			"state", schema_enum(
 				schema_names(review_state_names, REVIEW_STATES),
