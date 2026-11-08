@@ -4,8 +4,9 @@
  * instance with the same --notes path uses the same repository, and the
  * notes are branches in it. The functions of this module open the
  * repository, run git in it through git_run (src/git_run.h), write the
- * input of a commit for git fast-import, and recognize a write that raced
- * another writer. A git that writes ends before its lock file is
+ * input of a commit for git fast-import, recognize a write that raced
+ * another writer, and decide whether the commit of that write can be made
+ * again on the new tip. A git that writes ends before its lock file is
  * STORE_STALE seconds old. A lock file is removed only if it is older than
  * the boot of the system, never because of its age alone.
  */
@@ -35,6 +36,8 @@ enum {
 	STORE_MESSAGE = 1024,      /**< bytes of the message of a commit
 	                                without its trailer, NUL included, at
 	                                most */
+	STORE_TRIES   = 3,         /**< commits of one write that races other
+	                                writers, at most */
 };
 
 /** The age in seconds past which a lock file of a ref is older than every
@@ -408,5 +411,42 @@ store_commit_input (struct store_commit const *commit,
 extern int
 store_committed (struct span  out,
                  struct oid  *commit);
+
+/**
+ * Writes to @p in the input of STORE_CHECK after a commit on the ref
+ * @p ref raced another writer. @p base is the parent of that commit, or
+ * no name for a root commit. @p part is the one file part of the commit,
+ * in @p files. The input is what store_check_input() writes for the path
+ * of @p part at @p ref, and then, if @p base is a name, for the same path
+ * at @p base. store_rebased() reads the output. Returns 0, EINVAL for a
+ * null argument or a part that is not a quoted path in @p files, or the
+ * error of buf_printf(), after which @p in can contain part of the input.
+ */
+extern int
+store_rebase_input (struct buf              *in,
+                    char const              *ref,
+                    struct oid const        *base,
+                    struct span              files,
+                    struct store_part const *part);
+
+/**
+ * Reads @p out, the output of STORE_CHECK for the input that
+ * store_rebase_input() writes for the parent @p base. store_checked()
+ * reads the lines at the ref and the lines at @p base. Returns 0 with the
+ * commit of the ref, the new tip, in @p *tip if the same file part can be
+ * committed again on the new tip: the path is the same blob at the new tip
+ * as at @p base, or missing at both, and no directory in the path is a
+ * file. For a root commit, the path is missing at the new tip, and no
+ * directory in the path is a file there. Otherwise @p *tip is no name. The
+ * function returns ESTALE if the path is not the same, also for a ref
+ * that does not exist and for lines of @p base that name another commit.
+ * It returns EIO if store_checked() returns EIO for the lines at the ref
+ * or at @p base, or if the lines do not split into two halves, and EINVAL
+ * for a null argument.
+ */
+extern int
+store_rebased (struct span       out,
+               struct oid const *base,
+               struct oid       *tip);
 
 #endif /* ASKAI_SRC_STORE_H_ */
