@@ -649,18 +649,17 @@ cxi_layout_field (CXCursor     c,
 	enum CXCursorKind const k = clang_getCursorKind(decl);
 	bool const nested = (k == CXCursor_StructDecl || k == CXCursor_UnionDecl) &&
 	                    clang_Cursor_isAnonymous(decl);
-	char const *what = k == CXCursor_UnionDecl ? "union" : "struct";
 	char bits[2][CXI_BITS];
 	cxi_out_printf(l->out, "%7s%7s%7lld%7u  %*s", cxi_offset(bits[0], at),
 	               cxi_size(bits[1], size), align > 0 ? align : 0,
 	               cxi_line(clang_getCursorLocation(c)), (int)(2 * l->depth), "");
 	if (clang_Cursor_isAnonymousRecordDecl(decl)) {
-		cxi_out_printf(l->out, "(anonymous %s)\n", what);
+		cxi_out_printf(l->out, "(anonymous %s)\n", cxi_kind(decl));
 	} else {
 		cxi_out_clang(l->out, clang_getCursorSpelling(c));
 		cxi_out_printf(l->out, ": ");
 		if (nested)
-			cxi_out_printf(l->out, "%s (unnamed)", what);
+			cxi_out_printf(l->out, "%s (unnamed)", cxi_kind(decl));
 		else
 			cxi_out_clang(l->out, clang_getTypeSpelling(type));
 		if (bitfield)
@@ -1085,9 +1084,7 @@ cxi_member (struct cxi *x,
 	cxi_out_printf(&x->out, " of ");
 	cxi_out_clang(&x->out, clang_getTypeSpelling(record));
 	if (!clang_equalCursors(parent, outer))
-		cxi_out_printf(&x->out, ", in an anonymous %s",
-		               clang_getCursorKind(parent) == CXCursor_UnionDecl ? "union"
-		                                                                  : "struct");
+		cxi_out_printf(&x->out, ", in an anonymous %s", cxi_kind(parent));
 	cxi_out_printf(&x->out, ": ");
 	cxi_out_clang(&x->out, clang_getTypeSpelling(type));
 	char bits[2][CXI_BITS];
