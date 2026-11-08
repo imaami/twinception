@@ -1226,9 +1226,10 @@ policy_principal_uid (struct policy const *policy,
 		return 0;
 	}
 	char anchor[sizeof "uid:4294967295"];
-	size_t const n = util_format(anchor, sizeof anchor, "uid:%" PRIu32, uid);
+	int n = snprintf(anchor, sizeof anchor, "uid:%" PRIu32, uid);
 	uint64_t principal = 0;
-	*e = policy_principal_of(policy, 0, anchor, n, &principal);
+	*e = n < 0 || n >= (int)sizeof anchor ? EINVAL
+	   : policy_principal_of(policy, 0, anchor, (size_t)n, &principal);
 	return principal;
 }
 
