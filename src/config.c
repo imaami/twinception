@@ -2229,8 +2229,8 @@ config_description (struct config *cfg)
 	}
 	if (config_aprintf(&cfg->description, "Send a question or a task to %s%s. The other "
 	                   "AI cannot see this conversation, your files or your tools. Write "
-	                   "a complete prompt.%s%s Use the tool for a second opinion, for hard "
-	                   "problems, or for knowledge you lack.", who, model,
+	                   "a complete prompt.%s%s Use the other AI for a second opinion, for "
+	                   "hard problems, or for knowledge you lack.", who, model,
 	                   lent ? " The other AI can call some tools of this server. The result "
 	                          "lists the tool calls after the answer." : "",
 	                   lent & notes

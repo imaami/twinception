@@ -865,7 +865,7 @@ The value is a string. `askai` computes the default from `model`,
 
 > Send a question or a task to another AI model. The other AI cannot see
 > this conversation, your files or your tools. Write a complete prompt. Use
-> the tool for a second opinion, for hard problems, or for knowledge you
+> the other AI for a second opinion, for hard problems, or for knowledge you
 > lack.
 
 With `model` set to M, the first sentence ends with "to the AI model M". If

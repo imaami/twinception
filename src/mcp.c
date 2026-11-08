@@ -7798,8 +7798,9 @@ mcp_tool_definition (void const *service)
 	if (st->lending.of[KIND_NOTES])
 		props = jb_set_or_free(props, "thread", schema_property("string",
 			"An ask-chain thread ID from an earlier answer, 32 hexadecimal "
-			"digits. The call starts with the review record of the thread, if "
-			"any. Every call loads the notes, also without thread."));
+			"digits. The call starts with the review record of the thread, if a "
+			"review record exists for the thread. Every call starts with the "
+			"notes from your earlier calls, with or without thread."));
 	if (st->ep->background) {
 		props = jb_set_or_free(props, "job", schema_property("string",
 			"A job ID that an earlier call returned. Give job instead of prompt "
@@ -7841,7 +7842,8 @@ mcp_task_definition (void const *service)
 			"A test aid. With slices, the call runs slices of CPU work, 250 us "
 			"each, as a task on the event loops. The result contains the number "
 			"of slices and the number of moves between loops. With prompt "
-			"instead, the call asks the upstream AI as background work."),
+			"instead of slices, the call asks the upstream AI at a lower "
+			"priority than interactive calls."),
 		"inputSchema", schema_object(
 			jb_object(
 				"slices", jb_set_or_free(schema_count(1, nullptr), "maximum",
@@ -7868,10 +7870,10 @@ mcp_compact_definition (void const *service)
 	char about[512];
 	util_format(about, sizeof about, "Replace your turns and the tool results since the "
 	            "task with your summary. After compact, you see the original task, then "
-	            "your summary%s%s. Put all that you need to continue into the summary. "
-	            "Call compact when an askai notice asks for compact, or when you no longer "
-	            "need the details of finished work. Tool calls after compact in the same "
-	            "turn do not run.",
+	            "your summary%s%s. Put everything that you need to continue into the "
+	            "summary. Call compact when an askai notice shows the context 66%% full "
+	            "or more, or when you no longer need the details of finished work. Tool "
+	            "calls after compact in the same turn do not run.",
 	            st->lending.of[KIND_FINDINGS] ? ", then the review record" : "",
 	            st->lending.of[KIND_NOTES] ? ", then your note history and your newest note"
 	                                       : "");
@@ -7891,10 +7893,11 @@ mcp_background_definition (void const *service)
 	(void)service;
 	static_assert(JOBS_MAX == 8, "update the description");
 	return schema_tool("background",
-		"Run a call of another tool as a job. The call returns the job number "
-		"at once. When the job ends, a notice appears in a later tool result, "
-		"in the result of wait, or in a message after your answer. Read the "
-		"output with jobs. You can start at most 8 jobs.",
+		"Run a call of another tool as a job. background returns the job "
+		"number at once. When the job ends, a notice appears in a later tool "
+		"result, in the result of wait, or in a message after your answer. "
+		"Call jobs with action result to read the output of the job. You can "
+		"start at most 8 jobs.",
 		jb_object(
 			"tool", schema_property("string", "The name of the tool to call, "
 			                        "such as git or man."),
@@ -7910,8 +7913,9 @@ mcp_jobs_definition (void const *service)
 {
 	(void)service;
 	return schema_tool("jobs",
-		"List your jobs and timers, read the output of a finished job, or "
-		"cancel a job or a timer. Jobs and timers end when the ask call ends.",
+		"List your jobs and timers with action list. Read the output of a "
+		"finished job with action result. Cancel a job or a timer with action "
+		"cancel. Jobs and timers end when the ask call ends.",
 		jb_object(
 			"action", schema_enum(schema_names(actions, array_size(actions)), nullptr),
 			"job", schema_property("integer", "The job number, for result and "
@@ -7975,7 +7979,7 @@ mcp_background_client_definition (void const *service)
 	struct mcp_static const *st = service;
 	char about[1024];
 	util_format(about, sizeof about, "Run a call of another of your tools, such as %s, "
-	            "as a job. The call returns the job ID at once. The job continues after "
+	            "as a job. background returns the job ID at once. The job continues after "
 	            "the connection closes. wait returns when the job ends. jobs returns the "
 	            "result or cancels the job. At most 8 of your jobs and tasks run at once. "
 	            "askai stores the result for up to an hour after the job ends.",
@@ -7998,12 +8002,11 @@ mcp_jobs_client_definition (void const *service)
 {
 	(void)service;
 	return schema_tool("jobs",
-		"List your jobs and timers, return the result of a finished job, or "
-		"cancel a running job or a pending timer.",
+		"List your jobs and timers with action list. Get the result of a "
+		"finished job with action result. Cancel a running job or a pending "
+		"timer with action cancel.",
 		jb_object(
-			"action", schema_enum(schema_names(actions, array_size(actions)),
-				"list lists your jobs and timers. result returns the "
-				"result of a job. cancel cancels a job or a timer."),
+			"action", schema_enum(schema_names(actions, array_size(actions)), nullptr),
 			"job", schema_property("string", "The job ID from background, for "
 			                       "result and cancel."),
 			"timer", schema_property("integer", "The timer number from timer, "
@@ -8041,14 +8044,13 @@ mcp_timer_client_definition (void const *service)
 	(void)service;
 	static_assert(TIMER_MAX == 3600 && LEDGER_NOTE == 200, "update the description");
 	return schema_tool("timer",
-		"Set a timer. The call returns the timer number at once. When the "
-		"timer fires, wait returns with the number and the note of the timer.",
+		"Set a timer. The result contains the timer number. When the timer "
+		"fires, the result of wait contains the timer number and the note.",
 		jb_object(
 			"seconds", schema_property("integer", "The seconds until the timer "
 			                           "fires, from 1 to 3600."),
 			"note", schema_property("string", "What the timer is for, at most "
-			                        "200 bytes. The result of wait contains the "
-			                        "note."),
+			                        "200 bytes."),
 			nullptr),
 		CSTR_VIEW("seconds"));
 }
