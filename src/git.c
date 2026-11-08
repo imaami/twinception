@@ -230,9 +230,11 @@ enum {
 #define GIT_COMMAND_LIST(X)                                                                \
         X(READ,      "read",      read_options,      END | OBJECT | SINGLE | LINES,        \
           "Numbered lines of a committed file. Give the file as the one revision "         \
-          "commit:path, such as HEAD:src/journal.c. line is the first line, 1 by "         \
-          "default. count is the most lines, as many as fit by default. The first line "   \
-          "names the commit. The last line shows the next call, with the commit ID in "    \
+          "commit:path, such as HEAD:src/journal.c. line is the first line to "            \
+          "return. The default line is 1. count is the most lines to return. The "         \
+          "default count is as many lines as fit in one result. The first line of "        \
+          "the output names the commit. If the file goes on, the output ends with "        \
+          "the arguments of the next read. The arguments contain the commit ID in "        \
           "place of HEAD.", "blob")                                                        \
         X(LOG,       "log",       log_options,       FILES | END | RANGE,                  \
           "Committed history. The default revision is HEAD. Paths limit the history.",     \
@@ -245,22 +247,23 @@ enum {
           "limit the comparison. --stat or --name-status prints a summary.",               \
           "--no-ext-diff", "--no-textconv")                                                \
         X(GREP,      "grep",      grep_options,      FILES | END | PATTERN,                \
-          "Search committed files. The default revision is HEAD. The pattern is an "       \
-          "extended regex. -G, -F and -P select basic regex, plain text and Perl regex. "  \
-          "-i ignores case. With one revision, the first line names the commit. Each "     \
-          "file path is on a separate line, above the matches as line:text. With several " \
-          "revisions, each path starts with the commit ID and a colon. To read a match, "  \
-          "call read with commit:path and the line of the match. --no-heading puts the "   \
-          "path before each match. -l lists the files with a match. -L lists the files "   \
-          "without a match. -c counts the matches in each file. -C3 adds three lines of "  \
-          "context. -p adds the first line of the function around a match. -W adds the "   \
-          "whole function. --max-count=N stops after N matches in a file.",                \
+          "Search committed files. The default revision is HEAD. The pattern argument "    \
+          "is an extended regex. -G, -F and -P select basic regex, plain text and Perl "   \
+          "regex. -i ignores case. With one revision, the first line of the output "       \
+          "names the commit. Each file path is on a separate line, above the matches "     \
+          "as line:text. With several revisions, each path starts with the commit ID "     \
+          "and a colon. To read a match, call read with commit:path and the line of "      \
+          "the match. --no-heading puts the path before each match. -l lists the "         \
+          "files with a match. -L lists the files without a match. -c counts the "         \
+          "matching lines in each file. -C3 adds three lines of context. -p adds the "     \
+          "first line of the function that contains a match. -W adds the whole "           \
+          "function. --max-count=N stops after N matches in a file.",                      \
           "--no-textconv", "-n", "-E", "--heading", "--break", "--threads=1")              \
         X(BLAME,     "blame",     blame_options,     FILES | SINGLE | ONEPATH,             \
           "The commit that last changed each line of a committed file. The default "       \
           "revision is HEAD. Give the file as the one path, such as \"paths\": "           \
-          "[\"src/git.c\"]. -L10,30 limits the lines. -s leaves out the author and the "   \
-          "date.", "--no-textconv")                                                        \
+          "[\"src/git.c\"]. -L10,30 limits the output to lines 10 to 30. -s leaves out "   \
+          "the author and the date.", "--no-textconv")                                     \
         X(LS_TREE,   "ls-tree",   ls_tree_options,   FILES | SINGLE,                       \
           "Entries of a committed tree. The default revision is HEAD. The path \"src/\" "  \
           "lists the entries in src. The path \"src\" lists only src. -r recurses. -d "    \
@@ -433,18 +436,19 @@ git_definition (void const *service)
 		"title", json_object_new_string("Git"),
 		"description", json_object_new_string(
 			"Run a read-only git command in a repository of the server. The "
-			"result is the output of git, errors included, cut at 4 MiB. "
-			"help:true lists the options and limits of a command. Only "
-			"committed files are visible. A commit must be reachable from HEAD, "
-			"a branch, a tag or a remote-tracking ref. The default revision is "
-			"HEAD. Give diff two commits or one range. To read a file, give read "
-			"the file as the revision. Example: {\"command\": \"read\", "
+			"result is the output of git with the error messages. The output is "
+			"cut at 4 MiB. help:true lists the options and limits of a command. "
+			"Only committed files are visible. A commit must be reachable from "
+			"HEAD, a branch, a tag or a remote-tracking ref. The default revision "
+			"is HEAD. Give diff two commits or one range. To read a file, give "
+			"read the file as the revision. Example: {\"command\": \"read\", "
 			"\"revisions\": [\"HEAD:src/journal.c\"], \"line\": 120, \"count\": "
-			"40} returns lines 120 to 159 with line numbers. The last line of "
-			"the read output shows the next call, with the commit ID in place of "
-			"HEAD. The first line of the grep output names the commit. Each file "
-			"path is on a separate line, above the matches as <line>:<text>. For "
-			"a match, call read with \"revisions\": [\"<commit>:<path>\"] and "
+			"40} returns lines 120 to 159 with line numbers. If the file goes on, "
+			"the read output ends with the arguments of the next read. The "
+			"arguments contain the commit ID in place of HEAD. With one revision, "
+			"the first line of the grep output names the commit. Each file path "
+			"is on a separate line, above the matches as <line>:<text>. To read a "
+			"match, call read with \"revisions\": [\"<commit>:<path>\"] and "
 			"\"line\": <line>. Attach the value to the option: --max-count=20, "
 			"not -n 20."),
 		"inputSchema", schema_object(
@@ -1048,7 +1052,8 @@ git_call_command (struct git_call  *call,
 		}
 		if (range && (!(takes & RANGE) || ((takes & PAIR) && listed != 1))) {
 			bad = git_wrong(why, "In revisions[%zu], a range is allowed only for "
-			                "log, and for diff as the one revision A..B or A...B.", i);
+			                "log and diff. Give diff a range only as the one "
+			                "revision, A..B or A...B.", i);
 			continue;
 		}
 		size_t left = range ? (size_t)(range - s.data) : root;
@@ -1105,14 +1110,14 @@ git_help (struct mcp_slot *slot,
 		"options", options,
 		"option_values", json_object_new_string(
 			"Each option is one array entry, with the value attached. Append the "
-			"value after a trailing =. Replace a trailing # with digits, and a "
+			"value after a trailing =. Replace a trailing # with digits. Replace a "
 			"trailing * with a value. Examples: --max-count=20, -n20, -C3."),
 		"pagination", json_object_new_string(takes & LINES
 			? "git output is cut at 4 MiB. read returns at most count whole lines in "
 			  "at most window_bytes. Each line starts with the line number and a "
-			  "tab. The last line shows the revision and the line to read on from. "
-			  "A line longer than window_bytes is cut, with a note that names the "
-			  "next offset."
+			  "tab. If the file goes on, the output ends with the revision and the "
+			  "line to read on from. A line longer than window_bytes is cut. The "
+			  "result then ends with a note that gives the next offset."
 			: "git output is cut at 4 MiB. A result is at most window_bytes. A "
 			  "longer output ends with a note that names the exact next offset for "
 			  "the same arguments."),
