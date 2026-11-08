@@ -14056,7 +14056,7 @@ def check_review(binary, up):
             assert schema["additionalProperties"] is False, schema
             assert "need not copy" not in lent["findings"]["description"], lent["findings"]
             where = schema["properties"]["location"]["description"]
-            assert where.endswith("Leave it out if no file's lines show the claim."), where
+            assert where.endswith("Leave out location if no lines of a file show the claim."), where
             assert "After compact, you see the original task, then your summary, then " \
                 "the review record. " in lent["compact"]["description"], lent
 

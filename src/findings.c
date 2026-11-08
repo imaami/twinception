@@ -28,50 +28,41 @@ findings_definition (void const *service)
 	(void)service;
 	static_assert(TOOL_TEXT_MAX == 4U << 20, "update the description");
 	return schema_tool("findings",
-		"Keep your findings in askai's review record. askai shows the record "
-		"again after every compaction, with its log of the lines that you "
-		"read in this call with the read command of the git tool or saw in "
-		"describe of the code tool, if you have them. An ask call that "
-		"continues a thread starts with that thread's record, without its read "
-		"log; any other ask call starts with an empty record. add records a "
-		"claim, a candidate until you check it. update changes its state: "
-		"verified when source that you read shows it true, disproved when it "
-		"shows it false, retracted when you withdraw it, or candidate again. "
-		"Each update needs evidence and can also change the claim or the "
-		"location if they were wrong. askai stores the old text in the "
-		"finding's history. verified and disproved need the lines of the "
-		"location in the read log, so they need the git tool or the code tool, "
-		"and askai records the commit that the lines were read at. The log "
-		"takes the lines of a result from your next turn on, so verify or "
-		"disprove in a later turn than the read. show gives the record, or with "
-		"id one finding's history. The record's limit is 4 MiB.",
+		"Record your findings in the review record of this ask call. askai "
+		"shows the record again after every compaction. Change the state of a "
+		"finding with update: verified if source that you read shows the claim "
+		"true, disproved if the source shows the claim false, retracted if you "
+		"withdraw the claim, or candidate again. verified and disproved require "
+		"the lines of the location in the read log. The read log lists the "
+		"lines that the read command of the git tool and the describe action "
+		"of the code tool showed you. Verify or disprove a finding in a later "
+		"turn than the read of the lines. The history of a finding lists every "
+		"change. A record can start with findings from an earlier ask call. "
+		"The read log always starts empty. The record is limited to 4 MiB.",
 		jb_object(
 			"action", schema_enum(
 				schema_names(review_action_names, REVIEW_ACTIONS),
-				"add a finding, update one, or show the record."),
+				"add a finding, update a finding, or show the record."),
 			"claim", schema_property("string",
-				"Required for add, and for update if the claim was "
-				"wrong: what you found."),
+				"What you found. Required for add, and for update to "
+				"correct the claim."),
 			"location", schema_property("string",
-				"For add, and for update if the location was wrong: "
-				"the lines of a committed file that the claim is about, "
-				"as path:line or path:first-last, such as "
-				"src/mcp.c:120-140. A commit and a colon may come first, "
-				"as git grep prints them. HEAD: is the same as no commit. "
-				"Leave it out if no file's lines show the claim."),
+				"The lines of a committed file that show the claim, as "
+				"path:line or path:first-last, such as src/mcp.c:120-140. "
+				"A commit ID and a colon can come first, as in git grep "
+				"output. HEAD: is the same as no commit. Leave out "
+				"location if no lines of a file show the claim."),
 			"state", schema_enum(
 				schema_names(review_state_names, REVIEW_STATES),
-				"For add: candidate (the default), verified or "
-				"disproved. Required for update: the new state, or "
-				"the same."),
+				"For add: candidate (the default), verified or disproved. "
+				"Required for update."),
 			"evidence", schema_property("string",
-				"Required for update, and for add with verified or "
-				"disproved: what you read that shows the state, why "
-				"you retract the finding, or why it is a candidate "
-				"again."),
+				"What you read that shows the state. For retracted, the "
+				"reason you withdraw the finding. Required for update, "
+				"and for add with verified or disproved."),
 			"id", schema_count(1,
-				"Required for update, and for show to give one "
-				"finding's history: the number of the finding."),
+				"The number of a finding. Required for update. show with "
+				"id prints the history of the finding."),
 			"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 			nullptr),
 		CSTR_VIEW("action"));
