@@ -118,9 +118,6 @@ http_finish (struct curl_loop *curl,
 	curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
 	curl_easy_getinfo(easy, CURLINFO_RETRY_AFTER, &retry);
 	http->retry = retry > 0 && retry < LONG_MAX ? (long)retry : 0;
-	curl_multi_remove_handle(curl->multi, easy);
-	list_del(&request->hook);
-	list_del(&request->held);
 	if (request->started && http->metrics)
 		hist_record(&http->metrics->run, loop_clock() - request->started);
 
@@ -129,11 +126,9 @@ http_finish (struct curl_loop *curl,
 	char error[CURL_ERROR_SIZE];
 	memcpy(error, request->error, sizeof error);
 
-	curl_slist_free_all(request->resolve);
-	request->resolve = nullptr;
-	curl_slist_free_all(request->headers);
-	request->headers = nullptr;
-	free(request);
+	curl_multi_remove_handle(curl->multi, easy);
+	request->easy = nullptr;
+	http_cancel(http, &request);
 	CURL *outer = http->ended;
 	http->ended = easy;
 	done(result, status, error, user);
