@@ -806,10 +806,10 @@ cxi_lookup (struct cxi *x,
 		cxi_out_printf(&x->out, " are named ");
 		cxi_out_text(&x->out, x->key[CXI_KEY_NAME].data);
 		if (tag < n)
-			cxi_out_printf(&x->out, "; give %s %s for the type, or line:\n",
-			               cxi_kind(find.list.items[tag]), name);
+			cxi_out_printf(&x->out, ". Give %s %s for the type, or give line. The "
+			               "symbols:\n", cxi_kind(find.list.items[tag]), name);
 		else
-			cxi_out_printf(&x->out, "; give line:\n");
+			cxi_out_printf(&x->out, ". Give line. The symbols:\n");
 	} else {
 		find.part = 1;
 		find.kind = 0;
@@ -818,9 +818,10 @@ cxi_lookup (struct cxi *x,
 		cxi_out_text(&x->out, x->key[CXI_KEY_NAME].data);
 		cxi_out_printf(&x->out, " in the translation unit of ");
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-		cxi_out_printf(&x->out, "%s", find.list.n
-		               ? ". These names of the repository contain it:\n"
-		               : ", and no name of the repository contains it.");
+		cxi_out_printf(&x->out, find.list.n ? ". Names in the repository that contain "
+		                                    : ". No name in the repository contains ");
+		cxi_out_text(&x->out, name);
+		cxi_out_printf(&x->out, find.list.n ? ":\n" : ".");
 	}
 	for (size_t i = 0; i < find.list.n; ++i) {
 		CXCursor const at = cxi_shown(find.list.items[i]);
@@ -952,12 +953,12 @@ cxi_lookup_line (struct cxi *x,
 	if (!words.data) {
 		cxi_out_printf(&x->out, "Line %u is past the end of ", line);
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-		cxi_out_printf(&x->out, ", which has %zu line%s.", total, util_s(total));
+		cxi_out_printf(&x->out, ". The file contains %zu line%s.", total, util_s(total));
 		return EINVAL;
 	}
 	cxi_out_printf(&x->out, "Line %u of ", line);
 	cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-	cxi_out_printf(&x->out, " has no word ");
+	cxi_out_printf(&x->out, " contains no symbol named ");
 	cxi_out_text(&x->out, name);
 	cxi_out_printf(&x->out, ".");
 	return EINVAL;
@@ -1007,8 +1008,8 @@ cxi_lookup_member (struct cxi *x,
 		record = cxi_record_of(find.list.items[i]);
 	free(find.list.items);
 	if (clang_Cursor_isNull(record)) {
-		cxi_out_printf(&x->out, "No struct, union or typedef of one named %s in the "
-		               "translation unit of ", name);
+		cxi_out_printf(&x->out, "No struct or union type named %s in the translation "
+		               "unit of ", name);
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
 		cxi_out_printf(&x->out, ".");
 		return EINVAL;
@@ -1018,8 +1019,9 @@ cxi_lookup_member (struct cxi *x,
 	*c = seek.found;
 	if (!clang_Cursor_isNull(*c))
 		return x->out.e;
+	cxi_out_printf(&x->out, "No member %s in ", member);
 	cxi_out_clang(&x->out, clang_getTypeSpelling(clang_getCursorType(record)));
-	cxi_out_printf(&x->out, " has no member %s.", member);
+	cxi_out_printf(&x->out, ".");
 	return EINVAL;
 }
 
@@ -1062,8 +1064,8 @@ cxi_parse_name (struct cxi *x,
 	size_t const b = dot.len && *dot.data == '.' ? cxi_ident(cstr_view_slice(dot, 1, SIZE_MAX))
 	                                             : 0;
 	if (!a || a > CXI_NAME || b > CXI_NAME || dot.len != (b ? b + 1 : 0)) {
-		cxi_out_printf(&x->out, "name must be a name of C, such as git_start, struct dstr "
-		               "or child.flags.");
+		cxi_out_printf(&x->out, "The name argument must be a C name, such as git_start, "
+		               "struct dstr or child.flags.");
 		return EINVAL;
 	}
 	memcpy(name, rest.data, a);
@@ -1283,13 +1285,15 @@ cxi_words (struct cxi  *x,
 		while (i < value.len && (unsigned char)value.data[i] >= 0x20 && value.data[i] != 0x7f)
 			++i;
 		if (!once) {
+			cxi_out_printf(&x->out, "askai-code does not accept the word ");
 			cxi_out_path(&x->out, cstr_view(argv[*at]));
-			cxi_out_printf(&x->out, " is not a word that askai-code takes: it takes each "
-			               "key once, warning up to 16 times, and unconfined=1.");
+			cxi_out_printf(&x->out, ". Each key is allowed once, warning up to 16 times, "
+			               "and unconfined only as unconfined=1.");
 			return EINVAL;
 		}
 		if (i < value.len) {
-			cxi_out_printf(&x->out, "%s has a control character.", cxi_keys[k].data);
+			cxi_out_printf(&x->out, "The %s argument contains a control character.",
+			               k == CXI_KEY_WARNING ? "warnings" : cxi_keys[k].data);
 			return EINVAL;
 		}
 		x->key[k] = value;
@@ -1379,32 +1383,34 @@ cxi_valid (struct cxi *x)
 			break;
 	}
 	char const *why = x->action == CXI_ACTIONS
-	                  ? "action must be " XL_JOIN(", ", " or ", CXI_ACTION_LIST(XL_TEXT)) "."
+	                  ? "The action argument must be "
+	                    XL_JOIN(", ", " or ", CXI_ACTION_LIST(XL_TEXT)) "."
 	                : describe && !x->key[CXI_KEY_NAME].data
-	                  ? "describe needs name: a symbol such as git_start, or struct.member "
-	                    "such as child.flags."
+	                  ? "Give describe a name argument, such as git_start or child.flags."
 	                : !describe && (x->key[CXI_KEY_NAME].data || line.data)
-	                  ? "name and line are only for describe."
+	                  ? "The name and line arguments are only for describe."
 	                : line.data && (util_number(line.data, line.len, UINT32_MAX, &x->line) ||
 	                                !x->line)
-	                  ? "line must be a whole number from 1."
+	                  ? "The line argument must be a whole number from 1."
 	                : x->n_warnings && x->action != CXI_ACTION_DIAGNOSTICS
-	                  ? "warnings is only for diagnostics." : nullptr;
+	                  ? "The warnings argument is only for diagnostics." : nullptr;
 	if (why) {
 		cxi_out_printf(&x->out, "%s", why);
 	} else if (i < x->n_warnings) {
-		cxi_out_printf(&x->out, "Each warning must be -W or -Wno- and the name of a warning, "
-		               "such as -Wpadded: ");
+		cxi_out_printf(&x->out, "The warnings entry ");
 		cxi_out_path(&x->out, cstr_view(x->warning[i]));
-		cxi_out_printf(&x->out, ".");
+		cxi_out_printf(&x->out, " must be -W or -Wno- and the name of a warning, such as "
+		               "-Wpadded.");
 	} else if (memchr(path.data, ':', path.len)) {
-		cxi_out_printf(&x->out, "Give the commit as revision and the path alone.");
+		cxi_out_printf(&x->out, "The path argument must not contain a colon. Give the "
+		               "commit as the revision argument.");
 	} else if (!util_path_inside(path)) {
-		cxi_out_printf(&x->out, "path must be relative to the repository's top, with no .. "
-		               "component.");
+		cxi_out_printf(&x->out, "The path argument must be relative to the top of the "
+		               "repository, with no .. component.");
 	} else if (!cstr_view_ends(path, CSTR_VIEW(".c")) && !cstr_view_ends(path, CSTR_VIEW(".h"))) {
+		cxi_out_printf(&x->out, "The path argument must be a .c or .h file, not ");
 		cxi_out_path(&x->out, path);
-		cxi_out_printf(&x->out, " is not a C file; path must be a .c or .h file.");
+		cxi_out_printf(&x->out, ".");
 	} else {
 		return 0;
 	}
@@ -1431,11 +1437,11 @@ cxi_command (struct cxi       *x,
 	struct json_object *cmds = e ? nullptr : json_object_from_fd_ex(fd, CXI_DEPTH);
 	util_close(&fd);
 	if (!cmds) {
-		cxi_out_printf(&x->out, "The compile commands of %s cannot be read: ", repo);
+		cxi_out_printf(&x->out, "The compile commands of %s in ", repo);
 		cxi_out_path(&x->out, cstr_view(file));
-		cxi_out_printf(&x->out, ": %s.", e == EFBIG ? "it is not a regular file of at most "
-		                                              "64 MiB"
-		                                 : e ? strerror(e) : "it is not JSON");
+		cxi_out_printf(&x->out, " cannot be read (%s).",
+		               e == EFBIG ? "not a regular file of at most 64 MiB"
+		                          : e ? strerror(e) : "not JSON");
 		return EINVAL;
 	}
 	struct cdb_map const map = { x->key[CXI_KEY_TOP], cstr_view_slice(tree, 0, tree.len - 1) };
@@ -1447,10 +1453,10 @@ cxi_command (struct cxi       *x,
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
 		cxi_out_printf(&x->out, " is not in the compile commands of %s.", repo);
 	} else if (e == EINVAL) {
-		cxi_out_printf(&x->out, "The compile commands of %s have no entry with arguments "
-		               "for a file of the repository: ", repo);
+		cxi_out_printf(&x->out, "The compile commands of %s in ", repo);
 		cxi_out_path(&x->out, cstr_view(file));
-		cxi_out_printf(&x->out, ".");
+		cxi_out_printf(&x->out, " contain no entry with arguments for a file of the "
+		               "repository.");
 	}
 	return e == ENOENT ? EINVAL : e;
 }
@@ -1559,8 +1565,8 @@ cxi_cache_export (struct cxi_cache *cache,
 	free(list);
 	static_assert(CXI_FILES == 100'000 && CXI_BYTES == 1 << 30, "update the text of the limits");
 	if (e == EFBIG || (!e && (files > CXI_FILES || bytes > CXI_BYTES))) {
-		cxi_out_printf(out, "Commit %s has more than 100000 files and directories or more "
-		               "than 1 GiB, which the code tool reads at most.", commit.data);
+		cxi_out_printf(out, "Commit %s is too large for the code tool. The limits are "
+		               "100000 files and directories and 1 GiB.", commit.data);
 		return EINVAL;
 	}
 	if (!e)
@@ -1628,7 +1634,7 @@ cxi_cache_open (struct cxi_cache *cache,
 		return 0;
 	cxi_out_printf(out, "The cache directory ");
 	cxi_out_path(out, cstr_view_dstr(&cache->dir));
-	cxi_out_printf(out, " cannot be used: %s.", why ? why : strerror(e));
+	cxi_out_printf(out, " cannot be used (%s).", why ? why : strerror(e));
 	return EINVAL;
 }
 
@@ -1677,7 +1683,7 @@ cxi_parse (struct cxi        *x,
 	if (!e && !x->key[CXI_KEY_UNCONFINED].data)
 		e = confine_cage(tree);
 	if (e) {
-		cxi_out_printf(&x->out, "askai-code cannot confine itself: %s.", strerror(e));
+		cxi_out_printf(&x->out, "askai-code cannot confine the process (%s).", strerror(e));
 		free(argv);
 		return EINVAL;
 	}
@@ -1688,7 +1694,7 @@ cxi_parse (struct cxi        *x,
 	free(argv);
 	if (failed) {
 		cxi_out_printf(&x->out, failed == CXError_Crashed
-		               ? "clang ran out of memory or crashed while it parsed "
+		               ? "clang ran out of memory or crashed in the parse of "
 		               : "clang could not parse ");
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
 		cxi_out_printf(&x->out, ".");
@@ -1722,9 +1728,10 @@ cxi_run (struct cxi         *x,
 	    !cstr_view_starts(key[CXI_KEY_CACHE], CSTR_VIEW("/")) ||
 	    util_number(key[CXI_KEY_DEADLINE].data, key[CXI_KEY_DEADLINE].len, UINT64_MAX,
 	                &deadline)) {
-		cxi_out_printf(&x->out, "askai-code needs action, the name of a --git repository as "
-		               "repo, path, cdb, a commit ID, a deadline in nanoseconds, and "
-		               "absolute paths top and cache.");
+		cxi_out_printf(&x->out, "askai-code requires the words action, repo, path, cdb, "
+		               "commit, deadline, top and cache. repo is the name of a --git "
+		               "repository. commit is a commit ID. deadline is in nanoseconds. "
+		               "top and cache are absolute paths.");
 		return EINVAL;
 	}
 	int e = cxi_valid(x);
@@ -1784,7 +1791,7 @@ main (int    argc,
 		int const why = x.out.e ? x.out.e : e;
 		dstr_clear(&x.out.text);
 		x.out.e = 0;
-		cxi_out_printf(&x.out, "askai-code failed: %s.", strerror(why));
+		cxi_out_printf(&x.out, "askai-code failed (%s).", strerror(why));
 	}
 	/* An answer longer than TOOL_TEXT_MAX is cut at the end of a line. */
 	static char const cut[] = "\n[The answer is cut at 4 MiB.]";

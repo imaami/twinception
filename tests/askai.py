@@ -10551,10 +10551,11 @@ def check_code(binary, up):
                 "src/unlisted.c is not in the compile commands of proj."
             for path, text in (
                     ("src/none.h", f"src/none.h is not a file of commit {head}."),
-                    ("README", "README is not a C file; path must be a .c or .h file."),
-                    ("../a.c", "path must be relative to the repository's top, with no "
-                               ".. component."),
-                    ("HEAD:src/a.c", "Give the commit as revision and the path alone.")):
+                    ("README", "The path argument must be a .c or .h file, not README."),
+                    ("../a.c", "The path argument must be relative to the top of the "
+                               "repository, with no .. component."),
+                    ("HEAD:src/a.c", "The path argument must not contain a colon. Give the "
+                                     "commit as the revision argument.")):
                 assert call(ai, error=True, **outline, path=path) == text, path
             # A commit with more files than the limit is refused before the
             # export: 100,001 files, five levels of ten trees of ten, and one
@@ -10576,8 +10577,8 @@ def check_code(binary, up):
             bomb = sh("commit-tree", top, "-m", "bomb").strip()
             sh("branch", "bomb", bomb)
             assert call(ai, error=True, **outline, path="src/a.c", revision="bomb") == (
-                f"Commit {bomb} has more than 100000 files and directories or more than "
-                "1 GiB, which the code tool reads at most.")
+                f"Commit {bomb} is too large for the code tool. The limits are 100000 files "
+                "and directories and 1 GiB.")
             with open(f"{tree}/commit") as f:
                 assert f.read() == head
             check_code_describe(binary, up, call, head, d, cdb)
@@ -10680,7 +10681,7 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "field big of struct bits, in an anonymous union: uint64_t",
             "offset 16, size 8, alignment 8"]
         assert describe(name="bar_t.member").split("\n")[1] == "field member of struct bar: char"
-        assert describe(error=True, name="holes.d") == "struct holes has no member d."
+        assert describe(error=True, name="holes.d") == "No member d in struct holes."
         # A function: the places of its declaration and definition, its
         # calls, and the lines of its head with its comment.
         text = describe(name="lay_sum")
@@ -10710,26 +10711,26 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # A name of several symbols or of none, and other refusals.
         for arguments, text in (
                 ({"name": "lay_dup"}, "2 symbols in the translation unit of src/lay.c are "
-                 "named lay_dup; give struct lay_dup for the type, or line:\n"
+                 "named lay_dup. Give struct lay_dup for the type, or give line. The "
+                 "symbols:\n"
                  "  src/lay.h:43 struct lay_dup\n  src/lay.c:25 static variable lay_dup\n"),
                 ({"name": "lay_su"}, "No symbol lay_su in the translation unit of src/lay.c. "
-                 "These names of the repository contain it:\n  src/lay.c:18 function "
+                 "Names in the repository that contain lay_su:\n  src/lay.c:18 function "
                  "lay_sum\n"),
                 ({"name": "nowhere"}, "No symbol nowhere in the translation unit of "
-                 "src/lay.c, and no name of the repository contains it."),
+                 "src/lay.c. No name in the repository contains nowhere."),
                 ({"name": "struct foo_t"}, "No symbol struct foo_t in the translation unit "
-                 "of src/lay.c. These names of the repository contain it:\n"
+                 "of src/lay.c. Names in the repository that contain foo_t:\n"
                  "  src/lay.h:35 typedef foo_t\n"),
-                ({"name": "a-b"}, "name must be a name of C, such as git_start, struct "
-                 "dstr or child.flags."),
-                ({"name": "x", "line": 99}, "Line 99 is past the end of src/lay.c, which "
-                 "has 25 lines."),
-                ({"name": "x", "line": 1}, "Line 1 of src/lay.c has no word x."),
-                ({}, "describe needs name: a symbol such as git_start, or struct.member "
-                 "such as child.flags.")):
+                ({"name": "a-b"}, "The name argument must be a C name, such as git_start, "
+                 "struct dstr or child.flags."),
+                ({"name": "x", "line": 99}, "Line 99 is past the end of src/lay.c. The file "
+                 "contains 25 lines."),
+                ({"name": "x", "line": 1}, "Line 1 of src/lay.c contains no symbol named x."),
+                ({}, "Give describe a name argument, such as git_start or child.flags.")):
             assert describe(error=True, **arguments) == text, (arguments, text)
         assert call(ai, error=True, repo="proj", action="outline", path="src/lay.c",
-                    name="x") == "name and line are only for describe."
+                    name="x") == "The name and line arguments are only for describe."
         # diagnostics: errors and warnings without notes or columns,
         # including those in headers, and a message with a newline printed
         # on one line.
@@ -10755,10 +10756,10 @@ def check_code_describe(binary, up, call, head, d, cdb):
                                                                        "-Wsign-conversion"])
         for warning in ("-Wl,x", "-fplugin=x"):
             assert call(ai, error=True, **diagnostics, warnings=[warning]) == (
-                "Each warning must be -W or -Wno- and the name of a warning, such as "
-                f"-Wpadded: {warning}.")
+                f"The warnings entry {warning} must be -W or -Wno- and the name of a "
+                "warning, such as -Wpadded.")
         assert call(ai, error=True, repo="proj", action="outline", path="src/lay.c",
-                    warnings=["-Wpadded"]) == "warnings is only for diagnostics."
+                    warnings=["-Wpadded"]) == "The warnings argument is only for diagnostics."
         # The layout of a record of 20,000 members is cut at 2,000 rows, and
         # its padding is that of the rows shown.
         text = call(ai, repo="proj", action="describe", path="src/big.c", name="struct big")
@@ -10777,8 +10778,8 @@ def check_code_describe(binary, up, call, head, d, cdb):
         leak = {"repo": "proj", "action": "describe", "path": "src/leak.c",
                 "name": "SECRET_TOKEN_7f3a"}
         assert call(ai, error=True, **leak) == (
-            "No symbol SECRET_TOKEN_7f3a in the translation unit of src/leak.c, and no "
-            "name of the repository contains it.")
+            "No symbol SECRET_TOKEN_7f3a in the translation unit of src/leak.c. No name "
+            "in the repository contains SECRET_TOKEN_7f3a.")
         # diagnostics reports a file outside the tree as not found, as if it
         # did not exist.
         text = call(ai, repo="proj", action="diagnostics", path="src/leak.c")
