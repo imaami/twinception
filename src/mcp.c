@@ -6795,15 +6795,6 @@ mcp_req_cancel (struct mcp_req     *req,
 	buf_fini(&key);
 }
 
-/* Reply with a result serialized once, @p text. */
-static void
-mcp_req_result_of (struct mcp_req    *req,
-                   struct dstr const *text)
-{
-	struct mcp_piece const p[] = { DSTR(text), FRAG("}") };
-	mcp_req_result(req, p, array_size(p), SPAN(STREAM_JSON_FIELD));
-}
-
 /** Replies to the tools/list of @p req with the definitions of the tools
  *  that the role of the client grants. Each definition begins with a
  *  comma, and the comma of the first definition in the list is left out.
@@ -6992,7 +6983,8 @@ mcp_req_route (struct mcp_req     *req,
 		mcp_req_tools_list(req);
 		return;
 	case METHOD_DISCOVER:
-		mcp_req_result_of(req, &st->discover);
+		struct mcp_piece const p[] = { DSTR(&st->discover), FRAG("}") };
+		mcp_req_result(req, p, array_size(p), SPAN(STREAM_JSON_FIELD));
 		return;
 	case METHOD_INITIALIZE:
 		mcp_req_initialize(req, params);
