@@ -438,7 +438,7 @@ notes_add_input (struct buf       *in,
                  char const       *repo,
                  char const       *book,
                  struct oid const *tip,
-                 struct span       message,
+                 struct cstr_view  message,
                  struct span       file);
 
 /**

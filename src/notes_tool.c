@@ -644,8 +644,8 @@ notes_tool_write (struct mcp_slot  *slot,
 	struct span file = buf_peek(&call->file);
 	struct buf in = {};
 	int e = notes_tool_call_message(call, before);
-	struct span const msg = { (unsigned char *)call->message.data, call->message.len };
-	e = e ? e : notes_add_input(&in, call->repo, call->repo, tip, msg, file);
+	e = e ? e : notes_add_input(&in, call->repo, call->repo, tip,
+	                            util_text_view(&call->message), file);
 	buf_fini(&call->file);
 	notes_tool_run(slot, FETCH_ADD, &in, e);
 }
@@ -657,12 +657,10 @@ notes_tool_write (struct mcp_slot  *slot,
 static void
 notes_tool_write_record (struct mcp_slot *slot)
 {
-	static char const message[] = "Save the review record";
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct buf in = {};
 	int e = notes_add_input(&in, call->repo, call->notebook, &call->revision.tip,
-	                        (struct span){ (unsigned char *)message, sizeof message - 1 },
-	                        buf_peek(&call->file));
+	                        CSTR_VIEW("Save the review record"), buf_peek(&call->file));
 	buf_fini(&call->file);
 	notes_tool_run(slot, FETCH_SAVE | FETCH_SAVING, &in, e);
 }

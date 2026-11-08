@@ -765,22 +765,20 @@ notes_add_input (struct buf       *in,
                  char const       *repo,
                  char const       *book,
                  struct oid const *tip,
-                 struct span       message,
+                 struct cstr_view  message,
                  struct span       file)
 {
-	static char const mark[] = "get-mark :1\n";
-	if (!in || !repo || !book || !tip || !message.ptr ||
-	    message.len >= NOTES_MESSAGE || memchr(message.ptr, '\0', message.len))
+	if (!in || !repo || !book || !tip || !message.data ||
+	    message.len >= NOTES_MESSAGE || memchr(message.data, '\0', message.len))
 		return EINVAL;
 	/* The count of the data includes the line feed after the message.
 	 * get-mark ends the commit, and git writes the commit's id. */
 	int e = buf_printf(in, "commit %s\nmark :1\ncommitter %s <askai> now\ndata %zu\n%.*s\n",
-	                   repo, notes_selector(book), message.len + 1, (int)message.len,
-	                   (char const *)message.ptr);
+	                   repo, notes_selector(book), message.len + 1, (int)message.len, message.data);
 	if (!e && oid_len(tip))
 		e = buf_printf(in, "from %s\n", tip->hex);
 	e = e ? e : buf_put(in, file.ptr, file.len, SIZE_MAX);
-	return e ? e : buf_put(in, mark, sizeof mark - 1, SIZE_MAX);
+	return e ? e : buf_printf(in, "get-mark :1\n");
 }
 
 int
