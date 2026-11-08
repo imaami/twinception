@@ -85,7 +85,8 @@ struct config {
 	char const          **origins;      /**< http.origins */
 	char const          **listens;      /**< http.listen */
 	char const          **gits;         /**< the git tool's repositories */
-	char const          **codes;        /**< the REPO=FILE values of --code */
+	char const          **codes;        /**< the FILE of each --code, relative
+	                                         to its repository in code_repos */
 	char const          **code_repos;   /**< for each of codes, its
 	                                         repository's path in gits */
 	char                 *url;          /**< ep.url, when askai makes it:

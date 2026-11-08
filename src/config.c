@@ -1594,9 +1594,10 @@ config_check_gits (struct config *cfg)
 /* Check that each value of --code is REPO=FILE with one '=', a nonempty
  * FILE, and as REPO the name of a --git repository or, if it begins with
  * '/', the path of one as --git gives it. No two values may be for the
- * same repository. Then run askai-code --check (code_check()). If the
- * check fails, the code tool is off, and cfg->code_check contains the
- * reason.
+ * same repository. Then point codes[i] at the FILE part of each value,
+ * store the path of its repository in code_repos[i], and run askai-code
+ * --check (code_check()). If the check fails, the code tool is off and
+ * cfg->code_check contains the reason.
  */
 static int
 config_check_codes (struct config *cfg)
@@ -1623,6 +1624,7 @@ config_check_codes (struct config *cfg)
 			                       "%.*s", (int)name.len, name.data);
 		}
 		cfg->code_repos[i] = cfg->gits[g];
+		cfg->codes[i] = file + 1;
 	}
 	return cfg->n_codes && code_check(cfg) ? config_oom(cfg) : 0;
 }

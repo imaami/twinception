@@ -126,8 +126,7 @@ code_report (struct config const *cfg)
 	LOG_ALL(LOG_INFO, "code repositories:");
 	for (size_t i = 0; i < cfg->n_codes; ++i) {
 		struct cstr_view const name = git_name(cfg->code_repos[i]);
-		LOG_ALL(LOG_INFO, "  %-*.*s  %s", width, (int)name.len, name.data,
-		        strchr(cfg->codes[i], '=') + 1);
+		LOG_ALL(LOG_INFO, "  %-*.*s  %s", width, (int)name.len, name.data, cfg->codes[i]);
 	}
 }
 
@@ -437,7 +436,7 @@ code_args (struct code const  *code,
 	                           : (struct cstr_view){});
 	for (i = 0; !e && i < n; ++i)
 		e = code_word(call, CXI_KEY_WARNING, jb_view(jb_at(warnings, i)));
-	e = e ? e : code_word(call, CXI_KEY_CDB, cstr_view(strchr(cfg->codes[r], '=') + 1));
+	e = e ? e : code_word(call, CXI_KEY_CDB, cstr_view(cfg->codes[r]));
 	e = e ? e : code_word(call, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
 	return e ? e : code_word(call, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
 	                         ? CSTR_VIEW("1") : (struct cstr_view){});
