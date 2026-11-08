@@ -427,11 +427,9 @@ policy_build_ranges (struct policy_build  *b,
 	if (!e && !feof(f))
 		e = errno ? errno : EIO;
 	free(line);
-	line = nullptr;
 	(void)fclose(f);
 	if (e) {
 		free(ranges);
-		ranges = nullptr;
 		return policy_build_unreadable(b, path, e);
 	}
 	if (n)
@@ -926,9 +924,7 @@ policy_create (struct json_object    *file,
 		*e = ENOMEM;
 	if (*e) {
 		free(subuids);
-		subuids = nullptr;
 		free(b.subgids);
-		b.subgids = nullptr;
 		return nullptr;
 	}
 	atomic_init(&p->refs, 1);
@@ -941,7 +937,6 @@ policy_create (struct json_object    *file,
 	if (n_subuids)
 		memcpy(p->subuids, subuids, n_subuids * sizeof *subuids);
 	free(subuids);
-	subuids = nullptr;
 	p->overflow_errors[0] = policy_read_overflow(POLICY_OVERFLOWUID, &p->overflow_uid);
 	p->overflow_errors[1] = policy_read_overflow(POLICY_OVERFLOWGID, &p->overflow_gid);
 	b.names = (char *)(p->subuids + n_subuids);
@@ -954,7 +949,6 @@ policy_create (struct json_object    *file,
 		policy_build_own(&b, token);
 	buf_fini(&b.nss);
 	free(b.subgids);
-	b.subgids = nullptr;
 	/* The tokens get the principals of a key of zero bytes, until
 	 * policy_key() sets the real key. A failure is reported as EIO, so
 	 * that EINVAL always means that the file is wrong. */

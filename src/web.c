@@ -396,7 +396,6 @@ web_reply_create (struct web_run            *run,
 	run->len = run->cap = 0;
 	if (!reply) {
 		free(body);
-		body = nullptr;
 		return nullptr;
 	}
 	if (end->e || !len) {
