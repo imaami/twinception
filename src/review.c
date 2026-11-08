@@ -1199,12 +1199,10 @@ review_args_location (struct review_location_view *loc,
 		return EINVAL;
 	struct cstr_view const path = { t.data, (size_t)(colon - t.data) };
 	*loc = (struct review_location_view){ .first = (uint32_t)first, .last = (uint32_t)last };
-	size_t hex = 0;
-	while (hex < path.len && hex <= OID_SHA256 && util_is_hex(path.data + hex, 1))
-		++hex;
+	char const *sep = memchr(path.data, ':', path.len);
+	size_t const hex = sep ? (size_t)(sep - path.data) : 0;
 	size_t skip = 0;
-	if (hex >= REVIEW_OID_MIN && hex <= OID_SHA256 && hex < path.len &&
-	    path.data[hex] == ':') {
+	if (hex >= REVIEW_OID_MIN && hex <= OID_SHA256 && util_is_hex(path.data, hex)) {
 		loc->prefix = (struct cstr_view){ path.data, hex };
 		skip = hex + 1;
 	} else if (cstr_view_starts(path, CSTR_VIEW("HEAD:"))) {
