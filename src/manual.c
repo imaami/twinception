@@ -112,7 +112,8 @@ struct manual_call {
 };
 
 /* What ends a page cut short. */
-static char const cut[] = "\n\n[The page goes on past the 4 MiB shown.]\n";
+static struct cstr_view const manual_cut =
+	CSTR_VIEW_INIT("\n\n[The page goes on past the 4 MiB shown.]\n");
 static_assert(TOOL_TEXT_MAX == 4U << 20, "the note says 4 MiB");
 
 /* The reason of a fetch that ran out of memory. */
@@ -425,7 +426,7 @@ manual_fetch_rendered (struct child *c)
 		return;
 	}
 	size_t len = buf_peek(&c->out).len;
-	size_t note = c->flags & CHILD_CUT ? sizeof cut - 1 : 0;
+	size_t note = c->flags & CHILD_CUT ? manual_cut.len : 0;
 	struct manual_page *page = malloc(sizeof *page + len + note);
 	if (!page) {
 		manual_fetch_fail(f, manual_oom);
@@ -437,7 +438,7 @@ manual_fetch_rendered (struct child *c)
 	page->size = f->st.st_size;
 	page->len = (uint32_t)(len + note);
 	atomic_init(&page->refs, 1);
-	memcpy(page->text + len, cut, note);
+	memcpy(page->text + len, manual_cut.data, note);
 	f->page = page;
 	manual_fetch_copy(f->ml->loop, &f->step);
 }
@@ -740,9 +741,8 @@ manual_step (struct mcp_slot *slot)
 	}
 	if (call->depth != UINT32_MAX) {
 		/* A part that runs into the cut of the page ends with the note. */
-		size_t const to = call->to + sizeof cut - 1 >= text.len &&
-		                  cstr_view_ends(text, (struct cstr_view){ cut, sizeof cut - 1 })
-		                  ? text.len : call->to;
+		size_t const to = call->to + manual_cut.len >= text.len &&
+		                  cstr_view_ends(text, manual_cut) ? text.len : call->to;
 		mcp_slot_lend(slot, cstr_view_slice(text, call->from, to - call->from));
 		mcp_slot_finish(slot, 0);
 	} else if (call->heads.len) {
