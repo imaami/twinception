@@ -1009,11 +1009,9 @@ brainstem_init (struct brainstem           *bs,
 	if (bs->wake_fd < 0)
 		return errno;
 	brainstem_fd_table(bs);
-	size_t len;
-	bs->cgroup = brainstem_cgroup_dir(cgroup_room, &len);
+	bs->cgroup = brainstem_cgroup_dir(cgroup_room, &bs->cg_len);
 	if (!bs->cgroup)
 		return ENOMEM;
-	bs->cg_len = len;
 	/* Rings for the brainstem, the loops and the blockers. */
 	e = log_start(1 + bs->n + BLOCKER_THREADS, bs->wake_fd);
 	if (e)
