@@ -326,11 +326,8 @@ notes_select (struct cstr_view name,
 {
 	if (!name.data || sizeof BRANCH + name.len > NOTES_REPO || !notes_selector_valid(name))
 		return EINVAL;
-	if (!repo)
-		return 0;
-	memcpy(repo, BRANCH, sizeof BRANCH - 1);
-	memcpy(repo + sizeof BRANCH - 1, name.data, name.len);
-	repo[sizeof BRANCH - 1 + name.len] = '\0';
+	if (repo)
+		util_format(repo, NOTES_REPO, BRANCH "%.*s", (int)name.len, name.data);
 	return 0;
 }
 
