@@ -1443,8 +1443,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 	review_read_destroy(&slot->read);
 	slot->shows = nullptr;
 	loop_unready(&slot->step);
-	if (slot->call.bits)
-		loop_forget(slot->req->mcp->loop, slot->call);
+	loop_forget(slot->req->mcp->loop, slot->call);
 	slot->call = (struct handle){};
 }
 
@@ -1461,8 +1460,7 @@ mcp_req_drop (struct mcp_req *req)
 	mcp_slot_drop(&req->self);
 	mcp_req_slots_drop(req);
 	if (!job) {
-		if (req->call.bits)
-			mcp_req_forget(req);
+		mcp_req_forget(req);
 		return;
 	}
 	req->job = nullptr;
@@ -1643,8 +1641,7 @@ mcp_req_finish (struct mcp_req *req)
 	 * end, and the obsolete callback must not launch any more work. */
 	mcp_req_leave(req);
 	mcp_req_unwait(req);
-	if (req->archive_call.bits)
-		loop_forget(mcp->loop, req->archive_call);
+	loop_forget(mcp->loop, req->archive_call);
 	req->archive_call = (struct handle){};
 	jb_parser_fini(&req->parser, req->phase == PHASE_ANSWER || req->phase == PHASE_ARGS
 	                             ? &mcp->answers : &mcp->pool,
@@ -3455,8 +3452,7 @@ mcp_slot_wake (struct mcp_slot *slot)
 {
 	if (slot->web && !web_wait_done(slot->web))
 		web_wait_leave(&slot->web);
-	if (slot->call.bits)
-		loop_forget(slot->req->mcp->loop, slot->call);
+	loop_forget(slot->req->mcp->loop, slot->call);
 	slot->call = (struct handle){};
 	loop_unready(&slot->step);
 	mcp_slot_unwait(slot);
@@ -6231,8 +6227,7 @@ mcp_recover_back (struct loop           *loop,
 		                 LEDGER_WORKING, (struct span){}, loop, who, mcp_on_task_cancel,
 		                 &e) : nullptr;
 	if (!task) {
-		if (who.bits)
-			loop_forget(loop, who);
+		loop_forget(loop, who);
 		problem = CSTR_VIEW("Cannot resume this job now; it may already be resuming on "
 		                    "another request.");
 		goto failed;
