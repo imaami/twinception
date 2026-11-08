@@ -1020,14 +1020,16 @@ cxi_lookup_member (struct cxi *x,
 	return EINVAL;
 }
 
-/* Returns the length of the C identifier at the start of the NUL-terminated
- * string @p s, or 0 if @p s does not start with one.
+/* Returns the length of the C identifier at the start of the view @p s,
+ * or 0 if @p s does not start with one. Reads at most s.len bytes.
  */
 static size_t
-cxi_ident (char const *s)
+cxi_ident (struct cstr_view s)
 {
-	size_t const n = strspn(s, UTIL_ALNUM "_");
-	return n && (*s < '0' || *s > '9') ? n : 0;
+	size_t n = 0;
+	while (n < s.len && s.data[n] && strchr(UTIL_ALNUM "_", s.data[n]))
+		++n;
+	return n && (s.data[0] < '0' || s.data[0] > '9') ? n : 0;
 }
 
 /* Splits [struct |union |enum ]NAME[.MEMBER] into @p *kind, @p name and
@@ -1052,10 +1054,10 @@ cxi_parse_name (struct cxi *x,
 		++t;
 	*kind = tags[t].kind;
 	rest = cstr_view_slice(rest, tags[t].tag.len, SIZE_MAX);
-	/* rest is the end of a string in argv, so rest.data is NUL-terminated. */
-	size_t const a = cxi_ident(rest.data);
+	size_t const a = cxi_ident(rest);
 	struct cstr_view const dot = cstr_view_slice(rest, a, SIZE_MAX);
-	size_t const b = dot.len && *dot.data == '.' ? cxi_ident(dot.data + 1) : 0;
+	size_t const b = dot.len && *dot.data == '.' ? cxi_ident(cstr_view_slice(dot, 1, SIZE_MAX))
+	                                             : 0;
 	if (!a || a > CXI_NAME || b > CXI_NAME || dot.len != (b ? b + 1 : 0)) {
 		cxi_out_printf(&x->out, "name must be a name of C, such as git_start, struct dstr "
 		               "or child.flags.");
