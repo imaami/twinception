@@ -58,8 +58,8 @@ same (char const *file,
  */
 #define FINDINGS(n) "[askai: your " n ". Call findings with action show and id for " \
                     "the history of a finding.]\n"
-#define READS "[askai: your read log. git read and code describe showed you these lines " \
-              "in this ask call:]\n"
+#define READS "[askai: your read log of the lines that git read and code describe " \
+              "showed you in this ask call:]\n"
 #define CLOSING "[askai: disproved and retracted findings:]\n"
 
 /* A review_kept_fn that drops "[askai: x]", a stand-in for the notices of

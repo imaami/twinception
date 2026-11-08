@@ -62,8 +62,8 @@ def findings_head(counts):
 # (TOOL_OFFSET_ABOUT, src/tool.h).
 OFFSET_ABOUT = "The byte of the output to start from. The default is 0."
 # The header of the read log in the review record (src/review.c).
-READS = ("[askai: your read log. git read and code describe showed you these lines in "
-         "this ask call:]")
+READS = ("[askai: your read log of the lines that git read and code describe showed you "
+         "in this ask call:]")
 # The sentence that ends the description of each such tool lent to the turns.
 PAGED = (" A result is at most 64 KiB. The result can start up to 16 KiB before the "
          "offset, at the beginning of the line that contains the offset. If the output "

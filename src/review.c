@@ -944,8 +944,8 @@ review_put_logged (struct dstr         *out,
 	struct review_file const *f = &r->log.items[i];
 	bool const group = !i || !review_file_commit_equal(f, cstr_view_dstr(&f[-1].repo),
 	                                                    oid_view(&f[-1].commit));
-	return (!i && PUT(out, "[askai: your read log. git read and code describe showed you "
-	                       "these lines in this ask call:]\n")) ||
+	return (!i && PUT(out, "[askai: your read log of the lines that git read and code "
+	                       "describe showed you in this ask call:]\n")) ||
 	       (group && (cstr_view_cat(cstr_view_dstr(&f->repo), out) || PUT(out, " ") ||
 	                  cstr_view_cat(oid_view(&f->commit), out) || PUT(out, "\n"))) ||
 	       review_put_file(out, f) ? ENOMEM : 0;
