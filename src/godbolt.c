@@ -2051,7 +2051,6 @@ godbolt_targets_parse (struct godbolt *call)
 	}
 	int const e = godbolt_probe_init(&call->probe, text);
 	free(joined);
-	joined = nullptr;
 	loop_work(call->loop, LOOP_PARSE, text.len);
 	if (e == ENOMEM)
 		return ENOMEM;
@@ -2787,7 +2786,6 @@ godbolt_create (struct godbolt_args const *a,
 	struct json_tokener *tok = call ? json_tokener_new() : nullptr;
 	if (!tok) {
 		free(call);
-		call = nullptr;
 		*e = ENOMEM;
 		return nullptr;
 	}
