@@ -18,7 +18,7 @@
         " tokens. Note what you need to keep, then call compact.]"
 #define NOTICE_REMIND                                                          \
         "[askai: your context is %" PRIu64 "%% full, %" PRIu64 " of %" PRIu64  \
-        " tokens. Write notes now of what you have learned. Compaction "       \
+        " tokens. Now write notes of what you have learned. Compaction "       \
         "removes the conversation but not the notes.]"
 #define NOTICE_LAST                                                            \
         "[askai: your next turn is your last turn. Answer without calling "    \

@@ -6404,9 +6404,10 @@ mcp_req_fits (struct mcp_req const *req,
 	if (!req->context || used + bytes / 4 < req->context)
 		return 0;
 	return dstr_printf(out, "The note is too large to attach. The file is %zu bytes, "
-	                   "about %zu tokens. The context is %" PRIu32 " tokens, and "
-	                   "about %zu tokens are in use. Read the note in parts with "
-	                   "action read.", bytes, bytes / 4, req->context, used) ? EFBIG : ENOMEM;
+	                   "about %zu tokens. The context is %" PRIu32 " tokens. About %zu "
+	                   "tokens are in use. Read the note in parts with action read and "
+	                   "the offset argument.", bytes, bytes / 4, req->context, used)
+	       ? EFBIG : ENOMEM;
 }
 
 int

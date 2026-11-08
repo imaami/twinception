@@ -12769,7 +12769,7 @@ def check_attach(binary, up):
                  f"would have {len(note_view(huge).encode())} bytes, and askai uploads "
                  "16 MiB at most."),
                 ("big.c", up.stored, "The note is too large to attach. The file is "
-                 "8000 bytes, about 2000 tokens. The context is 1000 tokens"),
+                 "8000 bytes, about 2000 tokens. The context is 1000 tokens. About "),
                 ("small.c", lambda request: (200, {"file": {"uri": "files/a b"}}),
                  "The upload of the note failed. The upstream named the "
                  "file with a URI that is not printable ASCII."),
@@ -13135,8 +13135,8 @@ def check_turns(binary, up):
             # its own line, and says so. Notices within the text, or not on a
             # line of their own, or not of askai's forms, stay. The notes
             # calls of a turn run in order.
-            reminder = ("\n\n[askai: your context is 26% full, 2100 of 8000 tokens. Write "
-                        "notes now of what you have learned. Compaction removes the "
+            reminder = ("\n\n[askai: your context is 26% full, 2100 of 8000 tokens. Now "
+                        "write notes of what you have learned. Compaction removes the "
                         "conversation but not the notes.]")
             texts = {"strip/a.md": ("a" + provenance, "a\n"),
                      "strip/f.md": ("f" + provenance + "\n" + provenance + "\n", "f\n"),
@@ -13283,7 +13283,7 @@ def check_turns(binary, up):
             last = re.escape("\n\n[askai: your next turn is your last turn. Answer "
                              "without calling tools.]")
             for used, notice in ((5400, r"Note what you need to keep, then call compact\."),
-                                 (2100, r"Write notes now of what you have learned\. "
+                                 (2100, r"Now write notes of what you have learned\. "
                                         r"Compaction removes the conversation but not "
                                         r"the notes\.")):
                 name = f"f{used}.md"
@@ -13331,7 +13331,7 @@ def check_turns(binary, up):
             assert out.startswith("line 00000\n") and re.search(
                 r"line 00362\n\n\n\[Bytes 0 to 3993 of 44000\. To read on, call the "
                 r"tool again with the same arguments and \"offset\": 3993\.\]\n\n\[askai: "
-                r"your context is 6[0-6]% full, \d+ of 8000 tokens\. Write notes now "
+                r"your context is 6[0-6]% full, \d+ of 8000 tokens\. Now write notes "
                 r"of what you have learned\. Compaction removes the conversation but "
                 r"not the notes\.\]$", out), out[-300:]
             # An offset within a line gives the window from the line's start.
@@ -13364,7 +13364,7 @@ def check_turns(binary, up):
         # result asks for compact. After a compaction, the reminders start
         # again. Without the notes tool, there are no reminders.
         remind = (r"\n\n\[askai: your context is 2\d% full, \d+ of 8000 tokens\. "
-                  r"Write notes now of what you have learned\. "
+                  r"Now write notes of what you have learned\. "
                   r"Compaction removes the conversation but not the notes\.\]")
         warn = (r"\n\n\[askai: your context is 6\d% full, \d+ of 8000 tokens\. "
                 r"Note what you need to keep, then call compact\.\]")
