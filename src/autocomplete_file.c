@@ -64,8 +64,7 @@ autocomplete_file_expand (struct autocomplete_file const *const file,
 static bool
 autocomplete_file_safe (struct cstr_view const name)
 {
-	return !(name.len == 1 && name.data[0] == '.') &&
-	       !(name.len == 2 && name.data[0] == '.' && name.data[1] == '.') &&
+	return !cstr_view_equal(name, CSTR_VIEW(".")) && !cstr_view_equal(name, CSTR_VIEW("..")) &&
 	       autocomplete_safe(name, false);
 }
 
