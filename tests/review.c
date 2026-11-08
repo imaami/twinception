@@ -33,13 +33,11 @@ same (char const *file,
 #define B "1111111111111111111111111111111111111111"
 #define B12 "111111111111"
 
-#define HEADER \
-        "[askai: your review record, which askai keeps through every compaction " \
-        "of this ask call.]\n"
+#define HEADER "[askai: your review record. A compaction does not remove the record.]\n"
 
 /* The most bytes of the claim of a closed finding in the record text. */
 #define CLOSED 200
-#define NONE "[askai: you have recorded no findings; the findings tool records them.]"
+#define NONE "[askai: no findings yet. Record findings with the findings tool.]"
 #define LATER " The log takes the lines of a read once you have seen them, so call again in " \
               "a later turn."
 #define WHOLE ", where the path is the file's whole path from the top of the repository"
@@ -51,8 +49,9 @@ same (char const *file,
  * "1 finding: 1 verified".
  */
 #define FINDINGS(n) "[askai: your " n ". Call findings with action show and id for " \
-                    "the history of one finding:]\n"
-#define READS "[askai: the lines that git read and code describe showed you in this call:]\n"
+                    "the history of a finding.]\n"
+#define READS "[askai: your read log. git read and code describe showed you these lines " \
+              "in this ask call:]\n"
 #define CLOSING "[askai: disproved and retracted findings:]\n"
 
 /* A review_kept_fn that drops "[askai: x]", a stand-in for the notices of
@@ -1006,21 +1005,21 @@ test_history (void)
 	       "  evidence: E3\n"
 	       "turn 5: verified at " A12 "\n"
 	       "  evidence: E4\n"
-	       "  the claim was: C1\n"
-	       "  the location was: src/a.c:5\n"
+	       "  old claim: C1\n"
+	       "  old location: src/a.c:5\n"
 	       "turn 6: retracted at " A12 "\n"
 	       "  evidence: E5\n"
-	       "  the claim was: C2\n"
+	       "  old claim: C2\n"
 	       "turn 7: candidate\n"
 	       "  evidence: E6\n"
-	       "  the location was: src/a.c:6-7");
+	       "  old location: src/a.c:6-7");
 	EXPECT(r, "{\"action\":\"show\",\"id\":2}", 8, 0,
 	       "Finding 2: candidate, src/a.c:1 at " A12 "\n"
 	       "claim: D\n"
 	       "turn 7: candidate\n"
 	       "turn 8: candidate at " A12 "\n"
 	       "  evidence: F\n"
-	       "  the location was: none");
+	       "  old location: none");
 	review_destroy(&r);
 }
 
@@ -1108,7 +1107,7 @@ test_render (void)
 		for (size_t i = 0; i < most; ++i)
 			keep = want[i] == '\n' ? i + 1 : keep;
 		char tail[160];
-		snprintf(tail, sizeof tail, "[askai: the record goes on past these %zu bytes: call "
+		snprintf(tail, sizeof tail, "[askai: the record is longer than these %zu bytes. Call "
 		         "findings with action show and \"offset\": %zu for the rest.]", keep, keep);
 		CHECK(!strncmp(s, want, keep) && !strcmp(s + keep, tail));
 		dstr_cleanup(&out);
@@ -1155,8 +1154,8 @@ test_full (void)
 	struct dstr text = DSTR_INIT;
 	CHECK(!review_render(r, &text, SIZE_MAX));
 	char const *end = strrchr(dstr_get(&text), '\n');
-	SAME(end, "\n[askai: the read log is full, so what you read from turn 9 on may be "
-	          "missing from it.]");
+	SAME(end, "\n[askai: the read log is full. Lines that you read from turn 9 on can be "
+	          "missing from the read log.]");
 	CHECK(!strstr(dstr_get(&text), READS));
 	dstr_cleanup(&text);
 	/* The refusal of verified then suggests no git read. */

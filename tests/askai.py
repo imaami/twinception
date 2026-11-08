@@ -40,15 +40,13 @@ KEY_VARS = ("ASKAI_TOKEN", "ASKAI_API_KEY", "LLAMA_API_KEY", "OPENAI_API_KEY",
 # The tools, in order, that the turns get when they are lent git.
 TURN_TOOLS = ["git", "compact", "findings", "background", "jobs", "wait", "timer"]
 # The first line of the text of a review record (src/review.c).
-REVIEW = ("[askai: your review record, which askai keeps through every compaction "
-          "of this ask call.]\n")
+REVIEW = "[askai: your review record. A compaction does not remove the record.]\n"
 # The notice about the task that askai writes before the review record after
 # a compaction (mcp_req_compact_notes()).
 TASK = ("[askai: compaction does not change the task. The task is all text before "
         "the first [askai: ...] line: the system text, the earlier messages and the "
         "prompt. You do not need to copy the task into notes or a summary.]\n")
-REVIEW_EMPTY = REVIEW + ("[askai: you have recorded no findings; the findings tool "
-                         "records them.]")
+REVIEW_EMPTY = REVIEW + "[askai: no findings yet. Record findings with the findings tool.]"
 # The line before the closed findings of a review record (src/review.c).
 CLOSING = "[askai: disproved and retracted findings:]\n"
 
@@ -57,14 +55,15 @@ def findings_head(counts):
     """The line before the findings of a review record, with the counts, such
     as "2 findings: 1 candidate, 1 retracted" (src/review.c)."""
     return (f"[askai: your {counts}. Call findings with action show and id for the "
-            "history of one finding:]\n")
+            "history of a finding.]\n")
 
 
 # The description of the offset of each tool that pages its output
 # (TOOL_OFFSET_ABOUT, src/tool.h).
 OFFSET_ABOUT = "The byte of the output to start from. The default is 0."
 # The header of the read log in the review record (src/review.c).
-READS = "[askai: the lines that git read and code describe showed you in this call:]"
+READS = ("[askai: your read log. git read and code describe showed you these lines in "
+         "this ask call:]")
 # The sentence that ends the description of each such tool lent to the turns.
 PAGED = (" A result is at most 64 KiB. The result can start up to 16 KiB before the "
          "offset, at the beginning of the line that contains the offset. If the output "
@@ -3020,8 +3019,7 @@ def check_recovery_review(binary, up):
                 "candidate.", said
             assert output(creates[3], "show") == REVIEW + findings_head("1 finding: 1 verified") + (
                 f"1. verified, src/a.c:5 at {head[:12]}\n   claim: C\n"
-                "   evidence: E\n[askai: the lines that git read and code describe showed "
-                "you in this call:]\n"
+                f"   evidence: E\n{READS}\n"
                 f"proj {head}\n  src/a.c  lines 1-20: 20 of 300 lines"), creates[3]
             # The call made again has the turn of the first.
             assert output(creates[3], "history") == \
@@ -14113,7 +14111,7 @@ def check_review(binary, up):
                 "Finding 2 is now retracted; it was candidate. Its old claim is in its "
                 "history.",
                 "Finding 2: retracted\nclaim: C3b\nturn 1: candidate\n  evidence: E\n"
-                "turn 2: retracted\n  evidence: R\n  the claim was: C3",
+                "turn 2: retracted\n  evidence: R\n  old claim: C3",
                 record[len(REVIEW):] + f"\n\n[Bytes {len(REVIEW)} to {size} of {size}. "
                 "End of the output.]",
                 "There is no finding 9. The record contains findings 1 to 2."], results(sent[2])
@@ -14404,7 +14402,7 @@ def check_review(binary, up):
                 f"{k + 1}. candidate\n   claim: {c}\n" for k, c in enumerate(claims))
             record = record[:-1]
             keep = record.rindex("\n", 0, 4000) + 1
-            cut = (f"[askai: the record goes on past these {keep} bytes: call findings "
+            cut = (f"[askai: the record is longer than these {keep} bytes. Call findings "
                    f"with action show and \"offset\": {keep} for the rest.]")
 
             def show(request):

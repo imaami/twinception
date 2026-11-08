@@ -944,8 +944,8 @@ review_put_logged (struct dstr         *out,
 	struct review_file const *f = &r->log.items[i];
 	bool const group = !i || !review_file_commit_equal(f, cstr_view_dstr(&f[-1].repo),
 	                                                    oid_view(&f[-1].commit));
-	return (!i && PUT(out, "[askai: the lines that git read and code describe showed you "
-	                       "in this call:]\n")) ||
+	return (!i && PUT(out, "[askai: your read log. git read and code describe showed you "
+	                       "these lines in this ask call:]\n")) ||
 	       (group && (cstr_view_cat(cstr_view_dstr(&f->repo), out) || PUT(out, " ") ||
 	                  cstr_view_cat(oid_view(&f->commit), out) || PUT(out, "\n"))) ||
 	       review_put_file(out, f) ? ENOMEM : 0;
@@ -967,9 +967,9 @@ review_put_change (struct dstr                *out,
 	       (oid_len(&c->commit) && review_put_oid(out, &c->commit)) || PUT(out, "\n") ||
 	       (evidence.len && (PUT(out, "  evidence: ") || cstr_view_cat(evidence, out) ||
 	                         PUT(out, "\n"))) ||
-	       (claim.len && (PUT(out, "  the claim was: ") || cstr_view_cat(claim, out) ||
+	       (claim.len && (PUT(out, "  old claim: ") || cstr_view_cat(claim, out) ||
 	                      PUT(out, "\n"))) ||
-	       (c->moved && (PUT(out, "  the location was: ") ||
+	       (c->moved && (PUT(out, "  old location: ") ||
 	                     (path.len ? review_put_location(out, path, c->old_location.first,
 	                                                     c->old_location.last)
 	                               : PUT(out, "none")) ||
@@ -996,8 +996,8 @@ review_put_counts (struct dstr         *out,
 			return ENOMEM;
 		sep = ", ";
 	}
-	return PUT(out, ". Call findings with action show and id for the history of one "
-	                "finding:]\n") ? ENOMEM : 0;
+	return PUT(out, ". Call findings with action show and id for the history of a "
+	                "finding.]\n") ? ENOMEM : 0;
 }
 
 /**
@@ -1022,13 +1022,13 @@ review_put_item (struct dstr         *out,
 			       PUT(out, "\nclaim: ") || cstr_view_cat(cstr_view_dstr(&f->claim), out) ||
 			       PUT(out, "\n") ? ENOMEM : 0;
 		}
-		if (PUT(out, "[askai: your review record, which askai keeps through every "
-		             "compaction of this ask call.]\n"))
+		if (PUT(out, "[askai: your review record. A compaction does not remove the "
+		             "record.]\n"))
 			return ENOMEM;
 		if (!r || !r->findings.n) {
 			*cursor = (struct tool_cursor){ .section = REVIEW_SECTION_LOG };
-			return PUT(out, "[askai: you have recorded no findings; the findings tool "
-			                "records them.]\n") ? ENOMEM : 0;
+			return PUT(out, "[askai: no findings yet. Record findings with the "
+			                "findings tool.]\n") ? ENOMEM : 0;
 		}
 		*cursor = (struct tool_cursor){ .section = REVIEW_SECTION_OPEN };
 		return review_put_counts(out, r);
@@ -1043,8 +1043,9 @@ review_put_item (struct dstr         *out,
 	case REVIEW_SECTION_DROPPED:
 		cursor->section = REVIEW_SECTION_END;
 		return r && r->dropped_turn &&
-		       !dstr_printf(out, "[askai: the read log is full, so what you read from turn %"
-		                    PRIu32 " on may be missing from it.]\n", r->dropped_turn)
+		       !dstr_printf(out, "[askai: the read log is full. Lines that you read from "
+		                    "turn %" PRIu32 " on can be missing from the read log.]\n",
+		                    r->dropped_turn)
 		       ? ENOMEM : 0;
 	case REVIEW_SECTION_CHANGES:
 		if (cursor->item < f->changes.n)
@@ -1112,7 +1113,7 @@ review_render (struct review const *r,
 	char const *nl = text.len ? memrchr(text.data, '\n', text.len - 1) : nullptr;
 	size_t const keep = nl ? (size_t)(nl - text.data) + 1 : 0;
 	dstr_erase(out, start + keep, SIZE_MAX);
-	return dstr_printf(out, "[askai: the record goes on past these %zu bytes: call findings "
+	return dstr_printf(out, "[askai: the record is longer than these %zu bytes. Call findings "
 	                   "with action show and \"offset\": %zu for the rest.]", keep, keep)
 	       ? 0 : ENOMEM;
 }
