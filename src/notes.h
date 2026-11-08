@@ -373,8 +373,8 @@ notes_checked (struct span        out,
 /**
  * Sets @p *same to whether @p data are the bytes of the blob whose id and
  * size @p file has. It hashes the bytes only if their number is the size.
- * Returns 0, EINVAL for a null argument or a file without an id, or EIO
- * if the digest fails.
+ * Returns 0, EINVAL for a null argument, a file without an id or a failed
+ * snprintf() of the size, or EIO if the digest fails.
  */
 extern int
 notes_file_same (struct notes_file const *file,
@@ -388,8 +388,8 @@ notes_file_same (struct notes_file const *file,
  * it leaves unwritten, and a line feed. It stores the offsets of the name
  * and the text in @p *part. The caller then writes the text at the offset
  * part->data_at from the head of @p in, as notes_add_file() does. Returns
- * 0, EINVAL for a null argument or a name longer than NOTES_NAME, or
- * ENOMEM.
+ * 0, EINVAL for a null argument, a name longer than NOTES_NAME or a failed
+ * snprintf() of the data command, or ENOMEM.
  */
 extern int
 notes_add_head (struct buf        *in,
