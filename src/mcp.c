@@ -2195,10 +2195,7 @@ mcp_req_notify_put (struct mcp_req   *req,
                     struct cstr_view  text,
                     bool              tool)
 {
-	char num[24];
-	int n = snprintf(num, sizeof num, "%" PRIu64, value);
-	if (n < 0 || n >= (int)sizeof num)
-		return EOVERFLOW;
+	char num[UTIL_DECIMAL];
 	struct cstr_view const token = jb_wire(req->token);
 	if (!token.data)
 		return ENOMEM;
@@ -2207,7 +2204,7 @@ mcp_req_notify_put (struct mcp_req   *req,
 		     "\"params\":{\"progressToken\":"),
 		RAW(token.data, token.len),
 		FRAG(",\"progress\":"),
-		RAW(num, (size_t)n),
+		BYTES(util_decimal(num + sizeof num, value, 0)),
 		FRAG(",\"message\":\""),
 		BYTES(text),
 		FRAG("\",\"_meta\":{\"askai\":{\"kind\":\""),
@@ -2247,7 +2244,7 @@ mcp_req_delta (struct mcp_req *req)
 		return;
 	}
 	char digits[UTIL_DECIMAL];
-	struct cstr_view const turn = util_format_view(digits, sizeof digits, "%" PRIu32, req->turn);
+	struct cstr_view const turn = util_decimal(digits + sizeof digits, req->turn, 0);
 	while (req->delta_at < bytes.len) {
 		if (req->flags & REQ_BLOCKED)
 			return;
@@ -6954,7 +6951,7 @@ mcp_req_task_show (struct mcp_req     *req,
 		whole = task->size != 0;
 		updated_at = task->ended;
 		uint64_t ran = task->ended > task->created ? task->ended - task->created : 0;
-		ttl = util_format_view(ms, sizeof ms, "%" PRIu64, ran / MS + LEDGER_KEEP * 1000);
+		ttl = util_decimal(ms + sizeof ms, ran / MS + LEDGER_KEEP * 1000, 0);
 	}
 	struct mcp_piece const p[] = {
 		said[status],
