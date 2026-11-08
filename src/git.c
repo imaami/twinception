@@ -433,54 +433,56 @@ git_definition (void const *service)
 		"name", json_object_new_string("git"),
 		"title", json_object_new_string("Git"),
 		"description", json_object_new_string(
-			"Run a read-only git command in one of the repositories of the "
-			"server, and get its output, with its errors, cut at 4 MiB. "
-			"Use help:true with "
-			"any command for its exact options, limits and source selection. "
-			"Only committed contents are visible; the index, working tree, "
-			"untracked and ignored files are unavailable. Commits must be "
-			"reachable from HEAD, branches, tags or remote-tracking refs. "
-			"Commands default to "
-			"HEAD, except diff, which needs two commits or an explicit range. "
-			"To read a file, use read with the file as the revision: "
-			"{\"command\": \"read\", \"revisions\": [\"HEAD:src/journal.c\"], "
-			"\"line\": 120, \"count\": 40} gives lines 120 to 159 with their "
-			"numbers and names the commit. The output's last line gives the next "
-			"call, with the commit's ID in place of HEAD. The first line of the "
-			"output of grep names the commit, and each file path is on a "
-			"separate line above the matches in the file. A match "
-			"<line>:<text> reads as \"revisions\": [\"<commit>:<path>\"] and "
-			"\"line\": <line>. Give each option with its value attached "
-			"(--max-count=20, not -n 20)."),
+			"Run a read-only git command in a repository of the server. The "
+			"result is the output of git, errors included, cut at 4 MiB. "
+			"help:true lists the options and limits of a command. Only "
+			"committed files are visible. The index and the working tree are "
+			"not available. A commit must be reachable from HEAD, a branch, a "
+			"tag or a remote-tracking ref. The default revision is HEAD. Give "
+			"diff two commits or one range. To read a file, give read the file "
+			"as the revision. Example: {\"command\": \"read\", \"revisions\": "
+			"[\"HEAD:src/journal.c\"], \"line\": 120, \"count\": 40} returns "
+			"lines 120 to 159 with line numbers. The last line of the read "
+			"output shows the next call, with the commit ID in place of HEAD. "
+			"The first line of the grep output names the commit. Each file path "
+			"is on a separate line. Each match is on a line below the file path, "
+			"as <line>:<text>. For a match, call read with \"revisions\": "
+			"[\"<commit>:<path>\"] and \"line\": <line>. Attach the value to "
+			"the option: --max-count=20, not -n 20."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
 				"command", schema_enum(cmds, nullptr),
 				"help", schema_property("boolean",
-					"Describe this command instead of running it."),
+					"If true, return the options and limits of the command "
+					"instead of running git."),
 				"options", schema_array(schema_property("string", nullptr), OPTIONS,
-					"Options, such as --oneline or --max-count=20. Use "
-					"help:true to list the command's exact allowed options."),
+					"Options of the command, such as --oneline or "
+					"--max-count=20. Each entry is one option with the value "
+					"attached. help:true lists the allowed options."),
 				"revisions", schema_array(schema_property("string", nullptr), REVISIONS,
-					"Revisions, such as HEAD~3, main..topic or the hash of a "
-					"commit. For read, show and cat-file, HEAD:path names a "
-					"file as of that commit. References and hashes may use "
-					"^/~ ancestry and ^{commit}. Reflogs, stash, index and "
-					"raw blob/tree IDs are excluded."),
+					"Commits, such as main, HEAD~3 or a commit hash. ^ and ~ "
+					"suffixes and ^{commit} are allowed. Only log and diff "
+					"accept a range, such as main..topic. For read, show and "
+					"cat-file, HEAD:path names a file in the commit. Reflogs, "
+					"stash, the index and blob or tree hashes are not "
+					"available."),
 				"paths", schema_array(schema_property("string", nullptr), PATHS,
-					"Paths in the repository, relative to its top. They limit "
-					"the output of a command such as log or diff to those "
-					"paths; blame takes the file as its one path."),
+					"Paths relative to the top of the repository, such as src/ "
+					"or src/git.c. Paths limit the output of log, show, diff, "
+					"grep and ls-tree. Give blame exactly one path, the file. "
+					"Paths are not allowed for read, cat-file and rev-parse."),
 				"pattern", schema_property("string",
-					"The pattern for grep, an extended regex unless options "
-					"give -G (basic), -F (plain text) or -P (Perl)."),
+					"The grep pattern. The default syntax is extended regex. "
+					"The options -G, -F and -P select basic regex, plain text "
+					"and Perl regex."),
 				"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 				"line", schema_count(1,
-					"For read: the number of the first line to give, "
-					"from 1. The default is 1."),
+					"The number of the first line that read returns. The "
+					"default is 1."),
 				"count", schema_count(1,
-					"For read: the most lines to give. The default is "
-					"as many as fit in one result."),
+					"The maximum number of lines that read returns. The "
+					"default is as many lines as fit in one result."),
 				nullptr),
 			required, array_size(required)),
 		"annotations", jb_object(
