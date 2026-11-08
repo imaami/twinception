@@ -1732,19 +1732,6 @@ config_session (struct config *cfg)
 	return 0;
 }
 
-/* Take @p key as the API key, in @p *p_key, unless it has a line break. */
-static int
-config_key_take (struct config const *cfg,
-                 char const          *key,
-                 char const         **p_key)
-{
-	if (strpbrk(key, "\r\n"))
-		return config_complain(cfg, nullptr, "the API key contains a line "
-		                       "break");
-	*p_key = key;
-	return 0;
-}
-
 /* The API key, in @p *p_key, from the variable --key-env names. */
 static int
 config_key_env (struct config const *cfg,
@@ -1753,7 +1740,8 @@ config_key_env (struct config const *cfg,
 	char const *key = getenv(cfg->key_env);
 	if (!key || !*key)
 		return config_complain(cfg, nullptr, "%s is not set", cfg->key_env);
-	return config_key_take(cfg, key, p_key);
+	*p_key = key;
+	return 0;
 }
 
 /*
@@ -1774,8 +1762,10 @@ config_key_usual (struct config const *cfg,
 	char const *const *vars = providers[p].keys;
 	for (size_t i = 0; i < array_size(providers[0].keys) && vars[i]; ++i) {
 		char const *key = getenv(vars[i]);
-		if (key && *key)
-			return config_key_take(cfg, key, p_key);
+		if (key && *key) {
+			*p_key = key;
+			return 0;
+		}
 	}
 	if (ai_llama_like(p))
 		return 0;
@@ -1869,6 +1859,8 @@ config_upstream (struct config *cfg)
 	                          : config_key_usual(cfg, has_auth, &key);
 	if (status)
 		return status;
+	if (key && strpbrk(key, "\r\n"))
+		return config_complain(cfg, nullptr, "the API key contains a line break");
 	status = cfg->ep.url ? config_url_generate(cfg) : config_url_own(cfg);
 	if (status)
 		return status;
