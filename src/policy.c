@@ -733,8 +733,7 @@ policy_build_identities (struct policy_build *b,
 			return e;
 	}
 	struct policy *p = b->p;
-	if (p->n_tokens)
-		qsort(p->tokens, p->n_tokens, sizeof *p->tokens, policy_by_digest);
+	qsort(p->tokens, p->n_tokens, sizeof *p->tokens, policy_by_digest);
 	for (size_t i = 1; i < p->n_tokens; ++i)
 		if (!policy_by_digest(&p->tokens[i - 1], &p->tokens[i]))
 			return policy_build_fail(b, "two tokens of the identities are the same");
