@@ -31,10 +31,15 @@ enum {
 };
 
 /* The arguments: X(ID, name). */
-#define CODE_ARG_LIST(X)                                                   \
-        X(REPO, "repo") X(ACTION, "action") X(PATH, "path") X(NAME, "name") \
-        X(LINE, "line") X(WARNINGS, "warnings") X(REVISION, "revision")      \
-        X(OFFSET, "offset")
+#define CODE_ARG_LIST(X)        \
+        X(REPO,     "repo")     \
+        X(ACTION,   "action")   \
+        X(PATH,     "path")     \
+        X(NAME,     "name")     \
+        X(LINE,     "line")     \
+        X(WARNINGS, "warnings") \
+        X(REVISION, "revision") \
+        X(OFFSET,   "offset")
 
 #define CODE_ARG_ENUM(id, ...) CODE_ARG_##id,
 enum code_arg : uint8_t { CODE_ARG_LIST(CODE_ARG_ENUM) CODE_ARGS };
