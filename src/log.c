@@ -281,21 +281,6 @@ log_alloc (size_t n)
 	return lg.wake_fd < 0 ? errno : 0;
 }
 
-/* Start the logger's thread, detached. */
-static int
-log_spawn (void)
-{
-	pthread_attr_t attr;
-	int e = pthread_attr_init(&attr);
-	if (e)
-		return e;
-	(void)pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-	pthread_t thread;
-	e = pthread_create(&thread, &attr, log_thread, nullptr);
-	pthread_attr_destroy(&attr);
-	return e;
-}
-
 int
 log_start (size_t rings,
            int    notify_fd)
@@ -304,8 +289,11 @@ log_start (size_t rings,
 		return EINVAL;
 	lg.notify_fd = notify_fd;
 	int e = log_alloc(rings);
-	if (e || (e = log_spawn()))
+	pthread_t thread;
+	if (e || (e = pthread_create(&thread, nullptr, log_thread, nullptr)))
 		log_fini();
+	else
+		(void)pthread_detach(thread);
 	return e;
 }
 
