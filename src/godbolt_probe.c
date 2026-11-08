@@ -533,9 +533,9 @@ godbolt_probe_escape (char const **c,
 	unsigned value = 0;
 	unsigned digits = 0;
 	if (e == 'x') {
-		for (; *c < end && util_hex_digit((unsigned char)**c) < 16 && value <= UCHAR_MAX;
-		     ++digits)
-			value = value << 4 | util_hex_digit((unsigned char)*(*c)++);
+		for (unsigned h; *c < end && (h = util_hex_digit((unsigned char)**c)) < 16 &&
+		     value <= UCHAR_MAX; ++digits, ++*c)
+			value = value << 4 | h;
 	} else if (e >= '0' && e <= '7') {
 		value = e - '0';
 		for (digits = 1; digits < 3 && *c < end && **c >= '0' && **c <= '7'; ++digits)
