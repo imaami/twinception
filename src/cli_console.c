@@ -1092,14 +1092,12 @@ cli_console_create (uint32_t         flags,
 		return nullptr;
 	}
 	list_init(&console->queue.lines);
-	console->in.ref.fd = -1;
-	console->in.job.job.work = cli_console_input_work;
-	console->in.job.job.done = cli_console_input_done;
-	console->in.flags = -1;
-	console->out.ref.fd = -1;
-	console->out.job.job.work = cli_console_output_work;
-	console->out.job.job.done = cli_console_output_done;
-	console->out.flags = -1;
+	console->in = (struct cli_console_stream){.ref.fd = -1, .flags = -1,
+	                                          .job.job.work = cli_console_input_work,
+	                                          .job.job.done = cli_console_input_done};
+	console->out = (struct cli_console_stream){.ref.fd = -1, .flags = -1,
+	                                           .job.job.work = cli_console_output_work,
+	                                           .job.job.done = cli_console_output_done};
 	console->rows = 24;
 	console->columns = 80;
 	console->loop = loop;
