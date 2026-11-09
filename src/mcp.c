@@ -5807,9 +5807,9 @@ mcp_req_result_put (struct mcp_req         *req,
 
 /* Write the result of the turn's call req->part into the upload, one slice
  * in each step. Then write its line of the trace, add the call to the ring
- * (src/seen.h), a findings or compact call as its number only, drop the
- * call's output and go on with the next call. A jobs call shows the lines
- * of its job.
+ * (src/seen.h) unless it is a findings or compact call, drop the call's
+ * output and go on with the next call. A jobs call shows the lines of its
+ * job.
  */
 static void
 mcp_req_result_write (struct mcp_req *req)
@@ -5835,29 +5835,33 @@ mcp_req_result_write (struct mcp_req *req)
 	}
 	/* A replayed result is a part of the output; its record gives the size. */
 	struct json_object *saved = req->saved_tools[req->part];
+	uint64_t const output = saved ? jb_uint(jb_get(saved, "bytes"), 0) : out.len;
 	struct mcp_row const *row = mcp_row_of(mcp_slot_tool(slot));
-	struct seen_result const r = {
-		.parts  = parts,
-		.out    = { (char const *)out.ptr, out.len },
-		.read   = (slot->of ? slot->of : slot)->read,
-		.output = saved ? jb_uint(jb_get(saved, "bytes"), 0) : out.len,
-		.at     = jb_uint(jb_get(saved, "at"), 0),
-		.skip   = slot->skip,
-		.number = mcp_slot_call(slot),
-		.turn   = req->turn,
-		.tool   = slot->tool,
-		.index  = (uint16_t)req->part,
-		.flags  = slot->flags & SLOT_FAILED ? SEEN_FAILED : 0,
-	};
 	(void)mcp_req_trace(req, &c, slot->args, row->trace);
-	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED, r.output);
-	if (row->metric == LENT_FINDINGS || row->metric == LENT_COMPACT) {
-		e = seen_keep_number(&req->seen, r.number, r.tool);
-		seen_shown(req->seen, r.number, slot->skip, slot->window, r.turn);
-	} else {
+	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED, output);
+	switch (row->metric) {
+	case LENT_FINDINGS:
+		seen_shown(req->seen, mcp_slot_call(slot), slot->skip, slot->window, req->turn);
+		break;
+	case LENT_COMPACT:
+		/* A compact call shows nothing that a finding can cite. */
+		break;
+	default:
 		/* seen_keep() scans the output up to the end of the window. */
 		loop_work(req->mcp->loop, LOOP_COPY, slot->skip + slot->window);
-		e = seen_keep(&req->seen, &req->calls[req->part], &r, nullptr);
+		e = seen_keep(&req->seen, &req->calls[req->part], &(struct seen_result const){
+			.parts  = parts,
+			.out    = { (char const *)out.ptr, out.len },
+			.read   = (slot->of ? slot->of : slot)->read,
+			.output = output,
+			.at     = jb_uint(jb_get(saved, "at"), 0),
+			.skip   = slot->skip,
+			.number = mcp_slot_call(slot),
+			.turn   = req->turn,
+			.tool   = slot->tool,
+			.index  = (uint16_t)req->part,
+			.flags  = slot->flags & SLOT_FAILED ? SEEN_FAILED : 0,
+		}, nullptr);
 	}
 	if (e) {
 		mcp_req_fail(req, e);
@@ -6572,13 +6576,6 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	}
 	if (mcp_req_drained(req))
 		return;
-	/* The ring stores the number of the compact call, which shows nothing
-	 * that a finding can cite. */
-	int e = seen_keep_number(&req->seen, mcp_slot_call(slot), slot->tool);
-	if (e) {
-		mcp_req_fail(req, e);
-		return;
-	}
 	/* The trace line shows the name of the tool that the turn called. */
 	struct registry_tool const *t = mcp_slot_tool(slot);
 	struct ai_call const c = { .name = t->name };

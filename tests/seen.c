@@ -2,9 +2,9 @@
  *  the lines that a window shows whole, the calls that the ring stores and
  *  drops by count and by bytes, the newest call, calls too large to store,
  *  the offset of the window of a replayed result, the reuse of the storage,
- *  the calls that the ring stores as numbers, the calls before a restart,
- *  the lookup of a call by number, the evidence items that results
- *  showed, and the items in the journal state of a resumed ask call.
+ *  the calls before a restart, the lookup of a call by number, the
+ *  evidence items that results showed, and the items in the journal state
+ *  of a resumed ask call.
  */
 #include <errno.h>
 #include <json-c/json.h>
@@ -368,15 +368,12 @@ test_keep (void)
 	seen_clear(seen);
 	CHECK(!seen->n && !seen->bytes && !seen->head && !seen->calls[0].request.data);
 	CHECK(!seen_notice(seen, &text) && !dstr_len(&text));
-	CHECK(!seen_keep_number(&seen, 3, 1) && !seen_notice(seen, &text));
-	CHECK(!dstr_len(&text) && !seen->n && seen->numbers.n == 1);
 	CHECK(!keep(&seen, 4, 1, CSTR_VIEW("4")) && !seen_notice(seen, &text));
 	SAME(dstr_get(&text), dstr_len(&text), "[askai: askai keeps your call c4 of this ask call. "
 	     "Cite the call as evidence by number.]\n");
 	dstr_cleanup(&text);
 	seen_clear(seen);
 	CHECK(dstr_get_block_count(&seen->calls[0].result) == blocks && !dstr_len(&seen->calls[0].result));
-	CHECK(!seen->numbers.n && seen->numbers.items);
 	CHECK(seen_kept(seen) < kept && seen_kept(seen) > sizeof *seen);
 	seen_clear(nullptr);
 	CHECK(!seen_kept(nullptr));
@@ -461,9 +458,8 @@ test_drop (void)
 	seen_destroy(&seen);
 }
 
-/* Check that seen_find() finds the call @p number in @p seen @p where, a
- * call exactly if SEEN_KEPT, and a tool other than TOOL_MAX exactly if
- * SEEN_NUMBER.
+/* Check that seen_find() finds the call @p number in @p seen @p where, and
+ * a call exactly if SEEN_KEPT.
  */
 static void
 found (struct seen const *seen,
@@ -472,76 +468,57 @@ found (struct seen const *seen,
        int                line)
 {
 	struct seen_call const *c = (void *)1;
-	uint32_t tool = 0;
-	enum seen_where const got = seen_find(seen, number, &c, &tool);
-	if (got == where && (where == SEEN_KEPT ? c && c->number == number : !c) &&
-	    (where == SEEN_NUMBER) == (tool != TOOL_MAX))
+	enum seen_where const got = seen_find(seen, number, &c);
+	if (got == where && (where == SEEN_KEPT ? c && c->number == number : !c))
 		return;
 	++failures;
 	fprintf(stderr, "%s:%d: c%u found %d, want %d\n", __FILE__, line, number, got, where);
 }
 
-/* seen_keep_number() stores the number and the tool of a findings or
- * compact call, which takes no place among the calls of the ring.
- * seen_find() finds the calls of the ring and those numbers, and tells
- * the calls that left the ring, the calls before a restart and the calls
- * that did not run apart.
+/* seen_find() finds the calls of the ring, and tells the calls that left
+ * the ring, the calls before a restart and the other calls apart. A
+ * findings or compact call takes no place in the ring, and seen_find()
+ * finds it missing, as a call that did not run.
  */
 static void
-test_number (void)
+test_find (void)
 {
 	struct seen *seen = nullptr;
 	found(seen, 1, SEEN_MISSING, __LINE__);
 	CHECK(!seen_oldest(seen));
+	/* Call 2 is a findings call. */
 	CHECK(!keep(&seen, 1, 10, CSTR_VIEW("one")));
-	CHECK(!seen_keep_number(&seen, 2, 7));
 	CHECK(!keep(&seen, 3, 10, CSTR_VIEW("three")));
 	CHECK(seen->n == 2 && call_at(seen, 0)->number == 1 && call_at(seen, 1)->number == 3);
-	CHECK(seen->numbers.n == 1 && seen->numbers.items[0].number == 2 &&
-	      seen->numbers.items[0].tool == 7);
 	CHECK(seen->bytes == 2 * 10 + dstr_len(&call_at(seen, 0)->result) +
 	                     dstr_len(&call_at(seen, 1)->result));
 	struct seen_call const *c = (void *)1;
-	uint32_t tool = 0;
-	CHECK(seen_find(seen, 2, &c, &tool) == SEEN_NUMBER && !c && tool == 7);
-	CHECK(seen_find(seen, 3, &c, &tool) == SEEN_KEPT && c->number == 3 && tool == TOOL_MAX);
+	CHECK(seen_find(seen, 2, &c) == SEEN_MISSING && !c);
+	CHECK(seen_find(seen, 3, &c) == SEEN_KEPT && c->number == 3 && c == call_at(seen, 1));
 	found(seen, 0, SEEN_MISSING, __LINE__);
 	found(seen, 4, SEEN_MISSING, __LINE__);
 	CHECK(seen_oldest(seen) == 1);
 	/* Calls 4 and 5 did not run. */
 	CHECK(!keep(&seen, 6, 10, CSTR_VIEW("six")));
 	found(seen, 4, SEEN_MISSING, __LINE__);
+	found(seen, 5, SEEN_MISSING, __LINE__);
 	found(seen, 6, SEEN_KEPT, __LINE__);
-	/* Numbers take no place in the ring: after SEEN_CALLS numbers, the
-	 * ring still contains its calls, and the oldest number is there. */
+	/* Calls leave the ring for newer calls. seen_find() returns
+	 * SEEN_DROPPED for the findings call 2 too, because it is older than
+	 * the oldest call of the ring. */
 	for (uint32_t k = 7; k < 7 + SEEN_CALLS; ++k)
-		CHECK(!seen_keep_number(&seen, k, 8));
-	CHECK(seen->n == 3 && seen_oldest(seen) == 1 && seen->numbers.n == SEEN_CALLS + 1);
-	found(seen, 1, SEEN_KEPT, __LINE__);
-	found(seen, 2, SEEN_NUMBER, __LINE__);
-	found(seen, SEEN_CALLS + 6, SEEN_NUMBER, __LINE__);
-	found(seen, SEEN_CALLS + 7, SEEN_MISSING, __LINE__);
-	/* Calls leave the ring for newer calls. A number older than the oldest
-	 * call is still a number. */
-	for (uint32_t k = 7 + SEEN_CALLS; k < 7 + 2 * SEEN_CALLS; ++k)
 		CHECK(!keep(&seen, k, 10, CSTR_VIEW("k")));
-	CHECK(seen->n == SEEN_CALLS && seen_oldest(seen) == 7 + SEEN_CALLS);
+	CHECK(seen->n == SEEN_CALLS && seen_oldest(seen) == 7);
 	found(seen, 1, SEEN_DROPPED, __LINE__);
-	found(seen, 6, SEEN_DROPPED, __LINE__);
-	found(seen, 2, SEEN_NUMBER, __LINE__);
-	found(seen, 7, SEEN_NUMBER, __LINE__);
-	/* The ring stores the last SEEN_NUMBERS numbers. */
-	uint32_t const first = 7 + 2 * SEEN_CALLS;
-	for (uint32_t k = first; k < first + SEEN_NUMBERS; ++k)
-		CHECK(!seen_keep_number(&seen, k, 9));
-	CHECK(seen->numbers.n == SEEN_NUMBERS && seen->numbers.items[0].number == first);
 	found(seen, 2, SEEN_DROPPED, __LINE__);
-	found(seen, first, SEEN_NUMBER, __LINE__);
-	found(seen, first + SEEN_NUMBERS - 1, SEEN_NUMBER, __LINE__);
+	found(seen, 6, SEEN_DROPPED, __LINE__);
+	found(seen, 7, SEEN_KEPT, __LINE__);
+	found(seen, 6 + SEEN_CALLS, SEEN_KEPT, __LINE__);
+	found(seen, 7 + SEEN_CALLS, SEEN_MISSING, __LINE__);
 	seen_clear(seen);
 	found(seen, 6, SEEN_MISSING, __LINE__);
-	found(seen, first, SEEN_MISSING, __LINE__);
-	CHECK(!seen_oldest(seen) && !seen->bytes && !seen->numbers.n);
+	found(seen, 7, SEEN_MISSING, __LINE__);
+	CHECK(!seen_oldest(seen) && !seen->bytes);
 	seen_destroy(&seen);
 
 	/* A resumed ask call. askai made calls 1 to 10 before it restarted. */
@@ -569,7 +546,6 @@ test_number (void)
 	seen_destroy(&seen);
 
 	/* Null arguments. */
-	CHECK(seen_keep_number(nullptr, 1, 1) == EFAULT);
 	CHECK(seen_resume(nullptr, 1, nullptr) == EFAULT);
 }
 
@@ -847,7 +823,7 @@ main (void)
 	test_lines();
 	test_keep();
 	test_drop();
-	test_number();
+	test_find();
 	test_items();
 	test_resume_items();
 	return check_report("seen");

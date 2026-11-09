@@ -402,11 +402,10 @@ A change can cite evidence, at most 16 references:
 The number of a call is the number in the note of its result, such as
 `[askai: call c7]` (section [`context`](#context)). `askai` keeps the
 last 64 calls of an `ask_ai` call in memory, at most 16 MiB of them. A
-`findings` or `compact` call cannot be evidence. Such a call takes no
-place among the 64, and `askai` stores only the numbers of the last 1024
-of them, so that the refusal names the tool. `external` names
-material outside `askai` with an exact hash of 40 or 64 hexadecimal
-digits, at most 8 items of at most 1 KiB, which `askai` does not store.
+`findings` or `compact` call cannot be evidence, and `askai` does not
+store it. `external` names material outside `askai` with an exact hash
+of 40 or 64 hexadecimal digits, at most 8 items of at most 1 KiB, which
+`askai` does not store.
 `verified` and `disproved` need a `reason` and at least one reference
 that is not external. Each call that they cite must be of an earlier
 turn, and each item must be seen: a result of an earlier turn of the

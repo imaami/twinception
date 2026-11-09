@@ -316,30 +316,6 @@ seen_keep (struct seen              **p_seen,
 	return 0;
 }
 
-int
-seen_keep_number (struct seen **p_seen,
-                  uint32_t      number,
-                  uint32_t      tool)
-{
-	if (!p_seen)
-		return EFAULT;
-	int e = 0;
-	if (!*p_seen)
-		*p_seen = seen_create(&e);
-	if (e)
-		return e;
-	struct seen *seen = *p_seen;
-	if (seen->numbers.n == SEEN_NUMBERS) {
-		--seen->numbers.n;
-		memmove(seen->numbers.items, seen->numbers.items + 1,
-		        seen->numbers.n * sizeof *seen->numbers.items);
-	}
-	if (util_grow(seen->numbers.items, seen->numbers.cap, seen->numbers.n + 1))
-		return ENOMEM;
-	seen->numbers.items[seen->numbers.n++] = (struct seen_number){ number, tool };
-	return 0;
-}
-
 /* Drops the items of @p seen. The storage of the array stays. */
 static void
 seen_items_drop (struct seen *seen)
@@ -421,11 +397,9 @@ seen_resume (struct seen              **p_seen,
 enum seen_where
 seen_find (struct seen const       *seen,
            uint32_t                 number,
-           struct seen_call const **call,
-           uint32_t                *tool)
+           struct seen_call const **call)
 {
 	*call = nullptr;
-	*tool = TOOL_MAX;
 	if (!seen || !number)
 		return SEEN_MISSING;
 	for (size_t i = 0; i < seen->n; ++i) {
@@ -435,11 +409,6 @@ seen_find (struct seen const       *seen,
 			return SEEN_KEPT;
 		}
 	}
-	for (size_t i = 0; i < seen->numbers.n; ++i)
-		if (seen->numbers.items[i].number == number) {
-			*tool = seen->numbers.items[i].tool;
-			return SEEN_NUMBER;
-		}
 	if (number <= seen->resumed)
 		return SEEN_RESTARTED;
 	return seen->n && number < seen_oldest(seen) ? SEEN_DROPPED : SEEN_MISSING;
@@ -644,7 +613,6 @@ seen_clear (struct seen *seen)
 	while (seen->n)
 		seen_drop(seen);
 	seen_items_drop(seen);
-	seen->numbers.n = 0;
 	seen->head = 0;
 	seen->resumed = 0;
 }
@@ -661,7 +629,6 @@ seen_kept (struct seen const *seen)
 		                           dstr_get_block_count(&c->ids)) * DSTR_BLK_SIZE;
 	}
 	bytes += seen->items.cap * sizeof *seen->items.items;
-	bytes += seen->numbers.cap * sizeof *seen->numbers.items;
 	for (size_t i = 0; i < seen->items.n; ++i)
 		bytes += dstr_get_block_count(&seen->items.items[i].record) * DSTR_BLK_SIZE;
 	return bytes;
@@ -682,8 +649,6 @@ seen_destroy (struct seen **p_seen)
 		dstr_cleanup(&seen->items.items[i].record);
 	free(seen->items.items);
 	seen->items.items = nullptr;
-	free(seen->numbers.items);
-	seen->numbers.items = nullptr;
 	free(seen);
 	*p_seen = nullptr;
 }

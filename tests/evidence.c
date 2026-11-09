@@ -230,7 +230,7 @@ test_cite (void)
 	CHECK(seen->calls[0].lines.first == 2 && seen->calls[0].lines.last == 6);
 	keep(&seen, 2, 1, 2, "toolu_x", "{\"page\":\"git\"}", CSTR_VIEW("A man page.\n"), nullptr,
 	     false);
-	CHECK(!seen_keep_number(&seen, 3, 3));
+	/* Call c3 is a findings call, which the ring does not store. */
 	keep(&seen, 4, 2, 1, "", "{\"command\":\"grep\"}", CSTR_VIEW("a:1:x\n"), nullptr, false);
 	keep(&seen, 5, 2, 2, "", "{}", CSTR_VIEW("big"), nullptr, true);
 	keep(&seen, 6, 3, 2, "", "{}", CSTR_VIEW("now"), nullptr, false);
@@ -295,11 +295,12 @@ test_cite (void)
 	        "a man call.", __LINE__);
 	refused(&cite, "c4:5", true, "c4:5 needs a git read or a code describe. Call c4 is a git "
 	        "grep.", __LINE__);
-	refused(&cite, "c3", false, "c3 is a findings call. findings calls cannot be evidence.",
-	        __LINE__);
+	refused(&cite, "c3", false, "Call c3 is a findings or compact call, or did not run. Cite "
+	        "another call.", __LINE__);
 	refused(&cite, "c5", false, "Call c5 was too large to keep. askai keeps no call of more "
 	        "than 4 MiB.", __LINE__);
-	refused(&cite, "c7", false, "Call c7 did not run.", __LINE__);
+	refused(&cite, "c7", false, "Call c7 is a findings or compact call, or did not run. Cite "
+	        "another call.", __LINE__);
 	refused(&cite, "c8", false, "c8 is a findings call. findings calls cannot be evidence.",
 	        __LINE__);
 	refused(&cite, "c9", false, "No call c9 was made before this call.", __LINE__);
@@ -317,6 +318,9 @@ test_cite (void)
 	later.turn = 4;
 	refused(&later, "c2", true, "c2 is no longer kept. askai keeps the last 64 calls of an ask "
 	        "call. The oldest kept call is c7.", __LINE__);
+	/* The findings call c3 is older than the oldest kept call. */
+	refused(&later, "c3", true, "c3 is no longer kept. askai keeps the last 64 calls of an ask "
+	        "call. The oldest kept call is c7.", __LINE__);
 	seen_destroy(&seen);
 
 	/* Calls before a restart. */
@@ -333,7 +337,8 @@ test_cite (void)
 	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &later, true, why, sizeof why));
 	/* No ring at all. */
 	later.seen = nullptr;
-	refused(&later, "c11", true, "Call c11 did not run.", __LINE__);
+	refused(&later, "c11", true, "Call c11 is a findings or compact call, or did not run. Cite "
+	        "another call.", __LINE__);
 
 	/* Null arguments. */
 	CHECK(evidence_cite(nullptr, &m, &lines, &ref, &cite, true, why, sizeof why) == EINVAL);

@@ -20,13 +20,10 @@
  * call stores a copy of it, a struct seen_read (seen_read_create()).
  *
  * A findings call and a compact call show nothing that a finding can
- * cite. Such a call takes no place in the ring. The ring stores only its
- * number and its tool, apart from the calls, for the last SEEN_NUMBERS
- * such calls (seen_keep_number()), so that the refusal of the call names
- * why the call is not evidence. A resumed ask call records the calls that
- * askai made before it restarted (seen_resume()). seen_find() returns
- * SEEN_RESTARTED for such a call and SEEN_DROPPED for a call that left the
- * ring.
+ * cite, and the ring does not store them. A resumed ask call records the
+ * calls that askai made before it restarted (seen_resume()). seen_find()
+ * returns SEEN_RESTARTED for such a call and SEEN_DROPPED for a call that
+ * left the ring.
  *
  * The storage of a dropped result stays for the next call in the same
  * place of the ring. The storage of dropped arguments goes back to the
@@ -69,9 +66,6 @@ enum {
 	                                         call_source, at most */
 	SEEN_ITEMS    = 1024,               /**< evidence items in the ring of
 	                                         an ask call, at most */
-	SEEN_NUMBERS  = 1024,               /**< findings and compact calls
-	                                         whose numbers the ring of an
-	                                         ask call stores, at most */
 	SEEN_ID       = UTIL_WORD_MAX + 26, /**< bytes of the ID of an item,
 	                                         such as cuh#2/1, NUL included:
 	                                         a member name, '#', '/', two
@@ -99,13 +93,11 @@ enum seen_flag : uint16_t {
 /** Where seen_find() found a call. */
 enum seen_where : uint8_t {
 	SEEN_KEPT,       /**< the ring contains the call */
-	SEEN_NUMBER,     /**< a findings or compact call, whose number and
-	                      tool only the ring stores (seen_keep_number()) */
 	SEEN_DROPPED,    /**< the call left the ring for newer calls */
 	SEEN_RESTARTED,  /**< askai made the call before it restarted */
-	SEEN_MISSING,    /**< the ring contains no call of the number: the
-	                      call did not run, or no call has the number
-	                      yet */
+	SEEN_MISSING,    /**< the ring contains no call of the number: a
+	                      findings or compact call, a call that did not
+	                      run, or no call has the number yet */
 };
 
 /** A position in the numbered lines of an output. seen_lines() counts the
@@ -181,23 +173,13 @@ struct seen_item {
 	char        id[SEEN_ID];    /**< such as cuh#2/1 */
 };
 
-/** A findings call or a compact call, of which the ring stores only the
- *  number and the tool.
- */
-struct seen_number {
-	uint32_t number;  /**< N of the stamp cN */
-	uint32_t tool;    /**< the registry ID of the tool */
-};
-
 /** The ring of an ask call. calls[(head + i) % SEEN_CALLS] is the call i of
  *  the n calls in the ring, from the oldest. items are the evidence items
- *  that askai printed, and numbers the findings and compact calls, each
- *  from the oldest.
+ *  that askai printed, from the oldest.
  */
 struct seen {
 	struct seen_call calls[SEEN_CALLS];
-	UTIL_ARRAY(struct seen_item)   items;
-	UTIL_ARRAY(struct seen_number) numbers;
+	UTIL_ARRAY(struct seen_item) items;
 	size_t           bytes;    /**< bytes of the arguments and results of
 	                                the calls in the ring */
 	uint32_t         resumed;  /**< the calls that askai made before it
@@ -333,18 +315,6 @@ seen_keep (struct seen              **p_seen,
            struct seen_result const  *r,
            struct seen_lines         *lines);
 
-/** Records in the ring @p *p_seen the call @p number of the tool @p tool,
- *  a findings call or a compact call, as its newest number. The call takes
- *  no place among the calls of the ring. The ring stores no arguments and
- *  no result of the call. The ring is allocated on the first call, and the
- *  oldest number goes if the ring stores SEEN_NUMBERS numbers. Returns 0,
- *  EFAULT for a null @p p_seen, or ENOMEM.
- */
-extern int
-seen_keep_number (struct seen **p_seen,
-                  uint32_t      number,
-                  uint32_t      tool);
-
 /**
  * Records in the ring @p *p_seen that askai made @p calls calls of the ask
  * call before it restarted, as a resumed ask call starts. The items of
@@ -361,21 +331,18 @@ seen_resume (struct seen              **p_seen,
 
 /**
  * Finds the call @p number in @p seen. Stores the call in @p *call and
- * returns SEEN_KEPT if the ring contains it. Otherwise stores nullptr. For
- * a findings or compact call whose number the ring stores, the function
- * stores the registry ID of its tool in @p *tool and returns SEEN_NUMBER.
- * Otherwise it stores TOOL_MAX in @p *tool and returns SEEN_RESTARTED for a
- * number from 1 to the calls before a restart (seen_resume()),
- * SEEN_DROPPED for a later number before the oldest call of the ring, and
- * SEEN_MISSING for any other number, also for a null @p seen. A call that
- * did not run, such as a call after compact in its turn, is missing, and
- * so is a number after the newest call.
+ * returns SEEN_KEPT if the ring contains it. Otherwise stores nullptr and
+ * returns SEEN_RESTARTED for a number from 1 to the calls before a restart
+ * (seen_resume()), SEEN_DROPPED for a later number before the oldest call
+ * of the ring, and SEEN_MISSING for any other number, also for a null
+ * @p seen. A findings or compact call is missing, and so is a call that
+ * did not run, such as a call after compact in its turn, and a number
+ * after the newest call.
  */
 extern enum seen_where
 seen_find (struct seen const       *seen,
            uint32_t                 number,
-           struct seen_call const **call,
-           uint32_t                *tool);
+           struct seen_call const **call);
 
 /** Returns the number of the oldest call among the calls of @p seen, or 0
  *  for a null @p seen or a ring without calls.
@@ -450,9 +417,9 @@ extern int
 seen_notice (struct seen const *seen,
              struct dstr       *d);
 
-/** Drops the calls, the items and the numbers of @p seen at the end of an
- *  ask call, and the calls before a restart. The storage of the results stays for
- *  the next ask call that uses @p seen. Does nothing for a null @p seen.
+/** Drops the calls and the items of @p seen at the end of an ask call, and
+ *  the calls before a restart. The storage of the results stays for the
+ *  next ask call that uses @p seen. Does nothing for a null @p seen.
  */
 extern void
 seen_clear (struct seen *seen);

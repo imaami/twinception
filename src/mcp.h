@@ -436,7 +436,8 @@ extern size_t
 mcp_slot_window_max (struct mcp_slot const *slot);
 
 /** Returns the ring of the calls of the call's ask call (src/seen.h), or
- *  nullptr before the first call. This function is not exported.
+ *  nullptr before askai stores the first call or item of the ask call.
+ *  This function is not exported.
  */
 extern struct seen const *
 mcp_slot_seen (struct mcp_slot const *slot);

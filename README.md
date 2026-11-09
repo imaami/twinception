@@ -770,12 +770,13 @@ of them, and drops the oldest call first. For each call, `askai` stores the
 arguments as the model sent them, the result as the model got it, and for a
 `git` `read` or a `code` `describe` the commit, the path and the lines that
 the result showed whole. A call larger than 4 MiB is stored as its number
-only, and so is a `findings` or `compact` call, which shows nothing that a
-finding can cite. `askai` also stores the evidence items of findings
-that `findings` printed to the turns, at most 1024, with the bytes of
-each item that results showed. The stored calls and items are dropped
-when the ask call ends. After a compaction, a notice names the stored
-calls that a finding can cite, and another the items that the turns saw.
+only. A `findings` or `compact` call is not stored, because it shows
+nothing that a finding can cite. `askai` also stores the evidence items
+of findings that `findings` printed to the turns, at most 1024, with the
+bytes of each item that results showed. The stored calls and items are
+dropped when the ask call ends. After a compaction, a notice names the
+stored calls that a finding can cite, and another the items that the
+turns saw.
 
 The model need not wait for a slow call: `background` runs a call of `man`,
 `git` or a plugin tool that allows it, as a job, and answers at once with

@@ -336,17 +336,9 @@ evidence_find (struct evidence_ref const  *ref,
 	if (n > cite->call)
 		return util_refuse(why, len, "No call c%" PRIu32 " was made before this call.", n);
 	uint32_t const oldest = seen_oldest(cite->seen);
-	uint32_t tool;
-	char const *name;
-	switch (seen_find(cite->seen, n, call, &tool)) {
+	switch (seen_find(cite->seen, n, call)) {
 	case SEEN_KEPT:
 		return 0;
-	case SEEN_NUMBER:
-		name = cite->name(cite->owner, tool);
-		if (!name)
-			name = "unknown";
-		return util_refuse(why, len, "c%" PRIu32 " is a %s call. %s calls cannot be evidence.",
-		                   n, name, name);
 	case SEEN_DROPPED:
 		return util_refuse(why, len, "c%" PRIu32 " is no longer kept. askai keeps the last 64 "
 		                   "calls of an ask call. The oldest kept call is c%" PRIu32 ".", n,
@@ -361,7 +353,8 @@ evidence_find (struct evidence_ref const  *ref,
 	case SEEN_MISSING:
 		break;
 	}
-	return util_refuse(why, len, "Call c%" PRIu32 " did not run.", n);
+	return util_refuse(why, len, "Call c%" PRIu32 " is a findings or compact call, or did not "
+	                   "run. Cite another call.", n);
 }
 
 int

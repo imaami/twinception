@@ -14927,7 +14927,7 @@ def check_findings(binary, up):
                 "c2:5 needs a git read or a code describe. Call c2 is a git log.",
                 "evidence[0] is not a reference: c2:files. Give a call such as c7, lines such "
                 "as c7:120-140, or an evidence item such as bro#5/2.",
-                "c3 is a findings call. findings calls cannot be evidence.",
+                "Call c3 is a findings or compact call, or did not run. Cite another call.",
                 "No call c99 was made before this call.",
                 "evidence[0] is not a reference: x. Give a call such as c7, lines such as "
                 "c7:120-140, or an evidence item such as bro#5/2.",
@@ -15481,7 +15481,8 @@ def check_findings_expand(binary, up):
                 "cuh#1/1, cuh#1/2, cuh#3/1, cuh#3/2, cuh#2/1, bro#1/1, bro#1/2. These items "
                 "count as seen.]\n\n[askai: go on with the task.]"), prompt[-800:]
             last = results(sent[8])
-            assert last[0] == "c25 is a compact call. compact calls cannot be evidence.", last
+            assert last[0] == "Call c25 is a findings or compact call, or did not run. Cite " \
+                "another call.", last
             assert re.fullmatch(r"Added bro#3 \(verified\)\. Evidence bro#3/1 from cuh#2/1\. "
                                 r"Commit [0-9a-f]{8}\.", last[1]), last[1]
 
@@ -15556,8 +15557,10 @@ def check_findings_expand(binary, up):
             count = len(up.requests)
             bro.ask("Q")
             said = results(up.requests[count + 6])
-            assert said[:2] == ["c2 is a findings call. findings calls cannot be evidence.",
-                                "c65 is a findings call. findings calls cannot be evidence."]
+            assert said[:2] == ["Call c2 is a findings or compact call, or did not run. Cite "
+                                "another call.",
+                                "Call c65 is a findings or compact call, or did not run. Cite "
+                                "another call."], said
             assert re.fullmatch(r"Added bro#\d+ \(candidate\)\. Evidence bro#\d+/1 from call "
                                 r"c1\. Commit [0-9a-f]{8}\.", said[2]), said
 
