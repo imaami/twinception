@@ -55,7 +55,7 @@ static char const *const cmds[][10] = {
 	                     "--numstat", word, "--", word },
 	[STORE_READ]     = { "cat-file", "--batch" },
 	[STORE_REFS]     = { "for-each-ref", word, word, word, word },
-	[STORE_FILES]    = { "ls-tree", "-r", "-z", "-l", word, "--" },
+	[STORE_FILES]    = { "ls-tree", "-r", "-z", "-l", word, "--", word },
 	[STORE_HEAD]     = { "rev-parse", "--verify", "--end-of-options", word },
 	[STORE_ANCESTOR] = { "merge-base", "--is-ancestor", word, word },
 	[STORE_DIFF]     = { "diff", "--no-ext-diff", "--no-textconv", "--no-renames",

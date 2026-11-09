@@ -572,6 +572,7 @@ test_argv (struct store const *store)
 		                                      " for-each-ref --format=%(refname) refs/a/ refs/b/"
 		                                      " refs/c/" },
 		{ STORE_FILES,    { "R" },            " ls-tree -r -z -l R --" },
+		{ STORE_FILES,    { "R", "p" },       " ls-tree -r -z -l R -- p" },
 		{ STORE_HEAD,     { "R" },            " rev-parse --verify --end-of-options R" },
 		{ STORE_ANCESTOR, { "A", "B" },       " merge-base --is-ancestor A B" },
 		{ STORE_DIFF,     { "A", "B", "p" },  " diff --no-ext-diff --no-textconv --no-renames"
@@ -1103,10 +1104,15 @@ test_rebase (struct store const *store)
 	CHECK(snprintf(want, sizeof want, "%s\n", r4.hex) == OID_SHA1 + 1);
 	CHECK(!run_words(store_directory(store), parent, out, sizeof out, &len));
 	SAME(out, len, want);
-	CHECK(!run(store, STORE_FILES, (char const *const[]){ r5.hex }, (struct span){}, out,
-	           sizeof out, &len));
+	CHECK(!run(store, STORE_FILES, (char const *const[]){ r5.hex, nullptr },
+	           (struct span){}, out, sizeof out, &len));
 	CHECK(memmem(out, len, "\ta/b", 5) && memmem(out, len, "\ta/f", 5) &&
 	      memmem(out, len, "\tm/y", 5) && memmem(out, len, "\tn", 3));
+	/* A path lists only the files under the path. */
+	CHECK(!run(store, STORE_FILES, (char const *const[]){ r5.hex, "a" }, (struct span){}, out,
+	           sizeof out, &len));
+	CHECK(memmem(out, len, "\ta/b", 5) && memmem(out, len, "\ta/f", 5) &&
+	      !memmem(out, len, "\tm/y", 5) && !memmem(out, len, "\tn", 3));
 }
 
 static void
@@ -1140,8 +1146,8 @@ test_git (char const *path)
 	struct oid c1, c2, c3, c4;
 	CHECK(!commit_run(store, &commit, &c1, out, sizeof out, &len));
 	CHECK(oid_len(&c1) == OID_SHA1);
-	CHECK(!run(store, STORE_FILES, (char const *const[]){ c1.hex }, (struct span){}, out,
-	           sizeof out, &len) && !len);
+	CHECK(!run(store, STORE_FILES, (char const *const[]){ c1.hex, nullptr },
+	           (struct span){}, out, sizeof out, &len) && !len);
 
 	/* A file part adds the file. */
 	struct buf files = {};
@@ -1154,8 +1160,8 @@ test_git (char const *path)
 	buf_fini(&files);
 	static char tree[4096];
 	size_t tree_len = 0;
-	CHECK(!run(store, STORE_FILES, (char const *const[]){ c2.hex }, (struct span){}, tree,
-	           sizeof tree, &tree_len));
+	CHECK(!run(store, STORE_FILES, (char const *const[]){ c2.hex, nullptr },
+	           (struct span){}, tree, sizeof tree, &tree_len));
 	CHECK(tree_len && !tree[tree_len - 1]);
 	SAME(tree, tree_len - 1, "100644 blob f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f       3\ta");
 
@@ -1164,8 +1170,8 @@ test_git (char const *path)
 	commit.files = (struct span){};
 	commit.tip = &c2;
 	CHECK(!commit_run(store, &commit, &c3, out, sizeof out, &len));
-	CHECK(!run(store, STORE_FILES, (char const *const[]){ c3.hex }, (struct span){}, out,
-	           sizeof out, &len));
+	CHECK(!run(store, STORE_FILES, (char const *const[]){ c3.hex, nullptr },
+	           (struct span){}, out, sizeof out, &len));
 	CHECK(len == tree_len && !memcmp(out, tree, len));
 	CHECK(!run(store, STORE_HEAD, (char const *const[]){ commit.ref }, (struct span){}, out,
 	           sizeof out, &len));
@@ -1226,8 +1232,8 @@ test_git (char const *path)
 	               "Ask: 6f0c2b9a41d8e3f75a2c1b0d9e8f7a6b\nAsked-by: imaami\n\n", c3.hex) > 0);
 	CHECK(!run_words(store_directory(store), log, out, sizeof out, &len));
 	SAME(out, len, want);
-	CHECK(!run(store, STORE_FILES, (char const *const[]){ c5.hex }, (struct span){}, out,
-	           sizeof out, &len));
+	CHECK(!run(store, STORE_FILES, (char const *const[]){ c5.hex, nullptr },
+	           (struct span){}, out, sizeof out, &len));
 	CHECK(len > tree_len && !memcmp(out, tree, tree_len) && memmem(out, len, "\tb", 3));
 
 	/* A member record is a root commit with the empty tree, and git reads
@@ -1247,8 +1253,8 @@ test_git (char const *path)
 	};
 	struct oid m;
 	CHECK(!commit_run(store, &member, &m, out, sizeof out, &len));
-	CHECK(!run(store, STORE_FILES, (char const *const[]){ m.hex }, (struct span){}, out,
-	           sizeof out, &len) && !len);
+	CHECK(!run(store, STORE_FILES, (char const *const[]){ m.hex, nullptr },
+	           (struct span){}, out, sizeof out, &len) && !len);
 	char const *const show[] = {
 		"log", "-1", "--format=%(trailers:only)|%an <%ae>|%cn <%ce>|%P|%B", m.hex, nullptr
 	};

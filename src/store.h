@@ -69,8 +69,9 @@ enum store_cmd : uint8_t {
 	STORE_REFS,      /**< Runs git for-each-ref. The caller passes the
 	                      --format option, then one to three patterns. */
 	STORE_FILES,     /**< Runs git ls-tree -r. The output lists the files of
-	                      a tree in tree order. The caller passes a ref or a
-	                      commit. */
+	                      a tree in tree order, or the files under a path.
+	                      The caller passes a ref or a commit, then a path
+	                      or nullptr. */
 	STORE_HEAD,      /**< Runs git rev-parse --verify. The output is the
 	                      full id of a commit. The caller passes a ref or a
 	                      commit. */
