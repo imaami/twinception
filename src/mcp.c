@@ -118,6 +118,7 @@
 #include "task.h"
 #include "uploads.h"
 #include "util.h"
+#include "version.h"
 #include "web.h"
 #include "xlist.h"
 
@@ -8653,7 +8654,7 @@ mcp_static_create (struct config const          *cfg,
 	/* Built with json-c, which escapes as replies need, then kept as text. */
 	struct json_object *info = jb_object("name", json_object_new_string("askai"),
 	                                     "title", json_object_new_string("Ask AI"),
-	                                     "version", json_object_new_string("0.1.0"),
+	                                     "version", json_object_new_string(ASKAI_VERSION),
 	                                     nullptr);
 	struct json_object *list = json_object_new_array();
 	*e = info && list ? mcp_static_build(st, info, list) : ENOMEM;

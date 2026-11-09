@@ -35,7 +35,7 @@ TESTS = """
     check-datauri
     check-dstr check-git-run check-jb
     check-handle check-instance check-journal check-ledger check-load check-member check-ref
-    check-evidence check-review check-seen
+    check-evidence check-finding check-review check-seen
     check-store check-turn
     load load-build
 """.split()
