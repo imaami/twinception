@@ -38,7 +38,6 @@ struct oid;
 struct registry;
 struct seen;
 struct seen_item;
-struct store;
 struct stream_app;
 struct task_pool;
 struct web;
@@ -121,11 +120,10 @@ mcp_lent (void const *cfg,
  * contains the tools of the plugins that askai loaded. @p manual is the
  * service of the man tool (src/manual.h), @p tasks runs the calls of the
  * test aid test_task (src/task.h), @p git is the service of the git tool
- * (src/git.h), @p store is the repository of the session of the notes
- * tool (src/store.h), and @p members is the registry of the session
- * (src/member.h). With CFG_UPSTREAM_TOOLS, an ask call runs turns,
- * each an upstream call, and the tool calls of each turn, until an answer
- * calls no tool.
+ * (src/git.h), and @p members is the registry of the session of the notes
+ * and findings tools (src/member.h), with its repository. With
+ * CFG_UPSTREAM_TOOLS, an ask call runs turns, each an upstream call, and
+ * the tool calls of each turn, until an answer calls no tool.
  *
  * A tool call of a modern client that accepts tasks becomes a task in
  * @p ledger (src/ledger.h) after it runs a second. With CFG_CLIENT_JOBS,
@@ -141,17 +139,16 @@ mcp_lent (void const *cfg,
  * error number in @p *e.
  */
 extern struct mcp_static *
-mcp_static_create (struct config const          *cfg,
-                   struct manual                *manual,
-                   struct task_pool             *tasks,
-                   struct git                   *git,
-                   struct store const           *store,
-                   struct member_registry const *members,
-                   struct ledger                *ledger,
-                   struct roster                *roster,
-                   struct web                   *web,
-                   struct journal               *journal,
-                   int                          *e);
+mcp_static_create (struct config const    *cfg,
+                   struct manual          *manual,
+                   struct task_pool       *tasks,
+                   struct git             *git,
+                   struct member_registry *members,
+                   struct ledger          *ledger,
+                   struct roster          *roster,
+                   struct web             *web,
+                   struct journal         *journal,
+                   int                    *e);
 
 extern void
 mcp_static_destroy (struct mcp_static **p_static);

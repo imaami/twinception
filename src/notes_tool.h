@@ -23,18 +23,17 @@
 struct member_registry;
 struct member_table;
 struct plugin;
-struct store;
 
 /** The service of the notes tool. All loops share it. mcp_static_create()
  *  fills it before mcp_static_build() reads it.
  */
 struct notes_tool {
-	struct store const           *store;         /**< the repository of
-	                                                  the session, nullptr
-	                                                  without --notes */
 	struct member_registry const *members;       /**< the registry of the
-	                                                  session, nullptr
-	                                                  without --notes */
+	                                                  session, with its
+	                                                  repository
+	                                                  (member_registry_store()),
+	                                                  nullptr without
+	                                                  --notes */
 	size_t                        files_inline;  /**< the most bytes of a
 	                                                  file that a client
 	                                                  hands askai inline */

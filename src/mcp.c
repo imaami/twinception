@@ -8505,17 +8505,17 @@ mcp_lent (void const *cfg,
 
 /** Returns what @p plugin, a plugin in the registry, provides for @p st:
  *  for a built-in plugin, its service and its part functions, if any, and
- *  for a loaded plugin, nothing. The service of askai's own kinds is @p st,
- *  the service of the plugin of the man tool is @p manual, the service of
- *  the plugin of the git tool is @p git, and the services of the plugins of
- *  the code, notes and findings tools are st->code and st->notes_tool. The
+ *  for a loaded plugin, nothing. The services are @p st for askai's own
+ *  kinds, and @p manual, @p git, st->code, st->notes_tool and @p members
+ *  for the plugins of the man, git, code, notes and findings tools. The
  *  plugins of the man and notes tools create a part on every client loop.
  */
 static struct mcp_plugin
-mcp_static_plugin (struct mcp_static   *st,
-                   struct plugin const *plugin,
-                   struct manual       *manual,
-                   struct git          *git)
+mcp_static_plugin (struct mcp_static      *st,
+                   struct plugin const    *plugin,
+                   struct manual          *manual,
+                   struct git             *git,
+                   struct member_registry *members)
 {
 	struct {
 		struct plugin const *plugin;
@@ -8527,7 +8527,7 @@ mcp_static_plugin (struct mcp_static   *st,
 		{ &code_plugin, { .service = &st->code } },
 		{ &notes_tool_plugin,
 		  { &st->notes_tool, notes_tool_loop_create, notes_tool_loop_destroy } },
-		{ &findings_plugin, { .service = &st->notes_tool } },
+		{ &findings_plugin, { .service = members } },
 	};
 	for (size_t i = 0; i < array_size(own); ++i)
 		if (own[i].plugin == plugin)
@@ -8581,17 +8581,16 @@ mcp_files_inline (size_t body)
 }
 
 struct mcp_static *
-mcp_static_create (struct config const          *cfg,
-                   struct manual                *manual,
-                   struct task_pool             *tasks,
-                   struct git                   *git,
-                   struct store const           *store,
-                   struct member_registry const *members,
-                   struct ledger                *ledger,
-                   struct roster                *roster,
-                   struct web                   *web,
-                   struct journal               *journal,
-                   int                          *e)
+mcp_static_create (struct config const    *cfg,
+                   struct manual          *manual,
+                   struct task_pool       *tasks,
+                   struct git             *git,
+                   struct member_registry *members,
+                   struct ledger          *ledger,
+                   struct roster          *roster,
+                   struct web             *web,
+                   struct journal         *journal,
+                   int                    *e)
 {
 	struct registry const *reg = &cfg->registry;
 	struct mcp_static *st = malloc(sizeof *st);
@@ -8618,7 +8617,7 @@ mcp_static_create (struct config const          *cfg,
 		.versions = DSTR_INIT,
 		.files_url = DSTR_INIT,
 		.tasks = tasks,
-		.notes_tool = { .store = store, .members = members,
+		.notes_tool = { .members = members,
 		                .files_inline = mcp_files_inline(cfg->http.limits.body) },
 		.code = { git, cfg },
 		.journal = journal,
@@ -8634,11 +8633,11 @@ mcp_static_create (struct config const          *cfg,
 	uint64_t const url = util_hash(st->seed, ep->url, strlen(ep->url));
 	st->endpoint = ep->model ? util_hash(url, ep->model, strlen(ep->model)) : url;
 	for (uint64_t i = 0; i < reg->n_plugins; ++i)
-		st->plugins[i] = mcp_static_plugin(st, reg->plugins[i].plugin, manual, git);
+		st->plugins[i] = mcp_static_plugin(st, reg->plugins[i].plugin, manual, git, members);
 	/* A zeroed dstr is not an empty string (dstr.h). */
 	for (uint32_t id = 0; id < reg->n_tools; ++id)
 		st->offers[id] = (struct mcp_offer){ DSTR_INIT, DSTR_INIT };
-	if (cfg->flags & CFG_UPSTREAM_TOOLS && store && (*e = mcp_static_uploads(st))) {
+	if (cfg->flags & CFG_UPSTREAM_TOOLS && members && (*e = mcp_static_uploads(st))) {
 		mcp_static_destroy(&st);
 		return nullptr;
 	}

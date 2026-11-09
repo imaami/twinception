@@ -399,8 +399,8 @@ findings_run (struct mcp_slot   *slot,
 	int e = 0;
 	call->stage = stage;
 	child_destroy(&call->child);
-	call->child = store_spawn(call->notes->tool->store, slot, cmd, words, ref, buf_peek(in),
-	                          &e);
+	struct store const *store = member_registry_store(call->notes->tool->members);
+	call->child = store_spawn(store, slot, cmd, words, ref, buf_peek(in), &e);
 	buf_fini(in);
 	if (call->child)
 		return;
@@ -750,7 +750,7 @@ findings_committed (struct mcp_slot *slot)
 	}
 	struct span const out = buf_peek(&c->out);
 	if (!(c->end.flags & CHILD_LATE) && store_raced(out)) {
-		int64_t const age = store_stale(call->notes->tool->store,
+		int64_t const age = store_stale(member_registry_store(call->notes->tool->members),
 		                                session->refs[MEMBER_BRANCH_FINDINGS], "findings");
 		if (age) {
 			mcp_slot_tellf(slot, TOOL_FAILED, "Could not record the finding. The findings of %s "
@@ -2056,14 +2056,13 @@ static_assert(ON_CLIENTS == (1U << FINDINGS_ACTIONS) - (1U << FINDINGS_LIST),
               "the actions of clients are the last actions, from list on");
 
 /* Returns the definition of the findings tool for clients, which can only
- * list, show and expand. @p service is the struct notes_tool, whose
- * registry names the agent.
+ * list, show and expand. @p service is the registry of the members, which
+ * names the agent.
  */
 static struct json_object *
 findings_definition (void const *service)
 {
-	struct notes_tool const *tool = service;
-	struct member_session const *session = member_registry_session(tool->members);
+	struct member_session const *session = member_registry_session(service);
 	char const *agent = session ? session->agent.name : "";
 	dstr_auto about = DSTR_INIT;
 	dstr_auto id = DSTR_INIT;
@@ -2097,8 +2096,7 @@ findings_definition (void const *service)
 struct json_object *
 findings_upstream_definition (void const *service)
 {
-	struct notes_tool const *tool = service;
-	struct member_session const *session = member_registry_session(tool->members);
+	struct member_session const *session = member_registry_session(service);
 	char const *agent = session ? session->agent.name : "";
 	dstr_auto about = DSTR_INIT;
 	dstr_auto id = DSTR_INIT;

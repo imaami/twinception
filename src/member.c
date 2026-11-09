@@ -1066,6 +1066,12 @@ member_registry_session (struct member_registry const *registry)
 	return registry ? &registry->session : nullptr;
 }
 
+struct store const *
+member_registry_store (struct member_registry const *registry)
+{
+	return registry ? registry->store : nullptr;
+}
+
 void
 member_registry_report (struct member_registry const *registry)
 {

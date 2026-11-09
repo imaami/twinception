@@ -341,6 +341,12 @@ member_registry_destroy (struct member_registry **p_registry);
 extern struct member_session const *
 member_registry_session (struct member_registry const *registry);
 
+/** Returns the repository of the session of @p registry, or nullptr for a
+ *  null @p registry.
+ */
+extern struct store const *
+member_registry_store (struct member_registry const *registry);
+
 /** Logs @p registry at LOG_INFO as two lists: the session, with its
  *  repository, ID, name, agent, service, that every member can read the
  *  evidence of the findings, and the number of notebooks of the old layout

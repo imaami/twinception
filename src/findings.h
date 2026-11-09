@@ -37,11 +37,11 @@
  * or an update cites again, and the prompt of an ask call
  * (findings_prompt()) are read the same way.
  *
- * The tool is a built-in plugin without a part. Its service is the struct
- * notes_tool of the notes tool (src/notes_tool.h), which contains the
- * store and the registry of the members. A call uses the part of the notes
- * tool on its loop (mcp_slot_notes()), the struct notes_tool_loop with the
- * table of the members.
+ * The tool is a built-in plugin without a part. Its service is the
+ * registry of the members (src/member.h). A call uses the part of the
+ * notes tool on its loop (mcp_slot_notes()), the struct notes_tool_loop
+ * with the service of the notes tool, which contains the registry, and
+ * the table of the members.
  */
 #ifndef ASKAI_SRC_FINDINGS_H_
 #define ASKAI_SRC_FINDINGS_H_
@@ -61,7 +61,8 @@ struct plugin;
 extern struct plugin const findings_plugin;
 
 /** Returns the definition of the findings tool for the turns. @p service
- *  is the struct notes_tool. Returns nullptr if out of memory.
+ *  is the registry of the members (src/member.h). Returns nullptr if out
+ *  of memory.
  */
 extern struct json_object *
 findings_upstream_definition (void const *service);

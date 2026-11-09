@@ -696,8 +696,8 @@ askai_shared_make (struct askai_shared *s,
 	if (!(s->ledger = ledger_create(&e)) || !(s->roster = roster_create(&e)) ||
 	    !(s->web = web_create(&e)))
 		return e;
-	if (!(s->st = mcp_static_create(cfg, s->manual, s->tasks, s->git, s->store, s->members,
-	                                s->ledger, s->roster, s->web, s->journal, &e)))
+	if (!(s->st = mcp_static_create(cfg, s->manual, s->tasks, s->git, s->members, s->ledger,
+	                                s->roster, s->web, s->journal, &e)))
 		return e;
 	s->hub = httpd_hub_create(n, &e);
 	return e;

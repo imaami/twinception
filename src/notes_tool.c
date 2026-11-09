@@ -499,9 +499,9 @@ notes_tool_run (struct mcp_slot *slot,
 	if (fetch & FETCH_REVISION)
 		cmd = notes_revision_words(&call->revision, call->notebook, cmd, words);
 	call->fetch = fetch;
-	call->child = store_spawn(call->loop->tool->store, slot, cmd,
-	                          cmd == STORE_REFS ? member_list : words, call->repo,
-	                          buf_peek(in), &e);
+	struct store const *store = member_registry_store(call->loop->tool->members);
+	call->child = store_spawn(store, slot, cmd, cmd == STORE_REFS ? member_list : words,
+	                          call->repo, buf_peek(in), &e);
 	buf_fini(in);
 	if (!call->child)
 		notes_tool_failed(slot, e);
@@ -687,7 +687,8 @@ notes_tool_unadded (struct mcp_slot *slot)
 		notes_tool_unwritten(slot);
 		return;
 	}
-	int64_t const age = store_stale(call->loop->tool->store, call->repo, "notes");
+	int64_t const age = store_stale(member_registry_store(call->loop->tool->members),
+	                                call->repo, "notes");
 	if (age) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "Could not write the note. Your notebook %s has "
 		               "been locked for %" PRId64 " s.", call->self.name, age);
