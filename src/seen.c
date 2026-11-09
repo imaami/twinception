@@ -340,18 +340,82 @@ seen_keep_number (struct seen **p_seen,
 	return 0;
 }
 
+/* Drops the items of @p seen. The storage of the array stays. */
+static void
+seen_items_drop (struct seen *seen)
+{
+	for (size_t i = 0; i < seen->items.n; ++i)
+		dstr_cleanup(&seen->items.items[i].record);
+	seen->items.n = 0;
+}
+
+/* Returns true if @p obj is an object of the array of seen_items_json(). */
+static bool
+seen_item_valid (struct json_object *obj)
+{
+	struct json_object *blobs = jb_get(obj, "blobs");
+	uint64_t bytes;
+	uint64_t shown;
+	uint64_t turn;
+	if (jb_uint_checked(jb_get(obj, "bytes"), TOOL_OUTPUT_MAX, &bytes) || !bytes ||
+	    jb_uint_checked(jb_get(obj, "shown"), bytes, &shown) ||
+	    jb_uint_checked(jb_get(obj, "turn"), UINT32_MAX, &turn) || (turn && shown < bytes) ||
+	    !jb_text(jb_get(obj, "id"), 1, SEEN_ID - 1, nullptr).data ||
+	    !jb_text(jb_get(obj, "record"), 1, TOOL_TEXT_MAX, nullptr).data ||
+	    jb_len(blobs) != array_size((struct seen_item){}.blobs))
+		return false;
+	for (size_t k = 0; k < array_size((struct seen_item){}.blobs); ++k) {
+		struct cstr_view const hex = jb_view(jb_at(blobs, k));
+		if (!hex.data || (hex.len && !oid_valid(hex)))
+			return false;
+	}
+	return true;
+}
+
 int
-seen_resume (struct seen **p_seen,
-             uint32_t      calls)
+seen_resume (struct seen              **p_seen,
+             uint32_t                   calls,
+             struct json_object const  *items)
 {
 	if (!p_seen)
 		return EFAULT;
+	size_t const n = jb_len(items);
+	if (items && (!json_object_is_type(items, json_type_array) || n > SEEN_ITEMS))
+		return EINVAL;
+	for (size_t i = 0; i < n; ++i)
+		if (!seen_item_valid(jb_at(items, i)))
+			return EINVAL;
 	int e = 0;
 	if (!*p_seen)
 		*p_seen = seen_create(&e);
-	if (!e)
-		(*p_seen)->resumed = calls;
-	return e;
+	if (e)
+		return e;
+	struct seen *seen = *p_seen;
+	seen_items_drop(seen);
+	e = util_grow(seen->items.items, seen->items.cap, n);
+	for (size_t i = 0; !e && i < n; ++i) {
+		struct json_object *obj = jb_at(items, i);
+		struct json_object *blobs = jb_get(obj, "blobs");
+		struct cstr_view const id = jb_view(jb_get(obj, "id"));
+		struct seen_item *it = &seen->items.items[seen->items.n++];
+		*it = (struct seen_item){
+			.record = DSTR_INIT,
+			.bytes  = (uint32_t)jb_uint(jb_get(obj, "bytes"), 0),
+			.shown  = (uint32_t)jb_uint(jb_get(obj, "shown"), 0),
+			.turn   = (uint32_t)jb_uint(jb_get(obj, "turn"), 0),
+		};
+		memcpy(it->id, id.data, id.len);
+		/* seen_item_valid() checked the git IDs, and "" is no name. */
+		for (size_t k = 0; k < array_size(it->blobs); ++k)
+			(void)oid_init(&it->blobs[k], jb_view(jb_at(blobs, k)));
+		e = cstr_view_store(jb_view(jb_get(obj, "record")), &it->record);
+	}
+	if (e) {
+		seen_items_drop(seen);
+		return e;
+	}
+	seen->resumed = calls;
+	return 0;
 }
 
 enum seen_where
@@ -479,6 +543,36 @@ seen_shown (struct seen *seen,
 	}
 }
 
+struct json_object *
+seen_items_json (struct seen const *seen,
+                 int               *e)
+{
+	if (!e)
+		return nullptr;
+	struct json_object *list = json_object_new_array();
+	if (!seen) {
+		*e = list ? 0 : ENOMEM;
+		return list;
+	}
+	for (size_t i = 0; list && i < seen->items.n; ++i) {
+		struct seen_item const *it = &seen->items.items[i];
+		if (!it->shown)
+			continue;
+		struct json_object *blobs = jb_push_or_free(jb_list(json_object_new_string(
+			it->blobs[0].hex)), json_object_new_string(it->blobs[1].hex));
+		list = jb_push_or_free(list, jb_object(
+			"id", json_object_new_string(it->id),
+			"record", jb_string(cstr_view_dstr(&it->record)),
+			"blobs", blobs,
+			"bytes", json_object_new_uint64(it->bytes),
+			"shown", json_object_new_uint64(it->shown),
+			"turn", json_object_new_uint64(it->turn),
+			nullptr));
+	}
+	*e = list ? 0 : ENOMEM;
+	return list;
+}
+
 struct seen_item const *
 seen_find_item (struct seen const *seen,
                 struct cstr_view   id)
@@ -549,9 +643,7 @@ seen_clear (struct seen *seen)
 		return;
 	while (seen->n)
 		seen_drop(seen);
-	for (size_t i = 0; i < seen->items.n; ++i)
-		dstr_cleanup(&seen->items.items[i].record);
-	seen->items.n = 0;
+	seen_items_drop(seen);
 	seen->numbers.n = 0;
 	seen->head = 0;
 	seen->resumed = 0;

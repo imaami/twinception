@@ -371,7 +371,7 @@ test_cite (void)
 	seen_destroy(&seen);
 
 	/* Calls before a restart. */
-	CHECK(!seen_resume(&seen, 10));
+	CHECK(!seen_resume(&seen, 10, nullptr));
 	later.seen = seen;
 	later.call = 12;
 	refused(&later, "c5", true, "c5 is not kept, because askai restarted after c5. askai keeps "

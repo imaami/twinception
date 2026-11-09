@@ -6109,7 +6109,7 @@ mcp_recover_back (struct loop           *loop,
 		e = ENOMEM;
 	/* The calls of the earlier turns were made before the restart. */
 	if (!e)
-		e = seen_resume(&req->seen, (uint32_t)jb_int(jb_get(state, "calls"), 0));
+		e = seen_resume(&req->seen, (uint32_t)jb_int(jb_get(state, "calls"), 0), nullptr);
 	struct handle who = {};
 	if (!e)
 		e = loop_handle(loop, req, HANDLE_REQ, &who);

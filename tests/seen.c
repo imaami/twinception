@@ -3,16 +3,18 @@
  *  drops by count and by bytes, the newest call, calls too large to store,
  *  the offset of the window of a replayed result, the reuse of the storage,
  *  the calls that the ring stores as numbers, the calls before a restart,
- *  the lookup of a call by number, and the evidence items that results
- *  showed.
+ *  the lookup of a call by number, the evidence items that results
+ *  showed, and the items in the journal state of a resumed ask call.
  */
 #include <errno.h>
+#include <json-c/json.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "buf.h"
 #include "check.h"
 #include "dstr.h"
+#include "jb.h"
 #include "seen.h"
 #include "tool.h"
 
@@ -543,7 +545,7 @@ test_number (void)
 	seen_destroy(&seen);
 
 	/* A resumed ask call. askai made calls 1 to 10 before it restarted. */
-	CHECK(!seen_resume(&seen, 10));
+	CHECK(!seen_resume(&seen, 10, nullptr));
 	CHECK(seen && !seen->n && seen->resumed == 10);
 	found(seen, 1, SEEN_RESTARTED, __LINE__);
 	found(seen, 10, SEEN_RESTARTED, __LINE__);
@@ -558,7 +560,7 @@ test_number (void)
 	found(seen, 11, SEEN_DROPPED, __LINE__);
 	found(seen, 9, SEEN_RESTARTED, __LINE__);
 	/* A ring that exists keeps its calls when the resume point changes. */
-	CHECK(!seen_resume(&seen, 11) && seen->resumed == 11 && seen->n == SEEN_CALLS);
+	CHECK(!seen_resume(&seen, 11, nullptr) && seen->resumed == 11 && seen->n == SEEN_CALLS);
 	found(seen, 11, SEEN_RESTARTED, __LINE__);
 	/* seen_clear() forgets the restart. */
 	seen_clear(seen);
@@ -568,7 +570,7 @@ test_number (void)
 
 	/* Null arguments. */
 	CHECK(seen_keep_number(nullptr, 1, 1) == EFAULT);
-	CHECK(seen_resume(nullptr, 1) == EFAULT);
+	CHECK(seen_resume(nullptr, 1, nullptr) == EFAULT);
 }
 
 /* Returns an item with the ID @p id, the record @p record and the blobs
@@ -703,6 +705,142 @@ test_items (void)
 	dstr_cleanup(&c.record);
 }
 
+/* Returns the result of seen_resume() with an array of the one item
+ * @p item (JSON text) for the ring @p seen. A refusal leaves the items of
+ * the ring as they were.
+ */
+static int
+resume_with (struct seen **seen,
+             char const   *item)
+{
+	char text[512];
+	snprintf(text, sizeof text, "[%s]", item);
+	struct json_object *items = json_tokener_parse(text);
+	CHECK(items);
+	int const e = seen_resume(seen, 9, items);
+	json_object_put(items);
+	return e;
+}
+
+/* seen_items_json() writes the items that results showed for the journal
+ * state, and seen_resume() reads them back into the ring of a resumed ask
+ * call, where they count as seen and their pages go on.
+ */
+static void
+test_resume_items (void)
+{
+	struct seen *seen = nullptr;
+	int e = -1;
+	struct json_object *none = seen_items_json(nullptr, &e);
+	CHECK(!e && json_object_is_type(none, json_type_array) && !jb_len(none));
+	json_object_put(none);
+	CHECK(!seen_items_json(nullptr, nullptr));
+	/* a is shown whole in turn 3, b in part, and c not at all. */
+	struct seen_item a = item_of("cuh#2/1", "{\"item\":1}");
+	struct seen_item b = item_of("cuh#2/2", "{\"item\":2}");
+	struct seen_item c = item_of("bro#7/1", "{\"item\":3}");
+	b.blobs[0] = (struct oid){};
+	CHECK(!seen_print(&seen, &a, 5, 0, 50) && !seen_print(&seen, &b, 5, 50, 250) &&
+	      !seen_print(&seen, &c, 5, 300, 10));
+	seen_shown(seen, 5, 0, 70, 3);
+	CHECK(seen->items.n == 3);
+	struct json_object *items = seen_items_json(seen, &e);
+	CHECK(!e && jb_len(items) == 2);
+	SAME(jb_wire(items).data, jb_wire(items).len,
+	     "[{\"id\":\"cuh#2/1\",\"record\":\"{\\\"item\\\":1}\",\"blobs\":[\""
+	     "1111111111111111111111111111111111111111\",\"2222222222222222222222222222222222222222\"],"
+	     "\"bytes\":50,\"shown\":50,\"turn\":3},{\"id\":\"cuh#2/2\",\"record\":\""
+	     "{\\\"item\\\":2}\",\"blobs\":[\"\",\"2222222222222222222222222222222222222222\"],"
+	     "\"bytes\":250,\"shown\":20,\"turn\":0}]");
+
+	/* A resumed ask call gets the items, with no call that prints them. */
+	struct seen *resumed = nullptr;
+	CHECK(!seen_resume(&resumed, 7, items));
+	CHECK(resumed && resumed->resumed == 7 && !resumed->n && resumed->items.n == 2);
+	struct seen_item const *x = seen_find_item(resumed, CSTR_VIEW("cuh#2/1"));
+	struct seen_item const *y = seen_find_item(resumed, CSTR_VIEW("cuh#2/2"));
+	CHECK(!seen_find_item(resumed, CSTR_VIEW("bro#7/1")));
+	CHECK(x && x->bytes == 50 && x->shown == 50 && x->turn == 3 && !x->call && !x->at &&
+	      !memcmp(x->blobs, a.blobs, sizeof a.blobs));
+	SAME(dstr_get(&x->record), dstr_len(&x->record), "{\"item\":1}");
+	CHECK(y && y->bytes == 250 && y->shown == 20 && !y->turn && !oid_len(&y->blobs[0]) &&
+	      oid_equal(&y->blobs[1], &b.blobs[1]));
+	struct dstr text = DSTR_INIT;
+	CHECK(!seen_notice(resumed, &text));
+	SAME(dstr_get(&text), dstr_len(&text), "[askai: Evidence items that you expanded in this ask "
+	     "call: cuh#2/1. These items count as seen.]\n");
+	/* The pages of b go on from the bytes shown before the restart. */
+	CHECK(!seen_print(&resumed, &b, 9, 0, 250) && y->shown == 20 && y->call == 9);
+	seen_shown(resumed, 9, 20, 4000, 4);
+	CHECK(y->shown == 250 && y->turn == 4);
+	/* The items replace the items of a ring, and no items drop them. */
+	CHECK(!seen_resume(&resumed, 8, items) && resumed->items.n == 2 && resumed->resumed == 8);
+	CHECK(!seen_resume(&resumed, 8, nullptr) && !resumed->items.n);
+	CHECK(!seen_resume(&resumed, 8, items) && resumed->items.n == 2);
+
+	/* Refusals leave the ring as it was. */
+	static char const *const bad[] = {
+		"{}",
+		"1",
+		"{\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":1,\"turn\":0}",
+		"{\"id\":\"\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":1,"
+		"\"turn\":0}",
+		"{\"id\":\"x\",\"record\":\"\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":1,"
+		"\"turn\":0}",
+		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\"],\"bytes\":1,\"shown\":1,"
+		"\"turn\":0}",
+		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",\"12\"],\"bytes\":1,\"shown\":1,"
+		"\"turn\":0}",
+		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",7],\"bytes\":1,\"shown\":1,"
+		"\"turn\":0}",
+		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":0,\"shown\":0,"
+		"\"turn\":0}",
+		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":2,"
+		"\"turn\":0}",
+		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":2,\"shown\":1,"
+		"\"turn\":1}",
+		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":1,"
+		"\"turn\":-1}",
+		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":16777217,"
+		"\"shown\":1,\"turn\":0}",
+	};
+	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
+		if (resume_with(&resumed, bad[i]) != EINVAL || resumed->items.n != 2 ||
+		    resumed->resumed != 8) {
+			++failures;
+			fprintf(stderr, "%s:%d: accepted %s\n", __FILE__, __LINE__, bad[i]);
+		}
+	}
+	char id[SEEN_ID + 64];
+	memset(id, 'x', SEEN_ID);
+	snprintf(id + SEEN_ID, sizeof id - SEEN_ID, "\"");
+	char item[SEEN_ID + 128];
+	snprintf(item, sizeof item, "{\"id\":\"%s,\"record\":\"r\",\"blobs\":[\"\",\"\"],"
+	         "\"bytes\":1,\"shown\":1,\"turn\":0}", id);
+	CHECK(resume_with(&resumed, item) == EINVAL);
+	id[SEEN_ID - 1] = '"';
+	id[SEEN_ID] = '\0';
+	snprintf(item, sizeof item, "{\"id\":\"%s,\"record\":\"r\",\"blobs\":[\"\",\"\"],"
+	         "\"bytes\":1,\"shown\":1,\"turn\":0}", id);
+	CHECK(!resume_with(&resumed, item) && resumed->items.n == 1 &&
+	      strlen(resumed->items.items[0].id) == SEEN_ID - 1);
+	/* At most SEEN_ITEMS items. */
+	struct json_object *many = json_object_new_array();
+	for (size_t i = 0; i <= SEEN_ITEMS; ++i)
+		CHECK(!jb_push(many, json_object_get(jb_at(items, 0))));
+	CHECK(seen_resume(&resumed, 1, many) == EINVAL && resumed->items.n == 1);
+	CHECK(!json_object_array_del_idx(many, 0, 1) && !seen_resume(&resumed, 1, many) &&
+	      resumed->items.n == SEEN_ITEMS);
+	json_object_put(many);
+	json_object_put(items);
+	seen_destroy(&resumed);
+	seen_destroy(&seen);
+	dstr_cleanup(&text);
+	dstr_cleanup(&a.record);
+	dstr_cleanup(&b.record);
+	dstr_cleanup(&c.record);
+}
+
 int
 main (void)
 {
@@ -711,5 +849,6 @@ main (void)
 	test_drop();
 	test_number();
 	test_items();
+	test_resume_items();
 	return check_report("seen");
 }

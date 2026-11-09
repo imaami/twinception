@@ -41,7 +41,10 @@
  * (seen_shown()). An item counts as seen from the turn after the one that
  * showed its last byte. The pages of an item can come from several calls,
  * in order. The ring stores the JSON of each such item and the git IDs of
- * its archive files, so that a finding can cite the item again.
+ * its archive files, so that a finding can cite the item again. The journal
+ * state of an ask call contains the items (seen_items_json()), and
+ * seen_resume() puts them into the ring of the resumed ask call. The calls
+ * are not in the journal.
  */
 #ifndef ASKAI_SRC_SEEN_H_
 #define ASKAI_SRC_SEEN_H_
@@ -342,14 +345,19 @@ seen_keep_number (struct seen **p_seen,
                   uint32_t      number,
                   uint32_t      tool);
 
-/** Records in the ring @p *p_seen that askai made @p calls calls of the
- *  ask call before it restarted, as a resumed ask call starts. The ring is
- *  allocated if @p *p_seen is nullptr. Returns 0, EFAULT for a null
- *  @p p_seen, or ENOMEM.
+/**
+ * Records in the ring @p *p_seen that askai made @p calls calls of the ask
+ * call before it restarted, as a resumed ask call starts. The items of
+ * @p items, the array of seen_items_json() in the journal state of the ask
+ * call, replace the items of the ring. @p items is nullptr for no items.
+ * The ring is allocated if @p *p_seen is nullptr. Returns 0, EFAULT for a
+ * null @p p_seen, EINVAL with the ring unchanged if @p items is not such an
+ * array, or ENOMEM with no items in the ring.
  */
 extern int
-seen_resume (struct seen **p_seen,
-             uint32_t      calls);
+seen_resume (struct seen              **p_seen,
+             uint32_t                   calls,
+             struct json_object const  *items);
 
 /**
  * Finds the call @p number in @p seen. Stores the call in @p *call and
@@ -409,6 +417,16 @@ seen_shown (struct seen *seen,
             size_t       skip,
             size_t       window,
             uint32_t     turn);
+
+/** Returns the items of @p seen that results showed, whole or in part, for
+ *  the journal state of the ask call: a JSON array with an object for each
+ *  item, with the members id, record, blobs (two git IDs or ""), bytes,
+ *  shown and turn. The array is empty for a null @p seen. Returns nullptr
+ *  with ENOMEM in @p *e if out of memory, and nullptr for a null @p e.
+ */
+extern struct json_object *
+seen_items_json (struct seen const *seen,
+                 int               *e);
 
 /** Returns the item of @p seen with the ID @p id, such as cuh#2/1, or
  *  nullptr for no such item or a null @p seen.
