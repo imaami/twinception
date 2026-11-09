@@ -720,11 +720,11 @@ call, so the scheduler's fairness holds
 turn by turn. The caller gets the answer, and a second text that lists the calls the turns made, with their arguments (but
 those of `notes`, `compact` and `findings`, which are the model's own) and the bytes of
 each output. If the turns wrote a note or a finding, the second text ends
-with the conversation, such as "bro wrote in the session. Give
-conversation 6817…6172 to continue the work." An `ask_ai` call with
-`conversation` continues the conversation, and one without starts a new
-conversation. The argument `conversation` needs `notes`. The argument
-`thread` of earlier versions is refused, and the refusal names
+with a line such as "bro wrote in the session." With `notes`, the line
+ends with the conversation: "bro wrote in the session. Give conversation
+6817…6172 to continue the work." An `ask_ai` call with `conversation`
+continues the conversation, and one without starts a new conversation. The argument `conversation` needs `notes`. The
+argument `thread` of earlier versions is refused, and the refusal names
 `conversation`. With a `progressToken`, its notifications say the turn and the
 tool being called. `--max-turns` (32) bounds the turns: the turn before the
 last is told so, and a last answer that still calls tools ends the call, as an
@@ -765,18 +765,18 @@ run, but their numbers are used. The notices about the context, the last
 turn, jobs and timers follow the number. A background job resumed after a
 restart numbers its next calls after the calls of its checkpoint.
 
-`askai` stores the last 64 calls of each ask call in memory, at most 16 MiB
-of them, and drops the oldest call first. For each call, `askai` stores the
-arguments as the model sent them, the result as the model got it, and for a
-`git` `read` or a `code` `describe` the commit, the path and the lines that
-the result showed whole. A call larger than 4 MiB is stored as its number
-only. A `findings` or `compact` call is not stored, because it shows
-nothing that a finding can cite. `askai` also stores the evidence items
-of findings that `findings` printed to the turns, at most 1024, with the
-bytes of each item that results showed. The stored calls and items are
-dropped when the ask call ends. After a compaction, a notice names the
-stored calls that a finding can cite, and another the items that the
-turns saw.
+If the turns get `findings`, `askai` stores the last 64 calls of each ask
+call in memory, at most 16 MiB of them, and drops the oldest call first.
+For each call, `askai` stores the arguments as the model sent them, the
+result as the model got it, and for a `git` `read` or a `code` `describe`
+the commit, the path and the lines that the result showed whole. A call
+larger than 4 MiB is stored as its number only. A `findings` or `compact`
+call is not stored, because it shows nothing that a finding can cite.
+`askai` also stores the evidence items of findings that `findings` printed
+to the turns, at most 1024, with the bytes of each item that results
+showed. The stored calls and items are dropped when the ask call ends.
+After a compaction, a notice names the stored calls that a finding can
+cite, and another the items that the turns saw.
 
 The model need not wait for a slow call: `background` runs a call of `man`,
 `git` or a plugin tool that allows it, as a job, and answers at once with
@@ -872,10 +872,12 @@ is made. If another ask call of the agent changes the branch at the same
 time, `askai` reads the branch again and makes the commit again, three
 commits at most. Each ask call and each compaction starts with the open
 findings of the agent in the conversation, newest first, within a tool's
-window, and the number of its open findings in other conversations. The notice
-after the summary of a compaction states that the system text, the
-client's messages and the prompt stay word for word, so the model need
-not copy the task into notes. Nothing prunes the branch or the archive
+window, and the number of its open findings in other conversations, also
+for turns that get `findings` without `notes`. Such an ask call starts a
+new conversation, because the argument `conversation` requires notes.
+The notice after the summary of a compaction states that the system text,
+the client's messages and the prompt stay word for word, so the model
+need not copy the task into notes. Nothing prunes the branch or the archive
 files of the evidence, just as nothing prunes notes. Run `git gc` as
 needed. The review records of earlier versions under `refs/review/`
 stay where they are, and `askai` no longer reads them.

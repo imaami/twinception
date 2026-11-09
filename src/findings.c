@@ -44,7 +44,7 @@ enum findings_action : uint8_t {
 #define FINDINGS_ACTION_ENUM(id, ...) FINDINGS_##id,
 	FINDINGS_ACTION_LIST(FINDINGS_ACTION_ENUM)
 #undef FINDINGS_ACTION_ENUM
-	FINDINGS_ACTIONS
+	FINDINGS_ACTIONS,
 };
 
 /* The names of the actions. */
@@ -93,9 +93,8 @@ enum findings_stage : uint8_t {
 	STAGE_FILES,    /* ls-tree lists the files of the findings of a branch */
 	STAGE_READ,     /* cat-file reads files of findings */
 	STAGE_COMMIT,   /* fast-import commits an add or an update */
-	STAGE_RECORDS,  /* cat-file reads the files of the findings whose items
+	STAGE_BLOBS,    /* cat-file reads the archive files of the items that
 	                   the evidence cites again */
-	STAGE_BLOBS,    /* cat-file reads the archive files of those items */
 	STAGE_ARCHIVE,  /* cat-file reads the archive files of the items that
 	                   expand prints */
 	STAGE_CALLS,    /* log lists the calls of the newest commits of the
@@ -128,13 +127,16 @@ struct findings_branch {
 	char       author[MEMBER_NAME];
 };
 
-/* A file of a finding that cat-file reads: its size, the number of the
- * finding and the index of its branch.
+/* A file of a finding that cat-file reads: its size, its author, the
+ * number of the finding and its blob ID. cat-file reads a file without a
+ * blob ID by its path on the branch of the author.
  */
 struct findings_file {
-	uint64_t bytes;   /* from ls-tree, or 0 if unknown */
-	uint32_t number;
-	uint32_t branch;
+	uint64_t    bytes;   /* from ls-tree, or 0 if unknown */
+	char const *author;  /* in call->branches, call->cites, or
+	                        call->author */
+	uint32_t    number;
+	struct oid  id;      /* from ls-tree, or no name */
 };
 
 /* The flags of a reference to an item of a finding (struct findings_cite). */
@@ -175,9 +177,6 @@ struct findings_call {
 	                                     archive of the evidence, and the
 	                                     file of the finding while git
 	                                     commits */
-	struct buf             read;      /* the input of cat-file for the
-	                                     files of wanted that cat-file has
-	                                     not read yet */
 	struct dstr            out;       /* the result of the call */
 	struct dstr            claim;     /* the claim argument, without the
 	                                     notices at its end */
@@ -194,6 +193,14 @@ struct findings_call {
 	                                     read its output */
 	struct json_object    *args;      /* the arguments of the call, while
 	                                     log lists the calls (STAGE_CALLS) */
+	struct notes_tool const *tool;    /* the service */
+	struct dstr           *prompt;    /* the text that askai adds to the
+	                                     prompt, for the call of
+	                                     findings_prompt(), else nullptr */
+	tool_step_fn          *then;      /* the step that goes on with the ask
+	                                     call after findings_prompt() */
+	size_t                 most;      /* the most bytes of lines of findings
+	                                     for findings_prompt() */
 	size_t                 archive;   /* bytes of files that are the
 	                                     archive */
 	uint32_t               number;    /* N of id, or of a new finding */
@@ -221,12 +228,13 @@ struct findings_call {
 static_assert(EVIDENCE_REFS == 16 && EVIDENCE_EXTERNAL == 8 && TOOL_TEXT_MAX == 4U << 20,
               "update the texts in this file that say 16 items, 8 items or 4 MiB");
 
-/* Returns the session of the findings and the agent of askai in it. */
+/* Returns the session of the findings of @p call and the agent of askai in
+ * it.
+ */
 static struct member_session const *
-findings_session (struct mcp_slot const *slot)
+findings_session (struct findings_call const *call)
 {
-	struct notes_tool const *tool = mcp_slot_part(slot);
-	return member_registry_session(tool->members);
+	return member_registry_session(call->tool->members);
 }
 
 /* Returns the name of the tool with the registry ID @p tool, for
@@ -246,7 +254,6 @@ findings_call_destroy (struct findings_call **p_call)
 	struct findings_call *call = *p_call;
 	store_drop(&call->child);
 	buf_fini(&call->files);
-	buf_fini(&call->read);
 	dstr_cleanup(&call->out);
 	dstr_cleanup(&call->claim);
 	finding_change_fini(&call->change);
@@ -268,7 +275,7 @@ findings_call_destroy (struct findings_call **p_call)
 	*p_call = nullptr;
 }
 
-static void
+void
 findings_drop (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
@@ -298,24 +305,59 @@ findings_end (struct mcp_slot *slot,
 	mcp_slot_finish(slot, failed ? TOOL_FAILED : 0);
 }
 
-/* Ends the call in @p slot after the error @p e of a step: refuses the
- * call with the text @p why for EINVAL with a refusal, else fails the call
- * with @p e.
+/* Ends the reading of the open findings for the prompt in @p slot
+ * (findings_prompt()). Appends the notices of the open findings of the
+ * agent in the conversation of the ask call, or for @p e EINVAL the notice
+ * that the findings could not be read, and then seen_notice(). Then frees
+ * the call and calls call->then, or ends the ask call with ENOMEM.
  */
 static void
-findings_stop (struct mcp_slot *slot,
-               int              e,
-               char const      *why)
+findings_prompted (struct mcp_slot *slot,
+                   int              e)
 {
-	if (e == EINVAL && *why)
-		mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
+	struct findings_call const *call = *mcp_slot_own(slot);
+	struct dstr *d = call->prompt;
+	tool_step_fn *then = call->then;
+	/* After the prompt or a summary, the notices start a paragraph. */
+	int r = 0;
+	if (!cstr_view_ends(cstr_view_dstr(d), CSTR_VIEW("\n")))
+		r = cstr_view_cat(CSTR_VIEW("\n\n"), d);
+	if (e)
+		r = r ? r : cstr_view_cat(CSTR_VIEW("[askai: Your findings could not be read.]\n"), d);
 	else
+		r = r ? r : finding_notice(call->findings.items, call->findings.n,
+		                           &mcp_slot_member(slot)->conversation, call->most, d);
+	r = r ? r : seen_notice(mcp_slot_seen(slot), d);
+	findings_drop(slot);
+	if (r)
+		mcp_slot_fail(slot, r);
+	else
+		then(slot);
+}
+
+/* Ends the call in @p slot after the error @p e of a step. For EINVAL with
+ * a refusal @p why, the function refuses the call with @p why, or appends
+ * the notice that the findings could not be read to the prompt for the
+ * call of findings_prompt() (findings_prompted()). For any other error, it
+ * fails the call with @p e.
+ */
+static void
+findings_stop (struct mcp_slot  *slot,
+               int               e,
+               struct cstr_view  why)
+{
+	struct findings_call const *call = *mcp_slot_own(slot);
+	if (e != EINVAL || !why.len)
 		findings_end(slot, e, true);
+	else if (call->prompt)
+		findings_prompted(slot, e);
+	else
+		mcp_slot_tell(slot, why, TOOL_FAILED);
 }
 
 /* Spawns git for @p stage with the command @p cmd, the words @p words and
  * the input @p in, which the function frees. A commit updates @p ref. If
- * git cannot start, the call fails with the reason.
+ * git cannot start, the call is refused with the reason (findings_stop()).
  */
 static void
 findings_run (struct mcp_slot   *slot,
@@ -326,21 +368,21 @@ findings_run (struct mcp_slot   *slot,
               struct buf        *in)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	struct notes_tool const *tool = mcp_slot_part(slot);
 	int e = 0;
 	call->stage = stage;
 	child_destroy(&call->child);
-	call->child = store_spawn(tool->store, slot, cmd, words, ref, buf_peek(in), &e);
+	call->child = store_spawn(call->tool->store, slot, cmd, words, ref, buf_peek(in), &e);
 	buf_fini(in);
 	if (call->child)
 		return;
 	char buf[96];
-	mcp_slot_tell(slot, child_spawn_why(e, "git", buf, sizeof buf), TOOL_FAILED);
+	findings_stop(slot, EINVAL, child_spawn_why(e, "git", buf, sizeof buf));
 }
 
 /* Runs git to list the branches of findings that the action of the call
  * in @p slot needs: every branch for list and show, else the branch of the
- * agent, and for add the branch of the author of about.
+ * agent, and for add the branch of the author of about. The call of
+ * findings_prompt() lists only the branch of the agent.
  */
 static void
 findings_load (struct mcp_slot *slot)
@@ -348,9 +390,9 @@ findings_load (struct mcp_slot *slot)
 	struct findings_call *call = *mcp_slot_own(slot);
 	char own[FINDING_REF];
 	char other[FINDING_REF];
-	finding_ref(findings_session(slot)->agent, own);
+	finding_ref(findings_session(call)->agent, own);
 	char const *words[STORE_WORDS] = { "--format=%(objectname) %(refname)", own };
-	if (call->action == FINDINGS_LIST || call->action == FINDINGS_SHOW) {
+	if (call->action == FINDINGS_SHOW || (call->action == FINDINGS_LIST && !call->prompt)) {
 		words[1] = every_branch;
 	} else if (*call->about) {
 		char author[MEMBER_NAME];
@@ -367,7 +409,6 @@ findings_load (struct mcp_slot *slot)
 	call->batch = 0;
 	call->last = 0;
 	call->flags &= CALL_CITED;
-	buf_clear(&call->read);
 	for (size_t i = 0; i < call->findings.n; ++i)
 		finding_fini(&call->findings.items[i]);
 	call->findings.n = 0;
@@ -376,41 +417,56 @@ findings_load (struct mcp_slot *slot)
 
 /* Runs git to read the next files of call->wanted, from call->done on, as
  * many as one output of git holds (store_read_fits()), at least one. The
- * input of cat-file for those files moves out of call->read.
+ * input of cat-file names each file by its blob ID, or else by its path on
+ * the branch of its author.
  */
 static void
 findings_read_batch (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	struct span const lines = buf_peek(&call->read);
+	struct buf in = {};
 	uint64_t used = 0;
-	size_t end = 0;
 	uint32_t k = call->done;
-	while (k < call->wanted.n && end < lines.len) {
-		bool const fits = store_read_fits(&used, call->wanted.items[k].bytes);
+	int e = 0;
+	while (!e && k < call->wanted.n) {
+		struct findings_file const *w = &call->wanted.items[k];
+		bool const fits = store_read_fits(&used, w->bytes);
 		if (!fits && k > call->done)
 			break;
-		unsigned char const *nl = memchr(lines.ptr + end, '\n', lines.len - end);
-		end = nl ? (size_t)(nl - lines.ptr) + 1 : lines.len;
+		if (oid_len(&w->id)) {
+			e = buf_printf(&in, "%s\n", w->id.hex);
+		} else {
+			char ref[FINDING_REF];
+			char path[FINDING_FILE];
+			finding_ref(w->author, ref);
+			finding_path(w->number, path);
+			e = notes_read_input(&in, ref, cstr_view(path));
+		}
 		++k;
 		/* A file that does not fit is read alone. */
 		if (!fits)
 			break;
 	}
-	if (k == call->done) {
-		findings_end(slot, EIO, true);
-		return;
-	}
-	call->batch = k;
-	struct buf in = {};
-	int const e = buf_put(&in, lines.ptr, end, end);
-	buf_consume(&call->read, end);
 	if (e) {
 		buf_fini(&in);
 		findings_end(slot, e, true);
 		return;
 	}
+	call->batch = k;
 	findings_run(slot, STAGE_READ, STORE_READ, nullptr, nullptr, &in);
+}
+
+/* Appends @p file to the files that cat-file reads for @p call. Returns 0
+ * or ENOMEM.
+ */
+static int
+findings_queue (struct findings_call *call,
+                struct findings_file  file)
+{
+	int const e = util_grow(call->wanted.items, call->wanted.cap, call->wanted.n + 1);
+	if (!e)
+		call->wanted.items[call->wanted.n++] = file;
+	return e;
 }
 
 /* Runs git to read the finding of the id of expand by the path of its
@@ -420,23 +476,12 @@ static void
 findings_read_one (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	char ref[FINDING_REF];
-	char path[FINDING_FILE];
-	finding_ref(call->author, ref);
-	finding_path(call->number, path);
-	int e = util_grow(call->branches.items, call->branches.cap, 1);
-	e = e ? e : util_grow(call->wanted.items, call->wanted.cap, 1);
-	e = e ? e : buf_printf(&call->read, "%s:%s\n", ref, path);
+	int const e = findings_queue(call, (struct findings_file){ .author = call->author,
+	                                                           .number = call->number });
 	if (e) {
 		findings_end(slot, e, true);
 		return;
 	}
-	call->branches.items[0] = (struct findings_branch){};
-	(void)util_format(call->branches.items[0].author, sizeof call->branches.items[0].author,
-	                  "%s", call->author);
-	call->branches.n = 1;
-	call->wanted.items[0] = (struct findings_file){ .number = call->number };
-	call->wanted.n = 1;
 	findings_read_batch(slot);
 }
 
@@ -520,7 +565,7 @@ findings_got_files (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct findings_branch const *b = &call->branches.items[call->branch];
-	char const *agent = findings_session(slot)->agent;
+	char const *agent = findings_session(call)->agent;
 	char about[MEMBER_NAME];
 	uint32_t about_number = 0;
 	if (*call->about)
@@ -540,20 +585,16 @@ findings_got_files (struct mcp_slot *slot)
 			call->flags |= CALL_ABOUT;
 		if (call->number == n && !strcmp(b->author, call->author))
 			call->flags |= CALL_FOUND;
-		if (!findings_wants(call, b->author, n))
-			continue;
-		e = util_grow(call->wanted.items, call->wanted.cap, call->wanted.n + 1);
-		e = e ? e : buf_printf(&call->read, "%s\n", file.id.hex);
-		if (!e)
-			call->wanted.items[call->wanted.n++] = (struct findings_file){ file.bytes, n,
-			                                                               call->branch };
-	}
-	if (e == EIO) {
-		mcp_slot_tell(slot, unread, TOOL_FAILED);
-		return;
+		if (findings_wants(call, b->author, n))
+			e = findings_queue(call, (struct findings_file){
+				.bytes  = file.bytes,
+				.author = b->author,
+				.number = n,
+				.id     = file.id,
+			});
 	}
 	if (e) {
-		findings_end(slot, e, true);
+		findings_stop(slot, e == EIO ? EINVAL : e, unread);
 		return;
 	}
 	++call->branch;
@@ -562,8 +603,9 @@ findings_got_files (struct mcp_slot *slot)
 
 /* Handles the output of cat-file: the files of call->wanted from
  * call->done to call->batch, in order. A file that askai cannot read, or
- * whose ID is not the ID of its path, fails the call. Then cat-file reads
- * the next files, or the action goes on after the last file.
+ * whose finding is not the one of its author and number, refuses the call.
+ * Then cat-file reads the next files, or the action goes on after the last
+ * file.
  */
 static void
 findings_got_read (struct mcp_slot *slot)
@@ -571,35 +613,30 @@ findings_got_read (struct mcp_slot *slot)
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct span out = buf_peek(&call->child->out);
 	loop_work(mcp_slot_loop(slot), LOOP_PARSE, out.len);
-	if (util_grow(call->findings.items, call->findings.cap, call->wanted.n)) {
-		findings_end(slot, ENOMEM, true);
-		return;
-	}
-	for (size_t i = call->done; i < call->batch; ++i) {
-		struct findings_file const w = call->wanted.items[i];
-		char const *author = call->branches.items[w.branch].author;
+	char why[256] = "";
+	int e = util_grow(call->findings.items, call->findings.cap, call->wanted.n);
+	for (size_t i = call->done; !e && i < call->batch; ++i) {
+		struct findings_file const *w = &call->wanted.items[i];
 		struct finding *f = &call->findings.items[call->findings.n++];
 		*f = finding();
 		struct oid id;
 		struct span data;
-		int e = store_object_next(&out, &id, &data);
+		e = store_object_next(&out, &id, &data);
 		if (!e)
 			e = finding_parse(f, (struct cstr_view){ (char const *)data.ptr, data.len });
-		if (e == ENOMEM) {
-			findings_end(slot, e, true);
-			return;
-		}
-		/* expand with id reads the file of the finding by its path. */
-		if (e == ENOENT) {
-			mcp_slot_tellf(slot, TOOL_FAILED, "No finding has the id %s#%" PRIu32 ". list "
-			               "shows the findings.", author, w.number);
-			return;
-		}
-		if (e || f->number != w.number || strcmp(f->author, author)) {
-			mcp_slot_tellf(slot, TOOL_FAILED, "Could not read finding %s#%" PRIu32 ": "
-			               "unknown format.", author, w.number);
-			return;
-		}
+		/* expand with id and the findings of the items that the evidence
+		 * cites again read the file of a finding by its path. */
+		if (e == ENOENT)
+			e = util_refuse(why, sizeof why, "No finding has the id %s#%" PRIu32 ". list "
+			                "shows the findings.", w->author, w->number);
+		else if (e != ENOMEM &&
+		         (e || f->number != w->number || strcmp(f->author, w->author)))
+			e = util_refuse(why, sizeof why, "Could not read finding %s#%" PRIu32 ": "
+			                "unknown format.", w->author, w->number);
+	}
+	if (e) {
+		findings_stop(slot, e, cstr_view(why));
+		return;
 	}
 	call->done = call->batch;
 	if (call->done < call->wanted.n) {
@@ -664,7 +701,7 @@ findings_committed (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	char const *agent = findings_session(slot)->agent;
+	char const *agent = findings_session(call)->agent;
 	char id[FINDING_ID];
 	finding_id_format(agent, call->number, id);
 	if (child_ok(c)) {
@@ -691,10 +728,9 @@ findings_committed (struct mcp_slot *slot)
 	}
 	struct span const out = buf_peek(&c->out);
 	if (!(c->end.flags & CHILD_LATE) && store_raced(out)) {
-		struct notes_tool const *tool = mcp_slot_part(slot);
 		char ref[FINDING_REF];
 		finding_ref(agent, ref);
-		int64_t const age = store_stale(tool->store, ref, "findings");
+		int64_t const age = store_stale(call->tool->store, ref, "findings");
 		if (age) {
 			mcp_slot_tellf(slot, TOOL_FAILED, "Could not record the finding. The findings of %s "
 			               "have been locked for %" PRId64 " s.", agent, age);
@@ -750,7 +786,7 @@ findings_commit (struct mcp_slot *slot,
                  struct finding  *f)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	struct member_session const *session = findings_session(slot);
+	struct member_session const *session = findings_session(call);
 	char ref[FINDING_REF];
 	finding_ref(session->agent, ref);
 	struct oid tip = {};
@@ -928,7 +964,7 @@ findings_expanded (struct mcp_slot *slot,
                    struct span      out)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	char const *agent = findings_session(slot)->agent;
+	char const *agent = findings_session(call)->agent;
 	bool const turn = !mcp_slot_from_client(slot);
 	struct seen_item shown = { .record = DSTR_INIT };
 	char more_id[SEEN_ID] = "";
@@ -1033,7 +1069,7 @@ static void
 findings_expand (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	char const *agent = findings_session(slot)->agent;
+	char const *agent = findings_session(call)->agent;
 	struct buf in = {};
 	uint64_t bytes = 0;
 	bool full = false;
@@ -1088,20 +1124,42 @@ findings_got_archive (struct mcp_slot *slot)
 
 static void findings_cite_records (struct mcp_slot *slot);
 
+/* Returns the finding @p number of @p author that @p call read, or
+ * nullptr.
+ */
+static struct finding *
+findings_find (struct findings_call const *call,
+               char const                 *author,
+               uint32_t                    number)
+{
+	for (size_t i = 0; i < call->findings.n; ++i)
+		if (call->findings.items[i].number == number &&
+		    !strcmp(call->findings.items[i].author, author))
+			return &call->findings.items[i];
+	return nullptr;
+}
+
 /* Does the action of the call in @p slot once git has read what it needs:
- * writes the list or the finding, or commits an add or an update. An add
- * or an update whose evidence cites items of findings again first reads
- * those items (findings_cite_records()), and then comes back here.
+ * writes the list or the finding, or commits an add or an update. For the
+ * call of findings_prompt(), it appends the open findings to the prompt
+ * (findings_prompted()). An add or an update whose evidence cites items of
+ * findings again first reads those items (findings_cite_records()), and
+ * then comes back here.
  */
 static void
 findings_act (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	struct member_session const *session = findings_session(slot);
+	struct member_session const *session = findings_session(call);
 	char id[FINDING_ID];
 	finding_id_format(call->author, call->number, id);
 	child_destroy(&call->child);
 	finding_sort(call->findings.items, call->findings.n);
+	if (call->prompt) {
+		findings_prompted(slot, 0);
+		return;
+	}
+	char const *missing = nullptr;
 	switch (call->action) {
 	case FINDINGS_LIST:
 		findings_end(slot, finding_list(call->findings.items, call->findings.n, session->name,
@@ -1117,19 +1175,18 @@ findings_act (struct mcp_slot *slot)
 		return;
 	case FINDINGS_SHOW:
 	case FINDINGS_UPDATE:
-		if (!(call->flags & CALL_FOUND)) {
-			mcp_slot_tellf(slot, TOOL_FAILED, "No finding has the id %s. list shows the "
-			               "findings.", id);
-			return;
-		}
+		if (!(call->flags & CALL_FOUND))
+			missing = id;
 		break;
 	case FINDINGS_ADD:
-		if (*call->about && !(call->flags & CALL_ABOUT)) {
-			mcp_slot_tellf(slot, TOOL_FAILED, "No finding has the id %s. list shows the "
-			               "findings.", call->about);
-			return;
-		}
+		if (*call->about && !(call->flags & CALL_ABOUT))
+			missing = call->about;
 		break;
+	}
+	if (missing) {
+		mcp_slot_tellf(slot, TOOL_FAILED, "No finding has the id %s. list shows the findings.",
+		               missing);
+		return;
 	}
 	/* The items that the evidence cites again are read after the checks
 	 * above, so that the refusal of an item that the turns had not seen
@@ -1138,11 +1195,7 @@ findings_act (struct mcp_slot *slot)
 		findings_cite_records(slot);
 		return;
 	}
-	struct finding *f = nullptr;
-	for (size_t i = 0; i < call->findings.n && !f; ++i)
-		if (call->findings.items[i].number == call->number &&
-		    !strcmp(call->findings.items[i].author, call->author))
-			f = &call->findings.items[i];
+	struct finding *f = findings_find(call, call->author, call->number);
 	if (call->action == FINDINGS_SHOW) {
 		if (!f) {
 			findings_end(slot, EIO, true);
@@ -1319,7 +1372,7 @@ findings_cite_end (struct mcp_slot        *slot,
 		}
 	}
 	if (e) {
-		findings_stop(slot, e, why);
+		findings_stop(slot, e, cstr_view(why));
 		return;
 	}
 	call->archive = buf_peek(&call->files).len;
@@ -1426,94 +1479,57 @@ findings_cite_blobs (struct mcp_slot *slot)
 	findings_run(slot, STAGE_BLOBS, STORE_READ, nullptr, nullptr, &in);
 }
 
-/* Handles the output of cat-file for the files of the findings of the
- * items that the evidence cites again and the ring does not store: the
- * record of each item. Then reads the archive files that the call needs.
- */
-static void
-findings_got_records (struct mcp_slot *slot)
-{
-	struct findings_call *call = *mcp_slot_own(slot);
-	struct span out = buf_peek(&call->child->out);
-	loop_work(mcp_slot_loop(slot), LOOP_PARSE, out.len);
-	struct finding f = finding();
-	char why[256] = "";
-	int e = 0;
-	for (size_t i = 0; !e && i < call->cites.n; ++i) {
-		struct findings_cite *cite = &call->cites.items[i];
-		if (dstr_len(&cite->record))
-			continue;
-		struct evidence_ref const *ref = &cite->ref;
-		struct oid id;
-		struct span data;
-		e = store_object_next(&out, &id, &data);
-		if (e == ENOENT) {
-			e = util_refuse(why, sizeof why, "No finding has the id %s#%" PRIu32 ". list shows "
-			                "the findings.", ref->author, ref->number);
-			break;
-		}
-		if (!e)
-			e = finding_parse(&f, (struct cstr_view){ (char const *)data.ptr, data.len });
-		if (e == ENOMEM)
-			break;
-		if (e || f.number != ref->number || strcmp(f.author, ref->author)) {
-			e = util_refuse(why, sizeof why, "Could not read finding %s#%" PRIu32 ": unknown "
-			                "format.", ref->author, ref->number);
-			break;
-		}
-		struct evidence const *item = findings_item(&f, ref->item);
-		if (!item) {
-			e = util_refuse(why, sizeof why, "No evidence item has the id %s#%" PRIu32 "/%"
-			                PRIu32 ". show with id %s#%" PRIu32 " lists the items.",
-			                ref->author, ref->number, ref->item, ref->author, ref->number);
-			break;
-		}
-		e = findings_record(item, &cite->record);
-	}
-	finding_fini(&f);
-	if (e) {
-		findings_stop(slot, e, why);
-		return;
-	}
-	findings_cite_blobs(slot);
-}
-
-/* Runs git to read the files of the findings of the items that the
- * evidence of the call in @p slot cites again and that the ring does not
- * store. Without such items, the call goes on with their archive files.
+/* Makes the record of each item that the evidence of the call in @p slot
+ * cites again and that the ring does not store, from the findings that the
+ * call read. If such a finding is not read yet, cat-file first reads the
+ * file of the finding by its path (findings_read_batch()), and the call
+ * comes back here through findings_act(). Then the call reads the archive
+ * files of the items (findings_cite_blobs()).
  */
 static void
 findings_cite_records (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	struct buf in = {};
+	size_t const read = call->wanted.n;
+	char why[256] = "";
 	int e = 0;
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
-		struct findings_cite const *cite = &call->cites.items[i];
+		struct findings_cite *cite = &call->cites.items[i];
+		struct evidence_ref const *ref = &cite->ref;
 		if (dstr_len(&cite->record))
 			continue;
-		char ref[FINDING_REF];
-		char path[FINDING_FILE];
-		finding_ref(cite->ref.author, ref);
-		finding_path(cite->ref.number, path);
-		e = buf_printf(&in, "%s:%s\n", ref, path);
+		struct finding const *f = findings_find(call, ref->author, ref->number);
+		struct evidence const *item = f ? findings_item(f, ref->item) : nullptr;
+		/* cat-file reads a finding that the call has not read yet, once. */
+		bool queued = f != nullptr;
+		for (size_t k = read; !queued && k < call->wanted.n; ++k)
+			queued = call->wanted.items[k].number == ref->number &&
+			         !strcmp(call->wanted.items[k].author, ref->author);
+		if (item)
+			e = findings_record(item, &cite->record);
+		else if (f)
+			e = util_refuse(why, sizeof why, "No evidence item has the id %s#%" PRIu32 "/%"
+			                PRIu32 ". show with id %s#%" PRIu32 " lists the items.",
+			                ref->author, ref->number, ref->item, ref->author,
+			                ref->number);
+		else if (!queued)
+			e = findings_queue(call, (struct findings_file){ .author = ref->author,
+			                                                 .number = ref->number });
 	}
 	if (e) {
-		buf_fini(&in);
-		findings_end(slot, e, true);
+		findings_stop(slot, e, cstr_view(why));
 		return;
 	}
-	if (!buf_peek(&in).len) {
-		findings_cite_blobs(slot);
+	if (call->wanted.n > read) {
+		findings_read_batch(slot);
 		return;
 	}
-	findings_run(slot, STAGE_RECORDS, STORE_READ, nullptr, nullptr, &in);
+	findings_cite_blobs(slot);
 }
 
 static void findings_got_calls (struct mcp_slot *slot);
 
-/* Handles the output of the git of the call in @p slot. */
-static void
+void
 findings_step (struct mcp_slot *slot)
 {
 	static tool_step_fn *const steps[] = {
@@ -1521,14 +1537,13 @@ findings_step (struct mcp_slot *slot)
 		[STAGE_FILES]   = findings_got_files,
 		[STAGE_READ]    = findings_got_read,
 		[STAGE_COMMIT]  = findings_committed,
-		[STAGE_RECORDS] = findings_got_records,
 		[STAGE_BLOBS]   = findings_got_blobs,
 		[STAGE_ARCHIVE] = findings_got_archive,
 		[STAGE_CALLS]   = findings_got_calls,
 	};
 	struct findings_call const *call = *mcp_slot_own(slot);
 	if (!(STAGES_FAILED >> call->stage & 1) && !child_ok(call->child)) {
-		mcp_slot_tell(slot, unread, TOOL_FAILED);
+		findings_stop(slot, EINVAL, unread);
 		return;
 	}
 	steps[call->stage](slot);
@@ -1670,7 +1685,7 @@ findings_evidence (struct mcp_slot    *slot,
 			                   "such as c7, lines such as c7:120-140, or an evidence item such "
 			                   "as %s#5/2.", i,
 			                   (int)util_clip(text.data, text.len, 80), text.data ? text.data : "",
-			                   findings_session(slot)->agent);
+			                   findings_session(call)->agent);
 		struct evidence *item = &c->evidence.items[c->evidence.n++];
 		*item = evidence();
 		if (ref.form == EVIDENCE_REF_ITEM || ref.form == EVIDENCE_REF_ITEM_LINES) {
@@ -1712,7 +1727,7 @@ findings_args (struct mcp_slot    *slot,
                size_t              len)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	char const *agent = findings_session(slot)->agent;
+	char const *agent = findings_session(call)->agent;
 	char const *action = findings_actions[call->action].data;
 	struct json_object_iter it;
 	json_object_object_foreachC(args, it) {
@@ -1799,7 +1814,7 @@ findings_begin (struct mcp_slot    *slot,
 	char why[1024] = "";
 	int const e = findings_args(slot, args, why, sizeof why);
 	if (e) {
-		findings_stop(slot, e, why);
+		findings_stop(slot, e, cstr_view(why));
 		return;
 	}
 	if (call->action == FINDINGS_EXPAND && *call->author)
@@ -1860,6 +1875,27 @@ findings_got_calls (struct mcp_slot *slot)
 	findings_begin(slot, call->args);
 }
 
+/* Allocates a call of @p action with the service @p tool. Returns the
+ * call, or nullptr with ENOMEM in @p *e.
+ */
+static struct findings_call *
+findings_call_create (struct notes_tool const *tool,
+                      uint8_t                  action,
+                      int                     *e)
+{
+	struct findings_call *call = malloc(sizeof *call);
+	*e = call ? 0 : ENOMEM;
+	if (call)
+		*call = (struct findings_call){
+			.out    = DSTR_INIT,
+			.claim  = DSTR_INIT,
+			.change = finding_change(),
+			.tool   = tool,
+			.action = action,
+		};
+	return call;
+}
+
 /* Starts a call of the findings tool in @p slot with the arguments
  * @p args. An add or an update of the turn that askai resumes after a
  * restart may have made its commit before the restart, so git first lists
@@ -1871,18 +1907,14 @@ findings_start (struct mcp_slot    *slot,
 {
 	if (mcp_slot_offset(slot, args))
 		return;
-	struct findings_call *call = malloc(sizeof *call);
+	uint8_t const action = (uint8_t)cstr_view_index(findings_actions, FINDINGS_ACTIONS,
+	                                                jb_view(jb_get(args, "action")));
+	int e;
+	struct findings_call *call = findings_call_create(mcp_slot_part(slot), action, &e);
 	if (!call) {
-		mcp_slot_fail(slot, ENOMEM);
+		mcp_slot_fail(slot, e);
 		return;
 	}
-	*call = (struct findings_call){
-		.out    = DSTR_INIT,
-		.claim  = DSTR_INIT,
-		.change = finding_change(),
-		.action = (uint8_t)cstr_view_index(findings_actions, FINDINGS_ACTIONS,
-		                                   jb_view(jb_get(args, "action"))),
-	};
 	*mcp_slot_own(slot) = call;
 	/* Clients can only read the findings. */
 	bool const client = mcp_slot_from_client(slot);
@@ -1897,7 +1929,7 @@ findings_start (struct mcp_slot    *slot,
 	}
 	if ((ON_ADD | ON_UPDATE) >> call->action & 1 && mcp_slot_rerun(slot)) {
 		char ref[FINDING_REF];
-		finding_ref(findings_session(slot)->agent, ref);
+		finding_ref(findings_session(call)->agent, ref);
 		char const *const words[] = { ref };
 		call->args = args;
 		findings_run(slot, STAGE_CALLS, STORE_CALLS, words, nullptr, &(struct buf){});
@@ -2021,64 +2053,24 @@ struct plugin const findings_plugin = {
 	}}
 };
 
-int
-findings_read_input (struct buf  *in,
-                     struct span *files)
+void
+findings_prompt (struct notes_tool const *service,
+                 struct mcp_slot         *slot,
+                 struct dstr             *prompt,
+                 size_t                   most,
+                 tool_step_fn            *then)
 {
-	uint64_t used = 0;
-	while (files->len) {
-		struct span rest = *files;
-		struct notes_file file;
-		int e = notes_file_next(&rest, &file);
-		if (e)
-			return e;
-		if (!finding_path_number((struct cstr_view){ (char const *)file.name.ptr,
-		                                             file.name.len })) {
-			*files = rest;
-			continue;
-		}
-		bool const fits = store_read_fits(&used, file.bytes);
-		if (!fits && buf_peek(in).len)
-			return 0;
-		if (buf_printf(in, "%s\n", file.id.hex))
-			return ENOMEM;
-		*files = rest;
-		/* A file that does not fit is read alone. */
-		if (!fits)
-			return 0;
+	int e;
+	struct findings_call *call = findings_call_create(service, FINDINGS_LIST, &e);
+	if (!call) {
+		mcp_slot_fail(slot, e);
+		return;
 	}
-	return 0;
-}
-
-int
-findings_notice (struct span         out,
-                 struct hexid const *conversation,
-                 size_t              most,
-                 struct dstr        *d)
-{
-	UTIL_ARRAY(struct finding) list = {};
-	int e = 0;
-	while (!e && out.len) {
-		struct oid id;
-		struct span data;
-		if (store_object_next(&out, &id, &data))
-			e = EIO;
-		else
-			e = util_grow(list.items, list.cap, list.n + 1);
-		if (e)
-			break;
-		struct finding *f = &list.items[list.n++];
-		*f = finding();
-		e = finding_parse(f, (struct cstr_view){ (char const *)data.ptr, data.len });
-		if (e == EINVAL)
-			e = EIO;
-	}
-	if (!e) {
-		finding_sort(list.items, list.n);
-		e = finding_notice(list.items, list.n, conversation, most, d);
-	}
-	for (size_t i = 0; i < list.n; ++i)
-		finding_fini(&list.items[i]);
-	free(list.items);
-	return e;
+	*mcp_slot_own(slot) = call;
+	/* The list of the agent, with the open findings as its result. */
+	(void)util_format(call->author, sizeof call->author, "%s", findings_session(call)->agent);
+	call->prompt = prompt;
+	call->then = then;
+	call->most = most;
+	findings_load(slot);
 }

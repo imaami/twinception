@@ -15,8 +15,6 @@
 #include "cstr_view.h"
 #include "datauri.h"
 #include "dstr.h"
-#include "finding.h"
-#include "findings.h"
 #include "hexid.h"
 #include "jb.h"
 #include "list.h"
@@ -53,10 +51,6 @@ enum notes_tool_fetch : uint32_t {
 	FETCH_DIFF,            /* compare two revisions of a note */
 	FETCH_STAT,            /* count the lines that a write changed */
 	FETCH_GREP,            /* find the lines that match a pattern */
-	FETCH_FINDINGS,        /* list the files of the findings of the agent
-	                          for the prompt of an ask call */
-	FETCH_OPEN,            /* read the findings of the agent for the prompt
-	                          of an ask call */
 	FETCH_REBASE,          /* check the note of a write that raced another
 	                          writer, at the new tip */
 	FETCH_KIND = 15,       /* the mask of the kinds */
@@ -153,22 +147,15 @@ enum {
 };
 
 /* The state of one notes call. It is the own word of the call's slot. An
- * ask call has one in its own slot while git reads the notes and the
- * findings of the agent for its prompt. For the findings, notebook is the
- * branch of the findings of the agent.
+ * ask call has one in its own slot while git reads the notes of the agent
+ * for its prompt.
  */
 struct notes_tool_call {
 	struct buf              file;      /* the input of git, such as the
 	                                      pattern of a search, until
 	                                      notes_tool_run() passes it to
 	                                      git, or the file part of a write,
-	                                      until the call ends. For the
-	                                      prompt, the files of the findings
-	                                      of the agent that git has not
-	                                      read yet. */
-	struct buf              found;     /* the output of each git that read
-	                                      files of the findings of the
-	                                      agent for the prompt */
+	                                      until the call ends */
 	struct dstr             out;       /* the output of a tool call.
 	                                      notes_tool_end() lends it to
 	                                      the slot. */
@@ -186,10 +173,6 @@ struct notes_tool_call {
 	                                      askai adds to the prompt. */
 	tool_step_fn           *then;      /* the step that goes on with the ask
 	                                      call after the prompt notes */
-	struct hexid const     *conversation;  /* the conversation whose open
-	                                          findings of the agent git
-	                                          reads after the prompt notes,
-	                                          or nullptr */
 	size_t                  upload;    /* bytes of the file that attach
 	                                      uploads */
 	size_t                  note;      /* bytes of the note that attach
@@ -371,7 +354,6 @@ notes_tool_loop_put (struct notes_tool_loop  *loop,
 	member_table_cancel(&call->wait);
 	store_drop(&call->child);
 	buf_fini(&call->file);
-	buf_fini(&call->found);
 	if (atomic_load_explicit(&buf_pressure, memory_order_relaxed) != BUF_EASY) {
 		notes_tool_call_destroy(p_call);
 		return;
@@ -411,23 +393,14 @@ notes_tool_agent (struct notes_tool_call *call)
 
 /* Releases the notes call in @p slot, the ask call's own slot, after git
  * has read the notes for the prompt. If @p e is not 0, mcp_slot_fail() ends
- * the ask call with @p e. Otherwise, if call->conversation is set, git
- * first lists the findings of the agent on the branch of the findings, the
- * notebook of the call from then on. Then the function calls call->then,
- * which goes on with the ask call.
+ * the ask call with @p e. Otherwise the function calls call->then, which
+ * goes on with the ask call.
  */
 static void
 notes_tool_then (struct mcp_slot *slot,
                  int              e)
 {
-	struct notes_tool_call *call = *mcp_slot_own(slot);
-	if (!e && call->conversation) {
-		finding_ref(notes_tool_session(call)->agent, call->notebook);
-		(void)util_text_store(&call->revision.file, CSTR_VIEW("findings"));
-		child_destroy(&call->child);
-		notes_tool_run(slot, FETCH_FINDINGS, &(struct buf){}, 0);
-		return;
-	}
+	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	tool_step_fn *then = call->then;
 	notes_tool_drop(slot);
 	if (e)
@@ -437,12 +410,12 @@ notes_tool_then (struct mcp_slot *slot,
 }
 
 /* Handles the error @p e of spawning git for the call in @p slot. For a
- * compaction, for the newest note, for the members and the findings of a
- * prompt and for the lines of a write, the step runs with no child, as if
- * git had failed. The ask call then goes on without those notes or
- * findings or with the members that the table lists, and the write's
- * result without those lines. A call of the notes tool, and the list for
- * the start of an ask call, end with the error.
+ * compaction, for the newest note, for the members of a prompt and for the
+ * lines of a write, the step runs with no child, as if git had failed. The
+ * ask call then goes on without those notes or with the members that the
+ * table lists, and the write's result without those lines. A call of the
+ * notes tool, and the list for the start of an ask call, end with the
+ * error.
  */
 static void
 notes_tool_failed (struct mcp_slot *slot,
@@ -459,8 +432,6 @@ notes_tool_failed (struct mcp_slot *slot,
 	case FETCH_NEWEST:
 	case FETCH_COMPACT:
 	case FETCH_STAT:
-	case FETCH_FINDINGS:
-	case FETCH_OPEN:
 		notes_tool_fetch_step(call->fetch)->out(slot);
 		return;
 	case FETCH_RESUME:
@@ -573,15 +544,12 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
                         struct dstr            *prompt,
                         enum notes_tool_prompt  what,
                         size_t                  most,
-                        struct hexid const     *conversation,
                         tool_step_fn           *then)
 {
 	struct notes_tool_call *call = notes_tool_loop_take(loop, slot, prompt);
 	if (!call)
 		return;
-	struct member_call *member = mcp_slot_member(slot);
 	call->then = then;
-	call->conversation = conversation;
 	call->most = most;
 	notes_tool_agent(call);
 	call->book = call->self;
@@ -592,14 +560,10 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
 		return;
 	}
 	call->first = FETCH_RESUME;
-	int e = hexid_make(&member->ask);
-	if (e) {
-		notes_tool_then(slot, e);
-		return;
-	}
 	/* The asker of an ask call whose turns get the notes becomes a member. */
 	call->fetch = FETCH_PROMPT;
-	if (member_table_claim(loop->members, &member->login, &call->wait) == EINPROGRESS) {
+	if (member_table_claim(loop->members, &mcp_slot_member(slot)->login,
+	                       &call->wait) == EINPROGRESS) {
 		call->flags |= CALL_LOGIN;
 		(void)mcp_slot_park(slot);
 		return;
@@ -1680,96 +1644,6 @@ notes_tool_resumed (struct mcp_slot *slot)
 	}
 }
 
-/* Ends the findings of the agent in the prompt of the ask call in @p slot:
- * appends the notices of the open findings of the agent in the
- * conversation, from @p out, the outputs of git that read the files of the
- * findings. If
- * @p e is EIO, git could not read the findings, and the notice says so.
- * Then the ask call goes on (notes_tool_then()).
- */
-static void
-notes_tool_findings (struct mcp_slot *slot,
-                     struct span      out,
-                     int              e)
-{
-	struct notes_tool_call *call = *mcp_slot_own(slot);
-	if (!e)
-		e = findings_notice(out, call->conversation, call->most, call->text);
-	loop_work(mcp_slot_loop(slot), LOOP_PARSE, out.len);
-	if (e == EIO)
-		e = cstr_view_cat(CSTR_VIEW("[askai: Your findings could not be read.]\n"), call->text);
-	call->conversation = nullptr;
-	notes_tool_then(slot, e);
-}
-
-/* Runs git to read the next files of the findings of the agent for the
- * prompt of an ask call, from the files in call->file, as many as fit in
- * one output of git (findings_read_input()). Once git has read every file,
- * the notices follow from the outputs in call->found.
- */
-static void
-notes_tool_open (struct mcp_slot *slot)
-{
-	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct span files = buf_peek(&call->file);
-	size_t const listed = files.len;
-	struct buf in = {};
-	int const e = findings_read_input(&in, &files);
-	buf_consume(&call->file, listed - files.len);
-	if (!e && buf_peek(&in).len) {
-		child_destroy(&call->child);
-		notes_tool_run(slot, FETCH_OPEN, &in, 0);
-		return;
-	}
-	buf_fini(&in);
-	notes_tool_findings(slot, buf_peek(&call->found), e);
-}
-
-/* Handles the list of the files of the findings of the agent for the
- * prompt of an ask call, which call->file stores while git reads the
- * files. A branch without findings, which git cannot list (exit status
- * 128), results in the notice that the agent has no open findings.
- */
-static void
-notes_tool_found (struct mcp_slot *slot)
-{
-	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct child const *c = call->child;
-	int e = 0;
-	if (child_ok(c)) {
-		struct span const out = buf_peek(&c->out);
-		e = buf_put(&call->file, out.ptr, out.len, SIZE_MAX);
-	} else if (!c || !notes_tool_none(c)) {
-		e = EIO;
-	}
-	if (e) {
-		notes_tool_findings(slot, (struct span){}, e);
-		return;
-	}
-	notes_tool_open(slot);
-}
-
-/* Handles the output of git that read files of the findings of the agent
- * for the prompt of an ask call, and reads the next files.
- */
-static void
-notes_tool_opened (struct mcp_slot *slot)
-{
-	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct child const *c = call->child;
-	if (!child_ok(c)) {
-		notes_tool_findings(slot, (struct span){}, EIO);
-		return;
-	}
-	struct span const out = buf_peek(&c->out);
-	int const e = buf_put(&call->found, out.ptr, out.len, SIZE_MAX);
-	if (e) {
-		notes_tool_findings(slot, (struct span){}, e);
-		return;
-	}
-	notes_tool_open(slot);
-}
-
 static struct notes_tool_fetch_step const notes_tool_fetch_steps[] = {
 	[FETCH_CHECK]    = { notes_tool_checked,     STORE_CHECK,  0 },
 	[FETCH_ADD]      = { notes_tool_added,       STORE_COMMIT, 0 },
@@ -1783,8 +1657,6 @@ static struct notes_tool_fetch_step const notes_tool_fetch_steps[] = {
 	[FETCH_DIFF]     = { notes_tool_got_diff,    STORE_DIFF,   1 },
 	[FETCH_STAT]     = { notes_tool_stated,      STORE_STAT,   0 },
 	[FETCH_GREP]     = { notes_tool_got_grep,    STORE_GREP,   0 },
-	[FETCH_FINDINGS] = { notes_tool_found,       STORE_FILES,  0 },
-	[FETCH_OPEN]     = { notes_tool_opened,      STORE_READ,   0 },
 	[FETCH_REBASE]   = { notes_tool_rebased,     STORE_CHECK,  0 },
 };
 static_assert(array_size(notes_tool_fetch_steps) <= FETCH_KIND + 1);
@@ -1944,7 +1816,7 @@ notes_tool_logged_in (struct mcp_slot *slot)
 		return;
 	}
 	if (call->fetch & FETCH_PROMPT) {
-		mcp_slot_member(slot)->asker = call->wait.member;
+		(void)mcp_slot_asker(slot, &call->wait.member);
 		notes_tool_run(slot, FETCH_MEMBERS | FETCH_PROMPT, &(struct buf){}, 0);
 		return;
 	}

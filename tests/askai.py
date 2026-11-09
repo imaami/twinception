@@ -41,7 +41,7 @@ KEY_VARS = ("ASKAI_TOKEN", "ASKAI_API_KEY", "LLAMA_API_KEY", "OPENAI_API_KEY",
 # --notes.
 TURN_TOOLS = ["git", "compact", "background", "jobs", "wait", "timer"]
 # The notice about the task that askai writes after the summary of a
-# compaction if the turns are lent findings (mcp_req_compact_notes()).
+# compaction if the turns are lent findings (mcp_req_compact()).
 TASK = ("[askai: compaction does not change the task. The task is all text before "
         "the first [askai: ...] line: the system text, the earlier messages and the "
         "prompt. You do not need to copy the task into notes or a summary.]")
@@ -15800,9 +15800,62 @@ def check_findings_cases(binary, up):
             text = client(action="expand", id="cuh#1/1")
             assert text.endswith(":]\nchanged\n[askai: the stored material of cuh#1/1 does "
                                  "not match the recorded SHA-256.]\n"), text
+
+        # N1-1 without notes: turns lent findings but not notes, which the
+        # configuration denies to the upstream, get the open findings of
+        # the agent in a new conversation of the ask call. The commit of
+        # their finding names the ask call and the conversation, and after
+        # a compaction, the notices name the open findings and the calls of
+        # the ring.
+        path = f"{d}/askai.json"
+        with open(path, "w") as f:
+            json.dump(grouped({"url": up.url(), "upstream-tools": True, "agent": "eve",
+                               "git": [repo], "notes": session,
+                               "tools": {"upstream": {"deny": ["notes"]}}}), f)
+        os.chmod(path, 0o600)
+        tip = sh("rev-parse", "HEAD").stdout.strip()
+        with Askai(binary, "-c", path) as eve:
+            script[:] = [turn(("git", grep | {"revisions": [tip]})),
+                         turn(("findings", {"action": "add", "claim": "a.c declares b.",
+                                            "state": "verified", "evidence": ["c1"],
+                                            "reason": "c1 printed int b."})),
+                         turn(("compact", {"summary": "S"}))]
+            count = len(up.requests)
+            answer = eve.ask("Q")
+            first = up.requests[count]
+            assert [t["function"]["name"] for t in first["body"]["tools"]] == \
+                ["git", "findings", *TURN_TOOLS[1:]], first["body"]["tools"]
+            assert prompt(first) == "Q\n\n" + NO_OPEN, prompt(first)
+            [said] = results(up.requests[count + 2])
+            assert re.fullmatch(r"Added eve#1 \(verified\)\. Evidence eve#1/1 from call c1\. "
+                                r"Commit [0-9a-f]{8}\.", said), said
+            found = stored(1, "eve")
+            conversation = found.get("conversation", "")
+            ask = found["changes"][0].get("ask", "")
+            assert re.fullmatch("[0-9a-f]{32}", conversation) and \
+                re.fullmatch("[0-9a-f]{32}", ask), found
+            assert notes("log", "-1", "--format=%(trailers:key=Ask,valueonly,separator=%x2C)|"
+                         "%(trailers:key=Conversation,valueonly,separator=%x2C)",
+                         "refs/heads/agent/eve/findings").split() == \
+                [f"{ask}|{conversation}"], notes("log", "-1", "refs/heads/agent/eve/findings")
+            assert prompt(up.requests[count + 3]) == (
+                "Q\n\n[askai: you compacted the context. Your turns and the tool results since "
+                "the task are gone. Your summary:]\n\nS\n\n" + TASK + "\n\n[askai: Your "
+                "open findings in this conversation (id, state, claim):]\neve#1  verified   "
+                "a.c declares b.\n" + kept(1, 1) + "\n[askai: go on with the task.]"), \
+                prompt(up.requests[count + 3])
+            # The argument conversation needs notes, so the trace does not
+            # offer the conversation.
+            assert answer["content"][0]["text"] == "A" and \
+                answer["content"][1]["text"].endswith("\neve wrote in the session."), answer
+            refused = eve.ask("Q", conversation=conversation)
+            assert refused.get("isError") and text_of(refused) == \
+                "The conversation argument requires notes. The server stores no notes for " \
+                "your calls.", refused
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("findings cases: calls as evidence, stable IDs, any call verifies, shared findings, "
-          "stored bytes after a rewrite, the prompt notices, a changed archive: PASS")
+          "stored bytes after a rewrite, the prompt notices, a changed archive, findings "
+          "without notes: PASS")
 
 
 def check_tasks(binary, up):

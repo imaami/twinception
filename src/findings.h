@@ -29,24 +29,26 @@
  * that commit, and the call makes no second commit.
  *
  * git reads the files of findings in runs of cat-file whose output stays
- * within STORE_MAX bytes, so that any number of findings can be read.
+ * within STORE_MAX bytes, so that any number of findings can be read. The
+ * calls of the tool, the findings of the items that the evidence of an add
+ * or an update cites again, and the prompt of an ask call
+ * (findings_prompt()) are read the same way.
  *
  * The tool is a built-in plugin without a part. Its service is the struct
  * notes_tool of the notes tool (src/notes_tool.h), which contains the
- * store and the members. The notes tool adds the open findings of the
- * agent to the prompt of the turns (findings_read_input(),
- * findings_notice()).
+ * store and the members.
  */
 #ifndef ASKAI_SRC_FINDINGS_H_
 #define ASKAI_SRC_FINDINGS_H_
 
 #include <stddef.h>
 
-#include "buf.h"
+#include "tool.h"
 
 struct dstr;
-struct hexid;
 struct json_object;
+struct mcp_slot;
+struct notes_tool;
 struct plugin;
 
 /** The plugin of the findings tool, which is built into askai. Its
@@ -60,29 +62,37 @@ extern struct plugin const findings_plugin;
 extern struct json_object *
 findings_upstream_definition (void const *service);
 
-/**
- * Writes to @p in the input of STORE_READ for the next files of findings
- * in @p *files, the rest of the output of STORE_FILES for a branch of
- * findings and the path findings: as many files as fit in one output of
- * STORE_READ (store_read_fits()), at least one. Drops those files, and the
- * files that are not files of findings, from @p *files. Returns 0, with
- * @p in empty if no file of a finding is left, EIO for output that is not
- * that of STORE_FILES, or ENOMEM.
+/** Handles the output of git for the call in @p slot. This is the step()
+ *  of the findings kind. mcp_slot_ask_step() calls it while
+ *  findings_prompt() reads the open findings for the prompt.
  */
-extern int
-findings_read_input (struct buf  *in,
-                     struct span *files);
+extern tool_step_fn findings_step;
 
-/** Appends to @p d the notices of the open findings of the agent in the
- *  conversation @p conversation (finding_notice()), at most @p most bytes
- *  of lines of findings, from @p out, the outputs of STORE_READ for the
- *  inputs of findings_read_input(), one after another. Returns 0, EIO for
- *  output that is not the files of findings, or ENOMEM.
+/** Frees the findings call in @p slot. This is the drop() of the findings
+ *  kind, and of the ask kind while findings_prompt() reads.
  */
-extern int
-findings_notice (struct span         out,
-                 struct hexid const *conversation,
-                 size_t              most,
-                 struct dstr        *d);
+extern tool_drop_fn findings_drop;
+
+/**
+ * Appends to @p prompt, the text that askai adds to the prompt of the ask
+ * call in @p slot, the ask call's own slot, the notices of the open findings
+ * of the agent in the conversation of the ask call (finding_notice()), at
+ * most @p most bytes of lines of findings, and then the notice that names
+ * the calls of the ring of the ask call (seen_notice()). @p service is the
+ * struct notes_tool. git reads the files of the findings of the agent as
+ * for a call of the tool. The reading call is the own word of @p slot until
+ * the notices are in @p prompt. The notices start a paragraph of their own
+ * if @p prompt does not end with a line end. If git cannot read the
+ * findings, the function appends the notice "[askai: Your findings could
+ * not be read.]" instead of the open findings. Then the function calls
+ * @p then, which goes on with the ask call. For ENOMEM, mcp_slot_fail()
+ * ends the ask call instead.
+ */
+extern void
+findings_prompt (struct notes_tool const *service,
+                 struct mcp_slot         *slot,
+                 struct dstr             *prompt,
+                 size_t                   most,
+                 tool_step_fn            *then);
 
 #endif /* ASKAI_SRC_FINDINGS_H_ */

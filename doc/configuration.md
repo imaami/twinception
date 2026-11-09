@@ -400,12 +400,12 @@ A change can cite evidence, at most 16 references:
 | `cuh#2/1:161-165` | lines of the lines item `cuh#2/1`, at most 16 ranges |
 
 The number of a call is the number in the note of its result, such as
-`[askai: call c7]` (section [`context`](#context)). `askai` keeps the
-last 64 calls of an `ask_ai` call in memory, at most 16 MiB of them. A
-`findings` or `compact` call cannot be evidence, and `askai` does not
-store it. `external` names material outside `askai` with an exact hash
-of 40 or 64 hexadecimal digits, at most 8 items of at most 1 KiB, which
-`askai` does not store.
+`[askai: call c7]` (section [`context`](#context)). If the turns get
+`findings`, `askai` keeps the last 64 calls of an `ask_ai` call in memory,
+at most 16 MiB of them. A `findings` or `compact` call cannot be evidence,
+and `askai` does not store it. `external` names material outside `askai`
+with an exact hash of 40 or 64 hexadecimal digits, at most 8 items of at
+most 1 KiB, which `askai` does not store.
 `verified` and `disproved` need a `reason` and at least one reference
 that is not external. Each call that they cite must be of an earlier
 turn, and each item must be seen: a result of an earlier turn of the
@@ -452,10 +452,13 @@ the agent in the conversation, newest first, within the window of a tool
 result in a turn (section [`context`](#context)), and the number of the
 open findings of the agent in other conversations. After a compaction, a
 notice names the calls that a finding can cite, and another the items
-that the turns saw, at most 64 by ID. A notice after the
-summary of a compaction states that `askai` keeps the task word for word
-through every compaction: the system text, the messages of the client
-and the prompt. So the model need not copy the task into its notes. The
+that the turns saw, at most 64 by ID. The turns get these notices also
+when the upstream gets `findings` but not `notes`. Each `ask_ai` call then
+starts a new conversation, because the argument `conversation` requires
+notes. A notice after the summary of a compaction states that `askai`
+keeps the task word for word through every compaction: the system text,
+the messages of the client and the prompt. So the model need not copy the
+task into its notes. The
 series `askai_turn_tool_calls_total{tool="findings"}` counts the calls
 of `findings`. To turn the findings off, deny `findings` to the
 upstream:

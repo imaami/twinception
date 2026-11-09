@@ -476,8 +476,9 @@ enum mcp_slot_flag : uint16_t {
 };
 
 /* A tool call that a request runs. It is the client's call or a call of a
- * turn. The answer of an ask call is in req->self too, and the notes git
- * commands that an ask call runs for itself also use req->self.
+ * turn. The answer of an ask call is in req->self too, and the git commands
+ * that read the notes and the findings for the prompt of an ask call also
+ * use req->self.
  */
 struct mcp_slot {
 	struct loop_step    step;      /* the step that runs kind->step() */
@@ -574,6 +575,8 @@ enum mcp_req_flag : uint32_t {
 	REQ_ARCHIVED_END   = 1u << 18,  /* its end record is written */
 	REQ_RERUN          = 1u << 19,  /* the calls of its turn may have run
 	                                   before askai restarted */
+	REQ_FINDINGS       = 1u << 20,  /* the own word of req->self is the call
+	                                   of findings_prompt() */
 };
 
 /** A request, from its stream's head to its end or cancellation. */
@@ -1961,10 +1964,10 @@ mcp_req_tool_open (struct mcp_req   *req,
 
 /* Close the result's text; then, for an ask call whose turns called tools,
  * or wrote in the session, what they called and how they ended, as a text
- * of its own: the calls left untold, whether they were stopped, and the
- * conversation that continues the work. A call without turns that get
- * tools has no trace. A client's call of the notes tool has no turns. A job
- * resumed without --notes names no agent.
+ * of its own: the calls left untold, whether they were stopped, and with
+ * notes the conversation that continues the work. A call without turns
+ * that get tools writes no trace. A client's call of the notes tool runs
+ * no turns. A job resumed without --notes writes "The agent" for the name.
  */
 static int
 mcp_req_trace_put (struct mcp_req *req)
@@ -1978,10 +1981,14 @@ mcp_req_trace_put (struct mcp_req *req)
 		                       "of %" PRIu32 " turns.\n", req->turn);
 	struct member_session const *session =
 		member_registry_session(req->mcp->st->notes_tool.members);
-	if (req->flags & REQ_BRANCH)
-		(void)util_text_printf(&tail, "%s wrote in the session. Give conversation %s to "
-		                       "continue the work.", session ? session->agent : "The agent",
-		                       req->member.conversation.hex);
+	if (req->flags & REQ_BRANCH) {
+		(void)util_text_printf(&tail, "%s wrote in the session.",
+		                       session ? session->agent : "The agent");
+		/* The argument conversation needs notes (mcp_req_ask()). */
+		if (req->lent & req->mcp->st->lending.of[KIND_NOTES])
+			(void)util_text_printf(&tail, " Give conversation %s to continue the work.",
+			                       req->member.conversation.hex);
+	}
 	char head[160];
 	struct mcp_piece intro = TEXT("The other AI called no tools.\n");
 	if (req->traced)
@@ -3598,15 +3605,16 @@ mcp_slot_source (struct mcp_slot          *slot,
 	seen_read_destroy(&slot->read);
 	/* A turn's window is at most mcp_slot_window_max() bytes of the output,
 	 * so no window shows a longer single line whole. Keep no such line, so
-	 * that seen_lines() does not scan it. */
-	if (slot->role == ROLE_OWN ||
+	 * that seen_lines() does not scan it. Only findings cite the ring. */
+	struct mcp_req const *req = slot->req;
+	if (slot->role == ROLE_OWN || !(req->lent & req->mcp->st->lending.of[KIND_FINDINGS]) ||
 	    (src->first == src->last && src->len > mcp_slot_window_max(slot)))
 		return 0;
 	struct span const out = mcp_slot_output(slot);
 	slot->read = seen_read_create(src, (struct cstr_view){ (char const *)out.ptr, out.len },
 	                              &e);
 	if (slot->read)
-		loop_work(slot->req->mcp->loop, LOOP_COPY, src->len);
+		loop_work(req->mcp->loop, LOOP_COPY, src->len);
 	return e;
 }
 
@@ -3631,10 +3639,20 @@ mcp_slot_shows (struct mcp_slot *slot,
 	return e;
 }
 
-struct member_call *
-mcp_slot_member (struct mcp_slot *slot)
+struct member_call const *
+mcp_slot_member (struct mcp_slot const *slot)
 {
 	return slot ? &slot->req->member : nullptr;
+}
+
+int
+mcp_slot_asker (struct mcp_slot     *slot,
+                struct member const *asker)
+{
+	int e = !asker ? EFAULT : mcp_slot_live(slot, 0, 0);
+	if (!e)
+		slot->req->member.asker = *asker;
+	return e;
 }
 
 int
@@ -3945,20 +3963,49 @@ mcp_history_valid (struct json_object *history)
 	return true;
 }
 
-/* Goes on with the ask call in @p slot, req->self, once the notes of the
- * caller are in the prompt. The ask call builds its upstream request.
+static void mcp_req_add_start (struct mcp_req *req);
+
+/* Goes on with the ask call in @p slot, req->self, once the notes and the
+ * open findings are in the text that askai adds to the prompt. A new ask
+ * call builds its upstream request. After a compaction, the upload contains
+ * the request up to the prompt (req->prompt_at), and askai appends "[askai:
+ * go on with the task.]" to the text and writes the text into the upload.
  */
 static void
-mcp_slot_resumed (struct mcp_slot *slot)
+mcp_slot_go_on (struct mcp_slot *slot)
 {
-	mcp_req_enter(slot->req, PHASE_BUILD);
+	struct mcp_req *req = slot->req;
+	req->flags &= ~REQ_FINDINGS;
+	if (!req->prompt_at)
+		mcp_req_enter(req, PHASE_BUILD);
+	else if (cstr_view_cat(CSTR_VIEW("\n[askai: go on with the task.]"), &slot->answer))
+		mcp_req_fail(req, ENOMEM);
+	else
+		mcp_req_add_start(req);
+}
+
+/* Goes on with the ask call in @p slot once the notes are in the text that
+ * askai adds to the prompt. With findings, findings_prompt() first appends
+ * the open findings as the own word of req->self (REQ_FINDINGS).
+ */
+static void
+mcp_slot_prompted (struct mcp_slot *slot)
+{
+	struct mcp_req *req = slot->req;
+	if (!(req->lent & req->mcp->st->lending.of[KIND_FINDINGS])) {
+		mcp_slot_go_on(slot);
+		return;
+	}
+	req->flags |= REQ_FINDINGS;
+	findings_prompt(&req->mcp->st->notes_tool, slot, &slot->answer, mcp_req_lend_max(req),
+	                mcp_slot_go_on);
 }
 
 /* Start a call that asks the upstream, with the arguments @p args, of the
  * class the request asks for, lending the turns the tools req->lent says,
  * if any: build its upstream request, then submit its job. With notes, the
- * call continues the conversation of the argument conversation, or else
- * starts a new conversation.
+ * call continues the conversation of the argument conversation. Otherwise
+ * a call whose turns are lent notes or findings starts a new conversation.
  */
 static void
 mcp_req_ask (struct mcp_req     *req,
@@ -4000,16 +4047,23 @@ mcp_req_ask (struct mcp_req     *req,
 		else if (mcp_req_background(req, req->self.tool))
 			return;
 	}
-	/* A conversation comes with notes only (the problems above). */
-	if (!conversation && notes && hexid_make(&req->member.conversation)) {
-		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot make a conversation ID"),
+	/* The commits of turns lent notes or findings name the ask call and the
+	 * conversation. The argument comes with notes only (the problems above). */
+	int e = 0;
+	if (req->lent & (st->lending.of[KIND_NOTES] | st->lending.of[KIND_FINDINGS])) {
+		e = hexid_make(&req->member.ask);
+		if (!e && !conversation)
+			e = hexid_make(&req->member.conversation);
+	}
+	if (e) {
+		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot make the IDs of the ask call"),
 		              nullptr, 0);
 		return;
 	}
 	req->asked = ++req->mcp->asked;
 	mcp_req_log_ask(req, prompt, conversation != nullptr);
 	mcp_req_wait(req);
-	int e = mcp_req_draft(req, prompt, system, history);
+	e = mcp_req_draft(req, prompt, system, history);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -4020,15 +4074,11 @@ mcp_req_ask (struct mcp_req     *req,
 	/* Every ask starts with the notes of the agent, and with findings the
 	 * open findings of the agent in the conversation. */
 	mcp_req_dispose(req);
-	if (notes) {
+	if (notes)
 		notes_tool_loop_prompt(req->mcp->notes, &req->self, &req->self.answer,
-		                       NOTES_TOOL_RESUME, mcp_req_lend_max(req),
-		                       req->lent & st->lending.of[KIND_FINDINGS]
-		                       ? &req->member.conversation : nullptr,
-		                       mcp_slot_resumed);
-		return;
-	}
-	mcp_req_enter(req, PHASE_BUILD);
+		                       NOTES_TOOL_RESUME, mcp_req_lend_max(req), mcp_slot_prompted);
+	else
+		mcp_slot_prompted(&req->self);
 }
 
 /* test_task's work: a kernel of CPU work, run a slice at a time. */
@@ -4148,7 +4198,6 @@ static void mcp_req_calls_next (struct mcp_req *req);
 static int mcp_req_slice (struct mcp_req *req, struct jb_pool *pool,
                           struct cstr_view json);
 static void mcp_req_turn_submit (struct mcp_req *req);
-static void mcp_req_add_start (struct mcp_req *req);
 
 /* Write piece @p q into the upload from its byte req->off on, as far as the
  * step's shares allow.
@@ -5807,9 +5856,9 @@ mcp_req_result_put (struct mcp_req         *req,
 
 /* Write the result of the turn's call req->part into the upload, one slice
  * in each step. Then write its line of the trace, add the call to the ring
- * (src/seen.h) unless it is a findings or compact call, drop the call's
- * output and go on with the next call. A jobs call shows the lines of its
- * job.
+ * (src/seen.h) if the turns are lent findings, unless it is a findings or
+ * compact call, drop the call's output and go on with the next call. A jobs
+ * call shows the lines of its job.
  */
 static void
 mcp_req_result_write (struct mcp_req *req)
@@ -5848,6 +5897,8 @@ mcp_req_result_write (struct mcp_req *req)
 		break;
 	default:
 		/* seen_keep() scans the output up to the end of the window. */
+		if (!(req->lent & req->mcp->st->lending.of[KIND_FINDINGS]))
+			break;
 		loop_work(req->mcp->loop, LOOP_COPY, slot->skip + slot->window);
 		e = seen_keep(&req->seen, &req->calls[req->part], &(struct seen_result const){
 			.parts  = parts,
@@ -6116,7 +6167,7 @@ mcp_recover_back (struct loop           *loop,
 	/* The calls of the earlier turns were made before the restart. */
 	int e = seen_resume(&req->seen, (uint32_t)jb_int(jb_get(state, "calls"), 0),
 	                    jb_get(state, "seen"));
-	if (e == EINVAL || !request.len || turn < 1 || turn > UINT32_MAX ||
+	if (e == EINVAL || !request.len || turn < 1 || turn > UINT32_MAX || !prompt_at ||
 	    prompt_at > request.len || !json_object_is_type(names, json_type_array)) {
 		problem = CSTR_VIEW("The saved request of the job is invalid. No provider request "
 		                    "was sent.");
@@ -6313,39 +6364,6 @@ mcp_req_add_write (struct mcp_req *req)
 	mcp_req_turn_submit(req);
 }
 
-/** Appends @p text and "[askai: go on with the task.]" to the text that
- *  askai adds to the prompt of @p req, and writes that text into the
- *  upload.
- */
-static void
-mcp_req_go_on (struct mcp_req   *req,
-               struct cstr_view  text)
-{
-	struct dstr *d = &req->self.answer;
-	if (cstr_view_cat(text, d) ||
-	    cstr_view_cat(CSTR_VIEW("[askai: go on with the task.]"), d)) {
-		mcp_req_fail(req, ENOMEM);
-		return;
-	}
-	mcp_req_add_start(req);
-}
-
-/** Goes on with the ask call in @p slot, req->self, after a compaction put
- *  the notes into the prompt. With findings, a notice names the calls that
- *  the ring keeps, which the turns can cite.
- */
-static void
-mcp_slot_compacted (struct mcp_slot *slot)
-{
-	struct mcp_req *req = slot->req;
-	if (req->lent & req->mcp->st->lending.of[KIND_FINDINGS] &&
-	    seen_notice(req->seen, &req->self.answer)) {
-		mcp_req_fail(req, ENOMEM);
-		return;
-	}
-	mcp_req_go_on(req, CSTR_VIEW("\n"));
-}
-
 /** Adds the file of @p bytes bytes with the URI @p uri to req->attached, in
  *  the form of the API of the upstream (ai_format()). The URI is printable
  *  ASCII (ai_uploaded()). Returns 0 or ENOMEM.
@@ -6499,40 +6517,15 @@ mcp_slot_step (struct loop      *loop,
 	mcp_slot_tool(slot)->kind->step(slot);
 }
 
-/* Compaction has left the summary, if any, in what askai adds to the
- * prompt. If the turns are lent findings, a notice about the task of the
- * ask call follows the summary. The notices of the notes follow if the
- * turns are lent the notes tool, with the open findings of the agent in the
- * conversation if the turns are lent findings. They are left out for a job
- * resumed without --notes.
- */
-static void
-mcp_req_compact_notes (struct mcp_req *req)
-{
-	struct mcp_lending const *l = &req->mcp->st->lending;
-	bool const findings = req->lent & l->of[KIND_FINDINGS];
-	if (findings && cstr_view_cat(CSTR_VIEW("\n\n[askai: compaction does not change the task. "
-	                                        "The task is all text before the first [askai: ...] "
-	                                        "line: the system text, the earlier messages and the "
-	                                        "prompt. You do not need to copy the task into notes "
-	                                        "or a summary.]"), &req->self.answer)) {
-		mcp_req_fail(req, ENOMEM);
-		return;
-	}
-	if (req->lent & l->of[KIND_NOTES]) {
-		notes_tool_loop_prompt(req->mcp->notes, &req->self, &req->self.answer,
-		                       NOTES_TOOL_COMPACT, mcp_req_lend_max(req),
-		                       findings ? &req->member.conversation : nullptr,
-		                       mcp_slot_compacted);
-		return;
-	}
-	mcp_req_go_on(req, CSTR_VIEW("\n\n"));
-}
-
 /* Replaces the conversation of @p req after the prompt: lets go of the
- * job, the calls and the arguments of the turn's calls from @p from on,
- * makes @p head and @p summary what askai adds to the prompt, and goes on
- * with the notes (mcp_req_compact_notes()).
+ * job, the calls and the arguments of the turn's calls from @p from on, and
+ * makes @p head and @p summary what askai adds to the prompt. If the turns
+ * are lent findings, a notice about the task of the ask call follows the
+ * summary. The notices of the notes follow if the turns are lent the notes
+ * tool, then the open findings of the agent in the conversation and the
+ * calls of the ring if the turns are lent findings (mcp_slot_prompted()).
+ * They are left out for a job resumed without --notes. Without them, a
+ * line end follows the summary.
  */
 static void
 mcp_req_compact (struct mcp_req   *req,
@@ -6542,10 +6535,20 @@ mcp_req_compact (struct mcp_req   *req,
 {
 	/* The summary of a compact call is in the arguments of its slot, which
 	 * the reaper frees at once if it cannot grow, so it is copied first. */
+	struct mcp_lending const *l = &req->mcp->st->lending;
+	tool_mask const lent = req->lent & (l->of[KIND_NOTES] | l->of[KIND_FINDINGS]);
 	struct dstr *d = &req->self.answer;
 	dstr_clear(d);
 	int e = cstr_view_cat(head, d);
 	e = e ? e : cstr_view_cat(summary, d);
+	if (lent & l->of[KIND_FINDINGS])
+		e = e ? e : cstr_view_cat(CSTR_VIEW("\n\n[askai: compaction does not change the task. "
+		                                    "The task is all text before the first [askai: ...] "
+		                                    "line: the system text, the earlier messages and the "
+		                                    "prompt. You do not need to copy the task into notes "
+		                                    "or a summary.]"), d);
+	else if (!lent)
+		e = e ? e : cstr_view_cat(CSTR_VIEW("\n"), d);
 	req->reminded = 0;
 	mcp_req_drop(req);
 	mcp_req_args_free(req, from, JOB_CALLS);
@@ -6554,7 +6557,11 @@ mcp_req_compact (struct mcp_req   *req,
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_req_compact_notes(req);
+	if (lent & l->of[KIND_NOTES])
+		notes_tool_loop_prompt(req->mcp->notes, &req->self, d, NOTES_TOOL_COMPACT,
+		                       mcp_req_lend_max(req), mcp_slot_prompted);
+	else
+		mcp_slot_prompted(&req->self);
 }
 
 /** Handles the compact call of a turn in @p slot with the summary in
@@ -6614,16 +6621,32 @@ mcp_req_compact_full (struct mcp_req *req)
 #undef TURN_ARGS
 #undef TURN_FMT
 
-/* Handles the output of the git that reads the notes for the prompt of the
- * ask call in @p slot, req->self. The read parked the request among the
- * calls under way. The request does not wait once git has ended, so the
- * step takes it off that list first.
+/* Handles the output of the git that reads the notes or the open findings
+ * for the prompt of the ask call in @p slot, req->self. The read parked the
+ * request among the calls under way. The request does not wait once git has
+ * ended, so the step takes it off that list first.
  */
 static void
 mcp_slot_ask_step (struct mcp_slot *slot)
 {
 	mcp_slot_unwait(slot);
-	notes_tool_step(slot);
+	if (slot->req->flags & REQ_FINDINGS)
+		findings_step(slot);
+	else
+		notes_tool_step(slot);
+}
+
+/* Releases the call that reads the notes or the open findings for the
+ * prompt of the ask call in @p slot.
+ */
+static void
+mcp_slot_ask_drop (struct mcp_slot *slot)
+{
+	if (slot->req->flags & REQ_FINDINGS)
+		findings_drop(slot);
+	else
+		notes_tool_drop(slot);
+	slot->req->flags &= ~REQ_FINDINGS;
 }
 
 /* Start an ask call in @p slot, the request's own, its turns lent the tools
@@ -8164,7 +8187,7 @@ static struct plugin const mcp_host_plugin = {};
 static struct mcp_row const mcp_rows[KINDS] = {
 #define N(s) .name = CSTR_VIEW_INIT(s)
 	[KIND_ASK]        = { { .definition = mcp_tool_definition, .start = mcp_slot_ask,
-	                        .step = mcp_slot_ask_step, .drop = notes_tool_drop },
+	                        .step = mcp_slot_ask_step, .drop = mcp_slot_ask_drop },
 	                      .metric = LENT_NONE },
 	[KIND_MAN]        = { .plugin = &manual_plugin, N("man"), .metric = LENT_MAN,
 	                      .option = "--man" },

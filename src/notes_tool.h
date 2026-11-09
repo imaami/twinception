@@ -6,8 +6,8 @@
  * caller writes only its own notebook, and can read every notebook. The
  * tool is a built-in plugin with a part on each client loop, and each part
  * contains the table of the members of its loop. The part also runs the
- * git commands that read the notes and the open findings of the agent for
- * the prompt of an ask call (notes_tool_loop_prompt()).
+ * git commands that read the notes of the agent for the prompt of an ask
+ * call (notes_tool_loop_prompt()).
  */
 #ifndef ASKAI_SRC_NOTES_TOOL_H_
 #define ASKAI_SRC_NOTES_TOOL_H_
@@ -18,7 +18,6 @@
 #include "buf.h"
 #include "mcp.h"
 
-struct hexid;
 struct member_registry;
 struct notes_tool_loop;
 struct plugin;
@@ -106,7 +105,7 @@ extern tool_step_fn notes_tool_step;
 
 /** Releases the notes call in @p slot. Without memory pressure, the call
  *  object stays on its loop for reuse. This is the drop() of the notes
- *  kind and of the ask kind.
+ *  kind, and of the ask kind while git reads the notes for the prompt.
  */
 extern tool_drop_fn notes_tool_drop;
 
@@ -119,15 +118,10 @@ extern tool_drop_fn notes_tool_drop;
  * of it. @p what says whether the ask call starts or compacts its context.
  * As the ask call starts, the function claims the member of the login of
  * its client (member_table_claim()) and lists the members again. The
- * member is the asker, and with a new ask ID it goes into the struct
- * member_call of the request (mcp_slot_member()) for the commits of the
- * turns. If @p conversation is not nullptr, git then reads the findings of
- * the agent (src/findings.h), and the notices of its open findings in
- * @p conversation follow the notes, at most @p most bytes of them. Once
- * the notices are in @p prompt, the function calls @p then, which goes on
- * with the ask call. If git cannot list the notes for NOTES_TOOL_RESUME,
- * the ask call ends as failed. Findings that git cannot read give a notice
- * that says so.
+ * member is the asker of the request (mcp_slot_asker()), whom the commits
+ * of the turns name. Once the notices are in @p prompt, the function calls
+ * @p then, which goes on with the ask call. If git cannot list the notes
+ * for NOTES_TOOL_RESUME, the ask call ends as failed.
  */
 extern void
 notes_tool_loop_prompt (struct notes_tool_loop *loop,
@@ -135,7 +129,6 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
                         struct dstr            *prompt,
                         enum notes_tool_prompt  what,
                         size_t                  most,
-                        struct hexid const     *conversation,
                         tool_step_fn           *then);
 
 #endif /* ASKAI_SRC_NOTES_TOOL_H_ */

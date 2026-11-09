@@ -148,7 +148,8 @@ struct member_login {
 
 /** The member of the client of a request, and the IDs that the commits of
  *  the turns of an ask call name. Each request of mcp.c contains one
- *  (mcp_slot_member()), and the notes tool fills in the rest.
+ *  (mcp_slot_member()). mcp.c makes the IDs, and the notes tool sets the
+ *  asker (mcp_slot_asker()).
  */
 struct member_call {
 	struct member_login login;         /**< the login of the client, from

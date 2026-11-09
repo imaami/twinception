@@ -28,6 +28,7 @@ struct roster;
 struct manual;
 struct mcp;
 struct mcp_static;
+struct member;
 struct member_call;
 struct member_registry;
 struct metrics_mcp;
@@ -487,8 +488,8 @@ struct call_source {
 /** Stores a copy of @p src, which describes the numbered lines of a
  *  committed file in the call's output, written or lent, for the ring of
  *  the calls of the ask call (seen_keep()). It stores nothing for the call
- *  of a client, or if @p src is a single line longer than
- *  mcp_slot_window_max().
+ *  of a client, for an ask call whose turns are not lent findings, or if
+ *  @p src is a single line longer than mcp_slot_window_max().
  *  Returns 0, EFAULT for nullptr, EINVAL if the call has ended or @p src
  *  does not fit the output (seen_read_create()), or ENOMEM. This function
  *  is not exported yet.
@@ -527,8 +528,16 @@ mcp_slot_shows (struct mcp_slot *slot,
  *  and the asker that the commits of its turns name. Returns nullptr for a
  *  null @p slot. This function is not exported.
  */
-extern struct member_call *
-mcp_slot_member (struct mcp_slot *slot);
+extern struct member_call const *
+mcp_slot_member (struct mcp_slot const *slot);
+
+/** Sets the asker of the request of the call (mcp_slot_member()) to
+ *  @p asker. Returns 0, EFAULT for nullptr, or EINVAL if the call has
+ *  ended. This function is not exported.
+ */
+extern int
+mcp_slot_asker (struct mcp_slot     *slot,
+                struct member const *asker);
 
 /** Sets the structured content of the result of a client's call to the
  *  JSON object @p json, whose bytes must stay valid until the kind's
