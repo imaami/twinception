@@ -152,18 +152,22 @@ struct member_info {
 	                                 no name */
 };
 
-/** The session of a registry, and this askai in it. The views borrow the
- *  registry.
+/** The session of a registry, and this askai in it, made once as askai
+ *  starts. The views borrow the registry and the name of the service.
  */
 struct member_session {
-	struct cstr_view id;       /**< the session ID, 32 hexadecimal digits */
-	struct cstr_view name;     /**< the name of the session */
-	char const      *agent;    /**< the name of the agent of this askai */
-	char const      *service;  /**< the name of this askai, the committer of
-	                                its commits */
-	size_t           legacy;   /**< the notebooks of the old layout under
-	                                refs/heads/notes/, which askai does not
-	                                read */
+	struct cstr_view   id;         /**< the session ID, 32 hexadecimal
+	                                    digits */
+	struct cstr_view   name;       /**< the name of the session */
+	struct store_ident committer;  /**< this askai, SERVICE <askai>, the
+	                                    committer of its commits */
+	size_t             legacy;     /**< the notebooks of the old layout
+	                                    under refs/heads/notes/, which askai
+	                                    does not read */
+	struct member      agent;      /**< the agent of this askai */
+	char               refs[MEMBER_BRANCHES][MEMBER_REF];
+	                               /**< the branches of the agent, by enum
+	                                    member_branch (member_ref()) */
 };
 
 /** A login: how a client proves who it is, and the member that the login
@@ -308,7 +312,7 @@ member_login (struct member_login          *dest,
  * of the agent @p agent or adopts it, with git on the calling thread.
  * Another askai can create the repository or a record at the same time.
  * @p service is the name of this askai, the committer of the records.
- * Both are names that member_name_valid() accepts. @p store, @p agent and
+ * Both are names that member_name_valid() accepts. @p store and
  * @p service must outlive the registry. The function then reads all
  * records and counts the notebooks of the old layout. Returns the
  * registry, or returns nullptr with an error number in @p *e and a message
@@ -504,19 +508,19 @@ member_table_unknown (struct member_table const *table,
  * Fills the author, the committer and the trailer lines of @p commit, a
  * commit that the member @p self writes for the call @p k of the request
  * of @p call: the author is @p self as NAME <KIND/NAME>, the committer is
- * the service @p service as SERVICE <askai>, and the trailer lines name
- * the ask call, the call, the conversation and the asker of @p call, each
- * if it is known. @p k is 0 for a call that is not a turn's call. The
- * views of @p commit point to @p byline, @p self, @p call and @p service,
- * which must outlive @p commit.
+ * session->committer, and the trailer lines name the ask call, the call,
+ * the conversation and the asker of @p call, each if it is known. @p k is
+ * 0 for a call that is not a turn's call. The views of @p commit point to
+ * @p byline, @p self, @p call and @p session, which must outlive
+ * @p commit.
  */
 extern void
-member_byline_put (struct member_byline     *byline,
-                   struct store_commit      *commit,
-                   struct member const      *self,
-                   struct member_call const *call,
-                   uint32_t                  k,
-                   char const               *service);
+member_byline_put (struct member_byline        *byline,
+                   struct store_commit         *commit,
+                   struct member const         *self,
+                   struct member_call const    *call,
+                   uint32_t                     k,
+                   struct member_session const *session);
 
 /** Appends to @p d the notice of who the agent @p you is and who made the
  *  ask call @p call: call->asker, or a client without a member name if

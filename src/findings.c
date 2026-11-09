@@ -546,7 +546,7 @@ findings_got_refs (struct mcp_slot *slot)
 	bool const every = call->action == FINDINGS_SHOW ||
 	                   (call->action == FINDINGS_LIST && !*call->author);
 	struct cstr_view const only = cstr_view(call->action == FINDINGS_LIST
-	                                        ? call->author : findings_session(call)->agent);
+	                                        ? call->author : findings_session(call)->agent.name);
 	char author[MEMBER_NAME] = "";
 	uint32_t number = 0;
 	if (*call->about)
@@ -615,7 +615,7 @@ findings_got_files (struct mcp_slot *slot)
 	/* The highest number counts on the branch of the agent. The finding of
 	 * id is on the branch of its author, and update reads only its file.
 	 * list, show and expand read every file. */
-	bool const own = !strcmp(b->author, findings_session(call)->agent);
+	bool const own = !strcmp(b->author, findings_session(call)->agent.name);
 	uint32_t const id = strcmp(b->author, call->author) ? 0 : call->number;
 	uint32_t const only = call->action == FINDINGS_UPDATE ? id : 0;
 	bool const every = (ON_LIST | ON_SHOW | ON_EXPAND) >> call->action & 1;
@@ -734,7 +734,8 @@ findings_committed (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	char const *agent = findings_session(call)->agent;
+	struct member_session const *session = findings_session(call);
+	char const *agent = session->agent.name;
 	char id[FINDING_ID];
 	finding_id_format(agent, call->number, id);
 	if (child_ok(c)) {
@@ -761,9 +762,8 @@ findings_committed (struct mcp_slot *slot)
 	}
 	struct span const out = buf_peek(&c->out);
 	if (!(c->end.flags & CHILD_LATE) && store_raced(out)) {
-		char ref[MEMBER_REF];
-		findings_ref(agent, ref);
-		int64_t const age = store_stale(call->notes->tool->store, ref, "findings");
+		int64_t const age = store_stale(call->notes->tool->store,
+		                                session->refs[MEMBER_BRANCH_FINDINGS], "findings");
 		if (age) {
 			mcp_slot_tellf(slot, TOOL_FAILED, "Could not record the finding. The findings of %s "
 			               "have been locked for %" PRId64 " s.", agent, age);
@@ -832,10 +832,7 @@ findings_commit (struct mcp_slot      *slot,
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct member_session const *session = findings_session(call);
-	struct member agent = { .kind = MEMBER_AGENT };
-	(void)util_format(agent.name, sizeof agent.name, "%s", session->agent);
-	char ref[MEMBER_REF];
-	member_ref(&agent, MEMBER_BRANCH_FINDINGS, ref);
+	char const *ref = session->refs[MEMBER_BRANCH_FINDINGS];
 	/* add and update read only the branch of the agent. */
 	struct oid const tip = call->branches.n ? call->branches.items[0].tip : (struct oid){};
 	enum finding_state const before = finding_state(f);
@@ -876,8 +873,8 @@ findings_commit (struct mcp_slot      *slot,
 		.tip = &tip,
 	};
 	struct member_byline byline;
-	member_byline_put(&byline, &commit, &agent, mcp_slot_member(slot), mcp_slot_call(slot),
-	                  session->service);
+	member_byline_put(&byline, &commit, &session->agent, mcp_slot_member(slot),
+	                  mcp_slot_call(slot), session);
 	struct buf in = {};
 	e = e ? e : store_commit_input(&commit, &in);
 	/* The archive stays for a commit after a race. */
@@ -919,17 +916,15 @@ findings_record (struct evidence const *e,
 }
 
 /* Appends to @p in the line of cat-file that reads the archive file of the
- * material @p b on the branch of the findings of @p author. Returns 0 or
- * the error of buf_printf().
+ * material @p b on the branch of findings @p ref (findings_ref()). Returns
+ * 0 or the error of buf_printf().
  */
 static int
 findings_archive_line (struct buf                 *in,
-                       char const                 *author,
+                       char const                 *ref,
                        struct evidence_blob const *b)
 {
-	char ref[MEMBER_REF];
 	char path[EVIDENCE_PATH];
-	findings_ref(author, ref);
 	evidence_path(b->sha256, path);
 	return notes_read_input(in, ref, cstr_view(path));
 }
@@ -1143,12 +1138,13 @@ findings_no_item (char const *author,
  * prints, every item or the item of the id, and then the end of the items
  * of @p f. Counts the items in @p *items. For each item before call->fit,
  * adds the size of its material to @p *bytes (findings_fits()) and the
- * lines that read its archive files to @p in. The first item that does not
- * fit sets call->fit. Returns 0 or ENOMEM.
+ * lines that read its archive files on the branch @p ref to @p in. The
+ * first item that does not fit sets call->fit. Returns 0 or ENOMEM.
  */
 static int
 findings_expand_finding (struct findings_call *call,
                          struct finding const *f,
+                         char const           *ref,
                          uint64_t             *bytes,
                          size_t               *items,
                          struct buf           *in)
@@ -1169,8 +1165,8 @@ findings_expand_finding (struct findings_call *call,
 				continue;
 			}
 			if (ev->flags & EVIDENCE_REQUEST)
-				e = findings_archive_line(in, f->author, &ev->request);
-			e = e ? e : findings_archive_line(in, f->author, &ev->result);
+				e = findings_archive_line(in, ref, &ev->request);
+			e = e ? e : findings_archive_line(in, ref, &ev->result);
 		}
 	}
 	return e ? e : util_push(call->prints, (struct findings_print){ f, nullptr });
@@ -1194,12 +1190,19 @@ findings_expand (struct mcp_slot *slot)
 	call->prints.n = 0;
 	call->fit = SIZE_MAX;
 	/* The call read only the finding of the id, or the findings of the
-	 * agent. */
+	 * agent. Either way the findings are of one author, so the ref of the
+	 * branch is made once. */
+	char own[MEMBER_REF];
+	char const *ref = findings_session(call)->refs[MEMBER_BRANCH_FINDINGS];
+	if (*call->author) {
+		findings_ref(call->author, own);
+		ref = own;
+	}
 	for (size_t i = 0; !e && i < call->findings.n; ++i) {
 		struct finding const *f = &call->findings.items[i];
 		if (!*call->author && !(FINDING_OPEN >> finding_state(f) & 1))
 			continue;
-		e = findings_expand_finding(call, f, &bytes, &items, &in);
+		e = findings_expand_finding(call, f, ref, &bytes, &items, &in);
 	}
 	if (!e && call->item && !items) {
 		buf_fini(&in);
@@ -1328,11 +1331,11 @@ findings_act (struct mcp_slot *slot)
 	static_assert(UINT32_MAX == 4294967295, "update the refusal");
 	if (call->last == UINT32_MAX) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "%s#4294967295 exists. askai cannot give a finding "
-		               "of %s a higher number.", session->agent, session->agent);
+		               "of %s a higher number.", session->agent.name, session->agent.name);
 		return;
 	}
 	struct finding added = finding();
-	(void)util_format(added.author, sizeof added.author, "%s", session->agent);
+	memcpy(added.author, session->agent.name, sizeof added.author);
 	(void)util_format(added.about, sizeof added.about, "%s", call->about);
 	added.number = call->last + 1;
 	added.conversation = mcp_slot_member(slot)->conversation;
@@ -1539,6 +1542,8 @@ findings_cite_blobs (struct mcp_slot *slot)
 	struct buf in = {};
 	uint64_t bytes = 0;
 	uint64_t shown = 0;
+	char const *author = nullptr;
+	char ref[MEMBER_REF];
 	int e = 0;
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
 		struct findings_cite *cite = &call->cites.items[i];
@@ -1557,7 +1562,8 @@ findings_cite_blobs (struct mcp_slot *slot)
 		bool const asked = item.flags & EVIDENCE_REQUEST;
 		if (asked)
 			cite->flags |= CITE_REQUEST;
-		if (!(cite->flags & CITE_READ) && findings_stored(&item, cite->blobs))
+		bool const stored = findings_stored(&item, cite->blobs);
+		if (!(cite->flags & CITE_READ) && stored)
 			continue;
 		cite->flags |= CITE_READ;
 		if (!findings_fits(&bytes, &item)) {
@@ -1570,11 +1576,17 @@ findings_cite_blobs (struct mcp_slot *slot)
 		}
 		if (cite->flags & CITE_SHOW)
 			shown += (asked ? item.request.bytes : 0) + item.result.bytes;
-		/* The ring stores the git IDs of an item that a result showed. */
+		/* The ring stores the git IDs of an item that a result showed.
+		 * For the other items, the ref of the branch of the author is made
+		 * once for the items of one author in a row. */
+		if (!stored && (!author || strcmp(author, cite->ref.author))) {
+			author = cite->ref.author;
+			findings_ref(author, ref);
+		}
 		for (size_t k = asked ? 0 : 1; !e && k < array_size(cite->blobs); ++k)
 			e = oid_len(&cite->blobs[k])
 			  ? buf_printf(&in, "%s\n", cite->blobs[k].hex)
-			  : findings_archive_line(&in, cite->ref.author, k ? &item.result : &item.request);
+			  : findings_archive_line(&in, ref, k ? &item.result : &item.request);
 	}
 	evidence_fini(&item);
 	if (e) {
@@ -1809,7 +1821,7 @@ findings_evidence (struct mcp_slot    *slot,
 			                   "such as c7, lines such as c7:120-140, or an evidence item such "
 			                   "as %s#5/2.", i,
 			                   (int)util_clip(text.data, text.len, 80), text.data ? text.data : "",
-			                   findings_session(call)->agent);
+			                   findings_session(call)->agent.name);
 		struct evidence *item = &c->evidence.items[c->evidence.n++];
 		*item = evidence();
 		if (ref.form == EVIDENCE_REF_ITEM || ref.form == EVIDENCE_REF_ITEM_LINES) {
@@ -1840,7 +1852,7 @@ findings_args (struct mcp_slot    *slot,
                size_t              len)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	char const *agent = findings_session(call)->agent;
+	char const *agent = findings_session(call)->agent.name;
 	char const *action = findings_actions[call->action].data;
 	struct json_object_iter it;
 	json_object_object_foreachC(args, it) {
@@ -2056,9 +2068,7 @@ findings_start (struct mcp_slot    *slot,
 		return;
 	}
 	if ((ON_ADD | ON_UPDATE) >> call->action & 1 && mcp_slot_rerun(slot)) {
-		char ref[MEMBER_REF];
-		findings_ref(findings_session(call)->agent, ref);
-		char const *const words[] = { ref };
+		char const *const words[] = { findings_session(call)->refs[MEMBER_BRANCH_FINDINGS] };
 		call->args = args;
 		findings_run(slot, STAGE_CALLS, STORE_CALLS, words, nullptr, &(struct buf){});
 		return;
@@ -2078,7 +2088,7 @@ findings_definition (void const *service)
 {
 	struct notes_tool const *tool = service;
 	struct member_session const *session = member_registry_session(tool->members);
-	char const *agent = session ? session->agent : "";
+	char const *agent = session ? session->agent.name : "";
 	dstr_auto about = DSTR_INIT;
 	dstr_auto id = DSTR_INIT;
 	if (!dstr_printf(&about, "Findings are claims that the agents of this session made. A "
@@ -2113,7 +2123,7 @@ findings_upstream_definition (void const *service)
 {
 	struct notes_tool const *tool = service;
 	struct member_session const *session = member_registry_session(tool->members);
-	char const *agent = session ? session->agent : "";
+	char const *agent = session ? session->agent.name : "";
 	dstr_auto about = DSTR_INIT;
 	dstr_auto id = DSTR_INIT;
 	dstr_auto add = DSTR_INIT;
@@ -2196,7 +2206,7 @@ findings_prompt (struct notes_tool_loop const *notes,
 	}
 	*mcp_slot_own(slot) = call;
 	/* The list of the agent, with the open findings as its result. */
-	(void)util_format(call->author, sizeof call->author, "%s", findings_session(call)->agent);
+	memcpy(call->author, findings_session(call)->agent.name, sizeof call->author);
 	call->prompt = prompt;
 	call->then = then;
 	call->most = most;

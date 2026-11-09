@@ -552,7 +552,7 @@ member_commit_input (struct member_registry const *reg,
 {
 	struct store_commit const commit = {
 		.author = { CSTR_VIEW("askai"), CSTR_VIEW("askai") },
-		.committer = { cstr_view(reg->session.service), CSTR_VIEW("askai") },
+		.committer = reg->session.committer,
 		.message = message,
 		.files = {},
 		.trailers = t,
@@ -967,7 +967,7 @@ member_registry_start (struct member_registry *reg,
 	if (e)
 		return e;
 	struct member_claim agent = { .login = { .kind = MEMBER_AGENT } };
-	util_format(agent.login.name, sizeof agent.login.name, "%s", reg->session.agent);
+	memcpy(agent.login.name, reg->session.agent.name, sizeof agent.login.name);
 	e = member_registry_claim(reg, &agent, why, len);
 	if (e)
 		return e == EPERM ? EINVAL : e;
@@ -994,8 +994,9 @@ member_registry_create (struct store const *store,
 		*e = EINVAL;
 		return nullptr;
 	}
-	if (!store || !agent || !service || !member_name_valid(cstr_view(agent)) ||
-	    !member_name_valid(cstr_view(service))) {
+	struct cstr_view const agent_name = agent ? cstr_view(agent) : (struct cstr_view){};
+	struct cstr_view const service_name = service ? cstr_view(service) : (struct cstr_view){};
+	if (!store || !member_name_valid(agent_name) || !member_name_valid(service_name)) {
 		*e = util_refuse(why, len, "The registry needs a repository, and an agent and a "
 		                 "service with valid names.");
 		return nullptr;
@@ -1007,9 +1008,15 @@ member_registry_create (struct store const *store,
 		return nullptr;
 	}
 	*reg = (struct member_registry){
-		.session = { .agent = agent, .service = service },
+		.session = {
+			.committer = { service_name, CSTR_VIEW("askai") },
+			.agent = { .kind = MEMBER_AGENT },
+		},
 		.store = store,
 	};
+	memcpy(reg->session.agent.name, agent_name.data, agent_name.len);
+	for (size_t b = 0; b < MEMBER_BRANCHES; ++b)
+		member_ref(&reg->session.agent, (enum member_branch)b, reg->session.refs[b]);
 	*e = member_registry_start(reg, why, len);
 	if (*e)
 		member_registry_destroy(&reg);
@@ -1044,8 +1051,9 @@ member_registry_report (struct member_registry const *registry)
 	struct member_session const *session = &registry->session;
 	LOG_ALL(LOG_INFO, "  id          %.*s", (int)session->id.len, session->id.data);
 	LOG_ALL(LOG_INFO, "  name        %.*s", (int)session->name.len, session->name.data);
-	LOG_ALL(LOG_INFO, "  agent       %s", session->agent);
-	LOG_ALL(LOG_INFO, "  service     %s", session->service);
+	LOG_ALL(LOG_INFO, "  agent       %s", session->agent.name);
+	LOG_ALL(LOG_INFO, "  service     %.*s", (int)session->committer.name.len,
+	        session->committer.name.data);
 	LOG_ALL(LOG_INFO, "  evidence    every member can read all stored evidence");
 	if (session->legacy)
 		LOG_ALL(LOG_INFO, "  legacy      %zu notebook%s under " LEGACY, session->legacy,
@@ -1713,12 +1721,12 @@ member_table_unknown (struct member_table const *table,
 }
 
 void
-member_byline_put (struct member_byline     *byline,
-                   struct store_commit      *commit,
-                   struct member const      *self,
-                   struct member_call const *call,
-                   uint32_t                  k,
-                   char const               *service)
+member_byline_put (struct member_byline        *byline,
+                   struct store_commit         *commit,
+                   struct member const         *self,
+                   struct member_call const    *call,
+                   uint32_t                     k,
+                   struct member_session const *session)
 {
 	(void)util_format(byline->email, sizeof byline->email, "%s/%s",
 	                  member_kinds[self->kind].data, self->name);
@@ -1736,7 +1744,7 @@ member_byline_put (struct member_byline     *byline,
 	if (*call->asker.name)
 		t[n++] = (struct store_trailer){ CSTR_VIEW("Asked-by"), cstr_view(call->asker.name) };
 	commit->author = (struct store_ident){ cstr_view(self->name), cstr_view(byline->email) };
-	commit->committer = (struct store_ident){ cstr_view(service), CSTR_VIEW("askai") };
+	commit->committer = session->committer;
 	commit->trailers = t;
 	commit->n_trailers = n;
 }

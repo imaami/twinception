@@ -1983,7 +1983,7 @@ mcp_req_trace_put (struct mcp_req *req)
 		member_registry_session(req->mcp->st->notes_tool.members);
 	if (req->flags & REQ_BRANCH) {
 		(void)util_text_printf(&tail, "%s wrote in the session.",
-		                       session ? session->agent : "The agent");
+		                       session ? session->agent.name : "The agent");
 		/* The argument conversation needs notes (mcp_req_ask()). */
 		if (req->lent & req->mcp->st->lending.of[KIND_NOTES])
 			(void)util_text_printf(&tail, " Give conversation %s to continue the work.",

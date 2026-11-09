@@ -1201,9 +1201,41 @@ main (int    argc,
 	struct member_session const *session = member_registry_session(reg);
 	CHECK(session && hexid_valid(session->id) && !member_registry_session(nullptr));
 	CHECK(cstr_view_equal(session->name, CSTR_VIEW("test1")) &&
-	      !strcmp(session->service, "gpu1") && !strcmp(session->agent, "bro") &&
+	      cstr_view_equal(session->committer.name, CSTR_VIEW("gpu1")) &&
+	      cstr_view_equal(session->committer.email, CSTR_VIEW("askai")) &&
+	      session->agent.kind == MEMBER_AGENT && !strcmp(session->agent.name, "bro") &&
+	      !strcmp(session->refs[MEMBER_BRANCH_NOTES], "refs/heads/agent/bro/notes") &&
+	      !strcmp(session->refs[MEMBER_BRANCH_FINDINGS], "refs/heads/agent/bro/findings") &&
 	      !session->legacy);
 	member_registry_report(reg);
+
+	/* The byline of a commit of a turn names the author, the committer of
+	 * the session, and the ask call, the call, the conversation and the
+	 * asker. A commit of a client names none of them. */
+	struct member_call call = { .asker = { MEMBER_PERSON, "alice" } };
+	CHECK(!hexid_init(&call.ask, CSTR_VIEW("0123456789abcdef0123456789abcdef")) &&
+	      !hexid_init(&call.conversation, CSTR_VIEW("fedcba9876543210fedcba9876543210")));
+	struct member_byline byline;
+	struct store_commit commit = {};
+	member_byline_put(&byline, &commit, &(struct member){ MEMBER_PERSON, "carol" }, &call, 7,
+	                  session);
+	CHECK(cstr_view_equal(commit.author.name, CSTR_VIEW("carol")) &&
+	      cstr_view_equal(commit.author.email, CSTR_VIEW("person/carol")) &&
+	      commit.committer.name.data == session->committer.name.data &&
+	      cstr_view_equal(commit.committer.email, CSTR_VIEW("askai")) &&
+	      commit.trailers == byline.trailers && commit.n_trailers == 4);
+	struct cstr_view const lines[][2] = {
+		{ CSTR_VIEW("Ask"),          CSTR_VIEW("0123456789abcdef0123456789abcdef") },
+		{ CSTR_VIEW("Call"),         CSTR_VIEW("7") },
+		{ CSTR_VIEW("Conversation"), CSTR_VIEW("fedcba9876543210fedcba9876543210") },
+		{ CSTR_VIEW("Asked-by"),     CSTR_VIEW("alice") },
+	};
+	for (size_t i = 0; i < array_size(lines) && i < commit.n_trailers; ++i)
+		CHECK(cstr_view_equal(commit.trailers[i].key, lines[i][0]) &&
+		      cstr_view_equal(commit.trailers[i].value, lines[i][1]));
+	member_byline_put(&byline, &commit, &session->agent, &(struct member_call){}, 0, session);
+	CHECK(cstr_view_equal(commit.author.name, CSTR_VIEW("bro")) &&
+	      cstr_view_equal(commit.author.email, CSTR_VIEW("agent/bro")) && !commit.n_trailers);
 
 	/* Another service of the agent adopts its record, and another agent
 	 * gets a record. The session stays. */
@@ -1222,7 +1254,13 @@ main (int    argc,
 	CHECK(!again);
 	member_registry_destroy(&again);
 	member_registry_destroy(nullptr);
-	again = test_registry_make(store, "cuh", "gpu3", 0, "");
+	/* The registry copies the name of the agent. */
+	char cuh[] = "cuh";
+	again = test_registry_make(store, cuh, "gpu3", 0, "");
+	cuh[0] = 'x';
+	CHECK(again && !strcmp(member_registry_session(again)->agent.name, "cuh") &&
+	      !strcmp(member_registry_session(again)->refs[MEMBER_BRANCH_FINDINGS],
+	              "refs/heads/agent/cuh/findings"));
 	CHECK(test_has(store, "refs/askai/members/cuh", "\n\nAdd the agent cuh\n\nKind: agent\n"));
 	CHECK(test_has(store, "refs/askai/members/cuh", "\ncommitter gpu3 <askai> "));
 	member_registry_destroy(&again);

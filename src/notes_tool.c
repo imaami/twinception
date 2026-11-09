@@ -375,12 +375,16 @@ notes_tool_session (struct notes_tool_call const *call)
 	return member_registry_session(call->loop->tool->members);
 }
 
-/* Makes the agent of askai the caller of @p call. */
+/* Makes the agent of askai the caller of @p call, with the notebook of the
+ * agent as call->repo. The agent is the caller of each call of a turn and
+ * of the prompt notes.
+ */
 static void
-notes_tool_agent (struct notes_tool_call *call)
+notes_tool_agent_caller (struct notes_tool_call *call)
 {
-	call->self.kind = MEMBER_AGENT;
-	util_format(call->self.name, sizeof call->self.name, "%s", notes_tool_session(call)->agent);
+	struct member_session const *session = notes_tool_session(call);
+	call->self = session->agent;
+	memcpy(call->repo, session->refs[MEMBER_BRANCH_NOTES], sizeof call->repo);
 }
 
 /* Releases the notes call in @p slot, the ask call's own slot, after git
@@ -554,9 +558,8 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
 		return;
 	call->then = then;
 	call->most = most;
-	notes_tool_agent(call);
+	notes_tool_agent_caller(call);
 	call->book = call->self;
-	member_ref(&call->self, MEMBER_BRANCH_NOTES, call->repo);
 	if (what == NOTES_TOOL_COMPACT) {
 		call->first = FETCH_COMPACT;
 		notes_tool_prompt_notices(slot);
@@ -758,7 +761,7 @@ notes_tool_write (struct mcp_slot *slot,
 	};
 	struct member_byline byline;
 	member_byline_put(&byline, &commit, &call->self, mcp_slot_member(slot), mcp_slot_call(slot),
-	                  notes_tool_session(call)->service);
+	                  notes_tool_session(call));
 	e = e ? e : store_commit_input(&commit, &in);
 	notes_tool_run(slot, FETCH_ADD, &in, e);
 }
@@ -1887,7 +1890,7 @@ notes_tool_stage (struct mcp_slot *slot,
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	call->first = fetch;
 	if (!mcp_slot_from_client(slot)) {
-		notes_tool_agent(call);
+		notes_tool_agent_caller(call);
 		notes_tool_resolve(slot);
 		return;
 	}
@@ -2229,7 +2232,7 @@ notes_tool_schema (struct notes_tool const *tool,
                    bool                     turn)
 {
 	struct member_session const *session = member_registry_session(tool->members);
-	char const *agent = session ? session->agent : "";
+	char const *agent = session ? session->agent.name : "";
 	dstr_auto notebook = DSTR_INIT;
 	if (!dstr_printf(&notebook, "The notebook to read: the name of a member, such as %s. "
 	                 "Action members lists the names. The default is your notebook. copy "
@@ -2341,7 +2344,7 @@ notes_tool_definition (void const *service)
 	return jb_set_or_free(def, "_meta", jb_object(
 		"askai", jb_object(
 			"session", jb_string(session->id),
-			"agent", json_object_new_string(session->agent),
+			"agent", json_object_new_string(session->agent.name),
 			"members", json_object_new_boolean(1),
 			nullptr),
 		nullptr));
