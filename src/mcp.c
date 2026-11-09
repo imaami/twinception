@@ -516,8 +516,8 @@ struct mcp_slot {
 	                                  nullptr if they are no object; of a
 	                                  job, a copy, for the jobs tool */
 	struct mcp_slot    *of;        /* the job whose output it gives, if any */
-	struct review_read *read;      /* the lines of a file that its output
-	                                  shows, for the review record
+	struct seen_read   *read;      /* the lines of a file that its output
+	                                  shows, for the ring of the calls
 	                                  (mcp_slot_source()), if any */
 	char const         *shows;     /* the notebook that a notes read or diff
 	                                  shows, or nullptr. mcp_slot_done()
@@ -1456,7 +1456,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 	web_wait_leave(&slot->web);
 	instance_table_put(&slot->req->mcp->instances, &slot->inst);
 	slot->lent = (struct span){};
-	review_read_destroy(&slot->read);
+	seen_read_destroy(&slot->read);
 	slot->shows = nullptr;
 	loop_unready(&slot->step);
 	mcp_forget(slot->req->mcp, &slot->call);
@@ -3610,13 +3610,13 @@ mcp_slot_call (struct mcp_slot const *slot)
 }
 
 int
-mcp_slot_source (struct mcp_slot            *slot,
-                 struct review_source const *src)
+mcp_slot_source (struct mcp_slot          *slot,
+                 struct call_source const *src)
 {
 	int e = !src ? EFAULT : mcp_slot_live(slot, 0, 0);
 	if (e)
 		return e;
-	review_read_destroy(&slot->read);
+	seen_read_destroy(&slot->read);
 	/* A turn's window is at most mcp_slot_window_max() bytes of the output,
 	 * so no window shows a longer single line whole. Keep no such line, so
 	 * that seen_lines() does not scan it. */
@@ -3624,8 +3624,8 @@ mcp_slot_source (struct mcp_slot            *slot,
 	    (src->first == src->last && src->len > mcp_slot_window_max(slot)))
 		return 0;
 	struct span const out = mcp_slot_output(slot);
-	slot->read = review_read_create(src, (struct cstr_view){ (char const *)out.ptr, out.len },
-	                                &e);
+	slot->read = seen_read_create(src, (struct cstr_view){ (char const *)out.ptr, out.len },
+	                              &e);
 	if (slot->read)
 		loop_work(slot->req->mcp->loop, LOOP_COPY, src->len);
 	return e;
@@ -5470,7 +5470,7 @@ mcp_slot_replay (struct mcp_slot    *slot,
 	int e = skip > text.len || util_text_store(&slot->note, jb_view(jb_get(saved, "note")))
 	      ? EILSEQ : 0;
 	if (!e && source)
-		slot->read = review_read_create_json(source, text, &e);
+		slot->read = seen_read_create_json(source, text, &e);
 	if (e)
 		return e == EINVAL ? EILSEQ : e;
 	slot->start = loop_clock();
@@ -5733,7 +5733,7 @@ mcp_slot_done (struct mcp_slot *slot,
 			                                   (int)(slot->skip + slot->window - base)),
 			nullptr);
 		if (lines)
-			result = jb_set_or_free(result, "source", review_read_json(slot->read, &(int){}));
+			result = jb_set_or_free(result, "source", seen_read_json(slot->read, &(int){}));
 		int e = mcp_req_archive(req, "tool-result", result, nullptr);
 		if (e)
 			req->archive_error = e;

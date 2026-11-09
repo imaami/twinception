@@ -39,11 +39,11 @@ same (int         line,
  * @p src. If @p bare is true, the last line ends without a newline.
  */
 static void
-output (struct dstr          *out,
-        struct review_source *src,
-        uint32_t              first,
-        uint32_t              last,
-        bool                  bare)
+output (struct dstr        *out,
+        struct call_source *src,
+        uint32_t            first,
+        uint32_t            last,
+        bool                bare)
 {
 	(void)dstr_clear(out);
 	CHECK(dstr_printf(out, "[h]\n"));
@@ -52,8 +52,8 @@ output (struct dstr          *out,
 		CHECK(dstr_printf(out, "%u\tline %u%s", n, n, n == last && bare ? "" : "\n"));
 	size_t const len = dstr_len(out) - at;
 	CHECK(dstr_printf(out, "\n[f]"));
-	*src = (struct review_source){ CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 9,
-	                               at, len, first, last };
+	*src = (struct call_source){ CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 9,
+	                             at, len, first, last };
 }
 
 /* Check that the window of @p window bytes from @p skip of the output of
@@ -67,7 +67,7 @@ lines_in (size_t   skip,
           int      line)
 {
 	struct dstr out = DSTR_INIT;
-	struct review_source src;
+	struct call_source src;
 	output(&out, &src, 1, 9, false);
 	int e = -1;
 	struct seen_mark mark = {};
@@ -105,7 +105,7 @@ test_lines (void)
 	 * lines from the mark of the window before it, or from the start of the
 	 * read if that mark is after the window. */
 	struct dstr out = DSTR_INIT;
-	struct review_source src;
+	struct call_source src;
 	output(&out, &src, 1, 9, false);
 	struct cstr_view o = cstr_view_dstr(&out);
 	int e = -1;
@@ -134,7 +134,7 @@ test_lines (void)
 	got = seen_lines(&mark, &src, (struct cstr_view){ o.data, src.at + src.len - 1 }, 0,
 	                 SIZE_MAX, &e);
 	CHECK(e == EINVAL && !got.first && !got.last);
-	struct review_source bad = src;
+	struct call_source bad = src;
 	bad.len = 0;
 	e = -1;
 	CHECK(!seen_lines(&mark, &bad, o, 0, SIZE_MAX, &e).first && e == EINVAL);
@@ -146,8 +146,8 @@ test_lines (void)
 	CHECK(dstr_printf(&more, "[h]\n"));
 	for (int i = 0; i < 13; ++i)
 		CHECK(dstr_printf(&more, "a\n"));
-	bad = (struct review_source){ CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 0, 4,
-	                              dstr_len(&more) - 4, 1, 3 };
+	bad = (struct call_source){ CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 0, 4,
+	                            dstr_len(&more) - 4, 1, 3 };
 	mark = (struct seen_mark){};
 	e = -1;
 	CHECK(!seen_lines(&mark, &bad, cstr_view_dstr(&more), 0, SIZE_MAX, &e).first &&
@@ -217,11 +217,11 @@ static void
 test_keep (void)
 {
 	struct dstr out = DSTR_INIT;
-	struct review_source src;
+	struct call_source src;
 	output(&out, &src, 1, 9, false);
 	struct cstr_view const o = cstr_view_dstr(&out);
 	int e = -1;
-	struct review_read *read = review_read_create(&src, o, &e);
+	struct seen_read *read = seen_read_create(&src, o, &e);
 	CHECK(read && !e);
 	struct review *review = review_create(REVIEW_READ_LOG, &e);
 	CHECK(review && !e);
@@ -334,12 +334,12 @@ test_keep (void)
 	lines = (struct seen_lines){ 1, 1 };
 	CHECK(seen_keep(&seen, &request, nullptr, &lines) == EFAULT && !lines.first);
 	/* Numbered lines that do not fit the output. */
-	struct review_read *short_read = review_read_create(&src, o, &e);
+	struct seen_read *short_read = seen_read_create(&src, o, &e);
 	short_read->src.last = 4;
 	parts[0] = o;
 	r = (struct seen_result){ .parts = parts, .out = o, .read = short_read };
 	CHECK(seen_keep(&seen, &request, &r, &lines) == EINVAL);
-	review_read_destroy(&short_read);
+	seen_read_destroy(&short_read);
 	CHECK(seen->n == 4 && buf_peek(&request).len == 10);
 	buf_fini(&request);
 
@@ -357,7 +357,7 @@ test_keep (void)
 	CHECK(!seen);
 	seen_destroy(&seen);
 	seen_destroy(nullptr);
-	review_read_destroy(&read);
+	seen_read_destroy(&read);
 	review_destroy(&review);
 	dstr_cleanup(&out);
 }

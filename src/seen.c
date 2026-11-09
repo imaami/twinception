@@ -3,24 +3,154 @@
  * The calls whose results askai showed to the turns of an ask call
  * (src/seen.h).
  */
+#define _GNU_SOURCE /* mempcpy() */
 #include <errno.h>
 #include <inttypes.h>
+#include <json-c/json.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "jb.h"
-#include "review.h"
+#include "oid.h"
 #include "seen.h"
 #include "tool.h"
 #include "util.h"
 
+/** Returns true if @p t is 1 to SEEN_NAME_MAX bytes of UTF-8 text without
+ *  NUL, as a repository name or a path must be.
+ */
+static bool
+seen_name_valid (struct cstr_view t)
+{
+	return t.len && t.len <= SEEN_NAME_MAX && jb_is_text(t);
+}
+
+/** Returns true if the numbered lines of @p src are not empty and are
+ *  within @p out.
+ */
+static bool
+seen_source_within (struct call_source const *src,
+                    struct cstr_view          out)
+{
+	return src->len && src->len <= out.len && src->at <= out.len - src->len;
+}
+
+struct seen_read *
+seen_read_create (struct call_source const *src,
+                  struct cstr_view          out,
+                  int                      *e)
+{
+	if (!e)
+		return nullptr;
+	if (!src || (!out.data && out.len)) {
+		*e = EFAULT;
+		return nullptr;
+	}
+	*e = EINVAL;
+	if (!oid_valid(src->commit) ||
+	    !seen_name_valid(src->repo) || !seen_name_valid(src->path) || !src->first ||
+	    src->last < src->first || (src->total && src->total < src->last) ||
+	    src->total > UINT32_MAX || !seen_source_within(src, out))
+		return nullptr;
+	/* Each numbered line ends with a newline, except perhaps the last. */
+	struct cstr_view const lines = { out.data + src->at, src->len };
+	if (cstr_view_count(lines, '\n') + (lines.data[lines.len - 1] != '\n') !=
+	    (uint64_t)src->last - src->first + 1)
+		return nullptr;
+	struct seen_read *read = malloc(sizeof *read + src->repo.len + src->commit.len +
+	                                src->path.len);
+	if (!read) {
+		*e = ENOMEM;
+		return nullptr;
+	}
+	*read = (struct seen_read){ .src = *src, .mark = { .line = src->first, .at = src->at } };
+	read->src.repo.data = read->text;
+	read->src.commit.data = mempcpy(read->text, src->repo.data, src->repo.len);
+	read->src.path.data = mempcpy((char *)read->src.commit.data, src->commit.data,
+	                              src->commit.len);
+	memcpy((char *)read->src.path.data, src->path.data, src->path.len);
+	*e = 0;
+	return read;
+}
+
+void
+seen_read_destroy (struct seen_read **p_read)
+{
+	if (!p_read)
+		return;
+	free(*p_read);
+	*p_read = nullptr;
+}
+
+struct json_object *
+seen_read_json (struct seen_read const *read,
+                int                    *e)
+{
+	if (!e)
+		return nullptr;
+	if (!read) {
+		*e = EFAULT;
+		return nullptr;
+	}
+	struct call_source const *src = &read->src;
+	struct json_object *obj = jb_object("repo", jb_string(src->repo),
+	                                    "commit", jb_string(src->commit),
+	                                    "path", jb_string(src->path),
+	                                    "at", json_object_new_uint64(src->at),
+	                                    "len", json_object_new_uint64(src->len),
+	                                    "first", json_object_new_uint64(src->first),
+	                                    "last", json_object_new_uint64(src->last),
+	                                    "total", json_object_new_uint64(src->total),
+	                                    nullptr);
+	*e = obj ? 0 : ENOMEM;
+	return obj;
+}
+
+struct seen_read *
+seen_read_create_json (struct json_object const *obj,
+                       struct cstr_view          out,
+                       int                      *e)
+{
+	if (!e)
+		return nullptr;
+	if (!obj) {
+		*e = EFAULT;
+		return nullptr;
+	}
+	uint64_t at;
+	uint64_t len;
+	uint64_t first;
+	uint64_t last;
+	uint64_t total;
+	if (jb_uint_checked(jb_get(obj, "at"), SIZE_MAX, &at) ||
+	    jb_uint_checked(jb_get(obj, "len"), SIZE_MAX, &len) ||
+	    jb_uint_checked(jb_get(obj, "first"), UINT32_MAX, &first) ||
+	    jb_uint_checked(jb_get(obj, "last"), UINT32_MAX, &last) ||
+	    jb_uint_checked(jb_get(obj, "total"), UINT64_MAX, &total)) {
+		*e = EINVAL;
+		return nullptr;
+	}
+	/* seen_read_create() checks the texts. */
+	struct call_source const src = {
+		.repo   = jb_view(jb_get(obj, "repo")),
+		.commit = jb_view(jb_get(obj, "commit")),
+		.path   = jb_view(jb_get(obj, "path")),
+		.total  = total,
+		.at     = (size_t)at,
+		.len    = (size_t)len,
+		.first  = (uint32_t)first,
+		.last   = (uint32_t)last,
+	};
+	return seen_read_create(&src, out, e);
+}
+
 struct seen_lines
-seen_lines (struct seen_mark           *mark,
-            struct review_source const *src,
-            struct cstr_view            out,
-            size_t                      skip,
-            size_t                      window,
-            int                        *e)
+seen_lines (struct seen_mark         *mark,
+            struct call_source const *src,
+            struct cstr_view          out,
+            size_t                    skip,
+            size_t                    window,
+            int                      *e)
 {
 	if (!e)
 		return (struct seen_lines){};
@@ -85,8 +215,8 @@ seen_drop (struct seen *seen)
  * with the members repo, commit, path and total. Returns 0 or ENOMEM.
  */
 static int
-seen_ids (struct dstr                *ids,
-          struct review_source const *src)
+seen_ids (struct dstr              *ids,
+          struct call_source const *src)
 {
 	int e = cstr_view_cat(CSTR_VIEW("{\"repo\":\""), ids);
 	e = e ? e : jb_escape_cat(src->repo, ids);
@@ -129,7 +259,7 @@ seen_keep (struct seen              **p_seen,
 	    (window && r->parts[0].data != r->out.data + r->skip))
 		return EINVAL;
 	int e = 0;
-	struct review_read *read = r->read;
+	struct seen_read *read = r->read;
 	struct seen_lines const whole = read ? seen_lines(&read->mark, &read->src, r->out, r->skip,
 	                                                  window, &e)
 	                                     : (struct seen_lines){};

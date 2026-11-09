@@ -50,8 +50,6 @@ struct oid;
 enum {
 	REVIEW_ITEM     = 64,       /**< the bytes charged for each file, line
 	                                 range, finding and change */
-	REVIEW_NAME_MAX = 1024,     /**< the most bytes of a repository name or
-	                                 a path */
 };
 
 /** The flags of review_create(). */
@@ -99,37 +97,10 @@ extern struct cstr_view const review_state_names[REVIEW_STATES];
 /** The names of the actions of the findings tool. Each is NUL-terminated. */
 extern struct cstr_view const review_action_names[REVIEW_ACTIONS];
 
-/** The numbered lines of a committed file in the output of a git read or a
- *  code describe. The texts are views of the caller's storage.
- */
-struct review_source {
-	struct cstr_view repo;    /**< repository name */
-	struct cstr_view commit;  /**< full commit ID */
-	struct cstr_view path;    /**< path of the file in the commit */
-	uint64_t         total;   /**< line count of the file, or 0 if
-	                               unknown */
-	size_t           at;      /**< offset of the numbered lines in the
-	                               output */
-	size_t           len;     /**< bytes of the numbered lines. There is one
-	                               output line for each line from first to
-	                               last, and each output line ends with a
-	                               newline, except perhaps the last. */
-	uint32_t         first;   /**< number of the first line, from 1 */
-	uint32_t         last;    /**< number of the last line */
-};
 
 /** A review record. */
 struct review;
 
-/** A copy of a struct review_source in one allocation, and the position of
- *  the last window in the numbered lines (seen_lines()).
- */
-struct review_read {
-	struct review_source src;     /**< views of text */
-	struct seen_mark     mark;    /**< the position of the last window */
-	char                 text[];  /**< the repository name, the commit ID
-	                                   and the path */
-};
 
 /** Returns the number of the @p len bytes at @p text that remain after the
  *  notices at its end are removed. askai passes notice_kept(). The notices
@@ -154,45 +125,6 @@ extern void
 review_destroy (struct review **p_review);
 
 /**
- * Returns a copy of @p src, whose numbered lines are in the output @p out.
- *
- * @retval nullptr with EFAULT in @p *e if @p src is nullptr, or if
- *         out.data is nullptr and out.len is not 0.
- * @retval nullptr with EINVAL in @p *e if the commit is not 40 or 64
- *         hexadecimal digits, if the repository name or the path is not 1
- *         to REVIEW_NAME_MAX bytes of UTF-8 text without NUL, if the line
- *         numbers do not satisfy 1 <= first <= last <= total (or total is
- *         0), if total is greater than UINT32_MAX, or if the numbered lines
- *         are empty, not within @p out, or not last - first + 1 lines.
- * @retval nullptr with ENOMEM in @p *e if out of memory.
- */
-extern struct review_read *
-review_read_create (struct review_source const *src,
-                    struct cstr_view            out,
-                    int                        *e);
-
-/** Frees @p *p_read and sets it to nullptr. */
-extern void
-review_read_destroy (struct review_read **p_read);
-
-/** Returns @p read as a JSON object, or nullptr with EFAULT (for a nullptr
- *  @p read) or ENOMEM in @p *e.
- */
-extern struct json_object *
-review_read_json (struct review_read const *read,
-                  int                      *e);
-
-/** Returns a new read from the JSON object @p obj that review_read_json()
- *  made, checked against the output @p out as review_read_create() checks
- *  it. Returns nullptr with EFAULT (for a nullptr @p obj), EINVAL or ENOMEM
- *  in @p *e on failure.
- */
-extern struct review_read *
-review_read_create_json (struct json_object const *obj,
-                         struct cstr_view          out,
-                         int                      *e);
-
-/**
  * Adds the lines @p lines of the file of @p read, which a result in turn
  * @p turn shows whole (seen_lines()), to the pending lines of @p r. If the
  * record would be charged more than TOOL_TEXT_MAX bytes, the lines are
@@ -205,10 +137,10 @@ review_read_create_json (struct json_object const *obj,
  * @retval ENOMEM if out of memory.
  */
 extern int
-review_pending_add (struct review            *r,
-                    struct review_read const *read,
-                    struct seen_lines         lines,
-                    uint32_t                  turn);
+review_pending_add (struct review          *r,
+                    struct seen_read const *read,
+                    struct seen_lines       lines,
+                    uint32_t                turn);
 
 /**
  * Moves the pending lines of @p r into the read log (see the file

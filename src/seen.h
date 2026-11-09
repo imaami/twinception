@@ -14,7 +14,10 @@
  * of the upstream's API. A call whose arguments and result are together
  * larger than TOOL_TEXT_MAX stays as a number only (SEEN_TOO_LARGE). The
  * ring also stores the identifiers of the material that a call showed, and
- * the lines of a file that its result showed whole (seen_lines()).
+ * the lines of a file that its result showed whole (seen_lines()). A git
+ * read and a code describe name the numbered lines of a committed file in
+ * their output with a struct call_source (src/mcp.h), and the slot of the
+ * call stores a copy of it, a struct seen_read (seen_read_create()).
  *
  * The storage of a dropped result stays for the next call in the same
  * place of the ring. The storage of dropped arguments goes back to the
@@ -29,12 +32,16 @@
 #include "buf.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "mcp.h"
 
-struct review_read;
-struct review_source;
+struct json_object;
 
-/** The calls in the ring of an ask call, at most. */
-enum { SEEN_CALLS = 64 };
+enum {
+	SEEN_CALLS    = 64,    /**< calls in the ring of an ask call, at
+	                            most */
+	SEEN_NAME_MAX = 1024,  /**< bytes of a repository name or a path in
+	                            a struct call_source, at most */
+};
 
 /** The bytes of the arguments and results of the calls in the ring, at
  *  most.
@@ -55,6 +62,16 @@ enum seen_flag : uint16_t {
 struct seen_mark {
 	uint64_t line;  /**< number of the line of the byte at `at` */
 	size_t   at;    /**< offset in the output, at or after src->at */
+};
+
+/** A copy of a struct call_source in one allocation, and the position of
+ *  the last window in the numbered lines (seen_lines()).
+ */
+struct seen_read {
+	struct call_source src;     /**< views of text */
+	struct seen_mark   mark;    /**< the position of the last window */
+	char               text[];  /**< the repository name, the commit ID
+	                                 and the path */
 };
 
 /** The first and the last line of a file that a window showed whole, or 0
@@ -115,7 +132,7 @@ struct seen_result {
 	struct cstr_view        out;     /**< the output, or the part of the
 	                                      output that the journal recorded
 	                                      for a replayed result */
-	struct review_read     *read;    /**< the numbered lines of a file in
+	struct seen_read       *read;    /**< the numbered lines of a file in
 	                                      @p out, or nullptr */
 	uint64_t                output;  /**< bytes of the whole output */
 	uint64_t                at;      /**< offset of @p out in the whole
@@ -128,6 +145,46 @@ struct seen_result {
 	uint16_t                index;   /**< K of the call in its turn */
 	uint16_t                flags;   /**< enum seen_flag: SEEN_FAILED */
 };
+
+/**
+ * Returns a copy of @p src, whose numbered lines are in the output @p out.
+ *
+ * @retval nullptr with EFAULT in @p *e if @p src is nullptr, or if
+ *         out.data is nullptr and out.len is not 0.
+ * @retval nullptr with EINVAL in @p *e if the commit is not 40 or 64
+ *         hexadecimal digits, if the repository name or the path is not 1
+ *         to SEEN_NAME_MAX bytes of UTF-8 text without NUL, if the line
+ *         numbers do not satisfy 1 <= first <= last <= total (or total is
+ *         0), if total is greater than UINT32_MAX, or if the numbered lines
+ *         are empty, not within @p out, or not last - first + 1 lines.
+ * @retval nullptr with ENOMEM in @p *e if out of memory.
+ * @retval nullptr for a null @p e.
+ */
+extern struct seen_read *
+seen_read_create (struct call_source const *src,
+                  struct cstr_view          out,
+                  int                      *e);
+
+/** Frees @p *p_read and sets it to nullptr. */
+extern void
+seen_read_destroy (struct seen_read **p_read);
+
+/** Returns @p read as a JSON object, or nullptr with EFAULT (for a nullptr
+ *  @p read) or ENOMEM in @p *e.
+ */
+extern struct json_object *
+seen_read_json (struct seen_read const *read,
+                int                    *e);
+
+/** Returns a new read from the JSON object @p obj that seen_read_json()
+ *  made, checked against the output @p out as seen_read_create() checks
+ *  it. Returns nullptr with EFAULT (for a nullptr @p obj), EINVAL or ENOMEM
+ *  in @p *e on failure.
+ */
+extern struct seen_read *
+seen_read_create_json (struct json_object const *obj,
+                       struct cstr_view          out,
+                       int                      *e);
 
 /**
  * Returns the first and the last of the numbered lines @p src that the
@@ -146,12 +203,12 @@ struct seen_result {
  * no line for a null @p e.
  */
 extern struct seen_lines
-seen_lines (struct seen_mark           *mark,
-            struct review_source const *src,
-            struct cstr_view            out,
-            size_t                      skip,
-            size_t                      window,
-            int                        *e);
+seen_lines (struct seen_mark         *mark,
+            struct call_source const *src,
+            struct cstr_view          out,
+            size_t                    skip,
+            size_t                    window,
+            int                      *e);
 
 /**
  * Adds the call @p r with the arguments in @p request to the ring

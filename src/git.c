@@ -20,8 +20,8 @@
 #include "mcp.h"
 #include "oid.h"
 #include "plugin.h"
-#include "review.h"
 #include "schema.h"
+#include "seen.h"
 #include "util.h"
 #include "xlist.h"
 
@@ -51,8 +51,8 @@ enum {
 
 static_assert(2 * REVISIONS + OPTIONS <= GIT_ROOTS, "the commits that a call names fit a pin");
 
-static_assert((int)WORD <= (int)REVIEW_NAME_MAX, "a path that git reads fits a location of "
-              "the review record");
+static_assert((int)WORD <= (int)SEEN_NAME_MAX, "a path that git reads fits a struct "
+              "call_source");
 
 static_assert(TOOL_TEXT_MAX == 4U << 20, "update git.h and the texts in this file that say "
               "4 MiB");
@@ -1548,7 +1548,7 @@ git_read_foot (struct git_call const *call,
 }
 
 /* Pass mcp_slot_source() the numbered lines of the read in @p call, from
- * read->head to @p end in the output, for the review record. If the 4 MiB
+ * read->head to @p end in the output, for the ring of the calls. If the 4 MiB
  * cut (@p cut) ends inside the last line, which then does not end in a
  * newline (@p newline), that line is left out. total is 0 (unknown) when
  * the output was cut. Return 0 or the error of mcp_slot_source().
@@ -1565,7 +1565,7 @@ git_read_shown (struct git_call const *call,
 	if (read->last - part < read->line)
 		return 0;
 	struct git_revision const *rev = &call->revisions[0];
-	struct review_source const src = {
+	struct call_source const src = {
 		.repo   = call->pin.repo->name,
 		.commit = oid_view(&call->pin.roots[rev->root]),
 		.path   = cstr_view_slice(rev->path, 1, SIZE_MAX),

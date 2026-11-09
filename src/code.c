@@ -22,7 +22,6 @@
 #include "loop.h"
 #include "mcp.h"
 #include "plugin.h"
-#include "review.h"
 #include "schema.h"
 #include "util.h"
 #include "xlist.h"
@@ -297,9 +296,9 @@ code_spawn (struct code_call *call,
  * with a valid record line.
  */
 static bool
-code_record (struct cstr_view      *text,
-             struct git_pin const  *pin,
-             struct review_source  *src)
+code_record (struct cstr_view     *text,
+             struct git_pin const *pin,
+             struct call_source   *src)
 {
 	struct cstr_view rest = *text;
 	struct cstr_view line;
@@ -314,7 +313,7 @@ code_record (struct cstr_view      *text,
 		line = cstr_view_slice(line, n + 1, SIZE_MAX);
 	}
 	*text = rest;
-	*src = (struct review_source){
+	*src = (struct call_source){
 		.repo = pin->repo->name, .commit = oid_view(&pin->roots[0]),
 		.path = line, .total = v[2], .at = v[3], .len = v[4],
 		.first = (uint32_t)v[0], .last = (uint32_t)v[1],
@@ -324,7 +323,7 @@ code_record (struct cstr_view      *text,
 
 /* Ends the call in @p slot after askai-code has exited. With exit status
  * 0, the output is the result, and the numbered lines that describe
- * printed are added to the review record. With exit status 1, the output
+ * printed go to the ring of the calls. With exit status 1, the output
  * is a tool error. Otherwise the call fails with the reason.
  */
 static void
@@ -345,7 +344,7 @@ code_ended (struct mcp_slot  *slot,
 	 * case the helper is broken. */
 	struct cstr_view text = { (char const *)out.ptr, jb_mend((char *)out.ptr, out.len, true) };
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
-	struct review_source src;
+	struct call_source src;
 	bool const record = !status && code_record(&text, &call->pin, &src);
 	mcp_slot_lend(slot, text);
 	/* mcp_slot_source() returns EINVAL for a record line that does not

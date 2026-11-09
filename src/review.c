@@ -301,141 +301,22 @@ review_destroy (struct review **p_review)
 	*p_review = nullptr;
 }
 
-/** Returns true if @p t is 1 to REVIEW_NAME_MAX bytes of UTF-8 text without
+/** Returns true if @p t is 1 to SEEN_NAME_MAX bytes of UTF-8 text without
  *  NUL, as a repository name or a path must be.
  */
 static bool
 review_name_valid (struct cstr_view t)
 {
-	return t.len && t.len <= REVIEW_NAME_MAX && jb_is_text(t);
-}
-
-/** Returns true if the numbered lines of @p src are not empty and are
- *  within @p out.
- */
-static bool
-review_source_within (struct review_source const *src,
-                      struct cstr_view            out)
-{
-	return src->len && src->len <= out.len && src->at <= out.len - src->len;
-}
-
-struct review_read *
-review_read_create (struct review_source const *src,
-                    struct cstr_view            out,
-                    int                        *e)
-{
-	if (!e)
-		return nullptr;
-	if (!src || (!out.data && out.len)) {
-		*e = EFAULT;
-		return nullptr;
-	}
-	*e = EINVAL;
-	if (!oid_valid(src->commit) ||
-	    !review_name_valid(src->repo) || !review_name_valid(src->path) || !src->first ||
-	    src->last < src->first || (src->total && src->total < src->last) ||
-	    src->total > UINT32_MAX || !review_source_within(src, out))
-		return nullptr;
-	/* Each numbered line ends with a newline, except perhaps the last. */
-	struct cstr_view const lines = { out.data + src->at, src->len };
-	if (cstr_view_count(lines, '\n') + (lines.data[lines.len - 1] != '\n') !=
-	    (uint64_t)src->last - src->first + 1)
-		return nullptr;
-	struct review_read *read = malloc(sizeof *read + src->repo.len + src->commit.len +
-	                                  src->path.len);
-	if (!read) {
-		*e = ENOMEM;
-		return nullptr;
-	}
-	*read = (struct review_read){ .src = *src, .mark = { .line = src->first, .at = src->at } };
-	read->src.repo.data = read->text;
-	read->src.commit.data = mempcpy(read->text, src->repo.data, src->repo.len);
-	read->src.path.data = mempcpy((char *)read->src.commit.data, src->commit.data,
-	                              src->commit.len);
-	memcpy((char *)read->src.path.data, src->path.data, src->path.len);
-	*e = 0;
-	return read;
-}
-
-void
-review_read_destroy (struct review_read **p_read)
-{
-	if (!p_read)
-		return;
-	free(*p_read);
-	*p_read = nullptr;
-}
-
-struct json_object *
-review_read_json (struct review_read const *read,
-                  int                      *e)
-{
-	if (!e)
-		return nullptr;
-	if (!read) {
-		*e = EFAULT;
-		return nullptr;
-	}
-	struct review_source const *src = &read->src;
-	struct json_object *obj = jb_object("repo", jb_string(src->repo),
-	                                    "commit", jb_string(src->commit),
-	                                    "path", jb_string(src->path),
-	                                    "at", json_object_new_uint64(src->at),
-	                                    "len", json_object_new_uint64(src->len),
-	                                    "first", json_object_new_uint64(src->first),
-	                                    "last", json_object_new_uint64(src->last),
-	                                    "total", json_object_new_uint64(src->total),
-	                                    nullptr);
-	*e = obj ? 0 : ENOMEM;
-	return obj;
-}
-
-struct review_read *
-review_read_create_json (struct json_object const *obj,
-                         struct cstr_view          out,
-                         int                      *e)
-{
-	if (!e)
-		return nullptr;
-	if (!obj) {
-		*e = EFAULT;
-		return nullptr;
-	}
-	uint64_t at;
-	uint64_t len;
-	uint64_t first;
-	uint64_t last;
-	uint64_t total;
-	if (jb_uint_checked(jb_get(obj, "at"), SIZE_MAX, &at) ||
-	    jb_uint_checked(jb_get(obj, "len"), SIZE_MAX, &len) ||
-	    jb_uint_checked(jb_get(obj, "first"), UINT32_MAX, &first) ||
-	    jb_uint_checked(jb_get(obj, "last"), UINT32_MAX, &last) ||
-	    jb_uint_checked(jb_get(obj, "total"), UINT64_MAX, &total)) {
-		*e = EINVAL;
-		return nullptr;
-	}
-	/* review_read_create() checks the texts. */
-	struct review_source const src = {
-		.repo   = jb_view(jb_get(obj, "repo")),
-		.commit = jb_view(jb_get(obj, "commit")),
-		.path   = jb_view(jb_get(obj, "path")),
-		.total  = total,
-		.at     = (size_t)at,
-		.len    = (size_t)len,
-		.first  = (uint32_t)first,
-		.last   = (uint32_t)last,
-	};
-	return review_read_create(&src, out, e);
+	return t.len && t.len <= SEEN_NAME_MAX && jb_is_text(t);
 }
 
 /** Returns the repository, commit, path and total of @p f as a struct
- *  review_source with views of the texts of @p f and no lines.
+ * call_source with views of the texts of @p f and no lines.
  */
-static struct review_source
+static struct call_source
 review_file_source (struct review_file const *f)
 {
-	return (struct review_source){
+	return (struct call_source){
 		.repo   = cstr_view_dstr(&f->repo),
 		.commit = oid_view(&f->commit),
 		.path   = cstr_view_dstr(&f->path),
@@ -462,9 +343,9 @@ review_file_commit_equal (struct review_file const *f,
  * repository and commit, or list->n if there is none.
  */
 static size_t
-review_files_find (struct review_files const  *list,
-                   struct review_source const *key,
-                   size_t                     *at)
+review_files_find (struct review_files const *list,
+                   struct call_source const  *key,
+                   size_t                    *at)
 {
 	*at = list->n;
 	for (size_t i = 0; i < list->n; ++i) {
@@ -497,8 +378,8 @@ review_files_insert (struct review_files      *list,
  *  ENOMEM.
  */
 static int
-review_file_set (struct review_file         *f,
-                 struct review_source const *key)
+review_file_set (struct review_file       *f,
+                 struct call_source const *key)
 {
 	f->total = (uint32_t)key->total;
 	int e = oid_init(&f->commit, key->commit);
@@ -597,10 +478,10 @@ review_file_add_range (struct review       *r,
  * Returns 0 or ENOMEM.
  */
 static int
-review_files_add (struct review              *r,
-                  struct review_files        *list,
-                  struct review_source const *key,
-                  struct review_range         lines)
+review_files_add (struct review            *r,
+                  struct review_files       *list,
+                  struct call_source const  *key,
+                  struct review_range        lines)
 {
 	size_t at;
 	size_t const k = review_files_find(list, key, &at);
@@ -626,10 +507,10 @@ review_files_add (struct review              *r,
 }
 
 int
-review_pending_add (struct review            *r,
-                    struct review_read const *read,
-                    struct seen_lines         lines,
-                    uint32_t                  turn)
+review_pending_add (struct review          *r,
+                    struct seen_read const *read,
+                    struct seen_lines       lines,
+                    uint32_t                turn)
 {
 	if (!r || !read)
 		return EFAULT;
@@ -660,7 +541,7 @@ static int
 review_log_file (struct review      *r,
                  struct review_file *f)
 {
-	struct review_source const key = review_file_source(f);
+	struct call_source const key = review_file_source(f);
 	size_t at;
 	size_t const k = review_files_find(&r->log, &key, &at);
 	if (k < r->log.n) {
@@ -1864,7 +1745,7 @@ review_files_add_json (struct review            *r,
                        struct review_files      *list,
                        struct json_object const *obj)
 {
-	struct review_source key = {
+	struct call_source key = {
 		.repo   = jb_view(jb_get(obj, "repo")),
 		.commit = jb_view(jb_get(obj, "commit")),
 		.path   = jb_view(jb_get(obj, "path")),
@@ -1923,7 +1804,7 @@ review_files_check_totals (struct review const *r)
 {
 	for (size_t i = 0; i < r->pending.n; ++i) {
 		struct review_file const *p = &r->pending.items[i];
-		struct review_source const key = review_file_source(p);
+		struct call_source const key = review_file_source(p);
 		size_t at;
 		size_t const k = review_files_find(&r->log, &key, &at);
 		if (k == r->log.n)

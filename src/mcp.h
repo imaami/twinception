@@ -35,7 +35,6 @@ struct metrics_src;
 struct oid;
 struct registry;
 struct review;
-struct review_source;
 struct store;
 struct stream_app;
 struct task_pool;
@@ -449,18 +448,38 @@ mcp_slot_turn (struct mcp_slot const *slot);
 extern uint32_t
 mcp_slot_call (struct mcp_slot const *slot);
 
+/** The numbered lines of a committed file in the output of a git read or a
+ *  code describe (mcp_slot_source()). The texts are views of the caller's
+ *  storage.
+ */
+struct call_source {
+	struct cstr_view repo;    /**< repository name */
+	struct cstr_view commit;  /**< full commit ID */
+	struct cstr_view path;    /**< path of the file in the commit */
+	uint64_t         total;   /**< line count of the file, or 0 if
+	                               unknown */
+	size_t           at;      /**< offset of the numbered lines in the
+	                               output */
+	size_t           len;     /**< bytes of the numbered lines. There is one
+	                               output line for each line from first to
+	                               last, and each output line ends with a
+	                               newline, except perhaps the last. */
+	uint32_t         first;   /**< number of the first line, from 1 */
+	uint32_t         last;    /**< number of the last line */
+};
+
 /** Stores a copy of @p src, which describes the numbered lines of a
  *  committed file in the call's output, written or lent, for the ring of
  *  the calls of the ask call (seen_keep()) and its review record. It
  *  stores nothing for the call of a client, or if @p src is a single line
  *  longer than mcp_slot_window_max().
  *  Returns 0, EFAULT for nullptr, EINVAL if the call has ended or @p src
- *  does not fit the output (review_read_create()), or ENOMEM. This function
+ *  does not fit the output (seen_read_create()), or ENOMEM. This function
  *  is not exported yet.
  */
 extern int
-mcp_slot_source (struct mcp_slot            *slot,
-                 struct review_source const *src);
+mcp_slot_source (struct mcp_slot          *slot,
+                 struct call_source const *src);
 
 /** Sets the notebook that the call's output shows to @p notebook, the
  *  name of a member and its kind, such as "bro (agent)", which must stay

@@ -173,15 +173,15 @@ room_of (struct review *r)
  * @p bare is true, the last line has no newline.
  */
 static void
-output (struct dstr          *out,
-        struct review_source *src,
-        char const           *repo,
-        char const           *commit,
-        char const           *path,
-        uint32_t              first,
-        uint32_t              last,
-        uint32_t              total,
-        bool                  bare)
+output (struct dstr        *out,
+        struct call_source *src,
+        char const         *repo,
+        char const         *commit,
+        char const         *path,
+        uint32_t            first,
+        uint32_t            last,
+        uint32_t            total,
+        bool                bare)
 {
 	dstr_clear(out);
 	CHECK(dstr_printf(out, "[h]\n"));
@@ -190,8 +190,8 @@ output (struct dstr          *out,
 		CHECK(dstr_printf(out, "%u\tline %u%s", n, n, n == last && bare ? "" : "\n"));
 	size_t len = dstr_len(out) - at;
 	CHECK(dstr_printf(out, "\n[f]"));
-	*src = (struct review_source){ cstr_view(repo), cstr_view(commit), cstr_view(path),
-	                               total, at, len, first, last };
+	*src = (struct call_source){ cstr_view(repo), cstr_view(commit), cstr_view(path),
+	                             total, at, len, first, last };
 }
 
 /* Pass review_pending_add() the lines of @p read that the window of
@@ -199,12 +199,12 @@ output (struct dstr          *out,
  * turn @p turn. Returns the error number.
  */
 static int
-pending (struct review      *r,
-         struct review_read *read,
-         struct cstr_view    out,
-         size_t              skip,
-         size_t              window,
-         uint32_t            turn)
+pending (struct review    *r,
+         struct seen_read *read,
+         struct cstr_view  out,
+         size_t            skip,
+         size_t            window,
+         uint32_t          turn)
 {
 	int e = EFAULT;
 	struct seen_lines const lines = read ? seen_lines(&read->mark, &read->src, out, skip,
@@ -230,14 +230,14 @@ shown_in (struct review *r,
           uint32_t       turn)
 {
 	struct dstr out = DSTR_INIT;
-	struct review_source src;
+	struct call_source src;
 	output(&out, &src, repo, commit, path, first, last, total, false);
 	struct cstr_view o = cstr_view_dstr(&out);
 	int e;
-	struct review_read *read = review_read_create(&src, o, &e);
+	struct seen_read *read = seen_read_create(&src, o, &e);
 	if (!e)
 		e = pending(r, read, o, skip, window, turn);
-	review_read_destroy(&read);
+	seen_read_destroy(&read);
 	CHECK(!read);
 	dstr_cleanup(&out);
 	return e;
@@ -392,11 +392,11 @@ test_seen (void)
 	 * read if that mark is after the window. */
 	{
 		struct dstr paged = DSTR_INIT;
-		struct review_source from;
+		struct call_source from;
 		output(&paged, &from, "p", A, "src/a.c", 1, 9, 9, false);
 		struct cstr_view const o = cstr_view_dstr(&paged);
 		int e;
-		struct review_read *read = review_read_create(&from, o, &e);
+		struct seen_read *read = seen_read_create(&from, o, &e);
 		CHECK(read && !e);
 		struct review *r = fresh();
 		CHECK(!pending(r, read, o, 4 + 9 * 4, 9 * 2, 1));
@@ -404,7 +404,7 @@ test_seen (void)
 		CHECK(!pending(r, read, o, 4, 9 * 2, 1));
 		CHECK(!review_pending_log(r));
 		lines_of(r, "lines 1-2, 5-8: 6 of 9 lines", __LINE__);
-		review_read_destroy(&read);
+		seen_read_destroy(&read);
 		review_destroy(&r);
 		dstr_cleanup(&paged);
 	}
@@ -429,11 +429,11 @@ test_seen (void)
 
 	/* A last line without a newline counts only if the window holds its end. */
 	struct dstr out = DSTR_INIT;
-	struct review_source src;
+	struct call_source src;
 	output(&out, &src, "p", A, "src/a.c", 1, 3, 3, true);
 	struct cstr_view o = cstr_view_dstr(&out);
 	int e;
-	struct review_read *read = review_read_create(&src, o, &e);
+	struct seen_read *read = seen_read_create(&src, o, &e);
 	CHECK(read && !e);
 	struct review *r = fresh();
 	CHECK(!pending(r, read, o, 0, src.at + src.len - 1, 1) && !review_pending_log(r));
@@ -449,13 +449,13 @@ test_seen (void)
 		CHECK(dstr_printf(&more, "a\n"));
 	CHECK(pending(r, read, cstr_view_dstr(&more), 0, SIZE_MAX, 1) == EINVAL);
 	dstr_cleanup(&more);
-	review_read_destroy(&read);
+	seen_read_destroy(&read);
 	review_destroy(&r);
 
 	/* Sources that do not match their output or are not valid. */
 	output(&out, &src, "p", A, "src/a.c", 1, 3, 3, false);
 	o = cstr_view_dstr(&out);
-	struct review_source bad[] = {
+	struct call_source bad[] = {
 		src, src, src, src, src, src, src, src, src, src, src, src, src, src,
 	};
 	bad[0].last = 4;                       /* a line more than the text */
@@ -474,26 +474,26 @@ test_seen (void)
 	bad[13].total = (uint64_t)UINT32_MAX + 1;  /* more than a file records */
 	for (size_t i = 0; i < array_size(bad); ++i) {
 		e = 0;
-		CHECK(!review_read_create(&bad[i], o, &e) && e == EINVAL);
+		CHECK(!seen_read_create(&bad[i], o, &e) && e == EINVAL);
 	}
 	/* Bytes after the last newline are a line more than the read says. */
-	struct review_source trail = { CSTR_VIEW("p"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 0, 0, 5, 1, 1 };
+	struct call_source trail = { CSTR_VIEW("p"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 0, 0, 5, 1, 1 };
 	e = 0;
-	CHECK(!review_read_create(&trail, CSTR_VIEW("1\ta\n2"), &e) && e == EINVAL);
+	CHECK(!seen_read_create(&trail, CSTR_VIEW("1\ta\n2"), &e) && e == EINVAL);
 	/* The numbered lines may end without the last newline. */
 	src.len -= 1;
-	read = review_read_create(&src, o, &e);
+	read = seen_read_create(&src, o, &e);
 	CHECK(read && !e);
-	review_read_destroy(&read);
-	char path[REVIEW_NAME_MAX + 2] = {};
-	memset(path, 'a', REVIEW_NAME_MAX + 1);
+	seen_read_destroy(&read);
+	char path[SEEN_NAME_MAX + 2] = {};
+	memset(path, 'a', SEEN_NAME_MAX + 1);
 	src.path = cstr_view(path);
-	CHECK(!review_read_create(&src, o, &e) && e == EINVAL);
-	path[REVIEW_NAME_MAX] = '\0';
+	CHECK(!seen_read_create(&src, o, &e) && e == EINVAL);
+	path[SEEN_NAME_MAX] = '\0';
 	src.path = cstr_view(path);
-	read = review_read_create(&src, o, &e);
+	read = seen_read_create(&src, o, &e);
 	CHECK(read && !e);
-	review_read_destroy(&read);
+	seen_read_destroy(&read);
 	dstr_cleanup(&out);
 }
 
@@ -1563,36 +1563,36 @@ test_json (void)
 
 	/* A read and its JSON. */
 	struct dstr out = DSTR_INIT;
-	struct review_source src;
+	struct call_source src;
 	output(&out, &src, "proj", A, "src/a.c", 3, 5, 9, false);
 	struct cstr_view o = cstr_view_dstr(&out);
-	struct review_read *read = review_read_create(&src, o, &e);
+	struct seen_read *read = seen_read_create(&src, o, &e);
 	CHECK(read && !e);
-	struct json_object *rj = review_read_json(read, &e);
+	struct json_object *rj = seen_read_json(read, &e);
 	CHECK(rj && !e);
 	SAME(json_object_to_json_string_ext(rj, JSON_C_TO_STRING_PLAIN),
 	     "{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":\"src\\/a.c\",\"at\":4,"
 	     "\"len\":27,\"first\":3,\"last\":5,\"total\":9}");
-	struct review_read *copy = review_read_create_json(rj, o, &e);
+	struct seen_read *copy = seen_read_create_json(rj, o, &e);
 	CHECK(copy && !e);
 	r = fresh();
 	CHECK(!pending(r, copy, o, 0, SIZE_MAX, 1) && !review_pending_log(r));
 	lines_of(r, "lines 3-5: 3 of 9 lines", __LINE__);
 	review_destroy(&r);
-	review_read_destroy(&copy);
+	seen_read_destroy(&copy);
 	/* The output must still hold the lines, and each member must be there. */
-	CHECK(!review_read_create_json(rj, (struct cstr_view){ o.data, 20 }, &e) && e == EINVAL);
+	CHECK(!seen_read_create_json(rj, (struct cstr_view){ o.data, 20 }, &e) && e == EINVAL);
 	char const *const members[] = { "repo", "commit", "path", "at", "len", "first", "last",
 	                                "total" };
 	for (size_t i = 0; i < array_size(members); ++i) {
 		struct json_object *less = json_tokener_parse(
 			json_object_to_json_string_ext(rj, JSON_C_TO_STRING_PLAIN));
 		json_object_object_del(less, members[i]);
-		CHECK(!review_read_create_json(less, o, &e) && e == EINVAL);
+		CHECK(!seen_read_create_json(less, o, &e) && e == EINVAL);
 		json_object_put(less);
 	}
 	json_object_put(rj);
-	review_read_destroy(&read);
+	seen_read_destroy(&read);
 	dstr_cleanup(&out);
 }
 
@@ -1764,16 +1764,16 @@ test_nullptr (void)
 	review_destroy(nullptr);
 	struct review *none = nullptr;
 	review_destroy(&none);
-	struct review_read *no_read = nullptr;
-	review_read_destroy(nullptr);
-	review_read_destroy(&no_read);
+	struct seen_read *no_read = nullptr;
+	seen_read_destroy(nullptr);
+	seen_read_destroy(&no_read);
 	struct cstr_view out = { "x\n", 2 };
-	CHECK(!review_read_create(nullptr, out, &e) && e == EFAULT);
-	struct review_source src = { CSTR_VIEW("p"), CSTR_VIEW(A), CSTR_VIEW("a"), 0, 0, 2, 1, 1 };
-	CHECK(!review_read_create(&src, out, nullptr));
+	CHECK(!seen_read_create(nullptr, out, &e) && e == EFAULT);
+	struct call_source src = { CSTR_VIEW("p"), CSTR_VIEW(A), CSTR_VIEW("a"), 0, 0, 2, 1, 1 };
+	CHECK(!seen_read_create(&src, out, nullptr));
 	e = 0;
-	CHECK(!review_read_create(&src, (struct cstr_view){ nullptr, 2 }, &e) && e == EFAULT);
-	struct review_read *read = review_read_create(&src, out, &e);
+	CHECK(!seen_read_create(&src, (struct cstr_view){ nullptr, 2 }, &e) && e == EFAULT);
+	struct seen_read *read = seen_read_create(&src, out, &e);
 	CHECK(read && !e);
 	struct review *r = fresh();
 	struct seen_lines const one = { 1, 1 };
@@ -1796,13 +1796,13 @@ test_nullptr (void)
 	CHECK(!review_json(nullptr, &e) && e == EFAULT);
 	CHECK(review_restore(nullptr, args) == EFAULT);
 	CHECK(review_restore(r, nullptr) == EFAULT);
-	CHECK(!review_read_json(nullptr, &e) && e == EFAULT);
-	CHECK(!review_read_json(read, nullptr));
-	CHECK(!review_read_create_json(nullptr, out, &e) && e == EFAULT);
-	CHECK(!review_read_create_json(args, out, nullptr));
+	CHECK(!seen_read_json(nullptr, &e) && e == EFAULT);
+	CHECK(!seen_read_json(read, nullptr));
+	CHECK(!seen_read_create_json(nullptr, out, &e) && e == EFAULT);
+	CHECK(!seen_read_create_json(args, out, nullptr));
 	CHECK(!dstr_len(&d));
 	json_object_put(args);
-	review_read_destroy(&read);
+	seen_read_destroy(&read);
 	review_destroy(&r);
 }
 
