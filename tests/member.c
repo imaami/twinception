@@ -34,7 +34,6 @@
 #include "mcp.h"
 #include "member.h"
 #include "store.h"
-#include "stream.h"
 #include "util.h"
 
 struct loop *
@@ -243,23 +242,31 @@ test_logins (struct member_registry const *reg)
 	CHECK(member_login(nullptr, reg, &grant, nullptr) == EINVAL);
 	CHECK(member_login(&login, nullptr, &grant, nullptr) == EINVAL);
 	CHECK(member_login(&login, reg, nullptr, nullptr) == EINVAL);
-	/* A request starts with the login of its client and no asker. The
-	 * second word of the key of a Unix socket's peer is the uid. */
-	struct member_call call;
-	struct stream_peer const unix_peer = { { UINT64_MAX, 1000 } };
-	struct stream_peer const tcp_peer = { { 1, 2 } };
+	/* member_login() uses the uid of a Unix login, not the identity of the
+	 * grant. */
 	grant = (struct policy_grant){ .who = CSTR_VIEW("identity alice") };
-	memset(&call, 'x', sizeof call);
-	CHECK(!member_call_init(&call, reg, &grant, &unix_peer));
-	CHECK(!strcmp(call.login.text, "uid 1000") && !*call.ask.hex &&
-	      !*call.conversation.hex && !*call.asker.name);
-	CHECK(!member_call_init(&call, reg, &grant, &tcp_peer));
-	CHECK(!strcmp(call.login.text, "identity alice") && !*call.asker.name);
-	memset(&call, 'x', sizeof call);
-	CHECK(member_call_init(&call, nullptr, &grant, &unix_peer) == EINVAL);
-	CHECK(!*call.login.text && !*call.asker.name);
-	CHECK(member_call_init(&call, reg, &grant, nullptr) == EINVAL && !*call.login.text);
-	CHECK(member_call_init(nullptr, reg, &grant, &unix_peer) == EINVAL);
+	memset(&login, 'x', sizeof login);
+	CHECK(!member_login(&login, reg, &grant, &uid));
+	CHECK(!strcmp(login.text, "uid 1000") && login.uid == 1000 &&
+	      login.kind == MEMBER_PERSON && !*login.name);
+}
+
+/* member_call_ids() makes the ID of the ask call, and the ID of a new
+ * conversation unless the call continues one.
+ */
+static void
+test_call_ids (void)
+{
+	struct member_call call = {};
+	CHECK(!member_call_ids(&call) && hexid_valid(hexid_view(&call.ask)) &&
+	      hexid_valid(hexid_view(&call.conversation)) &&
+	      strcmp(call.ask.hex, call.conversation.hex));
+	struct hexid const first = call.ask;
+	CHECK(!hexid_init(&call.conversation, CSTR_VIEW("fedcba9876543210fedcba9876543210")));
+	CHECK(!member_call_ids(&call) && hexid_valid(hexid_view(&call.ask)) &&
+	      strcmp(call.ask.hex, first.hex) &&
+	      !strcmp(call.conversation.hex, "fedcba9876543210fedcba9876543210"));
+	CHECK(member_call_ids(nullptr) == EINVAL);
 }
 
 /* A login of the kind @p kind with the text @p text and the name @p name. */
@@ -1182,6 +1189,7 @@ main (int    argc,
 		return 2;
 	}
 	test_names();
+	test_call_ids();
 	test_registry(argv[1]);
 
 	char path[4096];

@@ -4053,14 +4053,10 @@ mcp_req_ask (struct mcp_req     *req,
 		else if (mcp_req_background(req, req->self.tool))
 			return;
 	}
-	/* The commits of turns lent notes or findings name the ask call and the
-	 * conversation. The argument comes with notes only (the problems above). */
+	/* The commits of the turns name the ask call and the conversation. */
 	int e = 0;
-	if (req->lent & (st->lending.of[KIND_NOTES] | st->lending.of[KIND_FINDINGS])) {
-		e = hexid_make(&req->member.ask);
-		if (!e && !conversation)
-			e = hexid_make(&req->member.conversation);
-	}
+	if (req->lent & (st->lending.of[KIND_NOTES] | st->lending.of[KIND_FINDINGS]))
+		e = member_call_ids(&req->member);
 	if (e) {
 		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot make the IDs of the ask call"),
 		              nullptr, 0);
@@ -7466,18 +7462,21 @@ mcp_begin (struct mcp           *mcp,
 		.method = method
 	};
 	/* The client's name is in the policy, which a reload can free after
-	 * the head, so it is copied, and so is the login. The log names a client
-	 * on a Unix socket by its uid, which is in peer.key[1] (src/stream.h),
-	 * with the name from the policy after it in parentheses. */
+	 * the head, so it is copied, and so is the login. The key of a client
+	 * on a Unix socket is { UINT64_MAX, uid } (src/stream.h). The log names
+	 * the client by its uid, with the name from the policy after it in
+	 * parentheses. */
 	struct cstr_view const who = s->grant.who;
-	(void)member_call_init(&req->member, mcp->st->notes_tool.members, &s->grant, &s->peer);
-	if (s->peer.key[0] != UINT64_MAX) {
+	uint32_t const uid = (uint32_t)s->peer.key[1];
+	bool const local = s->peer.key[0] == UINT64_MAX;
+	(void)member_login(&req->member.login, mcp->st->notes_tool.members, &s->grant,
+	                   local ? &uid : nullptr);
+	if (!local) {
 		if (who.len)
 			memcpy(req->client, who.data, who.len < sizeof req->client
 			                              ? who.len : sizeof req->client - 1);
 	} else {
-		size_t n = util_format(req->client, sizeof req->client, "uid %" PRIu64,
-		                       s->peer.key[1]);
+		size_t n = util_format(req->client, sizeof req->client, "uid %" PRIu32, uid);
 		if (who.len)
 			(void)util_format(req->client + n, sizeof req->client - n, " (%.*s)",
 			                  (int)who.len, who.data);

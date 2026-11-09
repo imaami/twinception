@@ -47,12 +47,9 @@
 struct blocker;
 struct child;
 struct dstr;
-struct list;
 struct loop;
-struct stream_peer;
 struct member_registry;
 struct member_table;
-struct store;
 
 enum {
 	MEMBER_NAME   = UTIL_WORD_MAX + 1,               /**< bytes of a member
@@ -186,8 +183,8 @@ struct member_login {
 
 /** The member of the client of a request, and the IDs that the commits of
  *  the turns of an ask call name. Each request of mcp.c contains one
- *  (mcp_slot_member()). mcp.c makes the IDs, and the notes tool sets the
- *  asker (mcp_slot_asker()).
+ *  (mcp_slot_member()). mcp.c makes the IDs (member_call_ids()), and the
+ *  notes tool sets the asker (mcp_slot_asker()).
  */
 struct member_call {
 	struct member_login login;         /**< the login of the client, from
@@ -212,18 +209,6 @@ struct member_byline {
 	char                 call[16];             /**< the number of the call,
 	                                                NUL included */
 };
-
-/** Initializes @p dest for a request of a client with the grant @p grant
- *  and the address @p peer (src/stream.h): the login of the client, as
- *  member_login() writes it, no IDs, and no asker. grant->who must be
- *  valid. Returns 0, or the error of member_login(), such as EINVAL for a
- *  null @p registry, as without --notes, with no login in @p dest.
- */
-extern int
-member_call_init (struct member_call           *dest,
-                  struct member_registry const *registry,
-                  struct policy_grant const    *grant,
-                  struct stream_peer const     *peer);
 
 /**
  * Returns true if @p name can be the name of a member: 1 to UTIL_WORD_MAX
@@ -304,6 +289,14 @@ member_login (struct member_login          *dest,
               struct member_registry const *registry,
               struct policy_grant const    *grant,
               uint32_t const               *uid);
+
+/** Makes the ID of the ask call of @p call, and the ID of a new
+ *  conversation unless call->conversation is the conversation that the ask
+ *  call continues. Returns 0, EINVAL for a null @p call, or the error of
+ *  hexid_make().
+ */
+extern int
+member_call_ids (struct member_call *call);
 
 /**
  * Creates the registry of the session in the repository @p store, as askai

@@ -23,7 +23,6 @@
 #include "oid.h"
 #include "policy.h"
 #include "store.h"
-#include "stream.h"
 #include "util.h"
 #include "xlist.h"
 
@@ -842,6 +841,17 @@ member_login (struct member_login          *dest,
 }
 
 int
+member_call_ids (struct member_call *call)
+{
+	if (!call)
+		return EINVAL;
+	int e = hexid_make(&call->ask);
+	if (!e && !*call->conversation.hex)
+		e = hexid_make(&call->conversation);
+	return e;
+}
+
+int
 member_init (struct member    *dest,
              struct cstr_view  name,
              struct cstr_view  kind)
@@ -855,23 +865,6 @@ member_init (struct member    *dest,
 	dest->kind = (enum member_kind)k;
 	memcpy(dest->name, name.data, name.len);
 	return 0;
-}
-
-int
-member_call_init (struct member_call           *dest,
-                  struct member_registry const *registry,
-                  struct policy_grant const    *grant,
-                  struct stream_peer const     *peer)
-{
-	if (!dest)
-		return EINVAL;
-	*dest = (struct member_call){};
-	if (!peer)
-		return EINVAL;
-	/* The key of a Unix socket's peer is { UINT64_MAX, uid }. */
-	uint32_t const uid = (uint32_t)peer->key[1];
-	return member_login(&dest->login, registry, grant,
-	                    peer->key[0] == UINT64_MAX ? &uid : nullptr);
 }
 
 /* Writes to @p name the name of the session in the repository at @p path:
