@@ -15615,6 +15615,20 @@ def check_findings_expand(binary, up):
             assert re.fullmatch(r"Added bro#\d+ \(candidate\)\. Evidence bro#\d+/1 from call "
                                 r"c1\. Commit [0-9a-f]{8}\.", said[2]), said
 
+            # A later reference to an item uses what the first reference
+            # read: lines of an item whose first reference is the whole
+            # item, whose git IDs the ring stores.
+            script[:] = [turn({"action": "expand", "id": "cuh#1/2"}),
+                         turn({"action": "add", "claim": "C", "state": "verified",
+                               "evidence": ["cuh#1/2", "cuh#1/2:3", "cuh#1/2:2-3"],
+                               "reason": "R"})]
+            count = len(up.requests)
+            bro.ask("Q")
+            said = results(up.requests[count + 2])
+            assert re.fullmatch(r"Added bro#(\d+) \(verified\)\. Evidence bro#\1/1 from "
+                                r"cuh#1/2, bro#\1/2 from cuh#1/2:3, bro#\1/3 from "
+                                r"cuh#1/2:2-3\. Commit [0-9a-f]{8}\.", said[0]), said
+
             # A client lists, shows and expands, and cannot change a finding.
             status, _, body = bro.rpc("tools/list")
             [listed] = [t for t in body["result"]["tools"] if t["name"] == "findings"]

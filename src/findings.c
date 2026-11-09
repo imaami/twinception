@@ -112,7 +112,7 @@ static constexpr size_t FINDINGS_MATERIAL = TOOL_OUTPUT_MAX / 2;
 
 /* The flags of a call. */
 enum findings_flag : uint8_t {
-	CALL_ABOUT = 1U << 0,  /* the finding that about names exists */
+	CALL_ABOUT = 1U << 0,  /* the finding of the about argument exists */
 	CALL_FOUND = 1U << 1,  /* the finding of id exists */
 	CALL_SAME  = 1U << 2,  /* the update does not change the state of the
 	                          finding */
@@ -142,7 +142,9 @@ struct findings_file {
 	struct oid  id;      /* from ls-tree, or no name */
 };
 
-/* The flags of a reference to an item of a finding (struct findings_cite). */
+/* The flags of a reference to an item of a finding (struct findings_cite).
+ * The flags are set only on the first reference to an item.
+ */
 enum findings_cite_flag : uint16_t {
 	CITE_SHOW    = 1U << 0,  /* the turns had not seen the item, which the
 	                            refusal prints */
@@ -152,20 +154,21 @@ enum findings_cite_flag : uint16_t {
 };
 
 /* A reference of the evidence argument to an item of a finding, X#n/m or
- * X#n/m:A-B.
+ * X#n/m:A-B. askai reads the record and the archive files of an item once,
+ * for the first reference to the item. The later references use them.
  */
 struct findings_cite {
 	struct dstr         record;    /* the JSON object of the item, from the
 	                                  ring or from the file of its
 	                                  finding */
-	struct evidence_ref ref;
 	uint32_t            index;     /* the place of the item in the evidence
 	                                  of the change */
-	uint32_t            turn;      /* the turn whose result showed the item
-	                                  whole, or 0 */
+	uint32_t            first;     /* the place in call->cites of the first
+	                                  reference to the item */
+	struct evidence_ref ref;
+	uint16_t            flags;     /* enum findings_cite_flag */
 	struct oid          blobs[2];  /* the git IDs of the archive files of
 	                                  the item, or no name */
-	uint16_t            flags;     /* enum findings_cite_flag */
 };
 
 /* An entry of the output of expand: the item e of the finding f, or the
@@ -934,6 +937,31 @@ findings_archive_line (struct buf                 *in,
 	return notes_read_input(in, ref, cstr_view(path));
 }
 
+/* Appends to call->files the archive files of the item @p e: the
+ * arguments of the call with EVIDENCE_REQUEST, and the material. A file
+ * whose git ID is in @p blobs is that blob of the repository, and any
+ * other file contains the material in @p m. Returns 0 or the error of
+ * store_part_file() or store_part_blob().
+ */
+static int
+findings_archive (struct findings_call           *call,
+                  struct evidence const          *e,
+                  struct evidence_material const *m,
+                  struct oid const                blobs[static 2])
+{
+	struct evidence_blob const *const b[] = { &e->request, &e->result };
+	struct cstr_view const data[] = { m->request, m->result };
+	int r = 0;
+	for (size_t k = e->flags & EVIDENCE_REQUEST ? 0 : 1; !r && k < array_size(b); ++k) {
+		char path[EVIDENCE_PATH];
+		struct store_part part;
+		evidence_path(b[k]->sha256, path);
+		r = oid_len(&blobs[k]) ? store_part_blob(&call->files, cstr_view(path), &blobs[k])
+		                       : store_part_file(&part, &call->files, cstr_view(path), data[k]);
+	}
+	return r;
+}
+
 /* Returns true if the archive files of the item @p e have the git IDs
  * @p blobs, so that a finding can cite the item again.
  */
@@ -1315,44 +1343,29 @@ findings_act (struct mcp_slot *slot)
 	finding_fini(&added);
 }
 
-/* Returns true if an earlier reference of call->cites than @p k names the
- * item of the reference @p k and is printed with it (CITE_SHOW).
+/* Writes to call->out the start of the refusal of the add or the update
+ * of @p call, whose evidence cites items that the turns had not seen
+ * (CITE_SHOW), and the IDs of those items to @p names, each once. Returns 0
+ * or ENOMEM.
  */
-static bool
-findings_cite_again (struct findings_call const *call,
-                     size_t                      k)
+static int
+findings_unseen_head (struct findings_call *call,
+                      struct dstr          *names)
 {
-	struct evidence_ref const *ref = &call->cites.items[k].ref;
-	for (size_t i = 0; i < k; ++i) {
-		struct findings_cite const *c = &call->cites.items[i];
-		if (c->flags & CITE_SHOW && c->ref.number == ref->number && c->ref.item == ref->item &&
-		    !strcmp(c->ref.author, ref->author))
-			return true;
-	}
-	return false;
-}
-
-/* Refuses the add or update of the call in @p slot, whose evidence cites
- * items that the turns had not seen (CITE_SHOW), and prints those items,
- * each once, with the material @p material, so that they count as shown in
- * this turn. Items that do not fit in one result together are named
- * instead, for expand to print a page at a time.
- */
-static void
-findings_unseen (struct mcp_slot        *slot,
-                 struct cstr_view const  material[static EVIDENCE_REFS][2])
-{
-	struct findings_call *call = *mcp_slot_own(slot);
 	char ids[EVIDENCE_REFS][SEEN_ID];
-	size_t n = 0;
-	for (size_t i = 0; i < call->cites.n; ++i)
-		if (call->cites.items[i].flags & CITE_SHOW && !findings_cite_again(call, i))
-			evidence_ref_id(&call->cites.items[i].ref, ids[n++]);
-	dstr_auto names = DSTR_INIT;
-	bool ok = true;
-	for (size_t i = 0; ok && i < n; ++i)
-		ok = dstr_printf(&names, "%s%s", !i ? "" : i + 1 < n ? ", " : " and ", ids[i]);
+	struct cstr_view views[EVIDENCE_REFS];
+	uint64_t mask = 0;
+	for (size_t i = 0; i < call->cites.n; ++i) {
+		struct findings_cite const *cite = &call->cites.items[i];
+		if (!(cite->flags & CITE_SHOW))
+			continue;
+		evidence_ref_id(&cite->ref, ids[i]);
+		views[i] = cstr_view(ids[i]);
+		mask |= UINT64_C(1) << i;
+	}
 	(void)dstr_clear(&call->out);
+	bool ok = !cstr_view_join(views, call->cites.n, mask, CSTR_VIEW(", "), CSTR_VIEW(" and "),
+	                          names);
 	if (ok && call->action == FINDINGS_ADD)
 		ok = dstr_cat(&call->out, "The finding was not added. ");
 	else if (ok)
@@ -1360,18 +1373,54 @@ findings_unseen (struct mcp_slot        *slot,
 		                 call->number);
 	ok = ok && dstr_printf(&call->out, "%s needs evidence that askai showed you before this "
 	                       "turn. askai had not shown you %s. ",
-	                       finding_state_names[call->change.state].data, dstr_get(&names));
+	                       finding_state_names[call->change.state].data, dstr_get(names));
+	return ok ? 0 : ENOMEM;
+}
+
+/* Refuses the add or the update of the call in @p slot, whose evidence
+ * cites the items @p names that the turns had not seen, because those
+ * items are longer than one result. findings_unseen_head() wrote the start
+ * of the refusal to call->out, and the function replaces the text after
+ * its byte @p head.
+ */
+static void
+findings_too_long (struct mcp_slot   *slot,
+                   size_t             head,
+                   struct dstr const *names)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	(void)dstr_erase(&call->out, head, SIZE_MAX);
+	bool const ok = dstr_printf(&call->out, "The evidence is longer than one result. Read %s "
+	                            "with expand, a page at a time. Repeat the %s in a later turn.",
+	                            dstr_get(names), findings_actions[call->action].data);
+	findings_end(slot, ok ? 0 : ENOMEM, true);
+}
+
+/* Refuses the add or the update of the call in @p slot, whose evidence
+ * cites items that the turns had not seen (CITE_SHOW), and prints those
+ * items, each once, with the material @p material, so that they count as
+ * shown in this turn. Items that do not fit in one result together are
+ * named instead, for expand to print a page at a time
+ * (findings_too_long()).
+ */
+static void
+findings_unseen (struct mcp_slot        *slot,
+                 struct cstr_view const  material[static EVIDENCE_REFS][2])
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	dstr_auto names = DSTR_INIT;
+	int e = findings_unseen_head(call, &names);
 	size_t const head = dstr_len(&call->out);
-	ok = ok && dstr_printf(&call->out, "askai prints %s below. Repeat the %s in your next "
-	                       "turn.\n", dstr_get(&names), findings_actions[call->action].data);
+	if (!e && !dstr_printf(&call->out, "askai prints %s below. Repeat the %s in your next "
+	                       "turn.\n", dstr_get(&names), findings_actions[call->action].data))
+		e = ENOMEM;
 	/* The place of each item in the output. */
 	size_t at[EVIDENCE_REFS + 1] = {};
 	struct evidence item = evidence();
-	int e = ok ? 0 : ENOMEM;
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
 		struct findings_cite *cite = &call->cites.items[i];
 		at[i] = dstr_len(&call->out);
-		if (!(cite->flags & CITE_SHOW) || findings_cite_again(call, i))
+		if (!(cite->flags & CITE_SHOW))
 			continue;
 		char finding[FINDING_ID];
 		finding_id_format(cite->ref.author, cite->ref.number, finding);
@@ -1383,11 +1432,7 @@ findings_unseen (struct mcp_slot        *slot,
 	evidence_fini(&item);
 	at[call->cites.n] = dstr_len(&call->out);
 	if (!e && at[call->cites.n] > mcp_slot_window_max(slot)) {
-		(void)dstr_erase(&call->out, head, SIZE_MAX);
-		e = dstr_printf(&call->out, "The evidence is longer than one result. Read %s with "
-		                "expand, a page at a time. Repeat the %s in a later turn.",
-		                dstr_get(&names), findings_actions[call->action].data) ? 0 : ENOMEM;
-		findings_end(slot, e, true);
+		findings_too_long(slot, head, &names);
 		return;
 	}
 	struct seen_item shown = { .record = DSTR_INIT };
@@ -1406,9 +1451,11 @@ findings_unseen (struct mcp_slot        *slot,
 
 /* Makes the items that the evidence of the call in @p slot cites again,
  * from their records and, for lines, from the stored lines @p material, or
- * refuses the call for items that the turns had not seen (CITE_SHOW).
- * Whole items go into the commit as the git IDs of their archive files.
- * Then the action goes on (findings_act()).
+ * refuses the call for items that the turns had not seen (CITE_SHOW). A
+ * reference uses the record, the git IDs and the material of the first
+ * reference to its item. Lines of an item are stored anew, and a whole
+ * item is the archive files of the item, by their git IDs. Then the action
+ * goes on (findings_act()).
  */
 static void
 findings_cite_end (struct mcp_slot        *slot,
@@ -1425,24 +1472,17 @@ findings_cite_end (struct mcp_slot        *slot,
 	int e = 0;
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
 		struct findings_cite const *cite = &call->cites.items[i];
+		struct findings_cite const *of = &call->cites.items[cite->first];
 		struct evidence *item = &call->change.evidence.items[cite->index];
-		e = evidence_recite(item, &lines, &cite->ref, cstr_view_dstr(&cite->record),
-		                    material[i][1], why, sizeof why);
-		char path[EVIDENCE_PATH];
-		if (!e && cite->ref.form == EVIDENCE_REF_ITEM_LINES) {
-			struct store_part part;
-			evidence_path(item->result.sha256, path);
-			e = store_part_file(&part, &call->files, cstr_view(path), cstr_view_dstr(&lines));
-			continue;
-		}
-		if (!e && item->flags & EVIDENCE_REQUEST) {
-			evidence_path(item->request.sha256, path);
-			e = store_part_blob(&call->files, cstr_view(path), &cite->blobs[0]);
-		}
-		if (!e) {
-			evidence_path(item->result.sha256, path);
-			e = store_part_blob(&call->files, cstr_view(path), &cite->blobs[1]);
-		}
+		e = evidence_recite(item, &lines, &cite->ref, cstr_view_dstr(&of->record),
+		                    material[cite->first][1], why, sizeof why);
+		if (e)
+			break;
+		if (cite->ref.form == EVIDENCE_REF_ITEM_LINES)
+			e = findings_archive(call, item, &(struct evidence_material){
+				.result = cstr_view_dstr(&lines) }, (struct oid const [2]){});
+		else
+			e = findings_archive(call, item, &(struct evidence_material){}, of->blobs);
 	}
 	if (e) {
 		findings_stop(slot, e, cstr_view(why));
@@ -1486,25 +1526,27 @@ findings_got_blobs (struct mcp_slot *slot)
 	findings_cite_end(slot, material);
 }
 
-/* Decides which items of call->cites the refusal of the call in @p slot
- * prints (CITE_SHOW): for verified and disproved, the items that a result
- * did not show whole before this turn. Then runs git to read the archive
- * files of those items, of items cited in part, and of items whose git IDs
- * the ring does not store (CITE_READ). Without such items, the call goes
- * on at once.
+/* Runs git to read the archive files of the items of call->cites that the
+ * refusal of the call in @p slot prints or that are cited in part, which
+ * findings_cite_add() marked CITE_READ, and of the items whose git IDs the
+ * ring does not store. Each item is read once, by its first reference. The
+ * call is refused before git runs if the material of the items that the
+ * refusal prints is longer than one result. Without items to read, the
+ * call goes on at once.
  */
 static void
 findings_cite_blobs (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	bool const strict = FINDING_SHOWN >> call->change.state & 1;
-	uint32_t const turn = mcp_slot_turn(slot);
 	struct evidence item = evidence();
 	struct buf in = {};
 	uint64_t bytes = 0;
+	uint64_t shown = 0;
 	int e = 0;
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
 		struct findings_cite *cite = &call->cites.items[i];
+		if (cite->first != i)
+			continue;
 		e = evidence_parse_text(&item, cstr_view_dstr(&cite->record));
 		if (e == EINVAL) {
 			evidence_fini(&item);
@@ -1515,11 +1557,10 @@ findings_cite_blobs (struct mcp_slot *slot)
 		}
 		if (e)
 			break;
-		bool const seen = cite->turn && cite->turn < turn;
 		bool const asked = item.flags & EVIDENCE_REQUEST;
-		cite->flags = (uint16_t)((strict && !seen ? CITE_SHOW : 0) | (asked ? CITE_REQUEST : 0));
-		if (!(cite->flags & CITE_SHOW) && cite->ref.form == EVIDENCE_REF_ITEM &&
-		    findings_stored(&item, cite->blobs))
+		if (asked)
+			cite->flags |= CITE_REQUEST;
+		if (!(cite->flags & CITE_READ) && findings_stored(&item, cite->blobs))
 			continue;
 		cite->flags |= CITE_READ;
 		if (!findings_fits(&bytes, &item)) {
@@ -1530,6 +1571,8 @@ findings_cite_blobs (struct mcp_slot *slot)
 			              TOOL_FAILED);
 			return;
 		}
+		if (cite->flags & CITE_SHOW)
+			shown += (asked ? item.request.bytes : 0) + item.result.bytes;
 		/* The ring stores the git IDs of an item that a result showed. */
 		for (size_t k = asked ? 0 : 1; !e && k < array_size(cite->blobs); ++k)
 			e = oid_len(&cite->blobs[k])
@@ -1542,6 +1585,16 @@ findings_cite_blobs (struct mcp_slot *slot)
 		findings_end(slot, e, true);
 		return;
 	}
+	if (shown > mcp_slot_window_max(slot)) {
+		buf_fini(&in);
+		dstr_auto names = DSTR_INIT;
+		e = findings_unseen_head(call, &names);
+		if (e)
+			findings_end(slot, e, true);
+		else
+			findings_too_long(slot, dstr_len(&call->out), &names);
+		return;
+	}
 	if (!buf_peek(&in).len) {
 		findings_cite_end(slot, (struct cstr_view [EVIDENCE_REFS][2]){});
 		return;
@@ -1551,10 +1604,11 @@ findings_cite_blobs (struct mcp_slot *slot)
 
 /* Makes the record of each item that the evidence of the call in @p slot
  * cites again and that the ring does not store, from the findings that the
- * call read. If such a finding is not read yet, cat-file first reads the
- * file of the finding by its path (findings_read_batch()), and the call
- * comes back here through findings_act(). Then the call reads the archive
- * files of the items (findings_cite_blobs()).
+ * call read, once for the first reference to the item. If such a finding
+ * is not read yet, cat-file first reads the file of the finding by its
+ * path (findings_read_batch()), and the call comes back here through
+ * findings_act(). Then the call reads the archive files of the items
+ * (findings_cite_blobs()).
  */
 static void
 findings_cite_records (struct mcp_slot *slot)
@@ -1566,7 +1620,7 @@ findings_cite_records (struct mcp_slot *slot)
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
 		struct findings_cite *cite = &call->cites.items[i];
 		struct evidence_ref const *ref = &cite->ref;
-		if (dstr_len(&cite->record))
+		if (cite->first != i || dstr_len(&cite->record))
 			continue;
 		struct finding const *f = findings_find(call, ref->author, ref->number);
 		struct evidence const *item = f ? findings_item(f, ref->item) : nullptr;
@@ -1648,10 +1702,15 @@ findings_texts (struct findings_call *call,
 
 /* Adds the reference @p ref to an item of a finding, X#n/m or X#n/m:A-B,
  * the item @p index of the evidence of the change of the call in @p slot,
- * to call->cites, with the record and the git IDs of the item if the ring
- * stores the item. With @p strict, an item that a result of this turn
- * showed whole is refused. Returns 0, EINVAL with the refusal in the
- * @p len bytes at @p why, or ENOMEM.
+ * to call->cites. findings_cite.first of a later reference is the index of
+ * the first reference to the item. For lines of a later reference,
+ * CITE_READ is set on the first reference, so that askai reads the archive
+ * files of the item. The function copies the record and the git IDs of the
+ * item to the first reference if the ring stores the item. With @p strict,
+ * an item that a result of this turn showed whole is refused, and the
+ * refusal of the call prints an item that no result showed whole
+ * (CITE_SHOW). Returns 0, EINVAL with the refusal in the @p len bytes at
+ * @p why, or ENOMEM.
  */
 static int
 findings_cite_add (struct mcp_slot           *slot,
@@ -1662,27 +1721,44 @@ findings_cite_add (struct mcp_slot           *slot,
                    size_t                     len)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
+	size_t const n = call->cites.n;
+	if (util_grow(call->cites.items, call->cites.cap, n + 1))
+		return ENOMEM;
+	size_t first = 0;
+	for (; first < n; ++first) {
+		struct evidence_ref const *r = &call->cites.items[first].ref;
+		if (r->number == ref->number && r->item == ref->item && !strcmp(r->author, ref->author))
+			break;
+	}
+	uint16_t const lines = ref->form == EVIDENCE_REF_ITEM_LINES ? CITE_READ : 0;
+	struct findings_cite *cite = &call->cites.items[n];
+	*cite = (struct findings_cite){
+		.record = DSTR_INIT,
+		.index  = (uint32_t)index,
+		.first  = (uint32_t)first,
+		.ref    = *ref,
+	};
+	if (first < n) {
+		call->cites.items[first].flags |= lines;
+		++call->cites.n;
+		return 0;
+	}
 	char id[SEEN_ID];
 	evidence_ref_id(ref, id);
 	struct seen_item const *s = seen_find_item(mcp_slot_seen(slot), cstr_view(id));
-	if (strict && s && s->turn && s->turn >= mcp_slot_turn(slot))
+	/* The turn whose result showed the item whole, or 0. */
+	uint32_t const turn = s ? s->turn : 0;
+	if (strict && turn && turn >= mcp_slot_turn(slot))
 		return util_refuse(why, len, "askai showed you %s in this turn. Cite %s for verified or "
 		                   "disproved in a later turn.", id, id);
-	if (util_grow(call->cites.items, call->cites.cap, call->cites.n + 1))
-		return ENOMEM;
-	struct findings_cite *cite = &call->cites.items[call->cites.n];
-	*cite = (struct findings_cite){
-		.record = DSTR_INIT,
-		.ref    = *ref,
-		.index  = (uint32_t)index,
-		.turn   = s ? s->turn : 0,
-	};
-	if (s && cstr_view_store(cstr_view_dstr(&s->record), &cite->record)) {
-		dstr_cleanup(&cite->record);
-		return ENOMEM;
-	}
-	if (s)
+	cite->flags = strict && !turn ? CITE_SHOW | CITE_READ | lines : lines;
+	if (s) {
+		if (cstr_view_store(cstr_view_dstr(&s->record), &cite->record)) {
+			dstr_cleanup(&cite->record);
+			return ENOMEM;
+		}
 		memcpy(cite->blobs, s->blobs, sizeof cite->blobs);
+	}
 	++call->cites.n;
 	return 0;
 }
@@ -1745,16 +1821,7 @@ findings_evidence (struct mcp_slot    *slot,
 		}
 		struct evidence_material material;
 		e = evidence_cite(item, &material, &lines, &ref, &cite, strict, why, len);
-		char path[EVIDENCE_PATH];
-		struct store_part part;
-		if (!e && item->flags & EVIDENCE_REQUEST) {
-			evidence_path(item->request.sha256, path);
-			e = store_part_file(&part, &call->files, cstr_view(path), material.request);
-		}
-		if (!e) {
-			evidence_path(item->result.sha256, path);
-			e = store_part_file(&part, &call->files, cstr_view(path), material.result);
-		}
+		e = e ? e : findings_archive(call, item, &material, (struct oid const [2]){});
 		loop_work(mcp_slot_loop(slot), LOOP_COPY, material.request.len + material.result.len);
 	}
 	for (size_t i = 0; !e && i < m; ++i) {
