@@ -103,6 +103,13 @@ finding_id (struct finding const *f,
 }
 
 void
+finding_ref (char const *author,
+             char        ref[static FINDING_REF])
+{
+	(void)util_format(ref, FINDING_REF, "refs/heads/agent/%s/findings", author);
+}
+
+void
 finding_path (uint32_t number,
               char     path[static FINDING_FILE])
 {
@@ -351,6 +358,20 @@ finding_apply (struct finding        *f,
 	f->changes.items[f->changes.n++] = *c;
 	*c = finding_change();
 	return 0;
+}
+
+void
+finding_unapply (struct finding        *f,
+                 struct finding_change *c)
+{
+	if (!f->changes.n)
+		return;
+	*c = f->changes.items[--f->changes.n];
+	f->changes.items[f->changes.n] = finding_change();
+	if (dstr_len(&c->claim_before)) {
+		dstr_cleanup(&f->claim);
+		f->claim = dstr_move(&c->claim_before);
+	}
 }
 
 /* Orders two findings for finding_sort(). */

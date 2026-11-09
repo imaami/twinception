@@ -109,7 +109,6 @@
 #include "policy.h"
 #include "ref.h"
 #include "registry.h"
-#include "review.h"
 #include "roster.h"
 #include "schema.h"
 #include "seen.h"
@@ -225,7 +224,8 @@ static char const *const field_names[F_N] = {
 
 /* The kinds of tool that askai may offer, each its row of mcp_rows. A role
  * can grant the kinds up to KIND_NOTES, which clients list and call. askai
- * offers the kinds in KINDS_TURNS only to the turns of ask calls. It offers
+ * offers the kinds in KINDS_TURNS only to the turns of ask calls, findings
+ * only with --notes. It offers
  * the kinds in KINDS_AGENDA to the turns, with --upstream-tools, and with
  * --client-jobs also to clients, as a role grants them. A kind's tool has
  * one id for both, and the start() of such a kind checks the role of its
@@ -287,12 +287,6 @@ enum mcp_trace : uint8_t {
  * becomes a task. askai does not resume an interrupted turn that called one.
  */
 static constexpr uint64_t KF_AGENDA = 1ull << 33;
-
-/* Kind flag for findings (bit 34, above TOOL_FLAGS). A findings call
- * changes only the review record, and the job checkpoint saves the record.
- * The journal does not record the call, so a resumed turn runs it again.
- */
-static constexpr uint64_t KF_RERUN = 1ull << 34;
 
 /* The row of a kind of tool in mcp_rows. */
 struct mcp_row {
@@ -622,8 +616,6 @@ struct mcp_req {
 	struct mcp_agenda   *agenda;     /* the jobs and timers of the turns,
 	                                    from the first background, wait or
 	                                    timer call until mcp_req_finish() */
-	struct review       *review;     /* the review record if the turns are
-	                                    lent findings (mcp_req_review_make()) */
 	struct seen         *seen;       /* the ring of the turns' calls
 	                                    (src/seen.h), reused by a spare request */
 	struct ledger_task  *task;       /* the ledger record of the call once it
@@ -1630,7 +1622,6 @@ mcp_req_finish (struct mcp_req *req)
 	 * call reaches it while its end is written. */
 	mcp_req_drop(req);
 	mcp_agenda_destroy(&req->agenda);
-	review_destroy(&req->review);
 	seen_clear(req->seen);
 	/* Neither a drain nor a notifications/cancelled reaches the call while
 	 * its end is written. A cancel may supersede a pending state, intent
@@ -2109,8 +2100,6 @@ mcp_req_reply (struct mcp_req *req)
 	mcp_req_tool_close(req);
 }
 
-static void mcp_slot_saved (struct mcp_slot *slot);
-
 /** Ends the call in @p slot with its output, failed if @p failed is true.
  *  mcp_slot_done() handles the call of a turn or a job. The reply to a
  *  client's call is written a slice in each step. It begins with
@@ -2128,16 +2117,6 @@ mcp_slot_respond (struct mcp_slot *slot,
 		return;
 	}
 	mcp_req_flag(req, REQ_FAILED, failed);
-	/* An ask call of a thread saves the findings that its turns changed
-	 * before it answers, so that the next ask call of the thread starts
-	 * with them. A suspended job saves them once it ends. SLOT_DONE is set
-	 * after the save, because git runs in the slot. */
-	if (req->mcp->notes && *req->thread.hex && !(req->flags & REQ_SUSPENDED) &&
-	    review_changed(req->review)) {
-		notes_tool_loop_save(req->mcp->notes, slot, &req->trace, &req->thread,
-		                     mcp_slot_saved);
-		return;
-	}
 	slot->flags |= SLOT_DONE;
 	struct span text = mcp_req_output(req);
 	loop_timer_stop(req->mcp->loop, &req->timer);
@@ -2160,17 +2139,6 @@ mcp_slot_respond (struct mcp_slot *slot,
 		return;
 	}
 	mcp_req_reply(req);
-}
-
-/* Answers the ask call in @p slot, req->self, after the save of its review
- * record. The function destroys the record first, so that
- * mcp_slot_respond() does not save it again.
- */
-static void
-mcp_slot_saved (struct mcp_slot *slot)
-{
-	review_destroy(&slot->req->review);
-	mcp_slot_respond(slot, slot->req->flags & REQ_FAILED);
 }
 
 /* Write a notification of progress @p value, saying @p text, which needs
@@ -3591,10 +3559,10 @@ mcp_slot_window_max (struct mcp_slot const *slot)
 	return slot->role == ROLE_OWN ? TOOL_OUTPUT_MAX : mcp_req_lend_max(slot->req);
 }
 
-struct review *
-mcp_slot_review (struct mcp_slot const *slot)
+struct seen const *
+mcp_slot_seen (struct mcp_slot const *slot)
 {
-	return slot->req->review;
+	return slot->req->seen;
 }
 
 uint32_t
@@ -3956,23 +3924,6 @@ mcp_history_valid (struct json_object *history)
 	return true;
 }
 
-/* Create req->review if the tool mask @p lent contains findings. The record
- * is created with REVIEW_READ_LOG if @p lent also contains git or code, and
- * with REVIEW_GIT if it contains git. Returns 0 or ENOMEM.
- */
-static int
-mcp_req_review_make (struct mcp_req *req,
-                     tool_mask       lent)
-{
-	struct mcp_lending const *l = &req->mcp->st->lending;
-	int e = 0;
-	if (lent & l->of[KIND_FINDINGS])
-		req->review = review_create((lent & l->of[KIND_GIT] ? REVIEW_GIT | REVIEW_READ_LOG
-		                                                    : 0) |
-		                            (lent & l->of[KIND_CODE] ? REVIEW_READ_LOG : 0), &e);
-	return e;
-}
-
 /* Goes on with the ask call in @p slot, req->self, once the notes of the
  * caller are in the prompt. The ask call builds its upstream request.
  */
@@ -4038,8 +3989,6 @@ mcp_req_ask (struct mcp_req     *req,
 	mcp_req_log_ask(req, prompt, thread != nullptr);
 	mcp_req_wait(req);
 	int e = mcp_req_draft(req, prompt, system, history);
-	if (!e)
-		e = mcp_req_review_make(req, req->lent);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -4047,12 +3996,14 @@ mcp_req_ask (struct mcp_req     *req,
 	req->s->ops->waiting(req->s);
 	if ((req->flags & (REQ_SSE_OK | REQ_DETACH_PENDING)) == REQ_SSE_OK)
 		mcp_req_stream(req);
-	/* Every ask starts with the notes of the agent. */
+	/* Every ask starts with the notes of the agent, and with findings the
+	 * open findings of the agent in the thread. */
 	mcp_req_dispose(req);
 	if (notes) {
 		notes_tool_loop_prompt(req->mcp->notes, &req->self, &req->self.answer,
 		                       NOTES_TOOL_RESUME, mcp_req_lend_max(req),
-		                       thread && req->review ? &req->thread : nullptr,
+		                       req->lent & st->lending.of[KIND_FINDINGS] ? &req->thread
+		                                                                 : nullptr,
 		                       mcp_slot_resumed);
 		return;
 	}
@@ -4305,10 +4256,9 @@ mcp_req_dozes (struct mcp_req const *req)
 	       mcp_agenda_pending(req->agenda);
 }
 
-/* Handle the end of a turn, once the answer of its job has arrived. First,
- * review_pending_log() moves the pending lines of the review record into its
- * read log (src/review.h). An answer that calls no tool is the answer of
- * the ask call, unless the turns doze after it. The answer of the last turn
+/* Handle the end of a turn, once the answer of its job has arrived. An
+ * answer that calls no tool is the answer of the ask call, unless the
+ * turns doze after it. The answer of the last turn
  * is the answer of the ask call too. Otherwise parse the arguments of the
  * calls that the answer makes, then write the turn into the upload and run
  * the calls, or doze.
@@ -4334,11 +4284,6 @@ mcp_req_turn_done (struct mcp_req *req)
 		n += len != 0;
 	}
 	mcp_req_log_turn(req, job, n);
-	int e = req->review ? review_pending_log(req->review) : 0;
-	if (e) {
-		mcp_req_fail(req, e);
-		return;
-	}
 	static_assert(CALLS_MAX == 16 << 20, "update the result text");
 	if (bytes > CALLS_MAX) {
 		mcp_slot_result(&req->self, CSTR_VIEW("The tool calls of the other AI in one turn "
@@ -4356,7 +4301,7 @@ mcp_req_turn_done (struct mcp_req *req)
 		mcp_req_enter(req, PHASE_TEXT);
 		return;
 	}
-	e = mcp_req_slots_make(req);
+	int e = mcp_req_slots_make(req);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -5709,11 +5654,11 @@ mcp_slot_done (struct mcp_slot *slot,
 		(void)util_text_printf(&slot->note, "\n\n" NOTICE_NOTEBOOK, notebook);
 	(void)util_text_printf(&slot->note, "\n\n" NOTICE_CALL, mcp_slot_call(slot));
 	if (*req->archive.hex && !(tool->kind->flags & KF_RERUN)) {
-		/* A resumed turn writes the window and the note again, and adds
-		 * the lines of a review read. So the window is recorded, or for a
-		 * read the whole output, if it is no more than WINDOW_MAX bytes
-		 * and the window reaches its end, with the size of the output for
-		 * the trace. */
+		/* A resumed turn writes the window and the note again, and
+		 * stores the lines of a read in the ring again. So the window is
+		 * recorded, or for a read the whole output, if it is no more than
+		 * WINDOW_MAX bytes and the window reaches its end, with the size
+		 * of the output for the trace. */
 		bool const lines = slot->read && out.len <= WINDOW_MAX &&
 		                   slot->skip + slot->window == out.len;
 		size_t const base = lines ? 0 : slot->skip;
@@ -5885,16 +5830,13 @@ mcp_req_result_write (struct mcp_req *req)
 	};
 	(void)mcp_req_trace(req, &c, slot->args, row->trace);
 	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED, r.output);
-	struct seen_lines lines = {};
 	if (row->metric == LENT_FINDINGS || row->metric == LENT_COMPACT) {
 		e = seen_keep_number(&req->seen, r.number, r.tool);
 	} else {
 		/* seen_keep() scans the output up to the end of the window. */
 		loop_work(req->mcp->loop, LOOP_COPY, slot->skip + slot->window);
-		e = seen_keep(&req->seen, &req->calls[req->part], &r, &lines);
+		e = seen_keep(&req->seen, &req->calls[req->part], &r, nullptr);
 	}
-	if (!e && req->review && lines.first)
-		e = review_pending_add(req->review, r.read, lines, req->turn);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -5976,10 +5918,6 @@ mcp_req_checkpoint (struct mcp_req *req)
 		"asks", json_object_new_int(req->asks),
 		"agenda", json_object_new_boolean(req->agenda != nullptr),
 		"lent", lent, nullptr);
-	/* Only a task's checkpoint can be resumed, so only it keeps the review
-	 * record. */
-	if (task && req->review)
-		state = jb_set_or_free(state, "review", review_json(req->review, &(int){}));
 	req->intents = 0;
 	mcp_req_saved_clear(req);
 	return mcp_req_archive(req, "state", state, mcp_req_archive_submitted);
@@ -6151,19 +6089,8 @@ mcp_recover_back (struct loop           *loop,
 	/* req->lent is set only after the job is admitted (below), so a poll
 	 * that fails here answers with the problem alone, without the turns'
 	 * trace (mcp_req_trace_put()). */
-	struct json_object const *review = jb_get(state, "review");
 	tool_mask lent = mcp_archive_lent(req, names);
-	int e = mcp_req_review_make(req, lent);
-	if (!e && req->review && review)
-		e = review_restore(req->review, review);
-	if (e) {
-		problem = e == ENOMEM ? CSTR_VIEW("Cannot restore the saved review record of the "
-		                                  "job now.")
-		        : CSTR_VIEW("The saved review record of the job is invalid. No provider "
-		                    "request was sent.");
-		goto failed;
-	}
-	e = buf_put(&req->upload, request.data, request.len, SIZE_MAX);
+	int e = buf_put(&req->upload, request.data, request.len, SIZE_MAX);
 	struct cstr_view trace = jb_view(jb_get(state, "trace"));
 	if (!e && trace.len && cstr_view_cat(trace, &req->trace))
 		e = ENOMEM;
@@ -6364,12 +6291,19 @@ mcp_req_go_on (struct mcp_req   *req,
 }
 
 /** Goes on with the ask call in @p slot, req->self, after a compaction put
- *  the notes into the prompt.
+ *  the notes into the prompt. With findings, a notice names the calls that
+ *  the ring keeps, which the turns can cite.
  */
 static void
 mcp_slot_compacted (struct mcp_slot *slot)
 {
-	mcp_req_go_on(slot->req, CSTR_VIEW("\n"));
+	struct mcp_req *req = slot->req;
+	if (req->lent & req->mcp->st->lending.of[KIND_FINDINGS] &&
+	    seen_notice(req->seen, &req->self.answer)) {
+		mcp_req_fail(req, ENOMEM);
+		return;
+	}
+	mcp_req_go_on(req, CSTR_VIEW("\n"));
 }
 
 /** Adds the file of @p bytes bytes with the URI @p uri to req->attached, in
@@ -6526,32 +6460,29 @@ mcp_slot_step (struct loop      *loop,
 }
 
 /* Compaction has left the summary, if any, in what askai adds to the
- * prompt. review_pending_drop() drops the pending lines of the review record
- * (see src/review.h). If there is a record, a notice about the task of the
- * ask call and the record follow the summary, cut to mcp_req_lend_max()
- * bytes. The notices of the notes follow if the turns are lent the notes
- * tool. They are left out for a job resumed without --notes.
+ * prompt. If the turns are lent findings, a notice about the task of the
+ * ask call follows the summary. The notices of the notes follow if the
+ * turns are lent the notes tool, with the open findings of the agent in the
+ * thread if the turns are lent findings. They are left out for a job
+ * resumed without --notes.
  */
 static void
 mcp_req_compact_notes (struct mcp_req *req)
 {
-	review_pending_drop(req->review);
-	int e = 0;
-	if (req->review)
-		e = cstr_view_cat(CSTR_VIEW("\n\n[askai: compaction does not change the task. "
-		                            "The task is all text before the first [askai: ...] "
-		                            "line: the system text, the earlier messages and the "
-		                            "prompt. You do not need to copy the task into notes "
-		                            "or a summary.]\n"), &req->self.answer)
-		    ? ENOMEM : review_render(req->review, &req->self.answer, mcp_req_lend_max(req));
-	if (e) {
-		mcp_req_fail(req, e);
+	struct mcp_lending const *l = &req->mcp->st->lending;
+	bool const findings = req->lent & l->of[KIND_FINDINGS];
+	if (findings && cstr_view_cat(CSTR_VIEW("\n\n[askai: compaction does not change the task. "
+	                                        "The task is all text before the first [askai: ...] "
+	                                        "line: the system text, the earlier messages and the "
+	                                        "prompt. You do not need to copy the task into notes "
+	                                        "or a summary.]"), &req->self.answer)) {
+		mcp_req_fail(req, ENOMEM);
 		return;
 	}
-	if (req->lent & req->mcp->st->lending.of[KIND_NOTES]) {
+	if (req->lent & l->of[KIND_NOTES]) {
 		notes_tool_loop_prompt(req->mcp->notes, &req->self, &req->self.answer,
-		                       NOTES_TOOL_COMPACT, mcp_req_lend_max(req), nullptr,
-		                       mcp_slot_compacted);
+		                       NOTES_TOOL_COMPACT, mcp_req_lend_max(req),
+		                       findings ? &req->thread : nullptr, mcp_slot_compacted);
 		return;
 	}
 	mcp_req_go_on(req, CSTR_VIEW("\n\n"));
@@ -7838,9 +7769,9 @@ mcp_tool_definition (void const *service)
 	if (st->lending.of[KIND_NOTES])
 		props = jb_set_or_free(props, "thread", schema_property("string",
 			"An ask-chain thread ID from an earlier answer, 32 hexadecimal "
-			"digits. The call starts with the review record of the thread, if a "
-			"review record exists for the thread. Every call starts with the "
-			"notes of the agent, with or without thread."));
+			"digits. Every call starts with the notes of the agent, with or "
+			"without thread. With findings, the call also starts with the open "
+			"findings of the agent in the thread."));
 	if (st->ep->background) {
 		props = jb_set_or_free(props, "job", schema_property("string",
 			"A job ID that an earlier call returned. Give job instead of prompt "
@@ -7899,9 +7830,9 @@ mcp_task_definition (void const *service)
 }
 
 /* Returns the definition of the compact tool. Only turns get this tool.
- * @p service is the mcp_static. The description names the review record
- * if the turns get findings, and the note history and the newest note if
- * they get notes.
+ * @p service is the mcp_static. The description names the note history
+ * and the newest note if the turns get notes, and the open findings if
+ * they get findings.
  */
 static struct json_object *
 mcp_compact_definition (void const *service)
@@ -7914,9 +7845,9 @@ mcp_compact_definition (void const *service)
 	            "summary. Call compact when an askai notice shows the context 66%% full "
 	            "or more, or when you no longer need the details of finished work. Tool "
 	            "calls after compact in the same turn do not run.",
-	            st->lending.of[KIND_FINDINGS] ? ", then the review record" : "",
 	            st->lending.of[KIND_NOTES] ? ", then your note history and your newest note"
-	                                       : "");
+	                                       : "",
+	            st->lending.of[KIND_FINDINGS] ? ", then your open findings" : "");
 	return schema_tool("compact", about,
 		jb_object(
 			"summary", schema_property("string",
@@ -8216,11 +8147,8 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	                        .flags = KF_SERIAL },
 	                      N("compact"), LEND_WITH, LENT_COMPACT, TRACE_NAME,
 	                      .sized = "summary" },
-	[KIND_FINDINGS]   = { { .definition = findings_definition, .start = findings_start,
-	                        .step = findings_step, .drop = findings_drop,
-	                        .flags = KF_SERIAL | KF_RERUN | TOOL_PAGED },
-	                      N("findings"), LEND_WITH, LENT_FINDINGS, TRACE_ACTION,
-	                      .sized = "claim" },
+	[KIND_FINDINGS]   = { .plugin = &findings_plugin, N("findings"), LEND_WITH, LENT_FINDINGS,
+	                      TRACE_ACTION, .sized = "claim" },
 	/* With --client-jobs, clients list the next four kinds with a
 	 * definition of their own. */
 	[KIND_BACKGROUND] = { { .definition = mcp_background_client_definition,
@@ -8370,8 +8298,10 @@ mcp_register (struct registry     *reg,
               struct config const *cfg)
 {
 	uint32_t const granted = mcp_offered_clients(cfg);
+	/* The findings are in the session of --notes. */
+	uint32_t const turns = cfg->notes ? KINDS_TURNS : 1u << KIND_COMPACT;
 	uint32_t const offered =
-		granted | (cfg->flags & CFG_UPSTREAM_TOOLS ? KINDS_TURNS | KINDS_AGENDA : 0);
+		granted | (cfg->flags & CFG_UPSTREAM_TOOLS ? turns | KINDS_AGENDA : 0);
 	/* registry_add() inserts each tool that a role can grant before the
 	 * kinds in KINDS_TURNS. */
 	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
@@ -8384,7 +8314,8 @@ mcp_register (struct registry     *reg,
 			.kind = &row->kind,
 			.data = row,
 		};
-		/* The man, git and notes tools are kinds of built-in plugins. */
+		/* The man, git, notes and findings tools are kinds of built-in
+		 * plugins. */
 		if (row->plugin) {
 			plugin = row->plugin;
 			tool.kind = plugin->tools;
@@ -8516,8 +8447,8 @@ mcp_lent (void const *cfg,
  *  for a loaded plugin, nothing. The service of askai's own kinds is @p st,
  *  the service of the plugin of the man tool is @p manual, the service of
  *  the plugin of the git tool is @p git, and the services of the plugins of
- *  the code and notes tools are st->code and st->notes_tool. The plugins of
- *  the man and notes tools create a part on every client loop.
+ *  the code, notes and findings tools are st->code and st->notes_tool. The
+ *  plugins of the man and notes tools create a part on every client loop.
  */
 static struct mcp_plugin
 mcp_static_plugin (struct mcp_static   *st,
@@ -8535,6 +8466,7 @@ mcp_static_plugin (struct mcp_static   *st,
 		{ &code_plugin, { .service = &st->code } },
 		{ &notes_tool_plugin,
 		  { &st->notes_tool, notes_tool_loop_create, notes_tool_loop_destroy } },
+		{ &findings_plugin, { .service = &st->notes_tool } },
 	};
 	for (size_t i = 0; i < array_size(own); ++i)
 		if (own[i].plugin == plugin)

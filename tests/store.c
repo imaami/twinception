@@ -481,6 +481,47 @@ test_object (void)
 	CHECK(object("x blob 3", STORE_KIND_OTHER, "", "-"));
 	CHECK(object(A " blob", STORE_KIND_OTHER, A, "-"));
 	CHECK(object("", STORE_KIND_OTHER, "", "-"));
+
+	/* store_object_next() reads the objects of git cat-file --batch one
+	 * after another. */
+	char text[] = A " blob 3\nabc\nrefs/heads/x:y missing\n" A " tree 2\nxy\n" A
+	              " blob 0\n\n" A " commit 1\nc\n";
+	struct span out = { (unsigned char *)text, sizeof text - 1 };
+	struct oid id;
+	struct span data;
+	CHECK(!store_object_next(&out, &id, &data) && !strcmp(id.hex, A) && data.len == 3 &&
+	      !memcmp(data.ptr, "abc", 3));
+	CHECK(store_object_next(&out, &id, &data) == ENOENT && !*id.hex && !data.len);
+	CHECK(store_object_next(&out, &id, &data) == EISDIR && !*id.hex && !data.len);
+	CHECK(!store_object_next(&out, &id, &data) && !strcmp(id.hex, A) && !data.len);
+	size_t const left = out.len;
+	CHECK(store_object_next(&out, &id, &data) == EIO && !*id.hex && out.len == left);
+	char cut[] = A " blob 5\nabc\n";
+	out = (struct span){ (unsigned char *)cut, sizeof cut - 1 };
+	CHECK(store_object_next(&out, &id, &data) == EIO && out.len == sizeof cut - 1);
+	char unended[] = A " blob 3\nabcd";
+	out = (struct span){ (unsigned char *)unended, sizeof unended - 1 };
+	CHECK(store_object_next(&out, &id, &data) == EIO);
+	out = (struct span){};
+	CHECK(store_object_next(&out, &id, &data) == EIO);
+
+	/* store_read_fits() keeps one output of git cat-file --batch within
+	 * STORE_MAX bytes: the data and at most 92 bytes for each object. */
+	uint64_t used = 0;
+	CHECK(store_read_fits(&used, 8) && used == 100);
+	CHECK(store_read_fits(&used, STORE_MAX - 200) && used == STORE_MAX - 8);
+	CHECK(!store_read_fits(&used, 0) && used == STORE_MAX - 8);
+	used = 0;
+	CHECK(!store_read_fits(&used, STORE_MAX) && !used);
+	CHECK(!store_read_fits(&used, UINT64_MAX) && !used);
+	CHECK(store_read_fits(&used, STORE_MAX - 92) && used == STORE_MAX);
+
+	/* util_unhex() is the reverse of util_hex(). */
+	unsigned char bytes[3] = { 0 };
+	CHECK(!util_unhex(bytes, "0aFf7c", 3) && bytes[0] == 0x0a && bytes[1] == 0xff &&
+	      bytes[2] == 0x7c);
+	CHECK(util_unhex(bytes, "0g", 1) == EINVAL && util_unhex(bytes, "g0", 1) == EINVAL);
+	CHECK(!util_unhex(bytes, "", 0));
 }
 
 /* Returns what store_checked() returns for the output @p out. Checks that

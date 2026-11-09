@@ -387,6 +387,35 @@ seen_oldest (struct seen const *seen)
 	return seen && seen->n ? seen->calls[seen->head].number : 0;
 }
 
+int
+seen_notice (struct seen const *seen,
+             struct dstr       *d)
+{
+	if (!seen)
+		return 0;
+	uint32_t oldest = 0;
+	uint32_t newest = 0;
+	for (size_t i = 0; i < seen->n; ++i) {
+		struct seen_call const *c = &seen->calls[(seen->head + i) % SEEN_CALLS];
+		if (c->flags & SEEN_TOO_LARGE)
+			continue;
+		if (!oldest)
+			oldest = c->number;
+		newest = c->number;
+	}
+	if (!oldest)
+		return 0;
+	bool ok;
+	if (oldest == newest)
+		ok = dstr_printf(d, "[askai: askai keeps your call c%" PRIu32 " of this ask call. "
+		                 "Cite the call as evidence by number.]\n", oldest);
+	else
+		ok = dstr_printf(d, "[askai: askai keeps your calls c%" PRIu32 " to c%" PRIu32 " of "
+		                 "this ask call. Cite the calls as evidence by number.]\n", oldest,
+		                 newest);
+	return ok ? 0 : ENOMEM;
+}
+
 void
 seen_clear (struct seen *seen)
 {

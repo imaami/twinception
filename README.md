@@ -292,9 +292,9 @@ Recovered tool turns reuse saved tool results. AskAI records tool intent
 before executing it and records its result afterwards. If a crash leaves
 an intent without a result, recovery reports an unknown tool outcome and
 stops; it does not execute a possibly completed side effect again.
-A `findings` call changes nothing but the review record, which the
-checkpoint keeps, so AskAI records neither its intent nor its result, and
-a recovered turn makes the call again.
+A `findings` call commits its change to the session at once. AskAI
+records neither its intent nor its result, and a recovered turn makes the
+call again.
 Interrupted tool jobs and timers are not restored, so recovery stops
 explicitly when it would depend on them.
 
@@ -354,8 +354,8 @@ replacement can temporarily use another 64 MiB. When space is needed, the oldest
 completed checkpoints may be removed; unfinished jobs and checkpoints
 migrated from the legacy journal are not evicted. These bounds do not prune
 saved reasoning text or Git history. The notes tool exposes neither archive
-nor checkpoints. The checkpoint of a background job keeps its review record
-too, and the number of the calls that its turns made.
+nor checkpoints. The checkpoint of a background job keeps the number of the
+calls that its turns made.
 
 Preserve the whole repository directory, including the private files and
 owner seed, when moving or backing up a live session. A Git-only clone
@@ -611,27 +611,28 @@ places of the declaration and the definition, the functions that a
 function calls, the members of a struct or union with their offsets, sizes
 and padding, including the members of anonymous members, and at most 40
 numbered lines of the declaration with its comment, a function's without
-its body. These lines count as read for the review record of `findings`
-(below). With `line`, `describe` uses the name on that line of `path`,
-such as a local variable or a macro use. For a macro use, it also prints
-the type and the value of the expression. This is `describe` of
-`struct review_file` in `src/review.c`:
+its body. A finding can cite these lines (below). With `line`, `describe`
+uses the name on that line of `path`, such as a local variable or a macro
+use. For a macro use, it also prints the type and the value of the
+expression. This is `describe` of `struct finding` in `src/finding.c`:
 
 ```text
-[Repository proj, file src/review.c at commit 1095916a86bd9dc0585d261ec87762fe6134de44. struct review_file in the translation unit.]
-struct review_file: 144 bytes, alignment 8, 3 bytes of padding, x86_64-pc-linux-gnu
-defined src/review.c:64
+[Repository proj, file src/finding.c at commit 1095916a86bd9dc0585d261ec87762fe6134de44. struct finding in the translation unit.]
+struct finding: 232 bytes, alignment 8, 0 bytes of padding, x86_64-pc-linux-gnu
+defined src/finding.h:111
  offset   size  align   line  member: type
-      0     24      8     65  repo: struct dstr
-     24     24      8     66  path: struct dstr
-     48      8      8     67  ranges: struct review_range *
-     56      8      8     68  n: size_t
-     64      8      8     69  cap: size_t
-     72      4      4     70  total: uint32_t
-     76     65      1     72  commit: struct oid
-    141      3                (padding at the end)
-src/review.c lines 59 to 73 of 2207:
-59	/**
+      0     24      8    112  claim: struct dstr
+     24     24      8    113  changes: struct (unnamed)
+     24      8      8    113    items: struct finding_change *
+     32      8      8    113    n: size_t
+     40      8      8    113    cap: size_t
+     48      4      4    114  number: uint32_t
+     52     82      1    115  about: char[82]
+    134     33      1    117  conversation: struct hexid
+    167     65      1    120  author: char[65]
+src/finding.h lines 110 to 121 of 303:
+110	/** A finding. Each member has a defined value from finding() on. */
+111	struct finding {
 ...
 ```
 
@@ -693,8 +694,9 @@ With `--upstream-tools`, an `ask_ai` call offers the other model tools of its
 own, in any of the APIs (`llama-server`'s chat template must take tools, as
 with `--jinja`): those of `man`, `git` and `code` that the caller's role lets
 the upstream call (`ask_ai` itself is never offered), `notes` with `--notes`,
-and with any of those `compact`, `findings`, `jobs`, `wait` and `timer`, and
-`background` beside a tool that can run in the background. A plugin's tool
+and with any of those `compact`, `jobs`, `wait` and `timer`, `findings` too
+with `--notes`, and `background` beside a tool that can run in the
+background. A plugin's tool
 is offered in the same way if its kind allows it (see Plugins below).
 Offered none, the call asks once, as without the option. Else it runs a
 loop of turns: each turn is an upstream call, whose answer may call tools;
@@ -757,8 +759,10 @@ of them, and drops the oldest call first. For each call, `askai` stores the
 arguments as the model sent them, the result as the model got it, and for a
 `git` `read` or a `code` `describe` the commit, the path and the lines that
 the result showed whole. A call larger than 4 MiB is stored as its number
-only. `askai` does not store `findings` or `compact` calls. The stored calls
-are dropped when the ask call ends.
+only, and so is a `findings` or `compact` call, which shows nothing that a
+finding can cite. The stored calls are dropped when the ask call ends.
+After a compaction, a notice names the stored calls that a finding can
+cite.
 
 The model need not wait for a slow call: `background` runs a call of `man`,
 `git` or a plugin tool that allows it, as a job, and answers at once with
@@ -781,55 +785,62 @@ or in the last turn, ends the call, and its jobs and timers with it.
 
 `compact` takes a summary: the conversation after the prompt, its turns and
 the tools' results, goes, and `askai` adds to the prompt, in brackets, the
-summary, the review record, the note history and the current text of the most
-recently written note; calls after `compact` in the same turn do not run.
+summary, the note history, the current text of the most recently written
+note, and with `findings` the open findings of the agent in the thread and
+the calls that a finding can cite; calls after `compact` in the same turn
+do not run.
 Should the context fill up all the same, as the upstream says (llama-server's
 "exceeds the available context size", or a "context length" or "context
 window" error) or as the usage counts, `askai` does likewise without a
 summary, once until a turn goes through again; the next overflow is the
 call's error.
 
-`findings` records findings in the call's review record, which lasts
-through all of its compactions, and with `--notes` into the next ask call
-of its thread. `add` records a finding: a claim, a location such as
-`src/mcp.c:120-140` unless no lines of a committed file show the claim,
-and a state, `candidate` until the model checks it.
-`update` changes the state to `verified`, `disproved`, `retracted` or
-`candidate` again, with evidence, and also the claim or the location if they
-were wrong; `askai` stores each change and the old text in the finding's
-history.
-`show` gives the record, a window at a time, or with `id` one finding's
-history. A finding becomes `verified` or `disproved` only if the lines of
-its location are in the read log of the record, which lists the lines that
-`git` `read` and `code` `describe` returned to the turns. The record, not
-the model, stores the commit of the latest read of those lines.
-The log takes the lines of a result once the upstream has answered the
-request with it, so the lines that a turn reads count from the next turn
-on, and not at all if a compaction removes the result first.
-After a compaction, the record follows the summary, within a tool's window;
-past that, its last line names the `offset` that `show` reads on from. The
-notice before the record states that the system text, the client's messages
-and the prompt stay word for word, so the model need not copy the task into
-notes. The record's limit is 4 MiB, the findings of the thread's earlier
-calls included. A background job that resumes after a restart gets its
-record back from its checkpoint.
+With `--notes`, `findings` keeps the findings of the agent on the branch
+`refs/heads/agent/NAME/findings` of the session. A finding is a claim of
+the agent about material that `askai` showed it, with an ID such as
+`bro#5`: the name of the agent and a number that counts its findings from
+1. The ID stays the same in every ask call. `add` records a finding with
+a claim and a state, `candidate` unless the model gives another, and with
+`about` the ID of the finding of another member that it checks. `update`
+changes the state of a finding of the agent to `candidate`, `verified`,
+`disproved` or `retracted`, and with `claim` corrects the claim; the
+change stores the earlier claim. Only the author changes a finding. `list`
+lists the findings of every member, open first, or with `author` those of
+one member. `show` prints a finding with every change, and the findings
+about it. The state of a finding is the state of its last change, and
+`candidate` and `verified` findings are open.
 
-With `--notes`, an ask call whose turns added or updated findings saves
-them before it answers: a commit with the file `review.json` on
-`refs/review/AGENT/WHO/THREAD`, outside the notebook branches, where `WHO`
-is the principal of the client or `anonymous`, on top
-of the commit that the call started with. The trace names the thread. An
-ask call with that `thread` starts with those findings, after the notes,
-but with an empty read log, so a finding becomes `verified` or `disproved`
-again only after a new `git` `read` of its lines, or a `code` `describe`
-that shows them. Any other ask call starts with an empty record. If
-another ask call of the thread saved first, git refuses the commit, and
-the findings of this call are not saved. A call cancelled before its last
-answer saves nothing, and neither does a call that fails because the tool
-calls of one turn take more than 16 MiB or because the context cannot
-hold the task and the notes. A stored record that cannot be read ends the
-ask call as failed and stays as it is. Nothing prunes these refs; `git
-update-ref -d` removes one.
+A change cites evidence, at most 16 references to the calls of the ask
+call: `c7` is the call c7, its arguments and its result as the model got
+them, or the lines of a `git` `read` or a `code` `describe` that its
+result showed whole; `c7:120-140,150` is some of those lines;
+`c7:message` and `c7:files` are the message and the files of the one
+commit of a `git` call. `askai` stores the material in the same commit as
+the finding, each as `archive/XX/YYY` named by the SHA-256 of its bytes,
+and the file of the finding names it with the identifiers that reproduce
+it, such as the repository, the commit and the path. `external` names
+material outside `askai` with an exact hash, at most 8 items, which
+`askai` does not store. `verified` and `disproved` need a `reason` and at
+least one reference that is not external, each to a call of an earlier
+turn. `retracted` needs a `reason`. A call that left the memory of the ask
+call, or that `askai` made before a restart, cannot be cited, and the
+refusal says why.
+
+Each `add` and `update` is one commit on the branch of the agent, by the
+agent, with the trailer lines `Ask:`, `Call:`, `Conversation:` and
+`Asked-by:`. The file of a finding is `findings/D/N.json`, with `D` the
+number divided by 100, a JSON object of version 1. The number of a new
+finding is one more than the highest number on the branch when the commit
+is made. If another ask call of the agent changes the branch at the same
+time, `askai` reads the branch again and makes the commit again, three
+commits at most. Each ask call and each compaction starts with the open
+findings of the agent in the thread, newest first, within a tool's
+window, and the number of its open findings in other threads. The notice
+after the summary of a compaction states that the system text, the
+client's messages and the prompt stay word for word, so the model need
+not copy the task into notes. Nothing prunes the branch, just as nothing
+prunes notes. The review records of earlier versions under `refs/review/`
+stay where they are, and `askai` no longer reads them.
 
 With `--notes PATH`, the repository at `PATH` is the shared session.
 `askai` creates a bare Git repository there if absent, and also accepts an
@@ -1052,7 +1063,7 @@ A moved notebook is readable at once by the name of its member. The
 member record appears with the first start of the agent's service, or the
 first write or ask call of the person. The committer of an old commit
 does not change. The old review records under `refs/review/` stay where
-they are.
+they are, and `askai` does not read them.
 
 A client keeps a file that the user gave it, such as an attachment, with an
 `add`, `append` or `replace` that has `content` instead of `text`. The
@@ -1166,7 +1177,10 @@ listed repositories through clang. `askai-code` runs under Landlock and
 seccomp unless `--code-unconfined` is set (see Asking clang about C code). An
 session's notes are readable by everyone allowed to call `notes`, including
 anonymous clients if the policy grants it. Each member writes only its own
-notebook, and a client without a member name writes none. Tokens cross the
+notebook, and a client without a member name writes none. Every member of
+the session can read the evidence that the findings store: tool output and
+lines of repositories as the model got them, also a member whose role does
+not grant the tool that made them. Tokens cross the
 network in the clear but over TLS (below), or a proxy that ends it. A plugin
 is code that runs inside `askai` with all of `askai`'s rights. Whoever may
 change the configuration file decides which files `askai` loads as plugins.
@@ -1330,8 +1344,9 @@ Four more members define who may connect, and what each client may do:
   tools that the role's `tools` lists. `upstream` can name `man`, `git`, `code`,
   `notes` and the plugin tools that may be lent. Without `--upstream-tools`,
   `upstream` must be empty or left out. The turns also get `notes` whenever
-  `--notes` is given, `compact`, `findings`, `jobs`, `wait` and `timer` whenever
-  they get any tool, and `background` beside a tool that can run in the
+  `--notes` is given, `compact`, `jobs`, `wait` and `timer` whenever they get
+  any tool, `findings` too with `--notes`, and `background` beside a tool
+  that can run in the
   background (`man`, `git`, `code`, or a plugin tool that allows it). `upstream`
   cannot name `compact`, `findings`, `background`, `jobs`, `wait` or
   `timer`, and `tools` cannot name `compact` or `findings`. With
@@ -1962,6 +1977,7 @@ session:
   name        notes
   agent       bro
   service     bro
+  evidence    every member can read all stored evidence
 session members:
   imaami  person  uid 1000
   bro     agent
@@ -2115,9 +2131,9 @@ Upstream AI ("upstream"):
                             man, git and the plugin tools that allow it,
                             as the role of the client allows, and notes
                             with --notes; with any of those also
-                            compact, findings, jobs, wait and timer,
-                            and beside a tool that can run in the
-                            background also background; an ask call
+                            compact, jobs, wait and timer, findings with
+                            --notes, and beside a tool that can run in
+                            the background also background; an ask call
                             runs the tool calls of each turn and sends
                             the next upstream request until an answer
                             ends the call

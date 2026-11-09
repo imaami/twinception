@@ -963,6 +963,7 @@ member_registry_report (struct member_registry const *registry)
 	LOG_ALL(LOG_INFO, "  name        %.*s", (int)session->name.len, session->name.data);
 	LOG_ALL(LOG_INFO, "  agent       %s", session->agent);
 	LOG_ALL(LOG_INFO, "  service     %s", session->service);
+	LOG_ALL(LOG_INFO, "  evidence    every member can read all stored evidence");
 	if (registry->legacy)
 		LOG_ALL(LOG_INFO, "  legacy      %zu notebook%s under " LEGACY, registry->legacy,
 		        util_s(registry->legacy));
@@ -1587,6 +1588,35 @@ member_table_unknown (struct member_table const *table,
 	if (ok && n > shown)
 		ok = dstr_printf(d, " and %zu more", n - shown);
 	return ok && dstr_cat(d, ".") ? 0 : ENOMEM;
+}
+
+void
+member_byline_put (struct member_byline     *byline,
+                   struct store_commit      *commit,
+                   struct member const      *self,
+                   struct member_call const *call,
+                   uint32_t                  k,
+                   char const               *service)
+{
+	(void)util_format(byline->email, sizeof byline->email, "%s/%s",
+	                  member_kinds[self->kind].data, self->name);
+	size_t n = 0;
+	struct store_trailer *t = byline->trailers;
+	if (*call->ask.hex)
+		t[n++] = (struct store_trailer){ CSTR_VIEW("Ask"), hexid_view(&call->ask) };
+	if (k)
+		t[n++] = (struct store_trailer){ CSTR_VIEW("Call"),
+		                                 util_format_view(byline->call, sizeof byline->call,
+		                                                  "%" PRIu32, k) };
+	if (*call->conversation.hex)
+		t[n++] = (struct store_trailer){ CSTR_VIEW("Conversation"),
+		                                 hexid_view(&call->conversation) };
+	if (*call->asker.name)
+		t[n++] = (struct store_trailer){ CSTR_VIEW("Asked-by"), cstr_view(call->asker.name) };
+	commit->author = (struct store_ident){ cstr_view(self->name), cstr_view(byline->email) };
+	commit->committer = (struct store_ident){ cstr_view(service), CSTR_VIEW("askai") };
+	commit->trailers = t;
+	commit->n_trailers = n;
 }
 
 int

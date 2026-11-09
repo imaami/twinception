@@ -4,13 +4,11 @@
  */
 #define _GNU_SOURCE /* memrchr() */
 #include <errno.h>
-#include <inttypes.h>
 #include <openssl/evp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "hexid.h"
 #include "notes.h"
 #include "oid.h"
 #include "store.h"
@@ -228,66 +226,16 @@ notes_read_out (struct span  out,
                 struct span *text,
                 struct oid  *id)
 {
-	*text = (struct span){};
-	if (id)
-		*id = (struct oid){};
-	struct cstr_view rest = { (char const *)out.ptr, out.len };
-	struct cstr_view line;
-	if (!cstr_view_cut(&rest, '\n', &line))
-		return EIO;
 	struct oid oid;
-	struct cstr_view digits;
-	enum store_kind kind = store_kind(line, &oid, &digits);
-	if (kind == STORE_KIND_MISSING)
-		return ENOENT;
-	if (kind == STORE_KIND_TREE)
-		return EISDIR;
-	if (kind != STORE_KIND_BLOB)
-		return EIO;
-	/* A line feed comes after the text. */
-	uint64_t size;
-	if (util_number(digits.data, digits.len, UINT64_MAX, &size) ||
-	    !rest.len || size != rest.len - 1 || rest.data[size] != '\n')
-		return EIO;
-	*text = (struct span){ out.ptr + line.len + 1, (size_t)size };
+	int e = store_object_next(&out, &oid, text);
+	/* The output is the one object. */
+	if (!e && out.len) {
+		*text = (struct span){};
+		e = EIO;
+	}
 	if (id)
-		*id = oid;
-	return 0;
-}
-
-void
-notes_review (char const         *agent,
-              uint64_t            principal,
-              struct hexid const *thread,
-              char                ref[NOTES_REF])
-{
-	static_assert(NOTES_REF >= sizeof "refs/review//" + UTIL_WORD_MAX + 16 + HEXID_DIGITS);
-	if (principal)
-		util_format(ref, NOTES_REF, "refs/review/%s/%016" PRIx64 "/%s", agent, principal,
-		            thread->hex);
-	else
-		util_format(ref, NOTES_REF, "refs/review/%s/anonymous/%s", agent, thread->hex);
-}
-
-int
-notes_review_out (struct span  out,
-                  struct oid  *tip,
-                  struct span *text)
-{
-	struct cstr_view rest = { (char const *)out.ptr, out.len };
-	struct cstr_view line, size;
-	if (!cstr_view_cut(&rest, '\n', &line))
-		return EIO;
-	enum store_kind kind = store_kind(line, tip, &size);
-	if (kind == STORE_KIND_MISSING)
-		return ENOENT;
-	/* The commit's text and a line feed come before the line of the blob. */
-	uint64_t n;
-	if (kind != STORE_KIND_COMMIT || util_number(size.data, size.len, UINT64_MAX, &n) ||
-	    n >= rest.len || rest.data[n] != '\n')
-		return EIO;
-	size_t const at = line.len + 1 + (size_t)n + 1;
-	return notes_read_out((struct span){ out.ptr + at, out.len - at }, text, nullptr) ? EIO : 0;
+		*id = e ? (struct oid){} : oid;
+	return e;
 }
 
 /* Returns the offset of the start of the token that ends with the NUL at

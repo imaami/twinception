@@ -203,8 +203,8 @@ only with `"upstream-tools": true`, and only in the turns of an `ask_ai`
 call (section [Tools for the upstream model, in
 `upstream`](#tools-for-the-upstream-model-in-upstream)).
 They are `man`, `git`, `code`, `notes` and the plugin tools whose kind has the
-flag `TOOL_LENT` (`src/tool.h`), and `compact`, `findings`, `background`,
-`jobs`, `wait` and `timer`. `compact` and `findings` never appear in
+flag `TOOL_LENT` (`src/tool.h`), and `compact`, `findings` (with `notes`),
+`background`, `jobs`, `wait` and `timer`. `compact` and `findings` never appear in
 `tools/list`, and a role cannot name them. `background`, `jobs`, `wait` and
 `timer` appear in `tools/list` only with `client-jobs`, as tools of the clients.
 A role can then name them in `tools`, but never in `upstream`. The turns of an
@@ -301,10 +301,11 @@ context. The upstream must accept tools in the request. With
 `llama-server`, its chat template must accept tools, as with `--jinja`.
 
 The model calls `compact` with a summary of at most 4 MiB. `askai` then
-removes the conversation after the prompt, and adds the summary, the review
-record (section [The review record](#the-review-record)), the notices of
-the agent and of the members of the session, the note history of the agent
-and the newest note to the prompt. A newest note longer than a
+removes the conversation after the prompt, and adds the summary, the notices of
+the agent and of the members of the session, the note history of the agent,
+the newest note, and with `findings` the open findings of the agent in the
+thread and the calls that a finding can cite (section [Findings](#findings))
+to the prompt. A newest note longer than a
 tool result in a turn (section [`context`](#context)) is cut there, with the
 offset from which the model reads on with `notes`.
 
@@ -347,91 +348,85 @@ After a compaction, `askai` adds the reminders at a quarter and at a half
 again. If the context size is unknown, `askai` adds no notice, but the
 model can still call `compact`.
 
-### The review record
+### Findings
 
-The turns of an `ask_ai` call keep a review record with the tool
-`findings`. The turns get `findings` under the same conditions as
-`compact`, and the member `tools` can deny it to the upstream. The record
-lasts through all compactions of the `ask_ai` call. With `notes` in the
-turns, a call whose turns added or updated findings saves them in the
-notes repository before it answers, and the next `ask_ai` call with the
-same `thread` starts with them, with an empty read log. If another call of
-the thread saved first, the findings of this call are not saved, and
-neither are those of a call that fails because the tool calls of one turn
-take more than 16 MiB or because the context cannot hold the task and the
-notes. Any other `ask_ai` call starts with an empty record. A background
-job that resumes after a restart gets its record back from its
-checkpoint, and `askai` makes the `findings` calls of the interrupted turn
-again. The record contains these things:
+With `notes`, the turns of an `ask_ai` call get the tool `findings`
+under the same conditions as `compact`, and the member `tools` can deny
+it to the upstream. Without `notes`, the turns get no `findings`. A
+finding is a claim of the agent of `askai` about material that `askai`
+showed it, with an ID such as `bro#5`: the name of the agent, `#`, and a
+number that counts the findings of the agent from 1. The ID stays the
+same in every `ask_ai` call. A finding has a claim, a state, the thread
+in which the agent added it, an optional `about`, the ID of the finding
+of another member that it checks, and a history of changes. The state
+of a finding is the state of its last change: `candidate`, `verified`,
+`disproved` or `retracted`. `candidate` and `verified` findings are
+open.
 
-- The findings of the model. `add` records a finding: a claim, an optional
-  location such as `src/mcp.c:120-140`, and a state. A finding is a
-  `candidate` until the model checks it. `update` changes the state to
-  `verified`, `disproved`, `retracted` or `candidate`, with evidence, and
-  can also change the claim or the location if they were wrong. The
-  history of the finding contains each change with its turn, its evidence
-  and the old claim or location.
-- A log of the lines of committed files that the command `read` of the
-  tool `git`, or the numbered lines of `describe` of the tool `code`,
-  showed the turns whole, by repository, commit and path. The lines of a
-  read in a background job count once `jobs` gives its result. A line that
-  the 4 MiB limit of `git` cuts does not count. Only `read` and `describe`
-  count: the output of `show`, `cat-file`, `grep` and `blame` does not.
-  The log takes the lines of a result once the upstream has answered the
-  request with the result, so the lines that a turn reads count from the
-  next turn on. The lines of a result that a compaction removes before
-  that do not count.
+- `add` records a finding with a claim, and a state, `candidate` unless
+  the model gives another.
+- `update` changes the state of a finding of the agent, and with `claim`
+  corrects the claim. The change keeps the earlier claim. Only the author
+  changes a finding.
+- `list` lists the findings of every member, open first, a line each
+  with the ID, the state, the about and the claim, cut at 200 bytes. With
+  `author`, it lists the findings of one member.
+- `show` prints a finding, the findings about it, and each change with
+  its reason and its evidence.
 
-`show` gives the whole record, a window at a time from `offset`, or with
-`id` the history of one finding.
+A change can cite evidence, at most 16 references:
 
-A finding can be `verified` or `disproved` only if the lines of its
-location are in the read log. Otherwise `askai` refuses the call, and the
-answer names the `read` call that shows the lines, or the rest of them if
-the log has the first of them. Without the tool `git`, it names no read
-and says that only the lines that `code` `describe` shows count. If the
-location goes past the end of the
-file at each commit that the log has the file at, the answer gives the
-number of lines of the file instead. If it goes past the end only at the
-commit of the lines that the log has, the answer names a read at a commit
-where the file may have them. If the record is too full to log the read,
-the answer names no read. The lines of a read take the place of what the
-log has of them, so the record takes the commit of a finding from the
-latest read that showed its lines. The model does not give the commit. A
-location can start with a commit ID of 7 to 64 hexadecimal digits and a
-colon, as `git grep` prints it, and then only reads at that commit count;
-`HEAD:` is as no commit. The path of a location can be short, such as
-`mcp.c`, if exactly one path in the read log ends with `/mcp.c`. A
-finding that got a short path before such a read gets the whole path in
-its next `update`. If two paths of the log end with it by then, an
-`update` to `verified` or `disproved` needs a `location` with the whole
-path. Without the tools `git` and `code`, nothing fills the read log, so
-`askai` refuses `verified` and `disproved`, and a finding stays a
-`candidate` until the model retracts it. `askai` leaves its own notices out of
-the end of a claim or of evidence, as it does for the text of a note.
+| Reference | Meaning |
+|---|---|
+| `c7` | the call c7 of the `ask_ai` call: its arguments and its result as the model got them, or for a `git` `read` or a `code` `describe` the lines that the result showed whole |
+| `c7:120-140,150` | lines that a `git` `read` or a `code` `describe` in call c7 showed whole, at most 16 ranges |
+| `c7:message` | the message of the one commit of a `git` `show` or `git` `log` in call c7 |
+| `c7:files` | the files that a `git` `ls-tree` in call c7 lists, under the tree of its one commit |
 
-After each compaction, `askai` adds the record to the prompt, after the
-summary and before the notes. A line gives the number of findings and the
-number in each state that has findings. The open findings come first, each
-with its claim and its latest evidence, then a line that names the closed
-states, then the closed findings, a line each, and then the read log.
-There the record takes at most the window of a tool result in a turn
-(section [`context`](#context)). If it is longer, its last line names the
-`offset` from which `findings` `show` gives the rest.
-The notice before the record states that `askai` keeps the task word for
-word through every compaction: the system text, the messages of the client
+The number of a call is the number in the note of its result, such as
+`[askai: call c7]` (section [`context`](#context)). `askai` keeps the
+last 64 calls of an `ask_ai` call in memory, at most 16 MiB of them. A
+`findings` or `compact` call cannot be evidence. Such a call takes no
+place among the 64, and `askai` stores only the numbers of the last 1024
+of them, so that the refusal names the tool. `external` names
+material outside `askai` with an exact hash of 40 or 64 hexadecimal
+digits, at most 8 items of at most 1 KiB, which `askai` does not store.
+`verified` and `disproved` need a `reason` and at least one reference
+that is not external, and each call that they cite must be of an earlier
+turn. `retracted` needs a `reason`. A call that left the memory, or that
+`askai` made before a restart, cannot be cited, and the refusal says
+why. `askai` leaves its own notices out of the end of a claim or of a
+reason, as it does for the text of a note, and refuses a claim or a
+reason that contains the markup of the next tool call.
+
+The findings of an agent are the branch
+`refs/heads/agent/NAME/findings` of the notes repository. Each `add` and
+each `update` is one commit on that branch, by the agent, with the
+trailer lines `Ask:`, `Call:`, `Conversation:` and `Asked-by:`. The
+commit has the file of the finding, `findings/D/N.json` with `D` the
+number divided by 100, a JSON object of version 1, and the material of
+the evidence, each as `archive/XX/YYY`, named by the SHA-256 of its
+bytes. The file of the finding names the material by size and SHA-256,
+with the identifiers that reproduce it, such as the repository, the
+commit and the path. The number of a new finding is one more than the
+highest number on the branch when the commit is made. If another `ask_ai`
+call of the agent changes the branch at the same time, `askai` reads the
+branch again and makes the commit again, three commits at most. A file
+of a finding that `askai` cannot read fails the call that reads it.
+Nothing prunes the branch. The review records of earlier versions under
+`refs/review/` stay where they are, and `askai` does not read them.
+
+Each `ask_ai` call and each compaction starts with the open findings of
+the agent in the thread, newest first, within the window of a tool
+result in a turn (section [`context`](#context)), and the number of the
+open findings of the agent in other threads. After a compaction, a
+notice names the calls that a finding can cite. A notice after the
+summary of a compaction states that `askai` keeps the task word for word
+through every compaction: the system text, the messages of the client
 and the prompt. So the model need not copy the task into its notes. The
-description of `compact` states this too.
-
-The record's limit is 4 MiB. `askai` counts the bytes of its texts, 64
-bytes for each file and range of lines, and the size of its own structure
-for each finding and change. `askai` refuses a call that would take the
-record past 4 MiB, and the answer names the bytes of claim and evidence
-that still fit, or states that the change does not fit. A read that does
-not fit is not logged, and the record says from which turn on its log can
-be incomplete. The series `askai_turn_tool_calls_total{tool="findings"}`
-counts the calls of `findings`. To turn the record off, deny `findings` to
-the upstream:
+series `askai_turn_tool_calls_total{tool="findings"}` counts the calls
+of `findings`. To turn the findings off, deny `findings` to the
+upstream:
 
 ```json
 {
@@ -472,8 +467,8 @@ With `upstream-tools`, the member has these meanings:
 In each case with `upstream-tools`, the turns also get these tools:
 
 - `notes` in every call when `notes` is set, whatever the role lists;
-- `compact`, `findings`, `jobs`, `wait` and `timer` when the turns get
-  any tool;
+- `compact`, `jobs`, `wait` and `timer` when the turns get any tool, and
+  `findings` too when `notes` is set;
 - `background` when the turns get a tool that can run in the background:
   `man`, `git`, `code`, or a plugin tool whose kind has the flag `TOOL_DETACH`
   (`src/tool.h`).
@@ -833,7 +828,7 @@ tools:
 | ---- | ------------ | --------------------- |
 | `notes` | writes, lists and reads shared session notebooks | in every call with `notes` |
 | `compact` | replaces the conversation after the prompt with a summary | with any other tool |
-| `findings` | records findings and shows the call's review record of findings and of the lines read with `git` `read` | with any other tool |
+| `findings` | records the findings of the agent in the notes repository, with evidence from the calls of the turns, and lists and shows the findings of every member | with any other tool, when `notes` is set |
 | `background` | runs a call of a tool as a job, and returns the number of the job at once | with a tool that can run in the background |
 | `jobs` | lists the jobs and the timers, returns the output of an ended job, or cancels a job or a timer | with any other tool |
 | `wait` | waits up to 10 minutes for a job or a timer | with any other tool |
@@ -1324,8 +1319,8 @@ gets every tool but `godbolt_compile`:
 A name in a list must be a tool that `askai` offers in this run, other
 than the ask tool: `man`, `git`, `code`, `notes`, `test_task`, `background`,
 `jobs`, `wait`, `timer`, `compact`, `findings` or a tool of a plugin, each
-only when `askai` offers it. `compact` and `findings` exist with
-`upstream-tools`, and
+only when `askai` offers it. `compact` exists with `upstream-tools`,
+`findings` with `upstream-tools` and `notes`, and
 `background`, `jobs`, `wait` and `timer` exist with `client-jobs` or
 `upstream-tools`. Otherwise `askai` stops with exit status 2. The message
 begins with the path of the file and `tools:`, or `tools: client:` or
@@ -1361,7 +1356,7 @@ For the upstream model, `tools` has these effects:
   upstream. This applies to every tool that the turns can get, also to
   `notes`, `compact`, `findings`, `background`, `jobs`, `wait` and
   `timer`. So with `"upstream": ["man"]`, the turns get `man` and no other
-  tool: no compaction, no review record, no jobs and no timers.
+  tool: no compaction, no findings, no jobs and no timers.
 - A denied tool does not count in the rules of section [What the role
   member upstream means](#what-the-role-member-upstream-means). With
   `{"deny": ["man"]}` and no other tool to lend, the turns get no
@@ -1980,7 +1975,8 @@ the policy have these effects.
   read `GET /metrics`. The role has no `upstream`, so in the turns of their
   `ask_ai` calls the upstream may call `man`, the one tool in the role's
   `tools` that `askai` can offer to the upstream. With `man`, the turns also get
-  `compact`, `findings`, `background`, `jobs`, `wait` and `timer`.
+  `compact`, `background`, `jobs`, `wait` and `timer`. Without `notes`, they
+  get no `findings`.
 - The role `user` allows its clients to call only `ask_ai`. The upstream
   may call `man` for them.
 - The role `guest` allows its clients to call only `ask_ai`. The upstream

@@ -273,9 +273,9 @@ enum config_arg : uint8_t {
           "man, git and the plugin tools that allow it," NL                                             \
           "as the role of the client allows, and notes" NL                                              \
           "with --notes; with any of those also" NL                                                     \
-          "compact, findings, jobs, wait and timer," NL                                                 \
-          "and beside a tool that can run in the" NL                                                    \
-          "background also background; an ask call" NL                                                  \
+          "compact, jobs, wait and timer, findings with" NL                                             \
+          "--notes, and beside a tool that can run in" NL                                               \
+          "the background also background; an ask call" NL                                              \
           "runs the tool calls of each turn and sends" NL                                               \
           "the next upstream request until an answer" NL                                                \
           "ends the call",                                                                              \

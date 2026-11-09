@@ -37,7 +37,6 @@ override SRC_askai := \
   plugin.c            \
   policy.c            \
   registry.c          \
-  review.c            \
   roster.c            \
   schema.c            \
   seen.c              \

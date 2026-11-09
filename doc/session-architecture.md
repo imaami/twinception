@@ -205,6 +205,12 @@ record and a member registry, as Git refs outside the notebook branches:
 - The author of a notebook commit is the member, and the committer is the
   service. The legacy branches `refs/heads/notes/PARTICIPANT/WHO/SIDE`
   stay readable with Git, and `askai` never writes them.
+- An agent keeps its findings on `refs/heads/agent/NAME/findings`: one
+  file for each finding, with an ID such as `bro#5` that stays the same in
+  every ask call, and the archive of the evidence, named by SHA-256. Only
+  the author changes a finding, and every member reads every finding. The
+  legacy review records under `refs/review/` stay readable with Git, and
+  `askai` no longer reads them.
 
 Step 6 is done. The service name (`service.name`, `--service-name`) names
 the journal writer, its lock, the branch `reasoning/SERVICE` and the

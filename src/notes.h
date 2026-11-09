@@ -11,9 +11,8 @@
  * have worktrees, and git resolves their packed refs. If another writer
  * changes the branch during a write, the write is made again on the new
  * tip if its note is the same there, and fails otherwise. No write
- * overwrites the change of another writer. The review record of a thread
- * is a commit on refs/review/AGENT/WHO/THREAD, outside the notebooks. The
- * repository is a store of src/store.h.
+ * overwrites the change of another writer. The repository is a store of
+ * src/store.h.
  */
 #ifndef ASKAI_SRC_NOTES_H_
 #define ASKAI_SRC_NOTES_H_
@@ -29,12 +28,10 @@
 #include "util.h"
 #include "xlist.h"
 
-struct hexid;
-
 enum {
 	NOTES_NAME = STORE_PATH, /**< bytes of the name of a note, at most */
-	NOTES_REF  = 128,        /**< bytes of the ref of a notebook or of a
-	                              review record, NUL included */
+	NOTES_REF  = 128,        /**< bytes of the ref of a notebook, NUL
+	                              included */
 };
 
 /** The actions of the notes tool: X(ID, name, flags, fetch), the constant
@@ -223,30 +220,6 @@ extern int
 notes_read_out (struct span  out,
                 struct span *text,
                 struct oid  *id);
-
-/** Writes to @p ref the ref of the review record of @p thread for the
- *  agent @p agent and the principal @p principal of the client of the ask
- *  call (src/policy.h): refs/review/AGENT/WHO/THREAD, where WHO is the
- *  principal in 16 hexadecimal digits, or anonymous for 0.
- */
-extern void
-notes_review (char const         *agent,
-              uint64_t            principal,
-              struct hexid const *thread,
-              char                ref[NOTES_REF]);
-
-/**
- * Reads @p out, the output of the command STORE_READ for the input that
- * store_check_input() writes for a ref of notes_review() and the name
- * review.json. Stores the commit of the ref in @p tip and the text of
- * review.json in @p text. Returns 0, ENOENT if the ref does not exist, or
- * EIO for any other output, such as a ref that is not a commit or a commit
- * without review.json.
- */
-extern int
-notes_review_out (struct span  out,
-                  struct oid  *tip,
-                  struct span *text);
 
 /**
  * Reads the next current note from @p out, the output of STORE_FILES, into

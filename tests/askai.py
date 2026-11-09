@@ -37,33 +37,32 @@ TAKES_TASKS = {"io.modelcontextprotocol/protocolVersion": MODERN,
 KEY_VARS = ("ASKAI_TOKEN", "ASKAI_API_KEY", "LLAMA_API_KEY", "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
             "DEEPINFRA_API_KEY", "DEEPINFRA_TOKEN", "OPENROUTER_API_KEY")
-# The tools, in order, that the turns get when they are lent git.
-TURN_TOOLS = ["git", "compact", "findings", "background", "jobs", "wait", "timer"]
-# The first line of the text of a review record (src/review.c).
-REVIEW = "[askai: your review record. A compaction does not remove the record.]\n"
-# The notice about the task that askai writes before the review record after
-# a compaction (mcp_req_compact_notes()).
+# The tools, in order, that the turns get when they are lent git, without
+# --notes.
+TURN_TOOLS = ["git", "compact", "background", "jobs", "wait", "timer"]
+# The notice about the task that askai writes after the summary of a
+# compaction if the turns are lent findings (mcp_req_compact_notes()).
 TASK = ("[askai: compaction does not change the task. The task is all text before "
         "the first [askai: ...] line: the system text, the earlier messages and the "
-        "prompt. You do not need to copy the task into notes or a summary.]\n")
-REVIEW_EMPTY = REVIEW + "[askai: no findings yet. Record findings with the findings tool.]"
-# The line before the closed findings of a review record (src/review.c).
-CLOSING = "[askai: disproved and retracted findings:]\n"
+        "prompt. You do not need to copy the task into notes or a summary.]")
+# The notice of a prompt without open findings of the agent in the
+# conversation (finding_notice(), src/finding.c).
+NO_OPEN = "[askai: You have no open findings in this conversation.]\n"
 
 
-def findings_head(counts):
-    """The line before the findings of a review record, with the counts, such
-    as "2 findings: 1 candidate, 1 retracted" (src/review.c)."""
-    return (f"[askai: your {counts}. Call findings with action show and id for the "
-            "history of a finding.]\n")
+def kept(first, last):
+    """The notice after a compaction that names the calls cFIRST to cLAST of
+    the ring of the ask call (seen_notice(), src/seen.c)."""
+    if first == last:
+        return (f"[askai: askai keeps your call c{first} of this ask call. Cite the call "
+                "as evidence by number.]\n")
+    return (f"[askai: askai keeps your calls c{first} to c{last} of this ask call. Cite "
+            "the calls as evidence by number.]\n")
 
 
 # The description of the offset of each tool that pages its output
 # (TOOL_OFFSET_ABOUT, src/tool.h).
 OFFSET_ABOUT = "The byte of the output to start from. The default is 0."
-# The header of the read log in the review record (src/review.c).
-READS = ("[askai: your read log of the lines that git read and code describe showed you "
-         "in this ask call:]")
 # The sentence that ends the description of each such tool lent to the turns.
 PAGED = (" A result is at most 64 KiB. The result can start up to 16 KiB before the "
          "offset, at the beginning of the line that contains the offset. If the output "
@@ -1602,11 +1601,11 @@ def check_client_jobs(binary, up):
                 wait_for(lambda: len(up.requests) >= count + 2)
                 lent = up.requests[count]["body"]["tools"]
                 assert [t["function"]["name"] for t in lent] == \
-                    ["git", "background", "jobs", "wait", "timer", "compact", "findings"], lent
+                    ["git", "background", "jobs", "wait", "timer", "compact"], lent
                 # The lent tools that page their output state the window; the
                 # listed ones do not.
                 assert [t["function"]["description"].endswith(PAGED) for t in lent] == \
-                    [True, False, True, False, False, False, True], lent
+                    [True, False, True, False, False, False], lent
                 assert PAGED not in tools[1]["description"], tools[1]
                 assert lent[2]["function"]["parameters"]["properties"]["job"]["type"] == \
                     "integer", lent[2]
@@ -2908,20 +2907,21 @@ def check_recovery_compact(binary, up):
           "without --notes: PASS")
 
 
-def check_recovery_review(binary, up):
-    """A resumed job gets its review record back from its checkpoint. The
-    checkpoint holds the pending lines of the results in its request, and
-    the log takes them once the resumed request is answered. The saved git
-    read of the interrupted turn restores its lines from its saved result,
+def check_recovery_findings(binary, up):
+    """A resumed job numbers its calls after the calls of its checkpoint.
+    The saved git read of the interrupted turn comes from its saved result,
     and git does not run again. The journal has no findings calls
-    (KF_RERUN), and the resumed turn makes them again. An invalid record in
-    the checkpoint stops the job before any request. A resume that is
+    (KF_RERUN), and the resumed turn makes them again. A finding that the
+    job committed before the restart stays on the branch. A call before the
+    restart cannot be cited any more, and the refusal says why. The
+    replayed read can be cited from the next turn on. A resume that is
     refused because the owner already runs 8 jobs answers with only the
-    problem. A call that is not a job saves no record in its checkpoints."""
+    problem."""
     held = up.reply, up.retrieve
     try:
         with tempfile.TemporaryDirectory() as d:
             repo, archive = f"{d}/proj", f"{d}/transcripts.git"
+            session = f"{d}/session.git"
             blocked, release, reads = f"{d}/blocked", f"{d}/release", f"{d}/reads"
             os.makedirs(f"{repo}/src")
             with open(f"{repo}/src/a.c", "w") as f:
@@ -2935,7 +2935,7 @@ def check_recovery_review(binary, up):
             os.mkdir(f"{d}/bin")
             with open(f"{d}/bin/git", "w") as f:
                 f.write('#!/bin/sh\ncase " $* " in\n'
-                        f'*" cat-file "*) printf "read\\n" >> {shlex.quote(reads)};;\n'
+                        f'*" cat-file blob "*) printf "read\\n" >> {shlex.quote(reads)};;\n'
                         f'*" diff "*) touch {shlex.quote(blocked)}; '
                         f'while [ -d {shlex.quote(d)} ] && [ ! -e {shlex.quote(release)} ]; '
                         'do sleep .02; done;;\n'
@@ -2952,16 +2952,19 @@ def check_recovery_review(binary, up):
                         "line": line, "count": 10}
             first = items(("read1", "git", read(1)),
                           ("add", "findings", {"action": "add", "claim": "C",
-                                               "location": "src/a.c:5"}))
+                                               "evidence": ["c1"]}))
             second = items(("read2", "git", read(11)),
-                           ("update", "findings", {"action": "update", "id": 1,
-                                                   "state": "verified", "evidence": "E"}),
+                           ("update", "findings", {"action": "update", "id": "recover#1",
+                                                   "state": "verified", "evidence": ["c1"],
+                                                   "reason": "R"}),
                            ("gate", "git", {"repo": "proj", "command": "diff",
                                             "revisions": ["HEAD", "HEAD"]}))
-            show = items(("show", "findings", {"action": "show"}),
-                         ("history", "findings", {"action": "show", "id": 1}))
+            third = items(("show", "findings", {"action": "show", "id": "recover#1"}),
+                          ("cite", "findings", {"action": "add", "claim": "D",
+                                                "state": "verified", "evidence": ["c3"],
+                                                "reason": "c3 shows lines 11 to 20."}))
             creates, resumes = [], []
-            jobs = f"{archive}/askai-journal/review-recovery/jobs"
+            jobs = f"{archive}/askai-journal/recover/jobs"
 
             def records(data):
                 """The offset, the kind and the value of each record of the
@@ -2975,8 +2978,8 @@ def check_recovery_review(binary, up):
 
             def reply(request):
                 creates.append(request)
-                turns = [(first, "review_first"), (second, "review_second"),
-                         (show, "review_show"), ([], "review_end")]
+                turns = [(first, "recover_first"), (second, "recover_second"),
+                         (third, "recover_third"), ([], "recover_end")]
                 calls, response_id = turns[min(len(creates), 4) - 1]
                 return 200, responses_turn(calls, text="" if calls else "recovered",
                                            response_id=response_id)
@@ -2985,12 +2988,16 @@ def check_recovery_review(binary, up):
                 if request["path"] == "/props":
                     return 404, {}
                 resumes.append(request)
-                return 200, responses_turn(second, response_id="review_second")
+                return 200, responses_turn(second, response_id="recover_second")
             up.reply, up.retrieve = reply, retrieve
             args = ("-u", up.url("/v1/responses"), "--api", "responses", "--background",
-                    "--upstream-tools", "--git", repo, "--agent", "review-recovery",
-                    "--transcripts", archive)
+                    "--upstream-tools", "--git", repo, "--agent", "recover", "--notes",
+                    session, "--transcripts", archive)
             env = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
+
+            def branch(*words):
+                return subprocess.run(["git", "--git-dir", session, *words], check=True,
+                                      capture_output=True, text=True).stdout
             ai = Askai(binary, *args, env=env)
             try:
                 result = ai.ask("Review src/a.c.")
@@ -3002,10 +3009,8 @@ def check_recovery_review(binary, up):
                 with open(f"{jobs}/{jid}", "rb") as f:
                     snapshot = f.read()
                 # Keep the records up to the gate's intent, as if askai had
-                # stopped just before it. The second turn's checkpoint has
-                # the record of the first turn, with the lines of its read
-                # still pending, and the journal has the second turn's read,
-                # but no findings call.
+                # stopped just before it. The journal has the second turn's
+                # read, but no findings call.
                 found = list(records(snapshot))
                 cut = next(k for k, (_, kind, value) in enumerate(found)
                            if kind == "tool-intent" and value["index"] == 2)
@@ -3016,11 +3021,7 @@ def check_recovery_review(binary, up):
                 state = found[0][2]
                 # The calls of the first turn are c1 and c2, so the second
                 # turn numbers its calls from c3 on.
-                assert state["calls"] == 2, state
-                assert state["review"]["reads"] == [] and state["review"]["pending"] == [{
-                    "repo": "proj", "commit": head, "path": "src/a.c", "total": 300,
-                    "lines": [1, 10, 1]}], state["review"]
-                assert [f["claim"] for f in state["review"]["findings"]] == ["C"], state
+                assert state["calls"] == 2 and "review" not in state, state
                 # The record of a read contains the whole output, from
                 # offset 0 on.
                 [(source, at)] = [(value["source"], value["at"])
@@ -3035,23 +3036,10 @@ def check_recovery_review(binary, up):
                     ai.proc.kill()
                     ai.proc.wait(timeout=5)
                     ai.state.cleanup()
-            # A checkpoint whose review record is invalid stops the job before
-            # any request, and stays as it was.
-            size = int.from_bytes(good[16:24], "big")
-            state["review"]["pending"][0]["lines"] = [10, 1, 1]
-            data = json.dumps(state, separators=(",", ":")).encode()
-            signed = good[:16] + len(data).to_bytes(8, "big") + good[24:88]
-            bad = signed + hashlib.sha256(signed + data).digest() + data + good[120 + size:]
-            with open(f"{jobs}/{jid}", "wb") as f:
-                f.write(bad)
-            with Askai(binary, *args, env=env) as restarted:
-                status, _, body = restarted.rpc("tools/call", {"name": "ask_ai",
-                                                               "arguments": {"job": jid}})
-                assert status == 200 and body["result"].get("isError") and \
-                    text_of(body["result"]) == "The saved review record of the job is " \
-                    "invalid. No provider request was sent.", (status, body)
-            with open(f"{jobs}/{jid}", "rb") as f:
-                assert f.read() == bad and not resumes and len(creates) == 2
+            # Both findings calls before the kill committed.
+            ref = "refs/heads/agent/recover/findings"
+            assert branch("log", "--format=%s", ref).split("\n")[:-1] == [
+                "Update recover#1 (candidate to verified)", "Add recover#1 (candidate)"]
             with open(f"{jobs}/{jid}", "wb") as f:
                 f.write(good)
             with Askai(binary, *args, env=env) as restarted:
@@ -3081,23 +3069,6 @@ def check_recovery_review(binary, up):
                     return result["content"][0]["text"] == "recovered"
                 wait_for(ended, seconds=15)
                 assert len(creates) == 4 and len(resumes) == 1, (creates, resumes)
-                # A call that is not a job cannot be resumed, so its
-                # checkpoints have no review record.
-                up.reply = lambda request: (200, responses_turn(
-                    [], text="done", response_id="plain_end") if any(
-                        i.get("type") == "function_call_output"
-                        for i in request["body"]["input"]) else responses_turn(
-                            items(("plain", "findings", {"action": "add", "claim": "F"})),
-                            response_id="plain_add"))
-                result = restarted.ask("Q", background=False)
-                assert result["content"][0]["text"] == "done", result
-                states = []
-                for name in os.listdir(jobs):
-                    with open(f"{jobs}/{name}", "rb") as f:
-                        states += [value for _, kind, value in records(f.read())
-                                   if kind == "state" and name not in (jid, *busy)]
-                assert len(states) == 1 and states[0]["turn"] == 2 and \
-                    "review" not in states[0], states
 
             def output(request, call):
                 [text] = [item["output"] for item in request["body"]["input"]
@@ -3106,142 +3077,35 @@ def check_recovery_review(binary, up):
                 return text
             # The resumed job numbers the calls of the second turn from c3
             # on. The stamp of the replayed read comes from its record. The
-            # calls that run again and the calls of the third turn get the
-            # next numbers.
+            # findings call runs again, and c1, a call before the restart,
+            # is not kept. The calls of the third turn get the next numbers.
             assert output(creates[2], "read2").endswith(stamp(3)), creates[2]
             assert output(creates[2], "gate").endswith(stamp(5)), creates[2]
-            said = output(creates[2], "update")
-            assert said == f"Updated finding 1: verified, src/a.c:5 at {head[:12]}." + \
-                stamp(4), said
-            assert output(creates[3], "show") == REVIEW + findings_head("1 finding: 1 verified") + (
-                f"1. verified, src/a.c:5 at {head[:12]}\n   claim: C\n"
-                f"   evidence: E\n{READS}\n"
-                f"proj {head}\n  src/a.c  lines 1-20: 20 of 300 lines") + stamp(6), creates[3]
-            # The call made again has the turn of the first.
-            assert output(creates[3], "history") == \
-                f"Finding 1: verified, src/a.c:5 at {head[:12]}\nclaim: C\nturn 1: " \
-                f"candidate\nturn 2: verified at {head[:12]}\n  evidence: E" + stamp(7), \
+            assert output(creates[2], "update") == "c1 is not kept, because askai " \
+                "restarted after c1. The oldest kept call is c3." + stamp(4), creates[2]
+            assert output(creates[3], "show").startswith(
+                "Finding recover#1 by recover: verified\nclaim: C\nChange 1: candidate, ask "), \
                 creates[3]
+            assert output(creates[3], "show").endswith(stamp(6)), creates[3]
+            assert re.fullmatch(r"Added recover#2 \(verified\)\. Evidence recover#2/1 from "
+                                r"c3:11-20\. Commit [0-9a-f]{8}\.", output(creates[3], "cite")[
+                                    :-len(stamp(7))]) and \
+                output(creates[3], "cite").endswith(stamp(7)), creates[3]
+            assert branch("log", "--format=%s", ref).split("\n")[:-1] == [
+                "Add recover#2 (verified)", "Update recover#1 (candidate to verified)",
+                "Add recover#1 (candidate)"]
+            # The finding of the resumed job names the call after the
+            # restart, and the turn of the replayed read.
+            [item] = json.loads(branch("show", f"{ref}:findings/0/2.json"))["changes"][0][
+                "evidence"]
+            assert (item["kind"], item["call"], item["turn"], item["lines"],
+                    item["call_id"]) == ("lines", 3, 2, [[11, 20]], "read2"), item
             with open(reads) as f:
                 assert f.read() == "read\nread\n", "a saved read ran again"
-
-            # With --notes, a job of a thread starts with the record that an
-            # earlier call of the thread saved. Its checkpoint contains the
-            # commit of that record and whether the job changed the
-            # findings, and the job resumed after a restart saves on top of
-            # that commit.
-            notes = f"{d}/notes"
-            git_env = os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null",
-                                    "GIT_CONFIG_NOSYSTEM": "1"}
-
-            def notes_git(*words):
-                return subprocess.run(["git", "--git-dir", notes, *words], check=True,
-                                      env=git_env, capture_output=True, text=True).stdout
-            held_turn = threading.Event()
-
-            class Held(Stream):
-                def pieces(self):
-                    yield self.wire
-                    assert held_turn.wait(30), "the held turn was not released"
-            asked = []
-
-            def carry(request):
-                asked.append(request)
-                turns = [(items(("c0", "findings", {"action": "add", "claim": "C0"})),
-                          "carry_add"), ([], "carry_end"),
-                         (items(("c1", "findings", {"action": "add", "claim": "C1"})),
-                          "carry_job")]
-                if len(asked) > len(turns):
-                    return 200, Held(wire=sse_wire([(None, {
-                        "type": "response.created", "sequence_number": 0,
-                        "response": {"id": "carry_held", "status": "in_progress"}})]))
-                calls, response_id = turns[len(asked) - 1]
-                return 200, responses_turn(calls, text="" if calls else "stored",
-                                           response_id=response_id)
-
-            def resumed(request):
-                if request["path"] == "/props":
-                    return 404, {}
-                return 200, responses_turn([], text="carried", response_id="carry_held")
-            up.reply, up.retrieve = carry, resumed
-            ai = Askai(binary, *args, "--notes", notes)
-            try:
-                result = ai.ask("Store.", background=False)
-                thread = re.search(r"thread ([0-9a-f]{32}) starts with the saved record\.\n$",
-                                   result["content"][1]["text"])[1]
-                ref = f"refs/review/review-recovery/anonymous/{thread}"
-                first = notes_git("rev-parse", ref).strip()
-                jid = re.search(r"Started job ([0-9a-f]{32})\.", text_of(
-                    ai.ask("Review.", thread=thread))).group(1)
-
-                def captured():
-                    with open(f"{jobs}/{jid}", "rb") as f:
-                        return b"carry_held" in f.read()
-                wait_for(lambda: os.path.exists(f"{jobs}/{jid}") and captured(), seconds=10)
-                given = json.dumps(asked[2]["body"]["input"])
-                assert "claim: C0" in given and "claim: C1" not in given, given
-                with open(f"{jobs}/{jid}", "rb") as f:
-                    [state] = [value for _, kind, value in records(f.read()) if kind == "state"]
-                assert state["review"]["base"] == first and state["review"]["changed"] is True, \
-                    state["review"]
-                ai.proc.kill()
-                assert ai.proc.wait(timeout=5) == -signal.SIGKILL
-                ai.state.cleanup()
-            finally:
-                held_turn.set()
-                if ai.proc.poll() is None:
-                    ai.proc.kill()
-                    ai.proc.wait(timeout=5)
-            stored = f"The review record is saved. An ask call with thread {thread} starts " \
-                "with the saved record.\n"
-            with Askai(binary, *args, "--notes", notes) as restarted:
-                def done(text):
-                    result = ask_result(restarted, {"job": jid})
-                    assert not result.get("isError"), result
-                    return result["content"][0]["text"] == text
-                wait_for(lambda: done("carried"), seconds=15)
-                result = ask_result(restarted, {"job": jid})
-                assert result["content"][1]["text"].endswith(stored), result
-                assert notes_git("rev-list", "--parents", "-n", "1", ref).split()[1:] == [first]
-
-                # A job whose stream breaks after the upstream named its
-                # response is suspended until a poll resumes it. It saves
-                # its findings once, when it ends.
-                class Cut(Stream):
-                    def pieces(self):
-                        yield self.wire
-                        raise ConnectionResetError
-                cut = []
-
-                def suspend(request):
-                    cut.append(request)
-                    if len(cut) == 1:
-                        return 200, responses_turn(items(("c2", "findings", {
-                            "action": "add", "claim": "C2"})), response_id="cut_add")
-                    if len(cut) == 2:
-                        return 200, Cut(wire=sse_wire([(None, {
-                            "type": "response.created", "sequence_number": 0,
-                            "response": {"id": "cut_held", "status": "in_progress"}})]))
-                    return 200, responses_turn([], text="resumed", response_id="cut_end")
-
-                def retrieved(request):
-                    if request["path"] == "/props":
-                        return 404, {}
-                    return 200, responses_turn(items(("c3", "findings", {
-                        "action": "add", "claim": "C3"})), response_id="cut_held")
-                up.reply, up.retrieve = suspend, retrieved
-                jid = re.search(r"Started job ([0-9a-f]{32})\.", text_of(
-                    restarted.ask("Review.", thread=thread))).group(1)
-                wait_for(lambda: done("resumed"), seconds=15)
-                result = ask_result(restarted, {"job": jid})
-                assert result["content"][1]["text"].endswith(stored), result
-            assert notes_git("rev-list", "--count", ref) == "3\n"
-            saved = json.loads(notes_git("show", f"{ref}:review.json"))
-            assert [f["claim"] for f in saved["findings"]] == ["C0", "C1", "C2", "C3"], saved
     finally:
         up.reply, up.retrieve = held
-    print("review recovery: the checkpoint's review record, a saved read's lines, "
-          "a findings call made again and the record of a thread: PASS")
+    print("findings recovery: the numbers after a restart, a saved read, a findings call "
+          "made again and a call before the restart: PASS")
 
 
 def check_durable_cancel(binary, up):
@@ -6005,7 +5869,8 @@ def check_logs(binary, up):
             session = ai.listed("session:")
             assert session[0] == f"repository  {notes}" and \
                 re.fullmatch(r"id          [0-9a-f]{32}", session[1]) and session[2:] == [
-                    "name        notes", "agent       bro", "service     bro"], told(ai)
+                    "name        notes", "agent       bro", "service     bro",
+                    "evidence    every member can read all stored evidence"], told(ai)
             # The earlier askai of the session ran the agent ask_ai.
             assert ai.listed("session members:") == ["ask_ai  agent", "bro     agent"], told(ai)
             assert not any(line.startswith("service:") for line in told(ai)), told(ai)
@@ -6057,8 +5922,8 @@ def check_logs(binary, up):
             assert ai.listed("role admin:") == [
                 "tools           ask_ai", "                git",
                 "upstream tools  git"] + [
-                f"{'':14}  {name}" for name in ("compact", "findings", "background", "jobs",
-                                                 "wait", "timer")] + [
+                f"{'':14}  {name}" for name in ("compact", "background", "jobs", "wait",
+                                                 "timer")] + [
                 "metrics         yes"], told(ai)
             assert ai.listed("role user:") == [
                 "tools           ask_ai", "upstream tools  none", "metrics         no"
@@ -6118,8 +5983,8 @@ def check_logs(binary, up):
             ai.wait_list("role admin:", [
                 "tools           ask_ai", "                man",
                 "upstream tools  man"] + [
-                f"{'':14}  {name}" for name in ("compact", "findings", "background", "jobs",
-                                                 "wait", "timer")] + [
+                f"{'':14}  {name}" for name in ("compact", "background", "jobs", "wait",
+                                                 "timer")] + [
                 "metrics         no"])
             ai.wait_list("warning: no role lists these tools:", ["git"])
             slow.join(5)
@@ -10565,7 +10430,8 @@ def check_code(binary, up):
                 schema["properties"]["repo"]["enum"] == ["proj", "lib"] and \
                 schema["properties"]["action"]["enum"] == [
                     "describe", "outline", "diagnostics"] and \
-                "count as read for findings" in tools[2]["description"], tools[2]
+                "A finding can cite the numbered lines, such as c7:120-140." in \
+                tools[2]["description"], tools[2]
 
             # askai checks the types of the arguments, and askai-code checks
             # their values.
@@ -10987,8 +10853,8 @@ def check_code_describe(binary, up, call, head, d, cdb):
         assert call(ai, error=True, repo="proj", action="describe", path="src/wt.c",
                     name="wt_uncommitted").startswith("No symbol wt_uncommitted ")
 
-    # The numbered lines that describe prints are added to the read log of
-    # the review record.
+    # A finding of a later turn can cite the numbered lines that describe
+    # printed, all of them or some, and the finding stores them.
     def turn(name, *calls):
         return lambda r: (200, turn_stream([(f"f{k}", name, json.dumps(c))
                                             for k, c in enumerate(calls)]))
@@ -10998,24 +10864,33 @@ def check_code_describe(binary, up, call, head, d, cdb):
              {"repo": "proj", "action": "describe", "path": "src/lay.c", "name": "strlen"},
              {"repo": "proj", "action": "describe", "path": "src/far.c",
               "name": "far_value"}),
-        turn("findings", *({"action": "add", "claim": "C", "state": "verified",
-                            "evidence": "E", "location": where}
-                           for where in ("src/lay.c:16-18", "src/sub/far.h:2", "src/lay.c:19",
-                                         "/usr/include/string.h:1")))]
+        turn("findings", *({"action": "add", "claim": f"C{k}", "state": "verified",
+                            "evidence": [cited], "reason": "R"}
+                           for k, cited in enumerate(("c1:16-18", "c3", "c1:19", "c2:1"))))]
     up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
+    session = f"{d}/session.git"
     with Askai(binary, "-u", up.url(), "--upstream-tools", "--git", f"{d}/proj",
-               "--code", f"proj={cdb}") as ai:
+               "--code", f"proj={cdb}", "--agent", "bro", "--notes", session) as ai:
         count = len(up.requests)
         assert ai.ask("Q")["content"][0]["text"] == "A"
         messages = up.requests[count + 2]["body"]["messages"]
         last = max(k for k, m in enumerate(messages) if m["role"] == "assistant")
         results = [m["content"] for m in unstamped(messages[last + 1:])]
-        assert results[0] == f"Added finding 1: verified, src/lay.c:16-18 at {head[:12]}.", \
+        assert re.fullmatch(r"Added bro#1 \(verified\)\. Evidence bro#1/1 from c1:16-18\. "
+                            r"Commit [0-9a-f]{8}\.", results[0]), results
+        assert re.fullmatch(r"Added bro#2 \(verified\)\. Evidence bro#2/1 from c3:2\. "
+                            r"Commit [0-9a-f]{8}\.", results[1]), results
+        assert re.fullmatch(r"Call c1 showed lines \d+ to 18 of src/lay\.c whole\. Give lines "
+                            r"within that range\.", results[2]), results
+        assert results[3].startswith("Call c2 showed lines ") or \
+            results[3] == "c2:1 needs a git read or a code describe. Call c2 is a code call.", \
             results
-        assert results[1] == f"Added finding 2: verified, src/sub/far.h:2 at {head[:12]}.", \
-            results
-        assert all(r.startswith("verified requires the lines of the location in your read log")
-                   for r in results[2:]), results
+        stored = json.loads(subprocess.run(
+            ["git", "--git-dir", session, "show", "refs/heads/agent/bro/findings:findings/0/1.json"],
+            check=True, capture_output=True, text=True).stdout)
+        [item] = stored["changes"][0]["evidence"]
+        assert (item["kind"], item["tool"], item["lines"], item["ids"]["path"],
+                item["ids"]["commit"]) == ("lines", "code", [[16, 18]], "src/lay.c", head), item
     up.reply = lambda request: (200, ANSWERS["openai"])
 
 
@@ -13661,7 +13536,7 @@ def check_turns(binary, up):
                 "notebook"]["description"]), notes_tool
             assert body["stream_options"] == {"include_usage": True}, body
             assert list(body)[-1] == "messages" and turns(first) == [], body
-            assert prompt(first) == "What is there?" + identity + empty, prompt(first)
+            assert prompt(first) == "What is there?" + identity + empty + NO_OPEN, prompt(first)
             head, *results = turns(second)
             assert head["role"] == "assistant" and head["content"] == "Looking." and \
                 head["reasoning_content"] == "hmm", head
@@ -13702,7 +13577,8 @@ def check_turns(binary, up):
                 "And now\\?" + re.escape(identity + history) +
                 f"1\\. {when}  found\\.md  \\(\\+1 -0\\), asked by {re.escape(ME)}\n"
                 "\\[askai: The current text of your newest note, found\\.md:\\]\n"
-                "found \"first\"\n", prompt(up.requests[count])), up.requests[count]
+                "found \"first\"\n" + re.escape(NO_OPEN), prompt(up.requests[count])), \
+                up.requests[count]
             assert f"ask-chain thread is {thread}." in result["content"][1]["text"], result
 
             # Hooks in the repository of a thread do not run. A note of a
@@ -13851,7 +13727,7 @@ def check_turns(binary, up):
             assert prompt(up.requests[count]).endswith(
                 "[askai: The current text of your newest note, long.md:]\n" + "L" * shown +
                 f"\n[askai: bytes 0 to {shown} of {size + 1}. Read the note with "
-                f"\"offset\": {shown} for the remaining bytes.]\n"), \
+                f"\"offset\": {shown} for the remaining bytes.]\n" + NO_OPEN), \
                 prompt(up.requests[count])[-300:]
 
             # The person keeps notes of its own: the turns of an ask call
@@ -13921,7 +13797,7 @@ def check_turns(binary, up):
             ai.ask("Once more", thread=mine)
             assert prompt(up.requests[count]).endswith(
                 "[askai: The current text of your newest note, z.bin:]\n" + note_view(b"\xff\x00\xfe")
-                + "\n"), prompt(up.requests[count])[-400:]
+                + "\n" + NO_OPEN), prompt(up.requests[count])[-400:]
             # A view longer than the prompt's window of 64 KiB is cut there,
             # with the length of the whole view and the offset to read on.
             raw = b"\xff" * 100000
@@ -14015,8 +13891,8 @@ def check_turns(binary, up):
             again = up.requests[count + 3]
             assert turns(again) == [] and prompt(again) == (
                 "Q\n\n[askai: your context filled up. Your turns and the tool results "
-                "since the task are gone.]\n\n" + TASK + REVIEW_EMPTY + nobody + empty +
-                "\n[askai: go on with the task.]"), prompt(again)
+                "since the task are gone.]\n\n" + TASK + nobody + empty + NO_OPEN +
+                kept(1, 3) + "\n[askai: go on with the task.]"), prompt(again)
             # Explicit compaction also gives the notices before the first note.
             script[:] = [lambda r: (200, turn_stream([("c", "compact", json.dumps(
                 {"summary": "S"}))]))]
@@ -14026,7 +13902,7 @@ def check_turns(binary, up):
             assert turns(again) == [] and prompt(again) == (
                 "Q\n\n[askai: you compacted the context. Your turns and the tool "
                 "results since the task are gone. Your summary:]\n\nS\n\n" + TASK +
-                REVIEW_EMPTY + nobody + empty + "\n[askai: go on with the task.]"), \
+                nobody + empty + NO_OPEN + "\n[askai: go on with the task.]"), \
                 prompt(again)
 
         # The reminders to write notes: one at a quarter of the context and
@@ -14085,11 +13961,11 @@ def check_turns(binary, up):
             assert turns(again) == [] and re.fullmatch(
                 "Q\n\n\\[askai: you compacted the context\\. Your turns and the tool "
                 "results since the task are gone\\. "
-                "Your summary:\\]\n\nS\n\n" + re.escape(TASK + REVIEW_EMPTY + nobody + history) +
+                "Your summary:\\]\n\nS\n\n" + re.escape(TASK + nobody + history) +
                 f"1\\. {when}  n1\\.md  \\(\\+1 -0\\)\n"
                 "\\[askai: The current text of your newest note, "
-                "n1\\.md:\\]\nn1\n\n\\[askai: go on with the task\\.\\]",
-                prompt(again)), prompt(again)
+                "n1\\.md:\\]\nn1\n" + re.escape(NO_OPEN + kept(1, 1)) +
+                "\n\\[askai: go on with the task\\.\\]", prompt(again)), prompt(again)
             assert "- compact: 1 bytes\n" in result["content"][1]["text"], result
             assert "git" not in result["content"][1]["text"], result
 
@@ -14108,10 +13984,11 @@ def check_turns(binary, up):
             assert turns(again) == [] and re.fullmatch(
                 "Q\n\n\\[askai: your context filled up\\. Your turns and the tool "
                 "results since the task are gone\\.\\]\n\n" +
-                re.escape(TASK + REVIEW_EMPTY + nobody + history) +
+                re.escape(TASK + nobody + history) +
                 f"1\\. {when}  n1\\.md  \\(\\+1 -0\\)\n2\\. {when}  n2\\.md  "
-                "\\(\\+1 -0\\)\n\\[askai: The current text of your newest note, n2\\.md:\\]\nn2\n\n"
-                "\\[askai: go on with the task\\.\\]", prompt(again)), prompt(again)
+                "\\(\\+1 -0\\)\n\\[askai: The current text of your newest note, n2\\.md:\\]\nn2\n" +
+                re.escape(NO_OPEN + kept(1, 1)) + "\n\\[askai: go on with the task\\.\\]",
+                prompt(again)), prompt(again)
             # After a delete, the prompt says that the newest note was deleted.
             script[:] = [lambda r: (200, turn_stream([("a", "notes", json.dumps(
                              {"action": "delete", "file": "n2.md"}))])),
@@ -14121,8 +13998,9 @@ def check_turns(binary, up):
             again = up.requests[count + 2]
             assert re.search(f"\n3\\. {when}  n2\\.md  \\(\\+0 -1\\)\n\\[askai: The current "
                              "text of your newest note, n2\\.md:\\]\n\\[askai: "
-                             "The note was deleted\\.\\]\n\n\\[askai: go on with the task\\.\\]$",
-                             prompt(again)), prompt(again)
+                             "The note was deleted\\.\\]\n" + re.escape(NO_OPEN + kept(1, 1)) +
+                             "\n\\[askai: go on with the task\\.\\]$", prompt(again)), \
+                prompt(again)
             script[:] = [lambda r: (200, turn_stream([("a", "git", log)])),
                          lambda r: (400, full), lambda r: (400, full)]
             result = ai.ask("Q")
@@ -14648,8 +14526,8 @@ def check_turns(binary, up):
                 == ["notes", "compact", "findings", "jobs", "wait", "timer"], \
                 up.requests[count]["body"]
             # compact names what a compaction shows again.
-            assert ", then the review record, then your note history and your newest " \
-                "note. " in up.requests[count]["body"]["tools"][1]["function"]["description"]
+            assert ", then your note history and your newest note, then your open " \
+                "findings. " in up.requests[count]["body"]["tools"][1]["function"]["description"]
             # There jobs lists and cancels a timer, and the call does not
             # doze for a cancelled one.
             script[:] = [
@@ -14694,27 +14572,27 @@ def check_turns(binary, up):
           "limits: PASS")
 
 
-def check_review(binary, up):
-    """With --upstream-tools, the turns get findings beside any tool that
-    they are lent. It keeps the review record of the ask call. add
-    records a finding, update changes one and keeps its history, and show
-    pages the record or the history of one finding. verified and disproved
-    need the lines of the location read with git read. The record logs the
-    lines that a read result shows the turns whole, at the commit that the
-    read resolved. It does not log a line that the window or the 4 MiB
-    limit cuts. The lines of a job's read count once jobs returns its
-    result. A location gets the commit of the latest read that showed its
-    lines. Lines are logged after the upstream answers the request with
-    the result, and not if a compaction removes the result first. A short
-    path resolves to the only logged path that ends with it. Trailing
-    askai notices are dropped from a claim or evidence. After each
-    compaction the record is shown again, up to the window of a tool, and
-    show gives the rest. With tools.upstream.deny, the turns get no
-    findings and compaction is unchanged. Without the git tool, findings
-    refuses verified and disproved and suggests no git read."""
+def check_findings(binary, up):
+    """With --upstream-tools and --notes, the turns get findings beside any
+    tool that they are lent. A finding of the agent bro has the ID bro#N on
+    the branch refs/heads/agent/bro/findings of the session. add records a
+    finding, update changes a finding of the agent, list lists the findings
+    of every member and show prints a finding with its changes. Each add and
+    update is one commit with the file of the finding and the archive of its
+    evidence. The evidence is calls of the ring of the ask call: a whole
+    call, lines of a read, or the message or the files of a git call that
+    names one commit. verified and disproved need evidence of an earlier
+    turn and a reason. The prompt of each ask call and compaction lists the
+    open findings of the agent in the thread, cut at the window of a tool,
+    and a compaction names the calls that a finding can cite. Two ask calls
+    that add findings at the same time both commit, the second after a race
+    on the new tip, and a write that races at each of its three commits is
+    refused. A finding that askai cannot read fails the call that reads it.
+    Without --notes, the turns get no findings."""
     with tempfile.TemporaryDirectory() as d:
         git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
         repo = f"{d}/proj"
+        session = f"{d}/session.git"
         os.makedirs(f"{repo}/src")
 
         def sh(*args):
@@ -14722,13 +14600,51 @@ def check_review(binary, up):
                                    "user.email=t@t", *args], check=True,
                                   env=os.environ | git, capture_output=True,
                                   text=True).stdout
+
+        def notes(*args, text=True):
+            return subprocess.run(["git", "--git-dir", session, *args], check=True,
+                                  env=os.environ | git, capture_output=True,
+                                  text=text).stdout
         sh("init", "-q", "-b", "main")
         with open(f"{repo}/src/a.c", "w") as f:
             f.write("".join(f"int x{i};\n" for i in range(300)))
         sh("add", "src/a.c")
         sh("commit", "-q", "-m", "first")
+        head = sh("rev-parse", "HEAD").strip()
         script = []
         up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
+        # A git for askai. With the file race, the first fast-import waits
+        # until a second one has ended. With the file always, each
+        # fast-import first moves the branch of the findings of bro.
+        real = shlex.quote(shutil.which("git"))
+        q = shlex.quote(d)
+        os.mkdir(f"{d}/bin")
+        with open(f"{d}/bin/git", "w") as f:
+            f.write(f'#!/bin/sh\ncase " $* " in\n*" fast-import "*)\n'
+                    f'if [ -e {q}/always ]; then\n'
+                    f'tip=$({real} --git-dir={shlex.quote(session)} rev-parse '
+                    f'refs/heads/agent/bro/findings) &&\n'
+                    f'new=$({real} -c user.name=t -c user.email=t@t '
+                    f'--git-dir={shlex.quote(session)} commit-tree -p "$tip" -m race '
+                    f'"$tip^{{tree}}") &&\n'
+                    f'{real} --git-dir={shlex.quote(session)} update-ref '
+                    f'refs/heads/agent/bro/findings "$new" "$tip"\n'
+                    f'elif [ -e {q}/race ]; then\n'
+                    f'printf "x\\n" >> {q}/imports\n'
+                    f'if mkdir {q}/first 2>/dev/null; then\n'
+                    f'while [ -d {q} ] && [ ! -e {q}/second ]; do sleep .02; done\n'
+                    f'elif mkdir {q}/later 2>/dev/null; then\n'
+                    f'{real} "$@"; s=$?; touch {q}/second; exit $s\n'
+                    f'fi\nfi;;\nesac\nexec {real} "$@"\n')
+        os.chmod(f"{d}/bin/git", 0o755)
+        wrapped = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
+
+        def tools(request):
+            """The results of the calls of the last turn in @p request, as
+            the turn got them, with their stamps."""
+            messages = request["body"]["messages"]
+            last = max(k for k, m in enumerate(messages) if m["role"] == "assistant")
+            return [m["content"] for m in messages[last + 1:]]
 
         def results(request):
             """The results of the calls of the last turn in @p request,
@@ -14740,628 +14656,408 @@ def check_review(binary, up):
         def prompt(request):
             return request["body"]["messages"][0]["content"]
 
-        def turn(*calls, name="findings"):
-            """A turn that calls @p name with each of the arguments @p calls."""
-            return lambda r: (200, turn_stream([(f"f{k}", name, json.dumps(c))
-                                                for k, c in enumerate(calls)]))
-
-        def compacted(summary, record):
-            return ("Q\n\n[askai: you compacted the context. Your turns and the tool "
-                    "results since the task are gone. Your "
-                    f"summary:]\n\n{summary}{record}\n\n[askai: go on with the "
-                    "task.]")
-
-        args = ("-u", up.url(), "--upstream-tools", "--git", repo)
-        with Askai(binary, *args) as ai:
-            # The definition's enums are the names that the record takes, and
-            # compact says that the record is shown again.
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            lent = {t["function"]["name"]: t["function"]
-                    for t in up.requests[count]["body"]["tools"]}
-            schema = lent["findings"]["parameters"]
-            assert sorted(schema["properties"]) == ["action", "claim", "evidence", "id",
-                                                    "location", "offset", "state"], schema
-            assert schema["properties"]["action"]["enum"] == ["add", "update", "show"]
-            assert schema["properties"]["state"]["enum"] == [
-                "candidate", "verified", "disproved", "retracted"], schema
-            assert schema["required"] == ["action"], schema
-            assert schema["additionalProperties"] is False, schema
-            assert "need not copy" not in lent["findings"]["description"], lent["findings"]
-            where = schema["properties"]["location"]["description"]
-            assert where.endswith("Leave out location if no lines of a file show the claim."), where
-            assert "After compact, you see the original task, then your summary, then " \
-                "the review record. " in lent["compact"]["description"], lent
-
-            # One ask call: findings calls in two turns, a compaction, a call
-            # after it, and a second compaction.
-            last = "[askai: your next turn is your last turn. Answer without calling tools.]"
-            script[:] = [
-                turn({"action": "add", "claim": "C1", "location": "src/a.c:3-4"},
-                     {"action": "add", "claim": "C2", "state": "verified",
-                      "evidence": "E", "location": "src/a.c:5"},
-                     {"action": "add", "claim": "C3", "evidence": f"E\n\n{last}"},
-                     {"action": "update", "id": 1},
-                     {"action": "remove"},
-                     {"action": "add", "claim": "C", "id": 1},
-                     {"action": "show"}),
-                turn({"action": "update", "id": 2, "state": "retracted", "evidence": "R",
-                      "claim": "C3b"},
-                     {"action": "show", "id": 2},
-                     {"action": "show", "offset": len(REVIEW)},
-                     {"action": "show", "id": 9}),
-                turn({"summary": "S"}, name="compact"),
-                turn({"action": "add", "claim": "C4"}),
-                turn({"summary": "T"}, name="compact"),
-            ]
-            count = len(up.requests)
-            result = ai.ask("Q")
-            sent = up.requests[count:]
-            assert len(sent) == 6 and result["content"][0]["text"] == "A", sent
-            first = (findings_head("2 findings: 2 candidate") +
-                     "1. candidate, src/a.c:3-4, not read\n   claim: C1\n"
-                     "2. candidate\n   claim: C3\n   evidence: E")
-            assert results(sent[1]) == [
-                "Added finding 1: candidate, src/a.c:3-4, not read. Read the lines of the "
-                "location before you verify the finding.",
-                "verified requires the lines of the location in your read log. The read log "
-                "does not contain src/a.c line 5. To read the lines, call the git tool with "
-                "\"command\": \"read\", \"revisions\": [\"HEAD:src/a.c\"] and \"line\": 5. The "
-                "path in revisions must be the whole path from the top of the repository. The "
-                "lines of a read enter the read log in your next turn. Call findings again in "
-                "a later turn.",
-                "Added finding 2: candidate. askai removed the [askai: ...] lines at the "
-                "end of the evidence.",
-                "update requires the state and evidence arguments.",
-                "The action argument must be add, update or show.",
-                "The argument id is not valid with action add.",
-                REVIEW + first], results(sent[1])
-            record = (REVIEW + findings_head("2 findings: 1 candidate, 1 retracted") +
-                      "1. candidate, src/a.c:3-4, not read\n   claim: C1\n" + CLOSING +
-                      "2. retracted: C3b")
-            paged = record
-            size = len(record.encode())
-            assert results(sent[2]) == [
-                "Updated finding 2: retracted.",
-                "Finding 2: retracted\nclaim: C3b\nturn 1: candidate\n  evidence: E\n"
-                "turn 2: retracted\n  evidence: R\n  old claim: C3",
-                record[len(REVIEW):] + f"\n\n[Bytes {len(REVIEW)} to {size} of {size}. "
-                "End of the output.]",
-                "There is no finding 9. The record contains findings 1 to 2."], results(sent[2])
-            # Each compaction puts the whole record into the prompt, and the
-            # calls after the first compaction add to it.
-            assert sent[3]["body"]["messages"][1:] == [], sent[3]
-            assert prompt(sent[3]) == compacted("S", "\n\n" + TASK + record), prompt(sent[3])
-            assert results(sent[4]) == ["Added finding 3: candidate."], results(sent[4])
-            record = (REVIEW + findings_head("3 findings: 2 candidate, 1 retracted") +
-                      "1. candidate, src/a.c:3-4, not read\n   claim: C1\n3. candidate\n"
-                      "   claim: C4\n" + CLOSING + "2. retracted: C3b")
-            assert prompt(sent[5]) == compacted("T", "\n\n" + TASK + record), prompt(sent[5])
-            # The trace names each call's action, and the bytes of its whole
-            # output or its failure.
-            said = results(sent[1]) + results(sent[2]) + [None] + results(sent[4]) + [None]
-            said[9] = paged
-            done = [("add", 1), ("add", 0), ("add", 1), ("update", 0), ("remove", 0),
-                    ("add", 0), ("show", 1), ("update", 1), ("show", 1), ("show", 1),
-                    ("show", 0), ("", 1), ("add", 1), ("", 1)]
-            assert result["content"][1]["text"] == "The other AI made 14 tool calls in 6 " \
-                "turns:\n" + "".join(
-                    "- compact: 1 bytes\n" if text is None else
-                    f"- findings {action}: {len(text.encode())} bytes\n" if ok else
-                    f"- findings {action}: failed\n"
-                    for text, (action, ok) in zip(said, done)), result
-            values = ai.metrics()
-            assert total(values, "askai_turn_tool_calls_total", tool="findings") == 12, \
-                values
-
-            # A claim larger than the LOOP_COPY share of a step is copied whole
-            # in a step of its own. Only that step goes over the share.
-            work(ai)
-            whole = 3 << 19
-            script[:] = [turn({"action": "add", "claim": "y" * whole})]
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            units, _ = work(ai)
-            assert whole < units["copy"][0] < whole + 4096, units
-            assert all(most <= bound for name, (most, bound) in units.items()
-                       if name != "copy"), units
-
-            # A claim larger than half the LOOP_COPY share of a step waits for
-            # a step of its own. A show of a record longer than the share
-            # takes several steps, and each step uses its whole share.
-            work(ai)
-            script[:] = [turn({"action": "add", "claim": f"{k} " + "x" * (600 << 10)})
-                         for k in range(3)] + [turn({"action": "show"})]
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            units, _ = work(ai)
-            assert all(most <= bound for most, bound in units.values()), units
-            assert units["copy"][0] == units["copy"][1], units
-            text = REVIEW + findings_head("3 findings: 3 candidate") + "\n".join(
-                f"{k + 1}. candidate\n   claim: {k} " + "x" * (600 << 10) for k in range(3))
-            shown = results(up.requests[count + 4])[0]
-            found = re.fullmatch(r"(.*)\n\n\[Bytes 0 to (\d+) of (\d+)\. To read on, call "
-                                 r"the tool again with the same arguments and "
-                                 r"\"offset\": \2\.\]",
-                                 shown, re.S)
-            assert found and int(found[3]) == len(text) and found[1] == text[:int(found[2])], \
-                shown[-200:]
-
         def mixed(*calls):
             """A turn that makes the @p calls, each a tool's name and its
             arguments."""
             return lambda r: (200, turn_stream([(f"m{k}", name, json.dumps(c))
                                                 for k, (name, c) in enumerate(calls)]))
 
-        def read(path, line, count=None, **more):
-            """The arguments of a git read of @p path at HEAD from @p line."""
-            return {"repo": "proj", "command": "read", "revisions": [f"HEAD:{path}"],
-                    "line": line, **({"count": count} if count else {}), **more}
+        def turn(*calls):
+            """A turn that calls findings with each of the arguments @p calls."""
+            return mixed(*(("findings", c) for c in calls))
 
-        def add(claim, location, state="verified"):
-            return {"action": "add", "claim": claim, "location": location, "state": state,
-                    "evidence": "E" + claim}
+        def blob(sha256):
+            """The archive file of the material with the SHA-256 @p sha256."""
+            data = notes("show", f"refs/heads/agent/bro/findings:archive/{sha256[:2]}/"
+                         f"{sha256[2:]}", text=False)
+            assert hashlib.sha256(data).hexdigest() == sha256, sha256
+            return data.decode()
 
-        later_turn = (" The lines of a read enter the read log in your next turn. Call "
-                      "findings again in a later turn.")
+        def stored(number, author="bro"):
+            return json.loads(notes("show", f"refs/heads/agent/{author}/findings:findings/"
+                                    f"{number // 100}/{number}.json"))
 
-        def missing(state, location, path, line, logged=True):
-            """The refusal of lines that are not in the log, of a path that
-            it has if @p logged is true."""
-            return (f"{state} requires the lines of the location in your read log. The read "
-                    f"log does not contain {location}. To read the lines, call the git tool "
-                    f"with \"command\": \"read\", \"revisions\": [\"HEAD:{path}\"] and "
-                    f"\"line\": {line}." +
-                    ("" if logged else " The path in revisions must be the whole path from "
-                     "the top of the repository.") + later_turn)
+        def commit_of(text):
+            return re.search(r" Commit ([0-9a-f]{8})\.$", text)[1]
 
-        def second(request):
-            """Commit src/x.c, tests/x.c, a line more of src/a.c, a file of
-            one long line and one past 4 MiB, then give the turn of the
-            reads at that commit."""
-            for name, text in (("src/x.c", "a\nb\n"), ("tests/x.c", "a\nb\n"),
-                               ("src/long.c", "y" * (2 << 20) + "\nz\n"),
-                               ("src/cut.c", ("x" * 999 + "\n") * 4200)):
-                os.makedirs(os.path.dirname(f"{repo}/{name}"), exist_ok=True)
-                with open(f"{repo}/{name}", "w") as f:
-                    f.write(text)
-            with open(f"{repo}/src/a.c", "a") as f:
-                f.write("int y;\n")
-            sh("add", "src", "tests")
-            sh("commit", "-q", "-m", "second")
-            return mixed(("git", read("src/a.c", 1, 5)), ("git", read("src/x.c", 1)),
-                         ("git", read("tests/x.c", 1)),
-                         ("findings", add("C4", "src/a.c:3")))(request)
+        def opened(*rows, more=0, other=0):
+            """The notices of the open findings of the agent in a prompt."""
+            text = "".join(rows)
+            text = ("[askai: Your open findings in this conversation (id, state, claim):]\n" +
+                    text) if rows else NO_OPEN
+            if more:
+                text += f"[askai: {more} more open finding{'s' * (more > 1)}. Call findings " \
+                    "with action list.]\n"
+            if other:
+                text += f"[askai: You have {other} open finding{'s' * (other > 1)} in other " \
+                    "conversations. Call findings with action list to see the findings of " \
+                    "every member.]\n"
+            return text
 
-        # The record logs the lines that a read result shows the turns
-        # whole, at the commit that the read resolved, after the upstream
-        # has seen them. verified and disproved need the lines of the
-        # location in the log. A short path resolves to the only logged
-        # path that ends with it.
-        head = sh("rev-parse", "HEAD").strip()
+        read = {"repo": "proj", "command": "read", "revisions": ["HEAD:src/a.c"], "line": 1,
+                "count": 10}
+        log = {"repo": "proj", "command": "log", "options": ["--oneline"]}
+        thread, other = "1" * 32, "2" * 32
+        args = ("-u", up.url(), "--upstream-tools", "--git", repo, "--agent", "bro",
+                "--notes", session)
         with Askai(binary, *args) as ai:
+            # The definition, and what compact says of the findings.
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            lent = {t["function"]["name"]: t["function"]
+                    for t in up.requests[count]["body"]["tools"]}
+            schema = lent["findings"]["parameters"]
+            assert sorted(schema["properties"]) == [
+                "about", "action", "author", "claim", "evidence", "external", "id", "offset",
+                "reason", "state"], schema
+            assert schema["properties"]["action"]["enum"] == ["add", "update", "list", "show"]
+            assert schema["properties"]["state"]["enum"] == [
+                "candidate", "verified", "disproved", "retracted"], schema
+            assert schema["properties"]["evidence"]["maxItems"] == 16 and \
+                schema["properties"]["evidence"]["items"] == {"type": "string"}, schema
+            assert schema["properties"]["external"]["maxItems"] == 8, schema
+            assert schema["required"] == ["action"] and \
+                schema["additionalProperties"] is False, schema
+            assert schema["properties"]["id"]["description"] == \
+                "A finding, such as bro#5, for update and show.", schema
+            assert lent["findings"]["description"].startswith(
+                "Findings are claims that you make about material that askai showed you. A "
+                "finding has an id such as bro#5, a claim, a state and a history of "
+                "changes."), lent["findings"]
+            assert ", then your note history and your newest note, then your open " \
+                "findings. " in lent["compact"]["description"], lent["compact"]
+            # A new ask call starts without open findings.
+            assert prompt(up.requests[count]).endswith(NO_OPEN), prompt(up.requests[count])
+
+            # One ask call of the thread: a read and a log, findings in the
+            # same turn and in the next, refusals, list and show, then a
+            # compaction and a finding after it.
+            claim = "git log shows one commit."
             script[:] = [
-                mixed(("git", read("src/a.c", 1, 10)), ("findings", add("C1", "src/a.c:3-4"))),
-                mixed(("git", read("src/a.c", 45, 16)), ("findings", add("C1", "src/a.c:3-4")),
-                      ("findings", add("C2", "a.c:50", "disproved"))),
-                mixed(("findings", add("C2", "a.c:50", "disproved")),
-                      ("findings", add("C3", "src/a.c:60-61"))),
-                second,
-                mixed(("findings", add("C4", "x.c:1")), ("findings", add("C4", "src/a.c:3")),
-                      ("findings", add("C5", f"{head[:7]}:src/a.c:8")),
-                      ("findings", {"action": "show"}))]
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            sent = up.requests[count:]
-            assert len(sent) == 6, sent
-            later = sh("rev-parse", "HEAD").strip()
-            shown = results(sent[1])
-            assert shown[0].startswith(f"[Repository proj, file src/a.c at commit {head}. "
-                                       "Lines 1 to 10 of 300.]\n1\tint x0;\n"), shown
-            # The turn that reads the lines has not seen them yet.
-            assert shown[1:] == [missing("verified", "src/a.c lines 3-4", "src/a.c", 3,
-                                         False)], shown
-            assert results(sent[2])[1:] == [
-                f"Added finding 1: verified, src/a.c:3-4 at {head[:12]}.",
-                missing("disproved", "src/a.c line 50", "src/a.c", 50)], sent[2]
-            # When the log has only some of the lines of the location, the
-            # refusal names the line after the logged lines, and their commit.
-            assert results(sent[3]) == [
-                f"Added finding 2: disproved, src/a.c:50 at {head[:12]}.",
-                "verified requires the lines of the location in your read log. The read log "
-                f"contains src/a.c line 60 at {head[:12]}, but not line 61. To read the "
-                "missing lines, call the git tool with \"command\": \"read\", "
-                f"\"revisions\": [\"{head[:12]}:src/a.c\"] and \"line\": 61. A long range can "
-                "need several reads." + later_turn], sent[3]
-            # The latest read that showed a location's lines gives its
-            # commit, and a commit's prefix picks the reads at that commit.
-            assert results(sent[4])[3:] == [f"Added finding 3: verified, src/a.c:3 at "
-                                            f"{head[:12]}."], results(sent[4])
-            assert results(sent[5]) == [
-                "x.c matches src/x.c and tests/x.c in your read log. Give the whole path in "
-                "location.",
-                f"Added finding 4: verified, src/a.c:3 at {later[:12]}.",
-                f"Added finding 5: verified, src/a.c:8 at {head[:12]}.",
-                REVIEW + findings_head("5 findings: 4 verified, 1 disproved") +
-                f"1. verified, src/a.c:3-4 at {head[:12]}\n   claim: C1\n   evidence: EC1\n"
-                f"3. verified, src/a.c:3 at {head[:12]}\n   claim: C4\n   evidence: EC4\n"
-                f"4. verified, src/a.c:3 at {later[:12]}\n   claim: C4\n   evidence: EC4\n"
-                f"5. verified, src/a.c:8 at {head[:12]}\n   claim: C5\n   evidence: EC5\n" +
-                CLOSING + f"2. disproved, src/a.c:50 at {head[:12]}: C2\n"
-                f"{READS}\nproj {head}\n"
-                f"  src/a.c  lines 1-10, 45-60: 26 of 300 lines\nproj {later}\n"
-                "  src/a.c  lines 1-5: 5 of 301 lines\n  src/x.c  lines 1-2: all 2 lines\n"
-                "  tests/x.c  lines 1-2: all 2 lines"], results(sent[5])
-
-            # Lines 3-4 keep the commit `later`, whose read showed them last,
-            # although the read after it, at `head`, adds lines 11-12 next to
-            # lines 1-10 at `head`. A location past the end of the file, as
-            # the log knows it, is refused. A HEAD: prefix means no commit
-            # prefix.
-            script[:] = [
-                mixed(("git", read("src/a.c", 1, 10, revisions=[f"{head}:src/a.c"]))),
-                mixed(("git", read("src/a.c", 3, 2, revisions=[f"{later}:src/a.c"]))),
-                mixed(("git", read("src/a.c", 11, 2, revisions=[f"{head}:src/a.c"]))),
-                mixed(("findings", add("C9", "src/a.c:3")),
-                      ("findings", add("C9", "src/a.c:300-305")),
-                      ("findings", add("C9", "HEAD:src/a.c:4")))]
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            assert results(up.requests[count + 4]) == [
-                f"Added finding 1: verified, src/a.c:3 at {later[:12]}.",
-                f"At {later[:12]}, src/a.c ends at line 301. Give a location within lines 1 "
-                "to 301.",
-                f"Added finding 2: verified, src/a.c:4 at {later[:12]}."], \
-                results(up.requests[count + 4])
-
-            # A short path that becomes ambiguous after it was recorded stays
-            # as it is in an update without a location, unless the new state
-            # needs the lines; that update is refused.
-            script[:] = [mixed(("findings", {"action": "add", "claim": "C10",
-                                             "location": "x.c:1"})),
-                         mixed(("git", read("src/x.c", 1)), ("git", read("tests/x.c", 1))),
-                         mixed(("findings", {"action": "update", "id": 1, "state": "verified",
-                                             "evidence": "E"}),
-                               ("findings", {"action": "update", "id": 1, "state": "retracted",
-                                             "evidence": "R"}))]
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            assert results(up.requests[count + 3]) == [
-                "x.c matches src/x.c and tests/x.c in your read log. Give the whole path in "
-                "location.",
-                "Updated finding 1: retracted, x.c:1, not read."], \
-                results(up.requests[count + 3])
-
-            # A compaction removes a read's result before the upstream sees
-            # it, so the log does not take its lines.
-            script[:] = [mixed(("git", read("src/a.c", 1, 10)), ("compact", {"summary": "S"})),
-                         mixed(("findings", add("C8", "src/a.c:3")))]
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            sent = up.requests[count:]
-            assert prompt(sent[1]) == compacted("S", "\n\n" + TASK + REVIEW_EMPTY), prompt(sent[1])
-            assert results(sent[2]) == [missing("verified", "src/a.c line 3", "src/a.c", 3,
-                                                False)], sent[2]
-            # So does the compaction that askai makes when the context fills
-            # up.
-            full = {"error": {"code": 400, "type": "exceed_context_size_error",
-                              "message": "request (9000 tokens) exceeds the available "
-                              "context size (8192 tokens), try increasing it"}}
-            script[:] = [mixed(("git", read("src/a.c", 1, 10))), lambda r: (400, full),
-                         mixed(("findings", add("C8", "src/a.c:3")))]
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            sent = up.requests[count:]
-            assert prompt(sent[2]) == (
-                "Q\n\n[askai: your context filled up. Your turns and the tool results since "
-                "the task are gone.]\n\n" + TASK + REVIEW_EMPTY +
-                "\n\n[askai: go on with the task.]"), prompt(sent[2])
-            assert results(sent[3]) == [missing("verified", "src/a.c line 3", "src/a.c", 3,
-                                                False)], sent[3]
-
-            # A job's read counts once jobs gives its result.
-            job = {"tool": "git", "arguments": read("src/a.c", 100, 5)}
-            script[:] = [mixed(("background", job)),
-                         mixed(("wait", {"seconds": 10, "jobs": [1]}),
-                               ("findings", add("C6", "src/a.c:101"))),
-                         mixed(("jobs", {"action": "result", "job": 1})),
-                         mixed(("findings", add("C6", "src/a.c:101")))]
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            sent = up.requests[count:]
-            assert results(sent[2])[1] == missing("verified", "src/a.c line 101",
-                                                  "src/a.c", 101, False), sent[2]
-            shown = results(sent[3])
-            assert shown[0].startswith(f"[Repository proj, file src/a.c at commit {later}. "
-                                       "Lines 100 to 104 of 301.]\n100\tint x99;\n"), shown
-            assert results(sent[4]) == [f"Added finding 1: verified, src/a.c:101 at "
-                                        f"{later[:12]}."], sent[4]
-            # The 4 MiB cut ends line 4195 of src/cut.c, which the log leaves
-            # out, and the file's lines are not known.
-            script[:] = [mixed(("git", read("src/cut.c", 4190))),
-                         mixed(("findings", add("C7", "src/cut.c:4195")),
-                               ("findings", add("C7", "src/cut.c:4194")),
-                               ("findings", {"action": "show"}))]
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            [read_cut] = results(up.requests[count + 1])
-            assert read_cut.startswith(f"[Repository proj, file src/cut.c at commit {later}. "
-                                       "Lines 4190 to 4195 of at least 4195.]\n") and \
-                read_cut.endswith("\n\n[Line 4195 is cut at the 4 MiB limit of the git "
-                                  "tool.]"), read_cut[-300:]
-            shown = results(up.requests[count + 2])
-            assert shown == [
-                missing("verified", "src/cut.c line 4195", "src/cut.c", 4195),
-                f"Added finding 1: verified, src/cut.c:4194 at {later[:12]}.",
-                REVIEW + findings_head("1 finding: 1 verified") +
-                f"1. verified, src/cut.c:4194 at {later[:12]}\n   claim: C7\n"
-                f"   evidence: EC7\n{READS}\nproj {later}\n  src/cut.c  lines 4190-4194: 5 "
-                "of an unknown number of lines"], shown
-            # A client's read is unchanged.
-            status, _, body = ai.rpc("tools/call", {"name": "git",
-                                                    "arguments": read("src/a.c", 300)})
-            assert status == 200 and text_of(body["result"]) == (
-                f"[Repository proj, file src/a.c at commit {later}. Lines 300 to 301 of "
-                "301.]\n300\tint x299;\n301\tint y;\n\n[Line 301 is the end of the file.]"), \
-                body
-
-        # A context of 8000 tokens has windows of 4000 bytes. The record of
-        # 40 findings is longer, so a compaction shows the lines of it that
-        # fit, and show with the offset that it names gives the rest.
-        with Askai(binary, *args, "--context", "8000") as ai:
-            claims = [f"claim {k:02} " + "x" * 80 for k in range(40)]
-            adds = [{"action": "add", "claim": c} for c in claims]
-            script[:] = [turn(*adds[:16]), turn(*adds[16:32]), turn(*adds[32:]),
-                         turn({"summary": "S"}, name="compact")]
-            record = REVIEW + findings_head("40 findings: 40 candidate") + "".join(
-                f"{k + 1}. candidate\n   claim: {c}\n" for k, c in enumerate(claims))
-            record = record[:-1]
-            keep = record.rindex("\n", 0, 4000) + 1
-            cut = (f"[askai: the record continues at byte {keep}. Call findings with action "
-                   f"show and \"offset\": {keep}.]")
-
-            def show(request):
-                found = re.search(r'"offset": (\d+)\.\]', prompt(request))
-                return turn({"action": "show", "offset": int(found[1])})(request)
-            script.append(show)
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            sent = up.requests[count:]
-            assert len(sent) == 6, sent
-            assert prompt(sent[4]) == compacted("S", "\n\n" + TASK + record[:keep] + cut), \
-                prompt(sent[4])[-600:]
-            size = len(record)
-            assert results(sent[5]) == [record[keep:] + f"\n\n[Bytes {keep} to {size} of "
-                                        f"{size}. End of the output.]"], results(sent[5])
-
-            # A read gives the lines that fit in the window, and the log has
-            # all of them. From an offset within a line, the window starts
-            # at the line's start, and the log has that line too.
-            def logged(*calls):
-                """The text of a read of src/a.c that a turn of a new ask
-                call makes with each of @p calls' arguments, and the line of
-                the read log that a show after them gives."""
-                script[:] = [mixed(*(("git", c) for c in calls)), turn({"action": "show"})]
-                count = len(up.requests)
-                assert ai.ask("Q")["content"][0]["text"] == "A"
-                sent = up.requests[count:]
-                shown = results(sent[2])[0].split("\n")
-                assert shown[-3:-1] == [
-                    READS,
-                    f"proj {later}"], shown
-                return results(sent[1])[0], shown[-1]
-
-            text, line = logged(read("src/a.c", 1))
-            out = text[:text.rindex("\n\n[To read on")]
-            numbered = re.findall(r"^(\d+)\tint x\d+;$", out, re.M)
-            last = int(numbered[-1])
-            assert numbered == [str(k) for k in range(1, last + 1)] and len(text) <= 4000
-            assert line == f"  src/a.c  lines 1-{last}: {last} of 301 lines", line
-            start = out.index("\n20\t") + 1
-            text, line = logged(read("src/a.c", 1, offset=start + 2))
-            assert text.startswith(out[start:] + "\n\n[To read on"), text
-            numbered = re.findall(r"^(\d+)\tint x\d+;$", out[start:], re.M)
-            assert numbered[0] == "20" and line == \
-                f"  src/a.c  lines 20-{last}: {last - 19} of 301 lines", (numbered, line)
-            # A line longer than the window is not logged, nor scanned whole
-            # in one step, nor its rest from an offset more than a quarter
-            # window into it, where the window starts.
-            work(ai)
-            script[:] = [mixed(("git", read("src/long.c", 1)),
-                               ("git", read("src/long.c", 1, offset=3000))),
-                         turn({"action": "show"})]
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            units, _ = work(ai)
-            assert all(most <= bound for most, bound in units.values()), units
-            assert results(up.requests[count + 2]) == [REVIEW_EMPTY]
-            assert re.fullmatch(r"y+\n\n\[Bytes 3000 to \d+ of \d+\. To read on, .*",
-                                results(up.requests[count + 1])[1], re.S), \
-                results(up.requests[count + 1])[1][-200:]
-
-        # Without findings, the turns cannot call it, and a compaction adds
-        # no record.
-        path = f"{d}/askai.json"
-        with open(path, "w") as f:
-            json.dump(grouped({"url": up.url(), "upstream-tools": True,
-                               "tools": {"upstream": {"deny": ["findings"]}}}), f)
-        os.chmod(path, 0o600)
-        with Askai(binary, "-c", path, "--git", repo) as ai:
-            script[:] = [turn({"action": "show"}), turn({"summary": "S"}, name="compact")]
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            sent = up.requests[count:]
-            lent = {t["function"]["name"]: t["function"] for t in sent[0]["body"]["tools"]}
-            assert "findings" not in lent, lent
-            assert "review record" not in lent["compact"]["description"], lent["compact"]
-            assert "you see the original task, then your summary. " in \
-                lent["compact"]["description"], lent["compact"]
-            assert results(sent[1]) == ["The tool name is unknown, or the tool is not "
-                                        "available to you."], sent[1]
-            assert prompt(sent[2]) == compacted("S", ""), prompt(sent[2])
-
-        # Without the git tool, the turns get findings beside man, but the
-        # read log stays empty: verified and disproved are refused, and no
-        # refusal suggests a git read.
-        with open(path, "w") as f:
-            json.dump(grouped({"url": up.url(), "upstream-tools": True,
-                               "tools": {"upstream": {"deny": ["git"]}}}), f)
-        with Askai(binary, "-c", path, "--git", repo, "--man") as ai:
-            script[:] = [turn({"action": "add", "claim": "C1", "state": "verified",
-                               "evidence": "E", "location": "src/a.c:3"},
-                              {"action": "add", "claim": "C2", "location": "src/a.c:3"},
-                              {"action": "update", "id": 1, "state": "disproved",
-                               "evidence": "E"})]
-            count = len(up.requests)
-            assert ai.ask("Q")["content"][0]["text"] == "A"
-            sent = up.requests[count:]
-            lent = {t["function"]["name"] for t in sent[0]["body"]["tools"]}
-            assert "findings" in lent and "git" not in lent, lent
-            no_git = ("verified and disproved need the git tool or the code tool. Neither "
-                      "tool is available in this ask call. Keep the finding a candidate, or "
-                      "retract the finding.")
-            assert results(sent[1]) == [no_git, "Added finding 1: candidate, src/a.c:3, not "
-                                        "read.", no_git], results(sent[1])
-
-        # With --notes, an ask call of a thread saves the findings that its
-        # turns added or updated before it answers, and the next ask call
-        # with the thread starts with them, without the read log. The first
-        # save also makes the repository.
-        session = f"{d}/session"
-        os.mkdir(session)
-
-        def notes(*args):
-            return subprocess.run(["git", "--git-dir", session, *args], check=True,
-                                  env=os.environ | git, capture_output=True,
-                                  text=True).stdout
-
-        def stored(thread):
-            return ("The review record is saved. An ask call with thread "
-                    f"{thread} starts with the saved record.\n")
-        raced = ("The findings of the ask call were not saved. Another ask call of the "
-                 "thread saved a review record first.\n")
-        up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
-        with Askai(binary, "-u", up.url(), "--upstream-tools", "--git", repo, "--agent", "ask_ai",
-                   "--notes",
-                   session, "--slots", "2") as ai:
-            [tool] = [t for t in ai.rpc("tools/list")[2]["result"]["tools"]
-                      if t["name"] == "ask_ai"]
-            assert tool["inputSchema"]["properties"]["thread"]["description"] == (
-                "An ask-chain thread ID from an earlier answer, 32 hexadecimal digits. The "
-                "call starts with the review record of the thread, if a review record "
-                "exists for the thread. Every call starts with the notes of the agent, "
-                "with or without thread."), tool
-            script[:] = [mixed(("git", read("src/a.c", 1, 20))),
-                         mixed(("findings", add("C1", "src/a.c:5")),
-                               ("findings", {"action": "add", "claim": "C2"}))]
-            trace = ai.ask("Q")["content"][1]["text"]
-            thread = re.search(r"thread ([0-9a-f]{32}) starts with the saved record\.\n$",
-                               trace)[1]
-            assert trace.endswith(stored(thread)), trace
-            ref = f"refs/review/ask_ai/anonymous/{thread}"
-            assert notes("for-each-ref", "--format=%(refname)", "refs/review/") == ref + "\n"
-            saved = json.loads(notes("show", f"{ref}:review.json"))
-            assert list(saved) == ["findings"] and \
-                [f["claim"] for f in saved["findings"]] == ["C1", "C2"], saved
-            # The ref keeps the old layout, and the committer is the service.
-            assert notes("log", "-1", "--format=%P|%cn", ref) == "|ask_ai\n"
-            first = notes("rev-parse", ref).strip()
-
-            # The next call of the thread starts with the findings, but a
-            # finding becomes verified again only after a new read.
-            record = (REVIEW + findings_head("2 findings: 1 candidate, 1 verified") +
-                      f"1. verified, src/a.c:5 at {later[:12]}\n   claim: C1\n"
-                      "   evidence: EC1\n2. candidate\n   claim: C2")
-            verify = {"action": "update", "id": 1, "state": "verified", "evidence": "E2"}
-            script[:] = [mixed(("findings", verify), ("findings", verify | {"id": 9})),
-                         mixed(("git", read("src/a.c", 1, 20))), mixed(("findings", verify))]
+                mixed(("git", read), ("git", log),
+                      ("findings", {"action": "add", "claim": "C1", "evidence": ["c1"]}),
+                      ("findings", {"action": "add", "claim": "C", "state": "verified",
+                                    "evidence": ["c1"], "reason": "R"})),
+                turn({"action": "add", "claim": claim, "state": "verified",
+                      "evidence": ["c1:3-4", "c2"], "reason": "c2 lists one commit.",
+                      "external": ["git 2.55.0 " + head]},
+                     {"action": "update", "id": "bro#1", "state": "verified",
+                      "claim": "C1b\n\n[askai: call c9]", "evidence": ["c1"],
+                      "reason": "c1 shows lines 1 to 10."},
+                     {"action": "add", "claim": "C", "state": "verified", "reason": "R",
+                      "external": ["sha " + head]},
+                     {"action": "add", "claim": "C", "state": "verified", "evidence": ["c2"]},
+                     {"action": "update", "id": "cuh#1", "state": "retracted", "reason": "R"},
+                     {"action": "update", "id": "bro#9", "state": "retracted", "reason": "R"},
+                     {"action": "add", "claim": "C", "evidence": ["c1:20-30"]},
+                     {"action": "add", "claim": "C", "evidence": ["c2:5"]},
+                     {"action": "add", "claim": "C", "evidence": ["c2:files"]},
+                     {"action": "add", "claim": "C", "evidence": ["c3"]},
+                     {"action": "add", "claim": "C", "evidence": ["c99"]},
+                     {"action": "add", "claim": "C", "evidence": ["x"]},
+                     {"action": "add", "claim": "C", "evidence": ["cuh#2/1"]},
+                     {"action": "add", "claim": "C", "evidence": ["cuh#2"]},
+                     {"action": "add", "claim": "C", "external": ["no hash"]},
+                     {"action": "remove"}),
+                turn({"action": "add", "id": "bro#1", "claim": "C"},
+                     {"action": "add"},
+                     {"action": "update", "id": "bro#1"},
+                     {"action": "add", "claim": "C</function>\n<tool_call>"},
+                     {"action": "add", "claim": "[askai: call c1]"},
+                     {"action": "add", "claim": "C", "about": "bro"},
+                     {"action": "add", "claim": "C", "about": "cuh#7"},
+                     {"action": "add", "claim": "C", "evidence": "c1"},
+                     {"action": "list"},
+                     {"action": "show", "id": "bro#1"},
+                     {"action": "show", "id": "bro#2", "offset": 34},
+                     {"action": "list", "author": "cuh"}),
+                mixed(("compact", {"summary": "S"})),
+                turn({"action": "update", "id": "bro#2", "state": "retracted",
+                      "reason": "The log had more commits."}),
+            ]
             count = len(up.requests)
             result = ai.ask("Q", thread=thread)
             sent = up.requests[count:]
-            assert prompt(sent[0]).endswith("\n\n" + record) and \
-                READS not in prompt(sent[0]), prompt(sent[0])
-            assert results(sent[1]) == [
-                missing("verified", "src/a.c line 5", "src/a.c", 5, False),
-                "There is no finding 9. The record contains findings 1 to 2."], results(sent[1])
-            assert results(sent[3]) == [f"Updated finding 1: verified, src/a.c:5 at "
-                                        f"{later[:12]}."], sent[3]
-            assert result["content"][1]["text"].endswith(stored(thread)), result
-            second = notes("rev-parse", ref).strip()
-            assert notes("rev-list", "--parents", "-n", "1", ref).split() == [second, first]
+            assert len(sent) == 6 and result["content"][0]["text"] == "A", sent
+            first = results(sent[1])
+            assert re.fullmatch(r"Added bro#1 \(candidate\)\. Evidence bro#1/1 from c1:1-10\. "
+                                r"Commit [0-9a-f]{8}\.", first[2]), first
+            assert first[3] == "Call c1 was made in this turn. Cite c1 for verified or " \
+                "disproved in a later turn.", first
+            second = results(sent[2])
+            assert re.fullmatch(r"Added bro#2 \(verified\)\. Evidence bro#2/1 from c1:3-4, "
+                                r"bro#2/2 from call c2\. Commit [0-9a-f]{8}\.", second[0]), second
+            assert re.fullmatch(r"bro#1 is now verified\. The claim changed\. Evidence bro#1/2 "
+                                r"from c1:1-10\. Commit [0-9a-f]{8}\.", second[1]), second
+            assert second[2:] == [
+                "verified needs at least one evidence item besides external.",
+                "verified needs reason: why the evidence shows the state.",
+                "Only cuh can change cuh#1. Add your own finding with about cuh#1.",
+                "No finding has the id bro#9. list shows the findings.",
+                "Call c1 showed lines 1 to 10 of src/a.c whole. Give lines within that range.",
+                "c2:5 needs a git read or a code describe. Call c2 is a git log.",
+                "c2:files needs a git ls-tree that names one commit. Call c2 is a git log.",
+                "c3 is a findings call. findings calls cannot be evidence.",
+                "No call c99 was made before this call.",
+                "evidence[0] is not a reference: x. Give a call such as c7, lines such as "
+                "c7:120-140, c7:message or c7:files.",
+                "askai cannot cite the evidence item cuh#2/1 yet. Cite your calls, such as c7.",
+                "cuh#2 is a finding. evidence takes an evidence item such as cuh#2/1, or a call "
+                "such as c7. show with id cuh#2 lists the items.",
+                "external[0] needs an exact hash of the material: 40 or 64 hexadecimal digits, "
+                "such as sha256:9b1c...",
+                "The action argument must be one of: add, update, list, show."], second
+            third = results(sent[3])
+            listed = ("Findings of the session session, open first (id, state, about, "
+                      f"claim):\nbro#2  verified   -  {claim}\nbro#1  verified   -  C1b\n")
+            ask = re.search(r"Ask: ([0-9a-f]{32})", notes(
+                "log", "-1", "--format=%B", "refs/heads/agent/bro/findings"))[1]
+            shown = (f"Finding bro#1 by bro: verified\nclaim: C1b\nChange 1: candidate, ask "
+                     f"{ask[:8]}, turn 1\n  evidence bro#1/1: lines 1 to 10 of src/a.c in "
+                     f"repository proj at commit {head[:12]}\nChange 2: verified, ask "
+                     f"{ask[:8]}, turn 2\n  claim before: C1\n  reason: c1 shows lines 1 to "
+                     f"10.\n  evidence bro#1/2: lines 1 to 10 of src/a.c in repository proj "
+                     f"at commit {head[:12]}\n")
+            assert third[:8] == [
+                "The action add takes no argument id.",
+                "add needs claim: what you found.",
+                "update needs state: candidate, verified, disproved or retracted.",
+                "The claim contains </function> and then <tool_call>. The text of the call "
+                "ended early. The next tool call became part of the claim. Nothing was "
+                "recorded. Make the call again with the claim closed correctly.",
+                "The claim contains only [askai: ...] lines. askai adds [askai: ...] lines "
+                "to tool results. Give the claim.",
+                "about must be the id of a finding, such as bro#2.",
+                "No finding has the id cuh#7. list shows the findings.",
+                "The evidence argument must be an array of references, such as [\"c7\", "
+                "\"c9:120-140\"]."], third
+            assert third[8] == listed, third[8]
+            assert third[9] == shown, third[9]
+            # show pages from the start of the line of the offset.
+            log_bytes = len(tools(sent[1])[1].encode())
+            show_two = (f"Finding bro#2 by bro: verified\nclaim: {claim}\nChange 1: verified, "
+                        f"ask {ask[:8]}, turn 2\n  reason: c2 lists one commit.\n  evidence "
+                        f"bro#2/1: lines 3 to 4 of src/a.c in repository proj at commit "
+                        f"{head[:12]}\n  evidence bro#2/2: call c2, git, {log_bytes} bytes\n"
+                        f"  external: git 2.55.0 {head}\n")
+            size = len(show_two)
+            assert third[10] == show_two[31:] + f"\n\n[Bytes 31 to {size} of {size}. End of " \
+                "the output.]", third[10]
+            assert third[11] == "cuh has no findings yet.\n", third[11]
+            # The compaction gives the task, the notices of the notes, the open
+            # findings of the thread, and the calls that the ring keeps.
+            nobody = ("\n\n[askai: You are the agent bro. A client without a member name made "
+                      "this ask call.]\n[askai: Members of this session: bro (agent, you). Call "
+                      "notes with action members to see what each member wrote last.]\n"
+                      "[askai: Your notebook bro contains no notes yet.]\n")
+            assert sent[4]["body"]["messages"][1:] == [], sent[4]
+            assert prompt(sent[4]) == (
+                "Q\n\n[askai: you compacted the context. Your turns and the tool results since "
+                "the task are gone. Your summary:]\n\nS\n\n" + TASK + nobody + opened(
+                    f"bro#2  verified   {claim}\n", "bro#1  verified   C1b\n") + kept(1, 2) +
+                "\n[askai: go on with the task.]"), prompt(sent[4])
+            assert re.fullmatch(r"bro#2 is now retracted\. Commit [0-9a-f]{8}\.",
+                                results(sent[5])[0]), results(sent[5])
+            # The trace names each call's action, and the bytes of its output
+            # or its failure.
+            trace = result["content"][1]["text"]
+            assert trace.startswith("The other AI made 34 tool calls in 6 turns:\n- git ") and \
+                "- findings add: failed\n" in trace and "- compact: 1 bytes\n" in trace and \
+                re.search(r"\n- findings update: \d+ bytes\n$", trace), trace
+            values = ai.metrics()
+            assert total(values, "askai_turn_tool_calls_total", tool="findings") == 31, values
 
-            # A call whose turns change no finding saves nothing, and a call
-            # without thread starts with an empty record.
-            script[:] = [turn({"action": "show"})]
-            result = ai.ask("Q", thread=thread)
-            assert not result["content"][1]["text"].endswith(stored(thread)), result
-            assert notes("rev-parse", ref).strip() == second
-            script[:] = [turn({"action": "show"})]
+            # The branch of the findings: a commit for each add and update,
+            # by the agent, with the trailer of the call.
+            ref = "refs/heads/agent/bro/findings"
+            assert notes("log", "--format=%s", ref).split("\n")[:-1] == [
+                "Update bro#2 (verified to retracted)",
+                "Update bro#1 (candidate to verified, claim)",
+                "Add bro#2 (verified)", "Add bro#1 (candidate)"]
+            assert notes("log", "-1", "--format=%an <%ae>|%cn <%ce>|%b", ref) == \
+                f"bro <agent/bro>|bro <askai>|Ask: {ask}\nCall: 34\nConversation: {thread}\n\n"
+            assert notes("log", "--format=%H", ref).split()[2][:8] == commit_of(second[0])
+            files = notes("ls-tree", "-r", "--name-only", ref).split()
+            assert [f for f in files if not f.startswith("archive/")] == [
+                "findings/0/1.json", "findings/0/2.json"], files
+            assert all(re.fullmatch(r"archive/[0-9a-f]{2}/[0-9a-f]{62}", f)
+                       for f in files if f.startswith("archive/")), files
+            two = stored(2)
+            assert (two["version"], two["id"], two["conversation"], two["claim"]) == \
+                (1, "bro#2", thread, claim) and "about" not in two, two
+            change = two["changes"][0]
+            assert (change["state"], change["ask"], change["turn"], change["call"],
+                    change["askai"], change["reason"], change["external"]) == (
+                "verified", ask, 2, 5, "0.1.0", "c2 lists one commit.",
+                ["git 2.55.0 " + head]) and "asked_by" not in change, change
+            assert [c["askai"] for c in stored(1)["changes"]] == ["0.1.0", "0.1.0"]
+            lines, call = change["evidence"]
+            assert (lines["item"], lines["kind"], lines["tool"], lines["call"], lines["turn"],
+                    lines["call_id"], lines["failed"], lines["skip"], lines["ask"],
+                    lines["ids"], lines["lines"]) == (
+                1, "lines", "git", 1, 1, "m0", False, 0, ask,
+                {"repo": "proj", "commit": head, "path": "src/a.c", "total": 300},
+                [[3, 4]]) and "request" not in lines, lines
+            assert blob(lines["result"]["sha256"]) == "3\tint x2;\n4\tint x3;\n", lines
+            assert (call["item"], call["kind"], call["tool"], call["call"],
+                    call["call_id"]) == (2, "call", "git", 2, "m1"), call
+            # The archive has the arguments as the upstream sent them, and
+            # the result as the turn got it, with its stamp.
+            assert blob(call["request"]["sha256"]) == json.dumps(log), call
+            assert blob(call["result"]["sha256"]) == tools(sent[1])[1], call
+            assert call["output"] == len(tools(sent[1])[1]) - len(stamp(2)) and \
+                call["result"]["bytes"] == len(tools(sent[1])[1].encode()), call
+            one = stored(1)
+            assert [c["state"] for c in one["changes"]] == ["candidate", "verified"] and \
+                one["changes"][1]["claim_before"] == "C1" and one["claim"] == "C1b", one
+            assert [e["item"] for c in one["changes"] for e in c["evidence"]] == [1, 2], one
+
+            # The next ask call of the thread starts with the open findings
+            # of the thread, and another thread with their number.
             count = len(up.requests)
-            result = ai.ask("Q")
-            sent = up.requests[count:]
-            assert REVIEW not in prompt(sent[0]) and results(sent[1]) == [REVIEW_EMPTY], sent
-            assert "saved" not in result["content"][1]["text"], result
-            assert notes("for-each-ref", "--format=%(refname)", "refs/review/") == ref + "\n"
+            ai.ask("Q", thread=thread)
+            assert prompt(up.requests[count]).endswith(
+                opened("bro#1  verified   C1b\n")), prompt(up.requests[count])
+            count = len(up.requests)
+            ai.ask("Q", thread=other)
+            assert prompt(up.requests[count]).endswith(opened(other=1)), \
+                prompt(up.requests[count])
 
-            # The first line of a trace that is cut counts the calls that it
-            # leaves out, and the sentence about the save follows the list.
-            script[:] = [turn(*[{"action": "show"}] * 16)] * 3 + [
-                turn({"action": "add", "claim": "C3"})]
-            lines = ai.ask("Q", thread=thread)["content"][1]["text"].split("\n")
-            assert lines[0] == "The other AI made 49 tool calls in 5 turns. The first 48 " \
-                "calls:" and len(lines) == 51 and \
-                all(line.startswith("- findings show: ") for line in lines[1:49]) and \
-                lines[49:] == [stored(thread)[:-1], ""], lines
+        # Another agent of the session, cuh, adds a finding, and bro checks
+        # it with about. Each lists the other's findings, and show lists the
+        # findings about a finding.
+        with Askai(binary, *args[:-4], "--agent", "cuh", "--notes", session) as cuh:
+            script[:] = [mixed(("git", log)),
+                         turn({"action": "add", "claim": "Two commits.", "state": "verified",
+                               "evidence": ["c1"], "reason": "R"})]
+            cuh.ask("Q", thread=other)
+        with Askai(binary, *args, env=wrapped) as ai:
+            script[:] = [turn({"action": "add", "claim": "One commit.", "about": "cuh#1"},
+                              {"action": "list"}, {"action": "show", "id": "cuh#1"},
+                              {"action": "update", "id": "cuh#1", "state": "retracted",
+                               "reason": "R"})]
+            count = len(up.requests)
+            ai.ask("Q", thread=other)
+            said = results(up.requests[count + 1])
+            assert re.fullmatch(r"Added bro#3 \(candidate\)\. Commit [0-9a-f]{8}\.", said[0])
+            assert said[1] == (
+                "Findings of the session session, open first (id, state, about, claim):\n"
+                "bro#3  candidate  cuh#1  One commit.\n"
+                "bro#1  verified   -      C1b\n"
+                "cuh#1  verified   -      Two commits.\n"
+                "Closed findings:\n"
+                f"bro#2  retracted  -      {claim}\n"), said[1]
+            assert said[2].startswith("Finding cuh#1 by cuh: verified\nclaim: Two commits.\n"
+                                      "Findings about cuh#1: bro#3 (candidate)\nChange 1: "
+                                      "verified, ask "), said[2]
+            assert said[3] == "Only cuh can change cuh#1. Add your own finding with about " \
+                "cuh#1.", said
+            assert stored(3)["about"] == "cuh#1" and stored(1, "cuh")["id"] == "cuh#1"
+            # The prompt lists the open findings of the thread, newest first.
+            count = len(up.requests)
+            ai.ask("Q", thread=other)
+            assert prompt(up.requests[count]).endswith(opened(
+                "bro#3  candidate  One commit.\n", other=1)), prompt(up.requests[count])
 
-            # Two calls of the thread that started from the same record both
-            # save. git refuses the second commit, and the record stays as
-            # the first call saved it.
+            # Two ask calls that add a finding at the same time both commit,
+            # each with a number of its own. git holds the first commit back
+            # until the second has ended, so the first races the second.
+            # askai then reads the branch again and makes the first commit
+            # again, on the new tip.
+            before = notes("rev-parse", "refs/heads/agent/bro/findings").strip()
+            open(f"{d}/race", "w").close()
             barrier = threading.Barrier(2, timeout=10)
 
             def both(request):
                 if any(m["role"] == "assistant" for m in request["body"]["messages"]):
                     return 200, turn_stream(text="A")
                 barrier.wait()
-                claim = {"action": "add", "claim": "claim of " + prompt(request)[:2]}
-                return 200, turn_stream([("b", "findings", json.dumps(claim))])
+                return 200, turn_stream([("b", "findings", json.dumps(
+                    {"action": "add", "claim": "claim of " + prompt(request)[:2]}))])
             up.reply = both
             traces = {}
             calls = [threading.Thread(target=lambda q=q: traces.update(
-                {q: ai.ask(q, thread=thread)["content"][1]["text"]})) for q in ("Qa", "Qb")]
+                {q: ai.ask(q)["content"][1]["text"]})) for q in ("Qa", "Qb")]
             for call in calls:
                 call.start()
             for call in calls:
                 call.join(30)
-            won = [q for q, text in traces.items() if text.endswith(stored(thread))]
-            lost = [q for q, text in traces.items() if text.endswith(raced)]
-            assert len(won) == len(lost) == 1, traces
-            last = json.loads(notes("show", f"{ref}:review.json"))["findings"][-1]
-            assert last["claim"] == "claim of " + won[0], last
-            for commit in notes("rev-list", "--glob=refs/review/").split():
-                assert "claim of " + lost[0] not in notes("show", f"{commit}:review.json")
+            os.remove(f"{d}/race")
+            assert len(traces) == 2 and all("- findings add: failed" not in t
+                                            for t in traces.values()), traces
+            claims = sorted(stored(n)["claim"] for n in (4, 5))
+            assert claims == ["claim of Qa", "claim of Qb"], claims
+            with open(f"{d}/imports") as f:
+                assert f.read() == "x\n" * 3
+            tip = notes("rev-parse", "refs/heads/agent/bro/findings").strip()
+            [newest, second] = notes("rev-list", "--parents", f"{before}..{tip}").split("\n")[:2]
+            mid = second.split()[0]
+            assert newest == f"{tip} {mid}" and second == f"{mid} {before}", (newest, second)
             up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
 
-            # A record that askai cannot read ends the call as failed before
-            # any upstream request, and the ref stays as it is.
+            # A write that races other writers at each of its three commits
+            # is refused.
+            open(f"{d}/always", "w").close()
+            script[:] = [turn({"action": "add", "claim": "C"})]
+            count = len(up.requests)
+            ai.ask("Q")
+            os.remove(f"{d}/always")
+            assert results(up.requests[count + 1]) == [
+                "Could not record the finding. Other ask calls of bro changed the findings at "
+                "the same time. Repeat the call."], results(up.requests[count + 1])
+            assert notes("log", "-3", "--format=%s",
+                         "refs/heads/agent/bro/findings").split() == ["race"] * 3
+
+            # A finding that askai cannot read fails list and show, but not
+            # an update of another finding.
             now = int(time.time())
-            for unread, files in (("a" * 32, {"review.json": b"not json"}),
-                                  ("b" * 32, {"other.txt": b"x"}),
-                                  ("c" * 32, {"review.json": b'{"findings":[{"claim":"C"}]}'})):
-                bad = f"refs/review/ask_ai/anonymous/{unread}"
-                subprocess.run(["git", "--git-dir", session, "fast-import", "--quiet"],
-                               input=f"commit {bad}\ncommitter t <t> {now} +0000\ndata 0\n"
-                               .encode() + b"".join(f"M 100644 inline {name}\ndata "
-                                                    f"{len(data)}\n".encode() + data + b"\n"
-                                                    for name, data in files.items()),
-                               check=True, env=os.environ | git)
-                before = notes("rev-parse", bad)
-                count = len(up.requests)
-                result = ai.ask("Q", thread=unread)
-                assert result.get("isError") and result["content"][0]["text"] == \
-                    "Cannot read the review record of the thread.", result
-                assert len(up.requests) == count and notes("rev-parse", bad) == before
+            subprocess.run(["git", "--git-dir", session, "fast-import", "--quiet"],
+                           input=f"commit refs/heads/agent/unc/findings\ncommitter t <t> {now} "
+                           "+0000\ndata 0\nM 100644 inline findings/0/1.json\ndata 8\nnot json"
+                           "\n".encode(), check=True, env=os.environ | git)
+            script[:] = [turn({"action": "list"}, {"action": "show", "id": "unc#1"},
+                              {"action": "update", "id": "bro#3", "state": "retracted",
+                               "reason": "R"})]
+            count = len(up.requests)
+            ai.ask("Q")
+            said = results(up.requests[count + 1])
+            assert said[:2] == ["Could not read finding unc#1: unknown format."] * 2, said
+            assert re.fullmatch(r"bro#3 is now retracted\. Commit [0-9a-f]{8}\.", said[2]), said
+
+        # A context of 8000 tokens has windows of 4000 bytes. After a
+        # compaction, the prompt lists the open findings of the thread that
+        # fit, newest first, and says how many more there are. The ring
+        # keeps no call that a finding can cite.
+        with Askai(binary, *args, "--context", "8000") as ai:
+            claims = [f"claim {k:02} " + "x" * 80 for k in range(40)]
+            adds = [{"action": "add", "claim": c} for c in claims]
+            script[:] = [turn(*adds[:16]), turn(*adds[16:32]), turn(*adds[32:]),
+                         mixed(("compact", {"summary": "S"}))]
+            count = len(up.requests)
+            ai.ask("Q", thread="3" * 32)
+            rows = [f"bro#{k + 6:<2}  candidate  {claims[k]}\n" for k in reversed(range(40))]
+            fit = 0
+            while sum(len(r) for r in rows[:fit + 1]) <= 4000:
+                fit += 1
+            assert fit < 40 and prompt(up.requests[count + 4]).endswith(opened(
+                *rows[:fit], more=40 - fit, other=3) + "\n[askai: go on with the task.]"), \
+                prompt(up.requests[count + 4])[-600:]
+
+        # Without --notes, the turns get no findings, and compact does not
+        # name them.
+        with Askai(binary, "-u", up.url(), "--upstream-tools", "--git", repo) as ai:
+            script[:] = [turn({"action": "list"})]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            sent = up.requests[count:]
+            lent = {t["function"]["name"]: t["function"] for t in sent[0]["body"]["tools"]}
+            assert "findings" not in lent and "findings" not in \
+                lent["compact"]["description"], lent
+            assert results(sent[1]) == ["The tool name is unknown, or the tool is not "
+                                        "available to you."], sent[1]
     up.reply = lambda request: (200, ANSWERS["openai"])
-    print("review: findings, the review record, its render after compaction, the record "
-          "of a thread's next ask call: PASS")
+    print("findings: add, update, list and show on the branch of the agent, evidence from "
+          "the ring, the open findings in the prompt, two writers at once: PASS")
 
 
 def check_tasks(binary, up):
@@ -15752,14 +15448,14 @@ def check_plugin(binary, up, plugin):
             assert ai.listed("policy: built in, without ASKAI_TOKEN")[3:] == [
                 "upstream tools  man"] + [
                 f"{'':14}  {name}" for name in ("test_echo", "test_state", "test_misuse",
-                                                 "compact", "findings", "background",
-                                                 "jobs", "wait", "timer")], ai.log
+                                                 "compact", "background", "jobs", "wait",
+                                                 "timer")], ai.log
             count = len(up.requests)
             answer, trace = [c["text"] for c in ai.ask("Q")["content"]]
             first, second = up.requests[count:]
             assert [t["function"]["name"] for t in first["body"]["tools"]] == \
-                ["man", "test_echo", "test_state", "test_misuse", "compact", "findings",
-                 "background", "jobs", "wait", "timer"], first
+                ["man", "test_echo", "test_state", "test_misuse", "compact", "background",
+                 "jobs", "wait", "timer"], first
             assert [m["content"] for m in second["body"]["messages"][2:]] == \
                 ["The seconds argument must be a whole number from 1 to 3600." + stamp(1),
                  "x" + stamp(2)], second
@@ -15778,11 +15474,10 @@ def check_plugin(binary, up, plugin):
               anonymous={"loopback": "e"}, **{"upstream-tools": True})
         with Askai(binary, "-c", path) as ai:
             assert ai.listed("role e:")[1:-1] == ["upstream tools  test_echo"] + [
-                f"{'':14}  {name}" for name in ("compact", "findings", "jobs", "wait",
-                                                 "timer")], ai.log
+                f"{'':14}  {name}" for name in ("compact", "jobs", "wait", "timer")], ai.log
             assert ai.listed("role s:")[1:-1] == ["upstream tools  test_state"] + [
-                f"{'':14}  {name}" for name in ("compact", "findings", "background", "jobs",
-                                                 "wait", "timer")], ai.log
+                f"{'':14}  {name}" for name in ("compact", "background", "jobs", "wait",
+                                                 "timer")], ai.log
             assert ai.listed("role n:")[1:-1] == ["upstream tools  none"], ai.log
             assert ai.listed("warning: no role lists these tools:") == [
                 "man", "test_fetch", "test_config"], ai.log
@@ -17815,7 +17510,7 @@ def main():
     try:
         for check in (check_legacy_session, check_protocols, check_upstream_errors,
                       check_modern, check_mcp_tasks, check_client_jobs, check_background, check_recovery, check_recovery_tools,
-                      check_recovery_notes, check_recovery_compact, check_recovery_review,
+                      check_recovery_notes, check_recovery_compact, check_recovery_findings,
                       check_durable_cancel,
                       check_withdrawn_end, check_archive_failure, check_journal_repair,
                       check_shared_transcripts, check_http,
@@ -17833,7 +17528,7 @@ def main():
                       check_scheduler, check_breaker, check_slots, check_progress,
                       check_man, check_git, check_git_scope, check_git_read, check_code,
                       check_turns,
-                      check_review,
+                      check_findings,
                       check_notes, check_shared_notes,
                       check_notes_history, check_notes_cancel, check_notes_texts,
                       check_turn_apis,

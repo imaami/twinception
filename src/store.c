@@ -5,6 +5,7 @@
 #define _GNU_SOURCE /* asprintf(), memmem(), memrchr(), mempcpy() */
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -408,6 +409,56 @@ store_kind (struct cstr_view  line,
 	                                         STORE_KIND_OTHER - STORE_KIND_BLOB, kind);
 }
 
+bool
+store_read_fits (uint64_t *used,
+                 uint64_t  bytes)
+{
+	/* The line "OID KIND SIZE" before the data, and the line feed after
+	 * the data in the place of the NUL. */
+	static constexpr uint64_t head = OID_SHA256 + sizeof " blob " + UTIL_DECIMAL + 1;
+	if (*used > STORE_MAX || bytes > STORE_MAX - *used || head > STORE_MAX - *used - bytes)
+		return false;
+	*used += head + bytes;
+	return true;
+}
+
+int
+store_object_next (struct span *out,
+                   struct oid  *id,
+                   struct span *data)
+{
+	*data = (struct span){};
+	unsigned char const *nl = out->len ? memchr(out->ptr, '\n', out->len) : nullptr;
+	if (!nl) {
+		*id = (struct oid){};
+		return EIO;
+	}
+	size_t const head = (size_t)(nl - out->ptr) + 1;
+	struct cstr_view size = {};
+	enum store_kind const kind = store_kind((struct cstr_view){ (char const *)out->ptr, head - 1 },
+	                                        id, &size);
+	if (kind == STORE_KIND_MISSING) {
+		out->ptr += head;
+		out->len -= head;
+		return ENOENT;
+	}
+	/* A line feed comes after the data. */
+	uint64_t n;
+	if ((kind != STORE_KIND_BLOB && kind != STORE_KIND_TREE) ||
+	    util_number(size.data, size.len, SIZE_MAX, &n) || out->len - head <= n ||
+	    out->ptr[head + n] != '\n') {
+		*id = (struct oid){};
+		return EIO;
+	}
+	if (kind == STORE_KIND_BLOB)
+		*data = (struct span){ out->ptr + head, (size_t)n };
+	else
+		*id = (struct oid){};
+	out->ptr += head + n + 1;
+	out->len -= head + n + 1;
+	return kind == STORE_KIND_BLOB ? 0 : EISDIR;
+}
+
 int
 store_check_input (struct buf       *in,
                    char const       *ref,
@@ -510,6 +561,19 @@ store_lock (struct store const *store,
 	util_close(&fd);
 	free(path);
 	return e;
+}
+
+int64_t
+store_stale (struct store const *store,
+             char const         *ref,
+             char const         *tool)
+{
+	int64_t age = 0;
+	if (store_lock(store, ref, &age) || age <= STORE_STALE)
+		return 0;
+	LOG(LOG_WARN, "%s: %s/%s.lock is %" PRId64 " s old; remove it if no git process uses the "
+	    "repository", tool, store->directory, ref, age);
+	return age;
 }
 
 /* Writes @p name at @p p in double quotes, with a backslash before each

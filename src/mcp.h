@@ -34,7 +34,7 @@ struct metrics_mcp;
 struct metrics_src;
 struct oid;
 struct registry;
-struct review;
+struct seen;
 struct store;
 struct stream_app;
 struct task_pool;
@@ -279,6 +279,12 @@ typedef void mcp_part_destroy_fn (void **p_part);
  */
 static constexpr uint64_t KF_SERIAL = 1ull << 32;
 
+/** Kind flag (bit 34, above TOOL_FLAGS) for findings. The journal does not
+ *  record the calls of such a tool, so a resumed turn runs them again. Only
+ *  the kinds built into askai can set it.
+ */
+static constexpr uint64_t KF_RERUN = 1ull << 34;
+
 /** Returns the part of the call's plugin on the call's loop. Only the
  *  built-in plugins have parts, so askai does not export this function.
  */
@@ -427,12 +433,11 @@ mcp_slot_lend (struct mcp_slot  *slot,
 extern size_t
 mcp_slot_window_max (struct mcp_slot const *slot);
 
-/** Returns the review record of the call's ask call, or nullptr if the
- *  turns of the ask call are not lent findings. This function is not
- *  exported.
+/** Returns the ring of the calls of the call's ask call (src/seen.h), or
+ *  nullptr before the first call. This function is not exported.
  */
-extern struct review *
-mcp_slot_review (struct mcp_slot const *slot);
+extern struct seen const *
+mcp_slot_seen (struct mcp_slot const *slot);
 
 /** Returns the current turn number of the ask call that the call belongs
  *  to. This function is not exported.
@@ -470,9 +475,9 @@ struct call_source {
 
 /** Stores a copy of @p src, which describes the numbered lines of a
  *  committed file in the call's output, written or lent, for the ring of
- *  the calls of the ask call (seen_keep()) and its review record. It
- *  stores nothing for the call of a client, or if @p src is a single line
- *  longer than mcp_slot_window_max().
+ *  the calls of the ask call (seen_keep()). It stores nothing for the call
+ *  of a client, or if @p src is a single line longer than
+ *  mcp_slot_window_max().
  *  Returns 0, EFAULT for nullptr, EINVAL if the call has ended or @p src
  *  does not fit the output (seen_read_create()), or ENOMEM. This function
  *  is not exported yet.

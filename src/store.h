@@ -256,6 +256,28 @@ store_kind (struct cstr_view  line,
             struct oid       *oid,
             struct cstr_view *size);
 
+/** Adds to @p *used, the bytes of one output of STORE_READ so far, the
+ *  bytes of an object with @p bytes bytes of data, and returns true, or
+ *  returns false with @p *used unchanged if the output would then be
+ *  longer than STORE_MAX.
+ */
+extern bool
+store_read_fits (uint64_t *used,
+                 uint64_t  bytes);
+
+/** Reads the next object of @p *out, the output of STORE_READ, and drops
+ *  it from @p *out. For a blob, the function stores its ID in @p *id and
+ *  its data, a view of @p *out, in @p *data, and returns 0. Otherwise
+ *  @p *id is no name and @p *data is empty, and the function returns
+ *  ENOENT for a name that names no object, EISDIR for a tree, or EIO with
+ *  @p *out unchanged for output that is not a whole object or for an
+ *  object of another kind.
+ */
+extern int
+store_object_next (struct span *out,
+                   struct oid  *id,
+                   struct span *data);
+
 /** Writes to @p in the input of STORE_CHECK for the path @p name at
  *  @p ref, a ref or a commit: a line for @p ref, a line for each directory
  *  in the path, and a line for the path. Returns 0, EINVAL for a null
@@ -296,6 +318,16 @@ extern int
 store_lock (struct store const *store,
             char const         *ref,
             int64_t            *age);
+
+/** Returns how many seconds ago the lock file of the ref @p ref was last
+ *  changed if that is more than STORE_STALE (store_lock()), else 0. The
+ *  function logs a lock file that old as "TOOL: DIR/REF.lock is N s old",
+ *  where TOOL is @p tool, the name of the caller.
+ */
+extern int64_t
+store_stale (struct store const *store,
+             char const         *ref,
+             char const         *tool);
 
 /** The offsets of the path and the data of a file part in the buffer that
  *  store_part_head() writes to, from the head of the buffer. The path

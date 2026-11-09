@@ -66,6 +66,10 @@ enum {
 	MEMBER_FORMAT = 1,                               /**< the format of the
 	                                                      records that askai
 	                                                      writes */
+	MEMBER_EMAIL  = sizeof "person/" + UTIL_WORD_MAX, /**< bytes of the email
+	                                                      address of an author,
+	                                                      KIND/NAME, NUL
+	                                                      included */
 };
 
 /** The time for the lookup of the name of a Unix user, in nanoseconds.
@@ -156,6 +160,18 @@ struct member_call {
 	struct member       asker;         /**< the member of the login that
 	                                        made the ask call, or the name
 	                                        "" for no such member */
+};
+
+/** The storage of the parts of a commit that member_byline_put() fills:
+ *  the author, the committer and the trailer lines.
+ */
+struct member_byline {
+	struct store_trailer trailers[4];      /**< Ask, Call, Conversation and
+	                                            Asked-by, each if known */
+	char                 email[MEMBER_EMAIL];  /**< the email address of
+	                                            the author, KIND/NAME */
+	char                 call[16];             /**< the number of the call,
+	                                                NUL included */
 };
 
 /** Initializes @p dest for a request of a client with the grant @p grant
@@ -259,9 +275,10 @@ extern struct member_session const *
 member_registry_session (struct member_registry const *registry);
 
 /** Logs @p registry at LOG_INFO as two lists: the session, with its
- *  repository, ID, name, agent, service and the number of notebooks of the
- *  old layout under refs/heads/notes/ if there are any, and the members as
- *  askai read them at the start, each with its kind and logins.
+ *  repository, ID, name, agent, service, that every member can read the
+ *  evidence of the findings, and the number of notebooks of the old layout
+ *  under refs/heads/notes/ if there are any, and the members as askai read
+ *  them at the start, each with its kind and logins.
  */
 extern void
 member_registry_report (struct member_registry const *registry);
@@ -402,6 +419,24 @@ extern int
 member_table_unknown (struct member_table const *table,
                       struct cstr_view           name,
                       struct dstr               *d);
+
+/**
+ * Fills the author, the committer and the trailer lines of @p commit, a
+ * commit that the member @p self writes for the call @p k of the request
+ * of @p call: the author is @p self as NAME <KIND/NAME>, the committer is
+ * the service @p service as SERVICE <askai>, and the trailer lines name
+ * the ask call, the call, the conversation and the asker of @p call, each
+ * if it is known. @p k is 0 for a call that is not a turn's call. The
+ * views of @p commit point to @p byline, @p self, @p call and @p service,
+ * which must outlive @p commit.
+ */
+extern void
+member_byline_put (struct member_byline     *byline,
+                   struct store_commit      *commit,
+                   struct member const      *self,
+                   struct member_call const *call,
+                   uint32_t                  k,
+                   char const               *service);
 
 /** Appends to @p d the notice of who the agent @p you is and who made the
  *  ask call @p call: call->asker, or a client without a member name if

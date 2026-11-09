@@ -26,8 +26,8 @@ enum {
 	TOOL_TEXT_MAX   =  4U << 20U,  /**< bytes of one message at most, such
 	                                    as a note, a summary, a manual
 	                                    page, the output of git, the body
-	                                    of a request or the charge of a
-	                                    review record */
+	                                    of a request or the file of a
+	                                    finding */
 	TOOL_OUTPUT_MAX = 16U << 20U,  /**< bytes a call may write */
 };
 

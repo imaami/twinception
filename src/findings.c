@@ -1,126 +1,994 @@
 /** @file findings.c
  *
- * The findings tool.
+ * The findings tool (src/findings.h).
  */
 #include <errno.h>
+#include <inttypes.h>
+#include <json-c/json.h>
 #include <stdlib.h>
+#include <string.h>
 
+#include "child.h"
 #include "dstr.h"
+#include "evidence.h"
+#include "finding.h"
 #include "findings.h"
 #include "jb.h"
+#include "log.h"
 #include "loop.h"
 #include "mcp.h"
+#include "member.h"
+#include "notes.h"
+#include "notes_tool.h"
 #include "notice.h"
-#include "review.h"
+#include "oid.h"
+#include "plugin.h"
 #include "schema.h"
+#include "seen.h"
+#include "store.h"
+#include "util.h"
+#include "version.h"
+#include "xlist.h"
 
-/* The state of a findings call, which mcp_slot_own() stores in the slot. */
-struct findings_call {
-	struct json_object *args;    /* a reference to the arguments */
-	struct dstr         out;     /* what review_call() wrote */
-	struct tool_cursor  cursor;  /* the position of a show in its text */
-	size_t              texts;   /* the bytes of the claim and the evidence */
+/* The actions of the findings tool: X(ID, name), the constant FINDINGS_ID
+ * of enum findings_action and the name.
+ */
+#define FINDINGS_ACTION_LIST(X) \
+        X(ADD,    "add")        \
+        X(UPDATE, "update")     \
+        X(LIST,   "list")       \
+        X(SHOW,   "show")
+
+enum findings_action : uint8_t {
+#define FINDINGS_ACTION_ENUM(id, ...) FINDINGS_##id,
+	FINDINGS_ACTION_LIST(FINDINGS_ACTION_ENUM)
+#undef FINDINGS_ACTION_ENUM
+	FINDINGS_ACTIONS
 };
 
-struct json_object *
-findings_definition (void const *service)
+/* The names of the actions. */
+static struct cstr_view const findings_actions[] = { FINDINGS_ACTION_LIST(XL_VIEW) };
+
+/* The actions as bits, 1 << enum findings_action. */
+enum : uint32_t {
+	ON_ADD    = 1U << FINDINGS_ADD,
+	ON_UPDATE = 1U << FINDINGS_UPDATE,
+	ON_LIST   = 1U << FINDINGS_LIST,
+	ON_SHOW   = 1U << FINDINGS_SHOW,
+};
+
+/* The names of the arguments of the findings tool, and the actions that
+ * take each.
+ */
+static struct {
+	struct cstr_view name;
+	uint64_t         actions;  /* uint64_t to fill the padding */
+} const findings_arg_rows[] = {
+	{ CSTR_VIEW_INIT("action"),   ON_ADD | ON_UPDATE | ON_LIST | ON_SHOW },
+	{ CSTR_VIEW_INIT("id"),       ON_UPDATE | ON_SHOW },
+	{ CSTR_VIEW_INIT("claim"),    ON_ADD | ON_UPDATE },
+	{ CSTR_VIEW_INIT("state"),    ON_ADD | ON_UPDATE },
+	{ CSTR_VIEW_INIT("evidence"), ON_ADD | ON_UPDATE },
+	{ CSTR_VIEW_INIT("external"), ON_ADD | ON_UPDATE },
+	{ CSTR_VIEW_INIT("reason"),   ON_ADD | ON_UPDATE },
+	{ CSTR_VIEW_INIT("about"),    ON_ADD },
+	{ CSTR_VIEW_INIT("author"),   ON_LIST },
+	{ CSTR_VIEW_INIT("offset"),   ON_LIST | ON_SHOW },
+};
+
+/* The pattern of the branches of the findings of every agent. */
+static char const every_branch[] = "refs/heads/agent/*/findings";
+
+/* The text for findings that git could not read. */
+static struct cstr_view const unread = CSTR_VIEW_INIT("The findings could not be read.");
+
+/* The git that a call runs. */
+enum findings_stage : uint8_t {
+	STAGE_REFS,    /* for-each-ref lists the branches of findings */
+	STAGE_FILES,   /* ls-tree lists the files of the findings of a branch */
+	STAGE_READ,    /* cat-file reads files of findings */
+	STAGE_COMMIT,  /* fast-import commits an add or an update */
+};
+
+/* The stages whose step handles a git that failed. The steps of the other
+ * stages need the output of a git that succeeded.
+ */
+static constexpr uint32_t STAGES_FAILED = 1U << STAGE_COMMIT;
+
+/* The flags of a call. */
+enum findings_flag : uint8_t {
+	CALL_ABOUT = 1U << 0,  /* the finding that about names exists */
+	CALL_FOUND = 1U << 1,  /* the finding of id exists */
+	CALL_SAME  = 1U << 2,  /* the update does not change the state of the
+	                          finding */
+	CALL_CLAIM = 1U << 3,  /* the update corrects the claim */
+};
+
+/* A branch of findings: its tip and its author. */
+struct findings_branch {
+	struct oid tip;
+	char       author[MEMBER_NAME];
+};
+
+/* A file of a finding that cat-file reads: its size, the number of the
+ * finding and the index of its branch.
+ */
+struct findings_file {
+	uint64_t bytes;   /* from ls-tree, or 0 if unknown */
+	uint32_t number;
+	uint32_t branch;
+};
+
+/* The state of a findings call. It is the own word of the call's slot. */
+struct findings_call {
+	struct buf             files;     /* the file parts of a commit: the
+	                                     archive of the evidence, and the
+	                                     file of the finding while git
+	                                     commits */
+	struct buf             read;      /* the input of cat-file for the
+	                                     files of wanted that cat-file has
+	                                     not read yet */
+	struct dstr            out;       /* the result of the call */
+	struct dstr            claim;     /* the claim argument, without the
+	                                     notices at its end */
+	struct finding_change  change;    /* the change of add and update */
+	UTIL_ARRAY(struct findings_branch) branches;  /* from for-each-ref */
+	UTIL_ARRAY(struct findings_file)   wanted;    /* the files that cat-file
+	                                                 reads, in order */
+	UTIL_ARRAY(struct finding)         findings;  /* the findings read */
+	struct child          *child;     /* the call's git, until a step has
+	                                     read its output */
+	size_t                 archive;   /* bytes of files that are the
+	                                     archive */
+	size_t                 branch;    /* the branch that ls-tree lists */
+	uint32_t               number;    /* N of id, or of a new finding */
+	uint32_t               last;      /* the highest number of a finding of
+	                                     the agent */
+	uint32_t               done;      /* the files of wanted that cat-file
+	                                     has read */
+	uint32_t               batch;     /* the files of wanted up to which
+	                                     the current cat-file reads */
+	uint8_t                action;    /* enum findings_action */
+	uint8_t                stage;     /* enum findings_stage */
+	uint16_t               tries;     /* commits that raced, at most
+	                                     STORE_TRIES, widened over the
+	                                     padding */
+	uint8_t                flags;     /* enum findings_flag */
+	char                   author[MEMBER_NAME];  /* the author of id, or the
+	                                                author argument of list,
+	                                                or "" */
+	char                   about[FINDING_ID];    /* the about argument, or
+	                                                "" */
+};
+
+static_assert(EVIDENCE_REFS == 16 && EVIDENCE_EXTERNAL == 8 && TOOL_TEXT_MAX == 4U << 20,
+              "update the texts in this file that say 16 items, 8 items or 4 MiB");
+
+/* Returns the session of the findings and the agent of askai in it. */
+static struct member_session const *
+findings_session (struct mcp_slot const *slot)
 {
-	(void)service;
-	static_assert(TOOL_TEXT_MAX == 4U << 20, "update the description");
-	return schema_tool("findings",
-		"Record your findings in the review record of this ask call. askai "
-		"shows the record again after every compaction. Change the state of a "
-		"finding with update: verified if source that you read shows the claim "
-		"true, disproved if the source shows the claim false, retracted if you "
-		"withdraw the claim, or candidate again. verified and disproved require "
-		"the lines of the location in the read log. The read log lists the "
-		"lines that the read command of the git tool and the describe action "
-		"of the code tool showed you. Verify or disprove a finding in a later "
-		"turn than the read of the lines. The history of a finding lists every "
-		"change. A record can start with findings from an earlier ask call. "
-		"The read log of each ask call starts empty. The record is limited to "
-		"4 MiB.",
-		jb_object(
-			"action", schema_enum(
-				schema_names(review_action_names, REVIEW_ACTIONS),
-				"add a finding, update a finding, or show the record."),
-			"claim", schema_property("string",
-				"What you found. Required for add, and for update to "
-				"correct the claim."),
-			"location", schema_property("string",
-				"The lines of a committed file that show the claim, as "
-				"path:line or path:first-last, such as src/mcp.c:120-140. "
-				"A commit ID and a colon can come first, as in git grep "
-				"output. HEAD: is the same as no commit. For update, "
-				"give location only to correct the location. Leave out "
-				"location if no lines of a file show the claim."),
-			"state", schema_enum(
-				schema_names(review_state_names, REVIEW_STATES),
-				"For add: candidate (the default), verified or disproved. "
-				"Required for update."),
-			"evidence", schema_property("string",
-				"What you read that shows the state. For retracted, the "
-				"reason you withdraw the finding. Required for update, "
-				"and for add with verified or disproved."),
-			"id", schema_count(1,
-				"The number of a finding. Required for update. show with "
-				"id prints the history of the finding."),
-			"offset", schema_count(0, TOOL_OFFSET_ABOUT),
-			nullptr),
-		CSTR_VIEW("action"));
+	struct notes_tool const *tool = mcp_slot_part(slot);
+	return member_registry_session(tool->members);
 }
 
-void
+/* Returns the name of the tool with the registry ID @p tool, for
+ * evidence_cite(). @p owner is the slot of the call.
+ */
+static char const *
+findings_tool_name (void const *owner,
+                    uint32_t    tool)
+{
+	return tool < TOOL_MAX ? mcp_slot_tool_name(owner, tool) : nullptr;
+}
+
+/* Frees the call at @p *p_call and sets @p *p_call to nullptr. */
+static void
+findings_call_destroy (struct findings_call **p_call)
+{
+	struct findings_call *call = *p_call;
+	store_drop(&call->child);
+	buf_fini(&call->files);
+	buf_fini(&call->read);
+	dstr_cleanup(&call->out);
+	dstr_cleanup(&call->claim);
+	finding_change_fini(&call->change);
+	for (size_t i = 0; i < call->findings.n; ++i)
+		finding_fini(&call->findings.items[i]);
+	free(call->findings.items);
+	call->findings.items = nullptr;
+	free(call->branches.items);
+	call->branches.items = nullptr;
+	free(call->wanted.items);
+	call->wanted.items = nullptr;
+	free(call);
+	*p_call = nullptr;
+}
+
+static void
 findings_drop (struct mcp_slot *slot)
 {
-	void **own = mcp_slot_own(slot);
-	struct findings_call *call = *own;
-	json_object_put(call->args);
-	call->args = nullptr;
-	dstr_cleanup(&call->out);
-	free(*own);
-	*own = nullptr;
+	struct findings_call *call = *mcp_slot_own(slot);
+	if (call)
+		findings_call_destroy(&call);
+	*mcp_slot_own(slot) = nullptr;
 }
 
-void
-findings_step (struct mcp_slot *slot)
+/* Ends the call in @p slot with its output, failed if @p failed is true,
+ * or with the error @p e (mcp_slot_fail()).
+ */
+static void
+findings_end (struct mcp_slot *slot,
+              int              e,
+              bool             failed)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	struct loop *loop = mcp_slot_loop(slot);
-	/* review_call() copies the claim and the evidence of an add or an
-	 * update. If less LOOP_COPY room is left in this step than they need,
-	 * and the step has used part of its share, the call runs in the next
-	 * step. A show writes at most the room of the step, and the rest of its
-	 * text in later steps (EAGAIN). */
-	if (!loop_fits(loop, LOOP_COPY, call->texts)) {
-		mcp_slot_ready(slot);
-		return;
-	}
-	size_t const had = dstr_len(&call->out);
-	int e = review_call(mcp_slot_review(slot), call->args, mcp_slot_turn(slot), notice_kept,
-	                    &call->cursor, loop_room(loop, LOOP_COPY), &call->out);
-	struct cstr_view const out = cstr_view_dstr(&call->out);
-	loop_work(loop, LOOP_COPY, call->texts + out.len - had);
-	switch (e) {
-	case 0:
-		break;
-	case EAGAIN:
-		mcp_slot_ready(slot);
-		return;
-	case EINVAL:
-		/* mcp_slot_offset() without arguments sets the offset of a refusal
-		 * to 0. */
-		(void)mcp_slot_offset(slot, nullptr);
-		break;
-	default:
+	child_destroy(&call->child);
+	if (e) {
 		mcp_slot_fail(slot, e);
 		return;
 	}
-	mcp_slot_lend(slot, out);
-	mcp_slot_finish(slot, e ? TOOL_FAILED : 0);
+	mcp_slot_lend(slot, cstr_view_dstr(&call->out));
+	/* The offset of a list or a show does not apply to a refusal. */
+	if (failed)
+		(void)mcp_slot_offset(slot, nullptr);
+	mcp_slot_finish(slot, failed ? TOOL_FAILED : 0);
 }
 
-void
+/* Ends the call in @p slot after the error @p e of a step: refuses the
+ * call with the text @p why for EINVAL with a refusal, else fails the call
+ * with @p e.
+ */
+static void
+findings_stop (struct mcp_slot *slot,
+               int              e,
+               char const      *why)
+{
+	if (e == EINVAL && *why)
+		mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
+	else
+		findings_end(slot, e, true);
+}
+
+/* Spawns git for @p stage with the command @p cmd, the words @p words and
+ * the input @p in, which the function frees. A commit updates @p ref. If
+ * git cannot start, the call fails with the reason.
+ */
+static void
+findings_run (struct mcp_slot   *slot,
+              uint8_t            stage,
+              enum store_cmd     cmd,
+              char const *const *words,
+              char const        *ref,
+              struct buf        *in)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	struct notes_tool const *tool = mcp_slot_part(slot);
+	int e = 0;
+	call->stage = stage;
+	child_destroy(&call->child);
+	call->child = store_spawn(tool->store, slot, cmd, words, ref, buf_peek(in), &e);
+	buf_fini(in);
+	if (call->child)
+		return;
+	char buf[96];
+	mcp_slot_tell(slot, child_spawn_why(e, "git", buf, sizeof buf), TOOL_FAILED);
+}
+
+/* Runs git to list the branches of findings that the action of the call
+ * in @p slot needs: every branch for list and show, else the branch of the
+ * agent, and for add the branch of the author of about.
+ */
+static void
+findings_load (struct mcp_slot *slot)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	char own[FINDING_REF];
+	char other[FINDING_REF];
+	finding_ref(findings_session(slot)->agent, own);
+	char const *words[STORE_WORDS] = { "--format=%(objectname) %(refname)", own };
+	if (call->action == FINDINGS_LIST || call->action == FINDINGS_SHOW) {
+		words[1] = every_branch;
+	} else if (*call->about) {
+		char author[MEMBER_NAME];
+		uint32_t n;
+		(void)finding_id_parse(cstr_view(call->about), author, &n);
+		finding_ref(author, other);
+		words[2] = other;
+	}
+	call->branches.n = 0;
+	call->wanted.n = 0;
+	call->branch = 0;
+	call->done = 0;
+	call->batch = 0;
+	call->last = 0;
+	call->flags = 0;
+	buf_clear(&call->read);
+	for (size_t i = 0; i < call->findings.n; ++i)
+		finding_fini(&call->findings.items[i]);
+	call->findings.n = 0;
+	findings_run(slot, STAGE_REFS, STORE_REFS, words, nullptr, &(struct buf){});
+}
+
+/* Runs git to read the next files of call->wanted, from call->done on, as
+ * many as fit in one output of git (store_read_fits()), at least one. The
+ * input of cat-file for those files moves out of call->read.
+ */
+static void
+findings_read_batch (struct mcp_slot *slot)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	struct span const lines = buf_peek(&call->read);
+	uint64_t used = 0;
+	size_t end = 0;
+	uint32_t k = call->done;
+	while (k < call->wanted.n && end < lines.len) {
+		bool const fits = store_read_fits(&used, call->wanted.items[k].bytes);
+		if (!fits && k > call->done)
+			break;
+		unsigned char const *nl = memchr(lines.ptr + end, '\n', lines.len - end);
+		end = nl ? (size_t)(nl - lines.ptr) + 1 : lines.len;
+		++k;
+		/* A file that does not fit is read alone. */
+		if (!fits)
+			break;
+	}
+	if (k == call->done) {
+		findings_end(slot, EIO, true);
+		return;
+	}
+	call->batch = k;
+	struct buf in = {};
+	int const e = buf_put(&in, lines.ptr, end, end);
+	buf_consume(&call->read, end);
+	if (e) {
+		buf_fini(&in);
+		findings_end(slot, e, true);
+		return;
+	}
+	findings_run(slot, STAGE_READ, STORE_READ, nullptr, nullptr, &in);
+}
+
+static void findings_act (struct mcp_slot *slot);
+
+/* Runs git to list the files of the findings of the branch call->branch,
+ * or reads the files that the action needs once every branch is listed.
+ * Without files to read, the action goes on at once.
+ */
+static void
+findings_next (struct mcp_slot *slot)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	if (call->branch < call->branches.n) {
+		char const *const words[] = { call->branches.items[call->branch].tip.hex, "findings" };
+		findings_run(slot, STAGE_FILES, STORE_FILES, words, nullptr, &(struct buf){});
+		return;
+	}
+	if (call->wanted.n) {
+		findings_read_batch(slot);
+		return;
+	}
+	findings_act(slot);
+}
+
+/* Handles the output of for-each-ref: one line "OID REF" for each branch
+ * of findings.
+ */
+static void
+findings_got_refs (struct mcp_slot *slot)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	struct span const out = buf_peek(&call->child->out);
+	struct cstr_view rest = { (char const *)out.ptr, out.len };
+	struct cstr_view line;
+	static struct cstr_view const head = CSTR_VIEW_INIT("refs/heads/agent/");
+	static struct cstr_view const tail = CSTR_VIEW_INIT("/findings");
+	while (cstr_view_cut(&rest, '\n', &line)) {
+		struct findings_branch b;
+		if (oid_init_field(&b.tip, &line, ' ') || line.len <= head.len + tail.len ||
+		    !cstr_view_starts(line, head) || !cstr_view_ends(line, tail))
+			continue;
+		struct cstr_view const name = cstr_view_slice(line, head.len,
+		                                              line.len - head.len - tail.len);
+		if (!member_name_valid(name) || call->branches.n >= UINT32_MAX)
+			continue;
+		(void)util_format(b.author, sizeof b.author, "%.*s", (int)name.len, name.data);
+		if (util_grow(call->branches.items, call->branches.cap, call->branches.n + 1)) {
+			findings_end(slot, ENOMEM, true);
+			return;
+		}
+		call->branches.items[call->branches.n++] = b;
+	}
+	findings_next(slot);
+}
+
+/* Returns true if the call reads the finding @p number of @p author. */
+static bool
+findings_wants (struct findings_call const *call,
+                char const                 *author,
+                uint32_t                    number)
+{
+	switch (call->action) {
+	case FINDINGS_LIST:
+	case FINDINGS_SHOW:
+		return true;
+	case FINDINGS_UPDATE:
+		return number == call->number && !strcmp(author, call->author);
+	}
+	return false;
+}
+
+/* Handles the output of ls-tree for the branch call->branch. For each file
+ * of a finding, the function notes the highest number of the agent and
+ * whether the findings of id and about exist, and adds the file to the
+ * input of cat-file if the action reads it.
+ */
+static void
+findings_got_files (struct mcp_slot *slot)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	struct findings_branch const *b = &call->branches.items[call->branch];
+	char const *agent = findings_session(slot)->agent;
+	char about[MEMBER_NAME];
+	uint32_t about_number = 0;
+	if (*call->about)
+		(void)finding_id_parse(cstr_view(call->about), about, &about_number);
+	struct span out = buf_peek(&call->child->out);
+	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
+	struct notes_file file;
+	int e = 0;
+	while (!e && out.len && !(e = notes_file_next(&out, &file))) {
+		uint32_t const n = finding_path_number((struct cstr_view){ (char const *)file.name.ptr,
+		                                                          file.name.len });
+		if (!n)
+			continue;
+		if (!strcmp(b->author, agent) && n > call->last)
+			call->last = n;
+		if (about_number == n && !strcmp(b->author, about))
+			call->flags |= CALL_ABOUT;
+		if (call->number == n && !strcmp(b->author, call->author))
+			call->flags |= CALL_FOUND;
+		if (!findings_wants(call, b->author, n))
+			continue;
+		e = util_grow(call->wanted.items, call->wanted.cap, call->wanted.n + 1);
+		e = e ? e : buf_printf(&call->read, "%s\n", file.id.hex);
+		if (!e)
+			call->wanted.items[call->wanted.n++] = (struct findings_file){ file.bytes, n,
+			                                                               call->branch };
+	}
+	if (e == EIO) {
+		mcp_slot_tell(slot, unread, TOOL_FAILED);
+		return;
+	}
+	if (e) {
+		findings_end(slot, e, true);
+		return;
+	}
+	++call->branch;
+	findings_next(slot);
+}
+
+/* Handles the output of cat-file: the files of call->wanted from
+ * call->done to call->batch, in order. A file that askai cannot read, or
+ * whose ID is not the ID of its path, fails the call. Then cat-file reads
+ * the next files, or the action goes on after the last file.
+ */
+static void
+findings_got_read (struct mcp_slot *slot)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	struct span out = buf_peek(&call->child->out);
+	loop_work(mcp_slot_loop(slot), LOOP_PARSE, out.len);
+	if (util_grow(call->findings.items, call->findings.cap, call->wanted.n)) {
+		findings_end(slot, ENOMEM, true);
+		return;
+	}
+	for (size_t i = call->done; i < call->batch; ++i) {
+		struct findings_file const w = call->wanted.items[i];
+		char const *author = call->branches.items[w.branch].author;
+		struct finding *f = &call->findings.items[call->findings.n++];
+		*f = finding();
+		struct oid id;
+		struct span data;
+		int e = store_object_next(&out, &id, &data);
+		if (!e)
+			e = finding_parse(f, (struct cstr_view){ (char const *)data.ptr, data.len });
+		if (e == ENOMEM) {
+			findings_end(slot, e, true);
+			return;
+		}
+		if (e || f->number != w.number || strcmp(f->author, author)) {
+			mcp_slot_tellf(slot, TOOL_FAILED, "Could not read finding %s#%" PRIu32 ": "
+			               "unknown format.", author, w.number);
+			return;
+		}
+	}
+	call->done = call->batch;
+	if (call->done < call->wanted.n) {
+		findings_read_batch(slot);
+		return;
+	}
+	findings_act(slot);
+}
+
+/* Appends to call->out the evidence of call->change, the change that the
+ * commit made, as " Evidence bro#5/1 from call c4, bro#5/2 from c7:3-9."
+ * for the finding @p id. Returns true, or false if out of memory.
+ */
+static bool
+findings_cited (struct findings_call *call,
+                char const           *id)
+{
+	struct finding_change const *c = &call->change;
+	for (size_t i = 0; i < c->evidence.n; ++i) {
+		struct evidence const *e = &c->evidence.items[i];
+		bool ok = dstr_printf(&call->out, "%s %s/%" PRIu32 " from ", i ? "," : " Evidence", id,
+		                      e->item);
+		if (!ok)
+			return false;
+		if (e->kind == EVIDENCE_CALL)
+			ok = dstr_printf(&call->out, "call c%" PRIu32, e->call);
+		else if (e->kind == EVIDENCE_LINES)
+			ok = dstr_printf(&call->out, "c%" PRIu32 ":", e->call) &&
+			     !evidence_ranges_put(e->ranges.items, e->ranges.n, &call->out);
+		else
+			ok = dstr_printf(&call->out, "c%" PRIu32 ":%s", e->call,
+			                 e->kind == EVIDENCE_MESSAGE ? "message" : "files");
+		if (!ok)
+			return false;
+	}
+	return !c->evidence.n || dstr_cat(&call->out, ".");
+}
+
+/* Handles the end of fast-import. After a commit, the result names the ID,
+ * the state, the evidence items and the commit. After a race with another
+ * writer, the call reads the branches again and makes the commit again,
+ * until it has made STORE_TRIES commits.
+ */
+static void
+findings_committed (struct mcp_slot *slot)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	struct child const *c = call->child;
+	char const *agent = findings_session(slot)->agent;
+	char id[FINDING_ID];
+	finding_id_format(agent, call->number, id);
+	if (child_ok(c)) {
+		struct oid commit;
+		if (store_committed(buf_peek(&c->out), &commit))
+			LOG(LOG_WARN, "findings: git fast-import gave no commit id");
+		char const *state = finding_state_names[call->change.state].data;
+		(void)dstr_clear(&call->out);
+		bool ok;
+		if (call->action == FINDINGS_ADD)
+			ok = dstr_printf(&call->out, "Added %s (%s).", id, state);
+		else
+			ok = dstr_printf(&call->out, "%s is %s %s.", id,
+			                 call->flags & CALL_SAME ? "still" : "now", state);
+		if (ok && call->flags & CALL_CLAIM)
+			ok = dstr_cat(&call->out, " The claim changed.");
+		if (ok)
+			ok = findings_cited(call, id);
+		if (ok && oid_len(&commit))
+			ok = dstr_printf(&call->out, " Commit %.8s.", commit.hex);
+		findings_end(slot, ok ? 0 : ENOMEM, false);
+		return;
+	}
+	struct span const out = buf_peek(&c->out);
+	if (!(c->end.flags & CHILD_LATE) && store_raced(out)) {
+		struct notes_tool const *tool = mcp_slot_part(slot);
+		char ref[FINDING_REF];
+		finding_ref(agent, ref);
+		int64_t const age = store_stale(tool->store, ref, "findings");
+		if (age) {
+			mcp_slot_tellf(slot, TOOL_FAILED, "Could not record the finding. The findings of %s "
+			               "have been locked for %" PRId64 " s.", agent, age);
+			return;
+		}
+		if (++call->tries < STORE_TRIES) {
+			findings_load(slot);
+			return;
+		}
+		mcp_slot_tellf(slot, TOOL_FAILED, "Could not record the finding. Other ask calls of %s "
+		               "changed the findings at the same time. Repeat the call.", agent);
+		return;
+	}
+	char const *why = (char const *)out.ptr;
+	LOG(LOG_WARN, "findings: git could not record %s: %.*s", id,
+	    (int)util_clip(why, out.len, 300), why);
+	if (c->end.flags & CHILD_LATE)
+		mcp_slot_tell(slot, CSTR_VIEW("Could not record the finding. The write timed out."),
+		              TOOL_FAILED);
+	else
+		mcp_slot_tell(slot, CSTR_VIEW("Could not record the finding."), TOOL_FAILED);
+}
+
+/* Writes to @p message the subject of the commit of the change of the
+ * call to the finding @p id, whose state was @p before: "Add bro#5
+ * (verified)", "Update bro#5 (candidate to verified)", "Update bro#5
+ * (claim)" or both.
+ */
+static void
+findings_subject (struct findings_call const *call,
+                  char const                 *id,
+                  enum finding_state          before,
+                  bool                        corrects,
+                  char                        message[static STORE_MESSAGE])
+{
+	char const *after = finding_state_names[call->change.state].data;
+	if (call->action == FINDINGS_ADD)
+		(void)util_format(message, STORE_MESSAGE, "Add %s (%s)", id, after);
+	else if (before == call->change.state)
+		(void)util_format(message, STORE_MESSAGE, "Update %s (%s)", id, corrects ? "claim"
+		                                                                     : after);
+	else
+		(void)util_format(message, STORE_MESSAGE, "Update %s (%s to %s%s)", id,
+		                  finding_state_names[before].data, after, corrects ? ", claim" : "");
+}
+
+/* Runs git to commit the change of the call in @p slot to @p f, the finding
+ * of an update or a new finding: the file of the finding with the change,
+ * and the archive of its evidence, on the branch of the agent.
+ */
+static void
+findings_commit (struct mcp_slot *slot,
+                 struct finding  *f)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	struct member_session const *session = findings_session(slot);
+	char ref[FINDING_REF];
+	finding_ref(session->agent, ref);
+	struct oid tip = {};
+	for (size_t i = 0; i < call->branches.n; ++i)
+		if (!strcmp(call->branches.items[i].author, session->agent))
+			tip = call->branches.items[i].tip;
+	enum finding_state const before = finding_state(f);
+	struct cstr_view const claim = cstr_view_dstr(&call->claim);
+	bool const corrects = call->action == FINDINGS_UPDATE && claim.len &&
+	                      !cstr_view_equal(claim, cstr_view_dstr(&f->claim));
+	if (call->action == FINDINGS_UPDATE && before == call->change.state)
+		call->flags |= CALL_SAME;
+	if (corrects)
+		call->flags |= CALL_CLAIM;
+	dstr_auto json = DSTR_INIT;
+	int e = finding_apply(f, &call->change, call->action == FINDINGS_UPDATE ? claim
+	                                                                         : CSTR_VIEW(""));
+	if (e) {
+		findings_end(slot, e, true);
+		return;
+	}
+	e = finding_render(f, &json);
+	finding_unapply(f, &call->change);
+	loop_work(mcp_slot_loop(slot), LOOP_COPY, dstr_len(&json));
+	if (e == EFBIG) {
+		mcp_slot_tell(slot, CSTR_VIEW("The finding would be larger than 4 MiB. Nothing was "
+		                              "recorded."), TOOL_FAILED);
+		return;
+	}
+	char id[FINDING_ID];
+	char path[FINDING_FILE];
+	char message[STORE_MESSAGE];
+	finding_id(f, id);
+	finding_path(f->number, path);
+	findings_subject(call, id, before, corrects, message);
+	call->number = f->number;
+	struct store_part part;
+	e = e ? e : store_part_file(&part, &call->files, cstr_view(path), cstr_view_dstr(&json));
+	struct store_commit commit = {
+		.message = cstr_view(message),
+		.files = buf_peek(&call->files),
+		.ref = ref,
+		.tip = &tip,
+	};
+	struct member agent = { .kind = MEMBER_AGENT };
+	(void)util_format(agent.name, sizeof agent.name, "%s", session->agent);
+	struct member_byline byline;
+	member_byline_put(&byline, &commit, &agent, mcp_slot_member(slot), mcp_slot_call(slot),
+	                  session->service);
+	struct buf in = {};
+	e = e ? e : store_commit_input(&commit, &in);
+	/* The archive stays for a commit after a race. */
+	struct span const files = buf_peek(&call->files);
+	buf_cut(&call->files, call->archive, files.len - call->archive);
+	if (e) {
+		buf_fini(&in);
+		findings_end(slot, e, true);
+		return;
+	}
+	findings_run(slot, STAGE_COMMIT, STORE_COMMIT, nullptr, ref, &in);
+}
+
+/* Does the action of the call in @p slot once git has read what it needs:
+ * writes the list or the finding, or commits an add or an update.
+ */
+static void
+findings_act (struct mcp_slot *slot)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	struct member_session const *session = findings_session(slot);
+	char id[FINDING_ID];
+	finding_id_format(call->author, call->number, id);
+	child_destroy(&call->child);
+	finding_sort(call->findings.items, call->findings.n);
+	switch (call->action) {
+	case FINDINGS_LIST:
+		findings_end(slot, finding_list(call->findings.items, call->findings.n, session->name,
+		                                call->author, &call->out), false);
+		return;
+	case FINDINGS_SHOW:
+	case FINDINGS_UPDATE:
+		if (!(call->flags & CALL_FOUND)) {
+			mcp_slot_tellf(slot, TOOL_FAILED, "No finding has the id %s. list shows the "
+			               "findings.", id);
+			return;
+		}
+		break;
+	case FINDINGS_ADD:
+		if (*call->about && !(call->flags & CALL_ABOUT)) {
+			mcp_slot_tellf(slot, TOOL_FAILED, "No finding has the id %s. list shows the "
+			               "findings.", call->about);
+			return;
+		}
+		break;
+	}
+	struct finding *f = nullptr;
+	for (size_t i = 0; i < call->findings.n && !f; ++i)
+		if (call->findings.items[i].number == call->number &&
+		    !strcmp(call->findings.items[i].author, call->author))
+			f = &call->findings.items[i];
+	if (call->action == FINDINGS_SHOW) {
+		findings_end(slot, f ? finding_show(f, call->findings.items, call->findings.n,
+		                                    &call->out) : EIO, false);
+		return;
+	}
+	if (call->action == FINDINGS_UPDATE) {
+		if (f)
+			findings_commit(slot, f);
+		else
+			findings_end(slot, EIO, true);
+		return;
+	}
+	/* The number of a new finding is one more than the highest number of
+	 * the agent. */
+	static_assert(UINT32_MAX == 4294967295, "update the refusal");
+	if (call->last == UINT32_MAX) {
+		mcp_slot_tellf(slot, TOOL_FAILED, "%s#4294967295 exists. askai cannot give a finding "
+		               "of %s a higher number.", session->agent, session->agent);
+		return;
+	}
+	struct finding added = finding();
+	(void)util_format(added.author, sizeof added.author, "%s", session->agent);
+	(void)util_format(added.about, sizeof added.about, "%s", call->about);
+	added.number = call->last + 1;
+	added.conversation = mcp_slot_member(slot)->conversation;
+	if (cstr_view_store(cstr_view_dstr(&call->claim), &added.claim)) {
+		finding_fini(&added);
+		findings_end(slot, ENOMEM, true);
+		return;
+	}
+	findings_commit(slot, &added);
+	finding_fini(&added);
+}
+
+/* Handles the output of the git of the call in @p slot. */
+static void
+findings_step (struct mcp_slot *slot)
+{
+	static tool_step_fn *const steps[] = {
+		[STAGE_REFS]   = findings_got_refs,
+		[STAGE_FILES]  = findings_got_files,
+		[STAGE_READ]   = findings_got_read,
+		[STAGE_COMMIT] = findings_committed,
+	};
+	struct findings_call const *call = *mcp_slot_own(slot);
+	if (!(STAGES_FAILED >> call->stage & 1) && !child_ok(call->child)) {
+		mcp_slot_tell(slot, unread, TOOL_FAILED);
+		return;
+	}
+	steps[call->stage](slot);
+}
+
+/* Returns the text @p v of a turn, a claim or a reason, without the
+ * notices at its end (notice_kept()) and the spaces and line ends before
+ * them.
+ */
+static struct cstr_view
+findings_text (struct json_object *v)
+{
+	struct cstr_view const t = jb_view(v);
+	return cstr_view_trim_end((struct cstr_view){ t.data, notice_kept(t.data, t.len) });
+}
+
+/* Checks the texts claim and reason of @p args: 1 byte to 4 MiB of UTF-8
+ * text without NUL each, and no markup of a later tool call
+ * (notice_markup()). Returns 0, or EINVAL with the refusal in the @p len
+ * bytes at @p why.
+ */
+static int
+findings_texts (struct json_object *args,
+                char               *why,
+                size_t              len)
+{
+	static char const *const names[] = { "claim", "reason" };
+	for (size_t i = 0; i < array_size(names); ++i) {
+		struct json_object *v = jb_get(args, names[i]);
+		struct cstr_view const t = jb_view(v);
+		if (!v)
+			continue;
+		if (!t.len || t.len > TOOL_TEXT_MAX || !jb_is_text(t))
+			return util_refuse(why, len, "The %s argument must be a string of 1 byte to 4 "
+			                   "MiB without NUL bytes.", names[i]);
+		struct cstr_view const kept = findings_text(v);
+		if (!kept.len)
+			return util_refuse(why, len, "The %s contains only [askai: ...] lines. askai adds "
+			                   "[askai: ...] lines to tool results. Give the %s.", names[i],
+			                   names[i]);
+		char const *tag = notice_markup(kept.data, kept.len);
+		if (tag)
+			return util_refuse(why, len, "The %s contains </function> and then %s. The text "
+			                   "of the call ended early. The next tool call became part of "
+			                   "the %s. Nothing was recorded. Make the call again with the %s "
+			                   "closed correctly.", names[i], tag, names[i], names[i]);
+	}
+	return 0;
+}
+
+/* Makes the evidence items of the references in the argument evidence of
+ * @p args for the change of the call in @p slot, and appends the file parts
+ * of the archive of their material to call->files. Then checks the
+ * external items. Returns 0, EINVAL with the refusal in the @p len bytes at
+ * @p why, or ENOMEM.
+ */
+static int
+findings_evidence (struct mcp_slot    *slot,
+                   struct json_object *args,
+                   char               *why,
+                   size_t              len)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	struct finding_change *c = &call->change;
+	struct json_object *refs = jb_get(args, "evidence");
+	struct json_object *external = jb_get(args, "external");
+	size_t const n = jb_len(refs);
+	size_t const m = jb_len(external);
+	if (refs && !json_object_is_type(refs, json_type_array))
+		return util_refuse(why, len, "The evidence argument must be an array of references, "
+		                   "such as [\"c7\", \"c9:120-140\"].");
+	if (n > EVIDENCE_REFS)
+		return util_refuse(why, len, "evidence takes at most 16 items.");
+	if (external && !json_object_is_type(external, json_type_array))
+		return util_refuse(why, len, "The external argument must be an array of strings.");
+	if (m > EVIDENCE_EXTERNAL)
+		return util_refuse(why, len, "external takes at most 8 items.");
+	if (util_grow(c->evidence.items, c->evidence.cap, n) ||
+	    util_grow(c->external.items, c->external.cap, m))
+		return ENOMEM;
+	struct member_call const *member = mcp_slot_member(slot);
+	struct evidence_cite const cite = {
+		.seen  = mcp_slot_seen(slot),
+		.ask   = &member->ask,
+		.name  = findings_tool_name,
+		.owner = slot,
+		.call  = mcp_slot_call(slot),
+		.turn  = mcp_slot_turn(slot),
+	};
+	bool const strict = FINDING_SHOWN >> c->state & 1;
+	dstr_auto lines = DSTR_INIT;
+	int e = 0;
+	for (size_t i = 0; !e && i < n; ++i) {
+		struct cstr_view const text = jb_view(jb_at(refs, i));
+		struct evidence_ref ref;
+		if (evidence_ref_parse(&ref, text))
+			return util_refuse(why, len, "evidence[%zu] is not a reference: %.*s. Give a call "
+			                   "such as c7, lines such as c7:120-140, c7:message or c7:files.",
+			                   i, (int)util_clip(text.data, text.len, 80),
+			                   text.data ? text.data : "");
+		struct evidence *item = &c->evidence.items[c->evidence.n++];
+		*item = evidence();
+		struct evidence_material material;
+		e = evidence_cite(item, &material, &lines, &ref, &cite, strict, why, len);
+		char path[EVIDENCE_PATH];
+		struct store_part part;
+		if (!e && item->flags & EVIDENCE_REQUEST) {
+			evidence_path(item->request.sha256, path);
+			e = store_part_file(&part, &call->files, cstr_view(path), material.request);
+		}
+		if (!e) {
+			evidence_path(item->result.sha256, path);
+			e = store_part_file(&part, &call->files, cstr_view(path), material.result);
+		}
+		loop_work(mcp_slot_loop(slot), LOOP_COPY, material.request.len + material.result.len);
+	}
+	for (size_t i = 0; !e && i < m; ++i) {
+		struct cstr_view const text = jb_view(jb_at(external, i));
+		e = evidence_external(text, i, why, len);
+		struct dstr *x = &c->external.items[c->external.n++];
+		*x = (struct dstr)DSTR_INIT;
+		e = e ? e : cstr_view_store(text, x);
+	}
+	return e;
+}
+
+/* Checks the arguments of the call in @p slot for its action and copies
+ * what the call needs from them. Returns 0, or EINVAL with the refusal in
+ * the @p len bytes at @p why, or ENOMEM.
+ */
+static int
+findings_args (struct mcp_slot    *slot,
+               struct json_object *args,
+               char               *why,
+               size_t              len)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	char const *agent = findings_session(slot)->agent;
+	char const *action = findings_actions[call->action].data;
+	struct json_object_iter it;
+	json_object_object_foreachC(args, it) {
+		size_t k = 0;
+		while (k < array_size(findings_arg_rows) &&
+		       !cstr_view_equal(findings_arg_rows[k].name, cstr_view(it.key)))
+			++k;
+		if (k == array_size(findings_arg_rows) ||
+		    !(findings_arg_rows[k].actions >> call->action & 1))
+			return util_refuse(why, len, "The action %s takes no argument %.64s.", action,
+			                   it.key);
+	}
+	struct json_object *id = jb_get(args, "id");
+	struct json_object *state = jb_get(args, "state");
+	struct json_object *about = jb_get(args, "about");
+	struct json_object *author = jb_get(args, "author");
+	if ((ON_UPDATE | ON_SHOW) >> call->action & 1 &&
+	    finding_id_parse(jb_view(id), call->author, &call->number))
+		return util_refuse(why, len, "%s needs id: a finding, such as %s#5.", action, agent);
+	if (call->action == FINDINGS_UPDATE && strcmp(call->author, agent))
+		return util_refuse(why, len, "Only %s can change %s#%" PRIu32 ". Add your own finding "
+		                   "with about %s#%" PRIu32 ".", call->author, call->author,
+		                   call->number, call->author, call->number);
+	if (author && !member_name_valid(jb_view(author)))
+		return util_refuse(why, len, "The author argument must be the name of a member, such "
+		                   "as %s.", agent);
+	if (author)
+		(void)util_format(call->author, sizeof call->author, "%s", jb_view(author).data);
+	char who[MEMBER_NAME];
+	uint32_t n;
+	if (about && finding_id_parse(jb_view(about), who, &n))
+		return util_refuse(why, len, "about must be the id of a finding, such as %s#2.", agent);
+	if (about)
+		util_format(call->about, sizeof call->about, "%s", jb_view(about).data);
+	if (call->action == FINDINGS_LIST || call->action == FINDINGS_SHOW)
+		return 0;
+	size_t const s = cstr_view_index(finding_state_names, FINDING_STATES, jb_view(state));
+	if (state ? s == FINDING_STATES : call->action == FINDINGS_UPDATE)
+		return util_refuse(why, len, "%s needs state: candidate, verified, disproved or "
+		                   "retracted.", action);
+	if (call->action == FINDINGS_ADD && !jb_get(args, "claim"))
+		return util_refuse(why, len, "add needs claim: what you found.");
+	int e = findings_texts(args, why, len);
+	if (e)
+		return e;
+	struct finding_change *c = &call->change;
+	struct member_call const *member = mcp_slot_member(slot);
+	c->state = state ? (enum finding_state)s : FINDING_CANDIDATE;
+	c->turn = mcp_slot_turn(slot);
+	c->call = mcp_slot_call(slot);
+	c->ask = member->ask;
+	(void)util_format(c->asked_by, sizeof c->asked_by, "%s", member->asker.name);
+	struct json_object *claim = jb_get(args, "claim");
+	struct json_object *reason = jb_get(args, "reason");
+	if ((claim && cstr_view_store(findings_text(claim), &call->claim)) ||
+	    (reason && cstr_view_store(findings_text(reason), &c->reason)) ||
+	    cstr_view_store(CSTR_VIEW(ASKAI_VERSION), &c->askai))
+		return ENOMEM;
+	e = findings_evidence(slot, args, why, len);
+	call->archive = buf_peek(&call->files).len;
+	return e ? e : finding_check(c, why, len);
+}
+
+/* Starts a call of the findings tool in @p slot with the arguments
+ * @p args: checks the arguments, makes the evidence items, and runs git to
+ * read the findings that the action needs.
+ */
+static void
 findings_start (struct mcp_slot    *slot,
                 struct json_object *args)
 {
@@ -132,10 +1000,154 @@ findings_start (struct mcp_slot    *slot,
 		return;
 	}
 	*call = (struct findings_call){
-		.args  = json_object_get(args),
-		.out   = DSTR_INIT,
-		.texts = jb_view(jb_get(args, "claim")).len + jb_view(jb_get(args, "evidence")).len,
+		.out    = DSTR_INIT,
+		.claim  = DSTR_INIT,
+		.change = finding_change(),
+		.action = (uint8_t)cstr_view_index(findings_actions, FINDINGS_ACTIONS,
+		                                   jb_view(jb_get(args, "action"))),
 	};
 	*mcp_slot_own(slot) = call;
-	findings_step(slot);
+	if (call->action == FINDINGS_ACTIONS) {
+		mcp_slot_tell(slot, CSTR_VIEW("The action argument must be one of: "
+		                              XL_JOIN(", ", ", ", FINDINGS_ACTION_LIST(XL_TEXT))
+		                              "."), TOOL_FAILED);
+		return;
+	}
+	char why[1024] = "";
+	int const e = findings_args(slot, args, why, sizeof why);
+	if (e) {
+		findings_stop(slot, e, why);
+		return;
+	}
+	findings_load(slot);
+}
+
+/* Returns the definition of the findings tool for the turns. @p service is
+ * the struct notes_tool, whose registry names the agent.
+ */
+static struct json_object *
+findings_definition (void const *service)
+{
+	struct notes_tool const *tool = service;
+	struct member_session const *session = member_registry_session(tool->members);
+	char const *agent = session ? session->agent : "";
+	dstr_auto about = DSTR_INIT;
+	dstr_auto id = DSTR_INIT;
+	dstr_auto add = DSTR_INIT;
+	if (!dstr_printf(&about, "Findings are claims that you make about material that askai "
+	                 "showed you. A finding has an id such as %s#5, a claim, a state and a "
+	                 "history of changes. The id stays the same in every ask call. Every "
+	                 "member can read every finding. Only the author of a finding can change "
+	                 "the finding. The states are candidate, verified, disproved and "
+	                 "retracted. verified and disproved need evidence that askai showed you "
+	                 "before this turn. Every tool result ends with a call number, such as "
+	                 "[askai: call c7]. Give that call as evidence. askai then stores the "
+	                 "call and the result exactly as you got them.", agent) ||
+	    !dstr_printf(&id, "A finding, such as %s#5, for update and show.", agent) ||
+	    !dstr_printf(&add, "For add: the finding of another member that your finding checks, "
+	                 "such as %s#2.", agent))
+		return nullptr;
+	struct json_object *props = jb_object(
+		"action", schema_enum(schema_names(findings_actions, FINDINGS_ACTIONS),
+			"add records a finding. update changes your finding. list lists the "
+			"findings of every member, open first. show prints a finding and every "
+			"change."),
+		"id", schema_property("string", dstr_get(&id)),
+		"claim", schema_property("string",
+			"What you found. Required for add. For update, give claim only to correct "
+			"the claim."),
+		"state", schema_enum(schema_names(finding_state_names, FINDING_STATES),
+			"candidate, verified, disproved or retracted. The default for add is "
+			"candidate. Required for update."),
+		"evidence", schema_array(schema_property("string", nullptr), EVIDENCE_REFS,
+			"The evidence for the state, at most 16 items. c7 is your call c7 of this "
+			"ask call. c7:120-140,150 is lines of a git read or a code describe in call "
+			"c7. c7:message is the message of the one commit of git call c7. c7:files is "
+			"the names and modes of the files that git call c7 lists."),
+		"external", schema_array(schema_property("string", nullptr), EVIDENCE_EXTERNAL,
+			"Material outside askai, at most 8 items. Each item names the material with "
+			"an exact hash, such as: libclang-19-dev 1:19.1.7-3 amd64 sha256:9b1c... "
+			"askai does not store or show this material. External items alone never "
+			"make a finding verified or disproved."),
+		"reason", schema_property("string",
+			"Why the evidence shows the state, or why you retract the finding. Required "
+			"for verified, disproved and retracted."),
+		"about", schema_property("string", dstr_get(&add)),
+		"author", schema_property("string",
+			"For list: list only the findings of this member."),
+		"offset", schema_count(0, TOOL_OFFSET_ABOUT),
+		nullptr);
+	return schema_tool("findings", dstr_get(&about), props, CSTR_VIEW("action"));
+}
+
+struct plugin const findings_plugin = {
+	.tools = {{
+		.definition = findings_definition,
+		.start = findings_start,
+		.step = findings_step,
+		.drop = findings_drop,
+		.flags = KF_SERIAL | KF_RERUN | TOOL_PAGED
+	}}
+};
+
+int
+findings_read_input (struct buf  *in,
+                     struct span *files)
+{
+	uint64_t used = 0;
+	while (files->len) {
+		struct span rest = *files;
+		struct notes_file file;
+		int e = notes_file_next(&rest, &file);
+		if (e)
+			return e;
+		if (!finding_path_number((struct cstr_view){ (char const *)file.name.ptr,
+		                                             file.name.len })) {
+			*files = rest;
+			continue;
+		}
+		bool const fits = store_read_fits(&used, file.bytes);
+		if (!fits && buf_peek(in).len)
+			return 0;
+		if (buf_printf(in, "%s\n", file.id.hex))
+			return ENOMEM;
+		*files = rest;
+		/* A file that does not fit is read alone. */
+		if (!fits)
+			return 0;
+	}
+	return 0;
+}
+
+int
+findings_notice (struct span         out,
+                 struct hexid const *conversation,
+                 size_t              most,
+                 struct dstr        *d)
+{
+	UTIL_ARRAY(struct finding) list = {};
+	int e = 0;
+	while (!e && out.len) {
+		struct oid id;
+		struct span data;
+		if (store_object_next(&out, &id, &data))
+			e = EIO;
+		else
+			e = util_grow(list.items, list.cap, list.n + 1);
+		if (e)
+			break;
+		struct finding *f = &list.items[list.n++];
+		*f = finding();
+		e = finding_parse(f, (struct cstr_view){ (char const *)data.ptr, data.len });
+		if (e == EINVAL)
+			e = EIO;
+	}
+	if (!e) {
+		finding_sort(list.items, list.n);
+		e = finding_notice(list.items, list.n, conversation, most, d);
+	}
+	for (size_t i = 0; i < list.n; ++i)
+		finding_fini(&list.items[i]);
+	free(list.items);
+	return e;
 }

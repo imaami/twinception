@@ -48,6 +48,9 @@ enum {
 	                                          askai writes and reads */
 	FINDING_CLAIM   = 200,               /**< bytes of a claim in a list, at
 	                                          most */
+	FINDING_REF     = sizeof "refs/heads/agent//findings" + UTIL_WORD_MAX,
+	                                     /**< bytes of the ref of a branch of
+	                                          findings, NUL included */
 };
 
 /** The states of a finding: X(ID, name), the constant FINDING_ID of enum
@@ -169,6 +172,13 @@ extern void
 finding_id (struct finding const *f,
             char                  id[static FINDING_ID]);
 
+/** Writes to @p ref the branch of the findings of the agent @p author:
+ *  refs/heads/agent/AUTHOR/findings.
+ */
+extern void
+finding_ref (char const *author,
+             char        ref[static FINDING_REF]);
+
 /** Writes to @p path the path of the file of the finding @p number:
  *  findings/D/N.json, where D is @p number / 100.
  */
@@ -223,6 +233,15 @@ extern int
 finding_apply (struct finding        *f,
                struct finding_change *c,
                struct cstr_view       claim);
+
+/** Moves the last change of @p f back into @p c, which must be empty, as
+ *  before the finding_apply() that added the change: a corrected claim
+ *  becomes the claim of @p f again. Does nothing for a finding without
+ *  changes.
+ */
+extern void
+finding_unapply (struct finding        *f,
+                 struct finding_change *c);
 
 /** Sorts the @p n findings at @p list by the name of the author, and the
  *  findings of one author newest first.

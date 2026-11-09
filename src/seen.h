@@ -328,6 +328,17 @@ seen_find (struct seen const       *seen,
 extern uint32_t
 seen_oldest (struct seen const *seen);
 
+/** Appends to @p d the notice of the calls that @p seen stores, for the
+ *  prompt after a compaction: "[askai: askai keeps your calls cA to cB of
+ *  this ask call. Cite the calls as evidence by number.]" and a line feed,
+ *  with the oldest and the newest call of the ring that a finding can
+ *  cite. Appends nothing if @p seen is nullptr or stores no such call.
+ *  Returns 0, or ENOMEM.
+ */
+extern int
+seen_notice (struct seen const *seen,
+             struct dstr       *d);
+
 /** Drops the calls of @p seen at the end of an ask call, and the calls
  *  before a restart. The storage of the results stays for the next ask
  *  call that uses @p seen. Does nothing for a null @p seen.

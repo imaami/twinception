@@ -12,8 +12,8 @@
 #include "buf.h"
 #include "check.h"
 #include "dstr.h"
-#include "review.h"
 #include "seen.h"
+#include "tool.h"
 
 /* A commit ID. */
 #define A "55aca1e8682351e4c39a92b040721def3f005402"
@@ -218,7 +218,8 @@ call_at (struct seen const *seen,
 }
 
 /* seen_keep() stores the arguments, the result, the identifiers and the
- * lines of a call, and passes the lines to the caller.
+ * lines of a call, and passes the lines to the caller. seen_notice() names
+ * the calls of the ring.
  */
 static void
 test_keep (void)
@@ -230,8 +231,6 @@ test_keep (void)
 	int e = -1;
 	struct seen_read *read = seen_read_create(&src, o, &e);
 	CHECK(read && !e);
-	struct review *review = review_create(REVIEW_READ_LOG, &e);
-	CHECK(review && !e);
 	struct buf request = {};
 	request_of(&request, 100);
 	unsigned char const *data = request.data;
@@ -271,13 +270,6 @@ test_keep (void)
 	CHECK(c->lines.first == 3 && c->lines.last == 5 && !c->lines.at);
 	CHECK(lines.first == 3 && lines.last == 5 && !lines.at);
 	CHECK(seen->bytes == 100 + dstr_len(&c->result));
-	/* The caller passes the lines to the review record. */
-	CHECK(!review_pending_add(review, read, lines, r.turn));
-	CHECK(!review_pending_log(review));
-	struct dstr text = DSTR_INIT;
-	CHECK(!review_render(review, &text, SIZE_MAX));
-	CHECK(strstr(dstr_get(&text), "src/a.c  lines 3-5: 3 of 9 lines"));
-	dstr_cleanup(&text);
 
 	/* A replayed result: out is the part of the output that the journal
 	 * recorded, from byte 5000 of the output on. The ring stores the
@@ -341,7 +333,7 @@ test_keep (void)
 	lines = (struct seen_lines){ 1, 1, 0 };
 	CHECK(seen_keep(&seen, &request, nullptr, &lines) == EFAULT && !lines.first);
 	/* A window past TOOL_OUTPUT_MAX in the whole output. */
-	r = (struct seen_result){ .parts = parts, .at = TOOL_OUTPUT_MAX, .skip = 0 };
+	r = (struct seen_result){ .parts = parts, .at = TOOL_OUTPUT_MAX, .number = 11 };
 	CHECK(!seen_keep(&seen, &request, &r, &lines));
 	request_of(&request, 10);
 	r = (struct seen_result){ .parts = parts, .out = abc, .at = TOOL_OUTPUT_MAX, .skip = 1 };
@@ -358,13 +350,30 @@ test_keep (void)
 	CHECK(seen->n == 5 && buf_peek(&request).len == 10 && call_at(seen, 4)->skip == TOOL_OUTPUT_MAX);
 	buf_fini(&request);
 
+	/* The notice of the calls that the ring keeps. */
+	struct dstr text = DSTR_INIT;
+	CHECK(!seen_notice(seen, &text));
+	SAME(dstr_get(&text), dstr_len(&text), "[askai: askai keeps your calls c7 to c11 of this ask "
+	     "call. Cite the calls as evidence by number.]\n");
+	(void)dstr_clear(&text);
+	CHECK(!seen_notice(nullptr, &text) && !dstr_len(&text));
+
 	/* seen_clear() drops the calls. The storage of the results stays. */
 	size_t const blocks = dstr_get_block_count(&seen->calls[0].result);
 	size_t const kept = seen_kept(seen);
 	CHECK(kept > sizeof *seen);
 	seen_clear(seen);
 	CHECK(!seen->n && !seen->bytes && !seen->head && !seen->calls[0].request.data);
+	CHECK(!seen_notice(seen, &text) && !dstr_len(&text));
+	CHECK(!seen_keep_number(&seen, 3, 1) && !seen_notice(seen, &text));
+	CHECK(!dstr_len(&text) && !seen->n && seen->numbers.n == 1);
+	CHECK(!keep(&seen, 4, 1, CSTR_VIEW("4")) && !seen_notice(seen, &text));
+	SAME(dstr_get(&text), dstr_len(&text), "[askai: askai keeps your call c4 of this ask call. "
+	     "Cite the call as evidence by number.]\n");
+	dstr_cleanup(&text);
+	seen_clear(seen);
 	CHECK(dstr_get_block_count(&seen->calls[0].result) == blocks && !dstr_len(&seen->calls[0].result));
+	CHECK(!seen->numbers.n && seen->numbers.items);
 	CHECK(seen_kept(seen) < kept && seen_kept(seen) > sizeof *seen);
 	seen_clear(nullptr);
 	CHECK(!seen_kept(nullptr));
@@ -373,7 +382,6 @@ test_keep (void)
 	seen_destroy(&seen);
 	seen_destroy(nullptr);
 	seen_read_destroy(&read);
-	review_destroy(&review);
 	dstr_cleanup(&out);
 }
 

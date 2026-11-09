@@ -59,6 +59,9 @@ test_ids (void)
 	finding_id(&f, id);
 	CHECK(!strcmp(id, "cuh#12"));
 
+	char ref[FINDING_REF];
+	finding_ref("first.last@ad", ref);
+	CHECK(!strcmp(ref, "refs/heads/agent/first.last@ad/findings"));
 	char path[FINDING_FILE];
 	finding_path(5, path);
 	CHECK(!strcmp(path, "findings/0/5.json") && finding_path_number(cstr_view(path)) == 5);
@@ -172,6 +175,25 @@ test_changes (void)
 	SAME(dstr_get(&f.claim), dstr_len(&f.claim), "Second claim.");
 	SAME(dstr_get(&f.changes.items[2].claim_before), dstr_len(&f.changes.items[2].claim_before),
 	     "First claim.");
+	/* finding_unapply() takes the last change back, as before the apply.
+	 * Applied again, it gets the same numbers. */
+	finding_unapply(&f, &c);
+	CHECK(f.changes.n == 2 && finding_state(&f) == FINDING_VERIFIED &&
+	      c.state == FINDING_VERIFIED &&
+	      !dstr_len(&c.claim_before) && dstr_len(&c.reason) && c.items == 3);
+	SAME(dstr_get(&f.claim), dstr_len(&f.claim), "First claim.");
+	CHECK(!finding_apply(&f, &c, CSTR_VIEW("Second claim.")) && f.changes.n == 3);
+	finding_unapply(&f, &c);
+	finding_change_fini(&c);
+	finding_unapply(&f, &c);
+	CHECK(f.changes.n == 1 && finding_state(&f) == FINDING_CANDIDATE && c.evidence.n == 1 &&
+	      c.evidence.items[0].item == 3);
+	finding_change_fini(&c);
+	finding_unapply(&f, &c);
+	CHECK(!f.changes.n && finding_state(&f) == FINDING_CANDIDATE && c.evidence.n == 2);
+	finding_change_fini(&c);
+	finding_unapply(&f, &c);
+	CHECK(!f.changes.n && !c.evidence.n);
 	finding_fini(&f);
 	CHECK(!f.changes.items && !f.changes.n && !*f.author && !f.number);
 	finding_fini(&f);

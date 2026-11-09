@@ -174,13 +174,13 @@ code_definition (void const *service)
 			"in the translation unit of path. describe also lists the calls of a "
 			"function, the value of an enumerator, and the members of a struct or "
 			"union with offsets, sizes and padding. describe prints up to 40 "
-			"numbered lines of the declaration, without the body of a function. The "
-			"numbered lines count as read for findings. diagnostics lists the errors "
-			"and warnings of clang for path. A place is path:line. To read the code "
-			"at a place, call git read with \"revisions\": [\"<commit>:<path>\"] and "
-			"\"line\": <line>. Only committed files are visible. A .c file must be "
-			"in the compile commands. A header is parsed with the flags of the "
-			"nearest .c file."),
+			"numbered lines of the declaration, without the body of a function. A "
+			"finding can cite the numbered lines, such as c7:120-140. diagnostics "
+			"lists the errors and warnings of clang for path. A place is path:line. "
+			"To read the code at a place, call git read with \"revisions\": "
+			"[\"<commit>:<path>\"] and \"line\": <line>. Only committed files are "
+			"visible. A .c file must be in the compile commands. A header is parsed "
+			"with the flags of the nearest .c file."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
