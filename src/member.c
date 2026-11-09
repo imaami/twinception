@@ -91,8 +91,8 @@ struct member_entry {
 /* The records of the session, as git lists them with member_list. */
 struct member_records {
 	struct buf                      out;      /* the output of git */
-	UTIL_ARRAY(struct member_entry) all;      /* the member records, by
-	                                             name */
+	UTIL_ARRAY(struct member_entry) all;      /* the members, in the order
+	                                             of member_entry_order() */
 	struct cstr_view                session;  /* the session ID of the
 	                                             session record, with data
 	                                             nullptr without the
@@ -101,6 +101,8 @@ struct member_records {
 	struct cstr_view                format;   /* its format */
 	size_t                          legacy;   /* the notebooks of the old
 	                                             layout under LEGACY */
+	size_t                          width;    /* the length of the longest
+	                                             name of the members */
 };
 
 struct member_registry {
@@ -210,15 +212,56 @@ member_records_fini (struct member_records *r)
 	*r = (struct member_records){};
 }
 
-/* Returns the member named @p name in @p r, or nullptr. */
+/* Orders the members by name. */
+static int
+member_entry_name (void const *a,
+                   void const *b)
+{
+	return cstr_view_compare(((struct member_entry const *)a)->info.name,
+	                         ((struct member_entry const *)b)->info.name);
+}
+
+/* Orders the persons before the agents, each by name. */
+static int
+member_entry_order (void const *a,
+                    void const *b)
+{
+	uint32_t const x = ((struct member_entry const *)a)->info.kind;
+	uint32_t const y = ((struct member_entry const *)b)->info.kind;
+	return x != y ? (x > y) - (x < y) : member_entry_name(a, b);
+}
+
+/* Returns the member named @p name in @p r, whose parse has sorted the
+ * members (member_entry_order()), or nullptr.
+ */
 static struct member_entry *
 member_records_find (struct member_records const *r,
                      struct cstr_view             name)
 {
-	for (size_t i = 0; i < r->all.n; ++i)
-		if (cstr_view_equal(r->all.items[i].info.name, name))
-			return &r->all.items[i];
+	if (!r->all.n)
+		return nullptr;
+	for (uint32_t kind = 0; kind < MEMBER_KINDS; ++kind) {
+		struct member_entry const key = { .info = { .name = name, .kind = kind } };
+		struct member_entry *entry = bsearch(&key, r->all.items, r->all.n, sizeof key,
+		                                     member_entry_order);
+		if (entry)
+			return entry;
+	}
 	return nullptr;
+}
+
+/* Appends @p entry to the members of @p r. Returns the entry in @p r, or
+ * nullptr for ENOMEM.
+ */
+static struct member_entry *
+member_records_add (struct member_records *r,
+                    struct member_entry    entry)
+{
+	if (util_push(r->all, entry))
+		return nullptr;
+	if (entry.info.name.len > r->width)
+		r->width = entry.info.name.len;
+	return &r->all.items[r->all.n - 1];
 }
 
 void
@@ -252,12 +295,14 @@ member_ref_parse (struct cstr_view    ref,
 
 /* Adds the branch of the line @p f of the output of member_list to @p r: a
  * notebook of the old layout to the count, and a branch of a member to the
- * member of a record of the name, or as a member without a record. A branch
- * of a name whose record is of another kind is left out, and so is any
- * other ref. Returns 0 or ENOMEM.
+ * member of a record of the name, one of the first @p records members of
+ * @p r, or as a member without a record. A branch of a name whose record
+ * is of another kind is left out, and so is any other ref. Returns 0 or
+ * ENOMEM.
  */
 static int
 member_records_branch (struct member_records  *r,
+                       size_t                  records,
                        struct cstr_view const  f[FIELDS])
 {
 	if (cstr_view_starts(f[FIELD_REF], CSTR_VIEW(LEGACY))) {
@@ -272,14 +317,18 @@ member_records_branch (struct member_records  *r,
 	if (member_ref_parse(f[FIELD_REF], &kind, &name, &branch) || oid_init(&tip, f[FIELD_TIP]) ||
 	    util_number(f[FIELD_TIME].data, f[FIELD_TIME].len, UINT64_MAX, &time))
 		return 0;
-	struct member_entry *entry = member_records_find(r, name);
+	struct member_entry const key = { .info = { .name = name, .kind = kind } };
+	struct member_entry *entry = records ? bsearch(&key, r->all.items, records, sizeof key,
+	                                               member_entry_name) : nullptr;
+	/* git lists the branches of a member one after the other. */
+	if (!entry && r->all.n > records && !member_entry_order(&key, &r->all.items[r->all.n - 1]))
+		entry = &r->all.items[r->all.n - 1];
 	if (entry && entry->info.kind != kind)
 		return 0;
 	if (!entry) {
-		if (util_grow(r->all.items, r->all.cap, r->all.n + 1))
+		entry = member_records_add(r, key);
+		if (!entry)
 			return ENOMEM;
-		entry = &r->all.items[r->all.n++];
-		*entry = (struct member_entry){ .info = { .name = name, .kind = kind } };
 	}
 	if (branch == MEMBER_BRANCH_FINDINGS) {
 		entry->info.findings = tip;
@@ -292,40 +341,20 @@ member_records_branch (struct member_records  *r,
 	return 0;
 }
 
-/* Returns the length of the longest name of the members of @p r. */
-static int
-member_records_width (struct member_records const *r)
-{
-	size_t width = 0;
-	for (size_t i = 0; i < r->all.n; ++i)
-		if (r->all.items[i].info.name.len > width)
-			width = r->all.items[i].info.name.len;
-	return (int)width;
-}
-
-/* Orders the persons before the agents, each by name. */
-static int
-member_entry_order (void const *a,
-                    void const *b)
-{
-	struct member_info const *x = &((struct member_entry const *)a)->info;
-	struct member_info const *y = &((struct member_entry const *)b)->info;
-	return x->kind != y->kind ? (x->kind > y->kind) - (x->kind < y->kind)
-	                          : cstr_view_compare(x->name, y->name);
-}
-
 /* Parses r->out into the records of @p r. A member record whose ref,
  * commit, kind or name is not valid is left out. git lists the records
- * before the branches, so a branch joins the record of its member.
- * Returns 0, EIO for output that is not in the form of member_list, or
- * ENOMEM.
+ * before the branches, in the order of their names, so bsearch() finds
+ * the record of the member of a branch. Returns 0, EIO for output that is
+ * not in the form of member_list, or ENOMEM.
  */
 static int
 member_records_parse (struct member_records *r)
 {
 	r->all.n = 0;
 	r->legacy = 0;
+	r->width = 0;
 	r->session = r->name = r->format = (struct cstr_view){};
+	size_t records = 0;
 	struct span const out = buf_peek(&r->out);
 	struct cstr_view rest = { (char const *)out.ptr, out.len };
 	while (rest.len) {
@@ -343,7 +372,7 @@ member_records_parse (struct member_records *r)
 			continue;
 		}
 		if (cstr_view_starts(f[FIELD_REF], CSTR_VIEW(HEADS))) {
-			if (member_records_branch(r, f))
+			if (member_records_branch(r, records, f))
 				return ENOMEM;
 			continue;
 		}
@@ -353,13 +382,16 @@ member_records_parse (struct member_records *r)
 		if (!cstr_view_starts(f[FIELD_REF], CSTR_VIEW(MEMBERS)) || !member_name_valid(name) ||
 		    kind == MEMBER_KINDS || !oid_valid(f[FIELD_TIP]))
 			continue;
-		if (util_grow(r->all.items, r->all.cap, r->all.n + 1))
-			return ENOMEM;
-		r->all.items[r->all.n++] = (struct member_entry){
+		if (r->all.n != records ||
+		    (records && cstr_view_compare(r->all.items[records - 1].info.name, name) >= 0))
+			return EIO;
+		if (!member_records_add(r, (struct member_entry){
 			.info = { .name = name, .kind = (uint32_t)kind, .flags = MEMBER_RECORD },
 			.logins = f[FIELD_LOGIN],
 			.tip = f[FIELD_TIP],
-		};
+		}))
+			return ENOMEM;
+		++records;
 	}
 	if (r->all.n)
 		qsort(r->all.items, r->all.n, sizeof *r->all.items, member_entry_order);
@@ -507,15 +539,6 @@ member_records_login (struct member_records const *r,
 		if (member_logins_have(r->all.items[i].logins, login))
 			return &r->all.items[i];
 	return nullptr;
-}
-
-/* Returns the record of @p r of the member @p name, or nullptr. */
-static struct member_entry const *
-member_records_name (struct member_records const *r,
-                     struct cstr_view             name)
-{
-	struct member_entry const *entry = member_records_find(r, name);
-	return entry && entry->info.flags & MEMBER_RECORD ? entry : nullptr;
 }
 
 /* Writes the member of @p info to @p member. */
@@ -711,7 +734,9 @@ member_claim_step (struct member_claim          *claim,
 	struct member_entry const *entry = member_records_login(r, cstr_view(login->text));
 	int e = 0;
 	if (!entry && *login->name) {
-		entry = member_records_name(r, cstr_view(login->name));
+		entry = member_records_find(r, cstr_view(login->name));
+		if (entry && !(entry->info.flags & MEMBER_RECORD))
+			entry = nullptr;
 		e = entry ? member_adopt(entry, login, why, len) : ENOENT;
 	}
 	switch (e) {
@@ -1044,7 +1069,7 @@ member_registry_report (struct member_registry const *registry)
 	if (session->legacy)
 		LOG_ALL(LOG_INFO, "  legacy      %zu notebook%s under " LEGACY, session->legacy,
 		        util_s(session->legacy));
-	int const width = member_records_width(r);
+	int const width = (int)r->width;
 	LOG_ALL(LOG_INFO, "session members:");
 	for (size_t i = 0; i < r->all.n; ++i) {
 		struct member_entry const *entry = &r->all.items[i];
@@ -1443,6 +1468,7 @@ member_table_create (struct member_registry const *registry,
 		memcpy(table->records.all.items, from->all.items,
 		       from->all.n * sizeof *from->all.items);
 	table->records.all.n = from->all.n;
+	table->records.width = from->width;
 	return table;
 }
 
@@ -1587,7 +1613,7 @@ member_table_name (struct member_table const *table,
 int
 member_table_width (struct member_table const *table)
 {
-	return table ? member_records_width(&table->records) : 0;
+	return table ? (int)table->records.width : 0;
 }
 
 int

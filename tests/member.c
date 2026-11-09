@@ -706,6 +706,25 @@ test_list (struct store const           *store,
 	CHECK(member_notice(&bro, nullptr, &d) == EINVAL);
 	CHECK(member_notice(&bro, &call, nullptr) == EINVAL);
 	CHECK(!*dstr_get(&d));
+
+	/* A branch without a record makes a member of the kind of the
+	 * branch, also for a name of a member of the other kind without a
+	 * record. A record of the name decides the kind. */
+	test_note(store, "refs/heads/person/ghost/notes", "Add \"g.md\" (1 byte)", nullptr);
+	CHECK(!test_take(store, table, children, member_list, why));
+	size_t ghosts = 0;
+	for (size_t i = 0; (info = member_table_info(table, i)); ++i) {
+		if (!cstr_view_equal(info->name, CSTR_VIEW("ghost")))
+			continue;
+		++ghosts;
+		CHECK(info->kind == MEMBER_PERSON ? info->flags == MEMBER_NOTES &&
+		                                    !oid_len(&info->findings)
+		                                  : !info->flags && oid_equal(&info->findings,
+		                                                              &findings[1]));
+	}
+	CHECK(ghosts == 2 && member_table_info(table, n));
+	CHECK(!member_table_name(table, CSTR_VIEW("ghost"), &member));
+	CHECK(member.kind == MEMBER_PERSON && !strcmp(member.name, "ghost"));
 	member_table_destroy(&table);
 }
 
