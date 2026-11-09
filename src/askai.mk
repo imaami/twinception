@@ -12,6 +12,7 @@ override SRC_askai := \
   curl_loop.c         \
   datauri.c           \
   dstr.c              \
+  evidence.c          \
   findings.c          \
   git.c               \
   git_run.c           \

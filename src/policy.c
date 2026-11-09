@@ -537,13 +537,9 @@ policy_build_token (struct policy_build *b,
 	char const *s = jb_view(spec).data;
 	if (s && !strncmp(s, sha, sizeof sha - 1)) {
 		char const *hex = s + sizeof sha - 1;
-		size_t n = strspn(hex, "0123456789abcdefABCDEF");
-		if (n != 2 * DIGEST || hex[n])
+		if (strlen(hex) != 2 * DIGEST || util_unhex(digest, hex, DIGEST))
 			return policy_build_fail(b, "identity %s: sha256: needs %d hex digits",
 			                         who, 2 * DIGEST);
-		for (size_t i = 0; i < DIGEST; ++i)
-			digest[i] = (unsigned char)(util_hex_digit(hex[2 * i]) << 4 |
-			                            util_hex_digit(hex[2 * i + 1]));
 		return 0;
 	}
 	if (!s || strncmp(s, env, sizeof env - 1))

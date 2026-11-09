@@ -83,6 +83,26 @@ util_hex_digit (unsigned char c)
 	     : lower >= 'a' && lower <= 'f' ? lower - 'a' + 10 : 16;
 }
 
+/** Write the 2 @p n hexadecimal digits of either case at @p src to @p dst
+ *  as @p n bytes, the reverse of util_hex(). Returns 0, or EINVAL if a
+ *  byte at @p src is not a hexadecimal digit, with @p dst written in part.
+ */
+static inline int
+util_unhex (void *restrict       dst,
+            char const *restrict src,
+            size_t               n)
+{
+	unsigned char *p = dst;
+	for (size_t i = 0; i < n; ++i) {
+		unsigned const high = util_hex_digit((unsigned char)src[2 * i]);
+		unsigned const low = util_hex_digit((unsigned char)src[2 * i + 1]);
+		if ((high | low) > 15)
+			return EINVAL;
+		p[i] = (unsigned char)(high << 4 | low);
+	}
+	return 0;
+}
+
 /** The most digits of a uint64_t in decimal. */
 enum { UTIL_DECIMAL = 20 };
 

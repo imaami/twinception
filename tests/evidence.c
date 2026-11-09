@@ -1,0 +1,615 @@
+/** @file Unit tests of the evidence of the findings (src/evidence.c): the
+ *  references, the items that the calls of the ring make, the refusals,
+ *  the external items, the archive paths, the JSON of an item and the
+ *  summaries.
+ */
+#include <errno.h>
+#include <json-c/json.h>
+#include <openssl/sha.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "buf.h"
+#include "check.h"
+#include "dstr.h"
+#include "evidence.h"
+#include "jb.h"
+#include "job.h"
+#include "seen.h"
+#include "tool.h"
+
+/* A commit ID. */
+#define A "55aca1e8682351e4c39a92b040721def3f005402"
+
+/* Check that the @p len bytes at @p got are the string @p want. */
+#define SAME(got, len, want) same(__LINE__, got, len, want)
+
+static void
+same (int         line,
+      void const *got,
+      size_t      len,
+      char const *want)
+{
+	size_t const n = strlen(want);
+	if (got && len == n && !memcmp(got, want, n))
+		return;
+	++failures;
+	fprintf(stderr, "%s:%d: got\n%.*s\nwant\n%s\n", __FILE__, line, (int)len,
+	        got ? (char const *)got : "", want);
+}
+
+/* The names of the tools by registry ID: 1 git, 2 man, 3 findings. */
+static char const *
+tool_name (void const *owner,
+           uint32_t    tool)
+{
+	static char const *const names[] = { "zero", "git", "man", "findings" };
+	(void)owner;
+	return tool < sizeof names / sizeof *names ? names[tool] : nullptr;
+}
+
+/* Fill @p request with a call of the provider ID @p id and the arguments
+ * @p args, as the upstream sent them (struct job_call).
+ */
+static void
+request_of (struct buf *request,
+            char const *id,
+            char const *args)
+{
+	struct job_call const h = {
+		.id   = (uint32_t)strlen(id),
+		.name = 3,
+		.args = (uint32_t)strlen(args),
+	};
+	CHECK(!buf_put(request, &h, sizeof h, SIZE_MAX));
+	CHECK(!buf_put(request, id, h.id, SIZE_MAX));
+	CHECK(!buf_put(request, "abc", 3, SIZE_MAX));
+	CHECK(!buf_put(request, args, h.args, SIZE_MAX));
+}
+
+/* Add the call @p number of the turn @p turn and the tool @p tool to
+ * @p *p_seen, with the provider ID @p id, the arguments @p args and the
+ * output @p out, all of it the window. @p read names numbered lines of
+ * @p out, or is nullptr. @p large makes the call too large to keep.
+ */
+static void
+keep (struct seen     **p_seen,
+      uint32_t          number,
+      uint32_t          turn,
+      uint32_t          tool,
+      char const       *id,
+      char const       *args,
+      struct cstr_view  out,
+      struct seen_read *read,
+      bool              large)
+{
+	struct buf request = {};
+	request_of(&request, id, args);
+	if (large) {
+		struct span room;
+		CHECK(!buf_reserve(&request, TOOL_TEXT_MAX, SIZE_MAX, &room));
+		memset(room.ptr, 'a', TOOL_TEXT_MAX);
+		buf_commit(&request, TOOL_TEXT_MAX);
+	}
+	char note[64];
+	snprintf(note, sizeof note, "\n\n[askai: call c%u]", number);
+	struct cstr_view const parts[SEEN_PARTS] = { out, cstr_view(note) };
+	struct seen_result const r = {
+		.parts  = parts,
+		.out    = out,
+		.read   = read,
+		.output = out.len,
+		.number = number,
+		.turn   = turn,
+		.tool   = tool,
+		.index  = (uint16_t)(number % 3),
+		.flags  = number == 2 ? SEEN_FAILED : 0,
+	};
+	CHECK(!seen_keep(p_seen, &request, &r, nullptr));
+	buf_fini(&request);
+}
+
+/* Replaces the arguments of the call @p c of @p seen with @p args, and the
+ * bytes of the ring with them.
+ */
+static void
+command (struct seen      *seen,
+         struct seen_call *c,
+         char const       *args)
+{
+	seen->bytes -= buf_peek(&c->request).len;
+	buf_fini(&c->request);
+	request_of(&c->request, "", args);
+	seen->bytes += buf_peek(&c->request).len;
+}
+
+/* Check that the reference @p text parses with the form @p form, or fails
+ * with @p form -1.
+ */
+static void
+parsed (char const *text,
+        int         form,
+        int         line)
+{
+	struct evidence_ref ref;
+	int const e = evidence_ref_parse(&ref, cstr_view(text));
+	if (form < 0 ? e == EINVAL : !e && ref.form == form)
+		return;
+	++failures;
+	fprintf(stderr, "%s:%d: %s: error %d, form %d\n", __FILE__, line, text, e, ref.form);
+}
+
+/* evidence_ref_parse() reads every form of a reference, and refuses
+ * anything else.
+ */
+static void
+test_parse (void)
+{
+	parsed("c7", EVIDENCE_REF_CALL, __LINE__);
+	parsed("c4294967295", EVIDENCE_REF_CALL, __LINE__);
+	parsed("c7:120-140,150", EVIDENCE_REF_LINES, __LINE__);
+	parsed("c7:5", EVIDENCE_REF_LINES, __LINE__);
+	parsed("c7:message", EVIDENCE_REF_MESSAGE, __LINE__);
+	parsed("c7:files", EVIDENCE_REF_FILES, __LINE__);
+	parsed("cuh#2", EVIDENCE_REF_FINDING, __LINE__);
+	parsed("cuh#2/1", EVIDENCE_REF_ITEM, __LINE__);
+	parsed("first.last@ad#12/3:161-165", EVIDENCE_REF_ITEM_LINES, __LINE__);
+	char const *const bad[] = {
+		"", "c", "c0", "c07", "C7", "c-1", "c7 ", " c7", "c7:", "c7:0", "c7:5-3", "c7:1-",
+		"c7:1,", "c7:,1", "c7:msg", "c7:1-2:3", "c7:message,1", "c4294967296", "cuh#0",
+		"cuh#2/0", "cuh#2/", "cuh#", "#2/1", "c7#2/1", ".x#2/1", "cuh#2:message",
+		"cuh#2/1:files", "cuh#2/1/1", "cuh#02/1",
+	};
+	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i)
+		parsed(bad[i], -1, __LINE__);
+	/* At most 16 ranges. */
+	parsed("c1:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16", EVIDENCE_REF_LINES, __LINE__);
+	parsed("c1:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17", -1, __LINE__);
+	struct evidence_ref ref;
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c12:120-140,150")));
+	CHECK(ref.number == 12 && ref.n_ranges == 2 && ref.ranges[0].first == 120 &&
+	      ref.ranges[0].last == 140 && ref.ranges[1].first == 150 && ref.ranges[1].last == 150 &&
+	      !*ref.author && !ref.item);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("bro#5/2:3-4")));
+	CHECK(!strcmp(ref.author, "bro") && ref.number == 5 && ref.item == 2 && ref.n_ranges == 1);
+	CHECK(evidence_ref_parse(nullptr, CSTR_VIEW("c1")) == EINVAL);
+	CHECK(evidence_ref_parse(&ref, (struct cstr_view){}) == EINVAL);
+}
+
+/* Check that citing @p text refuses with the reason @p want. */
+static void
+refused (struct evidence_cite const *cite,
+         char const                 *text,
+         bool                        strict,
+         char const                 *want,
+         int                         line)
+{
+	struct evidence_ref ref;
+	struct evidence e = evidence();
+	struct evidence_material m;
+	struct dstr lines = DSTR_INIT;
+	char why[512] = "x";
+	int const r = evidence_ref_parse(&ref, cstr_view(text));
+	int const got = r ? r : evidence_cite(&e, &m, &lines, &ref, cite, strict, why, sizeof why);
+	if (got != EINVAL || strcmp(why, want)) {
+		++failures;
+		fprintf(stderr, "%s:%d: %s: error %d, refusal\n%s\nwant\n%s\n", __FILE__, line, text,
+		        got, why, want);
+	}
+	evidence_fini(&e);
+	dstr_cleanup(&lines);
+}
+
+/* Check that @p blob is the size and the SHA-256 of @p material. */
+static void
+hashed (struct evidence_blob const *blob,
+        struct cstr_view            material,
+        int                         line)
+{
+	unsigned char sha[SHA256_DIGEST_LENGTH];
+	SHA256((unsigned char const *)(material.data ? material.data : ""), material.len, sha);
+	if (blob->bytes == material.len && !memcmp(blob->sha256, sha, sizeof sha))
+		return;
+	++failures;
+	fprintf(stderr, "%s:%d: blob of %zu bytes does not match\n", __FILE__, line, material.len);
+}
+
+/* evidence_cite() makes items from the calls of the ring and refuses the
+ * calls that it cannot cite.
+ */
+static void
+test_cite (void)
+{
+	/* Call c1, a git read of lines 1 to 9 whose window shows lines 2 to 6
+	 * whole. */
+	struct dstr out = DSTR_INIT;
+	CHECK(dstr_printf(&out, "[h]\n"));
+	size_t const at = dstr_len(&out);
+	for (unsigned n = 1; n <= 9; ++n)
+		CHECK(dstr_printf(&out, "%u\tline %u\n", n, n));
+	struct call_source const src = { CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 9,
+	                                 at, dstr_len(&out) - at, 1, 9 };
+	struct cstr_view const o = cstr_view_dstr(&out);
+	int e = -1;
+	struct seen_read *read = seen_read_create(&src, o, &e);
+	CHECK(read && !e);
+	struct seen *seen = nullptr;
+	struct cstr_view const window = { o.data + at + 3, 9 * 6 - 3 };
+	struct buf request = {};
+	request_of(&request, "", "{\"command\":\"read\"}");
+	struct cstr_view const parts[SEEN_PARTS] = { window, CSTR_VIEW("\n\n[askai: call c1]") };
+	struct seen_result const r = { .parts = parts, .out = o, .read = read, .output = o.len,
+	                               .skip = at + 3, .number = 1, .turn = 1, .tool = 1 };
+	CHECK(!seen_keep(&seen, &request, &r, nullptr));
+	buf_fini(&request);
+	CHECK(seen->calls[0].lines.first == 2 && seen->calls[0].lines.last == 6);
+	keep(&seen, 2, 1, 2, "toolu_x", "{\"page\":\"git\"}", CSTR_VIEW("A man page.\n"), nullptr,
+	     false);
+	CHECK(!seen_keep_number(&seen, 3, 3));
+	keep(&seen, 4, 2, 1, "", "{\"command\":\"grep\"}", CSTR_VIEW("a:1:x\n"), nullptr, false);
+	keep(&seen, 5, 2, 2, "", "{}", CSTR_VIEW("big"), nullptr, true);
+	keep(&seen, 6, 3, 2, "", "{}", CSTR_VIEW("now"), nullptr, false);
+	struct hexid ask;
+	CHECK(!hexid_make(&ask));
+	struct evidence_cite const cite = { seen, &ask, tool_name, nullptr, 8, 3 };
+	struct evidence_ref ref;
+	struct evidence ev = evidence();
+	struct evidence_material m;
+	struct dstr lines = DSTR_INIT;
+	char why[512] = "";
+
+	/* c1 is all the lines that the window showed whole. */
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c1")));
+	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why) && !*why);
+	CHECK(ev.kind == EVIDENCE_LINES && ev.call == 1 && ev.turn == 1 && !ev.item &&
+	      ev.ranges.n == 1 && ev.ranges.items[0].first == 2 && ev.ranges.items[0].last == 6 &&
+	      !ev.flags && !strcmp(ev.ask.hex, ask.hex) && ev.output == o.len && ev.skip == at + 3 &&
+	      !*ev.from && !m.request.len);
+	SAME(m.result.data, m.result.len, "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n6\tline 6\n");
+	hashed(&ev.result, m.result, __LINE__);
+	SAME(dstr_get(&ev.tool), dstr_len(&ev.tool), "git");
+	SAME(dstr_get(&ev.call_id), dstr_len(&ev.call_id), "call_1_0");
+	SAME(dstr_get(&ev.ids), dstr_len(&ev.ids),
+	     "{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":\"src/a.c\",\"total\":9}");
+	/* Some lines, and two ranges. */
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c1:3-4,6")));
+	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
+	CHECK(ev.kind == EVIDENCE_LINES && ev.ranges.n == 2 && ev.ranges.items[1].first == 6);
+	SAME(m.result.data, m.result.len, "3\tline 3\n4\tline 4\n6\tline 6\n");
+	hashed(&ev.result, m.result, __LINE__);
+	/* A read shows lines, not the message or the files of its commit. */
+	refused(&cite, "c1:message", true, "c1:message needs a git show or a git log that names "
+	        "one commit. Call c1 is a git read.", __LINE__);
+	refused(&cite, "c1:files", true, "c1:files needs a git ls-tree that names one commit. Call "
+	        "c1 is a git read.", __LINE__);
+	/* A call of another tool, which failed, with an ID from the provider. */
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c2")));
+	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
+	CHECK(ev.kind == EVIDENCE_CALL && ev.flags == (EVIDENCE_REQUEST | EVIDENCE_FAILED) &&
+	      ev.call == 2 && !dstr_len(&ev.ids));
+	SAME(dstr_get(&ev.call_id), dstr_len(&ev.call_id), "toolu_x");
+	SAME(dstr_get(&ev.tool), dstr_len(&ev.tool), "man");
+	SAME(m.result.data, m.result.len, "A man page.\n\n\n[askai: call c2]");
+	/* A call of this turn is evidence only for a candidate. */
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c6")));
+	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, false, why, sizeof why));
+	CHECK(ev.kind == EVIDENCE_CALL && ev.turn == 3);
+	refused(&cite, "c6", true, "Call c6 was made in this turn. Cite c6 for verified or "
+	        "disproved in a later turn.", __LINE__);
+
+	/* Refusals. */
+	refused(&cite, "c1:1-3", true, "Call c1 showed lines 2 to 6 of src/a.c whole. Give lines "
+	        "within that range.", __LINE__);
+	refused(&cite, "c1:2-6,7", true, "Call c1 showed lines 2 to 6 of src/a.c whole. Give lines "
+	        "within that range.", __LINE__);
+	refused(&cite, "c2:1-2,4", true, "c2:1-2,4 needs a git read or a code describe. Call c2 is "
+	        "a man call.", __LINE__);
+	refused(&cite, "c4:5", true, "c4:5 needs a git read or a code describe. Call c4 is a git "
+	        "grep.", __LINE__);
+	refused(&cite, "c2:message", true, "c2:message needs a git show or a git log that names "
+	        "one commit. Call c2 is a man call.", __LINE__);
+	refused(&cite, "c4:files", true, "c4:files needs a git ls-tree that names one commit. Call "
+	        "c4 is a git grep.", __LINE__);
+	refused(&cite, "c3", false, "c3 is a findings call. findings calls cannot be evidence.",
+	        __LINE__);
+	refused(&cite, "c5", false, "Call c5 was too large to keep. askai keeps no call of more "
+	        "than 4 MiB.", __LINE__);
+	refused(&cite, "c7", false, "Call c7 did not run.", __LINE__);
+	refused(&cite, "c8", false, "c8 is a findings call. findings calls cannot be evidence.",
+	        __LINE__);
+	refused(&cite, "c9", false, "No call c9 was made before this call.", __LINE__);
+	refused(&cite, "cuh#2", false, "cuh#2 is a finding. evidence takes an evidence item such "
+	        "as cuh#2/1, or a call such as c7. show with id cuh#2 lists the items.", __LINE__);
+	refused(&cite, "cuh#2/1", false, "askai cannot cite the evidence item cuh#2/1 yet. Cite "
+	        "your calls, such as c7.", __LINE__);
+	refused(&cite, "cuh#2/1:3", false, "askai cannot cite the evidence item cuh#2/1 yet. Cite "
+	        "your calls, such as c7.", __LINE__);
+	/* A git show without identifiers, and one that names two commits. The
+	 * call c3 takes no place in the ring, so c4 is the third call. */
+	struct seen_call *c4 = &seen->calls[2];
+	CHECK(c4->number == 4);
+	command(seen, c4, "{\"command\":\"show\"}");
+	refused(&cite, "c4:message", true, "c4:message needs a git show or a git log that names "
+	        "one commit. Call c4 names no commit.", __LINE__);
+	CHECK(dstr_printf(&c4->ids, "{\"commits\":[\"" A "\",\"" A "\"]}"));
+	refused(&cite, "c4:message", true, "c4:message needs a git show or a git log that names "
+	        "one commit. Call c4 names 2 commits.", __LINE__);
+	(void)dstr_clear(&c4->ids);
+	CHECK(dstr_printf(&c4->ids, "{\"commits\":[\"" A "\"]}"));
+	refused(&cite, "c4:files", true, "c4:files needs a git ls-tree that names one commit. Call "
+	        "c4 is a git show.", __LINE__);
+	/* The message of the one commit of a git show, and of a git log. */
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c4:message")));
+	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
+	CHECK(ev.kind == EVIDENCE_MESSAGE && ev.flags == EVIDENCE_REQUEST && !ev.ranges.n);
+	SAME(m.request.data, m.request.len, "{\"command\":\"show\"}");
+	SAME(m.result.data, m.result.len, "a:1:x\n\n\n[askai: call c4]");
+	hashed(&ev.request, m.request, __LINE__);
+	hashed(&ev.result, m.result, __LINE__);
+	command(seen, c4, "{\"command\":\"log\"}");
+	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
+	CHECK(ev.kind == EVIDENCE_MESSAGE);
+	/* The files of the one commit of a git ls-tree. */
+	refused(&cite, "c4:files", true, "c4:files needs a git ls-tree that names one commit. Call "
+	        "c4 is a git log.", __LINE__);
+	command(seen, c4, "{\"command\":\"ls-tree\"}");
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c4:files")));
+	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
+	CHECK(ev.kind == EVIDENCE_FILES && ev.flags == EVIDENCE_REQUEST);
+	SAME(m.request.data, m.request.len, "{\"command\":\"ls-tree\"}");
+	refused(&cite, "c4:message", true, "c4:message needs a git show or a git log that names "
+	        "one commit. Call c4 is a git ls-tree.", __LINE__);
+
+	/* Calls that left the ring. */
+	for (uint32_t k = 7; k < 7 + SEEN_CALLS; ++k)
+		keep(&seen, k, 3, 2, "", "{}", CSTR_VIEW("k"), nullptr, false);
+	struct evidence_cite later = cite;
+	later.call = 7 + SEEN_CALLS;
+	later.turn = 4;
+	refused(&later, "c2", true, "c2 is no longer kept. askai keeps the last 64 calls of an ask "
+	        "call. The oldest kept call is c7.", __LINE__);
+	seen_destroy(&seen);
+
+	/* Calls before a restart. */
+	CHECK(!seen_resume(&seen, 10));
+	later.seen = seen;
+	later.call = 12;
+	refused(&later, "c5", true, "c5 is not kept, because askai restarted after c5. askai keeps "
+	        "no call of this ask call yet.", __LINE__);
+	keep(&seen, 11, 3, 2, "", "{}", CSTR_VIEW("k"), nullptr, false);
+	later.seen = seen;
+	refused(&later, "c10", true, "c10 is not kept, because askai restarted after c10. The "
+	        "oldest kept call is c11.", __LINE__);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c11")));
+	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &later, true, why, sizeof why));
+	/* No ring at all. */
+	later.seen = nullptr;
+	refused(&later, "c11", true, "Call c11 did not run.", __LINE__);
+
+	/* Null arguments. */
+	CHECK(evidence_cite(nullptr, &m, &lines, &ref, &cite, true, why, sizeof why) == EINVAL);
+	CHECK(evidence_cite(&ev, &m, &lines, &ref, &cite, true, nullptr, 0) == EINVAL);
+	struct evidence_cite nameless = cite;
+	nameless.name = nullptr;
+	CHECK(evidence_cite(&ev, &m, &lines, &ref, &nameless, true, why, sizeof why) == EINVAL);
+
+	evidence_fini(&ev);
+	dstr_cleanup(&lines);
+	seen_destroy(&seen);
+	seen_read_destroy(&read);
+	dstr_cleanup(&out);
+}
+
+/* Check that evidence_external() accepts @p text, or refuses it with
+ * @p want.
+ */
+static void
+external (char const *text,
+          char const *want,
+          int         line)
+{
+	char why[256] = "";
+	int const e = evidence_external(cstr_view(text), 3, why, sizeof why);
+	if (want ? e == EINVAL && !strcmp(why, want) : !e)
+		return;
+	++failures;
+	fprintf(stderr, "%s:%d: %s: error %d, %s\n", __FILE__, line, text, e, why);
+}
+
+/* evidence_external() needs an exact hash in a short text on one line. */
+static void
+test_external (void)
+{
+	char const *const nohash = "external[3] needs an exact hash of the material: 40 or 64 "
+	                           "hexadecimal digits, such as sha256:9b1c...";
+	char const *const bad = "external[3] must be 1 byte to 1 KiB of text on one line.";
+	external("libclang-19-dev 1:19.1.7-3 amd64 sha256:"
+	         "9b1c0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5", nullptr,
+	         __LINE__);
+	external(A, nullptr, __LINE__);
+	external("commit " A " of upstream", nullptr, __LINE__);
+	external("SHA1 55ACA1E8682351E4C39A92B040721DEF3F005402", nullptr, __LINE__);
+	external("no hash here", nohash, __LINE__);
+	external(A "0", nohash, __LINE__);
+	external("x" A "y", nullptr, __LINE__);
+	external("abc", nohash, __LINE__);
+	external("", bad, __LINE__);
+	external("line\n" A, bad, __LINE__);
+	char big[EVIDENCE_TEXT + 2];
+	memset(big, 'a', sizeof big - 1);
+	big[sizeof big - 1] = '\0';
+	external(big, bad, __LINE__);
+	big[EVIDENCE_TEXT] = '\0';
+	memcpy(big, A, sizeof A - 1);
+	big[sizeof A - 1] = ' ';
+	external(big, nullptr, __LINE__);
+	external("\xff " A, bad, __LINE__);
+}
+
+/* evidence_path() names the archive file of material by its SHA-256. */
+static void
+test_path (void)
+{
+	unsigned char sha[EVIDENCE_SHA256];
+	for (size_t i = 0; i < sizeof sha; ++i)
+		sha[i] = (unsigned char)(i * 9 + 1);
+	char path[EVIDENCE_PATH];
+	evidence_path(sha, path);
+	SAME(path, strlen(path), "archive/01/0a131c252e37404952"
+	     "5b646d767f88919aa3acb5bec7d0d9e2ebf4fd060f18");
+	CHECK(strlen(path) == EVIDENCE_PATH - 1);
+}
+
+/* evidence_json() and evidence_parse() write and read an item, and
+ * evidence_parse() refuses what is not one.
+ */
+static void
+test_json (void)
+{
+	struct evidence e = evidence();
+	e.kind = EVIDENCE_LINES;
+	e.item = 2;
+	e.call = 12;
+	e.turn = 3;
+	e.output = 900;
+	e.skip = 100;
+	e.flags = EVIDENCE_FAILED;
+	CHECK(!hexid_init(&e.ask, CSTR_VIEW("9f3c2a71e0b14c55a1d2e3f405162738")));
+	memcpy(e.from, "cuh#2/2", sizeof "cuh#2/2");
+	CHECK(!cstr_view_store(CSTR_VIEW("git"), &e.tool));
+	CHECK(!cstr_view_store(CSTR_VIEW("call_3_1"), &e.call_id));
+	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"path\":\"src/git.c\",\"commit\":\""
+	                                 A "\",\"blob\":\"5d41402abc4b2a76b9719d911017c592\"}"),
+	                       &e.ids));
+	CHECK(!util_grow(e.ranges.items, e.ranges.cap, 2));
+	e.ranges.items[e.ranges.n++] = (struct evidence_range){ 161, 171 };
+	e.ranges.items[e.ranges.n++] = (struct evidence_range){ 180, 180 };
+	e.result.bytes = 702;
+	memset(e.result.sha256, 0xab, sizeof e.result.sha256);
+	int err = -1;
+	struct json_object *obj = evidence_json(&e, &err);
+	CHECK(obj && !err);
+	struct cstr_view const wire = jb_wire(obj);
+	SAME(wire.data, wire.len, "{\"item\":2,\"kind\":\"lines\",\"tool\":\"git\",\"call\":12,"
+	     "\"turn\":3,\"call_id\":\"call_3_1\",\"failed\":true,\"output\":900,\"skip\":100,"
+	     "\"ask\":\"9f3c2a71e0b14c55a1d2e3f405162738\",\"from\":\"cuh#2/2\",\"ids\":{\"repo\":"
+	     "\"askai\",\"path\":\"src/git.c\",\"commit\":\"" A "\",\"blob\":"
+	     "\"5d41402abc4b2a76b9719d911017c592\"},\"lines\":[[161,171],[180,180]],\"result\":"
+	     "{\"sha256\":\"abababababababababababababababababababababababababababababababab\","
+	     "\"bytes\":702}}");
+	struct evidence back = evidence();
+	CHECK(!evidence_parse(&back, obj));
+	CHECK(back.kind == EVIDENCE_LINES && back.item == 2 && back.call == 12 && back.turn == 3 &&
+	      back.output == 900 && back.skip == 100 && back.flags == EVIDENCE_FAILED &&
+	      !strcmp(back.ask.hex, e.ask.hex) && !strcmp(back.from, "cuh#2/2") &&
+	      back.ranges.n == 2 && back.ranges.items[1].first == 180 &&
+	      back.result.bytes == 702 && !memcmp(back.result.sha256, e.result.sha256, 32));
+	SAME(dstr_get(&back.ids), dstr_len(&back.ids), "{\"repo\":\"askai\",\"path\":\"src/git.c\","
+	     "\"commit\":\"" A "\",\"blob\":\"5d41402abc4b2a76b9719d911017c592\"}");
+	struct dstr text = DSTR_INIT;
+	CHECK(!evidence_summary(&back, &text));
+	SAME(dstr_get(&text), dstr_len(&text), "lines 161 to 171, 180 of src/git.c in repository "
+	     "askai at commit 55aca1e86823, blob 5d41402abc4b");
+	json_object_put(obj);
+
+	/* A call with its arguments, without ask and from. */
+	evidence_fini(&back);
+	evidence_fini(&e);
+	e.kind = EVIDENCE_CALL;
+	e.item = 1;
+	e.call = 4;
+	e.flags = EVIDENCE_REQUEST;
+	e.request.bytes = 98;
+	e.result.bytes = 1;
+	CHECK(!cstr_view_store(CSTR_VIEW("man"), &e.tool));
+	CHECK(!cstr_view_store(CSTR_VIEW("toolu_1"), &e.call_id));
+	obj = evidence_json(&e, &err);
+	CHECK(obj && !err && !jb_get(obj, "ask") && !jb_get(obj, "from") && !jb_get(obj, "ids") &&
+	      !jb_get(obj, "lines") && jb_get(obj, "request"));
+	CHECK(!evidence_parse(&back, obj));
+	CHECK(back.kind == EVIDENCE_CALL && back.flags == EVIDENCE_REQUEST &&
+	      back.request.bytes == 98 && !*back.ask.hex && !*back.from && !dstr_len(&back.ids));
+	(void)dstr_clear(&text);
+	CHECK(!evidence_summary(&back, &text));
+	SAME(dstr_get(&text), dstr_len(&text), "call c4, man, 1 byte");
+	back.flags |= EVIDENCE_FAILED;
+	back.kind = EVIDENCE_MESSAGE;
+	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\"}"), &back.ids));
+	(void)dstr_clear(&text);
+	CHECK(!evidence_summary(&back, &text));
+	SAME(dstr_get(&text), dstr_len(&text), "the message of commit 55aca1e86823 in repository "
+	     "askai, call c4, man, failed, 1 byte");
+	back.kind = EVIDENCE_LINES;
+	CHECK(!util_grow(back.ranges.items, back.ranges.cap, 1));
+	back.ranges.items[back.ranges.n++] = (struct evidence_range){ 7, 7 };
+	(void)dstr_clear(&back.ids);
+	(void)dstr_clear(&text);
+	CHECK(!evidence_summary(&back, &text));
+	SAME(dstr_get(&text), dstr_len(&text), "line 7 of the file");
+	dstr_cleanup(&text);
+
+	/* Members that are missing or not valid. */
+	char const *const drops[] = { "kind", "tool", "call_id", "failed", "item", "call", "turn",
+	                              "output", "skip", "result" };
+	for (size_t i = 0; i < sizeof drops / sizeof *drops; ++i) {
+		struct json_object *copy = nullptr;
+		CHECK(!json_object_deep_copy(obj, &copy, nullptr));
+		json_object_object_del(copy, drops[i]);
+		CHECK(evidence_parse(&back, copy) == EINVAL && !back.item);
+		json_object_put(copy);
+	}
+	struct {
+		char const *key;
+		char const *json;
+	} const bad[] = {
+		{ "kind",    "\"blob\"" },
+		{ "item",    "0" },
+		{ "item",    "-1" },
+		{ "call",    "\"4\"" },
+		{ "ask",     "\"9f3c\"" },
+		{ "from",    "\"\"" },
+		{ "from",    "7" },
+		{ "ids",     "[]" },
+		{ "request", "{\"sha256\":\"ab\",\"bytes\":1}" },
+		{ "result",  "{\"sha256\":\"abababababababababababababababababababababababababababababababab\"}" },
+		{ "result",  "{\"sha256\":\"zbababababababababababababababababababababababababababababababab\",\"bytes\":1}" },
+	};
+	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
+		struct json_object *copy = nullptr;
+		CHECK(!json_object_deep_copy(obj, &copy, nullptr));
+		CHECK(!json_object_object_add(copy, bad[i].key, json_tokener_parse(bad[i].json)));
+		if (evidence_parse(&back, copy) != EINVAL) {
+			++failures;
+			fprintf(stderr, "%s:%d: %s %s parsed\n", __FILE__, __LINE__, bad[i].key,
+			        bad[i].json);
+		}
+		json_object_put(copy);
+	}
+	/* A lines item needs its lines. */
+	char const *const lines[] = { "[]", "[[0,1]]", "[[2,1]]", "[[1]]", "7", "[[1,2],3]" };
+	for (size_t i = 0; i < sizeof lines / sizeof *lines; ++i) {
+		struct json_object *copy = nullptr;
+		CHECK(!json_object_deep_copy(obj, &copy, nullptr));
+		CHECK(!json_object_object_add(copy, "kind", json_object_new_string("lines")));
+		CHECK(!json_object_object_add(copy, "lines", json_tokener_parse(lines[i])));
+		CHECK(evidence_parse(&back, copy) == EINVAL);
+		json_object_put(copy);
+	}
+	CHECK(evidence_parse(&back, nullptr) == EINVAL);
+	CHECK(evidence_parse(nullptr, obj) == EINVAL);
+	CHECK(!evidence_json(nullptr, &err) && err == EFAULT);
+	json_object_put(obj);
+	evidence_fini(&back);
+	evidence_fini(&e);
+}
+
+int
+main (void)
+{
+	test_parse();
+	test_cite();
+	test_external();
+	test_path();
+	test_json();
+	return check_report("evidence");
+}
