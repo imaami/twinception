@@ -21,6 +21,8 @@
 #include "oid.h"
 
 struct child;
+struct list;
+struct loop;
 struct mcp_slot;
 struct store;
 
@@ -154,6 +156,64 @@ store_spawn (struct store const *store,
              char const         *ref,
              struct span         in,
              int                *e);
+
+/** Spawns git on @p loop, as store_spawn() does for a call, for an owner
+ *  that is not a call. The command is the one that store_command() writes,
+ *  and the deadline of git is GIT_RUN_NS after the start of the turn of
+ *  @p loop. As with child_create(), the child is on @p list until it is
+ *  destroyed, the member owner of the child is @p owner, and a step of
+ *  @p loop calls @p done with the child once git ends. Returns the child,
+ *  or returns nullptr with an error number in @p *e: EINVAL for a null
+ *  @p loop or for the arguments that store_command() refuses, or the
+ *  error of child_create(), such as EBUSY.
+ */
+extern struct child *
+store_start (struct store const *store,
+             struct loop        *loop,
+             struct list        *list,
+             enum store_cmd      cmd,
+             char const *const  *words,
+             char const         *ref,
+             struct span         in,
+             void              (*done) (struct child *c),
+             void               *owner,
+             int                *e);
+
+/** Runs @p cmd in @p store on the calling thread, without a loop, as
+ *  store_spawn() runs it for a call. The command is the one that
+ *  store_command() writes for @p cmd, @p words, @p ref and @p in, with the
+ *  lock check of @p ref before STORE_COMMIT, and the deadline of git is
+ *  GIT_RUN_NS after the start of the run. child_capture() appends the
+ *  output of git to @p out. Returns 0 with the exit status of git in
+ *  @p *status. Returns EINVAL for a null @p out or @p status or for the
+ *  arguments that store_command() refuses, ENOBUFS for an output longer
+ *  than STORE_MAX bytes, ETIMEDOUT if the deadline came, EIO if a signal
+ *  killed git, or the error that stopped the spawn or the read. After
+ *  ENOBUFS, @p out contains the bytes that it contained before the call.
+ */
+extern int
+store_run (struct store const *store,
+           enum store_cmd      cmd,
+           char const *const  *words,
+           char const         *ref,
+           struct span         in,
+           struct buf         *out,
+           int                *status);
+
+/** Creates the repository of @p store with STORE_CREATE on the calling
+ *  thread, as store_run() runs it, unless the repository exists. The
+ *  function locks the directory of the repository (flock()) while it
+ *  checks and creates, so that services that start at the same time create
+ *  the repository once. store_create() waits for the lock before it
+ *  refuses a directory that is not a repository. Returns 0 with the exit
+ *  status of git in @p *status, which is 0 if the repository exists.
+ *  Returns EINVAL for a null argument, the error of flock(), or the error
+ *  of store_run().
+ */
+extern int
+store_init (struct store const *store,
+            struct buf         *out,
+            int                *status);
 
 /** Lets go of @p *p_c, a git that store_spawn() started, and sets @p *p_c
  *  to nullptr. A git that writes runs to its end, because a kill could
