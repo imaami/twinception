@@ -15651,6 +15651,159 @@ def check_findings_expand(binary, up):
           "cited again across services, client reads: PASS")
 
 
+def check_findings_cases(binary, up):
+    """The acceptance cases of the design that findings, evidence and
+    expand cover, named by the recorded confusions. N7-15, N7-16, N7-17
+    and N4-5: the call itself is the evidence, stored exactly as the agent
+    got it, and expand shows every reader a change of the stored material.
+    N7-18 and N6-6: an ID such as cuh#1 names the same finding in every ask
+    call. N7-19 and N5-4: any call verifies, such as a notes call, without
+    git or code. N5-1 and N4-3: the findings live in the session, stay after
+    the ask call, and every agent reads them. N4-4 and N3-3: expand prints
+    the stored bytes after the source commit is gone. N1-1: the notices
+    name what the prompt contains."""
+    with tempfile.TemporaryDirectory() as d:
+        git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+        repo, session = f"{d}/proj", f"{d}/session.git"
+        os.makedirs(f"{repo}/src")
+
+        def sh(*args, check=True):
+            return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c",
+                                   "user.email=t@t", *args], check=check,
+                                  env=os.environ | git, capture_output=True, text=True)
+
+        def notes(*args, data=None):
+            return subprocess.run(["git", "--git-dir", session, *args], check=True,
+                                  env=os.environ | git, capture_output=True, text=True,
+                                  input=data).stdout
+        sh("init", "-q", "-b", "main")
+        with open(f"{repo}/src/a.c", "w") as f:
+            f.write("int a;\nint b;\n")
+        sh("add", "src")
+        sh("commit", "-q", "-m", "first")
+        head = sh("rev-parse", "HEAD").stdout.strip()
+        script = []
+        up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
+
+        def turn(*calls):
+            return lambda r: (200, turn_stream([(f"k{i}", name, json.dumps(c))
+                                                for i, (name, c) in enumerate(calls)]))
+
+        def tools(request):
+            """The results of the calls of the last turn in @p request, as
+            the turn got them."""
+            messages = request["body"]["messages"]
+            last = max(k for k, m in enumerate(messages) if m["role"] == "assistant")
+            return [m["content"] for m in messages[last + 1:]]
+
+        def results(request):
+            return [unstamp(t)[0] for t in tools(request)]
+
+        def prompt(request):
+            return request["body"]["messages"][0]["content"]
+
+        def stored(number, author):
+            return json.loads(notes("show", f"refs/heads/agent/{author}/findings:findings/0/"
+                                    f"{number}.json"))
+        grep = {"repo": "proj", "command": "grep", "pattern": "int", "revisions": [head]}
+        base = ("-u", up.url(), "--upstream-tools", "--git", repo, "--notes", session)
+        conversation = "1" * 32
+        with Askai(binary, *base, "--agent", "cuh") as cuh:
+            # N7-15, N7-16, N7-17 and N4-5: cuh cites the grep call itself,
+            # not lines that the call did not show.
+            script[:] = [turn(("git", grep)),
+                         turn(("findings", {"action": "add", "claim": "a.c declares a and b.",
+                                            "state": "verified", "evidence": ["c1"],
+                                            "reason": "c1 printed both lines."}))]
+            count = len(up.requests)
+            cuh.ask("Q", conversation=conversation)
+            [shown] = tools(up.requests[count + 1])
+            assert shown == f"[Repository proj, commit {head}]\nsrc/a.c\n1:int a;\n2:int b;\n" \
+                + stamp(1), shown
+            [said] = results(up.requests[count + 2])
+            assert re.fullmatch(r"Added cuh#1 \(verified\)\. Evidence cuh#1/1 from call c1\. "
+                                r"Commit [0-9a-f]{8}\.", said), said
+            [item] = stored(1, "cuh")["changes"][0]["evidence"]
+            assert (item["kind"], item["tool"], item["call"], item["result"]["bytes"]) == \
+                ("call", "git", 1, len(shown.encode())), item
+            # N7-18, N6-6 and N1-1: the next ask call of the conversation
+            # lists cuh#1 by the same ID, and the notice names the list.
+            count = len(up.requests)
+            cuh.ask("Q", conversation=conversation)
+            assert prompt(up.requests[count]).endswith(
+                "[askai: Your open findings in this conversation (id, state, claim):]\n"
+                "cuh#1  verified   a.c declares a and b.\n"), prompt(up.requests[count])
+            # N5-1 and N4-3: an ask call of a new conversation starts without
+            # the list, and counts cuh#1, which stays in the session.
+            count = len(up.requests)
+            cuh.ask("Q")
+            assert prompt(up.requests[count]).endswith(
+                "[askai: You have no open findings in this conversation.]\n[askai: You have 1 "
+                "open finding in other conversations. Call findings with action list to see "
+                "the findings of every member.]\n"), prompt(up.requests[count])
+
+        # N4-4 and N3-3: the commit that cuh read is rewritten away.
+        sh("commit", "-q", "--amend", "-m", "rewritten")
+        sh("reflog", "expire", "--expire=now", "--all")
+        sh("gc", "-q", "--prune=now")
+        assert sh("cat-file", "-e", head, check=False).returncode, head
+        with Askai(binary, *base, "--agent", "bro") as bro:
+            # N5-1 and N4-3: bro, another agent on another service, lists and
+            # expands the finding of cuh. N4-4 and N3-3: expand prints the
+            # stored result of c1 without the source commit.
+            script[:] = [turn(("findings", {"action": "list"}),
+                              ("findings", {"action": "expand", "id": "cuh#1"})),
+                         turn(("notes", {"action": "members"})),
+                         turn(("findings", {"action": "add", "about": "cuh#1",
+                                            "claim": "cuh#1 holds.", "state": "verified",
+                                            "evidence": ["cuh#1/1"],
+                                            "reason": "cuh#1/1 shows both lines."}),
+                              ("findings", {"action": "add",
+                                            "claim": "members lists the agent cuh.",
+                                            "state": "verified", "evidence": ["c3"],
+                                            "reason": "c3 lists cuh (agent)."}))]
+            count = len(up.requests)
+            bro.ask("Q")
+            listed, expanded = results(up.requests[count + 1])
+            assert listed == "Findings of the session session, open first (id, state, about, " \
+                "claim):\ncuh#1  verified   -  a.c declares a and b.\n", listed
+            assert f"[askai: cuh#1/1: result, {len(shown.encode())} bytes:]\n{shown}\n" in \
+                expanded and expanded.endswith("[askai: You saw cuh#1/1 whole. Cite cuh#1/1 "
+                                               "for verified or disproved from your next turn "
+                                               "on.]\n"), expanded
+            # N7-19 and N5-4: a notes call verifies a finding, without git
+            # or code.
+            said = results(up.requests[count + 3])
+            assert re.fullmatch(r"Added bro#1 \(verified\)\. Evidence bro#1/1 from cuh#1/1\. "
+                                r"Commit [0-9a-f]{8}\.", said[0]), said
+            assert re.fullmatch(r"Added bro#2 \(verified\)\. Evidence bro#2/1 from call c3\. "
+                                r"Commit [0-9a-f]{8}\.", said[1]), said
+            [item] = stored(2, "bro")["changes"][0]["evidence"]
+            assert (item["kind"], item["tool"], item["call"]) == ("call", "notes", 3), item
+
+            def client(**arguments):
+                body = bro.rpc("tools/call", {"name": "findings", "arguments": arguments})[2]
+                return text_of(body["result"])
+            # cuh#1 names the finding that checks it.
+            assert client(action="show", id="cuh#1").startswith(
+                "Finding cuh#1 by cuh: verified\nclaim: a.c declares a and b.\nFindings "
+                "about cuh#1: bro#1 (verified)\n"), client(action="show", id="cuh#1")
+            # N7-15, N7-16, N7-17 and N4-5: a changed archive file shows as a
+            # mismatch to every reader, here a client.
+            tip = notes("rev-parse", "refs/heads/agent/cuh/findings").strip()
+            sha = stored(1, "cuh")["changes"][0]["evidence"][0]["result"]["sha256"]
+            notes("fast-import", "--quiet", data=(
+                f"commit refs/heads/agent/cuh/findings\ncommitter t <t> {int(time.time())} "
+                f"+0000\ndata 0\nfrom {tip}\nM 100644 inline archive/{sha[:2]}/{sha[2:]}\n"
+                "data 8\nchanged\n\n"))
+            text = client(action="expand", id="cuh#1/1")
+            assert text.endswith(":]\nchanged\n[askai: the stored material of cuh#1/1 does "
+                                 "not match the recorded SHA-256.]\n"), text
+    up.reply = lambda request: (200, ANSWERS["openai"])
+    print("findings cases: calls as evidence, stable IDs, any call verifies, shared findings, "
+          "stored bytes after a rewrite, the prompt notices, a changed archive: PASS")
+
+
 def check_tasks(binary, up):
     """Tasks (src/task.h), through the test aid test_task, offered with
     --test-task only: its arguments checked; CPU work done a slice a step,
@@ -18120,7 +18273,7 @@ def main():
                       check_scheduler, check_breaker, check_slots, check_progress,
                       check_man, check_git, check_git_scope, check_git_read, check_code,
                       check_turns,
-                      check_findings, check_findings_expand,
+                      check_findings, check_findings_expand, check_findings_cases,
                       check_notes, check_shared_notes,
                       check_notes_history, check_notes_cancel, check_notes_texts,
                       check_turn_apis,
