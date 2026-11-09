@@ -230,6 +230,17 @@ cstr_view_total (struct cstr_view const *views,
 	return len;
 }
 
+/** Returns the number of the bytes of @p text that are @p c. */
+static inline size_t
+cstr_view_count (struct cstr_view text,
+                 char             c)
+{
+	size_t n = 0;
+	for (size_t i = 0; i < text.len; ++i)
+		n += text.data[i] == c;
+	return n;
+}
+
 /** Whether @p c is a space, a tab, a carriage return or a line feed. */
 static inline bool
 cstr_view_space (char c)

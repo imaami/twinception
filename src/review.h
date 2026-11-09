@@ -40,6 +40,7 @@
 #include <stdint.h>
 
 #include "cstr_view.h"
+#include "seen.h"
 #include "tool.h"
 
 struct dstr;
@@ -120,8 +121,15 @@ struct review_source {
 /** A review record. */
 struct review;
 
-/** A copy of a struct review_source in one allocation. */
-struct review_read;
+/** A copy of a struct review_source in one allocation, and the position of
+ *  the last window in the numbered lines (seen_lines()).
+ */
+struct review_read {
+	struct review_source src;     /**< views of text */
+	struct seen_mark     mark;    /**< the position of the last window */
+	char                 text[];  /**< the repository name, the commit ID
+	                                   and the path */
+};
 
 /** Returns the number of the @p len bytes at @p text that remain after the
  *  notices at its end are removed. askai passes notice_kept(). The notices
@@ -185,29 +193,22 @@ review_read_create_json (struct json_object const *obj,
                          int                      *e);
 
 /**
- * Adds the lines of @p read that a result in turn @p turn shows whole to
- * the pending lines of @p r. The result shows the @p window bytes of the
- * output @p out from byte @p skip on. A line that the window shows only in
- * part is not added. If the record would be charged more than TOOL_TEXT_MAX
- * bytes, the lines are not added, and the record stores the first turn
- * whose lines it did not add. @p read stores the position of the window,
- * so that the next call with a later window counts the lines from there.
+ * Adds the lines @p lines of the file of @p read, which a result in turn
+ * @p turn shows whole (seen_lines()), to the pending lines of @p r. If the
+ * record would be charged more than TOOL_TEXT_MAX bytes, the lines are
+ * not added, and the record stores the first turn whose lines it did not
+ * add.
  *
- * @retval 0 on success.
- * @retval EFAULT if @p r or @p read is nullptr, or if out.data is nullptr
- *         and out.len is not 0.
- * @retval EINVAL if the numbered lines of @p read are not within @p out,
- *         or if they contain more lines than the range of line numbers in
- *         @p read.
+ * @retval 0 on success, also for no line (lines.first 0).
+ * @retval EFAULT if @p r or @p read is nullptr.
+ * @retval EINVAL if @p lines are not within the numbered lines of @p read.
  * @retval ENOMEM if out of memory.
  */
 extern int
-review_pending_add (struct review      *r,
-                    struct review_read *read,
-                    struct cstr_view    out,
-                    size_t              skip,
-                    size_t              window,
-                    uint32_t            turn);
+review_pending_add (struct review            *r,
+                    struct review_read const *read,
+                    struct seen_lines         lines,
+                    uint32_t                  turn);
 
 /**
  * Moves the pending lines of @p r into the read log (see the file

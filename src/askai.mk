@@ -38,6 +38,7 @@ override SRC_askai := \
   review.c            \
   roster.c            \
   schema.c            \
+  seen.c              \
   store.c             \
   task.c              \
   tls.c               \

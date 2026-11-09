@@ -112,6 +112,7 @@
 #include "review.h"
 #include "roster.h"
 #include "schema.h"
+#include "seen.h"
 #include "shelf.h"
 #include "stream.h"
 #include "task.h"
@@ -622,6 +623,8 @@ struct mcp_req {
 	                                    timer call until mcp_req_finish() */
 	struct review       *review;     /* the review record if the turns are
 	                                    lent findings (mcp_req_review_make()) */
+	struct seen         *seen;       /* the ring of the turns' calls
+	                                    (src/seen.h), reused by a spare request */
 	struct ledger_task  *task;       /* the ledger record of the call once it
 	                                    becomes a task or a job */
 	struct ledger_task  *admitted;   /* durable admission, before its reply */
@@ -1025,7 +1028,8 @@ mcp_req_kept (struct mcp_req const *req)
 	                 dstr_get_block_count(&req->trace) * DSTR_BLK_SIZE +
 	                 req->scan.cap * sizeof *req->scan.members +
 	                 req->reaper.cap * sizeof *req->reaper.items +
-	                 req->splice.cap * sizeof *req->splice.items;
+	                 req->splice.cap * sizeof *req->splice.items +
+	                 seen_kept(req->seen);
 	size_t const slots = req->slots ? JOB_CALLS : 0;
 	for (size_t k = 0; k < slots; ++k)
 		bytes += sizeof *req->slots +
@@ -1095,6 +1099,7 @@ mcp_spare_drop (struct mcp *mcp)
 		dstr_cleanup(&req->slots[k].answer);
 	free(req->slots);
 	req->slots = nullptr;
+	seen_destroy(&req->seen);
 	free(req);
 }
 
@@ -1625,6 +1630,7 @@ mcp_req_finish (struct mcp_req *req)
 	mcp_req_drop(req);
 	mcp_agenda_destroy(&req->agenda);
 	review_destroy(&req->review);
+	seen_clear(req->seen);
 	/* Neither a drain nor a notifications/cancelled reaches the call while
 	 * its end is written. A cancel may supersede a pending state, intent
 	 * or result write: FIFO writes keep that evidence, followed by the
@@ -3613,8 +3619,8 @@ mcp_slot_source (struct mcp_slot            *slot,
 	review_read_destroy(&slot->read);
 	/* A turn's window is at most mcp_slot_window_max() bytes of the output,
 	 * so no window shows a longer single line whole. Keep no such line, so
-	 * that review_pending_add() does not scan it. */
-	if (!slot->req->review ||
+	 * that seen_lines() does not scan it. */
+	if (slot->role == ROLE_OWN ||
 	    (src->first == src->last && src->len > mcp_slot_window_max(slot)))
 		return 0;
 	struct span const out = mcp_slot_output(slot);
@@ -5463,7 +5469,7 @@ mcp_slot_replay (struct mcp_slot    *slot,
 	uint64_t const skip = jb_uint(jb_get(saved, "skip"), 0);
 	int e = skip > text.len || util_text_store(&slot->note, jb_view(jb_get(saved, "note")))
 	      ? EILSEQ : 0;
-	if (!e && source && slot->req->review)
+	if (!e && source)
 		slot->read = review_read_create_json(source, text, &e);
 	if (e)
 		return e == EINVAL ? EILSEQ : e;
@@ -5715,6 +5721,7 @@ mcp_slot_done (struct mcp_slot *slot,
 			"index", json_object_new_int64(k),
 			"failed", json_object_new_boolean(failed),
 			"skip", json_object_new_uint64(slot->skip - base),
+			"at", json_object_new_uint64(base),
 			"bytes", json_object_new_uint64(out.len),
 			"branch", json_object_new_boolean(req->flags & REQ_BRANCH),
 			"filing", json_object_new_boolean(req->flags & REQ_FILING),
@@ -5785,20 +5792,17 @@ mcp_req_result_begin (struct mcp_req  *req,
 	mcp_req_enter(req, PHASE_RESULT);
 }
 
-/** Writes the result of the call @p c, the call under way, into the upload
+/** Writes @p parts, the result of the call @p c under way, into the upload
  *  of @p req, and after the last result of the turn the attached files
  *  and the end of the messages. Returns 0 or an error number.
  */
 static int
-mcp_req_result_put (struct mcp_req       *req,
-                    struct ai_call const *c)
+mcp_req_result_put (struct mcp_req         *req,
+                    struct ai_call const   *c,
+                    struct cstr_view const  parts[static SEEN_PARTS])
 {
 	struct ai_format const *f = req->mcp->st->format;
-	struct mcp_slot const *slot = &req->slots[req->part];
-	struct span out = mcp_slot_output(slot);
 	struct span attached = buf_peek(&req->attached);
-	struct cstr_view told = req->agenda ? cstr_view_dstr(&req->agenda->told)
-	                                    : (struct cstr_view){};
 	char made[CALL_ID];
 	struct mcp_piece const id = mcp_req_call_id(req, c, req->part, made);
 	/* With AI_RESULT_NAMED, the key of a result is the name of the tool,
@@ -5821,10 +5825,10 @@ mcp_req_result_put (struct mcp_req       *req,
 		by,
 		also,
 		BYTES(f->output),
-		ESC(out.len ? out.ptr + slot->skip : nullptr, slot->window),
-		ESC_VIEW(util_text_view(&slot->note)),
-		ESC("\n\n", told.len ? 2 : 0),
-		ESC_VIEW(told),
+		ESC_VIEW(parts[0]),
+		ESC_VIEW(parts[1]),
+		ESC_VIEW(parts[2]),
+		ESC_VIEW(parts[3]),
 		BYTES(f->result_end),
 		RAW(attached.ptr, attached.len),
 		BYTES(f->results_end),
@@ -5834,52 +5838,59 @@ mcp_req_result_put (struct mcp_req       *req,
 	return mcp_req_upload(req, p, last ? array_size(p) : array_size(p) - 3);
 }
 
-/* Pass review_pending_add() the lines of a committed file that the result in
- * @p slot shows whole. The lines of a jobs call are those of its job
- * (slot->of). Returns 0 if the result shows no such lines, or the error
- * of review_pending_add().
- */
-static int
-mcp_req_shown (struct mcp_req        *req,
-               struct mcp_slot const *slot)
-{
-	struct review_read *read = (slot->of ? slot->of : slot)->read;
-	if (!read)
-		return 0;
-	/* review_pending_add() scans the output from the numbered lines to the end
-	 * of the window. */
-	loop_work(req->mcp->loop, LOOP_COPY, slot->skip + slot->window);
-	struct span out = mcp_slot_output(slot);
-	struct cstr_view text = { (char const *)out.ptr, out.len };
-	return review_pending_add(req->review, read, text, slot->skip, slot->window, req->turn);
-}
-
 /* Write the result of the turn's call req->part into the upload, one slice
- * in each step. Then write its line of the trace, pass the lines that it
- * shows to mcp_req_shown(), drop the call's output and go on with the next
- * call.
+ * in each step. Then write its line of the trace, add the call to the ring
+ * (src/seen.h) but not a findings or compact call, drop the call's output
+ * and go on with the next call. A jobs call shows the lines of its job.
  */
 static void
 mcp_req_result_write (struct mcp_req *req)
 {
 	struct job_call h;
 	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls[req->part]).ptr);
-	int e = mcp_req_result_put(req, &c);
+	struct mcp_slot *slot = &req->slots[req->part];
+	struct span const out = mcp_slot_output(slot);
+	struct cstr_view const told = req->agenda ? cstr_view_dstr(&req->agenda->told)
+	                                          : (struct cstr_view){};
+	struct cstr_view const parts[SEEN_PARTS] = {
+		{ out.len ? (char const *)out.ptr + slot->skip : nullptr, slot->window },
+		util_text_view(&slot->note),
+		told.len ? CSTR_VIEW("\n\n") : (struct cstr_view){},
+		told,
+	};
+	int e = mcp_req_result_put(req, &c, parts);
 	if (mcp_req_again(req, e))
 		return;
 	if (e) {
 		mcp_req_upload_failed(req, e);
 		return;
 	}
-	struct mcp_slot *slot = &req->slots[req->part];
 	/* A replayed result is a part of the output; its record gives the size. */
 	struct json_object *saved = req->saved_tools[req->part];
-	(void)mcp_req_trace(req, &c, slot->args,
-	                    mcp_row_of(mcp_slot_tool(slot))->trace);
-	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED,
-	                        saved ? jb_uint(jb_get(saved, "bytes"), 0)
-	                              : mcp_slot_output(slot).len);
-	e = mcp_req_shown(req, slot);
+	struct mcp_row const *row = mcp_row_of(mcp_slot_tool(slot));
+	struct seen_result const r = {
+		.parts  = parts,
+		.out    = { (char const *)out.ptr, out.len },
+		.read   = (slot->of ? slot->of : slot)->read,
+		.output = saved ? jb_uint(jb_get(saved, "bytes"), 0) : out.len,
+		.at     = jb_uint(jb_get(saved, "at"), 0),
+		.skip   = slot->skip,
+		.number = mcp_slot_call(slot),
+		.turn   = req->turn,
+		.tool   = slot->tool,
+		.index  = (uint16_t)req->part,
+		.flags  = slot->flags & SLOT_FAILED ? SEEN_FAILED : 0,
+	};
+	(void)mcp_req_trace(req, &c, slot->args, row->trace);
+	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED, r.output);
+	struct seen_lines lines = {};
+	if (row->metric != LENT_FINDINGS && row->metric != LENT_COMPACT) {
+		/* seen_keep() scans the output up to the end of the window. */
+		loop_work(req->mcp->loop, LOOP_COPY, slot->skip + slot->window);
+		e = seen_keep(&req->seen, &req->calls[req->part], &r, &lines);
+	}
+	if (!e && req->review && lines.first)
+		e = review_pending_add(req->review, r.read, lines, req->turn);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;
@@ -7430,6 +7441,7 @@ mcp_begin (struct mcp           *mcp,
 		.splice.items = req->splice.items,
 		.splice.cap = req->splice.cap,
 		.slots = req->slots,
+		.seen = req->seen,
 		.s = s,
 		.mcp = mcp,
 		.head = loop_clock(),

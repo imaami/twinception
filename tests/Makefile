@@ -5,11 +5,11 @@ $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-ai check-askai check-buf check-cdb check-cli check-completion \
         check-cstr-view check-datauri check-dstr check-git-run check-jb check-handle check-instance check-journal check-ledger check-load \
-        check-member check-ref check-review check-store check-turn load load-build
+        check-member check-ref check-review check-seen check-store check-turn load load-build
 default:; @:
 check: | check-completion check-askai check-cli check-ai check-jb check-cdb check-buf \
          check-datauri check-handle check-turn check-instance check-git-run check-journal check-ledger \
-         check-member check-ref check-review check-store check-dstr check-load
+         check-member check-ref check-review check-seen check-store check-dstr check-load
 
 # Nothing below this comment is defined when tab-completing.
 
@@ -172,11 +172,21 @@ $Otests/cdb.c.o $Otests/src/cdb.c.o: CPPFLAGS += $(JSON_INCLUDES)
 check-review: $Otests/review
 	$<
 
-$Otests/review: $Otests/review.c.o $Otests/src/review.c.o $Otests/src/jb.c.o $Otests/src/dstr.c.o \
-                $Otests/src/cstr_view.c.o
+$Otests/review: $Otests/review.c.o $Otests/src/review.c.o $Otests/src/seen.c.o $Otests/src/jb.c.o \
+                $Otests/src/buf.c.o $Otests/src/dstr.c.o $Otests/src/cstr_view.c.o
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
 
 $Otests/review.c.o $Otests/src/review.c.o: CPPFLAGS += $(JSON_INCLUDES)
+
+# Unit tests of the ring of the calls of an ask call, src/seen.c.
+check-seen: $Otests/seen
+	$<
+
+$Otests/seen: $Otests/seen.c.o $Otests/src/seen.c.o $Otests/src/review.c.o $Otests/src/jb.c.o \
+              $Otests/src/buf.c.o $Otests/src/dstr.c.o $Otests/src/cstr_view.c.o
+	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
+
+$Otests/seen.c.o $Otests/src/seen.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
 # Unit tests of the byte buffer, src/buf.c.
 check-buf: $Otests/buf

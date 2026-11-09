@@ -164,16 +164,6 @@ review_finding (uint32_t first,
 	return (struct review_finding){ .claim = DSTR_INIT, .location = review_location(first, last) };
 }
 
-struct review_read {
-	struct review_source src;        /**< views of text */
-	size_t               mark;       /**< an offset in the output, from
-	                                      src.at on */
-	uint64_t             mark_line;  /**< the number of the line that
-	                                      contains the byte at mark */
-	char                 text[];     /**< the repository name, the commit ID
-	                                      and the path */
-};
-
 struct review {
 	struct review_files    log;           /**< the read log */
 	struct review_files    pending;       /**< the pending lines (review.h) */
@@ -320,22 +310,6 @@ review_name_valid (struct cstr_view t)
 	return t.len && t.len <= REVIEW_NAME_MAX && jb_is_text(t);
 }
 
-/** Returns the number of newlines in @p t, whose data must not be
- *  nullptr.
- */
-static size_t
-review_newlines (struct cstr_view t)
-{
-	size_t k = 0;
-	char const *p = t.data;
-	char const *end = p + t.len;
-	while (p < end && (p = memchr(p, '\n', (size_t)(end - p)))) {
-		++k;
-		++p;
-	}
-	return k;
-}
-
 /** Returns true if the numbered lines of @p src are not empty and are
  *  within @p out.
  */
@@ -365,7 +339,7 @@ review_read_create (struct review_source const *src,
 		return nullptr;
 	/* Each numbered line ends with a newline, except perhaps the last. */
 	struct cstr_view const lines = { out.data + src->at, src->len };
-	if (review_newlines(lines) + (lines.data[lines.len - 1] != '\n') !=
+	if (cstr_view_count(lines, '\n') + (lines.data[lines.len - 1] != '\n') !=
 	    (uint64_t)src->last - src->first + 1)
 		return nullptr;
 	struct review_read *read = malloc(sizeof *read + src->repo.len + src->commit.len +
@@ -374,7 +348,7 @@ review_read_create (struct review_source const *src,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*read = (struct review_read){ .src = *src, .mark = src->at, .mark_line = src->first };
+	*read = (struct review_read){ .src = *src, .mark = { .line = src->first, .at = src->at } };
 	read->src.repo.data = read->text;
 	read->src.commit.data = mempcpy(read->text, src->repo.data, src->repo.len);
 	read->src.path.data = mempcpy((char *)read->src.commit.data, src->commit.data,
@@ -652,54 +626,19 @@ review_files_add (struct review              *r,
 }
 
 int
-review_pending_add (struct review      *r,
-                    struct review_read *read,
-                    struct cstr_view    out,
-                    size_t              skip,
-                    size_t              window,
-                    uint32_t            turn)
+review_pending_add (struct review            *r,
+                    struct review_read const *read,
+                    struct seen_lines         lines,
+                    uint32_t                  turn)
 {
-	if (!r || !read || (!out.data && out.len))
+	if (!r || !read)
 		return EFAULT;
-	struct review_source const *src = &read->src;
-	if (!review_source_within(src, out))
+	if (!lines.first)
+		return 0;
+	if (lines.first < read->src.first || lines.last < lines.first || lines.last > read->src.last)
 		return EINVAL;
-	size_t const end = src->at + src->len;
-	if (skip >= end)
-		return 0;
-	size_t lo = skip > src->at ? skip : src->at;
-	size_t const hi = window < end - skip ? skip + window : end;
-	if (lo >= hi)
-		return 0;
-	char const *p = out.data;
-	/* Count the lines from the mark of the last window, if it is before
-	 * this one. */
-	if (read->mark > lo) {
-		read->mark = src->at;
-		read->mark_line = src->first;
-	}
-	read->mark_line += review_newlines((struct cstr_view){ p + read->mark, lo - read->mark });
-	read->mark = lo;
-	uint64_t line = read->mark_line;
-	/* Skip a line whose start is before the window. */
-	if (lo > src->at && p[lo - 1] != '\n') {
-		char const *nl = memchr(p + lo, '\n', hi - lo);
-		if (!nl)
-			return 0;
-		lo = (size_t)(nl - p) + 1;
-		++line;
-	}
-	/* Count the lines that end within the window. The last line of the
-	 * read may end without a newline, and it counts if the window ends at
-	 * the end of the read. */
-	uint64_t const n = review_newlines((struct cstr_view){ p + lo, hi - lo }) +
-	                   (hi == end && hi > lo && p[hi - 1] != '\n');
-	if (!n)
-		return 0;
-	if (line + n - 1 > src->last)
-		return EINVAL;
-	return review_files_add(r, &r->pending, src, (struct review_range){
-		(uint32_t)line, (uint32_t)(line + n - 1), turn });
+	return review_files_add(r, &r->pending, &read->src, (struct review_range){
+		lines.first, lines.last, turn });
 }
 
 /** Subtracts the charges of the pending files of @p r from r->size. */

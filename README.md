@@ -752,6 +752,14 @@ run, but their numbers are used. The notices about the context, the last
 turn, jobs and timers follow the number. A background job resumed after a
 restart numbers its next calls after the calls of its checkpoint.
 
+`askai` stores the last 64 calls of each ask call in memory, at most 16 MiB
+of them, and drops the oldest call first. For each call, `askai` stores the
+arguments as the model sent them, the result as the model got it, and for a
+`git` `read` or a `code` `describe` the commit, the path and the lines that
+the result showed whole. A call larger than 4 MiB is stored as its number
+only. `askai` does not store `findings` or `compact` calls. The stored calls
+are dropped when the ask call ends.
+
 The model need not wait for a slow call: `background` runs a call of `man`,
 `git` or a plugin tool that allows it, as a job, and answers at once with
 its number, 8 jobs a call at most; `timer` sets a timer of up to an hour,

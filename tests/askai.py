@@ -2772,11 +2772,12 @@ def check_recovery_notes(binary, up):
                         break
                     at += 120 + size
                 assert saved and at < len(snapshot), snapshot
-                # The saved result is the window from the offset on, its note
-                # with the notebook and the stamp of the call, and the size of
-                # the output.
+                # The saved result is the window from the offset on, the
+                # offset, its note with the notebook and the stamp of the call,
+                # and the size of the output.
                 window = saved["text"]
-                assert saved["skip"] == 0 and saved["bytes"] == len(original) and \
+                assert saved["skip"] == 0 and saved["at"] == 5 and \
+                    saved["bytes"] == len(original) and \
                     window and original[5:5 + len(window)] == window and \
                     saved["note"].endswith(f"\n\n[askai: notebook {selector}]" + stamp(1)), \
                     saved
@@ -3020,10 +3021,12 @@ def check_recovery_review(binary, up):
                     "repo": "proj", "commit": head, "path": "src/a.c", "total": 300,
                     "lines": [1, 10, 1]}], state["review"]
                 assert [f["claim"] for f in state["review"]["findings"]] == ["C"], state
-                [source] = [value["source"] for _, kind, value in found[:cut]
-                            if kind == "tool-result"]
+                # The record of a read contains the whole output, from
+                # offset 0 on.
+                [(source, at)] = [(value["source"], value["at"])
+                                  for _, kind, value in found[:cut] if kind == "tool-result"]
                 assert (source["commit"], source["path"], source["first"], source["last"],
-                        source["total"]) == (head, "src/a.c", 11, 20, 300), source
+                        source["total"], at) == (head, "src/a.c", 11, 20, 300, 0), source
                 good = snapshot[:found[cut][0]]
             finally:
                 with open(release, "w"):

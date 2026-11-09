@@ -11,6 +11,7 @@
 #include "dstr.h"
 #include "oid.h"
 #include "review.h"
+#include "seen.h"
 
 /* Check that the text @p got is @p want. */
 #define SAME(got, want) same(__FILE__, __LINE__, got, want)
@@ -193,9 +194,28 @@ output (struct dstr          *out,
 	                               total, at, len, first, last };
 }
 
+/* Pass review_pending_add() the lines of @p read that the window of
+ * @p window bytes of @p out from @p skip shows whole (seen_lines()), in
+ * turn @p turn. Returns the error number.
+ */
+static int
+pending (struct review      *r,
+         struct review_read *read,
+         struct cstr_view    out,
+         size_t              skip,
+         size_t              window,
+         uint32_t            turn)
+{
+	int e = EFAULT;
+	struct seen_lines const lines = read ? seen_lines(&read->mark, &read->src, out, skip,
+	                                                  window, &e)
+	                                     : (struct seen_lines){};
+	return e ? e : review_pending_add(r, read, lines, turn);
+}
+
 /* Build a git read output of lines @p first to @p last, and pass
- * review_pending_add() its window of @p window bytes from @p skip, in turn
- * @p turn. Returns the error number.
+ * pending() its window of @p window bytes from @p skip, in turn @p turn.
+ * Returns the error number.
  */
 static int
 shown_in (struct review *r,
@@ -216,7 +236,7 @@ shown_in (struct review *r,
 	int e;
 	struct review_read *read = review_read_create(&src, o, &e);
 	if (!e)
-		e = review_pending_add(r, read, o, skip, window, turn);
+		e = pending(r, read, o, skip, window, turn);
 	review_read_destroy(&read);
 	CHECK(!read);
 	dstr_cleanup(&out);
@@ -342,7 +362,7 @@ lines_of (struct review const *r,
 	dstr_cleanup(&out);
 }
 
-/* review_pending_add() adds only the lines that the window shows whole. */
+/* pending() adds only the lines that the window shows whole. */
 static void
 test_seen (void)
 {
@@ -379,9 +399,9 @@ test_seen (void)
 		struct review_read *read = review_read_create(&from, o, &e);
 		CHECK(read && !e);
 		struct review *r = fresh();
-		CHECK(!review_pending_add(r, read, o, 4 + 9 * 4, 9 * 2, 1));
-		CHECK(!review_pending_add(r, read, o, 4 + 9 * 6, 9 * 2, 1));
-		CHECK(!review_pending_add(r, read, o, 4, 9 * 2, 1));
+		CHECK(!pending(r, read, o, 4 + 9 * 4, 9 * 2, 1));
+		CHECK(!pending(r, read, o, 4 + 9 * 6, 9 * 2, 1));
+		CHECK(!pending(r, read, o, 4, 9 * 2, 1));
 		CHECK(!review_pending_log(r));
 		lines_of(r, "lines 1-2, 5-8: 6 of 9 lines", __LINE__);
 		review_read_destroy(&read);
@@ -416,18 +436,18 @@ test_seen (void)
 	struct review_read *read = review_read_create(&src, o, &e);
 	CHECK(read && !e);
 	struct review *r = fresh();
-	CHECK(!review_pending_add(r, read, o, 0, src.at + src.len - 1, 1) && !review_pending_log(r));
+	CHECK(!pending(r, read, o, 0, src.at + src.len - 1, 1) && !review_pending_log(r));
 	lines_of(r, "lines 1-2: 2 of 3 lines", __LINE__);
-	CHECK(!review_pending_add(r, read, o, 0, src.at + src.len, 1) && !review_pending_log(r));
+	CHECK(!pending(r, read, o, 0, src.at + src.len, 1) && !review_pending_log(r));
 	lines_of(r, "lines 1-3: all 3 lines", __LINE__);
 	/* An output too short for the read, and one with too many lines. */
-	CHECK(review_pending_add(r, read, (struct cstr_view){ o.data, src.at + src.len - 1 }, 0,
-	                         SIZE_MAX, 1) == EINVAL);
+	CHECK(pending(r, read, (struct cstr_view){ o.data, src.at + src.len - 1 }, 0, SIZE_MAX,
+	              1) == EINVAL);
 	struct dstr more = DSTR_INIT;
 	CHECK(dstr_printf(&more, "[h]\n"));
 	for (int i = 0; i < 13; ++i)
 		CHECK(dstr_printf(&more, "a\n"));
-	CHECK(review_pending_add(r, read, cstr_view_dstr(&more), 0, SIZE_MAX, 1) == EINVAL);
+	CHECK(pending(r, read, cstr_view_dstr(&more), 0, SIZE_MAX, 1) == EINVAL);
 	dstr_cleanup(&more);
 	review_read_destroy(&read);
 	review_destroy(&r);
@@ -1556,7 +1576,7 @@ test_json (void)
 	struct review_read *copy = review_read_create_json(rj, o, &e);
 	CHECK(copy && !e);
 	r = fresh();
-	CHECK(!review_pending_add(r, copy, o, 0, SIZE_MAX, 1) && !review_pending_log(r));
+	CHECK(!pending(r, copy, o, 0, SIZE_MAX, 1) && !review_pending_log(r));
 	lines_of(r, "lines 3-5: 3 of 9 lines", __LINE__);
 	review_destroy(&r);
 	review_read_destroy(&copy);
@@ -1756,9 +1776,14 @@ test_nullptr (void)
 	struct review_read *read = review_read_create(&src, out, &e);
 	CHECK(read && !e);
 	struct review *r = fresh();
-	CHECK(review_pending_add(nullptr, read, out, 0, SIZE_MAX, 1) == EFAULT);
-	CHECK(review_pending_add(r, nullptr, out, 0, SIZE_MAX, 1) == EFAULT);
-	CHECK(review_pending_add(r, read, (struct cstr_view){ nullptr, 2 }, 0, SIZE_MAX, 1) == EFAULT);
+	struct seen_lines const one = { 1, 1 };
+	CHECK(review_pending_add(nullptr, read, one, 1) == EFAULT);
+	CHECK(review_pending_add(r, nullptr, one, 1) == EFAULT);
+	CHECK(pending(r, read, (struct cstr_view){ nullptr, 2 }, 0, SIZE_MAX, 1) == EFAULT);
+	/* No line adds nothing, and lines outside the read are refused. */
+	CHECK(!review_pending_add(r, read, (struct seen_lines){}, 1));
+	CHECK(review_pending_add(r, read, (struct seen_lines){ 1, 2 }, 1) == EINVAL);
+	CHECK(review_pending_add(r, read, (struct seen_lines){ 2, 1 }, 1) == EINVAL);
 	CHECK(review_pending_log(nullptr) == EFAULT);
 	review_pending_drop(nullptr);
 	struct dstr d = DSTR_INIT;
