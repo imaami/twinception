@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "buf.h"
 #include "child.h"
 #include "code.h"
 #include "config.h"
@@ -88,30 +89,38 @@ code_check (struct config *cfg)
 		.file = cfg->code_helper,
 		.argv = argv,
 		.envp = env,
+		.max = CODE_CHECK,
 		.deadline = loop_clock() + 10 * NS,
 		.flags = CHILD_STDERR,
 	};
-	char out[CODE_CHECK];
-	size_t len;
-	int status;
-	e = child_capture(&cmd, child_fds(), out, sizeof out, &len, &status);
+	struct buf out = {};
+	struct child_end end;
+	e = child_capture(&cmd, child_fds(), &out, &end);
 	free(cache);
 	cache = nullptr;
-	if (e == ENOENT)
-		return config_aprintf(&cfg->code_check, "no askai-code beside askai");
-	if (e)
-		return config_aprintf(&cfg->code_check, "askai-code --check failed: %s", strerror(e));
 	/* After a successful check the output is the version of libclang and
-	 * the confinement, one line each. Otherwise its first line is the
-	 * reason why the tool is off. */
-	char const *nl = memchr(out, '\n', len);
-	size_t const first = nl ? (size_t)(nl - out) : len;
-	if (status || first + 1 >= len)
-		return first ? config_aprintf(&cfg->code_check, "%.*s", (int)first, out)
-		             : config_aprintf(&cfg->code_check, "askai-code --check exited with "
-		                              "status %d", status);
-	cfg->flags |= CFG_CODE;
-	return config_aprintf(&cfg->code_check, "%.*s", (int)(len - (out[len - 1] == '\n')), out);
+	 * the confinement, one line each. Otherwise the first line of the
+	 * output is the reason why the tool is off. */
+	struct span const got = buf_peek(&out);
+	struct cstr_view const text = { (char const *)got.ptr, got.len };
+	struct cstr_view rest = text;
+	struct cstr_view first = text;
+	bool const two_lines = cstr_view_cut(&rest, '\n', &first) && rest.len;
+	if (e == ENOENT) {
+		e = config_aprintf(&cfg->code_check, "no askai-code beside askai");
+	} else if (e) {
+		e = config_aprintf(&cfg->code_check, "askai-code --check failed: %s", strerror(e));
+	} else if (end.status || !two_lines) {
+		e = first.len ? config_aprintf(&cfg->code_check, "%.*s", (int)first.len, first.data)
+		              : config_aprintf(&cfg->code_check, "askai-code --check exited with "
+		                               "status %d", end.status);
+	} else {
+		cfg->flags |= CFG_CODE;
+		e = config_aprintf(&cfg->code_check, "%.*s",
+		                   (int)(text.len - (text.data[text.len - 1] == '\n')), text.data);
+	}
+	buf_fini(&out);
+	return e;
 }
 
 void

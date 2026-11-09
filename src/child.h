@@ -225,18 +225,20 @@ child_run (struct child_cmd const *cmd,
            struct child_end       *end);
 
 /**
- * Run @p cmd as child_run() does, its output into a file in memory in place
- * of fds.out, and read the output into the @p size bytes at @p buf, its
- * length into @p *len. Returns 0 and the exit status in @p *status, EFBIG
- * if the output fills @p size bytes, or the error of the run or the read.
+ * Run @p cmd as child_run() does, with a file in memory in place of
+ * fds.out, and append the output to @p out, up to cmd->max bytes. The
+ * function writes @p *end as child_run() does, and @p *end is all zero if
+ * the child was not spawned. Returns what child_run() returns, the error
+ * of the read, or EFBIG for an output of more than cmd->max bytes. After
+ * EFBIG, end->flags contains CHILD_CUT, and the first cmd->max bytes of
+ * the output are appended to @p out. The output is read only if
+ * child_run() returns 0.
  */
 extern int
 child_capture (struct child_cmd const *cmd,
                struct child_fds        fds,
-               char                   *buf,
-               size_t                  size,
-               size_t                 *len,
-               int                    *status);
+               struct buf             *out,
+               struct child_end       *end);
 
 /** Write the @p n words at @p prefix, then the words at @p words up to its
  *  nullptr, and a nullptr to the @p cap pointers at @p argv. Returns 0, or

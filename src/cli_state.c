@@ -18,6 +18,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "buf.h"
 #include "child.h"
 #include "cli_state.h"
 #include "cstr_view.h"
@@ -44,7 +45,8 @@ struct cli_state {
 	struct dstr             temporary;
 	struct dstr             branch;
 	struct dstr             latest;
-	struct dstr             output;
+	struct buf              output;  /**< the output of the last git
+	                                      that cli_state_git() captured */
 	struct dstr             tree;
 	struct dstr             metadata;
 	struct dstr             scratch;
@@ -157,7 +159,9 @@ cli_state_lock (struct cli_state *state,
 	}
 }
 
-/** Run Git directly, with bounded captured output and no shell. */
+/** Run Git directly, with no shell. The output goes to @p output_fd, or to
+ *  state->output, up to 4 KiB, if @p output_fd is negative.
+ */
 static int
 cli_state_git (struct cli_state  *state,
                char const *const  args[],
@@ -179,20 +183,24 @@ cli_state_git (struct cli_state  *state,
 		.argv = argv,
 		.envp = env,
 		.in   = { (unsigned char *)(uintptr_t)input.data, input.len },
+		.max  = 4 << 10,
 	};
 	struct child_fds fds = child_fds();
-	(void)dstr_clear(&state->output);
-	if (output_fd >= 0) {
-		fds.out = output_fd;
-		struct child_end end;
-		e = child_run(&cmd, fds, &end);
-		*status = end.status;
-		return e;
-	}
-	char buffer[4097];
-	size_t got;
-	e = child_capture(&cmd, fds, buffer, sizeof buffer, &got, status);
-	return e ? e : cstr_view_cat((struct cstr_view){ buffer, got }, &state->output);
+	fds.out = output_fd;
+	struct child_end end;
+	buf_clear(&state->output);
+	e = output_fd >= 0 ? child_run(&cmd, fds, &end)
+	                   : child_capture(&cmd, fds, &state->output, &end);
+	*status = end.status;
+	return e;
+}
+
+/* Returns the output of the last git that cli_state_git() captured. */
+static struct cstr_view
+cli_state_output (struct cli_state const *state)
+{
+	struct span const out = buf_peek(&state->output);
+	return (struct cstr_view){ (char const *)out.ptr, out.len };
 }
 
 static int
@@ -216,7 +224,7 @@ cli_state_git_oid (struct cli_state  *state,
                    struct oid        *oid)
 {
 	int e = cli_state_git_ok(state, args, input);
-	return e ? e : oid_init_line(oid, cstr_view_dstr(&state->output));
+	return e ? e : oid_init_line(oid, cli_state_output(state));
 }
 
 static int
@@ -501,7 +509,7 @@ cli_state_load (struct cli_state *state,
 		                         "--format=%(objectname)", dstr_get(&state->scratch), nullptr },
 		                         (struct cstr_view){});
 	size_t n = 1;
-	for (struct cstr_view out = cstr_view_dstr(&state->output); !e && out.len; )
+	for (struct cstr_view out = cli_state_output(state); !e && out.len; )
 		if (n == array_size(tips) || oid_init_field(&tips[n], &out, '\n'))
 			e = EIO;
 		else
@@ -587,7 +595,7 @@ cli_state_repository_open (struct cli_state *state)
 			return EACCES;
 		int e = cli_state_git_ok(state, (char const *[]){ "config", "--local", "--get", "askai.cliHistoryVersion", nullptr },
 		                         (struct cstr_view){});
-		if (!e && !cstr_view_equal(cstr_view_dstr(&state->output), CSTR_VIEW("1\n")))
+		if (!e && !cstr_view_equal(cli_state_output(state), CSTR_VIEW("1\n")))
 			e = EINVAL;
 		return e;
 	}
@@ -665,7 +673,7 @@ cli_state_repository (struct cli_state *state)
 		return e;
 	if (status)
 		return EIO;
-	e = oid_init_line(&state->parent, cstr_view_dstr(&state->output));
+	e = oid_init_line(&state->parent, cli_state_output(state));
 	return e ? e : cli_state_load(state, group);
 }
 
@@ -692,7 +700,7 @@ cli_state_create (struct cstr_view    path,
 		state->turns[i] = (struct cli_state_turn){ dstr(""), dstr("") };
 	state->pending = (struct cli_state_turn){ dstr(""), dstr("") };
 	state->identity = state->path = state->name = state->temporary = state->scratch = dstr("");
-	state->branch = state->latest = state->output = state->tree = state->metadata = dstr("");
+	state->branch = state->latest = state->tree = state->metadata = dstr("");
 	*e = cstr_view_store(identity, &state->identity);
 	if (!*e)
 		*e = path.len ? cstr_view_store(path, &state->path) : cli_state_default_path(state);
@@ -746,7 +754,7 @@ cli_state_destroy (struct cli_state **pstate)
 	dstr_cleanup(&state->scratch);
 	dstr_cleanup(&state->branch);
 	dstr_cleanup(&state->latest);
-	dstr_cleanup(&state->output);
+	buf_fini(&state->output);
 	dstr_cleanup(&state->tree);
 	dstr_cleanup(&state->metadata);
 	free(state);

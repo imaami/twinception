@@ -466,23 +466,30 @@ child_run (struct child_cmd const *cmd,
 int
 child_capture (struct child_cmd const *cmd,
                struct child_fds        fds,
-               char                   *buf,
-               size_t                  size,
-               size_t                 *len,
-               int                    *status)
+               struct buf             *out,
+               struct child_end       *end)
 {
-	*len = 0;
+	*end = (struct child_end){};
 	fds.out = memfd_create("askai-output", MFD_CLOEXEC);
 	if (fds.out < 0)
 		return errno;
-	struct child_end end;
-	int e = child_run(cmd, fds, &end);
-	if (!e) {
-		*status = end.status;
-		e = util_read_all(fds.out, buf, size, 0, len);
-	}
-	if (!e && *len == size)
+	/* After the read, out contains at most max readable bytes. */
+	size_t const had = buf_peek(out).len;
+	size_t const max = cmd->max < SIZE_MAX - had ? had + cmd->max : SIZE_MAX;
+	int e = child_run(cmd, fds, end);
+	/* The child wrote through a copy of fds.out, and the copy shares the
+	 * file offset. So the read starts after a seek to offset 0. */
+	if (!e && lseek(fds.out, 0, SEEK_SET) < 0)
+		e = errno;
+	if (!e)
+		e = buf_read(out, fds.out, 0, max);
+	/* buf_read() reads one byte past max to detect a longer output, and
+	 * then returns ENOBUFS. */
+	if (e == ENOBUFS) {
+		buf_cut(out, max, buf_peek(out).len - max);
+		end->flags |= CHILD_CUT;
 		e = EFBIG;
+	}
 	close(fds.out);
 	return e;
 }

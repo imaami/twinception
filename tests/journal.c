@@ -165,15 +165,19 @@ journal_test_legacy (struct journal *j)
 	journal_records_destroy(&load.record);
 }
 
-/* Run "sh -c @p script" with child_run(), with a deadline @p after_ms from
- * now, or none if 0, and a grace of @p grace_ms. Returns the result of
- * child_run(), and writes how the child ended to @p *end and how long it
- * ran to @p *ms.
+/* Run "sh -c @p script" with a deadline @p after_ms from now, or none if
+ * 0, and a grace of @p grace_ms. If @p out is nullptr, the function runs
+ * the script with child_run(). Otherwise it runs the script with
+ * child_capture(), which appends up to @p max bytes of the output to
+ * @p out. Returns the result of child_run() or child_capture(), and writes
+ * how the child ended to @p *end and how long it ran to @p *ms.
  */
 static int
 journal_test_run (char const       *script,
                   uint64_t          after_ms,
                   uint64_t          grace_ms,
+                  size_t            max,
+                  struct buf       *out,
                   struct child_end *end,
                   uint64_t         *ms)
 {
@@ -184,11 +188,12 @@ journal_test_run (char const       *script,
 		.file = "sh",
 		.argv = argv,
 		.envp = envp,
+		.max = max,
 		.deadline = after_ms ? start + after_ms * MS : 0,
 		.grace = grace_ms * MS,
 	};
 	*end = (struct child_end){ .code = -1, .status = -1, .flags = UINT32_MAX };
-	int e = child_run(&cmd, child_fds(), end);
+	int e = out ? child_capture(&cmd, child_fds(), out, end) : child_run(&cmd, child_fds(), end);
 	*ms = (loop_clock() - start) / MS;
 	return e;
 }
@@ -242,41 +247,119 @@ journal_test_private (char const *repo)
 	util_close(&dir);
 }
 
+/* Returns true if the readable bytes of @p out are @p text. */
+static bool
+journal_test_out (struct buf const *out,
+                  struct cstr_view  text)
+{
+	struct span const got = buf_peek(out);
+	return cstr_view_equal((struct cstr_view){ (char const *)got.ptr, got.len }, text);
+}
+
 /* Tests child_run() with exit statuses, a death by a signal, and a
  * deadline without a grace, with a grace that the command honors, and with
  * a grace that the command ignores. Each case asserts the error and the
- * struct child_end.
+ * struct child_end. A failed spawn is tested with child_run() and with
+ * child_capture().
  */
 static void
 journal_test_child_run (void)
 {
 	struct child_end end;
 	uint64_t ms;
-	assert(!journal_test_run("exit 0", 0, 0, &end, &ms));
+	assert(!journal_test_run("exit 0", 0, 0, 0, nullptr, &end, &ms));
 	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags);
-	assert(!journal_test_run("exit 3", 0, 0, &end, &ms));
+	assert(!journal_test_run("exit 3", 0, 0, 0, nullptr, &end, &ms));
 	assert(end.code == CLD_EXITED && end.status == 3 && !end.flags);
-	assert(journal_test_run("kill -KILL $$", 0, 0, &end, &ms) == EIO);
+	assert(journal_test_run("kill -KILL $$", 0, 0, 0, nullptr, &end, &ms) == EIO);
 	assert(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags);
-	assert(journal_test_run("exec sleep 5", 100, 0, &end, &ms) == ETIMEDOUT);
+	assert(journal_test_run("exec sleep 5", 100, 0, 0, nullptr, &end, &ms) == ETIMEDOUT);
 	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
 	assert(ms >= 100 && ms < 2000);
-	assert(journal_test_run("exec sleep 5", 100, 3000, &end, &ms) == ETIMEDOUT);
+	assert(journal_test_run("exec sleep 5", 100, 3000, 0, nullptr, &end, &ms) == ETIMEDOUT);
 	assert(end.code == CLD_KILLED && end.status == SIGTERM && end.flags == CHILD_LATE);
 	assert(ms >= 100 && ms < 2000);
-	assert(journal_test_run("trap '' TERM; exec sleep 5", 100, 300, &end, &ms) ==
+	assert(journal_test_run("trap '' TERM; exec sleep 5", 100, 300, 0, nullptr, &end, &ms) ==
 	       ETIMEDOUT);
 	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
 	assert(ms >= 400 && ms < 2500);
-	/* After a failed spawn, every member of the struct child_end is 0. */
+	/* After a failed spawn, every member of the struct child_end is 0, and
+	 * child_capture() appends nothing to the buffer. */
 	struct child_cmd const none = {
 		.file = "/nonexistent/askai-test",
 		.argv = (char const *const[]){ "askai-test", nullptr },
 		.envp = (char *const[]){ nullptr },
+		.max = 3,
 	};
 	end = (struct child_end){ .code = -1, .status = -1, .flags = UINT32_MAX };
 	assert(child_run(&none, child_fds(), &end) == ENOENT);
 	assert(!end.code && !end.status && !end.flags);
+	struct buf out = {};
+	assert(!buf_put(&out, "x", 1, SIZE_MAX));
+	end = (struct child_end){ .code = -1, .status = -1, .flags = UINT32_MAX };
+	assert(child_capture(&none, child_fds(), &out, &end) == ENOENT);
+	assert(!end.code && !end.status && !end.flags);
+	assert(journal_test_out(&out, CSTR_VIEW("x")));
+	buf_fini(&out);
+}
+
+/* Tests child_capture(): the output is appended to a buffer up to the cap,
+ * a longer output is cut at the cap with EFBIG and CHILD_CUT, and after a
+ * signal or the deadline the buffer does not change. Each case asserts the
+ * error and the struct child_end. journal_test_child_run() tests a failed
+ * spawn.
+ */
+static void
+journal_test_child_capture (void)
+{
+	struct buf out = {};
+	struct child_end end;
+	uint64_t ms;
+	assert(!journal_test_run("true", 0, 0, 0, &out, &end, &ms));
+	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags);
+	assert(!buf_peek(&out).len);
+	assert(!journal_test_run("printf abc", 0, 0, 3, &out, &end, &ms));
+	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags);
+	assert(journal_test_out(&out, CSTR_VIEW("abc")));
+	/* The cap applies to the output, not to the bytes already in out. */
+	assert(!journal_test_run("printf de; exit 3", 0, 0, 2, &out, &end, &ms));
+	assert(end.code == CLD_EXITED && end.status == 3 && !end.flags);
+	assert(journal_test_out(&out, CSTR_VIEW("abcde")));
+	assert(journal_test_run("printf fghi", 0, 0, 3, &out, &end, &ms) == EFBIG);
+	assert(end.code == CLD_EXITED && end.status == 0 && end.flags == CHILD_CUT);
+	assert(journal_test_out(&out, CSTR_VIEW("abcdefgh")));
+	buf_clear(&out);
+	assert(journal_test_run("printf a", 0, 0, 0, &out, &end, &ms) == EFBIG);
+	assert(end.code == CLD_EXITED && end.flags == CHILD_CUT && !buf_peek(&out).len);
+	/* Outputs of 64 KiB and of one byte more, with a cap of 64 KiB. Both
+	 * buffers contain the first 64 KiB of the output. */
+	static char const line[] = "abcdefg\n";
+	assert(!journal_test_run("yes abcdefg | head -c 65536", 0, 0, 64 << 10, &out, &end, &ms));
+	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags);
+	struct span got = buf_peek(&out);
+	assert(got.len == 64 << 10);
+	for (size_t i = 0; i < got.len; ++i)
+		assert(got.ptr[i] == line[i % (sizeof line - 1)]);
+	buf_clear(&out);
+	assert(journal_test_run("yes abcdefg | head -c 65537", 0, 0, 64 << 10, &out, &end, &ms) ==
+	       EFBIG);
+	assert(end.code == CLD_EXITED && end.status == 0 && end.flags == CHILD_CUT);
+	got = buf_peek(&out);
+	assert(got.len == 64 << 10);
+	for (size_t i = 0; i < got.len; ++i)
+		assert(got.ptr[i] == line[i % (sizeof line - 1)]);
+	/* After a signal or the deadline, the output is not read. */
+	buf_clear(&out);
+	assert(!buf_put(&out, "x", 1, SIZE_MAX));
+	assert(journal_test_run("printf abc; kill -KILL $$", 0, 0, 3, &out, &end, &ms) == EIO);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags);
+	assert(journal_test_out(&out, CSTR_VIEW("x")));
+	assert(journal_test_run("printf abc; exec sleep 5", 100, 0, 3, &out, &end, &ms) ==
+	       ETIMEDOUT);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	assert(ms >= 100 && ms < 2000);
+	assert(journal_test_out(&out, CSTR_VIEW("x")));
+	buf_fini(&out);
 }
 
 /* Tests the reason that child_end_why() writes for each kind of end. The
@@ -344,8 +427,10 @@ main (int argc, char **argv)
 	journal_test_path(argv[1]);
 	journal_test_private(argv[1]);
 	journal_test_child_run();
+	journal_test_child_capture();
 	journal_test_child_end_why();
 	puts("Journal loads, write gaps, legacy migration, reasoning verification, "
-	     "path walks, private files, child_run() and child_end_why(): PASS");
+	     "path walks, private files, child_run(), child_capture() and "
+	     "child_end_why(): PASS");
 	return 0;
 }

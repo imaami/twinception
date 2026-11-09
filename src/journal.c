@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "buf.h"
 #include "child.h"
 #include "clk.h"
 #include "git.h"
@@ -148,6 +149,8 @@ struct journal {
 	struct journal_job     jobs[JOURNAL_JOBS];
 	struct journal_file    files[JOURNAL_FILES];
 	EVP_MD_CTX            *digest;
+	struct buf             out;       /* the output of the last git, at
+	                                     most sizeof scratch bytes */
 	char                   scratch[JOURNAL_SCRATCH];
 	unsigned char          key[POLICY_KEY];  /* the key of the principals,
 	                                            read from
@@ -253,8 +256,8 @@ journal_open_path (struct journal *j,
 
 /** Fixed argv and environment. Input/output are anonymous files, so a
  * child's output can never deadlock its input pipe. The output goes to
- * j->scratch, and @p out, if not nullptr, views it until the next use of
- * j->scratch. Only the writer and startup call this function.
+ * j->out, and @p out, if not nullptr, views it until the next call of
+ * journal_git(). Only the writer and startup call this function.
  */
 static int
 journal_git (struct journal    *j,
@@ -278,20 +281,23 @@ journal_git (struct journal    *j,
 		.file     = "git",
 		.argv     = argv,
 		.envp     = env,
+		.max      = sizeof j->scratch,
 		.deadline = loop_clock() + JOURNAL_GIT_NS,
 		.grace    = GIT_GRACE,
 	};
 	struct child_fds const fds = { .in = input, .out = -1, .dir = j->repo_fd,
 	                               .keep = j->lock_fd };
-	size_t len;
-	int code = 0;
-	e = child_capture(&cmd, fds, j->scratch, sizeof j->scratch, &len, &code);
+	struct child_end end;
+	buf_clear(&j->out);
+	e = child_capture(&cmd, fds, &j->out, &end);
 	if (!e && status)
-		*status = code;
-	else if (!e && code)
+		*status = end.status;
+	else if (!e && end.status)
 		e = EIO;
-	if (out)
-		*out = (struct cstr_view){ j->scratch, len };
+	if (out) {
+		struct span const got = buf_peek(&j->out);
+		*out = (struct cstr_view){ (char const *)got.ptr, got.len };
+	}
 	return e;
 }
 
@@ -1431,6 +1437,7 @@ journal_destroy (struct journal **p_journal)
 		util_close(&j->files[k].fd);
 	EVP_MD_CTX_free(j->digest);
 	j->digest = nullptr;
+	buf_fini(&j->out);
 	util_close(&j->jobs_fd);
 	util_close(&j->thoughts_fd);
 	util_close(&j->wal_fd);

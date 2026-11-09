@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "buf.h"
 #include "cdb.h"
 #include "child.h"
 #include "clk.h"
@@ -1483,28 +1484,27 @@ struct cxi_cache {
 	int                state;
 };
 
-/* Runs git with @p words and the lock kept open, its output into @p buf
- * or /dev/null. Returns EIO for an exit status other than 0.
+/* Runs git with @p words and the lock kept open. The output is appended
+ * to @p out, up to @p max bytes, or goes to /dev/null if @p out is nullptr.
+ * Returns EIO for an exit status other than 0.
  */
 static int
 cxi_cache_git (struct cxi_cache const *cache,
                char const *const      *words,
-               char                   *buf,
-               size_t                  size,
-               size_t                 *len)
+               struct buf             *out,
+               size_t                  max)
 {
 	char const *argv[256];
 	int e = child_argv(argv, array_size(argv), cache->git, (size_t)cache->n_git, words);
 	extern char **environ;
 	struct child_cmd const cmd = {
-		.file = "git", .argv = argv, .envp = environ, .deadline = cache->deadline
+		.file = "git", .argv = argv, .envp = environ, .max = max, .deadline = cache->deadline
 	};
 	struct child_fds fds = child_fds();
 	fds.keep = cache->lock;
 	struct child_end end;
 	if (!e)
-		e = buf ? child_capture(&cmd, fds, buf, size, len, &end.status)
-		        : child_run(&cmd, fds, &end);
+		e = out ? child_capture(&cmd, fds, out, &end) : child_run(&cmd, fds, &end);
 	return e ? e : end.status ? EIO : 0;
 }
 
@@ -1542,9 +1542,8 @@ cxi_cache_export (struct cxi_cache *cache,
 		"-c", "core.symlinks=false", "-c", "core.autocrlf=false", "read-tree", "--reset",
 		"-u", commit.data, nullptr
 	};
-	char *list = malloc(CXI_LIST);
-	int e = list ? 0 : ENOMEM;
-	if (!e && !oid_valid(was)) {
+	int e = 0;
+	if (!oid_valid(was)) {
 		e = nftw(dstr_get(&cache->tree), cxi_cache_remove, 16, FTW_DEPTH | FTW_PHYS) &&
 		    errno != ENOENT ? errno : 0;
 		for (char const *const *f = (char const *const[]){ "index", "index.lock", nullptr };
@@ -1553,19 +1552,20 @@ cxi_cache_export (struct cxi_cache *cache,
 	}
 	if (!e && mkdirat(cache->fd, "tree", 0700) && errno != EEXIST)
 		e = errno;
-	size_t len = 0;
+	struct buf list = {};
 	if (!e)
-		e = cxi_cache_git(cache, count, list, CXI_LIST, &len);
+		e = cxi_cache_git(cache, count, &list, CXI_LIST);
+	struct span const got = buf_peek(&list);
+	struct cstr_view rest = { (char const *)got.ptr, got.len };
 	size_t files = 0;
 	uint64_t bytes = 0;
 	/* The size of a submodule is "-", which util_digits() reads as 0. */
-	for (char *p = list, *z; p && (z = memchr(p, '\0', len - (size_t)(p - list)));
-	     p = z + 1, ++files) {
+	for (struct cstr_view field; cstr_view_cut(&rest, '\0', &field); ++files) {
 		uint64_t size;
-		(void)util_digits(p, (size_t)(z - p), UINT64_MAX, &size);
+		(void)util_digits(field.data, field.len, UINT64_MAX, &size);
 		bytes += size;
 	}
-	free(list);
+	buf_fini(&list);
 	static_assert(CXI_FILES == 100'000 && CXI_BYTES == 1 << 30, "update the text of the limits");
 	if (e == EFBIG || (!e && (files > CXI_FILES || bytes > CXI_BYTES))) {
 		cxi_out_printf(out, "Commit %s is too large for the code tool. The limits are "
@@ -1575,7 +1575,7 @@ cxi_cache_export (struct cxi_cache *cache,
 	if (!e)
 		e = cxi_cache_set_state(cache, CSTR_VIEW("-"));
 	if (!e)
-		e = cxi_cache_git(cache, export, nullptr, 0, nullptr);
+		e = cxi_cache_git(cache, export, nullptr, 0);
 	if (e == EIO || e == ETIMEDOUT) {
 		cxi_out_printf(out, "git cannot export commit %s%s.", commit.data,
 		               e == EIO ? "" : " in time");
