@@ -372,7 +372,16 @@ open.
   with the ID, the state, the about and the claim, cut at 200 bytes. With
   `author`, it lists the findings of one member.
 - `show` prints a finding, the findings about it, and each change with
-  its reason and its evidence.
+  its reason and a summary of its evidence. `show` does not count as
+  reading the evidence.
+- `expand` prints the stored evidence of a finding (`id` such as
+  `cuh#2`), of one evidence item (`cuh#2/1`), or without `id` of all
+  open findings of the agent, newest first, a window at a time from
+  `offset`. `askai` reads the file of the finding and the archive files
+  with `git cat-file --batch`, so `expand` works on every service of the
+  session. A notice names stored material that is missing or that does
+  not match its SHA-256. One call prints at most 8 MiB of material, and
+  names the items that did not fit.
 
 A change can cite evidence, at most 16 references:
 
@@ -382,6 +391,8 @@ A change can cite evidence, at most 16 references:
 | `c7:120-140,150` | lines that a `git` `read` or a `code` `describe` in call c7 showed whole, at most 16 ranges |
 | `c7:message` | the message of the one commit of a `git` `show` or `git` `log` in call c7 |
 | `c7:files` | the files that a `git` `ls-tree` in call c7 lists, under the tree of its one commit |
+| `cuh#2/1` | the evidence item 1 of the finding `cuh#2` |
+| `cuh#2/1:161-165` | lines of the lines item `cuh#2/1`, at most 16 ranges |
 
 The number of a call is the number in the note of its result, such as
 `[askai: call c7]` (section [`context`](#context)). `askai` keeps the
@@ -392,10 +403,15 @@ of them, so that the refusal names the tool. `external` names
 material outside `askai` with an exact hash of 40 or 64 hexadecimal
 digits, at most 8 items of at most 1 KiB, which `askai` does not store.
 `verified` and `disproved` need a `reason` and at least one reference
-that is not external, and each call that they cite must be of an earlier
-turn. `retracted` needs a `reason`. A call that left the memory, or that
-`askai` made before a restart, cannot be cited, and the refusal says
-why. `askai` leaves its own notices out of the end of a claim or of a
+that is not external. Each call that they cite must be of an earlier
+turn, and each item must be seen: a result of an earlier turn of the
+`ask_ai` call showed the last byte of the item, after its other bytes in
+order, as the pages of `expand` do. The refusal of an item that the
+turns had not seen prints the item if it fits in one result, and the
+item then counts as shown in that turn. `askai` keeps at most 1024 items
+in memory for an `ask_ai` call. `retracted` needs a `reason`. A call
+that left the memory, or that `askai` made before a restart, cannot be
+cited, and the refusal says why. `askai` leaves its own notices out of the end of a claim or of a
 reason, as it does for the text of a note, and refuses a claim or a
 reason that contains the markup of the next tool call.
 
@@ -408,7 +424,11 @@ number divided by 100, a JSON object of version 1, and the material of
 the evidence, each as `archive/XX/YYY`, named by the SHA-256 of its
 bytes. The file of the finding names the material by size and SHA-256,
 with the identifiers that reproduce it, such as the repository, the
-commit and the path. The number of a new finding is one more than the
+commit and the path. An item cited again from another finding names the
+finding that it comes from, and its archive files are the same Git
+objects as those of that finding, added by their IDs without a copy of
+the data, so each branch contains all of its evidence. Lines of an item
+are stored anew. The number of a new finding is one more than the
 highest number on the branch when the commit is made. If another `ask_ai`
 call of the agent changes the branch at the same time, `askai` reads the
 branch again and makes the commit again, three commits at most. A file
@@ -420,7 +440,8 @@ Each `ask_ai` call and each compaction starts with the open findings of
 the agent in the thread, newest first, within the window of a tool
 result in a turn (section [`context`](#context)), and the number of the
 open findings of the agent in other threads. After a compaction, a
-notice names the calls that a finding can cite. A notice after the
+notice names the calls that a finding can cite, and another the items
+that the turns saw, at most 64 by ID. A notice after the
 summary of a compaction states that `askai` keeps the task word for word
 through every compaction: the system text, the messages of the client
 and the prompt. So the model need not copy the task into its notes. The
@@ -828,7 +849,7 @@ tools:
 | ---- | ------------ | --------------------- |
 | `notes` | writes, lists and reads shared session notebooks | in every call with `notes` |
 | `compact` | replaces the conversation after the prompt with a summary | with any other tool |
-| `findings` | records the findings of the agent in the notes repository, with evidence from the calls of the turns, and lists and shows the findings of every member | with any other tool, when `notes` is set |
+| `findings` | records the findings of the agent in the notes repository, with evidence from the calls of the turns, lists and shows the findings of every member, and expands their stored evidence | with any other tool, when `notes` is set |
 | `background` | runs a call of a tool as a job, and returns the number of the job at once | with a tool that can run in the background |
 | `jobs` | lists the jobs and the timers, returns the output of an ended job, or cancels a job or a timer | with any other tool |
 | `wait` | waits up to 10 minutes for a job or a timer | with any other tool |

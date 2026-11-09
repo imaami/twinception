@@ -760,9 +760,11 @@ arguments as the model sent them, the result as the model got it, and for a
 `git` `read` or a `code` `describe` the commit, the path and the lines that
 the result showed whole. A call larger than 4 MiB is stored as its number
 only, and so is a `findings` or `compact` call, which shows nothing that a
-finding can cite. The stored calls are dropped when the ask call ends.
-After a compaction, a notice names the stored calls that a finding can
-cite.
+finding can cite. `askai` also stores the evidence items of findings
+that `findings` printed to the turns, at most 1024, with the bytes of
+each item that results showed. The stored calls and items are dropped
+when the ask call ends. After a compaction, a notice names the stored
+calls that a finding can cite, and another the items that the turns saw.
 
 The model need not wait for a slow call: `background` runs a call of `man`,
 `git` or a plugin tool that allows it, as a job, and answers at once with
@@ -807,24 +809,42 @@ changes the state of a finding of the agent to `candidate`, `verified`,
 change stores the earlier claim. Only the author changes a finding. `list`
 lists the findings of every member, open first, or with `author` those of
 one member. `show` prints a finding with every change, and the findings
-about it. The state of a finding is the state of its last change, and
-`candidate` and `verified` findings are open.
+about it. `expand` prints the stored evidence of a finding (`id` such as
+`cuh#2`), of one evidence item (`cuh#2/1`), or without `id` of all open
+findings of the agent, newest first, a window at a time from `offset`.
+The state of a finding is the state of its last change, and `candidate`
+and `verified` findings are open.
 
-A change cites evidence, at most 16 references to the calls of the ask
-call: `c7` is the call c7, its arguments and its result as the model got
-them, or the lines of a `git` `read` or a `code` `describe` that its
-result showed whole; `c7:120-140,150` is some of those lines;
-`c7:message` and `c7:files` are the message and the files of the one
-commit of a `git` call. `askai` stores the material in the same commit as
-the finding, each as `archive/XX/YYY` named by the SHA-256 of its bytes,
-and the file of the finding names it with the identifiers that reproduce
-it, such as the repository, the commit and the path. `external` names
-material outside `askai` with an exact hash, at most 8 items, which
-`askai` does not store. `verified` and `disproved` need a `reason` and at
-least one reference that is not external, each to a call of an earlier
-turn. `retracted` needs a `reason`. A call that left the memory of the ask
-call, or that `askai` made before a restart, cannot be cited, and the
-refusal says why.
+A change cites evidence, at most 16 references: `c7` is the call c7 of
+the ask call, its arguments and its result as the model got them, or the
+lines of a `git` `read` or a `code` `describe` that its result showed
+whole; `c7:120-140,150` is some of those lines; `c7:message` is the
+message of the one commit of a `git` `show` or `log` call, and
+`c7:files` the files of the one commit of a `git` `ls-tree` call;
+`cuh#2/1` is the evidence item 1 of the finding `cuh#2`, and
+`cuh#2/1:161-165` some lines of such an item. `askai` stores the material
+in the same commit as the finding, each as `archive/XX/YYY` named by the
+SHA-256 of its bytes, and the file of the finding names it with the
+identifiers that reproduce it, such as the repository, the commit and the
+path. An item cited again contains the identifiers of the item and names
+it, and its archive files are the Git objects of the other finding, so
+each branch contains all of its evidence. `external` names material outside
+`askai` with an exact hash, at most 8 items, which `askai` does not
+store. `verified` and `disproved` need a `reason` and at least one
+reference that is not external. Each call that they cite must be of an
+earlier turn, and each item must be seen: a result of an earlier turn of
+the ask call showed the last byte of the item, after its other bytes in
+order, as the pages of `expand` do. `show` does not count. The refusal of
+an item that the turns had not seen prints the item if it fits in one
+result, and the item then counts as shown in that turn. `retracted`
+needs a `reason`. A call that left the memory of the ask call, or that
+`askai` made before a restart, cannot be cited, and the refusal says why.
+
+`expand` reads the file of the finding and its archive files with `git
+cat-file --batch`, so it works on every service of the session, and a
+notice names stored material that is missing or that does not match its
+SHA-256. One call prints at most 8 MiB of material and names the items
+that did not fit.
 
 Each `add` and `update` is one commit on the branch of the agent, by the
 agent, with the trailer lines `Ask:`, `Call:`, `Conversation:` and

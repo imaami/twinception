@@ -3601,6 +3601,17 @@ mcp_slot_source (struct mcp_slot          *slot,
 }
 
 int
+mcp_slot_evidence (struct mcp_slot        *slot,
+                   struct seen_item const *item,
+                   size_t                  at,
+                   size_t                  len)
+{
+	int const e = !item ? EFAULT : mcp_slot_live(slot, 0, 0);
+	return e || slot->role != ROLE_TURN ? e
+	       : seen_print(&slot->req->seen, item, mcp_slot_call(slot), at, len);
+}
+
+int
 mcp_slot_shows (struct mcp_slot *slot,
                 char const      *notebook)
 {
@@ -5832,6 +5843,7 @@ mcp_req_result_write (struct mcp_req *req)
 	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED, r.output);
 	if (row->metric == LENT_FINDINGS || row->metric == LENT_COMPACT) {
 		e = seen_keep_number(&req->seen, r.number, r.tool);
+		seen_shown(req->seen, r.number, slot->skip, slot->window, r.turn);
 	} else {
 		/* seen_keep() scans the output up to the end of the window. */
 		loop_work(req->mcp->loop, LOOP_COPY, slot->skip + slot->window);

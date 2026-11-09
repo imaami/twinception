@@ -35,6 +35,7 @@ struct metrics_src;
 struct oid;
 struct registry;
 struct seen;
+struct seen_item;
 struct store;
 struct stream_app;
 struct task_pool;
@@ -485,6 +486,20 @@ struct call_source {
 extern int
 mcp_slot_source (struct mcp_slot          *slot,
                  struct call_source const *src);
+
+/** Records for the ring of the calls of the ask call (seen_print()) that
+ *  the @p len bytes of the call's output from @p at on print the evidence
+ *  item @p item. When askai writes the result, the bytes of the window
+ *  that continue the bytes of the item shown before count as shown
+ *  (seen_shown()). It records nothing for the call of a client or a job.
+ *  Returns 0, EFAULT for nullptr, EINVAL if the call has ended or for the
+ *  errors of seen_print(), or ENOMEM. This function is not exported.
+ */
+extern int
+mcp_slot_evidence (struct mcp_slot        *slot,
+                   struct seen_item const *item,
+                   size_t                  at,
+                   size_t                  len);
 
 /** Sets the notebook that the call's output shows to @p notebook, the
  *  name of a member and its kind, such as "bro (agent)", which must stay

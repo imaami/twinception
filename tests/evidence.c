@@ -320,11 +320,10 @@ test_cite (void)
 	        __LINE__);
 	refused(&cite, "c9", false, "No call c9 was made before this call.", __LINE__);
 	refused(&cite, "cuh#2", false, "cuh#2 is a finding. evidence takes an evidence item such "
-	        "as cuh#2/1, or a call such as c7. show with id cuh#2 lists the items.", __LINE__);
-	refused(&cite, "cuh#2/1", false, "askai cannot cite the evidence item cuh#2/1 yet. Cite "
-	        "your calls, such as c7.", __LINE__);
-	refused(&cite, "cuh#2/1:3", false, "askai cannot cite the evidence item cuh#2/1 yet. Cite "
-	        "your calls, such as c7.", __LINE__);
+	        "as cuh#2/1, or a call such as c7. expand with id cuh#2 lists the items.", __LINE__);
+	/* evidence_recite() cites an item again. */
+	refused(&cite, "cuh#2/1", false, "", __LINE__);
+	refused(&cite, "cuh#2/1:3", false, "", __LINE__);
 	/* A git show without identifiers, and one that names two commits. The
 	 * call c3 takes no place in the ring, so c4 is the third call. */
 	struct seen_call *c4 = &seen->calls[2];

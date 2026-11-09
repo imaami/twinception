@@ -227,9 +227,10 @@ evidence_ref_parse (struct evidence_ref *dest,
  * Returns 0. Returns EINVAL with the refusal for the turn in the @p len
  * bytes at @p why if the call is not in the ring, cannot be evidence, is
  * of the current turn with @p strict, or does not show what the form of
- * @p ref names, and for the forms of X#n. Returns ENOMEM, or EINVAL
- * without a refusal for a null argument. On failure @p dest can contain a
- * part of the item.
+ * @p ref names, and for X#n, a finding. Returns ENOMEM, or EINVAL without
+ * a refusal for a null argument and for X#n/m and X#n/m:A-B, which
+ * evidence_recite() takes. On failure @p dest can contain a part of the
+ * item.
  */
 extern int
 evidence_cite (struct evidence            *dest,

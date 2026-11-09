@@ -2,9 +2,16 @@
  *
  * The findings tool, which askai lends only to the turns of an ask call,
  * with --notes. A call adds a finding of the agent (src/finding.h),
- * updates one, lists the findings of every member, or shows one finding
- * with its changes. The evidence of an add or an update comes from the
- * calls of the ring of the ask call (src/evidence.h, src/seen.h).
+ * updates one, lists the findings of every member, shows one finding with
+ * its changes, or expands the stored evidence of a finding, of one evidence
+ * item, or of all open findings of the agent. The evidence of an add or an
+ * update comes from the calls of the ring of the ask call and from the
+ * items that a result showed whole in an earlier turn (src/evidence.h,
+ * src/seen.h). verified and disproved refuse an item
+ * that the turns had not seen, and the refusal prints the item, which then
+ * counts as shown in this turn. A finding that cites an item of another
+ * finding again names the archive files of the item by their git IDs, so
+ * that each branch of findings contains all of its evidence.
  *
  * The findings of an agent are the branch refs/heads/agent/NAME/findings
  * of the session repository (src/store.h). Each add and each update is one

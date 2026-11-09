@@ -14710,7 +14710,8 @@ def check_findings(binary, up):
             assert sorted(schema["properties"]) == [
                 "about", "action", "author", "claim", "evidence", "external", "id", "offset",
                 "reason", "state"], schema
-            assert schema["properties"]["action"]["enum"] == ["add", "update", "list", "show"]
+            assert schema["properties"]["action"]["enum"] == ["add", "update", "list", "show",
+                                                              "expand"]
             assert schema["properties"]["state"]["enum"] == [
                 "candidate", "verified", "disproved", "retracted"], schema
             assert schema["properties"]["evidence"]["maxItems"] == 16 and \
@@ -14719,7 +14720,14 @@ def check_findings(binary, up):
             assert schema["required"] == ["action"] and \
                 schema["additionalProperties"] is False, schema
             assert schema["properties"]["id"]["description"] == \
-                "A finding, such as bro#5, for update and show.", schema
+                "A finding, such as bro#5, for update, show and expand. An evidence item, " \
+                "such as bro#5/2, for expand. expand without id prints the evidence of all " \
+                "your open findings.", schema
+            assert schema["properties"]["evidence"]["description"].endswith(
+                " c7:message is the message of the one commit of a git show or a git log in "
+                "call c7. c7:files is the names and modes of the files that a git ls-tree in "
+                "call c7 lists. bro#5/2 is an evidence item that expand showed you. "
+                "bro#5/2:120-140 is lines 120 to 140 of the lines item bro#5/2."), schema
             assert lent["findings"]["description"].startswith(
                 "Findings are claims that you make about material that askai showed you. A "
                 "finding has an id such as bro#5, a claim, a state and a history of "
@@ -14800,13 +14808,13 @@ def check_findings(binary, up):
                 "c3 is a findings call. findings calls cannot be evidence.",
                 "No call c99 was made before this call.",
                 "evidence[0] is not a reference: x. Give a call such as c7, lines such as "
-                "c7:120-140, c7:message or c7:files.",
-                "askai cannot cite the evidence item cuh#2/1 yet. Cite your calls, such as c7.",
+                "c7:120-140, c7:message, c7:files, or an evidence item such as bro#5/2.",
+                "No finding has the id cuh#2. list shows the findings.",
                 "cuh#2 is a finding. evidence takes an evidence item such as cuh#2/1, or a call "
-                "such as c7. show with id cuh#2 lists the items.",
+                "such as c7. expand with id cuh#2 lists the items.",
                 "external[0] needs an exact hash of the material: 40 or 64 hexadecimal digits, "
                 "such as sha256:9b1c...",
-                "The action argument must be one of: add, update, list, show."], second
+                "The action argument must be one of: add, update, list, show, expand."], second
             third = results(sent[3])
             listed = ("Findings of the session session, open first (id, state, about, "
                       f"claim):\nbro#2  verified   -  {claim}\nbro#1  verified   -  C1b\n")
@@ -14817,7 +14825,8 @@ def check_findings(binary, up):
                      f"repository proj at commit {head[:12]}\nChange 2: verified, ask "
                      f"{ask[:8]}, turn 2\n  claim before: C1\n  reason: c1 shows lines 1 to "
                      f"10.\n  evidence bro#1/2: lines 1 to 10 of src/a.c in repository proj "
-                     f"at commit {head[:12]}\n")
+                     f"at commit {head[:12]}\n[askai: expand with id bro#1 prints the stored "
+                     f"evidence. Only expand counts as reading the evidence.]\n")
             assert third[:8] == [
                 "The action add takes no argument id.",
                 "add needs claim: what you found.",
@@ -14839,7 +14848,8 @@ def check_findings(binary, up):
                         f"ask {ask[:8]}, turn 2\n  reason: c2 lists one commit.\n  evidence "
                         f"bro#2/1: lines 3 to 4 of src/a.c in repository proj at commit "
                         f"{head[:12]}\n  evidence bro#2/2: call c2, git, {log_bytes} bytes\n"
-                        f"  external: git 2.55.0 {head}\n")
+                        f"  external: git 2.55.0 {head}\n[askai: expand with id bro#2 prints "
+                        f"the stored evidence. Only expand counts as reading the evidence.]\n")
             size = len(show_two)
             assert third[10] == show_two[31:] + f"\n\n[Bytes 31 to {size} of {size}. End of " \
                 "the output.]", third[10]
@@ -15058,6 +15068,413 @@ def check_findings(binary, up):
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("findings: add, update, list and show on the branch of the agent, evidence from "
           "the ring, the open findings in the prompt, two writers at once: PASS")
+
+
+def check_findings_expand(binary, up):
+    """expand prints the stored evidence of a finding, of one evidence item,
+    or of all open findings of the agent, from the session repository, on
+    any service of the session, a window at a time from offset. A result
+    that shows the last byte of an item, after its other bytes in order,
+    makes the item seen from the next turn of the ask call. verified and
+    disproved can cite an item X#n/m or lines of it X#n/m:A-B only after
+    that. The refusal of an item that the turns had not seen prints the
+    item, which then counts as shown in that turn. A finding that cites an
+    item of another agent's finding whole names its archive files by their
+    git IDs. Each refusal of the findings tool is checked here or in
+    check_findings and check_recovery_findings."""
+    with tempfile.TemporaryDirectory() as d:
+        git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+        repo = f"{d}/proj"
+        session = f"{d}/session.git"
+        os.makedirs(f"{repo}/src")
+
+        def sh(*args):
+            return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c",
+                                   "user.email=t@t", *args], check=True,
+                                  env=os.environ | git, capture_output=True,
+                                  text=True).stdout
+
+        def notes(*args, text=True, data=None):
+            return subprocess.run(["git", "--git-dir", session, *args], check=True,
+                                  env=os.environ | git, capture_output=True,
+                                  text=text, input=data).stdout
+        sh("init", "-q", "-b", "main")
+        with open(f"{repo}/src/a.c", "w") as f:
+            f.write("".join(f"int x{i};\n" for i in range(300)))
+        with open(f"{repo}/src/b.c", "w") as f:
+            f.write("".join(f"int y{i};\n" for i in range(800)))
+        sh("add", "src")
+        sh("commit", "-q", "-m", "first")
+        head = sh("rev-parse", "HEAD").strip()
+        script = []
+        up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
+
+        def tools(request):
+            """The results of the calls of the last turn in @p request, with
+            their stamps."""
+            messages = request["body"]["messages"]
+            last = max(k for k, m in enumerate(messages) if m["role"] == "assistant")
+            return [m["content"] for m in messages[last + 1:]]
+
+        def results(request):
+            """The results of the calls of the last turn, without stamps and
+            without the notice of the context after the last result."""
+            messages = request["body"]["messages"]
+            last = max(k for k, m in enumerate(messages) if m["role"] == "assistant")
+            return [re.sub(r"\n\n\[askai: your context is [^\]]*\]$", "", m["content"])
+                    for m in unstamped(messages[last + 1:])]
+
+        def mixed(*calls):
+            return lambda r: (200, turn_stream([(f"m{k}", name, json.dumps(c))
+                                                for k, (name, c) in enumerate(calls)]))
+
+        def turn(*calls):
+            return mixed(*(("findings", c) for c in calls))
+
+        def offset(request):
+            """The offset in the note of the last result in @p request, or
+            None."""
+            found = re.search(r'"offset": (\d+)\.\]', tools(request)[-1])
+            return int(found[1]) if found else None
+
+        def paging(request):
+            """Turns that page cuh#2 from the offset in the last result,
+            until its end, and then the next turn of the script."""
+            at = offset(request)
+            if at is None:
+                return script.pop(0)(request)
+            script.insert(0, paging)
+            return turn({"action": "expand", "id": "cuh#2", "offset": at})(request)
+
+        def stored(number, author):
+            return json.loads(notes("show", f"refs/heads/agent/{author}/findings:findings/"
+                                    f"{number // 100}/{number}.json"))
+
+        def tree(author):
+            """{path: blob} of the branch of the findings of @p author."""
+            rows = notes("ls-tree", "-r", f"refs/heads/agent/{author}/findings").split("\n")
+            return {r.split("\t")[1]: r.split()[2] for r in rows if r}
+
+        def archive(sha256):
+            return f"archive/{sha256[:2]}/{sha256[2:]}"
+
+        def call_block(item, call, args, result, author="cuh", ask=None, turn=2, frm=None,
+                       ids=""):
+            """An item of a call as expand prints it."""
+            by = f" from {frm}" if frm else ""
+            of = "" if frm else f" of {author}"
+            return (f"[askai: {item}{by}: call c{call}{of} in ask {ask[:8]}, turn {turn}, tool "
+                    f"git, stored exactly as sent.{ids} Arguments:]\n{args}\n[askai: {item}: "
+                    f"result, {len(result.encode())} bytes:]\n{result}\n")
+
+        def lines_block(item, ranges, path, lines, frm=None):
+            by = f" from {frm}" if frm else ""
+            return (f"[askai: {item}{by}: lines {ranges} of {path} in repository proj at "
+                    f"commit {head}, stored as shown:]\n{lines}")
+
+        log = {"repo": "proj", "command": "log", "options": ["--oneline"]}
+        read_a = {"repo": "proj", "command": "read", "revisions": ["HEAD:src/a.c"], "line": 1,
+                  "count": 10}
+        read_b = {"repo": "proj", "command": "read", "revisions": ["HEAD:src/b.c"], "line": 1,
+                  "count": 800}
+        base = ("-u", up.url(), "--upstream-tools", "--git", repo, "--notes", session)
+
+        # cuh records three findings: a call and lines, 800 lines of b.c,
+        # and lines of a.c and of b.c. A read shows lines, and a git log
+        # without identifiers names no commit, so neither shows the message
+        # or the files of a commit.
+        with Askai(binary, *base, "--agent", "cuh") as cuh:
+            script[:] = [mixed(("git", log), ("git", read_a), ("git", read_b)),
+                         turn({"action": "add", "claim": "One commit.", "state": "verified",
+                               "evidence": ["c1", "c2:2-4"], "reason": "R1",
+                               "external": ["sha " + head]},
+                              {"action": "add", "claim": "b.c has 800 lines.",
+                               "state": "verified", "evidence": ["c3"], "reason": "R2"},
+                              {"action": "add", "claim": "C3", "evidence": ["c2:5-6", "c3:1-2"]},
+                              {"action": "add", "claim": "C", "evidence": ["c2:message"]},
+                              {"action": "add", "claim": "C", "evidence": ["c1:files"]},
+                              {"action": "add", "claim": "C", "evidence": ["c1:message"]})]
+            count = len(up.requests)
+            cuh.ask("Q", thread="1" * 32)
+            made = tools(up.requests[count + 1])
+            said = results(up.requests[count + 2])
+            assert re.fullmatch(r"Added cuh#1 \(verified\)\. Evidence cuh#1/1 from call c1, "
+                                r"cuh#1/2 from c2:2-4\. Commit [0-9a-f]{8}\.", said[0]), said
+            assert re.fullmatch(r"Added cuh#3 \(candidate\)\. Evidence cuh#3/1 from "
+                                r"c2:5-6, cuh#3/2 from c3:1-2\. Commit [0-9a-f]{8}\.",
+                                said[2]), said
+            assert said[3:] == [
+                "c2:message needs a git show or a git log that names one commit. Call c2 is a "
+                "git read.",
+                "c1:files needs a git ls-tree that names one commit. Call c1 is a git log.",
+                "c1:message needs a git show or a git log that names one commit. Call c1 names "
+                "no commit."], said
+        cuh_ask = stored(1, "cuh")["changes"][0]["ask"]
+        cuh_tree = tree("cuh")
+        one = stored(1, "cuh")["changes"][0]["evidence"]
+        two = stored(2, "cuh")["changes"][0]["evidence"][0]
+        three = stored(3, "cuh")["changes"][0]["evidence"]
+        a_lines = "".join(f"{n}\tint x{n - 1};\n" for n in range(2, 5))
+        b_lines = "".join(f"{n}\tint y{n - 1};\n" for n in range(1, 801))
+        block31 = lines_block("cuh#3/1", "5 to 6", "src/a.c", "5\tint x4;\n6\tint x5;\n")
+        block32 = lines_block("cuh#3/2", "1 to 2", "src/b.c", "1\tint y0;\n2\tint y1;\n")
+        block11 = call_block("cuh#1/1", 1, json.dumps(log), made[0], ask=cuh_ask, turn=1)
+        block12 = lines_block("cuh#1/2", "2 to 4", "src/a.c", a_lines)
+        block21 = lines_block("cuh#2/1", "1 to 800", "src/b.c", b_lines)
+        assert two["result"]["bytes"] == len(b_lines), two
+        external = (f"[askai: external item of cuh#1: sha {head}]\n[askai: askai does not "
+                    "store or show this material.]\n")
+
+        # bro, on another service with windows of 4000 bytes, checks the
+        # findings of cuh in one ask call.
+        thread = "2" * 32
+        with Askai(binary, *base, "--agent", "bro", "--context", "8000") as bro:
+            script[:] = [
+                # Turn 1: an unseen item is refused and printed; an item
+                # expanded in this turn is refused for verified, and a
+                # candidate can cite any item.
+                turn({"action": "add", "claim": "C", "state": "verified",
+                      "evidence": ["cuh#1/1"], "reason": "R"},
+                     {"action": "expand", "id": "cuh#1/2"},
+                     {"action": "add", "claim": "C", "state": "verified",
+                      "evidence": ["cuh#1/2"], "reason": "R"},
+                     {"action": "add", "claim": "Lines 2 to 4.", "evidence": ["cuh#1/2"]}),
+                # Turn 2: both items count as seen. Refusals of items.
+                turn({"action": "add", "claim": "One commit too.", "state": "verified",
+                      "evidence": ["cuh#1/1", "cuh#1/2:3"], "reason": "R"},
+                     {"action": "update", "id": "bro#1", "state": "verified",
+                      "evidence": ["cuh#1/2"], "reason": "R"},
+                     {"action": "add", "claim": "C", "evidence": ["cuh#1/2:9"]},
+                     {"action": "add", "claim": "C", "evidence": ["cuh#1/2:3-4,6"]},
+                     {"action": "add", "claim": "C", "evidence": ["cuh#1/1:3"]},
+                     {"action": "add", "claim": "C", "evidence": ["cuh#1/7"]},
+                     {"action": "add", "claim": "C", "evidence": ["cuh#9/1"]},
+                     {"action": "add", "claim": "C", "state": "disproved",
+                      "evidence": ["cuh#3/1", "cuh#3/2", "cuh#3/1"], "reason": "R"},
+                     {"action": "expand", "id": "cuh#1/x"},
+                     {"action": "expand", "id": "cuh#1/9"},
+                     {"action": "expand", "id": "cuh#9"},
+                     {"action": "expand", "id": "c7"},
+                     {"action": "expand", "id": "cuh#1", "author": "cuh"}),
+                # Turn 3 and on: the first page of cuh#2, a refusal of the
+                # item seen in part, which names it for expand, and the
+                # other pages in order.
+                turn({"action": "expand", "id": "cuh#2"}),
+                lambda r: turn({"action": "update", "id": "bro#2", "state": "disproved",
+                                "evidence": ["cuh#2/1"], "reason": "R"},
+                               {"action": "expand", "id": "cuh#2", "offset": offset(r)})(r),
+                paging,
+                # cuh#2/1 counts as seen.
+                turn({"action": "update", "id": "bro#2", "state": "disproved",
+                      "evidence": ["cuh#2/1"], "reason": "b.c has 800 lines."},
+                     {"action": "expand"}),
+                # A git call, then a compaction, and calls after it. The
+                # compact call is c25 after one more page.
+                mixed(("git", log), ("compact", {"summary": "S"})),
+                turn({"action": "add", "claim": "C", "evidence": ["c25"]},
+                     {"action": "add", "claim": "C", "state": "verified",
+                      "evidence": ["cuh#2/1"], "reason": "R"}),
+            ]
+            count = len(up.requests)
+            assert bro.ask("Q", thread=thread)["content"][0]["text"] == "A"
+            sent = up.requests[count:]
+            assert len(sent) == 9, len(sent)
+            first = results(sent[1])
+            assert first[0] == (
+                "The finding was not added. verified needs evidence that askai showed you "
+                "before this turn. askai had not shown you cuh#1/1. askai prints cuh#1/1 below. "
+                "Repeat the add in your next turn.\n" + block11), first[0]
+            assert first[1] == (
+                "Evidence of finding cuh#1 by cuh: One commit.\n" + block12 + "[askai: You saw "
+                "cuh#1/2 whole. Cite cuh#1/2 for verified or disproved from your next turn "
+                "on.]\n"), first[1]
+            assert first[2] == "askai showed you cuh#1/2 in this turn. Cite cuh#1/2 for " \
+                "verified or disproved in a later turn.", first[2]
+            assert re.fullmatch(r"Added bro#1 \(candidate\)\. Evidence bro#1/1 from cuh#1/2\. "
+                                r"Commit [0-9a-f]{8}\.", first[3]), first[3]
+            second = results(sent[2])
+            assert re.fullmatch(r"Added bro#2 \(verified\)\. Evidence bro#2/1 from cuh#1/1, "
+                                r"bro#2/2 from cuh#1/2:3\. Commit [0-9a-f]{8}\.", second[0]), \
+                second[0]
+            assert re.fullmatch(r"bro#1 is now verified\. Evidence bro#1/2 from cuh#1/2\. "
+                                r"Commit [0-9a-f]{8}\.", second[1]), second[1]
+            assert second[2:7] == [
+                "cuh#1/2 shows lines 2 to 4 of src/a.c. Give lines within that range.",
+                "cuh#1/2 shows lines 2 to 4 of src/a.c. Give lines within that range.",
+                "cuh#1/1:3 needs a lines item. cuh#1/1 is a call item.",
+                "No evidence item has the id cuh#1/7. show with id cuh#1 lists the items.",
+                "No finding has the id cuh#9. list shows the findings."], second
+            assert second[7] == (
+                "The finding was not added. disproved needs evidence that askai showed you "
+                "before this turn. askai had not shown you cuh#3/1 and cuh#3/2. askai prints "
+                "cuh#3/1 and cuh#3/2 below. Repeat the add in your next turn.\n" + block31 +
+                block32), second[7]
+            assert three[0]["result"]["bytes"] == len("5\tint x4;\n6\tint x5;\n"), three
+            assert second[8:] == [
+                "expand needs id: a finding, such as bro#5, or an evidence item, such as "
+                "bro#5/2.",
+                "No evidence item has the id cuh#1/9. show with id cuh#1 lists the items.",
+                "No finding has the id cuh#9. list shows the findings.",
+                "expand needs id: a finding, such as bro#5, or an evidence item, such as "
+                "bro#5/2.",
+                "The action expand takes no argument author."], second[8:]
+            # The pages of cuh#2, 4000 bytes or less each.
+            assert results(sent[4])[0] == (
+                "bro#2 did not change. disproved needs evidence that askai showed you before "
+                "this turn. askai had not shown you cuh#2/1. The evidence is longer than one "
+                "result. Read cuh#2/1 with expand, a page at a time. Repeat the update in a "
+                "later turn."), results(sent[4])
+            pages = [results(sent[3])[0], results(sent[4])[1], results(sent[5])[0]]
+            whole = "Evidence of finding cuh#2 by cuh: b.c has 800 lines.\n" + block21 + \
+                "[askai: You saw cuh#2/1 whole. Cite cuh#2/1 for verified or disproved from " \
+                "your next turn on.]\n"
+            joined = b""
+            for k, page in enumerate(pages):
+                text = re.sub(r"\n\n\[Bytes \d+ to \d+ of \d+\.[^\]]*\]$", "", page).encode()
+                at = int(re.search(r"\[Bytes (\d+) to", page)[1])
+                assert len(text) <= 4000 and at <= len(joined) and (k or not at), page
+                joined = joined[:at] + text
+            assert joined.decode() == whole, joined[-300:]
+            assert pages[2].endswith(f"\n\n[Bytes {at} to {len(whole.encode())} of "
+                                     f"{len(whole.encode())}. End of the output.]"), pages[2]
+            eighth = results(sent[6])
+            assert re.fullmatch(r"bro#2 is now disproved\. Evidence bro#2/3 from cuh#2/1\. "
+                                r"Commit [0-9a-f]{8}\.", eighth[0]), eighth[0]
+            # expand without id: the open findings of bro, newest first.
+            bro_ask = stored(1, "bro")["changes"][0]["ask"]
+            assert eighth[1] == (
+                "Evidence of finding bro#1 by bro: Lines 2 to 4.\n" +
+                lines_block("bro#1/1", "2 to 4", "src/a.c", a_lines, "cuh#1/2") +
+                lines_block("bro#1/2", "2 to 4", "src/a.c", a_lines, "cuh#1/2") +
+                "[askai: You saw the 2 evidence items above whole. Cite the items for verified "
+                "or disproved from your next turn on.]\n"), eighth[1]
+            # The compaction names the call that a finding can cite and the
+            # items that the turns saw.
+            prompt = sent[7]["body"]["messages"][0]["content"]
+            assert prompt.endswith(
+                "[askai: askai keeps your call c24 of this ask call. Cite the call as evidence "
+                "by number.]\n[askai: Evidence items that you expanded in this ask call: "
+                "cuh#1/1, cuh#1/2, cuh#3/1, cuh#3/2, cuh#2/1, bro#1/1, bro#1/2. These items "
+                "count as seen.]\n\n[askai: go on with the task.]"), prompt[-800:]
+            last = results(sent[8])
+            assert last[0] == "c25 is a compact call. compact calls cannot be evidence.", last
+            assert re.fullmatch(r"Added bro#3 \(verified\)\. Evidence bro#3/1 from cuh#2/1\. "
+                                r"Commit [0-9a-f]{8}\.", last[1]), last[1]
+
+            # The branch of bro cites the archive files of cuh by their git
+            # IDs, and stores the lines of cuh#1/2:3 of its own.
+            bro_tree = tree("bro")
+            item = stored(2, "bro")["changes"][0]["evidence"]
+            assert item[0] == one[0] | {"from": "cuh#1/1"}, item[0]
+            for key in ("request", "result"):
+                path = archive(one[0][key]["sha256"])
+                assert bro_tree[path] == cuh_tree[path], (path, bro_tree, cuh_tree)
+            assert item[1] == one[1] | {"item": 2, "from": "cuh#1/2", "lines": [[3, 3]],
+                                        "result": {"sha256": hashlib.sha256(
+                                            b"3\tint x2;\n").hexdigest(), "bytes": 10}}, item[1]
+            assert notes("show", f"refs/heads/agent/bro/findings:"
+                         f"{archive(item[1]['result']['sha256'])}") == "3\tint x2;\n"
+            assert bro_tree[archive(two["result"]["sha256"])] == \
+                cuh_tree[archive(two["result"]["sha256"])]
+            # In a new ask call, an item is cited from the branch of its
+            # author, not the ring, and an update is refused for an item
+            # that the turns had not seen. A finding of id or about that does
+            # not exist is refused first.
+            script[:] = [turn({"action": "update", "id": "bro#9", "state": "verified",
+                               "evidence": ["cuh#1/1"], "reason": "R"},
+                              {"action": "add", "claim": "C", "about": "cuh#8",
+                               "state": "verified", "evidence": ["cuh#1/1"], "reason": "R"},
+                              {"action": "add", "claim": "C", "evidence": ["cuh#1/2:2"]},
+                              {"action": "add", "claim": "C", "state": "verified",
+                               "evidence": ["cuh#1/2:2"], "reason": "R"},
+                              {"action": "update", "id": "bro#1", "state": "disproved",
+                               "evidence": ["cuh#1/1"], "reason": "R"})]
+            count = len(up.requests)
+            bro.ask("Q")
+            said = results(up.requests[count + 1])
+            assert said[:2] == ["No finding has the id bro#9. list shows the findings.",
+                                "No finding has the id cuh#8. list shows the findings."], said
+            assert re.fullmatch(r"Added bro#4 \(candidate\)\. Evidence bro#4/1 from "
+                                r"cuh#1/2:2\. Commit [0-9a-f]{8}\.", said[2]), said
+            assert said[3].startswith("The finding was not added. verified needs evidence "
+                                      "that askai showed you before this turn. askai had not "
+                                      "shown you cuh#1/2.") and said[3].endswith(block12), said
+            assert said[4] == (
+                "bro#1 did not change. disproved needs evidence that askai showed you before "
+                "this turn. askai had not shown you cuh#1/1. askai prints cuh#1/1 below. Repeat "
+                "the update in your next turn.\n" + block11), said[4]
+
+            # Pages out of order do not make an item seen.
+            script[:] = [turn({"action": "expand", "id": "cuh#2", "offset": 6000}),
+                         turn({"action": "add", "claim": "C", "state": "verified",
+                               "evidence": ["cuh#2/1"], "reason": "R"})]
+            count = len(up.requests)
+            bro.ask("Q")
+            assert results(up.requests[count + 2])[0].startswith(
+                "The finding was not added. verified needs evidence that askai showed you "
+                "before this turn. askai had not shown you cuh#2/1.")
+
+            # 65 calls: the oldest leaves the ring.
+            script[:] = [mixed(*[("git", log)] * 13)] * 5 + [
+                turn({"action": "add", "claim": "C", "evidence": ["c1"]})]
+            count = len(up.requests)
+            bro.ask("Q")
+            assert results(up.requests[count + 6]) == [
+                "c1 is no longer kept. askai keeps the last 64 calls of an ask call. The "
+                "oldest kept call is c2."]
+            # findings calls take no place in the ring: after 64 of them, in
+            # turns of 16 calls, the call before them is still kept.
+            script[:] = [mixed(("git", log))] + [
+                turn(*[{"action": "expand", "id": "c7"}] * 16)] * 4 + [
+                turn({"action": "add", "claim": "C", "evidence": ["c2"]},
+                     {"action": "add", "claim": "C", "evidence": ["c65"]},
+                     {"action": "add", "claim": "C", "evidence": ["c1"]})]
+            count = len(up.requests)
+            bro.ask("Q")
+            said = results(up.requests[count + 6])
+            assert said[:2] == ["c2 is a findings call. findings calls cannot be evidence.",
+                                "c65 is a findings call. findings calls cannot be evidence."]
+            assert re.fullmatch(r"Added bro#\d+ \(candidate\)\. Evidence bro#\d+/1 from call "
+                                r"c1\. Commit [0-9a-f]{8}\.", said[2]), said
+
+        # cuh, on its own service, expands the finding of bro that cites its
+        # item again. Material that does not match its SHA-256 and material
+        # that is missing are named.
+        with Askai(binary, *base, "--agent", "cuh") as cuh:
+            script[:] = [turn({"action": "expand", "id": "bro#2/2"})]
+            count = len(up.requests)
+            cuh.ask("Q")
+            text = results(up.requests[count + 1])[0]
+            assert text == ("Evidence of finding bro#2 by bro: One commit too.\n" +
+                            lines_block("bro#2/2", "3", "src/a.c", "3\tint x2;\n",
+                                        "cuh#1/2")).replace("lines 3 of", "line 3 of") + \
+                "[askai: You saw bro#2/2 whole. Cite bro#2/2 for verified or disproved from " \
+                "your next turn on.]\n", text
+            tip = notes("rev-parse", "refs/heads/agent/cuh/findings").strip()
+            now = int(time.time())
+            changed = archive(one[0]["result"]["sha256"])
+            gone = archive(three[0]["result"]["sha256"])
+            notes("fast-import", "--quiet", data=(
+                f"commit refs/heads/agent/cuh/findings\ncommitter t <t> {now} +0000\ndata 0\n"
+                f"from {tip}\nM 100644 inline {changed}\ndata 8\ntampered\nD {gone}\n"))
+            script[:] = [turn({"action": "expand", "id": "cuh#1/1"},
+                              {"action": "expand", "id": "cuh#3/1"},
+                              {"action": "add", "claim": "C", "evidence": ["cuh#3/1"]})]
+            count = len(up.requests)
+            cuh.ask("Q")
+            said = results(up.requests[count + 1])
+            assert said[0] == ("Evidence of finding cuh#1 by cuh: One commit.\n" +
+                               block11.split(":]\n" + made[0])[0] + ":]\ntampered\n[askai: the "
+                               "stored material of cuh#1/1 does not match the recorded "
+                               "SHA-256.]\n[askai: You saw cuh#1/1 whole. Cite cuh#1/1 for "
+                               "verified or disproved from your next turn on.]\n"), said[0]
+            assert said[1] == ("Evidence of finding cuh#3 by cuh: C3\n" +
+                               block31.split(":]\n")[0] + ":]\n[askai: the stored material of "
+                               "cuh#3/1 is missing.]\n"), said[1]
+            assert said[2] == "The stored material of cuh#3/1 is missing.", said[2]
+    up.reply = lambda request: (200, ANSWERS["openai"])
+    print("findings: expand by finding, item and open findings, pages, the seen rule, items "
+          "cited again across services: PASS")
 
 
 def check_tasks(binary, up):
@@ -17528,7 +17945,7 @@ def main():
                       check_scheduler, check_breaker, check_slots, check_progress,
                       check_man, check_git, check_git_scope, check_git_read, check_code,
                       check_turns,
-                      check_findings,
+                      check_findings, check_findings_expand,
                       check_notes, check_shared_notes,
                       check_notes_history, check_notes_cancel, check_notes_texts,
                       check_turn_apis,

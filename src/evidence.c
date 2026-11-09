@@ -439,14 +439,13 @@ evidence_cite (struct evidence            *dest,
 	switch (ref->form) {
 	case EVIDENCE_REF_FINDING:
 		return util_refuse(why, len, "%s#%" PRIu32 " is a finding. evidence takes an evidence "
-		                   "item such as %s#%" PRIu32 "/1, or a call such as c7. show with id "
-		                   "%s#%" PRIu32 " lists the items.", author, ref->number, author,
+		                   "item such as %s#%" PRIu32 "/1, or a call such as c7. expand with "
+		                   "id %s#%" PRIu32 " lists the items.", author, ref->number, author,
 		                   ref->number, author, ref->number);
 	case EVIDENCE_REF_ITEM:
 	case EVIDENCE_REF_ITEM_LINES:
-		return util_refuse(why, len, "askai cannot cite the evidence item %s#%" PRIu32 "/%"
-		                   PRIu32 " yet. Cite your calls, such as c7.", author, ref->number,
-		                   ref->item);
+		/* evidence_recite() cites an item again. */
+		return EINVAL;
 	default:
 		break;
 	}
