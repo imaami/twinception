@@ -23,7 +23,7 @@
 #include "buf.h"
 #include "child.h"
 #include "clk.h"
-#include "git.h"
+#include "git_run.h"
 #include "journal.h"
 #include "loop.h"
 #include "oid.h"
@@ -60,11 +60,6 @@ enum {
 	JOURNAL_TERMINAL_BYTES = JOURNAL_RECORD_MAX + JOURNAL_HEADER,
 };
 
-/* The time a git of the journal may take. Its grace from SIGTERM, which
- * has it remove its lock files, to SIGKILL is GIT_GRACE.
- */
-static constexpr uint64_t JOURNAL_GIT_NS = 10 * NS;
-
 struct journal_item {
 	struct msg             msg;
 	struct list            hook;
@@ -85,6 +80,14 @@ struct journal_item {
 
 /* The prefix of the participant's reasoning branch. */
 static char const REF[] = "refs/heads/reasoning/";
+
+/* The options of the git processes of the journal, which
+ * git_run_dir_argv() writes after the fixed options. With these options,
+ * git calls fsync() on every file that it writes to the repository.
+ */
+static char const *const git_options[] = {
+	"-c", "core.fsync=all", "-c", "core.fsyncMethod=fsync", nullptr
+};
 
 static_assert((sizeof(struct journal_item) + sizeof(struct journal_record) +
                JOURNAL_CONTROL_RECORD + 1) * JOURNAL_CONTROL <= JOURNAL_CONTROL_BYTES);
@@ -151,6 +154,8 @@ struct journal {
 	EVP_MD_CTX            *digest;
 	struct buf             out;       /* the output of the last git, at
 	                                     most sizeof scratch bytes */
+	struct git_run_dir     git;       /* git runs in repo_fd with
+	                                     "--git-dir=." and git_options */
 	char                   scratch[JOURNAL_SCRATCH];
 	unsigned char          key[POLICY_KEY];  /* the key of the principals,
 	                                            read from
@@ -254,65 +259,44 @@ journal_open_path (struct journal *j,
 	return 0;
 }
 
-/** Fixed argv and environment. Input/output are anonymous files, so a
- * child's output can never deadlock its input pipe. The output goes to
- * j->out, and @p out, if not nullptr, views it until the next call of
- * journal_git(). Only the writer and startup call this function.
+/** Runs the git command @p command in the repository. The standard input
+ * of git is the file open as @p input, or none if @p input is -1. git
+ * writes the output to a file, which child_capture() reads into j->out
+ * after git ends, so that git never waits on a full pipe. If @p oid is not
+ * nullptr, the function reads the name of an object that git prints into
+ * @p oid. Returns what git_run_capture() returns. Only the writer and
+ * startup call this function.
  */
 static int
 journal_git (struct journal    *j,
              char const *const *command,
              int                input,
-             struct cstr_view  *out,
-             int               *status)
+             struct oid        *oid)
 {
-	static char const *const prefix[] = {
-		"git", "--git-dir=.", GIT_OPTIONS_FIXED,
-		"-c", "core.fsync=all", "-c", "core.fsyncMethod=fsync", nullptr
-	};
-	char const *const *const parts[] = { prefix, command };
-	char *const env[] = { util_env_path(), GIT_ENV_FIXED, nullptr };
-	char const *argv[48];
-	int e = child_argv(argv, array_size(argv), parts, array_size(parts));
+	struct git_run run;
+	int e = git_run_init(&run, &j->git, command, &(struct child_cmd){
+		.max      = sizeof j->scratch,
+		.deadline = loop_clock() + GIT_RUN_NS,
+		.grace    = GIT_GRACE,
+	});
 	if (e)
 		return e;
-	/* A Git child can outlive an abruptly killed AskAI. It keeps the same
-	 * flock open through exec, so restart cannot race that child. */
-	struct child_cmd const cmd = {
-		.file     = "git",
-		.argv     = argv,
-		.envp     = env,
-		.max      = sizeof j->scratch,
-		.deadline = loop_clock() + JOURNAL_GIT_NS,
-		.grace    = GIT_GRACE,
-	};
+	/* A git child can outlive an askai that was killed. fds.keep passes
+	 * the descriptor of the writer lock to git through exec, so the
+	 * flock() of a new askai on the writer lock fails until git ends. */
 	struct child_fds const fds = { .in = input, .out = -1, .dir = j->repo_fd,
 	                               .keep = j->lock_fd };
-	struct child_end end;
-	buf_clear(&j->out);
-	e = child_capture(&cmd, fds, &j->out, &end);
-	if (!e && status)
-		*status = end.status;
-	else if (!e && end.status)
-		e = EIO;
-	if (out) {
-		struct span const got = buf_peek(&j->out);
-		*out = (struct cstr_view){ (char const *)got.ptr, got.len };
-	}
-	return e;
+	return git_run_capture(&run, fds, &j->out, oid);
 }
 
 static int
 journal_tip (struct journal *j)
 {
 	char const *command[] = { "rev-parse", "--verify", "--quiet", j->ref, nullptr };
-	struct cstr_view out;
-	int status = 0;
-	int e = journal_git(j, command, -1, &out, &status);
-	struct oid tip = {};
-	if (!e && status != 1 && (status || oid_init_line(&tip, out)))
-		e = EIO;
-	else if (!e)
+	struct oid tip;
+	int e = journal_git(j, command, -1, &tip);
+	/* The tip is empty if the ref does not exist. */
+	if (!e)
 		j->tip = tip;
 	return e;
 }
@@ -322,35 +306,22 @@ journal_unlock (struct journal *j)
 {
 	/* Our participant lock excludes both other writers and their surviving
 	 * Git children. Only this participant's loose-ref lock is ours. */
-	char const *participant = j->ref + sizeof REF - 1;
-	static char const *const dirs[] = { "refs", "heads", "reasoning" };
-	int fd = fcntl(j->repo_fd, F_DUPFD_CLOEXEC, 3);
-	if (fd < 0)
-		return errno;
-	int e = 0;
-	for (size_t i = 0; i < array_size(dirs); ++i) {
-		int next = openat(fd, dirs[i], O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-		if (next < 0) {
-			e = errno == ENOENT ? 0 : errno;
-			close(fd);
-			return e;
-		}
-		close(fd);
-		fd = next;
-	}
-	char name[UTIL_WORD_MAX + sizeof ".lock"];
-	int n = snprintf(name, sizeof name, "%s.lock", participant);
-	if (n < 0 || n >= (int)sizeof name)
-		e = EOVERFLOW;
+	char path[sizeof j->ref + sizeof ".lock"];
+	int n = snprintf(path, sizeof path, "%s.lock", j->ref);
+	if (n < 0 || n >= (int)sizeof path)
+		return EOVERFLOW;
+	char const *name;
+	int fd = -1;
+	int e = util_parent_open(j->repo_fd, path, &name, &fd);
+	if (e)
+		return e == ENOENT ? 0 : e;
 	struct stat st;
-	if (!e && fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW))
+	if (fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW))
 		e = errno == ENOENT ? 0 : errno;
-	else if (!e) {
-		if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1)
-			e = EACCES;
-		else if (unlinkat(fd, name, 0) || fsync(fd))
-			e = errno;
-	}
+	else if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1)
+		e = EACCES;
+	else if (unlinkat(fd, name, 0) || fsync(fd))
+		e = errno;
 	close(fd);
 	return e;
 }
@@ -894,11 +865,8 @@ journal_thought_commit (struct journal            *j,
 	if (fdatasync(file->fd) || lseek(file->fd, 0, SEEK_SET) < 0)
 		return errno;
 	char const *hash[] = { "hash-object", "-w", "--stdin", nullptr };
-	struct cstr_view out;
-	e = journal_git(j, hash, file->fd, &out, nullptr);
 	struct oid blob;
-	if (!e && oid_init_line(&blob, out))
-		e = EILSEQ;
+	e = journal_git(j, hash, file->fd, &blob);
 	char path[sizeof "reasoning/xx//.txt" + HEXID_DIGITS + UTIL_DECIMAL];
 	int n = snprintf(path, sizeof path, "reasoning/%.2s/%s/%" PRIu32 ".txt",
 	                 item->id.hex, item->id.hex, item->turn);
@@ -910,11 +878,15 @@ journal_thought_commit (struct journal            *j,
 		if (n < 0 || n >= (int)sizeof name)
 			e = EOVERFLOW;
 		char const *find[] = { "rev-parse", "--verify", "--quiet", name, nullptr };
-		int status = 0;
-		if (!e)
-			e = journal_git(j, find, -1, &out, &status);
 		struct oid old;
-		if (!e && !status && !oid_init_line(&old, out) && oid_equal(&old, &blob)) {
+		if (!e)
+			e = journal_git(j, find, -1, &old);
+		/* The check only decides whether the commit can be skipped.
+		 * The journal commits after EIO: an exit status other than 0
+		 * and 1, an output that is not one name, or a signal. */
+		if (e == EIO)
+			e = 0;
+		else if (!e && oid_equal(&old, &blob)) {
 			file->committed_size = file->size;
 			return 0;
 		}
@@ -943,7 +915,7 @@ journal_thought_commit (struct journal            *j,
 			e = errno;
 		char const *import[] = { "fast-import", "--quiet", "--done", nullptr };
 		if (!e)
-			e = journal_git(j, import, fd, nullptr, nullptr);
+			e = journal_git(j, import, fd, nullptr);
 	}
 	if (output) {
 		if (fclose(output) && !e)
@@ -1284,9 +1256,11 @@ journal_setup (struct journal *j,
                char           *why,
                size_t          why_len)
 {
-	int e = journal_open_path(j, path);
+	int e = git_run_dir_init(&j->git, nullptr, git_options, nullptr, GIT_RUN_DOT);
 	int init_fd = -1;
 	int state = -1;
+	if (!e)
+		e = journal_open_path(j, path);
 	if (!e)
 		e = util_private_open(j->repo_fd, "askai-journal.lock", O_RDWR | O_CREAT, &init_fd);
 	if (!e && flock(init_fd, LOCK_EX))
@@ -1296,18 +1270,18 @@ journal_setup (struct journal *j,
 		if (errno != ENOENT)
 			e = errno;
 		else {
-			char const *command[] = { "init", "--bare", "--quiet", "--template=",
-			                          "--initial-branch=reasoning", ".", nullptr };
-			e = journal_git(j, command, -1, nullptr, nullptr);
+			char const *command[] = { GIT_INIT_BARE_WORDS("reasoning"), nullptr };
+			e = journal_git(j, command, -1, nullptr);
 		}
 	} else if (!e && !S_ISREG(st.st_mode)) {
 		e = EINVAL;
 	}
 	if (!e) {
 		char const *command[] = { "rev-parse", "--is-bare-repository", nullptr };
-		struct cstr_view out;
-		e = journal_git(j, command, -1, &out, nullptr);
-		if (!e && !cstr_view_equal(out, CSTR_VIEW("true\n")))
+		e = journal_git(j, command, -1, nullptr);
+		struct span const out = buf_peek(&j->out);
+		if (!e && !cstr_view_equal((struct cstr_view){ (char const *)out.ptr, out.len },
+		                           CSTR_VIEW("true\n")))
 			e = EINVAL;
 	}
 	if (!e)
@@ -1439,6 +1413,7 @@ journal_destroy (struct journal **p_journal)
 	EVP_MD_CTX_free(j->digest);
 	j->digest = nullptr;
 	buf_fini(&j->out);
+	j->git = (struct git_run_dir){};
 	util_close(&j->jobs_fd);
 	util_close(&j->thoughts_fd);
 	util_close(&j->wal_fd);

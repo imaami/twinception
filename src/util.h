@@ -8,6 +8,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -790,6 +791,68 @@ util_text_printf_ (uint32_t   *len,
 	*len += (uint32_t)util_vformat(data + *len, room, fmt, ap);
 	va_end(ap);
 	return *len < size - 1 ? 0 : EINVAL;
+}
+
+/** Open the directory that contains the file @p path, a relative path in
+ *  the directory @p dir, and store its file descriptor in @p *fd. The
+ *  parts of @p path come from util_path_next(), and each directory is
+ *  opened with O_NOFOLLOW, one part at a time, so that no part can be a
+ *  symbolic link. @p *leaf is set to the last part of @p path, the name of
+ *  the file in the directory. Returns 0, EINVAL for an empty path, a path
+ *  that starts with '/', a ".." part, a part longer than NAME_MAX bytes,
+ *  or a path that does not end with the name of a file, or the error
+ *  number of fcntl() or openat(), such as ENOENT for a missing directory,
+ *  or ENOTDIR for a symbolic link or another file that is not a
+ *  directory. @p *fd is -1 and @p *leaf is nullptr after an error.
+ */
+static inline int
+util_parent_open (int          dir,
+                  char const  *path,
+                  char const **leaf,
+                  int         *fd)
+{
+	*fd = -1;
+	*leaf = nullptr;
+	struct cstr_view rest = cstr_view(path);
+	if (!rest.len || *path == '/')
+		return EINVAL;
+	char const *const end = rest.data + rest.len;
+	struct cstr_view part = {};
+	int e = util_path_next(&rest, &part);
+	if (e)
+		return e;
+	int at = fcntl(dir, F_DUPFD_CLOEXEC, 3);
+	if (at < 0)
+		return errno;
+	/* Each part is a directory if another part comes after it. */
+	for (;;) {
+		struct cstr_view next = {};
+		e = util_path_next(&rest, &next);
+		if (e || !next.len)
+			break;
+		UTIL_TEXT(NAME_MAX + 1) name;
+		e = util_text_store(&name, part);
+		if (e)
+			break;
+		int const down = openat(at, name.data,
+		                        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+		if (down < 0) {
+			e = errno;
+			break;
+		}
+		util_close(&at);
+		at = down;
+		part = next;
+	}
+	if (!e && (!part.len || part.data + part.len != end))
+		e = EINVAL;
+	if (e) {
+		util_close(&at);
+		return e;
+	}
+	*leaf = part.data;
+	*fd = at;
+	return 0;
 }
 
 #endif /* ASKAI_SRC_UTIL_H_ */

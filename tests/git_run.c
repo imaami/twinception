@@ -1,8 +1,9 @@
 /** @file Unit tests of the argv and the environment of git, src/git_run.c:
  *  the argv of each shape of a struct git_run_dir word for word, the
  *  environment in order, the limits of both, the copy of the struct
- *  child_cmd in git_run_init(), and git run through child_capture() and
- *  child_run() in a new bare repository at the path of the argument.
+ *  child_cmd in git_run_init(), and git run through child_capture(),
+ *  child_run() and git_run_capture() in a new bare repository at the path
+ *  of the argument.
  */
 #define _GNU_SOURCE /* pipe2(), memfd_create() */
 #include <errno.h>
@@ -22,6 +23,7 @@
 #include "cstr_view.h"
 #include "git_run.h"
 #include "loop.h"
+#include "oid.h"
 #include "util.h"
 
 /* "git" and the words of GIT_OPTIONS_FIXED, spelled out. */
@@ -258,6 +260,75 @@ git_run_test_git (struct git_run_dir const *dir,
 	return e;
 }
 
+/* Tests git_run_capture() with git in @p dir, an empty repository. With
+ * a name to read: the name of an object, an empty name for the exit status
+ * 1, EIO for the exit status 128 and for an output that is not one name
+ * and a line feed, and the EFBIG of a cut output. The output replaces the
+ * bytes that were in the buffer, and the name is empty after an error.
+ * Without a name to read: 0 for the exit status 0 and EIO for the exit
+ * status 1, with the output in the buffer, or with child_run() and no
+ * buffer. EINVAL for a nullptr run and for a name to read without a
+ * buffer.
+ */
+static void
+git_run_test_capture (struct git_run_dir const *dir)
+{
+	static struct {
+		char const       *words[6];
+		struct cstr_view  in;
+		size_t            max;
+		int               e;
+		struct cstr_view  out;
+	} const cases[] = {
+		{ { "hash-object", "--stdin", nullptr }, CSTR_VIEW_INIT("abc"), 4096, 0,
+		  CSTR_VIEW_INIT("f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f\n") },
+		{ { "rev-parse", "--verify", "--quiet", "refs/heads/missing", nullptr }, {}, 4096, 0,
+		  {} },
+		{ { "rev-parse", "--verify", "missing", nullptr }, {}, 4096, EIO, {} },
+		{ { "rev-parse", "--is-bare-repository", nullptr }, {}, 4096, EIO,
+		  CSTR_VIEW_INIT("true\n") },
+		{ { "rev-parse", "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f",
+		    "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f", nullptr }, {}, 4096, EIO,
+		  CSTR_VIEW_INIT("f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f\n"
+		                 "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f\n") },
+		{ { "hash-object", "--stdin", nullptr }, CSTR_VIEW_INIT("abc"), 40, EFBIG,
+		  CSTR_VIEW_INIT("f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f") },
+	};
+	struct buf out = {};
+	for (size_t i = 0; i < array_size(cases); ++i) {
+		struct child_cmd const how = {
+			.in  = { (unsigned char *)(uintptr_t)cases[i].in.data, cases[i].in.len },
+			.max = cases[i].max,
+		};
+		struct git_run run;
+		CHECK(!git_run_init(&run, dir, cases[i].words, &how));
+		CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
+		struct oid oid = { "0123" };
+		CHECK(git_run_capture(&run, child_fds(), &out, &oid) == cases[i].e);
+		CHECK(git_run_test_out(&out, cases[i].out));
+		if (i)
+			CHECK(!oid_len(&oid));
+		else
+			CHECK(!strcmp(oid.hex, "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f"));
+	}
+	struct git_run run;
+	struct oid oid = { "0123" };
+	CHECK(!git_run_init(&run, dir, cases[1].words, &(struct child_cmd){ .max = 4096 }));
+	CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
+	CHECK(git_run_capture(&run, child_fds(), &out, nullptr) == EIO);
+	CHECK(!buf_peek(&out).len);
+	CHECK(git_run_capture(&run, child_fds(), nullptr, nullptr) == EIO);
+	CHECK(git_run_capture(&run, child_fds(), nullptr, &oid) == EINVAL);
+	CHECK(git_run_capture(nullptr, child_fds(), &out, &oid) == EINVAL);
+	CHECK(!strcmp(oid.hex, "0123"));
+	struct child_cmd const how = { .in = { (unsigned char *)"abc", 3 }, .max = 4096 };
+	CHECK(!git_run_init(&run, dir, cases[0].words, &how));
+	CHECK(!git_run_capture(&run, child_fds(), &out, nullptr));
+	CHECK(git_run_test_out(&out, cases[0].out));
+	CHECK(!git_run_capture(&run, child_fds(), nullptr, nullptr));
+	buf_fini(&out);
+}
+
 /* Runs git through git_run_init() and child_capture() in a new bare
  * repository at @p repo: with -C and the path, and with the directory of
  * the child; the options and the entries of the caller as git config
@@ -285,6 +356,7 @@ git_run_test_run (char const *repo)
 	                                                    "--template=", nullptr },
 	                        how, child_fds(), &out, &end, &ms));
 	CHECK(end.code == CLD_EXITED && !end.status && !end.flags && !buf_peek(&out).len);
+	git_run_test_capture(&at);
 
 	/* -C and the path, then the directory of the child, with "--git-dir=.". */
 	char *want = nullptr;

@@ -5,7 +5,9 @@
  * options of the caller and the environment. git_run_init() writes the
  * argv of one command for a struct git_run_dir into a struct git_run.
  * child_create(), child_run() or child_capture() runs the struct
- * child_cmd of the struct git_run.
+ * child_cmd of the struct git_run. git_run_capture() runs it on the
+ * calling thread, turns the end of git into an error number, and reads
+ * the name of an object that git prints.
  */
 #ifndef ASKAI_SRC_GIT_RUN_H_
 #define ASKAI_SRC_GIT_RUN_H_
@@ -15,6 +17,8 @@
 
 #include "child.h"
 #include "clk.h"
+
+struct oid;
 
 /** The environment entries after PATH of every git process that askai
  *  starts for the git tool, the notes and the journal. They set LC_ALL to
@@ -51,6 +55,20 @@
  *  files after SIGTERM.
  */
 static constexpr uint64_t GIT_GRACE = NS;
+
+/** The time in nanoseconds that a git process may run when askai or
+ *  askai-cli runs git for a repository of its own, such as the journal.
+ *  The git tool uses the timeout of the configuration instead.
+ */
+static constexpr uint64_t GIT_RUN_NS = 10 * NS;
+
+/** The words of git init that make a bare repository in ".", the
+ *  directory where git runs, with the initial branch @p branch, a string
+ *  literal, and with no files from a template.
+ */
+#define GIT_INIT_BARE_WORDS(branch) \
+        "init", "--bare", "--quiet", "--template=", \
+        "--initial-branch=" branch, "--", "."
 
 enum {
 	/** The number of entries of GIT_ENV_FIXED. */
@@ -146,5 +164,26 @@ git_run_init (struct git_run           *dest,
               struct git_run_dir const *dir,
               char const *const        *words,
               struct child_cmd const   *how);
+
+/**
+ * Runs the git command @p run on the calling thread with the descriptors
+ * @p fds. If @p out is not nullptr, the content of @p out is replaced with
+ * the output, which child_capture() reads up to the cap of @p run.
+ * Otherwise child_run() runs git, and git writes to fds.out. Returns 0,
+ * EIO for an exit status other than 0, EINVAL if @p run is nullptr or
+ * @p oid is not nullptr without @p out, or the error of child_capture()
+ * or child_run().
+ *
+ * If @p oid is not nullptr, the function copies the name of an object in
+ * the output, one name and a line feed, into @p oid. Another output is
+ * EIO. The exit status 1, which rev-parse --verify --quiet returns for a
+ * missing ref, is then no error, and @p oid is empty. @p oid is also
+ * empty after an error.
+ */
+extern int
+git_run_capture (struct git_run const *run,
+                 struct child_fds      fds,
+                 struct buf           *out,
+                 struct oid           *oid);
 
 #endif /* ASKAI_SRC_GIT_RUN_H_ */

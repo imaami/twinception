@@ -4,8 +4,11 @@
  */
 #include <errno.h>
 
+#include "buf.h"
 #include "child.h"
+#include "cstr_view.h"
 #include "git_run.h"
+#include "oid.h"
 #include "util.h"
 
 int
@@ -67,4 +70,30 @@ git_run_init (struct git_run           *dest,
 	dest->c.argv = dest->argv;
 	dest->c.envp = dir->env;
 	return 0;
+}
+
+int
+git_run_capture (struct git_run const *run,
+                 struct child_fds      fds,
+                 struct buf           *out,
+                 struct oid           *oid)
+{
+	if (!run || (oid && !out))
+		return EINVAL;
+	struct child_end end;
+	int e;
+	if (out) {
+		buf_clear(out);
+		e = child_capture(&run->c, fds, out, &end);
+	} else {
+		e = child_run(&run->c, fds, &end);
+	}
+	if (!oid)
+		return e ? e : end.status ? EIO : 0;
+	*oid = (struct oid){};
+	if (e || end.status == 1)
+		return e;
+	struct span const got = buf_peek(out);
+	struct cstr_view const text = { (char const *)got.ptr, got.len };
+	return end.status || oid_init_line(oid, text) ? EIO : 0;
 }

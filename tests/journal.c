@@ -256,6 +256,295 @@ journal_test_out (struct buf const *out,
 	return cstr_view_equal((struct cstr_view){ (char const *)got.ptr, got.len }, text);
 }
 
+/* Tests util_parent_open() and journal_unlock() in a new directory of the
+ * repository @p repo. util_parent_open() refuses an empty or absolute
+ * path, a path with a ".." part, a part longer than NAME_MAX bytes and a
+ * path whose last part is empty or ".", and leaves the path as it was.
+ * journal_unlock() removes the regular lock file of the participant, and
+ * returns 0 if there is no lock file. journal_unlock() refuses a lock file
+ * that is a symbolic link, a directory or a file with two links, and a
+ * directory of the ref that is a symbolic link, and leaves every file as
+ * it was.
+ */
+static void
+journal_test_unlock (char const *repo)
+{
+	int top = open(repo, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	assert(top >= 0 && !mkdirat(top, "unlock", 0700));
+	int dir = openat(top, "unlock", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	util_close(&top);
+	assert(dir >= 0);
+
+	static char const *const invalid[] = {
+		"", ".", "..", "/a", "a/", "a/.", "a/..", "../a", "a/../b", "./", "a//"
+	};
+	char path[NAME_MAX + 1 + sizeof "/a"];
+	char const *leaf = nullptr;
+	int fd = -1;
+	for (size_t i = 0; i < array_size(invalid); ++i) {
+		strcpy(path, invalid[i]);
+		fd = 0;
+		assert(util_parent_open(dir, path, &leaf, &fd) == EINVAL && fd == -1);
+		assert(!strcmp(path, invalid[i]));
+	}
+	memset(path, 'a', NAME_MAX + 1);
+	memcpy(path + NAME_MAX + 1, "/a", sizeof "/a");
+	assert(util_parent_open(dir, path, &leaf, &fd) == EINVAL && fd == -1);
+	assert(strlen(path) == NAME_MAX + 3 && path[NAME_MAX + 1] == '/');
+	strcpy(path, "refs/heads/a.lock");
+	assert(util_parent_open(dir, path, &leaf, &fd) == ENOENT && fd == -1);
+	assert(!strcmp(path, "refs/heads/a.lock"));
+	/* For a path of one part, util_parent_open() opens a copy of the
+	 * descriptor of the directory. */
+	strcpy(path, "a.lock");
+	struct stat st, at;
+	assert(!util_parent_open(dir, path, &leaf, &fd) && leaf == path && fd >= 0 && fd != dir);
+	assert(!fstat(fd, &st) && !fstat(dir, &at) && st.st_ino == at.st_ino && st.st_dev == at.st_dev);
+	util_close(&fd);
+
+	struct journal *j = calloc(1, sizeof *j);
+	assert(j);
+	j->repo_fd = dir;
+	(void)util_format(j->ref, sizeof j->ref, "%stest", REF);
+	assert(!journal_unlock(j));
+	assert(!mkdirat(dir, "refs", 0700) && !mkdirat(dir, "refs/heads", 0700) &&
+	       !mkdirat(dir, "refs/heads/reasoning", 0700));
+	assert(!journal_unlock(j));
+	strcpy(path, ".//refs//heads/./reasoning/test.lock");
+	assert(!util_parent_open(dir, path, &leaf, &fd) && leaf == path + strlen(path) - 9);
+	assert(!strcmp(path, ".//refs//heads/./reasoning/test.lock"));
+	assert(!fstat(fd, &st) && !fstatat(dir, "refs/heads/reasoning", &at, AT_SYMLINK_NOFOLLOW) &&
+	       st.st_ino == at.st_ino);
+	util_close(&fd);
+
+	/* A regular lock file is removed. */
+	fd = openat(dir, "refs/heads/reasoning/test.lock", O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+	            0600);
+	assert(fd >= 0);
+	util_close(&fd);
+	assert(!journal_unlock(j));
+	assert(fstatat(dir, "refs/heads/reasoning/test.lock", &st, AT_SYMLINK_NOFOLLOW) &&
+	       errno == ENOENT);
+	/* A lock file with two links, a directory and a symbolic link stay. */
+	fd = openat(dir, "refs/heads/reasoning/test.lock", O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+	            0600);
+	assert(fd >= 0);
+	util_close(&fd);
+	assert(!linkat(dir, "refs/heads/reasoning/test.lock", dir, "other.lock", 0));
+	assert(journal_unlock(j) == EACCES);
+	assert(!fstatat(dir, "refs/heads/reasoning/test.lock", &st, AT_SYMLINK_NOFOLLOW) &&
+	       st.st_nlink == 2);
+	assert(!unlinkat(dir, "refs/heads/reasoning/test.lock", 0));
+	assert(!mkdirat(dir, "refs/heads/reasoning/test.lock", 0700));
+	assert(journal_unlock(j) == EACCES);
+	assert(!unlinkat(dir, "refs/heads/reasoning/test.lock", AT_REMOVEDIR));
+	assert(!symlinkat("../../../other.lock", dir, "refs/heads/reasoning/test.lock"));
+	assert(journal_unlock(j) == EACCES);
+	assert(!fstatat(dir, "refs/heads/reasoning/test.lock", &st, AT_SYMLINK_NOFOLLOW) &&
+	       S_ISLNK(st.st_mode));
+	assert(!fstatat(dir, "other.lock", &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode));
+	assert(!unlinkat(dir, "refs/heads/reasoning/test.lock", 0));
+	/* A directory of the ref that is a symbolic link is not opened. */
+	assert(!renameat(dir, "refs/heads/reasoning", dir, "refs/heads/real"));
+	assert(!symlinkat("real", dir, "refs/heads/reasoning"));
+	assert(!linkat(dir, "other.lock", dir, "refs/heads/real/test.lock", 0));
+	assert(!unlinkat(dir, "other.lock", 0));
+	assert(journal_unlock(j) == ENOTDIR);
+	assert(!fstatat(dir, "refs/heads/real/test.lock", &st, AT_SYMLINK_NOFOLLOW) &&
+	       S_ISREG(st.st_mode));
+	assert(!unlinkat(dir, "refs/heads/reasoning", 0));
+	assert(!symlinkat("..", dir, "refs/heads/reasoning"));
+	assert(journal_unlock(j) == ENOTDIR);
+	strcpy(path, "refs/heads/reasoning/test.lock");
+	assert(util_parent_open(dir, path, &leaf, &fd) == ENOTDIR && fd == -1);
+	assert(!strcmp(path, "refs/heads/reasoning/test.lock"));
+	free(j);
+	util_close(&dir);
+}
+
+/* The words of each git command of the journal after "git" and before
+ * the words of the command. tests/git_run.c checks the words of
+ * GIT_OPTIONS_FIXED.
+ */
+static char const *const journal_test_prefix[] = {
+	GIT_OPTIONS_FIXED, "-c", "core.fsync=all", "-c", "core.fsyncMethod=fsync", "--git-dir=.",
+	nullptr
+};
+
+/* Returns true if the text at @p *at starts with the words of
+ * journal_test_prefix and the words at @p words, one word a line, and an
+ * empty line, as the git wrapper of journal_test_argv() writes them.
+ * Moves @p *at past those lines.
+ */
+static bool
+journal_test_logged (char const        **at,
+                     char const *const  *words)
+{
+	char const *const *const parts[] = { journal_test_prefix, words };
+	for (size_t i = 0; i < array_size(parts); ++i) {
+		for (char const *const *w = parts[i]; *w; ++w) {
+			size_t const n = strlen(*w);
+			if (strncmp(*at, *w, n) || (*at)[n] != '\n')
+				return false;
+			*at += n + 1;
+		}
+	}
+	if (**at != '\n')
+		return false;
+	++*at;
+	return true;
+}
+
+/* Pins the argv of each git command of the journal. A git wrapper first
+ * on PATH writes the words of each command after "git" to a log, then
+ * runs git. Three journals of the participant "pin" run one after the
+ * other in a new repository in @p repo, and each one commits the reasoning
+ * of one job. The first journal makes the repository. The second journal
+ * checks whether the tip already contains the file of its job. For the
+ * third journal, the wrapper exits with 128 for that check, and the
+ * journal commits, because the check only decides whether the commit can
+ * be skipped.
+ */
+static void
+journal_test_argv (char const *repo)
+{
+	char *real = realpath(repo, nullptr);
+	char *bin = nullptr;
+	char *wrapper = nullptr;
+	char *log = nullptr;
+	char *pin = nullptr;
+	char *path = nullptr;
+	char *fail = nullptr;
+	assert(real && asprintf(&bin, "%s/bin", real) > 0 && !mkdir(bin, 0700));
+	assert(asprintf(&wrapper, "%s/git", bin) > 0 && asprintf(&log, "%s/git.log", real) > 0);
+	assert(asprintf(&pin, "%s/pin.git", real) > 0 && asprintf(&fail, "%s/fail", real) > 0);
+	FILE *f = fopen(wrapper, "w");
+	assert(f);
+	fprintf(f, "#!/bin/sh\nprintf '%%s\\n' \"$@\" '' >> '%s'\n"
+	           "case \"$*\" in *:reasoning/*) [ -e '%s' ] && exit 128;; esac\n"
+	           "PATH=${PATH#*:}\nexport PATH\nexec git \"$@\"\n", log, fail);
+	assert(!fclose(f) && !chmod(wrapper, 0700));
+	char const *const old = getenv("PATH");
+	char *saved = strdup(old ? old : "/usr/bin:/bin");
+	assert(saved && asprintf(&path, "PATH=%s:%s", bin, saved) > 0);
+	assert(!setenv("PATH", path + sizeof "PATH=" - 1, 1));
+	struct oid tips[3] = {};
+	for (unsigned k = 1; k <= array_size(tips); ++k) {
+		if (k == 3) {
+			int fd = open(fail, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+			assert(fd >= 0);
+			util_close(&fd);
+		}
+		char why[256];
+		int e = 0;
+		struct journal *j = journal_create(pin, "pin", why, sizeof why, &e);
+		assert(j && !e);
+		assert(!j->git.path && j->git.opts == git_options && j->git.flags == GIT_RUN_DOT);
+		assert(!strcmp(j->git.env[0], path) && !strcmp(j->git.env[1], "HOME=/nonexistent"));
+		struct loop events = loop();
+		assert(!loop_init(&events));
+		int const success = 0;
+		struct hexid id;
+		journal_test_id(&id, k);
+		assert(!journal_thought(j, &id, 1, 0, "abc", 3, &events,
+		                        journal_test_done, (void *)&success));
+		assert(!journal_thought_end(j, &id, 1, true, &events,
+		                            journal_test_done, (void *)&success));
+		journal_stop(j);
+		loop_fini(&events);
+		assert(oid_len(&j->tip) && (k == 1 || !oid_equal(&j->tip, &tips[k - 2])));
+		tips[k - 1] = j->tip;
+		journal_destroy(&j);
+	}
+	assert(!setenv("PATH", saved, 1));
+	static char const *const init[] = {
+		"init", "--bare", "--quiet", "--template=", "--initial-branch=reasoning", "--", ".",
+		nullptr
+	};
+	static char const *const bare[] = { "rev-parse", "--is-bare-repository", nullptr };
+	static char const *const head[] = {
+		"rev-parse", "--verify", "--quiet", "refs/heads/reasoning/pin", nullptr
+	};
+	static char const *const hash[] = { "hash-object", "-w", "--stdin", nullptr };
+	static char const *const import[] = { "fast-import", "--quiet", "--done", nullptr };
+	char *names[2] = {};
+	for (size_t i = 0; i < array_size(names); ++i) {
+		struct hexid id;
+		journal_test_id(&id, (unsigned)i + 2);
+		assert(asprintf(&names[i], "%s:reasoning/%.2s/%s/1.txt", tips[i].hex, id.hex,
+		                id.hex) > 0);
+	}
+	char const *const find[] = { "rev-parse", "--verify", "--quiet", names[0], nullptr };
+	char const *const again[] = { "rev-parse", "--verify", "--quiet", names[1], nullptr };
+	char const *const *const runs[] = {
+		init, bare, head, hash, import, head,
+		bare, head, hash, find, import, head,
+		bare, head, hash, again, import, head,
+	};
+	static char text[1 << 14];
+	assert(!util_read_text(log, text, sizeof text));
+	char const *at = text;
+	for (size_t i = 0; i < array_size(runs); ++i)
+		assert(journal_test_logged(&at, runs[i]));
+	assert(!*at);
+	for (size_t i = 0; i < array_size(names); ++i)
+		free(names[i]);
+	free(fail);
+	free(saved);
+	free(path);
+	free(pin);
+	free(log);
+	free(wrapper);
+	free(bin);
+	free(real);
+}
+
+/* Tests journal_git() and journal_tip() with the journal @p j after
+ * journal_stop(): the name of an object, an empty name and an empty tip
+ * for a missing ref, and EIO for another exit status, for the exit status
+ * 1 without a name to read and for an output that is not a name. A git
+ * that cannot be spawned is ENOENT, and journal_tip() then leaves the tip
+ * as it was.
+ */
+static void
+journal_test_git (struct journal *j)
+{
+	struct oid tip = j->tip;
+	struct oid oid;
+	assert(oid_len(&tip));
+	assert(!journal_git(j, (char const *[]){ "rev-parse", "--verify", "--quiet", j->ref, nullptr },
+	                    -1, &oid) && oid_equal(&oid, &tip));
+	oid = tip;
+	assert(!journal_git(j, (char const *[]){ "rev-parse", "--verify", "--quiet",
+	                                         "refs/heads/reasoning/missing", nullptr },
+	                    -1, &oid) && !oid_len(&oid));
+	assert(journal_git(j, (char const *[]){ "rev-parse", "--verify", "--quiet",
+	                                        "refs/heads/reasoning/missing", nullptr },
+	                   -1, nullptr) == EIO);
+	oid = tip;
+	assert(journal_git(j, (char const *[]){ "rev-parse", "--verify", "missing", nullptr },
+	                   -1, &oid) == EIO && !oid_len(&oid));
+	oid = tip;
+	assert(journal_git(j, (char const *[]){ "rev-parse", "--is-bare-repository", nullptr },
+	                   -1, &oid) == EIO && !oid_len(&oid));
+	assert(!journal_git(j, (char const *[]){ "rev-parse", "--is-bare-repository", nullptr },
+	                    -1, nullptr));
+	assert(journal_test_out(&j->out, CSTR_VIEW("true\n")));
+	char const ref[] = "refs/heads/reasoning/missing";
+	static_assert(sizeof ref <= sizeof j->ref);
+	char saved[sizeof j->ref];
+	memcpy(saved, j->ref, sizeof saved);
+	memcpy(j->ref, ref, sizeof ref);
+	assert(!journal_tip(j) && !oid_len(&j->tip));
+	memcpy(j->ref, saved, sizeof saved);
+	assert(!journal_tip(j) && oid_equal(&j->tip, &tip));
+	char *const path = strdup(getenv("PATH"));
+	assert(path && !setenv("PATH", "/nonexistent", 1));
+	assert(journal_tip(j) == ENOENT && oid_equal(&j->tip, &tip));
+	assert(!setenv("PATH", path, 1));
+	free(path);
+}
+
 /* Tests child_run() with exit statuses, a death by a signal, and a
  * deadline without a grace, with a grace that the command honors, and with
  * a grace that the command ignores. Each case asserts the error and the
@@ -412,6 +701,7 @@ main (int argc, char **argv)
 	journal_test_load(j);
 	journal_test_gap(j);
 	journal_test_legacy(j);
+	journal_test_git(j);
 	/* Finished, checkpoint-less jobs must not exhaust the bounded table. */
 	for (unsigned k = JOURNAL_FILES + 2; k <= JOURNAL_JOBS + 1; ++k) {
 		struct hexid id;
@@ -429,8 +719,10 @@ main (int argc, char **argv)
 	journal_test_child_run();
 	journal_test_child_capture();
 	journal_test_child_end_why();
+	journal_test_unlock(argv[1]);
+	journal_test_argv(argv[1]);
 	puts("Journal loads, write gaps, legacy migration, reasoning verification, "
-	     "path walks, private files, child_run(), child_capture() and "
-	     "child_end_why(): PASS");
+	     "path walks, private files, child_run(), child_capture(), "
+	     "child_end_why(), journal_git(), lock removal and the argv of git: PASS");
 	return 0;
 }

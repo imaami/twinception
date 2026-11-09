@@ -219,7 +219,7 @@ check-journal: $Otests/journal
 	"$<" "$$directory/transcripts.git"
 
 $Otests/journal: $Otests/journal.c.o $Otests/src/loop.c.o $Otests/src/log.c.o \
-                 $Otests/src/child.c.o $Otests/src/buf.c.o
+                 $Otests/src/child.c.o $Otests/src/buf.c.o $Otests/src/git_run.c.o
 $Otests/journal:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lcrypto -lm
 
 # Unit tests of the argv and the environment of git, src/git_run.c. The
