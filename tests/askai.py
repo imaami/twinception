@@ -15127,6 +15127,11 @@ def check_findings(binary, up):
                 "Closed findings:\n"
                 f"bro#2  retracted  -      {claim}\n"), said[5]
             assert stored(3)["about"] == "cuh#1" and stored(1, "cuh")["id"] == "cuh#1"
+            # expand names a finding without evidence items.
+            body = ai.rpc("tools/call", {"name": "findings", "arguments": {
+                "action": "expand", "id": "bro#3"}})[2]
+            assert text_of(body["result"]) == "Evidence of finding bro#3 by bro: One commit.\n" \
+                "[askai: bro#3 has no evidence items.]\n", body
             # The prompt lists the open findings of the conversation, newest
             # first.
             count = len(up.requests)

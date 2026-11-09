@@ -168,7 +168,9 @@ struct findings_cite {
 	uint16_t            flags;     /* enum findings_cite_flag */
 };
 
-/* An item that expand prints, and its finding. */
+/* An entry of the output of expand: the item e of the finding f, or the
+ * end of the items of f for e nullptr.
+ */
 struct findings_print {
 	struct finding const  *f;
 	struct evidence const *e;
@@ -193,8 +195,8 @@ struct findings_call {
 	UTIL_ARRAY(struct finding)         findings;  /* the findings read */
 	UTIL_ARRAY(struct findings_cite)   cites;     /* the items that the
 	                                                 evidence cites again */
-	UTIL_ARRAY(struct findings_print)  prints;    /* the items that expand
-	                                                 prints, in order */
+	UTIL_ARRAY(struct findings_print)  prints;    /* the output of expand,
+	                                                 in order */
 	struct child          *child;     /* the call's git, until a step has
 	                                     read its output */
 	struct json_object    *args;      /* the arguments of the call, while
@@ -213,6 +215,9 @@ struct findings_call {
 	                                     for findings_prompt() */
 	size_t                 archive;   /* bytes of files that are the
 	                                     archive */
+	size_t                 fit;       /* the prints before which the items
+	                                     of expand fit in FINDINGS_MATERIAL
+	                                     bytes */
 	uint32_t               number;    /* N of id, or of a new finding */
 	uint32_t               item;      /* m of the id X#n/m of expand, or 0 */
 	uint32_t               last;      /* the highest number of a finding of
@@ -472,19 +477,6 @@ findings_read_batch (struct mcp_slot *slot)
 	findings_run(slot, STAGE_READ, STORE_READ, nullptr, nullptr, &in);
 }
 
-/* Appends @p file to the files that cat-file reads for @p call. Returns 0
- * or ENOMEM.
- */
-static int
-findings_queue (struct findings_call *call,
-                struct findings_file  file)
-{
-	int const e = util_grow(call->wanted.items, call->wanted.cap, call->wanted.n + 1);
-	if (!e)
-		call->wanted.items[call->wanted.n++] = file;
-	return e;
-}
-
 /* Runs git to read the finding of the id of expand by the path of its
  * file on the branch of its author.
  */
@@ -492,8 +484,8 @@ static void
 findings_read_one (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	int const e = findings_queue(call, (struct findings_file){ .author = call->author,
-	                                                           .number = call->number });
+	int const e = util_push(call->wanted, (struct findings_file){ .author = call->author,
+	                                                              .number = call->number });
 	if (e) {
 		findings_end(slot, e, true);
 		return;
@@ -641,7 +633,7 @@ findings_got_files (struct mcp_slot *slot)
 		if (call->number == n && !strcmp(b->author, call->author))
 			call->flags |= CALL_FOUND;
 		if (findings_wants(call, b->author, n))
-			e = findings_queue(call, (struct findings_file){
+			e = util_push(call->wanted, (struct findings_file){
 				.bytes  = file.bytes,
 				.author = b->author,
 				.number = n,
@@ -971,18 +963,6 @@ findings_shown (struct mcp_slot  *slot,
 	return mcp_slot_evidence(slot, shown, at, len);
 }
 
-/* Returns true if expand prints the items of @p f: the finding of the id,
- * or without id an open finding of the agent @p agent.
- */
-static bool
-findings_expands (struct findings_call const *call,
-                  struct finding const       *f,
-                  char const                 *agent)
-{
-	return *call->author ? f->number == call->number && !strcmp(f->author, call->author)
-	                     : FINDING_OPEN >> finding_state(f) & 1 && !strcmp(f->author, agent);
-}
-
 /* Appends to call->out the external items of @p f with the ID @p id, and
  * returns their number, or SIZE_MAX if out of memory.
  */
@@ -1004,88 +984,79 @@ findings_externals (struct findings_call *call,
 }
 
 /* Writes the output of expand from @p out, the output of STORE_READ for
- * the archive files of call->prints: each finding with its items and its
- * external items. Each item that a result can show whole is recorded for
- * the ring (findings_shown()). The output ends with the items that did not
- * fit, and for a turn, with what the turn saw.
+ * the archive files of the items of call->prints that fit: each finding
+ * with its items and its external items. Each item that a result can show
+ * whole is recorded for the ring (findings_shown()). The output ends with
+ * the items that did not fit, and for a turn, with what the turn saw.
  */
 static void
 findings_expanded (struct mcp_slot *slot,
                    struct span      out)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	char const *agent = findings_session(call)->agent;
 	bool const turn = !mcp_slot_from_client(slot);
 	struct seen_item shown = { .record = DSTR_INIT };
+	struct finding const *f = nullptr;
+	char id[FINDING_ID] = "";
 	char more_id[SEEN_ID] = "";
 	char seen_id[SEEN_ID] = "";
-	size_t printed = 0;
+	size_t items = 0;
 	size_t more = 0;
-	size_t listed = 0;
 	size_t whole = 0;
 	int e = 0;
 	(void)dstr_clear(&call->out);
-	for (size_t i = 0; !e && i < call->findings.n; ++i) {
-		struct finding const *f = &call->findings.items[i];
-		if (!findings_expands(call, f, agent))
-			continue;
-		char id[FINDING_ID];
-		finding_id(f, id);
-		struct cstr_view const claim = finding_claim_line(f);
-		if (!dstr_printf(&call->out, "Evidence of finding %s by %s: %.*s\n", id, f->author,
-		                 (int)claim.len, claim.len ? claim.data : ""))
-			e = ENOMEM;
-		++listed;
-		size_t items = 0;
-		for (size_t k = 0; !e && k < f->changes.n; ++k) {
-			struct finding_change const *c = &f->changes.items[k];
-			for (size_t j = 0; !e && j < c->evidence.n; ++j) {
-				struct evidence const *ev = &c->evidence.items[j];
-				if (call->item && ev->item != call->item)
-					continue;
-				++items;
-				if (printed == call->prints.n || call->prints.items[printed].e != ev) {
-					if (!more++)
-						(void)util_format(more_id, sizeof more_id, "%s/%" PRIu32, id,
-						                  ev->item);
-					continue;
-				}
-				++printed;
-				/* Missing material prints as missing. */
-				struct oid blobs[2] = {};
-				struct span request = {};
-				struct span result = {};
-				int r = 0;
-				if (ev->flags & EVIDENCE_REQUEST)
-					r = store_object_next(&out, &blobs[0], &request);
-				if (r != EIO)
-					r = store_object_next(&out, &blobs[1], &result);
-				if (r == EIO) {
-					e = EIO;
-					continue;
-				}
-				size_t const at = dstr_len(&call->out);
-				e = evidence_expand(ev, id, f->author,
-				                    (struct cstr_view){ (char const *)request.ptr, request.len },
-				                    (struct cstr_view){ (char const *)result.ptr, result.len },
-				                    &call->out);
-				if (e || !turn || !findings_stored(ev, blobs))
-					continue;
-				(void)util_format(seen_id, sizeof seen_id, "%s/%" PRIu32, id, ev->item);
-				e = findings_record(ev, &shown.record);
-				e = e ? e : findings_shown(slot, &shown, seen_id, blobs, at,
-				                           dstr_len(&call->out) - at);
-				++whole;
-			}
+	for (size_t i = 0; !e && i < call->prints.n; ++i) {
+		struct findings_print const *p = &call->prints.items[i];
+		if (p->f != f) {
+			f = p->f;
+			finding_id(f, id);
+			items = 0;
+			struct cstr_view const claim = finding_claim_line(f);
+			if (!dstr_printf(&call->out, "Evidence of finding %s by %s: %.*s\n", id, f->author,
+			                 (int)claim.len, claim.len ? claim.data : ""))
+				e = ENOMEM;
 		}
-		size_t externals = 0;
-		if (!e && !call->item)
-			externals = findings_externals(call, f, id);
-		if (externals == SIZE_MAX)
-			e = ENOMEM;
-		if (!e && !items && !externals &&
-		    !dstr_printf(&call->out, "[askai: %s has no evidence items.]\n", id))
-			e = ENOMEM;
+		struct evidence const *ev = p->e;
+		if (!ev) {
+			/* The end of the items of f. */
+			size_t const externals = e || call->item ? 0 : findings_externals(call, f, id);
+			if (externals == SIZE_MAX)
+				e = ENOMEM;
+			else if (!e && !items && !externals &&
+			         !dstr_printf(&call->out, "[askai: %s has no evidence items.]\n", id))
+				e = ENOMEM;
+			continue;
+		}
+		++items;
+		if (i >= call->fit) {
+			if (!more++)
+				(void)util_format(more_id, sizeof more_id, "%s/%" PRIu32, id, ev->item);
+			continue;
+		}
+		/* Missing material prints as missing. */
+		struct oid blobs[2] = {};
+		struct span request = {};
+		struct span result = {};
+		int r = 0;
+		if (ev->flags & EVIDENCE_REQUEST)
+			r = store_object_next(&out, &blobs[0], &request);
+		if (r != EIO)
+			r = store_object_next(&out, &blobs[1], &result);
+		if (r == EIO) {
+			e = EIO;
+			continue;
+		}
+		size_t const at = dstr_len(&call->out);
+		e = evidence_expand(ev, id, f->author,
+		                    (struct cstr_view){ (char const *)request.ptr, request.len },
+		                    (struct cstr_view){ (char const *)result.ptr, result.len },
+		                    &call->out);
+		if (e || !turn || !findings_stored(ev, blobs))
+			continue;
+		(void)util_format(seen_id, sizeof seen_id, "%s/%" PRIu32, id, ev->item);
+		e = findings_record(ev, &shown.record);
+		e = e ? e : findings_shown(slot, &shown, seen_id, blobs, at, dstr_len(&call->out) - at);
+		++whole;
 	}
 	dstr_cleanup(&shown.record);
 	if (e == EIO) {
@@ -1093,7 +1064,7 @@ findings_expanded (struct mcp_slot *slot,
 		return;
 	}
 	bool ok = !e;
-	if (ok && !listed)
+	if (ok && !call->prints.n)
 		ok = dstr_cat(&call->out, "You have no open findings.\n");
 	if (ok && more)
 		ok = dstr_printf(&call->out, "[askai: %zu more evidence item%s did not fit. Expand each "
@@ -1110,45 +1081,107 @@ findings_expanded (struct mcp_slot *slot,
 	findings_end(slot, e, false);
 }
 
-/* Runs git to read the archive files of the items that expand prints, in
- * the order of the findings, their changes and their items, until the
- * material would be more than FINDINGS_MATERIAL bytes. Without such items,
- * the call writes the output at once.
+/* Adds the sizes of the stored material of the item @p e to @p *bytes, the
+ * material of a call so far, and returns true, or returns false with
+ * @p *bytes unchanged if the material would then be more than
+ * FINDINGS_MATERIAL bytes.
+ */
+static bool
+findings_fits (uint64_t              *bytes,
+               struct evidence const *e)
+{
+	uint64_t const request = e->flags & EVIDENCE_REQUEST ? e->request.bytes : 0;
+	if (request > FINDINGS_MATERIAL - *bytes ||
+	    e->result.bytes > FINDINGS_MATERIAL - *bytes - request)
+		return false;
+	*bytes += request + e->result.bytes;
+	return true;
+}
+
+/* Writes the refusal of the item @p item of the finding @p number of
+ * @p author, which the finding does not contain, to the @p len bytes at
+ * @p why. Returns EINVAL.
+ */
+static int
+findings_no_item (char const *author,
+                  uint32_t    number,
+                  uint32_t    item,
+                  char       *why,
+                  size_t      len)
+{
+	return util_refuse(why, len, "No evidence item has the id %s#%" PRIu32 "/%" PRIu32 ". show "
+	                   "with id %s#%" PRIu32 " lists the items.", author, number, item, author,
+	                   number);
+}
+
+/* Records in call->prints the items of the finding @p f that expand
+ * prints, every item or the item of the id, and then the end of the items
+ * of @p f. Counts the items in @p *items. For each item before call->fit,
+ * adds the size of its material to @p *bytes (findings_fits()) and the
+ * lines that read its archive files to @p in. The first item that does not
+ * fit sets call->fit. Returns 0 or ENOMEM.
+ */
+static int
+findings_expand_finding (struct findings_call *call,
+                         struct finding const *f,
+                         uint64_t             *bytes,
+                         size_t               *items,
+                         struct buf           *in)
+{
+	int e = 0;
+	for (size_t k = 0; !e && k < f->changes.n; ++k) {
+		struct finding_change const *c = &f->changes.items[k];
+		for (size_t j = 0; !e && j < c->evidence.n; ++j) {
+			struct evidence const *ev = &c->evidence.items[j];
+			if (call->item && ev->item != call->item)
+				continue;
+			++*items;
+			e = util_push(call->prints, (struct findings_print){ f, ev });
+			if (e || call->fit < call->prints.n)
+				continue;
+			if (!findings_fits(bytes, ev)) {
+				call->fit = call->prints.n - 1;
+				continue;
+			}
+			if (ev->flags & EVIDENCE_REQUEST)
+				e = findings_archive_line(in, f->author, &ev->request);
+			e = e ? e : findings_archive_line(in, f->author, &ev->result);
+		}
+	}
+	return e ? e : util_push(call->prints, (struct findings_print){ f, nullptr });
+}
+
+/* Records in call->prints the output of expand: the items of the finding
+ * of the id, or of the item of the id, or without id of the open findings
+ * of the agent, each finding with the end of its items. call->fit is the
+ * first item whose material would make the material of the call more than
+ * FINDINGS_MATERIAL bytes. Then runs git to read the archive files of the
+ * items before it, or without such items, writes the output at once.
  */
 static void
 findings_expand (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	char const *agent = findings_session(call)->agent;
 	struct buf in = {};
 	uint64_t bytes = 0;
-	bool full = false;
+	size_t items = 0;
 	int e = 0;
 	call->prints.n = 0;
-	for (size_t i = 0; !e && !full && i < call->findings.n; ++i) {
+	call->fit = SIZE_MAX;
+	/* The call read only the finding of the id, or the findings of the
+	 * agent. */
+	for (size_t i = 0; !e && i < call->findings.n; ++i) {
 		struct finding const *f = &call->findings.items[i];
-		if (!findings_expands(call, f, agent))
+		if (!*call->author && !(FINDING_OPEN >> finding_state(f) & 1))
 			continue;
-		for (size_t k = 0; !e && !full && k < f->changes.n; ++k) {
-			struct finding_change const *c = &f->changes.items[k];
-			for (size_t j = 0; !e && !full && j < c->evidence.n; ++j) {
-				struct evidence const *ev = &c->evidence.items[j];
-				if (call->item && ev->item != call->item)
-					continue;
-				bool const asked = ev->flags & EVIDENCE_REQUEST;
-				uint64_t const request = asked ? ev->request.bytes : 0;
-				full = request > FINDINGS_MATERIAL - bytes ||
-				       ev->result.bytes > FINDINGS_MATERIAL - bytes - request;
-				if (full)
-					break;
-				bytes += request + ev->result.bytes;
-				e = util_grow(call->prints.items, call->prints.cap, call->prints.n + 1);
-				e = e || !asked ? e : findings_archive_line(&in, f->author, &ev->request);
-				e = e ? e : findings_archive_line(&in, f->author, &ev->result);
-				if (!e)
-					call->prints.items[call->prints.n++] = (struct findings_print){ f, ev };
-			}
-		}
+		e = findings_expand_finding(call, f, &bytes, &items, &in);
+	}
+	if (!e && call->item && !items) {
+		buf_fini(&in);
+		char why[256];
+		(void)findings_no_item(call->author, call->number, call->item, why, sizeof why);
+		mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
+		return;
 	}
 	if (e) {
 		buf_fini(&in);
@@ -1216,11 +1249,6 @@ findings_act (struct mcp_slot *slot)
 		                                call->author, &call->out), false);
 		return;
 	case FINDINGS_EXPAND:
-		if (call->item && call->findings.n && !findings_item(call->findings.items, call->item)) {
-			mcp_slot_tellf(slot, TOOL_FAILED, "No evidence item has the id %s/%" PRIu32 ". "
-			               "show with id %s lists the items.", id, call->item, id);
-			return;
-		}
 		findings_expand(slot);
 		return;
 	case FINDINGS_SHOW:
@@ -1494,9 +1522,7 @@ findings_cite_blobs (struct mcp_slot *slot)
 		    findings_stored(&item, cite->blobs))
 			continue;
 		cite->flags |= CITE_READ;
-		uint64_t const request = asked ? item.request.bytes : 0;
-		if (request > FINDINGS_MATERIAL - bytes ||
-		    item.result.bytes > FINDINGS_MATERIAL - bytes - request) {
+		if (!findings_fits(&bytes, &item)) {
 			evidence_fini(&item);
 			buf_fini(&in);
 			mcp_slot_tell(slot, CSTR_VIEW("The cited evidence items have more than 8 MiB of "
@@ -1504,7 +1530,6 @@ findings_cite_blobs (struct mcp_slot *slot)
 			              TOOL_FAILED);
 			return;
 		}
-		bytes += request + item.result.bytes;
 		/* The ring stores the git IDs of an item that a result showed. */
 		for (size_t k = asked ? 0 : 1; !e && k < array_size(cite->blobs); ++k)
 			e = oid_len(&cite->blobs[k])
@@ -1553,13 +1578,10 @@ findings_cite_records (struct mcp_slot *slot)
 		if (item)
 			e = findings_record(item, &cite->record);
 		else if (f)
-			e = util_refuse(why, sizeof why, "No evidence item has the id %s#%" PRIu32 "/%"
-			                PRIu32 ". show with id %s#%" PRIu32 " lists the items.",
-			                ref->author, ref->number, ref->item, ref->author,
-			                ref->number);
+			e = findings_no_item(ref->author, ref->number, ref->item, why, sizeof why);
 		else if (!queued)
-			e = findings_queue(call, (struct findings_file){ .author = ref->author,
-			                                                 .number = ref->number });
+			e = util_push(call->wanted, (struct findings_file){ .author = ref->author,
+			                                                    .number = ref->number });
 	}
 	if (e) {
 		findings_stop(slot, e, cstr_view(why));
