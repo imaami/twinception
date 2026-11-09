@@ -67,9 +67,20 @@ test_ids (void)
 	finding_path(UINT32_MAX, path);
 	CHECK(!strcmp(path, "findings/42949672/4294967295.json") &&
 	      finding_path_number(cstr_view(path)) == UINT32_MAX && strlen(path) == FINDING_FILE - 1);
+	finding_path(4294967200, path);
+	CHECK(!strcmp(path, "findings/42949672/4294967200.json") &&
+	      finding_path_number(cstr_view(path)) == 4294967200);
+	finding_path(99, path);
+	CHECK(finding_path_number(cstr_view(path)) == 99);
 	char const *const paths[] = { "findings/1/5.json", "findings/0/05.json", "findings/0/0.json",
 	                              "archive/0/5.json", "findings/0/5.txt", "x/findings/0/5.json",
-	                              "findings/00/5.json", ".json", "", "findings/0/.json" };
+	                              "findings/00/5.json", ".json", "", "findings/0/.json",
+	                              "findings/.json", "findings//5.json", "findings/0/5/5.json",
+	                              "findings/0/5.json/", "findings/2/199.json",
+	                              "findings/01/100.json", "findings/1/100.jsonx",
+	                              "findings/0/-5.json", "findings/0/+5.json",
+	                              "findings/42949672/4294967296.json", "findings/1/1 00.json",
+	                              "Findings/0/5.json", "findings/0/5.JSON" };
 	for (size_t i = 0; i < sizeof paths / sizeof *paths; ++i)
 		CHECK(!finding_path_number(cstr_view(paths[i])));
 }
@@ -399,8 +410,11 @@ test_texts (void)
 	};
 	size_t const n = sizeof list / sizeof *list;
 	finding_sort(list, n);
+	/* The open findings first, then by author, newest first. */
 	CHECK(list[0].number == 12 && list[1].number == 5 && list[2].number == 4 &&
-	      list[3].number == 3 && list[4].number == 2 && list[5].number == 1);
+	      list[3].number == 2 && list[4].number == 3 && list[5].number == 1);
+	CHECK(!strcmp(list[2].author, "bro") && !strcmp(list[3].author, "cuh") &&
+	      !strcmp(list[4].author, "bro") && !strcmp(list[5].author, "cuh"));
 	struct dstr text = DSTR_INIT;
 	CHECK(!finding_list(list, n, CSTR_VIEW("test1"), "", &text));
 	SAME(dstr_get(&text), dstr_len(&text),
@@ -412,15 +426,17 @@ test_texts (void)
 	     "Closed findings:\n"
 	     "bro#3   disproved  -      Closed.\n"
 	     "cuh#1   retracted  -      grep -c ignores -e.\n");
+	/* The findings of one author. */
+	struct finding const of_cuh[] = { list[3], list[5] };
 	(void)dstr_clear(&text);
-	CHECK(!finding_list(list, n, CSTR_VIEW("test1"), "cuh", &text));
+	CHECK(!finding_list(of_cuh, 2, CSTR_VIEW("test1"), "cuh", &text));
 	SAME(dstr_get(&text), dstr_len(&text),
 	     "Findings of cuh, open first (id, state, about, claim):\n"
 	     "cuh#2  verified   -  git grep -L lists every file of the commit.\n"
 	     "Closed findings:\n"
 	     "cuh#1  retracted  -  grep -c ignores -e.\n");
 	(void)dstr_clear(&text);
-	CHECK(!finding_list(list, n, CSTR_VIEW("test1"), "unc", &text));
+	CHECK(!finding_list(list, 0, CSTR_VIEW("test1"), "unc", &text));
 	SAME(dstr_get(&text), dstr_len(&text), "unc has no findings yet.\n");
 	(void)dstr_clear(&text);
 	CHECK(!finding_list(list, 0, CSTR_VIEW("test1"), "", &text));
@@ -436,8 +452,22 @@ test_texts (void)
 	      dstr_len(&text) == sizeof "Findings of the session test1, open first (id, state, "
 	                         "about, claim):\nunc#1  candidate  -  \n" - 1 + FINDING_CLAIM);
 
+	/* Only open findings, and only closed findings. */
+	(void)dstr_clear(&text);
+	CHECK(!finding_list(list + 4, 2, CSTR_VIEW("test1"), "", &text));
+	SAME(dstr_get(&text), dstr_len(&text),
+	     "Findings of the session test1, open first (id, state, about, claim):\n"
+	     "Closed findings:\n"
+	     "bro#3  disproved  -  Closed.\n"
+	     "cuh#1  retracted  -  grep -c ignores -e.\n");
+	(void)dstr_clear(&text);
+	CHECK(!finding_list(list + 2, 2, CSTR_VIEW("test1"), "", &text));
+	SAME(dstr_get(&text), dstr_len(&text),
+	     "Findings of the session test1, open first (id, state, about, claim):\n"
+	     "bro#4  verified   -  The git tool labels every exit status 1 as \"No matches.\".\n"
+	     "cuh#2  verified   -  git grep -L lists every file of the commit.\n");
 	/* show lists the findings about a finding and each change. */
-	struct finding *cuh2 = &list[4];
+	struct finding *cuh2 = &list[3];
 	struct finding_change c = change_of(FINDING_VERIFIED, "The option table maps -L.", 27, 9, 1);
 	strcpy(c.evidence.items[0].from, "unc#1/1");
 	c.evidence.items[0].kind = EVIDENCE_LINES;
@@ -471,8 +501,9 @@ test_texts (void)
 	                              "candidate, ask 9f3c2a71, turn 5, asked by imaami\n  evidence "
 	                              "bro#5/1: call c5, git, 105 bytes\n"));
 
-	/* The notice of the open findings of the agent bro. */
-	struct finding *bro = list;
+	/* The notice of the open findings of the agent bro, from the findings of
+	 * bro, sorted. */
+	struct finding const bro[] = { list[0], list[1], list[2], list[4] };
 	(void)dstr_clear(&text);
 	CHECK(!finding_notice(bro, 4, &(struct hexid){ CONV }, SIZE_MAX, &text));
 	SAME(dstr_get(&text), dstr_len(&text),

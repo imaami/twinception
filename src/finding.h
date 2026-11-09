@@ -35,13 +35,19 @@
 #include "member.h"
 #include "util.h"
 
+/** The directory of the files of the findings on a branch, and the end of
+ *  the name of a file (finding_path()).
+ */
+#define FINDING_DIR "findings/"
+#define FINDING_EXT ".json"
+
 enum {
 	FINDING_ID      = MEMBER_NAME + 17,  /**< bytes of an ID such as bro#5,
 	                                          NUL included: a member name,
 	                                          '#', at most 10 digits, and 6
 	                                          spare bytes in place of the
 	                                          padding of struct finding */
-	FINDING_FILE    = sizeof "findings/42949672/4294967295.json",
+	FINDING_FILE    = sizeof FINDING_DIR "42949672/4294967295" FINDING_EXT,
 	                                     /**< bytes of the path of the file
 	                                          of a finding, NUL included */
 	FINDING_VERSION = 1,                 /**< the version of the file that
@@ -226,8 +232,9 @@ finding_check (struct finding_change const *c,
                char                        *why,
                size_t                       len);
 
-/** Sorts the @p n findings at @p list by the name of the author, and the
- *  findings of one author newest first.
+/** Sorts the @p n findings at @p list: the open findings first, then the
+ *  closed ones, each by the name of the author, and the findings of one
+ *  author newest first.
  */
 extern void
 finding_sort (struct finding *list,
@@ -244,9 +251,9 @@ finding_claim_line (struct finding const *f);
  * finding_sort() sorted, as the action list writes it: a header that names
  * the session @p session, or the member @p author if it is not "", the
  * open findings, and the closed findings, one finding a line with its ID,
- * state, about and claim. Only the findings of @p author are listed if it
- * is not "". A claim is cut at its first line feed and at FINDING_CLAIM
- * bytes. Returns 0 or ENOMEM.
+ * state, about and claim. If @p author is not "", @p list must be the
+ * findings of @p author. A claim is cut at its first line feed and at
+ * FINDING_CLAIM bytes. Returns 0 or ENOMEM.
  */
 extern int
 finding_list (struct finding const *list,
@@ -268,12 +275,12 @@ finding_show (struct finding const *f,
 
 /**
  * Appends to @p d the notices of the open findings of the @p n findings at
- * @p list, the findings of the agent, for the prompt of a turn: the open
- * findings of the conversation @p conversation, newest first, one a line
- * with its ID, state and claim, then the number of open findings of other
- * conversations, if any. The lines of the findings take at most @p most
- * bytes. A notice says how many open findings of the conversation did not
- * fit. Returns 0 or ENOMEM.
+ * @p list, the findings of the agent that finding_sort() sorted, for the
+ * prompt of a turn: the open findings of the conversation @p conversation,
+ * newest first, one a line with its ID, state and claim, then the number
+ * of open findings of other conversations, if any. The lines of the
+ * findings are at most @p most bytes, and a notice counts the open
+ * findings of the conversation that did not fit. Returns 0 or ENOMEM.
  */
 extern int
 finding_notice (struct finding const *list,

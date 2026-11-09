@@ -16,10 +16,8 @@
 struct cstr_view const finding_state_names[FINDING_STATES] = { FINDING_STATE_LIST(XL_VIEW) };
 
 enum {
-	FINDING_ASK   = 8,   /* digits of an ask ID in show */
-	FINDING_STATE = 9,   /* the width of the state column of a list */
-	FINDING_ROW   = FINDING_ID + FINDING_STATE + FINDING_CLAIM + 8,  /* bytes of a line
-	                                                                    of the notice */
+	FINDING_ASK   = 8,  /* digits of an ask ID in show */
+	FINDING_STATE = 9,  /* the width of the state column of a list */
 };
 
 /* The options of json-c for the file of a finding. */
@@ -114,26 +112,29 @@ void
 finding_path (uint32_t number,
               char     path[static FINDING_FILE])
 {
-	(void)util_format(path, FINDING_FILE, "findings/%" PRIu32 "/%" PRIu32 ".json", number / 100,
-	                  number);
+	(void)util_format(path, FINDING_FILE, FINDING_DIR "%" PRIu32 "/%" PRIu32 FINDING_EXT,
+	                  number / 100, number);
 }
 
 uint32_t
 finding_path_number (struct cstr_view path)
 {
-	/* The number is between the last slash and .json. Only the path that
-	 * finding_path() writes for it is the file of a finding. */
-	size_t at = path.len;
-	while (at && path.data[at - 1] != '/')
-		--at;
-	struct cstr_view const name = cstr_view_slice(path, at, SIZE_MAX);
-	uint64_t n;
-	if (!cstr_view_ends(name, CSTR_VIEW(".json")) || !name.len ||
-	    util_number(name.data, name.len - (sizeof ".json" - 1), UINT32_MAX, &n) || !n)
+	/* findings/D/N.json, as finding_path() writes it: D and N without
+	 * leading zeros, N from 1, and D = N / 100. */
+	static struct cstr_view const head = CSTR_VIEW_INIT(FINDING_DIR);
+	static struct cstr_view const tail = CSTR_VIEW_INIT(FINDING_EXT);
+	if (path.len < head.len + tail.len || !cstr_view_starts(path, head) ||
+	    !cstr_view_ends(path, tail))
 		return 0;
-	char want[FINDING_FILE];
-	finding_path((uint32_t)n, want);
-	return cstr_view_equal(path, cstr_view(want)) ? (uint32_t)n : 0;
+	struct cstr_view n = cstr_view_slice(path, head.len, path.len - head.len - tail.len);
+	struct cstr_view d;
+	uint64_t dir;
+	uint64_t number;
+	if (!cstr_view_cut(&n, '/', &d) || util_number(d.data, d.len, UINT32_MAX, &dir) ||
+	    (d.len > 1 && *d.data == '0') || util_number(n.data, n.len, UINT32_MAX, &number) ||
+	    *n.data == '0' || dir != number / 100)
+		return 0;
+	return (uint32_t)number;
 }
 
 /* Reads the change @p obj of a file into @p c, which finding_change()
@@ -359,6 +360,10 @@ finding_order (void const *a,
 {
 	struct finding const *x = a;
 	struct finding const *y = b;
+	bool const xo = FINDING_OPEN >> finding_state(x) & 1;
+	bool const yo = FINDING_OPEN >> finding_state(y) & 1;
+	if (xo != yo)
+		return xo ? -1 : 1;
 	int const by = strcmp(x->author, y->author);
 	return by ? by : (x->number < y->number) - (x->number > y->number);
 }
@@ -382,11 +387,20 @@ finding_claim_line (struct finding const *f)
 	return claim;
 }
 
-/* Appends to @p d the line of @p f in a list, with the ID in a column of
- * @p width bytes and the about in a column of @p about bytes. Returns true,
- * or false if out of memory.
+/* Returns the length of the ID of @p f, such as 5 for bro#5. */
+static int
+finding_id_width (struct finding const *f)
+{
+	char digits[UTIL_DECIMAL];
+	return (int)(strlen(f->author) + 1 + util_decimal(digits + sizeof digits, f->number, 0).len);
+}
+
+/* Appends to @p d the line of @p f in a list: the ID in a column of
+ * @p width bytes, the state, the about in a column of @p about bytes
+ * unless @p about is 0, and the claim (finding_claim_line()). Returns 0
+ * or ENOMEM.
  */
-static bool
+static int
 finding_row (struct finding const *f,
              int                   width,
              int                   about,
@@ -395,10 +409,12 @@ finding_row (struct finding const *f,
 	char id[FINDING_ID];
 	finding_id(f, id);
 	struct cstr_view const claim = finding_claim_line(f);
-	return dstr_printf(d, "%-*s  %-*s  %-*s  %.*s\n", width, id, FINDING_STATE,
-	                   finding_state_names[finding_state(f)].data, about,
-	                   *f->about ? f->about : "-",
-	                   (int)claim.len, claim.len ? claim.data : "");
+	if (!dstr_printf(d, "%-*s  %-*s  ", width, id, FINDING_STATE,
+	                 finding_state_names[finding_state(f)].data))
+		return ENOMEM;
+	if (about && !dstr_printf(d, "%-*s  ", about, *f->about ? f->about : "-"))
+		return ENOMEM;
+	return dstr_printf(d, "%.*s\n", (int)claim.len, claim.len ? claim.data : "") ? 0 : ENOMEM;
 }
 
 int
@@ -410,24 +426,14 @@ finding_list (struct finding const *list,
 {
 	int width = 0;
 	int about = 1;
-	size_t listed = 0;
-	size_t closed = 0;
 	for (size_t i = 0; i < n; ++i) {
-		struct finding const *f = &list[i];
-		if (*author && strcmp(author, f->author))
-			continue;
-		char id[FINDING_ID];
-		finding_id(f, id);
-		int const w = (int)strlen(id);
-		int const a = (int)strlen(f->about);
+		int const w = finding_id_width(&list[i]);
+		int const a = (int)strlen(list[i].about);
 		width = w > width ? w : width;
 		about = a > about ? a : about;
-		++listed;
-		if (!(FINDING_OPEN >> finding_state(f) & 1))
-			++closed;
 	}
-	bool ok = true;
-	if (!listed)
+	bool ok;
+	if (!n)
 		ok = *author ? dstr_printf(d, "%s has no findings yet.\n", author)
 		             : dstr_printf(d, "No member of the session %.*s has findings yet.\n",
 		                           (int)session.len, session.data);
@@ -436,33 +442,33 @@ finding_list (struct finding const *list,
 	else
 		ok = dstr_printf(d, "Findings of the session %.*s, open first (id, state, about, "
 		                 "claim):\n", (int)session.len, session.data);
-	/* The open findings, then the closed ones. */
-	for (int pass = 0; ok && listed && pass < 2; ++pass) {
-		if (pass && closed)
-			ok = dstr_cat(d, "Closed findings:\n");
-		for (size_t i = 0; ok && i < n; ++i) {
-			struct finding const *f = &list[i];
-			bool const open = FINDING_OPEN >> finding_state(f) & 1;
-			if ((!*author || !strcmp(author, f->author)) && open == !pass)
-				ok = finding_row(f, width, about, d);
+	/* finding_sort() puts the open findings first. */
+	int e = ok ? 0 : ENOMEM;
+	bool open = true;
+	for (size_t i = 0; !e && i < n; ++i) {
+		struct finding const *f = &list[i];
+		if (open && !(FINDING_OPEN >> finding_state(f) & 1)) {
+			open = false;
+			e = dstr_cat(d, "Closed findings:\n") ? 0 : ENOMEM;
 		}
+		e = e ? e : finding_row(f, width, about, d);
 	}
-	return ok ? 0 : ENOMEM;
+	return e;
 }
 
-/* Appends to @p d the change @p k of @p f, its reason and its evidence, as
- * show writes them. Returns true, or false if out of memory.
+/* Appends to @p d the change @p k of @p f with the ID @p id, its reason
+ * and its evidence, as show writes them. Returns true, or false if out of
+ * memory.
  */
 static bool
 finding_show_change (struct finding const *f,
+                     char const           *id,
                      size_t                k,
                      struct dstr          *d)
 {
 	struct finding_change const *c = &f->changes.items[k];
 	struct cstr_view const reason = cstr_view_dstr(&c->reason);
 	struct cstr_view const before = cstr_view_dstr(&c->claim_before);
-	char id[FINDING_ID];
-	finding_id(f, id);
 	if (!dstr_printf(d, "Change %zu: %s", k + 1, finding_state_names[c->state].data))
 		return false;
 	if (*c->ask.hex && !dstr_printf(d, ", ask %.*s", FINDING_ASK, c->ask.hex))
@@ -529,7 +535,7 @@ finding_show (struct finding const *f,
 	if (ok && abouts)
 		ok = dstr_cat(d, "\n");
 	for (size_t k = 0; ok && k < f->changes.n; ++k)
-		ok = finding_show_change(f, k, d);
+		ok = finding_show_change(f, id, k, d);
 	return ok ? 0 : ENOMEM;
 }
 
@@ -540,52 +546,45 @@ finding_notice (struct finding const *list,
                 size_t                most,
                 struct dstr          *d)
 {
+	/* finding_sort() puts the open findings first: open is their number. */
+	size_t open = 0;
 	size_t here = 0;
-	size_t other = 0;
 	int width = 0;
-	for (size_t i = 0; i < n; ++i) {
-		struct finding const *f = &list[i];
-		if (!(FINDING_OPEN >> finding_state(f) & 1))
+	for (; open < n && FINDING_OPEN >> finding_state(&list[open]) & 1; ++open) {
+		if (!hexid_equal(&list[open].conversation, conversation))
 			continue;
-		if (!hexid_equal(&f->conversation, conversation)) {
-			++other;
-			continue;
-		}
-		char id[FINDING_ID];
-		finding_id(f, id);
-		int const w = (int)strlen(id);
+		int const w = finding_id_width(&list[open]);
 		width = w > width ? w : width;
 		++here;
 	}
+	size_t const other = open - here;
 	bool ok = here ? dstr_cat(d, "[askai: Your open findings in this conversation (id, state, "
 	                          "claim):]\n")
 	               : dstr_cat(d, "[askai: You have no open findings in this conversation.]\n");
+	int e = ok ? 0 : ENOMEM;
 	size_t used = 0;
 	size_t left = here;
-	for (size_t i = 0; ok && left && i < n; ++i) {
-		struct finding const *f = &list[i];
-		if (!(FINDING_OPEN >> finding_state(f) & 1) ||
-		    !hexid_equal(&f->conversation, conversation))
+	for (size_t i = 0; !e && left && i < open; ++i) {
+		if (!hexid_equal(&list[i].conversation, conversation))
 			continue;
-		char id[FINDING_ID];
-		finding_id(f, id);
-		struct cstr_view const claim = finding_claim_line(f);
-		char row[FINDING_ROW];
-		size_t const len = util_format(row, sizeof row, "%-*s  %-*s  %.*s\n", width, id,
-		                               FINDING_STATE, finding_state_names[finding_state(f)].data,
-		                               (int)claim.len, claim.len ? claim.data : "");
-		if (used + len > most)
+		size_t const at = dstr_len(d);
+		e = finding_row(&list[i], width, 0, d);
+		size_t const len = dstr_len(d) - at;
+		if (!e && len > most - used) {
+			(void)dstr_erase(d, at, SIZE_MAX);
 			break;
-		ok = dstr_cat_n(d, row, len);
+		}
 		used += len;
 		--left;
 	}
-	if (ok && left)
-		ok = dstr_printf(d, "[askai: %zu more open finding%s. Call findings with action list.]\n",
-		                 left, util_s(left));
-	if (ok && other)
-		ok = dstr_printf(d, "[askai: You have %zu open finding%s in other conversations. Call "
-		                 "findings with action list to see the findings of every member.]\n",
-		                 other, util_s(other));
-	return ok ? 0 : ENOMEM;
+	if (!e && left &&
+	    !dstr_printf(d, "[askai: %zu more open finding%s. Call findings with action list.]\n",
+	                 left, util_s(left)))
+		e = ENOMEM;
+	if (!e && other &&
+	    !dstr_printf(d, "[askai: You have %zu open finding%s in other conversations. Call "
+	                 "findings with action list to see the findings of every member.]\n",
+	                 other, util_s(other)))
+		e = ENOMEM;
+	return e;
 }
