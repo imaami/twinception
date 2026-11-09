@@ -1474,12 +1474,12 @@ struct cxi_cache {
 	struct dstr        dir;
 	struct dstr        tree;
 	char const *const *git;       /* the git command line up to the
-	                                 subcommand, n_git words */
+	                                 subcommand, up to a nullptr */
 	uint64_t           deadline;  /* of the git processes, in loop_clock()
 	                                 time */
-	int                n_git;
+	struct child_fds   fds;       /* of the git processes, with the file
+	                                 lock open as fds.keep */
 	int                fd;
-	int                lock;
 	int                state;
 };
 
@@ -1493,17 +1493,17 @@ cxi_cache_git (struct cxi_cache const *cache,
                struct buf             *out,
                size_t                  max)
 {
+	char const *const *const parts[] = { cache->git, words };
 	char const *argv[256];
-	int e = child_argv(argv, array_size(argv), cache->git, (size_t)cache->n_git, words);
+	int e = child_argv(argv, array_size(argv), parts, array_size(parts));
 	extern char **environ;
 	struct child_cmd const cmd = {
 		.file = "git", .argv = argv, .envp = environ, .max = max, .deadline = cache->deadline
 	};
-	struct child_fds fds = child_fds();
-	fds.keep = cache->lock;
 	struct child_end end;
 	if (!e)
-		e = out ? child_capture(&cmd, fds, out, &end) : child_run(&cmd, fds, &end);
+		e = out ? child_capture(&cmd, cache->fds, out, &end)
+		        : child_run(&cmd, cache->fds, &end);
 	return e ? e : end.status ? EIO : 0;
 }
 
@@ -1594,7 +1594,7 @@ cxi_cache_lock (struct cxi_cache *cache,
 	for (int op = LOCK_SH, e;; op = op == LOCK_SH ? LOCK_EX : LOCK_SH) {
 		char now[OID_SHA256 + 3];
 		size_t n;
-		if (flock(cache->lock, op))
+		if (flock(cache->fds.keep, op))
 			return errno;
 		if ((e = util_read_all(cache->state, now, sizeof now, 0, &n)))
 			return e;
@@ -1620,7 +1620,7 @@ cxi_cache_open (struct cxi_cache *cache,
 	int const flags = O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC;
 	struct dstr index = DSTR_INIT;
 	int e = cxi_dir((char *)dstr_raw(&cache->dir), &cache->fd, &why);
-	if (!e && ((cache->lock = openat(cache->fd, "lock", flags, 0600)) < 0 ||
+	if (!e && ((cache->fds.keep = openat(cache->fd, "lock", flags, 0600)) < 0 ||
 	           (cache->state = openat(cache->fd, "commit", flags, 0600)) < 0))
 		e = errno;
 	if (!e && !dstr_printf(&index, "%sindex", dstr_get(&cache->dir)))
@@ -1710,12 +1710,11 @@ cxi_parse (struct cxi        *x,
 }
 
 /* Runs the request with @p git, the git command line up to the
- * subcommand.
+ * subcommand and a nullptr.
  */
 static int
 cxi_run (struct cxi         *x,
          char const *const  *git,
-         int                 n_git,
          int                *fd)
 {
 	struct cstr_view const *key = x->key;
@@ -1741,7 +1740,7 @@ cxi_run (struct cxi         *x,
 	struct cxi_cache cache = {
 		.dir = DSTR_INIT, .tree = DSTR_INIT, .git = git,
 		.deadline = deadline > CXI_EARLY ? deadline - CXI_EARLY : 1,
-		.n_git = n_git, .fd = -1, .lock = -1, .state = -1,
+		.fds = child_fds(), .fd = -1, .state = -1,
 	};
 	struct dstr words = DSTR_INIT;
 	/* clang's names are compared with the tree in normal form. */
@@ -1767,7 +1766,7 @@ cxi_run (struct cxi         *x,
 	x->out.tree = (struct cstr_view){};
 	dstr_cleanup(&words);
 	util_close(&cache.state);
-	util_close(&cache.lock);
+	util_close(&cache.fds.keep);
 	util_close(&cache.fd);
 	dstr_cleanup(&cache.tree);
 	dstr_cleanup(&cache.dir);
@@ -1787,7 +1786,7 @@ main (int    argc,
 		e = cxi_words(&x, argc, argv, &at);
 	if (!e)
 		e = check ? cxi_check(&x)
-		          : cxi_run(&x, (char const *const *)argv + at, argc - at, &fd);
+		          : cxi_run(&x, (char const *const *)argv + at, &fd);
 	if (x.out.e || e == ENOMEM || (e && !dstr_len(&x.out.text))) {
 		int const why = x.out.e ? x.out.e : e;
 		dstr_clear(&x.out.text);

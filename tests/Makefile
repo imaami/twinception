@@ -4,11 +4,11 @@ include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-ai check-askai check-buf check-cdb check-cli check-completion \
-        check-cstr-view check-datauri check-dstr check-jb check-handle check-instance check-journal check-ledger check-load \
+        check-cstr-view check-datauri check-dstr check-git-run check-jb check-handle check-instance check-journal check-ledger check-load \
         check-ref check-review check-turn load load-build
 default:; @:
 check: | check-completion check-askai check-cli check-ai check-jb check-cdb check-buf \
-         check-datauri check-handle check-turn check-instance check-journal check-ledger \
+         check-datauri check-handle check-turn check-instance check-git-run check-journal check-ledger \
          check-ref check-review check-dstr check-load
 
 # Nothing below this comment is defined when tab-completing.
@@ -221,6 +221,17 @@ check-journal: $Otests/journal
 $Otests/journal: $Otests/journal.c.o $Otests/src/loop.c.o $Otests/src/log.c.o \
                  $Otests/src/child.c.o $Otests/src/buf.c.o
 $Otests/journal:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lcrypto -lm
+
+# Unit tests of the argv and the environment of git, src/git_run.c. The
+# test runs git in a new bare repository in a temporary directory.
+check-git-run: $Otests/git_run
+	@directory=$$(mktemp -d) || exit 1; \
+	trap 'rm -rf "$$directory"' EXIT; \
+	"$<" "$$directory/git_run.git"
+
+$Otests/git_run: $Otests/git_run.c.o $Otests/src/git_run.c.o $Otests/src/child.c.o \
+                 $Otests/src/buf.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
+$Otests/git_run:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
 
 # The unit tests. Each test links the object of its own source and the
 # objects of the files of src/ that the lines below list.

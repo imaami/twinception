@@ -14,6 +14,7 @@ override SRC_askai := \
   dstr.c              \
   findings.c          \
   git.c               \
+  git_run.c           \
   git_view.c          \
   home.c              \
   http.c              \

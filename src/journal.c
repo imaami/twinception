@@ -268,11 +268,12 @@ journal_git (struct journal    *j,
 {
 	static char const *const prefix[] = {
 		"git", "--git-dir=.", GIT_OPTIONS_FIXED,
-		"-c", "core.fsync=all", "-c", "core.fsyncMethod=fsync"
+		"-c", "core.fsync=all", "-c", "core.fsyncMethod=fsync", nullptr
 	};
+	char const *const *const parts[] = { prefix, command };
 	char *const env[] = { util_env_path(), GIT_ENV_FIXED, nullptr };
 	char const *argv[48];
-	int e = child_argv(argv, array_size(argv), prefix, array_size(prefix), command);
+	int e = child_argv(argv, array_size(argv), parts, array_size(parts));
 	if (e)
 		return e;
 	/* A Git child can outlive an abruptly killed AskAI. It keeps the same

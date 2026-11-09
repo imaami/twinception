@@ -13,6 +13,7 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "git.h"
+#include "git_run.h"
 #include "git_view.h"
 #include "jb.h"
 #include "loop.h"
@@ -43,9 +44,9 @@ enum {
 	REVISIONS = 4,        /**< its revisions */
 	PATHS     = 32,       /**< its paths */
 	WORD      = 1024,     /**< bytes of an option, a revision, a path or a pattern */
-	ATTR      = GIT_ENV - 2,  /**< the index of GIT_ATTR_SOURCE in git's
-	                               environment, which is set only if the
-	                               view contains HEAD */
+	/** The most words that git_run_dir_argv() writes before a command:
+	 *  GIT_RUN_PREFIX and the options of a repository. */
+	PREFIX    = GIT_RUN_PREFIX + array_size((struct git_repo){}.opts) - 1,
 };
 
 static_assert(2 * REVISIONS + OPTIONS <= GIT_ROOTS, "the commits that a call names fit a pin");
@@ -57,11 +58,15 @@ static_assert(TOOL_TEXT_MAX == 4U << 20, "update git.h and the texts in this fil
               "4 MiB");
 
 struct git {
-	char           *env[GIT_ENV];
-	struct dstr     ceilings;  /* the GIT_CEILING_DIRECTORIES entry of env */
-	uint64_t        timeout;
-	size_t          n;
-	struct git_repo repo[];
+	/* The struct git_run_dir of the git processes of the tool, without the
+	 * path, the options and the flags. dirs[1] is for a view that contains
+	 * HEAD, and dirs[0] for the others. */
+	struct git_run_dir dirs[2];
+	struct dstr        ceilings;  /* the GIT_CEILING_DIRECTORIES entry of
+	                                 the environment of dirs */
+	uint64_t           timeout;
+	size_t             n;
+	struct git_repo    repo[];
 };
 
 enum git_phase : uint64_t {
@@ -125,27 +130,13 @@ struct git_read {
 struct git_call {
 	struct git_pin         pin;
 	struct json_object    *args;
-	char const            *argv[GIT_ARGV];
+	char const            *argv[GIT_RUN_ARGV];
 	size_t                 command;
 	size_t                 n_revisions;
 	struct git_revision    revisions[REVISIONS];
 	struct git_read        read;
 	enum git_phase         phase;
 	uint64_t               grep;  /* GREP_WITHOUT and GREP_INVERT */
-};
-
-/* What git runs with whatever the call: GIT_OPTIONS_FIXED, no implicit
- * worktree operations, no submodule's diff (which a superproject's show
- * or log -p runs as a git of its own, without these options), and path
- * names as they are, not quoted, unless they have a '"', a '\' or a
- * control character.
- */
-static char const *const fixed[] = {
-	GIT_OPTIONS_FIXED,
-	"-c", "core.bare=true",
-	"-c", "diff.submodule=short",
-	"-c", "diff.autoRefreshIndex=false",
-	"-c", "core.quotePath=false",
 };
 
 /*
@@ -289,10 +280,9 @@ static struct {
 
 static struct cstr_view const git_command_names[] = { GIT_COMMAND_LIST(XL_VIEW) };
 
-static_assert(1 + array_size(fixed) + 5 + array_size(commands[0].forced) + OPTIONS + 2 + 1 +
-              REVISIONS + 1 + PATHS + 1 <= GIT_ARGV, "a command fits argv");
-static_assert(1 + array_size(fixed) + 5 + 10 + GIT_ROOTS + 1 <= GIT_ARGV,
-              "history validation fits argv");
+static_assert(PREFIX + 1 + array_size(commands[0].forced) + OPTIONS + 2 + 1 + REVISIONS + 1 +
+              PATHS + 1 <= GIT_RUN_ARGV, "a command fits argv");
+static_assert(PREFIX + 10 + GIT_ROOTS + 1 <= GIT_RUN_ARGV, "history validation fits argv");
 
 struct cstr_view
 git_name (char const *path)
@@ -312,7 +302,11 @@ git_name (char const *path)
 
 /* Sets up @p r for the repository at @p path. The function stores the
  * name, the real path and the safe.directory setting of the repository in
- * one allocation.
+ * one allocation. The options of git for the repository turn off implicit
+ * worktree operations and the diff of a submodule, which a superproject's
+ * show or log -p runs as a git of its own, without these options. They
+ * also make git write path names as they are, not quoted, unless they
+ * contain a '"', a '\' or a control character, and set safe.directory.
  */
 static int
 git_repo_init (struct git_repo *r,
@@ -335,7 +329,17 @@ git_repo_init (struct git_repo *r,
 	free(real);
 	real = nullptr;
 	*(char *)mempcpy(copy, name.data, name.len) = '\0';
-	*r = (struct git_repo){ .name = { copy, name.len }, .path = s, .safe = s + size };
+	*r = (struct git_repo){
+		.name = { copy, name.len },
+		.path = s,
+		.opts = {
+			"-c", "core.bare=true",
+			"-c", "diff.submodule=short",
+			"-c", "diff.autoRefreshIndex=false",
+			"-c", "core.quotePath=false",
+			"-c", s + size,
+		},
+	};
 	return 0;
 }
 
@@ -371,14 +375,11 @@ git_load (struct git        *git,
 	int e = git_ceilings(git);
 	if (e)
 		return e;
-	/* The last but one is GIT_ATTR_SOURCE's, when a call has a HEAD. */
-	char *const vars[] = {
-		util_env_path(), (char *)dstr_raw(&git->ceilings), GIT_ENV_FIXED,
-		"GIT_OPTIONAL_LOCKS=0", nullptr, nullptr
-	};
-	static_assert(sizeof vars == sizeof git->env);
-	memcpy(git->env, vars, sizeof vars);
-	return 0;
+	char *env[] = { (char *)dstr_raw(&git->ceilings), "GIT_OPTIONAL_LOCKS=0", nullptr, nullptr };
+	e = git_run_dir_init(&git->dirs[0], nullptr, nullptr, env, 0);
+	/* git reads the attributes from HEAD in a view that contains HEAD. */
+	env[2] = "GIT_ATTR_SOURCE=HEAD";
+	return e ? e : git_run_dir_init(&git->dirs[1], nullptr, nullptr, env, 0);
 }
 
 struct git *
@@ -410,7 +411,7 @@ git_destroy (struct git **p_git)
 		git->repo[i] = (struct git_repo){};
 	}
 	dstr_cleanup(&git->ceilings);
-	memset(git->env, 0, sizeof git->env);
+	memset(git->dirs, 0, sizeof git->dirs);
 	free(git);
 }
 
@@ -678,28 +679,20 @@ git_pin_add (struct git_pin   *pin,
 	return e;
 }
 
-size_t
-git_pin_argv (struct git_pin const *pin,
-              char const          **argv,
-              char                **env)
+void
+git_pin_dir (struct git_pin const *pin,
+             struct git_run_dir   *dir)
 {
-	size_t k = 0;
-	argv[k++] = "git";
-	for (size_t i = 0; i < array_size(fixed); ++i)
-		argv[k++] = fixed[i];
-	argv[k++] = "-c";
-	argv[k++] = pin->repo->safe;
-	argv[k++] = "-C";
-	memcpy(env, pin->git->env, sizeof pin->git->env);
-	if (!pin->view) {
-		argv[k++] = pin->repo->path;
+	struct git_view const *view = pin->view;
+	if (!view) {
+		*dir = pin->git->dirs[0];
+		dir->path = pin->repo->path;
 	} else {
-		argv[k++] = git_view_directory(pin->view);
-		argv[k++] = "--git-dir=.";
-		if (git_view_has_head(pin->view))
-			env[ATTR] = "GIT_ATTR_SOURCE=HEAD";
+		*dir = pin->git->dirs[git_view_has_head(view)];
+		dir->path = git_view_directory(view);
+		dir->flags = GIT_RUN_DOT;
 	}
-	return k;
+	dir->opts = pin->repo->opts;
 }
 
 /* Spawns in @p slot the git of the current phase of @p pin, or once the
@@ -733,9 +726,9 @@ git_pin_spawn (struct git_pin           *pin,
 		[GIT_PIN_META] = meta, [GIT_PIN_REFS] = refs, [GIT_PIN_RESOLVE] = resolve,
 		[GIT_PIN_CHECK] = check, [GIT_PIN_DONE] = run,
 	};
-	char const *argv[GIT_ARGV];
-	char *env[GIT_ENV];
-	size_t k = git_pin_argv(pin, argv, env);
+	/* The words of the command, after the options of git. */
+	char const *argv[GIT_RUN_ARGV];
+	size_t k = 0;
 	char const *next = dstr_get(&pin->text);
 	for (char const *const *w = words[pin->phase]; *w; ++w)
 		argv[k++] = *w == git_derived ? git_text_next(&next) : *w;
@@ -747,7 +740,7 @@ git_pin_spawn (struct git_pin           *pin,
 			argv[k++] = git_text_next(&next);
 		break;
 	case GIT_PIN_CHECK:
-		if (env[ATTR])
+		if (git_view_has_head(pin->view))
 			argv[k++] = "HEAD";
 		argv[k++] = "--not";
 		argv[k++] = "--end-of-options";
@@ -759,17 +752,17 @@ git_pin_spawn (struct git_pin           *pin,
 		break;
 	}
 	argv[k] = nullptr;
-	struct child_cmd const cmd = {
-		.file = "git",
-		.argv = argv,
-		.envp = env,
+	struct git_run_dir dir;
+	git_pin_dir(pin, &dir);
+	struct git_run cmd;
+	int e = git_run_init(&cmd, &dir, argv, &(struct child_cmd){
 		.max = TOOL_TEXT_MAX,
 		.deadline = pin->deadline,
 		.grace = GIT_GRACE,
 		.flags = flags,
-	};
-	int e = 0;
-	pin->child = mcp_slot_spawn(slot, &cmd, &e);
+	});
+	if (!e)
+		pin->child = mcp_slot_spawn(slot, &cmd.c, &e);
 	return e;
 }
 

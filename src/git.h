@@ -45,9 +45,9 @@
 #include <stdint.h>
 
 #include "buf.h"
-#include "clk.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "git_run.h"
 #include "oid.h"
 #include "util.h"
 
@@ -57,56 +57,24 @@ struct git_view;
 struct mcp_slot;
 struct plugin;
 
-/** The environment entries after PATH of every git process that askai
- *  starts for the git tool, the notes and the journal. They set LC_ALL to
- *  C.UTF-8, and turn off the home, system and global configuration, the
- *  terminal prompt, the pager, lazy fetching and every remote protocol. A
- *  repository's configuration cannot override GIT_ALLOW_PROTOCOL.
- */
-#define GIT_ENV_FIXED \
-        "HOME=/nonexistent", "LC_ALL=C.UTF-8", "GIT_CONFIG_NOSYSTEM=1", \
-        "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat", \
-        "GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=none"
-
-/** The options before the command of every git process that askai starts.
- *  They turn off the pager, replacement objects, every remote protocol,
- *  automatic gc, maintenance and the signature checks of a log. They also
- *  keep git from running a program that a repository's configuration
- *  names for the fsmonitor, for gpg or for hooks. The format of a log can
- *  make git run gpg.
- */
-#define GIT_OPTIONS_FIXED \
-        "--no-pager", "--no-replace-objects", \
-        "-c", "core.fsmonitor=false", \
-        "-c", "core.hooksPath=/dev/null", \
-        "-c", "gpg.program=false", \
-        "-c", "gpg.ssh.program=false", \
-        "-c", "gpg.x509.program=false", \
-        "-c", "protocol.allow=never", \
-        "-c", "gc.auto=0", \
-        "-c", "maintenance.auto=false", \
-        "-c", "log.showSignature=false"
-
-/** The time from SIGTERM to SIGKILL at the deadline of a git process of
- *  the git tool, of the journal, or of the notes that writes, in
- *  nanoseconds: the second of the file comment.
- */
-static constexpr uint64_t GIT_GRACE = NS;
-
 enum {
-	GIT_ARGV  = 128,  /**< words in the argv of a git command, with nullptr */
-	GIT_ENV   = 13,   /**< entries in git's environment, with nullptr */
-	GIT_ROOTS = 24,   /**< revisions in a pin, at most */
-	GIT_WHY   = 1024, /**< bytes of an error message about a call, NUL included */
+	GIT_REPO_OPTS = 11,    /**< options of git for a repository, with nullptr */
+	GIT_ROOTS     = 24,    /**< revisions in a pin, at most */
+	GIT_WHY       = 1024,  /**< bytes of an error message about a call, NUL
+	                            included */
 };
 
-/** A repository of the git tool: its name, its real path, and the git
- *  setting safe.directory=<path>, in one allocation that starts at path.
+/** A repository of the git tool, with its name, its real path and the
+ *  options of git for the repository. The path, the setting
+ *  safe.directory=<path> of the options and the name are in one
+ *  allocation that starts at path.
  */
 struct git_repo {
 	struct cstr_view name;
 	char            *path;
-	char            *safe;
+	char const      *opts[GIT_REPO_OPTS];  /**< the options of the git tool
+	                                            and safe.directory, up to a
+	                                            nullptr */
 };
 
 /** A message about what is wrong with a tool call. The message starts
@@ -177,13 +145,13 @@ git_pin_step (struct git_pin   *pin,
               struct mcp_slot  *slot,
               struct cstr_view *why);
 
-/** Writes to @p argv git and its options for @p pin up to the subcommand,
- *  and to @p env git's environment. Returns the number of words.
+/** Writes to @p dir where the git processes of @p pin run, their options
+ *  and their environment. They run in the repository, or in the view of
+ *  @p pin once the view exists.
  */
-extern size_t
-git_pin_argv (struct git_pin const *pin,
-              char const          **argv,
-              char                **env);
+extern void
+git_pin_dir (struct git_pin const *pin,
+             struct git_run_dir   *dir);
 
 /** Returns true if @p name is a valid name of a repository: 1 to 64 of
  *  [A-Za-z0-9_.-], not starting with a dot. Reads at most name.len bytes.

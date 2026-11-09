@@ -16,6 +16,7 @@
 #include "cxi.h"
 #include "dstr.h"
 #include "git.h"
+#include "git_run.h"
 #include "jb.h"
 #include "log.h"
 #include "loop.h"
@@ -261,20 +262,25 @@ code_spawn (struct code_call *call,
 	e = e ? e : code_word(call, CXI_KEY_TOP, cstr_view(pin->repo->path));
 	if (e)
 		return e;
-	char const *argv[GIT_ARGV];
-	char *env[GIT_ENV];
+	/* The helper, at most a word for each key but CXI_KEY_WARNING and for
+	 * each warning, "--", then the argv of git. */
+	char const *argv[GIT_RUN_ARGV];
+	static_assert(1 + CXI_KEYS - 1 + CXI_WARNINGS + 1 < array_size(argv));
 	size_t k = 0;
 	argv[k++] = code->cfg->code_helper;
 	for (char const *w = dstr_get(&call->words), *last = w + dstr_len(&call->words); w < last;
 	     w += strlen(w) + 1)
 		argv[k++] = w;
 	argv[k++] = "--";
-	k += git_pin_argv(pin, argv + k, env);
-	argv[k] = nullptr;
+	struct git_run_dir dir;
+	git_pin_dir(pin, &dir);
+	e = git_run_dir_argv(&dir, nullptr, argv + k, array_size(argv) - k);
+	if (e)
+		return e;
 	struct child_cmd const cmd = {
 		.file = code->cfg->code_helper,
 		.argv = argv,
-		.envp = env,
+		.envp = dir.env,
 		/* The output can contain the record line of describe in addition
 		 * to a result of TOOL_TEXT_MAX bytes. */
 		.max = TOOL_TEXT_MAX + 4096,

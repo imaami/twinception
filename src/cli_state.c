@@ -171,10 +171,11 @@ cli_state_git (struct cli_state  *state,
 {
 	char const *const prefix[] = {
 		"git", "-C", dstr_get(&state->path), "-c", "user.name=AskAI CLI",
-		"-c", "user.email=askai-cli@localhost", "-c", "core.fsync=committed"
+		"-c", "user.email=askai-cli@localhost", "-c", "core.fsync=committed", nullptr
 	};
+	char const *const *const parts[] = { prefix, args };
 	char const *argv[32];
-	int e = child_argv(argv, array_size(argv), prefix, array_size(prefix), args);
+	int e = child_argv(argv, array_size(argv), parts, array_size(parts));
 	if (e)
 		return e;
 	char *const env[] = { util_env_path(), GIT_ENV_FIXED, nullptr };

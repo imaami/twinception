@@ -495,21 +495,22 @@ child_capture (struct child_cmd const *cmd,
 }
 
 int
-child_argv (char const        **argv,
-            size_t              cap,
-            char const *const  *prefix,
-            size_t              n,
-            char const *const  *words)
+child_argv (char const               **argv,
+            size_t                     cap,
+            char const *const *const  *parts,
+            size_t                     n)
 {
-	if (n >= cap)
+	if (!cap)
 		return E2BIG;
-	memcpy(argv, prefix, n * sizeof *argv);
-	for (; *words; ++words) {
-		if (n + 1 >= cap)
-			return E2BIG;
-		argv[n++] = *words;
+	size_t k = 0;
+	for (size_t i = 0; i < n; ++i) {
+		for (char const *const *w = parts[i]; w && *w; ++w) {
+			if (k + 1 >= cap)
+				return E2BIG;
+			argv[k++] = *w;
+		}
 	}
-	argv[n] = nullptr;
+	argv[k] = nullptr;
 	return 0;
 }
 

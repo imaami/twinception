@@ -240,16 +240,16 @@ child_capture (struct child_cmd const *cmd,
                struct buf             *out,
                struct child_end       *end);
 
-/** Write the @p n words at @p prefix, then the words at @p words up to its
- *  nullptr, and a nullptr to the @p cap pointers at @p argv. Returns 0, or
- *  E2BIG if they do not fit.
+/** Write the words of the @p n word arrays at @p parts, each up to its
+ *  nullptr, and a nullptr to the @p cap pointers at @p argv. A nullptr in
+ *  @p parts adds no words. Returns 0, or E2BIG if the words and the
+ *  nullptr do not fit.
  */
 extern int
-child_argv (char const        **argv,
-            size_t              cap,
-            char const *const  *prefix,
-            size_t              n,
-            char const *const  *words);
+child_argv (char const               **argv,
+            size_t                     cap,
+            char const *const *const  *parts,
+            size_t                     n);
 
 /** Let go of @p *p_c, which becomes nullptr: free it, if it has ended;
  *  else kill it, stop reading its output, and free it once it is reaped.
