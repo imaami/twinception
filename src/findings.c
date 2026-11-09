@@ -50,13 +50,16 @@ enum findings_action : uint8_t {
 /* The names of the actions. */
 static struct cstr_view const findings_actions[] = { FINDINGS_ACTION_LIST(XL_VIEW) };
 
-/* The actions as bits, 1 << enum findings_action. */
+/* The actions as bits, 1 << enum findings_action, and the actions that
+ * clients can call.
+ */
 enum : uint32_t {
-	ON_ADD    = 1U << FINDINGS_ADD,
-	ON_UPDATE = 1U << FINDINGS_UPDATE,
-	ON_LIST   = 1U << FINDINGS_LIST,
-	ON_SHOW   = 1U << FINDINGS_SHOW,
-	ON_EXPAND = 1U << FINDINGS_EXPAND,
+	ON_ADD     = 1U << FINDINGS_ADD,
+	ON_UPDATE  = 1U << FINDINGS_UPDATE,
+	ON_LIST    = 1U << FINDINGS_LIST,
+	ON_SHOW    = 1U << FINDINGS_SHOW,
+	ON_EXPAND  = 1U << FINDINGS_EXPAND,
+	ON_CLIENTS = ON_LIST | ON_SHOW | ON_EXPAND,
 };
 
 /* The names of the arguments of the findings tool, and the actions that
@@ -915,7 +918,7 @@ findings_externals (struct findings_call *call,
  * the archive files of call->prints: each finding with its items and its
  * external items. Each item that a result can show whole is recorded for
  * the ring (findings_shown()). The output ends with the items that did not
- * fit, and with what the turn saw.
+ * fit, and for a turn, with what the turn saw.
  */
 static void
 findings_expanded (struct mcp_slot *slot,
@@ -923,6 +926,7 @@ findings_expanded (struct mcp_slot *slot,
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	char const *agent = findings_session(slot)->agent;
+	bool const turn = !mcp_slot_from_client(slot);
 	struct seen_item shown = { .record = DSTR_INIT };
 	char more_id[SEEN_ID] = "";
 	char seen_id[SEEN_ID] = "";
@@ -976,7 +980,7 @@ findings_expanded (struct mcp_slot *slot,
 				                    (struct cstr_view){ (char const *)request.ptr, request.len },
 				                    (struct cstr_view){ (char const *)result.ptr, result.len },
 				                    &call->out);
-				if (e || !findings_stored(ev, blobs))
+				if (e || !turn || !findings_stored(ev, blobs))
 					continue;
 				(void)util_format(seen_id, sizeof seen_id, "%s/%" PRIu32, id, ev->item);
 				e = findings_record(ev, &shown.record);
@@ -1137,12 +1141,19 @@ findings_act (struct mcp_slot *slot)
 		    !strcmp(call->findings.items[i].author, call->author))
 			f = &call->findings.items[i];
 	if (call->action == FINDINGS_SHOW) {
-		int e = f ? finding_show(f, call->findings.items, call->findings.n, &call->out) : EIO;
-		bool const items = f && f->changes.n && f->changes.items[f->changes.n - 1].items;
-		if (!e && items && !dstr_printf(&call->out, "[askai: expand with id %s prints the stored "
-		                                "evidence. Only expand counts as reading the "
-		                                "evidence.]\n", id))
-			e = ENOMEM;
+		if (!f) {
+			findings_end(slot, EIO, true);
+			return;
+		}
+		int e = finding_show(f, call->findings.items, call->findings.n, &call->out);
+		bool const items = f->changes.n && f->changes.items[f->changes.n - 1].items;
+		if (!e && items) {
+			char const *only = mcp_slot_from_client(slot)
+			                 ? "" : " Only expand counts as reading the evidence.";
+			if (!dstr_printf(&call->out, "[askai: expand with id %s prints the stored "
+			                 "evidence.%s]\n", id, only))
+				e = ENOMEM;
+		}
 		findings_end(slot, e, false);
 		return;
 	}
@@ -1715,14 +1726,13 @@ findings_args (struct mcp_slot    *slot,
 	if ((ON_UPDATE | ON_SHOW) >> call->action & 1 &&
 	    finding_id_parse(jb_view(id), call->author, &call->number))
 		return util_refuse(why, len, "%s needs id: a finding, such as %s#5.", action, agent);
-	/* expand without id prints all open findings of the agent. */
-	struct evidence_ref ref;
-	if (call->action == FINDINGS_EXPAND && id && (evidence_ref_parse(&ref, jb_view(id)) ||
-	                                      (ref.form != EVIDENCE_REF_FINDING &&
-	                                       ref.form != EVIDENCE_REF_ITEM)))
-		return util_refuse(why, len, "expand needs id: a finding, such as %s#5, or an evidence "
-		                   "item, such as %s#5/2.", agent, agent);
-	if (call->action == FINDINGS_EXPAND && id) {
+	/* expand of a turn without id prints all open findings of the agent. */
+	if (call->action == FINDINGS_EXPAND && (id || mcp_slot_from_client(slot))) {
+		struct evidence_ref ref;
+		if (evidence_ref_parse(&ref, jb_view(id)) ||
+		    (ref.form != EVIDENCE_REF_FINDING && ref.form != EVIDENCE_REF_ITEM))
+			return util_refuse(why, len, "expand needs id: a finding, such as %s#5, or an "
+			                   "evidence item, such as %s#5/2.", agent, agent);
 		memcpy(call->author, ref.author, sizeof call->author);
 		call->number = ref.number;
 		call->item = ref.item;
@@ -1794,10 +1804,15 @@ findings_start (struct mcp_slot    *slot,
 		                                   jb_view(jb_get(args, "action"))),
 	};
 	*mcp_slot_own(slot) = call;
-	if (call->action == FINDINGS_ACTIONS) {
-		mcp_slot_tell(slot, CSTR_VIEW("The action argument must be one of: "
-		                              XL_JOIN(", ", ", ", FINDINGS_ACTION_LIST(XL_TEXT))
-		                              "."), TOOL_FAILED);
+	/* Clients can only read the findings. */
+	bool const client = mcp_slot_from_client(slot);
+	if (call->action == FINDINGS_ACTIONS || (client && !(ON_CLIENTS >> call->action & 1))) {
+		mcp_slot_tell(slot, client ? CSTR_VIEW("The action argument must be one of: list, "
+		                                       "show, expand.")
+		                           : CSTR_VIEW("The action argument must be one of: "
+		                                       XL_JOIN(", ", ", ",
+		                                               FINDINGS_ACTION_LIST(XL_TEXT)) "."),
+		              TOOL_FAILED);
 		return;
 	}
 	char why[1024] = "";
@@ -1812,11 +1827,50 @@ findings_start (struct mcp_slot    *slot,
 		findings_load(slot);
 }
 
-/* Returns the definition of the findings tool for the turns. @p service is
- * the struct notes_tool, whose registry names the agent.
+static_assert(ON_CLIENTS == (1U << FINDINGS_ACTIONS) - (1U << FINDINGS_LIST),
+              "the actions of clients are the last actions, from list on");
+
+/* Returns the definition of the findings tool for clients, which can only
+ * list, show and expand. @p service is the struct notes_tool, whose
+ * registry names the agent.
  */
 static struct json_object *
 findings_definition (void const *service)
+{
+	struct notes_tool const *tool = service;
+	struct member_session const *session = member_registry_session(tool->members);
+	char const *agent = session ? session->agent : "";
+	dstr_auto about = DSTR_INIT;
+	dstr_auto id = DSTR_INIT;
+	if (!dstr_printf(&about, "Findings are claims that the agents of this session made. A "
+	                 "finding has an id such as %s#5. show prints a finding. expand prints the "
+	                 "stored evidence of a finding.", agent) ||
+	    !dstr_printf(&id, "A finding, such as %s#5, for show and expand. An evidence item, such "
+	                 "as %s#5/2, for expand.", agent, agent))
+		return nullptr;
+	struct json_object *props = jb_object(
+		"action", schema_enum(schema_names(findings_actions + FINDINGS_LIST,
+		                                   FINDINGS_ACTIONS - FINDINGS_LIST),
+			"list lists the findings of every member, open first. show prints a finding "
+			"and every change. expand prints the stored evidence of a finding or of one "
+			"evidence item."),
+		"id", schema_property("string", dstr_get(&id)),
+		"author", schema_property("string",
+			"For list: list only the findings of this member."),
+		"offset", schema_count(0, TOOL_OFFSET_ABOUT),
+		nullptr);
+	struct json_object *def = schema_tool("findings", dstr_get(&about), props,
+	                                      CSTR_VIEW("action"));
+	return jb_set_or_free(def, "annotations", jb_object(
+		"readOnlyHint", json_object_new_boolean(1),
+		"destructiveHint", json_object_new_boolean(0),
+		"idempotentHint", json_object_new_boolean(1),
+		"openWorldHint", json_object_new_boolean(0),
+		nullptr));
+}
+
+struct json_object *
+findings_upstream_definition (void const *service)
 {
 	struct notes_tool const *tool = service;
 	struct member_session const *session = member_registry_session(tool->members);

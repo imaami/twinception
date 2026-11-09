@@ -72,10 +72,11 @@ mcp_limits (void)
 /**
  * Adds the tools of askai's own that @p cfg offers to the registry @p reg
  * (src/registry.h). The ask tool, the man tool, test_task, the git tool, the
- * code tool and the notes tool are added in that order as tools that a role
- * can grant, and with CFG_CLIENT_JOBS background, jobs, wait and timer after
- * them. The tools that only the turns of an ask call use are added after
- * them. Returns 0, or the error number of registry_add().
+ * code tool, the notes tool and the findings tool are added in that order as
+ * tools that a role can grant, and with CFG_CLIENT_JOBS background, jobs,
+ * wait and timer after them. The tools that only the turns of an ask call
+ * use are added after them. Returns 0, or the error number of
+ * registry_add().
  */
 extern int
 mcp_register (struct registry     *reg,

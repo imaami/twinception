@@ -194,6 +194,7 @@ The first set is the tools of the clients. A client lists them with
 | `git` | with `repositories` in `tools.git` |
 | `code` | with `compile-commands` in `tools.code`, when `askai-code` runs |
 | `notes` | with `directory` in `tools.notes` |
+| `findings`, to list, show and expand only | with `directory` in `tools.notes` |
 | `test_task` | with `"test-task": true` in `testing` |
 | `background`, `jobs`, `wait` and `timer` | with `"clients": true` in `tools.jobs` |
 | the tools of the plugins | with `plugins` |
@@ -204,8 +205,11 @@ call (section [Tools for the upstream model, in
 `upstream`](#tools-for-the-upstream-model-in-upstream)).
 They are `man`, `git`, `code`, `notes` and the plugin tools whose kind has the
 flag `TOOL_LENT` (`src/tool.h`), and `compact`, `findings` (with `notes`),
-`background`, `jobs`, `wait` and `timer`. `compact` and `findings` never appear in
-`tools/list`, and a role cannot name them. `background`, `jobs`, `wait` and
+`background`, `jobs`, `wait` and `timer`. `compact` never appears in
+`tools/list`, and a role cannot name it. `findings` appears in `tools/list`
+with `notes`, as a tool of the clients that lists, shows and expands the
+findings, and a role can name it in `tools`, but never in `upstream`.
+`background`, `jobs`, `wait` and
 `timer` appear in `tools/list` only with `client-jobs`, as tools of the clients.
 A role can then name them in `tools`, but never in `upstream`. The turns of an
 `ask_ai` call get these four tools with a definition of their own, and their
@@ -382,6 +386,9 @@ open.
   session. A notice names stored material that is missing or that does
   not match its SHA-256. One call prints at most 8 MiB of material, and
   names the items that did not fit.
+
+A client can call `findings` with `list`, `show` and `expand`, as its
+role allows, and cannot change a finding.
 
 A change can cite evidence, at most 16 references:
 

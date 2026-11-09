@@ -1,13 +1,13 @@
 /** @file findings.h
  *
- * The findings tool, which askai lends only to the turns of an ask call,
- * with --notes. A call adds a finding of the agent (src/finding.h),
- * updates one, lists the findings of every member, shows one finding with
- * its changes, or expands the stored evidence of a finding, of one evidence
- * item, or of all open findings of the agent. The evidence of an add or an
- * update comes from the calls of the ring of the ask call and from the
- * items that a result showed whole in an earlier turn (src/evidence.h,
- * src/seen.h). verified and disproved refuse an item
+ * The findings tool, which askai offers with --notes. A call of a turn of
+ * an ask call adds a finding of the agent (src/finding.h), updates one,
+ * lists the findings of every member, shows one finding with its changes,
+ * or expands the stored evidence of a finding, of one evidence item, or of
+ * all open findings of the agent. Clients can list, show and expand. The
+ * evidence of an add or an update comes from the calls of the ring of the
+ * ask call and from the items that a result showed whole in an earlier
+ * turn (src/evidence.h, src/seen.h). verified and disproved refuse an item
  * that the turns had not seen, and the refusal prints the item, which then
  * counts as shown in this turn. A finding that cites an item of another
  * finding again names the archive files of the item by their git IDs, so
@@ -40,10 +40,19 @@
 
 struct dstr;
 struct hexid;
+struct json_object;
 struct plugin;
 
-/** The plugin of the findings tool, which is built into askai. */
+/** The plugin of the findings tool, which is built into askai. Its
+ *  definition is the one for clients, which can list, show and expand.
+ */
 extern struct plugin const findings_plugin;
+
+/** Returns the definition of the findings tool for the turns. @p service
+ *  is the struct notes_tool. Returns nullptr if out of memory.
+ */
+extern struct json_object *
+findings_upstream_definition (void const *service);
 
 /**
  * Writes to @p in the input of STORE_READ for the next files of findings

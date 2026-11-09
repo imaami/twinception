@@ -5028,9 +5028,9 @@ def check_configuration(binary, up, godbolt):
             # The member tools denies godbolt_compile to the upstream, which
             # the role user does not list.
             assert [item.split()[-1] for item in ai.listed("role user:")] == \
-                ["ask_ai", "man", "notes", "man", "git", "notes", "background", "jobs",
-                 "wait", "timer", "godbolt_catalog", "godbolt_targets", "compact",
-                 "findings", "no"], ai.log
+                ["ask_ai", "man", "notes", "man", "git", "notes", "findings", "background",
+                 "jobs", "wait", "timer", "godbolt_catalog", "godbolt_targets", "compact",
+                 "no"], ai.log
 
     # The list of the repositories has room for all of tools.git's, with a
     # short command line.
@@ -5408,21 +5408,22 @@ def check_allow(binary, up):
         cli = ["--agent", "ask_ai", "--notes", f"{d}/notes", "--man", "--client-jobs"]
         jobs = ["background", "jobs", "wait", "timer"]
         for tools, clients, turns in (
-                (True, ["ask_ai", "man", "notes", *jobs],
-                 ["man", "notes", *jobs, "compact", "findings"]),
+                (True, ["ask_ai", "man", "notes", "findings", *jobs],
+                 ["man", "notes", "findings", *jobs, "compact"]),
                 (False, ["ask_ai"], []),
                 (["man"], ["ask_ai", "man"], ["man"]),
                 ({"allow": ["man", "compact"]}, ["ask_ai", "man"], ["man", "compact"]),
-                ({"allow": ["man", "findings"]}, ["ask_ai", "man"], ["man", "findings"]),
-                ({"deny": ["man", "compact"]}, ["ask_ai", "notes", *jobs],
-                 ["notes", "jobs", "wait", "timer", "findings"]),
+                ({"allow": ["man", "findings"]}, ["ask_ai", "man", "findings"],
+                 ["man", "findings"]),
+                ({"deny": ["man", "compact"]}, ["ask_ai", "notes", "findings", *jobs],
+                 ["notes", "findings", "jobs", "wait", "timer"]),
                 ({"deny": ["findings"]}, ["ask_ai", "man", "notes", *jobs],
                  ["man", "notes", *jobs, "compact"]),
-                ({}, ["ask_ai", "man", "notes", *jobs],
-                 ["man", "notes", *jobs, "compact", "findings"]),
+                ({}, ["ask_ai", "man", "notes", "findings", *jobs],
+                 ["man", "notes", "findings", *jobs, "compact"]),
                 ({"client": {"allow": ["notes"]}, "upstream": {"deny": ["notes"]}},
-                 ["ask_ai", "notes"], ["man", *jobs, "compact", "findings"]),
-                ({"upstream": False}, ["ask_ai", "man", "notes", *jobs], [])):
+                 ["ask_ai", "notes"], ["man", "findings", *jobs, "compact"]),
+                ({"upstream": False}, ["ask_ai", "man", "notes", "findings", *jobs], [])):
             whole = isinstance(tools, dict)
             with open(path, "w") as f:
                 json.dump(grouped((on if whole else {"url": up.url(),
@@ -5448,7 +5449,7 @@ def check_allow(binary, up):
                         (tools, body)
                 report = [item.split() for item in ai.listed("built-in tools for clients:")]
                 off = [item[0] for item in report if item[1:] == ["off", "(tools)"]]
-                assert off == [t for t in ["man", "git", "notes", *jobs]
+                assert off == [t for t in ["man", "git", "notes", "findings", *jobs]
                                if t not in clients and t != "git"], (tools, report)
 
         # A role may name a tool that the member denies clients: no client
@@ -5462,7 +5463,7 @@ def check_allow(binary, up):
         with Askai(binary, "-c", path) as ai:
             listed = ai.rpc("tools/list")[2]["result"]["tools"]
             assert [t["name"] for t in listed] == ["ask_ai", "notes"], listed
-            assert lent(ai) == ["man", "notes", *jobs, "compact", "findings"]
+            assert lent(ai) == ["man", "notes", "findings", *jobs, "compact"]
             assert [item.split()[-1] for item in ai.listed("role r:")][:2] == \
                 ["ask_ai", "notes"], ai.log
             assert not any("no role lists" in line for line in ai.log), ai.log
@@ -5816,7 +5817,8 @@ def check_logs(binary, up):
                 "files     off (the API takes none)"], told(ai)
             assert ai.listed("built-in tools for clients:") == [
                 "ask_ai      on", "man         off (--man)", "git         off (--git PATH)",
-                "code        off (--code REPO=FILE)", "notes       off (--notes DIR)"] + [
+                "code        off (--code REPO=FILE)", "notes       off (--notes DIR)",
+                "findings    off (--notes DIR)"] + [
                 f"{name:<10}  off (--client-jobs)"
                 for name in ("background", "jobs", "wait", "timer")], told(ai)
             has(ai, "plugins: none", "upstream tools: off (--upstream-tools)")
@@ -5863,7 +5865,7 @@ def check_logs(binary, up):
                 f"URL       {up.url()}", "files     off (the API takes none)"], told(ai)
             assert ai.listed("built-in tools for clients:") == [
                 f"{name:<10}  on" for name in ("bro", "man", "test_task", "git")
-            ] + ["code        off (--code REPO=FILE)", "notes       on"] + [
+            ] + ["code        off (--code REPO=FILE)", "notes       on", "findings    on"] + [
                 f"{name:<10}  off (--client-jobs)"
                 for name in ("background", "jobs", "wait", "timer")], told(ai)
             session = ai.listed("session:")
@@ -5879,7 +5881,7 @@ def check_logs(binary, up):
                 "clients with the token  all tools and metrics",
                 "other clients           refused",
                 "upstream tools          man"] + [
-                f"{'':22}  {name}" for name in ("git", "notes", "compact", "findings",
+                f"{'':22}  {name}" for name in ("git", "notes", "findings", "compact",
                                                  "background", "jobs", "wait",
                                                  "timer")], told(ai)
             assert ai.rpc("tools/call", {"name": "bro", "arguments": {"prompt": "Q"}},
@@ -5999,7 +6001,7 @@ def check_logs(binary, up):
         with Askai(binary, "-c", path) as ai:
             assert ai.listed("role user:") == [
                 "tools           ask_ai", "upstream tools  man"] + [
-                f"{'':14}  {name}" for name in ("notes", "compact", "findings", "background",
+                f"{'':14}  {name}" for name in ("notes", "findings", "compact", "background",
                                                  "jobs", "wait", "timer")] + [
                 "metrics         no"], told(ai)
             assert ai.listed("warning: no role lists these tools:") == ["git"], told(ai)
@@ -6317,7 +6319,8 @@ def check_unix(binary, up):
                    f"unix:{sock}", "--verbose", env={"ASKAI_TOKEN": "s3cret"}) as ai:
             assert names(uds_rpc(sock)) == 401
             assert names(uds_rpc(sock, headers=bearer("wrong"))) == 401
-            assert names(uds_rpc(sock, headers=bearer("s3cret"))) == ["ask_ai", "man", "notes"]
+            assert names(uds_rpc(sock, headers=bearer("s3cret"))) == ["ask_ai", "man", "notes",
+                                                                      "findings"]
             assert own(uds_rpc(sock, "tools/call", notebooks, headers=bearer("s3cret"))) == mine
             status, _, body = ai.rpc("tools/call", notebooks, headers=bearer("s3cret"))
             assert own((status, body)) == mine
@@ -13490,10 +13493,16 @@ def check_turns(binary, up):
             for name in ("git", "notes"):
                 assert tools[name]["inputSchema"]["properties"]["offset"][
                     "description"] == OFFSET_ABOUT, tools[name]
-            assert "compact" not in tools and "findings" not in tools, tools
+            # A client can list, show and expand findings, not compact.
+            assert "compact" not in tools and tools["findings"]["inputSchema"][
+                "properties"]["action"]["enum"] == ["list", "show", "expand"], tools
+            body = ai.rpc("tools/call", {"name": "compact", "arguments": {
+                "summary": "S"}})[2]
+            assert body["error"]["message"] == "Unknown tool: compact", body
             body = ai.rpc("tools/call", {"name": "findings", "arguments": {
                 "action": "show"}})[2]
-            assert body["error"]["message"] == "Unknown tool: findings", body
+            assert body["result"]["isError"] and text_of(body["result"]) == \
+                "show needs id: a finding, such as turns#5.", body
 
             # Two calls, one of git and one of notes, then a list of the notes,
             # then the answer. The turns carry the text, the thinking and the
@@ -13511,7 +13520,7 @@ def check_turns(binary, up):
             first, second, third = up.requests[count:]
             body = first["body"]
             assert [t["function"]["name"] for t in body["tools"]] == \
-                ["git", "notes", "compact", "findings", "background", "jobs", "wait",
+                ["git", "notes", "findings", "compact", "background", "jobs", "wait",
                  "timer"], body["tools"]
             # The lent tools that read on from an offset describe it alike,
             # and state the window.
@@ -14523,11 +14532,11 @@ def check_turns(binary, up):
             count = len(up.requests)
             assert text_of(ai.ask("Q")) == "A"
             assert [t["function"]["name"] for t in up.requests[count]["body"]["tools"]] \
-                == ["notes", "compact", "findings", "jobs", "wait", "timer"], \
+                == ["notes", "findings", "compact", "jobs", "wait", "timer"], \
                 up.requests[count]["body"]
             # compact names what a compaction shows again.
             assert ", then your note history and your newest note, then your open " \
-                "findings. " in up.requests[count]["body"]["tools"][1]["function"]["description"]
+                "findings. " in up.requests[count]["body"]["tools"][2]["function"]["description"]
             # There jobs lists and cancels a timer, and the call does not
             # doze for a cancelled one.
             script[:] = [
@@ -14545,10 +14554,10 @@ def check_turns(binary, up):
         # role's clients may call.
         for role, listed, lent in (
                 ({"tools": ["ask_ai"], "upstream": ["git"]}, ["ask_ai"],
-                 ["git", "notes", "compact", "findings", "background", "jobs", "wait",
+                 ["git", "notes", "findings", "compact", "background", "jobs", "wait",
                   "timer"]),
                 ({"tools": ["ask_ai", "git"], "upstream": []}, ["ask_ai", "git"],
-                 ["notes", "compact", "findings", "jobs", "wait", "timer"])):
+                 ["notes", "findings", "compact", "jobs", "wait", "timer"])):
             with open(path, "w") as f:
                 json.dump({"roles": {"asker": role},
                            "anonymous": {"loopback": "asker"}}, f)
@@ -15081,7 +15090,8 @@ def check_findings_expand(binary, up):
     item, which then counts as shown in that turn. A finding that cites an
     item of another agent's finding whole names its archive files by their
     git IDs. Each refusal of the findings tool is checked here or in
-    check_findings and check_recovery_findings."""
+    check_findings and check_recovery_findings. Clients list, show and
+    expand the findings, and cannot change them."""
     with tempfile.TemporaryDirectory() as d:
         git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
         repo = f"{d}/proj"
@@ -15437,19 +15447,67 @@ def check_findings_expand(binary, up):
             assert re.fullmatch(r"Added bro#\d+ \(candidate\)\. Evidence bro#\d+/1 from call "
                                 r"c1\. Commit [0-9a-f]{8}\.", said[2]), said
 
+            # A client lists, shows and expands, and cannot change a finding.
+            status, _, body = bro.rpc("tools/list")
+            [listed] = [t for t in body["result"]["tools"] if t["name"] == "findings"]
+            assert listed["description"] == (
+                "Findings are claims that the agents of this session made. A finding has an id "
+                "such as bro#5. show prints a finding. expand prints the stored evidence of a "
+                "finding."), listed
+            schema = listed["inputSchema"]
+            assert sorted(schema["properties"]) == ["action", "author", "id", "offset"] and \
+                schema["properties"]["action"]["enum"] == ["list", "show", "expand"] and \
+                schema["required"] == ["action"], schema
+            assert schema["properties"]["id"]["description"] == (
+                "A finding, such as bro#5, for show and expand. An evidence item, such as "
+                "bro#5/2, for expand."), schema
+            assert listed["annotations"] == {"readOnlyHint": True, "destructiveHint": False,
+                                             "idempotentHint": True, "openWorldHint": False}
+
+            def client(**arguments):
+                status, _, body = bro.rpc("tools/call", {"name": "findings",
+                                                         "arguments": arguments})
+                assert status == 200, body
+                result = body["result"]
+                return result["content"][0]["text"], result.get("isError", False)
+            text, failed = client(action="list", author="cuh")
+            assert not failed and text == (
+                "Findings of cuh, open first (id, state, about, claim):\n"
+                "cuh#3  candidate  -  C3\ncuh#2  verified   -  b.c has 800 lines.\n"
+                "cuh#1  verified   -  One commit.\n"), text
+            text, failed = client(action="show", id="cuh#1")
+            assert not failed and text.startswith("Finding cuh#1 by cuh: verified\n") and \
+                text.endswith("[askai: expand with id cuh#1 prints the stored evidence.]\n"), text
+            text, failed = client(action="expand", id="cuh#1")
+            assert not failed and text == ("Evidence of finding cuh#1 by cuh: One commit.\n" +
+                                           block11 + block12 + external), text
+            text, failed = client(action="expand", id="bro#2/1")
+            assert not failed and text == (
+                "Evidence of finding bro#2 by bro: One commit too.\n" +
+                call_block("bro#2/1", 1, json.dumps(log), made[0], ask=cuh_ask, turn=1,
+                           frm="cuh#1/1")), text
+            # A client reads from the offset, without the notice of what the
+            # turns saw.
+            text, failed = client(action="expand", id="cuh#2", offset=10000)
+            mine = ("Evidence of finding cuh#2 by cuh: b.c has 800 lines.\n" + block21).encode()
+            assert not failed and text == mine[10000:].decode(), text
+            assert client(action="expand") == (
+                "expand needs id: a finding, such as bro#5, or an evidence item, such as "
+                "bro#5/2.", True)
+            assert client(action="add", claim="C") == (
+                "The action argument must be one of: list, show, expand.", True)
+            assert client(action="update", id="bro#1", state="retracted", reason="R") == (
+                "The action argument must be one of: list, show, expand.", True)
+
         # cuh, on its own service, expands the finding of bro that cites its
         # item again. Material that does not match its SHA-256 and material
         # that is missing are named.
         with Askai(binary, *base, "--agent", "cuh") as cuh:
-            script[:] = [turn({"action": "expand", "id": "bro#2/2"})]
-            count = len(up.requests)
-            cuh.ask("Q")
-            text = results(up.requests[count + 1])[0]
+            text = cuh.rpc("tools/call", {"name": "findings", "arguments": {
+                "action": "expand", "id": "bro#2/2"}})[2]["result"]["content"][0]["text"]
             assert text == ("Evidence of finding bro#2 by bro: One commit too.\n" +
                             lines_block("bro#2/2", "3", "src/a.c", "3\tint x2;\n",
-                                        "cuh#1/2")).replace("lines 3 of", "line 3 of") + \
-                "[askai: You saw bro#2/2 whole. Cite bro#2/2 for verified or disproved from " \
-                "your next turn on.]\n", text
+                                        "cuh#1/2")).replace("lines 3 of", "line 3 of"), text
             tip = notes("rev-parse", "refs/heads/agent/cuh/findings").strip()
             now = int(time.time())
             changed = archive(one[0]["result"]["sha256"])
@@ -15474,7 +15532,7 @@ def check_findings_expand(binary, up):
             assert said[2] == "The stored material of cuh#3/1 is missing.", said[2]
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("findings: expand by finding, item and open findings, pages, the seen rule, items "
-          "cited again across services: PASS")
+          "cited again across services, client reads: PASS")
 
 
 def check_tasks(binary, up):
@@ -15745,7 +15803,8 @@ def check_plugin(binary, up, plugin):
                  "test_fetch", "test_config"], tools
             assert ai.listed("built-in tools for clients:") == [
                 "ask_ai      on", "man         on", "git         off (--git PATH)",
-                "code        off (--code REPO=FILE)", "notes       off (--notes DIR)"] + [
+                "code        off (--code REPO=FILE)", "notes       off (--notes DIR)",
+                "findings    off (--notes DIR)"] + [
                 f"{name:<10}  off (--client-jobs)"
                 for name in ("background", "jobs", "wait", "timer")], ai.log
             assert ai.listed("plugin test:") == [

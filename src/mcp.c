@@ -223,14 +223,13 @@ static char const *const field_names[F_N] = {
 };
 
 /* The kinds of tool that askai may offer, each its row of mcp_rows. A role
- * can grant the kinds up to KIND_NOTES, which clients list and call. askai
- * offers the kinds in KINDS_TURNS only to the turns of ask calls, findings
- * only with --notes. It offers
- * the kinds in KINDS_AGENDA to the turns, with --upstream-tools, and with
- * --client-jobs also to clients, as a role grants them. A kind's tool has
- * one id for both, and the start() of such a kind checks the role of its
- * slot: ROLE_OWN is a client's call. KIND_NONE is the kind of a tool that
- * askai does not offer.
+ * can grant the kinds up to KIND_NOTES, and KIND_FINDINGS, which clients
+ * list and call. askai offers compact only to the turns of ask calls, and
+ * findings only with --notes. It offers the kinds in KINDS_AGENDA to the
+ * turns, with --upstream-tools, and with --client-jobs also to clients, as
+ * a role grants them. A kind's tool has one id for both, and the start()
+ * of such a kind checks the role of its slot: ROLE_OWN is a client's call.
+ * KIND_NONE is the kind of a tool that askai does not offer.
  */
 enum mcp_kind : uint32_t {
 	KIND_ASK,
@@ -300,10 +299,9 @@ struct mcp_row {
 	char const          *sized;     /* the argument whose size the log
 	                                   shows instead of its value */
 	char const          *option;    /* the option that turns the tool on,
-	                                   for the log. It is nullptr for the
-	                                   kinds in KINDS_TURNS and the test
-	                                   aid, which the log leaves out while
-	                                   they are off. */
+	                                   for the log. It is nullptr for
+	                                   compact and the test aid, which the
+	                                   log leaves out while they are off. */
 	struct cstr_view     name;      /* the name; name.data is nullptr for
 	                                   the ask tool, whose name comes from
 	                                   the configuration */
@@ -8159,8 +8157,10 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	                        .flags = KF_SERIAL },
 	                      N("compact"), LEND_WITH, LENT_COMPACT, TRACE_NAME,
 	                      .sized = "summary" },
-	[KIND_FINDINGS]   = { .plugin = &findings_plugin, N("findings"), LEND_WITH, LENT_FINDINGS,
-	                      TRACE_ACTION, .sized = "claim" },
+	[KIND_FINDINGS]   = { .plugin = &findings_plugin,
+	                      .upstream = findings_upstream_definition,
+	                      N("findings"), LEND_WITH, LENT_FINDINGS, TRACE_ACTION,
+	                      .sized = "claim", .option = "--notes DIR" },
 	/* With --client-jobs, clients list the next four kinds with a
 	 * definition of their own. */
 	[KIND_BACKGROUND] = { { .definition = mcp_background_client_definition,
@@ -8291,8 +8291,8 @@ mcp_lending (struct config const *cfg)
 static constexpr uint32_t KINDS_AGENDA = 1u << KIND_BACKGROUND | 1u << KIND_JOBS |
                                          1u << KIND_WAIT | 1u << KIND_TIMER;
 
-/* The kinds compact and findings, which only the turns get, as bits. */
-static constexpr uint32_t KINDS_TURNS = 1u << KIND_COMPACT | 1u << KIND_FINDINGS;
+/* The kinds notes and findings, which --notes offers, as bits. */
+static constexpr uint32_t KINDS_NOTES = 1u << KIND_NOTES | 1u << KIND_FINDINGS;
 
 /* The kinds of askai's own tools that @p cfg offers to clients, as bits. */
 static uint32_t
@@ -8300,7 +8300,7 @@ mcp_offered_clients (struct config const *cfg)
 {
 	return 1u << KIND_ASK | (cfg->flags & CFG_MAN ? 1u << KIND_MAN : 0) |
 	       (cfg->flags & CFG_TEST_TASK ? 1u << KIND_TASK : 0) |
-	       (cfg->n_gits ? 1u << KIND_GIT : 0) | (cfg->notes ? 1u << KIND_NOTES : 0) |
+	       (cfg->n_gits ? 1u << KIND_GIT : 0) | (cfg->notes ? KINDS_NOTES : 0) |
 	       (cfg->flags & CFG_CODE ? 1u << KIND_CODE : 0) |
 	       (cfg->flags & CFG_CLIENT_JOBS ? KINDS_AGENDA : 0);
 }
@@ -8310,12 +8310,10 @@ mcp_register (struct registry     *reg,
               struct config const *cfg)
 {
 	uint32_t const granted = mcp_offered_clients(cfg);
-	/* The findings are in the session of --notes. */
-	uint32_t const turns = cfg->notes ? KINDS_TURNS : 1u << KIND_COMPACT;
-	uint32_t const offered =
-		granted | (cfg->flags & CFG_UPSTREAM_TOOLS ? turns | KINDS_AGENDA : 0);
+	uint32_t const offered = granted | (cfg->flags & CFG_UPSTREAM_TOOLS
+	                                    ? 1u << KIND_COMPACT | KINDS_AGENDA : 0);
 	/* registry_add() inserts each tool that a role can grant before the
-	 * kinds in KINDS_TURNS. */
+	 * tools that only the turns get. */
 	for (enum mcp_kind k = 0; k < KIND_NONE; ++k) {
 		if (!(offered >> k & 1))
 			continue;

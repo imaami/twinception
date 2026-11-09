@@ -844,7 +844,8 @@ needs a `reason`. A call that left the memory of the ask call, or that
 cat-file --batch`, so it works on every service of the session, and a
 notice names stored material that is missing or that does not match its
 SHA-256. One call prints at most 8 MiB of material and names the items
-that did not fit.
+that did not fit. Clients can call `findings` too, with `--notes`, as
+their role allows: `list`, `show` and `expand`, but no change.
 
 Each `add` and `update` is one commit on the branch of the agent, by the
 agent, with the trailer lines `Ask:`, `Call:`, `Conversation:` and
@@ -1369,7 +1370,8 @@ Four more members define who may connect, and what each client may do:
   that can run in the
   background (`man`, `git`, `code`, or a plugin tool that allows it). `upstream`
   cannot name `compact`, `findings`, `background`, `jobs`, `wait` or
-  `timer`, and `tools` cannot name `compact` or `findings`. With
+  `timer`, and `tools` cannot name `compact`. With `--notes`, `tools` can
+  name `findings`, which lets clients list, show and expand findings. With
   `--client-jobs`, `tools` can name `background`, `jobs`, `wait` and
   `timer`, which are then the client's own tools (see
   Background jobs and timers for clients above).
@@ -1452,11 +1454,11 @@ tools on as the options on the command line do. These objects are members of
 }
 ```
 
-With this file, `askai` offers `man`, `git` and `notes`. No client gets
-`git`, whatever its role grants, and a role may name `git` without an
-error. The turns of an `ask_ai` call get at most `man`, `notes` and
+With this file, `askai` offers `man`, `git`, `notes` and `findings`. No
+client gets `git`, whatever its role grants, and a role may name `git`
+without an error. The turns of an `ask_ai` call get at most `man`, `notes` and
 `compact`, and never `git`, `findings`, `background`, `jobs`, `wait` or
-`timer`. A
+`timer`. Clients also get `findings`, which `notes` turns on. A
 name in `tools` must be a tool that `askai` offers in this run. The
 startup log shows a tool that `tools` denies to clients as `off (tools)`.
 A change of `tools` needs a restart, also a change of an object of a
@@ -1933,6 +1935,7 @@ built-in tools for clients:
   man         on
   git         on
   notes       on
+  findings    on
   background  off (--client-jobs)
   jobs        off (--client-jobs)
   wait        off (--client-jobs)
@@ -1956,8 +1959,8 @@ role admin:
   upstream tools  man
                   git
                   notes
-                  compact
                   findings
+                  compact
                   background
                   jobs
                   wait
@@ -1971,8 +1974,8 @@ role user:
   upstream tools  man
                   git
                   notes
-                  compact
                   findings
+                  compact
                   background
                   jobs
                   wait
@@ -1986,6 +1989,7 @@ anonymous clients:
   remote    refused
   unix      refused
 warning: no role lists these tools:
+  findings
   godbolt_catalog
   godbolt_compile
   godbolt_preprocess
