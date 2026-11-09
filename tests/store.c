@@ -243,29 +243,41 @@ test_input (void)
 	CHECK(!oid_init(&tip, CSTR_VIEW(A)));
 	struct oid const root = {};
 
-	/* A file part quotes the path as fast-import reads it. */
+	/* store_quote() writes a path as fast-import reads it, without a
+	 * NUL. */
+	char quoted[16];
+	memset(quoted, 'x', sizeof quoted);
+	char const *end = store_quote(quoted, CSTR_VIEW("a\"b\\c"));
+	SAME(quoted, (size_t)(end - quoted), "\"a\\\"b\\\\c\"");
+	CHECK(*end == 'x');
+	end = store_quote(quoted, CSTR_VIEW(""));
+	SAME(quoted, (size_t)(end - quoted), "\"\"");
+
+	/* A file part quotes the path as store_quote() does. */
 	struct buf files = {};
 	struct store_part part;
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("a\"b\\c"), CSTR_VIEW("abc")));
-	CHECK(part.name_at == 16 && part.name_len == 9 && part.data_at == 33 && part.data_len == 3);
-	CHECK(!store_part_delete(&part, &files, CSTR_VIEW("d")));
-	CHECK(part.name_at == 39 && part.name_len == 3 && part.data_at == 42 && !part.data_len);
+	CHECK(part.data_at == 33 && part.data_len == 3);
+	/* A delete part is "D ", the quoted path and a line feed. */
+	CHECK(!store_part_delete(&files, CSTR_VIEW("d")));
+	struct span s = buf_peek(&files);
+	SAME(s.ptr, s.len, "M 100644 inline \"a\\\"b\\\\c\"\ndata 3\nabc\nD \"d\"\n");
 	char name[STORE_PATH + 2];
 	memset(name, 'n', sizeof name);
 	CHECK(store_part_file(&part, &files, (struct cstr_view){ name, STORE_PATH + 1 },
 	                      CSTR_VIEW("")) == EINVAL);
-	CHECK(store_part_delete(&part, &files, (struct cstr_view){}) == EINVAL);
+	CHECK(store_part_delete(&files, (struct cstr_view){}) == EINVAL);
+	CHECK(store_part_delete(&files, (struct cstr_view){ name, STORE_PATH + 1 }) == EINVAL);
+	CHECK(store_part_delete(nullptr, CSTR_VIEW("d")) == EINVAL);
 	/* A blob part names the blob by its ID and has no data. */
-	CHECK(!store_part_blob(&part, &files, CSTR_VIEW("e\""), &tip));
-	CHECK(part.name_at == 53 + OID_SHA1 && part.name_len == 5 &&
-	      part.data_at == 58 + OID_SHA1 && !part.data_len);
-	CHECK(store_part_blob(&part, &files, CSTR_VIEW("e"), &root) == EINVAL);
-	CHECK(store_part_blob(&part, &files, CSTR_VIEW("e"), nullptr) == EINVAL);
-	CHECK(store_part_blob(&part, &files, (struct cstr_view){ name, STORE_PATH + 1 }, &tip) ==
-	      EINVAL);
-	CHECK(store_part_blob(nullptr, &files, CSTR_VIEW("e"), &tip) == EINVAL);
-	CHECK(store_part_blob(&part, nullptr, CSTR_VIEW("e"), &tip) == EINVAL);
-	struct span s = buf_peek(&files);
+	CHECK(!store_part_blob(&files, CSTR_VIEW("e\""), &tip));
+	CHECK(store_part_blob(&files, CSTR_VIEW("e"), &root) == EINVAL);
+	CHECK(store_part_blob(&files, CSTR_VIEW("e"), nullptr) == EINVAL);
+	CHECK(store_part_blob(&files, (struct cstr_view){ name, STORE_PATH + 1 }, &tip) == EINVAL);
+	CHECK(store_part_blob(nullptr, CSTR_VIEW("e"), &tip) == EINVAL);
+	/* The buffer contains the file, delete and blob parts, and nothing of
+	 * the refused parts. */
+	s = buf_peek(&files);
 	SAME(s.ptr, s.len, "M 100644 inline \"a\\\"b\\\\c\"\ndata 3\nabc\nD \"d\"\n"
 	     "M 100644 " A " \"e\\\"\"\n");
 	buf_cut(&files, 43, s.len - 43);
@@ -949,11 +961,11 @@ test_ends (char const *parent)
  * @p tip, and writes the new commit to @p id.
  */
 static void
-rebase_commit (struct store const *store,
-               char const         *ref,
-               struct oid const   *tip,
-               struct buf         *files,
-               struct oid         *id)
+race_commit (struct store const *store,
+             char const         *ref,
+             struct oid const   *tip,
+             struct buf         *files,
+             struct oid         *id)
 {
 	static char out[4096];
 	size_t len = 0;
@@ -968,199 +980,104 @@ rebase_commit (struct store const *store,
 	buf_fini(files);
 }
 
-/* Runs STORE_CHECK in @p store with the input of store_rebase_input() for
- * @p ref, the parent @p base and the file part @p part in @p files.
- * Returns what store_rebased() returns for the output, and the new tip in
- * @p *tip.
+/* Runs STORE_CHECK in @p store for the path @p name at @p ref, a ref or a
+ * commit. Returns what store_checked() returns for the output, with the
+ * commit of @p ref in @p *tip and the blob of the path in @p *blob.
  */
 static int
-rebase_check (struct store const      *store,
-              char const              *ref,
-              struct oid const        *base,
-              struct buf const        *files,
-              struct store_part const *part,
-              struct oid              *tip)
+check_at (struct store const *store,
+          char const         *ref,
+          char const         *name,
+          struct oid         *tip,
+          struct oid         *blob)
 {
 	static char out[4096];
 	size_t len = 0;
+	uint64_t bytes;
 	struct buf in = {};
-	CHECK(!store_rebase_input(&in, ref, base, buf_peek(files), part));
+	CHECK(!store_check_input(&in, ref, cstr_view(name)));
 	CHECK(!run(store, STORE_CHECK, nullptr, buf_peek(&in), out, sizeof out, &len));
 	buf_fini(&in);
-	return store_rebased((struct span){ (unsigned char *)out, len }, base, tip);
+	return store_checked((struct span){ (unsigned char *)out, len }, tip, blob, &bytes);
 }
 
-/* Returns what rebase_check() returns for a file part that writes the
- * file @p name.
- */
-static int
-rebase_file (struct store const *store,
-             char const         *ref,
-             struct oid const   *base,
-             char const         *name,
-             struct oid         *tip)
-{
-	struct buf files = {};
-	struct store_part part;
-	CHECK(!store_part_file(&part, &files, cstr_view(name), CSTR_VIEW("x")));
-	int e = rebase_check(store, ref, base, &files, &part, tip);
-	buf_fini(&files);
-	return e;
-}
-
-/* The input and the output of STORE_CHECK after a commit raced another
- * writer, and the decision whether the commit can be made again on the
- * new tip.
+/* The output of STORE_CHECK for a path at two commits of a ref, which a
+ * note write compares after its commit raced another writer, and a whole
+ * retry: a commit that raced is made again on the new tip.
  */
 static void
-test_rebase (struct store const *store)
+test_race (struct store const *store)
 {
-	/* The input names the ref, each directory in the path and the path,
-	 * without the quotes of the file part, and then the same at the
-	 * base. */
-	struct oid base;
-	CHECK(!oid_init(&base, CSTR_VIEW(A)));
+	/* r1 has a/b and c. r2 changes c and adds a/d, and so the tree a. r3
+	 * adds the file n, where a path expects a directory. r4 adds m/y,
+	 * which makes the directory m. */
+	char const *ref = "refs/heads/notes/r";
 	struct oid const root = {};
 	struct buf files = {};
-	struct buf in = {};
 	struct store_part part;
-	CHECK(!store_part_file(&part, &files, CSTR_VIEW("q\"\\x/y"), CSTR_VIEW("data")));
-	CHECK(!store_rebase_input(&in, "refs/heads/n", &base, buf_peek(&files), &part));
-	struct span s = buf_peek(&in);
-	SAME(s.ptr, s.len, "refs/heads/n\nrefs/heads/n:q\"\\x\nrefs/heads/n:q\"\\x/y\n"
-	     A "\n" A ":q\"\\x\n" A ":q\"\\x/y\n");
-	buf_clear(&in);
-	/* Without a base, the input names the ref only. */
-	CHECK(!store_rebase_input(&in, "refs/heads/n", &root, buf_peek(&files), &part));
-	s = buf_peek(&in);
-	SAME(s.ptr, s.len, "refs/heads/n\nrefs/heads/n:q\"\\x\nrefs/heads/n:q\"\\x/y\n");
-	buf_clear(&in);
-	/* A deletion names its path the same way. */
-	struct store_part gone;
-	CHECK(!store_part_delete(&gone, &files, CSTR_VIEW("d")));
-	CHECK(!store_rebase_input(&in, "refs/heads/n", &root, buf_peek(&files), &gone));
-	s = buf_peek(&in);
-	SAME(s.ptr, s.len, "refs/heads/n\nrefs/heads/n:d\n");
-	buf_clear(&in);
-	/* A part must be a quoted path of at most STORE_PATH bytes in the
-	 * file parts. */
-	struct span const f = buf_peek(&files);
-	struct store_part bad = part;
-	CHECK(store_rebase_input(nullptr, "r", &base, f, &part) == EINVAL);
-	CHECK(store_rebase_input(&in, nullptr, &base, f, &part) == EINVAL);
-	CHECK(store_rebase_input(&in, "r", nullptr, f, &part) == EINVAL);
-	CHECK(store_rebase_input(&in, "r", &base, f, nullptr) == EINVAL);
-	bad.name_at = f.len;
-	CHECK(store_rebase_input(&in, "r", &base, f, &bad) == EINVAL);
-	bad = part;
-	bad.name_len = f.len;
-	CHECK(store_rebase_input(&in, "r", &base, f, &bad) == EINVAL);
-	bad = part;
-	bad.name_len = 2;
-	CHECK(store_rebase_input(&in, "r", &base, f, &bad) == EINVAL);
-	bad = part;
-	bad.name_at = part.data_at;
-	CHECK(store_rebase_input(&in, "r", &base, f, &bad) == EINVAL);
-	char quoted[STORE_PATH + 3];
-	memset(quoted, 'p', sizeof quoted);
-	quoted[0] = quoted[STORE_PATH + 1] = '"';
-	struct span const q = { (unsigned char *)quoted, sizeof quoted };
-	struct store_part longest = { .name_len = STORE_PATH + 2 };
-	CHECK(!store_rebase_input(&in, "r", &base, q, &longest));
-	quoted[STORE_PATH + 1] = 'p';
-	quoted[STORE_PATH + 2] = '"';
-	++longest.name_len;
-	CHECK(store_rebase_input(&in, "r", &base, q, &longest) == EINVAL);
-	/* A backslash before the last quote leaves the quote open. */
-	memcpy(quoted, "\"a\\\"", 4);
-	longest.name_len = 4;
-	CHECK(store_rebase_input(&in, "r", &base, q, &longest) == EINVAL);
-	buf_fini(&in);
-	buf_fini(&files);
-
-	/* r1 has a/b and c. r2 changes c and adds a/d, and so the tree a. */
-	char const *ref = "refs/heads/notes/r";
-	struct oid r1, r2, r3, r4, tip;
+	struct oid r1, r2, r3, r4;
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("a/b"), CSTR_VIEW("1")));
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("c"), CSTR_VIEW("2")));
-	rebase_commit(store, ref, &root, &files, &r1);
+	race_commit(store, ref, &root, &files, &r1);
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("c"), CSTR_VIEW("3")));
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("a/d"), CSTR_VIEW("4")));
-	rebase_commit(store, ref, &r1, &files, &r2);
-	/* A path that is the same blob or missing at both commits, below
-	 * trees or missing directories, can be written again on r2. */
-	CHECK(!rebase_file(store, ref, &r1, "a/b", &tip) && oid_equal(&tip, &r2));
-	CHECK(!rebase_file(store, ref, &r1, "e", &tip) && oid_equal(&tip, &r2));
-	CHECK(!rebase_file(store, ref, &r1, "a/e", &tip) && oid_equal(&tip, &r2));
-	CHECK(!rebase_file(store, ref, &r1, "new/x", &tip) && oid_equal(&tip, &r2));
-	CHECK(!store_part_delete(&part, &files, CSTR_VIEW("a/b")));
-	CHECK(!rebase_check(store, ref, &r1, &files, &part, &tip) && oid_equal(&tip, &r2));
-	buf_fini(&files);
-	/* A changed blob, a new blob, a tree as the path and a blob as a
-	 * directory are not the same. */
-	CHECK(rebase_file(store, ref, &r1, "c", &tip) == ESTALE && !oid_len(&tip));
-	CHECK(store_part_delete(&part, &files, CSTR_VIEW("c")) == 0);
-	CHECK(rebase_check(store, ref, &r1, &files, &part, &tip) == ESTALE);
-	buf_fini(&files);
-	CHECK(rebase_file(store, ref, &r1, "a/d", &tip) == ESTALE);
-	CHECK(rebase_file(store, ref, &r1, "a", &tip) == ESTALE);
-	CHECK(rebase_file(store, ref, &r1, "a/b/c", &tip) == ESTALE);
-	CHECK(rebase_file(store, ref, &r1, "c/x", &tip) == ESTALE);
-	/* r3 adds the file n, where a path expects a directory. r4 adds m/y,
-	 * which makes the directory m. */
+	race_commit(store, ref, &r1, &files, &r2);
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("n"), CSTR_VIEW("5")));
-	rebase_commit(store, ref, &r2, &files, &r3);
-	CHECK(rebase_file(store, ref, &r2, "n/x", &tip) == ESTALE);
-	CHECK(rebase_file(store, ref, &r2, "n", &tip) == ESTALE);
-	CHECK(!rebase_file(store, ref, &r2, "a/b", &tip) && oid_equal(&tip, &r3));
+	race_commit(store, ref, &r2, &files, &r3);
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("m/y"), CSTR_VIEW("6")));
-	rebase_commit(store, ref, &r3, &files, &r4);
-	CHECK(!rebase_file(store, ref, &r3, "m/z", &tip) && oid_equal(&tip, &r4));
-	CHECK(rebase_file(store, ref, &r3, "m/y", &tip) == ESTALE);
-	CHECK(rebase_file(store, ref, &r3, "m", &tip) == ESTALE);
-	/* A root commit can be made again only as a commit that adds its path
-	 * below trees or missing directories. */
-	CHECK(!rebase_file(store, ref, &root, "z", &tip) && oid_equal(&tip, &r4));
-	CHECK(!rebase_file(store, ref, &root, "m/z", &tip) && oid_equal(&tip, &r4));
-	CHECK(rebase_file(store, ref, &root, "c", &tip) == ESTALE);
-	CHECK(rebase_file(store, ref, &root, "n/x", &tip) == ESTALE);
-	CHECK(rebase_file(store, ref, &root, "a", &tip) == ESTALE);
-	/* A ref that does not exist, and a base that does not exist, are not
-	 * the same either. A blob as the base, here the blob of a/b, is not a
-	 * parent. */
-	CHECK(rebase_file(store, "refs/heads/notes/none", &r1, "a/b", &tip) == ESTALE);
-	CHECK(rebase_file(store, "refs/heads/notes/none", &root, "a/b", &tip) == ESTALE);
-	struct oid absent, blob;
-	CHECK(!oid_init(&absent, CSTR_VIEW(B)));
-	CHECK(rebase_file(store, ref, &absent, "a/b", &tip) == ESTALE && !oid_len(&tip));
-	CHECK(!oid_init(&blob, CSTR_VIEW("56a6051ca2b02b04ef92d5150c9ef600403cb1de")));
-	CHECK(rebase_file(store, ref, &blob, "a/b", &tip) == EIO && !oid_len(&tip));
+	race_commit(store, ref, &r3, &files, &r4);
 
-	/* An output without a path, with a line without its line feed, or
-	 * with an odd number of lines for a base, is not what git writes. */
-	static char const commits[] = A " commit 9\n" A " commit 9\n";
-	struct span const two = { (unsigned char *)commits, sizeof commits - 1 };
-	CHECK(store_rebased(two, &base, &tip) == EIO);
-	CHECK(store_rebased((struct span){ two.ptr, two.len / 2 }, &base, &tip) == EIO);
-	CHECK(store_rebased((struct span){ two.ptr, two.len / 2 }, &root, &tip) == EIO);
-	CHECK(store_rebased((struct span){ two.ptr, two.len - 1 }, &base, &tip) == EIO);
-	CHECK(store_rebased((struct span){}, &base, &tip) == EIO);
-	static char const missing[] = A " commit 9\nr:x missing\n";
-	struct span const one = { (unsigned char *)missing, sizeof missing - 1 };
-	CHECK(!store_rebased(one, &root, &tip) && !strcmp(tip.hex, A));
-	CHECK(store_rebased(one, &base, &tip) == EIO && !oid_len(&tip));
-	CHECK(store_rebased(one, nullptr, &tip) == EINVAL);
-	CHECK(store_rebased(one, &root, nullptr) == EINVAL);
-	/* The lines of the base name the base. */
-	static char const other[] = A " commit 9\nr:x missing\n" A " commit 9\nb:x missing\n";
-	struct span const four = { (unsigned char *)other, sizeof other - 1 };
-	CHECK(!store_rebased(four, &base, &tip) && !strcmp(tip.hex, A));
-	CHECK(store_rebased(four, &blob, &tip) == ESTALE && !oid_len(&tip));
-	size_t const three = four.len - (sizeof "b:x missing\n" - 1);
-	CHECK(store_rebased((struct span){ four.ptr, three }, &base, &tip) == EIO);
+	/* A path at a commit and at the next one: what store_checked()
+	 * returns at each, and whether the blob IDs are equal. A note write
+	 * that raced is made again only if the path is the same blob at both
+	 * commits (EEXIST), or missing at both below trees or missing
+	 * directories (0). A changed blob, a new blob, a tree as the path
+	 * (EISDIR) and a blob as a directory (ENOTDIR) do not qualify. */
+	struct {
+		struct oid const *at[2];
+		char const       *name;
+		int               r[2];
+		bool              same;
+	} const paths[] = {
+		{ { &r1, &r2 }, "a/b",   { EEXIST,  EEXIST  }, true  },
+		{ { &r1, &r2 }, "e",     { 0,       0       }, true  },
+		{ { &r1, &r2 }, "a/e",   { 0,       0       }, true  },
+		{ { &r1, &r2 }, "new/x", { 0,       0       }, true  },
+		{ { &r1, &r2 }, "c",     { EEXIST,  EEXIST  }, false },
+		{ { &r1, &r2 }, "a/d",   { 0,       EEXIST  }, false },
+		{ { &r1, &r2 }, "a",     { EISDIR,  EISDIR  }, true  },
+		{ { &r1, &r2 }, "a/b/c", { ENOTDIR, ENOTDIR }, true  },
+		{ { &r1, &r2 }, "c/x",   { ENOTDIR, ENOTDIR }, true  },
+		{ { &r2, &r3 }, "n/x",   { 0,       ENOTDIR }, true  },
+		{ { &r2, &r3 }, "n",     { 0,       EEXIST  }, false },
+		{ { &r2, &r3 }, "a/b",   { EEXIST,  EEXIST  }, true  },
+		{ { &r3, &r4 }, "m/z",   { 0,       0       }, true  },
+		{ { &r3, &r4 }, "m/y",   { 0,       EEXIST  }, false },
+		{ { &r3, &r4 }, "m",     { 0,       EISDIR  }, true  },
+	};
+	for (size_t i = 0; i < array_size(paths); ++i) {
+		struct oid tip, blob[2];
+		for (size_t k = 0; k < 2; ++k) {
+			int const r = check_at(store, paths[i].at[k]->hex, paths[i].name, &tip,
+			                       &blob[k]);
+			CHECK(r == paths[i].r[k] && oid_equal(&tip, paths[i].at[k]));
+			CHECK(!oid_len(&blob[k]) == (r != EEXIST));
+		}
+		CHECK(oid_equal(&blob[0], &blob[1]) == paths[i].same);
+	}
+	/* At the tip of the ref, the commit is r4. A ref that does not exist
+	 * and an object that does not exist name no commit. A blob, here the
+	 * blob of a/b, is not a commit. */
+	struct oid tip, blob, id;
+	CHECK(check_at(store, ref, "a/b", &tip, &blob) == EEXIST && oid_equal(&tip, &r4));
+	CHECK(!check_at(store, "refs/heads/notes/none", "a/b", &tip, &id) && !oid_len(&tip) &&
+	      !oid_len(&id));
+	CHECK(!check_at(store, B, "a/b", &tip, &id) && !oid_len(&tip) && !oid_len(&id));
+	CHECK(check_at(store, blob.hex, "a/b", &tip, &id) == EIO && !oid_len(&tip));
 
-	/* The whole retry: a commit on r3 races r4, the check finds its path
-	 * as it was, and the same file part is committed on r4. */
+	/* The whole retry: a commit on r3 races r4. The check at the ref
+	 * finds a/f missing, as at r3, and the same file part is committed on
+	 * r4. */
 	static char out[4096];
 	size_t len = 0;
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("a/f"), CSTR_VIEW("7")));
@@ -1174,7 +1091,8 @@ test_rebase (struct store const *store)
 	struct oid r5;
 	CHECK(commit_run(store, &commit, &r5, out, sizeof out, &len) > 0);
 	CHECK(store_raced((struct span){ (unsigned char *)out, len }));
-	CHECK(!rebase_check(store, ref, commit.tip, &files, &part, &tip) && oid_equal(&tip, &r4));
+	CHECK(!check_at(store, r3.hex, "a/f", &tip, &id) && !oid_len(&id));
+	CHECK(!check_at(store, ref, "a/f", &tip, &id) && oid_equal(&tip, &r4) && !oid_len(&id));
 	commit.tip = &tip;
 	CHECK(!commit_run(store, &commit, &r5, out, sizeof out, &len));
 	buf_fini(&files);
@@ -1247,7 +1165,7 @@ test_git (char const *path)
 	/* A blob part adds a blob of the repository, here on another ref. */
 	struct oid blob;
 	CHECK(!oid_init(&blob, CSTR_VIEW("f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f")));
-	CHECK(!store_part_blob(&part, &files, CSTR_VIEW("c/d"), &blob));
+	CHECK(!store_part_blob(&files, CSTR_VIEW("c/d"), &blob));
 	struct store_commit cited = commit;
 	cited.message = CSTR_VIEW("Cite a");
 	cited.files = buf_peek(&files);
@@ -1262,7 +1180,7 @@ test_git (char const *path)
 	SAME(out, len - 1, "100644 blob f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f       3\tc/d");
 	/* git refuses a blob that the repository does not have. */
 	CHECK(!oid_init(&blob, CSTR_VIEW(A)));
-	CHECK(!store_part_blob(&part, &files, CSTR_VIEW("e"), &blob));
+	CHECK(!store_part_blob(&files, CSTR_VIEW("e"), &blob));
 	cited.files = buf_peek(&files);
 	cited.tip = &u;
 	CHECK(commit_run(store, &cited, &c4, out, sizeof out, &len) > 0);
@@ -1368,7 +1286,7 @@ test_git (char const *path)
 	test_argv(store);
 	test_spawn(store);
 	test_run(store, &c5);
-	test_rebase(store);
+	test_race(store);
 	store_destroy(&store);
 	CHECK(!store);
 	store_destroy(&store);

@@ -4,9 +4,8 @@
  * instance with the same --notes path uses the same repository, and the
  * notes are branches in it. The functions of this module open the
  * repository, run git in it through git_run (src/git_run.h), write the
- * input of a commit for git fast-import, recognize a write that raced
- * another writer, and decide whether the commit of that write can be made
- * again on the new tip. A git that writes ends before its lock file is
+ * input of a commit for git fast-import, and recognize a write that raced
+ * another writer. A git that writes ends before its lock file is
  * STORE_STALE seconds old. A lock file is removed only if it is older than
  * the boot of the system, never because of its age alone.
  */
@@ -26,16 +25,21 @@ struct mcp_slot;
 struct store;
 
 enum {
-	STORE_WORDS   = 3,         /**< words of a command of enum store_cmd, at
-	                                most */
-	STORE_MAX     = 16 << 20,  /**< bytes of the output of git, at most */
-	STORE_PATH    = 255,       /**< bytes of the path of a file in a
-	                                commit, at most */
-	STORE_MESSAGE = 1024,      /**< bytes of the message of a commit
-	                                without its trailer, NUL included, at
-	                                most */
-	STORE_TRIES   = 3,         /**< commits of one write that races other
-	                                writers, at most */
+	STORE_WORDS   = 3,                   /**< words of a command of enum
+	                                          store_cmd, at most */
+	STORE_MAX     = 16 << 20,            /**< bytes of the output of git,
+	                                          at most */
+	STORE_PATH    = 255,                 /**< bytes of the path of a file
+	                                          in a commit, at most */
+	STORE_QUOTED  = 2 * STORE_PATH + 2,  /**< bytes of a path that
+	                                          store_quote() writes, at
+	                                          most */
+	STORE_MESSAGE = 1024,                /**< bytes of the message of a
+	                                          commit without its trailer,
+	                                          NUL included, at most */
+	STORE_TRIES   = 3,                   /**< commits of one write that
+	                                          races other writers, at
+	                                          most */
 };
 
 /** The age in seconds past which a lock file of a ref is older than every
@@ -310,13 +314,21 @@ store_stale (struct store const *store,
              char const         *ref,
              char const         *tool);
 
-/** The offsets of the path and the data of a file part in the buffer that
- *  store_part_head() writes to, from the head of the buffer. The path
- *  includes its quotes.
+/** Writes @p name to @p dest in double quotes, with a backslash before
+ *  each double quote and backslash in it, as git fast-import reads a path,
+ *  and returns the end. @p dest must have room for 2 * name.len + 2 bytes,
+ *  STORE_QUOTED for a path of STORE_PATH bytes. The function writes no
+ *  NUL.
+ */
+extern char *
+store_quote (char             *dest,
+             struct cstr_view  name);
+
+/** The offset of the data of a file part in the buffer that
+ *  store_part_head() writes to, from the head of the buffer, and the bytes
+ *  of the data.
  */
 struct store_part {
-	size_t name_at;
-	size_t name_len;
 	size_t data_at;
 	size_t data_len;
 };
@@ -325,7 +337,7 @@ struct store_part {
  * Writes to @p in the head of a file part of the input of STORE_COMMIT,
  * for the file @p name whose data is @p len bytes long. After the head,
  * the function adds @p len bytes for the data, which it leaves unwritten,
- * and a line feed. It stores the offsets of the path and the data in
+ * and a line feed. It stores the offset and the bytes of the data in
  * @p *part. The caller then writes the data at the offset part->data_at
  * from the head of @p in, as store_part_file() does. Returns 0, EINVAL for
  * a null argument, a name longer than STORE_PATH or a failed snprintf() of
@@ -351,28 +363,24 @@ store_part_file (struct store_part *part,
 
 /**
  * Writes to @p in the part of the input of STORE_COMMIT that deletes the
- * file @p name. The function stores the offset of the path in @p *part, as
- * store_part_head() does, and no data. Returns 0, EINVAL for a null
- * argument or a name longer than STORE_PATH, or ENOMEM.
+ * file @p name. Returns 0, EINVAL for a null argument or a name longer than
+ * STORE_PATH, or ENOMEM.
  */
 extern int
-store_part_delete (struct store_part *part,
-                   struct buf        *in,
-                   struct cstr_view   name);
+store_part_delete (struct buf       *in,
+                   struct cstr_view  name);
 
 /**
  * Writes to @p in a file part of the input of STORE_COMMIT that adds the
- * blob @p id of the repository as the file @p name, without its data. The
- * function stores the offset of the path in @p *part, as store_part_head()
- * does, and no data. git refuses the commit if the repository has no such
- * blob. Returns 0, EINVAL for a null argument, an @p id that is no name or
- * a name longer than STORE_PATH, or ENOMEM.
+ * blob @p id of the repository as the file @p name, without its data. git
+ * refuses the commit if the repository has no such blob. Returns 0, EINVAL
+ * for a null argument, an @p id that is no name or a name longer than
+ * STORE_PATH, or ENOMEM.
  */
 extern int
-store_part_blob (struct store_part *part,
-                 struct buf        *in,
-                 struct cstr_view   name,
-                 struct oid const  *id);
+store_part_blob (struct buf       *in,
+                 struct cstr_view  name,
+                 struct oid const *id);
 
 /** One line of the trailer of a commit message, written as KEY: VALUE. */
 struct store_trailer {
@@ -440,42 +448,5 @@ store_commit_input (struct store_commit const *commit,
 extern int
 store_committed (struct span  out,
                  struct oid  *commit);
-
-/**
- * Writes to @p in the input of STORE_CHECK after a commit on the ref
- * @p ref raced another writer. @p base is the parent of that commit, or
- * no name for a root commit. @p part is the one file part of the commit,
- * in @p files. The input is what store_check_input() writes for the path
- * of @p part at @p ref, and then, if @p base is a name, for the same path
- * at @p base. store_rebased() reads the output. Returns 0, EINVAL for a
- * null argument or a part that is not a quoted path in @p files, or the
- * error of buf_printf(), after which @p in can contain part of the input.
- */
-extern int
-store_rebase_input (struct buf              *in,
-                    char const              *ref,
-                    struct oid const        *base,
-                    struct span              files,
-                    struct store_part const *part);
-
-/**
- * Reads @p out, the output of STORE_CHECK for the input that
- * store_rebase_input() writes for the parent @p base. store_checked()
- * reads the lines at the ref and the lines at @p base. Returns 0 with the
- * commit of the ref, the new tip, in @p *tip if the same file part can be
- * committed again on the new tip: the path is the same blob at the new tip
- * as at @p base, or missing at both, and no directory in the path is a
- * file. For a root commit, the path is missing at the new tip, and no
- * directory in the path is a file there. Otherwise @p *tip is no name. The
- * function returns ESTALE if the path is not the same, also for a ref
- * that does not exist and for lines of @p base that name another commit.
- * It returns EIO if store_checked() returns EIO for the lines at the ref
- * or at @p base, or if the lines do not split into two halves, and EINVAL
- * for a null argument.
- */
-extern int
-store_rebased (struct span       out,
-               struct oid const *base,
-               struct oid       *tip);
 
 #endif /* ASKAI_SRC_STORE_H_ */

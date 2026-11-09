@@ -549,22 +549,18 @@ store_stale (struct store const *store,
 	return age;
 }
 
-/* Writes @p name at @p p in double quotes, with a backslash before each
- * double quote and backslash in it, as fast-import reads a path, and
- * returns the end. The quoted name is at most 2 * name.len + 2 bytes long.
- */
-static char *
-store_quote (char             *p,
+char *
+store_quote (char             *dest,
              struct cstr_view  name)
 {
-	*p++ = '"';
+	*dest++ = '"';
 	for (size_t i = 0; i < name.len; ++i) {
 		if (name.data[i] == '"' || name.data[i] == '\\')
-			*p++ = '\\';
-		*p++ = name.data[i];
+			*dest++ = '\\';
+		*dest++ = name.data[i];
 	}
-	*p++ = '"';
-	return p;
+	*dest++ = '"';
+	return dest;
 }
 
 int
@@ -592,14 +588,7 @@ store_part_head (struct store_part *part,
 		return EINVAL;
 	size_t const h = (size_t)(p - head) + (size_t)n;
 	head[h + len] = '\n';
-	/* The quoted name runs from the end of m to p. */
-	size_t at = buf_peek(in).len;
-	*part = (struct store_part){
-		.name_at = at + sizeof m - 1,
-		.name_len = (size_t)(p - head) - (sizeof m - 1),
-		.data_at = at + h,
-		.data_len = len,
-	};
+	*part = (struct store_part){ .data_at = buf_peek(in).len + h, .data_len = len };
 	buf_commit(in, h + len + 1);
 	return 0;
 }
@@ -617,11 +606,10 @@ store_part_file (struct store_part *part,
 }
 
 int
-store_part_delete (struct store_part *part,
-                   struct buf        *in,
-                   struct cstr_view   name)
+store_part_delete (struct buf       *in,
+                   struct cstr_view  name)
 {
-	if (!part || !in || !name.data || name.len > STORE_PATH)
+	if (!in || !name.data || name.len > STORE_PATH)
 		return EINVAL;
 	/* The part is "D ", the name quoted as a C string, which at most
 	 * doubles its bytes, and a line feed. */
@@ -631,22 +619,18 @@ store_part_delete (struct store_part *part,
 		return e;
 	char *const head = (char *)s.ptr;
 	char *p = store_quote(mempcpy(head, "D ", 2), name);
-	size_t const at = buf_peek(in).len;
-	size_t const end = (size_t)(p - head);
-	*part = (struct store_part){ .name_at = at + 2, .name_len = end - 2, .data_at = at + end };
 	*p = '\n';
-	buf_commit(in, end + 1);
+	buf_commit(in, (size_t)(p - head) + 1);
 	return 0;
 }
 
 int
-store_part_blob (struct store_part *part,
-                 struct buf        *in,
-                 struct cstr_view   name,
-                 struct oid const  *id)
+store_part_blob (struct buf       *in,
+                 struct cstr_view  name,
+                 struct oid const *id)
 {
 	size_t const n = id ? oid_len(id) : 0;
-	if (!part || !in || !name.data || name.len > STORE_PATH || !n)
+	if (!in || !name.data || name.len > STORE_PATH || !n)
 		return EINVAL;
 	/* The part is "M 100644 ", the ID, a space, the name quoted as a C
 	 * string, which at most doubles its bytes, and a line feed. */
@@ -658,17 +642,9 @@ store_part_blob (struct store_part *part,
 	char *const head = (char *)s.ptr;
 	char *p = mempcpy(mempcpy(head, m, sizeof m - 1), id->hex, n);
 	*p++ = ' ';
-	size_t const at = buf_peek(in).len;
-	size_t const name_at = (size_t)(p - head);
 	p = store_quote(p, name);
-	size_t const end = (size_t)(p - head);
-	*part = (struct store_part){
-		.name_at = at + name_at,
-		.name_len = end - name_at,
-		.data_at = at + end,
-	};
 	*p = '\n';
-	buf_commit(in, end + 1);
+	buf_commit(in, (size_t)(p - head) + 1);
 	return 0;
 }
 
@@ -749,76 +725,4 @@ store_committed (struct span  out,
 		out = (struct span){ nl + 1, out.len - (size_t)(nl + 1 - out.ptr) };
 	struct cstr_view const line = { (char const *)out.ptr, out.len };
 	return oid_init_line(commit, line) ? EIO : 0;
-}
-
-int
-store_rebase_input (struct buf              *in,
-                    char const              *ref,
-                    struct oid const        *base,
-                    struct span              files,
-                    struct store_part const *part)
-{
-	if (!in || !ref || !base || !part || part->name_at > files.len ||
-	    part->name_len > files.len - part->name_at || part->name_len < 3)
-		return EINVAL;
-	/* The path, without the quotes and the backslashes of store_quote(). */
-	char const *q = (char const *)files.ptr + part->name_at;
-	size_t const end = part->name_len - 1;
-	if (q[0] != '"' || q[end] != '"')
-		return EINVAL;
-	char path[STORE_PATH];
-	size_t len = 0;
-	for (size_t i = 1; i < end; ++i) {
-		if (q[i] == '\\')
-			++i;
-		if (i == end || len == sizeof path)
-			return EINVAL;
-		path[len++] = q[i];
-	}
-	/* The lines at the ref, and then the same lines at the base. */
-	struct cstr_view const name = { path, len };
-	int e = store_check_input(in, ref, name);
-	return e || !oid_len(base) ? e : store_check_input(in, base->hex, name);
-}
-
-int
-store_rebased (struct span       out,
-               struct oid const *base,
-               struct oid       *tip)
-{
-	if (!base || !tip)
-		return EINVAL;
-	*tip = (struct oid){};
-	/* After a root commit, every line is about the ref. Otherwise the
-	 * first half of the lines is about the ref, and the second half is
-	 * about the base. */
-	size_t mid = out.len;
-	if (oid_len(base)) {
-		size_t lines = 0;
-		for (size_t i = 0; i < out.len; ++i)
-			lines += out.ptr[i] == '\n';
-		if (!lines || lines % 2)
-			return EIO;
-		mid = 0;
-		for (size_t k = 0; k < lines / 2; ++mid)
-			k += out.ptr[mid] == '\n';
-	}
-	struct oid tips[2] = {};
-	struct oid ids[2] = {};
-	uint64_t bytes;
-	int r[2] = {};
-	r[0] = store_checked((struct span){ out.ptr, mid }, &tips[0], &ids[0], &bytes);
-	if (oid_len(base))
-		r[1] = store_checked((struct span){ out.ptr + mid, out.len - mid }, &tips[1],
-		                     &ids[1], &bytes);
-	if (r[0] == EIO || r[1] == EIO)
-		return EIO;
-	/* The ref is a commit, and the lines of the base name the base. */
-	if (!oid_len(&tips[0]) || (oid_len(base) && !oid_equal(&tips[1], base)))
-		return ESTALE;
-	/* The path is missing at both commits, or the same blob at both. */
-	if (r[0] != r[1] || (r[0] && r[0] != EEXIST) || !oid_equal(&ids[0], &ids[1]))
-		return ESTALE;
-	*tip = tips[0];
-	return 0;
 }

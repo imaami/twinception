@@ -49,8 +49,9 @@ enum notes_tool_fetch : uint32_t {
 	FETCH_DIFF,            /* compare two revisions of a note */
 	FETCH_STAT,            /* count the lines that a write changed */
 	FETCH_GREP,            /* find the lines that match a pattern */
-	FETCH_REBASE,          /* check the note of a write that raced another
-	                          writer, at the new tip */
+	FETCH_REBASE,          /* check the note of a write at another commit:
+	                          at the new tip after a race, or at the tip
+	                          that a restore pinned */
 	FETCH_KIND = 15,       /* the mask of the kinds */
 	FETCH_APPEND = 16,     /* set for append, also with FETCH_READ to read
 	                          the note to append to */
@@ -122,14 +123,13 @@ static struct cstr_view const raced =
 	               "time. Read the current note and retry.");
 
 /* The flags of a notes call (struct notes_tool_call). */
-enum {
-	CALL_STRIPPED = 1 << 0,  /* askai cut its notices off the text */
-	CALL_AS       = 1 << 1,  /* the call gave the argument as */
-	CALL_LOGIN    = 1 << 2,  /* the call waits for the member of the login
-	                            of its client, without git */
-	CALL_NEW      = 1 << 3,  /* the write makes a new note */
-	CALL_READ     = 1 << 4,  /* the call waits for the read of the records
-	                            of the members (member_table_read()) */
+enum notes_tool_call_flag : uint8_t {
+	CALL_STRIPPED = 1u << 0,  /* askai cut its notices off the text */
+	CALL_AS       = 1u << 1,  /* the call gave the argument as */
+	CALL_LOGIN    = 1u << 2,  /* the call waits for the member of the login
+	                             of its client, without git */
+	CALL_READ     = 1u << 3,  /* the call waits for the read of the records
+	                             of the members (member_table_read()) */
 };
 
 /* The state of one notes call. It is the own word of the call's slot. An
@@ -145,7 +145,7 @@ struct notes_tool_call {
 	struct dstr             out;       /* the output of a tool call.
 	                                      notes_tool_end() lends it to
 	                                      the slot. */
-	struct store_part       part;      /* the offsets of the name and the
+	struct store_part       part;      /* the offset and the bytes of the
 	                                      text in file */
 	struct list             spare;     /* the call's node on loop->spare */
 	struct member_wait      wait;      /* the lookup of the member of the
@@ -174,8 +174,6 @@ struct notes_tool_call {
 	union {
 		UTIL_TEXT(STORE_MESSAGE)  message;  /* the commit message of a
 		                                       write, for its result */
-		UTIL_TEXT(NOTES_NAME + 1) name;     /* the name of a copy, until
-		                                       its file part is written */
 		struct oid                id;       /* the object id of an
 		                                       attached note, until the
 		                                       upload's answer */
@@ -185,18 +183,24 @@ struct notes_tool_call {
 		                                       result of a read
 		                                       (notes_tool_shows()) */
 	};
+	UTIL_TEXT(NOTES_NAME + 1) name;    /* the name of the note that a copy
+	                                      or a restore writes: the as
+	                                      argument, or else file */
 	uint32_t                fetch;     /* why git runs (enum
 	                                      notes_tool_fetch) */
 	uint32_t                first;     /* the fetch value of the first git
 	                                      run of a tool call, which runs
 	                                      once the caller and the notebook
 	                                      are known */
-	uint16_t                action;    /* the row of notes_tool_actions[] */
-	uint16_t                tries;     /* the commits of a write that
+	uint8_t                 action;    /* the row of notes_tool_actions[] */
+	uint8_t                 tries;     /* the commits of a write that
 	                                      raced, at most STORE_TRIES */
-	uint32_t                flags;     /* CALL_STRIPPED, CALL_AS,
-	                                      CALL_LOGIN, CALL_NEW and
-	                                      CALL_READ */
+	uint8_t                 flags;     /* enum notes_tool_call_flag */
+	struct oid              blob;      /* the blob of the note of a write
+	                                      at revision.tip, or no name for a
+	                                      new note. The commit of the write
+	                                      is made on another tip only if
+	                                      the note is the same there. */
 	struct member           self;      /* the caller: the agent for a turn,
 	                                      the member of the login for a
 	                                      client, or no name */
@@ -526,9 +530,9 @@ notes_tool_prompt_notices (struct mcp_slot *slot)
  * the call is parked.
  */
 static bool
-notes_tool_park (struct notes_tool_call *call,
-                 int                     e,
-                 uint32_t                flag)
+notes_tool_park (struct notes_tool_call    *call,
+                 int                        e,
+                 enum notes_tool_call_flag  flag)
 {
 	if (e != EINPROGRESS)
 		return false;
@@ -630,27 +634,39 @@ notes_tool_unwritten (struct mcp_slot *slot)
 	mcp_slot_tell(slot, CSTR_VIEW("Could not write the note."), TOOL_FAILED);
 }
 
-/* Runs git to check the note of the write in @p slot at the new tip of the
- * notebook, after the notebook moved from call->revision.tip, the tip that
- * the write found (notes_tool_rebased()). If @p e is not 0, the function
- * ends the call with @p e instead.
+/* Returns the name of the note that the write of @p call writes:
+ * call->name for a copy or a restore, else call->revision.file.
+ */
+static struct cstr_view
+notes_tool_target (struct notes_tool_call const *call)
+{
+	return notes_tool_actions[call->action].fetch & (FETCH_COPY | FETCH_RESTORE)
+	     ? util_text_view(&call->name) : util_text_view(&call->revision.file);
+}
+
+/* Destroys the git of the call in @p slot, and runs git for @p fetch to
+ * check at @p ref the note that the write of the call writes: FETCH_CHECK
+ * at call->repo before a copy or a restore, or FETCH_REBASE at another
+ * commit (notes_tool_rebased()). If @p e is not 0, the function ends the
+ * call with @p e instead.
  */
 static void
-notes_tool_rebase (struct mcp_slot *slot,
-                   int              e)
+notes_tool_check (struct mcp_slot *slot,
+                  uint32_t         fetch,
+                  char const      *ref,
+                  int              e)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct buf in = {};
 	if (!e)
-		e = store_rebase_input(&in, call->repo, &call->revision.tip, buf_peek(&call->file),
-		                       &call->part);
+		e = store_check_input(&in, ref, notes_tool_target(call));
 	child_destroy(&call->child);
-	notes_tool_run(slot, FETCH_REBASE, &in, e);
+	notes_tool_run(slot, fetch, &in, e);
 }
 
 /* Handles a commit of a write in @p slot that git did not make. After a
  * race with another writer, git checks the note at the new tip of the
- * notebook (notes_tool_rebase()), until the write has made STORE_TRIES
+ * notebook (notes_tool_rebased()), until the write has made STORE_TRIES
  * commits. The write then fails with the text raced. A lock file that a
  * dead or hung writer left fails the write, and the function logs the
  * lock file. Other failures of git fail the write in
@@ -675,7 +691,7 @@ notes_tool_unadded (struct mcp_slot *slot)
 		mcp_slot_tell(slot, raced, TOOL_FAILED);
 		return;
 	}
-	notes_tool_rebase(slot, 0);
+	notes_tool_check(slot, FETCH_REBASE, call->repo, 0);
 }
 
 /* The size of a note before a write that creates the note. */
@@ -689,10 +705,6 @@ static int
 notes_tool_call_message (struct notes_tool_call *call,
                          uint64_t                before)
 {
-	static_assert(sizeof "Copy  from the notebook of  at : ( bytes)" + UTIL_DECIMAL +
-	              2 * NOTES_NAME + 2 + MEMBER_NAME + OID_SHA256 + NOTES_NAME <= STORE_MESSAGE);
-	static_assert(sizeof "Restore  from : ( to  bytes)" + 2 * UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
-	              OID_SHA256 + NOTES_NAME <= STORE_MESSAGE);
 	uint32_t fetch = notes_tool_actions[call->action].fetch;
 	struct cstr_view const verb = notes_action_names[call->action];
 	char const up = (char)(verb.data[0] - 'a' + 'A');
@@ -707,8 +719,12 @@ notes_tool_call_message (struct notes_tool_call *call,
 	else if (*commit)
 		util_format(from, sizeof from, " from %s", commit);
 	char const *source = call->flags & CALL_AS ? call->revision.file.data : "";
-	int len = (int)call->part.name_len;
-	char const *name = (char const *)buf_peek(&call->file).ptr + call->part.name_at;
+	char name[STORE_QUOTED];
+	static_assert(sizeof "Copy  from the notebook of  at : ( bytes)" + UTIL_DECIMAL +
+	              sizeof name + MEMBER_NAME + OID_SHA256 + NOTES_NAME <= STORE_MESSAGE);
+	static_assert(sizeof "Restore  from : ( to  bytes)" + 2 * UTIL_DECIMAL + sizeof name +
+	              OID_SHA256 + NOTES_NAME <= STORE_MESSAGE);
+	int const len = (int)(store_quote(name, notes_tool_target(call)) - name);
 	uint64_t after = call->part.data_len;
 	util_text_clear(&call->message);
 	int e = util_text_printf(&call->message, "%c%.*s %.*s%s%s%s", up, (int)verb.len - 1,
@@ -775,8 +791,8 @@ notes_tool_unchanged (struct mcp_slot         *slot,
                       struct oid const        *tip)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	struct span file = buf_peek(&call->file);
-	struct span data = { file.ptr + call->part.data_at, call->part.data_len };
+	struct span const data = { buf_peek(&call->file).ptr + call->part.data_at,
+	                           call->part.data_len };
 	bool same = false;
 	int e = notes_file_same(note, data, &same);
 	if (e)
@@ -785,12 +801,12 @@ notes_tool_unchanged (struct mcp_slot         *slot,
 		loop_work(mcp_slot_loop(slot), LOOP_COPY, data.len);
 	if (!same)
 		return false;
-	char const *name = (char const *)file.ptr + call->part.name_at;
+	char name[STORE_QUOTED];
+	size_t const len = (size_t)(store_quote(name, notes_tool_target(call)) - name);
 	uint64_t n = note->bytes;
 	e = dstr_printf(call->text, "Unchanged. %.*s at the newest commit %s already contains "
 	                "the same %" PRIu64 " byte%s. No commit was made.",
-	                (int)jb_utf8(name, call->part.name_len), name, tip->hex, n,
-	                util_s(n)) ? 0 : ENOMEM;
+	                (int)jb_utf8(name, len), name, tip->hex, n, util_s(n)) ? 0 : ENOMEM;
 	(void)mcp_slot_noted(slot);
 	notes_tool_wrote(slot, e);
 	return true;
@@ -802,11 +818,11 @@ notes_tool_unchanged (struct mcp_slot         *slot,
  * of an existing note, and git reads the note for append. A replace or a
  * restore that leaves the bytes of the note unchanged makes no commit.
  * The function stores the newest commit, the parent of the write, in
- * call->revision.tip, and sets CALL_NEW for a write that makes a new note.
- * A restore read its note at the tip that git pinned, call->revision.tip.
- * If the newest commit is another one, the restore raced another writer.
- * call->revision.tip then stays, and git checks the note at both commits
- * (notes_tool_rebase()).
+ * call->revision.tip, and the blob of the note there in call->blob, or no
+ * name for a write that makes a new note. A restore read its note at the
+ * tip that git pinned, call->revision.tip. If the newest commit is another
+ * one, the restore raced another writer, and git checks the note at the
+ * pinned tip before the commit (notes_tool_rebased()).
  */
 static void
 notes_tool_checked (struct mcp_slot *slot)
@@ -823,11 +839,10 @@ notes_tool_checked (struct mcp_slot *slot)
 	if (fetch & FETCH_RESTORE && r == EEXIST && !(call->flags & CALL_AS))
 		r = 0;
 	if (!r) {
-		bool const moved = fetch & FETCH_RESTORE && !oid_equal(&tip, &call->revision.tip);
-		if (!moved)
-			call->revision.tip = tip;
-		if (before == NO_NOTE)
-			call->flags |= CALL_NEW;
+		struct oid const pinned = call->revision.tip;
+		bool const moved = fetch & FETCH_RESTORE && !oid_equal(&tip, &pinned);
+		call->revision.tip = tip;
+		call->blob = note.id;
 		child_destroy(&call->child);
 		if (fetch & FETCH_APPEND) {
 			/* git reads the note at the tip that the write builds on. */
@@ -838,7 +853,7 @@ notes_tool_checked (struct mcp_slot *slot)
 		           !notes_tool_unchanged(slot, &note, &tip)) {
 			int e = notes_tool_call_message(call, before);
 			if (moved)
-				notes_tool_rebase(slot, e);
+				notes_tool_check(slot, FETCH_REBASE, pinned.hex, e);
 			else
 				notes_tool_write(slot, e);
 		}
@@ -867,7 +882,7 @@ notes_tool_saved (struct mcp_slot *slot,
                   int              e)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	if (!e && !(call->flags & CALL_NEW))
+	if (!e && oid_len(&call->blob))
 		e = dstr_printf(call->text, " The previous version is in commit %s.",
 		                call->revision.tip.hex) ? 0 : ENOMEM;
 	notes_tool_wrote(slot, e);
@@ -927,7 +942,7 @@ notes_tool_added (struct mcp_slot *slot)
 	};
 	int e = cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""),
 	                       call->text);
-	if (e || !oid_len(&commit) || call->flags & CALL_NEW ||
+	if (e || !oid_len(&commit) || !oid_len(&call->blob) ||
 	    notes_tool_actions[call->action].fetch & (FETCH_APPEND | FETCH_DELETE)) {
 		notes_tool_saved(slot, e);
 		return;
@@ -937,30 +952,37 @@ notes_tool_added (struct mcp_slot *slot)
 	notes_tool_run(slot, FETCH_STAT | FETCH_REVISION, &(struct buf){}, 0);
 }
 
-/* Handles the output of STORE_CHECK after the write in @p slot raced
- * another writer. If the note and each directory in its name are at the
- * new tip as they were at call->revision.tip, the tip that the write
- * found, git makes the commit of the write on the new tip. A changed note
- * fails the write with the text raced. A failed git or an output that
- * store_rebased() cannot read fails the write as notes_tool_unwritten()
- * does.
+/* Handles the output of STORE_CHECK for the note of the write in @p slot
+ * at another commit than call->revision.tip: at the new tip after the
+ * commit of the write raced another writer, or at the tip that a restore
+ * pinned, before the first commit. If the note is call->blob there, or is
+ * missing at both commits, and no directory in its name is a file, git
+ * makes the commit of the write, after a race on the new tip. Otherwise
+ * the write fails with the text raced, also if the ref names no commit. A
+ * failed git or an output that store_checked() cannot read fails the
+ * write as notes_tool_unwritten() does.
  */
 static void
 notes_tool_rebased (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	struct oid tip;
-	int r = child_ok(c) ? store_rebased(buf_peek(&c->out), &call->revision.tip, &tip) : EIO;
-	if (r == ESTALE) {
-		mcp_slot_tell(slot, raced, TOOL_FAILED);
-		return;
-	}
-	if (r) {
+	struct oid tip, blob;
+	uint64_t bytes;
+	int r = child_ok(c) ? store_checked(buf_peek(&c->out), &tip, &blob, &bytes) : EIO;
+	if (r == EIO) {
 		notes_tool_unwritten(slot);
 		return;
 	}
-	call->revision.tip = tip;
+	if ((r && r != EEXIST) || !oid_len(&tip) || !oid_equal(&blob, &call->blob)) {
+		mcp_slot_tell(slot, raced, TOOL_FAILED);
+		return;
+	}
+	/* After a race, the new tip is the parent. Before the first commit,
+	 * the check was at the tip that a restore pinned, and the parent
+	 * stays. */
+	if (call->tries)
+		call->revision.tip = tip;
 	child_destroy(&call->child);
 	notes_tool_write(slot, 0);
 }
@@ -1734,21 +1756,6 @@ static_assert(TOOL_TEXT_MAX == 4U << 20 && NOTES_NAME == 255 && HEXID_DIGITS == 
               "update the texts in this file that say 4 MiB, 255 bytes or 32 hexadecimal "
               "digits");
 
-/* Runs git to check the name @p name of the note in call->file before the
- * write. If @p e is not 0, the function ends the call with @p e instead.
- */
-static void
-notes_tool_check (struct mcp_slot  *slot,
-                  struct cstr_view  name,
-                  int               e)
-{
-	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	struct buf in = {};
-	if (!e)
-		e = store_check_input(&in, call->repo, name);
-	notes_tool_run(slot, FETCH_CHECK, &in, e);
-}
-
 /* Runs call->first, the first git run of the call in @p slot, once the
  * caller and the notebook are known. For a check of a write and for a
  * read without a revision, the input of git names the note
@@ -1982,8 +1989,7 @@ notes_tool_got_copy (struct mcp_slot *slot,
 		                "as %s. ", call->revision.file.data, call->book.name,
 		                call->revision.from.hex, to.data) ? 0 : ENOMEM;
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, text.len);
-	child_destroy(&call->child);
-	notes_tool_check(slot, to, e);
+	notes_tool_check(slot, FETCH_CHECK, call->repo, e);
 }
 
 /* Starts delete of the note @p name in the caller's own notebook. */
@@ -1997,7 +2003,10 @@ notes_tool_delete (struct mcp_slot  *slot,
 		return;
 	}
 	(void)util_text_store(&call->revision.file, name);
-	notes_tool_stage(slot, FETCH_CHECK, store_part_delete(&call->part, &call->file, name));
+	/* The size of the note after a delete is 0 bytes, as the commit
+	 * message prints it. */
+	call->part = (struct store_part){};
+	notes_tool_stage(slot, FETCH_CHECK, store_part_delete(&call->file, name));
 }
 
 /* Writes the note @p old, which git read at call->revision.tip, and the

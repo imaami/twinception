@@ -1411,19 +1411,19 @@ findings_cite_end (struct mcp_slot        *slot,
 		e = evidence_recite(item, &lines, &cite->ref, cstr_view_dstr(&cite->record),
 		                    material[i][1], why, sizeof why);
 		char path[EVIDENCE_PATH];
-		struct store_part part;
 		if (!e && cite->ref.form == EVIDENCE_REF_ITEM_LINES) {
+			struct store_part part;
 			evidence_path(item->result.sha256, path);
 			e = store_part_file(&part, &call->files, cstr_view(path), cstr_view_dstr(&lines));
 			continue;
 		}
 		if (!e && item->flags & EVIDENCE_REQUEST) {
 			evidence_path(item->request.sha256, path);
-			e = store_part_blob(&part, &call->files, cstr_view(path), &cite->blobs[0]);
+			e = store_part_blob(&call->files, cstr_view(path), &cite->blobs[0]);
 		}
 		if (!e) {
 			evidence_path(item->result.sha256, path);
-			e = store_part_blob(&part, &call->files, cstr_view(path), &cite->blobs[1]);
+			e = store_part_blob(&call->files, cstr_view(path), &cite->blobs[1]);
 		}
 	}
 	if (e) {

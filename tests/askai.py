@@ -12135,12 +12135,16 @@ def check_notes_history(binary, up):
             repo = f"{d}/notes"
             subprocess.run(["git", "init", "--bare", "-q",
                             f"--object-format={object_format}", repo], check=True, env=env)
-            armed, blocked = f"{d}/armed", f"{d}/blocked"
+            # A git for alice. Once armed, it waits in cat-file --batch.
+            # It adds a line to the file imports for each fast-import.
+            armed, blocked, imports = f"{d}/armed", f"{d}/blocked", f"{d}/imports"
+            open(imports, "w").close()
             os.mkdir(f"{d}/bin")
             with open(f"{d}/bin/git", "w") as f:
                 f.write('#!/bin/sh\ncase " $* " in *" cat-file --batch "*)\n'
                         f'if [ -e {shlex.quote(armed)} ]; then touch {shlex.quote(blocked)}; '
                         f'while [ -e {shlex.quote(armed)} ]; do sleep .01; done; fi;;\n'
+                        f'*" fast-import "*) echo >> {shlex.quote(imports)};;\n'
                         f'esac\nexec {shlex.quote(shutil.which("git"))} "$@"\n')
             os.chmod(f"{d}/bin/git", 0o755)
 
@@ -12409,11 +12413,14 @@ def check_notes_history(binary, up):
                     # note, the restore fails and asks to read the note again.
                     # If the writer changed another note, the restore makes
                     # its commit on the commit of the writer.
-                    def restore_during(name, raw):
+                    def restore_during(name, raw, runs):
                         """The result of a restore of plan.md at first while
                         a writer commits @p raw as the note @p name, and the
-                        commit of the writer."""
+                        commit of the writer. Checks that the restore ran git
+                        fast-import @p runs times: once for a commit, and
+                        never for a restore that fails."""
                         results = []
+                        start = os.path.getsize(imports)
                         with open(armed, "w"):
                             pass
                         restoring = threading.Thread(target=lambda: results.append(call(
@@ -12431,20 +12438,34 @@ def check_notes_history(binary, up):
                             os.unlink(armed)
                             restoring.join(10)
                         assert len(results) == 1, results
+                        assert os.path.getsize(imports) - start == runs, results
                         return results[0], updated
 
                     raw = b"concurrent writer's note\n"
-                    said, updated = restore_during("plan.md", raw)
+                    said, updated = restore_during("plan.md", raw, 0)
                     assert said == "!Could not write the note. Another call changed the " \
                         "notebook at the same time. Read the current note and retry.", said
                     assert tip() == updated and git("show", f"{own}:plan.md") == raw
-                    said, updated = restore_during("other.md", b"other\n")
+                    said, updated = restore_during("other.md", b"other\n", 1)
                     assert wrote(said, f'Restore "plan.md" from {first} ({len(raw)} to 9 '
                                  f"bytes)") and said.endswith(
                                      f" The previous version is in commit {updated}."), said
                     assert tip(f"{own}^") == updated
                     assert git("show", f"{own}:plan.md") == b"old plan\n"
                     assert git("show", f"{own}:other.md") == b"other\n"
+                    # A restore of a deleted note makes the note again on
+                    # the commit of a writer that adds another note. A
+                    # writer that adds the note itself fails the restore.
+                    assert not call(alice, action="delete", file="plan.md").startswith("!")
+                    said, updated = restore_during("third.md", b"third\n", 1)
+                    assert wrote(said, f'Restore "plan.md" from {first} (9 bytes)'), said
+                    assert tip(f"{own}^") == updated
+                    assert git("show", f"{own}:plan.md") == b"old plan\n"
+                    assert not call(alice, action="delete", file="plan.md").startswith("!")
+                    said, updated = restore_during("plan.md", raw, 0)
+                    assert said == "!Could not write the note. Another call changed the " \
+                        "notebook at the same time. Read the current note and retry.", said
+                    assert tip() == updated and git("show", f"{own}:plan.md") == raw
     print("notes history: revision IDs, historical reads and diffs, byte-exact "
           "restoration without rewind, deleted notes, peer access and revision "
           "confinement, concurrent writes, SHA-1 and SHA-256: PASS")
