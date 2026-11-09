@@ -14844,11 +14844,11 @@ def check_findings(binary, up):
                 "A finding, such as bro#5, for update, show and expand. An evidence item, " \
                 "such as bro#5/2, for expand. expand without id prints the evidence of all " \
                 "your open findings.", schema
-            assert schema["properties"]["evidence"]["description"].endswith(
-                " c7:message is the message of the one commit of a git show or a git log in "
-                "call c7. c7:files is the names and modes of the files that a git ls-tree in "
-                "call c7 lists. bro#5/2 is an evidence item that expand showed you. "
-                "bro#5/2:120-140 is lines 120 to 140 of the lines item bro#5/2."), schema
+            assert schema["properties"]["evidence"]["description"] == \
+                "The evidence for the state, at most 16 items. c7 is your call c7 of this ask " \
+                "call. c7:120-140,150 is lines of a git read or a code describe in call c7. " \
+                "bro#5/2 is an evidence item that expand showed you. bro#5/2:120-140 is lines " \
+                "120 to 140 of the lines item bro#5/2.", schema
             assert lent["findings"]["description"].startswith(
                 "Findings are claims that you make about material that askai showed you. A "
                 "finding has an id such as bro#5, a claim, a state and a history of "
@@ -14925,11 +14925,12 @@ def check_findings(binary, up):
                 "No finding has the id bro#9. list shows the findings.",
                 "Call c1 showed lines 1 to 10 of src/a.c whole. Give lines within that range.",
                 "c2:5 needs a git read or a code describe. Call c2 is a git log.",
-                "c2:files needs a git ls-tree that names one commit. Call c2 is a git log.",
+                "evidence[0] is not a reference: c2:files. Give a call such as c7, lines such "
+                "as c7:120-140, or an evidence item such as bro#5/2.",
                 "c3 is a findings call. findings calls cannot be evidence.",
                 "No call c99 was made before this call.",
                 "evidence[0] is not a reference: x. Give a call such as c7, lines such as "
-                "c7:120-140, c7:message, c7:files, or an evidence item such as bro#5/2.",
+                "c7:120-140, or an evidence item such as bro#5/2.",
                 "No finding has the id cuh#2. list shows the findings.",
                 "cuh#2 is a finding. evidence takes an evidence item such as cuh#2/1, or a call "
                 "such as c7. expand with id cuh#2 lists the items.",
@@ -15306,9 +15307,8 @@ def check_findings_expand(binary, up):
         base = ("-u", up.url(), "--upstream-tools", "--git", repo, "--notes", session)
 
         # cuh records three findings: a call and lines, 800 lines of b.c,
-        # and lines of a.c and of b.c. A read shows lines, and a git log
-        # without identifiers names no commit, so neither shows the message
-        # or the files of a commit.
+        # and lines of a.c and of b.c. c2:message and c1:files are not
+        # references.
         with Askai(binary, *base, "--agent", "cuh") as cuh:
             script[:] = [mixed(("git", log), ("git", read_a), ("git", read_b)),
                          turn({"action": "add", "claim": "One commit.", "state": "verified",
@@ -15318,8 +15318,7 @@ def check_findings_expand(binary, up):
                                "state": "verified", "evidence": ["c3"], "reason": "R2"},
                               {"action": "add", "claim": "C3", "evidence": ["c2:5-6", "c3:1-2"]},
                               {"action": "add", "claim": "C", "evidence": ["c2:message"]},
-                              {"action": "add", "claim": "C", "evidence": ["c1:files"]},
-                              {"action": "add", "claim": "C", "evidence": ["c1:message"]})]
+                              {"action": "add", "claim": "C", "evidence": ["c1:files"]})]
             count = len(up.requests)
             cuh.ask("Q", conversation="1" * 32)
             made = tools(up.requests[count + 1])
@@ -15330,11 +15329,10 @@ def check_findings_expand(binary, up):
                                 r"c2:5-6, cuh#3/2 from c3:1-2\. Commit [0-9a-f]{8}\.",
                                 said[2]), said
             assert said[3:] == [
-                "c2:message needs a git show or a git log that names one commit. Call c2 is a "
-                "git read.",
-                "c1:files needs a git ls-tree that names one commit. Call c1 is a git log.",
-                "c1:message needs a git show or a git log that names one commit. Call c1 names "
-                "no commit."], said
+                "evidence[0] is not a reference: c2:message. Give a call such as c7, lines such "
+                "as c7:120-140, or an evidence item such as cuh#5/2.",
+                "evidence[0] is not a reference: c1:files. Give a call such as c7, lines such "
+                "as c7:120-140, or an evidence item such as cuh#5/2."], said
         cuh_ask = stored(1, "cuh")["changes"][0]["ask"]
         cuh_tree = tree("cuh")
         one = stored(1, "cuh")["changes"][0]["evidence"]

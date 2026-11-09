@@ -110,20 +110,6 @@ keep (struct seen     **p_seen,
 	buf_fini(&request);
 }
 
-/* Replaces the arguments of the call @p c of @p seen with @p args, and the
- * bytes of the ring with them.
- */
-static void
-command (struct seen      *seen,
-         struct seen_call *c,
-         char const       *args)
-{
-	seen->bytes -= buf_peek(&c->request).len;
-	buf_fini(&c->request);
-	request_of(&c->request, "", args);
-	seen->bytes += buf_peek(&c->request).len;
-}
-
 /* Check that the reference @p text parses with the form @p form, or fails
  * with @p form -1.
  */
@@ -150,16 +136,14 @@ test_parse (void)
 	parsed("c4294967295", EVIDENCE_REF_CALL, __LINE__);
 	parsed("c7:120-140,150", EVIDENCE_REF_LINES, __LINE__);
 	parsed("c7:5", EVIDENCE_REF_LINES, __LINE__);
-	parsed("c7:message", EVIDENCE_REF_MESSAGE, __LINE__);
-	parsed("c7:files", EVIDENCE_REF_FILES, __LINE__);
 	parsed("cuh#2", EVIDENCE_REF_FINDING, __LINE__);
 	parsed("cuh#2/1", EVIDENCE_REF_ITEM, __LINE__);
 	parsed("first.last@ad#12/3:161-165", EVIDENCE_REF_ITEM_LINES, __LINE__);
 	char const *const bad[] = {
 		"", "c", "c0", "c07", "C7", "c-1", "c7 ", " c7", "c7:", "c7:0", "c7:5-3", "c7:1-",
-		"c7:1,", "c7:,1", "c7:msg", "c7:1-2:3", "c7:message,1", "c4294967296", "cuh#0",
-		"cuh#2/0", "cuh#2/", "cuh#", "#2/1", "c7#2/1", ".x#2/1", "cuh#2:message",
-		"cuh#2/1:files", "cuh#2/1/1", "cuh#02/1",
+		"c7:1,", "c7:,1", "c7:msg", "c7:1-2:3", "c7:message", "c7:files", "c7:sources",
+		"c7:message,1", "c4294967296", "cuh#0", "cuh#2/0", "cuh#2/", "cuh#", "#2/1",
+		"c7#2/1", ".x#2/1", "cuh#2:message", "cuh#2/1:files", "cuh#2/1/1", "cuh#02/1",
 	};
 	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i)
 		parsed(bad[i], -1, __LINE__);
@@ -278,11 +262,6 @@ test_cite (void)
 	CHECK(ev.kind == EVIDENCE_LINES && ev.ranges.n == 2 && ev.ranges.items[1].first == 6);
 	SAME(m.result.data, m.result.len, "3\tline 3\n4\tline 4\n6\tline 6\n");
 	hashed(&ev.result, m.result, __LINE__);
-	/* A read shows lines, not the message or the files of its commit. */
-	refused(&cite, "c1:message", true, "c1:message needs a git show or a git log that names "
-	        "one commit. Call c1 is a git read.", __LINE__);
-	refused(&cite, "c1:files", true, "c1:files needs a git ls-tree that names one commit. Call "
-	        "c1 is a git read.", __LINE__);
 	/* A call of another tool, which failed, with an ID from the provider. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c2")));
 	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
@@ -291,6 +270,15 @@ test_cite (void)
 	SAME(dstr_get(&ev.call_id), dstr_len(&ev.call_id), "toolu_x");
 	SAME(dstr_get(&ev.tool), dstr_len(&ev.tool), "man");
 	SAME(m.result.data, m.result.len, "A man page.\n\n\n[askai: call c2]");
+	/* A git grep shows no lines, so c4 is a call item. */
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c4")));
+	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
+	CHECK(ev.kind == EVIDENCE_CALL && ev.flags == EVIDENCE_REQUEST && ev.call == 4 &&
+	      ev.turn == 2 && !ev.ranges.n);
+	SAME(m.request.data, m.request.len, "{\"command\":\"grep\"}");
+	SAME(m.result.data, m.result.len, "a:1:x\n\n\n[askai: call c4]");
+	hashed(&ev.request, m.request, __LINE__);
+	hashed(&ev.result, m.result, __LINE__);
 	/* A call of this turn is evidence only for a candidate. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c6")));
 	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, false, why, sizeof why));
@@ -307,10 +295,6 @@ test_cite (void)
 	        "a man call.", __LINE__);
 	refused(&cite, "c4:5", true, "c4:5 needs a git read or a code describe. Call c4 is a git "
 	        "grep.", __LINE__);
-	refused(&cite, "c2:message", true, "c2:message needs a git show or a git log that names "
-	        "one commit. Call c2 is a man call.", __LINE__);
-	refused(&cite, "c4:files", true, "c4:files needs a git ls-tree that names one commit. Call "
-	        "c4 is a git grep.", __LINE__);
 	refused(&cite, "c3", false, "c3 is a findings call. findings calls cannot be evidence.",
 	        __LINE__);
 	refused(&cite, "c5", false, "Call c5 was too large to keep. askai keeps no call of more "
@@ -324,41 +308,6 @@ test_cite (void)
 	/* evidence_recite() cites an item again. */
 	refused(&cite, "cuh#2/1", false, "", __LINE__);
 	refused(&cite, "cuh#2/1:3", false, "", __LINE__);
-	/* A git show without identifiers, and one that names two commits. The
-	 * call c3 takes no place in the ring, so c4 is the third call. */
-	struct seen_call *c4 = &seen->calls[2];
-	CHECK(c4->number == 4);
-	command(seen, c4, "{\"command\":\"show\"}");
-	refused(&cite, "c4:message", true, "c4:message needs a git show or a git log that names "
-	        "one commit. Call c4 names no commit.", __LINE__);
-	CHECK(dstr_printf(&c4->ids, "{\"commits\":[\"" A "\",\"" A "\"]}"));
-	refused(&cite, "c4:message", true, "c4:message needs a git show or a git log that names "
-	        "one commit. Call c4 names 2 commits.", __LINE__);
-	(void)dstr_clear(&c4->ids);
-	CHECK(dstr_printf(&c4->ids, "{\"commits\":[\"" A "\"]}"));
-	refused(&cite, "c4:files", true, "c4:files needs a git ls-tree that names one commit. Call "
-	        "c4 is a git show.", __LINE__);
-	/* The message of the one commit of a git show, and of a git log. */
-	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c4:message")));
-	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
-	CHECK(ev.kind == EVIDENCE_MESSAGE && ev.flags == EVIDENCE_REQUEST && !ev.ranges.n);
-	SAME(m.request.data, m.request.len, "{\"command\":\"show\"}");
-	SAME(m.result.data, m.result.len, "a:1:x\n\n\n[askai: call c4]");
-	hashed(&ev.request, m.request, __LINE__);
-	hashed(&ev.result, m.result, __LINE__);
-	command(seen, c4, "{\"command\":\"log\"}");
-	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
-	CHECK(ev.kind == EVIDENCE_MESSAGE);
-	/* The files of the one commit of a git ls-tree. */
-	refused(&cite, "c4:files", true, "c4:files needs a git ls-tree that names one commit. Call "
-	        "c4 is a git log.", __LINE__);
-	command(seen, c4, "{\"command\":\"ls-tree\"}");
-	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c4:files")));
-	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
-	CHECK(ev.kind == EVIDENCE_FILES && ev.flags == EVIDENCE_REQUEST);
-	SAME(m.request.data, m.request.len, "{\"command\":\"ls-tree\"}");
-	refused(&cite, "c4:message", true, "c4:message needs a git show or a git log that names "
-	        "one commit. Call c4 is a git ls-tree.", __LINE__);
 
 	/* Calls that left the ring. */
 	for (uint32_t k = 7; k < 7 + SEEN_CALLS; ++k)
@@ -479,8 +428,7 @@ test_json (void)
 	CHECK(!cstr_view_store(CSTR_VIEW("git"), &e.tool));
 	CHECK(!cstr_view_store(CSTR_VIEW("call_3_1"), &e.call_id));
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"path\":\"src/git.c\",\"commit\":\""
-	                                 A "\",\"blob\":\"5d41402abc4b2a76b9719d911017c592\"}"),
-	                       &e.ids));
+	                                 A "\"}"), &e.ids));
 	CHECK(!util_grow(e.ranges.items, e.ranges.cap, 2));
 	e.ranges.items[e.ranges.n++] = (struct evidence_range){ 161, 171 };
 	e.ranges.items[e.ranges.n++] = (struct evidence_range){ 180, 180 };
@@ -493,8 +441,8 @@ test_json (void)
 	SAME(wire.data, wire.len, "{\"item\":2,\"kind\":\"lines\",\"tool\":\"git\",\"call\":12,"
 	     "\"turn\":3,\"call_id\":\"call_3_1\",\"failed\":true,\"output\":900,\"skip\":100,"
 	     "\"ask\":\"9f3c2a71e0b14c55a1d2e3f405162738\",\"from\":\"cuh#2/2\",\"ids\":{\"repo\":"
-	     "\"askai\",\"path\":\"src/git.c\",\"commit\":\"" A "\",\"blob\":"
-	     "\"5d41402abc4b2a76b9719d911017c592\"},\"lines\":[[161,171],[180,180]],\"result\":"
+	     "\"askai\",\"path\":\"src/git.c\",\"commit\":\"" A "\"},\"lines\":[[161,171],"
+	     "[180,180]],\"result\":"
 	     "{\"sha256\":\"abababababababababababababababababababababababababababababababab\","
 	     "\"bytes\":702}}");
 	struct evidence back = evidence();
@@ -505,11 +453,11 @@ test_json (void)
 	      back.ranges.n == 2 && back.ranges.items[1].first == 180 &&
 	      back.result.bytes == 702 && !memcmp(back.result.sha256, e.result.sha256, 32));
 	SAME(dstr_get(&back.ids), dstr_len(&back.ids), "{\"repo\":\"askai\",\"path\":\"src/git.c\","
-	     "\"commit\":\"" A "\",\"blob\":\"5d41402abc4b2a76b9719d911017c592\"}");
+	     "\"commit\":\"" A "\"}");
 	struct dstr text = DSTR_INIT;
 	CHECK(!evidence_summary(&back, &text));
 	SAME(dstr_get(&text), dstr_len(&text), "lines 161 to 171, 180 of src/git.c in repository "
-	     "askai at commit 55aca1e86823, blob 5d41402abc4b");
+	     "askai at commit 55aca1e86823");
 	json_object_put(obj);
 
 	/* A call with its arguments, without ask and from. */
@@ -532,13 +480,12 @@ test_json (void)
 	(void)dstr_clear(&text);
 	CHECK(!evidence_summary(&back, &text));
 	SAME(dstr_get(&text), dstr_len(&text), "call c4, man, 1 byte");
+	/* The summary of a call names no identifiers. */
 	back.flags |= EVIDENCE_FAILED;
-	back.kind = EVIDENCE_MESSAGE;
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\"}"), &back.ids));
 	(void)dstr_clear(&text);
 	CHECK(!evidence_summary(&back, &text));
-	SAME(dstr_get(&text), dstr_len(&text), "the message of commit 55aca1e86823 in repository "
-	     "askai, call c4, man, failed, 1 byte");
+	SAME(dstr_get(&text), dstr_len(&text), "call c4, man, failed, 1 byte");
 	back.kind = EVIDENCE_LINES;
 	CHECK(!util_grow(back.ranges.items, back.ranges.cap, 1));
 	back.ranges.items[back.ranges.n++] = (struct evidence_range){ 7, 7 };
@@ -563,6 +510,9 @@ test_json (void)
 		char const *json;
 	} const bad[] = {
 		{ "kind",    "\"blob\"" },
+		{ "kind",    "\"message\"" },
+		{ "kind",    "\"files\"" },
+		{ "kind",    "\"sources\"" },
 		{ "item",    "0" },
 		{ "item",    "-1" },
 		{ "call",    "\"4\"" },
@@ -785,7 +735,7 @@ test_expand (void)
 	e.flags = EVIDENCE_REQUEST;
 	CHECK(!hexid_init(&e.ask, CSTR_VIEW("68177013a5c94f0e8b1d2c3e4f506172")));
 	CHECK(!cstr_view_store(CSTR_VIEW("git"), &e.tool));
-	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commits\":[\"" A "\"]}"), &e.ids));
+	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\"}"), &e.ids));
 	hash_of(&e.request, args);
 	hash_of(&e.result, out);
 	expanded(&e, args, out, "[askai: cuh#2/1: call c9 of cuh in ask 68177013, turn 19, tool git, "
@@ -810,23 +760,22 @@ test_expand (void)
 	         "failed, stored exactly as sent. Arguments:]\n{}\n[askai: cuh#2/1: result, 25 "
 	         "bytes:]\nsrc/a.c\n\n[askai: call c9]\n[askai: the stored material of cuh#2/1 "
 	         "does not match the recorded SHA-256.]\n", __LINE__);
-	/* The message and the files of one commit. An item cited again names
-	 * no author of the call. */
-	e.kind = EVIDENCE_MESSAGE;
+	/* An item cited again names no author of the call. The identifiers
+	 * name only a repository, and then only a commit. */
 	e.item = 3;
 	e.flags = EVIDENCE_REQUEST;
-	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\"}"), &e.ids));
-	expanded(&e, args, out, "[askai: cuh#2/3: the message of commit " A " in repository askai "
-	         "is the evidence, not the files. Call c9 of cuh, turn 19, tool git, stored exactly "
-	         "as sent. Arguments:]\n{\"command\":\"grep\"}\n[askai: cuh#2/3: result, 25 "
-	         "bytes:]\nsrc/a.c\n\n[askai: call c9]\n", __LINE__);
-	e.kind = EVIDENCE_FILES;
 	memcpy(e.from, "bro#1/1", sizeof "bro#1/1");
 	CHECK(!hexid_init(&e.ask, CSTR_VIEW("68177013a5c94f0e8b1d2c3e4f506172")));
-	expanded(&e, args, out, "[askai: cuh#2/3 from bro#1/1: the files of commit " A " in "
-	         "repository askai. Call c9 in ask 68177013, turn 19, tool git, stored exactly as "
-	         "sent. Arguments:]\n{\"command\":\"grep\"}\n[askai: cuh#2/3: result, 25 "
-	         "bytes:]\nsrc/a.c\n\n[askai: call c9]\n", __LINE__);
+	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\"}"), &e.ids));
+	expanded(&e, args, out, "[askai: cuh#2/3 from bro#1/1: call c9 in ask 68177013, turn 19, "
+	         "tool git, stored exactly as sent. Repository askai. Arguments:]\n"
+	         "{\"command\":\"grep\"}\n[askai: cuh#2/3: result, 25 bytes:]\nsrc/a.c\n\n"
+	         "[askai: call c9]\n", __LINE__);
+	CHECK(!cstr_view_store(CSTR_VIEW("{\"commit\":\"" A "\"}"), &e.ids));
+	expanded(&e, args, out, "[askai: cuh#2/3 from bro#1/1: call c9 in ask 68177013, turn 19, "
+	         "tool git, stored exactly as sent. Commit " A ". Arguments:]\n"
+	         "{\"command\":\"grep\"}\n[askai: cuh#2/3: result, 25 bytes:]\nsrc/a.c\n\n"
+	         "[askai: call c9]\n", __LINE__);
 	/* Lines, with the whole IDs. */
 	struct cstr_view const lines = CSTR_VIEW("161\tx\n171\ty");
 	evidence_fini(&e);
@@ -834,17 +783,17 @@ test_expand (void)
 	e.item = 2;
 	memcpy(e.from, "cuh#1/3", sizeof "cuh#1/3");
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\",\"path\":"
-	                                 "\"src/git.c\",\"blob\":\"" A "\"}"), &e.ids));
+	                                 "\"src/git.c\"}"), &e.ids));
 	CHECK(!util_grow(e.ranges.items, e.ranges.cap, 2));
 	e.ranges.items[e.ranges.n++] = (struct evidence_range){ 161, 161 };
 	e.ranges.items[e.ranges.n++] = (struct evidence_range){ 171, 171 };
 	hash_of(&e.result, lines);
 	expanded(&e, (struct cstr_view){}, lines, "[askai: cuh#2/2 from cuh#1/3: lines 161, 171 of "
-	         "src/git.c in repository askai at commit " A ", blob " A ", stored as shown:]\n"
+	         "src/git.c in repository askai at commit " A ", stored as shown:]\n"
 	         "161\tx\n171\ty\n", __LINE__);
 	expanded(&e, (struct cstr_view){}, (struct cstr_view){}, "[askai: cuh#2/2 from cuh#1/3: "
-	         "lines 161, 171 of src/git.c in repository askai at commit " A ", blob " A ", "
-	         "stored as shown:]\n[askai: the stored material of cuh#2/2 is missing.]\n",
+	         "lines 161, 171 of src/git.c in repository askai at commit " A ", stored as "
+	         "shown:]\n[askai: the stored material of cuh#2/2 is missing.]\n",
 	         __LINE__);
 	struct dstr d = DSTR_INIT;
 	CHECK(evidence_expand(nullptr, "cuh#2", "cuh", args, out, &d) == EFAULT);

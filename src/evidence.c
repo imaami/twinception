@@ -23,7 +23,7 @@ static_assert(SEEN_CALLS == 64 && TOOL_TEXT_MAX == 4U << 20, "update the refusal
 struct cstr_view const evidence_kind_names[EVIDENCE_KINDS] = { EVIDENCE_KIND_LIST(XL_VIEW) };
 
 enum {
-	EVIDENCE_SHORT   = 12,  /* digits of a commit or a blob in a summary */
+	EVIDENCE_SHORT   = 12,  /* digits of a commit in a summary */
 	EVIDENCE_COMMAND = 33,  /* bytes of the command of a git call, NUL
 	                           included */
 };
@@ -101,8 +101,8 @@ evidence_ref_parse (struct evidence_ref *dest,
 	*dest = (struct evidence_ref){};
 	if (!text.data || !text.len)
 		return EINVAL;
-	/* The part after the colon is ranges, message or files. A member name
-	 * contains no colon and no #. */
+	/* The part after the colon is ranges. A member name contains no colon
+	 * and no #. */
 	struct cstr_view head = text;
 	struct cstr_view tail = {};
 	bool const colon = cstr_view_cut(&head, ':', &head);
@@ -117,10 +117,6 @@ evidence_ref_parse (struct evidence_ref *dest,
 			return EINVAL;
 		if (!colon)
 			dest->form = EVIDENCE_REF_CALL;
-		else if (cstr_view_equal(tail, CSTR_VIEW("message")))
-			dest->form = EVIDENCE_REF_MESSAGE;
-		else if (cstr_view_equal(tail, CSTR_VIEW("files")))
-			dest->form = EVIDENCE_REF_FILES;
 		else if (!evidence_ranges(dest, tail))
 			dest->form = EVIDENCE_REF_LINES;
 		else
@@ -227,18 +223,6 @@ evidence_what (char const *tool,
 		(void)util_format(what, len, "a %s call", tool);
 }
 
-/* Returns the number of commits that the identifiers @p ids name: the
- * length of commits, else 1 for commit, else 0.
- */
-static size_t
-evidence_commits (struct json_object *ids)
-{
-	struct json_object *commits = jb_get(ids, "commits");
-	if (json_object_is_type(commits, json_type_array))
-		return jb_len(commits);
-	return jb_view(jb_get(ids, "commit")).len ? 1 : 0;
-}
-
 /* Appends to @p d the lines of the range @p r of the call @p c: the bytes
  * of the result from the start of line r.first to the end of line r.last,
  * line feed included. The result starts with the lines c->lines that the
@@ -332,46 +316,6 @@ evidence_unshown (struct evidence_ref const *ref,
 		return ENOMEM;
 	return util_refuse(why, len, "Call c%" PRIu32 " showed %s whole. Give lines within that "
 	                   "range.", c->number, dstr_get(&text));
-}
-
-/* Checks that the call @p c of the tool @p tool shows what the form of
- * @p ref names, from one commit: a git show or a git log for cN:message,
- * and a git ls-tree for cN:files. Returns 0, or EINVAL with the refusal in
- * the @p len bytes at @p why.
- */
-static int
-evidence_one_commit (struct evidence_ref const *ref,
-                     struct seen_call const    *c,
-                     char const                *tool,
-                     char                      *why,
-                     size_t                     len)
-{
-	bool const message = ref->form == EVIDENCE_REF_MESSAGE;
-	char const *word = message ? "message" : "files";
-	char const *need = message ? "a git show or a git log" : "a git ls-tree";
-	char command[EVIDENCE_COMMAND];
-	evidence_command(c, tool, command);
-	bool shows;
-	if (message)
-		shows = !strcmp(command, "show") || !strcmp(command, "log");
-	else
-		shows = !strcmp(command, "ls-tree");
-	if (!shows) {
-		char what[64];
-		evidence_what(tool, command, what, sizeof what);
-		return util_refuse(why, len, "c%" PRIu32 ":%s needs %s that names one commit. Call c%"
-		                   PRIu32 " is %s.", c->number, word, need, c->number, what);
-	}
-	struct json_object *ids = evidence_ids(&c->ids);
-	size_t const n = evidence_commits(ids);
-	json_object_put(ids);
-	if (n == 1)
-		return 0;
-	if (!n)
-		return util_refuse(why, len, "c%" PRIu32 ":%s needs %s that names one commit. Call c%"
-		                   PRIu32 " names no commit.", c->number, word, need, c->number);
-	return util_refuse(why, len, "c%" PRIu32 ":%s needs %s that names one commit. Call c%"
-	                   PRIu32 " names %zu commits.", c->number, word, need, c->number, n);
 }
 
 /* Finds the call that @p ref names in the ring of @p cite. Returns 0 with
@@ -473,14 +417,9 @@ evidence_cite (struct evidence            *dest,
 		if (!c->lines.first || shown.ranges[i].first < c->lines.first ||
 		    shown.ranges[i].last > c->lines.last)
 			return evidence_unshown(ref, c, tool, why, len);
-	if ((ref->form == EVIDENCE_REF_MESSAGE || ref->form == EVIDENCE_REF_FILES) &&
-	    (e = evidence_one_commit(ref, c, tool, why, len)))
-		return e;
 	static enum evidence_kind const kinds[] = {
-		[EVIDENCE_REF_CALL]    = EVIDENCE_CALL,
-		[EVIDENCE_REF_LINES]   = EVIDENCE_LINES,
-		[EVIDENCE_REF_MESSAGE] = EVIDENCE_MESSAGE,
-		[EVIDENCE_REF_FILES]   = EVIDENCE_FILES,
+		[EVIDENCE_REF_CALL]  = EVIDENCE_CALL,
+		[EVIDENCE_REF_LINES] = EVIDENCE_LINES,
 	};
 	struct ai_call const parts = evidence_parts(c);
 	evidence_fini(dest);
@@ -713,9 +652,8 @@ evidence_parse_text (struct evidence  *dest,
 
 /* Appends to @p d the lines of the item @p e of the kind EVIDENCE_LINES
  * with the identifiers @p ids: "lines A to B, C of PATH in repository R at
- * commit C, blob B", each part that @p ids name, with at most @p clip
- * digits of the commit and the blob. Returns true, or false if out of
- * memory.
+ * commit C", each part that @p ids name, with at most @p clip digits of
+ * the commit. Returns true, or false if out of memory.
  */
 static bool
 evidence_lines_summary (struct evidence const *e,
@@ -725,47 +663,26 @@ evidence_lines_summary (struct evidence const *e,
 {
 	struct cstr_view const repo = jb_view(jb_get(ids, "repo"));
 	struct cstr_view const commit = jb_view(jb_get(ids, "commit"));
-	struct cstr_view const blob = jb_view(jb_get(ids, "blob"));
 	bool ok = evidence_lines_of(e->ranges.items, e->ranges.n, ids, d);
 	ok = ok && (!repo.len || dstr_printf(d, " in repository %.*s", (int)repo.len, repo.data));
-	ok = ok && (!commit.len || dstr_printf(d, " at commit %.*s", (int)util_clip(commit.data,
-	                                       commit.len, clip), commit.data));
-	return ok && (!blob.len || dstr_printf(d, ", blob %.*s", (int)util_clip(blob.data,
-	                                       blob.len, clip), blob.data));
+	return ok && (!commit.len || dstr_printf(d, " at commit %.*s", (int)util_clip(commit.data,
+	                                         commit.len, clip), commit.data));
 }
 
 int
 evidence_summary (struct evidence const *e,
                   struct dstr           *d)
 {
-	struct json_object *ids = evidence_ids(&e->ids);
-	struct cstr_view const repo = jb_view(jb_get(ids, "repo"));
-	struct cstr_view const commit = jb_view(jb_get(ids, "commit"));
-	struct cstr_view const tool = cstr_view_dstr(&e->tool);
-	bool ok = true;
-	switch (e->kind) {
-	case EVIDENCE_LINES:
-		ok = evidence_lines_summary(e, ids, EVIDENCE_SHORT, d);
+	if (e->kind == EVIDENCE_LINES) {
+		struct json_object *ids = evidence_ids(&e->ids);
+		bool const ok = evidence_lines_summary(e, ids, EVIDENCE_SHORT, d);
 		json_object_put(ids);
 		return ok ? 0 : ENOMEM;
-	case EVIDENCE_MESSAGE:
-	case EVIDENCE_FILES:
-		ok = dstr_printf(d, "the %s of commit %.*s in repository %.*s, ",
-		                 e->kind == EVIDENCE_MESSAGE ? "message" : "files",
-		                 (int)util_clip(commit.data, commit.len, EVIDENCE_SHORT),
-		                 commit.len ? commit.data : "", (int)repo.len, repo.len ? repo.data : "");
-		break;
-	case EVIDENCE_SOURCES:
-		ok = dstr_cat(d, "the sources, ");
-		break;
-	case EVIDENCE_CALL:
-	case EVIDENCE_KINDS:
-		break;
 	}
-	ok = ok && dstr_printf(d, "call c%" PRIu32 ", %.*s", e->call, (int)tool.len, tool.data);
+	struct cstr_view const tool = cstr_view_dstr(&e->tool);
+	bool ok = dstr_printf(d, "call c%" PRIu32 ", %.*s", e->call, (int)tool.len, tool.data);
 	ok = ok && (!(e->flags & EVIDENCE_FAILED) || dstr_cat(d, ", failed"));
 	ok = ok && dstr_printf(d, ", %" PRIu64 " byte%s", e->result.bytes, util_s(e->result.bytes));
-	json_object_put(ids);
 	return ok ? 0 : ENOMEM;
 }
 
@@ -895,34 +812,21 @@ evidence_material_put (struct cstr_view  m,
 	                  (m.data[m.len - 1] == '\n' || dstr_cat_n(d, "\n", 1)));
 }
 
-/* Appends to @p d the part of the notice of the item @p e of a kind other
- * than EVIDENCE_LINES, as evidence_expand() prints it, from what the item
- * is to the end of the notice before the arguments. @p repo and @p commit
- * are the repository and the one commit of the identifiers, or empty.
- * Returns true, or false if out of memory.
+/* Appends to @p d the part of the notice of the item @p e of the kind
+ * EVIDENCE_CALL, as evidence_expand() prints it, from what the item is to
+ * the end of the notice before the arguments. @p ids are the identifiers
+ * of the item, or nullptr. Returns true, or false if out of memory.
  */
 static bool
 evidence_expand_call (struct evidence const *e,
                       char const            *author,
-                      struct cstr_view       repo,
-                      struct cstr_view       commit,
+                      struct json_object    *ids,
                       struct dstr           *d)
 {
 	struct cstr_view const tool = cstr_view_dstr(&e->tool);
-	bool ok;
-	if (e->kind == EVIDENCE_MESSAGE)
-		ok = dstr_printf(d, "the message of commit %.*s in repository %.*s is the evidence, "
-		                 "not the files. Call", (int)commit.len, commit.len ? commit.data : "",
-		                 (int)repo.len, repo.len ? repo.data : "");
-	else if (e->kind == EVIDENCE_FILES)
-		ok = dstr_printf(d, "the files of commit %.*s in repository %.*s. Call",
-		                 (int)commit.len, commit.len ? commit.data : "", (int)repo.len,
-		                 repo.len ? repo.data : "");
-	else
-		ok = dstr_cat(d, "call");
-	if (!ok)
-		return false;
-	if (!dstr_printf(d, " c%" PRIu32, e->call))
+	struct cstr_view const repo = jb_view(jb_get(ids, "repo"));
+	struct cstr_view const commit = jb_view(jb_get(ids, "commit"));
+	if (!dstr_printf(d, "call c%" PRIu32, e->call))
 		return false;
 	/* The call of an item cited again is not a call of the author. */
 	if (!*e->from && !dstr_printf(d, " of %s", author))
@@ -933,8 +837,6 @@ evidence_expand_call (struct evidence const *e,
 	                 (int)tool.len, tool.len ? tool.data : "",
 	                 e->flags & EVIDENCE_FAILED ? ", failed" : ""))
 		return false;
-	if (e->kind != EVIDENCE_CALL)
-		return true;
 	if (repo.len && commit.len)
 		return dstr_printf(d, " Repository %.*s, commit %.*s.", (int)repo.len, repo.data,
 		                   (int)commit.len, commit.data);
@@ -958,11 +860,6 @@ evidence_expand (struct evidence const *e,
 	char id[SEEN_ID];
 	(void)util_format(id, sizeof id, "%s/%" PRIu32, finding, e->item);
 	struct json_object *ids = evidence_ids(&e->ids);
-	struct cstr_view const repo = jb_view(jb_get(ids, "repo"));
-	struct json_object *commits = jb_get(ids, "commits");
-	struct cstr_view commit = {};
-	if (evidence_commits(ids) == 1)
-		commit = jb_view(commits ? jb_at(commits, 0) : jb_get(ids, "commit"));
 	bool const asked = e->flags & EVIDENCE_REQUEST;
 	bool const missing = !result.data || (asked && !request.data);
 	bool differs = false;
@@ -982,7 +879,7 @@ evidence_expand (struct evidence const *e,
 		if (!dstr_cat(d, ", stored as shown:]\n"))
 			goto done;
 	} else {
-		if (!evidence_expand_call(e, author, repo, commit, d))
+		if (!evidence_expand_call(e, author, ids, d))
 			goto done;
 		if (asked) {
 			if (!dstr_cat(d, " Arguments:]\n"))

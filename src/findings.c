@@ -643,9 +643,6 @@ findings_cited (struct findings_call *call,
 			ok = dstr_cat(&call->out, e->from);
 		else if (e->kind == EVIDENCE_CALL)
 			ok = dstr_printf(&call->out, "call c%" PRIu32, e->call);
-		else if (!lines)
-			ok = dstr_printf(&call->out, "c%" PRIu32 ":%s", e->call,
-			                 e->kind == EVIDENCE_MESSAGE ? "message" : "files");
 		else
 			ok = dstr_printf(&call->out, "c%" PRIu32, e->call);
 		if (ok && lines)
@@ -1670,8 +1667,8 @@ findings_evidence (struct mcp_slot    *slot,
 		struct evidence_ref ref;
 		if (evidence_ref_parse(&ref, text))
 			return util_refuse(why, len, "evidence[%zu] is not a reference: %.*s. Give a call "
-			                   "such as c7, lines such as c7:120-140, c7:message, c7:files, or "
-			                   "an evidence item such as %s#5/2.", i,
+			                   "such as c7, lines such as c7:120-140, or an evidence item such "
+			                   "as %s#5/2.", i,
 			                   (int)util_clip(text.data, text.len, 80), text.data ? text.data : "",
 			                   findings_session(slot)->agent);
 		struct evidence *item = &c->evidence.items[c->evidence.n++];
@@ -1979,11 +1976,9 @@ findings_upstream_definition (void const *service)
 	                 "such as %s#2.", agent) ||
 	    !dstr_printf(&evidence, "The evidence for the state, at most 16 items. c7 is your call "
 	                 "c7 of this ask call. c7:120-140,150 is lines of a git read or a code "
-	                 "describe in call c7. c7:message is the message of the one commit of a "
-	                 "git show or a git log in call c7. c7:files is the names and modes of the "
-	                 "files that a git ls-tree in call c7 lists. %s#5/2 is an evidence item "
-	                 "that expand showed you. %s#5/2:120-140 is lines 120 to 140 of the lines "
-	                 "item %s#5/2.", agent, agent, agent))
+	                 "describe in call c7. %s#5/2 is an evidence item that expand showed you. "
+	                 "%s#5/2:120-140 is lines 120 to 140 of the lines item %s#5/2.", agent,
+	                 agent, agent))
 		return nullptr;
 	struct json_object *props = jb_object(
 		"action", schema_enum(schema_names(findings_actions, FINDINGS_ACTIONS),

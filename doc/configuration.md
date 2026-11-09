@@ -396,8 +396,6 @@ A change can cite evidence, at most 16 references:
 |---|---|
 | `c7` | the call c7 of the `ask_ai` call: its arguments and its result as the model got them, or for a `git` `read` or a `code` `describe` the lines that the result showed whole |
 | `c7:120-140,150` | lines that a `git` `read` or a `code` `describe` in call c7 showed whole, at most 16 ranges |
-| `c7:message` | the message of the one commit of a `git` `show` or `git` `log` in call c7 |
-| `c7:files` | the files that a `git` `ls-tree` in call c7 lists, under the tree of its one commit |
 | `cuh#2/1` | the evidence item 1 of the finding `cuh#2` |
 | `cuh#2/1:161-165` | lines of the lines item `cuh#2/1`, at most 16 ranges |
 

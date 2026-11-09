@@ -7,10 +7,6 @@
  *   result says: the arguments and the result, exactly as askai sent them.
  * - cN:A-B,C is lines of the file that the git read or the code describe
  *   call N showed whole.
- * - cN:message is the message of the one commit of the git show or git log
- *   call N.
- * - cN:files is the names, modes and blobs of the files that the git
- *   ls-tree call N lists, under the tree of the one commit of the call.
  * - X#n/m is the evidence item m of the finding X#n, and X#n/m:A-B lines
  *   of a lines item. A finding cites such an item again with its
  *   identifiers and its archive files (evidence_recite()).
@@ -60,17 +56,11 @@ enum {
  *  enum evidence_kind and the name in the file of a finding.
  */
 #define EVIDENCE_KIND_LIST(X) \
-        X(LINES,   "lines")   \
-        X(FILES,   "files")   \
-        X(MESSAGE, "message") \
-        X(CALL,    "call")    \
-        X(SOURCES, "sources")
+        X(LINES, "lines")     \
+        X(CALL,  "call")
 
 /** The kinds of evidence items. lines is lines of a file that a git read
- *  or a code describe showed. files is the files of one commit that a git
- *  call listed, message the message of one commit of a git call, and call
- *  any other call. sources is reserved for code calls on a directory
- *  without git.
+ *  or a code describe showed, and call is any other call.
  */
 enum evidence_kind : uint8_t {
 #define EVIDENCE_KIND_ENUM(id, ...) EVIDENCE_##id,
@@ -86,8 +76,6 @@ extern struct cstr_view const evidence_kind_names[EVIDENCE_KINDS];
 enum evidence_form : uint8_t {
 	EVIDENCE_REF_CALL,        /**< cN */
 	EVIDENCE_REF_LINES,       /**< cN:A-B,C */
-	EVIDENCE_REF_MESSAGE,     /**< cN:message */
-	EVIDENCE_REF_FILES,       /**< cN:files */
 	EVIDENCE_REF_ITEM,        /**< X#n/m */
 	EVIDENCE_REF_ITEM_LINES,  /**< X#n/m:A-B,C */
 	EVIDENCE_REF_FINDING,     /**< X#n, a finding, which is no evidence
@@ -198,12 +186,11 @@ extern void
 evidence_fini (struct evidence *e);
 
 /**
- * Reads the reference @p text into @p dest: cN, cN:A-B,C, cN:message,
- * cN:files, X#n, X#n/m or X#n/m:A-B,C, where N, n and m are numbers from 1
- * without leading zeros, X is a member name (member_name_valid()), and
- * A-B,C is at most EVIDENCE_RANGES ranges, each a line A or lines A to B
- * with 1 <= A <= B. Returns 0, or EINVAL for any other text or a null
- * @p dest.
+ * Reads the reference @p text into @p dest: cN, cN:A-B,C, X#n, X#n/m or
+ * X#n/m:A-B,C, where N, n and m are numbers from 1 without leading zeros,
+ * X is a member name (member_name_valid()), and A-B,C is at most
+ * EVIDENCE_RANGES ranges, each a line A or lines A to B with 1 <= A <= B.
+ * Returns 0, or EINVAL for any other text or a null @p dest.
  */
 extern int
 evidence_ref_parse (struct evidence_ref *dest,
@@ -216,14 +203,11 @@ evidence_ref_parse (struct evidence_ref *dest,
  * verified and disproved need. dest->item is 0. A call of a git read or a
  * code describe whose result showed lines whole makes an item of the kind
  * EVIDENCE_LINES, with all its lines for cN, and the material is the
- * lines, which the function writes to @p lines. cN:message makes the kind
- * EVIDENCE_MESSAGE of a git show or git log call that names one commit,
- * and cN:files the kind EVIDENCE_FILES of a git ls-tree call that names
- * one commit. Any other call makes EVIDENCE_CALL. The material of those
- * three is the arguments and the result. The function
- * stores the material in @p *material and its sizes and SHA-256 in
- * dest->request and dest->result. The caller stores the material at
- * evidence_path() before the ring or @p lines change.
+ * lines, which the function writes to @p lines. Any other call makes an
+ * item of the kind EVIDENCE_CALL, and the material is the arguments and
+ * the result. The function stores the material in @p *material and its
+ * sizes and SHA-256 in dest->request and dest->result. The caller stores
+ * the material at evidence_path() before the ring or @p lines change.
  *
  * Returns 0. Returns EINVAL with the refusal for the turn in the @p len
  * bytes at @p why if the call is not in the ring, cannot be evidence, is

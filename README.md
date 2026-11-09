@@ -829,10 +829,8 @@ and `verified` findings are open.
 A change cites evidence, at most 16 references: `c7` is the call c7 of
 the ask call, its arguments and its result as the model got them, or the
 lines of a `git` `read` or a `code` `describe` that its result showed
-whole; `c7:120-140,150` is some of those lines; `c7:message` is the
-message of the one commit of a `git` `show` or `log` call, and
-`c7:files` the files of the one commit of a `git` `ls-tree` call;
-`cuh#2/1` is the evidence item 1 of the finding `cuh#2`, and
+whole; `c7:120-140,150` is some of those lines; `cuh#2/1` is the
+evidence item 1 of the finding `cuh#2`, and
 `cuh#2/1:161-165` some lines of such an item. `askai` stores the material
 in the same commit as the finding, each as `archive/XX/YYY` named by the
 SHA-256 of its bytes, and the file of the finding names it with the
