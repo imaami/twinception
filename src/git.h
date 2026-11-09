@@ -185,11 +185,20 @@ git_pin_argv (struct git_pin const *pin,
               char const          **argv,
               char                **env);
 
+/** Returns true if @p name is a valid name of a repository: 1 to 64 of
+ *  [A-Za-z0-9_.-], not starting with a dot. Reads at most name.len bytes.
+ */
+static inline bool
+git_name_valid (struct cstr_view name)
+{
+	return name.len && name.len <= 64 && *name.data != '.' &&
+	       cstr_view_spn(name, UTIL_ALNUM "_.-") == name.len;
+}
+
 /**
  * Returns the name of the repository at @p path: the last component of the
- * path, without a .git suffix. A valid name is 1 to 64 of [A-Za-z0-9_.-]
- * and does not start with a dot. Returns an empty view for a path without
- * a valid name.
+ * path, without a .git suffix, if git_name_valid() accepts it. Returns an
+ * empty view for a path without a valid name.
  */
 extern struct cstr_view
 git_name (char const *path);

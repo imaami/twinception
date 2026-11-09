@@ -205,6 +205,20 @@ cstr_view_index (struct cstr_view const *names,
 	return i;
 }
 
+/** Returns the length of the leading run of the bytes of @p text that are
+ *  in the NUL-terminated set @p set, as strspn() does. Stops at a NUL and
+ *  reads at most text.len bytes.
+ */
+static inline size_t
+cstr_view_spn (struct cstr_view  text,
+               char const       *set)
+{
+	size_t n = 0;
+	while (n < text.len && text.data[n] && strchr(set, text.data[n]))
+		++n;
+	return n;
+}
+
 /** Returns the sum of the lengths of the @p n views at @p views. */
 static inline size_t
 cstr_view_total (struct cstr_view const *views,

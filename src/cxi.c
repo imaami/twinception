@@ -27,6 +27,7 @@
 #include "cstr_view.h"
 #include "cxi.h"
 #include "dstr.h"
+#include "git.h"
 #include "jb.h"
 #include "oid.h"
 #include "tool.h"
@@ -1035,9 +1036,7 @@ cxi_lookup_member (struct cxi *x,
 static size_t
 cxi_ident (struct cstr_view s)
 {
-	size_t n = 0;
-	while (n < s.len && s.data[n] && strchr(UTIL_ALNUM "_", s.data[n]))
-		++n;
+	size_t const n = cstr_view_spn(s, UTIL_ALNUM "_");
 	return n && (s.data[0] < '0' || s.data[0] > '9') ? n : 0;
 }
 
@@ -1724,8 +1723,7 @@ cxi_run (struct cxi         *x,
 	struct cstr_view const commit = key[CXI_KEY_COMMIT];
 	uint64_t deadline;
 	/* The name of the repository is a directory of the cache. */
-	if (!key[CXI_KEY_ACTION].data || !repo.len || repo.len > 64 || *repo.data == '.' ||
-	    strspn(repo.data, UTIL_ALNUM "_.-") < repo.len || !key[CXI_KEY_PATH].data ||
+	if (!key[CXI_KEY_ACTION].data || !git_name_valid(repo) || !key[CXI_KEY_PATH].data ||
 	    !key[CXI_KEY_CDB].data || !oid_valid(commit) ||
 	    !cstr_view_starts(key[CXI_KEY_TOP], CSTR_VIEW("/")) ||
 	    !cstr_view_starts(key[CXI_KEY_CACHE], CSTR_VIEW("/")) ||

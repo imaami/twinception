@@ -307,10 +307,7 @@ git_name (char const *path)
 	struct cstr_view name = { path + start, end - start };
 	if (name.len > suffix.len && cstr_view_ends(name, suffix))
 		name.len -= suffix.len;
-	if (!name.len || name.len > 64 || *name.data == '.' ||
-	    strspn(name.data, UTIL_ALNUM "_.-") < name.len)
-		return (struct cstr_view){};
-	return name;
+	return git_name_valid(name) ? name : (struct cstr_view){};
 }
 
 /* Sets up @p r for the repository at @p path. The function stores the
