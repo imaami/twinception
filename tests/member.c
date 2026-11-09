@@ -650,11 +650,10 @@ test_list (struct store const           *store,
 		struct oid const *tip = bro ? &findings[0] : ghost ? &findings[1]
 		                      : moved ? &findings[2] : &(struct oid){};
 		CHECK(oid_equal(&info->findings, tip));
-		CHECK(dstr_printf(&notice, "%s%s (%s%s)", n ? ", " : "", names[n],
-		                  n < 7 ? "person" : "agent", bro ? ", you" : ""));
-		CHECK(dstr_printf(&unknown, "%s%s", !n ? "" : n + 1 < array_size(names) ? ", "
-		                                                                        : " and ",
-		                  names[n]));
+		char const *sep = !n ? "" : n + 1 < array_size(names) ? ", " : " and ";
+		char const *kind = n < 7 ? "person" : "agent";
+		CHECK(dstr_printf(&notice, "%s%s (%s%s)", sep, names[n], kind, bro ? ", you" : ""));
+		CHECK(dstr_printf(&unknown, "%s%s (%s)", sep, names[n], kind));
 		if (!bro)
 			continue;
 		CHECK(cstr_view_equal(info->change, CSTR_VIEW("Add \"plan.md\" (1 byte)")));
@@ -725,6 +724,32 @@ test_list (struct store const           *store,
 	CHECK(ghosts == 2 && member_table_info(table, n));
 	CHECK(!member_table_name(table, CSTR_VIEW("ghost"), &member));
 	CHECK(member.kind == MEMBER_PERSON && !strcmp(member.name, "ghost"));
+
+	/* The notices name the first 32 members and count the others. */
+	for (size_t i = 0; i < 21; ++i) {
+		char ref[64];
+		CHECK(snprintf(ref, sizeof ref, "refs/heads/agent/zz%02zu/notes", i) > 0);
+		test_note(store, ref, "Add \"z.md\" (1 byte)", nullptr);
+	}
+	CHECK(!test_take(store, table, children, member_list, why));
+	CHECK(member_table_info(table, 32) && !member_table_info(table, 33));
+	dstr_auto many = dstr("[askai: Members of this session: ");
+	for (size_t i = 0; (info = member_table_info(table, i)) && i < 32; ++i) {
+		bool const agent = info->kind == MEMBER_AGENT;
+		bool const you = agent && cstr_view_equal(info->name, CSTR_VIEW("bro"));
+		CHECK(dstr_printf(&many, "%s%.*s (%s%s)", i ? ", " : "", (int)info->name.len,
+		                  info->name.data, agent ? "agent" : "person", you ? ", you" : ""));
+	}
+	CHECK(dstr_cat(&many, " and 1 more. Call notes with action members to see what each "
+	               "member wrote last.]\n"));
+	CHECK(!member_table_notice(table, &bro, &d));
+	test_text(&d, dstr_get(&many));
+	CHECK(!member_table_unknown(table, CSTR_VIEW("own"), &d));
+	struct cstr_view const all = cstr_view_dstr(&d);
+	CHECK(cstr_view_starts(all, CSTR_VIEW("No member is named own. The members are alice "
+	                                      "(person), carol (person), ")) &&
+	      cstr_view_ends(all, CSTR_VIEW(", zz18 (agent), zz19 (agent) and 1 more.")));
+	dstr_clear(&d);
 	member_table_destroy(&table);
 }
 

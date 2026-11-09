@@ -11403,14 +11403,17 @@ def check_notes(binary, up):
                       "notebook": "writers"},
                      "!You can write only your notebook, alice."),
                     ({"action": "list", "notebook": "theirs"},
-                     "!No member is named theirs. The members are alice and writers."),
+                     "!No member is named theirs. The members are alice (person) and writers "
+                     "(agent)."),
                     ({"action": "list", "notebook": "own"},
-                     "!No member is named own. The members are alice and writers."),
+                     "!No member is named own. The members are alice (person) and writers "
+                     "(agent)."),
                     ({"action": "list", "notebook": "other"},
-                     "!No member is named other. The members are alice and writers."),
+                     "!No member is named other. The members are alice (person) and writers "
+                     "(agent)."),
                     ({"action": "list", "notebook": "writers/0123456789abcdef/client"},
                      "!No member is named writers/0123456789abcdef/client. The members are "
-                     "alice and writers."),
+                     "alice (person) and writers (agent)."),
                     ({"action": "copy", "file": "found.md"},
                      "!copy needs notebook: the name of the member whose note you copy. "
                      "Action members lists the names."),
@@ -12035,7 +12038,8 @@ def check_shared_notes(binary, up):
                 assert call(ai, "ann", action="read", file="plan.md", notebook="ben") == "ben"
                 assert "carl" not in call(ai, "ann", action="members")
                 assert call(ai, "ann", action="list", notebook="carl") == "!No member is " \
-                    "named carl. The members are ann, ben, alice and bob."
+                    "named carl. The members are ann (person), ben (person), alice (agent) " \
+                    "and bob (agent)."
                 git("update-ref", "refs/heads/agent/carl/notes", old)
                 assert call(ai, "ann", action="read", file="plan.md", notebook="carl") == "ben"
                 assert re.search(rf"^carl   agent   {when}  ",
@@ -12685,7 +12689,7 @@ def check_notes_texts(binary, up):
                 assert call(action="read", file="a.md", notebook="p", revision="current") == \
                     "!The notebook p contains no notes yet."
                 assert call(action="list", notebook="cuh2") == \
-                    f"!No member is named cuh2. The members are {ME} and p."
+                    f"!No member is named cuh2. The members are {ME} (person) and p (agent)."
                 assert call(action="read", file="a.md", revision="0" * 40) == \
                     "!The commit in revision, from or to is not in the notebook history. " \
                     "Use a full commit ID from action history."
@@ -13585,7 +13589,7 @@ def check_turns(binary, up):
         # member name.
         identity = ("\n\n[askai: You are the agent turns. A client program of the person "
                     f"{ME} made this ask call.]\n[askai: Members of this session: {ME} "
-                    "(person), turns (agent, you). Call notes with action members to see "
+                    "(person) and turns (agent, you). Call notes with action members to see "
                     "what each member wrote last.]\n")
         nobody = ("\n\n[askai: You are the agent turns. A client without a member name made "
                   "this ask call.]\n[askai: Members of this session: turns (agent, you). "

@@ -996,14 +996,15 @@ several files added by one commit. `list` reflects the current tree;
   from the old layout, lists its member with the kind of its branch.
 - `notebook` names the member whose notebook an action reads. The default
   is the notebook of the caller. A name that no member has is refused with
-  the names of the members. A notebook without notes answers that the
-  notebook contains no notes yet; for `list`, `history` and `search` the
-  answer is not a failure. Writes go only to the notebook of the caller.
+  the names and the kinds of the members, at most 32, and the number of
+  the others. A notebook without notes answers that the notebook contains
+  no notes yet; for `list`, `history` and `search` the answer is not a
+  failure. Writes go only to the notebook of the caller.
 - The prompt of an ask call begins its notes with who the agent is and who
-  made the ask call, then the members of the session and their kinds,
-  then the note history of the agent and its newest note, or a line that
-  the notebook contains no notes yet. After a compaction, the same notices
-  follow the summary.
+  made the ask call, then the members of the session and their kinds, at
+  most 32, and the number of the others, then the note history of the
+  agent and its newest note, or a line that the notebook contains no notes
+  yet. After a compaction, the same notices follow the summary.
 - `search` lists the lines of the selected notebook's current notes that
   match `pattern`, as `file:line:text`. Each line of `pattern` is an
   extended regular expression, and case is ignored.

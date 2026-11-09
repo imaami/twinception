@@ -1621,6 +1621,36 @@ member_table_width (struct member_table const *table)
 	return table ? (int)table->records.width : 0;
 }
 
+/* Appends to @p d the first MEMBER_SHOWN members of @p table, each with
+ * its kind, and with ", you" for @p you if @p you is not nullptr, such as
+ * "imaami (person), bro (agent, you) and cuh (agent)", and " and N more"
+ * for the members after them. Returns 0 or ENOMEM.
+ */
+static int
+member_table_names (struct member_table const *table,
+                    struct member const       *you,
+                    struct dstr               *d)
+{
+	struct cstr_view views[MEMBER_SHOWN];
+	static_assert(array_size(views) <= 64, "cstr_view_join() joins at most 64 views");
+	char items[array_size(views)][MEMBER_NAME + sizeof " (person, you)"];
+	size_t const n = table->records.all.n;
+	size_t const shown = n < array_size(views) ? n : array_size(views);
+	struct cstr_view const me = you ? cstr_view(you->name) : (struct cstr_view){};
+	for (size_t i = 0; i < shown; ++i) {
+		struct member_info const *info = &table->records.all.items[i].info;
+		bool const self = you && info->kind == you->kind && cstr_view_equal(info->name, me);
+		views[i] = util_format_view(items[i], sizeof items[i], "%.*s (%s%s)",
+		                            (int)info->name.len, info->name.data,
+		                            member_kinds[info->kind].data, self ? ", you" : "");
+	}
+	int const e = cstr_view_join(views, shown, UINT64_MAX, CSTR_VIEW(", "),
+	                             n > shown ? CSTR_VIEW(", ") : CSTR_VIEW(" and "), d);
+	if (e || n == shown)
+		return e;
+	return dstr_printf(d, " and %zu more", n - shown) ? 0 : ENOMEM;
+}
+
 int
 member_table_notice (struct member_table const *table,
                      struct member const       *you,
@@ -1628,19 +1658,10 @@ member_table_notice (struct member_table const *table,
 {
 	if (!table || !you || !d)
 		return EINVAL;
-	size_t const n = table->records.all.n;
-	bool ok = dstr_cat(d, "[askai: Members of this session: ");
-	for (size_t i = 0; ok && i < n && i < MEMBER_SHOWN; ++i) {
-		struct member_info const *info = &table->records.all.items[i].info;
-		bool const self = info->kind == you->kind &&
-		                  cstr_view_equal(info->name, cstr_view(you->name));
-		ok = dstr_printf(d, "%s%.*s (%s%s)", i ? ", " : "", (int)info->name.len,
-		                 info->name.data, member_kinds[info->kind].data, self ? ", you" : "");
-	}
-	if (ok && n > MEMBER_SHOWN)
-		ok = dstr_printf(d, " and %zu more", n - MEMBER_SHOWN);
-	ok = ok && dstr_cat(d, ". Call notes with action members to see what each member wrote "
-	                       "last.]\n");
+	bool const ok = dstr_cat(d, "[askai: Members of this session: ") &&
+	                !member_table_names(table, you, d) &&
+	                dstr_cat(d, ". Call notes with action members to see what each member "
+	                            "wrote last.]\n");
 	return ok ? 0 : ENOMEM;
 }
 
@@ -1651,19 +1672,12 @@ member_table_unknown (struct member_table const *table,
 {
 	if (!table || !d)
 		return EINVAL;
-	size_t const n = table->records.all.n;
-	size_t const shown = n < MEMBER_SHOWN ? n : MEMBER_SHOWN;
-	bool ok = dstr_printf(d, "No member is named %.*s. %s ",
-	                      (int)util_clip(name.data, name.len, 2 * UTIL_WORD_MAX), name.data,
-	                      n == 1 ? "The only member is" : "The members are");
-	for (size_t i = 0; ok && i < shown; ++i) {
-		struct member_info const *info = &table->records.all.items[i].info;
-		char const *sep = !i ? "" : i + 1 < shown || n > shown ? ", " : " and ";
-		ok = dstr_printf(d, "%s%.*s", sep, (int)info->name.len, info->name.data);
-	}
-	if (ok && n > shown)
-		ok = dstr_printf(d, " and %zu more", n - shown);
-	return ok && dstr_cat(d, ".") ? 0 : ENOMEM;
+	bool const ok = dstr_printf(d, "No member is named %.*s. %s ",
+	                            (int)util_clip(name.data, name.len, 2 * UTIL_WORD_MAX),
+	                            name.data, table->records.all.n == 1 ? "The only member is"
+	                                                                 : "The members are") &&
+	                !member_table_names(table, nullptr, d) && dstr_cat(d, ".");
+	return ok ? 0 : ENOMEM;
 }
 
 void

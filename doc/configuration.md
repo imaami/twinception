@@ -1644,9 +1644,9 @@ newest change of its notebook, and says who the caller is; for a client,
 the result also has `structuredContent` with the caller and the members.
 `notebook` names the member whose notebook an action reads. The default is
 the notebook of the caller. A name that no member has is refused with the
-names of the members. Agents get who they are, who made the ask call and the
-members of the session at the start of their prompt, and reads name the
-source notebook separately from the note's contents.
+names and the kinds of the members. Agents get who they are, who made the
+ask call and the members of the session at the start of their prompt, and
+reads name the source notebook separately from the note's contents.
 
 `add` creates a new file and refuses an existing name. `replace` updates
 an existing file in the caller's own notebook, adding a Git commit that
