@@ -910,12 +910,15 @@ member_session_name (char const *path,
 		util_format(name, MEMBER_NAME, "session");
 }
 
-/* Creates the session record of @p reg if no record of the session
- * exists, and reads the records into reg->records. While another service
- * writes the record, a commit fails on the lock file of the record, and
- * the read after the commit can come before the record. The next try then
- * finds the record or makes it. Returns 0, or EINVAL, EIO or ENOMEM with a
- * reason in the @p len bytes at @p why.
+/* Reads the records of @p reg into reg->records, and creates the session
+ * record first if no record of the session exists. The session record is
+ * create-only: a commit after the commit of another service writes
+ * nothing, and the records that git lists after it contain the record of
+ * that service. A commit during the commit of another service can fail on
+ * the lock file of the record (EAGAIN) before that record exists, so the
+ * function commits and reads again, at most STORE_TRIES times, with the
+ * session ID and the name made once. Returns 0, or EINVAL, EIO or ENOMEM
+ * with a reason in the @p len bytes at @p why.
  */
 static int
 member_registry_session_read (struct member_registry *reg,
@@ -924,7 +927,7 @@ member_registry_session_read (struct member_registry *reg,
 {
 	struct member_records *r = &reg->records;
 	int e = member_records_read(r, reg->store, why, len);
-	for (size_t tries = 0; !e && !r->session.data && tries < STORE_TRIES; ++tries) {
+	if (!e && !r->session.data) {
 		struct hexid id;
 		e = hexid_make(&id);
 		if (e) {
@@ -940,12 +943,14 @@ member_registry_session_read (struct member_registry *reg,
 		};
 		char message[STORE_MESSAGE];
 		util_format(message, sizeof message, "Create the session %s", name);
-		struct buf in = {};
-		e = member_commit_input(reg, SESSION, cstr_view(message), t, array_size(t),
-		                        &(struct oid){}, &in);
-		e = member_commit(reg, SESSION, &in, e, why, len);
-		if (!e || e == EAGAIN)
-			e = member_records_read(r, reg->store, why, len);
+		for (size_t tries = 0; !e && !r->session.data && tries < STORE_TRIES; ++tries) {
+			struct buf in = {};
+			e = member_commit_input(reg, SESSION, cstr_view(message), t, array_size(t),
+			                        &(struct oid){}, &in);
+			e = member_commit(reg, SESSION, &in, e, why, len);
+			if (!e || e == EAGAIN)
+				e = member_records_read(r, reg->store, why, len);
+		}
 	}
 	if (e)
 		return e;
