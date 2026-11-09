@@ -1615,20 +1615,21 @@ notes_tool_uploaded (struct mcp_slot *slot)
 	notes_tool_end(slot, e == EIO ? 0 : e, e == EIO);
 }
 
-/* Appends @p head and the list of the notes in the output of git to
- * call->text, the text that askai adds to the prompt. Then the function
- * runs git to read the newest note. If there are no notes, the ask call
- * continues.
+/* Appends a line that names the notebook of the agent and the list of
+ * the notes in the output of git to call->text, the text that askai adds
+ * to the prompt. Then the function runs git to read the newest note. If
+ * there are no notes, the ask call continues.
  */
 static void
-notes_tool_prompt_list (struct mcp_slot  *slot,
-                        struct cstr_view  head)
+notes_tool_prompt_list (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
 	struct span newest = {};
 	struct buf in = {};
-	int e = cstr_view_cat(head, call->text);
+	int e = dstr_printf(call->text, "[askai: Your notebook is %s. Your note history, oldest "
+	                    "first. A repeated name is an update:]\n", call->self.name)
+	      ? 0 : ENOMEM;
 	if (!e)
 		e = notes_tool_history(slot, buf_peek(&c->out), c->end.flags & CHILD_CUT, &newest);
 	struct cstr_view const name = { (char const *)newest.ptr, newest.len };
@@ -1712,15 +1713,11 @@ notes_tool_newest (struct mcp_slot *slot)
 static void
 notes_tool_resumed (struct mcp_slot *slot)
 {
-	static char const history[] = "[askai: Your notebook is %s. Your note history, oldest "
-	                              "first. A repeated name is an update:]\n";
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	char head[sizeof history + MEMBER_NAME];
 	if (notes_tool_listed(c)) {
 		(void)mcp_slot_noted(slot);
-		notes_tool_prompt_list(slot, util_format_view(head, sizeof head, history,
-		                                              call->self.name));
+		notes_tool_prompt_list(slot);
 	} else if (c && notes_tool_none(c)) {
 		notes_tool_then(slot, dstr_printf(call->text, "[askai: Your notebook %s contains "
 		                                  "no notes yet.]\n", call->self.name) ? 0 : ENOMEM);
