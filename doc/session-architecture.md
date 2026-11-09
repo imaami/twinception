@@ -208,7 +208,9 @@ record and a member registry, as Git refs outside the notebook branches:
 - An agent keeps its findings on `refs/heads/agent/NAME/findings`: one
   file for each finding, with an ID such as `bro#5` that stays the same in
   every ask call, and the archive of the evidence, named by SHA-256. Only
-  the author changes a finding, and every member reads every finding. The
+  the author changes a finding, and every member reads every finding and
+  its evidence. The evidence is the calls of the ask call as the agent got
+  them, and items of other findings that `expand` showed the agent. The
   legacy review records under `refs/review/` stay readable with Git, and
   `askai` no longer reads them.
 
@@ -222,9 +224,13 @@ of one agent need two service names when they share a transcript
 repository.
 
 Steps 2 and 3 are partly done. The notebook of a member is the author
-view, and the commits of the turns name the ask call, the call, the
-conversation and the asker. Note IDs are not done. Steps 4 and 5 are not
-done.
+view. The request context of an ask call is the ask ID, the conversation,
+which the client passes back as `conversation`, and the asker, the member
+of the client. The commits of the turns name them with the call, and so
+does each change of a finding. The checkpoint of a background job
+contains them, so a job that `askai` resumes after a restart names them
+too. Note IDs and operation IDs beyond the ask call are not done. Steps 4
+and 5 are not done.
 
 ## References
 

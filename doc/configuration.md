@@ -444,10 +444,11 @@ background job that `askai` resumes after a restart makes the `findings`
 calls of the interrupted turn again. If a commit with the lines `Ask:`
 and `Call:` of an `add` or `update` is among the newest 64 commits of the
 branch, the call made that commit before the restart, and the result
-names the commit instead of making a second one. A file
-of a finding that `askai` cannot read fails the call that reads it.
-Nothing prunes the branch. The review records of earlier versions under
-`refs/review/` stay where they are, and `askai` does not read them.
+names the commit instead of making a second one. A file of a finding that
+`askai` cannot read fails the call that reads it. Nothing prunes the
+branch or the archive files of the evidence. The review records of
+earlier versions under `refs/review/` stay where they are, and `askai`
+does not read them.
 
 Each `ask_ai` call and each compaction starts with the open findings of
 the agent in the conversation, newest first, within the window of a tool

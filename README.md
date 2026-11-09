@@ -876,8 +876,9 @@ findings of the agent in the conversation, newest first, within a tool's
 window, and the number of its open findings in other conversations. The notice
 after the summary of a compaction states that the system text, the
 client's messages and the prompt stay word for word, so the model need
-not copy the task into notes. Nothing prunes the branch, just as nothing
-prunes notes. The review records of earlier versions under `refs/review/`
+not copy the task into notes. Nothing prunes the branch or the archive
+files of the evidence, just as nothing prunes notes. Run `git gc` as
+needed. The review records of earlier versions under `refs/review/`
 stay where they are, and `askai` no longer reads them.
 
 With `--notes PATH`, the repository at `PATH` is the shared session.
