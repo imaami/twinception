@@ -701,46 +701,32 @@ findings_got_read (struct mcp_slot *slot)
 	findings_act(slot);
 }
 
-/* Returns true if the item @p index of the evidence of the change of
- * @p call cites some lines of an item again (X#n/m:A-B).
- */
-static bool
-findings_cites_lines (struct findings_call const *call,
-                      size_t                      index)
-{
-	for (size_t i = 0; i < call->cites.n; ++i)
-		if (call->cites.items[i].index == index)
-			return call->cites.items[i].ref.form == EVIDENCE_REF_ITEM_LINES;
-	return false;
-}
-
 /* Appends to call->out the evidence of call->change, the change that the
  * commit made, as " Evidence bro#5/1 from call c4, bro#5/2 from c7:3-9,
- * bro#5/3 from cuh#2/1." for the finding @p id. Returns true, or false if
- * out of memory.
+ * bro#5/3 from cuh#2/1." for the finding @p id: the reference of the cite
+ * of an item cited again, and else the reference of the call or of its
+ * lines (evidence_ref_put()). Returns true, or false if out of memory.
  */
 static bool
 findings_cited (struct findings_call *call,
                 char const           *id)
 {
 	struct finding_change const *c = &call->change;
+	/* The cites are in the order of the items that they make. */
+	size_t k = 0;
 	for (size_t i = 0; i < c->evidence.n; ++i) {
 		struct evidence const *e = &c->evidence.items[i];
-		bool const lines = *e->from ? findings_cites_lines(call, i) : e->kind == EVIDENCE_LINES;
-		bool ok = dstr_printf(&call->out, "%s %s/%" PRIu32 " from ", i ? "," : " Evidence", id,
-		                      e->item);
-		if (!ok)
-			return false;
-		if (*e->from)
-			ok = dstr_cat(&call->out, e->from);
-		else if (e->kind == EVIDENCE_CALL)
-			ok = dstr_printf(&call->out, "call c%" PRIu32, e->call);
-		else
-			ok = dstr_printf(&call->out, "c%" PRIu32, e->call);
-		if (ok && lines)
-			ok = dstr_cat(&call->out, ":") &&
-			     !evidence_ranges_put(e->ranges.items, e->ranges.n, &call->out);
-		if (!ok)
+		struct evidence_ref ref = { .number = e->call, .form = EVIDENCE_REF_CALL };
+		if (*e->from && k < call->cites.n) {
+			ref = call->cites.items[k++].ref;
+		} else if (e->kind == EVIDENCE_LINES) {
+			ref.form = EVIDENCE_REF_LINES;
+			ref.n_ranges = (uint16_t)e->ranges.n;
+			memcpy(ref.ranges, e->ranges.items, e->ranges.n * sizeof *ref.ranges);
+		}
+		if (!dstr_printf(&call->out, "%s %s/%" PRIu32 " from %s", i ? "," : " Evidence", id,
+		                 e->item, ref.form == EVIDENCE_REF_CALL ? "call " : "") ||
+		    evidence_ref_put(&ref, &call->out))
 			return false;
 	}
 	return !c->evidence.n || dstr_cat(&call->out, ".");

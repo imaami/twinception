@@ -399,6 +399,10 @@ A change can cite evidence, at most 16 references:
 | `cuh#2/1` | the evidence item 1 of the finding `cuh#2` |
 | `cuh#2/1:161-165` | lines of the lines item `cuh#2/1`, at most 16 ranges |
 
+The ranges of a reference can come in any order. `askai` stores them in
+ascending order, ranges that overlap as one range, and their lines in
+that order, each line once.
+
 The number of a call is the number in the note of its result, such as
 `[askai: call c7]` (section [`context`](#context)). If the turns get
 `findings`, `askai` keeps the last 64 calls of an `ask_ai` call in memory,

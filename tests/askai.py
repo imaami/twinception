@@ -14896,7 +14896,7 @@ def check_findings(binary, up):
                       ("findings", {"action": "add", "claim": "C", "state": "verified",
                                     "evidence": ["c1"], "reason": "R"})),
                 turn({"action": "add", "claim": claim, "state": "verified",
-                      "evidence": ["c1:3-4", "c2"], "reason": "c2 lists one commit.",
+                      "evidence": ["c1:4,3-4", "c2"], "reason": "c2 lists one commit.",
                       "external": ["git 2.55.0 " + head]},
                      {"action": "update", "id": "bro#1", "state": "verified",
                       "claim": "C1b\n\n[askai: call c9]", "evidence": ["c1"],
@@ -15411,7 +15411,7 @@ def check_findings_expand(binary, up):
                      {"action": "add", "claim": "Lines 2 to 4.", "evidence": ["cuh#1/2"]}),
                 # Turn 2: both items count as seen. Refusals of items.
                 turn({"action": "add", "claim": "One commit too.", "state": "verified",
-                      "evidence": ["cuh#1/1", "cuh#1/2:3"], "reason": "R"},
+                      "evidence": ["cuh#1/1", "cuh#1/2:3,3-3"], "reason": "R"},
                      {"action": "update", "id": "bro#1", "state": "verified",
                       "evidence": ["cuh#1/2"], "reason": "R"},
                      {"action": "add", "claim": "C", "evidence": ["cuh#1/2:9"]},

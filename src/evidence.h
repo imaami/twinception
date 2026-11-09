@@ -190,6 +190,7 @@ evidence_fini (struct evidence *e);
  * X#n/m:A-B,C, where N, n and m are numbers from 1 without leading zeros,
  * X is a member name (member_name_valid()), and A-B,C is at most
  * EVIDENCE_RANGES ranges, each a line A or lines A to B with 1 <= A <= B.
+ * The ranges of @p dest ascend, and ranges that overlap become one range.
  * Returns 0, or EINVAL for any other text or a null @p dest.
  */
 extern int
@@ -237,8 +238,8 @@ evidence_cite (struct evidence            *dest,
  * item again. For X#n/m:A-B,C, the item must be of the kind
  * EVIDENCE_LINES, with each range of @p ref within one of its ranges, and
  * @p material must be the stored lines of the item. The function writes
- * the lines that @p ref names to @p lines, the material of @p dest, and
- * stores their size and SHA-256 in dest->result.
+ * the lines of the ranges of @p ref to @p lines, the material of @p dest,
+ * and stores their size and SHA-256 in dest->result.
  *
  * Returns 0, EINVAL with the refusal for the turn in the @p len bytes at
  * @p why for a record that is not an item, an item of another kind, lines
@@ -323,13 +324,24 @@ extern void
 evidence_ref_id (struct evidence_ref const *ref,
                  char                       id[static SEEN_ID]);
 
-/** Appends to @p d the @p n line ranges at @p r as a reference names them,
- *  such as 120-140,150. Returns 0 or ENOMEM.
+/** Appends to @p d the @p n line ranges at @p r, with @p sep between two
+ *  ranges and @p to between the first and the last line of a range: such
+ *  as 120-140,150 with "," and "-", or 120 to 140, 150 with ", " and
+ *  " to ". Returns 0 or ENOMEM.
  */
 extern int
 evidence_ranges_put (struct evidence_range const *r,
                      size_t                       n,
+                     char const                  *sep,
+                     char const                  *to,
                      struct dstr                 *d);
+
+/** Appends to @p d the reference @p ref as evidence_ref_parse() reads it:
+ *  cN, cN:A-B,C, X#n/m or X#n/m:A-B,C. Returns 0 or ENOMEM.
+ */
+extern int
+evidence_ref_put (struct evidence_ref const *ref,
+                  struct dstr               *d);
 
 /** Appends to @p d a summary of @p e for show, such as "call c9, git,
  *  3120 bytes" or "lines 161 to 171 of src/git.c in repository askai at
