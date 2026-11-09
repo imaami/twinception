@@ -12,7 +12,7 @@
 
 /* The notices that a turn's result can end with. */
 static char const *const notice_formats[] = {
-	NOTICE_NOTEBOOK, NOTICE_COMPACT, NOTICE_REMIND, NOTICE_LAST,
+	NOTICE_NOTEBOOK, NOTICE_CALL, NOTICE_COMPACT, NOTICE_REMIND, NOTICE_LAST,
 };
 
 /* Returns the length of the argument of the printf conversion @p conv at

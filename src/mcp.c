@@ -711,11 +711,12 @@ struct mcp_req {
 	uint32_t             context;    /* tokens the upstream's context holds;
 	                                    0: unknown */
 	uint32_t             traced;     /* tool calls the turns made */
-	uint32_t             launched;   /* the turn's calls launched */
 	uint32_t             part;       /* the part of the turn being written,
 	                                    or its call under way */
-	uint32_t             n_calls;    /* the turn's tool calls */
+	uint32_t             calls_base; /* calls of the earlier turns */
 	struct member_call   member;     /* its client's login and asker */
+	uint16_t             launched;   /* the turn's calls launched */
+	uint16_t             n_calls;    /* the turn's tool calls */
 	uint16_t             next;       /* the splice to write next, or piece */
 	uint8_t              phase;      /* enum mcp_phase */
 	uint8_t              method;     /* enum metrics_method */
@@ -1526,10 +1527,12 @@ mcp_slot_unwait (struct mcp_slot *slot)
 		mcp_req_unwait(slot->req);
 }
 
-/* Let go of the turn's tool calls. */
+/* Let go of the turn's calls, and number the next turn's calls after them. */
 static void
-mcp_req_calls_fini (struct mcp_req *req)
+mcp_req_calls_end (struct mcp_req *req)
 {
+	req->calls_base += req->n_calls;
+	req->n_calls = 0;
 	for (size_t k = 0; k < JOB_CALLS; ++k)
 		buf_fini(&req->calls[k]);
 }
@@ -1664,7 +1667,7 @@ mcp_req_finish (struct mcp_req *req)
 	buf_fini(&req->body);
 	buf_fini(&req->upload);
 	buf_fini(&req->reply);
-	mcp_req_calls_fini(req);
+	mcp_req_calls_end(req);
 	buf_fini(&req->attached);
 	dstr_clear(&req->self.answer);
 	dstr_clear(&req->trace);
@@ -3591,6 +3594,13 @@ uint32_t
 mcp_slot_turn (struct mcp_slot const *slot)
 {
 	return slot->req->turn;
+}
+
+uint32_t
+mcp_slot_call (struct mcp_slot const *slot)
+{
+	struct mcp_req const *req = slot->req;
+	return slot->role == ROLE_TURN ? req->calls_base + (uint32_t)(slot - req->slots) + 1 : 0;
 }
 
 int
@@ -5539,7 +5549,7 @@ mcp_req_calls_next (struct mcp_req *req)
 {
 	if (req->part == req->n_calls) {
 		mcp_req_slots_drop(req);
-		mcp_req_calls_fini(req);
+		mcp_req_calls_end(req);
 		buf_fini(&req->attached);
 		if (mcp_req_full(req))
 			mcp_req_compact_full(req);
@@ -5690,6 +5700,7 @@ mcp_slot_done (struct mcp_slot *slot,
 	mcp_slot_note_window(slot, out.len, offset);
 	if (notebook)
 		(void)util_text_printf(&slot->note, "\n\n" NOTICE_NOTEBOOK, notebook);
+	(void)util_text_printf(&slot->note, "\n\n" NOTICE_CALL, mcp_slot_call(slot));
 	if (*req->archive.hex && !(tool->kind->flags & KF_RERUN)) {
 		/* A resumed turn writes the window and the note again, and adds
 		 * the lines of a review read. So the window is recorded, or for a
@@ -5939,6 +5950,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 		"used", json_object_new_int64(req->used),
 		"context", json_object_new_int64(req->context),
 		"traced", json_object_new_int64(req->traced),
+		"calls", json_object_new_int64(req->calls_base),
 		"trace", jb_string(cstr_view_dstr(&req->trace)),
 		"thread", json_object_new_string(req->thread.hex),
 		"branch", json_object_new_boolean(req->flags & REQ_BRANCH),
@@ -6163,6 +6175,7 @@ mcp_recover_back (struct loop           *loop,
 	req->used = (uint32_t)jb_int(jb_get(state, "used"), 0);
 	req->context = (uint32_t)jb_int(jb_get(state, "context"), 0);
 	req->traced = (uint32_t)jb_int(jb_get(state, "traced"), 0);
+	req->calls_base = (uint32_t)jb_int(jb_get(state, "calls"), 0);
 	req->reminded = (uint8_t)jb_int(jb_get(state, "reminded"), 0);
 	req->forced = (uint8_t)jb_int(jb_get(state, "forced"), 0);
 	mcp_req_flag(req, REQ_BRANCH, json_object_get_boolean(jb_get(local, "branch")));
@@ -6546,7 +6559,7 @@ mcp_req_compact (struct mcp_req   *req,
 	req->reminded = 0;
 	mcp_req_drop(req);
 	mcp_req_args_free(req, from, JOB_CALLS);
-	mcp_req_calls_fini(req);
+	mcp_req_calls_end(req);
 	if (e) {
 		mcp_req_fail(req, e);
 		return;

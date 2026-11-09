@@ -846,6 +846,44 @@ LEFT_OUT = (" askai removed the [askai: ...] lines from the end of the text. ask
             "adds [askai: ...] lines to tool results, not to notes.")
 
 
+def stamp(n):
+    """The stamp of the call N of the turns of an ask call after a blank
+    line, which ends the note of the result of the call (src/seen.h)."""
+    return f"\n\n[askai: call c{n}]"
+
+
+# The stamp of a call, the number in group 1.
+STAMP = re.compile(r"\n\n\[askai: call c([1-9][0-9]*)\]")
+
+
+def unstamp(text):
+    """Returns @p text without its last stamp, and the number of the call
+    in the stamp. The text must contain a stamp."""
+    found = list(STAMP.finditer(text))
+    assert found, text
+    at = found[-1]
+    return text[:at.start()] + text[at.end():], int(at.group(1))
+
+
+def unstamped(messages):
+    """The chat messages @p messages, the content of each tool result
+    without its stamp. The numbers in the stamps grow from result to result,
+    one by one among the results of a turn."""
+    out = []
+    last = 0
+    after = False
+    for m in messages:
+        if m.get("role") != "tool":
+            out.append(m)
+            after = False
+            continue
+        text, n = unstamp(m["content"])
+        assert n == last + 1 if after else n > last, (n, last, messages)
+        last, after = n, True
+        out.append(m | {"content": text})
+    return out
+
+
 def saved(message, commit="[0-9a-f]{40}|[0-9a-f]{64}", stripped=False):
     """A regular expression for the result of a note write whose commit has
     the message @p message. @p commit is a regular expression for the ID of
@@ -2735,11 +2773,13 @@ def check_recovery_notes(binary, up):
                     at += 120 + size
                 assert saved and at < len(snapshot), snapshot
                 # The saved result is the window from the offset on, its note
-                # with the notebook, and the size of the output.
+                # with the notebook and the stamp of the call, and the size of
+                # the output.
                 window = saved["text"]
                 assert saved["skip"] == 0 and saved["bytes"] == len(original) and \
                     window and original[5:5 + len(window)] == window and \
-                    saved["note"].endswith(f"\n\n[askai: notebook {selector}]"), saved
+                    saved["note"].endswith(f"\n\n[askai: notebook {selector}]" + stamp(1)), \
+                    saved
                 with open(checkpoint, "wb") as f:
                     f.write(snapshot[:at])
                 write_note("changed after the crash", ref + "^0")
@@ -2758,14 +2798,16 @@ def check_recovery_notes(binary, up):
                 wait_for(ended, seconds=15)
                 assert len(creates) == 2 and len(resumes) == 1, (creates, resumes)
                 assert resumes[0]["path"] == "/v1/responses/notes_source?stream=true", resumes
-                [output] = [item["output"] for item in creates[1]["body"]["input"]
-                            if item.get("call_id") == "read" and
-                            item.get("type") == "function_call_output"]
+                # The stamp of the replayed result comes from its record. The
+                # call after it gets the next number.
+                output, gate = [item["output"] for item in creates[1]["body"]["input"]
+                                if item.get("type") == "function_call_output"]
                 match = re.fullmatch(
                     r"(.*)\n\n\[Bytes 5 to (\d+) of (\d+)\. To read on, call the tool "
                     r'again with the same arguments and "offset": (\d+)\.\]' +
-                    re.escape(f"\n\n[askai: notebook {selector}]"), output, re.S)
+                    re.escape(f"\n\n[askai: notebook {selector}]" + stamp(1)), output, re.S)
                 assert match, output
+                assert unstamp(gate)[1] == 2, gate
                 end, total, offset = map(int, match.groups()[1:])
                 assert end == offset < total == len(original) and \
                     match.group(1) == original[5:end], output
@@ -2971,6 +3013,9 @@ def check_recovery_review(binary, up):
                     k for k in kinds if k[0].startswith("tool-")] == [
                         ("tool-intent", 0), ("tool-result", 0)], kinds
                 state = found[0][2]
+                # The calls of the first turn are c1 and c2, so the second
+                # turn numbers its calls from c3 on.
+                assert state["calls"] == 2, state
                 assert state["review"]["reads"] == [] and state["review"]["pending"] == [{
                     "repo": "proj", "commit": head, "path": "src/a.c", "total": 300,
                     "lines": [1, 10, 1]}], state["review"]
@@ -3056,16 +3101,24 @@ def check_recovery_review(binary, up):
                           if item.get("call_id") == call and
                           item.get("type") == "function_call_output"]
                 return text
+            # The resumed job numbers the calls of the second turn from c3
+            # on. The stamp of the replayed read comes from its record. The
+            # calls that run again and the calls of the third turn get the
+            # next numbers.
+            assert output(creates[2], "read2").endswith(stamp(3)), creates[2]
+            assert output(creates[2], "gate").endswith(stamp(5)), creates[2]
             said = output(creates[2], "update")
-            assert said == f"Updated finding 1: verified, src/a.c:5 at {head[:12]}.", said
+            assert said == f"Updated finding 1: verified, src/a.c:5 at {head[:12]}." + \
+                stamp(4), said
             assert output(creates[3], "show") == REVIEW + findings_head("1 finding: 1 verified") + (
                 f"1. verified, src/a.c:5 at {head[:12]}\n   claim: C\n"
                 f"   evidence: E\n{READS}\n"
-                f"proj {head}\n  src/a.c  lines 1-20: 20 of 300 lines"), creates[3]
+                f"proj {head}\n  src/a.c  lines 1-20: 20 of 300 lines") + stamp(6), creates[3]
             # The call made again has the turn of the first.
             assert output(creates[3], "history") == \
                 f"Finding 1: verified, src/a.c:5 at {head[:12]}\nclaim: C\nturn 1: " \
-                f"candidate\nturn 2: verified at {head[:12]}\n  evidence: E", creates[3]
+                f"candidate\nturn 2: verified at {head[:12]}\n  evidence: E" + stamp(7), \
+                creates[3]
             with open(reads) as f:
                 assert f.read() == "read\nread\n", "a saved read ran again"
 
@@ -8932,7 +8985,7 @@ def check_man(binary, up):
         with Askai(binary, "-u", up.url(), "--man", "--upstream-tools", env=env) as ai:
             count = len(up.requests)
             assert ai.ask()["content"][0]["text"] == "A"
-            results = up.requests[count + 1]["body"]["messages"][2:]
+            results = unstamped(up.requests[count + 1]["body"]["messages"][2:])
             assert [m["content"] for m in results[:2]] == \
                 ["No manual entry for missing." + like] * 2, results
             assert results[2]["content"].startswith("       headed - a page") and \
@@ -10953,7 +11006,7 @@ def check_code_describe(binary, up, call, head, d, cdb):
         assert ai.ask("Q")["content"][0]["text"] == "A"
         messages = up.requests[count + 2]["body"]["messages"]
         last = max(k for k, m in enumerate(messages) if m["role"] == "assistant")
-        results = [m["content"] for m in messages[last + 1:]]
+        results = [m["content"] for m in unstamped(messages[last + 1:])]
         assert results[0] == f"Added finding 1: verified, src/lay.c:16-18 at {head[:12]}.", \
             results
         assert results[1] == f"Added finding 2: verified, src/sub/far.h:2 at {head[:12]}.", \
@@ -12344,7 +12397,11 @@ def check_notes_history(binary, up):
                     def reply(request):
                         messages = request["body"]["messages"]
                         if messages[-1]["role"] == "tool":
-                            outputs.append(messages[-1]["content"])
+                            # Each turn makes one call, so the stamps count
+                            # the turns.
+                            text, n = unstamp(messages[-1]["content"])
+                            assert n == len(outputs) + 1, (n, outputs)
+                            outputs.append(text)
                         if len(outputs) == len(actions):
                             return 200, turn_stream(text="Restored the old note.")
                         action = actions[len(outputs)]
@@ -12521,8 +12578,9 @@ def check_notes_texts(binary, up):
                     count = len(up.requests)
                     result = ai.ask("Q", **arguments)
                     messages = up.requests[count + 1]["body"]["messages"]
-                    return [m["content"] for m in messages if m["role"] == "tool"], \
-                        result["content"][1]["text"]
+                    said = [unstamp(m["content"]) for m in messages if m["role"] == "tool"]
+                    assert [n for _, n in said] == list(range(1, len(said) + 1)), said
+                    return [text for text, _ in said], result["content"][1]["text"]
 
                 def members(last, rows=(), kinds=((ME, "person"), ("p", "agent"))):
                     """The answer of members with the lines @p rows of
@@ -12814,9 +12872,10 @@ def check_turn_apis(binary, up):
             assert given[1:5] == items, given
             assert [(g["type"], g["call_id"]) for g in given[5:]] == \
                 [("function_call_output", "c1"), ("function_call_output", "c2")], given
-            assert re.fullmatch(logged, given[5]["output"]), given
+            # Each result ends with the stamp of its call, a failed one too.
+            assert re.fullmatch(logged + re.escape(stamp(1)), given[5]["output"]), given
             assert given[6]["output"] == "The arguments were not a JSON object. " \
-                "The call was not run.", given
+                "The call was not run." + stamp(2), given
             timer = {"type": "function_call", "id": "fc_3", "call_id": "t1",
                      "name": "timer", "arguments": "{\"seconds\":1}",
                      "status": "completed"}
@@ -12861,8 +12920,11 @@ def check_turn_apis(binary, up):
             assert [(c["type"], c["tool_use_id"]) for c in results["content"]] == \
                 [("tool_result", "c1"), ("tool_result", "c2"), ("tool_result", "c3")], \
                 results
-            assert re.fullmatch(logged, results["content"][0]["content"]), results
-            assert re.fullmatch(logged, results["content"][2]["content"]), results
+            assert re.fullmatch(logged + re.escape(stamp(1)), results["content"][0]["content"]), \
+                results
+            assert results["content"][1]["content"].endswith(stamp(2)), results
+            assert re.fullmatch(logged + re.escape(stamp(3)), results["content"][2]["content"]), \
+                results
             messages = doze(ai, [messages_turn([("tool", "t1", "timer", '{"seconds":1}')]),
                                  messages_turn([("text", "Waiting.")], "end_turn"),
                                  messages_turn([("text", "A")], "end_turn")], "messages")
@@ -12909,8 +12971,9 @@ def check_turn_apis(binary, up):
             assert contents[2]["role"] == "user" and len(contents) == 3, contents
             assert [p["functionResponse"]["name"] for p in parts] == ["git", "git"] and \
                 all("id" not in p["functionResponse"] for p in parts), parts
-            assert re.fullmatch(logged, parts[0]["functionResponse"]["response"]["output"]), \
-                parts
+            assert re.fullmatch(logged + re.escape(stamp(1)),
+                                parts[0]["functionResponse"]["response"]["output"]), parts
+            assert parts[1]["functionResponse"]["response"]["output"].endswith(stamp(2)), parts
             contents = third["body"]["contents"]
             assert contents[3] == {"role": "model", "parts": [
                 {"text": "More."}, {"functionCall": call | {"id": "g3"}}]}, contents
@@ -13054,10 +13117,10 @@ def check_turn_apis(binary, up):
             assert b'"signature":"c2ln/+1="}' in second["raw"], second["raw"]
             assert [(g["type"], g["name"], g["call_id"]) for g in given[6:]] == \
                 [("function_result", "git", c) for c in ("c1", "c2", "c3")], given
-            assert re.fullmatch(logged, given[6]["result"]), given
+            assert re.fullmatch(logged + re.escape(stamp(1)), given[6]["result"]), given
             assert given[7]["result"] == "The arguments were not a JSON object. " \
-                "The call was not run.", given
-            assert re.fullmatch(logged, given[8]["result"]), given
+                "The call was not run." + stamp(2), given
+            assert re.fullmatch(logged + re.escape(stamp(3)), given[8]["result"]), given
             assert [sorted(g) for g in given[6:]] == \
                 [["call_id", "name", "result", "type"]] * 3, given
             given = third["body"]["input"]
@@ -13502,8 +13565,9 @@ def check_turns(binary, up):
         when = r"\d{4}-\d\d-\d\d \d\d:\d\d UTC"
 
         def turns(request):
-            """The messages after the prompt's."""
-            return request["body"]["messages"][1:]
+            """The messages after the prompt's, the results without their
+            stamps (unstamped())."""
+            return unstamped(request["body"]["messages"][1:])
 
         def prompt(request):
             return request["body"]["messages"][0]["content"]
@@ -13745,8 +13809,10 @@ def check_turns(binary, up):
             texts = {"strip/a.md": ("a" + provenance, "a\n"),
                      "strip/f.md": ("f" + provenance + "\n" + provenance + "\n", "f\n"),
                      "strip/g.md": ("g" + reminder, "g\n"),
+                     "strip/h.md": ("h" + stamp(12) + provenance + stamp(3), "h\n"),
                      "strip/b.md": ("b " + provenance[2:], None),
                      "strip/c.md": ("c" + provenance + "\n\nmore", None),
+                     "strip/i.md": ("i" + stamp(3) + "\n\nmore", None),
                      "strip/d.md": ("d\n\n[askai: notebook nobody]", None)}
             calls = [(f"s{k}", "notes", json.dumps({"action": "add", "file": name,
                                                     "text": text}))
@@ -13875,8 +13941,9 @@ def check_turns(binary, up):
                 int(cut.group(3)) == n and shown[head:head + n] == whole[:n], cut
 
         # A turn that writes a result back into its note leaves out the
-        # notices that askai gave the result: the notebook of a read, a
-        # notice about the context, and the notice of the last turn.
+        # notices that askai gave the result: the notebook of a read, the
+        # stamp of the call, a notice about the context, and the notice of
+        # the last turn.
         with Askai(binary, *isolated("--context", "8000", "--max-turns", "3")) as ai:
             book = f"{notes}-{sessions}"
             last = re.escape("\n\n[askai: your next turn is your last turn. Answer "
@@ -13893,10 +13960,10 @@ def check_turns(binary, up):
                         {"action": "read", "file": name}))], used=(used, 10)))]
                 count = len(up.requests)
                 assert ai.ask("Q")["content"][0]["text"] == "A"
-                seen = turns(up.requests[count + 2])[-1]["content"]
-                assert re.fullmatch("kept\n" + re.escape(provenance) + r"\n\n\[askai: your "
-                                    r"context is \d+% full, \d+ of 8000 tokens\. " + notice +
-                                    r"\]" + last, seen), seen
+                seen = up.requests[count + 2]["body"]["messages"][-1]["content"]
+                assert re.fullmatch("kept\n" + re.escape(provenance + stamp(2)) +
+                                    r"\n\n\[askai: your context is \d+% full, \d+ of 8000 "
+                                    r"tokens\. " + notice + r"\]" + last, seen), seen
                 before = tip(book=book)
                 script[:] = [lambda r, name=name, seen=seen: (200, turn_stream([(
                     "c", "notes", json.dumps({"action": "replace", "file": name,
@@ -14219,6 +14286,42 @@ def check_turns(binary, up):
             results = turns(up.requests[count + 1])[1:]
             assert [m["tool_call_id"] for m in results] == ["p0", "p1", "p2"], results
             assert result["content"][1]["text"].count("- git ") == 3, result
+
+            # The note of each result of a turn's call ends with the stamp of
+            # the call. The calls of an ask call count up from c1 in call
+            # order, across turns and compactions, whatever order they end
+            # in: the slow git call c1 ends after the calls c2 to c5. A
+            # failed call, a refused call and a call whose arguments are no
+            # object get a stamp too. The calls after a compact call do not
+            # run, but use up their numbers.
+            script[:] = [
+                lambda r: (200, turn_stream([("s1", "git", slow), ("s2", "git", log),
+                                             ("s3", "nope", "{}"),
+                                             ("s4", "git", '{"repo":"nope","command":"log"}'),
+                                             ("s5", "git", "[1]")])),
+                lambda r: (200, turn_stream([("s6", "git", log), ("s7", "notes", json.dumps(
+                    {"action": "add", "file": "c.md", "text": "c"}))])),
+                lambda r: (200, turn_stream([("s8", "compact", '{"summary":"S"}'),
+                                             ("s9", "git", log)])),
+                lambda r: (200, turn_stream([("s10", "git", log)]))]
+            count = len(up.requests)
+            assert ai.ask("Q")["content"][0]["text"] == "A"
+            asked = [[m for m in r["body"]["messages"] if m["role"] == "tool"]
+                     for r in up.requests[count:]]
+            assert len(asked) == 5 and not asked[3], asked
+            stamped = [(m["tool_call_id"], unstamp(m["content"])) for m in asked[1]]
+            assert [(cid, n) for cid, (_, n) in stamped] == [
+                (f"s{n}", n) for n in range(1, 6)], stamped
+            assert all(m["content"].endswith(stamp(k)) for k, m in enumerate(asked[1], 1)), \
+                asked[1]
+            assert [text for _, (text, _) in stamped] == [
+                "[No output.]", stamped[1][1][0], "The tool name is unknown, or the tool is "
+                "not available to you.", "The repo argument must be proj.", "The arguments "
+                "were not a JSON object. The call was not run."], stamped
+            assert re.fullmatch(r"[0-9a-f]{7} first\n", stamped[1][1][0]), stamped
+            assert [unstamp(m["content"])[1] for m in asked[2]] == list(range(1, 8)), asked[2]
+            assert [(m["tool_call_id"], unstamp(m["content"])[1]) for m in asked[4]] == \
+                [("s10", 10)], asked[4]
 
             # A job in the background, and timers: background starts git and
             # answers at once; a wait for the job ends as it finishes, with the
@@ -14620,10 +14723,11 @@ def check_review(binary, up):
         up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
 
         def results(request):
-            """The results of the calls of the last turn in @p request."""
+            """The results of the calls of the last turn in @p request,
+            without their stamps (unstamped())."""
             messages = request["body"]["messages"]
             last = max(k for k, m in enumerate(messages) if m["role"] == "assistant")
-            return [m["content"] for m in messages[last + 1:]]
+            return [m["content"] for m in unstamped(messages[last + 1:])]
 
         def prompt(request):
             return request["body"]["messages"][0]["content"]
@@ -15649,8 +15753,8 @@ def check_plugin(binary, up, plugin):
                 ["man", "test_echo", "test_state", "test_misuse", "compact", "findings",
                  "background", "jobs", "wait", "timer"], first
             assert [m["content"] for m in second["body"]["messages"][2:]] == \
-                ["The seconds argument must be a whole number from 1 to 3600.",
-                 "x"], second
+                ["The seconds argument must be a whole number from 1 to 3600." + stamp(1),
+                 "x" + stamp(2)], second
             assert answer == "A" and '- test_echo {"text":"x"}: 1 bytes\n' in trace, \
                 trace
             assert total(ai.metrics(), "askai_turn_tool_calls_total",
@@ -15968,7 +16072,7 @@ def check_instances(binary, up, plugin):
             assert status == 200 and not body["result"].get("isError"), (status, body)
             second = up.requests[count:][1]
             assert second["body"]["messages"][2]["content"] == \
-                f"principal={alice} instance={hers} calls=4 last=", second
+                f"principal={alice} instance={hers} calls=4 last=" + stamp(1), second
             up.reply = hold
             assert state(ai, "alice") == (alice, hers, 5, "turn")
             assert state(ai, "bob") == (bob, his, 4, "")
@@ -16027,8 +16131,8 @@ def check_instances(binary, up, plugin):
             status, _, body = asked[0]
             assert status == 200 and not body["result"].get("isError"), (status, body)
             told = up.requests[count:][1]["body"]["messages"][2]["content"]
-            assert re.fullmatch(rf"principal={alice} instance=\S+ calls=1 last=",
-                                told), told
+            assert re.fullmatch(rf"principal={alice} instance=\S+ calls=1 last=" +
+                                re.escape(stamp(1)), told), told
             assert state(ai, "alice")[1:] == (mine[1], 2, "mine")
 
         # The policy has no identities, so every TCP client is anonymous.

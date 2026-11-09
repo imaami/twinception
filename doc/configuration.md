@@ -877,7 +877,10 @@ with `upstream-tools` in three ways:
 
 - A tool result in a turn is a window of an eighth of the context, counted
   at 4 bytes per token, but at least 2 KiB and at most 64 KiB. Without a
-  known context size, the window is 64 KiB.
+  known context size, the window is 64 KiB. The note after the window
+  contains the number of the call, such as `[askai: call c7]`, counted in
+  call order across the turns of the `ask_ai` call. The notices about the
+  context and the last turn follow the number.
 - `askai` adds the notices of section [How to turn on
   compaction](#how-to-turn-on-compaction).
 - `askai` compacts the conversation when the counted tokens reach the
@@ -1625,14 +1628,14 @@ same commit on top of the other change, with at most 3 tries in all.
 Otherwise the write fails, and its result says to read the current note
 and retry. No write overwrites another writer's changes.
 When a turn writes text whose last lines are askai's own notices from tool
-results, such as `[askai: notebook ...]` or the context notices, askai
-leaves those lines out and says so in the result. Notices inside the
-text, and text from clients, stay as they are. askai adds a line feed to
-a turn's text that does not end with one. askai refuses a turn's text that
-contains `</function>` and later `</tool_call>` or `<tool_call>`, and
-writes nothing. The text argument of such a call ended early, and the next
-tool call of the turn became part of the text. Text from clients is not
-checked.
+results, such as `[askai: notebook ...]`, `[askai: call c7]` or the context
+notices, askai leaves those lines out and says so in the result. Notices
+inside the text, and text from clients, stay as they are. askai adds a line
+feed to a turn's text that does not end with one. askai refuses a turn's
+text that contains `</function>` and later `</tool_call>` or `<tool_call>`,
+and writes nothing. The text argument of such a call ended early, and the
+next tool call of the turn became part of the text. Text from clients is
+not checked.
 `search` lists the lines of the current notes that match `pattern`, whose
 lines are extended regular expressions, case ignored.
 `list` shows each current file once, with its byte count and blob identity;

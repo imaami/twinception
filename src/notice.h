@@ -1,11 +1,11 @@
 /** @file notice.h
  *
  * The [askai: ...] notices that askai appends to the results of a turn's
- * tool calls, after a blank line: the notebook of a read, the two notices
- * about the context, and the notice of the last turn. A turn can copy a
- * result into a note, and notice_kept() finds the notices at the end of
- * such a text by the same formats. notice_markup() finds the markup of a
- * tool call in the text of a turn.
+ * tool calls, after a blank line: the notebook of a read, the number of
+ * the call, the two notices about the context, and the notice of the last
+ * turn. A turn can copy a result into a note, and notice_kept() finds the
+ * notices at the end of such a text by the same formats. notice_markup()
+ * finds the markup of a tool call in the text of a turn.
  */
 #ifndef ASKAI_SRC_NOTICE_H_
 #define ASKAI_SRC_NOTICE_H_
@@ -14,6 +14,7 @@
 #include <stddef.h>
 
 #define NOTICE_NOTEBOOK "[askai: notebook %s]"
+#define NOTICE_CALL     "[askai: call c%" PRIu32 "]"
 #define NOTICE_COMPACT                                                         \
         "[askai: your context is %" PRIu64 "%% full, %" PRIu64 " of %" PRIu64  \
         " tokens. Note what you need to keep, then call compact.]"

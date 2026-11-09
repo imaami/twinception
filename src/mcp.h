@@ -441,6 +441,14 @@ mcp_slot_review (struct mcp_slot const *slot);
 extern uint32_t
 mcp_slot_turn (struct mcp_slot const *slot);
 
+/** Returns the number N of a turn's call, as the stamp [askai: call cN] of
+ *  its result says, or 0 for the call of a client or a job. The calls of
+ *  an ask call are numbered from 1 in call order across its turns. This
+ *  function is not exported.
+ */
+extern uint32_t
+mcp_slot_call (struct mcp_slot const *slot);
+
 /** Stores a copy of @p src, which describes the numbered lines of a
  *  committed file in the call's output, written or lent, for the review
  *  record of the ask call (review_pending_add()). It stores nothing if
