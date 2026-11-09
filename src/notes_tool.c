@@ -1567,18 +1567,18 @@ notes_tool_got_attach (struct mcp_slot  *slot,
 	}
 	dstr_auto view = DSTR_INIT;
 	if (binary) {
-		/* Measure the view before making it, so that askai makes no view
-		 * that is longer than STORE_MAX. */
+		/* One pass makes the view and measures all of it. The view stops
+		 * soon after STORE_MAX + 1 bytes, so askai makes no long view of
+		 * a note that it does not attach. */
 		size_t len = 0;
-		(void)notes_tool_view(&view, body, 0, &len);
+		if (notes_tool_view(&view, body, STORE_MAX + 1, &len)) {
+			notes_tool_end(slot, ENOMEM, true);
+			return;
+		}
 		if (len > STORE_MAX) {
 			mcp_slot_tellf(slot, TOOL_FAILED, "The note is too large to attach. The view "
 			               "of the note would be %zu bytes. The upload limit is %d MiB. "
 			               "read shows the note in parts.", len, STORE_MAX >> 20);
-			return;
-		}
-		if (notes_tool_view(&view, body, SIZE_MAX, nullptr)) {
-			notes_tool_end(slot, ENOMEM, true);
 			return;
 		}
 		body = cstr_view_dstr(&view);
