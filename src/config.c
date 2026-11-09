@@ -2295,9 +2295,9 @@ config_allow (struct config *cfg)
 }
 
 /* The ask tool's description, unless one is given: with the sentences
- * about tools and notes if the turns of a role that grants every tool get
- * any tool and the tool notes. With --agent, every sentence names the
- * agent of this askai (config_session()).
+ * about tools, notes and findings if the turns of a role that grants every
+ * tool get any tool, the tool notes and the tool findings. With --agent,
+ * every sentence names the agent of this askai (config_session()).
  */
 static int
 config_description (struct config *cfg)
@@ -2307,6 +2307,7 @@ config_description (struct config *cfg)
 	struct config const *run = config_run(cfg);
 	tool_mask lent = mcp_lent(run, ~(tool_mask)0, ~(tool_mask)0);
 	tool_mask notes = config_tool_bit(&run->registry, CSTR_VIEW("notes"));
+	tool_mask both = notes | config_tool_bit(&run->registry, CSTR_VIEW("findings"));
 	char const *who = "another AI model";
 	char const *on = "";
 	char const *model = "";
@@ -2319,8 +2320,8 @@ config_description (struct config *cfg)
 	int e = 0;
 	if (!agent) {
 		e = config_aprintf(&cfg->description, "Send a question or a task to %s%s. The other "
-		                   "AI cannot see this conversation, your files or your tools. Write "
-		                   "a complete prompt.%s Use the other AI for a second opinion, for "
+		                   "AI cannot see your chat, your files or your tools. Write a "
+		                   "complete prompt.%s Use the other AI for a second opinion, for "
 		                   "hard problems, or for knowledge you lack.", who, model,
 		                   lent ? " The other AI can call some tools of this server. The "
 		                          "result lists the tool calls after the answer." : "");
@@ -2329,15 +2330,21 @@ config_description (struct config *cfg)
 		                                   "result lists the tool calls after the answer.";
 		static char const notes_format[] = " %s keeps notes in the session. Each call starts "
 		                                   "with the notes of %s.";
+		static char const findings_format[] =
+			" %s keeps notes and findings in the session. Each call starts with the "
+			"notes of %s and the open findings of %s in the conversation.";
 		char tools_text[sizeof tools_format + UTIL_WORD_MAX] = "";
-		char notes_text[sizeof notes_format + 2 * UTIL_WORD_MAX] = "";
+		char notes_text[sizeof findings_format + 3 * UTIL_WORD_MAX] = "";
 		if (lent)
 			util_format(tools_text, sizeof tools_text, tools_format, agent);
-		if (lent & notes)
+		if ((lent & both) == both)
+			util_format(notes_text, sizeof notes_text, findings_format, agent, agent,
+			            agent);
+		else if (lent & notes)
 			util_format(notes_text, sizeof notes_text, notes_format, agent, agent);
 		e = config_aprintf(&cfg->description, "Send a question or a task to the agent %s%s%s. "
-		                   "%s cannot see this conversation, your files or your tools. Write "
-		                   "a complete prompt.%s%s Ask %s for a second opinion, for hard "
+		                   "%s cannot see your chat, your files or your tools. Write a "
+		                   "complete prompt.%s%s Ask %s for a second opinion, for hard "
 		                   "problems, or for knowledge you lack.", agent, on, model, agent,
 		                   tools_text, notes_text, agent);
 	}

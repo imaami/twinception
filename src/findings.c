@@ -683,6 +683,7 @@ findings_committed (struct mcp_slot *slot)
 			ok = findings_cited(call, id);
 		if (ok && oid_len(&commit))
 			ok = dstr_printf(&call->out, " Commit %.8s.", commit.hex);
+		(void)mcp_slot_noted(slot);
 		findings_end(slot, ok ? 0 : ENOMEM, false);
 		return;
 	}

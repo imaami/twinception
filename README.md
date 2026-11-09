@@ -223,7 +223,7 @@ While work continues, this returns a successful pending message and asks
 the client to check again later. Once the job ends, it returns the original
 answer or error. `{"job": "ID_FROM_THE_FIRST_REPLY", "action": "cancel"}`
 cancels the job. `action` defaults to `result`. Do not combine `job` with
-`prompt`, `system` or `thread`. The tool's description explains this protocol,
+`prompt`, `system` or `conversation`. The tool's description explains this protocol,
 including when `--tool-description` supplies its other instructions.
 
 Neither `--client-jobs` nor a grant of the generic `jobs` tool is needed.
@@ -714,7 +714,13 @@ their signatures among them. Each turn waits for an upstream slot like any
 call, so the scheduler's fairness holds
 turn by turn. The caller gets the answer, and a second text that lists the calls the turns made, with their arguments (but
 those of `notes`, `compact` and `findings`, which are the model's own) and the bytes of
-each output. With a `progressToken`, its notifications say the turn and the
+each output. If the turns wrote a note or a finding, the second text ends
+with the conversation, such as "bro wrote in the session. Give
+conversation 6817…6172 to continue the work." An `ask_ai` call with
+`conversation` continues the conversation, and one without starts a new
+conversation. The argument `conversation` needs `notes`. The argument
+`thread` of earlier versions is refused, and the refusal names
+`conversation`. With a `progressToken`, its notifications say the turn and the
 tool being called. `--max-turns` (32) bounds the turns: the turn before the
 last is told so, and a last answer that still calls tools ends the call, as an
 error if it has no text. A `notifications/cancelled` from the caller of the
@@ -788,8 +794,8 @@ or in the last turn, ends the call, and its jobs and timers with it.
 `compact` takes a summary: the conversation after the prompt, its turns and
 the tools' results, goes, and `askai` adds to the prompt, in brackets, the
 summary, the note history, the current text of the most recently written
-note, and with `findings` the open findings of the agent in the thread and
-the calls that a finding can cite; calls after `compact` in the same turn
+note, and with `findings` the open findings of the agent in the
+conversation and the calls that a finding can cite; calls after `compact` in the same turn
 do not run.
 Should the context fill up all the same, as the upstream says (llama-server's
 "exceeds the available context size", or a "context length" or "context
@@ -855,8 +861,8 @@ finding is one more than the highest number on the branch when the commit
 is made. If another ask call of the agent changes the branch at the same
 time, `askai` reads the branch again and makes the commit again, three
 commits at most. Each ask call and each compaction starts with the open
-findings of the agent in the thread, newest first, within a tool's
-window, and the number of its open findings in other threads. The notice
+findings of the agent in the conversation, newest first, within a tool's
+window, and the number of its open findings in other conversations. The notice
 after the summary of a compaction states that the system text, the
 client's messages and the prompt stay word for word, so the model need
 not copy the task into notes. Nothing prunes the branch, just as nothing
@@ -922,7 +928,7 @@ member. The message says what the write did, the note's name and its size
 before and after, such as `Replace "plan.md" (1234 to 1302 bytes)`;
 previous versions remain in history. The commit of a turn ends with the
 trailer lines `Ask:`, the ID of the ask call, `Call:`, the number of the
-turn's call that made the commit, `Conversation:`, its thread, and
+turn's call that made the commit, `Conversation:`, its conversation, and
 `Asked-by:`, the member whose client made the ask call, if it has a name.
 `history` and the prompt show the asker as `, asked by NAME`. The
 result names the new commit and repeats its message. If the write changed a
@@ -2042,7 +2048,7 @@ With `--verbose`, `askai` also logs these lines:
 - each call of `background` by a client, as the job starts: the client, the
   id of the job and the tool that the job calls.
 - each ask call as it starts: its number, `LOOP.N`, its client, the size of
-  its prompt, its thread of notes and the start of the prompt as a JSON
+  its prompt, its conversation and the start of the prompt as a JSON
   string of at most 100 bytes. The lines of the call's turns begin with
   `ask call LOOP.N turn T`, and the line of the call's end has the number
   too.
@@ -2061,7 +2067,7 @@ The text of a note and the summary of `compact` are logged only by their
 sizes. These are the lines of an ask call whose first turn calls two tools:
 
 ```text
-ask call 1.1 from anonymous loopback (role user): prompt 85 bytes, thread b73f6f9a14edb9977c9aa00761470f26 (new), "What is in the repository? Use git to look at its log, and keep a plan in your notes."
+ask call 1.1 from anonymous loopback (role user): prompt 85 bytes, conversation b73f6f9a14edb9977c9aa00761470f26 (new), "What is in the repository? Use git to look at its log, and keep a plan in your notes."
 ask call 1.1 turn 1: answered, HTTP 200 after 2.4 s, 1230 of 8192 tokens (15 %), stop reason "tool_calls", 2 tool calls, 8 bytes of text
 ask call 1.1 turn 1: tool call git answered after 0.1 s (14 bytes); arguments {"repo":"proj","command":"log","options":["--oneline"]}
 ask call 1.1 turn 1: tool call notes answered after 0.0 s (6 bytes); arguments {"action":"add","file":"plan.md","text":"(210 bytes)"}

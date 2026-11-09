@@ -308,7 +308,7 @@ The model calls `compact` with a summary of at most 4 MiB. `askai` then
 removes the conversation after the prompt, and adds the summary, the notices of
 the agent and of the members of the session, the note history of the agent,
 the newest note, and with `findings` the open findings of the agent in the
-thread and the calls that a finding can cite (section [Findings](#findings))
+conversation and the calls that a finding can cite (section [Findings](#findings))
 to the prompt. A newest note longer than a
 tool result in a turn (section [`context`](#context)) is cut there, with the
 offset from which the model reads on with `notes`.
@@ -360,12 +360,12 @@ it to the upstream. Without `notes`, the turns get no `findings`. A
 finding is a claim of the agent of `askai` about material that `askai`
 showed it, with an ID such as `bro#5`: the name of the agent, `#`, and a
 number that counts the findings of the agent from 1. The ID stays the
-same in every `ask_ai` call. A finding has a claim, a state, the thread
-in which the agent added it, an optional `about`, the ID of the finding
-of another member that it checks, and a history of changes. The state
-of a finding is the state of its last change: `candidate`, `verified`,
-`disproved` or `retracted`. `candidate` and `verified` findings are
-open.
+same in every `ask_ai` call. A finding has a claim, a state, the
+conversation in which the agent added it, an optional `about`, the ID of
+the finding of another member that it checks, and a history of changes.
+The state of a finding is the state of its last change: `candidate`,
+`verified`, `disproved` or `retracted`. `candidate` and `verified`
+findings are open.
 
 - `add` records a finding with a claim, and a state, `candidate` unless
   the model gives another.
@@ -444,9 +444,9 @@ Nothing prunes the branch. The review records of earlier versions under
 `refs/review/` stay where they are, and `askai` does not read them.
 
 Each `ask_ai` call and each compaction starts with the open findings of
-the agent in the thread, newest first, within the window of a tool
+the agent in the conversation, newest first, within the window of a tool
 result in a turn (section [`context`](#context)), and the number of the
-open findings of the agent in other threads. After a compaction, a
+open findings of the agent in other conversations. After a compaction, a
 notice names the calls that a finding can cite, and another the items
 that the turns saw, at most 64 by ID. A notice after the
 summary of a compaction states that `askai` keeps the task word for word
@@ -930,8 +930,8 @@ The value is a string. `askai` computes the default from `model`,
 `upstream-tools` and `tools.notes.directory`:
 
 > Send a question or a task to another AI model. The other AI cannot see
-> this conversation, your files or your tools. Write a complete prompt. Use
-> the other AI for a second opinion, for hard problems, or for knowledge you
+> your chat, your files or your tools. Write a complete prompt. Use the
+> other AI for a second opinion, for hard problems, or for knowledge you
 > lack.
 
 With `model` set to M, the first sentence ends with "to the AI model M". If
@@ -941,17 +941,20 @@ answer." after the third sentence. With an [`agent`](#agent) NAME, every
 sentence names the agent instead:
 
 > Send a question or a task to the agent NAME, on the AI model M. NAME
-> cannot see this conversation, your files or your tools. Write a complete
-> prompt. NAME can call some tools of this server. The result lists the
-> tool calls after the answer. NAME keeps notes in the session. Each call
-> starts with the notes of NAME. Ask NAME for a second opinion, for hard
-> problems, or for knowledge you lack.
+> cannot see your chat, your files or your tools. Write a complete prompt.
+> NAME can call some tools of this server. The result lists the tool calls
+> after the answer. NAME keeps notes and findings in the session. Each
+> call starts with the notes of NAME and the open findings of NAME in the
+> conversation. Ask NAME for a second opinion, for hard problems, or for
+> knowledge you lack.
 
 Without `model`, the first sentence ends after NAME. The sentences about
 tools are there if the turns can get a tool, and the sentences about notes
-if they can get `notes`. The turns can get a tool with `upstream-tools`,
-when `askai` offers a tool that it can lend and `tools` allows the
-upstream that tool.
+and findings if they can get `notes` and `findings`. With `notes` and
+without `findings`, the sentences are "NAME keeps notes in the session.
+Each call starts with the notes of NAME." The turns can get a tool with
+`upstream-tools`, when `askai` offers a tool that it can lend and `tools`
+allows the upstream that tool.
 
 ### MCP server and listeners, in `service`
 
@@ -1391,7 +1394,7 @@ For the upstream model, `tools` has these effects:
   `compact`, `findings`, `jobs`, `wait` or `timer`, and an `ask_ai` call is
   one upstream request.
 - Without `notes` in the turns, an `ask_ai` call refuses the argument
-  `thread`, and the ask tool does not list it. From two thirds of the
+  `conversation`, and the ask tool does not list it. From two thirds of the
   context on, the notice to call `compact` comes only when the turns have
   `compact`.
 - Without `upstream-tools`, the turns get no tool, whatever `tools`

@@ -719,13 +719,13 @@ struct mcp_req {
 	                                    client's job */
 	uint8_t              forced;     /* compactions askai made since a turn
 	                                    went through */
-	uint8_t              reminded;   /* the quarters of the context, 0 to 2,
+	uint16_t             reminded;   /* the quarters of the context, 0 to 2,
 	                                    at which the turns were last reminded
 	                                    to write notes, since the last
-	                                    compaction */
+	                                    compaction, widened over the
+	                                    padding */
 	struct hexid         archive;    /* the id of its job's records in the
 	                                    journal, if any */
-	struct hexid         thread;     /* the id of the thread of the notes */
 	char                 client[POLICY_WHO];  /* the client for the log,
 	                                             which mcp_begin() writes
 	                                             from its stream; "": an
@@ -1957,11 +1957,11 @@ mcp_req_tool_open (struct mcp_req   *req,
 }
 
 /* Close the result's text; then, for an ask call whose turns called tools,
- * or kept notes, what they called and how they ended, as a text of its own:
- * the calls left untold, whether they were stopped, and where the notes
- * are. A call without turns that get tools has no trace. A client's call
- * of the notes tool has no turns, and its thread does not belong to an ask
- * call.
+ * or wrote in the session, what they called and how they ended, as a text
+ * of its own: the calls left untold, whether they were stopped, and the
+ * conversation that continues the work. A call without turns that get
+ * tools has no trace. A client's call of the notes tool has no turns. A job
+ * resumed without --notes names no agent.
  */
 static int
 mcp_req_trace_put (struct mcp_req *req)
@@ -1973,9 +1973,12 @@ mcp_req_trace_put (struct mcp_req *req)
 	if (req->flags & REQ_STOPPED)
 		(void)util_text_printf(&tail, "The other AI was still calling tools at the limit "
 		                       "of %" PRIu32 " turns.\n", req->turn);
+	struct member_session const *session =
+		member_registry_session(req->mcp->st->notes_tool.members);
 	if (req->flags & REQ_BRANCH)
-		(void)util_text_printf(&tail, "The other AI saved notes in the shared session "
-		                       "repository. The ask-chain thread is %s.", req->thread.hex);
+		(void)util_text_printf(&tail, "%s wrote in the session. Give conversation %s to "
+		                       "continue the work.", session ? session->agent : "The agent",
+		                       req->member.conversation.hex);
 	char head[160];
 	struct mcp_piece intro = TEXT("The other AI called no tools.\n");
 	if (req->traced)
@@ -3886,8 +3889,8 @@ mcp_req_draft (struct mcp_req     *req,
 
 /** Logs, with --verbose, the start of the ask call of @p req with the
  *  prompt @p prompt. The line contains the client, the size and the start
- *  of the prompt, and the thread of the notes, if any. @p resume is true
- *  if the call goes on with an earlier thread.
+ *  of the prompt, and the conversation, if any. @p resume is true if the
+ *  call continues an earlier conversation.
  */
 static void
 mcp_req_log_ask (struct mcp_req const *req,
@@ -3898,13 +3901,13 @@ mcp_req_log_ask (struct mcp_req const *req,
 		return;
 	struct cstr_view text = jb_view(prompt);
 	char quoted[QUOTED(PROMPT_LOG)];
-	char thread[sizeof "thread  (resumed)" + HEXID_DIGITS] = "no thread";
-	if (*req->thread.hex)
-		util_format(thread, sizeof thread, "thread %s (%s)", req->thread.hex,
-		            resume ? "resumed" : "new");
+	char conversation[sizeof "conversation  (resumed)" + HEXID_DIGITS] = "no conversation";
+	if (*req->member.conversation.hex)
+		util_format(conversation, sizeof conversation, "conversation %s (%s)",
+		            req->member.conversation.hex, resume ? "resumed" : "new");
 	LOG(LOG_VERBOSE, "ask call %" PRIu64 ".%" PRIu64 " from %s: prompt %zu byte%s, %s, %s",
 	    req->mcp->loop->id, req->asked, mcp_req_client(req), text.len, util_s(text.len),
-	    thread, mcp_quote(quoted, sizeof quoted, text, PROMPT_LOG));
+	    conversation, mcp_quote(quoted, sizeof quoted, text, PROMPT_LOG));
 }
 
 static int mcp_req_background (struct mcp_req *req, uint32_t tool);
@@ -3944,21 +3947,22 @@ mcp_slot_resumed (struct mcp_slot *slot)
 
 /* Start a call that asks the upstream, with the arguments @p args, of the
  * class the request asks for, lending the turns the tools req->lent says,
- * if any: build its upstream request, then submit its job. The notes the turns keep, if askai keeps
- * them, go in the thread the call goes on with, else in a new one.
+ * if any: build its upstream request, then submit its job. With notes, the
+ * call continues the conversation of the argument conversation, or else
+ * starts a new conversation.
  */
 static void
 mcp_req_ask (struct mcp_req     *req,
              struct json_object *args,
              bool                background)
 {
-	static_assert(HEXID_DIGITS == 32, "update the problem text of the thread argument");
+	static_assert(HEXID_DIGITS == 32, "update the problem text of the conversation argument");
 	struct mcp_static const *st = req->mcp->st;
 	bool const notes = req->lent & st->lending.of[KIND_NOTES];
 	/* Argument problems go back to the model so it can correct itself. */
 	struct json_object *prompt = jb_get(args, "prompt");
 	struct json_object *system = jb_get(args, "system");
-	struct json_object *thread = jb_get(args, "thread");
+	struct json_object *conversation = jb_get(args, "conversation");
 	struct json_object *history = nullptr;
 	bool has_history = json_object_object_get_ex(args, "messages", &history);
 	char const *text = jb_view(prompt).data;
@@ -3970,12 +3974,12 @@ mcp_req_ask (struct mcp_req     *req,
 		? CSTR_VIEW("The messages argument must be an array of at most 1024 messages. "
 		            "Each message must be an object with only role (user or assistant) "
 		            "and content (a string).")
-		: !thread ? (struct cstr_view){}
-		: !notes ? CSTR_VIEW("The thread argument requires notes. The server stores no "
-		                     "notes for your calls.")
-		: hexid_init(&req->thread, jb_view(thread))
-		? CSTR_VIEW("The thread argument must be a thread ID from an earlier answer. A "
-		            "thread ID is 32 hexadecimal digits.")
+		: !conversation ? (struct cstr_view){}
+		: !notes ? CSTR_VIEW("The conversation argument requires notes. The server stores "
+		                     "no notes for your calls.")
+		: hexid_init(&req->member.conversation, jb_view(conversation))
+		? CSTR_VIEW("The conversation argument must be a conversation ID from an earlier "
+		            "answer. A conversation ID is 32 hexadecimal digits.")
 		: (struct cstr_view){};
 	if (problem.data) {
 		mcp_slot_result(&req->self, problem, true);
@@ -3987,15 +3991,14 @@ mcp_req_ask (struct mcp_req     *req,
 		else if (mcp_req_background(req, req->self.tool))
 			return;
 	}
-	/* A thread's id comes with notes only (the problems above). */
-	if (!thread && notes && hexid_make(&req->thread)) {
-		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot make a thread ID"),
+	/* A conversation comes with notes only (the problems above). */
+	if (!conversation && notes && hexid_make(&req->member.conversation)) {
+		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG("Cannot make a conversation ID"),
 		              nullptr, 0);
 		return;
 	}
-	req->member.conversation = req->thread;
 	req->asked = ++req->mcp->asked;
-	mcp_req_log_ask(req, prompt, thread != nullptr);
+	mcp_req_log_ask(req, prompt, conversation != nullptr);
 	mcp_req_wait(req);
 	int e = mcp_req_draft(req, prompt, system, history);
 	if (e) {
@@ -4006,13 +4009,13 @@ mcp_req_ask (struct mcp_req     *req,
 	if ((req->flags & (REQ_SSE_OK | REQ_DETACH_PENDING)) == REQ_SSE_OK)
 		mcp_req_stream(req);
 	/* Every ask starts with the notes of the agent, and with findings the
-	 * open findings of the agent in the thread. */
+	 * open findings of the agent in the conversation. */
 	mcp_req_dispose(req);
 	if (notes) {
 		notes_tool_loop_prompt(req->mcp->notes, &req->self, &req->self.answer,
 		                       NOTES_TOOL_RESUME, mcp_req_lend_max(req),
-		                       req->lent & st->lending.of[KIND_FINDINGS] ? &req->thread
-		                                                                 : nullptr,
+		                       req->lent & st->lending.of[KIND_FINDINGS]
+		                       ? &req->member.conversation : nullptr,
 		                       mcp_slot_resumed);
 		return;
 	}
@@ -5919,7 +5922,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 		"traced", json_object_new_int64(req->traced),
 		"calls", json_object_new_int64(req->calls_base),
 		"trace", jb_string(cstr_view_dstr(&req->trace)),
-		"thread", json_object_new_string(req->thread.hex),
+		"thread", json_object_new_string(req->member.conversation.hex),
 		"branch", json_object_new_boolean(req->flags & REQ_BRANCH),
 		"filing", json_object_new_boolean(req->flags & REQ_FILING),
 		"filed", json_object_new_uint64(req->filed),
@@ -6131,15 +6134,14 @@ mcp_recover_back (struct loop           *loop,
 	req->context = (uint32_t)jb_int(jb_get(state, "context"), 0);
 	req->traced = (uint32_t)jb_int(jb_get(state, "traced"), 0);
 	req->calls_base = req->seen->resumed;
-	req->reminded = (uint8_t)jb_int(jb_get(state, "reminded"), 0);
+	req->reminded = (uint16_t)jb_int(jb_get(state, "reminded"), 0);
 	req->forced = (uint8_t)jb_int(jb_get(state, "forced"), 0);
 	mcp_req_flag(req, REQ_BRANCH, json_object_get_boolean(jb_get(local, "branch")));
 	mcp_req_flag(req, REQ_FILING, json_object_get_boolean(jb_get(local, "filing")));
 	req->filed = jb_uint(jb_get(local, "filed"), 0);
 	req->replay_filed = last_tool_result ? req->filed : 0;
-	/* A saved thread that is not an id, such as "", is no thread. */
-	(void)hexid_init(&req->thread, jb_view(jb_get(state, "thread")));
-	req->member.conversation = req->thread;
+	/* A saved conversation that is not an id, such as "", is none. */
+	(void)hexid_init(&req->member.conversation, jb_view(jb_get(state, "thread")));
 	req->intents = intents;
 	req->flags |= REQ_RECOVERING;
 	req->asked = ++req->mcp->asked;
@@ -6473,7 +6475,7 @@ mcp_slot_step (struct loop      *loop,
  * prompt. If the turns are lent findings, a notice about the task of the
  * ask call follows the summary. The notices of the notes follow if the
  * turns are lent the notes tool, with the open findings of the agent in the
- * thread if the turns are lent findings. They are left out for a job
+ * conversation if the turns are lent findings. They are left out for a job
  * resumed without --notes.
  */
 static void
@@ -6492,7 +6494,8 @@ mcp_req_compact_notes (struct mcp_req *req)
 	if (req->lent & l->of[KIND_NOTES]) {
 		notes_tool_loop_prompt(req->mcp->notes, &req->self, &req->self.answer,
 		                       NOTES_TOOL_COMPACT, mcp_req_lend_max(req),
-		                       findings ? &req->thread : nullptr, mcp_slot_compacted);
+		                       findings ? &req->member.conversation : nullptr,
+		                       mcp_slot_compacted);
 		return;
 	}
 	mcp_req_go_on(req, CSTR_VIEW("\n\n"));
@@ -6621,15 +6624,18 @@ mcp_slot_ask (struct mcp_slot    *slot,
 	bool const has_action = background && json_object_object_get_ex(args, "action", &action);
 	size_t const act = cstr_view_index(actions, array_size(actions), jb_view(action));
 	struct cstr_view const problem =
-		has_override && (!json_object_is_type(override, json_type_boolean) ||
-		                 (want && (!background || stream)))
+		json_object_object_get_ex(args, "thread", nullptr)
+		? CSTR_VIEW("thread is now called conversation. Give the conversation from an "
+		            "earlier answer as conversation.")
+		: has_override && (!json_object_is_type(override, json_type_boolean) ||
+		                   (want && (!background || stream)))
 		? CSTR_VIEW("The background argument must be a boolean. true works only in "
 		            "server background mode and without live streaming.")
 		: job && (json_object_object_get_ex(args, "prompt", nullptr) ||
 		          json_object_object_get_ex(args, "system", nullptr) ||
 		          json_object_object_get_ex(args, "messages", nullptr) ||
 		          has_override || stream ||
-		          json_object_object_get_ex(args, "thread", nullptr) ||
+		          json_object_object_get_ex(args, "conversation", nullptr) ||
 		          json_object_object_get_ex(args, "timer", nullptr))
 		? CSTR_VIEW("With job, give no argument other than action. A call with job "
 		            "cannot stream.")
@@ -7744,8 +7750,8 @@ mcp_drain (struct mcp *mcp)
 
 /** Returns the definition of the ask tool. @p service is the mcp_static,
  *  which contains the configured name and description of the tool. The
- *  definition contains the argument thread if the turns can be lent the
- *  notes tool, which requires --notes and --upstream-tools.
+ *  definition contains the argument conversation if the turns can be lent
+ *  the notes tool, which requires --notes and --upstream-tools.
  */
 static struct json_object *
 mcp_tool_definition (void const *service)
@@ -7777,11 +7783,10 @@ mcp_tool_definition (void const *service)
 			"without live streaming."),
 		nullptr);
 	if (st->lending.of[KIND_NOTES])
-		props = jb_set_or_free(props, "thread", schema_property("string",
-			"An ask-chain thread ID from an earlier answer, 32 hexadecimal "
-			"digits. Every call starts with the notes of the agent, with or "
-			"without thread. With findings, the call also starts with the open "
-			"findings of the agent in the thread."));
+		props = jb_set_or_free(props, "conversation", schema_property("string",
+			"The conversation from an earlier answer, 32 hexadecimal digits. The "
+			"call then continues the conversation. Without conversation, the call "
+			"starts a new conversation."));
 	if (st->ep->background) {
 		props = jb_set_or_free(props, "job", schema_property("string",
 			"A job ID that an earlier call returned. Give job instead of prompt "

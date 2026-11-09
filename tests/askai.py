@@ -962,9 +962,9 @@ def check_legacy_session(binary, up):
         tool, = body["result"]["tools"]
         # Without --agent, the description names the other AI.
         assert tool["name"] == "ask_ai" and tool["description"] == (
-            "Send a question or a task to the AI model m. The other AI cannot see this "
-            "conversation, your files or your tools. Write a complete prompt. Use the other "
-            "AI for a second opinion, for hard problems, or for knowledge you lack."), tool
+            "Send a question or a task to the AI model m. The other AI cannot see your "
+            "chat, your files or your tools. Write a complete prompt. Use the other AI for "
+            "a second opinion, for hard problems, or for knowledge you lack."), tool
         assert tool["inputSchema"]["required"] == ["prompt"]
 
         assert text_of(ai.ask("What is 6*7?")) == "A"
@@ -1858,7 +1858,7 @@ def check_client_jobs(binary, up):
                     values["askai_mcp_waits"] == 0, values
                 assert [re.sub(r"\d+\.\d+", "N", re.sub(r"[0-9a-f]{32}", "ID", line))
                         for line in ai.log if "SECRET" in line] == [
-                    'ask call N from anonymous: prompt 6 bytes, no thread, '
+                    'ask call N from anonymous: prompt 6 bytes, no conversation, '
                     '"SECRET"\n',
                     "tool call ask_ai from anonymous answered after N s (1 byte); "
                     "job ID; ask call N, 1 turn, 0 tool calls; arguments "
@@ -2171,7 +2171,9 @@ def check_background(binary, up):
                           for value in (None, 2, "short")],
                         *[({"job": jid, key: None}, "With job, give no argument other than "
                            "action. A call with job cannot stream.")
-                          for key in ("prompt", "system", "thread", "timer")]):
+                          for key in ("prompt", "system", "conversation", "timer")],
+                        ({"job": jid, "thread": None}, "thread is now called conversation. "
+                         "Give the conversation from an earlier answer as conversation.")):
                     refused(ai, args, message, **alice)
                 assert len(up.requests) == count
                 stream.release.set()
@@ -5435,18 +5437,24 @@ def check_allow(binary, up):
                 assert [t["name"] for t in listed] == clients, (tools, listed)
                 assert lent(ai) == turns, (tools, up.requests[-1]["body"])
                 # The default description of the ask tool, and its argument
-                # thread, follow what the turns get.
+                # conversation, follow what the turns get.
                 ask = listed[0]
                 assert ("ask_ai can call some tools of this server" in ask["description"],
                         " ask_ai keeps notes in the session. Each call starts with the notes "
                         "of ask_ai." in ask["description"],
+                        " ask_ai keeps notes and findings in the session. Each call starts "
+                        "with the notes of ask_ai and the open findings of ask_ai in the "
+                        "conversation." in ask["description"],
+                        "conversation" in ask["inputSchema"]["properties"],
                         "thread" in ask["inputSchema"]["properties"]) == \
-                    (bool(turns), "notes" in turns, "notes" in turns), (tools, ask)
+                    (bool(turns), "notes" in turns and "findings" not in turns,
+                     "notes" in turns and "findings" in turns, "notes" in turns, False), \
+                    (tools, ask)
                 if turns and "notes" not in turns:
                     _, _, body = ai.rpc("tools/call", {"name": "ask_ai", "arguments": {
-                        "prompt": "Q", "thread": "0" * 32}})
-                    assert "The thread argument requires notes." in text_of(body["result"]), \
-                        (tools, body)
+                        "prompt": "Q", "conversation": "0" * 32}})
+                    assert text_of(body["result"]) == "The conversation argument requires " \
+                        "notes. The server stores no notes for your calls.", (tools, body)
                 report = [item.split() for item in ai.listed("built-in tools for clients:")]
                 off = [item[0] for item in report if item[1:] == ["off", "(tools)"]]
                 assert off == [t for t in ["man", "git", "notes", "findings", *jobs]
@@ -6073,7 +6081,7 @@ def check_logs(binary, up):
             ]
             assert ai.ask("x" * 300)["content"][0]["text"] == "A"
             start = ai.wait_log(r'^ask call \d+\.\d+ from identity ASKAI_TOKEN: prompt 300 '
-                                r'bytes, thread [0-9a-f]{32} \(new\), "x{100}"\.\.\.$')
+                                r'bytes, conversation [0-9a-f]{32} \(new\), "x{100}"\.\.\.$')
             call = re.escape(re.search(r"ask call (\d+\.\d+)", start).group(1))
             for pattern in (
                     r'turn 1: answered, HTTP 200 after \d+\.\d s, 5510 of 8000 tokens '
@@ -6133,23 +6141,24 @@ def check_logs(binary, up):
             ai.wait_log(r'^tool call ask_ai from identity ASKAI_TOKEN failed after \d+\.\d s '
                         r'\(\d+ bytes\); ask call \d+\.\d+, 1 turn, 0 tool calls; arguments '
                         r'\{"prompt":"Q"\}; error "Upstream error \(HTTP 401\): no"$')
-            # A new thread, a reminder to write notes, and the thread resumed.
+            # A new conversation, a reminder to write notes, and the
+            # conversation resumed.
             script[:] = [lambda r: (200, turn_stream([("a", "notes", '{"action":"list"}')],
                                                      used=(2100, 10)))]
             ai.log.clear()
             ai.ask("Q")
             start = ai.wait_log(r'^ask call \d+\.\d+ from identity ASKAI_TOKEN: prompt 1 byte, '
-                                r'thread [0-9a-f]{32} \(new\), "Q"$')
+                                r'conversation [0-9a-f]{32} \(new\), "Q"$')
             call = re.escape(re.search(r"ask call (\S+) ", start).group(1))
-            thread = re.search(r"thread (\w{32})", start).group(1)
+            conversation = re.search(r"conversation (\w{32})", start).group(1)
             ai.wait_log(rf"^ask call {call} turn 1: context notice, 26 % full, \d+ of "
                         r"8000 tokens: a reminder to write notes$")
             ai.log.clear()
-            ai.ask("Q", thread=thread)
-            ai.wait_log(rf'^ask call \d+\.\d+ from identity ASKAI_TOKEN: prompt 1 byte, thread '
-                        rf'{thread} \(resumed\), "Q"$')
+            ai.ask("Q", conversation=conversation)
+            ai.wait_log(r'^ask call \d+\.\d+ from identity ASKAI_TOKEN: prompt 1 byte, '
+                        rf'conversation {conversation} \(resumed\), "Q"$')
 
-        # Without notes an ask call has no thread. A call that the turns
+        # Without notes an ask call is in no conversation. A call that the turns
         # stop at --max-turns fails without a text, so its line has no
         # error.
         with Askai(binary, "-u", up.url(), "--verbose", "--man", "--upstream-tools",
@@ -6157,7 +6166,7 @@ def check_logs(binary, up):
             script[:] = [lambda r: (200, turn_stream([("a", "man", '{"name":"ls"}')]))] * 2
             ai.ask("Q")
             ai.wait_log(r'^ask call \d+\.\d+ from anonymous: prompt 1 byte, no '
-                        r'thread, "Q"$')
+                        r'conversation, "Q"$')
             ai.wait_log(r'^tool call ask_ai from anonymous failed after \d+\.\d s '
                         r'\(0 bytes\); ask call \d+\.\d+, 2 turns, 1 tool call, stopped at '
                         r'--max-turns; arguments \{"prompt":"Q"\}$')
@@ -12597,18 +12606,18 @@ def check_notes_texts(binary, up):
                     "+++ b/a.md\n@@ -1 +1 @@\n-alpha\n+alpha 2\n\n\n"
                     f"[askai: notebook {ME} (person)]",
                     f"alpha 2\n\n\n[askai: notebook {ME} (person)]"], said
-                assert "The other AI saved notes" not in trace, trace
+                assert "wrote in the session" not in trace, trace
 
-                thread = "1" * 32
+                conversation = "1" * 32
                 said, trace = results([{"action": "add", "file": "b.md", "text": "b"}],
-                                      thread=thread)
+                                      conversation=conversation)
                 assert re.fullmatch(saved('Add "b.md" (2 bytes)'), said[0]), said
                 assert trace == "The other AI made 1 tool call in 2 turns:\n" \
-                    f"- notes add: {len(said[0])} bytes\nThe other AI saved notes in the " \
-                    f"shared session repository. The ask-chain thread is {thread}.", trace
+                    f"- notes add: {len(said[0])} bytes\np wrote in the session. Give " \
+                    f"conversation {conversation} to continue the work.", trace
                 assert re.fullmatch(
                     r'p <agent/p>\|p <askai>\|Add "b\.md" \(2 bytes\)\n\nAsk: [0-9a-f]{32}\n'
-                    rf"Call: 1\nConversation: {thread}\nAsked-by: {re.escape(ME)}",
+                    rf"Call: 1\nConversation: {conversation}\nAsked-by: {re.escape(ME)}",
                     git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B", upstream)), \
                     git("log", "-1", "--format=%B", upstream)
                 # A turn's text gets a final line feed, so the same text again
@@ -13157,11 +13166,11 @@ def check_attach(binary, up):
                 said = call({"action": "add", "file": "latin1.c", "content":
                              "data:;base64," + base64.b64encode(latin1).decode()})
                 assert re.fullmatch(saved(f'Add "latin1.c" ({len(latin1)} bytes)'), said), said
-                thread = "1" * 32
+                conversation = "1" * 32
                 script[:] = [lambda r: (200, calls([{"action": "add", "file": "own.c",
                                                      "text": code}, {"action": "bogus"}])),
                              lambda r: (200, answer("A"))]
-                assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
+                assert ai.ask("Q", conversation=conversation)["content"][0]["text"] == "A"
                 assert "The action argument must be one of: add, append, replace, delete, " \
                     "restore, members, list, search, history, read, diff, copy, attach." \
                     in json.dumps(up.requests[-1]["body"][key])
@@ -13172,7 +13181,7 @@ def check_attach(binary, up):
                 count = len(up.requests)
                 stored = len(up.uploads)
                 script[:] = [lambda r: (200, calls(attach)), lambda r: (200, answer("B"))]
-                assert ai.ask("Q", thread=thread)["content"][0]["text"] == "B"
+                assert ai.ask("Q", conversation=conversation)["content"][0]["text"] == "B"
                 first, second = up.requests[count:]
                 [notes_tool] = [t for t in tools(first["body"]) if t["name"] == "notes"]
                 action = notes_tool[schema]["properties"]["action"]
@@ -13206,7 +13215,7 @@ def check_attach(binary, up):
                 # Again: the same files, with no upload.
                 count = len(up.requests)
                 script[:] = [lambda r: (200, calls(attach)), lambda r: (200, answer("C"))]
-                assert ai.ask("Q", thread=thread)["content"][0]["text"] == "C"
+                assert ai.ask("Q", conversation=conversation)["content"][0]["text"] == "C"
                 assert len(up.uploads) == stored + 2
                 assert split(up.requests[count + 1]["body"][key])[1] == \
                     [file(u) for u in uris]
@@ -13220,7 +13229,7 @@ def check_attach(binary, up):
                                                      "file": "new.c"}])),
                              lambda r: (200, answer("D"))]
                 try:
-                    assert ai.ask("Q", thread=thread)["content"][0]["text"] == "D"
+                    assert ai.ask("Q", conversation=conversation)["content"][0]["text"] == "D"
                 finally:
                     up.upload = up.stored
                 last = json.dumps(up.requests[count + 2]["body"][key][-2:])
@@ -13237,7 +13246,7 @@ def check_attach(binary, up):
                 count = len(up.requests)
                 script[:] = [lambda r: (200, calls(attach[1:])),
                              lambda r: (400, too_many), lambda r: (200, answer("E"))]
-                assert ai.ask("Q", thread=thread)["content"][0]["text"] == "E"
+                assert ai.ask("Q", conversation=conversation)["content"][0]["text"] == "E"
                 assert len(up.uploads) == stored
                 again = up.requests[count + 2]["body"][key]
                 assert "files.test" not in json.dumps(again)
@@ -13245,7 +13254,7 @@ def check_attach(binary, up):
                 assert prompt.count(f"[askai: You are the agent {api}. A client program of "
                                     f"the person {ME} made this ask call.]") == 1, prompt
                 script[:] = [lambda r: (200, calls(attach[1:])), lambda r: (200, answer("F"))]
-                assert ai.ask("Q", thread=thread)["content"][0]["text"] == "F"
+                assert ai.ask("Q", conversation=conversation)["content"][0]["text"] == "F"
                 assert len(up.uploads) == stored + 1
 
                 # A file that expires within 6 hours, or whose expiry the
@@ -13270,8 +13279,8 @@ def check_attach(binary, up):
                                      lambda r: (200, calls([{"action": "attach",
                                                              "file": name}])),
                                      lambda r: (200, answer("H"))]
-                        assert ai.ask("Q", thread=thread)["content"][0]["text"] == "G"
-                        assert ai.ask("Q", thread=thread)["content"][0]["text"] == "H"
+                        assert ai.ask("Q", conversation=conversation)["content"][0]["text"] == "G"
+                        assert ai.ask("Q", conversation=conversation)["content"][0]["text"] == "H"
                     finally:
                         up.upload = up.stored
                     assert len(up.uploads) == stored + 2, hours
@@ -13289,7 +13298,7 @@ def check_attach(binary, up):
         status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
             "action": "add", "file": "big.c", "text": "x" * 8000}})
         assert re.fullmatch(saved('Add "big.c" (8000 bytes)'), text_of(body["result"])), body
-        thread = "2" * 32
+        conversation = "2" * 32
         status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
             "action": "add", "file": "small.c", "text": "y"}})
         # A view of more than 16 MiB is not uploaded, nor made whole.
@@ -13319,7 +13328,7 @@ def check_attach(binary, up):
                                  "notebook": ME}}}]])),
                          lambda r: (200, generate_turn([[{"text": "A"}]]))]
             try:
-                assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
+                assert ai.ask("Q", conversation=conversation)["content"][0]["text"] == "A"
             finally:
                 up.upload = up.stored
             assert said in json.dumps(up.requests[count + 1]["body"]["contents"][-1]), \
@@ -13344,13 +13353,13 @@ def check_attach(binary, up):
             status, _, body = ai.rpc("tools/call", {"name": "notes", "arguments": {
                 "action": "add", "file": "g.c", "text": "g"}})
             assert re.fullmatch(saved('Add "g.c" (1 byte)'), text_of(body["result"])), body
-            thread = "3" * 32
+            conversation = "3" * 32
             script[:] = [lambda r: (200, generate_turn([[{"functionCall": {
                              "name": "notes", "id": "c0", "args": {
                                  "action": "attach", "file": "g.c",
                                  "notebook": ME}}}]])),
                          lambda r: (200, generate_turn([[{"text": "A"}]]))]
-            assert ai.ask("Q", thread=thread)["content"][0]["text"] == "A"
+            assert ai.ask("Q", conversation=conversation)["content"][0]["text"] == "A"
             assert up.uploads[-1]["path"] == "/gw/upload/v1beta/files?key=QK", \
                 up.uploads[-1]
         with Askai(binary, "--api", "generate", "-u",
@@ -13488,7 +13497,12 @@ def check_turns(binary, up):
             return sh("--git-dir", book, "rev-parse", ref, cwd=d).strip()
         with Askai(binary, *args, token="turns-1") as ai:
             tools = {t["name"]: t for t in ai.rpc("tools/list")[2]["result"]["tools"]}
-            assert "thread" in tools["ask_ai"]["inputSchema"]["properties"], tools
+            assert "conversation" in tools["ask_ai"]["inputSchema"]["properties"] and \
+                "thread" not in tools["ask_ai"]["inputSchema"]["properties"], tools
+            assert tools["ask_ai"]["inputSchema"]["properties"]["conversation"][
+                "description"] == "The conversation from an earlier answer, 32 hexadecimal " \
+                "digits. The call then continues the conversation. Without conversation, " \
+                "the call starts a new conversation.", tools
             assert "thread" not in tools["notes"]["inputSchema"]["properties"], tools
             for name in ("git", "notes"):
                 assert tools[name]["inputSchema"]["properties"]["offset"][
@@ -13535,9 +13549,9 @@ def check_turns(binary, up):
             # The lent jobs states that jobs and timers end with the ask call.
             assert "Jobs and timers end when the ask call ends." in \
                 body["tools"][5]["function"]["description"], body["tools"][5]
-            # The upstream's notes use the thread of the ask call.
-            assert "thread" not in body["tools"][1]["function"]["parameters"][
-                "properties"], body["tools"][1]
+            # The upstream's notes have no argument thread or conversation.
+            assert {"thread", "conversation"}.isdisjoint(body["tools"][1]["function"][
+                "parameters"]["properties"]), body["tools"][1]
             notes_tool = body["tools"][1]["function"]
             assert "You are the agent turns. Your notebook is turns." in \
                 notes_tool["description"], notes_tool
@@ -13566,7 +13580,9 @@ def check_turns(binary, up):
                 selector, {"found.md": b'found "first"\n'}), read
             text, trace = [c["text"] for c in result["content"]]
             assert text == "A", result
-            thread = re.search(r"ask-chain thread is ([0-9a-f]{32})", trace).group(1)
+            conversation = re.search(r"\nturns wrote in the session\. Give conversation "
+                                     r"([0-9a-f]{32}) to continue the work\.$",
+                                     trace).group(1)
             assert trace.startswith("The other AI made 3 tool calls in 3 turns:\n"
                                     f"- git {log}: 14 bytes\n"
                                     f"- notes add: {len(results[1]['content'].encode())} bytes\n"
@@ -13578,19 +13594,20 @@ def check_turns(binary, up):
             assert sh("--git-dir", book, "log", "-1", "--format=%s", branch,
                       cwd=d) == 'Add "found.md" (14 bytes)\n', book
 
-            # When an ask call goes on with a thread, the prompt has the list
-            # of the notes of the thread and the newest note.
+            # When an ask call continues a conversation, the prompt contains
+            # the list of the notes of the agent and the newest note.
             count = len(up.requests)
-            result = ai.ask("And now?", thread=thread)
+            result = ai.ask("And now?", conversation=conversation)
             assert re.fullmatch(
                 "And now\\?" + re.escape(identity + history) +
                 f"1\\. {when}  found\\.md  \\(\\+1 -0\\), asked by {re.escape(ME)}\n"
                 "\\[askai: The current text of your newest note, found\\.md:\\]\n"
                 "found \"first\"\n" + re.escape(NO_OPEN), prompt(up.requests[count])), \
                 up.requests[count]
-            assert f"ask-chain thread is {thread}." in result["content"][1]["text"], result
+            assert f"Give conversation {conversation} to continue the work." in \
+                result["content"][1]["text"], result
 
-            # Hooks in the repository of a thread do not run. A note of a
+            # Hooks in the repository of the session do not run. A note of a
             # name that a note has is refused.
             os.makedirs(f"{book}/hooks")
             with open(f"{book}/hooks/reference-transaction", "w") as f:
@@ -13603,17 +13620,30 @@ def check_turns(binary, up):
                                            "text": "n"})),
                 ("j", "notes", json.dumps({"action": "read", "file": "next.md"}))]))]
             count = len(up.requests)
-            ai.ask("Q", thread=thread)
+            ai.ask("Q", conversation=conversation)
             outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
             assert re.fullmatch(saved('Add "next.md" (2 bytes)', tip()), outputs[0]), outputs
             assert outputs[1:] == ["The note already exists. Change the note with replace "
                                    "or append, or choose another name.", "n\n" + provenance], \
                 outputs
             assert not os.path.exists(f"{d}/hooked")
-            assert ai.ask("Q", thread="0" * 32)["content"][0]["text"] == "A"
-            for value, message in (("xyz", "must be a thread ID"),):
-                result = ai.ask("Q", thread=value)
-                assert result.get("isError") and message in text_of(result), result
+            assert ai.ask("Q", conversation="0" * 32)["content"][0]["text"] == "A"
+            for arguments, message in (
+                    ({"conversation": "xyz"}, "The conversation argument must be a "
+                     "conversation ID from an earlier answer. A conversation ID is 32 "
+                     "hexadecimal digits."),
+                    ({"conversation": 7}, "The conversation argument must be a "
+                     "conversation ID from an earlier answer. A conversation ID is 32 "
+                     "hexadecimal digits."),
+                    ({"thread": "0" * 32}, "thread is now called conversation. Give the "
+                     "conversation from an earlier answer as conversation."),
+                    ({"thread": "0" * 32, "conversation": "0" * 32}, "thread is now called "
+                     "conversation. Give the conversation from an earlier answer as "
+                     "conversation.")):
+                count = len(up.requests)
+                result = ai.ask("Q", **arguments)
+                assert result.get("isError") and text_of(result) == message, result
+                assert len(up.requests) == count, up.requests[count:]
 
             # A window of git's output, the rest by offset; a note too long,
             # a tool not lent, arguments that are no object.
@@ -13729,9 +13759,9 @@ def check_turns(binary, up):
             script[:] = [lambda r: (200, turn_stream([
                 ("k", "notes", json.dumps({"action": "add", "file": "long.md",
                                            "text": "L" * size}))]))]
-            ai.ask("Q", thread=thread)
+            ai.ask("Q", conversation=conversation)
             count = len(up.requests)
-            ai.ask("Again?", thread=thread)
+            ai.ask("Again?", conversation=conversation)
             shown = 64 << 10
             assert prompt(up.requests[count]).endswith(
                 "[askai: The current text of your newest note, long.md:]\n" + "L" * shown +
@@ -13765,7 +13795,7 @@ def check_turns(binary, up):
                 ("s", "notes", json.dumps({"action": "add", "file": "c.bin",
                                            "content": "data:,x"}))]))]
             count = len(up.requests)
-            result = ai.ask("Go on", thread=mine)
+            result = ai.ask("Go on", conversation=mine)
             assert prompt(up.requests[count]).startswith("Go on" + identity + history), \
                 prompt(up.requests[count])
             outputs = [m["content"] for m in turns(up.requests[count + 1])[1:]]
@@ -13780,7 +13810,8 @@ def check_turns(binary, up):
                     re.escape("Only a client can give content. Give text instead.")]
             assert len(outputs) == 8 and all(
                 re.fullmatch(w, o) for w, o in zip(want, outputs[1:])), outputs
-            assert f"ask-chain thread is {mine}." in result["content"][1]["text"], result
+            assert f"Give conversation {mine} to continue the work." in \
+                result["content"][1]["text"], result
             assert "seen.md" in client_notes({"action": "list", "notebook": "turns"})
             assert sh("--git-dir", notes, "log", "-1", "--format=%s", branch, cwd=d) == \
                 f'Copy "brief.md" from the notebook of {ME} at {tip(client)} (3 bytes)\n'
@@ -13791,7 +13822,7 @@ def check_turns(binary, up):
                                 said), said
             assert sh("--git-dir", notes, "show", f"{client}:aim2.md", cwd=d) == text
             count = len(up.requests)
-            ai.ask("Again", thread=mine)
+            ai.ask("Again", conversation=mine)
             assert prompt(up.requests[count]).startswith("Again" + identity + history), \
                 prompt(up.requests[count])
             # A newest note that is not text goes into the prompt as its view.
@@ -13803,7 +13834,7 @@ def check_turns(binary, up):
                            + b"\xff\x00\xfe\n", check=True, env=os.environ | {
                                "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
             count = len(up.requests)
-            ai.ask("Once more", thread=mine)
+            ai.ask("Once more", conversation=mine)
             assert prompt(up.requests[count]).endswith(
                 "[askai: The current text of your newest note, z.bin:]\n" + note_view(b"\xff\x00\xfe")
                 + "\n" + NO_OPEN), prompt(up.requests[count])[-400:]
@@ -13819,7 +13850,7 @@ def check_turns(binary, up):
                            env=os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null",
                                              "GIT_CONFIG_NOSYSTEM": "1"})
             count = len(up.requests)
-            ai.ask("Last", thread=mine)
+            ai.ask("Last", conversation=mine)
             shown = prompt(up.requests[count]).encode()
             marker = b"[askai: The current text of your newest note, y.bin:]\n"
             head = shown.index(marker) + len(marker)
@@ -14424,11 +14455,12 @@ def check_turns(binary, up):
             assert any("upstream slots: 1 (--slots)" in line for line in ai.log), ai.log
             description = ai.rpc("tools/list")[2]["result"]["tools"][0]["description"]
             assert description == (
-                "Send a question or a task to the agent turns. turns cannot see this "
-                "conversation, your files or your tools. Write a complete prompt. turns can "
+                "Send a question or a task to the agent turns. turns cannot see your chat, "
+                "your files or your tools. Write a complete prompt. turns can "
                 "call some tools of this server. The result lists the tool calls after the "
-                "answer. turns keeps notes in the session. Each call starts with the notes "
-                "of turns. Ask turns for a second opinion, for hard problems, or for "
+                "answer. turns keeps notes and findings in the session. Each call starts "
+                "with the notes of turns and the open findings of turns in the "
+                "conversation. Ask turns for a second opinion, for hard problems, or for "
                 "knowledge you lack."), description
             # help names the window that the turn takes.
             script[:] = [lambda r: (200, turn_stream([
@@ -14577,7 +14609,7 @@ def check_turns(binary, up):
             'role r: askai offers no tool "ask_ai" to the upstream' in run.stderr, \
             run.stderr
     up.reply = lambda request: (200, ANSWERS["openai"])
-    print("turns: tools lent to the upstream, notes, threads, windows, compaction, "
+    print("turns: tools lent to the upstream, notes, conversations, windows, compaction, "
           "limits: PASS")
 
 
@@ -14589,10 +14621,11 @@ def check_findings(binary, up):
     of every member and show prints a finding with its changes. Each add and
     update is one commit with the file of the finding and the archive of its
     evidence. The evidence is calls of the ring of the ask call: a whole
-    call, lines of a read, or the message or the files of a git call that
-    names one commit. verified and disproved need evidence of an earlier
-    turn and a reason. The prompt of each ask call and compaction lists the
-    open findings of the agent in the thread, cut at the window of a tool,
+    call, lines of a read, the message of a git show or log, or the files of
+    a git ls-tree, that names one commit. Each change names the version of
+    askai. verified and disproved need evidence of an earlier turn and a
+    reason. The prompt of each ask call and compaction lists the open
+    findings of the agent in the conversation, cut at the window of a tool,
     and a compaction names the calls that a finding can cite. Two ask calls
     that add findings at the same time both commit, the second after a race
     on the new tip, and a write that races at each of its three commits is
@@ -14706,7 +14739,7 @@ def check_findings(binary, up):
         read = {"repo": "proj", "command": "read", "revisions": ["HEAD:src/a.c"], "line": 1,
                 "count": 10}
         log = {"repo": "proj", "command": "log", "options": ["--oneline"]}
-        thread, other = "1" * 32, "2" * 32
+        conversation, other = "1" * 32, "2" * 32
         args = ("-u", up.url(), "--upstream-tools", "--git", repo, "--agent", "bro",
                 "--notes", session)
         with Askai(binary, *args) as ai:
@@ -14746,7 +14779,7 @@ def check_findings(binary, up):
             # A new ask call starts without open findings.
             assert prompt(up.requests[count]).endswith(NO_OPEN), prompt(up.requests[count])
 
-            # One ask call of the thread: a read and a log, findings in the
+            # One ask call of the conversation: a read and a log, findings in the
             # same turn and in the next, refusals, list and show, then a
             # compaction and a finding after it.
             claim = "git log shows one commit."
@@ -14793,7 +14826,7 @@ def check_findings(binary, up):
                       "reason": "The log had more commits."}),
             ]
             count = len(up.requests)
-            result = ai.ask("Q", thread=thread)
+            result = ai.ask("Q", conversation=conversation)
             sent = up.requests[count:]
             assert len(sent) == 6 and result["content"][0]["text"] == "A", sent
             first = results(sent[1])
@@ -14864,7 +14897,7 @@ def check_findings(binary, up):
                 "the output.]", third[10]
             assert third[11] == "cuh has no findings yet.\n", third[11]
             # The compaction gives the task, the notices of the notes, the open
-            # findings of the thread, and the calls that the ring keeps.
+            # findings of the conversation, and the calls that the ring keeps.
             nobody = ("\n\n[askai: You are the agent bro. A client without a member name made "
                       "this ask call.]\n[askai: Members of this session: bro (agent, you). Call "
                       "notes with action members to see what each member wrote last.]\n"
@@ -14882,7 +14915,8 @@ def check_findings(binary, up):
             trace = result["content"][1]["text"]
             assert trace.startswith("The other AI made 34 tool calls in 6 turns:\n- git ") and \
                 "- findings add: failed\n" in trace and "- compact: 1 bytes\n" in trace and \
-                re.search(r"\n- findings update: \d+ bytes\n$", trace), trace
+                re.search(r"\n- findings update: \d+ bytes\nbro wrote in the session\. Give "
+                          rf"conversation {conversation} to continue the work\.$", trace), trace
             values = ai.metrics()
             assert total(values, "askai_turn_tool_calls_total", tool="findings") == 31, values
 
@@ -14894,7 +14928,8 @@ def check_findings(binary, up):
                 "Update bro#1 (candidate to verified, claim)",
                 "Add bro#2 (verified)", "Add bro#1 (candidate)"]
             assert notes("log", "-1", "--format=%an <%ae>|%cn <%ce>|%b", ref) == \
-                f"bro <agent/bro>|bro <askai>|Ask: {ask}\nCall: 34\nConversation: {thread}\n\n"
+                f"bro <agent/bro>|bro <askai>|Ask: {ask}\nCall: 34\n" \
+                f"Conversation: {conversation}\n\n"
             assert notes("log", "--format=%H", ref).split()[2][:8] == commit_of(second[0])
             files = notes("ls-tree", "-r", "--name-only", ref).split()
             assert [f for f in files if not f.startswith("archive/")] == [
@@ -14903,7 +14938,7 @@ def check_findings(binary, up):
                        for f in files if f.startswith("archive/")), files
             two = stored(2)
             assert (two["version"], two["id"], two["conversation"], two["claim"]) == \
-                (1, "bro#2", thread, claim) and "about" not in two, two
+                (1, "bro#2", conversation, claim) and "about" not in two, two
             change = two["changes"][0]
             assert (change["state"], change["ask"], change["turn"], change["call"],
                     change["askai"], change["reason"], change["external"]) == (
@@ -14931,14 +14966,15 @@ def check_findings(binary, up):
                 one["changes"][1]["claim_before"] == "C1" and one["claim"] == "C1b", one
             assert [e["item"] for c in one["changes"] for e in c["evidence"]] == [1, 2], one
 
-            # The next ask call of the thread starts with the open findings
-            # of the thread, and another thread with their number.
+            # The next ask call of the conversation starts with the open
+            # findings of the conversation, and another conversation with their
+            # number.
             count = len(up.requests)
-            ai.ask("Q", thread=thread)
+            ai.ask("Q", conversation=conversation)
             assert prompt(up.requests[count]).endswith(
                 opened("bro#1  verified   C1b\n")), prompt(up.requests[count])
             count = len(up.requests)
-            ai.ask("Q", thread=other)
+            ai.ask("Q", conversation=other)
             assert prompt(up.requests[count]).endswith(opened(other=1)), \
                 prompt(up.requests[count])
 
@@ -14949,14 +14985,14 @@ def check_findings(binary, up):
             script[:] = [mixed(("git", log)),
                          turn({"action": "add", "claim": "Two commits.", "state": "verified",
                                "evidence": ["c1"], "reason": "R"})]
-            cuh.ask("Q", thread=other)
+            cuh.ask("Q", conversation=other)
         with Askai(binary, *args, env=wrapped) as ai:
             script[:] = [turn({"action": "add", "claim": "One commit.", "about": "cuh#1"},
                               {"action": "list"}, {"action": "show", "id": "cuh#1"},
                               {"action": "update", "id": "cuh#1", "state": "retracted",
                                "reason": "R"})]
             count = len(up.requests)
-            ai.ask("Q", thread=other)
+            ai.ask("Q", conversation=other)
             said = results(up.requests[count + 1])
             assert re.fullmatch(r"Added bro#3 \(candidate\)\. Commit [0-9a-f]{8}\.", said[0])
             assert said[1] == (
@@ -14972,9 +15008,10 @@ def check_findings(binary, up):
             assert said[3] == "Only cuh can change cuh#1. Add your own finding with about " \
                 "cuh#1.", said
             assert stored(3)["about"] == "cuh#1" and stored(1, "cuh")["id"] == "cuh#1"
-            # The prompt lists the open findings of the thread, newest first.
+            # The prompt lists the open findings of the conversation, newest
+            # first.
             count = len(up.requests)
-            ai.ask("Q", thread=other)
+            ai.ask("Q", conversation=other)
             assert prompt(up.requests[count]).endswith(opened(
                 "bro#3  candidate  One commit.\n", other=1)), prompt(up.requests[count])
 
@@ -15044,7 +15081,7 @@ def check_findings(binary, up):
             assert re.fullmatch(r"bro#3 is now retracted\. Commit [0-9a-f]{8}\.", said[2]), said
 
         # A context of 8000 tokens has windows of 4000 bytes. After a
-        # compaction, the prompt lists the open findings of the thread that
+        # compaction, the prompt lists the open findings of the conversation that
         # fit, newest first, and says how many more there are. The ring
         # keeps no call that a finding can cite.
         with Askai(binary, *args, "--context", "8000") as ai:
@@ -15053,7 +15090,7 @@ def check_findings(binary, up):
             script[:] = [turn(*adds[:16]), turn(*adds[16:32]), turn(*adds[32:]),
                          mixed(("compact", {"summary": "S"}))]
             count = len(up.requests)
-            ai.ask("Q", thread="3" * 32)
+            ai.ask("Q", conversation="3" * 32)
             rows = [f"bro#{k + 6:<2}  candidate  {claims[k]}\n" for k in reversed(range(40))]
             fit = 0
             while sum(len(r) for r in rows[:fit + 1]) <= 4000:
@@ -15205,7 +15242,7 @@ def check_findings_expand(binary, up):
                               {"action": "add", "claim": "C", "evidence": ["c1:files"]},
                               {"action": "add", "claim": "C", "evidence": ["c1:message"]})]
             count = len(up.requests)
-            cuh.ask("Q", thread="1" * 32)
+            cuh.ask("Q", conversation="1" * 32)
             made = tools(up.requests[count + 1])
             said = results(up.requests[count + 2])
             assert re.fullmatch(r"Added cuh#1 \(verified\)\. Evidence cuh#1/1 from call c1, "
@@ -15237,7 +15274,7 @@ def check_findings_expand(binary, up):
 
         # bro, on another service with windows of 4000 bytes, checks the
         # findings of cuh in one ask call.
-        thread = "2" * 32
+        conversation = "2" * 32
         with Askai(binary, *base, "--agent", "bro", "--context", "8000") as bro:
             script[:] = [
                 # Turn 1: an unseen item is refused and printed; an item
@@ -15286,7 +15323,7 @@ def check_findings_expand(binary, up):
                       "evidence": ["cuh#2/1"], "reason": "R"}),
             ]
             count = len(up.requests)
-            assert bro.ask("Q", thread=thread)["content"][0]["text"] == "A"
+            assert bro.ask("Q", conversation=conversation)["content"][0]["text"] == "A"
             sent = up.requests[count:]
             assert len(sent) == 9, len(sent)
             first = results(sent[1])

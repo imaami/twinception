@@ -532,11 +532,11 @@ extern int
 mcp_slot_structured (struct mcp_slot  *slot,
                      struct cstr_view  json);
 
-/** Records that the caller's own notebook has notes. The trace of the ask
- *  call then says where the notes are. The journal and the checkpoint keep
- *  the fact. A compaction reads the notes again. Returns 0, EFAULT if
- *  @p slot is nullptr, or EINVAL if the call has ended. This function is
- *  not exported.
+/** Records that the call wrote in the session: a note in the caller's own
+ *  notebook, or a finding. The trace of the ask call then names the
+ *  conversation. The fact goes into the journal and the checkpoint.
+ *  Returns 0, EFAULT if @p slot is nullptr, or EINVAL if the call has
+ *  ended. This function is not exported.
  */
 extern int
 mcp_slot_noted (struct mcp_slot *slot);

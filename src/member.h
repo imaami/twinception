@@ -155,8 +155,8 @@ struct member_call {
 	                                        the head of the request */
 	struct hexid        ask;           /**< the ID of the ask call, or
 	                                        empty */
-	struct hexid        conversation;  /**< the thread of the ask call, or
-	                                        empty */
+	struct hexid        conversation;  /**< the conversation of the ask
+	                                        call, or empty */
 	struct member       asker;         /**< the member of the login that
 	                                        made the ask call, or the name
 	                                        "" for no such member */
