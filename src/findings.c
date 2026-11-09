@@ -265,6 +265,20 @@ findings_tool_name (void const *owner,
 	return tool < TOOL_MAX ? mcp_slot_tool_name(owner, tool) : nullptr;
 }
 
+/* Empties the arrays of @p call that a load fills: the branches, the files
+ * to read, the findings and the output of expand.
+ */
+static void
+findings_call_reset (struct findings_call *call)
+{
+	for (size_t i = 0; i < call->findings.n; ++i)
+		finding_fini(&call->findings.items[i]);
+	call->findings.n = 0;
+	call->branches.n = 0;
+	call->wanted.n = 0;
+	call->prints.n = 0;
+}
+
 /* Frees the call at @p *p_call and sets @p *p_call to nullptr. */
 static void
 findings_call_destroy (struct findings_call **p_call)
@@ -276,8 +290,7 @@ findings_call_destroy (struct findings_call **p_call)
 	dstr_cleanup(&call->out);
 	dstr_cleanup(&call->claim);
 	finding_change_fini(&call->change);
-	for (size_t i = 0; i < call->findings.n; ++i)
-		finding_fini(&call->findings.items[i]);
+	findings_call_reset(call);
 	free(call->findings.items);
 	call->findings.items = nullptr;
 	for (size_t i = 0; i < call->cites.n; ++i)
@@ -419,17 +432,12 @@ static void
 findings_load (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	call->branches.n = 0;
-	call->wanted.n = 0;
-	call->prints.n = 0;
+	findings_call_reset(call);
 	call->branch = 0;
 	call->done = 0;
 	call->batch = 0;
 	call->last = 0;
 	call->flags &= CALL_CITED;
-	for (size_t i = 0; i < call->findings.n; ++i)
-		finding_fini(&call->findings.items[i]);
-	call->findings.n = 0;
 	call->stage = STAGE_REFS;
 	child_destroy(&call->child);
 	if (member_table_read(call->notes->members, &call->wait) == EINPROGRESS) {
@@ -594,23 +602,6 @@ findings_got_check (struct mcp_slot *slot)
 	findings_next(slot);
 }
 
-/* Returns true if the call reads the finding @p number of @p author. */
-static bool
-findings_wants (struct findings_call const *call,
-                char const                 *author,
-                uint32_t                    number)
-{
-	switch (call->action) {
-	case FINDINGS_LIST:
-	case FINDINGS_SHOW:
-	case FINDINGS_EXPAND:
-		return true;
-	case FINDINGS_UPDATE:
-		return number == call->number && !strcmp(author, call->author);
-	}
-	return false;
-}
-
 /* Handles the output of ls-tree for the branch call->branch. For each file
  * of a finding, the function notes the highest number of the agent and
  * whether the finding of id exists, and adds the file to the input of
@@ -621,7 +612,13 @@ findings_got_files (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct findings_branch const *b = &call->branches.items[call->branch];
-	char const *agent = findings_session(call)->agent;
+	/* The highest number counts on the branch of the agent. The finding of
+	 * id is on the branch of its author, and update reads only its file.
+	 * list, show and expand read every file. */
+	bool const own = !strcmp(b->author, findings_session(call)->agent);
+	uint32_t const id = strcmp(b->author, call->author) ? 0 : call->number;
+	uint32_t const only = call->action == FINDINGS_UPDATE ? id : 0;
+	bool const every = (ON_LIST | ON_SHOW | ON_EXPAND) >> call->action & 1;
 	struct span out = buf_peek(&call->child->out);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
 	struct notes_file file;
@@ -631,11 +628,11 @@ findings_got_files (struct mcp_slot *slot)
 		                                                          file.name.len });
 		if (!n)
 			continue;
-		if (!strcmp(b->author, agent) && n > call->last)
+		if (own && n > call->last)
 			call->last = n;
-		if (call->number == n && !strcmp(b->author, call->author))
+		if (n == id)
 			call->flags |= CALL_FOUND;
-		if (findings_wants(call, b->author, n))
+		if (every || n == only)
 			e = util_push(call->wanted, (struct findings_file){
 				.bytes  = file.bytes,
 				.author = b->author,
