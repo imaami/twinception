@@ -7,7 +7,8 @@
  * child_create(), child_run() or child_capture() runs the struct
  * child_cmd of the struct git_run. git_run_capture() runs it on the
  * calling thread, turns the end of git into an error number, and reads
- * the name of an object that git prints.
+ * the name of an object that git prints. git_run_path() reads a line with
+ * an absolute path from the output of git.
  */
 #ifndef ASKAI_SRC_GIT_RUN_H_
 #define ASKAI_SRC_GIT_RUN_H_
@@ -18,6 +19,7 @@
 #include "child.h"
 #include "clk.h"
 
+struct cstr_view;
 struct oid;
 
 /** The environment entries after PATH of every git process that askai
@@ -186,5 +188,15 @@ git_run_capture (struct git_run const *run,
                  struct child_fds      fds,
                  struct buf           *out,
                  struct oid           *oid);
+
+/**
+ * Stores the next line of @p rest, a part of the output of git, in
+ * @p path, and removes the line and its line feed from @p rest. Returns 0,
+ * or EINVAL if a pointer is nullptr or the line is not an absolute path
+ * without a NUL.
+ */
+extern int
+git_run_path (struct cstr_view *rest,
+              struct cstr_view *path);
 
 #endif /* ASKAI_SRC_GIT_RUN_H_ */

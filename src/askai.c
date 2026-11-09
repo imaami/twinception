@@ -750,7 +750,8 @@ askai_shared_init (struct askai_shared *s,
 	}
 	if (cfg->transcripts) {
 		char why[256];
-		if (cfg->notes && (e = askai_separate_repos(notes_directory(s->notes), cfg->transcripts))) {
+		if (cfg->notes && (e = askai_separate_repos(store_directory(notes_store(s->notes)),
+		                                            cfg->transcripts))) {
 			fprintf(stderr, "notes and transcripts require separate, nonnested repositories\n");
 			return e;
 		}

@@ -2,35 +2,27 @@
  *
  * The notes tool.
  */
-#define _GNU_SOURCE /* asprintf(), memrchr(), mempcpy() */
-#include <dirent.h>
+#define _GNU_SOURCE /* memrchr() */
 #include <errno.h>
-#include <fcntl.h>
 #include <inttypes.h>
 #include <openssl/evp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
-#include "clk.h"
-#include "git.h"
 #include "hexid.h"
 #include "notes.h"
 #include "oid.h"
+#include "store.h"
 #include "util.h"
 
 /* Only this namespace is exposed by the notes tool. */
 #define BRANCH "refs/heads/notes/"
 
 struct notes {
-	char *dir;    /* the real path of the shared session repository */
-	char *participant;
-	char *directory; /* canonical Git common directory */
-	size_t named; /* the bytes of participant */
-	int   fd;     /* the repository directory, open; -1 if not open */
-	uint32_t bare;
+	struct store *store;        /* the shared session repository */
+	char         *participant;
+	size_t        named;        /* the bytes of participant */
 };
 
 /* The stages of a historical read or diff, in their order. */
@@ -41,38 +33,6 @@ enum notes_revision_phase : uint8_t {
 	REVISION_DATA,  /* git reads the note at from, or compares it with to */
 };
 
-/* The options of git before each command: GIT_OPTIONS_FIXED, which stop
- * the configuration of the repository from making git run other programs,
- * literal paths, and no worktree.
- */
-static char const *const fixed[] = {
-	GIT_OPTIONS_FIXED, "--literal-pathspecs", "-c", "core.bare=true",
-};
-
-/* The place in a row of cmds[] where notes_argv() puts the next of the
- * words that the caller passes.
- */
-static char const word[] = "";
-
-/* The words of each command after the options in fixed. */
-static char const *const cmds[][10] = {
-	[NOTES_CREATE]   = { "init", "--bare", "--quiet", "--template=",
-	                     "--initial-branch=session", "--", "." },
-	[NOTES_CHECK]    = { "cat-file", "--batch-check" },
-	[NOTES_ADD]      = { "fast-import", "--quiet", "--date-format=now" },
-	[NOTES_LIST]     = { "log", "-z", "--no-renames", "--format=%ct %H %s", "--numstat",
-	                     word, "--", word },
-	[NOTES_READ]     = { "cat-file", "--batch" },
-	[NOTES_BOOKS]    = { "for-each-ref", "--format=%(refname:strip=3)", BRANCH },
-	[NOTES_FILES]    = { "ls-tree", "-r", "-z", "-l", word, "--" },
-	[NOTES_HEAD]     = { "rev-parse", "--verify", "--end-of-options", word },
-	[NOTES_ANCESTOR] = { "merge-base", "--is-ancestor", word, word },
-	[NOTES_DIFF]     = { "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
-	                     "--no-color", "--submodule=short", word, word, "--", word },
-	[NOTES_STAT]     = { "diff", "--numstat", "--no-textconv", word, word },
-	[NOTES_GREP]     = { "grep", "-IniEz", "--no-color", "-f", "-", word, "--" },
-};
-
 /* The kinds of the objects in the output of git cat-file. */
 enum notes_kind {
 	KIND_MISSING,
@@ -81,156 +41,6 @@ enum notes_kind {
 	KIND_COMMIT,
 	KIND_OTHER,
 };
-
-/* Makes the directory @p path if it does not exist, and stores its real
- * path in notes->dir. Returns 0, or the error number with a message in
- * @p why, of @p len bytes.
- */
-static int
-notes_open (struct notes *notes,
-            char const   *path,
-            char         *why,
-            size_t        len)
-{
-	int e = mkdir(path, 0700) && errno != EEXIST ? errno : 0;
-	if (!e && !(notes->dir = realpath(path, nullptr)))
-		e = errno;
-	if (!e && (notes->fd = open(notes->dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0)
-		e = errno;
-	if (e)
-		goto fail;
-	struct stat st;
-	if (!fstatat(notes->fd, ".git", &st, AT_SYMLINK_NOFOLLOW)) {
-		if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode))
-			return 0;
-		return util_refuse(why, len, "the repository .git is not a file or directory");
-	}
-	if (!fstatat(notes->fd, "HEAD", &st, AT_SYMLINK_NOFOLLOW)) {
-		if (!S_ISREG(st.st_mode))
-			return util_refuse(why, len, "the repository HEAD is not a regular file");
-		notes->bare = true;
-		return 0;
-	}
-	/* Never silently start a new session over the old per-thread layout. */
-	int fd = dup(notes->fd);
-	if (fd < 0) {
-		e = errno;
-		goto fail;
-	}
-	DIR *dir = fdopendir(fd);
-	if (!dir) {
-		e = errno;
-		util_close(&fd);
-		goto fail;
-	}
-	/* closedir() closes the descriptor. */
-	fd = -1;
-	struct dirent *entry;
-	errno = 0; /* readdir distinguishes exhaustion from errors through errno. */
-	while ((entry = readdir(dir))) {
-		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
-			continue;
-		e = EINVAL;
-		break;
-	}
-	if (!entry && errno)
-		e = errno;
-	if (closedir(dir) && !e)
-		e = errno;
-	if (e)
-		util_format(why, len, "notes now names one shared Git repository; this "
-		            "nonempty directory is not a repository. Keep the old notes "
-		            "directory and select a new repository path for the session");
-	notes->bare = true;
-	return e;
-fail:
-	util_format(why, len, "%s", strerror(e));
-	return e;
-}
-
-/* Resolves a Git path, relative to its containing directory when needed. */
-static int
-notes_resolve (char const *base,
-               char const *name,
-               char      **resolved)
-{
-	char *path = nullptr;
-	if (*name != '/' && asprintf(&path, "%s/%s", base, name) < 0)
-		return ENOMEM;
-	*resolved = realpath(path ? path : name, nullptr);
-	int e = *resolved ? 0 : errno;
-	free(path);
-	return e;
-}
-
-/* Reads Git's one-line indirection files at startup, outside the service loops. */
-static int
-notes_line (char const *base,
-            char const *name,
-            char      **line)
-{
-	char *path = nullptr;
-	if (asprintf(&path, "%s/%s", base, name) < 0)
-		return ENOMEM;
-	FILE *file = fopen(path, "re");
-	int e = file ? 0 : errno;
-	free(path);
-	path = nullptr;
-	if (e)
-		return e;
-	size_t size = 0;
-	ssize_t n = getline(line, &size, file);
-	e = n < 0 ? ferror(file) ? EIO : EINVAL : 0;
-	if (!e) {
-		while (n && ((*line)[n - 1] == '\n' || (*line)[n - 1] == '\r'))
-			(*line)[--n] = '\0';
-		if (!n || memchr(*line, '\0', (size_t)n))
-			e = EINVAL;
-	}
-	if (fclose(file) && !e)
-		e = errno;
-	return e;
-}
-
-/* Finds the common directory even when --notes names an attached worktree. */
-static int
-notes_common (struct notes *notes)
-{
-	if (notes->bare) {
-		notes->directory = strdup(notes->dir);
-		return notes->directory ? 0 : ENOMEM;
-	}
-	struct stat st;
-	if (fstatat(notes->fd, ".git", &st, AT_SYMLINK_NOFOLLOW))
-		return errno;
-	char *line = nullptr;
-	char *git = nullptr;
-	int e = 0;
-	if (S_ISDIR(st.st_mode))
-		e = notes_resolve(notes->dir, ".git", &git);
-	else {
-		struct cstr_view const gitdir = CSTR_VIEW("gitdir: ");
-		e = notes_line(notes->dir, ".git", &line);
-		if (!e)
-			e = !cstr_view_starts(cstr_view(line), gitdir) ? EINVAL
-			  : notes_resolve(notes->dir, line + gitdir.len, &git);
-		free(line);
-		line = nullptr;
-	}
-	if (!e) {
-		e = notes_line(git, "commondir", &line);
-		if (e == ENOENT) {
-			notes->directory = git;
-			git = nullptr;
-			e = 0;
-		} else if (!e) {
-			e = notes_resolve(git, line, &notes->directory);
-		}
-	}
-	free(line);
-	free(git);
-	return e;
-}
 
 struct notes *
 notes_create (char const *path,
@@ -254,10 +64,8 @@ notes_create (char const *path,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*notes = (struct notes){ .participant = copy, .named = named, .fd = -1 };
-	if (!(*e = notes_open(notes, path, why, len)) && (*e = notes_common(notes)))
-		util_format(why, len, "cannot resolve the Git common directory: %s", strerror(*e));
-	if (*e)
+	*notes = (struct notes){ .participant = copy, .named = named };
+	if (!(notes->store = store_create(path, why, len, e)))
 		notes_destroy(&notes);
 	return notes;
 }
@@ -269,20 +77,16 @@ notes_destroy (struct notes **p_notes)
 		return;
 	struct notes *notes = *p_notes;
 	*p_notes = nullptr;
-	free(notes->dir);
-	notes->dir = nullptr;
+	store_destroy(&notes->store);
 	free(notes->participant);
 	notes->participant = nullptr;
-	free(notes->directory);
-	notes->directory = nullptr;
-	util_close(&notes->fd);
 	free(notes);
 }
 
-char const *
-notes_directory (struct notes const *notes)
+struct store const *
+notes_store (struct notes const *notes)
 {
-	return notes->directory;
+	return notes ? notes->store : nullptr;
 }
 
 char const *
@@ -334,30 +138,9 @@ notes_selector (char const *repo)
 	return repo + sizeof BRANCH - 1;
 }
 
-#undef BRANCH
+char const *const notes_books[] = { "--format=%(refname:strip=3)", BRANCH };
 
-void
-notes_argv (struct notes const *notes,
-            enum notes_cmd      cmd,
-            char const *const  *words,
-            char const         *argv[NOTES_ARGV])
-{
-	static_assert(4 + array_size(fixed) + array_size(cmds[0]) + 1 <= NOTES_ARGV);
-	size_t k = 0;
-	argv[k++] = "git";
-	argv[k++] = "-C";
-	if (cmd == NOTES_CREATE) {
-		argv[k++] = notes->dir;
-	} else {
-		argv[k++] = notes->directory;
-		argv[k++] = "--git-dir=.";
-	}
-	for (size_t i = 0; i < array_size(fixed); ++i)
-		argv[k++] = fixed[i];
-	for (size_t i = 0; i < array_size(cmds[cmd]) && cmds[cmd][i]; ++i)
-		argv[k++] = cmds[cmd][i] == word ? *words++ : cmds[cmd][i];
-	argv[k] = nullptr;
-}
+#undef BRANCH
 
 int
 notes_revision_init (struct notes_revision *dest,
@@ -383,26 +166,26 @@ notes_revision_pin (struct notes_revision *revision,
 	revision->phase = REVISION_DATA;
 }
 
-void
-notes_revision_argv (struct notes_revision const *revision,
-                     struct notes const          *notes,
-                     char const                  *repo,
-                     enum notes_cmd               cmd,
-                     char const                  *argv[NOTES_ARGV])
+enum store_cmd
+notes_revision_words (struct notes_revision const *revision,
+                      char const                  *repo,
+                      enum store_cmd               cmd,
+                      char const                  *words[static STORE_WORDS])
 {
-	enum notes_cmd const phases[] = {
-		[REVISION_HEAD] = NOTES_HEAD,
-		[REVISION_FROM] = NOTES_ANCESTOR,
-		[REVISION_TO]   = NOTES_ANCESTOR,
+	enum store_cmd const phases[] = {
+		[REVISION_HEAD] = STORE_HEAD,
+		[REVISION_FROM] = STORE_ANCESTOR,
+		[REVISION_TO]   = STORE_ANCESTOR,
 		[REVISION_DATA] = cmd,
 	};
-	char const *const words[][3] = {
+	char const *const rows[][STORE_WORDS] = {
 		[REVISION_HEAD] = { repo },
 		[REVISION_FROM] = { revision->from.hex, revision->tip.hex },
 		[REVISION_TO]   = { revision->to.hex, revision->tip.hex },
 		[REVISION_DATA] = { revision->from.hex, revision->to.hex, revision->file.data },
 	};
-	notes_argv(notes, phases[revision->phase], words[revision->phase], argv);
+	memcpy(words, rows[revision->phase], sizeof rows[0]);
+	return phases[revision->phase];
 }
 
 int
@@ -476,52 +259,6 @@ notes_is_dotgit (char const *part,
 		at += (size_t)(bs - s) + 1;
 	}
 	return false;
-}
-
-/* A git that writes ends, at its deadline and grace at the latest, before
- * its lock file is NOTES_STALE old. */
-static_assert(NOTES_NS + GIT_GRACE < (uint64_t)NOTES_STALE * NS);
-
-int
-notes_lock (struct notes const *notes,
-            char const         *repo,
-            int64_t            *age)
-{
-	*age = 0;
-
-	struct timespec now = clk_now_or_1969(CLOCK_REALTIME);
-	if (now.tv_sec < 0)
-		return clk_errno(now);
-
-	struct timespec up = clk_now_or_1969(CLOCK_BOOTTIME);
-	if (up.tv_sec < 0)
-		return clk_errno(up);
-
-	char *path = nullptr;
-	if (asprintf(&path, "%s/%s.lock", notes->directory, repo) < 0)
-		return ENOMEM;
-	struct stat st;
-	int e = 0;
-	if (lstat(path, &st))
-		e = errno == ENOENT ? 0 : errno;
-	/* A margin keeps a clock step after the boot from making a live lock
-	 * look older than the boot. */
-	else if (!S_ISREG(st.st_mode) || st.st_mtime >= now.tv_sec - up.tv_sec - NOTES_STALE)
-		*age = now.tv_sec - st.st_mtime;
-	else if (unlink(path) && errno != ENOENT)
-		e = errno;
-	free(path);
-	return e;
-}
-
-bool
-notes_exists (struct notes const *notes)
-{
-	if (!notes)
-		return false;
-	struct stat st;
-	return !fstatat(notes->fd, notes->bare ? "HEAD" : ".git", &st,
-	                AT_SYMLINK_NOFOLLOW);
 }
 
 int
@@ -667,130 +404,6 @@ notes_file_same (struct notes_file const *file,
 	return 0;
 }
 
-/* Writes @p name at @p p in double quotes, with a backslash before each
- * double quote and backslash in it, as fast-import reads a path, and
- * returns the end. The quoted name takes at most 2 * name.len + 2 bytes.
- */
-static char *
-notes_quote (char             *p,
-             struct cstr_view  name)
-{
-	*p++ = '"';
-	for (size_t i = 0; i < name.len; ++i) {
-		if (name.data[i] == '"' || name.data[i] == '\\')
-			*p++ = '\\';
-		*p++ = name.data[i];
-	}
-	*p++ = '"';
-	return p;
-}
-
-int
-notes_add_head (struct buf        *in,
-                struct cstr_view   name,
-                size_t             len,
-                struct notes_part *part)
-{
-	static char const m[] = "M 100644 inline ";
-	if (!in || !name.data || name.len > NOTES_NAME || !part)
-		return EINVAL;
-	/* The head is m, the name quoted as a C string, which at most doubles
-	 * its bytes, and the data command. Then come the text and a line
-	 * feed. */
-	struct span s;
-	int e = buf_reserve(in, sizeof m + 2 * name.len + sizeof "\"\"\ndata \n" + UTIL_DECIMAL +
-	                    len, SIZE_MAX, &s);
-	if (e)
-		return e;
-	char *const head = (char *)s.ptr;
-	char *p = notes_quote(mempcpy(head, m, sizeof m - 1), name);
-	size_t const room = s.len - (size_t)(p - head);
-	int n = snprintf(p, room, "\ndata %zu\n", len);
-	if (n < 0 || (size_t)n >= room)
-		return EINVAL;
-	size_t const h = (size_t)(p - head) + (size_t)n;
-	head[h + len] = '\n';
-	/* The quoted name runs from the end of m to p. */
-	size_t at = buf_peek(in).len;
-	*part = (struct notes_part){
-		.name_at = at + sizeof m - 1,
-		.name_len = (size_t)(p - head) - (sizeof m - 1),
-		.data_at = at + h,
-		.data_len = len,
-	};
-	buf_commit(in, h + len + 1);
-	return 0;
-}
-
-int
-notes_add_file (struct buf        *in,
-                struct cstr_view   name,
-                struct cstr_view   text,
-                struct notes_part *part)
-{
-	int e = notes_add_head(in, name, text.len, part);
-	if (!e)
-		memcpy(buf_peek(in).ptr + part->data_at, text.data, text.len);
-	return e;
-}
-
-int
-notes_delete_file (struct buf        *in,
-                   struct cstr_view   name,
-                   struct notes_part *part)
-{
-	if (!in || !name.data || name.len > NOTES_NAME || !part)
-		return EINVAL;
-	/* The part is "D ", the name quoted as a C string, which at most
-	 * doubles its bytes, and a line feed. */
-	struct span s;
-	int e = buf_reserve(in, sizeof "D \"\"\n" + 2 * name.len, SIZE_MAX, &s);
-	if (e)
-		return e;
-	char *const head = (char *)s.ptr;
-	char *p = notes_quote(mempcpy(head, "D ", 2), name);
-	size_t const at = buf_peek(in).len;
-	size_t const end = (size_t)(p - head);
-	*part = (struct notes_part){ .name_at = at + 2, .name_len = end - 2, .data_at = at + end };
-	*p = '\n';
-	buf_commit(in, end + 1);
-	return 0;
-}
-
-int
-notes_add_input (struct buf       *in,
-                 char const       *repo,
-                 char const       *book,
-                 struct oid const *tip,
-                 struct cstr_view  message,
-                 struct span       file)
-{
-	if (!in || !repo || !book || !tip || !message.data ||
-	    message.len >= NOTES_MESSAGE || memchr(message.data, '\0', message.len))
-		return EINVAL;
-	/* The count of the data includes the line feed after the message.
-	 * get-mark ends the commit, and git writes the commit's id. */
-	int e = buf_printf(in, "commit %s\nmark :1\ncommitter %s <askai> now\ndata %zu\n%.*s\n",
-	                   repo, notes_selector(book), message.len + 1, (int)message.len, message.data);
-	if (!e && oid_len(tip))
-		e = buf_printf(in, "from %s\n", tip->hex);
-	e = e ? e : buf_put(in, file.ptr, file.len, SIZE_MAX);
-	return e ? e : buf_printf(in, "get-mark :1\n");
-}
-
-int
-notes_add_out (struct span  out,
-               struct oid  *commit)
-{
-	if (!commit)
-		return EINVAL;
-	unsigned char *nl = out.len > 1 ? memrchr(out.ptr, '\n', out.len - 1) : nullptr;
-	if (nl)
-		out = (struct span){ nl + 1, out.len - (size_t)(nl + 1 - out.ptr) };
-	struct cstr_view const line = { (char const *)out.ptr, out.len };
-	return oid_init_line(commit, line) ? EIO : 0;
-}
-
 int
 notes_read_input (struct buf       *in,
                   char const       *repo,
@@ -911,7 +524,7 @@ notes_file_next (struct span       *out,
 }
 
 /* Finds the header of the commit before the numstat token at @p stat in
- * @p out, the output of NOTES_LIST, and stores its commit, time, subject
+ * @p out, the output of STORE_LOG, and stores its commit, time, subject
  * and end in @p cursor. Returns false if no header precedes @p stat, as in
  * an output cut short.
  */

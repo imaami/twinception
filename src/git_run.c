@@ -3,6 +3,7 @@
  * The argv and the environment of git.
  */
 #include <errno.h>
+#include <string.h>
 
 #include "buf.h"
 #include "child.h"
@@ -96,4 +97,14 @@ git_run_capture (struct git_run const *run,
 	struct span const got = buf_peek(out);
 	struct cstr_view const text = { (char const *)got.ptr, got.len };
 	return end.status || oid_init_line(oid, text) ? EIO : 0;
+}
+
+int
+git_run_path (struct cstr_view *rest,
+              struct cstr_view *path)
+{
+	if (!rest || !path)
+		return EINVAL;
+	return cstr_view_cut(rest, '\n', path) && cstr_view_starts(*path, CSTR_VIEW("/")) &&
+	       !memchr(path->data, '\0', path->len) ? 0 : EINVAL;
 }

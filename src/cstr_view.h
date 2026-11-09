@@ -248,6 +248,20 @@ cstr_view_trim_end (struct cstr_view text)
 	return text;
 }
 
+/** Returns the last line of @p text after cstr_view_trim_end(): the bytes
+ *  after the last line feed, or the whole trimmed text if it contains no
+ *  line feed.
+ */
+static inline struct cstr_view
+cstr_view_last_line (struct cstr_view text)
+{
+	text = cstr_view_trim_end(text);
+	size_t n = text.len;
+	while (n && text.data[n - 1] != '\n')
+		--n;
+	return cstr_view_slice(text, n, SIZE_MAX);
+}
+
 /**
  * Drop spaces and tabs from the start of @p text, and spaces, tabs,
  * carriage returns and line feeds from its end, as from a line of input or

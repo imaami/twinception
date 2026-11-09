@@ -1,9 +1,9 @@
 /** @file Unit tests of the argv and the environment of git, src/git_run.c:
  *  the argv of each shape of a struct git_run_dir word for word, the
  *  environment in order, the limits of both, the copy of the struct
- *  child_cmd in git_run_init(), and git run through child_capture(),
- *  child_run() and git_run_capture() in a new bare repository at the path
- *  of the argument.
+ *  child_cmd in git_run_init(), the paths that git_run_path() reads, and
+ *  git run through child_capture(), child_run() and git_run_capture() in
+ *  a new bare repository at the path of the argument.
  */
 #define _GNU_SOURCE /* pipe2(), memfd_create() */
 #include <errno.h>
@@ -229,6 +229,35 @@ git_run_test_init (void)
 	CHECK(git_run_init(&run, &dir, words, nullptr) == EINVAL);
 	CHECK(git_run_dir_argv(nullptr, words, run.argv, array_size(run.argv)) == EINVAL);
 	CHECK(git_run_dir_argv(&dir, words, nullptr, array_size(run.argv)) == EINVAL);
+}
+
+/* Tests git_run_path(): two absolute paths in a row, then the rest of the
+ * output; EINVAL for a relative path, an empty line, a line without its
+ * line feed, a NUL in the path and each nullptr.
+ */
+static void
+git_run_test_path (void)
+{
+	struct cstr_view rest = CSTR_VIEW("/a b\n/c\nd\n");
+	struct cstr_view path = {};
+	CHECK(!git_run_path(&rest, &path) && cstr_view_equal(path, CSTR_VIEW("/a b")));
+	CHECK(!git_run_path(&rest, &path) && cstr_view_equal(path, CSTR_VIEW("/c")));
+	CHECK(cstr_view_equal(rest, CSTR_VIEW("d\n")));
+	static struct cstr_view const bad[] = {
+		CSTR_VIEW_INIT("d\n"),
+		CSTR_VIEW_INIT("\n/a\n"),
+		CSTR_VIEW_INIT("/a"),
+		CSTR_VIEW_INIT("/a\0b\n"),
+		{},
+	};
+	for (size_t i = 0; i < array_size(bad); ++i) {
+		rest = bad[i];
+		CHECK(git_run_path(&rest, &path) == EINVAL);
+	}
+	rest = CSTR_VIEW("/a\n");
+	CHECK(git_run_path(nullptr, &path) == EINVAL);
+	CHECK(git_run_path(&rest, nullptr) == EINVAL);
+	CHECK(cstr_view_equal(rest, CSTR_VIEW("/a\n")));
 }
 
 /* Runs @p words with git in @p dir with the descriptors @p fds, the
@@ -491,6 +520,7 @@ main (int    argc,
 	git_run_test_shapes();
 	git_run_test_env();
 	git_run_test_init();
+	git_run_test_path();
 	git_run_test_run(argv[1]);
 	return check_report("git_run");
 }

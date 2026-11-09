@@ -12,7 +12,8 @@
  * Existing repositories can have worktrees; Git resolves their packed refs.
  * Concurrent changes to one branch fail rather than overwrite another writer.
  * The review record of a thread is a commit on
- * refs/review/PARTICIPANT/WHO/THREAD, outside the notebook branches.
+ * refs/review/PARTICIPANT/WHO/THREAD, outside the notebook branches. The
+ * repository is a store of src/store.h.
  */
 #ifndef ASKAI_SRC_NOTES_H_
 #define ASKAI_SRC_NOTES_H_
@@ -21,9 +22,9 @@
 #include <stdint.h>
 
 #include "buf.h"
-#include "clk.h"
 #include "cstr_view.h"
 #include "oid.h"
+#include "store.h"
 #include "util.h"
 #include "xlist.h"
 
@@ -31,24 +32,12 @@ struct hexid;
 struct notes;
 
 enum {
-	NOTES_NAME = 255,      /**< bytes of the name of a note, at most */
-	NOTES_MAX  = 16 << 20, /**< bytes of the output of git, at most */
-	NOTES_REPO = 128,      /**< bytes of a full notebook branch ref, NUL included */
-	NOTES_ARGV = 40,       /**< elements of the argv of git, nullptr
-	                            included */
-	NOTES_MESSAGE = 1024,  /**< bytes of the commit message of a note
-	                            write, NUL included, at most */
-	NOTES_WHO  = 16,       /**< hexadecimal digits of a principal in a
-	                            notebook's ref */
+	NOTES_NAME = STORE_PATH, /**< bytes of the name of a note, at most */
+	NOTES_REPO = 128,        /**< bytes of a full notebook branch ref, NUL
+	                              included */
+	NOTES_WHO  = 16,         /**< hexadecimal digits of a principal in a
+	                              notebook's ref */
 };
-
-/** The time from the start of git to its deadline, in nanoseconds. */
-static constexpr uint64_t NOTES_NS = 10 * NS;
-
-/** The age in seconds past which a lock file of a notebook has outlived
- *  every write of askai, so that its writer has died or hangs.
- */
-static constexpr int64_t NOTES_STALE = 60;
 
 /** The two authors within a participant and principal. */
 enum notes_side : uint8_t {
@@ -67,26 +56,8 @@ static struct cstr_view const notes_sides[] = {
 	[NOTES_CLIENT]   = CSTR_VIEW_INIT("client"),
 };
 
-/** The commands of git that write and read the notes. */
-enum notes_cmd : uint8_t {
-	NOTES_CREATE,    /**< initializes the shared repository */
-	NOTES_CHECK,     /**< checks the name of a new note. notes_check_input()
-	                      writes its input. */
-	NOTES_ADD,       /**< writes a note. notes_add_input() writes its
-	                      input. */
-	NOTES_LIST,      /**< writes the note history, the newest first */
-	NOTES_READ,      /**< writes a note. notes_read_input() writes its
-	                      input. */
-	NOTES_BOOKS,     /**< lists all participant notebook selectors */
-	NOTES_FILES,     /**< lists the current notes, in tree order */
-	NOTES_HEAD,      /**< resolves a notebook branch to its full commit id */
-	NOTES_ANCESTOR,  /**< checks that a commit is an ancestor of another */
-	NOTES_DIFF,      /**< compares a note in two commits */
-	NOTES_STAT,      /**< counts the lines that one commit changed against
-	                      another */
-	NOTES_GREP,      /**< finds the lines of the current notes that match
-	                      the patterns of its input */
-};
+/** The words of STORE_REFS that list the selectors of all notebooks. */
+extern char const *const notes_books[2];
 
 /** The actions of the notes tool: X(ID, name, flags, fetch), the constant
  *  NOTES_ACTION_ID of enum notes_action, the name, and the flags and the
@@ -121,8 +92,8 @@ enum notes_action : uint8_t {
 /** The names of the actions. Each is NUL-terminated. */
 static struct cstr_view const notes_action_names[] = { NOTES_ALL_ACTION_LIST(XL_VIEW) };
 
-/** A current note in the output of NOTES_FILES or NOTES_CHECK. Views
- *  borrow that output. From NOTES_CHECK, the name is empty.
+/** A current note in the output of STORE_FILES or STORE_CHECK. Views
+ *  borrow that output. From STORE_CHECK, the name is empty.
  */
 struct notes_file {
 	struct span name;
@@ -130,18 +101,7 @@ struct notes_file {
 	struct oid  id;     /**< the name of the blob */
 };
 
-/** The offsets of the name and the text of a note in the buffer that
- *  notes_add_head() writes to, from the head of the buffer. The name
- *  includes its quotes.
- */
-struct notes_part {
-	size_t name_at;
-	size_t name_len;
-	size_t data_at;
-	size_t data_len;
-};
-
-/** A change to a note in the output of NOTES_LIST. */
+/** A change to a note in the output of STORE_LOG. */
 struct notes_entry {
 	struct span name;
 	struct span subject; /**< the commit's subject; borrows the history output */
@@ -167,10 +127,9 @@ struct notes_cursor {
 /** The lines of a note that git sees as binary (struct notes_entry). */
 static constexpr uint64_t NOTES_BINARY = UINT64_MAX;
 
-/** Opens the shared session repository at @p path for @p participant. An
- * empty directory is initialized lazily on its first note. A nonempty directory
- * that is not a repository is refused, preserving the old per-thread layout.
- * Returns nullptr and an error number and message on failure.
+/** Opens the shared session repository at @p path for @p participant, as
+ * store_create() does. Returns nullptr and an error number and message on
+ * failure.
  */
 extern struct notes *
 notes_create (char const *path,
@@ -182,9 +141,11 @@ notes_create (char const *path,
 extern void
 notes_destroy (struct notes **p_notes);
 
-/** The canonical Git common directory, resolving worktree indirections. */
-extern char const *
-notes_directory (struct notes const *notes);
+/** Returns the store of the shared session repository, or nullptr if
+ *  @p notes is nullptr.
+ */
+extern struct store const *
+notes_store (struct notes const *notes);
 
 /** The configured writer identity, shared by this instance's notebooks. */
 extern char const *
@@ -237,39 +198,6 @@ notes_select (struct cstr_view name,
 extern char const *
 notes_selector (char const *repo);
 
-/** Writes to @p *age how many seconds ago the lock file of the notebook
- *  branch @p repo was last changed, or 0 if it has none. A lock file last
- *  changed more than NOTES_STALE before the system booted belongs to no
- *  running process, as a crash can leave it, and is removed instead; the
- *  margin keeps a step of the clock from making a live lock look older than
- *  the boot. Any other lock file stays, as its writer may be outside
- *  askai. Returns 0 or an error number.
- */
-extern int
-notes_lock (struct notes const *notes,
-            char const         *repo,
-            int64_t            *age);
-
-/** Whether the shared repository has been initialized. Branch existence is
- * resolved by Git, including packed refs.
- */
-extern bool
-notes_exists (struct notes const *notes);
-
-/** Writes the argv of the command @p cmd to @p argv. The arguments of the
- *  command come from @p words, in this order: for NOTES_LIST a notebook
- *  branch or commit and a file name or nullptr, for NOTES_FILES and
- *  NOTES_HEAD a notebook branch or commit, for NOTES_ANCESTOR two commits,
- *  for NOTES_DIFF two commits and a file name, for NOTES_STAT two commits,
- *  and for NOTES_GREP a commit. The other commands do not read @p words,
- *  which may then be nullptr. The words must outlive @p argv.
- */
-extern void
-notes_argv (struct notes const *notes,
-            enum notes_cmd      cmd,
-            char const *const  *words,
-            char const         *argv[NOTES_ARGV]);
-
 /** The stage of a historical read or diff (notes.c). */
 enum notes_revision_phase : uint8_t;
 
@@ -309,17 +237,18 @@ notes_revision_pin (struct notes_revision *revision,
                     struct oid const      *from,
                     struct oid const      *to);
 
-/** Builds the current stage's Git argv: pin the selected notebook tip,
- *  authorize explicit revisions by ancestry, then run @p cmd, NOTES_READ,
- *  NOTES_DIFF, NOTES_STAT or NOTES_GREP, on those exact snapshots.
- *  @p revision and @p repo must outlive the argv.
+/** Writes to @p words the words of the command of the current stage, and
+ *  returns the command: pin the tip of the notebook branch @p repo
+ *  (STORE_HEAD), authorize explicit revisions by ancestry
+ *  (STORE_ANCESTOR), then run @p cmd, STORE_READ, STORE_DIFF, STORE_STAT or
+ *  STORE_GREP, on those exact snapshots. The words point into @p revision
+ *  and @p repo.
  */
-extern void
-notes_revision_argv (struct notes_revision const *revision,
-                     struct notes const          *notes,
-                     char const                  *repo,
-                     enum notes_cmd               cmd,
-                     char const                  *argv[NOTES_ARGV]);
+extern enum store_cmd
+notes_revision_words (struct notes_revision const *revision,
+                      char const                  *repo,
+                      enum store_cmd               cmd,
+                      char const                  *words[static STORE_WORDS]);
 
 /** Consumes a successful authorization stage's complete output and advances
  *  to the next stage. Never call after failed, cancelled or truncated Git
@@ -346,7 +275,7 @@ notes_revision_ready (struct notes_revision const *revision);
 extern int
 notes_name (struct cstr_view *name);
 
-/** Writes the input of the command NOTES_CHECK for the valid name @p name
+/** Writes the input of the command STORE_CHECK for the valid name @p name
  *  in the notebook branch @p repo to @p in. Returns 0, EINVAL for a null
  *  argument, or the error number that buf_printf() returns.
  */
@@ -356,7 +285,7 @@ notes_check_input (struct buf       *in,
                    struct cstr_view  name);
 
 /**
- * Reads @p out, the output of the command NOTES_CHECK. If the branch has
+ * Reads @p out, the output of the command STORE_CHECK. If the branch has
  * notes, the function writes the name of the newest commit to @p tip, else
  * no name. If a note has the name, it writes the note's blob id and size
  * to @p note, else it zeroes @p note. Returns 0 if a note of the
@@ -381,77 +310,7 @@ notes_file_same (struct notes_file const *file,
                  struct span              data,
                  bool                    *same);
 
-/**
- * Writes to @p in the head of the file part of the input of the command
- * NOTES_ADD, for a note with the name @p name whose text is @p len bytes
- * long. After the head, the function adds @p len bytes for the text, which
- * it leaves unwritten, and a line feed. It stores the offsets of the name
- * and the text in @p *part. The caller then writes the text at the offset
- * part->data_at from the head of @p in, as notes_add_file() does. Returns
- * 0, EINVAL for a null argument, a name longer than NOTES_NAME or a failed
- * snprintf() of the data command, or ENOMEM.
- */
-extern int
-notes_add_head (struct buf        *in,
-                struct cstr_view   name,
-                size_t             len,
-                struct notes_part *part);
-
-/**
- * Writes to @p in the file part of the input of the command NOTES_ADD. The
- * valid name of the note is @p name, and its text is @p text.
- * notes_add_input() puts the commit before the file part. The function
- * fills @p *part as notes_add_head() does. Returns 0, EINVAL for a name
- * longer than NOTES_NAME, or ENOMEM.
- */
-extern int
-notes_add_file (struct buf        *in,
-                struct cstr_view   name,
-                struct cstr_view   text,
-                struct notes_part *part);
-
-/**
- * Writes to @p in the part of the input of the command NOTES_ADD that
- * deletes the note of the valid name @p name. It stores the offset of the
- * name in @p *part, as notes_add_head() does, and no text. Returns 0,
- * EINVAL for a null argument or a name longer than NOTES_NAME, or ENOMEM.
- */
-extern int
-notes_delete_file (struct buf        *in,
-                   struct cstr_view   name,
-                   struct notes_part *part);
-
-/**
- * Writes to @p in the input of the command NOTES_ADD. The input is a commit
- * on @p repo with the message @p message, one line without its line feed,
- * and with @p file, the part that notes_add_file() wrote. The committer's
- * name is the selector of the notebook branch @p book. A file replaces any
- * existing note with the same name. The parent is @p tip. A @p tip without
- * a name makes a root commit, which git refuses if the branch exists.
- * notes_add_out() reads the new commit's id from the output. Returns 0,
- * EINVAL for a null argument, a NUL in @p message or a message of
- * NOTES_MESSAGE bytes or more, or the error of buf_printf() or buf_put(),
- * after which @p in can contain part of the input.
- */
-extern int
-notes_add_input (struct buf       *in,
-                 char const       *repo,
-                 char const       *book,
-                 struct oid const *tip,
-                 struct cstr_view  message,
-                 struct span       file);
-
-/**
- * Reads @p out, the output of the command NOTES_ADD, and writes the id of
- * the new commit, its last line, to @p commit. Returns 0, EINVAL for a
- * null @p commit, or EIO with no name in @p commit if the last line is not
- * a commit id.
- */
-extern int
-notes_add_out (struct span  out,
-               struct oid  *commit);
-
-/** Writes the input of the command NOTES_READ for the valid name @p name
+/** Writes the input of the command STORE_READ for the valid name @p name
  *  in the notebook branch or commit @p repo to @p in. Returns 0, EINVAL
  *  for a null argument, or the error number that buf_printf() returns.
  */
@@ -461,7 +320,7 @@ notes_read_input (struct buf       *in,
                   struct cstr_view  name);
 
 /**
- * Reads @p out, the output of the command NOTES_READ, and stores the text
+ * Reads @p out, the output of the command STORE_READ, and stores the text
  * of the note in @p text, and its object id in @p id unless @p id is
  * nullptr. Returns 0, ENOENT if no note has the name,
  * EISDIR if the name is a directory of notes, and EIO if the output is not
@@ -482,7 +341,7 @@ notes_review (char const         *repo,
               char                ref[NOTES_REPO]);
 
 /**
- * Reads @p out, the output of the command NOTES_READ for the input that
+ * Reads @p out, the output of the command STORE_READ for the input that
  * notes_check_input() writes for a ref of notes_review() and the name
  * review.json. Stores the commit of the ref in @p tip and the text of
  * review.json in @p text. Returns 0, ENOENT if the ref does not exist, or
@@ -495,7 +354,7 @@ notes_review_out (struct span  out,
                   struct span *text);
 
 /**
- * Reads the next current note from @p out, the output of NOTES_FILES, into
+ * Reads the next current note from @p out, the output of STORE_FILES, into
  * @p file, consuming its complete record. Returns 0, ENOENT at the end, or
  * EIO for an incomplete or malformed record; errors leave @p out unchanged.
  */
@@ -504,7 +363,7 @@ notes_file_next (struct span       *out,
                  struct notes_file *file);
 
 /**
- * Reads a note in @p out, the output of NOTES_LIST, into @p entry and
+ * Reads a note in @p out, the output of STORE_LOG, into @p entry and
  * advances @p cursor backwards. Start with cursor.end = out.len and its other
  * fields zero. Changes come oldest first, including all files of a multi-file
  * commit. Incomplete records at a cut end are skipped. Returns false at end.

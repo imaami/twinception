@@ -16,7 +16,6 @@
 #include "cstr_view.h"
 #include "datauri.h"
 #include "dstr.h"
-#include "git.h"
 #include "hexid.h"
 #include "jb.h"
 #include "list.h"
@@ -31,9 +30,10 @@
 #include "review.h"
 #include "schema.h"
 #include "shelf.h"
+#include "store.h"
 #include "util.h"
 
-/* A fetch value says why git runs on the notes (src/notes.h). The values
+/* A fetch value says why git runs on the notes (src/store.h). The values
  * up to FETCH_KIND are kinds, and FETCH_KIND masks them. Each kind is a
  * row of notes_tool_fetch_steps[]. The bits above FETCH_KIND are flags.
  */
@@ -77,18 +77,11 @@ enum notes_tool_fetch : uint32_t {
  */
 struct notes_tool_fetch_step {
 	tool_step_fn *out;
-	uint32_t      cmd;     /* enum notes_cmd, widened over the padding */
+	uint32_t      cmd;     /* enum store_cmd, widened over the padding */
 	uint32_t      listed;
 };
 
 static struct notes_tool_fetch_step const *notes_tool_fetch_step (uint32_t fetch);
-
-/* Returns true if git writes to the notes when it runs @p cmd. */
-static bool
-notes_tool_writes (enum notes_cmd cmd)
-{
-	return cmd == NOTES_CREATE || cmd == NOTES_ADD;
-}
 
 /* The flags of an action in notes_tool_actions[]. */
 enum {
@@ -162,7 +155,7 @@ struct notes_tool_call {
 	struct dstr             out;       /* the output of a tool call.
 	                                      notes_tool_end() lends it to
 	                                      the slot. */
-	struct notes_part       part;      /* the offsets of the name and the
+	struct store_part       part;      /* the offsets of the name and the
 	                                      text in file */
 	struct list             spare;     /* the call's node on loop->spare */
 	struct child           *child;     /* the call's git, until a step has
@@ -188,7 +181,7 @@ struct notes_tool_call {
 	                                      other calls. tip is the parent of
 	                                      a write that changes a note. */
 	union {
-		UTIL_TEXT(NOTES_MESSAGE)  message;  /* the commit message of a
+		UTIL_TEXT(STORE_MESSAGE)  message;  /* the commit message of a
 		                                       write, for its result */
 		UTIL_TEXT(NOTES_NAME + 1) name;     /* the name of a copy, until
 		                                       its file part is written */
@@ -306,8 +299,7 @@ notes_tool_loop_take (struct notes_tool_loop *loop,
 }
 
 /* Ends the notes call at @p *p_call, which @p loop gave out, and sets
- * @p *p_call to nullptr. A git that writes notes runs to its end, because
- * a kill could leave a lock file behind. Any other git is killed. Without
+ * @p *p_call to nullptr. store_drop() lets go of the call's git. Without
  * memory pressure, the function then puts the call on loop->spare for
  * reuse. dstr_clear() keeps the storage of the output. Under memory
  * pressure, the function frees the call and the output.
@@ -317,10 +309,7 @@ notes_tool_loop_put (struct notes_tool_loop  *loop,
                      struct notes_tool_call **p_call)
 {
 	struct notes_tool_call *call = *p_call;
-	if (notes_tool_writes(notes_tool_fetch_step(call->fetch)->cmd))
-		child_release(&call->child);
-	else
-		child_destroy(&call->child);
+	store_drop(&call->child);
 	buf_fini(&call->file);
 	if (atomic_load_explicit(&buf_pressure, memory_order_relaxed) != BUF_EASY) {
 		notes_tool_call_destroy(p_call);
@@ -436,9 +425,10 @@ notes_tool_end (struct mcp_slot *slot,
 	mcp_slot_finish(slot, failed ? TOOL_FAILED : 0);
 }
 
-/* Spawns git for @p fetch in the shared repository and frees @p in, the
- * input of git, which may be empty. git reads the notebook that the call
- * selected, or else call->repo. Writes always go to call->repo. If
+/* Spawns git for @p fetch in the shared repository (store_spawn()) and
+ * frees @p in, the input of git, which may be empty. git reads the
+ * notebook that the call selected, or else call->repo. Writes always go
+ * to call->repo, whose lock file store_spawn() checks. If
  * @p e, the error of making @p in, is not 0, the function frees @p in and
  * ends the call with @p e instead (notes_tool_end()).
  */
@@ -454,40 +444,17 @@ notes_tool_run (struct mcp_slot *slot,
 		return;
 	}
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct notes const *notes = call->loop->tool->notes;
-	struct loop *loop = mcp_slot_loop(slot);
 	char const *repo = notes_tool_call_notebook(call);
-	enum notes_cmd cmd = notes_tool_fetch_step(fetch)->cmd;
-	/* git removes its own lock files on SIGTERM. notes_lock() removes a
-	 * lock file that is older than the last boot. Any other lock file
-	 * stays, because its writer can run outside askai. */
-	bool writes = notes_tool_writes(cmd);
-	int64_t age;
-	int const lock = cmd == NOTES_ADD ? notes_lock(notes, call->repo, &age) : 0;
-	if (lock)
-		LOG(LOG_WARN, "notes: cannot check the lock of %s: %s", call->repo, strerror(lock));
-	char const *argv[NOTES_ARGV];
-	char const *const words[] = {
+	enum store_cmd cmd = notes_tool_fetch_step(fetch)->cmd;
+	char const *words[STORE_WORDS] = {
 		repo, call->revision.file.len ? call->revision.file.data : nullptr
 	};
 	if (fetch & FETCH_REVISION)
-		notes_revision_argv(&call->revision, notes, repo, cmd, argv);
-	else
-		notes_argv(notes, cmd, words, argv);
-	char *const env[] = { util_env_path(), GIT_ENV_FIXED, nullptr };
-	struct child_cmd const c = {
-		.file = "git",
-		.argv = argv,
-		.envp = env,
-		.in = buf_peek(in),
-		.max = NOTES_MAX,
-		.deadline = loop->now + NOTES_NS,
-		.grace = writes ? GIT_GRACE : 0,
-		/* For the commands that write, the output includes the errors. */
-		.flags = writes ? CHILD_STDERR : 0
-	};
+		cmd = notes_revision_words(&call->revision, repo, cmd, words);
 	call->fetch = fetch;
-	call->child = mcp_slot_spawn(slot, &c, &e);
+	call->child = store_spawn(notes_store(call->loop->tool->notes), slot, cmd,
+	                          cmd == STORE_REFS ? notes_books : words, call->repo,
+	                          buf_peek(in), &e);
 	buf_fini(in);
 	if (!call->child)
 		notes_tool_failed(slot, e);
@@ -541,24 +508,6 @@ notes_tool_call_unread (struct notes_tool_call const *call)
 	                                    : CSTR_VIEW("The notes could not be read.");
 }
 
-/* Returns true if the output of git shows that another writer changed the
- * branch, or created the repository, at the same time. Other instances of
- * askai can share the repository.
- */
-static bool
-notes_tool_raced (struct child const *child)
-{
-	struct cstr_view const raced[] = {
-		CSTR_VIEW("Not updating "), CSTR_VIEW("not updating "),
-		CSTR_VIEW(" but expected "), CSTR_VIEW("File exists"),
-	};
-	struct span out = buf_peek(&child->out);
-	for (size_t i = 0; i < array_size(raced) && out.len; ++i)
-		if (memmem(out.ptr, out.len, raced[i].data, raced[i].len))
-			return true;
-	return false;
-}
-
 /* Fails the write in @p slot with why git did not write the note. The
  * reasons are a timeout, a race with another writer, a lock file that a
  * dead or hung writer left, and other errors of git. The function logs the
@@ -574,11 +523,11 @@ notes_tool_unadded (struct mcp_slot *slot)
 		              TOOL_FAILED);
 		return;
 	}
-	if (notes_tool_raced(c)) {
-		struct notes const *notes = call->loop->tool->notes;
+	if (store_raced(c)) {
+		struct store const *store = notes_store(call->loop->tool->notes);
 		char const *repo = call->repo;
 		int64_t age = 0;
-		if (notes_lock(notes, repo, &age) || age <= NOTES_STALE) {
+		if (store_lock(store, repo, &age) || age <= STORE_STALE) {
 			mcp_slot_tell(slot, CSTR_VIEW("Could not write the note. Another call "
 			                              "changed the notebook at the same time. "
 			                              "Read the current note and retry."),
@@ -586,7 +535,7 @@ notes_tool_unadded (struct mcp_slot *slot)
 			return;
 		}
 		LOG(LOG_WARN, "notes: %s/%s.lock is %" PRId64 " s old; remove it if no "
-		    "git process uses the repository", notes_directory(notes), repo, age);
+		    "git process uses the repository", store_directory(store), repo, age);
 		mcp_slot_tellf(slot, TOOL_FAILED, "Could not write the note. The notebook has been "
 		               "locked for %" PRId64 " s.", age);
 		return;
@@ -610,9 +559,9 @@ notes_tool_call_message (struct notes_tool_call *call,
                          uint64_t                before)
 {
 	static_assert(sizeof "Copy  from  at : ( bytes)" + UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
-	              NOTES_REPO + OID_SHA256 + NOTES_NAME <= NOTES_MESSAGE);
+	              NOTES_REPO + OID_SHA256 + NOTES_NAME <= STORE_MESSAGE);
 	static_assert(sizeof "Restore  from : ( to  bytes)" + 2 * UTIL_DECIMAL + 2 * NOTES_NAME + 2 +
-	              OID_SHA256 + NOTES_NAME <= NOTES_MESSAGE);
+	              OID_SHA256 + NOTES_NAME <= STORE_MESSAGE);
 	uint32_t fetch = notes_tool_actions[call->action].fetch;
 	struct cstr_view const verb = notes_action_names[call->action];
 	char const up = (char)(verb.data[0] - 'a' + 'A');
@@ -644,11 +593,17 @@ notes_tool_write (struct mcp_slot  *slot,
                   uint64_t          before)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct span file = buf_peek(&call->file);
 	struct buf in = {};
 	int e = notes_tool_call_message(call, before);
-	e = e ? e : notes_add_input(&in, call->repo, call->repo, tip,
-	                            util_text_view(&call->message), file);
+	/* The committer is the selector of the caller's own notebook. */
+	struct store_commit const commit = {
+		.committer = { cstr_view(notes_selector(call->repo)), CSTR_VIEW("askai") },
+		.message = util_text_view(&call->message),
+		.files = buf_peek(&call->file),
+		.ref = call->repo,
+		.tip = tip,
+	};
+	e = e ? e : store_commit_input(&commit, &in);
 	buf_fini(&call->file);
 	notes_tool_run(slot, FETCH_ADD, &in, e);
 }
@@ -662,8 +617,15 @@ notes_tool_write_record (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct buf in = {};
-	int e = notes_add_input(&in, call->repo, call->notebook, &call->revision.tip,
-	                        CSTR_VIEW("Save the review record"), buf_peek(&call->file));
+	/* The committer is the selector of the caller's own notebook. */
+	struct store_commit const commit = {
+		.committer = { cstr_view(notes_selector(call->notebook)), CSTR_VIEW("askai") },
+		.message = CSTR_VIEW("Save the review record"),
+		.files = buf_peek(&call->file),
+		.ref = call->repo,
+		.tip = &call->revision.tip,
+	};
+	int e = store_commit_input(&commit, &in);
 	buf_fini(&call->file);
 	notes_tool_run(slot, FETCH_SAVE | FETCH_SAVING, &in, e);
 }
@@ -683,7 +645,7 @@ notes_tool_created (struct mcp_slot *slot)
 		return;
 	}
 	if (child_ok(call->child) ||
-	    (notes_tool_raced(call->child) && notes_exists(call->loop->tool->notes))) {
+	    (store_raced(call->child) && store_exists(notes_store(call->loop->tool->notes)))) {
 		child_destroy(&call->child);
 		notes_tool_write(slot, &(struct oid){}, NO_NOTE);
 		return;
@@ -706,7 +668,7 @@ notes_tool_wrote (struct mcp_slot *slot,
 	notes_tool_end(slot, e, false);
 }
 
-/* Returns true if @p note, the note that NOTES_CHECK found, already has
+/* Returns true if @p note, the note that STORE_CHECK found, already has
  * the bytes of call->file. The function then answers the replace or
  * restore in @p slot without a commit. The answer names @p tip, the newest
  * commit of the branch. The caller's own notebook contains notes, and
@@ -740,7 +702,7 @@ notes_tool_unchanged (struct mcp_slot         *slot,
 	return true;
 }
 
-/* Handles the output of NOTES_CHECK for a write. add and copy accept only a
+/* Handles the output of STORE_CHECK for a write. add and copy accept only a
  * name that is neither a note nor a directory of notes. No directory in the
  * name can be a note. The writes with FETCH_REPLACE accept only the name
  * of an existing note, and git reads the note for append. A replace or a
@@ -809,7 +771,7 @@ notes_tool_saved (struct mcp_slot *slot,
 	notes_tool_wrote(slot, e);
 }
 
-/* Handles the output of NOTES_STAT after a replace or restore. The
+/* Handles the output of STORE_STAT after a replace or restore. The
  * function appends to the result the lines that the write removed and
  * added, unless git failed or counted the note as binary.
  */
@@ -845,7 +807,7 @@ notes_tool_added (struct mcp_slot *slot)
 	}
 	(void)mcp_slot_noted(slot);
 	struct oid commit;
-	if (notes_add_out(buf_peek(&call->child->out), &commit))
+	if (store_committed(buf_peek(&call->child->out), &commit))
 		LOG(LOG_WARN, "notes: git fast-import gave no commit id");
 	struct cstr_view const p[] = {
 		oid_len(&commit) ? CSTR_VIEW("Saved in commit ") : CSTR_VIEW("Saved"),
@@ -866,7 +828,7 @@ notes_tool_added (struct mcp_slot *slot)
 	notes_tool_run(slot, FETCH_STAT | FETCH_REVISION, &(struct buf){}, 0);
 }
 
-/* Appends the history in @p out, the output of git for NOTES_LIST, to
+/* Appends the history in @p out, the output of git for STORE_LOG, to
  * call->text, the oldest change first. Stores the name of the newest note
  * in @p *newest. @p cut is true if askai cut the output of git. A cut
  * output lacks the oldest changes. Returns 0 or ENOMEM.
@@ -915,7 +877,7 @@ notes_tool_history (struct mcp_slot *slot,
 	return 0;
 }
 
-/* Appends the current files in @p out, the output of git for NOTES_FILES,
+/* Appends the current files in @p out, the output of git for STORE_FILES,
  * to call->text. @p cut is true if askai cut the output, which then ends
  * within a record. Returns 0, ENOMEM, or EIO if a record of an output that
  * askai did not cut cannot be decoded.
@@ -968,7 +930,7 @@ notes_tool_got_list (struct mcp_slot *slot)
 /* Appends the session's notebooks to call->text: the selector of the
  * caller's own notebook, which does not need to have commits, then the
  * selector of each other notebook in the output of @p c, the git for
- * NOTES_BOOKS, or the line that no other notebook has notes. @p c is
+ * STORE_REFS, or the line that no other notebook has notes. @p c is
  * nullptr before the first note of the session. git lists loose and
  * packed refs. Returns 0 or ENOMEM.
  */
@@ -1273,13 +1235,13 @@ notes_tool_got_attach (struct mcp_slot  *slot,
 	dstr_auto view = DSTR_INIT;
 	if (binary) {
 		/* Measure the view before making it, so that askai makes no view
-		 * that is longer than NOTES_MAX. */
+		 * that is longer than STORE_MAX. */
 		size_t len = 0;
 		(void)notes_tool_view(&view, body, 0, &len);
-		if (len > NOTES_MAX) {
+		if (len > STORE_MAX) {
 			mcp_slot_tellf(slot, TOOL_FAILED, "The note is too large to attach. The view "
 			               "of the note would be %zu bytes. The upload limit is %d MiB. "
-			               "read shows the note in parts.", len, NOTES_MAX >> 20);
+			               "read shows the note in parts.", len, STORE_MAX >> 20);
 			return;
 		}
 		if (notes_tool_view(&view, body, SIZE_MAX, nullptr)) {
@@ -1513,7 +1475,7 @@ notes_tool_committed (struct mcp_slot *slot)
 		char const *text = (char const *)out.ptr;
 		LOG(LOG_WARN, "notes: git could not save %s: %.*s", call->repo,
 		    (int)util_clip(text, out.len, 300), text);
-		if (notes_tool_raced(c))
+		if (store_raced(c))
 			why = CSTR_VIEW("The findings of the ask call were not saved. Another ask "
 			                "call of the thread saved a review record first.\n");
 	}
@@ -1540,7 +1502,7 @@ notes_tool_loop_save (struct notes_tool_loop *loop,
 	struct json_object *record = review_carry_json(mcp_slot_review(slot), &call->revision.tip,
 	                                               &e);
 	struct cstr_view const json = jb_wire(record);
-	e = e ? e : json.data ? notes_add_file(&call->file, review_file, json, &call->part)
+	e = e ? e : json.data ? store_part_file(&call->part, &call->file, review_file, json)
 	  : ENOMEM;
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, json.len);
 	json_object_put(record);
@@ -1548,28 +1510,28 @@ notes_tool_loop_save (struct notes_tool_loop *loop,
 		notes_tool_then(slot, e);
 		return;
 	}
-	if (notes_exists(loop->tool->notes))
+	if (store_exists(notes_store(loop->tool->notes)))
 		notes_tool_write_record(slot);
 	else
 		notes_tool_run(slot, FETCH_CREATE | FETCH_SAVING, &(struct buf){}, 0);
 }
 
 static struct notes_tool_fetch_step const notes_tool_fetch_steps[] = {
-	[FETCH_CREATE]  = { notes_tool_created,   NOTES_CREATE, 0 },
-	[FETCH_CHECK]   = { notes_tool_checked,   NOTES_CHECK,  0 },
-	[FETCH_ADD]     = { notes_tool_added,     NOTES_ADD,    0 },
-	[FETCH_LIST]    = { notes_tool_got_list,  NOTES_LIST,   1 },
-	[FETCH_READ]    = { notes_tool_got_note,  NOTES_READ,   0 },
-	[FETCH_RESUME]  = { notes_tool_resumed,   NOTES_LIST,   0 },
-	[FETCH_COMPACT] = { notes_tool_compacted, NOTES_LIST,   0 },
-	[FETCH_BOOKS]   = { notes_tool_got_books, NOTES_BOOKS,  1 },
-	[FETCH_FILES]   = { notes_tool_got_list,  NOTES_FILES,  1 },
-	[FETCH_NEWEST]  = { notes_tool_newest,    NOTES_READ,   0 },
-	[FETCH_DIFF]    = { notes_tool_got_diff,  NOTES_DIFF,   1 },
-	[FETCH_STAT]    = { notes_tool_stated,    NOTES_STAT,   0 },
-	[FETCH_GREP]    = { notes_tool_got_grep,  NOTES_GREP,   0 },
-	[FETCH_RECORD]  = { notes_tool_carried,   NOTES_READ,   0 },
-	[FETCH_SAVE]    = { notes_tool_committed, NOTES_ADD,    0 },
+	[FETCH_CREATE]  = { notes_tool_created,   STORE_CREATE, 0 },
+	[FETCH_CHECK]   = { notes_tool_checked,   STORE_CHECK,  0 },
+	[FETCH_ADD]     = { notes_tool_added,     STORE_COMMIT, 0 },
+	[FETCH_LIST]    = { notes_tool_got_list,  STORE_LOG,    1 },
+	[FETCH_READ]    = { notes_tool_got_note,  STORE_READ,   0 },
+	[FETCH_RESUME]  = { notes_tool_resumed,   STORE_LOG,    0 },
+	[FETCH_COMPACT] = { notes_tool_compacted, STORE_LOG,    0 },
+	[FETCH_BOOKS]   = { notes_tool_got_books, STORE_REFS,   1 },
+	[FETCH_FILES]   = { notes_tool_got_list,  STORE_FILES,  1 },
+	[FETCH_NEWEST]  = { notes_tool_newest,    STORE_READ,   0 },
+	[FETCH_DIFF]    = { notes_tool_got_diff,  STORE_DIFF,   1 },
+	[FETCH_STAT]    = { notes_tool_stated,    STORE_STAT,   0 },
+	[FETCH_GREP]    = { notes_tool_got_grep,  STORE_GREP,   0 },
+	[FETCH_RECORD]  = { notes_tool_carried,   STORE_READ,   0 },
+	[FETCH_SAVE]    = { notes_tool_committed, STORE_COMMIT, 0 },
 };
 static_assert(array_size(notes_tool_fetch_steps) <= FETCH_KIND + 1);
 
@@ -1617,7 +1579,7 @@ notes_tool_check (struct mcp_slot  *slot,
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct buf in = {};
 	uint32_t fetch = FETCH_CREATE;
-	if (!e && notes_exists(call->loop->tool->notes)) {
+	if (!e && store_exists(notes_store(call->loop->tool->notes))) {
 		fetch = FETCH_CHECK;
 		e = notes_check_input(&in, call->repo, name);
 	}
@@ -1672,18 +1634,18 @@ notes_tool_add (struct mcp_slot    *slot,
 	(void)util_text_store(&call->revision.file, name);
 	int e;
 	if (content) {
-		e = notes_add_head(&call->file, name, data.size, &call->part);
+		e = store_part_head(&call->part, &call->file, name, data.size);
 		if (!e)
 			datauri_decode(&data, buf_peek(&call->file).ptr + call->part.data_at);
 		loop_work(mcp_slot_loop(slot), LOOP_COPY, data.size);
 	} else {
 		/* askai adds a line feed to a turn's text that lacks a final
 		 * one, if the note stays within 4 MiB. The byte after the kept
-		 * text is that line feed, or the one that notes_add_head()
+		 * text is that line feed, or the one that store_part_head()
 		 * writes after the text. */
 		size_t const lf = turn && kept < TOOL_TEXT_MAX && text.data[kept - 1] != '\n';
 		call->flags = kept < text.len ? CALL_STRIPPED : 0;
-		e = notes_add_head(&call->file, name, kept + lf, &call->part);
+		e = store_part_head(&call->part, &call->file, name, kept + lf);
 		if (!e)
 			*(char *)mempcpy(buf_peek(&call->file).ptr + call->part.data_at, text.data,
 			                 kept) = '\n';
@@ -1706,7 +1668,7 @@ notes_tool_got_copy (struct mcp_slot *slot,
 	}
 	struct cstr_view const to = util_text_view(&call->name);
 	struct cstr_view const bytes = { (char const *)text.ptr, text.len };
-	int e = notes_add_file(&call->file, to, bytes, &call->part);
+	int e = store_part_file(&call->part, &call->file, to, bytes);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, text.len);
 	child_destroy(&call->child);
 	notes_tool_check(slot, to, e);
@@ -1722,7 +1684,7 @@ notes_tool_delete (struct mcp_slot  *slot,
 		mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 		return;
 	}
-	int e = notes_delete_file(&call->file, name, &call->part);
+	int e = store_part_delete(&call->part, &call->file, name);
 	notes_tool_check(slot, name, e);
 }
 
@@ -1744,9 +1706,9 @@ notes_tool_got_append (struct mcp_slot *slot,
 		return;
 	}
 	struct buf file = {};
-	struct notes_part part;
-	int e = notes_add_head(&file, util_text_view(&call->revision.file), old.len + lf + add.len,
-	                       &part);
+	struct store_part part;
+	int e = store_part_head(&part, &file, util_text_view(&call->revision.file),
+	                        old.len + lf + add.len);
 	if (e) {
 		buf_fini(&file);
 		notes_tool_end(slot, e, true);
@@ -1851,6 +1813,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		return;
 	enum notes_side const side = mcp_slot_from_client(slot) ? NOTES_CLIENT : NOTES_UPSTREAM;
 	struct notes const *notes = call->loop->tool->notes;
+	struct store const *store = notes_store(notes);
 	notes_repo(notes, mcp_slot_principal(slot), side, call->repo);
 	size_t const offered = side == NOTES_UPSTREAM ? call->loop->tool->actions
 	                                              : NOTES_ACTION_ATTACH;
@@ -1949,7 +1912,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		notes_tool_revision(slot, name, revisions, fetch);
 		return;
 	}
-	if (fetch & FETCH_REPLACE && !notes_exists(notes)) {
+	if (fetch & FETCH_REPLACE && !store_exists(store)) {
 		mcp_slot_tell(slot, no_note, TOOL_FAILED);
 		return;
 	}
@@ -1961,7 +1924,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		notes_tool_add(slot, name, args);
 		return;
 	}
-	if (!notes_exists(notes)) {
+	if (!store_exists(store)) {
 		/* This answer does not fail the call. A turn's offset applies to it,
 		 * and a client's offset does not. */
 		struct cstr_view const none = CSTR_VIEW("The session contains no notes yet.");
@@ -2100,7 +2063,7 @@ notes_tool_definition (void const *service)
 	 * also for attached worktrees. The definition has a hash of the path
 	 * instead of the path. The hash stays the same when askai or the client
 	 * restarts. */
-	char const *directory = notes_directory(tool->notes);
+	char const *directory = store_directory(notes_store(tool->notes));
 	unsigned char digest[SHA256_DIGEST_LENGTH];
 	if (!SHA256((unsigned char const *)directory, strlen(directory), digest)) {
 		json_object_put(def);

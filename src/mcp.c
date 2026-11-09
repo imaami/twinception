@@ -4033,7 +4033,7 @@ mcp_req_ask (struct mcp_req     *req,
 	if ((req->flags & (REQ_SSE_OK | REQ_DETACH_PENDING)) == REQ_SSE_OK)
 		mcp_req_stream(req);
 	/* Every ask starts with this participant's session notes. */
-	bool resume = notes && notes_exists(notes);
+	bool resume = store_exists(notes_store(notes));
 	mcp_req_dispose(req);
 	if (resume) {
 		notes_tool_loop_prompt(req->mcp->notes, &req->self, &req->self.answer,

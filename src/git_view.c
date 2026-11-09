@@ -7,11 +7,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "cstr_view.h"
+#include "git_run.h"
 #include "git_view.h"
 #include "oid.h"
 #include "util.h"
@@ -26,17 +26,6 @@ struct git_view {
 	char     directory[sizeof GIT_VIEW_TEMPLATE];
 	uint16_t head;  /**< not 0 if HEAD of the snapshot is a commit */
 };
-
-/** Takes the next line of @p rest into @p path. Returns 0, or EINVAL if
- *  the line is not an absolute path without a NUL.
- */
-static int
-git_view_path (struct cstr_view *rest,
-               struct cstr_view *path)
-{
-	return cstr_view_cut(rest, '\n', path) && cstr_view_starts(*path, CSTR_VIEW("/")) &&
-	       !memchr(path->data, '\0', path->len) ? 0 : EINVAL;
-}
 
 /** Validates the "OID refname" lines of @p refs: each OID is @p width
  *  hexadecimal digits, and each name is in a namespace of GIT_VIEW_REF_LIST,
@@ -120,7 +109,7 @@ git_view_create (struct span metadata,
 	struct cstr_view rest = { (char const *)metadata.ptr, metadata.len };
 	struct cstr_view const packed = { (char const *)refs.ptr, refs.len };
 	struct cstr_view objects, shallow, format, head = {};
-	if (git_view_path(&rest, &objects) || git_view_path(&rest, &shallow) ||
+	if (git_run_path(&rest, &objects) || git_run_path(&rest, &shallow) ||
 	    !cstr_view_cut(&rest, '\n', &format))
 		return nullptr;
 	enum oid_format const width = oid_format(format);
