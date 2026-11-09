@@ -881,9 +881,10 @@ The author is the member, such as `bro <agent/bro>` or
 member. The message says what the write did, the note's name and its size
 before and after, such as `Replace "plan.md" (1234 to 1302 bytes)`;
 previous versions remain in history. The commit of a turn ends with the
-trailer lines `Ask:`, the ID of the ask call, `Conversation:`, its thread,
-and `Asked-by:`, the member whose client made the ask call, if it has a
-name. `history` and the prompt show the asker as `, asked by NAME`. The
+trailer lines `Ask:`, the ID of the ask call, `Call:`, the number of the
+turn's call that made the commit, `Conversation:`, its thread, and
+`Asked-by:`, the member whose client made the ask call, if it has a name.
+`history` and the prompt show the asker as `, asked by NAME`. The
 result names the new commit and repeats its message. If the write changed a
 note, the result also names the commit of the previous version, after the
 lines that a `replace` or `restore` removed and added, such as `1 line

@@ -216,8 +216,9 @@ of one agent need two service names when they share a transcript
 repository.
 
 Steps 2 and 3 are partly done. The notebook of a member is the author
-view, and the commits of the turns name the ask call, the conversation and
-the asker. Note IDs are not done. Steps 4 and 5 are not done.
+view, and the commits of the turns name the ask call, the call, the
+conversation and the asker. Note IDs are not done. Steps 4 and 5 are not
+done.
 
 ## References
 

@@ -777,15 +777,22 @@ notes_tool_write (struct mcp_slot *slot,
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct member_call const *member = mcp_slot_member(slot);
 	/* The author is the caller, and the committer is this askai. The
-	 * commit of a turn names the ask call, the conversation and the
-	 * asker. The request of a call of a client contains none of them. */
+	 * commit of a turn names the ask call, the call, the conversation and
+	 * the asker. The request of a call of a client contains none of
+	 * them. */
 	char email[sizeof "person/" + UTIL_WORD_MAX];
 	util_format(email, sizeof email, "%s/%s", member_kinds[call->self.kind].data,
 	            call->self.name);
-	struct store_trailer t[3];
+	struct store_trailer t[4];
 	size_t n = 0;
 	if (*member->ask.hex)
 		t[n++] = (struct store_trailer){ CSTR_VIEW("Ask"), hexid_view(&member->ask) };
+	char number[sizeof "4294967295"];
+	uint32_t const k = mcp_slot_call(slot);
+	if (k)
+		t[n++] = (struct store_trailer){ CSTR_VIEW("Call"),
+		                                 util_format_view(number, sizeof number,
+		                                                  "%" PRIu32, k) };
 	if (*member->conversation.hex)
 		t[n++] = (struct store_trailer){ CSTR_VIEW("Conversation"),
 		                                 hexid_view(&member->conversation) };

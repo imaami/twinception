@@ -12136,8 +12136,9 @@ def check_shared_notes(binary, up):
                     message = git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B",
                                   "refs/heads/agent/cuh/notes")
                     assert re.fullmatch(r'cuh <agent/cuh>\|cuh <askai>\|Add "turn\.md" \(2 '
-                                        r"bytes\)\n\nAsk: [0-9a-f]{32}\nConversation: "
-                                        r"[0-9a-f]{32}\nAsked-by: claude\n\n", message), message
+                                        r"bytes\)\n\nAsk: [0-9a-f]{32}\nCall: 1\n"
+                                        r"Conversation: [0-9a-f]{32}\nAsked-by: claude\n\n",
+                                        message), message
             finally:
                 up.reply = held
     print("shared notes: two services, bare and working repositories, one session with "
@@ -12428,8 +12429,8 @@ def check_notes_history(binary, up):
                                   upstream).decode()
                     assert re.fullmatch(
                         rf'alice <agent/alice>\|alice <askai>\|Restore "plan\.md" from {first} '
-                        r"\(9 to 9 bytes\)\n\nAsk: [0-9a-f]{32}\nConversation: [0-9a-f]{32}\n"
-                        rf"Asked-by: {re.escape(ME)}\n\n", message), message
+                        r"\(9 to 9 bytes\)\n\nAsk: [0-9a-f]{32}\nCall: 4\nConversation: "
+                        rf"[0-9a-f]{{32}}\nAsked-by: {re.escape(ME)}\n\n", message), message
                     assert call(alice, action="history", file="plan.md",
                                 notebook="alice").endswith(
                         f'  commit {tip(upstream)}  Restore "plan.md" from {first} (9 to 9 '
@@ -12726,7 +12727,7 @@ def check_notes_texts(binary, up):
                     f"shared session repository. The ask-chain thread is {thread}.", trace
                 assert re.fullmatch(
                     r'p <agent/p>\|p <askai>\|Add "b\.md" \(2 bytes\)\n\nAsk: [0-9a-f]{32}\n'
-                    rf"Conversation: {thread}\nAsked-by: {re.escape(ME)}",
+                    rf"Call: 1\nConversation: {thread}\nAsked-by: {re.escape(ME)}",
                     git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B", upstream)), \
                     git("log", "-1", "--format=%B", upstream)
                 # A turn's text gets a final line feed, so the same text again
@@ -14293,7 +14294,9 @@ def check_turns(binary, up):
             # in: the slow git call c1 ends after the calls c2 to c5. A
             # failed call, a refused call and a call whose arguments are no
             # object get a stamp too. The calls after a compact call do not
-            # run, but use up their numbers.
+            # run, but use up their numbers. The commit of a turn's note
+            # names the call.
+            book = f"{notes}-{sessions}"
             script[:] = [
                 lambda r: (200, turn_stream([("s1", "git", slow), ("s2", "git", log),
                                              ("s3", "nope", "{}"),
@@ -14322,6 +14325,8 @@ def check_turns(binary, up):
             assert [unstamp(m["content"])[1] for m in asked[2]] == list(range(1, 8)), asked[2]
             assert [(m["tool_call_id"], unstamp(m["content"])[1]) for m in asked[4]] == \
                 [("s10", 10)], asked[4]
+            assert re.search(r"\nCall: 7\n", sh("--git-dir", book, "log", "-1", "--format=%B",
+                                                 branch, cwd=d)), book
 
             # A job in the background, and timers: background starts git and
             # answers at once; a wait for the job ends as it finishes, with the
