@@ -13857,12 +13857,17 @@ def check_turns(binary, up):
                      "strip/b.md": ("b " + provenance[2:], None),
                      "strip/c.md": ("c" + provenance + "\n\nmore", None),
                      "strip/i.md": ("i" + stamp(3) + "\n\nmore", None),
-                     "strip/d.md": ("d\n\n[askai: notebook nobody]", None)}
+                     "strip/d.md": ("d\n\n[askai: notebook nobody]", None),
+                     # The stamp names a member and its kind, each matched as
+                     # a member name.
+                     "strip/j.md": ("j\n\n[askai: notebook bro (team)]", "j\n"),
+                     "strip/k.md": ("k\n\n[askai: notebook bro (a b)]", None)}
             calls = [(f"s{k}", "notes", json.dumps({"action": "add", "file": name,
                                                     "text": text}))
                      for k, (name, (text, _)) in enumerate(texts.items())]
-            calls.append(("s9", "notes", json.dumps({"action": "add", "file": "strip/e.md",
-                                                     "text": provenance + "\n"})))
+            calls.append((f"s{len(texts)}", "notes",
+                          json.dumps({"action": "add", "file": "strip/e.md",
+                                      "text": provenance + "\n"})))
             script[:] = [lambda r: (200, turn_stream(calls))]
             count = len(up.requests)
             assert ai.ask("Q")["content"][0]["text"] == "A"

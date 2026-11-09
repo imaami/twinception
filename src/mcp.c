@@ -481,46 +481,46 @@ enum mcp_slot_flag : uint16_t {
  * use req->self.
  */
 struct mcp_slot {
-	struct loop_step    step;      /* the step that runs kind->step() */
-	struct dstr         answer;    /* the output of the call. Its storage
+	struct loop_step     step;     /* the step that runs kind->step() */
+	struct dstr          answer;   /* the output of the call. Its storage
 	                                  is kept for reuse. */
-	struct mcp_req     *req;       /* the request that runs the call */
-	void               *own;       /* the call's own word (mcp_slot_own()).
+	struct mcp_req      *req;      /* the request that runs the call */
+	void                *own;      /* the call's own word (mcp_slot_own()).
 	                                  The kind's drop() releases it. */
-	void               *inst;      /* The instance of the tool's plugin for
+	void                *inst;     /* The instance of the tool's plugin for
 	                                  the user of the request, or nullptr
 	                                  if the plugin has no instances.
 	                                  mcp_slot_start() sets it with
 	                                  instance_table_get(), and
 	                                  mcp_slot_drop() clears it with
 	                                  instance_table_put(). */
-	struct span         lent;      /* the output text if own holds it, such
+	struct span          lent;     /* the output text if own holds it, such
 	                                  as the page text of a man call */
-	struct web_wait    *web;       /* the last HTTP request of the call, in
+	struct web_wait     *web;      /* the last HTTP request of the call, in
 	                                  progress or answered, until the next
 	                                  request or mcp_slot_drop() */
-	size_t              skip;      /* the output offset at which the window
+	size_t               skip;     /* the output offset at which the window
 	                                  given to a turn starts */
-	size_t              window;    /* the length of that window in bytes */
-	uint64_t            start;     /* loop_clock() when the call began */
-	struct handle       call;      /* the handle that mcp_slot_name() makes
+	size_t               window;   /* the length of that window in bytes */
+	uint64_t             start;    /* loop_clock() when the call began */
+	struct handle        call;     /* the handle that mcp_slot_name() makes
 	                                  for the post that completes the call */
-	struct json_object *args;      /* the arguments of the call: of a turn's
+	struct json_object  *args;     /* the arguments of the call: of a turn's
 	                                  call until its result is written, or
 	                                  nullptr if they are no object; of a
 	                                  job, a copy, for the jobs tool */
-	struct mcp_slot    *of;        /* the job whose output it gives, if any */
-	struct seen_read   *read;      /* the lines of a file that its output
+	struct mcp_slot     *of;       /* the job whose output it gives, if any */
+	struct seen_read    *read;     /* the lines of a file that its output
 	                                  shows, for the ring of the calls
 	                                  (mcp_slot_source()), if any */
-	char const         *shows;     /* the notebook that a notes read or diff
-	                                  shows, or nullptr. mcp_slot_done()
-	                                  puts it in the notice and the journal
-	                                  and then clears it. */
-	UTIL_TEXT(512)      note;      /* text appended to the tool output */
-	uint8_t             tool;      /* the id of the tool, or TOOL_MAX */
-	uint8_t             role;      /* enum mcp_role */
-	uint16_t            flags;     /* enum mcp_slot_flag, widened over the
+	struct member const *shows;    /* the member whose notebook a notes
+	                                  read or diff shows, or nullptr.
+	                                  mcp_slot_done() puts it in the notice
+	                                  and the journal and then clears it. */
+	UTIL_TEXT(512)       note;     /* text appended to the tool output */
+	uint8_t              tool;     /* the id of the tool, or TOOL_MAX */
+	uint8_t              role;     /* enum mcp_role */
+	uint16_t             flags;    /* enum mcp_slot_flag, widened over the
 	                                  padding */
 };
 
@@ -3630,8 +3630,8 @@ mcp_slot_evidence (struct mcp_slot        *slot,
 }
 
 int
-mcp_slot_shows (struct mcp_slot *slot,
-                char const      *notebook)
+mcp_slot_shows (struct mcp_slot     *slot,
+                struct member const *notebook)
 {
 	int e = !notebook ? EFAULT : mcp_slot_live(slot, 0, 0);
 	if (!e)
@@ -5706,7 +5706,7 @@ mcp_slot_done (struct mcp_slot *slot,
 		    util_s(out.len), shown.data, *text ? "; error " : "", text);
 	}
 	slot->flags |= failed ? SLOT_FAILED : 0;
-	char const *notebook = !failed ? slot->shows : nullptr;
+	struct member const *notebook = !failed ? slot->shows : nullptr;
 	slot->shows = nullptr;
 	if (job) {
 		mcp_agenda_job_done(slot);
@@ -5722,7 +5722,8 @@ mcp_slot_done (struct mcp_slot *slot,
 	mcp_slot_window(slot, out);
 	mcp_slot_note_window(slot, out.len, offset);
 	if (notebook)
-		(void)util_text_printf(&slot->note, "\n\n" NOTICE_NOTEBOOK, notebook);
+		(void)util_text_printf(&slot->note, "\n\n" NOTICE_NOTEBOOK, notebook->name,
+		                       member_kinds[notebook->kind].data);
 	(void)util_text_printf(&slot->note, "\n\n" NOTICE_CALL, mcp_slot_call(slot));
 	if (*req->archive.hex && !(tool->kind->flags & KF_RERUN)) {
 		/* A resumed turn writes the window and the note again, and

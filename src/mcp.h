@@ -513,16 +513,16 @@ mcp_slot_evidence (struct mcp_slot        *slot,
                    size_t                  at,
                    size_t                  len);
 
-/** Sets the notebook that the call's output shows to @p notebook, the
- *  name of a member and its kind, such as "bro (agent)", which must stay
- *  valid until the kind's drop(). After the result of a turn's call that
- *  does not fail, askai adds a notice that names the notebook, and the
+/** Sets the notebook that the call's output shows to the notebook of the
+ *  member @p notebook, which must stay valid until the kind's drop().
+ *  After the result of a turn's call that does not fail, askai adds a
+ *  notice that names the member and its kind (NOTICE_NOTEBOOK), and the
  *  journal records the notice. Returns 0, EFAULT for nullptr, or EINVAL if
  *  the call has ended. This function is not exported.
  */
 extern int
-mcp_slot_shows (struct mcp_slot *slot,
-                char const      *notebook);
+mcp_slot_shows (struct mcp_slot     *slot,
+                struct member const *notebook);
 
 /** Returns the struct member_call of the request of the call
  *  (src/member.h): the login of its client, and for an ask call, the IDs

@@ -181,11 +181,6 @@ struct notes_tool_call {
 		struct oid                id;       /* the object id of an
 		                                       attached note, until the
 		                                       upload's answer */
-		char                      shows[MEMBER_NAME + sizeof " (person)"];
-		                                    /* book and its kind, such as
-		                                       "bro (agent)", for the
-		                                       result of a read
-		                                       (notes_tool_shows()) */
 	};
 	UTIL_TEXT(NOTES_NAME + 1) name;    /* the name of the note that a copy
 	                                      or a restore writes: the as
@@ -443,17 +438,14 @@ notes_tool_failed (struct mcp_slot *slot,
 	mcp_slot_tell(slot, why, TOOL_FAILED);
 }
 
-/* Writes the name and the kind of the member whose notebook @p call reads
- * to call->shows, such as "bro (agent)", and returns call->shows. Only a
- * call that writes no note and attaches no note can use call->shows,
- * which shares its storage.
+/* Appends to call->text the head of a result that shows the notebook of
+ * call->book, "Notebook NAME (KIND): ". Returns 0 or ENOMEM.
  */
-static char const *
-notes_tool_shows (struct notes_tool_call *call)
+static int
+notes_tool_head (struct notes_tool_call const *call)
 {
-	util_format(call->shows, sizeof call->shows, "%s (%s)", call->book.name,
-	            member_kinds[call->book.kind].data);
-	return call->shows;
+	return dstr_printf(call->text, "Notebook %s (%s): ", call->book.name,
+	                   member_kinds[call->book.kind].data) ? 0 : ENOMEM;
 }
 
 /* Ends the call of the notes tool in @p slot. The function destroys the
@@ -1128,11 +1120,11 @@ notes_tool_got_list (struct mcp_slot *slot)
 	bool const cut = c->end.flags & CHILD_CUT;
 	struct span const out = buf_peek(&c->out);
 	struct span newest;
-	int e = dstr_printf(call->text, "Notebook %s: %s:\n\n", notes_tool_shows(call),
-	                    files ? "current notes (bytes, blob)"
-	                          : "changes, oldest first (lines +added -removed, commit, "
-	                            "message)")
-	      ? 0 : ENOMEM;
+	int e = notes_tool_head(call);
+	if (!e && !dstr_cat(call->text, files ? "current notes (bytes, blob):\n\n"
+	                                      : "changes, oldest first (lines +added -removed, "
+	                                        "commit, message):\n\n"))
+		e = ENOMEM;
 	if (!e)
 		e = files ? notes_tool_files(slot, out, cut)
 		          : notes_tool_history(slot, out, cut, &newest);
@@ -1420,9 +1412,10 @@ notes_tool_got_diff (struct mcp_slot *slot)
 	struct notes_revision const *r = &call->revision;
 	struct span out = buf_peek(&c->out);
 	struct dstr *d = call->text;
-	(void)mcp_slot_shows(slot, notes_tool_shows(call));
-	int e = dstr_printf(d, "Notebook %s: %s\nfrom %s\nto %s\n\n", call->shows, r->file.data,
-	                    r->from.hex, r->to.hex) ? 0 : ENOMEM;
+	(void)mcp_slot_shows(slot, &call->book);
+	int e = notes_tool_head(call);
+	if (!e && !dstr_printf(d, "%s\nfrom %s\nto %s\n\n", r->file.data, r->from.hex, r->to.hex))
+		e = ENOMEM;
 	struct cstr_view const diff = { (char const *)out.ptr, out.len };
 	if (!e)
 		e = !diff.len ? cstr_view_cat(CSTR_VIEW("No differences.\n"), call->text)
@@ -1469,8 +1462,9 @@ notes_tool_got_grep (struct mcp_slot *slot)
 	}
 	struct cstr_view const lines = cstr_view_dstr(&found);
 	if (!e)
-		e = dstr_printf(call->text, "Notebook %s: lines that match the pattern "
-		                "(file:line:text):\n\n", notes_tool_shows(call)) ? 0 : ENOMEM;
+		e = notes_tool_head(call);
+	if (!e && !dstr_cat(call->text, "lines that match the pattern (file:line:text):\n\n"))
+		e = ENOMEM;
 	if (!e)
 		e = lines.len ? notes_tool_show(call->text, lines)
 		  : cstr_view_cat(CSTR_VIEW("No line of the current notes matches the "
@@ -1514,11 +1508,14 @@ notes_tool_got_note (struct mcp_slot *slot)
 		return;
 	}
 	struct cstr_view const body = { (char const *)text.ptr, text.len };
-	(void)mcp_slot_shows(slot, notes_tool_shows(call));
+	(void)mcp_slot_shows(slot, &call->book);
 	int e = 0;
-	if (call->fetch & FETCH_REVISION)
-		e = dstr_printf(call->text, "Notebook %s: %s at %s:\n\n", call->shows,
-		                call->revision.file.data, call->revision.from.hex) ? 0 : ENOMEM;
+	if (call->fetch & FETCH_REVISION) {
+		e = notes_tool_head(call);
+		if (!e && !dstr_printf(call->text, "%s at %s:\n\n", call->revision.file.data,
+		                       call->revision.from.hex))
+			e = ENOMEM;
+	}
 	if (!e)
 		e = notes_tool_show(call->text, body);
 	notes_tool_end(slot, e, false);

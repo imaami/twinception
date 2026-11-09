@@ -19,28 +19,21 @@ static char const *const notice_formats[] = {
 
 /* Returns the length of the argument of the printf conversion @p conv at
  * the start of the @p len bytes at @p s, or 0 if there is none: one or
- * more digits for 'u', and for 's' the name of a member and its kind in
- * parentheses, such as "bro (agent)", up to the next ']'.
+ * more digits for 'u', and for 's' a name that member_name_valid()
+ * accepts, up to the byte @p end, the byte after the conversion in the
+ * format. The name of a member and its kind are each such a name.
  */
 static size_t
 notice_arg (char        conv,
+            char        end,
             char const *s,
             size_t      len)
 {
 	switch (conv) {
 	case 's': {
-		char const *end = memchr(s, ']', len);
-		if (!end)
-			return 0;
-		size_t const n = (size_t)(end - s);
-		struct cstr_view kind = { s, n }, name;
-		if (!cstr_view_cut(&kind, ' ', &name) || !member_name_valid(name))
-			return 0;
-		if (!cstr_view_starts(kind, CSTR_VIEW("(")) || !cstr_view_ends(kind, CSTR_VIEW(")")))
-			return 0;
-		struct cstr_view const word = cstr_view_slice(kind, 1, kind.len - 2);
-		return cstr_view_index(member_kinds, array_size(member_kinds), word) <
-		       array_size(member_kinds) ? n : 0;
+		char const *at = memchr(s, end, len);
+		size_t const n = at ? (size_t)(at - s) : 0;
+		return member_name_valid((struct cstr_view){ s, n }) ? n : 0;
 	}
 	case 'u': {
 		size_t n = 0;
@@ -67,7 +60,7 @@ notice_is (char const *pattern,
 		size_t n;
 		if (*p == '%' && p[1] != '%') {
 			p += 1 + strspn(p + 1, "hljzt");
-			n = notice_arg(*p, s + i, len - i);
+			n = notice_arg(*p, p[1], s + i, len - i);
 		} else {
 			p += *p == '%';
 			n = i < len && s[i] == *p;
