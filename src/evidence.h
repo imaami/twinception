@@ -48,8 +48,6 @@ enum {
 	                                            at most */
 	EVIDENCE_TEXT     = 1024,              /**< bytes of an external item, at
 	                                            most */
-	EVIDENCE_FROM     = MEMBER_NAME + 24,  /**< bytes of an item ID such as
-	                                            cuh#2/1, NUL included */
 	EVIDENCE_PATH     = sizeof "archive/xx/" + 62,  /**< bytes of the path of
 	                                                     an archive file, NUL
 	                                                     included */
@@ -145,18 +143,19 @@ struct evidence {
 	                                     the result or the lines */
 	uint64_t              output;   /**< bytes of the whole output of the
 	                                     call */
-	uint64_t              skip;     /**< offset of the window in the output */
+	uint32_t              skip;     /**< offset of the window in the output,
+	                                     at most TOOL_OUTPUT_MAX */
 	uint32_t              item;     /**< m of AUTHOR#n/m, or 0 before the
 	                                     change numbers the item */
 	uint32_t              call;     /**< N of the call cN */
 	uint32_t              turn;     /**< the turn whose answer made the call */
+	uint32_t              flags;    /**< enum evidence_flag */
 	enum evidence_kind    kind;
-	uint8_t               flags;    /**< enum evidence_flag */
 	struct hexid          ask;      /**< the ask call of the call, or no id
 	                                     for a call after a restart */
-	char                  from[EVIDENCE_FROM];  /**< the item that the item
-	                                                 cites again, such as
-	                                                 cuh#2/1, or "" */
+	char                  from[SEEN_ID];  /**< the item that the item cites
+	                                           again, such as cuh#2/1, or
+	                                           "" */
 };
 
 /** Returns the name of the tool with the registry ID @p tool, or nullptr

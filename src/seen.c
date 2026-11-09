@@ -387,6 +387,134 @@ seen_oldest (struct seen const *seen)
 	return seen && seen->n ? seen->calls[seen->head].number : 0;
 }
 
+/* Returns the index of the item of @p seen with the ID @p id, or
+ * seen->items.n for no such item.
+ */
+static size_t
+seen_item_index (struct seen const *seen,
+                 struct cstr_view   id)
+{
+	size_t k = 0;
+	while (k < seen->items.n && !cstr_view_equal(cstr_view(seen->items.items[k].id), id))
+		++k;
+	return k;
+}
+
+int
+seen_print (struct seen            **p_seen,
+            struct seen_item const  *item,
+            uint32_t                 call,
+            size_t                   at,
+            size_t                   len)
+{
+	if (!p_seen || !item)
+		return EFAULT;
+	struct cstr_view const id = { item->id, strnlen(item->id, sizeof item->id) };
+	if (!call || !id.len || id.len == sizeof item->id || !len || len > TOOL_OUTPUT_MAX ||
+	    at > TOOL_OUTPUT_MAX - len)
+		return EINVAL;
+	int e = 0;
+	if (!*p_seen)
+		*p_seen = seen_create(&e);
+	if (e)
+		return e;
+	struct seen *seen = *p_seen;
+	size_t k = seen_item_index(seen, id);
+	if (k == seen->items.n) {
+		if (seen->items.n == SEEN_ITEMS) {
+			dstr_cleanup(&seen->items.items[0].record);
+			--seen->items.n;
+			memmove(seen->items.items, seen->items.items + 1,
+			        seen->items.n * sizeof *seen->items.items);
+		}
+		if (util_grow(seen->items.items, seen->items.cap, seen->items.n + 1))
+			return ENOMEM;
+		k = seen->items.n;
+		seen->items.items[k] = (struct seen_item){ .record = DSTR_INIT };
+	}
+	struct seen_item *it = &seen->items.items[k];
+	/* A new item, or an item of another size, which is not the item that
+	 * the turns saw, starts with no byte shown. */
+	if (it->bytes != len) {
+		it->bytes = 0;
+		it->shown = 0;
+		it->turn = 0;
+		it->call = 0;
+		if (cstr_view_store(cstr_view_dstr(&item->record), &it->record))
+			return ENOMEM;
+		memcpy(it->blobs, item->blobs, sizeof it->blobs);
+		memcpy(it->id, id.data, id.len + 1);
+		it->bytes = (uint32_t)len;
+		if (k == seen->items.n)
+			++seen->items.n;
+	}
+	it->at = (uint32_t)at;
+	it->call = call;
+	return 0;
+}
+
+void
+seen_shown (struct seen *seen,
+            uint32_t     call,
+            size_t       skip,
+            size_t       window,
+            uint32_t     turn)
+{
+	if (!seen || !call)
+		return;
+	for (size_t i = 0; i < seen->items.n; ++i) {
+		struct seen_item *it = &seen->items.items[i];
+		if (it->call != call)
+			continue;
+		it->call = 0;
+		/* The window continues the bytes shown before if it starts at
+		 * or before their end and ends after it. */
+		size_t const end = (size_t)it->at + it->shown;
+		if (skip > end || window <= end - skip)
+			continue;
+		size_t const to = skip + window - it->at;
+		it->shown = to < it->bytes ? (uint32_t)to : it->bytes;
+		if (it->shown == it->bytes && !it->turn)
+			it->turn = turn;
+	}
+}
+
+struct seen_item const *
+seen_find_item (struct seen const *seen,
+                struct cstr_view   id)
+{
+	if (!seen)
+		return nullptr;
+	size_t const k = seen_item_index(seen, id);
+	return k < seen->items.n ? &seen->items.items[k] : nullptr;
+}
+
+/* Appends to @p d the notice of the items of @p seen that results showed
+ * whole, if there are any. Returns true, or false if out of memory.
+ */
+static bool
+seen_notice_items (struct seen const *seen,
+                   struct dstr       *d)
+{
+	size_t listed = 0;
+	size_t whole = 0;
+	bool ok = true;
+	for (size_t i = 0; ok && i < seen->items.n; ++i) {
+		struct seen_item const *it = &seen->items.items[i];
+		if (!it->turn)
+			continue;
+		if (listed < SEEN_LISTED) {
+			ok = dstr_printf(d, "%s%s", listed ? ", " : "[askai: Evidence items that you "
+			                 "expanded in this ask call: ", it->id);
+			++listed;
+		}
+		++whole;
+	}
+	if (ok && whole > listed)
+		ok = dstr_printf(d, " and %zu more", whole - listed);
+	return ok && (!whole || dstr_cat(d, ". These items count as seen.]\n"));
+}
+
 int
 seen_notice (struct seen const *seen,
              struct dstr       *d)
@@ -403,17 +531,15 @@ seen_notice (struct seen const *seen,
 			oldest = c->number;
 		newest = c->number;
 	}
-	if (!oldest)
-		return 0;
-	bool ok;
-	if (oldest == newest)
+	bool ok = true;
+	if (oldest && oldest == newest)
 		ok = dstr_printf(d, "[askai: askai keeps your call c%" PRIu32 " of this ask call. "
 		                 "Cite the call as evidence by number.]\n", oldest);
-	else
+	else if (oldest)
 		ok = dstr_printf(d, "[askai: askai keeps your calls c%" PRIu32 " to c%" PRIu32 " of "
 		                 "this ask call. Cite the calls as evidence by number.]\n", oldest,
 		                 newest);
-	return ok ? 0 : ENOMEM;
+	return ok && seen_notice_items(seen, d) ? 0 : ENOMEM;
 }
 
 void
@@ -423,6 +549,9 @@ seen_clear (struct seen *seen)
 		return;
 	while (seen->n)
 		seen_drop(seen);
+	for (size_t i = 0; i < seen->items.n; ++i)
+		dstr_cleanup(&seen->items.items[i].record);
+	seen->items.n = 0;
 	seen->numbers.n = 0;
 	seen->head = 0;
 	seen->resumed = 0;
@@ -439,7 +568,10 @@ seen_kept (struct seen const *seen)
 		bytes += c->request.cap + (dstr_get_block_count(&c->result) +
 		                           dstr_get_block_count(&c->ids)) * DSTR_BLK_SIZE;
 	}
+	bytes += seen->items.cap * sizeof *seen->items.items;
 	bytes += seen->numbers.cap * sizeof *seen->numbers.items;
+	for (size_t i = 0; i < seen->items.n; ++i)
+		bytes += dstr_get_block_count(&seen->items.items[i].record) * DSTR_BLK_SIZE;
 	return bytes;
 }
 
@@ -454,6 +586,10 @@ seen_destroy (struct seen **p_seen)
 		dstr_cleanup(&seen->calls[i].result);
 		dstr_cleanup(&seen->calls[i].ids);
 	}
+	for (size_t i = 0; i < seen->items.n; ++i)
+		dstr_cleanup(&seen->items.items[i].record);
+	free(seen->items.items);
+	seen->items.items = nullptr;
 	free(seen->numbers.items);
 	seen->numbers.items = nullptr;
 	free(seen);

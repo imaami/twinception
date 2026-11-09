@@ -667,15 +667,16 @@ evidence_parse (struct evidence          *dest,
 	uint64_t item;
 	uint64_t call;
 	uint64_t turn;
+	uint64_t skip;
 	int e = !json_object_is_type(obj, json_type_object) || kind == EVIDENCE_KINDS ||
 	        !tool.data || !call_id.data || !json_object_is_type(failed, json_type_boolean) ||
 	        jb_uint_checked(jb_get(obj, "item"), UINT32_MAX, &item) || !item ||
 	        jb_uint_checked(jb_get(obj, "call"), UINT32_MAX, &call) ||
 	        jb_uint_checked(jb_get(obj, "turn"), UINT32_MAX, &turn) ||
 	        jb_uint_checked(jb_get(obj, "output"), UINT64_MAX, &dest->output) ||
-	        jb_uint_checked(jb_get(obj, "skip"), UINT64_MAX, &dest->skip) ||
+	        jb_uint_checked(jb_get(obj, "skip"), TOOL_OUTPUT_MAX, &skip) ||
 	        (ask && hexid_init(&dest->ask, jb_view(ask))) ||
-	        (from && !jb_text(from, 1, EVIDENCE_FROM - 1, nullptr).data) ||
+	        (from && !jb_text(from, 1, SEEN_ID - 1, nullptr).data) ||
 	        (ids && !json_object_is_type(ids, json_type_object)) ||
 	        (request && evidence_blob_parse(&dest->request, request)) ||
 	        evidence_blob_parse(&dest->result, jb_get(obj, "result")) ? EINVAL : 0;
@@ -683,6 +684,7 @@ evidence_parse (struct evidence          *dest,
 		e = evidence_ranges_parse(dest, obj);
 	if (!e) {
 		dest->kind = (enum evidence_kind)kind;
+		dest->skip = (uint32_t)skip;
 		dest->item = (uint32_t)item;
 		dest->call = (uint32_t)call;
 		dest->turn = (uint32_t)turn;

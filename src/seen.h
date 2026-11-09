@@ -31,6 +31,17 @@
  * The storage of a dropped result stays for the next call in the same
  * place of the ring. The storage of dropped arguments goes back to the
  * thread's stash (src/buf.h).
+ *
+ * The ring also stores the evidence items of findings (src/evidence.h)
+ * that askai printed to the turns: by the action expand of the findings
+ * tool, or after the refusal of an item that the turns had not seen. A
+ * call that prints an item names the bytes of the item in its output
+ * (seen_print()). When askai writes the result of the call, the bytes of
+ * the window that continue the bytes shown before count as shown
+ * (seen_shown()). An item counts as seen from the turn after the one that
+ * showed its last byte. The pages of an item can come from several calls,
+ * in order. The ring stores the JSON of each such item and the git IDs of
+ * its archive files, so that a finding can cite the item again.
  */
 #ifndef ASKAI_SRC_SEEN_H_
 #define ASKAI_SRC_SEEN_H_
@@ -42,17 +53,31 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "mcp.h"
+#include "oid.h"
 #include "util.h"
 
 struct json_object;
 
 enum {
-	SEEN_CALLS    = 64,    /**< calls in the ring of an ask call, at
-	                            most */
-	SEEN_NAME_MAX = 1024,  /**< bytes of a repository name or a path in
-	                            a struct call_source, at most */
-	SEEN_NUMBERS  = 1024,  /**< findings and compact calls whose numbers
-	                            the ring of an ask call stores, at most */
+	SEEN_CALLS    = 64,                 /**< calls in the ring of an ask
+	                                         call, at most */
+	SEEN_NAME_MAX = 1024,               /**< bytes of a repository name or
+	                                         a path in a struct
+	                                         call_source, at most */
+	SEEN_ITEMS    = 1024,               /**< evidence items in the ring of
+	                                         an ask call, at most */
+	SEEN_NUMBERS  = 1024,               /**< findings and compact calls
+	                                         whose numbers the ring of an
+	                                         ask call stores, at most */
+	SEEN_ID       = UTIL_WORD_MAX + 26, /**< bytes of the ID of an item,
+	                                         such as cuh#2/1, NUL included:
+	                                         a member name, '#', '/', two
+	                                         numbers of at most 10 digits,
+	                                         the NUL and 3 spare bytes in
+	                                         place of the padding of struct
+	                                         seen_item */
+	SEEN_LISTED   = 64,                 /**< items that the notice of
+	                                         seen_notice() names, at most */
 };
 
 /** The bytes of the arguments and results of the calls in the ring, at
@@ -133,6 +158,26 @@ struct seen_call {
 	uint16_t          flags;    /**< enum seen_flag */
 };
 
+/** An evidence item that askai printed to the turns. */
+struct seen_item {
+	struct dstr record;         /**< the JSON object of the item, as the
+	                                 file of its finding has it */
+	uint32_t    bytes;          /**< bytes of the item in an output */
+	uint32_t    shown;          /**< the bytes of the item from its start
+	                                 that results showed, in order */
+	uint32_t    at;             /**< offset of the item in the output of
+	                                 the call `call` */
+	uint32_t    call;           /**< N of the call cN whose result is not
+	                                 written yet and prints the item, or
+	                                 0 */
+	uint32_t    turn;           /**< the turn whose result showed the last
+	                                 byte of the item, or 0 */
+	struct oid  blobs[2];       /**< git IDs of the archive files: the
+	                                 arguments of the call, or no name,
+	                                 and the material */
+	char        id[SEEN_ID];    /**< such as cuh#2/1 */
+};
+
 /** A findings call or a compact call, of which the ring stores only the
  *  number and the tool.
  */
@@ -142,11 +187,13 @@ struct seen_number {
 };
 
 /** The ring of an ask call. calls[(head + i) % SEEN_CALLS] is the call i of
- *  the n calls in the ring, from the oldest. numbers are the findings and
- *  compact calls, from the oldest.
+ *  the n calls in the ring, from the oldest. items are the evidence items
+ *  that askai printed, and numbers the findings and compact calls, each
+ *  from the oldest.
  */
 struct seen {
 	struct seen_call calls[SEEN_CALLS];
+	UTIL_ARRAY(struct seen_item)   items;
 	UTIL_ARRAY(struct seen_number) numbers;
 	size_t           bytes;    /**< bytes of the arguments and results of
 	                                the calls in the ring */
@@ -328,20 +375,66 @@ seen_find (struct seen const       *seen,
 extern uint32_t
 seen_oldest (struct seen const *seen);
 
-/** Appends to @p d the notice of the calls that @p seen stores, for the
- *  prompt after a compaction: "[askai: askai keeps your calls cA to cB of
- *  this ask call. Cite the calls as evidence by number.]" and a line feed,
- *  with the oldest and the newest call of the ring that a finding can
- *  cite. Appends nothing if @p seen is nullptr or stores no such call.
- *  Returns 0, or ENOMEM.
+/**
+ * Records in the ring @p *p_seen that the output of the call @p call prints
+ * the item @p item in the @p len bytes from @p at. The ring is allocated on
+ * the first call. The ring copies item->id, item->record and item->blobs
+ * for an item that it does not store, as its newest item, and drops its
+ * oldest item if it stores SEEN_ITEMS items. For an item that the ring
+ * stores, the bytes that results showed stay shown, unless @p len is not
+ * the size that the ring stores, which starts the item anew. seen_shown()
+ * counts the window of the result of the call. Returns 0, EFAULT for a
+ * null @p p_seen or @p item, EINVAL for a @p call of 0, an empty item->id
+ * or one without a NUL, a @p len of 0, or bytes past TOOL_OUTPUT_MAX, or
+ * ENOMEM.
+ */
+extern int
+seen_print (struct seen            **p_seen,
+            struct seen_item const  *item,
+            uint32_t                 call,
+            size_t                   at,
+            size_t                   len);
+
+/**
+ * Counts the window of @p window bytes from @p skip of the result of the
+ * call @p call in the turn @p turn, for each item that the output of the
+ * call prints (seen_print()). The bytes of the window that continue the
+ * bytes of the item shown before count as shown. If the item is then shown
+ * whole and was not before, the turn of the item becomes @p turn. Does
+ * nothing for a null @p seen.
+ */
+extern void
+seen_shown (struct seen *seen,
+            uint32_t     call,
+            size_t       skip,
+            size_t       window,
+            uint32_t     turn);
+
+/** Returns the item of @p seen with the ID @p id, such as cuh#2/1, or
+ *  nullptr for no such item or a null @p seen.
+ */
+extern struct seen_item const *
+seen_find_item (struct seen const *seen,
+                struct cstr_view   id);
+
+/**
+ * Appends to @p d the notices of the calls and the items that @p seen
+ * stores, for the prompt after a compaction. The first is "[askai: askai
+ * keeps your calls cA to cB of this ask call. Cite the calls as evidence
+ * by number.]" with the oldest and the newest call of the ring that a
+ * finding can cite. The second is "[askai: Evidence items that you expanded in this
+ * ask call: cuh#2/1, cuh#2/2. These items count as seen.]" with the items
+ * that results showed whole, at most SEEN_LISTED of them by ID. Each notice
+ * ends with a line feed. Appends nothing for a null @p seen, and no notice
+ * without such calls or items. Returns 0, or ENOMEM.
  */
 extern int
 seen_notice (struct seen const *seen,
              struct dstr       *d);
 
-/** Drops the calls of @p seen at the end of an ask call, and the calls
- *  before a restart. The storage of the results stays for the next ask
- *  call that uses @p seen. Does nothing for a null @p seen.
+/** Drops the calls, the items and the numbers of @p seen at the end of an
+ *  ask call, and the calls before a restart. The storage of the results stays for
+ *  the next ask call that uses @p seen. Does nothing for a null @p seen.
  */
 extern void
 seen_clear (struct seen *seen);

@@ -3,7 +3,8 @@
  *  drops by count and by bytes, the newest call, calls too large to store,
  *  the offset of the window of a replayed result, the reuse of the storage,
  *  the calls that the ring stores as numbers, the calls before a restart,
- *  and the lookup of a call by number.
+ *  the lookup of a call by number, and the evidence items that results
+ *  showed.
  */
 #include <errno.h>
 #include <stdio.h>
@@ -570,6 +571,138 @@ test_number (void)
 	CHECK(seen_resume(nullptr, 1) == EFAULT);
 }
 
+/* Returns an item with the ID @p id, the record @p record and the blobs
+ * of the IDs 1... and 2... for seen_print(). The caller frees the record.
+ */
+static struct seen_item
+item_of (char const *id,
+         char const *record)
+{
+	struct seen_item it = { .record = DSTR_INIT };
+	CHECK(!cstr_view_store(cstr_view(record), &it.record));
+	memset(it.blobs[0].hex, '1', OID_SHA1);
+	memset(it.blobs[1].hex, '2', OID_SHA1);
+	snprintf(it.id, sizeof it.id, "%s", id);
+	return it;
+}
+
+/* seen_print() names the bytes of an item in the output of a call, and
+ * seen_shown() counts the window of the result of the call. An item counts
+ * as shown in the turn whose result showed its last byte, after its other
+ * bytes in order. seen_notice() names the items shown whole.
+ */
+static void
+test_items (void)
+{
+	struct seen *seen = nullptr;
+	struct seen_item a = item_of("cuh#2/1", "{\"item\":1}");
+	struct seen_item b = item_of("cuh#2/2", "{\"item\":2}");
+	CHECK(!seen_find_item(seen, CSTR_VIEW("cuh#2/1")));
+	seen_shown(seen, 5, 0, 100, 1);
+	/* The output of call 5 prints a at bytes 100 to 150 and b at bytes 150
+	 * to 400. The window of 120 bytes shows 20 bytes of a. */
+	CHECK(!seen_print(&seen, &a, 5, 100, 50));
+	CHECK(seen && seen->items.n == 1);
+	CHECK(!seen_print(&seen, &b, 5, 150, 250));
+	struct seen_item const *x = seen_find_item(seen, CSTR_VIEW("cuh#2/1"));
+	struct seen_item const *y = seen_find_item(seen, CSTR_VIEW("cuh#2/2"));
+	CHECK(x && x->bytes == 50 && !x->shown && x->at == 100 && x->call == 5 && !x->turn);
+	CHECK(y && y->bytes == 250 && y->at == 150 && y->call == 5);
+	SAME(dstr_get(&x->record), dstr_len(&x->record), "{\"item\":1}");
+	CHECK(!memcmp(x->blobs, a.blobs, sizeof a.blobs) && !strcmp(x->id, "cuh#2/1"));
+	CHECK(!seen_find_item(seen, CSTR_VIEW("cuh#2/3")) && !seen_find_item(seen, CSTR_VIEW("")));
+	seen_shown(seen, 4, 0, 1000, 1);
+	CHECK(!x->shown && x->call == 5);
+	seen_shown(seen, 5, 0, 120, 1);
+	CHECK(x->shown == 20 && !x->call && !x->turn && !y->shown && !y->call);
+	/* The same call again counts nothing. */
+	seen_shown(seen, 5, 0, 1000, 1);
+	CHECK(x->shown == 20);
+	/* Call 6 prints a at byte 0. A window from byte 25 does not continue
+	 * the 20 bytes shown, and a window that ends at byte 20 adds none. */
+	CHECK(!seen_print(&seen, &a, 6, 0, 50) && x->at == 0 && x->call == 6 && x->shown == 20);
+	seen_shown(seen, 6, 25, 100, 2);
+	CHECK(x->shown == 20 && !x->turn);
+	CHECK(!seen_print(&seen, &a, 7, 0, 50));
+	seen_shown(seen, 7, 5, 15, 2);
+	CHECK(x->shown == 20);
+	/* A window from byte 20 to 40 continues them, and a window from byte
+	 * 30 to the end shows a whole in turn 3. */
+	CHECK(!seen_print(&seen, &a, 8, 0, 50));
+	seen_shown(seen, 8, 20, 20, 2);
+	CHECK(x->shown == 40 && !x->turn);
+	CHECK(!seen_print(&seen, &a, 9, 0, 50));
+	seen_shown(seen, 9, 30, 4000, 3);
+	CHECK(x->shown == 50 && x->turn == 3);
+	/* An item shown whole keeps its turn when it is shown again. */
+	CHECK(!seen_print(&seen, &a, 10, 7, 50));
+	seen_shown(seen, 10, 0, 4000, 5);
+	CHECK(x->shown == 50 && x->turn == 3 && x->at == 7);
+	/* b shown whole in one window. */
+	CHECK(!seen_print(&seen, &b, 11, 0, 250));
+	seen_shown(seen, 11, 0, 250, 4);
+	CHECK(y->shown == 250 && y->turn == 4);
+
+	/* The notices name the items shown whole. */
+	struct dstr text = DSTR_INIT;
+	CHECK(!seen_notice(seen, &text));
+	SAME(dstr_get(&text), dstr_len(&text), "[askai: Evidence items that you expanded in this ask "
+	     "call: cuh#2/1, cuh#2/2. These items count as seen.]\n");
+	/* An item of another size starts anew, with the record and the blobs
+	 * of the new item. */
+	struct seen_item c = item_of("cuh#2/2", "{\"item\":3}");
+	CHECK(!seen_print(&seen, &c, 12, 0, 300));
+	CHECK(seen->items.n == 2 && y->bytes == 300 && !y->shown && !y->turn && y->call == 12);
+	SAME(dstr_get(&y->record), dstr_len(&y->record), "{\"item\":3}");
+	(void)dstr_clear(&text);
+	CHECK(!keep(&seen, 13, 1, CSTR_VIEW("x")) && !seen_notice(seen, &text));
+	SAME(dstr_get(&text), dstr_len(&text), "[askai: askai keeps your call c13 of this ask call. "
+	     "Cite the call as evidence by number.]\n[askai: Evidence items that you expanded in "
+	     "this ask call: cuh#2/1. These items count as seen.]\n");
+
+	/* Refusals. */
+	CHECK(seen_print(nullptr, &a, 1, 0, 1) == EFAULT);
+	CHECK(seen_print(&seen, nullptr, 1, 0, 1) == EFAULT);
+	CHECK(seen_print(&seen, &a, 0, 0, 1) == EINVAL);
+	CHECK(seen_print(&seen, &a, 1, 0, 0) == EINVAL);
+	CHECK(seen_print(&seen, &a, 1, 0, TOOL_OUTPUT_MAX + 1) == EINVAL);
+	CHECK(seen_print(&seen, &a, 1, 1, TOOL_OUTPUT_MAX) == EINVAL);
+	struct seen_item bad = a;
+	bad.id[0] = '\0';
+	CHECK(seen_print(&seen, &bad, 1, 0, 1) == EINVAL);
+	memset(bad.id, 'x', sizeof bad.id);
+	CHECK(seen_print(&seen, &bad, 1, 0, 1) == EINVAL);
+	CHECK(seen->items.n == 2);
+
+	/* The ring stores SEEN_ITEMS items at most and drops the oldest. Past
+	 * SEEN_LISTED items, the notice counts the rest. */
+	seen_clear(seen);
+	CHECK(!seen->items.n && !seen_find_item(seen, CSTR_VIEW("cuh#2/1")));
+	for (uint32_t k = 1; k <= SEEN_ITEMS + 2; ++k) {
+		snprintf(c.id, sizeof c.id, "bro#1/%u", k);
+		CHECK(!seen_print(&seen, &c, k, 0, 10));
+		seen_shown(seen, k, 0, 10, 1);
+	}
+	CHECK(seen->items.n == SEEN_ITEMS && !seen_find_item(seen, CSTR_VIEW("bro#1/2")) &&
+	      seen_find_item(seen, CSTR_VIEW("bro#1/3")) &&
+	      seen_find_item(seen, CSTR_VIEW("bro#1/1026")));
+	(void)dstr_clear(&text);
+	CHECK(!seen_notice(seen, &text));
+	CHECK(strstr(dstr_get(&text), ": bro#1/3, bro#1/4, ") &&
+	      strstr(dstr_get(&text), ", bro#1/66 and 960 more. These items count as seen.]\n"));
+	size_t const kept = seen_kept(seen);
+	CHECK(kept >= sizeof *seen + SEEN_ITEMS * sizeof c);
+	seen_clear(seen);
+	CHECK(seen_kept(seen) <= kept && seen->items.cap >= SEEN_ITEMS);
+	(void)dstr_clear(&text);
+	CHECK(!seen_notice(seen, &text) && !dstr_len(&text));
+	seen_destroy(&seen);
+	dstr_cleanup(&text);
+	dstr_cleanup(&a.record);
+	dstr_cleanup(&b.record);
+	dstr_cleanup(&c.record);
+}
+
 int
 main (void)
 {
@@ -577,5 +710,6 @@ main (void)
 	test_keep();
 	test_drop();
 	test_number();
+	test_items();
 	return check_report("seen");
 }
