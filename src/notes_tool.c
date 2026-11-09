@@ -519,7 +519,7 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
 static bool
 notes_tool_listed (struct child const *c)
 {
-	return c && (c->flags & CHILD_CUT || !child_status(c));
+	return c && (c->end.flags & CHILD_CUT || !child_status(c));
 }
 
 /* Returns true if git exited with status 128. It does so if the
@@ -569,7 +569,7 @@ notes_tool_unadded (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	if (c->flags & CHILD_LATE) {
+	if (c->end.flags & CHILD_LATE) {
 		mcp_slot_tell(slot, CSTR_VIEW("Could not write the note. The write timed out."),
 		              TOOL_FAILED);
 		return;
@@ -947,7 +947,7 @@ notes_tool_got_list (struct mcp_slot *slot)
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
 	bool const files = (call->fetch & FETCH_KIND) == FETCH_FILES;
-	bool const cut = c->flags & CHILD_CUT;
+	bool const cut = c->end.flags & CHILD_CUT;
 	struct span const out = buf_peek(&c->out);
 	struct span newest;
 	int e = dstr_printf(call->text, "Notebook %s — %s:\n\n",
@@ -987,7 +987,7 @@ notes_tool_books (struct notes_tool_call const *call,
 		peers += peer;
 		ok = !peer || dstr_printf(call->text, "%.*s (read-only)\n", (int)name.len, name.data);
 	}
-	char const *end = c && c->flags & CHILD_CUT ? "[The notebook list is incomplete.]\n"
+	char const *end = c && c->end.flags & CHILD_CUT ? "[The notebook list is incomplete.]\n"
 	                : peers ? nullptr : "No other notebook contains notes yet.\n";
 	return ok && (!end || dstr_cat(call->text, end)) ? 0 : ENOMEM;
 }
@@ -1131,7 +1131,7 @@ notes_tool_got_diff (struct mcp_slot *slot)
 	if (!e)
 		e = !diff.len ? cstr_view_cat(CSTR_VIEW("No differences.\n"), call->text)
 		  : notes_tool_show(d, diff);
-	if (!e && c->flags & CHILD_CUT)
+	if (!e && c->end.flags & CHILD_CUT)
 		e = cstr_view_cat(CSTR_VIEW("\n[The diff is incomplete.]\n"), call->text);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
 	notes_tool_end(slot, e, false);
@@ -1149,7 +1149,7 @@ notes_tool_got_grep (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	bool const cut = c->flags & CHILD_CUT;
+	bool const cut = c->end.flags & CHILD_CUT;
 	int const status = child_status(c);
 	if (status != 0 && status != 1 && !cut) {
 		mcp_slot_tell(slot, status == 128 ? CSTR_VIEW("A line of the pattern is not an "
@@ -1335,7 +1335,7 @@ notes_tool_prompt_list (struct mcp_slot  *slot,
 	struct buf in = {};
 	int e = cstr_view_cat(head, call->text);
 	if (!e)
-		e = notes_tool_history(slot, buf_peek(&c->out), c->flags & CHILD_CUT, &newest);
+		e = notes_tool_history(slot, buf_peek(&c->out), c->end.flags & CHILD_CUT, &newest);
 	struct cstr_view const name = { (char const *)newest.ptr, newest.len };
 	/* The name comes from git. git reads the note only if add would accept
 	 * the name as it is. */

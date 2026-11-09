@@ -1501,11 +1501,11 @@ cxi_cache_git (struct cxi_cache const *cache,
 	};
 	struct child_fds fds = child_fds();
 	fds.keep = cache->lock;
-	int status;
+	struct child_end end;
 	if (!e)
-		e = buf ? child_capture(&cmd, fds, buf, size, len, &status)
-		        : child_run(&cmd, fds, &status);
-	return e ? e : status ? EIO : 0;
+		e = buf ? child_capture(&cmd, fds, buf, size, len, &end.status)
+		        : child_run(&cmd, fds, &end);
+	return e ? e : end.status ? EIO : 0;
 }
 
 static int

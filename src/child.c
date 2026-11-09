@@ -93,13 +93,13 @@ child_read (struct child *c)
 		size_t room = loop_room(loop, LOOP_RECV);
 		size_t want = left < room ? left : room;
 		if (!want) {
-			c->flags |= CHILD_OUT;
+			c->end.flags |= CHILD_OUT;
 			loop_ready_bulk(loop, &c->step);
 			return;
 		}
 		struct span s;
 		if (buf_reserve(&c->out, want, c->max + 1, &s)) {
-			c->flags |= CHILD_CUT;
+			c->end.flags |= CHILD_CUT;
 			child_kill(c);
 			return;
 		}
@@ -109,7 +109,7 @@ child_read (struct child *c)
 		loop_work(loop, LOOP_RECV, got);
 		if (len + got > c->max) {
 			buf_cut(&c->out, c->max, len + got - c->max);
-			c->flags |= CHILD_CUT;
+			c->end.flags |= CHILD_CUT;
 			child_kill(c);
 			return;
 		}
@@ -142,8 +142,8 @@ child_exited (struct child *c)
 	} else if (!info.si_pid) {
 		return;
 	}
-	c->code = info.si_code;
-	c->status = info.si_status;
+	c->end.code = info.si_code;
+	c->end.status = info.si_status;
 	loop_close(c->loop, &c->proc);
 }
 
@@ -153,8 +153,8 @@ child_exited (struct child *c)
 static void
 child_due (struct child *c)
 {
-	bool term = c->grace && !(c->flags & CHILD_LATE) && c->pid > 0;
-	c->flags |= CHILD_LATE;
+	bool term = c->grace && !(c->end.flags & CHILD_LATE) && c->pid > 0;
+	c->end.flags |= CHILD_LATE;
 	if (!term) {
 		child_signal(c, SIGKILL);
 		return;
@@ -172,8 +172,8 @@ child_step (struct loop      *loop,
             struct loop_step *step)
 {
 	struct child *c = container_of(step, struct child, step);
-	uint32_t events = c->flags & CHILD_EVENTS;
-	c->flags &= ~CHILD_EVENTS;
+	uint32_t events = c->end.flags & CHILD_EVENTS;
+	c->end.flags &= ~CHILD_EVENTS;
 	if (events & CHILD_DUE)
 		child_due(c);
 	if (events & CHILD_OUT && c->pipe.fd >= 0)
@@ -197,7 +197,7 @@ child_event (struct loop     *loop,
 {
 	(void)events;
 	struct child *c = ref->owner;
-	c->flags |= ref == &c->proc ? CHILD_EXIT : CHILD_OUT;
+	c->end.flags |= ref == &c->proc ? CHILD_EXIT : CHILD_OUT;
 	loop_ready_bulk(loop, &c->step);
 }
 
@@ -206,7 +206,7 @@ child_late (struct loop       *loop,
             struct loop_timer *timer)
 {
 	struct child *c = container_of(timer, struct child, timer);
-	c->flags |= CHILD_DUE;
+	c->end.flags |= CHILD_DUE;
 	loop_ready_bulk(loop, &c->step);
 }
 
@@ -431,8 +431,9 @@ child_await (struct child_cmd const *cmd,
 int
 child_run (struct child_cmd const *cmd,
            struct child_fds        fds,
-           int                    *status)
+           struct child_end       *end)
 {
+	*end = (struct child_end){};
 	int own = -1;
 	if (fds.in < 0 && cmd->in.len) {
 		int e = child_input(cmd->in, &own);
@@ -445,7 +446,7 @@ child_run (struct child_cmd const *cmd,
 	util_close(&own);
 	if (e)
 		return e;
-	int waited = child_await(cmd, pidfd);
+	int const waited = child_await(cmd, pidfd);
 	siginfo_t info = {};
 	int failed;
 	do {
@@ -453,8 +454,12 @@ child_run (struct child_cmd const *cmd,
 	} while (failed && errno == EINTR);
 	e = waited ? waited : failed ? errno : info.si_code != CLD_EXITED ? EIO : 0;
 	close(pidfd);
-	if (!e)
-		*status = info.si_status;
+	/* info stays zero if waitid() fails, so end->code is 0 then. */
+	*end = (struct child_end){
+		.code   = info.si_code,
+		.status = info.si_status,
+		.flags  = waited == ETIMEDOUT ? CHILD_LATE : 0,
+	};
 	return e;
 }
 
@@ -470,9 +475,12 @@ child_capture (struct child_cmd const *cmd,
 	fds.out = memfd_create("askai-output", MFD_CLOEXEC);
 	if (fds.out < 0)
 		return errno;
-	int e = child_run(cmd, fds, status);
-	if (!e)
+	struct child_end end;
+	int e = child_run(cmd, fds, &end);
+	if (!e) {
+		*status = end.status;
 		e = util_read_all(fds.out, buf, size, 0, len);
+	}
 	if (!e && *len == size)
 		e = EFBIG;
 	close(fds.out);
@@ -499,24 +507,27 @@ child_argv (char const        **argv,
 }
 
 struct cstr_view
-child_why (struct child const *c,
-           char const         *name,
-           uint64_t            timeout,
-           char               *buf,
-           size_t              size)
+child_end_why (struct child_end const *end,
+               char const             *name,
+               uint64_t                timeout,
+               size_t                  max,
+               char                   *buf,
+               size_t                  size)
 {
-	if (c->flags & CHILD_LATE)
+	if (end->flags & CHILD_LATE)
 		return util_format_view(buf, size, "%s took longer than %" PRIu64 " s, and was "
 		                        "stopped.", name, timeout / NS);
-	switch (c->code) {
+	if (end->flags & CHILD_CUT)
+		return util_format_view(buf, size, "%s wrote more than %zu MiB.", name, max >> 20);
+	switch (end->code) {
 	case CLD_EXITED:
-		return c->status ? util_format_view(buf, size, "%s exited with status %d.", name,
-		                                    c->status)
-		                 : (struct cstr_view){};
+		return end->status ? util_format_view(buf, size, "%s exited with status %d.", name,
+		                                      end->status)
+		                   : (struct cstr_view){};
 	case 0:
 		return util_format_view(buf, size, "%s ended, and why is unknown.", name);
 	default:
-		return util_format_view(buf, size, "%s was killed by signal %d.", name, c->status);
+		return util_format_view(buf, size, "%s was killed by signal %d.", name, end->status);
 	}
 }
 

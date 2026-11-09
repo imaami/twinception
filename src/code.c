@@ -321,10 +321,8 @@ code_ended (struct mcp_slot  *slot,
 	int const status = child_status(c);
 	char buf[GIT_WHY];
 	if (status != 0 && status != 1) {
-		mcp_slot_tell(slot, (c->flags & (CHILD_CUT | CHILD_LATE)) == CHILD_CUT
-		                    ? CSTR_VIEW("askai-code wrote more than 4 MiB.")
-		                    : child_why(c, "askai-code", code->cfg->git_timeout, buf,
-		                                sizeof buf), TOOL_FAILED);
+		mcp_slot_tell(slot, child_end_why(&c->end, "askai-code", code->cfg->git_timeout,
+		                                  c->max, buf, sizeof buf), TOOL_FAILED);
 		return;
 	}
 	struct span const out = buf_peek(&c->out);

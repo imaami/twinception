@@ -823,7 +823,7 @@ git_pin_step (struct git_pin   *pin,
 			break;
 		}
 	}
-	bool const late = c->flags & CHILD_LATE;
+	bool const late = c->end.flags & CHILD_LATE;
 	child_destroy(&pin->child);
 	if (!e)
 		return ++pin->phase == GIT_PIN_DONE ? 0 : git_pin_spawn(pin, slot, nullptr, 0);
@@ -1270,12 +1270,13 @@ git_ended (struct mcp_slot *slot,
 	struct cstr_view out = mcp_slot_answer(slot);
 	/* The blank line before the note and its brackets are 4 bytes at most. */
 	char buf[GIT_NOTE - 4];
-	struct cstr_view note = child_why(c, "git", git->timeout, buf, sizeof buf);
+	struct cstr_view note = child_end_why(&c->end, "git", git->timeout, c->max, buf,
+	                                      sizeof buf);
 	int const status = child_status(c);
 	bool failed = true;
-	if ((c->flags & (CHILD_CUT | CHILD_LATE)) == CHILD_CUT) {
+	if ((c->end.flags & (CHILD_CUT | CHILD_LATE)) == CHILD_CUT) {
 		note = CSTR_VIEW("The output is cut at 4 MiB.");
-		failed = c->code == CLD_EXITED && c->status;
+		failed = c->end.code == CLD_EXITED && c->end.status;
 	} else if (!status) {
 		note = out.len ? (struct cstr_view){} : CSTR_VIEW("No output.");
 		failed = false;
@@ -1623,7 +1624,7 @@ git_scan (struct mcp_slot *slot,
 	read->total = read->lines;
 	if (read->line > (read->total ? read->total : 1)) {
 		struct git_why why = {};
-		git_read_past(read, c->flags & CHILD_CUT, &why);
+		git_read_past(read, c->end.flags & CHILD_CUT, &why);
 		git_drop(slot);
 		mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
 		return;
@@ -1645,7 +1646,7 @@ git_number (struct mcp_slot *slot,
 	struct git_read *read = &call->read;
 	struct child *c = call->pin.child;
 	struct span blob = buf_peek(&c->out);
-	bool const cut = c->flags & CHILD_CUT;
+	bool const cut = c->end.flags & CHILD_CUT;
 	bool const newline = read->to && blob.ptr[read->to - 1] == '\n';
 	int e = 0;
 	if (!read->head) {
@@ -1777,7 +1778,7 @@ git_step (struct mcp_slot *slot)
 	struct child *c = call->pin.child;
 	uint64_t const takes = commands[call->command].takes;
 	/* Git's failed object lookup may disclose whether a path exists on disk. */
-	if ((takes & OBJECT) && c->code == CLD_EXITED && c->status) {
+	if ((takes & OBJECT) && c->end.code == CLD_EXITED && c->end.status) {
 		git_ended(slot, call, takes);
 		return;
 	}
@@ -1785,8 +1786,8 @@ git_step (struct mcp_slot *slot)
 	 * the lines before the cut, as it does after a git that exited in
 	 * time. */
 	if (takes & LINES) {
-		uint32_t const end = c->flags & (CHILD_CUT | CHILD_LATE);
-		if (end ? end != CHILD_CUT : c->code != CLD_EXITED)
+		uint32_t const end = c->end.flags & (CHILD_CUT | CHILD_LATE);
+		if (end ? end != CHILD_CUT : c->end.code != CLD_EXITED)
 			git_ended(slot, call, takes);
 		else if (call->phase == GIT_RUN)
 			git_scan(slot, call);

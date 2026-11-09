@@ -166,15 +166,16 @@ journal_test_legacy (struct journal *j)
 }
 
 /* Run "sh -c @p script" with child_run(), with a deadline @p after_ms from
- * now, or none if 0, and a grace of @p grace_ms. Returns its result, its
- * exit status in @p *status, and how long it ran in @p *ms.
+ * now, or none if 0, and a grace of @p grace_ms. Returns the result of
+ * child_run(), and writes how the child ended to @p *end and how long it
+ * ran to @p *ms.
  */
 static int
-journal_test_run (char const *script,
-                  uint64_t    after_ms,
-                  uint64_t    grace_ms,
-                  int        *status,
-                  uint64_t   *ms)
+journal_test_run (char const       *script,
+                  uint64_t          after_ms,
+                  uint64_t          grace_ms,
+                  struct child_end *end,
+                  uint64_t         *ms)
 {
 	char const *const argv[] = { "sh", "-c", script, nullptr };
 	char *const envp[] = { "PATH=/usr/bin:/bin", nullptr };
@@ -186,8 +187,8 @@ journal_test_run (char const *script,
 		.deadline = after_ms ? start + after_ms * MS : 0,
 		.grace = grace_ms * MS,
 	};
-	*status = -1;
-	int e = child_run(&cmd, child_fds(), status);
+	*end = (struct child_end){ .code = -1, .status = -1, .flags = UINT32_MAX };
+	int e = child_run(&cmd, child_fds(), end);
 	*ms = (loop_clock() - start) / MS;
 	return e;
 }
@@ -241,24 +242,79 @@ journal_test_private (char const *repo)
 	util_close(&dir);
 }
 
-/* child_run(): exit statuses, a death by a signal, and a deadline without
- * a grace, with a grace that the command honors, and with a grace that it
- * ignores.
+/* Tests child_run() with exit statuses, a death by a signal, and a
+ * deadline without a grace, with a grace that the command honors, and with
+ * a grace that the command ignores. Each case asserts the error and the
+ * struct child_end.
  */
 static void
 journal_test_child_run (void)
 {
-	int status;
+	struct child_end end;
 	uint64_t ms;
-	assert(!journal_test_run("exit 3", 0, 0, &status, &ms) && status == 3);
-	assert(journal_test_run("kill -KILL $$", 0, 0, &status, &ms) == EIO);
-	assert(journal_test_run("exec sleep 5", 100, 0, &status, &ms) == ETIMEDOUT);
+	assert(!journal_test_run("exit 0", 0, 0, &end, &ms));
+	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags);
+	assert(!journal_test_run("exit 3", 0, 0, &end, &ms));
+	assert(end.code == CLD_EXITED && end.status == 3 && !end.flags);
+	assert(journal_test_run("kill -KILL $$", 0, 0, &end, &ms) == EIO);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags);
+	assert(journal_test_run("exec sleep 5", 100, 0, &end, &ms) == ETIMEDOUT);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
 	assert(ms >= 100 && ms < 2000);
-	assert(journal_test_run("exec sleep 5", 100, 3000, &status, &ms) == ETIMEDOUT);
+	assert(journal_test_run("exec sleep 5", 100, 3000, &end, &ms) == ETIMEDOUT);
+	assert(end.code == CLD_KILLED && end.status == SIGTERM && end.flags == CHILD_LATE);
 	assert(ms >= 100 && ms < 2000);
-	assert(journal_test_run("trap '' TERM; exec sleep 5", 100, 300, &status, &ms) ==
+	assert(journal_test_run("trap '' TERM; exec sleep 5", 100, 300, &end, &ms) ==
 	       ETIMEDOUT);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
 	assert(ms >= 400 && ms < 2500);
+	/* After a failed spawn, every member of the struct child_end is 0. */
+	struct child_cmd const none = {
+		.file = "/nonexistent/askai-test",
+		.argv = (char const *const[]){ "askai-test", nullptr },
+		.envp = (char *const[]){ nullptr },
+	};
+	end = (struct child_end){ .code = -1, .status = -1, .flags = UINT32_MAX };
+	assert(child_run(&none, child_fds(), &end) == ENOENT);
+	assert(!end.code && !end.status && !end.flags);
+}
+
+/* Tests the reason that child_end_why() writes for each kind of end. The
+ * late test comes first and the cut test second. For an exit with status
+ * 0, the view is empty.
+ */
+static void
+journal_test_child_end_why (void)
+{
+	static struct {
+		struct child_end end;
+		struct cstr_view why;
+	} const cases[] = {
+		{ { CLD_EXITED, 0, 0 },
+		  {} },
+		{ { CLD_EXITED, 2, 0 },
+		  CSTR_VIEW_INIT("git exited with status 2.") },
+		{ { CLD_KILLED, SIGKILL, 0 },
+		  CSTR_VIEW_INIT("git was killed by signal 9.") },
+		{ { CLD_DUMPED, SIGSEGV, 0 },
+		  CSTR_VIEW_INIT("git was killed by signal 11.") },
+		{ { 0, 0, 0 },
+		  CSTR_VIEW_INIT("git ended, and why is unknown.") },
+		{ { CLD_KILLED, SIGKILL, CHILD_CUT },
+		  CSTR_VIEW_INIT("git wrote more than 4 MiB.") },
+		{ { CLD_EXITED, 0, CHILD_CUT },
+		  CSTR_VIEW_INIT("git wrote more than 4 MiB.") },
+		{ { CLD_KILLED, SIGKILL, CHILD_LATE },
+		  CSTR_VIEW_INIT("git took longer than 10 s, and was stopped.") },
+		{ { CLD_KILLED, SIGKILL, CHILD_CUT | CHILD_LATE },
+		  CSTR_VIEW_INIT("git took longer than 10 s, and was stopped.") },
+	};
+	for (size_t i = 0; i < array_size(cases); ++i) {
+		char buf[64];
+		struct cstr_view const why = child_end_why(&cases[i].end, "git", 10 * NS,
+		                                           (4 << 20) + 4096, buf, sizeof buf);
+		assert(cstr_view_equal(why, cases[i].why) && !why.data == !cases[i].why.data);
+	}
 }
 
 int
@@ -288,7 +344,8 @@ main (int argc, char **argv)
 	journal_test_path(argv[1]);
 	journal_test_private(argv[1]);
 	journal_test_child_run();
+	journal_test_child_end_why();
 	puts("Journal loads, write gaps, legacy migration, reasoning verification, "
-	     "path walks, private files and child_run(): PASS");
+	     "path walks, private files, child_run() and child_end_why(): PASS");
 	return 0;
 }

@@ -31,8 +31,9 @@ enum child_flag {
 	CHILD_STDERR = 1u << 0,  /**< its standard error goes to its output too */
 };
 
-/** The bits of child.flags. Only child.c uses the bits of CHILD_EVENTS:
- *  what the next step of the child is to look at.
+/** The bits of child_end.flags. The bits of CHILD_EVENTS mark the events
+ *  that the next step of a child of a loop handles, and only child.c uses
+ *  those bits.
  */
 enum child_state : uint32_t {
 	CHILD_CUT    = 1u << 0,  /**< its output went past the cap, or memory
@@ -43,6 +44,19 @@ enum child_state : uint32_t {
 	CHILD_EXIT   = 1u << 3,  /**< it has exited */
 	CHILD_DUE    = 1u << 4,  /**< its deadline has come */
 	CHILD_EVENTS = CHILD_OUT | CHILD_EXIT | CHILD_DUE,
+};
+
+/** How a child ended. For a child of a loop, flags can contain every bit
+ *  of enum child_state. A synchronous run sets only CHILD_CUT and
+ *  CHILD_LATE.
+ */
+struct child_end {
+	int      code;    /**< CLD_EXITED, CLD_KILLED or CLD_DUMPED from
+	                       waitid() after the child exits, and 0 before
+	                       that or if waitid() failed */
+	int      status;  /**< the exit status, or the number of the signal
+	                       that killed the child */
+	uint32_t flags;   /**< enum child_state */
 };
 
 /**
@@ -80,13 +94,8 @@ struct child {
 	                                  its process group, from the watch of
 	                                  the pidfd until the reap, and 0 at
 	                                  other times */
-	int                code;     /**< CLD_EXITED, CLD_KILLED or CLD_DUMPED
-	                                  from waitid() after the child exits,
-	                                  and 0 before that or if waitid()
-	                                  failed */
-	int                status;   /**< its exit status, or the signal that
-	                                  killed it */
-	uint32_t           flags;    /**< enum child_state */
+	struct child_end   end;      /**< how the child ended, and the events
+	                                  for its next step */
 };
 
 /** Returns the exit status of @p c if it exited before its deadline and its
@@ -95,7 +104,8 @@ struct child {
 static inline int
 child_status (struct child const *c)
 {
-	return c->flags & (CHILD_CUT | CHILD_LATE) || c->code != CLD_EXITED ? -1 : c->status;
+	struct child_end const *end = &c->end;
+	return end->flags & (CHILD_CUT | CHILD_LATE) || end->code != CLD_EXITED ? -1 : end->status;
 }
 
 /** Returns true if @p c exited with status 0 before its deadline and its
@@ -108,19 +118,25 @@ child_ok (struct child const *c)
 }
 
 /**
- * Writes why @p c, a child that ran @p name, failed into the @p size bytes
- * at @p buf: it took longer than its @p timeout, in ns, a signal killed it,
- * it exited with a status other than 0, or the reason is unknown. Returns
- * a view of the text, or an empty view if @p c exited with status 0 before
- * its deadline. A cut also kills the child, so the caller tests CHILD_CUT
- * first.
+ * Writes why a child that ran @p name failed into the @p size bytes at
+ * @p buf. @p end is how the child ended. The function writes the first
+ * reason in this list that applies:
+ * - the child took longer than @p timeout ns;
+ * - the output went past @p max bytes, written in the text as whole MiB,
+ *   rounded down;
+ * - a signal killed the child;
+ * - the child exited with a status other than 0;
+ * - the reason is unknown.
+ * Returns a view of the text, or an empty view if the child exited with
+ * status 0 before the deadline and the output was not cut.
  */
 extern struct cstr_view
-child_why (struct child const *c,
-           char const         *name,
-           uint64_t            timeout,
-           char               *buf,
-           size_t              size);
+child_end_why (struct child_end const *end,
+               char const             *name,
+               uint64_t                timeout,
+               size_t                  max,
+               char                   *buf,
+               size_t                  size);
 
 /**
  * Writes why child_create() could not spawn @p name, with the error @p e,
@@ -190,19 +206,23 @@ child_create (struct loop            *loop,
               int                    *e);
 
 /**
- * Run @p cmd to its end on the calling thread, which no loop needs: spawned
- * as child_create() spawns it, but with the descriptors @p fds, its output
- * into a file such as a memfd, uncapped and unread. If cmd->deadline, a
- * time of loop_clock(), is set, at that time it gets SIGTERM, and SIGKILL
- * once its grace has passed too, or SIGKILL at once without a grace, and the
- * run fails with ETIMEDOUT. It does not count toward CHILD_MAX. Returns 0
- * and its exit status in @p *status, EIO if a signal killed it, or the error
- * that stopped the spawn or the wait.
+ * Run @p cmd to the end on the calling thread, without a loop. The child
+ * is spawned as child_create() spawns it, but with the descriptors @p fds.
+ * The output goes to fds.out, such as a memfd, without a cap, and this
+ * function does not read it. If cmd->deadline, a time of loop_clock(), is
+ * set, the function sends SIGTERM to the child at that time and SIGKILL
+ * after cmd->grace, or SIGKILL at once if cmd->grace is 0. The child does
+ * not count toward CHILD_MAX. The function writes the code and the status
+ * of waitid() to @p *end, and sets CHILD_LATE in end->flags if the
+ * deadline came. @p *end is all zero if the child was not spawned.
+ * Returns 0 if the child exited before the deadline, ETIMEDOUT if the
+ * deadline came, EIO if a signal killed the child before the deadline, or
+ * the error that stopped the spawn or the wait.
  */
 extern int
 child_run (struct child_cmd const *cmd,
            struct child_fds        fds,
-           int                    *status);
+           struct child_end       *end);
 
 /**
  * Run @p cmd as child_run() does, its output into a file in memory in place

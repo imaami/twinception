@@ -421,10 +421,11 @@ static void
 manual_fetch_rendered (struct child *c)
 {
 	struct manual_fetch *f = c->owner;
-	size_t const note = c->flags & CHILD_CUT ? manual_cut.len : 0;
+	size_t const note = c->end.flags & CHILD_CUT ? manual_cut.len : 0;
 	char buf[MANUAL_WHY];
 	struct cstr_view const why = note ? (struct cstr_view){}
-	                             : child_why(c, "man", MANUAL_SECONDS * NS, buf, sizeof buf);
+	                             : child_end_why(&c->end, "man", MANUAL_SECONDS * NS, c->max,
+	                                             buf, sizeof buf);
 	if (why.data) {
 		manual_fetch_fail(f, why);
 		return;
@@ -565,8 +566,9 @@ manual_fetch_found (struct child *c)
 		return;
 	}
 	char buf[MANUAL_WHY];
-	struct cstr_view const why = c->flags & CHILD_CUT ? (struct cstr_view){}
-	                             : child_why(c, "man", MANUAL_SECONDS * NS, buf, sizeof buf);
+	struct cstr_view const why = c->end.flags & CHILD_CUT ? (struct cstr_view){}
+	                             : child_end_why(&c->end, "man", MANUAL_SECONDS * NS, c->max,
+	                                             buf, sizeof buf);
 	if (why.data) {
 		manual_fetch_fail(f, why);
 		return;

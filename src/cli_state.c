@@ -184,7 +184,10 @@ cli_state_git (struct cli_state  *state,
 	(void)dstr_clear(&state->output);
 	if (output_fd >= 0) {
 		fds.out = output_fd;
-		return child_run(&cmd, fds, status);
+		struct child_end end;
+		e = child_run(&cmd, fds, &end);
+		*status = end.status;
+		return e;
 	}
 	char buffer[4097];
 	size_t got;
