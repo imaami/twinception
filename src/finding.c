@@ -11,7 +11,6 @@
 #include "finding.h"
 #include "jb.h"
 #include "tool.h"
-#include "version.h"
 #include "xlist.h"
 
 struct cstr_view const finding_state_names[FINDING_STATES] = { FINDING_STATE_LIST(XL_VIEW) };
@@ -57,6 +56,15 @@ finding_change_fini (struct finding_change *c)
 		dstr_cleanup(&c->external.items[i]);
 	free(c->external.items);
 	*c = finding_change();
+}
+
+int
+finding_change_external (struct finding_change *c,
+                         struct cstr_view       text)
+{
+	if (util_push(c->external, (struct dstr)DSTR_INIT))
+		return ENOMEM;
+	return cstr_view_store(text, &c->external.items[c->external.n - 1]);
 }
 
 void
@@ -148,14 +156,17 @@ finding_change_read (struct finding_change    *c,
 	struct json_object const *cited = jb_get(obj, "evidence");
 	struct json_object const *external = jb_get(obj, "external");
 	struct cstr_view const by = jb_view(asked_by);
+	struct cstr_view const version = jb_view(askai);
+	struct cstr_view const why = jb_view(reason);
+	struct cstr_view const was = jb_view(before);
 	uint64_t turn;
 	uint64_t call;
 	if (state == FINDING_STATES ||
 	    jb_uint_checked(jb_get(obj, "turn"), UINT32_MAX, &turn) ||
 	    jb_uint_checked(jb_get(obj, "call"), UINT32_MAX, &call) ||
 	    (ask && hexid_init(&c->ask, jb_view(ask))) ||
-	    (asked_by && !member_name_valid(by)) || (askai && !jb_view(askai).data) ||
-	    (reason && !jb_view(reason).data) || (before && !jb_view(before).data) ||
+	    (asked_by && !member_name_valid(by)) || (askai && !version.data) ||
+	    (reason && !why.data) || (before && !was.data) ||
 	    !json_object_is_type(cited, json_type_array) || jb_len(cited) > EVIDENCE_REFS ||
 	    !json_object_is_type(external, json_type_array) ||
 	    jb_len(external) > EVIDENCE_EXTERNAL)
@@ -165,9 +176,9 @@ finding_change_read (struct finding_change    *c,
 	c->call = (uint32_t)call;
 	if (asked_by)
 		memcpy(c->asked_by, by.data, by.len);
-	if ((askai && cstr_view_store(jb_view(askai), &c->askai)) ||
-	    (reason && cstr_view_store(jb_view(reason), &c->reason)) ||
-	    (before && cstr_view_store(jb_view(before), &c->claim_before)))
+	if ((askai && cstr_view_store(version, &c->askai)) ||
+	    (reason && cstr_view_store(why, &c->reason)) ||
+	    (before && cstr_view_store(was, &c->claim_before)))
 		return ENOMEM;
 	size_t const k = jb_len(cited);
 	if (util_grow(c->evidence.items, c->evidence.cap, k))
@@ -184,15 +195,11 @@ finding_change_read (struct finding_change    *c,
 	}
 	c->items = *items;
 	size_t const m = jb_len(external);
-	if (util_grow(c->external.items, c->external.cap, m))
-		return ENOMEM;
 	for (size_t i = 0; i < m; ++i) {
 		struct cstr_view const t = jb_view(jb_at(external, i));
-		struct dstr *x = &c->external.items[c->external.n++];
-		*x = (struct dstr)DSTR_INIT;
 		if (!t.data)
 			return EINVAL;
-		if (cstr_view_store(t, x))
+		if (finding_change_external(c, t))
 			return ENOMEM;
 	}
 	return 0;
@@ -247,9 +254,12 @@ finding_parse (struct finding   *f,
 	return e;
 }
 
-/* Returns the change @p c as a JSON object, or nullptr if out of memory. */
+/* Returns the change @p c with the claim before @p before as a JSON
+ * object, or nullptr if out of memory.
+ */
 static struct json_object *
-finding_change_json (struct finding_change const *c)
+finding_change_json (struct finding_change const *c,
+                     struct cstr_view             before)
 {
 	struct json_object *obj = jb_object("state", jb_string(finding_state_names[c->state]),
 	                                    nullptr);
@@ -259,12 +269,14 @@ finding_change_json (struct finding_change const *c)
 	obj = jb_set_or_free(obj, "call", json_object_new_uint64(c->call));
 	if (*c->asked_by)
 		obj = jb_set_or_free(obj, "asked_by", json_object_new_string(c->asked_by));
-	if (dstr_len(&c->askai))
-		obj = jb_set_or_free(obj, "askai", jb_string(cstr_view_dstr(&c->askai)));
-	if (dstr_len(&c->reason))
-		obj = jb_set_or_free(obj, "reason", jb_string(cstr_view_dstr(&c->reason)));
-	if (dstr_len(&c->claim_before))
-		obj = jb_set_or_free(obj, "claim_before", jb_string(cstr_view_dstr(&c->claim_before)));
+	struct cstr_view const version = cstr_view_dstr(&c->askai);
+	struct cstr_view const reason = cstr_view_dstr(&c->reason);
+	if (version.len)
+		obj = jb_set_or_free(obj, "askai", jb_string(version));
+	if (reason.len)
+		obj = jb_set_or_free(obj, "reason", jb_string(reason));
+	if (before.len)
+		obj = jb_set_or_free(obj, "claim_before", jb_string(before));
 	struct json_object *evidence = json_object_new_array();
 	int e = 0;
 	for (size_t i = 0; evidence && i < c->evidence.n; ++i)
@@ -277,11 +289,20 @@ finding_change_json (struct finding_change const *c)
 }
 
 int
-finding_render (struct finding const *f,
-                struct dstr          *d)
+finding_render (struct finding const        *f,
+                struct finding_change const *c,
+                struct cstr_view             claim,
+                struct dstr                 *d)
 {
 	char id[FINDING_ID];
 	finding_id(f, id);
+	/* A new claim makes the claim of f the claim before of the change c. */
+	struct cstr_view now = cstr_view_dstr(&f->claim);
+	struct cstr_view was = c ? cstr_view_dstr(&c->claim_before) : (struct cstr_view){};
+	if (claim.len) {
+		was = now;
+		now = claim;
+	}
 	struct json_object *obj = jb_object("version", json_object_new_int(FINDING_VERSION),
 	                                    "id", json_object_new_string(id),
 	                                    nullptr);
@@ -289,10 +310,15 @@ finding_render (struct finding const *f,
 		obj = jb_set_or_free(obj, "about", json_object_new_string(f->about));
 	if (*f->conversation.hex)
 		obj = jb_set_or_free(obj, "conversation", json_object_new_string(f->conversation.hex));
-	obj = jb_set_or_free(obj, "claim", jb_string(cstr_view_dstr(&f->claim)));
+	obj = jb_set_or_free(obj, "claim", jb_string(now));
 	struct json_object *changes = json_object_new_array();
-	for (size_t i = 0; changes && i < f->changes.n; ++i)
-		changes = jb_push_or_free(changes, finding_change_json(&f->changes.items[i]));
+	for (size_t i = 0; changes && i < f->changes.n; ++i) {
+		struct finding_change const *k = &f->changes.items[i];
+		changes = jb_push_or_free(changes,
+		                          finding_change_json(k, cstr_view_dstr(&k->claim_before)));
+	}
+	if (changes && c)
+		changes = jb_push_or_free(changes, finding_change_json(c, was));
 	obj = jb_set_or_free(obj, "changes", changes);
 	size_t len = 0;
 	size_t const had = dstr_len(d);
@@ -324,47 +350,6 @@ finding_check (struct finding_change const *c,
 		                   c->state == FINDING_RETRACTED ? "why you retract the finding"
 		                                                 : "why the evidence shows the state");
 	return 0;
-}
-
-int
-finding_apply (struct finding        *f,
-               struct finding_change *c,
-               struct cstr_view       claim)
-{
-	if (util_grow(f->changes.items, f->changes.cap, f->changes.n + 1))
-		return ENOMEM;
-	bool const corrects = claim.len && !cstr_view_equal(claim, cstr_view_dstr(&f->claim));
-	struct dstr copy = DSTR_INIT;
-	if (corrects && cstr_view_store(claim, &copy)) {
-		dstr_cleanup(&copy);
-		return ENOMEM;
-	}
-	uint32_t items = f->changes.n ? f->changes.items[f->changes.n - 1].items : 0;
-	for (size_t i = 0; i < c->evidence.n; ++i)
-		c->evidence.items[i].item = ++items;
-	c->items = items;
-	if (corrects) {
-		dstr_cleanup(&c->claim_before);
-		c->claim_before = dstr_move(&f->claim);
-		f->claim = dstr_move(&copy);
-	}
-	f->changes.items[f->changes.n++] = *c;
-	*c = finding_change();
-	return 0;
-}
-
-void
-finding_unapply (struct finding        *f,
-                 struct finding_change *c)
-{
-	if (!f->changes.n)
-		return;
-	*c = f->changes.items[--f->changes.n];
-	f->changes.items[f->changes.n] = finding_change();
-	if (dstr_len(&c->claim_before)) {
-		dstr_cleanup(&f->claim);
-		f->claim = dstr_move(&c->claim_before);
-	}
 }
 
 /* Orders two findings for finding_sort(). */

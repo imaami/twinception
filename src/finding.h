@@ -146,6 +146,13 @@ finding_change (void);
 extern void
 finding_change_fini (struct finding_change *c);
 
+/** Appends the external item @p text to the change @p c. Returns 0 or
+ *  ENOMEM.
+ */
+extern int
+finding_change_external (struct finding_change *c,
+                         struct cstr_view       text);
+
 /**
  * Reads the ID @p text, such as bro#5: a member name (member_name_valid()),
  * '#' and a number from 1 to UINT32_MAX without a leading zero. Stores the
@@ -193,13 +200,20 @@ extern int
 finding_parse (struct finding   *f,
                struct cstr_view  json);
 
-/** Appends to @p d the text of the file of @p f, of version 1, and a line
- *  feed. Returns 0, EFBIG if the text would be longer than TOOL_TEXT_MAX,
- *  or ENOMEM. On failure @p d is as it was.
+/**
+ * Appends to @p d the text of the file of @p f, of version 1, and a line
+ * feed. The change @p c, unless it is nullptr, comes after the changes of
+ * @p f, with its evidence items numbered already. A @p claim that is not
+ * empty is the claim of the file in place of the claim of @p f, and the
+ * claim before of the change @p c is then the claim of @p f. Returns 0,
+ * EFBIG if the text would be longer than TOOL_TEXT_MAX, or ENOMEM. On
+ * failure @p d is as it was.
  */
 extern int
-finding_render (struct finding const *f,
-                struct dstr          *d);
+finding_render (struct finding const        *f,
+                struct finding_change const *c,
+                struct cstr_view             claim,
+                struct dstr                 *d);
 
 /**
  * Checks the change @p c by the rules of its state: verified and disproved
@@ -211,28 +225,6 @@ extern int
 finding_check (struct finding_change const *c,
                char                        *why,
                size_t                       len);
-
-/**
- * Adds the change @p c to @p f as its last change and moves the storage of
- * @p c into @p f, which leaves @p c as finding_change() returns it. The
- * evidence items of @p c are numbered after the items of @p f. If
- * @p claim is not empty and not the claim of @p f, it becomes the claim,
- * and the change stores the earlier claim in claim_before. Returns 0, or
- * ENOMEM with @p f and @p c as they were.
- */
-extern int
-finding_apply (struct finding        *f,
-               struct finding_change *c,
-               struct cstr_view       claim);
-
-/** Moves the last change of @p f back into @p c, which must be empty, as
- *  before the finding_apply() that added the change: a corrected claim
- *  becomes the claim of @p f again. Does nothing for a finding without
- *  changes.
- */
-extern void
-finding_unapply (struct finding        *f,
-                 struct finding_change *c);
 
 /** Sorts the @p n findings at @p list by the name of the author, and the
  *  findings of one author newest first.

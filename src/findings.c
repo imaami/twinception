@@ -797,34 +797,46 @@ findings_committed (struct mcp_slot *slot)
 
 /* Writes to @p message the subject of the commit of the change of the
  * call to the finding @p id, whose state was @p before: "Add bro#5
- * (verified)", "Update bro#5 (candidate to verified)", "Update bro#5
- * (claim)" or both.
+ * (verified)", and for an update by CALL_SAME and CALL_CLAIM "Update bro#5
+ * (candidate to verified)", "Update bro#5 (claim)" or both.
  */
 static void
 findings_subject (struct findings_call const *call,
                   char const                 *id,
                   enum finding_state          before,
-                  bool                        corrects,
                   char                        message[static STORE_MESSAGE])
 {
 	char const *after = finding_state_names[call->change.state].data;
-	if (call->action == FINDINGS_ADD)
+	char const *was = finding_state_names[before].data;
+	if (call->action == FINDINGS_ADD) {
 		(void)util_format(message, STORE_MESSAGE, "Add %s (%s)", id, after);
-	else if (before == call->change.state)
-		(void)util_format(message, STORE_MESSAGE, "Update %s (%s)", id, corrects ? "claim"
-		                                                                     : after);
-	else
-		(void)util_format(message, STORE_MESSAGE, "Update %s (%s to %s%s)", id,
-		                  finding_state_names[before].data, after, corrects ? ", claim" : "");
+		return;
+	}
+	switch (call->flags & (CALL_SAME | CALL_CLAIM)) {
+	case CALL_SAME:
+		(void)util_format(message, STORE_MESSAGE, "Update %s (%s)", id, after);
+		break;
+	case CALL_SAME | CALL_CLAIM:
+		(void)util_format(message, STORE_MESSAGE, "Update %s (claim)", id);
+		break;
+	case CALL_CLAIM:
+		(void)util_format(message, STORE_MESSAGE, "Update %s (%s to %s, claim)", id, was, after);
+		break;
+	default:
+		(void)util_format(message, STORE_MESSAGE, "Update %s (%s to %s)", id, was, after);
+		break;
+	}
 }
 
 /* Runs git to commit the change of the call in @p slot to @p f, the finding
- * of an update or a new finding: the file of the finding with the change,
- * and the archive of its evidence, on the branch of the agent.
+ * of an update or a new finding without a claim: the file of the finding
+ * with the change, and the archive of its evidence, on the branch of the
+ * agent. The claim of the call is the claim of a new finding, and the
+ * claim of an update if it is another claim.
  */
 static void
-findings_commit (struct mcp_slot *slot,
-                 struct finding  *f)
+findings_commit (struct mcp_slot      *slot,
+                 struct finding const *f)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct member_session const *session = findings_session(call);
@@ -832,27 +844,24 @@ findings_commit (struct mcp_slot *slot,
 	(void)util_format(agent.name, sizeof agent.name, "%s", session->agent);
 	char ref[MEMBER_REF];
 	member_ref(&agent, MEMBER_BRANCH_FINDINGS, ref);
-	struct oid tip = {};
-	for (size_t i = 0; i < call->branches.n; ++i)
-		if (!strcmp(call->branches.items[i].author, session->agent))
-			tip = call->branches.items[i].tip;
+	/* add and update read only the branch of the agent. */
+	struct oid const tip = call->branches.n ? call->branches.items[0].tip : (struct oid){};
 	enum finding_state const before = finding_state(f);
-	struct cstr_view const claim = cstr_view_dstr(&call->claim);
-	bool const corrects = call->action == FINDINGS_UPDATE && claim.len &&
-	                      !cstr_view_equal(claim, cstr_view_dstr(&f->claim));
-	if (call->action == FINDINGS_UPDATE && before == call->change.state)
-		call->flags |= CALL_SAME;
-	if (corrects)
-		call->flags |= CALL_CLAIM;
-	dstr_auto json = DSTR_INIT;
-	int e = finding_apply(f, &call->change, call->action == FINDINGS_UPDATE ? claim
-	                                                                         : CSTR_VIEW(""));
-	if (e) {
-		findings_end(slot, e, true);
-		return;
+	struct cstr_view claim = cstr_view_dstr(&call->claim);
+	if (call->action == FINDINGS_UPDATE) {
+		if (cstr_view_equal(claim, cstr_view_dstr(&f->claim)))
+			claim = (struct cstr_view){};
+		call->flags |= (before == call->change.state ? CALL_SAME : 0) |
+		               (claim.len ? CALL_CLAIM : 0);
 	}
-	e = finding_render(f, &json);
-	finding_unapply(f, &call->change);
+	/* The items of the change are numbered after the items of f. */
+	struct finding_change *c = &call->change;
+	uint32_t items = f->changes.n ? f->changes.items[f->changes.n - 1].items : 0;
+	for (size_t i = 0; i < c->evidence.n; ++i)
+		c->evidence.items[i].item = ++items;
+	c->items = items;
+	dstr_auto json = DSTR_INIT;
+	int e = finding_render(f, c, claim, &json);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, dstr_len(&json));
 	if (e == EFBIG) {
 		mcp_slot_tell(slot, CSTR_VIEW("The finding would be larger than 4 MiB. Nothing was "
@@ -864,7 +873,7 @@ findings_commit (struct mcp_slot *slot,
 	char message[STORE_MESSAGE];
 	finding_id(f, id);
 	finding_path(f->number, path);
-	findings_subject(call, id, before, corrects, message);
+	findings_subject(call, id, before, message);
 	call->number = f->number;
 	struct store_part part;
 	e = e ? e : store_part_file(&part, &call->files, cstr_view(path), cstr_view_dstr(&json));
@@ -1274,11 +1283,6 @@ findings_act (struct mcp_slot *slot)
 	(void)util_format(added.about, sizeof added.about, "%s", call->about);
 	added.number = call->last + 1;
 	added.conversation = mcp_slot_member(slot)->conversation;
-	if (cstr_view_store(cstr_view_dstr(&call->claim), &added.claim)) {
-		finding_fini(&added);
-		findings_end(slot, ENOMEM, true);
-		return;
-	}
 	findings_commit(slot, &added);
 	finding_fini(&added);
 }
@@ -1688,8 +1692,7 @@ findings_evidence (struct mcp_slot    *slot,
 		return util_refuse(why, len, "The external argument must be an array of strings.");
 	if (m > EVIDENCE_EXTERNAL)
 		return util_refuse(why, len, "external takes at most 8 items.");
-	if (util_grow(c->evidence.items, c->evidence.cap, n) ||
-	    util_grow(c->external.items, c->external.cap, m))
+	if (util_grow(c->evidence.items, c->evidence.cap, n))
 		return ENOMEM;
 	struct member_call const *member = mcp_slot_member(slot);
 	struct evidence_cite const cite = {
@@ -1735,9 +1738,7 @@ findings_evidence (struct mcp_slot    *slot,
 	for (size_t i = 0; !e && i < m; ++i) {
 		struct cstr_view const text = jb_view(jb_at(external, i));
 		e = evidence_external(text, i, why, len);
-		struct dstr *x = &c->external.items[c->external.n++];
-		*x = (struct dstr)DSTR_INIT;
-		e = e ? e : cstr_view_store(text, x);
+		e = e ? e : finding_change_external(c, text);
 	}
 	return e;
 }

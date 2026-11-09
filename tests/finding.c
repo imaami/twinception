@@ -118,8 +118,42 @@ change_of (enum finding_state  state,
 	return c;
 }
 
-/* finding_check() checks the rules of each state, and finding_apply()
- * numbers the items and corrects the claim.
+/* Adds the change @p c to @p f as its last change, with its evidence items
+ * numbered after the items of @p f, as findings_commit() numbers them, and
+ * moves the storage of @p c into @p f.
+ */
+static void
+push (struct finding        *f,
+      struct finding_change *c)
+{
+	uint32_t items = f->changes.n ? f->changes.items[f->changes.n - 1].items : 0;
+	for (size_t i = 0; i < c->evidence.n; ++i)
+		c->evidence.items[i].item = ++items;
+	c->items = items;
+	CHECK(!util_grow(f->changes.items, f->changes.cap, f->changes.n + 1));
+	f->changes.items[f->changes.n++] = *c;
+	*c = finding_change();
+}
+
+/* Returns the finding of the file that finding_render() writes for @p f,
+ * the change @p c and the claim @p claim.
+ */
+static struct finding
+rendered (struct finding const        *f,
+          struct finding_change const *c,
+          char const                  *claim)
+{
+	struct dstr text = DSTR_INIT;
+	CHECK(!finding_render(f, c, cstr_view(claim), &text));
+	struct finding back = finding();
+	CHECK(!finding_parse(&back, cstr_view_dstr(&text)));
+	dstr_cleanup(&text);
+	return back;
+}
+
+/* finding_check() checks the rules of each state, and finding_render()
+ * writes a new change after the changes of a finding, with its claim
+ * correction, and changes nothing of the finding.
  */
 static void
 test_changes (void)
@@ -151,46 +185,73 @@ test_changes (void)
 	f.number = 5;
 	CHECK(!cstr_view_store(CSTR_VIEW("First claim."), &f.claim));
 	c = change_of(FINDING_CANDIDATE, "Looks so.", 2, 4, 2);
-	CHECK(!finding_apply(&f, &c, CSTR_VIEW("")));
-	CHECK(!c.evidence.n && !c.evidence.items && !dstr_len(&c.reason) && !dstr_len(&c.askai) &&
-	      !c.state);
-	CHECK(f.changes.n == 1 && finding_state(&f) == FINDING_CANDIDATE &&
-	      f.changes.items[0].items == 2 &&
-	      f.changes.items[0].evidence.items[0].item == 1 &&
-	      f.changes.items[0].evidence.items[1].item == 2 &&
-	      !dstr_len(&f.changes.items[0].claim_before));
-	/* The same claim is no correction. */
+	c.evidence.items[0].item = 1;
+	c.evidence.items[1].item = 2;
+	c.items = 2;
+	struct finding back = rendered(&f, &c, "");
+	CHECK(back.changes.n == 1 && finding_state(&back) == FINDING_CANDIDATE &&
+	      back.changes.items[0].items == 2 &&
+	      back.changes.items[0].evidence.items[0].item == 1 &&
+	      back.changes.items[0].evidence.items[1].item == 2 &&
+	      !dstr_len(&back.changes.items[0].claim_before));
+	SAME(dstr_get(&back.claim), dstr_len(&back.claim), "First claim.");
+	SAME(dstr_get(&back.changes.items[0].askai), dstr_len(&back.changes.items[0].askai),
+	     "0.9.0-412-gd02cc233");
+	/* f and c stay as they were. */
+	CHECK(!f.changes.n && c.evidence.n == 2 && c.evidence.items[1].item == 2 && c.items == 2);
+	finding_fini(&back);
+	push(&f, &c);
+	CHECK(f.changes.n == 1 && f.changes.items[0].items == 2 && !c.evidence.n);
+	/* A new claim is the claim of the file, and the claim before of the
+	 * change is the claim of f. */
 	c = change_of(FINDING_VERIFIED, "Call c9 shows it.", 4, 9, 1);
-	CHECK(!finding_apply(&f, &c, CSTR_VIEW("First claim.")));
-	CHECK(f.changes.n == 2 && finding_state(&f) == FINDING_VERIFIED &&
-	      f.changes.items[1].items == 3 &&
-	      f.changes.items[1].evidence.items[0].item == 3 &&
-	      !dstr_len(&f.changes.items[1].claim_before));
-	c = change_of(FINDING_VERIFIED, "Corrected.", 5, 0, 0);
-	CHECK(!finding_apply(&f, &c, CSTR_VIEW("Second claim.")));
-	CHECK(f.changes.n == 3 && f.changes.items[2].items == 3);
-	SAME(dstr_get(&f.claim), dstr_len(&f.claim), "Second claim.");
-	SAME(dstr_get(&f.changes.items[2].claim_before), dstr_len(&f.changes.items[2].claim_before),
-	     "First claim.");
-	/* finding_unapply() takes the last change back, as before the apply.
-	 * Applied again, it gets the same numbers. */
-	finding_unapply(&f, &c);
-	CHECK(f.changes.n == 2 && finding_state(&f) == FINDING_VERIFIED &&
-	      c.state == FINDING_VERIFIED &&
-	      !dstr_len(&c.claim_before) && dstr_len(&c.reason) && c.items == 3);
+	c.evidence.items[0].item = 3;
+	c.items = 3;
+	back = rendered(&f, &c, "Second claim.");
+	CHECK(back.changes.n == 2 && finding_state(&back) == FINDING_VERIFIED &&
+	      back.changes.items[1].items == 3 && back.changes.items[1].evidence.items[0].item == 3 &&
+	      !dstr_len(&back.changes.items[0].claim_before));
+	SAME(dstr_get(&back.claim), dstr_len(&back.claim), "Second claim.");
+	SAME(dstr_get(&back.changes.items[1].claim_before),
+	     dstr_len(&back.changes.items[1].claim_before), "First claim.");
 	SAME(dstr_get(&f.claim), dstr_len(&f.claim), "First claim.");
-	CHECK(!finding_apply(&f, &c, CSTR_VIEW("Second claim.")) && f.changes.n == 3);
-	finding_unapply(&f, &c);
+	CHECK(f.changes.n == 1 && !dstr_len(&c.claim_before));
+	finding_fini(&back);
+	/* Without a claim, the claim before of the change is its own
+	 * claim_before. */
+	CHECK(!cstr_view_store(CSTR_VIEW("Zeroth claim."), &c.claim_before));
+	back = rendered(&f, &c, "");
+	SAME(dstr_get(&back.claim), dstr_len(&back.claim), "First claim.");
+	SAME(dstr_get(&back.changes.items[1].claim_before),
+	     dstr_len(&back.changes.items[1].claim_before), "Zeroth claim.");
+	finding_fini(&back);
+	/* Without a change, the file of f alone. */
+	back = rendered(&f, nullptr, "");
+	CHECK(back.changes.n == 1 && back.changes.items[0].items == 2 && back.number == 5 &&
+	      !strcmp(back.author, "bro"));
+	finding_fini(&back);
+	/* A long version of askai, such as one of git describe with a long
+	 * tail, stays as it is. */
+	struct dstr text = DSTR_INIT;
+	CHECK(!finding_render(&f, &c, CSTR_VIEW(""), &text));
+	char const *at = strstr(dstr_get(&text), "0.9.0-412-gd02cc233");
+	CHECK(at);
+	struct dstr longer = DSTR_INIT;
+	CHECK(dstr_printf(&longer, "%.*s%s%s", (int)(at - dstr_get(&text)), dstr_get(&text),
+	                  "0.9.0-412-gd02cc233-and-a-much-longer-tail-dirty", at + 19));
+	CHECK(!finding_parse(&back, cstr_view_dstr(&longer)) && back.changes.n == 2);
+	SAME(dstr_get(&back.changes.items[0].askai), dstr_len(&back.changes.items[0].askai),
+	     "0.9.0-412-gd02cc233-and-a-much-longer-tail-dirty");
+	finding_fini(&back);
+	dstr_cleanup(&longer);
+	dstr_cleanup(&text);
 	finding_change_fini(&c);
-	finding_unapply(&f, &c);
-	CHECK(f.changes.n == 1 && finding_state(&f) == FINDING_CANDIDATE && c.evidence.n == 1 &&
-	      c.evidence.items[0].item == 3);
+	/* finding_change_external() appends an external item. */
+	CHECK(!finding_change_external(&c, CSTR_VIEW("sha256:9b1c")) &&
+	      !finding_change_external(&c, CSTR_VIEW("x")) && c.external.n == 2);
+	SAME(dstr_get(&c.external.items[1]), dstr_len(&c.external.items[1]), "x");
 	finding_change_fini(&c);
-	finding_unapply(&f, &c);
-	CHECK(!f.changes.n && finding_state(&f) == FINDING_CANDIDATE && c.evidence.n == 2);
-	finding_change_fini(&c);
-	finding_unapply(&f, &c);
-	CHECK(!f.changes.n && !c.evidence.n);
+	CHECK(!c.external.n && !c.external.items);
 	finding_fini(&f);
 	CHECK(!f.changes.items && !f.changes.n && !*f.author && !f.number);
 	finding_fini(&f);
@@ -215,7 +276,7 @@ finding_of (char const         *author,
 	CHECK(!hexid_init(&f.conversation, cstr_view(conversation)));
 	CHECK(!cstr_view_store(cstr_view(claim), &f.claim));
 	struct finding_change c = change_of(state, state ? "Shown." : "", number, number, 1);
-	CHECK(!finding_apply(&f, &c, CSTR_VIEW("")));
+	push(&f, &c);
 	return f;
 }
 
@@ -229,13 +290,11 @@ test_file (void)
 	                              "cuh#2", FINDING_CANDIDATE);
 	struct finding_change c = change_of(FINDING_VERIFIED, "Call c4 printed 246 files.", 4, 4,
 	                                    1);
-	CHECK(!util_grow(c.external.items, c.external.cap, 1));
-	struct dstr *x = &c.external.items[c.external.n++];
-	*x = (struct dstr)DSTR_INIT;
-	CHECK(!cstr_view_store(CSTR_VIEW("libclang sha256:9b1c"), x));
-	CHECK(!finding_apply(&f, &c, CSTR_VIEW("git grep -L lists 246 files.")));
+	CHECK(!finding_change_external(&c, CSTR_VIEW("libclang sha256:9b1c")));
+	c.evidence.items[0].item = 2;
+	c.items = 2;
 	struct dstr text = DSTR_INIT;
-	CHECK(!finding_render(&f, &text));
+	CHECK(!finding_render(&f, &c, CSTR_VIEW("git grep -L lists 246 files."), &text));
 	char const *t = dstr_get(&text);
 	CHECK(strstr(t, "\"version\": 1,") && strstr(t, "\"id\": \"bro#5\",") &&
 	      strstr(t, "\"about\": \"cuh#2\",") && strstr(t, "\"conversation\": \"" CONV "\",") &&
@@ -268,7 +327,7 @@ test_file (void)
 	SAME(dstr_get(&back.changes.items[1].askai), dstr_len(&back.changes.items[1].askai),
 	     "0.9.0-412-gd02cc233");
 	struct dstr again = DSTR_INIT;
-	CHECK(!finding_render(&back, &again));
+	CHECK(!finding_render(&back, nullptr, CSTR_VIEW(""), &again));
 	SAME(dstr_get(&again), dstr_len(&again), t);
 
 	/* Files that askai does not read. */
@@ -316,6 +375,7 @@ test_file (void)
 	      !back.changes.items[0].items);
 	finding_fini(&back);
 	finding_fini(&f);
+	finding_change_fini(&c);
 	dstr_cleanup(&again);
 	dstr_cleanup(&text);
 }
@@ -388,7 +448,7 @@ test_texts (void)
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":"
 	                                 "\"d02cc2338c4f7d1e00000000000000000000aaaa\","
 	                                 "\"path\":\"src/git.c\"}"), &c.evidence.items[0].ids));
-	CHECK(!finding_apply(cuh2, &c, CSTR_VIEW("")));
+	push(cuh2, &c);
 	strcpy(cuh2->changes.items[1].asked_by, "");
 	cuh2->changes.items[1].ask = (struct hexid){};
 	(void)dstr_clear(&text);

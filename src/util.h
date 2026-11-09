@@ -627,6 +627,14 @@ util_room (void   *items,
  */
 #define UTIL_ARRAY(T) struct { T *items; size_t n; size_t cap; }
 
+/** Append the value after @p array, such as a compound literal, to
+ *  @p array, a UTIL_ARRAY lvalue that util_grow() grows. Evaluates to 0,
+ *  or to ENOMEM with @p array unchanged.
+ */
+#define util_push(array, ...)                                         \
+        (util_grow((array).items, (array).cap, (array).n + 1) ? ENOMEM \
+         : ((array).items[(array).n++] = (__VA_ARGS__), 0))
+
 /** Make room for @p add items at the index @p at of @p items, an array of
  *  @p n items of @p size bytes with room for @p *cap items, in place of
  *  the @p drop items from @p at on: grow the array with util_room() and
