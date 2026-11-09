@@ -1,12 +1,13 @@
 /** @file Unit tests of the evidence of the findings (src/evidence.c): the
  *  references, the items that the calls of the ring make, the refusals,
- *  the external items, the archive paths, the JSON of an item and the
- *  summaries.
+ *  the external items, the archive paths, the JSON of an item, the
+ *  summaries, the items cited again, and the items as expand prints them.
  */
 #include <errno.h>
 #include <json-c/json.h>
 #include <openssl/sha.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "buf.h"
@@ -603,6 +604,259 @@ test_json (void)
 	evidence_fini(&e);
 }
 
+/* Stores the size and the SHA-256 of @p material in @p blob. */
+static void
+hash_of (struct evidence_blob *blob,
+         struct cstr_view      material)
+{
+	SHA256((unsigned char const *)(material.data ? material.data : ""), material.len,
+	       blob->sha256);
+	blob->bytes = material.len;
+}
+
+/* Returns the JSON object text of @p e, which the caller frees. */
+static char *
+record_of (struct evidence const *e)
+{
+	int err = -1;
+	struct json_object *obj = evidence_json(e, &err);
+	CHECK(obj && !err);
+	char *text = strdup(json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PLAIN));
+	json_object_put(obj);
+	return text;
+}
+
+/* Check that citing the item @p text again from @p record and
+ * @p material refuses with @p want.
+ */
+static void
+recite_refused (char const       *text,
+                char const       *record,
+                struct cstr_view  material,
+                char const       *want,
+                int               line)
+{
+	struct evidence_ref ref;
+	struct evidence e = evidence();
+	struct dstr lines = DSTR_INIT;
+	char why[512] = "x";
+	int const r = evidence_ref_parse(&ref, cstr_view(text));
+	int const got = r ? r : evidence_recite(&e, &lines, &ref, cstr_view(record), material, why,
+	                                        sizeof why);
+	if (got != EINVAL || strcmp(why, want)) {
+		++failures;
+		fprintf(stderr, "%s:%d: %s: error %d, refusal\n%s\nwant\n%s\n", __FILE__, line, text,
+		        got, why, want);
+	}
+	evidence_fini(&e);
+	dstr_cleanup(&lines);
+}
+
+/* evidence_recite() cites an item again, whole or some of its lines. */
+static void
+test_recite (void)
+{
+	/* cuh#2/1 is lines 2 to 6 and 8 to 9, the last without a line feed. */
+	static char const stored[] = "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n6\tline 6\n"
+	                             "8\tline 8\n9\tline 9";
+	struct cstr_view const material = { stored, sizeof stored - 1 };
+	struct evidence item = evidence();
+	item.kind = EVIDENCE_LINES;
+	item.item = 1;
+	item.call = 3;
+	item.turn = 2;
+	item.output = 400;
+	CHECK(!hexid_init(&item.ask, CSTR_VIEW("68177013a5c94f0e8b1d2c3e4f506172")));
+	CHECK(!cstr_view_store(CSTR_VIEW("git"), &item.tool));
+	CHECK(!cstr_view_store(CSTR_VIEW("call_2_0"), &item.call_id));
+	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":"
+	                                 "\"src/a.c\",\"total\":9}"), &item.ids));
+	CHECK(!util_grow(item.ranges.items, item.ranges.cap, 2));
+	item.ranges.items[item.ranges.n++] = (struct evidence_range){ 2, 6 };
+	item.ranges.items[item.ranges.n++] = (struct evidence_range){ 8, 9 };
+	hash_of(&item.result, material);
+	char *record = record_of(&item);
+
+	/* Whole: the same item, without its number, from cuh#2/1. */
+	struct evidence_ref ref;
+	struct evidence e = evidence();
+	struct dstr lines = DSTR_INIT;
+	char why[512] = "x";
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(record), (struct cstr_view){}, why,
+	                       sizeof why) && !*why);
+	CHECK(e.kind == EVIDENCE_LINES && !e.item && e.call == 3 && e.turn == 2 && e.output == 400 &&
+	      !strcmp(e.from, "cuh#2/1") && !strcmp(e.ask.hex, item.ask.hex) && e.ranges.n == 2 &&
+	      e.ranges.items[1].last == 9 && !memcmp(&e.result, &item.result, sizeof e.result) &&
+	      !dstr_len(&lines));
+	SAME(dstr_get(&e.ids), dstr_len(&e.ids), dstr_get(&item.ids));
+	/* Some lines, from both ranges and up to the last line. */
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:3-4,9")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(record), material, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), "3\tline 3\n4\tline 4\n9\tline 9");
+	hashed(&e.result, cstr_view_dstr(&lines), __LINE__);
+	CHECK(e.kind == EVIDENCE_LINES && e.ranges.n == 2 && e.ranges.items[0].first == 3 &&
+	      e.ranges.items[0].last == 4 && e.ranges.items[1].first == 9 &&
+	      !strcmp(e.from, "cuh#2/1") && !e.item && !(e.flags & EVIDENCE_REQUEST));
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:2,6-6,8")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(record), material, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), "2\tline 2\n6\tline 6\n8\tline 8\n");
+
+	/* Refusals. */
+	recite_refused("cuh#2/1:6-8", record, material, "cuh#2/1 shows lines 2 to 6, 8 to 9 of "
+	               "src/a.c. Give lines within those ranges.", __LINE__);
+	recite_refused("cuh#2/1:1", record, material, "cuh#2/1 shows lines 2 to 6, 8 to 9 of "
+	               "src/a.c. Give lines within those ranges.", __LINE__);
+	recite_refused("cuh#2/1:9-10", record, material, "cuh#2/1 shows lines 2 to 6, 8 to 9 of "
+	               "src/a.c. Give lines within those ranges.", __LINE__);
+	recite_refused("cuh#2/1:3", record, CSTR_VIEW("2\tline 2\n"), "The stored material of "
+	               "cuh#2/1 does not match the recorded SHA-256.", __LINE__);
+	recite_refused("cuh#2/1", "{}", material, "Could not read finding cuh#2: unknown format.",
+	               __LINE__);
+	recite_refused("cuh#2/1:3", "not json", material, "Could not read finding cuh#2: unknown "
+	               "format.", __LINE__);
+	recite_refused("cuh#2", record, material, "", __LINE__);
+	recite_refused("c7", record, material, "", __LINE__);
+	/* One range: "that range". */
+	item.ranges.n = 1;
+	item.ranges.items[0] = (struct evidence_range){ 2, 6 };
+	char *one = record_of(&item);
+	recite_refused("cuh#2/1:7", one, material, "cuh#2/1 shows lines 2 to 6 of src/a.c. Give "
+	               "lines within that range.", __LINE__);
+	free(one);
+	/* A call item has no lines. */
+	item.kind = EVIDENCE_CALL;
+	item.flags = EVIDENCE_REQUEST;
+	char *call = record_of(&item);
+	recite_refused("cuh#2/1:3", call, material, "cuh#2/1:3 needs a lines item. cuh#2/1 is a "
+	               "call item.", __LINE__);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(call), (struct cstr_view){}, why,
+	                       sizeof why));
+	CHECK(e.kind == EVIDENCE_CALL && e.flags == EVIDENCE_REQUEST && !strcmp(e.from, "cuh#2/1"));
+	free(call);
+	CHECK(evidence_recite(nullptr, &lines, &ref, cstr_view(record), material, why,
+	                      sizeof why) == EINVAL);
+	CHECK(evidence_recite(&e, nullptr, &ref, cstr_view(record), material, why,
+	                      sizeof why) == EINVAL);
+	CHECK(evidence_recite(&e, &lines, nullptr, cstr_view(record), material, why,
+	                      sizeof why) == EINVAL);
+	CHECK(evidence_recite(&e, &lines, &ref, cstr_view(record), material, nullptr, 0) == EINVAL);
+	free(record);
+	evidence_fini(&e);
+	evidence_fini(&item);
+	dstr_cleanup(&lines);
+}
+
+/* Check that evidence_expand() prints @p e of cuh#2 by cuh with the
+ * material @p request and @p result as @p want.
+ */
+static void
+expanded (struct evidence const *e,
+          struct cstr_view       request,
+          struct cstr_view       result,
+          char const            *want,
+          int                    line)
+{
+	struct dstr d = DSTR_INIT;
+	int const got = evidence_expand(e, "cuh#2", "cuh", request, result, &d);
+	if (got || strcmp(dstr_get(&d), want)) {
+		++failures;
+		fprintf(stderr, "%s:%d: error %d, got\n%s\nwant\n%s\n", __FILE__, line, got,
+		        dstr_get(&d), want);
+	}
+	dstr_cleanup(&d);
+}
+
+/* evidence_expand() prints an item of each kind with its material, and
+ * says when the material is missing or does not match.
+ */
+static void
+test_expand (void)
+{
+	struct cstr_view const args = CSTR_VIEW("{\"command\":\"grep\"}");
+	struct cstr_view const out = CSTR_VIEW("src/a.c\n\n[askai: call c9]");
+	struct evidence e = evidence();
+	e.kind = EVIDENCE_CALL;
+	e.item = 1;
+	e.call = 9;
+	e.turn = 19;
+	e.output = 9000;
+	e.skip = 100;
+	e.flags = EVIDENCE_REQUEST;
+	CHECK(!hexid_init(&e.ask, CSTR_VIEW("68177013a5c94f0e8b1d2c3e4f506172")));
+	CHECK(!cstr_view_store(CSTR_VIEW("git"), &e.tool));
+	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commits\":[\"" A "\"]}"), &e.ids));
+	hash_of(&e.request, args);
+	hash_of(&e.result, out);
+	expanded(&e, args, out, "[askai: cuh#2/1: call c9 of cuh in ask 68177013, turn 19, tool git, "
+	         "stored exactly as sent. Repository askai, commit " A ". Arguments:]\n"
+	         "{\"command\":\"grep\"}\n[askai: cuh#2/1: result, 25 bytes, from byte 100 of an "
+	         "output of 9000 bytes:]\nsrc/a.c\n\n[askai: call c9]\n", __LINE__);
+	/* The whole output, no identifiers, a failed call after a restart. */
+	e.skip = 0;
+	e.output = 7;
+	e.flags |= EVIDENCE_FAILED;
+	e.ask = (struct hexid){};
+	(void)dstr_clear(&e.ids);
+	expanded(&e, args, out, "[askai: cuh#2/1: call c9 of cuh, turn 19, tool git, failed, stored "
+	         "exactly as sent. Arguments:]\n{\"command\":\"grep\"}\n[askai: cuh#2/1: result, "
+	         "25 bytes:]\nsrc/a.c\n\n[askai: call c9]\n", __LINE__);
+	/* Missing and changed material. */
+	expanded(&e, args, (struct cstr_view){}, "[askai: cuh#2/1: call c9 of cuh, turn 19, tool "
+	         "git, failed, stored exactly as sent. Arguments:]\n{\"command\":\"grep\"}\n"
+	         "[askai: cuh#2/1: result, 25 bytes:]\n[askai: the stored material of cuh#2/1 is "
+	         "missing.]\n", __LINE__);
+	expanded(&e, CSTR_VIEW("{}"), out, "[askai: cuh#2/1: call c9 of cuh, turn 19, tool git, "
+	         "failed, stored exactly as sent. Arguments:]\n{}\n[askai: cuh#2/1: result, 25 "
+	         "bytes:]\nsrc/a.c\n\n[askai: call c9]\n[askai: the stored material of cuh#2/1 "
+	         "does not match the recorded SHA-256.]\n", __LINE__);
+	/* The message and the files of one commit. An item cited again names
+	 * no author of the call. */
+	e.kind = EVIDENCE_MESSAGE;
+	e.item = 3;
+	e.flags = EVIDENCE_REQUEST;
+	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\"}"), &e.ids));
+	expanded(&e, args, out, "[askai: cuh#2/3: the message of commit " A " in repository askai "
+	         "is the evidence, not the files. Call c9 of cuh, turn 19, tool git, stored exactly "
+	         "as sent. Arguments:]\n{\"command\":\"grep\"}\n[askai: cuh#2/3: result, 25 "
+	         "bytes:]\nsrc/a.c\n\n[askai: call c9]\n", __LINE__);
+	e.kind = EVIDENCE_FILES;
+	memcpy(e.from, "bro#1/1", sizeof "bro#1/1");
+	CHECK(!hexid_init(&e.ask, CSTR_VIEW("68177013a5c94f0e8b1d2c3e4f506172")));
+	expanded(&e, args, out, "[askai: cuh#2/3 from bro#1/1: the files of commit " A " in "
+	         "repository askai. Call c9 in ask 68177013, turn 19, tool git, stored exactly as "
+	         "sent. Arguments:]\n{\"command\":\"grep\"}\n[askai: cuh#2/3: result, 25 "
+	         "bytes:]\nsrc/a.c\n\n[askai: call c9]\n", __LINE__);
+	/* Lines, with the whole IDs. */
+	struct cstr_view const lines = CSTR_VIEW("161\tx\n171\ty");
+	evidence_fini(&e);
+	e.kind = EVIDENCE_LINES;
+	e.item = 2;
+	memcpy(e.from, "cuh#1/3", sizeof "cuh#1/3");
+	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\",\"path\":"
+	                                 "\"src/git.c\",\"blob\":\"" A "\"}"), &e.ids));
+	CHECK(!util_grow(e.ranges.items, e.ranges.cap, 2));
+	e.ranges.items[e.ranges.n++] = (struct evidence_range){ 161, 161 };
+	e.ranges.items[e.ranges.n++] = (struct evidence_range){ 171, 171 };
+	hash_of(&e.result, lines);
+	expanded(&e, (struct cstr_view){}, lines, "[askai: cuh#2/2 from cuh#1/3: lines 161, 171 of "
+	         "src/git.c in repository askai at commit " A ", blob " A ", stored as shown:]\n"
+	         "161\tx\n171\ty\n", __LINE__);
+	expanded(&e, (struct cstr_view){}, (struct cstr_view){}, "[askai: cuh#2/2 from cuh#1/3: "
+	         "lines 161, 171 of src/git.c in repository askai at commit " A ", blob " A ", "
+	         "stored as shown:]\n[askai: the stored material of cuh#2/2 is missing.]\n",
+	         __LINE__);
+	struct dstr d = DSTR_INIT;
+	CHECK(evidence_expand(nullptr, "cuh#2", "cuh", args, out, &d) == EFAULT);
+	CHECK(evidence_expand(&e, nullptr, "cuh", args, out, &d) == EFAULT);
+	CHECK(evidence_expand(&e, "cuh#2", nullptr, args, out, &d) == EFAULT);
+	CHECK(evidence_expand(&e, "cuh#2", "cuh", args, out, nullptr) == EFAULT);
+	CHECK(!dstr_len(&d));
+	dstr_cleanup(&d);
+	evidence_fini(&e);
+}
+
 int
 main (void)
 {
@@ -611,5 +865,7 @@ main (void)
 	test_external();
 	test_path();
 	test_json();
+	test_recite();
+	test_expand();
 	return check_report("evidence");
 }

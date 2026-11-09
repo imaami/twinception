@@ -701,35 +701,38 @@ evidence_parse (struct evidence          *dest,
 	return e;
 }
 
+int
+evidence_parse_text (struct evidence  *dest,
+                     struct cstr_view  json)
+{
+	struct json_object *obj = json.len ? jb_parse(json.data, json.len, JSON_TOKENER_STRICT, 0)
+	                                   : nullptr;
+	int const e = evidence_parse(dest, obj);
+	json_object_put(obj);
+	return e;
+}
+
 /* Appends to @p d the lines of the item @p e of the kind EVIDENCE_LINES
  * with the identifiers @p ids: "lines A to B, C of PATH in repository R at
- * commit C, blob B", each part that @p ids name. Returns true, or false if
- * out of memory.
+ * commit C, blob B", each part that @p ids name, with at most @p clip
+ * digits of the commit and the blob. Returns true, or false if out of
+ * memory.
  */
 static bool
 evidence_lines_summary (struct evidence const *e,
                         struct json_object    *ids,
+                        size_t                 clip,
                         struct dstr           *d)
 {
-	struct cstr_view const path = jb_view(jb_get(ids, "path"));
 	struct cstr_view const repo = jb_view(jb_get(ids, "repo"));
 	struct cstr_view const commit = jb_view(jb_get(ids, "commit"));
 	struct cstr_view const blob = jb_view(jb_get(ids, "blob"));
-	bool const one = e->ranges.n == 1 && e->ranges.items[0].first == e->ranges.items[0].last;
-	bool ok = dstr_cat(d, one ? "line " : "lines ");
-	for (size_t i = 0; ok && i < e->ranges.n; ++i) {
-		struct evidence_range const r = e->ranges.items[i];
-		ok = r.first == r.last
-		   ? dstr_printf(d, "%s%" PRIu32, i ? ", " : "", r.first)
-		   : dstr_printf(d, "%s%" PRIu32 " to %" PRIu32, i ? ", " : "", r.first, r.last);
-	}
-	ok = ok && dstr_printf(d, " of %.*s", path.len ? (int)path.len : 8,
-	                       path.len ? path.data : "the file");
+	bool ok = evidence_lines_of(e->ranges.items, e->ranges.n, ids, d);
 	ok = ok && (!repo.len || dstr_printf(d, " in repository %.*s", (int)repo.len, repo.data));
 	ok = ok && (!commit.len || dstr_printf(d, " at commit %.*s", (int)util_clip(commit.data,
-	                                       commit.len, EVIDENCE_SHORT), commit.data));
+	                                       commit.len, clip), commit.data));
 	return ok && (!blob.len || dstr_printf(d, ", blob %.*s", (int)util_clip(blob.data,
-	                                       blob.len, EVIDENCE_SHORT), blob.data));
+	                                       blob.len, clip), blob.data));
 }
 
 int
@@ -743,7 +746,7 @@ evidence_summary (struct evidence const *e,
 	bool ok = true;
 	switch (e->kind) {
 	case EVIDENCE_LINES:
-		ok = evidence_lines_summary(e, ids, d);
+		ok = evidence_lines_summary(e, ids, EVIDENCE_SHORT, d);
 		json_object_put(ids);
 		return ok ? 0 : ENOMEM;
 	case EVIDENCE_MESSAGE:
@@ -763,6 +766,253 @@ evidence_summary (struct evidence const *e,
 	ok = ok && dstr_printf(d, "call c%" PRIu32 ", %.*s", e->call, (int)tool.len, tool.data);
 	ok = ok && (!(e->flags & EVIDENCE_FAILED) || dstr_cat(d, ", failed"));
 	ok = ok && dstr_printf(d, ", %" PRIu64 " byte%s", e->result.bytes, util_s(e->result.bytes));
+	json_object_put(ids);
+	return ok ? 0 : ENOMEM;
+}
+
+void
+evidence_ref_id (struct evidence_ref const *ref,
+                 char                       id[static SEEN_ID])
+{
+	(void)util_format(id, SEEN_ID, "%s#%" PRIu32 "/%" PRIu32, ref->author, ref->number,
+	                  ref->item);
+}
+
+/* Appends to @p d the lines @p r of the stored lines @p material of the
+ * item @p e, whose lines are e->ranges, one after another. The lines must
+ * be within one range of @p e. Returns 0, EINVAL if @p material has fewer
+ * lines, or ENOMEM.
+ */
+static int
+evidence_cut (struct evidence const *e,
+              struct evidence_range  r,
+              struct cstr_view       material,
+              struct dstr           *d)
+{
+	/* The lines before the range of @p e that contains @p r. */
+	uint64_t skip = 0;
+	size_t k = 0;
+	while (k < e->ranges.n && (r.first < e->ranges.items[k].first ||
+	                           r.last > e->ranges.items[k].last)) {
+		skip += (uint64_t)e->ranges.items[k].last - e->ranges.items[k].first + 1;
+		++k;
+	}
+	if (k == e->ranges.n)
+		return EINVAL;
+	skip += r.first - e->ranges.items[k].first;
+	struct cstr_view line;
+	while (skip && cstr_view_cut(&material, '\n', &line))
+		--skip;
+	/* The last stored line can end without a line feed. */
+	char const *const start = material.data;
+	uint64_t n = (uint64_t)r.last - r.first + 1;
+	while (n && material.len) {
+		if (!cstr_view_cut(&material, '\n', &line))
+			material = cstr_view_slice(material, material.len, SIZE_MAX);
+		--n;
+	}
+	if (skip || n || !start)
+		return EINVAL;
+	return dstr_cat_n(d, start, (size_t)(material.data - start)) ? 0 : ENOMEM;
+}
+
+/* Returns true if @p m is the material that @p b records. */
+static bool
+evidence_matches (struct evidence_blob const *b,
+                  struct cstr_view            m)
+{
+	unsigned char sha256[EVIDENCE_SHA256];
+	(void)SHA256((unsigned char const *)(m.data ? m.data : ""), m.len, sha256);
+	return m.len == b->bytes && !memcmp(sha256, b->sha256, sizeof sha256);
+}
+
+int
+evidence_recite (struct evidence           *dest,
+                 struct dstr               *lines,
+                 struct evidence_ref const *ref,
+                 struct cstr_view           record,
+                 struct cstr_view           material,
+                 char                      *why,
+                 size_t                     len)
+{
+	if (why && len)
+		*why = '\0';
+	if (!dest || !lines || !ref || !why || !len ||
+	    (ref->form != EVIDENCE_REF_ITEM && ref->form != EVIDENCE_REF_ITEM_LINES))
+		return EINVAL;
+	char id[SEEN_ID];
+	evidence_ref_id(ref, id);
+	int e = evidence_parse_text(dest, record);
+	if (e == EINVAL)
+		return util_refuse(why, len, "Could not read finding %s#%" PRIu32 ": unknown format.",
+		                   ref->author, ref->number);
+	if (e)
+		return e;
+	dest->item = 0;
+	memcpy(dest->from, id, sizeof id);
+	if (ref->form == EVIDENCE_REF_ITEM)
+		return 0;
+	dstr_auto text = DSTR_INIT;
+	if (evidence_ranges_put(ref->ranges, ref->n_ranges, &text))
+		return ENOMEM;
+	if (dest->kind != EVIDENCE_LINES)
+		return util_refuse(why, len, "%s:%s needs a lines item. %s is a %s item.", id,
+		                   dstr_get(&text), id, evidence_kind_names[dest->kind].data);
+	if (!evidence_matches(&dest->result, material))
+		return util_refuse(why, len, "The stored material of %s does not match the recorded "
+		                   "SHA-256.", id);
+	(void)dstr_clear(lines);
+	for (size_t i = 0; !e && i < ref->n_ranges; ++i)
+		e = evidence_cut(dest, ref->ranges[i], material, lines);
+	if (e == EINVAL) {
+		(void)dstr_clear(&text);
+		struct json_object *ids = evidence_ids(&dest->ids);
+		bool const ok = evidence_lines_of(dest->ranges.items, dest->ranges.n, ids, &text);
+		json_object_put(ids);
+		if (!ok)
+			return ENOMEM;
+		return util_refuse(why, len, "%s shows %s. Give lines within %s.", id, dstr_get(&text),
+		                   dest->ranges.n > 1 ? "those ranges" : "that range");
+	}
+	if (e)
+		return e;
+	dest->ranges.n = 0;
+	if (util_grow(dest->ranges.items, dest->ranges.cap, ref->n_ranges))
+		return ENOMEM;
+	for (size_t i = 0; i < ref->n_ranges; ++i)
+		dest->ranges.items[dest->ranges.n++] = ref->ranges[i];
+	evidence_hash(&dest->result, cstr_view_dstr(lines));
+	return 0;
+}
+
+/* Appends the material @p m to @p d, with a line feed after it if it does
+ * not end with one. Returns true, or false if out of memory.
+ */
+static bool
+evidence_material_put (struct cstr_view  m,
+                       struct dstr      *d)
+{
+	return !m.len || (dstr_cat_n(d, m.data, m.len) &&
+	                  (m.data[m.len - 1] == '\n' || dstr_cat_n(d, "\n", 1)));
+}
+
+/* Appends to @p d the part of the notice of the item @p e of a kind other
+ * than EVIDENCE_LINES, as evidence_expand() prints it, from what the item
+ * is to the end of the notice before the arguments. @p repo and @p commit
+ * are the repository and the one commit of the identifiers, or empty.
+ * Returns true, or false if out of memory.
+ */
+static bool
+evidence_expand_call (struct evidence const *e,
+                      char const            *author,
+                      struct cstr_view       repo,
+                      struct cstr_view       commit,
+                      struct dstr           *d)
+{
+	struct cstr_view const tool = cstr_view_dstr(&e->tool);
+	bool ok;
+	if (e->kind == EVIDENCE_MESSAGE)
+		ok = dstr_printf(d, "the message of commit %.*s in repository %.*s is the evidence, "
+		                 "not the files. Call", (int)commit.len, commit.len ? commit.data : "",
+		                 (int)repo.len, repo.len ? repo.data : "");
+	else if (e->kind == EVIDENCE_FILES)
+		ok = dstr_printf(d, "the files of commit %.*s in repository %.*s. Call",
+		                 (int)commit.len, commit.len ? commit.data : "", (int)repo.len,
+		                 repo.len ? repo.data : "");
+	else
+		ok = dstr_cat(d, "call");
+	if (!ok)
+		return false;
+	if (!dstr_printf(d, " c%" PRIu32, e->call))
+		return false;
+	/* The call of an item cited again is not a call of the author. */
+	if (!*e->from && !dstr_printf(d, " of %s", author))
+		return false;
+	if (*e->ask.hex && !dstr_printf(d, " in ask %.8s", e->ask.hex))
+		return false;
+	if (!dstr_printf(d, ", turn %" PRIu32 ", tool %.*s%s, stored exactly as sent.", e->turn,
+	                 (int)tool.len, tool.len ? tool.data : "",
+	                 e->flags & EVIDENCE_FAILED ? ", failed" : ""))
+		return false;
+	if (e->kind != EVIDENCE_CALL)
+		return true;
+	if (repo.len && commit.len)
+		return dstr_printf(d, " Repository %.*s, commit %.*s.", (int)repo.len, repo.data,
+		                   (int)commit.len, commit.data);
+	if (repo.len)
+		return dstr_printf(d, " Repository %.*s.", (int)repo.len, repo.data);
+	if (commit.len)
+		return dstr_printf(d, " Commit %.*s.", (int)commit.len, commit.data);
+	return true;
+}
+
+int
+evidence_expand (struct evidence const *e,
+                 char const            *finding,
+                 char const            *author,
+                 struct cstr_view       request,
+                 struct cstr_view       result,
+                 struct dstr           *d)
+{
+	if (!e || !finding || !author || !d)
+		return EFAULT;
+	char id[SEEN_ID];
+	(void)util_format(id, sizeof id, "%s/%" PRIu32, finding, e->item);
+	struct json_object *ids = evidence_ids(&e->ids);
+	struct cstr_view const repo = jb_view(jb_get(ids, "repo"));
+	struct json_object *commits = jb_get(ids, "commits");
+	struct cstr_view commit = {};
+	if (evidence_commits(ids) == 1)
+		commit = jb_view(commits ? jb_at(commits, 0) : jb_get(ids, "commit"));
+	bool const asked = e->flags & EVIDENCE_REQUEST;
+	bool const missing = !result.data || (asked && !request.data);
+	bool differs = false;
+	if (!missing)
+		differs = !evidence_matches(&e->result, result) ||
+		          (asked && !evidence_matches(&e->request, request));
+	bool ok = false;
+	if (!dstr_printf(d, "[askai: %s", id))
+		goto done;
+	if (*e->from && !dstr_printf(d, " from %s", e->from))
+		goto done;
+	if (!dstr_cat(d, ": "))
+		goto done;
+	if (e->kind == EVIDENCE_LINES) {
+		if (!evidence_lines_summary(e, ids, SIZE_MAX, d))
+			goto done;
+		if (!dstr_cat(d, ", stored as shown:]\n"))
+			goto done;
+	} else {
+		if (!evidence_expand_call(e, author, repo, commit, d))
+			goto done;
+		if (asked) {
+			if (!dstr_cat(d, " Arguments:]\n"))
+				goto done;
+			if (!evidence_material_put(request, d))
+				goto done;
+			if (!dstr_printf(d, "[askai: %s: result", id))
+				goto done;
+		} else if (!dstr_cat(d, " Result")) {
+			goto done;
+		}
+		if (!dstr_printf(d, ", %" PRIu64 " byte%s", e->result.bytes, util_s(e->result.bytes)))
+			goto done;
+		if ((e->skip || e->output > e->result.bytes) &&
+		    !dstr_printf(d, ", from byte %" PRIu32 " of an output of %" PRIu64 " bytes",
+		                 e->skip, e->output))
+			goto done;
+		if (!dstr_cat(d, ":]\n"))
+			goto done;
+	}
+	if (!evidence_material_put(result, d))
+		goto done;
+	if (missing && !dstr_printf(d, "[askai: the stored material of %s is missing.]\n", id))
+		goto done;
+	if (differs && !dstr_printf(d, "[askai: the stored material of %s does not match the "
+	                            "recorded SHA-256.]\n", id))
+		goto done;
+	ok = true;
+done:
 	json_object_put(ids);
 	return ok ? 0 : ENOMEM;
 }

@@ -12,7 +12,8 @@
  * - cN:files is the names, modes and blobs of the files that the git
  *   ls-tree call N lists, under the tree of the one commit of the call.
  * - X#n/m is the evidence item m of the finding X#n, and X#n/m:A-B lines
- *   of a lines item.
+ *   of a lines item. A finding cites such an item again with its
+ *   identifiers and its archive files (evidence_recite()).
  *
  * askai makes an evidence item from a reference to a call of the ring of
  * the ask call (src/seen.h), with the identifiers that reproduce the
@@ -20,9 +21,10 @@
  * of the result as the agent got them, or the lines of the result, is
  * stored in the same commit as the finding, as the file archive/XX/YYY
  * (evidence_path()), where XX are the first 2 and YYY the other 62
- * hexadecimal digits of the SHA-256 of the bytes. Material outside askai
- * is an external text with an exact hash, which askai does not store
- * (evidence_external()).
+ * hexadecimal digits of the SHA-256 of the bytes. The action expand of
+ * the findings tool prints the stored material (evidence_expand()).
+ * Material outside askai is an external text with an exact hash, which
+ * askai does not store (evidence_external()).
  */
 #ifndef ASKAI_SRC_EVIDENCE_H_
 #define ASKAI_SRC_EVIDENCE_H_
@@ -239,6 +241,55 @@ evidence_cite (struct evidence            *dest,
                char                       *why,
                size_t                      len);
 
+/**
+ * Makes the evidence item @p dest that cites again the item that @p ref
+ * names, X#n/m or X#n/m:A-B,C, from @p record, the JSON object of the item
+ * in the file of its finding (evidence_json()). The kind, the identifiers
+ * and the material of @p dest are those of that item, dest->item is 0,
+ * and dest->from is the ID X#n/m. For X#n/m, the material of @p dest is
+ * the material of the item, and the caller stores the archive files of the
+ * item again. For X#n/m:A-B,C, the item must be of the kind
+ * EVIDENCE_LINES, with each range of @p ref within one of its ranges, and
+ * @p material must be the stored lines of the item. The function writes
+ * the lines that @p ref names to @p lines, the material of @p dest, and
+ * stores their size and SHA-256 in dest->result.
+ *
+ * Returns 0, EINVAL with the refusal for the turn in the @p len bytes at
+ * @p why for a record that is not an item, an item of another kind, lines
+ * that the item does not contain, or @p material that does not match the
+ * recorded SHA-256, ENOMEM, or EINVAL without a refusal for a null
+ * argument or another form of @p ref. On failure @p dest can contain a
+ * part of the item.
+ */
+extern int
+evidence_recite (struct evidence           *dest,
+                 struct dstr               *lines,
+                 struct evidence_ref const *ref,
+                 struct cstr_view           record,
+                 struct cstr_view           material,
+                 char                      *why,
+                 size_t                     len);
+
+/**
+ * Appends to @p d the evidence item @p e of the finding @p finding, such
+ * as cuh#2, of the member @p author, as the action expand prints it. The
+ * first line is a notice that names the item and says what the item is.
+ * A lines item then prints the lines, and the other kinds the arguments of
+ * the call, a notice with the size of the result, and the result, each
+ * with a line feed at its end. @p request and @p result are the stored
+ * material, the arguments of the call and the result or the lines, or a
+ * view without data for material that is missing. A notice after the
+ * material says if material is missing or does not match the recorded
+ * SHA-256. Returns 0, EFAULT for a null argument, or ENOMEM.
+ */
+extern int
+evidence_expand (struct evidence const *e,
+                 char const            *finding,
+                 char const            *author,
+                 struct cstr_view       request,
+                 struct cstr_view       result,
+                 struct dstr           *d);
+
 /** Checks the external item @p text, the item @p index of the argument
  *  external: 1 to EVIDENCE_TEXT bytes of UTF-8 text without control
  *  characters, with a run of exactly 40 or 64 hexadecimal digits. Returns
@@ -272,6 +323,19 @@ evidence_json (struct evidence const *e,
 extern int
 evidence_parse (struct evidence          *dest,
                 struct json_object const *obj);
+
+/** Replaces @p dest with the evidence item of @p json, the text of a JSON
+ *  object that evidence_json() made, as evidence_parse() does. Returns 0,
+ *  EINVAL for a text that is not such an object, or ENOMEM.
+ */
+extern int
+evidence_parse_text (struct evidence  *dest,
+                     struct cstr_view  json);
+
+/** Writes the ID of the item that @p ref names to @p id, such as cuh#2/1. */
+extern void
+evidence_ref_id (struct evidence_ref const *ref,
+                 char                       id[static SEEN_ID]);
 
 /** Appends to @p d the @p n line ranges at @p r as a reference names them,
  *  such as 120-140,150. Returns 0 or ENOMEM.
