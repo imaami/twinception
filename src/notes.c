@@ -16,10 +16,9 @@
 
 /* The stages of a historical read or diff, in their order. */
 enum notes_revision_phase : uint8_t {
-	REVISION_HEAD,  /* git pins the tip of the notebook */
-	REVISION_FROM,  /* git checks that from is an ancestor of the tip */
-	REVISION_TO,    /* git checks that to is one too */
-	REVISION_DATA,  /* git reads the note at from, or compares it with to */
+	REVISION_HEAD,   /* git pins the tip of the notebook */
+	REVISION_REACH,  /* git checks that the tip reaches from and to */
+	REVISION_DATA,   /* git reads the note at from, or compares it with to */
 };
 
 int
@@ -52,20 +51,29 @@ notes_revision_words (struct notes_revision const *revision,
                       enum store_cmd               cmd,
                       char const                  *words[static STORE_WORDS])
 {
-	enum store_cmd const phases[] = {
-		[REVISION_HEAD] = STORE_HEAD,
-		[REVISION_FROM] = STORE_ANCESTOR,
-		[REVISION_TO]   = STORE_ANCESTOR,
-		[REVISION_DATA] = cmd,
-	};
-	char const *const rows[][STORE_WORDS] = {
-		[REVISION_HEAD] = { repo },
-		[REVISION_FROM] = { revision->from.hex, revision->tip.hex },
-		[REVISION_TO]   = { revision->to.hex, revision->tip.hex },
-		[REVISION_DATA] = { revision->from.hex, revision->to.hex, revision->file.data },
-	};
-	memcpy(words, rows[revision->phase], sizeof rows[0]);
-	return phases[revision->phase];
+	switch (revision->phase) {
+	case REVISION_HEAD:
+		words[0] = repo;
+		return STORE_HEAD;
+	case REVISION_REACH:
+		return STORE_REACH;
+	case REVISION_DATA:
+		break;
+	}
+	words[0] = revision->from.hex;
+	words[1] = revision->to.hex;
+	words[2] = revision->file.data;
+	return cmd;
+}
+
+int
+notes_revision_input (struct notes_revision const *revision,
+                      struct buf                  *in)
+{
+	if (!revision || !in)
+		return EINVAL;
+	return buf_printf(in, "%s^{commit}\n%s^{commit}\n^%s\n", revision->from.hex,
+	                  revision->to.hex, revision->tip.hex);
 }
 
 int
@@ -84,27 +92,21 @@ notes_revision_next (struct notes_revision *revision,
 			revision->to = *tip;
 		if (oid_len(&revision->from) != oid_len(tip) || oid_len(&revision->to) != oid_len(tip))
 			return EINVAL;
-		if (!oid_equal(&revision->from, tip)) {
-			revision->phase = REVISION_FROM;
-			return 0;
-		}
-		break;
-	case REVISION_FROM:
-		/* git merge-base --is-ancestor writes nothing. */
-		if (out.len)
-			return EIO;
-		break;
-	case REVISION_TO:
+		/* The tip reaches itself. If from and to are the tip, as for
+		 * search, the check does not run. */
+		revision->phase = oid_equal(&revision->from, tip) && oid_equal(&revision->to, tip)
+		                ? REVISION_DATA : REVISION_REACH;
+		return 0;
+	case REVISION_REACH:
+		/* git rev-list writes no commit if the tip reaches both. */
 		if (out.len)
 			return EIO;
 		revision->phase = REVISION_DATA;
 		return 0;
 	case REVISION_DATA:
-		return EINVAL;
+		break;
 	}
-	revision->phase = oid_equal(&revision->to, tip) || oid_equal(&revision->to, &revision->from)
-	                ? REVISION_DATA : REVISION_TO;
-	return 0;
+	return EINVAL;
 }
 
 bool

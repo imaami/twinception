@@ -145,16 +145,25 @@ notes_revision_pin (struct notes_revision *revision,
 
 /** Writes to @p words the words of the command of the current stage, and
  *  returns the command: pin the tip of the notebook branch @p repo
- *  (STORE_HEAD), authorize explicit revisions by ancestry
- *  (STORE_ANCESTOR), then run @p cmd, STORE_READ, STORE_DIFF, STORE_STAT or
- *  STORE_GREP, on those exact snapshots. The words point into @p revision
- *  and @p repo.
+ *  (STORE_HEAD), check that the tip reaches the commits from and to
+ *  (STORE_REACH, with the input of notes_revision_input()), then run
+ *  @p cmd, STORE_READ, STORE_DIFF, STORE_STAT or STORE_GREP, on those
+ *  exact snapshots. The words point into @p revision and @p repo.
  */
 extern enum store_cmd
 notes_revision_words (struct notes_revision const *revision,
                       char const                  *repo,
                       enum store_cmd               cmd,
                       char const                  *words[static STORE_WORDS]);
+
+/** Writes the input of STORE_REACH for @p revision to @p in: the lines
+ *  FROM^{commit} and TO^{commit}, which git refuses for a tree or a blob,
+ *  and ^TIP. Returns 0, EINVAL for a null argument, or the error number
+ *  that buf_printf() returns.
+ */
+extern int
+notes_revision_input (struct notes_revision const *revision,
+                      struct buf                  *in);
 
 /** Consumes a successful authorization stage's complete output and advances
  *  to the next stage. Never call after failed, cancelled or truncated Git

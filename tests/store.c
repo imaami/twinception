@@ -1,7 +1,8 @@
 /** @file Unit tests of the git store, src/store.c: the argv of each
  *  command, the checks of store_command(), store_spawn(), store_run() and
  *  store_lock(), the input of git fast-import, the commits that git makes
- *  from that input in a new bare repository, the common directory of a
+ *  from that input in a new bare repository, the commits that STORE_REACH
+ *  finds, the common directory of a
  *  clone and of a worktree, and the result and the end record of
  *  store_run() for each way that git ends. The test replaces
  *  mcp_slot_spawn() and mcp_slot_loop().
@@ -644,7 +645,7 @@ test_argv (struct store const *store)
 		{ STORE_FILES,    { "R" },            " ls-tree -r -z -l R --" },
 		{ STORE_FILES,    { "R", "p" },       " ls-tree -r -z -l R -- p" },
 		{ STORE_HEAD,     { "R" },            " rev-parse --verify --end-of-options R" },
-		{ STORE_ANCESTOR, { "A", "B" },       " merge-base --is-ancestor A B" },
+		{ STORE_REACH,    {},                 " rev-list --max-count=1 --stdin" },
 		{ STORE_DIFF,     { "A", "B", "p" },  " diff --no-ext-diff --no-textconv --no-renames"
 		                                      " --no-color --submodule=short A B -- p" },
 		{ STORE_STAT,     { "A", "B" },       " diff --numstat --no-textconv A B" },
@@ -1112,6 +1113,62 @@ test_race (struct store const *store)
 	      !memmem(out, len, "\tm/y", 5) && !memmem(out, len, "\tn", 3));
 }
 
+/* The output of STORE_REACH with the input of notes_revision_input():
+ * the lines FROM^{commit}, TO^{commit} and ^TIP. The commits @p c1, @p c3
+ * and @p c5 of @p store are in this order on one ref, and @p u is a root
+ * commit on another ref. git writes nothing if the tip reaches both
+ * commits, and a commit that the tip does not reach otherwise. git fails
+ * for a tree, a blob and an object that the repository does not have.
+ */
+static void
+test_reach (struct store const *store,
+            struct oid const   *c1,
+            struct oid const   *c3,
+            struct oid const   *c5,
+            struct oid const   *u)
+{
+	static char out[4096];
+	size_t len = 0;
+	char tree_of[OID_SHA1 + sizeof "^{tree}"];
+	CHECK(snprintf(tree_of, sizeof tree_of, "%s^{tree}", c3->hex) == OID_SHA1 + 7);
+	struct oid tree;
+	CHECK(!run(store, STORE_HEAD, (char const *const[]){ tree_of }, (struct span){}, out,
+	           sizeof out, &len) && !oid_init_line(&tree, (struct cstr_view){ out, len }));
+	/* The blob of the file a at c3. */
+	char const *const blob = "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f";
+	struct {
+		char const *from;
+		char const *to;
+		char const *tip;
+		int         status;
+		char const *out;
+	} const rows[] = {
+		{ c1->hex,   c3->hex, c5->hex, 0,   ""      },
+		{ c5->hex,   c5->hex, c5->hex, 0,   ""      },
+		{ c3->hex,   c1->hex, c3->hex, 0,   ""      },
+		{ c5->hex,   c5->hex, c3->hex, 0,   c5->hex },
+		{ u->hex,    c1->hex, c5->hex, 0,   u->hex  },
+		{ c1->hex,   u->hex,  c5->hex, 0,   u->hex  },
+		{ tree.hex,  c5->hex, c5->hex, 128, ""      },
+		{ c1->hex,   blob,    c5->hex, 128, ""      },
+		{ A,         c5->hex, c5->hex, 128, ""      },
+	};
+	for (size_t i = 0; i < array_size(rows); ++i) {
+		char in[3 * (OID_SHA1 + sizeof "^{commit}\n")];
+		int const n = snprintf(in, sizeof in, "%s^{commit}\n%s^{commit}\n^%s\n", rows[i].from,
+		                       rows[i].to, rows[i].tip);
+		CHECK(n > 0 && n < (int)sizeof in);
+		int const status = run(store, STORE_REACH, nullptr,
+		                       (struct span){ (unsigned char *)in, (size_t)n }, out, sizeof out,
+		                       &len);
+		CHECK(status == rows[i].status);
+		char want[OID_SHA1 + 2] = "";
+		if (*rows[i].out)
+			CHECK(snprintf(want, sizeof want, "%s\n", rows[i].out) == OID_SHA1 + 1);
+		SAME(out, len, want);
+	}
+}
+
 static void
 test_git (char const *path)
 {
@@ -1287,6 +1344,7 @@ test_git (char const *path)
 	test_spawn(store);
 	test_run(store, &c5);
 	test_race(store);
+	test_reach(store, &c1, &c3, &c5, &u);
 	store_destroy(&store);
 	CHECK(!store);
 	store_destroy(&store);

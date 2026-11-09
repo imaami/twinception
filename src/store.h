@@ -82,8 +82,12 @@ enum store_cmd : uint8_t {
 	STORE_HEAD,      /**< Runs git rev-parse --verify. The output is the
 	                      full id of a commit. The caller passes a ref or a
 	                      commit. */
-	STORE_ANCESTOR,  /**< Runs git merge-base --is-ancestor. The caller
-	                      passes two commits. */
+	STORE_REACH,     /**< Runs git rev-list --max-count=1 --stdin. Each
+	                      line of the input is a commit, or a ^ and a
+	                      commit. The output is the id of a commit that the
+	                      commits without ^ reach and the commits with ^ do
+	                      not, or empty if there is none. The caller passes
+	                      no words. */
 	STORE_DIFF,      /**< Runs git diff on a path. The caller passes two
 	                      commits, then the path. */
 	STORE_STAT,      /**< Runs git diff --numstat. The output lists the

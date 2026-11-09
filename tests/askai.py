@@ -12228,8 +12228,12 @@ def check_notes_history(binary, up):
                 if object_format == "sha1":
                     git("update-ref", f"refs/heads/{wrong_length}", third)
                 blob = tip(f"{first}:plan.md")
-                for revision in (foreign, stash, wrong_length, blob, "0" * len(first), "HEAD", own,
-                                 first + "^", first[:12], "--all", ":plan.md", 123):
+                tree = tip(f"{first}^{{tree}}")
+                # Every full ID that names no commit in the history of the
+                # notebook gets one refusal, also the ID of a tree or a blob.
+                outside = (foreign, stash, wrong_length, blob, tree, "0" * len(first))
+                for revision in (*outside, "HEAD", own, first + "^", first[:12], "--all",
+                                 ":plan.md", 123):
                     for arguments in (
                             {"action": "read", "revision": revision},
                             {"action": "restore", "revision": revision},
@@ -12237,6 +12241,9 @@ def check_notes_history(binary, up):
                             {"action": "diff", "from": first, "to": revision}):
                         said = call(alice, file="plan.md", **arguments)
                         assert said.startswith("!"), (arguments, said)
+                        assert revision not in outside or said == "!The commit in revision, " \
+                            "from or to is not in the notebook history. Use a full commit ID " \
+                            "from action history.", (arguments, said)
                 for arguments in ({"action": "restore"}, {"action": "diff"},
                                   {"action": "read", "revision": first},
                                   {"action": "restore", "revision": first}):

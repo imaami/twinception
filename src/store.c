@@ -62,7 +62,7 @@ static char const *const cmds[][10] = {
 	[STORE_REFS]     = { "for-each-ref", word, word, word },
 	[STORE_FILES]    = { "ls-tree", "-r", "-z", "-l", word, "--", word },
 	[STORE_HEAD]     = { "rev-parse", "--verify", "--end-of-options", word },
-	[STORE_ANCESTOR] = { "merge-base", "--is-ancestor", word, word },
+	[STORE_REACH]    = { "rev-list", "--max-count=1", "--stdin" },
 	[STORE_DIFF]     = { "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
 	                     "--no-color", "--submodule=short", word, word, "--", word },
 	[STORE_STAT]     = { "diff", "--numstat", "--no-textconv", word, word },

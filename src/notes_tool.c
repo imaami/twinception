@@ -1350,6 +1350,7 @@ static void notes_tool_got_attach (struct mcp_slot *slot, struct span text,
 /* Handles the output of git for one stage of notes_revision_next(). git
  * reads no note before every revision is resolved and checked against the
  * notebook. Then git reads the note at the revision, or writes the diff.
+ * call->file, the pattern of search, stays for that last stage.
  */
 static void
 notes_tool_revision_step (struct mcp_slot *slot)
@@ -1367,10 +1368,16 @@ notes_tool_revision_step (struct mcp_slot *slot)
 		return;
 	}
 	child_destroy(&call->child);
+	struct notes_revision const *r = &call->revision;
+	if (!notes_revision_ready(r)) {
+		struct buf in = {};
+		int const e = notes_revision_input(r, &in);
+		notes_tool_run(slot, call->fetch, &in, e);
+		return;
+	}
 	int e = 0;
-	if (notes_revision_ready(&call->revision) && (call->fetch & FETCH_KIND) == FETCH_READ)
-		e = notes_read_input(&call->file, call->revision.from.hex,
-		                     util_text_view(&call->revision.file));
+	if ((call->fetch & FETCH_KIND) == FETCH_READ)
+		e = notes_read_input(&call->file, r->from.hex, util_text_view(&r->file));
 	notes_tool_run(slot, call->fetch, &call->file, e);
 }
 
