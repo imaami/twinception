@@ -379,6 +379,20 @@ store_part_delete (struct store_part *part,
                    struct buf        *in,
                    struct cstr_view   name);
 
+/**
+ * Writes to @p in a file part of the input of STORE_COMMIT that adds the
+ * blob @p id of the repository as the file @p name, without its data. The
+ * function stores the offset of the path in @p *part, as store_part_head()
+ * does, and no data. git refuses the commit if the repository has no such
+ * blob. Returns 0, EINVAL for a null argument, an @p id that is no name or
+ * a name longer than STORE_PATH, or ENOMEM.
+ */
+extern int
+store_part_blob (struct store_part *part,
+                 struct buf        *in,
+                 struct cstr_view   name,
+                 struct oid const  *id);
+
 /** One line of the trailer of a commit message, written as KEY: VALUE. */
 struct store_trailer {
 	struct cstr_view key;    /**< letters, digits, underscores and hyphens */
@@ -406,7 +420,8 @@ struct store_commit {
 	struct span                 files;       /**< zero or more file parts,
 	                                              one after another, from
 	                                              store_part_head(),
-	                                              store_part_file() and
+	                                              store_part_file(),
+	                                              store_part_blob() and
 	                                              store_part_delete() */
 	struct store_trailer const *trailers;    /**< the trailer after the
 	                                              message, or nullptr */

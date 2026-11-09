@@ -666,6 +666,39 @@ store_part_delete (struct store_part *part,
 	return 0;
 }
 
+int
+store_part_blob (struct store_part *part,
+                 struct buf        *in,
+                 struct cstr_view   name,
+                 struct oid const  *id)
+{
+	size_t const n = id ? oid_len(id) : 0;
+	if (!part || !in || !name.data || name.len > STORE_PATH || !n)
+		return EINVAL;
+	/* The part is "M 100644 ", the ID, a space, the name quoted as a C
+	 * string, which at most doubles its bytes, and a line feed. */
+	static char const m[] = "M 100644 ";
+	struct span s;
+	int e = buf_reserve(in, sizeof m + n + sizeof " \"\"\n" + 2 * name.len, SIZE_MAX, &s);
+	if (e)
+		return e;
+	char *const head = (char *)s.ptr;
+	char *p = mempcpy(mempcpy(head, m, sizeof m - 1), id->hex, n);
+	*p++ = ' ';
+	size_t const at = buf_peek(in).len;
+	size_t const name_at = (size_t)(p - head);
+	p = store_quote(p, name);
+	size_t const end = (size_t)(p - head);
+	*part = (struct store_part){
+		.name_at = at + name_at,
+		.name_len = end - name_at,
+		.data_at = at + end,
+	};
+	*p = '\n';
+	buf_commit(in, end + 1);
+	return 0;
+}
+
 /* Returns true if v.data is not nullptr, @p v is shorter than
  * STORE_MESSAGE bytes, and @p v contains no NUL and none of the bytes of
  * the string @p bad.

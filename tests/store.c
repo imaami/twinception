@@ -254,8 +254,21 @@ test_input (void)
 	CHECK(store_part_file(&part, &files, (struct cstr_view){ name, STORE_PATH + 1 },
 	                      CSTR_VIEW("")) == EINVAL);
 	CHECK(store_part_delete(&part, &files, (struct cstr_view){}) == EINVAL);
+	/* A blob part names the blob by its ID and has no data. */
+	CHECK(!store_part_blob(&part, &files, CSTR_VIEW("e\""), &tip));
+	CHECK(part.name_at == 53 + OID_SHA1 && part.name_len == 5 &&
+	      part.data_at == 58 + OID_SHA1 && !part.data_len);
+	CHECK(store_part_blob(&part, &files, CSTR_VIEW("e"), &root) == EINVAL);
+	CHECK(store_part_blob(&part, &files, CSTR_VIEW("e"), nullptr) == EINVAL);
+	CHECK(store_part_blob(&part, &files, (struct cstr_view){ name, STORE_PATH + 1 }, &tip) ==
+	      EINVAL);
+	CHECK(store_part_blob(nullptr, &files, CSTR_VIEW("e"), &tip) == EINVAL);
+	CHECK(store_part_blob(&part, nullptr, CSTR_VIEW("e"), &tip) == EINVAL);
 	struct span s = buf_peek(&files);
-	SAME(s.ptr, s.len, "M 100644 inline \"a\\\"b\\\\c\"\ndata 3\nabc\nD \"d\"\n");
+	SAME(s.ptr, s.len, "M 100644 inline \"a\\\"b\\\\c\"\ndata 3\nabc\nD \"d\"\n"
+	     "M 100644 " A " \"e\\\"\"\n");
+	buf_cut(&files, 43, s.len - 43);
+	s = buf_peek(&files);
 
 	/* The input of a commit with a committer is the same byte for byte as
 	 * the input that notes_add_input() wrote before the store. */
@@ -1205,6 +1218,30 @@ test_git (char const *path)
 	           (struct span){}, tree, sizeof tree, &tree_len));
 	CHECK(tree_len && !tree[tree_len - 1]);
 	SAME(tree, tree_len - 1, "100644 blob f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f       3\ta");
+
+	/* A blob part adds a blob of the repository, here on another ref. */
+	struct oid blob;
+	CHECK(!oid_init(&blob, CSTR_VIEW("f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f")));
+	CHECK(!store_part_blob(&part, &files, CSTR_VIEW("c/d"), &blob));
+	struct store_commit cited = commit;
+	cited.message = CSTR_VIEW("Cite a");
+	cited.files = buf_peek(&files);
+	cited.ref = "refs/heads/notes/u";
+	cited.tip = &root;
+	struct oid u;
+	CHECK(!commit_run(store, &cited, &u, out, sizeof out, &len));
+	buf_fini(&files);
+	CHECK(!run(store, STORE_FILES, (char const *const[]){ u.hex, nullptr },
+	           (struct span){}, out, sizeof out, &len));
+	CHECK(len && !out[len - 1]);
+	SAME(out, len - 1, "100644 blob f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f       3\tc/d");
+	/* git refuses a blob that the repository does not have. */
+	CHECK(!oid_init(&blob, CSTR_VIEW(A)));
+	CHECK(!store_part_blob(&part, &files, CSTR_VIEW("e"), &blob));
+	cited.files = buf_peek(&files);
+	cited.tip = &u;
+	CHECK(commit_run(store, &cited, &c4, out, sizeof out, &len) > 0);
+	buf_fini(&files);
 
 	/* A commit without file parts has the tree of its parent. */
 	commit.message = CSTR_VIEW("Keep");
