@@ -7,7 +7,8 @@
  * tool is a built-in plugin with a part on each client loop, and each part
  * contains the table of the members of its loop. The part also runs the
  * git commands that read the notes of the agent for the prompt of an ask
- * call (notes_tool_loop_prompt()).
+ * call (notes_tool_loop_prompt()). The findings tool shares the part
+ * (src/findings.h).
  */
 #ifndef ASKAI_SRC_NOTES_TOOL_H_
 #define ASKAI_SRC_NOTES_TOOL_H_
@@ -17,9 +18,10 @@
 
 #include "buf.h"
 #include "mcp.h"
+#include "shelf.h"
 
 struct member_registry;
-struct notes_tool_loop;
+struct member_table;
 struct plugin;
 struct store;
 
@@ -47,6 +49,16 @@ struct notes_tool {
 	                                                  upstream supports
 	                                                  file uploads
 	                                                  (ai_upload()). */
+};
+
+/** The part of the notes tool on one loop. */
+struct notes_tool_loop {
+	struct shelf             spare;    /**< finished calls, kept for reuse
+	                                        with the storage of their
+	                                        output */
+	struct notes_tool const *tool;     /**< the service */
+	struct member_table     *members;  /**< the members of the session, or
+	                                        nullptr without --notes */
 };
 
 /** The reason why notes_tool_loop_prompt() reads the notes. */
@@ -117,11 +129,12 @@ extern tool_drop_fn notes_tool_drop;
  * the note history of the agent and the newest note, at most @p most bytes
  * of it. @p what says whether the ask call starts or compacts its context.
  * As the ask call starts, the function claims the member of the login of
- * its client (member_table_claim()) and lists the members again. The
- * member is the asker of the request (mcp_slot_asker()), whom the commits
- * of the turns name. Once the notices are in @p prompt, the function calls
- * @p then, which goes on with the ask call. If git cannot list the notes
- * for NOTES_TOOL_RESUME, the ask call ends as failed.
+ * its client (member_table_claim()), and the table reads the records
+ * (member_table_read()). The member is the asker of the request
+ * (mcp_slot_asker()), whom the commits of the turns name. Once the notices
+ * are in @p prompt, the function calls @p then, which goes on with the ask
+ * call. If git cannot list the notes for NOTES_TOOL_RESUME, the ask call
+ * ends as failed.
  */
 extern void
 notes_tool_loop_prompt (struct notes_tool_loop *loop,

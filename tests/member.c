@@ -1,10 +1,11 @@
 /** @file Unit tests of the members of the session, src/member.c: the name
- *  rule, the logins of clients, the session record and the record of the
- *  agent that the registry writes as askai starts, also for services that
- *  start at the same time, the lookups of a table, with git on a loop and
- *  names from blockers, which find, create, adopt, extend and refuse member
- *  records in new repositories, and the list of the members and their
- *  notebooks with its notices. The test replaces mcp_slot_spawn() and
+ *  rule, the refs of the branches, the logins of clients, the session
+ *  record and the record of the agent that the registry writes as askai
+ *  starts, also for services that start at the same time, the lookups of a
+ *  table, with git on a loop and names from blockers, which find, create,
+ *  adopt, extend and refuse member records in new repositories, the reads
+ *  of the records of a table, and the list of the members and their
+ *  branches with its notices. The test replaces mcp_slot_spawn() and
  *  mcp_slot_loop(), which src/store.c calls.
  */
 #define _GNU_SOURCE /* memmem() */
@@ -59,6 +60,15 @@ static void
 test_ended (struct member_wait *)
 {
 	++ended;
+}
+
+/* Runs one turn of the loop, which waits for nothing. A read of the
+ * records of a table in a later turn runs git again.
+ */
+static void
+test_turn (void)
+{
+	CHECK(!loop_turn(&test_loop, loop_clock()));
 }
 
 /* Runs the loop until @p n waits have ended in all, for 10 s at most. */
@@ -158,6 +168,39 @@ test_names (void)
 	for (size_t i = 0; i < array_size(kinds); ++i)
 		CHECK(member_init(&m, CSTR_VIEW("bro"), kinds[i]) == EINVAL && !*m.name);
 	CHECK(member_init(nullptr, CSTR_VIEW("bro"), CSTR_VIEW("agent")) == EINVAL);
+
+	/* The refs of the branches of a member, and back. */
+	char ref[MEMBER_REF];
+	member_ref(&(struct member){ MEMBER_PERSON, "first.last@ad" }, MEMBER_BRANCH_NOTES, ref);
+	CHECK(!strcmp(ref, "refs/heads/person/first.last@ad/notes"));
+	enum member_kind kind = MEMBER_AGENT;
+	struct cstr_view name = {};
+	enum member_branch branch = MEMBER_BRANCH_FINDINGS;
+	CHECK(!member_ref_parse(cstr_view(ref), &kind, &name, &branch));
+	CHECK(kind == MEMBER_PERSON && cstr_view_equal(name, CSTR_VIEW("first.last@ad")) &&
+	      branch == MEMBER_BRANCH_NOTES);
+	/* The longest ref fills MEMBER_REF. */
+	m = (struct member){ MEMBER_PERSON };
+	memset(m.name, 'n', UTIL_WORD_MAX);
+	member_ref(&m, MEMBER_BRANCH_FINDINGS, ref);
+	CHECK(strlen(ref) == MEMBER_REF - 1 && !strncmp(ref, "refs/heads/person/nnn", 21) &&
+	      !strcmp(ref + MEMBER_REF - sizeof "n/findings", "n/findings"));
+	CHECK(!member_ref_parse(cstr_view(ref), &kind, &name, &branch));
+	CHECK(kind == MEMBER_PERSON && name.len == UTIL_WORD_MAX &&
+	      branch == MEMBER_BRANCH_FINDINGS);
+	member_ref(&(struct member){ MEMBER_AGENT, "bro" }, MEMBER_BRANCH_FINDINGS, ref);
+	CHECK(!strcmp(ref, "refs/heads/agent/bro/findings"));
+	struct cstr_view const refs[] = {
+		{}, CSTR_VIEW("refs/heads/agent/bro"), CSTR_VIEW("refs/heads/agent/bro/"),
+		CSTR_VIEW("refs/heads/agent/bro/review"), CSTR_VIEW("refs/heads/team/bro/notes"),
+		CSTR_VIEW("refs/heads/agent/c7/notes"), CSTR_VIEW("refs/heads/agent/a/b/notes"),
+		CSTR_VIEW("refs/heads/agent/bro/notes/x"), CSTR_VIEW("refs/tags/agent/bro/notes"),
+		CSTR_VIEW("refs/heads/notes/bro/anonymous/upstream"),
+		CSTR_VIEW("refs/heads/agent//notes"), CSTR_VIEW("refs/askai/members/bro"),
+		CSTR_VIEW("refs/heads/Agent/bro/notes"),
+	};
+	for (size_t i = 0; i < array_size(refs); ++i)
+		CHECK(member_ref_parse(refs[i], &kind, &name, &branch) == EINVAL);
 }
 
 static void
@@ -232,7 +275,8 @@ test_login (enum member_kind  kind,
 }
 
 /* Finds the member of @p login in @p table with a lookup of @p lookup,
- * member_table_find() or member_table_claim(), and checks the result: the
+ * member_table_find() or member_table_claim(), in a turn of its own, so
+ * that the table reads the records with git, and checks the result: the
  * error @p e, and the member @p name of the kind @p kind, or the start of
  * the reason @p why. Returns the number of waits that ended.
  */
@@ -249,6 +293,7 @@ test_find (struct member_table       *table,
 {
 	struct member_wait wait = { .done = test_ended };
 	unsigned const before = ended;
+	test_turn();
 	int const first = lookup(table, login, &wait);
 	CHECK(first == EINPROGRESS && wait.e == EINPROGRESS);
 	if (first == EINPROGRESS)
@@ -387,6 +432,7 @@ test_table (struct store const           *store,
 	};
 	login = test_login(MEMBER_PERSON, "identity dave", "dave");
 	unsigned const before = ended;
+	test_turn();
 	CHECK(member_table_find(table, &login, &waits[0]) == EINPROGRESS);
 	CHECK(member_table_find(table, &login, &waits[1]) == EINPROGRESS);
 	CHECK(member_table_claim(table, &login, &waits[2]) == EINPROGRESS);
@@ -418,6 +464,7 @@ test_table (struct store const           *store,
 	 * reads, and the lookup ends no wait. */
 	unsigned const after = ended;
 	login = test_login(MEMBER_PERSON, "identity erin", "erin");
+	test_turn();
 	CHECK(member_table_claim(table, &login, &wait) == EINPROGRESS);
 	member_table_destroy(&table);
 	CHECK(!table);
@@ -477,8 +524,26 @@ test_text (struct dstr *d,
 	dstr_clear(d);
 }
 
-/* The list of the members of @p store and their notebooks in a table of
- * @p reg, the notices of the list, and the lookup of a notebook by name.
+/* Returns the tip of the ref @p ref of @p store. */
+static struct oid
+test_tip (struct store const *store,
+          char const         *ref)
+{
+	char const *const words[] = { ref };
+	struct buf out = {};
+	int status = -1;
+	CHECK(!store_run(store, STORE_HEAD, words, nullptr, (struct span){}, &out, &status) &&
+	      !status);
+	struct span const s = buf_peek(&out);
+	struct oid tip;
+	CHECK(!oid_init_line(&tip, (struct cstr_view){ (char const *)s.ptr, s.len }));
+	buf_fini(&out);
+	return tip;
+}
+
+/* The reads of the records of a table of @p reg, the list of the members
+ * of @p store and their branches in the table, the notices of the list,
+ * and the lookup of a notebook by name.
  */
 static void
 test_list (struct store const           *store,
@@ -489,23 +554,50 @@ test_list (struct store const           *store,
 	int e = -1;
 	struct member_table *table = member_table_create(reg, &test_loop, blockers, children, &e);
 	CHECK(table && !e);
-	/* The notebook of bro, a notebook moved from the old layout without a
-	 * record, a notebook of a kind that the record of the name does not
-	 * have, and a branch that is no notebook. */
+	/* The notebook and the findings of bro, a notebook moved from the old
+	 * layout without a record, a notebook of a kind that the record of the
+	 * name does not have, the findings of an agent without a record or a
+	 * notebook, the findings of a person, a branch that is no branch of a
+	 * member, and two notebooks of the old layout. */
 	test_note(store, "refs/heads/agent/bro/notes", "Add \"plan.md\" (1 byte)", "alice");
 	test_note(store, "refs/heads/person/moved/notes", "Add \"a.md\" (1 byte)", nullptr);
 	test_note(store, "refs/heads/person/bro/notes", "Add \"b.md\" (1 byte)", nullptr);
 	test_note(store, "refs/heads/agent/bro/findings", "Add bro#1", nullptr);
+	test_note(store, "refs/heads/agent/ghost/findings", "Add ghost#1", nullptr);
+	test_note(store, "refs/heads/person/moved/findings", "Add moved#1", nullptr);
+	test_note(store, "refs/heads/agent/bro/review", "Review", nullptr);
 	test_note(store, "refs/heads/notes/bro/anonymous/upstream", "Add \"c.md\" (1 byte)",
 	          nullptr);
-	struct buf out = {};
-	int status = -1;
-	CHECK(!store_run(store, STORE_REFS, member_list, nullptr, (struct span){}, &out, &status) &&
-	      !status);
-	CHECK(member_table_refresh(nullptr, buf_peek(&out)) == EINVAL);
-	CHECK(member_table_refresh(table, (struct span){ (unsigned char *)"x", 1 }) == EIO);
-	CHECK(!member_table_refresh(table, buf_peek(&out)));
-	buf_fini(&out);
+	test_note(store, "refs/heads/notes/cuh/anonymous/client", "Add \"d.md\" (1 byte)",
+	          nullptr);
+	struct oid const findings[] = {
+		test_tip(store, "refs/heads/agent/bro/findings"),
+		test_tip(store, "refs/heads/agent/ghost/findings"),
+		test_tip(store, "refs/heads/person/moved/findings"),
+	};
+	/* The table reads the records with git. A read in the turn of the
+	 * read takes no git, and a read in a later turn takes git again. */
+	struct member_wait wait = { .done = test_ended };
+	unsigned const before = ended;
+	CHECK(member_table_read(nullptr, &wait) == EINVAL);
+	CHECK(member_table_read(table, nullptr) == EINVAL);
+	test_turn();
+	CHECK(member_table_read(table, &wait) == EINPROGRESS && wait.e == EINPROGRESS && wait.git);
+	CHECK(!list_is_empty(children));
+	test_until(before + 1);
+	CHECK(!wait.e && !*wait.why && !wait.git && list_is_empty(children));
+	struct member_wait again = { .done = test_ended, .why = "x" };
+	CHECK(!member_table_read(table, &again) && !again.e && !*again.why && !again.git);
+	CHECK(list_is_empty(children));
+	test_turn();
+	CHECK(member_table_read(table, &again) == EINPROGRESS && again.git);
+	/* A read that stops waiting kills its git and ends no wait. */
+	member_table_cancel(&again);
+	CHECK(!again.git);
+	member_table_cancel(&again);
+	for (size_t i = 0; i < 1000 && !list_is_empty(children); ++i)
+		CHECK(!loop_turn(&test_loop, loop_clock() + NS / 100));
+	CHECK(list_is_empty(children) && ended == before + 1 && again.e == EINPROGRESS);
 	/* The persons come first, then the agents, each by name. The user who
 	 * runs the test is a person of the table too. */
 	char user[MEMBER_NAME];
@@ -516,7 +608,7 @@ test_list (struct store const           *store,
 		CHECK(snprintf(user, sizeof user, "uid-%" PRIu32, (uint32_t)geteuid()) > 0);
 	char const *names[] = {
 		"alice", "carol", "dave", "frank", "moved", "uid-4242420042", user, "bro", "claude",
-		"cuh",
+		"cuh", "ghost",
 	};
 	for (size_t i = 1; i < 7; ++i)
 		for (size_t j = i; j && strcmp(names[j - 1], names[j]) > 0; --j) {
@@ -532,9 +624,13 @@ test_list (struct store const           *store,
 		CHECK(cstr_view_equal(info->name, cstr_view(names[n])));
 		bool const bro = !strcmp(names[n], "bro");
 		bool const moved = !strcmp(names[n], "moved");
+		bool const ghost = !strcmp(names[n], "ghost");
 		CHECK(info->kind == (n < 7 ? MEMBER_PERSON : MEMBER_AGENT));
 		CHECK(info->flags == (moved ? MEMBER_NOTES : bro ? MEMBER_RECORD | MEMBER_NOTES
-		                                                 : MEMBER_RECORD));
+		                                           : ghost ? 0 : MEMBER_RECORD));
+		struct oid const *tip = bro ? &findings[0] : ghost ? &findings[1]
+		                      : moved ? &findings[2] : &(struct oid){};
+		CHECK(oid_equal(&info->findings, tip));
 		CHECK(dstr_printf(&notice, "%s%s (%s%s)", n ? ", " : "", names[n],
 		                  n < 7 ? "person" : "agent", bro ? ", you" : ""));
 		CHECK(dstr_printf(&unknown, "%s%s", !n ? "" : n + 1 < array_size(names) ? ", "
@@ -913,7 +1009,8 @@ main (int    argc,
 	struct member_session const *session = member_registry_session(reg);
 	CHECK(session && hexid_valid(session->id) && !member_registry_session(nullptr));
 	CHECK(cstr_view_equal(session->name, CSTR_VIEW("test1")) &&
-	      !strcmp(session->service, "gpu1") && !strcmp(session->agent, "bro"));
+	      !strcmp(session->service, "gpu1") && !strcmp(session->agent, "bro") &&
+	      !session->legacy);
 	member_registry_report(reg);
 
 	/* Another service of the agent adopts its record, and another agent
@@ -951,8 +1048,10 @@ main (int    argc,
 	test_list(store, reg, blockers, &children);
 	test_blocked(store, reg, &children);
 
-	/* The agent of a service adopts the record of an agent identity. */
+	/* The agent of a service adopts the record of an agent identity. The
+	 * registry counts the notebooks of the old layout of test_list(). */
 	again = test_registry_make(store, "claude", "gpu4", 0, "");
+	CHECK(again && member_registry_session(again)->legacy == 2);
 	member_registry_destroy(&again);
 	CHECK(test_has(store, "refs/askai/members/claude", "Login: identity claude\n"));
 

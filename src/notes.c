@@ -22,15 +22,6 @@ enum notes_revision_phase : uint8_t {
 	REVISION_DATA,  /* git reads the note at from, or compares it with to */
 };
 
-void
-notes_ref (struct member const *member,
-           char                 ref[NOTES_REF])
-{
-	static_assert(NOTES_REF >= sizeof "refs/heads/person/" + UTIL_WORD_MAX + sizeof "/notes");
-	util_format(ref, NOTES_REF, "refs/heads/%s/%s/notes", member_kinds[member->kind].data,
-	            member->name);
-}
-
 int
 notes_revision_init (struct notes_revision *dest,
                      struct cstr_view       file,

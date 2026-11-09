@@ -23,10 +23,11 @@
  * after the Unix user is renamed. Otherwise the name of a Unix login is
  * the name of the user, which a blocker looks up with getpwuid_r().
  *
- * Each member has one notebook (src/notes.h), the branch
- * refs/heads/KIND/NAME/notes. A table lists the records and the notebooks
- * together, so a notebook without a record, such as a notebook that the
- * operator moved from the old layout, still names a member.
+ * The branches of a member are refs/heads/KIND/NAME/LEAF (member_ref()):
+ * the notebook of each member (src/notes.h), and the findings of an agent
+ * (src/finding.h). A table lists the records and the branches together, so
+ * a branch without a record, such as a notebook that the operator moved
+ * from the old layout, still names a member.
  */
 #ifndef ASKAI_SRC_MEMBER_H_
 #define ASKAI_SRC_MEMBER_H_
@@ -38,11 +39,13 @@
 #include "cstr_view.h"
 #include "hexid.h"
 #include "list.h"
+#include "oid.h"
 #include "policy.h"
 #include "store.h"
 #include "util.h"
 
 struct blocker;
+struct child;
 struct dstr;
 struct list;
 struct loop;
@@ -70,6 +73,11 @@ enum {
 	                                                      address of an author,
 	                                                      KIND/NAME, NUL
 	                                                      included */
+	MEMBER_REF    = sizeof "refs/heads/person//findings" + UTIL_WORD_MAX,
+	                                                 /**< bytes of the ref of a
+	                                                      branch or of the
+	                                                      record of a member,
+	                                                      NUL included */
 };
 
 /** The time for the lookup of the name of a Unix user, in nanoseconds.
@@ -78,18 +86,39 @@ enum {
  */
 static constexpr uint64_t MEMBER_NS = 10 * NS;
 
-/** The kinds of members. */
+/** The kinds of members: X(ID, name), the constant MEMBER_ID of enum
+ *  member_kind and the name in the trailer line Kind of a record and in the
+ *  refs of the branches. A person is a human or a service account, and an
+ *  agent is an AI member.
+ */
+#define MEMBER_KIND_LIST(X) \
+        X(PERSON, "person") \
+        X(AGENT,  "agent")
+
 enum member_kind : uint8_t {
-	MEMBER_PERSON,  /**< a human or a service account */
-	MEMBER_AGENT,   /**< an AI member */
+#define MEMBER_KIND_ENUM(id, ...) MEMBER_##id,
+	MEMBER_KIND_LIST(MEMBER_KIND_ENUM)
+#undef MEMBER_KIND_ENUM
+	MEMBER_KINDS
 };
 
-/** The names of the kinds, indexed by enum member_kind, as they are in
- *  the trailer line Kind of a record.
+/** The names of the kinds. Each is NUL-terminated. */
+extern struct cstr_view const member_kinds[MEMBER_KINDS];
+
+/** The branches of a member: X(ID, leaf), the constant MEMBER_BRANCH_ID of
+ *  enum member_branch and the last part of the ref of the branch,
+ *  refs/heads/KIND/NAME/LEAF. NOTES is the notebook, and FINDINGS the
+ *  findings of an agent.
  */
-static struct cstr_view const member_kinds[] = {
-	[MEMBER_PERSON] = CSTR_VIEW_INIT("person"),
-	[MEMBER_AGENT]  = CSTR_VIEW_INIT("agent"),
+#define MEMBER_BRANCH_LIST(X)   \
+        X(NOTES,    "notes")    \
+        X(FINDINGS, "findings")
+
+enum member_branch : uint8_t {
+#define MEMBER_BRANCH_ENUM(id, ...) MEMBER_BRANCH_##id,
+	MEMBER_BRANCH_LIST(MEMBER_BRANCH_ENUM)
+#undef MEMBER_BRANCH_ENUM
+	MEMBER_BRANCHES
 };
 
 /** A member of the session. */
@@ -105,20 +134,22 @@ enum {
 	                               notes */
 };
 
-/** A member in a table, and the newest change of the notebook of the
- *  member. The views borrow the records of the table, which a lookup or
- *  member_table_refresh() can replace.
+/** A member in a table, the newest change of the notebook of the member,
+ *  and the tip of the branch of findings of the member. The views borrow
+ *  the records of the table, which member_table_read() can replace.
  */
 struct member_info {
 	struct cstr_view name;
-	struct cstr_view change;  /**< the subject of the newest commit of the
-	                               notebook */
-	struct cstr_view asker;   /**< the trailer line Asked-by of that commit,
-	                               or empty */
-	uint64_t         time;    /**< the time of that commit, in seconds
-	                               since the epoch */
-	uint32_t         kind;    /**< enum member_kind */
-	uint32_t         flags;   /**< MEMBER_RECORD and MEMBER_NOTES */
+	struct cstr_view change;    /**< the subject of the newest commit of
+	                                 the notebook */
+	struct cstr_view asker;     /**< the trailer line Asked-by of that
+	                                 commit, or empty */
+	uint64_t         time;      /**< the time of that commit, in seconds
+	                                 since the epoch */
+	uint32_t         kind;      /**< enum member_kind */
+	uint32_t         flags;     /**< MEMBER_RECORD and MEMBER_NOTES */
+	struct oid       findings;  /**< the tip of the branch of findings, or
+	                                 no name */
 };
 
 /** The session of a registry, and this askai in it. The views borrow the
@@ -130,6 +161,9 @@ struct member_session {
 	char const      *agent;    /**< the name of the agent of this askai */
 	char const      *service;  /**< the name of this askai, the committer of
 	                                its commits */
+	size_t           legacy;   /**< the notebooks of the old layout under
+	                                refs/heads/notes/, which askai does not
+	                                read */
 };
 
 /** A login: how a client proves who it is, and the member that the login
@@ -187,11 +221,6 @@ member_call_init (struct member_call           *dest,
                   struct policy_grant const    *grant,
                   struct stream_peer const     *peer);
 
-/** The words of STORE_REFS that list the records of the session and the
- *  notebooks of the members, for member_table_refresh().
- */
-extern char const *const member_list[STORE_WORDS];
-
 /**
  * Returns true if @p name can be the name of a member: 1 to UTIL_WORD_MAX
  * characters from [A-Za-z0-9_.@-], not starting with . or -, without ..,
@@ -232,6 +261,27 @@ extern int
 member_init (struct member    *dest,
              struct cstr_view  name,
              struct cstr_view  kind);
+
+/** Writes to @p ref the ref of the branch @p branch of @p member, a member
+ *  with a name: refs/heads/KIND/NAME/LEAF, such as
+ *  refs/heads/agent/bro/findings.
+ */
+extern void
+member_ref (struct member const *member,
+            enum member_branch   branch,
+            char                 ref[static MEMBER_REF]);
+
+/** Reads @p ref as the ref of a branch of a member, as member_ref() writes
+ *  it, and stores the kind of the member in @p *kind, its name, a view of
+ *  @p ref, in @p *name, and the branch in @p *branch. Returns 0, or EINVAL
+ *  for any other ref, such as a ref of an unknown kind or leaf, or of a
+ *  name that member_name_valid() refuses.
+ */
+extern int
+member_ref_parse (struct cstr_view    ref,
+                  enum member_kind   *kind,
+                  struct cstr_view   *name,
+                  enum member_branch *branch);
 
 /**
  * Writes to @p dest the login of a client with the grant @p grant
@@ -297,18 +347,24 @@ member_registry_report (struct member_registry const *registry);
 
 /**
  * A call that waits for the member of a login (member_table_find() and
- * member_table_claim()). The owner of the wait sets done, and the table
- * sets the other members before it calls done. The owner calls
+ * member_table_claim()), or for the records (member_table_read()). The
+ * owner of the wait sets done, and the table sets the other members before
+ * it calls done. done finds the owner with container_of(). The owner calls
  * member_table_cancel() before it frees a wait that waits.
  */
 struct member_wait {
-	struct list    hook;             /**< on the lookup of the login while
-	                                      the wait waits */
-	/** Called on the loop of the table once the lookup ends. */
+	struct list    hook;             /**< on the lookup of the login, or on
+	                                      the table for a read, while the
+	                                      wait waits */
+	/** Called on the loop of the table once the lookup or the read ends. */
 	void         (*done) (struct member_wait *wait);
+	struct child  *git;              /**< the git that reads the records
+	                                      for member_table_read(), or
+	                                      nullptr */
 	int            e;                /**< 0, or the error number for a
 	                                      login without a member, as
-	                                      member_table_find() returns it */
+	                                      member_table_find() returns it,
+	                                      or for a read that failed */
 	struct member  member;           /**< the member of the login */
 	char           why[MEMBER_WHY];  /**< the reason for an error other
 	                                      than ENOENT and ENOMEM, a text
@@ -316,11 +372,11 @@ struct member_wait {
 };
 
 /** Creates the table of the members on @p loop, with the records that
- *  @p registry read at the start. git runs for the lookups on @p loop,
- *  with its children on @p children (src/child.h), and the blockers
- *  @p blockers look up the names of Unix users. Returns the table, or
- *  returns nullptr with an error number in @p *e: EINVAL for a null
- *  argument, or ENOMEM.
+ *  @p registry read at the start. @p registry must outlive the table. git
+ *  runs for the lookups and the reads on @p loop, with its children on
+ *  @p children (src/child.h), and the blockers @p blockers look up the
+ *  names of Unix users. Returns the table, or returns nullptr with an error
+ *  number in @p *e: EINVAL for a null argument, or ENOMEM.
  */
 extern struct member_table *
 member_table_create (struct member_registry const *registry,
@@ -330,8 +386,8 @@ member_table_create (struct member_registry const *registry,
                      int                          *e);
 
 /** Frees the table at @p *p_table and sets @p *p_table to nullptr. A
- *  lookup under way calls no wait. Its git is killed if it reads, and runs
- *  to its end if it writes.
+ *  lookup or a read under way calls no wait. Its git is killed if it reads,
+ *  and runs to its end if it writes.
  */
 extern void
 member_table_destroy (struct member_table **p_table);
@@ -380,7 +436,9 @@ member_table_claim (struct member_table       *table,
                     struct member_login const *login,
                     struct member_wait        *wait);
 
-/** Stops @p wait from waiting, if it waits. Its done does not run. */
+/** Stops @p wait from waiting, if it waits. Its done does not run, and the
+ *  git of a read is killed.
+ */
 extern void
 member_table_cancel (struct member_wait *wait);
 
@@ -391,14 +449,24 @@ extern struct member_info const *
 member_table_info (struct member_table const *table,
                    size_t                     i);
 
-/** Replaces the records of @p table with the records in @p out, the whole
- *  output of STORE_REFS for member_list. Returns 0, EINVAL for a null
- *  @p table, EIO for output that is not in that form, or ENOMEM. On
- *  failure the records stay as they are.
+/**
+ * Reads the records of @p table again for @p wait, which must not be on a
+ * list: git lists the records and the branches of the members, and the
+ * output replaces the records of the table. If a read in the current turn
+ * of the loop of the table replaced the records, the function runs no git.
+ * After a lookup of the table writes a record, the next read runs git.
+ * Returns 0 if a read of the turn replaced the records, or
+ * EINPROGRESS if the wait waits: the function adds @p wait to the table,
+ * and wait->done runs later, with the result in wait->e. The function and
+ * wait->done set wait->e to 0, EIO if git fails or writes output that is
+ * not a list of the records, EAGAIN if askai is busy, or ENOMEM, and
+ * wait->why to the reason for EIO and EAGAIN, and leave wait->member as it
+ * is. On failure the records stay as they are. Returns EINVAL for a null
+ * argument.
  */
 extern int
-member_table_refresh (struct member_table *table,
-                      struct span          out);
+member_table_read (struct member_table *table,
+                   struct member_wait  *wait);
 
 /** Writes to @p dest the member named @p name: the member of a record of
  *  the name, or else of a notebook of the name. Returns 0, ENOENT if

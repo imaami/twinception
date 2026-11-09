@@ -103,13 +103,6 @@ finding_id (struct finding const *f,
 }
 
 void
-finding_ref (char const *author,
-             char        ref[static FINDING_REF])
-{
-	(void)util_format(ref, FINDING_REF, "refs/heads/agent/%s/findings", author);
-}
-
-void
 finding_path (uint32_t number,
               char     path[static FINDING_FILE])
 {

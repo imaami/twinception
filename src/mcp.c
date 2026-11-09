@@ -3645,6 +3645,12 @@ mcp_slot_member (struct mcp_slot const *slot)
 	return slot ? &slot->req->member : nullptr;
 }
 
+struct notes_tool_loop const *
+mcp_slot_notes (struct mcp_slot const *slot)
+{
+	return slot ? slot->req->mcp->notes : nullptr;
+}
+
 int
 mcp_slot_asker (struct mcp_slot     *slot,
                 struct member const *asker)
@@ -3997,7 +4003,7 @@ mcp_slot_prompted (struct mcp_slot *slot)
 		return;
 	}
 	req->flags |= REQ_FINDINGS;
-	findings_prompt(&req->mcp->st->notes_tool, slot, &slot->answer, mcp_req_lend_max(req),
+	findings_prompt(req->mcp->notes, slot, &slot->answer, mcp_req_lend_max(req),
 	                mcp_slot_go_on);
 }
 

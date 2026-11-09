@@ -33,6 +33,7 @@ struct member_call;
 struct member_registry;
 struct metrics_mcp;
 struct metrics_src;
+struct notes_tool_loop;
 struct oid;
 struct registry;
 struct seen;
@@ -530,6 +531,13 @@ mcp_slot_shows (struct mcp_slot *slot,
  */
 extern struct member_call const *
 mcp_slot_member (struct mcp_slot const *slot);
+
+/** Returns the part of the notes tool on the loop of the call, which the
+ *  findings tool uses, or nullptr for a null @p slot. This function is not
+ *  exported.
+ */
+extern struct notes_tool_loop const *
+mcp_slot_notes (struct mcp_slot const *slot);
 
 /** Sets the asker of the request of the call (mcp_slot_member()) to
  *  @p asker. Returns 0, EFAULT for nullptr, or EINVAL if the call has

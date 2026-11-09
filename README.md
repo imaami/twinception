@@ -989,9 +989,9 @@ several files added by one commit. `list` reflects the current tree;
   line says who the caller is. For a client, the result also has
   `structuredContent`: `members`, each with `name`, `kind`, and for a
   notebook with notes `time` and `change`, and for a caller with a member
-  name `you`, with the name and the kind of the caller. A notebook without
-  a member record, such as a notebook moved from the old layout, lists its
-  member with the kind of its branch.
+  name `you`, with the name and the kind of the caller. A notebook or a
+  branch of findings without a member record, such as a notebook moved
+  from the old layout, lists its member with the kind of its branch.
 - `notebook` names the member whose notebook an action reads. The default
   is the notebook of the caller. A name that no member has is refused with
   the names of the members. A notebook without notes answers that the

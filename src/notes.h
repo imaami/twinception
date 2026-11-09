@@ -2,15 +2,15 @@
  *
  * The notes of the session. --notes names one git repository, the session
  * of every askai that names it (src/member.h). Each member of the session
- * has one notebook, the branch refs/heads/KIND/NAME/notes, where KIND is
- * person or agent and NAME is the name of the member. Every member can
- * read every notebook, and only the member writes its notebook. Each write
- * that changes a note adds a commit whose message says what the write did.
- * Earlier contents stay in the history of the notebook. A write that
- * leaves the bytes of a note as they are adds no commit. A repository can
- * have worktrees, and git resolves their packed refs. If another writer
- * changes the branch during a write, the write is made again on the new
- * tip if its note is the same there, and fails otherwise. No write
+ * has one notebook, the branch refs/heads/KIND/NAME/notes (member_ref()),
+ * where KIND is person or agent and NAME is the name of the member. Every
+ * member can read every notebook, and only the member writes its notebook.
+ * Each write that changes a note adds a commit whose message says what the
+ * write did. Earlier contents stay in the history of the notebook. A write
+ * that leaves the bytes of a note as they are adds no commit. A repository
+ * can have worktrees, and git resolves their packed refs. If another
+ * writer changes the branch during a write, the write is made again on the
+ * new tip if its note is the same there, and fails otherwise. No write
  * overwrites the change of another writer. The repository is a store of
  * src/store.h.
  */
@@ -22,7 +22,6 @@
 
 #include "buf.h"
 #include "cstr_view.h"
-#include "member.h"
 #include "oid.h"
 #include "store.h"
 #include "util.h"
@@ -30,13 +29,13 @@
 
 enum {
 	NOTES_NAME = STORE_PATH, /**< bytes of the name of a note, at most */
-	NOTES_REF  = 128,        /**< bytes of the ref of a notebook, NUL
-	                              included */
 };
 
 /** The actions of the notes tool: X(ID, name, flags, fetch), the constant
  *  NOTES_ACTION_ID of enum notes_action, the name, and the flags and the
- *  fetch value of the action, which only notes_tool.c uses. Every caller
+ *  fetch value of the action, which only notes_tool.c uses. The fetch
+ *  value of members is 0, because members runs no command of the notes. It
+ *  reads the records of the members (member_table_read()). Every caller
  *  can use the actions of NOTES_COMMON_ACTION_LIST, the first
  *  NOTES_ACTION_ATTACH actions of NOTES_ALL_ACTION_LIST. Only a turn whose
  *  upstream takes files can use attach. The commit message of a write
@@ -48,7 +47,7 @@ enum {
         X(REPLACE, "replace", NOTE_AUTHOR | NOTE_WRITE | NOTE_FILE,                 FETCH_REPLACE)                \
         X(DELETE,  "delete",  NOTE_AUTHOR | NOTE_WRITE | NOTE_FILE,                 FETCH_REPLACE | FETCH_DELETE) \
         X(RESTORE, "restore", NOTE_AUTHOR | NOTE_WRITE | NOTE_FILE | NOTE_REVISION, FETCH_READ | FETCH_RESTORE)   \
-        X(MEMBERS, "members", NOTE_OFFSET,                                          FETCH_MEMBERS)                \
+        X(MEMBERS, "members", NOTE_OFFSET,                                          0)                            \
         X(LIST,    "list",    NOTE_OFFSET,                                          FETCH_FILES)                  \
         X(SEARCH,  "search",  NOTE_OFFSET,                                          FETCH_GREP)                   \
         X(HISTORY, "history", NOTE_OFFSET,                                          FETCH_LIST)                   \
@@ -104,13 +103,6 @@ struct notes_cursor {
 
 /** The lines of a note that git sees as binary (struct notes_entry). */
 static constexpr uint64_t NOTES_BINARY = UINT64_MAX;
-
-/** Writes to @p ref the ref of the notebook of @p member, a member with a
- *  name: refs/heads/KIND/NAME/notes.
- */
-extern void
-notes_ref (struct member const *member,
-           char                 ref[NOTES_REF]);
 
 /** The stage of a historical read or diff (notes.c). */
 enum notes_revision_phase : uint8_t;

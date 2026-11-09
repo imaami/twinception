@@ -19,8 +19,8 @@
  *
  * A finding is the file findings/D/N.json (finding_path()), where N is its
  * number and D is N / 100, on the branch refs/heads/agent/AUTHOR/findings
- * of the session repository (src/store.h). The file is a JSON object of
- * version 1 (finding_render(), finding_parse()).
+ * of the session repository (member_ref(), src/store.h). The file is a
+ * JSON object of version 1 (finding_render(), finding_parse()).
  */
 #ifndef ASKAI_SRC_FINDING_H_
 #define ASKAI_SRC_FINDING_H_
@@ -48,9 +48,6 @@ enum {
 	                                          askai writes and reads */
 	FINDING_CLAIM   = 200,               /**< bytes of a claim in a list, at
 	                                          most */
-	FINDING_REF     = sizeof "refs/heads/agent//findings" + UTIL_WORD_MAX,
-	                                     /**< bytes of the ref of a branch of
-	                                          findings, NUL included */
 };
 
 /** The states of a finding: X(ID, name), the constant FINDING_ID of enum
@@ -172,13 +169,6 @@ finding_id_format (char const *author,
 extern void
 finding_id (struct finding const *f,
             char                  id[static FINDING_ID]);
-
-/** Writes to @p ref the branch of the findings of the agent @p author:
- *  refs/heads/agent/AUTHOR/findings.
- */
-extern void
-finding_ref (char const *author,
-             char        ref[static FINDING_REF]);
 
 /** Writes to @p path the path of the file of the finding @p number:
  *  findings/D/N.json, where D is @p number / 100.

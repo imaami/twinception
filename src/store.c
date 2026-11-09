@@ -59,7 +59,7 @@ static char const *const cmds[][10] = {
 	                     "%(trailers:key=Call,valueonly,separator=%x2C) %s",
 	                     "--end-of-options", word, "--" },
 	[STORE_READ]     = { "cat-file", "--batch" },
-	[STORE_REFS]     = { "for-each-ref", word, word, word, word },
+	[STORE_REFS]     = { "for-each-ref", word, word, word },
 	[STORE_FILES]    = { "ls-tree", "-r", "-z", "-l", word, "--", word },
 	[STORE_HEAD]     = { "rev-parse", "--verify", "--end-of-options", word },
 	[STORE_ANCESTOR] = { "merge-base", "--is-ancestor", word, word },

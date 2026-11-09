@@ -626,9 +626,8 @@ test_argv (struct store const *store)
 		{ STORE_READ,     {},                 " cat-file --batch" },
 		{ STORE_REFS,     { "--format=%(refname)", "refs/heads/" },
 		                                      " for-each-ref --format=%(refname) refs/heads/" },
-		{ STORE_REFS,     { "--format=%(refname)", "refs/a/", "refs/b/", "refs/c/" },
-		                                      " for-each-ref --format=%(refname) refs/a/ refs/b/"
-		                                      " refs/c/" },
+		{ STORE_REFS,     { "--format=%(refname)", "refs/a/", "refs/b/" },
+		                                      " for-each-ref --format=%(refname) refs/a/ refs/b/" },
 		{ STORE_FILES,    { "R" },            " ls-tree -r -z -l R --" },
 		{ STORE_FILES,    { "R", "p" },       " ls-tree -r -z -l R -- p" },
 		{ STORE_HEAD,     { "R" },            " rev-parse --verify --end-of-options R" },
@@ -662,6 +661,14 @@ test_argv (struct store const *store)
 		int e = store_command(store, &run, rows[i].cmd, nullptr, ref, (struct span){}, 7);
 		CHECK(e == (rows[i].words[0] ? EINVAL : 0));
 	}
+	/* A command reads at most STORE_WORDS words, so the fourth word is
+	 * not passed to git. */
+	char const *const four[] = { "--format=%(refname)", "refs/a/", "refs/b/", "refs/c/" };
+	CHECK(!store_command(store, &run, STORE_REFS, four, ref, (struct span){}, 7));
+	CHECK(join(run.argv, got, sizeof got) < GIT_RUN_ARGV);
+	CHECK(snprintf(want, sizeof want, "%s for-each-ref --format=%%(refname) refs/a/ refs/b/",
+	               start) > 0);
+	SAME(got, strlen(got), want);
 	struct span const in = { (unsigned char *)"abc", 3 };
 	CHECK(!store_command(store, &run, STORE_READ, nullptr, nullptr, in, 7));
 	CHECK(run.c.in.ptr == in.ptr && run.c.in.len == in.len);

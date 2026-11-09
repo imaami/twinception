@@ -28,7 +28,7 @@ struct mcp_slot;
 struct store;
 
 enum {
-	STORE_WORDS   = 4,         /**< words of a command of enum store_cmd, at
+	STORE_WORDS   = 3,         /**< words of a command of enum store_cmd, at
 	                                most */
 	STORE_MAX     = 16 << 20,  /**< bytes of the output of git, at most */
 	STORE_PATH    = 255,       /**< bytes of the path of a file in a
@@ -72,7 +72,7 @@ enum store_cmd : uint8_t {
 	                      each object that the input names. The caller
 	                      passes no words. */
 	STORE_REFS,      /**< Runs git for-each-ref. The caller passes the
-	                      --format option, then one to three patterns. */
+	                      --format option, then one or two patterns. */
 	STORE_FILES,     /**< Runs git ls-tree -r. The output lists the files of
 	                      a tree in tree order, or the files under a path.
 	                      The caller passes a ref or a commit, then a path

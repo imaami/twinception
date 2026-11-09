@@ -15070,7 +15070,9 @@ def check_findings(binary, up):
             script[:] = [turn({"action": "add", "claim": "One commit.", "about": "cuh#1"},
                               {"action": "list"}, {"action": "show", "id": "cuh#1"},
                               {"action": "update", "id": "cuh#1", "state": "retracted",
-                               "reason": "R"})]
+                               "reason": "R"},
+                              {"action": "add", "claim": "C", "about": "cuh#9"},
+                              {"action": "list", "author": "bro"})]
             count = len(up.requests)
             ai.ask("Q", conversation=other)
             said = results(up.requests[count + 1])
@@ -15087,6 +15089,15 @@ def check_findings(binary, up):
                                       "verified, ask "), said[2]
             assert said[3] == "Only cuh can change cuh#1. Add your own finding with about " \
                 "cuh#1.", said
+            # The branch of cuh exists, and git finds no file of cuh#9 on it.
+            # A list with an author lists the findings of the author only.
+            assert said[4] == "No finding has the id cuh#9. list shows the findings.", said
+            assert said[5] == (
+                "Findings of bro, open first (id, state, about, claim):\n"
+                "bro#3  candidate  cuh#1  One commit.\n"
+                "bro#1  verified   -      C1b\n"
+                "Closed findings:\n"
+                f"bro#2  retracted  -      {claim}\n"), said[5]
             assert stored(3)["about"] == "cuh#1" and stored(1, "cuh")["id"] == "cuh#1"
             # The prompt lists the open findings of the conversation, newest
             # first.

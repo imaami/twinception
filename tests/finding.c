@@ -59,9 +59,6 @@ test_ids (void)
 	finding_id(&f, id);
 	CHECK(!strcmp(id, "cuh#12"));
 
-	char ref[FINDING_REF];
-	finding_ref("first.last@ad", ref);
-	CHECK(!strcmp(ref, "refs/heads/agent/first.last@ad/findings"));
 	char path[FINDING_FILE];
 	finding_path(5, path);
 	CHECK(!strcmp(path, "findings/0/5.json") && finding_path_number(cstr_view(path)) == 5);
