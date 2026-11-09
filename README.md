@@ -354,8 +354,13 @@ replacement can temporarily use another 64 MiB. When space is needed, the oldest
 completed checkpoints may be removed; unfinished jobs and checkpoints
 migrated from the legacy journal are not evicted. These bounds do not prune
 saved reasoning text or Git history. The notes tool exposes neither archive
-nor checkpoints. The checkpoint of a background job keeps the number of the
-calls that its turns made.
+nor checkpoints. The checkpoint of a background job contains the number of
+the calls that its turns made, the evidence items that results showed, the
+conversation, the ID of the ask call and the asker. A resumed job then
+cites the items that it saw before the restart, and its commits name the
+same ask call, conversation and asker. A checkpoint of an earlier version
+resumes without the items, the ask call and the asker, and the log says
+that its review record was not restored.
 
 Preserve the whole repository directory, including the private files and
 owner seed, when moving or backing up a live session. A Git-only clone
@@ -845,6 +850,7 @@ an item that the turns had not seen prints the item if it fits in one
 result, and the item then counts as shown in that turn. `retracted`
 needs a `reason`. A call that left the memory of the ask call, or that
 `askai` made before a restart, cannot be cited, and the refusal says why.
+An item that a result showed before a restart stays seen.
 
 `expand` reads the file of the finding and its archive files with `git
 cat-file --batch`, so it works on every service of the session, and a

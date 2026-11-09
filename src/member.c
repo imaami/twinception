@@ -760,6 +760,22 @@ member_login (struct member_login          *dest,
 }
 
 int
+member_init (struct member    *dest,
+             struct cstr_view  name,
+             struct cstr_view  kind)
+{
+	if (!dest)
+		return EINVAL;
+	size_t const k = cstr_view_index(member_kinds, array_size(member_kinds), kind);
+	*dest = (struct member){};
+	if (!member_name_valid(name) || k == array_size(member_kinds))
+		return EINVAL;
+	dest->kind = (enum member_kind)k;
+	memcpy(dest->name, name.data, name.len);
+	return 0;
+}
+
+int
 member_call_init (struct member_call           *dest,
                   struct member_registry const *registry,
                   struct policy_grant const    *grant,

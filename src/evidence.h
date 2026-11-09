@@ -154,7 +154,8 @@ struct evidence {
 	uint32_t              flags;    /**< enum evidence_flag */
 	enum evidence_kind    kind;
 	struct hexid          ask;      /**< the ask call of the call, or no id
-	                                     for a call after a restart */
+	                                     for a job resumed from a journal
+	                                     state of version 2 */
 	char                  from[SEEN_ID];  /**< the item that the item cites
 	                                           again, such as cuh#2/1, or
 	                                           "" */

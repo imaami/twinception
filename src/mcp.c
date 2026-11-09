@@ -5905,8 +5905,9 @@ mcp_req_checkpoint (struct mcp_req *req)
 	struct span upload = buf_peek(&req->upload);
 	uint64_t now = clk_realtime_ns();
 	req->archive_deadline = st->timeout ? now + st->timeout : 0;
+	struct member const *asker = &req->member.asker;
 	struct json_object *state = jb_object(
-		"version", json_object_new_int(2),
+		"version", json_object_new_int(3),
 		"owner", json_object_new_uint64(req->owner),
 		"created", json_object_new_uint64(task ? task->created : now),
 		"tool", jb_string(mcp_static_tool(st, req->self.tool)->name),
@@ -5921,8 +5922,12 @@ mcp_req_checkpoint (struct mcp_req *req)
 		"context", json_object_new_int64(req->context),
 		"traced", json_object_new_int64(req->traced),
 		"calls", json_object_new_int64(req->calls_base),
+		"seen", seen_items_json(req->seen, &(int){}),
 		"trace", jb_string(cstr_view_dstr(&req->trace)),
-		"thread", json_object_new_string(req->member.conversation.hex),
+		"conversation", json_object_new_string(req->member.conversation.hex),
+		"ask", json_object_new_string(req->member.ask.hex),
+		"asker", jb_object("name", json_object_new_string(asker->name),
+		                   "kind", jb_string(member_kinds[asker->kind]), nullptr),
 		"branch", json_object_new_boolean(req->flags & REQ_BRANCH),
 		"filing", json_object_new_boolean(req->flags & REQ_FILING),
 		"filed", json_object_new_uint64(req->filed),
@@ -5997,9 +6002,11 @@ mcp_recover_back (struct loop           *loop,
 	}
 	struct json_object *state = mcp_archive_json(checkpoint);
 	struct cstr_view tool = jb_view(jb_get(state, "tool"));
+	/* Version 2 names the conversation thread. */
+	int64_t const version = jb_int(jb_get(state, "version"), 0);
 	struct cstr_view problem =
 		error ? CSTR_VIEW("Cannot read the durable job journal.")
-		: !state || jb_int(jb_get(state, "version"), 0) != 2
+		: !state || (version != 2 && version != 3)
 		? CSTR_VIEW("You have no recoverable job with the given ID.")
 		: jb_uint(jb_get(state, "owner"), 0) != owner ||
 		  !cstr_view_equal(tool, mcp_static_tool(st, req->self.tool)->name)
@@ -6093,8 +6100,11 @@ mcp_recover_back (struct loop           *loop,
 	int64_t turn = jb_int(jb_get(state, "turn"), 0);
 	uint64_t prompt_at = jb_uint(jb_get(state, "prompt_at"), 0);
 	struct json_object *names = jb_get(state, "lent");
-	if (!request.len || turn < 1 || turn > UINT32_MAX || prompt_at > request.len ||
-	    !json_object_is_type(names, json_type_array)) {
+	/* The calls of the earlier turns were made before the restart. */
+	int e = seen_resume(&req->seen, (uint32_t)jb_int(jb_get(state, "calls"), 0),
+	                    jb_get(state, "seen"));
+	if (e == EINVAL || !request.len || turn < 1 || turn > UINT32_MAX ||
+	    prompt_at > request.len || !json_object_is_type(names, json_type_array)) {
 		problem = CSTR_VIEW("The saved request of the job is invalid. No provider request "
 		                    "was sent.");
 		goto failed;
@@ -6103,13 +6113,11 @@ mcp_recover_back (struct loop           *loop,
 	 * that fails here answers with the problem alone, without the turns'
 	 * trace (mcp_req_trace_put()). */
 	tool_mask lent = mcp_archive_lent(req, names);
-	int e = buf_put(&req->upload, request.data, request.len, SIZE_MAX);
+	if (!e)
+		e = buf_put(&req->upload, request.data, request.len, SIZE_MAX);
 	struct cstr_view trace = jb_view(jb_get(state, "trace"));
 	if (!e && trace.len && cstr_view_cat(trace, &req->trace))
 		e = ENOMEM;
-	/* The calls of the earlier turns were made before the restart. */
-	if (!e)
-		e = seen_resume(&req->seen, (uint32_t)jb_int(jb_get(state, "calls"), 0), nullptr);
 	struct handle who = {};
 	if (!e)
 		e = loop_handle(loop, req, HANDLE_REQ, &who);
@@ -6140,8 +6148,15 @@ mcp_recover_back (struct loop           *loop,
 	mcp_req_flag(req, REQ_FILING, json_object_get_boolean(jb_get(local, "filing")));
 	req->filed = jb_uint(jb_get(local, "filed"), 0);
 	req->replay_filed = last_tool_result ? req->filed : 0;
-	/* A saved conversation that is not an id, such as "", is none. */
-	(void)hexid_init(&req->member.conversation, jb_view(jb_get(state, "thread")));
+	/* An ID that is not one, such as "", and an invalid asker are none. */
+	(void)hexid_init(&req->member.conversation,
+	                 jb_view(jb_get(state, version == 2 ? "thread" : "conversation")));
+	(void)hexid_init(&req->member.ask, jb_view(jb_get(state, "ask")));
+	struct json_object *asker = jb_get(state, "asker");
+	(void)member_init(&req->member.asker, jb_view(jb_get(asker, "name")),
+	                  jb_view(jb_get(asker, "kind")));
+	if (jb_get(state, "review"))
+		LOG(LOG_INFO, "journal: job %s: the old review record was not restored", id.hex);
 	req->intents = intents;
 	req->flags |= REQ_RECOVERING;
 	req->asked = ++req->mcp->asked;

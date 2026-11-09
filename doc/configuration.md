@@ -416,7 +416,8 @@ turn, and each item must be seen: a result of an earlier turn of the
 order, as the pages of `expand` do. The refusal of an item that the
 turns had not seen prints the item if it fits in one result, and the
 item then counts as shown in that turn. `askai` keeps at most 1024 items
-in memory for an `ask_ai` call. `retracted` needs a `reason`. A call
+in memory for an `ask_ai` call, and in the checkpoint of a background
+job, so an item stays seen after a restart. `retracted` needs a `reason`. A call
 that left the memory, or that `askai` made before a restart, cannot be
 cited, and the refusal says why. `askai` leaves its own notices out of the end of a claim or of a
 reason, as it does for the text of a note, and refuses a claim or a

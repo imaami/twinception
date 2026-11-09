@@ -141,6 +141,23 @@ test_names (void)
 	};
 	for (size_t i = 0; i < array_size(invalid); ++i)
 		CHECK(!member_name_valid(invalid[i]));
+	/* member_init() makes a member of a valid name and a known kind. */
+	struct member m = { .kind = MEMBER_AGENT, .name = "old" };
+	CHECK(!member_init(&m, CSTR_VIEW("imaami"), CSTR_VIEW("person")) &&
+	      m.kind == MEMBER_PERSON && !strcmp(m.name, "imaami"));
+	CHECK(!member_init(&m, valid[array_size(valid) - 1], CSTR_VIEW("agent")) &&
+	      m.kind == MEMBER_AGENT && strlen(m.name) == UTIL_WORD_MAX);
+	for (size_t i = 0; i < array_size(invalid); ++i) {
+		m = (struct member){ .kind = MEMBER_AGENT, .name = "old" };
+		CHECK(member_init(&m, invalid[i], CSTR_VIEW("person")) == EINVAL &&
+		      m.kind == MEMBER_PERSON && !*m.name);
+	}
+	struct cstr_view const kinds[] = {
+		{}, CSTR_VIEW(""), CSTR_VIEW("Person"), CSTR_VIEW("team"), CSTR_VIEW("agent "),
+	};
+	for (size_t i = 0; i < array_size(kinds); ++i)
+		CHECK(member_init(&m, CSTR_VIEW("bro"), kinds[i]) == EINVAL && !*m.name);
+	CHECK(member_init(nullptr, CSTR_VIEW("bro"), CSTR_VIEW("agent")) == EINVAL);
 }
 
 static void

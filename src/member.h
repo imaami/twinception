@@ -221,6 +221,17 @@ member_name_valid (struct cstr_view name)
 	return !digits;
 }
 
+/** Initializes @p dest as the member named @p name, of the kind @p kind
+ *  as member_kinds names it, such as the asker in the journal state of an
+ *  ask call. Returns 0, EINVAL for a null @p dest, or EINVAL with no member
+ *  in @p dest for a name that member_name_valid() refuses or a kind that
+ *  member_kinds does not name.
+ */
+extern int
+member_init (struct member    *dest,
+             struct cstr_view  name,
+             struct cstr_view  kind);
+
 /**
  * Writes to @p dest the login of a client with the grant @p grant
  * (src/policy.h). @p uid is the uid of a client on a Unix socket, or

@@ -100,8 +100,9 @@ struct finding_change {
 	                                       item of the finding after the
 	                                       change */
 	enum finding_state state;
-	struct hexid       ask;           /**< the ask call, or no id after a
-	                                       restart */
+	struct hexid       ask;           /**< the ask call, or no id for a job
+	                                       resumed from a journal state of
+	                                       version 2 */
 	char               asked_by[MEMBER_NAME];  /**< the member that made the
 	                                                ask call, or "" */
 };
