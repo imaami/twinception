@@ -379,6 +379,35 @@ util_dir_next (DIR *dir,
 	return entry;
 }
 
+/** Check that the directory @p fd contains no entries but ".", ".." and
+ *  the @p n names at @p allowed. The function reads the directory with
+ *  util_dir_open(), so the offset of @p fd does not change. Returns 0 if
+ *  the directory contains no other entry, EEXIST if it contains another
+ *  entry, or the error number of util_dir_open(), readdir() or closedir().
+ */
+static inline int
+util_dir_empty (int                     fd,
+                struct cstr_view const *allowed,
+                size_t                  n)
+{
+	static struct cstr_view const dots[] = { CSTR_VIEW_INIT("."), CSTR_VIEW_INIT("..") };
+	int e;
+	DIR *dir = util_dir_open(fd, &e);
+	if (!dir)
+		return e;
+	for (struct dirent *entry; (entry = util_dir_next(dir, &e)); ) {
+		struct cstr_view const name = cstr_view(entry->d_name);
+		if (cstr_view_index(dots, array_size(dots), name) == array_size(dots) &&
+		    cstr_view_index(allowed, n, name) == n) {
+			e = EEXIST;
+			break;
+		}
+	}
+	if (closedir(dir) && !e)
+		e = errno;
+	return e;
+}
+
 /** Block every signal but those that faults raise in the calling thread,
  *  whose threads to come inherit its mask, and store the mask before in
  *  @p old. Returns 0, or the error number of pthread_sigmask().

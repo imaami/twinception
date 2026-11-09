@@ -5,7 +5,6 @@
 #ifndef _GNU_SOURCE
 # define _GNU_SOURCE
 #endif
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -23,9 +22,10 @@
 #include "cli_state.h"
 #include "cstr_view.h"
 #include "dstr.h"
-#include "git.h"
+#include "git_run.h"
 #include "hexid.h"
 #include "jb.h"
+#include "loop.h"
 #include "oid.h"
 #include "util.h"
 
@@ -47,6 +47,9 @@ struct cli_state {
 	struct dstr             latest;
 	struct buf              output;  /**< the output of the last git
 	                                      that cli_state_git() captured */
+	struct git_run_dir      git;     /**< git runs with -C and the content
+	                                      of path, "--git-dir=." and
+	                                      cli_state_git_options */
 	struct dstr             tree;
 	struct dstr             metadata;
 	struct dstr             scratch;
@@ -66,6 +69,23 @@ enum {
 };
 
 static char const cli_state_magic[] = "ASKAI-CLI-1\n";
+
+/* The options of the git processes of askai-cli, which git_run_dir_argv()
+ * writes after the fixed options. They set the name and the email of the
+ * author and the committer of a commit. With core.fsync=committed, git
+ * calls fsync() on the objects and the refs that it writes.
+ */
+static char const *const cli_state_git_options[] = {
+	"-c", "user.name=AskAI CLI",
+	"-c", "user.email=askai-cli@localhost",
+	"-c", "core.fsync=committed",
+	nullptr
+};
+
+/* The name of the lock file that cli_state_repository_init() locks while
+ * it opens or creates the history repository.
+ */
+static struct cstr_view const cli_state_init_lock = CSTR_VIEW_INIT("cli-init.lock");
 
 /* A short read is a snapshot cut short. */
 static int
@@ -159,41 +179,37 @@ cli_state_lock (struct cli_state *state,
 	}
 }
 
-/** Run Git directly, with no shell. The output goes to @p output_fd, or to
- *  state->output, up to 4 KiB, if @p output_fd is negative.
+/** Runs the git command @p words in the history repository, with no shell,
+ *  and with the standard input @p input. git writes the output to the file
+ *  @p output_fd, or to state->output, up to 4 KiB, if @p output_fd is
+ *  negative. If @p oid is not nullptr, the function reads the name of an
+ *  object that git prints into @p oid. Returns the error of
+ *  git_run_init(), or what git_run_capture() returns. For a git that runs
+ *  longer than GIT_RUN_NS, the error is ETIMEDOUT.
  */
 static int
 cli_state_git (struct cli_state  *state,
-               char const *const  args[],
+               char const *const *words,
                struct cstr_view   input,
                int                output_fd,
-               int               *status)
+               struct oid        *oid)
 {
-	char const *const prefix[] = {
-		"git", "-C", dstr_get(&state->path), "-c", "user.name=AskAI CLI",
-		"-c", "user.email=askai-cli@localhost", "-c", "core.fsync=committed", nullptr
-	};
-	char const *const *const parts[] = { prefix, args };
-	char const *argv[32];
-	int e = child_argv(argv, array_size(argv), parts, array_size(parts));
+	/* update-ref, init and config create lock files in the repository,
+	 * and askai-cli does not remove a stale lock file. At the deadline,
+	 * child_run() and child_capture() send SIGTERM to git, which removes
+	 * its lock files and exits, and SIGKILL GIT_GRACE later. */
+	struct git_run run;
+	int e = git_run_init(&run, &state->git, words, &(struct child_cmd){
+		.in       = { (unsigned char *)(uintptr_t)input.data, input.len },
+		.max      = 4 << 10,
+		.deadline = loop_clock() + GIT_RUN_NS,
+		.grace    = GIT_GRACE,
+	});
 	if (e)
 		return e;
-	char *const env[] = { util_env_path(), GIT_ENV_FIXED, nullptr };
-	struct child_cmd const cmd = {
-		.file = "git",
-		.argv = argv,
-		.envp = env,
-		.in   = { (unsigned char *)(uintptr_t)input.data, input.len },
-		.max  = 4 << 10,
-	};
 	struct child_fds fds = child_fds();
 	fds.out = output_fd;
-	struct child_end end;
-	buf_clear(&state->output);
-	e = output_fd >= 0 ? child_run(&cmd, fds, &end)
-	                   : child_capture(&cmd, fds, &state->output, &end);
-	*status = end.status;
-	return e;
+	return git_run_capture(&run, fds, output_fd < 0 ? &state->output : nullptr, oid);
 }
 
 /* Returns the output of the last git that cli_state_git() captured. */
@@ -202,30 +218,6 @@ cli_state_output (struct cli_state const *state)
 {
 	struct span const out = buf_peek(&state->output);
 	return (struct cstr_view){ (char const *)out.ptr, out.len };
-}
-
-static int
-cli_state_git_ok (struct cli_state  *state,
-                  char const *const  args[],
-                  struct cstr_view   input)
-{
-	int status = 0;
-	int e = cli_state_git(state, args, input, -1, &status);
-	return e ? e : status ? EIO : 0;
-}
-
-/* Runs git as cli_state_git_ok() does and stores the one name that it
- * prints in @p oid. Returns 0, EINVAL if git prints anything else, or the
- * error of cli_state_git_ok().
- */
-static int
-cli_state_git_oid (struct cli_state  *state,
-                   char const *const  args[],
-                   struct cstr_view   input,
-                   struct oid        *oid)
-{
-	int e = cli_state_git_ok(state, args, input);
-	return e ? e : oid_init_line(oid, cli_state_output(state));
 }
 
 static int
@@ -243,8 +235,8 @@ cli_state_tree_blob (struct cli_state *state,
                      struct cstr_view  text)
 {
 	struct oid oid;
-	int e = cli_state_git_oid(state, (char const *[]){ "hash-object", "-w", "--stdin", nullptr }, text,
-	                          &oid);
+	int e = cli_state_git(state, (char const *[]){ "hash-object", "-w", "--stdin", nullptr }, text, -1,
+	                      &oid);
 	return e ? e : cli_state_tree_entry(state, &oid, name);
 }
 
@@ -253,14 +245,14 @@ cli_state_commit (struct cli_state *state)
 {
 	(void)dstr_clear(&state->tree);
 	struct oid blob;
-	int e = cli_state_git_oid(state, (char const *[]){ "hash-object", "-w", "--", dstr_get(&state->name), nullptr },
-	                          (struct cstr_view){}, &blob);
+	int e = cli_state_git(state, (char const *[]){ "hash-object", "-w", "--", dstr_get(&state->name), nullptr },
+	                      (struct cstr_view){}, -1, &blob);
 	if (!e)
 		e = cli_state_tree_entry(state, &blob, "snapshot");
 	/* The identity of a writer never changes: write its blob once. */
 	if (!e && !oid_len(&state->identity_blob))
-		e = cli_state_git_oid(state, (char const *[]){ "hash-object", "-w", "--stdin", nullptr },
-		                      cstr_view_dstr(&state->metadata), &state->identity_blob);
+		e = cli_state_git(state, (char const *[]){ "hash-object", "-w", "--stdin", nullptr },
+		                  cstr_view_dstr(&state->metadata), -1, &state->identity_blob);
 	if (!e)
 		e = cli_state_tree_entry(state, &state->identity_blob, "identity.txt");
 	if (!e && state->ring.used.n)
@@ -273,15 +265,15 @@ cli_state_commit (struct cli_state *state)
 	}
 	struct oid tree;
 	if (!e)
-		e = cli_state_git_oid(state, (char const *[]){ "mktree", nullptr }, cstr_view_dstr(&state->tree),
-		                      &tree);
+		e = cli_state_git(state, (char const *[]){ "mktree", nullptr }, cstr_view_dstr(&state->tree), -1,
+		                  &tree);
 	char const *args[] = { "commit-tree", tree.hex, "-F", "-", "-p", state->parent.hex, nullptr };
 	if (!oid_len(&state->parent))
 		args[4] = nullptr;
 	struct oid commit;
 	if (!e)
-		e = cli_state_git_oid(state, args, CSTR_VIEW("Save CLI input history and completed conversation\n"),
-		                      &commit);
+		e = cli_state_git(state, args, CSTR_VIEW("Save CLI input history and completed conversation\n"),
+		                  -1, &commit);
 	(void)dstr_clear(&state->scratch);
 	if (!e && !dstr_printf(&state->scratch, "start\nupdate %s %s\nupdate %s %s\nprepare\ncommit\n",
 	                       dstr_get(&state->branch), commit.hex, dstr_get(&state->latest), commit.hex))
@@ -289,15 +281,19 @@ cli_state_commit (struct cli_state *state)
 	if (!e)
 		e = cli_state_lock(state, state->lock);
 	if (!e) {
-		e = cli_state_git_ok(state, (char const *[]){ "update-ref", "--stdin", nullptr }, cstr_view_dstr(&state->scratch));
+		e = cli_state_git(state, (char const *[]){ "update-ref", "--stdin", nullptr },
+		                  cstr_view_dstr(&state->scratch), -1, nullptr);
 		if (flock(state->lock, LOCK_UN) && !e)
 			e = errno;
 	}
 	if (e)
 		return e;
 	state->parent = commit;
-	(void)cli_state_git_ok(state, (char const *[]){ "gc", "--auto", "--quiet", nullptr },
-	                       (struct cstr_view){});
+	/* The fixed options of git_run.h set gc.auto=0. The later -c sets
+	 * gc.auto to 6700, the default of git, for this gc only, so that
+	 * gc --auto packs the loose objects of the history repository. */
+	(void)cli_state_git(state, (char const *[]){ "-c", "gc.auto=6700", "gc", "--auto", "--quiet", nullptr },
+	                    (struct cstr_view){}, -1, nullptr);
 	return 0;
 }
 
@@ -421,11 +417,8 @@ cli_state_snapshot (struct cli_state *state,
 		return ENOMEM;
 	if (ftruncate(fd, 0) || lseek(fd, 0, SEEK_SET) < 0)
 		return errno;
-	int status = 0;
 	int e = cli_state_git(state, (char const *[]){ "cat-file", "blob", dstr_get(&state->scratch), nullptr },
-	                      (struct cstr_view){}, fd, &status);
-	if (!e && status)
-		e = EIO;
+	                      (struct cstr_view){}, fd, nullptr);
 	if (!e && lseek(fd, 0, SEEK_SET) < 0)
 		e = errno;
 	char magic[sizeof cli_state_magic - 1];
@@ -506,9 +499,9 @@ cli_state_load (struct cli_state *state,
 	(void)dstr_clear(&state->scratch);
 	int e = dstr_printf(&state->scratch, "refs/heads/cli/%016" PRIx64 "/", group) ? 0 : ENOMEM;
 	if (!e)
-		e = cli_state_git_ok(state, (char const *[]){ "for-each-ref", "--sort=-committerdate", option,
-		                         "--format=%(objectname)", dstr_get(&state->scratch), nullptr },
-		                         (struct cstr_view){});
+		e = cli_state_git(state, (char const *[]){ "for-each-ref", "--sort=-committerdate", option,
+		                      "--format=%(objectname)", dstr_get(&state->scratch), nullptr },
+		                      (struct cstr_view){}, -1, nullptr);
 	size_t n = 1;
 	for (struct cstr_view out = cli_state_output(state); !e && out.len; )
 		if (n == array_size(tips) || oid_init_field(&tips[n], &out, '\n'))
@@ -543,46 +536,6 @@ cli_state_load (struct cli_state *state,
 	return e;
 }
 
-/* Returns 0 if the repository directory contains no entries but ".", ".."
- * and cli-init.lock, EEXIST if it contains another entry, or another error
- * number.
- */
-static int
-cli_state_directory_check_empty (struct cli_state *state)
-{
-	static struct cstr_view const allowed[] = {
-		CSTR_VIEW_INIT("."), CSTR_VIEW_INIT(".."), CSTR_VIEW_INIT("cli-init.lock")
-	};
-	int directory_fd = dup(state->directory);
-	if (directory_fd < 0)
-		return errno;
-	DIR *directory = fdopendir(directory_fd);
-	if (!directory) {
-		int e = errno;
-		util_close(&directory_fd);
-		return e;
-	}
-	directory_fd = -1;
-	int e = 0;
-	for (;;) {
-		/* readdir() returns nullptr at the end and after an error, and
-		 * only an error sets errno. */
-		errno = 0;
-		struct dirent *entry = readdir(directory);
-		if (!entry) {
-			e = errno;
-			break;
-		}
-		if (cstr_view_index(allowed, array_size(allowed), cstr_view(entry->d_name)) == array_size(allowed)) {
-			e = EEXIST;
-			break;
-		}
-	}
-	if (closedir(directory) && !e)
-		e = errno;
-	return e;
-}
-
 /* Check the version of the history repository if its config file exists.
  * Otherwise create the repository, if the directory is empty. Returns 0 or
  * an error number.
@@ -594,32 +547,32 @@ cli_state_repository_open (struct cli_state *state)
 	if (!fstatat(state->directory, "config", &status, AT_SYMLINK_NOFOLLOW)) {
 		if (!S_ISREG(status.st_mode))
 			return EACCES;
-		int e = cli_state_git_ok(state, (char const *[]){ "config", "--local", "--get", "askai.cliHistoryVersion", nullptr },
-		                         (struct cstr_view){});
+		int e = cli_state_git(state, (char const *[]){ "config", "--local", "--get", "askai.cliHistoryVersion", nullptr },
+		                      (struct cstr_view){}, -1, nullptr);
 		if (!e && !cstr_view_equal(cli_state_output(state), CSTR_VIEW("1\n")))
 			e = EINVAL;
 		return e;
 	}
 	if (errno != ENOENT)
 		return errno;
-	int e = cli_state_directory_check_empty(state);
+	int e = util_dir_empty(state->directory, &cli_state_init_lock, 1);
 	if (!e)
-		e = cli_state_git_ok(state, (char const *[]){ "init", "--bare", "--quiet", ".", nullptr },
-		                     (struct cstr_view){});
+		e = cli_state_git(state, (char const *[]){ GIT_INIT_BARE_WORDS("history"), nullptr },
+		                  (struct cstr_view){}, -1, nullptr);
 	if (!e)
-		e = cli_state_git_ok(state, (char const *[]){ "config", "--local", "askai.cliHistoryVersion", "1", nullptr },
-		                     (struct cstr_view){});
+		e = cli_state_git(state, (char const *[]){ "config", "--local", "askai.cliHistoryVersion", "1", nullptr },
+		                  (struct cstr_view){}, -1, nullptr);
 	return e;
 }
 
-/* Open or create the history repository while cli-init.lock is locked.
- * Returns 0 or an error number.
+/* Open or create the history repository while cli_state_init_lock is
+ * locked. Returns 0 or an error number.
  */
 static int
 cli_state_repository_init (struct cli_state *state)
 {
 	int fd = -1;
-	int e = util_private_open(state->directory, "cli-init.lock", O_RDWR | O_CREAT, &fd);
+	int e = util_private_open(state->directory, cli_state_init_lock.data, O_RDWR | O_CREAT, &fd);
 	if (fd < 0)
 		return e;
 	if (!e)
@@ -667,15 +620,13 @@ cli_state_repository (struct cli_state *state)
 	                      &state->lock);
 	if (e)
 		return e;
-	int status = 0;
 	e = cli_state_git(state, (char const *[]){ "rev-parse", "--verify", "--quiet", dstr_get(&state->latest), nullptr },
-	                  (struct cstr_view){}, -1, &status);
-	if (e || status == 1)
+	                  (struct cstr_view){}, -1, &state->parent);
+	/* The parent is empty if the latest ref of the group does not exist
+	 * yet. */
+	if (e || !oid_len(&state->parent))
 		return e;
-	if (status)
-		return EIO;
-	e = oid_init_line(&state->parent, cli_state_output(state));
-	return e ? e : cli_state_load(state, group);
+	return cli_state_load(state, group);
 }
 
 struct cli_state *
@@ -714,6 +665,11 @@ cli_state_create (struct cstr_view    path,
 	}
 	if (!*e)
 		*e = util_private_fd(state->directory, S_IFDIR);
+	/* state->path does not change after this point, so state->git can
+	 * point at the content of state->path. */
+	if (!*e)
+		*e = git_run_dir_init(&state->git, dstr_get(&state->path), cli_state_git_options, nullptr,
+		                      GIT_RUN_DOT);
 	if (!*e)
 		*e = cli_state_repository(state);
 	if (*e)
@@ -750,6 +706,7 @@ cli_state_destroy (struct cli_state **pstate)
 	dstr_cleanup(&state->pending.answer);
 	dstr_cleanup(&state->identity);
 	dstr_cleanup(&state->path);
+	state->git = (struct git_run_dir){};
 	dstr_cleanup(&state->name);
 	dstr_cleanup(&state->temporary);
 	dstr_cleanup(&state->scratch);

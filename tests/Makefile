@@ -124,7 +124,8 @@ $Otests/cli_ui:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS)
 
 $Otests/cli_state: $Otests/cli_state.c.o $Otests/src/cli_state.c.o \
                    $Otests/src/dstr.c.o $Otests/src/jb.c.o $Otests/src/child.c.o \
-                   $Otests/src/buf.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
+                   $Otests/src/buf.c.o $Otests/src/loop.c.o $Otests/src/log.c.o \
+                   $Otests/src/git_run.c.o
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
 
 $Otests/autocomplete: $Otests/autocomplete.c.o $Otests/src/autocomplete_file.c.o $(AUTOCOMPLETE_OBJECTS)

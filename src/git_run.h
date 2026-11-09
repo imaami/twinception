@@ -21,22 +21,23 @@
 struct oid;
 
 /** The environment entries after PATH of every git process that askai
- *  starts for the git tool, the notes and the journal. They set LC_ALL to
- *  C.UTF-8, and turn off the home, system and global configuration, the
- *  terminal prompt, the pager, lazy fetching and every remote protocol. A
- *  repository's configuration cannot override GIT_ALLOW_PROTOCOL.
+ *  starts for the git tool, the notes and the journal, and of every git
+ *  process of askai-cli. They set LC_ALL to C.UTF-8, and turn off the
+ *  home, system and global configuration, the terminal prompt, the pager,
+ *  lazy fetching and every remote protocol. A repository's configuration
+ *  cannot override GIT_ALLOW_PROTOCOL.
  */
 #define GIT_ENV_FIXED \
         "HOME=/nonexistent", "LC_ALL=C.UTF-8", "GIT_CONFIG_NOSYSTEM=1", \
         "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat", \
         "GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=none"
 
-/** The options before the command of every git process that askai starts.
- *  They turn off the pager, replacement objects, every remote protocol,
- *  automatic gc, maintenance and the signature checks of a log. They also
- *  keep git from running a program that a repository's configuration
- *  names for the fsmonitor, for gpg or for hooks. The format of a log can
- *  make git run gpg.
+/** The options before the command of every git process that askai and
+ *  askai-cli start. They turn off the pager, replacement objects, every
+ *  remote protocol, automatic gc, maintenance and the signature checks of
+ *  a log. They also stop git from running the program that the
+ *  configuration of a repository sets for the fsmonitor, for gpg or for
+ *  hooks. The format of a log can make git run gpg.
  */
 #define GIT_OPTIONS_FIXED \
         "--no-pager", "--no-replace-objects", \
@@ -51,8 +52,8 @@ struct oid;
         "-c", "log.showSignature=false"
 
 /** The time from SIGTERM to SIGKILL at the deadline of a git process that
- *  askai runs, in nanoseconds. It is one second. git removes its lock
- *  files after SIGTERM.
+ *  askai or askai-cli runs, in nanoseconds. It is one second. git removes
+ *  its lock files after SIGTERM.
  */
 static constexpr uint64_t GIT_GRACE = NS;
 

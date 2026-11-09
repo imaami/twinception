@@ -211,6 +211,15 @@ dedicated repository and `--no-history` to disable client persistence.
 Noninteractive runs do not persist by default; an explicit
 `--history-repo` enables it for scripts.
 
+askai-cli runs git with the same fixed options as askai, so git runs no
+hooks, fsmonitor or gpg program from the repository's configuration. The
+deadline of each git command is 10 seconds. At the deadline, askai-cli
+sends SIGTERM to git, which removes its lock files, and SIGKILL one
+second later. After each commit, askai-cli runs `git gc --auto` with
+git's default threshold, so git packs the loose objects once there are
+more than about 6700 of them. By default, git finishes that packing in
+the background after the gc command exits, outside the deadline.
+
 Submitted commands and prompts are committed before execution. Completed
 answers are saved separately after success; failed and cancelled input stays
 in recall without becoming a completed model turn. Restoring input never
