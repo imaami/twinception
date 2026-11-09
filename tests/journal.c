@@ -247,6 +247,36 @@ journal_test_private (char const *repo)
 	util_close(&dir);
 }
 
+/* Tests util_dir_open() and util_dir_next() on the repository @p repo. The
+ * stream reads every entry through a new descriptor, so the offset of the
+ * descriptor of the caller stays 0, and closedir() leaves that descriptor
+ * open. util_dir_open() returns EBADF for a bad descriptor and ENOTDIR for
+ * a file.
+ */
+static void
+journal_test_dir (char const *repo)
+{
+	int fd = open(repo, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	assert(fd >= 0);
+	int e = -1;
+	DIR *dir = util_dir_open(fd, &e);
+	assert(dir && !e);
+	size_t dots = 0;
+	size_t n = 0;
+	for (struct dirent *entry; (entry = util_dir_next(dir, &e)); ++n)
+		dots += !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..");
+	assert(!e && dots == 2 && n > 2 && !closedir(dir));
+	assert(lseek(fd, 0, SEEK_CUR) == 0 && fcntl(fd, F_GETFD) >= 0);
+	e = 0;
+	assert(!util_dir_open(-1, &e) && e == EBADF);
+	int file = openat(fd, "HEAD", O_RDONLY | O_CLOEXEC);
+	assert(file >= 0);
+	e = 0;
+	assert(!util_dir_open(file, &e) && e == ENOTDIR);
+	util_close(&file);
+	util_close(&fd);
+}
+
 /* Returns true if the readable bytes of @p out are @p text. */
 static bool
 journal_test_out (struct buf const *out,
@@ -716,13 +746,15 @@ main (int argc, char **argv)
 	journal_destroy(&j);
 	journal_test_path(argv[1]);
 	journal_test_private(argv[1]);
+	journal_test_dir(argv[1]);
 	journal_test_child_run();
 	journal_test_child_capture();
 	journal_test_child_end_why();
 	journal_test_unlock(argv[1]);
 	journal_test_argv(argv[1]);
 	puts("Journal loads, write gaps, legacy migration, reasoning verification, "
-	     "path walks, private files, child_run(), child_capture(), "
-	     "child_end_why(), journal_git(), lock removal and the argv of git: PASS");
+	     "path walks, private files, directory streams, child_run(), "
+	     "child_capture(), child_end_why(), journal_git(), lock removal and "
+	     "the argv of git: PASS");
 	return 0;
 }

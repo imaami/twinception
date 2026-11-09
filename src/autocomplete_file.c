@@ -13,6 +13,7 @@
 #include "compat.h"
 #include "dstr.h"
 #include "jb.h"
+#include "util.h"
 
 struct autocomplete_file {
 	struct autocomplete_matches found;
@@ -119,13 +120,8 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 	if (!dir)
 		return errno == ENOMEM ? ENOMEM : 0;
 	int e = 0;
-	while (file->found.count < array_size(file->found.matches)) {
-		errno = 0;
-		struct dirent *const entry = readdir(dir);
-		if (!entry) {
-			e = errno;
-			break;
-		}
+	struct dirent *entry;
+	while (file->found.count < array_size(file->found.matches) && (entry = util_dir_next(dir, &e))) {
 		struct cstr_view const name = cstr_view(entry->d_name);
 		if (!cstr_view_starts(name, basename) || !autocomplete_file_safe(name))
 			continue;

@@ -6,6 +6,7 @@
 #ifndef ASKAI_SRC_UTIL_H_
 #define ASKAI_SRC_UTIL_H_
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -336,6 +337,46 @@ util_mkdir_parents (char *path)
 		*slash = '/';
 	}
 	return e;
+}
+
+/** Opens a directory stream for the directory @p fd. The stream reads the
+ *  directory through a new descriptor that openat() opens for "." in
+ *  @p fd, so the offset of @p fd does not change, and closedir() closes
+ *  only the new descriptor. Returns the stream, or nullptr with the error
+ *  number of openat() or fdopendir() in @p *e.
+ */
+static inline DIR *
+util_dir_open (int  fd,
+               int *e)
+{
+	*e = 0;
+	int at = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (at < 0) {
+		*e = errno;
+		return nullptr;
+	}
+	DIR *dir = fdopendir(at);
+	if (!dir) {
+		*e = errno;
+		close(at);
+	}
+	return dir;
+}
+
+/** Returns the next entry of the directory stream @p dir, or nullptr at
+ *  the end of the directory or after an error. Sets @p *e to 0 or to the
+ *  error number of readdir().
+ */
+static inline struct dirent *
+util_dir_next (DIR *dir,
+               int *e)
+{
+	/* readdir() returns nullptr at the end and after an error, and only
+	 * an error sets errno. */
+	errno = 0;
+	struct dirent *entry = readdir(dir);
+	*e = entry ? 0 : errno;
+	return entry;
 }
 
 /** Block every signal but those that faults raise in the calling thread,

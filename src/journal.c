@@ -493,23 +493,11 @@ journal_job_find (struct journal     *j,
 static int
 journal_jobs_scan (struct journal *j)
 {
-	int fd = fcntl(j->jobs_fd, F_DUPFD_CLOEXEC, 3);
-	if (fd < 0)
-		return errno;
-	DIR *directory = fdopendir(fd);
-	if (!directory) {
-		int e = errno;
-		close(fd);
+	int e;
+	DIR *directory = util_dir_open(j->jobs_fd, &e);
+	if (!directory)
 		return e;
-	}
-	int e = 0;
-	for (;;) {
-		errno = 0;
-		struct dirent *entry = readdir(directory);
-		if (!entry) {
-			e = errno;
-			break;
-		}
+	for (struct dirent *entry; (entry = util_dir_next(directory, &e)); ) {
 		struct hexid id;
 		if (hexid_init(&id, cstr_view(entry->d_name)))
 			continue;
