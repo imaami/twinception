@@ -1776,14 +1776,14 @@ test_nullptr (void)
 	struct seen_read *read = seen_read_create(&src, out, &e);
 	CHECK(read && !e);
 	struct review *r = fresh();
-	struct seen_lines const one = { 1, 1 };
+	struct seen_lines const one = { 1, 1, 0 };
 	CHECK(review_pending_add(nullptr, read, one, 1) == EFAULT);
 	CHECK(review_pending_add(r, nullptr, one, 1) == EFAULT);
 	CHECK(pending(r, read, (struct cstr_view){ nullptr, 2 }, 0, SIZE_MAX, 1) == EFAULT);
 	/* No line adds nothing, and lines outside the read are refused. */
 	CHECK(!review_pending_add(r, read, (struct seen_lines){}, 1));
-	CHECK(review_pending_add(r, read, (struct seen_lines){ 1, 2 }, 1) == EINVAL);
-	CHECK(review_pending_add(r, read, (struct seen_lines){ 2, 1 }, 1) == EINVAL);
+	CHECK(review_pending_add(r, read, (struct seen_lines){ 1, 2, 0 }, 1) == EINVAL);
+	CHECK(review_pending_add(r, read, (struct seen_lines){ 2, 1, 0 }, 1) == EINVAL);
 	CHECK(review_pending_log(nullptr) == EFAULT);
 	review_pending_drop(nullptr);
 	struct dstr d = DSTR_INIT;

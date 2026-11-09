@@ -19,6 +19,15 @@
  * their output with a struct call_source (src/mcp.h), and the slot of the
  * call stores a copy of it, a struct seen_read (seen_read_create()).
  *
+ * A findings call and a compact call show nothing that a finding can
+ * cite. Such a call takes no place in the ring. The ring stores only its
+ * number and its tool, apart from the calls, for the last SEEN_NUMBERS
+ * such calls (seen_keep_number()), so that the refusal of the call names
+ * why the call is not evidence. A resumed ask call records the calls that
+ * askai made before it restarted (seen_resume()). seen_find() returns
+ * SEEN_RESTARTED for such a call and SEEN_DROPPED for a call that left the
+ * ring.
+ *
  * The storage of a dropped result stays for the next call in the same
  * place of the ring. The storage of dropped arguments goes back to the
  * thread's stash (src/buf.h).
@@ -33,6 +42,7 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "mcp.h"
+#include "util.h"
 
 struct json_object;
 
@@ -41,6 +51,8 @@ enum {
 	                            most */
 	SEEN_NAME_MAX = 1024,  /**< bytes of a repository name or a path in
 	                            a struct call_source, at most */
+	SEEN_NUMBERS  = 1024,  /**< findings and compact calls whose numbers
+	                            the ring of an ask call stores, at most */
 };
 
 /** The bytes of the arguments and results of the calls in the ring, at
@@ -51,9 +63,21 @@ static constexpr size_t SEEN_BYTES = 16U << 20;
 /** The flags of a call in the ring. */
 enum seen_flag : uint16_t {
 	SEEN_FAILED    = 1U << 0,  /**< the call failed */
-	SEEN_TOO_LARGE = 1U << 1,  /**< the arguments and the result were larger
-	                                than TOOL_TEXT_MAX, so the ring stores
-	                                neither */
+	SEEN_TOO_LARGE = 1U << 1,  /**< the arguments and the result were
+	                                larger than TOOL_TEXT_MAX, so the ring
+	                                stores neither */
+};
+
+/** Where seen_find() found a call. */
+enum seen_where : uint8_t {
+	SEEN_KEPT,       /**< the ring contains the call */
+	SEEN_NUMBER,     /**< a findings or compact call, whose number and
+	                      tool only the ring stores (seen_keep_number()) */
+	SEEN_DROPPED,    /**< the call left the ring for newer calls */
+	SEEN_RESTARTED,  /**< askai made the call before it restarted */
+	SEEN_MISSING,    /**< the ring contains no call of the number: the
+	                      call did not run, or no call has the number
+	                      yet */
 };
 
 /** A position in the numbered lines of an output. seen_lines() counts the
@@ -75,11 +99,13 @@ struct seen_read {
 };
 
 /** The first and the last line of a file that a window showed whole, or 0
- *  and 0 for no line.
+ *  and 0 for no line, and the offset of the first of them in the window.
  */
 struct seen_lines {
 	uint32_t first;
 	uint32_t last;
+	uint32_t at;     /**< offset of the start of line first from the start
+	                      of the window */
 };
 
 /** A call in the ring. */
@@ -92,8 +118,11 @@ struct seen_call {
 	struct dstr       ids;      /**< the identifiers of the material as a
 	                                 JSON object, or empty */
 	uint64_t          output;   /**< bytes of the whole output */
-	uint64_t          skip;     /**< offset of the window in the output */
-	struct seen_lines lines;    /**< the lines that the window showed whole */
+	uint32_t          skip;     /**< offset of the window in the output,
+	                                 at most TOOL_OUTPUT_MAX */
+	struct seen_lines lines;    /**< the lines that the window showed
+	                                 whole. The window is at the start of
+	                                 result. */
 	uint32_t          number;   /**< N of the stamp cN */
 	uint32_t          turn;     /**< the turn whose answer made the call */
 	uint32_t          tool;     /**< the registry ID of the tool, or
@@ -104,15 +133,27 @@ struct seen_call {
 	uint16_t          flags;    /**< enum seen_flag */
 };
 
+/** A findings call or a compact call, of which the ring stores only the
+ *  number and the tool.
+ */
+struct seen_number {
+	uint32_t number;  /**< N of the stamp cN */
+	uint32_t tool;    /**< the registry ID of the tool */
+};
+
 /** The ring of an ask call. calls[(head + i) % SEEN_CALLS] is the call i of
- *  the n calls in the ring, from the oldest.
+ *  the n calls in the ring, from the oldest. numbers are the findings and
+ *  compact calls, from the oldest.
  */
 struct seen {
 	struct seen_call calls[SEEN_CALLS];
-	size_t           bytes;  /**< bytes of the arguments and results of
-	                              the calls in the ring */
-	uint32_t         head;   /**< index of the oldest call */
-	uint32_t         n;      /**< calls in the ring */
+	UTIL_ARRAY(struct seen_number) numbers;
+	size_t           bytes;    /**< bytes of the arguments and results of
+	                                the calls in the ring */
+	uint32_t         resumed;  /**< the calls that askai made before it
+	                                restarted, or 0 (seen_resume()) */
+	uint16_t         head;     /**< index of the oldest call */
+	uint16_t         n;        /**< calls in the ring */
 };
 
 /** The parts of the result of a turn's call, in order: the window of the
@@ -189,7 +230,8 @@ seen_read_create_json (struct json_object const *obj,
 /**
  * Returns the first and the last of the numbered lines @p src that the
  * window of @p window bytes of the output @p out from @p skip on shows
- * whole. A line that the window shows only in part does not count. The
+ * whole, and the offset of the first of them from @p skip. A line that
+ * the window shows only in part does not count. The
  * last line may end without a newline, and it counts if the window ends at
  * the end of the numbered lines. @p mark is the position of the last
  * window. A window counts its lines from that position, or from the start
@@ -199,8 +241,9 @@ seen_read_create_json (struct json_object const *obj,
  *
  * Stores 0 in @p *e, EFAULT for a null @p mark or @p src, or for an @p out
  * with a length and no bytes, or EINVAL if the numbered lines are empty,
- * not within @p out, or more lines than src->first to src->last. Returns
- * no line for a null @p e.
+ * not within @p out, or more lines than src->first to src->last, or if the
+ * first line that the window shows whole starts more than UINT32_MAX bytes
+ * after @p skip. Returns no line for a null @p e.
  */
 extern struct seen_lines
 seen_lines (struct seen_mark         *mark,
@@ -220,7 +263,7 @@ seen_lines (struct seen_mark         *mark,
  * the arguments and the result are larger than TOOL_TEXT_MAX together, the
  * ring stores neither, and the flags of the call contain SEEN_TOO_LARGE.
  * The ring entry stores r->at + r->skip as the offset of the window in the
- * whole output.
+ * whole output, which is at most TOOL_OUTPUT_MAX.
  *
  * With r->read, the ring entry stores the identifiers of the file and the
  * lines that the window shows whole (seen_lines()). The function stores
@@ -229,8 +272,9 @@ seen_lines (struct seen_mark         *mark,
  *
  * Returns 0, EFAULT for a null argument other than @p lines, a null
  * r->parts or an r->out with a length and no bytes, EINVAL if the window
- * parts[0] is not the bytes of r->out from r->skip on or for the errors of
- * seen_lines(), or ENOMEM. On failure the ring does not contain the call,
+ * parts[0] is not the bytes of r->out from r->skip on, if r->at + r->skip
+ * is greater than TOOL_OUTPUT_MAX, or for the errors of seen_lines(), or
+ * ENOMEM. On failure the ring does not contain the call,
  * but calls may have left the ring.
  */
 extern int
@@ -239,9 +283,54 @@ seen_keep (struct seen              **p_seen,
            struct seen_result const  *r,
            struct seen_lines         *lines);
 
-/** Drops the calls of @p seen at the end of an ask call. The storage of
- *  the results stays for the next ask call that uses @p seen. Does
- *  nothing for a null @p seen.
+/** Records in the ring @p *p_seen the call @p number of the tool @p tool,
+ *  a findings call or a compact call, as its newest number. The call takes
+ *  no place among the calls of the ring. The ring stores no arguments and
+ *  no result of the call. The ring is allocated on the first call, and the
+ *  oldest number goes if the ring stores SEEN_NUMBERS numbers. Returns 0,
+ *  EFAULT for a null @p p_seen, or ENOMEM.
+ */
+extern int
+seen_keep_number (struct seen **p_seen,
+                  uint32_t      number,
+                  uint32_t      tool);
+
+/** Records in the ring @p *p_seen that askai made @p calls calls of the
+ *  ask call before it restarted, as a resumed ask call starts. The ring is
+ *  allocated if @p *p_seen is nullptr. Returns 0, EFAULT for a null
+ *  @p p_seen, or ENOMEM.
+ */
+extern int
+seen_resume (struct seen **p_seen,
+             uint32_t      calls);
+
+/**
+ * Finds the call @p number in @p seen. Stores the call in @p *call and
+ * returns SEEN_KEPT if the ring contains it. Otherwise stores nullptr. For
+ * a findings or compact call whose number the ring stores, the function
+ * stores the registry ID of its tool in @p *tool and returns SEEN_NUMBER.
+ * Otherwise it stores TOOL_MAX in @p *tool and returns SEEN_RESTARTED for a
+ * number from 1 to the calls before a restart (seen_resume()),
+ * SEEN_DROPPED for a later number before the oldest call of the ring, and
+ * SEEN_MISSING for any other number, also for a null @p seen. A call that
+ * did not run, such as a call after compact in its turn, is missing, and
+ * so is a number after the newest call.
+ */
+extern enum seen_where
+seen_find (struct seen const       *seen,
+           uint32_t                 number,
+           struct seen_call const **call,
+           uint32_t                *tool);
+
+/** Returns the number of the oldest call among the calls of @p seen, or 0
+ *  for a null @p seen or a ring without calls.
+ */
+extern uint32_t
+seen_oldest (struct seen const *seen);
+
+/** Drops the calls of @p seen at the end of an ask call, and the calls
+ *  before a restart. The storage of the results stays for the next ask
+ *  call that uses @p seen. Does nothing for a null @p seen.
  */
 extern void
 seen_clear (struct seen *seen);

@@ -5840,8 +5840,9 @@ mcp_req_result_put (struct mcp_req         *req,
 
 /* Write the result of the turn's call req->part into the upload, one slice
  * in each step. Then write its line of the trace, add the call to the ring
- * (src/seen.h) but not a findings or compact call, drop the call's output
- * and go on with the next call. A jobs call shows the lines of its job.
+ * (src/seen.h), a findings or compact call as its number only, drop the
+ * call's output and go on with the next call. A jobs call shows the lines
+ * of its job.
  */
 static void
 mcp_req_result_write (struct mcp_req *req)
@@ -5884,7 +5885,9 @@ mcp_req_result_write (struct mcp_req *req)
 	(void)mcp_req_trace(req, &c, slot->args, row->trace);
 	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED, r.output);
 	struct seen_lines lines = {};
-	if (row->metric != LENT_FINDINGS && row->metric != LENT_COMPACT) {
+	if (row->metric == LENT_FINDINGS || row->metric == LENT_COMPACT) {
+		e = seen_keep_number(&req->seen, r.number, r.tool);
+	} else {
 		/* seen_keep() scans the output up to the end of the window. */
 		loop_work(req->mcp->loop, LOOP_COPY, slot->skip + slot->window);
 		e = seen_keep(&req->seen, &req->calls[req->part], &r, &lines);
@@ -6163,6 +6166,9 @@ mcp_recover_back (struct loop           *loop,
 	struct cstr_view trace = jb_view(jb_get(state, "trace"));
 	if (!e && trace.len && cstr_view_cat(trace, &req->trace))
 		e = ENOMEM;
+	/* The calls of the earlier turns were made before the restart. */
+	if (!e)
+		e = seen_resume(&req->seen, (uint32_t)jb_int(jb_get(state, "calls"), 0));
 	struct handle who = {};
 	if (!e)
 		e = loop_handle(loop, req, HANDLE_REQ, &who);
@@ -6186,7 +6192,7 @@ mcp_recover_back (struct loop           *loop,
 	req->used = (uint32_t)jb_int(jb_get(state, "used"), 0);
 	req->context = (uint32_t)jb_int(jb_get(state, "context"), 0);
 	req->traced = (uint32_t)jb_int(jb_get(state, "traced"), 0);
-	req->calls_base = (uint32_t)jb_int(jb_get(state, "calls"), 0);
+	req->calls_base = req->seen->resumed;
 	req->reminded = (uint8_t)jb_int(jb_get(state, "reminded"), 0);
 	req->forced = (uint8_t)jb_int(jb_get(state, "forced"), 0);
 	mcp_req_flag(req, REQ_BRANCH, json_object_get_boolean(jb_get(local, "branch")));
@@ -6597,6 +6603,13 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	}
 	if (mcp_req_drained(req))
 		return;
+	/* The ring stores the number of the compact call, which shows nothing
+	 * that a finding can cite. */
+	int e = seen_keep_number(&req->seen, mcp_slot_call(slot), slot->tool);
+	if (e) {
+		mcp_req_fail(req, e);
+		return;
+	}
 	/* The trace line shows the name of the tool that the turn called. */
 	struct registry_tool const *t = mcp_slot_tool(slot);
 	struct ai_call const c = { .name = t->name };

@@ -189,11 +189,11 @@ seen_lines (struct seen_mark         *mark,
 	                   (hi == end && hi > lo && p[hi - 1] != '\n');
 	if (!n)
 		return (struct seen_lines){};
-	if (line + n - 1 > src->last) {
+	if (line + n - 1 > src->last || lo - skip > UINT32_MAX) {
 		*e = EINVAL;
 		return (struct seen_lines){};
 	}
-	return (struct seen_lines){ (uint32_t)line, (uint32_t)(line + n - 1) };
+	return (struct seen_lines){ (uint32_t)line, (uint32_t)(line + n - 1), (uint32_t)(lo - skip) };
 }
 
 /* Drops the oldest call of @p seen, which must contain a call. The storage
@@ -207,8 +207,20 @@ seen_drop (struct seen *seen)
 	buf_fini(&c->request);
 	(void)dstr_clear(&c->result);
 	(void)dstr_clear(&c->ids);
-	seen->head = (seen->head + 1) % SEEN_CALLS;
+	seen->head = (uint16_t)((seen->head + 1) % SEEN_CALLS);
 	--seen->n;
+}
+
+/* Drops the oldest calls of @p seen until a call of @p bytes bytes fits,
+ * and returns the place of the newest call. The newest call always fits.
+ */
+static struct seen_call *
+seen_room (struct seen *seen,
+           size_t       bytes)
+{
+	while (seen->n && (seen->n == SEEN_CALLS || seen->bytes + bytes > SEEN_BYTES))
+		seen_drop(seen);
+	return &seen->calls[(seen->head + seen->n) % SEEN_CALLS];
 }
 
 /* Appends the identifiers of the file @p src to @p ids as a JSON object
@@ -256,7 +268,8 @@ seen_keep (struct seen              **p_seen,
 		return EFAULT;
 	size_t const window = r->parts[0].len;
 	if (r->skip > r->out.len || window > r->out.len - r->skip ||
-	    (window && r->parts[0].data != r->out.data + r->skip))
+	    (window && r->parts[0].data != r->out.data + r->skip) ||
+	    r->at > TOOL_OUTPUT_MAX || r->skip > TOOL_OUTPUT_MAX - r->at)
 		return EINVAL;
 	int e = 0;
 	struct seen_read *read = r->read;
@@ -272,9 +285,7 @@ seen_keep (struct seen              **p_seen,
 	size_t const asked = buf_peek(request).len;
 	bool const large = asked + shown > TOOL_TEXT_MAX;
 	size_t const bytes = large ? 0 : asked + shown;
-	while (seen->n && (seen->n == SEEN_CALLS || seen->bytes + bytes > SEEN_BYTES))
-		seen_drop(seen);
-	struct seen_call *c = &seen->calls[(seen->head + seen->n) % SEEN_CALLS];
+	struct seen_call *c = seen_room(seen, bytes);
 	e = read ? seen_ids(&c->ids, &read->src) : 0;
 	if (!e && !large && !dstr_reserve(&c->result, shown))
 		e = ENOMEM;
@@ -291,7 +302,7 @@ seen_keep (struct seen              **p_seen,
 		*request = (struct buf){};
 	}
 	c->output = r->output;
-	c->skip = r->at + r->skip;
+	c->skip = (uint32_t)(r->at + r->skip);
 	c->lines = whole;
 	c->number = r->number;
 	c->turn = r->turn;
@@ -305,6 +316,77 @@ seen_keep (struct seen              **p_seen,
 	return 0;
 }
 
+int
+seen_keep_number (struct seen **p_seen,
+                  uint32_t      number,
+                  uint32_t      tool)
+{
+	if (!p_seen)
+		return EFAULT;
+	int e = 0;
+	if (!*p_seen)
+		*p_seen = seen_create(&e);
+	if (e)
+		return e;
+	struct seen *seen = *p_seen;
+	if (seen->numbers.n == SEEN_NUMBERS) {
+		--seen->numbers.n;
+		memmove(seen->numbers.items, seen->numbers.items + 1,
+		        seen->numbers.n * sizeof *seen->numbers.items);
+	}
+	if (util_grow(seen->numbers.items, seen->numbers.cap, seen->numbers.n + 1))
+		return ENOMEM;
+	seen->numbers.items[seen->numbers.n++] = (struct seen_number){ number, tool };
+	return 0;
+}
+
+int
+seen_resume (struct seen **p_seen,
+             uint32_t      calls)
+{
+	if (!p_seen)
+		return EFAULT;
+	int e = 0;
+	if (!*p_seen)
+		*p_seen = seen_create(&e);
+	if (!e)
+		(*p_seen)->resumed = calls;
+	return e;
+}
+
+enum seen_where
+seen_find (struct seen const       *seen,
+           uint32_t                 number,
+           struct seen_call const **call,
+           uint32_t                *tool)
+{
+	*call = nullptr;
+	*tool = TOOL_MAX;
+	if (!seen || !number)
+		return SEEN_MISSING;
+	for (size_t i = 0; i < seen->n; ++i) {
+		struct seen_call const *c = &seen->calls[(seen->head + i) % SEEN_CALLS];
+		if (c->number == number) {
+			*call = c;
+			return SEEN_KEPT;
+		}
+	}
+	for (size_t i = 0; i < seen->numbers.n; ++i)
+		if (seen->numbers.items[i].number == number) {
+			*tool = seen->numbers.items[i].tool;
+			return SEEN_NUMBER;
+		}
+	if (number <= seen->resumed)
+		return SEEN_RESTARTED;
+	return seen->n && number < seen_oldest(seen) ? SEEN_DROPPED : SEEN_MISSING;
+}
+
+uint32_t
+seen_oldest (struct seen const *seen)
+{
+	return seen && seen->n ? seen->calls[seen->head].number : 0;
+}
+
 void
 seen_clear (struct seen *seen)
 {
@@ -312,7 +394,9 @@ seen_clear (struct seen *seen)
 		return;
 	while (seen->n)
 		seen_drop(seen);
+	seen->numbers.n = 0;
 	seen->head = 0;
+	seen->resumed = 0;
 }
 
 size_t
@@ -326,6 +410,7 @@ seen_kept (struct seen const *seen)
 		bytes += c->request.cap + (dstr_get_block_count(&c->result) +
 		                           dstr_get_block_count(&c->ids)) * DSTR_BLK_SIZE;
 	}
+	bytes += seen->numbers.cap * sizeof *seen->numbers.items;
 	return bytes;
 }
 
@@ -340,6 +425,8 @@ seen_destroy (struct seen **p_seen)
 		dstr_cleanup(&seen->calls[i].result);
 		dstr_cleanup(&seen->calls[i].ids);
 	}
+	free(seen->numbers.items);
+	seen->numbers.items = nullptr;
 	free(seen);
 	*p_seen = nullptr;
 }

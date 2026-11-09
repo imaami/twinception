@@ -1,8 +1,9 @@
 /** @file Unit tests of the ring of the calls of an ask call (src/seen.c):
  *  the lines that a window shows whole, the calls that the ring stores and
  *  drops by count and by bytes, the newest call, calls too large to store,
- *  the offset of the window of a replayed result, and the reuse of the
- *  storage.
+ *  the offset of the window of a replayed result, the reuse of the storage,
+ *  the calls that the ring stores as numbers, the calls before a restart,
+ *  and the lookup of a call by number.
  */
 #include <errno.h>
 #include <stdio.h>
@@ -112,13 +113,19 @@ test_lines (void)
 	struct seen_mark mark = {};
 	struct seen_lines got = seen_lines(&mark, &src, o, 4 + 9 * 4, 9 * 2, &e);
 	CHECK(!e && got.first == 5 && got.last == 6 && mark.at == 4 + 9 * 4 && mark.line == 5);
+	CHECK(!got.at);
 	got = seen_lines(&mark, &src, o, 4 + 9 * 6, 9 * 2, &e);
 	CHECK(!e && got.first == 7 && got.last == 8 && mark.at == 4 + 9 * 6 && mark.line == 7);
 	got = seen_lines(&mark, &src, o, 4, 9 * 2, &e);
 	CHECK(!e && got.first == 1 && got.last == 2 && mark.at == 4 && mark.line == 1);
-	/* A mark in the middle of a line counts that line. */
+	/* A mark in the middle of a line counts that line. The first whole
+	 * line starts 6 bytes into the window. */
 	got = seen_lines(&mark, &src, o, 4 + 9 * 2 + 3, 9 * 2, &e);
-	CHECK(!e && got.first == 4 && got.last == 4 && mark.line == 3);
+	CHECK(!e && got.first == 4 && got.last == 4 && mark.line == 3 && got.at == 6);
+	/* A window from the start of the output shows the header first. */
+	mark = (struct seen_mark){};
+	got = seen_lines(&mark, &src, o, 0, SIZE_MAX, &e);
+	CHECK(!e && got.first == 1 && got.last == 9 && got.at == 4);
 
 	/* A last line without a newline counts only if the window shows its
 	 * end. */
@@ -248,7 +255,7 @@ test_keep (void)
 		.flags  = SEEN_FAILED,
 	};
 	struct seen *seen = nullptr;
-	struct seen_lines lines = { 1, 1 };
+	struct seen_lines lines = { 1, 1, 0 };
 	CHECK(!seen_keep(&seen, &request, &r, &lines));
 	CHECK(seen && seen->n == 1 && seen->head == 0);
 	/* The storage of the arguments moved into the ring. */
@@ -261,8 +268,8 @@ test_keep (void)
 	     "{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":\"src/a.c\",\"total\":9}");
 	CHECK(c->output == 1000 && c->skip == skip && c->number == 7 && c->turn == 3 &&
 	      c->tool == 5 && c->index == 2 && c->flags == SEEN_FAILED);
-	CHECK(c->lines.first == 3 && c->lines.last == 5);
-	CHECK(lines.first == 3 && lines.last == 5);
+	CHECK(c->lines.first == 3 && c->lines.last == 5 && !c->lines.at);
+	CHECK(lines.first == 3 && lines.last == 5 && !lines.at);
 	CHECK(seen->bytes == 100 + dstr_len(&c->result));
 	/* The caller passes the lines to the review record. */
 	CHECK(!review_pending_add(review, read, lines, r.turn));
@@ -311,7 +318,7 @@ test_keep (void)
 	struct cstr_view const abc = CSTR_VIEW("abc");
 	parts[0] = (struct cstr_view){ abc.data + 2, 2 };
 	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 2 };
-	lines = (struct seen_lines){ 1, 1 };
+	lines = (struct seen_lines){ 1, 1, 0 };
 	CHECK(seen_keep(&seen, &request, &r, &lines) == EINVAL && !lines.first && !lines.last);
 	parts[0] = (struct cstr_view){};
 	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 4 };
@@ -331,8 +338,16 @@ test_keep (void)
 	r = (struct seen_result){ .parts = parts };
 	CHECK(seen_keep(nullptr, &request, &r, &lines) == EFAULT);
 	CHECK(seen_keep(&seen, nullptr, &r, &lines) == EFAULT);
-	lines = (struct seen_lines){ 1, 1 };
+	lines = (struct seen_lines){ 1, 1, 0 };
 	CHECK(seen_keep(&seen, &request, nullptr, &lines) == EFAULT && !lines.first);
+	/* A window past TOOL_OUTPUT_MAX in the whole output. */
+	r = (struct seen_result){ .parts = parts, .at = TOOL_OUTPUT_MAX, .skip = 0 };
+	CHECK(!seen_keep(&seen, &request, &r, &lines));
+	request_of(&request, 10);
+	r = (struct seen_result){ .parts = parts, .out = abc, .at = TOOL_OUTPUT_MAX, .skip = 1 };
+	CHECK(seen_keep(&seen, &request, &r, &lines) == EINVAL);
+	r = (struct seen_result){ .parts = parts, .at = (uint64_t)TOOL_OUTPUT_MAX + 1 };
+	CHECK(seen_keep(&seen, &request, &r, &lines) == EINVAL);
 	/* Numbered lines that do not fit the output. */
 	struct seen_read *short_read = seen_read_create(&src, o, &e);
 	short_read->src.last = 4;
@@ -340,7 +355,7 @@ test_keep (void)
 	r = (struct seen_result){ .parts = parts, .out = o, .read = short_read };
 	CHECK(seen_keep(&seen, &request, &r, &lines) == EINVAL);
 	seen_read_destroy(&short_read);
-	CHECK(seen->n == 4 && buf_peek(&request).len == 10);
+	CHECK(seen->n == 5 && buf_peek(&request).len == 10 && call_at(seen, 4)->skip == TOOL_OUTPUT_MAX);
 	buf_fini(&request);
 
 	/* seen_clear() drops the calls. The storage of the results stays. */
@@ -435,11 +450,124 @@ test_drop (void)
 	seen_destroy(&seen);
 }
 
+/* Check that seen_find() finds the call @p number in @p seen @p where, a
+ * call exactly if SEEN_KEPT, and a tool other than TOOL_MAX exactly if
+ * SEEN_NUMBER.
+ */
+static void
+found (struct seen const *seen,
+       uint32_t           number,
+       enum seen_where    where,
+       int                line)
+{
+	struct seen_call const *c = (void *)1;
+	uint32_t tool = 0;
+	enum seen_where const got = seen_find(seen, number, &c, &tool);
+	if (got == where && (where == SEEN_KEPT ? c && c->number == number : !c) &&
+	    (where == SEEN_NUMBER) == (tool != TOOL_MAX))
+		return;
+	++failures;
+	fprintf(stderr, "%s:%d: c%u found %d, want %d\n", __FILE__, line, number, got, where);
+}
+
+/* seen_keep_number() stores the number and the tool of a findings or
+ * compact call, which takes no place among the calls of the ring.
+ * seen_find() finds the calls of the ring and those numbers, and tells
+ * the calls that left the ring, the calls before a restart and the calls
+ * that did not run apart.
+ */
+static void
+test_number (void)
+{
+	struct seen *seen = nullptr;
+	found(seen, 1, SEEN_MISSING, __LINE__);
+	CHECK(!seen_oldest(seen));
+	CHECK(!keep(&seen, 1, 10, CSTR_VIEW("one")));
+	CHECK(!seen_keep_number(&seen, 2, 7));
+	CHECK(!keep(&seen, 3, 10, CSTR_VIEW("three")));
+	CHECK(seen->n == 2 && call_at(seen, 0)->number == 1 && call_at(seen, 1)->number == 3);
+	CHECK(seen->numbers.n == 1 && seen->numbers.items[0].number == 2 &&
+	      seen->numbers.items[0].tool == 7);
+	CHECK(seen->bytes == 2 * 10 + dstr_len(&call_at(seen, 0)->result) +
+	                     dstr_len(&call_at(seen, 1)->result));
+	struct seen_call const *c = (void *)1;
+	uint32_t tool = 0;
+	CHECK(seen_find(seen, 2, &c, &tool) == SEEN_NUMBER && !c && tool == 7);
+	CHECK(seen_find(seen, 3, &c, &tool) == SEEN_KEPT && c->number == 3 && tool == TOOL_MAX);
+	found(seen, 0, SEEN_MISSING, __LINE__);
+	found(seen, 4, SEEN_MISSING, __LINE__);
+	CHECK(seen_oldest(seen) == 1);
+	/* Calls 4 and 5 did not run. */
+	CHECK(!keep(&seen, 6, 10, CSTR_VIEW("six")));
+	found(seen, 4, SEEN_MISSING, __LINE__);
+	found(seen, 6, SEEN_KEPT, __LINE__);
+	/* Numbers take no place in the ring: after SEEN_CALLS numbers, the
+	 * ring still contains its calls, and the oldest number is there. */
+	for (uint32_t k = 7; k < 7 + SEEN_CALLS; ++k)
+		CHECK(!seen_keep_number(&seen, k, 8));
+	CHECK(seen->n == 3 && seen_oldest(seen) == 1 && seen->numbers.n == SEEN_CALLS + 1);
+	found(seen, 1, SEEN_KEPT, __LINE__);
+	found(seen, 2, SEEN_NUMBER, __LINE__);
+	found(seen, SEEN_CALLS + 6, SEEN_NUMBER, __LINE__);
+	found(seen, SEEN_CALLS + 7, SEEN_MISSING, __LINE__);
+	/* Calls leave the ring for newer calls. A number older than the oldest
+	 * call is still a number. */
+	for (uint32_t k = 7 + SEEN_CALLS; k < 7 + 2 * SEEN_CALLS; ++k)
+		CHECK(!keep(&seen, k, 10, CSTR_VIEW("k")));
+	CHECK(seen->n == SEEN_CALLS && seen_oldest(seen) == 7 + SEEN_CALLS);
+	found(seen, 1, SEEN_DROPPED, __LINE__);
+	found(seen, 6, SEEN_DROPPED, __LINE__);
+	found(seen, 2, SEEN_NUMBER, __LINE__);
+	found(seen, 7, SEEN_NUMBER, __LINE__);
+	/* The ring stores the last SEEN_NUMBERS numbers. */
+	uint32_t const first = 7 + 2 * SEEN_CALLS;
+	for (uint32_t k = first; k < first + SEEN_NUMBERS; ++k)
+		CHECK(!seen_keep_number(&seen, k, 9));
+	CHECK(seen->numbers.n == SEEN_NUMBERS && seen->numbers.items[0].number == first);
+	found(seen, 2, SEEN_DROPPED, __LINE__);
+	found(seen, first, SEEN_NUMBER, __LINE__);
+	found(seen, first + SEEN_NUMBERS - 1, SEEN_NUMBER, __LINE__);
+	seen_clear(seen);
+	found(seen, 6, SEEN_MISSING, __LINE__);
+	found(seen, first, SEEN_MISSING, __LINE__);
+	CHECK(!seen_oldest(seen) && !seen->bytes && !seen->numbers.n);
+	seen_destroy(&seen);
+
+	/* A resumed ask call. askai made calls 1 to 10 before it restarted. */
+	CHECK(!seen_resume(&seen, 10));
+	CHECK(seen && !seen->n && seen->resumed == 10);
+	found(seen, 1, SEEN_RESTARTED, __LINE__);
+	found(seen, 10, SEEN_RESTARTED, __LINE__);
+	found(seen, 11, SEEN_MISSING, __LINE__);
+	CHECK(!keep(&seen, 11, 10, CSTR_VIEW("eleven")));
+	found(seen, 10, SEEN_RESTARTED, __LINE__);
+	found(seen, 11, SEEN_KEPT, __LINE__);
+	CHECK(seen_oldest(seen) == 11);
+	/* Calls after the restart that left the ring. */
+	for (uint32_t k = 12; k < 12 + SEEN_CALLS; ++k)
+		CHECK(!keep(&seen, k, 10, CSTR_VIEW("k")));
+	found(seen, 11, SEEN_DROPPED, __LINE__);
+	found(seen, 9, SEEN_RESTARTED, __LINE__);
+	/* A ring that exists keeps its calls when the resume point changes. */
+	CHECK(!seen_resume(&seen, 11) && seen->resumed == 11 && seen->n == SEEN_CALLS);
+	found(seen, 11, SEEN_RESTARTED, __LINE__);
+	/* seen_clear() forgets the restart. */
+	seen_clear(seen);
+	CHECK(!seen->resumed);
+	found(seen, 5, SEEN_MISSING, __LINE__);
+	seen_destroy(&seen);
+
+	/* Null arguments. */
+	CHECK(seen_keep_number(nullptr, 1, 1) == EFAULT);
+	CHECK(seen_resume(nullptr, 1) == EFAULT);
+}
+
 int
 main (void)
 {
 	test_lines();
 	test_keep();
 	test_drop();
+	test_number();
 	return check_report("seen");
 }
