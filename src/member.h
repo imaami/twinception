@@ -426,7 +426,7 @@ member_table_find (struct member_table       *table,
  * and writes the record of the member if no record names the member: git
  * creates the record of a new member, or adds the login to the record of
  * the person of the name. git reads the records again after each write.
- * Returns as member_table_find() does, also EIO after MEMBER_TRIES writes
+ * Returns as member_table_find() does, also EIO after STORE_TRIES writes
  * that lost a race to other writers. A name of a Unix user that is uid-N
  * until a later lookup works gets no record: the claim looks up the name
  * again, or fails with EAGAIN while that lookup runs or after it fails.

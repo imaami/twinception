@@ -302,27 +302,6 @@ store_spawn (struct store const *store,
 	return *e ? nullptr : mcp_slot_spawn(slot, &run.c, e);
 }
 
-struct child *
-store_start (struct store const *store,
-             struct loop        *loop,
-             struct list        *list,
-             enum store_cmd      cmd,
-             char const *const  *words,
-             char const         *ref,
-             struct span         in,
-             void              (*done) (struct child *c),
-             void               *owner,
-             int                *e)
-{
-	if (!loop) {
-		*e = EINVAL;
-		return nullptr;
-	}
-	struct git_run run;
-	*e = store_command(store, &run, cmd, words, ref, in, loop->now);
-	return *e ? nullptr : child_create(loop, list, &run.c, done, owner, e);
-}
-
 int
 store_run (struct store const *store,
            enum store_cmd      cmd,
@@ -330,40 +309,30 @@ store_run (struct store const *store,
            char const         *ref,
            struct span         in,
            struct buf         *out,
-           int                *status)
+           struct child_end   *end)
 {
-	if (!out || !status)
+	if (!out || !end)
 		return EINVAL;
+	*end = (struct child_end){};
 	struct git_run run;
-	int e = store_command(store, &run, cmd, words, ref, in, loop_clock());
-	if (e)
-		return e;
-	size_t const had = buf_peek(out).len;
-	struct child_end end;
-	e = child_capture(&run.c, child_fds(), out, &end);
-	*status = end.status;
-	if (e != EFBIG)
-		return e;
-	/* For an output longer than STORE_MAX, child_capture() appends the
-	 * first STORE_MAX bytes and returns EFBIG. store_run() removes those
-	 * bytes and returns ENOBUFS. */
-	buf_cut(out, had, buf_peek(out).len - had);
-	return ENOBUFS;
+	int const e = store_command(store, &run, cmd, words, ref, in, loop_clock());
+	return e ? e : child_capture(&run.c, child_fds(), out, end);
 }
 
 int
 store_init (struct store const *store,
             struct buf         *out,
-            int                *status)
+            struct child_end   *end)
 {
-	if (!store || !out || !status)
+	if (!store || !out || !end)
 		return EINVAL;
+	/* For a repository that exists, no git runs. */
+	*end = (struct child_end){ .code = CLD_EXITED };
 	if (flock(store->fd, LOCK_EX))
 		return errno;
-	*status = 0;
 	int e = 0;
 	if (!store_exists(store))
-		e = store_run(store, STORE_CREATE, nullptr, nullptr, (struct span){}, out, status);
+		e = store_run(store, STORE_CREATE, nullptr, nullptr, (struct span){}, out, end);
 	(void)flock(store->fd, LOCK_UN);
 	return e;
 }
@@ -371,7 +340,7 @@ store_init (struct store const *store,
 void
 store_drop (struct child **p_c)
 {
-	/* store_spawn() sets a grace only for a git that writes. */
+	/* store_command() sets a grace only for a git that writes. */
 	if (p_c && *p_c && (*p_c)->grace)
 		child_release(p_c);
 	else

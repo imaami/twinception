@@ -4,9 +4,11 @@
  *  starts, also for services that start at the same time, the lookups of a
  *  table, with git on a loop and names from blockers, which find, create,
  *  adopt, extend and refuse member records in new repositories, the reads
- *  of the records of a table, and the list of the members and their
- *  branches with its notices. The test replaces mcp_slot_spawn() and
- *  mcp_slot_loop(), which src/store.c calls.
+ *  of the records of a table, the list of the members and their branches
+ *  with its notices, two tables that claim one record at the same time,
+ *  and the reasons of a git that fails at the start and on a loop. The
+ *  test replaces mcp_slot_spawn() and mcp_slot_loop(), which src/store.c
+ *  calls.
  */
 #define _GNU_SOURCE /* memmem() */
 #include <errno.h>
@@ -93,10 +95,10 @@ test_record (struct store const *store,
 	int n = snprintf(line, sizeof line, "%s\n", ref);
 	CHECK(n > 0 && (size_t)n < sizeof line);
 	buf_clear(out);
-	int status = -1;
+	struct child_end end;
 	CHECK(!store_run(store, STORE_READ, nullptr, nullptr,
-	                 (struct span){ (unsigned char *)line, (size_t)n }, out, &status) &&
-	      !status);
+	                 (struct span){ (unsigned char *)line, (size_t)n }, out, &end) &&
+	      !end.status);
 }
 
 /* Returns true if the commit of @p ref in @p store contains @p text, and
@@ -180,7 +182,7 @@ test_names (void)
 	CHECK(kind == MEMBER_PERSON && cstr_view_equal(name, CSTR_VIEW("first.last@ad")) &&
 	      branch == MEMBER_BRANCH_NOTES);
 	/* The longest ref fills MEMBER_REF. */
-	m = (struct member){ MEMBER_PERSON };
+	m = (struct member){ .kind = MEMBER_PERSON };
 	memset(m.name, 'n', UTIL_WORD_MAX);
 	member_ref(&m, MEMBER_BRANCH_FINDINGS, ref);
 	CHECK(strlen(ref) == MEMBER_REF - 1 && !strncmp(ref, "refs/heads/person/nnn", 21) &&
@@ -321,10 +323,10 @@ test_exists (struct store const *store,
 {
 	char const *const words[] = { ref };
 	struct buf out = {};
-	int status = -1;
-	CHECK(!store_run(store, STORE_HEAD, words, nullptr, (struct span){}, &out, &status));
+	struct child_end end;
+	CHECK(!store_run(store, STORE_HEAD, words, nullptr, (struct span){}, &out, &end));
 	buf_fini(&out);
-	return !status;
+	return !end.status;
 }
 
 static void
@@ -443,7 +445,7 @@ test_table (struct store const           *store,
 	CHECK(!strcmp(waits[0].member.name, "dave") && !strcmp(waits[2].member.name, "dave"));
 	CHECK(test_has(store, "refs/askai/members/dave", "Login: identity dave\n"));
 
-	/* A claim ends with EIO after MEMBER_TRIES writes that lose a race,
+	/* A claim ends with EIO after STORE_TRIES writes that lose a race,
 	 * such as with the lock file of another writer. */
 	char lock[4096];
 	CHECK(snprintf(lock, sizeof lock, "%s/refs/askai/members/frank.lock",
@@ -503,10 +505,10 @@ test_note (struct store const *store,
 	};
 	struct buf in = {};
 	struct buf out = {};
-	int status = -1;
+	struct child_end end;
 	CHECK(!store_commit_input(&commit, &in));
-	CHECK(!store_run(store, STORE_COMMIT, nullptr, ref, buf_peek(&in), &out, &status) &&
-	      !status);
+	CHECK(!store_run(store, STORE_COMMIT, nullptr, ref, buf_peek(&in), &out, &end) &&
+	      !end.status);
 	buf_fini(&files);
 	buf_fini(&in);
 	buf_fini(&out);
@@ -531,9 +533,9 @@ test_tip (struct store const *store,
 {
 	char const *const words[] = { ref };
 	struct buf out = {};
-	int status = -1;
-	CHECK(!store_run(store, STORE_HEAD, words, nullptr, (struct span){}, &out, &status) &&
-	      !status);
+	struct child_end end;
+	CHECK(!store_run(store, STORE_HEAD, words, nullptr, (struct span){}, &out, &end) &&
+	      !end.status);
 	struct span const s = buf_peek(&out);
 	struct oid tip;
 	CHECK(!oid_init_line(&tip, (struct cstr_view){ (char const *)s.ptr, s.len }));
@@ -854,9 +856,9 @@ test_session (char const                 *path,
 		return;
 	struct buf in = {};
 	struct buf out = {};
-	int status = -1;
-	CHECK(!store_run(store, STORE_CREATE, nullptr, nullptr, (struct span){}, &out, &status) &&
-	      !status);
+	struct child_end end;
+	CHECK(!store_run(store, STORE_CREATE, nullptr, nullptr, (struct span){}, &out, &end) &&
+	      !end.status);
 	struct store_commit const commit = {
 		.committer = { CSTR_VIEW("old"), CSTR_VIEW("askai") },
 		.message = CSTR_VIEW("Create the session"),
@@ -866,8 +868,8 @@ test_session (char const                 *path,
 		.tip = &(struct oid){},
 	};
 	CHECK(!store_commit_input(&commit, &in));
-	CHECK(!store_run(store, STORE_COMMIT, nullptr, commit.ref, buf_peek(&in), &out, &status) &&
-	      !status);
+	CHECK(!store_run(store, STORE_COMMIT, nullptr, commit.ref, buf_peek(&in), &out, &end) &&
+	      !end.status);
 	buf_fini(&in);
 	buf_fini(&out);
 	store_destroy(&store);
@@ -981,6 +983,196 @@ test_registry (char const *dir)
 	store_destroy(&store);
 }
 
+/* Two tables of two services claim one new login at the same time. Each
+ * table finds the login first, so that the claims start their commits in
+ * one turn of the loop. The commit that loses the race reads the records
+ * again and finds the record of the other commit.
+ */
+static void
+test_race (struct store const           *store,
+           struct member_registry const *reg,
+           struct blocker               *blockers,
+           struct list                  *children)
+{
+	struct member_registry *other = test_registry_make(store, "bro", "gpu5", 0, "");
+	int e = -1;
+	struct member_table *tables[2] = {
+		member_table_create(reg, &test_loop, blockers, children, &e),
+		other ? member_table_create(other, &test_loop, blockers, children, &e) : nullptr,
+	};
+	CHECK(tables[0] && tables[1]);
+	if (!tables[0] || !tables[1]) {
+		member_table_destroy(&tables[0]);
+		member_registry_destroy(&other);
+		return;
+	}
+	struct member_login const login = test_login(MEMBER_PERSON, "identity zoe", "zoe");
+	struct member_wait waits[2] = { { .done = test_ended }, { .done = test_ended } };
+	for (size_t i = 0; i < array_size(tables); ++i)
+		test_find(tables[i], member_table_find, &login, 0, MEMBER_PERSON, "zoe", "");
+	CHECK(!test_exists(store, "refs/askai/members/zoe"));
+	unsigned const before = ended;
+	for (size_t i = 0; i < array_size(tables); ++i)
+		CHECK(member_table_claim(tables[i], &login, &waits[i]) == EINPROGRESS);
+	CHECK(!list_is_empty(children));
+	test_until(before + 2);
+	for (size_t i = 0; i < array_size(waits); ++i)
+		CHECK(!waits[i].e && waits[i].member.kind == MEMBER_PERSON &&
+		      !strcmp(waits[i].member.name, "zoe") && !*waits[i].why);
+	CHECK(test_has(store, "refs/askai/members/zoe", "\n\nAdd the person zoe\n\nKind: person\n"
+	               "Login: identity zoe\n"));
+	CHECK(!test_in(store, "refs/askai/members/zoe", "\nparent ", false));
+	CHECK(test_in(store, "refs/askai/members/zoe", "\ncommitter gpu1 <askai> ", false) !=
+	      test_in(store, "refs/askai/members/zoe", "\ncommitter gpu5 <askai> ", false));
+	/* Both tables answer later finds and claims without git. */
+	for (size_t i = 0; i < array_size(tables); ++i) {
+		CHECK(!member_table_claim(tables[i], &login, &waits[i]) && !waits[i].e &&
+		      !strcmp(waits[i].member.name, "zoe"));
+		member_table_destroy(&tables[i]);
+	}
+	CHECK(list_is_empty(children));
+	member_registry_destroy(&other);
+}
+
+/* Ends a wait whose result the test reads from the wait. */
+static void
+test_ignored (struct member_wait *)
+{
+}
+
+/* The reasons of a git that fails, for the registry with git on the calling
+ * thread and for a table with git on the loop: an exit with a status other
+ * than 0, the errors of a git that writes, a signal, an output longer than
+ * STORE_MAX, no git to run, and a git that runs longer than GIT_RUN_NS. A
+ * script named git in a new directory @p dir/fake-NAME at the start of
+ * PATH runs in place of git, and a PATH of only an empty directory names
+ * no git. The lookups that fail leave no lookup on the table, and the next
+ * claim of the login writes the record.
+ */
+static void
+test_ends (char const                   *dir,
+           struct store const           *store,
+           struct member_registry const *reg,
+           struct blocker               *blockers,
+           struct list                  *children)
+{
+	enum { FAIL, KILL, CUT, LATE, NONE, FAKES };
+	struct {
+		char const *name;
+		char const *script;
+	} const fakes[FAKES] = {
+		[FAIL] = { "fail", "echo 'fatal: boom' >&2\nexit 3\n" },
+		[KILL] = { "kill", "kill -KILL $$\n" },
+		[CUT]  = { "cut",  "exec head -c 16777217 /dev/zero\n" },
+		[LATE] = { "late", "exec sleep 60\n" },
+		[NONE] = { "none", nullptr },
+	};
+	char *old = strdup(getenv("PATH"));
+	CHECK(old);
+	if (!old)
+		return;
+	static char paths[FAKES][8192];
+	for (size_t i = 0; i < FAKES; ++i) {
+		char sub[4096], file[4096];
+		CHECK(snprintf(sub, sizeof sub, "%s/fake-%s", dir, fakes[i].name) > 0 &&
+		      !mkdir(sub, 0700));
+		CHECK(snprintf(paths[i], sizeof paths[i], fakes[i].script ? "%s:%s" : "%s", sub,
+		               old) > 0);
+		if (!fakes[i].script)
+			continue;
+		CHECK(snprintf(file, sizeof file, "%s/git", sub) > 0);
+		FILE *f = fopen(file, "we");
+		CHECK(f && fprintf(f, "#!/bin/sh\n%s", fakes[i].script) > 0 && !fclose(f));
+		CHECK(!chmod(file, 0700));
+	}
+
+	/* The read of a table that runs longer than GIT_RUN_NS ends while the
+	 * other cases run. */
+	int e = -1;
+	struct member_table *late = member_table_create(reg, &test_loop, blockers, children, &e);
+	struct member_table *table = member_table_create(reg, &test_loop, blockers, children, &e);
+	CHECK(late && table);
+	if (!late || !table) {
+		member_table_destroy(&late);
+		free(old);
+		return;
+	}
+	struct member_wait slow = { .done = test_ignored };
+	struct member_login login = test_login(MEMBER_PERSON, "identity gil", "gil");
+	unsigned const before = ended;
+	CHECK(!setenv("PATH", paths[LATE], 1));
+	CHECK(member_table_claim(late, &login, &slow) == EINPROGRESS);
+	CHECK(!setenv("PATH", old, 1));
+
+	/* The registry reads the records of a session that exists, and creates
+	 * a new repository. */
+	char const *const reads[] = {
+		[FAIL] = "Could not read the member records: git exited with status 3.",
+		[KILL] = "Could not read the member records: git was killed by signal 9.",
+		[CUT]  = "Could not read the member records: git wrote more than 16 MiB.",
+	};
+	for (size_t i = 0; i < array_size(reads); ++i) {
+		CHECK(!setenv("PATH", paths[i], 1));
+		test_registry_make(store, "bro", "gpu1", EIO, reads[i]);
+		CHECK(!setenv("PATH", old, 1));
+	}
+	CHECK(!setenv("PATH", paths[NONE], 1));
+	test_registry_make(store, "bro", "gpu1", EIO, "Could not read the member records: No such "
+	                   "file or directory.");
+	CHECK(!setenv("PATH", old, 1));
+	char path[4096], why[256];
+	CHECK(snprintf(path, sizeof path, "%s/new.git", dir) > 0);
+	struct store *made = store_create(path, why, sizeof why, &e);
+	CHECK(made && !e);
+	CHECK(!setenv("PATH", paths[FAIL], 1));
+	test_registry_make(made, "bro", "gpu1", EIO, "Could not create the repository: fatal: boom");
+	CHECK(!setenv("PATH", old, 1));
+	CHECK(!store_exists(made));
+	store_destroy(&made);
+
+	/* The reads and the commits of a table. A git that cannot start ends
+	 * the lookup at once. */
+	struct member_wait wait = { .done = test_ended };
+	login = test_login(MEMBER_PERSON, "identity hal", "hal");
+	test_turn();
+	CHECK(!setenv("PATH", paths[FAIL], 1));
+	CHECK(member_table_claim(table, &login, &wait) == EINPROGRESS);
+	CHECK(!setenv("PATH", old, 1));
+	test_until(before + 1);
+	CHECK(wait.e == EIO && !strcmp(wait.why, reads[FAIL]));
+	test_find(table, member_table_claim, &login, 0, MEMBER_PERSON, "hal", "");
+	CHECK(test_has(store, "refs/askai/members/hal", "Login: identity hal\n"));
+	login = test_login(MEMBER_PERSON, "identity ian", "ian");
+	test_turn();
+	CHECK(!setenv("PATH", paths[NONE], 1));
+	CHECK(member_table_claim(table, &login, &wait) == EIO && wait.e == EIO);
+	CHECK(!setenv("PATH", old, 1));
+	CHECK(!strcmp(wait.why, "Cannot run git: No such file or directory."));
+	test_find(table, member_table_find, &login, 0, MEMBER_PERSON, "ian", "");
+	CHECK(!setenv("PATH", paths[FAIL], 1));
+	unsigned const found = ended;
+	CHECK(member_table_claim(table, &login, &wait) == EINPROGRESS);
+	CHECK(!setenv("PATH", old, 1));
+	test_until(found + 1);
+	CHECK(wait.e == EIO && !strcmp(wait.why, "Could not write refs/askai/members/ian: fatal: "
+	                                         "boom"));
+	CHECK(!test_exists(store, "refs/askai/members/ian"));
+	test_find(table, member_table_claim, &login, 0, MEMBER_PERSON, "ian", "");
+	CHECK(test_has(store, "refs/askai/members/ian", "Login: identity ian\n"));
+
+	/* The read that runs too long ends the lookup, and writes no record. */
+	uint64_t const deadline = loop_clock() + GIT_RUN_NS + 10 * NS;
+	while (slow.e == EINPROGRESS && loop_clock() < deadline)
+		CHECK(!loop_turn(&test_loop, deadline));
+	CHECK(slow.e == EIO && !strcmp(slow.why, "Could not read the member records: git took "
+	                                         "longer than 10 s, and was stopped."));
+	CHECK(!test_exists(store, "refs/askai/members/gil"));
+	member_table_destroy(&late);
+	member_table_destroy(&table);
+	CHECK(list_is_empty(children));
+	free(old);
+}
+
 int
 main (int    argc,
       char **argv)
@@ -1016,11 +1208,11 @@ main (int    argc,
 	/* Another service of the agent adopts its record, and another agent
 	 * gets a record. The session stays. */
 	struct buf head = {};
-	int status = -1;
+	struct child_end end;
 	char const *const bro[] = { "refs/askai/members/bro" };
-	CHECK(!store_run(store, STORE_HEAD, bro, nullptr, (struct span){}, &head, &status));
+	CHECK(!store_run(store, STORE_HEAD, bro, nullptr, (struct span){}, &head, &end));
 	struct member_registry *again = test_registry_make(store, "bro", "gpu2", 0, "");
-	CHECK(!store_run(store, STORE_HEAD, bro, nullptr, (struct span){}, &head, &status));
+	CHECK(!store_run(store, STORE_HEAD, bro, nullptr, (struct span){}, &head, &end));
 	struct span const heads = buf_peek(&head);
 	CHECK(heads.len == 2 * (OID_SHA1 + 1) && !memcmp(heads.ptr, heads.ptr + OID_SHA1 + 1,
 	                                                  OID_SHA1));
@@ -1046,6 +1238,8 @@ main (int    argc,
 	list_init(&children);
 	test_table(store, reg, blockers, &children);
 	test_list(store, reg, blockers, &children);
+	test_race(store, reg, blockers, &children);
+	test_ends(argv[1], store, reg, blockers, &children);
 	test_blocked(store, reg, &children);
 
 	/* The agent of a service adopts the record of an agent identity. The

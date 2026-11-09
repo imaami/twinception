@@ -2,8 +2,9 @@
  *  command, the checks of store_command(), store_spawn(), store_run() and
  *  store_lock(), the input of git fast-import, the commits that git makes
  *  from that input in a new bare repository, the common directory of a
- *  clone and of a worktree, and the result of store_run() for each way
- *  that git ends. The test replaces mcp_slot_spawn() and mcp_slot_loop().
+ *  clone and of a worktree, and the result and the end record of
+ *  store_run() for each way that git ends. The test replaces
+ *  mcp_slot_spawn() and mcp_slot_loop().
  */
 #define _GNU_SOURCE /* memmem() */
 #include <errno.h>
@@ -815,18 +816,19 @@ test_common (char const *parent)
 }
 
 /* store_run() runs git on the calling thread, after the lock check of a
- * commit, and appends the output to its buffer. The ref
- * refs/heads/notes/t of @p store is at the commit @p tip.
+ * commit, appends the output to its buffer, and writes how git ended. The
+ * ref refs/heads/notes/t of @p store is at the commit @p tip.
  */
 static void
 test_run (struct store const *store,
           struct oid const   *tip)
 {
 	struct buf out = {};
-	int status = -1;
+	struct child_end end;
 	CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
 	CHECK(!store_run(store, STORE_HEAD, (char const *const[]){ "refs/heads/notes/t" }, nullptr,
-	                 (struct span){}, &out, &status) && !status);
+	                 (struct span){}, &out, &end));
+	CHECK(end.code == CLD_EXITED && !end.status && !end.flags);
 	struct span s = buf_peek(&out);
 	CHECK(s.len == OID_SHA1 + 2 && s.ptr[0] == 'x' && !memcmp(s.ptr + 1, tip->hex, OID_SHA1));
 	buf_clear(&out);
@@ -845,21 +847,21 @@ test_run (struct store const *store,
 	};
 	struct buf in = {};
 	CHECK(!store_commit_input(&commit, &in));
-	CHECK(!store_run(store, STORE_COMMIT, nullptr, commit.ref, buf_peek(&in), &out, &status) &&
-	      status == 1);
+	CHECK(!store_run(store, STORE_COMMIT, nullptr, commit.ref, buf_peek(&in), &out, &end) &&
+	      end.code == CLD_EXITED && end.status == 1);
 	buf_fini(&in);
 	CHECK(access(lock, F_OK) && errno == ENOENT);
 	CHECK(store_raced(buf_peek(&out)));
 	buf_fini(&out);
 
-	/* Refusals run no git. */
-	CHECK(store_run(store, STORE_COMMIT, nullptr, nullptr, (struct span){}, &out, &status) ==
+	/* Refusals run no git, and the end record of a refusal is all zero. */
+	CHECK(store_run(store, STORE_COMMIT, nullptr, nullptr, (struct span){}, &out, &end) ==
+	      EINVAL && !end.code && !end.status && !end.flags);
+	CHECK(store_run(store, STORE_HEAD, nullptr, nullptr, (struct span){}, &out, &end) ==
 	      EINVAL);
-	CHECK(store_run(store, STORE_HEAD, nullptr, nullptr, (struct span){}, &out, &status) ==
-	      EINVAL);
-	CHECK(store_run(nullptr, STORE_READ, nullptr, nullptr, (struct span){}, &out, &status) ==
-	      EINVAL);
-	CHECK(store_run(store, STORE_READ, nullptr, nullptr, (struct span){}, nullptr, &status) ==
+	CHECK(store_run(nullptr, STORE_READ, nullptr, nullptr, (struct span){}, &out, &end) ==
+	      EINVAL && !end.code);
+	CHECK(store_run(store, STORE_READ, nullptr, nullptr, (struct span){}, nullptr, &end) ==
 	      EINVAL);
 	CHECK(store_run(store, STORE_READ, nullptr, nullptr, (struct span){}, &out, nullptr) ==
 	      EINVAL);
@@ -868,11 +870,12 @@ test_run (struct store const *store,
 }
 
 /* store_init() creates a new repository in @p parent once. store_run()
- * returns 0 with the exit status of a git that fails, ENOBUFS for an
- * output longer than STORE_MAX with the first STORE_MAX bytes in its
- * buffer, EIO for a git that a signal killed, and ETIMEDOUT for a git that
- * runs past its deadline. In the last three cases, a script named git in a
- * new directory at the start of PATH runs in place of git.
+ * returns 0 with the exit status of a git that fails in the end record,
+ * EFBIG and CHILD_CUT for an output longer than STORE_MAX with the first
+ * STORE_MAX bytes in its buffer, EIO for a git that a signal killed, and
+ * ETIMEDOUT and CHILD_LATE for a git that runs past its deadline. In the
+ * last three cases, a script named git in a new directory at the start of
+ * PATH runs in place of git.
  */
 static void
 test_ends (char const *parent)
@@ -886,27 +889,35 @@ test_ends (char const *parent)
 	if (!store)
 		return;
 	struct buf out = {};
-	int status = -1;
-	CHECK(!store_init(store, &out, &status) && !status && store_exists(store));
+	struct child_end end;
+	CHECK(!store_init(store, &out, &end) && end.code == CLD_EXITED && !end.status &&
+	      store_exists(store));
 	buf_clear(&out);
-	status = -1;
-	CHECK(!store_init(store, &out, &status) && !status && !buf_peek(&out).len);
-	CHECK(store_init(nullptr, &out, &status) == EINVAL);
-	CHECK(store_init(store, nullptr, &status) == EINVAL);
+	/* For a repository that exists, no git runs, and the end is an exit
+	 * with status 0. */
+	end = (struct child_end){ .status = -1, .flags = CHILD_LATE };
+	CHECK(!store_init(store, &out, &end) && end.code == CLD_EXITED && !end.status &&
+	      !end.flags && !buf_peek(&out).len);
+	CHECK(store_init(nullptr, &out, &end) == EINVAL);
+	CHECK(store_init(store, nullptr, &end) == EINVAL);
 	CHECK(store_init(store, &out, nullptr) == EINVAL);
 	CHECK(!store_run(store, STORE_HEAD, (char const *const[]){ "refs/heads/none" }, nullptr,
-	                 (struct span){}, &out, &status) && status == 128);
+	                 (struct span){}, &out, &end) && end.code == CLD_EXITED &&
+	      end.status == 128);
 
-	/* After each error, out contains only the byte that the test puts
-	 * there before the run. */
+	/* After each error, out begins with the byte that the test puts there
+	 * before the run. After a cut, the first STORE_MAX bytes of the output
+	 * follow it. git exits after a cut, and SIGKILL ends the other two. */
 	struct {
 		char const *name;
 		char const *script;
 		int         e;
+		uint32_t    flags;
+		size_t      len;
 	} const fakes[] = {
-		{ "cut",  "exec head -c 16777217 /dev/zero\n", ENOBUFS },
-		{ "kill", "kill -KILL $$\n",                   EIO },
-		{ "late", "exec sleep 60\n",                   ETIMEDOUT },
+		{ "cut",  "exec head -c 16777217 /dev/zero\n", EFBIG,     CHILD_CUT,  1 + STORE_MAX },
+		{ "kill", "kill -KILL $$\n",                   EIO,       0,          1 },
+		{ "late", "exec sleep 60\n",                   ETIMEDOUT, CHILD_LATE, 1 },
 	};
 	char *old = strdup(getenv("PATH"));
 	CHECK(old);
@@ -921,10 +932,13 @@ test_ends (char const *parent)
 		CHECK(snprintf(env, sizeof env, "%s:%s", dir, old) > 0 && !setenv("PATH", env, 1));
 		buf_clear(&out);
 		CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
-		e = store_run(store, STORE_READ, nullptr, nullptr, (struct span){}, &out, &status);
+		e = store_run(store, STORE_READ, nullptr, nullptr, (struct span){}, &out, &end);
 		CHECK(!setenv("PATH", old, 1));
 		struct span const got = buf_peek(&out);
-		CHECK(e == fakes[i].e && got.len == 1 && *got.ptr == 'x');
+		CHECK(e == fakes[i].e && end.flags == fakes[i].flags && got.len == fakes[i].len &&
+		      *got.ptr == 'x');
+		CHECK(fakes[i].flags & CHILD_CUT ? end.code == CLD_EXITED && !end.status
+		                                 : end.code == CLD_KILLED && end.status == SIGKILL);
 	}
 	free(old);
 	buf_fini(&out);

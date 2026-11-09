@@ -14,6 +14,7 @@
 #include "buf.h"
 #include "child.h"
 #include "dstr.h"
+#include "git_run.h"
 #include "hexid.h"
 #include "list.h"
 #include "log.h"
@@ -34,7 +35,6 @@
 #define LEGACY  HEADS "notes/"
 
 enum {
-	MEMBER_TRIES = 4,   /* writes of a record in a claim, at most */
 	MEMBER_SHOWN = 32,  /* members that a notice names, at most */
 };
 
@@ -137,30 +137,44 @@ struct member_table {
 	                                            replaced the records, or 0 */
 };
 
+/* The claim of the member of a login. Each step (member_claim_step())
+ * decides the member with the records, and writes the input of git for
+ * the commit of a record that the member needs. The registry runs the
+ * steps with git on the calling thread as askai starts
+ * (member_registry_claim()), and a lookup runs them with git on the loop
+ * of its table (member_lookup_step()).
+ */
+struct member_claim {
+	struct member_login login;            /* the login, and once the records
+	                                         decide, the kind and the name
+	                                         of the member */
+	uint32_t            writes;           /* the commits of the record so
+	                                         far, at most STORE_TRIES */
+	char                ref[MEMBER_REF];  /* the ref of the record that the
+	                                         last step wrote the input
+	                                         for */
+};
+
 /* The flags of a lookup. */
 enum {
-	LOOKUP_NAME    = 1u << 0,  /* the job name is with a blocker */
-	LOOKUP_WRITE   = 1u << 1,  /* a wait needs the record of the member, so
-	                              git writes a missing record */
-	LOOKUP_DONE    = 1u << 2,  /* the lookup ended, and the later lookups of
-	                              the login get its result */
-	LOOKUP_GUESS   = 1u << 3,  /* the name is uid-N, because the lookup of
-	                              the name of the user failed in a way that
-	                              a retry can fix */
-	LOOKUP_REFUSED = 1u << 4,  /* the lookup ended with EPERM, the reason in
-	                              why */
+	LOOKUP_NAME  = 1u << 0,  /* the job name is with a blocker */
+	LOOKUP_WRITE = 1u << 1,  /* a wait needs the record of the member, so
+	                            git writes a missing record */
+	LOOKUP_GUESS = 1u << 2,  /* the name is uid-N, because the lookup of
+	                            the name of the user failed in a way that a
+	                            retry can fix */
 };
 
 /* The lookup of a login whose member the records of a table do not name,
  * on the loop of the table. The table reads the records
- * (member_table_read()), and the records decide the member
- * (member_lookup_decide()). If a wait needs a record that does not exist,
- * git writes the record, and the table reads the records again. For a
- * Unix login that no record names, the job name first looks up the name
- * of the user on a blocker. A lookup that ends with the member, also a
- * member without a record, or with a refusal stays on the table, and the
- * later lookups of the login get that result without git. Any other end
- * removes the lookup from the table, unless the job name is with a
+ * (member_table_read()), and the steps of the claim of the lookup decide
+ * the member (member_lookup_step()). If a wait needs a record that does
+ * not exist, git writes the record, and the table reads the records again.
+ * For a Unix login that no record names, the job name first looks up the
+ * name of the user on a blocker. A lookup that ends with the member, also
+ * a member without a record, or with a refusal stays on the table, and
+ * the later lookups of the login get that result without git. Any other
+ * end removes the lookup from the table, unless the job name is with a
  * blocker, so that no uid has two jobs with the blockers. The lookup is
  * freed once it is off the table and the job name is not with a blocker.
  */
@@ -175,13 +189,19 @@ struct member_lookup {
 	                                              table */
 	struct child          *git;                /* the git that writes the
 	                                              record, or nullptr */
+	struct member_claim    claim;              /* the login, the member
+	                                              once the records decide,
+	                                              and the record that git
+	                                              writes */
 	uint32_t               flags;
-	struct member_login    login;              /* the login, and once the
-	                                              records decide, the kind
-	                                              and the name of the
-	                                              member */
-	uint8_t                writes;             /* the records that git
-	                                              wrote */
+	int16_t                result;             /* EINPROGRESS until the
+	                                              lookup ends, then the
+	                                              result of the end. After
+	                                              EPERM, the later lookups
+	                                              of the login return the
+	                                              refusal. After any other
+	                                              result, a find returns
+	                                              the member. */
 	char                   user[MEMBER_NAME];  /* the name of the Unix
 	                                              user, as the job name
 	                                              finds it */
@@ -354,53 +374,15 @@ member_records_parse (struct member_records *r)
 	return 0;
 }
 
-/* Writes to the @p size bytes at @p buf why git failed, after store_run()
- * returned the error @p e and the exit status @p status, as
- * child_end_why() says it for a git on a loop. Returns a view of the
- * text, or an empty view if git exited with status 0.
+/* Writes to the @p len bytes at @p why that askai could not @p verb
+ * @p object: with the last line of @p out, the errors of a git that
+ * writes, or else with @p because.
  */
-static struct cstr_view
-member_run_why (int     e,
-                int     status,
-                char   *buf,
-                size_t  size)
-{
-	switch (e) {
-	case 0:
-		return status ? util_format_view(buf, size, "git exited with status %d.", status)
-		              : (struct cstr_view){};
-	case ETIMEDOUT:
-		return util_format_view(buf, size, "git took longer than %" PRIu64 " s, and was "
-		                        "stopped.", GIT_RUN_NS / NS);
-	case ENOBUFS:
-		return util_format_view(buf, size, "git wrote more than %d MiB.", STORE_MAX >> 20);
-	default:
-		return util_format_view(buf, size, "%s.", strerror(e));
-	}
-}
-
-/* Writes to the @p size bytes at @p buf why git @p c, which ran on a loop,
- * failed, as child_end_why() says it. Returns a view of the text, or an
- * empty view if git exited with status 0.
- */
-static struct cstr_view
-member_child_why (struct child const *c,
-                  char               *buf,
-                  size_t              size)
-{
-	if ((c->end.flags & (CHILD_CUT | CHILD_LATE)) == CHILD_CUT)
-		return member_run_why(ENOBUFS, 0, buf, size);
-	return child_end_why(&c->end, "git", GIT_RUN_NS, c->max, buf, size);
-}
-
-/* Writes to the @p len bytes at @p why that askai could not do @p what:
- * with the last line of @p out, the errors of a git that writes, or else
- * with @p because, why git failed. Returns EIO.
- */
-static int
+static void
 member_failed (char             *why,
                size_t            len,
-               char const       *what,
+               char const       *verb,
+               char const       *object,
                struct span       out,
                struct cstr_view  because)
 {
@@ -408,22 +390,88 @@ member_failed (char             *why,
 	                                                                 out.len });
 	if (!text.len)
 		text = because;
-	util_format(why, len, "Could not %s: %.*s", what, (int)util_clip(text.data, text.len, 200),
-	            text.data);
+	util_format(why, len, "Could not %s %s: %.*s", verb, object,
+	            (int)util_clip(text.data, text.len, 200), text.data);
+}
+
+/* Returns 0 if git, which ended as @p end says, exited with status 0, and
+ * @p e is 0. @p e is the error that kept git from running or its output
+ * from being read, such as an error of store_run(), or 0. Otherwise the
+ * function writes that askai could not @p verb @p object, as
+ * member_failed() does with the output @p out, and with why git failed as
+ * child_end_why() says it, or else the text of @p e. Then it returns EIO.
+ */
+static int
+member_git_result (char                   *why,
+                   size_t                  len,
+                   char const             *verb,
+                   char const             *object,
+                   struct span             out,
+                   int                     e,
+                   struct child_end const *end)
+{
+	char text[MEMBER_WHY];
+	struct cstr_view because = child_end_why(end, "git", GIT_RUN_NS, STORE_MAX, text,
+	                                         sizeof text);
+	/* end->code is 0 if git did not run, and child_end_why() returns an
+	 * empty text for an exit with status 0. Then the reason is the text
+	 * of @p e. */
+	if (e && (!end->code || !because.len))
+		because = util_format_view(text, sizeof text, "%s.", strerror(e));
+	if (!because.len)
+		return 0;
+	member_failed(why, len, verb, object, out, because);
 	return EIO;
 }
 
-/* Writes to the @p len bytes at @p why why askai could not read the member
- * records, for the error @p e of member_records_parse(). Returns @p e.
+/* Returns the result of a commit of a record on the ref @p ref. git ended
+ * as @p end says, with the output @p out, and @p e is the error that kept
+ * git from running, or 0. Returns 0, EAGAIN if the output shows that
+ * another writer changed the ref first, or else EIO with the reason in the
+ * @p len bytes at @p why (member_git_result()).
  */
 static int
-member_records_invalid (int     e,
-                        char   *why,
-                        size_t  len)
+member_commit_result (char                   *why,
+                      size_t                  len,
+                      char const             *ref,
+                      struct span             out,
+                      int                     e,
+                      struct child_end const *end)
 {
-	if (e)
-		util_format(why, len, "Could not read the member records: %s.",
-		            e == EIO ? "the output of git is not valid" : strerror(e));
+	e = member_git_result(why, len, "write", ref, out, e, end);
+	return e && store_raced(out) ? EAGAIN : e;
+}
+
+/* Replaces the records of @p r with the records in @p out, the whole
+ * output of a git that listed them with member_list. git ended as @p end
+ * says, after the error @p e as member_git_result() reads it. The storage of
+ * @p out moves to the function, and @p out is empty after the call.
+ * Returns 0, or EIO or ENOMEM with the reason in the @p len bytes at
+ * @p why. On failure the records stay as they are.
+ */
+static int
+member_records_take (struct member_records  *r,
+                     struct buf             *out,
+                     int                     e,
+                     struct child_end const *end,
+                     char                   *why,
+                     size_t                  len)
+{
+	static char const records[] = "the member records";
+	struct member_records got = { .out = *out };
+	*out = (struct buf){};
+	int const ended = member_git_result(why, len, "read", records, (struct span){}, e, end);
+	e = ended ? ended : member_records_parse(&got);
+	if (!e) {
+		struct member_records const old = *r;
+		*r = got;
+		got = old;
+	} else if (!ended) {
+		member_failed(why, len, "read", records, (struct span){},
+		              e == EIO ? CSTR_VIEW("the output of git is not valid.")
+		                       : CSTR_VIEW("Out of memory."));
+	}
+	member_records_fini(&got);
 	return e;
 }
 
@@ -436,15 +484,10 @@ member_records_read (struct member_records *r,
                      char                  *why,
                      size_t                 len)
 {
-	buf_clear(&r->out);
-	int status = -1;
-	int const e = store_run(store, STORE_REFS, member_list, nullptr, (struct span){}, &r->out,
-	                        &status);
-	char text[MEMBER_WHY];
-	struct cstr_view const because = member_run_why(e, status, text, sizeof text);
-	if (because.len)
-		return member_failed(why, len, "read the member records", (struct span){}, because);
-	return member_records_invalid(member_records_parse(r), why, len);
+	struct buf out = {};
+	struct child_end end;
+	int const e = store_run(store, STORE_REFS, member_list, nullptr, (struct span){}, &out, &end);
+	return member_records_take(r, &out, e, &end, why, len);
 }
 
 /* Returns true if @p logins, Login values separated by commas, contains
@@ -520,30 +563,11 @@ member_commit_input (struct member_registry const *reg,
 	return store_commit_input(&commit, in);
 }
 
-/* Returns the result of a git that wrote a record on the ref @p ref, with
- * the output @p out: 0 for an empty @p because, which is why git failed,
- * EAGAIN if @p out shows that another writer changed the ref first, or
- * else EIO with the reason in the @p len bytes at @p why.
- */
-static int
-member_wrote (char const       *ref,
-              struct span       out,
-              struct cstr_view  because,
-              char             *why,
-              size_t            len)
-{
-	if (!because.len)
-		return 0;
-	if (store_raced(out))
-		return EAGAIN;
-	char what[sizeof "write " + MEMBER_REF];
-	util_format(what, sizeof what, "write %s", ref);
-	return member_failed(why, len, what, out, because);
-}
-
 /* Runs git on the calling thread to commit @p in, the input of a commit
  * of a record of @p reg on the ref @p ref, and frees @p in. @p e is the
- * error of making @p in. Returns as member_wrote() does.
+ * error of making @p in. Returns 0, EAGAIN if the output of git shows that
+ * another writer changed the ref first, or else EIO with the reason in the
+ * @p len bytes at @p why.
  */
 static int
 member_commit (struct member_registry const *reg,
@@ -554,13 +578,11 @@ member_commit (struct member_registry const *reg,
                size_t                        len)
 {
 	struct buf out = {};
-	int status = -1;
+	struct child_end end = {};
 	if (!e)
-		e = store_run(reg->store, STORE_COMMIT, nullptr, ref, buf_peek(in), &out, &status);
+		e = store_run(reg->store, STORE_COMMIT, nullptr, ref, buf_peek(in), &out, &end);
 	buf_fini(in);
-	char text[MEMBER_WHY];
-	e = member_wrote(ref, buf_peek(&out), member_run_why(e, status, text, sizeof text), why,
-	                 len);
+	e = member_commit_result(why, len, ref, buf_peek(&out), e, &end);
 	buf_fini(&out);
 	return e;
 }
@@ -602,19 +624,6 @@ member_record_input (struct member_registry const *reg,
 		t[n++] = (struct store_trailer){ key, cstr_view(login->text) };
 	util_format(ref, MEMBER_REF, MEMBERS "%s", login->name);
 	return member_commit_input(reg, ref, cstr_view(message), t, n, &tip, in);
-}
-
-/* Writes to the @p len bytes at @p why that other writers changed the
- * record of @p login first on every try. Returns EIO.
- */
-static int
-member_raced (struct member_login const *login,
-              char                      *why,
-              size_t                     len)
-{
-	util_format(why, len, "Could not write the member record of %s. Other askai services "
-	            "changed the member record at the same time.", login->name);
-	return EIO;
 }
 
 /* Returns the length of the kind of a login, "uid " or "identity ",
@@ -682,72 +691,92 @@ member_adopt (struct member_entry const *entry,
 }
 
 /*
- * Decides the member of @p login with the records @p r: the member of the
- * record of the login, or of the record of the name login->name that the
- * login adopts (member_adopt()). The function writes the member to
- * @p member, empty if no record names it, and the record of the name to
- * @p *p_entry. Returns 0, also if no record names the login and
- * login->name is empty; ENOENT if no record of the name exists, so that
- * the login makes a new member; EEXIST if askai adds the login to the
- * record of the name; or EPERM with the reason in the @p len bytes at
- * @p why.
+ * Decides the member of claim->login with the records @p r of the registry
+ * @p reg, as one step of the claim: the member of the record of the login,
+ * or of the record of the name login->name that the login adopts
+ * (member_adopt()). Returns 0 with the member in claim->login, also with
+ * the name "" for a Unix login that no record names and whose name is not
+ * known yet. If no record names the member yet, the step writes to @p in
+ * the input of git for the commit of the record: the record of a new
+ * member named login->name, or the login added to the record of the person
+ * of that name. It writes the ref of the record to claim->ref, counts the
+ * commit in claim->writes, and returns EINPROGRESS. For a null @p in, as
+ * for a find, the step returns 0 instead, with the member that the commit
+ * makes. Otherwise the step returns EPERM if the record of the name
+ * refuses the login, or EIO after STORE_TRIES commits or if the input
+ * cannot be made, with the reason in the @p len bytes at @p why, and
+ * @p in stays empty.
  */
 static int
-member_decide (struct member_records const  *r,
-               struct member_login const    *login,
-               struct member                *member,
-               struct member_entry const   **p_entry,
-               char                         *why,
-               size_t                        len)
+member_claim_step (struct member_claim          *claim,
+                   struct member_registry const *reg,
+                   struct member_records const  *r,
+                   struct buf                   *in,
+                   char                         *why,
+                   size_t                        len)
 {
-	*member = (struct member){};
+	struct member_login *login = &claim->login;
 	struct member_entry const *entry = member_records_login(r, cstr_view(login->text));
 	int e = 0;
 	if (!entry && *login->name) {
 		entry = member_records_name(r, cstr_view(login->name));
 		e = entry ? member_adopt(entry, login, why, len) : ENOENT;
 	}
-	if (!e && entry)
-		member_of(member, &entry->info);
-	*p_entry = entry;
-	return e;
+	switch (e) {
+	case 0:
+		if (entry) {
+			struct member member;
+			member_of(&member, &entry->info);
+			login->kind = member.kind;
+			memcpy(login->name, member.name, sizeof login->name);
+		}
+		return 0;
+	case ENOENT:
+	case EEXIST:
+		/* No record names the member yet, and a find writes none. */
+		if (!in)
+			return 0;
+		break;
+	default:
+		return e;
+	}
+	if (claim->writes == STORE_TRIES) {
+		util_format(why, len, "Could not write the member record of %s. Other askai services "
+		            "changed the member record at the same time.", login->name);
+		return EIO;
+	}
+	e = member_record_input(reg, login, entry, claim->ref, in);
+	if (!e) {
+		++claim->writes;
+		return EINPROGRESS;
+	}
+	buf_fini(in);
+	return member_git_result(why, len, "write", claim->ref, (struct span){}, e,
+	                         &(struct child_end){});
 }
 
 /*
- * Finds the member of @p login in the records of the registry @p reg, with
- * git on the calling thread. If no record names the member and
- * login->name is not empty, the function makes the member: it creates the
- * record of the name, adopts it, or adds the login to it. After each
- * write, and after a race with another writer, the function reads the
- * records again. The records that the function reads last are in @p r.
- * Writes the member to @p member, which is empty if no record names the
- * member and login->name is empty. Returns 0, EPERM if the record of the
- * name refuses the login, or EIO or ENOMEM, with the reason in the @p len
- * bytes at @p why.
+ * Runs the steps of @p claim with the records of @p reg and with git on the
+ * calling thread, as askai starts, before any loop: git commits the record
+ * that a step writes, and then reads the records into reg->records again.
+ * Returns as member_claim_step() does, but never EINPROGRESS, or EIO or
+ * ENOMEM with the reason in the @p len bytes at @p why.
  */
 static int
-member_claim (struct member_registry const *reg,
-              struct member_login const    *login,
-              struct member_records        *r,
-              struct member                *member,
-              char                         *why,
-              size_t                        len)
+member_registry_claim (struct member_registry *reg,
+                       struct member_claim    *claim,
+                       char                   *why,
+                       size_t                  len)
 {
-	*member = (struct member){};
-	for (size_t writes = 0; ; ++writes) {
-		struct member_entry const *entry = nullptr;
-		int e = member_records_read(r, reg->store, why, len);
-		if (!e)
-			e = member_decide(r, login, member, &entry, why, len);
-		if (e != ENOENT && e != EEXIST)
-			return e;
-		if (writes == MEMBER_TRIES)
-			return member_raced(login, why, len);
-		char ref[MEMBER_REF];
+	for (;;) {
 		struct buf in = {};
-		e = member_record_input(reg, login, entry, ref, &in);
-		e = member_commit(reg, ref, &in, e, why, len);
-		if (e && e != EAGAIN)
+		int e = member_claim_step(claim, reg, &reg->records, &in, why, len);
+		if (e != EINPROGRESS)
+			return e;
+		e = member_commit(reg, claim->ref, &in, 0, why, len);
+		if (!e || e == EAGAIN)
+			e = member_records_read(&reg->records, reg->store, why, len);
+		if (e)
 			return e;
 	}
 }
@@ -871,8 +900,11 @@ member_session_name (char const *path,
 }
 
 /* Creates the session record of @p reg if no record of the session
- * exists, and reads the records into reg->records. Returns 0, or EINVAL,
- * EIO or ENOMEM with a reason in the @p len bytes at @p why.
+ * exists, and reads the records into reg->records. While another service
+ * writes the record, a commit fails on the lock file of the record, and
+ * the read after the commit can come before the record. The next try then
+ * finds the record or makes it. Returns 0, or EINVAL, EIO or ENOMEM with a
+ * reason in the @p len bytes at @p why.
  */
 static int
 member_registry_session_read (struct member_registry *reg,
@@ -881,7 +913,7 @@ member_registry_session_read (struct member_registry *reg,
 {
 	struct member_records *r = &reg->records;
 	int e = member_records_read(r, reg->store, why, len);
-	for (size_t tries = 1; !e && !r->session.data && tries < MEMBER_TRIES; ++tries) {
+	for (size_t tries = 0; !e && !r->session.data && tries < STORE_TRIES; ++tries) {
 		struct hexid id;
 		e = hexid_make(&id);
 		if (e) {
@@ -926,21 +958,17 @@ member_registry_start (struct member_registry *reg,
                        size_t                  len)
 {
 	struct buf out = {};
-	int status = -1;
-	int e = store_init(reg->store, &out, &status);
-	char text[MEMBER_WHY];
-	struct cstr_view const because = member_run_why(e, status, text, sizeof text);
-	if (because.len)
-		e = member_failed(why, len, "create the repository", buf_peek(&out), because);
+	struct child_end end = {};
+	int e = store_init(reg->store, &out, &end);
+	e = member_git_result(why, len, "create", "the repository", buf_peek(&out), e, &end);
 	buf_fini(&out);
 	if (!e)
 		e = member_registry_session_read(reg, why, len);
 	if (e)
 		return e;
-	struct member_login agent = { .kind = MEMBER_AGENT };
-	util_format(agent.name, sizeof agent.name, "%s", reg->session.agent);
-	struct member member;
-	e = member_claim(reg, &agent, &reg->records, &member, why, len);
+	struct member_claim agent = { .login = { .kind = MEMBER_AGENT } };
+	util_format(agent.login.name, sizeof agent.login.name, "%s", reg->session.agent);
+	e = member_registry_claim(reg, &agent, why, len);
 	if (e)
 		return e == EPERM ? EINVAL : e;
 	/* The records stay as they are from here on. */
@@ -1076,13 +1104,14 @@ member_lookup_give (struct member_lookup const *lookup,
                     struct member_wait         *wait,
                     int                         e)
 {
+	struct member_login const *login = &lookup->claim.login;
 	wait->e = e;
-	wait->member = (struct member){ .kind = lookup->login.kind };
+	wait->member = (struct member){ .kind = login->kind };
 	wait->why[0] = '\0';
 	if (e)
 		util_format(wait->why, sizeof wait->why, "%s", lookup->why);
 	else
-		memcpy(wait->member.name, lookup->login.name, sizeof wait->member.name);
+		memcpy(wait->member.name, login->name, sizeof wait->member.name);
 	return e;
 }
 
@@ -1096,17 +1125,16 @@ member_lookup_end (struct member_lookup *lookup,
                    int                   e)
 {
 	if (e && e != ECANCELED)
-		LOG(LOG_WARN, "member: %s: %s", lookup->login.text, lookup->why);
-	uint32_t const refused = e == EPERM ? LOOKUP_REFUSED : 0;
-	bool const kept = !e || refused;
-	lookup->flags = (lookup->flags & ~LOOKUP_WRITE) | LOOKUP_DONE | refused;
+		LOG(LOG_WARN, "member: %s: %s", lookup->claim.login.text, lookup->why);
+	lookup->result = (int16_t)e;
+	lookup->flags &= ~LOOKUP_WRITE;
 	struct list waits;
 	list_init(&waits);
 	list_transplant(&waits, &lookup->waits);
 	struct list *node;
 	list_foreach (node, &waits)
 		(void)member_lookup_give(lookup, container_of(node, struct member_wait, hook), e);
-	if (!kept && !(lookup->flags & LOOKUP_NAME))
+	if (e && e != EPERM && !(lookup->flags & LOOKUP_NAME))
 		member_lookup_drop(lookup);
 	while (!list_is_empty(&waits)) {
 		struct member_wait *wait = container_of(waits.next, struct member_wait, hook);
@@ -1151,6 +1179,28 @@ member_spawn_result (int     e,
 	return e == EBUSY ? EAGAIN : EIO;
 }
 
+/* Spawns git on the loop of @p table for the command @p cmd of the store
+ * of the registry of the table, as store_command() writes it for
+ * @p words, @p ref and @p in. The child is on table->children until it is
+ * destroyed, its owner is @p owner, and a step of the loop calls @p done
+ * with the child once git ends. Returns the child, or returns nullptr with
+ * the error of store_command() or child_create() in @p *e.
+ */
+static struct child *
+member_table_spawn (struct member_table const *table,
+                    enum store_cmd             cmd,
+                    char const *const         *words,
+                    char const                *ref,
+                    struct span                in,
+                    void                     (*done) (struct child *c),
+                    void                      *owner,
+                    int                       *e)
+{
+	struct git_run run;
+	*e = store_command(table->registry->store, &run, cmd, words, ref, in, table->loop->now);
+	return *e ? nullptr : child_create(table->loop, table->children, &run.c, done, owner, e);
+}
+
 /* Writes to lookup->why that the name of the Unix user of @p lookup
  * is not known. Returns EAGAIN.
  */
@@ -1158,54 +1208,8 @@ static int
 member_lookup_unnamed (struct member_lookup *lookup)
 {
 	util_format(lookup->why, sizeof lookup->why, "Could not look up the name of %s. "
-	            "Try again.", lookup->login.text);
+	            "Try again.", lookup->claim.login.text);
 	return EAGAIN;
-}
-
-static int member_lookup_decide (struct member_lookup *lookup);
-
-/* Reads the records for @p lookup (member_table_read()). A read of the
- * current turn decides the member at once (member_lookup_decide()).
- * Returns EINPROGRESS while git reads, the result of member_lookup_decide(),
- * or the error of the read with the reason in lookup->why.
- */
-static int
-member_lookup_read (struct member_lookup *lookup)
-{
-	int const e = member_table_read(lookup->table, &lookup->read);
-	if (!e)
-		return member_lookup_decide(lookup);
-	if (e != EINPROGRESS)
-		memcpy(lookup->why, lookup->read.why, sizeof lookup->why);
-	return e;
-}
-
-static void member_lookup_wrote (struct child *c);
-
-/* Runs git to write the record of the login of @p lookup: a new record,
- * or with @p entry, the login added to that record. Returns EINPROGRESS,
- * or EAGAIN or EIO with the reason in lookup->why if git cannot start
- * or the input of git cannot be made.
- */
-static int
-member_lookup_write (struct member_lookup      *lookup,
-                     struct member_entry const *entry)
-{
-	struct member_table const *table = lookup->table;
-	char ref[MEMBER_REF];
-	struct buf in = {};
-	int e = member_record_input(table->registry, &lookup->login, entry, ref, &in);
-	if (!e) {
-		lookup->git = store_start(table->registry->store, table->loop, table->children,
-		                          STORE_COMMIT, nullptr, ref, buf_peek(&in),
-		                          member_lookup_wrote, lookup, &e);
-		buf_fini(&in);
-		return member_spawn_result(e, lookup->why, sizeof lookup->why);
-	}
-	buf_fini(&in);
-	char text[MEMBER_WHY];
-	return member_wrote(ref, (struct span){}, member_run_why(e, 0, text, sizeof text),
-	                    lookup->why, sizeof lookup->why);
 }
 
 /* Submits the job name of @p lookup to a blocker, with the deadline
@@ -1229,41 +1233,55 @@ member_lookup_submit (struct member_lookup *lookup)
 	return EINPROGRESS;
 }
 
-/* Decides the member of the login of @p lookup with the records of its
- * table (member_decide()). For a Unix login that no record names, the job
- * name first looks up the name of the user. If a wait needs a record that
- * does not exist, git writes the record. Returns EINPROGRESS while the job
- * name or git runs. Otherwise returns the result: 0 with the member in
- * lookup->login, also a member whose record does not exist, or an error
- * number with the reason in lookup->why.
+static void member_lookup_wrote (struct child *c);
+
+/* Runs a step of the claim of @p lookup with the records of its table
+ * (member_claim_step()), with the input of a commit if a wait needs the
+ * record of the member (LOOKUP_WRITE). For a Unix login that no record
+ * names, the job name first looks up the name of the user, and git commits
+ * the record that the step writes. Returns EINPROGRESS while the job name
+ * or git runs. Otherwise returns the result of the step, with the reason
+ * in lookup->why.
  */
 static int
-member_lookup_decide (struct member_lookup *lookup)
+member_lookup_step (struct member_lookup *lookup)
 {
-	struct member_login *login = &lookup->login;
-	struct member member;
-	struct member_entry const *entry;
-	int const e = member_decide(&lookup->table->records, login, &member, &entry,
-	                            lookup->why, sizeof lookup->why);
-	if (*member.name) {
-		login->kind = member.kind;
-		memcpy(login->name, member.name, sizeof login->name);
-	}
+	struct member_table *table = lookup->table;
+	char *why = lookup->why;
+	size_t const len = sizeof lookup->why;
+	struct buf in = {};
+	int e = member_claim_step(&lookup->claim, table->registry, &table->records,
+	                          lookup->flags & LOOKUP_WRITE ? &in : nullptr, why, len);
 	/* A Unix login that no record names needs the name of its user. */
-	if (!e && !*login->name)
+	if (!e && !*lookup->claim.login.name)
 		return member_lookup_submit(lookup);
-	if (e != ENOENT && e != EEXIST)
+	if (e != EINPROGRESS)
 		return e;
-	if (!(lookup->flags & LOOKUP_WRITE))
-		return 0;
-	if (lookup->writes == MEMBER_TRIES)
-		return member_raced(login, lookup->why, sizeof lookup->why);
-	return member_lookup_write(lookup, entry);
+	lookup->git = member_table_spawn(table, STORE_COMMIT, nullptr, lookup->claim.ref,
+	                                 buf_peek(&in), member_lookup_wrote, lookup, &e);
+	buf_fini(&in);
+	return member_spawn_result(e, why, len);
+}
+
+/* Reads the records for @p lookup (member_table_read()). A read of the
+ * current turn runs the step of the lookup at once (member_lookup_step()).
+ * Returns EINPROGRESS while git reads, the result of member_lookup_step(),
+ * or the error of the read with the reason in lookup->why.
+ */
+static int
+member_lookup_read (struct member_lookup *lookup)
+{
+	int const e = member_table_read(lookup->table, &lookup->read);
+	if (!e)
+		return member_lookup_step(lookup);
+	if (e != EINPROGRESS)
+		memcpy(lookup->why, lookup->read.why, sizeof lookup->why);
+	return e;
 }
 
 /* On the loop: the table read the records for the lookup of @p wait. The
- * lookup decides the member with the records, or ends with the error and
- * the reason of the read.
+ * lookup runs its step with the records, or ends with the error and the
+ * reason of the read.
  */
 static void
 member_lookup_read_done (struct member_wait *wait)
@@ -1273,26 +1291,22 @@ member_lookup_read_done (struct member_wait *wait)
 	if (e)
 		memcpy(lookup->why, wait->why, sizeof lookup->why);
 	else
-		e = member_lookup_decide(lookup);
+		e = member_lookup_step(lookup);
 	if (e != EINPROGRESS)
 		member_lookup_end(lookup, e);
 }
 
-/* On the loop: git wrote the record for the lookup of @p c, or another
+/* On the loop: git committed the record for the lookup of @p c, or another
  * writer changed the record first. The records of the table are older
- * than the write, so the table reads the records again with git.
+ * than the commit, so the table reads the records again with git.
  */
 static void
 member_lookup_wrote (struct child *c)
 {
 	struct member_lookup *lookup = c->owner;
-	char ref[MEMBER_REF];
-	util_format(ref, sizeof ref, MEMBERS "%s", lookup->login.name);
-	char text[MEMBER_WHY];
-	int e = member_wrote(ref, buf_peek(&c->out), member_child_why(c, text, sizeof text),
-	                     lookup->why, sizeof lookup->why);
+	int e = member_commit_result(lookup->why, sizeof lookup->why, lookup->claim.ref,
+	                             buf_peek(&c->out), 0, &c->end);
 	child_destroy(&lookup->git);
-	++lookup->writes;
 	lookup->table->read = 0;
 	if (!e || e == EAGAIN)
 		e = member_lookup_read(lookup);
@@ -1307,23 +1321,23 @@ static void
 member_lookup_name (struct blocker_job *job)
 {
 	struct member_lookup *lookup = container_of(job, struct member_lookup, name);
-	job->error = member_user(lookup->login.uid, lookup->user);
+	job->error = member_user(lookup->claim.login.uid, lookup->user);
 }
 
-/* Writes to lookup->login the name of the Unix user of @p lookup: the name
- * that the job name found, or uid-N for the error @p e of the job, which
- * the log names. For ENOENT, no user with the uid, and for EINVAL, a name
- * that member_name_valid() refuses, uid-N is the name of the person. For
- * any other error, such as ETIMEDOUT after MEMBER_NS, uid-N is a guess
- * (LOOKUP_GUESS), which a find answers and a claim does not write.
- * Returns EAGAIN with the reason in lookup->why for a guess that a
- * wait needs to write, else 0.
+/* Writes to lookup->claim.login the name of the Unix user of @p lookup:
+ * the name that the job name found, or uid-N for the error @p e of the
+ * job, which the log names. For ENOENT, no user with the uid, and for
+ * EINVAL, a name that member_name_valid() refuses, uid-N is the name of
+ * the person. For any other error, such as ETIMEDOUT after MEMBER_NS,
+ * uid-N is a guess (LOOKUP_GUESS), which a find answers and a claim does
+ * not write. Returns EAGAIN with the reason in lookup->why for a
+ * guess that a wait needs to write, else 0.
  */
 static int
 member_lookup_named (struct member_lookup *lookup,
                      int                   e)
 {
-	struct member_login *login = &lookup->login;
+	struct member_login *login = &lookup->claim.login;
 	lookup->flags &= ~LOOKUP_GUESS;
 	if (!e) {
 		memcpy(login->name, lookup->user, sizeof login->name);
@@ -1368,14 +1382,14 @@ member_lookup_name_done (struct loop *,
 	}
 	(void)loop_timer_stop(lookup->table->loop, &lookup->timer);
 	int e = (int)lookup->name.error;
-	if (e == ECANCELED && !(lookup->flags & LOOKUP_DONE)) {
+	if (e == ECANCELED && lookup->result == EINPROGRESS) {
 		util_format(lookup->why, sizeof lookup->why, "askai stops.");
 		member_lookup_end(lookup, e);
 		return;
 	}
 	e = member_lookup_named(lookup, e);
 	if (!e && !(lookup->flags & LOOKUP_GUESS))
-		e = member_lookup_decide(lookup);
+		e = member_lookup_step(lookup);
 	if (e != EINPROGRESS)
 		member_lookup_end(lookup, e);
 }
@@ -1414,8 +1428,9 @@ member_lookup_create (struct member_table       *table,
 		.timer.fn = member_lookup_late,
 		.read.done = member_lookup_read_done,
 		.table = table,
+		.claim.login = *login,
 		.flags = flags,
-		.login = *login,
+		.result = EINPROGRESS,
 	};
 	list_init(&lookup->waits);
 	list_init(&lookup->read.hook);
@@ -1505,7 +1520,7 @@ member_table_lookup (struct member_table       *table,
 	struct list *node;
 	list_foreach (node, &table->lookups) {
 		struct member_lookup *l = container_of(node, struct member_lookup, hook);
-		if (cstr_view_equal(cstr_view(l->login.text), text)) {
+		if (cstr_view_equal(cstr_view(l->claim.login.text), text)) {
 			lookup = l;
 			break;
 		}
@@ -1517,27 +1532,35 @@ member_table_lookup (struct member_table       *table,
 			return wait->e = e;
 		return member_lookup_join(lookup, wait, member_lookup_read(lookup));
 	}
-	if (!(lookup->flags & LOOKUP_DONE)) {
+	switch (lookup->result) {
+	case EINPROGRESS:
 		/* A lookup that a wait joins writes the record if any wait needs
 		 * it. */
 		lookup->flags |= write;
 		return member_lookup_join(lookup, wait, EINPROGRESS);
-	}
-	/* The result of a lookup that ended answers a find. A claim of a
-	 * member without a record decides again, and git writes the record.
-	 * While the job name of a guess is with a blocker, a claim fails, so
-	 * that no second job of the uid goes to the blockers. */
-	if (lookup->flags & LOOKUP_REFUSED)
+	case EPERM:
 		return member_lookup_give(lookup, wait, EPERM);
+	}
+	/* After any other result of a lookup that ended, a find returns the
+	 * member, also a member without a record or a guess. A claim runs the
+	 * steps again, and git writes the record. While the job name of a
+	 * guess is with a blocker, a claim fails, so that no second job of the
+	 * uid goes to the blockers. */
 	if (!write)
 		return member_lookup_give(lookup, wait, 0);
-	if (lookup->flags & LOOKUP_NAME)
+	switch (lookup->flags & (LOOKUP_NAME | LOOKUP_GUESS)) {
+	case 0:
+		break;
+	case LOOKUP_GUESS:
+		lookup->claim.login.name[0] = '\0';
+		break;
+	default:
 		return member_lookup_give(lookup, wait, member_lookup_unnamed(lookup));
-	if (lookup->flags & LOOKUP_GUESS)
-		lookup->login.name[0] = '\0';
-	lookup->flags = (lookup->flags & ~(LOOKUP_DONE | LOOKUP_GUESS)) | LOOKUP_WRITE;
-	lookup->writes = 0;
-	return member_lookup_join(lookup, wait, member_lookup_decide(lookup));
+	}
+	lookup->flags = (lookup->flags & ~LOOKUP_GUESS) | LOOKUP_WRITE;
+	lookup->result = EINPROGRESS;
+	lookup->claim.writes = 0;
+	return member_lookup_join(lookup, wait, member_lookup_step(lookup));
 }
 
 int
@@ -1565,27 +1588,6 @@ member_table_cancel (struct member_wait *wait)
 	store_drop(&wait->git);
 }
 
-/* Replaces the records of @p table with the records in @p out, the whole
- * output of member_list. The storage of @p out moves to the table, and
- * @p out is empty after the call. Returns 0, EIO for output that is not in
- * that form, or ENOMEM. On failure the records stay as they are.
- */
-static int
-member_table_refresh (struct member_table *table,
-                      struct buf          *out)
-{
-	struct member_records r = { .out = *out };
-	*out = (struct buf){};
-	int const e = member_records_parse(&r);
-	if (!e) {
-		struct member_records const old = table->records;
-		table->records = r;
-		r = old;
-	}
-	member_records_fini(&r);
-	return e;
-}
-
 /* On the loop: git @p c read the records for a wait on the reads of its
  * table, c->owner. The output replaces the records of the table, and then
  * the wait ends.
@@ -1610,15 +1612,8 @@ member_table_read_done (struct child *c)
 		child_destroy(&c);
 		return;
 	}
-	char text[MEMBER_WHY];
-	struct cstr_view const because = member_child_why(c, text, sizeof text);
-	int e;
-	if (because.len)
-		e = member_failed(wait->why, sizeof wait->why, "read the member records",
-		                  (struct span){}, because);
-	else
-		e = member_records_invalid(member_table_refresh(table, &c->out), wait->why,
-		                           sizeof wait->why);
+	int const e = member_records_take(&table->records, &c->out, 0, &c->end, wait->why,
+	                                  sizeof wait->why);
 	if (!e)
 		table->read = table->loop->now;
 	member_table_cancel(wait);
@@ -1637,9 +1632,8 @@ member_table_read (struct member_table *table,
 	if (table->read == table->loop->now)
 		return wait->e = 0;
 	int e = 0;
-	wait->git = store_start(table->registry->store, table->loop, table->children, STORE_REFS,
-	                        member_list, nullptr, (struct span){}, member_table_read_done,
-	                        table, &e);
+	wait->git = member_table_spawn(table, STORE_REFS, member_list, nullptr, (struct span){},
+	                               member_table_read_done, table, &e);
 	e = member_spawn_result(e, wait->why, sizeof wait->why);
 	if (e == EINPROGRESS)
 		list_append(&table->reads, &wait->hook);
