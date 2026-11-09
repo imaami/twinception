@@ -12756,9 +12756,9 @@ def check_notes_texts(binary, up):
                 # append and replace refuse such a text and make no commit.
                 def leaked(tag):
                     return f"The text contains </function> and then {tag}. The text of " \
-                        "the call ended early. The next tool call became part of the note " \
-                        "text. Nothing was written. Write the note again with the text " \
-                        "parameter closed correctly."
+                        "the call ended early. The next tool call became part of the text. " \
+                        "Nothing was recorded. Make the call again with the text closed " \
+                        "correctly."
                 end = "</text></function></tool_call><tool_call><function=notes>" \
                     "<parameter=action>list"
                 middle = "```\n</function></tool_call><tool_call><function=git>" \
@@ -13858,7 +13858,7 @@ def check_turns(binary, up):
                 assert sh("--git-dir", notes, "show", f"{branch}:{name}", cwd=d) == data, name
             assert outputs[len(texts):] == [
                 "The text contains only [askai: ...] lines. askai adds [askai: ...] lines "
-                "to tool results. Give the text of the note."], outputs
+                "to tool results. Give the text."], outputs
 
             # A long newest note goes into the prompt cut to the window of a
             # tool's output, with the offset to read on from.
@@ -15190,14 +15190,21 @@ def check_findings(binary, up):
                            input=f"commit refs/heads/agent/unc/findings\ncommitter t <t> {now} "
                            "+0000\ndata 0\nM 100644 inline findings/0/1.json\ndata 8\nnot json"
                            "\n".encode(), check=True, env=os.environ | git)
+            # A claim of only spaces and line ends is no claim, and a blank
+            # reason is no reason.
             script[:] = [turn({"action": "list"}, {"action": "show", "id": "unc#1"},
                               {"action": "update", "id": "bro#3", "state": "retracted",
-                               "reason": "R"})]
+                               "reason": "R"},
+                              {"action": "add", "claim": " \n\t\n"},
+                              {"action": "add", "claim": "C", "state": "retracted",
+                               "reason": "\n \n"})]
             count = len(up.requests)
             ai.ask("Q")
             said = results(up.requests[count + 1])
             assert said[:2] == ["Could not read finding unc#1: unknown format."] * 2, said
             assert re.fullmatch(r"bro#3 is now retracted\. Commit [0-9a-f]{8}\.", said[2]), said
+            assert said[3:] == ["add needs claim: what you found.",
+                                "retracted needs reason: why you retract the finding."], said
 
         # A context of 8000 tokens has windows of 4000 bytes. After a
         # compaction, the prompt lists the open findings of the conversation that

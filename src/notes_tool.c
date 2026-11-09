@@ -1903,9 +1903,9 @@ notes_tool_stage (struct mcp_slot *slot,
 /* Starts add, append or replace of the note @p name with the arguments
  * @p args. For append, the file part contains the text to append. The note
  * goes to the caller's own notebook. A turn's text is cut before its
- * trailing notices (notice_kept()), because askai adds those notices only
- * to the results of a turn's calls. A turn's text with the markup of a
- * later tool call (notice_markup()) is refused, and nothing is written.
+ * trailing notices, because askai adds those notices only to the results
+ * of a turn's calls. A turn's text with the markup of a later tool call is
+ * refused, and nothing is written (notice_text_check()).
  */
 static void
 notes_tool_add (struct mcp_slot    *slot,
@@ -1917,39 +1917,30 @@ notes_tool_add (struct mcp_slot    *slot,
 	size_t most = call->loop->tool->files_inline;
 	struct json_object *content = jb_get(args, "content");
 	struct cstr_view const text = jb_view(jb_get(args, "text"));
-	size_t kept = turn ? notice_kept(text.data, text.len) : text.len;
+	size_t kept = text.len;
 	struct datauri data = {};
-	char big[96];
-	struct cstr_view const problem =
-		notes_name(&name) ? bad_name
-		: !content ? (!text.len || text.len > TOOL_TEXT_MAX || memchr(text.data, '\0', text.len)
-		              ? CSTR_VIEW("The text argument must be a string of 1 byte to 4 MiB "
-		                          "without NUL bytes.")
-		              : !kept ? CSTR_VIEW("The text contains only [askai: ...] lines. "
-		                                  "askai adds [askai: ...] lines to tool results. "
-		                                  "Give the text of the note.")
-		              : (struct cstr_view){})
-		: turn ? CSTR_VIEW("Only a client can give content. Give text instead.")
-		: text.data ? CSTR_VIEW("Give text or content, not both.")
-		: datauri_init(&data, jb_view(content))
-		? CSTR_VIEW("The content argument must be a data: URI. Your client fills in "
-		            "content with a file from the user.")
-		: data.size > most
-		? util_format_view(big, sizeof big, "The content file is larger than the limit "
-		                   "of %zu bytes.", most)
-		: !data.size && notes_tool_actions[call->action].fetch & FETCH_APPEND
-		? CSTR_VIEW("The content file to append is empty.")
-		: (struct cstr_view){};
+	char why[256];
+	struct cstr_view problem = {};
+	if (notes_name(&name)) {
+		problem = bad_name;
+	} else if (!content) {
+		if (notice_text_check(text, "text", turn ? &kept : nullptr, why, sizeof why))
+			problem = cstr_view(why);
+	} else if (turn) {
+		problem = CSTR_VIEW("Only a client can give content. Give text instead.");
+	} else if (text.data) {
+		problem = CSTR_VIEW("Give text or content, not both.");
+	} else if (datauri_init(&data, jb_view(content))) {
+		problem = CSTR_VIEW("The content argument must be a data: URI. Your client fills in "
+		                    "content with a file from the user.");
+	} else if (data.size > most) {
+		problem = util_format_view(why, sizeof why, "The content file is larger than the "
+		                           "limit of %zu bytes.", most);
+	} else if (!data.size && notes_tool_actions[call->action].fetch & FETCH_APPEND) {
+		problem = CSTR_VIEW("The content file to append is empty.");
+	}
 	if (problem.data) {
 		mcp_slot_tell(slot, problem, TOOL_FAILED);
-		return;
-	}
-	char const *tag = turn ? notice_markup(text.data, kept) : nullptr;
-	if (tag) {
-		mcp_slot_tellf(slot, TOOL_FAILED, "The text contains </function> and then %s. The "
-		               "text of the call ended early. The next tool call became part of the "
-		               "note text. Nothing was written. Write the note again with the text "
-		               "parameter closed correctly.", tag);
 		return;
 	}
 	(void)util_text_store(&call->revision.file, name);

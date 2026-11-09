@@ -418,7 +418,8 @@ job, so an item stays seen after a restart. `retracted` needs a `reason`. A call
 that left the memory, or that `askai` made before a restart, cannot be
 cited, and the refusal says why. `askai` leaves its own notices out of the end of a claim or of a
 reason, as it does for the text of a note, and refuses a claim or a
-reason that contains the markup of the next tool call.
+reason that contains the markup of the next tool call. A claim or a
+reason of only spaces and line ends counts as missing.
 
 The findings of an agent are the branch
 `refs/heads/agent/NAME/findings` of the notes repository. Each `add` and

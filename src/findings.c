@@ -1605,47 +1605,31 @@ findings_step (struct mcp_slot *slot)
 	steps[call->stage](slot);
 }
 
-/* Returns the text @p v of a turn, a claim or a reason, without the
- * notices at its end (notice_kept()) and the spaces and line ends before
- * them.
- */
-static struct cstr_view
-findings_text (struct json_object *v)
-{
-	struct cstr_view const t = jb_view(v);
-	return cstr_view_trim_end((struct cstr_view){ t.data, notice_kept(t.data, t.len) });
-}
-
-/* Checks the texts claim and reason of @p args: 1 byte to 4 MiB of UTF-8
- * text without NUL each, and no markup of a later tool call
- * (notice_markup()). Returns 0, or EINVAL with the refusal in the @p len
- * bytes at @p why.
+/* Checks the texts claim and reason of @p args (notice_text_check()), and
+ * stores them in call->claim and in the reason of call->change, without
+ * the notices at their ends and the spaces and line ends before them.
+ * Returns 0, EINVAL with the refusal in the @p len bytes at @p why, or
+ * ENOMEM.
  */
 static int
-findings_texts (struct json_object *args,
-                char               *why,
-                size_t              len)
+findings_texts (struct findings_call *call,
+                struct json_object   *args,
+                char                 *why,
+                size_t                len)
 {
 	static char const *const names[] = { "claim", "reason" };
+	struct dstr *const texts[] = { &call->claim, &call->change.reason };
 	for (size_t i = 0; i < array_size(names); ++i) {
 		struct json_object *v = jb_get(args, names[i]);
 		struct cstr_view const t = jb_view(v);
+		size_t kept;
 		if (!v)
 			continue;
-		if (!t.len || t.len > TOOL_TEXT_MAX || !jb_is_text(t))
-			return util_refuse(why, len, "The %s argument must be a string of 1 byte to 4 "
-			                   "MiB without NUL bytes.", names[i]);
-		struct cstr_view const kept = findings_text(v);
-		if (!kept.len)
-			return util_refuse(why, len, "The %s contains only [askai: ...] lines. askai adds "
-			                   "[askai: ...] lines to tool results. Give the %s.", names[i],
-			                   names[i]);
-		char const *tag = notice_markup(kept.data, kept.len);
-		if (tag)
-			return util_refuse(why, len, "The %s contains </function> and then %s. The text "
-			                   "of the call ended early. The next tool call became part of "
-			                   "the %s. Nothing was recorded. Make the call again with the %s "
-			                   "closed correctly.", names[i], tag, names[i], names[i]);
+		int const e = notice_text_check(t, names[i], &kept, why, len);
+		if (e)
+			return e;
+		if (cstr_view_store(cstr_view_trim_end((struct cstr_view){ t.data, kept }), texts[i]))
+			return ENOMEM;
 	}
 	return 0;
 }
@@ -1818,28 +1802,34 @@ findings_args (struct mcp_slot    *slot,
 		return util_refuse(why, len, "Only %s can change %s#%" PRIu32 ". Add your own finding "
 		                   "with about %s#%" PRIu32 ".", call->author, call->author,
 		                   call->number, call->author, call->number);
-	if (author && !member_name_valid(jb_view(author)))
-		return util_refuse(why, len, "The author argument must be the name of a member, such "
-		                   "as %s.", agent);
-	if (author)
-		(void)util_format(call->author, sizeof call->author, "%s", jb_view(author).data);
-	char who[MEMBER_NAME];
-	uint32_t n;
-	if (about && finding_id_parse(jb_view(about), who, &n))
-		return util_refuse(why, len, "about must be the id of a finding, such as %s#2.", agent);
-	if (about)
-		(void)util_format(call->about, sizeof call->about, "%s", jb_view(about).data);
+	if (author) {
+		struct cstr_view const name = jb_view(author);
+		if (!member_name_valid(name))
+			return util_refuse(why, len, "The author argument must be the name of a member, "
+			                   "such as %s.", agent);
+		(void)util_format(call->author, sizeof call->author, "%.*s", (int)name.len, name.data);
+	}
+	if (about) {
+		struct cstr_view const text = jb_view(about);
+		char who[MEMBER_NAME];
+		uint32_t n;
+		if (finding_id_parse(text, who, &n))
+			return util_refuse(why, len, "about must be the id of a finding, such as %s#2.",
+			                   agent);
+		(void)util_format(call->about, sizeof call->about, "%.*s", (int)text.len, text.data);
+	}
 	if (!((ON_ADD | ON_UPDATE) >> call->action & 1))
 		return 0;
 	size_t const s = cstr_view_index(finding_state_names, FINDING_STATES, jb_view(state));
 	if (state ? s == FINDING_STATES : call->action == FINDINGS_UPDATE)
 		return util_refuse(why, len, "%s needs state: candidate, verified, disproved or "
 		                   "retracted.", action);
-	if (call->action == FINDINGS_ADD && !jb_get(args, "claim"))
-		return util_refuse(why, len, "add needs claim: what you found.");
-	int e = findings_texts(args, why, len);
+	int e = findings_texts(call, args, why, len);
 	if (e)
 		return e;
+	/* A claim of only spaces and line ends is no claim. */
+	if (call->action == FINDINGS_ADD && !dstr_len(&call->claim))
+		return util_refuse(why, len, "add needs claim: what you found.");
 	struct finding_change *c = &call->change;
 	struct member_call const *member = mcp_slot_member(slot);
 	c->state = state ? (enum finding_state)s : FINDING_CANDIDATE;
@@ -1847,11 +1837,7 @@ findings_args (struct mcp_slot    *slot,
 	c->call = mcp_slot_call(slot);
 	c->ask = member->ask;
 	(void)util_format(c->asked_by, sizeof c->asked_by, "%s", member->asker.name);
-	struct json_object *claim = jb_get(args, "claim");
-	struct json_object *reason = jb_get(args, "reason");
-	if ((claim && cstr_view_store(findings_text(claim), &call->claim)) ||
-	    (reason && cstr_view_store(findings_text(reason), &c->reason)) ||
-	    cstr_view_store(CSTR_VIEW(ASKAI_VERSION), &c->askai))
+	if (cstr_view_store(CSTR_VIEW(ASKAI_VERSION), &c->askai))
 		return ENOMEM;
 	e = findings_evidence(slot, args, why, len);
 	call->archive = buf_peek(&call->files).len;

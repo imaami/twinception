@@ -3,15 +3,19 @@
  * The [askai: ...] notices that askai appends to the results of a turn's
  * tool calls, after a blank line: the notebook of a read, the number of
  * the call, the two notices about the context, and the notice of the last
- * turn. A turn can copy a result into a note, and notice_kept() finds the
- * notices at the end of such a text by the same formats. notice_markup()
- * finds the markup of a tool call in the text of a turn.
+ * turn. A turn can copy a result into a note. notice_text_check() checks
+ * the text argument of a tool call. For the text of a turn, it stores the
+ * length of the text without the notices at its end, which it matches with
+ * the same formats, and it refuses a text that contains the markup of a
+ * later tool call.
  */
 #ifndef ASKAI_SRC_NOTICE_H_
 #define ASKAI_SRC_NOTICE_H_
 
 #include <inttypes.h>
 #include <stddef.h>
+
+#include "cstr_view.h"
 
 #define NOTICE_NOTEBOOK "[askai: notebook %s]"
 #define NOTICE_CALL     "[askai: call c%" PRIu32 "]"
@@ -27,25 +31,22 @@
         "tools.]"
 
 /**
- * Returns the length of the @p len bytes at @p text without the lines at
- * its end that are notices. The kept text ends with the first line feed
- * after its last non-blank byte. It is empty if only spaces, tabs and
- * line ends come before the notices. Returns @p len if the text does not
- * end with a notice, and 0 for a null @p text.
+ * Checks @p text, the argument @p what of a tool call, such as "text" or
+ * "claim". The text must be 1 byte to TOOL_TEXT_MAX bytes without NUL.
+ * The text of a turn must also contain more than the notices at its end
+ * and the blank lines before them, and no markup of a later tool call
+ * before them: "</function>" and then "</tool_call>" or "<tool_call>".
+ * @p kept is nullptr for the text of a client, which only the first check
+ * applies to. For the text of a turn, the function stores the length of
+ * the text without those notices in @p *kept.
+ *
+ * Returns 0, or EINVAL with the refusal in the @p len bytes at @p why.
  */
-extern size_t
-notice_kept (char const *text,
-             size_t      len);
-
-/**
- * Returns "</tool_call>" or "<tool_call>" if the @p len bytes at @p text
- * contain "</function>" and later that tag, or else nullptr. "</tool_call>"
- * is checked first. Such a text is the text argument of a tool call whose
- * text ended early: the next tool call of the turn became part of the
- * text. Returns nullptr for a null @p text.
- */
-extern char const *
-notice_markup (char const *text,
-               size_t      len);
+extern int
+notice_text_check (struct cstr_view  text,
+                   char const       *what,
+                   size_t           *kept,
+                   char             *why,
+                   size_t            len);
 
 #endif /* ASKAI_SRC_NOTICE_H_ */
