@@ -122,16 +122,15 @@ struct notes_revision {
 	enum notes_revision_phase  phase;
 };
 
-/** Initializes @p dest for a read or diff of the note @p file, whose name
- *  notes_name() accepts. The revisions @p from and @p to are commits, or no
- *  name for the notebook's pinned tip. Returns 0, or EINVAL for a null
- *  argument or a name that is not valid.
+/** Sets @p revision to the first stage of a read, diff or restore of the
+ *  note revision->file at the commits @p from and @p to. No name for
+ *  @p from or @p to stands for the tip of the notebook, which the first
+ *  stage pins. The next stage checks that the tip reaches both commits.
  */
-extern int
-notes_revision_init (struct notes_revision *dest,
-                     struct cstr_view       file,
-                     struct oid const      *from,
-                     struct oid const      *to);
+extern void
+notes_revision_set (struct notes_revision *revision,
+                    struct oid const      *from,
+                    struct oid const      *to);
 
 /** Sets @p revision to the stage that runs its command on the commits
  *  @p from and @p to, without the stages that check them. askai wrote or

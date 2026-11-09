@@ -21,18 +21,16 @@ enum notes_revision_phase : uint8_t {
 	REVISION_DATA,   /* git reads the note at from, or compares it with to */
 };
 
-int
-notes_revision_init (struct notes_revision *dest,
-                     struct cstr_view       file,
-                     struct oid const      *from,
-                     struct oid const      *to)
+void
+notes_revision_set (struct notes_revision *revision,
+                    struct oid const      *from,
+                    struct oid const      *to)
 {
-	if (!dest || !from || !to || notes_name(&file))
-		return EINVAL;
 	/* No name stands for the tip until the first stage pins it. */
-	*dest = (struct notes_revision){ .from = *from, .to = *to, .phase = REVISION_HEAD };
-	(void)util_text_store(&dest->file, file);
-	return 0;
+	revision->from = *from;
+	revision->to = *to;
+	revision->tip = (struct oid){};
+	revision->phase = REVISION_HEAD;
 }
 
 void

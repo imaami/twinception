@@ -11335,6 +11335,20 @@ def check_notes(binary, up):
                               ("x" * 256, "A note name must be")):
                 said = call({"action": "add", "file": name, "text": "t"})
                 assert said.startswith("!" + why), (name, said)
+            # Every action with a file checks the name first, also history,
+            # whose file is optional, and before a revision.
+            for arguments in ({"action": "append", "text": "t"},
+                              {"action": "replace", "text": "t"},
+                              {"action": "delete"},
+                              {"action": "restore"},
+                              {"action": "restore", "revision": "current", "as": "a.md"},
+                              {"action": "read"},
+                              {"action": "read", "revision": "x"},
+                              {"action": "diff"},
+                              {"action": "history"},
+                              {"action": "copy", "notebook": "writers"}):
+                said = call(arguments | {"file": "a//b"})
+                assert said.startswith("!A note name must be"), (arguments, said)
             for text in ("", "x" * ((4 << 20) + 1), "a\0b"):
                 assert call({"action": "add", "file": "t.md",
                              "text": text}).startswith("!The text argument"), text
