@@ -63,6 +63,11 @@ enum store_cmd : uint8_t {
 	                      commit, and the number of lines added and deleted
 	                      in each file. The caller passes a ref or a commit,
 	                      then a path or nullptr. */
+	STORE_CALLS,     /**< Runs git log -n 64. The output lists the id, the
+	                      trailer lines Ask and Call and the subject of each
+	                      of the newest 64 commits, separated by spaces, and
+	                      a NUL after each commit. The caller passes a ref
+	                      or a commit. */
 	STORE_READ,      /**< Runs git cat-file --batch. The output contains
 	                      each object that the input names. The caller
 	                      passes no words. */

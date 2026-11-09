@@ -2948,9 +2948,10 @@ def check_recovery_findings(binary, up):
     member review or thread. The saved git read of the interrupted turn
     comes from its saved result, and git does not run again. The journal
     has no findings calls (KF_RERUN), and the resumed turn makes them
-    again. A finding that the job committed before the restart stays on the
-    branch. A call before the restart cannot be cited any more, and the
-    refusal says why. An item that expand showed before the restart counts
+    again. An add or an update that committed before the restart names that
+    commit, and makes no second commit. A call before the restart cannot be
+    cited any more, and the refusal says why. An item that expand showed
+    before the restart counts
     as seen, and the replayed read can be cited from the next turn on. The
     commits of the resumed job name the same ask call, conversation and
     asker. A resume that is refused because the owner already runs 8 jobs
@@ -2996,13 +2997,17 @@ def check_recovery_findings(binary, up):
                            ("update", "findings", {"action": "update", "id": "recover#1",
                                                    "state": "verified", "evidence": ["c1"],
                                                    "reason": "R"}),
+                           ("add2", "findings", {"action": "add", "claim": "E"}),
                            ("gate", "git", {"repo": "proj", "command": "diff",
                                             "revisions": ["HEAD", "HEAD"]}))
             third = items(("show", "findings", {"action": "show", "id": "recover#1"}),
                           ("cite", "findings", {"action": "add", "claim": "D",
                                                 "state": "verified",
                                                 "evidence": ["c4", "recover#1/1"],
-                                                "reason": "c4 shows lines 11 to 20."}))
+                                                "reason": "c4 shows lines 11 to 20."}),
+                          ("old", "findings", {"action": "add", "claim": "F",
+                                               "state": "verified", "evidence": ["c1"],
+                                               "reason": "c1 shows lines 1 to 10."}))
             creates, resumes = [], []
             jobs = f"{archive}/askai-journal/recover/jobs"
 
@@ -3053,7 +3058,7 @@ def check_recovery_findings(binary, up):
                 # read, but no findings call.
                 found = list(records(snapshot))
                 cut = next(k for k, (_, kind, value) in enumerate(found)
-                           if kind == "tool-intent" and value["index"] == 2)
+                           if kind == "tool-intent" and value["index"] == 3)
                 kinds = [(kind, value.get("index")) for _, kind, value in found[:cut]]
                 assert kinds[0] == ("state", None) and [
                     k for k in kinds if k[0].startswith("tool-")] == [
@@ -3086,10 +3091,13 @@ def check_recovery_findings(binary, up):
                     ai.proc.kill()
                     ai.proc.wait(timeout=5)
                     ai.state.cleanup()
-            # Both findings calls before the kill committed.
+            # The findings calls before the kill committed.
             ref = "refs/heads/agent/recover/findings"
             assert branch("log", "--format=%s", ref).split("\n")[:-1] == [
-                "Update recover#1 (candidate to verified)", "Add recover#1 (candidate)"]
+                "Add recover#2 (candidate)", "Update recover#1 (candidate to verified)",
+                "Add recover#1 (candidate)"]
+            update_commit, add_commit = (branch("rev-parse", f"{ref}~{k}").strip()
+                                         for k in (1, 0))
             with open(f"{jobs}/{jid}", "wb") as f:
                 f.write(good)
             with Askai(binary, *args, env=env, token="recover-token") as restarted:
@@ -3127,27 +3135,32 @@ def check_recovery_findings(binary, up):
                 return text
             # The resumed job numbers the calls of the second turn from c4
             # on. The stamp of the replayed read comes from its record. The
-            # findings call runs again, and c1, a call before the restart,
-            # is not kept. The calls of the third turn get the next numbers.
+            # findings calls run again, and each names the commit that it
+            # made before the restart. The calls of the third turn get the
+            # next numbers.
             assert output(creates[1], "expand").endswith(
                 "[askai: You saw recover#1/1 whole. Cite recover#1/1 for verified or "
                 "disproved from your next turn on.]\n" + stamp(3)), creates[1]
             assert output(creates[2], "read2").endswith(stamp(4)), creates[2]
-            assert output(creates[2], "gate").endswith(stamp(6)), creates[2]
-            assert output(creates[2], "update") == "c1 is not kept, because askai " \
-                "restarted after c1. The oldest kept call is c4." + stamp(5), creates[2]
+            assert output(creates[2], "gate").endswith(stamp(7)), creates[2]
+            assert output(creates[2], "update") == f"recover#1 was already updated in commit " \
+                f"{update_commit[:8]} before askai restarted." + stamp(5), creates[2]
+            assert output(creates[2], "add2") == f"recover#2 was already added in commit " \
+                f"{add_commit[:8]} before askai restarted." + stamp(6), creates[2]
             assert output(creates[3], "show").startswith(
                 "Finding recover#1 by recover: verified\nclaim: C\nChange 1: candidate, ask "), \
                 creates[3]
-            assert output(creates[3], "show").endswith(stamp(7)), creates[3]
+            assert output(creates[3], "show").endswith(stamp(8)), creates[3]
             # recover#1/1, which expand showed before the restart, is seen.
-            assert re.fullmatch(r"Added recover#2 \(verified\)\. Evidence recover#2/1 from "
-                                r"c4:11-20, recover#2/2 from recover#1/1\. Commit [0-9a-f]{8}\.",
-                                output(creates[3], "cite")[:-len(stamp(8))]) and \
-                output(creates[3], "cite").endswith(stamp(8)), creates[3]
+            assert re.fullmatch(r"Added recover#3 \(verified\)\. Evidence recover#3/1 from "
+                                r"c4:11-20, recover#3/2 from recover#1/1\. Commit [0-9a-f]{8}\.",
+                                output(creates[3], "cite")[:-len(stamp(9))]) and \
+                output(creates[3], "cite").endswith(stamp(9)), creates[3]
+            assert output(creates[3], "old") == "c1 is not kept, because askai restarted " \
+                "after c1. The oldest kept call is c4." + stamp(10), creates[3]
             assert branch("log", "--format=%s", ref).split("\n")[:-1] == [
-                "Add recover#2 (verified)", "Update recover#1 (candidate to verified)",
-                "Add recover#1 (candidate)"]
+                "Add recover#3 (verified)", "Add recover#2 (candidate)",
+                "Update recover#1 (candidate to verified)", "Add recover#1 (candidate)"]
             # The commits before and after the restart name the same ask
             # call, conversation and asker.
             trailers = branch("log", "--format=%(trailers:key=Ask,valueonly,separator=%x2C)|"
@@ -3156,23 +3169,24 @@ def check_recovery_findings(binary, up):
                               "%(trailers:key=Asked-by,valueonly,separator=%x2C)",
                               ref).split("\n")[:-1]
             assert trailers == [f"{state['ask']}|{n}|{state['conversation']}|{ME}"
-                                for n in (8, 5, 2)], trailers
+                                for n in (9, 6, 5, 2)], trailers
             # The finding of the resumed job names the call after the
             # restart, the turn of the replayed read, the ask call and the
             # asker.
-            change = json.loads(branch("show", f"{ref}:findings/0/2.json"))["changes"][0]
+            change = json.loads(branch("show", f"{ref}:findings/0/3.json"))["changes"][0]
             item, again = change["evidence"]
             assert (item["kind"], item["call"], item["turn"], item["lines"],
                     item["call_id"]) == ("lines", 4, 2, [[11, 20]], "read2"), item
             assert again["from"] == "recover#1/1" and again["call"] == 1, again
             assert (change["ask"], change["asked_by"], change["call"]) == \
-                (state["ask"], ME, 8), change
+                (state["ask"], ME, 9), change
             with open(reads) as f:
                 assert f.read() == "read\nread\n", "a saved read ran again"
     finally:
         up.reply, up.retrieve = held
-    print("findings recovery: the numbers after a restart, a saved read, a findings call "
-          "made again and a call before the restart: PASS")
+    print("findings recovery: the numbers after a restart, a saved read, the checkpoint, "
+          "findings calls made again without a second commit, and an item seen before the "
+          "restart: PASS")
 
 
 def check_durable_cancel(binary, up):

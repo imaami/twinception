@@ -54,6 +54,10 @@ static char const *const cmds[][10] = {
 	[STORE_LOG]      = { "log", "-z", "--no-renames",
 	                     "--format=%ct %H %(trailers:key=Asked-by,valueonly,separator=%x2C) %s",
 	                     "--numstat", word, "--", word },
+	[STORE_CALLS]    = { "log", "-z", "-n", "64",
+	                     "--format=%H %(trailers:key=Ask,valueonly,separator=%x2C) "
+	                     "%(trailers:key=Call,valueonly,separator=%x2C) %s",
+	                     "--end-of-options", word, "--" },
 	[STORE_READ]     = { "cat-file", "--batch" },
 	[STORE_REFS]     = { "for-each-ref", word, word, word, word },
 	[STORE_FILES]    = { "ls-tree", "-r", "-z", "-l", word, "--", word },

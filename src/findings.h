@@ -20,7 +20,13 @@
  * than the highest number on the branch when the commit is made. If
  * another ask call of the agent changed the branch at the same time, the
  * call reads the branch again and makes the commit again, STORE_TRIES
- * commits at most. The result names the ID only after the commit.
+ * commits at most. The result names the ID only after the commit. The
+ * journal records no findings call (KF_RERUN), so the turn that askai
+ * resumes after a restart makes its findings calls again. An add or an
+ * update of that turn first lists the newest commits of the branch of the
+ * agent, and a commit with the trailer lines Ask and Call of the call means
+ * that the call made the commit before the restart. The result then names
+ * that commit, and the call makes no second commit.
  *
  * git reads the files of findings in runs of cat-file whose output stays
  * within STORE_MAX bytes, so that any number of findings can be read.

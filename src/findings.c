@@ -98,12 +98,15 @@ enum findings_stage : uint8_t {
 	STAGE_BLOBS,    /* cat-file reads the archive files of those items */
 	STAGE_ARCHIVE,  /* cat-file reads the archive files of the items that
 	                   expand prints */
+	STAGE_CALLS,    /* log lists the calls of the newest commits of the
+	                   branch of the agent, for an add or an update that
+	                   askai runs again after a restart */
 };
 
 /* The stages whose step handles a git that failed. The steps of the other
  * stages need the output of a git that succeeded.
  */
-static constexpr uint32_t STAGES_FAILED = 1U << STAGE_COMMIT;
+static constexpr uint32_t STAGES_FAILED = 1U << STAGE_COMMIT | 1U << STAGE_CALLS;
 
 /* The stored material of the items that one call reads, at most. */
 static constexpr size_t FINDINGS_MATERIAL = TOOL_OUTPUT_MAX / 2;
@@ -189,6 +192,8 @@ struct findings_call {
 	                                                 prints, in order */
 	struct child          *child;     /* the call's git, until a step has
 	                                     read its output */
+	struct json_object    *args;      /* the arguments of the call, while
+	                                     log lists the calls (STAGE_CALLS) */
 	size_t                 archive;   /* bytes of files that are the
 	                                     archive */
 	uint32_t               number;    /* N of id, or of a new finding */
@@ -1508,6 +1513,8 @@ findings_cite_records (struct mcp_slot *slot)
 	findings_run(slot, STAGE_RECORDS, STORE_READ, nullptr, nullptr, &in);
 }
 
+static void findings_got_calls (struct mcp_slot *slot);
+
 /* Handles the output of the git of the call in @p slot. */
 static void
 findings_step (struct mcp_slot *slot)
@@ -1520,6 +1527,7 @@ findings_step (struct mcp_slot *slot)
 		[STAGE_RECORDS] = findings_got_records,
 		[STAGE_BLOBS]   = findings_got_blobs,
 		[STAGE_ARCHIVE] = findings_got_archive,
+		[STAGE_CALLS]   = findings_got_calls,
 	};
 	struct findings_call const *call = *mcp_slot_own(slot);
 	if (!(STAGES_FAILED >> call->stage & 1) && !child_ok(call->child)) {
@@ -1782,9 +1790,83 @@ findings_args (struct mcp_slot    *slot,
 	return e ? e : finding_check(c, why, len);
 }
 
+/* Checks the arguments @p args of the call in @p slot, makes the evidence
+ * items of the calls of the ring, and runs git to read the findings that
+ * the action needs.
+ */
+static void
+findings_begin (struct mcp_slot    *slot,
+                struct json_object *args)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	char why[1024] = "";
+	int const e = findings_args(slot, args, why, sizeof why);
+	if (e) {
+		findings_stop(slot, e, why);
+		return;
+	}
+	if (call->action == FINDINGS_EXPAND && *call->author)
+		findings_read_one(slot);
+	else
+		findings_load(slot);
+}
+
+/* Handles the output of git log for an add or an update that askai runs
+ * again after a restart: the newest commits of the branch of the agent,
+ * each "ID ASK CALL SUBJECT". If a commit names the ask call and the call,
+ * the call made that commit before the restart, and the result says so
+ * without a second commit. Otherwise the call goes on. Exit status 128,
+ * for a branch that does not exist, means no such commit.
+ */
+static void
+findings_got_calls (struct mcp_slot *slot)
+{
+	struct findings_call *call = *mcp_slot_own(slot);
+	struct child const *c = call->child;
+	if (!child_ok(c) && child_status(c) != 128) {
+		mcp_slot_tell(slot, unread, TOOL_FAILED);
+		return;
+	}
+	struct span const out = buf_peek(&c->out);
+	struct cstr_view rest = child_ok(c) ? (struct cstr_view){ (char const *)out.ptr, out.len }
+	                                    : (struct cstr_view){};
+	struct cstr_view const ask = hexid_view(&mcp_slot_member(slot)->ask);
+	char digits[16];
+	struct cstr_view const number = util_format_view(digits, sizeof digits, "%" PRIu32,
+	                                                 mcp_slot_call(slot));
+	while (rest.len) {
+		struct cstr_view line;
+		if (!cstr_view_cut(&rest, '\0', &line)) {
+			line = rest;
+			rest = (struct cstr_view){};
+		}
+		struct oid commit;
+		struct cstr_view a, n, verb, id;
+		char author[MEMBER_NAME];
+		uint32_t k;
+		/* The subject is "Add bro#5 (verified)" or "Update bro#5 (...)". A
+		 * commit without the trailer line Ask names no ask call. */
+		if (oid_init_field(&commit, &line, ' ') || !cstr_view_cut(&line, ' ', &a) ||
+		    !cstr_view_cut(&line, ' ', &n) || !a.len || !cstr_view_equal(a, ask) ||
+		    !cstr_view_equal(n, number) || !cstr_view_cut(&line, ' ', &verb) ||
+		    !cstr_view_cut(&line, ' ', &id) || finding_id_parse(id, author, &k))
+			continue;
+		(void)dstr_clear(&call->out);
+		bool const ok = dstr_printf(&call->out, "%.*s was already %s in commit %.8s before "
+		                            "askai restarted.", (int)id.len, id.data,
+		                            call->action == FINDINGS_ADD ? "added" : "updated",
+		                            commit.hex);
+		(void)mcp_slot_noted(slot);
+		findings_end(slot, ok ? 0 : ENOMEM, false);
+		return;
+	}
+	findings_begin(slot, call->args);
+}
+
 /* Starts a call of the findings tool in @p slot with the arguments
- * @p args: checks the arguments, makes the evidence items, and runs git to
- * read the findings that the action needs.
+ * @p args. An add or an update of the turn that askai resumes after a
+ * restart may have made its commit before the restart, so git first lists
+ * the calls of the newest commits of the branch of the agent.
  */
 static void
 findings_start (struct mcp_slot    *slot,
@@ -1816,16 +1898,15 @@ findings_start (struct mcp_slot    *slot,
 		              TOOL_FAILED);
 		return;
 	}
-	char why[1024] = "";
-	int const e = findings_args(slot, args, why, sizeof why);
-	if (e) {
-		findings_stop(slot, e, why);
+	if ((ON_ADD | ON_UPDATE) >> call->action & 1 && mcp_slot_rerun(slot)) {
+		char ref[FINDING_REF];
+		finding_ref(findings_session(slot)->agent, ref);
+		char const *const words[] = { ref };
+		call->args = args;
+		findings_run(slot, STAGE_CALLS, STORE_CALLS, words, nullptr, &(struct buf){});
 		return;
 	}
-	if (call->action == FINDINGS_EXPAND && *call->author)
-		findings_read_one(slot);
-	else
-		findings_load(slot);
+	findings_begin(slot, args);
 }
 
 static_assert(ON_CLIENTS == (1U << FINDINGS_ACTIONS) - (1U << FINDINGS_LIST),

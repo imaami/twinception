@@ -619,6 +619,10 @@ test_argv (struct store const *store)
 		{ STORE_LOG,      { "R" },            " log -z --no-renames --format=%ct %H "
 		                                      "%(trailers:key=Asked-by,valueonly,separator=%x2C)"
 		                                      " %s --numstat R --" },
+		{ STORE_CALLS,    { "R" },            " log -z -n 64 --format=%H "
+		                                      "%(trailers:key=Ask,valueonly,separator=%x2C) "
+		                                      "%(trailers:key=Call,valueonly,separator=%x2C) %s"
+		                                      " --end-of-options R --" },
 		{ STORE_READ,     {},                 " cat-file --batch" },
 		{ STORE_REFS,     { "--format=%(refname)", "refs/heads/" },
 		                                      " for-each-ref --format=%(refname) refs/heads/" },

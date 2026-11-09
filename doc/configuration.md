@@ -439,7 +439,12 @@ the data, so each branch contains all of its evidence. Lines of an item
 are stored anew. The number of a new finding is one more than the
 highest number on the branch when the commit is made. If another `ask_ai`
 call of the agent changes the branch at the same time, `askai` reads the
-branch again and makes the commit again, three commits at most. A file
+branch again and makes the commit again, three commits at most. A
+background job that `askai` resumes after a restart makes the `findings`
+calls of the interrupted turn again. If a commit with the lines `Ask:`
+and `Call:` of an `add` or `update` is among the newest 64 commits of the
+branch, the call made that commit before the restart, and the result
+names the commit instead of making a second one. A file
 of a finding that `askai` cannot read fails the call that reads it.
 Nothing prunes the branch. The review records of earlier versions under
 `refs/review/` stay where they are, and `askai` does not read them.

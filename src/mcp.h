@@ -455,6 +455,14 @@ mcp_slot_turn (struct mcp_slot const *slot);
 extern uint32_t
 mcp_slot_call (struct mcp_slot const *slot);
 
+/** Returns true for a call of the turn that askai resumes after a restart.
+ *  Such a call may have run before the restart, as the journal records no
+ *  call of a kind with KF_RERUN. Returns false for any other call, and for
+ *  the call of a client or a job. This function is not exported.
+ */
+extern bool
+mcp_slot_rerun (struct mcp_slot const *slot);
+
 /** The numbered lines of a committed file in the output of a git read or a
  *  code describe (mcp_slot_source()). The texts are views of the caller's
  *  storage.

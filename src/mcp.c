@@ -572,6 +572,8 @@ enum mcp_req_flag : uint32_t {
 	REQ_DETACH_PENDING = 1u << 17,  /* it becomes a job once its first
 	                                   checkpoint is durable */
 	REQ_ARCHIVED_END   = 1u << 18,  /* its end record is written */
+	REQ_RERUN          = 1u << 19,  /* the calls of its turn may have run
+	                                   before askai restarted */
 };
 
 /** A request, from its stream's head to its end or cancellation. */
@@ -1529,6 +1531,7 @@ mcp_req_calls_end (struct mcp_req *req)
 {
 	req->calls_base += req->n_calls;
 	req->n_calls = 0;
+	req->flags &= ~REQ_RERUN;
 	for (size_t k = 0; k < JOB_CALLS; ++k)
 		buf_fini(&req->calls[k]);
 }
@@ -3577,6 +3580,12 @@ mcp_slot_call (struct mcp_slot const *slot)
 {
 	struct mcp_req const *req = slot->req;
 	return slot->role == ROLE_TURN ? req->calls_base + (uint32_t)(slot - req->slots) + 1 : 0;
+}
+
+bool
+mcp_slot_rerun (struct mcp_slot const *slot)
+{
+	return slot->role == ROLE_TURN && slot->req->flags & REQ_RERUN;
 }
 
 int
@@ -6158,7 +6167,7 @@ mcp_recover_back (struct loop           *loop,
 	if (jb_get(state, "review"))
 		LOG(LOG_INFO, "journal: job %s: the old review record was not restored", id.hex);
 	req->intents = intents;
-	req->flags |= REQ_RECOVERING;
+	req->flags |= REQ_RECOVERING | REQ_RERUN;
 	req->asked = ++req->mcp->asked;
 	req->recovered = checkpoint->next;
 	checkpoint->next = nullptr;

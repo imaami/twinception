@@ -850,7 +850,12 @@ an item that the turns had not seen prints the item if it fits in one
 result, and the item then counts as shown in that turn. `retracted`
 needs a `reason`. A call that left the memory of the ask call, or that
 `askai` made before a restart, cannot be cited, and the refusal says why.
-An item that a result showed before a restart stays seen.
+An item that a result showed before a restart stays seen. A background
+job that `askai` resumes after a restart makes the `findings` calls of the
+interrupted turn again. An `add` or `update` that made its commit before
+the restart finds that commit by its lines `Ask:` and `Call:` among the
+newest 64 commits of the branch, answers such as "bro#5 was already added
+in commit 3e1f0a2b before askai restarted.", and makes no second commit.
 
 `expand` reads the file of the finding and its archive files with `git
 cat-file --batch`, so it works on every service of the session, and a
