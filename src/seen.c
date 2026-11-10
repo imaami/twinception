@@ -240,21 +240,23 @@ seen_ids (struct dstr              *ids,
 	return e ? e : dstr_printf(ids, "\",\"total\":%" PRIu64 "}", src->total) ? 0 : ENOMEM;
 }
 
-/* Returns a new ring without calls, or nullptr with ENOMEM in @p *e. */
-static struct seen *
-seen_create (int *e)
+/* Allocates a ring without calls into @p *p_seen if @p *p_seen is
+ * nullptr. Returns 0 or ENOMEM.
+ */
+static int
+seen_get (struct seen **p_seen)
 {
+	if (*p_seen)
+		return 0;
 	struct seen *seen = malloc(sizeof *seen);
-	if (!seen) {
-		*e = ENOMEM;
-		return nullptr;
-	}
+	if (!seen)
+		return ENOMEM;
 	*seen = (struct seen){};
 	for (size_t i = 0; i < SEEN_CALLS; ++i)
 		seen->calls[i] = (struct seen_call){ .result = DSTR_INIT, .ids = DSTR_INIT,
 		                                     .tool = TOOL_MAX };
-	*e = 0;
-	return seen;
+	*p_seen = seen;
+	return 0;
 }
 
 int
@@ -273,8 +275,7 @@ seen_keep (struct seen              **p_seen,
 	struct seen_read *read = r->read;
 	struct seen_lines const whole = read ? seen_lines(read, r->out, r->skip, window, &e)
 	                                     : (struct seen_lines){};
-	if (!e && !*p_seen)
-		*p_seen = seen_create(&e);
+	e = e ? e : seen_get(p_seen);
 	if (e)
 		return e;
 	struct seen *seen = *p_seen;
@@ -356,9 +357,7 @@ seen_resume (struct seen              **p_seen,
 	for (size_t i = 0; i < n; ++i)
 		if (!seen_item_valid(jb_at(items, i)))
 			return EINVAL;
-	int e = 0;
-	if (!*p_seen)
-		*p_seen = seen_create(&e);
+	int e = seen_get(p_seen);
 	if (e)
 		return e;
 	struct seen *seen = *p_seen;
@@ -441,9 +440,7 @@ seen_print (struct seen            **p_seen,
 	if (!call || !id.len || id.len == sizeof item->id || !len || len > TOOL_OUTPUT_MAX ||
 	    at > TOOL_OUTPUT_MAX - len)
 		return EINVAL;
-	int e = 0;
-	if (!*p_seen)
-		*p_seen = seen_create(&e);
+	int e = seen_get(p_seen);
 	if (e)
 		return e;
 	struct seen *seen = *p_seen;
@@ -640,8 +637,7 @@ seen_destroy (struct seen **p_seen)
 		dstr_cleanup(&seen->calls[i].result);
 		dstr_cleanup(&seen->calls[i].ids);
 	}
-	for (size_t i = 0; i < seen->items.n; ++i)
-		dstr_cleanup(&seen->items.items[i].record);
+	seen_items_drop(seen);
 	free(seen->items.items);
 	seen->items.items = nullptr;
 	free(seen);
