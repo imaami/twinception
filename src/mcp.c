@@ -502,6 +502,9 @@ struct mcp_slot {
 	size_t               skip;     /* the output offset at which the window
 	                                  given to a turn starts */
 	size_t               window;   /* the length of that window in bytes */
+	uint64_t             at;       /* the offset of a replayed output in the
+	                                  whole output, from the journal, or 0 */
+	uint64_t             bytes;    /* bytes of the whole output */
 	uint64_t             start;    /* loop_clock() when the call began */
 	struct handle        call;     /* the handle that mcp_slot_name() makes
 	                                  for the post that completes the call */
@@ -1181,7 +1184,10 @@ mcp_slot_reset (struct mcp_slot *slot)
 	mcp_slot_drop(slot);
 	slot->of = nullptr;
 	dstr_clear(&slot->answer);
-	slot->skip = slot->window = 0;
+	slot->skip = 0;
+	slot->window = 0;
+	slot->at = 0;
+	slot->bytes = 0;
 	util_text_clear(&slot->note);
 	slot->tool = TOOL_MAX;
 	slot->flags = 0;
@@ -5473,9 +5479,10 @@ mcp_req_intent_saved (struct mcp_req *req,
 }
 
 /* Ends the call in @p slot with the result @p saved that a resumed job
- * stored: the bytes of the output that the turn takes, from skip on, the
- * note after them, whether the call failed, and the numbered lines of a
- * git read. Returns 0, EILSEQ if @p saved is not valid, or ENOMEM.
+ * stored: the bytes of the output that the window of the turn contains,
+ * from skip on, their offset in the whole output and its size, the note
+ * after them, whether the call failed, and the numbered lines of a git
+ * read. Returns 0, EILSEQ if @p saved is not valid, or ENOMEM.
  */
 static int
 mcp_slot_replay (struct mcp_slot    *slot,
@@ -5493,6 +5500,8 @@ mcp_slot_replay (struct mcp_slot    *slot,
 	slot->start = loop_clock();
 	slot->skip = skip;
 	slot->window = text.len - skip;
+	slot->at = jb_uint(jb_get(saved, "at"), 0);
+	slot->bytes = jb_uint(jb_get(saved, "bytes"), 0);
 	mcp_slot_result(slot, text, json_object_get_boolean(jb_get(saved, "failed")));
 	return 0;
 }
@@ -5718,6 +5727,7 @@ mcp_slot_done (struct mcp_slot *slot,
 		loop_ready_bulk(req->mcp->loop, &req->step);
 		return;
 	}
+	slot->bytes = out.len;
 	size_t const offset = slot->skip;
 	mcp_slot_window(slot, out);
 	mcp_slot_note_window(slot, out.len, offset);
@@ -5884,12 +5894,9 @@ mcp_req_result_write (struct mcp_req *req)
 		mcp_req_upload_failed(req, e);
 		return;
 	}
-	/* A replayed result is a part of the output; its record gives the size. */
-	struct json_object *saved = req->saved_tools[req->part];
-	uint64_t const output = saved ? jb_uint(jb_get(saved, "bytes"), 0) : out.len;
 	struct mcp_row const *row = mcp_row_of(mcp_slot_tool(slot));
 	(void)mcp_req_trace(req, &c, slot->args, row->trace);
-	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED, output);
+	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED, slot->bytes);
 	switch (row->metric) {
 	case LENT_FINDINGS:
 		seen_shown(req->seen, mcp_slot_call(slot), slot->skip, slot->window, req->turn);
@@ -5906,8 +5913,8 @@ mcp_req_result_write (struct mcp_req *req)
 			.parts  = parts,
 			.out    = { (char const *)out.ptr, out.len },
 			.read   = (slot->of ? slot->of : slot)->read,
-			.output = output,
-			.at     = jb_uint(jb_get(saved, "at"), 0),
+			.output = slot->bytes,
+			.at     = slot->at,
 			.skip   = slot->skip,
 			.number = mcp_slot_call(slot),
 			.turn   = req->turn,
