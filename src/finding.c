@@ -355,19 +355,31 @@ finding_check (struct finding_change const *c,
 	return 0;
 }
 
-/* Orders two findings for finding_sort(). */
+/* Orders two findings by the name of the author, and the findings of one
+ * author newest first.
+ */
+static int
+finding_order_id (void const *a,
+                  void const *b)
+{
+	struct finding const *x = a;
+	struct finding const *y = b;
+	int const by = strcmp(x->author, y->author);
+	return by ? by : (x->number < y->number) - (x->number > y->number);
+}
+
+/* Orders two findings for finding_sort(): the open findings first, then
+ * as finding_order_id() orders them.
+ */
 static int
 finding_order (void const *a,
                void const *b)
 {
-	struct finding const *x = a;
-	struct finding const *y = b;
-	bool const xo = FINDING_OPEN >> finding_state(x) & 1;
-	bool const yo = FINDING_OPEN >> finding_state(y) & 1;
+	bool const xo = FINDING_OPEN >> finding_state(a) & 1;
+	bool const yo = FINDING_OPEN >> finding_state(b) & 1;
 	if (xo != yo)
 		return xo ? -1 : 1;
-	int const by = strcmp(x->author, y->author);
-	return by ? by : (x->number < y->number) - (x->number > y->number);
+	return finding_order_id(a, b);
 }
 
 void
@@ -376,6 +388,49 @@ finding_sort (struct finding *list,
 {
 	if (n > 1)
 		qsort(list, n, sizeof *list, finding_order);
+}
+
+struct finding const *
+finding_find (struct finding const *list,
+              size_t                n,
+              char const           *author,
+              uint32_t              number)
+{
+	if (!list || !author)
+		return nullptr;
+	/* The open findings come first. open becomes their number. */
+	size_t open = 0;
+	for (size_t end = n; open < end; ) {
+		size_t const mid = open + (end - open) / 2;
+		if (FINDING_OPEN >> finding_state(&list[mid]) & 1)
+			open = mid + 1;
+		else
+			end = mid;
+	}
+	struct finding key = { .number = number };
+	(void)util_format(key.author, sizeof key.author, "%s", author);
+	struct finding const *f = bsearch(&key, list, open, sizeof *list, finding_order_id);
+	return f ? f : bsearch(&key, list + open, n - open, sizeof *list, finding_order_id);
+}
+
+struct evidence const *
+finding_item (struct finding const *f,
+              uint32_t              item)
+{
+	if (!f)
+		return nullptr;
+	/* The items of a change are numbered after the items of the changes
+	 * before it, up to the number c->items. */
+	for (size_t k = 0; k < f->changes.n; ++k) {
+		struct finding_change const *c = &f->changes.items[k];
+		if (c->items < item)
+			continue;
+		for (size_t i = 0; i < c->evidence.n; ++i)
+			if (c->evidence.items[i].item == item)
+				return &c->evidence.items[i];
+		break;
+	}
+	return nullptr;
 }
 
 struct cstr_view

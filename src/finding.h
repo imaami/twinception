@@ -239,6 +239,23 @@ extern void
 finding_sort (struct finding *list,
               size_t          n);
 
+/** Returns the finding @p number of @p author among the @p n findings at
+ *  @p list, which finding_sort() sorted, or nullptr for no such finding or
+ *  a null @p list or @p author.
+ */
+extern struct finding const *
+finding_find (struct finding const *list,
+              size_t                n,
+              char const           *author,
+              uint32_t              number);
+
+/** Returns the evidence item @p item of @p f, or nullptr for no such item
+ *  or a null @p f.
+ */
+extern struct evidence const *
+finding_item (struct finding const *f,
+              uint32_t              item);
+
 /** Returns the claim of @p f for a line: up to its first line feed, at
  *  most FINDING_CLAIM bytes.
  */

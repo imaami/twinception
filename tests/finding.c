@@ -225,6 +225,19 @@ test_changes (void)
 	CHECK(back.changes.n == 2 && finding_state(&back) == FINDING_VERIFIED &&
 	      back.changes.items[1].items == 3 && back.changes.items[1].evidence.items[0].item == 3 &&
 	      !dstr_len(&back.changes.items[0].claim_before));
+	/* finding_item() finds each item in its change. */
+	CHECK(finding_item(&back, 1) == &back.changes.items[0].evidence.items[0] &&
+	      finding_item(&back, 2) == &back.changes.items[0].evidence.items[1] &&
+	      finding_item(&back, 3) == &back.changes.items[1].evidence.items[0] &&
+	      !finding_item(&back, 0) && !finding_item(&back, 4) && !finding_item(nullptr, 1));
+	/* Numbers with gaps, which finding_parse() accepts if they grow. */
+	back.changes.items[0].evidence.items[1].item = 3;
+	back.changes.items[0].items = 3;
+	back.changes.items[1].evidence.items[0].item = 5;
+	back.changes.items[1].items = 5;
+	CHECK(finding_item(&back, 3) == &back.changes.items[0].evidence.items[1] &&
+	      finding_item(&back, 5) == &back.changes.items[1].evidence.items[0] &&
+	      !finding_item(&back, 2) && !finding_item(&back, 4) && !finding_item(&back, 6));
 	SAME(dstr_get(&back.claim), dstr_len(&back.claim), "Second claim.");
 	SAME(dstr_get(&back.changes.items[1].claim_before),
 	     dstr_len(&back.changes.items[1].claim_before), "First claim.");
@@ -418,6 +431,17 @@ test_texts (void)
 	      list[3].number == 2 && list[4].number == 3 && list[5].number == 1);
 	CHECK(!strcmp(list[2].author, "bro") && !strcmp(list[3].author, "cuh") &&
 	      !strcmp(list[4].author, "bro") && !strcmp(list[5].author, "cuh"));
+	/* finding_find() finds each finding of the sorted list, open or
+	 * closed. */
+	for (size_t i = 0; i < n; ++i)
+		CHECK(finding_find(list, n, list[i].author, list[i].number) == &list[i]);
+	CHECK(!finding_find(list, n, "bro", 6) && !finding_find(list, n, "bro", 1) &&
+	      !finding_find(list, n, "cuh", 3) && !finding_find(list, n, "dan", 1) &&
+	      !finding_find(list, n, "", 12) && !finding_find(list, 0, "bro", 12) &&
+	      !finding_find(nullptr, n, "bro", 12) && !finding_find(list, n, nullptr, 12));
+	CHECK(finding_find(list, 4, "bro", 12) == &list[0] && !finding_find(list, 4, "cuh", 1) &&
+	      finding_find(list + 4, 2, "cuh", 1) == &list[5] &&
+	      !finding_find(list + 4, 2, "bro", 12));
 	struct dstr text = DSTR_INIT;
 	CHECK(!finding_list(list, n, CSTR_VIEW("test1"), "", &text));
 	SAME(dstr_get(&text), dstr_len(&text),

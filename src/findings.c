@@ -869,18 +869,6 @@ findings_commit (struct mcp_slot      *slot,
 	findings_run(slot, STAGE_COMMIT, STORE_COMMIT, nullptr, ref, &in);
 }
 
-/* Returns the evidence item @p item of @p f, or nullptr for no such item. */
-static struct evidence const *
-findings_item (struct finding const *f,
-               uint32_t              item)
-{
-	for (size_t k = 0; k < f->changes.n; ++k)
-		for (size_t i = 0; i < f->changes.items[k].evidence.n; ++i)
-			if (f->changes.items[k].evidence.items[i].item == item)
-				return &f->changes.items[k].evidence.items[i];
-	return nullptr;
-}
-
 /* Stores in @p d the JSON object of the item @p e without spaces, as the
  * ring stores it (struct seen_item). Returns 0 or ENOMEM.
  */
@@ -1216,21 +1204,6 @@ findings_got_archive (struct mcp_slot *slot)
 
 static void findings_cite_records (struct mcp_slot *slot);
 
-/* Returns the finding @p number of @p author that @p call read, or
- * nullptr.
- */
-static struct finding *
-findings_find (struct findings_call const *call,
-               char const                 *author,
-               uint32_t                    number)
-{
-	for (size_t i = 0; i < call->findings.n; ++i)
-		if (call->findings.items[i].number == number &&
-		    !strcmp(call->findings.items[i].author, author))
-			return &call->findings.items[i];
-	return nullptr;
-}
-
 /* Does the action of the call in @p slot once git has read what it needs,
  * with the findings that finding_sort() sorted: writes the list or the
  * finding, or commits an add or an update. For the call of
@@ -1283,7 +1256,8 @@ findings_act (struct mcp_slot *slot)
 		findings_cite_records(slot);
 		return;
 	}
-	struct finding *f = findings_find(call, call->author, call->number);
+	struct finding const *f = finding_find(call->findings.items, call->findings.n, call->author,
+	                                       call->number);
 	if (call->action == FINDINGS_SHOW) {
 		if (!f) {
 			findings_end(slot, EIO, true);
@@ -1614,8 +1588,9 @@ findings_cite_records (struct mcp_slot *slot)
 		struct evidence_ref const *ref = &cite->ref;
 		if (cite->first != i || dstr_len(&cite->record))
 			continue;
-		struct finding const *f = findings_find(call, ref->author, ref->number);
-		struct evidence const *item = f ? findings_item(f, ref->item) : nullptr;
+		struct finding const *f = finding_find(call->findings.items, call->findings.n,
+		                                       ref->author, ref->number);
+		struct evidence const *item = finding_item(f, ref->item);
 		/* cat-file reads a finding that the call has not read yet, once. */
 		bool queued = f != nullptr;
 		for (size_t k = read; !queued && k < call->wanted.n; ++k)
