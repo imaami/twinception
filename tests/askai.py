@@ -7653,21 +7653,21 @@ def check_streaming(binary, up):
         up.reply = lambda request: (200, Stream(wire=wire, sizes=(20,) * 200, gap=0.1))
         result = ai.ask()
         assert result["isError"] and "timed out after 2 s" in text_of(result), result
-        # Text that is not UTF-8, which json-c lets through, ends the call;
-        # so does an event that is not JSON text, with text that json-c
-        # finds no UTF-8 or cut short.
+        # The stream passes the gate of text as it comes, before its events
+        # are parsed: bytes that are not UTF-8 text end the call, at the
+        # start or within an event; so does an event that is not JSON text.
         bad = b'data: {"choices":[{"delta":{"content":"\xc0\xa0"}}]}\n\n'
-        up.reply = lambda request: (200, Stream(wire=bad + wire))
-        result = ai.ask()
-        assert result["isError"] and text_of(result) == \
-            "Upstream error (HTTP 200): an answer that is not text", result
-        for bad in (b'data: {"choices":[{"delta":{"content":"BAD\xff"}}]}\n\n',
-                    b'data: {"choices":[{"delta":{"content":"LOST"}}\n\n'):
-            up.reply = lambda request, b=bad: (200, Stream(
-                wire=wire[:60] + b + wire[60:]))
+        xff = b'data: {"choices":[{"delta":{"content":"BAD\xff"}}]}\n\n'
+        for wired in (bad + wire, wire[:60] + xff + wire[60:]):
+            up.reply = lambda request, w=wired: (200, Stream(wire=w))
             result = ai.ask()
             assert result["isError"] and text_of(result) == \
-                "Upstream error (HTTP 200): an event that is not JSON text", result
+                "Upstream error (HTTP 200): an answer that is not text", result
+        lost = b'data: {"choices":[{"delta":{"content":"LOST"}}\n\n'
+        up.reply = lambda request: (200, Stream(wire=wire[:60] + lost + wire[60:]))
+        result = ai.ask()
+        assert result["isError"] and text_of(result) == \
+            "Upstream error (HTTP 200): an event that is not JSON text", result
         # The first completion's text, should --extra ask for more.
         events = [(None, {"choices": [{"index": i % 2, "delta": {"content": c}}]})
                   for i, c in enumerate("HwEoLrLlOd")]

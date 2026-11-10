@@ -91,13 +91,14 @@ override UTF8_LIBS = $(call test-pkg-config,UTF8_LIBS,--libs libutf8proc)
 override U8_OBJECTS := $Otests/src/u8.c.o $Otests/src/c.utf-8/src/utf8.c.o
 override AUTOCOMPLETE_OBJECTS := $Otests/autocomplete_fixture.c.o \
                                  $Otests/src/autocomplete.c.o $Otests/src/cli_command.c.o \
-                                 $Otests/src/dstr.c.o $Otests/src/jb.c.o
+                                 $Otests/src/dstr.c.o $Otests/src/jb.c.o $(U8_OBJECTS)
 override AUTOCOMPLETE_WRAPS := -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
 
 override CLI_CONSOLE_OBJECTS := $Otests/src/cli_console.c.o $Otests/src/buf.c.o \
                                 $Otests/src/cli_loop.c.o \
                                 $Otests/src/cli_render.c.o $Otests/src/cli_scrollback.c.o $Otests/src/cli_style.c.o $Otests/src/cli_io.c.o \
-                                $Otests/src/blocker.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
+                                $Otests/src/blocker.c.o $Otests/src/loop.c.o $Otests/src/log.c.o \
+                                $(U8_OBJECTS)
 
 $Otests/cli_io: $Otests/cli_io.c.o $Otests/src/cli_io.c.o $Otests/src/cli_loop.c.o \
                 $Otests/src/blocker.c.o $Otests/src/loop.c.o $Otests/src/log.c.o
@@ -108,7 +109,7 @@ $Otests/cli_loop: $Otests/cli_loop.c.o $Otests/src/cli_loop.c.o \
 $Otests/cli_loop:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
 
 $Otests/cli_scrollback: $Otests/cli_scrollback.c.o $Otests/src/cli_render.c.o $Otests/src/cli_scrollback.c.o $Otests/src/cli_style.c.o \
-                       $Otests/src/dstr.c.o $Otests/src/cstr_view.c.o
+                       $Otests/src/dstr.c.o $Otests/src/cstr_view.c.o $(U8_OBJECTS)
 $Otests/cli_scrollback:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(UTF8_LIBS)
 
 $Otests/cli_input $Otests/cli_ui $Otests/cli_state $Otests/autocomplete $Otests/cstr_view: $Otests/src/cstr_view.c.o
@@ -129,7 +130,7 @@ $Otests/cli_ui:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS)
 $Otests/cli_state: $Otests/cli_state.c.o $Otests/src/cli_state.c.o \
                    $Otests/src/dstr.c.o $Otests/src/jb.c.o $Otests/src/child.c.o \
                    $Otests/src/buf.c.o $Otests/src/loop.c.o $Otests/src/log.c.o \
-                   $Otests/src/git_run.c.o
+                   $Otests/src/git_run.c.o $(U8_OBJECTS)
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
 
 $Otests/autocomplete: $Otests/autocomplete.c.o $Otests/src/autocomplete_file.c.o $(AUTOCOMPLETE_OBJECTS)
@@ -147,7 +148,8 @@ $Otests/src/cli_render.c.o: CPPFLAGS += $(UTF8_INCLUDES)
 check-ai: $Otests/ai
 	$<
 
-$Otests/ai: $Otests/ai.c.o $Otests/src/ai.c.o $Otests/src/jb.c.o $Otests/src/dstr.c.o
+$Otests/ai: $Otests/ai.c.o $Otests/src/ai.c.o $Otests/src/jb.c.o $Otests/src/dstr.c.o \
+            $(U8_OBJECTS)
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -Wl,--wrap=json_object_get_int64 -o "$@" $^ $(JSON_LIBS)
 
 $Otests/ai.c.o $Otests/src/ai.c.o: CPPFLAGS += $(JSON_INCLUDES)
@@ -288,7 +290,8 @@ check-member: $Otests/member
 $Otests/member: $Otests/member.c.o $Otests/src/member.c.o $Otests/src/store.c.o \
                 $Otests/src/blocker.c.o $Otests/src/child.c.o $Otests/src/loop.c.o \
                 $Otests/src/log.c.o $Otests/src/buf.c.o $Otests/src/cstr_view.c.o \
-                $Otests/src/dstr.c.o $Otests/src/git_run.c.o $Otests/src/jb.c.o
+                $Otests/src/dstr.c.o $Otests/src/git_run.c.o $Otests/src/jb.c.o \
+                $(U8_OBJECTS)
 $Otests/member:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS) -lm
 
 $Otests/member.c.o $Otests/src/member.c.o: CPPFLAGS += $(JSON_INCLUDES)

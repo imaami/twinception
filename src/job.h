@@ -57,6 +57,7 @@
 #include "loop.h"
 #include "ref.h"
 #include "stream.h"
+#include "u8.h"
 
 struct home_principal;
 struct home_delivery_error;
@@ -211,6 +212,10 @@ struct job {
 	struct buf             wire;        /**< home's: a streamed answer's bytes
 	                                         yet to read */
 	struct jb_parser       parser;      /**< home's: of the stream's event */
+	struct u8_gate         gate;        /**< home writes before DONE: what of the
+	                                         answer has passed the gate of text,
+	                                         a plain answer as it comes, a stream
+	                                         as it is read */
 	struct loop           *front;       /**< the front's loop, set as it is made */
 	struct http_request   *transfer;    /**< home's: the request upstream */
 	char                  *cancel_url;  /**< home's: native background job's

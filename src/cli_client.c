@@ -11,6 +11,7 @@
 #include "notes.h"
 #include "oid.h"
 #include "sse.h"
+#include "u8.h"
 #include "util.h"
 
 int
@@ -77,6 +78,7 @@ void cli_client_fini(struct cli_client *client)
 struct cli_client_response {
 	struct buf body;
 	struct sse stream;
+	struct u8_gate gate;  /* what of the body has passed the gate of text */
 	struct dstr session;
 	struct cli_client *client;
 	struct cli_error *error;
@@ -102,7 +104,7 @@ static void cli_client_response_fini(struct cli_client_response *response)
 static int cli_client_response_event(char const *data, size_t len, void *user)
 {
 	struct cli_client_response *response = user;
-	cli_json_auto event = jb_parse(data, len, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8, 0);
+	cli_json_auto event = jb_parse(data, len, JSON_TOKENER_STRICT, 0);
 	if (!json_object_is_type(event, json_type_object))
 		return cli_error_set(response->error, EPROTO, "Malformed JSON response from AskAI");
 	struct json_object *id = jb_get(event, "id");
@@ -130,19 +132,29 @@ cli_client_response_init (struct cli_client_response *response,
 {
 	*response = (struct cli_client_response){
 		.stream = sse(cli_client_response_event, response),
-		.session = DSTR_INIT, .client = client, .error = error,
+		.gate = u8_gate(), .session = DSTR_INIT, .client = client, .error = error,
 		.notify = notify, .context = context, .id = id,
 	};
 }
 
-/* The partial line and event of a stream are at most CLI_LIMIT bytes. */
+/* Fail @p response, whose body is not UTF-8 text. */
+static int cli_client_not_text(struct cli_client_response *response)
+{
+	return cli_error_set(response->error, EPROTO, "AskAI sent a response that is not UTF-8 text");
+}
+
+/* The body passes the gate of text as it comes. The partial line and event
+ * of a stream are at most CLI_LIMIT bytes.
+ */
 static int cli_client_response_receive(struct cstr_view bytes, void *context)
 {
 	struct cli_client_response *response = context;
 	struct sse *stream = &response->stream;
 	if (response->failure)
 		return response->failure;
-	if (!response->sse)
+	if (u8_gate_pass(&response->gate, bytes))
+		response->failure = cli_client_not_text(response);
+	else if (!response->sse)
 		response->failure = buf_put(&response->body, bytes.data, bytes.len, CLI_LIMIT);
 	else if (bytes.len > CLI_LIMIT - dstr_len(&stream->input) - dstr_len(&stream->data))
 		response->failure = ENOBUFS;
@@ -188,8 +200,10 @@ cli_client_response_status (struct cli_client_response      *response,
 		return response->failure;
 	if (e)
 		return result->message[0] ? cli_error_set(response->error, e, "%s", result->message) : e;
+	if (u8_gate_end(&response->gate))
+		return cli_client_not_text(response);
 	if (result->status < 200 || result->status >= 300) {
-		size_t length = response->body.tail < 1024 ? response->body.tail : 1024;
+		size_t length = util_clip((char const *)response->body.data, response->body.tail, 1024);
 		return cli_error_set(response->error, EPROTO, "AskAI HTTP %ld%s%.*s", result->status,
 		                      length ? ": " : "", (int)length,
 		                      length ? (char const *)response->body.data : "");

@@ -12,7 +12,7 @@
 #include "autocomplete_file.h"
 #include "compat.h"
 #include "dstr.h"
-#include "jb.h"
+#include "u8.h"
 #include "util.h"
 
 struct autocomplete_file {
@@ -33,7 +33,7 @@ autocomplete_file_create (int *const e)
 	*file = (struct autocomplete_file){
 		.found.lines = dstr(nullptr),
 		.directory   = dstr(nullptr),
-		.home        = jb_is_text(home) ? home : (struct cstr_view){},
+		.home        = u8_check(home) ? (struct cstr_view){} : home,
 	};
 	*e = 0;
 	return file;
@@ -86,7 +86,7 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 
 	if (line.len > AUTOCOMPLETE_BYTES)
 		return E2BIG;
-	if (!file || !command.data || !command.len || cursor > line.len || !jb_is_text(line))
+	if (!file || !command.data || !command.len || cursor > line.len)
 		return EINVAL;
 
 	if (cursor < command.len || !cstr_view_starts(line, command))

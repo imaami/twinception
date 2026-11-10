@@ -24,6 +24,7 @@
 #include "oid.h"
 #include "policy.h"
 #include "store.h"
+#include "u8.h"
 #include "util.h"
 #include "xlist.h"
 
@@ -326,8 +327,11 @@ member_records_branch (struct member_records  *r,
 		entry->findings = tip;
 		return 0;
 	}
-	entry->change = f[FIELD_SUBJECT];
-	entry->asker = f[FIELD_ASKER];
+	/* The text of the commit passes the gate here, once, and ends where
+	 * it stops being text. */
+	int bad;
+	entry->change = u8_text(f[FIELD_SUBJECT], &bad).view;
+	entry->asker = u8_text(f[FIELD_ASKER], &bad).view;
 	entry->time = time;
 	entry->flags |= MEMBER_NOTES;
 	return 0;

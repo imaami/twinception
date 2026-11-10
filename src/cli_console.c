@@ -29,9 +29,9 @@
 #include "cli_state.h"
 #include "compat.h"
 #include "dstr.h"
-#include "jb.h"
 #include "list.h"
 #include "loop.h"
+#include "u8.h"
 #include "util.h"
 
 enum {
@@ -72,13 +72,6 @@ enum {
 	                  CLI_CONSOLE_TAB_LISTING | CLI_CONSOLE_TAB_COMPLETED,
 };
 
-struct cli_console_output {
-	uint32_t       value;
-	unsigned       used;
-	unsigned       expected;
-	unsigned char  pending[4];
-};
-
 /* The blocker job of a stream, which reads stdin or writes stdout. */
 struct cli_console_io {
 	struct cli_io_job job;
@@ -111,9 +104,8 @@ enum cli_console_pane_id : uint32_t {
 };
 
 struct cli_console_pane {
-	struct cli_scrollback     scrollback;
-	struct cli_console_output output;
-	struct dstr               rows[CLI_CONSOLE_ROWS];
+	struct cli_scrollback scrollback;
+	struct dstr           rows[CLI_CONSOLE_ROWS];
 };
 
 enum {
@@ -183,7 +175,7 @@ static struct cli_console *cli_console_active;
 static int cli_console_input_arm (struct cli_console *console);
 static int cli_console_output_drain (struct cli_console *console);
 static int cli_console_render (struct cli_console *console);
-static int cli_console_output_write (struct cli_console_output *state, struct dstr *dest, struct cstr_view text);
+static int cli_console_output_write (struct dstr *dest, struct cstr_view text);
 
 static unsigned
 cli_console_pane_width (struct cli_console const *console,
@@ -210,8 +202,7 @@ cli_console_completion_cache (struct cli_console *console)
 		size_t begin = dstr_len(&console->completion_labels);
 		if (label.len >= CLI_CONSOLE_INPUT_LIMIT - begin)
 			return E2BIG;
-		struct cli_console_output state = {};
-		int e = cli_console_output_write(&state, &console->completion_labels, label);
+		int e = cli_console_output_write(&console->completion_labels, label);
 		if (e)
 			return e;
 		console->completions[i] = (struct cli_console_completion){
@@ -512,7 +503,7 @@ cli_console_accept (char *line)
 	cli_console_pause_keys(console);
 	if (text.len >= CLI_CONSOLE_INPUT_LIMIT)
 		console->in.error = EFBIG;
-	else if (jb_utf8(text.data, text.len) != text.len)
+	else if (u8_check(text))
 		console->in.error = EILSEQ;
 	else if (text.len <= CLI_CONSOLE_HISTORY_LIMIT)
 		/* Record before Readline positions the new draft's history cursor. */
@@ -1711,8 +1702,8 @@ cli_console_read_text_simple (struct cli_console *console,
 	struct buf bytes = {};
 	int e = cli_console_read_simple(console, &bytes, multiline, prompt);
 	struct cstr_view line = {(char const *)bytes.data, bytes.tail};
-	if (!e && !jb_is_text(line))
-		e = EILSEQ;
+	if (!e)
+		e = u8_check(line);
 	if (!e && cstr_view_cat(line, text))
 		e = ENOMEM;
 	buf_fini(&bytes);
@@ -1794,81 +1785,30 @@ cli_console_read (struct cli_console *console,
 }
 
 
-/* Add the continuation byte to the character in state. Once the character
- * is complete, append it to dest, or "?" if it is unsafe or overlong.
+/* Append text to dest with "?" in place of each control character but a
+ * newline and a tab, C1 controls included, and of each byte that is not
+ * part of a character. Text has passed its gate whole characters at a time,
+ * so a character never straddles two calls. Returns 0 or ENOMEM.
  */
 static int
-cli_console_output_next (struct cli_console_output *state,
-                         unsigned char              byte,
-                         struct dstr               *dest)
+cli_console_output_write (struct dstr      *dest,
+                          struct cstr_view  text)
 {
-	static uint32_t const minimum[] = {[2] = 0x80, [3] = 0x800, [4] = 0x10000};
-	state->pending[state->used++] = byte;
-	state->value = (state->value << 6) | (byte & 0x3f);
-	if (state->used < state->expected)
-		return 0;
-	uint32_t value = state->value;
-	bool unsafe = value < minimum[state->expected] || value > 0x10ffff ||
-	              (value >= 0xd800 && value <= 0xdfff) || (value >= 0x0080 && value <= 0x009f);
-	struct cstr_view bytes = unsafe ? CSTR_VIEW("?") : (struct cstr_view){(char const *)state->pending, state->used};
-	state->used = 0;
-	return cstr_view_cat(bytes, dest);
-}
-
-/* Filter the first bytes of text, which is not empty, into dest. A byte
- * that continues the character in state is added to it, and a complete
- * character is appended, or "?" if it is unsafe. A byte that cuts the
- * character short appends "?" and is not used. A run of printable ASCII
- * is appended as it is, and an unsafe ASCII byte as "?". A lead byte
- * starts a character, or appends "?" if it is not valid. Sets *used to the
- * number of bytes used. Returns 0 or ENOMEM.
- */
-static int
-cli_console_output_step (struct cli_console_output *state,
-                         struct dstr               *dest,
-                         struct cstr_view           text,
-                         size_t                    *used)
-{
-	unsigned char byte = (unsigned char)text.data[0];
-	*used = 1;
-	if (state->used) {
-		if ((byte & 0xc0) == 0x80)
-			return cli_console_output_next(state, byte, dest);
-		/* A byte that does not continue the character cuts it short. */
-		state->used = 0;
-		*used = 0;
-		return cstr_view_cat(CSTR_VIEW("?"), dest);
-	}
-	if (byte >= 0x80) {
-		state->expected = byte >= 0xc2 && byte <= 0xdf ? 2 :
-		                  byte >= 0xe0 && byte <= 0xef ? 3 :
-		                  byte >= 0xf0 && byte <= 0xf4 ? 4 : 0;
-		state->pending[0] = byte;
-		state->used = state->expected != 0;
-		state->value = byte & (0x7f >> state->expected);
-		return state->expected ? 0 : cstr_view_cat(CSTR_VIEW("?"), dest);
-	}
-	if ((byte < 0x20 || byte == 0x7f) && byte != '\n' && byte != '\t')
-		return cstr_view_cat(CSTR_VIEW("?"), dest);
-	while (*used < text.len && (unsigned char)text.data[*used] - 0x20u < 0x5f)
-		++*used;
-	return cstr_view_cat(cstr_view_slice(text, 0, *used), dest);
-}
-
-static int
-cli_console_output_write (struct cli_console_output *state,
-                          struct dstr               *dest,
-                          struct cstr_view           text)
-{
-	/* UTF-8 code points may straddle provider deltas. C1 controls are unsafe. */
+	size_t kept = 0;
 	for (size_t i = 0; i < text.len;) {
-		size_t used;
-		int e = cli_console_output_step(state, dest, cstr_view_slice(text, i, SIZE_MAX), &used);
-		if (e)
-			return e;
-		i += used;
+		uint32_t c;
+		size_t const n = u8_char(cstr_view_slice(text, i, SIZE_MAX), &c);
+		if (n && (c < 0x20 ? c == '\n' || c == '\t' : c - 0x7fu > 0x20u)) {
+			i += n;
+			continue;
+		}
+		if (cstr_view_cat(cstr_view_slice(text, kept, i - kept), dest) ||
+		    cstr_view_cat(CSTR_VIEW("?"), dest))
+			return ENOMEM;
+		i += n ? n : 1;
+		kept = i;
 	}
-	return 0;
+	return cstr_view_cat(cstr_view_slice(text, kept, SIZE_MAX), dest);
 }
 
 int
@@ -1880,7 +1820,7 @@ cli_console_write (struct cli_console *console,
 	struct cli_console_pane *pane = &console->panes[target];
 	struct dstr *clean = &console->clean;
 	(void)dstr_clear(clean);
-	int e = cli_console_output_write(&pane->output, clean, text);
+	int e = cli_console_output_write(clean, text);
 	if (e)
 		return e;
 	if (!(console->flags & CLI_CONSOLE_FULLSCREEN))
@@ -1912,7 +1852,6 @@ cli_console_print (struct cli_console            *console,
 		return e;
 	}
 	/* A stream changes its style only where the style changes. */
-	struct cli_console_output *state = &console->panes[CLI_CONSOLE_CONVERSATION].output;
 	struct dstr *clean = &console->clean;
 	enum cli_style display = console->display;
 	(void)dstr_clear(clean);
@@ -1922,7 +1861,7 @@ cli_console_print (struct cli_console            *console,
 		if (style != display && !dstr_cat_n(clean, sequence->bytes, sequence->length))
 			return ENOMEM;
 		display = style;
-		int e = i < count ? cli_console_output_write(state, clean, spans[i].text) : 0;
+		int e = i < count ? cli_console_output_write(clean, spans[i].text) : 0;
 		if (e)
 			return e;
 	}
@@ -1936,10 +1875,9 @@ int
 cli_console_write_error (struct cstr_view const *parts,
                          size_t                  count)
 {
-	struct cli_console_output state = {};
 	dstr_auto clean = dstr(nullptr);
 	for (size_t i = 0; i < count; ++i) {
-		int e = cli_console_output_write(&state, &clean, parts[i]);
+		int e = cli_console_output_write(&clean, parts[i]);
 		if (e)
 			return e;
 	}

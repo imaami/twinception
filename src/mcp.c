@@ -115,6 +115,7 @@
 #include "shelf.h"
 #include "stream.h"
 #include "task.h"
+#include "u8.h"
 #include "uploads.h"
 #include "util.h"
 #include "version.h"
@@ -703,6 +704,7 @@ struct mcp_req {
 	struct handle        call;       /* names the request to its job's
 	                                    completion, while it waits for that */
 	struct jb_scan       scan;       /* the body's pre-scan */
+	struct u8_gate       gate;       /* the body's gate of text */
 	int                  error;      /* to end the stream with */
 	int                  archive_error; /* of a record that was not written */
 	uint32_t             intents;    /* tool intents made durable this turn */
@@ -3436,12 +3438,12 @@ mcp_slot_tell (struct mcp_slot  *slot,
 	int e = !text.data && text.len ? EFAULT : mcp_slot_live(slot, flags, TOOL_FAILED);
 	if (e)
 		return e;
-	size_t len = jb_utf8(text.data, text.len < TOOL_TELL_MAX ? text.len : TOOL_TELL_MAX);
+	text = u8_text(cstr_view_slice(text, 0, TOOL_TELL_MAX), &e).view;
 	mcp_slot_wake(slot);
 	/* The output is the text whole, not lent, nor from an offset. */
 	slot->skip = 0;
 	slot->lent = (struct span){};
-	mcp_slot_result(slot, (struct cstr_view){ text.data, len }, flags & TOOL_FAILED);
+	mcp_slot_result(slot, text, flags & TOOL_FAILED);
 	return 0;
 }
 
@@ -3519,11 +3521,11 @@ mcp_slot_write (struct mcp_slot  *slot,
 	size_t had = dstr_len(answer);
 	if (text.len > TOOL_OUTPUT_MAX - had)
 		return EFBIG;
-	/* Valid UTF-8 at the start of the text is copied at once, and the rest
-	 * a chunk at a time, mended by jb_mend(). With TOOL_MORE, an incomplete
+	/* The text at the start of the text is copied at once, and the rest a
+	 * chunk at a time, mended by u8_mend(). With TOOL_MORE, an incomplete
 	 * character at the end is left for the next write. On failure, nothing
 	 * is appended. */
-	size_t i = jb_utf8(text.data, text.len);
+	size_t i = u8_text(text, &e).len;
 	bool ok = dstr_cat_n(answer, text.data, i);
 	for (bool last = i == text.len; ok && !last; ) {
 		char chunk[4 << 10];
@@ -3531,7 +3533,7 @@ mcp_slot_write (struct mcp_slot  *slot,
 		size_t n = left < sizeof chunk ? left : sizeof chunk;
 		last = n == left;
 		memcpy(chunk, text.data + i, n);
-		n = jb_mend(chunk, n, last && !(flags & TOOL_MORE));
+		n = u8_mend(chunk, n, last && !(flags & TOOL_MORE));
 		ok = dstr_cat_n(answer, chunk, n);
 		i += n;
 	}
@@ -4609,7 +4611,7 @@ mcp_req_trace (struct mcp_req       *req,
 		return 0;
 	char const *name = c->name.data;
 	if (cstr_view_cat(CSTR_VIEW("- "), &req->trace) ||
-	    !dstr_cat_n(&req->trace, name, jb_utf8(name, util_clip(name, c->name.len, TRACE_TOOL))))
+	    !dstr_cat_n(&req->trace, name, util_clip(name, c->name.len, TRACE_TOOL)))
 		return ENOMEM;
 	switch (trace) {
 	case TRACE_NAME:
@@ -4622,7 +4624,7 @@ mcp_req_trace (struct mcp_req       *req,
 		       ? 0 : ENOMEM;
 	default:
 		char const *json = c->args.data;
-		size_t n = jb_utf8(json, util_clip(json, c->args.len, TRACE_ARGS));
+		size_t n = util_clip(json, c->args.len, TRACE_ARGS);
 		if (n && (cstr_view_cat(CSTR_VIEW(" "), &req->trace) ||
 		          !dstr_cat_n(&req->trace, json, n)))
 			return ENOMEM;
@@ -5424,8 +5426,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 	struct cstr_view note = jb_view(o);
 	struct cstr_view problem =
 		!secs ? CSTR_VIEW("The seconds argument must be a whole number from 1 to 3600.")
-		: o && (!note.data || note.len > LEDGER_NOTE ||
-		        jb_utf8(note.data, note.len) < note.len)
+		: o && (!note.data || note.len > LEDGER_NOTE)
 		? CSTR_VIEW("The note argument must be a string of at most 200 bytes.")
 		: (struct cstr_view){};
 	if (problem.data) {
@@ -6589,8 +6590,7 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
 	LOG(LOG_VERBOSE, TURN_FMT "compacted by the upstream's compact call, summary %zu byte%s",
 	    TURN_ARGS(req), summary.len, util_s(summary.len));
-	mcp_req_compact(req, req->part, CSTR_VIEW("\n\n" NOTICE_COMPACTED "\n\n"),
-	                (struct cstr_view){ summary.data, jb_utf8(summary.data, summary.len) });
+	mcp_req_compact(req, req->part, CSTR_VIEW("\n\n" NOTICE_COMPACTED "\n\n"), summary);
 }
 
 /* The context is full, as the upstream said or as askai reckons: what
@@ -7278,29 +7278,25 @@ mcp_req_reasoning (struct mcp_req *req)
 	return 0;
 }
 
-/* Parse as much of the upstream's answer as the step has the share for, and
- * check it is UTF-8 text; once it is parsed, or found not to be JSON, read the
- * tool's output from it in a step of its own, as that copies the output.
+/* Parse as much of the upstream's answer as the step has the share for, if
+ * all of it passed the gate of text (the job's); once it is parsed, or found
+ * not to be JSON text, read the tool's output from it in a step of its own,
+ * as that copies the output.
  */
 static void
 mcp_req_answer (struct mcp_req *req)
 {
-	struct span json = buf_peek(&req->job->result);
-	char const *text = json.len ? (char const *)json.ptr : "";
-	size_t off = req->parser.off;
-	int e = mcp_req_slice(req, &req->mcp->answers, (struct cstr_view){ text, json.len });
-	if (e == ENOMEM) {
-		mcp_req_fail(req, e);
-		return;
+	int e = u8_gate_end(&req->job->gate);
+	if (!e) {
+		struct span json = buf_peek(&req->job->result);
+		e = mcp_req_slice(req, &req->mcp->answers,
+		                  (struct cstr_view){ json.len ? (char const *)json.ptr : "", json.len });
+		if (e == ENOMEM) {
+			mcp_req_fail(req, e);
+			return;
+		}
 	}
-	bool over = e != EAGAIN;
-	size_t end = !over ? req->parser.off : req->msg ? json.len : off;
-	if (jb_utf8(text + off, end - off) < end - off) {
-		jb_parser_fini(&req->parser, &req->mcp->answers, &req->reaper);
-		mcp_req_dispose(req);
-		over = true;
-	}
-	if (over) {
+	if (e != EAGAIN) {
 		req->phase = PHASE_TEXT;
 		e = mcp_req_reasoning(req);
 		if (e) {
@@ -7329,8 +7325,8 @@ mcp_req_text (struct mcp_req *req)
 	}
 	bool failed = true;
 	struct cstr_view const text = { body.len ? (char const *)body.ptr : "", body.len };
-	int e = ai_answer(req->mcp->st->ep->api, job->http, req->msg, text, &req->self.answer,
-	                  &failed);
+	int e = ai_answer(req->mcp->st->ep->api, job->http, req->msg, text, job->gate.len,
+	                  &req->self.answer, &failed);
 	loop_work(req->mcp->loop, LOOP_COPY, dstr_len(&req->self.answer));
 	mcp_req_dispose(req);
 	mcp_req_drop(req);
@@ -7434,6 +7430,7 @@ mcp_begin (struct mcp           *mcp,
 		.timer.fn = mcp_req_timer,
 		.reaper = req->reaper,
 		.scan = req->scan,
+		.gate = u8_gate(),
 		.self = { .step.fn = mcp_slot_step, .answer = req->self.answer, .req = req,
 		          .tool = TOOL_MAX },
 		.trace = req->trace,
@@ -7526,6 +7523,11 @@ mcp_on_body (struct stream *s,
 		/* A body to a GET says nothing. */
 		if (last)
 			loop_ready_bulk(req->mcp->loop, &req->step);
+		return;
+	}
+	if (u8_gate_pass(&req->gate, (struct cstr_view){ (char const *)bytes.ptr, bytes.len }) ||
+	    (last && u8_gate_end(&req->gate))) {
+		mcp_req_http_error(req, 400, "The request body is not UTF-8 text");
 		return;
 	}
 	struct mcp_limits const *lim = &req->mcp->st->lim;
@@ -7663,12 +7665,9 @@ mcp_create (struct loop              *loop,
 		.pool = {
 			.depth = st->lim.depth,
 			.scalar = JB_SCALAR_MAX,
-			.flags = JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8
+			.flags = JSON_TOKENER_STRICT
 		},
-		.answers = {
-			.scalar = JB_SCALAR_MAX,
-			.flags = JSON_TOKENER_VALIDATE_UTF8
-		},
+		.answers = { .scalar = JB_SCALAR_MAX },
 		.metrics = metrics,
 		.loop = loop,
 		.home = home,

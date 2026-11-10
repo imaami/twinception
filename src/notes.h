@@ -77,9 +77,10 @@ struct notes_file {
 /** A change to a note in the output of STORE_LOG. */
 struct notes_entry {
 	struct span name;
-	struct span subject; /**< the commit's subject; borrows the history output */
-	struct span asker;   /**< the trailer line Asked-by of the commit, or
-	                          empty; borrows the history output */
+	struct span subject; /**< the text of the commit's subject; borrows the
+	                          history output */
+	struct span asker;   /**< the text of the trailer line Asked-by of the
+	                          commit, or empty; borrows the history output */
 	uint64_t    time;    /**< when it was committed, in seconds since the
 	                          epoch */
 	uint64_t    added;   /**< the number of lines added by this change, or
@@ -233,7 +234,9 @@ notes_file_next (struct span       *out,
  * Reads a note in @p out, the output of STORE_LOG, into @p entry and
  * advances @p cursor backwards. Start with cursor.end = out.len and its other
  * fields zero. Changes come oldest first, including all files of a multi-file
- * commit. Incomplete records at a cut end are skipped. Returns false at end.
+ * commit. Incomplete records at a cut end are skipped. The subject and the
+ * asker pass the gate of text (u8.h) once for each commit, and end where
+ * they stop being text. Returns false at end.
  */
 extern bool
 notes_entry_before (struct span          out,

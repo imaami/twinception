@@ -169,7 +169,8 @@ autocomplete_list_at (struct autocomplete const *ac,
 /** No I/O. Matches are borrowed until the next completion or destruction.
  * At most 256 matches and 16 MiB of replacement text (including trailing
  * NULs) are returned. Candidates that exceed this budget are omitted. Input
- * is limited to 16 MiB. Returns 0, EINVAL, E2BIG or ENOMEM.
+ * is limited to 16 MiB. The draft @p line passes the gate of text (u8.h)
+ * here. Returns 0, EINVAL, E2BIG or ENOMEM.
  */
 extern int
 autocomplete_complete (struct autocomplete              *ac,
@@ -185,13 +186,13 @@ extern bool
 autocomplete_safe (struct cstr_view text,
                    bool             identifier);
 
-/** Parses /tool NAME key=VALUE ... or /tool NAME {JSON}. On success the
- * caller owns args and borrows tool from the catalog. On failure both
- * are null. Shorthand checks basic types; full JSON is validated by the
- * server. Input is limited to 16 MiB (E2BIG otherwise). Returns 0 or an
- * error number. If @p why is not nullptr, it receives the diagnostic as
- * text of at most @p size bytes with its NUL, which util_format() cuts
- * with "...".
+/** Parses /tool NAME key=VALUE ... or /tool NAME {JSON}, a @p line of text
+ * (u8.h). On success the caller owns args and borrows tool from the
+ * catalog. On failure both are null. Shorthand checks basic types; full
+ * JSON is validated by the server. Input is limited to 16 MiB (E2BIG
+ * otherwise). Returns 0 or an error number. If @p why is not nullptr, it
+ * receives the diagnostic as text of at most @p size bytes with its NUL,
+ * which util_format() cuts with "...".
  */
 extern int
 autocomplete_parse_call (struct autocomplete             *ac,

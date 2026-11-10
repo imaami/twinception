@@ -349,7 +349,8 @@ Autocomplete is implemented by the C modules `autocomplete.c` and
 `autocomplete_file.c`. Their `.h` interfaces expose borrowed strings with
 explicit byte lengths and C linkage. Each module retains its work buffers
 and result storage until destruction, growing capacity as needed and keeping
-it between calls. Text storage uses `dstr` and UTF-8 validation uses `jb_utf8`.
+it between calls. Text storage uses `dstr`. A draft passes the gate of text
+(`u8.h`) once, in `autocomplete_complete()`, and nothing past it checks UTF-8.
 Candidate output is bounded to 256 entries and 16 MiB. The Readline adapter consumes
 those views directly; only the strings that Readline takes ownership of are
 copied. The terminal, display, and MCP transport are C modules with explicit

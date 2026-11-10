@@ -14,6 +14,7 @@
 #include "dstr.h"
 #include "jb.h"
 #include "notes.h"
+#include "u8.h"
 #include "util.h"
 
 /* The most tools and the most lists of note paths of a catalog. */
@@ -115,16 +116,14 @@ bool
 autocomplete_safe (struct cstr_view value,
                    bool             identifier)
 {
-	if (!value.len || !value.data || jb_utf8(value.data, value.len) != value.len)
-		return false;
-	for (size_t i = 0; i < value.len; ++i) {
-		unsigned char byte = (unsigned char)value.data[i];
-		if (byte < 0x20 || byte == 0x7f ||
-		    (byte == 0xc2 && i + 1 < value.len && (unsigned char)value.data[i + 1] < 0xa0) ||
-		    (identifier && (cstr_view_space(byte) || byte == '=' || byte == '\'' || byte == '"' || byte == '\\')))
+	for (size_t i = 0, n; i < value.len; i += n) {
+		uint32_t c;
+		n = u8_char(cstr_view_slice(value, i, SIZE_MAX), &c);
+		if (!n || c < 0x20 || c - 0x7fu < 0x21u ||
+		    (identifier && (c == ' ' || c == '=' || c == '\'' || c == '"' || c == '\\')))
 			return false;
 	}
-	return true;
+	return value.len;
 }
 
 /* What a byte of an argument is: quoting, text in quotes or after a
@@ -319,7 +318,7 @@ autocomplete_json_parse (struct autocomplete *autocomplete,
 		autocomplete->parser = json_tokener_new();
 		if (!autocomplete->parser)
 			return ENOMEM;
-		json_tokener_set_flags(autocomplete->parser, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
+		json_tokener_set_flags(autocomplete->parser, JSON_TOKENER_STRICT);
 	} else
 		json_tokener_reset(autocomplete->parser);
 	struct json_tokener *parser = autocomplete->parser;
@@ -1225,7 +1224,8 @@ autocomplete_complete (struct autocomplete              *ac,
 	*count = 0;
 	if (line.len > AUTOCOMPLETE_BYTES)
 		return E2BIG;
-	if (!jb_is_text(line) || cursor > line.len || util_char_start(line.data, line.len, cursor) != cursor)
+	/* A draft passes the gate of text here, before it is complete. */
+	if (u8_check(line) || cursor > line.len || util_char_start(line.data, line.len, cursor) != cursor)
 		return EINVAL;
 	if (!line.data)
 		line.data = "";
@@ -1425,8 +1425,6 @@ autocomplete_parse_call (struct autocomplete             *ac,
 		(void)util_format(why, size, "Tool command is too long");
 		return E2BIG;
 	}
-	if (!jb_is_text(line))
-		return util_refuse(why, size, "Invalid tool command bytes");
 	if (!line.data)
 		line.data = "";
 	int error = autocomplete_tokenize(ac, line, true, why, size);

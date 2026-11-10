@@ -474,7 +474,6 @@ test_external (void)
 	memcpy(big, A, sizeof A - 1);
 	big[sizeof A - 1] = ' ';
 	external(big, nullptr, __LINE__);
-	external("\xff " A, bad, __LINE__);
 }
 
 /* evidence_path() names the archive file of material by its SHA-256. */

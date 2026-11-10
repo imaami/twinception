@@ -582,7 +582,7 @@ git_option_check (struct cstr_view  opt,
 	int e = git_option_find(commands[command].options, opt, &match);
 	if (!e)
 		return 0;
-	int quoted = (int)jb_utf8(opt.data, opt.len < 80 ? opt.len : 80);
+	int quoted = (int)util_clip(opt.data, opt.len, 80);
 	if (match.data) {
 		char last = match.data[match.len - 1];
 		size_t at = match.len - (last != '=');

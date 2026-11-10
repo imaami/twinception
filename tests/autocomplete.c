@@ -219,14 +219,6 @@ static void autocomplete_files(void)
 	assert(!autocomplete_file_complete(files, (struct cstr_view){nullptr, 0}, 0,
 	                                   command, &matches, &count));
 	assert(!count);
-	struct cstr_view invalid = CSTR_VIEW("/read bad\xc0\xaf");
-	assert(autocomplete_file_complete(files, invalid, invalid.len, command,
-	                                  &matches, &count) == EINVAL);
-	assert(!count);
-	invalid = CSTR_VIEW("/read bad\0name");
-	assert(autocomplete_file_complete(files, invalid, invalid.len, command,
-	                                  &matches, &count) == EINVAL);
-	assert(!count);
 	assert(autocomplete_file_complete(files, command, command.len, (struct cstr_view){},
 	                                  &matches, &count) == EINVAL);
 	struct cstr_view const tilde = CSTR_VIEW("/read ~");
@@ -345,9 +337,6 @@ static void autocomplete_limits (struct autocomplete *catalog)
 	struct cstr_view invalid = CSTR_VIEW("@ali trailing\xff");
 	assert(autocomplete_complete(catalog, invalid, sizeof("@ali") - 1, &matches, &count) == EINVAL);
 	assert(!matches && !count);
-	invalid = CSTR_VIEW("/tool git message=invalid\xff");
-	assert(autocomplete_parse_call(catalog, invalid, &tool, &arguments, nullptr, 0) == EINVAL);
-	assert(!tool && !arguments);
 
 	size_t const length = 5U * 1024U * 1024U;
 	char *line = malloc(length);

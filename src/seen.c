@@ -16,13 +16,13 @@
 #include "tool.h"
 #include "util.h"
 
-/** Returns true if @p t is 1 to SEEN_NAME_MAX bytes of UTF-8 text without
- *  NUL, as a repository name or a path must be.
+/** Returns true if @p t, text past its gate (u8.h), is 1 to SEEN_NAME_MAX
+ *  bytes without NUL, as a repository name or a path must be.
  */
 static bool
 seen_name_valid (struct cstr_view t)
 {
-	return t.len && t.len <= SEEN_NAME_MAX && jb_is_text(t);
+	return t.len && t.len <= SEEN_NAME_MAX && !memchr(t.data, '\0', t.len);
 }
 
 /** Returns true if the numbered lines of @p src are not empty and are

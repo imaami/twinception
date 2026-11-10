@@ -447,6 +447,7 @@ home_job_reset (struct job *job,
 	job->flags = flags;
 	job->http = 0;
 	job->ev = job->evlen = job->line = job->scan = job->chunks = job->used = 0;
+	job->gate = u8_gate();
 	job->reader = (struct ai_reader){};
 	job->reason[0] = '\0';
 }
@@ -1033,9 +1034,9 @@ home_receive (struct job *job,
 }
 
 /* Gather the upstream's answer, a stream into the wire and a plain one into
- * the result (home_receive()). A stream is held back too while a step's
- * share of it waits to be read. Each write counts as the answer's sign of
- * life.
+ * the result (home_receive()), through the gate of text. A stream is held
+ * back too while a step's share of it waits to be read. Each write counts as
+ * the answer's sign of life.
  */
 static size_t
 home_job_write (char const *data,
@@ -1053,8 +1054,11 @@ home_job_write (char const *data,
 	if (home->silence && home->timers[TIMER_QUIET].due == UINT64_MAX)
 		(void)loop_timer_set(home->loop, &home->timers[TIMER_QUIET],
 		                     job->active + home->silence);
-	if (!(job->flags & STREAM))
-		return home_receive(job, &job->result, data, len);
+	if (!(job->flags & STREAM)) {
+		size_t n = home_receive(job, &job->result, data, len);
+		(void)u8_gate_pass(&job->gate, (struct cstr_view){ data, n });
+		return n;
+	}
 	if (job->flags & DELTA_PENDING || buf_peek(&job->wire).len - job->scan >= LOOP_STEP_RECV) {
 		job->flags |= BACKED;
 		list_del(&job->idle);
@@ -1493,17 +1497,14 @@ home_silent_step (struct loop      *loop,
 }
 
 /* Append @p text to @p to, the answer, the thinking or the replay of a
- * job, if @p text is UTF-8 and the buffer stays within MAX_RESPONSE.
- * json-c lets overlong forms through, so this function checks the
- * encoding again. The text is appended whole or not at all.
+ * job, if the buffer stays within MAX_RESPONSE. The text is appended whole
+ * or not at all.
  */
 static int
 home_append_text (struct home      *home,
                   struct buf       *to,
                   struct cstr_view  text)
 {
-	if (jb_utf8(text.data, text.len) < text.len)
-		return EILSEQ;
 	if (!text.len)
 		return 0;
 	int e = buf_put(to, text.data, text.len, MAX_RESPONSE);
@@ -1625,8 +1626,7 @@ home_put_thought (void             *user,
 {
 	struct job *job = user;
 	int e = job->asks & JOB_TOOLS && self->ep->api == AI_CHAT
-	      ? home_append_text(self, &job->thought, text)
-	      : jb_utf8(text.data, text.len) < text.len ? EILSEQ : 0;
+	      ? home_append_text(self, &job->thought, text) : 0;
 	if (!e && text.len && job->journal)
 		e = home_journal_thought(self, job, text);
 	return e ? e : home_put_delta(job, text, true);
@@ -1656,7 +1656,7 @@ home_put_replay (void             *user,
  * stored bytes, because some servers send them again. The function
  * returns EPROTO if a call breaks this order or if there are more than
  * JOB_CALLS calls. It returns ENOBUFS if the calls together would exceed
- * MAX_RESPONSE bytes, and EILSEQ if a piece is not UTF-8.
+ * MAX_RESPONSE bytes.
  */
 static int
 home_put_call (void                 *user,
@@ -1727,9 +1727,6 @@ home_put_call (void                 *user,
 	bool later = c.extra || c.args;
 	if ((id && (c.name || later)) || ((name || extra) && later))
 		return EPROTO;
-	if (jb_utf8(call->id.data, id) < id || jb_utf8(call->name.data, name) < name ||
-	    jb_utf8(call->extra.data, extra) < extra || jb_utf8(call->args.data, args) < args)
-		return EILSEQ;
 	size_t len = head + id + name + extra + args;
 	if (!len)
 		return 0;
@@ -1928,19 +1925,18 @@ home_take (struct home        *home,
 	job->flags |= (ev.flags & AI_EV_END ? ENDED | PROVIDER_DONE : 0) |
 	              (e == ENOBUFS ? OVERFLOW : 0);
 	if (ev.reason) {
-		size_t len = jb_utf8(ev.reason, strnlen(ev.reason, sizeof job->reason - 1));
+		size_t len = util_clip(ev.reason, strnlen(ev.reason, sizeof job->reason),
+		                       sizeof job->reason - 1);
 		memcpy(job->reason, ev.reason, len);
 		job->reason[len] = '\0';
 		job->flags = ev.flags & AI_EV_TRUNCATED ? job->flags | TRUNCATED
 		                                         : job->flags & ~TRUNCATED;
 	}
 	if (ev.error) {
-		size_t len = strnlen(ev.error, MAX_ERROR);
-		(void)home_job_erred(job, ev.error, (int)jb_utf8(ev.error, len));
+		size_t len = util_clip(ev.error, strnlen(ev.error, MAX_ERROR + 1), MAX_ERROR);
+		(void)home_job_erred(job, ev.error, (int)len);
 	} else if (e == EPROTO) {
 		(void)home_job_erred(job, "tool calls out of order, or too many", -1);
-	} else if (e == EILSEQ) {
-		(void)home_job_erred(job, "an answer that is not text", -1);
 	}
 	if (e && job->recovery.error)
 		home_job_unpersisted(job);
@@ -2053,9 +2049,10 @@ home_job_line (struct job *job,
 }
 
 /* Look for the line break that ends the line of @p job's stream read, as far
- * as the step's share of parsing allows, and take in the line it ends. 0
- * once it has looked, EAGAIN if the share has run out, ENODATA if all of the
- * wire has been looked at already.
+ * as the step's share of parsing allows, the bytes looked at passing the
+ * gate of text, and take in the line it ends. 0 once it has looked, EAGAIN
+ * if the share has run out, ENODATA if all of the wire has been looked at
+ * already, ECANCELED if the bytes are not text, which ends the job.
  */
 static int
 home_scan (struct home *home,
@@ -2070,15 +2067,16 @@ home_scan (struct home *home,
 		return EAGAIN;
 	size_t n = w.len - job->scan < room ? w.len - job->scan : room;
 	unsigned char const *nl = memchr(w.ptr + job->scan, '\n', n);
-	if (!nl) {
-		loop_work(loop, LOOP_PARSE, n);
-		job->scan += (uint32_t)n;
-		return 0;
+	n = nl ? (size_t)(nl - w.ptr) + 1 - job->scan : n;
+	loop_work(loop, LOOP_PARSE, n);
+	if (u8_gate_pass(&job->gate, (struct cstr_view){ (char const *)w.ptr + job->scan, n })) {
+		(void)home_job_erred(job, "an answer that is not text", -1);
+		home_cut(home, job, CURLE_OK);
+		return ECANCELED;
 	}
-	size_t end = (size_t)(nl - w.ptr);
-	loop_work(loop, LOOP_PARSE, end + 1 - job->scan);
-	job->scan = (uint32_t)end + 1;
-	home_job_line(job, end);
+	job->scan += (uint32_t)n;
+	if (nl)
+		home_job_line(job, (size_t)(nl - w.ptr));
 	return 0;
 }
 
@@ -2100,6 +2098,13 @@ home_drained (struct home *home,
 			http_resume(job->transfer);
 		}
 		return ENODATA;
+	}
+	/* A stream that ends within a character is not text, unless the
+	 * transfer that cut it short says why. */
+	if (!job->delivery_error && u8_gate_end(&job->gate)) {
+		(void)home_job_erred(job, "an answer that is not text", -1);
+		home_cut(home, job, CURLE_OK);
+		return ECANCELED;
 	}
 	if (job->line < job->scan) {
 		home_job_line(job, job->scan);
@@ -2740,10 +2745,7 @@ home_create (struct loop         *loop,
 			[TIMER_BREAKER].fn = home_breaker_event,
 			[TIMER_CANCEL].fn = home_cleanup_event,
 		},
-		.pool = {
-			.scalar = JB_SCALAR_MAX,
-			.flags = JSON_TOKENER_VALIDATE_UTF8
-		},
+		.pool = { .scalar = JB_SCALAR_MAX },
 		.metrics = metrics,
 		.loop = loop,
 		.door = door,

@@ -405,8 +405,7 @@ struct jb_parser {
  * with a tokener from @p pool and within its limits: at most @p bytes bytes,
  * 4 at least, and @p values values. Returns EAGAIN while bytes remain to be
  * parsed. Once the parse is over, returns 0, and jb_parser_take() gives the
- * value, or the error that parser->error also keeps. A slice never ends
- * within a character, whose bytes it leaves to the next.
+ * value, or the error that parser->error also keeps.
  */
 extern int
 jb_parser_step (struct jb_parser *parser,
@@ -434,36 +433,6 @@ extern void
 jb_parser_fini (struct jb_parser *parser,
                 struct jb_pool   *pool,
                 struct jb_reaper *reaper);
-
-/** Length of the longest prefix of the @p len bytes at @p str that is UTF-8
- *  text (RFC 3629), which json-c checks more leniently.
- */
-extern size_t
-jb_utf8 (char const *str,
-         size_t      len);
-
-/** Returns the length of the start of @p t that is UTF-8 text (jb_utf8())
- *  before the first NUL byte, or 0 for a view without data.
- */
-extern size_t
-jb_text_len (struct cstr_view t);
-
-/** Whether @p t is UTF-8 text without a NUL, as an empty view is: whether
- *  jb_text_len() returns the length of @p t.
- */
-extern bool
-jb_is_text (struct cstr_view t);
-
-/**
- * Make the @p n bytes at @p p UTF-8 text, in place, each byte that breaks it
- * becoming a '?', but for a character cut short at their end while more
- * bytes follow (@p last false), which those may complete; returns the bytes
- * made text, all but that character's.
- */
-extern size_t
-jb_mend (char   *p,
-         size_t  n,
-         bool    last);
 
 /**
  * Write @p len bytes of UTF-8 text to @p dst, which has room for 6 * @p len,

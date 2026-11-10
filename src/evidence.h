@@ -274,9 +274,9 @@ evidence_expand (struct evidence const          *e,
                  struct dstr                    *d);
 
 /** Checks the external item @p text, the item @p index of the argument
- *  external: 1 to EVIDENCE_TEXT bytes of UTF-8 text without control
- *  characters, with a run of exactly 40 or 64 hexadecimal digits. Returns
- *  0, or EINVAL with the refusal in the @p len bytes at @p why.
+ *  external, text past its gate (u8.h): 1 to EVIDENCE_TEXT bytes without
+ *  control characters, with a run of exactly 40 or 64 hexadecimal digits.
+ *  Returns 0, or EINVAL with the refusal in the @p len bytes at @p why.
  */
 extern int
 evidence_external (struct cstr_view  text,

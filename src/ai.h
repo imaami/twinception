@@ -373,12 +373,12 @@ ai_model_url (struct ai_endpoint const *ep,
               struct dstr              *out);
 
 /**
- * Read the answer @p body of HTTP @p status to an upload (ai_upload()).
- * Appends the URI of the file, which is printable ASCII, to @p uri, and
- * stores the time at which the file expires, in seconds since the epoch,
- * in @p *expires, or 0 if the answer does not contain it. Returns 0, EIO
- * with the error appended to @p why, ENOMEM, or EINVAL if an argument is
- * not valid.
+ * Read the answer @p body of HTTP @p status to an upload (ai_upload()),
+ * which passes the gate of text (u8.h) here. Appends the URI of the file,
+ * which is printable ASCII, to @p uri, and stores the time at which the
+ * file expires, in seconds since the epoch, in @p *expires, or 0 if the
+ * answer does not contain it. Returns 0, EIO with the error appended to
+ * @p why, ENOMEM, or EINVAL if an argument is not valid.
  */
 extern int
 ai_uploaded (enum ai_api       api,
@@ -403,15 +403,17 @@ ai_no_answer (char       *buf,
 
 /**
  * Turn the upstream HTTP response @p body into tool output in @p text,
- * which must start empty. @p root is the body parsed as UTF-8 JSON, or
- * nullptr if it is not JSON. The caller owns it. @p *failed is set when
- * @p text describes an error instead of containing an answer.
+ * which must start empty. The first @p gated bytes of @p body passed the
+ * gate of text (u8.h). @p root is the body parsed as JSON, or nullptr if it
+ * is not JSON text, all of it gated. The caller owns it. @p *failed is set
+ * when @p text describes an error instead of containing an answer.
  */
 extern int
 ai_answer (enum ai_api         api,
            long                status,
            struct json_object *root,
            struct cstr_view    body,
+           size_t              gated,
            struct dstr        *text,
            bool               *failed);
 

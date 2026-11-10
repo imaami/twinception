@@ -11,6 +11,7 @@
 #include "ai.h"
 #include "dstr.h"
 #include "jb.h"
+#include "u8.h"
 #include "util.h"
 
 /** Anthropic requires max_tokens; this fits every model's output limit. */
@@ -1488,24 +1489,25 @@ ai_error_event (struct cstr_view body)
 }
 
 /* Appends the error in the answer @p body of HTTP @p status to @p text.
- * @p root is the parsed body. The error is the message of the answer, or
- * the message of its first event, or the start of @p body.
+ * @p root is the parsed body, and its first @p gated bytes passed the gate
+ * of text. The error is the message of the answer, or the message of its
+ * first event, or the start of the text.
  */
 static int
 ai_describe_error (struct dstr        *text,
                    long                status,
                    struct json_object *root,
-                   struct cstr_view    body)
+                   struct cstr_view    body,
+                   size_t              gated)
 {
 	if (!dstr_printf(text, "Upstream error (HTTP %ld): ", status))
 		return ENOMEM;
-	struct json_object *event = root ? nullptr : ai_error_event(body);
+	struct json_object *event = root ? nullptr : ai_error_event(cstr_view_slice(body, 0, gated));
 	char const *said = event ? ai_event_error(event) : ai_error_text(jb_get(root, "error"));
 	said = said ? said : jb_view(jb_get(root, "message")).data;
 	said = said ? said : jb_view(jb_get(root, "detail")).data;
-	/* Else quote the start of an unparsable body, as far as it is UTF-8
-	 * text. */
-	size_t cut = said ? 0 : jb_utf8(body.data, body.len < 512 ? body.len : 512);
+	/* Else quote the start of the text of an unparsable body. */
+	size_t cut = said ? 0 : util_clip(body.data, gated, 512);
 #define QUOTE(s) dstr_cat_n(text, s, sizeof s - 1)
 	bool ok = said ? dstr_cat(text, said)
 	        : cut ? dstr_cat_n(text, body.data, cut)
@@ -1619,13 +1621,15 @@ ai_uploaded (enum ai_api       api,
 	*expires = 0;
 	if (!ai_upload(api))
 		return dstr_cat(why, "The upstream takes no files.") ? EIO : ENOMEM;
-	struct json_object *root = body.len ? jb_parse(body.data, body.len, JSON_TOKENER_STRICT, 8)
-	                                    : nullptr;
+	int e;
+	size_t const gated = u8_text(body, &e).len;
+	struct json_object *root = body.len && !e ? jb_parse(body.data, body.len,
+	                                                     JSON_TOKENER_STRICT, 8)
+	                                          : nullptr;
 	struct json_object *file = jb_get(root, "file");
 	struct cstr_view at = jb_view(jb_get(file, "uri"));
-	int e;
 	if (status < 200 || status > 299 || !at.data) {
-		e = ai_describe_error(why, status, root, body);
+		e = ai_describe_error(why, status, root, body, gated);
 		e = e ? e : EIO;
 	} else if (!at.len || at.len > strspn(at.data, ai_uri_bytes)) {
 		e = dstr_cat(why, "The upstream named the file with a URI that is not "
@@ -1643,12 +1647,13 @@ ai_answer (enum ai_api         api,
            long                status,
            struct json_object *root,
            struct cstr_view    body,
+           size_t              gated,
            struct dstr        *text,
            bool               *failed)
 {
 	*failed = status < 200 || status > 299 || !root || jb_get(root, "error");
 	if (*failed)
-		return ai_describe_error(text, status, root, body);
+		return ai_describe_error(text, status, root, body, gated);
 
 	if (!api || api >= array_size(ai_bodies))
 		return EINVAL;

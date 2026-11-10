@@ -721,10 +721,10 @@ mcp_slot_named (struct loop const *loop,
 
 /** Ends the call with @p text as its whole output, without an offset. The
  *  text is cut at TOOL_TELL_MAX bytes, or before its first byte that is not
- *  part of UTF-8. With TOOL_FAILED in @p flags, the call fails. Returns
- *  0, EFAULT if @p slot is nullptr or @p text has a length and no bytes, or
- *  EINVAL if the call has ended or @p flags has other bits than
- *  TOOL_FAILED.
+ *  text (u8.h): a NUL byte, or one that is not part of UTF-8. With
+ *  TOOL_FAILED in @p flags, the call fails. Returns 0, EFAULT if @p slot is
+ *  nullptr or @p text has a length and no bytes, or EINVAL if the call has
+ *  ended or @p flags has other bits than TOOL_FAILED.
  */
 EXPORT
 extern int

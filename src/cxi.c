@@ -28,9 +28,9 @@
 #include "cxi.h"
 #include "dstr.h"
 #include "git.h"
-#include "jb.h"
 #include "oid.h"
 #include "tool.h"
+#include "u8.h"
 #include "util.h"
 #include "xlist.h"
 
@@ -115,11 +115,9 @@ static size_t
 cxi_char (char const *p,
           size_t      n)
 {
-	unsigned char const c = (unsigned char)*p;
-	size_t const k = c < 0x80 ? 1 : c >= 0xf0 ? 4 : c >= 0xe0 ? 3 : 2;
-	if (c < 0x20 || c == 0x7f || k > n || (c == 0xc2 && (unsigned char)p[1] < 0xa0))
-		return 0;
-	return k == 1 || jb_utf8(p, k) == k ? k : 0;
+	uint32_t c;
+	size_t const k = u8_char((struct cstr_view){ p, n }, &c);
+	return k && c >= 0x20 && c - 0x7fu > 0x20u ? k : 0;
 }
 
 /* Appends @p s from clang, the commit or the request without the path of

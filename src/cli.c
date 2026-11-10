@@ -35,6 +35,7 @@
 #include "jb.h"
 #include "list.h"
 #include "loop.h"
+#include "u8.h"
 #include "util.h"
 #include "xlist.h"
 
@@ -61,8 +62,8 @@ cli_read_file (struct autocomplete_file const *files,
 	e = e == ENOBUFS ? cli_error_set(error, EFBIG, "Prompt file exceeds the %d MiB client limit",
 	                                 CLI_LIMIT >> 20)
 	  : e ? cli_error_set(error, e, "%s: %s", dstr_get(&expanded), strerror(e))
-	  : !jb_is_text(contents) ? cli_error_set(error, EILSEQ, "Prompt files must contain UTF-8 "
-	                                          "text without NUL bytes")
+	  : u8_check(contents) ? cli_error_set(error, EILSEQ, "Prompt files must contain UTF-8 "
+	                                       "text without NUL bytes")
 	  : cstr_view_store(contents, text);
 	buf_fini(&bytes);
 	return e;
@@ -199,6 +200,12 @@ cli_args (struct cli_options  *out,
 		return cli_error_set(error, EINVAL, "Unexpected positional argument; see --help");
 	if (prompts > 1)
 		return cli_error_set(error, EINVAL, "Use only one --prompt or --file");
+	/* The text of the options passes its gate here. */
+	char const *const texts[] = { out->prompt, out->system, out->tool, out->session_id };
+	for (size_t i = 0; i < array_size(texts); ++i)
+		if (u8_check(cstr_view(texts[i])))
+			return cli_error_set(error, EILSEQ, "--prompt, --system, --tool and --session-id "
+			                     "must be UTF-8 text");
 	if (out->session_id && !*out->session_id)
 		return cli_error_set(error, EINVAL, "--session-id requires a nonempty identity");
 	if (!out->socket || !*out->socket)
@@ -587,8 +594,9 @@ cli_path_work (struct cli_io_job *job)
 	char *path = realpath(work->path, nullptr);
 	if (!path)
 		return errno;
-	int e = dstr_cat(work->identity, "socket=") &&
-	        dstr_cat(work->identity, path) ? 0 : ENOMEM;
+	int e = u8_check(cstr_view(path));
+	if (!e && (!dstr_cat(work->identity, "socket=") || !dstr_cat(work->identity, path)))
+		e = ENOMEM;
 	free(path);
 	return e;
 }
@@ -726,7 +734,7 @@ cli_tools (struct cli       *cli,
 	for (size_t i = 0, count = autocomplete_tool_count(cli->client.catalog); i < count; ++i) {
 		struct autocomplete_tool const *entry = autocomplete_tool_at(cli->client.catalog, i);
 		struct cstr_view summary = entry->description;
-		summary.len = jb_utf8(summary.data, summary.len < 160 ? summary.len : 160);
+		summary.len = util_clip(summary.data, summary.len, 160);
 		(void)cstr_view_cut(&summary, '\n', &summary);
 		struct cli_console_span const spans[] = {
 			{entry->name, CLI_STYLE_RESET},

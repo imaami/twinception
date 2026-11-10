@@ -24,6 +24,7 @@
 #include "plugin.h"
 #include "ref.h"
 #include "schema.h"
+#include "u8.h"
 #include "util.h"
 
 enum {
@@ -404,7 +405,7 @@ manual_fetch_copy (struct loop      *loop,
 	n = n < mend ? n : mend;
 	if (n) {
 		char *p = (char *)out.ptr + f->off;
-		n = jb_mend(p, n, n == left);
+		n = u8_mend(p, n, n == left);
 		memcpy(f->page->text + f->off, p, n);
 		loop_work(loop, LOOP_COPY, n);
 		loop_work(loop, LOOP_ESCAPE, n);

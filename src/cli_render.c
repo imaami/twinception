@@ -6,6 +6,7 @@
 
 #include "cli_render.h"
 #include "dstr.h"
+#include "u8.h"
 
 size_t
 cli_render_character (struct cstr_view text, int *width)
@@ -15,15 +16,14 @@ cli_render_character (struct cstr_view text, int *width)
 		*width = first >= ' ' && first != 0x7f ? 1 : -1;
 		return 1;
 	}
-	int32_t character;
-	ptrdiff_t length = utf8proc_iterate((uint8_t const *)text.data,
-	                                    text.len < 4 ? (ptrdiff_t)text.len : 4, &character);
-	if (length < 0) {
+	uint32_t c;
+	size_t const n = u8_char(text, &c);
+	if (!n) {
 		*width = -1;
 		return 1;
 	}
-	*width = character < 0xa0 ? -1 : utf8proc_charwidth(character);
-	return (size_t)length;
+	*width = c < 0xa0 ? -1 : utf8proc_charwidth((utf8proc_int32_t)c);
+	return n;
 }
 
 /** A negative width identifies a complete SGR sequence. */

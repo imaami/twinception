@@ -146,10 +146,10 @@ struct member_info {
 	struct cstr_view logins;    /**< the values of the trailer lines Login
 	                                 of the record, separated by commas, or
 	                                 empty */
-	struct cstr_view change;    /**< the subject of the newest commit of
-	                                 the notebook */
-	struct cstr_view asker;     /**< the trailer line Asked-by of that
-	                                 commit, or empty */
+	struct cstr_view change;    /**< the text of the subject of the newest
+	                                 commit of the notebook (u8.h) */
+	struct cstr_view asker;     /**< the text of the trailer line Asked-by
+	                                 of that commit, or empty */
 	uint64_t         time;      /**< the time of that commit, in seconds
 	                                 since the epoch */
 	uint32_t         kind;      /**< enum member_kind */

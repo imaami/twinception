@@ -12,6 +12,7 @@
 #include "notes.h"
 #include "oid.h"
 #include "store.h"
+#include "u8.h"
 #include "util.h"
 
 /* The stages of a historical read or diff, in their order. */
@@ -294,6 +295,11 @@ notes_cursor_header (struct span          out,
 		struct cstr_view asker;
 		if (!oid_init_field(&cursor->commit, &rest, ' ') && cstr_view_cut(&rest, ' ', &asker) &&
 		    !util_number(s + token, digits, UINT64_MAX, &cursor->time)) {
+			/* The text of a commit passes the gate here, once for all
+			 * of its files, and ends where it stops being text. */
+			int bad;
+			asker = u8_text(asker, &bad).view;
+			rest = u8_text(rest, &bad).view;
 			cursor->asker = (struct span){ out.ptr + (asker.data - s), asker.len };
 			cursor->subject = (struct span){ out.ptr + (rest.data - s), rest.len };
 			cursor->first = before;

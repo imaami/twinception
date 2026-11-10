@@ -24,7 +24,8 @@ autocomplete_file_expand (struct autocomplete_file const *file,
                           struct dstr                    *dest);
 
 /**
- * Completes one filename after command (including its trailing space).
+ * Completes one filename after command (including its trailing space) in
+ * @p line, a draft that has passed the gate of autocomplete_complete().
  * Results and scratch buffers remain owned by file until the next call or
  * destruction; input spans must not alias that storage. Keeps capacity,
  * returns at most 256 matches / 16 MiB of text. A missing or unreadable

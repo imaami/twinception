@@ -313,8 +313,7 @@ jb_parser_step (struct jb_parser *parser,
 	if (!parser->tok && !(parser->tok = jb_pool_take(pool)))
 		return jb_parser_end(parser, ENOMEM);
 
-	/* Up to the value that would be one too many; within a string, not
-	 * within a character: json-c finds UTF-8 split between slices invalid. */
+	/* Up to the value that would be one too many. */
 	size_t off = parser->off;
 	size_t room = len - off < bytes ? len - off : bytes;
 	if (room > INT_MAX - 1)
@@ -327,9 +326,6 @@ jb_parser_step (struct jb_parser *parser,
 	if (end < off + room && parser->cut.state == JB_SCAN_SCALAR &&
 	    parser->cut.run == scalar)
 		return jb_parser_end(parser, EINVAL);
-	for (int i = 0; i < 3 && end > off + 1 && end < len &&
-	                ((unsigned char)data[end] & 0xc0) == 0x80; ++i)
-		--end;
 
 	struct json_tokener *tok = parser->tok;
 	if (!parser->root) {
@@ -384,63 +380,6 @@ jb_parser_fini (struct jb_parser *parser,
 		}
 	}
 	*parser = (struct jb_parser){};
-}
-
-size_t
-jb_utf8 (char const *str,
-         size_t      len)
-{
-	unsigned char const *s = (unsigned char const *)str;
-	size_t i = 0;
-	for (size_t n; i < len; i += n) {
-		unsigned c = s[i];
-		n = c < 0x80 ? 1 : c < 0xc2 ? 0 : c < 0xe0 ? 2 : c < 0xf0 ? 3 :
-		    c < 0xf5 ? 4 : 0;
-		if (!n || n > len - i)
-			break;
-		if (n == 1)
-			continue;
-		/* The second byte's range rules out overlong forms, surrogates
-		 * and code points past U+10FFFF. */
-		unsigned lo = c == 0xe0 ? 0xa0 : c == 0xf0 ? 0x90 : 0x80;
-		unsigned hi = c == 0xed ? 0x9f : c == 0xf4 ? 0x8f : 0xbf;
-		if (s[i + 1] < lo || s[i + 1] > hi)
-			break;
-		for (size_t k = 2; k < n; ++k)
-			if ((s[i + k] & 0xc0) != 0x80)
-				return i;
-	}
-	return i;
-}
-
-size_t
-jb_text_len (struct cstr_view t)
-{
-	if (!t.data)
-		return 0;
-	size_t const run = jb_utf8(t.data, t.len);
-	char const *nul = memchr(t.data, '\0', run);
-	return nul ? (size_t)(nul - t.data) : run;
-}
-
-bool
-jb_is_text (struct cstr_view t)
-{
-	return jb_text_len(t) == t.len;
-}
-
-size_t
-jb_mend (char   *p,
-         size_t  n,
-         bool    last)
-{
-	size_t i = 0;
-	while ((i += jb_utf8(p + i, n - i)) < n) {
-		if (!last && n - i < 4)
-			return i;
-		p[i++] = '?';
-	}
-	return n;
 }
 
 /* The letter of the two-byte escape of each byte that has one; the other
@@ -516,5 +455,5 @@ jb_escape_fit (char const *src,
 		if (used > room)
 			break;
 	}
-	return jb_utf8(src, i);
+	return util_clip(src, len, i);
 }

@@ -531,7 +531,7 @@ evidence_external (struct cstr_view  text,
 	}
 	hash |= run == OID_SHA1 || run == OID_SHA256;
 	static_assert(EVIDENCE_TEXT == 1024, "update the refusal");
-	if (!text.len || text.len > EVIDENCE_TEXT || control || !jb_is_text(text))
+	if (!text.len || text.len > EVIDENCE_TEXT || control)
 		return util_refuse(why, len, "external[%zu] must be 1 byte to 1 KiB of text on one "
 		                   "line.", index);
 	if (!hash)

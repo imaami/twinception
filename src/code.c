@@ -23,6 +23,7 @@
 #include "mcp.h"
 #include "plugin.h"
 #include "schema.h"
+#include "u8.h"
 #include "util.h"
 #include "xlist.h"
 
@@ -340,9 +341,9 @@ code_ended (struct mcp_slot  *slot,
 		return;
 	}
 	struct span const out = buf_peek(&c->out);
-	/* askai-code writes valid UTF-8. jb_mend() replaces invalid bytes in
-	 * case the helper is broken. */
-	struct cstr_view text = { (char const *)out.ptr, jb_mend((char *)out.ptr, out.len, true) };
+	/* askai-code writes UTF-8 text. Its output passes the gate of text
+	 * (u8_mend()) in case the helper is broken. */
+	struct cstr_view text = { (char const *)out.ptr, u8_mend((char *)out.ptr, out.len, true) };
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
 	struct call_source src;
 	bool const record = !status && code_record(&text, &call->pin, &src);

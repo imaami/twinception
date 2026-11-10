@@ -30,6 +30,7 @@
 #include "schema.h"
 #include "shelf.h"
 #include "store.h"
+#include "u8.h"
 #include "util.h"
 
 /* A fetch value says why git runs on the notes (src/store.h). The values
@@ -808,7 +809,7 @@ notes_tool_unchanged (struct mcp_slot         *slot,
 	uint64_t n = note->bytes;
 	e = dstr_printf(call->text, "Unchanged. %.*s at the newest commit %s already contains "
 	                "the same %" PRIu64 " byte%s. No commit was made.",
-	                (int)jb_utf8(name, len), name, tip->hex, n, util_s(n)) ? 0 : ENOMEM;
+	                (int)len, name, tip->hex, n, util_s(n)) ? 0 : ENOMEM;
 	(void)mcp_slot_noted(slot);
 	notes_tool_wrote(slot, e);
 	return true;
@@ -932,8 +933,7 @@ notes_tool_added (struct mcp_slot *slot)
 	struct cstr_view const id = oid_view(&commit);
 	/* The result of a copy names the copy instead of the message. */
 	struct cstr_view colon = CSTR_VIEW(": ");
-	struct cstr_view message = { call->message.data,
-	                             jb_utf8(call->message.data, call->message.len) };
+	struct cstr_view message = util_text_view(&call->message);
 	if (notes_tool_actions[call->action].fetch & FETCH_COPY)
 		colon = message = CSTR_VIEW("");
 	struct cstr_view const p[] = {
@@ -1053,20 +1053,20 @@ notes_tool_history (struct mcp_slot *slot,
 	struct cstr_view const filter = util_text_view(&call->revision.file);
 	uint32_t k = 0;
 	while (notes_entry_before(out, &cursor, &entry)) {
-		char const *name = (char const *)entry.name.ptr;
-		/* Git also matches descendants if this path was once a directory. */
-		if (filter.len && !cstr_view_equal(filter, (struct cstr_view){ name, entry.name.len }))
+		struct cstr_view const name = { (char const *)entry.name.ptr, entry.name.len };
+		/* Git also matches descendants if this path was once a directory.
+		 * A name that is not text names no note: add takes only text. */
+		if (filter.len ? !cstr_view_equal(filter, name) : u8_check(name))
 			continue;
 		char when[WHEN];
 		size_t const w = notes_tool_when(when, sizeof when, entry.time, when_text);
-		char const *s = (char const *)entry.subject.ptr;
-		char const *a = (char const *)entry.asker.ptr;
-		struct cstr_view const subject = { s, history ? jb_utf8(s, entry.subject.len) : 0 };
-		struct cstr_view const asker = { a, jb_utf8(a, entry.asker.len) };
+		struct cstr_view const subject = { (char const *)entry.subject.ptr,
+		                                   history ? entry.subject.len : 0 };
+		struct cstr_view const asker = { (char const *)entry.asker.ptr, entry.asker.len };
 		++k;
 		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", k, (int)w, when))
 			return ENOMEM;
-		if (!dstr_cat_n(d, name, jb_utf8(name, entry.name.len)))
+		if (!dstr_cat_n(d, name.data, name.len))
 			return ENOMEM;
 		if (entry.added == NOTES_BINARY ? !dstr_cat(d, "  (binary)")
 		    : !dstr_printf(d, "  (+%" PRIu64 " -%" PRIu64 ")", entry.added, entry.removed))
@@ -1097,9 +1097,11 @@ notes_tool_files (struct mcp_slot *slot,
 	struct notes_file file;
 	int r = 0;
 	while (out.len && !(r = notes_file_next(&out, &file))) {
-		char const *name = (char const *)file.name.ptr;
-		if (!dstr_printf(call->text, "%.*s  (%" PRIu64 " bytes, %s)\n",
-		                 (int)jb_utf8(name, file.name.len), name, file.bytes, file.id.hex))
+		struct cstr_view const name = { (char const *)file.name.ptr, file.name.len };
+		/* A name that is not text names no note: add takes only text. */
+		if (!u8_check(name) && !dstr_printf(call->text, "%.*s  (%" PRIu64 " bytes, %s)\n",
+		                                    (int)name.len, name.data, file.bytes,
+		                                    file.id.hex))
 			return ENOMEM;
 	}
 	if (!cut)
@@ -1165,15 +1167,11 @@ notes_tool_members (struct notes_tool_call *call,
 		    !notes_tool_when(when, sizeof when, info->time, when_text)) {
 			ok = ok && dstr_cat(d, "no notes yet\n");
 		} else {
-			struct cstr_view const change = { info->change.data,
-			                                  jb_utf8(info->change.data, info->change.len) };
-			struct cstr_view const asker = { info->asker.data,
-			                                 jb_utf8(info->asker.data, info->asker.len) };
-			ok = ok && dstr_cat(d, when) && !notes_tool_change(d, change, asker);
+			ok = ok && dstr_cat(d, when) && !notes_tool_change(d, info->change, info->asker);
 			char stamp[WHEN];
 			if (list && notes_tool_when(stamp, sizeof stamp, info->time, when_json)) {
 				member = jb_set_or_free(member, "time", json_object_new_string(stamp));
-				member = jb_set_or_free(member, "change", jb_string(change));
+				member = jb_set_or_free(member, "change", jb_string(info->change));
 			}
 		}
 		if (list) {
@@ -1301,7 +1299,7 @@ notes_tool_put (struct dstr *d,
 }
 
 /* Appends to @p d the view of @p note, whose text at the start is @p text
- * bytes long (jb_text_len()). askai shows a note as its view if the note
+ * bytes long (u8_text()). askai shows a note as its view if the note
  * is not UTF-8 text or contains a NUL byte. The view starts with a line
  * that explains it. Valid UTF-8 text stays as it is, and each ⟦ in it
  * becomes ⟦⟦. Each other byte, and each NUL, becomes ⟦XX⟧ with its value
@@ -1329,7 +1327,8 @@ notes_tool_view (struct dstr      *d,
 	        "text shows as %s%s.]\n\n", note.len, util_s(note.len), view_open, view_close,
 	        view_open, view_open, view_open));
 	for (size_t i = 0; !e && i < note.len; ) {
-		size_t const run = i ? jb_text_len(cstr_view_slice(note, i, SIZE_MAX)) : text;
+		int bad;
+		size_t const run = i ? u8_text(cstr_view_slice(note, i, SIZE_MAX), &bad).len : text;
 		/* Copy the valid text and double each ⟦ in it. */
 		for (size_t at = i; !e && at < i + run; ) {
 			char const *m = memmem(note.data + at, i + run - at, view_open, open);
@@ -1359,9 +1358,9 @@ static int
 notes_tool_show (struct dstr      *d,
                  struct cstr_view  note)
 {
-	size_t const text = jb_text_len(note);
-	return text == note.len ? cstr_view_cat(note, d)
-	                        : notes_tool_view(d, note, text, SIZE_MAX, nullptr);
+	int bad;
+	size_t const text = u8_text(note, &bad).len;
+	return !bad ? cstr_view_cat(note, d) : notes_tool_view(d, note, text, SIZE_MAX, nullptr);
 }
 
 static void notes_tool_got_copy (struct mcp_slot *slot, struct span text);
@@ -1555,8 +1554,9 @@ notes_tool_got_attach (struct mcp_slot  *slot,
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct cstr_view body = { (char const *)text.ptr, text.len };
-	size_t const valid = jb_text_len(body);
-	bool const binary = valid < body.len;
+	int bad;
+	size_t const valid = u8_text(body, &bad).len;
+	bool const binary = bad != 0;
 	size_t kept = 0;
 	int e = mcp_slot_attach(slot, id, (struct cstr_view){}, &kept, call->text);
 	if (e != ENOENT) {
@@ -1634,14 +1634,14 @@ notes_tool_prompt_list (struct mcp_slot *slot)
 	if (!e)
 		e = notes_tool_history(slot, buf_peek(&c->out), c->end.flags & CHILD_CUT, &newest);
 	struct cstr_view const name = { (char const *)newest.ptr, newest.len };
-	/* The name comes from git. git reads the note only if add would accept
-	 * the name as it is. */
+	/* The name comes from git, and is text (notes_tool_history()). git
+	 * reads the note only if add would accept the name as it is. */
 	struct cstr_view checked = name;
 	bool named = !notes_name(&checked) && checked.len == name.len;
 	if (!e && named) {
 		struct cstr_view const p[] = {
 			CSTR_VIEW("[askai: The current text of your newest note, "),
-			{ name.data, jb_utf8(name.data, name.len) },
+			name,
 			CSTR_VIEW(":]\n"),
 		};
 		e = cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""),
@@ -1680,8 +1680,9 @@ notes_tool_newest (struct mcp_slot *slot)
 	 * function makes only the start of the view, a little more than the
 	 * call->most bytes that the prompt shows. */
 	dstr_auto view = DSTR_INIT;
-	size_t const valid = jb_text_len(body);
-	if (!r && valid < body.len) {
+	int bad;
+	size_t const valid = u8_text(body, &bad).len;
+	if (!r && bad) {
 		if (notes_tool_view(&view, body, valid, call->most + 1, &len)) {
 			notes_tool_then(slot, ENOMEM);
 			return;

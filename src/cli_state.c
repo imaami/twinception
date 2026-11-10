@@ -24,9 +24,9 @@
 #include "dstr.h"
 #include "git_run.h"
 #include "hexid.h"
-#include "jb.h"
 #include "loop.h"
 #include "oid.h"
+#include "u8.h"
 #include "util.h"
 
 enum {
@@ -127,10 +127,13 @@ cli_state_write_text (int                fd,
 	return e ? e : util_write_all(fd, dstr_get(text), n);
 }
 
+/* Read a record of at most *budget bytes into bytes, and take them from
+ * *budget.
+ */
 static int
-cli_state_read_text (int          fd,
-                     struct dstr *text,
-                     size_t      *budget)
+cli_state_read_bytes (int          fd,
+                      struct dstr *bytes,
+                      size_t      *budget)
 {
 	size_t len = 0;
 	int e = cli_state_read_number(fd, &len);
@@ -139,8 +142,8 @@ cli_state_read_text (int          fd,
 	if (len > *budget)
 		return EFBIG;
 	*budget -= len;
-	(void)dstr_clear(text);
-	if (!dstr_reserve(text, len))
+	(void)dstr_clear(bytes);
+	if (!dstr_reserve(bytes, len))
 		return ENOMEM;
 	char buffer[8192];
 	while (len) {
@@ -149,11 +152,23 @@ cli_state_read_text (int          fd,
 		e = cli_state_read(fd, buffer, count);
 		if (e)
 			return e;
-		if (!dstr_cat_n(text, buffer, count))
+		if (!dstr_cat_n(bytes, buffer, count))
 			return ENOMEM;
 		len -= count;
 	}
-	return jb_utf8(dstr_get(text), dstr_len(text)) == dstr_len(text) ? 0 : EILSEQ;
+	return 0;
+}
+
+/* Read a record of text, an input, a prompt or an answer, as
+ * cli_state_read_bytes() does, through the gate of text.
+ */
+static int
+cli_state_read_text (int          fd,
+                     struct dstr *text,
+                     size_t      *budget)
+{
+	int e = cli_state_read_bytes(fd, text, budget);
+	return e ? e : u8_check(cstr_view_dstr(text));
 }
 
 /** flock has no readiness notification. Retry only this contended lock,
@@ -386,8 +401,6 @@ static int
 cli_state_recall (struct cli_state *state,
                   struct cstr_view  text)
 {
-	if (!jb_is_text(text))
-		return EILSEQ;
 	struct cli_state_ring const *ring = &state->ring;
 	for (size_t j = 0; j < ring->used.n; ++j) {
 		if (!cstr_view_equal(cli_state_input_at(state, j), text))
@@ -428,7 +441,8 @@ cli_state_snapshot (struct cli_state *state,
 		e = EINVAL;
 	size_t budget = CLI_STATE_ID_BYTES;
 	if (!e)
-		e = cli_state_read_text(fd, &state->scratch, &budget);
+		e = cli_state_read_bytes(fd, &state->scratch, &budget);
+	/* The identity, whose parts NUL bytes separate, is as it was made. */
 	if (!e && !cstr_view_equal(cstr_view_dstr(&state->scratch), cstr_view_dstr(&state->identity)))
 		e = EXDEV;
 	if (!e)
@@ -636,8 +650,7 @@ cli_state_create (struct cstr_view    path,
                   int                *e)
 {
 	*e = EINVAL;
-	if (!identity.data || !identity.len || identity.len > CLI_STATE_ID_BYTES ||
-	    !jb_is_text(path) || jb_utf8(identity.data, identity.len) != identity.len)
+	if (!identity.data || !identity.len || identity.len > CLI_STATE_ID_BYTES || u8_check(path))
 		return nullptr;
 	struct cli_state *state = calloc(1, sizeof *state);
 	if (!state) {
@@ -758,7 +771,7 @@ int
 cli_state_add_input (struct cli_state *state,
                      struct cstr_view  text)
 {
-	if (!state || !jb_is_text(text))
+	if (!state)
 		return EINVAL;
 	if (text.len > CLI_STATE_INPUT_BYTES)
 		return EFBIG;
@@ -781,8 +794,9 @@ cli_state_add_turn (struct cli_state *state,
                     struct cstr_view  answer,
                     bool              replace)
 {
+	/* A JSON escape can make a NUL of an answer, which is text otherwise. */
 	if (!state || (replace && !state->turns_used.n) ||
-	    !jb_is_text(prompt) || !jb_is_text(answer))
+	    (answer.len && memchr(answer.data, '\0', answer.len)))
 		return EINVAL;
 	struct tally used = state->turns_used;
 	size_t const index = used.n - replace;
