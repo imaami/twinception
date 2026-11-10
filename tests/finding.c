@@ -60,18 +60,21 @@ test_ids (void)
 	CHECK(!strcmp(id, "cuh#12"));
 
 	char path[FINDING_FILE];
-	finding_path(5, path);
-	CHECK(!strcmp(path, "findings/0/5.json") && finding_path_number(cstr_view(path)) == 5);
-	finding_path(100, path);
-	CHECK(!strcmp(path, "findings/1/100.json") && finding_path_number(cstr_view(path)) == 100);
-	finding_path(UINT32_MAX, path);
+	struct cstr_view p = finding_path(5, path);
+	CHECK(!strcmp(path, "findings/0/5.json") && p.data == path && p.len == strlen(path) &&
+	      finding_path_number(p) == 5);
+	p = finding_path(100, path);
+	CHECK(!strcmp(path, "findings/1/100.json") && p.len == strlen(path) &&
+	      finding_path_number(p) == 100);
+	p = finding_path(UINT32_MAX, path);
 	CHECK(!strcmp(path, "findings/42949672/4294967295.json") &&
-	      finding_path_number(cstr_view(path)) == UINT32_MAX && strlen(path) == FINDING_FILE - 1);
-	finding_path(4294967200, path);
-	CHECK(!strcmp(path, "findings/42949672/4294967200.json") &&
-	      finding_path_number(cstr_view(path)) == 4294967200);
-	finding_path(99, path);
-	CHECK(finding_path_number(cstr_view(path)) == 99);
+	      finding_path_number(p) == UINT32_MAX && p.len == FINDING_FILE - 1 &&
+	      strlen(path) == FINDING_FILE - 1);
+	p = finding_path(4294967200, path);
+	CHECK(!strcmp(path, "findings/42949672/4294967200.json") && p.len == strlen(path) &&
+	      finding_path_number(p) == 4294967200);
+	p = finding_path(99, path);
+	CHECK(finding_path_number(p) == 99 && p.len == strlen(path));
 	char const *const paths[] = { "findings/1/5.json", "findings/0/05.json", "findings/0/0.json",
 	                              "archive/0/5.json", "findings/0/5.txt", "x/findings/0/5.json",
 	                              "findings/00/5.json", ".json", "", "findings/0/.json",

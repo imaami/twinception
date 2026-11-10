@@ -182,9 +182,10 @@ finding_id (struct finding const *f,
             char                  id[static FINDING_ID]);
 
 /** Writes to @p path the path of the file of the finding @p number:
- *  findings/D/N.json, where D is @p number / 100.
+ *  findings/D/N.json, where D is @p number / 100. Returns the view of the
+ *  path in @p path.
  */
-extern void
+extern struct cstr_view
 finding_path (uint32_t number,
               char     path[static FINDING_FILE]);
 

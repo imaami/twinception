@@ -110,12 +110,12 @@ finding_id (struct finding const *f,
 	finding_id_format(f->author, f->number, id);
 }
 
-void
+struct cstr_view
 finding_path (uint32_t number,
               char     path[static FINDING_FILE])
 {
-	(void)util_format(path, FINDING_FILE, FINDING_DIR "%" PRIu32 "/%" PRIu32 FINDING_EXT,
-	                  number / 100, number);
+	return util_format_view(path, FINDING_FILE, FINDING_DIR "%" PRIu32 "/%" PRIu32 FINDING_EXT,
+	                        number / 100, number);
 }
 
 uint32_t

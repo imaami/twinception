@@ -458,8 +458,7 @@ findings_read_batch (struct mcp_slot *slot)
 			char ref[MEMBER_REF];
 			char path[FINDING_FILE];
 			findings_ref(w->author, ref);
-			finding_path(w->number, path);
-			e = notes_read_input(&in, ref, cstr_view(path));
+			e = notes_read_input(&in, ref, finding_path(w->number, path));
 		}
 		++k;
 		/* A file that does not fit is read alone. */
@@ -563,9 +562,8 @@ findings_got_refs (struct mcp_slot *slot)
 		return;
 	}
 	char path[FINDING_FILE];
-	finding_path(number, path);
 	struct buf in = {};
-	e = notes_read_input(&in, tip.hex, cstr_view(path));
+	e = notes_read_input(&in, tip.hex, finding_path(number, path));
 	if (e) {
 		buf_fini(&in);
 		findings_end(slot, e, true);
@@ -849,11 +847,11 @@ findings_commit (struct mcp_slot      *slot,
 	char path[FINDING_FILE];
 	char message[STORE_MESSAGE];
 	finding_id(f, id);
-	finding_path(f->number, path);
 	findings_subject(call, id, before, message);
 	call->number = f->number;
 	struct store_part part;
-	e = e ? e : store_part_file(&part, &call->files, cstr_view(path), cstr_view_dstr(&json));
+	e = e ? e : store_part_file(&part, &call->files, finding_path(f->number, path),
+	                            cstr_view_dstr(&json));
 	struct store_commit commit = {
 		.message = cstr_view(message),
 		.files = buf_peek(&call->files),
