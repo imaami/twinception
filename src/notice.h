@@ -22,7 +22,7 @@
 
 #include "cstr_view.h"
 
-#define NOTICE_NOTEBOOK "[askai: notebook %s (%s)]"
+#define NOTICE_NOTEBOOK "[askai: notebook %s]"
 #define NOTICE_CALL     "[askai: call c%" PRIu32 "]"
 #define NOTICE_COMPACT                                                         \
         "[askai: your context is %" PRIu64 "%% full, %" PRIu64 " of %" PRIu64  \

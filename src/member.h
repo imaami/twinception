@@ -76,6 +76,10 @@ enum {
 	                                                      branch or of the
 	                                                      record of a member,
 	                                                      NUL included */
+	MEMBER_TEXT   = sizeof " (person, you)" + UTIL_WORD_MAX,
+	                                                 /**< bytes of a member as
+	                                                      member_text() writes
+	                                                      it, NUL included */
 };
 
 /** The time for the lookup of the name of a Unix user, in nanoseconds.
@@ -245,6 +249,16 @@ member_name_valid (struct cstr_view name)
 	}
 	return !digits;
 }
+
+/** Writes the member @p name of the kind @p kind to @p text as NAME (KIND),
+ *  such as bro (agent), or as NAME (KIND, you) if @p you is true. Returns
+ *  the view of the text in @p text.
+ */
+extern struct cstr_view
+member_text (struct cstr_view name,
+             enum member_kind kind,
+             bool             you,
+             char             text[static MEMBER_TEXT]);
 
 /** Returns a new JSON object of the member @p name of the kind @p kind,
  *  {"name": NAME, "kind": KIND}, such as the asker in the journal state of

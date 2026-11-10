@@ -5722,9 +5722,12 @@ mcp_slot_done (struct mcp_slot *slot,
 	size_t const offset = slot->skip;
 	mcp_slot_window(slot, out);
 	mcp_slot_note_window(slot, out.len, offset);
-	if (notebook)
-		(void)util_text_printf(&slot->note, "\n\n" NOTICE_NOTEBOOK, notebook->name,
-		                       member_kinds[notebook->kind].data);
+	if (notebook) {
+		char who[MEMBER_TEXT];
+		struct cstr_view const member = member_text(cstr_view(notebook->name), notebook->kind,
+		                                            false, who);
+		(void)util_text_printf(&slot->note, "\n\n" NOTICE_NOTEBOOK, member.data);
+	}
 	(void)util_text_printf(&slot->note, "\n\n" NOTICE_CALL, mcp_slot_call(slot));
 	if (*req->archive.hex && !(tool->kind->flags & KF_RERUN)) {
 		/* A resumed turn writes the window and the note again, and

@@ -444,8 +444,10 @@ notes_tool_failed (struct mcp_slot *slot,
 static int
 notes_tool_head (struct notes_tool_call const *call)
 {
-	return dstr_printf(call->text, "Notebook %s (%s): ", call->book.name,
-	                   member_kinds[call->book.kind].data) ? 0 : ENOMEM;
+	char buf[MEMBER_TEXT];
+	struct cstr_view const member = member_text(cstr_view(call->book.name), call->book.kind,
+	                                            false, buf);
+	return dstr_printf(call->text, "Notebook %s: ", member.data) ? 0 : ENOMEM;
 }
 
 /* Ends the call of the notes tool in @p slot. The function destroys the

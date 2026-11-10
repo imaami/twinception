@@ -18,10 +18,12 @@ static char const *const notice_formats[] = {
 };
 
 /* Returns the length of the argument of the printf conversion @p conv at
- * the start of the @p len bytes at @p s, or 0 if there is none: one or
- * more digits for 'u', and for 's' a name that member_name_valid()
- * accepts, up to the byte @p end, the byte after the conversion in the
- * format. The name of a member and its kind are each such a name.
+ * the start of the @p len bytes at @p s, or 0 if there is none. For 'u',
+ * the argument is one or more digits. The only 's' conversion of the
+ * notices is the member of NOTICE_NOTEBOOK, so for 's' the argument is a
+ * member as member_text() writes it, NAME (KIND), up to the byte @p end,
+ * the byte after the conversion in the format. The name and the kind are
+ * each a name that member_name_valid() accepts.
  */
 static size_t
 notice_arg (char        conv,
@@ -32,8 +34,17 @@ notice_arg (char        conv,
 	switch (conv) {
 	case 's': {
 		char const *at = memchr(s, end, len);
-		size_t const n = at ? (size_t)(at - s) : 0;
-		return member_name_valid((struct cstr_view){ s, n }) ? n : 0;
+		if (!at)
+			return 0;
+		struct cstr_view rest = { s, (size_t)(at - s) };
+		struct cstr_view name;
+		struct cstr_view kind;
+		if (!cstr_view_cut(&rest, ' ', &name) || !member_name_valid(name))
+			return 0;
+		if (!cstr_view_cut(&rest, ')', &kind) || rest.len ||
+		    !cstr_view_starts(kind, CSTR_VIEW("(")))
+			return 0;
+		return member_name_valid(cstr_view_slice(kind, 1, SIZE_MAX)) ? (size_t)(at - s) : 0;
 	}
 	case 'u': {
 		size_t n = 0;

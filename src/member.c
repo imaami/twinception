@@ -873,6 +873,16 @@ member_call_ids (struct member_call *call)
 	return e;
 }
 
+struct cstr_view
+member_text (struct cstr_view name,
+             enum member_kind kind,
+             bool             you,
+             char             text[static MEMBER_TEXT])
+{
+	return util_format_view(text, MEMBER_TEXT, "%.*s (%s%s)", (int)name.len, name.data,
+	                        member_kinds[kind].data, you ? ", you" : "");
+}
+
 struct json_object *
 member_json (struct cstr_view name,
              enum member_kind kind)
@@ -1673,16 +1683,14 @@ member_table_names (struct member_table const *table,
                     struct dstr               *d)
 {
 	struct cstr_view views[MEMBER_SHOWN];
-	char items[array_size(views)][MEMBER_NAME + sizeof " (person, you)"];
+	char items[array_size(views)][MEMBER_TEXT];
 	size_t const n = table->records.all.n;
 	size_t const shown = n < array_size(views) ? n : array_size(views);
 	struct cstr_view const me = you ? cstr_view(you->name) : (struct cstr_view){};
 	for (size_t i = 0; i < shown; ++i) {
 		struct member_info const *info = &table->records.all.items[i];
 		bool const self = you && info->kind == you->kind && cstr_view_equal(info->name, me);
-		views[i] = util_format_view(items[i], sizeof items[i], "%.*s (%s%s)",
-		                            (int)info->name.len, info->name.data,
-		                            member_kinds[info->kind].data, self ? ", you" : "");
+		views[i] = member_text(info->name, (enum member_kind)info->kind, self, items[i]);
 	}
 	return cstr_view_join_more(views, shown, n, d);
 }
