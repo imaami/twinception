@@ -50,8 +50,6 @@ enum {
 	FINDING_FILE    = sizeof FINDING_DIR "42949672/4294967295" FINDING_EXT,
 	                                     /**< bytes of the path of the file
 	                                          of a finding, NUL included */
-	FINDING_VERSION = 1,                 /**< the version of the file that
-	                                          askai writes and reads */
 	FINDING_CLAIM   = 200,               /**< bytes of a claim in a list, at
 	                                          most */
 };

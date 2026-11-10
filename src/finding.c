@@ -16,8 +16,10 @@
 struct cstr_view const finding_state_names[FINDING_STATES] = { FINDING_STATE_LIST(XL_VIEW) };
 
 enum {
-	FINDING_ASK   = 8,  /* digits of an ask ID in show */
-	FINDING_STATE = 9,  /* the width of the state column of a list */
+	FINDING_ASK     = 8,  /* digits of an ask ID in show */
+	FINDING_STATE   = 9,  /* the width of the state column of a list */
+	FINDING_VERSION = 1,  /* the version of the file that askai writes and
+	                         reads */
 };
 
 /* The options of json-c for the file of a finding. */
