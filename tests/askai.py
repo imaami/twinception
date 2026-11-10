@@ -11556,7 +11556,7 @@ def check_notes(binary, up):
                 r"Members of the session notes \(name, kind, newest change of the notebook\):\n"
                 rf"alice    person  {when}  Add \"in/text\.md\" \(4 bytes\)\n"
                 rf"bob      person  {when}  Add \"bob\.md\" \(1 byte\)\n"
-                rf"writers  agent   {when}  \n"
+                rf"writers  agent   {when}\n"
                 r"You write as the person bob\. To read another notebook, give the member "
                 r"name as notebook\.\n", members), members
             # Replacements extend the branch, preserving each previous blob.

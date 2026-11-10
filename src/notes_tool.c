@@ -1001,6 +1001,46 @@ notes_tool_rebased (struct mcp_slot *slot)
 	notes_tool_write(slot, 0);
 }
 
+/* The strftime() formats of the time of a change in a text and in JSON,
+ * and the bytes of a time in either format, NUL included.
+ */
+static char const when_text[] = "%Y-%m-%d %H:%M UTC";
+static char const when_json[] = "%Y-%m-%dT%H:%M:%SZ";
+static constexpr size_t WHEN = sizeof "2026-10-14 12:34 UTC";
+static_assert(sizeof "2026-10-14T12:34:56Z" == WHEN, "a time in JSON fits WHEN bytes");
+
+/* Writes @p time, seconds since the epoch, in UTC in the strftime() format
+ * @p format to the @p size bytes at @p buf. Returns the length, or 0 if
+ * the time cannot be written.
+ */
+static size_t
+notes_tool_when (char       *buf,
+                 size_t      size,
+                 uint64_t    time,
+                 char const *format)
+{
+	time_t const t = (time_t)time;
+	struct tm tm;
+	return gmtime_r(&t, &tm) ? strftime(buf, size, format, &tm) : 0;
+}
+
+/* Appends to @p d the end of a line of the history or of the members: two
+ * spaces and @p subject, the subject of a change, if @p subject is not
+ * empty, then ", asked by ASKER" if @p asker is not empty, and a line
+ * feed. Both views are UTF-8 text. Returns 0 or ENOMEM.
+ */
+static int
+notes_tool_change (struct dstr      *d,
+                   struct cstr_view  subject,
+                   struct cstr_view  asker)
+{
+	if (subject.len && !dstr_printf(d, "  %.*s", (int)subject.len, subject.data))
+		return ENOMEM;
+	if (asker.len && !dstr_printf(d, ", asked by %.*s", (int)asker.len, asker.data))
+		return ENOMEM;
+	return dstr_cat_n(d, "\n", 1) ? 0 : ENOMEM;
+}
+
 /* Appends the history in @p out, the output of git for STORE_LOG, to
  * call->text, the oldest change first. Stores the name of the newest note
  * in @p *newest. @p cut is true if askai cut the output of git. A cut
@@ -1028,25 +1068,25 @@ notes_tool_history (struct mcp_slot *slot,
 		/* Git also matches descendants if this path was once a directory. */
 		if (filter.len && !cstr_view_equal(filter, (struct cstr_view){ name, entry.name.len }))
 			continue;
-		char when[sizeof "2026-10-14 12:34 UTC"];
-		struct tm tm;
-		time_t t = (time_t)entry.time;
-		size_t w = gmtime_r(&t, &tm) ? strftime(when, sizeof when, "%Y-%m-%d %H:%M UTC",
-		                                        &tm) : 0;
-		char const *subject = (char const *)entry.subject.ptr;
-		size_t subject_len = history ? jb_utf8(subject, entry.subject.len) : 0;
-		char const *asker = (char const *)entry.asker.ptr;
-		size_t const asker_len = jb_utf8(asker, entry.asker.len);
-		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", ++k, (int)w, when) ||
-		    !dstr_cat_n(d, name, jb_utf8(name, entry.name.len)) ||
-		    !(entry.added == NOTES_BINARY ? dstr_cat(d, "  (binary)")
-		      : dstr_printf(d, "  (+%" PRIu64 " -%" PRIu64 ")", entry.added, entry.removed)) ||
-		    (history && !dstr_printf(d, "  commit %s%s%.*s", entry.commit.hex,
-		                            subject_len ? "  " : "",
-		                            (int)subject_len, subject_len ? subject : "")) ||
-		    (asker_len && !dstr_printf(d, ", asked by %.*s", (int)asker_len, asker)) ||
-		    !dstr_cat_n(d, "\n", 1))
+		char when[WHEN];
+		size_t const w = notes_tool_when(when, sizeof when, entry.time, when_text);
+		char const *s = (char const *)entry.subject.ptr;
+		char const *a = (char const *)entry.asker.ptr;
+		struct cstr_view const subject = { s, history ? jb_utf8(s, entry.subject.len) : 0 };
+		struct cstr_view const asker = { a, jb_utf8(a, entry.asker.len) };
+		++k;
+		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", k, (int)w, when))
 			return ENOMEM;
+		if (!dstr_cat_n(d, name, jb_utf8(name, entry.name.len)))
+			return ENOMEM;
+		if (entry.added == NOTES_BINARY ? !dstr_cat(d, "  (binary)")
+		    : !dstr_printf(d, "  (+%" PRIu64 " -%" PRIu64 ")", entry.added, entry.removed))
+			return ENOMEM;
+		if (history && !dstr_printf(d, "  commit %s", entry.commit.hex))
+			return ENOMEM;
+		int const e = notes_tool_change(d, subject, asker);
+		if (e)
+			return e;
 		*newest = entry.name;
 	}
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
@@ -1103,73 +1143,66 @@ notes_tool_got_list (struct mcp_slot *slot)
 }
 
 /* Appends to call->text the members of the session, each with the newest
- * change of the notebook, and who the caller is. Returns 0 or ENOMEM.
+ * change of the notebook, and who the caller is. For a client, the
+ * function then appends the JSON object of the structured content:
+ * "members", each with its name and kind, and the time and the subject of
+ * the newest change of its notebook, and "you", the member of a caller
+ * with a member name. It stores the length of the object in @p *json.
+ * Returns 0 or ENOMEM.
  */
 static int
-notes_tool_members_text (struct notes_tool_call *call)
+notes_tool_members (struct notes_tool_call *call,
+                    size_t                 *json)
 {
 	struct member_table const *table = call->loop->members;
 	struct member_session const *session = notes_tool_session(call);
+	struct dstr *d = call->text;
 	int const width = member_table_width(table);
-	bool ok = dstr_printf(call->text, "Members of the session %.*s (name, kind, newest change "
-	                      "of the notebook):\n", (int)session->name.len, session->name.data);
+	/* The rows of the JSON of a client, or nullptr for a turn. */
+	bool const client = mcp_slot_from_client(call->slot);
+	struct json_object *list = client ? json_object_new_array() : nullptr;
+	bool ok = (list || !client) &&
+	          dstr_printf(d, "Members of the session %.*s (name, kind, newest change of the "
+	                      "notebook):\n", (int)session->name.len, session->name.data);
 	struct member_info const *info;
 	for (size_t i = 0; ok && (info = member_table_info(table, i)); ++i) {
-		ok = dstr_printf(call->text, "%-*.*s  %-6s  ", width, (int)info->name.len,
-		                 info->name.data, member_kinds[info->kind].data);
-		char when[sizeof "2026-10-14 12:34 UTC"];
-		struct tm tm;
-		time_t const t = (time_t)info->time;
-		if (!(info->flags & MEMBER_NOTES) || !gmtime_r(&t, &tm) ||
-		    !strftime(when, sizeof when, "%Y-%m-%d %H:%M UTC", &tm)) {
-			ok = ok && dstr_cat(call->text, "no notes yet\n");
-			continue;
+		struct json_object *member = list ? member_json(info->name, info->kind) : nullptr;
+		ok = dstr_printf(d, "%-*.*s  %-6s  ", width, (int)info->name.len, info->name.data,
+		                 member_kinds[info->kind].data);
+		char when[WHEN];
+		if (!(info->flags & MEMBER_NOTES) ||
+		    !notes_tool_when(when, sizeof when, info->time, when_text)) {
+			ok = ok && dstr_cat(d, "no notes yet\n");
+		} else {
+			struct cstr_view const change = { info->change.data,
+			                                  jb_utf8(info->change.data, info->change.len) };
+			struct cstr_view const asker = { info->asker.data,
+			                                 jb_utf8(info->asker.data, info->asker.len) };
+			ok = ok && dstr_cat(d, when) && !notes_tool_change(d, change, asker);
+			char stamp[WHEN];
+			if (list && notes_tool_when(stamp, sizeof stamp, info->time, when_json)) {
+				member = jb_set_or_free(member, "time", json_object_new_string(stamp));
+				member = jb_set_or_free(member, "change", jb_string(change));
+			}
 		}
-		int const change = (int)jb_utf8(info->change.data, info->change.len);
-		int const asker = (int)jb_utf8(info->asker.data, info->asker.len);
-		ok = ok && dstr_printf(call->text, "%s  %.*s%s%.*s\n", when, change, info->change.data,
-		                       asker ? ", asked by " : "", asker, info->asker.data);
+		if (list) {
+			list = jb_push_or_free(list, member);
+			ok = ok && list;
+		}
 	}
 	struct member const *self = &call->self;
 	char const *kind = member_kinds[self->kind].data;
-	if (!mcp_slot_from_client(call->slot))
-		ok = ok && dstr_printf(call->text, "You are the %s %s.", kind, self->name);
+	if (!client)
+		ok = ok && dstr_printf(d, "You are the %s %s.", kind, self->name);
 	else if (*self->name)
-		ok = ok && dstr_printf(call->text, "You write as the %s %s.", kind, self->name);
+		ok = ok && dstr_printf(d, "You write as the %s %s.", kind, self->name);
 	else
-		ok = ok && dstr_cat(call->text, "You have no member name, so you cannot write notes.");
-	ok = ok && dstr_cat(call->text, " To read another notebook, give the member name as "
-	                    "notebook.\n");
-	return ok ? 0 : ENOMEM;
-}
-
-/* Appends to call->out the JSON object of the structured content of the
- * members for a client: "members", each with its name and kind, and the
- * time and the subject of the newest change of its notebook, and "you",
- * the member of a caller with a member name. Stores the length of the
- * object in @p *json. Returns 0 or ENOMEM.
- */
-static int
-notes_tool_members_json (struct notes_tool_call *call,
-                         size_t                 *json)
-{
-	struct json_object *list = json_object_new_array();
-	struct member_info const *info;
-	for (size_t i = 0; list && (info = member_table_info(call->loop->members, i)); ++i) {
-		struct json_object *member = member_json(info->name, info->kind);
-		char stamp[sizeof "2026-10-14T12:34:56Z"];
-		struct tm tm;
-		time_t const t = (time_t)info->time;
-		if (info->flags & MEMBER_NOTES && gmtime_r(&t, &tm) &&
-		    strftime(stamp, sizeof stamp, "%Y-%m-%dT%H:%M:%SZ", &tm)) {
-			struct cstr_view const change = { info->change.data,
-			                                  jb_utf8(info->change.data, info->change.len) };
-			member = jb_set_or_free(member, "time", json_object_new_string(stamp));
-			member = jb_set_or_free(member, "change", jb_string(change));
-		}
-		list = jb_push_or_free(list, member);
+		ok = ok && dstr_cat(d, "You have no member name, so you cannot write notes.");
+	ok = ok && dstr_cat(d, " To read another notebook, give the member name as notebook.\n");
+	if (!ok || !list) {
+		json_object_put(list);
+		return ok ? 0 : ENOMEM;
 	}
-	struct member const *self = &call->self;
 	struct json_object *structured = jb_object("members", list, nullptr);
 	if (*self->name)
 		structured = jb_set_or_free(structured, "you", member_json(cstr_view(self->name),
@@ -1177,7 +1210,7 @@ notes_tool_members_json (struct notes_tool_call *call,
 	if (!structured)
 		return ENOMEM;
 	struct cstr_view const wire = jb_wire(structured);
-	int e = wire.data ? cstr_view_cat(wire, &call->out) : ENOMEM;
+	int const e = wire.data ? cstr_view_cat(wire, d) : ENOMEM;
 	*json = e ? 0 : wire.len;
 	json_object_put(structured);
 	return e;
@@ -1244,9 +1277,7 @@ notes_tool_got_members (struct mcp_slot *slot)
 	}
 	/* The output is the text, then the JSON of a client. */
 	size_t json = 0;
-	e = notes_tool_members_text(call);
-	if (!e && mcp_slot_from_client(slot))
-		e = notes_tool_members_json(call, &json);
+	e = notes_tool_members(call, &json);
 	if (e) {
 		mcp_slot_fail(slot, e);
 		return;
