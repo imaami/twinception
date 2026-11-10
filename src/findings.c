@@ -1366,8 +1366,8 @@ findings_too_long (struct mcp_slot   *slot,
  * (findings_too_long()).
  */
 static void
-findings_unseen (struct mcp_slot        *slot,
-                 struct cstr_view const  material[static EVIDENCE_REFS][2])
+findings_unseen (struct mcp_slot                *slot,
+                 struct evidence_material const  material[static EVIDENCE_REFS])
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	dstr_auto names = DSTR_INIT;
@@ -1388,8 +1388,8 @@ findings_unseen (struct mcp_slot        *slot,
 		finding_id_format(cite->ref.author, cite->ref.number, finding);
 		e = evidence_parse_text(&item, cstr_view_dstr(&cite->record));
 		if (!e)
-			e = evidence_expand(&item, finding, cite->ref.author, material[i][0],
-			                    material[i][1], &call->out);
+			e = evidence_expand(&item, finding, cite->ref.author, material[i].request,
+			                    material[i].result, &call->out);
 	}
 	evidence_fini(&item);
 	at[call->cites.n] = dstr_len(&call->out);
@@ -1420,8 +1420,8 @@ findings_unseen (struct mcp_slot        *slot,
  * goes on (findings_act()).
  */
 static void
-findings_cite_end (struct mcp_slot        *slot,
-                   struct cstr_view const  material[static EVIDENCE_REFS][2])
+findings_cite_end (struct mcp_slot                *slot,
+                   struct evidence_material const  material[static EVIDENCE_REFS])
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	for (size_t i = 0; i < call->cites.n; ++i)
@@ -1437,7 +1437,7 @@ findings_cite_end (struct mcp_slot        *slot,
 		struct findings_cite const *of = &call->cites.items[cite->first];
 		struct evidence *item = &call->change.evidence.items[cite->index];
 		e = evidence_recite(item, &lines, &cite->ref, cstr_view_dstr(&of->record),
-		                    material[cite->first][1], why, sizeof why);
+		                    material[cite->first].result, why, sizeof why);
 		if (e)
 			break;
 		if (cite->ref.form == EVIDENCE_REF_ITEM_LINES)
@@ -1464,12 +1464,15 @@ findings_got_blobs (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct span out = buf_peek(&call->child->out);
-	struct cstr_view material[EVIDENCE_REFS][2] = {};
+	struct evidence_material material[EVIDENCE_REFS] = {};
 	for (size_t i = 0; i < call->cites.n; ++i) {
 		struct findings_cite *cite = &call->cites.items[i];
 		if (!(cite->flags & CITE_READ))
 			continue;
-		for (size_t k = cite->flags & CITE_REQUEST ? 0 : 1; k < array_size(cite->blobs); ++k) {
+		/* The archive files of an item are the arguments, then the
+		 * material. */
+		struct cstr_view *const m[] = { &material[i].request, &material[i].result };
+		for (size_t k = cite->flags & CITE_REQUEST ? 0 : 1; k < array_size(m); ++k) {
 			struct span data;
 			int const e = store_object_next(&out, &cite->blobs[k], &data);
 			if (e == ENOENT) {
@@ -1482,7 +1485,7 @@ findings_got_blobs (struct mcp_slot *slot)
 				mcp_slot_tell(slot, unread, TOOL_FAILED);
 				return;
 			}
-			material[i][k] = (struct cstr_view){ (char const *)data.ptr, data.len };
+			*m[k] = (struct cstr_view){ (char const *)data.ptr, data.len };
 		}
 	}
 	findings_cite_end(slot, material);
@@ -1567,7 +1570,7 @@ findings_cite_blobs (struct mcp_slot *slot)
 		return;
 	}
 	if (!buf_peek(&in).len) {
-		findings_cite_end(slot, (struct cstr_view [EVIDENCE_REFS][2]){});
+		findings_cite_end(slot, (struct evidence_material [EVIDENCE_REFS]){});
 		return;
 	}
 	findings_run(slot, STAGE_BLOBS, STORE_READ, nullptr, nullptr, &in);
