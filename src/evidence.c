@@ -20,7 +20,8 @@
 static_assert(SEEN_CALLS == 64 && TOOL_TEXT_MAX == 4U << 20, "update the refusals of "
               "evidence_cite()");
 
-struct cstr_view const evidence_kind_names[EVIDENCE_KINDS] = { EVIDENCE_KIND_LIST(XL_VIEW) };
+/* The names of the kinds. Each is NUL-terminated. */
+static struct cstr_view const evidence_kind_names[EVIDENCE_KINDS] = { EVIDENCE_KIND_LIST(XL_VIEW) };
 
 enum {
 	EVIDENCE_SHORT   = 12,  /* digits of a commit in a summary */

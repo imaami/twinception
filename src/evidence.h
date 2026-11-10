@@ -69,9 +69,6 @@ enum evidence_kind : uint8_t {
 	EVIDENCE_KINDS
 };
 
-/** The names of the kinds. Each is NUL-terminated. */
-extern struct cstr_view const evidence_kind_names[EVIDENCE_KINDS];
-
 /** The forms of a reference (struct evidence_ref). */
 enum evidence_form : uint8_t {
 	EVIDENCE_REF_CALL,        /**< cN */
