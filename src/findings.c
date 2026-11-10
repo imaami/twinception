@@ -155,20 +155,25 @@ enum findings_cite_flag : uint16_t {
 
 /* A reference of the evidence argument to an item of a finding, X#n/m or
  * X#n/m:A-B. askai reads the record and the archive files of an item once,
- * for the first reference to the item. The later references use them.
+ * for the first reference to the item. The later references use them. The
+ * member id of the first reference is the ID of the item.
  */
 struct findings_cite {
-	struct dstr         record;    /* the JSON object of the item, from the
-	                                  ring or from the file of its
-	                                  finding */
-	uint32_t            index;     /* the place of the item in the evidence
-	                                  of the change */
-	uint32_t            first;     /* the place in call->cites of the first
-	                                  reference to the item */
+	struct dstr         record;       /* the JSON object of the item, from
+	                                     the ring or from the file of its
+	                                     finding */
+	uint32_t            index;        /* the place of the item in the
+	                                     evidence of the change */
+	uint32_t            first;        /* the place in call->cites of the
+	                                     first reference to the item */
 	struct evidence_ref ref;
-	uint16_t            flags;     /* enum findings_cite_flag */
-	struct oid          blobs[2];  /* the git IDs of the archive files of
-	                                  the item, or no name */
+	struct oid          blobs[2];     /* the git IDs of the archive files of
+	                                     the item, or no name */
+	char                id[SEEN_ID];  /* the ID of the item, such as
+	                                     cuh#2/1, or "" for a later
+	                                     reference */
+	uint64_t            flags;        /* enum findings_cite_flag, uint64_t
+	                                     to fill the padding */
 };
 
 /* An entry of the output of expand: the item e of the finding f, or the
@@ -1315,15 +1320,13 @@ static int
 findings_unseen_head (struct findings_call *call,
                       struct dstr          *names)
 {
-	char ids[EVIDENCE_REFS][SEEN_ID];
 	struct cstr_view views[EVIDENCE_REFS];
 	uint64_t mask = 0;
 	for (size_t i = 0; i < call->cites.n; ++i) {
 		struct findings_cite const *cite = &call->cites.items[i];
 		if (!(cite->flags & CITE_SHOW))
 			continue;
-		evidence_ref_id(&cite->ref, ids[i]);
-		views[i] = cstr_view(ids[i]);
+		views[i] = cstr_view(cite->id);
 		mask |= UINT64_C(1) << i;
 	}
 	(void)dstr_clear(&call->out);
@@ -1377,35 +1380,35 @@ findings_unseen (struct mcp_slot                *slot,
 	if (!e && !dstr_printf(&call->out, "askai prints %s below. Repeat the %s in your next "
 	                       "turn.\n", dstr_get(&names), findings_actions[call->action].data))
 		e = ENOMEM;
-	/* The place of each item in the output. */
+	/* The place of each item in the output. end is the end of the
+	 * output. */
 	size_t at[EVIDENCE_REFS + 1] = {};
+	size_t end = dstr_len(&call->out);
 	struct evidence item = evidence();
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
-		struct findings_cite *cite = &call->cites.items[i];
-		at[i] = dstr_len(&call->out);
+		struct findings_cite const *cite = &call->cites.items[i];
+		at[i] = end;
 		if (!(cite->flags & CITE_SHOW))
 			continue;
-		char id[SEEN_ID];
-		evidence_ref_id(&cite->ref, id);
 		e = evidence_parse_text(&item, cstr_view_dstr(&cite->record));
 		if (!e)
-			e = evidence_expand(&item, id, cite->ref.author, &material[i], &call->out);
+			e = evidence_expand(&item, cite->id, cite->ref.author, &material[i], &call->out);
+		end = dstr_len(&call->out);
 	}
 	evidence_fini(&item);
-	at[call->cites.n] = dstr_len(&call->out);
-	if (!e && at[call->cites.n] > mcp_slot_window_max(slot)) {
+	at[call->cites.n] = end;
+	if (!e && end > mcp_slot_window_max(slot)) {
 		findings_too_long(slot, head, &names);
 		return;
 	}
 	struct seen_item shown = { .record = DSTR_INIT };
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
-		struct findings_cite *cite = &call->cites.items[i];
+		struct findings_cite const *cite = &call->cites.items[i];
 		if (at[i] == at[i + 1])
 			continue;
-		char id[SEEN_ID];
-		evidence_ref_id(&cite->ref, id);
 		e = cstr_view_store(cstr_view_dstr(&cite->record), &shown.record);
-		e = e ? e : findings_shown(slot, &shown, id, cite->blobs, at[i], at[i + 1] - at[i]);
+		e = e ? e : findings_shown(slot, &shown, cite->id, cite->blobs, at[i],
+		                           at[i + 1] - at[i]);
 	}
 	dstr_cleanup(&shown.record);
 	findings_end(slot, e, true);
@@ -1476,9 +1479,8 @@ findings_got_blobs (struct mcp_slot *slot)
 			struct span data;
 			int const e = store_object_next(&out, &cite->blobs[k], &data);
 			if (e == ENOENT) {
-				char id[SEEN_ID];
-				evidence_ref_id(&cite->ref, id);
-				mcp_slot_tellf(slot, TOOL_FAILED, "The stored material of %s is missing.", id);
+				mcp_slot_tellf(slot, TOOL_FAILED, "The stored material of %s is missing.",
+				               cite->id);
 				return;
 			}
 			if (e) {
@@ -1718,14 +1720,13 @@ findings_cite_add (struct mcp_slot           *slot,
 		++call->cites.n;
 		return 0;
 	}
-	char id[SEEN_ID];
-	evidence_ref_id(ref, id);
-	struct seen_item const *s = seen_find_item(mcp_slot_seen(slot), cstr_view(id));
+	evidence_ref_id(ref, cite->id);
+	struct seen_item const *s = seen_find_item(mcp_slot_seen(slot), cstr_view(cite->id));
 	/* The turn whose result showed the item whole, or 0. */
 	uint32_t const turn = s ? s->turn : 0;
 	if (strict && turn && turn >= mcp_slot_turn(slot))
 		return util_refuse(why, len, "askai showed you %s in this turn. Cite %s for verified or "
-		                   "disproved in a later turn.", id, id);
+		                   "disproved in a later turn.", cite->id, cite->id);
 	cite->flags = strict && !turn ? CITE_SHOW | CITE_READ | lines : lines;
 	if (s) {
 		if (cstr_view_store(cstr_view_dstr(&s->record), &cite->record)) {
