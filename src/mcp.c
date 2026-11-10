@@ -5991,8 +5991,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 		"trace", jb_string(cstr_view_dstr(&req->trace)),
 		"conversation", json_object_new_string(req->member.conversation.hex),
 		"ask", json_object_new_string(req->member.ask.hex),
-		"asker", jb_object("name", json_object_new_string(asker->name),
-		                   "kind", jb_string(member_kinds[asker->kind]), nullptr),
+		"asker", member_json(cstr_view(asker->name), asker->kind),
 		"branch", json_object_new_boolean(req->flags & REQ_BRANCH),
 		"filing", json_object_new_boolean(req->flags & REQ_FILING),
 		"filed", json_object_new_uint64(req->filed),
@@ -6217,9 +6216,7 @@ mcp_recover_back (struct loop           *loop,
 	(void)hexid_init(&req->member.conversation,
 	                 jb_view(jb_get(state, version == 2 ? "thread" : "conversation")));
 	(void)hexid_init(&req->member.ask, jb_view(jb_get(state, "ask")));
-	struct json_object *asker = jb_get(state, "asker");
-	(void)member_init(&req->member.asker, jb_view(jb_get(asker, "name")),
-	                  jb_view(jb_get(asker, "kind")));
+	(void)member_init_json(&req->member.asker, jb_get(state, "asker"));
 	if (jb_get(state, "review"))
 		LOG(LOG_INFO, "journal: job %s: the old review record was not restored", id.hex);
 	req->intents = intents;

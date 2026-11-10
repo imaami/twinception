@@ -280,8 +280,10 @@ check-member: $Otests/member
 $Otests/member: $Otests/member.c.o $Otests/src/member.c.o $Otests/src/store.c.o \
                 $Otests/src/blocker.c.o $Otests/src/child.c.o $Otests/src/loop.c.o \
                 $Otests/src/log.c.o $Otests/src/buf.c.o $Otests/src/cstr_view.c.o \
-                $Otests/src/dstr.c.o $Otests/src/git_run.c.o
-$Otests/member:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lm
+                $Otests/src/dstr.c.o $Otests/src/git_run.c.o $Otests/src/jb.c.o
+$Otests/member:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS) -lm
+
+$Otests/member.c.o $Otests/src/member.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
 # The unit tests. Each test links the object of its own source and the
 # objects of the files of src/ that the lines below list.

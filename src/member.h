@@ -47,6 +47,7 @@
 struct blocker;
 struct child;
 struct dstr;
+struct json_object;
 struct loop;
 struct member_registry;
 struct member_table;
@@ -240,16 +241,23 @@ member_name_valid (struct cstr_view name)
 	return !digits;
 }
 
-/** Initializes @p dest as the member named @p name, of the kind @p kind
- *  as member_kinds names it, such as the asker in the journal state of an
- *  ask call. Returns 0, EINVAL for a null @p dest, or EINVAL with no member
- *  in @p dest for a name that member_name_valid() refuses or a kind that
- *  member_kinds does not name.
+/** Returns a new JSON object of the member @p name of the kind @p kind,
+ *  {"name": NAME, "kind": KIND}, such as the asker in the journal state of
+ *  an ask call or a member in the result of members, or nullptr for a
+ *  @p name without data, a @p kind past the kinds, or if out of memory.
+ */
+extern struct json_object *
+member_json (struct cstr_view name,
+             enum member_kind kind);
+
+/** Initializes @p dest as the member of @p json, an object as member_json()
+ *  writes it. Returns 0, EINVAL for a null @p dest, or EINVAL with no
+ *  member in @p dest for an object whose name member_name_valid() refuses
+ *  or whose kind member_kinds does not name.
  */
 extern int
-member_init (struct member    *dest,
-             struct cstr_view  name,
-             struct cstr_view  kind);
+member_init_json (struct member      *dest,
+                  struct json_object *json);
 
 /** Writes to @p ref the ref of the branch @p branch of @p member, a member
  *  with a name: refs/heads/KIND/NAME/LEAF, such as

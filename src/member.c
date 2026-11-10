@@ -16,6 +16,7 @@
 #include "dstr.h"
 #include "git_run.h"
 #include "hexid.h"
+#include "jb.h"
 #include "list.h"
 #include "log.h"
 #include "loop.h"
@@ -869,15 +870,24 @@ member_call_ids (struct member_call *call)
 	return e;
 }
 
+struct json_object *
+member_json (struct cstr_view name,
+             enum member_kind kind)
+{
+	if (!name.data || kind >= MEMBER_KINDS)
+		return nullptr;
+	return jb_object("name", jb_string(name), "kind", jb_string(member_kinds[kind]), nullptr);
+}
+
 int
-member_init (struct member    *dest,
-             struct cstr_view  name,
-             struct cstr_view  kind)
+member_init_json (struct member      *dest,
+                  struct json_object *json)
 {
 	if (!dest)
 		return EINVAL;
-	size_t const k = cstr_view_index(member_kinds, MEMBER_KINDS, kind);
 	*dest = (struct member){};
+	struct cstr_view const name = jb_view(jb_get(json, "name"));
+	size_t const k = cstr_view_index(member_kinds, MEMBER_KINDS, jb_view(jb_get(json, "kind")));
 	if (!member_name_valid(name) || k == MEMBER_KINDS)
 		return EINVAL;
 	dest->kind = (enum member_kind)k;

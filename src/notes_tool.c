@@ -1151,10 +1151,7 @@ notes_tool_members_json (struct notes_tool_call *call,
 	struct json_object *list = json_object_new_array();
 	struct member_info const *info;
 	for (size_t i = 0; list && (info = member_table_info(call->loop->members, i)); ++i) {
-		struct json_object *member = jb_object(
-			"name", jb_string(info->name),
-			"kind", json_object_new_string(member_kinds[info->kind].data),
-			nullptr);
+		struct json_object *member = member_json(info->name, info->kind);
 		char stamp[sizeof "2026-10-14T12:34:56Z"];
 		struct tm tm;
 		time_t const t = (time_t)info->time;
@@ -1170,10 +1167,8 @@ notes_tool_members_json (struct notes_tool_call *call,
 	struct member const *self = &call->self;
 	struct json_object *structured = jb_object("members", list, nullptr);
 	if (*self->name)
-		structured = jb_set_or_free(structured, "you", jb_object(
-			"name", json_object_new_string(self->name),
-			"kind", json_object_new_string(member_kinds[self->kind].data),
-			nullptr));
+		structured = jb_set_or_free(structured, "you", member_json(cstr_view(self->name),
+		                                                           self->kind));
 	if (!structured)
 		return ENOMEM;
 	struct cstr_view const wire = jb_wire(structured);

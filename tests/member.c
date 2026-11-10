@@ -30,6 +30,7 @@
 #include "dstr.h"
 #include "git_run.h"
 #include "hexid.h"
+#include "jb.h"
 #include "list.h"
 #include "loop.h"
 #include "mcp.h"
@@ -151,23 +152,43 @@ test_names (void)
 	};
 	for (size_t i = 0; i < array_size(invalid); ++i)
 		CHECK(!member_name_valid(invalid[i]));
-	/* member_init() makes a member of a valid name and a known kind. */
+	/* member_json() writes a member, and member_init_json() makes a member
+	 * of a valid name and a known kind. */
 	struct member m = { .kind = MEMBER_AGENT, .name = "old" };
-	CHECK(!member_init(&m, CSTR_VIEW("imaami"), CSTR_VIEW("person")) &&
-	      m.kind == MEMBER_PERSON && !strcmp(m.name, "imaami"));
-	CHECK(!member_init(&m, valid[array_size(valid) - 1], CSTR_VIEW("agent")) &&
-	      m.kind == MEMBER_AGENT && strlen(m.name) == UTIL_WORD_MAX);
+	struct json_object *json = member_json(CSTR_VIEW("imaami"), MEMBER_PERSON);
+	CHECK(cstr_view_equal(jb_wire(json), CSTR_VIEW("{\"name\":\"imaami\",\"kind\":\"person\"}")));
+	CHECK(!member_init_json(&m, json) && m.kind == MEMBER_PERSON && !strcmp(m.name, "imaami"));
+	json_object_put(json);
+	CHECK(!member_json((struct cstr_view){}, MEMBER_PERSON));
+	CHECK(!member_json(CSTR_VIEW("imaami"), MEMBER_KINDS));
+	json = jb_object("name", jb_string(valid[array_size(valid) - 1]),
+	                 "kind", json_object_new_string("agent"), nullptr);
+	CHECK(!member_init_json(&m, json) && m.kind == MEMBER_AGENT &&
+	      strlen(m.name) == UTIL_WORD_MAX);
+	json_object_put(json);
 	for (size_t i = 0; i < array_size(invalid); ++i) {
 		m = (struct member){ .kind = MEMBER_AGENT, .name = "old" };
-		CHECK(member_init(&m, invalid[i], CSTR_VIEW("person")) == EINVAL &&
-		      m.kind == MEMBER_PERSON && !*m.name);
+		json = jb_object("name", invalid[i].data ? jb_string(invalid[i])
+		                                         : json_object_new_int(3),
+		                 "kind", json_object_new_string("person"), nullptr);
+		CHECK(json && member_init_json(&m, json) == EINVAL && m.kind == MEMBER_PERSON &&
+		      !*m.name);
+		json_object_put(json);
 	}
 	struct cstr_view const kinds[] = {
-		{}, CSTR_VIEW(""), CSTR_VIEW("Person"), CSTR_VIEW("team"), CSTR_VIEW("agent "),
+		CSTR_VIEW(""), CSTR_VIEW("Person"), CSTR_VIEW("team"), CSTR_VIEW("agent "),
 	};
-	for (size_t i = 0; i < array_size(kinds); ++i)
-		CHECK(member_init(&m, CSTR_VIEW("bro"), kinds[i]) == EINVAL && !*m.name);
-	CHECK(member_init(nullptr, CSTR_VIEW("bro"), CSTR_VIEW("agent")) == EINVAL);
+	for (size_t i = 0; i < array_size(kinds); ++i) {
+		json = jb_object("name", json_object_new_string("bro"), "kind", jb_string(kinds[i]),
+		                 nullptr);
+		CHECK(json && member_init_json(&m, json) == EINVAL && !*m.name);
+		json_object_put(json);
+	}
+	json = jb_object("name", json_object_new_string("bro"), nullptr);
+	CHECK(json && member_init_json(&m, json) == EINVAL && !*m.name);
+	CHECK(member_init_json(nullptr, json) == EINVAL);
+	json_object_put(json);
+	CHECK(member_init_json(&m, nullptr) == EINVAL && !*m.name);
 
 	/* The refs of the branches of a member, and back. */
 	char ref[MEMBER_REF];
