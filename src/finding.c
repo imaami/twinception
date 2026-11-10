@@ -162,6 +162,8 @@ finding_change_read (struct finding_change    *c,
 	struct cstr_view const version = jb_view(askai);
 	struct cstr_view const why = jb_view(reason);
 	struct cstr_view const was = jb_view(before);
+	size_t const k = jb_len(cited);
+	size_t const m = jb_len(external);
 	uint64_t turn;
 	uint64_t call;
 	if (state == FINDING_STATES ||
@@ -170,9 +172,8 @@ finding_change_read (struct finding_change    *c,
 	    (ask && hexid_init(&c->ask, jb_view(ask))) ||
 	    (asked_by && !member_name_valid(by)) || (askai && !version.data) ||
 	    (reason && !why.data) || (before && !was.data) ||
-	    !json_object_is_type(cited, json_type_array) || jb_len(cited) > EVIDENCE_REFS ||
-	    !json_object_is_type(external, json_type_array) ||
-	    jb_len(external) > EVIDENCE_EXTERNAL)
+	    !json_object_is_type(cited, json_type_array) || k > EVIDENCE_REFS ||
+	    !json_object_is_type(external, json_type_array) || m > EVIDENCE_EXTERNAL)
 		return EINVAL;
 	c->state = (enum finding_state)state;
 	c->turn = (uint32_t)turn;
@@ -183,7 +184,6 @@ finding_change_read (struct finding_change    *c,
 	    (reason && cstr_view_store(why, &c->reason)) ||
 	    (before && cstr_view_store(was, &c->claim_before)))
 		return ENOMEM;
-	size_t const k = jb_len(cited);
 	if (util_grow(c->evidence.items, c->evidence.cap, k))
 		return ENOMEM;
 	for (size_t i = 0; i < k; ++i) {
@@ -197,7 +197,6 @@ finding_change_read (struct finding_change    *c,
 		*items = e->item;
 	}
 	c->items = *items;
-	size_t const m = jb_len(external);
 	for (size_t i = 0; i < m; ++i) {
 		struct cstr_view const t = jb_view(jb_at(external, i));
 		if (!t.data)
@@ -219,17 +218,18 @@ finding_read (struct finding           *f,
 	struct json_object *conversation = jb_get(obj, "conversation");
 	struct json_object const *changes = jb_get(obj, "changes");
 	struct cstr_view const claim = jb_view(jb_get(obj, "claim"));
+	struct cstr_view const about_id = jb_view(about);
 	char author[MEMBER_NAME];
 	uint32_t number;
 	size_t const k = jb_len(changes);
 	if (jb_int(jb_get(obj, "version"), 0) != FINDING_VERSION ||
 	    finding_id_parse(jb_view(jb_get(obj, "id")), f->author, &f->number) ||
-	    (about && finding_id_parse(jb_view(about), author, &number)) ||
+	    (about && finding_id_parse(about_id, author, &number)) ||
 	    (conversation && hexid_init(&f->conversation, jb_view(conversation))) ||
 	    !claim.len || !json_object_is_type(changes, json_type_array) || !k)
 		return EINVAL;
 	if (about)
-		memcpy(f->about, jb_view(about).data, jb_view(about).len);
+		memcpy(f->about, about_id.data, about_id.len);
 	if (cstr_view_store(claim, &f->claim) || util_grow(f->changes.items, f->changes.cap, k))
 		return ENOMEM;
 	uint32_t items = 0;
