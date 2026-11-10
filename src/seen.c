@@ -370,13 +370,15 @@ seen_item_valid (struct json_object *obj)
 
 int
 seen_resume (struct seen              **p_seen,
-             uint32_t                   calls,
+             struct json_object const  *calls,
              struct json_object const  *items)
 {
 	if (!p_seen)
 		return EFAULT;
+	uint64_t made = 0;
 	size_t const n = jb_len(items);
-	if (items && (!json_object_is_type(items, json_type_array) || n > SEEN_ITEMS))
+	if ((calls && jb_uint_checked(calls, UINT32_MAX, &made)) ||
+	    (items && (!json_object_is_type(items, json_type_array) || n > SEEN_ITEMS)))
 		return EINVAL;
 	for (size_t i = 0; i < n; ++i)
 		if (!seen_item_valid(jb_at(items, i)))
@@ -408,7 +410,7 @@ seen_resume (struct seen              **p_seen,
 		seen_items_drop(seen);
 		return e;
 	}
-	seen->resumed = calls;
+	seen->resumed = (uint32_t)made;
 	return 0;
 }
 

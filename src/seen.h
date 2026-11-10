@@ -316,17 +316,20 @@ seen_keep (struct seen              **p_seen,
            struct seen_result const  *r);
 
 /**
- * Records in the ring @p *p_seen that askai made @p calls calls of the ask
- * call before it restarted, as a resumed ask call starts. The items of
- * @p items, the array of seen_items_json() in the journal state of the ask
- * call, replace the items of the ring. @p items is nullptr for no items.
- * The ring is allocated if @p *p_seen is nullptr. Returns 0, EFAULT for a
- * null @p p_seen, EINVAL with the ring unchanged if @p items is not such an
- * array, or ENOMEM with no items in the ring.
+ * Records in the ring @p *p_seen the calls that askai made of the ask call
+ * before it restarted, as a resumed ask call starts. @p calls is their
+ * number in the journal state of the ask call, a JSON number from 0 to
+ * UINT32_MAX, or nullptr for 0, as in a state of version 2. The items of
+ * @p items, the array of seen_items_json() in the journal state, replace
+ * the items of the ring. @p items is nullptr for no items. The ring is
+ * allocated if @p *p_seen is nullptr. Returns 0, EFAULT for a null
+ * @p p_seen, EINVAL with the ring unchanged if @p calls is not such a
+ * number or @p items is not such an array, or ENOMEM with no items in the
+ * ring.
  */
 extern int
 seen_resume (struct seen              **p_seen,
-             uint32_t                   calls,
+             struct json_object const  *calls,
              struct json_object const  *items);
 
 /**

@@ -6173,8 +6173,7 @@ mcp_recover_back (struct loop           *loop,
 	uint64_t prompt_at = jb_uint(jb_get(state, "prompt_at"), 0);
 	struct json_object *names = jb_get(state, "lent");
 	/* The calls of the earlier turns were made before the restart. */
-	int e = seen_resume(&req->seen, (uint32_t)jb_int(jb_get(state, "calls"), 0),
-	                    jb_get(state, "seen"));
+	int e = seen_resume(&req->seen, jb_get(state, "calls"), jb_get(state, "seen"));
 	if (e == EINVAL || !request.len || turn < 1 || turn > UINT32_MAX || !prompt_at ||
 	    prompt_at > request.len || !json_object_is_type(names, json_type_array)) {
 		problem = CSTR_VIEW("The saved request of the job is invalid. No provider request "

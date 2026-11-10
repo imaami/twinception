@@ -360,7 +360,8 @@ conversation, the ID of the ask call and the asker. A resumed job then
 cites the items that it saw before the restart, and its commits name the
 same ask call, conversation and asker. A checkpoint of an earlier version
 resumes without the items, the ask call and the asker, and the log says
-that its review record was not restored.
+that its review record was not restored. A checkpoint whose number of
+calls is not from 0 to 4294967295 is invalid, and its job does not resume.
 
 Preserve the whole repository directory, including the private files and
 owner seed, when moving or backing up a live session. A Git-only clone

@@ -222,6 +222,21 @@ keep (struct seen     **p_seen,
 	return e;
 }
 
+/* Returns the result of seen_resume() for the ring @p seen with @p calls
+ * as a JSON number and the items @p items.
+ */
+static int
+resume (struct seen              **seen,
+        uint64_t                   calls,
+        struct json_object const  *items)
+{
+	struct json_object *number = json_object_new_uint64(calls);
+	CHECK(number);
+	int const e = seen_resume(seen, number, items);
+	json_object_put(number);
+	return e;
+}
+
 /* Returns the call i of the n calls of @p seen, from the oldest. */
 static struct seen_call const *
 call_at (struct seen const *seen,
@@ -525,7 +540,7 @@ test_find (void)
 	seen_destroy(&seen);
 
 	/* A resumed ask call. askai made calls 1 to 10 before it restarted. */
-	CHECK(!seen_resume(&seen, 10, nullptr));
+	CHECK(!resume(&seen, 10, nullptr));
 	CHECK(seen && !seen->n && seen->resumed == 10);
 	found(seen, 1, SEEN_RESTARTED, __LINE__);
 	found(seen, 10, SEEN_RESTARTED, __LINE__);
@@ -540,8 +555,17 @@ test_find (void)
 	found(seen, 11, SEEN_DROPPED, __LINE__);
 	found(seen, 9, SEEN_RESTARTED, __LINE__);
 	/* A ring that exists keeps its calls when the resume point changes. */
-	CHECK(!seen_resume(&seen, 11, nullptr) && seen->resumed == 11 && seen->n == SEEN_CALLS);
+	CHECK(!resume(&seen, 11, nullptr) && seen->resumed == 11 && seen->n == SEEN_CALLS);
 	found(seen, 11, SEEN_RESTARTED, __LINE__);
+	/* The number of the calls is a JSON number of 32 bits, or none for 0.
+	 * Any other value leaves the ring as it was. */
+	CHECK(resume(&seen, UINT64_C(1) << 32, nullptr) == EINVAL && seen->resumed == 11);
+	struct json_object *text = json_object_new_string("12");
+	CHECK(seen_resume(&seen, text, nullptr) == EINVAL && seen->resumed == 11);
+	json_object_put(text);
+	CHECK(!resume(&seen, UINT32_MAX, nullptr) && seen->resumed == UINT32_MAX);
+	CHECK(!seen_resume(&seen, nullptr, nullptr) && !seen->resumed && seen->n == SEEN_CALLS);
+	CHECK(!resume(&seen, 11, nullptr) && seen->resumed == 11);
 	/* seen_clear() forgets the restart. */
 	seen_clear(seen);
 	CHECK(!seen->resumed);
@@ -549,7 +573,7 @@ test_find (void)
 	seen_destroy(&seen);
 
 	/* Null arguments. */
-	CHECK(seen_resume(nullptr, 1, nullptr) == EFAULT);
+	CHECK(seen_resume(nullptr, nullptr, nullptr) == EFAULT);
 }
 
 /* Returns an item with the ID @p id, the record @p record and the blobs
@@ -699,7 +723,7 @@ test_items (void)
 	      cstr_view_equal(jb_view(jb_get(jb_at(wrapped, SEEN_ITEMS - 1), "id")),
 	                      CSTR_VIEW("bro#1/1026")));
 	struct seen *again = nullptr;
-	CHECK(!seen_resume(&again, 1, wrapped) && !again->items_head && again->items.n == SEEN_ITEMS &&
+	CHECK(!resume(&again, 1, wrapped) && !again->items_head && again->items.n == SEEN_ITEMS &&
 	      !strcmp(again->items.items[0].id, "bro#1/3"));
 	seen_destroy(&again);
 	json_object_put(wrapped);
@@ -729,7 +753,7 @@ resume_with (struct seen **seen,
 	snprintf(text, sizeof text, "[%s]", item);
 	struct json_object *items = json_tokener_parse(text);
 	CHECK(items);
-	int const e = seen_resume(seen, 9, items);
+	int const e = resume(seen, 9, items);
 	json_object_put(items);
 	return e;
 }
@@ -767,7 +791,7 @@ test_resume_items (void)
 
 	/* A resumed ask call gets the items, with no call that prints them. */
 	struct seen *resumed = nullptr;
-	CHECK(!seen_resume(&resumed, 7, items));
+	CHECK(!resume(&resumed, 7, items));
 	CHECK(resumed && resumed->resumed == 7 && !resumed->n && resumed->items.n == 2);
 	struct seen_item const *x = seen_find_item(resumed, CSTR_VIEW("cuh#2/1"));
 	struct seen_item const *y = seen_find_item(resumed, CSTR_VIEW("cuh#2/2"));
@@ -786,9 +810,9 @@ test_resume_items (void)
 	seen_shown(resumed, 9, 20, 4000, 4);
 	CHECK(y->shown == 250 && y->turn == 4);
 	/* The items replace the items of a ring, and no items drop them. */
-	CHECK(!seen_resume(&resumed, 8, items) && resumed->items.n == 2 && resumed->resumed == 8);
-	CHECK(!seen_resume(&resumed, 8, nullptr) && !resumed->items.n);
-	CHECK(!seen_resume(&resumed, 8, items) && resumed->items.n == 2);
+	CHECK(!resume(&resumed, 8, items) && resumed->items.n == 2 && resumed->resumed == 8);
+	CHECK(!resume(&resumed, 8, nullptr) && !resumed->items.n);
+	CHECK(!resume(&resumed, 8, items) && resumed->items.n == 2);
 
 	/* Refusals leave the ring as it was. */
 	static char const *const bad[] = {
@@ -840,8 +864,8 @@ test_resume_items (void)
 	struct json_object *many = json_object_new_array();
 	for (size_t i = 0; i <= SEEN_ITEMS; ++i)
 		CHECK(!jb_push(many, json_object_get(jb_at(items, 0))));
-	CHECK(seen_resume(&resumed, 1, many) == EINVAL && resumed->items.n == 1);
-	CHECK(!json_object_array_del_idx(many, 0, 1) && !seen_resume(&resumed, 1, many) &&
+	CHECK(resume(&resumed, 1, many) == EINVAL && resumed->items.n == 1);
+	CHECK(!json_object_array_del_idx(many, 0, 1) && !resume(&resumed, 1, many) &&
 	      resumed->items.n == SEEN_ITEMS);
 	json_object_put(many);
 	json_object_put(items);

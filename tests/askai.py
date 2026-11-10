@@ -2303,8 +2303,9 @@ def check_recovery(binary, up):
     """Private checkpoints recover the same provider job from its beginning.
     Existing plaintext thoughts are verified and not appended twice. Git
     contains thoughts only, never response events or recovery checkpoints.
-    A checkpoint of state version 2, with thread and review, resumes, and
-    the log says that the review record was not restored."""
+    A checkpoint of state version 2, with thread and review and without
+    calls, resumes, and the log says that the review record was not
+    restored. A checkpoint whose calls are more than 32 bits is refused."""
     pending = "The job is still running."
     held = (up.reply, up.retrieve, up.delete)
     gates = []
@@ -2363,9 +2364,11 @@ def check_recovery(binary, up):
                   jid.encode() + kind.encode().ljust(32, b"\0"))
         return header + hashlib.sha256(header + data).digest() + data
 
-    def older_state(path, jid):
+    def older_state(path, jid, replay):
         """Rewrites the state records of the checkpoint at @p path in the
-        form of state version 2, with thread and review."""
+        form of state version 2 from before the numbers of the calls, with
+        thread and review and without calls, or for @p replay "calls" with
+        calls of 2**32."""
         with open(path, "rb") as file:
             data = file.read()
         out, at = b"", 0
@@ -2378,10 +2381,13 @@ def check_recovery(binary, up):
                 state = json.loads(body)
                 assert state["version"] == 3 and state["seen"] == [] and \
                     state["asker"] == {"name": "", "kind": "person"} and \
-                    state["conversation"] == state["ask"] == "", state
-                for key in ("conversation", "ask", "asker", "seen"):
-                    del state[key]
-                state |= {"version": 2, "thread": "", "review": {"findings": []}}
+                    state["conversation"] == state["ask"] == "" and state["calls"] == 0, state
+                if replay == "calls":
+                    state["calls"] = 2**32
+                else:
+                    for key in ("conversation", "ask", "asker", "seen", "calls"):
+                        del state[key]
+                    state |= {"version": 2, "thread": "", "review": {"findings": []}}
                 body = json.dumps(state, separators=(",", ":")).encode()
             out += legacy_record(jid, kind, body, sequence)
             at += 120 + size
@@ -2393,7 +2399,7 @@ def check_recovery(binary, up):
                  ("openai", False, "same"), ("responses", False, "changed"),
                  ("responses", False, "short"), ("responses", False, "empty"),
                  ("responses", False, "blocks"), ("responses", False, "legacy"),
-                 ("responses", False, "older"))
+                 ("responses", False, "older"), ("responses", False, "calls"))
         for fmt, graceful, replay in cases:
             expected_thought = b"persisted reasoning"
             provider_id = "response recover/+id" if fmt == "responses" else "v1_recover/+id"
@@ -2524,12 +2530,18 @@ def check_recovery(binary, up):
                         file.write(legacy)
                     os.chmod(wal, 0o600)
                     os.unlink(checkpoint)
-                if replay == "older":
-                    older_state(checkpoint, jid)
+                if replay in ("older", "calls"):
+                    older_state(checkpoint, jid, replay)
                 with Askai(binary, *args, env=env) as restarted:
                     result = poll(restarted, jid)
                     restored = f"journal: job {jid}: the old review record was not restored\n"
                     assert (restored in restarted.log) == (replay == "older"), restarted.log
+                    if replay == "calls":
+                        assert result.get("isError") and text_of(result) == (
+                            "The saved request of the job is invalid. No provider request "
+                            "was sent."), result
+                        assert len(creations) == 1 and not retrievals, (creations, retrievals)
+                        continue
                     if replay in ("changed", "short", "empty"):
                         assert result.get("isError"), (replay, result)
                         assert thoughts(repo) == [expected_thought], (replay, thoughts(repo))
