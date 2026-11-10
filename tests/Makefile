@@ -5,9 +5,10 @@ $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-ai check-askai check-buf check-cdb check-cli check-completion \
         check-cstr-view check-datauri check-dstr check-git-run check-jb check-handle check-instance check-journal check-ledger check-load \
-        check-evidence check-finding check-member check-ref check-seen check-store check-turn load load-build
+        check-evidence check-finding check-member check-ref check-seen check-store check-turn check-u8 \
+        load load-build
 default:; @:
-check: | check-completion check-askai check-cli check-ai check-jb check-cdb check-buf \
+check: | check-completion check-askai check-cli check-ai check-jb check-u8 check-cdb check-buf \
          check-datauri check-handle check-turn check-instance check-git-run check-journal check-ledger \
          check-evidence check-finding check-member check-ref check-seen check-store check-dstr check-load
 
@@ -85,6 +86,9 @@ override JSON_INCLUDES = $(call test-pkg-config,JSON_INCLUDES,--cflags json-c)
 override JSON_LIBS = $(call test-pkg-config,JSON_LIBS,--libs json-c)
 override UTF8_INCLUDES = $(call test-pkg-config,UTF8_INCLUDES,--cflags libutf8proc)
 override UTF8_LIBS = $(call test-pkg-config,UTF8_LIBS,--libs libutf8proc)
+# The gate of text, src/u8.c, and the UTF-8 parser of the submodule
+# src/c.utf-8 that it runs.
+override U8_OBJECTS := $Otests/src/u8.c.o $Otests/src/c.utf-8/src/utf8.c.o
 override AUTOCOMPLETE_OBJECTS := $Otests/autocomplete_fixture.c.o \
                                  $Otests/src/autocomplete.c.o $Otests/src/cli_command.c.o \
                                  $Otests/src/dstr.c.o $Otests/src/jb.c.o
@@ -204,6 +208,10 @@ $Otests/finding.c.o $Otests/src/finding.c.o: CPPFLAGS += $(JSON_INCLUDES)
 check-buf: $Otests/buf
 	$<
 
+# Unit tests of the gate of text, src/u8.c.
+check-u8: $Otests/u8
+	$<
+
 # Unit tests of the data: URIs of files that clients hand askai,
 # src/datauri.c.
 check-datauri: $Otests/datauri
@@ -287,12 +295,13 @@ $Otests/member.c.o $Otests/src/member.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
 # The unit tests. Each test links the object of its own source and the
 # objects of the files of src/ that the lines below list.
-override UNIT := buf datauri handle instance ledger ref turn
+override UNIT := buf datauri handle instance ledger ref turn u8
 
 $Otests/buf: $Otests/src/buf.c.o
 $Otests/datauri: $Otests/src/datauri.c.o
 $Otests/handle $Otests/instance $Otests/ledger $Otests/turn: $Otests/src/log.c.o
 $Otests/ledger: $Otests/src/dstr.c.o
+$Otests/u8: $(U8_OBJECTS)
 
 $(UNIT:%=$Otests/%): $Otests/%: $Otests/%.c.o
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^
@@ -308,6 +317,8 @@ $Otests/%.c.o: $(TEST_DIR)%.c | $Otests
 
 $Otests/src/%.c.o: $(SRC_DIR)%.c | $Otests/src
 	$(CC) $(TEST_FLAGS) -I$(SRC_DIR) $(CPPFLAGS) $(CFLAGS) -MMD -c -o "$@" "$<"
+
+$Otests/src/c.utf-8/src/utf8.c.o: | $Otests/src/c.utf-8/src
 
 # e.g. make check-dstr DSTR_CHECKFLAGS='-t gcc -S address'
 check-dstr:
@@ -330,7 +341,7 @@ $(LOAD)/gen: $(LOAD_SRC)/gen.c | $(LOAD)
 $(LOAD)/mock: $(LOAD_SRC)/mock.c | $(LOAD)
 	$(CC) $(LOAD_FLAGS) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -MMD -o "$@" $<
 
-$Otests $Otests/src $(LOAD):; mkdir -p "$@"
+$Otests $Otests/src $Otests/src/c.utf-8/src $(LOAD):; mkdir -p "$@"
 
 # The harness's verdict (no errors, lockouts, leaks, unfairness or unbounded
 # work; latency only against the same run's idle phase) on a light mix of
@@ -343,6 +354,7 @@ check-load: | load-build askai
 load: | load-build askai
 	RATE=$(RATE) $(LOAD_SRC)/run.sh storm $Oaskai "$(LOAD)" $(LOAD_SECONDS)
 
--include $(wildcard $Otests/*.c.d $Otests/src/*.c.d) $(LOAD)/gen.d $(LOAD)/mock.d
+-include $(wildcard $Otests/*.c.d $Otests/src/*.c.d $Otests/src/c.utf-8/src/*.c.d) \
+         $(LOAD)/gen.d $(LOAD)/mock.d
 
 endif

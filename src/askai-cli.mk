@@ -3,6 +3,7 @@ override SRC_askai-cli := \
   autocomplete_file.c     \
   blocker.c               \
   buf.c                   \
+  c.utf-8/src/utf8.c      \
   child.c                 \
   cli.c                   \
   cli_client.c            \
@@ -26,7 +27,8 @@ override SRC_askai-cli := \
   jb.c                    \
   log.c                   \
   loop.c                  \
-  sse.c
+  sse.c                   \
+  u8.c
 
 override LIB_askai-cli := \
   json-c                  \

@@ -28,7 +28,9 @@ direction for shared notes, stable members, and multiple execution routes.
 - libcurl
 - json-c
 - GNU Readline (for `askai-cli`)
-- utf8proc (for `askai-cli`)
+- utf8proc (for `askai-cli`), which tells how wide a character is
+- [c.utf-8](https://github.com/imaami/c.utf-8), the UTF-8 parser of the gate
+  of text (`src/u8.h`), as the submodule `src/c.utf-8`
 - OpenSSL 3.5 or later (libssl, libcrypto), and its `openssl` command for the
   tests' certificates
 - Linux epoll + timerfd
@@ -36,6 +38,9 @@ direction for shared notes, stable members, and multiple execution routes.
   and the tool `code` (optional)
 
 ## Build
+
+Clone with `git clone --recurse-submodules`, or run
+`git submodule update --init` in a clone, to fetch c.utf-8.
 
 ```sh
 make            # builds askai, askai-cli, askai's plugins and askai-code

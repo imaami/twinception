@@ -36,7 +36,7 @@ TESTS = """
     check-dstr check-git-run check-jb
     check-handle check-instance check-journal check-ledger check-load check-member check-ref
     check-evidence check-finding check-seen
-    check-store check-turn
+    check-store check-turn check-u8
     load load-build
 """.split()
 

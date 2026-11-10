@@ -5,6 +5,7 @@ override SRC_askai := \
   blocker.c           \
   brainstem.c         \
   buf.c               \
+  c.utf-8/src/utf8.c  \
   child.c             \
   code.c              \
   config.c            \
@@ -43,6 +44,7 @@ override SRC_askai := \
   store.c             \
   task.c              \
   tls.c               \
+  u8.c                \
   uploads.c           \
   web.c
 

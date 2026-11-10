@@ -159,8 +159,10 @@ purge: | clean.a
 clean.a:; $(RM) $(A_OBJ)
 endif
 
-# Targets that need the output directory
+# Targets that need the output directory, and objects of a subdirectory
+# of the sources (a submodule's), which need theirs
 $(TGT:%=$O%) $(A_OBJ) $(O_OBJ) $(JSON) $Ocompile_commands.json: | $O
+$(foreach d,$(filter-out $O,$(sort $(dir $(O_OBJ)))),$(eval $(filter $d%,$(O_OBJ) $(JSON)): | $d))
 
 ifneq (,$(O_TGT))
 $(O_TGT:%=$O%):; +$(strip $(CC) -o "$@" -MMD $(CFLAGS) \
@@ -285,7 +287,7 @@ $O%.cpp.o-fPIC.json: $(SRCDIR)%.cpp
 	        arguments: (split(\"\u0000\")[:-1]),  \
 	        file: \$$src, output: \$$out }" > "$@"
 
-$O:; mkdir -p "$@"
+$(sort $O $(dir $(O_OBJ))):; mkdir -p "$@"
 
 -include $(DEP)
 endif

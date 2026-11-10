@@ -13,6 +13,7 @@ override LLVM_INCLUDEDIR := $(if $(LLVM_CONFIG),$(shell $(LLVM_CONFIG) --include
 
 override SRC_askai-code := $(if $(LLVM_CONFIG), \
   buf.c                                         \
+  c.utf-8/src/utf8.c                            \
   cdb.c                                         \
   child.c                                       \
   confine.c                                     \
@@ -21,7 +22,8 @@ override SRC_askai-code := $(if $(LLVM_CONFIG), \
   dstr.c                                        \
   jb.c                                          \
   log.c                                         \
-  loop.c)
+  loop.c                                        \
+  u8.c)
 
 override LIB_askai-code := \
   json-c
