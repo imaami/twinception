@@ -934,6 +934,7 @@ notes_tool_added (struct mcp_slot *slot)
 	struct oid commit;
 	if (store_committed(buf_peek(&call->child->out), &commit))
 		LOG(LOG_WARN, "notes: git fast-import gave no commit id");
+	struct cstr_view const id = oid_view(&commit);
 	/* The result of a copy names the copy instead of the message. */
 	struct cstr_view colon = CSTR_VIEW(": ");
 	struct cstr_view message = { call->message.data,
@@ -941,15 +942,15 @@ notes_tool_added (struct mcp_slot *slot)
 	if (notes_tool_actions[call->action].fetch & FETCH_COPY)
 		colon = message = CSTR_VIEW("");
 	struct cstr_view const p[] = {
-		oid_len(&commit) ? CSTR_VIEW("Saved in commit ") : CSTR_VIEW("Saved"),
-		oid_view(&commit),
+		id.len ? CSTR_VIEW("Saved in commit ") : CSTR_VIEW("Saved"),
+		id,
 		colon,
 		message,
 		CSTR_VIEW("."),
 	};
 	int e = cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""),
 	                       call->text);
-	if (e || !oid_len(&commit) || !oid_len(&call->blob) ||
+	if (e || !id.len || !oid_len(&call->blob) ||
 	    notes_tool_actions[call->action].fetch & (FETCH_APPEND | FETCH_DELETE)) {
 		notes_tool_saved(slot, e);
 		return;
