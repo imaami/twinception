@@ -148,6 +148,24 @@ main (void)
 	assert(!cstr_view_join(many, 64, UINT64_C(1) << 63 | 1, sep, last, &owned));
 	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("x or x")));
 	assert(cstr_view_join(names, 3, 1, sep, last, nullptr) == ENOMEM);
+	dstr_clear(&owned);
+	assert(!cstr_view_join_more(names, 3, 3, &owned));
+	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("one, two and t\0o")));
+	dstr_clear(&owned);
+	assert(!cstr_view_join_more(names, 2, 3, &owned));
+	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("one, two and 1 more")));
+	dstr_clear(&owned);
+	assert(!cstr_view_join_more(names, 1, 1, &owned));
+	assert(cstr_view_equal(cstr_view_dstr(&owned), CSTR_VIEW("one")));
+	dstr_clear(&owned);
+	assert(!cstr_view_join_more(names, 0, 0, &owned) && !dstr_len(&owned));
+	struct cstr_view more[66];
+	for (size_t i = 0; i < 66; ++i)
+		more[i] = CSTR_VIEW("y");
+	assert(!cstr_view_join_more(more, 66, 66, &owned));
+	assert(dstr_len(&owned) == 64 + 63 * 2 + sizeof " and 2 more" - 1);
+	assert(cstr_view_ends(cstr_view_dstr(&owned), CSTR_VIEW("y, y and 2 more")));
+	assert(cstr_view_join_more(names, 3, 4, nullptr) == ENOMEM);
 	dstr_cleanup(&owned);
 	puts("cstr views: empty values, counted NULs, byte order, cases, bounded slices, trims, "
 	     "cuts, SSE data lines, lists, lookups, stores, appends and joins: PASS");

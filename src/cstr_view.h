@@ -69,6 +69,18 @@ cstr_view_join (struct cstr_view const *names,
                 struct cstr_view        last,
                 struct dstr            *dest);
 
+/**
+ * Append to @p dest the @p n views @p names, the first of @p total names,
+ * as a list such as "a, b and c", or "a, b, c and 4 more" if @p total is
+ * greater than @p n. At most 64 views are joined, and the others count as
+ * more. Returns 0, or ENOMEM with a part of the list appended.
+ */
+extern int
+cstr_view_join_more (struct cstr_view const *names,
+                     size_t                  n,
+                     size_t                  total,
+                     struct dstr            *dest);
+
 /** Compare all bytes, including embedded NULs. Empty views compare equal. */
 static inline bool
 cstr_view_equal (struct cstr_view left,

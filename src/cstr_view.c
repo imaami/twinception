@@ -49,3 +49,18 @@ cstr_view_join (struct cstr_view const *names,
 	}
 	return e;
 }
+
+int
+cstr_view_join_more (struct cstr_view const *names,
+                     size_t                  n,
+                     size_t                  total,
+                     struct dstr            *dest)
+{
+	size_t const shown = n < 64 ? n : 64;
+	struct cstr_view const sep = CSTR_VIEW(", ");
+	int const e = cstr_view_join(names, shown, UINT64_MAX, sep,
+	                             total > shown ? sep : CSTR_VIEW(" and "), dest);
+	if (e || total <= shown)
+		return e;
+	return dstr_printf(dest, " and %zu more", total - shown) ? 0 : ENOMEM;
+}

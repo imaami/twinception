@@ -1648,7 +1648,6 @@ member_table_names (struct member_table const *table,
                     struct dstr               *d)
 {
 	struct cstr_view views[MEMBER_SHOWN];
-	static_assert(array_size(views) <= 64, "cstr_view_join() joins at most 64 views");
 	char items[array_size(views)][MEMBER_NAME + sizeof " (person, you)"];
 	size_t const n = table->records.all.n;
 	size_t const shown = n < array_size(views) ? n : array_size(views);
@@ -1660,11 +1659,7 @@ member_table_names (struct member_table const *table,
 		                            (int)info->name.len, info->name.data,
 		                            member_kinds[info->kind].data, self ? ", you" : "");
 	}
-	int const e = cstr_view_join(views, shown, UINT64_MAX, CSTR_VIEW(", "),
-	                             n > shown ? CSTR_VIEW(", ") : CSTR_VIEW(" and "), d);
-	if (e || n == shown)
-		return e;
-	return dstr_printf(d, " and %zu more", n - shown) ? 0 : ENOMEM;
+	return cstr_view_join_more(views, shown, n, d);
 }
 
 int
