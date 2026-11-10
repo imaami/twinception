@@ -332,7 +332,9 @@ seen_keep (struct seen              **p_seen,
 	return 0;
 }
 
-/* Drops the items of @p seen. The storage of the array stays. */
+/* Drops the items of @p seen, and with them the list of the items that
+ * calls printed. The storage of the arrays stays.
+ */
 static void
 seen_items_drop (struct seen *seen)
 {
@@ -340,6 +342,7 @@ seen_items_drop (struct seen *seen)
 		dstr_cleanup(&seen->items.items[seen_item_place(seen, i)].record);
 	seen->items.n = 0;
 	seen->items_head = 0;
+	seen->printed.n = 0;
 }
 
 /* Returns true if @p obj is an object of the array of seen_items_json(). */
@@ -467,6 +470,8 @@ seen_print (struct seen            **p_seen,
 	if (e)
 		return e;
 	struct seen *seen = *p_seen;
+	if (util_grow(seen->printed.items, seen->printed.cap, seen->printed.n + 1))
+		return ENOMEM;
 	size_t k = seen_item_index(seen, id);
 	bool const added = k == SEEN_ITEMS;
 	if (added) {
@@ -497,6 +502,8 @@ seen_print (struct seen            **p_seen,
 		it->bytes = (uint32_t)len;
 		seen->items.n += added;
 	}
+	if (it->call != call)
+		seen->printed.items[seen->printed.n++] = k;
 	it->at = (uint32_t)at;
 	it->call = call;
 	return 0;
@@ -511,10 +518,17 @@ seen_shown (struct seen *seen,
 {
 	if (!seen || !call)
 		return;
-	for (size_t i = 0; i < seen->items.n; ++i) {
-		struct seen_item *it = &seen->items.items[seen_item_place(seen, i)];
-		if (it->call != call)
+	size_t kept = 0;
+	for (size_t i = 0; i < seen->printed.n; ++i) {
+		size_t const k = seen->printed.items[i];
+		struct seen_item *it = &seen->items.items[k];
+		if (it->call != call) {
+			/* An item that another call printed last stays on the list
+			 * for the result of that call. */
+			if (it->call)
+				seen->printed.items[kept++] = k;
 			continue;
+		}
 		it->call = 0;
 		/* The window continues the bytes shown before if it starts at
 		 * or before their end and ends after it. */
@@ -526,6 +540,7 @@ seen_shown (struct seen *seen,
 		if (it->shown == it->bytes && !it->turn)
 			it->turn = turn;
 	}
+	seen->printed.n = kept;
 }
 
 struct json_object *
@@ -644,7 +659,8 @@ seen_kept (struct seen const *seen)
 		bytes += c->request.cap + (dstr_get_block_count(&c->result) +
 		                           dstr_get_block_count(&c->ids)) * DSTR_BLK_SIZE;
 	}
-	bytes += seen->items.cap * sizeof *seen->items.items;
+	bytes += seen->items.cap * sizeof *seen->items.items +
+	         seen->printed.cap * sizeof *seen->printed.items;
 	for (size_t i = 0; i < seen->items.n; ++i) {
 		struct seen_item const *it = &seen->items.items[seen_item_place(seen, i)];
 		bytes += dstr_get_block_count(&it->record) * DSTR_BLK_SIZE;
@@ -666,6 +682,8 @@ seen_destroy (struct seen **p_seen)
 	seen_items_drop(seen);
 	free(seen->items.items);
 	seen->items.items = nullptr;
+	free(seen->printed.items);
+	seen->printed.items = nullptr;
 	free(seen);
 	*p_seen = nullptr;
 }

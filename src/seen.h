@@ -176,11 +176,15 @@ struct seen_item {
 /** The ring of an ask call. calls[(head + i) % SEEN_CALLS] is the call i of
  *  the n calls in the ring, from the oldest. items.items[(items_head + i) %
  *  SEEN_ITEMS] is the evidence item i of the items.n items that askai
- *  printed, from the oldest.
+ *  printed, from the oldest. printed contains the indexes in items.items
+ *  of the items that calls printed (seen_print()) whose results askai has
+ *  not written yet (seen_shown()), and can contain an index more than
+ *  once.
  */
 struct seen {
 	struct seen_call calls[SEEN_CALLS];
 	UTIL_ARRAY(struct seen_item) items;
+	UTIL_ARRAY(size_t) printed;
 	size_t           items_head;  /**< index of the oldest item */
 	size_t           bytes;       /**< bytes of the arguments and results
 	                                   of the calls in the ring */

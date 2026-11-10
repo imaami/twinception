@@ -592,10 +592,12 @@ test_items (void)
 	SAME(dstr_get(&x->record), dstr_len(&x->record), "{\"item\":1}");
 	CHECK(!memcmp(x->blobs, a.blobs, sizeof a.blobs) && !strcmp(x->id, "cuh#2/1"));
 	CHECK(!seen_find_item(seen, CSTR_VIEW("cuh#2/3")) && !seen_find_item(seen, CSTR_VIEW("")));
+	/* The list of the printed items names each item once for its call. */
+	CHECK(!seen_print(&seen, &a, 5, 100, 50) && seen->printed.n == 2);
 	seen_shown(seen, 4, 0, 1000, 1);
-	CHECK(!x->shown && x->call == 5);
+	CHECK(!x->shown && x->call == 5 && seen->printed.n == 2);
 	seen_shown(seen, 5, 0, 120, 1);
-	CHECK(x->shown == 20 && !x->call && !x->turn && !y->shown && !y->call);
+	CHECK(x->shown == 20 && !x->call && !x->turn && !y->shown && !y->call && !seen->printed.n);
 	/* The same call again counts nothing. */
 	seen_shown(seen, 5, 0, 1000, 1);
 	CHECK(x->shown == 20);
@@ -640,6 +642,16 @@ test_items (void)
 	SAME(dstr_get(&text), dstr_len(&text), "[askai: askai keeps your call c13 of this ask call. "
 	     "Cite the call as evidence by number.]\n[askai: Evidence items that you expanded in "
 	     "this ask call: cuh#2/1. These items count as seen.]\n");
+	/* Call 12 left no result. Calls 14 and 15 print items before their
+	 * results. A result counts only the items that its call printed last,
+	 * and the list keeps the items of the other calls. */
+	CHECK(seen->printed.n == 1 && y->call == 12);
+	CHECK(!seen_print(&seen, &c, 14, 0, 300) && !seen_print(&seen, &a, 15, 0, 50));
+	CHECK(seen->printed.n == 3 && y->call == 14 && x->call == 15);
+	seen_shown(seen, 15, 0, 50, 6);
+	CHECK(seen->printed.n == 2 && !x->call && x->turn == 3 && y->call == 14 && !y->shown);
+	seen_shown(seen, 14, 0, 300, 6);
+	CHECK(!seen->printed.n && !y->call && y->shown == 300 && y->turn == 6);
 
 	/* Refusals. */
 	CHECK(seen_print(nullptr, &a, 1, 0, 1) == EFAULT);
@@ -694,7 +706,8 @@ test_items (void)
 	size_t const kept = seen_kept(seen);
 	CHECK(kept >= sizeof *seen + SEEN_ITEMS * sizeof c);
 	seen_clear(seen);
-	CHECK(seen_kept(seen) <= kept && seen->items.cap >= SEEN_ITEMS);
+	CHECK(seen_kept(seen) <= kept && seen->items.cap >= SEEN_ITEMS && !seen->printed.n &&
+	      seen->printed.cap);
 	(void)dstr_clear(&text);
 	CHECK(!seen_notice(seen, &text) && !dstr_len(&text));
 	seen_destroy(&seen);
