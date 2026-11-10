@@ -776,9 +776,10 @@ findings_committed (struct mcp_slot *slot)
 /* Writes to @p message the subject of the commit of the change of the
  * call to the finding @p id, whose state was @p before: "Add bro#5
  * (verified)", and for an update by CALL_SAME and CALL_CLAIM "Update bro#5
- * (candidate to verified)", "Update bro#5 (claim)" or both.
+ * (candidate to verified)", "Update bro#5 (claim)" or both. Returns the
+ * view of the subject in @p message.
  */
-static void
+static struct cstr_view
 findings_subject (struct findings_call const *call,
                   char const                 *id,
                   enum finding_state          before,
@@ -786,23 +787,18 @@ findings_subject (struct findings_call const *call,
 {
 	char const *after = finding_state_names[call->change.state].data;
 	char const *was = finding_state_names[before].data;
-	if (call->action == FINDINGS_ADD) {
-		(void)util_format(message, STORE_MESSAGE, "Add %s (%s)", id, after);
-		return;
-	}
+	if (call->action == FINDINGS_ADD)
+		return util_format_view(message, STORE_MESSAGE, "Add %s (%s)", id, after);
 	switch (call->flags & (CALL_SAME | CALL_CLAIM)) {
 	case CALL_SAME:
-		(void)util_format(message, STORE_MESSAGE, "Update %s (%s)", id, after);
-		break;
+		return util_format_view(message, STORE_MESSAGE, "Update %s (%s)", id, after);
 	case CALL_SAME | CALL_CLAIM:
-		(void)util_format(message, STORE_MESSAGE, "Update %s (claim)", id);
-		break;
+		return util_format_view(message, STORE_MESSAGE, "Update %s (claim)", id);
 	case CALL_CLAIM:
-		(void)util_format(message, STORE_MESSAGE, "Update %s (%s to %s, claim)", id, was, after);
-		break;
+		return util_format_view(message, STORE_MESSAGE, "Update %s (%s to %s, claim)", id, was,
+		                        after);
 	default:
-		(void)util_format(message, STORE_MESSAGE, "Update %s (%s to %s)", id, was, after);
-		break;
+		return util_format_view(message, STORE_MESSAGE, "Update %s (%s to %s)", id, was, after);
 	}
 }
 
@@ -837,7 +833,8 @@ findings_commit (struct mcp_slot      *slot,
 	c->items = items;
 	dstr_auto json = DSTR_INIT;
 	int e = finding_render(f, c, claim, &json);
-	loop_work(mcp_slot_loop(slot), LOOP_COPY, dstr_len(&json));
+	struct cstr_view const text = cstr_view_dstr(&json);
+	loop_work(mcp_slot_loop(slot), LOOP_COPY, text.len);
 	if (e == EFBIG) {
 		mcp_slot_tell(slot, CSTR_VIEW("The finding would be larger than 4 MiB. Nothing was "
 		                              "recorded."), TOOL_FAILED);
@@ -847,13 +844,11 @@ findings_commit (struct mcp_slot      *slot,
 	char path[FINDING_FILE];
 	char message[STORE_MESSAGE];
 	finding_id(f, id);
-	findings_subject(call, id, before, message);
 	call->number = f->number;
 	struct store_part part;
-	e = e ? e : store_part_file(&part, &call->files, finding_path(f->number, path),
-	                            cstr_view_dstr(&json));
+	e = e ? e : store_part_file(&part, &call->files, finding_path(f->number, path), text);
 	struct store_commit commit = {
-		.message = cstr_view(message),
+		.message = findings_subject(call, id, before, message),
 		.files = buf_peek(&call->files),
 		.ref = ref,
 		.tip = &tip,
@@ -864,8 +859,7 @@ findings_commit (struct mcp_slot      *slot,
 	struct buf in = {};
 	e = e ? e : store_commit_input(&commit, &in);
 	/* The archive stays for a commit after a race. */
-	struct span const files = buf_peek(&call->files);
-	buf_cut(&call->files, call->archive, files.len - call->archive);
+	buf_cut(&call->files, call->archive, commit.files.len - call->archive);
 	if (e) {
 		buf_fini(&in);
 		findings_end(slot, e, true);
