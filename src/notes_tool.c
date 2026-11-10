@@ -1212,16 +1212,17 @@ notes_tool_members (struct notes_tool_call *call,
 	return e;
 }
 
-/* Finds the member that the notebook argument of @p call names in the
- * table of the members, as call->book, and writes the ref of the notebook
- * of the member to call->notebook. Returns 0, or ENOENT if the table names
- * no such member.
+/* Finds the member named @p name in the table of the members and writes
+ * the member to call->book. @p name is the view of the notebook argument
+ * in call->book.name. Then writes the ref of the notebook of the member to
+ * call->notebook. Returns 0, or ENOENT if the table contains no member of
+ * that name.
  */
 static int
-notes_tool_book (struct notes_tool_call *call)
+notes_tool_book (struct notes_tool_call *call,
+                 struct cstr_view        name)
 {
-	int const e = member_table_name(call->loop->members, cstr_view(call->book.name),
-	                                &call->book);
+	int const e = member_table_name(call->loop->members, name, &call->book);
 	if (!e)
 		member_ref(&call->book, MEMBER_BRANCH_NOTES, call->notebook);
 	return e;
@@ -1257,14 +1258,14 @@ notes_tool_got_members (struct mcp_slot *slot)
 	/* The table writes the reason of a read that failed. */
 	struct cstr_view const why = cstr_view(reason);
 	if (call->action != NOTES_ACTION_MEMBERS) {
-		if (!notes_tool_book(call))
+		struct cstr_view const name = cstr_view(call->book.name);
+		if (!notes_tool_book(call, name))
 			notes_tool_launch(slot);
 		else if (e)
 			mcp_slot_tell(slot, why, TOOL_FAILED);
 		else
-			notes_tool_end(slot, member_table_unknown(call->loop->members,
-			                                          cstr_view(call->book.name),
-			                                          call->text), true);
+			notes_tool_end(slot, member_table_unknown(call->loop->members, name, call->text),
+			               true);
 		return;
 	}
 	if (e) {
@@ -1821,7 +1822,8 @@ notes_tool_resolve (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	uint32_t const flags = notes_tool_actions[call->action].flags;
-	bool const own = !*call->book.name || !strcmp(call->book.name, call->self.name);
+	struct cstr_view const name = cstr_view(call->book.name);
+	bool const own = !name.len || cstr_view_equal(name, cstr_view(call->self.name));
 	if (!*call->self.name) {
 		/* The refusal of a login by a record comes with a reason. */
 		struct cstr_view const why = cstr_view(call->wait.why);
@@ -1850,7 +1852,7 @@ notes_tool_resolve (struct mcp_slot *slot)
 		mcp_slot_tellf(slot, TOOL_FAILED, "You can write only your notebook, %s.",
 		               call->self.name);
 		return;
-	} else if (notes_tool_book(call)) {
+	} else if (notes_tool_book(call, name)) {
 		notes_tool_run(slot, FETCH_MEMBERS, &(struct buf){}, 0);
 		return;
 	}
