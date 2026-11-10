@@ -630,7 +630,7 @@ test_items (void)
 	struct dstr text = DSTR_INIT;
 	CHECK(!seen_notice(seen, &text));
 	SAME(dstr_get(&text), dstr_len(&text), "[askai: Evidence items that you expanded in this ask "
-	     "call: cuh#2/1, cuh#2/2. These items count as seen.]\n");
+	     "call: cuh#2/1 and cuh#2/2. These items count as seen.]\n");
 	/* An item of another size starts anew, with the record and the blobs
 	 * of the new item. */
 	struct seen_item c = item_of("cuh#2/2", "{\"item\":3}");

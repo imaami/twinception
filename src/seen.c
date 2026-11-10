@@ -584,29 +584,29 @@ seen_find_item (struct seen const *seen,
 }
 
 /* Appends to @p d the notice of the items of @p seen that results showed
- * whole, if there are any. Returns true, or false if out of memory.
+ * whole, if there are any. Returns 0 or ENOMEM.
  */
-static bool
+static int
 seen_notice_items (struct seen const *seen,
                    struct dstr       *d)
 {
-	size_t listed = 0;
+	struct cstr_view ids[SEEN_LISTED];
 	size_t whole = 0;
-	bool ok = true;
-	for (size_t i = 0; ok && i < seen->items.n; ++i) {
+	for (size_t i = 0; i < seen->items.n; ++i) {
 		struct seen_item const *it = &seen->items.items[seen_item_place(seen, i)];
 		if (!it->turn)
 			continue;
-		if (listed < SEEN_LISTED) {
-			ok = dstr_printf(d, "%s%s", listed ? ", " : "[askai: Evidence items that you "
-			                 "expanded in this ask call: ", it->id);
-			++listed;
-		}
+		if (whole < array_size(ids))
+			ids[whole] = cstr_view(it->id);
 		++whole;
 	}
-	if (ok && whole > listed)
-		ok = dstr_printf(d, " and %zu more", whole - listed);
-	return ok && (!whole || dstr_cat(d, ". These items count as seen.]\n"));
+	if (!whole)
+		return 0;
+	size_t const listed = whole < array_size(ids) ? whole : array_size(ids);
+	bool const ok = dstr_cat(d, "[askai: Evidence items that you expanded in this ask call: ") &&
+	                !cstr_view_join_more(ids, listed, whole, d) &&
+	                dstr_cat(d, ". These items count as seen.]\n");
+	return ok ? 0 : ENOMEM;
 }
 
 int
@@ -625,15 +625,21 @@ seen_notice (struct seen const *seen,
 			oldest = c->number;
 		newest = c->number;
 	}
-	bool ok = true;
-	if (oldest && oldest == newest)
-		ok = dstr_printf(d, "[askai: askai keeps your call c%" PRIu32 " of this ask call. "
-		                 "Cite the call as evidence by number.]\n", oldest);
-	else if (oldest)
-		ok = dstr_printf(d, "[askai: askai keeps your calls c%" PRIu32 " to c%" PRIu32 " of "
-		                 "this ask call. Cite the calls as evidence by number.]\n", oldest,
-		                 newest);
-	return ok && seen_notice_items(seen, d) ? 0 : ENOMEM;
+	if (!oldest)
+		return seen_notice_items(seen, d);
+	/* The range of the calls, written once, and the plural for more than
+	 * one call. */
+	char span[sizeof "c4294967295 to c4294967295"];
+	char const *s = "";
+	size_t const n = util_format(span, sizeof span, "c%" PRIu32, oldest);
+	if (oldest != newest) {
+		(void)util_format(span + n, sizeof span - n, " to c%" PRIu32, newest);
+		s = "s";
+	}
+	if (!dstr_printf(d, "[askai: askai keeps your call%s %s of this ask call. Cite the call%s "
+	                 "as evidence by number.]\n", s, span, s))
+		return ENOMEM;
+	return seen_notice_items(seen, d);
 }
 
 void

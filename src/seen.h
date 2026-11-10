@@ -407,11 +407,13 @@ seen_find_item (struct seen const *seen,
  * stores, for the prompt after a compaction. The first is "[askai: askai
  * keeps your calls cA to cB of this ask call. Cite the calls as evidence
  * by number.]" with the oldest and the newest call of the ring that a
- * finding can cite. The second is "[askai: Evidence items that you expanded in this
- * ask call: cuh#2/1, cuh#2/2. These items count as seen.]" with the items
- * that results showed whole, at most SEEN_LISTED of them by ID. Each notice
- * ends with a line feed. Appends nothing for a null @p seen, and no notice
- * without such calls or items. Returns 0, or ENOMEM.
+ * finding can cite, or "your call cA" and "the call" for one call. The
+ * second is "[askai: Evidence items that you expanded in this ask call:
+ * cuh#2/1 and cuh#2/2. These items count as seen.]" with the items that
+ * results showed whole, at most SEEN_LISTED of them by ID and " and N
+ * more" for the others. Each notice ends with a line feed. Appends nothing
+ * for a null @p seen, and no notice without such calls or items. Returns
+ * 0, or ENOMEM.
  */
 extern int
 seen_notice (struct seen const *seen,

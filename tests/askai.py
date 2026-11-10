@@ -53,11 +53,9 @@ NO_OPEN = "[askai: You have no open findings in this conversation.]\n"
 def kept(first, last):
     """The notice after a compaction that names the calls cFIRST to cLAST of
     the ring of the ask call (seen_notice(), src/seen.c)."""
-    if first == last:
-        return (f"[askai: askai keeps your call c{first} of this ask call. Cite the call "
-                "as evidence by number.]\n")
-    return (f"[askai: askai keeps your calls c{first} to c{last} of this ask call. Cite "
-            "the calls as evidence by number.]\n")
+    span, s = (f"c{first}", "") if first == last else (f"c{first} to c{last}", "s")
+    return (f"[askai: askai keeps your call{s} {span} of this ask call. Cite the call{s} "
+            "as evidence by number.]\n")
 
 
 # The description of the offset of each tool that pages its output
@@ -15550,9 +15548,8 @@ def check_findings_expand(binary, up):
             # items that the turns saw.
             prompt = sent[7]["body"]["messages"][0]["content"]
             assert prompt.endswith(
-                "[askai: askai keeps your call c24 of this ask call. Cite the call as evidence "
-                "by number.]\n[askai: Evidence items that you expanded in this ask call: "
-                "cuh#1/1, cuh#1/2, cuh#3/1, cuh#3/2, cuh#2/1, bro#1/1, bro#1/2. These items "
+                kept(24, 24) + "[askai: Evidence items that you expanded in this ask call: "
+                "cuh#1/1, cuh#1/2, cuh#3/1, cuh#3/2, cuh#2/1, bro#1/1 and bro#1/2. These items "
                 "count as seen.]\n\n[askai: go on with the task.]"), prompt[-800:]
             last = results(sent[8])
             assert last[0] == "Call c25 is a findings or compact call, or did not run. Cite " \
