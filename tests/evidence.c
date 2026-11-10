@@ -4,6 +4,7 @@
  *  summaries, the items cited again, and the items as expand prints them.
  */
 #include <errno.h>
+#include <inttypes.h>
 #include <json-c/json.h>
 #include <openssl/sha.h>
 #include <stdio.h>
@@ -900,7 +901,10 @@ expanded (struct evidence const *e,
           int                    line)
 {
 	struct dstr d = DSTR_INIT;
-	int const got = evidence_expand(e, "cuh#2", "cuh", request, result, &d);
+	struct evidence_material const m = { request, result };
+	char id[SEEN_ID];
+	CHECK(snprintf(id, sizeof id, "cuh#2/%" PRIu32, e->item) > 0);
+	int const got = evidence_expand(e, id, "cuh", &m, &d);
 	if (got || strcmp(dstr_get(&d), want)) {
 		++failures;
 		fprintf(stderr, "%s:%d: error %d, got\n%s\nwant\n%s\n", __FILE__, line, got,
@@ -988,10 +992,12 @@ test_expand (void)
 	         "shown:]\n[askai: the stored material of cuh#2/2 is missing.]\n",
 	         __LINE__);
 	struct dstr d = DSTR_INIT;
-	CHECK(evidence_expand(nullptr, "cuh#2", "cuh", args, out, &d) == EFAULT);
-	CHECK(evidence_expand(&e, nullptr, "cuh", args, out, &d) == EFAULT);
-	CHECK(evidence_expand(&e, "cuh#2", nullptr, args, out, &d) == EFAULT);
-	CHECK(evidence_expand(&e, "cuh#2", "cuh", args, out, nullptr) == EFAULT);
+	struct evidence_material const m = { args, out };
+	CHECK(evidence_expand(nullptr, "cuh#2/2", "cuh", &m, &d) == EFAULT);
+	CHECK(evidence_expand(&e, nullptr, "cuh", &m, &d) == EFAULT);
+	CHECK(evidence_expand(&e, "cuh#2/2", nullptr, &m, &d) == EFAULT);
+	CHECK(evidence_expand(&e, "cuh#2/2", "cuh", nullptr, &d) == EFAULT);
+	CHECK(evidence_expand(&e, "cuh#2/2", "cuh", &m, nullptr) == EFAULT);
 	CHECK(!dstr_len(&d));
 	dstr_cleanup(&d);
 	evidence_fini(&e);

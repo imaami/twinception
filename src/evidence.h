@@ -255,24 +255,23 @@ evidence_recite (struct evidence           *dest,
                  size_t                     len);
 
 /**
- * Appends to @p d the evidence item @p e of the finding @p finding, such
- * as cuh#2, of the member @p author, as the action expand prints it. The
- * first line is a notice that names the item and says what the item is.
- * A lines item then prints the lines, and the other kinds the arguments of
- * the call, a notice with the size of the result, and the result, each
- * with a line feed at its end. @p request and @p result are the stored
- * material, the arguments of the call and the result or the lines, or a
- * view without data for material that is missing. A notice after the
+ * Appends to @p d the evidence item @p e with the ID @p id, such as
+ * cuh#2/1, of a finding of the member @p author, as the action expand
+ * prints it. The first line is a notice that names the item and says what
+ * the item is. A lines item then prints the lines, and the other kinds the
+ * arguments of the call, a notice with the size of the result, and the
+ * result, each with a line feed at its end. @p material is the stored
+ * material, the arguments of the call and the result or the lines, with
+ * a view without data for material that is missing. A notice after the
  * material says if material is missing or does not match the recorded
  * SHA-256. Returns 0, EFAULT for a null argument, or ENOMEM.
  */
 extern int
-evidence_expand (struct evidence const *e,
-                 char const            *finding,
-                 char const            *author,
-                 struct cstr_view       request,
-                 struct cstr_view       result,
-                 struct dstr           *d);
+evidence_expand (struct evidence const          *e,
+                 char const                     *id,
+                 char const                     *author,
+                 struct evidence_material const *material,
+                 struct dstr                    *d);
 
 /** Checks the external item @p text, the item @p index of the argument
  *  external: 1 to EVIDENCE_TEXT bytes of UTF-8 text without control

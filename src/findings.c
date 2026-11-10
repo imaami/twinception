@@ -993,7 +993,6 @@ findings_expanded (struct mcp_slot *slot,
 	struct finding const *f = nullptr;
 	char id[FINDING_ID] = "";
 	char more_id[SEEN_ID] = "";
-	char seen_id[SEEN_ID] = "";
 	size_t items = 0;
 	size_t more = 0;
 	size_t whole = 0;
@@ -1041,15 +1040,16 @@ findings_expanded (struct mcp_slot *slot,
 			continue;
 		}
 		size_t const at = dstr_len(&call->out);
-		e = evidence_expand(ev, id, f->author,
-		                    (struct cstr_view){ (char const *)request.ptr, request.len },
-		                    (struct cstr_view){ (char const *)result.ptr, result.len },
-		                    &call->out);
+		char item[SEEN_ID];
+		(void)util_format(item, sizeof item, "%s/%" PRIu32, id, ev->item);
+		e = evidence_expand(ev, item, f->author, &(struct evidence_material){
+			(struct cstr_view){ (char const *)request.ptr, request.len },
+			(struct cstr_view){ (char const *)result.ptr, result.len },
+		}, &call->out);
 		if (e || !turn || !findings_stored(ev, blobs))
 			continue;
-		(void)util_format(seen_id, sizeof seen_id, "%s/%" PRIu32, id, ev->item);
 		e = findings_record(ev, &shown.record);
-		e = e ? e : findings_shown(slot, &shown, seen_id, blobs, at, dstr_len(&call->out) - at);
+		e = e ? e : findings_shown(slot, &shown, item, blobs, at, dstr_len(&call->out) - at);
 		++whole;
 	}
 	dstr_cleanup(&shown.record);
@@ -1063,9 +1063,10 @@ findings_expanded (struct mcp_slot *slot,
 	if (ok && more)
 		ok = dstr_printf(&call->out, "[askai: %zu more evidence item%s did not fit. Expand each "
 		                 "item by id, such as %s.]\n", more, util_s(more), more_id);
+	/* shown.id is the ID of the last item that a result can show whole. */
 	if (ok && whole == 1)
 		ok = dstr_printf(&call->out, "[askai: You saw %s whole. Cite %s for verified or "
-		                 "disproved from your next turn on.]\n", seen_id, seen_id);
+		                 "disproved from your next turn on.]\n", shown.id, shown.id);
 	else if (ok && whole > 1)
 		ok = dstr_printf(&call->out, "[askai: You saw the %zu evidence items above whole. Cite "
 		                 "the items for verified or disproved from your next turn on.]\n",
@@ -1384,12 +1385,11 @@ findings_unseen (struct mcp_slot                *slot,
 		at[i] = dstr_len(&call->out);
 		if (!(cite->flags & CITE_SHOW))
 			continue;
-		char finding[FINDING_ID];
-		finding_id_format(cite->ref.author, cite->ref.number, finding);
+		char id[SEEN_ID];
+		evidence_ref_id(&cite->ref, id);
 		e = evidence_parse_text(&item, cstr_view_dstr(&cite->record));
 		if (!e)
-			e = evidence_expand(&item, finding, cite->ref.author, material[i].request,
-			                    material[i].result, &call->out);
+			e = evidence_expand(&item, id, cite->ref.author, &material[i], &call->out);
 	}
 	evidence_fini(&item);
 	at[call->cites.n] = dstr_len(&call->out);

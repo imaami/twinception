@@ -901,17 +901,16 @@ evidence_expand_call (struct evidence const *e,
 }
 
 int
-evidence_expand (struct evidence const *e,
-                 char const            *finding,
-                 char const            *author,
-                 struct cstr_view       request,
-                 struct cstr_view       result,
-                 struct dstr           *d)
+evidence_expand (struct evidence const          *e,
+                 char const                     *id,
+                 char const                     *author,
+                 struct evidence_material const *material,
+                 struct dstr                    *d)
 {
-	if (!e || !finding || !author || !d)
+	if (!e || !id || !author || !material || !d)
 		return EFAULT;
-	char id[SEEN_ID];
-	(void)util_format(id, sizeof id, "%s/%" PRIu32, finding, e->item);
+	struct cstr_view const request = material->request;
+	struct cstr_view const result = material->result;
 	struct json_object *ids = evidence_ids(&e->ids);
 	bool const asked = e->flags & EVIDENCE_REQUEST;
 	bool const missing = !result.data || (asked && !request.data);
