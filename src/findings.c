@@ -550,8 +550,11 @@ findings_got_refs (struct mcp_slot *slot)
 		(void)finding_id_parse(cstr_view(call->about), author, &number);
 	struct cstr_view const about = cstr_view(author);
 	struct oid tip = {};
-	struct member_info const *info;
-	for (size_t i = 0; (info = member_table_info(call->notes->members, i)); ++i) {
+	size_t n;
+	struct member_info const *const members = member_table_members(call->notes->members, &n,
+	                                                               nullptr);
+	for (size_t i = 0; i < n; ++i) {
+		struct member_info const *info = &members[i];
 		if (info->kind != MEMBER_AGENT || !oid_len(&info->findings))
 			continue;
 		if (about.len && cstr_view_equal(info->name, about))

@@ -132,12 +132,16 @@ enum {
 	                               notes */
 };
 
-/** A member in a table, the newest change of the notebook of the member,
- *  and the tip of the branch of findings of the member. The views borrow
- *  the records of the table, which member_table_parse() can replace.
+/** A member in a table: the record of the member, the newest change of
+ *  the notebook of the member, and the tip of the branch of findings of
+ *  the member. The views point into the records of the table, which
+ *  member_table_parse() can replace.
  */
 struct member_info {
 	struct cstr_view name;
+	struct cstr_view logins;    /**< the values of the trailer lines Login
+	                                 of the record, separated by commas, or
+	                                 empty */
 	struct cstr_view change;    /**< the subject of the newest commit of
 	                                 the notebook */
 	struct cstr_view asker;     /**< the trailer line Asked-by of that
@@ -146,6 +150,7 @@ struct member_info {
 	                                 since the epoch */
 	uint32_t         kind;      /**< enum member_kind */
 	uint32_t         flags;     /**< MEMBER_RECORD and MEMBER_NOTES */
+	struct oid       record;    /**< the commit of the record, or no name */
 	struct oid       findings;  /**< the tip of the branch of findings, or
 	                                 no name */
 };
@@ -446,12 +451,16 @@ member_table_claim (struct member_table       *table,
 extern void
 member_table_cancel (struct member_wait *wait);
 
-/** Returns the member at the index @p i of @p table, or nullptr past the
- *  last member. The persons come first, then the agents, each by name.
+/** Returns the members of @p table, the persons first, then the agents,
+ *  each by name, and stores their number in @p *n, and the length of the
+ *  longest name in @p *width unless @p width is nullptr. The array stays
+ *  valid until member_table_parse() replaces the records. Returns nullptr
+ *  with 0 in @p *n and @p *width for a null @p table.
  */
 extern struct member_info const *
-member_table_info (struct member_table const *table,
-                   size_t                     i);
+member_table_members (struct member_table const *table,
+                      size_t                    *n,
+                      size_t                    *width);
 
 /** The words of STORE_REFS (src/store.h) that list the records of the
  *  session and the branches of the members, for member_table_parse().
@@ -479,12 +488,6 @@ extern int
 member_table_name (struct member_table const *table,
                    struct cstr_view           name,
                    struct member             *dest);
-
-/** Returns the length of the longest name of the members of @p table, or
- *  0 for a null @p table.
- */
-extern int
-member_table_width (struct member_table const *table);
 
 /** Appends to @p d the notice of the members for a turn of the agent
  *  @p you: "[askai: Members of this session: ...]" and a line feed.

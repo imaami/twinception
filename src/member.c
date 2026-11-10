@@ -80,20 +80,11 @@ enum member_field : uint8_t {
 	FIELDS
 };
 
-/* A member in the output of member_list: a member record, its branches,
- * or both. The views borrow the output.
- */
-struct member_entry {
-	struct member_info info;
-	struct cstr_view   logins;  /* the Login lines, separated by commas */
-	struct cstr_view   tip;     /* the commit of the record */
-};
-
 /* The records of the session, as git lists them with member_list. */
 struct member_records {
 	struct buf                      out;      /* the output of git */
-	UTIL_ARRAY(struct member_entry) all;      /* the members, in the order
-	                                             of member_entry_order() */
+	UTIL_ARRAY(struct member_info)  all;      /* the members, in the order
+	                                             of member_info_order() */
 	struct cstr_view                session;  /* the session ID of the
 	                                             session record, with data
 	                                             nullptr without the
@@ -215,53 +206,53 @@ member_records_fini (struct member_records *r)
 
 /* Orders the members by name. */
 static int
-member_entry_name (void const *a,
-                   void const *b)
+member_info_name (void const *a,
+                  void const *b)
 {
-	return cstr_view_compare(((struct member_entry const *)a)->info.name,
-	                         ((struct member_entry const *)b)->info.name);
+	return cstr_view_compare(((struct member_info const *)a)->name,
+	                         ((struct member_info const *)b)->name);
 }
 
 /* Orders the persons before the agents, each by name. */
 static int
-member_entry_order (void const *a,
-                    void const *b)
+member_info_order (void const *a,
+                   void const *b)
 {
-	uint32_t const x = ((struct member_entry const *)a)->info.kind;
-	uint32_t const y = ((struct member_entry const *)b)->info.kind;
-	return x != y ? (x > y) - (x < y) : member_entry_name(a, b);
+	uint32_t const x = ((struct member_info const *)a)->kind;
+	uint32_t const y = ((struct member_info const *)b)->kind;
+	return x != y ? (x > y) - (x < y) : member_info_name(a, b);
 }
 
 /* Returns the member named @p name in @p r, whose parse has sorted the
- * members (member_entry_order()), or nullptr.
+ * members (member_info_order()), or nullptr.
  */
-static struct member_entry *
+static struct member_info *
 member_records_find (struct member_records const *r,
                      struct cstr_view             name)
 {
 	if (!r->all.n)
 		return nullptr;
 	for (uint32_t kind = 0; kind < MEMBER_KINDS; ++kind) {
-		struct member_entry const key = { .info = { .name = name, .kind = kind } };
-		struct member_entry *entry = bsearch(&key, r->all.items, r->all.n, sizeof key,
-		                                     member_entry_order);
+		struct member_info const key = { .name = name, .kind = kind };
+		struct member_info *entry = bsearch(&key, r->all.items, r->all.n, sizeof key,
+		                                    member_info_order);
 		if (entry)
 			return entry;
 	}
 	return nullptr;
 }
 
-/* Appends @p entry to the members of @p r. Returns the entry in @p r, or
+/* Appends @p entry to the members of @p r. Returns the member in @p r, or
  * nullptr for ENOMEM.
  */
-static struct member_entry *
+static struct member_info *
 member_records_add (struct member_records *r,
-                    struct member_entry    entry)
+                    struct member_info     entry)
 {
 	if (util_push(r->all, entry))
 		return nullptr;
-	if (entry.info.name.len > r->width)
-		r->width = entry.info.name.len;
+	if (entry.name.len > r->width)
+		r->width = entry.name.len;
 	return &r->all.items[r->all.n - 1];
 }
 
@@ -318,13 +309,13 @@ member_records_branch (struct member_records  *r,
 	if (member_ref_parse(f[FIELD_REF], &kind, &name, &branch) || oid_init(&tip, f[FIELD_TIP]) ||
 	    util_number(f[FIELD_TIME].data, f[FIELD_TIME].len, UINT64_MAX, &time))
 		return 0;
-	struct member_entry const key = { .info = { .name = name, .kind = kind } };
-	struct member_entry *entry = records ? bsearch(&key, r->all.items, records, sizeof key,
-	                                               member_entry_name) : nullptr;
+	struct member_info const key = { .name = name, .kind = kind };
+	struct member_info *entry = records ? bsearch(&key, r->all.items, records, sizeof key,
+	                                              member_info_name) : nullptr;
 	/* git lists the branches of a member one after the other. */
-	if (!entry && r->all.n > records && !member_entry_order(&key, &r->all.items[r->all.n - 1]))
+	if (!entry && r->all.n > records && !member_info_order(&key, &r->all.items[r->all.n - 1]))
 		entry = &r->all.items[r->all.n - 1];
-	if (entry && entry->info.kind != kind)
+	if (entry && entry->kind != kind)
 		return 0;
 	if (!entry) {
 		entry = member_records_add(r, key);
@@ -332,13 +323,13 @@ member_records_branch (struct member_records  *r,
 			return ENOMEM;
 	}
 	if (branch == MEMBER_BRANCH_FINDINGS) {
-		entry->info.findings = tip;
+		entry->findings = tip;
 		return 0;
 	}
-	entry->info.change = f[FIELD_SUBJECT];
-	entry->info.asker = f[FIELD_ASKER];
-	entry->info.time = time;
-	entry->info.flags |= MEMBER_NOTES;
+	entry->change = f[FIELD_SUBJECT];
+	entry->asker = f[FIELD_ASKER];
+	entry->time = time;
+	entry->flags |= MEMBER_NOTES;
 	return 0;
 }
 
@@ -380,22 +371,25 @@ member_records_parse (struct member_records *r)
 		struct cstr_view const name = cstr_view_slice(f[FIELD_REF], sizeof MEMBERS - 1,
 		                                              SIZE_MAX);
 		size_t const kind = cstr_view_index(member_kinds, MEMBER_KINDS, f[FIELD_KIND]);
+		struct oid record;
 		if (!cstr_view_starts(f[FIELD_REF], CSTR_VIEW(MEMBERS)) || !member_name_valid(name) ||
-		    kind == MEMBER_KINDS || !oid_valid(f[FIELD_TIP]))
+		    kind == MEMBER_KINDS || oid_init(&record, f[FIELD_TIP]))
 			continue;
 		if (r->all.n != records ||
-		    (records && cstr_view_compare(r->all.items[records - 1].info.name, name) >= 0))
+		    (records && cstr_view_compare(r->all.items[records - 1].name, name) >= 0))
 			return EIO;
-		if (!member_records_add(r, (struct member_entry){
-			.info = { .name = name, .kind = (uint32_t)kind, .flags = MEMBER_RECORD },
+		if (!member_records_add(r, (struct member_info){
+			.name   = name,
 			.logins = f[FIELD_LOGIN],
-			.tip = f[FIELD_TIP],
+			.kind   = (uint32_t)kind,
+			.flags  = MEMBER_RECORD,
+			.record = record,
 		}))
 			return ENOMEM;
 		++records;
 	}
 	if (r->all.n)
-		qsort(r->all.items, r->all.n, sizeof *r->all.items, member_entry_order);
+		qsort(r->all.items, r->all.n, sizeof *r->all.items, member_info_order);
 	return 0;
 }
 
@@ -532,7 +526,7 @@ member_logins_have (struct cstr_view logins,
 }
 
 /* Returns the record of @p r with the login @p login, or nullptr. */
-static struct member_entry const *
+static struct member_info const *
 member_records_login (struct member_records const *r,
                       struct cstr_view             login)
 {
@@ -613,7 +607,7 @@ static int
 member_record_input (struct member_registry const *reg,
                      struct member_login const    *login,
                      struct cstr_view              text,
-                     struct member_entry const    *entry,
+                     struct member_info const     *entry,
                      char                          ref[MEMBER_REF],
                      struct buf                   *in)
 {
@@ -622,11 +616,11 @@ member_record_input (struct member_registry const *reg,
 		{ CSTR_VIEW("Kind"), member_kinds[login->kind] }
 	};
 	size_t n = 1;
-	struct oid tip = {};
+	struct oid const *tip = &(struct oid){};
 	char message[STORE_MESSAGE];
 	struct cstr_view subject;
 	if (entry) {
-		(void)oid_init(&tip, entry->tip);
+		tip = &entry->record;
 		struct cstr_view logins = entry->logins;
 		for (bool more = logins.len != 0; more && n <= MEMBER_LOGINS; ) {
 			struct cstr_view item = logins;
@@ -642,7 +636,7 @@ member_record_input (struct member_registry const *reg,
 	if (text.len)
 		t[n++] = (struct store_trailer){ key, text };
 	util_format(ref, MEMBER_REF, MEMBERS "%s", login->name);
-	return member_commit_input(reg, ref, subject, t, n, &tip, in);
+	return member_commit_input(reg, ref, subject, t, n, tip, in);
 }
 
 /* Returns the length of the kind of a login, "uid " or "identity ",
@@ -664,7 +658,7 @@ member_login_kind (struct cstr_view login)
  * Otherwise returns EPERM with the reason in the @p len bytes at @p why.
  */
 static int
-member_adopt (struct member_entry const *entry,
+member_adopt (struct member_info const  *entry,
               struct member_login const *login,
               struct cstr_view           text,
               char                      *why,
@@ -680,7 +674,7 @@ member_adopt (struct member_entry const *entry,
 		same = same || (member_login_kind(item) == kind && !memcmp(item.data, text.data, kind));
 	}
 	/* The kind of the login, then the kind of the record. */
-	switch (login->kind << 1 | (enum member_kind)entry->info.kind) {
+	switch (login->kind << 1 | (enum member_kind)entry->kind) {
 	case MEMBER_AGENT << 1 | MEMBER_AGENT:
 		if (!text.len)
 			return 0;
@@ -734,7 +728,7 @@ member_claim_step (struct member_claim          *claim,
                    struct member_registry const *reg,
                    struct member_records const  *r,
                    struct cstr_view              text,
-                   struct member_entry const    *entry,
+                   struct member_info const     *entry,
                    struct buf                   *in,
                    char                         *why,
                    size_t                        len)
@@ -743,7 +737,7 @@ member_claim_step (struct member_claim          *claim,
 	int e = 0;
 	if (!entry && *login->name) {
 		entry = member_records_find(r, cstr_view(login->name));
-		if (entry && !(entry->info.flags & MEMBER_RECORD))
+		if (entry && !(entry->flags & MEMBER_RECORD))
 			entry = nullptr;
 		e = entry ? member_adopt(entry, login, text, why, len) : ENOENT;
 	}
@@ -751,7 +745,7 @@ member_claim_step (struct member_claim          *claim,
 	case 0:
 		if (entry) {
 			struct member member;
-			member_of(&member, &entry->info);
+			member_of(&member, entry);
 			login->kind = member.kind;
 			memcpy(login->name, member.name, sizeof login->name);
 		}
@@ -1105,13 +1099,12 @@ member_registry_report (struct member_registry const *registry)
 	int const width = (int)r->width;
 	LOG_ALL(LOG_INFO, "session members:");
 	for (size_t i = 0; i < r->all.n; ++i) {
-		struct member_entry const *entry = &r->all.items[i];
-		struct member_info const *info = &entry->info;
+		struct member_info const *info = &r->all.items[i];
 		if (!(info->flags & MEMBER_RECORD))
 			continue;
 		char logins[MEMBER_LOGINS * (MEMBER_LOGIN + 1)] = "";
 		size_t at = 0;
-		struct cstr_view rest = entry->logins;
+		struct cstr_view rest = info->logins;
 		for (bool more = rest.len != 0; more && at < sizeof logins; ) {
 			struct cstr_view item = rest;
 			more = cstr_view_cut(&rest, ',', &item);
@@ -1282,9 +1275,9 @@ static void member_lookup_wrote (struct child *c);
  * returns the result of the step, with the reason in lookup->why.
  */
 static int
-member_lookup_step (struct member_lookup      *lookup,
-                    struct cstr_view           text,
-                    struct member_entry const *entry)
+member_lookup_step (struct member_lookup     *lookup,
+                    struct cstr_view          text,
+                    struct member_info const *entry)
 {
 	struct member_table *table = lookup->table;
 	struct buf in = {};
@@ -1550,9 +1543,9 @@ member_table_lookup (struct member_table       *table,
 	struct cstr_view const text = cstr_view(login->text);
 	if (!text.len)
 		return wait->e = ENOENT;
-	struct member_entry const *entry = member_records_login(&table->records, text);
+	struct member_info const *entry = member_records_login(&table->records, text);
 	if (entry) {
-		member_of(&wait->member, &entry->info);
+		member_of(&wait->member, entry);
 		return wait->e = 0;
 	}
 	struct member_lookup *lookup = nullptr;
@@ -1638,10 +1631,21 @@ member_table_parse (struct member_table *table,
 }
 
 struct member_info const *
-member_table_info (struct member_table const *table,
-                   size_t                     i)
+member_table_members (struct member_table const *table,
+                      size_t                    *n,
+                      size_t                    *width)
 {
-	return table && i < table->records.all.n ? &table->records.all.items[i].info : nullptr;
+	if (!table) {
+		*n = 0;
+		if (width)
+			*width = 0;
+		return nullptr;
+	}
+	struct member_records const *r = &table->records;
+	*n = r->all.n;
+	if (width)
+		*width = r->width;
+	return r->all.items;
 }
 
 int
@@ -1651,17 +1655,11 @@ member_table_name (struct member_table const *table,
 {
 	if (!table || !dest)
 		return EINVAL;
-	struct member_entry const *entry = member_records_find(&table->records, name);
+	struct member_info const *entry = member_records_find(&table->records, name);
 	if (!entry)
 		return ENOENT;
-	member_of(dest, &entry->info);
+	member_of(dest, entry);
 	return 0;
-}
-
-int
-member_table_width (struct member_table const *table)
-{
-	return table ? (int)table->records.width : 0;
 }
 
 /* Appends to @p d the first MEMBER_SHOWN members of @p table, each with
@@ -1680,7 +1678,7 @@ member_table_names (struct member_table const *table,
 	size_t const shown = n < array_size(views) ? n : array_size(views);
 	struct cstr_view const me = you ? cstr_view(you->name) : (struct cstr_view){};
 	for (size_t i = 0; i < shown; ++i) {
-		struct member_info const *info = &table->records.all.items[i].info;
+		struct member_info const *info = &table->records.all.items[i];
 		bool const self = you && info->kind == you->kind && cstr_view_equal(info->name, me);
 		views[i] = util_format_view(items[i], sizeof items[i], "%.*s (%s%s)",
 		                            (int)info->name.len, info->name.data,

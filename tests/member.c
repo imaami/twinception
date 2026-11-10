@@ -656,11 +656,16 @@ test_list (struct store const           *store,
 			names[j] = names[j - 1];
 			names[j - 1] = t;
 		}
+	size_t count = 0;
+	size_t width = 0;
+	struct member_info const *members = member_table_members(table, &count, &width);
+	CHECK(members && count == array_size(names));
 	size_t n = 0;
 	struct member_info const *info;
 	dstr_auto notice = dstr("[askai: Members of this session: ");
 	dstr_auto unknown = dstr("No member is named own. The members are ");
-	for (; (info = member_table_info(table, n)) && n < array_size(names); ++n) {
+	for (; n < count && n < array_size(names); ++n) {
+		info = &members[n];
 		CHECK(cstr_view_equal(info->name, cstr_view(names[n])));
 		bool const bro = !strcmp(names[n], "bro");
 		bool const moved = !strcmp(names[n], "moved");
@@ -668,6 +673,8 @@ test_list (struct store const           *store,
 		CHECK(info->kind == (n < 7 ? MEMBER_PERSON : MEMBER_AGENT));
 		CHECK(info->flags == (moved ? MEMBER_NOTES : bro ? MEMBER_RECORD | MEMBER_NOTES
 		                                           : ghost ? 0 : MEMBER_RECORD));
+		/* The commit of the record is set only for a member with a record. */
+		CHECK(!(info->flags & MEMBER_RECORD) == !oid_len(&info->record));
 		struct oid const *tip = bro ? &findings[0] : ghost ? &findings[1]
 		                      : moved ? &findings[2] : &(struct oid){};
 		CHECK(oid_equal(&info->findings, tip));
@@ -680,14 +687,17 @@ test_list (struct store const           *store,
 		CHECK(cstr_view_equal(info->change, CSTR_VIEW("Add \"plan.md\" (1 byte)")));
 		CHECK(cstr_view_equal(info->asker, CSTR_VIEW("alice")) && info->time > 1'700'000'000);
 	}
-	CHECK(n == array_size(names) && !member_table_info(table, n));
-	CHECK(!member_table_info(nullptr, 0));
-	size_t width = 0;
+	CHECK(n == array_size(names));
+	size_t longest = 0;
 	for (size_t i = 0; i < array_size(names); ++i) {
 		size_t const len = strlen(names[i]);
-		width = len > width ? len : width;
+		longest = len > longest ? len : longest;
 	}
-	CHECK(member_table_width(table) == (int)width && !member_table_width(nullptr));
+	CHECK(width == longest);
+	size_t none = 9;
+	size_t none_width = 9;
+	CHECK(!member_table_members(nullptr, &none, &none_width) && !none && !none_width);
+	CHECK(member_table_members(table, &none, nullptr) == members && none == count);
 	CHECK(dstr_cat(&notice, ". Call notes with action members to see what each member wrote "
 	               "last.]\n") && dstr_cat(&unknown, "."));
 	struct member member;
@@ -733,7 +743,9 @@ test_list (struct store const           *store,
 	test_note(store, "refs/heads/person/ghost/notes", "Add \"g.md\" (1 byte)", nullptr);
 	CHECK(!test_take(store, table, children, member_list, why));
 	size_t ghosts = 0;
-	for (size_t i = 0; (info = member_table_info(table, i)); ++i) {
+	members = member_table_members(table, &count, &width);
+	for (size_t i = 0; i < count; ++i) {
+		info = &members[i];
 		if (!cstr_view_equal(info->name, CSTR_VIEW("ghost")))
 			continue;
 		++ghosts;
@@ -742,7 +754,7 @@ test_list (struct store const           *store,
 		                                  : !info->flags && oid_equal(&info->findings,
 		                                                              &findings[1]));
 	}
-	CHECK(ghosts == 2 && member_table_info(table, n));
+	CHECK(ghosts == 2 && count == n + 1 && width == longest);
 	CHECK(!member_table_name(table, CSTR_VIEW("ghost"), &member));
 	CHECK(member.kind == MEMBER_PERSON && !strcmp(member.name, "ghost"));
 
@@ -753,9 +765,11 @@ test_list (struct store const           *store,
 		test_note(store, ref, "Add \"z.md\" (1 byte)", nullptr);
 	}
 	CHECK(!test_take(store, table, children, member_list, why));
-	CHECK(member_table_info(table, 32) && !member_table_info(table, 33));
+	members = member_table_members(table, &count, nullptr);
+	CHECK(count == 33);
 	dstr_auto many = dstr("[askai: Members of this session: ");
-	for (size_t i = 0; (info = member_table_info(table, i)) && i < 32; ++i) {
+	for (size_t i = 0; i < count && i < 32; ++i) {
+		info = &members[i];
 		bool const agent = info->kind == MEMBER_AGENT;
 		bool const you = agent && cstr_view_equal(info->name, CSTR_VIEW("bro"));
 		CHECK(dstr_printf(&many, "%s%.*s (%s%s)", i ? ", " : "", (int)info->name.len,

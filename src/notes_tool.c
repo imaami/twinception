@@ -1150,17 +1150,19 @@ notes_tool_members (struct notes_tool_call *call,
 	struct member_table const *table = call->loop->members;
 	struct member_session const *session = notes_tool_session(call);
 	struct dstr *d = call->text;
-	int const width = member_table_width(table);
+	size_t n;
+	size_t width;
+	struct member_info const *const members = member_table_members(table, &n, &width);
 	/* The rows of the JSON of a client, or nullptr for a turn. */
 	bool const client = mcp_slot_from_client(call->slot);
 	struct json_object *list = client ? json_object_new_array() : nullptr;
 	bool ok = (list || !client) &&
 	          dstr_printf(d, "Members of the session %.*s (name, kind, newest change of the "
 	                      "notebook):\n", (int)session->name.len, session->name.data);
-	struct member_info const *info;
-	for (size_t i = 0; ok && (info = member_table_info(table, i)); ++i) {
+	for (size_t i = 0; ok && i < n; ++i) {
+		struct member_info const *info = &members[i];
 		struct json_object *member = list ? member_json(info->name, info->kind) : nullptr;
-		ok = dstr_printf(d, "%-*.*s  %-6s  ", width, (int)info->name.len, info->name.data,
+		ok = dstr_printf(d, "%-*.*s  %-6s  ", (int)width, (int)info->name.len, info->name.data,
 		                 member_kinds[info->kind].data);
 		char when[WHEN];
 		if (!(info->flags & MEMBER_NOTES) ||
