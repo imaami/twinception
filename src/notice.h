@@ -8,6 +8,11 @@
  * length of the text without the notices at its end, which it matches with
  * the same formats, and it refuses a text that contains the markup of a
  * later tool call.
+ *
+ * askai also writes notices into the text that it adds to the prompt
+ * after a compaction: the head of a compaction by a compact call or by a
+ * full context, the notice about the task with findings, and the notice
+ * to go on with the task at the end.
  */
 #ifndef ASKAI_SRC_NOTICE_H_
 #define ASKAI_SRC_NOTICE_H_
@@ -29,6 +34,18 @@
 #define NOTICE_LAST                                                            \
         "[askai: your next turn is your last turn. Answer without calling "    \
         "tools.]"
+#define NOTICE_COMPACTED                                                       \
+        "[askai: you compacted the context. Your turns and the tool results "  \
+        "since the task are gone. Your summary:]"
+#define NOTICE_FILLED                                                          \
+        "[askai: your context filled up. Your turns and the tool results "     \
+        "since the task are gone.]"
+#define NOTICE_TASK                                                            \
+        "[askai: compaction does not change the task. The task is all text "   \
+        "before the first [askai: ...] line: the system text, the earlier "    \
+        "messages and the prompt. You do not need to copy the task into "      \
+        "notes or a summary.]"
+#define NOTICE_GO_ON "[askai: go on with the task.]"
 
 /**
  * Checks @p text, the argument @p what of a tool call, such as "text" or

@@ -3977,39 +3977,30 @@ mcp_history_valid (struct json_object *history)
 
 static void mcp_req_add_start (struct mcp_req *req);
 
-/* Goes on with the ask call in @p slot, req->self, once the notes and the
- * open findings are in the text that askai adds to the prompt. A new ask
- * call builds its upstream request. After a compaction, the upload contains
- * the request up to the prompt (req->prompt_at), and askai appends "[askai:
- * go on with the task.]" to the text and writes the text into the upload.
- */
-static void
-mcp_slot_go_on (struct mcp_slot *slot)
-{
-	struct mcp_req *req = slot->req;
-	req->flags &= ~REQ_FINDINGS;
-	if (!req->prompt_at)
-		mcp_req_enter(req, PHASE_BUILD);
-	else if (cstr_view_cat(CSTR_VIEW("\n[askai: go on with the task.]"), &slot->answer))
-		mcp_req_fail(req, ENOMEM);
-	else
-		mcp_req_add_start(req);
-}
-
-/* Goes on with the ask call in @p slot once the notes are in the text that
- * askai adds to the prompt. With findings, findings_prompt() first appends
- * the open findings as the own word of req->self (REQ_FINDINGS).
+/* Goes on with the ask call in @p slot, req->self, once the notes are in
+ * the text that askai adds to the prompt. With findings, findings_prompt()
+ * first appends the open findings as the own word of req->self
+ * (REQ_FINDINGS) and then calls this function again. Then a new ask call
+ * builds its upstream request. After a compaction, the upload contains the
+ * request up to the prompt (req->prompt_at), and askai appends
+ * NOTICE_GO_ON to the text and writes the text into the upload.
  */
 static void
 mcp_slot_prompted (struct mcp_slot *slot)
 {
 	struct mcp_req *req = slot->req;
-	if (!(req->lent & req->mcp->st->lending.of[KIND_FINDINGS])) {
-		mcp_slot_go_on(slot);
+	if (!(req->flags & REQ_FINDINGS) && req->lent & req->mcp->st->lending.of[KIND_FINDINGS]) {
+		req->flags |= REQ_FINDINGS;
+		findings_prompt(slot, &slot->answer, mcp_req_lend_max(req), mcp_slot_prompted);
 		return;
 	}
-	req->flags |= REQ_FINDINGS;
-	findings_prompt(slot, &slot->answer, mcp_req_lend_max(req), mcp_slot_go_on);
+	req->flags &= ~REQ_FINDINGS;
+	if (!req->prompt_at)
+		mcp_req_enter(req, PHASE_BUILD);
+	else if (cstr_view_cat(CSTR_VIEW("\n" NOTICE_GO_ON), &slot->answer))
+		mcp_req_fail(req, ENOMEM);
+	else
+		mcp_req_add_start(req);
 }
 
 /* Start a call that asks the upstream, with the arguments @p args, of the
@@ -6547,11 +6538,7 @@ mcp_req_compact (struct mcp_req   *req,
 	int e = cstr_view_cat(head, d);
 	e = e ? e : cstr_view_cat(summary, d);
 	if (lent & l->of[KIND_FINDINGS])
-		e = e ? e : cstr_view_cat(CSTR_VIEW("\n\n[askai: compaction does not change the task. "
-		                                    "The task is all text before the first [askai: ...] "
-		                                    "line: the system text, the earlier messages and the "
-		                                    "prompt. You do not need to copy the task into notes "
-		                                    "or a summary.]"), d);
+		e = e ? e : cstr_view_cat(CSTR_VIEW("\n\n" NOTICE_TASK), d);
 	else if (!lent)
 		e = e ? e : cstr_view_cat(CSTR_VIEW("\n"), d);
 	req->reminded = 0;
@@ -6596,9 +6583,7 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);
 	LOG(LOG_VERBOSE, TURN_FMT "compacted by the upstream's compact call, summary %zu byte%s",
 	    TURN_ARGS(req), summary.len, util_s(summary.len));
-	mcp_req_compact(req, req->part,
-	                CSTR_VIEW("\n\n[askai: you compacted the context. Your turns and the "
-	                          "tool results since the task are gone. Your summary:]\n\n"),
+	mcp_req_compact(req, req->part, CSTR_VIEW("\n\n" NOTICE_COMPACTED "\n\n"),
 	                (struct cstr_view){ summary.data, jb_utf8(summary.data, summary.len) });
 }
 
@@ -6618,9 +6603,7 @@ mcp_req_compact_full (struct mcp_req *req)
 	}
 	hist_add(&req->mcp->counts->calls.compacted[1], 1);
 	LOG(LOG_VERBOSE, TURN_FMT "context full, compacted by askai", TURN_ARGS(req));
-	mcp_req_compact(req, 0, CSTR_VIEW("\n\n[askai: your context filled up. Your turns and "
-	                                  "the tool results since the task are gone.]"),
-	                CSTR_VIEW(""));
+	mcp_req_compact(req, 0, CSTR_VIEW("\n\n" NOTICE_FILLED), CSTR_VIEW(""));
 }
 
 #undef TURN_ARGS
