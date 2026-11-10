@@ -4,11 +4,10 @@
  * the session (src/notes.h, src/member.h). The turns of an ask call write
  * as the agent of askai. A client writes as the member of its login. A
  * caller writes only its own notebook, and can read every notebook. The
- * tool is a built-in plugin with a part on each client loop, and each part
- * contains the table of the members of its loop. The part also runs the
- * git commands that read the notes of the agent for the prompt of an ask
- * call (notes_tool_loop_prompt()). The findings tool shares the part
- * (src/findings.h).
+ * tool is a built-in plugin with a part on each client loop. A call uses
+ * the table of the members on the loop of the call (mcp_slot_members()).
+ * The part also runs the git commands that read the notes of the agent for
+ * the prompt of an ask call (notes_tool_loop_prompt()).
  */
 #ifndef ASKAI_SRC_NOTES_TOOL_H_
 #define ASKAI_SRC_NOTES_TOOL_H_
@@ -21,7 +20,6 @@
 #include "shelf.h"
 
 struct member_registry;
-struct member_table;
 struct plugin;
 
 /** The service of the notes tool. All loops share it. mcp_static_create()
@@ -52,12 +50,10 @@ struct notes_tool {
 
 /** The part of the notes tool on one loop. */
 struct notes_tool_loop {
-	struct shelf             spare;    /**< finished calls, kept for reuse
-	                                        with the storage of their
-	                                        output */
-	struct notes_tool const *tool;     /**< the service */
-	struct member_table     *members;  /**< the members of the session, or
-	                                        nullptr without --notes */
+	struct shelf             spare;  /**< finished calls, kept for reuse
+	                                      with the storage of their
+	                                      output */
+	struct notes_tool const *tool;   /**< the service */
 };
 
 /** The reason why notes_tool_loop_prompt() reads the notes. */
@@ -73,10 +69,8 @@ enum notes_tool_prompt : uint8_t {
  */
 extern struct plugin const notes_tool_plugin;
 
-/** Creates the part of the notes tool for @p service, a struct notes_tool,
- *  with the table of the members of the loop (src/member.h) if askai runs
- *  with --notes. Returns the part, or nullptr with ENOMEM or the error of
- *  member_table_create() in @p *e.
+/** Creates the part of the notes tool for @p service, a struct notes_tool.
+ *  Returns the part, or nullptr with ENOMEM in @p *e.
  */
 extern mcp_part_create_fn notes_tool_loop_create;
 

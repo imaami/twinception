@@ -31,9 +31,9 @@ struct mcp_static;
 struct member;
 struct member_call;
 struct member_registry;
+struct member_table;
 struct metrics_mcp;
 struct metrics_src;
-struct notes_tool_loop;
 struct oid;
 struct registry;
 struct seen;
@@ -120,10 +120,13 @@ mcp_lent (void const *cfg,
  * contains the tools of the plugins that askai loaded. @p manual is the
  * service of the man tool (src/manual.h), @p tasks runs the calls of the
  * test aid test_task (src/task.h), @p git is the service of the git tool
- * (src/git.h), and @p members is the registry of the session of the notes
- * and findings tools (src/member.h), with its repository. With
- * CFG_UPSTREAM_TOOLS, an ask call runs turns, each an upstream call, and
- * the tool calls of each turn, until an answer calls no tool.
+ * (src/git.h), and @p members is the registry of the members
+ * (src/member.h), which refers to the session repository
+ * (member_registry_store()), or nullptr without --notes. member_login()
+ * writes the login of the client of each request with @p members. The
+ * service of the findings tool is @p members. With CFG_UPSTREAM_TOOLS, an
+ * ask call runs turns, each an upstream call, and the tool calls of each
+ * turn, until an answer calls no tool.
  *
  * A tool call of a modern client that accepts tasks becomes a task in
  * @p ledger (src/ledger.h) after it runs a second. With CFG_CLIENT_JOBS,
@@ -156,16 +159,20 @@ mcp_static_destroy (struct mcp_static **p_static);
 /**
  * Creates the MCP application of the client loop @p loop. askai calls the
  * function on the thread of @p loop. @p home is the loop of home, which
- * runs the upstream calls of the client loops as jobs (src/job.h). The
- * function creates the part of each built-in plugin that has parts, in the
- * order of the plugins. These plugins are man and notes. The parts run
- * blocking work on @p blockers (src/blocker.h). The new object records its
- * statistics in @p counts, whose atomic members must be valid. It answers
- * GET /metrics from @p metrics.
+ * runs the upstream calls of the client loops as jobs (src/job.h). With
+ * --notes, the function creates the table of the members of the session on
+ * @p loop (member_table_create()). mcp_slot_members() returns the table to
+ * the calls of the loop. Then the function creates the part of each
+ * built-in plugin with parts, in the order of the plugins. These plugins
+ * are man and notes. The table and the parts run blocking work on
+ * @p blockers (src/blocker.h). The new object records its statistics in
+ * @p counts, whose atomic members must be valid. It answers GET /metrics
+ * from @p metrics.
  *
  * Returns the new object. On failure it returns nullptr and stores the
  * error number in @p *e. The error number is ENOMEM, or the error number
- * of the function that failed to create a part.
+ * of member_table_create() or of the function that failed to create a
+ * part.
  */
 extern struct mcp *
 mcp_create (struct loop              *loop,
@@ -177,7 +184,7 @@ mcp_create (struct loop              *loop,
             int                      *e);
 
 /** Cancel every request under way, give back what is kept, destroy the
- *  parts, last first, and free MCP.
+ *  parts, last first, and then the table of the members, and free MCP.
  */
 extern void
 mcp_destroy (struct mcp **p_mcp);
@@ -529,12 +536,12 @@ mcp_slot_shows (struct mcp_slot     *slot,
 extern struct member_call const *
 mcp_slot_member (struct mcp_slot const *slot);
 
-/** Returns the part of the notes tool on the loop of the call, which the
- *  findings tool uses, or nullptr for a null @p slot. This function is not
- *  exported.
+/** Returns the table of the members of the session on the loop of the
+ *  call (src/member.h), which the notes and findings tools use, or nullptr
+ *  without --notes or for a null @p slot. This function is not exported.
  */
-extern struct notes_tool_loop const *
-mcp_slot_notes (struct mcp_slot const *slot);
+extern struct member_table *
+mcp_slot_members (struct mcp_slot const *slot);
 
 /** Sets the asker of the request of the call (mcp_slot_member()) to
  *  @p asker. Returns 0, EFAULT for nullptr, or EINVAL if the call has

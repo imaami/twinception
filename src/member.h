@@ -417,6 +417,12 @@ member_table_create (struct member_registry const *registry,
 extern void
 member_table_destroy (struct member_table **p_table);
 
+/** Returns the registry that @p table was created with, or nullptr for a
+ *  null @p table.
+ */
+extern struct member_registry const *
+member_table_registry (struct member_table const *table);
+
 /**
  * Finds the member of @p login for @p wait, and writes no record. If the
  * records of @p table name the member, the function writes the member to

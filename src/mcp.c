@@ -386,6 +386,8 @@ struct mcp_static {
 	struct dstr               versions;     /**< the supported versions, an array */
 	struct task_pool         *tasks;        /**< test_task's, if askai offers
 	                                             it */
+	struct member_registry   *members;      /**< the registry of the members,
+	                                             nullptr without --notes */
 	struct notes_tool         notes_tool;   /**< the notes tool's service */
 	struct code               code;         /**< the code tool's service */
 	struct journal           *journal;      /**< reasoning and recovery state */
@@ -789,6 +791,8 @@ struct mcp {
 	struct loop              *loop;
 	struct loop              *home;       /* the loop where jobs run */
 	struct mcp_static const  *st;
+	struct member_table      *members;    /* the table of the members, or
+	                                         nullptr without --notes */
 	struct notes_tool_loop   *notes;      /* the part of the notes tool, or
 	                                         nullptr without --notes */
 	struct instance_table     instances;  /* the instances of the plugins
@@ -1985,8 +1989,7 @@ mcp_req_trace_put (struct mcp_req *req)
 	if (req->flags & REQ_STOPPED)
 		(void)util_text_printf(&tail, "The other AI was still calling tools at the limit "
 		                       "of %" PRIu32 " turns.\n", req->turn);
-	struct member_session const *session =
-		member_registry_session(req->mcp->st->notes_tool.members);
+	struct member_session const *session = member_registry_session(req->mcp->st->members);
 	if (req->flags & REQ_BRANCH) {
 		(void)util_text_printf(&tail, "%s wrote in the session.",
 		                       session ? session->agent.name : "The agent");
@@ -3651,10 +3654,10 @@ mcp_slot_member (struct mcp_slot const *slot)
 	return slot ? &slot->req->member : nullptr;
 }
 
-struct notes_tool_loop const *
-mcp_slot_notes (struct mcp_slot const *slot)
+struct member_table *
+mcp_slot_members (struct mcp_slot const *slot)
 {
-	return slot ? slot->req->mcp->notes : nullptr;
+	return slot ? slot->req->mcp->members : nullptr;
 }
 
 int
@@ -7458,8 +7461,7 @@ mcp_begin (struct mcp           *mcp,
 	struct cstr_view const who = s->grant.who;
 	uint32_t const uid = (uint32_t)s->peer.key[1];
 	bool const local = s->peer.key[0] == UINT64_MAX;
-	(void)member_login(&req->member.login, mcp->st->notes_tool.members, &s->grant,
-	                   local ? &uid : nullptr);
+	(void)member_login(&req->member.login, mcp->st->members, &s->grant, local ? &uid : nullptr);
 	if (!local) {
 		if (who.len)
 			memcpy(req->client, who.data, who.len < sizeof req->client
@@ -7678,7 +7680,14 @@ mcp_create (struct loop              *loop,
 		free(mcp);
 		return nullptr;
 	}
-	for (uint64_t i = 0; i < reg->n_plugins; ++i) {
+	/* At fail, mcp_destroy_parts() destroys the parts before part i. */
+	uint64_t i = 0;
+	if (st->members) {
+		mcp->members = member_table_create(st->members, loop, blockers, &mcp->children, e);
+		if (!mcp->members)
+			goto fail;
+	}
+	for (; i < reg->n_plugins; ++i) {
 		struct mcp_plugin const *p = &st->plugins[i];
 		/* For a plugin without part_create(), the part is the service of
 		 * the plugin. A plugin that askai loaded from a file provides
@@ -7688,16 +7697,19 @@ mcp_create (struct loop              *loop,
 		if (p->part_create &&
 		    !(mcp->parts[i] = p->part_create(p->service, loop, blockers, &mcp->children, &pe))) {
 			*e = pe ? pe : ENOMEM;
-			mcp_destroy_parts(mcp, i);
-			instance_table_fini(&mcp->instances);
-			free(mcp);
-			return nullptr;
+			goto fail;
 		}
 		if (reg->plugins[i].plugin == &notes_tool_plugin)
 			mcp->notes = mcp->parts[i];
 	}
 	self = mcp;
 	return mcp;
+fail:
+	mcp_destroy_parts(mcp, i);
+	member_table_destroy(&mcp->members);
+	instance_table_fini(&mcp->instances);
+	free(mcp);
+	return nullptr;
 }
 
 void
@@ -7726,6 +7738,7 @@ mcp_destroy (struct mcp **p_mcp)
 		;
 	instance_table_fini(&mcp->instances);
 	mcp_destroy_parts(mcp, mcp->st->reg->n_plugins);
+	member_table_destroy(&mcp->members);
 	child_destroy_all(&mcp->children);
 	loop_unready(&mcp->drain);
 	self = nullptr;
@@ -8498,16 +8511,15 @@ mcp_lent (void const *cfg,
 /** Returns what @p plugin, a plugin in the registry, provides for @p st:
  *  for a built-in plugin, its service and its part functions, if any, and
  *  for a loaded plugin, nothing. The services are @p st for askai's own
- *  kinds, and @p manual, @p git, st->code, st->notes_tool and @p members
+ *  kinds, and @p manual, @p git, st->code, st->notes_tool and st->members
  *  for the plugins of the man, git, code, notes and findings tools. The
  *  plugins of the man and notes tools create a part on every client loop.
  */
 static struct mcp_plugin
-mcp_static_plugin (struct mcp_static      *st,
-                   struct plugin const    *plugin,
-                   struct manual          *manual,
-                   struct git             *git,
-                   struct member_registry *members)
+mcp_static_plugin (struct mcp_static   *st,
+                   struct plugin const *plugin,
+                   struct manual       *manual,
+                   struct git          *git)
 {
 	struct {
 		struct plugin const *plugin;
@@ -8519,7 +8531,7 @@ mcp_static_plugin (struct mcp_static      *st,
 		{ &code_plugin, { .service = &st->code } },
 		{ &notes_tool_plugin,
 		  { &st->notes_tool, notes_tool_loop_create, notes_tool_loop_destroy } },
-		{ &findings_plugin, { .service = members } },
+		{ &findings_plugin, { .service = st->members } },
 	};
 	for (size_t i = 0; i < array_size(own); ++i)
 		if (own[i].plugin == plugin)
@@ -8609,6 +8621,7 @@ mcp_static_create (struct config const    *cfg,
 		.versions = DSTR_INIT,
 		.files_url = DSTR_INIT,
 		.tasks = tasks,
+		.members = members,
 		.notes_tool = { .members = members,
 		                .files_inline = mcp_files_inline(cfg->http.limits.body) },
 		.code = { git, cfg },
@@ -8625,7 +8638,7 @@ mcp_static_create (struct config const    *cfg,
 	uint64_t const url = util_hash(st->seed, ep->url, strlen(ep->url));
 	st->endpoint = ep->model ? util_hash(url, ep->model, strlen(ep->model)) : url;
 	for (uint64_t i = 0; i < reg->n_plugins; ++i)
-		st->plugins[i] = mcp_static_plugin(st, reg->plugins[i].plugin, manual, git, members);
+		st->plugins[i] = mcp_static_plugin(st, reg->plugins[i].plugin, manual, git);
 	/* A zeroed dstr is not an empty string (dstr.h). */
 	for (uint32_t id = 0; id < reg->n_tools; ++id)
 		st->offers[id] = (struct mcp_offer){ DSTR_INIT, DSTR_INIT };

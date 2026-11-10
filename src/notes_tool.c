@@ -218,24 +218,18 @@ struct notes_tool_call {
 
 void *
 notes_tool_loop_create (void           *service,
-                        struct loop    *loop,
-                        struct blocker *blockers,
-                        struct list    *children,
+                        struct loop    *,
+                        struct blocker *,
+                        struct list    *,
                         int            *e)
 {
-	struct notes_tool const *tool = service;
 	struct notes_tool_loop *nl = malloc(sizeof *nl);
 	if (!nl) {
 		*e = ENOMEM;
 		return nullptr;
 	}
 	*e = 0;
-	*nl = (struct notes_tool_loop){ .spare.list = list(&nl->spare.list), .tool = tool };
-	if (tool->members &&
-	    !(nl->members = member_table_create(tool->members, loop, blockers, children, e))) {
-		free(nl);
-		return nullptr;
-	}
+	*nl = (struct notes_tool_loop){ .spare.list = list(&nl->spare.list), .tool = service };
 	return nl;
 }
 
@@ -284,7 +278,6 @@ notes_tool_loop_destroy (void **p_part)
 		return;
 	*p_part = nullptr;
 	(void)notes_tool_loop_relieve(nl, BUF_CRITICAL, SIZE_MAX);
-	member_table_destroy(&nl->members);
 	free(nl);
 }
 
@@ -518,7 +511,7 @@ notes_tool_prompt_notices (struct mcp_slot *slot)
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	int e = cstr_view_cat(CSTR_VIEW("\n\n"), call->text);
 	e = e ? e : member_notice(&call->self, mcp_slot_member(slot), call->text);
-	e = e ? e : member_table_notice(call->loop->members, &call->self, call->text);
+	e = e ? e : member_table_notice(mcp_slot_members(slot), &call->self, call->text);
 	if (e) {
 		notes_tool_then(slot, e);
 		return;
@@ -538,7 +531,7 @@ static void
 notes_tool_login (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct member_table *members = call->loop->members;
+	struct member_table *const members = mcp_slot_members(slot);
 	struct member_login const *login = &mcp_slot_member(slot)->login;
 	bool const claim = call->then || notes_tool_actions[call->action].flags & NOTE_AUTHOR;
 	int const e = claim ? member_table_claim(members, login, &call->wait)
@@ -1150,12 +1143,12 @@ static int
 notes_tool_members (struct notes_tool_call *call,
                     size_t                 *json)
 {
-	struct member_table const *table = call->loop->members;
 	struct member_session const *session = notes_tool_session(call);
 	struct dstr *d = call->text;
 	size_t n;
 	size_t width;
-	struct member_info const *const members = member_table_members(table, &n, &width);
+	struct member_info const *const members = member_table_members(mcp_slot_members(call->slot),
+	                                                               &n, &width);
 	/* The rows of the JSON of a client, or nullptr for a turn. */
 	bool const client = mcp_slot_from_client(call->slot);
 	struct json_object *list = client ? json_object_new_array() : nullptr;
@@ -1224,7 +1217,7 @@ static int
 notes_tool_book (struct notes_tool_call *call,
                  struct cstr_view        name)
 {
-	int const e = member_table_name(call->loop->members, name, &call->book);
+	int const e = member_table_name(mcp_slot_members(call->slot), name, &call->book);
 	if (!e)
 		member_ref(&call->book, MEMBER_BRANCH_NOTES, call->notebook);
 	return e;
@@ -1243,9 +1236,9 @@ static void
 notes_tool_got_members (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
+	struct member_table *const members = mcp_slot_members(slot);
 	char reason[MEMBER_WHY] = "";
-	int e = call->child ? member_table_parse(call->loop->members, call->child, reason,
-	                                         sizeof reason) : EIO;
+	int e = call->child ? member_table_parse(members, call->child, reason, sizeof reason) : EIO;
 	child_destroy(&call->child);
 	if (e == ENOMEM) {
 		notes_tool_end(slot, ENOMEM, true);
@@ -1266,8 +1259,7 @@ notes_tool_got_members (struct mcp_slot *slot)
 		else if (e)
 			mcp_slot_tell(slot, why, TOOL_FAILED);
 		else
-			notes_tool_end(slot, member_table_unknown(call->loop->members, name, call->text),
-			               true);
+			notes_tool_end(slot, member_table_unknown(members, name, call->text), true);
 		return;
 	}
 	if (e) {
@@ -2162,7 +2154,7 @@ notes_tool_start (struct mcp_slot    *slot,
 			return;
 		}
 		if (!member_name_valid(selected)) {
-			notes_tool_end(slot, member_table_unknown(call->loop->members, selected,
+			notes_tool_end(slot, member_table_unknown(mcp_slot_members(slot), selected,
 			                                          call->text), true);
 			return;
 		}

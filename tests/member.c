@@ -370,6 +370,7 @@ test_table (struct store const           *store,
 	CHECK(table && !e);
 	if (!table)
 		return;
+	CHECK(member_table_registry(table) == reg && !member_table_registry(nullptr));
 	struct member_wait wait = { .done = test_ended };
 	struct member_login login = {};
 	CHECK(member_table_find(table, &login, &wait) == ENOENT && wait.e == ENOENT);

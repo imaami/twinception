@@ -1535,6 +1535,12 @@ member_table_destroy (struct member_table **p_table)
 	free(table);
 }
 
+struct member_registry const *
+member_table_registry (struct member_table const *table)
+{
+	return table ? table->registry : nullptr;
+}
+
 /* Finds the member of @p login for @p wait, as member_table_find() and
  * member_table_claim() say. @p write is LOOKUP_WRITE if the wait needs
  * the record of the member, else 0.

@@ -38,10 +38,9 @@
  * (findings_prompt()) are read the same way.
  *
  * The tool is a built-in plugin without a part. Its service is the
- * registry of the members (src/member.h). A call uses the part of the
- * notes tool on its loop (mcp_slot_notes()), the struct notes_tool_loop
- * with the service of the notes tool, which contains the registry, and
- * the table of the members.
+ * registry of the members (src/member.h). A call uses the table of the
+ * members on the loop of the call (mcp_slot_members()) and the registry of
+ * the table (member_table_registry()).
  */
 #ifndef ASKAI_SRC_FINDINGS_H_
 #define ASKAI_SRC_FINDINGS_H_

@@ -19,7 +19,6 @@
 #include "mcp.h"
 #include "member.h"
 #include "notes.h"
-#include "notes_tool.h"
 #include "notice.h"
 #include "oid.h"
 #include "plugin.h"
@@ -207,10 +206,6 @@ struct findings_call {
 	                                     read its output */
 	struct json_object    *args;      /* the arguments of the call, while
 	                                     log lists the calls (STAGE_CALLS) */
-	struct notes_tool_loop const *notes;  /* the part of the notes tool on
-	                                         the loop of the call, with the
-	                                         service and the table of the
-	                                         members */
 	struct dstr           *prompt;    /* the text that askai adds to the
 	                                     prompt, for the call of
 	                                     findings_prompt(), else nullptr */
@@ -248,13 +243,22 @@ struct findings_call {
 static_assert(EVIDENCE_REFS == 16 && EVIDENCE_EXTERNAL == 8 && TOOL_TEXT_MAX == 4U << 20,
               "update the texts in this file that say 16 items, 8 items or 4 MiB");
 
-/* Returns the session of the findings of @p call and the agent of askai in
- * it.
+/* Returns the registry of the members, from the table of the members on
+ * the loop of the call in @p slot.
+ */
+static struct member_registry const *
+findings_registry (struct mcp_slot const *slot)
+{
+	return member_table_registry(mcp_slot_members(slot));
+}
+
+/* Returns the session of the findings of the call in @p slot and the agent
+ * of askai in it.
  */
 static struct member_session const *
-findings_session (struct findings_call const *call)
+findings_session (struct mcp_slot const *slot)
 {
-	return member_registry_session(call->notes->tool->members);
+	return member_registry_session(findings_registry(slot));
 }
 
 /* Returns the name of the tool with the registry ID @p tool, for
@@ -404,7 +408,7 @@ findings_run (struct mcp_slot   *slot,
 	int e = 0;
 	call->stage = stage;
 	child_destroy(&call->child);
-	struct store const *store = member_registry_store(call->notes->tool->members);
+	struct store const *store = member_registry_store(findings_registry(slot));
 	call->child = store_spawn(store, slot, cmd, words, ref, buf_peek(in), &e);
 	buf_fini(in);
 	if (call->child)
@@ -533,9 +537,10 @@ static void
 findings_got_refs (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
+	struct member_table *table = mcp_slot_members(slot);
 	/* The table writes the reason of a read that failed. */
 	char why[MEMBER_WHY] = "";
-	int e = member_table_parse(call->notes->members, call->child, why, sizeof why);
+	int e = member_table_parse(table, call->child, why, sizeof why);
 	if (e) {
 		findings_stop(slot, e == ENOMEM ? ENOMEM : EINVAL, *why ? cstr_view(why) : unread);
 		return;
@@ -543,7 +548,7 @@ findings_got_refs (struct mcp_slot *slot)
 	bool const every = call->action == FINDINGS_SHOW ||
 	                   (call->action == FINDINGS_LIST && !*call->author);
 	struct cstr_view const only = cstr_view(call->action == FINDINGS_LIST
-	                                        ? call->author : findings_session(call)->agent.name);
+	                                        ? call->author : findings_session(slot)->agent.name);
 	char author[MEMBER_NAME] = "";
 	uint32_t number = 0;
 	if (*call->about)
@@ -551,8 +556,7 @@ findings_got_refs (struct mcp_slot *slot)
 	struct cstr_view const about = cstr_view(author);
 	struct oid tip = {};
 	size_t n;
-	struct member_info const *const members = member_table_members(call->notes->members, &n,
-	                                                               nullptr);
+	struct member_info const *const members = member_table_members(table, &n, nullptr);
 	for (size_t i = 0; i < n; ++i) {
 		struct member_info const *info = &members[i];
 		if (info->kind != MEMBER_AGENT || !oid_len(&info->findings))
@@ -614,7 +618,7 @@ findings_got_files (struct mcp_slot *slot)
 	/* The highest number counts on the branch of the agent. The finding of
 	 * id is on the branch of its author, and update reads only its file.
 	 * list, show and expand read every file. */
-	bool const own = !strcmp(b->author, findings_session(call)->agent.name);
+	bool const own = !strcmp(b->author, findings_session(slot)->agent.name);
 	uint32_t const id = strcmp(b->author, call->author) ? 0 : call->number;
 	uint32_t const only = call->action == FINDINGS_UPDATE ? id : 0;
 	bool const every = (ON_LIST | ON_SHOW | ON_EXPAND) >> call->action & 1;
@@ -734,7 +738,7 @@ findings_committed (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	struct member_session const *session = findings_session(call);
+	struct member_session const *session = findings_session(slot);
 	char const *agent = session->agent.name;
 	char id[FINDING_ID];
 	finding_id_format(agent, call->number, id);
@@ -762,7 +766,7 @@ findings_committed (struct mcp_slot *slot)
 	}
 	struct span const out = buf_peek(&c->out);
 	if (!(c->end.flags & CHILD_LATE) && store_raced(out)) {
-		int64_t const age = store_stale(member_registry_store(call->notes->tool->members),
+		int64_t const age = store_stale(member_registry_store(findings_registry(slot)),
 		                                session->refs[MEMBER_BRANCH_FINDINGS], "findings");
 		if (age) {
 			mcp_slot_tellf(slot, TOOL_FAILED, "Could not record the finding. The findings of %s "
@@ -827,7 +831,7 @@ findings_commit (struct mcp_slot      *slot,
                  struct finding const *f)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	struct member_session const *session = findings_session(call);
+	struct member_session const *session = findings_session(slot);
 	char const *ref = session->refs[MEMBER_BRANCH_FINDINGS];
 	/* add and update read only the branch of the agent. */
 	struct oid const tip = call->branches.n ? call->branches.items[0].tip : (struct oid){};
@@ -1176,7 +1180,7 @@ findings_expand (struct mcp_slot *slot)
 	 * agent. Either way the findings are of one author, so the ref of the
 	 * branch is made once. */
 	char own[MEMBER_REF];
-	char const *ref = findings_session(call)->refs[MEMBER_BRANCH_FINDINGS];
+	char const *ref = findings_session(slot)->refs[MEMBER_BRANCH_FINDINGS];
 	if (*call->author) {
 		findings_ref(call->author, own);
 		ref = own;
@@ -1230,7 +1234,7 @@ static void
 findings_act (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	struct member_session const *session = findings_session(call);
+	struct member_session const *session = findings_session(slot);
 	child_destroy(&call->child);
 	if (call->prompt) {
 		findings_prompted(slot, 0);
@@ -1791,7 +1795,7 @@ findings_evidence (struct mcp_slot    *slot,
 			                   "such as c7, lines such as c7:120-140, or an evidence item such "
 			                   "as %s#5/2.", i,
 			                   (int)util_clip(text.data, text.len, 80), text.data ? text.data : "",
-			                   findings_session(call)->agent.name);
+			                   findings_session(slot)->agent.name);
 		struct evidence *item = &c->evidence.items[c->evidence.n++];
 		*item = evidence();
 		if (ref.form == EVIDENCE_REF_ITEM || ref.form == EVIDENCE_REF_ITEM_LINES) {
@@ -1822,7 +1826,7 @@ findings_args (struct mcp_slot    *slot,
                size_t              len)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	char const *agent = findings_session(call)->agent.name;
+	char const *agent = findings_session(slot)->agent.name;
 	char const *action = findings_actions[call->action].data;
 	struct json_object_iter it;
 	json_object_object_foreachC(args, it) {
@@ -1972,14 +1976,12 @@ findings_got_calls (struct mcp_slot *slot)
 	findings_begin(slot, call->args);
 }
 
-/* Allocates a call of @p action in @p slot with the part of the notes tool
- * on the loop of @p slot. Returns the call, or nullptr with ENOMEM in
- * @p *e.
+/* Allocates a call of @p action. Returns the call, or nullptr with ENOMEM
+ * in @p *e.
  */
 static struct findings_call *
-findings_call_create (struct mcp_slot *slot,
-                      uint8_t          action,
-                      int             *e)
+findings_call_create (uint8_t  action,
+                      int     *e)
 {
 	struct findings_call *call = malloc(sizeof *call);
 	*e = call ? 0 : ENOMEM;
@@ -1988,7 +1990,6 @@ findings_call_create (struct mcp_slot *slot,
 			.out    = DSTR_INIT,
 			.claim  = DSTR_INIT,
 			.change = finding_change(),
-			.notes  = mcp_slot_notes(slot),
 			.action = action,
 		};
 	return call;
@@ -2008,7 +2009,7 @@ findings_start (struct mcp_slot    *slot,
 	uint8_t const action = (uint8_t)cstr_view_index(findings_actions, FINDINGS_ACTIONS,
 	                                                jb_view(jb_get(args, "action")));
 	int e;
-	struct findings_call *call = findings_call_create(slot, action, &e);
+	struct findings_call *call = findings_call_create(action, &e);
 	if (!call) {
 		mcp_slot_fail(slot, e);
 		return;
@@ -2026,7 +2027,7 @@ findings_start (struct mcp_slot    *slot,
 		return;
 	}
 	if ((ON_ADD | ON_UPDATE) >> call->action & 1 && mcp_slot_rerun(slot)) {
-		char const *const words[] = { findings_session(call)->refs[MEMBER_BRANCH_FINDINGS] };
+		char const *const words[] = { findings_session(slot)->refs[MEMBER_BRANCH_FINDINGS] };
 		call->args = args;
 		findings_run(slot, STAGE_CALLS, STORE_CALLS, words, nullptr, &(struct buf){});
 		return;
@@ -2154,14 +2155,14 @@ findings_prompt (struct mcp_slot *slot,
                  tool_step_fn    *then)
 {
 	int e;
-	struct findings_call *call = findings_call_create(slot, FINDINGS_LIST, &e);
+	struct findings_call *call = findings_call_create(FINDINGS_LIST, &e);
 	if (!call) {
 		mcp_slot_fail(slot, e);
 		return;
 	}
 	*mcp_slot_own(slot) = call;
 	/* The list of the agent, with the open findings as its result. */
-	struct member_session const *session = findings_session(call);
+	struct member_session const *session = findings_session(slot);
 	if (!session) {
 		findings_drop(slot);
 		mcp_slot_fail(slot, EINVAL);
