@@ -129,8 +129,8 @@ extern tool_drop_fn notes_tool_drop;
  * the note history of the agent and the newest note, at most @p most bytes
  * of it. @p what says whether the ask call starts or compacts its context.
  * As the ask call starts, the function claims the member of the login of
- * its client (member_table_claim()), and the table reads the records
- * (member_table_read()). The member is the asker of the request
+ * its client (member_table_claim()), and git lists the records of the
+ * members (member_list). The member is the asker of the request
  * (mcp_slot_asker()), whom the commits of the turns name. Once the notices
  * are in @p prompt, the function calls @p then, which goes on with the ask
  * call. If git cannot list the notes for NOTES_TOOL_RESUME, the ask call

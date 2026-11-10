@@ -133,7 +133,7 @@ enum {
 
 /** A member in a table, the newest change of the notebook of the member,
  *  and the tip of the branch of findings of the member. The views borrow
- *  the records of the table, which member_table_read() can replace.
+ *  the records of the table, which member_table_parse() can replace.
  */
 struct member_info {
 	struct cstr_view name;
@@ -344,24 +344,19 @@ member_registry_report (struct member_registry const *registry);
 
 /**
  * A call that waits for the member of a login (member_table_find() and
- * member_table_claim()), or for the records (member_table_read()). The
- * owner of the wait sets done, and the table sets the other members before
- * it calls done. done finds the owner with container_of(). The owner calls
- * member_table_cancel() before it frees a wait that waits.
+ * member_table_claim()). The owner of the wait sets done, and the table
+ * sets the other members before it calls done. done finds the owner with
+ * container_of(). The owner calls member_table_cancel() before it frees a
+ * wait that waits.
  */
 struct member_wait {
-	struct list    hook;             /**< on the lookup of the login, or on
-	                                      the table for a read, while the
-	                                      wait waits */
-	/** Called on the loop of the table once the lookup or the read ends. */
+	struct list    hook;             /**< on the lookup of the login while
+	                                      the wait waits */
+	/** Called on the loop of the table once the lookup ends. */
 	void         (*done) (struct member_wait *wait);
-	struct child  *git;              /**< the git that reads the records
-	                                      for member_table_read(), or
-	                                      nullptr */
 	int            e;                /**< 0, or the error number for a
 	                                      login without a member, as
-	                                      member_table_find() returns it,
-	                                      or for a read that failed */
+	                                      member_table_find() returns it */
 	struct member  member;           /**< the member of the login */
 	char           why[MEMBER_WHY];  /**< the reason for an error other
 	                                      than ENOENT and ENOMEM, a text
@@ -370,10 +365,10 @@ struct member_wait {
 
 /** Creates the table of the members on @p loop, with the records that
  *  @p registry read at the start. @p registry must outlive the table. git
- *  runs for the lookups and the reads on @p loop, with its children on
- *  @p children (src/child.h), and the blockers @p blockers look up the
- *  names of Unix users. Returns the table, or returns nullptr with an error
- *  number in @p *e: EINVAL for a null argument, or ENOMEM.
+ *  runs for the lookups on @p loop, with its children on @p children
+ *  (src/child.h), and the blockers @p blockers look up the names of Unix
+ *  users. Returns the table, or returns nullptr with an error number in
+ *  @p *e: EINVAL for a null argument, or ENOMEM.
  */
 extern struct member_table *
 member_table_create (struct member_registry const *registry,
@@ -383,8 +378,8 @@ member_table_create (struct member_registry const *registry,
                      int                          *e);
 
 /** Frees the table at @p *p_table and sets @p *p_table to nullptr. A
- *  lookup or a read under way calls no wait. Its git is killed if it reads,
- *  and runs to its end if it writes.
+ *  lookup under way calls no wait. Its git is killed if it reads, and runs
+ *  to its end if it writes.
  */
 extern void
 member_table_destroy (struct member_table **p_table);
@@ -433,9 +428,7 @@ member_table_claim (struct member_table       *table,
                     struct member_login const *login,
                     struct member_wait        *wait);
 
-/** Stops @p wait from waiting, if it waits. Its done does not run, and the
- *  git of a read is killed.
- */
+/** Stops @p wait from waiting, if it waits. Its done does not run. */
 extern void
 member_table_cancel (struct member_wait *wait);
 
@@ -446,24 +439,23 @@ extern struct member_info const *
 member_table_info (struct member_table const *table,
                    size_t                     i);
 
+/** The words of STORE_REFS (src/store.h) that list the records of the
+ *  session and the branches of the members, for member_table_parse().
+ */
+extern char const *const member_list[STORE_WORDS];
+
 /**
- * Reads the records of @p table again for @p wait, which must not be on a
- * list: git lists the records and the branches of the members, and the
- * output replaces the records of the table. If a read in the current turn
- * of the loop of the table replaced the records, the function runs no git.
- * After a lookup of the table writes a record, the next read runs git.
- * Returns 0 if a read of the turn replaced the records, or
- * EINPROGRESS if the wait waits: the function adds @p wait to the table,
- * and wait->done runs later, with the result in wait->e. The function and
- * wait->done set wait->e to 0, EIO if git fails or writes output that is
- * not a list of the records, EAGAIN if askai is busy, or ENOMEM, and
- * wait->why to the reason for EIO and EAGAIN, and leave wait->member as it
- * is. On failure the records stay as they are. Returns EINVAL for a null
- * argument.
+ * Replaces the records of @p table with the records that @p git listed
+ * with member_list. The output of @p git moves to the table. Returns 0,
+ * EIO if git failed or wrote output that is not a list of the records, or
+ * ENOMEM, with the reason in the @p len bytes at @p why, a text for the
+ * client. On failure the records stay as they are.
  */
 extern int
-member_table_read (struct member_table *table,
-                   struct member_wait  *wait);
+member_table_parse (struct member_table *table,
+                    struct child        *git,
+                    char                *why,
+                    size_t               len);
 
 /** Writes to @p dest the member named @p name: the member of a record of
  *  the name, or else of a notebook of the name. Returns 0, ENOENT if

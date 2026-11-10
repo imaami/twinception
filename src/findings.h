@@ -15,7 +15,7 @@
  *
  * The findings of an agent are the branch refs/heads/agent/NAME/findings
  * of the session repository (src/store.h). The records of the members name
- * the tip of the branch of each agent (member_table_read()). A list with
+ * the tip of the branch of each agent (member_list). A list with
  * an author reads only the branch of the author, and an add with about
  * checks only the file of that finding. Each add and each update is one
  * commit on that branch, made at once with the file of the finding and the
@@ -53,7 +53,6 @@
 struct dstr;
 struct json_object;
 struct mcp_slot;
-struct notes_tool_loop;
 struct plugin;
 
 /** The plugin of the findings tool, which is built into askai. Its
@@ -83,21 +82,19 @@ extern tool_drop_fn findings_drop;
  * call in @p slot, the ask call's own slot, the notices of the open findings
  * of the agent in the conversation of the ask call (finding_notice()), at
  * most @p most bytes of lines of findings, and then the notice that names
- * the calls of the ring of the ask call (seen_notice()). @p notes is the
- * part of the notes tool on the loop of @p slot. git reads the files of the
- * findings of the agent as for a call of the tool. The reading call is the
- * own word of @p slot until the notices are in @p prompt. The notices start
- * a paragraph of their own if @p prompt does not end with a line end. If
- * git cannot read the findings, the function appends the notice "[askai:
- * Your findings could not be read.]" instead of the open findings. Then the
- * function calls @p then, which goes on with the ask call. For ENOMEM,
- * mcp_slot_fail() ends the ask call instead.
+ * the calls of the ring of the ask call (seen_notice()). git reads the
+ * files of the findings of the agent as for a call of the tool. The reading
+ * call is the own word of @p slot until the notices are in @p prompt. The
+ * notices start a paragraph of their own if @p prompt does not end with a
+ * line end. If git cannot read the findings, the function appends the
+ * notice "[askai: Your findings could not be read.]" instead of the open
+ * findings. Then the function calls @p then, which goes on with the ask
+ * call. For ENOMEM, mcp_slot_fail() ends the ask call instead.
  */
 extern void
-findings_prompt (struct notes_tool_loop const *notes,
-                 struct mcp_slot              *slot,
-                 struct dstr                  *prompt,
-                 size_t                        most,
-                 tool_step_fn                 *then);
+findings_prompt (struct mcp_slot *slot,
+                 struct dstr     *prompt,
+                 size_t           most,
+                 tool_step_fn    *then);
 
 #endif /* ASKAI_SRC_FINDINGS_H_ */

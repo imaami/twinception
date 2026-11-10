@@ -44,14 +44,13 @@ struct cstr_view const member_kinds[MEMBER_KINDS] = { MEMBER_KIND_LIST(XL_VIEW) 
 /* The leaves of the branches, by enum member_branch. */
 static struct cstr_view const member_leaves[MEMBER_BRANCHES] = { MEMBER_BRANCH_LIST(XL_VIEW) };
 
-/* The words of STORE_REFS that list the records of the session and the
- * branches. git writes a line for each ref: the ref, the commit, the
- * values of the trailer lines Kind, Login, Session, Name and Format, the
- * commit time, the value of the trailer line Asked-by and the subject,
- * each field followed by a NUL. The values of several lines of one key are
- * one field, separated by commas.
+/* git writes a line for each ref: the ref, the commit, the values of the
+ * trailer lines Kind, Login, Session, Name and Format, the commit time, the
+ * value of the trailer line Asked-by and the subject, each field followed
+ * by a NUL. The values of several lines of one key are one field,
+ * separated by commas.
  */
-static char const *const member_list[STORE_WORDS] = {
+char const *const member_list[STORE_WORDS] = {
 	"--format=%(refname)%00%(objectname)%00"
 	"%(trailers:key=Kind,valueonly,separator=%x2C)%00"
 	"%(trailers:key=Login,valueonly,separator=%x2C)%00"
@@ -115,25 +114,19 @@ struct member_registry {
 };
 
 struct member_table {
-	struct member_records         records;   /* the newest records that a
-	                                            read read. Until the first
+	struct member_records         records;   /* the newest records that git
+	                                            listed. Until the first
 	                                            read, the entries are a copy
 	                                            of the entries of the
 	                                            registry, and the views point
 	                                            into its output. */
 	struct list                   lookups;   /* struct member_lookup, under
 	                                            way or refused */
-	struct list                   reads;     /* struct member_wait of
-	                                            member_table_read(), whose
-	                                            git runs */
 	struct member_registry const *registry;
 	struct loop                  *loop;
 	struct blocker               *blockers;
 	struct list                  *children;  /* the children of the loop,
 	                                            which run git */
-	uint64_t                      read;      /* the start of the turn of
-	                                            the loop in which a read
-	                                            replaced the records, or 0 */
 };
 
 /* The claim of the member of a login. Each step (member_claim_step())
@@ -165,10 +158,10 @@ enum {
 };
 
 /* The lookup of a login whose member the records of a table do not name,
- * on the loop of the table. The table reads the records
- * (member_table_read()), and the steps of the claim of the lookup decide
+ * on the loop of the table. git reads the records into the table
+ * (member_table_parse()), and the steps of the claim of the lookup decide
  * the member (member_lookup_step()). If a wait needs a record that does
- * not exist, git writes the record, and the table reads the records again.
+ * not exist, git writes the record, and reads the records again.
  * For a Unix login that no record names, the job name first looks up the
  * name of the user on a blocker. A lookup that ends with the member, also
  * a member without a record, or with a refusal stays on the table, and
@@ -183,10 +176,10 @@ struct member_lookup {
 	struct list            waits;              /* struct member_wait */
 	struct loop_timer      timer;              /* the deadline of the job
 	                                              name */
-	struct member_wait     read;               /* the read of the records */
 	struct member_table   *table;              /* nullptr once off the
 	                                              table */
-	struct child          *git;                /* the git that writes the
+	struct child          *git;                /* the git that reads the
+	                                              records or writes the
 	                                              record, or nullptr */
 	struct member_claim    claim;              /* the login, the member
 	                                              once the records decide,
@@ -1077,9 +1070,8 @@ member_registry_report (struct member_registry const *registry)
 }
 
 /* Removes @p lookup from its table, and frees it unless the job name is
- * with a blocker. member_table_cancel() kills the git that reads the
- * records for the lookup, and store_drop() lets the git that writes a
- * record run to its end.
+ * with a blocker. store_drop() kills the git that reads the records, and
+ * lets the git that writes a record run to its end.
  */
 static void
 member_lookup_drop (struct member_lookup *lookup)
@@ -1091,7 +1083,6 @@ member_lookup_drop (struct member_lookup *lookup)
 	}
 	while (!list_is_empty(&lookup->waits))
 		list_del(lookup->waits.next);
-	member_table_cancel(&lookup->read);
 	store_drop(&lookup->git);
 	if (!(lookup->flags & LOOKUP_NAME))
 		free(lookup);
@@ -1162,44 +1153,32 @@ member_lookup_join (struct member_lookup *lookup,
 	return e;
 }
 
-/* Returns the result of a spawn of git that returned @p e: EINPROGRESS
- * for 0. For an error, the function writes why git could not start
- * (child_spawn_why()) to the @p len bytes at @p why, and returns EAGAIN
- * for EBUSY, too many children, or else EIO.
+/* Runs git as lookup->git on the loop of the table of @p lookup for the
+ * command @p cmd of the store of the registry, as store_command() writes
+ * it for @p words, @p ref and @p in. A step of the loop calls @p done with
+ * the child once git ends. Returns EINPROGRESS. If git cannot start, the
+ * function writes why (child_spawn_why()) to lookup->why, and returns
+ * EAGAIN for EBUSY, too many children, or else EIO.
  */
 static int
-member_spawn_result (int     e,
-                     char   *why,
-                     size_t  len)
+member_lookup_git (struct member_lookup *lookup,
+                   enum store_cmd        cmd,
+                   char const *const    *words,
+                   char const           *ref,
+                   struct span           in,
+                   void                (*done) (struct child *c))
 {
+	struct member_table const *table = lookup->table;
+	struct git_run run;
+	int e = store_command(table->registry->store, &run, cmd, words, ref, in, table->loop->now);
+	if (!e)
+		lookup->git = child_create(table->loop, table->children, &run.c, done, lookup, &e);
 	if (!e)
 		return EINPROGRESS;
 	char text[MEMBER_WHY];
 	struct cstr_view const because = child_spawn_why(e, "git", text, sizeof text);
-	util_format(why, len, "%.*s", (int)because.len, because.data);
+	util_format(lookup->why, sizeof lookup->why, "%.*s", (int)because.len, because.data);
 	return e == EBUSY ? EAGAIN : EIO;
-}
-
-/* Spawns git on the loop of @p table for the command @p cmd of the store
- * of the registry of the table, as store_command() writes it for
- * @p words, @p ref and @p in. The child is on table->children until it is
- * destroyed, its owner is @p owner, and a step of the loop calls @p done
- * with the child once git ends. Returns the child, or returns nullptr with
- * the error of store_command() or child_create() in @p *e.
- */
-static struct child *
-member_table_spawn (struct member_table const *table,
-                    enum store_cmd             cmd,
-                    char const *const         *words,
-                    char const                *ref,
-                    struct span                in,
-                    void                     (*done) (struct child *c),
-                    void                      *owner,
-                    int                       *e)
-{
-	struct git_run run;
-	*e = store_command(table->registry->store, &run, cmd, words, ref, in, table->loop->now);
-	return *e ? nullptr : child_create(table->loop, table->children, &run.c, done, owner, e);
 }
 
 /* Writes to lookup->why that the name of the Unix user of @p lookup
@@ -1248,58 +1227,50 @@ static int
 member_lookup_step (struct member_lookup *lookup)
 {
 	struct member_table *table = lookup->table;
-	char *why = lookup->why;
-	size_t const len = sizeof lookup->why;
 	struct buf in = {};
 	int e = member_claim_step(&lookup->claim, table->registry, &table->records,
-	                          lookup->flags & LOOKUP_WRITE ? &in : nullptr, why, len);
+	                          lookup->flags & LOOKUP_WRITE ? &in : nullptr, lookup->why,
+	                          sizeof lookup->why);
 	/* A Unix login that no record names needs the name of its user. */
 	if (!e && !*lookup->claim.login.name)
 		return member_lookup_submit(lookup);
 	if (e != EINPROGRESS)
 		return e;
-	lookup->git = member_table_spawn(table, STORE_COMMIT, nullptr, lookup->claim.ref,
-	                                 buf_peek(&in), member_lookup_wrote, lookup, &e);
+	e = member_lookup_git(lookup, STORE_COMMIT, nullptr, lookup->claim.ref, buf_peek(&in),
+	                      member_lookup_wrote);
 	buf_fini(&in);
-	return member_spawn_result(e, why, len);
-}
-
-/* Reads the records for @p lookup (member_table_read()). A read of the
- * current turn runs the step of the lookup at once (member_lookup_step()).
- * Returns EINPROGRESS while git reads, the result of member_lookup_step(),
- * or the error of the read with the reason in lookup->why.
- */
-static int
-member_lookup_read (struct member_lookup *lookup)
-{
-	int const e = member_table_read(lookup->table, &lookup->read);
-	if (!e)
-		return member_lookup_step(lookup);
-	if (e != EINPROGRESS)
-		memcpy(lookup->why, lookup->read.why, sizeof lookup->why);
 	return e;
 }
 
-/* On the loop: the table read the records for the lookup of @p wait. The
- * lookup runs its step with the records, or ends with the error and the
- * reason of the read.
+/* On the loop: git @p c listed the records for the lookup c->owner. The
+ * records replace the records of the table, and the lookup runs its step
+ * with them, or ends with the error and the reason of the read.
  */
 static void
-member_lookup_read_done (struct member_wait *wait)
+member_lookup_read_done (struct child *c)
 {
-	struct member_lookup *lookup = container_of(wait, struct member_lookup, read);
-	int e = wait->e;
-	if (e)
-		memcpy(lookup->why, wait->why, sizeof lookup->why);
-	else
+	struct member_lookup *lookup = c->owner;
+	int e = member_table_parse(lookup->table, c, lookup->why, sizeof lookup->why);
+	child_destroy(&lookup->git);
+	if (!e)
 		e = member_lookup_step(lookup);
 	if (e != EINPROGRESS)
 		member_lookup_end(lookup, e);
 }
 
+/* Runs git to read the records for @p lookup. Returns as
+ * member_lookup_git() does.
+ */
+static int
+member_lookup_read (struct member_lookup *lookup)
+{
+	return member_lookup_git(lookup, STORE_REFS, member_list, nullptr, (struct span){},
+	                         member_lookup_read_done);
+}
+
 /* On the loop: git committed the record for the lookup of @p c, or another
  * writer changed the record first. The records of the table are older
- * than the commit, so the table reads the records again with git.
+ * than the commit, so git reads the records again.
  */
 static void
 member_lookup_wrote (struct child *c)
@@ -1308,7 +1279,6 @@ member_lookup_wrote (struct child *c)
 	int e = member_commit_result(lookup->why, sizeof lookup->why, lookup->claim.ref,
 	                             buf_peek(&c->out), 0, &c->end);
 	child_destroy(&lookup->git);
-	lookup->table->read = 0;
 	if (!e || e == EAGAIN)
 		e = member_lookup_read(lookup);
 	if (e != EINPROGRESS)
@@ -1427,14 +1397,12 @@ member_lookup_create (struct member_table       *table,
 			.loop = table->loop
 		},
 		.timer.fn = member_lookup_late,
-		.read.done = member_lookup_read_done,
 		.table = table,
 		.claim.login = *login,
 		.flags = flags,
 		.result = EINPROGRESS,
 	};
 	list_init(&lookup->waits);
-	list_init(&lookup->read.hook);
 	list_append(&table->lookups, &lookup->hook);
 	*e = 0;
 	return lookup;
@@ -1463,7 +1431,6 @@ member_table_create (struct member_registry const *registry,
 		.children = children,
 	};
 	list_init(&table->lookups);
-	list_init(&table->reads);
 	/* The views of the entries point into the output of the registry,
 	 * which outlives the table. */
 	struct member_records const *from = &registry->records;
@@ -1488,8 +1455,6 @@ member_table_destroy (struct member_table **p_table)
 	*p_table = nullptr;
 	while (!list_is_empty(&table->lookups))
 		member_lookup_drop(container_of(table->lookups.next, struct member_lookup, hook));
-	while (!list_is_empty(&table->reads))
-		member_table_cancel(container_of(table->reads.next, struct member_wait, hook));
 	member_records_fini(&table->records);
 	free(table);
 }
@@ -1583,62 +1548,19 @@ member_table_claim (struct member_table       *table,
 void
 member_table_cancel (struct member_wait *wait)
 {
-	if (!wait)
-		return;
-	list_del(&wait->hook);
-	store_drop(&wait->git);
-}
-
-/* On the loop: git @p c read the records for a wait on the reads of its
- * table, c->owner. The output replaces the records of the table, and then
- * the wait ends.
- */
-static void
-member_table_read_done (struct child *c)
-{
-	struct member_table *table = c->owner;
-	struct member_wait *wait = nullptr;
-	struct list *node;
-	list_foreach (node, &table->reads) {
-		struct member_wait *w = container_of(node, struct member_wait, hook);
-		if (w->git == c) {
-			wait = w;
-			break;
-		}
-	}
-	/* member_table_read() sets wait->git, and member_table_cancel()
-	 * destroys that git, so the wait of a git that ends is on the reads.
-	 * A git without a wait is destroyed. */
-	if (!wait) {
-		child_destroy(&c);
-		return;
-	}
-	int const e = member_records_take(&table->records, &c->out, 0, &c->end, wait->why,
-	                                  sizeof wait->why);
-	if (!e)
-		table->read = table->loop->now;
-	member_table_cancel(wait);
-	wait->e = e;
-	wait->done(wait);
+	if (wait)
+		list_del(&wait->hook);
 }
 
 int
-member_table_read (struct member_table *table,
-                   struct member_wait  *wait)
+member_table_parse (struct member_table *table,
+                    struct child        *git,
+                    char                *why,
+                    size_t               len)
 {
-	if (!table || !wait)
+	if (!table || !git || !why || !len)
 		return EINVAL;
-	list_init(&wait->hook);
-	wait->why[0] = '\0';
-	if (table->read == table->loop->now)
-		return wait->e = 0;
-	int e = 0;
-	wait->git = member_table_spawn(table, STORE_REFS, member_list, nullptr, (struct span){},
-	                               member_table_read_done, table, &e);
-	e = member_spawn_result(e, wait->why, sizeof wait->why);
-	if (e == EINPROGRESS)
-		list_append(&table->reads, &wait->hook);
-	return wait->e = e;
+	return member_records_take(&table->records, &git->out, 0, &git->end, why, len);
 }
 
 struct member_info const *

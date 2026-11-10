@@ -28,6 +28,7 @@
 #include "check.h"
 #include "child.h"
 #include "dstr.h"
+#include "git_run.h"
 #include "hexid.h"
 #include "list.h"
 #include "loop.h"
@@ -63,13 +64,11 @@ test_ended (struct member_wait *)
 	++ended;
 }
 
-/* Runs one turn of the loop, which waits for nothing. A read of the
- * records of a table in a later turn runs git again.
- */
+/* On the loop: the git of test_take() ended. */
 static void
-test_turn (void)
+test_git_done (struct child *)
 {
-	CHECK(!loop_turn(&test_loop, loop_clock()));
+	++ended;
 }
 
 /* Runs the loop until @p n waits have ended in all, for 10 s at most. */
@@ -284,10 +283,10 @@ test_login (enum member_kind  kind,
 }
 
 /* Finds the member of @p login in @p table with a lookup of @p lookup,
- * member_table_find() or member_table_claim(), in a turn of its own, so
- * that the table reads the records with git, and checks the result: the
- * error @p e, and the member @p name of the kind @p kind, or the start of
- * the reason @p why. Returns the number of waits that ended.
+ * member_table_find() or member_table_claim(), which reads the records
+ * with git, and checks the result: the error @p e, and the member @p name
+ * of the kind @p kind, or the start of the reason @p why. Returns the
+ * number of waits that ended.
  */
 static unsigned
 test_find (struct member_table       *table,
@@ -302,7 +301,6 @@ test_find (struct member_table       *table,
 {
 	struct member_wait wait = { .done = test_ended };
 	unsigned const before = ended;
-	test_turn();
 	int const first = lookup(table, login, &wait);
 	CHECK(first == EINPROGRESS && wait.e == EINPROGRESS);
 	if (first == EINPROGRESS)
@@ -441,7 +439,6 @@ test_table (struct store const           *store,
 	};
 	login = test_login(MEMBER_PERSON, "identity dave", "dave");
 	unsigned const before = ended;
-	test_turn();
 	CHECK(member_table_find(table, &login, &waits[0]) == EINPROGRESS);
 	CHECK(member_table_find(table, &login, &waits[1]) == EINPROGRESS);
 	CHECK(member_table_claim(table, &login, &waits[2]) == EINPROGRESS);
@@ -473,7 +470,6 @@ test_table (struct store const           *store,
 	 * reads, and the lookup ends no wait. */
 	unsigned const after = ended;
 	login = test_login(MEMBER_PERSON, "identity erin", "erin");
-	test_turn();
 	CHECK(member_table_claim(table, &login, &wait) == EINPROGRESS);
 	member_table_destroy(&table);
 	CHECK(!table);
@@ -550,6 +546,31 @@ test_tip (struct store const *store,
 	return tip;
 }
 
+/* Runs git on the loop with the words @p words of STORE_REFS for @p store,
+ * and replaces the records of @p table with its output
+ * (member_table_parse()). Returns the result, with the reason in @p why.
+ */
+static int
+test_take (struct store const *store,
+           struct member_table *table,
+           struct list        *children,
+           char const *const  *words,
+           char                why[MEMBER_WHY])
+{
+	struct git_run run;
+	CHECK(!store_command(store, &run, STORE_REFS, words, nullptr, (struct span){},
+	                     loop_clock()));
+	int e = -1;
+	unsigned const before = ended;
+	struct child *c = child_create(&test_loop, children, &run.c, test_git_done, nullptr, &e);
+	CHECK(c && !e);
+	test_until(before + 1);
+	*why = 'x';
+	e = member_table_parse(table, c, why, MEMBER_WHY);
+	child_destroy(&c);
+	return e;
+}
+
 /* The reads of the records of a table of @p reg, the list of the members
  * of @p store and their branches in the table, the notices of the list,
  * and the lookup of a notebook by name.
@@ -584,29 +605,18 @@ test_list (struct store const           *store,
 		test_tip(store, "refs/heads/agent/ghost/findings"),
 		test_tip(store, "refs/heads/person/moved/findings"),
 	};
-	/* The table reads the records with git. A read in the turn of the
-	 * read takes no git, and a read in a later turn takes git again. */
-	struct member_wait wait = { .done = test_ended };
-	unsigned const before = ended;
-	CHECK(member_table_read(nullptr, &wait) == EINVAL);
-	CHECK(member_table_read(table, nullptr) == EINVAL);
-	test_turn();
-	CHECK(member_table_read(table, &wait) == EINPROGRESS && wait.e == EINPROGRESS && wait.git);
-	CHECK(!list_is_empty(children));
-	test_until(before + 1);
-	CHECK(!wait.e && !*wait.why && !wait.git && list_is_empty(children));
-	struct member_wait again = { .done = test_ended, .why = "x" };
-	CHECK(!member_table_read(table, &again) && !again.e && !*again.why && !again.git);
+	/* The output of git that lists the records replaces the records of the
+	 * table. Output in another form leaves the records as they are. */
+	char why[MEMBER_WHY];
+	char const *const other[STORE_WORDS] = { "--format=%(refname)", "refs/askai/" };
+	CHECK(test_take(store, table, children, other, why) == EIO &&
+	      !strcmp(why, "Could not read the member records: the output of git is not valid."));
+	CHECK(!member_table_name(table, CSTR_VIEW("bro"), &(struct member){}) &&
+	      member_table_name(table, CSTR_VIEW("moved"), &(struct member){}) == ENOENT);
+	CHECK(!test_take(store, table, children, member_list, why) && *why == 'x');
 	CHECK(list_is_empty(children));
-	test_turn();
-	CHECK(member_table_read(table, &again) == EINPROGRESS && again.git);
-	/* A read that stops waiting kills its git and ends no wait. */
-	member_table_cancel(&again);
-	CHECK(!again.git);
-	member_table_cancel(&again);
-	for (size_t i = 0; i < 1000 && !list_is_empty(children); ++i)
-		CHECK(!loop_turn(&test_loop, loop_clock() + NS / 100));
-	CHECK(list_is_empty(children) && ended == before + 1 && again.e == EINPROGRESS);
+	CHECK(member_table_parse(nullptr, nullptr, why, sizeof why) == EINVAL);
+	CHECK(member_table_parse(table, nullptr, why, sizeof why) == EINVAL);
 	/* The persons come first, then the agents, each by name. The user who
 	 * runs the test is a person of the table too. */
 	char user[MEMBER_NAME];
@@ -1141,7 +1151,6 @@ test_ends (char const                   *dir,
 	 * the lookup at once. */
 	struct member_wait wait = { .done = test_ended };
 	login = test_login(MEMBER_PERSON, "identity hal", "hal");
-	test_turn();
 	CHECK(!setenv("PATH", paths[FAIL], 1));
 	CHECK(member_table_claim(table, &login, &wait) == EINPROGRESS);
 	CHECK(!setenv("PATH", old, 1));
@@ -1150,7 +1159,6 @@ test_ends (char const                   *dir,
 	test_find(table, member_table_claim, &login, 0, MEMBER_PERSON, "hal", "");
 	CHECK(test_has(store, "refs/askai/members/hal", "Login: identity hal\n"));
 	login = test_login(MEMBER_PERSON, "identity ian", "ian");
-	test_turn();
 	CHECK(!setenv("PATH", paths[NONE], 1));
 	CHECK(member_table_claim(table, &login, &wait) == EIO && wait.e == EIO);
 	CHECK(!setenv("PATH", old, 1));

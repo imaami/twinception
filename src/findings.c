@@ -86,8 +86,8 @@ static struct cstr_view const unread = CSTR_VIEW_INIT("The findings could not be
 
 /* The git that a call runs. */
 enum findings_stage : uint8_t {
-	STAGE_REFS,     /* the table of the members reads the records, with the
-	                   branches of findings (member_table_read()) */
+	STAGE_REFS,     /* for-each-ref lists the records of the members, with
+	                   the branches of findings (member_list) */
 	STAGE_CHECK,    /* cat-file checks the finding that about names */
 	STAGE_FILES,    /* ls-tree lists the files of the findings of a branch */
 	STAGE_READ,     /* cat-file reads files of findings */
@@ -101,8 +101,8 @@ enum findings_stage : uint8_t {
 	                   askai runs again after a restart */
 };
 
-/* The stages whose step handles a git or a read that failed. The steps of
- * the other stages need the output of a git that succeeded.
+/* The stages whose step handles a git that failed. The steps of the other
+ * stages need the output of a git that succeeded.
  */
 static constexpr uint32_t STAGES_FAILED = 1U << STAGE_REFS | 1U << STAGE_COMMIT |
                                           1U << STAGE_CALLS;
@@ -189,8 +189,6 @@ struct findings_call {
 	struct dstr            claim;     /* the claim argument, without the
 	                                     notices at its end */
 	struct finding_change  change;    /* the change of add and update */
-	struct member_wait     wait;      /* the read of the records of the
-	                                     members (STAGE_REFS) */
 	UTIL_ARRAY(struct findings_branch) branches;  /* from the records of
 	                                                 the members */
 	UTIL_ARRAY(struct findings_file)   wanted;    /* the files that cat-file
@@ -208,7 +206,6 @@ struct findings_call {
 	                                         the loop of the call, with the
 	                                         service and the table of the
 	                                         members */
-	struct mcp_slot       *slot;      /* the slot of the call */
 	struct dstr           *prompt;    /* the text that askai adds to the
 	                                     prompt, for the call of
 	                                     findings_prompt(), else nullptr */
@@ -284,7 +281,6 @@ static void
 findings_call_destroy (struct findings_call **p_call)
 {
 	struct findings_call *call = *p_call;
-	member_table_cancel(&call->wait);
 	store_drop(&call->child);
 	buf_fini(&call->files);
 	dstr_cleanup(&call->out);
@@ -422,11 +418,8 @@ findings_ref (char const *author,
 	member_ref(&agent, MEMBER_BRANCH_FINDINGS, ref);
 }
 
-static void findings_got_refs (struct mcp_slot *slot);
-
-/* Starts the action of the call in @p slot anew: the table of the members
- * reads the records, which name the branches of findings
- * (member_table_read()).
+/* Starts the action of the call in @p slot anew: git lists the records of
+ * the members, which name the branches of findings (member_list).
  */
 static void
 findings_load (struct mcp_slot *slot)
@@ -438,13 +431,7 @@ findings_load (struct mcp_slot *slot)
 	call->batch = 0;
 	call->last = 0;
 	call->flags &= CALL_CITED;
-	call->stage = STAGE_REFS;
-	child_destroy(&call->child);
-	if (member_table_read(call->notes->members, &call->wait) == EINPROGRESS) {
-		(void)mcp_slot_park(slot);
-		return;
-	}
-	findings_got_refs(slot);
+	findings_run(slot, STAGE_REFS, STORE_REFS, member_list, nullptr, &(struct buf){});
 }
 
 /* Runs git to read the next files of call->wanted, from call->done on, as
@@ -527,20 +514,21 @@ findings_next (struct mcp_slot *slot)
 }
 
 /* Copies the branches of findings that the action of the call in @p slot
- * needs from the records of the members, once the table has read them:
- * every branch for show and for list without author, the branch of the
- * author for list with author, and else the branch of the agent. For add
- * with about, cat-file first checks the finding that about names on the
- * branch of its author.
+ * needs from the records of the members, once their list has replaced the
+ * records of the table (member_table_parse()): every branch for show and
+ * for list without author, the branch of the author for list with author,
+ * and else the branch of the agent. For add with about, cat-file first
+ * checks the finding that about names on the branch of its author.
  */
 static void
 findings_got_refs (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	/* The table writes the reason of a read that failed. */
-	if (call->wait.e) {
-		findings_stop(slot, call->wait.e == ENOMEM ? ENOMEM : EINVAL,
-		              *call->wait.why ? cstr_view(call->wait.why) : unread);
+	char why[MEMBER_WHY] = "";
+	int e = member_table_parse(call->notes->members, call->child, why, sizeof why);
+	if (e) {
+		findings_stop(slot, e == ENOMEM ? ENOMEM : EINVAL, *why ? cstr_view(why) : unread);
 		return;
 	}
 	bool const every = call->action == FINDINGS_SHOW ||
@@ -577,7 +565,7 @@ findings_got_refs (struct mcp_slot *slot)
 	char path[FINDING_FILE];
 	finding_path(number, path);
 	struct buf in = {};
-	int const e = notes_read_input(&in, tip.hex, cstr_view(path));
+	e = notes_read_input(&in, tip.hex, cstr_view(path));
 	if (e) {
 		buf_fini(&in);
 		findings_end(slot, e, true);
@@ -2002,24 +1990,14 @@ findings_got_calls (struct mcp_slot *slot)
 	findings_begin(slot, call->args);
 }
 
-/* Called on the loop once the table of the members ends the read of the
- * records for the call of @p wait. The step of the call then goes on
- * (mcp_slot_ready()).
- */
-static void
-findings_waited (struct member_wait *wait)
-{
-	(void)mcp_slot_ready(container_of(wait, struct findings_call, wait)->slot);
-}
-
-/* Allocates a call of @p action in @p slot with the part @p notes of the
- * notes tool. Returns the call, or nullptr with ENOMEM in @p *e.
+/* Allocates a call of @p action in @p slot with the part of the notes tool
+ * on the loop of @p slot. Returns the call, or nullptr with ENOMEM in
+ * @p *e.
  */
 static struct findings_call *
-findings_call_create (struct mcp_slot              *slot,
-                      struct notes_tool_loop const *notes,
-                      uint8_t                       action,
-                      int                          *e)
+findings_call_create (struct mcp_slot *slot,
+                      uint8_t          action,
+                      int             *e)
 {
 	struct findings_call *call = malloc(sizeof *call);
 	*e = call ? 0 : ENOMEM;
@@ -2028,9 +2006,7 @@ findings_call_create (struct mcp_slot              *slot,
 			.out    = DSTR_INIT,
 			.claim  = DSTR_INIT,
 			.change = finding_change(),
-			.wait   = { .hook = list(&call->wait.hook), .done = findings_waited },
-			.notes  = notes,
-			.slot   = slot,
+			.notes  = mcp_slot_notes(slot),
 			.action = action,
 		};
 	return call;
@@ -2050,7 +2026,7 @@ findings_start (struct mcp_slot    *slot,
 	uint8_t const action = (uint8_t)cstr_view_index(findings_actions, FINDINGS_ACTIONS,
 	                                                jb_view(jb_get(args, "action")));
 	int e;
-	struct findings_call *call = findings_call_create(slot, mcp_slot_notes(slot), action, &e);
+	struct findings_call *call = findings_call_create(slot, action, &e);
 	if (!call) {
 		mcp_slot_fail(slot, e);
 		return;
@@ -2192,21 +2168,26 @@ struct plugin const findings_plugin = {
 };
 
 void
-findings_prompt (struct notes_tool_loop const *notes,
-                 struct mcp_slot              *slot,
-                 struct dstr                  *prompt,
-                 size_t                        most,
-                 tool_step_fn                 *then)
+findings_prompt (struct mcp_slot *slot,
+                 struct dstr     *prompt,
+                 size_t           most,
+                 tool_step_fn    *then)
 {
 	int e;
-	struct findings_call *call = findings_call_create(slot, notes, FINDINGS_LIST, &e);
+	struct findings_call *call = findings_call_create(slot, FINDINGS_LIST, &e);
 	if (!call) {
 		mcp_slot_fail(slot, e);
 		return;
 	}
 	*mcp_slot_own(slot) = call;
 	/* The list of the agent, with the open findings as its result. */
-	memcpy(call->author, findings_session(call)->agent.name, sizeof call->author);
+	struct member_session const *session = findings_session(call);
+	if (!session) {
+		findings_drop(slot);
+		mcp_slot_fail(slot, EINVAL);
+		return;
+	}
+	memcpy(call->author, session->agent.name, sizeof call->author);
 	call->prompt = prompt;
 	call->then = then;
 	call->most = most;

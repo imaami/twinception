@@ -4003,8 +4003,7 @@ mcp_slot_prompted (struct mcp_slot *slot)
 		return;
 	}
 	req->flags |= REQ_FINDINGS;
-	findings_prompt(req->mcp->notes, slot, &slot->answer, mcp_req_lend_max(req),
-	                mcp_slot_go_on);
+	findings_prompt(slot, &slot->answer, mcp_req_lend_max(req), mcp_slot_go_on);
 }
 
 /* Start a call that asks the upstream, with the arguments @p args, of the
