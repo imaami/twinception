@@ -437,7 +437,8 @@ findings_load (struct mcp_slot *slot)
 /* Runs git to read the next files of call->wanted, from call->done on, as
  * many as one output of git holds (store_read_fits()), at least one. The
  * input of cat-file names each file by its blob ID, or else by its path on
- * the branch of its author.
+ * the branch of its author. The ref of the branch is made once for the
+ * files of one author in a row.
  */
 static void
 findings_read_batch (struct mcp_slot *slot)
@@ -446,6 +447,8 @@ findings_read_batch (struct mcp_slot *slot)
 	struct buf in = {};
 	uint64_t used = 0;
 	uint32_t k = call->done;
+	char const *author = nullptr;
+	char ref[MEMBER_REF];
 	int e = 0;
 	while (!e && k < call->wanted.n) {
 		struct findings_file const *w = &call->wanted.items[k];
@@ -455,9 +458,11 @@ findings_read_batch (struct mcp_slot *slot)
 		if (oid_len(&w->id)) {
 			e = buf_printf(&in, "%s\n", w->id.hex);
 		} else {
-			char ref[MEMBER_REF];
+			if (!author || strcmp(author, w->author)) {
+				author = w->author;
+				findings_ref(author, ref);
+			}
 			char path[FINDING_FILE];
-			findings_ref(w->author, ref);
 			e = notes_read_input(&in, ref, finding_path(w->number, path));
 		}
 		++k;
