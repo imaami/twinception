@@ -622,6 +622,7 @@ member_record_input (struct member_registry const *reg,
 	size_t n = 1;
 	struct oid tip = {};
 	char message[STORE_MESSAGE];
+	struct cstr_view subject;
 	if (entry) {
 		(void)oid_init(&tip, entry->tip);
 		struct cstr_view logins = entry->logins;
@@ -630,16 +631,16 @@ member_record_input (struct member_registry const *reg,
 			more = cstr_view_cut(&logins, ',', &item);
 			t[n++] = (struct store_trailer){ key, item };
 		}
-		util_format(message, sizeof message, "Add login %s to the %s %s", login->text,
-		            member_kinds[login->kind].data, login->name);
+		subject = util_format_view(message, sizeof message, "Add login %s to the %s %s",
+		                           login->text, member_kinds[login->kind].data, login->name);
 	} else {
-		util_format(message, sizeof message, "Add the %s %s", member_kinds[login->kind].data,
-		            login->name);
+		subject = util_format_view(message, sizeof message, "Add the %s %s",
+		                           member_kinds[login->kind].data, login->name);
 	}
 	if (*login->text)
 		t[n++] = (struct store_trailer){ key, cstr_view(login->text) };
 	util_format(ref, MEMBER_REF, MEMBERS "%s", login->name);
-	return member_commit_input(reg, ref, cstr_view(message), t, n, &tip, in);
+	return member_commit_input(reg, ref, subject, t, n, &tip, in);
 }
 
 /* Returns the length of the kind of a login, "uid " or "identity ",
@@ -898,8 +899,9 @@ member_init_json (struct member      *dest,
 /* Writes to @p name the name of the session in the repository at @p path:
  * the last part of the path less .git, or of the directory that contains
  * a .git directory, or "session" if member_name_valid() refuses that.
+ * Returns the view of the name in @p name.
  */
-static void
+static struct cstr_view
 member_session_name (char const *path,
                      char        name[MEMBER_NAME])
 {
@@ -915,9 +917,9 @@ member_session_name (char const *path,
 	}
 	if (cstr_view_ends(base, git))
 		base.len -= git.len;
-	util_format(name, MEMBER_NAME, "%.*s", (int)base.len, base.data);
 	if (!member_name_valid(base))
-		util_format(name, MEMBER_NAME, "session");
+		return util_format_view(name, MEMBER_NAME, "session");
+	return util_format_view(name, MEMBER_NAME, "%.*s", (int)base.len, base.data);
 }
 
 /* Reads the records of @p reg into reg->records, and creates the session
@@ -944,19 +946,21 @@ member_registry_session_read (struct member_registry *reg,
 			util_format(why, len, "Could not make the session ID: %s.", strerror(e));
 			return e;
 		}
-		char name[MEMBER_NAME];
-		member_session_name(store_directory(reg->store), name);
+		char text[MEMBER_NAME];
+		struct cstr_view const name = member_session_name(store_directory(reg->store), text);
 		struct store_trailer const t[] = {
 			{ CSTR_VIEW("Session"), hexid_view(&id) },
-			{ CSTR_VIEW("Name"),    cstr_view(name) },
+			{ CSTR_VIEW("Name"),    name },
 			{ CSTR_VIEW("Format"),  CSTR_VIEW("1") },
 		};
 		char message[STORE_MESSAGE];
-		util_format(message, sizeof message, "Create the session %s", name);
+		struct cstr_view const subject = util_format_view(message, sizeof message,
+		                                                  "Create the session %.*s",
+		                                                  (int)name.len, name.data);
 		for (size_t tries = 0; !e && !r->session.data && tries < STORE_TRIES; ++tries) {
 			struct buf in = {};
-			e = member_commit_input(reg, SESSION, cstr_view(message), t, array_size(t),
-			                        &(struct oid){}, &in);
+			e = member_commit_input(reg, SESSION, subject, t, array_size(t), &(struct oid){},
+			                        &in);
 			e = member_commit(reg, SESSION, &in, e, why, len);
 			if (!e || e == EAGAIN)
 				e = member_records_read(r, reg->store, why, len);
@@ -1699,8 +1703,8 @@ member_byline_put (struct member_byline        *byline,
                    uint32_t                     k,
                    struct member_session const *session)
 {
-	(void)util_format(byline->email, sizeof byline->email, "%s/%s",
-	                  member_kinds[self->kind].data, self->name);
+	struct cstr_view const email = util_format_view(byline->email, sizeof byline->email, "%s/%s",
+	                                                member_kinds[self->kind].data, self->name);
 	size_t n = 0;
 	struct store_trailer *t = byline->trailers;
 	if (*call->ask.hex)
@@ -1714,7 +1718,7 @@ member_byline_put (struct member_byline        *byline,
 		                                 hexid_view(&call->conversation) };
 	if (*call->asker.name)
 		t[n++] = (struct store_trailer){ CSTR_VIEW("Asked-by"), cstr_view(call->asker.name) };
-	commit->author = (struct store_ident){ cstr_view(self->name), cstr_view(byline->email) };
+	commit->author = (struct store_ident){ cstr_view(self->name), email };
 	commit->committer = session->committer;
 	commit->trailers = t;
 	commit->n_trailers = n;
