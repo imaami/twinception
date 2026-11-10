@@ -605,12 +605,14 @@ member_commit (struct member_registry const *reg,
 
 /* Writes to @p in the input of git for the record of @p login, the record
  * of a new member named login->name, and to @p ref the ref of the record.
- * With @p entry, the record of that name, the commit adds the login to
- * that record instead. Returns as member_commit_input() does.
+ * @p text is the view of login->text. With @p entry, the record of that
+ * name, the commit adds the login to that record instead. Returns as
+ * member_commit_input() does.
  */
 static int
 member_record_input (struct member_registry const *reg,
                      struct member_login const    *login,
+                     struct cstr_view              text,
                      struct member_entry const    *entry,
                      char                          ref[MEMBER_REF],
                      struct buf                   *in)
@@ -637,8 +639,8 @@ member_record_input (struct member_registry const *reg,
 		subject = util_format_view(message, sizeof message, "Add the %s %s",
 		                           member_kinds[login->kind].data, login->name);
 	}
-	if (*login->text)
-		t[n++] = (struct store_trailer){ key, cstr_view(login->text) };
+	if (text.len)
+		t[n++] = (struct store_trailer){ key, text };
 	util_format(ref, MEMBER_REF, MEMBERS "%s", login->name);
 	return member_commit_input(reg, ref, subject, t, n, &tip, in);
 }
@@ -654,20 +656,20 @@ member_login_kind (struct cstr_view login)
 }
 
 /* Decides what @p login, which no record names, does with @p entry, the
- * record of the name login->name. Returns 0 if the login adopts the
- * record: the agent of a service and the record of an agent. Returns
- * EEXIST if askai adds the login to the record: the first login of its
- * kind and the record of a person. A person can then log in as a Unix user
- * and as an identity of one name. Otherwise returns EPERM with the reason
- * in the @p len bytes at @p why.
+ * record of the name login->name. @p text is the view of login->text.
+ * Returns 0 if the login adopts the record: the agent of a service and the
+ * record of an agent. Returns EEXIST if askai adds the login to the
+ * record: the first login of its kind and the record of a person. A
+ * person can then log in as a Unix user and as an identity of one name.
+ * Otherwise returns EPERM with the reason in the @p len bytes at @p why.
  */
 static int
 member_adopt (struct member_entry const *entry,
               struct member_login const *login,
+              struct cstr_view           text,
               char                      *why,
               size_t                     len)
 {
-	struct cstr_view const text = cstr_view(login->text);
 	size_t const kind = member_login_kind(text);
 	struct cstr_view logins = entry->logins;
 	size_t n = 0;
@@ -709,12 +711,15 @@ member_adopt (struct member_entry const *entry,
 
 /*
  * Decides the member of claim->login with the records @p r of the registry
- * @p reg, as one step of the claim: the member of the record of the login,
- * or of the record of the name login->name that the login adopts
+ * @p reg, as one step of the claim. @p text is the login text of
+ * claim->login, which the caller measured. @p entry is the record of the
+ * login in @p r, which the caller looked up with member_records_login(),
+ * or nullptr. The member is the member of @p entry, or without @p entry,
+ * of the record of the name login->name that the login adopts
  * (member_adopt()). Returns 0 with the member in claim->login, also with
- * the name "" for a Unix login that no record names and whose name is not
- * known yet. If no record names the member yet, the step writes to @p in
- * the input of git for the commit of the record: the record of a new
+ * the name "" for a Unix login without a record whose name is not known
+ * yet. If no record of the member exists yet, the step writes to
+ * @p in the input of git for the commit of the record: the record of a new
  * member named login->name, or the login added to the record of the person
  * of that name. It writes the ref of the record to claim->ref, counts the
  * commit in claim->writes, and returns EINPROGRESS. For a null @p in, as
@@ -728,18 +733,19 @@ static int
 member_claim_step (struct member_claim          *claim,
                    struct member_registry const *reg,
                    struct member_records const  *r,
+                   struct cstr_view              text,
+                   struct member_entry const    *entry,
                    struct buf                   *in,
                    char                         *why,
                    size_t                        len)
 {
 	struct member_login *login = &claim->login;
-	struct member_entry const *entry = member_records_login(r, cstr_view(login->text));
 	int e = 0;
 	if (!entry && *login->name) {
 		entry = member_records_find(r, cstr_view(login->name));
 		if (entry && !(entry->info.flags & MEMBER_RECORD))
 			entry = nullptr;
-		e = entry ? member_adopt(entry, login, why, len) : ENOENT;
+		e = entry ? member_adopt(entry, login, text, why, len) : ENOENT;
 	}
 	switch (e) {
 	case 0:
@@ -764,7 +770,7 @@ member_claim_step (struct member_claim          *claim,
 		            "changed the member record at the same time.", login->name);
 		return EIO;
 	}
-	e = member_record_input(reg, login, entry, claim->ref, in);
+	e = member_record_input(reg, login, text, entry, claim->ref, in);
 	if (!e) {
 		++claim->writes;
 		return EINPROGRESS;
@@ -787,9 +793,11 @@ member_registry_claim (struct member_registry *reg,
                        char                   *why,
                        size_t                  len)
 {
+	struct cstr_view const text = cstr_view(claim->login.text);
 	for (;;) {
 		struct buf in = {};
-		int e = member_claim_step(claim, reg, &reg->records, &in, why, len);
+		int e = member_claim_step(claim, reg, &reg->records, text,
+		                          member_records_login(&reg->records, text), &in, why, len);
 		if (e != EINPROGRESS)
 			return e;
 		e = member_commit(reg, claim->ref, &in, 0, why, len);
@@ -1265,20 +1273,22 @@ member_lookup_submit (struct member_lookup *lookup)
 
 static void member_lookup_wrote (struct child *c);
 
-/* Runs a step of the claim of @p lookup with the records of its table
- * (member_claim_step()), with the input of a commit if a wait needs the
- * record of the member (LOOKUP_WRITE). For a Unix login that no record
- * names, the job name first looks up the name of the user, and git commits
- * the record that the step writes. Returns EINPROGRESS while the job name
- * or git runs. Otherwise returns the result of the step, with the reason
- * in lookup->why.
+/* Runs a step of the claim of @p lookup with the records of its table, the
+ * login text @p text of the lookup and @p entry, the record of the login
+ * in the records or nullptr (member_claim_step()). With LOOKUP_WRITE, the
+ * step writes the input of a commit, and git commits the record. For a
+ * Unix login without a record, the job name first looks up the name of the
+ * user. Returns EINPROGRESS while the job name or git runs. Otherwise
+ * returns the result of the step, with the reason in lookup->why.
  */
 static int
-member_lookup_step (struct member_lookup *lookup)
+member_lookup_step (struct member_lookup      *lookup,
+                    struct cstr_view           text,
+                    struct member_entry const *entry)
 {
 	struct member_table *table = lookup->table;
 	struct buf in = {};
-	int e = member_claim_step(&lookup->claim, table->registry, &table->records,
+	int e = member_claim_step(&lookup->claim, table->registry, &table->records, text, entry,
 	                          lookup->flags & LOOKUP_WRITE ? &in : nullptr, lookup->why,
 	                          sizeof lookup->why);
 	/* A Unix login that no record names needs the name of its user. */
@@ -1292,6 +1302,18 @@ member_lookup_step (struct member_lookup *lookup)
 	return e;
 }
 
+/* Searches the records of the table of @p lookup for the record of the
+ * login, and runs a step of the claim with that record or nullptr
+ * (member_lookup_step()). The search and the step use one view of the
+ * login text. Returns as member_lookup_step() does.
+ */
+static int
+member_lookup_search (struct member_lookup *lookup)
+{
+	struct cstr_view const text = cstr_view(lookup->claim.login.text);
+	return member_lookup_step(lookup, text, member_records_login(&lookup->table->records, text));
+}
+
 /* On the loop: git @p c listed the records for the lookup c->owner. The
  * records replace the records of the table, and the lookup runs its step
  * with them, or ends with the error and the reason of the read.
@@ -1303,7 +1325,7 @@ member_lookup_read_done (struct child *c)
 	int e = member_table_parse(lookup->table, c, lookup->why, sizeof lookup->why);
 	child_destroy(&lookup->git);
 	if (!e)
-		e = member_lookup_step(lookup);
+		e = member_lookup_search(lookup);
 	if (e != EINPROGRESS)
 		member_lookup_end(lookup, e);
 }
@@ -1410,7 +1432,7 @@ member_lookup_name_done (struct loop *,
 	}
 	e = member_lookup_named(lookup, e);
 	if (!e && !(lookup->flags & LOOKUP_GUESS))
-		e = member_lookup_step(lookup);
+		e = member_lookup_search(lookup);
 	if (e != EINPROGRESS)
 		member_lookup_end(lookup, e);
 }
@@ -1537,7 +1559,7 @@ member_table_lookup (struct member_table       *table,
 	struct list *node;
 	list_foreach (node, &table->lookups) {
 		struct member_lookup *l = container_of(node, struct member_lookup, hook);
-		if (cstr_view_equal(cstr_view(l->claim.login.text), text)) {
+		if (!strcmp(l->claim.login.text, login->text)) {
 			lookup = l;
 			break;
 		}
@@ -1577,7 +1599,8 @@ member_table_lookup (struct member_table       *table,
 	lookup->flags = (lookup->flags & ~LOOKUP_GUESS) | LOOKUP_WRITE;
 	lookup->result = EINPROGRESS;
 	lookup->claim.writes = 0;
-	return member_lookup_join(lookup, wait, member_lookup_step(lookup));
+	/* The search above found no record of the login in the records. */
+	return member_lookup_join(lookup, wait, member_lookup_step(lookup, text, nullptr));
 }
 
 int
