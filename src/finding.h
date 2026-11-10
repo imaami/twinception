@@ -261,13 +261,14 @@ finding_list (struct finding const *list,
               char const           *author,
               struct dstr          *d);
 
-/** Appends to @p d the finding @p f as the action show writes it: its ID,
- *  author, state, claim and about, the findings of the @p n findings at
- *  @p list whose about names @p f, and each change with its reason and
- *  evidence. Returns 0 or ENOMEM.
+/** Appends to @p d the finding @p f as the action show writes it: its ID
+ *  @p id (finding_id()), author, state, claim and about, the findings of
+ *  the @p n findings at @p list whose about names @p f, and each change
+ *  with its reason and evidence. Returns 0 or ENOMEM.
  */
 extern int
 finding_show (struct finding const *f,
+              char const           *id,
               struct finding const *list,
               size_t                n,
               struct dstr          *d);

@@ -637,8 +637,8 @@ findings_got_files (struct mcp_slot *slot)
 /* Handles the output of cat-file: the files of call->wanted from
  * call->done to call->batch, in order. A file that askai cannot read, or
  * whose finding is not the one of its author and number, refuses the call.
- * Then cat-file reads the next files, or the action goes on after the last
- * file.
+ * Then cat-file reads the next files. After the last file, the findings
+ * are sorted (finding_sort()), and the action goes on.
  */
 static void
 findings_got_read (struct mcp_slot *slot)
@@ -676,6 +676,7 @@ findings_got_read (struct mcp_slot *slot)
 		findings_read_batch(slot);
 		return;
 	}
+	finding_sort(call->findings.items, call->findings.n);
 	findings_act(slot);
 }
 
@@ -1230,9 +1231,10 @@ findings_find (struct findings_call const *call,
 	return nullptr;
 }
 
-/* Does the action of the call in @p slot once git has read what it needs:
- * writes the list or the finding, or commits an add or an update. For the
- * call of findings_prompt(), it appends the open findings to the prompt
+/* Does the action of the call in @p slot once git has read what it needs,
+ * with the findings that finding_sort() sorted: writes the list or the
+ * finding, or commits an add or an update. For the call of
+ * findings_prompt(), it appends the open findings to the prompt
  * (findings_prompted()). An add or an update whose evidence cites items of
  * findings again first reads those items (findings_cite_records()), and
  * then comes back here.
@@ -1242,14 +1244,12 @@ findings_act (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct member_session const *session = findings_session(call);
-	char id[FINDING_ID];
-	finding_id_format(call->author, call->number, id);
 	child_destroy(&call->child);
-	finding_sort(call->findings.items, call->findings.n);
 	if (call->prompt) {
 		findings_prompted(slot, 0);
 		return;
 	}
+	char id[FINDING_ID];
 	char const *missing = nullptr;
 	switch (call->action) {
 	case FINDINGS_LIST:
@@ -1261,8 +1261,10 @@ findings_act (struct mcp_slot *slot)
 		return;
 	case FINDINGS_SHOW:
 	case FINDINGS_UPDATE:
-		if (!(call->flags & CALL_FOUND))
+		if (!(call->flags & CALL_FOUND)) {
+			finding_id_format(call->author, call->number, id);
 			missing = id;
+		}
 		break;
 	case FINDINGS_ADD:
 		if (*call->about && !(call->flags & CALL_ABOUT))
@@ -1287,7 +1289,8 @@ findings_act (struct mcp_slot *slot)
 			findings_end(slot, EIO, true);
 			return;
 		}
-		int e = finding_show(f, call->findings.items, call->findings.n, &call->out);
+		finding_id(f, id);
+		int e = finding_show(f, id, call->findings.items, call->findings.n, &call->out);
 		bool const items = f->changes.n && f->changes.items[f->changes.n - 1].items;
 		if (!e && items) {
 			char const *only = mcp_slot_from_client(slot)

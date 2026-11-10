@@ -485,7 +485,9 @@ test_texts (void)
 	strcpy(cuh2->changes.items[1].asked_by, "");
 	cuh2->changes.items[1].ask = (struct hexid){};
 	(void)dstr_clear(&text);
-	CHECK(!finding_show(cuh2, list, n, &text));
+	char id[FINDING_ID];
+	finding_id(cuh2, id);
+	CHECK(!finding_show(cuh2, id, list, n, &text));
 	SAME(dstr_get(&text), dstr_len(&text),
 	     "Finding cuh#2 by cuh: verified\n"
 	     "claim: git grep -L lists every file of the commit.\nMore text.\n"
@@ -498,7 +500,8 @@ test_texts (void)
 	     "  evidence cuh#2/2 from unc#1/1: lines 161 to 171 of src/git.c in repository askai "
 	     "at commit d02cc2338c4f\n");
 	(void)dstr_clear(&text);
-	CHECK(!finding_show(&list[1], list, n, &text));
+	finding_id(&list[1], id);
+	CHECK(!finding_show(&list[1], id, list, n, &text));
 	CHECK(strstr(dstr_get(&text), "Finding bro#5 by bro: candidate\nclaim: git grep -L at "
 	                              "d02cc233 lists only the 246 files.\nabout: cuh#2\nChange 1: "
 	                              "candidate, ask 9f3c2a71, turn 5, asked by imaami\n  evidence "

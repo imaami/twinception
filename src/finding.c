@@ -508,12 +508,11 @@ finding_show_change (struct finding const *f,
 
 int
 finding_show (struct finding const *f,
+              char const           *id,
               struct finding const *list,
               size_t                n,
               struct dstr          *d)
 {
-	char id[FINDING_ID];
-	finding_id(f, id);
 	struct cstr_view const claim = cstr_view_dstr(&f->claim);
 	bool ok = dstr_printf(d, "Finding %s by %s: %s\nclaim: %.*s\n", id, f->author,
 	                      finding_state_names[finding_state(f)].data, (int)claim.len, claim.data);
