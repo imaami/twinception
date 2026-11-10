@@ -442,7 +442,15 @@ extern size_t
 jb_utf8 (char const *str,
          size_t      len);
 
-/** Whether @p t is UTF-8 text without a NUL, as an empty view is. */
+/** Returns the length of the start of @p t that is UTF-8 text (jb_utf8())
+ *  before the first NUL byte, or 0 for a view without data.
+ */
+extern size_t
+jb_text_len (struct cstr_view t);
+
+/** Whether @p t is UTF-8 text without a NUL, as an empty view is: whether
+ *  jb_text_len() returns the length of @p t.
+ */
 extern bool
 jb_is_text (struct cstr_view t);
 

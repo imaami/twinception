@@ -1306,19 +1306,21 @@ notes_tool_put (struct dstr *d,
 	return put && !dstr_cat_n(d, p, n) ? ENOMEM : 0;
 }
 
-/* Appends to @p d the view of @p note. askai shows a note as its view if
- * the note is not UTF-8 text or contains a NUL byte. The view starts with
- * a line that explains it. Valid UTF-8 text stays as it is, and each ⟦ in
- * it becomes ⟦⟦. Each other byte, and each NUL, becomes ⟦XX⟧ with its
- * value in hexadecimal. So the view shows every byte of the note. Only the
- * start of the view goes into @p d, up to the first piece that ends at or
- * past @p max bytes. The length of the whole view goes into @p *size if
+/* Appends to @p d the view of @p note, whose text at the start is @p text
+ * bytes long (jb_text_len()). askai shows a note as its view if the note
+ * is not UTF-8 text or contains a NUL byte. The view starts with a line
+ * that explains it. Valid UTF-8 text stays as it is, and each ⟦ in it
+ * becomes ⟦⟦. Each other byte, and each NUL, becomes ⟦XX⟧ with its value
+ * in hexadecimal. So the view shows every byte of the note. Only the start
+ * of the view goes into @p d, up to the first piece that ends at or past
+ * @p max bytes. The length of the whole view goes into @p *size if
  * @p size is not nullptr. Returns 0 or ENOMEM. With @p max 0, the function
  * appends nothing and returns 0.
  */
 static int
 notes_tool_view (struct dstr      *d,
                  struct cstr_view  note,
+                 size_t            text,
                  size_t            max,
                  size_t           *size)
 {
@@ -1333,10 +1335,7 @@ notes_tool_view (struct dstr      *d,
 	        "text shows as %s%s.]\n\n", note.len, util_s(note.len), view_open, view_close,
 	        view_open, view_open, view_open));
 	for (size_t i = 0; !e && i < note.len; ) {
-		size_t run = jb_utf8(note.data + i, note.len - i);
-		char const *nul = memchr(note.data + i, '\0', run);
-		if (nul)
-			run = (size_t)(nul - note.data) - i;
+		size_t const run = i ? jb_text_len(cstr_view_slice(note, i, SIZE_MAX)) : text;
 		/* Copy the valid text and double each ⟦ in it. */
 		for (size_t at = i; !e && at < i + run; ) {
 			char const *m = memmem(note.data + at, i + run - at, view_open, open);
@@ -1366,7 +1365,9 @@ static int
 notes_tool_show (struct dstr      *d,
                  struct cstr_view  note)
 {
-	return jb_is_text(note) ? cstr_view_cat(note, d) : notes_tool_view(d, note, SIZE_MAX, nullptr);
+	size_t const text = jb_text_len(note);
+	return text == note.len ? cstr_view_cat(note, d)
+	                        : notes_tool_view(d, note, text, SIZE_MAX, nullptr);
 }
 
 static void notes_tool_got_copy (struct mcp_slot *slot, struct span text);
@@ -1560,7 +1561,8 @@ notes_tool_got_attach (struct mcp_slot  *slot,
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct cstr_view body = { (char const *)text.ptr, text.len };
-	bool binary = !jb_is_text(body);
+	size_t const valid = jb_text_len(body);
+	bool const binary = valid < body.len;
 	size_t kept = 0;
 	int e = mcp_slot_attach(slot, id, (struct cstr_view){}, &kept, call->text);
 	if (e != ENOENT) {
@@ -1576,7 +1578,7 @@ notes_tool_got_attach (struct mcp_slot  *slot,
 		 * soon after STORE_MAX + 1 bytes, so askai makes no long view of
 		 * a note that it does not attach. */
 		size_t len = 0;
-		if (notes_tool_view(&view, body, STORE_MAX + 1, &len)) {
+		if (notes_tool_view(&view, body, valid, STORE_MAX + 1, &len)) {
 			notes_tool_end(slot, ENOMEM, true);
 			return;
 		}
@@ -1684,8 +1686,9 @@ notes_tool_newest (struct mcp_slot *slot)
 	 * function makes only the start of the view, a little more than the
 	 * call->most bytes that the prompt shows. */
 	dstr_auto view = DSTR_INIT;
-	if (!r && !jb_is_text(body)) {
-		if (notes_tool_view(&view, body, call->most + 1, &len)) {
+	size_t const valid = jb_text_len(body);
+	if (!r && valid < body.len) {
+		if (notes_tool_view(&view, body, valid, call->most + 1, &len)) {
 			notes_tool_then(slot, ENOMEM);
 			return;
 		}

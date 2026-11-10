@@ -413,11 +413,20 @@ jb_utf8 (char const *str,
 	return i;
 }
 
+size_t
+jb_text_len (struct cstr_view t)
+{
+	if (!t.data)
+		return 0;
+	size_t const run = jb_utf8(t.data, t.len);
+	char const *nul = memchr(t.data, '\0', run);
+	return nul ? (size_t)(nul - t.data) : run;
+}
+
 bool
 jb_is_text (struct cstr_view t)
 {
-	return !t.len ||
-	       (t.data && !memchr(t.data, '\0', t.len) && jb_utf8(t.data, t.len) == t.len);
+	return jb_text_len(t) == t.len;
 }
 
 size_t
