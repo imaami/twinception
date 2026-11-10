@@ -667,10 +667,30 @@ test_items (void)
 	CHECK(seen->items.n == SEEN_ITEMS && !seen_find_item(seen, CSTR_VIEW("bro#1/2")) &&
 	      seen_find_item(seen, CSTR_VIEW("bro#1/3")) &&
 	      seen_find_item(seen, CSTR_VIEW("bro#1/1026")));
+	/* The two newest items took the places of the two oldest. */
+	CHECK(seen->items_head == 2 &&
+	      seen_find_item(seen, CSTR_VIEW("bro#1/3")) == &seen->items.items[2] &&
+	      seen_find_item(seen, CSTR_VIEW("bro#1/1026")) == &seen->items.items[1]);
+	/* An item that the ring stores stays in its place, and the items stay
+	 * in order in the notice and in the journal state. */
+	CHECK(!seen_print(&seen, &c, SEEN_ITEMS + 3, 0, 10) && seen->items_head == 2 &&
+	      seen_find_item(seen, CSTR_VIEW("bro#1/1026")) == &seen->items.items[1]);
+	seen_shown(seen, SEEN_ITEMS + 3, 0, 10, 1);
 	(void)dstr_clear(&text);
 	CHECK(!seen_notice(seen, &text));
 	CHECK(strstr(dstr_get(&text), ": bro#1/3, bro#1/4, ") &&
 	      strstr(dstr_get(&text), ", bro#1/66 and 960 more. These items count as seen.]\n"));
+	int e = -1;
+	struct json_object *wrapped = seen_items_json(seen, &e);
+	CHECK(!e && jb_len(wrapped) == SEEN_ITEMS &&
+	      cstr_view_equal(jb_view(jb_get(jb_at(wrapped, 0), "id")), CSTR_VIEW("bro#1/3")) &&
+	      cstr_view_equal(jb_view(jb_get(jb_at(wrapped, SEEN_ITEMS - 1), "id")),
+	                      CSTR_VIEW("bro#1/1026")));
+	struct seen *again = nullptr;
+	CHECK(!seen_resume(&again, 1, wrapped) && !again->items_head && again->items.n == SEEN_ITEMS &&
+	      !strcmp(again->items.items[0].id, "bro#1/3"));
+	seen_destroy(&again);
+	json_object_put(wrapped);
 	size_t const kept = seen_kept(seen);
 	CHECK(kept >= sizeof *seen + SEEN_ITEMS * sizeof c);
 	seen_clear(seen);

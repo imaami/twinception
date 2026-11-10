@@ -197,6 +197,26 @@ seen_lines (struct seen_read *read,
 	return (struct seen_lines){ (uint32_t)line, (uint32_t)(line + n - 1), (uint32_t)(lo - skip) };
 }
 
+/* Returns the index in seen->calls of the call @p i of @p seen, from the
+ * oldest.
+ */
+static size_t
+seen_call_place (struct seen const *seen,
+                 size_t             i)
+{
+	return (seen->head + i) % SEEN_CALLS;
+}
+
+/* Returns the index in seen->items.items of the item @p i of @p seen, from
+ * the oldest.
+ */
+static size_t
+seen_item_place (struct seen const *seen,
+                 size_t             i)
+{
+	return (seen->items_head + i) % SEEN_ITEMS;
+}
+
 /* Drops the oldest call of @p seen, which must contain a call. The storage
  * of the result and of the identifiers stays in place.
  */
@@ -208,7 +228,7 @@ seen_drop (struct seen *seen)
 	buf_fini(&c->request);
 	(void)dstr_clear(&c->result);
 	(void)dstr_clear(&c->ids);
-	seen->head = (uint16_t)((seen->head + 1) % SEEN_CALLS);
+	seen->head = (uint16_t)seen_call_place(seen, 1);
 	--seen->n;
 }
 
@@ -221,7 +241,7 @@ seen_room (struct seen *seen,
 {
 	while (seen->n && (seen->n == SEEN_CALLS || seen->bytes + bytes > SEEN_BYTES))
 		seen_drop(seen);
-	return &seen->calls[(seen->head + seen->n) % SEEN_CALLS];
+	return &seen->calls[seen_call_place(seen, seen->n)];
 }
 
 /* Appends the identifiers of the file @p src to @p ids as a JSON object
@@ -317,8 +337,9 @@ static void
 seen_items_drop (struct seen *seen)
 {
 	for (size_t i = 0; i < seen->items.n; ++i)
-		dstr_cleanup(&seen->items.items[i].record);
+		dstr_cleanup(&seen->items.items[seen_item_place(seen, i)].record);
 	seen->items.n = 0;
+	seen->items_head = 0;
 }
 
 /* Returns true if @p obj is an object of the array of seen_items_json(). */
@@ -397,7 +418,7 @@ seen_find (struct seen const       *seen,
 	if (!seen || !number)
 		return SEEN_MISSING;
 	for (size_t i = 0; i < seen->n; ++i) {
-		struct seen_call const *c = &seen->calls[(seen->head + i) % SEEN_CALLS];
+		struct seen_call const *c = &seen->calls[seen_call_place(seen, i)];
 		if (c->number == number) {
 			*call = c;
 			return SEEN_KEPT;
@@ -414,17 +435,19 @@ seen_oldest (struct seen const *seen)
 	return seen && seen->n ? seen->calls[seen->head].number : 0;
 }
 
-/* Returns the index of the item of @p seen with the ID @p id, or
- * seen->items.n for no such item.
+/* Returns the index in seen->items.items of the item of @p seen with the
+ * ID @p id, or SEEN_ITEMS for no such item.
  */
 static size_t
 seen_item_index (struct seen const *seen,
                  struct cstr_view   id)
 {
-	size_t k = 0;
-	while (k < seen->items.n && !cstr_view_equal(cstr_view(seen->items.items[k].id), id))
-		++k;
-	return k;
+	for (size_t i = 0; i < seen->items.n; ++i) {
+		size_t const k = seen_item_place(seen, i);
+		if (cstr_view_equal(cstr_view(seen->items.items[k].id), id))
+			return k;
+	}
+	return SEEN_ITEMS;
 }
 
 int
@@ -445,16 +468,18 @@ seen_print (struct seen            **p_seen,
 		return e;
 	struct seen *seen = *p_seen;
 	size_t k = seen_item_index(seen, id);
-	if (k == seen->items.n) {
+	bool const added = k == SEEN_ITEMS;
+	if (added) {
+		/* A new item goes after the newest item. In a full ring, that is
+		 * the place of the oldest item, which leaves the ring. */
+		k = seen_item_place(seen, seen->items.n);
 		if (seen->items.n == SEEN_ITEMS) {
-			dstr_cleanup(&seen->items.items[0].record);
+			dstr_cleanup(&seen->items.items[k].record);
+			seen->items_head = seen_item_place(seen, 1);
 			--seen->items.n;
-			memmove(seen->items.items, seen->items.items + 1,
-			        seen->items.n * sizeof *seen->items.items);
 		}
-		if (util_grow(seen->items.items, seen->items.cap, seen->items.n + 1))
+		if (util_grow(seen->items.items, seen->items.cap, k + 1))
 			return ENOMEM;
-		k = seen->items.n;
 		seen->items.items[k] = (struct seen_item){ .record = DSTR_INIT };
 	}
 	struct seen_item *it = &seen->items.items[k];
@@ -470,8 +495,7 @@ seen_print (struct seen            **p_seen,
 		memcpy(it->blobs, item->blobs, sizeof it->blobs);
 		memcpy(it->id, id.data, id.len + 1);
 		it->bytes = (uint32_t)len;
-		if (k == seen->items.n)
-			++seen->items.n;
+		seen->items.n += added;
 	}
 	it->at = (uint32_t)at;
 	it->call = call;
@@ -488,7 +512,7 @@ seen_shown (struct seen *seen,
 	if (!seen || !call)
 		return;
 	for (size_t i = 0; i < seen->items.n; ++i) {
-		struct seen_item *it = &seen->items.items[i];
+		struct seen_item *it = &seen->items.items[seen_item_place(seen, i)];
 		if (it->call != call)
 			continue;
 		it->call = 0;
@@ -516,7 +540,7 @@ seen_items_json (struct seen const *seen,
 		return list;
 	}
 	for (size_t i = 0; list && i < seen->items.n; ++i) {
-		struct seen_item const *it = &seen->items.items[i];
+		struct seen_item const *it = &seen->items.items[seen_item_place(seen, i)];
 		if (!it->shown)
 			continue;
 		struct json_object *blobs = jb_push_or_free(jb_list(json_object_new_string(
@@ -541,7 +565,7 @@ seen_find_item (struct seen const *seen,
 	if (!seen)
 		return nullptr;
 	size_t const k = seen_item_index(seen, id);
-	return k < seen->items.n ? &seen->items.items[k] : nullptr;
+	return k < SEEN_ITEMS ? &seen->items.items[k] : nullptr;
 }
 
 /* Appends to @p d the notice of the items of @p seen that results showed
@@ -555,7 +579,7 @@ seen_notice_items (struct seen const *seen,
 	size_t whole = 0;
 	bool ok = true;
 	for (size_t i = 0; ok && i < seen->items.n; ++i) {
-		struct seen_item const *it = &seen->items.items[i];
+		struct seen_item const *it = &seen->items.items[seen_item_place(seen, i)];
 		if (!it->turn)
 			continue;
 		if (listed < SEEN_LISTED) {
@@ -579,7 +603,7 @@ seen_notice (struct seen const *seen,
 	uint32_t oldest = 0;
 	uint32_t newest = 0;
 	for (size_t i = 0; i < seen->n; ++i) {
-		struct seen_call const *c = &seen->calls[(seen->head + i) % SEEN_CALLS];
+		struct seen_call const *c = &seen->calls[seen_call_place(seen, i)];
 		if (c->flags & SEEN_TOO_LARGE)
 			continue;
 		if (!oldest)
@@ -621,8 +645,10 @@ seen_kept (struct seen const *seen)
 		                           dstr_get_block_count(&c->ids)) * DSTR_BLK_SIZE;
 	}
 	bytes += seen->items.cap * sizeof *seen->items.items;
-	for (size_t i = 0; i < seen->items.n; ++i)
-		bytes += dstr_get_block_count(&seen->items.items[i].record) * DSTR_BLK_SIZE;
+	for (size_t i = 0; i < seen->items.n; ++i) {
+		struct seen_item const *it = &seen->items.items[seen_item_place(seen, i)];
+		bytes += dstr_get_block_count(&it->record) * DSTR_BLK_SIZE;
+	}
 	return bytes;
 }
 
