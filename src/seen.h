@@ -260,30 +260,28 @@ seen_read_create_json (struct json_object const *obj,
                        int                      *e);
 
 /**
- * Returns the first and the last of the numbered lines @p src that the
+ * Returns the first and the last of the numbered lines of @p read that the
  * window of @p window bytes of the output @p out from @p skip on shows
  * whole, and the offset of the first of them from @p skip. A line that
- * the window shows only in part does not count. The
- * last line may end without a newline, and it counts if the window ends at
- * the end of the numbered lines. @p mark is the position of the last
- * window. A window counts its lines from that position, or from the start
- * of the numbered lines if the position is after the window, and then
- * moves @p mark to the start of the window. Returns no line if the window
- * shows none.
+ * the window shows only in part does not count. The last line may end
+ * without a newline, and it counts if the window ends at the end of the
+ * numbered lines. read->mark is the position of the last window. A window
+ * counts its lines from that position, or from the start of the numbered
+ * lines if the position is after the window, and then moves read->mark to
+ * the start of the window. Returns no line if the window shows none.
  *
- * Stores 0 in @p *e, EFAULT for a null @p mark or @p src, or for an @p out
- * with a length and no bytes, or EINVAL if the numbered lines are empty,
- * not within @p out, or more lines than src->first to src->last, or if the
- * first line that the window shows whole starts more than UINT32_MAX bytes
- * after @p skip. Returns no line for a null @p e.
+ * Stores 0 in @p *e, EFAULT for a null @p read or for an @p out with a
+ * length and no bytes, or EINVAL if the numbered lines are empty, not
+ * within @p out, or more lines than read->src.first to read->src.last, or
+ * if the first line that the window shows whole starts more than
+ * UINT32_MAX bytes after @p skip. Returns no line for a null @p e.
  */
 extern struct seen_lines
-seen_lines (struct seen_mark         *mark,
-            struct call_source const *src,
-            struct cstr_view          out,
-            size_t                    skip,
-            size_t                    window,
-            int                      *e);
+seen_lines (struct seen_read *read,
+            struct cstr_view  out,
+            size_t            skip,
+            size_t            window,
+            int              *e);
 
 /**
  * Adds the call @p r with the arguments in @p request to the ring

@@ -61,7 +61,7 @@ output (struct dstr        *out,
 }
 
 /* Check that the window of @p window bytes from @p skip of the output of
- * lines 1 to 9 shows lines @p first to @p last whole, from a new mark.
+ * lines 1 to 9 shows lines @p first to @p last whole, from a new read.
  */
 static void
 lines_in (size_t   skip,
@@ -74,14 +74,14 @@ lines_in (size_t   skip,
 	struct call_source src;
 	output(&out, &src, 1, 9, false);
 	int e = -1;
-	struct seen_mark mark = {};
-	struct seen_lines const got = seen_lines(&mark, &src, cstr_view_dstr(&out), skip, window,
-	                                         &e);
-	if (e || got.first != first || got.last != last) {
+	struct seen_read *read = seen_read_create(&src, cstr_view_dstr(&out), &e);
+	struct seen_lines const got = seen_lines(read, cstr_view_dstr(&out), skip, window, &e);
+	if (!read || e || got.first != first || got.last != last) {
 		++failures;
 		fprintf(stderr, "%s:%d: lines %u-%u, error %d, want %u-%u\n", __FILE__, line,
 		        got.first, got.last, e, first, last);
 	}
+	seen_read_destroy(&read);
 	dstr_cleanup(&out);
 }
 
@@ -107,70 +107,80 @@ test_lines (void)
 
 	/* A read paged forward and then back to its start. A window counts its
 	 * lines from the mark of the window before it, or from the start of the
-	 * read if that mark is after the window. */
+	 * read if that mark is after the window. A new read marks the start of
+	 * its numbered lines. */
 	struct dstr out = DSTR_INIT;
 	struct call_source src;
 	output(&out, &src, 1, 9, false);
 	struct cstr_view o = cstr_view_dstr(&out);
 	int e = -1;
-	struct seen_mark mark = {};
-	struct seen_lines got = seen_lines(&mark, &src, o, 4 + 9 * 4, 9 * 2, &e);
-	CHECK(!e && got.first == 5 && got.last == 6 && mark.at == 4 + 9 * 4 && mark.line == 5);
+	struct seen_read *read = seen_read_create(&src, o, &e);
+	CHECK(read && !e && read->mark.line == 1 && read->mark.at == src.at);
+	struct seen_lines got = seen_lines(read, o, 4 + 9 * 4, 9 * 2, &e);
+	CHECK(!e && got.first == 5 && got.last == 6 && read->mark.at == 4 + 9 * 4 &&
+	      read->mark.line == 5);
 	CHECK(!got.at);
-	got = seen_lines(&mark, &src, o, 4 + 9 * 6, 9 * 2, &e);
-	CHECK(!e && got.first == 7 && got.last == 8 && mark.at == 4 + 9 * 6 && mark.line == 7);
-	got = seen_lines(&mark, &src, o, 4, 9 * 2, &e);
-	CHECK(!e && got.first == 1 && got.last == 2 && mark.at == 4 && mark.line == 1);
+	got = seen_lines(read, o, 4 + 9 * 6, 9 * 2, &e);
+	CHECK(!e && got.first == 7 && got.last == 8 && read->mark.at == 4 + 9 * 6 &&
+	      read->mark.line == 7);
+	got = seen_lines(read, o, 4, 9 * 2, &e);
+	CHECK(!e && got.first == 1 && got.last == 2 && read->mark.at == 4 && read->mark.line == 1);
 	/* A mark in the middle of a line counts that line. The first whole
 	 * line starts 6 bytes into the window. */
-	got = seen_lines(&mark, &src, o, 4 + 9 * 2 + 3, 9 * 2, &e);
-	CHECK(!e && got.first == 4 && got.last == 4 && mark.line == 3 && got.at == 6);
-	/* A window from the start of the output shows the header first. */
-	mark = (struct seen_mark){};
-	got = seen_lines(&mark, &src, o, 0, SIZE_MAX, &e);
-	CHECK(!e && got.first == 1 && got.last == 9 && got.at == 4);
+	got = seen_lines(read, o, 4 + 9 * 2 + 3, 9 * 2, &e);
+	CHECK(!e && got.first == 4 && got.last == 4 && read->mark.line == 3 && got.at == 6);
+	/* A window from the start of the output shows the header first. The
+	 * mark is after the window, so the lines count from the start. */
+	got = seen_lines(read, o, 0, SIZE_MAX, &e);
+	CHECK(!e && got.first == 1 && got.last == 9 && got.at == 4 && read->mark.line == 1 &&
+	      read->mark.at == src.at);
+	seen_read_destroy(&read);
 
 	/* A last line without a newline counts only if the window shows its
 	 * end. */
 	output(&out, &src, 1, 3, true);
 	o = cstr_view_dstr(&out);
-	mark = (struct seen_mark){};
-	got = seen_lines(&mark, &src, o, 0, src.at + src.len - 1, &e);
+	read = seen_read_create(&src, o, &e);
+	CHECK(read && !e);
+	got = seen_lines(read, o, 0, src.at + src.len - 1, &e);
 	CHECK(!e && got.first == 1 && got.last == 2);
-	got = seen_lines(&mark, &src, o, 0, src.at + src.len, &e);
+	got = seen_lines(read, o, 0, src.at + src.len, &e);
 	CHECK(!e && got.first == 1 && got.last == 3);
-	/* Numbered lines that are empty or not within the output, and more
-	 * lines than the source says. */
-	got = seen_lines(&mark, &src, (struct cstr_view){ o.data, src.at + src.len - 1 }, 0,
-	                 SIZE_MAX, &e);
+	/* Numbered lines that are empty or not within the output. */
+	got = seen_lines(read, (struct cstr_view){ o.data, src.at + src.len - 1 }, 0, SIZE_MAX,
+	                 &e);
 	CHECK(e == EINVAL && !got.first && !got.last);
-	struct call_source bad = src;
-	bad.len = 0;
+	read->src.len = 0;
 	e = -1;
-	CHECK(!seen_lines(&mark, &bad, o, 0, SIZE_MAX, &e).first && e == EINVAL);
-	bad = src;
-	bad.at = SIZE_MAX;
+	CHECK(!seen_lines(read, o, 0, SIZE_MAX, &e).first && e == EINVAL);
+	read->src.len = src.len;
+	read->src.at = SIZE_MAX;
 	e = -1;
-	CHECK(!seen_lines(&mark, &bad, o, 0, SIZE_MAX, &e).first && e == EINVAL);
+	CHECK(!seen_lines(read, o, 0, SIZE_MAX, &e).first && e == EINVAL);
+	read->src.at = src.at;
+	e = -1;
+	CHECK(seen_lines(read, o, 0, SIZE_MAX, &e).last == 3 && !e);
+	seen_read_destroy(&read);
+	/* More lines than the source says. */
 	struct dstr more = DSTR_INIT;
 	CHECK(dstr_printf(&more, "[h]\n"));
 	for (int i = 0; i < 13; ++i)
 		CHECK(dstr_printf(&more, "a\n"));
-	bad = (struct call_source){ CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 0, 4,
-	                            dstr_len(&more) - 4, 1, 3 };
-	mark = (struct seen_mark){};
+	struct call_source const many = { CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 0,
+	                                  4, dstr_len(&more) - 4, 1, 13 };
+	read = seen_read_create(&many, cstr_view_dstr(&more), &e);
+	CHECK(read && !e);
+	read->src.last = 3;
 	e = -1;
-	CHECK(!seen_lines(&mark, &bad, cstr_view_dstr(&more), 0, SIZE_MAX, &e).first &&
-	      e == EINVAL);
+	CHECK(!seen_lines(read, cstr_view_dstr(&more), 0, SIZE_MAX, &e).first && e == EINVAL);
 	/* Null arguments. */
 	e = -1;
-	CHECK(!seen_lines(nullptr, &src, o, 0, SIZE_MAX, &e).first && e == EFAULT);
+	CHECK(!seen_lines(nullptr, o, 0, SIZE_MAX, &e).first && e == EFAULT);
 	e = -1;
-	CHECK(!seen_lines(&mark, nullptr, o, 0, SIZE_MAX, &e).first && e == EFAULT);
-	e = -1;
-	CHECK(!seen_lines(&mark, &src, (struct cstr_view){ nullptr, 2 }, 0, SIZE_MAX, &e).first &&
+	CHECK(!seen_lines(read, (struct cstr_view){ nullptr, 2 }, 0, SIZE_MAX, &e).first &&
 	      e == EFAULT);
-	CHECK(!seen_lines(&mark, &src, o, 0, SIZE_MAX, nullptr).first);
+	CHECK(!seen_lines(read, o, 0, SIZE_MAX, nullptr).first);
+	seen_read_destroy(&read);
 	dstr_cleanup(&more);
 	dstr_cleanup(&out);
 }

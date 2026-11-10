@@ -145,20 +145,20 @@ seen_read_create_json (struct json_object const *obj,
 }
 
 struct seen_lines
-seen_lines (struct seen_mark         *mark,
-            struct call_source const *src,
-            struct cstr_view          out,
-            size_t                    skip,
-            size_t                    window,
-            int                      *e)
+seen_lines (struct seen_read *read,
+            struct cstr_view  out,
+            size_t            skip,
+            size_t            window,
+            int              *e)
 {
 	if (!e)
 		return (struct seen_lines){};
-	if (!mark || !src || (!out.data && out.len)) {
+	if (!read || (!out.data && out.len)) {
 		*e = EFAULT;
 		return (struct seen_lines){};
 	}
-	*e = !src->len || src->len > out.len || src->at > out.len - src->len ? EINVAL : 0;
+	struct call_source const *src = &read->src;
+	*e = seen_source_within(src, out) ? 0 : EINVAL;
 	size_t const end = src->at + src->len;
 	if (*e || skip >= end)
 		return (struct seen_lines){};
@@ -167,9 +167,10 @@ seen_lines (struct seen_mark         *mark,
 	if (lo >= hi)
 		return (struct seen_lines){};
 	char const *p = out.data;
-	/* Count the lines from the mark of the last window, if there is one
-	 * before this window. */
-	if (!mark->line || mark->at > lo)
+	/* Count the lines from the mark of the last window, or from the start
+	 * of the numbered lines if the mark is after this window. */
+	struct seen_mark *mark = &read->mark;
+	if (mark->at > lo)
 		*mark = (struct seen_mark){ .line = src->first, .at = src->at };
 	mark->line += cstr_view_count((struct cstr_view){ p + mark->at, lo - mark->at }, '\n');
 	mark->at = lo;
@@ -273,8 +274,7 @@ seen_keep (struct seen              **p_seen,
 		return EINVAL;
 	int e = 0;
 	struct seen_read *read = r->read;
-	struct seen_lines const whole = read ? seen_lines(&read->mark, &read->src, r->out, r->skip,
-	                                                  window, &e)
+	struct seen_lines const whole = read ? seen_lines(read, r->out, r->skip, window, &e)
 	                                     : (struct seen_lines){};
 	if (!e && !*p_seen)
 		*p_seen = seen_create(&e);
