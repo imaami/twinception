@@ -106,7 +106,7 @@ keep (struct seen     **p_seen,
 		.index  = (uint16_t)(number % 3),
 		.flags  = number == 2 ? SEEN_FAILED : 0,
 	};
-	CHECK(!seen_keep(p_seen, &request, &r, nullptr));
+	CHECK(!seen_keep(p_seen, &request, &r));
 	buf_fini(&request);
 }
 
@@ -284,7 +284,7 @@ test_cite (void)
 	struct cstr_view const parts[SEEN_PARTS] = { window, CSTR_VIEW("\n\n[askai: call c1]") };
 	struct seen_result const r = { .parts = parts, .out = o, .read = read, .output = o.len,
 	                               .skip = at + 3, .number = 1, .turn = 1, .tool = 1 };
-	CHECK(!seen_keep(&seen, &request, &r, nullptr));
+	CHECK(!seen_keep(&seen, &request, &r));
 	buf_fini(&request);
 	CHECK(seen->calls[0].lines.first == 2 && seen->calls[0].lines.last == 6);
 	keep(&seen, 2, 1, 2, "toolu_x", "{\"page\":\"git\"}", CSTR_VIEW("A man page.\n"), nullptr,

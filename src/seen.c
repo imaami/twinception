@@ -260,11 +260,8 @@ seen_create (int *e)
 int
 seen_keep (struct seen              **p_seen,
            struct buf                *request,
-           struct seen_result const  *r,
-           struct seen_lines         *lines)
+           struct seen_result const  *r)
 {
-	if (lines)
-		*lines = (struct seen_lines){};
 	if (!p_seen || !request || !r || !r->parts || (!r->out.data && r->out.len))
 		return EFAULT;
 	size_t const window = r->parts[0].len;
@@ -311,8 +308,6 @@ seen_keep (struct seen              **p_seen,
 	c->flags = (r->flags & SEEN_FAILED) | (large ? SEEN_TOO_LARGE : 0);
 	seen->bytes += bytes;
 	++seen->n;
-	if (lines)
-		*lines = whole;
 	return 0;
 }
 

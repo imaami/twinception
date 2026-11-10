@@ -217,7 +217,7 @@ keep (struct seen     **p_seen,
 		.turn = number,
 		.tool = 3,
 	};
-	int e = seen_keep(p_seen, &request, &r, nullptr);
+	int e = seen_keep(p_seen, &request, &r);
 	buf_fini(&request);
 	return e;
 }
@@ -231,8 +231,7 @@ call_at (struct seen const *seen,
 }
 
 /* seen_keep() stores the arguments, the result, the identifiers and the
- * lines of a call, and passes the lines to the caller. seen_notice() names
- * the calls of the ring.
+ * lines of a call. seen_notice() names the calls of the ring.
  */
 static void
 test_keep (void)
@@ -267,8 +266,7 @@ test_keep (void)
 		.flags  = SEEN_FAILED,
 	};
 	struct seen *seen = nullptr;
-	struct seen_lines lines = { 1, 1, 0 };
-	CHECK(!seen_keep(&seen, &request, &r, &lines));
+	CHECK(!seen_keep(&seen, &request, &r));
 	CHECK(seen && seen->n == 1 && seen->head == 0);
 	/* The storage of the arguments moved into the ring. */
 	CHECK(!request.data && !request.cap && !buf_peek(&request).len);
@@ -281,7 +279,6 @@ test_keep (void)
 	CHECK(c->output == 1000 && c->skip == skip && c->number == 7 && c->turn == 3 &&
 	      c->tool == 5 && c->index == 2 && c->flags == SEEN_FAILED);
 	CHECK(c->lines.first == 3 && c->lines.last == 5 && !c->lines.at);
-	CHECK(lines.first == 3 && lines.last == 5 && !lines.at);
 	CHECK(seen->bytes == 100 + dstr_len(&c->result));
 
 	/* A replayed result: out is the part of the output that the journal
@@ -292,10 +289,9 @@ test_keep (void)
 	parts[2] = parts[3] = (struct cstr_view){};
 	r = (struct seen_result){ .parts = parts, .out = o, .read = read, .output = 6000,
 	                          .at = 5000, .skip = 4, .number = 8, .turn = 4 };
-	CHECK(!seen_keep(&seen, &request, &r, &lines));
+	CHECK(!seen_keep(&seen, &request, &r));
 	c = call_at(seen, 1);
 	CHECK(c->skip == 5004 && c->output == 6000 && c->lines.first == 1 && c->lines.last == 1);
-	CHECK(lines.first == 1 && lines.last == 1);
 	SAME(dstr_get(&c->result), dstr_len(&c->result), "1\tline 1\n\n\n[askai: call c7]");
 
 	/* A call without lines, identifiers or notices. */
@@ -304,61 +300,58 @@ test_keep (void)
 	parts[1] = (struct cstr_view){};
 	r = (struct seen_result){ .parts = parts, .out = parts[0], .output = 5, .number = 9,
 	                          .turn = 4, .tool = TOOL_MAX };
-	CHECK(!seen_keep(&seen, &request, &r, &lines));
+	CHECK(!seen_keep(&seen, &request, &r));
 	c = call_at(seen, 2);
 	CHECK(seen->n == 3 && !c->lines.first && !c->lines.last && !dstr_len(&c->ids) &&
-	      c->tool == TOOL_MAX && !c->index && !c->flags && !lines.first && !lines.last);
+	      c->tool == TOOL_MAX && !c->index && !c->flags);
 	SAME(dstr_get(&c->result), dstr_len(&c->result), "plain");
 	/* An empty output without data. */
 	request_of(&request, 10);
 	parts[0] = (struct cstr_view){};
 	parts[1] = CSTR_VIEW("note");
 	r = (struct seen_result){ .parts = parts, .number = 10 };
-	CHECK(!seen_keep(&seen, &request, &r, nullptr));
+	CHECK(!seen_keep(&seen, &request, &r));
 	SAME(dstr_get(&call_at(seen, 3)->result), dstr_len(&call_at(seen, 3)->result), "note");
 
-	/* Refusals. The ring stays as it was after a refused call, and no
-	 * line comes back. */
+	/* Refusals. The ring stays as it was after a refused call. */
 	request_of(&request, 10);
 	struct cstr_view const abc = CSTR_VIEW("abc");
 	parts[0] = (struct cstr_view){ abc.data + 2, 2 };
 	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 2 };
-	lines = (struct seen_lines){ 1, 1, 0 };
-	CHECK(seen_keep(&seen, &request, &r, &lines) == EINVAL && !lines.first && !lines.last);
+	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	parts[0] = (struct cstr_view){};
 	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 4 };
-	CHECK(seen_keep(&seen, &request, &r, &lines) == EINVAL);
+	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	/* A window that is not the bytes of out from skip on. */
 	parts[0] = (struct cstr_view){ abc.data, 2 };
 	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 1 };
-	CHECK(seen_keep(&seen, &request, &r, &lines) == EINVAL);
+	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	parts[0] = CSTR_VIEW("ab");
 	r = (struct seen_result){ .parts = parts, .out = abc };
-	CHECK(seen_keep(&seen, &request, &r, &lines) == EINVAL);
+	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	parts[0] = (struct cstr_view){};
 	r = (struct seen_result){ .parts = parts, .out = { nullptr, 2 } };
-	CHECK(seen_keep(&seen, &request, &r, &lines) == EFAULT);
+	CHECK(seen_keep(&seen, &request, &r) == EFAULT);
 	r = (struct seen_result){ .out = abc };
-	CHECK(seen_keep(&seen, &request, &r, &lines) == EFAULT);
+	CHECK(seen_keep(&seen, &request, &r) == EFAULT);
 	r = (struct seen_result){ .parts = parts };
-	CHECK(seen_keep(nullptr, &request, &r, &lines) == EFAULT);
-	CHECK(seen_keep(&seen, nullptr, &r, &lines) == EFAULT);
-	lines = (struct seen_lines){ 1, 1, 0 };
-	CHECK(seen_keep(&seen, &request, nullptr, &lines) == EFAULT && !lines.first);
+	CHECK(seen_keep(nullptr, &request, &r) == EFAULT);
+	CHECK(seen_keep(&seen, nullptr, &r) == EFAULT);
+	CHECK(seen_keep(&seen, &request, nullptr) == EFAULT);
 	/* A window past TOOL_OUTPUT_MAX in the whole output. */
 	r = (struct seen_result){ .parts = parts, .at = TOOL_OUTPUT_MAX, .number = 11 };
-	CHECK(!seen_keep(&seen, &request, &r, &lines));
+	CHECK(!seen_keep(&seen, &request, &r));
 	request_of(&request, 10);
 	r = (struct seen_result){ .parts = parts, .out = abc, .at = TOOL_OUTPUT_MAX, .skip = 1 };
-	CHECK(seen_keep(&seen, &request, &r, &lines) == EINVAL);
+	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	r = (struct seen_result){ .parts = parts, .at = (uint64_t)TOOL_OUTPUT_MAX + 1 };
-	CHECK(seen_keep(&seen, &request, &r, &lines) == EINVAL);
+	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	/* Numbered lines that do not fit the output. */
 	struct seen_read *short_read = seen_read_create(&src, o, &e);
 	short_read->src.last = 4;
 	parts[0] = o;
 	r = (struct seen_result){ .parts = parts, .out = o, .read = short_read };
-	CHECK(seen_keep(&seen, &request, &r, &lines) == EINVAL);
+	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	seen_read_destroy(&short_read);
 	CHECK(seen->n == 5 && buf_peek(&request).len == 10 && call_at(seen, 4)->skip == TOOL_OUTPUT_MAX);
 	buf_fini(&request);
@@ -453,7 +446,7 @@ test_drop (void)
 	struct seen_result const r = { .parts = parts, .out = parts[0], .output = 1, .number = 8,
 	                               .turn = 2, .tool = 1, .index = 7, .flags = SEEN_FAILED };
 	size_t const before = seen->bytes;
-	CHECK(!seen_keep(&seen, &request, &r, nullptr));
+	CHECK(!seen_keep(&seen, &request, &r));
 	struct seen_call const *c = call_at(seen, seen->n - 1);
 	CHECK(seen->n == 5 && c->number == 8 && c->turn == 2 && c->tool == 1 && c->index == 7 &&
 	      c->flags == (SEEN_FAILED | SEEN_TOO_LARGE) && c->output == 1);

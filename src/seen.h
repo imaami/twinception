@@ -296,22 +296,18 @@ seen_lines (struct seen_read *read,
  * whole output, which is at most TOOL_OUTPUT_MAX.
  *
  * With r->read, the ring entry stores the identifiers of the file and the
- * lines that the window shows whole (seen_lines()). The function stores
- * these lines in @p *lines too, if @p lines is not nullptr, and no line
- * for a call without r->read or on failure.
+ * lines that the window shows whole (seen_lines()).
  *
- * Returns 0, EFAULT for a null argument other than @p lines, a null
- * r->parts or an r->out with a length and no bytes, EINVAL if the window
- * parts[0] is not the bytes of r->out from r->skip on, if r->at + r->skip
- * is greater than TOOL_OUTPUT_MAX, or for the errors of seen_lines(), or
- * ENOMEM. On failure the ring does not contain the call,
- * but calls may have left the ring.
+ * Returns 0, EFAULT for a null argument, a null r->parts or an r->out with
+ * a length and no bytes, EINVAL if the window parts[0] is not the bytes of
+ * r->out from r->skip on, if r->at + r->skip is greater than
+ * TOOL_OUTPUT_MAX, or for the errors of seen_lines(), or ENOMEM. On failure
+ * the ring does not contain the call, but calls may have left the ring.
  */
 extern int
 seen_keep (struct seen              **p_seen,
            struct buf                *request,
-           struct seen_result const  *r,
-           struct seen_lines         *lines);
+           struct seen_result const  *r);
 
 /**
  * Records in the ring @p *p_seen that askai made @p calls calls of the ask

@@ -5914,7 +5914,7 @@ mcp_req_result_write (struct mcp_req *req)
 			.tool   = slot->tool,
 			.index  = (uint16_t)req->part,
 			.flags  = slot->flags & SLOT_FAILED ? SEEN_FAILED : 0,
-		}, nullptr);
+		});
 	}
 	if (e) {
 		mcp_req_fail(req, e);
