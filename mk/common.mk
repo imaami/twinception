@@ -76,13 +76,23 @@ $(eval
   ifneq (override,$$(origin __pkgcfg__$1__$2))
     override __pkgcfg__$1__$2 = $$(eval \
     override __pkgcfg__$1__$2 := $$(shell \
-      $$(PKG_CONFIG) --$1 $2))$$(__pkgcfg__$1__$2)
+      echo "$$(PKG_CONFIG) --$1 $3" >&2 ; \
+      $$(PKG_CONFIG) --$1 $3))$$(__pkgcfg__$1__$2)
   endif)
 endef
-override __pkg-config = $(call __pkgcfg,$1,$2)$(__pkgcfg__$1__$2)
-override pkg-config = $(sort $(foreach x,$2,$(call __pkg-config,$(strip $1),$x)))
+override __pkg-config = $(if $3,$(call __pkgcfg,$1,$2,$(sort $3))$(__pkgcfg__$1__$2))
+override pkg-config = $(call __pkg-config,$(strip $1),$(subst $() $(),+,$(sort $2)),$2)
+
 override __pkgcfg_inc_cflags = $(foreach x,$1,$(eval override \
- C$(if $(x:%.c=),XX)FLAGS_$x = $$(call pkg-config,cflags,$$(INC_$x))))
+ C$(if $(x:%.c=),XX)FLAGS_$x = $$(call pkg-config,cflags,$$(strip $$(INC_$x)))))
+
+override define __pkgcfg_link_flags
+$(eval
+  override LDLIBS_$1 = $$(sort $$(call \
+    pkg-config,libs-only-l,$$(LIB_$1:-%=)) $$(filter -l%,$$(LIB_$1)))
+  override LDFLAGS_$1 = $$(sort $$(call \
+    pkg-config,libs-only-L,$$(LIB_$1:-%=)) $$(filter -%,$$(LIB_$1:-l%=))))
+endef
 
 override define __tgt
 
@@ -102,8 +112,7 @@ $1: | $$O$1
 ifneq (,$(1:%.a=))
 # Executable or shared library target
 $$O$1: $$(A_OBJ_$1) $$(O_OBJ_$1) $$(EXT_$1)
-override LDFLAGS_$1 += $$(call pkg-config,libs-only-L,$$(LIB_$1))
-override LDLIBS_$1  += $$(call pkg-config,libs-only-l,$$(LIB_$1))
+$$(call __pkgcfg_link_flags,$1)
 else
 # Archive target
 $$O$1: $$O$1($$(A_OBJ_$1) $$(O_OBJ_$1) $$(EXT_$1))
@@ -163,10 +172,11 @@ endif
 $(TGT:%=$O%) $(A_OBJ) $(O_OBJ) $(JSON) $Ocompile_commands.json: | $O
 
 ifneq (,$(O_TGT))
-$(O_TGT:%=$O%):; +$(strip $(CC) -o "$@" -MMD $(CFLAGS) \
-                         -ffile-prefix-map=$(SRCDIR)='' \
-                         $^ $(LDFLAGS) $(LDFLAGS_$(@F)) \
-                         $(LDLIBS) $(LDLIBS_$(@F)))
+$(O_TGT:%=$O%):
+	+$(strip $(CC) -o "$@" -MMD $(CFLAGS)         \
+	               -ffile-prefix-map=$(SRCDIR)='' \
+	               $^ $(LDFLAGS) $(LDFLAGS_$(@F)) \
+	               $(LDLIBS) $(LDLIBS_$(@F)))
 endif
 
 ifneq (,$(SO_TGT))

@@ -47,10 +47,8 @@ override SRC_askai := \
   web.c
 
 override LIB_askai := \
-  libcrypto           \
   json-c              \
+  libcrypto           \
   libcurl             \
-  libssl
-
-# Exports to the plugins it loads what src/export.h marks
-override LDFLAGS_askai := -rdynamic
+  libssl              \
+  -rdynamic

@@ -6,10 +6,10 @@
 # rest of the build is unchanged.
 ifeq (,$(filter-out default undefined,$(origin LLVM_CONFIG)))
 override LLVM_CONFIG := $(shell for c in llvm-config $(foreach v,30 29 28 27 26 25 24 23 22 21 20 19,llvm-config-$v); do \
-  v=$$($$c --version 2>/dev/null) && [ "$${v%%.*}" -ge 19 ] && { echo $$c; break; }; done)
+  v=$$($$c --version 2>/dev/null) && [ "$${v%%.*}" -ge 19 ] && { echo $$c | tee /dev/stderr; break; }; done)
 endif
 
-override LLVM_INCLUDEDIR := $(if $(LLVM_CONFIG),$(shell $(LLVM_CONFIG) --includedir))
+override LLVM_INCLUDEDIR := $(if $(LLVM_CONFIG),$(shell echo $(LLVM_CONFIG) --includedir >&2; $(LLVM_CONFIG) --includedir))
 
 override SRC_askai-code := $(if $(LLVM_CONFIG), \
   buf.c                                         \
@@ -24,7 +24,5 @@ override SRC_askai-code := $(if $(LLVM_CONFIG), \
   loop.c)
 
 override LIB_askai-code := \
-  json-c
-
-override LDFLAGS_askai-code := $(if $(LLVM_CONFIG),-L$(shell $(LLVM_CONFIG) --libdir))
-override LDLIBS_askai-code += -lclang
+  json-c                   \
+  -lclang $(if $(LLVM_CONFIG),-L$(shell echo $(LLVM_CONFIG) --libdir >&2; $(LLVM_CONFIG) --libdir))
