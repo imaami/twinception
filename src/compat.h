@@ -10,10 +10,14 @@
 #include "compiler.h"
 #include "pragma.h"
 
+#undef HAVE_C23_CONSTEXPR
 #undef HAVE_C23_BOOL
 #undef HAVE_C23_NULLPTR
 
 #if __STDC_VERSION__ >= 202000L
+# if gcc_at_least_version(13,1) || clang_at_least_version(19)
+#  define HAVE_C23_CONSTEXPR
+# endif
 # if gcc_at_least_version(13,1) || clang_at_least_version(15)
 #  define HAVE_C23_BOOL
 # endif
@@ -21,6 +25,10 @@
 #  define HAVE_C23_NULLPTR
 # endif
 #endif // __STDC_VERSION__ >= 202000L
+
+#ifndef HAVE_C23_CONSTEXPR
+# define constexpr const
+#endif
 
 #ifndef HAVE_C23_BOOL
 # include <stdbool.h>
@@ -30,6 +38,7 @@
 # define nullptr NULL
 #endif
 
+#undef HAVE_C23_CONSTEXPR
 #undef HAVE_C23_BOOL
 #undef HAVE_C23_NULLPTR
 
