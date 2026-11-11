@@ -1,11 +1,12 @@
 /** @file member.h
  *
  * The members of the session of --notes: persons and agents. A member is
- * of one kind, with one name. A person is a human or a service account,
- * named by a Unix user or by an identity of the policy (src/policy.h). An
- * agent is an AI member: the agent of an askai service (--agent), or an
- * identity whose member "agent" is true. A login is how a client proves
- * who it is: "uid N" for a Unix user, or "identity NAME" for an identity.
+ * of one kind, with one name (src/member_name.h). A person is a human or a
+ * service account, named by a Unix user or by an identity of the policy
+ * (src/policy.h). An agent is an AI member: the agent of an askai service
+ * (--agent), or an identity whose member "agent" is true. A login is how a
+ * client proves who it is: "uid N" for a Unix user, or "identity NAME" for
+ * an identity.
  *
  * The registry of the members is in the repository of the session
  * (src/store.h). The record of a member is the create-only ref
@@ -39,6 +40,7 @@
 #include "cstr_view.h"
 #include "hexid.h"
 #include "list.h"
+#include "member_name.h"
 #include "oid.h"
 #include "policy.h"
 #include "store.h"
@@ -53,9 +55,6 @@ struct member_registry;
 struct member_table;
 
 enum {
-	MEMBER_NAME   = UTIL_WORD_MAX + 1,               /**< bytes of a member
-	                                                      name, NUL
-	                                                      included */
 	MEMBER_LOGIN  = sizeof "identity " + POLICY_NAME, /**< bytes of a login,
 	                                                      NUL included */
 	MEMBER_LOGINS = 8,                               /**< logins of a member,
@@ -88,25 +87,6 @@ enum {
  */
 #define MEMBER_NS (10 * NS)
 
-/** The kinds of members: X(ID, name), the constant MEMBER_ID of enum
- *  member_kind and the name in the trailer line Kind of a record and in the
- *  refs of the branches. A person is a human or a service account, and an
- *  agent is an AI member.
- */
-#define MEMBER_KIND_LIST(X) \
-        X(PERSON, "person") \
-        X(AGENT,  "agent")
-
-enum member_kind : uint8_t {
-#define MEMBER_KIND_ENUM(id, ...) MEMBER_##id,
-	MEMBER_KIND_LIST(MEMBER_KIND_ENUM)
-#undef MEMBER_KIND_ENUM
-	MEMBER_KINDS
-};
-
-/** The names of the kinds. Each is NUL-terminated. */
-extern struct cstr_view const member_kinds[MEMBER_KINDS];
-
 /** The branches of a member: X(ID, leaf), the constant MEMBER_BRANCH_ID of
  *  enum member_branch and the last part of the ref of the branch,
  *  refs/heads/KIND/NAME/LEAF. NOTES is the notebook, and FINDINGS the
@@ -121,12 +101,6 @@ enum member_branch : uint8_t {
 	MEMBER_BRANCH_LIST(MEMBER_BRANCH_ENUM)
 #undef MEMBER_BRANCH_ENUM
 	MEMBER_BRANCHES
-};
-
-/** A member of the session. */
-struct member {
-	enum member_kind kind;
-	char             name[MEMBER_NAME];  /**< "" for no member */
 };
 
 /** The flags of a member in a table (struct member_info). */
@@ -219,36 +193,6 @@ struct member_byline {
 	char                 call[16];             /**< the number of the call,
 	                                                NUL included */
 };
-
-/**
- * Returns true if @p name can be the name of a member: 1 to UTIL_WORD_MAX
- * characters from [A-Za-z0-9_.@-], not starting with . or -, without ..,
- * not ending with . or .lock, not @, and not a letter followed only by
- * digits, such as c7. The name of a service of askai is of the same
- * form.
- */
-static inline bool
-member_name_valid (struct cstr_view name)
-{
-	if (!name.data || !name.len || name.len > UTIL_WORD_MAX || *name.data == '.' ||
-	    *name.data == '-' || name.data[name.len - 1] == '.' ||
-	    cstr_view_ends(name, CSTR_VIEW(".lock")) || cstr_view_equal(name, CSTR_VIEW("@")))
-		return false;
-	bool digits = name.len > 1;
-	for (size_t i = 0; i < name.len; ++i) {
-		char const c = name.data[i];
-		bool const digit = c >= '0' && c <= '9';
-		bool const letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-		if (!digit && !letter && c != '_' && c != '.' && c != '@' && c != '-')
-			return false;
-		if (c == '.' && i && name.data[i - 1] == '.')
-			return false;
-		/* The first character is a letter, and the others are digits. */
-		if (i ? !digit : !letter)
-			digits = false;
-	}
-	return !digits;
-}
 
 /** Writes the member @p name of the kind @p kind to @p text as NAME (KIND),
  *  such as bro (agent), or as NAME (KIND, you) if @p you is true. Returns

@@ -7,7 +7,7 @@
 #include <string.h>
 
 #include "cstr_view.h"
-#include "member.h"
+#include "member_name.h"
 #include "notice.h"
 #include "tool.h"
 #include "util.h"

@@ -32,7 +32,7 @@
 #include "dstr.h"
 #include "evidence.h"
 #include "hexid.h"
-#include "member.h"
+#include "member_name.h"
 #include "util.h"
 
 /** The directory of the files of the findings on a branch, and the end of

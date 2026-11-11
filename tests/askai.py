@@ -448,7 +448,7 @@ class Upstream:
 
 
 def member_name(name):
-    """Whether @p name is a valid member name (src/member.h)."""
+    """Whether @p name is a valid member name (src/member_name.h)."""
     return re.fullmatch(r"[A-Za-z0-9_.@-]{1,64}", name) is not None and \
         name[0] not in ".-" and ".." not in name and not name.endswith((".", ".lock")) and \
         name != "@" and re.fullmatch(r"[A-Za-z][0-9]+", name) is None

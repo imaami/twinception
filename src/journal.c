@@ -26,7 +26,7 @@
 #include "git_run.h"
 #include "journal.h"
 #include "loop.h"
-#include "member.h"
+#include "member_name.h"
 #include "oid.h"
 #include "tally.h"
 #include "util.h"

@@ -31,7 +31,7 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "hexid.h"
-#include "member.h"
+#include "member_name.h"
 #include "seen.h"
 #include "util.h"
 

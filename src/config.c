@@ -33,7 +33,7 @@
 #include "jb.h"
 #include "log.h"
 #include "mcp.h"
-#include "member.h"
+#include "member_name.h"
 #include "policy.h"
 #include "tls.h"
 #include "util.h"
@@ -557,7 +557,9 @@ static char const participant_retired[] =
 	"in the session. Set service.name to the old participant value to keep the transcripts "
 	"and the background jobs.";
 
-/* The form of a member name (src/member.h), for the refusal of a name. */
+/* The form of a member name (src/member_name.h), for the refusal of a
+ * name.
+ */
 #define CONFIG_NAME_RULE                                                                  \
         "a name is 1 to 64 characters from [A-Za-z0-9_.@-], does not start with . or -, " \
         "contains no .., does not end with . or .lock, is not @ and is not a letter "     \

@@ -40,8 +40,6 @@ enum {
 
 static_assert(sizeof MEMBERS + UTIL_WORD_MAX <= MEMBER_REF, "a record ref fits MEMBER_REF");
 
-struct cstr_view const member_kinds[MEMBER_KINDS] = { MEMBER_KIND_LIST(XL_VIEW) };
-
 /* The leaves of the branches, by enum member_branch. */
 static struct cstr_view const member_leaves[MEMBER_BRANCHES] = { MEMBER_BRANCH_LIST(XL_VIEW) };
 

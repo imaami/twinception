@@ -74,7 +74,7 @@ journal_load_cb (struct loop           *loop,
 
 /** Opens or creates a bare repository and starts its writer for the
  * service @p service. Called at startup, off the loops. @p service is a
- * name that member_name_valid() accepts (src/member.h). Missing path
+ * name that member_name_valid() accepts (src/member_name.h). Missing path
  * components are made with 0700; symbolic links and parent-directory
  * components are refused. On failure the function returns nullptr, stores
  * the error number in @p *e, and writes a message of at most @p why_len
