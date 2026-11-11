@@ -22,7 +22,7 @@ struct loop_stats;
 
 /** The bound of each unit per step, LOOP_STEP_ID for LOOP_ID. */
 #define LOOP_BOUND(id, name, bound) [LOOP_##id] = bound,
-static constexpr uint64_t loop_bound[LOOP_UNITS] = { LOOP_UNIT_LIST(LOOP_BOUND) };
+static uint64_t const loop_bound[LOOP_UNITS] = { LOOP_UNIT_LIST(LOOP_BOUND) };
 #undef LOOP_BOUND
 
 /**

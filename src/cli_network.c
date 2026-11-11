@@ -30,7 +30,7 @@ enum {
 /* The bounds of the chunks that the network thread has posted to the UI
  * and not got back yet.
  */
-static constexpr struct tally cli_network_credit = { 64, CLI_NETWORK_BYTES };
+static struct tally const cli_network_credit = { 64, CLI_NETWORK_BYTES };
 
 /* The bits of a call's flags, after CLI_NETWORK_INTERRUPTIBLE. */
 enum {

@@ -2,10 +2,19 @@
 
 static_assert(sizeof(struct cli_style_entry) == 16);
 
-static constexpr struct cli_style_entry cli_style_none[CLI_STYLE_COUNT] = {};
+static struct cli_style_entry const cli_style_none[CLI_STYLE_COUNT] = {};
 
-#define CLI_STYLE(sequence) {sequence, sizeof(sequence) - 1}
-static constexpr struct cli_style_entry cli_style_table[CLI_STYLE_COUNT] = {
+/* A sequence and its length. The static_assert fails if the sequence and
+ * the terminating NUL do not fit the array bytes of an entry. A
+ * static_assert is a declaration, so it is written in a struct, and 0
+ * times the size of that struct is added to the length.
+ */
+#define CLI_STYLE(sequence)                                                      \
+        {sequence, sizeof(sequence) - 1 + 0 * sizeof(struct {                    \
+                static_assert(sizeof(sequence) <= sizeof cli_style_none->bytes); \
+                char c;                                                          \
+        })}
+static struct cli_style_entry const cli_style_table[CLI_STYLE_COUNT] = {
 	[CLI_STYLE_RESET]                = CLI_STYLE("\033[0m"),
 	[CLI_STYLE_INFO]                 = CLI_STYLE("\033[0;38;5;110m"),
 	[CLI_STYLE_PROMPT]               = CLI_STYLE("\033[0;38;5;229m"),
