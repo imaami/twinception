@@ -496,12 +496,12 @@ static struct cstr_view const godbolt_filters[] = { GODBOLT_FILTER_LIST(XL_VIEW)
 
 /* The filters that the argument filters can set. */
 #define GODBOLT_FILTER_BIT(id, name, set, site) | (uint32_t)set << GODBOLT_FILTER_##id
-static constexpr uint32_t GODBOLT_SETTABLE = 0 GODBOLT_FILTER_LIST(GODBOLT_FILTER_BIT);
+enum { GODBOLT_SETTABLE = 0 GODBOLT_FILTER_LIST(GODBOLT_FILTER_BIT) };
 #undef GODBOLT_FILTER_BIT
 
 /* The filters that the Compiler Explorer site sets by default. */
 #define GODBOLT_FILTER_BIT(id, name, set, site) | (uint32_t)site << GODBOLT_FILTER_##id
-static constexpr uint32_t GODBOLT_SITE_FILTERS = 0 GODBOLT_FILTER_LIST(GODBOLT_FILTER_BIT);
+enum { GODBOLT_SITE_FILTERS = 0 GODBOLT_FILTER_LIST(GODBOLT_FILTER_BIT) };
 #undef GODBOLT_FILTER_BIT
 
 /* The flags of the arguments headers, share, run and offset. run sets the

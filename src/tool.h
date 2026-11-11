@@ -16,7 +16,7 @@ struct json_object;
 struct mcp_slot;
 
 /** The tools askai may offer at most: a mask's width; as an id, none. */
-static constexpr unsigned TOOL_MAX = 128;
+enum { TOOL_MAX = 128 };
 
 /** Tools, bit i that of id i. */
 typedef unsigned _BitInt(TOOL_MAX) tool_mask;

@@ -41,8 +41,10 @@ cli_tool_create (struct cli_client  *client,
                  struct cli_error   *error,
                  int                *e)
 {
-	static constexpr uint32_t writes = 1U << NOTES_ACTION_ADD | 1U << NOTES_ACTION_COPY | 1U << NOTES_ACTION_DELETE |
-	                                   1U << NOTES_ACTION_REPLACE | 1U << NOTES_ACTION_RESTORE;
+	enum {
+		WRITES = 1U << NOTES_ACTION_ADD | 1U << NOTES_ACTION_COPY | 1U << NOTES_ACTION_DELETE |
+		         1U << NOTES_ACTION_REPLACE | 1U << NOTES_ACTION_RESTORE,
+	};
 	struct autocomplete_tool const *entry;
 	cli_json_auto arguments = nullptr;
 	*e = autocomplete_parse_call(client->catalog, command, &entry, &arguments,
@@ -52,7 +54,7 @@ cli_tool_create (struct cli_client  *client,
 		return nullptr;
 	}
 	uint64_t dirty = cstr_view_equal(entry->name, cstr_view_dstr(&client->notes_tool)) &&
-	                 writes >> cstr_view_index(notes_action_names, array_size(notes_action_names),
+	                 WRITES >> cstr_view_index(notes_action_names, array_size(notes_action_names),
 	                                           jb_view(jb_get(arguments, "action"))) & 1
 	                 ? CLI_CLIENT_NOTES_DIRTY : 0;
 	struct cstr_view const token = CSTR_VIEW("tool");

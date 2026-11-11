@@ -997,7 +997,7 @@ notes_tool_rebased (struct mcp_slot *slot)
  */
 static char const when_text[] = "%Y-%m-%d %H:%M UTC";
 static char const when_json[] = "%Y-%m-%dT%H:%M:%SZ";
-static constexpr size_t WHEN = sizeof "2026-10-14 12:34 UTC";
+enum { WHEN = sizeof "2026-10-14 12:34 UTC" };
 static_assert(sizeof "2026-10-14T12:34:56Z" == WHEN, "a time in JSON fits WHEN bytes");
 
 /* Writes @p time, seconds since the epoch, in UTC in the strftime() format

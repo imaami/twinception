@@ -31,9 +31,9 @@
  */
 #if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
     __has_feature(undefined_behavior_sanitizer)
-static constexpr bool PLUGIN_STATE_REFUSED = false;
+enum { PLUGIN_STATE_REFUSED = false };
 #else
-static constexpr bool PLUGIN_STATE_REFUSED = true;
+enum { PLUGIN_STATE_REFUSED = true };
 #endif
 
 /* What plugin_manifest_read() knows about the plugin's file while it reads

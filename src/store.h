@@ -40,12 +40,12 @@ enum {
 	STORE_TRIES   = 3,                   /**< commits of one write that
 	                                          races other writers, at
 	                                          most */
+	STORE_STALE   = 60,                  /**< seconds of age past which a
+	                                          lock file of a ref is older
+	                                          than every write of askai, so
+	                                          that its writer died or
+	                                          hangs */
 };
-
-/** The age in seconds past which a lock file of a ref is older than every
- *  write of askai, so that its writer died or hangs.
- */
-static constexpr int64_t STORE_STALE = 60;
 
 /** The commands of git in the repository. The words of a command are the
  *  arguments that the caller of store_command() or store_spawn() passes,

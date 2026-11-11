@@ -8344,12 +8344,14 @@ mcp_lending (struct config const *cfg)
 	return l;
 }
 
-/* The kinds background, jobs, wait and timer, as bits. */
-static constexpr uint32_t KINDS_AGENDA = 1u << KIND_BACKGROUND | 1u << KIND_JOBS |
-                                         1u << KIND_WAIT | 1u << KIND_TIMER;
+enum {
+	/* The kinds background, jobs, wait and timer, as bits. */
+	KINDS_AGENDA = 1u << KIND_BACKGROUND | 1u << KIND_JOBS |
+	               1u << KIND_WAIT | 1u << KIND_TIMER,
 
-/* The kinds notes and findings, which --notes offers, as bits. */
-static constexpr uint32_t KINDS_NOTES = 1u << KIND_NOTES | 1u << KIND_FINDINGS;
+	/* The kinds notes and findings, which --notes offers, as bits. */
+	KINDS_NOTES  = 1u << KIND_NOTES | 1u << KIND_FINDINGS,
+};
 
 /* The kinds of askai's own tools that @p cfg offers to clients, as bits. */
 static uint32_t

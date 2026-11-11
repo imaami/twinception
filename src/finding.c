@@ -20,11 +20,10 @@ enum {
 	FINDING_STATE   = 9,  /* the width of the state column of a list */
 	FINDING_VERSION = 1,  /* the version of the file that askai writes and
 	                         reads */
+	FINDING_JSON    = JSON_C_TO_STRING_PRETTY | JSON_C_TO_STRING_SPACED |
+	                  JSON_C_TO_STRING_NOSLASHESCAPE,
+	                      /* the options of json-c for the file of a finding */
 };
-
-/* The options of json-c for the file of a finding. */
-static constexpr int FINDING_JSON = JSON_C_TO_STRING_PRETTY | JSON_C_TO_STRING_SPACED |
-                                    JSON_C_TO_STRING_NOSLASHESCAPE;
 
 struct finding
 finding (void)

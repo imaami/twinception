@@ -65,17 +65,20 @@ enum policy_kind {
 	POLICY_KINDS
 };
 
-/** Bytes of a role's or an identity's name, at most. */
-static constexpr size_t POLICY_NAME = 64;
+enum {
+	/** Bytes of a role's or an identity's name, at most. */
+	POLICY_NAME = 64,
 
-/** Bytes of the key of the principals (policy_key()). */
-static constexpr size_t POLICY_KEY = 32;
+	/** Bytes of the key of the principals (policy_key()). */
+	POLICY_KEY  = 32,
 
-/** Bytes of the longest name of a client in the log, with a terminating
- *  NUL. mcp.c names a client on a Unix socket "uid N (WHO)", where WHO is
- *  the member who of struct policy_grant, and other clients by who alone.
- */
-static constexpr size_t POLICY_WHO = sizeof "uid 4294967295 (identity )" + POLICY_NAME;
+	/** Bytes of the longest name of a client in the log, with a
+	 *  terminating NUL. mcp.c names a client on a Unix socket "uid N
+	 *  (WHO)", where WHO is the member who of struct policy_grant, and
+	 *  other clients by who alone.
+	 */
+	POLICY_WHO  = sizeof "uid 4294967295 (identity )" + POLICY_NAME,
+};
 
 /** Whether a client on a Unix socket may connect at all, by its uid, as
  *  policy_admit_uid() answers.

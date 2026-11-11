@@ -47,7 +47,7 @@ enum { BRAINSTEM_FORCED = 3, BRAINSTEM_RELIEF_MS = 10000 };
 /** The least default resident threshold: the default body budget, which
  *  bounds the working set the default limits allow.
  */
-static constexpr uint64_t MEMORY_HIGH_MIN = 256 << 20;
+enum { MEMORY_HIGH_MIN = 256 << 20 };
 
 /**
  * The inputs to the memory pressure level, as X(ID, name): PRESSURE_ID in

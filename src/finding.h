@@ -73,13 +73,15 @@ enum finding_state : uint16_t {
 /** The names of the states. Each is NUL-terminated. */
 extern struct cstr_view const finding_state_names[FINDING_STATES];
 
-/** The open states, as a mask of the bits 1 << state. */
-static constexpr uint8_t FINDING_OPEN = 1U << FINDING_CANDIDATE | 1U << FINDING_VERIFIED;
+enum {
+	/** The open states, as a mask of the bits 1 << state. */
+	FINDING_OPEN  = 1U << FINDING_CANDIDATE | 1U << FINDING_VERIFIED,
 
-/** The states that need evidence that askai showed before the turn, as a
- *  mask of the bits 1 << state.
- */
-static constexpr uint8_t FINDING_SHOWN = 1U << FINDING_VERIFIED | 1U << FINDING_DISPROVED;
+	/** The states that need evidence that askai showed before the turn,
+	 *  as a mask of the bits 1 << state.
+	 */
+	FINDING_SHOWN = 1U << FINDING_VERIFIED | 1U << FINDING_DISPROVED,
+};
 
 /** A change of a finding. Each member has a defined value from
  *  finding_change() on.

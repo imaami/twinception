@@ -13,7 +13,7 @@
 #include <stdint.h>
 
 /** The note type of a manifest; a note's owner gives its types meaning. */
-static constexpr uint32_t MANIFEST_TYPE = 0x61736b01; // `{1,'k','s','a'}`
+enum { MANIFEST_TYPE = 0x61736b01 }; // `{1,'k','s','a'}`
 
 enum {
 	MANIFEST_ABI   = 32, //!< Length of the @ref manifest::abi array

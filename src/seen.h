@@ -75,12 +75,10 @@ enum {
 	                                         seen_item */
 	SEEN_LISTED   = 64,                 /**< items that the notice of
 	                                         seen_notice() names, at most */
+	SEEN_BYTES    = 16U << 20,          /**< bytes of the arguments and
+	                                         results of the calls in the
+	                                         ring, at most */
 };
-
-/** The bytes of the arguments and results of the calls in the ring, at
- *  most.
- */
-static constexpr size_t SEEN_BYTES = 16U << 20;
 
 /** The flags of a call in the ring. */
 enum seen_flag : uint16_t {

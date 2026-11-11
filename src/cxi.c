@@ -43,10 +43,8 @@ enum {
 	CXI_ROWS  = 2000,     /* the most member rows of a layout */
 	CXI_BITS  = 48,       /* the size of the text of an offset or a size */
 	CXI_NAME  = 256,      /* the longest part of the name of describe */
+	CXI_BYTES = 1 << 30,  /* the largest total size of the files of a commit */
 };
-
-/* The largest total size of the files of a commit. */
-static constexpr uint64_t CXI_BYTES = UINT64_C(1) << 30;
 
 /* The git processes of an export get SIGKILL this long before askai kills
  * askai-code, so that none of them holds the lock of the cache after that.

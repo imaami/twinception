@@ -72,10 +72,11 @@ enum {
 	LEDGER_NOTE    = 200,   /**< bytes of a timer's note */
 	LEDGER_WAITS   = 4,     /**< waits of one owner at once */
 	LEDGER_OWNERS  = 1024,  /**< owners in the ledger at most */
+	LEDGER_BYTES   = 64 << 20,
+	                        /**< bytes of the results in the ledger, at most.
+	                             The record of a call that just ended is
+	                             not removed for this limit */
 };
-
-/** Bytes of results the ledger keeps, at most, but for the newest's. */
-static constexpr size_t LEDGER_BYTES = 64 << 20;
 
 /** The bit of the key of an owner that is an anonymous client's address.
  *  The ledger has at most LEDGER_OWNERS / 2 such owners, so that anonymous

@@ -103,11 +103,10 @@ enum findings_stage : uint8_t {
 /* The stages whose step handles a git that failed. The steps of the other
  * stages need the output of a git that succeeded.
  */
-static constexpr uint32_t STAGES_FAILED = 1U << STAGE_REFS | 1U << STAGE_COMMIT |
-                                          1U << STAGE_CALLS;
+enum { STAGES_FAILED = 1U << STAGE_REFS | 1U << STAGE_COMMIT | 1U << STAGE_CALLS };
 
 /* The stored material of the items that one call reads, at most. */
-static constexpr size_t FINDINGS_MATERIAL = TOOL_OUTPUT_MAX / 2;
+enum { FINDINGS_MATERIAL = TOOL_OUTPUT_MAX / 2 };
 
 /* The flags of a call. */
 enum findings_flag : uint8_t {
