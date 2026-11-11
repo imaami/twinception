@@ -86,7 +86,7 @@ enum { JOB_CALLS = 16 };
 enum { JOB_QUEUED = 8 };
 
 /** In a running job's progress, beside its tokens: the latest was thinking. */
-static constexpr uint32_t JOB_THINKING = UINT32_C(1) << 31;
+#define JOB_THINKING (UINT32_C(1) << 31)
 
 /** What the front asks of a job, before SUBMIT. */
 enum job_ask {

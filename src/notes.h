@@ -101,7 +101,7 @@ struct notes_cursor {
 };
 
 /** The lines of a note that git sees as binary (struct notes_entry). */
-static constexpr uint64_t NOTES_BINARY = UINT64_MAX;
+#define NOTES_BINARY UINT64_MAX
 
 /** The stage of a historical read or diff (notes.c). */
 enum notes_revision_phase : uint8_t;

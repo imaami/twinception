@@ -142,7 +142,7 @@ struct ai_event {
 /** A tool call's index that an event does not give: the call it says
  *  something of is a new one if it gives a new id, else the last.
  */
-static constexpr uint32_t AI_CALL_NEXT = UINT32_MAX;
+#define AI_CALL_NEXT UINT32_MAX
 
 /** The parts of a tool call that the model makes, as one streamed event
  *  contains them or as a job stored them (job_call_parts()). A part that

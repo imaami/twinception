@@ -36,7 +36,7 @@
 enum { START_BATCH = 2 };
 
 /* How long looked-up addresses serve new requests. */
-static constexpr uint64_t LOOKUP_TTL_NS = 60 * NS;
+#define LOOKUP_TTL_NS (60 * NS)
 
 struct http_request {
 	struct list        hook;     /* on a host's waiting list, then on
@@ -402,6 +402,8 @@ http_host_found (struct http_host   *host,
 		http_host_resume(host, container_of(host->waiting.next, struct http_request,
 		                                    hook), why);
 }
+
+#undef LOOKUP_TTL_NS
 
 /* On the loop: a lookup has come back, to its host unless http has gone. */
 static void

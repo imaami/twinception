@@ -121,13 +121,13 @@ enum {
 };
 
 /* An event bit epoll never reports, for the timer finding a deadline passed. */
-static constexpr uint32_t DEADLINE = 1u << 31;
+#define DEADLINE (UINT32_C(1) << 31)
 
 /* And one that steps keep: TLS holds input that epoll no longer reports, the
  * rest of a record a read had no room for, or records a read that waited to
  * send left.
  */
-static constexpr uint32_t HELD = 1u << 30;
+#define HELD (UINT32_C(1) << 30)
 
 /* The head starts the input buffer until the request is done, so header
  * values are kept as offsets into it, which survive the buffer moving; 0 is
@@ -2218,6 +2218,8 @@ httpd_conn_step (struct loop      *loop,
 		httpd_conn_pump(conn);
 }
 
+#undef HELD
+
 static void
 httpd_conn_event (struct loop     *loop,
                   struct loop_ref *ref,
@@ -2245,6 +2247,8 @@ httpd_conn_timer (struct loop       *loop,
 	conn->events |= DEADLINE;
 	httpd_conn_ready(conn);
 }
+
+#undef DEADLINE
 
 /* Watch the listeners for clients, or for none if @p events is 0. */
 static void

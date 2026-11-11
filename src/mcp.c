@@ -178,11 +178,9 @@ enum {
  */
 static_assert((int)LEDGER_RUNNING <= (int)JOB_QUEUED, "home queues the jobs that run");
 
-static constexpr uint64_t PROGRESS_NS = 100 * MS;  /* between a call's
-                                                      notifications */
-static constexpr uint64_t TASK_NS = NS;  /* a call's run before it becomes
-                                            a task, for a client that takes
-                                            them */
+#define PROGRESS_NS (100 * MS)  /* between a call's notifications */
+#define TASK_NS     NS          /* a call's run before it becomes a task, for
+                                   a client that accepts tasks */
 
 /** The protocol revisions that askai supports, newest first. The clients
  *  of the first MODERN revisions send their version in _meta. The last,
@@ -2400,6 +2398,8 @@ mcp_req_progressed (struct mcp_req *req)
 		loop_ready(loop, &req->step);
 	}
 }
+
+#undef PROGRESS_NS
 
 static void mcp_req_turn_done (struct mcp_req *req);
 static void mcp_req_compact_full (struct mcp_req *req);
@@ -6776,6 +6776,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 }
 
 #undef QUOTED
+#undef TASK_NS
 
 static void
 mcp_req_initialize (struct mcp_req     *req,

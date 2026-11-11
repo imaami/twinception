@@ -51,7 +51,7 @@ static constexpr uint64_t CXI_BYTES = UINT64_C(1) << 30;
 /* The git processes of an export get SIGKILL this long before askai kills
  * askai-code, so that none of them holds the lock of the cache after that.
  */
-static constexpr uint64_t CXI_EARLY = 200 * MS;
+#define CXI_EARLY (200 * MS)
 
 static struct cstr_view const cxi_keys[] = { CXI_KEY_LIST(XL_VIEW) };
 static struct cstr_view const cxi_actions[] = { CXI_ACTION_LIST(XL_VIEW) };
@@ -1772,6 +1772,8 @@ cxi_run (struct cxi         *x,
 	dstr_cleanup(&cache.dir);
 	return e;
 }
+
+#undef CXI_EARLY
 
 int
 main (int    argc,

@@ -81,7 +81,7 @@ static constexpr size_t LEDGER_BYTES = 64 << 20;
  *  The ledger has at most LEDGER_OWNERS / 2 such owners, so that anonymous
  *  clients cannot fill the table of owners for identities and Unix users.
  */
-static constexpr uint64_t LEDGER_ANONYMOUS = UINT64_C(1) << 63;
+#define LEDGER_ANONYMOUS (UINT64_C(1) << 63)
 
 /** Where a task stands, working or how its call ended: X(ID, name), the
  *  constant LEDGER_ID and its word, as MCP's tasks extension names it.

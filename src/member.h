@@ -86,7 +86,7 @@ enum {
  *  After a longer lookup, a find names the person uid-N, and a claim fails
  *  with EAGAIN.
  */
-static constexpr uint64_t MEMBER_NS = 10 * NS;
+#define MEMBER_NS (10 * NS)
 
 /** The kinds of members: X(ID, name), the constant MEMBER_ID of enum
  *  member_kind and the name in the trailer line Kind of a record and in the

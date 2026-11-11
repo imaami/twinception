@@ -57,13 +57,13 @@ struct oid;
  *  askai or askai-cli runs, in nanoseconds. It is one second. git removes
  *  its lock files after SIGTERM.
  */
-static constexpr uint64_t GIT_GRACE = NS;
+#define GIT_GRACE NS
 
 /** The time in nanoseconds that a git process may run when askai or
  *  askai-cli runs git for a repository of its own, such as the journal.
  *  The git tool uses the timeout of the configuration instead.
  */
-static constexpr uint64_t GIT_RUN_NS = 10 * NS;
+#define GIT_RUN_NS (10 * NS)
 
 /** The words of git init that make a bare repository in ".", the
  *  directory where git runs, with the initial branch @p branch, a string

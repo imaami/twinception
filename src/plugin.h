@@ -72,13 +72,13 @@
  *  PLUGIN_MANIFEST() stores it in the manifest so that askai does not load
  *  a plugin that was built with a different value.
  */
-static constexpr uint32_t PLUGIN_EPOCH = 4;
+#define PLUGIN_EPOCH UINT32_C(4)
 
 /** The largest value of instance_size, in bytes. */
-static constexpr size_t PLUGIN_INSTANCE_MAX = 64 << 10;
+#define PLUGIN_INSTANCE_MAX ((size_t)64 << 10)
 
 /** The largest value of config_size, in bytes. */
-static constexpr size_t PLUGIN_CONFIG_MAX = 4 << 10;
+#define PLUGIN_CONFIG_MAX ((size_t)4 << 10)
 
 /**
  * Initializes an instance. @p instance points to instance_size bytes that

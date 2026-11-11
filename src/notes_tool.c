@@ -697,7 +697,7 @@ notes_tool_unadded (struct mcp_slot *slot)
 }
 
 /* The size of a note before a write that creates the note. */
-static constexpr uint64_t NO_NOTE = UINT64_MAX;
+#define NO_NOTE UINT64_MAX
 
 /* Writes to call->message the commit message for the note that @p call
  * writes. @p before is the size of the note before the write, or NO_NOTE.
@@ -873,6 +873,8 @@ notes_tool_checked (struct mcp_slot *slot)
 	              : CSTR_VIEW("A part of the note name before a slash is a note."),
 	              TOOL_FAILED);
 }
+
+#undef NO_NOTE
 
 /* Ends the write in @p slot after its result named the new commit. If the
  * write changed an existing note, the result names the commit of the

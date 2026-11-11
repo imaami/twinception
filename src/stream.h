@@ -30,7 +30,7 @@
 #include "policy.h"
 
 /** The body length of a request or response not known up front. */
-static constexpr size_t STREAM_OPEN = SIZE_MAX;
+#define STREAM_OPEN SIZE_MAX
 
 /** The most request header fields an application may ask for. */
 enum { STREAM_FIELDS = 8 };

@@ -29,10 +29,10 @@ enum { DIGEST = SHA256_DIGEST_LENGTH };
  * has it clear, and no principal has bit 63 set, so the principals of the
  * two kinds differ, and none has the bit LEDGER_ANONYMOUS (src/ledger.h).
  */
-static constexpr uint64_t POLICY_IDENTITY = UINT64_C(1) << 62;
+#define POLICY_IDENTITY (UINT64_C(1) << 62)
 
 /* The index of no role, of a client that the policy refuses. */
-static constexpr size_t POLICY_NO_ROLE = SIZE_MAX;
+#define POLICY_NO_ROLE SIZE_MAX
 
 /* The members of the configuration file that make the policy. */
 enum policy_part : uint8_t {
@@ -231,6 +231,8 @@ policy_principal_identity (struct policy const *policy,
 	anchor[sizeof prefix - 2] = ':';
 	return policy_principal_of(policy, POLICY_IDENTITY, anchor, who.len, principal);
 }
+
+#undef POLICY_IDENTITY
 
 /* Compute the principal of each token of @p policy from the name of its
  * identity, with the key of @p policy. Returns 0, or the error of
@@ -488,7 +490,7 @@ policy_read_overflow (char const *path,
  * entry lists the names of its members, so the entry of a large directory
  * group can take megabytes.
  */
-static constexpr size_t POLICY_ENTRY_MAX = 64 << 20;
+#define POLICY_ENTRY_MAX ((size_t)64 << 20)
 
 /* Look up the Unix group @p name of unix-groups, a gid in decimal or a
  * group name that NSS resolves, and store its gid in @p *gid. The lookup
@@ -524,6 +526,8 @@ policy_build_gid (struct policy_build *b,
 	*gid = (uint32_t)r->gr_gid;
 	return 0;
 }
+
+#undef POLICY_ENTRY_MAX
 
 /* Read @p spec, a string "sha256:HEX" or "env:NAME", into @p digest. */
 static int
@@ -1276,6 +1280,8 @@ policy_grant_role (struct policy const *policy,
 		g->who = who;
 	return POLICY_GRANTED;
 }
+
+#undef POLICY_NO_ROLE
 
 /* Grant the client that shows @p token the role of the identity that the
  * token proves, if any.

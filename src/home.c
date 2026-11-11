@@ -46,8 +46,8 @@ enum {
 	FAILURES     = 5,         /* failures in a row that open the breaker */
 };
 
-static constexpr uint64_t BACKOFF_MIN = NS;
-static constexpr uint64_t BACKOFF_MAX = 60 * NS;
+#define BACKOFF_MIN NS
+#define BACKOFF_MAX (60 * NS)
 
 /* What home notes of a job's run, in its flags. */
 enum : uint32_t {
@@ -755,6 +755,8 @@ home_breaker_open (struct home *home,
 	    spell / NS);
 	loop_ready_bulk(loop, &home->shed);
 }
+
+#undef BACKOFF_MAX
 
 static void
 home_breaker_event (struct loop       *loop,
@@ -2801,6 +2803,8 @@ home_create (struct loop         *loop,
 		http_connections(home->http, ep->slots + 1L);
 	return home;
 }
+
+#undef BACKOFF_MIN
 
 void
 home_destroy (struct home **p_home)
