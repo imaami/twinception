@@ -1120,12 +1120,40 @@ findings_no_item (char const *author,
 	                   number);
 }
 
+/* Records in call->prints the item @p ev of the finding @p f, and counts
+ * the item in @p *items. An expand of one item skips every other item.
+ * For an item before call->fit, adds the size of its material to
+ * @p *bytes (findings_fits()) and the lines that read its archive files
+ * on the branch @p ref to @p in. The first item that does not fit sets
+ * call->fit. Returns 0, ENOMEM, or the error of findings_archive_line().
+ */
+static int
+findings_expand_item (struct findings_call  *call,
+                      struct finding const  *f,
+                      struct evidence const *ev,
+                      char const            *ref,
+                      uint64_t              *bytes,
+                      size_t                *items,
+                      struct buf            *in)
+{
+	if (call->item && ev->item != call->item)
+		return 0;
+	++*items;
+	int e = util_push(call->prints, (struct findings_print){ f, ev });
+	if (e || call->fit < call->prints.n)
+		return e;
+	if (!findings_fits(bytes, ev)) {
+		call->fit = call->prints.n - 1;
+		return 0;
+	}
+	if (ev->flags & EVIDENCE_REQUEST)
+		e = findings_archive_line(in, ref, &ev->request);
+	return e ? e : findings_archive_line(in, ref, &ev->result);
+}
+
 /* Records in call->prints the items of the finding @p f that expand
- * prints, every item or the item of the id, and then the end of the items
- * of @p f. Counts the items in @p *items. For each item before call->fit,
- * adds the size of its material to @p *bytes (findings_fits()) and the
- * lines that read its archive files on the branch @p ref to @p in. The
- * first item that does not fit sets call->fit. Returns 0 or ENOMEM.
+ * prints (findings_expand_item()), and then the end of the items of
+ * @p f. Returns 0, ENOMEM, or the error of findings_expand_item().
  */
 static int
 findings_expand_finding (struct findings_call *call,
@@ -1138,22 +1166,8 @@ findings_expand_finding (struct findings_call *call,
 	int e = 0;
 	for (size_t k = 0; !e && k < f->changes.n; ++k) {
 		struct finding_change const *c = &f->changes.items[k];
-		for (size_t j = 0; !e && j < c->evidence.n; ++j) {
-			struct evidence const *ev = &c->evidence.items[j];
-			if (call->item && ev->item != call->item)
-				continue;
-			++*items;
-			e = util_push(call->prints, (struct findings_print){ f, ev });
-			if (e || call->fit < call->prints.n)
-				continue;
-			if (!findings_fits(bytes, ev)) {
-				call->fit = call->prints.n - 1;
-				continue;
-			}
-			if (ev->flags & EVIDENCE_REQUEST)
-				e = findings_archive_line(in, ref, &ev->request);
-			e = e ? e : findings_archive_line(in, ref, &ev->result);
-		}
+		for (size_t j = 0; !e && j < c->evidence.n; ++j)
+			e = findings_expand_item(call, f, &c->evidence.items[j], ref, bytes, items, in);
 	}
 	return e ? e : util_push(call->prints, (struct findings_print){ f, nullptr });
 }
