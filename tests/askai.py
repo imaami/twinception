@@ -2957,7 +2957,7 @@ def check_recovery_findings(binary, up):
     call, the asker and the evidence items that results showed, and no
     member review or thread. The saved git read of the interrupted turn
     comes from its saved result, and git does not run again. The journal
-    has no findings calls (KF_RERUN), and the resumed turn makes them
+    has no findings calls (TOOL_RERUN), and the resumed turn makes them
     again. An add or an update that committed before the restart names that
     commit, and makes no second commit. A call before the restart cannot be
     cited any more, and the refusal says why. An item that expand showed

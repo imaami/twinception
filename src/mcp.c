@@ -279,12 +279,6 @@ enum mcp_trace : uint8_t {
 	TRACE_NAME,
 };
 
-/* Kind flag (bit 33, above TOOL_FLAGS) for the kinds in KINDS_AGENDA. A
- * client's background call cannot start them. A client's call of them never
- * becomes a task. askai does not resume an interrupted turn that called one.
- */
-static constexpr uint64_t KF_AGENDA = 1ull << 33;
-
 /* The row of a kind of tool in mcp_rows. */
 struct mcp_row {
 	struct tool_kind     kind;      /* the functions of the tool, if askai
@@ -5011,7 +5005,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	struct registry_tool const *tool = mcp_static_tool(st, id);
 	struct json_object *call = jb_get(args, "arguments");
 	struct cstr_view problem =
-		!mcp_req_granted(req, id) || tool->kind->flags & KF_AGENDA
+		!mcp_req_granted(req, id) || tool->kind->flags & TOOL_AGENDA
 		? CSTR_VIEW("The tool argument must name a tool that you may call, other than "
 		            "background, jobs, wait and timer.")
 		: call && !json_object_is_type(call, json_type_object)
@@ -5202,7 +5196,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
                         struct json_object *args)
 {
 	struct mcp_req *req = slot->req;
-	uint32_t const of = mcp_slot_tool(slot)->kind->flags & KF_AGENDA ? TOOL_MAX : slot->tool;
+	uint32_t const of = mcp_slot_tool(slot)->kind->flags & TOOL_AGENDA ? TOOL_MAX : slot->tool;
 	struct ledger_task *task = agenda_find(slot, args, of);
 	if (!task)
 		return;
@@ -5246,7 +5240,7 @@ mcp_slot_client_cancel (struct mcp_slot    *slot,
                         struct json_object *args)
 {
 	agenda_cancel(slot, args,
-	              mcp_slot_tool(slot)->kind->flags & KF_AGENDA ? TOOL_MAX : slot->tool);
+	              mcp_slot_tool(slot)->kind->flags & TOOL_AGENDA ? TOOL_MAX : slot->tool);
 }
 
 /* Cancels the job or the timer that @p args names for the jobs call in
@@ -5501,7 +5495,7 @@ mcp_slot_replay (struct mcp_slot    *slot,
 }
 
 /** Launches the next tool call of the turn of @p req in its slot. A call
- *  of a tool with KF_SERIAL and the call after it wait until the results
+ *  of a tool with TOOL_SERIAL and the call after it wait until the results
  *  before them are written. The call goes to the lent tool of its name, or
  *  to KIND_NONE. With a journal, the intent of the call becomes durable
  *  first, and a result that the journal recorded ends the call.
@@ -5520,17 +5514,17 @@ mcp_req_call_launch (struct mcp_req *req)
 	struct registry_tool const *tool = mcp_static_tool(mcp->st, id);
 	uint64_t const flags = tool->kind->flags;
 	if ((k > req->part &&
-	     (flags | mcp_slot_tool(&req->slots[k - 1])->kind->flags) & KF_SERIAL) ||
+	     (flags | mcp_slot_tool(&req->slots[k - 1])->kind->flags) & TOOL_SERIAL) ||
 	    mcp_req_drained(req))
 		return;
 	/* mcp_req_args_free() frees the arguments after the result is written. */
 	struct mcp_slot *slot = &req->slots[k];
 	struct json_object *args = slot->args;
 	struct json_object *saved = req->saved_tools[k];
-	if (*req->archive.hex && !(flags & KF_RERUN) && !(req->intents >> k & 1) && !saved) {
+	if (*req->archive.hex && !(flags & TOOL_RERUN) && !(req->intents >> k & 1) && !saved) {
 		struct json_object *intent = jb_object(
 			"index", json_object_new_int64(k),
-			"agenda", json_object_new_boolean((flags & KF_AGENDA) != 0),
+			"agenda", json_object_new_boolean((flags & TOOL_AGENDA) != 0),
 			"name", jb_string(c.name),
 			"arguments", args ? json_object_get(args) : json_object_new_object(),
 			nullptr);
@@ -5732,7 +5726,7 @@ mcp_slot_done (struct mcp_slot *slot,
 		(void)util_text_printf(&slot->note, "\n\n" NOTICE_NOTEBOOK, member.data);
 	}
 	(void)util_text_printf(&slot->note, "\n\n" NOTICE_CALL, mcp_slot_call(slot));
-	if (*req->archive.hex && !(tool->kind->flags & KF_RERUN)) {
+	if (*req->archive.hex && !(tool->kind->flags & TOOL_RERUN)) {
 		/* A resumed turn writes the window and the note again, and
 		 * stores the lines of a read in the ring again. So the window is
 		 * recorded, or for a read the whole output, if it is no more than
@@ -6705,7 +6699,7 @@ mcp_slot_ask (struct mcp_slot    *slot,
  *  arguments and _meta.progressToken of @p params. The role of the client
  *  must grant the tool, whose name is compared over its full length, as
  *  the Mcp-Name header is. If @p tasks is true, the call becomes a task
- *  after TASK_NS, unless the flags of its kind contain KF_AGENDA.
+ *  after TASK_NS, unless the flags of its kind contain TOOL_AGENDA.
  */
 static void
 mcp_req_tools_call (struct mcp_req     *req,
@@ -6764,7 +6758,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 	}
 	struct json_object *token = jb_get(meta, "progressToken");
 	req->token = mcp_id_valid(token) ? json_object_get(token) : nullptr;
-	if (tasks && !streamed && !(tool->kind->flags & KF_AGENDA)) {
+	if (tasks && !streamed && !(tool->kind->flags & TOOL_AGENDA)) {
 		req->promote_at = req->mcp->loop->now + TASK_NS;
 		mcp_req_arm(req);
 	}
@@ -8211,7 +8205,7 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	                      N("notes"), LEND_ALWAYS, LENT_NOTES, TRACE_ACTION,
 	                      .sized = "text", .option = "--notes DIR" },
 	[KIND_COMPACT]    = { { .definition = mcp_compact_definition, .start = mcp_slot_compact,
-	                        .flags = KF_SERIAL },
+	                        .flags = TOOL_SERIAL },
 	                      N("compact"), LEND_WITH, LENT_COMPACT, TRACE_NAME,
 	                      .sized = "summary" },
 	[KIND_FINDINGS]   = { .plugin = &findings_plugin,
@@ -8221,23 +8215,23 @@ static struct mcp_row const mcp_rows[KINDS] = {
 	/* With --client-jobs, clients list the next four kinds with a
 	 * definition of their own. */
 	[KIND_BACKGROUND] = { { .definition = mcp_background_client_definition,
-	                        .start = mcp_slot_background, .flags = KF_AGENDA },
+	                        .start = mcp_slot_background, .flags = TOOL_AGENDA },
 	                      .upstream = mcp_background_definition,
 	                      N("background"), LEND_DETACH, LENT_BACKGROUND,
 	                      .option = "--client-jobs" },
 	[KIND_JOBS]       = { { .definition = mcp_jobs_client_definition,
 	                        .start = mcp_slot_jobs,
-	                        .flags = TOOL_PAGED | KF_SERIAL | KF_AGENDA },
+	                        .flags = TOOL_PAGED | TOOL_SERIAL | TOOL_AGENDA },
 	                      .upstream = mcp_jobs_definition,
 	                      N("jobs"), LEND_WITH, LENT_JOBS, .option = "--client-jobs" },
 	[KIND_WAIT]       = { { .definition = mcp_wait_client_definition,
 	                        .start = mcp_slot_wait, .step = agenda_wait_step,
 	                        .drop = agenda_wait_drop,
-	                        .flags = TOOL_STREAM | KF_SERIAL | KF_AGENDA },
+	                        .flags = TOOL_STREAM | TOOL_SERIAL | TOOL_AGENDA },
 	                      .upstream = mcp_wait_definition,
 	                      N("wait"), LEND_WITH, LENT_WAIT, .option = "--client-jobs" },
 	[KIND_TIMER]      = { { .definition = mcp_timer_client_definition,
-	                        .start = mcp_slot_timer, .flags = KF_AGENDA },
+	                        .start = mcp_slot_timer, .flags = TOOL_AGENDA },
 	                      .upstream = mcp_timer_definition,
 	                      N("timer"), LEND_WITH, LENT_TIMER, .option = "--client-jobs" },
 	[KIND_NONE]       = { { .start = mcp_slot_none },

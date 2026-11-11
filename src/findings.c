@@ -2143,7 +2143,7 @@ struct plugin const findings_plugin = {
 		.start = findings_start,
 		.step = findings_step,
 		.drop = findings_drop,
-		.flags = KF_SERIAL | KF_RERUN | TOOL_PAGED
+		.flags = TOOL_SERIAL | TOOL_RERUN | TOOL_PAGED
 	}}
 };
 

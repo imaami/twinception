@@ -2357,6 +2357,6 @@ struct plugin const notes_tool_plugin = {
 		.start = notes_tool_start,
 		.step = notes_tool_step,
 		.drop = notes_tool_drop,
-		.flags = KF_SERIAL | TOOL_LENT | TOOL_PAGED
+		.flags = TOOL_SERIAL | TOOL_LENT | TOOL_PAGED
 	}}
 };

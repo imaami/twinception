@@ -37,16 +37,36 @@ enum tool_flag : uint64_t {
 	                              start() takes with mcp_slot_offset() */
 	TOOL_DETACH = 1U << 2U,  /**< a turn may run it in the background */
 	TOOL_STREAM = 1U << 3U,  /**< parking opens the event stream */
+
+	/** The flags that a kind of a loaded plugin can set. plugin.c refuses
+	 *  a loaded plugin with a kind that sets another flag. Only the kinds
+	 *  built into askai can set the flags after TOOL_FLAGS.
+	 */
+	TOOL_FLAGS  = TOOL_LENT | TOOL_PAGED | TOOL_DETACH | TOOL_STREAM,
+
+	/** The calls of the tool run alone. A turn's call of such a tool
+	 *  starts after the results of all earlier calls are written. Later
+	 *  calls start after its result is written.
+	 */
+	TOOL_SERIAL = UINT64_C(1) << 32,
+
+	/** The tool is one of askai's tools background, jobs, wait and timer.
+	 *  A client's background call cannot start such a tool. A client's
+	 *  call of such a tool never becomes a task. askai does not resume an
+	 *  interrupted turn that called one.
+	 */
+	TOOL_AGENDA = UINT64_C(1) << 33,
+
+	/** The journal does not record the calls of the tool, so a resumed
+	 *  turn runs them again. The kind of the findings tool sets it.
+	 */
+	TOOL_RERUN  = UINT64_C(1) << 34,
 };
 
 /** The description of the argument offset of each tool whose kind has
  *  TOOL_PAGED.
  */
 #define TOOL_OFFSET_ABOUT "The byte of the output to start from. The default is 0."
-
-/** A plugin's kinds may have these; askai's have more. */
-static constexpr uint64_t TOOL_FLAGS = TOOL_LENT | TOOL_PAGED | TOOL_DETACH |
-                                       TOOL_STREAM;
 
 /** How a call's output ends, or goes on. */
 enum tool_out : uint32_t {

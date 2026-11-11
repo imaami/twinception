@@ -279,20 +279,6 @@ typedef void *mcp_part_create_fn (void           *service,
  */
 typedef void mcp_part_destroy_fn (void **p_part);
 
-/** Kind flag (bit 32, above TOOL_FLAGS) for tools whose calls run alone. A
- *  turn's call of such a tool starts after the results of all earlier calls
- *  are written. Later calls start after its result is written. Only the
- *  kinds built into askai can set it. plugin.c refuses a loaded plugin
- *  whose kind has a flag outside TOOL_FLAGS.
- */
-static constexpr uint64_t KF_SERIAL = 1ull << 32;
-
-/** Kind flag (bit 34, above TOOL_FLAGS) for findings. The journal does not
- *  record the calls of such a tool, so a resumed turn runs them again. Only
- *  the kinds built into askai can set it.
- */
-static constexpr uint64_t KF_RERUN = 1ull << 34;
-
 /** Returns the part of the call's plugin on the call's loop. Only the
  *  built-in plugins have parts, so askai does not export this function.
  */
@@ -464,7 +450,7 @@ mcp_slot_call (struct mcp_slot const *slot);
 
 /** Returns true for a call of the turn that askai resumes after a restart.
  *  Such a call may have run before the restart, as the journal records no
- *  call of a kind with KF_RERUN. Returns false for any other call, and for
+ *  call of a kind with TOOL_RERUN. Returns false for any other call, and for
  *  the call of a client or a job. This function is not exported.
  */
 extern bool
