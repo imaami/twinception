@@ -135,7 +135,7 @@ enum {
 enum {
 	MAX_ID       = 1 << 10,   /* string request id bytes: every reply repeats it */
 	MAX_ECHO     = 256,       /* bytes of a client's string an error repeats */
-	CACHE_TTL_MS = 300000,   /* how long modern clients may cache lists */
+	CACHE_TTL_MS = 300000,    /* how long modern clients may cache lists */
 	UPLOAD_MAX   = 16 << 20,  /* bytes of a conversation's upstream request:
 	                             past those, its context is full */
 	CHAT_HISTORY = 1024,      /* earlier visible messages of a chat */

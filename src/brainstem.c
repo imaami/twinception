@@ -40,13 +40,13 @@
 enum { HOME };
 
 enum {
-	START_MS  = 10000,   /* for a loop to start */
-	STUCK_MS  = 1000,    /* one turn this long while draining: stuck */
-	JOIN_MS   = 2000,    /* for the blockers to finish what they do */
-	FLUSH_MS  = 1000,    /* for the logger to write what it holds */
-	SAMPLE_MS = 1000,    /* between resource samples */
+	START_MS  = 10000,    /* for a loop to start */
+	STUCK_MS  = 1000,     /* one turn this long while draining: stuck */
+	JOIN_MS   = 2000,     /* for the blockers to finish what they do */
+	FLUSH_MS  = 1000,     /* for the logger to write what it holds */
+	SAMPLE_MS = 1000,     /* between resource samples */
 	IDLE_MS   = 100,      /* between the watchdog's looks, with no threshold */
-	FD_TABLE  = 65536,   /* descriptors the table is grown to at the start */
+	FD_TABLE  = 65536,    /* descriptors the table is grown to at the start */
 	STACK     = 1 << 20,  /* a loop thread's stack: N of them count against
 	                         RLIMIT_DATA, where the default, RLIMIT_STACK's
 	                         8 MiB, would not fit many */
@@ -96,8 +96,8 @@ static struct {
 	[PRESSURE_RESIDENT] = { { 10000, 20000 }, { 7500, 15000 } },  /* of memory_high */
 	[PRESSURE_SYSTEM]   = { {  9000,  9500 }, { 8500,  9000 } },  /* of RAM */
 	[PRESSURE_CGROUP]   = { {  9000,  9500 }, { 8500,  9000 } },  /* of the limit */
-	[PRESSURE_PSI]      = { {  1000,  4000 }, {   500,  2000 } },  /* of the time */
-	[PRESSURE_TEST]     = { {      1,      2 }, {     1,      2 } },  /* the level */
+	[PRESSURE_PSI]      = { {  1000,  4000 }, {  500,  2000 } },  /* of the time */
+	[PRESSURE_TEST]     = { {     1,     2 }, {    1,     2 } },  /* the level */
 };
 
 struct brainstem;

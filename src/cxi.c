@@ -35,7 +35,7 @@
 #include "xlist.h"
 
 enum {
-	CXI_FILES = 100000,  /* the most files and directories of a commit */
+	CXI_FILES = 100000,   /* the most files and directories of a commit */
 	CXI_LIST  = 2 << 20,  /* the most output of ls-tree */
 	CXI_CDB   = 64 << 20, /* the largest compile_commands.json */
 	CXI_DEPTH = 16,       /* the deepest nesting of its JSON */

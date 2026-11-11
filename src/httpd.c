@@ -105,7 +105,7 @@
 enum {
 	READ_MIN       = 4 << 10,   /* free space a read asks for */
 	CHUNK_LINE     = 1 << 10,   /* longest chunk-size line, extensions included */
-	STEP_NS        = 100000,   /* requests and accepts stop starting after
+	STEP_NS        = 100000,    /* requests and accepts stop starting after
 	                               this, within the step's units of work */
 	SAMPLE_NS      = NS,        /* the least time over which home works
 	                               out a client loop's utilisation: a

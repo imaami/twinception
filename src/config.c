@@ -267,7 +267,7 @@ enum config_arg : uint8_t {
           "identity, one Unix user, or else one session" NL                                             \
           "or client address; an ask call past those" NL                                                \
           "fails at once with an error to try again",                                                   \
-          calls, 1, 1000000)                                                                          \
+          calls, 1, 1000000)                                                                            \
         X(flag,    UPSTREAM_TOOLS,   "upstream-tools",   ,    UPSTREAM, NONE, "",                       \
           "offer tools to the upstream in ask calls:" NL                                                \
           "man, git and the plugin tools that allow it," NL                                             \
@@ -482,11 +482,11 @@ enum config_arg : uint8_t {
           "-w) is older than this, the next man call" NL                                                \
           "for the page repeats the lookup in the" NL                                                   \
           "background (default 600, 0 = on each call)",                                                 \
-          man_recheck, 0, 86400)                                                                       \
+          man_recheck, 0, 86400)                                                                        \
         X(count,   TEST_STALL,       "test-stall",       ,    TESTING, ONE, "MS",                       \
           "SIGUSR2 stops each event loop in one turn" NL                                                \
           "for this long",                                                                              \
-          brainstem.stall_ms, 1, 3600000)                                                             \
+          brainstem.stall_ms, 1, 3600000)                                                               \
         X(text,    TEST_PRESSURE,    "test-pressure",    ,    TESTING, ONE, "FILE",                     \
           "memory pressure is at least the level in" NL                                                 \
           "FILE, 0 (none), 1 (high) or 2 (critical)," NL                                                \

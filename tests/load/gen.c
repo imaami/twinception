@@ -163,9 +163,9 @@ enum {
 };
 
 enum {
-	REDIAL_NS        = 100000000,   /**< pause before redialling a failed connect */
+	REDIAL_NS        = 100000000,     /**< pause before redialling a failed connect */
 	CHURN_SLOTS      = 256,           /**< churn connections in flight at most */
-	CHURN_TIMEOUT_NS = 2000000000, /**< give-up age of a churn connection */
+	CHURN_TIMEOUT_NS = 2000000000,    /**< give-up age of a churn connection */
 	PER_SRC          = 128,           /**< dials per source address, under
 	                                       askai's per-client cap of 256 */
 };
