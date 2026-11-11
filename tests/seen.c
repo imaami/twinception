@@ -57,7 +57,7 @@ output (struct dstr        *out,
 	size_t const len = dstr_len(out) - at;
 	CHECK(dstr_printf(out, "\n[f]"));
 	*src = (struct call_source){ CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 9,
-	                             at, len, { first, last } };
+	                             { at, len }, { first, last } };
 }
 
 /* Check that the window of @p window bytes from @p skip of the output of
@@ -75,7 +75,8 @@ lines_in (size_t   skip,
 	output(&out, &src, 1, 9, false);
 	int e = -1;
 	struct seen_read *read = seen_read_create(&src, cstr_view_dstr(&out), &e);
-	struct seen_lines const got = seen_lines(read, cstr_view_dstr(&out), skip, window, &e);
+	struct seen_lines const got = seen_lines(read, cstr_view_dstr(&out),
+	                                         (struct extent){ skip, window }, &e);
 	if (!read || e || got.range.first != first || got.range.last != last) {
 		++failures;
 		fprintf(stderr, "%s:%d: lines %u-%u, error %d, want %u-%u\n", __FILE__, line,
@@ -113,28 +114,30 @@ test_lines (void)
 	struct call_source src;
 	output(&out, &src, 1, 9, false);
 	struct cstr_view o = cstr_view_dstr(&out);
+	/* all is a window that contains the whole output. */
+	struct extent const all = { 0, SIZE_MAX };
 	int e = -1;
 	struct seen_read *read = seen_read_create(&src, o, &e);
-	CHECK(read && !e && read->mark.line == 1 && read->mark.at == src.at);
-	struct seen_lines got = seen_lines(read, o, 4 + 9 * 4, 9 * 2, &e);
+	CHECK(read && !e && read->mark.line == 1 && read->mark.at == src.output.at);
+	struct seen_lines got = seen_lines(read, o, (struct extent){ 4 + 9 * 4, 9 * 2 }, &e);
 	CHECK(!e && got.range.first == 5 && got.range.last == 6 && read->mark.at == 4 + 9 * 4 &&
 	      read->mark.line == 5);
 	CHECK(!got.at);
-	got = seen_lines(read, o, 4 + 9 * 6, 9 * 2, &e);
+	got = seen_lines(read, o, (struct extent){ 4 + 9 * 6, 9 * 2 }, &e);
 	CHECK(!e && got.range.first == 7 && got.range.last == 8 && read->mark.at == 4 + 9 * 6 &&
 	      read->mark.line == 7);
-	got = seen_lines(read, o, 4, 9 * 2, &e);
+	got = seen_lines(read, o, (struct extent){ 4, 9 * 2 }, &e);
 	CHECK(!e && got.range.first == 1 && got.range.last == 2 && read->mark.at == 4 &&
 	      read->mark.line == 1);
 	/* A mark in the middle of a line counts that line. The first whole
 	 * line starts 6 bytes into the window. */
-	got = seen_lines(read, o, 4 + 9 * 2 + 3, 9 * 2, &e);
+	got = seen_lines(read, o, (struct extent){ 4 + 9 * 2 + 3, 9 * 2 }, &e);
 	CHECK(!e && got.range.first == 4 && got.range.last == 4 && read->mark.line == 3 && got.at == 6);
 	/* A window from the start of the output shows the header first. The
 	 * mark is after the window, so the lines count from the start. */
-	got = seen_lines(read, o, 0, SIZE_MAX, &e);
+	got = seen_lines(read, o, all, &e);
 	CHECK(!e && got.range.first == 1 && got.range.last == 9 && got.at == 4 &&
-	      read->mark.line == 1 && read->mark.at == src.at);
+	      read->mark.line == 1 && read->mark.at == src.output.at);
 	seen_read_destroy(&read);
 
 	/* A last line without a newline counts only if the window shows its
@@ -143,24 +146,24 @@ test_lines (void)
 	o = cstr_view_dstr(&out);
 	read = seen_read_create(&src, o, &e);
 	CHECK(read && !e);
-	got = seen_lines(read, o, 0, src.at + src.len - 1, &e);
+	got = seen_lines(read, o, (struct extent){ 0, src.output.at + src.output.len - 1 }, &e);
 	CHECK(!e && got.range.first == 1 && got.range.last == 2);
-	got = seen_lines(read, o, 0, src.at + src.len, &e);
+	got = seen_lines(read, o, (struct extent){ 0, src.output.at + src.output.len }, &e);
 	CHECK(!e && got.range.first == 1 && got.range.last == 3);
 	/* Numbered lines that are empty or not within the output. */
-	got = seen_lines(read, (struct cstr_view){ o.data, src.at + src.len - 1 }, 0, SIZE_MAX,
-	                 &e);
+	got = seen_lines(read, (struct cstr_view){ o.data, src.output.at + src.output.len - 1 },
+	                 all, &e);
 	CHECK(e == EINVAL && !got.range.first && !got.range.last);
-	read->src.len = 0;
+	read->src.output.len = 0;
 	e = -1;
-	CHECK(!seen_lines(read, o, 0, SIZE_MAX, &e).range.first && e == EINVAL);
-	read->src.len = src.len;
-	read->src.at = SIZE_MAX;
+	CHECK(!seen_lines(read, o, all, &e).range.first && e == EINVAL);
+	read->src.output.len = src.output.len;
+	read->src.output.at = SIZE_MAX;
 	e = -1;
-	CHECK(!seen_lines(read, o, 0, SIZE_MAX, &e).range.first && e == EINVAL);
-	read->src.at = src.at;
+	CHECK(!seen_lines(read, o, all, &e).range.first && e == EINVAL);
+	read->src.output.at = src.output.at;
 	e = -1;
-	CHECK(seen_lines(read, o, 0, SIZE_MAX, &e).range.last == 3 && !e);
+	CHECK(seen_lines(read, o, all, &e).range.last == 3 && !e);
 	seen_read_destroy(&read);
 	/* More lines than the source says. */
 	struct dstr more = DSTR_INIT;
@@ -168,19 +171,19 @@ test_lines (void)
 	for (int i = 0; i < 13; ++i)
 		CHECK(dstr_printf(&more, "a\n"));
 	struct call_source const many = { CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 0,
-	                                  4, dstr_len(&more) - 4, { 1, 13 } };
+	                                  { 4, dstr_len(&more) - 4 }, { 1, 13 } };
 	read = seen_read_create(&many, cstr_view_dstr(&more), &e);
 	CHECK(read && !e);
 	read->src.lines.last = 3;
 	e = -1;
-	CHECK(!seen_lines(read, cstr_view_dstr(&more), 0, SIZE_MAX, &e).range.first && e == EINVAL);
+	CHECK(!seen_lines(read, cstr_view_dstr(&more), all, &e).range.first && e == EINVAL);
 	/* Null arguments. */
 	e = -1;
-	CHECK(!seen_lines(nullptr, o, 0, SIZE_MAX, &e).range.first && e == EFAULT);
+	CHECK(!seen_lines(nullptr, o, all, &e).range.first && e == EFAULT);
 	e = -1;
-	CHECK(!seen_lines(read, (struct cstr_view){ nullptr, 2 }, 0, SIZE_MAX, &e).range.first &&
+	CHECK(!seen_lines(read, (struct cstr_view){ nullptr, 2 }, all, &e).range.first &&
 	      e == EFAULT);
-	CHECK(!seen_lines(read, o, 0, SIZE_MAX, nullptr).range.first);
+	CHECK(!seen_lines(read, o, all, nullptr).range.first);
 	seen_read_destroy(&read);
 	dstr_cleanup(&more);
 	dstr_cleanup(&out);
@@ -605,51 +608,52 @@ test_items (void)
 	struct seen_item a = item_of("cuh#2/1", "{\"item\":1}");
 	struct seen_item b = item_of("cuh#2/2", "{\"item\":2}");
 	CHECK(!seen_find_item(seen, CSTR_VIEW("cuh#2/1")));
-	seen_shown(seen, 5, 0, 100, 1);
+	seen_shown(seen, 5, (struct extent){ 0, 100 }, 1);
 	/* The output of call 5 prints a at bytes 100 to 150 and b at bytes 150
 	 * to 400. The window of 120 bytes shows 20 bytes of a. */
-	CHECK(!seen_print(&seen, &a, 5, 100, 50));
+	CHECK(!seen_print(&seen, &a, 5, (struct extent){ 100, 50 }));
 	CHECK(seen && seen->items.n == 1);
-	CHECK(!seen_print(&seen, &b, 5, 150, 250));
+	CHECK(!seen_print(&seen, &b, 5, (struct extent){ 150, 250 }));
 	struct seen_item const *x = seen_find_item(seen, CSTR_VIEW("cuh#2/1"));
 	struct seen_item const *y = seen_find_item(seen, CSTR_VIEW("cuh#2/2"));
-	CHECK(x && x->bytes == 50 && !x->shown && x->at == 100 && x->call == 5 && !x->turn);
-	CHECK(y && y->bytes == 250 && y->at == 150 && y->call == 5);
+	CHECK(x && x->output.len == 50 && !x->shown && x->output.at == 100 && x->call == 5 && !x->turn);
+	CHECK(y && y->output.len == 250 && y->output.at == 150 && y->call == 5);
 	SAME(dstr_get(&x->record), dstr_len(&x->record), "{\"item\":1}");
 	CHECK(!memcmp(x->blobs, a.blobs, sizeof a.blobs) && !strcmp(x->id, "cuh#2/1"));
 	CHECK(!seen_find_item(seen, CSTR_VIEW("cuh#2/3")) && !seen_find_item(seen, CSTR_VIEW("")));
 	/* The list of the printed items names each item once for its call. */
-	CHECK(!seen_print(&seen, &a, 5, 100, 50) && seen->printed.n == 2);
-	seen_shown(seen, 4, 0, 1000, 1);
+	CHECK(!seen_print(&seen, &a, 5, (struct extent){ 100, 50 }) && seen->printed.n == 2);
+	seen_shown(seen, 4, (struct extent){ 0, 1000 }, 1);
 	CHECK(!x->shown && x->call == 5 && seen->printed.n == 2);
-	seen_shown(seen, 5, 0, 120, 1);
+	seen_shown(seen, 5, (struct extent){ 0, 120 }, 1);
 	CHECK(x->shown == 20 && !x->call && !x->turn && !y->shown && !y->call && !seen->printed.n);
 	/* The same call again counts nothing. */
-	seen_shown(seen, 5, 0, 1000, 1);
+	seen_shown(seen, 5, (struct extent){ 0, 1000 }, 1);
 	CHECK(x->shown == 20);
 	/* Call 6 prints a at byte 0. A window from byte 25 does not continue
 	 * the 20 bytes shown, and a window that ends at byte 20 adds none. */
-	CHECK(!seen_print(&seen, &a, 6, 0, 50) && x->at == 0 && x->call == 6 && x->shown == 20);
-	seen_shown(seen, 6, 25, 100, 2);
+	CHECK(!seen_print(&seen, &a, 6, (struct extent){ 0, 50 }) && x->output.at == 0 &&
+	      x->call == 6 && x->shown == 20);
+	seen_shown(seen, 6, (struct extent){ 25, 100 }, 2);
 	CHECK(x->shown == 20 && !x->turn);
-	CHECK(!seen_print(&seen, &a, 7, 0, 50));
-	seen_shown(seen, 7, 5, 15, 2);
+	CHECK(!seen_print(&seen, &a, 7, (struct extent){ 0, 50 }));
+	seen_shown(seen, 7, (struct extent){ 5, 15 }, 2);
 	CHECK(x->shown == 20);
 	/* A window from byte 20 to 40 continues them, and a window from byte
 	 * 30 to the end shows a whole in turn 3. */
-	CHECK(!seen_print(&seen, &a, 8, 0, 50));
-	seen_shown(seen, 8, 20, 20, 2);
+	CHECK(!seen_print(&seen, &a, 8, (struct extent){ 0, 50 }));
+	seen_shown(seen, 8, (struct extent){ 20, 20 }, 2);
 	CHECK(x->shown == 40 && !x->turn);
-	CHECK(!seen_print(&seen, &a, 9, 0, 50));
-	seen_shown(seen, 9, 30, 4000, 3);
+	CHECK(!seen_print(&seen, &a, 9, (struct extent){ 0, 50 }));
+	seen_shown(seen, 9, (struct extent){ 30, 4000 }, 3);
 	CHECK(x->shown == 50 && x->turn == 3);
 	/* An item shown whole keeps its turn when it is shown again. */
-	CHECK(!seen_print(&seen, &a, 10, 7, 50));
-	seen_shown(seen, 10, 0, 4000, 5);
-	CHECK(x->shown == 50 && x->turn == 3 && x->at == 7);
+	CHECK(!seen_print(&seen, &a, 10, (struct extent){ 7, 50 }));
+	seen_shown(seen, 10, (struct extent){ 0, 4000 }, 5);
+	CHECK(x->shown == 50 && x->turn == 3 && x->output.at == 7);
 	/* b shown whole in one window. */
-	CHECK(!seen_print(&seen, &b, 11, 0, 250));
-	seen_shown(seen, 11, 0, 250, 4);
+	CHECK(!seen_print(&seen, &b, 11, (struct extent){ 0, 250 }));
+	seen_shown(seen, 11, (struct extent){ 0, 250 }, 4);
 	CHECK(y->shown == 250 && y->turn == 4);
 
 	/* The notices name the items shown whole. */
@@ -660,8 +664,8 @@ test_items (void)
 	/* An item of another size starts anew, with the record and the blobs
 	 * of the new item. */
 	struct seen_item c = item_of("cuh#2/2", "{\"item\":3}");
-	CHECK(!seen_print(&seen, &c, 12, 0, 300));
-	CHECK(seen->items.n == 2 && y->bytes == 300 && !y->shown && !y->turn && y->call == 12);
+	CHECK(!seen_print(&seen, &c, 12, (struct extent){ 0, 300 }));
+	CHECK(seen->items.n == 2 && y->output.len == 300 && !y->shown && !y->turn && y->call == 12);
 	SAME(dstr_get(&y->record), dstr_len(&y->record), "{\"item\":3}");
 	(void)dstr_clear(&text);
 	CHECK(!keep(&seen, 13, 1, CSTR_VIEW("x")) && !seen_notice(seen, &text));
@@ -672,25 +676,33 @@ test_items (void)
 	 * results. A result counts only the items that its call printed last,
 	 * and the list keeps the items of the other calls. */
 	CHECK(seen->printed.n == 1 && y->call == 12);
-	CHECK(!seen_print(&seen, &c, 14, 0, 300) && !seen_print(&seen, &a, 15, 0, 50));
+	CHECK(!seen_print(&seen, &c, 14, (struct extent){ 0, 300 }) &&
+	      !seen_print(&seen, &a, 15, (struct extent){ 0, 50 }));
 	CHECK(seen->printed.n == 3 && y->call == 14 && x->call == 15);
-	seen_shown(seen, 15, 0, 50, 6);
+	seen_shown(seen, 15, (struct extent){ 0, 50 }, 6);
 	CHECK(seen->printed.n == 2 && !x->call && x->turn == 3 && y->call == 14 && !y->shown);
-	seen_shown(seen, 14, 0, 300, 6);
+	seen_shown(seen, 14, (struct extent){ 0, 300 }, 6);
 	CHECK(!seen->printed.n && !y->call && y->shown == 300 && y->turn == 6);
+	/* An item can end at the last byte of the largest output. */
+	CHECK(!seen_print(&seen, &a, 16, (struct extent){ TOOL_OUTPUT_MAX - 50, 50 }) &&
+	      x->output.at == TOOL_OUTPUT_MAX - 50 && x->output.len == 50 && x->call == 16);
+	seen_shown(seen, 16, (struct extent){ TOOL_OUTPUT_MAX - 50, 50 }, 7);
+	CHECK(!seen->printed.n && !x->call && x->shown == 50 && x->turn == 3);
 
 	/* Refusals. */
-	CHECK(seen_print(nullptr, &a, 1, 0, 1) == EFAULT);
-	CHECK(seen_print(&seen, nullptr, 1, 0, 1) == EFAULT);
-	CHECK(seen_print(&seen, &a, 0, 0, 1) == EINVAL);
-	CHECK(seen_print(&seen, &a, 1, 0, 0) == EINVAL);
-	CHECK(seen_print(&seen, &a, 1, 0, TOOL_OUTPUT_MAX + 1) == EINVAL);
-	CHECK(seen_print(&seen, &a, 1, 1, TOOL_OUTPUT_MAX) == EINVAL);
+	CHECK(seen_print(nullptr, &a, 1, (struct extent){ 0, 1 }) == EFAULT);
+	CHECK(seen_print(&seen, nullptr, 1, (struct extent){ 0, 1 }) == EFAULT);
+	CHECK(seen_print(&seen, &a, 0, (struct extent){ 0, 1 }) == EINVAL);
+	CHECK(seen_print(&seen, &a, 1, (struct extent){ 0, 0 }) == EINVAL);
+	CHECK(seen_print(&seen, &a, 1, (struct extent){ 0, TOOL_OUTPUT_MAX + 1 }) == EINVAL);
+	CHECK(seen_print(&seen, &a, 1, (struct extent){ 1, TOOL_OUTPUT_MAX }) == EINVAL);
+	CHECK(seen_print(&seen, &a, 1, (struct extent){ SIZE_MAX, 1 }) == EINVAL);
+	CHECK(seen_print(&seen, &a, 1, (struct extent){ 1, SIZE_MAX }) == EINVAL);
 	struct seen_item bad = a;
 	bad.id[0] = '\0';
-	CHECK(seen_print(&seen, &bad, 1, 0, 1) == EINVAL);
+	CHECK(seen_print(&seen, &bad, 1, (struct extent){ 0, 1 }) == EINVAL);
 	memset(bad.id, 'x', sizeof bad.id);
-	CHECK(seen_print(&seen, &bad, 1, 0, 1) == EINVAL);
+	CHECK(seen_print(&seen, &bad, 1, (struct extent){ 0, 1 }) == EINVAL);
 	CHECK(seen->items.n == 2);
 
 	/* The ring stores SEEN_ITEMS items at most and drops the oldest. Past
@@ -699,8 +711,8 @@ test_items (void)
 	CHECK(!seen->items.n && !seen_find_item(seen, CSTR_VIEW("cuh#2/1")));
 	for (uint32_t k = 1; k <= SEEN_ITEMS + 2; ++k) {
 		snprintf(c.id, sizeof c.id, "bro#1/%u", k);
-		CHECK(!seen_print(&seen, &c, k, 0, 10));
-		seen_shown(seen, k, 0, 10, 1);
+		CHECK(!seen_print(&seen, &c, k, (struct extent){ 0, 10 }));
+		seen_shown(seen, k, (struct extent){ 0, 10 }, 1);
 	}
 	CHECK(seen->items.n == SEEN_ITEMS && !seen_find_item(seen, CSTR_VIEW("bro#1/2")) &&
 	      seen_find_item(seen, CSTR_VIEW("bro#1/3")) &&
@@ -711,9 +723,10 @@ test_items (void)
 	      seen_find_item(seen, CSTR_VIEW("bro#1/1026")) == &seen->items.items[1]);
 	/* An item that the ring stores stays in its place, and the items stay
 	 * in order in the notice and in the journal state. */
-	CHECK(!seen_print(&seen, &c, SEEN_ITEMS + 3, 0, 10) && seen->items_head == 2 &&
+	CHECK(!seen_print(&seen, &c, SEEN_ITEMS + 3, (struct extent){ 0, 10 }) &&
+	      seen->items_head == 2 &&
 	      seen_find_item(seen, CSTR_VIEW("bro#1/1026")) == &seen->items.items[1]);
-	seen_shown(seen, SEEN_ITEMS + 3, 0, 10, 1);
+	seen_shown(seen, SEEN_ITEMS + 3, (struct extent){ 0, 10 }, 1);
 	(void)dstr_clear(&text);
 	CHECK(!seen_notice(seen, &text));
 	CHECK(strstr(dstr_get(&text), ": bro#1/3, bro#1/4, ") &&
@@ -778,9 +791,10 @@ test_resume_items (void)
 	struct seen_item b = item_of("cuh#2/2", "{\"item\":2}");
 	struct seen_item c = item_of("bro#7/1", "{\"item\":3}");
 	b.blobs[0] = (struct oid){};
-	CHECK(!seen_print(&seen, &a, 5, 0, 50) && !seen_print(&seen, &b, 5, 50, 250) &&
-	      !seen_print(&seen, &c, 5, 300, 10));
-	seen_shown(seen, 5, 0, 70, 3);
+	CHECK(!seen_print(&seen, &a, 5, (struct extent){ 0, 50 }) &&
+	      !seen_print(&seen, &b, 5, (struct extent){ 50, 250 }) &&
+	      !seen_print(&seen, &c, 5, (struct extent){ 300, 10 }));
+	seen_shown(seen, 5, (struct extent){ 0, 70 }, 3);
 	CHECK(seen->items.n == 3);
 	struct json_object *items = seen_items_json(seen, &e);
 	CHECK(!e && jb_len(items) == 2);
@@ -798,18 +812,19 @@ test_resume_items (void)
 	struct seen_item const *x = seen_find_item(resumed, CSTR_VIEW("cuh#2/1"));
 	struct seen_item const *y = seen_find_item(resumed, CSTR_VIEW("cuh#2/2"));
 	CHECK(!seen_find_item(resumed, CSTR_VIEW("bro#7/1")));
-	CHECK(x && x->bytes == 50 && x->shown == 50 && x->turn == 3 && !x->call && !x->at &&
+	CHECK(x && x->output.len == 50 && x->shown == 50 && x->turn == 3 && !x->call && !x->output.at &&
 	      !memcmp(x->blobs, a.blobs, sizeof a.blobs));
 	SAME(dstr_get(&x->record), dstr_len(&x->record), "{\"item\":1}");
-	CHECK(y && y->bytes == 250 && y->shown == 20 && !y->turn && !oid_len(&y->blobs[0]) &&
+	CHECK(y && y->output.len == 250 && y->shown == 20 && !y->turn && !oid_len(&y->blobs[0]) &&
 	      oid_equal(&y->blobs[1], &b.blobs[1]));
 	struct dstr text = DSTR_INIT;
 	CHECK(!seen_notice(resumed, &text));
 	SAME(dstr_get(&text), dstr_len(&text), "[askai: Evidence items that you expanded in this ask "
 	     "call: cuh#2/1. These items count as seen.]\n");
 	/* The pages of b go on from the bytes shown before the restart. */
-	CHECK(!seen_print(&resumed, &b, 9, 0, 250) && y->shown == 20 && y->call == 9);
-	seen_shown(resumed, 9, 20, 4000, 4);
+	CHECK(!seen_print(&resumed, &b, 9, (struct extent){ 0, 250 }) && y->shown == 20 &&
+	      y->call == 9);
+	seen_shown(resumed, 9, (struct extent){ 20, 4000 }, 4);
 	CHECK(y->shown == 250 && y->turn == 4);
 	/* The items replace the items of a ring, and no items drop them. */
 	CHECK(!resume(&resumed, 8, items) && resumed->items.n == 2 && resumed->resumed == 8);

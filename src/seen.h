@@ -104,7 +104,8 @@ enum seen_where : uint8_t {
  */
 struct seen_mark {
 	uint64_t line;  /**< number of the line of the byte at `at` */
-	size_t   at;    /**< offset in the output, at or after src->at */
+	size_t   at;    /**< offset in the output, at or after
+	                     src->output.at */
 };
 
 /** A copy of a struct call_source in one allocation, and the position of
@@ -154,22 +155,22 @@ struct seen_call {
 
 /** An evidence item that askai printed to the turns. */
 struct seen_item {
-	struct dstr record;         /**< the JSON object of the item, as the
+	struct dstr   record;       /**< the JSON object of the item, as the
 	                                 file of its finding has it */
-	uint32_t    bytes;          /**< bytes of the item in an output */
-	uint32_t    shown;          /**< the bytes of the item from its start
+	struct extent output;       /**< the bytes of the item in an output,
+	                                 at the offset in the output of the
+	                                 call `call` */
+	uint32_t      shown;        /**< the bytes of the item from its start
 	                                 that results showed, in order */
-	uint32_t    at;             /**< offset of the item in the output of
-	                                 the call `call` */
-	uint32_t    call;           /**< N of the call cN whose result is not
+	uint32_t      call;         /**< N of the call cN whose result is not
 	                                 written yet and prints the item, or
 	                                 0 */
-	uint32_t    turn;           /**< the turn whose result showed the last
+	uint32_t      turn;         /**< the turn whose result showed the last
 	                                 byte of the item, or 0 */
-	struct oid  blobs[2];       /**< git IDs of the archive files: the
+	struct oid    blobs[2];     /**< git IDs of the archive files: the
 	                                 arguments of the call, or no name,
 	                                 and the material */
-	char        id[SEEN_ID];    /**< such as cuh#2/1 */
+	char          id[SEEN_ID];  /**< such as cuh#2/1 */
 };
 
 /** The ring of an ask call. calls[(head + i) % SEEN_CALLS] is the call i of
@@ -266,26 +267,25 @@ seen_read_create_json (struct json_object const *obj,
 
 /**
  * Returns the first and the last of the numbered lines of @p read that the
- * window of @p window bytes of the output @p out from @p skip on shows
- * whole, and the offset of the first of them from @p skip. A line that
- * the window shows only in part does not count. The last line may end
- * without a newline, and it counts if the window ends at the end of the
- * numbered lines. read->mark is the position of the last window. A window
- * counts its lines from that position, or from the start of the numbered
- * lines if the position is after the window, and then moves read->mark to
- * the start of the window. Returns no line if the window shows none.
+ * window @p window of the output @p out shows whole, and the offset of the
+ * first of those lines from window.at. A line that the window shows only
+ * in part does not count. The last line may end without a newline, and it
+ * counts if the window ends at the end of the numbered lines. read->mark
+ * is the position of the last window. The function counts the lines from
+ * that position, or from the start of the numbered lines if the position
+ * is after the window, and then sets read->mark to the start of the
+ * window. Returns no line if the window shows none.
  *
  * Stores 0 in @p *e, EFAULT for a null @p read or for an @p out with a
  * length and no bytes, or EINVAL if the numbered lines are empty, not
  * within @p out, or more lines than read->src.lines, or if the first line
  * that the window shows whole starts more than UINT32_MAX bytes after
- * @p skip. Returns no line for a null @p e.
+ * window.at. Returns no line for a null @p e.
  */
 extern struct seen_lines
 seen_lines (struct seen_read *read,
             struct cstr_view  out,
-            size_t            skip,
-            size_t            window,
+            struct extent     window,
             int              *e);
 
 /**
@@ -354,38 +354,36 @@ seen_oldest (struct seen const *seen);
 
 /**
  * Records in the ring @p *p_seen that the output of the call @p call prints
- * the item @p item in the @p len bytes from @p at. The ring is allocated on
- * the first call. The ring copies item->id, item->record and item->blobs
- * for an item that it does not store, as its newest item, and drops its
- * oldest item if it stores SEEN_ITEMS items. For an item that the ring
- * stores, the bytes that results showed stay shown, unless @p len is not
- * the size that the ring stores, which starts the item anew. seen_shown()
+ * the item @p item in the bytes @p output. The ring is allocated on the
+ * first call. The ring copies item->id, item->record and item->blobs for
+ * an item that it does not store, as its newest item, and drops its oldest
+ * item if it stores SEEN_ITEMS items. For an item that the ring stores,
+ * the bytes that results showed stay shown, unless output.len is not the
+ * size that the ring stores, which starts the item anew. seen_shown()
  * counts the window of the result of the call. Returns 0, EFAULT for a
  * null @p p_seen or @p item, EINVAL for a @p call of 0, an empty item->id
- * or one without a NUL, a @p len of 0, or bytes past TOOL_OUTPUT_MAX, or
- * ENOMEM.
+ * or one without a NUL, an output.len of 0, or bytes past TOOL_OUTPUT_MAX,
+ * or ENOMEM.
  */
 extern int
 seen_print (struct seen            **p_seen,
             struct seen_item const  *item,
             uint32_t                 call,
-            size_t                   at,
-            size_t                   len);
+            struct extent            output);
 
 /**
- * Counts the window of @p window bytes from @p skip of the result of the
- * call @p call in the turn @p turn, for each item that the output of the
- * call prints (seen_print()). The bytes of the window that continue the
- * bytes of the item shown before count as shown. If the item is then shown
- * whole and was not before, the turn of the item becomes @p turn. Does
- * nothing for a null @p seen.
+ * Counts the window @p window of the output in the result of the call
+ * @p call in the turn @p turn, for each item that the output of the call
+ * prints (seen_print()). The bytes of the window that continue the bytes
+ * of the item shown before count as shown. If the item is then shown whole
+ * and was not before, the turn of the item becomes @p turn. Does nothing
+ * for a null @p seen.
  */
 extern void
-seen_shown (struct seen *seen,
-            uint32_t     call,
-            size_t       skip,
-            size_t       window,
-            uint32_t     turn);
+seen_shown (struct seen   *seen,
+            uint32_t       call,
+            struct extent  window,
+            uint32_t       turn);
 
 /** Returns the items of @p seen that results showed, whole or in part, for
  *  the journal state of the ask call: a JSON array with an object for each

@@ -33,7 +33,8 @@ static bool
 seen_source_within (struct call_source const *src,
                     struct cstr_view          out)
 {
-	return src->len && src->len <= out.len && src->at <= out.len - src->len;
+	struct extent const lines = src->output;
+	return lines.len && lines.len <= out.len && lines.at <= out.len - lines.len;
 }
 
 struct seen_read *
@@ -54,7 +55,7 @@ seen_read_create (struct call_source const *src,
 	    src->total > UINT32_MAX || !seen_source_within(src, out))
 		return nullptr;
 	/* Each numbered line ends with a newline, except perhaps the last. */
-	struct cstr_view const lines = { out.data + src->at, src->len };
+	struct cstr_view const lines = cstr_view_slice(out, src->output.at, src->output.len);
 	if (cstr_view_count(lines, '\n') + (lines.data[lines.len - 1] != '\n') !=
 	    range_count(src->lines))
 		return nullptr;
@@ -65,7 +66,7 @@ seen_read_create (struct call_source const *src,
 		return nullptr;
 	}
 	*read = (struct seen_read){ .src = *src,
-	                            .mark = { .line = src->lines.first, .at = src->at } };
+	                            .mark = { .line = src->lines.first, .at = src->output.at } };
 	read->src.repo.data = read->text;
 	read->src.commit.data = mempcpy(read->text, src->repo.data, src->repo.len);
 	read->src.path.data = mempcpy((char *)read->src.commit.data, src->commit.data,
@@ -98,8 +99,8 @@ seen_read_json (struct seen_read const *read,
 	struct json_object *obj = jb_object("repo", jb_string(src->repo),
 	                                    "commit", jb_string(src->commit),
 	                                    "path", jb_string(src->path),
-	                                    "at", json_object_new_uint64(src->at),
-	                                    "len", json_object_new_uint64(src->len),
+	                                    "at", json_object_new_uint64(src->output.at),
+	                                    "len", json_object_new_uint64(src->output.len),
 	                                    "first", json_object_new_uint64(src->lines.first),
 	                                    "last", json_object_new_uint64(src->lines.last),
 	                                    "total", json_object_new_uint64(src->total),
@@ -138,8 +139,7 @@ seen_read_create_json (struct json_object const *obj,
 		.commit = jb_view(jb_get(obj, "commit")),
 		.path   = jb_view(jb_get(obj, "path")),
 		.total  = total,
-		.at     = (size_t)at,
-		.len    = (size_t)len,
+		.output = { (size_t)at, (size_t)len },
 		.lines  = { (uint32_t)first, (uint32_t)last },
 	};
 	return seen_read_create(&src, out, e);
@@ -148,8 +148,7 @@ seen_read_create_json (struct json_object const *obj,
 struct seen_lines
 seen_lines (struct seen_read *read,
             struct cstr_view  out,
-            size_t            skip,
-            size_t            window,
+            struct extent     window,
             int              *e)
 {
 	if (!e)
@@ -160,11 +159,11 @@ seen_lines (struct seen_read *read,
 	}
 	struct call_source const *src = &read->src;
 	*e = seen_source_within(src, out) ? 0 : EINVAL;
-	size_t const end = src->at + src->len;
-	if (*e || skip >= end)
+	size_t const end = src->output.at + src->output.len;
+	if (*e || window.at >= end)
 		return (struct seen_lines){};
-	size_t lo = skip > src->at ? skip : src->at;
-	size_t const hi = window < end - skip ? skip + window : end;
+	size_t lo = window.at > src->output.at ? window.at : src->output.at;
+	size_t const hi = window.len < end - window.at ? window.at + window.len : end;
 	if (lo >= hi)
 		return (struct seen_lines){};
 	char const *p = out.data;
@@ -172,12 +171,12 @@ seen_lines (struct seen_read *read,
 	 * of the numbered lines if the mark is after this window. */
 	struct seen_mark *mark = &read->mark;
 	if (mark->at > lo)
-		*mark = (struct seen_mark){ .line = src->lines.first, .at = src->at };
+		*mark = (struct seen_mark){ .line = src->lines.first, .at = src->output.at };
 	mark->line += cstr_view_count((struct cstr_view){ p + mark->at, lo - mark->at }, '\n');
 	mark->at = lo;
 	uint64_t line = mark->line;
 	/* Skip a line whose start is before the window. */
-	if (lo > src->at && p[lo - 1] != '\n') {
+	if (lo > src->output.at && p[lo - 1] != '\n') {
 		char const *nl = memchr(p + lo, '\n', hi - lo);
 		if (!nl)
 			return (struct seen_lines){};
@@ -191,12 +190,12 @@ seen_lines (struct seen_read *read,
 	                   (hi == end && hi > lo && p[hi - 1] != '\n');
 	if (!n)
 		return (struct seen_lines){};
-	if (line + n - 1 > src->lines.last || lo - skip > UINT32_MAX) {
+	if (line + n - 1 > src->lines.last || lo - window.at > UINT32_MAX) {
 		*e = EINVAL;
 		return (struct seen_lines){};
 	}
 	return (struct seen_lines){ { (uint32_t)line, (uint32_t)(line + n - 1) },
-	                            (uint32_t)(lo - skip) };
+	                            (uint32_t)(lo - window.at) };
 }
 
 /* Returns the index in seen->calls of the call @p i of @p seen, from the
@@ -288,14 +287,14 @@ seen_keep (struct seen              **p_seen,
 {
 	if (!p_seen || !request || !r || !r->parts || (!r->out.data && r->out.len))
 		return EFAULT;
-	size_t const window = r->parts[0].len;
-	if (r->skip > r->out.len || window > r->out.len - r->skip ||
-	    (window && r->parts[0].data != r->out.data + r->skip) ||
-	    r->at > TOOL_OUTPUT_MAX || r->skip > TOOL_OUTPUT_MAX - r->at)
+	struct extent const window = { r->skip, r->parts[0].len };
+	if (window.at > r->out.len || window.len > r->out.len - window.at ||
+	    (window.len && r->parts[0].data != r->out.data + window.at) ||
+	    r->at > TOOL_OUTPUT_MAX || window.at > TOOL_OUTPUT_MAX - r->at)
 		return EINVAL;
 	int e = 0;
 	struct seen_read *read = r->read;
-	struct seen_lines const whole = read ? seen_lines(read, r->out, r->skip, window, &e)
+	struct seen_lines const whole = read ? seen_lines(read, r->out, window, &e)
 	                                     : (struct seen_lines){};
 	e = e ? e : seen_get(p_seen);
 	if (e)
@@ -398,7 +397,7 @@ seen_resume (struct seen              **p_seen,
 		struct seen_item *it = &seen->items.items[seen->items.n++];
 		*it = (struct seen_item){
 			.record = DSTR_INIT,
-			.bytes  = (uint32_t)jb_uint(jb_get(obj, "bytes"), 0),
+			.output = { .len = (size_t)jb_uint(jb_get(obj, "bytes"), 0) },
 			.shown  = (uint32_t)jb_uint(jb_get(obj, "shown"), 0),
 			.turn   = (uint32_t)jb_uint(jb_get(obj, "turn"), 0),
 		};
@@ -461,14 +460,13 @@ int
 seen_print (struct seen            **p_seen,
             struct seen_item const  *item,
             uint32_t                 call,
-            size_t                   at,
-            size_t                   len)
+            struct extent            output)
 {
 	if (!p_seen || !item)
 		return EFAULT;
 	struct cstr_view const id = { item->id, strnlen(item->id, sizeof item->id) };
-	if (!call || !id.len || id.len == sizeof item->id || !len || len > TOOL_OUTPUT_MAX ||
-	    at > TOOL_OUTPUT_MAX - len)
+	if (!call || !id.len || id.len == sizeof item->id || !output.len ||
+	    output.len > TOOL_OUTPUT_MAX || output.at > TOOL_OUTPUT_MAX - output.len)
 		return EINVAL;
 	int e = seen_get(p_seen);
 	if (e)
@@ -494,8 +492,8 @@ seen_print (struct seen            **p_seen,
 	struct seen_item *it = &seen->items.items[k];
 	/* A new item, or an item of another size, which is not the item that
 	 * the turns saw, starts with no byte shown. */
-	if (it->bytes != len) {
-		it->bytes = 0;
+	if (it->output.len != output.len) {
+		it->output.len = 0;
 		it->shown = 0;
 		it->turn = 0;
 		it->call = 0;
@@ -503,22 +501,20 @@ seen_print (struct seen            **p_seen,
 			return ENOMEM;
 		memcpy(it->blobs, item->blobs, sizeof it->blobs);
 		memcpy(it->id, id.data, id.len + 1);
-		it->bytes = (uint32_t)len;
 		seen->items.n += added;
 	}
 	if (it->call != call)
 		seen->printed.items[seen->printed.n++] = k;
-	it->at = (uint32_t)at;
+	it->output = output;
 	it->call = call;
 	return 0;
 }
 
 void
-seen_shown (struct seen *seen,
-            uint32_t     call,
-            size_t       skip,
-            size_t       window,
-            uint32_t     turn)
+seen_shown (struct seen   *seen,
+            uint32_t       call,
+            struct extent  window,
+            uint32_t       turn)
 {
 	if (!seen || !call)
 		return;
@@ -536,12 +532,12 @@ seen_shown (struct seen *seen,
 		it->call = 0;
 		/* The window continues the bytes shown before if it starts at
 		 * or before their end and ends after it. */
-		size_t const end = (size_t)it->at + it->shown;
-		if (skip > end || window <= end - skip)
+		size_t const end = it->output.at + it->shown;
+		if (window.at > end || window.len <= end - window.at)
 			continue;
-		size_t const to = skip + window - it->at;
-		it->shown = to < it->bytes ? (uint32_t)to : it->bytes;
-		if (it->shown == it->bytes && !it->turn)
+		size_t const to = window.at + window.len - it->output.at;
+		it->shown = (uint32_t)(to < it->output.len ? to : it->output.len);
+		if (it->shown == it->output.len && !it->turn)
 			it->turn = turn;
 	}
 	seen->printed.n = kept;
@@ -568,7 +564,7 @@ seen_items_json (struct seen const *seen,
 			"id", json_object_new_string(it->id),
 			"record", jb_string(cstr_view_dstr(&it->record)),
 			"blobs", blobs,
-			"bytes", json_object_new_uint64(it->bytes),
+			"bytes", json_object_new_uint64(it->output.len),
 			"shown", json_object_new_uint64(it->shown),
 			"turn", json_object_new_uint64(it->turn),
 			nullptr));

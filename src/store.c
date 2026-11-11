@@ -564,10 +564,10 @@ store_quote (char             *dest,
 }
 
 int
-store_part_head (struct store_part *part,
-                 struct buf        *in,
-                 struct cstr_view   name,
-                 size_t             len)
+store_part_head (struct extent    *part,
+                 struct buf       *in,
+                 struct cstr_view  name,
+                 size_t            len)
 {
 	static char const m[] = "M 100644 inline ";
 	if (!part || !in || !name.data || name.len > STORE_PATH)
@@ -588,20 +588,20 @@ store_part_head (struct store_part *part,
 		return EINVAL;
 	size_t const h = (size_t)(p - head) + (size_t)n;
 	head[h + len] = '\n';
-	*part = (struct store_part){ .data_at = buf_peek(in).len + h, .data_len = len };
+	*part = (struct extent){ buf_peek(in).len + h, len };
 	buf_commit(in, h + len + 1);
 	return 0;
 }
 
 int
-store_part_file (struct store_part *part,
-                 struct buf        *in,
-                 struct cstr_view   name,
-                 struct cstr_view   data)
+store_part_file (struct extent    *part,
+                 struct buf       *in,
+                 struct cstr_view  name,
+                 struct cstr_view  data)
 {
 	int e = store_part_head(part, in, name, data.len);
 	if (!e)
-		memcpy(buf_peek(in).ptr + part->data_at, data.data, data.len);
+		memcpy(buf_peek(in).ptr + part->at, data.data, data.len);
 	return e;
 }
 

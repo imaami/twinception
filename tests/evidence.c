@@ -345,7 +345,7 @@ test_cite (void)
 	for (unsigned n = 1; n <= 9; ++n)
 		CHECK(dstr_printf(&out, "%u\tline %u\n", n, n));
 	struct call_source const src = { CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 9,
-	                                 at, dstr_len(&out) - at, { 1, 9 } };
+	                                 { at, dstr_len(&out) - at }, { 1, 9 } };
 	struct cstr_view const o = cstr_view_dstr(&out);
 	int e = -1;
 	struct seen_read *read = seen_read_create(&src, o, &e);

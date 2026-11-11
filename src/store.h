@@ -328,30 +328,21 @@ extern char *
 store_quote (char             *dest,
              struct cstr_view  name);
 
-/** The offset of the data of a file part in the buffer that
- *  store_part_head() writes to, from the head of the buffer, and the bytes
- *  of the data.
- */
-struct store_part {
-	size_t data_at;
-	size_t data_len;
-};
-
 /**
  * Writes to @p in the head of a file part of the input of STORE_COMMIT,
  * for the file @p name whose data is @p len bytes long. After the head,
  * the function adds @p len bytes for the data, which it leaves unwritten,
  * and a line feed. It stores the offset and the bytes of the data in
- * @p *part. The caller then writes the data at the offset part->data_at
- * from the head of @p in, as store_part_file() does. Returns 0, EINVAL for
+ * @p *part. The caller then writes the data at the offset part->at from
+ * the head of @p in, as store_part_file() does. Returns 0, EINVAL for
  * a null argument, a name longer than STORE_PATH or a failed snprintf() of
  * the data command, or ENOMEM.
  */
 extern int
-store_part_head (struct store_part *part,
-                 struct buf        *in,
-                 struct cstr_view   name,
-                 size_t             len);
+store_part_head (struct extent    *part,
+                 struct buf       *in,
+                 struct cstr_view  name,
+                 size_t            len);
 
 /**
  * Writes to @p in a file part of the input of STORE_COMMIT: the file
@@ -360,10 +351,10 @@ store_part_head (struct store_part *part,
  * path. Returns 0, EINVAL for a name longer than STORE_PATH, or ENOMEM.
  */
 extern int
-store_part_file (struct store_part *part,
-                 struct buf        *in,
-                 struct cstr_view   name,
-                 struct cstr_view   data);
+store_part_file (struct extent    *part,
+                 struct buf       *in,
+                 struct cstr_view  name,
+                 struct cstr_view  data);
 
 /**
  * Writes to @p in the part of the input of STORE_COMMIT that deletes the

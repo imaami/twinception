@@ -467,12 +467,11 @@ struct call_source {
 	struct cstr_view path;    /**< path of the file in the commit */
 	uint64_t         total;   /**< line count of the file, or 0 if
 	                               unknown */
-	size_t           at;      /**< offset of the numbered lines in the
-	                               output */
-	size_t           len;     /**< bytes of the numbered lines. There is one
-	                               output line for each number in the range
-	                               lines, and each output line ends with a
-	                               newline, except perhaps the last. */
+	struct extent    output;  /**< the numbered lines in the output. There
+	                               is one output line for each number in
+	                               the range lines, and each output line
+	                               ends with a newline, except perhaps the
+	                               last. */
 	struct range     lines;   /**< numbers of the first and the last line,
 	                               from 1 */
 };
@@ -491,9 +490,9 @@ mcp_slot_source (struct mcp_slot          *slot,
                  struct call_source const *src);
 
 /** Records for the ring of the calls of the ask call (seen_print()) that
- *  the @p len bytes of the call's output from @p at on print the evidence
- *  item @p item. When askai writes the result, the bytes of the window
- *  that continue the bytes of the item shown before count as shown
+ *  the bytes @p output of the call's output print the evidence item
+ *  @p item. When askai writes the result, the bytes of the window that
+ *  continue the bytes of the item shown before count as shown
  *  (seen_shown()). It records nothing for the call of a client or a job.
  *  Returns 0, EFAULT for nullptr, EINVAL if the call has ended or for the
  *  errors of seen_print(), or ENOMEM. This function is not exported.
@@ -501,8 +500,7 @@ mcp_slot_source (struct mcp_slot          *slot,
 extern int
 mcp_slot_evidence (struct mcp_slot        *slot,
                    struct seen_item const *item,
-                   size_t                  at,
-                   size_t                  len);
+                   struct extent           output);
 
 /** Sets the notebook that the call's output shows to the notebook of the
  *  member @p notebook, which must stay valid until the kind's drop().

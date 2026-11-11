@@ -493,9 +493,10 @@ struct mcp_slot {
 	struct web_wait     *web;      /* the last HTTP request of the call, in
 	                                  progress or answered, until the next
 	                                  request or mcp_slot_drop() */
-	size_t               skip;     /* the output offset at which the window
-	                                  given to a turn starts */
-	size_t               window;   /* the length of that window in bytes */
+	struct extent        window;   /* the window of the output given to a
+	                                  turn. Until the call ends, window.at
+	                                  is the offset argument of the call
+	                                  (mcp_slot_offset()). */
 	uint64_t             at;       /* the offset of a replayed output in the
 	                                  whole output, from the journal, or 0 */
 	uint64_t             bytes;    /* bytes of the whole output */
@@ -1180,8 +1181,7 @@ mcp_slot_reset (struct mcp_slot *slot)
 	mcp_slot_drop(slot);
 	slot->of = nullptr;
 	dstr_clear(&slot->answer);
-	slot->skip = 0;
-	slot->window = 0;
+	slot->window = (struct extent){};
 	slot->at = 0;
 	slot->bytes = 0;
 	util_text_clear(&slot->note);
@@ -2046,7 +2046,7 @@ mcp_slot_result (struct mcp_slot  *slot,
 	if (slot->role != ROLE_OWN) {
 		/* An offset does not apply to the answer of a failed call. */
 		if (failed)
-			slot->skip = 0;
+			slot->window.at = 0;
 		if (cstr_view_store(text, &slot->answer)) {
 			mcp_req_fail(req, ENOMEM);
 			return;
@@ -2116,7 +2116,7 @@ mcp_req_reply (struct mcp_req *req)
  *  mcp_slot_done() handles the call of a turn or a job. The reply to a
  *  client's call is written a slice in each step. It begins with
  *  agenda->said and continues with the output from the first character
- *  at or after slot->skip, or from 0 for an ask call with lent tools.
+ *  at or after slot->window.at, or from 0 for an ask call with lent tools.
  */
 static void
 mcp_slot_respond (struct mcp_slot *slot,
@@ -2132,7 +2132,7 @@ mcp_slot_respond (struct mcp_slot *slot,
 	slot->flags |= SLOT_DONE;
 	struct span text = mcp_req_output(req);
 	loop_timer_stop(req->mcp->loop, &req->timer);
-	size_t off = req->lent ? 0 : slot->skip;
+	size_t off = req->lent ? 0 : slot->window.at;
 	if (off > text.len) {
 		char why[96];
 		mcp_slot_result(slot, util_format_view(why, sizeof why, "The offset is past the end "
@@ -3433,7 +3433,7 @@ mcp_slot_tell (struct mcp_slot  *slot,
 	size_t len = jb_utf8(text.data, text.len < TOOL_TELL_MAX ? text.len : TOOL_TELL_MAX);
 	mcp_slot_wake(slot);
 	/* The output is the text whole, not lent, nor from an offset. */
-	slot->skip = 0;
+	slot->window.at = 0;
 	slot->lent = (struct span){};
 	mcp_slot_result(slot, (struct cstr_view){ text.data, len }, flags & TOOL_FAILED);
 	return 0;
@@ -3489,7 +3489,7 @@ mcp_slot_offset (struct mcp_slot    *slot,
 	struct json_object *o = jb_get(args, "offset");
 	uint64_t n = 0;
 	e = o ? jb_uint_checked(o, SIZE_MAX, &n) : 0;
-	slot->skip = (size_t)n;
+	slot->window.at = (size_t)n;
 	if (!e)
 		return 0;
 	mcp_slot_tell(slot, CSTR_VIEW("The offset argument must be a whole number of bytes, "
@@ -3611,25 +3611,24 @@ mcp_slot_source (struct mcp_slot          *slot,
 	 * that seen_lines() does not scan it. Only findings cite the ring. */
 	struct mcp_req const *req = slot->req;
 	if (slot->role == ROLE_OWN || !(req->lent & req->mcp->st->lending.of[KIND_FINDINGS]) ||
-	    (src->lines.first == src->lines.last && src->len > mcp_slot_window_max(slot)))
+	    (src->lines.first == src->lines.last && src->output.len > mcp_slot_window_max(slot)))
 		return 0;
 	struct span const out = mcp_slot_output(slot);
 	slot->read = seen_read_create(src, (struct cstr_view){ (char const *)out.ptr, out.len },
 	                              &e);
 	if (slot->read)
-		loop_work(req->mcp->loop, LOOP_COPY, src->len);
+		loop_work(req->mcp->loop, LOOP_COPY, src->output.len);
 	return e;
 }
 
 int
 mcp_slot_evidence (struct mcp_slot        *slot,
                    struct seen_item const *item,
-                   size_t                  at,
-                   size_t                  len)
+                   struct extent           output)
 {
 	int const e = !item ? EFAULT : mcp_slot_live(slot, 0, 0);
 	return e || slot->role != ROLE_TURN ? e
-	       : seen_print(&slot->req->seen, item, mcp_slot_call(slot), at, len);
+	       : seen_print(&slot->req->seen, item, mcp_slot_call(slot), output);
 }
 
 int
@@ -5486,8 +5485,7 @@ mcp_slot_replay (struct mcp_slot    *slot,
 	if (e)
 		return e == EINVAL ? EILSEQ : e;
 	slot->start = loop_clock();
-	slot->skip = skip;
-	slot->window = text.len - skip;
+	slot->window = (struct extent){ skip, text.len - skip };
 	slot->at = jb_uint(jb_get(saved, "at"), 0);
 	slot->bytes = jb_uint(jb_get(saved, "bytes"), 0);
 	mcp_slot_result(slot, text, json_object_get_boolean(jb_get(saved, "failed")));
@@ -5586,13 +5584,26 @@ mcp_req_calls_next (struct mcp_req *req)
 	mcp_req_call_launch(req);
 }
 
-/* Take the window of the output @p out of @p slot's call that the turn
- * takes into slot->skip and slot->window: from the start of the line that
- * contains slot->skip if that start is at most (cap - 3) / 4 bytes back,
- * else from slot->skip, or the output's end, a character's start; up to
- * cap = mcp_req_lend_max() bytes, to a line's end if one is near.
- * util_clip() can make a window up to 3 bytes short, so a call from the
- * offset in a window's note gets a window from that offset.
+/* Sets slot->window to the part of the output @p out of the call in
+ * @p slot that the next upstream request contains. On entry,
+ * slot->window.at is the offset argument of the call. The function moves
+ * an offset inside a character forward to the start of the next
+ * character. For an offset at or past the end of the output, the window
+ * is empty and starts at the end of the output. Otherwise the function
+ * searches the bytes before the offset, at most (cap - 3) / 4 of them,
+ * for a line feed, where cap is mcp_req_lend_max(). The window starts
+ * after the last line feed in those bytes. If those bytes contain no line
+ * feed, the window starts at the start of the output if the search
+ * reached it, and at the offset if not.
+ *
+ * The window is at most cap bytes long. A longer rest of the output is
+ * cut at the end of a character, and then after the last line feed in the
+ * last quarter of the window if that quarter contains one. util_clip()
+ * can cut up to 3 bytes less than cap, so the search above is not longer
+ * than the last quarter of a window that is cut. For a tool with
+ * TOOL_PAGED, mcp_slot_note_window() writes the end of such a window into
+ * the note as the offset of the next call, and the window of a call with
+ * that offset starts at that offset.
  */
 static void
 mcp_slot_window (struct mcp_slot *slot,
@@ -5600,7 +5611,7 @@ mcp_slot_window (struct mcp_slot *slot,
 {
 	static_assert(WINDOW_MIN > 3, "cap - 3 does not wrap around");
 	size_t skip = util_char_start((char const *)out.ptr, out.len,
-	                              slot->skip < out.len ? slot->skip : out.len);
+	                              slot->window.at < out.len ? slot->window.at : out.len);
 	size_t cap = mcp_req_lend_max(slot->req);
 	if (skip < out.len) {
 		size_t const back = skip < (cap - 3) / 4 ? skip : (cap - 3) / 4;
@@ -5616,8 +5627,7 @@ mcp_slot_window (struct mcp_slot *slot,
 		if (nl)
 			window = (size_t)(nl - out.ptr - skip) + 1;
 	}
-	slot->skip = skip;
-	slot->window = window;
+	slot->window = (struct extent){ skip, window };
 }
 
 /* Say in slot->note where the window is in the output of @p len bytes of
@@ -5629,21 +5639,21 @@ mcp_slot_note_window (struct mcp_slot *slot,
                       size_t           len,
                       size_t           offset)
 {
-	size_t end = slot->skip + slot->window;
+	size_t end = slot->window.at + slot->window.len;
 	if (end < len) {
 		if (mcp_slot_tool(slot)->kind->flags & TOOL_PAGED)
 			(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu. To read "
 			                       "on, call the tool again with the same arguments "
-			                       "and \"offset\": %zu.]", slot->skip, end, len, end);
+			                       "and \"offset\": %zu.]", slot->window.at, end, len, end);
 		else
 			(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu. The rest "
-			                       "of the output is cut.]", slot->skip, end, len);
+			                       "of the output is cut.]", slot->window.at, end, len);
 	} else if (offset > len)
 		(void)util_text_printf(&slot->note, "[The offset is past the end of the output. "
 		                       "The output is %zu bytes.]", len);
 	else if (offset)
 		(void)util_text_printf(&slot->note, "\n\n[Bytes %zu to %zu of %zu. End of the "
-		                       "output.]", slot->skip, len, len);
+		                       "output.]", slot->window.at, len, len);
 }
 
 static void mcp_agenda_job_done (struct mcp_slot *slot);
@@ -5651,9 +5661,9 @@ static void mcp_agenda_job_done (struct mcp_slot *slot);
 /**
  * Handles the end of the call in @p slot, which is a call of a turn or a
  * job. The call has produced its output or has failed. For a call of a
- * turn, the function sets slot->skip and slot->window to the part of the
- * output that the next upstream request contains, writes the note about
- * that part into slot->note, and records the result in the journal if
+ * turn, the function sets slot->window to the part of the output that
+ * the next upstream request contains, writes the note about that part
+ * into slot->note, and records the result in the journal if
  * req->archive is set. The window and the note of a call that a resumed
  * job replays are set already. Then the function queues the step of the
  * request. The step writes the results of the calls into the upstream
@@ -5716,7 +5726,7 @@ mcp_slot_done (struct mcp_slot *slot,
 		return;
 	}
 	slot->bytes = out.len;
-	size_t const offset = slot->skip;
+	size_t const offset = slot->window.at;
 	mcp_slot_window(slot, out);
 	mcp_slot_note_window(slot, out.len, offset);
 	if (notebook) {
@@ -5733,13 +5743,13 @@ mcp_slot_done (struct mcp_slot *slot,
 		 * WINDOW_MAX bytes and the window reaches its end, with the size
 		 * of the output for the trace. */
 		bool const lines = slot->read && out.len <= WINDOW_MAX &&
-		                   slot->skip + slot->window == out.len;
-		size_t const base = lines ? 0 : slot->skip;
+		                   slot->window.at + slot->window.len == out.len;
+		size_t const base = lines ? 0 : slot->window.at;
 		struct span const files = buf_peek(&req->attached);
 		struct json_object *result = jb_object(
 			"index", json_object_new_int64(k),
 			"failed", json_object_new_boolean(failed),
-			"skip", json_object_new_uint64(slot->skip - base),
+			"skip", json_object_new_uint64(slot->window.at - base),
 			"at", json_object_new_uint64(base),
 			"bytes", json_object_new_uint64(out.len),
 			"branch", json_object_new_boolean(req->flags & REQ_BRANCH),
@@ -5749,7 +5759,7 @@ mcp_slot_done (struct mcp_slot *slot,
 			                                       (int)files.len),
 			"note", jb_string(util_text_view(&slot->note)),
 			"text", json_object_new_string_len(out.len ? (char const *)out.ptr + base : "",
-			                                   (int)(slot->skip + slot->window - base)),
+			                                   (int)(slot->window.at + slot->window.len - base)),
 			nullptr);
 		if (lines)
 			result = jb_set_or_free(result, "source", seen_read_json(slot->read, &(int){}));
@@ -5804,7 +5814,7 @@ mcp_req_result_begin (struct mcp_req  *req,
 		mcp_dstr_swap(&a->told, &a->notices);
 	if (req->part + 1u == req->n_calls) {
 		mcp_req_context_note(req, slot, mcp_req_tokens(req) +
-		                                (slot->window + slot->note.len) / 4);
+		                                (slot->window.len + slot->note.len) / 4);
 		if (req->turn + 1u == req->mcp->st->turns)
 			(void)util_text_printf(&slot->note, "\n\n" NOTICE_LAST);
 	}
@@ -5873,7 +5883,7 @@ mcp_req_result_write (struct mcp_req *req)
 	struct cstr_view const told = req->agenda ? cstr_view_dstr(&req->agenda->told)
 	                                          : (struct cstr_view){};
 	struct cstr_view const parts[SEEN_PARTS] = {
-		{ out.len ? (char const *)out.ptr + slot->skip : nullptr, slot->window },
+		{ out.len ? (char const *)out.ptr + slot->window.at : nullptr, slot->window.len },
 		util_text_view(&slot->note),
 		told.len ? CSTR_VIEW("\n\n") : (struct cstr_view){},
 		told,
@@ -5890,7 +5900,7 @@ mcp_req_result_write (struct mcp_req *req)
 	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED, slot->bytes);
 	switch (row->metric) {
 	case LENT_FINDINGS:
-		seen_shown(req->seen, mcp_slot_call(slot), slot->skip, slot->window, req->turn);
+		seen_shown(req->seen, mcp_slot_call(slot), slot->window, req->turn);
 		break;
 	case LENT_COMPACT:
 		/* A compact call shows nothing that a finding can cite. */
@@ -5899,14 +5909,14 @@ mcp_req_result_write (struct mcp_req *req)
 		/* seen_keep() scans the output up to the end of the window. */
 		if (!(req->lent & req->mcp->st->lending.of[KIND_FINDINGS]))
 			break;
-		loop_work(req->mcp->loop, LOOP_COPY, slot->skip + slot->window);
+		loop_work(req->mcp->loop, LOOP_COPY, slot->window.at + slot->window.len);
 		e = seen_keep(&req->seen, &req->calls[req->part], &(struct seen_result const){
 			.parts  = parts,
 			.out    = { (char const *)out.ptr, out.len },
 			.read   = (slot->of ? slot->of : slot)->read,
 			.output = slot->bytes,
 			.at     = slot->at,
-			.skip   = slot->skip,
+			.skip   = slot->window.at,
 			.number = mcp_slot_call(slot),
 			.turn   = req->turn,
 			.tool   = slot->tool,

@@ -43,6 +43,14 @@ struct span {
 	size_t         len;
 };
 
+/** A run of bytes in a buffer or a text by offset. Unlike a span, an
+ *  extent stays valid when the storage of the bytes moves.
+ */
+struct extent {
+	size_t at;   /**< offset of the first byte */
+	size_t len;  /**< bytes of the run */
+};
+
 /** Size classes of storage: powers of two from 4 KiB to 32 MiB, glibc's
  *  largest mmap threshold. Larger storage is allocated and freed as is.
  */

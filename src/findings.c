@@ -862,7 +862,7 @@ findings_commit (struct mcp_slot      *slot,
 	char message[STORE_MESSAGE];
 	finding_id(f, id);
 	call->number = f->number;
-	struct store_part part;
+	struct extent part;
 	e = e ? e : store_part_file(&part, &call->files, finding_path(f->number, path), text);
 	struct store_commit commit = {
 		.message = findings_subject(call, id, before, message),
@@ -931,7 +931,7 @@ findings_archive (struct findings_call           *call,
 	int r = 0;
 	for (size_t k = e->flags & EVIDENCE_REQUEST ? 0 : 1; !r && k < array_size(b); ++k) {
 		char path[EVIDENCE_PATH];
-		struct store_part part;
+		struct extent part;
 		evidence_path(b[k]->sha256, path);
 		r = oid_len(&blobs[k]) ? store_part_blob(&call->files, cstr_view(path), &blobs[k])
 		                       : store_part_file(&part, &call->files, cstr_view(path), data[k]);
@@ -951,21 +951,20 @@ findings_stored (struct evidence const *e,
 
 /* Records that the item @p id, such as cuh#2/1, whose record is in
  * shown->record and whose archive files have the git IDs @p blobs, is the
- * @p len bytes of the output of the call in @p slot from @p at on, so that
- * a finding can cite the item once a result has shown it
- * (mcp_slot_evidence()). Returns 0 or the error of mcp_slot_evidence().
+ * bytes @p output of the output of the call in @p slot, so that a finding
+ * can cite the item once a result has shown it (mcp_slot_evidence()).
+ * Returns 0 or the error of mcp_slot_evidence().
  */
 static int
 findings_shown (struct mcp_slot  *slot,
                 struct seen_item *shown,
                 char const       *id,
                 struct oid const  blobs[static 2],
-                size_t            at,
-                size_t            len)
+                struct extent     output)
 {
 	memcpy(shown->blobs, blobs, sizeof shown->blobs);
 	(void)util_format(shown->id, sizeof shown->id, "%s", id);
-	return mcp_slot_evidence(slot, shown, at, len);
+	return mcp_slot_evidence(slot, shown, output);
 }
 
 /* Appends to call->out the external items of @p f with the ID @p id, and
@@ -1060,7 +1059,8 @@ findings_expanded (struct mcp_slot *slot,
 		if (e || !turn || !findings_stored(ev, blobs))
 			continue;
 		e = findings_record(ev, &shown.record);
-		e = e ? e : findings_shown(slot, &shown, item, blobs, at, dstr_len(&call->out) - at);
+		e = e ? e : findings_shown(slot, &shown, item, blobs,
+		                           (struct extent){ at, dstr_len(&call->out) - at });
 		++whole;
 	}
 	dstr_cleanup(&shown.record);
@@ -1427,8 +1427,8 @@ findings_unseen (struct mcp_slot                *slot,
 		if (at[i] == at[i + 1])
 			continue;
 		e = cstr_view_store(cstr_view_dstr(&cite->record), &shown.record);
-		e = e ? e : findings_shown(slot, &shown, cite->id, cite->blobs, at[i],
-		                           at[i + 1] - at[i]);
+		e = e ? e : findings_shown(slot, &shown, cite->id, cite->blobs,
+		                           (struct extent){ at[i], at[i + 1] - at[i] });
 	}
 	dstr_cleanup(&shown.record);
 	findings_end(slot, e, true);

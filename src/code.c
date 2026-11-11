@@ -315,7 +315,7 @@ code_record (struct cstr_view     *text,
 	*text = rest;
 	*src = (struct call_source){
 		.repo = pin->repo->name, .commit = oid_view(&pin->roots[0]),
-		.path = line, .total = v[2], .at = v[3], .len = v[4],
+		.path = line, .total = v[2], .output = { v[3], v[4] },
 		.lines = { (uint32_t)v[0], (uint32_t)v[1] },
 	};
 	return true;

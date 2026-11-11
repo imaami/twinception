@@ -149,7 +149,7 @@ struct notes_tool_call {
 	struct dstr             out;       /* the output of a tool call.
 	                                      notes_tool_end() lends it to
 	                                      the slot. */
-	struct store_part       part;      /* the offset and the bytes of the
+	struct extent           part;      /* the offset and the bytes of the
 	                                      text in file */
 	struct list             spare;     /* the call's node on loop->spare */
 	struct member_wait      wait;      /* the lookup of the member of the
@@ -727,7 +727,7 @@ notes_tool_call_message (struct notes_tool_call *call,
 	static_assert(sizeof "Restore  from : ( to  bytes)" + 2 * UTIL_DECIMAL + sizeof name +
 	              OID_SHA256 + NOTES_NAME <= STORE_MESSAGE);
 	int const len = (int)(store_quote(name, notes_tool_target(call)) - name);
-	uint64_t after = call->part.data_len;
+	uint64_t after = call->part.len;
 	util_text_clear(&call->message);
 	int e = util_text_printf(&call->message, "%c%.*s %.*s%s%s%s", up, (int)verb.len - 1,
 	                         verb.data + 1, len, name, from, *source ? ":" : "", source);
@@ -793,8 +793,7 @@ notes_tool_unchanged (struct mcp_slot         *slot,
                       struct oid const        *tip)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	struct span const data = { buf_peek(&call->file).ptr + call->part.data_at,
-	                           call->part.data_len };
+	struct span const data = { buf_peek(&call->file).ptr + call->part.at, call->part.len };
 	bool same = false;
 	int e = notes_file_same(note, data, &same);
 	if (e)
@@ -1967,7 +1966,7 @@ notes_tool_add (struct mcp_slot    *slot,
 	if (content) {
 		e = store_part_head(&call->part, &call->file, name, data.size);
 		if (!e)
-			datauri_decode(&data, buf_peek(&call->file).ptr + call->part.data_at);
+			datauri_decode(&data, buf_peek(&call->file).ptr + call->part.at);
 		loop_work(mcp_slot_loop(slot), LOOP_COPY, data.size);
 	} else {
 		/* askai adds a line feed to a turn's text that lacks a final
@@ -1979,7 +1978,7 @@ notes_tool_add (struct mcp_slot    *slot,
 			call->flags |= CALL_STRIPPED;
 		e = store_part_head(&call->part, &call->file, name, kept + lf);
 		if (!e)
-			*(char *)mempcpy(buf_peek(&call->file).ptr + call->part.data_at, text.data,
+			*(char *)mempcpy(buf_peek(&call->file).ptr + call->part.at, text.data,
 			                 kept) = '\n';
 	}
 	notes_tool_stage(slot, FETCH_CHECK, e);
@@ -2020,8 +2019,7 @@ notes_tool_got_append (struct mcp_slot *slot,
                        struct span      old)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct span const add = { buf_peek(&call->file).ptr + call->part.data_at,
-	                          call->part.data_len };
+	struct span const add = { buf_peek(&call->file).ptr + call->part.at, call->part.len };
 	size_t const lf = old.len && old.ptr[old.len - 1] != '\n';
 	if (old.len + lf + add.len > TOOL_TEXT_MAX) {
 		mcp_slot_tell(slot, CSTR_VIEW("The note would be larger than the 4 MiB limit. "
@@ -2029,7 +2027,7 @@ notes_tool_got_append (struct mcp_slot *slot,
 		return;
 	}
 	struct buf file = {};
-	struct store_part part;
+	struct extent part;
 	int e = store_part_head(&part, &file, util_text_view(&call->revision.file),
 	                        old.len + lf + add.len);
 	if (e) {
@@ -2037,7 +2035,7 @@ notes_tool_got_append (struct mcp_slot *slot,
 		notes_tool_end(slot, e, true);
 		return;
 	}
-	unsigned char *p = mempcpy(buf_peek(&file).ptr + part.data_at, old.ptr, old.len);
+	unsigned char *p = mempcpy(buf_peek(&file).ptr + part.at, old.ptr, old.len);
 	if (lf)
 		*p++ = '\n';
 	memcpy(p, add.ptr, add.len);
@@ -2205,7 +2203,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	if (fetch & FETCH_DELETE) {
 		/* The size of the note after a delete is 0 bytes, as the commit
 		 * message prints it. */
-		call->part = (struct store_part){};
+		call->part = (struct extent){};
 		notes_tool_stage(slot, FETCH_CHECK, store_part_delete(&call->file, name));
 	} else if (flags & NOTE_WRITE) {
 		notes_tool_add(slot, name, args);
