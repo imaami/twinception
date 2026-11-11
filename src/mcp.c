@@ -135,7 +135,7 @@ enum {
 enum {
 	MAX_ID       = 1 << 10,   /* string request id bytes: every reply repeats it */
 	MAX_ECHO     = 256,       /* bytes of a client's string an error repeats */
-	CACHE_TTL_MS = 300'000,   /* how long modern clients may cache lists */
+	CACHE_TTL_MS = 300000,   /* how long modern clients may cache lists */
 	UPLOAD_MAX   = 16 << 20,  /* bytes of a conversation's upstream request:
 	                             past those, its context is full */
 	CHAT_HISTORY = 1024,      /* earlier visible messages of a chat */
@@ -4092,7 +4092,7 @@ struct mcp_spin {
 };
 
 /* The most slices a test_task call may ask for: 25 s of work. */
-enum { SPIN_MAX = 100'000 };
+enum { SPIN_MAX = 100000 };
 
 static enum task_state
 mcp_spin_slice (struct task *task,
@@ -4142,7 +4142,7 @@ static void
 mcp_slot_spin (struct mcp_slot    *slot,
                struct json_object *slices)
 {
-	static_assert(SPIN_MAX == 100'000, "update the problem text");
+	static_assert(SPIN_MAX == 100000, "update the problem text");
 	struct mcp *mcp = slot->req->mcp;
 	struct loop *loop = mcp->loop;
 	uint64_t const n = jb_count(slices, SPIN_MAX);
@@ -7871,7 +7871,7 @@ static struct json_object *
 mcp_task_definition (void const *service)
 {
 	(void)service;
-	static_assert(SPIN_MAX == 100'000 && TASK_SLICE_NS == 250'000, "update the description");
+	static_assert(SPIN_MAX == 100000 && TASK_SLICE_NS == 250000, "update the description");
 	return jb_object(
 		"name", json_object_new_string("test_task"),
 		"title", json_object_new_string("Test task"),

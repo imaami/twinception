@@ -13,7 +13,7 @@
 #include <time.h>
 
 /* clock_ns is the time of the fake clock in nanoseconds. */
-static uint64_t clock_ns = 1'000'000'000;
+static uint64_t clock_ns = 1000000000;
 
 /* This function replaces clock_gettime() in src/loop.c and src/ledger.c.
  * It ignores @p id and stores the time clock_ns in @p ts. */
@@ -23,8 +23,8 @@ fake_clock_gettime (clockid_t        id,
 {
 	(void)id;
 	*ts = (struct timespec){
-		.tv_sec = (time_t)(clock_ns / 1'000'000'000),
-		.tv_nsec = (long)(clock_ns % 1'000'000'000)
+		.tv_sec = (time_t)(clock_ns / 1000000000),
+		.tv_nsec = (long)(clock_ns % 1000000000)
 	};
 	return 0;
 }

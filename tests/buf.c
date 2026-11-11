@@ -77,27 +77,27 @@ test_growth (void)
 	struct buf buf = {};
 	static unsigned char block[4096];
 	memset(block, 'g', sizeof block);
-	CHECK(!buf_put(&buf, block, 4096, 50'000));
+	CHECK(!buf_put(&buf, block, 4096, 50000));
 	CHECK(buf.cap == 4096);
-	CHECK(!buf_put(&buf, block, 1, 50'000) && buf.cap == 8192);
-	CHECK(!buf_put(&buf, block, 4096, 50'000) && buf.cap == 16384);
+	CHECK(!buf_put(&buf, block, 1, 50000) && buf.cap == 8192);
+	CHECK(!buf_put(&buf, block, 4096, 50000) && buf.cap == 16384);
 	/* Doubling stops at the class that holds the maximum. */
 	struct span s;
-	CHECK(!buf_reserve(&buf, 30'000, 50'000, &s));
-	CHECK(s.len == 50'000 - 8193 && buf.cap == 65536);
-	buf_commit(&buf, 30'000);
-	CHECK(buf_peek(&buf).len == 38'193);
+	CHECK(!buf_reserve(&buf, 30000, 50000, &s));
+	CHECK(s.len == 50000 - 8193 && buf.cap == 65536);
+	buf_commit(&buf, 30000);
+	CHECK(buf_peek(&buf).len == 38193);
 
 	/* Past the maximum: ENOBUFS, and nothing changes. */
 	unsigned char *data = buf.data;
-	CHECK(buf_reserve(&buf, 11'808, 50'000, &s) == ENOBUFS && !s.ptr && !s.len);
-	CHECK(buf.data == data && buf.cap == 65536 && buf_peek(&buf).len == 38'193);
-	CHECK(!buf_reserve(&buf, 11'807, 50'000, &s));
-	CHECK(s.len == 11'807);
+	CHECK(buf_reserve(&buf, 11808, 50000, &s) == ENOBUFS && !s.ptr && !s.len);
+	CHECK(buf.data == data && buf.cap == 65536 && buf_peek(&buf).len == 38193);
+	CHECK(!buf_reserve(&buf, 11807, 50000, &s));
+	CHECK(s.len == 11807);
 
 	/* A maximum below the capacity also caps the span. */
-	CHECK(buf_reserve(&buf, 10, 38'199, &s) == ENOBUFS && !s.len);
-	CHECK(!buf_reserve(&buf, 5, 38'199, &s));
+	CHECK(buf_reserve(&buf, 10, 38199, &s) == ENOBUFS && !s.len);
+	CHECK(!buf_reserve(&buf, 5, 38199, &s));
 	CHECK(s.len == 6 && buf.cap == 65536);
 
 	/* A smaller maximum than the readable bytes, and overflowing sums. */
@@ -293,7 +293,7 @@ stashed (struct buf_stash const *stash)
 static void
 test_model (void)
 {
-	enum { MAX = 1 << 16, OPS = 200'000 };
+	enum { MAX = 1 << 16, OPS = 200000 };
 	static unsigned char model[MAX];
 	static unsigned char noise[MAX];
 	size_t len = 0;

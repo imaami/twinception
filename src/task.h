@@ -31,7 +31,7 @@
 #include "loop.h"
 
 enum {
-	TASK_SLICE_NS = 250'000,  /**< a slice, at most (loop.c's BULK_NS) */
+	TASK_SLICE_NS = 250000,  /**< a slice, at most (loop.c's BULK_NS) */
 	TASK_BACKLOG  = 8,        /**< tasks a loop holds before one moves:
 	                               2 ms of slices */
 };

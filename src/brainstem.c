@@ -40,13 +40,13 @@
 enum { HOME };
 
 enum {
-	START_MS  = 10'000,   /* for a loop to start */
-	STUCK_MS  = 1'000,    /* one turn this long while draining: stuck */
-	JOIN_MS   = 2'000,    /* for the blockers to finish what they do */
-	FLUSH_MS  = 1'000,    /* for the logger to write what it holds */
-	SAMPLE_MS = 1'000,    /* between resource samples */
+	START_MS  = 10000,   /* for a loop to start */
+	STUCK_MS  = 1000,    /* one turn this long while draining: stuck */
+	JOIN_MS   = 2000,    /* for the blockers to finish what they do */
+	FLUSH_MS  = 1000,    /* for the logger to write what it holds */
+	SAMPLE_MS = 1000,    /* between resource samples */
 	IDLE_MS   = 100,      /* between the watchdog's looks, with no threshold */
-	FD_TABLE  = 65'536,   /* descriptors the table is grown to at the start */
+	FD_TABLE  = 65536,   /* descriptors the table is grown to at the start */
 	STACK     = 1 << 20,  /* a loop thread's stack: N of them count against
 	                         RLIMIT_DATA, where the default, RLIMIT_STACK's
 	                         8 MiB, would not fit many */
@@ -94,10 +94,10 @@ static struct {
 	uint32_t up[2];
 	uint32_t down[2];
 } const marks[PRESSURE_INPUTS] = {
-	[PRESSURE_RESIDENT] = { { 10'000, 20'000 }, { 7'500, 15'000 } },  /* of memory_high */
-	[PRESSURE_SYSTEM]   = { {  9'000,  9'500 }, { 8'500,  9'000 } },  /* of RAM */
-	[PRESSURE_CGROUP]   = { {  9'000,  9'500 }, { 8'500,  9'000 } },  /* of the limit */
-	[PRESSURE_PSI]      = { {  1'000,  4'000 }, {   500,  2'000 } },  /* of the time */
+	[PRESSURE_RESIDENT] = { { 10000, 20000 }, { 7500, 15000 } },  /* of memory_high */
+	[PRESSURE_SYSTEM]   = { {  9000,  9500 }, { 8500,  9000 } },  /* of RAM */
+	[PRESSURE_CGROUP]   = { {  9000,  9500 }, { 8500,  9000 } },  /* of the limit */
+	[PRESSURE_PSI]      = { {  1000,  4000 }, {   500,  2000 } },  /* of the time */
 	[PRESSURE_TEST]     = { {      1,      2 }, {     1,      2 } },  /* the level */
 };
 
@@ -565,7 +565,7 @@ brainstem_cgroup (struct brainstem *bs,
 		memcpy(path + len, cgroup_current, sizeof cgroup_current);
 		uint64_t use = brainstem_number(path, buf, size, 0);
 		use -= cache < use ? cache : use;
-		uint64_t full = use * 10'000 / cap;
+		uint64_t full = use * 10000 / cap;
 		if (!use || full < most)
 			continue;
 		most = full;
@@ -648,9 +648,9 @@ brainstem_pressure (struct brainstem *bs,
 	              : room / 16 > MEMORY_HIGH_MIN ? room / 16 : MEMORY_HIGH_MIN;
 	uint64_t rss = hist_get(&brainstem_metrics.rss);
 	uint64_t const fullness[PRESSURE_INPUTS] = {
-		[PRESSURE_RESIDENT] = rss * 10'000 / high,
+		[PRESSURE_RESIDENT] = rss * 10000 / high,
 		/* MemAvailable reads 0 where it is absent, as before Linux 3.14. */
-		[PRESSURE_SYSTEM] = avail && avail < total ? (total - avail) * 10'000 / total
+		[PRESSURE_SYSTEM] = avail && avail < total ? (total - avail) * 10000 / total
 		                                           : 0,
 		[PRESSURE_CGROUP] = cg,
 		[PRESSURE_PSI] = hist_get(&brainstem_metrics.psi[PSI_MEMORY]),

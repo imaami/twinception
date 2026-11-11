@@ -34,8 +34,8 @@ enum {
 	MAX_RESPONSE = 16 << 20,  /* the most bytes of an answer, of a streamed
 	                             one's text, and of an event of it */
 	MAX_PROPS    = 1 << 20,   /* bytes of a /props answer */
-	PROPS_MS     = 10'000,    /* the most /props may take, or the timeout */
-	CANCEL_MS    = 5'000,     /* native cancellation's total lifetime */
+	PROPS_MS     = 10000,    /* the most /props may take, or the timeout */
+	CANCEL_MS    = 5000,     /* native cancellation's total lifetime */
 	MAX_JOB_ID   = 4096,      /* bytes of a native provider job's id */
 	MAX_CANCEL   = 64 << 10,  /* bytes of the answer to a cancellation */
 	MAX_ERROR    = 4096,      /* bytes of an event's error text that the

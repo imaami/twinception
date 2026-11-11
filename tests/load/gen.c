@@ -163,9 +163,9 @@ enum {
 };
 
 enum {
-	REDIAL_NS        = 100'000'000,   /**< pause before redialling a failed connect */
+	REDIAL_NS        = 100000000,   /**< pause before redialling a failed connect */
 	CHURN_SLOTS      = 256,           /**< churn connections in flight at most */
-	CHURN_TIMEOUT_NS = 2'000'000'000, /**< give-up age of a churn connection */
+	CHURN_TIMEOUT_NS = 2000000000, /**< give-up age of a churn connection */
 	PER_SRC          = 128,           /**< dials per source address, under
 	                                       askai's per-client cap of 256 */
 };
@@ -184,7 +184,7 @@ now_ns (void)
 {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint64_t)ts.tv_sec * 1'000'000'000u + (uint64_t)ts.tv_nsec;
+	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 
 /* --- plain-TCP transport ------------------------------------------------- */
@@ -887,7 +887,7 @@ probe_warmup (struct probe *p)
 {
 	for (int i = 0; i < p->nka; ++i)
 		pc_connect(p, &p->pool[i]);
-	uint64_t warm_end = now_ns() + 2'000'000'000u;
+	uint64_t warm_end = now_ns() + 2000000000u;
 	struct epoll_event evs[256];
 	int ready = 0;
 	while (ready < p->nka && now_ns() < warm_end) {
@@ -937,15 +937,15 @@ probe_run (struct probe *p,
 		} else if (!probe_busy(p)) {
 			break;
 		} else if (drain_end == UINT64_MAX) {
-			drain_end = now + p->timeout_ns + 1'000'000'000u;
+			drain_end = now + p->timeout_ns + 1000000000u;
 		} else if (now >= drain_end) {
 			break;
 		}
 		uint64_t dt = nearest > now ? nearest - now : 0;
-		if (dt > 20'000'000u)
-			dt = 20'000'000u;
-		struct timespec ts = { .tv_sec = (time_t)(dt / 1'000'000'000u),
-		                       .tv_nsec = (long)(dt % 1'000'000'000u) };
+		if (dt > 20000000u)
+			dt = 20000000u;
+		struct timespec ts = { .tv_sec = (time_t)(dt / 1000000000u),
+		                       .tv_nsec = (long)(dt % 1000000000u) };
 		int n = epoll_pwait2(p->epfd, evs, 256, &ts, nullptr);
 		for (int i = 0; i < n; ++i)
 			probe_event(p, evs[i].data.ptr, evs[i].events);
@@ -1107,7 +1107,7 @@ out:
  * so askai parses them in full: 1024 values (empty objects, or 507 keys), a
  * 1 MiB string, and a 1 MiB tool call prompt full of escapes.
  */
-enum { HOSTILE_KINDS = 7, HOSTILE_MAX = 9'200'000 };
+enum { HOSTILE_KINDS = 7, HOSTILE_MAX = 9200000 };
 
 static char *
 hostile_body (int     kind,
@@ -1127,22 +1127,22 @@ hostile_body (int     kind,
 	size_t k = 0;
 	switch (kind) {
 	case 0:
-		for (size_t i = 0; i < 100'000; ++i)
+		for (size_t i = 0; i < 100000; ++i)
 			s[k++] = '[';
-		for (size_t i = 0; i < 100'000; ++i)
+		for (size_t i = 0; i < 100000; ++i)
 			s[k++] = ']';
 		break;
 	case 1:
 		s[k++] = '[';
-		for (size_t i = 0; i < 400'000; ++i)
+		for (size_t i = 0; i < 400000; ++i)
 			k += (size_t)sprintf(s + k, "%s0", i ? "," : "");
 		s[k++] = ']';
 		break;
 	case 2:
 		s[k++] = '"';
 		/* Past the default body limit of 8 MiB. */
-		memset(s + k, 'x', 9'000'000);
-		k += 9'000'000;
+		memset(s + k, 'x', 9000000);
+		k += 9000000;
 		s[k++] = '"';
 		break;
 	case 3:
@@ -1278,7 +1278,7 @@ burst_thread (void *arg)
 		 * counts neither way. */
 		struct pollfd pfd = { .fd = fd, .events = POLLIN };
 		char junk[512];
-		ssize_t r = sent && poll(&pfd, 1, b->mode == BURST_DENSE ? 10'000 : 2000) == 1
+		ssize_t r = sent && poll(&pfd, 1, b->mode == BURST_DENSE ? 10000 : 2000) == 1
 		          ? b->t->recv(fd, junk, sizeof junk) : 0;
 		if (r > 0) {
 			b->n[BURST_ANSWERED]++;
@@ -1583,7 +1583,7 @@ jobs_thread (void *arg)
 	while (!atomic_load(&g_stop)) {
 		struct epoll_event evs[128];
 		int n = epoll_pwait2(ep, evs, 128, &(struct timespec){
-			.tv_nsec = b->mode ? 2'000'000 : 100'000'000 }, nullptr);
+			.tv_nsec = b->mode ? 2000000 : 100000000 }, nullptr);
 		for (int i = 0; i < n; ++i) {
 			struct job_conn *c = evs[i].data.ptr;
 			uint32_t e = evs[i].events;
@@ -1660,7 +1660,7 @@ jobs_thread (void *arg)
 					hist_record(b->lat, now_ns() - c->sent_ns);
 				c->state = busy ? JOB_HOLDING : JOB_SENDING;
 				c->sent = 0;
-				c->due_ns = now_ns() + BUSY_MS * 1'000'000u;
+				c->due_ns = now_ns() + BUSY_MS * 1000000u;
 				job_arm(ep, c, busy ? 0 : EPOLLOUT);
 			} else if (hangup && head && !c->cancelled &&
 			           memmem(c->buf, head, "text/event-stream", 17)) {
@@ -2001,7 +2001,7 @@ main (int   argc,
 	ctls.src = (uint32_t)(127 << 24 | (BG_MAX + 2) << 16);
 	ctls.tls = &tls_churned;
 	hist_init(&tls_churned.hs);
-	if (!probe_init(&p, &tcp, conns, fresh, (uint64_t)timeout_ms * 1'000'000u) ||
+	if (!probe_init(&p, &tcp, conns, fresh, (uint64_t)timeout_ms * 1000000u) ||
 	    !probe_init(&cp, &ctcp, 0, CHURN_SLOTS, CHURN_TIMEOUT_NS) ||
 	    !probe_init(&tp, &ctls, 0, CHURN_SLOTS, CHURN_TIMEOUT_NS)) {
 		fputs("gen: out of memory\n", stderr);

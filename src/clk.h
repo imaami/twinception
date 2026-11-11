@@ -13,10 +13,10 @@
 #include "compat.h"
 
 /** Nanoseconds in a second. */
-static constexpr uint64_t NS = 1'000'000'000;
+static constexpr uint64_t NS = 1000000000;
 
 /** Nanoseconds in a millisecond. */
-static constexpr uint64_t MS = 1'000'000;
+static constexpr uint64_t MS = 1000000;
 
 /** The time @p ns, in nanoseconds, as a struct timespec. */
 static const_inline struct timespec

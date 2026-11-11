@@ -27,8 +27,8 @@ turn_clock_gettime (clockid_t        id,
 	if (clock_fails)
 		return -1;
 	*ts = (struct timespec){
-		.tv_sec = (time_t)(clock_ns / 1'000'000'000),
-		.tv_nsec = (long)(clock_ns % 1'000'000'000)
+		.tv_sec = (time_t)(clock_ns / 1000000000),
+		.tv_nsec = (long)(clock_ns % 1000000000)
 	};
 	return 0;
 }
@@ -104,7 +104,7 @@ static void
 turn_bulk (struct loop      *loop,
            struct loop_step *step)
 {
-	clock_ns += 1'000;
+	clock_ns += 1000;
 	if (++t.turns == t.last)
 		loop_exit(loop);
 	else
@@ -125,9 +125,9 @@ turn_run (uint64_t mail,
 		.ongoing.fn = turn_ongoing,
 		.bulk.fn = turn_bulk,
 		.mail.fn = turn_mail,
-		.mail_ns = mail * 1'000,
-		.fresh_ns = fresh * 1'000,
-		.ongoing_ns = ongoing * 1'000,
+		.mail_ns = mail * 1000,
+		.fresh_ns = fresh * 1000,
+		.ongoing_ns = ongoing * 1000,
 		.last = turns
 	};
 	struct loop l = loop();
@@ -181,8 +181,8 @@ test_no_room (void)
 static void
 test_clock_fails (void)
 {
-	clock_ns = 1'000'000'000;
-	CHECK(loop_clock() == 1'000'000'000);
+	clock_ns = 1000000000;
+	CHECK(loop_clock() == 1000000000);
 	clock_fails = true;
 	CHECK(!loop_clock());
 	clock_fails = false;

@@ -35,7 +35,7 @@
 #include "xlist.h"
 
 enum {
-	CXI_FILES = 100'000,  /* the most files and directories of a commit */
+	CXI_FILES = 100000,  /* the most files and directories of a commit */
 	CXI_LIST  = 2 << 20,  /* the most output of ls-tree */
 	CXI_CDB   = 64 << 20, /* the largest compile_commands.json */
 	CXI_DEPTH = 16,       /* the deepest nesting of its JSON */
@@ -1565,7 +1565,7 @@ cxi_cache_export (struct cxi_cache *cache,
 		bytes += size;
 	}
 	buf_fini(&list);
-	static_assert(CXI_FILES == 100'000 && CXI_BYTES == 1 << 30, "update the text of the limits");
+	static_assert(CXI_FILES == 100000 && CXI_BYTES == 1 << 30, "update the text of the limits");
 	if (e == EFBIG || (!e && (files > CXI_FILES || bytes > CXI_BYTES))) {
 		cxi_out_printf(out, "Commit %s is too large for the code tool. The limits are "
 		               "100000 files and directories and 1 GiB.", commit.data);

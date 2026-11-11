@@ -686,7 +686,7 @@ test_list (struct store const           *store,
 		if (!bro)
 			continue;
 		CHECK(cstr_view_equal(info->change, CSTR_VIEW("Add \"plan.md\" (1 byte)")));
-		CHECK(cstr_view_equal(info->asker, CSTR_VIEW("alice")) && info->time > 1'700'000'000);
+		CHECK(cstr_view_equal(info->asker, CSTR_VIEW("alice")) && info->time > 1700000000);
 	}
 	CHECK(n == array_size(names));
 	size_t longest = 0;

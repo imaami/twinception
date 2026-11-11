@@ -101,7 +101,7 @@ now_ns (void)
 {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint64_t)ts.tv_sec * 1'000'000'000u + (uint64_t)ts.tv_nsec;
+	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 
 static void
@@ -198,7 +198,7 @@ admit (struct conn *c)
 		mock.peak = mock.active;
 	c->chat = true;
 	c->state = ST_DELAY;
-	c->due_ns = now_ns() + (uint64_t)mock.delay_ms * 1'000'000u;
+	c->due_ns = now_ns() + (uint64_t)mock.delay_ms * 1000000u;
 	fifo_insert(&mock.delays, c);
 }
 
@@ -297,7 +297,7 @@ stream_next (struct conn *c)
 		if (!sse_chunk(c, ev, len + sizeof tail - 1))
 			c->keep = false;
 		c->tokens_left -= n;
-		c->due_ns = mock.tok_per_s ? now_ns() + 1'000'000'000u / mock.tok_per_s : 0;
+		c->due_ns = mock.tok_per_s ? now_ns() + 1000000000u / mock.tok_per_s : 0;
 		return true;
 	}
 	if (!c->tail_sent) {
@@ -673,8 +673,8 @@ main (int   argc,
 		if (next != UINT64_MAX) {
 			uint64_t t = now_ns();
 			uint64_t dt = next > t ? next - t : 0;
-			ts = (struct timespec){ .tv_sec = (time_t)(dt / 1'000'000'000u),
-			                        .tv_nsec = (long)(dt % 1'000'000'000u) };
+			ts = (struct timespec){ .tv_sec = (time_t)(dt / 1000000000u),
+			                        .tv_nsec = (long)(dt % 1000000000u) };
 			to = &ts;
 		}
 		struct epoll_event evs[256];

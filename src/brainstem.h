@@ -42,7 +42,7 @@ struct loop;
 /** The exit status of a shutdown the brainstem forced; the time between the
  *  loops' reliefs of memory pressure that lasts.
  */
-enum { BRAINSTEM_FORCED = 3, BRAINSTEM_RELIEF_MS = 10'000 };
+enum { BRAINSTEM_FORCED = 3, BRAINSTEM_RELIEF_MS = 10000 };
 
 /** The least default resident threshold: the default body budget, which
  *  bounds the working set the default limits allow.

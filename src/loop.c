@@ -26,8 +26,8 @@ enum {
 	EVENTS         = 128,      /* events taken per wait */
 	MAIL           = 256,      /* inbox handlers per turn */
 	TIMERS         = 64,       /* timers fired per turn */
-	INTERACTIVE_NS = 500'000,  /* interactive steps start until then */
-	BULK_NS        = 650'000,  /* further bulk steps: a step of up to 250 µs
+	INTERACTIVE_NS = 500000,  /* interactive steps start until then */
+	BULK_NS        = 650000,  /* further bulk steps: a step of up to 250 µs
 	                              then ends by 1 ms, with time to spare for
 	                              page faults and preemption */
 	HEAP_MIN       = 64,       /* timer slots the heap begins with; it keeps
