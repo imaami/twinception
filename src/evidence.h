@@ -32,6 +32,7 @@
 #include "dstr.h"
 #include "hexid.h"
 #include "member_name.h"
+#include "range.h"
 #include "seen.h"
 #include "util.h"
 
@@ -79,23 +80,17 @@ enum evidence_form : uint8_t {
 	                               item */
 };
 
-/** Lines first to last of a file, numbered from 1. */
-struct evidence_range {
-	uint32_t first;
-	uint32_t last;
-};
-
 /** A reference of the evidence argument of a findings call. */
 struct evidence_ref {
-	struct evidence_range ranges[EVIDENCE_RANGES];  /**< the lines of
-	                                                     EVIDENCE_REF_LINES
-	                                                     and
-	                                                     EVIDENCE_REF_ITEM_LINES */
-	uint32_t              number;               /**< N of cN, or n of X#n */
-	uint32_t              item;                 /**< m of X#n/m, or 0 */
-	uint16_t              n_ranges;             /**< ranges in use */
-	enum evidence_form    form;
-	char                  author[MEMBER_NAME];  /**< X of X#n, or "" */
+	struct range       ranges[EVIDENCE_RANGES];  /**< the lines of
+	                                                  EVIDENCE_REF_LINES and
+	                                                  EVIDENCE_REF_ITEM_LINES,
+	                                                  numbered from 1 */
+	uint32_t           number;                   /**< N of cN, or n of X#n */
+	uint32_t           item;                     /**< m of X#n/m, or 0 */
+	uint16_t           n_ranges;                 /**< ranges in use */
+	enum evidence_form form;
+	char               author[MEMBER_NAME];      /**< X of X#n, or "" */
 };
 
 /** The size and the SHA-256 of stored material. */
@@ -122,8 +117,8 @@ struct evidence {
 	struct dstr           tool;     /**< the name of the tool of the call */
 	struct dstr           call_id;  /**< the ID of the call from the
 	                                     provider, or call_T_K */
-	UTIL_ARRAY(struct evidence_range) ranges;  /**< the lines of
-	                                                EVIDENCE_LINES */
+	UTIL_ARRAY(struct range) ranges;  /**< the lines of EVIDENCE_LINES,
+	                                       numbered from 1 */
 	struct evidence_blob  request;  /**< the arguments of the call, with
 	                                     EVIDENCE_REQUEST */
 	struct evidence_blob  result;   /**< the material that expand prints:
@@ -187,8 +182,9 @@ evidence_fini (struct evidence *e);
  * X#n/m:A-B,C, where N, n and m are numbers from 1 without leading zeros,
  * X is a member name (member_name_valid()), and A-B,C is at most
  * EVIDENCE_RANGES ranges, each a line A or lines A to B with 1 <= A <= B.
- * The ranges of @p dest ascend, and ranges that overlap become one range.
- * Returns 0, or EINVAL for any other text or a null @p dest.
+ * The ranges of @p dest ascend, and ranges that overlap or touch become
+ * one range (range_merge()). Returns 0, or EINVAL for any other text or a
+ * null @p dest.
  */
 extern int
 evidence_ref_parse (struct evidence_ref *dest,
@@ -233,10 +229,10 @@ evidence_cite (struct evidence            *dest,
  * and dest->from is the ID X#n/m. For X#n/m, the material of @p dest is
  * the material of the item, and the caller stores the archive files of the
  * item again. For X#n/m:A-B,C, the item must be of the kind
- * EVIDENCE_LINES, with each range of @p ref within one of its ranges, and
- * @p material must be the stored lines of the item. The function writes
- * the lines of the ranges of @p ref to @p lines, the material of @p dest,
- * and stores their size and SHA-256 in dest->result.
+ * EVIDENCE_LINES, with each line of the ranges of @p ref in a range of the
+ * item, and @p material must be the stored lines of the item. The function
+ * writes the lines of the ranges of @p ref to @p lines, the material of
+ * @p dest, and stores their size and SHA-256 in dest->result.
  *
  * Returns 0, EINVAL with the refusal for the turn in the @p len bytes at
  * @p why for a record that is not an item, an item of another kind, lines
@@ -326,11 +322,11 @@ evidence_ref_id (struct evidence_ref const *ref,
  *  " to ". Returns 0 or ENOMEM.
  */
 extern int
-evidence_ranges_put (struct evidence_range const *r,
-                     size_t                       n,
-                     char const                  *sep,
-                     char const                  *to,
-                     struct dstr                 *d);
+evidence_ranges_put (struct range const *r,
+                     size_t              n,
+                     char const         *sep,
+                     char const         *to,
+                     struct dstr        *d);
 
 /** Appends to @p d the reference @p ref as evidence_ref_parse() reads it:
  *  cN, cN:A-B,C, X#n/m or X#n/m:A-B,C. Returns 0 or ENOMEM.

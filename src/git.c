@@ -1571,8 +1571,7 @@ git_read_shown (struct git_call const *call,
 		.path   = cstr_view_slice(rev->path, 1, SIZE_MAX),
 		.at     = read->head,
 		.len    = (part ? read->mark : end) - read->head,
-		.first  = read->line,
-		.last   = read->last - part,
+		.lines  = { read->line, read->last - part },
 		.total  = cut ? 0 : read->total,
 	};
 	return mcp_slot_source(slot, &src);

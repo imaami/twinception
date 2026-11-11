@@ -13,6 +13,7 @@
 #include "jb.h"
 #include "job.h"
 #include "oid.h"
+#include "range.h"
 #include "seen.h"
 #include "tool.h"
 #include "xlist.h"
@@ -66,26 +67,16 @@ evidence_number (struct cstr_view *text,
 	return 0;
 }
 
-/* Orders two line ranges by their first lines, for qsort(). */
-static int
-evidence_range_order (void const *a,
-                      void const *b)
-{
-	struct evidence_range const *x = a;
-	struct evidence_range const *y = b;
-	return (x->first > y->first) - (x->first < y->first);
-}
-
 /* Reads the line ranges @p text, such as 120-140,150, into @p dest in
- * ascending order. Ranges that overlap become one range, so that cite and
- * recite copy the lines of all ranges in one forward pass. Returns 0 or
- * EINVAL.
+ * ascending order. Ranges that overlap or touch become one range, so that
+ * cite and recite copy the lines of all ranges in one forward pass. Returns
+ * 0 or EINVAL.
  */
 static int
 evidence_ranges (struct evidence_ref *dest,
                  struct cstr_view     text)
 {
-	struct evidence_range *const r = dest->ranges;
+	struct range *const r = dest->ranges;
 	size_t n = 0;
 	for (;;) {
 		if (n == EVIDENCE_RANGES || evidence_number(&text, &r[n].first))
@@ -103,15 +94,7 @@ evidence_ranges (struct evidence_ref *dest,
 			return EINVAL;
 		text = cstr_view_slice(text, 1, SIZE_MAX);
 	}
-	qsort(r, n, sizeof *r, evidence_range_order);
-	size_t k = 0;
-	for (size_t i = 1; i < n; ++i) {
-		if (r[i].first > r[k].last)
-			r[++k] = r[i];
-		else if (r[i].last > r[k].last)
-			r[k].last = r[i].last;
-	}
-	dest->n_ranges = (uint16_t)(k + 1);
+	dest->n_ranges = (uint16_t)range_merge(r, n);
 	return 0;
 }
 
@@ -282,11 +265,11 @@ evidence_lines_copy (struct cstr_view *text,
 }
 
 int
-evidence_ranges_put (struct evidence_range const *r,
-                     size_t                       n,
-                     char const                  *sep,
-                     char const                  *to,
-                     struct dstr                 *d)
+evidence_ranges_put (struct range const *r,
+                     size_t              n,
+                     char const         *sep,
+                     char const         *to,
+                     struct dstr        *d)
 {
 	for (size_t i = 0; i < n; ++i) {
 		if (!dstr_printf(d, "%s%" PRIu32, i ? sep : "", r[i].first))
@@ -319,10 +302,10 @@ evidence_ref_put (struct evidence_ref const *ref,
  * path. Returns true, or false if out of memory.
  */
 static bool
-evidence_lines_of (struct evidence_range const *r,
-                   size_t                       n,
-                   struct json_object          *ids,
-                   struct dstr                 *d)
+evidence_lines_of (struct range const *r,
+                   size_t              n,
+                   struct json_object *ids,
+                   struct dstr        *d)
 {
 	struct cstr_view path = jb_view(jb_get(ids, "path"));
 	if (!path.len)
@@ -344,7 +327,7 @@ evidence_unshown (struct evidence_ref const *ref,
                   size_t                     len)
 {
 	dstr_auto text = DSTR_INIT;
-	if (!c->lines.first) {
+	if (!c->lines.range.first) {
 		char command[EVIDENCE_COMMAND];
 		char what[64];
 		evidence_command(c, tool, command);
@@ -354,9 +337,8 @@ evidence_unshown (struct evidence_ref const *ref,
 		return util_refuse(why, len, "%s needs a git read or a code describe. Call c%" PRIu32
 		                   " is %s.", dstr_get(&text), c->number, what);
 	}
-	struct evidence_range const shown = { c->lines.first, c->lines.last };
 	struct json_object *ids = evidence_ids(&c->ids);
-	bool const ok = evidence_lines_of(&shown, 1, ids, &text);
+	bool const ok = evidence_lines_of(&c->lines.range, 1, ids, &text);
 	json_object_put(ids);
 	if (!ok)
 		return ENOMEM;
@@ -448,15 +430,17 @@ evidence_cite (struct evidence            *dest,
 	/* The lines of cN are all the lines that the call showed whole. The
 	 * ranges ascend, so the first and the last range bound them. */
 	struct evidence_ref shown = *ref;
-	if (ref->form == EVIDENCE_REF_CALL && c->lines.first) {
+	if (ref->form == EVIDENCE_REF_CALL && c->lines.range.first) {
 		shown.form = EVIDENCE_REF_LINES;
-		shown.ranges[0] = (struct evidence_range){ c->lines.first, c->lines.last };
+		shown.ranges[0] = c->lines.range;
 		shown.n_ranges = 1;
 	}
-	if (shown.form == EVIDENCE_REF_LINES &&
-	    (!c->lines.first || shown.ranges[0].first < c->lines.first ||
-	     shown.ranges[shown.n_ranges - 1].last > c->lines.last))
-		return evidence_unshown(ref, c, tool, why, len);
+	if (shown.form == EVIDENCE_REF_LINES) {
+		struct range const bound = { shown.ranges[0].first,
+		                             shown.ranges[shown.n_ranges - 1].last };
+		if (!c->lines.range.first || !range_contains(c->lines.range, bound))
+			return evidence_unshown(ref, c, tool, why, len);
+	}
 	static enum evidence_kind const kinds[] = {
 		[EVIDENCE_REF_CALL]  = EVIDENCE_CALL,
 		[EVIDENCE_REF_LINES] = EVIDENCE_LINES,
@@ -488,17 +472,16 @@ evidence_cite (struct evidence            *dest,
 	}
 	if (util_grow(dest->ranges.items, dest->ranges.cap, shown.n_ranges))
 		return ENOMEM;
-	/* The result starts with the lines c->lines that the window showed
-	 * whole, from the offset c->lines.at. line is the number of the first
-	 * line of rest. */
+	/* The result starts with the lines c->lines.range that the window
+	 * showed whole, from the offset c->lines.at. line is the number of the
+	 * first line of rest. */
 	struct cstr_view rest = cstr_view_slice(cstr_view_dstr(&c->result), c->lines.at, SIZE_MAX);
-	uint32_t line = c->lines.first;
+	uint32_t line = c->lines.range.first;
 	(void)dstr_clear(lines);
 	for (size_t i = 0; !e && i < shown.n_ranges; ++i) {
-		struct evidence_range const r = shown.ranges[i];
+		struct range const r = shown.ranges[i];
 		dest->ranges.items[dest->ranges.n++] = r;
-		e = evidence_lines_copy(&rest, r.first - line, (uint64_t)r.last - r.first + 1,
-		                        lines);
+		e = evidence_lines_copy(&rest, r.first - line, range_count(r), lines);
 		line = r.last + 1;
 	}
 	if (e)
@@ -597,7 +580,7 @@ evidence_json (struct evidence const *e,
 	if (e->kind == EVIDENCE_LINES) {
 		struct json_object *lines = json_object_new_array();
 		for (size_t i = 0; lines && i < e->ranges.n; ++i) {
-			struct evidence_range const r = e->ranges.items[i];
+			struct range const r = e->ranges.items[i];
 			struct json_object *pair = json_object_new_array();
 			pair = jb_push_or_free(pair, json_object_new_uint64(r.first));
 			lines = jb_push_or_free(lines, jb_push_or_free(pair, json_object_new_uint64(r.last)));
@@ -634,8 +617,7 @@ evidence_ranges_parse (struct evidence          *dest,
 		    jb_uint_checked(jb_at(pair, 0), UINT32_MAX, &first) ||
 		    jb_uint_checked(jb_at(pair, 1), UINT32_MAX, &last) || !first || last < first)
 			return EINVAL;
-		dest->ranges.items[dest->ranges.n++] = (struct evidence_range){ (uint32_t)first,
-		                                                                (uint32_t)last };
+		dest->ranges.items[dest->ranges.n++] = (struct range){ (uint32_t)first, (uint32_t)last };
 	}
 	return 0;
 }
@@ -795,16 +777,23 @@ evidence_recite (struct evidence           *dest,
 		return util_refuse(why, len, "The stored material of %s does not match the recorded "
 		                   "SHA-256.", id);
 	/* The material is the lines of the ranges of the item, one after
-	 * another. The ranges of @p ref ascend. The ranges of an item that
-	 * askai stored ascend too and are apart, so the range k of the item
-	 * that contains a range of @p ref, and the place of its lines in the
-	 * material, only move forward. An item of an earlier askai can have
-	 * ranges out of order or ranges that overlap. For such an item, the
-	 * search for each range of @p ref starts again at the first range of
-	 * the item and at the start of the material. start is the index of the
-	 * first line of the range k in the material, and done the number of
-	 * the lines that the loop dropped from rest. */
-	struct evidence_range const *const r = dest->ranges.items;
+	 * another. evidence_ref_parse() makes one range of ranges that touch,
+	 * so the lines of a range of @p ref can be in several ranges of the
+	 * item. The loop copies a range of @p ref in parts. want is the lines
+	 * of the range i of @p ref that are not copied yet, and part is the
+	 * lines of want up to the last line of the range k of the item, which
+	 * contains the first line of want. copied is the number of the lines
+	 * of the range i that are copied.
+	 *
+	 * The ranges of @p ref ascend. If the ranges of the item ascend too and
+	 * do not overlap, as askai stores them, the range k and the place of
+	 * its lines in the material only move forward. The ranges of an item
+	 * that an earlier askai stored can be out of order and can overlap. For
+	 * such an item, the search for each part starts again at the first
+	 * range of the item and at the start of the material. start is the
+	 * index of the first line of the range k in the material, and done is
+	 * the number of the lines that the loop dropped from rest. */
+	struct range const *const r = dest->ranges.items;
 	bool apart = true;
 	for (size_t k = 1; apart && k < dest->ranges.n; ++k)
 		apart = r[k].first > r[k - 1].last;
@@ -812,27 +801,36 @@ evidence_recite (struct evidence           *dest,
 	uint64_t done = 0;
 	uint64_t start = 0;
 	size_t k = 0;
+	size_t i = 0;
+	uint32_t copied = 0;
 	(void)dstr_clear(lines);
-	for (size_t i = 0; !e && i < ref->n_ranges; ++i) {
-		struct evidence_range const want = ref->ranges[i];
+	while (!e && i < ref->n_ranges) {
+		struct range const want = { ref->ranges[i].first + copied, ref->ranges[i].last };
 		if (!apart) {
 			rest = material;
 			done = 0;
 			start = 0;
 			k = 0;
 		}
-		while (k < dest->ranges.n && (want.first < r[k].first || want.last > r[k].last)) {
-			start += (uint64_t)r[k].last - r[k].first + 1;
+		while (k < dest->ranges.n && (want.first < r[k].first || want.first > r[k].last)) {
+			start += range_count(r[k]);
 			++k;
 		}
 		if (k == dest->ranges.n) {
 			e = EINVAL;
 			break;
 		}
-		uint64_t const from = start + (want.first - r[k].first);
-		uint64_t const n = (uint64_t)want.last - want.first + 1;
+		struct range const part = { want.first, want.last < r[k].last ? want.last : r[k].last };
+		uint64_t const from = start + (part.first - r[k].first);
+		uint64_t const n = range_count(part);
 		e = evidence_lines_copy(&rest, from - done, n, lines);
 		done = from + n;
+		if (part.last < want.last) {
+			copied += (uint32_t)n;
+			continue;
+		}
+		copied = 0;
+		++i;
 	}
 	if (e == EINVAL) {
 		struct json_object *ids = evidence_ids(&dest->ids);

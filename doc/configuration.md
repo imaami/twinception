@@ -400,8 +400,9 @@ A change can cite evidence, at most 16 references:
 | `cuh#2/1:161-165` | lines of the lines item `cuh#2/1`, at most 16 ranges |
 
 The ranges of a reference can come in any order. `askai` stores them in
-ascending order, ranges that overlap as one range, and their lines in
-that order, each line once.
+ascending order, ranges that overlap or touch as one range, such as
+`120-140,141-150` as `120-150`, and their lines in that order, each line
+once.
 
 The number of a call is the number in the note of its result, such as
 `[askai: call c7]` (section [`context`](#context)). If the turns get

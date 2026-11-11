@@ -54,6 +54,7 @@
 #include "dstr.h"
 #include "mcp.h"
 #include "oid.h"
+#include "range.h"
 #include "util.h"
 
 struct json_object;
@@ -116,14 +117,14 @@ struct seen_read {
 	                                 and the path */
 };
 
-/** The first and the last line of a file that a window showed whole, or 0
- *  and 0 for no line, and the offset of the first of them in the window.
+/** The lines of a file that a window showed whole, and the offset of the
+ *  first of them in the window.
  */
 struct seen_lines {
-	uint32_t first;
-	uint32_t last;
-	uint32_t at;     /**< offset of the start of line first from the start
-	                      of the window */
+	struct range range;  /**< the numbers of the first and the last line,
+	                          or 0 and 0 for no line */
+	uint32_t     at;     /**< offset of the start of the first line from
+	                          the start of the window */
 };
 
 /** A call in the ring. */
@@ -276,9 +277,9 @@ seen_read_create_json (struct json_object const *obj,
  *
  * Stores 0 in @p *e, EFAULT for a null @p read or for an @p out with a
  * length and no bytes, or EINVAL if the numbered lines are empty, not
- * within @p out, or more lines than read->src.first to read->src.last, or
- * if the first line that the window shows whole starts more than
- * UINT32_MAX bytes after @p skip. Returns no line for a null @p e.
+ * within @p out, or more lines than read->src.lines, or if the first line
+ * that the window shows whole starts more than UINT32_MAX bytes after
+ * @p skip. Returns no line for a null @p e.
  */
 extern struct seen_lines
 seen_lines (struct seen_read *read,

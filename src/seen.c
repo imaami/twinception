@@ -12,6 +12,7 @@
 
 #include "jb.h"
 #include "oid.h"
+#include "range.h"
 #include "seen.h"
 #include "tool.h"
 #include "util.h"
@@ -48,14 +49,14 @@ seen_read_create (struct call_source const *src,
 	}
 	*e = EINVAL;
 	if (!oid_valid(src->commit) ||
-	    !seen_name_valid(src->repo) || !seen_name_valid(src->path) || !src->first ||
-	    src->last < src->first || (src->total && src->total < src->last) ||
+	    !seen_name_valid(src->repo) || !seen_name_valid(src->path) || !src->lines.first ||
+	    src->lines.last < src->lines.first || (src->total && src->total < src->lines.last) ||
 	    src->total > UINT32_MAX || !seen_source_within(src, out))
 		return nullptr;
 	/* Each numbered line ends with a newline, except perhaps the last. */
 	struct cstr_view const lines = { out.data + src->at, src->len };
 	if (cstr_view_count(lines, '\n') + (lines.data[lines.len - 1] != '\n') !=
-	    (uint64_t)src->last - src->first + 1)
+	    range_count(src->lines))
 		return nullptr;
 	struct seen_read *read = malloc(sizeof *read + src->repo.len + src->commit.len +
 	                                src->path.len);
@@ -63,7 +64,8 @@ seen_read_create (struct call_source const *src,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	*read = (struct seen_read){ .src = *src, .mark = { .line = src->first, .at = src->at } };
+	*read = (struct seen_read){ .src = *src,
+	                            .mark = { .line = src->lines.first, .at = src->at } };
 	read->src.repo.data = read->text;
 	read->src.commit.data = mempcpy(read->text, src->repo.data, src->repo.len);
 	read->src.path.data = mempcpy((char *)read->src.commit.data, src->commit.data,
@@ -98,8 +100,8 @@ seen_read_json (struct seen_read const *read,
 	                                    "path", jb_string(src->path),
 	                                    "at", json_object_new_uint64(src->at),
 	                                    "len", json_object_new_uint64(src->len),
-	                                    "first", json_object_new_uint64(src->first),
-	                                    "last", json_object_new_uint64(src->last),
+	                                    "first", json_object_new_uint64(src->lines.first),
+	                                    "last", json_object_new_uint64(src->lines.last),
 	                                    "total", json_object_new_uint64(src->total),
 	                                    nullptr);
 	*e = obj ? 0 : ENOMEM;
@@ -138,8 +140,7 @@ seen_read_create_json (struct json_object const *obj,
 		.total  = total,
 		.at     = (size_t)at,
 		.len    = (size_t)len,
-		.first  = (uint32_t)first,
-		.last   = (uint32_t)last,
+		.lines  = { (uint32_t)first, (uint32_t)last },
 	};
 	return seen_read_create(&src, out, e);
 }
@@ -171,7 +172,7 @@ seen_lines (struct seen_read *read,
 	 * of the numbered lines if the mark is after this window. */
 	struct seen_mark *mark = &read->mark;
 	if (mark->at > lo)
-		*mark = (struct seen_mark){ .line = src->first, .at = src->at };
+		*mark = (struct seen_mark){ .line = src->lines.first, .at = src->at };
 	mark->line += cstr_view_count((struct cstr_view){ p + mark->at, lo - mark->at }, '\n');
 	mark->at = lo;
 	uint64_t line = mark->line;
@@ -190,11 +191,12 @@ seen_lines (struct seen_read *read,
 	                   (hi == end && hi > lo && p[hi - 1] != '\n');
 	if (!n)
 		return (struct seen_lines){};
-	if (line + n - 1 > src->last || lo - skip > UINT32_MAX) {
+	if (line + n - 1 > src->lines.last || lo - skip > UINT32_MAX) {
 		*e = EINVAL;
 		return (struct seen_lines){};
 	}
-	return (struct seen_lines){ (uint32_t)line, (uint32_t)(line + n - 1), (uint32_t)(lo - skip) };
+	return (struct seen_lines){ { (uint32_t)line, (uint32_t)(line + n - 1) },
+	                            (uint32_t)(lo - skip) };
 }
 
 /* Returns the index in seen->calls of the call @p i of @p seen, from the

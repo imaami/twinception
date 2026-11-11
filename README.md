@@ -834,8 +834,9 @@ lines of a `git` `read` or a `code` `describe` that its result showed
 whole; `c7:120-140,150` is some of those lines; `cuh#2/1` is the
 evidence item 1 of the finding `cuh#2`, and
 `cuh#2/1:161-165` some lines of such an item. The ranges can come in any
-order. `askai` stores them in ascending order, ranges that overlap as one
-range, and their lines in that order, each line once. `askai` stores the
+order. `askai` stores them in ascending order, ranges that overlap or touch
+as one range, such as `120-140,141-150` as `120-150`, and their lines in
+that order, each line once. `askai` stores the
 material in the same commit as the finding, each as `archive/XX/YYY` named
 by the SHA-256 of its bytes, and the file of the finding names it with the
 identifiers that reproduce it, such as the repository, the commit and the

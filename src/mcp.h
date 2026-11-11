@@ -13,6 +13,7 @@
 #include "cstr_view.h"
 #include "export.h"
 #include "loop_export.h"
+#include "range.h"
 #include "tool.h"
 
 struct blocker;
@@ -469,11 +470,11 @@ struct call_source {
 	size_t           at;      /**< offset of the numbered lines in the
 	                               output */
 	size_t           len;     /**< bytes of the numbered lines. There is one
-	                               output line for each line from first to
-	                               last, and each output line ends with a
+	                               output line for each number in the range
+	                               lines, and each output line ends with a
 	                               newline, except perhaps the last. */
-	uint32_t         first;   /**< number of the first line, from 1 */
-	uint32_t         last;    /**< number of the last line */
+	struct range     lines;   /**< numbers of the first and the last line,
+	                               from 1 */
 };
 
 /** Stores a copy of @p src, which describes the numbered lines of a

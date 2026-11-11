@@ -501,7 +501,7 @@ test_texts (void)
 	c.evidence.items[0].flags = 0;
 	CHECK(!util_grow(c.evidence.items[0].ranges.items, c.evidence.items[0].ranges.cap, 1));
 	c.evidence.items[0].ranges.items[c.evidence.items[0].ranges.n++] =
-		(struct evidence_range){ 161, 171 };
+		(struct range){ 161, 171 };
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":"
 	                                 "\"d02cc2338c4f7d1e00000000000000000000aaaa\","
 	                                 "\"path\":\"src/git.c\"}"), &c.evidence.items[0].ids));

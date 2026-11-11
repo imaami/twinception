@@ -2,6 +2,7 @@
  *  references, the items that the calls of the ring make, the refusals,
  *  the external items, the archive paths, the JSON of an item, the
  *  summaries, the items cited again, and the items as expand prints them.
+ *  The ranges of numbers (src/range.h) are tested here too.
  */
 #include <errno.h>
 #include <inttypes.h>
@@ -17,6 +18,7 @@
 #include "evidence.h"
 #include "jb.h"
 #include "job.h"
+#include "range.h"
 #include "seen.h"
 #include "tool.h"
 
@@ -127,6 +129,67 @@ parsed (char const *text,
 	fprintf(stderr, "%s:%d: %s: error %d, form %d\n", __FILE__, line, text, e, ref.form);
 }
 
+/* range_count() counts the numbers of a range, range_contains() compares
+ * two ranges, and range_merge() sorts ranges and merges the ranges that
+ * overlap or touch.
+ */
+static void
+test_range (void)
+{
+	CHECK(range_count((struct range){ 5, 5 }) == 1 && range_count((struct range){ 3, 9 }) == 7);
+	CHECK(range_count((struct range){ 0, UINT32_MAX }) == (uint64_t)UINT32_MAX + 1);
+	struct range const outer = { 3, 9 };
+	CHECK(range_contains(outer, outer) && range_contains(outer, (struct range){ 3, 3 }) &&
+	      range_contains(outer, (struct range){ 9, 9 }) &&
+	      range_contains(outer, (struct range){ 4, 8 }));
+	CHECK(!range_contains(outer, (struct range){ 2, 9 }) &&
+	      !range_contains(outer, (struct range){ 3, 10 }) &&
+	      !range_contains(outer, (struct range){ 2, 10 }) &&
+	      !range_contains(outer, (struct range){ 1, 2 }) &&
+	      !range_contains(outer, (struct range){ 10, UINT32_MAX }));
+	static struct {
+		struct range in[4];
+		struct range out[4];
+		uint32_t     n;     /* ranges of in */
+		uint32_t     left;  /* ranges of out */
+	} const cases[] = {
+		/* One range, and equal ranges. */
+		{ { { 7, 7 } }, { { 7, 7 } }, 1, 1 },
+		{ { { 5, 8 }, { 5, 8 }, { 5, 8 } }, { { 5, 8 } }, 3, 1 },
+		/* Unsorted ranges that are apart. */
+		{ { { 9, 9 }, { 1, 3 }, { 5, 7 } }, { { 1, 3 }, { 5, 7 }, { 9, 9 } }, 3, 3 },
+		/* Ranges that overlap, and a range within another. */
+		{ { { 3, 6 }, { 5, 9 }, { 1, 1 }, { 4, 4 } }, { { 1, 1 }, { 3, 9 } }, 4, 2 },
+		{ { { 5, 6 }, { 1, 10 }, { 2, 2 }, { 12, 12 } }, { { 1, 10 }, { 12, 12 } }, 4, 2 },
+		{ { { 5, 7 }, { 5, 9 }, { 5, 6 } }, { { 5, 9 } }, 3, 1 },
+		/* Ranges that touch. */
+		{ { { 141, 150 }, { 120, 140 } }, { { 120, 150 } }, 2, 1 },
+		{ { { 3, 3 }, { 1, 1 }, { 2, 2 }, { 5, 5 } }, { { 1, 3 }, { 5, 5 } }, 4, 2 },
+		{ { { 0, 0 }, { 1, 1 } }, { { 0, 1 } }, 2, 1 },
+		/* Ranges that end at UINT32_MAX. The sum last + 1 does not wrap. */
+		{ { { 5, 9 }, { 1, UINT32_MAX }, { 3, 3 } }, { { 1, UINT32_MAX } }, 3, 1 },
+		{ { { UINT32_MAX, UINT32_MAX }, { 0, UINT32_MAX }, { 0, 0 } },
+		  { { 0, UINT32_MAX } }, 3, 1 },
+		{ { { UINT32_MAX, UINT32_MAX }, { UINT32_MAX - 1, UINT32_MAX - 1 } },
+		  { { UINT32_MAX - 1, UINT32_MAX } }, 2, 1 },
+		{ { { 5, UINT32_MAX }, { 1, 3 } }, { { 1, 3 }, { 5, UINT32_MAX } }, 2, 2 },
+	};
+	for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+		struct range r[4];
+		memcpy(r, cases[i].in, sizeof r);
+		size_t const left = range_merge(r, cases[i].n);
+		if (left == cases[i].left && !memcmp(r, cases[i].out, left * sizeof *r))
+			continue;
+		++failures;
+		fprintf(stderr, "%s:%d: case %zu: %zu ranges, the first %u-%u\n", __FILE__, __LINE__, i,
+		        left, r[0].first, r[0].last);
+	}
+	/* No range. */
+	struct range none = { 2, 4 };
+	CHECK(!range_merge(&none, 0) && none.first == 2 && none.last == 4);
+	CHECK(!range_merge(nullptr, 0));
+}
+
 /* evidence_ref_parse() reads every form of a reference, and refuses
  * anything else.
  */
@@ -160,14 +223,22 @@ test_parse (void)
 	CHECK(!strcmp(ref.author, "bro") && ref.number == 5 && ref.item == 2 && ref.n_ranges == 1);
 	CHECK(evidence_ref_parse(nullptr, CSTR_VIEW("c1")) == EINVAL);
 	CHECK(evidence_ref_parse(&ref, (struct cstr_view){}) == EINVAL);
-	/* The ranges ascend, and ranges that overlap become one. Ranges that
-	 * only meet stay apart. */
+	/* The ranges ascend, and ranges that overlap or touch become one.
+	 * Ranges with a line between them stay apart. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c7:150,130-145,5,120-140,5,146-149,140-141")));
-	CHECK(ref.form == EVIDENCE_REF_LINES && ref.n_ranges == 4 &&
+	CHECK(ref.form == EVIDENCE_REF_LINES && ref.n_ranges == 2 &&
 	      ref.ranges[0].first == 5 && ref.ranges[0].last == 5 &&
-	      ref.ranges[1].first == 120 && ref.ranges[1].last == 145 &&
-	      ref.ranges[2].first == 146 && ref.ranges[2].last == 149 &&
-	      ref.ranges[3].first == 150 && ref.ranges[3].last == 150);
+	      ref.ranges[1].first == 120 && ref.ranges[1].last == 150);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c7:141-150,120-140")) && ref.n_ranges == 1 &&
+	      ref.ranges[0].first == 120 && ref.ranges[0].last == 150);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c7:9,5-7,1-3")) && ref.n_ranges == 3 &&
+	      ref.ranges[0].first == 1 && ref.ranges[0].last == 3 &&
+	      ref.ranges[1].first == 5 && ref.ranges[1].last == 7 &&
+	      ref.ranges[2].first == 9 && ref.ranges[2].last == 9);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c1:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16")) &&
+	      ref.n_ranges == 1 && ref.ranges[0].first == 1 && ref.ranges[0].last == 16);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c1:4294967295,7,2-4294967295,9")) &&
+	      ref.n_ranges == 1 && ref.ranges[0].first == 2 && ref.ranges[0].last == UINT32_MAX);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c1:1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1")) &&
 	      ref.n_ranges == 1 && ref.ranges[0].first == 1 && ref.ranges[0].last == 1);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:9-12,1-20")) &&
@@ -208,9 +279,10 @@ test_put (void)
 	put("c7:150,120-140", "c7:120-140,150", __LINE__);
 	put("c7:5-5", "c7:5", __LINE__);
 	put("c7:3-6,4-9,1", "c7:1,3-9", __LINE__);
+	put("c7:141-150,120-140", "c7:120-150", __LINE__);
 	put("cuh#2/1", "cuh#2/1", __LINE__);
 	put("first.last@ad#12/3:165,161-163", "first.last@ad#12/3:161-163,165", __LINE__);
-	struct evidence_range const r[] = { { 1, 1 }, { 3, 9 }, { 11, 4294967295 } };
+	struct range const r[] = { { 1, 1 }, { 3, 9 }, { 11, 4294967295 } };
 	struct dstr d = DSTR_INIT;
 	CHECK(!evidence_ranges_put(r, 3, ", ", " to ", &d));
 	SAME(dstr_get(&d), dstr_len(&d), "1, 3 to 9, 11 to 4294967295");
@@ -273,7 +345,7 @@ test_cite (void)
 	for (unsigned n = 1; n <= 9; ++n)
 		CHECK(dstr_printf(&out, "%u\tline %u\n", n, n));
 	struct call_source const src = { CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 9,
-	                                 at, dstr_len(&out) - at, 1, 9 };
+	                                 at, dstr_len(&out) - at, { 1, 9 } };
 	struct cstr_view const o = cstr_view_dstr(&out);
 	int e = -1;
 	struct seen_read *read = seen_read_create(&src, o, &e);
@@ -287,7 +359,7 @@ test_cite (void)
 	                               .skip = at + 3, .number = 1, .turn = 1, .tool = 1 };
 	CHECK(!seen_keep(&seen, &request, &r));
 	buf_fini(&request);
-	CHECK(seen->calls[0].lines.first == 2 && seen->calls[0].lines.last == 6);
+	CHECK(seen->calls[0].lines.range.first == 2 && seen->calls[0].lines.range.last == 6);
 	keep(&seen, 2, 1, 2, "toolu_x", "{\"page\":\"git\"}", CSTR_VIEW("A man page.\n"), nullptr,
 	     false);
 	/* Call c3 is a findings call, which the ring does not store. */
@@ -322,16 +394,23 @@ test_cite (void)
 	CHECK(ev.kind == EVIDENCE_LINES && ev.ranges.n == 2 && ev.ranges.items[1].first == 6);
 	SAME(m.result.data, m.result.len, "3\tline 3\n4\tline 4\n6\tline 6\n");
 	hashed(&ev.result, m.result, __LINE__);
-	/* Ranges in any order, and ranges that overlap, take each line once, in
-	 * order. The first and the last line that the window showed whole. */
+	/* evidence_cite() copies each line once, in ascending order, for ranges
+	 * in any order and for ranges that overlap or touch. The lines of the
+	 * reference below are all lines that the window showed whole, from the
+	 * first to the last. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c1:6,4-5,2,3-4")));
 	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
-	CHECK(ev.kind == EVIDENCE_LINES && ev.ranges.n == 3 && ev.ranges.items[0].first == 2 &&
-	      ev.ranges.items[0].last == 2 && ev.ranges.items[1].first == 3 &&
-	      ev.ranges.items[1].last == 5 && ev.ranges.items[2].first == 6 &&
-	      ev.ranges.items[2].last == 6);
+	CHECK(ev.kind == EVIDENCE_LINES && ev.ranges.n == 1 && ev.ranges.items[0].first == 2 &&
+	      ev.ranges.items[0].last == 6);
 	SAME(m.result.data, m.result.len,
 	     "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n6\tline 6\n");
+	hashed(&ev.result, m.result, __LINE__);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c1:6,3-4,2-3")));
+	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
+	CHECK(ev.kind == EVIDENCE_LINES && ev.ranges.n == 2 && ev.ranges.items[0].first == 2 &&
+	      ev.ranges.items[0].last == 4 && ev.ranges.items[1].first == 6 &&
+	      ev.ranges.items[1].last == 6);
+	SAME(m.result.data, m.result.len, "2\tline 2\n3\tline 3\n4\tline 4\n6\tline 6\n");
 	hashed(&ev.result, m.result, __LINE__);
 	/* A call of another tool, which failed, with an ID from the provider. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c2")));
@@ -512,8 +591,8 @@ test_json (void)
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"path\":\"src/git.c\",\"commit\":\""
 	                                 A "\"}"), &e.ids));
 	CHECK(!util_grow(e.ranges.items, e.ranges.cap, 2));
-	e.ranges.items[e.ranges.n++] = (struct evidence_range){ 161, 171 };
-	e.ranges.items[e.ranges.n++] = (struct evidence_range){ 180, 180 };
+	e.ranges.items[e.ranges.n++] = (struct range){ 161, 171 };
+	e.ranges.items[e.ranges.n++] = (struct range){ 180, 180 };
 	e.result.bytes = 702;
 	memset(e.result.sha256, 0xab, sizeof e.result.sha256);
 	int err = -1;
@@ -570,7 +649,7 @@ test_json (void)
 	SAME(dstr_get(&text), dstr_len(&text), "call c4, man, failed, 1 byte");
 	back.kind = EVIDENCE_LINES;
 	CHECK(!util_grow(back.ranges.items, back.ranges.cap, 1));
-	back.ranges.items[back.ranges.n++] = (struct evidence_range){ 7, 7 };
+	back.ranges.items[back.ranges.n++] = (struct range){ 7, 7 };
 	(void)dstr_clear(&back.ids);
 	(void)dstr_clear(&text);
 	CHECK(!evidence_summary(&back, &text));
@@ -636,8 +715,8 @@ test_json (void)
 	/* An earlier askai stored the ranges in the order of the reference, and
 	 * overlapping. Such an item stays readable, in the stored order. */
 	static struct {
-		char const            *json;
-		struct evidence_range  second;
+		char const   *json;
+		struct range  second;
 	} const older[] = {
 		{ "[[5,6],[1,2]]", { 1, 2 } },
 		{ "[[1,3],[3,4]]", { 3, 4 } },
@@ -729,8 +808,8 @@ test_recite (void)
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":"
 	                                 "\"src/a.c\",\"total\":9}"), &item.ids));
 	CHECK(!util_grow(item.ranges.items, item.ranges.cap, 2));
-	item.ranges.items[item.ranges.n++] = (struct evidence_range){ 2, 6 };
-	item.ranges.items[item.ranges.n++] = (struct evidence_range){ 8, 9 };
+	item.ranges.items[item.ranges.n++] = (struct range){ 2, 6 };
+	item.ranges.items[item.ranges.n++] = (struct range){ 8, 9 };
 	hash_of(&item.result, material);
 	char *record = record_of(&item);
 
@@ -758,14 +837,21 @@ test_recite (void)
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:2,6-6,8")));
 	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(record), material, why, sizeof why));
 	SAME(dstr_get(&lines), dstr_len(&lines), "2\tline 2\n6\tline 6\n8\tline 8\n");
-	/* Ranges in any order, and ranges that overlap, in one pass. */
+	/* Ranges in any order, and ranges that overlap or touch, in one pass. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:9,5-6,3-5,8,2")));
 	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(record), material, why, sizeof why));
 	SAME(dstr_get(&lines), dstr_len(&lines), "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n"
 	     "6\tline 6\n8\tline 8\n9\tline 9");
-	CHECK(e.ranges.n == 4 && e.ranges.items[0].first == 2 && e.ranges.items[1].first == 3 &&
-	      e.ranges.items[1].last == 6 && e.ranges.items[2].first == 8 &&
-	      e.ranges.items[3].first == 9);
+	CHECK(e.ranges.n == 2 && e.ranges.items[0].first == 2 && e.ranges.items[0].last == 6 &&
+	      e.ranges.items[1].first == 8 && e.ranges.items[1].last == 9);
+	hashed(&e.result, cstr_view_dstr(&lines), __LINE__);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:9,5-6,4-5,2")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(record), material, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), "2\tline 2\n4\tline 4\n5\tline 5\n6\tline 6\n"
+	     "9\tline 9");
+	CHECK(e.ranges.n == 3 && e.ranges.items[0].first == 2 && e.ranges.items[0].last == 2 &&
+	      e.ranges.items[1].first == 4 && e.ranges.items[1].last == 6 &&
+	      e.ranges.items[2].first == 9 && e.ranges.items[2].last == 9);
 	hashed(&e.result, cstr_view_dstr(&lines), __LINE__);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:8-9,2-6")));
 	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(record), material, why, sizeof why));
@@ -789,18 +875,18 @@ test_recite (void)
 	shorter.ranges.items = nullptr;
 	shorter.ranges.n = shorter.ranges.cap = 0;
 	CHECK(!util_grow(shorter.ranges.items, shorter.ranges.cap, 2));
-	shorter.ranges.items[shorter.ranges.n++] = (struct evidence_range){ 2, 6 };
-	shorter.ranges.items[shorter.ranges.n++] = (struct evidence_range){ 8, 12 };
+	shorter.ranges.items[shorter.ranges.n++] = (struct range){ 2, 6 };
+	shorter.ranges.items[shorter.ranges.n++] = (struct range){ 8, 12 };
 	hash_of(&shorter.result, material);
 	char *cut = record_of(&shorter);
 	recite_refused("cuh#2/1:10", cut, material, "cuh#2/1 shows lines 2 to 6, 8 to 12 of src/a.c. "
 	               "Give lines within those ranges.", __LINE__);
 	free(cut);
 	evidence_fini(&shorter);
-	/* An item of an earlier askai whose ranges do not ascend: the material
-	 * is the lines in the stored order. Each range comes from the stored
-	 * range that contains it, in any order, and a range that no stored
-	 * range contains is refused. */
+	/* The ranges of an item that an earlier askai stored can be out of
+	 * order. The material is the lines in the stored order. Each line of a
+	 * reference comes from the stored range that contains the line, and a
+	 * reference with a line that no stored range contains is refused. */
 	static char const unsorted[] = "8\tline 8\n9\tline 9\n2\tline 2\n3\tline 3\n";
 	struct cstr_view const backwards = { unsorted, sizeof unsorted - 1 };
 	struct evidence older = evidence();
@@ -810,8 +896,8 @@ test_recite (void)
 	CHECK(!cstr_view_store(CSTR_VIEW("git"), &older.tool));
 	CHECK(!cstr_view_store(CSTR_VIEW("call_2_0"), &older.call_id));
 	CHECK(!util_grow(older.ranges.items, older.ranges.cap, 2));
-	older.ranges.items[older.ranges.n++] = (struct evidence_range){ 8, 9 };
-	older.ranges.items[older.ranges.n++] = (struct evidence_range){ 2, 3 };
+	older.ranges.items[older.ranges.n++] = (struct range){ 8, 9 };
+	older.ranges.items[older.ranges.n++] = (struct range){ 2, 3 };
 	hash_of(&older.result, backwards);
 	char *old = record_of(&older);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:9")));
@@ -831,12 +917,41 @@ test_recite (void)
 	recite_refused("cuh#2/1:3-8", old, backwards, "cuh#2/1 shows lines 8 to 9, 2 to 3 of "
 	               "src/a.c. Give lines within those ranges.", __LINE__);
 	free(old);
-	/* An item of an earlier askai whose ranges overlap: the material
-	 * contains line 3 twice. */
+	/* Stored ranges that are out of order can touch, such as 4-5 and 2-3.
+	 * A reference to the lines 2 to 5 is one range, and the lines of that
+	 * range are in both stored ranges. */
+	static char const reversed[] = "4\tline 4\n5\tline 5\n2\tline 2\n3\tline 3\n";
+	struct cstr_view const reverse = { reversed, sizeof reversed - 1 };
+	older.ranges.items[0] = (struct range){ 4, 5 };
+	older.ranges.items[1] = (struct range){ 2, 3 };
+	hash_of(&older.result, reverse);
+	old = record_of(&older);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:2-3,4-5")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(old), reverse, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n");
+	CHECK(e.ranges.n == 1 && e.ranges.items[0].first == 2 && e.ranges.items[0].last == 5);
+	hashed(&e.result, cstr_view_dstr(&lines), __LINE__);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:3,4")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(old), reverse, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), "3\tline 3\n4\tline 4\n");
+	CHECK(e.ranges.n == 1 && e.ranges.items[0].first == 3 && e.ranges.items[0].last == 4);
+	hashed(&e.result, cstr_view_dstr(&lines), __LINE__);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:5,2")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(old), reverse, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), "2\tline 2\n5\tline 5\n");
+	recite_refused("cuh#2/1:4-6", old, reverse, "cuh#2/1 shows lines 4 to 5, 2 to 3 of src/a.c. "
+	               "Give lines within those ranges.", __LINE__);
+	recite_refused("cuh#2/1:1-3", old, reverse, "cuh#2/1 shows lines 4 to 5, 2 to 3 of src/a.c. "
+	               "Give lines within those ranges.", __LINE__);
+	free(old);
+	/* The ranges of an item that an earlier askai stored can overlap. The
+	 * material then contains line 3 twice. evidence_recite() copies each
+	 * line of a reference once, from the first stored range that contains
+	 * the line. */
 	static char const twice[] = "1\tline 1\n2\tline 2\n3\tline 3\n3\tline 3\n4\tline 4\n";
 	struct cstr_view const overlap = { twice, sizeof twice - 1 };
-	older.ranges.items[0] = (struct evidence_range){ 1, 3 };
-	older.ranges.items[1] = (struct evidence_range){ 3, 4 };
+	older.ranges.items[0] = (struct range){ 1, 3 };
+	older.ranges.items[1] = (struct range){ 3, 4 };
 	hash_of(&older.result, overlap);
 	old = record_of(&older);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:3-4")));
@@ -845,8 +960,65 @@ test_recite (void)
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:1-2,4")));
 	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(old), overlap, why, sizeof why));
 	SAME(dstr_get(&lines), dstr_len(&lines), "1\tline 1\n2\tline 2\n4\tline 4\n");
-	recite_refused("cuh#2/1:2-4", old, overlap, "cuh#2/1 shows lines 1 to 3, 3 to 4 of src/a.c. "
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:2-4")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(old), overlap, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), "2\tline 2\n3\tline 3\n4\tline 4\n");
+	CHECK(e.ranges.n == 1 && e.ranges.items[0].first == 2 && e.ranges.items[0].last == 4);
+	hashed(&e.result, cstr_view_dstr(&lines), __LINE__);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:1-3,4")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(old), overlap, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), "1\tline 1\n2\tline 2\n3\tline 3\n4\tline 4\n");
+	CHECK(e.ranges.n == 1 && e.ranges.items[0].first == 1 && e.ranges.items[0].last == 4);
+	recite_refused("cuh#2/1:3-5", old, overlap, "cuh#2/1 shows lines 1 to 3, 3 to 4 of src/a.c. "
 	               "Give lines within those ranges.", __LINE__);
+	free(old);
+	/* The ranges of an item of an earlier askai can ascend and touch. The
+	 * lines of the two ranges are next to each other in the material, so a
+	 * range of the reference can span both ranges. */
+	static char const joined[] = "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n";
+	struct cstr_view const touch = { joined, sizeof joined - 1 };
+	older.ranges.items[0] = (struct range){ 2, 3 };
+	older.ranges.items[1] = (struct range){ 4, 5 };
+	hash_of(&older.result, touch);
+	old = record_of(&older);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:3-4")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(old), touch, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), "3\tline 3\n4\tline 4\n");
+	CHECK(e.ranges.n == 1 && e.ranges.items[0].first == 3 && e.ranges.items[0].last == 4);
+	hashed(&e.result, cstr_view_dstr(&lines), __LINE__);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:4-5,2-3")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(old), touch, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), joined);
+	CHECK(e.ranges.n == 1 && e.ranges.items[0].first == 2 && e.ranges.items[0].last == 5);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:5,2")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(old), touch, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), "2\tline 2\n5\tline 5\n");
+	recite_refused("cuh#2/1:5-6", old, touch, "cuh#2/1 shows lines 2 to 3, 4 to 5 of src/a.c. "
+	               "Give lines within those ranges.", __LINE__);
+	free(old);
+	/* Each of the two ranges of the references below contains lines of two
+	 * stored ranges. The stored ranges ascend, so evidence_recite() copies
+	 * the lines in one pass over the material. */
+	static char const pairs[] = "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n7\tline 7\n"
+	                            "8\tline 8\n9\tline 9\n";
+	struct cstr_view const four = { pairs, sizeof pairs - 1 };
+	CHECK(!util_grow(older.ranges.items, older.ranges.cap, 4));
+	older.ranges.items[2] = (struct range){ 7, 8 };
+	older.ranges.items[3] = (struct range){ 9, 9 };
+	older.ranges.n = 4;
+	hash_of(&older.result, four);
+	old = record_of(&older);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:8-9,3-4")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(old), four, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), "3\tline 3\n4\tline 4\n8\tline 8\n9\tline 9\n");
+	CHECK(e.ranges.n == 2 && e.ranges.items[0].first == 3 && e.ranges.items[0].last == 4 &&
+	      e.ranges.items[1].first == 8 && e.ranges.items[1].last == 9);
+	hashed(&e.result, cstr_view_dstr(&lines), __LINE__);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:7-9,2-5")));
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(old), four, why, sizeof why));
+	SAME(dstr_get(&lines), dstr_len(&lines), pairs);
+	recite_refused("cuh#2/1:5-7", old, four, "cuh#2/1 shows lines 2 to 3, 4 to 5, 7 to 8, 9 of "
+	               "src/a.c. Give lines within those ranges.", __LINE__);
 	free(old);
 	evidence_fini(&older);
 	recite_refused("cuh#2/1:3", record, CSTR_VIEW("2\tline 2\n"), "The stored material of "
@@ -859,7 +1031,7 @@ test_recite (void)
 	recite_refused("c7", record, material, "", __LINE__);
 	/* One range: "that range". */
 	item.ranges.n = 1;
-	item.ranges.items[0] = (struct evidence_range){ 2, 6 };
+	item.ranges.items[0] = (struct range){ 2, 6 };
 	char *one = record_of(&item);
 	recite_refused("cuh#2/1:7", one, material, "cuh#2/1 shows lines 2 to 6 of src/a.c. Give "
 	               "lines within that range.", __LINE__);
@@ -870,8 +1042,10 @@ test_recite (void)
 	char *call = record_of(&item);
 	recite_refused("cuh#2/1:3", call, material, "cuh#2/1:3 needs a lines item. cuh#2/1 is a "
 	               "call item.", __LINE__);
-	recite_refused("cuh#2/1:5,3-4", call, material, "cuh#2/1:3-4,5 needs a lines item. cuh#2/1 "
+	recite_refused("cuh#2/1:7,3-4", call, material, "cuh#2/1:3-4,7 needs a lines item. cuh#2/1 "
 	               "is a call item.", __LINE__);
+	recite_refused("cuh#2/1:5,3-4", call, material, "cuh#2/1:3-5 needs a lines item. cuh#2/1 is "
+	               "a call item.", __LINE__);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1")));
 	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(call), (struct cstr_view){}, why,
 	                       sizeof why));
@@ -981,8 +1155,8 @@ test_expand (void)
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\",\"path\":"
 	                                 "\"src/git.c\"}"), &e.ids));
 	CHECK(!util_grow(e.ranges.items, e.ranges.cap, 2));
-	e.ranges.items[e.ranges.n++] = (struct evidence_range){ 161, 161 };
-	e.ranges.items[e.ranges.n++] = (struct evidence_range){ 171, 171 };
+	e.ranges.items[e.ranges.n++] = (struct range){ 161, 161 };
+	e.ranges.items[e.ranges.n++] = (struct range){ 171, 171 };
 	hash_of(&e.result, lines);
 	expanded(&e, (struct cstr_view){}, lines, "[askai: cuh#2/2 from cuh#1/3: lines 161, 171 of "
 	         "src/git.c in repository askai at commit " A ", stored as shown:]\n"
@@ -1006,6 +1180,7 @@ test_expand (void)
 int
 main (void)
 {
+	test_range();
 	test_parse();
 	test_put();
 	test_cite();

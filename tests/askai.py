@@ -15391,7 +15391,8 @@ def check_findings_expand(binary, up):
         base = ("-u", up.url(), "--upstream-tools", "--git", repo, "--notes", session)
 
         # cuh records three findings: a call and lines, 800 lines of b.c,
-        # and lines of a.c and of b.c. c2:message and c1:files are not
+        # and lines of a.c and of b.c. The ranges 6 and 5 of c2 touch, and
+        # askai stores them as the range 5-6. c2:message and c1:files are not
         # references.
         with Askai(binary, *base, "--agent", "cuh") as cuh:
             script[:] = [mixed(("git", log), ("git", read_a), ("git", read_b)),
@@ -15400,7 +15401,7 @@ def check_findings_expand(binary, up):
                                "external": ["sha " + head]},
                               {"action": "add", "claim": "b.c has 800 lines.",
                                "state": "verified", "evidence": ["c3"], "reason": "R2"},
-                              {"action": "add", "claim": "C3", "evidence": ["c2:5-6", "c3:1-2"]},
+                              {"action": "add", "claim": "C3", "evidence": ["c2:6,5", "c3:1-2"]},
                               {"action": "add", "claim": "C", "evidence": ["c2:message"]},
                               {"action": "add", "claim": "C", "evidence": ["c1:files"]})]
             count = len(up.requests)
@@ -15430,6 +15431,7 @@ def check_findings_expand(binary, up):
         block12 = lines_block("cuh#1/2", "2 to 4", "src/a.c", a_lines)
         block21 = lines_block("cuh#2/1", "1 to 800", "src/b.c", b_lines)
         assert two["result"]["bytes"] == len(b_lines), two
+        assert three[0]["lines"] == [[5, 6]], three
         external = (f"[askai: external item of cuh#1: sha {head}]\n[askai: askai does not "
                     "store or show this material.]\n")
 

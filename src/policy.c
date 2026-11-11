@@ -19,6 +19,7 @@
 #include "jb.h"
 #include "log.h"
 #include "policy.h"
+#include "range.h"
 #include "ref.h"
 #include "registry.h"
 #include "util.h"
@@ -73,14 +74,6 @@ struct policy_gid {
 	uint32_t role;
 };
 
-/* A range of subordinate ids from /etc/subuid or /etc/subgid, by its first
- * id first.
- */
-struct policy_range {
-	uint32_t first;
-	uint32_t last;
-};
-
 /* The files that list the ranges of subordinate ids that are delegated to
  * users for user namespaces (newuidmap, newgidmap), and the files of the
  * ids that the kernel reports for a uid or a gid that the user namespace of
@@ -106,7 +99,7 @@ struct policy {
 	                                                  receives the role of
 	                                                  the first group that
 	                                                  contains the user. */
-	struct policy_range *subuids;                  /* the ranges of
+	struct range        *subuids;                  /* the ranges of
 	                                                  /etc/subuid, sorted and
 	                                                  merged */
 	size_t               n_tokens;
@@ -152,7 +145,7 @@ static_assert(sizeof "anonymous loopback (role )" + POLICY_NAME <= POLICY_WHO);
 static_assert(alignof (struct policy_grant) <= alignof (struct policy) &&
               alignof (struct policy_token) <= alignof (struct policy_grant) &&
               alignof (struct policy_gid) <= alignof (struct policy_token) &&
-              alignof (struct policy_range) <= alignof (struct policy_gid));
+              alignof (struct range) <= alignof (struct policy_gid));
 
 /* The input of policy_create() and the buffer for its error message. */
 struct policy_build {
@@ -166,7 +159,7 @@ struct policy_build {
 	char                  *names;     /* the place in the policy's block
 	                                     where the next name for the log is
 	                                     written */
-	struct policy_range   *subgids;   /* the ranges of /etc/subgid, sorted
+	struct range          *subgids;   /* the ranges of /etc/subgid, sorted
 	                                     and merged, which policy_create()
 	                                     frees at the end */
 	size_t                 len;
@@ -309,7 +302,7 @@ policy_by_digest (void const *a,
 	return memcmp(a, b, DIGEST);
 }
 
-/* Of uint32_t ids, or of structs that begin with one. */
+/* Orders two uint32_t ids, for qsort() and bsearch(). */
 static int
 policy_by_id (void const *a,
               void const *b)
@@ -363,8 +356,8 @@ policy_range_number (char const *s,
  * map, so askai can refuse more clients than needed, but never fewer.
  */
 static bool
-policy_range_parse (char const          *line,
-                    struct policy_range *r)
+policy_range_parse (char const   *line,
+                    struct range *r)
 {
 	uint64_t start = 0;
 	uint64_t count = 0;
@@ -375,7 +368,7 @@ policy_range_parse (char const          *line,
 	/* The number of ids above START, up to UINT32_MAX. Neither this
 	 * subtraction nor the addition below can wrap around. */
 	uint64_t room = UINT32_MAX - start;
-	*r = (struct policy_range){
+	*r = (struct range){
 		.first = (uint32_t)start,
 		.last = (uint32_t)(start + (count - 1 < room ? count - 1 : room))
 	};
@@ -404,7 +397,7 @@ policy_build_unreadable (struct policy_build *b,
 static int
 policy_build_ranges (struct policy_build  *b,
                      char const           *path,
-                     struct policy_range **p_ranges,
+                     struct range        **p_ranges,
                      size_t               *p_n)
 {
 	*p_ranges = nullptr;
@@ -413,13 +406,13 @@ policy_build_ranges (struct policy_build  *b,
 	if (!f)
 		return errno == ENOENT ? 0 : policy_build_unreadable(b, path, errno);
 	int e = 0;
-	struct policy_range *ranges = nullptr;
+	struct range *ranges = nullptr;
 	size_t n = 0;
 	size_t room = 0;
 	char *line = nullptr;
 	size_t size = 0;
 	while (getline(&line, &size, f) >= 0) {
-		struct policy_range r;
+		struct range r;
 		if (!policy_range_parse(line, &r))
 			continue;
 		e = util_grow(ranges, room, n + 1);
@@ -437,25 +430,16 @@ policy_build_ranges (struct policy_build  *b,
 		free(ranges);
 		return policy_build_unreadable(b, path, e);
 	}
-	if (n)
-		qsort(ranges, n, sizeof *ranges, policy_by_id);
-	size_t k = 0;
-	for (size_t i = 1; i < n; ++i) {
-		if (ranges[i].first > (uint64_t)ranges[k].last + 1)
-			ranges[++k] = ranges[i];
-		else if (ranges[i].last > ranges[k].last)
-			ranges[k].last = ranges[i].last;
-	}
 	*p_ranges = ranges;
-	*p_n = n ? k + 1 : 0;
+	*p_n = range_merge(ranges, n);
 	return 0;
 }
 
 /* Whether @p id lies in one of the @p n sorted and disjoint @p ranges. */
 static bool
-policy_ranges_have (struct policy_range const *ranges,
-                    size_t                     n,
-                    uint32_t                   id)
+policy_ranges_have (struct range const *ranges,
+                    size_t              n,
+                    uint32_t            id)
 {
 	size_t lo = 0;
 	size_t hi = n;
@@ -935,7 +919,7 @@ policy_create (struct json_object    *file,
 			n_tokens += jb_len(jb_get(it.val, "tokens"));
 	/* The subordinate uids go into the policy's block, and the
 	 * subordinate gids are needed only to check unix-groups. */
-	struct policy_range *subuids;
+	struct range *subuids;
 	size_t n_subuids;
 	*e = policy_build_ranges(&b, POLICY_SUBUID, &subuids, &n_subuids);
 	if (!*e && n_groups)
@@ -955,7 +939,7 @@ policy_create (struct json_object    *file,
 	p->roles = (struct policy_grant *)(p + 1);
 	p->tokens = (struct policy_token *)(p->roles + n_roles);
 	p->groups = (struct policy_gid *)(p->tokens + n_tokens);
-	p->subuids = (struct policy_range *)(p->groups + n_groups);
+	p->subuids = (struct range *)(p->groups + n_groups);
 	p->n_roles = n_roles;
 	p->n_subuids = n_subuids;
 	if (n_subuids)
@@ -1146,9 +1130,9 @@ policy_log_own (struct policy const   *policy,
  * "uid N" for one uid, else "uids FIRST-LAST". Returns its length.
  */
 static size_t
-policy_range_label (char                *buf,
-                    size_t               size,
-                    struct policy_range  r)
+policy_range_label (char         *buf,
+                    size_t        size,
+                    struct range  r)
 {
 	if (r.first == r.last)
 		return util_format(buf, size, "uid %" PRIu32, r.first);

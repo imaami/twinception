@@ -3611,7 +3611,7 @@ mcp_slot_source (struct mcp_slot          *slot,
 	 * that seen_lines() does not scan it. Only findings cite the ring. */
 	struct mcp_req const *req = slot->req;
 	if (slot->role == ROLE_OWN || !(req->lent & req->mcp->st->lending.of[KIND_FINDINGS]) ||
-	    (src->first == src->last && src->len > mcp_slot_window_max(slot)))
+	    (src->lines.first == src->lines.last && src->len > mcp_slot_window_max(slot)))
 		return 0;
 	struct span const out = mcp_slot_output(slot);
 	slot->read = seen_read_create(src, (struct cstr_view){ (char const *)out.ptr, out.len },
