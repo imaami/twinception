@@ -388,7 +388,7 @@ store_read_fits (uint64_t *used,
 {
 	/* The line "OID KIND SIZE" before the data, and the line feed after
 	 * the data in the place of the NUL. */
-	static constexpr uint64_t head = OID_SHA256 + sizeof " blob " + UTIL_DECIMAL + 1;
+	uint64_t const head = OID_SHA256 + sizeof " blob " + UTIL_DECIMAL + 1;
 	if (*used > STORE_MAX || bytes > STORE_MAX - *used || head > STORE_MAX - *used - bytes)
 		return false;
 	*used += head + bytes;

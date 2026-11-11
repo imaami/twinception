@@ -439,7 +439,7 @@ test_drop (void)
 
 	/* Calls of 3 MiB: five fit into 16 MiB, and the sixth drops the
 	 * first. */
-	static constexpr size_t three = 3U << 20;
+	size_t const three = 3U << 20;
 	for (uint32_t k = 1; k <= 5; ++k)
 		CHECK(!keep(&seen, k, three, CSTR_VIEW("r")));
 	CHECK(seen->n == 5 && seen->bytes == 5 * (three + 19));

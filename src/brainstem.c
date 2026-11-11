@@ -80,10 +80,9 @@ static char const cgroup_high[] = "/memory.high";
 static char const cgroup_max[] = "/memory.max";
 static char const cgroup_stat[] = "/memory.stat";
 static char const cgroup_current[] = "/memory.current";
-static constexpr size_t cgroup_room = sizeof cgroup_current;
-static_assert(sizeof cgroup_high <= cgroup_room &&
-              sizeof cgroup_max <= cgroup_room &&
-              sizeof cgroup_stat <= cgroup_room);
+static_assert(sizeof cgroup_high <= sizeof cgroup_current &&
+              sizeof cgroup_max <= sizeof cgroup_current &&
+              sizeof cgroup_stat <= sizeof cgroup_current);
 
 /*
  * Where each input's memory pressure level rises to high and to critical,
@@ -1001,7 +1000,7 @@ brainstem_init (struct brainstem           *bs,
 	if (bs->wake_fd < 0)
 		return errno;
 	brainstem_fd_table(bs);
-	bs->cgroup = brainstem_cgroup_dir(cgroup_room, &bs->cg_len);
+	bs->cgroup = brainstem_cgroup_dir(sizeof cgroup_current, &bs->cg_len);
 	if (!bs->cgroup)
 		return ENOMEM;
 	/* Rings for the brainstem, the loops and the blockers. */

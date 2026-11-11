@@ -1254,7 +1254,7 @@ mcp_quote (char             *buf,
            struct cstr_view  text,
            size_t            max)
 {
-	static constexpr size_t frame = QUOTED(0);
+	size_t const frame = QUOTED(0);
 	if (size < frame) {
 		if (size)
 			buf[0] = '\0';
