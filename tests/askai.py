@@ -17844,7 +17844,11 @@ class MockCE:
         if cid == "gone":
             return 404, b"Not Found", ()
         if cid == "boom":
-            return 500, {"error": True, "message": "Something broke"}, ()
+            # A source with WORDY gets a message of 204 bytes, whose bytes
+            # 199 and 200 are one character.
+            wordy = "WORDY" in body["source"]
+            return 500, {"error": True, "message": "w" * 198 + "\u00e9tail" if wordy
+                         else "Something broke"}, ()
         if cid == "later" or (cid == "busy" and first):
             return 429, b"Too Many Requests", [("Retry-After",
                                                  "120" if cid == "later" else "1")]
@@ -18209,6 +18213,12 @@ def check_godbolt(binary, up, godbolt):
                     last == summary(3, 1, 0, 2, 0), records
                 text = refused(ai, "godbolt_compile", compilers=["gone"], source=source)
                 assert text.endswith(summary(1, 0, 0, 1, 0)), text
+                # The record has the first 200 bytes of a longer error text
+                # of the site, whole.
+                records, _ = ce_records(refused(ai, "godbolt_compile", compilers=["boom"],
+                                                source="// WORDY\n"))
+                assert [r[2] for r in records] == ["HTTP 500: " + "w" * 198 + "\u00e9"], \
+                    records
                 # An id that is not in the list of the language fails the call
                 # before a compilation is sent, with a hint to the catalog.
                 sent = len(ce.bodies())
