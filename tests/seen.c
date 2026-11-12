@@ -349,8 +349,8 @@ test_read (void)
 	struct seen *seen = nullptr;
 	struct buf request = {};
 	struct cstr_view const parts[SEEN_PARTS] = { o };
-	struct seen_result const r = { .parts = parts, .out = o, .read = read, .output = o.len,
-	                               .number = 1, .turn = 1 };
+	struct seen_result const r = { .parts = parts, .out = o, .read = read,
+	                               .stamp = { .output = o.len, .number = 1, .turn = 1 } };
 	CHECK(!seen_keep(&seen, &request, &r) && seen && seen->n == 1);
 	SAME(dstr_get(&seen->calls[0].ids), dstr_len(&seen->calls[0].ids),
 	     "{\"repo\":\"proj\",\"commit\":\"" B "\",\"path\":\"src/a.c\",\"total\":9}");
@@ -456,10 +456,7 @@ keep (struct seen     **p_seen,
 	struct seen_result const r = {
 		.parts = parts,
 		.out = out,
-		.output = out.len,
-		.number = number,
-		.turn = number,
-		.tool = 3,
+		.stamp = { .output = out.len, .number = number, .turn = number, .tool = 3 },
 	};
 	int e = seen_keep(p_seen, &request, &r);
 	buf_fini(&request);
@@ -512,18 +509,15 @@ test_keep (void)
 		CSTR_VIEW("\n\n"),
 		CSTR_VIEW("[Job 1 ended.]"),
 	};
-	struct seen_result r = {
-		.parts  = parts,
-		.out    = o,
-		.read   = read,
+	struct seen_stamp const stamp = {
 		.output = 1000,
-		.skip   = skip,
 		.number = 7,
 		.turn   = 3,
 		.tool   = 5,
 		.index  = 2,
 		.flags  = SEEN_FAILED,
 	};
+	struct seen_result r = { .parts = parts, .out = o, .read = read, .stamp = stamp, .skip = skip };
 	struct seen *seen = nullptr;
 	CHECK(!seen_keep(&seen, &request, &r));
 	CHECK(seen && seen->n == 1 && seen->head == 0);
@@ -535,8 +529,16 @@ test_keep (void)
 	     "3\tline 3\n4\tline 4\n5\tline 5\n6\t\n\n[askai: call c7]\n\n[Job 1 ended.]");
 	SAME(dstr_get(&c->ids), dstr_len(&c->ids),
 	     "{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":\"src/a.c\",\"total\":9}");
-	CHECK(c->output == 1000 && c->skip == skip && c->number == 7 && c->turn == 3 &&
-	      c->tool == 5 && c->index == 2 && c->flags == SEEN_FAILED);
+	/* The ring stores the stamp as the caller passed it. A stamp is 24
+	 * bytes without padding. */
+	static_assert(sizeof stamp == 24, "struct seen_stamp is not 24 bytes");
+	CHECK(c->skip == skip && c->stamp.output == 1000 && c->stamp.number == 7 &&
+	      c->stamp.turn == 3 && c->stamp.tool == 5 && c->stamp.index == 2 &&
+	      c->stamp.flags == SEEN_FAILED);
+	CHECK(!memcmp(&c->stamp, &stamp, sizeof stamp));
+	/* The tool of a place of the ring without a call is TOOL_MAX. */
+	CHECK(seen->calls[1].stamp.tool == TOOL_MAX && !seen->calls[1].stamp.number &&
+	      !seen->calls[1].stamp.flags);
 	CHECK(c->lines.range.first == 3 && c->lines.range.last == 5 && !c->lines.at);
 	CHECK(seen->bytes == 100 + dstr_len(&c->result));
 
@@ -546,11 +548,11 @@ test_keep (void)
 	request_of(&request, 10);
 	parts[0] = (struct cstr_view){ o.data + 4, 9 };
 	parts[2] = parts[3] = (struct cstr_view){};
-	r = (struct seen_result){ .parts = parts, .out = o, .read = read, .output = 6000,
-	                          .at = 5000, .skip = 4, .number = 8, .turn = 4 };
+	r = (struct seen_result){ .parts = parts, .out = o, .read = read, .at = 5000, .skip = 4,
+	                          .stamp = { .output = 6000, .number = 8, .turn = 4 } };
 	CHECK(!seen_keep(&seen, &request, &r));
 	c = call_at(seen, 1);
-	CHECK(c->skip == 5004 && c->output == 6000 && c->lines.range.first == 1 &&
+	CHECK(c->skip == 5004 && c->stamp.output == 6000 && c->lines.range.first == 1 &&
 	      c->lines.range.last == 1);
 	SAME(dstr_get(&c->result), dstr_len(&c->result), "1\tline 1\n\n\n[askai: call c7]");
 
@@ -558,20 +560,29 @@ test_keep (void)
 	request_of(&request, 10);
 	parts[0] = CSTR_VIEW("plain");
 	parts[1] = (struct cstr_view){};
-	r = (struct seen_result){ .parts = parts, .out = parts[0], .output = 5, .number = 9,
-	                          .turn = 4, .tool = TOOL_MAX };
+	r = (struct seen_result){ .parts = parts, .out = parts[0],
+	                          .stamp = { .output = 5, .number = 9, .turn = 4, .tool = TOOL_MAX } };
 	CHECK(!seen_keep(&seen, &request, &r));
 	c = call_at(seen, 2);
 	CHECK(seen->n == 3 && !c->lines.range.first && !c->lines.range.last && !dstr_len(&c->ids) &&
-	      c->tool == TOOL_MAX && !c->index && !c->flags);
+	      c->stamp.tool == TOOL_MAX && !c->stamp.index && !c->stamp.flags);
 	SAME(dstr_get(&c->result), dstr_len(&c->result), "plain");
-	/* An empty output without data. */
+	/* An empty output without data. seen_keep() copies SEEN_FAILED and no
+	 * other flag of the stamp, so the call is not too large. */
 	request_of(&request, 10);
 	parts[0] = (struct cstr_view){};
 	parts[1] = CSTR_VIEW("note");
-	r = (struct seen_result){ .parts = parts, .number = 10 };
+	r = (struct seen_result){ .parts = parts,
+	                          .stamp = { .number = 10, .flags = (uint16_t)~SEEN_FAILED } };
 	CHECK(!seen_keep(&seen, &request, &r));
-	SAME(dstr_get(&call_at(seen, 3)->result), dstr_len(&call_at(seen, 3)->result), "note");
+	c = call_at(seen, 3);
+	CHECK(c->stamp.number == 10 && !c->stamp.flags && buf_peek(&c->request).len == 10);
+	SAME(dstr_get(&c->result), dstr_len(&c->result), "note");
+	request_of(&request, 10);
+	r.stamp = (struct seen_stamp){ .number = 11, .flags = UINT16_MAX };
+	CHECK(!seen_keep(&seen, &request, &r));
+	c = call_at(seen, 4);
+	CHECK(c->stamp.number == 11 && c->stamp.flags == SEEN_FAILED);
 
 	/* Refusals. The ring stays as it was after a refused call. */
 	request_of(&request, 10);
@@ -599,7 +610,7 @@ test_keep (void)
 	CHECK(seen_keep(&seen, nullptr, &r) == EFAULT);
 	CHECK(seen_keep(&seen, &request, nullptr) == EFAULT);
 	/* A window past TOOL_OUTPUT_MAX in the whole output. */
-	r = (struct seen_result){ .parts = parts, .at = TOOL_OUTPUT_MAX, .number = 11 };
+	r = (struct seen_result){ .parts = parts, .at = TOOL_OUTPUT_MAX, .stamp = { .number = 12 } };
 	CHECK(!seen_keep(&seen, &request, &r));
 	request_of(&request, 10);
 	r = (struct seen_result){ .parts = parts, .out = abc, .at = TOOL_OUTPUT_MAX, .skip = 1 };
@@ -613,13 +624,14 @@ test_keep (void)
 	r = (struct seen_result){ .parts = parts, .out = o, .read = short_read };
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	seen_read_destroy(&short_read);
-	CHECK(seen->n == 5 && buf_peek(&request).len == 10 && call_at(seen, 4)->skip == TOOL_OUTPUT_MAX);
+	CHECK(seen->n == 6 && buf_peek(&request).len == 10 &&
+	      call_at(seen, 5)->skip == TOOL_OUTPUT_MAX);
 	buf_fini(&request);
 
 	/* The notice of the calls that the ring keeps. */
 	struct dstr text = DSTR_INIT;
 	CHECK(!seen_notice(seen, &text));
-	SAME(dstr_get(&text), dstr_len(&text), "[askai: askai keeps your calls c7 to c11 of this ask "
+	SAME(dstr_get(&text), dstr_len(&text), "[askai: askai keeps your calls c7 to c12 of this ask "
 	     "call. Cite the calls as evidence by number.]\n");
 	(void)dstr_clear(&text);
 	CHECK(!seen_notice(nullptr, &text) && !dstr_len(&text));
@@ -664,18 +676,19 @@ test_drop (void)
 	char const *first = dstr_get(&seen->calls[0].result);
 	for (uint32_t k = 2; k <= SEEN_CALLS; ++k)
 		CHECK(!keep(&seen, k, 16, CSTR_VIEW("small")));
-	CHECK(seen->n == SEEN_CALLS && seen->head == 0 && call_at(seen, 0)->number == 1);
+	CHECK(seen->n == SEEN_CALLS && seen->head == 0 && call_at(seen, 0)->stamp.number == 1);
 	/* Call 65 goes into the place of call 1 and reuses the storage of the
 	 * result. */
 	CHECK(!keep(&seen, SEEN_CALLS + 1, 16, big));
 	CHECK(seen->n == SEEN_CALLS && seen->head == 1);
-	CHECK(call_at(seen, 0)->number == 2 && call_at(seen, SEEN_CALLS - 1)->number == SEEN_CALLS + 1);
+	CHECK(call_at(seen, 0)->stamp.number == 2 &&
+	      call_at(seen, SEEN_CALLS - 1)->stamp.number == SEEN_CALLS + 1);
 	CHECK(dstr_get(&seen->calls[0].result) == first);
 	for (uint32_t k = SEEN_CALLS + 2; k <= 2 * SEEN_CALLS + 6; ++k)
 		CHECK(!keep(&seen, k, 16, CSTR_VIEW("small")));
 	CHECK(seen->n == SEEN_CALLS && seen->head == 6);
 	for (uint32_t i = 0; i < SEEN_CALLS; ++i)
-		CHECK(call_at(seen, i)->number == SEEN_CALLS + 7 + i);
+		CHECK(call_at(seen, i)->stamp.number == SEEN_CALLS + 7 + i);
 	size_t bytes = 0;
 	for (uint32_t i = 0; i < SEEN_CALLS; ++i)
 		bytes += buf_peek(&call_at(seen, i)->request).len + dstr_len(&call_at(seen, i)->result);
@@ -689,12 +702,14 @@ test_drop (void)
 		CHECK(!keep(&seen, k, three, CSTR_VIEW("r")));
 	CHECK(seen->n == 5 && seen->bytes == 5 * (three + 19));
 	CHECK(!keep(&seen, 6, three, CSTR_VIEW("r")));
-	CHECK(seen->n == 5 && call_at(seen, 0)->number == 2 && call_at(seen, 4)->number == 6);
+	CHECK(seen->n == 5 && call_at(seen, 0)->stamp.number == 2 &&
+	      call_at(seen, 4)->stamp.number == 6);
 	/* No storage of arguments stays after a dropped call. */
 	CHECK(!seen->calls[0].request.data && seen->calls[1].request.data);
 	/* A call of 4 MiB less a little drops two more, and stays. */
 	CHECK(!keep(&seen, 7, TOOL_TEXT_MAX - 50, CSTR_VIEW("r")));
-	CHECK(seen->n == 4 && call_at(seen, 0)->number == 4 && call_at(seen, 3)->number == 7);
+	CHECK(seen->n == 4 && call_at(seen, 0)->stamp.number == 4 &&
+	      call_at(seen, 3)->stamp.number == 7);
 	CHECK(seen->bytes == 3 * (three + 19) + TOOL_TEXT_MAX - 50 + 19);
 	CHECK(buf_peek(&call_at(seen, 3)->request).len == TOOL_TEXT_MAX - 50);
 
@@ -703,20 +718,23 @@ test_drop (void)
 	struct buf request = {};
 	request_of(&request, TOOL_TEXT_MAX);
 	struct cstr_view const parts[SEEN_PARTS] = { CSTR_VIEW("r") };
-	struct seen_result const r = { .parts = parts, .out = parts[0], .output = 1, .number = 8,
-	                               .turn = 2, .tool = 1, .index = 7, .flags = SEEN_FAILED };
+	struct seen_result const r = { .parts = parts, .out = parts[0],
+	                               .stamp = { .output = 1, .number = 8, .turn = 2, .tool = 1,
+	                                          .index = 7, .flags = SEEN_FAILED } };
 	size_t const before = seen->bytes;
 	CHECK(!seen_keep(&seen, &request, &r));
 	struct seen_call const *c = call_at(seen, seen->n - 1);
-	CHECK(seen->n == 5 && c->number == 8 && c->turn == 2 && c->tool == 1 && c->index == 7 &&
-	      c->flags == (SEEN_FAILED | SEEN_TOO_LARGE) && c->output == 1);
+	CHECK(seen->n == 5 && c->stamp.number == 8 && c->stamp.turn == 2 && c->stamp.tool == 1 &&
+	      c->stamp.index == 7 && c->stamp.flags == (SEEN_FAILED | SEEN_TOO_LARGE) &&
+	      c->stamp.output == 1);
 	CHECK(!c->request.data && !dstr_len(&c->result) && seen->bytes == before);
 	CHECK(buf_peek(&request).len == TOOL_TEXT_MAX);
 	buf_fini(&request);
 	/* A call of TOOL_TEXT_MAX bytes is not too large, and stays. */
 	CHECK(!keep(&seen, 9, TOOL_TEXT_MAX - 18, CSTR_VIEW("")));
 	c = call_at(seen, seen->n - 1);
-	CHECK(c->number == 9 && !c->flags && buf_peek(&c->request).len == TOOL_TEXT_MAX - 18);
+	CHECK(c->stamp.number == 9 && !c->stamp.flags &&
+	      buf_peek(&c->request).len == TOOL_TEXT_MAX - 18);
 	CHECK(seen->bytes <= SEEN_BYTES);
 	seen_destroy(&seen);
 }
@@ -732,7 +750,7 @@ found (struct seen const *seen,
 {
 	struct seen_call const *c = (void *)1;
 	enum seen_where const got = seen_find(seen, number, &c);
-	if (got == where && (where == SEEN_KEPT ? c && c->number == number : !c))
+	if (got == where && (where == SEEN_KEPT ? c && c->stamp.number == number : !c))
 		return;
 	++failures;
 	fprintf(stderr, "%s:%d: c%u found %d, want %d\n", __FILE__, line, number, got, where);
@@ -752,12 +770,13 @@ test_find (void)
 	/* Call 2 is a findings call. */
 	CHECK(!keep(&seen, 1, 10, CSTR_VIEW("one")));
 	CHECK(!keep(&seen, 3, 10, CSTR_VIEW("three")));
-	CHECK(seen->n == 2 && call_at(seen, 0)->number == 1 && call_at(seen, 1)->number == 3);
+	CHECK(seen->n == 2 && call_at(seen, 0)->stamp.number == 1 &&
+	      call_at(seen, 1)->stamp.number == 3);
 	CHECK(seen->bytes == 2 * 10 + dstr_len(&call_at(seen, 0)->result) +
 	                     dstr_len(&call_at(seen, 1)->result));
 	struct seen_call const *c = (void *)1;
 	CHECK(seen_find(seen, 2, &c) == SEEN_MISSING && !c);
-	CHECK(seen_find(seen, 3, &c) == SEEN_KEPT && c->number == 3 && c == call_at(seen, 1));
+	CHECK(seen_find(seen, 3, &c) == SEEN_KEPT && c->stamp.number == 3 && c == call_at(seen, 1));
 	found(seen, 0, SEEN_MISSING, __LINE__);
 	found(seen, 4, SEEN_MISSING, __LINE__);
 	CHECK(seen_oldest(seen) == 1);

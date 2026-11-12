@@ -335,7 +335,7 @@ evidence_unshown (struct evidence_ref const *ref,
 		if (evidence_ref_put(ref, &text))
 			return ENOMEM;
 		return util_refuse(why, len, "%s needs a git read or a code describe. Call c%" PRIu32
-		                   " is %s.", dstr_get(&text), c->number, what);
+		                   " is %s.", dstr_get(&text), c->stamp.number, what);
 	}
 	struct json_object *ids = evidence_ids(&c->ids);
 	bool const ok = evidence_lines_of(&c->lines.range, 1, ids, &text);
@@ -343,7 +343,7 @@ evidence_unshown (struct evidence_ref const *ref,
 	if (!ok)
 		return ENOMEM;
 	return util_refuse(why, len, "Call c%" PRIu32 " showed %s whole. Give lines within that "
-	                   "range.", c->number, dstr_get(&text));
+	                   "range.", c->stamp.number, dstr_get(&text));
 }
 
 /* Finds the call that @p ref names in the ring of @p cite. Returns 0 with
@@ -418,15 +418,17 @@ evidence_cite (struct evidence            *dest,
 	int e = evidence_find(ref, cite, &c, why, len);
 	if (e)
 		return e;
-	char const *tool = cite->name(cite->owner, c->tool);
+	struct seen_stamp const *stamp = &c->stamp;
+	char const *tool = cite->name(cite->owner, stamp->tool);
 	if (!tool)
 		tool = "unknown";
-	if (c->flags & SEEN_TOO_LARGE)
+	if (stamp->flags & SEEN_TOO_LARGE)
 		return util_refuse(why, len, "Call c%" PRIu32 " was too large to keep. askai keeps no "
-		                   "call of more than 4 MiB.", c->number);
-	if (strict && c->turn >= cite->turn)
+		                   "call of more than 4 MiB.", stamp->number);
+	if (strict && stamp->turn >= cite->turn)
 		return util_refuse(why, len, "Call c%" PRIu32 " was made in this turn. Cite c%" PRIu32
-		                   " for verified or disproved in a later turn.", c->number, c->number);
+		                   " for verified or disproved in a later turn.", stamp->number,
+		                   stamp->number);
 	/* The lines of cN are all the lines that the call showed whole. The
 	 * ranges ascend, so the first and the last range bound them. */
 	struct evidence_ref shown = *ref;
@@ -448,16 +450,16 @@ evidence_cite (struct evidence            *dest,
 	struct ai_call const parts = evidence_parts(c);
 	evidence_fini(dest);
 	dest->kind = kinds[shown.form];
-	dest->call = c->number;
-	dest->turn = c->turn;
+	dest->call = stamp->number;
+	dest->turn = stamp->turn;
 	dest->ask = *cite->ask;
-	dest->output = c->output;
+	dest->output = stamp->output;
 	dest->skip = c->skip;
-	dest->flags = c->flags & SEEN_FAILED ? EVIDENCE_FAILED : 0;
+	dest->flags = stamp->flags & SEEN_FAILED ? EVIDENCE_FAILED : 0;
 	char made[sizeof "call_4294967295_65535"];
 	struct cstr_view const id = parts.id.len ? parts.id
 	                          : util_format_view(made, sizeof made, "call_%" PRIu32 "_%u",
-	                                             c->turn, (unsigned)c->index);
+	                                             stamp->turn, (unsigned)stamp->index);
 	e = cstr_view_store(cstr_view(tool), &dest->tool);
 	e = e ? e : cstr_view_store(id, &dest->call_id);
 	e = e ? e : cstr_view_store(cstr_view_dstr(&c->ids), &dest->ids);

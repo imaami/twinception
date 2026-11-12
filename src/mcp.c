@@ -5911,17 +5911,17 @@ mcp_req_result_write (struct mcp_req *req)
 			break;
 		loop_work(req->mcp->loop, LOOP_COPY, slot->window.at + slot->window.len);
 		e = seen_keep(&req->seen, &req->calls[req->part], &(struct seen_result const){
-			.parts  = parts,
-			.out    = { (char const *)out.ptr, out.len },
-			.read   = (slot->of ? slot->of : slot)->read,
-			.output = slot->bytes,
-			.at     = slot->at,
-			.skip   = slot->window.at,
-			.number = mcp_slot_call(slot),
-			.turn   = req->turn,
-			.tool   = slot->tool,
-			.index  = (uint16_t)req->part,
-			.flags  = slot->flags & SLOT_FAILED ? SEEN_FAILED : 0,
+			.parts = parts,
+			.out   = { (char const *)out.ptr, out.len },
+			.read  = (slot->of ? slot->of : slot)->read,
+			.stamp = { .output = slot->bytes,
+			           .number = mcp_slot_call(slot),
+			           .turn   = req->turn,
+			           .tool   = slot->tool,
+			           .index  = (uint16_t)req->part,
+			           .flags  = slot->flags & SLOT_FAILED ? SEEN_FAILED : 0 },
+			.at    = slot->at,
+			.skip  = slot->window.at,
 		});
 	}
 	if (e) {

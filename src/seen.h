@@ -145,6 +145,22 @@ struct seen_lines {
 	                          the start of the window */
 };
 
+/** The stamp of a call contains the numbers of the call, of the turn and
+ *  of the tool, the size of the output, and the flags of the call.
+ *  seen_keep() copies the stamp of a result into the ring.
+ */
+struct seen_stamp {
+	uint64_t output;  /**< bytes of the whole output */
+	uint32_t number;  /**< N of the call cN */
+	uint32_t turn;    /**< the turn whose answer made the call */
+	uint32_t tool;    /**< the registry ID of the tool, or TOOL_MAX for an
+	                       unknown tool */
+	uint16_t index;   /**< K of the call in its turn, from 0, as in the ID
+	                       call_T_K of a call without an ID from the
+	                       provider */
+	uint16_t flags;   /**< enum seen_flag */
+};
+
 /** A call in the ring. */
 struct seen_call {
 	struct buf        request;  /**< the struct job_call of the call and
@@ -154,20 +170,14 @@ struct seen_call {
 	                                 as the turn got them */
 	struct dstr       ids;      /**< the identifiers of the material as a
 	                                 JSON object, or empty */
-	uint64_t          output;   /**< bytes of the whole output */
+	struct seen_stamp stamp;    /**< the stamp of the result. stamp.flags
+	                                 contains SEEN_TOO_LARGE if the ring
+	                                 stores neither request nor result. */
 	uint32_t          skip;     /**< offset of the window in the output,
 	                                 at most TOOL_OUTPUT_MAX */
 	struct seen_lines lines;    /**< the lines that the window showed
 	                                 whole. The window is at the start of
 	                                 result. */
-	uint32_t          number;   /**< N of the stamp cN */
-	uint32_t          turn;     /**< the turn whose answer made the call */
-	uint32_t          tool;     /**< the registry ID of the tool, or
-	                                 TOOL_MAX for an unknown tool */
-	uint16_t          index;    /**< K of the call in its turn, from 0,
-	                                 as in the ID call_T_K of a call
-	                                 without an ID from the provider */
-	uint16_t          flags;    /**< enum seen_flag */
 };
 
 /** An evidence item that askai printed to the turns. */
@@ -230,16 +240,12 @@ struct seen_result {
 	                                      for a replayed result */
 	struct seen_read       *read;    /**< the numbered lines of a file in
 	                                      @p out, or nullptr */
-	uint64_t                output;  /**< bytes of the whole output */
+	struct seen_stamp       stamp;   /**< the stamp of the call. seen_keep()
+	                                      copies only SEEN_FAILED of
+	                                      stamp.flags. */
 	uint64_t                at;      /**< offset of @p out in the whole
 	                                      output */
 	size_t                  skip;    /**< offset of the window in @p out */
-	uint32_t                number;  /**< N of the stamp cN */
-	uint32_t                turn;    /**< the turn whose answer made the
-	                                      call */
-	uint32_t                tool;    /**< the registry ID of the tool */
-	uint16_t                index;   /**< K of the call in its turn */
-	uint16_t                flags;   /**< enum seen_flag: SEEN_FAILED */
 };
 
 /**

@@ -275,7 +275,7 @@ seen_get (struct seen **p_seen)
 	*seen = (struct seen){};
 	for (size_t i = 0; i < SEEN_CALLS; ++i)
 		seen->calls[i] = (struct seen_call){ .result = DSTR_INIT, .ids = DSTR_INIT,
-		                                     .tool = TOOL_MAX };
+		                                     .stamp = { .tool = TOOL_MAX } };
 	*p_seen = seen;
 	return 0;
 }
@@ -320,14 +320,10 @@ seen_keep (struct seen              **p_seen,
 		c->request = *request;
 		*request = (struct buf){};
 	}
-	c->output = r->output;
+	c->stamp = r->stamp;
+	c->stamp.flags = (r->stamp.flags & SEEN_FAILED) | (large ? SEEN_TOO_LARGE : 0);
 	c->skip = (uint32_t)(r->at + r->skip);
 	c->lines = whole;
-	c->number = r->number;
-	c->turn = r->turn;
-	c->tool = r->tool;
-	c->index = r->index;
-	c->flags = (r->flags & SEEN_FAILED) | (large ? SEEN_TOO_LARGE : 0);
 	seen->bytes += bytes;
 	++seen->n;
 	return 0;
@@ -425,7 +421,7 @@ seen_find (struct seen const       *seen,
 		return SEEN_MISSING;
 	for (size_t i = 0; i < seen->n; ++i) {
 		struct seen_call const *c = &seen->calls[seen_call_place(seen, i)];
-		if (c->number == number) {
+		if (c->stamp.number == number) {
 			*call = c;
 			return SEEN_KEPT;
 		}
@@ -438,7 +434,7 @@ seen_find (struct seen const       *seen,
 uint32_t
 seen_oldest (struct seen const *seen)
 {
-	return seen && seen->n ? seen->calls[seen->head].number : 0;
+	return seen && seen->n ? seen->calls[seen->head].stamp.number : 0;
 }
 
 /* Returns the index in seen->items.items of the item of @p seen with the
@@ -618,12 +614,12 @@ seen_notice (struct seen const *seen,
 	uint32_t oldest = 0;
 	uint32_t newest = 0;
 	for (size_t i = 0; i < seen->n; ++i) {
-		struct seen_call const *c = &seen->calls[seen_call_place(seen, i)];
-		if (c->flags & SEEN_TOO_LARGE)
+		struct seen_stamp const *stamp = &seen->calls[seen_call_place(seen, i)].stamp;
+		if (stamp->flags & SEEN_TOO_LARGE)
 			continue;
 		if (!oldest)
-			oldest = c->number;
-		newest = c->number;
+			oldest = stamp->number;
+		newest = stamp->number;
 	}
 	if (!oldest)
 		return seen_notice_items(seen, d);

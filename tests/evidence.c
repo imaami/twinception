@@ -99,15 +99,15 @@ keep (struct seen     **p_seen,
 	snprintf(note, sizeof note, "\n\n[askai: call c%u]", number);
 	struct cstr_view const parts[SEEN_PARTS] = { out, cstr_view(note) };
 	struct seen_result const r = {
-		.parts  = parts,
-		.out    = out,
-		.read   = read,
-		.output = out.len,
-		.number = number,
-		.turn   = turn,
-		.tool   = tool,
-		.index  = (uint16_t)(number % 3),
-		.flags  = number == 2 ? SEEN_FAILED : 0,
+		.parts = parts,
+		.out   = out,
+		.read  = read,
+		.stamp = { .output = out.len,
+		           .number = number,
+		           .turn   = turn,
+		           .tool   = tool,
+		           .index  = (uint16_t)(number % 3),
+		           .flags  = number == 2 ? SEEN_FAILED : 0 },
 	};
 	CHECK(!seen_keep(p_seen, &request, &r));
 	buf_fini(&request);
@@ -355,8 +355,9 @@ test_cite (void)
 	struct buf request = {};
 	request_of(&request, "", "{\"command\":\"read\"}");
 	struct cstr_view const parts[SEEN_PARTS] = { window, CSTR_VIEW("\n\n[askai: call c1]") };
-	struct seen_result const r = { .parts = parts, .out = o, .read = read, .output = o.len,
-	                               .skip = at + 3, .number = 1, .turn = 1, .tool = 1 };
+	struct seen_result const r = { .parts = parts, .out = o, .read = read, .skip = at + 3,
+	                               .stamp = { .output = o.len, .number = 1, .turn = 1,
+	                                          .tool = 1 } };
 	CHECK(!seen_keep(&seen, &request, &r));
 	buf_fini(&request);
 	CHECK(seen->calls[0].lines.range.first == 2 && seen->calls[0].lines.range.last == 6);
