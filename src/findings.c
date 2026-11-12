@@ -681,14 +681,14 @@ findings_got_files (struct mcp_slot *slot)
 	findings_next(slot);
 }
 
-/* Handles the output of cat-file: the files of call->wanted from
- * call->done to call->batch, in order. The call is refused for a file
- * that askai cannot read, or whose finding is not the one of its author
- * and number. For the call of findings_prompt(), the prompt gets the
- * notice that the findings could not be read instead
- * (findings_prompted()). Otherwise cat-file reads the next files. After
- * the last file, the findings are sorted (finding_sort()), and the action
- * goes on.
+/* Handles the output of cat-file, which is the files of call->wanted from
+ * call->done to call->batch, in order. If askai cannot read a file, or the
+ * ID of the finding in a file is not the ID that the file was read for,
+ * the function refuses the call. For the call of findings_prompt(), the
+ * function instead appends the notice that the findings could not be read
+ * to the prompt (findings_prompted()). If every file of the batch was
+ * read, cat-file reads the next files. After the last file, the findings
+ * are sorted (finding_sort()), and the action goes on.
  */
 static void
 findings_got_read (struct mcp_slot *slot)
