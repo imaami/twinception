@@ -3,7 +3,9 @@
  *  owners. The test includes src/loop.c and src/ledger.c, so that it can
  *  read the ledger's own structures, and replaces clock_gettime() in them
  *  with a fake clock, as tests/turn.c does. The ledger's source is named by
- *  its path, because "ledger.c" alone would name this file. */
+ *  its path, because "ledger.c" alone would name this file. One test checks
+ *  the status of the ledger that agenda_job_status() (src/agenda.h) returns
+ *  for a job of the turns. */
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
@@ -34,7 +36,9 @@ fake_clock_gettime (clockid_t        id,
 #include "loop.c"
 #undef clock_gettime
 
+#include "agenda.h"
 #include "check.h"
+#include "flag.h"
 
 enum { A = 1, B = 2, C = 3 };  /* owners */
 
@@ -892,6 +896,28 @@ test_cancels (struct ledger *l)
 	test_end(l, t);
 }
 
+/* agenda_job_status() maps the flag word of the slot of a job of the turns
+ * to a status of the ledger. The bits that are no state of a job do not
+ * change the status. */
+static void
+test_job_status (void)
+{
+	CHECK(agenda_job_status(0) == LEDGER_WORKING);
+	CHECK(agenda_job_status(FLAG_DONE) == LEDGER_COMPLETED);
+	CHECK(agenda_job_status(FLAG_DONE | FLAG_FAILED) == LEDGER_FAILED);
+	CHECK(agenda_job_status(FLAG_DONE | FLAG_CANCEL) == LEDGER_CANCELLED);
+	uint32_t const other = ~(uint32_t)(FLAG_DONE | FLAG_FAILED | FLAG_CANCEL);
+	CHECK(agenda_job_status(other) == LEDGER_WORKING);
+	CHECK(agenda_job_status(other | FLAG_DONE) == LEDGER_COMPLETED);
+	CHECK(agenda_job_status(other | FLAG_DONE | FLAG_FAILED) == LEDGER_FAILED);
+	CHECK(agenda_job_status(other | FLAG_DONE | FLAG_CANCEL) == LEDGER_CANCELLED);
+	/* The names that src/mcp.c reads by the status. */
+	CHECK(!strcmp(ledger_statuses[agenda_job_status(FLAG_DONE | FLAG_FAILED)].data, "failed"));
+	CHECK(!strcmp(ledger_statuses[agenda_job_status(FLAG_DONE | FLAG_CANCEL)].data,
+	              "cancelled"));
+	CHECK(!strcmp(ledger_statuses[agenda_job_status(FLAG_DONE)].data, "completed"));
+}
+
 int
 main (void)
 {
@@ -931,6 +957,7 @@ main (void)
 	test_anonymous(l);
 	test_race(l);
 	test_cancels(l);
+	test_job_status();
 	ledger_destroy(&l);
 	CHECK(!l);
 	loop_fini(other_loop);

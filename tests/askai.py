@@ -14418,7 +14418,11 @@ def check_turns(binary, up):
             # wait for it ends at once, with the notice that it was
             # cancelled; jobs cancels the second timer, so the call does not
             # doze for it; a cancel of a job that failed says that it had
-            # failed.
+            # failed. The list of jobs shows a job that runs as running, and
+            # a call for the result of that job is refused. A call for the
+            # result of a cancelled job and a second cancel of that job are
+            # refused. The list shows a failed job with the size of the
+            # output of the job, and the result of the job is that output.
             def tool_call(cid, name, **args):
                 return (cid, name, json.dumps(args))
             script[:] = [
@@ -14435,9 +14439,13 @@ def check_turns(binary, up):
                 lambda r: (200, turn_stream([
                     tool_call("b2", "background", tool="git", arguments=json.loads(slow)),
                     tool_call("b3", "background", tool="notes", arguments={}),
+                    tool_call("r1", "jobs", action="list"),
+                    tool_call("r2", "jobs", action="result", job=2),
                     tool_call("w3", "wait", seconds=5, jobs=[1])])),
                 lambda r: (200, turn_stream([tool_call("c1", "jobs", action="cancel", job=2),
                                              tool_call("c2", "jobs", action="list"),
+                                             tool_call("c8", "jobs", action="result", job=2),
+                                             tool_call("c9", "jobs", action="cancel", job=2),
                                              tool_call("c3", "wait", seconds=0),
                                              tool_call("c4", "jobs", action="cancel", timer=2),
                                              tool_call("c5", "jobs", action="cancel", timer=2),
@@ -14447,7 +14455,9 @@ def check_turns(binary, up):
                 lambda r: (200, turn_stream([
                     tool_call("b4", "background", tool="git",
                               arguments={"repo": "nope", "command": "log"}),
-                    tool_call("c7", "jobs", action="cancel", job=3)])),
+                    tool_call("c7", "jobs", action="cancel", job=3),
+                    tool_call("l3", "jobs", action="list"),
+                    tool_call("r3", "jobs", action="result", job=3)])),
             ]
             count = len(up.requests)
             start = time.monotonic()
@@ -14478,10 +14488,15 @@ def check_turns(binary, up):
             assert said(4, "w2") == "[askai: timer 1 fired: check it.]\n", said(4, "w2")
             assert said(5, "b2") == "Started job 2." and \
                 said(5, "b3").startswith("The tool argument must name a tool") and \
-                said(5, "w3") == ended, turns(asked[5])
+                re.fullmatch(r"job 1: git .*: completed, \d+ bytes\njob 2: git .*: running\n"
+                             r"timer 2: fires in \d+ s\n", said(5, "r1")) and \
+                said(5, "r2") == "The job is still running. Call wait to wait for the " \
+                "job." and said(5, "w3") == ended, turns(asked[5])
             assert said(6, "c1") == "Cancelled the job." and \
                 re.fullmatch(r"job 1: git .*: completed, \d+ bytes\njob 2: git .*: cancelled\n"
                              r"timer 2: fires in \d+ s\n", said(6, "c2")) and \
+                said(6, "c8") == "The job was cancelled." and \
+                said(6, "c9") == "The job was cancelled." and \
                 said(6, "c3").startswith("The seconds argument") and \
                 said(6, "c4") == "Cancelled timer 2." and \
                 said(6, "c5") == "You have no timer 2 set." and \
@@ -14490,7 +14505,10 @@ def check_turns(binary, up):
                 turns(asked[6])
             assert said(7, "b4") == "Started job 3.\n\n[askai: job 3, git, failed. Call jobs " \
                 "with action result and job 3 for the output.]\n" and \
-                said(7, "c7") == "The job had already failed.", turns(asked[7])
+                said(7, "c7") == "The job had already failed." and \
+                re.fullmatch(r"job 1: git .*: completed, \d+ bytes\njob 2: git .*: cancelled\n"
+                             r"job 3: git .*: failed, \d+ bytes\n", said(7, "l3")) and \
+                said(7, "r3") == "The repo argument must be proj.", turns(asked[7])
             assert 2 <= took < 6, took
             trace = result["content"][1]["text"]
             assert all(f"- {t} " in trace for t in ("background", "timer", "wait", "jobs")), \

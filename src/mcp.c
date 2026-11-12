@@ -87,6 +87,7 @@
 #include "config.h"
 #include "dstr.h"
 #include "findings.h"
+#include "flag.h"
 #include "git.h"
 #include "hexid.h"
 #include "home.h"
@@ -457,22 +458,17 @@ enum mcp_role : uint8_t {
 	ROLE_JOB,   /* a job a turn started in the background */
 };
 
-/* The states of a slot's call, as the bits of slot->flags. */
-enum mcp_slot_flag : uint16_t {
-	SLOT_DONE      = 1u << 0,  /* the call has ended. A call ends when its
-	                              output is all in, when it fails, when it
-	                              is cancelled, and when askai calls its
-	                              kind's drop(). The functions of the call
-	                              API that would end or change a call do
-	                              nothing for an ended call. */
-	SLOT_FAILED    = 1u << 1,  /* the call failed */
-	SLOT_CANCELLED = 1u << 2,  /* the job was cancelled */
-};
-
 /* A tool call that a request runs. It is the client's call or a call of a
  * turn. The answer of an ask call is in req->self too, and the git commands
  * that read the notes and the findings for the prompt of an ask call also
  * use req->self.
+ *
+ * The states of the call are bits of slot->flags, and each is a shared bit
+ * of src/flag.h. FLAG_DONE is set when the call has ended. A call ends when
+ * its output is all in, when it fails, when it is cancelled, and when askai
+ * calls its kind's drop(). The functions of the call API that would end or
+ * change a call do nothing for an ended call. FLAG_FAILED is set if the
+ * call failed, and FLAG_CANCEL if the job was cancelled.
  */
 struct mcp_slot {
 	struct loop_step     step;     /* the step that runs kind->step() */
@@ -518,8 +514,8 @@ struct mcp_slot {
 	UTIL_TEXT(512)       note;     /* text appended to the tool output */
 	uint8_t              tool;     /* the id of the tool, or TOOL_MAX */
 	uint8_t              role;     /* enum mcp_role */
-	uint16_t             flags;    /* enum mcp_slot_flag, widened over the
-	                                  padding */
+	uint16_t             flags;    /* FLAG_DONE, FLAG_FAILED and FLAG_CANCEL,
+	                                  widened over the padding */
 };
 
 static_assert(TOOL_MAX <= UINT8_MAX, "TOOL_MAX must fit in slot->tool");
@@ -1442,7 +1438,7 @@ static void
 mcp_slot_drop (struct mcp_slot *slot)
 {
 	if (slot->own) {
-		slot->flags |= SLOT_DONE;
+		slot->flags |= FLAG_DONE;
 		struct registry_tool const *tool = mcp_slot_tool(slot);
 		if (tool->kind->drop)
 			tool->kind->drop(slot);
@@ -2042,7 +2038,7 @@ mcp_slot_result (struct mcp_slot  *slot,
                  bool              failed)
 {
 	struct mcp_req *req = slot->req;
-	slot->flags |= SLOT_DONE;
+	slot->flags |= FLAG_DONE;
 	if (slot->role != ROLE_OWN) {
 		/* An offset does not apply to the answer of a failed call. */
 		if (failed)
@@ -2124,12 +2120,12 @@ mcp_slot_respond (struct mcp_slot *slot,
 {
 	struct mcp_req *req = slot->req;
 	if (slot->role != ROLE_OWN) {
-		slot->flags |= SLOT_DONE;
+		slot->flags |= FLAG_DONE;
 		mcp_slot_done(slot, failed);
 		return;
 	}
 	mcp_req_flag(req, REQ_FAILED, failed);
-	slot->flags |= SLOT_DONE;
+	slot->flags |= FLAG_DONE;
 	struct span text = mcp_req_output(req);
 	loop_timer_stop(req->mcp->loop, &req->timer);
 	size_t off = req->lent ? 0 : slot->window.at;
@@ -3419,7 +3415,7 @@ mcp_slot_live (struct mcp_slot const *slot,
                uint32_t               flags,
                uint32_t               allowed)
 {
-	return !slot ? EFAULT : slot->flags & SLOT_DONE || flags & ~allowed ? EINVAL : 0;
+	return !slot ? EFAULT : slot->flags & FLAG_DONE || flags & ~allowed ? EINVAL : 0;
 }
 
 int
@@ -3474,7 +3470,7 @@ mcp_slot_fail (struct mcp_slot *slot,
 	int const refused = mcp_slot_live(slot, 0, 0);
 	if (refused)
 		return refused;
-	slot->flags |= SLOT_DONE;
+	slot->flags |= FLAG_DONE;
 	mcp_req_fail(slot->req, e);
 	return 0;
 }
@@ -3755,7 +3751,7 @@ mcp_slot_fetch_back (struct loop     *loop,
 		web_wait_leave(&wait);
 		return;
 	}
-	if (!(slot->flags & SLOT_DONE))
+	if (!(slot->flags & FLAG_DONE))
 		loop_ready_bulk(loop, &slot->step);
 }
 
@@ -4303,7 +4299,7 @@ mcp_agenda_pending (struct mcp_agenda const *a)
 		return false;
 	bool any = dstr_len(&a->notices) || dstr_len(&a->told);
 	for (uint32_t k = 0; !any && k < a->n_jobs; ++k)
-		any = !(a->jobs[k].flags & SLOT_DONE);
+		any = !(a->jobs[k].flags & FLAG_DONE);
 	return any || ledger_timer_any(a->timers);
 }
 
@@ -4856,13 +4852,14 @@ mcp_agenda_job_notice (struct mcp_agenda *a,
 {
 	struct mcp_slot const *job = &a->jobs[k];
 	char const *tool = mcp_slot_tool(job)->name.data;
-	bool const ok = job->flags & SLOT_CANCELLED
+	enum ledger_status const status = agenda_job_status(job->flags);
+	bool const ok = status == LEDGER_CANCELLED
 	              ? dstr_printf(&a->notices, "[askai: job %" PRIu32 ", %s, cancelled.]\n",
 	                            k + 1, tool)
 	              : dstr_printf(&a->notices, "[askai: job %" PRIu32 ", %s, %s. Call jobs "
 	                            "with action result and job %" PRIu32 " for the "
-	                            "output.]\n", k + 1, tool,
-	                            job->flags & SLOT_FAILED ? "failed" : "completed", k + 1);
+	                            "output.]\n", k + 1, tool, ledger_statuses[status].data,
+	                            k + 1);
 	return ok ? 0 : ENOMEM;
 }
 
@@ -5094,12 +5091,6 @@ mcp_slot_background (struct mcp_slot    *slot,
 static int
 mcp_slot_turn_list (struct mcp_slot *slot)
 {
-	static char const *const states[] = {
-		[0]                          = "running",
-		[SLOT_DONE]                  = "completed",
-		[SLOT_DONE | SLOT_FAILED]    = "failed",
-		[SLOT_DONE | SLOT_CANCELLED] = "cancelled",
-	};
 	struct mcp_agenda const *a = slot->req->agenda;
 	struct dstr *d = &slot->answer;
 	if (!a)
@@ -5108,13 +5099,15 @@ mcp_slot_turn_list (struct mcp_slot *slot)
 		struct mcp_slot const *job = &a->jobs[k];
 		struct cstr_view const args = jb_wire(job->args);
 		size_t const shown = util_clip(args.data, args.len, JOB_ARGS);
-		uint16_t const state = job->flags & (SLOT_DONE | SLOT_FAILED | SLOT_CANCELLED);
+		enum ledger_status const status = agenda_job_status(job->flags);
 		/* The output of a job that ran to its end is sized. */
-		bool const sized = (state & (SLOT_DONE | SLOT_CANCELLED)) == SLOT_DONE;
+		bool const sized = status == LEDGER_COMPLETED || status == LEDGER_FAILED;
 		bool const ok = args.data &&
 		                dstr_printf(d, "job %" PRIu32 ": %s %.*s%s: %s", k + 1,
 		                            mcp_slot_tool(job)->name.data, (int)shown, args.data,
-		                            shown < args.len ? "..." : "", states[state]) &&
+		                            shown < args.len ? "..." : "",
+		                            status == LEDGER_WORKING ? "running"
+		                            : ledger_statuses[status].data) &&
 		                (!sized || dstr_printf(d, ", %zu bytes", mcp_slot_output(job).len)) &&
 		                !cstr_view_cat(CSTR_VIEW("\n"), d);
 		if (!ok)
@@ -5126,20 +5119,21 @@ mcp_slot_turn_list (struct mcp_slot *slot)
 }
 
 /* Returns the job of the turns that the argument job of @p args names, for
- * the jobs call in @p slot. If there is no such job, or it was cancelled,
- * returns nullptr, and the call answers why.
+ * the jobs call in @p slot. If there is no such job, or if @p refused
+ * contains an answer for the status of the job, returns nullptr, and the
+ * call answers why.
  */
 static struct mcp_slot *
-mcp_slot_turn_job (struct mcp_slot    *slot,
-                   struct json_object *args)
+mcp_slot_turn_job (struct mcp_slot        *slot,
+                   struct json_object     *args,
+                   struct cstr_view const  refused[static LEDGER_STATUSES])
 {
 	struct mcp_agenda *a = slot->req->agenda;
 	uint64_t const n = jb_count(jb_get(args, "job"), a ? a->n_jobs : 0);
 	struct mcp_slot *job = n ? &a->jobs[n - 1] : nullptr;
 	struct cstr_view const problem =
 		!job ? CSTR_VIEW("The job argument must be the number of a job that you started.")
-		: job->flags & SLOT_CANCELLED ? agenda_ended[LEDGER_CANCELLED]
-		: (struct cstr_view){};
+		: refused[agenda_job_status(job->flags)];
 	if (!problem.data)
 		return job;
 	mcp_slot_result(slot, problem, true);
@@ -5147,42 +5141,37 @@ mcp_slot_turn_job (struct mcp_slot    *slot,
 }
 
 /* Gives the output of the job of the turns that @p args names, for the
- * jobs call in @p slot: from its offset, once the job has ended.
+ * jobs call in @p slot: from its offset, once the job has ended. The
+ * result of a job that still runs or was cancelled is refused.
  */
 static void
 mcp_slot_turn_result (struct mcp_slot    *slot,
                       struct json_object *args)
 {
-	struct mcp_slot *job = mcp_slot_turn_job(slot, args);
-	if (!job)
-		return;
-	if (!(job->flags & SLOT_DONE)) {
-		mcp_slot_result(slot, still_runs, true);
-		return;
-	}
-	if (mcp_slot_offset(slot, args))
+	struct cstr_view const refused[LEDGER_STATUSES] = {
+		[LEDGER_WORKING]   = still_runs,
+		[LEDGER_CANCELLED] = agenda_ended[LEDGER_CANCELLED],
+	};
+	struct mcp_slot *job = mcp_slot_turn_job(slot, args, refused);
+	if (!job || mcp_slot_offset(slot, args))
 		return;
 	slot->of = job;
-	mcp_slot_respond(slot, job->flags & SLOT_FAILED);
+	mcp_slot_respond(slot, job->flags & FLAG_FAILED);
 }
 
 /* Cancels the job of the turns that @p args names, for the jobs call in
- * @p slot, if the job runs.
+ * @p slot, if the job runs. The cancel of a job that has ended is refused
+ * with the answer of agenda_ended[] for the status of the job.
  */
 static void
 mcp_slot_turn_cancel (struct mcp_slot    *slot,
                       struct json_object *args)
 {
-	struct mcp_slot *job = mcp_slot_turn_job(slot, args);
+	struct mcp_slot *job = mcp_slot_turn_job(slot, args, agenda_ended);
 	if (!job)
 		return;
-	if (job->flags & SLOT_DONE) {
-		mcp_slot_result(slot, agenda_ended[job->flags & SLOT_FAILED
-		                                   ? LEDGER_FAILED : LEDGER_COMPLETED], true);
-		return;
-	}
 	mcp_slot_drop(job);
-	job->flags |= SLOT_DONE | SLOT_CANCELLED;
+	job->flags |= FLAG_DONE | FLAG_CANCEL;
 	mcp_slot_result(slot, CSTR_VIEW("Cancelled the job."), false);
 }
 
@@ -5220,7 +5209,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 		return;
 	}
 	atomic_fetch_or_explicit(&task->state, LEDGER_TOLD, memory_order_relaxed);
-	slot->flags |= SLOT_DONE;
+	slot->flags |= FLAG_DONE;
 	req->shown = task;
 	int e = mcp_req_open(req, FRAG(""));
 	if (e) {
@@ -5362,7 +5351,7 @@ mcp_slot_wait (struct mcp_slot    *slot,
 	 * the job's notice if the job ended after the last result. */
 	bool const told = !dstr_len(&a->notices);
 	for (uint32_t k = 0; told && mask && k < n_jobs; ++k)
-		if (mask >> k & 1 && a->jobs[k].flags & SLOT_DONE && mcp_agenda_job_notice(a, k)) {
+		if (mask >> k & 1 && a->jobs[k].flags & FLAG_DONE && mcp_agenda_job_notice(a, k)) {
 			mcp_req_fail(req, ENOMEM);
 			return;
 		}
@@ -5576,7 +5565,7 @@ mcp_req_calls_next (struct mcp_req *req)
 		return;
 	}
 	struct mcp_slot *slot = &req->slots[req->part];
-	if (slot->flags & SLOT_DONE) {
+	if (slot->flags & FLAG_DONE) {
 		mcp_req_result_begin(req, slot);
 		return;
 	}
@@ -5712,7 +5701,7 @@ mcp_slot_done (struct mcp_slot *slot,
 		    failed ? "failed" : "answered", mcp_elapsed(slot->start), out.len,
 		    util_s(out.len), shown.data, *text ? "; error " : "", text);
 	}
-	slot->flags |= failed ? SLOT_FAILED : 0;
+	slot->flags |= failed ? FLAG_FAILED : 0;
 	struct member const *notebook = !failed ? slot->shows : nullptr;
 	slot->shows = nullptr;
 	if (job) {
@@ -5897,7 +5886,7 @@ mcp_req_result_write (struct mcp_req *req)
 	}
 	struct mcp_row const *row = mcp_row_of(mcp_slot_tool(slot));
 	(void)mcp_req_trace(req, &c, slot->args, row->trace);
-	(void)mcp_req_trace_end(req, slot->flags & SLOT_FAILED, slot->bytes);
+	(void)mcp_req_trace_end(req, slot->flags & FLAG_FAILED, slot->bytes);
 	switch (row->metric) {
 	case LENT_FINDINGS:
 		seen_shown(req->seen, mcp_slot_call(slot), slot->window, req->turn);
@@ -5919,7 +5908,7 @@ mcp_req_result_write (struct mcp_req *req)
 			           .turn   = req->turn,
 			           .tool   = slot->tool,
 			           .index  = (uint16_t)req->part,
-			           .flags  = slot->flags & SLOT_FAILED ? FLAG_FAILED : 0 },
+			           .flags  = slot->flags & FLAG_FAILED },
 			.at    = slot->at,
 			.skip  = slot->window.at,
 		});

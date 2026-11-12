@@ -3,9 +3,10 @@
  * Parts of the client side of jobs and wait: the lookup, list and cancel
  * of a client's job and the client's wait, over the records and the timers
  * of the client's owner in the ledger (src/ledger.h); the answer to a
- * refusal of the ledger; and texts that the turns' agenda in src/mcp.c
- * shares. The functions use the call API of src/mcp.h. The rest of the
- * client side and the turns' side are in src/mcp.c.
+ * refusal of the ledger; texts that the turns' agenda in src/mcp.c shares;
+ * and the status of a job of the turns, for those texts. The functions use
+ * the call API of src/mcp.h. The rest of the client side and the turns'
+ * side are in src/mcp.c.
  */
 #ifndef ASKAI_SRC_AGENDA_H_
 #define ASKAI_SRC_AGENDA_H_
@@ -13,6 +14,7 @@
 #include <stdint.h>
 
 #include "cstr_view.h"
+#include "flag.h"
 #include "ledger.h"
 #include "tool.h"
 
@@ -23,6 +25,24 @@ enum { AGENDA_WAIT_IDS = 16 };
 
 /** The answers to a cancel of a job that has ended, by its status. */
 extern struct cstr_view const agenda_ended[LEDGER_STATUSES];
+
+/** Returns the status of a job of the turns, as the ledger names the
+ *  status of a job of a client. @p flags is the flag word of the slot of
+ *  the job in src/mcp.c. Of the shared bits of src/flag.h, the word
+ *  contains none while the job runs, and FLAG_DONE after the job has
+ *  ended, with FLAG_FAILED for a job that failed or FLAG_CANCEL for a job
+ *  that a call cancelled.
+ */
+static inline enum ledger_status
+agenda_job_status (uint32_t flags)
+{
+	switch (flags & (FLAG_DONE | FLAG_FAILED | FLAG_CANCEL)) {
+	case FLAG_DONE:               return LEDGER_COMPLETED;
+	case FLAG_DONE | FLAG_FAILED: return LEDGER_FAILED;
+	case FLAG_DONE | FLAG_CANCEL: return LEDGER_CANCELLED;
+	default:                      return LEDGER_WORKING;
+	}
+}
 
 /** Appends the notice that the timer @p t fired, with its note, to @p d.
  *  Returns 0, or ENOMEM.
