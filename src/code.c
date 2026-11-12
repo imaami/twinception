@@ -475,7 +475,7 @@ code_start (struct mcp_slot    *slot,
 		mcp_slot_fail(slot, ENOMEM);
 		return;
 	}
-	call->words = (struct dstr)DSTR_INIT;
+	*call = (struct code_call){ .words = DSTR_INIT };
 	git_pin_init(&call->pin, code->git, jb_view(jb_get(args, "repo")),
 	             mcp_slot_loop(slot)->now + code->cfg->git_timeout);
 	*mcp_slot_own(slot) = call;
