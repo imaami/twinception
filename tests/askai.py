@@ -8503,11 +8503,12 @@ def check_stalled_stderr(binary, up):
 # A stand-in for man(1). With -w it finds a page's file in its directory's
 # "pages", making it if need be, and notes its arguments in "finds"; with -a
 # the pages several and suffixed have files in more than one section. For
-# the page gone, it prints the path of a file that does not exist. With -k
-# it notes its arguments in "searches" and names pages that begin with
-# missing or lots. Else it renders the page that file names, noting its
-# arguments in "renders", and the name says what it does. It notes the
-# processes that wait in "waiting".
+# the page gone, it prints the path of a file that does not exist. For the
+# page awaited, it finds no page, after it has waited for the file "go" in
+# its directory. With -k it notes its arguments in "searches" and names
+# pages that begin with missing, lots or awaited. Else it renders the page
+# that file names, noting its arguments in "renders", and the name says what
+# it does. It notes the processes that wait in "waiting".
 # For the page wait0, the fake man exits at once, and its sleep still has
 # the output pipe open.
 FAKE_MAN = r"""#!/bin/sh
@@ -8519,6 +8520,7 @@ if [ "$1" = -k ]; then
 	^missing) printf '%s\n' "missing_link (3)     - a link" "other (1)            - missing" \
 		"Missingno (7)        - a glitch" ;;
 	^lots) seq -f "lots_%g (3) - one of many" 400 ;;
+	^awaited) printf '%s\n' "awaited_one (3)      - a page" "awaited_two (7)      - a page" ;;
 	*) exit 16 ;;
 	esac
 	exit 0
@@ -8527,6 +8529,9 @@ if [ "$1" = -w ]; then
 	echo "$*" >> "$dir/finds"
 	case $page in
 	missing|absent|c++x|a.b|lots) echo "No manual entry for $page" >&2; exit 16 ;;
+	awaited)
+		while [ ! -e "$dir/go" ]; do sleep 0.05; done
+		echo "No manual entry for $page" >&2; exit 16 ;;
 	several|suffixed)
 		if [ "$2" = -a ]; then set -- 1 2 3posix; else set -- "$3"; fi
 		[ "$page$#" = suffixed3 ] && set -- 1 3pm
@@ -8997,6 +9002,40 @@ def check_man(binary, up):
             wait_for(lambda: ai.metrics()["askai_man_pages"] == 2)
             assert runs("shadow") == (2, 1) and runs("shadowed") == (0, 1)
             assert text_of(man_call(ai, name="shadow")) == "second\n"
+
+        # Three calls on two loops wait for the one fetch of a page that man
+        # does not find. The fetch stores its reason, with the list of the
+        # pages whose names begin with the name, once. Each call reads that
+        # reason, and askai logs it for each call. The fake man waits for
+        # the file "go", so the fetch fails after the third call has begun
+        # to wait. The next call starts a new fetch.
+        with Askai(binary, "-u", up.url(), "--man", "--verbose", loops=2, env=env) as ai:
+            results = []
+            threads = [threading.Thread(target=lambda: results.append(
+                man_call(ai, name="awaited"))) for _ in range(3)]
+            for thread in threads:
+                thread.start()
+            wait_for(lambda: ai.metrics()["askai_man_asks_total{result=\"wait\"}"] == 3)
+            open(f"{fake}/go", "w").close()
+            for thread in threads:
+                thread.join(10)
+            text = "No manual entry for awaited. Pages whose names begin with awaited: " \
+                "awaited_one(3), awaited_two(7)."
+            assert [(r.get("isError"), text_of(r)) for r in results] == [(True, text)] * 3, \
+                results
+            assert runs("awaited") == (1, 0), runs("awaited")
+            assert lines("searches").count("-k -- ^awaited") == 1, lines("searches")
+            values = ai.metrics()
+            assert sorted(v for k, v in values.items()
+                          if k.startswith("askai_request_seconds_count{") and
+                          'method="tools/call"' in k) == [1, 2], values
+            assert values["askai_man_runs_total{run=\"find\"}"] == 1, values
+            assert values["askai_man_runs_total{run=\"search\"}"] == 1, values
+            failed = re.compile(r"man call failed after \d+\.\d s: " + re.escape(text) + "\n")
+            wait_for(lambda: sum(bool(failed.fullmatch(line)) for line in list(ai.log)) == 3)
+            result = man_call(ai, name="awaited")
+            assert result.get("isError") and text_of(result) == text, result
+            assert runs("awaited") == (2, 0), runs("awaited")
 
         # With no man in PATH, a call fails with the reason why man cannot
         # run. askai logs the reason once for each call.
