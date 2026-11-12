@@ -549,7 +549,6 @@ enum mcp_req_flag : uint32_t {
 	                                   due */
 	REQ_DELTA          = 1u << 6,   /* the job's immutable mailbox is
 	                                   published */
-	REQ_FAILED         = 1u << 7,   /* the answer reports an error */
 	REQ_LISTED         = 1u << 8,   /* the list that the turn's items go in
 	                                   has one */
 	REQ_BRANCH         = 1u << 9,   /* notes are on the caller's branch */
@@ -2016,7 +2015,7 @@ mcp_req_tool_close (struct mcp_req *req)
 		FRAG("]"),
 		req->structured.len ? FRAG(",\"structuredContent\":") : FRAG(""),
 		BYTES(req->structured),
-		req->flags & REQ_FAILED ? FRAG(",\"isError\":true") : FRAG(""),
+		req->self.flags & FLAG_FAILED ? FRAG(",\"isError\":true") : FRAG(""),
 		req->flags & REQ_MODERN && !req->task ? DSTR(&st->modern_tail) : FRAG("}"),
 		FRAG("}"),
 	};
@@ -2025,33 +2024,32 @@ mcp_req_tool_close (struct mcp_req *req)
 	              e ? e : mcp_req_put(req, p, array_size(p)));
 }
 
-static void mcp_slot_done (struct mcp_slot *slot, bool failed);
+static void mcp_slot_done (struct mcp_slot *slot);
 
-/** Ends the call in @p slot with the short text @p text, failed if
- *  @p failed is true. For a call of a turn or a job, the text becomes the
- *  answer of the slot for mcp_slot_done(). A client's call is logged and
- *  answered with the text.
+/** Ends the call in @p slot with the short text @p text. @p end is
+ *  TOOL_FAILED for a call that failed, and 0 otherwise. For a call of a
+ *  turn or a job, the text becomes the answer of the slot for
+ *  mcp_slot_done(). A client's call is logged and answered with the text.
  */
 static void
 mcp_slot_result (struct mcp_slot  *slot,
                  struct cstr_view  text,
-                 bool              failed)
+                 uint32_t          end)
 {
 	struct mcp_req *req = slot->req;
-	slot->flags |= FLAG_DONE;
+	slot->flags |= FLAG_DONE | (end & FLAG_FAILED);
 	if (slot->role != ROLE_OWN) {
 		/* An offset does not apply to the answer of a failed call. */
-		if (failed)
+		if (end)
 			slot->window.at = 0;
 		if (cstr_view_store(text, &slot->answer)) {
 			mcp_req_fail(req, ENOMEM);
 			return;
 		}
-		mcp_slot_done(slot, failed);
+		mcp_slot_done(slot);
 		return;
 	}
-	mcp_req_flag(req, REQ_FAILED, failed);
-	mcp_req_log_call(req, failed ? "failed" : "answered", text, failed);
+	mcp_req_log_call(req, end ? "failed" : "answered", text, end);
 	int e = mcp_req_tool_open(req, text);
 	if (e) {
 		mcp_req_abort(req, e);
@@ -2108,24 +2106,23 @@ mcp_req_reply (struct mcp_req *req)
 	mcp_req_tool_close(req);
 }
 
-/** Ends the call in @p slot with its output, failed if @p failed is true.
- *  mcp_slot_done() handles the call of a turn or a job. The reply to a
- *  client's call is written a slice in each step. It begins with
- *  agenda->said and continues with the output from the first character
- *  at or after slot->window.at, or from 0 for an ask call with lent tools.
+/** Ends the call in @p slot with its output. @p end is TOOL_FAILED for a
+ *  call that failed, and 0 otherwise. mcp_slot_done() handles the call of
+ *  a turn or a job. The reply to a client's call is written a slice in
+ *  each step. It begins with agenda->said and continues with the output
+ *  from the first character at or after slot->window.at, or from 0 for an
+ *  ask call with lent tools.
  */
 static void
 mcp_slot_respond (struct mcp_slot *slot,
-                  bool             failed)
+                  uint32_t         end)
 {
-	struct mcp_req *req = slot->req;
+	slot->flags |= FLAG_DONE | (end & FLAG_FAILED);
 	if (slot->role != ROLE_OWN) {
-		slot->flags |= FLAG_DONE;
-		mcp_slot_done(slot, failed);
+		mcp_slot_done(slot);
 		return;
 	}
-	mcp_req_flag(req, REQ_FAILED, failed);
-	slot->flags |= FLAG_DONE;
+	struct mcp_req *req = slot->req;
 	struct span text = mcp_req_output(req);
 	loop_timer_stop(req->mcp->loop, &req->timer);
 	size_t off = req->lent ? 0 : slot->window.at;
@@ -2133,11 +2130,11 @@ mcp_slot_respond (struct mcp_slot *slot,
 		char why[TOOL_TELL_MAX];
 		mcp_slot_result(slot, util_format_view(why, sizeof why, "The offset is past the end "
 		                                       "of the output. The output is %zu bytes.",
-		                                       text.len), true);
+		                                       text.len), TOOL_FAILED);
 		return;
 	}
-	mcp_req_log_call(req, failed ? "failed" : "answered",
-	                 (struct cstr_view){ (char const *)text.ptr, text.len }, failed);
+	mcp_req_log_call(req, end ? "failed" : "answered",
+	                 (struct cstr_view){ (char const *)text.ptr, text.len }, end);
 	req->phase = PHASE_REPLY;
 	req->off = util_char_start((char const *)text.ptr, text.len, off);
 	int e = mcp_req_tool_open(req, req->agenda ? cstr_view_dstr(&req->agenda->said)
@@ -2566,7 +2563,7 @@ mcp_req_job_done (struct mcp_req *req)
 		mcp_req_fail(req, e);
 		return;
 	}
-	mcp_slot_respond(&req->self, true);
+	mcp_slot_respond(&req->self, TOOL_FAILED);
 }
 
 /*
@@ -4032,7 +4029,7 @@ mcp_req_ask (struct mcp_req     *req,
 		            "answer. A conversation ID is 32 hexadecimal digits.")
 		: (struct cstr_view){};
 	if (problem.data) {
-		mcp_slot_result(&req->self, problem, true);
+		mcp_slot_result(&req->self, problem, TOOL_FAILED);
 		return;
 	}
 	if (background && !req->task) {
@@ -4348,7 +4345,7 @@ mcp_req_turn_done (struct mcp_req *req)
 	if (bytes > CALLS_MAX) {
 		mcp_slot_result(&req->self, CSTR_VIEW("The tool calls of the other AI in one turn "
 		                                      "were larger than 16 MiB. No tool call was "
-		                                      "run."), true);
+		                                      "run."), TOOL_FAILED);
 		return;
 	}
 	if (!n && !mcp_req_dozes(req)) {
@@ -4795,7 +4792,7 @@ mcp_agenda_wait_end (struct mcp_agenda *a)
 		mcp_req_fail(a->req, e);
 		return;
 	}
-	mcp_slot_respond(slot, false);
+	mcp_slot_respond(slot, 0);
 }
 
 /* What happened wakes @p a's turns, which dozed: a message of the user's
@@ -4945,7 +4942,7 @@ mcp_slot_start (struct mcp_slot    *slot,
 	int e = instance_table_get(&mcp->instances, mcp->st->reg->plugins[tool->part].plugin,
 	                           req->principal, req->generation, &slot->inst);
 	if (e == EBUSY)
-		mcp_slot_result(slot, busy, true);
+		mcp_slot_result(slot, busy, TOOL_FAILED);
 	else if (e)
 		mcp_req_fail(req, e);
 	else
@@ -5008,7 +5005,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 		? not_object
 		: (struct cstr_view){};
 	if (problem.data) {
-		mcp_slot_result(slot, problem, true);
+		mcp_slot_result(slot, problem, TOOL_FAILED);
 		return;
 	}
 	if (mcp_req_background(req, id))
@@ -5051,7 +5048,7 @@ mcp_slot_background (struct mcp_slot    *slot,
 		? not_object
 		: (struct cstr_view){};
 	if (problem.data) {
-		mcp_slot_result(slot, problem, true);
+		mcp_slot_result(slot, problem, TOOL_FAILED);
 		return;
 	}
 	int e;
@@ -5062,7 +5059,7 @@ mcp_slot_background (struct mcp_slot    *slot,
 	}
 	if (a->n_jobs == JOBS_MAX) {
 		mcp_slot_result(slot, CSTR_VIEW("You have started 8 jobs. An ask call can start "
-		                                "at most 8 jobs."), true);
+		                                "at most 8 jobs."), TOOL_FAILED);
 		return;
 	}
 	struct mcp_slot *job = &a->jobs[a->n_jobs];
@@ -5079,7 +5076,7 @@ mcp_slot_background (struct mcp_slot    *slot,
 	uint32_t n = ++a->n_jobs;
 	char text[64];
 	mcp_slot_result(slot, util_format_view(text, sizeof text, "Started job %" PRIu32 ".", n),
-	                false);
+	                0);
 	/* Last, as the job's start may end the request. */
 	mcp_slot_start(job, job->args);
 }
@@ -5136,7 +5133,7 @@ mcp_slot_turn_job (struct mcp_slot        *slot,
 		: refused[agenda_job_status(job->flags)];
 	if (!problem.data)
 		return job;
-	mcp_slot_result(slot, problem, true);
+	mcp_slot_result(slot, problem, TOOL_FAILED);
 	return nullptr;
 }
 
@@ -5172,7 +5169,7 @@ mcp_slot_turn_cancel (struct mcp_slot    *slot,
 		return;
 	mcp_slot_drop(job);
 	job->flags |= FLAG_DONE | FLAG_CANCEL;
-	mcp_slot_result(slot, CSTR_VIEW("Cancelled the job."), false);
+	mcp_slot_result(slot, CSTR_VIEW("Cancelled the job."), 0);
 }
 
 /* Answers a client's call of jobs in @p slot with the result of the job
@@ -5195,7 +5192,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 		mcp_slot_result(slot, util_format_view(text, sizeof text, "The job is still running. "
 		                                       "Call %s with the job ID again after one "
 		                                       "second for the result.",
-		                                       mcp_slot_tool(slot)->name.data), false);
+		                                       mcp_slot_tool(slot)->name.data), 0);
 		return;
 	}
 	struct cstr_view problem =
@@ -5205,7 +5202,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 		: (struct cstr_view){};
 	if (problem.data) {
 		ledger_task_put(task);
-		mcp_slot_result(slot, problem, true);
+		mcp_slot_result(slot, problem, TOOL_FAILED);
 		return;
 	}
 	atomic_fetch_or_explicit(&task->state, LEDGER_TOLD, memory_order_relaxed);
@@ -5242,7 +5239,7 @@ mcp_slot_jobs_cancel (struct mcp_slot    *slot,
 	struct json_object *timer = jb_get(args, "timer");
 	if (!jb_get(args, "job") == !timer) {
 		mcp_slot_result(slot, CSTR_VIEW("For cancel, give either job or timer, not both."),
-		                true);
+		                TOOL_FAILED);
 		return;
 	}
 	bool const own = slot->role == ROLE_OWN;
@@ -5264,7 +5261,7 @@ mcp_slot_jobs_cancel (struct mcp_slot    *slot,
 		: e == EALREADY ? util_format_view(text, sizeof text, "Timer %" PRIu32 " has already "
 		                                   "fired.", n)
 		: util_format_view(text, sizeof text, "You have no timer %" PRIu32 " set.", n);
-	mcp_slot_result(slot, said, e != 0);
+	mcp_slot_result(slot, said, e ? TOOL_FAILED : 0);
 }
 
 /* The jobs tool's call in @p slot: by the argument action of @p args, list
@@ -5290,13 +5287,13 @@ mcp_slot_jobs (struct mcp_slot    *slot,
 		return;
 	default:
 		mcp_slot_result(slot, CSTR_VIEW("The action argument must be " XL_JOIN(", ", " or ",
-		                                MCP_ACTION_LIST(XL_TEXT)) "."), true);
+		                                MCP_ACTION_LIST(XL_TEXT)) "."), TOOL_FAILED);
 		return;
 	}
 	if (e)
 		mcp_slot_fail(slot, e);
 	else
-		mcp_slot_respond(slot, false);
+		mcp_slot_respond(slot, 0);
 }
 #undef MCP_ACTION_LIST
 
@@ -5314,7 +5311,7 @@ mcp_slot_wait (struct mcp_slot    *slot,
 	uint64_t const secs = jb_count(jb_get(args, "seconds"), WAIT_MAX);
 	if (!secs) {
 		mcp_slot_result(slot, CSTR_VIEW("The seconds argument must be a whole number from "
-		                                "1 to 600."), true);
+		                                "1 to 600."), TOOL_FAILED);
 		return;
 	}
 	if (slot->role == ROLE_OWN) {
@@ -5333,7 +5330,7 @@ mcp_slot_wait (struct mcp_slot    *slot,
 	}
 	if (!listed) {
 		mcp_slot_result(slot, CSTR_VIEW("The jobs argument must be a list of numbers of jobs "
-		                                "that you started."), true);
+		                                "that you started."), TOOL_FAILED);
 		return;
 	}
 	int e;
@@ -5411,7 +5408,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 		? CSTR_VIEW("The note argument must be a string of at most 200 bytes.")
 		: (struct cstr_view){};
 	if (problem.data) {
-		mcp_slot_result(slot, problem, true);
+		mcp_slot_result(slot, problem, TOOL_FAILED);
 		return;
 	}
 	uint64_t due = req->mcp->loop->now + secs * NS;
@@ -5425,7 +5422,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 	}
 	char said[64];
 	mcp_slot_result(slot, util_format_view(said, sizeof said, "Timer %" PRIu32 " will fire "
-	                                       "in %" PRIu64 " s.", id, secs), false);
+	                                       "in %" PRIu64 " s.", id, secs), 0);
 }
 
 static void mcp_req_result_begin (struct mcp_req *req, struct mcp_slot *slot);
@@ -5439,7 +5436,7 @@ mcp_slot_none (struct mcp_slot    *slot,
 {
 	(void)args;
 	mcp_slot_result(slot, CSTR_VIEW("The tool name is unknown, or the tool is not "
-	                                "available to you."), true);
+	                                "available to you."), TOOL_FAILED);
 }
 
 static void
@@ -5477,7 +5474,8 @@ mcp_slot_replay (struct mcp_slot    *slot,
 	slot->window = (struct extent){ skip, text.len - skip };
 	slot->at = jb_uint(jb_get(saved, "at"), 0);
 	slot->bytes = jb_uint(jb_get(saved, "bytes"), 0);
-	mcp_slot_result(slot, text, json_object_get_boolean(jb_get(saved, "failed")));
+	mcp_slot_result(slot, text,
+	                json_object_get_boolean(jb_get(saved, "failed")) ? TOOL_FAILED : 0);
 	return 0;
 }
 
@@ -5541,7 +5539,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		                ? CSTR_VIEW("Your answer reached the output token limit. The "
 		                            "limit cut the arguments short. The call was not run.")
 		                : CSTR_VIEW("The arguments were not a JSON object. The call was "
-		                            "not run."), true);
+		                            "not run."), TOOL_FAILED);
 		return;
 	}
 	mcp_slot_start(slot, args);
@@ -5649,15 +5647,16 @@ static void mcp_agenda_job_done (struct mcp_slot *slot);
 
 /**
  * Handles the end of the call in @p slot, which is a call of a turn or a
- * job. The call has produced its output or has failed. For a call of a
- * turn, the function sets slot->window to the part of the output that
- * the next upstream request contains, writes the note about that part
- * into slot->note, and records the result in the journal if
- * req->archive is set. The window and the note of a call that a resumed
- * job replays are set already. Then the function queues the step of the
- * request. The step writes the results of the calls into the upstream
- * request in the order of the calls. For a job, the function calls
- * mcp_agenda_job_done(), which adds a notice about the job to the agenda.
+ * job. The call has produced its output, or it has failed and slot->flags
+ * contains FLAG_FAILED. For a call of a turn, the function sets
+ * slot->window to the part of the output that the next upstream request
+ * contains, writes the note about that part into slot->note, and records
+ * the result in the journal if req->archive is set. The window and the
+ * note of a call that a resumed job replays are set already. Then the
+ * function queues the step of the request. The step writes the results of
+ * the calls into the upstream request in the order of the calls. For a job,
+ * the function calls mcp_agenda_job_done(), which adds a notice about the
+ * job to the agenda.
  *
  * With --verbose, the function logs one line with the ask call, the turn,
  * the name of the tool, whether the call failed, the time that the call
@@ -5672,8 +5671,7 @@ static void mcp_agenda_job_done (struct mcp_slot *slot);
  * ends in mcp_slot_drop(), which logs no line.
  */
 static void
-mcp_slot_done (struct mcp_slot *slot,
-               bool             failed)
+mcp_slot_done (struct mcp_slot *slot)
 {
 	/* The words of the log line for a call of a turn and for a job. This
 	 * function is not called for ROLE_OWN. */
@@ -5685,6 +5683,7 @@ mcp_slot_done (struct mcp_slot *slot,
 	struct registry_tool const *tool = mcp_slot_tool(slot);
 	struct span out = mcp_slot_output(slot);
 	bool job = slot->role == ROLE_JOB;
+	bool const failed = slot->flags & FLAG_FAILED;
 	if (log_threshold >= LOG_VERBOSE && slot->tool != TOOL_MAX) {
 		/* A turn's call whose arguments are not a JSON object ends at once
 		 * in mcp_req_call_launch(), so REQ_CUT is still the value of its
@@ -5701,7 +5700,6 @@ mcp_slot_done (struct mcp_slot *slot,
 		    failed ? "failed" : "answered", mcp_elapsed(slot->start), out.len,
 		    util_s(out.len), shown.data, *text ? "; error " : "", text);
 	}
-	slot->flags |= failed ? FLAG_FAILED : 0;
 	struct member const *notebook = !failed ? slot->shows : nullptr;
 	slot->shows = nullptr;
 	if (job) {
@@ -6235,7 +6233,7 @@ mcp_recover_back (struct loop           *loop,
 	goto out;
 failed:
 	json_object_put(state);
-	mcp_slot_result(&req->self, problem, true);
+	mcp_slot_result(&req->self, problem, TOOL_FAILED);
 out:
 	json_object_put(args);
 	journal_records_destroy(&records);
@@ -6271,7 +6269,7 @@ mcp_req_recover (struct mcp_req     *req,
 	if (e) {
 		mcp_req_journal_unwait(req, &w);
 		mcp_slot_result(&req->self, CSTR_VIEW("Cannot load the durable job journal "
-		                                      "now."), true);
+		                                      "now."), TOOL_FAILED);
 		return true;
 	}
 	req->archive_call = w->who;
@@ -6569,7 +6567,7 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	struct cstr_view const summary = jb_view(jb_get(args, "summary"));
 	if (!summary.len || summary.len > TOOL_TEXT_MAX) {
 		mcp_slot_result(slot, CSTR_VIEW("The summary argument must be a string of 1 "
-		                                "byte to 4 MiB."), true);
+		                                "byte to 4 MiB."), TOOL_FAILED);
 		return;
 	}
 	if (mcp_req_drained(req))
@@ -6597,7 +6595,8 @@ mcp_req_compact_full (struct mcp_req *req)
 		return;
 	if (req->forced++) {
 		mcp_slot_result(&req->self, CSTR_VIEW("The task and the notes do not fit in the "
-		                                      "context of the upstream model."), true);
+		                                      "context of the upstream model."),
+		                TOOL_FAILED);
 		return;
 	}
 	hist_add(&req->mcp->counts->calls.compacted[1], 1);
@@ -6677,7 +6676,7 @@ mcp_slot_ask (struct mcp_slot    *slot,
 		            XL_JOIN(", ", " or ", MCP_JOB_ACTION_LIST(XL_TEXT)) ".")
 		: (struct cstr_view){};
 	if (problem.data) {
-		mcp_slot_result(slot, problem, true);
+		mcp_slot_result(slot, problem, TOOL_FAILED);
 		return;
 	}
 	if (!job) {
@@ -7318,7 +7317,8 @@ mcp_req_text (struct mcp_req *req)
 	struct span body = buf_peek(&job->result);
 	/* A streamed answer without text after REQ_STOPPED is set is a failure. */
 	if (job->status == JOB_TEXT) {
-		mcp_slot_respond(&req->self, req->flags & REQ_STOPPED && !body.len);
+		mcp_slot_respond(&req->self,
+		                 req->flags & REQ_STOPPED && !body.len ? TOOL_FAILED : 0);
 		return;
 	}
 	bool failed = true;
@@ -7336,7 +7336,7 @@ mcp_req_text (struct mcp_req *req)
 		mcp_req_compact_full(req);
 		return;
 	}
-	mcp_slot_respond(&req->self, failed);
+	mcp_slot_respond(&req->self, failed ? TOOL_FAILED : 0);
 }
 
 /* Render a share of the metrics into the reply; once all are in, send it. */
