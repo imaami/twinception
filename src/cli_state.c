@@ -25,7 +25,6 @@
 #include "git_run.h"
 #include "hexid.h"
 #include "jb.h"
-#include "loop.h"
 #include "oid.h"
 #include "util.h"
 
@@ -183,9 +182,9 @@ cli_state_lock (struct cli_state *state,
  *  and with the standard input @p input. git writes the output to the file
  *  @p output_fd, or to state->output, up to 4 KiB, if @p output_fd is
  *  negative. If @p oid is not nullptr, the function reads the name of an
- *  object that git prints into @p oid. Returns the error of
- *  git_run_init(), or what git_run_capture() returns. For a git that runs
- *  longer than GIT_RUN_NS, the error is ETIMEDOUT.
+ *  object that git prints into @p oid. Returns what git_run_now()
+ *  returns. For a git that runs longer than GIT_RUN_NS, the error is
+ *  ETIMEDOUT.
  */
 static int
 cli_state_git (struct cli_state  *state,
@@ -198,18 +197,15 @@ cli_state_git (struct cli_state  *state,
 	 * and askai-cli does not remove a stale lock file. At the deadline,
 	 * child_run() and child_capture() send SIGTERM to git, which removes
 	 * its lock files and exits, and SIGKILL GIT_GRACE later. */
-	struct git_run run;
-	int e = git_run_init(&run, &state->git, words, &(struct child_cmd){
-		.in       = { (unsigned char *)(uintptr_t)input.data, input.len },
-		.max      = 4 << 10,
-		.deadline = loop_clock() + GIT_RUN_NS,
-		.grace    = GIT_GRACE,
-	});
-	if (e)
-		return e;
+	struct child_cmd const how = {
+		.in    = { (unsigned char *)(uintptr_t)input.data, input.len },
+		.max   = 4 << 10,
+		.grace = GIT_GRACE,
+	};
 	struct child_fds fds = child_fds();
 	fds.out = output_fd;
-	return git_run_capture(&run, fds, output_fd < 0 ? &state->output : nullptr, oid);
+	return git_run_now(&state->git, words, how, fds,
+	                   output_fd < 0 ? &state->output : nullptr, oid);
 }
 
 /* Returns the output of the last git that cli_state_git() captured. */
