@@ -16,6 +16,7 @@
 #include "check.h"
 #include "dstr.h"
 #include "finding_id.h"
+#include "flag.h"
 #include "jb.h"
 #include "oid.h"
 #include "range.h"
@@ -516,7 +517,7 @@ test_keep (void)
 		.turn   = 3,
 		.tool   = 5,
 		.index  = 2,
-		.flags  = SEEN_FAILED,
+		.flags  = FLAG_FAILED,
 	};
 	struct seen_result r = { .parts = parts, .out = o, .read = read, .stamp = stamp, .skip = skip };
 	struct seen *seen = nullptr;
@@ -535,7 +536,7 @@ test_keep (void)
 	static_assert(sizeof stamp == 24, "struct seen_stamp is not 24 bytes");
 	CHECK(c->skip == skip && c->stamp.output == 1000 && c->stamp.number == 7 &&
 	      c->stamp.turn == 3 && c->stamp.tool == 5 && c->stamp.index == 2 &&
-	      c->stamp.flags == SEEN_FAILED);
+	      c->stamp.flags == FLAG_FAILED);
 	CHECK(!memcmp(&c->stamp, &stamp, sizeof stamp));
 	/* The tool of a place of the ring without a call is TOOL_MAX. */
 	CHECK(seen->calls[1].stamp.tool == TOOL_MAX && !seen->calls[1].stamp.number &&
@@ -568,13 +569,13 @@ test_keep (void)
 	CHECK(seen->n == 3 && !c->lines.range.first && !c->lines.range.last && !dstr_len(&c->ids) &&
 	      c->stamp.tool == TOOL_MAX && !c->stamp.index && !c->stamp.flags);
 	SAME(dstr_get(&c->result), dstr_len(&c->result), "plain");
-	/* An empty output without data. seen_keep() copies SEEN_FAILED and no
+	/* An empty output without data. seen_keep() copies FLAG_FAILED and no
 	 * other flag of the stamp, so the call is not too large. */
 	request_of(&request, 10);
 	parts[0] = (struct cstr_view){};
 	parts[1] = CSTR_VIEW("note");
 	r = (struct seen_result){ .parts = parts,
-	                          .stamp = { .number = 10, .flags = (uint16_t)~SEEN_FAILED } };
+	                          .stamp = { .number = 10, .flags = (uint16_t)~FLAG_FAILED } };
 	CHECK(!seen_keep(&seen, &request, &r));
 	c = call_at(seen, 3);
 	CHECK(c->stamp.number == 10 && !c->stamp.flags && buf_peek(&c->request).len == 10);
@@ -583,7 +584,7 @@ test_keep (void)
 	r.stamp = (struct seen_stamp){ .number = 11, .flags = UINT16_MAX };
 	CHECK(!seen_keep(&seen, &request, &r));
 	c = call_at(seen, 4);
-	CHECK(c->stamp.number == 11 && c->stamp.flags == SEEN_FAILED);
+	CHECK(c->stamp.number == 11 && c->stamp.flags == FLAG_FAILED);
 
 	/* Refusals. The ring stays as it was after a refused call. */
 	request_of(&request, 10);
@@ -721,12 +722,12 @@ test_drop (void)
 	struct cstr_view const parts[SEEN_PARTS] = { CSTR_VIEW("r") };
 	struct seen_result const r = { .parts = parts, .out = parts[0],
 	                               .stamp = { .output = 1, .number = 8, .turn = 2, .tool = 1,
-	                                          .index = 7, .flags = SEEN_FAILED } };
+	                                          .index = 7, .flags = FLAG_FAILED } };
 	size_t const before = seen->bytes;
 	CHECK(!seen_keep(&seen, &request, &r));
 	struct seen_call const *c = call_at(seen, seen->n - 1);
 	CHECK(seen->n == 5 && c->stamp.number == 8 && c->stamp.turn == 2 && c->stamp.tool == 1 &&
-	      c->stamp.index == 7 && c->stamp.flags == (SEEN_FAILED | SEEN_TOO_LARGE) &&
+	      c->stamp.index == 7 && c->stamp.flags == (FLAG_FAILED | SEEN_TOO_LARGE) &&
 	      c->stamp.output == 1);
 	CHECK(!c->request.data && !dstr_len(&c->result) && seen->bytes == before);
 	CHECK(buf_peek(&request).len == TOOL_TEXT_MAX);

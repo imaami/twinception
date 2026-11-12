@@ -17,6 +17,7 @@
 #include "dstr.h"
 #include "evidence.h"
 #include "finding_id.h"
+#include "flag.h"
 #include "jb.h"
 #include "job.h"
 #include "range.h"
@@ -109,7 +110,7 @@ keep (struct seen     **p_seen,
 		           .turn   = turn,
 		           .tool   = tool,
 		           .index  = (uint16_t)(number % 3),
-		           .flags  = number == 2 ? SEEN_FAILED : 0 },
+		           .flags  = number == 2 ? FLAG_FAILED : 0 },
 	};
 	CHECK(!seen_keep(p_seen, &request, &r));
 	buf_fini(&request);

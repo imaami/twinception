@@ -11,6 +11,7 @@
 
 #include "evidence.h"
 #include "finding_id.h"
+#include "flag.h"
 #include "jb.h"
 #include "job.h"
 #include "oid.h"
@@ -429,7 +430,7 @@ evidence_cite (struct evidence            *dest,
 	dest->ask = *cite->ask;
 	dest->output = stamp->output;
 	dest->skip = c->skip;
-	dest->flags = stamp->flags & SEEN_FAILED ? EVIDENCE_FAILED : 0;
+	dest->flags = stamp->flags & FLAG_FAILED ? EVIDENCE_FAILED : 0;
 	char made[sizeof "call_4294967295_65535"];
 	struct cstr_view const id = parts.id.len ? parts.id
 	                          : util_format_view(made, sizeof made, "call_%" PRIu32 "_%u",

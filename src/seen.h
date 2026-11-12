@@ -53,6 +53,7 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "finding_id.h"
+#include "flag.h"
 #include "oid.h"
 #include "range.h"
 #include "util.h"
@@ -74,12 +75,14 @@ enum {
 	                                         ring, at most */
 };
 
-/** The flags of a call in the ring. */
+/** The flags of a call in the ring. The flags of a failed call contain
+ *  FLAG_FAILED, the shared bit of src/flag.h. SEEN_TOO_LARGE is a bit of
+ *  this word only.
+ */
 enum seen_flag : uint16_t {
-	SEEN_FAILED    = 1U << 0,  /**< the call failed */
-	SEEN_TOO_LARGE = 1U << 1,  /**< the arguments and the result were
-	                                larger than TOOL_TEXT_MAX, so the ring
-	                                stores neither */
+	SEEN_TOO_LARGE = FLAG_OWN(0),  /**< the arguments and the result were
+	                                    larger than TOOL_TEXT_MAX, so the
+	                                    ring stores neither */
 };
 
 /** Where seen_find() found a call. */
@@ -152,7 +155,7 @@ struct seen_stamp {
 	uint16_t index;   /**< K of the call in its turn, from 0, as in the ID
 	                       call_T_K of a call without an ID from the
 	                       provider */
-	uint16_t flags;   /**< enum seen_flag */
+	uint16_t flags;   /**< FLAG_FAILED and enum seen_flag */
 };
 
 /** A call in the ring. */
@@ -235,7 +238,7 @@ struct seen_result {
 	struct seen_read       *read;    /**< the numbered lines of a file in
 	                                      @p out, or nullptr */
 	struct seen_stamp       stamp;   /**< the stamp of the call. seen_keep()
-	                                      copies only SEEN_FAILED of
+	                                      copies only FLAG_FAILED of
 	                                      stamp.flags. */
 	uint64_t                at;      /**< offset of @p out in the whole
 	                                      output */

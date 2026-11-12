@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "finding_id.h"
+#include "flag.h"
 #include "jb.h"
 #include "oid.h"
 #include "range.h"
@@ -322,7 +323,7 @@ seen_keep (struct seen              **p_seen,
 		*request = (struct buf){};
 	}
 	c->stamp = r->stamp;
-	c->stamp.flags = (r->stamp.flags & SEEN_FAILED) | (large ? SEEN_TOO_LARGE : 0);
+	c->stamp.flags = (r->stamp.flags & FLAG_FAILED) | (large ? SEEN_TOO_LARGE : 0);
 	c->skip = (uint32_t)(r->at + r->skip);
 	c->lines = whole;
 	seen->bytes += bytes;

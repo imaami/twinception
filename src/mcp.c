@@ -5919,7 +5919,7 @@ mcp_req_result_write (struct mcp_req *req)
 			           .turn   = req->turn,
 			           .tool   = slot->tool,
 			           .index  = (uint16_t)req->part,
-			           .flags  = slot->flags & SLOT_FAILED ? SEEN_FAILED : 0 },
+			           .flags  = slot->flags & SLOT_FAILED ? FLAG_FAILED : 0 },
 			.at    = slot->at,
 			.skip  = slot->window.at,
 		});
