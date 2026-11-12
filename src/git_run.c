@@ -9,6 +9,7 @@
 #include "child.h"
 #include "cstr_view.h"
 #include "git_run.h"
+#include "loop.h"
 #include "oid.h"
 #include "util.h"
 
@@ -97,6 +98,22 @@ git_run_capture (struct git_run const *run,
 	struct span const got = buf_peek(out);
 	struct cstr_view const text = { (char const *)got.ptr, got.len };
 	return end.status || oid_init_line(oid, text) ? EIO : 0;
+}
+
+int
+git_run_now (struct git_run_dir const *dir,
+             char const *const        *words,
+             struct child_cmd          how,
+             struct child_fds          fds,
+             struct buf               *out,
+             struct oid               *oid)
+{
+	how.deadline = loop_clock() + GIT_RUN_NS;
+	/* git_run_init() writes the argv up to its nullptr, not the pointers
+	 * after it. */
+	struct git_run run = {};
+	int const e = git_run_init(&run, dir, words, &how);
+	return e ? e : git_run_capture(&run, fds, out, oid);
 }
 
 int

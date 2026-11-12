@@ -7,8 +7,9 @@
  * child_create(), child_run() or child_capture() runs the struct
  * child_cmd of the struct git_run. git_run_capture() runs it on the
  * calling thread, turns the end of git into an error number, and reads
- * the name of an object that git prints. git_run_path() reads a line with
- * an absolute path from the output of git.
+ * the name of an object that git prints. git_run_now() runs one command
+ * in that way, with the deadline GIT_RUN_NS after the call. git_run_path()
+ * reads a line with an absolute path from the output of git.
  */
 #ifndef ASKAI_SRC_GIT_RUN_H_
 #define ASKAI_SRC_GIT_RUN_H_
@@ -188,6 +189,25 @@ git_run_capture (struct git_run const *run,
                  struct child_fds      fds,
                  struct buf           *out,
                  struct oid           *oid);
+
+/**
+ * Runs the git command @p words, up to their nullptr, in @p dir on the
+ * calling thread. The function initializes a struct git_run as
+ * git_run_init() does, with the deadline GIT_RUN_NS after the call, and
+ * runs it as git_run_capture() does with @p fds, @p out and @p oid. The
+ * input, the cap, the grace and the bits of enum child_flag are those of
+ * @p how. The function does not read how.deadline. Returns the error of
+ * git_run_init(), which leaves @p out and @p oid as they were, or what
+ * git_run_capture() returns. The error of a git that runs longer than
+ * GIT_RUN_NS is ETIMEDOUT.
+ */
+extern int
+git_run_now (struct git_run_dir const *dir,
+             char const *const        *words,
+             struct child_cmd          how,
+             struct child_fds          fds,
+             struct buf               *out,
+             struct oid               *oid);
 
 /**
  * Stores the next line of @p rest, a part of the output of git, in
