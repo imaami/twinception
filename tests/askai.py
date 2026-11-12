@@ -10700,6 +10700,22 @@ def check_code(binary, up):
                 f.write("int planted;\n")
             call(ai, **outline, path="src/b.c")
             assert not os.path.exists(f"{tree}/tree/planted.c")
+            # A git that exits with an error does not finish the export.
+            # b.c differs in the first commit, and its directory cannot be
+            # written. The call after that exports again. The user root can
+            # write the directory, so the check does not run for root.
+            if os.geteuid():
+                os.chmod(f"{tree}/tree/src", 0o500)
+                try:
+                    got = call(ai, error=True, **outline, path="src/b.c", revision="HEAD~1")
+                finally:
+                    os.chmod(f"{tree}/tree/src", 0o700)
+                assert got == f"git cannot export commit {parent}.", got
+                with open(f"{tree}/commit") as f:
+                    assert f.read() == "-"
+                assert call(ai, **outline, path="src/b.c") == (
+                    f"[Repository proj, file src/b.c at commit {head}. 2 names.]\n"
+                    "1 variable b_value: int\n2 variable b_more: int\n")
             # clang's debug pragmas have no effect, a stack overflow kills
             # the helper, and a .c file that is not in the compile commands
             # is refused.

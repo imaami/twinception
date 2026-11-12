@@ -1481,9 +1481,10 @@ struct cxi_cache {
 	int                state;
 };
 
-/* Runs git with @p words and the lock kept open. The output is appended
- * to @p out, up to @p max bytes, or goes to /dev/null if @p out is nullptr.
- * Returns EIO for an exit status other than 0.
+/* Runs git with @p words and the lock kept open, as child_cmd_run() runs
+ * a command. The output replaces the content of @p out, up to @p max
+ * bytes, or goes to /dev/null if @p out is nullptr. Returns EIO for an
+ * exit status other than 0.
  */
 static int
 cxi_cache_git (struct cxi_cache const *cache,
@@ -1493,16 +1494,12 @@ cxi_cache_git (struct cxi_cache const *cache,
 {
 	char const *const *const parts[] = { cache->git, words };
 	char const *argv[256];
-	int e = child_argv(argv, array_size(argv), parts, array_size(parts));
+	int const e = child_argv(argv, array_size(argv), parts, array_size(parts));
 	extern char **environ;
 	struct child_cmd const cmd = {
 		.file = "git", .argv = argv, .envp = environ, .max = max, .deadline = cache->deadline
 	};
-	struct child_end end;
-	if (!e)
-		e = out ? child_capture(&cmd, cache->fds, out, &end)
-		        : child_run(&cmd, cache->fds, &end);
-	return e ? e : end.status ? EIO : 0;
+	return e ? e : child_cmd_run(&cmd, cache->fds, out, &(struct child_end){});
 }
 
 static int
