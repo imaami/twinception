@@ -389,6 +389,19 @@ findings_stop (struct mcp_slot  *slot,
 		mcp_slot_tell(slot, why, TOOL_FAILED);
 }
 
+/* Returns the refusal that a writer wrote into @p scratch, the scratch of
+ * the loop, before the writer returned the error @p e. findings_args() and
+ * evidence_recite() write a refusal only for EINVAL, so the scratch is read
+ * only then (mcp_slot_scratch()). For any other error, the function returns
+ * an empty view.
+ */
+static struct cstr_view
+findings_refusal (struct tool_scratch const *scratch,
+                  int                        e)
+{
+	return e == EINVAL ? cstr_view(scratch->text) : (struct cstr_view){};
+}
+
 /* Refuses the call in @p slot for the finding @p id, which does not exist. */
 static void
 findings_no_finding (struct mcp_slot         *slot,
@@ -1487,12 +1500,10 @@ findings_cite_end (struct mcp_slot                *slot,
 		struct evidence *item = &call->change.evidence.items[cite->index];
 		e = evidence_recite(item, &lines, &cite->ref, cstr_view_dstr(&of->record),
 		                    material[cite->first].result, scratch->text, sizeof scratch->text);
-		if (e == EINVAL) {
-			findings_stop(slot, EINVAL, cstr_view(scratch->text));
+		if (e) {
+			findings_stop(slot, e, findings_refusal(scratch, e));
 			return;
 		}
-		if (e)
-			break;
 		if (cite->ref.form == EVIDENCE_REF_ITEM_LINES)
 			e = findings_archive(call, item, &(struct evidence_material){
 				.result = cstr_view_dstr(&lines) }, (struct oid const [2]){});
@@ -1943,12 +1954,8 @@ findings_begin (struct mcp_slot    *slot,
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct tool_scratch *scratch = mcp_slot_scratch(slot);
 	int const e = findings_args(slot, args, scratch->text, sizeof scratch->text);
-	if (e == EINVAL) {
-		findings_stop(slot, EINVAL, cstr_view(scratch->text));
-		return;
-	}
 	if (e) {
-		findings_end(slot, e, true);
+		findings_stop(slot, e, findings_refusal(scratch, e));
 		return;
 	}
 	if (call->action == FINDINGS_EXPAND && *call->id.author)
