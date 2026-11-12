@@ -711,6 +711,31 @@ mcp_slot_tellf (struct mcp_slot *slot,
                 char const      *fmt,
                 ...);
 
+/** Empties the scratch text of the loop that runs the call, and returns
+ *  the scratch. If a write is missing by mistake, the text is then empty,
+ *  and is not the text of an earlier call. All calls of a loop write their
+ *  texts into the one scratch, so these rules apply:
+ *  - The write and the use are adjacent. The function that called
+ *    mcp_slot_scratch() passes the scratch to one writer. The text is an
+ *    argument of mcp_slot_tell(), mcp_slot_tellf() or LOG() in the same
+ *    statement or in the next statement.
+ *  - A writer is a function with the storage as a parameter. A writer
+ *    never calls mcp_slot_scratch().
+ *  - A text is read through the view that the writer returned, or after a
+ *    writer that writes a text for the error number that it returns. No
+ *    code reads the scratch after an error number for which the writer
+ *    wrote no text.
+ *  - The only struct tool_scratch objects are the member of the struct mcp
+ *    of each loop, and the object of a unit test.
+ *
+ *  mcp_slot_tell() copies the text before any other call runs.
+ *  mcp_slot_tellf() formats in an array of its own, so a view of the
+ *  scratch can be an argument of the format. Only the built-in plugins
+ *  build such texts, so askai does not export this function.
+ */
+extern struct tool_scratch *
+mcp_slot_scratch (struct mcp_slot const *slot);
+
 /** Ends the call with the output that mcp_slot_write() wrote. A client's
  *  call gets the output from the offset that mcp_slot_offset() took. A
  *  turn's call gets the part of the output that the turn takes. With

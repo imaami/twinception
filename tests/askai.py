@@ -17001,9 +17001,10 @@ def check_misuse(binary, up, plugin):
     has no step() and no drop(). Its case "ready" asks for a step, its case
     "own" sets the mcp_slot_own() pointer, and its case "after" ends the
     call and then calls each function of the call API that ends or changes
-    a call. The drop() of test_state tries to end its call. A background
-    job of test_state with "fail" ends with mcp_slot_fail() while the reply
-    of its ask call is being sent.
+    a call. Its case "long" ends the call with mcp_slot_tellf() and a format
+    that produces 5000 bytes. The drop() of test_state tries to end its
+    call. A background job of test_state with "fail" ends with
+    mcp_slot_fail() while the reply of its ask call is being sent.
     """
     plugin = os.path.realpath(plugin)
     auth = {"Authorization": "Bearer alice"}
@@ -17014,7 +17015,11 @@ def check_misuse(binary, up, plugin):
                   True),
         "own": ("own", False),
         "after": ("first", False),
+        # mcp_slot_tellf() cuts the 5000 bytes of the format to the 4095
+        # bytes of a told text. The last three of them are "...".
+        "long": ("long " + "0" * 4087 + "...", False),
     }
+    assert len(expected["long"][0]) == 4095
     hold = up.reply
     with tempfile.TemporaryDirectory() as d:
         path = f"{os.path.realpath(d)}/askai.json"
@@ -17061,9 +17066,9 @@ def check_misuse(binary, up, plugin):
                 "foreign 0 own 1"
             # After the end of the call, each function that would end or
             # change the call, and mcp_slot_fetched(), refused with EINVAL.
-            assert state()[1] == "refused 10 of 10"
+            assert state()[1] == "refused 11 of 11"
 
-            # The same three cases in a turn of an ask call.
+            # The same four cases in a turn of an ask call.
             up.reply = lambda request: (200, turn_stream(
                 [(case, "test_misuse", json.dumps({"case": case})) for case in expected]
                 if len(request["body"]["messages"]) == 1 else (), text="A"))
@@ -17074,7 +17079,7 @@ def check_misuse(binary, up, plugin):
             assert result["content"][0]["text"] == "A" and \
                 not result.get("isError"), result
             told = [m["content"] for m in up.requests[count:][1]["body"]["messages"][2:]]
-            assert len(told) == 3 and all(
+            assert len(told) == len(expected) and all(
                 said.startswith(text) for said, (text, _) in zip(told, expected.values())), told
 
             # The client of a call that waits closes its connection, so askai
@@ -17129,8 +17134,8 @@ def check_misuse(binary, up, plugin):
             assert text_of(call("test_echo", {"text": "z"})) == "z"
     print("misuse: askai ignores or refuses a step without step(), an own word "
           "without drop(), the call API after the end and from drop(), and a "
-          "job that fails while its ask call's reply is sent, and the next "
-          "calls work: PASS")
+          "job that fails while its ask call's reply is sent, a format of 5000 "
+          "bytes is told as 4095 bytes, and the next calls work: PASS")
 
 
 def check_web(binary, up, plugin):

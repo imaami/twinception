@@ -788,6 +788,14 @@ struct mcp {
 	uint64_t                  asked;      /* the number of ask calls begun
 	                                         on this loop, for the log */
 	uint64_t                  draining;   /* bool, widened over the padding */
+	struct tool_scratch       scratch;    /* the scratch text of the loop
+	                                         (mcp_slot_scratch()) */
+	char                      told[TOOL_TELL_MAX];
+	                                      /* the text that mcp_slot_tellf()
+	                                         and mcp_slot_respond() format.
+	                                         Only these two functions write
+	                                         the array, so no argument of a
+	                                         format is a text in the array. */
 	void                     *parts[];    /* the parts of the plugins, in
 	                                         the order of st->reg->plugins[] */
 };
@@ -2126,10 +2134,10 @@ mcp_slot_respond (struct mcp_slot *slot,
 	loop_timer_stop(req->mcp->loop, &req->timer);
 	size_t off = req->lent ? 0 : slot->window.at;
 	if (off > text.len) {
-		char why[TOOL_TELL_MAX];
-		mcp_slot_result(slot, util_format_view(why, sizeof why, "The offset is past the end "
-		                                       "of the output. The output is %zu bytes.",
-		                                       text.len), TOOL_FAILED);
+		struct mcp *mcp = req->mcp;
+		mcp_slot_result(slot, util_format_view(mcp->told, sizeof mcp->told, "The offset is "
+		                                       "past the end of the output. The output is "
+		                                       "%zu bytes.", text.len), TOOL_FAILED);
 		return;
 	}
 	mcp_req_log_call(req, failed ? "failed" : "answered",
@@ -3414,6 +3422,23 @@ mcp_slot_live (struct mcp_slot const *slot,
 	return !slot ? EFAULT : slot->flags & FLAG_DONE || flags & ~allowed ? EINVAL : 0;
 }
 
+/* Ends the call in @p slot with @p text, as mcp_slot_tell() does after it
+ * has checked its inputs. @p end is TOOL_FAILED for a call that failed,
+ * and 0 otherwise.
+ */
+static void
+mcp_slot_told (struct mcp_slot  *slot,
+               struct cstr_view  text,
+               uint32_t          end)
+{
+	size_t len = jb_utf8(text.data, text.len < TOOL_TELL_MAX ? text.len : TOOL_TELL_MAX);
+	mcp_slot_wake(slot);
+	/* The output is the text whole, not lent, nor from an offset. */
+	slot->window.at = 0;
+	slot->lent = (struct span){};
+	mcp_slot_result(slot, (struct cstr_view){ text.data, len }, end);
+}
+
 int
 mcp_slot_tell (struct mcp_slot  *slot,
                struct cstr_view  text,
@@ -3422,12 +3447,7 @@ mcp_slot_tell (struct mcp_slot  *slot,
 	int e = !text.data && text.len ? EFAULT : mcp_slot_live(slot, flags, TOOL_FAILED);
 	if (e)
 		return e;
-	size_t len = jb_utf8(text.data, text.len < TOOL_TELL_MAX ? text.len : TOOL_TELL_MAX);
-	mcp_slot_wake(slot);
-	/* The output is the text whole, not lent, nor from an offset. */
-	slot->window.at = 0;
-	slot->lent = (struct span){};
-	mcp_slot_result(slot, (struct cstr_view){ text.data, len }, flags);
+	mcp_slot_told(slot, text, flags);
 	return 0;
 }
 
@@ -3437,14 +3457,24 @@ mcp_slot_tellf (struct mcp_slot *slot,
                 char const      *fmt,
                 ...)
 {
-	if (!fmt)
-		return EFAULT;
-	char text[TOOL_TELL_MAX];
+	int const e = !fmt ? EFAULT : mcp_slot_live(slot, flags, TOOL_FAILED);
+	if (e)
+		return e;
+	struct mcp *mcp = slot->req->mcp;
 	va_list ap;
 	va_start(ap, fmt);
-	size_t const len = util_vformat(text, sizeof text, fmt, ap);
+	size_t const len = util_vformat(mcp->told, sizeof mcp->told, fmt, ap);
 	va_end(ap);
-	return mcp_slot_tell(slot, (struct cstr_view){ text, len }, flags);
+	mcp_slot_told(slot, (struct cstr_view){ mcp->told, len }, flags);
+	return 0;
+}
+
+struct tool_scratch *
+mcp_slot_scratch (struct mcp_slot const *slot)
+{
+	struct tool_scratch *scratch = &slot->req->mcp->scratch;
+	scratch->text[0] = '\0';
+	return scratch;
 }
 
 int
@@ -5252,7 +5282,7 @@ mcp_slot_jobs_cancel (struct mcp_slot    *slot,
 	            : own ? ledger_timer_cancel(req->mcp->st->ledger, req->owner, n)
 	            : !req->agenda ? ENOENT
 	            : ledger_timer_drop(req->agenda->timers, n, req->mcp->loop->now);
-	char text[96];
+	char text[96] = "";
 	struct cstr_view const said =
 		e == EINVAL ? CSTR_VIEW("The timer argument must be the number of a timer that you "
 		                        "set.")

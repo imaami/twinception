@@ -18,8 +18,10 @@
  *
  * test_misuse calls the call API in ways that tool.h and mcp.h do not
  * allow, and passes the exported functions inputs that they must refuse.
- * askai must go on working after them, and nothing of one call may reach
- * another call. check_misuse (tests/askai.py) runs it.
+ * One of its cases calls mcp_slot_tellf() with a format that produces more
+ * than TOOL_TELL_MAX - 1 bytes. askai must go on working after these calls,
+ * and no output of one call may appear in another call. check_misuse
+ * (tests/askai.py) runs it.
  *
  * test_fetch sends an HTTP request with mcp_slot_fetch() and parks. Its
  * step() writes the response's status, type, age, retry, error number and
@@ -282,6 +284,7 @@ test_plugin_state_drop (struct mcp_slot *slot)
         X(READY,   "ready")      \
         X(OWN,     "own")        \
         X(AFTER,   "after")      \
+        X(LONG,    "long")       \
         X(INVALID, "invalid")    \
         X(HANDLES, "handles")
 
@@ -487,6 +490,9 @@ test_plugin_misuse_handles (struct mcp_slot *slot,
  *   N is the number of these calls and R is the number of them that
  *   returned EINVAL. The next test_state call of the user shows that
  *   text.
+ * - "long": the call ends with mcp_slot_tellf() and a format that produces
+ *   5000 bytes. The output is the first 4092 of those bytes and then "...",
+ *   which is TOOL_TELL_MAX - 1 bytes in all.
  * - "invalid": test_plugin_misuse_invalid() runs.
  * - "handles": test_plugin_misuse_handles() runs.
  * Any other case ends the call as failed.
@@ -515,6 +521,9 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 		*own = inst;
 		mcp_slot_tell(slot, CSTR_VIEW("own"), 0);
 		return;
+	case TEST_PLUGIN_LONG:
+		mcp_slot_tellf(slot, 0, "long %04995d", 0);
+		return;
 	case TEST_PLUGIN_INVALID:
 		test_plugin_misuse_invalid(slot, loop);
 		return;
@@ -541,6 +550,7 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 		mcp_slot_name(slot, &who),
 		mcp_slot_offset(slot, nullptr),
 		mcp_slot_tell(slot, CSTR_VIEW("second"), 0),
+		mcp_slot_tellf(slot, 0, "third"),
 		mcp_slot_finish(slot, 0),
 		mcp_slot_fail(slot, EIO),
 		mcp_slot_ready(slot),

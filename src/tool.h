@@ -98,6 +98,15 @@ struct tool_why {
 	char     data[TOOL_TELL_MAX];  /**< the text, and a NUL after the text */
 };
 
+/** The scratch text of a client loop. It is storage for one text of at
+ *  most TOOL_TELL_MAX - 1 bytes and a NUL. There is one scratch for each
+ *  client loop. The rules of its use are in the comment of
+ *  mcp_slot_scratch() (src/mcp.h).
+ */
+struct tool_scratch {
+	char text[TOOL_TELL_MAX];
+};
+
 /** Returns the definition of the tool as tools/list shows it. The result
  *  is a new reference, or nullptr if out of memory. askai calls the
  *  function when it starts. For a plugin that askai loads from a file, it
