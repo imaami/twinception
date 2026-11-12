@@ -1204,7 +1204,6 @@ journal_secret (int         dir,
 	char const *problem = nullptr;
 	if (e == EACCES && !fstatat(dir, name, &st, AT_SYMLINK_NOFOLLOW))
 		problem = util_private(&st, S_IFREG);
-	char wrong[64];
 	if (!e && !st.st_size) {
 		do
 			e = util_random(secret, len);
@@ -1214,10 +1213,12 @@ journal_secret (int         dir,
 		if (!e && fdatasync(fd))
 			e = errno;
 	} else if (!e && st.st_size != (off_t)len) {
-		e = EILSEQ;
-		util_format(wrong, sizeof wrong, "the file has %jd bytes, not %zu",
+		/* The reason of this problem contains two numbers, so the
+		 * branch formats the whole reason and returns. */
+		util_close(&fd);
+		util_format(why, why_len, "%s/%s: the file has %jd bytes, not %zu", shown, name,
 		            (intmax_t)st.st_size, len);
-		problem = wrong;
+		return EILSEQ;
 	} else if (!e) {
 		size_t n = 0;
 		e = util_read_all(fd, secret, len, 0, &n);

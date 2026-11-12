@@ -541,12 +541,48 @@ test_cite (void)
 	refused(&cite, "cuh#2/1", false, "", __LINE__);
 	refused(&cite, "cuh#2/1:3", false, "", __LINE__);
 
-	/* Calls that left the ring. */
-	for (uint32_t k = 7; k < 7 + SEEN_CALLS; ++k)
-		keep(&seen, k, 3, 2, "", "{}", CSTR_VIEW("k"), nullptr, false);
+	/* Calls that left the ring. The first new calls are calls without
+	 * lines. The refusal of lines of such a call names the command of a
+	 * git call, which is 1 to 32 lowercase letters and hyphens, and else
+	 * the tool. */
+	static struct {
+		uint32_t    tool;
+		char const *args;
+		char const *what;
+	} const unlined[] = {
+		{ 1, "{}",                                                  "a git call" },
+		{ 1, "{\"command\":\"\"}",                                  "a git call" },
+		{ 1, "{\"command\":\"LOG\"}",                               "a git call" },
+		{ 1, "{\"command\":7}",                                     "a git call" },
+		{ 1, "{\"command\":\"cherry-pick\"}",                       "a git cherry-pick" },
+		{ 1, "{\"command\":\"abcdefghijklmnopqrstuvwxyz-abcde\"}",
+		  "a git abcdefghijklmnopqrstuvwxyz-abcde" },
+		{ 1, "{\"command\":\"abcdefghijklmnopqrstuvwxyz-abcdef\"}", "a git call" },
+		{ 1, "not JSON",                                            "a git call" },
+		{ 2, "{\"command\":\"grep\"}",                              "a man call" },
+	};
+	uint32_t number = 7;
+	for (size_t i = 0; i < array_size(unlined); ++i, ++number)
+		keep(&seen, number, 3, unlined[i].tool, "", unlined[i].args, CSTR_VIEW("k"), nullptr,
+		     false);
+	for (; number < 7 + SEEN_CALLS; ++number)
+		keep(&seen, number, 3, 2, "", "{}", CSTR_VIEW("k"), nullptr, false);
 	struct evidence_cite later = cite;
 	later.call = 7 + SEEN_CALLS;
 	later.turn = 4;
+	for (size_t i = 0; i < array_size(unlined); ++i) {
+		char text[32];
+		char want[160];
+		CHECK(snprintf(text, sizeof text, "c%zu:1", 7 + i) > 0);
+		CHECK(snprintf(want, sizeof want, "c%zu:1 needs a git read or a code describe. Call "
+		               "c%zu is %s.", 7 + i, 7 + i, unlined[i].what) > 0);
+		refused(&later, text, true, want, __LINE__);
+	}
+	/* The refusal is cut at the size of its buffer. */
+	char cut[48] = "";
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c11:1")));
+	CHECK(evidence_cite(&ev, &m, &lines, &ref, &later, true, cut, sizeof cut) == EINVAL);
+	SAME(cut, strlen(cut), "c11:1 needs a git read or a code describe. C...");
 	refused(&later, "c2", true, "c2 is no longer kept. askai keeps the last 64 calls of an ask "
 	        "call. The oldest kept call is c7.", __LINE__);
 	/* The findings call c3 is older than the oldest kept call. */

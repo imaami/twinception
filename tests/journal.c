@@ -249,6 +249,63 @@ journal_test_private (char const *repo)
 	util_close(&dir);
 }
 
+/* Tests journal_secret() on a file of the repository @p repo. A new file
+ * and an empty file get random bytes that are not all zero, and the next
+ * call reads the same bytes. journal_secret() refuses a file of another
+ * size, a file of zero bytes, a file that other users can access, a file
+ * with two links and a directory. The reason is the path of the file and
+ * the problem, cut at the size of its buffer. A call that succeeds writes
+ * no reason.
+ */
+static void
+journal_test_secret (char const *repo)
+{
+	static char const name[] = "secret.test";
+	int dir = open(repo, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	assert(dir >= 0);
+	unsigned char made[32] = {};
+	unsigned char got[32] = {};
+	char why[96] = "none";
+	assert(!journal_secret(dir, "shown", name, made, sizeof made, why, sizeof why));
+	struct stat st;
+	assert(!fstatat(dir, name, &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) &&
+	       st.st_size == (off_t)sizeof made && (st.st_mode & 0777) == 0600);
+	assert(!journal_zero(made, sizeof made) && !strcmp(why, "none"));
+	assert(!journal_secret(dir, "shown", name, got, sizeof got, why, sizeof why));
+	assert(!memcmp(made, got, sizeof made) && !strcmp(why, "none"));
+	int fd = openat(dir, name, O_RDWR | O_CLOEXEC);
+	assert(fd >= 0 && !ftruncate(fd, 0));
+	memset(got, 0, sizeof got);
+	assert(!journal_secret(dir, "shown", name, got, 8, why, sizeof why));
+	assert(!journal_zero(got, 8) && journal_zero(got + 8, sizeof got - 8) &&
+	       !fstat(fd, &st) && st.st_size == 8 && !strcmp(why, "none"));
+	/* Another size, also with a reason that does not fit. */
+	assert(journal_secret(dir, "shown", name, got, sizeof got, why, sizeof why) == EILSEQ);
+	assert(!strcmp(why, "shown/secret.test: the file has 8 bytes, not 32"));
+	char cut[32] = "";
+	assert(journal_secret(dir, "a/b", name, got, 7, cut, sizeof cut) == EILSEQ);
+	assert(!strcmp(cut, "a/b/secret.test: the file ha..."));
+	static unsigned char const zero[8];
+	assert(pwrite(fd, zero, sizeof zero, 0) == (ssize_t)sizeof zero);
+	assert(journal_secret(dir, "shown", name, got, sizeof zero, why, sizeof why) == EILSEQ);
+	assert(!strcmp(why, "shown/secret.test: the file has only zero bytes"));
+	assert(!fchmod(fd, 0640));
+	assert(journal_secret(dir, "shown", name, got, sizeof zero, why, sizeof why) == EACCES);
+	assert(!strcmp(why, "shown/secret.test: the mode of the file lets other users access it"));
+	assert(!fchmod(fd, 0600) && !linkat(dir, name, dir, "secret.link", 0));
+	assert(journal_secret(dir, "shown", name, got, sizeof zero, why, sizeof why) == EACCES);
+	assert(!strcmp(why, "shown/secret.test: the file has more than one hard link"));
+	assert(!unlinkat(dir, "secret.link", 0) && !unlinkat(dir, name, 0));
+	util_close(&fd);
+	/* Any other error is named by the text of its number. */
+	char want[96];
+	assert(snprintf(want, sizeof want, "shown/secret.test: %s", strerror(EISDIR)) > 0);
+	assert(!mkdirat(dir, name, 0700));
+	assert(journal_secret(dir, "shown", name, got, sizeof zero, why, sizeof why) == EISDIR);
+	assert(!strcmp(why, want) && !unlinkat(dir, name, AT_REMOVEDIR));
+	util_close(&dir);
+}
+
 /* Tests util_dir_open() and util_dir_next() on the repository @p repo. The
  * stream reads every entry through a new descriptor, so the offset of the
  * descriptor of the caller stays 0, and closedir() leaves that descriptor
@@ -860,6 +917,7 @@ main (int argc, char **argv)
 	journal_destroy(&j);
 	journal_test_path(argv[1]);
 	journal_test_private(argv[1]);
+	journal_test_secret(argv[1]);
 	journal_test_dir(argv[1]);
 	journal_test_child_run();
 	journal_test_child_capture();
@@ -868,7 +926,7 @@ main (int argc, char **argv)
 	journal_test_unlock(argv[1]);
 	journal_test_argv(argv[1]);
 	puts("Journal loads, write gaps, legacy migration, reasoning verification, "
-	     "path walks, private files, directory streams, child_capture(), "
+	     "path walks, private files, secret files, directory streams, child_capture(), "
 	     "child_cmd_run(), child_end_why(), child_end_status(), journal_git(), "
 	     "lock removal and the argv of git: PASS");
 	return 0;

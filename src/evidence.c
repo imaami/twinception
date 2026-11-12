@@ -187,22 +187,6 @@ evidence_command (struct seen_call const *c,
 	json_object_put(args);
 }
 
-/* Writes to @p what what a call of the tool @p tool with the command
- * @p command is, for a refusal: "a git grep" for a git call with a
- * command, else "a man call" with the name of the tool.
- */
-static void
-evidence_what (char const *tool,
-               char const *command,
-               char       *what,
-               size_t      len)
-{
-	if (*command)
-		(void)util_format(what, len, "a git %s", command);
-	else
-		(void)util_format(what, len, "a %s call", tool);
-}
-
 /* Drops the first line of @p *text, up to and with its line feed, or up to
  * the end of @p *text. Returns false if @p *text is empty.
  */
@@ -303,13 +287,15 @@ evidence_unshown (struct evidence_ref const *ref,
 	dstr_auto text = DSTR_INIT;
 	if (!c->lines.range.first) {
 		char command[EVIDENCE_COMMAND];
-		char what[64];
 		evidence_command(c, tool, command);
-		evidence_what(tool, command, what, sizeof what);
 		if (evidence_ref_put(ref, &text))
 			return ENOMEM;
+		/* evidence_command() writes a command only for a git call, so
+		 * the call is "a git grep", or else "a man call" with the name
+		 * of the tool. */
 		return util_refuse(why, len, "%s needs a git read or a code describe. Call c%" PRIu32
-		                   " is %s.", dstr_get(&text), c->stamp.number, what);
+		                   " is a %s %s.", dstr_get(&text), c->stamp.number, tool,
+		                   *command ? command : "call");
 	}
 	struct json_object *ids = evidence_ids(&c->ids);
 	bool const ok = evidence_lines_of(&c->lines.range, 1, ids, &text);
