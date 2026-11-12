@@ -557,14 +557,13 @@ findings_got_refs (struct mcp_slot *slot)
 			tip = info->findings;
 		if (!every && !cstr_view_equal(info->name, only))
 			continue;
-		if (util_grow(call->branches.items, call->branches.cap, call->branches.n + 1)) {
+		struct findings_branch b = { .tip = info->findings };
+		(void)util_format(b.author, sizeof b.author, "%.*s", (int)info->name.len,
+		                  info->name.data);
+		if (util_push(call->branches, b)) {
 			findings_end(slot, ENOMEM, true);
 			return;
 		}
-		struct findings_branch *b = &call->branches.items[call->branches.n++];
-		b->tip = info->findings;
-		(void)util_format(b->author, sizeof b->author, "%.*s", (int)info->name.len,
-		                  info->name.data);
 	}
 	if (!oid_len(&tip)) {
 		findings_next(slot);
