@@ -88,16 +88,6 @@ enum tool_out : uint32_t {
  */
 static_assert(TOOL_FAILED == 1 && TOOL_MORE == 2, "the values are part of the plugin ABI");
 
-/** The reason why a call failed, as text that the call tells
- *  (mcp_slot_tell()). The text is at most TOOL_TELL_MAX - 1 bytes, the
- *  longest text that mcp_slot_tellf() formats. A zeroed reason is empty.
- *  The util_text macros of src/util.h format and read the text.
- */
-struct tool_why {
-	uint32_t len;                  /**< bytes of the text, without the NUL */
-	char     data[TOOL_TELL_MAX];  /**< the text, and a NUL after the text */
-};
-
 /** The scratch text of a client loop. It is storage for one text of at
  *  most TOOL_TELL_MAX - 1 bytes and a NUL. There is one scratch for each
  *  client loop. The rules of its use are in the comment of
