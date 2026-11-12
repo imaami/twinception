@@ -21,6 +21,7 @@
 #include "range.h"
 #include "seen.h"
 #include "tool.h"
+#include "util.h"
 
 /* A commit ID. */
 #define A "55aca1e8682351e4c39a92b040721def3f005402"
@@ -188,6 +189,62 @@ test_range (void)
 	struct range none = { 2, 4 };
 	CHECK(!range_merge(&none, 0) && none.first == 2 && none.last == 4);
 	CHECK(!range_merge(nullptr, 0));
+}
+
+/* util_ordinal() reads a number from 1 without a leading zero at the
+ * start of a text and drops its digits, or leaves the text and the number
+ * as they were.
+ */
+static void
+test_ordinal (void)
+{
+	static struct {
+		char const *text;
+		char const *rest;  /* the text after the number */
+		uint32_t    n;
+	} const good[] = {
+		{ "1", "", 1 },
+		{ "7", "", 7 },
+		{ "10", "", 10 },
+		{ "4294967295", "", UINT32_MAX },
+		{ "12-15,3", "-15,3", 12 },
+		{ "5/2", "/2", 5 },
+		{ "9 ", " ", 9 },
+		{ "100x", "x", 100 },
+		{ "1.5", ".5", 1 },
+	};
+	for (size_t i = 0; i < sizeof good / sizeof *good; ++i) {
+		struct cstr_view text = cstr_view(good[i].text);
+		uint32_t n = 77;
+		if (!util_ordinal(&text, &n) && n == good[i].n &&
+		    cstr_view_equal(text, cstr_view(good[i].rest)) &&
+		    text.data == good[i].text + strlen(good[i].text) - strlen(good[i].rest))
+			continue;
+		++failures;
+		fprintf(stderr, "%s:%d: %s: got %u and %.*s\n", __FILE__, __LINE__, good[i].text, n,
+		        (int)text.len, text.data);
+	}
+	static char const *const bad[] = {
+		"", "0", "00", "07", "0x", "x", "x7", " 7", "-7", "+7", ".7", "4294967296",
+		"42949672950", "99999999999999999999",
+	};
+	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
+		struct cstr_view text = cstr_view(bad[i]);
+		uint32_t n = 77;
+		if (util_ordinal(&text, &n) == EINVAL && n == 77 && text.data == bad[i] &&
+		    text.len == strlen(bad[i]))
+			continue;
+		++failures;
+		fprintf(stderr, "%s:%d: read %s\n", __FILE__, __LINE__, bad[i]);
+	}
+	/* The number ends where the view ends, and a view without bytes is no
+	 * number. */
+	struct cstr_view part = { "1234", 2 };
+	uint32_t n = 77;
+	CHECK(!util_ordinal(&part, &n) && n == 12 && !part.len);
+	CHECK(util_ordinal(&part, &n) == EINVAL && n == 12);
+	struct cstr_view none = {};
+	CHECK(util_ordinal(&none, &n) == EINVAL && n == 12 && !none.data && !none.len);
 }
 
 /* evidence_ref_parse() reads every form of a reference, and refuses
@@ -1182,6 +1239,7 @@ int
 main (void)
 {
 	test_range();
+	test_ordinal();
 	test_parse();
 	test_put();
 	test_cite();

@@ -51,22 +51,6 @@ evidence_fini (struct evidence *e)
 	*e = evidence();
 }
 
-/* Reads a number from 1 to UINT32_MAX without a leading zero at the start
- * of @p *text into @p *n, and drops it from @p *text. Returns 0 or EINVAL.
- */
-static int
-evidence_number (struct cstr_view *text,
-                 uint32_t         *n)
-{
-	uint64_t v;
-	size_t const k = util_digits(text->data, text->len, UINT32_MAX, &v);
-	if (!k || !v || *text->data == '0')
-		return EINVAL;
-	*n = (uint32_t)v;
-	*text = cstr_view_slice(*text, k, SIZE_MAX);
-	return 0;
-}
-
 /* Reads the line ranges @p text, such as 120-140,150, into @p dest in
  * ascending order. Ranges that overlap or touch become one range, so that
  * cite and recite copy the lines of all ranges in one forward pass. Returns
@@ -79,12 +63,12 @@ evidence_ranges (struct evidence_ref *dest,
 	struct range *const r = dest->ranges;
 	size_t n = 0;
 	for (;;) {
-		if (n == EVIDENCE_RANGES || evidence_number(&text, &r[n].first))
+		if (n == EVIDENCE_RANGES || util_ordinal(&text, &r[n].first))
 			return EINVAL;
 		r[n].last = r[n].first;
 		if (text.len && *text.data == '-') {
 			text = cstr_view_slice(text, 1, SIZE_MAX);
-			if (evidence_number(&text, &r[n].last) || r[n].last < r[n].first)
+			if (util_ordinal(&text, &r[n].last) || r[n].last < r[n].first)
 				return EINVAL;
 		}
 		++n;
@@ -119,7 +103,7 @@ evidence_ref_parse (struct evidence_ref *dest,
 		if (head.len < 2 || *head.data != 'c')
 			return EINVAL;
 		head = cstr_view_slice(head, 1, SIZE_MAX);
-		if (evidence_number(&head, &dest->number) || head.len)
+		if (util_ordinal(&head, &dest->number) || head.len)
 			return EINVAL;
 		if (!colon)
 			dest->form = EVIDENCE_REF_CALL;
@@ -130,7 +114,7 @@ evidence_ref_parse (struct evidence_ref *dest,
 		return 0;
 	}
 	/* X#n, X#n/m or X#n/m:A-B. head is the part after the #. */
-	if (!member_name_valid(name) || evidence_number(&head, &dest->number))
+	if (!member_name_valid(name) || util_ordinal(&head, &dest->number))
 		return EINVAL;
 	memcpy(dest->author, name.data, name.len);
 	if (!head.len && !colon) {
@@ -140,7 +124,7 @@ evidence_ref_parse (struct evidence_ref *dest,
 	if (!head.len || *head.data != '/')
 		return EINVAL;
 	head = cstr_view_slice(head, 1, SIZE_MAX);
-	if (evidence_number(&head, &dest->item) || head.len)
+	if (util_ordinal(&head, &dest->item) || head.len)
 		return EINVAL;
 	dest->form = EVIDENCE_REF_ITEM;
 	if (colon) {

@@ -193,6 +193,25 @@ util_number (char const *s,
 	return len && util_digits(s, len, max, value) == len ? 0 : EINVAL;
 }
 
+/** Parse the number at the start of @p *text into @p *n and drop its
+ *  digits from @p *text. The number is from 1 to UINT32_MAX without a
+ *  leading zero, such as the number of a line or the N of a call cN.
+ *  Returns 0, or EINVAL with @p *text and @p *n unchanged.
+ */
+static inline int
+util_ordinal (struct cstr_view *text,
+              uint32_t         *n)
+{
+	uint64_t v;
+	size_t const k = util_digits(text->data, text->len, UINT32_MAX, &v);
+	/* A number without a leading zero is at least 1. */
+	if (!k || *text->data == '0')
+		return EINVAL;
+	*n = (uint32_t)v;
+	*text = cstr_view_slice(*text, k, SIZE_MAX);
+	return 0;
+}
+
 /** Returns how many of the @p len bytes at @p s fit in @p max bytes
  *  without ending within a UTF-8 character.
  */

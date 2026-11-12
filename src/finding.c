@@ -84,13 +84,13 @@ finding_id_parse (struct cstr_view  text,
 	*author = '\0';
 	*number = 0;
 	struct cstr_view name = text;
-	uint64_t n;
-	if (!cstr_view_cut(&text, '#', &name) || !member_name_valid(name) || !text.len ||
-	    *text.data == '0' || util_number(text.data, text.len, UINT32_MAX, &n))
+	uint32_t n;
+	if (!cstr_view_cut(&text, '#', &name) || !member_name_valid(name) ||
+	    util_ordinal(&text, &n) || text.len)
 		return EINVAL;
 	memcpy(author, name.data, name.len);
 	author[name.len] = '\0';
-	*number = (uint32_t)n;
+	*number = n;
 	return 0;
 }
 
@@ -130,12 +130,12 @@ finding_path_number (struct cstr_view path)
 	struct cstr_view n = cstr_view_slice(path, head.len, path.len - head.len - tail.len);
 	struct cstr_view d;
 	uint64_t dir;
-	uint64_t number;
+	uint32_t number;
 	if (!cstr_view_cut(&n, '/', &d) || util_number(d.data, d.len, UINT32_MAX, &dir) ||
-	    (d.len > 1 && *d.data == '0') || util_number(n.data, n.len, UINT32_MAX, &number) ||
-	    *n.data == '0' || dir != number / 100)
+	    (d.len > 1 && *d.data == '0') || util_ordinal(&n, &number) || n.len ||
+	    dir != number / 100)
 		return 0;
-	return (uint32_t)number;
+	return number;
 }
 
 /* Reads the change @p obj of a file into @p c, which finding_change()
