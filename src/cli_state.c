@@ -195,8 +195,8 @@ cli_state_git (struct cli_state  *state,
 {
 	/* update-ref, init and config create lock files in the repository,
 	 * and askai-cli does not remove a stale lock file. At the deadline,
-	 * child_run() and child_capture() send SIGTERM to git, which removes
-	 * its lock files and exits, and SIGKILL GIT_GRACE later. */
+	 * git_run_now() sends SIGTERM to git, which removes its lock files
+	 * and exits, and SIGKILL GIT_GRACE later. */
 	struct child_cmd const how = {
 		.in    = { (unsigned char *)(uintptr_t)input.data, input.len },
 		.max   = 4 << 10,

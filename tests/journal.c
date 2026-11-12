@@ -167,10 +167,11 @@ journal_test_legacy (struct journal *j)
 
 /* Run "sh -c @p script" with a deadline @p after_ms from now, or none if
  * 0, and a grace of @p grace_ms. If @p out is nullptr, the function runs
- * the script with child_run(). Otherwise it runs the script with
- * child_capture(), which appends up to @p max bytes of the output to
- * @p out. Returns the result of child_run() or child_capture(), and writes
- * how the child ended to @p *end and how long it ran to @p *ms.
+ * the script with child_cmd_run() and no buffer. Otherwise it runs the
+ * script with child_capture(), which appends up to @p max bytes of the
+ * output to @p out. Returns the result of child_cmd_run() or
+ * child_capture(), and writes how the child ended to @p *end and how long
+ * it ran to @p *ms.
  */
 static int
 journal_test_run (char const       *script,
@@ -193,7 +194,8 @@ journal_test_run (char const       *script,
 		.grace = grace_ms * MS,
 	};
 	*end = (struct child_end){ .code = -1, .status = -1, .flags = UINT32_MAX };
-	int e = out ? child_capture(&cmd, child_fds(), out, end) : child_run(&cmd, child_fds(), end);
+	int e = out ? child_capture(&cmd, child_fds(), out, end)
+	            : child_cmd_run(&cmd, child_fds(), nullptr, end);
 	*ms = (loop_clock() - start) / MS;
 	return e;
 }
@@ -575,11 +577,11 @@ journal_test_git (struct journal *j)
 	free(path);
 }
 
-/* Tests child_run() with exit statuses, a death by a signal, and a
- * deadline without a grace, with a grace that the command honors, and with
- * a grace that the command ignores. Each case asserts the error and the
- * struct child_end. A failed spawn is tested with child_run() and with
- * child_capture().
+/* Tests the run of a child without a buffer, through child_cmd_run(),
+ * with exit statuses, a death by a signal, and a deadline without a grace,
+ * with a grace that the command honors, and with a grace that the command
+ * ignores. Each case asserts the error and the struct child_end. A failed
+ * spawn is tested with child_cmd_run() and with child_capture().
  */
 static void
 journal_test_child_run (void)
@@ -588,7 +590,7 @@ journal_test_child_run (void)
 	uint64_t ms;
 	assert(!journal_test_run("exit 0", 0, 0, 0, nullptr, &end, &ms));
 	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags);
-	assert(!journal_test_run("exit 3", 0, 0, 0, nullptr, &end, &ms));
+	assert(journal_test_run("exit 3", 0, 0, 0, nullptr, &end, &ms) == EIO);
 	assert(end.code == CLD_EXITED && end.status == 3 && !end.flags);
 	assert(journal_test_run("kill -KILL $$", 0, 0, 0, nullptr, &end, &ms) == EIO);
 	assert(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags);
@@ -611,7 +613,7 @@ journal_test_child_run (void)
 		.max = 3,
 	};
 	end = (struct child_end){ .code = -1, .status = -1, .flags = UINT32_MAX };
-	assert(child_run(&none, child_fds(), &end) == ENOENT);
+	assert(child_cmd_run(&none, child_fds(), nullptr, &end) == ENOENT);
 	assert(!end.code && !end.status && !end.flags);
 	struct buf out = {};
 	assert(!buf_put(&out, "x", 1, SIZE_MAX));
@@ -682,14 +684,14 @@ journal_test_child_capture (void)
 }
 
 /* Tests child_cmd_run() with a buffer and with a file as fds.out. The
- * error is EIO for an exit status other than 0, and the error of
- * child_capture() or child_run() comes before that EIO. After EIO, the
- * exit status 1 and the signal number 1 differ in the code of the struct
- * child_end. With a buffer, the output replaces the bytes that were in
- * the buffer, and those bytes are also removed if the child is not
- * spawned. The cap is 3 bytes, and the whole output goes to the file. A
- * deadline ends the child, also a deadline in the past. Each case asserts
- * the error and the struct child_end.
+ * error is EIO for an exit status other than 0, and the error of the run
+ * or of the read comes before that EIO. After EIO, the exit status 1 and
+ * the signal number 1 differ in the code of the struct child_end. With a
+ * buffer, the output replaces the bytes that were in the buffer, and
+ * those bytes are also removed if the child is not spawned. The cap is 3
+ * bytes, and the whole output goes to the file. A deadline ends the
+ * child, also a deadline in the past. Each case asserts the error and the
+ * struct child_end.
  */
 static void
 journal_test_child_cmd_run (void)
@@ -855,8 +857,8 @@ main (int argc, char **argv)
 	journal_test_unlock(argv[1]);
 	journal_test_argv(argv[1]);
 	puts("Journal loads, write gaps, legacy migration, reasoning verification, "
-	     "path walks, private files, directory streams, child_run(), "
-	     "child_capture(), child_cmd_run(), child_end_why(), journal_git(), "
+	     "path walks, private files, directory streams, child_capture(), "
+	     "child_cmd_run(), child_end_why(), journal_git(), "
 	     "lock removal and the argv of git: PASS");
 	return 0;
 }

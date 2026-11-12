@@ -428,7 +428,15 @@ child_await (struct child_cmd const *cmd,
 	}
 }
 
-int
+/* Runs @p cmd to the end on the calling thread with the descriptors
+ * @p fds, and writes how the child ended to @p *end. The comment of
+ * child_capture() in src/child.h describes the spawn, the deadline and
+ * @p *end. The output goes to fds.out, and the function does not read it.
+ * Returns 0 if the child exited before the deadline, ETIMEDOUT if the
+ * deadline came, EIO if a signal killed the child before the deadline, or
+ * the error that stopped the spawn or the wait.
+ */
+static int
 child_run (struct child_cmd const *cmd,
            struct child_fds        fds,
            struct child_end       *end)

@@ -5,8 +5,9 @@
  * read its standard output from a pipe into a capped buffer. The pidfd
  * becomes readable when the child exits, so askai does not use SIGCHLD.
  * The child is reaped by its pid after its output has also ended.
- * child_run() instead runs a child on the calling thread, its output in a
- * file, and reaps it through its pidfd.
+ * child_capture() and child_cmd_run() instead run a child on the calling
+ * thread, with its output in a file, and reap the child through its
+ * pidfd.
  */
 #ifndef ASKAI_SRC_CHILD_H_
 #define ASKAI_SRC_CHILD_H_
@@ -164,10 +165,13 @@ struct child_cmd {
 	                                   padding */
 };
 
-/** The descriptors of a child that child_run() runs, each -1 if it has
- *  none: its input, else cmd->in or /dev/null; its output, else /dev/null;
- *  the directory it runs in, else the caller's; and a descriptor that it
- *  keeps as descriptor 3, such as a file's lock.
+/** The descriptors of a child that child_capture() or child_cmd_run()
+ *  runs. A descriptor that the caller does not pass is -1. The input of
+ *  the child is the member in, or else cmd->in, or else /dev/null. The
+ *  output is the member out, or else /dev/null. The child runs in the
+ *  directory of the member dir, or else in the directory of the caller.
+ *  The child inherits the member keep as descriptor 3, such as the lock of
+ *  a file.
  */
 struct child_fds {
 	int in;
@@ -206,33 +210,25 @@ child_create (struct loop            *loop,
               int                    *e);
 
 /**
- * Run @p cmd to the end on the calling thread, without a loop. The child
- * is spawned as child_create() spawns it, but with the descriptors @p fds.
- * The output goes to fds.out, such as a memfd, without a cap, and this
- * function does not read it. If cmd->deadline, a time of loop_clock(), is
- * set, the function sends SIGTERM to the child at that time and SIGKILL
- * after cmd->grace, or SIGKILL at once if cmd->grace is 0. The child does
- * not count toward CHILD_MAX. The function writes the code and the status
- * of waitid() to @p *end, and sets CHILD_LATE in end->flags if the
- * deadline came. @p *end is all zero if the child was not spawned.
- * Returns 0 if the child exited before the deadline, ETIMEDOUT if the
- * deadline came, EIO if a signal killed the child before the deadline, or
- * the error that stopped the spawn or the wait.
- */
-extern int
-child_run (struct child_cmd const *cmd,
-           struct child_fds        fds,
-           struct child_end       *end);
-
-/**
- * Run @p cmd as child_run() does, with a file in memory in place of
- * fds.out, and append the output to @p out, up to cmd->max bytes. The
- * function writes @p *end as child_run() does, and @p *end is all zero if
- * the child was not spawned. Returns what child_run() returns, the error
- * of the read, or EFBIG for an output of more than cmd->max bytes. After
- * EFBIG, end->flags contains CHILD_CUT, and the first cmd->max bytes of
- * the output are appended to @p out. The output is read only if
- * child_run() returns 0.
+ * Runs @p cmd to the end on the calling thread, without a loop, and
+ * appends the output to @p out, up to cmd->max bytes. The child is spawned
+ * as child_create() spawns it, but with the descriptors @p fds, and with a
+ * file in memory in place of fds.out. If cmd->deadline, a time of
+ * loop_clock(), is set, the function sends SIGTERM to the child at that
+ * time and SIGKILL after cmd->grace, or SIGKILL at once if cmd->grace is
+ * 0. The child does not count toward CHILD_MAX. The function writes the
+ * code and the status of waitid() to @p *end, and sets CHILD_LATE in
+ * end->flags if the deadline came. @p *end is all zero if the child was
+ * not spawned.
+ *
+ * Returns 0 if the child exited before the deadline, with any exit
+ * status. Returns ETIMEDOUT if the deadline came, EIO if a signal killed
+ * the child before the deadline, or the error that stopped the spawn or
+ * the wait. The output is read only if the child exited before the
+ * deadline. The function then returns the error of the read, or EFBIG for
+ * an output of more than cmd->max bytes. After EFBIG, end->flags contains
+ * CHILD_CUT, and the first cmd->max bytes of the output are appended to
+ * @p out.
  */
 extern int
 child_capture (struct child_cmd const *cmd,
@@ -241,16 +237,17 @@ child_capture (struct child_cmd const *cmd,
                struct child_end       *end);
 
 /**
- * Run @p cmd to the end on the calling thread, and return 0 only if the
+ * Runs @p cmd to the end on the calling thread, and returns 0 only if the
  * child exited with status 0. If @p out is not nullptr, the function
  * removes the content of @p out and runs @p cmd as child_capture() does,
  * so that the content of @p out is the output, up to cmd->max bytes. If
- * @p out is nullptr, the function runs @p cmd as child_run() does, and
- * the output goes to fds.out. The function writes @p *end as those two
- * functions write it. Returns the error of child_capture() or
- * child_run(), or EIO if the child exited with a status other than 0.
- * After EIO, end->code is CLD_EXITED for such a status, and another value
- * if a signal killed the child.
+ * @p out is nullptr, the function runs @p cmd in the same way with the
+ * output of the child in fds.out, such as a memfd, without a cap, and
+ * does not read the output. The function writes @p *end as
+ * child_capture() does. Returns the error of the run or of the read, as
+ * child_capture() returns it, or EIO if the child exited with a status
+ * other than 0. After EIO, end->code is CLD_EXITED for such a status, and
+ * another value if a signal killed the child.
  */
 extern int
 child_cmd_run (struct child_cmd const *cmd,

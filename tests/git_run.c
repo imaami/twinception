@@ -3,7 +3,7 @@
  *  environment in order, the limits of both, the copy of the struct
  *  child_cmd in git_run_init(), the paths that git_run_path() reads, the
  *  names of repositories that git_run_name() and git_run_name_valid()
- *  accept, and git run through child_capture(), child_run() and
+ *  accept, and git run through child_capture(), child_cmd_run() and
  *  git_run_now() in a new bare repository at the path of the argument.
  */
 #define _GNU_SOURCE /* pipe2(), memfd_create() */
@@ -380,9 +380,9 @@ git_run_test_name (void)
  * input, the cap, the grace and the flags of @p how, and a deadline of
  * how->deadline ms from now, or 10 s if that is 0. git runs through
  * child_capture(), which appends the output to @p out, or through
- * child_run() if @p out is nullptr. Returns what child_capture() or
- * child_run() returns, and writes how git ended to @p *end and how long it
- * ran to @p *ms.
+ * child_cmd_run() without a buffer if @p out is nullptr. Returns what
+ * child_capture() or child_cmd_run() returns, and writes how git ended to
+ * @p *end and how long it ran to @p *ms.
  */
 static int
 git_run_test_git (struct git_run_dir const *dir,
@@ -400,7 +400,8 @@ git_run_test_git (struct git_run_dir const *dir,
 	CHECK(!e);
 	*end = (struct child_end){ .code = -1, .status = -1, .flags = UINT32_MAX };
 	if (!e)
-		e = out ? child_capture(&run.c, fds, out, end) : child_run(&run.c, fds, end);
+		e = out ? child_capture(&run.c, fds, out, end)
+		        : child_cmd_run(&run.c, fds, nullptr, end);
 	*ms = (loop_clock() - start) / MS;
 	return e;
 }
@@ -520,9 +521,9 @@ git_run_test_now (struct git_run_dir const *dir)
  * the child; the options and the entries of the caller as git config
  * reads them; GIT_PAGER of GIT_ENV_FIXED; the input; the errors with and
  * without CHILD_STDERR; the cap; the deadline with and without a grace;
- * and a git that a signal kills. Runs git through child_run() with the
- * output in fds.out, at the deadline with and without a grace, and with a
- * signal.
+ * and a git that a signal kills. Runs git through child_cmd_run() with
+ * the output in fds.out, at the deadline with and without a grace, and
+ * with a signal.
  */
 static void
 git_run_test_run (char const *repo)
@@ -593,7 +594,8 @@ git_run_test_run (char const *repo)
 	CHECK(end.code == CLD_EXITED && !end.status && !end.flags);
 	CHECK(git_run_test_out(&out, CSTR_VIEW("f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f\n")));
 	buf_clear(&out);
-	/* child_run() lets git write to fds.out, as cli_state does. */
+	/* Without a buffer, git writes to fds.out. cli_state runs git in that
+	 * way. */
 	struct child_fds file = child_fds();
 	file.out = memfd_create("askai-git-run-test", MFD_CLOEXEC);
 	CHECK(file.out >= 0);
@@ -642,7 +644,7 @@ git_run_test_run (char const *repo)
 	CHECK(git_run_test_git(&at, hash, late, fds, &out, &end, &ms) == ETIMEDOUT);
 	CHECK(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
 	CHECK(ms >= 100 && ms < 2000 && !buf_peek(&out).len);
-	/* child_run() ends git at the deadline in the same way. */
+	/* Without a buffer, the deadline ends git in the same way. */
 	CHECK(git_run_test_git(&at, hash, late, fds, nullptr, &end, &ms) == ETIMEDOUT);
 	CHECK(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
 	CHECK(ms >= 100 && ms < 2000);
@@ -654,7 +656,7 @@ git_run_test_run (char const *repo)
 	util_close(&pipe_fds[1]);
 
 	/* An alias of a shell command kills git with SIGKILL, through
-	 * child_capture() and through child_run(). */
+	 * child_capture() and through child_cmd_run(). */
 	char const *const die[] = { "-c", "alias.die=!kill -KILL $PPID", "die", nullptr };
 	CHECK(git_run_test_git(&at, die, how, child_fds(), &out, &end, &ms) == EIO);
 	CHECK(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags);

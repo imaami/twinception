@@ -4,7 +4,7 @@
  * askai-cli start. A struct git_run_dir describes where git runs, the
  * options of the caller and the environment. git_run_init() writes the
  * argv of one command for a struct git_run_dir into a struct git_run.
- * child_create(), child_run() or child_capture() runs the struct
+ * child_create(), child_capture() or child_cmd_run() runs the struct
  * child_cmd of the struct git_run. git_run_now() runs one command on the
  * calling thread with the deadline GIT_RUN_NS after the call, turns the
  * end of git into an error number, and reads the name of an object that
