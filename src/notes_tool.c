@@ -2162,8 +2162,7 @@ notes_tool_start (struct mcp_slot    *slot,
 			                                          call->text), true);
 			return;
 		}
-		/* The call is zeroed, so the copy of the name ends with a NUL. */
-		memcpy(call->book.name, selected.data, selected.len);
+		member_name_set(call->book.name, selected);
 	} else if (fetch & FETCH_COPY) {
 		mcp_slot_tell(slot, CSTR_VIEW("copy needs notebook: the name of the member whose "
 		                              "note you copy. Action members lists the names."),

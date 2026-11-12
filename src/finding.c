@@ -146,7 +146,7 @@ finding_change_read (struct finding_change    *c,
 	c->turn = (uint32_t)turn;
 	c->call = (uint32_t)call;
 	if (asked_by)
-		memcpy(c->asked_by, by.data, by.len);
+		member_name_set(c->asked_by, by);
 	if ((askai && cstr_view_store(version, &c->askai)) ||
 	    (reason && cstr_view_store(why, &c->reason)) ||
 	    (before && cstr_view_store(was, &c->claim_before)))

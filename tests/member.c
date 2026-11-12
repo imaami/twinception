@@ -130,6 +130,20 @@ test_has (struct store const *store,
 	return test_in(store, ref, text, true);
 }
 
+/* Returns true if the name of @p member ends with a NUL and every byte
+ * after that NUL is 0. A struct assignment and memcpy() copy the whole
+ * name, so a byte that no code wrote would be copied too.
+ */
+static bool
+test_name_zeroed (struct member const *member)
+{
+	size_t const len = strnlen(member->name, sizeof member->name);
+	for (size_t i = len; i < sizeof member->name; ++i)
+		if (member->name[i])
+			return false;
+	return len < sizeof member->name;
+}
+
 static void
 test_names (void)
 {
@@ -152,19 +166,41 @@ test_names (void)
 	};
 	for (size_t i = 0; i < array_size(invalid); ++i)
 		CHECK(!member_name_valid(invalid[i]));
+	/* member_name_set() writes the name and 0 in every byte after the
+	 * name, also into an array that the test fills with 'x' first. It
+	 * writes the first UTIL_WORD_MAX bytes of a name that is too long, and
+	 * "" for an empty view. member() returns a member of the kind with
+	 * the same bytes as the name. */
+	struct cstr_view const sets[] = {
+		CSTR_VIEW("bro"), CSTR_VIEW("p"), { long_name, UTIL_WORD_MAX },
+		{ long_name, sizeof long_name }, {}, CSTR_VIEW(""),
+	};
+	for (size_t i = 0; i < array_size(sets); ++i) {
+		size_t const len = sets[i].len < UTIL_WORD_MAX ? sets[i].len : UTIL_WORD_MAX;
+		struct member set;
+		memset(&set, 'x', sizeof set);
+		member_name_set(set.name, sets[i]);
+		CHECK(strnlen(set.name, sizeof set.name) == len && test_name_zeroed(&set) &&
+		      (!len || !memcmp(set.name, sets[i].data, len)));
+		struct member const made = member(i % 2 ? MEMBER_AGENT : MEMBER_PERSON, sets[i]);
+		CHECK(made.kind == (i % 2 ? MEMBER_AGENT : MEMBER_PERSON) &&
+		      !memcmp(made.name, set.name, sizeof made.name));
+	}
 	/* member_json() writes a member, and member_init_json() makes a member
 	 * of a valid name and a known kind. */
-	struct member m = { .kind = MEMBER_AGENT, .name = "old" };
+	struct member m;
+	memset(&m, 'x', sizeof m);
 	struct json_object *json = member_json(CSTR_VIEW("imaami"), MEMBER_PERSON);
 	CHECK(cstr_view_equal(jb_wire(json), CSTR_VIEW("{\"name\":\"imaami\",\"kind\":\"person\"}")));
-	CHECK(!member_init_json(&m, json) && m.kind == MEMBER_PERSON && !strcmp(m.name, "imaami"));
+	CHECK(!member_init_json(&m, json) && m.kind == MEMBER_PERSON && !strcmp(m.name, "imaami") &&
+	      test_name_zeroed(&m));
 	json_object_put(json);
 	CHECK(!member_json((struct cstr_view){}, MEMBER_PERSON));
 	CHECK(!member_json(CSTR_VIEW("imaami"), MEMBER_KINDS));
 	json = jb_object("name", jb_string(valid[array_size(valid) - 1]),
 	                 "kind", json_object_new_string("agent"), nullptr);
 	CHECK(!member_init_json(&m, json) && m.kind == MEMBER_AGENT &&
-	      strlen(m.name) == UTIL_WORD_MAX);
+	      strlen(m.name) == UTIL_WORD_MAX && test_name_zeroed(&m));
 	json_object_put(json);
 	for (size_t i = 0; i < array_size(invalid); ++i) {
 		m = (struct member){ .kind = MEMBER_AGENT, .name = "old" };
@@ -245,12 +281,14 @@ test_logins (struct member_registry const *reg)
 	      login.member.kind == MEMBER_PERSON && !*login.member.name);
 	/* An identity is a person, or an agent with POLICY_AGENT. */
 	grant = (struct policy_grant){ .who = CSTR_VIEW("identity alice") };
+	memset(&login, 'x', sizeof login);
 	CHECK(!member_login(&login, reg, &grant, nullptr));
 	CHECK(!strcmp(login.text, "identity alice") && !strcmp(login.member.name, "alice") &&
-	      login.member.kind == MEMBER_PERSON);
+	      login.member.kind == MEMBER_PERSON && test_name_zeroed(&login.member));
 	grant.flags = POLICY_AGENT | POLICY_METRICS;
 	CHECK(!member_login(&login, reg, &grant, nullptr));
-	CHECK(!strcmp(login.text, "identity alice") && login.member.kind == MEMBER_AGENT);
+	CHECK(!strcmp(login.text, "identity alice") && login.member.kind == MEMBER_AGENT &&
+	      !strcmp(login.member.name, "alice") && test_name_zeroed(&login.member));
 	/* A client over TCP without a token is without a login. */
 	grant = (struct policy_grant){ .who = CSTR_VIEW("anonymous loopback (role user)") };
 	memset(&login, 'x', sizeof login);
@@ -311,20 +349,6 @@ test_why (struct member_wait const *wait,
           char const               *why)
 {
 	return wait->why.len == strlen(why) && !strcmp(wait->why.data, why);
-}
-
-/* Returns true if the name of @p member ends with a NUL and every byte
- * after that NUL is 0. A struct assignment and memcpy() copy the whole
- * name, so a byte that no code wrote would be copied too.
- */
-static bool
-test_name_zeroed (struct member const *member)
-{
-	size_t const len = strnlen(member->name, sizeof member->name);
-	for (size_t i = len; i < sizeof member->name; ++i)
-		if (member->name[i])
-			return false;
-	return len < sizeof member->name;
 }
 
 /* Finds the member of @p login in @p table with a lookup of @p lookup,

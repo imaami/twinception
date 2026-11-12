@@ -539,16 +539,11 @@ member_records_login (struct member_records const *r,
 	return nullptr;
 }
 
-/* Writes the member of @p info to @p member. The function writes every
- * byte of @p *member, because code copies a member whole.
- */
-static void
-member_of (struct member            *member,
-           struct member_info const *info)
+/* Returns the member of the record @p info. */
+static struct member
+member_of (struct member_info const *info)
 {
-	*member = (struct member){ .kind = (enum member_kind)info->kind };
-	util_format(member->name, sizeof member->name, "%.*s", (int)info->name.len,
-	            info->name.data);
+	return member((enum member_kind)info->kind, info->name);
 }
 
 /* Writes to @p in the input of git for a commit of a record of @p reg:
@@ -752,7 +747,7 @@ member_claim_step (struct member_claim          *claim,
 	switch (e) {
 	case 0:
 		if (entry)
-			member_of(&login->member, entry);
+			login->member = member_of(entry);
 		return 0;
 	case ENOENT:
 	case EEXIST:
@@ -825,10 +820,11 @@ member_user (uint32_t uid,
 		int e = getpwuid_r((uid_t)uid, &pw, storage, size, &found);
 		if (!e && !found)
 			e = ENOENT;
-		if (!e && !member_name_valid(cstr_view(pw.pw_name)))
+		struct cstr_view const user = found ? cstr_view(pw.pw_name) : (struct cstr_view){};
+		if (!e && !member_name_valid(user))
 			e = EINVAL;
 		if (!e)
-			util_format(name, MEMBER_NAME, "%s", pw.pw_name);
+			member_name_set(name, user);
 		free(storage);
 		if (e != ERANGE || size > 1 << 20)
 			return e;
@@ -860,9 +856,8 @@ member_login (struct member_login          *dest,
 		return ENOENT;
 	if (!member_name_valid(name))
 		return EINVAL;
-	dest->member.kind = grant->flags & POLICY_AGENT ? MEMBER_AGENT : MEMBER_PERSON;
+	dest->member = member(grant->flags & POLICY_AGENT ? MEMBER_AGENT : MEMBER_PERSON, name);
 	util_format(dest->text, sizeof dest->text, "%.*s", (int)grant->who.len, grant->who.data);
-	util_format(dest->member.name, sizeof dest->member.name, "%.*s", (int)name.len, name.data);
 	return 0;
 }
 
@@ -907,8 +902,7 @@ member_init_json (struct member      *dest,
 	size_t const k = cstr_view_index(member_kinds, MEMBER_KINDS, jb_view(jb_get(json, "kind")));
 	if (!member_name_valid(name) || k == MEMBER_KINDS)
 		return EINVAL;
-	dest->kind = (enum member_kind)k;
-	memcpy(dest->name, name.data, name.len);
+	*dest = member((enum member_kind)k, name);
 	return 0;
 }
 
@@ -1055,11 +1049,10 @@ member_registry_create (struct store const *store,
 	*reg = (struct member_registry){
 		.session = {
 			.committer = { service_name, CSTR_VIEW("askai") },
-			.agent = { .kind = MEMBER_AGENT },
+			.agent = member(MEMBER_AGENT, agent_name),
 		},
 		.store = store,
 	};
-	memcpy(reg->session.agent.name, agent_name.data, agent_name.len);
 	for (size_t b = 0; b < MEMBER_BRANCHES; ++b)
 		member_ref(&reg->session.agent, (enum member_branch)b, reg->session.refs[b]);
 	*e = member_registry_start(reg, why, len);
@@ -1575,7 +1568,7 @@ member_table_lookup (struct member_table       *table,
 		return wait->e = ENOENT;
 	struct member_info const *entry = member_records_login(&table->records, text);
 	if (entry) {
-		member_of(&wait->member, entry);
+		wait->member = member_of(entry);
 		return wait->e = 0;
 	}
 	struct member_lookup *lookup = nullptr;
@@ -1688,7 +1681,7 @@ member_table_name (struct member_table const *table,
 	struct member_info const *entry = member_records_find(&table->records, name);
 	if (!entry)
 		return ENOENT;
-	member_of(dest, entry);
+	*dest = member_of(entry);
 	return 0;
 }
 

@@ -9,6 +9,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "compat.h"
 #include "cstr_view.h"
@@ -73,6 +74,36 @@ member_name_valid (struct cstr_view name)
 			digits = false;
 	}
 	return !digits;
+}
+
+/**
+ * Writes the name @p name to the MEMBER_NAME bytes at @p dest, and 0 to
+ * every byte of @p dest after the name. Code copies a name as the whole
+ * array, so the function writes every byte of the array. The caller
+ * checks the name with member_name_valid() first. Of a longer name, the
+ * function writes only the first UTIL_WORD_MAX bytes. For an empty view,
+ * the name is "".
+ */
+static inline void
+member_name_set (char             dest[static MEMBER_NAME],
+                 struct cstr_view name)
+{
+	size_t const len = name.len < MEMBER_NAME ? name.len : MEMBER_NAME - 1;
+	if (len)
+		memcpy(dest, name.data, len);
+	memset(dest + len, 0, MEMBER_NAME - len);
+}
+
+/** Returns the member of the kind @p kind with the name @p name. The name
+ *  is written as member_name_set() writes it.
+ */
+static inline struct member
+member (enum member_kind kind,
+        struct cstr_view name)
+{
+	struct member m = { .kind = kind };
+	member_name_set(m.name, name);
+	return m;
 }
 
 #endif /* ASKAI_SRC_MEMBER_NAME_H_ */

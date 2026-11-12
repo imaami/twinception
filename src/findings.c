@@ -559,8 +559,7 @@ findings_got_refs (struct mcp_slot *slot)
 		if (!every && !cstr_view_equal(info->name, only))
 			continue;
 		struct findings_branch b = { .tip = info->findings };
-		(void)util_format(b.author, sizeof b.author, "%.*s", (int)info->name.len,
-		                  info->name.data);
+		member_name_set(b.author, info->name);
 		if (util_push(call->branches, b)) {
 			findings_end(slot, ENOMEM, true);
 			return;
@@ -1877,8 +1876,7 @@ findings_args (struct mcp_slot    *slot,
 		if (!member_name_valid(name))
 			return util_refuse(why, len, "The author argument must be the name of a member, "
 			                   "such as %s.", agent);
-		(void)util_format(call->id.author, sizeof call->id.author, "%.*s", (int)name.len,
-		                  name.data);
+		member_name_set(call->id.author, name);
 	}
 	if (about && (finding_id_parse(&call->about, jb_view(about)) || call->about.item))
 		return util_refuse(why, len, "about must be the id of a finding, such as %s#2.", agent);

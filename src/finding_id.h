@@ -63,7 +63,7 @@ finding_id_parse (struct finding_id *id,
 	}
 	id->number = number;
 	id->item = item;
-	memcpy(id->author, name.data, name.len);
+	member_name_set(id->author, name);
 	return 0;
 }
 
