@@ -17,11 +17,22 @@
 #include "mcp.h"
 #include "util.h"
 
+/* The answer of both tables for a job that was cancelled. */
+#define AGENDA_CANCELLED "The job was cancelled."
+
 struct cstr_view const agenda_ended[LEDGER_STATUSES] = {
 	[LEDGER_COMPLETED] = CSTR_VIEW_INIT("The job had already completed."),
 	[LEDGER_FAILED]    = CSTR_VIEW_INIT("The job had already failed."),
-	[LEDGER_CANCELLED] = CSTR_VIEW_INIT("The job was cancelled."),
+	[LEDGER_CANCELLED] = CSTR_VIEW_INIT(AGENDA_CANCELLED),
 };
+
+struct cstr_view const agenda_no_result[LEDGER_STATUSES] = {
+	[LEDGER_WORKING]   = CSTR_VIEW_INIT("The job is still running. Call wait to wait for the "
+	                                    "job."),
+	[LEDGER_CANCELLED] = CSTR_VIEW_INIT(AGENDA_CANCELLED),
+};
+
+#undef AGENDA_CANCELLED
 
 /* The answer to a client's call of background, timer or wait that the
  * ledger refuses for want of room.

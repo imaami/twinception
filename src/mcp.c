@@ -805,8 +805,6 @@ static char const persist_failed[] = "Cannot persist job state";
 static char const start_failed[] = "Cannot start the upstream request";
 static struct cstr_view const not_object = CSTR_VIEW_INIT("The arguments argument must be an "
                                                           "object.");
-static struct cstr_view const still_runs = CSTR_VIEW_INIT("The job is still running. Call "
-                                                          "wait to wait for the job.");
 
 /* The actions of the jobs tool: X(ID, name), the constant ACTION_ID and the
  * name. An ask call that names a job in background mode takes the last two.
@@ -5138,17 +5136,14 @@ mcp_slot_turn_job (struct mcp_slot        *slot,
 
 /* Gives the output of the job of the turns that @p args names, for the
  * jobs call in @p slot: from its offset, once the job has ended. The
- * result of a job that still runs or was cancelled is refused.
+ * result of a job that still runs or was cancelled is refused with the
+ * answer of agenda_no_result[] for the status of the job.
  */
 static void
 mcp_slot_turn_result (struct mcp_slot    *slot,
                       struct json_object *args)
 {
-	struct cstr_view const refused[LEDGER_STATUSES] = {
-		[LEDGER_WORKING]   = still_runs,
-		[LEDGER_CANCELLED] = agenda_ended[LEDGER_CANCELLED],
-	};
-	struct mcp_slot *job = mcp_slot_turn_job(slot, args, refused);
+	struct mcp_slot *job = mcp_slot_turn_job(slot, args, agenda_no_result);
 	if (!job || mcp_slot_offset(slot, args))
 		return;
 	slot->of = job;
@@ -5194,9 +5189,9 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 		                                       mcp_slot_tool(slot)->name.data), 0);
 		return;
 	}
-	struct cstr_view problem =
-		status == LEDGER_WORKING ? still_runs
-		: status == LEDGER_CANCELLED ? agenda_ended[status]
+	struct cstr_view const refused = agenda_no_result[status];
+	struct cstr_view const problem =
+		refused.data ? refused
 		: !task->size ? CSTR_VIEW("The job failed. askai stored no result of the job.")
 		: (struct cstr_view){};
 	if (problem.data) {

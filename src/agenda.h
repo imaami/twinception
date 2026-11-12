@@ -26,6 +26,12 @@ enum { AGENDA_WAIT_IDS = 16 };
 /** The answers to a cancel of a job that has ended, by its status. */
 extern struct cstr_view const agenda_ended[LEDGER_STATUSES];
 
+/** The answers to a request for the result of a job that still runs or
+ *  was cancelled, by the status of the job. The entry of every other
+ *  status is an empty view.
+ */
+extern struct cstr_view const agenda_no_result[LEDGER_STATUSES];
+
 /** Returns the status of a job of the turns, as the ledger names the
  *  status of a job of a client. @p flags is the flag word of the slot of
  *  the job in src/mcp.c. Of the shared bits of src/flag.h, the word
