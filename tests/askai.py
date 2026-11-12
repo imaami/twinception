@@ -12939,13 +12939,13 @@ def check_notes_texts(binary, up):
                                     call(action="add", file="leak.md", text=end)) and \
                     git("show", f"{client}:leak.md") == end
 
-            # A git that cannot start. askai writes the reason in the scratch
-            # text of the loop and logs the reason. This askai has one loop,
-            # so every call writes the same scratch. With the git of the test
-            # alone on PATH, no other git runs in its place. With the file
-            # vanish, the git of the test makes itself not executable as it
-            # runs the command that the file names, so the next git cannot
-            # start.
+            # In the cases that follow, git cannot start. askai writes the
+            # reason in the scratch text of the loop and logs the reason.
+            # This askai runs one loop, so every call writes the same
+            # scratch. With the git of the test alone on PATH, no other git
+            # runs in its place. With the file vanish, the git of the test
+            # makes itself not executable as it runs the command whose name
+            # is in the file, so the next git cannot start.
             bin = f"{d}/bin"
             os.mkdir(bin)
             with open(f"{bin}/git", "w") as f:
@@ -12971,10 +12971,10 @@ def check_notes_texts(binary, up):
             with Askai(binary, "-u", up.url(), "--notes", notes, "--agent", "p",
                        "--upstream-tools", token="texts-1", env={"PATH": bin},
                        loops=1) as ai:
-                # The start of an ask call. git cannot list the members, and
-                # the prompt goes on with the members that the table lists.
-                # Then git cannot list the notes, and the ask call ends with
-                # the reason.
+                # At the start of an ask call, git cannot list the members,
+                # and the prompt goes on with the members that the table
+                # lists. Then git cannot list the notes, and the ask call
+                # ends with the reason.
                 os.chmod(f"{bin}/git", 0o644)
                 count = len(up.requests)
                 try:
@@ -13030,7 +13030,7 @@ def check_notes_texts(binary, up):
                 big = base64.b64encode(b"x" * ((4 << 20) + 1)).decode()
                 assert call(action="add", file="big.bin", content="data:;base64," + big) == \
                     f"!The content file is larger than the limit of {4 << 20} bytes."
-                # The log has each reason once as a warning of its own.
+                # Each reason is in the log once, as a warning of its own.
                 wait_for(lambda: ai.log.count(cannot + "\n") == 8)
     finally:
         up.reply = held
@@ -15498,11 +15498,11 @@ def check_findings(binary, up):
                 *rows[:fit], more=40 - fit, other=3) + "\n[askai: go on with the task.]"), \
                 prompt(up.requests[count + 4])[-600:]
 
-        # A git that cannot start refuses the call with the reason. askai
-        # writes the reason and the refusal of a wrong argument in the
-        # scratch text of the loop. On one connection, each result is only
-        # its own text. With the git of the test alone on PATH, no other
-        # git runs in its place.
+        # When git cannot start, askai refuses the call with the reason.
+        # askai writes the reason and the refusal of a wrong argument in
+        # the scratch text of the loop. On one connection, each result is
+        # only its own text. With the git of the test alone on PATH, no
+        # other git runs in its place.
         with Askai(binary, *args, env={"PATH": f"{d}/bin"}) as ai:
             conn = ai.connect()
 
@@ -15526,7 +15526,7 @@ def check_findings(binary, up):
                 "No evidence item has the id bro#1/99. show with id bro#1 lists the items."
             assert told(action="list", id="bro#1") == "The action list takes no argument id."
             conn.close()
-            # The log has the reason once as a warning of its own.
+            # The reason is in the log once, as a warning of its own.
             ai.wait_log(r"^Cannot run git: Permission denied\.$")
             assert ai.log.count("Cannot run git: Permission denied.\n") == 1, ai.log
 
@@ -17286,7 +17286,7 @@ def check_misuse(binary, up, plugin):
             # change the call, and mcp_slot_fetched(), refused with EINVAL.
             assert state()[1] == "refused 11 of 11"
 
-            # The same four cases in a turn of an ask call.
+            # The same four cases run in a turn of an ask call.
             up.reply = lambda request: (200, turn_stream(
                 [(case, "test_misuse", json.dumps({"case": case})) for case in expected]
                 if len(request["body"]["messages"]) == 1 else (), text="A"))
@@ -17844,7 +17844,7 @@ class MockCE:
         if cid == "gone":
             return 404, b"Not Found", ()
         if cid == "boom":
-            # A source with WORDY gets a message of 204 bytes, whose bytes
+            # For a source with WORDY, the message is 204 bytes, and bytes
             # 199 and 200 are one character.
             wordy = "WORDY" in body["source"]
             return 500, {"error": True, "message": "w" * 198 + "\u00e9tail" if wordy
@@ -18213,8 +18213,8 @@ def check_godbolt(binary, up, godbolt):
                     last == summary(3, 1, 0, 2, 0), records
                 text = refused(ai, "godbolt_compile", compilers=["gone"], source=source)
                 assert text.endswith(summary(1, 0, 0, 1, 0)), text
-                # The record has the first 200 bytes of a longer error text
-                # of the site, whole.
+                # The record contains the first 200 bytes of a longer error
+                # text of the site. The cut is at the end of a character.
                 records, _ = ce_records(refused(ai, "godbolt_compile", compilers=["boom"],
                                                 source="// WORDY\n"))
                 assert [r[2] for r in records] == ["HTTP 500: " + "w" * 198 + "\u00e9"], \

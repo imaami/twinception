@@ -182,14 +182,14 @@ git_run_test_env (void)
 	CHECK(git_run_dir_init(nullptr, "/r", nullptr, nullptr, 0) == EINVAL);
 }
 
-/* Tests git_run_init(): the copy of the input, the cap, the deadline, the
- * grace and the flags of the struct child_cmd, with the file, the argv
- * and the environment of git in place of those of the struct child_cmd;
- * the pointers after the argv, which are nullptr although every pointer
- * of the struct git_run pointed at a word before the call; the argv of
- * GIT_RUN_ARGV pointers; one word too many, which leaves the struct
- * git_run all zero; and EINVAL for each nullptr, which leaves the struct
- * git_run as it was.
+/* Tests git_run_init(). The struct child_cmd of the result is a copy of
+ * the struct child_cmd that the test passes, with the file, the argv and
+ * the environment of git in place of the ones of the test. Every pointer
+ * of run.argv after the nullptr of the argv is nullptr, although each
+ * pointer of run.argv pointed at a word before the call. An argv of
+ * GIT_RUN_ARGV pointers fits. After one word too many, the function
+ * returns E2BIG and the struct git_run is all zero. After EINVAL for a
+ * nullptr, the struct git_run is as it was.
  */
 static void
 git_run_test_init (void)
