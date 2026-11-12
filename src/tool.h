@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "flag.h"
+
 struct json_object;
 struct mcp_slot;
 
@@ -68,11 +70,23 @@ enum tool_flag : uint64_t {
  */
 #define TOOL_OFFSET_ABOUT "The byte of the output to start from. The default is 0."
 
-/** How a call's output ends, or goes on. */
+/** The flags of the functions of src/mcp.h that write the output of a
+ *  call or end the call. TOOL_FAILED is the shared bit of a failure
+ *  (src/flag.h), and TOOL_MORE is a bit of this word only.
+ */
 enum tool_out : uint32_t {
-	TOOL_FAILED = 1U << 0U,  /**< tell, finish: the call failed */
-	TOOL_MORE   = 1U << 1U,  /**< write: more output follows */
+	TOOL_FAILED = FLAG_FAILED,  /**< the call failed. mcp_slot_tell(),
+	                                 mcp_slot_tellf() and mcp_slot_finish()
+	                                 read the flag. */
+	TOOL_MORE   = FLAG_OWN(0),  /**< the call writes more output after the
+	                                 text. mcp_slot_write() reads the
+	                                 flag. */
 };
+
+/* The two values are part of the plugin ABI. A plugin that was built
+ * before a change of flag.h still passes 1 and 2.
+ */
+static_assert(TOOL_FAILED == 1 && TOOL_MORE == 2, "the values are part of the plugin ABI");
 
 /** The reason why a call failed, as text that the call tells
  *  (mcp_slot_tell()). The text is at most TOOL_TELL_MAX - 1 bytes, the
