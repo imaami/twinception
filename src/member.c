@@ -129,9 +129,10 @@ struct member_table {
  * of its table (member_lookup_step()).
  */
 struct member_claim {
-	struct member_login login;            /* the login, and once the records
-	                                         decide, the member of the
-	                                         login in login.member */
+	struct member_login login;            /* the login. After
+	                                         member_claim_step() returns 0,
+	                                         login.member is the member of
+	                                         the login. */
 	uint32_t            writes;           /* the commits of the record so
 	                                         far, at most STORE_TRIES */
 	char                ref[MEMBER_REF];  /* the ref of the record that the
