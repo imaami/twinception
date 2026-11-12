@@ -15766,8 +15766,10 @@ def check_findings_cases(binary, up):
     the ask call, and every agent reads them. N4-4 and N3-3: expand prints
     the stored bytes after the source commit is gone. N1-1: the notices
     name what the prompt contains. Beyond the recorded confusions, the
-    function checks the item of a failed call and the item of a call that
-    the upstream sent without an ID."""
+    function checks the item of a failed call, the item of a call that the
+    upstream sent without an ID, the ID of an item where an argument needs
+    the ID of a finding, and a file that contains the ID of another
+    finding."""
     with tempfile.TemporaryDirectory() as d:
         git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
         repo, session = f"{d}/proj", f"{d}/session.git"
@@ -15934,6 +15936,45 @@ def check_findings_cases(binary, up):
             text = client(action="expand", id="cuh#1/1")
             assert text.endswith(":]\nchanged\n[askai: the stored material of cuh#1/1 does "
                                  "not match the recorded SHA-256.]\n"), text
+            # show, update and about need the ID of a finding and refuse
+            # the ID of an item. expand refuses lines of an item and an
+            # item number with a leading zero. Nothing is recorded.
+            script[:] = [turn(("findings", {"action": "show", "id": "cuh#1/1"}),
+                              ("findings", {"action": "update", "id": "bro#1/1",
+                                            "state": "retracted", "reason": "R"}),
+                              ("findings", {"action": "add", "claim": "C", "about": "cuh#1/1"}),
+                              ("findings", {"action": "expand", "id": "cuh#1/1:1"}),
+                              ("findings", {"action": "expand", "id": "cuh#1/01"}))]
+            count = len(up.requests)
+            bro.ask("Q")
+            said = results(up.requests[count + 1])
+            assert said == ["show needs id: a finding, such as bro#5.",
+                            "update needs id: a finding, such as bro#5.",
+                            "about must be the id of a finding, such as bro#2.",
+                            *["expand needs id: a finding, such as bro#5, or an evidence item, "
+                              "such as bro#5/2."] * 2], said
+            assert client(action="show", id="cuh#1/1") == said[0], said
+            listed = client(action="list")
+            assert "bro#3 " in listed and "bro#4" not in listed and \
+                "bro#1  verified " in listed, listed
+            # The ID in the file of a finding must be the author of its
+            # branch and the number of its path. A file of dan#1 with
+            # another number, another author or the ID of an item fails
+            # show.
+            parent = ""
+            for key, want in (("dan#2", "Could not read finding dan#1: unknown format."),
+                              ("cuh#1", "Could not read finding dan#1: unknown format."),
+                              ("dan#1/1", "Could not read finding dan#1: unknown format."),
+                              ("dan#1", "Finding dan#1 by dan: verified\nclaim: a.c declares a "
+                                        "and b.\n")):
+                body = json.dumps(stored(1, "cuh") | {"id": key})
+                notes("fast-import", "--quiet", data=(
+                    f"commit refs/heads/agent/dan/findings\ncommitter t <t> {int(time.time())} "
+                    f"+0000\ndata 0\n{parent}M 100644 inline findings/0/1.json\n"
+                    f"data {len(body.encode())}\n{body}\n"))
+                parent = "from refs/heads/agent/dan/findings^0\n"
+                text = client(action="show", id="dan#1")
+                assert text.startswith(want) and (text == want or key == "dan#1"), (key, text)
 
         # N1-1 without notes: turns lent findings but not notes, which the
         # configuration denies to the upstream, get the open findings of
@@ -15989,7 +16030,8 @@ def check_findings_cases(binary, up):
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("findings cases: calls as evidence, stable IDs, any call verifies, shared findings, "
           "a failed call and calls without an ID, stored bytes after a rewrite, the prompt "
-          "notices, a changed archive, findings without notes: PASS")
+          "notices, a changed archive, the ID of an item in place of a finding, a file with "
+          "the ID of another finding, findings without notes: PASS")
 
 
 def check_tasks(binary, up):
