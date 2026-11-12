@@ -265,8 +265,8 @@ journal_open_path (struct journal *j,
  * writes the output to a file, which child_capture() reads into j->out
  * after git ends, so that git never waits on a full pipe. If @p oid is not
  * nullptr, the function reads the name of an object that git prints into
- * @p oid. Returns what git_run_capture() returns. Only the writer and
- * startup call this function.
+ * @p oid. Returns what git_run_now() returns. Only the writer and startup
+ * call this function.
  */
 static int
 journal_git (struct journal    *j,
@@ -274,20 +274,16 @@ journal_git (struct journal    *j,
              int                input,
              struct oid        *oid)
 {
-	struct git_run run;
-	int e = git_run_init(&run, &j->git, command, &(struct child_cmd){
-		.max      = sizeof j->scratch,
-		.deadline = loop_clock() + GIT_RUN_NS,
-		.grace    = GIT_GRACE,
-	});
-	if (e)
-		return e;
+	struct child_cmd const how = {
+		.max   = sizeof j->scratch,
+		.grace = GIT_GRACE,
+	};
 	/* A git child can outlive an askai that was killed. fds.keep passes
 	 * the descriptor of the writer lock to git through exec, so the
 	 * flock() of a new askai on the writer lock fails until git ends. */
 	struct child_fds const fds = { .in = input, .out = -1, .dir = j->repo_fd,
 	                               .keep = j->lock_fd };
-	return git_run_capture(&run, fds, &j->out, oid);
+	return git_run_now(&j->git, command, how, fds, &j->out, oid);
 }
 
 static int
