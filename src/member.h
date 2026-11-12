@@ -44,7 +44,6 @@
 #include "oid.h"
 #include "policy.h"
 #include "store.h"
-#include "tool.h"
 #include "util.h"
 
 struct blocker;
@@ -54,6 +53,7 @@ struct json_object;
 struct loop;
 struct member_registry;
 struct member_table;
+struct tool_scratch;
 
 enum {
 	MEMBER_LOGIN  = sizeof "identity " + POLICY_NAME, /**< bytes of a login,
@@ -80,7 +80,7 @@ enum {
 
 /** The time for the lookup of the name of a Unix user, in nanoseconds.
  *  After a longer lookup, a find names the person uid-N, and a claim fails
- *  with EAGAIN.
+ *  with ENODATA.
  */
 #define MEMBER_NS (10 * NS)
 
@@ -278,7 +278,9 @@ member_call_ids (struct member_call *call);
  * registry, or returns nullptr with an error number in @p *e and a message
  * in the @p len bytes at @p why: EINVAL for a null or invalid argument, a
  * session of a later format than MEMBER_FORMAT, or a record of the name of
- * the agent that belongs to a person; EIO if git fails; or ENOMEM.
+ * the agent that belongs to a person; EIO if git fails; EAGAIN after
+ * STORE_TRIES commits of the record of the agent that lost a race to other
+ * services; or ENOMEM.
  */
 extern struct member_registry *
 member_registry_create (struct store const *store,
@@ -327,14 +329,35 @@ struct member_wait {
 	                               waits */
 	/** Called on the loop of the table once the lookup ends. */
 	void           (*done) (struct member_wait *wait);
-	struct tool_why  why;     /**< the reason for an error other than ENOENT
-	                               and ENOMEM, a text for the client */
-	int16_t          e;       /**< 0, or the error number for a login
+	int32_t          e;       /**< 0, or the error number for a login
 	                               without a member, as member_table_find()
-	                               returns it. With an int16_t, the struct
-	                               is without padding. */
-	struct member    member;  /**< the member of the login */
+	                               returns it */
+	struct member    member;  /**< the member of the login, or the name ""
+	                               after an error */
+	struct member    by;      /**< for EPERM, the record that refuses the
+	                               login, with its kind and its name. The
+	                               name is the name of the identity or of
+	                               the Unix user of the login. Else the
+	                               name "". */
 };
+
+/**
+ * Writes why a lookup of @p login ended with the error number @p e, as
+ * member_table_find() sets it in a wait, into the @p size bytes at @p buf.
+ * The text is a sentence for the client. @p by is wait->by, the record
+ * that refuses the login. The function reads @p by only for EPERM, so
+ * @p by can be nullptr for any other @p e. The sentence for EPERM contains
+ * the name of that record, because @p login does not contain the name of
+ * the user of a Unix login. Returns a view of the text in @p buf, or a
+ * view of a static text. The view is empty for an error number without a
+ * sentence, such as ENOENT and ENOMEM, and for a null @p login or @p buf.
+ */
+extern struct cstr_view
+member_login_why (struct member_login const *login,
+                  int                        e,
+                  struct member const       *by,
+                  char                      *buf,
+                  size_t                     size);
 
 /** Creates the table of the members on @p loop, with the records that
  *  @p registry read at the start. @p registry must outlive the table. git
@@ -387,9 +410,10 @@ member_table_registry (struct member_table const *table);
  * to the lookup of the login, and wait->done runs later, with the result
  * in @p wait. The function and wait->done set wait->e to 0; ENOENT for no
  * login, which is no member; EPERM if the record of the name refuses the
- * login; EIO if git fails; EAGAIN if askai is busy; ECANCELED if askai
- * stops; ENOMEM; or EINVAL for a null argument. wait->why contains the
- * reason for EPERM, EIO, EAGAIN and ECANCELED, a text for the client.
+ * login, with that record in wait->by; EIO if git cannot read or write the
+ * records, and the log names the cause; EBUSY if askai runs too many
+ * commands or lookups; ECANCELED if askai stops; ENOMEM; or EINVAL for a
+ * null argument. member_login_why() writes the sentence for the client.
  */
 extern int
 member_table_find (struct member_table       *table,
@@ -401,10 +425,11 @@ member_table_find (struct member_table       *table,
  * and writes the record of the member if no record names the member: git
  * creates the record of a new member, or adds the login to the record of
  * the person of the name. git reads the records again after each write.
- * Returns as member_table_find() does, also EIO after STORE_TRIES writes
- * that lost a race to other writers. A name of a Unix user that is uid-N
- * until a later lookup works gets no record: the claim looks up the name
- * again, or fails with EAGAIN while that lookup runs or after it fails.
+ * Returns as member_table_find() does, also EAGAIN after STORE_TRIES
+ * writes that lost a race to other writers. A name of a Unix user that is
+ * uid-N until a later lookup works gets no record: the claim looks up the
+ * name again, or fails with ENODATA while that lookup runs or after it
+ * fails.
  */
 extern int
 member_table_claim (struct member_table       *table,

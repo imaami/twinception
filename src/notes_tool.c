@@ -1810,6 +1810,23 @@ notes_tool_launch (struct mcp_slot *slot)
 	notes_tool_run(slot, call->first, &in, e);
 }
 
+/* Refuses the call in @p slot, whose caller has no member name. If a
+ * record refuses the login of the caller, the refusal is the sentence of
+ * member_login_why(). Otherwise the refusal is @p needs.
+ */
+static void
+notes_tool_no_member (struct mcp_slot  *slot,
+                      struct cstr_view  needs)
+{
+	struct notes_tool_call const *call = *mcp_slot_own(slot);
+	struct member_wait const *wait = &call->wait;
+	struct tool_scratch *scratch = mcp_slot_scratch(slot);
+	struct cstr_view const why = member_login_why(&mcp_slot_member(slot)->login, wait->e,
+	                                              &wait->by, scratch->text,
+	                                              sizeof scratch->text);
+	mcp_slot_tell(slot, why.len ? why : needs, TOOL_FAILED);
+}
+
 /* Finds the notebook of the call in @p slot once the caller is known, and
  * runs the first git of the call. A call that writes a note as the caller
  * (NOTES_ACTION_WRITE) needs a caller with a member name, and a write
@@ -1826,20 +1843,17 @@ notes_tool_resolve (struct mcp_slot *slot)
 	struct cstr_view const name = cstr_view(call->book.name);
 	bool const own = !name.len || cstr_view_equal(name, cstr_view(call->self.name));
 	if (!*call->self.name) {
-		/* The refusal of a login by a record comes with a reason. */
-		struct cstr_view const why = util_text_view(&call->wait.why);
 		if (flags & NOTES_ACTION_WRITE) {
-			mcp_slot_tell(slot, why.len ? why
-			              : CSTR_VIEW("Writing notes needs a member name. Connect through "
-			                          "the Unix socket, or with the token of an "
-			                          "identity."), TOOL_FAILED);
+			notes_tool_no_member(slot, CSTR_VIEW("Writing notes needs a member name. "
+			                                     "Connect through the Unix socket, or "
+			                                     "with the token of an identity."));
 			return;
 		}
 		if (own && call->action != NOTES_ACTION_MEMBERS) {
-			mcp_slot_tell(slot, why.len ? why
-			              : CSTR_VIEW("You have no notebook, because you have no member "
-			                          "name. Give a name as notebook. Action members "
-			                          "lists the names."), TOOL_FAILED);
+			notes_tool_no_member(slot, CSTR_VIEW("You have no notebook, because you "
+			                                     "have no member name. Give a name as "
+			                                     "notebook. Action members lists the "
+			                                     "names."));
 			return;
 		}
 	}
@@ -1863,8 +1877,9 @@ notes_tool_resolve (struct mcp_slot *slot)
 /* Goes on with the call in @p slot once the lookup of the member of the
  * login of its client has ended. A login without a member (ENOENT) and a
  * login that a record refuses (EPERM) go on without a member name. Any
- * other error of the lookup, such as EAGAIN for a busy askai, ends the
- * call with the reason. For the prompt of an ask call, the member is then
+ * other error of the lookup, such as EBUSY for a busy askai, ends the call
+ * with the sentence of member_login_why(), or fails the call if the error
+ * is without a sentence. For the prompt of an ask call, the member is then
  * the asker, and the table reads the records of the members. For a call
  * of the notes tool, the member is the caller, with its notebook as
  * call->repo, and notes_tool_resolve() then selects the notebook that the
@@ -1877,10 +1892,15 @@ notes_tool_logged_in (struct mcp_slot *slot)
 	call->flags &= ~CALL_LOGIN;
 	int const e = call->wait.e;
 	if (e && e != ENOENT && e != EPERM) {
-		struct tool_why const why = call->wait.why;
 		notes_tool_drop(slot);
+		/* Only EPERM, which goes on below, needs the record that refuses
+		 * a login. */
+		struct tool_scratch *scratch = mcp_slot_scratch(slot);
+		struct cstr_view const why = member_login_why(&mcp_slot_member(slot)->login, e,
+		                                              nullptr, scratch->text,
+		                                              sizeof scratch->text);
 		if (why.len)
-			mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
+			mcp_slot_tell(slot, why, TOOL_FAILED);
 		else
 			mcp_slot_fail(slot, e);
 		return;

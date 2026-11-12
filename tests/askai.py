@@ -11904,16 +11904,20 @@ def check_notes(binary, up):
             assert call(nobody).startswith("!No member is named nobody. The members are ")
             assert call({"action": "members"}).startswith("Members of the session ")
             ai.wait_lines("member: ", [cause] * 2)
-            # The call of a new member fails with the reason if git cannot
-            # write the record of the member, and no record is written. A
-            # second call fails with the same reason. The call works once
-            # git writes again.
+            # The call of a new member fails with one fixed sentence if git
+            # cannot write the record of the member, and no record is
+            # written. The log names the cause of git once for each call. A
+            # second call fails in the same way. The call works once git
+            # writes again.
             record = "refs/askai/members/dave"
+            wrote_no = f"member: identity dave: Could not write {record}: fatal: boom"
             open(boom, "w").close()
+            ai.log.clear()
             for _ in range(2):
                 assert call({"action": "delete", "file": "d1.md"}, "dave-1") == \
-                    f"!Could not write {record}: fatal: boom"
+                    "!askai could not read or write the member records."
             os.unlink(boom)
+            ai.wait_lines("member: ", [wrote_no] * 2)
             assert not git("for-each-ref", record)
             # The first two writes of a new notebook both succeed. The later
             # one makes its commit on the first commit of the notebook. A
@@ -11923,6 +11927,7 @@ def check_notes(binary, up):
             names = ("d1.md", "d2.md")
             assert call({"action": "delete", "file": "d1.md"}, "dave-1") == "!" + NO_NOTE
             assert b"Login: identity dave\n" in git("log", "-1", "--format=%B", record)
+            ai.wait_lines("member: ", [wrote_no] * 2)
             assert not git("for-each-ref", dave)
             said = race(*({"action": "add", "file": name, "text": "d"} for name in names),
                         token="dave-1")
@@ -12025,6 +12030,30 @@ def check_notes(binary, up):
         with Askai(binary, "-c", path, ignore=(signal.SIGCHLD,)) as ai:
             said = call({"action": "add", "file": "y.md", "text": "y"})
             assert wrote(said, 'Add "y.md" (1 byte)'), said
+        # The agent of this askai is named like the user who runs askai.
+        # With ASKAI_TOKEN, the login of the client is the Unix login of
+        # that user, and askai looks up the name of the user. The record of
+        # the agent refuses the login, and the refusal names the user. The
+        # table of a loop logs the refusal once, at the first lookup of the
+        # login, and this askai runs one loop. The person has no member
+        # name, and can read the notebook of the agent by its name.
+        with Askai(binary, "-u", up.url(), "--notes", f"{d}/own", "--agent", ME,
+                   token="own-1", loops=1) as ai:
+            def own_call(**arguments):
+                result = ai.rpc("tools/call", {"name": "notes",
+                                               "arguments": arguments})[2]["result"]
+                return ("!" if result.get("isError") else "") + text_of(result)
+            refused = f"Your login name {ME} is the name of an agent of this session. Ask " \
+                "the operator to rename the agent."
+            assert own_call(action="list") == "!" + refused
+            assert own_call(action="add", file="x.md", text="x") == "!" + refused
+            assert own_call(action="members").endswith(
+                "\nYou have no member name, so you cannot write notes. To read another "
+                "notebook, give the member name as notebook.\n")
+            assert own_call(action="list", notebook=ME) == \
+                f"The notebook {ME} contains no notes yet."
+            ai.wait_lines(f"member: uid {os.geteuid()}: Your ",
+                          [f"member: uid {os.geteuid()}: {refused}"])
     print("notes: one notebook per member, members and their kinds, reads of every "
           "notebook by member name, author and committer, versioned files, copy, binary "
           "data, offsets, races, drops, preservation of external locks and removal of "
@@ -12722,7 +12751,9 @@ def check_notes_texts(binary, up):
     markup of the next tool call. A git that cannot start ends a call with
     the reason. The prompt of an ask call then goes on with the members that
     the table lists, and without the newest note and the findings. The
-    result of a write is then without the lines that the write changed."""
+    result of a write is then without the lines that the write changed. If
+    git cannot start for the lookup of a login, the call ends with one fixed
+    sentence, and the log names the cause."""
     held = up.reply
     script = []
     up.reply = lambda request: script.pop(0)(request)
@@ -13063,6 +13094,23 @@ def check_notes_texts(binary, up):
                     f"!The content file is larger than the limit of {4 << 20} bytes."
                 # Each reason is in the log once, as a warning of its own.
                 wait_for(lambda: ai.log.count(cannot + "\n") == 8)
+
+            # In a new session, the person is not a member yet, and git
+            # cannot start for the lookup of the login. The call ends with
+            # one fixed sentence. The log names the login and the cause in
+            # one line. The call works once git starts again.
+            with Askai(binary, "-u", up.url(), "--notes", f"{d}/fresh", "--agent", "p",
+                       token="texts-2", env={"PATH": bin}, loops=1) as ai:
+                os.chmod(f"{bin}/git", 0o644)
+                try:
+                    said = call(action="list")
+                finally:
+                    back()
+                assert said == "!askai could not read or write the member records.", said
+                ai.wait_lines("member: ", [f"member: uid {os.geteuid()}: cannot run git: "
+                                           "Permission denied"])
+                assert call(action="list") == mine
+                assert not any(line.startswith("Cannot run git") for line in ai.log), ai.log
     finally:
         up.reply = held
     print("notes texts: the answers before the first note, the members and their "
