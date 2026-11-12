@@ -492,7 +492,7 @@ test_cite (void)
 	/* A call of another tool, which failed, with an ID from the provider. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c2")));
 	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
-	CHECK(ev.kind == EVIDENCE_CALL && ev.flags == EVIDENCE_FAILED && ev.call == 2 &&
+	CHECK(ev.kind == EVIDENCE_CALL && ev.flags == FLAG_FAILED && ev.call == 2 &&
 	      !dstr_len(&ev.ids));
 	SAME(dstr_get(&ev.call_id), dstr_len(&ev.call_id), "toolu_x");
 	SAME(dstr_get(&ev.tool), dstr_len(&ev.tool), "man");
@@ -660,7 +660,7 @@ test_json (void)
 	e.turn = 3;
 	e.output = 900;
 	e.skip = 100;
-	e.flags = EVIDENCE_FAILED;
+	e.flags = FLAG_FAILED;
 	CHECK(!hexid_init(&e.ask, CSTR_VIEW("9f3c2a71e0b14c55a1d2e3f405162738")));
 	CHECK(!finding_id_parse(&e.from, CSTR_VIEW("cuh#2/2")));
 	CHECK(!cstr_view_store(CSTR_VIEW("git"), &e.tool));
@@ -686,7 +686,7 @@ test_json (void)
 	struct evidence back = evidence();
 	CHECK(!evidence_parse(&back, obj));
 	CHECK(back.kind == EVIDENCE_LINES && back.item == 2 && back.call == 12 && back.turn == 3 &&
-	      back.output == 900 && back.skip == 100 && back.flags == EVIDENCE_FAILED &&
+	      back.output == 900 && back.skip == 100 && back.flags == FLAG_FAILED &&
 	      !strcmp(back.ask.hex, e.ask.hex) && finding_id_equal(&back.from, &e.from) &&
 	      !strcmp(back.from.author, "cuh") && back.from.number == 2 && back.from.item == 2 &&
 	      back.ranges.n == 2 && back.ranges.items[1].first == 180 &&
@@ -720,7 +720,7 @@ test_json (void)
 	CHECK(!evidence_summary(&back, &text));
 	SAME(dstr_get(&text), dstr_len(&text), "call c4, man, 1 byte");
 	/* The summary of a call names no identifiers. */
-	back.flags |= EVIDENCE_FAILED;
+	back.flags |= FLAG_FAILED;
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\"}"), &back.ids));
 	(void)dstr_clear(&text);
 	CHECK(!evidence_summary(&back, &text));
@@ -1209,7 +1209,7 @@ test_expand (void)
 	/* The whole output, no identifiers, a failed call after a restart. */
 	e.skip = 0;
 	e.output = 7;
-	e.flags |= EVIDENCE_FAILED;
+	e.flags |= FLAG_FAILED;
 	e.ask = (struct hexid){};
 	(void)dstr_clear(&e.ids);
 	expanded(&e, args, out, "[askai: cuh#2/1: call c9 of cuh, turn 19, tool git, failed, stored "

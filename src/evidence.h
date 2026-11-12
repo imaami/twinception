@@ -103,11 +103,6 @@ struct evidence_blob {
 	unsigned char sha256[EVIDENCE_SHA256];
 };
 
-/** The flags of an evidence item. */
-enum evidence_flag : uint8_t {
-	EVIDENCE_FAILED = 1U << 0,  /**< the call failed */
-};
-
 /** An evidence item: the record of stored material and the identifiers
  *  that reproduce it. Each member has a defined value from evidence()
  *  on.
@@ -136,9 +131,10 @@ struct evidence {
 	struct finding_id     from;     /**< the ID of the item that the item
 	                                     cites again, such as cuh#2/1, or no
 	                                     ID */
-	uint16_t              flags;    /**< enum evidence_flag. The member is
-	                                     16 bits wide so that the struct
-	                                     ends without padding. */
+	uint16_t              flags;    /**< FLAG_FAILED of src/flag.h if the
+	                                     call failed, and no other bit. The
+	                                     member is 16 bits wide so that the
+	                                     struct ends without padding. */
 	enum evidence_kind    kind;
 	struct hexid          ask;      /**< the ask call of the call, or no id
 	                                     for a job resumed from a journal

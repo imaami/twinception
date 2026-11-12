@@ -430,7 +430,7 @@ evidence_cite (struct evidence            *dest,
 	dest->ask = *cite->ask;
 	dest->output = stamp->output;
 	dest->skip = c->skip;
-	dest->flags = stamp->flags & FLAG_FAILED ? EVIDENCE_FAILED : 0;
+	dest->flags = stamp->flags & FLAG_FAILED;
 	char made[sizeof "call_4294967295_65535"];
 	struct cstr_view const id = parts.id.len ? parts.id
 	                          : util_format_view(made, sizeof made, "call_%" PRIu32 "_%u",
@@ -542,7 +542,7 @@ evidence_json (struct evidence const *e,
 		"call", json_object_new_uint64(e->call),
 		"turn", json_object_new_uint64(e->turn),
 		"call_id", jb_string(cstr_view_dstr(&e->call_id)),
-		"failed", json_object_new_boolean(e->flags & EVIDENCE_FAILED),
+		"failed", json_object_new_boolean(e->flags & FLAG_FAILED),
 		"output", json_object_new_uint64(e->output),
 		"skip", json_object_new_uint64(e->skip),
 		nullptr);
@@ -642,7 +642,7 @@ evidence_parse (struct evidence          *dest,
 		dest->item = (uint32_t)item;
 		dest->call = (uint32_t)call;
 		dest->turn = (uint32_t)turn;
-		dest->flags = jb_true(failed) ? EVIDENCE_FAILED : 0;
+		dest->flags = jb_true(failed) ? FLAG_FAILED : 0;
 		struct cstr_view const wire = jb_wire(ids);
 		e = ids && !wire.data ? ENOMEM : cstr_view_store(tool, &dest->tool);
 		e = e ? e : cstr_view_store(call_id, &dest->call_id);
@@ -695,7 +695,7 @@ evidence_summary (struct evidence const *e,
 	}
 	struct cstr_view const tool = cstr_view_dstr(&e->tool);
 	bool ok = dstr_printf(d, "call c%" PRIu32 ", %.*s", e->call, (int)tool.len, tool.data);
-	ok = ok && (!(e->flags & EVIDENCE_FAILED) || dstr_cat(d, ", failed"));
+	ok = ok && (!(e->flags & FLAG_FAILED) || dstr_cat(d, ", failed"));
 	ok = ok && dstr_printf(d, ", %" PRIu64 " byte%s", e->result.bytes, util_s(e->result.bytes));
 	return ok ? 0 : ENOMEM;
 }
@@ -859,7 +859,7 @@ evidence_expand_call (struct evidence const *e,
 		return false;
 	if (!dstr_printf(d, ", turn %" PRIu32 ", tool %.*s%s, stored exactly as sent.", e->turn,
 	                 (int)tool.len, tool.len ? tool.data : "",
-	                 e->flags & EVIDENCE_FAILED ? ", failed" : ""))
+	                 e->flags & FLAG_FAILED ? ", failed" : ""))
 		return false;
 	if (repo.len && commit.len)
 		return dstr_printf(d, " Repository %.*s, commit %.*s.", (int)repo.len, repo.data,
