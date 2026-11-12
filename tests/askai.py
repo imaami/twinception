@@ -10523,8 +10523,9 @@ def check_code(binary, up):
                        for c in ("a.c", "b.c", "pragma.c", "deep.c", "lay.c", "big.c",
                                  "leak.c", "far.c", "wt.c", "warn.c")], f)
 
-        def call(ai, error=False, **arguments):
-            status, _, body = ai.rpc("tools/call", {"name": "code", "arguments": arguments})
+        def call(ai, error=False, conn=None, **arguments):
+            status, _, body = ai.rpc("tools/call", {"name": "code", "arguments": arguments},
+                                     conn=conn)
             assert status == 200 and bool(body["result"].get("isError")) == error, \
                 (arguments, body)
             return text_of(body["result"])
@@ -10589,6 +10590,10 @@ def check_code(binary, up):
             # their values.
             outline = {"repo": "proj", "action": "outline", "path": "src/a.c"}
             string = "The {} argument must be a string of 1 to 1024 bytes without a NUL."
+            history = ("A revision names no commit that the git tool can read. Possible "
+                       "causes: a name or hash that does not exist, ~N past the first commit, "
+                       "a blob or tree hash, or a commit that no branch, tag, remote-tracking "
+                       "ref or HEAD reaches. Give a file as commit:path, not as a blob hash.")
             for arguments, text in (
                     ({**outline, "bogus": 1}, "bogus is not an argument of the code tool."),
                     ({**outline, "repo": "nope"}, "The repo argument must be proj or lib."),
@@ -10607,11 +10612,7 @@ def check_code(binary, up):
                     ({**outline, "revision": "main..x"},
                      "The revision argument must be a commit name or hash, with optional "
                      "^ and ~ suffixes, such as HEAD~1."),
-                    ({**outline, "revision": "nope"},
-                     "A revision names no commit that the git tool can read. Possible "
-                     "causes: a name or hash that does not exist, ~N past the first commit, "
-                     "a blob or tree hash, or a commit that no branch, tag, remote-tracking "
-                     "ref or HEAD reaches. Give a file as commit:path, not as a blob hash."),
+                    ({**outline, "revision": "nope"}, history),
                     ({**outline, "offset": -1},
                      "The offset argument must be a whole number of bytes, 0 or more."),
                     ({**outline, "path": "fail.c"}, "The fake refuses fail.c."),
@@ -10619,6 +10620,25 @@ def check_code(binary, up):
                     ({**outline, "path": "segv.c"}, "askai-code was killed by signal 11."),
                     ({**outline, "path": "big.c"}, "askai-code wrote more than 4 MiB.")):
                 assert call(ai, error=True, **arguments) == text, (arguments, text)
+            # The list of the repositories and the reason of a failed
+            # askai-code are written in the scratch text of the loop. Each
+            # result on one connection is only its own text.
+            conn = ai.connect()
+            for arguments, text in (
+                    ({**outline, "repo": "nope"}, "The repo argument must be proj or lib."),
+                    ({**outline, "path": "exit3.c"}, "askai-code exited with status 3."),
+                    ({**outline, "bogus": 1}, "bogus is not an argument of the code tool."),
+                    ({**outline, "path": "segv.c"}, "askai-code was killed by signal 11."),
+                    ({**outline, "repo": "nope"}, "The repo argument must be proj or lib."),
+                    ({**outline, "line": 0}, "The line argument must be a whole number "
+                     "from 1."),
+                    ({**outline, "revision": "nope"}, history),
+                    ({**outline, "path": "fail.c"}, "The fake refuses fail.c.")):
+                assert call(ai, error=True, conn=conn, **arguments) == text, (arguments, text)
+            assert call(ai, conn=conn, **outline) == f"[proj at {head}: src/a.c, 0 names.]\n"
+            assert call(ai, error=True, conn=conn, **{**outline, "repo": "nope"}) == \
+                "The repo argument must be proj or lib."
+            conn.close()
 
             # The request: the KEY=VALUE words with the resolved commit, then
             # the git command line of the git tool for the private view, and

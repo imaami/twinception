@@ -334,10 +334,11 @@ code_ended (struct mcp_slot  *slot,
 	struct code const *code = mcp_slot_part(slot);
 	struct child *c = call->pin.child;
 	int const status = child_status(c);
-	char buf[TOOL_TELL_MAX];
 	if (status != 0 && status != 1) {
+		struct tool_scratch *scratch = mcp_slot_scratch(slot);
 		mcp_slot_tell(slot, child_end_why(&c->end, "askai-code", code->cfg->git_timeout,
-		                                  c->max, buf, sizeof buf), TOOL_FAILED);
+		                                  c->max, scratch->text, sizeof scratch->text),
+		              TOOL_FAILED);
 		return;
 	}
 	struct span const out = buf_peek(&c->out);
@@ -379,36 +380,44 @@ code_step (struct mcp_slot *slot)
 		git_step_failed(slot, e, why, pin->phase < GIT_PIN_DONE ? "git" : "askai-code");
 }
 
-/* Checks the types of the arguments @p args of @p call, a call of @p code,
- * whose values askai-code checks. Adds the revision to the pin of the call
- * and appends the words of the request to askai-code. Returns 0, EINVAL
- * with the error text in @p why, or ENOMEM.
+/* Checks the types of the arguments @p args of @p call, the call of
+ * @p code in @p slot. askai-code checks the values of the arguments. The
+ * function adds the revision to the pin of the call and appends the words
+ * of the request to askai-code. Returns 0 or ENOMEM, or EINVAL after it has
+ * ended the call with a text that says which argument is wrong.
  */
 static int
 code_args (struct code const  *code,
            struct code_call   *call,
            struct json_object *args,
-           struct tool_why    *why)
+           struct mcp_slot    *slot)
 {
 	struct json_object *of[CODE_ARGS] = {};
 	uint64_t seen;
 	struct cstr_view other;
 	if (jb_args(args, code_arg_names, CODE_ARGS, UINT64_MAX, of, &seen, &other))
-		return util_text_printf(why, "%.*s is not an argument of the code tool.",
-		                        (int)other.len, other.data), EINVAL;
+		return mcp_slot_tellf(slot, TOOL_FAILED, "%.*s is not an argument of the code "
+		                      "tool.", (int)other.len, other.data), EINVAL;
 	struct config const *cfg = code->cfg;
 	struct cstr_view const repo = jb_text(of[CODE_ARG_REPO], 1, CODE_WORD, nullptr);
 	size_t r = repo.data ? 0 : cfg->n_codes;
 	while (r < cfg->n_codes && !cstr_view_equal(git_run_name(cfg->code_repos[r]), repo))
 		++r;
 	if (r == cfg->n_codes) {
-		util_text_printf(why, "The repo argument must be ");
+		/* The names are appended one by one, so the sentence is built in
+		 * the scratch text of the loop. */
+		struct tool_scratch *scratch = mcp_slot_scratch(slot);
+		char *const why = scratch->text;
+		uint32_t len = 0;
+		util_text_printf_(&len, why, sizeof scratch->text, "The repo argument must be ");
 		for (size_t i = 0; i < cfg->n_codes; ++i) {
 			struct cstr_view const name = git_run_name(cfg->code_repos[i]);
-			util_text_printf(why, "%s%.*s", !i ? "" : i + 1 < cfg->n_codes ? ", " : " or ",
-			                 (int)name.len, name.data);
+			util_text_printf_(&len, why, sizeof scratch->text, "%s%.*s",
+			                  !i ? "" : i + 1 < cfg->n_codes ? ", " : " or ",
+			                  (int)name.len, name.data);
 		}
-		return util_text_printf(why, "."), EINVAL;
+		util_text_printf_(&len, why, sizeof scratch->text, ".");
+		return mcp_slot_tell(slot, (struct cstr_view){ why, len }, TOOL_FAILED), EINVAL;
 	}
 	struct cstr_view const action = jb_text(of[CODE_ARG_ACTION], 1, CODE_WORD, nullptr);
 	struct cstr_view const path = jb_text(of[CODE_ARG_PATH], 1, CODE_WORD, nullptr);
@@ -421,12 +430,12 @@ code_args (struct code const  *code,
 	                : !revision.data ? "revision" : nullptr;
 	static_assert(CODE_WORD == 1024 && CXI_WARNINGS == 16, "update the texts of the limits");
 	if (bad)
-		return util_text_printf(why, "The %s argument must be a string of 1 to 1024 bytes "
-		                        "without a NUL.", bad), EINVAL;
+		return mcp_slot_tellf(slot, TOOL_FAILED, "The %s argument must be a string of 1 to "
+		                      "1024 bytes without a NUL.", bad), EINVAL;
 	uint64_t const line = jb_count(of[CODE_ARG_LINE], UINT32_MAX);
 	if (of[CODE_ARG_LINE] && !line)
-		return util_text_printf(why, "The line argument must be a whole number from 1."),
-		       EINVAL;
+		return mcp_slot_tell(slot, CSTR_VIEW("The line argument must be a whole number "
+		                                     "from 1."), TOOL_FAILED), EINVAL;
 	struct json_object *warnings = of[CODE_ARG_WARNINGS];
 	size_t const n = jb_len(warnings);
 	size_t i = 0;
@@ -434,12 +443,14 @@ code_args (struct code const  *code,
 		++i;
 	if (warnings && (!json_object_is_type(warnings, json_type_array) || n > CXI_WARNINGS ||
 	                 i < n))
-		return util_text_printf(why, "The warnings argument must be an array of at most 16 "
-		                        "strings of 1 to 1024 bytes without a NUL."), EINVAL;
+		return mcp_slot_tell(slot, CSTR_VIEW("The warnings argument must be an array of at "
+		                                     "most 16 strings of 1 to 1024 bytes without a "
+		                                     "NUL."), TOOL_FAILED), EINVAL;
 	int e = git_pin_add(&call->pin, revision);
 	if (e == EINVAL)
-		return util_text_printf(why, "The revision argument must be a commit name or hash, "
-		                        "with optional ^ and ~ suffixes, such as HEAD~1."), EINVAL;
+		return mcp_slot_tell(slot, CSTR_VIEW("The revision argument must be a commit name "
+		                                     "or hash, with optional ^ and ~ suffixes, such "
+		                                     "as HEAD~1."), TOOL_FAILED), EINVAL;
 	char digits[UTIL_DECIMAL];
 	e = e ? e : code_word(call, CXI_KEY_ACTION, action);
 	e = e ? e : code_word(call, CXI_KEY_REPO, repo);
@@ -474,11 +485,11 @@ code_start (struct mcp_slot    *slot,
 	git_pin_init(&call->pin, code->git, jb_view(jb_get(args, "repo")),
 	             mcp_slot_loop(slot)->now + code->cfg->git_timeout);
 	*mcp_slot_own(slot) = call;
-	struct tool_why why = {};
-	int e = code_args(code, call, args, &why);
+	int const e = code_args(code, call, args, slot);
+	/* After EINVAL, code_args() has ended the call. */
 	if (e == EINVAL)
-		mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
-	else if (e)
+		return;
+	if (e)
 		mcp_slot_fail(slot, e);
 	else if (!mcp_slot_offset(slot, args))
 		code_step(slot);
