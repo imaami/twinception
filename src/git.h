@@ -135,6 +135,18 @@ git_pin_step (struct git_pin   *pin,
               struct mcp_slot  *slot,
               struct cstr_view *why);
 
+/** Ends the call in @p slot after git_pin_step() or the spawn of the
+ *  program @p name for the call returned the error @p e. For ENOMEM, the
+ *  call ends as mcp_slot_fail() ends a call. For another error, the call
+ *  fails with the text @p why of git_pin_step(), or with the text of
+ *  child_spawn_why() for @p name if git_pin_step() stored no text.
+ */
+extern void
+git_step_failed (struct mcp_slot  *slot,
+                 int               e,
+                 struct cstr_view  why,
+                 char const       *name);
+
 /** Writes to @p dir where the git processes of @p pin run, their options
  *  and their environment. They run in the repository, or in the view of
  *  @p pin once the view exists.

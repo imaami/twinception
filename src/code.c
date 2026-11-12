@@ -375,13 +375,8 @@ code_step (struct mcp_slot *slot)
 	int e = git_pin_step(pin, slot, &why);
 	if (!e && !pin->child)
 		e = code_spawn(call, slot);
-	char buf[TOOL_TELL_MAX];
-	if (e == ENOMEM)
-		mcp_slot_fail(slot, e);
-	else if (e)
-		mcp_slot_tell(slot, why.data ? why : child_spawn_why(e, pin->phase < GIT_PIN_DONE
-		                                                     ? "git" : "askai-code", buf,
-		                                                     sizeof buf), TOOL_FAILED);
+	if (e)
+		git_step_failed(slot, e, why, pin->phase < GIT_PIN_DONE ? "git" : "askai-code");
 }
 
 /* Checks the types of the arguments @p args of @p call, a call of @p code,

@@ -9811,14 +9811,29 @@ def check_git(binary, up):
         # reason, not as a failed history validation. With the fake git
         # alone on PATH, no other git runs in its place.
         with Askai(binary, "-u", up.url(), "--git", repo, env={"PATH": fake}) as ai:
+            # The reason is written in the scratch text of the loop. It is
+            # the whole refusal after a long refusal on the same connection,
+            # and the refusal after it is only its own sentence.
+            conn = ai.connect()
+
+            def told(arguments):
+                result = ai.rpc("tools/call", {"name": "git", "arguments": arguments},
+                                conn=conn)[2]["result"]
+                assert result.get("isError"), (arguments, result)
+                return text_of(result)
+            assert told(many) == problems[:4092] + "..."
             open(f"{fake}/vanish", "w").close()
             try:
-                result = call(ai, repo="proj", command="log")
+                text = told({"repo": "proj", "command": "log"})
             finally:
                 os.chmod(f"{fake}/git", 0o755)
                 os.unlink(f"{fake}/vanish")
-            assert result.get("isError") and \
-                text_of(result) == "Cannot run git: Permission denied.", result
+            assert text == "Cannot run git: Permission denied.", text
+            assert told({"repo": "nope", "command": "log"}) == \
+                "The repo argument must be proj."
+            assert told({"repo": "proj", "command": "log", "revisions": ["nosuch"]}) == \
+                history
+            conn.close()
 
         # The same defaults work without any worktree or index.
         bare = f"{d}/snapshot.git"

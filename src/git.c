@@ -824,6 +824,23 @@ git_pin_step (struct git_pin   *pin,
 	return e;
 }
 
+void
+git_step_failed (struct mcp_slot  *slot,
+                 int               e,
+                 struct cstr_view  why,
+                 char const       *name)
+{
+	if (e == ENOMEM) {
+		mcp_slot_fail(slot, e);
+		return;
+	}
+	if (!why.data) {
+		struct tool_scratch *scratch = mcp_slot_scratch(slot);
+		why = child_spawn_why(e, name, scratch->text, sizeof scratch->text);
+	}
+	mcp_slot_tell(slot, why, TOOL_FAILED);
+}
+
 /* GIT_ARG_LIST(X) expands to X(ID, name) for each argument of the git
  * tool. With help:true, git_call_command() returns before it reads OPTIONS
  * and the arguments after it.
@@ -1216,12 +1233,7 @@ git_call_advance (struct git_call *call,
 	if (!e)
 		return;
 	git_drop(slot);
-	char buf[TOOL_TELL_MAX];
-	if (e == ENOMEM)
-		mcp_slot_fail(slot, e);
-	else
-		mcp_slot_tell(slot, why.data ? why : child_spawn_why(e, "git", buf, sizeof buf),
-		              TOOL_FAILED);
+	git_step_failed(slot, e, why, "git");
 }
 
 /* Returns true if the string @p path contains a ':' and digits after it
