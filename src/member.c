@@ -130,8 +130,8 @@ struct member_table {
  */
 struct member_claim {
 	struct member_login login;            /* the login, and once the records
-	                                         decide, the kind and the name
-	                                         of the member */
+	                                         decide, the member of the
+	                                         login in login.member */
 	uint32_t            writes;           /* the commits of the record so
 	                                         far, at most STORE_TRIES */
 	char                ref[MEMBER_REF];  /* the ref of the record that the
@@ -602,7 +602,7 @@ member_commit (struct member_registry const *reg,
 }
 
 /* Writes to @p in the input of git for the record of @p login, the record
- * of a new member named login->name, and to @p ref the ref of the record.
+ * of the new member login->member, and to @p ref the ref of the record.
  * @p text is the view of login->text. With @p entry, the record of that
  * name, the commit adds the login to that record instead. Returns as
  * member_commit_input() does.
@@ -616,8 +616,10 @@ member_record_input (struct member_registry const *reg,
                      struct buf                   *in)
 {
 	struct cstr_view const key = CSTR_VIEW("Login");
+	struct member const *member = &login->member;
+	struct cstr_view const kind = member_kinds[member->kind];
 	struct store_trailer t[2 + MEMBER_LOGINS] = {
-		{ CSTR_VIEW("Kind"), member_kinds[login->kind] }
+		{ CSTR_VIEW("Kind"), kind }
 	};
 	size_t n = 1;
 	struct oid const *tip = &(struct oid){};
@@ -632,14 +634,14 @@ member_record_input (struct member_registry const *reg,
 			t[n++] = (struct store_trailer){ key, item };
 		}
 		subject = util_format_view(message, sizeof message, "Add login %s to the %s %s",
-		                           login->text, member_kinds[login->kind].data, login->name);
+		                           login->text, kind.data, member->name);
 	} else {
-		subject = util_format_view(message, sizeof message, "Add the %s %s",
-		                           member_kinds[login->kind].data, login->name);
+		subject = util_format_view(message, sizeof message, "Add the %s %s", kind.data,
+		                           member->name);
 	}
 	if (text.len)
 		t[n++] = (struct store_trailer){ key, text };
-	util_format(ref, MEMBER_REF, MEMBERS "%s", login->name);
+	util_format(ref, MEMBER_REF, MEMBERS "%s", member->name);
 	return member_commit_input(reg, ref, subject, t, n, tip, in);
 }
 
@@ -654,7 +656,7 @@ member_login_kind (struct cstr_view login)
 }
 
 /* Decides what @p login, which no record names, does with @p entry, the
- * record of the name login->name. @p text is the view of login->text.
+ * record of the name of login->member. @p text is the view of login->text.
  * Returns 0 if the login adopts the record: the agent of a service and the
  * record of an agent. Returns EEXIST if askai adds the login to the
  * record: the first login of its kind and the record of a person. A
@@ -668,6 +670,7 @@ member_adopt (struct member_info const  *entry,
               char                      *why,
               size_t                     len)
 {
+	struct member const *member = &login->member;
 	size_t const kind = member_login_kind(text);
 	struct cstr_view logins = entry->logins;
 	size_t n = 0;
@@ -678,30 +681,30 @@ member_adopt (struct member_info const  *entry,
 		same = same || (member_login_kind(item) == kind && !memcmp(item.data, text.data, kind));
 	}
 	/* The kind of the login, then the kind of the record. */
-	switch (login->kind << 1 | (enum member_kind)entry->kind) {
+	switch (member->kind << 1 | (enum member_kind)entry->kind) {
 	case MEMBER_AGENT << 1 | MEMBER_AGENT:
 		if (!text.len)
 			return 0;
 		util_format(why, len, "Your login name %s is the name of another agent of this "
-		            "session.", login->name);
+		            "session.", member->name);
 		return EPERM;
 	case MEMBER_PERSON << 1 | MEMBER_PERSON:
 		if (!same && n < MEMBER_LOGINS)
 			return EEXIST;
 		util_format(why, len, "Your login name %s is the name of another person of this "
-		            "session.", login->name);
+		            "session.", member->name);
 		return EPERM;
 	case MEMBER_PERSON << 1 | MEMBER_AGENT:
 		util_format(why, len, "Your login name %s is the name of an agent of this session. "
-		            "Ask the operator to rename the agent.", login->name);
+		            "Ask the operator to rename the agent.", member->name);
 		return EPERM;
 	default: /* an agent and the record of a person */
 		if (text.len)
 			util_format(why, len, "Your login name %s is the name of a person of this "
-			            "session.", login->name);
+			            "session.", member->name);
 		else
 			util_format(why, len, "agent %s: the name %s belongs to the person with login "
-			            "%.*s in this session", login->name, login->name,
+			            "%.*s in this session", member->name, member->name,
 			            (int)entry->logins.len, entry->logins.data);
 		return EPERM;
 	}
@@ -713,12 +716,12 @@ member_adopt (struct member_info const  *entry,
  * claim->login, which the caller measured. @p entry is the record of the
  * login in @p r, which the caller looked up with member_records_login(),
  * or nullptr. The member is the member of @p entry, or without @p entry,
- * of the record of the name login->name that the login adopts
- * (member_adopt()). Returns 0 with the member in claim->login, also with
+ * of the record of the name login->member.name that the login adopts
+ * (member_adopt()). Returns 0 with the member in login->member, also with
  * the name "" for a Unix login without a record whose name is not known
  * yet. If no record of the member exists yet, the step writes to
- * @p in the input of git for the commit of the record: the record of a new
- * member named login->name, or the login added to the record of the person
+ * @p in the input of git for the commit of the record: the record of the
+ * new member login->member, or the login added to the record of the person
  * of that name. It writes the ref of the record to claim->ref, counts the
  * commit in claim->writes, and returns EINPROGRESS. For a null @p in, as
  * for a find, the step returns 0 instead, with the member that the commit
@@ -739,20 +742,16 @@ member_claim_step (struct member_claim          *claim,
 {
 	struct member_login *login = &claim->login;
 	int e = 0;
-	if (!entry && *login->name) {
-		entry = member_records_find(r, cstr_view(login->name));
+	if (!entry && *login->member.name) {
+		entry = member_records_find(r, cstr_view(login->member.name));
 		if (entry && !(entry->flags & MEMBER_RECORD))
 			entry = nullptr;
 		e = entry ? member_adopt(entry, login, text, why, len) : ENOENT;
 	}
 	switch (e) {
 	case 0:
-		if (entry) {
-			struct member member;
-			member_of(&member, entry);
-			login->kind = member.kind;
-			memcpy(login->name, member.name, sizeof login->name);
-		}
+		if (entry)
+			member_of(&login->member, entry);
 		return 0;
 	case ENOENT:
 	case EEXIST:
@@ -765,7 +764,7 @@ member_claim_step (struct member_claim          *claim,
 	}
 	if (claim->writes == STORE_TRIES) {
 		util_format(why, len, "Could not write the member record of %s. Other askai services "
-		            "changed the member record at the same time.", login->name);
+		            "changed the member record at the same time.", login->member.name);
 		return EIO;
 	}
 	e = member_record_input(reg, login, text, entry, claim->ref, in);
@@ -860,9 +859,9 @@ member_login (struct member_login          *dest,
 		return ENOENT;
 	if (!member_name_valid(name))
 		return EINVAL;
-	dest->kind = grant->flags & POLICY_AGENT ? MEMBER_AGENT : MEMBER_PERSON;
+	dest->member.kind = grant->flags & POLICY_AGENT ? MEMBER_AGENT : MEMBER_PERSON;
 	util_format(dest->text, sizeof dest->text, "%.*s", (int)grant->who.len, grant->who.data);
-	util_format(dest->name, sizeof dest->name, "%.*s", (int)name.len, name.data);
+	util_format(dest->member.name, sizeof dest->member.name, "%.*s", (int)name.len, name.data);
 	return 0;
 }
 
@@ -1012,8 +1011,7 @@ member_registry_start (struct member_registry *reg,
 		e = member_registry_session_read(reg, why, len);
 	if (e)
 		return e;
-	struct member_claim agent = { .login = { .kind = MEMBER_AGENT } };
-	memcpy(agent.login.name, reg->session.agent.name, sizeof agent.login.name);
+	struct member_claim agent = { .login.member = reg->session.agent };
 	e = member_registry_claim(reg, &agent, why, len);
 	if (e)
 		return e == EPERM ? EINVAL : e;
@@ -1023,7 +1021,7 @@ member_registry_start (struct member_registry *reg,
 	reg->session.legacy = reg->records.legacy;
 	/* A table looks up the name of the user, as for a Unix login. */
 	uint32_t const uid = (uint32_t)geteuid();
-	reg->own = (struct member_login){ .uid = uid, .kind = MEMBER_PERSON };
+	reg->own = (struct member_login){ .uid = uid, .member.kind = MEMBER_PERSON };
 	util_format(reg->own.text, sizeof reg->own.text, "uid %" PRIu32, uid);
 	return 0;
 }
@@ -1161,14 +1159,15 @@ member_lookup_give (struct member_lookup const *lookup,
                     struct member_wait         *wait,
                     int                         e)
 {
-	struct member_login const *login = &lookup->claim.login;
+	struct member const *member = &lookup->claim.login.member;
 	wait->e = (int16_t)e;
-	wait->member = (struct member){ .kind = login->kind };
 	util_text_clear(&wait->why);
-	if (e)
+	if (e) {
+		wait->member = (struct member){ .kind = member->kind };
 		(void)util_text_store(&wait->why, util_text_view(&lookup->why));
-	else
-		memcpy(wait->member.name, login->name, sizeof wait->member.name);
+	} else {
+		wait->member = *member;
+	}
 	return e;
 }
 
@@ -1309,7 +1308,7 @@ member_lookup_step (struct member_lookup     *lookup,
 	                          lookup->flags & LOOKUP_WRITE ? &in : nullptr, lookup->why.data,
 	                          sizeof lookup->why.data);
 	/* A Unix login that no record names needs the name of its user. */
-	if (!e && !*lookup->claim.login.name)
+	if (!e && !*lookup->claim.login.member.name)
 		return member_lookup_submit(lookup);
 	if (e != EINPROGRESS)
 		return e;
@@ -1400,18 +1399,18 @@ member_lookup_named (struct member_lookup *lookup,
 	struct member_login *login = &lookup->claim.login;
 	lookup->flags &= ~LOOKUP_GUESS;
 	if (!e) {
-		memcpy(login->name, lookup->user, sizeof login->name);
+		memcpy(login->member.name, lookup->user, sizeof login->member.name);
 		return 0;
 	}
-	util_format(login->name, sizeof login->name, "uid-%" PRIu32, login->uid);
+	util_format(login->member.name, sizeof login->member.name, "uid-%" PRIu32, login->uid);
 	switch (e) {
 	case ENOENT:
 		LOG(LOG_WARN, "member: %s: no user with the uid exists, so the person is %s",
-		    login->text, login->name);
+		    login->text, login->member.name);
 		return 0;
 	case EINVAL:
 		LOG(LOG_WARN, "member: %s: the name of the user is not a valid member name, so the "
-		    "person is %s", login->text, login->name);
+		    "person is %s", login->text, login->member.name);
 		return 0;
 	case ETIMEDOUT:
 		LOG(LOG_WARN, "member: %s: the lookup of the name took longer than %" PRIu64 " s",
@@ -1614,7 +1613,7 @@ member_table_lookup (struct member_table       *table,
 	case 0:
 		break;
 	case LOOKUP_GUESS:
-		lookup->claim.login.name[0] = '\0';
+		lookup->claim.login.member.name[0] = '\0';
 		break;
 	default:
 		return member_lookup_give(lookup, wait, member_lookup_unnamed(lookup));

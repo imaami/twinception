@@ -235,22 +235,22 @@ test_logins (struct member_registry const *reg)
 	grant.flags = POLICY_OPERATOR;
 	CHECK(!member_login(&login, reg, &grant, &uid));
 	CHECK(!strcmp(login.text, "uid 1000") && login.uid == 1000 &&
-	      login.kind == MEMBER_PERSON && !*login.name);
+	      login.member.kind == MEMBER_PERSON && !*login.member.name);
 	/* The token of askai's own policy over TCP is the Unix user who runs
 	 * askai, whose name a lookup finds. */
 	CHECK(!member_login(&login, reg, &grant, nullptr));
 	char own[MEMBER_LOGIN];
 	CHECK(snprintf(own, sizeof own, "uid %" PRIu32, (uint32_t)geteuid()) > 0);
-	CHECK(!strcmp(login.text, own) && login.uid == geteuid() && login.kind == MEMBER_PERSON &&
-	      !*login.name);
+	CHECK(!strcmp(login.text, own) && login.uid == geteuid() &&
+	      login.member.kind == MEMBER_PERSON && !*login.member.name);
 	/* An identity is a person, or an agent with POLICY_AGENT. */
 	grant = (struct policy_grant){ .who = CSTR_VIEW("identity alice") };
 	CHECK(!member_login(&login, reg, &grant, nullptr));
-	CHECK(!strcmp(login.text, "identity alice") && !strcmp(login.name, "alice") &&
-	      login.kind == MEMBER_PERSON);
+	CHECK(!strcmp(login.text, "identity alice") && !strcmp(login.member.name, "alice") &&
+	      login.member.kind == MEMBER_PERSON);
 	grant.flags = POLICY_AGENT | POLICY_METRICS;
 	CHECK(!member_login(&login, reg, &grant, nullptr));
-	CHECK(!strcmp(login.text, "identity alice") && login.kind == MEMBER_AGENT);
+	CHECK(!strcmp(login.text, "identity alice") && login.member.kind == MEMBER_AGENT);
 	/* A client over TCP without a token is without a login. */
 	grant = (struct policy_grant){ .who = CSTR_VIEW("anonymous loopback (role user)") };
 	memset(&login, 'x', sizeof login);
@@ -268,7 +268,7 @@ test_logins (struct member_registry const *reg)
 	memset(&login, 'x', sizeof login);
 	CHECK(!member_login(&login, reg, &grant, &uid));
 	CHECK(!strcmp(login.text, "uid 1000") && login.uid == 1000 &&
-	      login.kind == MEMBER_PERSON && !*login.name);
+	      login.member.kind == MEMBER_PERSON && !*login.member.name);
 }
 
 /* member_call_ids() makes the ID of the ask call, and the ID of a new
@@ -295,9 +295,9 @@ test_login (enum member_kind  kind,
             char const       *text,
             char const       *name)
 {
-	struct member_login login = { .kind = kind };
+	struct member_login login = { .member.kind = kind };
 	snprintf(login.text, sizeof login.text, "%s", text);
-	snprintf(login.name, sizeof login.name, "%s", name);
+	snprintf(login.member.name, sizeof login.member.name, "%s", name);
 	if (!strncmp(text, "uid ", 4))
 		login.uid = (uint32_t)strtoul(text + 4, nullptr, 10);
 	return login;

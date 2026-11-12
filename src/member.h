@@ -152,14 +152,13 @@ struct member_session {
  *  makes if the records do not name the member of the login yet.
  */
 struct member_login {
-	uint32_t         uid;                 /**< the uid of a Unix login */
-	enum member_kind kind;                /**< the kind of a new member */
-	char             text[MEMBER_LOGIN];  /**< "uid N" or "identity NAME"
-	                                           as in the trailer line Login,
-	                                           or "" for no login */
-	char             name[MEMBER_NAME];   /**< the name of a new member, or
-	                                           "" for a Unix login whose
-	                                           name a lookup finds */
+	uint32_t      uid;                 /**< the uid of a Unix login */
+	struct member member;              /**< the new member, with the name
+	                                        "" for a Unix login whose name
+	                                        a lookup finds */
+	char          text[MEMBER_LOGIN];  /**< "uid N" or "identity NAME" as
+	                                        in the trailer line Login, or
+	                                        "" for no login */
 };
 
 /** The member of the client of a request, and the IDs that the commits of
@@ -369,8 +368,8 @@ member_table_registry (struct member_table const *table);
  * records of @p table name the member, the function writes the member to
  * wait->member and returns 0. Otherwise git reads the records again. If
  * they do not name the member either, the member is the member that
- * member_table_claim() makes, without a record: a person or an agent named
- * login->name, or for an empty name a person named like the Unix user, or
+ * member_table_claim() makes, without a record: login->member, a person or
+ * an agent, or for an empty name a person named like the Unix user, or
  * uid-N if no user with the uid exists or member_name_valid() refuses the
  * name of the user. If the lookup of the name fails in another way, such
  * as after MEMBER_NS, the person is named uid-N until a later lookup of
