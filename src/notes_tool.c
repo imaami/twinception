@@ -514,7 +514,7 @@ notes_tool_prompt_notices (struct mcp_slot *slot)
 
 /* Finds the member of the login of the client of the call in @p slot. The
  * prompt of an ask call (call->then) and an action that writes a note as
- * the caller (NOTES_ACTION_AUTHOR) claim the member, which makes the
+ * the caller (NOTES_ACTION_WRITE) claim the member, which makes the
  * record of a new member (member_table_claim()). Any other call only
  * looks the member up (member_table_find()). Once the lookup has ended,
  * the call goes on in notes_tool_logged_in(). While the table looks the
@@ -527,7 +527,7 @@ notes_tool_login (struct mcp_slot *slot)
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct member_table *const members = mcp_slot_members(slot);
 	struct member_login const *login = &mcp_slot_member(slot)->login;
-	bool const claim = call->then || notes_tool_actions[call->action].flags & NOTES_ACTION_AUTHOR;
+	bool const claim = call->then || notes_tool_actions[call->action].flags & NOTES_ACTION_WRITE;
 	int const e = claim ? member_table_claim(members, login, &call->wait)
 	                    : member_table_find(members, login, &call->wait);
 	if (e != EINPROGRESS) {
@@ -1803,7 +1803,7 @@ notes_tool_launch (struct mcp_slot *slot)
 
 /* Finds the notebook of the call in @p slot once the caller is known, and
  * runs the first git of the call. A call that writes a note as the caller
- * (NOTES_ACTION_AUTHOR) needs a caller with a member name, and a write
+ * (NOTES_ACTION_WRITE) needs a caller with a member name, and a write
  * writes only the notebook of the caller. Without the notebook argument,
  * the call reads the notebook of the caller (CALL_OWN). Otherwise the
  * argument names a member of the table. For a name without a member in
@@ -1819,7 +1819,7 @@ notes_tool_resolve (struct mcp_slot *slot)
 	if (!*call->self.name) {
 		/* The refusal of a login by a record comes with a reason. */
 		struct cstr_view const why = util_text_view(&call->wait.why);
-		if (flags & NOTES_ACTION_AUTHOR) {
+		if (flags & NOTES_ACTION_WRITE) {
 			mcp_slot_tell(slot, why.len ? why
 			              : CSTR_VIEW("Writing notes needs a member name. Connect through "
 			                          "the Unix socket, or with the token of an "
@@ -1840,7 +1840,7 @@ notes_tool_resolve (struct mcp_slot *slot)
 		call->flags |= CALL_OWN;
 		call->book = call->self;
 		memcpy(call->notebook, call->repo, sizeof call->notebook);
-	} else if (flags & NOTES_ACTION_WRITE) {
+	} else if (flags & NOTES_ACTION_SELF) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "You can write only your notebook, %s.",
 		               call->self.name);
 		return;
@@ -1891,7 +1891,7 @@ notes_tool_logged_in (struct mcp_slot *slot)
 /* Stages @p fetch as the first git run of the call in @p slot. The caller
  * of a turn is the agent of askai. For a client, the function first finds
  * the member of its login. A call that writes a note as the caller
- * (NOTES_ACTION_AUTHOR) claims the member (notes_tool_login()). If @p e is
+ * (NOTES_ACTION_WRITE) claims the member (notes_tool_login()). If @p e is
  * not 0, the function ends the call with @p e instead.
  */
 static void
@@ -2208,7 +2208,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		 * message prints it. */
 		call->part = (struct extent){};
 		notes_tool_stage(slot, FETCH_CHECK, store_part_delete(&call->file, name));
-	} else if (flags & NOTES_ACTION_WRITE) {
+	} else if (flags & NOTES_ACTION_SELF) {
 		notes_tool_add(slot, name, args);
 	} else if (kind == FETCH_GREP) {
 		notes_tool_search(slot, jb_view(jb_get(args, "pattern")));

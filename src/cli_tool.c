@@ -44,7 +44,7 @@ cli_tool_create (struct cli_client  *client,
 	/* The actions of the notes tool that write a note, as the bits
 	 * 1U << NOTES_ACTION_ID. */
 	#define CLI_TOOL_WRITE_BIT(id, name, flags, ...) \
-	        | ((flags) & NOTES_ACTION_AUTHOR ? 1U << NOTES_ACTION_##id : 0)
+	        | ((flags) & NOTES_ACTION_WRITE ? 1U << NOTES_ACTION_##id : 0)
 	enum { WRITES = 0 NOTES_ACTION_ALL_LIST(CLI_TOOL_WRITE_BIT) };
 	#undef CLI_TOOL_WRITE_BIT
 	struct autocomplete_tool const *entry;
