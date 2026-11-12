@@ -14905,8 +14905,10 @@ def check_findings(binary, up):
     and a compaction names the calls that a finding can cite. Two ask calls
     that add findings at the same time both commit, the second after a race
     on the new tip, and a write that races at each of its three commits is
-    refused. A finding that askai cannot read fails the call that reads it.
-    Without --notes, the turns get no findings."""
+    refused. A finding that askai cannot read fails the call that reads it,
+    and the prompt says so for a finding of the agent. A git that cannot
+    start refuses the call with the reason. Without --notes, the turns get
+    no findings."""
     with tempfile.TemporaryDirectory() as d:
         git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
         repo = f"{d}/proj"
@@ -15399,6 +15401,57 @@ def check_findings(binary, up):
                 *rows[:fit], more=40 - fit, other=3) + "\n[askai: go on with the task.]"), \
                 prompt(up.requests[count + 4])[-600:]
 
+        # A git that cannot start refuses the call with the reason. askai
+        # writes the reason and the refusal of a wrong argument in the
+        # scratch text of the loop. On one connection, each result is only
+        # its own text. With the git of the test alone on PATH, no other
+        # git runs in its place.
+        with Askai(binary, *args, env={"PATH": f"{d}/bin"}) as ai:
+            conn = ai.connect()
+
+            def told(**arguments):
+                result = ai.rpc("tools/call", {"name": "findings", "arguments": arguments},
+                                conn=conn)[2]["result"]
+                assert result.get("isError"), (arguments, result)
+                return text_of(result)
+            needs = "show needs id: a finding, such as bro#5."
+            assert told(action="show") == needs
+            os.chmod(f"{d}/bin/git", 0o644)
+            try:
+                text = told(action="list")
+            finally:
+                os.chmod(f"{d}/bin/git", 0o755)
+            assert text == "Cannot run git: Permission denied.", text
+            assert told(action="show", id="bro#1/1") == needs
+            assert told(action="expand", id="bro#999") == \
+                "No finding has the id bro#999. list shows the findings."
+            assert told(action="expand", id="bro#1/99") == \
+                "No evidence item has the id bro#1/99. show with id bro#1 lists the items."
+            assert told(action="list", id="bro#1") == "The action list takes no argument id."
+            conn.close()
+            # The log has the reason once as a warning of its own.
+            ai.wait_log(r"^Cannot run git: Permission denied\.$")
+            assert ai.log.count("Cannot run git: Permission denied.\n") == 1, ai.log
+
+            # askai cannot read a finding of the agent. The prompt of an
+            # ask call then says so in place of the open findings, and
+            # list, expand and show of a turn are refused.
+            subprocess.run(["git", "--git-dir", session, "fast-import", "--quiet"],
+                           input="commit refs/heads/agent/bro/findings\ncommitter t <t> "
+                           f"{int(time.time())} +0000\ndata 0\nfrom refs/heads/agent/bro/"
+                           "findings^0\nM 100644 inline findings/0/1.json\ndata 8\nnot json"
+                           "\n".encode(), check=True, env=os.environ | git)
+            script[:] = [turn({"action": "list"}, {"action": "expand"},
+                              {"action": "show", "id": "bro#2"})]
+            count = len(up.requests)
+            ai.ask("Q")
+            asked = prompt(up.requests[count])
+            assert asked.endswith("\n[askai: Your findings could not be read.]\n") and \
+                "open finding" not in asked, asked
+            assert results(up.requests[count + 1]) == \
+                ["Could not read finding bro#1: unknown format."] * 3, \
+                results(up.requests[count + 1])
+
         # Without --notes, the turns get no findings, and compact does not
         # name them.
         with Askai(binary, "-u", up.url(), "--upstream-tools", "--git", repo) as ai:
@@ -15413,7 +15466,8 @@ def check_findings(binary, up):
                                         "available to you."], sent[1]
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("findings: add, update, list and show on the branch of the agent, evidence from "
-          "the ring, the open findings in the prompt, two writers at once: PASS")
+          "the ring, the open findings in the prompt, two writers at once, a git that cannot "
+          "start, a finding that cannot be read: PASS")
 
 
 def check_findings_expand(binary, up):

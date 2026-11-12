@@ -718,7 +718,9 @@ mcp_slot_tellf (struct mcp_slot *slot,
  *  - The write and the use are adjacent. The function that called
  *    mcp_slot_scratch() passes the scratch to one writer. The text is an
  *    argument of mcp_slot_tell(), mcp_slot_tellf() or LOG() in the same
- *    statement or in the next statement.
+ *    statement or in the next statement. findings_stop() of
+ *    src/findings.c passes its text straight to mcp_slot_tell(), so a
+ *    call of findings_stop() is such a use too.
  *  - A writer is a function with the storage as a parameter. A writer
  *    never calls mcp_slot_scratch().
  *  - A text is read through the view that the writer returned, or after a

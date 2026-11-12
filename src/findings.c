@@ -371,7 +371,9 @@ findings_prompted (struct mcp_slot *slot,
  * a refusal @p why, the function refuses the call with @p why, or appends
  * the notice that the findings could not be read to the prompt for the
  * call of findings_prompt() (findings_prompted()). For any other error, it
- * fails the call with @p e.
+ * fails the call with @p e. The function passes @p why straight to
+ * mcp_slot_tell(), so @p why can be a text in the scratch of the loop
+ * (mcp_slot_scratch()).
  */
 static void
 findings_stop (struct mcp_slot  *slot,
@@ -408,8 +410,8 @@ findings_run (struct mcp_slot   *slot,
 	buf_fini(in);
 	if (call->child)
 		return;
-	char buf[TOOL_TELL_MAX];
-	findings_stop(slot, EINVAL, child_spawn_why(e, "git", buf, sizeof buf));
+	struct tool_scratch *scratch = mcp_slot_scratch(slot);
+	findings_stop(slot, EINVAL, child_spawn_why(e, "git", scratch->text, sizeof scratch->text));
 }
 
 /* Writes to @p ref the branch of the findings of the agent @p author. */
@@ -645,10 +647,13 @@ findings_got_files (struct mcp_slot *slot)
 }
 
 /* Handles the output of cat-file: the files of call->wanted from
- * call->done to call->batch, in order. A file that askai cannot read, or
- * whose finding is not the one of its author and number, refuses the call.
- * Then cat-file reads the next files. After the last file, the findings
- * are sorted (finding_sort()), and the action goes on.
+ * call->done to call->batch, in order. The call is refused for a file
+ * that askai cannot read, or whose finding is not the one of its author
+ * and number. For the call of findings_prompt(), the prompt gets the
+ * notice that the findings could not be read instead
+ * (findings_prompted()). Otherwise cat-file reads the next files. After
+ * the last file, the findings are sorted (finding_sort()), and the action
+ * goes on.
  */
 static void
 findings_got_read (struct mcp_slot *slot)
@@ -656,7 +661,6 @@ findings_got_read (struct mcp_slot *slot)
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct span out = buf_peek(&call->child->out);
 	loop_work(mcp_slot_loop(slot), LOOP_PARSE, out.len);
-	char why[TOOL_TELL_MAX] = "";
 	int e = util_grow(call->findings.items, call->findings.cap, call->wanted.n);
 	for (size_t i = call->done; !e && i < call->batch; ++i) {
 		struct findings_file const *w = &call->wanted.items[i];
@@ -669,19 +673,24 @@ findings_got_read (struct mcp_slot *slot)
 			e = finding_parse(f, (struct cstr_view){ (char const *)data.ptr, data.len });
 		if (e == ENOMEM || (!e && finding_id_equal(&f->id, &w->id)))
 			continue;
+		if (call->prompt) {
+			findings_prompted(slot, EINVAL);
+			return;
+		}
 		char id[FINDING_ID_TEXT];
 		finding_id_put(&w->id, id);
 		/* expand with id and the findings of the items that the evidence
 		 * cites again read the file of a finding by its path. */
 		if (e == ENOENT)
-			e = util_refuse(why, sizeof why, "No finding has the id %s. list shows the "
-			                "findings.", id);
+			mcp_slot_tellf(slot, TOOL_FAILED, "No finding has the id %s. list shows the "
+			               "findings.", id);
 		else
-			e = util_refuse(why, sizeof why, "Could not read finding %s: unknown format.",
-			                id);
+			mcp_slot_tellf(slot, TOOL_FAILED, "Could not read finding %s: unknown format.",
+			               id);
+		return;
 	}
 	if (e) {
-		findings_stop(slot, e, cstr_view(why));
+		findings_end(slot, e, true);
 		return;
 	}
 	call->done = call->batch;
@@ -1109,20 +1118,19 @@ findings_fits (uint64_t              *bytes,
 	return true;
 }
 
-/* Writes the refusal of the item @p id, which its finding does not
- * contain, to the @p len bytes at @p why. Returns EINVAL.
+/* Refuses the call in @p slot for the item @p id, which its finding does
+ * not contain.
  */
-static int
-findings_no_item (struct finding_id const *id,
-                  char                    *why,
-                  size_t                   len)
+static void
+findings_no_item (struct mcp_slot         *slot,
+                  struct finding_id const *id)
 {
 	struct finding_id const finding = finding_id_without_item(id);
 	char item_text[FINDING_ID_TEXT];
 	char finding_text[FINDING_ID_TEXT];
-	return util_refuse(why, len, "No evidence item has the id %s. show with id %s lists the "
-	                   "items.", finding_id_put(id, item_text).data,
-	                   finding_id_put(&finding, finding_text).data);
+	mcp_slot_tellf(slot, TOOL_FAILED, "No evidence item has the id %s. show with id %s lists "
+	               "the items.", finding_id_put(id, item_text).data,
+	               finding_id_put(&finding, finding_text).data);
 }
 
 /* Records in call->prints the item @p ev of the finding @p f, and counts
@@ -1211,9 +1219,7 @@ findings_expand (struct mcp_slot *slot)
 	}
 	if (!e && call->id.item && !items) {
 		buf_fini(&in);
-		char why[TOOL_TELL_MAX];
-		(void)findings_no_item(&call->id, why, sizeof why);
-		mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
+		findings_no_item(slot, &call->id);
 		return;
 	}
 	if (e) {
@@ -1455,7 +1461,7 @@ findings_cite_end (struct mcp_slot                *slot,
 			findings_unseen(slot, material);
 			return;
 		}
-	char why[TOOL_TELL_MAX] = "";
+	struct tool_scratch *scratch = mcp_slot_scratch(slot);
 	dstr_auto lines = DSTR_INIT;
 	int e = 0;
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
@@ -1463,7 +1469,11 @@ findings_cite_end (struct mcp_slot                *slot,
 		struct findings_cite const *of = &call->cites.items[cite->first];
 		struct evidence *item = &call->change.evidence.items[cite->index];
 		e = evidence_recite(item, &lines, &cite->ref, cstr_view_dstr(&of->record),
-		                    material[cite->first].result, why, sizeof why);
+		                    material[cite->first].result, scratch->text, sizeof scratch->text);
+		if (e == EINVAL) {
+			findings_stop(slot, EINVAL, cstr_view(scratch->text));
+			return;
+		}
 		if (e)
 			break;
 		if (cite->ref.form == EVIDENCE_REF_ITEM_LINES)
@@ -1473,7 +1483,7 @@ findings_cite_end (struct mcp_slot                *slot,
 			e = findings_archive(call, item, &(struct evidence_material){}, of->blobs);
 	}
 	if (e) {
-		findings_stop(slot, e, cstr_view(why));
+		findings_end(slot, e, true);
 		return;
 	}
 	call->archive = buf_peek(&call->files).len;
@@ -1616,7 +1626,6 @@ findings_cite_records (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	size_t const read = call->wanted.n;
-	char why[TOOL_TELL_MAX] = "";
 	int e = 0;
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
 		struct findings_cite *cite = &call->cites.items[i];
@@ -1629,15 +1638,17 @@ findings_cite_records (struct mcp_slot *slot)
 		bool queued = f != nullptr;
 		for (size_t k = read; !queued && k < call->wanted.n; ++k)
 			queued = finding_id_equal(&call->wanted.items[k].id, &finding);
-		if (item)
+		if (item) {
 			e = findings_record(item, &cite->record);
-		else if (f)
-			e = findings_no_item(&cite->ref.id, why, sizeof why);
-		else if (!queued)
+		} else if (f) {
+			findings_no_item(slot, &cite->ref.id);
+			return;
+		} else if (!queued) {
 			e = util_push(call->wanted, (struct findings_file){ .id = finding });
+		}
 	}
 	if (e) {
-		findings_stop(slot, e, cstr_view(why));
+		findings_end(slot, e, true);
 		return;
 	}
 	if (call->wanted.n > read) {
@@ -1915,10 +1926,14 @@ findings_begin (struct mcp_slot    *slot,
                 struct json_object *args)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	char why[TOOL_TELL_MAX] = "";
-	int const e = findings_args(slot, args, why, sizeof why);
+	struct tool_scratch *scratch = mcp_slot_scratch(slot);
+	int const e = findings_args(slot, args, scratch->text, sizeof scratch->text);
+	if (e == EINVAL) {
+		findings_stop(slot, EINVAL, cstr_view(scratch->text));
+		return;
+	}
 	if (e) {
-		findings_stop(slot, e, cstr_view(why));
+		findings_end(slot, e, true);
 		return;
 	}
 	if (call->action == FINDINGS_EXPAND && *call->id.author)
