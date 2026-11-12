@@ -12688,7 +12688,10 @@ def check_notes_texts(binary, up):
     diff and read, the last line of the trace when the turns of an ask
     call kept notes, the answer to a turn's replace whose text lacks only
     the final line feed, and the refusal of a turn's text that contains the
-    markup of the next tool call."""
+    markup of the next tool call. A git that cannot start ends a call with
+    the reason. The prompt of an ask call then goes on with the members that
+    the table lists, and without the newest note and the findings. The
+    result of a write is then without the lines that the write changed."""
     held = up.reply
     script = []
     up.reply = lambda request: script.pop(0)(request)
@@ -12935,13 +12938,107 @@ def check_notes_texts(binary, up):
                 assert re.fullmatch(saved(f'Add "leak.md" ({len(end)} bytes)'),
                                     call(action="add", file="leak.md", text=end)) and \
                     git("show", f"{client}:leak.md") == end
+
+            # A git that cannot start. askai writes the reason in the scratch
+            # text of the loop and logs the reason. This askai has one loop,
+            # so every call writes the same scratch. With the git of the test
+            # alone on PATH, no other git runs in its place. With the file
+            # vanish, the git of the test makes itself not executable as it
+            # runs the command that the file names, so the next git cannot
+            # start.
+            bin = f"{d}/bin"
+            os.mkdir(bin)
+            with open(f"{bin}/git", "w") as f:
+                f.write('#!/bin/sh\ndir=${0%/*}\nif [ -e "$dir/vanish" ]; then\n'
+                        '    read -r word < "$dir/vanish"\n'
+                        '    case " $* " in *" $word "*) /bin/chmod -x "$0" ;; esac\nfi\n'
+                        f'exec {shlex.quote(shutil.which("git"))} "$@"\n')
+            os.chmod(f"{bin}/git", 0o755)
+
+            def vanish(word):
+                with open(f"{bin}/vanish", "w") as f:
+                    f.write(word + "\n")
+
+            def back():
+                os.chmod(f"{bin}/git", 0o755)
+                if os.path.exists(f"{bin}/vanish"):
+                    os.unlink(f"{bin}/vanish")
+
+            def answer(request):
+                back()
+                return 200, turn_stream(text="A")
+            cannot = "Cannot run git: Permission denied."
+            with Askai(binary, "-u", up.url(), "--notes", notes, "--agent", "p",
+                       "--upstream-tools", token="texts-1", env={"PATH": bin},
+                       loops=1) as ai:
+                # The start of an ask call. git cannot list the members, and
+                # the prompt goes on with the members that the table lists.
+                # Then git cannot list the notes, and the ask call ends with
+                # the reason.
+                os.chmod(f"{bin}/git", 0o644)
+                count = len(up.requests)
+                try:
+                    result = ai.ask("Q")
+                finally:
+                    back()
+                assert result.get("isError") and text_of(result) == cannot and \
+                    len(up.requests) == count, result
+                ai.wait_log("notes: cannot read the members of the session")
+                # git lists the notes and vanishes. The prompt goes on
+                # without the newest note and without the findings.
+                vanish("log")
+                script[:] = [answer]
+                count = len(up.requests)
+                ai.ask("Q")
+                asked = up.requests[count]["body"]["messages"][0]["content"]
+                assert re.search(r"\n\[askai: The current text of your newest note, [^:\n]+:\]\n"
+                                 r"\[askai: The note could not be read\.\]\n"
+                                 r"\[askai: Your findings could not be read\.\]\n$", asked), asked
+
+                # The calls of a turn end with the reason: a list, a read
+                # and members. The refusals of a text and of content between
+                # them are only their own sentences.
+                def gone(request):
+                    os.chmod(f"{bin}/git", 0o644)
+                    return 200, turn_stream([(f"c{i}", "notes", json.dumps(a))
+                                             for i, a in enumerate(calls)])
+                calls = [{"action": "add", "file": "x.md", "text": end},
+                         {"action": "list"},
+                         {"action": "add", "file": "x.md", "content": "data:,x"},
+                         {"action": "read", "file": "b.md"},
+                         {"action": "members"}]
+                script[:] = [gone, answer]
+                count = len(up.requests)
+                ai.ask("Q")
+                said = [unstamp(m["content"])[0]
+                        for m in up.requests[count + 1]["body"]["messages"] if m["role"] == "tool"]
+                assert said == [leaked("</tool_call>"), cannot, "Only a client can give "
+                                "content. Give text instead.", cannot, cannot], said
+                # git commits a replace and vanishes. The result is then
+                # without the lines that the write changed.
+                vanish("fast-import")
+                try:
+                    said = call(action="replace", file="a.md", text="gamma\n")
+                finally:
+                    back()
+                assert re.fullmatch(r'Saved in commit [0-9a-f]{40}: Replace "a\.md" \(8 to 6 '
+                                    r"bytes\)\. The previous version is in commit "
+                                    r"[0-9a-f]{40}\.", said) and \
+                    git("show", f"{client}:a.md") == "gamma", said
+                # The refusal of a large content file follows in the same
+                # scratch.
+                big = base64.b64encode(b"x" * ((4 << 20) + 1)).decode()
+                assert call(action="add", file="big.bin", content="data:;base64," + big) == \
+                    f"!The content file is larger than the limit of {4 << 20} bytes."
+                # The log has each reason once as a warning of its own.
+                wait_for(lambda: ai.log.count(cannot + "\n") == 8)
     finally:
         up.reply = held
     print("notes texts: the answers before the first note, the members and their "
           "newest changes, the three answers for a notebook argument, an unusable "
           "revision, a diff without differences, the definitions, the notice after "
-          "a turn's diff and read, the commit of a turn, the end of the trace and "
-          "leaked tool-call markup: PASS")
+          "a turn's diff and read, the commit of a turn, the end of the trace, "
+          "leaked tool-call markup and a git that cannot start: PASS")
 
 
 def check_turn_apis(binary, up):

@@ -403,25 +403,30 @@ notes_tool_failed (struct mcp_slot *slot,
                    int              e)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	char buf[TOOL_TELL_MAX];
-	struct cstr_view const why = child_spawn_why(e, "git", buf, sizeof buf);
+	/* The step that runs with no child, or nullptr for a call that ends
+	 * with the error. */
+	tool_step_fn *out = nullptr;
 	switch (call->fetch & FETCH_KIND) {
 	case FETCH_MEMBERS:
-		if (call->then) {
-			notes_tool_fetch_step(call->fetch)->out(slot);
-			return;
-		}
-		break;
+		if (!call->then)
+			break;
+		[[fallthrough]];
 	case FETCH_NEWEST:
 	case FETCH_COMPACT:
 	case FETCH_STAT:
-		notes_tool_fetch_step(call->fetch)->out(slot);
-		return;
+		out = notes_tool_fetch_step(call->fetch)->out;
+		break;
 	case FETCH_RESUME:
 		notes_tool_drop(slot);
 		break;
 	}
-	mcp_slot_tell(slot, why, TOOL_FAILED);
+	/* child_spawn_why() logs the error, also for a step that goes on. */
+	struct tool_scratch *scratch = mcp_slot_scratch(slot);
+	struct cstr_view const why = child_spawn_why(e, "git", scratch->text, sizeof scratch->text);
+	if (out)
+		out(slot);
+	else
+		mcp_slot_tell(slot, why, TOOL_FAILED);
 }
 
 /* Appends to call->text the head of a result that shows the notebook of
@@ -1933,11 +1938,12 @@ notes_tool_add (struct mcp_slot    *slot,
 	struct cstr_view const text = jb_view(jb_get(args, "text"));
 	size_t kept = text.len;
 	struct datauri data = {};
-	char why[TOOL_TELL_MAX];
+	struct tool_scratch *scratch = mcp_slot_scratch(slot);
 	struct cstr_view problem = {};
 	if (!content) {
-		if (notice_text_check(text, "text", turn ? &kept : nullptr, why, sizeof why))
-			problem = cstr_view(why);
+		if (notice_text_check(text, "text", turn ? &kept : nullptr, scratch->text,
+		                      sizeof scratch->text))
+			problem = cstr_view(scratch->text);
 	} else if (turn) {
 		problem = CSTR_VIEW("Only a client can give content. Give text instead.");
 	} else if (text.data) {
@@ -1946,8 +1952,8 @@ notes_tool_add (struct mcp_slot    *slot,
 		problem = CSTR_VIEW("The content argument must be a data: URI. Your client fills in "
 		                    "content with a file from the user.");
 	} else if (data.size > most) {
-		problem = util_format_view(why, sizeof why, "The content file is larger than the "
-		                           "limit of %zu bytes.", most);
+		problem = util_format_view(scratch->text, sizeof scratch->text, "The content file is "
+		                           "larger than the limit of %zu bytes.", most);
 	} else if (!data.size && notes_tool_actions[call->action].fetch & FETCH_APPEND) {
 		problem = CSTR_VIEW("The content file to append is empty.");
 	}
