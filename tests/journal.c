@@ -681,6 +681,98 @@ journal_test_child_capture (void)
 	buf_fini(&out);
 }
 
+/* Tests child_cmd_run() with a buffer and with a file as fds.out. The
+ * error is EIO for an exit status other than 0, and the error of
+ * child_capture() or child_run() comes before that EIO. After EIO, the
+ * exit status 1 and the signal number 1 differ in the code of the struct
+ * child_end. With a buffer, the output replaces the bytes that were in
+ * the buffer, and those bytes are also removed if the child is not
+ * spawned. The cap is 3 bytes, and the whole output goes to the file.
+ * Each case asserts the error and the struct child_end.
+ */
+static void
+journal_test_child_cmd_run (void)
+{
+	static struct {
+		char const       *script;
+		int               e;      /* with a buffer */
+		int               plain;  /* with a file */
+		struct child_end  end;    /* with a buffer */
+		struct cstr_view  out;    /* the buffer */
+		struct cstr_view  all;    /* the file */
+	} const cases[] = {
+		{ "printf abc", 0, 0, { CLD_EXITED, 0, 0 },
+		  CSTR_VIEW_INIT("abc"), CSTR_VIEW_INIT("abc") },
+		{ "printf abc; exit 1", EIO, EIO, { CLD_EXITED, 1, 0 },
+		  CSTR_VIEW_INIT("abc"), CSTR_VIEW_INIT("abc") },
+		{ "printf abc; exit 3", EIO, EIO, { CLD_EXITED, 3, 0 },
+		  CSTR_VIEW_INIT("abc"), CSTR_VIEW_INIT("abc") },
+		{ "printf abcd", EFBIG, 0, { CLD_EXITED, 0, CHILD_CUT },
+		  CSTR_VIEW_INIT("abc"), CSTR_VIEW_INIT("abcd") },
+		{ "printf abcd; exit 3", EFBIG, EIO, { CLD_EXITED, 3, CHILD_CUT },
+		  CSTR_VIEW_INIT("abc"), CSTR_VIEW_INIT("abcd") },
+		{ "printf abc; kill -HUP $$", EIO, EIO, { CLD_KILLED, SIGHUP, 0 },
+		  {}, CSTR_VIEW_INIT("abc") },
+		{ "printf abc; kill -KILL $$", EIO, EIO, { CLD_KILLED, SIGKILL, 0 },
+		  {}, CSTR_VIEW_INIT("abc") },
+	};
+	static_assert(SIGHUP == 1, "the signal number that equals the exit status 1");
+	struct child_end const unset = { .code = -1, .status = -1, .flags = UINT32_MAX };
+	char *const envp[] = { "PATH=/usr/bin:/bin", nullptr };
+	struct buf out = {};
+	for (size_t i = 0; i < array_size(cases); ++i) {
+		char const *const argv[] = { "sh", "-c", cases[i].script, nullptr };
+		struct child_cmd const cmd = { .file = "sh", .argv = argv, .envp = envp, .max = 3 };
+		struct child_end const *const want = &cases[i].end;
+		assert(!buf_put(&out, "x", 1, SIZE_MAX));
+		struct child_end end = unset;
+		assert(child_cmd_run(&cmd, child_fds(), &out, &end) == cases[i].e);
+		assert(end.code == want->code && end.status == want->status &&
+		       end.flags == want->flags);
+		assert(journal_test_out(&out, cases[i].out));
+		/* A file has no cap, so the output is not cut. */
+		struct child_fds fds = child_fds();
+		fds.out = memfd_create("askai-journal-test", MFD_CLOEXEC);
+		assert(fds.out >= 0);
+		end = unset;
+		assert(child_cmd_run(&cmd, fds, nullptr, &end) == cases[i].plain);
+		assert(end.code == want->code && end.status == want->status && !end.flags);
+		char text[8];
+		struct cstr_view const all = cases[i].all;
+		assert(pread(fds.out, text, sizeof text, 0) == (ssize_t)all.len &&
+		       !memcmp(text, all.data, all.len));
+		util_close(&fds.out);
+	}
+	/* The deadline comes 100 ms after the start, before the exit. */
+	char const *const slow[] = { "sh", "-c", "printf abc; exec sleep 5", nullptr };
+	struct child_cmd late = { .file = "sh", .argv = slow, .envp = envp, .max = 3 };
+	assert(!buf_put(&out, "x", 1, SIZE_MAX));
+	late.deadline = loop_clock() + 100 * MS;
+	struct child_end end = unset;
+	assert(child_cmd_run(&late, child_fds(), &out, &end) == ETIMEDOUT);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	assert(!buf_peek(&out).len);
+	late.deadline = loop_clock() + 100 * MS;
+	end = unset;
+	assert(child_cmd_run(&late, child_fds(), nullptr, &end) == ETIMEDOUT);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	/* A child that is not spawned. */
+	struct child_cmd const none = {
+		.file = "/nonexistent/askai-test",
+		.argv = (char const *const[]){ "askai-test", nullptr },
+		.envp = (char *const[]){ nullptr },
+		.max = 3,
+	};
+	assert(!buf_put(&out, "x", 1, SIZE_MAX));
+	end = unset;
+	assert(child_cmd_run(&none, child_fds(), &out, &end) == ENOENT);
+	assert(!end.code && !end.status && !end.flags && !buf_peek(&out).len);
+	end = unset;
+	assert(child_cmd_run(&none, child_fds(), nullptr, &end) == ENOENT);
+	assert(!end.code && !end.status && !end.flags);
+	buf_fini(&out);
+}
+
 /* Tests the reason that child_end_why() writes for each kind of end. The
  * late test comes first and the cut test second. For an exit with status
  * 0, the view is empty.
@@ -749,12 +841,13 @@ main (int argc, char **argv)
 	journal_test_dir(argv[1]);
 	journal_test_child_run();
 	journal_test_child_capture();
+	journal_test_child_cmd_run();
 	journal_test_child_end_why();
 	journal_test_unlock(argv[1]);
 	journal_test_argv(argv[1]);
 	puts("Journal loads, write gaps, legacy migration, reasoning verification, "
 	     "path walks, private files, directory streams, child_run(), "
-	     "child_capture(), child_end_why(), journal_git(), lock removal and "
-	     "the argv of git: PASS");
+	     "child_capture(), child_cmd_run(), child_end_why(), journal_git(), "
+	     "lock removal and the argv of git: PASS");
 	return 0;
 }

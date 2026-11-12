@@ -240,6 +240,24 @@ child_capture (struct child_cmd const *cmd,
                struct buf             *out,
                struct child_end       *end);
 
+/**
+ * Run @p cmd to the end on the calling thread, and return 0 only if the
+ * child exited with status 0. If @p out is not nullptr, the function
+ * removes the content of @p out and runs @p cmd as child_capture() does,
+ * so that the content of @p out is the output, up to cmd->max bytes. If
+ * @p out is nullptr, the function runs @p cmd as child_run() does, and
+ * the output goes to fds.out. The function writes @p *end as those two
+ * functions write it. Returns the error of child_capture() or
+ * child_run(), or EIO if the child exited with a status other than 0.
+ * After EIO, end->code is CLD_EXITED for such a status, and another value
+ * if a signal killed the child.
+ */
+extern int
+child_cmd_run (struct child_cmd const *cmd,
+               struct child_fds        fds,
+               struct buf             *out,
+               struct child_end       *end);
+
 /** Write the words of the @p n word arrays at @p parts, each up to its
  *  nullptr, and a nullptr to the @p cap pointers at @p argv. A nullptr in
  *  @p parts adds no words. Returns 0, or E2BIG if the words and the

@@ -495,6 +495,22 @@ child_capture (struct child_cmd const *cmd,
 }
 
 int
+child_cmd_run (struct child_cmd const *cmd,
+               struct child_fds        fds,
+               struct buf             *out,
+               struct child_end       *end)
+{
+	int e;
+	if (out) {
+		buf_clear(out);
+		e = child_capture(cmd, fds, out, end);
+	} else {
+		e = child_run(cmd, fds, end);
+	}
+	return e ? e : end->status ? EIO : 0;
+}
+
+int
 child_argv (char const               **argv,
             size_t                     cap,
             char const *const *const  *parts,
