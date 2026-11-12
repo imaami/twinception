@@ -162,7 +162,8 @@ mcp_static_destroy (struct mcp_static **p_static);
  * function on the thread of @p loop. @p home is the loop of home, which
  * runs the upstream calls of the client loops as jobs (src/job.h). With
  * --notes, the function creates the table of the members of the session on
- * @p loop (member_table_create()). mcp_slot_members() returns the table to
+ * @p loop (member_table_create()), with a pointer to the scratch text of
+ * the loop (mcp_slot_scratch()). mcp_slot_members() returns the table to
  * the calls of the loop. Then the function creates the part of each
  * built-in plugin with parts, in the order of the plugins. These plugins
  * are man and notes. The table and the parts run blocking work on
@@ -729,6 +730,13 @@ mcp_slot_tellf (struct mcp_slot *slot,
  *    wrote no text.
  *  - The only struct tool_scratch objects are the member of the struct mcp
  *    of each loop, and the object of a unit test.
+ *
+ *  The table of the members of the loop (src/member.h) runs without a
+ *  slot, so mcp_create() passes a pointer to the scratch to the table. The
+ *  same rules apply to the table. The table writes the cause of a failure
+ *  into the scratch and logs the cause in the next statement. The table
+ *  reads only a text that it has just written, so no code empties the
+ *  scratch for the table.
  *
  *  mcp_slot_tell() copies the text before any other call runs.
  *  mcp_slot_tellf() formats in an array of its own, so a view of the

@@ -569,6 +569,15 @@ class Askai:
             time.sleep(0.01)
         raise AssertionError(f"no {pattern!r} in the log: " + "".join(self.log))
 
+    def wait_lines(self, prefix, lines, timeout=5):
+        """Wait until the lines of the log that start with @p prefix are
+        exactly @p lines, each without its line end."""
+        end = time.monotonic() + timeout
+        while (got := [line.rstrip("\n") for line in list(self.log)
+                       if line.startswith(prefix)]) != lines and time.monotonic() < end:
+            time.sleep(0.01)
+        assert got == lines, (prefix, got, "".join(self.log))
+
     def listed(self, header):
         """The items of the list under the first line @p header of the log,
         without the indent, or None without that line."""
@@ -11802,9 +11811,11 @@ def check_notes(binary, up):
         # imports, which shows that the later write raced and committed
         # again. While the file steal exists, the git also moves the
         # notebook ahead before each fast-import. While the file boom exists,
-        # each fast-import fails, and the git does not count it.
+        # each fast-import fails, and the git does not count it. While the
+        # file norefs exists, each for-each-ref exits with status 3.
         five = git("rev-parse", f"{own}^").decode().strip()
         steal, imports, boom = f"{d}/steal", f"{d}/imports", f"{d}/boom"
+        norefs = f"{d}/norefs"
         real, repo = shlex.quote(shutil.which("git")), shlex.quote(notes)
         os.mkdir(f"{d}/bin")
         with open(f"{d}/bin/git", "w") as f:
@@ -11818,7 +11829,9 @@ def check_notes(binary, up):
                     f'GIT_COMMITTER_EMAIL=t {real} --git-dir {repo} commit-tree -p "$t" '
                     '-m steal "$t^{tree}")\n'
                     f'    {real} --git-dir {repo} update-ref {own} "$c" "$t"\n'
-                    f'  fi;;\nesac\nexec {real} "$@"\n')
+                    f'  fi;;\n*" for-each-ref "*)\n'
+                    f'  if [ -e {shlex.quote(norefs)} ]; then\n    exit 3\n  fi;;\n'
+                    f'esac\nexec {real} "$@"\n')
         os.chmod(f"{d}/bin/git", 0o755)
         with Askai(binary, "-c", path,
                    env={"PATH": f"{d}/bin:{os.environ['PATH']}"}) as ai:
@@ -11873,6 +11886,24 @@ def check_notes(binary, up):
                        for r, name in zip(said, names)]
                 assert all(ids) and commits(*ids), said
                 assert all(git("show", f"{own}:{name}") == b"r" for name in names), said
+            # git cannot list the records of the members. The action members
+            # and a call whose notebook argument names no member of the
+            # table are refused with one sentence. The log names the cause
+            # once for each call. The calls work once git lists the records
+            # again.
+            unread = "!The members could not be read."
+            nobody = {"action": "list", "notebook": "nobody"}
+            open(norefs, "w").close()
+            ai.log.clear()
+            assert call({"action": "members"}) == unread
+            assert call(nobody) == unread
+            os.unlink(norefs)
+            cause = "member: Could not read the member records: git exited with status 3."
+            ai.wait_lines("member: ", [cause] * 2)
+            ai.wait_lines("notes: ", ["notes: cannot read the members of the session"] * 2)
+            assert call(nobody).startswith("!No member is named nobody. The members are ")
+            assert call({"action": "members"}).startswith("Members of the session ")
+            ai.wait_lines("member: ", [cause] * 2)
             # The call of a new member fails with the reason if git cannot
             # write the record of the member, and no record is written. A
             # second call fails with the same reason. The call works once
@@ -15004,8 +15035,9 @@ def check_findings(binary, up):
     on the new tip, and a write that races at each of its three commits is
     refused. A finding that askai cannot read fails the call that reads it,
     and the prompt says so for a finding of the agent. A git that cannot
-    start refuses the call with the reason. Without --notes, the turns get
-    no findings."""
+    start refuses the call with the reason. A git that cannot list the
+    members refuses the call with one sentence, and the log names the
+    cause. Without --notes, the turns get no findings."""
     with tempfile.TemporaryDirectory() as d:
         git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
         repo = f"{d}/proj"
@@ -15032,7 +15064,8 @@ def check_findings(binary, up):
         up.reply = lambda r: script.pop(0)(r) if script else (200, turn_stream(text="A"))
         # A git for askai. With the file race, the first fast-import waits
         # until a second one has ended. With the file always, each
-        # fast-import first moves the branch of the findings of bro.
+        # fast-import first moves the branch of the findings of bro. With
+        # the file norefs, each for-each-ref exits with status 3.
         real = shlex.quote(shutil.which("git"))
         q = shlex.quote(d)
         os.mkdir(f"{d}/bin")
@@ -15052,7 +15085,9 @@ def check_findings(binary, up):
                     f'while [ -d {q} ] && [ ! -e {q}/second ]; do sleep .02; done\n'
                     f'elif mkdir {q}/later 2>/dev/null; then\n'
                     f'{real} "$@"; s=$?; touch {q}/second; exit $s\n'
-                    f'fi\nfi;;\nesac\nexec {real} "$@"\n')
+                    f'fi\nfi;;\n*" for-each-ref "*)\n'
+                    f'if [ -e {q}/norefs ]; then exit 3; fi;;\n'
+                    f'esac\nexec {real} "$@"\n')
         os.chmod(f"{d}/bin/git", 0o755)
         wrapped = {"PATH": f"{d}/bin:{os.environ['PATH']}"}
 
@@ -15525,10 +15560,37 @@ def check_findings(binary, up):
             assert told(action="expand", id="bro#1/99") == \
                 "No evidence item has the id bro#1/99. show with id bro#1 lists the items."
             assert told(action="list", id="bro#1") == "The action list takes no argument id."
-            conn.close()
             # The reason is in the log once, as a warning of its own.
             ai.wait_log(r"^Cannot run git: Permission denied\.$")
             assert ai.log.count("Cannot run git: Permission denied.\n") == 1, ai.log
+
+            # git cannot list the records of the members, which name the
+            # branches of the findings. The call of a client and the call
+            # of a turn are refused with one sentence, and the prompt of
+            # the ask call says that the findings could not be read. The
+            # log names the cause once for each read: for the call of the
+            # client, and in the ask call for the members of the prompt,
+            # for the findings of the prompt and for the call of the turn.
+            unread = "The findings could not be read."
+            cause = "member: Could not read the member records: git exited with status 3."
+            open(f"{d}/norefs", "w").close()
+            ai.log.clear()
+            try:
+                assert told(action="list") == unread
+                ai.wait_lines("member: ", [cause])
+                script[:] = [turn({"action": "list"})]
+                count = len(up.requests)
+                ai.ask("Q")
+            finally:
+                os.remove(f"{d}/norefs")
+            asked = prompt(up.requests[count])
+            assert asked.endswith("\n[askai: Your findings could not be read.]\n") and \
+                "open finding" not in asked, asked
+            assert results(up.requests[count + 1]) == [unread], results(up.requests[count + 1])
+            ai.wait_lines("member: ", [cause] * 4)
+            assert told(action="show") == needs
+            conn.close()
+            ai.wait_lines("member: ", [cause] * 4)
 
             # askai cannot read a finding of the agent. The prompt of an
             # ask call then says so in place of the open findings, and

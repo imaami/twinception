@@ -571,11 +571,10 @@ findings_got_refs (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct member_table *table = mcp_slot_members(slot);
-	/* The table writes the reason of a read that failed. */
-	char why[TOOL_TELL_MAX] = "";
-	int e = member_table_parse(table, call->child, why, sizeof why);
+	/* The table logs the cause of a read that failed. */
+	int e = member_table_parse(table, call->child);
 	if (e) {
-		findings_stop(slot, e == ENOMEM ? ENOMEM : EINVAL, *why ? cstr_view(why) : unread);
+		findings_stop(slot, e == ENOMEM ? ENOMEM : EINVAL, unread);
 		return;
 	}
 	bool const every = call->action == FINDINGS_SHOW ||

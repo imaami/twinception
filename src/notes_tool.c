@@ -120,6 +120,11 @@ static struct cstr_view const raced =
 	CSTR_VIEW_INIT("Could not write the note. Another call changed the notebook at the same "
 	               "time. Read the current note and retry.");
 
+/* The message for a call that needs the list of the members, if git could
+ * not read the list.
+ */
+static struct cstr_view const members_unread = CSTR_VIEW_INIT("The members could not be read.");
+
 /* The flags of a notes call (struct notes_tool_call). */
 enum notes_tool_call_flag : uint8_t {
 	CALL_STRIPPED = 1u << 0,  /* askai cut its notices off the text */
@@ -1229,16 +1234,17 @@ notes_tool_book (struct notes_tool_call *call,
  * with the result of members. If the read failed or git did not start,
  * the prompt of an ask call and a call with a notebook argument continue
  * with the old records. A call whose notebook argument is the name of no
- * member is refused. The refusal contains the reason of the failed read,
- * or else the names of the members.
+ * member is refused. The refusal is members_unread after a failed read,
+ * and else the names of the members. The result of members after a failed
+ * read is members_unread too.
  */
 static void
 notes_tool_got_members (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct member_table *const members = mcp_slot_members(slot);
-	char reason[TOOL_TELL_MAX] = "";
-	int e = call->child ? member_table_parse(members, call->child, reason, sizeof reason) : EIO;
+	/* The table logs the cause of a read that failed. */
+	int e = call->child ? member_table_parse(members, call->child) : EIO;
 	child_destroy(&call->child);
 	if (e == ENOMEM) {
 		notes_tool_end(slot, ENOMEM, true);
@@ -1250,20 +1256,18 @@ notes_tool_got_members (struct mcp_slot *slot)
 		notes_tool_prompt_notices(slot);
 		return;
 	}
-	/* The table writes the reason of a read that failed. */
-	struct cstr_view const why = cstr_view(reason);
 	if (call->action != NOTES_ACTION_MEMBERS) {
 		struct cstr_view const name = cstr_view(call->book.name);
 		if (!notes_tool_book(call, name))
 			notes_tool_launch(slot);
 		else if (e)
-			mcp_slot_tell(slot, why, TOOL_FAILED);
+			mcp_slot_tell(slot, members_unread, TOOL_FAILED);
 		else
 			notes_tool_end(slot, member_table_unknown(members, name, call->text), true);
 		return;
 	}
 	if (e) {
-		mcp_slot_tell(slot, why, TOOL_FAILED);
+		mcp_slot_tell(slot, members_unread, TOOL_FAILED);
 		return;
 	}
 	/* The output is the text, then the JSON of a client. */

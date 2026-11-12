@@ -341,6 +341,30 @@ test_login (enum member_kind  kind,
 	return login;
 }
 
+/* The scratch text of the tables of the test. A table writes there the
+ * cause of a failure that it logs.
+ */
+static struct tool_scratch test_scratch;
+
+/* Returns true if the scratch of the test contains the text @p cause. */
+static bool
+test_cause (char const *cause)
+{
+	return !strcmp(test_scratch.text, cause);
+}
+
+/* Creates a table of @p reg on the loop of the test, with the scratch of
+ * the test (member_table_create()).
+ */
+static struct member_table *
+test_table_make (struct member_registry const *reg,
+                 struct blocker               *blockers,
+                 struct list                  *children,
+                 int                          *e)
+{
+	return member_table_create(reg, &test_loop, blockers, children, &test_scratch, e);
+}
+
 /* Returns true if the reason of @p wait is the text @p why, and the
  * length of the reason is the length of that text.
  */
@@ -414,11 +438,16 @@ test_table (struct store const           *store,
             struct list                  *children)
 {
 	int e = -1;
-	CHECK(!member_table_create(nullptr, &test_loop, blockers, children, &e) && e == EINVAL);
-	CHECK(!member_table_create(reg, nullptr, blockers, children, &e) && e == EINVAL);
-	CHECK(!member_table_create(reg, &test_loop, nullptr, children, &e) && e == EINVAL);
-	CHECK(!member_table_create(reg, &test_loop, blockers, nullptr, &e) && e == EINVAL);
-	struct member_table *table = member_table_create(reg, &test_loop, blockers, children, &e);
+	struct tool_scratch *const scratch = &test_scratch;
+	CHECK(!member_table_create(nullptr, &test_loop, blockers, children, scratch, &e) &&
+	      e == EINVAL);
+	CHECK(!member_table_create(reg, nullptr, blockers, children, scratch, &e) && e == EINVAL);
+	CHECK(!member_table_create(reg, &test_loop, nullptr, children, scratch, &e) && e == EINVAL);
+	CHECK(!member_table_create(reg, &test_loop, blockers, nullptr, scratch, &e) && e == EINVAL);
+	e = -1;
+	CHECK(!member_table_create(reg, &test_loop, blockers, children, nullptr, &e) &&
+	      e == EINVAL);
+	struct member_table *table = test_table_make(reg, blockers, children, &e);
 	CHECK(table && !e);
 	if (!table)
 		return;
@@ -644,14 +673,15 @@ test_tip (struct store const *store,
 
 /* Runs git on the loop with the words @p words of STORE_REFS for @p store,
  * and replaces the records of @p table with its output
- * (member_table_parse()). Returns the result, with the reason in @p why.
+ * (member_table_parse()). Returns the result. The scratch of the test
+ * contains "x" before the parse. A parse that fails writes the cause
+ * there, and a parse that succeeds writes nothing.
  */
 static int
 test_take (struct store const *store,
            struct member_table *table,
            struct list        *children,
-           char const *const  *words,
-           char                why[TOOL_TELL_MAX])
+           char const *const  *words)
 {
 	struct git_run run;
 	CHECK(!store_command(store, &run, STORE_REFS, words, nullptr, (struct span){},
@@ -661,8 +691,8 @@ test_take (struct store const *store,
 	struct child *c = child_create(&test_loop, children, &run.c, test_git_done, nullptr, &e);
 	CHECK(c && !e);
 	test_until(before + 1);
-	*why = 'x';
-	e = member_table_parse(table, c, why, TOOL_TELL_MAX);
+	test_scratch = (struct tool_scratch){ "x" };
+	e = member_table_parse(table, c);
 	child_destroy(&c);
 	return e;
 }
@@ -678,7 +708,7 @@ test_list (struct store const           *store,
            struct list                  *children)
 {
 	int e = -1;
-	struct member_table *table = member_table_create(reg, &test_loop, blockers, children, &e);
+	struct member_table *table = test_table_make(reg, blockers, children, &e);
 	CHECK(table && !e);
 	/* The notebook and the findings of bro, a notebook moved from the old
 	 * layout without a record, a notebook of a kind that the record of the
@@ -703,16 +733,23 @@ test_list (struct store const           *store,
 	};
 	/* The output of git that lists the records replaces the records of the
 	 * table. Output in another form leaves the records as they are. */
-	char why[TOOL_TELL_MAX];
 	char const *const other[STORE_WORDS] = { "--format=%(refname)", "refs/askai/" };
-	CHECK(test_take(store, table, children, other, why) == EIO &&
-	      !strcmp(why, "Could not read the member records: the output of git is not valid."));
+	CHECK(test_take(store, table, children, other) == EIO &&
+	      test_cause("Could not read the member records: the output of git is not valid."));
 	CHECK(!member_table_name(table, CSTR_VIEW("bro"), &(struct member){}) &&
 	      member_table_name(table, CSTR_VIEW("moved"), &(struct member){}) == ENOENT);
-	CHECK(!test_take(store, table, children, member_list, why) && *why == 'x');
+	/* A git that fails leaves the records as they are too. git exits with
+	 * status 128 for a format with an unknown field. */
+	char const *const wrong[STORE_WORDS] = { "--format=%(nosuchfield)", "refs/askai/" };
+	CHECK(test_take(store, table, children, wrong) == EIO &&
+	      test_cause("Could not read the member records: git exited with status 128."));
+	CHECK(!member_table_name(table, CSTR_VIEW("bro"), &(struct member){}) &&
+	      member_table_name(table, CSTR_VIEW("moved"), &(struct member){}) == ENOENT);
+	CHECK(!test_take(store, table, children, member_list) && test_cause("x"));
 	CHECK(list_is_empty(children));
-	CHECK(member_table_parse(nullptr, nullptr, why, sizeof why) == EINVAL);
-	CHECK(member_table_parse(table, nullptr, why, sizeof why) == EINVAL);
+	CHECK(member_table_parse(nullptr, nullptr) == EINVAL);
+	CHECK(member_table_parse(table, nullptr) == EINVAL && test_cause("x"));
+	CHECK(member_table_parse(nullptr, &(struct child){}) == EINVAL && test_cause("x"));
 	/* The persons come first, then the agents, each by name. The user who
 	 * runs the test is a person of the table too. */
 	char user[MEMBER_NAME];
@@ -820,7 +857,7 @@ test_list (struct store const           *store,
 	 * branch, also for a name of a member of the other kind without a
 	 * record. A record of the name decides the kind. */
 	test_note(store, "refs/heads/person/ghost/notes", "Add \"g.md\" (1 byte)", nullptr);
-	CHECK(!test_take(store, table, children, member_list, why));
+	CHECK(!test_take(store, table, children, member_list));
 	size_t ghosts = 0;
 	members = member_table_members(table, &count, &width);
 	for (size_t i = 0; i < count; ++i) {
@@ -843,7 +880,7 @@ test_list (struct store const           *store,
 		CHECK(snprintf(ref, sizeof ref, "refs/heads/agent/zz%02zu/notes", i) > 0);
 		test_note(store, ref, "Add \"z.md\" (1 byte)", nullptr);
 	}
-	CHECK(!test_take(store, table, children, member_list, why));
+	CHECK(!test_take(store, table, children, member_list));
 	members = member_table_members(table, &count, nullptr);
 	CHECK(count == 33);
 	dstr_auto many = dstr("[askai: Members of this session: ");
@@ -953,7 +990,7 @@ test_blocked (struct store const           *store,
 	/* A table that goes away while the job name waits frees the lookup
 	 * once the job comes back, and ends no wait. */
 	test_hold_all(blockers, hold);
-	struct member_table *table = member_table_create(reg, &test_loop, blockers, children, &e);
+	struct member_table *table = test_table_make(reg, blockers, children, &e);
 	CHECK(table && !e);
 	struct member_wait wait = { .done = test_ended };
 	struct member_login login = test_login(MEMBER_PERSON, "uid 4242420050", "");
@@ -970,7 +1007,7 @@ test_blocked (struct store const           *store,
 	 * comes back, a find names the person uid-N, and a claim fails at
 	 * once. A job that comes back late gives the name to the next claim. */
 	test_hold_all(blockers, hold);
-	table = member_table_create(reg, &test_loop, blockers, children, &e);
+	table = test_table_make(reg, blockers, children, &e);
 	CHECK(table && !e);
 	login = test_login(MEMBER_PERSON, "uid 4242420051", "");
 	char const *const unnamed = "Could not look up the name of uid 4242420051. Try again.";
@@ -996,7 +1033,7 @@ test_blocked (struct store const           *store,
 	/* Blockers that stop cancel the job name, and the wait ends without a
 	 * record. */
 	test_hold_all(blockers, hold);
-	table = member_table_create(reg, &test_loop, blockers, children, &e);
+	table = test_table_make(reg, blockers, children, &e);
 	CHECK(table && !e);
 	login = test_login(MEMBER_PERSON, "uid 4242420052", "");
 	unsigned const stopped = ended;
@@ -1176,8 +1213,8 @@ test_race (struct store const           *store,
 	struct member_registry *other = test_registry_make(store, "bro", "gpu5", 0, "");
 	int e = -1;
 	struct member_table *tables[2] = {
-		member_table_create(reg, &test_loop, blockers, children, &e),
-		other ? member_table_create(other, &test_loop, blockers, children, &e) : nullptr,
+		test_table_make(reg, blockers, children, &e),
+		other ? test_table_make(other, blockers, children, &e) : nullptr,
 	};
 	CHECK(tables[0] && tables[1]);
 	if (!tables[0] || !tables[1]) {
@@ -1270,8 +1307,8 @@ test_ends (char const                   *dir,
 	/* The read of a table that runs longer than GIT_RUN_NS ends while the
 	 * other cases run. */
 	int e = -1;
-	struct member_table *late = member_table_create(reg, &test_loop, blockers, children, &e);
-	struct member_table *table = member_table_create(reg, &test_loop, blockers, children, &e);
+	struct member_table *late = test_table_make(reg, blockers, children, &e);
+	struct member_table *table = test_table_make(reg, blockers, children, &e);
 	CHECK(late && table);
 	if (!late || !table) {
 		member_table_destroy(&late);

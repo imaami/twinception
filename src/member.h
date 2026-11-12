@@ -340,14 +340,18 @@ struct member_wait {
  *  @p registry read at the start. @p registry must outlive the table. git
  *  runs for the lookups on @p loop, with its children on @p children
  *  (src/child.h), and the blockers @p blockers look up the names of Unix
- *  users. Returns the table, or returns nullptr with an error number in
- *  @p *e: EINVAL for a null argument, or ENOMEM.
+ *  users. @p scratch is the scratch text of @p loop (src/tool.h), which
+ *  must outlive the table. The table writes the cause of a failure there,
+ *  and logs the cause in the next statement. Returns the table, or returns
+ *  nullptr with an error number in @p *e: EINVAL for a null argument, or
+ *  ENOMEM.
  */
 extern struct member_table *
 member_table_create (struct member_registry const *registry,
                      struct loop                  *loop,
                      struct blocker               *blockers,
                      struct list                  *children,
+                     struct tool_scratch          *scratch,
                      int                          *e);
 
 /** Frees the table at @p *p_table and sets @p *p_table to nullptr. A
@@ -430,15 +434,15 @@ extern char const *const member_list[STORE_WORDS];
 /**
  * Replaces the records of @p table with the records that @p git listed
  * with member_list. The output of @p git moves to the table. Returns 0,
- * EIO if git failed or wrote output that is not a list of the records, or
- * ENOMEM, with the reason in the @p len bytes at @p why, a text for the
- * client. On failure the records stay as they are.
+ * EINVAL for a null argument, EIO if git failed or wrote output that is
+ * not a list of the records, or ENOMEM. The function logs the cause of EIO
+ * and of ENOMEM, such as "member: Could not read the member records: git
+ * exited with status 128.". The caller tells the client a sentence of its
+ * own. On failure the records stay as they are.
  */
 extern int
 member_table_parse (struct member_table *table,
-                    struct child        *git,
-                    char                *why,
-                    size_t               len);
+                    struct child        *git);
 
 /** Writes to @p dest the member named @p name: the member of a record of
  *  the name, or else of a notebook of the name. Returns 0, ENOENT if

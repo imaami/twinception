@@ -119,6 +119,10 @@ struct member_table {
 	struct blocker               *blockers;
 	struct list                  *children;  /* the children of the loop,
 	                                            which run git */
+	struct tool_scratch          *scratch;   /* the scratch text of the
+	                                            loop, for the cause of a
+	                                            failure that the table
+	                                            logs */
 };
 
 /* The claim of the member of a login. Each step (member_claim_step())
@@ -1311,14 +1315,16 @@ member_lookup_search (struct member_lookup *lookup)
 }
 
 /* On the loop: git @p c listed the records for the lookup c->owner. The
- * records replace the records of the table, and the lookup runs its step
- * with them, or ends with the error and the reason of the read.
+ * records replace the records of the table (member_records_take()), and
+ * the lookup runs its step with them, or ends with the error and the
+ * reason of the read.
  */
 static void
 member_lookup_read_done (struct child *c)
 {
 	struct member_lookup *lookup = c->owner;
-	int e = member_table_parse(lookup->table, c, lookup->why.data, sizeof lookup->why.data);
+	int e = member_records_take(&lookup->table->records, &c->out, 0, &c->end, lookup->why.data,
+	                            sizeof lookup->why.data);
 	child_destroy(&lookup->git);
 	if (!e)
 		e = member_lookup_search(lookup);
@@ -1481,9 +1487,10 @@ member_table_create (struct member_registry const *registry,
                      struct loop                  *loop,
                      struct blocker               *blockers,
                      struct list                  *children,
+                     struct tool_scratch          *scratch,
                      int                          *e)
 {
-	if (!registry || !loop || !blockers || !children) {
+	if (!registry || !loop || !blockers || !children || !scratch) {
 		*e = EINVAL;
 		return nullptr;
 	}
@@ -1497,6 +1504,7 @@ member_table_create (struct member_registry const *registry,
 		.loop = loop,
 		.blockers = blockers,
 		.children = children,
+		.scratch = scratch,
 	};
 	list_init(&table->lookups);
 	/* The views of the entries point into the output of the registry,
@@ -1630,13 +1638,16 @@ member_table_cancel (struct member_wait *wait)
 
 int
 member_table_parse (struct member_table *table,
-                    struct child        *git,
-                    char                *why,
-                    size_t               len)
+                    struct child        *git)
 {
-	if (!table || !git || !why || !len)
+	if (!table || !git)
 		return EINVAL;
-	return member_records_take(&table->records, &git->out, 0, &git->end, why, len);
+	struct tool_scratch *scratch = table->scratch;
+	int const e = member_records_take(&table->records, &git->out, 0, &git->end, scratch->text,
+	                                  sizeof scratch->text);
+	if (e)
+		LOG(LOG_WARN, "member: %s", scratch->text);
+	return e;
 }
 
 struct member_info const *

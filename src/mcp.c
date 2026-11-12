@@ -7706,7 +7706,8 @@ mcp_create (struct loop              *loop,
 	/* At fail, mcp_destroy_parts() destroys the parts before part i. */
 	uint64_t i = 0;
 	if (st->members) {
-		mcp->members = member_table_create(st->members, loop, blockers, &mcp->children, e);
+		mcp->members = member_table_create(st->members, loop, blockers, &mcp->children,
+		                                   &mcp->scratch, e);
 		if (!mcp->members)
 			goto fail;
 	}
