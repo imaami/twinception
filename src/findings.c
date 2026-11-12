@@ -867,7 +867,7 @@ findings_commit (struct mcp_slot      *slot,
 		.ref = ref,
 		.tip = &tip,
 	};
-	struct member_byline byline;
+	struct member_byline byline = {};
 	member_byline_put(&byline, &commit, &session->agent, mcp_slot_member(slot),
 	                  mcp_slot_call(slot), session);
 	struct buf in = {};
