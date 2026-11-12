@@ -1677,7 +1677,7 @@ def check_client_jobs(binary, up):
                 for seconds in (0, 601, "1"):
                     refused(ai, "wait", "The seconds argument must be a whole number "
                             "from 1 to 600.", seconds=seconds)
-                for jobs in ("x", [1], ["0" * 32] * 17):
+                for jobs in ("x", [1], [jid, 7], ["0" * 32] * 17):
                     refused(ai, "wait", "The jobs argument must be a list of at most 16 "
                             "IDs of your jobs.", seconds=1, jobs=jobs)
                 assert say(ai, "wait", seconds=1, jobs=[jid] * 16) == done(jid)

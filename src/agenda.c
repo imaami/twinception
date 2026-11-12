@@ -307,9 +307,7 @@ agenda_wait_start (struct mcp_slot    *slot,
 		.secs     = (uint32_t)secs,
 		.n        = (uint32_t)n,
 	};
-	char why[TOOL_TELL_MAX];
-	struct cstr_view problem = {};
-	for (size_t i = 0; !problem.data && i < n; ++i) {
+	for (size_t i = 0; i < n; ++i) {
 		struct cstr_view const id = jb_view(jb_at(list, i));
 		struct ledger_task *task = hexid_init(&w->ids[i], id) ? nullptr
 		                         : ledger_find(ledger, owner, &w->ids[i]);
@@ -317,15 +315,13 @@ agenda_wait_start (struct mcp_slot    *slot,
 			ledger_task_put(task);
 			continue;
 		}
-		problem = !id.data ? bad_list
-		        : util_format_view(why, sizeof why, "You have no job with the ID %.*s. "
-		                           "askai stores a job for up to an hour after the job "
-		                           "ends.",
-		                           (int)util_clip(id.data, id.len, HEXID_DIGITS), id.data);
-	}
-	if (problem.data) {
 		free(w);
-		mcp_slot_tell(slot, problem, TOOL_FAILED);
+		if (!id.data)
+			mcp_slot_tell(slot, bad_list, TOOL_FAILED);
+		else
+			mcp_slot_tellf(slot, TOOL_FAILED, "You have no job with the ID %.*s. askai "
+			               "stores a job for up to an hour after the job ends.",
+			               (int)util_clip(id.data, id.len, HEXID_DIGITS), id.data);
 		return;
 	}
 	struct handle who;
