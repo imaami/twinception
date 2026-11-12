@@ -633,9 +633,14 @@ evidence_parse (struct evidence          *dest,
 	        evidence_blob_parse(&dest->result, jb_get(obj, "result")) ? EINVAL : 0;
 	/* A call item stores the arguments of the call. A lines item stores
 	 * its lines and no arguments. */
-	if (!e)
-		e = kind == EVIDENCE_CALL ? evidence_blob_parse(&dest->request, request)
-		  : request ? EINVAL : evidence_ranges_parse(dest, obj);
+	if (!e) {
+		if (kind == EVIDENCE_CALL)
+			e = evidence_blob_parse(&dest->request, request);
+		else if (request)
+			e = EINVAL;
+		else
+			e = evidence_ranges_parse(dest, obj);
+	}
 	if (!e) {
 		dest->kind = (enum evidence_kind)kind;
 		dest->skip = (uint32_t)skip;
