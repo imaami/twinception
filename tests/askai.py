@@ -5487,7 +5487,49 @@ def check_configuration(binary, up, godbolt):
                              text=True, timeout=5)
         assert run.returncode == 0 and "--config FILE" in run.stdout, run
 
-    print("configuration and key handling, and the configuration file: PASS")
+    # askai stops with status 1 if the repository of the notes, the journal
+    # or the session cannot be made. stderr is one line: the option, the
+    # path and the reason of the object that failed. A reason of more than
+    # 511 bytes is cut and ends with "...".
+    with tempfile.TemporaryDirectory() as d:
+        d = os.path.realpath(d)
+
+        def stops(*args):
+            run = subprocess.run([binary, "-l", "127.0.0.1:0", "-u", up.url(), "--agent",
+                                  "bro", *args], stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, timeout=10)
+            assert run.returncode == 1 and not run.stdout, (args, run)
+            return run.stderr
+
+        # git cannot resolve the .git file of the notes.
+        notes = f"{d}/notes"
+        os.mkdir(notes)
+        target = "/nonexistent/" + "/".join(["x" * 200] * 3)
+        with open(f"{notes}/.git", "w") as f:
+            f.write(f"gitdir: {target}\n")
+        head = f"--notes: {notes}: "
+        said = stops("--notes", notes)
+        assert said.startswith(f"{head}cannot resolve the Git common directory: fatal: ") and \
+            said.endswith("...\n") and len(said) == len(head) + 511 + 1, said
+        os.remove(f"{notes}/.git")
+        # The journal fails after the repository of the notes was made.
+        with open(f"{d}/file", "w"):
+            pass
+        assert stops("--notes", notes, "--transcripts", f"{d}/file") == \
+            f"--transcripts: {d}/file: {os.strerror(errno.ENOTDIR)}\n"
+        assert os.listdir(notes) == []
+        # The session fails after the repository and the journal were made.
+        subprocess.run(["git", "init", "-q", "--bare", notes], check=True)
+        subprocess.run(["git", "-C", notes, "fast-import", "--quiet"], check=True,
+                       input="commit refs/askai/session\ncommitter old <askai> 0 +0000\n"
+                       "data <<EOF\nCreate the session notes\n\nSession: " + "6f" * 16 +
+                       "\nName: notes\nFormat: 2\nEOF\n", text=True)
+        assert stops("--notes", notes, "--transcripts", f"{d}/transcripts.git") == \
+            f"{head}The session has format 2. This askai writes format 1.\n"
+        assert os.path.isdir(f"{d}/transcripts.git/askai-journal/bro")
+
+    print("configuration and key handling, the configuration file, and the reason "
+          "of a shared object that cannot be made: PASS")
 
 
 def check_allow(binary, up):
