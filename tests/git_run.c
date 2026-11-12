@@ -185,8 +185,11 @@ git_run_test_env (void)
 /* Tests git_run_init(): the copy of the input, the cap, the deadline, the
  * grace and the flags of the struct child_cmd, with the file, the argv
  * and the environment of git in place of those of the struct child_cmd;
- * the argv of GIT_RUN_ARGV pointers and one word too many; and EINVAL for
- * each nullptr.
+ * the pointers after the argv, which are nullptr although every pointer
+ * of the struct git_run pointed at a word before the call; the argv of
+ * GIT_RUN_ARGV pointers; one word too many, which leaves the struct
+ * git_run all zero; and EINVAL for each nullptr, which leaves the struct
+ * git_run as it was.
  */
 static void
 git_run_test_init (void)
@@ -204,13 +207,17 @@ git_run_test_init (void)
 		.grace    = GIT_GRACE,
 		.flags    = CHILD_STDERR,
 	};
-	struct git_run run;
+	static char const *const tail[] = { "-C", "/r", "--git-dir=.", nullptr };
+	struct git_run run = { .c = how };
+	for (size_t i = 0; i < array_size(run.argv); ++i)
+		run.argv[i] = "old";
 	CHECK(!git_run_init(&run, &dir, words, &how));
 	CHECK(!strcmp(run.c.file, "git") && run.c.argv == run.argv && run.c.envp == dir.env);
 	CHECK(run.c.in.ptr == how.in.ptr && run.c.in.len == 3 && run.c.max == 7 &&
 	      run.c.deadline == 123 && run.c.grace == GIT_GRACE && run.c.flags == CHILD_STDERR);
-	CHECK(git_run_test_argv(run.argv, (char const *const[]){ "-C", "/r", "--git-dir=.",
-	                                                         nullptr }, words));
+	CHECK(git_run_test_argv(run.argv, tail, words));
+	for (size_t i = git_run_test_count(run.argv); i < array_size(run.argv); ++i)
+		CHECK(!run.argv[i]);
 	/* The words that fill the argv to its last pointer, then one more. */
 	size_t const n = array_size(fixed) + 3;
 	char const *many[GIT_RUN_ARGV];
@@ -224,10 +231,17 @@ git_run_test_init (void)
 	many[fit] = "x";
 	many[fit + 1] = nullptr;
 	CHECK(git_run_init(&run, &dir, many, &how) == E2BIG);
+	CHECK(!run.c.file && !run.c.argv && !run.c.envp && !run.c.in.ptr && !run.c.in.len &&
+	      !run.c.max && !run.c.deadline && !run.c.grace && !run.c.flags);
+	for (size_t i = 0; i < array_size(run.argv); ++i)
+		CHECK(!run.argv[i]);
+	CHECK(!git_run_init(&run, &dir, words, &how));
 	CHECK(git_run_init(nullptr, &dir, words, &how) == EINVAL);
 	CHECK(git_run_init(&run, nullptr, words, &how) == EINVAL);
 	CHECK(git_run_init(&run, &dir, nullptr, &how) == EINVAL);
 	CHECK(git_run_init(&run, &dir, words, nullptr) == EINVAL);
+	CHECK(!strcmp(run.c.file, "git") && run.c.argv == run.argv && run.c.envp == dir.env &&
+	      run.c.max == 7 && git_run_test_argv(run.argv, tail, words));
 	CHECK(git_run_dir_argv(nullptr, words, run.argv, array_size(run.argv)) == EINVAL);
 	CHECK(git_run_dir_argv(&dir, words, nullptr, array_size(run.argv)) == EINVAL);
 }

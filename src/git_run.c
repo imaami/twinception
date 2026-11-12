@@ -62,16 +62,16 @@ git_run_init (struct git_run           *dest,
               char const *const        *words,
               struct child_cmd const   *how)
 {
-	if (!dest || !words || !how)
+	if (!dest || !dir || !words || !how)
 		return EINVAL;
-	int e = git_run_dir_argv(dir, words, dest->argv, array_size(dest->argv));
-	if (e)
-		return e;
-	dest->c = *how;
+	*dest = (struct git_run){ .c = *how };
 	dest->c.file = "git";
 	dest->c.argv = dest->argv;
 	dest->c.envp = dir->env;
-	return 0;
+	int const e = git_run_dir_argv(dir, words, dest->argv, array_size(dest->argv));
+	if (e)
+		*dest = (struct git_run){};
+	return e;
 }
 
 int
@@ -85,8 +85,6 @@ git_run_now (struct git_run_dir const *dir,
 	if (oid && !out)
 		return EINVAL;
 	how.deadline = loop_clock() + GIT_RUN_NS;
-	/* git_run_init() writes the argv up to its nullptr, not the pointers
-	 * after it. */
 	struct git_run run = {};
 	int e = git_run_init(&run, dir, words, &how);
 	if (e)
