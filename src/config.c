@@ -28,7 +28,7 @@
 #include "code.h"
 #include "config.h"
 #include "dstr.h"
-#include "git.h"
+#include "git_run.h"
 #include "httpd.h"
 #include "jb.h"
 #include "log.h"
@@ -1602,7 +1602,7 @@ config_git_repo (char const *path)
 	return repo;
 }
 
-/* Check each repository of --git. git_name() must return a name for it
+/* Check each repository of --git. git_run_name() must return a name for it
  * that is not empty and differs from the names of the repositories before
  * it, and config_git_repo() must return true for its path.
  */
@@ -1611,7 +1611,7 @@ config_check_gits (struct config *cfg)
 {
 	for (size_t i = 0; i < cfg->n_gits; ++i) {
 		char const *path = cfg->gits[i];
-		struct cstr_view const name = git_name(path);
+		struct cstr_view const name = git_run_name(path);
 		if (!name.len)
 			return config_complain(cfg, nullptr, "--git: %s names no repository: "
 			                       "its last component, less a .git suffix, must "
@@ -1621,7 +1621,7 @@ config_check_gits (struct config *cfg)
 			return config_complain(cfg, nullptr, "--git: not a git repository: %s",
 			                       path);
 		size_t j = 0;
-		while (j < i && !cstr_view_equal(git_name(cfg->gits[j]), name))
+		while (j < i && !cstr_view_equal(git_run_name(cfg->gits[j]), name))
 			++j;
 		if (j < i)
 			return config_complain(cfg, nullptr, "--git: two repositories "
@@ -1648,7 +1648,8 @@ config_check_codes (struct config *cfg)
 		bool const path = *code == '/';
 		size_t g = 0;
 		while (g < cfg->n_gits &&
-		       !cstr_view_equal(path ? cstr_view(cfg->gits[g]) : git_name(cfg->gits[g]), repo))
+		       !cstr_view_equal(path ? cstr_view(cfg->gits[g]) : git_run_name(cfg->gits[g]),
+		                        repo))
 			++g;
 		if (g == cfg->n_gits || !file[1] || strchr(file + 1, '='))
 			return config_complain(cfg, nullptr, "--code: REPO=FILE needs the name or "
@@ -1658,7 +1659,7 @@ config_check_codes (struct config *cfg)
 		while (j < i && cfg->code_repos[j] != cfg->gits[g])
 			++j;
 		if (j < i) {
-			struct cstr_view const name = git_name(cfg->gits[g]);
+			struct cstr_view const name = git_run_name(cfg->gits[g]);
 			return config_complain(cfg, nullptr, "--code: two compile commands for "
 			                       "%.*s", (int)name.len, name.data);
 		}

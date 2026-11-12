@@ -284,22 +284,6 @@ static_assert(PREFIX + 1 + array_size(commands[0].forced) + OPTIONS + 2 + 1 + RE
               PATHS + 1 <= GIT_RUN_ARGV, "a command fits argv");
 static_assert(PREFIX + 10 + GIT_ROOTS + 1 <= GIT_RUN_ARGV, "history validation fits argv");
 
-struct cstr_view
-git_name (char const *path)
-{
-	struct cstr_view const suffix = CSTR_VIEW(".git");
-	size_t end = strlen(path);
-	while (end > 1 && path[end - 1] == '/')
-		--end;
-	size_t start = end;
-	while (start && path[start - 1] != '/')
-		--start;
-	struct cstr_view name = { path + start, end - start };
-	if (name.len > suffix.len && cstr_view_ends(name, suffix))
-		name.len -= suffix.len;
-	return git_name_valid(name) ? name : (struct cstr_view){};
-}
-
 /* Sets up @p r for the repository at @p path. The function stores the
  * name, the real path and the safe.directory setting of the repository in
  * one allocation. The options of git for the repository turn off implicit
@@ -313,7 +297,7 @@ git_repo_init (struct git_repo *r,
                char const      *path)
 {
 	static char const safe[] = "safe.directory=";
-	struct cstr_view const name = git_name(path);
+	struct cstr_view const name = git_run_name(path);
 	if (!name.len)
 		return EINVAL;
 	char *real = realpath(path, nullptr);

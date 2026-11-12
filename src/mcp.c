@@ -8437,12 +8437,12 @@ mcp_report_gits (struct config const *cfg)
 {
 	int width = 0;
 	for (size_t i = 0; i < cfg->n_gits; ++i) {
-		size_t const len = git_name(cfg->gits[i]).len;
+		size_t const len = git_run_name(cfg->gits[i]).len;
 		width = (int)len > width ? (int)len : width;
 	}
 	LOG_ALL(LOG_INFO, "git repositories:");
 	for (size_t i = 0; i < cfg->n_gits; ++i) {
-		struct cstr_view const repo = git_name(cfg->gits[i]);
+		struct cstr_view const repo = git_run_name(cfg->gits[i]);
 		LOG_ALL(LOG_INFO, "  %-*.*s  %s", width, (int)repo.len, repo.data, cfg->gits[i]);
 	}
 }

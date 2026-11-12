@@ -1,9 +1,11 @@
 /** @file Unit tests of the argv and the environment of git, src/git_run.c:
  *  the argv of each shape of a struct git_run_dir word for word, the
  *  environment in order, the limits of both, the copy of the struct
- *  child_cmd in git_run_init(), the paths that git_run_path() reads, and
- *  git run through child_capture(), child_run(), git_run_capture() and
- *  git_run_now() in a new bare repository at the path of the argument.
+ *  child_cmd in git_run_init(), the paths that git_run_path() reads, the
+ *  names of repositories that git_run_name() and git_run_name_valid()
+ *  accept, and git run through child_capture(), child_run(),
+ *  git_run_capture() and git_run_now() in a new bare repository at the path
+ *  of the argument.
  */
 #define _GNU_SOURCE /* pipe2(), memfd_create() */
 #include <errno.h>
@@ -258,6 +260,121 @@ git_run_test_path (void)
 	CHECK(git_run_path(nullptr, &path) == EINVAL);
 	CHECK(git_run_path(&rest, nullptr) == EINVAL);
 	CHECK(cstr_view_equal(rest, CSTR_VIEW("/a\n")));
+}
+
+/* Tests git_run_name() and git_run_name_valid(). The name of a repository
+ * is the last component of its path, without the slashes after it and
+ * without one .git suffix. git_run_name() returns the name as a view of
+ * the bytes of the path. A valid name is 1 to 64 bytes of [A-Za-z0-9_.-]
+ * and does not start with a dot. The view of a path without a valid name
+ * is empty. git_run_name_valid() reads only the bytes of the view.
+ */
+static void
+git_run_test_name (void)
+{
+	static struct {
+		char const       *path;
+		size_t            at;    /* the offset of the name in the path */
+		struct cstr_view  name;  /* empty for a path without a name */
+	} const cases[] = {
+		{ "/srv/askai",        5, CSTR_VIEW_INIT("askai") },
+		{ "/srv/askai.git",    5, CSTR_VIEW_INIT("askai") },
+		{ "/srv/askai/",       5, CSTR_VIEW_INIT("askai") },
+		{ "/srv/askai.git///", 5, CSTR_VIEW_INIT("askai") },
+		{ "/srv//askai",       6, CSTR_VIEW_INIT("askai") },
+		{ "askai",             0, CSTR_VIEW_INIT("askai") },
+		{ "askai.git",         0, CSTR_VIEW_INIT("askai") },
+		{ "./askai",           2, CSTR_VIEW_INIT("askai") },
+		{ "/askai",            1, CSTR_VIEW_INIT("askai") },
+		{ "/srv/a",            5, CSTR_VIEW_INIT("a") },
+		{ "/srv/a.git",        5, CSTR_VIEW_INIT("a") },
+		{ "/srv/A-b_c.d9",     5, CSTR_VIEW_INIT("A-b_c.d9") },
+		{ "/srv/-x",           5, CSTR_VIEW_INIT("-x") },
+		{ "/srv/_x",           5, CSTR_VIEW_INIT("_x") },
+		{ "/srv/c7",           5, CSTR_VIEW_INIT("c7") },
+		{ "/srv/x.",           5, CSTR_VIEW_INIT("x.") },
+		{ "/srv/x..y",         5, CSTR_VIEW_INIT("x..y") },
+		{ "/srv/x.lock",       5, CSTR_VIEW_INIT("x.lock") },
+		/* One .git suffix in lower case is not part of the name. */
+		{ "/srv/x.git.git",    5, CSTR_VIEW_INIT("x.git") },
+		{ "/srv/x.GIT",        5, CSTR_VIEW_INIT("x.GIT") },
+		{ "/srv/x.gitx",       5, CSTR_VIEW_INIT("x.gitx") },
+		{ "/srv/xgit",         5, CSTR_VIEW_INIT("xgit") },
+		{ "/srv/git",          5, CSTR_VIEW_INIT("git") },
+		/* A last component that starts with a dot is no name, with
+		 * and without the suffix. */
+		{ "/srv/askai/.git",   0, {} },
+		{ "/srv/..git",        0, {} },
+		{ "/srv/.askai",       0, {} },
+		{ "/srv/.askai.git",   0, {} },
+		{ "/srv/.",            0, {} },
+		{ "/srv/..",           0, {} },
+		/* A path without a last component. */
+		{ "",                  0, {} },
+		{ "/",                 0, {} },
+		{ "//",                0, {} },
+		/* A byte that is not one of [A-Za-z0-9_.-]. */
+		{ "/srv/a b",          0, {} },
+		{ "/srv/a b.git",      0, {} },
+		{ "/srv/a\tb",         0, {} },
+		{ "/srv/a@b",          0, {} },
+		{ "/srv/a+b",          0, {} },
+		{ "/srv/a:b",          0, {} },
+		{ "/srv/a~",           0, {} },
+		{ "/srv/caf\xc3\xa9",  0, {} },
+	};
+	for (size_t i = 0; i < array_size(cases); ++i) {
+		struct cstr_view const name = git_run_name(cases[i].path);
+		CHECK(cstr_view_equal(name, cases[i].name));
+		if (cases[i].name.len)
+			CHECK(name.data == cases[i].path + cases[i].at && git_run_name_valid(name));
+		else
+			CHECK(!name.data);
+	}
+	/* A name of 64 bytes is valid and a name of 65 bytes is not, with
+	 * and without the suffix and a slash. */
+	static char const x65[] = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+	                          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+	static_assert(sizeof x65 == 65 + 1, "a name of 65 bytes");
+	static char const *const tails[] = { "", ".git", "/", ".git/" };
+	for (size_t i = 0; i < array_size(tails); ++i) {
+		char path[80];
+		int len = snprintf(path, sizeof path, "/srv/%.64s%s", x65, tails[i]);
+		CHECK(len > 0 && len < (int)sizeof path);
+		struct cstr_view name = git_run_name(path);
+		CHECK(name.data == path + 5 && name.len == 64);
+		len = snprintf(path, sizeof path, "/srv/%s%s", x65, tails[i]);
+		CHECK(len > 0 && len < (int)sizeof path);
+		name = git_run_name(path);
+		CHECK(!name.data && !name.len);
+	}
+	static struct {
+		struct cstr_view name;
+		bool             valid;
+	} const names[] = {
+		{ CSTR_VIEW_INIT("a"),      true },
+		{ CSTR_VIEW_INIT("a.git"),  true },
+		{ CSTR_VIEW_INIT("-"),      true },
+		{ CSTR_VIEW_INIT("_"),      true },
+		{ CSTR_VIEW_INIT("0"),      true },
+		{ CSTR_VIEW_INIT("a.b-c_"), true },
+		{ {},                       false },
+		{ CSTR_VIEW_INIT(""),       false },
+		{ CSTR_VIEW_INIT("."),      false },
+		{ CSTR_VIEW_INIT(".a"),     false },
+		{ CSTR_VIEW_INIT("a/b"),    false },
+		{ CSTR_VIEW_INIT("a/"),     false },
+		{ CSTR_VIEW_INIT("a\0b"),   false },
+		{ CSTR_VIEW_INIT("a\n"),    false },
+		{ CSTR_VIEW_INIT("a b"),    false },
+	};
+	for (size_t i = 0; i < array_size(names); ++i)
+		CHECK(git_run_name_valid(names[i].name) == names[i].valid);
+	/* The bytes after the view are not part of the name. */
+	CHECK(git_run_name_valid((struct cstr_view){ "ab/c", 2 }));
+	CHECK(!git_run_name_valid((struct cstr_view){ "ab/c", 3 }));
+	CHECK(git_run_name_valid((struct cstr_view){ x65, 64 }));
+	CHECK(!git_run_name_valid((struct cstr_view){ x65, 65 }));
 }
 
 /* Runs @p words with git in @p dir with the descriptors @p fds, the
@@ -605,6 +722,7 @@ main (int    argc,
 	git_run_test_env();
 	git_run_test_init();
 	git_run_test_path();
+	git_run_test_name();
 	git_run_test_run(argv[1]);
 	return check_report("git_run");
 }

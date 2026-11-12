@@ -9,7 +9,9 @@
  * calling thread, turns the end of git into an error number, and reads
  * the name of an object that git prints. git_run_now() runs one command
  * in that way, with the deadline GIT_RUN_NS after the call. git_run_path()
- * reads a line with an absolute path from the output of git.
+ * reads a line with an absolute path from the output of git. git_run_name()
+ * returns the name of the repository at a path, and git_run_name_valid()
+ * tests such a name.
  */
 #ifndef ASKAI_SRC_GIT_RUN_H_
 #define ASKAI_SRC_GIT_RUN_H_
@@ -19,8 +21,10 @@
 
 #include "child.h"
 #include "clk.h"
+#include "compat.h"
+#include "cstr_view.h"
+#include "util.h"
 
-struct cstr_view;
 struct oid;
 
 /** The environment entries after PATH of every git process that askai
@@ -217,5 +221,23 @@ git_run_now (struct git_run_dir const *dir,
 extern int
 git_run_path (struct cstr_view *rest,
               struct cstr_view *path);
+
+/** Returns true if @p name is a valid name of a repository: 1 to 64 of
+ *  [A-Za-z0-9_.-], not starting with a dot. Reads at most name.len bytes.
+ */
+static inline bool
+git_run_name_valid (struct cstr_view name)
+{
+	return name.len && name.len <= 64 && *name.data != '.' &&
+	       cstr_view_spn(name, UTIL_ALNUM "_.-") == name.len;
+}
+
+/**
+ * Returns the name of the repository at @p path: the last component of the
+ * path, without a .git suffix, if git_run_name_valid() accepts it. Returns
+ * an empty view for a path without a valid name.
+ */
+extern struct cstr_view
+git_run_name (char const *path);
 
 #endif /* ASKAI_SRC_GIT_RUN_H_ */

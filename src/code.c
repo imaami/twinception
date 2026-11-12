@@ -136,12 +136,12 @@ code_report (struct config const *cfg)
 	LOG_ALL(LOG_INFO, "  cache        %s", cfg->code_cache);
 	int width = 0;
 	for (size_t i = 0; i < cfg->n_codes; ++i) {
-		int const len = (int)git_name(cfg->code_repos[i]).len;
+		int const len = (int)git_run_name(cfg->code_repos[i]).len;
 		width = len > width ? len : width;
 	}
 	LOG_ALL(LOG_INFO, "code repositories:");
 	for (size_t i = 0; i < cfg->n_codes; ++i) {
-		struct cstr_view const name = git_name(cfg->code_repos[i]);
+		struct cstr_view const name = git_run_name(cfg->code_repos[i]);
 		LOG_ALL(LOG_INFO, "  %-*.*s  %s", width, (int)name.len, name.data, cfg->codes[i]);
 	}
 }
@@ -157,7 +157,7 @@ code_definition (void const *service)
 	struct config const *cfg = code->cfg;
 	struct json_object *repos = json_object_new_array();
 	for (size_t i = 0; repos && i < cfg->n_codes; ++i)
-		repos = jb_push_or_free(repos, jb_string(git_name(cfg->code_repos[i])));
+		repos = jb_push_or_free(repos, jb_string(git_run_name(cfg->code_repos[i])));
 	static struct cstr_view const actions[] = { CXI_ACTION_LIST(XL_VIEW) };
 	static struct cstr_view const required[] = {
 		CSTR_VIEW_INIT("repo"), CSTR_VIEW_INIT("action"), CSTR_VIEW_INIT("path"),
@@ -404,12 +404,12 @@ code_args (struct code const  *code,
 	struct config const *cfg = code->cfg;
 	struct cstr_view const repo = jb_text(of[CODE_ARG_REPO], 1, CODE_WORD, nullptr);
 	size_t r = repo.data ? 0 : cfg->n_codes;
-	while (r < cfg->n_codes && !cstr_view_equal(git_name(cfg->code_repos[r]), repo))
+	while (r < cfg->n_codes && !cstr_view_equal(git_run_name(cfg->code_repos[r]), repo))
 		++r;
 	if (r == cfg->n_codes) {
 		util_text_printf(why, "The repo argument must be ");
 		for (size_t i = 0; i < cfg->n_codes; ++i) {
-			struct cstr_view const name = git_name(cfg->code_repos[i]);
+			struct cstr_view const name = git_run_name(cfg->code_repos[i]);
 			util_text_printf(why, "%s%.*s", !i ? "" : i + 1 < cfg->n_codes ? ", " : " or ",
 			                 (int)name.len, name.data);
 		}

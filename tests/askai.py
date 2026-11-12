@@ -10656,6 +10656,22 @@ def check_code(binary, up):
             print("code: SKIP real helper (no askai-code)")
             print("code: off reasons, refusals, request, statuses, deadline, cap: PASS")
             return
+        # askai-code checks the name of the repository as --git does: 1 to
+        # 64 of [A-Za-z0-9_.-], not starting with a dot. It checks the words
+        # of the request before the action, and "nope" is no action.
+        words = ("action=nope", "path=src/a.c", "cdb=c.json", f"commit={head}", "deadline=1",
+                 f"top={repo}", f"cache={d}/none", "--", "git")
+        for name, valid in (("proj", True), ("A-b_c.d9", True), ("-", True), ("x.git", True),
+                            ("x" * 64, True), ("x" * 65, False), ("", False), (None, False),
+                            (".", False), (".proj", False), ("a/b", False), ("a b", False),
+                            ("a@b", False), ("caf\u00e9", False)):
+            proc = subprocess.run([helper, *(() if name is None else (f"repo={name}",)),
+                                   *words], capture_output=True, text=True, timeout=10)
+            assert proc.returncode == 1 and proc.stdout == (
+                "The action argument must be describe, outline or diagnostics." if valid else
+                "askai-code requires the words action, repo, path, cdb, commit, deadline, top "
+                "and cache. repo is the name of a --git repository. commit is a commit ID. "
+                "deadline is in nanoseconds. top and cache are absolute paths."), (name, proc)
         # A relative FILE is relative to the directory of the repository.
         with Askai(binary, "-u", up.url(), "--git", repo, "--code",
                    "proj=../build/compile_commands.json", env={"CPATH": f"{d}/cpath"}) as ai:

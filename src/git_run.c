@@ -1,6 +1,6 @@
 /** @file git_run.c
  *
- * The argv and the environment of git.
+ * The argv and the environment of git, and the name of a repository.
  */
 #include <errno.h>
 #include <string.h>
@@ -119,4 +119,20 @@ git_run_path (struct cstr_view *rest,
 		return EINVAL;
 	return cstr_view_cut(rest, '\n', path) && cstr_view_starts(*path, CSTR_VIEW("/")) &&
 	       !memchr(path->data, '\0', path->len) ? 0 : EINVAL;
+}
+
+struct cstr_view
+git_run_name (char const *path)
+{
+	struct cstr_view const suffix = CSTR_VIEW(".git");
+	size_t end = strlen(path);
+	while (end > 1 && path[end - 1] == '/')
+		--end;
+	size_t start = end;
+	while (start && path[start - 1] != '/')
+		--start;
+	struct cstr_view name = { path + start, end - start };
+	if (name.len > suffix.len && cstr_view_ends(name, suffix))
+		name.len -= suffix.len;
+	return git_run_name_valid(name) ? name : (struct cstr_view){};
 }

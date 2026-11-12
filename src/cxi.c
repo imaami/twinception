@@ -27,7 +27,7 @@
 #include "cstr_view.h"
 #include "cxi.h"
 #include "dstr.h"
-#include "git.h"
+#include "git_run.h"
 #include "jb.h"
 #include "oid.h"
 #include "tool.h"
@@ -1717,7 +1717,7 @@ cxi_run (struct cxi         *x,
 	struct cstr_view const commit = key[CXI_KEY_COMMIT];
 	uint64_t deadline;
 	/* The name of the repository is a directory of the cache. */
-	if (!key[CXI_KEY_ACTION].data || !git_name_valid(repo) || !key[CXI_KEY_PATH].data ||
+	if (!key[CXI_KEY_ACTION].data || !git_run_name_valid(repo) || !key[CXI_KEY_PATH].data ||
 	    !key[CXI_KEY_CDB].data || !oid_valid(commit) ||
 	    !cstr_view_starts(key[CXI_KEY_TOP], CSTR_VIEW("/")) ||
 	    !cstr_view_starts(key[CXI_KEY_CACHE], CSTR_VIEW("/")) ||
