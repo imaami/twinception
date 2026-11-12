@@ -687,8 +687,9 @@ journal_test_child_capture (void)
  * exit status 1 and the signal number 1 differ in the code of the struct
  * child_end. With a buffer, the output replaces the bytes that were in
  * the buffer, and those bytes are also removed if the child is not
- * spawned. The cap is 3 bytes, and the whole output goes to the file.
- * Each case asserts the error and the struct child_end.
+ * spawned. The cap is 3 bytes, and the whole output goes to the file. A
+ * deadline ends the child, also a deadline in the past. Each case asserts
+ * the error and the struct child_end.
  */
 static void
 journal_test_child_cmd_run (void)
@@ -756,6 +757,14 @@ journal_test_child_cmd_run (void)
 	end = unset;
 	assert(child_cmd_run(&late, child_fds(), nullptr, &end) == ETIMEDOUT);
 	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	/* A deadline in the past ends the child at once. */
+	assert(!buf_put(&out, "x", 1, SIZE_MAX));
+	late.deadline = 1;
+	end = unset;
+	uint64_t const start = loop_clock();
+	assert(child_cmd_run(&late, child_fds(), &out, &end) == ETIMEDOUT);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	assert(loop_clock() - start < 2000 * MS && !buf_peek(&out).len);
 	/* A child that is not spawned. */
 	struct child_cmd const none = {
 		.file = "/nonexistent/askai-test",

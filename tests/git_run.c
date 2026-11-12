@@ -3,9 +3,8 @@
  *  environment in order, the limits of both, the copy of the struct
  *  child_cmd in git_run_init(), the paths that git_run_path() reads, the
  *  names of repositories that git_run_name() and git_run_name_valid()
- *  accept, and git run through child_capture(), child_run(),
- *  git_run_capture() and git_run_now() in a new bare repository at the path
- *  of the argument.
+ *  accept, and git run through child_capture(), child_run() and
+ *  git_run_now() in a new bare repository at the path of the argument.
  */
 #define _GNU_SOURCE /* pipe2(), memfd_create() */
 #include <errno.h>
@@ -406,19 +405,23 @@ git_run_test_git (struct git_run_dir const *dir,
 	return e;
 }
 
-/* Tests git_run_capture() with git in @p dir, an empty repository. With
- * a name to read: the name of an object, an empty name for the exit status
- * 1, EIO for the exit status 128 and for an output that is not one name
- * and a line feed, the EFBIG of a cut output, and EIO for a git that a
- * signal kills. The signal number of SIGHUP is 1, and that end is not the
- * exit status 1. The output replaces the bytes that were in the buffer,
- * and the name is empty after an error. Without a name to read: 0 for the
- * exit status 0 and EIO for the exit status 1, with the output in the
- * buffer, or with child_run() and no buffer. EINVAL for a nullptr run and
- * for a name to read without a buffer.
+/* Tests git_run_now() with git in @p dir, an empty repository. The
+ * deadline of the struct child_cmd is a time in the past, and
+ * git_run_now() runs each command to its end. The cases with a name to
+ * read are the name of an object, an empty name for the exit status 1,
+ * EIO for the exit status 128 and for an output that is not one name and
+ * a line feed, the EFBIG of a cut output, and EIO for a git that a signal
+ * kills. The signal number of SIGHUP is 1, and that end is not the exit
+ * status 1. The output replaces the bytes that were in the buffer, and
+ * the name is empty after an error. Without a name to read, the result is
+ * 0 for the exit status 0 and EIO for the exit status 1, with the output
+ * in the buffer, or in fds.out without a buffer. An error of
+ * git_run_init() leaves the buffer and the name as they were, and so does
+ * the EINVAL of a name to read without a buffer. git_run_now() ends a git
+ * that waits for its input GIT_RUN_NS after the call.
  */
 static void
-git_run_test_capture (struct git_run_dir const *dir)
+git_run_test_now (struct git_run_dir const *dir)
 {
 	static struct {
 		char const       *words[6];
@@ -444,75 +447,37 @@ git_run_test_capture (struct git_run_dir const *dir)
 		{ { "-c", "alias.die=!kill -KILL $PPID", "die", nullptr }, {}, 4096, EIO, {} },
 	};
 	static_assert(SIGHUP == 1, "the signal number that equals the exit status 1");
+	char const *const *const hash = cases[0].words;
+	char const *const *const missing = cases[1].words;
+	struct cstr_view const name = cases[0].out;
 	struct buf out = {};
 	for (size_t i = 0; i < array_size(cases); ++i) {
 		struct child_cmd const how = {
-			.in  = { (unsigned char *)(uintptr_t)cases[i].in.data, cases[i].in.len },
-			.max = cases[i].max,
+			.in       = { (unsigned char *)(uintptr_t)cases[i].in.data,
+			              cases[i].in.len },
+			.max      = cases[i].max,
+			.deadline = 1,
 		};
-		struct git_run run;
-		CHECK(!git_run_init(&run, dir, cases[i].words, &how));
 		CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
 		struct oid oid = { "0123" };
-		CHECK(git_run_capture(&run, child_fds(), &out, &oid) == cases[i].e);
+		CHECK(git_run_now(dir, cases[i].words, how, child_fds(), &out, &oid) == cases[i].e);
 		CHECK(git_run_test_out(&out, cases[i].out));
 		if (i)
 			CHECK(!oid_len(&oid));
 		else
 			CHECK(!strcmp(oid.hex, "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f"));
 	}
-	struct git_run run;
-	struct oid oid = { "0123" };
-	CHECK(!git_run_init(&run, dir, cases[1].words, &(struct child_cmd){ .max = 4096 }));
-	CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
-	CHECK(git_run_capture(&run, child_fds(), &out, nullptr) == EIO);
-	CHECK(!buf_peek(&out).len);
-	CHECK(git_run_capture(&run, child_fds(), nullptr, nullptr) == EIO);
-	CHECK(git_run_capture(&run, child_fds(), nullptr, &oid) == EINVAL);
-	CHECK(git_run_capture(nullptr, child_fds(), &out, &oid) == EINVAL);
-	CHECK(!strcmp(oid.hex, "0123"));
-	struct child_cmd const how = { .in = { (unsigned char *)"abc", 3 }, .max = 4096 };
-	CHECK(!git_run_init(&run, dir, cases[0].words, &how));
-	CHECK(!git_run_capture(&run, child_fds(), &out, nullptr));
-	CHECK(git_run_test_out(&out, cases[0].out));
-	CHECK(!git_run_capture(&run, child_fds(), nullptr, nullptr));
-	buf_fini(&out);
-}
-
-/* Tests git_run_now() with git in @p dir, an empty repository. The
- * deadline of the struct child_cmd is a time in the past, and
- * git_run_now() runs each command to its end: the name of an object, an
- * empty name for the exit status 1, EIO for the exit status 1 without a
- * name to read, and the output in the buffer or in fds.out. An error of
- * git_run_init() leaves the buffer and the name as they were, and so does
- * the EINVAL of a name to read without a buffer. With the deadline in the
- * past, git_run_capture() ends a git that waits for its input at once.
- * git_run_now() ends that git GIT_RUN_NS after the call.
- */
-static void
-git_run_test_now (struct git_run_dir const *dir)
-{
-	static char const *const hash[] = { "hash-object", "--stdin", nullptr };
-	static char const *const missing[] = {
-		"rev-parse", "--verify", "--quiet", "refs/heads/missing", nullptr
-	};
-	static struct cstr_view const name =
-		CSTR_VIEW_INIT("f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f\n");
 	struct child_cmd const how = {
 		.in       = { (unsigned char *)"abc", 3 },
 		.max      = 4096,
 		.deadline = 1,
 		.grace    = GIT_GRACE,
 	};
-	struct buf out = {};
 	struct oid oid = { "0123" };
 	CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
-	CHECK(!git_run_now(dir, hash, how, child_fds(), &out, &oid));
-	CHECK(!strcmp(oid.hex, "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f"));
-	CHECK(git_run_test_out(&out, name));
-	CHECK(!git_run_now(dir, missing, how, child_fds(), &out, &oid));
-	CHECK(!oid_len(&oid) && !buf_peek(&out).len);
 	CHECK(git_run_now(dir, missing, how, child_fds(), &out, nullptr) == EIO);
+	CHECK(!buf_peek(&out).len);
+	CHECK(git_run_now(dir, missing, how, child_fds(), nullptr, nullptr) == EIO);
 	CHECK(!git_run_now(dir, hash, how, child_fds(), &out, nullptr));
 	CHECK(git_run_test_out(&out, name));
 	/* Without a buffer, git writes to fds.out. */
@@ -525,12 +490,11 @@ git_run_test_now (struct git_run_dir const *dir)
 	      !memcmp(text, name.data, name.len));
 	util_close(&fds.out);
 
-	/* The errors of git_run_init(), then the error of git_run_capture(). */
+	/* The errors of git_run_init(), then a name to read without a buffer. */
 	char const *many[GIT_RUN_ARGV];
 	for (size_t i = 0; i < array_size(many) - 1; ++i)
 		many[i] = "x";
 	many[array_size(many) - 1] = nullptr;
-	oid = (struct oid){ "0123" };
 	CHECK(git_run_now(dir, many, how, child_fds(), &out, &oid) == E2BIG);
 	CHECK(git_run_now(nullptr, hash, how, child_fds(), &out, &oid) == EINVAL);
 	CHECK(git_run_now(dir, nullptr, how, child_fds(), &out, &oid) == EINVAL);
@@ -541,14 +505,7 @@ git_run_test_now (struct git_run_dir const *dir)
 	int pipe_fds[2];
 	CHECK(!pipe2(pipe_fds, O_CLOEXEC));
 	fds.in = pipe_fds[0];
-	struct git_run run;
-	CHECK(!git_run_init(&run, dir, hash, &how));
-	uint64_t start = loop_clock();
-	CHECK(git_run_capture(&run, fds, &out, &oid) == ETIMEDOUT);
-	CHECK(loop_clock() - start < GIT_RUN_NS && !oid_len(&oid) && !buf_peek(&out).len);
-	oid = (struct oid){ "0123" };
-	CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
-	start = loop_clock();
+	uint64_t const start = loop_clock();
 	CHECK(git_run_now(dir, hash, how, fds, &out, &oid) == ETIMEDOUT);
 	uint64_t const took = loop_clock() - start;
 	CHECK(took >= GIT_RUN_NS && took < GIT_RUN_NS + GIT_GRACE);
@@ -585,7 +542,6 @@ git_run_test_run (char const *repo)
 	                                                    "--template=", nullptr },
 	                        how, child_fds(), &out, &end, &ms));
 	CHECK(end.code == CLD_EXITED && !end.status && !end.flags && !buf_peek(&out).len);
-	git_run_test_capture(&at);
 	git_run_test_now(&at);
 
 	/* -C and the path, then the directory of the child, with "--git-dir=.". */

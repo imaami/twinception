@@ -75,15 +75,24 @@ git_run_init (struct git_run           *dest,
 }
 
 int
-git_run_capture (struct git_run const *run,
-                 struct child_fds      fds,
-                 struct buf           *out,
-                 struct oid           *oid)
+git_run_now (struct git_run_dir const *dir,
+             char const *const        *words,
+             struct child_cmd          how,
+             struct child_fds          fds,
+             struct buf               *out,
+             struct oid               *oid)
 {
-	if (!run || (oid && !out))
+	if (oid && !out)
 		return EINVAL;
+	how.deadline = loop_clock() + GIT_RUN_NS;
+	/* git_run_init() writes the argv up to its nullptr, not the pointers
+	 * after it. */
+	struct git_run run = {};
+	int e = git_run_init(&run, dir, words, &how);
+	if (e)
+		return e;
 	struct child_end end = {};
-	int const e = child_cmd_run(&run->c, fds, out, &end);
+	e = child_cmd_run(&run.c, fds, out, &end);
 	if (!oid)
 		return e;
 	*oid = (struct oid){};
@@ -93,22 +102,6 @@ git_run_capture (struct git_run const *run,
 	struct span const got = buf_peek(out);
 	struct cstr_view const text = { (char const *)got.ptr, got.len };
 	return oid_init_line(oid, text) ? EIO : 0;
-}
-
-int
-git_run_now (struct git_run_dir const *dir,
-             char const *const        *words,
-             struct child_cmd          how,
-             struct child_fds          fds,
-             struct buf               *out,
-             struct oid               *oid)
-{
-	how.deadline = loop_clock() + GIT_RUN_NS;
-	/* git_run_init() writes the argv up to its nullptr, not the pointers
-	 * after it. */
-	struct git_run run = {};
-	int const e = git_run_init(&run, dir, words, &how);
-	return e ? e : git_run_capture(&run, fds, out, oid);
 }
 
 int

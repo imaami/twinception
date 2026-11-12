@@ -5,13 +5,12 @@
  * options of the caller and the environment. git_run_init() writes the
  * argv of one command for a struct git_run_dir into a struct git_run.
  * child_create(), child_run() or child_capture() runs the struct
- * child_cmd of the struct git_run. git_run_capture() runs it on the
- * calling thread, turns the end of git into an error number, and reads
- * the name of an object that git prints. git_run_now() runs one command
- * in that way, with the deadline GIT_RUN_NS after the call. git_run_path()
- * reads a line with an absolute path from the output of git. git_run_name()
- * returns the name of the repository at a path, and git_run_name_valid()
- * tests such a name.
+ * child_cmd of the struct git_run. git_run_now() runs one command on the
+ * calling thread with the deadline GIT_RUN_NS after the call, turns the
+ * end of git into an error number, and reads the name of an object that
+ * git prints. git_run_path() reads a line with an absolute path from the
+ * output of git. git_run_name() returns the name of the repository at a
+ * path, and git_run_name_valid() tests such a name.
  */
 #ifndef ASKAI_SRC_GIT_RUN_H_
 #define ASKAI_SRC_GIT_RUN_H_
@@ -174,35 +173,26 @@ git_run_init (struct git_run           *dest,
               struct child_cmd const   *how);
 
 /**
- * Runs the git command @p run on the calling thread with the descriptors
- * @p fds, as child_cmd_run() runs a command. If @p out is not nullptr, the
- * content of @p out is replaced with the output, up to the cap of @p run.
- * Otherwise git writes to fds.out. Returns what child_cmd_run() returns,
- * which is EIO for an exit status other than 0, or EINVAL if @p run is
- * nullptr or @p oid is not nullptr without @p out.
+ * Runs the git command @p words, up to their nullptr, in @p dir on the
+ * calling thread with the descriptors @p fds, as child_cmd_run() runs a
+ * command. The function initializes a struct git_run as git_run_init()
+ * does, with the deadline GIT_RUN_NS after the call. The input, the cap,
+ * the grace and the bits of enum child_flag are those of @p how. The
+ * function does not read how.deadline. If @p out is not nullptr, the
+ * content of @p out is replaced with the output, up to the cap. Otherwise
+ * git writes to fds.out.
+ *
+ * Returns EINVAL if @p oid is not nullptr without @p out, or the error of
+ * git_run_init(). After these two errors, @p out and @p oid are as they
+ * were. Otherwise the function returns what child_cmd_run() returns,
+ * which is EIO for an exit status other than 0, and ETIMEDOUT for a git
+ * that runs longer than GIT_RUN_NS.
  *
  * If @p oid is not nullptr, the function copies the name of an object in
  * the output, one name and a line feed, into @p oid. Another output is
  * EIO. The exit status 1, which rev-parse --verify --quiet returns for a
  * missing ref, is then no error, and @p oid is empty. @p oid is also
- * empty after an error.
- */
-extern int
-git_run_capture (struct git_run const *run,
-                 struct child_fds      fds,
-                 struct buf           *out,
-                 struct oid           *oid);
-
-/**
- * Runs the git command @p words, up to their nullptr, in @p dir on the
- * calling thread. The function initializes a struct git_run as
- * git_run_init() does, with the deadline GIT_RUN_NS after the call, and
- * runs it as git_run_capture() does with @p fds, @p out and @p oid. The
- * input, the cap, the grace and the bits of enum child_flag are those of
- * @p how. The function does not read how.deadline. Returns the error of
- * git_run_init(), which leaves @p out and @p oid as they were, or what
- * git_run_capture() returns. The error of a git that runs longer than
- * GIT_RUN_NS is ETIMEDOUT.
+ * empty after an error of the run.
  */
 extern int
 git_run_now (struct git_run_dir const *dir,
