@@ -2695,8 +2695,8 @@ godbolt_args_read (struct godbolt_args         *a,
 	if (jb_args(args, godbolt_arg_names, array_size(godbolt_arg_names), t->args & ~off, of,
 	            &seen, &other)) {
 		if (t->args & off && cstr_view_equal(other, godbolt_arg_names[GODBOLT_ARG_SHARE]))
-			mcp_slot_tell(slot, CSTR_VIEW("Links are turned off on this server. Call the "
-			                              "tool without share."), TOOL_FAILED);
+			mcp_slot_tell(slot, CSTR_VIEW("Links are turned off on this server. Call "
+			                              "the tool without share."), TOOL_FAILED);
 		else
 			mcp_slot_tellf(slot, TOOL_FAILED, "%.*s is not an argument of the tool.",
 			               (int)other.len, other.data);
@@ -2714,7 +2714,8 @@ godbolt_args_read (struct godbolt_args         *a,
 	/* The bits of kind, family and architecture are adjacent. */
 	if (a->action == GODBOLT_LANGUAGES && seen >> GODBOLT_ARG_KIND & 7)
 		return mcp_slot_tell(slot, CSTR_VIEW("kind, family and architecture are not valid "
-		                                     "with action languages."), TOOL_FAILED), EINVAL;
+		                                     "with action languages."),
+		                     TOOL_FAILED), EINVAL;
 	if ((uint32_t)a->n_ids * a->n_strings > GODBOLT_JOBS)
 		return mcp_slot_tell(slot, CSTR_VIEW("The number of compilers times the number of "
 		                                     "strings in args must be at most 32."),

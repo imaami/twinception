@@ -1499,7 +1499,8 @@ findings_cite_end (struct mcp_slot                *slot,
 		struct findings_cite const *of = &call->cites.items[cite->first];
 		struct evidence *item = &call->change.evidence.items[cite->index];
 		e = evidence_recite(item, &lines, &cite->ref, cstr_view_dstr(&of->record),
-		                    material[cite->first].result, scratch->text, sizeof scratch->text);
+		                    material[cite->first].result, scratch->text,
+		                    sizeof scratch->text);
 		if (e) {
 			findings_stop(slot, e, findings_refusal(scratch, e));
 			return;

@@ -1952,8 +1952,9 @@ notes_tool_add (struct mcp_slot    *slot,
 		problem = CSTR_VIEW("The content argument must be a data: URI. Your client fills in "
 		                    "content with a file from the user.");
 	} else if (data.size > most) {
-		problem = util_format_view(scratch->text, sizeof scratch->text, "The content file is "
-		                           "larger than the limit of %zu bytes.", most);
+		problem = util_format_view(scratch->text, sizeof scratch->text,
+		                           "The content file is larger than the limit of %zu "
+		                           "bytes.", most);
 	} else if (!data.size && notes_tool_actions[call->action].fetch & FETCH_APPEND) {
 		problem = CSTR_VIEW("The content file to append is empty.");
 	}
