@@ -30,7 +30,7 @@ seen_name_valid (struct cstr_view t)
  *  within @p out.
  */
 static bool
-seen_source_within (struct call_source const *src,
+seen_source_within (struct seen_source const *src,
                     struct cstr_view          out)
 {
 	struct extent const lines = src->output;
@@ -38,7 +38,7 @@ seen_source_within (struct call_source const *src,
 }
 
 struct seen_read *
-seen_read_create (struct call_source const *src,
+seen_read_create (struct seen_source const *src,
                   struct cstr_view          out,
                   int                      *e)
 {
@@ -49,7 +49,7 @@ seen_read_create (struct call_source const *src,
 		return nullptr;
 	}
 	*e = EINVAL;
-	if (!oid_valid(src->commit) ||
+	if (!oid_len(&src->commit) ||
 	    !seen_name_valid(src->repo) || !seen_name_valid(src->path) || !src->lines.first ||
 	    src->lines.last < src->lines.first || (src->total && src->total < src->lines.last) ||
 	    src->total > UINT32_MAX || !seen_source_within(src, out))
@@ -59,19 +59,17 @@ seen_read_create (struct call_source const *src,
 	if (cstr_view_count(lines, '\n') + (lines.data[lines.len - 1] != '\n') !=
 	    range_count(src->lines))
 		return nullptr;
-	struct seen_read *read = malloc(sizeof *read + src->repo.len + src->commit.len +
-	                                src->path.len);
+	struct seen_read *read = malloc(sizeof *read + src->repo.len + src->path.len);
 	if (!read) {
 		*e = ENOMEM;
 		return nullptr;
 	}
 	*read = (struct seen_read){ .src = *src,
 	                            .mark = { .line = src->lines.first, .at = src->output.at } };
+	char *path = mempcpy(read->text, src->repo.data, src->repo.len);
+	memcpy(path, src->path.data, src->path.len);
 	read->src.repo.data = read->text;
-	read->src.commit.data = mempcpy(read->text, src->repo.data, src->repo.len);
-	read->src.path.data = mempcpy((char *)read->src.commit.data, src->commit.data,
-	                              src->commit.len);
-	memcpy((char *)read->src.path.data, src->path.data, src->path.len);
+	read->src.path.data = path;
 	*e = 0;
 	return read;
 }
@@ -95,9 +93,9 @@ seen_read_json (struct seen_read const *read,
 		*e = EFAULT;
 		return nullptr;
 	}
-	struct call_source const *src = &read->src;
+	struct seen_source const *src = &read->src;
 	struct json_object *obj = jb_object("repo", jb_string(src->repo),
-	                                    "commit", jb_string(src->commit),
+	                                    "commit", jb_string(oid_view(&src->commit)),
 	                                    "path", jb_string(src->path),
 	                                    "at", json_object_new_uint64(src->output.at),
 	                                    "len", json_object_new_uint64(src->output.len),
@@ -125,18 +123,20 @@ seen_read_create_json (struct json_object const *obj,
 	uint64_t first;
 	uint64_t last;
 	uint64_t total;
+	struct oid commit;
 	if (jb_uint_checked(jb_get(obj, "at"), SIZE_MAX, &at) ||
 	    jb_uint_checked(jb_get(obj, "len"), SIZE_MAX, &len) ||
 	    jb_uint_checked(jb_get(obj, "first"), UINT32_MAX, &first) ||
 	    jb_uint_checked(jb_get(obj, "last"), UINT32_MAX, &last) ||
-	    jb_uint_checked(jb_get(obj, "total"), UINT64_MAX, &total)) {
+	    jb_uint_checked(jb_get(obj, "total"), UINT64_MAX, &total) ||
+	    oid_init(&commit, jb_view(jb_get(obj, "commit")))) {
 		*e = EINVAL;
 		return nullptr;
 	}
-	/* seen_read_create() checks the texts. */
-	struct call_source const src = {
+	/* seen_read_create() checks the repository name and the path. */
+	struct seen_source const src = {
 		.repo   = jb_view(jb_get(obj, "repo")),
-		.commit = jb_view(jb_get(obj, "commit")),
+		.commit = commit,
 		.path   = jb_view(jb_get(obj, "path")),
 		.total  = total,
 		.output = { (size_t)at, (size_t)len },
@@ -157,7 +157,7 @@ seen_lines (struct seen_read *read,
 		*e = EFAULT;
 		return (struct seen_lines){};
 	}
-	struct call_source const *src = &read->src;
+	struct seen_source const *src = &read->src;
 	*e = seen_source_within(src, out) ? 0 : EINVAL;
 	size_t const end = src->output.at + src->output.len;
 	if (*e || window.at >= end)
@@ -250,12 +250,12 @@ seen_room (struct seen *seen,
  */
 static int
 seen_ids (struct dstr              *ids,
-          struct call_source const *src)
+          struct seen_source const *src)
 {
 	int e = cstr_view_cat(CSTR_VIEW("{\"repo\":\""), ids);
 	e = e ? e : jb_escape_cat(src->repo, ids);
 	e = e ? e : cstr_view_cat(CSTR_VIEW("\",\"commit\":\""), ids);
-	e = e ? e : cstr_view_cat(src->commit, ids);
+	e = e ? e : cstr_view_cat(oid_view(&src->commit), ids);
 	e = e ? e : cstr_view_cat(CSTR_VIEW("\",\"path\":\""), ids);
 	e = e ? e : jb_escape_cat(src->path, ids);
 	return e ? e : dstr_printf(ids, "\",\"total\":%" PRIu64 "}", src->total) ? 0 : ENOMEM;

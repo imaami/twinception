@@ -15,9 +15,9 @@
  * larger than TOOL_TEXT_MAX stays as a number only (SEEN_TOO_LARGE). The
  * ring also stores the identifiers of the material that a call showed, and
  * the lines of a file that its result showed whole (seen_lines()). A git
- * read and a code describe name the numbered lines of a committed file in
- * their output with a struct call_source (src/mcp.h), and the slot of the
- * call stores a copy of it, a struct seen_read (seen_read_create()).
+ * read and a code describe pass a struct seen_source to mcp_slot_source()
+ * for the numbered lines of a committed file in their output. The slot of
+ * the call stores a copy of it, a struct seen_read (seen_read_create()).
  *
  * A findings call and a compact call show nothing that a finding can
  * cite, and the ring does not store them. A resumed ask call records the
@@ -52,7 +52,6 @@
 #include "buf.h"
 #include "cstr_view.h"
 #include "dstr.h"
-#include "mcp.h"
 #include "oid.h"
 #include "range.h"
 #include "util.h"
@@ -64,7 +63,7 @@ enum {
 	                                         call, at most */
 	SEEN_NAME_MAX = 1024,               /**< bytes of a repository name or
 	                                         a path in a struct
-	                                         call_source, at most */
+	                                         seen_source, at most */
 	SEEN_ITEMS    = 1024,               /**< evidence items in the ring of
 	                                         an ask call, at most */
 	SEEN_ID       = UTIL_WORD_MAX + 26, /**< bytes of the ID of an item,
@@ -108,14 +107,32 @@ struct seen_mark {
 	                     src->output.at */
 };
 
-/** A copy of a struct call_source in one allocation, and the position of
+/** The numbered lines of a committed file in the output of a git read or a
+ *  code describe (mcp_slot_source()). The texts are views of the caller's
+ *  storage.
+ */
+struct seen_source {
+	struct cstr_view repo;    /**< repository name */
+	struct cstr_view path;    /**< path of the file in the commit */
+	struct extent    output;  /**< the numbered lines in the output. There
+	                               is one output line for each number in
+	                               the range lines, and each output line
+	                               ends with a newline, except perhaps the
+	                               last. */
+	uint64_t         total;   /**< line count of the file, or 0 if
+	                               unknown */
+	struct range     lines;   /**< numbers of the first and the last line,
+	                               from 1 */
+	struct oid       commit;  /**< name of the commit */
+};
+
+/** A copy of a struct seen_source in one allocation, and the position of
  *  the last window in the numbered lines (seen_lines()).
  */
 struct seen_read {
-	struct call_source src;     /**< views of text */
+	struct seen_source src;     /**< repo and path are views of text */
 	struct seen_mark   mark;    /**< the position of the last window */
-	char               text[];  /**< the repository name, the commit ID
-	                                 and the path */
+	char               text[];  /**< the repository name and the path */
 };
 
 /** The lines of a file that a window showed whole, and the offset of the
@@ -230,9 +247,9 @@ struct seen_result {
  *
  * @retval nullptr with EFAULT in @p *e if @p src is nullptr, or if
  *         out.data is nullptr and out.len is not 0.
- * @retval nullptr with EINVAL in @p *e if the commit is not 40 or 64
- *         hexadecimal digits, if the repository name or the path is not 1
- *         to SEEN_NAME_MAX bytes of UTF-8 text without NUL, if the line
+ * @retval nullptr with EINVAL in @p *e if the commit is no name
+ *         (src/oid.h), if the repository name or the path is not 1 to
+ *         SEEN_NAME_MAX bytes of UTF-8 text without NUL, if the line
  *         numbers do not satisfy 1 <= first <= last <= total (or total is
  *         0), if total is greater than UINT32_MAX, or if the numbered lines
  *         are empty, not within @p out, or not last - first + 1 lines.
@@ -240,7 +257,7 @@ struct seen_result {
  * @retval nullptr for a null @p e.
  */
 extern struct seen_read *
-seen_read_create (struct call_source const *src,
+seen_read_create (struct seen_source const *src,
                   struct cstr_view          out,
                   int                      *e);
 

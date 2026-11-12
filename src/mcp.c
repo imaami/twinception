@@ -3600,7 +3600,7 @@ mcp_slot_rerun (struct mcp_slot const *slot)
 
 int
 mcp_slot_source (struct mcp_slot          *slot,
-                 struct call_source const *src)
+                 struct seen_source const *src)
 {
 	int e = !src ? EFAULT : mcp_slot_live(slot, 0, 0);
 	if (e)

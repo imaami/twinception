@@ -13,7 +13,6 @@
 #include "cstr_view.h"
 #include "export.h"
 #include "loop_export.h"
-#include "range.h"
 #include "tool.h"
 
 struct blocker;
@@ -39,6 +38,7 @@ struct oid;
 struct registry;
 struct seen;
 struct seen_item;
+struct seen_source;
 struct stream_app;
 struct task_pool;
 struct web;
@@ -457,28 +457,9 @@ mcp_slot_call (struct mcp_slot const *slot);
 extern bool
 mcp_slot_rerun (struct mcp_slot const *slot);
 
-/** The numbered lines of a committed file in the output of a git read or a
- *  code describe (mcp_slot_source()). The texts are views of the caller's
- *  storage.
- */
-struct call_source {
-	struct cstr_view repo;    /**< repository name */
-	struct cstr_view commit;  /**< full commit ID */
-	struct cstr_view path;    /**< path of the file in the commit */
-	uint64_t         total;   /**< line count of the file, or 0 if
-	                               unknown */
-	struct extent    output;  /**< the numbered lines in the output. There
-	                               is one output line for each number in
-	                               the range lines, and each output line
-	                               ends with a newline, except perhaps the
-	                               last. */
-	struct range     lines;   /**< numbers of the first and the last line,
-	                               from 1 */
-};
-
-/** Stores a copy of @p src, which describes the numbered lines of a
- *  committed file in the call's output, written or lent, for the ring of
- *  the calls of the ask call (seen_keep()). It stores nothing for the call
+/** Stores a copy of @p src (src/seen.h), which describes the numbered lines
+ *  of a committed file in the call's output, written or lent, for the ring
+ *  of the calls of the ask call (seen_keep()). It stores nothing for the call
  *  of a client, for an ask call whose turns are not lent findings, or if
  *  @p src is a single line longer than mcp_slot_window_max().
  *  Returns 0, EFAULT for nullptr, EINVAL if the call has ended or @p src
@@ -487,7 +468,7 @@ struct call_source {
  */
 extern int
 mcp_slot_source (struct mcp_slot          *slot,
-                 struct call_source const *src);
+                 struct seen_source const *src);
 
 /** Records for the ring of the calls of the ask call (seen_print()) that
  *  the bytes @p output of the call's output print the evidence item

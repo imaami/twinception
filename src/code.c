@@ -23,6 +23,7 @@
 #include "mcp.h"
 #include "plugin.h"
 #include "schema.h"
+#include "seen.h"
 #include "util.h"
 #include "xlist.h"
 
@@ -292,13 +293,13 @@ code_spawn (struct code_call *call,
 /* Parses the record line "lines FIRST LAST TOTAL AT LEN PATH" at the start
  * of @p *text, the output of describe, into @p src, and removes the line
  * from @p *text. Sets src->repo to the name of pin->repo and src->commit
- * to a view of pin->roots[0]. Returns false if @p *text does not start
- * with a valid record line.
+ * to pin->roots[0]. Returns false if @p *text does not start with a valid
+ * record line.
  */
 static bool
 code_record (struct cstr_view     *text,
              struct git_pin const *pin,
-             struct call_source   *src)
+             struct seen_source   *src)
 {
 	struct cstr_view rest = *text;
 	struct cstr_view line;
@@ -313,8 +314,8 @@ code_record (struct cstr_view     *text,
 		line = cstr_view_slice(line, n + 1, SIZE_MAX);
 	}
 	*text = rest;
-	*src = (struct call_source){
-		.repo = pin->repo->name, .commit = oid_view(&pin->roots[0]),
+	*src = (struct seen_source){
+		.repo = pin->repo->name, .commit = pin->roots[0],
 		.path = line, .total = v[2], .output = { v[3], v[4] },
 		.lines = { (uint32_t)v[0], (uint32_t)v[1] },
 	};
@@ -344,7 +345,7 @@ code_ended (struct mcp_slot  *slot,
 	 * case the helper is broken. */
 	struct cstr_view text = { (char const *)out.ptr, jb_mend((char *)out.ptr, out.len, true) };
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
-	struct call_source src;
+	struct seen_source src;
 	bool const record = !status && code_record(&text, &call->pin, &src);
 	mcp_slot_lend(slot, text);
 	/* mcp_slot_source() returns EINVAL for a record line that does not

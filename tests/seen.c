@@ -1,10 +1,11 @@
 /** @file Unit tests of the ring of the calls of an ask call (src/seen.c):
- *  the lines that a window shows whole, the calls that the ring stores and
- *  drops by count and by bytes, the newest call, calls too large to store,
- *  the offset of the window of a replayed result, the reuse of the storage,
- *  the calls before a restart, the lookup of a call by number, the
- *  evidence items that results showed, and the items in the journal state
- *  of a resumed ask call.
+ *  the lines that a window shows whole, the copy of a source and the JSON
+ *  object of the copy, the calls that the ring stores and drops by count
+ *  and by bytes, the newest call, calls too large to store, the offset of
+ *  the window of a replayed result, the reuse of the storage, the calls
+ *  before a restart, the lookup of a call by number, the evidence items
+ *  that results showed, and the items in the journal state of a resumed ask
+ *  call.
  */
 #include <errno.h>
 #include <json-c/json.h>
@@ -15,11 +16,16 @@
 #include "check.h"
 #include "dstr.h"
 #include "jb.h"
+#include "oid.h"
+#include "range.h"
 #include "seen.h"
 #include "tool.h"
 
 /* A commit ID. */
 #define A "55aca1e8682351e4c39a92b040721def3f005402"
+
+/* A commit ID of a SHA-256 repository. */
+#define B "7d865e959b2466918c9863afca942d0fb89d7c9ac0c99bafc3749504ded97730"
 
 /* Check that the @p len bytes at @p got are the string @p want. */
 #define SAME(got, len, want) same(__LINE__, got, len, want)
@@ -44,7 +50,7 @@ same (int         line,
  */
 static void
 output (struct dstr        *out,
-        struct call_source *src,
+        struct seen_source *src,
         uint32_t            first,
         uint32_t            last,
         bool                bare)
@@ -56,8 +62,8 @@ output (struct dstr        *out,
 		CHECK(dstr_printf(out, "%u\tline %u%s", n, n, n == last && bare ? "" : "\n"));
 	size_t const len = dstr_len(out) - at;
 	CHECK(dstr_printf(out, "\n[f]"));
-	*src = (struct call_source){ CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 9,
-	                             { at, len }, { first, last } };
+	*src = (struct seen_source){ CSTR_VIEW("proj"), CSTR_VIEW("src/a.c"), { at, len }, 9,
+	                             { first, last }, { A } };
 }
 
 /* Check that the window of @p window bytes from @p skip of the output of
@@ -71,7 +77,7 @@ lines_in (size_t   skip,
           int      line)
 {
 	struct dstr out = DSTR_INIT;
-	struct call_source src;
+	struct seen_source src;
 	output(&out, &src, 1, 9, false);
 	int e = -1;
 	struct seen_read *read = seen_read_create(&src, cstr_view_dstr(&out), &e);
@@ -111,7 +117,7 @@ test_lines (void)
 	 * read if that mark is after the window. A new read marks the start of
 	 * its numbered lines. */
 	struct dstr out = DSTR_INIT;
-	struct call_source src;
+	struct seen_source src;
 	output(&out, &src, 1, 9, false);
 	struct cstr_view o = cstr_view_dstr(&out);
 	/* all is a window that contains the whole output. */
@@ -170,8 +176,8 @@ test_lines (void)
 	CHECK(dstr_printf(&more, "[h]\n"));
 	for (int i = 0; i < 13; ++i)
 		CHECK(dstr_printf(&more, "a\n"));
-	struct call_source const many = { CSTR_VIEW("proj"), CSTR_VIEW(A), CSTR_VIEW("src/a.c"), 0,
-	                                  { 4, dstr_len(&more) - 4 }, { 1, 13 } };
+	struct seen_source const many = { CSTR_VIEW("proj"), CSTR_VIEW("src/a.c"),
+	                                  { 4, dstr_len(&more) - 4 }, 0, { 1, 13 }, { A } };
 	read = seen_read_create(&many, cstr_view_dstr(&more), &e);
 	CHECK(read && !e);
 	read->src.lines.last = 3;
@@ -186,6 +192,240 @@ test_lines (void)
 	CHECK(!seen_lines(read, o, all, nullptr).range.first);
 	seen_read_destroy(&read);
 	dstr_cleanup(&more);
+	dstr_cleanup(&out);
+}
+
+/* Check that @p read is a copy of the source that output() stores for
+ * lines 3 to 5, with the commit @p commit, and that the mark of @p read is
+ * at the start of the lines.
+ */
+static void
+read_is (struct seen_read const *read,
+         char const             *commit,
+         int                     line)
+{
+	if (read && read->src.repo.data == read->text && read->src.path.data == read->text + 4 &&
+	    cstr_view_equal(read->src.repo, CSTR_VIEW("proj")) &&
+	    cstr_view_equal(read->src.path, CSTR_VIEW("src/a.c")) &&
+	    !strcmp(read->src.commit.hex, commit) && read->src.total == 9 &&
+	    read->src.lines.first == 3 && read->src.lines.last == 5 && read->src.output.at == 4 &&
+	    read->src.output.len == 9 * 3 && read->mark.line == 3 && read->mark.at == 4)
+		return;
+	++failures;
+	fprintf(stderr, "%s:%d: not the read of lines 3 to 5 at %s\n", __FILE__, line, commit);
+}
+
+/* Returns the error of seen_read_create() for @p src in the output
+ * @p out. Checks that seen_read_create() returns a read if and only if the
+ * error is 0.
+ */
+static int
+read_error (struct seen_source const *src,
+            struct cstr_view          out)
+{
+	int e = -1;
+	struct seen_read *read = seen_read_create(src, out, &e);
+	CHECK(!read == !!e);
+	seen_read_destroy(&read);
+	return e;
+}
+
+/* Returns the error of seen_read_create_json() in the output @p out for a
+ * JSON object of lines 3 to 5 without the member commit. @p members is the
+ * JSON text of more members of the object, each after a comma, or "". A
+ * member of @p members replaces an earlier member of the same name. If
+ * @p commit is not nullptr, the function checks that the read is a copy of
+ * the source with the commit @p commit.
+ */
+static int
+read_json_error (char const       *members,
+                 char const       *commit,
+                 struct cstr_view  out)
+{
+	char text[256];
+	int const n = snprintf(text, sizeof text, "{\"repo\":\"proj\",\"path\":\"src/a.c\",\"at\":4,"
+	                       "\"len\":27,\"first\":3,\"last\":5,\"total\":9%s}", members);
+	CHECK(n > 0 && n < (int)sizeof text);
+	struct json_object *obj = json_tokener_parse(text);
+	CHECK(obj);
+	int e = -1;
+	struct seen_read *read = seen_read_create_json(obj, out, &e);
+	CHECK(!read == !!e);
+	if (commit)
+		read_is(read, commit, __LINE__);
+	seen_read_destroy(&read);
+	json_object_put(obj);
+	return e;
+}
+
+/* seen_read_create() copies a source that fits the output, with the commit
+ * by value, and refuses any other source. seen_read_json() writes the copy
+ * as a JSON object, and seen_read_create_json() reads the object.
+ */
+static void
+test_read (void)
+{
+	struct dstr out = DSTR_INIT;
+	struct seen_source src;
+	output(&out, &src, 3, 5, false);
+	struct cstr_view const o = cstr_view_dstr(&out);
+	/* The read stores a copy of the repository name and the path. The
+	 * storage of the caller can change after the call. */
+	char repo[] = "proj";
+	char path[] = "src/a.c";
+	src.repo = (struct cstr_view){ repo, sizeof repo - 1 };
+	src.path = (struct cstr_view){ path, sizeof path - 1 };
+	int e = -1;
+	struct seen_read *read = seen_read_create(&src, o, &e);
+	CHECK(read && !e);
+	memset(repo, 'x', sizeof repo - 1);
+	memset(path, 'y', sizeof path - 1);
+	read_is(read, A, __LINE__);
+
+	/* The JSON object of the read, and a read from that object. */
+	struct json_object *obj = seen_read_json(read, &e);
+	CHECK(obj && !e);
+	SAME(jb_wire(obj).data, jb_wire(obj).len,
+	     "{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":\"src/a.c\",\"at\":4,\"len\":27,"
+	     "\"first\":3,\"last\":5,\"total\":9}");
+	e = -1;
+	struct seen_read *again = seen_read_create_json(obj, o, &e);
+	CHECK(again && !e && again != read);
+	read_is(again, A, __LINE__);
+	seen_read_destroy(&again);
+	CHECK(!again);
+	/* The object does not fit a shorter output. */
+	e = -1;
+	CHECK(!seen_read_create_json(obj, (struct cstr_view){ o.data, 4 + 9 * 3 - 1 }, &e) &&
+	      e == EINVAL);
+	json_object_put(obj);
+	seen_read_destroy(&read);
+	e = -1;
+	CHECK(!seen_read_json(nullptr, &e) && e == EFAULT);
+	CHECK(!seen_read_json(nullptr, nullptr));
+	e = -1;
+	CHECK(!seen_read_create_json(nullptr, o, &e) && e == EFAULT);
+	CHECK(!seen_read_create_json(nullptr, o, nullptr));
+
+	/* The commit of an object is the name of a commit: 40 or 64 lowercase
+	 * hexadecimal digits. */
+	CHECK(!read_json_error(",\"commit\":\"" A "\"", A, o));
+	CHECK(!read_json_error(",\"commit\":\"" B "\"", B, o));
+	CHECK(read_json_error("", nullptr, o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":\"\"", nullptr, o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":\"" A "0\"", nullptr, o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":\"5aca1e8682351e4c39a92b040721def3f005402\"", nullptr,
+	                      o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":\"55ACA1E8682351E4C39A92B040721DEF3F005402\"", nullptr,
+	                      o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":\"g5aca1e8682351e4c39a92b040721def3f005402\"", nullptr,
+	                      o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":55", nullptr, o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":null", nullptr, o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":[\"" A "\"]", nullptr, o) == EINVAL);
+	/* An object with the commit and a member that is not a number in the
+	 * range of the member, and an object for another output. */
+	CHECK(read_json_error(",\"commit\":\"" A "\",\"total\":\"9\"", nullptr, o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":\"" A "\",\"first\":-3", nullptr, o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":\"" A "\",\"last\":4294967296", nullptr, o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":\"" A "\",\"at\":null", nullptr, o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":\"" A "\",\"len\":2.5", nullptr, o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":\"" A "\",\"repo\":7", nullptr, o) == EINVAL);
+	CHECK(read_json_error(",\"commit\":\"" A "\"", nullptr, CSTR_VIEW("[h]\n")) == EINVAL);
+
+	/* A source without a commit. An empty struct oid is no name. */
+	src.repo = CSTR_VIEW("proj");
+	src.path = CSTR_VIEW("src/a.c");
+	CHECK(!read_error(&src, o));
+	struct seen_source bad = src;
+	bad.commit = (struct oid){};
+	CHECK(read_error(&bad, o) == EINVAL);
+	/* A commit of a SHA-256 repository. The identifiers of a call with the
+	 * read contain the 64 digits. */
+	bad.commit = (struct oid){ B };
+	read = seen_read_create(&bad, o, &e);
+	CHECK(read && !e);
+	read_is(read, B, __LINE__);
+	struct seen *seen = nullptr;
+	struct buf request = {};
+	struct cstr_view const parts[SEEN_PARTS] = { o };
+	struct seen_result const r = { .parts = parts, .out = o, .read = read, .output = o.len,
+	                               .number = 1, .turn = 1 };
+	CHECK(!seen_keep(&seen, &request, &r) && seen && seen->n == 1);
+	SAME(dstr_get(&seen->calls[0].ids), dstr_len(&seen->calls[0].ids),
+	     "{\"repo\":\"proj\",\"commit\":\"" B "\",\"path\":\"src/a.c\",\"total\":9}");
+	CHECK(seen->calls[0].lines.range.first == 3 && seen->calls[0].lines.range.last == 5);
+	seen_destroy(&seen);
+	seen_read_destroy(&read);
+	/* A repository name or a path that is empty, too long, or not UTF-8
+	 * text without NUL. */
+	char name[SEEN_NAME_MAX + 1];
+	memset(name, 'n', sizeof name);
+	bad = src;
+	bad.repo = (struct cstr_view){};
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.repo = (struct cstr_view){ name, 0 };
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.repo = (struct cstr_view){ name, SEEN_NAME_MAX + 1 };
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.repo = (struct cstr_view){ name, SEEN_NAME_MAX };
+	CHECK(!read_error(&bad, o));
+	bad.path = (struct cstr_view){ name, SEEN_NAME_MAX + 1 };
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.path = (struct cstr_view){ name, SEEN_NAME_MAX };
+	CHECK(!read_error(&bad, o));
+	bad.path = CSTR_VIEW("a\xff");
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.path = (struct cstr_view){ "a\0b", 3 };
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.path = (struct cstr_view){};
+	CHECK(read_error(&bad, o) == EINVAL);
+	/* Line numbers that do not satisfy 1 <= first <= last <= total. A
+	 * total of 0 is unknown. */
+	bad = src;
+	bad.lines = (struct range){ 0, 2 };
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.lines = (struct range){ 5, 3 };
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.lines = src.lines;
+	bad.total = 4;
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.total = 5;
+	CHECK(!read_error(&bad, o));
+	bad.total = 0;
+	CHECK(!read_error(&bad, o));
+	bad.total = UINT32_MAX;
+	CHECK(!read_error(&bad, o));
+	bad.total = (uint64_t)UINT32_MAX + 1;
+	CHECK(read_error(&bad, o) == EINVAL);
+	/* Numbered lines that are empty, not within the output, or not one
+	 * line for each number. */
+	bad = src;
+	bad.output.len = 0;
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.output = (struct extent){ o.len, 1 };
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.output = (struct extent){ 4, o.len - 3 };
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.output = (struct extent){ SIZE_MAX, 9 * 3 };
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.output = (struct extent){ 4, SIZE_MAX };
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.output = (struct extent){ 4, 9 * 2 };
+	CHECK(read_error(&bad, o) == EINVAL);
+	bad.output = src.output;
+	bad.lines.last = 6;
+	CHECK(read_error(&bad, o) == EINVAL);
+	CHECK(read_error(&src, (struct cstr_view){}) == EINVAL);
+	/* The last line can end without a newline. */
+	bad.lines.last = 5;
+	bad.output.len = 9 * 3 - 1;
+	CHECK(!read_error(&bad, o));
+	/* Null arguments. */
+	CHECK(read_error(nullptr, o) == EFAULT);
+	CHECK(read_error(&src, (struct cstr_view){ nullptr, 2 }) == EFAULT);
+	CHECK(!seen_read_create(&src, o, nullptr));
+	seen_read_destroy(nullptr);
 	dstr_cleanup(&out);
 }
 
@@ -256,7 +496,7 @@ static void
 test_keep (void)
 {
 	struct dstr out = DSTR_INIT;
-	struct call_source src;
+	struct seen_source src;
 	output(&out, &src, 1, 9, false);
 	struct cstr_view const o = cstr_view_dstr(&out);
 	int e = -1;
@@ -898,6 +1138,7 @@ int
 main (void)
 {
 	test_lines();
+	test_read();
 	test_keep();
 	test_drop();
 	test_find();
