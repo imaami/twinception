@@ -142,12 +142,10 @@ struct findings_file {
 /* The flags of a reference to an item of a finding (struct findings_cite).
  * The flags are set only on the first reference to an item.
  */
-enum findings_cite_flag : uint16_t {
-	CITE_SHOW    = 1U << 0,  /* the turns had not seen the item, which the
-	                            refusal prints */
-	CITE_READ    = 1U << 1,  /* the call reads the archive files of the
-	                            item */
-	CITE_REQUEST = 1U << 2,  /* the item stores the arguments of a call */
+enum findings_cite_flag : uint8_t {
+	CITE_SHOW = 1U << 0,  /* the turns had not seen the item, which the
+	                         refusal prints */
+	CITE_READ = 1U << 1,  /* the call reads the archive files of the item */
 };
 
 /* A reference of the evidence argument to an item of a finding, X#n/m or
@@ -165,7 +163,10 @@ struct findings_cite {
 	                                  cuh#2/1 */
 	struct oid          blobs[2];  /* the git IDs of the archive files of
 	                                  the item, or no name */
-	uint16_t            flags;     /* enum findings_cite_flag */
+	uint8_t             flags;     /* enum findings_cite_flag */
+	enum evidence_kind  kind;      /* the kind of the item.
+	                                  findings_cite_blobs() sets the member
+	                                  of the first reference to the item. */
 };
 
 /* An entry of the output of expand: the item e of the finding f, or the
@@ -912,7 +913,7 @@ findings_archive_line (struct buf                 *in,
 }
 
 /* Appends to call->files the archive files of the item @p e: the
- * arguments of the call with EVIDENCE_REQUEST, and the material. A file
+ * arguments of the call of a call item, and the material. A file
  * whose git ID is in @p blobs is that blob of the repository, and any
  * other file contains the material in @p m. Returns 0 or the error of
  * store_part_file() or store_part_blob().
@@ -926,7 +927,7 @@ findings_archive (struct findings_call           *call,
 	struct evidence_blob const *const b[] = { &e->request, &e->result };
 	struct cstr_view const data[] = { m->request, m->result };
 	int r = 0;
-	for (size_t k = e->flags & EVIDENCE_REQUEST ? 0 : 1; !r && k < array_size(b); ++k) {
+	for (size_t k = e->kind == EVIDENCE_CALL ? 0 : 1; !r && k < array_size(b); ++k) {
 		char path[EVIDENCE_PATH];
 		struct extent part;
 		evidence_path(b[k]->sha256, path);
@@ -943,7 +944,7 @@ static bool
 findings_stored (struct evidence const *e,
                  struct oid const       blobs[static 2])
 {
-	return oid_len(&blobs[1]) && (!(e->flags & EVIDENCE_REQUEST) || oid_len(&blobs[0]));
+	return oid_len(&blobs[1]) && (e->kind != EVIDENCE_CALL || oid_len(&blobs[0]));
 }
 
 /* Records that the item @p key, such as cuh#2/1, whose record is in
@@ -1045,7 +1046,7 @@ findings_expanded (struct mcp_slot *slot,
 		struct span request = {};
 		struct span result = {};
 		int r = 0;
-		if (ev->flags & EVIDENCE_REQUEST)
+		if (ev->kind == EVIDENCE_CALL)
 			r = store_object_next(&out, &blobs[0], &request);
 		if (r != EIO)
 			r = store_object_next(&out, &blobs[1], &result);
@@ -1101,7 +1102,7 @@ static bool
 findings_fits (uint64_t              *bytes,
                struct evidence const *e)
 {
-	uint64_t const request = e->flags & EVIDENCE_REQUEST ? e->request.bytes : 0;
+	uint64_t const request = e->kind == EVIDENCE_CALL ? e->request.bytes : 0;
 	if (request > FINDINGS_MATERIAL - *bytes ||
 	    e->result.bytes > FINDINGS_MATERIAL - *bytes - request)
 		return false;
@@ -1151,7 +1152,7 @@ findings_expand_item (struct findings_call  *call,
 		call->fit = call->prints.n - 1;
 		return 0;
 	}
-	if (ev->flags & EVIDENCE_REQUEST)
+	if (ev->kind == EVIDENCE_CALL)
 		e = findings_archive_line(in, ref, &ev->request);
 	return e ? e : findings_archive_line(in, ref, &ev->result);
 }
@@ -1498,7 +1499,7 @@ findings_got_blobs (struct mcp_slot *slot)
 		/* The archive files of an item are the arguments, then the
 		 * material. */
 		struct cstr_view *const m[] = { &material[i].request, &material[i].result };
-		for (size_t k = cite->flags & CITE_REQUEST ? 0 : 1; k < array_size(m); ++k) {
+		for (size_t k = cite->kind == EVIDENCE_CALL ? 0 : 1; k < array_size(m); ++k) {
 			struct span data;
 			int const e = store_object_next(&out, &cite->blobs[k], &data);
 			if (e == ENOENT) {
@@ -1552,9 +1553,8 @@ findings_cite_blobs (struct mcp_slot *slot)
 		}
 		if (e)
 			break;
-		bool const asked = item.flags & EVIDENCE_REQUEST;
-		if (asked)
-			cite->flags |= CITE_REQUEST;
+		cite->kind = item.kind;
+		bool const asked = item.kind == EVIDENCE_CALL;
 		bool const stored = findings_stored(&item, cite->blobs);
 		if (!(cite->flags & CITE_READ) && stored)
 			continue;
@@ -1727,7 +1727,7 @@ findings_cite_add (struct mcp_slot           *slot,
 	size_t first = 0;
 	while (first < n && !finding_id_equal(&call->cites.items[first].ref.id, &ref->id))
 		++first;
-	uint16_t const lines = ref->form == EVIDENCE_REF_ITEM_LINES ? CITE_READ : 0;
+	uint8_t const lines = ref->form == EVIDENCE_REF_ITEM_LINES ? CITE_READ : 0;
 	struct findings_cite *cite = &call->cites.items[n];
 	*cite = (struct findings_cite){
 		.record = DSTR_INIT,

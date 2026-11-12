@@ -440,7 +440,6 @@ evidence_cite (struct evidence            *dest,
 	if (e)
 		return e;
 	if (dest->kind != EVIDENCE_LINES) {
-		dest->flags |= EVIDENCE_REQUEST;
 		*material = (struct evidence_material){ parts.args, cstr_view_dstr(&c->result) };
 		evidence_hash(&dest->request, material->request);
 		evidence_hash(&dest->result, material->result);
@@ -564,9 +563,9 @@ evidence_json (struct evidence const *e,
 			lines = jb_push_or_free(lines, jb_push_or_free(pair, json_object_new_uint64(r.last)));
 		}
 		obj = jb_set_or_free(obj, "lines", lines);
-	}
-	if (e->flags & EVIDENCE_REQUEST)
+	} else {
 		obj = jb_set_or_free(obj, "request", evidence_blob_json(&e->request));
+	}
 	obj = jb_set_or_free(obj, "result", evidence_blob_json(&e->result));
 	*err = obj ? 0 : ENOMEM;
 	return obj;
@@ -630,17 +629,19 @@ evidence_parse (struct evidence          *dest,
 	        (ask && hexid_init(&dest->ask, jb_view(ask))) ||
 	        (from && (finding_id_parse(&dest->from, jb_view(from)) || !dest->from.item)) ||
 	        (ids && !json_object_is_type(ids, json_type_object)) ||
-	        (request && evidence_blob_parse(&dest->request, request)) ||
 	        evidence_blob_parse(&dest->result, jb_get(obj, "result")) ? EINVAL : 0;
-	if (!e && kind == EVIDENCE_LINES)
-		e = evidence_ranges_parse(dest, obj);
+	/* A call item stores the arguments of the call. A lines item stores
+	 * its lines and no arguments. */
+	if (!e)
+		e = kind == EVIDENCE_CALL ? evidence_blob_parse(&dest->request, request)
+		  : request ? EINVAL : evidence_ranges_parse(dest, obj);
 	if (!e) {
 		dest->kind = (enum evidence_kind)kind;
 		dest->skip = (uint32_t)skip;
 		dest->item = (uint32_t)item;
 		dest->call = (uint32_t)call;
 		dest->turn = (uint32_t)turn;
-		dest->flags = (jb_true(failed) ? EVIDENCE_FAILED : 0) | (request ? EVIDENCE_REQUEST : 0);
+		dest->flags = jb_true(failed) ? EVIDENCE_FAILED : 0;
 		struct cstr_view const wire = jb_wire(ids);
 		e = ids && !wire.data ? ENOMEM : cstr_view_store(tool, &dest->tool);
 		e = e ? e : cstr_view_store(call_id, &dest->call_id);
@@ -883,12 +884,12 @@ evidence_expand (struct evidence const          *e,
 	struct cstr_view const request = material->request;
 	struct cstr_view const result = material->result;
 	struct json_object *ids = evidence_ids(&e->ids);
-	bool const asked = e->flags & EVIDENCE_REQUEST;
-	bool const missing = !result.data || (asked && !request.data);
+	bool const call = e->kind == EVIDENCE_CALL;
+	bool const missing = !result.data || (call && !request.data);
 	bool differs = false;
 	if (!missing)
 		differs = !evidence_matches(&e->result, result) ||
-		          (asked && !evidence_matches(&e->request, request));
+		          (call && !evidence_matches(&e->request, request));
 	bool ok = false;
 	if (!dstr_printf(d, "[askai: %s", text))
 		goto done;
@@ -896,31 +897,26 @@ evidence_expand (struct evidence const          *e,
 		goto done;
 	if (!dstr_cat(d, ": "))
 		goto done;
-	if (e->kind == EVIDENCE_LINES) {
-		if (!evidence_lines_summary(e, ids, SIZE_MAX, d))
-			goto done;
-		if (!dstr_cat(d, ", stored as shown:]\n"))
-			goto done;
-	} else {
+	if (call) {
 		if (!evidence_expand_call(e, id->author, ids, d))
 			goto done;
-		if (asked) {
-			if (!dstr_cat(d, " Arguments:]\n"))
-				goto done;
-			if (!evidence_material_put(request, d))
-				goto done;
-			if (!dstr_printf(d, "[askai: %s: result", text))
-				goto done;
-		} else if (!dstr_cat(d, " Result")) {
+		if (!dstr_cat(d, " Arguments:]\n"))
 			goto done;
-		}
-		if (!dstr_printf(d, ", %" PRIu64 " byte%s", e->result.bytes, util_s(e->result.bytes)))
+		if (!evidence_material_put(request, d))
+			goto done;
+		if (!dstr_printf(d, "[askai: %s: result, %" PRIu64 " byte%s", text, e->result.bytes,
+		                 util_s(e->result.bytes)))
 			goto done;
 		if ((e->skip || e->output > e->result.bytes) &&
 		    !dstr_printf(d, ", from byte %" PRIu32 " of an output of %" PRIu64 " bytes",
 		                 e->skip, e->output))
 			goto done;
 		if (!dstr_cat(d, ":]\n"))
+			goto done;
+	} else {
+		if (!evidence_lines_summary(e, ids, SIZE_MAX, d))
+			goto done;
+		if (!dstr_cat(d, ", stored as shown:]\n"))
 			goto done;
 	}
 	if (!evidence_material_put(result, d))

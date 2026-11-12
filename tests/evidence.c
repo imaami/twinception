@@ -491,16 +491,16 @@ test_cite (void)
 	/* A call of another tool, which failed, with an ID from the provider. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c2")));
 	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
-	CHECK(ev.kind == EVIDENCE_CALL && ev.flags == (EVIDENCE_REQUEST | EVIDENCE_FAILED) &&
-	      ev.call == 2 && !dstr_len(&ev.ids));
+	CHECK(ev.kind == EVIDENCE_CALL && ev.flags == EVIDENCE_FAILED && ev.call == 2 &&
+	      !dstr_len(&ev.ids));
 	SAME(dstr_get(&ev.call_id), dstr_len(&ev.call_id), "toolu_x");
 	SAME(dstr_get(&ev.tool), dstr_len(&ev.tool), "man");
 	SAME(m.result.data, m.result.len, "A man page.\n\n\n[askai: call c2]");
 	/* A git grep shows no lines, so c4 is a call item. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c4")));
 	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
-	CHECK(ev.kind == EVIDENCE_CALL && ev.flags == EVIDENCE_REQUEST && ev.call == 4 &&
-	      ev.turn == 2 && !ev.ranges.n);
+	CHECK(ev.kind == EVIDENCE_CALL && !ev.flags && ev.call == 4 && ev.turn == 2 &&
+	      !ev.ranges.n);
 	SAME(m.request.data, m.request.len, "{\"command\":\"grep\"}");
 	SAME(m.result.data, m.result.len, "a:1:x\n\n\n[askai: call c4]");
 	hashed(&ev.request, m.request, __LINE__);
@@ -704,7 +704,6 @@ test_json (void)
 	e.kind = EVIDENCE_CALL;
 	e.item = 1;
 	e.call = 4;
-	e.flags = EVIDENCE_REQUEST;
 	e.request.bytes = 98;
 	e.result.bytes = 1;
 	CHECK(!cstr_view_store(CSTR_VIEW("man"), &e.tool));
@@ -713,7 +712,7 @@ test_json (void)
 	CHECK(obj && !err && !jb_get(obj, "ask") && !jb_get(obj, "from") && !jb_get(obj, "ids") &&
 	      !jb_get(obj, "lines") && jb_get(obj, "request"));
 	CHECK(!evidence_parse(&back, obj));
-	CHECK(back.kind == EVIDENCE_CALL && back.flags == EVIDENCE_REQUEST &&
+	CHECK(back.kind == EVIDENCE_CALL && !back.flags &&
 	      back.request.bytes == 98 && !*back.ask.hex && !*back.from.author &&
 	      !back.from.number && !back.from.item && !dstr_len(&back.ids));
 	(void)dstr_clear(&text);
@@ -734,9 +733,10 @@ test_json (void)
 	SAME(dstr_get(&text), dstr_len(&text), "line 7 of the file");
 	dstr_cleanup(&text);
 
-	/* Members that are missing or not valid. */
+	/* Members that are missing or not valid. A call item without the
+	 * member request is refused. */
 	char const *const drops[] = { "kind", "tool", "call_id", "failed", "item", "call", "turn",
-	                              "output", "skip", "result" };
+	                              "output", "skip", "request", "result" };
 	for (size_t i = 0; i < sizeof drops / sizeof *drops; ++i) {
 		struct json_object *copy = nullptr;
 		CHECK(!json_object_deep_copy(obj, &copy, nullptr));
@@ -787,16 +787,22 @@ test_json (void)
 	for (size_t i = 0; i < sizeof lines / sizeof *lines; ++i) {
 		struct json_object *copy = nullptr;
 		CHECK(!json_object_deep_copy(obj, &copy, nullptr));
+		json_object_object_del(copy, "request");
 		CHECK(!json_object_object_add(copy, "kind", json_object_new_string("lines")));
 		CHECK(!json_object_object_add(copy, "lines", json_tokener_parse(lines[i])));
 		CHECK(evidence_parse(&back, copy) == EINVAL);
 		json_object_put(copy);
 	}
+	/* A lines item with the member request is refused. */
 	struct json_object *meet = nullptr;
 	CHECK(!json_object_deep_copy(obj, &meet, nullptr));
 	CHECK(!json_object_object_add(meet, "kind", json_object_new_string("lines")));
 	CHECK(!json_object_object_add(meet, "lines", json_tokener_parse("[[1,2],[3,4],[6,6]]")));
-	CHECK(!evidence_parse(&back, meet) && back.ranges.n == 3);
+	CHECK(evidence_parse(&back, meet) == EINVAL && back.kind == EVIDENCE_CALL &&
+	      !back.ranges.n && !back.request.bytes);
+	json_object_object_del(meet, "request");
+	CHECK(!evidence_parse(&back, meet) && back.kind == EVIDENCE_LINES && back.ranges.n == 3 &&
+	      !back.request.bytes);
 	json_object_put(meet);
 	/* An earlier askai stored the ranges in the order of the reference, and
 	 * overlapping. Such an item stays readable, in the stored order. */
@@ -811,6 +817,7 @@ test_json (void)
 	for (size_t i = 0; i < sizeof older / sizeof *older; ++i) {
 		struct json_object *copy = nullptr;
 		CHECK(!json_object_deep_copy(obj, &copy, nullptr));
+		json_object_object_del(copy, "request");
 		CHECK(!json_object_object_add(copy, "kind", json_object_new_string("lines")));
 		CHECK(!json_object_object_add(copy, "lines", json_tokener_parse(older[i].json)));
 		CHECK(!evidence_parse(&back, copy) && back.ranges.n == 2 &&
@@ -1126,7 +1133,6 @@ test_recite (void)
 	free(one);
 	/* A call item has no lines. */
 	item.kind = EVIDENCE_CALL;
-	item.flags = EVIDENCE_REQUEST;
 	char *call = record_of(&item);
 	recite_refused("cuh#2/1:3", call, material, "cuh#2/1:3 needs a lines item. cuh#2/1 is a "
 	               "call item.", __LINE__);
@@ -1137,8 +1143,8 @@ test_recite (void)
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1")));
 	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(call), (struct cstr_view){}, why,
 	                       sizeof why));
-	CHECK(e.kind == EVIDENCE_CALL && e.flags == EVIDENCE_REQUEST &&
-	      finding_id_equal(&e.from, &ref.id) && e.from.item == 1);
+	CHECK(e.kind == EVIDENCE_CALL && !e.flags && finding_id_equal(&e.from, &ref.id) &&
+	      e.from.item == 1);
 	free(call);
 	CHECK(evidence_recite(nullptr, &lines, &ref, cstr_view(record), material, why,
 	                      sizeof why) == EINVAL);
@@ -1190,7 +1196,6 @@ test_expand (void)
 	e.turn = 19;
 	e.output = 9000;
 	e.skip = 100;
-	e.flags = EVIDENCE_REQUEST;
 	CHECK(!hexid_init(&e.ask, CSTR_VIEW("68177013a5c94f0e8b1d2c3e4f506172")));
 	CHECK(!cstr_view_store(CSTR_VIEW("git"), &e.tool));
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\"}"), &e.ids));
@@ -1221,7 +1226,7 @@ test_expand (void)
 	/* An item cited again names no author of the call. The identifiers
 	 * name only a repository, and then only a commit. */
 	e.item = 3;
-	e.flags = EVIDENCE_REQUEST;
+	e.flags = 0;
 	CHECK(!finding_id_parse(&e.from, CSTR_VIEW("bro#1/1")));
 	CHECK(!hexid_init(&e.ask, CSTR_VIEW("68177013a5c94f0e8b1d2c3e4f506172")));
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\"}"), &e.ids));

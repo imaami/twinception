@@ -61,7 +61,9 @@ enum {
         X(CALL,  "call")
 
 /** The kinds of evidence items. lines is lines of a file that a git read
- *  or a code describe showed, and call is any other call.
+ *  or a code describe showed, and call is any other call. A call item
+ *  stores the arguments of the call (request) and the result. A lines item
+ *  stores only the lines (result).
  */
 enum evidence_kind : uint8_t {
 #define EVIDENCE_KIND_ENUM(id, ...) EVIDENCE_##id,
@@ -103,9 +105,7 @@ struct evidence_blob {
 
 /** The flags of an evidence item. */
 enum evidence_flag : uint8_t {
-	EVIDENCE_FAILED  = 1U << 0,  /**< the call failed */
-	EVIDENCE_REQUEST = 1U << 1,  /**< the item stores the arguments of the
-	                                  call */
+	EVIDENCE_FAILED = 1U << 0,  /**< the call failed */
 };
 
 /** An evidence item: the record of stored material and the identifiers
@@ -121,8 +121,8 @@ struct evidence {
 	                                     provider, or call_T_K */
 	UTIL_ARRAY(struct range) ranges;  /**< the lines of EVIDENCE_LINES,
 	                                       numbered from 1 */
-	struct evidence_blob  request;  /**< the arguments of the call, with
-	                                     EVIDENCE_REQUEST */
+	struct evidence_blob  request;  /**< the arguments of the call of an
+	                                     EVIDENCE_CALL item, or zeroed */
 	struct evidence_blob  result;   /**< the material that expand prints:
 	                                     the result or the lines */
 	uint64_t              output;   /**< bytes of the whole output of the
@@ -156,8 +156,8 @@ typedef char const *evidence_name_fn (void const *owner,
  *  lines that the caller passed.
  */
 struct evidence_material {
-	struct cstr_view request;  /**< the arguments of the call, with
-	                                EVIDENCE_REQUEST, else empty */
+	struct cstr_view request;  /**< the arguments of the call of an
+	                                EVIDENCE_CALL item, else empty */
 	struct cstr_view result;   /**< the result, or the lines */
 };
 
@@ -299,8 +299,9 @@ evidence_json (struct evidence const *e,
 
 /** Replaces @p dest with the evidence item of the JSON object @p obj that
  *  evidence_json() made. Returns 0, EINVAL for an object that is not such
- *  an item or of an unknown kind, or ENOMEM. On failure @p dest is as
- *  evidence() returns it.
+ *  an item, or ENOMEM. An item of an unknown kind, a call item without
+ *  the member request and a lines item with the member request are not
+ *  such items. On failure @p dest is as evidence() returns it.
  */
 extern int
 evidence_parse (struct evidence          *dest,

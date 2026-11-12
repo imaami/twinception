@@ -199,7 +199,6 @@ item_of (uint32_t    call,
 	e.call = call;
 	e.turn = call;
 	e.output = 100 + call;
-	e.flags = EVIDENCE_REQUEST;
 	e.request.bytes = 10;
 	e.result.bytes = 100 + call;
 	memset(e.result.sha256, (int)call, sizeof e.result.sha256);
