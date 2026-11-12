@@ -752,7 +752,7 @@ notes_tool_write (struct mcp_slot *slot,
 		.ref = call->repo,
 		.tip = &call->revision.tip,
 	};
-	struct member_byline byline;
+	struct member_byline byline = {};
 	member_byline_put(&byline, &commit, &call->self, mcp_slot_member(slot), mcp_slot_call(slot),
 	                  notes_tool_session(call));
 	e = e ? e : store_commit_input(&commit, &in);
