@@ -2134,7 +2134,7 @@ mcp_slot_respond (struct mcp_slot *slot,
 	loop_timer_stop(req->mcp->loop, &req->timer);
 	size_t off = req->lent ? 0 : slot->window.at;
 	if (off > text.len) {
-		char why[96];
+		char why[TOOL_TELL_MAX];
 		mcp_slot_result(slot, util_format_view(why, sizeof why, "The offset is past the end "
 		                                       "of the output. The output is %zu bytes.",
 		                                       text.len), true);

@@ -178,6 +178,12 @@ struct member_lookup {
 	                                              and the record that git
 	                                              writes */
 	uint32_t               flags;
+	struct tool_why        why;                /* the reason for the
+	                                              result of the lookup.
+	                                              member_lookup_end() sets
+	                                              the length of a text that
+	                                              a function wrote through
+	                                              a pointer and a size. */
 	int16_t                result;             /* EINPROGRESS until the
 	                                              lookup ends, then the
 	                                              result of the end. After
@@ -189,8 +195,6 @@ struct member_lookup {
 	char                   user[MEMBER_NAME];  /* the name of the Unix
 	                                              user, as the job name
 	                                              finds it */
-	char                   why[MEMBER_WHY];    /* the reason for the
-	                                              result of the lookup */
 };
 
 /* Frees the output and the records of @p r. */
@@ -427,7 +431,7 @@ member_git_result (char                   *why,
                    int                     e,
                    struct child_end const *end)
 {
-	char text[MEMBER_WHY];
+	char text[TOOL_TELL_MAX];
 	struct cstr_view because = child_end_why(end, "git", GIT_RUN_NS, STORE_MAX, text,
 	                                         sizeof text);
 	/* end->code is 0 if git did not run, and child_end_why() returns an
@@ -1156,29 +1160,40 @@ member_lookup_give (struct member_lookup const *lookup,
                     int                         e)
 {
 	struct member_login const *login = &lookup->claim.login;
-	wait->e = e;
+	wait->e = (int16_t)e;
 	wait->member = (struct member){ .kind = login->kind };
-	wait->why[0] = '\0';
+	util_text_clear(&wait->why);
 	if (e)
-		util_format(wait->why, sizeof wait->why, "%s", lookup->why);
+		(void)util_text_store(&wait->why, util_text_view(&lookup->why));
 	else
 		memcpy(wait->member.name, login->name, sizeof wait->member.name);
 	return e;
 }
 
-/* Ends @p lookup with the result @p e and passes the result to each wait.
- * For 0 and EPERM, the lookup stays on the table with the result. For any
- * other result, the function removes the lookup from the table, unless
- * the job name is with a blocker. The waits run after that.
+/* Ends @p lookup with the result @p e and writes the result to each wait
+ * of the lookup. @p now is the wait of a call that ends the lookup before
+ * the wait is on the lookup, or nullptr. The function writes the result to
+ * @p now too, and does not call the done of @p now. For 0 and EPERM, the
+ * lookup stays on the table with the result. For any other result, the
+ * function removes the lookup from the table, unless the job name is with
+ * a blocker. The waits of the lookup run after that.
  */
 static void
 member_lookup_end (struct member_lookup *lookup,
-                   int                   e)
+                   int                   e,
+                   struct member_wait   *now)
 {
+	/* member_claim_step(), member_table_parse() and member_commit_result()
+	 * write the reason through a pointer and a size, without the length.
+	 * member_lookup_give() copies the text to a wait with the length that
+	 * is measured here. */
+	lookup->why.len = (uint32_t)strlen(lookup->why.data);
 	if (e && e != ECANCELED)
-		LOG(LOG_WARN, "member: %s: %s", lookup->claim.login.text, lookup->why);
+		LOG(LOG_WARN, "member: %s: %s", lookup->claim.login.text, lookup->why.data);
 	lookup->result = (int16_t)e;
 	lookup->flags &= ~LOOKUP_WRITE;
+	if (now)
+		(void)member_lookup_give(lookup, now, e);
 	struct list waits;
 	list_init(&waits);
 	list_transplant(&waits, &lookup->waits);
@@ -1195,8 +1210,8 @@ member_lookup_end (struct member_lookup *lookup,
 }
 
 /* Adds @p wait to @p lookup if @p e is EINPROGRESS. Otherwise the function
- * writes the result @p e to @p wait and ends the lookup with it. Returns
- * @p e.
+ * ends the lookup with the result @p e, and member_lookup_end() writes the
+ * result to @p wait. Returns @p e.
  */
 static int
 member_lookup_join (struct member_lookup *lookup,
@@ -1205,10 +1220,9 @@ member_lookup_join (struct member_lookup *lookup,
 {
 	if (e == EINPROGRESS) {
 		list_append(&lookup->waits, &wait->hook);
-		return wait->e = e;
+		return wait->e = EINPROGRESS;
 	}
-	(void)member_lookup_give(lookup, wait, e);
-	member_lookup_end(lookup, e);
+	member_lookup_end(lookup, e, wait);
 	return e;
 }
 
@@ -1234,9 +1248,8 @@ member_lookup_git (struct member_lookup *lookup,
 		lookup->git = child_create(table->loop, table->children, &run.c, done, lookup, &e);
 	if (!e)
 		return EINPROGRESS;
-	char text[MEMBER_WHY];
-	struct cstr_view const because = child_spawn_why(e, "git", text, sizeof text);
-	util_format(lookup->why, sizeof lookup->why, "%.*s", (int)because.len, because.data);
+	char text[TOOL_TELL_MAX];
+	(void)util_text_store(&lookup->why, child_spawn_why(e, "git", text, sizeof text));
 	return e == EBUSY ? EAGAIN : EIO;
 }
 
@@ -1246,8 +1259,9 @@ member_lookup_git (struct member_lookup *lookup,
 static int
 member_lookup_unnamed (struct member_lookup *lookup)
 {
-	util_format(lookup->why, sizeof lookup->why, "Could not look up the name of %s. "
-	            "Try again.", lookup->claim.login.text);
+	util_text_clear(&lookup->why);
+	(void)util_text_printf(&lookup->why, "Could not look up the name of %s. Try again.",
+	                       lookup->claim.login.text);
 	return EAGAIN;
 }
 
@@ -1265,7 +1279,7 @@ member_lookup_submit (struct member_lookup *lookup)
 		return e;
 	if (blocker_submit(lookup->table->blockers, &lookup->name)) {
 		(void)loop_timer_stop(loop, &lookup->timer);
-		util_format(lookup->why, sizeof lookup->why, "askai is busy. Try again.");
+		(void)util_text_store(&lookup->why, CSTR_VIEW("askai is busy. Try again."));
 		return EAGAIN;
 	}
 	lookup->flags |= LOOKUP_NAME;
@@ -1290,8 +1304,8 @@ member_lookup_step (struct member_lookup     *lookup,
 	struct member_table *table = lookup->table;
 	struct buf in = {};
 	int e = member_claim_step(&lookup->claim, table->registry, &table->records, text, entry,
-	                          lookup->flags & LOOKUP_WRITE ? &in : nullptr, lookup->why,
-	                          sizeof lookup->why);
+	                          lookup->flags & LOOKUP_WRITE ? &in : nullptr, lookup->why.data,
+	                          sizeof lookup->why.data);
 	/* A Unix login that no record names needs the name of its user. */
 	if (!e && !*lookup->claim.login.name)
 		return member_lookup_submit(lookup);
@@ -1323,12 +1337,12 @@ static void
 member_lookup_read_done (struct child *c)
 {
 	struct member_lookup *lookup = c->owner;
-	int e = member_table_parse(lookup->table, c, lookup->why, sizeof lookup->why);
+	int e = member_table_parse(lookup->table, c, lookup->why.data, sizeof lookup->why.data);
 	child_destroy(&lookup->git);
 	if (!e)
 		e = member_lookup_search(lookup);
 	if (e != EINPROGRESS)
-		member_lookup_end(lookup, e);
+		member_lookup_end(lookup, e, nullptr);
 }
 
 /* Runs git to read the records for @p lookup. Returns as
@@ -1349,13 +1363,13 @@ static void
 member_lookup_wrote (struct child *c)
 {
 	struct member_lookup *lookup = c->owner;
-	int e = member_commit_result(lookup->why, sizeof lookup->why, lookup->claim.ref,
+	int e = member_commit_result(lookup->why.data, sizeof lookup->why.data, lookup->claim.ref,
 	                             buf_peek(&c->out), 0, &c->end);
 	child_destroy(&lookup->git);
 	if (!e || e == EAGAIN)
 		e = member_lookup_read(lookup);
 	if (e != EINPROGRESS)
-		member_lookup_end(lookup, e);
+		member_lookup_end(lookup, e, nullptr);
 }
 
 /* On a blocker: looks up the name of the Unix user of the lookup of
@@ -1427,15 +1441,15 @@ member_lookup_name_done (struct loop *,
 	(void)loop_timer_stop(lookup->table->loop, &lookup->timer);
 	int e = (int)lookup->name.error;
 	if (e == ECANCELED && lookup->result == EINPROGRESS) {
-		util_format(lookup->why, sizeof lookup->why, "askai stops.");
-		member_lookup_end(lookup, e);
+		(void)util_text_store(&lookup->why, CSTR_VIEW("askai stops."));
+		member_lookup_end(lookup, e, nullptr);
 		return;
 	}
 	e = member_lookup_named(lookup, e);
 	if (!e && !(lookup->flags & LOOKUP_GUESS))
 		e = member_lookup_search(lookup);
 	if (e != EINPROGRESS)
-		member_lookup_end(lookup, e);
+		member_lookup_end(lookup, e, nullptr);
 }
 
 /* On the loop: the job name of a lookup took longer than MEMBER_NS. The
@@ -1446,7 +1460,7 @@ member_lookup_late (struct loop       *,
                     struct loop_timer *timer)
 {
 	struct member_lookup *lookup = container_of(timer, struct member_lookup, timer);
-	member_lookup_end(lookup, member_lookup_named(lookup, ETIMEDOUT));
+	member_lookup_end(lookup, member_lookup_named(lookup, ETIMEDOUT), nullptr);
 }
 
 /* Creates the lookup of @p login on @p table, with the flags @p flags.
@@ -1553,7 +1567,7 @@ member_table_lookup (struct member_table       *table,
 		return EINVAL;
 	list_init(&wait->hook);
 	wait->member = (struct member){};
-	wait->why[0] = '\0';
+	util_text_clear(&wait->why);
 	struct cstr_view const text = cstr_view(login->text);
 	if (!text.len)
 		return wait->e = ENOENT;
@@ -1575,7 +1589,7 @@ member_table_lookup (struct member_table       *table,
 		int e = 0;
 		lookup = member_lookup_create(table, login, write, &e);
 		if (!lookup)
-			return wait->e = e;
+			return wait->e = (int16_t)e;
 		return member_lookup_join(lookup, wait, member_lookup_read(lookup));
 	}
 	switch (lookup->result) {

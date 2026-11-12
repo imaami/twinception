@@ -703,9 +703,9 @@ struct godbolt {
 	                                           state */
 	uint8_t                      full;      /* 1 after godbolt_full() cut
 	                                           the output */
-	UTIL_TEXT(GODBOLT_REASON_MAX + 120) why;  /* the reason of a failure,
-	                                             or the status of a
-	                                             compilation */
+	struct tool_why              why;       /* the reason of a failure, or
+	                                           the status of a
+	                                           compilation */
 	/* The id that args.ids[0] points to in a call without compilers. */
 	char                         default_compiler[GODBOLT_ID_MAX];
 	char                         url[1024];

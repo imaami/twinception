@@ -8508,7 +8508,7 @@ if [ "$1" = -k ]; then
 	case $page in
 	^missing) printf '%s\n' "missing_link (3)     - a link" "other (1)            - missing" \
 		"Missingno (7)        - a glitch" ;;
-	^lots) seq -f "lots_%g (3) - one of many" 100 ;;
+	^lots) seq -f "lots_%g (3) - one of many" 400 ;;
 	*) exit 16 ;;
 	esac
 	exit 0
@@ -8810,7 +8810,7 @@ def check_man(binary, up):
             assert result.get("isError") and cut, result
             pages = cut[1].split()
             assert pages == [f"lots_{k}(3)," for k in range(1, len(pages) + 1)], pages
-            assert len(text) <= 1019 < len(text) + len(f" lots_{len(pages) + 1}(3),"), \
+            assert len(text) <= 4095 < len(text) + len(f" lots_{len(pages) + 1}(3),"), \
                 len(text)
             assert lines("searches") == ["-k -- ^missing"] * 4 + ["-k -- ^absent"] * 2 + \
                 ["-k -- ^c\\+\\+x"] * 2 + ["-k -- ^a\\.b"] * 2 + ["-k -- ^lots"], \
@@ -9284,6 +9284,10 @@ def check_git(binary, up):
                      bad_option("grep", "--bogus") + " paths[0] must be relative to the "
                      "top of the repository, with no .. component and no :(...) pathspec "
                      "magic."),
+                    # 16 problems are 1445 bytes, and none is cut.
+                    ({"repo": "proj", "command": "log", "options": ["--output=/x"] * 16},
+                     " ".join(bad_option("log", "--output=/x").replace(
+                         "options[0]", f"options[{k}]") for k in range(16))),
                     ({"repo": "proj", "command": "grep", "pattern": "a",
                       "options": ["-f"]}, bad_option("grep", "-f")),
                     ({"repo": "proj", "command": "grep", "pattern": "a",

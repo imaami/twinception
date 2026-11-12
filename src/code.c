@@ -334,7 +334,7 @@ code_ended (struct mcp_slot  *slot,
 	struct code const *code = mcp_slot_part(slot);
 	struct child *c = call->pin.child;
 	int const status = child_status(c);
-	char buf[GIT_WHY];
+	char buf[TOOL_TELL_MAX];
 	if (status != 0 && status != 1) {
 		mcp_slot_tell(slot, child_end_why(&c->end, "askai-code", code->cfg->git_timeout,
 		                                  c->max, buf, sizeof buf), TOOL_FAILED);
@@ -375,7 +375,7 @@ code_step (struct mcp_slot *slot)
 	int e = git_pin_step(pin, slot, &why);
 	if (!e && !pin->child)
 		e = code_spawn(call, slot);
-	char buf[GIT_WHY];
+	char buf[TOOL_TELL_MAX];
 	if (e == ENOMEM)
 		mcp_slot_fail(slot, e);
 	else if (e)
@@ -393,7 +393,7 @@ static int
 code_args (struct code const  *code,
            struct code_call   *call,
            struct json_object *args,
-           struct git_why     *why)
+           struct tool_why    *why)
 {
 	struct json_object *of[CODE_ARGS] = {};
 	uint64_t seen;
@@ -479,7 +479,7 @@ code_start (struct mcp_slot    *slot,
 	git_pin_init(&call->pin, code->git, jb_view(jb_get(args, "repo")),
 	             mcp_slot_loop(slot)->now + code->cfg->git_timeout);
 	*mcp_slot_own(slot) = call;
-	struct git_why why = {};
+	struct tool_why why = {};
 	int e = code_args(code, call, args, &why);
 	if (e == EINVAL)
 		mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);

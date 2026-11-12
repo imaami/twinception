@@ -31,9 +31,6 @@ enum {
 	MANUAL_NAME    = 128,      /**< bytes of a page's name, at most */
 	MANUAL_SECTION = 16,       /**< and of a section's */
 	MANUAL_HEADING = 128,      /**< and of a heading's */
-	MANUAL_WHY     = 1020,     /**< bytes of the reason why there is no
-	                                page, with a list of pages; a waiter
-	                                has no padding */
 	MANUAL_HEADS   = 2044,     /**< bytes of a page's headings in a
 	                                refusal; a call has no padding */
 	HEAD_INDENT    = 3,        /**< spaces before a heading at most: man
@@ -75,7 +72,7 @@ struct manual_wait {
 	uint64_t              since;  /**< loop_clock() when the call began to
 	                                   wait */
 	struct handle         who;    /**< the handle of the call on its loop */
-	UTIL_TEXT(MANUAL_WHY) why;
+	struct tool_why       why;
 };
 
 /** What a client loop has of the manual, the man tool's part of it: the
@@ -384,7 +381,7 @@ manual_fetch_run (struct manual_fetch *f,
 		hist_count(runs, 1);
 		return;
 	}
-	char buf[MANUAL_WHY];
+	char buf[TOOL_TELL_MAX];
 	manual_fetch_fail(f, child_spawn_why(e, "man", buf, sizeof buf));
 }
 
@@ -422,7 +419,7 @@ manual_fetch_rendered (struct child *c)
 {
 	struct manual_fetch *f = c->owner;
 	size_t const note = c->end.flags & CHILD_CUT ? manual_cut.len : 0;
-	char buf[MANUAL_WHY];
+	char buf[TOOL_TELL_MAX];
 	struct cstr_view const why = note ? (struct cstr_view){}
 	                             : child_end_why(&c->end, "man", MANUAL_SECONDS * NS, c->max,
 	                                             buf, sizeof buf);
@@ -505,7 +502,7 @@ manual_fetch_searched (struct child *c)
 	struct span const out = buf_peek(&c->out);
 	struct cstr_view rest = { (char const *)out.ptr, out.len };
 	loop_work(f->ml->loop, LOOP_PARSE, out.len);
-	UTIL_TEXT(MANUAL_WHY) why = {};
+	struct tool_why why = {};
 	(void)util_text_printf(&why, "No manual entry for %s%s%s.", key,
 	                       *section ? " in section " : "", section);
 	struct cstr_view const miss = util_text_view(&why);
@@ -565,7 +562,7 @@ manual_fetch_found (struct child *c)
 		                 &m->metrics.searches);
 		return;
 	}
-	char buf[MANUAL_WHY];
+	char buf[TOOL_TELL_MAX];
 	struct cstr_view const why = c->end.flags & CHILD_CUT ? (struct cstr_view){}
 	                             : child_end_why(&c->end, "man", MANUAL_SECONDS * NS, c->max,
 	                                             buf, sizeof buf);
@@ -582,7 +579,7 @@ manual_fetch_found (struct child *c)
 		return;
 	}
 	loop_work(f->ml->loop, LOOP_PARSE, paths.len);
-	UTIL_TEXT(MANUAL_WHY) several = {};
+	struct tool_why several = {};
 	(void)util_text_printf(&several, "Pages named %s are in more than one section:",
 	                       f->alias->key);
 	uint32_t digits = 0;  /* bit d: a page in section d */

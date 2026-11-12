@@ -576,7 +576,7 @@ static int
 git_option_check (struct cstr_view  opt,
                   size_t            command,
                   size_t            index,
-                  struct git_why   *why)
+                  struct tool_why  *why)
 {
 	struct cstr_view match;
 	int e = git_option_find(commands[command].options, opt, &match);
@@ -624,7 +624,7 @@ git_find (struct git const *git,
  */
 static int
 git_repos_wrong (struct git const *git,
-                 struct git_why   *why)
+                 struct tool_why  *why)
 {
 	util_text_printf(why, "The repo argument must be ");
 	for (size_t i = 0; i < git->n; ++i)
@@ -864,7 +864,7 @@ static struct cstr_view const git_arg_names[] = { GIT_ARG_LIST(XL_VIEW) };
 static int
 git_call_command (struct git_call  *call,
                   struct git const *git,
-                  struct git_why   *why)
+                  struct tool_why  *why)
 {
 	struct json_object *args = call->args;
 	if (!args)
@@ -1222,7 +1222,7 @@ git_call_advance (struct git_call *call,
 	if (!e)
 		return;
 	git_drop(slot);
-	char buf[GIT_WHY];
+	char buf[TOOL_TELL_MAX];
 	if (e == ENOMEM)
 		mcp_slot_fail(slot, e);
 	else
@@ -1407,7 +1407,7 @@ git_read_scan (struct git_read *read,
 static void
 git_read_past (struct git_read const *read,
                bool                   cut,
-               struct git_why        *why)
+               struct tool_why       *why)
 {
 	if (!read->total)
 		util_text_printf(why, "Line %zu is past the end of the file. The file is empty.",
@@ -1611,7 +1611,7 @@ git_scan (struct mcp_slot *slot,
 	}
 	read->total = read->lines;
 	if (read->line > (read->total ? read->total : 1)) {
-		struct git_why why = {};
+		struct tool_why why = {};
 		git_read_past(read, c->end.flags & CHILD_CUT, &why);
 		git_drop(slot);
 		mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
@@ -1812,7 +1812,7 @@ git_start (struct mcp_slot    *slot,
 		return;
 	}
 	*mcp_slot_own(slot) = call;
-	struct git_why why = {};
+	struct tool_why why = {};
 	e = git_call_command(call, git, &why);
 	if (e == EINVAL)
 		mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);

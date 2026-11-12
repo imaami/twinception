@@ -412,7 +412,7 @@ findings_run (struct mcp_slot   *slot,
 	buf_fini(in);
 	if (call->child)
 		return;
-	char buf[96];
+	char buf[TOOL_TELL_MAX];
 	findings_stop(slot, EINVAL, child_spawn_why(e, "git", buf, sizeof buf));
 }
 
@@ -538,7 +538,7 @@ findings_got_refs (struct mcp_slot *slot)
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct member_table *table = mcp_slot_members(slot);
 	/* The table writes the reason of a read that failed. */
-	char why[MEMBER_WHY] = "";
+	char why[TOOL_TELL_MAX] = "";
 	int e = member_table_parse(table, call->child, why, sizeof why);
 	if (e) {
 		findings_stop(slot, e == ENOMEM ? ENOMEM : EINVAL, *why ? cstr_view(why) : unread);
@@ -662,7 +662,7 @@ findings_got_read (struct mcp_slot *slot)
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct span out = buf_peek(&call->child->out);
 	loop_work(mcp_slot_loop(slot), LOOP_PARSE, out.len);
-	char why[256] = "";
+	char why[TOOL_TELL_MAX] = "";
 	int e = util_grow(call->findings.items, call->findings.cap, call->wanted.n);
 	for (size_t i = call->done; !e && i < call->batch; ++i) {
 		struct findings_file const *w = &call->wanted.items[i];
@@ -1206,7 +1206,7 @@ findings_expand (struct mcp_slot *slot)
 	}
 	if (!e && call->item && !items) {
 		buf_fini(&in);
-		char why[256];
+		char why[TOOL_TELL_MAX];
 		(void)findings_no_item(call->author, call->number, call->item, why, sizeof why);
 		mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
 		return;
@@ -1452,7 +1452,7 @@ findings_cite_end (struct mcp_slot                *slot,
 			findings_unseen(slot, material);
 			return;
 		}
-	char why[1024] = "";
+	char why[TOOL_TELL_MAX] = "";
 	dstr_auto lines = DSTR_INIT;
 	int e = 0;
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
@@ -1611,7 +1611,7 @@ findings_cite_records (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	size_t const read = call->wanted.n;
-	char why[256] = "";
+	char why[TOOL_TELL_MAX] = "";
 	int e = 0;
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
 		struct findings_cite *cite = &call->cites.items[i];
@@ -1925,7 +1925,7 @@ findings_begin (struct mcp_slot    *slot,
                 struct json_object *args)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	char why[1024] = "";
+	char why[TOOL_TELL_MAX] = "";
 	int const e = findings_args(slot, args, why, sizeof why);
 	if (e) {
 		findings_stop(slot, e, cstr_view(why));

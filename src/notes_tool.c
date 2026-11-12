@@ -410,7 +410,7 @@ notes_tool_failed (struct mcp_slot *slot,
                    int              e)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	char buf[96];
+	char buf[TOOL_TELL_MAX];
 	struct cstr_view const why = child_spawn_why(e, "git", buf, sizeof buf);
 	switch (call->fetch & FETCH_KIND) {
 	case FETCH_MEMBERS:
@@ -1238,7 +1238,7 @@ notes_tool_got_members (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct member_table *const members = mcp_slot_members(slot);
-	char reason[MEMBER_WHY] = "";
+	char reason[TOOL_TELL_MAX] = "";
 	int e = call->child ? member_table_parse(members, call->child, reason, sizeof reason) : EIO;
 	child_destroy(&call->child);
 	if (e == ENOMEM) {
@@ -1824,7 +1824,7 @@ notes_tool_resolve (struct mcp_slot *slot)
 	bool const own = !name.len || cstr_view_equal(name, cstr_view(call->self.name));
 	if (!*call->self.name) {
 		/* The refusal of a login by a record comes with a reason. */
-		struct cstr_view const why = cstr_view(call->wait.why);
+		struct cstr_view const why = util_text_view(&call->wait.why);
 		if (flags & NOTE_AUTHOR) {
 			mcp_slot_tell(slot, why.len ? why
 			              : CSTR_VIEW("Writing notes needs a member name. Connect through "
@@ -1874,11 +1874,10 @@ notes_tool_logged_in (struct mcp_slot *slot)
 	call->flags &= ~CALL_LOGIN;
 	int const e = call->wait.e;
 	if (e && e != ENOENT && e != EPERM) {
-		char why[MEMBER_WHY];
-		memcpy(why, call->wait.why, sizeof why);
+		struct tool_why const why = call->wait.why;
 		notes_tool_drop(slot);
-		if (*why)
-			mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
+		if (why.len)
+			mcp_slot_tell(slot, util_text_view(&why), TOOL_FAILED);
 		else
 			mcp_slot_fail(slot, e);
 		return;
@@ -1940,7 +1939,7 @@ notes_tool_add (struct mcp_slot    *slot,
 	struct cstr_view const text = jb_view(jb_get(args, "text"));
 	size_t kept = text.len;
 	struct datauri data = {};
-	char why[256];
+	char why[TOOL_TELL_MAX];
 	struct cstr_view problem = {};
 	if (!content) {
 		if (notice_text_check(text, "text", turn ? &kept : nullptr, why, sizeof why))

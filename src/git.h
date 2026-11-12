@@ -60,8 +60,6 @@ struct plugin;
 enum {
 	GIT_REPO_OPTS = 11,    /**< options of git for a repository, with nullptr */
 	GIT_ROOTS     = 24,    /**< revisions in a pin, at most */
-	GIT_WHY       = 1024,  /**< bytes of an error message about a call, NUL
-	                            included */
 };
 
 /** A repository of the git tool, with its name, its real path and the
@@ -75,13 +73,6 @@ struct git_repo {
 	char const      *opts[GIT_REPO_OPTS];  /**< the options of the git tool
 	                                            and safe.directory, up to a
 	                                            nullptr */
-};
-
-/** A message about what is wrong with a tool call. The message starts
- *  empty, and util_text_printf() appends to it.
- */
-struct git_why {
-	UTIL_TEXT(GIT_WHY);
 };
 
 /** The phases of a pin, in their order. */

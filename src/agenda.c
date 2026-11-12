@@ -296,7 +296,7 @@ agenda_wait_start (struct mcp_slot    *slot,
 		.secs     = (uint32_t)secs,
 		.n        = (uint32_t)n,
 	};
-	char why[160];
+	char why[TOOL_TELL_MAX];
 	struct cstr_view problem = {};
 	for (size_t i = 0; !problem.data && i < n; ++i) {
 		struct cstr_view const id = jb_view(jb_at(list, i));

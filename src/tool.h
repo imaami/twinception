@@ -74,6 +74,16 @@ enum tool_out : uint32_t {
 	TOOL_MORE   = 1U << 1U,  /**< write: more output follows */
 };
 
+/** The reason why a call failed, as text that the call tells
+ *  (mcp_slot_tell()). The text is at most TOOL_TELL_MAX - 1 bytes, the
+ *  longest text that mcp_slot_tellf() formats. A zeroed reason is empty.
+ *  The util_text macros of src/util.h format and read the text.
+ */
+struct tool_why {
+	uint32_t len;                  /**< bytes of the text, without the NUL */
+	char     data[TOOL_TELL_MAX];  /**< the text, and a NUL after the text */
+};
+
 /** Returns the definition of the tool as tools/list shows it. The result
  *  is a new reference, or nullptr if out of memory. askai calls the
  *  function when it starts. For a plugin that askai loads from a file, it

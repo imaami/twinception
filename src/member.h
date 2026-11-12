@@ -44,6 +44,7 @@
 #include "oid.h"
 #include "policy.h"
 #include "store.h"
+#include "tool.h"
 #include "util.h"
 
 struct blocker;
@@ -59,10 +60,6 @@ enum {
 	                                                      NUL included */
 	MEMBER_LOGINS = 8,                               /**< logins of a member,
 	                                                      at most */
-	MEMBER_WHY    = 258,                             /**< bytes of the reason
-	                                                      for a login without
-	                                                      a member, NUL
-	                                                      included */
 	MEMBER_FORMAT = 1,                               /**< the format of the
 	                                                      records that askai
 	                                                      writes */
@@ -327,17 +324,17 @@ member_registry_report (struct member_registry const *registry);
  * wait that waits.
  */
 struct member_wait {
-	struct list    hook;             /**< on the lookup of the login while
-	                                      the wait waits */
+	struct list      hook;    /**< on the lookup of the login while the wait
+	                               waits */
 	/** Called on the loop of the table once the lookup ends. */
-	void         (*done) (struct member_wait *wait);
-	int            e;                /**< 0, or the error number for a
-	                                      login without a member, as
-	                                      member_table_find() returns it */
-	struct member  member;           /**< the member of the login */
-	char           why[MEMBER_WHY];  /**< the reason for an error other
-	                                      than ENOENT and ENOMEM, a text
-	                                      for the client */
+	void           (*done) (struct member_wait *wait);
+	struct tool_why  why;     /**< the reason for an error other than ENOENT
+	                               and ENOMEM, a text for the client */
+	int16_t          e;       /**< 0, or the error number for a login
+	                               without a member, as member_table_find()
+	                               returns it. With an int16_t, the struct
+	                               is without padding. */
+	struct member    member;  /**< the member of the login */
 };
 
 /** Creates the table of the members on @p loop, with the records that
