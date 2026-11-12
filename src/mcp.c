@@ -2034,10 +2034,11 @@ mcp_slot_result (struct mcp_slot  *slot,
                  uint32_t          end)
 {
 	struct mcp_req *req = slot->req;
-	slot->flags |= FLAG_DONE | (end & FLAG_FAILED);
+	uint32_t const failed = end & FLAG_FAILED;
+	slot->flags |= FLAG_DONE | failed;
 	if (slot->role != ROLE_OWN) {
 		/* An offset does not apply to the answer of a failed call. */
-		if (end)
+		if (failed)
 			slot->window.at = 0;
 		if (cstr_view_store(text, &slot->answer)) {
 			mcp_req_fail(req, ENOMEM);
@@ -2046,7 +2047,7 @@ mcp_slot_result (struct mcp_slot  *slot,
 		mcp_slot_done(slot);
 		return;
 	}
-	mcp_req_log_call(req, end ? "failed" : "answered", text, end);
+	mcp_req_log_call(req, failed ? "failed" : "answered", text, failed);
 	int e = mcp_req_tool_open(req, text);
 	if (e) {
 		mcp_req_abort(req, e);
@@ -2114,7 +2115,8 @@ static void
 mcp_slot_respond (struct mcp_slot *slot,
                   uint32_t         end)
 {
-	slot->flags |= FLAG_DONE | (end & FLAG_FAILED);
+	uint32_t const failed = end & FLAG_FAILED;
+	slot->flags |= FLAG_DONE | failed;
 	if (slot->role != ROLE_OWN) {
 		mcp_slot_done(slot);
 		return;
@@ -2130,8 +2132,8 @@ mcp_slot_respond (struct mcp_slot *slot,
 		                                       text.len), TOOL_FAILED);
 		return;
 	}
-	mcp_req_log_call(req, end ? "failed" : "answered",
-	                 (struct cstr_view){ (char const *)text.ptr, text.len }, end);
+	mcp_req_log_call(req, failed ? "failed" : "answered",
+	                 (struct cstr_view){ (char const *)text.ptr, text.len }, failed);
 	req->phase = PHASE_REPLY;
 	req->off = util_char_start((char const *)text.ptr, text.len, off);
 	int e = mcp_req_tool_open(req, req->agenda ? cstr_view_dstr(&req->agenda->said)
@@ -3425,7 +3427,7 @@ mcp_slot_tell (struct mcp_slot  *slot,
 	/* The output is the text whole, not lent, nor from an offset. */
 	slot->window.at = 0;
 	slot->lent = (struct span){};
-	mcp_slot_result(slot, (struct cstr_view){ text.data, len }, flags & TOOL_FAILED);
+	mcp_slot_result(slot, (struct cstr_view){ text.data, len }, flags);
 	return 0;
 }
 
@@ -3453,7 +3455,7 @@ mcp_slot_finish (struct mcp_slot *slot,
 	if (e)
 		return e;
 	mcp_slot_wake(slot);
-	mcp_slot_respond(slot, flags & TOOL_FAILED);
+	mcp_slot_respond(slot, flags);
 	return 0;
 }
 
