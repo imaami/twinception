@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "finding_id.h"
 #include "jb.h"
 #include "oid.h"
 #include "range.h"
@@ -347,13 +348,14 @@ static bool
 seen_item_valid (struct json_object *obj)
 {
 	struct json_object *blobs = jb_get(obj, "blobs");
+	struct finding_id key;
 	uint64_t bytes;
 	uint64_t shown;
 	uint64_t turn;
 	if (jb_uint_checked(jb_get(obj, "bytes"), TOOL_OUTPUT_MAX, &bytes) || !bytes ||
 	    jb_uint_checked(jb_get(obj, "shown"), bytes, &shown) ||
 	    jb_uint_checked(jb_get(obj, "turn"), UINT32_MAX, &turn) || (turn && shown < bytes) ||
-	    !jb_text(jb_get(obj, "id"), 1, SEEN_ID - 1, nullptr).data ||
+	    finding_id_parse(&key, jb_view(jb_get(obj, "id"))) || !key.item ||
 	    !jb_text(jb_get(obj, "record"), 1, TOOL_TEXT_MAX, nullptr).data ||
 	    jb_len(blobs) != array_size((struct seen_item){}.blobs))
 		return false;
@@ -389,7 +391,6 @@ seen_resume (struct seen              **p_seen,
 	for (size_t i = 0; !e && i < n; ++i) {
 		struct json_object *obj = jb_at(items, i);
 		struct json_object *blobs = jb_get(obj, "blobs");
-		struct cstr_view const id = jb_view(jb_get(obj, "id"));
 		struct seen_item *it = &seen->items.items[seen->items.n++];
 		*it = (struct seen_item){
 			.record = DSTR_INIT,
@@ -397,8 +398,9 @@ seen_resume (struct seen              **p_seen,
 			.shown  = (uint32_t)jb_uint(jb_get(obj, "shown"), 0),
 			.turn   = (uint32_t)jb_uint(jb_get(obj, "turn"), 0),
 		};
-		memcpy(it->id, id.data, id.len);
-		/* seen_item_valid() checked the git IDs, and "" is no name. */
+		/* seen_item_valid() checked the ID and the git IDs, and "" is no
+		 * name. */
+		(void)finding_id_parse(&it->key, jb_view(jb_get(obj, "id")));
 		for (size_t k = 0; k < array_size(it->blobs); ++k)
 			(void)oid_init(&it->blobs[k], jb_view(jb_at(blobs, k)));
 		e = cstr_view_store(jb_view(jb_get(obj, "record")), &it->record);
@@ -438,15 +440,15 @@ seen_oldest (struct seen const *seen)
 }
 
 /* Returns the index in seen->items.items of the item of @p seen with the
- * ID @p id, or SEEN_ITEMS for no such item.
+ * ID @p key, or SEEN_ITEMS for no such item.
  */
 static size_t
-seen_item_index (struct seen const *seen,
-                 struct cstr_view   id)
+seen_item_index (struct seen const       *seen,
+                 struct finding_id const *key)
 {
 	for (size_t i = 0; i < seen->items.n; ++i) {
 		size_t const k = seen_item_place(seen, i);
-		if (cstr_view_equal(cstr_view(seen->items.items[k].id), id))
+		if (finding_id_equal(&seen->items.items[k].key, key))
 			return k;
 	}
 	return SEEN_ITEMS;
@@ -460,8 +462,7 @@ seen_print (struct seen            **p_seen,
 {
 	if (!p_seen || !item)
 		return EFAULT;
-	struct cstr_view const id = { item->id, strnlen(item->id, sizeof item->id) };
-	if (!call || !id.len || id.len == sizeof item->id || !output.len ||
+	if (!call || !*item->key.author || !item->key.item || !output.len ||
 	    output.len > TOOL_OUTPUT_MAX || output.at > TOOL_OUTPUT_MAX - output.len)
 		return EINVAL;
 	int e = seen_get(p_seen);
@@ -470,7 +471,7 @@ seen_print (struct seen            **p_seen,
 	struct seen *seen = *p_seen;
 	if (util_grow(seen->printed.items, seen->printed.cap, seen->printed.n + 1))
 		return ENOMEM;
-	size_t k = seen_item_index(seen, id);
+	size_t k = seen_item_index(seen, &item->key);
 	bool const added = k == SEEN_ITEMS;
 	if (added) {
 		/* A new item goes after the newest item. In a full ring, that is
@@ -496,7 +497,7 @@ seen_print (struct seen            **p_seen,
 		if (cstr_view_store(cstr_view_dstr(&item->record), &it->record))
 			return ENOMEM;
 		memcpy(it->blobs, item->blobs, sizeof it->blobs);
-		memcpy(it->id, id.data, id.len + 1);
+		it->key = item->key;
 		seen->items.n += added;
 	}
 	if (it->call != call)
@@ -554,10 +555,11 @@ seen_items_json (struct seen const *seen,
 		struct seen_item const *it = &seen->items.items[seen_item_place(seen, i)];
 		if (!it->shown)
 			continue;
+		char id[FINDING_ID_TEXT];
 		struct json_object *blobs = jb_push_or_free(jb_list(json_object_new_string(
 			it->blobs[0].hex)), json_object_new_string(it->blobs[1].hex));
 		list = jb_push_or_free(list, jb_object(
-			"id", json_object_new_string(it->id),
+			"id", jb_string(finding_id_put(&it->key, id)),
 			"record", jb_string(cstr_view_dstr(&it->record)),
 			"blobs", blobs,
 			"bytes", json_object_new_uint64(it->output.len),
@@ -570,12 +572,12 @@ seen_items_json (struct seen const *seen,
 }
 
 struct seen_item const *
-seen_find_item (struct seen const *seen,
-                struct cstr_view   id)
+seen_find_item (struct seen const       *seen,
+                struct finding_id const *key)
 {
-	if (!seen)
+	if (!seen || !key)
 		return nullptr;
-	size_t const k = seen_item_index(seen, id);
+	size_t const k = seen_item_index(seen, key);
 	return k < SEEN_ITEMS ? &seen->items.items[k] : nullptr;
 }
 
@@ -587,13 +589,14 @@ seen_notice_items (struct seen const *seen,
                    struct dstr       *d)
 {
 	struct cstr_view ids[SEEN_LISTED];
+	char texts[SEEN_LISTED][FINDING_ID_TEXT];
 	size_t whole = 0;
 	for (size_t i = 0; i < seen->items.n; ++i) {
 		struct seen_item const *it = &seen->items.items[seen_item_place(seen, i)];
 		if (!it->turn)
 			continue;
 		if (whole < array_size(ids))
-			ids[whole] = cstr_view(it->id);
+			ids[whole] = finding_id_put(&it->key, texts[whole]);
 		++whole;
 	}
 	if (!whole)

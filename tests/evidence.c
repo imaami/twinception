@@ -16,6 +16,7 @@
 #include "check.h"
 #include "dstr.h"
 #include "evidence.h"
+#include "finding_id.h"
 #include "jb.h"
 #include "job.h"
 #include "range.h"
@@ -265,6 +266,8 @@ test_parse (void)
 		"c7:1,", "c7:,1", "c7:msg", "c7:1-2:3", "c7:message", "c7:files", "c7:sources",
 		"c7:message,1", "c4294967296", "cuh#0", "cuh#2/0", "cuh#2/", "cuh#", "#2/1",
 		"c7#2/1", ".x#2/1", "cuh#2:message", "cuh#2/1:files", "cuh#2/1/1", "cuh#02/1",
+		"cuh#2:1", "cuh#2:1-2", "cuh#2/1:", "cuh#2/1:0", "cuh#2/01", "cuh#2/1 ", "cuh#2#1",
+		"c7/1", "c7/1:2", "c7x", "x7", "7", "#", ":", ":1", "c:1", "cuh:1", "cuh/1:1",
 	};
 	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i)
 		parsed(bad[i], -1, __LINE__);
@@ -273,11 +276,26 @@ test_parse (void)
 	parsed("c1:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17", -1, __LINE__);
 	struct evidence_ref ref;
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c12:120-140,150")));
-	CHECK(ref.number == 12 && ref.n_ranges == 2 && ref.ranges[0].first == 120 &&
+	CHECK(ref.call == 12 && ref.n_ranges == 2 && ref.ranges[0].first == 120 &&
 	      ref.ranges[0].last == 140 && ref.ranges[1].first == 150 && ref.ranges[1].last == 150 &&
-	      !*ref.author && !ref.item);
+	      !*ref.id.author && !ref.id.number && !ref.id.item);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("bro#5/2:3-4")));
-	CHECK(!strcmp(ref.author, "bro") && ref.number == 5 && ref.item == 2 && ref.n_ranges == 1);
+	CHECK(!strcmp(ref.id.author, "bro") && ref.id.number == 5 && ref.id.item == 2 &&
+	      ref.n_ranges == 1 && !ref.call && ref.form == EVIDENCE_REF_ITEM_LINES);
+	/* The ID of a call reference is empty, and the call of an item
+	 * reference or a finding reference is 0. */
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c4294967295")) && ref.call == UINT32_MAX &&
+	      !*ref.id.author && !ref.id.number && !ref.id.item && !ref.n_ranges);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1")) && !strcmp(ref.id.author, "cuh") &&
+	      ref.id.number == 2 && ref.id.item == 1 && !ref.call && !ref.n_ranges &&
+	      ref.form == EVIDENCE_REF_ITEM);
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2")) && !strcmp(ref.id.author, "cuh") &&
+	      ref.id.number == 2 && !ref.id.item && !ref.call && !ref.n_ranges &&
+	      ref.form == EVIDENCE_REF_FINDING);
+	/* A member name can start with c and digits. */
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c7x#3/4:5")) && !strcmp(ref.id.author, "c7x") &&
+	      ref.id.number == 3 && ref.id.item == 4 && !ref.call && ref.n_ranges == 1 &&
+	      ref.form == EVIDENCE_REF_ITEM_LINES);
 	CHECK(evidence_ref_parse(nullptr, CSTR_VIEW("c1")) == EINVAL);
 	CHECK(evidence_ref_parse(&ref, (struct cstr_view){}) == EINVAL);
 	/* The ranges ascend, and ranges that overlap or touch become one.
@@ -439,7 +457,7 @@ test_cite (void)
 	CHECK(ev.kind == EVIDENCE_LINES && ev.call == 1 && ev.turn == 1 && !ev.item &&
 	      ev.ranges.n == 1 && ev.ranges.items[0].first == 2 && ev.ranges.items[0].last == 6 &&
 	      !ev.flags && !strcmp(ev.ask.hex, ask.hex) && ev.output == o.len && ev.skip == at + 3 &&
-	      !*ev.from && !m.request.len);
+	      !*ev.from.author && !ev.from.number && !ev.from.item && !m.request.len);
 	SAME(m.result.data, m.result.len, "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n6\tline 6\n");
 	hashed(&ev.result, m.result, __LINE__);
 	SAME(dstr_get(&ev.tool), dstr_len(&ev.tool), "git");
@@ -643,7 +661,7 @@ test_json (void)
 	e.skip = 100;
 	e.flags = EVIDENCE_FAILED;
 	CHECK(!hexid_init(&e.ask, CSTR_VIEW("9f3c2a71e0b14c55a1d2e3f405162738")));
-	memcpy(e.from, "cuh#2/2", sizeof "cuh#2/2");
+	CHECK(!finding_id_parse(&e.from, CSTR_VIEW("cuh#2/2")));
 	CHECK(!cstr_view_store(CSTR_VIEW("git"), &e.tool));
 	CHECK(!cstr_view_store(CSTR_VIEW("call_3_1"), &e.call_id));
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"path\":\"src/git.c\",\"commit\":\""
@@ -668,7 +686,8 @@ test_json (void)
 	CHECK(!evidence_parse(&back, obj));
 	CHECK(back.kind == EVIDENCE_LINES && back.item == 2 && back.call == 12 && back.turn == 3 &&
 	      back.output == 900 && back.skip == 100 && back.flags == EVIDENCE_FAILED &&
-	      !strcmp(back.ask.hex, e.ask.hex) && !strcmp(back.from, "cuh#2/2") &&
+	      !strcmp(back.ask.hex, e.ask.hex) && finding_id_equal(&back.from, &e.from) &&
+	      !strcmp(back.from.author, "cuh") && back.from.number == 2 && back.from.item == 2 &&
 	      back.ranges.n == 2 && back.ranges.items[1].first == 180 &&
 	      back.result.bytes == 702 && !memcmp(back.result.sha256, e.result.sha256, 32));
 	SAME(dstr_get(&back.ids), dstr_len(&back.ids), "{\"repo\":\"askai\",\"path\":\"src/git.c\","
@@ -695,7 +714,8 @@ test_json (void)
 	      !jb_get(obj, "lines") && jb_get(obj, "request"));
 	CHECK(!evidence_parse(&back, obj));
 	CHECK(back.kind == EVIDENCE_CALL && back.flags == EVIDENCE_REQUEST &&
-	      back.request.bytes == 98 && !*back.ask.hex && !*back.from && !dstr_len(&back.ids));
+	      back.request.bytes == 98 && !*back.ask.hex && !*back.from.author &&
+	      !back.from.number && !back.from.item && !dstr_len(&back.ids));
 	(void)dstr_clear(&text);
 	CHECK(!evidence_summary(&back, &text));
 	SAME(dstr_get(&text), dstr_len(&text), "call c4, man, 1 byte");
@@ -738,6 +758,13 @@ test_json (void)
 		{ "ask",     "\"9f3c\"" },
 		{ "from",    "\"\"" },
 		{ "from",    "7" },
+		{ "from",    "\"x\"" },
+		{ "from",    "\"cuh#2\"" },
+		{ "from",    "\"cuh#2/0\"" },
+		{ "from",    "\"cuh#2/1:3\"" },
+		{ "from",    "\"cuh#2/1 \"" },
+		{ "from",    "\"c7\"" },
+		{ "from",    "\"c7#2/1\"" },
 		{ "ids",     "[]" },
 		{ "request", "{\"sha256\":\"ab\",\"bytes\":1}" },
 		{ "result",  "{\"sha256\":\"abababababababababababababababababababababababababababababababab\"}" },
@@ -747,7 +774,8 @@ test_json (void)
 		struct json_object *copy = nullptr;
 		CHECK(!json_object_deep_copy(obj, &copy, nullptr));
 		CHECK(!json_object_object_add(copy, bad[i].key, json_tokener_parse(bad[i].json)));
-		if (evidence_parse(&back, copy) != EINVAL) {
+		if (evidence_parse(&back, copy) != EINVAL || *back.from.author || back.from.number ||
+		    back.from.item) {
 			++failures;
 			fprintf(stderr, "%s:%d: %s %s parsed\n", __FILE__, __LINE__, bad[i].key,
 			        bad[i].json);
@@ -880,7 +908,9 @@ test_recite (void)
 	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(record), (struct cstr_view){}, why,
 	                       sizeof why) && !*why);
 	CHECK(e.kind == EVIDENCE_LINES && !e.item && e.call == 3 && e.turn == 2 && e.output == 400 &&
-	      !strcmp(e.from, "cuh#2/1") && !strcmp(e.ask.hex, item.ask.hex) && e.ranges.n == 2 &&
+	      finding_id_equal(&e.from, &ref.id) && !strcmp(e.from.author, "cuh") &&
+	      e.from.number == 2 && e.from.item == 1 && !strcmp(e.ask.hex, item.ask.hex) &&
+	      e.ranges.n == 2 &&
 	      e.ranges.items[1].last == 9 && !memcmp(&e.result, &item.result, sizeof e.result) &&
 	      !dstr_len(&lines) && !e.flags);
 	SAME(dstr_get(&e.ids), dstr_len(&e.ids), dstr_get(&item.ids));
@@ -891,7 +921,7 @@ test_recite (void)
 	hashed(&e.result, cstr_view_dstr(&lines), __LINE__);
 	CHECK(e.kind == EVIDENCE_LINES && e.ranges.n == 2 && e.ranges.items[0].first == 3 &&
 	      e.ranges.items[0].last == 4 && e.ranges.items[1].first == 9 &&
-	      !strcmp(e.from, "cuh#2/1") && !e.item && !e.flags);
+	      finding_id_equal(&e.from, &ref.id) && e.from.item == 1 && !e.item && !e.flags);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:2,6-6,8")));
 	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(record), material, why, sizeof why));
 	SAME(dstr_get(&lines), dstr_len(&lines), "2\tline 2\n6\tline 6\n8\tline 8\n");
@@ -1107,7 +1137,8 @@ test_recite (void)
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1")));
 	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(call), (struct cstr_view){}, why,
 	                       sizeof why));
-	CHECK(e.kind == EVIDENCE_CALL && e.flags == EVIDENCE_REQUEST && !strcmp(e.from, "cuh#2/1"));
+	CHECK(e.kind == EVIDENCE_CALL && e.flags == EVIDENCE_REQUEST &&
+	      finding_id_equal(&e.from, &ref.id) && e.from.item == 1);
 	free(call);
 	CHECK(evidence_recite(nullptr, &lines, &ref, cstr_view(record), material, why,
 	                      sizeof why) == EINVAL);
@@ -1134,9 +1165,8 @@ expanded (struct evidence const *e,
 {
 	struct dstr d = DSTR_INIT;
 	struct evidence_material const m = { request, result };
-	char id[SEEN_ID];
-	CHECK(snprintf(id, sizeof id, "cuh#2/%" PRIu32, e->item) > 0);
-	int const got = evidence_expand(e, id, "cuh", &m, &d);
+	struct finding_id const id = { .number = 2, .item = e->item, .author = "cuh" };
+	int const got = evidence_expand(e, &id, &m, &d);
 	if (got || strcmp(dstr_get(&d), want)) {
 		++failures;
 		fprintf(stderr, "%s:%d: error %d, got\n%s\nwant\n%s\n", __FILE__, line, got,
@@ -1192,7 +1222,7 @@ test_expand (void)
 	 * name only a repository, and then only a commit. */
 	e.item = 3;
 	e.flags = EVIDENCE_REQUEST;
-	memcpy(e.from, "bro#1/1", sizeof "bro#1/1");
+	CHECK(!finding_id_parse(&e.from, CSTR_VIEW("bro#1/1")));
 	CHECK(!hexid_init(&e.ask, CSTR_VIEW("68177013a5c94f0e8b1d2c3e4f506172")));
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\"}"), &e.ids));
 	expanded(&e, args, out, "[askai: cuh#2/3 from bro#1/1: call c9 in ask 68177013, turn 19, "
@@ -1209,7 +1239,7 @@ test_expand (void)
 	evidence_fini(&e);
 	e.kind = EVIDENCE_LINES;
 	e.item = 2;
-	memcpy(e.from, "cuh#1/3", sizeof "cuh#1/3");
+	CHECK(!finding_id_parse(&e.from, CSTR_VIEW("cuh#1/3")));
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\",\"path\":"
 	                                 "\"src/git.c\"}"), &e.ids));
 	CHECK(!util_grow(e.ranges.items, e.ranges.cap, 2));
@@ -1225,11 +1255,11 @@ test_expand (void)
 	         __LINE__);
 	struct dstr d = DSTR_INIT;
 	struct evidence_material const m = { args, out };
-	CHECK(evidence_expand(nullptr, "cuh#2/2", "cuh", &m, &d) == EFAULT);
-	CHECK(evidence_expand(&e, nullptr, "cuh", &m, &d) == EFAULT);
-	CHECK(evidence_expand(&e, "cuh#2/2", nullptr, &m, &d) == EFAULT);
-	CHECK(evidence_expand(&e, "cuh#2/2", "cuh", nullptr, &d) == EFAULT);
-	CHECK(evidence_expand(&e, "cuh#2/2", "cuh", &m, nullptr) == EFAULT);
+	struct finding_id const id = { .number = 2, .item = 2, .author = "cuh" };
+	CHECK(evidence_expand(nullptr, &id, &m, &d) == EFAULT);
+	CHECK(evidence_expand(&e, nullptr, &m, &d) == EFAULT);
+	CHECK(evidence_expand(&e, &id, nullptr, &d) == EFAULT);
+	CHECK(evidence_expand(&e, &id, &m, nullptr) == EFAULT);
 	CHECK(!dstr_len(&d));
 	dstr_cleanup(&d);
 	evidence_fini(&e);

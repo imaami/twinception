@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "evidence.h"
+#include "finding_id.h"
 #include "jb.h"
 #include "job.h"
 #include "oid.h"
@@ -91,47 +92,35 @@ evidence_ref_parse (struct evidence_ref *dest,
 	*dest = (struct evidence_ref){};
 	if (!text.data || !text.len)
 		return EINVAL;
-	/* The part after the colon is ranges. A member name contains no colon
-	 * and no #. */
+	/* The part after the colon is ranges. A member name contains no
+	 * colon. */
 	struct cstr_view head = text;
-	struct cstr_view tail = {};
-	bool const colon = cstr_view_cut(&head, ':', &head);
-	if (colon)
-		tail = cstr_view_slice(text, head.len + 1, SIZE_MAX);
-	struct cstr_view name = head;
-	if (!cstr_view_cut(&head, '#', &name)) {
-		if (head.len < 2 || *head.data != 'c')
-			return EINVAL;
-		head = cstr_view_slice(head, 1, SIZE_MAX);
-		if (util_ordinal(&head, &dest->number) || head.len)
-			return EINVAL;
-		if (!colon)
-			dest->form = EVIDENCE_REF_CALL;
-		else if (!evidence_ranges(dest, tail))
-			dest->form = EVIDENCE_REF_LINES;
-		else
-			return EINVAL;
-		return 0;
-	}
-	/* X#n, X#n/m or X#n/m:A-B. head is the part after the #. */
-	if (!member_name_valid(name) || util_ordinal(&head, &dest->number))
+	struct cstr_view tail = text;
+	bool const colon = cstr_view_cut(&tail, ':', &head);
+	if (colon && evidence_ranges(dest, tail))
 		return EINVAL;
-	memcpy(dest->author, name.data, name.len);
-	if (!head.len && !colon) {
+	/* calls and items are the forms of a call and of an item, the first
+	 * without ranges and the second with ranges. */
+	static enum evidence_form const calls[] = { EVIDENCE_REF_CALL, EVIDENCE_REF_LINES };
+	static enum evidence_form const items[] = { EVIDENCE_REF_ITEM, EVIDENCE_REF_ITEM_LINES };
+	/* The head is the ID X#n or X#n/m, or cN. No member name is c and a
+	 * number, so cN is no ID. */
+	if (!finding_id_parse(&dest->id, head)) {
+		if (dest->id.item) {
+			dest->form = items[colon];
+			return 0;
+		}
+		/* A finding is a reference only without ranges. */
 		dest->form = EVIDENCE_REF_FINDING;
-		return 0;
+		return colon ? EINVAL : 0;
 	}
-	if (!head.len || *head.data != '/')
+	/* The head is no ID, so the reference is cN or cN:A-B. */
+	if (head.len < 2 || *head.data != 'c')
 		return EINVAL;
 	head = cstr_view_slice(head, 1, SIZE_MAX);
-	if (util_ordinal(&head, &dest->item) || head.len)
+	if (util_ordinal(&head, &dest->call) || head.len)
 		return EINVAL;
-	dest->form = EVIDENCE_REF_ITEM;
-	if (colon) {
-		if (evidence_ranges(dest, tail))
-			return EINVAL;
-		dest->form = EVIDENCE_REF_ITEM_LINES;
-	}
+	dest->form = calls[colon];
 	return 0;
 }
 
@@ -269,12 +258,12 @@ evidence_ref_put (struct evidence_ref const *ref,
                   struct dstr               *d)
 {
 	bool ok;
-	if (*ref->author) {
-		char id[SEEN_ID];
-		evidence_ref_id(ref, id);
-		ok = dstr_cat(d, id);
+	if (*ref->id.author) {
+		char text[FINDING_ID_TEXT];
+		struct cstr_view const id = finding_id_put(&ref->id, text);
+		ok = dstr_cat_n(d, id.data, id.len);
 	} else {
-		ok = dstr_printf(d, "c%" PRIu32, ref->number);
+		ok = dstr_printf(d, "c%" PRIu32, ref->call);
 	}
 	if (!ok || (ref->n_ranges && !dstr_cat(d, ":")))
 		return ENOMEM;
@@ -341,7 +330,7 @@ evidence_find (struct evidence_ref const  *ref,
                char                       *why,
                size_t                      len)
 {
-	uint32_t const n = ref->number;
+	uint32_t const n = ref->call;
 	if (n == cite->call)
 		return util_refuse(why, len, "c%" PRIu32 " is a findings call. findings calls cannot "
 		                   "be evidence.", n);
@@ -384,13 +373,14 @@ evidence_cite (struct evidence            *dest,
 		return EINVAL;
 	*material = (struct evidence_material){};
 	*why = '\0';
-	char const *author = ref->author;
 	switch (ref->form) {
-	case EVIDENCE_REF_FINDING:
-		return util_refuse(why, len, "%s#%" PRIu32 " is a finding. evidence takes an evidence "
-		                   "item such as %s#%" PRIu32 "/1, or a call such as c7. expand with "
-		                   "id %s#%" PRIu32 " lists the items.", author, ref->number, author,
-		                   ref->number, author, ref->number);
+	case EVIDENCE_REF_FINDING: {
+		char id[FINDING_ID_TEXT];
+		finding_id_put(&ref->id, id);
+		return util_refuse(why, len, "%s is a finding. evidence takes an evidence item such as "
+		                   "%s/1, or a call such as c7. expand with id %s lists the items.", id,
+		                   id, id);
+	}
 	case EVIDENCE_REF_ITEM:
 	case EVIDENCE_REF_ITEM_LINES:
 		/* evidence_recite() cites an item again. */
@@ -558,8 +548,10 @@ evidence_json (struct evidence const *e,
 		nullptr);
 	if (*e->ask.hex)
 		obj = jb_set_or_free(obj, "ask", json_object_new_string(e->ask.hex));
-	if (*e->from)
-		obj = jb_set_or_free(obj, "from", json_object_new_string(e->from));
+	if (*e->from.author) {
+		char from[FINDING_ID_TEXT];
+		obj = jb_set_or_free(obj, "from", jb_string(finding_id_put(&e->from, from)));
+	}
 	struct cstr_view const ids = cstr_view_dstr(&e->ids);
 	if (ids.len)
 		obj = jb_set_or_free(obj, "ids", jb_parse(ids.data, ids.len, JSON_TOKENER_STRICT, 0));
@@ -636,7 +628,7 @@ evidence_parse (struct evidence          *dest,
 	        jb_uint_checked(jb_get(obj, "output"), UINT64_MAX, &dest->output) ||
 	        jb_uint_checked(jb_get(obj, "skip"), TOOL_OUTPUT_MAX, &skip) ||
 	        (ask && hexid_init(&dest->ask, jb_view(ask))) ||
-	        (from && !jb_text(from, 1, SEEN_ID - 1, nullptr).data) ||
+	        (from && (finding_id_parse(&dest->from, jb_view(from)) || !dest->from.item)) ||
 	        (ids && !json_object_is_type(ids, json_type_object)) ||
 	        (request && evidence_blob_parse(&dest->request, request)) ||
 	        evidence_blob_parse(&dest->result, jb_get(obj, "result")) ? EINVAL : 0;
@@ -649,8 +641,6 @@ evidence_parse (struct evidence          *dest,
 		dest->call = (uint32_t)call;
 		dest->turn = (uint32_t)turn;
 		dest->flags = (jb_true(failed) ? EVIDENCE_FAILED : 0) | (request ? EVIDENCE_REQUEST : 0);
-		if (from)
-			memcpy(dest->from, jb_view(from).data, jb_view(from).len);
 		struct cstr_view const wire = jb_wire(ids);
 		e = ids && !wire.data ? ENOMEM : cstr_view_store(tool, &dest->tool);
 		e = e ? e : cstr_view_store(call_id, &dest->call_id);
@@ -708,14 +698,6 @@ evidence_summary (struct evidence const *e,
 	return ok ? 0 : ENOMEM;
 }
 
-void
-evidence_ref_id (struct evidence_ref const *ref,
-                 char                       id[static SEEN_ID])
-{
-	(void)util_format(id, SEEN_ID, "%s#%" PRIu32 "/%" PRIu32, ref->author, ref->number,
-	                  ref->item);
-}
-
 /* Returns true if @p m is the material that @p b records. */
 static bool
 evidence_matches (struct evidence_blob const *b,
@@ -740,16 +722,17 @@ evidence_recite (struct evidence           *dest,
 	if (!dest || !lines || !ref || !why || !len ||
 	    (ref->form != EVIDENCE_REF_ITEM && ref->form != EVIDENCE_REF_ITEM_LINES))
 		return EINVAL;
-	char id[SEEN_ID];
-	evidence_ref_id(ref, id);
+	char id[FINDING_ID_TEXT];
 	int e = evidence_parse_text(dest, record);
-	if (e == EINVAL)
-		return util_refuse(why, len, "Could not read finding %s#%" PRIu32 ": unknown format.",
-		                   ref->author, ref->number);
+	if (e == EINVAL) {
+		struct finding_id const finding = finding_id_without_item(&ref->id);
+		return util_refuse(why, len, "Could not read finding %s: unknown format.",
+		                   finding_id_put(&finding, id).data);
+	}
 	if (e)
 		return e;
 	dest->item = 0;
-	memcpy(dest->from, id, sizeof id);
+	dest->from = ref->id;
 	if (ref->form == EVIDENCE_REF_ITEM)
 		return 0;
 	dstr_auto text = DSTR_INIT;
@@ -757,11 +740,12 @@ evidence_recite (struct evidence           *dest,
 		if (evidence_ref_put(ref, &text))
 			return ENOMEM;
 		return util_refuse(why, len, "%s needs a lines item. %s is a %s item.", dstr_get(&text),
-		                   id, evidence_kind_names[dest->kind].data);
+		                   finding_id_put(&ref->id, id).data,
+		                   evidence_kind_names[dest->kind].data);
 	}
 	if (!evidence_matches(&dest->result, material))
 		return util_refuse(why, len, "The stored material of %s does not match the recorded "
-		                   "SHA-256.", id);
+		                   "SHA-256.", finding_id_put(&ref->id, id).data);
 	/* The material is the lines of the ranges of the item, one after
 	 * another. evidence_ref_parse() makes one range of ranges that touch,
 	 * so the lines of a range of @p ref can be in several ranges of the
@@ -824,7 +808,8 @@ evidence_recite (struct evidence           *dest,
 		json_object_put(ids);
 		if (!ok)
 			return ENOMEM;
-		return util_refuse(why, len, "%s shows %s. Give lines within %s.", id, dstr_get(&text),
+		return util_refuse(why, len, "%s shows %s. Give lines within %s.",
+		                   finding_id_put(&ref->id, id).data, dstr_get(&text),
 		                   dest->ranges.n > 1 ? "those ranges" : "that range");
 	}
 	if (e)
@@ -866,7 +851,7 @@ evidence_expand_call (struct evidence const *e,
 	if (!dstr_printf(d, "call c%" PRIu32, e->call))
 		return false;
 	/* The call of an item cited again is not a call of the author. */
-	if (!*e->from && !dstr_printf(d, " of %s", author))
+	if (!*e->from.author && !dstr_printf(d, " of %s", author))
 		return false;
 	if (*e->ask.hex && !dstr_printf(d, " in ask %.8s", e->ask.hex))
 		return false;
@@ -886,13 +871,15 @@ evidence_expand_call (struct evidence const *e,
 
 int
 evidence_expand (struct evidence const          *e,
-                 char const                     *id,
-                 char const                     *author,
+                 struct finding_id const        *id,
                  struct evidence_material const *material,
                  struct dstr                    *d)
 {
-	if (!e || !id || !author || !material || !d)
+	if (!e || !id || !material || !d)
 		return EFAULT;
+	char text[FINDING_ID_TEXT];
+	char from[FINDING_ID_TEXT];
+	finding_id_put(id, text);
 	struct cstr_view const request = material->request;
 	struct cstr_view const result = material->result;
 	struct json_object *ids = evidence_ids(&e->ids);
@@ -903,9 +890,9 @@ evidence_expand (struct evidence const          *e,
 		differs = !evidence_matches(&e->result, result) ||
 		          (asked && !evidence_matches(&e->request, request));
 	bool ok = false;
-	if (!dstr_printf(d, "[askai: %s", id))
+	if (!dstr_printf(d, "[askai: %s", text))
 		goto done;
-	if (*e->from && !dstr_printf(d, " from %s", e->from))
+	if (*e->from.author && !dstr_printf(d, " from %s", finding_id_put(&e->from, from).data))
 		goto done;
 	if (!dstr_cat(d, ": "))
 		goto done;
@@ -915,14 +902,14 @@ evidence_expand (struct evidence const          *e,
 		if (!dstr_cat(d, ", stored as shown:]\n"))
 			goto done;
 	} else {
-		if (!evidence_expand_call(e, author, ids, d))
+		if (!evidence_expand_call(e, id->author, ids, d))
 			goto done;
 		if (asked) {
 			if (!dstr_cat(d, " Arguments:]\n"))
 				goto done;
 			if (!evidence_material_put(request, d))
 				goto done;
-			if (!dstr_printf(d, "[askai: %s: result", id))
+			if (!dstr_printf(d, "[askai: %s: result", text))
 				goto done;
 		} else if (!dstr_cat(d, " Result")) {
 			goto done;
@@ -938,10 +925,10 @@ evidence_expand (struct evidence const          *e,
 	}
 	if (!evidence_material_put(result, d))
 		goto done;
-	if (missing && !dstr_printf(d, "[askai: the stored material of %s is missing.]\n", id))
+	if (missing && !dstr_printf(d, "[askai: the stored material of %s is missing.]\n", text))
 		goto done;
 	if (differs && !dstr_printf(d, "[askai: the stored material of %s does not match the "
-	                            "recorded SHA-256.]\n", id))
+	                            "recorded SHA-256.]\n", text))
 		goto done;
 	ok = true;
 done:

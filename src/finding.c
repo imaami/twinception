@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "finding.h"
+#include "finding_id.h"
 #include "jb.h"
 #include "tool.h"
 #include "xlist.h"
@@ -74,39 +75,6 @@ finding_fini (struct finding *f)
 		finding_change_fini(&f->changes.items[i]);
 	free(f->changes.items);
 	*f = finding();
-}
-
-int
-finding_id_parse (struct cstr_view  text,
-                  char              author[static MEMBER_NAME],
-                  uint32_t         *number)
-{
-	*author = '\0';
-	*number = 0;
-	struct cstr_view name = text;
-	uint32_t n;
-	if (!cstr_view_cut(&text, '#', &name) || !member_name_valid(name) ||
-	    util_ordinal(&text, &n) || text.len)
-		return EINVAL;
-	memcpy(author, name.data, name.len);
-	author[name.len] = '\0';
-	*number = n;
-	return 0;
-}
-
-void
-finding_id_format (char const *author,
-                   uint32_t    number,
-                   char        id[static FINDING_ID])
-{
-	(void)util_format(id, FINDING_ID, "%s#%" PRIu32, author, number);
-}
-
-void
-finding_id (struct finding const *f,
-            char                  id[static FINDING_ID])
-{
-	finding_id_format(f->author, f->number, id);
 }
 
 struct cstr_view
@@ -217,18 +185,14 @@ finding_read (struct finding           *f,
 	struct json_object *conversation = jb_get(obj, "conversation");
 	struct json_object const *changes = jb_get(obj, "changes");
 	struct cstr_view const claim = jb_view(jb_get(obj, "claim"));
-	struct cstr_view const about_id = jb_view(about);
-	char author[MEMBER_NAME];
-	uint32_t number;
 	size_t const k = jb_len(changes);
+	/* The IDs in the file are IDs of findings, not of items. */
 	if (jb_int(jb_get(obj, "version"), 0) != FINDING_VERSION ||
-	    finding_id_parse(jb_view(jb_get(obj, "id")), f->author, &f->number) ||
-	    (about && finding_id_parse(about_id, author, &number)) ||
+	    finding_id_parse(&f->id, jb_view(jb_get(obj, "id"))) || f->id.item ||
+	    (about && (finding_id_parse(&f->about, jb_view(about)) || f->about.item)) ||
 	    (conversation && hexid_init(&f->conversation, jb_view(conversation))) ||
 	    !claim.len || !json_object_is_type(changes, json_type_array) || !k)
 		return EINVAL;
-	if (about)
-		memcpy(f->about, about_id.data, about_id.len);
 	if (cstr_view_store(claim, &f->claim) || util_grow(f->changes.items, f->changes.cap, k))
 		return ENOMEM;
 	uint32_t items = 0;
@@ -296,8 +260,6 @@ finding_render (struct finding const        *f,
                 struct cstr_view             claim,
                 struct dstr                 *d)
 {
-	char id[FINDING_ID];
-	finding_id(f, id);
 	/* A new claim makes the claim of f the claim before of the change c. */
 	struct cstr_view now = cstr_view_dstr(&f->claim);
 	struct cstr_view was = c ? cstr_view_dstr(&c->claim_before) : (struct cstr_view){};
@@ -305,11 +267,12 @@ finding_render (struct finding const        *f,
 		was = now;
 		now = claim;
 	}
+	char id[FINDING_ID_TEXT];
 	struct json_object *obj = jb_object("version", json_object_new_int(FINDING_VERSION),
-	                                    "id", json_object_new_string(id),
+	                                    "id", jb_string(finding_id_put(&f->id, id)),
 	                                    nullptr);
-	if (*f->about)
-		obj = jb_set_or_free(obj, "about", json_object_new_string(f->about));
+	if (*f->about.author)
+		obj = jb_set_or_free(obj, "about", jb_string(finding_id_put(&f->about, id)));
 	if (*f->conversation.hex)
 		obj = jb_set_or_free(obj, "conversation", json_object_new_string(f->conversation.hex));
 	obj = jb_set_or_free(obj, "claim", jb_string(now));
@@ -363,8 +326,8 @@ finding_order_id (void const *a,
 {
 	struct finding const *x = a;
 	struct finding const *y = b;
-	int const by = strcmp(x->author, y->author);
-	return by ? by : (x->number < y->number) - (x->number > y->number);
+	int const by = strcmp(x->id.author, y->id.author);
+	return by ? by : (x->id.number < y->id.number) - (x->id.number > y->id.number);
 }
 
 /* Orders two findings for finding_sort(): the open findings first, then
@@ -390,12 +353,11 @@ finding_sort (struct finding *list,
 }
 
 struct finding const *
-finding_find (struct finding const *list,
-              size_t                n,
-              char const           *author,
-              uint32_t              number)
+finding_find (struct finding const    *list,
+              size_t                   n,
+              struct finding_id const *id)
 {
-	if (!list || !author)
+	if (!list || !id)
 		return nullptr;
 	/* The open findings come first. open becomes their number. */
 	size_t open = 0;
@@ -406,8 +368,7 @@ finding_find (struct finding const *list,
 		else
 			end = mid;
 	}
-	struct finding key = { .number = number };
-	(void)util_format(key.author, sizeof key.author, "%s", author);
+	struct finding const key = { .id = *id };
 	struct finding const *f = bsearch(&key, list, open, sizeof *list, finding_order_id);
 	return f ? f : bsearch(&key, list + open, n - open, sizeof *list, finding_order_id);
 }
@@ -443,14 +404,6 @@ finding_claim_line (struct finding const *f)
 	return claim;
 }
 
-/* Returns the length of the ID of @p f, such as 5 for bro#5. */
-static int
-finding_id_width (struct finding const *f)
-{
-	char digits[UTIL_DECIMAL];
-	return (int)(strlen(f->author) + 1 + util_decimal(digits + sizeof digits, f->number, 0).len);
-}
-
 /* Appends to @p d the line of @p f in a list: the ID in a column of
  * @p width bytes, the state, the about in a column of @p about bytes
  * unless @p about is 0, and the claim (finding_claim_line()). Returns 0
@@ -462,13 +415,13 @@ finding_row (struct finding const *f,
              int                   about,
              struct dstr          *d)
 {
-	char id[FINDING_ID];
-	finding_id(f, id);
+	char id[FINDING_ID_TEXT];
 	struct cstr_view const claim = finding_claim_line(f);
-	if (!dstr_printf(d, "%-*s  %-*s  ", width, id, FINDING_STATE,
+	if (!dstr_printf(d, "%-*s  %-*s  ", width, finding_id_put(&f->id, id).data, FINDING_STATE,
 	                 finding_state_names[finding_state(f)].data))
 		return ENOMEM;
-	if (about && !dstr_printf(d, "%-*s  ", about, *f->about ? f->about : "-"))
+	if (about && !dstr_printf(d, "%-*s  ", about,
+	                          *f->about.author ? finding_id_put(&f->about, id).data : "-"))
 		return ENOMEM;
 	return dstr_printf(d, "%.*s\n", (int)claim.len, claim.len ? claim.data : "") ? 0 : ENOMEM;
 }
@@ -483,8 +436,8 @@ finding_list (struct finding const *list,
 	int width = 0;
 	int about = 1;
 	for (size_t i = 0; i < n; ++i) {
-		int const w = finding_id_width(&list[i]);
-		int const a = (int)strlen(list[i].about);
+		int const w = finding_id_width(&list[i].id);
+		int const a = finding_id_width(&list[i].about);
 		width = w > width ? w : width;
 		about = a > about ? a : about;
 	}
@@ -541,9 +494,11 @@ finding_show_change (struct finding const *f,
 		return false;
 	for (size_t i = 0; i < c->evidence.n; ++i) {
 		struct evidence const *e = &c->evidence.items[i];
+		char from[FINDING_ID_TEXT];
 		if (!dstr_printf(d, "  evidence %s/%" PRIu32, id, e->item))
 			return false;
-		if (*e->from && !dstr_printf(d, " from %s", e->from))
+		if (*e->from.author &&
+		    !dstr_printf(d, " from %s", finding_id_put(&e->from, from).data))
 			return false;
 		if (!dstr_cat(d, ": "))
 			return false;
@@ -568,23 +523,23 @@ finding_show (struct finding const *f,
               struct dstr          *d)
 {
 	struct cstr_view const claim = cstr_view_dstr(&f->claim);
-	bool ok = dstr_printf(d, "Finding %s by %s: %s\nclaim: %.*s\n", id, f->author,
+	char text[FINDING_ID_TEXT];
+	bool ok = dstr_printf(d, "Finding %s by %s: %s\nclaim: %.*s\n", id, f->id.author,
 	                      finding_state_names[finding_state(f)].data, (int)claim.len, claim.data);
-	if (ok && *f->about)
-		ok = dstr_printf(d, "about: %s\n", f->about);
+	if (ok && *f->about.author)
+		ok = dstr_printf(d, "about: %s\n", finding_id_put(&f->about, text).data);
 	size_t abouts = 0;
 	for (size_t i = 0; ok && i < n; ++i) {
 		struct finding const *other = &list[i];
-		if (strcmp(other->about, id))
+		if (!finding_id_equal(&other->about, &f->id))
 			continue;
-		char by[FINDING_ID];
-		finding_id(other, by);
 		if (abouts)
 			ok = dstr_cat(d, ", ");
 		else
 			ok = dstr_printf(d, "Findings about %s: ", id);
 		if (ok)
-			ok = dstr_printf(d, "%s (%s)", by, finding_state_names[finding_state(other)].data);
+			ok = dstr_printf(d, "%s (%s)", finding_id_put(&other->id, text).data,
+			                 finding_state_names[finding_state(other)].data);
 		++abouts;
 	}
 	if (ok && abouts)
@@ -608,7 +563,7 @@ finding_notice (struct finding const *list,
 	for (; open < n && FINDING_OPEN >> finding_state(&list[open]) & 1; ++open) {
 		if (!hexid_equal(&list[open].conversation, conversation))
 			continue;
-		int const w = finding_id_width(&list[open]);
+		int const w = finding_id_width(&list[open].id);
 		width = w > width ? w : width;
 		++here;
 	}

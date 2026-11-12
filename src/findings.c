@@ -12,6 +12,7 @@
 #include "dstr.h"
 #include "evidence.h"
 #include "finding.h"
+#include "finding_id.h"
 #include "findings.h"
 #include "jb.h"
 #include "log.h"
@@ -128,16 +129,14 @@ struct findings_branch {
 	char       author[MEMBER_NAME];
 };
 
-/* A file of a finding that cat-file reads: its size, its author, the
- * number of the finding and its blob ID. cat-file reads a file without a
- * blob ID by its path on the branch of the author.
+/* A file of a finding that cat-file reads: its size, the ID of the
+ * finding and its blob ID. cat-file reads a file without a blob ID by its
+ * path on the branch of the author of the finding.
  */
 struct findings_file {
-	uint64_t    bytes;   /* from ls-tree, or 0 if unknown */
-	char const *author;  /* in call->branches, call->cites, or
-	                        call->author */
-	uint32_t    number;
-	struct oid  id;      /* from ls-tree, or no name */
+	uint64_t          bytes;  /* from ls-tree, or 0 if unknown */
+	struct finding_id id;     /* the ID of the finding */
+	struct oid        blob;   /* from ls-tree, or no name */
 };
 
 /* The flags of a reference to an item of a finding (struct findings_cite).
@@ -153,25 +152,20 @@ enum findings_cite_flag : uint16_t {
 
 /* A reference of the evidence argument to an item of a finding, X#n/m or
  * X#n/m:A-B. askai reads the record and the archive files of an item once,
- * for the first reference to the item. The later references use them. The
- * member id of the first reference is the ID of the item.
+ * for the first reference to the item. The later references use them.
  */
 struct findings_cite {
-	struct dstr         record;       /* the JSON object of the item, from
-	                                     the ring or from the file of its
-	                                     finding */
-	uint32_t            index;        /* the place of the item in the
-	                                     evidence of the change */
-	uint32_t            first;        /* the place in call->cites of the
-	                                     first reference to the item */
-	struct evidence_ref ref;
-	struct oid          blobs[2];     /* the git IDs of the archive files of
-	                                     the item, or no name */
-	char                id[SEEN_ID];  /* the ID of the item, such as
-	                                     cuh#2/1, or "" for a later
-	                                     reference */
-	uint64_t            flags;        /* enum findings_cite_flag, uint64_t
-	                                     to fill the padding */
+	struct dstr         record;    /* the JSON object of the item, from the
+	                                  ring or from the file of its finding */
+	uint32_t            index;     /* the place of the item in the evidence
+	                                  of the change */
+	uint32_t            first;     /* the place in call->cites of the first
+	                                  reference to the item */
+	struct evidence_ref ref;       /* ref.id is the ID of the item, such as
+	                                  cuh#2/1 */
+	struct oid          blobs[2];  /* the git IDs of the archive files of
+	                                  the item, or no name */
+	uint16_t            flags;     /* enum findings_cite_flag */
 };
 
 /* An entry of the output of expand: the item e of the finding f, or the
@@ -217,8 +211,6 @@ struct findings_call {
 	size_t                 fit;       /* the prints before which the items
 	                                     of expand fit in FINDINGS_MATERIAL
 	                                     bytes */
-	uint32_t               number;    /* N of id, or of a new finding */
-	uint32_t               item;      /* m of the id X#n/m of expand, or 0 */
 	uint32_t               last;      /* the highest number of a finding of
 	                                     the agent */
 	uint32_t               branch;    /* the branch that ls-tree lists */
@@ -226,17 +218,20 @@ struct findings_call {
 	                                     has read */
 	uint32_t               batch;     /* the files of wanted up to which
 	                                     the current cat-file reads */
+	struct finding_id      id;        /* the ID of the id argument: a
+	                                     finding, or for expand a finding
+	                                     or an item. A commit stores the ID
+	                                     of its finding here. For list,
+	                                     id.author is the author argument,
+	                                     or "" */
+	struct finding_id      about;     /* the about argument, or no ID */
 	uint8_t                action;    /* enum findings_action */
 	uint8_t                stage;     /* enum findings_stage */
 	uint16_t               tries;     /* commits that raced, at most
 	                                     STORE_TRIES, widened over the
 	                                     padding */
-	uint8_t                flags;     /* enum findings_flag */
-	char                   author[MEMBER_NAME];  /* the author of id, or the
-	                                                author argument of list,
-	                                                or "" */
-	char                   about[FINDING_ID];    /* the about argument, or
-	                                                "" */
+	uint32_t               flags;     /* enum findings_flag, widened over
+	                                     the padding */
 };
 
 static_assert(EVIDENCE_REFS == 16 && EVIDENCE_EXTERNAL == 8 && TOOL_TEXT_MAX == 4U << 20,
@@ -418,11 +413,11 @@ findings_run (struct mcp_slot   *slot,
 
 /* Writes to @p ref the branch of the findings of the agent @p author. */
 static void
-findings_ref (char const *author,
-              char        ref[static MEMBER_REF])
+findings_ref (char const author[static MEMBER_NAME],
+              char       ref[static MEMBER_REF])
 {
 	struct member agent = { .kind = MEMBER_AGENT };
-	(void)util_format(agent.name, sizeof agent.name, "%s", author);
+	memcpy(agent.name, author, sizeof agent.name);
 	member_ref(&agent, MEMBER_BRANCH_FINDINGS, ref);
 }
 
@@ -463,15 +458,15 @@ findings_read_batch (struct mcp_slot *slot)
 		bool const fits = store_read_fits(&used, w->bytes);
 		if (!fits && k > call->done)
 			break;
-		if (oid_len(&w->id)) {
-			e = buf_printf(&in, "%s\n", w->id.hex);
+		if (oid_len(&w->blob)) {
+			e = buf_printf(&in, "%s\n", w->blob.hex);
 		} else {
-			if (!author || strcmp(author, w->author)) {
-				author = w->author;
+			if (!author || strcmp(author, w->id.author)) {
+				author = w->id.author;
 				findings_ref(author, ref);
 			}
 			char path[FINDING_FILE];
-			e = notes_read_input(&in, ref, finding_path(w->number, path));
+			e = notes_read_input(&in, ref, finding_path(w->id.number, path));
 		}
 		++k;
 		/* A file that does not fit is read alone. */
@@ -494,8 +489,9 @@ static void
 findings_read_one (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	int const e = util_push(call->wanted, (struct findings_file){ .author = call->author,
-	                                                              .number = call->number });
+	int const e = util_push(call->wanted, (struct findings_file){
+		.id = finding_id_without_item(&call->id),
+	});
 	if (e) {
 		findings_end(slot, e, true);
 		return;
@@ -545,14 +541,11 @@ findings_got_refs (struct mcp_slot *slot)
 		return;
 	}
 	bool const every = call->action == FINDINGS_SHOW ||
-	                   (call->action == FINDINGS_LIST && !*call->author);
+	                   (call->action == FINDINGS_LIST && !*call->id.author);
 	struct cstr_view const only = cstr_view(call->action == FINDINGS_LIST
-	                                        ? call->author : findings_session(slot)->agent.name);
-	char author[MEMBER_NAME] = "";
-	uint32_t number = 0;
-	if (*call->about)
-		(void)finding_id_parse(cstr_view(call->about), author, &number);
-	struct cstr_view const about = cstr_view(author);
+	                                        ? call->id.author
+	                                        : findings_session(slot)->agent.name);
+	struct cstr_view const about = cstr_view(call->about.author);
 	struct oid tip = {};
 	size_t n;
 	struct member_info const *const members = member_table_members(table, &n, nullptr);
@@ -579,7 +572,7 @@ findings_got_refs (struct mcp_slot *slot)
 	}
 	char path[FINDING_FILE];
 	struct buf in = {};
-	e = notes_read_input(&in, tip.hex, finding_path(number, path));
+	e = notes_read_input(&in, tip.hex, finding_path(call->about.number, path));
 	if (e) {
 		buf_fini(&in);
 		findings_end(slot, e, true);
@@ -618,12 +611,15 @@ findings_got_files (struct mcp_slot *slot)
 	 * id is on the branch of its author, and update reads only its file.
 	 * list, show and expand read every file. */
 	bool const own = !strcmp(b->author, findings_session(slot)->agent.name);
-	uint32_t const id = strcmp(b->author, call->author) ? 0 : call->number;
+	uint32_t const id = strcmp(b->author, call->id.author) ? 0 : call->id.number;
 	uint32_t const only = call->action == FINDINGS_UPDATE ? id : 0;
 	bool const every = (ON_LIST | ON_SHOW | ON_EXPAND) >> call->action & 1;
 	struct span out = buf_peek(&call->child->out);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
 	struct notes_file file;
+	/* The files of the branch are findings of its author. */
+	struct findings_file want = {};
+	memcpy(want.id.author, b->author, sizeof want.id.author);
 	int e = 0;
 	while (!e && out.len && !(e = notes_file_next(&out, &file))) {
 		uint32_t const n = finding_path_number((struct cstr_view){ (char const *)file.name.ptr,
@@ -634,13 +630,12 @@ findings_got_files (struct mcp_slot *slot)
 			call->last = n;
 		if (n == id)
 			call->flags |= CALL_FOUND;
-		if (every || n == only)
-			e = util_push(call->wanted, (struct findings_file){
-				.bytes  = file.bytes,
-				.author = b->author,
-				.number = n,
-				.id     = file.id,
-			});
+		if (!every && n != only)
+			continue;
+		want.bytes = file.bytes;
+		want.id.number = n;
+		want.blob = file.id;
+		e = util_push(call->wanted, want);
 	}
 	if (e) {
 		findings_stop(slot, e == EIO ? EINVAL : e, unread);
@@ -668,20 +663,23 @@ findings_got_read (struct mcp_slot *slot)
 		struct findings_file const *w = &call->wanted.items[i];
 		struct finding *f = &call->findings.items[call->findings.n++];
 		*f = finding();
-		struct oid id;
+		struct oid blob;
 		struct span data;
-		e = store_object_next(&out, &id, &data);
+		e = store_object_next(&out, &blob, &data);
 		if (!e)
 			e = finding_parse(f, (struct cstr_view){ (char const *)data.ptr, data.len });
+		if (e == ENOMEM || (!e && finding_id_equal(&f->id, &w->id)))
+			continue;
+		char id[FINDING_ID_TEXT];
+		finding_id_put(&w->id, id);
 		/* expand with id and the findings of the items that the evidence
 		 * cites again read the file of a finding by its path. */
 		if (e == ENOENT)
-			e = util_refuse(why, sizeof why, "No finding has the id %s#%" PRIu32 ". list "
-			                "shows the findings.", w->author, w->number);
-		else if (e != ENOMEM &&
-		         (e || f->number != w->number || strcmp(f->author, w->author)))
-			e = util_refuse(why, sizeof why, "Could not read finding %s#%" PRIu32 ": "
-			                "unknown format.", w->author, w->number);
+			e = util_refuse(why, sizeof why, "No finding has the id %s. list shows the "
+			                "findings.", id);
+		else
+			e = util_refuse(why, sizeof why, "Could not read finding %s: unknown format.",
+			                id);
 	}
 	if (e) {
 		findings_stop(slot, e, cstr_view(why));
@@ -711,8 +709,8 @@ findings_cited (struct findings_call *call,
 	size_t k = 0;
 	for (size_t i = 0; i < c->evidence.n; ++i) {
 		struct evidence const *e = &c->evidence.items[i];
-		struct evidence_ref ref = { .number = e->call, .form = EVIDENCE_REF_CALL };
-		if (*e->from && k < call->cites.n) {
+		struct evidence_ref ref = { .call = e->call, .form = EVIDENCE_REF_CALL };
+		if (*e->from.author && k < call->cites.n) {
 			ref = call->cites.items[k++].ref;
 		} else if (e->kind == EVIDENCE_LINES) {
 			ref.form = EVIDENCE_REF_LINES;
@@ -739,8 +737,8 @@ findings_committed (struct mcp_slot *slot)
 	struct child const *c = call->child;
 	struct member_session const *session = findings_session(slot);
 	char const *agent = session->agent.name;
-	char id[FINDING_ID];
-	finding_id_format(agent, call->number, id);
+	char id[FINDING_ID_TEXT];
+	finding_id_put(&call->id, id);
 	if (child_ok(c)) {
 		struct oid commit;
 		if (store_committed(buf_peek(&c->out), &commit))
@@ -857,13 +855,13 @@ findings_commit (struct mcp_slot      *slot,
 		                              "recorded."), TOOL_FAILED);
 		return;
 	}
-	char id[FINDING_ID];
+	char id[FINDING_ID_TEXT];
 	char path[FINDING_FILE];
 	char message[STORE_MESSAGE];
-	finding_id(f, id);
-	call->number = f->number;
+	finding_id_put(&f->id, id);
+	call->id = f->id;
 	struct extent part;
-	e = e ? e : store_part_file(&part, &call->files, finding_path(f->number, path), text);
+	e = e ? e : store_part_file(&part, &call->files, finding_path(f->id.number, path), text);
 	struct store_commit commit = {
 		.message = findings_subject(call, id, before, message),
 		.files = buf_peek(&call->files),
@@ -949,21 +947,21 @@ findings_stored (struct evidence const *e,
 	return oid_len(&blobs[1]) && (!(e->flags & EVIDENCE_REQUEST) || oid_len(&blobs[0]));
 }
 
-/* Records that the item @p id, such as cuh#2/1, whose record is in
+/* Records that the item @p key, such as cuh#2/1, whose record is in
  * shown->record and whose archive files have the git IDs @p blobs, is the
  * bytes @p output of the output of the call in @p slot, so that a finding
  * can cite the item once a result has shown it (mcp_slot_evidence()).
  * Returns 0 or the error of mcp_slot_evidence().
  */
 static int
-findings_shown (struct mcp_slot  *slot,
-                struct seen_item *shown,
-                char const       *id,
-                struct oid const  blobs[static 2],
-                struct extent     output)
+findings_shown (struct mcp_slot         *slot,
+                struct seen_item        *shown,
+                struct finding_id const *key,
+                struct oid const         blobs[static 2],
+                struct extent            output)
 {
 	memcpy(shown->blobs, blobs, sizeof shown->blobs);
-	(void)util_format(shown->id, sizeof shown->id, "%s", id);
+	shown->key = *key;
 	return mcp_slot_evidence(slot, shown, output);
 }
 
@@ -1001,8 +999,13 @@ findings_expanded (struct mcp_slot *slot,
 	bool const turn = !mcp_slot_from_client(slot);
 	struct seen_item shown = { .record = DSTR_INIT };
 	struct finding const *f = nullptr;
-	char id[FINDING_ID] = "";
-	char more_id[SEEN_ID] = "";
+	/* key is the ID of the item of a print, and more_id is the ID of the
+	 * first item that did not fit. In the loop, text is the text of the ID
+	 * of f. After the loop, text is the text of the ID that a notice
+	 * prints. */
+	struct finding_id key = {};
+	struct finding_id more_id = {};
+	char text[FINDING_ID_TEXT] = "";
 	size_t items = 0;
 	size_t more = 0;
 	size_t whole = 0;
@@ -1012,28 +1015,30 @@ findings_expanded (struct mcp_slot *slot,
 		struct findings_print const *p = &call->prints.items[i];
 		if (p->f != f) {
 			f = p->f;
-			finding_id(f, id);
+			key = f->id;
+			finding_id_put(&f->id, text);
 			items = 0;
 			struct cstr_view const claim = finding_claim_line(f);
-			if (!dstr_printf(&call->out, "Evidence of finding %s by %s: %.*s\n", id, f->author,
-			                 (int)claim.len, claim.len ? claim.data : ""))
+			if (!dstr_printf(&call->out, "Evidence of finding %s by %s: %.*s\n", text,
+			                 f->id.author, (int)claim.len, claim.len ? claim.data : ""))
 				e = ENOMEM;
 		}
 		struct evidence const *ev = p->e;
 		if (!ev) {
 			/* The end of the items of f. */
-			size_t const externals = e || call->item ? 0 : findings_externals(call, f, id);
+			size_t const externals = e || call->id.item ? 0 : findings_externals(call, f, text);
 			if (externals == SIZE_MAX)
 				e = ENOMEM;
 			else if (!e && !items && !externals &&
-			         !dstr_printf(&call->out, "[askai: %s has no evidence items.]\n", id))
+			         !dstr_printf(&call->out, "[askai: %s has no evidence items.]\n", text))
 				e = ENOMEM;
 			continue;
 		}
 		++items;
+		key.item = ev->item;
 		if (i >= call->fit) {
 			if (!more++)
-				(void)util_format(more_id, sizeof more_id, "%s/%" PRIu32, id, ev->item);
+				more_id = key;
 			continue;
 		}
 		/* Missing material prints as missing. */
@@ -1050,16 +1055,14 @@ findings_expanded (struct mcp_slot *slot,
 			continue;
 		}
 		size_t const at = dstr_len(&call->out);
-		char item[SEEN_ID];
-		(void)util_format(item, sizeof item, "%s/%" PRIu32, id, ev->item);
-		e = evidence_expand(ev, item, f->author, &(struct evidence_material){
+		e = evidence_expand(ev, &key, &(struct evidence_material){
 			(struct cstr_view){ (char const *)request.ptr, request.len },
 			(struct cstr_view){ (char const *)result.ptr, result.len },
 		}, &call->out);
 		if (e || !turn || !findings_stored(ev, blobs))
 			continue;
 		e = findings_record(ev, &shown.record);
-		e = e ? e : findings_shown(slot, &shown, item, blobs,
+		e = e ? e : findings_shown(slot, &shown, &key, blobs,
 		                           (struct extent){ at, dstr_len(&call->out) - at });
 		++whole;
 	}
@@ -1073,15 +1076,18 @@ findings_expanded (struct mcp_slot *slot,
 		ok = dstr_cat(&call->out, "You have no open findings.\n");
 	if (ok && more)
 		ok = dstr_printf(&call->out, "[askai: %zu more evidence item%s did not fit. Expand each "
-		                 "item by id, such as %s.]\n", more, util_s(more), more_id);
-	/* shown.id is the ID of the last item that a result can show whole. */
-	if (ok && whole == 1)
+		                 "item by id, such as %s.]\n", more, util_s(more),
+		                 finding_id_put(&more_id, text).data);
+	/* shown.key is the ID of the last item that a result can show whole. */
+	if (ok && whole == 1) {
+		finding_id_put(&shown.key, text);
 		ok = dstr_printf(&call->out, "[askai: You saw %s whole. Cite %s for verified or "
-		                 "disproved from your next turn on.]\n", shown.id, shown.id);
-	else if (ok && whole > 1)
+		                 "disproved from your next turn on.]\n", text, text);
+	} else if (ok && whole > 1) {
 		ok = dstr_printf(&call->out, "[askai: You saw the %zu evidence items above whole. Cite "
 		                 "the items for verified or disproved from your next turn on.]\n",
 		                 whole);
+	}
 	if (!ok && !e)
 		e = ENOMEM;
 	findings_end(slot, e, false);
@@ -1104,20 +1110,20 @@ findings_fits (uint64_t              *bytes,
 	return true;
 }
 
-/* Writes the refusal of the item @p item of the finding @p number of
- * @p author, which the finding does not contain, to the @p len bytes at
- * @p why. Returns EINVAL.
+/* Writes the refusal of the item @p id, which its finding does not
+ * contain, to the @p len bytes at @p why. Returns EINVAL.
  */
 static int
-findings_no_item (char const *author,
-                  uint32_t    number,
-                  uint32_t    item,
-                  char       *why,
-                  size_t      len)
+findings_no_item (struct finding_id const *id,
+                  char                    *why,
+                  size_t                   len)
 {
-	return util_refuse(why, len, "No evidence item has the id %s#%" PRIu32 "/%" PRIu32 ". show "
-	                   "with id %s#%" PRIu32 " lists the items.", author, number, item, author,
-	                   number);
+	struct finding_id const finding = finding_id_without_item(id);
+	char item_text[FINDING_ID_TEXT];
+	char finding_text[FINDING_ID_TEXT];
+	return util_refuse(why, len, "No evidence item has the id %s. show with id %s lists the "
+	                   "items.", finding_id_put(id, item_text).data,
+	                   finding_id_put(&finding, finding_text).data);
 }
 
 /* Records in call->prints the item @p ev of the finding @p f, and counts
@@ -1136,7 +1142,7 @@ findings_expand_item (struct findings_call  *call,
                       size_t                *items,
                       struct buf            *in)
 {
-	if (call->item && ev->item != call->item)
+	if (call->id.item && ev->item != call->id.item)
 		return 0;
 	++*items;
 	int e = util_push(call->prints, (struct findings_print){ f, ev });
@@ -1194,20 +1200,20 @@ findings_expand (struct mcp_slot *slot)
 	 * branch is made once. */
 	char own[MEMBER_REF];
 	char const *ref = findings_session(slot)->refs[MEMBER_BRANCH_FINDINGS];
-	if (*call->author) {
-		findings_ref(call->author, own);
+	if (*call->id.author) {
+		findings_ref(call->id.author, own);
 		ref = own;
 	}
 	for (size_t i = 0; !e && i < call->findings.n; ++i) {
 		struct finding const *f = &call->findings.items[i];
-		if (!*call->author && !(FINDING_OPEN >> finding_state(f) & 1))
+		if (!*call->id.author && !(FINDING_OPEN >> finding_state(f) & 1))
 			continue;
 		e = findings_expand_finding(call, f, ref, &bytes, &items, &in);
 	}
-	if (!e && call->item && !items) {
+	if (!e && call->id.item && !items) {
 		buf_fini(&in);
 		char why[TOOL_TELL_MAX];
-		(void)findings_no_item(call->author, call->number, call->item, why, sizeof why);
+		(void)findings_no_item(&call->id, why, sizeof why);
 		mcp_slot_tell(slot, cstr_view(why), TOOL_FAILED);
 		return;
 	}
@@ -1253,31 +1259,29 @@ findings_act (struct mcp_slot *slot)
 		findings_prompted(slot, 0);
 		return;
 	}
-	char id[FINDING_ID];
-	char const *missing = nullptr;
+	char id[FINDING_ID_TEXT];
+	struct finding_id const *missing = nullptr;
 	switch (call->action) {
 	case FINDINGS_LIST:
 		findings_end(slot, finding_list(call->findings.items, call->findings.n, session->name,
-		                                call->author, &call->out), false);
+		                                call->id.author, &call->out), false);
 		return;
 	case FINDINGS_EXPAND:
 		findings_expand(slot);
 		return;
 	case FINDINGS_SHOW:
 	case FINDINGS_UPDATE:
-		if (!(call->flags & CALL_FOUND)) {
-			finding_id_format(call->author, call->number, id);
-			missing = id;
-		}
+		if (!(call->flags & CALL_FOUND))
+			missing = &call->id;
 		break;
 	case FINDINGS_ADD:
-		if (*call->about && !(call->flags & CALL_ABOUT))
-			missing = call->about;
+		if (*call->about.author && !(call->flags & CALL_ABOUT))
+			missing = &call->about;
 		break;
 	}
 	if (missing) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "No finding has the id %s. list shows the findings.",
-		               missing);
+		               finding_id_put(missing, id).data);
 		return;
 	}
 	/* The items that the evidence cites again are read after the checks
@@ -1287,14 +1291,13 @@ findings_act (struct mcp_slot *slot)
 		findings_cite_records(slot);
 		return;
 	}
-	struct finding const *f = finding_find(call->findings.items, call->findings.n, call->author,
-	                                       call->number);
+	struct finding const *f = finding_find(call->findings.items, call->findings.n, &call->id);
 	if (call->action == FINDINGS_SHOW) {
 		if (!f) {
 			findings_end(slot, EIO, true);
 			return;
 		}
-		finding_id(f, id);
+		finding_id_put(&f->id, id);
 		int e = finding_show(f, id, call->findings.items, call->findings.n, &call->out);
 		bool const items = f->changes.n && f->changes.items[f->changes.n - 1].items;
 		if (!e && items) {
@@ -1323,9 +1326,9 @@ findings_act (struct mcp_slot *slot)
 		return;
 	}
 	struct finding added = finding();
-	memcpy(added.author, session->agent.name, sizeof added.author);
-	(void)util_format(added.about, sizeof added.about, "%s", call->about);
-	added.number = call->last + 1;
+	memcpy(added.id.author, session->agent.name, sizeof added.id.author);
+	added.id.number = call->last + 1;
+	added.about = call->about;
 	added.conversation = mcp_slot_member(slot)->conversation;
 	findings_commit(slot, &added);
 	finding_fini(&added);
@@ -1341,12 +1344,14 @@ findings_unseen_head (struct findings_call *call,
                       struct dstr          *names)
 {
 	struct cstr_view views[EVIDENCE_REFS];
+	char texts[EVIDENCE_REFS][FINDING_ID_TEXT];
+	char id[FINDING_ID_TEXT];
 	uint64_t mask = 0;
 	for (size_t i = 0; i < call->cites.n; ++i) {
 		struct findings_cite const *cite = &call->cites.items[i];
 		if (!(cite->flags & CITE_SHOW))
 			continue;
-		views[i] = cstr_view(cite->id);
+		views[i] = finding_id_put(&cite->ref.id, texts[i]);
 		mask |= UINT64_C(1) << i;
 	}
 	(void)dstr_clear(&call->out);
@@ -1355,8 +1360,7 @@ findings_unseen_head (struct findings_call *call,
 	if (ok && call->action == FINDINGS_ADD)
 		ok = dstr_cat(&call->out, "The finding was not added. ");
 	else if (ok)
-		ok = dstr_printf(&call->out, "%s#%" PRIu32 " did not change. ", call->author,
-		                 call->number);
+		ok = dstr_printf(&call->out, "%s did not change. ", finding_id_put(&call->id, id).data);
 	ok = ok && dstr_printf(&call->out, "%s needs evidence that askai showed you before this "
 	                       "turn. askai had not shown you %s. ",
 	                       finding_state_names[call->change.state].data, dstr_get(names));
@@ -1412,7 +1416,7 @@ findings_unseen (struct mcp_slot                *slot,
 			continue;
 		e = evidence_parse_text(&item, cstr_view_dstr(&cite->record));
 		if (!e)
-			e = evidence_expand(&item, cite->id, cite->ref.author, &material[i], &call->out);
+			e = evidence_expand(&item, &cite->ref.id, &material[i], &call->out);
 		end = dstr_len(&call->out);
 	}
 	evidence_fini(&item);
@@ -1427,7 +1431,7 @@ findings_unseen (struct mcp_slot                *slot,
 		if (at[i] == at[i + 1])
 			continue;
 		e = cstr_view_store(cstr_view_dstr(&cite->record), &shown.record);
-		e = e ? e : findings_shown(slot, &shown, cite->id, cite->blobs,
+		e = e ? e : findings_shown(slot, &shown, &cite->ref.id, cite->blobs,
 		                           (struct extent){ at[i], at[i + 1] - at[i] });
 	}
 	dstr_cleanup(&shown.record);
@@ -1499,8 +1503,9 @@ findings_got_blobs (struct mcp_slot *slot)
 			struct span data;
 			int const e = store_object_next(&out, &cite->blobs[k], &data);
 			if (e == ENOENT) {
+				char id[FINDING_ID_TEXT];
 				mcp_slot_tellf(slot, TOOL_FAILED, "The stored material of %s is missing.",
-				               cite->id);
+				               finding_id_put(&cite->ref.id, id).data);
 				return;
 			}
 			if (e) {
@@ -1538,10 +1543,12 @@ findings_cite_blobs (struct mcp_slot *slot)
 			continue;
 		e = evidence_parse_text(&item, cstr_view_dstr(&cite->record));
 		if (e == EINVAL) {
+			struct finding_id const finding = finding_id_without_item(&cite->ref.id);
+			char text[FINDING_ID_TEXT];
 			evidence_fini(&item);
 			buf_fini(&in);
-			mcp_slot_tellf(slot, TOOL_FAILED, "Could not read finding %s#%" PRIu32 ": unknown "
-			               "format.", cite->ref.author, cite->ref.number);
+			mcp_slot_tellf(slot, TOOL_FAILED, "Could not read finding %s: unknown format.",
+			               finding_id_put(&finding, text).data);
 			return;
 		}
 		if (e)
@@ -1566,8 +1573,8 @@ findings_cite_blobs (struct mcp_slot *slot)
 		/* The ring stores the git IDs of an item that a result showed.
 		 * For the other items, the ref of the branch of the author is made
 		 * once for the items of one author in a row. */
-		if (!stored && (!author || strcmp(author, cite->ref.author))) {
-			author = cite->ref.author;
+		if (!stored && (!author || strcmp(author, cite->ref.id.author))) {
+			author = cite->ref.id.author;
 			findings_ref(author, ref);
 		}
 		for (size_t k = asked ? 0 : 1; !e && k < array_size(cite->blobs); ++k)
@@ -1615,24 +1622,21 @@ findings_cite_records (struct mcp_slot *slot)
 	int e = 0;
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
 		struct findings_cite *cite = &call->cites.items[i];
-		struct evidence_ref const *ref = &cite->ref;
 		if (cite->first != i || dstr_len(&cite->record))
 			continue;
-		struct finding const *f = finding_find(call->findings.items, call->findings.n,
-		                                       ref->author, ref->number);
-		struct evidence const *item = finding_item(f, ref->item);
+		struct finding_id const finding = finding_id_without_item(&cite->ref.id);
+		struct finding const *f = finding_find(call->findings.items, call->findings.n, &finding);
+		struct evidence const *item = finding_item(f, cite->ref.id.item);
 		/* cat-file reads a finding that the call has not read yet, once. */
 		bool queued = f != nullptr;
 		for (size_t k = read; !queued && k < call->wanted.n; ++k)
-			queued = call->wanted.items[k].number == ref->number &&
-			         !strcmp(call->wanted.items[k].author, ref->author);
+			queued = finding_id_equal(&call->wanted.items[k].id, &finding);
 		if (item)
 			e = findings_record(item, &cite->record);
 		else if (f)
-			e = findings_no_item(ref->author, ref->number, ref->item, why, sizeof why);
+			e = findings_no_item(&cite->ref.id, why, sizeof why);
 		else if (!queued)
-			e = util_push(call->wanted, (struct findings_file){ .author = ref->author,
-			                                                    .number = ref->number });
+			e = util_push(call->wanted, (struct findings_file){ .id = finding });
 	}
 	if (e) {
 		findings_stop(slot, e, cstr_view(why));
@@ -1722,11 +1726,8 @@ findings_cite_add (struct mcp_slot           *slot,
 	if (util_grow(call->cites.items, call->cites.cap, n + 1))
 		return ENOMEM;
 	size_t first = 0;
-	for (; first < n; ++first) {
-		struct evidence_ref const *r = &call->cites.items[first].ref;
-		if (r->number == ref->number && r->item == ref->item && !strcmp(r->author, ref->author))
-			break;
-	}
+	while (first < n && !finding_id_equal(&call->cites.items[first].ref.id, &ref->id))
+		++first;
 	uint16_t const lines = ref->form == EVIDENCE_REF_ITEM_LINES ? CITE_READ : 0;
 	struct findings_cite *cite = &call->cites.items[n];
 	*cite = (struct findings_cite){
@@ -1740,13 +1741,15 @@ findings_cite_add (struct mcp_slot           *slot,
 		++call->cites.n;
 		return 0;
 	}
-	evidence_ref_id(ref, cite->id);
-	struct seen_item const *s = seen_find_item(mcp_slot_seen(slot), cstr_view(cite->id));
+	struct seen_item const *s = seen_find_item(mcp_slot_seen(slot), &ref->id);
 	/* The turn whose result showed the item whole, or 0. */
 	uint32_t const turn = s ? s->turn : 0;
-	if (strict && turn && turn >= mcp_slot_turn(slot))
+	if (strict && turn && turn >= mcp_slot_turn(slot)) {
+		char id[FINDING_ID_TEXT];
+		finding_id_put(&ref->id, id);
 		return util_refuse(why, len, "askai showed you %s in this turn. Cite %s for verified or "
-		                   "disproved in a later turn.", cite->id, cite->id);
+		                   "disproved in a later turn.", id, id);
+	}
 	cite->flags = strict && !turn ? CITE_SHOW | CITE_READ | lines : lines;
 	if (s) {
 		if (cstr_view_store(cstr_view_dstr(&s->record), &cite->record)) {
@@ -1857,39 +1860,29 @@ findings_args (struct mcp_slot    *slot,
 	struct json_object *about = jb_get(args, "about");
 	struct json_object *author = jb_get(args, "author");
 	if ((ON_UPDATE | ON_SHOW) >> call->action & 1 &&
-	    finding_id_parse(jb_view(id), call->author, &call->number))
+	    (finding_id_parse(&call->id, jb_view(id)) || call->id.item))
 		return util_refuse(why, len, "%s needs id: a finding, such as %s#5.", action, agent);
 	/* expand of a turn without id prints all open findings of the agent. */
-	if (call->action == FINDINGS_EXPAND && (id || mcp_slot_from_client(slot))) {
-		struct evidence_ref ref;
-		if (evidence_ref_parse(&ref, jb_view(id)) ||
-		    (ref.form != EVIDENCE_REF_FINDING && ref.form != EVIDENCE_REF_ITEM))
-			return util_refuse(why, len, "expand needs id: a finding, such as %s#5, or an "
-			                   "evidence item, such as %s#5/2.", agent, agent);
-		memcpy(call->author, ref.author, sizeof call->author);
-		call->number = ref.number;
-		call->item = ref.item;
+	if (call->action == FINDINGS_EXPAND && (id || mcp_slot_from_client(slot)) &&
+	    finding_id_parse(&call->id, jb_view(id)))
+		return util_refuse(why, len, "expand needs id: a finding, such as %s#5, or an "
+		                   "evidence item, such as %s#5/2.", agent, agent);
+	if (call->action == FINDINGS_UPDATE && strcmp(call->id.author, agent)) {
+		char text[FINDING_ID_TEXT];
+		finding_id_put(&call->id, text);
+		return util_refuse(why, len, "Only %s can change %s. Add your own finding with about "
+		                   "%s.", call->id.author, text, text);
 	}
-	if (call->action == FINDINGS_UPDATE && strcmp(call->author, agent))
-		return util_refuse(why, len, "Only %s can change %s#%" PRIu32 ". Add your own finding "
-		                   "with about %s#%" PRIu32 ".", call->author, call->author,
-		                   call->number, call->author, call->number);
 	if (author) {
 		struct cstr_view const name = jb_view(author);
 		if (!member_name_valid(name))
 			return util_refuse(why, len, "The author argument must be the name of a member, "
 			                   "such as %s.", agent);
-		(void)util_format(call->author, sizeof call->author, "%.*s", (int)name.len, name.data);
+		(void)util_format(call->id.author, sizeof call->id.author, "%.*s", (int)name.len,
+		                  name.data);
 	}
-	if (about) {
-		struct cstr_view const text = jb_view(about);
-		char who[MEMBER_NAME];
-		uint32_t n;
-		if (finding_id_parse(text, who, &n))
-			return util_refuse(why, len, "about must be the id of a finding, such as %s#2.",
-			                   agent);
-		(void)util_format(call->about, sizeof call->about, "%.*s", (int)text.len, text.data);
-	}
+	if (about && (finding_id_parse(&call->about, jb_view(about)) || call->about.item))
+		return util_refuse(why, len, "about must be the id of a finding, such as %s#2.", agent);
 	if (!((ON_ADD | ON_UPDATE) >> call->action & 1))
 		return 0;
 	size_t const s = cstr_view_index(finding_state_names, FINDING_STATES, jb_view(state));
@@ -1908,7 +1901,7 @@ findings_args (struct mcp_slot    *slot,
 	c->turn = mcp_slot_turn(slot);
 	c->call = mcp_slot_call(slot);
 	c->ask = member->ask;
-	(void)util_format(c->asked_by, sizeof c->asked_by, "%s", member->asker.name);
+	memcpy(c->asked_by, member->asker.name, sizeof c->asked_by);
 	if (cstr_view_store(CSTR_VIEW(ASKAI_VERSION), &c->askai))
 		return ENOMEM;
 	e = findings_evidence(slot, args, why, len);
@@ -1931,7 +1924,7 @@ findings_begin (struct mcp_slot    *slot,
 		findings_stop(slot, e, cstr_view(why));
 		return;
 	}
-	if (call->action == FINDINGS_EXPAND && *call->author)
+	if (call->action == FINDINGS_EXPAND && *call->id.author)
 		findings_read_one(slot);
 	else
 		findings_load(slot);
@@ -1968,14 +1961,13 @@ findings_got_calls (struct mcp_slot *slot)
 		}
 		struct oid commit;
 		struct cstr_view a, n, verb, id;
-		char author[MEMBER_NAME];
-		uint32_t k;
+		struct finding_id found;
 		/* The subject is "Add bro#5 (verified)" or "Update bro#5 (...)". A
 		 * commit without the trailer line Ask names no ask call. */
 		if (oid_init_field(&commit, &line, ' ') || !cstr_view_cut(&line, ' ', &a) ||
 		    !cstr_view_cut(&line, ' ', &n) || !a.len || !cstr_view_equal(a, ask) ||
 		    !cstr_view_equal(n, number) || !cstr_view_cut(&line, ' ', &verb) ||
-		    !cstr_view_cut(&line, ' ', &id) || finding_id_parse(id, author, &k))
+		    !cstr_view_cut(&line, ' ', &id) || finding_id_parse(&found, id) || found.item)
 			continue;
 		(void)dstr_clear(&call->out);
 		bool const ok = dstr_printf(&call->out, "%.*s was already %s in commit %.8s before "
@@ -2181,7 +2173,7 @@ findings_prompt (struct mcp_slot *slot,
 		mcp_slot_fail(slot, EINVAL);
 		return;
 	}
-	memcpy(call->author, session->agent.name, sizeof call->author);
+	memcpy(call->id.author, session->agent.name, sizeof call->id.author);
 	call->prompt = prompt;
 	call->then = then;
 	call->most = most;

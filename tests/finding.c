@@ -10,6 +10,7 @@
 #include "dstr.h"
 #include "evidence.h"
 #include "finding.h"
+#include "finding_id.h"
 #include "hexid.h"
 
 /* Two conversations and an ask call. */
@@ -34,31 +35,132 @@ same (int         line,
 	        got ? (char const *)got : "", want);
 }
 
-/* finding_id_parse() reads IDs, and finding_path() and
- * finding_path_number() name the files.
+/* Returns the ID of the finding @p number of @p author, or of its item
+ * @p item if @p item is not 0.
+ */
+static struct finding_id
+id_of (char const *author,
+       uint32_t    number,
+       uint32_t    item)
+{
+	struct finding_id id = { .number = number, .item = item };
+	snprintf(id.author, sizeof id.author, "%s", author);
+	return id;
+}
+
+/* Check that finding_id_parse() reads @p text as the ID @p want, and that
+ * finding_id_put() writes that ID as @p text again.
  */
 static void
-test_ids (void)
+parsed (char const        *text,
+        struct finding_id  want,
+        int                line)
 {
-	char author[MEMBER_NAME] = "x";
-	uint32_t n = 9;
-	CHECK(!finding_id_parse(CSTR_VIEW("bro#5"), author, &n) && !strcmp(author, "bro") && n == 5);
-	CHECK(!finding_id_parse(CSTR_VIEW("first.last@ad#4294967295"), author, &n) &&
-	      !strcmp(author, "first.last@ad") && n == UINT32_MAX);
-	char const *const bad[] = { "", "bro", "bro#", "bro#0", "bro#05", "bro#4294967296", "#5",
-	                            "c7#5", ".bro#5", "bro#5/1", "bro#5 ", "bro#-1", "b ro#5" };
-	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
-		n = 9;
-		strcpy(author, "x");
-		CHECK(finding_id_parse(cstr_view(bad[i]), author, &n) == EINVAL && !*author && !n);
-	}
-	struct finding f = finding();
-	strcpy(f.author, "cuh");
-	f.number = 12;
-	char id[FINDING_ID];
-	finding_id(&f, id);
-	CHECK(!strcmp(id, "cuh#12"));
+	struct finding_id id = id_of("x", 9, 9);
+	char back[FINDING_ID_TEXT + 1];
+	memset(back, 'y', sizeof back);
+	int const e = finding_id_parse(&id, cstr_view(text));
+	struct cstr_view const put = finding_id_put(&want, back);
+	/* The bytes of author after the name are 0, so that two IDs of the
+	 * same text are the same bytes. */
+	if (!e && !memcmp(id.author, want.author, sizeof id.author) && id.number == want.number &&
+	    id.item == want.item && finding_id_equal(&id, &want) && put.data == back &&
+	    put.len == strlen(text) && !strcmp(back, text) && back[FINDING_ID_TEXT] == 'y')
+		return;
+	++failures;
+	fprintf(stderr, "%s:%d: %s: error %d, got %s#%u/%u, put %s\n", __FILE__, line, text, e,
+	        id.author, id.number, id.item, back);
+}
 
+/* finding_id_parse() reads the IDs of findings and of items and refuses
+ * any other text, finding_id_put() writes them, finding_id_equal() compares
+ * them, and finding_id_without_item() returns the ID of the finding of an
+ * item.
+ */
+static void
+test_id (void)
+{
+	parsed("bro#5", id_of("bro", 5, 0), __LINE__);
+	parsed("bro#5/2", id_of("bro", 5, 2), __LINE__);
+	parsed("first.last@ad#4294967295", id_of("first.last@ad", UINT32_MAX, 0), __LINE__);
+	parsed("first.last@ad#12/4294967295", id_of("first.last@ad", 12, UINT32_MAX), __LINE__);
+	parsed("c#1", id_of("c", 1, 0), __LINE__);
+	parsed("c7x#10/10", id_of("c7x", 10, 10), __LINE__);
+	/* The longest ID fills FINDING_ID_TEXT bytes with its NUL. */
+	char longest[FINDING_ID_TEXT];
+	memset(longest, 'a', UTIL_WORD_MAX);
+	snprintf(longest + UTIL_WORD_MAX, sizeof longest - UTIL_WORD_MAX, "#4294967295/4294967295");
+	CHECK(strlen(longest) == FINDING_ID_TEXT - 1);
+	struct finding_id big = { .number = UINT32_MAX, .item = UINT32_MAX };
+	memset(big.author, 'a', UTIL_WORD_MAX);
+	parsed(longest, big, __LINE__);
+	static_assert(sizeof big.author == UTIL_WORD_MAX + 1, "a member name and its NUL");
+
+	static char const *const bad[] = {
+		"", "bro", "bro#", "bro#0", "bro#05", "bro#4294967296", "#5", "c7#5", ".bro#5",
+		"bro#5 ", " bro#5", "bro#-1", "bro#+1", "b ro#5", "bro#5#1", "bro##5", "bro#5x",
+		"bro#5/", "bro#5/0", "bro#5/01", "bro#5/4294967296", "bro#5/1/1", "bro#5/1 ",
+		"bro#5/-1", "bro#5/x", "bro#/1", "bro#0/1", "bro#05/1", "bro#5:1", "bro#5/1:1",
+		"bro#5/1:1-2", "bro/1", "bro/1#5", "/1", "#", "/", "#/", "#5/1", "c7#5/1", "bro#5//1",
+	};
+	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
+		struct finding_id id = id_of("x", 9, 9);
+		if (finding_id_parse(&id, cstr_view(bad[i])) == EINVAL && !*id.author && !id.number &&
+		    !id.item)
+			continue;
+		++failures;
+		fprintf(stderr, "%s:%d: accepted %s\n", __FILE__, __LINE__, bad[i]);
+	}
+	/* A name of UTIL_WORD_MAX + 1 characters. */
+	struct finding_id id = id_of("x", 9, 9);
+	char name[UTIL_WORD_MAX + sizeof "a#5"];
+	memset(name, 'a', UTIL_WORD_MAX + 1);
+	memcpy(name + UTIL_WORD_MAX + 1, "#5", sizeof "#5");
+	CHECK(finding_id_parse(&id, cstr_view(name)) == EINVAL && !*id.author);
+	CHECK(!finding_id_parse(&id, cstr_view(name + 1)) && strlen(id.author) == UTIL_WORD_MAX);
+	/* A view without bytes, and a text with a NUL inside. */
+	CHECK(finding_id_parse(&id, (struct cstr_view){}) == EINVAL && !*id.author);
+	CHECK(finding_id_parse(&id, (struct cstr_view){ "bro#5\0/1", 8 }) == EINVAL);
+	CHECK(finding_id_parse(&id, (struct cstr_view){ "bro\0#5", 6 }) == EINVAL);
+	/* The text ends where the view ends. */
+	CHECK(!finding_id_parse(&id, (struct cstr_view){ "bro#51/23x", 6 }) && id.number == 51 &&
+	      !id.item);
+	CHECK(!finding_id_parse(&id, (struct cstr_view){ "bro#51/23x", 9 }) && id.number == 51 &&
+	      id.item == 23);
+
+	/* finding_id_equal() compares the author and both numbers. */
+	struct finding_id const a = id_of("bro", 5, 2);
+	struct finding_id const same = id_of("bro", 5, 2);
+	struct finding_id const none = {};
+	CHECK(finding_id_equal(&a, &a) && finding_id_equal(&a, &same) &&
+	      finding_id_equal(&none, &none));
+	struct finding_id const other[] = {
+		id_of("bro", 5, 0), id_of("bro", 5, 3), id_of("bro", 6, 2), id_of("cuh", 5, 2),
+		id_of("br", 5, 2), id_of("bro1", 5, 2), id_of("Bro", 5, 2), {},
+	};
+	for (size_t i = 0; i < sizeof other / sizeof *other; ++i)
+		CHECK(!finding_id_equal(&a, &other[i]) && !finding_id_equal(&other[i], &a));
+
+	/* The ID of the finding of an item, and of a finding. */
+	struct finding_id const of = finding_id_without_item(&a);
+	struct finding_id const whole = id_of("bro", 5, 0);
+	CHECK(finding_id_equal(&of, &whole) && !of.item && a.item == 2);
+	struct finding_id const again = finding_id_without_item(&of);
+	CHECK(finding_id_equal(&again, &whole));
+
+	/* finding_id_put() returns the view of the text. */
+	char text[FINDING_ID_TEXT];
+	struct cstr_view const v = finding_id_put(&a, text);
+	CHECK(v.data == text && v.len == 7 && !strcmp(text, "bro#5/2"));
+	CHECK(finding_id_put(&whole, text).len == 5 && !strcmp(text, "bro#5"));
+	static_assert(FINDING_ID_TEXT == UTIL_WORD_MAX + sizeof "#4294967295/4294967295",
+	              "a name, the numbers and the NUL");
+}
+
+/* finding_path() and finding_path_number() name the files. */
+static void
+test_paths (void)
+{
 	char path[FINDING_FILE];
 	struct cstr_view p = finding_path(5, path);
 	CHECK(!strcmp(path, "findings/0/5.json") && p.data == path && p.len == strlen(path) &&
@@ -195,8 +297,7 @@ test_changes (void)
 	finding_change_fini(&c);
 
 	struct finding f = finding();
-	strcpy(f.author, "bro");
-	f.number = 5;
+	f.id = id_of("bro", 5, 0);
 	CHECK(!cstr_view_store(CSTR_VIEW("First claim."), &f.claim));
 	c = change_of(FINDING_CANDIDATE, "Looks so.", 2, 4, 2);
 	c.evidence.items[0].item = 1;
@@ -254,8 +355,8 @@ test_changes (void)
 	finding_fini(&back);
 	/* Without a change, the file of f alone. */
 	back = rendered(&f, nullptr, "");
-	CHECK(back.changes.n == 1 && back.changes.items[0].items == 2 && back.number == 5 &&
-	      !strcmp(back.author, "bro"));
+	CHECK(back.changes.n == 1 && back.changes.items[0].items == 2 && back.id.number == 5 &&
+	      !back.id.item && !strcmp(back.id.author, "bro"));
 	finding_fini(&back);
 	/* A long version of askai, such as one of git describe with a long
 	 * tail, stays as it is. */
@@ -280,13 +381,13 @@ test_changes (void)
 	finding_change_fini(&c);
 	CHECK(!c.external.n && !c.external.items);
 	finding_fini(&f);
-	CHECK(!f.changes.items && !f.changes.n && !*f.author && !f.number);
+	CHECK(!f.changes.items && !f.changes.n && !*f.id.author && !f.id.number);
 	finding_fini(&f);
 }
 
 /* Returns the finding AUTHOR#NUMBER with the claim @p claim, the
- * conversation @p conversation and the about @p about, with one change to
- * @p state.
+ * conversation @p conversation and the about @p about, an ID or "" for no
+ * about, with one change to @p state.
  */
 static struct finding
 finding_of (char const         *author,
@@ -297,9 +398,9 @@ finding_of (char const         *author,
             enum finding_state  state)
 {
 	struct finding f = finding();
-	strcpy(f.author, author);
-	f.number = number;
-	strcpy(f.about, about);
+	f.id = id_of(author, number, 0);
+	if (*about)
+		CHECK(!finding_id_parse(&f.about, cstr_view(about)));
 	CHECK(!hexid_init(&f.conversation, cstr_view(conversation)));
 	CHECK(!cstr_view_store(cstr_view(claim), &f.claim));
 	struct finding_change c = change_of(state, state ? "Shown." : "", number, number, 1);
@@ -343,7 +444,9 @@ test_file (void)
 	}
 	struct finding back = finding();
 	CHECK(!finding_parse(&back, cstr_view_dstr(&text)));
-	CHECK(back.number == 5 && !strcmp(back.author, "bro") && !strcmp(back.about, "cuh#2") &&
+	struct finding_id const bro5 = id_of("bro", 5, 0);
+	struct finding_id const cuh2 = id_of("cuh", 2, 0);
+	CHECK(finding_id_equal(&back.id, &bro5) && finding_id_equal(&back.about, &cuh2) &&
 	      !strcmp(back.conversation.hex, CONV) && finding_state(&back) == FINDING_VERIFIED &&
 	      back.changes.n == 2 && back.changes.items[1].items == 2 &&
 	      back.changes.items[1].external.n == 1 && back.changes.items[1].evidence.n == 1 &&
@@ -365,7 +468,12 @@ test_file (void)
 		{ "\"version\": 1", "\"version\": 2" },
 		{ "\"version\": 1", "\"version\": \"1\"" },
 		{ "\"id\": \"bro#5\"", "\"id\": \"bro\"" },
+		{ "\"id\": \"bro#5\"", "\"id\": \"bro#5/1\"" },
+		{ "\"id\": \"bro#5\"", "\"id\": 5" },
 		{ "\"about\": \"cuh#2\"", "\"about\": \"cuh\"" },
+		{ "\"about\": \"cuh#2\"", "\"about\": \"cuh#2/1\"" },
+		{ "\"about\": \"cuh#2\"", "\"about\": \"\"" },
+		{ "\"about\": \"cuh#2\"", "\"about\": 2" },
 		{ "\"conversation\": \"" CONV "\"", "\"conversation\": \"x\"" },
 		{ "\"claim\": \"git grep -L lists 246 files.\"", "\"claim\": \"\"" },
 		{ "\"state\": \"verified\"", "\"state\": \"open\"" },
@@ -386,7 +494,8 @@ test_file (void)
 		CHECK(dstr_printf(&bad, "%.*s%s%s", (int)(p - t), t, edits[i].to,
 		                  p + strlen(edits[i].from)));
 		CHECK(finding_parse(&back, cstr_view_dstr(&bad)) == EINVAL);
-		CHECK(!back.changes.n && !back.number && !dstr_len(&back.claim));
+		CHECK(!back.changes.n && !back.id.number && !*back.id.author && !*back.about.author &&
+		      !back.about.number && !back.about.item && !dstr_len(&back.claim));
 		dstr_cleanup(&bad);
 	}
 	CHECK(finding_parse(&back, CSTR_VIEW("")) == EINVAL);
@@ -397,7 +506,8 @@ test_file (void)
 	CHECK(!finding_parse(&back, CSTR_VIEW("{\"version\":1,\"id\":\"bro#1\",\"claim\":\"c\","
 	                                      "\"changes\":[{\"state\":\"candidate\",\"turn\":1,"
 	                                      "\"call\":2,\"evidence\":[],\"external\":[]}]}")));
-	CHECK(back.number == 1 && back.changes.n == 1 && !*back.about && !*back.conversation.hex &&
+	CHECK(back.id.number == 1 && back.changes.n == 1 && !*back.about.author &&
+	      !back.about.number && !*back.conversation.hex &&
 	      !*back.changes.items[0].ask.hex && !*back.changes.items[0].asked_by &&
 	      !back.changes.items[0].items);
 	finding_fini(&back);
@@ -427,21 +537,29 @@ test_texts (void)
 	size_t const n = sizeof list / sizeof *list;
 	finding_sort(list, n);
 	/* The open findings first, then by author, newest first. */
-	CHECK(list[0].number == 12 && list[1].number == 5 && list[2].number == 4 &&
-	      list[3].number == 2 && list[4].number == 3 && list[5].number == 1);
-	CHECK(!strcmp(list[2].author, "bro") && !strcmp(list[3].author, "cuh") &&
-	      !strcmp(list[4].author, "bro") && !strcmp(list[5].author, "cuh"));
+	CHECK(list[0].id.number == 12 && list[1].id.number == 5 && list[2].id.number == 4 &&
+	      list[3].id.number == 2 && list[4].id.number == 3 && list[5].id.number == 1);
+	CHECK(!strcmp(list[2].id.author, "bro") && !strcmp(list[3].id.author, "cuh") &&
+	      !strcmp(list[4].id.author, "bro") && !strcmp(list[5].id.author, "cuh"));
 	/* finding_find() finds each finding of the sorted list, open or
-	 * closed. */
-	for (size_t i = 0; i < n; ++i)
-		CHECK(finding_find(list, n, list[i].author, list[i].number) == &list[i]);
-	CHECK(!finding_find(list, n, "bro", 6) && !finding_find(list, n, "bro", 1) &&
-	      !finding_find(list, n, "cuh", 3) && !finding_find(list, n, "dan", 1) &&
-	      !finding_find(list, n, "", 12) && !finding_find(list, 0, "bro", 12) &&
-	      !finding_find(nullptr, n, "bro", 12) && !finding_find(list, n, nullptr, 12));
-	CHECK(finding_find(list, 4, "bro", 12) == &list[0] && !finding_find(list, 4, "cuh", 1) &&
-	      finding_find(list + 4, 2, "cuh", 1) == &list[5] &&
-	      !finding_find(list + 4, 2, "bro", 12));
+	 * closed, by its ID and by the ID of an item of the finding. */
+	for (size_t i = 0; i < n; ++i) {
+		struct finding_id item = list[i].id;
+		item.item = 7;
+		CHECK(finding_find(list, n, &list[i].id) == &list[i] &&
+		      finding_find(list, n, &item) == &list[i]);
+	}
+	struct finding_id const bro12 = id_of("bro", 12, 0);
+	struct finding_id const cuh1 = id_of("cuh", 1, 0);
+	struct finding_id const none[] = { id_of("bro", 6, 0), id_of("bro", 1, 0), id_of("cuh", 3, 0),
+	                                   id_of("dan", 1, 0), id_of("", 12, 0), id_of("br", 12, 0),
+	                                   {} };
+	for (size_t i = 0; i < sizeof none / sizeof *none; ++i)
+		CHECK(!finding_find(list, n, &none[i]));
+	CHECK(!finding_find(list, 0, &bro12) && !finding_find(nullptr, n, &bro12) &&
+	      !finding_find(list, n, nullptr));
+	CHECK(finding_find(list, 4, &bro12) == &list[0] && !finding_find(list, 4, &cuh1) &&
+	      finding_find(list + 4, 2, &cuh1) == &list[5] && !finding_find(list + 4, 2, &bro12));
 	struct dstr text = DSTR_INIT;
 	CHECK(!finding_list(list, n, CSTR_VIEW("test1"), "", &text));
 	SAME(dstr_get(&text), dstr_len(&text),
@@ -496,7 +614,7 @@ test_texts (void)
 	/* show lists the findings about a finding and each change. */
 	struct finding *cuh2 = &list[3];
 	struct finding_change c = change_of(FINDING_VERIFIED, "The option table maps -L.", 27, 9, 1);
-	strcpy(c.evidence.items[0].from, "unc#1/1");
+	c.evidence.items[0].from = id_of("unc", 1, 1);
 	c.evidence.items[0].kind = EVIDENCE_LINES;
 	c.evidence.items[0].flags = 0;
 	CHECK(!util_grow(c.evidence.items[0].ranges.items, c.evidence.items[0].ranges.cap, 1));
@@ -509,8 +627,8 @@ test_texts (void)
 	strcpy(cuh2->changes.items[1].asked_by, "");
 	cuh2->changes.items[1].ask = (struct hexid){};
 	(void)dstr_clear(&text);
-	char id[FINDING_ID];
-	finding_id(cuh2, id);
+	char id[FINDING_ID_TEXT];
+	finding_id_put(&cuh2->id, id);
 	CHECK(!finding_show(cuh2, id, list, n, &text));
 	SAME(dstr_get(&text), dstr_len(&text),
 	     "Finding cuh#2 by cuh: verified\n"
@@ -524,7 +642,7 @@ test_texts (void)
 	     "  evidence cuh#2/2 from unc#1/1: lines 161 to 171 of src/git.c in repository askai "
 	     "at commit d02cc2338c4f\n");
 	(void)dstr_clear(&text);
-	finding_id(&list[1], id);
+	finding_id_put(&list[1].id, id);
 	CHECK(!finding_show(&list[1], id, list, n, &text));
 	CHECK(strstr(dstr_get(&text), "Finding bro#5 by bro: candidate\nclaim: git grep -L at "
 	                              "d02cc233 lists only the 246 files.\nabout: cuh#2\nChange 1: "
@@ -575,7 +693,8 @@ test_texts (void)
 int
 main (void)
 {
-	test_ids();
+	test_id();
+	test_paths();
 	test_changes();
 	test_file();
 	test_texts();

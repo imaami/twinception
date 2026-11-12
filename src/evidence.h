@@ -30,8 +30,8 @@
 
 #include "cstr_view.h"
 #include "dstr.h"
+#include "finding_id.h"
 #include "hexid.h"
-#include "member_name.h"
 #include "range.h"
 #include "seen.h"
 #include "util.h"
@@ -70,8 +70,10 @@ enum evidence_kind : uint8_t {
 	EVIDENCE_KINDS
 };
 
-/** The forms of a reference (struct evidence_ref). */
-enum evidence_form : uint8_t {
+/** The forms of a reference (struct evidence_ref). The type is 16 bits
+ *  wide so that struct evidence_ref ends without padding.
+ */
+enum evidence_form : uint16_t {
 	EVIDENCE_REF_CALL,        /**< cN */
 	EVIDENCE_REF_LINES,       /**< cN:A-B,C */
 	EVIDENCE_REF_ITEM,        /**< X#n/m */
@@ -86,11 +88,11 @@ struct evidence_ref {
 	                                                  EVIDENCE_REF_LINES and
 	                                                  EVIDENCE_REF_ITEM_LINES,
 	                                                  numbered from 1 */
-	uint32_t           number;                   /**< N of cN, or n of X#n */
-	uint32_t           item;                     /**< m of X#n/m, or 0 */
+	struct finding_id  id;                       /**< X#n or X#n/m, or no ID
+	                                                  for a call */
+	uint32_t           call;                     /**< N of cN, or 0 */
 	uint16_t           n_ranges;                 /**< ranges in use */
 	enum evidence_form form;
-	char               author[MEMBER_NAME];      /**< X of X#n, or "" */
 };
 
 /** The size and the SHA-256 of stored material. */
@@ -131,14 +133,16 @@ struct evidence {
 	                                     change numbers the item */
 	uint32_t              call;     /**< N of the call cN */
 	uint32_t              turn;     /**< the turn whose answer made the call */
-	uint32_t              flags;    /**< enum evidence_flag */
+	struct finding_id     from;     /**< the ID of the item that the item
+	                                     cites again, such as cuh#2/1, or no
+	                                     ID */
+	uint16_t              flags;    /**< enum evidence_flag. The member is
+	                                     16 bits wide so that the struct
+	                                     ends without padding. */
 	enum evidence_kind    kind;
 	struct hexid          ask;      /**< the ask call of the call, or no id
 	                                     for a job resumed from a journal
 	                                     state of version 2 */
-	char                  from[SEEN_ID];  /**< the item that the item cites
-	                                           again, such as cuh#2/1, or
-	                                           "" */
 };
 
 /** Returns the name of the tool with the registry ID @p tool, or nullptr
@@ -179,8 +183,8 @@ evidence_fini (struct evidence *e);
 
 /**
  * Reads the reference @p text into @p dest: cN, cN:A-B,C, X#n, X#n/m or
- * X#n/m:A-B,C, where N, n and m are numbers from 1 without leading zeros,
- * X is a member name (member_name_valid()), and A-B,C is at most
+ * X#n/m:A-B,C, where N is a number from 1 without a leading zero, X#n and
+ * X#n/m are IDs (finding_id_parse()), and A-B,C is at most
  * EVIDENCE_RANGES ranges, each a line A or lines A to B with 1 <= A <= B.
  * The ranges of @p dest ascend, and ranges that overlap or touch become
  * one range (range_merge()). Returns 0, or EINVAL for any other text or a
@@ -252,8 +256,8 @@ evidence_recite (struct evidence           *dest,
 
 /**
  * Appends to @p d the evidence item @p e with the ID @p id, such as
- * cuh#2/1, of a finding of the member @p author, as the action expand
- * prints it. The first line is a notice that names the item and says what
+ * cuh#2/1, as the action expand prints it. id->author is the author of
+ * the finding. The first line is a notice with the ID of the item and what
  * the item is. A lines item then prints the lines, and the other kinds the
  * arguments of the call, a notice with the size of the result, and the
  * result, each with a line feed at its end. @p material is the stored
@@ -264,8 +268,7 @@ evidence_recite (struct evidence           *dest,
  */
 extern int
 evidence_expand (struct evidence const          *e,
-                 char const                     *id,
-                 char const                     *author,
+                 struct finding_id const        *id,
                  struct evidence_material const *material,
                  struct dstr                    *d);
 
@@ -310,11 +313,6 @@ evidence_parse (struct evidence          *dest,
 extern int
 evidence_parse_text (struct evidence  *dest,
                      struct cstr_view  json);
-
-/** Writes the ID of the item that @p ref names to @p id, such as cuh#2/1. */
-extern void
-evidence_ref_id (struct evidence_ref const *ref,
-                 char                       id[static SEEN_ID]);
 
 /** Appends to @p d the @p n line ranges at @p r, with @p sep between two
  *  ranges and @p to between the first and the last line of a range: such

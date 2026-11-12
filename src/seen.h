@@ -52,6 +52,7 @@
 #include "buf.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "finding_id.h"
 #include "oid.h"
 #include "range.h"
 #include "util.h"
@@ -66,13 +67,6 @@ enum {
 	                                         seen_source, at most */
 	SEEN_ITEMS    = 1024,               /**< evidence items in the ring of
 	                                         an ask call, at most */
-	SEEN_ID       = UTIL_WORD_MAX + 26, /**< bytes of the ID of an item,
-	                                         such as cuh#2/1, NUL included:
-	                                         a member name, '#', '/', two
-	                                         numbers of at most 10 digits,
-	                                         the NUL and 3 spare bytes in
-	                                         place of the padding of struct
-	                                         seen_item */
 	SEEN_LISTED   = 64,                 /**< items that the notice of
 	                                         seen_notice() names, at most */
 	SEEN_BYTES    = 16U << 20,          /**< bytes of the arguments and
@@ -182,22 +176,22 @@ struct seen_call {
 
 /** An evidence item that askai printed to the turns. */
 struct seen_item {
-	struct dstr   record;       /**< the JSON object of the item, as the
-	                                 file of its finding has it */
-	struct extent output;       /**< the bytes of the item in an output,
-	                                 at the offset in the output of the
-	                                 call `call` */
-	uint32_t      shown;        /**< the bytes of the item from its start
-	                                 that results showed, in order */
-	uint32_t      call;         /**< N of the call cN whose result is not
-	                                 written yet and prints the item, or
-	                                 0 */
-	uint32_t      turn;         /**< the turn whose result showed the last
-	                                 byte of the item, or 0 */
-	struct oid    blobs[2];     /**< git IDs of the archive files: the
-	                                 arguments of the call, or no name,
-	                                 and the material */
-	char          id[SEEN_ID];  /**< such as cuh#2/1 */
+	struct dstr       record;    /**< the JSON object of the item, as in
+	                                  the file of its finding */
+	struct extent     output;    /**< the bytes of the item in an output,
+	                                  at the offset in the output of the
+	                                  call `call` */
+	uint32_t          shown;     /**< the bytes of the item from its start
+	                                  that results showed, in order */
+	uint32_t          call;      /**< N of the call cN whose result is not
+	                                  written yet and prints the item, or
+	                                  0 */
+	uint32_t          turn;      /**< the turn whose result showed the last
+	                                  byte of the item, or 0 */
+	struct finding_id key;       /**< the ID of the item, such as cuh#2/1 */
+	struct oid        blobs[2];  /**< git IDs of the archive files: the
+	                                  arguments of the call, or no name,
+	                                  and the material */
 };
 
 /** The ring of an ask call. calls[(head + i) % SEEN_CALLS] is the call i of
@@ -378,15 +372,15 @@ seen_oldest (struct seen const *seen);
 /**
  * Records in the ring @p *p_seen that the output of the call @p call prints
  * the item @p item in the bytes @p output. The ring is allocated on the
- * first call. The ring copies item->id, item->record and item->blobs for
+ * first call. The ring copies item->key, item->record and item->blobs for
  * an item that it does not store, as its newest item, and drops its oldest
  * item if it stores SEEN_ITEMS items. For an item that the ring stores,
  * the bytes that results showed stay shown, unless output.len is not the
  * size that the ring stores, which starts the item anew. seen_shown()
  * counts the window of the result of the call. Returns 0, EFAULT for a
- * null @p p_seen or @p item, EINVAL for a @p call of 0, an empty item->id
- * or one without a NUL, an output.len of 0, or bytes past TOOL_OUTPUT_MAX,
- * or ENOMEM.
+ * null @p p_seen or @p item, EINVAL for a @p call of 0, an item->key that
+ * is not the ID of an item, an output.len of 0, or bytes past
+ * TOOL_OUTPUT_MAX, or ENOMEM.
  */
 extern int
 seen_print (struct seen            **p_seen,
@@ -418,12 +412,12 @@ extern struct json_object *
 seen_items_json (struct seen const *seen,
                  int               *e);
 
-/** Returns the item of @p seen with the ID @p id, such as cuh#2/1, or
- *  nullptr for no such item or a null @p seen.
+/** Returns the item of @p seen with the ID @p key, such as cuh#2/1, or
+ *  nullptr for no such item or a null @p seen or @p key.
  */
 extern struct seen_item const *
-seen_find_item (struct seen const *seen,
-                struct cstr_view   id);
+seen_find_item (struct seen const       *seen,
+                struct finding_id const *key);
 
 /**
  * Appends to @p d the notices of the calls and the items that @p seen

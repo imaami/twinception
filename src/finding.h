@@ -16,6 +16,7 @@
  * The evidence of a change is a list of evidence items (src/evidence.h).
  * The items of a finding are numbered from 1 across its changes, so that
  * bro#5/2 names the item 2 of bro#5, and the numbers never change.
+ * struct finding_id (src/finding_id.h) is the type of both IDs.
  *
  * A finding is the file findings/D/N.json (finding_path()), where N is its
  * number and D is N / 100, on the branch refs/heads/agent/AUTHOR/findings
@@ -31,6 +32,7 @@
 #include "cstr_view.h"
 #include "dstr.h"
 #include "evidence.h"
+#include "finding_id.h"
 #include "hexid.h"
 #include "member_name.h"
 #include "util.h"
@@ -42,11 +44,6 @@
 #define FINDING_EXT ".json"
 
 enum {
-	FINDING_ID      = MEMBER_NAME + 17,  /**< bytes of an ID such as bro#5,
-	                                          NUL included: a member name,
-	                                          '#', at most 10 digits, and 6
-	                                          spare bytes in place of the
-	                                          padding of struct finding */
 	FINDING_FILE    = sizeof FINDING_DIR "42949672/4294967295" FINDING_EXT,
 	                                     /**< bytes of the path of the file
 	                                          of a finding, NUL included */
@@ -54,8 +51,9 @@ enum {
 	                                          most */
 };
 
-/** The states of a finding: X(ID, name), the constant FINDING_ID of enum
- *  finding_state and the name in the findings tool and in the file.
+/** The states of a finding: X(ID, name). ID with the prefix FINDING_ is the
+ *  constant of enum finding_state, and name is the name in the findings
+ *  tool and in the file.
  */
 #define FINDING_STATE_LIST(X)      \
         X(CANDIDATE, "candidate") \
@@ -112,15 +110,14 @@ struct finding_change {
 
 /** A finding. Each member has a defined value from finding() on. */
 struct finding {
-	struct dstr  claim;
+	struct dstr       claim;
 	UTIL_ARRAY(struct finding_change) changes;
-	uint32_t     number;              /**< N of AUTHOR#N */
-	char         about[FINDING_ID];   /**< the ID of the finding that this
-	                                       finding checks, or "" */
-	struct hexid conversation;        /**< the conversation in which the
-	                                       author added the finding, or no
-	                                       id */
-	char         author[MEMBER_NAME];
+	struct finding_id id;            /**< AUTHOR#N, the ID of the finding */
+	struct finding_id about;         /**< the ID of the finding that this
+	                                      finding checks, or no ID */
+	struct hexid      conversation;  /**< the conversation in which the
+	                                      author added the finding, or no
+	                                      id */
 };
 
 /** Returns the state of @p f: the state of the last change, or candidate
@@ -158,30 +155,6 @@ finding_change_fini (struct finding_change *c);
 extern int
 finding_change_external (struct finding_change *c,
                          struct cstr_view       text);
-
-/**
- * Reads the ID @p text, such as bro#5: a member name (member_name_valid()),
- * '#' and a number from 1 to UINT32_MAX without a leading zero. Stores the
- * name in @p author and the number in @p *number. Returns 0, or EINVAL for
- * any other text, with "" in @p author and 0 in @p *number.
- */
-extern int
-finding_id_parse (struct cstr_view  text,
-                  char              author[static MEMBER_NAME],
-                  uint32_t         *number);
-
-/** Writes the ID of the finding @p number of @p author to @p id, such as
- *  bro#5.
- */
-extern void
-finding_id_format (char const *author,
-                   uint32_t    number,
-                   char        id[static FINDING_ID]);
-
-/** Writes the ID of @p f to @p id, such as bro#5. */
-extern void
-finding_id (struct finding const *f,
-            char                  id[static FINDING_ID]);
 
 /** Writes to @p path the path of the file of the finding @p number:
  *  findings/D/N.json, where D is @p number / 100. Returns the view of the
@@ -241,15 +214,15 @@ extern void
 finding_sort (struct finding *list,
               size_t          n);
 
-/** Returns the finding @p number of @p author among the @p n findings at
- *  @p list, which finding_sort() sorted, or nullptr for no such finding or
- *  a null @p list or @p author.
+/** Returns the finding of the ID @p id among the @p n findings at @p list,
+ *  which finding_sort() sorted, or nullptr for no such finding or a null
+ *  @p list or @p id. For the ID of an item, that is the finding of the
+ *  item.
  */
 extern struct finding const *
-finding_find (struct finding const *list,
-              size_t                n,
-              char const           *author,
-              uint32_t              number);
+finding_find (struct finding const    *list,
+              size_t                   n,
+              struct finding_id const *id);
 
 /** Returns the evidence item @p item of @p f, or nullptr for no such item
  *  or a null @p f.
@@ -280,10 +253,11 @@ finding_list (struct finding const *list,
               char const           *author,
               struct dstr          *d);
 
-/** Appends to @p d the finding @p f as the action show writes it: its ID
- *  @p id (finding_id()), author, state, claim and about, the findings of
- *  the @p n findings at @p list whose about names @p f, and each change
- *  with its reason and evidence. Returns 0 or ENOMEM.
+/** Appends to @p d the finding @p f as the action show writes it: its ID,
+ *  author, state, claim and about, the findings of the @p n findings at
+ *  @p list whose about is the ID of @p f, and each change with its reason
+ *  and evidence. @p id is the text of the ID of @p f (finding_id_put()).
+ *  Returns 0 or ENOMEM.
  */
 extern int
 finding_show (struct finding const *f,

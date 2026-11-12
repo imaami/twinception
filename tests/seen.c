@@ -15,6 +15,7 @@
 #include "buf.h"
 #include "check.h"
 #include "dstr.h"
+#include "finding_id.h"
 #include "jb.h"
 #include "oid.h"
 #include "range.h"
@@ -840,6 +841,24 @@ test_find (void)
 	CHECK(seen_resume(nullptr, nullptr, nullptr) == EFAULT);
 }
 
+/* Returns the ID @p text, such as cuh#2/1, which must be an ID. */
+static struct finding_id
+key_of (char const *text)
+{
+	struct finding_id key;
+	CHECK(!finding_id_parse(&key, cstr_view(text)));
+	return key;
+}
+
+/* Returns the item of @p seen with the ID @p text (seen_find_item()). */
+static struct seen_item const *
+find_item (struct seen const *seen,
+           char const        *text)
+{
+	struct finding_id const key = key_of(text);
+	return seen_find_item(seen, &key);
+}
+
 /* Returns an item with the ID @p id, the record @p record and the blobs
  * of the IDs 1... and 2... for seen_print(). The caller frees the record.
  */
@@ -847,11 +866,10 @@ static struct seen_item
 item_of (char const *id,
          char const *record)
 {
-	struct seen_item it = { .record = DSTR_INIT };
+	struct seen_item it = { .record = DSTR_INIT, .key = key_of(id) };
 	CHECK(!cstr_view_store(cstr_view(record), &it.record));
 	memset(it.blobs[0].hex, '1', OID_SHA1);
 	memset(it.blobs[1].hex, '2', OID_SHA1);
-	snprintf(it.id, sizeof it.id, "%s", id);
 	return it;
 }
 
@@ -866,20 +884,27 @@ test_items (void)
 	struct seen *seen = nullptr;
 	struct seen_item a = item_of("cuh#2/1", "{\"item\":1}");
 	struct seen_item b = item_of("cuh#2/2", "{\"item\":2}");
-	CHECK(!seen_find_item(seen, CSTR_VIEW("cuh#2/1")));
+	CHECK(!find_item(seen, "cuh#2/1"));
 	seen_shown(seen, 5, (struct extent){ 0, 100 }, 1);
 	/* The output of call 5 prints a at bytes 100 to 150 and b at bytes 150
 	 * to 400. The window of 120 bytes shows 20 bytes of a. */
 	CHECK(!seen_print(&seen, &a, 5, (struct extent){ 100, 50 }));
 	CHECK(seen && seen->items.n == 1);
 	CHECK(!seen_print(&seen, &b, 5, (struct extent){ 150, 250 }));
-	struct seen_item const *x = seen_find_item(seen, CSTR_VIEW("cuh#2/1"));
-	struct seen_item const *y = seen_find_item(seen, CSTR_VIEW("cuh#2/2"));
+	struct seen_item const *x = find_item(seen, "cuh#2/1");
+	struct seen_item const *y = find_item(seen, "cuh#2/2");
 	CHECK(x && x->output.len == 50 && !x->shown && x->output.at == 100 && x->call == 5 && !x->turn);
 	CHECK(y && y->output.len == 250 && y->output.at == 150 && y->call == 5);
 	SAME(dstr_get(&x->record), dstr_len(&x->record), "{\"item\":1}");
-	CHECK(!memcmp(x->blobs, a.blobs, sizeof a.blobs) && !strcmp(x->id, "cuh#2/1"));
-	CHECK(!seen_find_item(seen, CSTR_VIEW("cuh#2/3")) && !seen_find_item(seen, CSTR_VIEW("")));
+	CHECK(!memcmp(x->blobs, a.blobs, sizeof a.blobs) && finding_id_equal(&x->key, &a.key) &&
+	      !strcmp(x->key.author, "cuh") && x->key.number == 2 && x->key.item == 1);
+	/* The item of a finding of another number or author, the finding of the
+	 * item, no ID and a null ID are no item of the ring. */
+	struct finding_id const finding = finding_id_without_item(&a.key);
+	CHECK(!find_item(seen, "cuh#2/3") && !find_item(seen, "cuh#3/1") &&
+	      !find_item(seen, "cu#2/1") && !find_item(seen, "cuh2#2/1") &&
+	      !seen_find_item(seen, &finding) && !seen_find_item(seen, &(struct finding_id){}) &&
+	      !seen_find_item(seen, nullptr) && !seen_find_item(nullptr, &a.key));
 	/* The list of the printed items names each item once for its call. */
 	CHECK(!seen_print(&seen, &a, 5, (struct extent){ 100, 50 }) && seen->printed.n == 2);
 	seen_shown(seen, 4, (struct extent){ 0, 1000 }, 1);
@@ -957,34 +982,37 @@ test_items (void)
 	CHECK(seen_print(&seen, &a, 1, (struct extent){ 1, TOOL_OUTPUT_MAX }) == EINVAL);
 	CHECK(seen_print(&seen, &a, 1, (struct extent){ SIZE_MAX, 1 }) == EINVAL);
 	CHECK(seen_print(&seen, &a, 1, (struct extent){ 1, SIZE_MAX }) == EINVAL);
+	/* A key that is no ID, and the ID of a finding. */
 	struct seen_item bad = a;
-	bad.id[0] = '\0';
+	bad.key = (struct finding_id){};
 	CHECK(seen_print(&seen, &bad, 1, (struct extent){ 0, 1 }) == EINVAL);
-	memset(bad.id, 'x', sizeof bad.id);
+	bad.key = a.key;
+	bad.key.author[0] = '\0';
 	CHECK(seen_print(&seen, &bad, 1, (struct extent){ 0, 1 }) == EINVAL);
-	CHECK(seen->items.n == 2);
+	bad.key = finding;
+	CHECK(seen_print(&seen, &bad, 1, (struct extent){ 0, 1 }) == EINVAL);
+	CHECK(seen->items.n == 2 && !seen->printed.n);
 
 	/* The ring stores SEEN_ITEMS items at most and drops the oldest. Past
 	 * SEEN_LISTED items, the notice counts the rest. */
 	seen_clear(seen);
-	CHECK(!seen->items.n && !seen_find_item(seen, CSTR_VIEW("cuh#2/1")));
+	CHECK(!seen->items.n && !find_item(seen, "cuh#2/1"));
 	for (uint32_t k = 1; k <= SEEN_ITEMS + 2; ++k) {
-		snprintf(c.id, sizeof c.id, "bro#1/%u", k);
+		c.key = (struct finding_id){ .number = 1, .item = k, .author = "bro" };
 		CHECK(!seen_print(&seen, &c, k, (struct extent){ 0, 10 }));
 		seen_shown(seen, k, (struct extent){ 0, 10 }, 1);
 	}
-	CHECK(seen->items.n == SEEN_ITEMS && !seen_find_item(seen, CSTR_VIEW("bro#1/2")) &&
-	      seen_find_item(seen, CSTR_VIEW("bro#1/3")) &&
-	      seen_find_item(seen, CSTR_VIEW("bro#1/1026")));
+	CHECK(seen->items.n == SEEN_ITEMS && !find_item(seen, "bro#1/2") &&
+	      find_item(seen, "bro#1/3") && find_item(seen, "bro#1/1026"));
 	/* The two newest items took the places of the two oldest. */
 	CHECK(seen->items_head == 2 &&
-	      seen_find_item(seen, CSTR_VIEW("bro#1/3")) == &seen->items.items[2] &&
-	      seen_find_item(seen, CSTR_VIEW("bro#1/1026")) == &seen->items.items[1]);
+	      find_item(seen, "bro#1/3") == &seen->items.items[2] &&
+	      find_item(seen, "bro#1/1026") == &seen->items.items[1]);
 	/* An item that the ring stores stays in its place, and the items stay
 	 * in order in the notice and in the journal state. */
 	CHECK(!seen_print(&seen, &c, SEEN_ITEMS + 3, (struct extent){ 0, 10 }) &&
 	      seen->items_head == 2 &&
-	      seen_find_item(seen, CSTR_VIEW("bro#1/1026")) == &seen->items.items[1]);
+	      find_item(seen, "bro#1/1026") == &seen->items.items[1]);
 	seen_shown(seen, SEEN_ITEMS + 3, (struct extent){ 0, 10 }, 1);
 	(void)dstr_clear(&text);
 	CHECK(!seen_notice(seen, &text));
@@ -998,7 +1026,9 @@ test_items (void)
 	                      CSTR_VIEW("bro#1/1026")));
 	struct seen *again = nullptr;
 	CHECK(!resume(&again, 1, wrapped) && !again->items_head && again->items.n == SEEN_ITEMS &&
-	      !strcmp(again->items.items[0].id, "bro#1/3"));
+	      !strcmp(again->items.items[0].key.author, "bro") &&
+	      again->items.items[0].key.number == 1 && again->items.items[0].key.item == 3 &&
+	      again->items.items[SEEN_ITEMS - 1].key.item == SEEN_ITEMS + 2);
 	seen_destroy(&again);
 	json_object_put(wrapped);
 	size_t const kept = seen_kept(seen);
@@ -1068,9 +1098,9 @@ test_resume_items (void)
 	struct seen *resumed = nullptr;
 	CHECK(!resume(&resumed, 7, items));
 	CHECK(resumed && resumed->resumed == 7 && !resumed->n && resumed->items.n == 2);
-	struct seen_item const *x = seen_find_item(resumed, CSTR_VIEW("cuh#2/1"));
-	struct seen_item const *y = seen_find_item(resumed, CSTR_VIEW("cuh#2/2"));
-	CHECK(!seen_find_item(resumed, CSTR_VIEW("bro#7/1")));
+	struct seen_item const *x = find_item(resumed, "cuh#2/1");
+	struct seen_item const *y = find_item(resumed, "cuh#2/2");
+	CHECK(!find_item(resumed, "bro#7/1"));
 	CHECK(x && x->output.len == 50 && x->shown == 50 && x->turn == 3 && !x->call && !x->output.at &&
 	      !memcmp(x->blobs, a.blobs, sizeof a.blobs));
 	SAME(dstr_get(&x->record), dstr_len(&x->record), "{\"item\":1}");
@@ -1090,30 +1120,47 @@ test_resume_items (void)
 	CHECK(!resume(&resumed, 8, nullptr) && !resumed->items.n);
 	CHECK(!resume(&resumed, 8, items) && resumed->items.n == 2);
 
-	/* Refusals leave the ring as it was. */
+	/* Refusals leave the ring as it was. One member of each item is missing
+	 * or not valid. */
 	static char const *const bad[] = {
 		"{}",
 		"1",
 		"{\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":1,\"turn\":0}",
 		"{\"id\":\"\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":1,"
 		"\"turn\":0}",
-		"{\"id\":\"x\",\"record\":\"\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":1,"
-		"\"turn\":0}",
-		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\"],\"bytes\":1,\"shown\":1,"
-		"\"turn\":0}",
-		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",\"12\"],\"bytes\":1,\"shown\":1,"
-		"\"turn\":0}",
-		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",7],\"bytes\":1,\"shown\":1,"
-		"\"turn\":0}",
-		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":0,\"shown\":0,"
-		"\"turn\":0}",
-		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":2,"
-		"\"turn\":0}",
-		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":2,\"shown\":1,"
-		"\"turn\":1}",
 		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":1,"
-		"\"turn\":-1}",
-		"{\"id\":\"x\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":16777217,"
+		"\"turn\":0}",
+		"{\"id\":7,\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":1,"
+		"\"turn\":0}",
+		"{\"id\":\"cuh#2\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":1,"
+		"\"turn\":0}",
+		"{\"id\":\"cuh#2/0\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,"
+		"\"shown\":1,\"turn\":0}",
+		"{\"id\":\"cuh#2/1:3\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,"
+		"\"shown\":1,\"turn\":0}",
+		"{\"id\":\"cuh#2/1 \",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,"
+		"\"shown\":1,\"turn\":0}",
+		"{\"id\":\"c7#2/1\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,"
+		"\"shown\":1,\"turn\":0}",
+		"{\"id\":\"c7\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,\"shown\":1,"
+		"\"turn\":0}",
+		"{\"id\":\"cuh#2/1\",\"record\":\"\",\"blobs\":[\"\",\"\"],\"bytes\":1,"
+		"\"shown\":1,\"turn\":0}",
+		"{\"id\":\"cuh#2/1\",\"record\":\"r\",\"blobs\":[\"\"],\"bytes\":1,\"shown\":1,"
+		"\"turn\":0}",
+		"{\"id\":\"cuh#2/1\",\"record\":\"r\",\"blobs\":[\"\",\"12\"],\"bytes\":1,"
+		"\"shown\":1,\"turn\":0}",
+		"{\"id\":\"cuh#2/1\",\"record\":\"r\",\"blobs\":[\"\",7],\"bytes\":1,\"shown\":1,"
+		"\"turn\":0}",
+		"{\"id\":\"cuh#2/1\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":0,"
+		"\"shown\":0,\"turn\":0}",
+		"{\"id\":\"cuh#2/1\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,"
+		"\"shown\":2,\"turn\":0}",
+		"{\"id\":\"cuh#2/1\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":2,"
+		"\"shown\":1,\"turn\":1}",
+		"{\"id\":\"cuh#2/1\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":1,"
+		"\"shown\":1,\"turn\":-1}",
+		"{\"id\":\"cuh#2/1\",\"record\":\"r\",\"blobs\":[\"\",\"\"],\"bytes\":16777217,"
 		"\"shown\":1,\"turn\":0}",
 	};
 	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
@@ -1123,19 +1170,28 @@ test_resume_items (void)
 			fprintf(stderr, "%s:%d: accepted %s\n", __FILE__, __LINE__, bad[i]);
 		}
 	}
-	char id[SEEN_ID + 64];
-	memset(id, 'x', SEEN_ID);
-	snprintf(id + SEEN_ID, sizeof id - SEEN_ID, "\"");
-	char item[SEEN_ID + 128];
-	snprintf(item, sizeof item, "{\"id\":\"%s,\"record\":\"r\",\"blobs\":[\"\",\"\"],"
+	/* The ID of an item is at most FINDING_ID_TEXT - 1 bytes: a name of
+	 * UTIL_WORD_MAX characters and two numbers of 10 digits. A longer name
+	 * is no ID. */
+	char id[FINDING_ID_TEXT + 1] = "a";
+	memset(id + 1, 'a', UTIL_WORD_MAX);
+	snprintf(id + 1 + UTIL_WORD_MAX, sizeof id - 1 - UTIL_WORD_MAX, "#4294967295/4294967295");
+	char item[sizeof id + 128];
+	snprintf(item, sizeof item, "{\"id\":\"%s\",\"record\":\"r\",\"blobs\":[\"\",\"\"],"
 	         "\"bytes\":1,\"shown\":1,\"turn\":0}", id);
-	CHECK(resume_with(&resumed, item) == EINVAL);
-	id[SEEN_ID - 1] = '"';
-	id[SEEN_ID] = '\0';
-	snprintf(item, sizeof item, "{\"id\":\"%s,\"record\":\"r\",\"blobs\":[\"\",\"\"],"
-	         "\"bytes\":1,\"shown\":1,\"turn\":0}", id);
-	CHECK(!resume_with(&resumed, item) && resumed->items.n == 1 &&
-	      strlen(resumed->items.items[0].id) == SEEN_ID - 1);
+	CHECK(resume_with(&resumed, item) == EINVAL && resumed->items.n == 2);
+	snprintf(item, sizeof item, "{\"id\":\"%s\",\"record\":\"r\",\"blobs\":[\"\",\"\"],"
+	         "\"bytes\":1,\"shown\":1,\"turn\":0}", id + 1);
+	CHECK(!resume_with(&resumed, item) && resumed->items.n == 1 && resumed->resumed == 9);
+	struct finding_id const *longest = &resumed->items.items[0].key;
+	CHECK(strlen(longest->author) == UTIL_WORD_MAX && longest->number == UINT32_MAX &&
+	      longest->item == UINT32_MAX && strlen(id + 1) == FINDING_ID_TEXT - 1);
+	/* The journal state contains the text of the ID again. */
+	struct json_object *wrote = seen_items_json(resumed, &e);
+	CHECK(!e && jb_len(wrote) == 1 &&
+	      cstr_view_equal(jb_view(jb_get(jb_at(wrote, 0), "id")), cstr_view(id + 1)));
+	json_object_put(wrote);
+	CHECK(find_item(resumed, id + 1) == &resumed->items.items[0]);
 	/* At most SEEN_ITEMS items. */
 	struct json_object *many = json_object_new_array();
 	for (size_t i = 0; i <= SEEN_ITEMS; ++i)
