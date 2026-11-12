@@ -41,10 +41,12 @@ cli_tool_create (struct cli_client  *client,
                  struct cli_error   *error,
                  int                *e)
 {
-	enum {
-		WRITES = 1U << NOTES_ACTION_ADD | 1U << NOTES_ACTION_COPY | 1U << NOTES_ACTION_DELETE |
-		         1U << NOTES_ACTION_REPLACE | 1U << NOTES_ACTION_RESTORE,
-	};
+	/* The actions of the notes tool that write a note, as the bits
+	 * 1U << NOTES_ACTION_ID. */
+	#define CLI_TOOL_WRITE_BIT(id, name, flags, ...) \
+	        | ((flags) & NOTES_ACTION_AUTHOR ? 1U << NOTES_ACTION_##id : 0)
+	enum { WRITES = 0 NOTES_ACTION_ALL_LIST(CLI_TOOL_WRITE_BIT) };
+	#undef CLI_TOOL_WRITE_BIT
 	struct autocomplete_tool const *entry;
 	cli_json_auto arguments = nullptr;
 	*e = autocomplete_parse_call(client->catalog, command, &entry, &arguments,

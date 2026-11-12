@@ -674,11 +674,12 @@ def check_peer_notes(cli, unused_server):
     own = "design/äiti (1 line).md"
     other = "thoughts/next.md"
     selected = "reviews/note  (1 line).md"
-    copied, learned, replaced, restored = False, False, False, False
+    copied, learned, replaced, appended, restored = False, False, False, False, False
     calls = []
     held, release = threading.Event(), threading.Event()
     copied_listed, learned_listed = threading.Event(), threading.Event()
     replaced_listed, restored_listed = threading.Event(), threading.Event()
+    appended_listed = threading.Event()
     ask = {"name": "ask_ai", "title": "Ask AI", "inputSchema": {
         "type": "object", "properties": {"prompt": {"type": "string"},
         "messages": {"type": "array"}, "background": {"type": "boolean"}}}}
@@ -686,7 +687,7 @@ def check_peer_notes(cli, unused_server):
         "session": "6f0c2b9a41d8e3f75a2c1b0d9e8f7a6b", "agent": "self", "members": True}},
              "inputSchema": {"type": "object", "properties": {
                  "action": {"type": "string", "enum": ["members", "list", "read", "copy", "add",
-                                                       "replace", "restore"]},
+                                                       "append", "replace", "restore"]},
                  "notebook": {"type": "string"}, "file": {"type": "string"}}}}
     members = [{"name": "ann", "kind": "person"}, {"name": "bob", "kind": "agent"},
                {"name": "self", "kind": "agent"}]
@@ -701,7 +702,7 @@ def check_peer_notes(cli, unused_server):
         return None
 
     def reply(request):
-        nonlocal copied, learned, replaced, restored
+        nonlocal copied, learned, replaced, appended, restored
         params = request["params"]
         if params["name"] == "ask_ai":
             learned = True
@@ -727,6 +728,8 @@ def check_peer_notes(cli, unused_server):
                     learned_listed.set()
                 if replaced:
                     replaced_listed.set()
+                if appended:
+                    appended_listed.set()
                 if restored:
                     restored_listed.set()
             blob = "a" * (64 if book == "bob" else 40)
@@ -736,10 +739,11 @@ def check_peer_notes(cli, unused_server):
                           f"decimal.md  (12x bytes, {blob})\n"
                           f"short.md  (123 bytes, abcd)\n"
                           f"partial.md  (123 bytes, {blob})")
-        assert args["action"] in ("read", "copy", "replace", "restore"), request
+        assert args["action"] in ("read", "copy", "replace", "append", "restore"), request
         calls.append(args)
         copied |= args["action"] == "copy"
         replaced |= args["action"] == "replace"
+        appended |= args["action"] == "append"
         restored |= args["action"] == "restore"
         if args == {"action": "read", "file": "held.md"}:
             held.set()
@@ -814,6 +818,13 @@ def check_peer_notes(cli, unused_server):
             os.write(master, f"/tool notebook_service action=replace file='{own}'\r".encode())
             completed({"action": "replace", "file": own})
             assert replaced_listed.wait(5), "note replacement did not refresh filenames"
+            # An append changes a note as a replace does, and the completion
+            # lists the note again after the refresh.
+            os.write(master, f"/tool notebook_service action=append file='{own}'\r".encode())
+            completed({"action": "append", "file": own})
+            complete_refreshed(b"/tool notebook_service action=read file=des", own,
+                               appended_listed)
+            completed({"action": "read", "file": own})
             # A restore can bring back a note that is gone from the tree.
             os.write(master, f"/tool notebook_service action=restore file='{own}'\r".encode())
             completed({"action": "restore", "file": own})
