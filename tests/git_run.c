@@ -292,12 +292,13 @@ git_run_test_git (struct git_run_dir const *dir,
 /* Tests git_run_capture() with git in @p dir, an empty repository. With
  * a name to read: the name of an object, an empty name for the exit status
  * 1, EIO for the exit status 128 and for an output that is not one name
- * and a line feed, and the EFBIG of a cut output. The output replaces the
- * bytes that were in the buffer, and the name is empty after an error.
- * Without a name to read: 0 for the exit status 0 and EIO for the exit
- * status 1, with the output in the buffer, or with child_run() and no
- * buffer. EINVAL for a nullptr run and for a name to read without a
- * buffer.
+ * and a line feed, the EFBIG of a cut output, and EIO for a git that a
+ * signal kills. The signal number of SIGHUP is 1, and that end is not the
+ * exit status 1. The output replaces the bytes that were in the buffer,
+ * and the name is empty after an error. Without a name to read: 0 for the
+ * exit status 0 and EIO for the exit status 1, with the output in the
+ * buffer, or with child_run() and no buffer. EINVAL for a nullptr run and
+ * for a name to read without a buffer.
  */
 static void
 git_run_test_capture (struct git_run_dir const *dir)
@@ -322,7 +323,10 @@ git_run_test_capture (struct git_run_dir const *dir)
 		                 "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f\n") },
 		{ { "hash-object", "--stdin", nullptr }, CSTR_VIEW_INIT("abc"), 40, EFBIG,
 		  CSTR_VIEW_INIT("f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f") },
+		{ { "-c", "alias.die=!kill -HUP $PPID", "die", nullptr }, {}, 4096, EIO, {} },
+		{ { "-c", "alias.die=!kill -KILL $PPID", "die", nullptr }, {}, 4096, EIO, {} },
 	};
+	static_assert(SIGHUP == 1, "the signal number that equals the exit status 1");
 	struct buf out = {};
 	for (size_t i = 0; i < array_size(cases); ++i) {
 		struct child_cmd const how = {

@@ -82,22 +82,17 @@ git_run_capture (struct git_run const *run,
 {
 	if (!run || (oid && !out))
 		return EINVAL;
-	struct child_end end;
-	int e;
-	if (out) {
-		buf_clear(out);
-		e = child_capture(&run->c, fds, out, &end);
-	} else {
-		e = child_run(&run->c, fds, &end);
-	}
+	struct child_end end = {};
+	int const e = child_cmd_run(&run->c, fds, out, &end);
 	if (!oid)
-		return e ? e : end.status ? EIO : 0;
-	*oid = (struct oid){};
-	if (e || end.status == 1)
 		return e;
+	*oid = (struct oid){};
+	/* With a name to read, the exit status 1 is no error. */
+	if (e)
+		return e == EIO && end.code == CLD_EXITED && end.status == 1 ? 0 : e;
 	struct span const got = buf_peek(out);
 	struct cstr_view const text = { (char const *)got.ptr, got.len };
-	return end.status || oid_init_line(oid, text) ? EIO : 0;
+	return oid_init_line(oid, text) ? EIO : 0;
 }
 
 int

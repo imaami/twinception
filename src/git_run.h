@@ -171,12 +171,11 @@ git_run_init (struct git_run           *dest,
 
 /**
  * Runs the git command @p run on the calling thread with the descriptors
- * @p fds. If @p out is not nullptr, the content of @p out is replaced with
- * the output, which child_capture() reads up to the cap of @p run.
- * Otherwise child_run() runs git, and git writes to fds.out. Returns 0,
- * EIO for an exit status other than 0, EINVAL if @p run is nullptr or
- * @p oid is not nullptr without @p out, or the error of child_capture()
- * or child_run().
+ * @p fds, as child_cmd_run() runs a command. If @p out is not nullptr, the
+ * content of @p out is replaced with the output, up to the cap of @p run.
+ * Otherwise git writes to fds.out. Returns what child_cmd_run() returns,
+ * which is EIO for an exit status other than 0, or EINVAL if @p run is
+ * nullptr or @p oid is not nullptr without @p out.
  *
  * If @p oid is not nullptr, the function copies the name of an object in
  * the output, one name and a line feed, into @p oid. Another output is
