@@ -15761,7 +15761,9 @@ def check_findings_cases(binary, up):
     git or code. N5-1 and N4-3: the findings live in the session, stay after
     the ask call, and every agent reads them. N4-4 and N3-3: expand prints
     the stored bytes after the source commit is gone. N1-1: the notices
-    name what the prompt contains."""
+    name what the prompt contains. Beyond the recorded confusions, the
+    function checks the item of a failed call and the item of a call that
+    the upstream sent without an ID."""
     with tempfile.TemporaryDirectory() as d:
         git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
         repo, session = f"{d}/proj", f"{d}/session.git"
@@ -15880,10 +15882,39 @@ def check_findings_cases(binary, up):
                                 r"Commit [0-9a-f]{8}\.", said[1]), said
             [item] = stored(2, "bro")["changes"][0]["evidence"]
             assert (item["kind"], item["tool"], item["call"]) == ("call", "notes", 3), item
+            # The upstream sends two calls without an ID, and the second
+            # call fails, because the commit of the grep is gone. Each item
+            # contains the ID call_T_K that askai made for the call K of the
+            # turn T, the bytes of the output, and whether the call failed.
+            script[:] = [lambda r: (200, turn_stream([("", "notes", '{"action":"members"}'),
+                                                      ("", "git", json.dumps(grep))])),
+                         turn(("findings", {"action": "add", "claim": "The first commit is gone.",
+                                            "state": "verified", "evidence": ["c1", "c2"],
+                                            "reason": "c2 failed."}))]
+            count = len(up.requests)
+            bro.ask("Q")
+            members, gone = results(up.requests[count + 1])
+            assert gone.startswith("A revision names no commit that the git tool can read. "), gone
+            [said] = results(up.requests[count + 2])
+            assert re.fullmatch(r"Added bro#3 \(verified\)\. Evidence bro#3/1 from call c1, "
+                                r"bro#3/2 from call c2\. Commit [0-9a-f]{8}\.", said), said
+            items = stored(3, "bro")["changes"][0]["evidence"]
+            assert [(i["tool"], i["call"], i["turn"], i["call_id"], i["failed"], i["output"])
+                    for i in items] == \
+                [("notes", 1, 1, "call_1_0", False, len(members.encode())),
+                 ("git", 2, 1, "call_1_1", True, len(gone.encode()))], items
 
             def client(**arguments):
                 body = bro.rpc("tools/call", {"name": "findings", "arguments": arguments})[2]
                 return text_of(body["result"])
+            # The texts of show and expand contain "failed" for bro#3/2.
+            sizes = [i["result"]["bytes"] for i in items]
+            assert f"  evidence bro#3/1: call c1, notes, {sizes[0]} bytes\n  evidence " \
+                f"bro#3/2: call c2, git, failed, {sizes[1]} bytes\n" in \
+                client(action="show", id="bro#3"), client(action="show", id="bro#3")
+            text = client(action="expand", id="bro#3")
+            assert ", turn 1, tool notes, stored exactly as sent. Arguments:]\n" in text and \
+                ", turn 1, tool git, failed, stored exactly as sent. Arguments:]\n" in text, text
             # cuh#1 names the finding that checks it.
             assert client(action="show", id="cuh#1").startswith(
                 "Finding cuh#1 by cuh: verified\nclaim: a.c declares a and b.\nFindings "
@@ -15953,8 +15984,8 @@ def check_findings_cases(binary, up):
                 "your calls.", refused
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("findings cases: calls as evidence, stable IDs, any call verifies, shared findings, "
-          "stored bytes after a rewrite, the prompt notices, a changed archive, findings "
-          "without notes: PASS")
+          "a failed call and calls without an ID, stored bytes after a rewrite, the prompt "
+          "notices, a changed archive, findings without notes: PASS")
 
 
 def check_tasks(binary, up):
