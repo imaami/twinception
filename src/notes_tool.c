@@ -2096,8 +2096,8 @@ notes_tool_revision (struct mcp_slot          *slot,
  * every action. Any other caller can use the actions before attach.
  */
 static size_t
-notes_tool_offered (struct notes_tool const *tool,
-                    bool                     turn)
+notes_tool_action_count (struct notes_tool const *tool,
+                         bool                     turn)
 {
 	return turn && tool->attach ? array_size(notes_action_names) : NOTES_ACTION_ATTACH;
 }
@@ -2116,7 +2116,8 @@ notes_tool_start (struct mcp_slot    *slot,
 	struct notes_tool_call *call = notes_tool_loop_take(mcp_slot_part(slot), slot, nullptr);
 	if (!call)
 		return;
-	size_t const offered = notes_tool_offered(call->loop->tool, !mcp_slot_from_client(slot));
+	size_t const offered = notes_tool_action_count(call->loop->tool,
+	                                               !mcp_slot_from_client(slot));
 	size_t const which = cstr_view_index(notes_action_names, offered,
 	                                     jb_view(jb_get(args, "action")));
 	if (which == offered) {
@@ -2220,7 +2221,7 @@ notes_tool_start (struct mcp_slot    *slot,
 /* Returns the definition of the notes tool for a turn if @p turn is true,
  * or else for clients. Only the definition for clients contains the
  * content argument. The enum of the action argument contains the actions
- * that the caller can use (notes_tool_offered()).
+ * that the caller can use (notes_tool_action_count()).
  */
 static struct json_object *
 notes_tool_schema (struct notes_tool const *tool,
@@ -2233,7 +2234,7 @@ notes_tool_schema (struct notes_tool const *tool,
 	                 "Action members lists the names. The default is your notebook. copy "
 	                 "needs notebook.", agent))
 		return nullptr;
-	size_t const offered = notes_tool_offered(tool, turn);
+	size_t const offered = notes_tool_action_count(tool, turn);
 	struct json_object *actions = schema_names(notes_action_names, offered);
 	struct json_object *props = jb_object(
 		"action", jb_set_or_free(schema_enum(actions, nullptr), "description", schema_text3(
