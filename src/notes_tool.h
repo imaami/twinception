@@ -35,17 +35,13 @@ struct notes_tool {
 	size_t                        files_inline;  /**< the most bytes of a
 	                                                  file that a client
 	                                                  hands askai inline */
-	size_t                        actions;       /**< the number of leading
-	                                                  entries of
-	                                                  notes_action_names
-	                                                  that are valid
-	                                                  actions for the
-	                                                  upstream. It is
-	                                                  NOTES_ACTION_ATTACH,
-	                                                  or all of them if the
-	                                                  upstream supports
-	                                                  file uploads
-	                                                  (ai_upload()). */
+	size_t                        attach;        /**< 1 if the upstream
+	                                                  supports file uploads
+	                                                  (ai_upload()), so
+	                                                  that a turn can use
+	                                                  the action attach,
+	                                                  else 0. A bool would
+	                                                  leave padding. */
 };
 
 /** The part of the notes tool on one loop. */

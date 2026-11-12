@@ -103,7 +103,6 @@
 #include "mcp.h"
 #include "member.h"
 #include "metrics.h"
-#include "notes.h"
 #include "notes_tool.h"
 #include "notice.h"
 #include "plugin.h"
@@ -8642,7 +8641,7 @@ mcp_static_create (struct config const    *cfg,
 		mcp_static_destroy(&st);
 		return nullptr;
 	}
-	st->notes_tool.actions = st->uploads ? array_size(notes_action_names) : NOTES_ACTION_ATTACH;
+	st->notes_tool.attach = st->uploads != nullptr;
 
 	/* Built with json-c, which escapes as replies need, then kept as text. */
 	struct json_object *info = jb_object("name", json_object_new_string("askai"),
