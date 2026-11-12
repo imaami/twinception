@@ -9397,6 +9397,38 @@ def check_git(binary, up):
                 assert result.get("isError") and text_of(result) == text, \
                     (arguments, result)
 
+            # 16 wrong options and 32 wrong paths are more than the 4095 bytes
+            # of a refusal. The refusal is cut and ends in "...". The loop of
+            # a connection builds every refusal in one scratch text, and the
+            # next result on the connection is only its own text: a refusal
+            # of one sentence, the refusal of a revision, an output of git.
+            problems = " ".join(
+                [bad_option("grep", "--bogus").replace("options[0]", f"options[{k}]")
+                 for k in range(16)] +
+                [f"paths[{k}] must be relative to the top of the repository, with no .. "
+                 "component and no :(...) pathspec magic." for k in range(32)])
+            assert len(problems) > 4095, len(problems)
+            many = {"repo": "proj", "command": "grep", "pattern": "a",
+                    "options": ["--bogus"] * 16, "paths": ["../x"] * 32}
+            conn = ai.connect()
+            for arguments, failed, text in (
+                    (many, True, problems[:4092] + "..."),
+                    ({"repo": "proj", "command": "grep", "pattern": "a", "options": ["-f"]},
+                     True, bad_option("grep", "-f")),
+                    (many, True, problems[:4092] + "..."),
+                    ({"repo": "proj", "command": "rev-parse", "revisions": ["HEAD~9999"]},
+                     True, history),
+                    (many, True, problems[:4092] + "..."),
+                    ({"repo": "proj", "command": "ls-tree", "options": ["-r", "--name-only"]},
+                     False, "a.txt\nbig.txt\ndeleted.txt\n"),
+                    ({"repo": "nope", "command": "log"},
+                     True, "The repo argument must be proj or other.")):
+                result = ai.rpc("tools/call", {"name": "git", "arguments": arguments},
+                                conn=conn)[2]["result"]
+                assert bool(result.get("isError")) == failed and \
+                    text_of(result) == text, (arguments, result)
+            conn.close()
+
             # Repair instructions follow the selected command's spelling,
             # including flags whose meaning differs between commands.
             for command, option, fragments in (
