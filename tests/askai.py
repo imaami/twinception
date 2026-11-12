@@ -11702,13 +11702,16 @@ def check_notes(binary, up):
         # newest commit. The git counts its fast-import runs in the file
         # imports, which shows that the later write raced and committed
         # again. While the file steal exists, the git also moves the
-        # notebook ahead before each fast-import.
+        # notebook ahead before each fast-import. While the file boom exists,
+        # each fast-import fails, and the git does not count it.
         five = git("rev-parse", f"{own}^").decode().strip()
-        steal, imports = f"{d}/steal", f"{d}/imports"
+        steal, imports, boom = f"{d}/steal", f"{d}/imports", f"{d}/boom"
         real, repo = shlex.quote(shutil.which("git")), shlex.quote(notes)
         os.mkdir(f"{d}/bin")
         with open(f"{d}/bin/git", "w") as f:
             f.write('#!/bin/sh\ncase " $* " in *" fast-import "*)\n'
+                    f'  if [ -e {shlex.quote(boom)} ]; then\n'
+                    "    echo 'fatal: boom' >&2\n    exit 128\n  fi\n"
                     f'  echo >> {shlex.quote(imports)}\n  sleep 0.5\n'
                     f'  if [ -e {shlex.quote(steal)} ]; then\n'
                     f'    t=$({real} --git-dir {repo} rev-parse {own})\n'
@@ -11771,6 +11774,17 @@ def check_notes(binary, up):
                        for r, name in zip(said, names)]
                 assert all(ids) and commits(*ids), said
                 assert all(git("show", f"{own}:{name}") == b"r" for name in names), said
+            # The call of a new member fails with the reason if git cannot
+            # write the record of the member, and no record is written. A
+            # second call fails with the same reason. The call works once
+            # git writes again.
+            record = "refs/askai/members/dave"
+            open(boom, "w").close()
+            for _ in range(2):
+                assert call({"action": "delete", "file": "d1.md"}, "dave-1") == \
+                    f"!Could not write {record}: fatal: boom"
+            os.unlink(boom)
+            assert not git("for-each-ref", record)
             # The first two writes of a new notebook both succeed. The later
             # one makes its commit on the first commit of the notebook. A
             # delete of a missing note first writes the record of the new
@@ -11778,6 +11792,7 @@ def check_notes(binary, up):
             dave = "refs/heads/person/dave/notes"
             names = ("d1.md", "d2.md")
             assert call({"action": "delete", "file": "d1.md"}, "dave-1") == "!" + NO_NOTE
+            assert b"Login: identity dave\n" in git("log", "-1", "--format=%B", record)
             assert not git("for-each-ref", dave)
             said = race(*({"action": "add", "file": name, "text": "d"} for name in names),
                         token="dave-1")
