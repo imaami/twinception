@@ -538,12 +538,14 @@ member_records_login (struct member_records const *r,
 	return nullptr;
 }
 
-/* Writes the member of @p info to @p member. */
+/* Writes the member of @p info to @p member. The function writes every
+ * byte of @p *member, because code copies a member whole.
+ */
 static void
 member_of (struct member            *member,
            struct member_info const *info)
 {
-	member->kind = (enum member_kind)info->kind;
+	*member = (struct member){ .kind = (enum member_kind)info->kind };
 	util_format(member->name, sizeof member->name, "%.*s", (int)info->name.len,
 	            info->name.data);
 }

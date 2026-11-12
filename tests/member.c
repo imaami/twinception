@@ -313,11 +313,26 @@ test_why (struct member_wait const *wait,
 	return wait->why.len == strlen(why) && !strcmp(wait->why.data, why);
 }
 
+/* Returns true if the name of @p member ends with a NUL and every byte
+ * after that NUL is 0. A struct assignment and memcpy() copy the whole
+ * name, so a byte that no code wrote would be copied too.
+ */
+static bool
+test_name_zeroed (struct member const *member)
+{
+	size_t const len = strnlen(member->name, sizeof member->name);
+	for (size_t i = len; i < sizeof member->name; ++i)
+		if (member->name[i])
+			return false;
+	return len < sizeof member->name;
+}
+
 /* Finds the member of @p login in @p table with a lookup of @p lookup,
  * member_table_find() or member_table_claim(), which reads the records
  * with git, and checks the result: the error @p e, and the member @p name
- * of the kind @p kind, or the start of the reason @p why. Returns the
- * number of waits that ended.
+ * of the kind @p kind, or the start of the reason @p why, and that every
+ * byte of the name of the member is written (test_name_zeroed()). Returns
+ * the number of waits that ended.
  */
 static unsigned
 test_find (struct member_table       *table,
@@ -336,7 +351,7 @@ test_find (struct member_table       *table,
 	CHECK(first == EINPROGRESS && wait.e == EINPROGRESS);
 	if (first == EINPROGRESS)
 		test_until(before + 1);
-	CHECK(wait.e == e);
+	CHECK(wait.e == e && test_name_zeroed(&wait.member));
 	if (!e)
 		CHECK(wait.member.kind == kind && !strcmp(wait.member.name, name) &&
 		      test_why(&wait, ""));
@@ -346,7 +361,8 @@ test_find (struct member_table       *table,
 	/* After a lookup, the next find needs no lookup. It gets the member,
 	 * also a member without a record, or the refusal. */
 	struct member_wait again = { .done = test_ended };
-	CHECK(member_table_find(table, login, &again) == e && again.e == e);
+	CHECK(member_table_find(table, login, &again) == e && again.e == e &&
+	      test_name_zeroed(&again.member));
 	if (!e)
 		CHECK(again.member.kind == kind && !strcmp(again.member.name, name));
 	else
@@ -385,8 +401,10 @@ test_table (struct store const           *store,
 	CHECK(member_table_registry(table) == reg && !member_table_registry(nullptr));
 	struct member_wait wait = { .done = test_ended };
 	struct member_login login = {};
-	CHECK(member_table_find(table, &login, &wait) == ENOENT && wait.e == ENOENT);
-	CHECK(member_table_claim(table, &login, &wait) == ENOENT && wait.e == ENOENT);
+	CHECK(member_table_find(table, &login, &wait) == ENOENT && wait.e == ENOENT &&
+	      test_name_zeroed(&wait.member));
+	CHECK(member_table_claim(table, &login, &wait) == ENOENT && wait.e == ENOENT &&
+	      test_name_zeroed(&wait.member));
 	CHECK(member_table_find(nullptr, &login, &wait) == EINVAL);
 	CHECK(member_table_find(table, nullptr, &wait) == EINVAL);
 	CHECK(member_table_claim(table, &login, nullptr) == EINVAL);
@@ -419,8 +437,9 @@ test_table (struct store const           *store,
 	                            "session. Ask the operator to rename the agent.";
 	unsigned const refused = ended;
 	CHECK(member_table_claim(table, &early, &wait) == EPERM && wait.e == EPERM &&
-	      test_why(&wait, taken));
-	CHECK(member_table_find(table, &early, &wait) == EPERM && test_why(&wait, taken));
+	      test_why(&wait, taken) && test_name_zeroed(&wait.member));
+	CHECK(member_table_find(table, &early, &wait) == EPERM && test_why(&wait, taken) &&
+	      test_name_zeroed(&wait.member));
 	CHECK(ended == refused);
 	/* An agent identity of the name of another agent is refused, and the
 	 * record of the agent stays. */
@@ -443,7 +462,8 @@ test_table (struct store const           *store,
 	/* A login stays with its member, whatever name comes with it. */
 	login = test_login(MEMBER_PERSON, "uid 4343", "renamed");
 	struct member_wait known = { .done = test_ended };
-	CHECK(!member_table_find(table, &login, &known) && !strcmp(known.member.name, "carol"));
+	CHECK(!member_table_find(table, &login, &known) && !strcmp(known.member.name, "carol") &&
+	      test_name_zeroed(&known.member));
 
 	/* A person of the name of an agent or of another person is refused,
 	 * by a find too, and the refusal stays without a lookup. */
@@ -451,7 +471,7 @@ test_table (struct store const           *store,
 	test_find(table, member_table_find, &login, EPERM, MEMBER_PERSON, "", "Your login name "
 	          "bro is the name of an agent of this session. Ask the operator to rename the "
 	          "agent.");
-	CHECK(member_table_claim(table, &login, &wait) == EPERM);
+	CHECK(member_table_claim(table, &login, &wait) == EPERM && test_name_zeroed(&wait.member));
 	login = test_login(MEMBER_PERSON, "uid 4545", "carol");
 	test_find(table, member_table_claim, &login, EPERM, MEMBER_PERSON, "", "Your login name "
 	          "carol is the name of another person of this session.");
@@ -496,6 +516,8 @@ test_table (struct store const           *store,
 	test_until(before + 2);
 	CHECK(!waits[0].e && !waits[2].e && waits[1].e == EINPROGRESS);
 	CHECK(!strcmp(waits[0].member.name, "dave") && !strcmp(waits[2].member.name, "dave"));
+	for (size_t i = 0; i < array_size(waits); ++i)
+		CHECK(test_name_zeroed(&waits[i].member));
 	CHECK(test_has(store, "refs/askai/members/dave", "Login: identity dave\n"));
 
 	/* A claim ends with EIO after STORE_TRIES writes that lose a race,
@@ -511,7 +533,8 @@ test_table (struct store const           *store,
 	test_until(raced + 1);
 	CHECK(wait.e == EIO && test_why(&wait, "Could not write the member record of frank. "
 	                                        "Other askai services changed the member "
-	                                        "record at the same time."));
+	                                        "record at the same time.") &&
+	      test_name_zeroed(&wait.member));
 	CHECK(!unlink(lock));
 	test_find(table, member_table_claim, &login, 0, MEMBER_PERSON, "frank", "");
 
@@ -729,10 +752,14 @@ test_list (struct store const           *store,
 	CHECK(dstr_cat(&notice, ". Call notes with action members to see what each member wrote "
 	               "last.]\n") && dstr_cat(&unknown, "."));
 	struct member member;
+	memset(&member, 'x', sizeof member);
 	CHECK(!member_table_name(table, CSTR_VIEW("bro"), &member));
-	CHECK(member.kind == MEMBER_AGENT && !strcmp(member.name, "bro"));
+	CHECK(member.kind == MEMBER_AGENT && !strcmp(member.name, "bro") &&
+	      test_name_zeroed(&member));
+	memset(&member, 'x', sizeof member);
 	CHECK(!member_table_name(table, CSTR_VIEW("moved"), &member));
-	CHECK(member.kind == MEMBER_PERSON && !strcmp(member.name, "moved"));
+	CHECK(member.kind == MEMBER_PERSON && !strcmp(member.name, "moved") &&
+	      test_name_zeroed(&member));
 	CHECK(member_table_name(table, CSTR_VIEW("nobody"), &member) == ENOENT);
 	CHECK(member_table_name(table, CSTR_VIEW("anonymous"), &member) == ENOENT);
 	CHECK(member_table_name(nullptr, CSTR_VIEW("bro"), &member) == EINVAL);
@@ -927,10 +954,13 @@ test_blocked (struct store const           *store,
 	uint64_t const deadline = loop_clock() + MEMBER_NS + 10 * NS;
 	while (ended == before && loop_clock() < deadline)
 		CHECK(!loop_turn(&test_loop, deadline));
-	CHECK(ended == before + 1 && wait.e == EAGAIN && test_why(&wait, unnamed));
+	CHECK(ended == before + 1 && wait.e == EAGAIN && test_why(&wait, unnamed) &&
+	      test_name_zeroed(&wait.member));
 	CHECK(!test_exists(store, "refs/askai/members/uid-4242420051"));
-	CHECK(!member_table_find(table, &login, &wait) && !strcmp(wait.member.name, "uid-4242420051"));
-	CHECK(member_table_claim(table, &login, &wait) == EAGAIN && test_why(&wait, unnamed));
+	CHECK(!member_table_find(table, &login, &wait) &&
+	      !strcmp(wait.member.name, "uid-4242420051") && test_name_zeroed(&wait.member));
+	CHECK(member_table_claim(table, &login, &wait) == EAGAIN && test_why(&wait, unnamed) &&
+	      test_name_zeroed(&wait.member));
 	CHECK(!eventfd_write(test_gate, BLOCKER_THREADS));
 	test_jobs(blockers, 2 * BLOCKER_THREADS + 2);
 	CHECK(held == 2 * BLOCKER_THREADS && ended == before + 1);
@@ -951,7 +981,8 @@ test_blocked (struct store const           *store,
 	blocker_stop(blockers);
 	CHECK(!eventfd_write(test_gate, 1));
 	test_until(stopped + 1);
-	CHECK(wait.e == ECANCELED && test_why(&wait, "askai stops."));
+	CHECK(wait.e == ECANCELED && test_why(&wait, "askai stops.") &&
+	      test_name_zeroed(&wait.member));
 	CHECK(!test_exists(store, "refs/askai/members/uid-4242420052"));
 	CHECK(!eventfd_write(test_gate, 1));
 	uint64_t const end = loop_clock() + 10 * NS;
@@ -1142,7 +1173,8 @@ test_race (struct store const           *store,
 	test_until(before + 2);
 	for (size_t i = 0; i < array_size(waits); ++i)
 		CHECK(!waits[i].e && waits[i].member.kind == MEMBER_PERSON &&
-		      !strcmp(waits[i].member.name, "zoe") && test_why(&waits[i], ""));
+		      !strcmp(waits[i].member.name, "zoe") && test_why(&waits[i], "") &&
+		      test_name_zeroed(&waits[i].member));
 	CHECK(test_has(store, "refs/askai/members/zoe", "\n\nAdd the person zoe\n\nKind: person\n"
 	               "Login: identity zoe\n"));
 	CHECK(!test_in(store, "refs/askai/members/zoe", "\nparent ", false));
@@ -1151,7 +1183,7 @@ test_race (struct store const           *store,
 	/* Both tables answer later finds and claims without git. */
 	for (size_t i = 0; i < array_size(tables); ++i) {
 		CHECK(!member_table_claim(tables[i], &login, &waits[i]) && !waits[i].e &&
-		      !strcmp(waits[i].member.name, "zoe"));
+		      !strcmp(waits[i].member.name, "zoe") && test_name_zeroed(&waits[i].member));
 		member_table_destroy(&tables[i]);
 	}
 	CHECK(list_is_empty(children));
@@ -1263,12 +1295,13 @@ test_ends (char const                   *dir,
 	CHECK(member_table_claim(table, &login, &wait) == EINPROGRESS);
 	CHECK(!setenv("PATH", old, 1));
 	test_until(before + 1);
-	CHECK(wait.e == EIO && test_why(&wait, reads[FAIL]));
+	CHECK(wait.e == EIO && test_why(&wait, reads[FAIL]) && test_name_zeroed(&wait.member));
 	test_find(table, member_table_claim, &login, 0, MEMBER_PERSON, "hal", "");
 	CHECK(test_has(store, "refs/askai/members/hal", "Login: identity hal\n"));
 	login = test_login(MEMBER_PERSON, "identity ian", "ian");
 	CHECK(!setenv("PATH", paths[NONE], 1));
-	CHECK(member_table_claim(table, &login, &wait) == EIO && wait.e == EIO);
+	CHECK(member_table_claim(table, &login, &wait) == EIO && wait.e == EIO &&
+	      test_name_zeroed(&wait.member));
 	CHECK(!setenv("PATH", old, 1));
 	CHECK(test_why(&wait, "Cannot run git: No such file or directory."));
 	test_find(table, member_table_find, &login, 0, MEMBER_PERSON, "ian", "");
@@ -1278,7 +1311,7 @@ test_ends (char const                   *dir,
 	CHECK(!setenv("PATH", old, 1));
 	test_until(found + 1);
 	CHECK(wait.e == EIO && test_why(&wait, "Could not write refs/askai/members/ian: fatal: "
-	                                        "boom"));
+	                                        "boom") && test_name_zeroed(&wait.member));
 	CHECK(!test_exists(store, "refs/askai/members/ian"));
 	test_find(table, member_table_claim, &login, 0, MEMBER_PERSON, "ian", "");
 	CHECK(test_has(store, "refs/askai/members/ian", "Login: identity ian\n"));
@@ -1299,14 +1332,16 @@ test_ends (char const                   *dir,
 	CHECK(member_table_claim(table, &login, &wait) == EINPROGRESS);
 	CHECK(!setenv("PATH", old, 1));
 	test_until(whole + 1);
-	CHECK(wait.e == EIO && test_why(&wait, reason) && !test_exists(store, ref));
+	CHECK(wait.e == EIO && test_why(&wait, reason) && !test_exists(store, ref) &&
+	      test_name_zeroed(&wait.member));
 
 	/* The read that runs too long ends the lookup, and writes no record. */
 	uint64_t const deadline = loop_clock() + GIT_RUN_NS + 10 * NS;
 	while (slow.e == EINPROGRESS && loop_clock() < deadline)
 		CHECK(!loop_turn(&test_loop, deadline));
 	CHECK(slow.e == EIO && test_why(&slow, "Could not read the member records: git took "
-	                                        "longer than 10 s, and was stopped."));
+	                                        "longer than 10 s, and was stopped.") &&
+	      test_name_zeroed(&slow.member));
 	CHECK(!test_exists(store, "refs/askai/members/gil"));
 	member_table_destroy(&late);
 	member_table_destroy(&table);
