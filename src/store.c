@@ -87,17 +87,14 @@ store_open_common (struct store *store,
 	static char const *const words[] = {
 		"--git-dir=.git", "rev-parse", "--path-format=absolute", "--git-common-dir", nullptr
 	};
+	struct child_cmd const how = {
+		.max   = STORE_MAX,
+		.flags = CHILD_STDERR,
+	};
 	struct git_run_dir dir;
-	struct git_run run;
 	int e = git_run_dir_init(&dir, store->directory, nullptr, nullptr, 0);
 	if (!e)
-		e = git_run_init(&run, &dir, words, &(struct child_cmd){
-			.max      = STORE_MAX,
-			.deadline = loop_clock() + GIT_RUN_NS,
-			.flags    = CHILD_STDERR,
-		});
-	if (!e)
-		e = git_run_capture(&run, child_fds(), out, nullptr);
+		e = git_run_now(&dir, words, how, child_fds(), out, nullptr);
 	if (e)
 		return e;
 	struct span const got = buf_peek(out);
