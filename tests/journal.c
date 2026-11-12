@@ -193,7 +193,7 @@ journal_test_run (char const       *script,
 		.deadline = after_ms ? start + after_ms * MS : 0,
 		.grace = grace_ms * MS,
 	};
-	*end = (struct child_end){ .code = -1, .status = -1, .flags = UINT32_MAX };
+	*end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
 	int e = out ? child_capture(&cmd, child_fds(), out, end)
 	            : child_cmd_run(&cmd, child_fds(), nullptr, end);
 	*ms = (loop_clock() - start) / MS;
@@ -612,12 +612,12 @@ journal_test_child_run (void)
 		.envp = (char *const[]){ nullptr },
 		.max = 3,
 	};
-	end = (struct child_end){ .code = -1, .status = -1, .flags = UINT32_MAX };
+	end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
 	assert(child_cmd_run(&none, child_fds(), nullptr, &end) == ENOENT);
 	assert(!end.code && !end.status && !end.flags);
 	struct buf out = {};
 	assert(!buf_put(&out, "x", 1, SIZE_MAX));
-	end = (struct child_end){ .code = -1, .status = -1, .flags = UINT32_MAX };
+	end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
 	assert(child_capture(&none, child_fds(), &out, &end) == ENOENT);
 	assert(!end.code && !end.status && !end.flags);
 	assert(journal_test_out(&out, CSTR_VIEW("x")));
@@ -720,7 +720,7 @@ journal_test_child_cmd_run (void)
 		  {}, CSTR_VIEW_INIT("abc") },
 	};
 	static_assert(SIGHUP == 1, "the signal number that equals the exit status 1");
-	struct child_end const unset = { .code = -1, .status = -1, .flags = UINT32_MAX };
+	struct child_end const unset = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
 	char *const envp[] = { "PATH=/usr/bin:/bin", nullptr };
 	struct buf out = {};
 	for (size_t i = 0; i < array_size(cases); ++i) {

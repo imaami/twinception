@@ -13,11 +13,11 @@
 #define ASKAI_SRC_CHILD_H_
 
 #include <signal.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
 
 #include "buf.h"
+#include "compat.h"
 #include "cstr_view.h"
 #include "list.h"
 #include "loop.h"
@@ -59,6 +59,14 @@ struct child_end {
 	                       that killed the child */
 	uint32_t flags;   /**< enum child_state */
 };
+
+static const_inline struct child_end
+child_end (struct child_end const e)
+{
+	return e;
+}
+
+#define child_end(...) (child_end)((struct child_end){__VA_ARGS__})
 
 /**
  * A child process, from its spawn until it is reaped and its owner has let
@@ -102,7 +110,7 @@ struct child {
 /** Returns the exit status of @p c if it exited before its deadline and its
  *  output was not cut, else -1.
  */
-static inline int
+static force_inline int
 child_status (struct child const *c)
 {
 	struct child_end const *end = &c->end;
@@ -112,7 +120,7 @@ child_status (struct child const *c)
 /** Returns true if @p c exited with status 0 before its deadline and its
  *  output was not cut, and false if @p c is nullptr.
  */
-static inline bool
+static force_inline bool
 child_ok (struct child const *c)
 {
 	return c && !child_status(c);
@@ -165,6 +173,28 @@ struct child_cmd {
 	                                   padding */
 };
 
+static force_inline struct child_cmd
+child_cmd (char const        *file,
+           char const *const *argv,
+           char *const       *envp,
+           struct span        in,
+           size_t             max,
+           uint64_t           deadline,
+           uint64_t           grace,
+           enum child_flag    flags)
+{
+	return (struct child_cmd){
+		.file     = file,
+		.argv     = argv,
+		.envp     = envp,
+		.in       = in,
+		.max      = max,
+		.deadline = deadline,
+		.grace    = grace,
+		.flags    = flags
+	};
+}
+
 /** The descriptors of a child that child_capture() or child_cmd_run()
  *  runs. A descriptor that the caller does not pass is -1. The input of
  *  the child is the member in, or else cmd->in, or else /dev/null. The
@@ -181,10 +211,15 @@ struct child_fds {
 };
 
 /** Returns a struct child_fds whose descriptors are all -1. */
-static inline struct child_fds
+static const_inline struct child_fds
 child_fds (void)
 {
-	return (struct child_fds){ .in = -1, .out = -1, .dir = -1, .keep = -1 };
+	return (struct child_fds){
+		.in   = -1,
+		.out  = -1,
+		.dir  = -1,
+		.keep = -1
+	};
 }
 
 /**

@@ -310,7 +310,7 @@ store_run (struct store const *store,
 {
 	if (!out || !end)
 		return EINVAL;
-	*end = (struct child_end){};
+	*end = child_end();
 	struct git_run run;
 	int const e = store_command(store, &run, cmd, words, ref, in, loop_clock());
 	return e ? e : child_capture(&run.c, child_fds(), out, end);
@@ -324,7 +324,7 @@ store_init (struct store const *store,
 	if (!store || !out || !end)
 		return EINVAL;
 	/* For a repository that exists, no git runs. */
-	*end = (struct child_end){ .code = CLD_EXITED };
+	*end = child_end(.code = CLD_EXITED);
 	if (flock(store->fd, LOCK_EX))
 		return errno;
 	int e = 0;

@@ -908,7 +908,7 @@ test_ends (char const *parent)
 	buf_clear(&out);
 	/* For a repository that exists, no git runs, and the end is an exit
 	 * with status 0. */
-	end = (struct child_end){ .status = -1, .flags = CHILD_LATE };
+	end = child_end(.status = -1, .flags = CHILD_LATE);
 	CHECK(!store_init(store, &out, &end) && end.code == CLD_EXITED && !end.status &&
 	      !end.flags && !buf_peek(&out).len);
 	CHECK(store_init(nullptr, &out, &end) == EINVAL);

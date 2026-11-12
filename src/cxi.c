@@ -1499,7 +1499,8 @@ cxi_cache_git (struct cxi_cache const *cache,
 	struct child_cmd const cmd = {
 		.file = "git", .argv = argv, .envp = environ, .max = max, .deadline = cache->deadline
 	};
-	return e ? e : child_cmd_run(&cmd, cache->fds, out, &(struct child_end){});
+	struct child_end end = child_end();
+	return e ? e : child_cmd_run(&cmd, cache->fds, out, &end);
 }
 
 static int

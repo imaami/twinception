@@ -89,7 +89,7 @@ git_run_now (struct git_run_dir const *dir,
 	int e = git_run_init(&run, dir, words, &how);
 	if (e)
 		return e;
-	struct child_end end = {};
+	struct child_end end = child_end();
 	e = child_cmd_run(&run.c, fds, out, &end);
 	if (!oid)
 		return e;

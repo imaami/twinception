@@ -412,7 +412,7 @@ git_run_test_git (struct git_run_dir const *dir,
 	struct git_run run;
 	int e = git_run_init(&run, dir, words, &how);
 	CHECK(!e);
-	*end = (struct child_end){ .code = -1, .status = -1, .flags = UINT32_MAX };
+	*end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
 	if (!e)
 		e = out ? child_capture(&run.c, fds, out, end)
 		        : child_cmd_run(&run.c, fds, nullptr, end);

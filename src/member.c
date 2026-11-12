@@ -507,7 +507,7 @@ member_records_read (struct member_records *r,
                      size_t                 len)
 {
 	struct buf out = {};
-	struct child_end end;
+	struct child_end end = child_end();
 	int const e = store_run(store, STORE_REFS, member_list, nullptr, (struct span){}, &out, &end);
 	return member_records_take(r, &out, e, &end, why, len);
 }
@@ -588,7 +588,7 @@ member_commit (struct member_registry const *reg,
                size_t                        len)
 {
 	struct buf out = {};
-	struct child_end end = {};
+	struct child_end end = child_end();
 	if (!e)
 		e = store_run(reg->store, STORE_COMMIT, nullptr, ref, buf_peek(in), &out, &end);
 	buf_fini(in);
@@ -769,8 +769,9 @@ member_claim_step (struct member_claim          *claim,
 		return EINPROGRESS;
 	}
 	buf_fini(in);
-	return member_git_result(why, len, "write", claim->ref, (struct span){}, e,
-	                         &(struct child_end){});
+	struct child_end end = child_end();
+	return member_git_result(why, len, "write", claim->ref,
+	                         (struct span){}, e, &end);
 }
 
 /*
@@ -998,9 +999,10 @@ member_registry_start (struct member_registry *reg,
                        size_t                  len)
 {
 	struct buf out = {};
-	struct child_end end = {};
+	struct child_end end = child_end();
 	int e = store_init(reg->store, &out, &end);
-	e = member_git_result(why, len, "create", "the repository", buf_peek(&out), e, &end);
+	e = member_git_result(why, len, "create", "the repository",
+	                      buf_peek(&out), e, &end);
 	buf_fini(&out);
 	if (!e)
 		e = member_registry_session_read(reg, why, len);

@@ -441,7 +441,7 @@ child_run (struct child_cmd const *cmd,
            struct child_fds        fds,
            struct child_end       *end)
 {
-	*end = (struct child_end){};
+	*end = child_end();
 	int own = -1;
 	if (fds.in < 0 && cmd->in.len) {
 		int e = child_input(cmd->in, &own);
@@ -463,11 +463,11 @@ child_run (struct child_cmd const *cmd,
 	e = waited ? waited : failed ? errno : info.si_code != CLD_EXITED ? EIO : 0;
 	close(pidfd);
 	/* info stays zero if waitid() fails, so end->code is 0 then. */
-	*end = (struct child_end){
+	*end = child_end(
 		.code   = info.si_code,
 		.status = info.si_status,
-		.flags  = waited == ETIMEDOUT ? CHILD_LATE : 0,
-	};
+		.flags  = waited == ETIMEDOUT ? CHILD_LATE : 0
+	);
 	return e;
 }
 
@@ -477,7 +477,7 @@ child_capture (struct child_cmd const *cmd,
                struct buf             *out,
                struct child_end       *end)
 {
-	*end = (struct child_end){};
+	*end = child_end();
 	fds.out = memfd_create("askai-output", MFD_CLOEXEC);
 	if (fds.out < 0)
 		return errno;
