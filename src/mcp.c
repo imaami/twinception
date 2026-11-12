@@ -5085,6 +5085,10 @@ mcp_slot_background (struct mcp_slot    *slot,
 static int
 mcp_slot_turn_list (struct mcp_slot *slot)
 {
+	/* The statuses of a job that ran to its end, as the bits
+	 * 1u << LEDGER_ID. The list shows the size of the output of such a
+	 * job. */
+	enum { SIZED = 1u << LEDGER_COMPLETED | 1u << LEDGER_FAILED };
 	struct mcp_agenda const *a = slot->req->agenda;
 	struct dstr *d = &slot->answer;
 	if (!a)
@@ -5094,8 +5098,7 @@ mcp_slot_turn_list (struct mcp_slot *slot)
 		struct cstr_view const args = jb_wire(job->args);
 		size_t const shown = util_clip(args.data, args.len, JOB_ARGS);
 		enum ledger_status const status = agenda_job_status(job->flags);
-		/* The output of a job that ran to its end is sized. */
-		bool const sized = status == LEDGER_COMPLETED || status == LEDGER_FAILED;
+		bool const sized = SIZED >> status & 1;
 		bool const ok = args.data &&
 		                dstr_printf(d, "job %" PRIu32 ": %s %.*s%s: %s", k + 1,
 		                            mcp_slot_tool(job)->name.data, (int)shown, args.data,
