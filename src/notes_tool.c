@@ -23,6 +23,7 @@
 #include "mcp.h"
 #include "member.h"
 #include "notes.h"
+#include "notes_action.h"
 #include "notes_tool.h"
 #include "notice.h"
 #include "oid.h"
@@ -83,23 +84,15 @@ struct notes_tool_fetch_step {
 
 static struct notes_tool_fetch_step const *notes_tool_fetch_step (uint32_t fetch);
 
-/* The flags of an action in notes_tool_actions[]. */
-enum {
-	NOTE_WRITE    = 1 << 0,  /* writes to the caller's own notebook */
-	NOTE_FILE     = 1 << 1,  /* takes the file argument */
-	NOTE_OFFSET   = 1 << 2,  /* takes the offset argument */
-	NOTE_REVISION = 1 << 3,  /* takes the revision argument */
-	NOTE_AUTHOR   = 1 << 4,  /* writes a note as the caller, which needs
-	                            the member name of the caller */
-};
-
-/* The flags and the fetch value of each action (NOTES_ALL_ACTION_LIST). */
+/* The flags (enum notes_action_flag) and the fetch value of each action
+ * (NOTES_ACTION_ALL_LIST).
+ */
 static struct {
 	uint32_t              flags;
 	enum notes_tool_fetch fetch;
 } const notes_tool_actions[] = {
 #define NOTES_ACTION_ROW(id, name, flags, fetch) { flags, fetch },
-	NOTES_ALL_ACTION_LIST(NOTES_ACTION_ROW)
+	NOTES_ACTION_ALL_LIST(NOTES_ACTION_ROW)
 #undef NOTES_ACTION_ROW
 };
 
@@ -521,11 +514,12 @@ notes_tool_prompt_notices (struct mcp_slot *slot)
 
 /* Finds the member of the login of the client of the call in @p slot. The
  * prompt of an ask call (call->then) and an action that writes a note as
- * the caller (NOTE_AUTHOR) claim the member, which makes the record of a
- * new member (member_table_claim()). Any other call only looks the member
- * up (member_table_find()). Once the lookup has ended, the call goes on in
- * notes_tool_logged_in(). While the table looks the login up, the call is
- * parked with CALL_LOGIN, the state from which notes_tool_step() goes on.
+ * the caller (NOTES_ACTION_AUTHOR) claim the member, which makes the
+ * record of a new member (member_table_claim()). Any other call only
+ * looks the member up (member_table_find()). Once the lookup has ended,
+ * the call goes on in notes_tool_logged_in(). While the table looks the
+ * login up, the call is parked with CALL_LOGIN, the state from which
+ * notes_tool_step() goes on.
  */
 static void
 notes_tool_login (struct mcp_slot *slot)
@@ -533,7 +527,7 @@ notes_tool_login (struct mcp_slot *slot)
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct member_table *const members = mcp_slot_members(slot);
 	struct member_login const *login = &mcp_slot_member(slot)->login;
-	bool const claim = call->then || notes_tool_actions[call->action].flags & NOTE_AUTHOR;
+	bool const claim = call->then || notes_tool_actions[call->action].flags & NOTES_ACTION_AUTHOR;
 	int const e = claim ? member_table_claim(members, login, &call->wait)
 	                    : member_table_find(members, login, &call->wait);
 	if (e != EINPROGRESS) {
@@ -607,7 +601,7 @@ notes_tool_unread (struct mcp_slot *slot)
 	struct cstr_view const none = util_format_view(buf, sizeof buf,
 	                                               call->flags & CALL_OWN ? yours : other,
 	                                               call->book.name);
-	if (notes_tool_actions[call->action].flags & NOTE_FILE)
+	if (notes_tool_actions[call->action].flags & NOTES_ACTION_FILE)
 		mcp_slot_tell(slot, none, TOOL_FAILED);
 	else if (mcp_slot_from_client(slot))
 		mcp_slot_tell(slot, none, 0);
@@ -1809,11 +1803,11 @@ notes_tool_launch (struct mcp_slot *slot)
 
 /* Finds the notebook of the call in @p slot once the caller is known, and
  * runs the first git of the call. A call that writes a note as the caller
- * (NOTE_AUTHOR) needs a caller with a member name, and a write writes only
- * the notebook of the caller. Without the notebook argument, the call
- * reads the notebook of the caller (CALL_OWN). Otherwise the argument
- * names a member of the table. For a name without a member in the table,
- * git lists the records of the members first (FETCH_MEMBERS).
+ * (NOTES_ACTION_AUTHOR) needs a caller with a member name, and a write
+ * writes only the notebook of the caller. Without the notebook argument,
+ * the call reads the notebook of the caller (CALL_OWN). Otherwise the
+ * argument names a member of the table. For a name without a member in
+ * the table, git lists the records of the members first (FETCH_MEMBERS).
  */
 static void
 notes_tool_resolve (struct mcp_slot *slot)
@@ -1825,7 +1819,7 @@ notes_tool_resolve (struct mcp_slot *slot)
 	if (!*call->self.name) {
 		/* The refusal of a login by a record comes with a reason. */
 		struct cstr_view const why = util_text_view(&call->wait.why);
-		if (flags & NOTE_AUTHOR) {
+		if (flags & NOTES_ACTION_AUTHOR) {
 			mcp_slot_tell(slot, why.len ? why
 			              : CSTR_VIEW("Writing notes needs a member name. Connect through "
 			                          "the Unix socket, or with the token of an "
@@ -1846,7 +1840,7 @@ notes_tool_resolve (struct mcp_slot *slot)
 		call->flags |= CALL_OWN;
 		call->book = call->self;
 		memcpy(call->notebook, call->repo, sizeof call->notebook);
-	} else if (flags & NOTE_WRITE) {
+	} else if (flags & NOTES_ACTION_WRITE) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "You can write only your notebook, %s.",
 		               call->self.name);
 		return;
@@ -1897,8 +1891,8 @@ notes_tool_logged_in (struct mcp_slot *slot)
 /* Stages @p fetch as the first git run of the call in @p slot. The caller
  * of a turn is the agent of askai. For a client, the function first finds
  * the member of its login. A call that writes a note as the caller
- * (NOTE_AUTHOR) claims the member (notes_tool_login()). If @p e is not 0,
- * the function ends the call with @p e instead.
+ * (NOTES_ACTION_AUTHOR) claims the member (notes_tool_login()). If @p e is
+ * not 0, the function ends the call with @p e instead.
  */
 static void
 notes_tool_stage (struct mcp_slot *slot,
@@ -2127,7 +2121,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	                                     jb_view(jb_get(args, "action")));
 	if (which == offered) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "The action argument must be one of: "
-		               XL_JOIN(", ", ", ", NOTES_COMMON_ACTION_LIST(XL_TEXT)) "%s.",
+		               XL_JOIN(", ", ", ", NOTES_ACTION_COMMON_LIST(XL_TEXT)) "%s.",
 		               offered > NOTES_ACTION_ATTACH ? ", attach" : "");
 		return;
 	}
@@ -2137,7 +2131,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	uint32_t const kind = fetch & FETCH_KIND;
 	bool const diff = kind == FETCH_DIFF;
 	struct json_object *file = jb_get(args, "file");
-	if ((flags & NOTE_FILE) && !file) {
+	if ((flags & NOTES_ACTION_FILE) && !file) {
 		mcp_slot_tell(slot, CSTR_VIEW("The file argument is missing. Give the name of a "
 		                              "note, such as plan.md."), TOOL_FAILED);
 		return;
@@ -2145,7 +2139,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	struct json_object *revision = jb_get(args, "revision");
 	struct json_object *from = jb_get(args, "from");
 	struct json_object *to = jb_get(args, "to");
-	if ((revision && !(flags & NOTE_REVISION)) || ((from || to) && !diff)) {
+	if ((revision && !(flags & NOTES_ACTION_REVISION)) || ((from || to) && !diff)) {
 		mcp_slot_tell(slot, CSTR_VIEW("Give revision only with read or restore. Give from "
 		                              "and to only with diff."), TOOL_FAILED);
 		return;
@@ -2175,12 +2169,12 @@ notes_tool_start (struct mcp_slot    *slot,
 		              TOOL_FAILED);
 		return;
 	}
-	if ((flags & NOTE_OFFSET) && mcp_slot_offset(slot, args))
+	if ((flags & NOTES_ACTION_OFFSET) && mcp_slot_offset(slot, args))
 		return;
 	/* history accepts file too, and then lists only the changes to that note. */
 	bool const history = kind == FETCH_LIST && file;
 	struct cstr_view name = jb_view(file);
-	if (flags & NOTE_FILE || history) {
+	if (flags & NOTES_ACTION_FILE || history) {
 		if (notes_name(&name)) {
 			mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 			return;
@@ -2214,7 +2208,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		 * message prints it. */
 		call->part = (struct extent){};
 		notes_tool_stage(slot, FETCH_CHECK, store_part_delete(&call->file, name));
-	} else if (flags & NOTE_WRITE) {
+	} else if (flags & NOTES_ACTION_WRITE) {
 		notes_tool_add(slot, name, args);
 	} else if (kind == FETCH_GREP) {
 		notes_tool_search(slot, jb_view(jb_get(args, "pattern")));

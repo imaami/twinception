@@ -8,7 +8,7 @@
 #include "cli_network.h"
 #include "compat.h"
 #include "jb.h"
-#include "notes.h"
+#include "notes_action.h"
 #include "oid.h"
 #include "sse.h"
 #include "util.h"

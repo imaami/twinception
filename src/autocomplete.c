@@ -13,7 +13,7 @@
 #include "compat.h"
 #include "dstr.h"
 #include "jb.h"
-#include "notes.h"
+#include "notes_action.h"
 #include "util.h"
 
 /* The most tools and the most lists of note paths of a catalog. */

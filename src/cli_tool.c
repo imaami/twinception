@@ -14,7 +14,7 @@
 #include "compat.h"
 #include "jb.h"
 #include "list.h"
-#include "notes.h"
+#include "notes_action.h"
 
 struct cli_tool {
 	struct cli_stream   stream;
