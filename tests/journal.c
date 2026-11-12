@@ -784,34 +784,40 @@ journal_test_child_cmd_run (void)
 	buf_fini(&out);
 }
 
-/* Tests the reason that child_end_why() writes for each kind of end. The
- * late test comes first and the cut test second. For an exit with status
- * 0, the view is empty.
+/* Tests the reason that child_end_why() writes and the status that
+ * child_end_status() returns for each kind of end. The late test comes
+ * first and the cut test second. For an exit with status 0, the view is
+ * empty. The status is the exit status of a child that exited before its
+ * deadline and whose output was not cut, and else -1. child_status() and
+ * child_ok() read the end of a child in the same way.
  */
 static void
 journal_test_child_end_why (void)
 {
 	static struct {
 		struct child_end end;
+		int              status;
 		struct cstr_view why;
 	} const cases[] = {
-		{ { CLD_EXITED, 0, 0 },
+		{ { CLD_EXITED, 0, 0 }, 0,
 		  {} },
-		{ { CLD_EXITED, 2, 0 },
+		{ { CLD_EXITED, 2, 0 }, 2,
 		  CSTR_VIEW_INIT("git exited with status 2.") },
-		{ { CLD_KILLED, SIGKILL, 0 },
+		{ { CLD_KILLED, SIGKILL, 0 }, -1,
 		  CSTR_VIEW_INIT("git was killed by signal 9.") },
-		{ { CLD_DUMPED, SIGSEGV, 0 },
+		{ { CLD_DUMPED, SIGSEGV, 0 }, -1,
 		  CSTR_VIEW_INIT("git was killed by signal 11.") },
-		{ { 0, 0, 0 },
+		{ { 0, 0, 0 }, -1,
 		  CSTR_VIEW_INIT("git ended, and why is unknown.") },
-		{ { CLD_KILLED, SIGKILL, CHILD_CUT },
+		{ { CLD_KILLED, SIGKILL, CHILD_CUT }, -1,
 		  CSTR_VIEW_INIT("git wrote more than 4 MiB.") },
-		{ { CLD_EXITED, 0, CHILD_CUT },
+		{ { CLD_EXITED, 0, CHILD_CUT }, -1,
 		  CSTR_VIEW_INIT("git wrote more than 4 MiB.") },
-		{ { CLD_KILLED, SIGKILL, CHILD_LATE },
+		{ { CLD_KILLED, SIGKILL, CHILD_LATE }, -1,
 		  CSTR_VIEW_INIT("git took longer than 10 s, and was stopped.") },
-		{ { CLD_KILLED, SIGKILL, CHILD_CUT | CHILD_LATE },
+		{ { CLD_KILLED, SIGKILL, CHILD_CUT | CHILD_LATE }, -1,
+		  CSTR_VIEW_INIT("git took longer than 10 s, and was stopped.") },
+		{ { CLD_EXITED, 0, CHILD_LATE }, -1,
 		  CSTR_VIEW_INIT("git took longer than 10 s, and was stopped.") },
 	};
 	for (size_t i = 0; i < array_size(cases); ++i) {
@@ -819,7 +825,12 @@ journal_test_child_end_why (void)
 		struct cstr_view const why = child_end_why(&cases[i].end, "git", 10 * NS,
 		                                           (4 << 20) + 4096, buf, sizeof buf);
 		assert(cstr_view_equal(why, cases[i].why) && !why.data == !cases[i].why.data);
+		assert(child_end_status(&cases[i].end) == cases[i].status &&
+		       !why.len == !cases[i].status);
+		struct child const c = { .end = cases[i].end };
+		assert(child_status(&c) == cases[i].status && child_ok(&c) == !cases[i].status);
 	}
+	assert(!child_ok(nullptr));
 }
 
 int
@@ -858,7 +869,7 @@ main (int argc, char **argv)
 	journal_test_argv(argv[1]);
 	puts("Journal loads, write gaps, legacy migration, reasoning verification, "
 	     "path walks, private files, directory streams, child_capture(), "
-	     "child_cmd_run(), child_end_why(), journal_git(), "
+	     "child_cmd_run(), child_end_why(), child_end_status(), journal_git(), "
 	     "lock removal and the argv of git: PASS");
 	return 0;
 }

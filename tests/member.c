@@ -1301,6 +1301,15 @@ test_ends (char const                   *dir,
 	test_registry_make(store, "bro", "gpu1", EIO, "Could not read the member records: No such "
 	                   "file or directory.");
 	CHECK(!setenv("PATH", old, 1));
+	/* A reason that does not fit its storage ends with "...", for a cut in
+	 * the cause and for a cut before the cause. */
+	char cut[48] = "";
+	CHECK(!setenv("PATH", paths[FAIL], 1));
+	CHECK(!member_registry_create(store, "bro", "gpu1", cut, sizeof cut, &e) && e == EIO &&
+	      !strcmp(cut, "Could not read the member records: git exite..."));
+	CHECK(!member_registry_create(store, "bro", "gpu1", cut, 24, &e) && e == EIO &&
+	      !strcmp(cut, "Could not read the m..."));
+	CHECK(!setenv("PATH", old, 1));
 	char path[4096], why[256];
 	CHECK(snprintf(path, sizeof path, "%s/new.git", dir) > 0);
 	struct store *made = store_create(path, why, sizeof why, &e);

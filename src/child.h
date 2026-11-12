@@ -68,6 +68,15 @@ child_end (struct child_end const e)
 
 #define child_end(...) (child_end)((struct child_end){__VA_ARGS__})
 
+/** Returns the exit status of a child that ended as @p end says if the
+ *  child exited before its deadline and its output was not cut, else -1.
+ */
+static force_inline int
+child_end_status (struct child_end const *end)
+{
+	return end->flags & (CHILD_CUT | CHILD_LATE) || end->code != CLD_EXITED ? -1 : end->status;
+}
+
 /**
  * A child process, from its spawn until it is reaped and its owner has let
  * go of it. Its session's process group is killed, with SIGKILL, once its
@@ -113,8 +122,7 @@ struct child {
 static force_inline int
 child_status (struct child const *c)
 {
-	struct child_end const *end = &c->end;
-	return end->flags & (CHILD_CUT | CHILD_LATE) || end->code != CLD_EXITED ? -1 : end->status;
+	return child_end_status(&c->end);
 }
 
 /** Returns true if @p c exited with status 0 before its deadline and its

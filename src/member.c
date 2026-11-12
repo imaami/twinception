@@ -396,32 +396,14 @@ member_records_parse (struct member_records *r)
 	return 0;
 }
 
-/* Writes to the @p len bytes at @p why that askai could not @p verb
- * @p object: with the last line of @p out, the errors of a git that
- * writes, or else with @p because.
- */
-static void
-member_failed (char             *why,
-               size_t            len,
-               char const       *verb,
-               char const       *object,
-               struct span       out,
-               struct cstr_view  because)
-{
-	struct cstr_view text = cstr_view_last_line((struct cstr_view){ (char const *)out.ptr,
-	                                                                 out.len });
-	if (!text.len)
-		text = because;
-	util_format(why, len, "Could not %s %s: %.*s", verb, object,
-	            (int)util_clip(text.data, text.len, 200), text.data);
-}
-
 /* Returns 0 if git, which ended as @p end says, exited with status 0, and
  * @p e is 0. @p e is the error that kept git from running or its output
  * from being read, such as an error of store_run(), or 0. Otherwise the
- * function writes that askai could not @p verb @p object, as
- * member_failed() does with the output @p out, and with why git failed as
- * child_end_why() says it, or else the text of @p e. Then it returns EIO.
+ * function returns EIO, and writes to the @p len bytes at @p why that
+ * askai could not @p verb @p object, and then the cause. The cause is the
+ * last line of @p out, the errors of a git that writes. Without that line,
+ * the cause is the text of @p e if git did not run or exited with status
+ * 0, and else why git failed, as child_end_why() says it.
  */
 static int
 member_git_result (char                   *why,
@@ -432,17 +414,20 @@ member_git_result (char                   *why,
                    int                     e,
                    struct child_end const *end)
 {
-	char text[TOOL_TELL_MAX];
-	struct cstr_view because = child_end_why(end, "git", GIT_RUN_NS, STORE_MAX, text,
-	                                         sizeof text);
-	/* end->code is 0 if git did not run, and child_end_why() returns an
-	 * empty text for an exit with status 0. Then the reason is the text
-	 * of @p e. */
-	if (e && (!end->code || !because.len))
-		because = util_format_view(text, sizeof text, "%s.", strerror(e));
-	if (!because.len)
+	int const status = child_end_status(end);
+	if (!e && !status)
 		return 0;
-	member_failed(why, len, verb, object, out, because);
+	size_t const at = util_format(why, len, "Could not %s %s: ", verb, object);
+	struct cstr_view const line = cstr_view_last_line((struct cstr_view){ (char const *)out.ptr,
+	                                                                       out.len });
+	/* end->code is 0 if git did not run. */
+	if (line.len)
+		util_format(why + at, len - at, "%.*s", (int)util_clip(line.data, line.len, 200),
+		            line.data);
+	else if (e && (!end->code || !status))
+		util_format(why + at, len - at, "%s.", strerror(e));
+	else
+		(void)child_end_why(end, "git", GIT_RUN_NS, STORE_MAX, why + at, len - at);
 	return EIO;
 }
 
@@ -489,9 +474,8 @@ member_records_take (struct member_records  *r,
 		*r = got;
 		got = old;
 	} else if (!ended) {
-		member_failed(why, len, "read", records, (struct span){},
-		              e == EIO ? CSTR_VIEW("the output of git is not valid.")
-		                       : CSTR_VIEW("Out of memory."));
+		util_format(why, len, "Could not read %s: %s", records,
+		            e == EIO ? "the output of git is not valid." : "Out of memory.");
 	}
 	member_records_fini(&got);
 	return e;
