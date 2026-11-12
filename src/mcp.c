@@ -7719,7 +7719,8 @@ mcp_create (struct loop              *loop,
 		int pe = 0;
 		mcp->parts[i] = p->service;
 		if (p->part_create &&
-		    !(mcp->parts[i] = p->part_create(p->service, loop, blockers, &mcp->children, &pe))) {
+		    !(mcp->parts[i] = p->part_create(p->service, loop, blockers, &mcp->children,
+		                                     &mcp->scratch, &pe))) {
 			*e = pe ? pe : ENOMEM;
 			goto fail;
 		}

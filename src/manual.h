@@ -67,8 +67,9 @@ manual_counts (struct manual const *manual);
 extern struct plugin const manual_plugin;
 
 /** Creates the man tool's part of a client loop (src/mcp.h). The service
- *  argument points to the struct manual. The only error number is
- *  ENOMEM.
+ *  argument points to the struct manual. A fetch of the loop that fails
+ *  builds its reason in the scratch text that the scratch argument points
+ *  to. The only error number is ENOMEM.
  */
 extern mcp_part_create_fn manual_loop_create;
 

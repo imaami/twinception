@@ -165,11 +165,11 @@ mcp_static_destroy (struct mcp_static **p_static);
  * @p loop (member_table_create()), with a pointer to the scratch text of
  * the loop (mcp_slot_scratch()). mcp_slot_members() returns the table to
  * the calls of the loop. Then the function creates the part of each
- * built-in plugin with parts, in the order of the plugins. These plugins
- * are man and notes. The table and the parts run blocking work on
- * @p blockers (src/blocker.h). The new object records its statistics in
- * @p counts, whose atomic members must be valid. It answers GET /metrics
- * from @p metrics.
+ * built-in plugin with parts, in the order of the plugins, with a pointer
+ * to the same scratch. These plugins are man and notes. The table and the
+ * parts run blocking work on @p blockers (src/blocker.h). The new object
+ * records its statistics in @p counts, whose atomic members must be valid.
+ * It answers GET /metrics from @p metrics.
  *
  * Returns the new object. On failure it returns nullptr and stores the
  * error number in @p *e. The error number is ENOMEM, or the error number
@@ -263,16 +263,19 @@ mcp_app (struct mcp *mcp);
  *  @p service is the plugin's service, the object that all loops share.
  *  @p blockers run the work of the part that blocks (src/blocker.h).
  *  @p children is the list of the children (src/child.h) of the loop,
- *  which askai frees after the parts. askai calls the function on the
- *  thread of @p loop, before the loop's first call. Returns the part. On
- *  failure it returns nullptr and stores the error number in @p *e. Parts
- *  exist only for the built-in plugins.
+ *  which askai frees after the parts. @p scratch is the scratch text of
+ *  the loop, for a part that builds a text without a slot
+ *  (mcp_slot_scratch()). askai calls the function on the thread of
+ *  @p loop, before the loop's first call. Returns the part. On failure it
+ *  returns nullptr and stores the error number in @p *e. Parts exist only
+ *  for the built-in plugins.
  */
-typedef void *mcp_part_create_fn (void           *service,
-                                  struct loop    *loop,
-                                  struct blocker *blockers,
-                                  struct list    *children,
-                                  int            *e);
+typedef void *mcp_part_create_fn (void                *service,
+                                  struct loop         *loop,
+                                  struct blocker      *blockers,
+                                  struct list         *children,
+                                  struct tool_scratch *scratch,
+                                  int                 *e);
 
 /** Destroys the part @p *p_part and sets @p *p_part to nullptr. askai
  *  calls the function when the loop stops, after it has dropped every call
@@ -731,12 +734,15 @@ mcp_slot_tellf (struct mcp_slot *slot,
  *  - The only struct tool_scratch objects are the member of the struct mcp
  *    of each loop, and the object of a unit test.
  *
- *  The table of the members of the loop (src/member.h) runs without a
- *  slot, so mcp_create() passes a pointer to the scratch to the table. The
- *  same rules apply to the table. The table writes the cause of a failure
- *  into the scratch and logs the cause in the next statement. The table
- *  reads only a text that it has just written, so no code empties the
- *  scratch for the table.
+ *  The table of the members of the loop (src/member.h) and the part of
+ *  the man tool (src/manual.c) run without a slot, so mcp_create() passes
+ *  a pointer to the scratch to both. The same rules apply to them. The
+ *  table writes the cause of a failure into the scratch and logs the cause
+ *  in the next statement. A fetch of a man page writes the reason of its
+ *  failure into the scratch and passes the text to manual_fetch_fail(),
+ *  which copies the text before any other code can write the scratch.
+ *  Both read only a text that they have just written, so no code empties
+ *  the scratch for them.
  *
  *  mcp_slot_tell() copies the text before any other call runs.
  *  mcp_slot_tellf() formats in an array of its own, so a view of the

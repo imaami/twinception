@@ -8502,7 +8502,8 @@ def check_stalled_stderr(binary, up):
 
 # A stand-in for man(1). With -w it finds a page's file in its directory's
 # "pages", making it if need be, and notes its arguments in "finds"; with -a
-# the pages several and suffixed have files in more than one section. With -k
+# the pages several and suffixed have files in more than one section. For
+# the page gone, it prints the path of a file that does not exist. With -k
 # it notes its arguments in "searches" and names pages that begin with
 # missing or lots. Else it renders the page that file names, noting its
 # arguments in "renders", and the name says what it does. It notes the
@@ -8533,6 +8534,7 @@ if [ "$1" = -w ]; then
 		exit 0 ;;
 	fail) exit 3 ;;
 	nowhere) echo pages/nowhere; exit 0 ;;
+	gone) echo "$dir/pages/gone.3"; exit 0 ;;
 	shadow) [ -e "$dir/moved" ] && page=shadowed ;;
 	esac
 	[ -e "$dir/pages/$page" ] || : > "$dir/pages/$page"
@@ -8805,11 +8807,14 @@ def check_man(binary, up):
                                     ({"name": "fail"}, "man exited with status 3."),
                                     ({"name": "broken"}, "man exited with status 3."),
                                     ({"name": "nowhere"},
-                                     "man -w printed no file path for the page.")):
+                                     "man -w printed no file path for the page."),
+                                    ({"name": "gone"}, "Cannot read the page file (No such "
+                                     "file or directory).")):
                 for _ in range(2):
                     result = man_call(ai, **arguments)
                     assert result.get("isError") and text_of(result) == text, result
             assert runs("missing") == (4, 0) and runs("broken") == (2, 2)
+            assert runs("gone") == (2, 0), runs("gone")
             # A list of pages longer than the room of the reason ends with
             # "and more pages." after the last whole page that fits.
             result = man_call(ai, name="lots")
@@ -8992,6 +8997,19 @@ def check_man(binary, up):
             wait_for(lambda: ai.metrics()["askai_man_pages"] == 2)
             assert runs("shadow") == (2, 1) and runs("shadowed") == (0, 1)
             assert text_of(man_call(ai, name="shadow")) == "second\n"
+
+        # With no man in PATH, a call fails with the reason why man cannot
+        # run. askai logs the reason once for each call.
+        os.mkdir(f"{fake}/empty")
+        with Askai(binary, "-u", up.url(), "--man", env=env | {"PATH": f"{fake}/empty"}) as ai:
+            for _ in range(2):
+                result = man_call(ai, name="echo")
+                assert result.get("isError") and text_of(result) == \
+                    "Cannot run man: No such file or directory.", result
+            ai.wait_lines("Cannot run man", ["Cannot run man: No such file or directory."] * 2)
+            values = ai.metrics()
+            assert values["askai_man_asks_total{result=\"wait\"}"] == 2, values
+            assert values["askai_man_runs_total{run=\"find\"}"] == 0, values
 
         # Stopping ends a man call, killing its child.
         # The man of wait0 exits at once, and stopping askai kills its

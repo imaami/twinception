@@ -215,11 +215,12 @@ struct notes_tool_call {
 };
 
 void *
-notes_tool_loop_create (void           *service,
-                        struct loop    *,
-                        struct blocker *,
-                        struct list    *,
-                        int            *e)
+notes_tool_loop_create (void                *service,
+                        struct loop         *,
+                        struct blocker      *,
+                        struct list         *,
+                        struct tool_scratch *,
+                        int                 *e)
 {
 	struct notes_tool_loop *nl = malloc(sizeof *nl);
 	if (!nl) {

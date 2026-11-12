@@ -75,14 +75,17 @@ struct manual_wait {
 	struct tool_why       why;
 };
 
-/** What a client loop has of the manual, the man tool's part of it: the
- *  fetches it runs, and the list of the loop's children.
+/** The man tool's part of a client loop. It contains the list of the
+ *  fetches that the loop runs, and pointers to the list of the children of
+ *  the loop and to the scratch text of the loop. A fetch that fails builds
+ *  its reason in the scratch (mcp_slot_scratch() of src/mcp.h).
  */
 struct manual_loop {
-	struct list     fetches;
-	struct list    *children;
-	struct manual  *manual;
-	struct loop    *loop;
+	struct list          fetches;
+	struct list         *children;
+	struct manual       *manual;
+	struct loop         *loop;
+	struct tool_scratch *scratch;
 };
 
 /* The state of the scan of a page for the part under a heading, as bits. */
@@ -284,7 +287,9 @@ manual_fetch_destroy (struct manual_fetch **p_f)
 }
 
 /* Ends the failed fetch @p f. The function removes the alias of the fetch
- * and posts the reason @p why to each waiter.
+ * and posts the reason @p why to each waiter. @p why can be a text in the
+ * scratch of the loop. The function copies the text into each waiter
+ * before it calls a function that can write the scratch.
  */
 static void
 manual_fetch_fail (struct manual_fetch *f,
@@ -356,8 +361,10 @@ manual_fetch_done (struct manual_fetch *f,
 	manual_fetch_destroy(&f);
 }
 
-/* Run man with @p argv, its output up to @p max bytes, then @p done; else
- * fail the fetch with why not. Counts the run in @p runs.
+/* Runs man with @p argv for the fetch @p f, and counts the run in
+ * @p runs. man writes at most @p max bytes of output, and @p done runs
+ * when man has ended. If man cannot start, the function fails the fetch
+ * with the reason, which it writes into the scratch of the loop.
  */
 static void
 manual_fetch_run (struct manual_fetch *f,
@@ -381,8 +388,8 @@ manual_fetch_run (struct manual_fetch *f,
 		hist_count(runs, 1);
 		return;
 	}
-	char buf[TOOL_TELL_MAX];
-	manual_fetch_fail(f, child_spawn_why(e, "man", buf, sizeof buf));
+	struct tool_scratch *scratch = ml->scratch;
+	manual_fetch_fail(f, child_spawn_why(e, "man", scratch->text, sizeof scratch->text));
 }
 
 /* Copy as much of the page in as the step has the share for, made UTF-8
@@ -419,10 +426,10 @@ manual_fetch_rendered (struct child *c)
 {
 	struct manual_fetch *f = c->owner;
 	size_t const note = c->end.flags & CHILD_CUT ? manual_cut.len : 0;
-	char buf[TOOL_TELL_MAX];
+	struct tool_scratch *scratch = f->ml->scratch;
 	struct cstr_view const why = note ? (struct cstr_view){}
 	                             : child_end_why(&c->end, "man", MANUAL_SECONDS * NS, c->max,
-	                                             buf, sizeof buf);
+	                                             scratch->text, sizeof scratch->text);
 	if (why.data) {
 		manual_fetch_fail(f, why);
 		return;
@@ -490,7 +497,9 @@ manual_list_end (uint32_t  len,
 }
 
 /* Fails the fetch of @p c, a man -k run, with the miss and the pages whose
- * names begin with the name, if any.
+ * names begin with the name, if any. The function builds the reason in the
+ * scratch of the loop and counts the length of the reason in a local
+ * variable.
  */
 static void
 manual_fetch_searched (struct child *c)
@@ -502,22 +511,25 @@ manual_fetch_searched (struct child *c)
 	struct span const out = buf_peek(&c->out);
 	struct cstr_view rest = { (char const *)out.ptr, out.len };
 	loop_work(f->ml->loop, LOOP_PARSE, out.len);
-	struct tool_why why = {};
-	(void)util_text_printf(&why, "No manual entry for %s%s%s.", key,
-	                       *section ? " in section " : "", section);
-	struct cstr_view const miss = util_text_view(&why);
-	(void)util_text_printf(&why, " Pages whose names begin with %s:", key);
-	uint32_t const lead = why.len;
+	struct tool_scratch *scratch = f->ml->scratch;
+	char *const why = scratch->text;
+	uint32_t len = 0;
+	(void)util_text_printf_(&len, why, sizeof scratch->text, "No manual entry for %s%s%s.", key,
+	                        *section ? " in section " : "", section);
+	uint32_t const miss = len;
+	(void)util_text_printf_(&len, why, sizeof scratch->text, " Pages whose names begin with "
+	                        "%s:", key);
+	uint32_t const lead = len;
 	/* A line is "NAME (SECTION) - what the page is about". */
 	for (struct cstr_view line, page; cstr_view_cut(&rest, '\n', &line); ) {
 		if (cstr_view_cut(&line, ' ', &page) && cstr_view_starts_case(page, name) &&
 		    cstr_view_starts(line, CSTR_VIEW("(")) && cstr_view_cut(&line, ')', &line))
-			manual_list_add(&why.len, why.data, sizeof why.data, manual_more_pages,
+			manual_list_add(&len, why, sizeof scratch->text, manual_more_pages,
 			                " %.*s%.*s),", (int)page.len, page.data, (int)line.len,
 			                line.data);
 	}
-	manual_list_end(why.len, why.data);
-	manual_fetch_fail(f, why.len > lead ? util_text_view(&why) : miss);
+	manual_list_end(len, why);
+	manual_fetch_fail(f, (struct cstr_view){ why, len > lead ? len : miss });
 }
 
 /* Returns the section of the page file at @p path, which man -w named:
@@ -562,10 +574,13 @@ manual_fetch_found (struct child *c)
 		                 &m->metrics.searches);
 		return;
 	}
-	char buf[TOOL_TELL_MAX];
+	/* Each reason of a failure is built in the scratch of the loop and
+	 * passed to manual_fetch_fail() before the next one is written. */
+	struct tool_scratch *scratch = f->ml->scratch;
+	char *const text = scratch->text;
 	struct cstr_view const why = c->end.flags & CHILD_CUT ? (struct cstr_view){}
 	                             : child_end_why(&c->end, "man", MANUAL_SECONDS * NS, c->max,
-	                                             buf, sizeof buf);
+	                                             text, sizeof scratch->text);
 	if (why.data) {
 		manual_fetch_fail(f, why);
 		return;
@@ -579,23 +594,23 @@ manual_fetch_found (struct child *c)
 		return;
 	}
 	loop_work(f->ml->loop, LOOP_PARSE, paths.len);
-	struct tool_why several = {};
-	(void)util_text_printf(&several, "Pages named %s are in more than one section:",
-	                       f->alias->key);
+	uint32_t len = 0;
+	(void)util_text_printf_(&len, text, sizeof scratch->text, "Pages named %s are in more than "
+	                        "one section:", f->alias->key);
 	uint32_t digits = 0;  /* bit d: a page in section d */
 	for (struct cstr_view rest = paths, line; cstr_view_cut(&rest, '\n', &line); ) {
 		struct cstr_view const s = manual_path_section(line);
 		if (s.len == 1)
 			digits |= 1u << (*s.data - '0');
 		if (s.len)
-			manual_list_add(&several.len, several.data, sizeof several.data,
-			                manual_more_pages, " %s(%.*s),", f->alias->key,
-			                (int)s.len, s.data);
+			manual_list_add(&len, text, sizeof scratch->text, manual_more_pages,
+			                " %s(%.*s),", f->alias->key, (int)s.len, s.data);
 	}
 	if (digits & (digits - 1)) {
-		manual_list_end(several.len, several.data);
-		(void)util_text_printf(&several, " Give the section argument.");
-		manual_fetch_fail(f, util_text_view(&several));
+		manual_list_end(len, text);
+		(void)util_text_printf_(&len, text, sizeof scratch->text, " Give the section "
+		                        "argument.");
+		manual_fetch_fail(f, (struct cstr_view){ text, len });
 		return;
 	}
 	uint64_t hash = util_hash(m->seed, path.data, path.len);
@@ -613,10 +628,10 @@ manual_fetch_found (struct child *c)
 		return;
 	}
 	if (stat(file->key, &f->st)) {
-		struct cstr_view const text = util_format_view(buf, sizeof buf, "Cannot read the "
-		                                               "page file (%s).", strerror(errno));
+		int const e = errno;
 		manual_page_put(page);
-		manual_fetch_fail(f, text);
+		manual_fetch_fail(f, util_format_view(text, sizeof scratch->text, "Cannot read the "
+		                                      "page file (%s).", strerror(e)));
 		return;
 	}
 	if (page && manual_page_same(page, &f->st)) {
@@ -888,14 +903,16 @@ manual_find (struct manual_loop  *ml,
 
 /* Creates the man tool's part of @p loop for @p service, a struct manual:
  * the list of the fetches that the loop runs. Their children go on
- * @p children. Returns the part, or nullptr with ENOMEM in @p *e.
+ * @p children, and a fetch that fails builds its reason in @p scratch.
+ * Returns the part, or nullptr with ENOMEM in @p *e.
  */
 void *
-manual_loop_create (void           *service,
-                    struct loop    *loop,
-                    struct blocker *,
-                    struct list    *children,
-                    int            *e)
+manual_loop_create (void                *service,
+                    struct loop         *loop,
+                    struct blocker      *,
+                    struct list         *children,
+                    struct tool_scratch *scratch,
+                    int                 *e)
 {
 	struct manual_loop *ml = malloc(sizeof *ml);
 	if (!ml) {
@@ -903,7 +920,7 @@ manual_loop_create (void           *service,
 		return nullptr;
 	}
 	*ml = (struct manual_loop){ .fetches = list(&ml->fetches), .children = children,
-	                            .manual = service, .loop = loop };
+	                            .manual = service, .loop = loop, .scratch = scratch };
 	*e = 0;
 	return ml;
 }
