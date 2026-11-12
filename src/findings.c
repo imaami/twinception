@@ -389,6 +389,28 @@ findings_stop (struct mcp_slot  *slot,
 		mcp_slot_tell(slot, why, TOOL_FAILED);
 }
 
+/* Refuses the call in @p slot for the finding @p id, which does not exist. */
+static void
+findings_no_finding (struct mcp_slot         *slot,
+                     struct finding_id const *id)
+{
+	char text[FINDING_ID_TEXT];
+	mcp_slot_tellf(slot, TOOL_FAILED, "No finding has the id %s. list shows the findings.",
+	               finding_id_put(id, text).data);
+}
+
+/* Refuses the call in @p slot for the finding @p id, whose file askai
+ * could not read.
+ */
+static void
+findings_unreadable (struct mcp_slot         *slot,
+                     struct finding_id const *id)
+{
+	char text[FINDING_ID_TEXT];
+	mcp_slot_tellf(slot, TOOL_FAILED, "Could not read finding %s: unknown format.",
+	               finding_id_put(id, text).data);
+}
+
 /* Spawns git for @p stage with the command @p cmd, the words @p words and
  * the input @p in, which the function frees. A commit updates @p ref. If
  * git cannot start, the call is refused with the reason (findings_stop()).
@@ -677,16 +699,12 @@ findings_got_read (struct mcp_slot *slot)
 			findings_prompted(slot, EINVAL);
 			return;
 		}
-		char id[FINDING_ID_TEXT];
-		finding_id_put(&w->id, id);
 		/* expand with id and the findings of the items that the evidence
 		 * cites again read the file of a finding by its path. */
 		if (e == ENOENT)
-			mcp_slot_tellf(slot, TOOL_FAILED, "No finding has the id %s. list shows the "
-			               "findings.", id);
+			findings_no_finding(slot, &w->id);
 		else
-			mcp_slot_tellf(slot, TOOL_FAILED, "Could not read finding %s: unknown format.",
-			               id);
+			findings_unreadable(slot, &w->id);
 		return;
 	}
 	if (e) {
@@ -1264,7 +1282,6 @@ findings_act (struct mcp_slot *slot)
 		findings_prompted(slot, 0);
 		return;
 	}
-	char id[FINDING_ID_TEXT];
 	struct finding_id const *missing = nullptr;
 	switch (call->action) {
 	case FINDINGS_LIST:
@@ -1285,8 +1302,7 @@ findings_act (struct mcp_slot *slot)
 		break;
 	}
 	if (missing) {
-		mcp_slot_tellf(slot, TOOL_FAILED, "No finding has the id %s. list shows the findings.",
-		               finding_id_put(missing, id).data);
+		findings_no_finding(slot, missing);
 		return;
 	}
 	/* The items that the evidence cites again are read after the checks
@@ -1302,6 +1318,7 @@ findings_act (struct mcp_slot *slot)
 			findings_end(slot, EIO, true);
 			return;
 		}
+		char id[FINDING_ID_TEXT];
 		finding_id_put(&f->id, id);
 		int e = finding_show(f, id, call->findings.items, call->findings.n, &call->out);
 		bool const items = f->changes.n && f->changes.items[f->changes.n - 1].items;
@@ -1553,11 +1570,9 @@ findings_cite_blobs (struct mcp_slot *slot)
 		e = evidence_parse_text(&item, cstr_view_dstr(&cite->record));
 		if (e == EINVAL) {
 			struct finding_id const finding = finding_id_without_item(&cite->ref.id);
-			char text[FINDING_ID_TEXT];
 			evidence_fini(&item);
 			buf_fini(&in);
-			mcp_slot_tellf(slot, TOOL_FAILED, "Could not read finding %s: unknown format.",
-			               finding_id_put(&finding, text).data);
+			findings_unreadable(slot, &finding);
 			return;
 		}
 		if (e)
