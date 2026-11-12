@@ -1396,11 +1396,13 @@ struct godbolt_absent {
 	char ids[GODBOLT_IDS * (GODBOLT_ID_MAX + 2) + 1];
 };
 
-/* Returns the ids of @p call that are not in the list. */
+/* Returns the ids of @p call that are not in the list. The function
+ * returns the whole object, so the initializer writes every byte of it.
+ */
 static struct godbolt_absent
 godbolt_absent (struct godbolt const *call)
 {
-	struct godbolt_absent a;
+	struct godbolt_absent a = {};
 	char *p = a.ids;
 	for (uint32_t m = call->missing; m; m &= m - 1) {
 		p = godbolt_cat(p, p == a.ids ? (struct cstr_view){} : CSTR_VIEW(", "));
