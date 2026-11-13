@@ -106,6 +106,16 @@ struct seen_mark {
 	                     src->output.at */
 };
 
+/** Returns the position of the byte at the offset @p at of an output.
+ *  @p line is the number of the line that contains the byte.
+ */
+static const_inline struct seen_mark
+seen_mark (uint64_t line,
+           size_t   at)
+{
+	return (struct seen_mark){ .line = line, .at = at };
+}
+
 /** The numbered lines of a committed file in the output of a git read or a
  *  code describe (mcp_slot_source()). The texts are views of the caller's
  *  storage.

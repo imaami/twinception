@@ -172,7 +172,7 @@ seen_lines (struct seen_read *read,
 	 * of the numbered lines if the mark is after this window. */
 	struct seen_mark *mark = &read->mark;
 	if (mark->at > lo)
-		*mark = (struct seen_mark){ .line = src->lines.first, .at = src->output.at };
+		*mark = seen_mark(src->lines.first, src->output.at);
 	mark->line += cstr_view_count(cstr_view_n(p + mark->at, lo - mark->at), '\n');
 	mark->at = lo;
 	uint64_t line = mark->line;
