@@ -117,11 +117,11 @@ static int cli_client_response_event(char const *data, size_t len, void *user)
 	return response->notify ? response->notify(response->context, event, response->id, response->error) : 0;
 }
 
-/* Returns the response to the request @p id of @p client, 0 for a
- * notification, for the object at @p self. The event stream stores
- * @p self as the context of cli_client_response_event(). So @p self must
- * be the address of the object that the result initializes, and that
- * object must not be copied afterwards.
+/* Returns the response to the request @p id of @p client for the object at
+ * @p self. @p id is 0 for a notification. The event stream stores @p self
+ * as the context of cli_client_response_event(). So @p self must be the
+ * address of the object that the result initializes, and that object must
+ * not be copied afterwards.
  */
 static force_inline struct cli_client_response
 cli_client_response (struct cli_client_response *self,
@@ -138,7 +138,7 @@ cli_client_response (struct cli_client_response *self,
 	};
 }
 
-/* Start @p response to the request @p id of @p client, 0 for a
+/* Start @p response to the request @p id of @p client. @p id is 0 for a
  * notification.
  */
 static void
