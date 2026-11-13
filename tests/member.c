@@ -159,7 +159,8 @@ test_names (void)
 	for (size_t i = 0; i < array_size(valid); ++i)
 		CHECK(member_name_valid(valid[i]));
 	struct cstr_view const invalid[] = {
-		{}, CSTR_VIEW(""), cstr_view_n(nullptr, 3), CSTR_VIEW(".x"), CSTR_VIEW("-x"),
+		cstr_view(nullptr),
+		CSTR_VIEW(""), cstr_view_n(nullptr, 3), CSTR_VIEW(".x"), CSTR_VIEW("-x"),
 		CSTR_VIEW("a..b"), CSTR_VIEW("x."), CSTR_VIEW("x.lock"), CSTR_VIEW("@"),
 		CSTR_VIEW("c7"), CSTR_VIEW("C12"), CSTR_VIEW("a/b"), CSTR_VIEW("bro#5"),
 		CSTR_VIEW("a b"), CSTR_VIEW("a\0b"), CSTR_VIEW("\xc3\xa4"), CSTR_VIEW("a:b"),
@@ -174,7 +175,7 @@ test_names (void)
 	 * the same bytes as the name. */
 	struct cstr_view const sets[] = {
 		CSTR_VIEW("bro"), CSTR_VIEW("p"), cstr_view_n(long_name, UTIL_WORD_MAX),
-		cstr_view_n(long_name, sizeof long_name), {}, CSTR_VIEW(""),
+		cstr_view_n(long_name, sizeof long_name), cstr_view(nullptr), CSTR_VIEW(""),
 	};
 	for (size_t i = 0; i < array_size(sets); ++i) {
 		size_t const len = sets[i].len < UTIL_WORD_MAX ? sets[i].len : UTIL_WORD_MAX;
@@ -249,7 +250,8 @@ test_names (void)
 	member_ref(&(struct member){ MEMBER_AGENT, "bro" }, MEMBER_BRANCH_FINDINGS, ref);
 	CHECK(!strcmp(ref, "refs/heads/agent/bro/findings"));
 	struct cstr_view const refs[] = {
-		{}, CSTR_VIEW("refs/heads/agent/bro"), CSTR_VIEW("refs/heads/agent/bro/"),
+		cstr_view(nullptr),
+		CSTR_VIEW("refs/heads/agent/bro"), CSTR_VIEW("refs/heads/agent/bro/"),
 		CSTR_VIEW("refs/heads/agent/bro/review"), CSTR_VIEW("refs/heads/team/bro/notes"),
 		CSTR_VIEW("refs/heads/agent/c7/notes"), CSTR_VIEW("refs/heads/agent/a/b/notes"),
 		CSTR_VIEW("refs/heads/agent/bro/notes/x"), CSTR_VIEW("refs/tags/agent/bro/notes"),

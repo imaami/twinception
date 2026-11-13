@@ -1315,7 +1315,7 @@ httpd_stream_data (struct stream *s,
 	/* In chunks, each is its size in hexadecimal, a CRLF, its bytes and
 	 * another. */
 	char digits[20];
-	struct cstr_view f[] = { {}, cstr_view_span(bytes), {} };
+	struct cstr_view f[] = { cstr_view(nullptr), cstr_view_span(bytes), cstr_view(nullptr) };
 	if (conn->req.flags & REQ_CHUNKS) {
 		char *size = digits + sizeof digits - 2;
 		for (size_t n = bytes.len; n; n /= 16)

@@ -380,7 +380,7 @@ test_input (void)
 	CHECK(store_commit_input(&commit, nullptr) == EINVAL);
 
 	struct cstr_view const bad[] = {
-		{}, cstr_view_n(nullptr, 5), CSTR_VIEW("a\0b"),
+		cstr_view(nullptr), cstr_view_n(nullptr, 5), CSTR_VIEW("a\0b"),
 	};
 	for (size_t i = 0; i < array_size(bad); ++i) {
 		c = commit;
@@ -485,8 +485,8 @@ test_trailer (void)
 	buf_fini(&in);
 
 	struct cstr_view const idents[] = {
-		{}, cstr_view_n(nullptr, 5), CSTR_VIEW("a\0b"), CSTR_VIEW("a<b"), CSTR_VIEW("a>b"),
-		CSTR_VIEW("a\nb"),
+		cstr_view(nullptr), cstr_view_n(nullptr, 5), CSTR_VIEW("a\0b"), CSTR_VIEW("a<b"),
+		CSTR_VIEW("a>b"), CSTR_VIEW("a\nb"),
 	};
 	for (size_t i = 0; i < array_size(idents); ++i) {
 		c = commit;
@@ -500,8 +500,8 @@ test_trailer (void)
 	char word[UTIL_WORD_MAX + 1];
 	memset(word, 'k', sizeof word);
 	struct cstr_view const keys[] = {
-		{}, cstr_view_n(nullptr, 5), CSTR_VIEW(""), CSTR_VIEW("Asked by"), CSTR_VIEW("Ask:"),
-		CSTR_VIEW("a\nb"), CSTR_VIEW("a\0b"), CSTR_VIEW("Ask\xc3\xa4"),
+		cstr_view(nullptr), cstr_view_n(nullptr, 5), CSTR_VIEW(""), CSTR_VIEW("Asked by"),
+		CSTR_VIEW("Ask:"), CSTR_VIEW("a\nb"), CSTR_VIEW("a\0b"), CSTR_VIEW("Ask\xc3\xa4"),
 		cstr_view_n(word, UTIL_WORD_MAX + 1),
 	};
 	for (size_t i = 0; i < array_size(keys); ++i) {
@@ -522,7 +522,7 @@ test_trailer (void)
 	char big[STORE_MESSAGE];
 	memset(big, 'v', sizeof big);
 	struct cstr_view const values[] = {
-		{}, cstr_view_n(nullptr, 5), CSTR_VIEW("x\ny"), CSTR_VIEW("x\0y"),
+		cstr_view(nullptr), cstr_view_n(nullptr, 5), CSTR_VIEW("x\ny"), CSTR_VIEW("x\0y"),
 		cstr_view_n(big, STORE_MESSAGE),
 	};
 	for (size_t i = 0; i < array_size(values); ++i) {
