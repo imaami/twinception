@@ -1823,7 +1823,7 @@ notes_tool_no_member (struct mcp_slot  *slot,
 	struct member_wait const *wait = &call->wait;
 	struct tool_scratch *scratch = mcp_slot_scratch(slot);
 	struct cstr_view const why = member_login_why(&mcp_slot_member(slot)->login, wait->e,
-	                                              &wait->by, scratch->text,
+	                                              &wait->refuser, scratch->text,
 	                                              sizeof scratch->text);
 	mcp_slot_tell(slot, why.len ? why : needs, TOOL_FAILED);
 }

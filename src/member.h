@@ -325,37 +325,38 @@ member_registry_report (struct member_registry const *registry);
  * wait that waits.
  */
 struct member_wait {
-	struct list      hook;    /**< on the lookup of the login while the wait
-	                               waits */
+	struct list      hook;     /**< on the lookup of the login while the
+	                                wait waits */
 	/** Called on the loop of the table once the lookup ends. */
 	void           (*done) (struct member_wait *wait);
-	int32_t          e;       /**< 0, or the error number for a login
-	                               without a member, as member_table_find()
-	                               returns it */
-	struct member    member;  /**< the member of the login, or the name ""
-	                               after an error */
-	struct member    by;      /**< for EPERM, the record that refuses the
-	                               login, with its kind and its name. The
-	                               name is the name of the identity or of
-	                               the Unix user of the login. For any
-	                               other result, the name is "". */
+	int32_t          e;        /**< 0, or the error number for a login
+	                                without a member, as member_table_find()
+	                                returns it */
+	struct member    member;   /**< the member of the login, or the name ""
+	                                after an error */
+	struct member    refuser;  /**< for EPERM, the record that refuses the
+	                                login, with its kind and its name. The
+	                                name is the name of the identity or of
+	                                the Unix user of the login. For any
+	                                other result, the name is "". */
 };
 
 /**
  * Writes why a lookup of @p login ended with the error number @p e, as
  * member_table_find() sets it in a wait, into the @p size bytes at @p buf.
- * The text is a sentence for the client. @p by is wait->by, the record
- * that refuses the login. The function reads @p by only for EPERM, so
- * @p by can be nullptr for any other @p e. The sentence for EPERM contains
- * the name of that record, because @p login does not contain the name of
- * the user of a Unix login. Returns a view of the text in @p buf, or a
- * view of a static text. The view is empty for an error number without a
- * sentence, such as ENOENT and ENOMEM, and for a null @p login or @p buf.
+ * The text is a sentence for the client. @p refuser is wait->refuser, the
+ * record that refuses the login. The function reads @p refuser only for
+ * EPERM, so @p refuser can be nullptr for any other @p e. The sentence for
+ * EPERM contains the name of that record, because @p login does not
+ * contain the name of the user of a Unix login. Returns a view of the text
+ * in @p buf, or a view of a static text. The view is empty for an error
+ * number without a sentence, such as ENOENT and ENOMEM, and for a null
+ * @p login or @p buf.
  */
 extern struct cstr_view
 member_login_why (struct member_login const *login,
                   int                        e,
-                  struct member const       *by,
+                  struct member const       *refuser,
                   char                      *buf,
                   size_t                     size);
 
@@ -410,10 +411,10 @@ member_table_registry (struct member_table const *table);
  * to the lookup of the login, and wait->done runs later, with the result
  * in @p wait. The function and wait->done set wait->e to 0; ENOENT for no
  * login, which is no member; EPERM if the record of the name refuses the
- * login, with that record in wait->by; EIO if git cannot read or write the
- * records, with the cause in the log; EBUSY if askai runs too many
- * commands or lookups; ECANCELED if askai stops; ENOMEM; or EINVAL for a
- * null argument. member_login_why() writes the sentence for the client.
+ * login, with that record in wait->refuser; EIO if git cannot read or
+ * write the records, with the cause in the log; EBUSY if askai runs too
+ * many commands or lookups; ECANCELED if askai stops; ENOMEM; or EINVAL for
+ * a null argument. member_login_why() writes the sentence for the client.
  */
 extern int
 member_table_find (struct member_table       *table,

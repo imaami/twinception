@@ -195,7 +195,7 @@ struct member_lookup {
 	char                   user[MEMBER_NAME];  /* the name of the Unix
 	                                              user, as the job name
 	                                              finds it */
-	enum member_kind       by;                 /* after EPERM, the kind of
+	enum member_kind       refuser_kind;       /* after EPERM, the kind of
 	                                              the record that refuses
 	                                              the login */
 };
@@ -640,7 +640,7 @@ member_login_kind (struct cstr_view login)
 struct cstr_view
 member_login_why (struct member_login const *login,
                   int                        e,
-                  struct member const       *by,
+                  struct member const       *refuser,
                   char                      *buf,
                   size_t                     size)
 {
@@ -648,7 +648,7 @@ member_login_why (struct member_login const *login,
 		return (struct cstr_view){};
 	switch (e) {
 	case EPERM:
-		if (!by)
+		if (!refuser)
 			return (struct cstr_view){};
 		break;
 	case EIO:
@@ -667,20 +667,20 @@ member_login_why (struct member_login const *login,
 		return (struct cstr_view){};
 	}
 	/* The kind of the login, then the kind of the record. */
-	switch (login->member.kind << 1 | by->kind) {
+	switch (login->member.kind << 1 | refuser->kind) {
 	case MEMBER_AGENT << 1 | MEMBER_AGENT:
 		return util_format_view(buf, size, "Your login name %s is the name of another "
-		                        "agent of this session.", by->name);
+		                        "agent of this session.", refuser->name);
 	case MEMBER_PERSON << 1 | MEMBER_PERSON:
 		return util_format_view(buf, size, "Your login name %s is the name of another "
-		                        "person of this session.", by->name);
+		                        "person of this session.", refuser->name);
 	case MEMBER_PERSON << 1 | MEMBER_AGENT:
 		return util_format_view(buf, size, "Your login name %s is the name of an agent of "
 		                        "this session. Ask the operator to rename the agent.",
-		                        by->name);
+		                        refuser->name);
 	default: /* an agent and the record of a person */
 		return util_format_view(buf, size, "Your login name %s is the name of a person of "
-		                        "this session.", by->name);
+		                        "this session.", refuser->name);
 	}
 }
 
@@ -1174,7 +1174,7 @@ member_lookup_drop (struct member_lookup *lookup)
 /* Writes the result @p e of @p lookup to @p wait: the member for 0, and
  * else no member. For EPERM, the function also writes the record that
  * refuses the login, which is the record of the name of the login, of the
- * kind lookup->by. Returns @p e.
+ * kind lookup->refuser_kind. Returns @p e.
  */
 static int
 member_lookup_give (struct member_lookup const *lookup,
@@ -1184,11 +1184,11 @@ member_lookup_give (struct member_lookup const *lookup,
 	struct member const *claimed = &lookup->claim.login.member;
 	wait->e = e;
 	wait->member = (struct member){ .kind = claimed->kind };
-	wait->by = (struct member){};
+	wait->refuser = (struct member){};
 	if (!e)
 		wait->member = *claimed;
 	else if (e == EPERM)
-		wait->by = member(lookup->by, cstr_view(claimed->name));
+		wait->refuser = member(lookup->refuser_kind, cstr_view(claimed->name));
 	return e;
 }
 
@@ -1296,10 +1296,10 @@ static void member_lookup_wrote (struct child *c);
  * step writes the input of a commit, and git commits the record. For a
  * Unix login without a record, the job name first looks up the name of the
  * user. Returns EINPROGRESS while the job name or git runs. Otherwise
- * returns the result of the step. After EPERM, lookup->by is the kind of
- * the record that refuses the login. The function logs the reason of an
- * error of the step: for EPERM the sentence of member_login_why(), and
- * else the text that the step wrote into the scratch of the table.
+ * returns the result of the step. After EPERM, lookup->refuser_kind is the
+ * kind of the record that refuses the login. The function logs the reason
+ * of an error of the step: for EPERM the sentence of member_login_why(),
+ * and else the text that the step wrote into the scratch of the table.
  */
 static int
 member_lookup_step (struct member_lookup     *lookup,
@@ -1323,10 +1323,11 @@ member_lookup_step (struct member_lookup     *lookup,
 		buf_fini(&in);
 		return e;
 	case EPERM: {
-		struct member const by = member_of(entry);
-		lookup->by = by.kind;
+		struct member const refuser = member_of(entry);
+		lookup->refuser_kind = refuser.kind;
 		LOG(LOG_WARN, "member: %s: %s", login->text,
-		    member_login_why(login, EPERM, &by, scratch->text, sizeof scratch->text).data);
+		    member_login_why(login, EPERM, &refuser, scratch->text,
+		                     sizeof scratch->text).data);
 		return EPERM;
 	}
 	default:
@@ -1591,7 +1592,7 @@ member_table_lookup (struct member_table       *table,
 		return EINVAL;
 	list_init(&wait->hook);
 	wait->member = (struct member){};
-	wait->by = (struct member){};
+	wait->refuser = (struct member){};
 	struct cstr_view const text = cstr_view(login->text);
 	if (!text.len)
 		return wait->e = ENOENT;
