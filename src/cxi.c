@@ -934,6 +934,37 @@ cxi_symbol (CXTranslationUnit tu,
 	return clang_Cursor_isNull(referenced) ? at : referenced;
 }
 
+/* Returns the definition of the macro through which the token at @p loc
+ * is written, or null if the token is part of no macro body. The macro is
+ * the one that is used at the place of the token in the file: for
+ * LOG(WRAPPER(x)) and a token of the body of WRAPPER, the macro WRAPPER.
+ * libclang records no use of a macro whose name is an argument of another
+ * macro, as X is in LIST(X). The macro is then the outermost one that is
+ * used at the place, LIST.
+ */
+static CXCursor
+cxi_macro (CXTranslationUnit tu,
+           CXSourceLocation  loc)
+{
+	CXFile file;
+	CXFile spelled;
+	unsigned line;
+	unsigned column;
+	unsigned at;
+	unsigned spelled_at;
+	clang_getFileLocation(loc, &file, &line, &column, &at);
+	clang_getSpellingLocation(loc, &spelled, nullptr, nullptr, &spelled_at);
+	if (clang_File_isEqual(file, spelled) && at == spelled_at)
+		return clang_getNullCursor();
+	CXCursor macro = cxi_symbol(tu, file, line, column);
+	if (clang_getCursorKind(macro) != CXCursor_MacroDefinition) {
+		clang_getExpansionLocation(loc, &file, &line, &column, nullptr);
+		macro = cxi_symbol(tu, file, line, column);
+	}
+	return clang_getCursorKind(macro) == CXCursor_MacroDefinition ? macro
+	                                                              : clang_getNullCursor();
+}
+
 /* Writes the first symbol named @p name on the line to @p *c. */
 static int
 cxi_lookup_line (struct cxi *x,
@@ -1560,37 +1591,6 @@ cxi_callee (struct cxi_calls *calls,
 	}
 	free(kids.items);
 	return found;
-}
-
-/* Returns the definition of the macro through which the token at @p loc
- * is written, or null if the token is part of no macro body. The macro is
- * the one that is used at the place of the token in the file: for
- * LOG(WRAPPER(x)) and a token of the body of WRAPPER, the macro WRAPPER.
- * libclang records no use of a macro whose name is an argument of another
- * macro, as X is in LIST(X). The macro is then the outermost one that is
- * used at the place, LIST.
- */
-static CXCursor
-cxi_macro (CXTranslationUnit tu,
-           CXSourceLocation  loc)
-{
-	CXFile file;
-	CXFile spelled;
-	unsigned line;
-	unsigned column;
-	unsigned at;
-	unsigned spelled_at;
-	clang_getFileLocation(loc, &file, &line, &column, &at);
-	clang_getSpellingLocation(loc, &spelled, nullptr, nullptr, &spelled_at);
-	if (clang_File_isEqual(file, spelled) && at == spelled_at)
-		return clang_getNullCursor();
-	CXCursor macro = cxi_symbol(tu, file, line, column);
-	if (clang_getCursorKind(macro) != CXCursor_MacroDefinition) {
-		clang_getExpansionLocation(loc, &file, &line, &column, nullptr);
-		macro = cxi_symbol(tu, file, line, column);
-	}
-	return clang_getCursorKind(macro) == CXCursor_MacroDefinition ? macro
-	                                                              : clang_getNullCursor();
 }
 
 /* Appends the call expression @p at, of the children @p kids and in the
