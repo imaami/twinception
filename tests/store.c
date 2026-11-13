@@ -81,9 +81,10 @@ prefix (struct store const *store,
         char               *text,
         size_t              size)
 {
-	struct git_run_dir dir;
+	int e = 0;
+	struct git_run_dir dir = git_run_dir(nullptr, nullptr, nullptr, 0, &e);
+	CHECK(!e);
 	char const *argv[GIT_RUN_ARGV];
-	CHECK(!git_run_dir_init(&dir, nullptr, nullptr, nullptr, 0));
 	CHECK(!git_run_dir_argv(&dir, nullptr, argv, array_size(argv)));
 	char fixed[1024];
 	join(argv, fixed, sizeof fixed);
@@ -187,9 +188,9 @@ run_words (char const        *path,
            size_t             size,
            size_t            *len)
 {
-	struct git_run_dir dir;
+	int e = 0;
+	struct git_run_dir dir = git_run_dir(path, nullptr, nullptr, 0, &e);
 	struct git_run r;
-	int e = git_run_dir_init(&dir, path, nullptr, nullptr, 0);
 	if (!e)
 		e = git_run_init(&r, &dir, words, &(struct child_cmd){
 			.deadline = loop_clock() + GIT_RUN_NS,

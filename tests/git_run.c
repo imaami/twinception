@@ -118,9 +118,10 @@ git_run_test_shapes (void)
 	};
 	static char const *const none[] = { nullptr };
 	for (size_t i = 0; i < array_size(shapes); ++i) {
-		struct git_run_dir dir;
-		CHECK(!git_run_dir_init(&dir, shapes[i].path, shapes[i].opts, nullptr,
-		                        shapes[i].flags));
+		int e = 0;
+		struct git_run_dir dir = git_run_dir(shapes[i].path, shapes[i].opts, nullptr,
+		                                     shapes[i].flags, &e);
+		CHECK(!e);
 		CHECK(dir.path == shapes[i].path && dir.opts == shapes[i].opts &&
 		      dir.flags == shapes[i].flags);
 		char const *argv[GIT_RUN_ARGV];
@@ -148,7 +149,10 @@ git_run_test_shapes (void)
  * GIT_ENV_FIXED, the entries of the caller in their order, and nullptr.
  * More than 3 entries of the caller are E2BIG, which leaves the struct
  * git_run_dir all zero. A flag other than GIT_RUN_DOT is EINVAL, which
- * leaves the struct git_run_dir as it was.
+ * leaves the struct git_run_dir as it was. git_run_dir() returns the
+ * struct git_run_dir that git_run_dir_init() writes, and stores the same
+ * error number. The result of git_run_dir() is all zero after E2BIG,
+ * after EINVAL, and if the pointer for the error number is nullptr.
  */
 static void
 git_run_test_env (void)
@@ -179,6 +183,21 @@ git_run_test_env (void)
 	CHECK(git_run_dir_init(&dir, "/r", nullptr, nullptr, 1u << 1) == EINVAL);
 	CHECK(dir.flags == GIT_RUN_DOT && !dir.path);
 	CHECK(git_run_dir_init(nullptr, "/r", nullptr, nullptr, 0) == EINVAL);
+	static char const *const opts[] = { "--literal-pathspecs", nullptr };
+	static struct git_run_dir const none = {};
+	CHECK(!git_run_dir_init(&dir, "/r", opts, three, GIT_RUN_DOT));
+	int e = -1;
+	struct git_run_dir const same = git_run_dir("/r", opts, three, GIT_RUN_DOT, &e);
+	CHECK(!e && !memcmp(&same, &dir, sizeof dir));
+	struct git_run_dir const many = git_run_dir("/r", opts, four, GIT_RUN_DOT, &e);
+	CHECK(e == E2BIG && !memcmp(&many, &none, sizeof none));
+	struct git_run_dir const plain = git_run_dir(nullptr, nullptr, nullptr, 0, &e);
+	CHECK(!e && !plain.path && !plain.opts && !plain.flags && !strcmp(plain.env[0], path) &&
+	      !plain.env[1 + array_size(fixed_env)]);
+	struct git_run_dir const flag = git_run_dir("/r", opts, three, 1u << 1, &e);
+	CHECK(e == EINVAL && !memcmp(&flag, &none, sizeof none));
+	struct git_run_dir const lost = git_run_dir("/r", opts, three, GIT_RUN_DOT, nullptr);
+	CHECK(!memcmp(&lost, &none, sizeof none));
 }
 
 /* Tests git_run_init(). The struct child_cmd of the result is a copy of
@@ -193,8 +212,9 @@ git_run_test_env (void)
 static void
 git_run_test_init (void)
 {
-	struct git_run_dir dir;
-	CHECK(!git_run_dir_init(&dir, "/r", nullptr, nullptr, GIT_RUN_DOT));
+	int e = 0;
+	struct git_run_dir dir = git_run_dir("/r", nullptr, nullptr, GIT_RUN_DOT, &e);
+	CHECK(!e);
 	static char const *const words[] = { "hash-object", "--stdin", nullptr };
 	struct child_cmd const how = {
 		.file     = "/nonexistent/askai-test",
@@ -550,8 +570,9 @@ git_run_test_run (char const *repo)
 	struct buf out = buf();
 	struct child_end end;
 	uint64_t ms;
-	struct git_run_dir at;
-	CHECK(!git_run_dir_init(&at, repo, nullptr, nullptr, GIT_RUN_DOT));
+	int e = 0;
+	struct git_run_dir at = git_run_dir(repo, nullptr, nullptr, GIT_RUN_DOT, &e);
+	CHECK(!e);
 	CHECK(!git_run_test_git(&at, (char const *const[]){ "init", "--bare", "--quiet",
 	                                                    "--template=", nullptr },
 	                        how, child_fds(), &out, &end, &ms));
@@ -569,8 +590,8 @@ git_run_test_run (char const *repo)
 	CHECK(end.code == CLD_EXITED && !end.status && !end.flags);
 	CHECK(git_run_test_out(&out, bare));
 	buf_clear(&out);
-	struct git_run_dir here;
-	CHECK(!git_run_dir_init(&here, nullptr, nullptr, nullptr, GIT_RUN_DOT));
+	struct git_run_dir here = git_run_dir(nullptr, nullptr, nullptr, GIT_RUN_DOT, &e);
+	CHECK(!e);
 	struct child_fds fds = child_fds();
 	fds.dir = open(repo, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	CHECK(fds.dir >= 0);
@@ -582,12 +603,13 @@ git_run_test_run (char const *repo)
 
 	/* The entries of the caller come before the options in the output of
 	 * git config. GIT_PAGER is cat. */
-	struct git_run_dir set;
-	CHECK(!git_run_dir_init(&set, repo,
-	                        (char const *const[]){ "-c", "askai.option=1", nullptr },
-	                        (char *const[]){ "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=askai.env",
-	                                         "GIT_CONFIG_VALUE_0=2", nullptr },
-	                        GIT_RUN_DOT));
+	struct git_run_dir set = git_run_dir(
+		repo,
+		(char const *const[]){ "-c", "askai.option=1", nullptr },
+		(char *const[]){ "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=askai.env",
+		                 "GIT_CONFIG_VALUE_0=2", nullptr },
+		GIT_RUN_DOT, &e);
+	CHECK(!e);
 	CHECK(!git_run_test_git(&set, (char const *const[]){ "config", "--get-regexp",
 	                                                     "^askai\\.", nullptr },
 	                        how, child_fds(), &out, &end, &ms));

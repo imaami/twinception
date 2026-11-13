@@ -38,6 +38,19 @@ git_run_dir_init (struct git_run_dir *dest,
 	return 0;
 }
 
+struct git_run_dir
+git_run_dir (char const        *path,
+             char const *const *opts,
+             char *const       *env,
+             uint32_t           flags,
+             int               *e)
+{
+	struct git_run_dir dir = {};
+	if (e)
+		*e = git_run_dir_init(&dir, path, opts, env, flags);
+	return dir;
+}
+
 int
 git_run_dir_argv (struct git_run_dir const *dir,
                   char const *const        *words,

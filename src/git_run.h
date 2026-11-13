@@ -141,6 +141,23 @@ git_run_dir_init (struct git_run_dir *dest,
                   uint32_t            flags);
 
 /**
+ * Returns a struct git_run_dir for git in the directory @p path, with the
+ * options @p opts, the entries at @p env and the bits @p flags, as
+ * git_run_dir_init() initializes one, and stores 0 in @p *e. The result
+ * points at @p path, at @p opts and at the entries of @p env, which must
+ * stay valid as long as the result is in use. If git_run_dir_init()
+ * fails, the function stores the error number in @p *e and the result is
+ * all zero. If @p e is nullptr, the function stores nothing and the
+ * result is all zero.
+ */
+extern struct git_run_dir
+git_run_dir (char const        *path,
+             char const *const *opts,
+             char *const       *env,
+             uint32_t           flags,
+             int               *e);
+
+/**
  * Writes the argv of git for @p dir to the @p cap pointers at @p argv:
  * "git", GIT_OPTIONS_FIXED, the options of @p dir, "-C" and the path if
  * the path is not nullptr, and "--git-dir=." with GIT_RUN_DOT. Then

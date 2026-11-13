@@ -91,8 +91,8 @@ store_open_common (struct store *store,
 		.max   = STORE_MAX,
 		.flags = CHILD_STDERR,
 	};
-	struct git_run_dir dir;
-	int e = git_run_dir_init(&dir, store->directory, nullptr, nullptr, 0);
+	int e = 0;
+	struct git_run_dir dir = git_run_dir(store->directory, nullptr, nullptr, 0, &e);
 	if (!e)
 		e = git_run_now(&dir, words, how, child_fds(), out, nullptr);
 	if (e)
