@@ -172,6 +172,16 @@ struct job_delta {
 	uint32_t thought;
 };
 
+/** Returns the header of a piece of @p len bytes. @p thought is 1 for a
+ *  piece of thinking and 0 for a piece of the text of the answer.
+ */
+static const_inline struct job_delta
+job_delta (uint32_t len,
+           uint32_t thought)
+{
+	return (struct job_delta){ .len = len, .thought = thought };
+}
+
 /** Home's state of the journal and the recovery of a job (home.c). A
  *  zeroed one is no state.
  */

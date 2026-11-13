@@ -2224,7 +2224,7 @@ mcp_req_delta (struct mcp_req *req)
 	while (req->delta_at < bytes.len) {
 		if (req->flags & REQ_BLOCKED)
 			return;
-		struct job_delta header;
+		struct job_delta header = {};
 		memcpy(&header, bytes.ptr + req->delta_at, sizeof header);
 		char const *text = (char const *)bytes.ptr + req->delta_at + sizeof header;
 		size_t room = loop_room(loop, LOOP_ESCAPE);

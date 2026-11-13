@@ -1530,7 +1530,7 @@ home_put_delta (struct job       *job,
 		return 0;
 	if (text.len > MAX_RESPONSE)
 		return ENOBUFS;
-	struct job_delta header = { .len = (uint32_t)text.len, .thought = thought };
+	struct job_delta header = job_delta((uint32_t)text.len, thought);
 	size_t len = sizeof header + text.len;
 	struct span s = {};
 	int e = buf_reserve(&job->delta, len, 2 * MAX_RESPONSE, &s);
