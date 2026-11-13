@@ -8,17 +8,6 @@
 #include "cli_console.h"
 #include "cli_ui.h"
 
-struct cli_ui
-cli_ui (struct cli_console *console)
-{
-	return (struct cli_ui){
-		.console = console,
-		.actor = DSTR_INIT,
-		.status = DSTR_INIT,
-		.flags = CLI_UI_TRAILING_NEWLINE,
-	};
-}
-
 /* The mark that is written when the output enters a state, and the style
  * of the output in that state. Index 0 is the state out of the reasoning,
  * and index 1 the state in the reasoning.

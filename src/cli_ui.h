@@ -5,6 +5,7 @@
 #ifndef ASKAI_SRC_CLI_UI_H_
 #define ASKAI_SRC_CLI_UI_H_
 
+#include "compat.h"
 #include "cstr_view.h"
 #include "dstr.h"
 
@@ -28,8 +29,16 @@ struct cli_ui {
 	uint64_t            flags;
 };
 
-struct cli_ui
-cli_ui (struct cli_console *console);
+static force_inline struct cli_ui
+cli_ui (struct cli_console *console)
+{
+	return (struct cli_ui){
+		.console = console,
+		.actor = DSTR_INIT,
+		.status = DSTR_INIT,
+		.flags = CLI_UI_TRAILING_NEWLINE,
+	};
+}
 
 extern void
 cli_ui_fini (struct cli_ui *ui);
