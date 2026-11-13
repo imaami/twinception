@@ -130,6 +130,19 @@ struct findings_branch {
 	char       author[MEMBER_NAME];
 };
 
+/* Returns the branch of findings with the tip @p tip, whose author is the
+ * agent named @p author. Every byte of the array author after the name is
+ * 0.
+ */
+static force_inline struct findings_branch
+findings_branch (struct oid       tip,
+                 struct cstr_view author)
+{
+	struct findings_branch b = { .tip = tip };
+	member_name_set(b.author, author);
+	return b;
+}
+
 /* A file of a finding that cat-file reads: its size, the ID of the
  * finding and its blob ID. cat-file reads a file without a blob ID by its
  * path on the branch of the author of the finding.
@@ -626,9 +639,7 @@ findings_got_refs (struct mcp_slot *slot)
 			tip = info->findings;
 		if (!every && !cstr_view_equal(info->name, only))
 			continue;
-		struct findings_branch b = { .tip = info->findings };
-		member_name_set(b.author, info->name);
-		if (util_push(call->branches, b)) {
+		if (util_push(call->branches, findings_branch(info->findings, info->name))) {
 			findings_end(slot, ENOMEM, true);
 			return;
 		}
