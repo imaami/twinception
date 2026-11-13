@@ -1486,7 +1486,8 @@ cxi_command (struct cxi       *x,
 		                          : e ? strerror(e) : "not JSON");
 		return EINVAL;
 	}
-	struct cdb_map const map = { x->key[CXI_KEY_TOP], cstr_view_slice(tree, 0, tree.len - 1) };
+	struct cdb_map const map = cdb_map(x->key[CXI_KEY_TOP],
+	                                   cstr_view_slice(tree, 0, tree.len - 1));
 	e = cdb_command(&map, cmds, x->key[CXI_KEY_PATH], words);
 	json_object_put(cmds);
 	char const *last = e ? nullptr : memrchr(dstr_get(words), '\0', dstr_len(words) - 1);

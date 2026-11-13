@@ -6,6 +6,7 @@
 #ifndef ASKAI_SRC_CDB_H_
 #define ASKAI_SRC_CDB_H_
 
+#include "compat.h"
 #include "cstr_view.h"
 
 struct dstr;
@@ -16,6 +17,16 @@ struct cdb_map {
 	struct cstr_view top;
 	struct cstr_view tree;
 };
+
+/** Returns the map of a repository. @p top is the real path of the top of
+ *  the repository, and @p tree is the path of the exported tree.
+ */
+static force_inline struct cdb_map
+cdb_map (struct cstr_view top,
+         struct cstr_view tree)
+{
+	return (struct cdb_map){ .top = top, .tree = tree };
+}
 
 /** Writes @p path, against @p dir if relative, to @p out without ".", ".."
  *  and empty components. Returns 0 or ENOMEM.

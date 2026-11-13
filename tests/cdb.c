@@ -49,7 +49,7 @@ check_command (struct json_object *cmds,
                char const         *want,
                size_t              len)
 {
-	struct cdb_map const map = { CSTR_VIEW("/r/proj"), CSTR_VIEW("/c/proj/tree") };
+	struct cdb_map const map = cdb_map(CSTR_VIEW("/r/proj"), CSTR_VIEW("/c/proj/tree"));
 	struct dstr words = DSTR_INIT;
 	int e = cdb_command(&map, cmds, cstr_view(rel), &words);
 	if (!e)
