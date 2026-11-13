@@ -198,6 +198,15 @@ struct httpd_req {
 	struct httpd_field app[STREAM_FIELDS];  /* those the application asked for */
 };
 
+/* Returns the request of a head that is @p head bytes long, before
+ * httpd_req_parse() reads the head. Every other member is zero.
+ */
+static const_inline struct httpd_req
+httpd_req (uint16_t head)
+{
+	return (struct httpd_req){ .head = head };
+}
+
 /* The connections from one client address: home's, which counts them, and
  * keeps the entry for reuse once none is left; the client loops count the
  * bytes of bodies they hold for it.
@@ -739,7 +748,7 @@ httpd_req_parse (struct httpd_req          *req,
                  struct stream_app const   *app,
                  struct httpd_limits const *lim)
 {
-	*req = (struct httpd_req){ .head = (uint16_t)len };
+	*req = httpd_req((uint16_t)len);
 	if (memchr(data, '\0', len))
 		return 400;
 
