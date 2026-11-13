@@ -458,6 +458,16 @@ struct mcp_splice {
 	size_t              at;  /* offset into the draft's text */
 };
 
+/* Returns the splice of the string @p str of a client. @p at is the
+ * offset in the text of the draft where the text of the string goes.
+ */
+static force_inline struct mcp_splice
+mcp_splice (struct json_object *str,
+            size_t              at)
+{
+	return (struct mcp_splice){ .str = str, .at = at };
+}
+
 struct mcp_req;
 
 /* Whose a slot's call is, which says where its output goes. */
@@ -2650,7 +2660,7 @@ mcp_splice_mark (struct json_object *str,
 	if (req->splice.n == req->splice.cap ||
 	    printbuf_strappend(pb, "\"\"") < 0)
 		return -1;
-	req->splice.items[req->splice.n++] = (struct mcp_splice){ str, (size_t)pb->bpos - 1 };
+	req->splice.items[req->splice.n++] = mcp_splice(str, (size_t)pb->bpos - 1);
 	return 0;
 }
 
