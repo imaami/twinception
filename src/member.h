@@ -337,8 +337,8 @@ struct member_wait {
 	struct member    by;      /**< for EPERM, the record that refuses the
 	                               login, with its kind and its name. The
 	                               name is the name of the identity or of
-	                               the Unix user of the login. Else the
-	                               name "". */
+	                               the Unix user of the login. For any
+	                               other result, the name is "". */
 };
 
 /**
@@ -411,7 +411,7 @@ member_table_registry (struct member_table const *table);
  * in @p wait. The function and wait->done set wait->e to 0; ENOENT for no
  * login, which is no member; EPERM if the record of the name refuses the
  * login, with that record in wait->by; EIO if git cannot read or write the
- * records, and the log names the cause; EBUSY if askai runs too many
+ * records, with the cause in the log; EBUSY if askai runs too many
  * commands or lookups; ECANCELED if askai stops; ENOMEM; or EINVAL for a
  * null argument. member_login_why() writes the sentence for the client.
  */

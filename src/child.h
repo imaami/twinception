@@ -68,8 +68,8 @@ child_end (struct child_end const e)
 
 #define child_end(...) (child_end)((struct child_end){__VA_ARGS__})
 
-/** Returns the exit status of a child that ended as @p end says if the
- *  child exited before its deadline and its output was not cut, else -1.
+/** Returns the exit status in @p end if the child exited before its
+ *  deadline and its output was not cut, else -1.
  */
 static force_inline int
 child_end_status (struct child_end const *end)

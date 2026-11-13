@@ -405,7 +405,7 @@ member_records_parse (struct member_records *r)
  * askai could not @p verb @p object, and then the cause. The cause is the
  * last line of @p out, the errors of a git that writes. Without that line,
  * the cause is the text of @p e if git did not run or exited with status
- * 0, and else why git failed, as child_end_why() says it.
+ * 0, and else why git failed, as child_end_why() writes it.
  */
 static int
 member_git_result (char                   *why,
@@ -797,7 +797,7 @@ member_claim_step (struct member_claim          *claim,
  * Returns as member_claim_step() does, but never EINPROGRESS, or EIO or
  * ENOMEM, each with the reason in the @p len bytes at @p why. The claim is
  * the claim of the agent of the service, which only the record of a person
- * refuses. The reason for EPERM names the logins of that person.
+ * refuses. The reason for EPERM contains the logins of that person.
  */
 static int
 member_registry_claim (struct member_registry *reg,

@@ -329,9 +329,10 @@ test_call_ids (void)
 }
 
 /* member_login_why() writes the sentence for each error number of a
- * lookup. The sentence of a refusal names the kind and the name of the
- * record that refuses the login, also for a Unix login, which is without a
- * name. An error number without a sentence gives an empty view.
+ * lookup. The sentence of a refusal depends on the kind of the record that
+ * refuses the login and contains the name of that record, also for a Unix
+ * login, which is without a name. The view is empty for an error number
+ * without a sentence.
  */
 static void
 test_sentences (void)
