@@ -1740,8 +1740,7 @@ main (int    argc,
 	struct blocker *blockers = blocker_create(fd, &e);
 	CHECK(blockers && !e && !blocker_start(blockers));
 	CHECK(!loop_init(&test_loop));
-	struct list children;
-	list_init(&children);
+	struct list children = list(&children);
 	test_table(store, reg, blockers, &children);
 	test_list(store, reg, blockers, &children);
 	test_race(store, reg, blockers, &children);

@@ -641,11 +641,9 @@ loop_run (struct loop *loop,
           uint64_t     until,
           bool         bulk)
 {
-	struct list batch[2];
-	for (size_t i = 0; i < n; ++i) {
-		list_init(&batch[i]);
+	struct list batch[2] = { list(&batch[0]), list(&batch[1]) };
+	for (size_t i = 0; i < n; ++i)
 		list_transplant(&batch[i], &lists[i]);
-	}
 
 	uint64_t t = loop_clock();
 	uint64_t steps = 0;

@@ -1208,8 +1208,7 @@ member_lookup_end (struct member_lookup *lookup,
 	lookup->flags &= ~LOOKUP_WRITE;
 	if (now)
 		(void)member_lookup_give(lookup, now, e);
-	struct list waits;
-	list_init(&waits);
+	struct list waits = list(&waits);
 	list_transplant(&waits, &lookup->waits);
 	struct list *node;
 	list_foreach (node, &waits)
