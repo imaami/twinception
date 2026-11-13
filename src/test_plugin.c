@@ -350,7 +350,7 @@ static void
 test_plugin_misuse_invalid (struct mcp_slot *slot,
                             struct loop     *loop)
 {
-	struct cstr_view const none = { nullptr, 5 };
+	struct cstr_view const none = cstr_view_n(nullptr, 5);
 	char const *const no_format = nullptr;
 	struct loop_timer bare = { .due = UINT64_MAX };
 	struct loop_timer stray = { .due = UINT64_MAX, .fn = test_plugin_never, .slot = 1000 };

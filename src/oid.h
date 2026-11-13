@@ -40,7 +40,7 @@ oid_len (struct oid const *oid)
 static inline struct cstr_view
 oid_view (struct oid const *oid)
 {
-	return (struct cstr_view){ oid->hex, oid_len(oid) };
+	return cstr_view_n(oid->hex, oid_len(oid));
 }
 
 /** Returns true if @p hex is OID_SHA1 or OID_SHA256 lowercase hexadecimal

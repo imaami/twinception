@@ -20,7 +20,12 @@ main (void)
 	assert(!slice.data && !slice.len);
 
 	char const counted[] = { 'a', '\0', 'b' };
-	struct cstr_view text = { counted, sizeof counted };
+	struct cstr_view text = cstr_view_n(counted, sizeof counted);
+	assert(text.data == counted && text.len == sizeof counted);
+	struct cstr_view const none = cstr_view_n(nullptr, 0);
+	assert(!none.data && !none.len && cstr_view_equal(none, empty));
+	struct cstr_view const part = cstr_view_n(counted + 1, 0);
+	assert(part.data == counted + 1 && !part.len && cstr_view_equal(part, empty));
 	assert(cstr_view_equal(text, CSTR_VIEW("a\0b")));
 	assert(!cstr_view_equal(text, CSTR_VIEW("a")));
 	assert(!cstr_view_equal(text, CSTR_VIEW("a\0c")));

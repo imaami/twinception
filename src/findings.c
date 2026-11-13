@@ -1731,7 +1731,7 @@ findings_texts (struct findings_call *call,
 		int const e = notice_text_check(t, names[i], &kept, why, len);
 		if (e)
 			return e;
-		if (cstr_view_store(cstr_view_trim_end((struct cstr_view){ t.data, kept }), texts[i]))
+		if (cstr_view_store(cstr_view_trim_end(cstr_view_n(t.data, kept)), texts[i]))
 			return ENOMEM;
 	}
 	return 0;

@@ -166,7 +166,7 @@ loop_lines_next (struct loop_lines *l,
 	l->at = next;
 	if (!nl && (end < text.len || l->start == end))
 		return false;
-	*line = (struct cstr_view){ text.data + l->start, end - l->start };
+	*line = cstr_view_n(text.data + l->start, end - l->start);
 	l->start = next;
 	return true;
 }

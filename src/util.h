@@ -118,7 +118,7 @@ util_decimal (char     *end,
 	char *p = end;
 	do *--p = (char)('0' + n % 10);
 	while (n /= 10);
-	return (struct cstr_view){ p, (size_t)(end - p) + tail };
+	return cstr_view_n(p, (size_t)(end - p) + tail);
 }
 
 /** The plural ending of a noun after the count @p n: "" if @p n is 1, else
@@ -826,7 +826,7 @@ util_format_view (char       *buf,
 	va_start(ap, fmt);
 	size_t len = util_vformat(buf, size, fmt, ap);
 	va_end(ap);
-	return (struct cstr_view){ buf, len };
+	return cstr_view_n(buf, len);
 }
 
 /** Formats the reason of a refusal into the @p len bytes at @p why as
@@ -853,7 +853,7 @@ util_refuse (char       *why,
 #define UTIL_TEXT(n) struct { uint32_t len; char data[n]; }
 
 /** A view of the text of @p t. */
-#define util_text_view(t) ((struct cstr_view){ (t)->data, (t)->len })
+#define util_text_view(t) cstr_view_n((t)->data, (t)->len)
 
 /** Empty the text of @p t. */
 #define util_text_clear(t) ((t)->data[0] = '\0', (void)((t)->len = 0))

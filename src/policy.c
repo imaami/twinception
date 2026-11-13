@@ -217,7 +217,7 @@ policy_principal_identity (struct policy const *policy,
 {
 	static char const prefix[] = "identity ";
 	char anchor[sizeof prefix - 1 + POLICY_NAME];
-	if (!cstr_view_starts(who, (struct cstr_view){ prefix, sizeof prefix - 1 }) ||
+	if (!cstr_view_starts(who, cstr_view_n(prefix, sizeof prefix - 1)) ||
 	    who.len > sizeof anchor)
 		return EINVAL;
 	memcpy(anchor, who.data, who.len);
@@ -254,7 +254,7 @@ policy_build_who (struct policy_build    *b,
 	char *who = b->names;
 	for (size_t i = 0; i < n; ++i)
 		b->names = mempcpy(b->names, parts[i].data, parts[i].len);
-	return (struct cstr_view){ who, (size_t)(b->names - who) };
+	return cstr_view_n(who, (size_t)(b->names - who));
 }
 
 /* Return the index of the role whose name is the string @p name, or
@@ -464,7 +464,7 @@ policy_read_overflow (char const *path,
 	int e = util_read_text(path, text, sizeof text);
 	if (e)
 		return e;
-	return policy_number((struct cstr_view){ text, strcspn(text, "\n") }, id) ? 0 : EILSEQ;
+	return policy_number(cstr_view_n(text, strcspn(text, "\n")), id) ? 0 : EILSEQ;
 }
 
 /* Bytes of the buffer for one group entry from NSS, at most. A group
@@ -629,7 +629,7 @@ policy_build_role_one (struct policy_build *b,
 		return policy_build_fail(b, "invalid role name: %s", name);
 	if (!json_object_is_type(members, json_type_object))
 		return policy_build_fail(b, "role %s must be an object", name);
-	struct cstr_view const parts[] = { CSTR_VIEW("role "), { name, len } };
+	struct cstr_view const parts[] = { CSTR_VIEW("role "), cstr_view_n(name, len) };
 	r->who = policy_build_who(b, array_size(parts), parts);
 	struct json_object_iter m;
 	json_object_object_foreachC(members, m) {
@@ -698,7 +698,7 @@ policy_build_identity (struct policy_build *b,
 	size_t n = jb_len(tokens);
 	if (!n)
 		return policy_build_fail(b, "identity %s needs tokens", who);
-	struct cstr_view const parts[] = { CSTR_VIEW("identity "), { who, len } };
+	struct cstr_view const parts[] = { CSTR_VIEW("identity "), cstr_view_n(who, len) };
 	struct cstr_view name = policy_build_who(b, array_size(parts), parts);
 	uint64_t const flags = json_object_get_boolean(agent) ? POLICY_AGENT : 0;
 	for (size_t i = 0; i < n; ++i) {

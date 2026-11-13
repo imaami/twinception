@@ -2000,7 +2000,7 @@ home_read_event (struct home *home,
 {
 	char const *data = (char const *)buf_peek(&job->wire).ptr + job->ev;
 	int e = 0;
-	if (cstr_view_equal((struct cstr_view){ data, job->evlen }, CSTR_VIEW("[DONE]"))) {
+	if (cstr_view_equal(cstr_view_n(data, job->evlen), CSTR_VIEW("[DONE]"))) {
 		job->flags |= home->ep->api == AI_INTERACTIONS ? 0 : ENDED;
 		if (job->flags & ENDED)
 			e = home_thought_end(home, job, true);
@@ -2031,7 +2031,7 @@ home_job_line (struct job *job,
                size_t      end)
 {
 	unsigned char *wire = buf_peek(&job->wire).ptr;
-	struct cstr_view line = { (char const *)wire + job->line, end - job->line };
+	struct cstr_view line = cstr_view_n((char const *)wire + job->line, end - job->line);
 	/* The data of a data line ends where the line ends. */
 	uint32_t n = (uint32_t)cstr_view_sse_data(&line).len;
 	uint32_t at = job->line + (uint32_t)(line.len - n);

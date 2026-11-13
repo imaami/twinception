@@ -254,7 +254,7 @@ manual_match (struct htab_node const *node,
               void const             *key)
 {
 	struct manual_entry const *e = container_of(node, struct manual_entry, node);
-	return cstr_view_equal((struct cstr_view){ e->key, e->len },
+	return cstr_view_equal(cstr_view_n(e->key, e->len),
 	                       *(struct cstr_view const *)key);
 }
 
@@ -265,7 +265,7 @@ manual_lookup (struct manual const *m,
                size_t               len,
                uint64_t             hash)
 {
-	struct cstr_view const k = { key, len };
+	struct cstr_view const k = cstr_view_n(key, len);
 	struct htab_node *node = *htab_find(&m->table, hash, manual_match, &k);
 	return node ? container_of(node, struct manual_entry, node) : nullptr;
 }
@@ -555,7 +555,7 @@ manual_fetch_searched (struct child *c)
 {
 	struct manual_fetch *f = c->owner;
 	char const *key = f->alias->key;
-	struct cstr_view const name = { key, strlen(key) };
+	struct cstr_view const name = cstr_view(key);
 	char const *section = key + name.len + 1;
 	struct span const out = buf_peek(&c->out);
 	struct cstr_view rest = { (char const *)out.ptr, out.len };
@@ -578,7 +578,7 @@ manual_fetch_searched (struct child *c)
 			                line.data);
 	}
 	manual_list_end(len, why);
-	manual_fetch_fail(f, (struct cstr_view){ why, len > lead ? len : miss });
+	manual_fetch_fail(f, cstr_view_n(why, len > lead ? len : miss));
 }
 
 /* Returns the section of the page file at @p path, which man -w named:
@@ -659,7 +659,7 @@ manual_fetch_found (struct child *c)
 		manual_list_end(len, text);
 		(void)util_text_printf_(&len, text, sizeof scratch->text, " Give the section "
 		                        "argument.");
-		manual_fetch_fail(f, (struct cstr_view){ text, len });
+		manual_fetch_fail(f, cstr_view_n(text, len));
 		return;
 	}
 	uint64_t hash = util_hash(m->seed, path.data, path.len);
@@ -761,7 +761,7 @@ manual_answer (struct mcp_slot    *slot,
 	call->page = page;
 	if (call->heading)
 		return !mcp_slot_ready(slot);
-	mcp_slot_lend(slot, (struct cstr_view){ page->text, page->len });
+	mcp_slot_lend(slot, cstr_view_n(page->text, page->len));
 	mcp_slot_finish(slot, 0);
 	return false;
 }
@@ -828,7 +828,7 @@ static void
 manual_step (struct mcp_slot *slot)
 {
 	struct manual_call *call = *mcp_slot_own(slot);
-	struct cstr_view const text = { call->page->text, call->page->len };
+	struct cstr_view const text = cstr_view_n(call->page->text, call->page->len);
 	struct cstr_view const heading = jb_view(call->heading);
 	struct loop *loop = mcp_slot_loop(slot);
 	bool done = false;
@@ -881,7 +881,7 @@ manual_back (struct loop *loop,
 		(void)manual_answer(slot, page);
 	} else {
 		struct cstr_view const why =
-			w->why ? (struct cstr_view){ w->why->text, w->why->len } : manual_oom;
+			w->why ? cstr_view_n(w->why->text, w->why->len) : manual_oom;
 		LOG(LOG_VERBOSE, "man call failed after %.1f s: %.*s",
 		    (double)(loop_clock() - w->since) / 1e9, (int)why.len, why.data);
 		mcp_slot_tell(slot, why, TOOL_FAILED);
@@ -1080,7 +1080,7 @@ manual_start (struct mcp_slot    *slot,
 	char digit[2] = "";
 	if (number >= 0 && number <= 9) {
 		digit[0] = (char)('0' + number);
-		sect = (struct cstr_view){ digit, 1 };
+		sect = cstr_view_n(digit, 1);
 	}
 	struct cstr_view const problem =
 		!page.data || *page.data == '-'

@@ -418,7 +418,7 @@ store_object_next (struct span *out,
 	}
 	size_t const head = (size_t)(nl - out->ptr) + 1;
 	struct cstr_view size = {};
-	enum store_kind const kind = store_kind((struct cstr_view){ (char const *)out->ptr, head - 1 },
+	enum store_kind const kind = store_kind(cstr_view_n((char const *)out->ptr, head - 1),
 	                                        id, &size);
 	if (kind == STORE_KIND_MISSING) {
 		out->ptr += head;

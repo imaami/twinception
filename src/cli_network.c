@@ -289,7 +289,7 @@ cli_network_deliver_chunks (struct cli_network      *network,
 		             (network->ready && !network->ready(network->ready_context))))
 			return;
 		cli_network_receive_fn *receive = chunk->header ? call->header : call->body;
-		int e = live && receive ? receive((struct cstr_view){chunk->bytes, chunk->length},
+		int e = live && receive ? receive(cstr_view_n(chunk->bytes, chunk->length),
 		                                  call->context) : 0;
 		if (e) {
 			call->error = e;

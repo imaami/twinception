@@ -126,7 +126,7 @@ notes_is_dotgit (char const *part,
 {
 	for (size_t at = 0; at <= n; ) {
 		char const *s = part + at;
-		struct cstr_view const rest = { s, n - at };
+		struct cstr_view const rest = cstr_view_n(s, n - at);
 		size_t k = cstr_view_starts_case(rest, CSTR_VIEW(".git")) ? 4
 		         : cstr_view_starts_case(rest, CSTR_VIEW("git~1")) ? 5 : 0;
 		while (k && k < rest.len && (s[k] == ' ' || s[k] == '.'))
@@ -251,7 +251,7 @@ notes_file_next (struct span       *out,
 	char const *nul = memchr(s, '\0', out->len);
 	char const *tab = nul ? memchr(s, '\t', (size_t)(nul - s)) : nullptr;
 	/* The record is "MODE blob OID SIZE\tNAME\0", with spaces before SIZE. */
-	struct cstr_view rest = { s, tab ? (size_t)(tab - s) : 0 };
+	struct cstr_view rest = cstr_view_n(s, tab ? (size_t)(tab - s) : 0);
 	struct cstr_view mode, type;
 	struct oid id;
 	if (!tab || tab + 1 == nul || !cstr_view_cut(&rest, ' ', &mode) ||
@@ -289,7 +289,7 @@ notes_cursor_header (struct span          out,
 		size_t len = before - 1 - token;
 		char const *space = memchr(s + token, ' ', len);
 		size_t digits = space ? (size_t)(space - s - token) : len;
-		struct cstr_view rest = cstr_view_slice((struct cstr_view){ s + token, len },
+		struct cstr_view rest = cstr_view_slice(cstr_view_n(s + token, len),
 		                                        digits + 1, SIZE_MAX);
 		struct cstr_view asker;
 		if (!oid_init_field(&cursor->commit, &rest, ' ') && cstr_view_cut(&rest, ' ', &asker) &&

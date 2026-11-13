@@ -122,7 +122,7 @@ git_run_name (char const *path)
 	size_t start = end;
 	while (start && path[start - 1] != '/')
 		--start;
-	struct cstr_view name = { path + start, end - start };
+	struct cstr_view name = cstr_view_n(path + start, end - start);
 	if (name.len > suffix.len && cstr_view_ends(name, suffix))
 		name.len -= suffix.len;
 	return git_run_name_valid(name) ? name : (struct cstr_view){};

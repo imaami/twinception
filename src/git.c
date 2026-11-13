@@ -338,7 +338,7 @@ git_ceilings (struct git *git)
 	for (size_t i = 0; !e && i < git->n; ++i) {
 		char const *p = git->repo[i].path;
 		size_t const len = (size_t)(strrchr(p, '/') - p);
-		struct cstr_view const parent = len ? (struct cstr_view){ p, len } : CSTR_VIEW("/");
+		struct cstr_view const parent = len ? cstr_view_n(p, len) : CSTR_VIEW("/");
 		e = dstr_printf(&git->ceilings, "%s%.*s", i ? ":" : "", (int)parent.len, parent.data)
 		    ? 0 : ENOMEM;
 	}
@@ -527,12 +527,12 @@ git_commit (struct dstr      *text,
 	char const *dest = dstr_get(text) + at;
 	size_t const len = word.len;
 	size_t const base = strcspn(dest, "^~:@{}");
-	struct cstr_view const ref = { dest, base };
+	struct cstr_view const ref = cstr_view_n(dest, base);
 	if (!base || *dest == '-' || *dest == '/' || strstr(dest, "..") ||
 	    cstr_view_equal(ref, CSTR_VIEW("stash")) || cstr_view_equal(ref, CSTR_VIEW("refs/stash")))
 		return EINVAL;
 	for (size_t i = base; i < len;) {
-		if (cstr_view_starts((struct cstr_view){ dest + i, len - i }, suffix)) {
+		if (cstr_view_starts(cstr_view_n(dest + i, len - i), suffix)) {
 			i += suffix.len;
 			continue;
 		}
@@ -1437,7 +1437,7 @@ git_read_head (struct git_call const *call,
 	char lines[sizeof ". Lines  to  of at least .]\n" + 3 * UTIL_DECIMAL];
 	struct cstr_view const p[] = {
 		CSTR_VIEW("[Repository "), call->pin.repo->name, CSTR_VIEW(", file "),
-		{ dstr_get(&call->pin.text) + n + 1, read->rev_len - n - 1 },
+		cstr_view_n(dstr_get(&call->pin.text) + n + 1, read->rev_len - n - 1),
 		CSTR_VIEW(" at commit "), oid_view(commit),
 		read->total ? util_format_view(lines, sizeof lines, ". Lines %zu to %zu of "
 		                               "%s%zu.]\n", read->line, read->last,
@@ -1488,8 +1488,8 @@ git_read_lines (struct git_read *read,
 		size_t taken;
 		int e = mcp_slot_write(slot, num, 0, &taken);
 		if (!e)
-			e = mcp_slot_write(slot, (struct cstr_view){ (char const *)blob.ptr +
-			                                             read->scan.at, n },
+			e = mcp_slot_write(slot,
+			                   cstr_view_n((char const *)blob.ptr + read->scan.at, n),
 			                   ends ? 0 : TOOL_MORE, &taken);
 		if (e)
 			return e;
@@ -1526,8 +1526,8 @@ git_read_foot (struct git_call const *call,
 	 * before the line number, and the text after it. */
 	struct cstr_view const notes[][4] = {
 		{ CSTR_VIEW("[To read on, call again with \"revisions\": [\""),
-		  { dstr_get(&call->pin.text), read->rev_len }, CSTR_VIEW("\"] and \"line\": "),
-		  CSTR_VIEW(".]") },
+		  cstr_view_n(dstr_get(&call->pin.text), read->rev_len),
+		  CSTR_VIEW("\"] and \"line\": "), CSTR_VIEW(".]") },
 		{ CSTR_VIEW("[Line "), {}, {}, CSTR_VIEW(" is the end of the file.]") },
 		{ CSTR_VIEW("[Line "), {}, {},
 		  CSTR_VIEW(" is the end of the file. The file does not end in a newline.]") },
@@ -1686,7 +1686,7 @@ git_copy (struct mcp_slot *slot,
 	struct span left = buf_peek(&c->out);
 	size_t room = loop_room(c->loop, LOOP_COPY);
 	size_t n = left.len < room ? left.len : room;
-	int e = mcp_slot_write(slot, (struct cstr_view){ (char const *)left.ptr, n },
+	int e = mcp_slot_write(slot, cstr_view_n((char const *)left.ptr, n),
 	                       n < left.len ? TOOL_MORE : 0, &n);
 	if (e)
 		return e;
@@ -1750,7 +1750,7 @@ git_grep_copy (struct git_call *call,
 		if (nl)
 			n = (size_t)(nl - text.data) + 1;
 		bool const ends = nl || n == text.len;
-		int e = mcp_slot_write(slot, (struct cstr_view){ text.data, n },
+		int e = mcp_slot_write(slot, cstr_view_n(text.data, n),
 		                       ends ? 0 : TOOL_MORE, &taken);
 		if (e)
 			return e;
@@ -1829,7 +1829,7 @@ git_start (struct mcp_slot    *slot,
 	uint32_t len = 0;
 	e = git_call_command(call, git, &len, scratch->text, sizeof scratch->text);
 	if (e == EINVAL)
-		mcp_slot_tell(slot, (struct cstr_view){ scratch->text, len }, TOOL_FAILED);
+		mcp_slot_tell(slot, cstr_view_n(scratch->text, len), TOOL_FAILED);
 	else if (e)
 		mcp_slot_fail(slot, e);
 	else if (mcp_slot_offset(slot, args))

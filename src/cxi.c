@@ -132,7 +132,7 @@ cxi_out_text (struct cxi_out *out,
 	for (size_t i = 0; i < n; ) {
 		size_t const col = s[i] == ':' && i && s[i - 1] >= '0' && s[i - 1] <= '9'
 		                   ? strspn(s + i + 1, "0123456789") : 0;
-		struct cstr_view const rest = { s + i, n - i };
+		struct cstr_view const rest = cstr_view_n(s + i, n - i);
 		size_t const skip = out->tree.len && cstr_view_starts(rest, out->tree) ? out->tree.len
 		                  : col && s[i + 1 + col] == ')' ? 1 + col : 0;
 		size_t k;
@@ -408,7 +408,8 @@ cxi_find_line (char const       *text,
 	size_t total = 0;
 	for (char const *p = text, *end = text + size; p < end; ++total) {
 		char const *nl = memchr(p, '\n', (size_t)(end - p));
-		struct cstr_view const here = { p, nl ? (size_t)(nl - p) : (size_t)(end - p) };
+		struct cstr_view const here = cstr_view_n(p, nl ? (size_t)(nl - p)
+		                                                : (size_t)(end - p));
 		*line = total + 1 == n ? here : *line;
 		p = nl ? nl + 1 : end;
 	}
@@ -498,7 +499,7 @@ cxi_declaration (struct cxi *x,
 		cxi_out_printf(&x->out, "\n");
 		char const *next = here.data + here.len + (here.data + here.len < end);
 		char const *nl = memchr(next, '\n', (size_t)(end - next));
-		here = (struct cstr_view){ next, nl ? (size_t)(nl - next) : (size_t)(end - next) };
+		here = cstr_view_n(next, nl ? (size_t)(nl - next) : (size_t)(end - next));
 	}
 	/* The record names a file of the tree that is UTF-8 without control
 	 * bytes, so that askai can read it. */
@@ -1594,7 +1595,7 @@ cxi_cache_lock (struct cxi_cache *cache,
 			return errno;
 		if ((e = util_read_all(cache->state, now, sizeof now, 0, &n)))
 			return e;
-		struct cstr_view const was = { now, n };
+		struct cstr_view const was = cstr_view_n(now, n);
 		bool const same = cstr_view_equal(was, commit);
 		if (same && op == LOCK_SH)
 			return 0;

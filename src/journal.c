@@ -364,14 +364,14 @@ journal_record_read (struct journal         *j,
 		return ENOMEM;
 	r->sequence = util_be_get(header + JOURNAL_AT_SEQUENCE, sizeof r->sequence);
 	r->len = (size_t)length;
-	struct cstr_view const id = { (char const *)header + JOURNAL_AT_ID, HEXID_DIGITS };
+	struct cstr_view const id = cstr_view_n((char const *)header + JOURNAL_AT_ID, HEXID_DIGITS);
 	char const *kind = (char const *)header + JOURNAL_AT_KIND;
 	size_t const kind_len = strnlen(kind, JOURNAL_KIND);
 	if (hexid_init(&r->id, id) || !util_word(kind, kind_len, JOURNAL_KIND)) {
 		journal_records_destroy(&r);
 		return EILSEQ;
 	}
-	r->type = journal_kind((struct cstr_view){ kind, kind_len });
+	r->type = journal_kind(cstr_view_n(kind, kind_len));
 	e = util_read_all(fd, r->data, r->len, *offset + (off_t)sizeof header, &got);
 	if (e || got != r->len) {
 		journal_records_destroy(&r);
@@ -1102,7 +1102,7 @@ journal_put (struct journal     *j,
 {
 	size_t const n = util_word_len(kind, JOURNAL_KIND);
 	return j && !n ? EINVAL
-	               : journal_submit(j, id, journal_kind((struct cstr_view){ kind, n }), 0, 0,
+	               : journal_submit(j, id, journal_kind(cstr_view_n(kind, n)), 0, 0,
 	                                JOURNAL_CONTROL_PUT, data, len, loop, done, arg);
 }
 

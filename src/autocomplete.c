@@ -893,7 +893,8 @@ autocomplete_replacement (struct autocomplete    *ac,
 	if (separate && end < line.len && cstr_view_space(line.data[end]))
 		++end;
 	struct cstr_view const parts[] = {
-		cstr_view_slice(line, 0, begin), value, {" ", separate}, cstr_view_slice(line, end, SIZE_MAX),
+		cstr_view_slice(line, 0, begin), value, cstr_view_n(" ", separate),
+		cstr_view_slice(line, end, SIZE_MAX),
 	};
 	return autocomplete_matches_add(&ac->found, parts, array_size(parts), begin + value.len + separate,
 	                                begin, kind);

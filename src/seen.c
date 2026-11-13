@@ -174,7 +174,7 @@ seen_lines (struct seen_read *read,
 	struct seen_mark *mark = &read->mark;
 	if (mark->at > lo)
 		*mark = (struct seen_mark){ .line = src->lines.first, .at = src->output.at };
-	mark->line += cstr_view_count((struct cstr_view){ p + mark->at, lo - mark->at }, '\n');
+	mark->line += cstr_view_count(cstr_view_n(p + mark->at, lo - mark->at), '\n');
 	mark->at = lo;
 	uint64_t line = mark->line;
 	/* Skip a line whose start is before the window. */
@@ -188,7 +188,7 @@ seen_lines (struct seen_read *read,
 	/* Count the lines that end within the window. The last line may end
 	 * without a newline, and it counts if the window ends at the end of
 	 * the numbered lines. */
-	uint64_t const n = cstr_view_count((struct cstr_view){ p + lo, hi - lo }, '\n') +
+	uint64_t const n = cstr_view_count(cstr_view_n(p + lo, hi - lo), '\n') +
 	                   (hi == end && hi > lo && p[hi - 1] != '\n');
 	if (!n)
 		return (struct seen_lines){};

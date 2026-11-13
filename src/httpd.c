@@ -641,7 +641,7 @@ httpd_req_header (struct httpd_req        *req,
 		req->flags |= REQ_CHUNKED;
 		return 0;
 	case HEADER_CONNECTION:
-		struct cstr_view const list = { value, f.len };
+		struct cstr_view const list = cstr_view_n(value, f.len);
 		if (cstr_view_list_has(list, CSTR_VIEW("close")))
 			req->flags |= REQ_CLOSE;
 		else if (req->flags & REQ_HTTP10 &&
@@ -686,7 +686,7 @@ httpd_req_field (struct httpd_req        *req,
 	while (end > value && (end[-1] == ' ' || end[-1] == '\t'))
 		*--end = '\0';
 	struct httpd_field const f = { (uint16_t)(value - data), (uint16_t)(end - value) };
-	return httpd_req_header(req, app, (struct cstr_view){ line, (size_t)(colon - line) },
+	return httpd_req_header(req, app, cstr_view_n(line, (size_t)(colon - line)),
 	                        value, f, max_body);
 }
 
@@ -759,7 +759,7 @@ httpd_conn_field (struct httpd_conn const *conn,
                   struct httpd_field       f)
 {
 	char const *head = (char const *)buf_peek(&conn->in).ptr;
-	return f.off ? (struct cstr_view){ head + f.off, f.len } : (struct cstr_view){};
+	return f.off ? cstr_view_n(head + f.off, f.len) : (struct cstr_view){};
 }
 
 /* The address a client is known by: IPv4 (as IPv4-mapped IPv6), or for other
@@ -1304,7 +1304,7 @@ httpd_stream_data (struct stream *s,
 		for (size_t n = bytes.len; n; n /= 16)
 			*--size = "0123456789abcdef"[n % 16];
 		memcpy(digits + sizeof digits - 2, "\r\n", 2);
-		f[0] = (struct cstr_view){ size, (size_t)(digits + sizeof digits - size) };
+		f[0] = cstr_view_n(size, (size_t)(digits + sizeof digits - size));
 		f[2] = CSTR_VIEW("\r\n");
 	}
 	if (httpd_conn_put(conn, f, array_size(f)))
@@ -3022,7 +3022,7 @@ httpd_listen_addr (char const *text,
 	a.port = at;
 	if (colon) {
 		a.port = colon + 1;
-		*e = httpd_listen_host(&a, (struct cstr_view){ at, (size_t)(colon - at) });
+		*e = httpd_listen_host(&a, cstr_view_n(at, (size_t)(colon - at)));
 		if (*e)
 			return a;
 	}

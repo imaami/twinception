@@ -40,6 +40,14 @@ cstr_view (char const *text)
 	return (struct cstr_view){ text, text ? strlen(text) : 0 };
 }
 
+/** Returns the view of @p len bytes at @p data. */
+static force_inline struct cstr_view
+cstr_view_n (char const *data,
+             size_t      len)
+{
+	return (struct cstr_view){ .data = data, .len = len };
+}
+
 /** View a dstr's full contents, including embedded NULs, until it changes. */
 extern struct cstr_view
 cstr_view_dstr (struct dstr const *text);
@@ -144,7 +152,7 @@ cstr_view_starts_case (struct cstr_view text,
                        struct cstr_view prefix)
 {
 	return text.len >= prefix.len &&
-	       cstr_view_equal_case((struct cstr_view){ text.data, prefix.len }, prefix);
+	       cstr_view_equal_case(cstr_view_n(text.data, prefix.len), prefix);
 }
 
 /**
@@ -183,8 +191,8 @@ cstr_view_cut (struct cstr_view *rest,
 	if (!at)
 		return false;
 	size_t const n = (size_t)(at - text.data);
-	*rest = (struct cstr_view){ at + 1, text.len - n - 1 };
-	*head = (struct cstr_view){ text.data, n };
+	*rest = cstr_view_n(at + 1, text.len - n - 1);
+	*head = cstr_view_n(text.data, n);
 	return true;
 }
 

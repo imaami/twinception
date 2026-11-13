@@ -937,8 +937,8 @@ notes_tool_added (struct mcp_slot *slot)
 	struct cstr_view const id = oid_view(&commit);
 	/* The result of a copy names the copy instead of the message. */
 	struct cstr_view colon = CSTR_VIEW(": ");
-	struct cstr_view message = { call->message.data,
-	                             jb_utf8(call->message.data, call->message.len) };
+	struct cstr_view message = cstr_view_n(call->message.data,
+	                                       jb_utf8(call->message.data, call->message.len));
 	if (notes_tool_actions[call->action].fetch & FETCH_COPY)
 		colon = message = CSTR_VIEW("");
 	struct cstr_view const p[] = {
@@ -1061,14 +1061,15 @@ notes_tool_history (struct mcp_slot *slot,
 	while (notes_entry_before(out, &cursor, &entry)) {
 		char const *name = (char const *)entry.name.ptr;
 		/* Git also matches descendants if this path was once a directory. */
-		if (filter.len && !cstr_view_equal(filter, (struct cstr_view){ name, entry.name.len }))
+		if (filter.len && !cstr_view_equal(filter, cstr_view_n(name, entry.name.len)))
 			continue;
 		char when[WHEN];
 		size_t const w = notes_tool_when(when, sizeof when, entry.time, when_text);
 		char const *s = (char const *)entry.subject.ptr;
 		char const *a = (char const *)entry.asker.ptr;
-		struct cstr_view const subject = { s, history ? jb_utf8(s, entry.subject.len) : 0 };
-		struct cstr_view const asker = { a, jb_utf8(a, entry.asker.len) };
+		struct cstr_view const subject =
+			cstr_view_n(s, history ? jb_utf8(s, entry.subject.len) : 0);
+		struct cstr_view const asker = cstr_view_n(a, jb_utf8(a, entry.asker.len));
 		++k;
 		if (!dstr_printf(d, "%" PRIu32 ". %.*s  ", k, (int)w, when))
 			return ENOMEM;
@@ -1171,10 +1172,12 @@ notes_tool_members (struct notes_tool_call *call,
 		    !notes_tool_when(when, sizeof when, info->time, when_text)) {
 			ok = ok && dstr_cat(d, "no notes yet\n");
 		} else {
-			struct cstr_view const change = { info->change.data,
-			                                  jb_utf8(info->change.data, info->change.len) };
-			struct cstr_view const asker = { info->asker.data,
-			                                 jb_utf8(info->asker.data, info->asker.len) };
+			struct cstr_view const change =
+				cstr_view_n(info->change.data,
+				            jb_utf8(info->change.data, info->change.len));
+			struct cstr_view const asker =
+				cstr_view_n(info->asker.data,
+				            jb_utf8(info->asker.data, info->asker.len));
 			ok = ok && dstr_cat(d, when) && !notes_tool_change(d, change, asker);
 			char stamp[WHEN];
 			if (list && notes_tool_when(stamp, sizeof stamp, info->time, when_json)) {
@@ -1646,7 +1649,7 @@ notes_tool_prompt_list (struct mcp_slot *slot)
 	if (!e && named) {
 		struct cstr_view const p[] = {
 			CSTR_VIEW("[askai: The current text of your newest note, "),
-			{ name.data, jb_utf8(name.data, name.len) },
+			cstr_view_n(name.data, jb_utf8(name.data, name.len)),
 			CSTR_VIEW(":]\n"),
 		};
 		e = cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""),

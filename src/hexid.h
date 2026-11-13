@@ -62,7 +62,7 @@ hexid_init (struct hexid     *id,
 static inline struct cstr_view
 hexid_view (struct hexid const *id)
 {
-	return (struct cstr_view){ id->hex, *id->hex ? HEXID_DIGITS : 0 };
+	return cstr_view_n(id->hex, *id->hex ? HEXID_DIGITS : 0);
 }
 
 /** Returns true if @p a and @p b are the same id, or both no id. */

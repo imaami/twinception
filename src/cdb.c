@@ -148,7 +148,7 @@ cdb_words (struct cdb_map const *map,
 		else if (drop)
 			continue;
 		else if (o + 1 < array_size(cdb_paths) && !value.len && i + 1 < n)
-			e = cdb_path(map, dir, (struct cstr_view){ a.data, a.len + 1 },
+			e = cdb_path(map, dir, cstr_view_n(a.data, a.len + 1),
 			             jb_view(jb_at(args, ++i)), tmp, words);
 		/* A joined value that starts with '-' belongs to another option,
 		 * such as -include-pch. */

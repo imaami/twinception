@@ -141,7 +141,7 @@ git_view_create (struct span metadata,
 		? CSTR_VIEW("[core]\nrepositoryFormatVersion = 1\nbare = true\n"
 		            "[extensions]\nobjectFormat = sha256\n")
 		: CSTR_VIEW("[core]\nrepositoryFormatVersion = 0\nbare = true\n");
-	head = head.len ? (struct cstr_view){ head.data, head.len + 1 }
+	head = head.len ? cstr_view_n(head.data, head.len + 1)
 	                : CSTR_VIEW("ref: refs/askai/unborn\n");
 	if (!*e)
 		*e = git_view_file(view, "config", cfg);

@@ -36,7 +36,7 @@ notice_arg (char        conv,
 		char const *at = memchr(s, end, len);
 		if (!at)
 			return 0;
-		struct cstr_view rest = { s, (size_t)(at - s) };
+		struct cstr_view rest = cstr_view_n(s, (size_t)(at - s));
 		struct cstr_view name;
 		struct cstr_view kind;
 		if (!cstr_view_cut(&rest, ' ', &name) || !member_name_valid(name))
@@ -98,7 +98,7 @@ notice_kept (char const *text,
 	size_t kept = len;
 	size_t end = len;
 	for (;;) {
-		end = cstr_view_trim_end((struct cstr_view){ text, end }).len;
+		end = cstr_view_trim_end(cstr_view_n(text, end)).len;
 		char const *nl = memrchr(text, '\n', end);
 		size_t line = nl ? (size_t)(nl - text) + 1 : 0;
 		bool notice = false;

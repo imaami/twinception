@@ -45,7 +45,7 @@ static char const godbolt_probe_text[] =
 struct cstr_view
 godbolt_probe_source (void)
 {
-	return (struct cstr_view){ godbolt_probe_text, sizeof godbolt_probe_text - 1 };
+	return cstr_view_n(godbolt_probe_text, sizeof godbolt_probe_text - 1);
 }
 
 /* Stores in @p *result the value of the integer expansion @p text of a

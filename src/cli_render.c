@@ -85,7 +85,7 @@ cli_render_row (struct dstr *cache, struct dstr *output,
 		    (length > 1 && memcmp(text.data + start, old.data + start, length)))
 			break;
 		if (width < 0)
-			style = (struct cstr_view){text.data + start, length};
+			style = cstr_view_n(text.data + start, length);
 		else if (width) {
 			base = start;
 			base_cells = cells;

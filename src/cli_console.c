@@ -530,7 +530,7 @@ cli_console_submit (int count,
                     int key)
 {
 	struct cli_console *console = cli_console_active;
-	bool immediate = cli_console_is_immediate(console, (struct cstr_view){rl_line_buffer, (size_t)rl_end});
+	bool immediate = cli_console_is_immediate(console, cstr_view_n(rl_line_buffer, (size_t)rl_end));
 	char last = !immediate && rl_end ? rl_line_buffer[rl_end - 1] : 0;
 	bool marked = last == '/' || last == '\\';
 	bool multiline = console->flags & CLI_CONSOLE_MULTILINE;
@@ -587,7 +587,7 @@ cli_console_complete (char const *text,
 	console->completion_count = 0;
 	if (!console->complete || start || end < 0 || rl_end < 0)
 		return nullptr;
-	struct cstr_view line = {rl_line_buffer, (size_t)rl_end};
+	struct cstr_view line = cstr_view_n(rl_line_buffer, (size_t)rl_end);
 	console->in.error = console->complete(console->complete_context, line, (size_t)end,
 	                                      &console->candidates, &console->candidate_count);
 	if (console->in.error || !console->candidate_count)
@@ -830,7 +830,7 @@ cli_console_terminal_write (void       *cookie,
                             size_t      length)
 {
 	struct cli_console *console = cookie;
-	int e = cli_console_queue(console, (struct cstr_view){data, length});
+	int e = cli_console_queue(console, cstr_view_n(data, length));
 	if (e) {
 		console->out.error = e;
 		return -1;
@@ -847,7 +847,7 @@ static void
 cli_console_redisplay (void)
 {
 	struct cli_console *console = cli_console_active;
-	struct cstr_view text = {rl_line_buffer, (size_t)rl_end};
+	struct cstr_view text = cstr_view_n(rl_line_buffer, (size_t)rl_end);
 	if (!cstr_view_equal(text, cstr_view_dstr(&console->draft)) &&
 	    cstr_view_store(text, &console->draft))
 		console->in.error = ENOMEM;
@@ -1253,7 +1253,7 @@ cli_console_set_display (struct cli_console *console,
 	struct cli_style_entry const *sequence = &console->palette[display];
 	int e = 0;
 	if (!(console->flags & CLI_CONSOLE_FULLSCREEN) && console->display != display && sequence->length)
-		e = cli_console_queue(console, (struct cstr_view){sequence->bytes, sequence->length});
+		e = cli_console_queue(console, cstr_view_n(sequence->bytes, sequence->length));
 	if (!e)
 		console->display = display;
 	return e;
@@ -1710,7 +1710,7 @@ cli_console_read_text_simple (struct cli_console *console,
 {
 	struct buf bytes = buf();
 	int e = cli_console_read_simple(console, &bytes, multiline, prompt);
-	struct cstr_view line = {(char const *)bytes.data, bytes.tail};
+	struct cstr_view line = cstr_view_n((char const *)bytes.data, bytes.tail);
 	if (!e && !jb_is_text(line))
 		e = EILSEQ;
 	if (!e && cstr_view_cat(line, text))
@@ -1810,7 +1810,7 @@ cli_console_output_next (struct cli_console_output *state,
 	uint32_t value = state->value;
 	bool unsafe = value < minimum[state->expected] || value > 0x10ffff ||
 	              (value >= 0xd800 && value <= 0xdfff) || (value >= 0x0080 && value <= 0x009f);
-	struct cstr_view bytes = unsafe ? CSTR_VIEW("?") : (struct cstr_view){(char const *)state->pending, state->used};
+	struct cstr_view bytes = unsafe ? CSTR_VIEW("?") : cstr_view_n((char const *)state->pending, state->used);
 	state->used = 0;
 	return cstr_view_cat(bytes, dest);
 }
@@ -2031,7 +2031,7 @@ cli_console_take_immediate (struct cli_console *console,
 	*ready = false;
 	if (console->frame || !console->immediate_line)
 		return 0;
-	struct cstr_view line = {console->immediate_line, console->immediate_length};
+	struct cstr_view line = cstr_view_n(console->immediate_line, console->immediate_length);
 	int e = cstr_view_store(line, text);
 	if (e)
 		return e;

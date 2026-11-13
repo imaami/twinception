@@ -669,7 +669,7 @@ static bool
 config_has_header (struct config const *cfg,
                    char const          *prefix)
 {
-	struct cstr_view const name = { prefix, strcspn(prefix, ":") + 1 };
+	struct cstr_view const name = cstr_view_n(prefix, strcspn(prefix, ":") + 1);
 	for (char const **line = cfg->headers; *line; ++line)
 		if (cstr_view_starts_case(cstr_view(*line), name))
 			return true;
@@ -1243,7 +1243,7 @@ static struct cstr_view
 config_text (struct buf const *text)
 {
 	struct span const s = buf_peek(text);
-	return (struct cstr_view){ s.len ? (char const *)s.ptr : "", s.len };
+	return cstr_view_n(s.len ? (char const *)s.ptr : "", s.len);
 }
 
 /* Say that the configuration file's @p text is not as config_json() says,
@@ -1644,7 +1644,7 @@ config_check_codes (struct config *cfg)
 	for (size_t i = 0; i < cfg->n_codes; ++i) {
 		char const *code = cfg->codes[i];
 		char const *file = strchr(code, '=');
-		struct cstr_view const repo = { code, file ? (size_t)(file - code) : 0 };
+		struct cstr_view const repo = cstr_view_n(code, file ? (size_t)(file - code) : 0);
 		bool const path = *code == '/';
 		size_t g = 0;
 		while (g < cfg->n_gits &&
@@ -1887,7 +1887,7 @@ config_url_generate (struct config *cfg)
 	/* The path, less its method if that is the one that does not stream. */
 	size_t path = (size_t)(query - url);
 	char const *stream = "";
-	if (cstr_view_ends((struct cstr_view){ url, path }, method)) {
+	if (cstr_view_ends(cstr_view_n(url, path), method)) {
 		path -= method.len;
 		stream = ":streamGenerateContent";
 	}

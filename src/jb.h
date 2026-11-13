@@ -142,8 +142,7 @@ jb_view (struct json_object *val)
 {
 	if (!json_object_is_type(val, json_type_string))
 		return (struct cstr_view){};
-	return (struct cstr_view){ json_object_get_string(val),
-	                           (size_t)json_object_get_string_len(val) };
+	return cstr_view_n(json_object_get_string(val), (size_t)json_object_get_string_len(val));
 }
 
 /** Returns jb_view(@p val) if the string is @p min to @p max bytes long,
@@ -375,8 +374,7 @@ jb_args (struct json_object      *args,
 		struct cstr_view const key = cstr_view(it.key);
 		size_t const i = cstr_view_index(names, n, key);
 		if (i == n || !(accepted >> i & 1)) {
-			*other = (struct cstr_view){ key.data, util_clip(key.data, key.len,
-			                                                 JB_KEY_SHOWN) };
+			*other = cstr_view_n(key.data, util_clip(key.data, key.len, JB_KEY_SHOWN));
 			return EINVAL;
 		}
 		of[i] = it.val;

@@ -809,7 +809,7 @@ godbolt_putf (struct godbolt *call,
 	char text[512];
 	va_list ap;
 	va_start(ap, fmt);
-	struct cstr_view const t = { text, util_vformat(text, sizeof text, fmt, ap) };
+	struct cstr_view const t = cstr_view_n(text, util_vformat(text, sizeof text, fmt, ap));
 	va_end(ap);
 	return godbolt_put(call, t);
 }
@@ -1213,11 +1213,11 @@ godbolt_put_field (struct godbolt   *call,
 		unsigned char const c = (unsigned char)t.data[i];
 		if (c >= sizeof letter || !letter[c])
 			continue;
-		godbolt_put(call, (struct cstr_view){ t.data + from, i - from });
-		godbolt_put(call, (struct cstr_view){ (char const[]){ '\\', letter[c] }, 2 });
+		godbolt_put(call, cstr_view_n(t.data + from, i - from));
+		godbolt_put(call, cstr_view_n((char const[]){ '\\', letter[c] }, 2));
 		from = i + 1;
 	}
-	return godbolt_put(call, (struct cstr_view){ t.data + from, t.len - from });
+	return godbolt_put(call, cstr_view_n(t.data + from, t.len - from));
 }
 
 /* Counts an element of the list of languages, and writes it as a row if the
@@ -1525,7 +1525,7 @@ godbolt_default_row (struct godbolt     *call,
 		return 0;
 	struct cstr_view const id = godbolt_id(jb_get(element, "defaultCompiler"));
 	static_assert(sizeof call->default_compiler >= GODBOLT_ID_MAX);
-	call->args.ids[0] = (struct cstr_view){ call->default_compiler, id.len };
+	call->args.ids[0] = cstr_view_n(call->default_compiler, id.len);
 	godbolt_cat(call->default_compiler, id);
 	call->list = GODBOLT_LIST_END;
 	return 0;
@@ -1685,7 +1685,7 @@ godbolt_cat_arguments (struct godbolt              *call,
 	d = godbolt_cat(d, r->flags);
 	d = godbolt_cat(d, d > flags && a.len ? CSTR_VIEW(" ") : (struct cstr_view){});
 	char *const end = d + jb_escape(d, a.data, a.len);
-	call->escaped = (struct cstr_view){ d, (size_t)(end - d) };
+	call->escaped = cstr_view_n(d, (size_t)(end - d));
 	loop_work(call->loop, LOOP_ESCAPE, a.len);
 	d = godbolt_cat(end, CSTR_VIEW("\",\"filters\":{"));
 	for (size_t i = 0; i < array_size(godbolt_filters); ++i) {
@@ -1746,7 +1746,7 @@ godbolt_state_link (struct godbolt *call)
 	}
 	loop_work(call->loop, LOOP_COPY, n);
 	godbolt_put(call, CSTR_VIEW("Link: "));
-	godbolt_put(call, (struct cstr_view){ link, (size_t)(d - link) });
+	godbolt_put(call, cstr_view_n(link, (size_t)(d - link)));
 	return godbolt_put(call, CSTR_VIEW("\n"));
 }
 
@@ -1809,7 +1809,7 @@ godbolt_state (struct godbolt *call)
 	if (call->cfg->share == GODBOLT_SHARE_STATE)
 		return godbolt_state_link(call) ? godbolt_finish(call, TOOL_FAILED) : GODBOLT_GO;
 	godbolt_request(call, GODBOLT_POST_SHORTEN, (struct cstr_view){},
-	                (struct cstr_view){ call->body, call->len });
+	                cstr_view_n(call->body, call->len));
 	call->phase = GODBOLT_LINK;
 	return godbolt_send(call);
 }
@@ -1923,7 +1923,7 @@ godbolt_job (struct godbolt *call)
 	}
 	godbolt_request(call, GODBOLT_POST_COMPILE,
 	                call->args.ids[call->job / call->args.n_strings],
-	                (struct cstr_view){ call->body + GODBOLT_SKIP, call->len - GODBOLT_SKIP });
+	                cstr_view_n(call->body + GODBOLT_SKIP, call->len - GODBOLT_SKIP));
 	call->phase = GODBOLT_ANSWER;
 	return godbolt_send(call);
 }
@@ -2579,7 +2579,7 @@ godbolt_args_words (struct godbolt_args *a,
 		if (a->n_words == array_size(a->words))
 			return EINVAL;
 		size_t const k = strcspn(t.data + i, space);
-		a->words[a->n_words++] = (struct cstr_view){ t.data + i, k };
+		a->words[a->n_words++] = cstr_view_n(t.data + i, k);
 		i += k;
 	}
 	return 0;
@@ -2735,7 +2735,7 @@ static struct cstr_view
 godbolt_copy (char             **p,
               struct cstr_view   t)
 {
-	struct cstr_view const copy = { *p, t.len };
+	struct cstr_view const copy = cstr_view_n(*p, t.len);
 	*p = godbolt_cat(*p, t);
 	return copy;
 }
@@ -2792,7 +2792,7 @@ godbolt_create (struct godbolt_args const *a,
 	for (uint8_t i = 0; i < a->n_words; ++i)
 		call->args.words[i] = godbolt_copy(&p, a->words[i]);
 	call->args.language = godbolt_copy(&p, a->language);
-	call->args.source = (struct cstr_view){ p, head.len + source.len };
+	call->args.source = cstr_view_n(p, head.len + source.len);
 	p = godbolt_cat(godbolt_cat(p, head), source);
 	for (size_t i = 0; i < array_size(a->values); ++i)
 		call->args.values[i] = godbolt_copy(&p, a->values[i]);

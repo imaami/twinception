@@ -11,7 +11,7 @@
 struct cstr_view
 cstr_view_dstr (struct dstr const *text)
 {
-	return (struct cstr_view){ dstr_get(text), dstr_len(text) };
+	return cstr_view_n(dstr_get(text), dstr_len(text));
 }
 
 int

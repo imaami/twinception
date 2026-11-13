@@ -344,7 +344,8 @@ code_ended (struct mcp_slot  *slot,
 	struct span const out = buf_peek(&c->out);
 	/* askai-code writes valid UTF-8. jb_mend() replaces invalid bytes in
 	 * case the helper is broken. */
-	struct cstr_view text = { (char const *)out.ptr, jb_mend((char *)out.ptr, out.len, true) };
+	struct cstr_view text = cstr_view_n((char const *)out.ptr,
+	                                    jb_mend((char *)out.ptr, out.len, true));
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
 	struct seen_source src;
 	bool const record = !status && code_record(&text, &call->pin, &src);
@@ -417,7 +418,7 @@ code_args (struct code const  *code,
 			                  (int)name.len, name.data);
 		}
 		util_text_printf_(&len, why, sizeof scratch->text, ".");
-		return mcp_slot_tell(slot, (struct cstr_view){ why, len }, TOOL_FAILED), EINVAL;
+		return mcp_slot_tell(slot, cstr_view_n(why, len), TOOL_FAILED), EINVAL;
 	}
 	struct cstr_view const action = jb_text(of[CODE_ARG_ACTION], 1, CODE_WORD, nullptr);
 	struct cstr_view const path = jb_text(of[CODE_ARG_PATH], 1, CODE_WORD, nullptr);

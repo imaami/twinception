@@ -3436,7 +3436,7 @@ mcp_slot_told (struct mcp_slot  *slot,
 	/* The output is the text whole, not lent, nor from an offset. */
 	slot->window.at = 0;
 	slot->lent = span(nullptr, 0);
-	mcp_slot_result(slot, (struct cstr_view){ text.data, len }, end);
+	mcp_slot_result(slot, cstr_view_n(text.data, len), end);
 }
 
 int
@@ -3465,7 +3465,7 @@ mcp_slot_tellf (struct mcp_slot *slot,
 	va_start(ap, fmt);
 	size_t const len = util_vformat(mcp->told, sizeof mcp->told, fmt, ap);
 	va_end(ap);
-	mcp_slot_told(slot, (struct cstr_view){ mcp->told, len }, flags);
+	mcp_slot_told(slot, cstr_view_n(mcp->told, len), flags);
 	return 0;
 }
 
@@ -3814,7 +3814,7 @@ mcp_slot_fetch (struct mcp_slot          *slot,
 	      ? EFAULT : mcp_slot_live(slot, 0, 0);
 	if (e)
 		return e;
-	struct cstr_view url = { request->url, strnlen(request->url, WEB_URL_MAX + 1) };
+	struct cstr_view url = cstr_view_n(request->url, strnlen(request->url, WEB_URL_MAX + 1));
 	char const *accept = request->accept;
 	size_t accept_len = 0;
 	if (accept) {
@@ -5899,7 +5899,8 @@ mcp_req_result_write (struct mcp_req *req)
 	struct cstr_view const told = req->agenda ? cstr_view_dstr(&req->agenda->told)
 	                                          : (struct cstr_view){};
 	struct cstr_view const parts[SEEN_PARTS] = {
-		{ out.len ? (char const *)out.ptr + slot->window.at : nullptr, slot->window.len },
+		cstr_view_n(out.len ? (char const *)out.ptr + slot->window.at : nullptr,
+		            slot->window.len),
 		util_text_view(&slot->note),
 		told.len ? CSTR_VIEW("\n\n") : (struct cstr_view){},
 		told,
@@ -6610,7 +6611,7 @@ mcp_slot_compact (struct mcp_slot    *slot,
 	LOG(LOG_VERBOSE, TURN_FMT "compacted by the upstream's compact call, summary %zu byte%s",
 	    TURN_ARGS(req), summary.len, util_s(summary.len));
 	mcp_req_compact(req, req->part, CSTR_VIEW("\n\n" NOTICE_COMPACTED "\n\n"),
-	                (struct cstr_view){ summary.data, jb_utf8(summary.data, summary.len) });
+	                cstr_view_n(summary.data, jb_utf8(summary.data, summary.len)));
 }
 
 /* The context is full, as the upstream said or as askai reckons: what
@@ -7310,7 +7311,7 @@ mcp_req_answer (struct mcp_req *req)
 	struct span json = buf_peek(&req->job->result);
 	char const *text = json.len ? (char const *)json.ptr : "";
 	size_t off = req->parser.off;
-	int e = mcp_req_slice(req, &req->mcp->answers, (struct cstr_view){ text, json.len });
+	int e = mcp_req_slice(req, &req->mcp->answers, cstr_view_n(text, json.len));
 	if (e == ENOMEM) {
 		mcp_req_fail(req, e);
 		return;
@@ -7351,7 +7352,7 @@ mcp_req_text (struct mcp_req *req)
 		return;
 	}
 	bool failed = true;
-	struct cstr_view const text = { body.len ? (char const *)body.ptr : "", body.len };
+	struct cstr_view const text = cstr_view_n(body.len ? (char const *)body.ptr : "", body.len);
 	int e = ai_answer(req->mcp->st->ep->api, job->http, req->msg, text, &req->self.answer,
 	                  &failed);
 	loop_work(req->mcp->loop, LOOP_COPY, dstr_len(&req->self.answer));
