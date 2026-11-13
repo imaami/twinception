@@ -436,7 +436,7 @@ static void
 request_of (struct buf *request,
             size_t      len)
 {
-	struct span room;
+	struct span room = {};
 	CHECK(!buf_reserve(request, len, SIZE_MAX, &room));
 	memset(room.ptr, 'a', len);
 	buf_commit(request, len);

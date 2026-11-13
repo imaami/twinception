@@ -63,7 +63,7 @@ test_round_trip (void)
 	CHECK(!buf.head && !buf.tail && buf.data == data && !buf_peek(&buf).len);
 
 	/* The span covers all free space, and a zero reservation succeeds. */
-	struct span s;
+	struct span s = {};
 	CHECK(!buf_reserve(&buf, 1, SIZE_MAX, &s));
 	CHECK(s.ptr == buf.data && s.len == buf.cap);
 	CHECK(!buf_reserve(&buf, 0, SIZE_MAX, &s));
@@ -82,7 +82,7 @@ test_growth (void)
 	CHECK(!buf_put(&buf, block, 1, 50000) && buf.cap == 8192);
 	CHECK(!buf_put(&buf, block, 4096, 50000) && buf.cap == 16384);
 	/* Doubling stops at the class that holds the maximum. */
-	struct span s;
+	struct span s = {};
 	CHECK(!buf_reserve(&buf, 30000, 50000, &s));
 	CHECK(s.len == 50000 - 8193 && buf.cap == 65536);
 	buf_commit(&buf, 30000);
@@ -124,7 +124,7 @@ test_compaction (void)
 	struct buf buf = {};
 	CHECK(!buf_put(&buf, bytes, 4096, SIZE_MAX) && buf.cap == 4096);
 	buf_consume(&buf, 1000);
-	struct span s;
+	struct span s = {};
 	CHECK(!buf_reserve(&buf, 500, SIZE_MAX, &s));
 	CHECK(buf.cap == 8192 && !buf.head && s.len == 8192 - 3096);
 	CHECK(holds(&buf, bytes + 1000, 3096));

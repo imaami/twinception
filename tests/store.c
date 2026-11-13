@@ -220,7 +220,7 @@ commit_run (struct store const        *store,
 	buf_fini(&in);
 	*id = (struct oid){};
 	if (!status)
-		CHECK(!store_committed((struct span){ (unsigned char *)out, *len }, id));
+		CHECK(!store_committed(span((unsigned char *)out, *len), id));
 	return status;
 }
 
@@ -306,7 +306,7 @@ test_input (void)
 	struct store_commit c = commit;
 	c.committer.email = CSTR_VIEW("");
 	c.message = CSTR_VIEW("");
-	c.files = (struct span){};
+	c.files = span(nullptr, 0);
 	c.tip = &root;
 	CHECK(!store_commit_input(&c, &in));
 	s = buf_peek(&in);
@@ -364,8 +364,8 @@ test_input (void)
 	buf_fini(&files);
 
 	struct oid id = {};
-	CHECK(store_committed((struct span){}, nullptr) == EINVAL);
-	CHECK(store_committed((struct span){ (unsigned char *)"x\n", 2 }, &id) == EIO && !oid_len(&id));
+	CHECK(store_committed(span(nullptr, 0), nullptr) == EINVAL);
+	CHECK(store_committed(span((unsigned char *)"x\n", 2), &id) == EIO && !oid_len(&id));
 }
 
 static void
@@ -513,9 +513,9 @@ test_object (void)
 	 * after another. */
 	char text[] = A " blob 3\nabc\nrefs/heads/x:y missing\n" A " tree 2\nxy\n" A
 	              " blob 0\n\n" A " commit 1\nc\n";
-	struct span out = { (unsigned char *)text, sizeof text - 1 };
+	struct span out = span((unsigned char *)text, sizeof text - 1);
 	struct oid id;
-	struct span data;
+	struct span data = {};
 	CHECK(!store_object_next(&out, &id, &data) && !strcmp(id.hex, A) && data.len == 3 &&
 	      !memcmp(data.ptr, "abc", 3));
 	CHECK(store_object_next(&out, &id, &data) == ENOENT && !*id.hex && !data.len);
@@ -524,12 +524,12 @@ test_object (void)
 	size_t const left = out.len;
 	CHECK(store_object_next(&out, &id, &data) == EIO && !*id.hex && out.len == left);
 	char cut[] = A " blob 5\nabc\n";
-	out = (struct span){ (unsigned char *)cut, sizeof cut - 1 };
+	out = span((unsigned char *)cut, sizeof cut - 1);
 	CHECK(store_object_next(&out, &id, &data) == EIO && out.len == sizeof cut - 1);
 	char unended[] = A " blob 3\nabcd";
-	out = (struct span){ (unsigned char *)unended, sizeof unended - 1 };
+	out = span((unsigned char *)unended, sizeof unended - 1);
 	CHECK(store_object_next(&out, &id, &data) == EIO);
-	out = (struct span){};
+	out = span(nullptr, 0);
 	CHECK(store_object_next(&out, &id, &data) == EIO);
 
 	/* store_read_fits() keeps one output of git cat-file --batch within
@@ -563,7 +563,7 @@ checked (char const *out,
 {
 	struct oid t, i;
 	uint64_t n = 1;
-	int r = store_checked((struct span){ (unsigned char *)out, strlen(out) }, &t, &i, &n);
+	int r = store_checked(span((unsigned char *)out, strlen(out)), &t, &i, &n);
 	CHECK(!strcmp(t.hex, tip) && !strcmp(i.hex, id) && n == bytes);
 	return r;
 }
@@ -607,7 +607,7 @@ test_check (void)
 	CHECK(checked(A " commit 9\n" B " commit 9\n", A, "", 0) == EIO);
 	CHECK(checked(A " commit 9\n" B " tag 9\n", A, "", 0) == EIO);
 	static char const none[] = "r missing\nr:x missing\n";
-	struct span const out = { (unsigned char *)none, sizeof none - 1 };
+	struct span const out = span((unsigned char *)none, sizeof none - 1);
 	struct oid t;
 	uint64_t n;
 	CHECK(store_checked(out, nullptr, &t, &n) == EINVAL);
@@ -658,7 +658,7 @@ test_argv (struct store const *store)
 	struct git_run run;
 	prefix(store, start, sizeof start);
 	for (size_t i = 0; i < array_size(rows); ++i) {
-		CHECK(!store_command(store, &run, rows[i].cmd, rows[i].words, ref, (struct span){},
+		CHECK(!store_command(store, &run, rows[i].cmd, rows[i].words, ref, span(nullptr, 0),
 		                     7));
 		CHECK(join(run.argv, got, sizeof got) < GIT_RUN_ARGV);
 		CHECK(snprintf(want, sizeof want, "%s%s", start, rows[i].tail) > 0);
@@ -672,18 +672,18 @@ test_argv (struct store const *store)
 		      run.c.grace == (writes ? GIT_GRACE : 0) &&
 		      run.c.flags == (writes ? CHILD_STDERR : 0));
 		/* A command without words does not read the words. */
-		int e = store_command(store, &run, rows[i].cmd, nullptr, ref, (struct span){}, 7);
+		int e = store_command(store, &run, rows[i].cmd, nullptr, ref, span(nullptr, 0), 7);
 		CHECK(e == (rows[i].words[0] ? EINVAL : 0));
 	}
 	/* A command reads at most STORE_WORDS words, so the fourth word is
 	 * not passed to git. */
 	char const *const four[] = { "--format=%(refname)", "refs/a/", "refs/b/", "refs/c/" };
-	CHECK(!store_command(store, &run, STORE_REFS, four, ref, (struct span){}, 7));
+	CHECK(!store_command(store, &run, STORE_REFS, four, ref, span(nullptr, 0), 7));
 	CHECK(join(run.argv, got, sizeof got) < GIT_RUN_ARGV);
 	CHECK(snprintf(want, sizeof want, "%s for-each-ref --format=%%(refname) refs/a/ refs/b/",
 	               start) > 0);
 	SAME(got, strlen(got), want);
-	struct span const in = { (unsigned char *)"abc", 3 };
+	struct span const in = span((unsigned char *)"abc", 3);
 	CHECK(!store_command(store, &run, STORE_READ, nullptr, nullptr, in, 7));
 	CHECK(run.c.in.ptr == in.ptr && run.c.in.len == in.len);
 	CHECK(store_command(store, &run, STORE_COMMIT, nullptr, nullptr, in, 7) == EINVAL);
@@ -716,14 +716,14 @@ test_spawn (struct store const *store)
 	prefix(store, start, sizeof start);
 	test_loop.now = 5 * NS;
 	int e = -1;
-	CHECK(store_spawn(store, slot, STORE_READ, nullptr, nullptr, (struct span){}, &e) ==
+	CHECK(store_spawn(store, slot, STORE_READ, nullptr, nullptr, span(nullptr, 0), &e) ==
 	      &test_child && !e);
 	CHECK(spawned.calls == 1 && spawned.deadline == 5 * NS + GIT_RUN_NS && !spawned.grace &&
 	      !spawned.flags && spawned.max == STORE_MAX && !spawned.in && spawned.path);
 	CHECK(snprintf(want, sizeof want, "%s cat-file --batch", start) > 0);
 	SAME(spawned.argv, strlen(spawned.argv), want);
 	CHECK(store_spawn(store, slot, STORE_HEAD, (char const *const[]){ "R" }, nullptr,
-	                  (struct span){}, &e) == &test_child && !e);
+	                  span(nullptr, 0), &e) == &test_child && !e);
 	CHECK(snprintf(want, sizeof want, "%s rev-parse --verify --end-of-options R", start) > 0);
 	SAME(spawned.argv, strlen(spawned.argv), want);
 
@@ -734,11 +734,11 @@ test_spawn (struct store const *store)
 	CHECK(snprintf(lock, sizeof lock, "%s/refs/heads/notes/t.lock", store_directory(store)) > 0);
 	lock_make(lock, 1);
 	CHECK(store_spawn(store, slot, STORE_COMMIT, nullptr, "refs/heads/notes/t",
-	                  (struct span){ (unsigned char *)"abc", 3 }, &e) == &test_child && !e);
+	                  span((unsigned char *)"abc", 3), &e) == &test_child && !e);
 	CHECK(spawned.calls == 3 && spawned.grace == GIT_GRACE && spawned.flags == CHILD_STDERR &&
 	      spawned.in == 3);
 	CHECK(access(lock, F_OK) && errno == ENOENT);
-	CHECK(store_spawn(store, slot, STORE_CREATE, nullptr, nullptr, (struct span){}, &e) ==
+	CHECK(store_spawn(store, slot, STORE_CREATE, nullptr, nullptr, span(nullptr, 0), &e) ==
 	      &test_child && !e);
 	CHECK(spawned.calls == 4 && spawned.grace == GIT_GRACE && spawned.flags == CHILD_STDERR);
 
@@ -769,7 +769,7 @@ test_spawn (struct store const *store)
 	for (size_t i = 0; i < array_size(bad); ++i) {
 		e = -1;
 		CHECK(!store_spawn(bad[i].store, bad[i].slot, bad[i].cmd, nullptr, bad[i].ref,
-		                   (struct span){}, &e) && e == EINVAL);
+		                   span(nullptr, 0), &e) && e == EINVAL);
 	}
 	CHECK(spawned.calls == 4);
 }
@@ -834,7 +834,7 @@ cause_is (char const *out,
           size_t      len,
           char const *cause)
 {
-	struct cstr_view const got = store_cause((struct span){ (unsigned char *)out, len });
+	struct cstr_view const got = store_cause(span((unsigned char *)out, len));
 	return cstr_view_equal(got, cstr_view(cause));
 }
 
@@ -856,7 +856,7 @@ test_cause (void)
 	CHECK(cause_is(two, sizeof two - 1, "fatal: second"));
 	CHECK(cause_is(crash, sizeof crash - 1, "fatal: third"));
 	CHECK(cause_is(alone, sizeof alone - 1, ""));
-	CHECK(cause_is("\n\n", 2, "") && !store_cause((struct span){}).len);
+	CHECK(cause_is("\n\n", 2, "") && !store_cause(span(nullptr, 0)).len);
 	/* The two bytes of U+00E9 are at STORE_CAUSE - 1 and STORE_CAUSE. */
 	char wide[STORE_CAUSE + 8], cut[STORE_CAUSE];
 	memset(wide, 'x', sizeof wide);
@@ -865,8 +865,7 @@ test_cause (void)
 	cut[sizeof cut - 1] = '\0';
 	CHECK(cause_is(wide, sizeof wide, cut));
 	memset(wide, 'x', sizeof wide);
-	struct cstr_view const whole = store_cause((struct span){ (unsigned char *)wide,
-	                                                          sizeof wide });
+	struct cstr_view const whole = store_cause(span((unsigned char *)wide, sizeof wide));
 	CHECK(whole.len == STORE_CAUSE && whole.data == wide);
 }
 
@@ -882,7 +881,7 @@ test_run (struct store const *store,
 	struct child_end end;
 	CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
 	CHECK(!store_run(store, STORE_HEAD, (char const *const[]){ "refs/heads/notes/t" }, nullptr,
-	                 (struct span){}, &out, &end));
+	                 span(nullptr, 0), &out, &end));
 	CHECK(end.code == CLD_EXITED && !end.status && !end.flags);
 	struct span s = buf_peek(&out);
 	CHECK(s.len == OID_SHA1 + 2 && s.ptr[0] == 'x' && !memcmp(s.ptr + 1, tip->hex, OID_SHA1));
@@ -910,15 +909,15 @@ test_run (struct store const *store,
 	buf_fini(&out);
 
 	/* Refusals run no git, and the end record of a refusal is all zero. */
-	CHECK(store_run(store, STORE_COMMIT, nullptr, nullptr, (struct span){}, &out, &end) ==
+	CHECK(store_run(store, STORE_COMMIT, nullptr, nullptr, span(nullptr, 0), &out, &end) ==
 	      EINVAL && !end.code && !end.status && !end.flags);
-	CHECK(store_run(store, STORE_HEAD, nullptr, nullptr, (struct span){}, &out, &end) ==
+	CHECK(store_run(store, STORE_HEAD, nullptr, nullptr, span(nullptr, 0), &out, &end) ==
 	      EINVAL);
-	CHECK(store_run(nullptr, STORE_READ, nullptr, nullptr, (struct span){}, &out, &end) ==
+	CHECK(store_run(nullptr, STORE_READ, nullptr, nullptr, span(nullptr, 0), &out, &end) ==
 	      EINVAL && !end.code);
-	CHECK(store_run(store, STORE_READ, nullptr, nullptr, (struct span){}, nullptr, &end) ==
+	CHECK(store_run(store, STORE_READ, nullptr, nullptr, span(nullptr, 0), nullptr, &end) ==
 	      EINVAL);
-	CHECK(store_run(store, STORE_READ, nullptr, nullptr, (struct span){}, &out, nullptr) ==
+	CHECK(store_run(store, STORE_READ, nullptr, nullptr, span(nullptr, 0), &out, nullptr) ==
 	      EINVAL);
 	CHECK(!buf_peek(&out).len);
 	buf_fini(&out);
@@ -957,7 +956,7 @@ test_ends (char const *parent)
 	CHECK(store_init(store, nullptr, &end) == EINVAL);
 	CHECK(store_init(store, &out, nullptr) == EINVAL);
 	CHECK(!store_run(store, STORE_HEAD, (char const *const[]){ "refs/heads/none" }, nullptr,
-	                 (struct span){}, &out, &end) && end.code == CLD_EXITED &&
+	                 span(nullptr, 0), &out, &end) && end.code == CLD_EXITED &&
 	      end.status == 128);
 
 	/* After each error, out begins with the byte that the test puts there
@@ -987,7 +986,7 @@ test_ends (char const *parent)
 		CHECK(snprintf(env, sizeof env, "%s:%s", dir, old) > 0 && !setenv("PATH", env, 1));
 		buf_clear(&out);
 		CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
-		e = store_run(store, STORE_READ, nullptr, nullptr, (struct span){}, &out, &end);
+		e = store_run(store, STORE_READ, nullptr, nullptr, span(nullptr, 0), &out, &end);
 		CHECK(!setenv("PATH", old, 1));
 		struct span const got = buf_peek(&out);
 		CHECK(e == fakes[i].e && end.flags == fakes[i].flags && got.len == fakes[i].len &&
@@ -1041,7 +1040,7 @@ check_at (struct store const *store,
 	CHECK(!store_check_input(&in, ref, cstr_view(name)));
 	CHECK(!run(store, STORE_CHECK, nullptr, buf_peek(&in), out, sizeof out, &len));
 	buf_fini(&in);
-	return store_checked((struct span){ (unsigned char *)out, len }, tip, blob, &bytes);
+	return store_checked(span((unsigned char *)out, len), tip, blob, &bytes);
 }
 
 /* The output of STORE_CHECK for a path at two commits of a ref, which a
@@ -1133,7 +1132,7 @@ test_race (struct store const *store)
 	};
 	struct oid r5;
 	CHECK(commit_run(store, &commit, &r5, out, sizeof out, &len) > 0);
-	CHECK(store_raced((struct span){ (unsigned char *)out, len }));
+	CHECK(store_raced(span((unsigned char *)out, len)));
 	CHECK(!check_at(store, r3.hex, "a/f", &tip, &id) && !oid_len(&id));
 	CHECK(!check_at(store, ref, "a/f", &tip, &id) && oid_equal(&tip, &r4) && !oid_len(&id));
 	commit.tip = &tip;
@@ -1145,11 +1144,11 @@ test_race (struct store const *store)
 	CHECK(!run_words(store_directory(store), parent, out, sizeof out, &len));
 	SAME(out, len, want);
 	CHECK(!run(store, STORE_FILES, (char const *const[]){ r5.hex, nullptr },
-	           (struct span){}, out, sizeof out, &len));
+	           span(nullptr, 0), out, sizeof out, &len));
 	CHECK(memmem(out, len, "\ta/b", 5) && memmem(out, len, "\ta/f", 5) &&
 	      memmem(out, len, "\tm/y", 5) && memmem(out, len, "\tn", 3));
 	/* A path lists only the files under the path. */
-	CHECK(!run(store, STORE_FILES, (char const *const[]){ r5.hex, "a" }, (struct span){}, out,
+	CHECK(!run(store, STORE_FILES, (char const *const[]){ r5.hex, "a" }, span(nullptr, 0), out,
 	           sizeof out, &len));
 	CHECK(memmem(out, len, "\ta/b", 5) && memmem(out, len, "\ta/f", 5) &&
 	      !memmem(out, len, "\tm/y", 5) && !memmem(out, len, "\tn", 3));
@@ -1174,7 +1173,7 @@ test_reach (struct store const *store,
 	char tree_of[OID_SHA1 + sizeof "^{tree}"];
 	CHECK(snprintf(tree_of, sizeof tree_of, "%s^{tree}", c3->hex) == OID_SHA1 + 7);
 	struct oid tree;
-	CHECK(!run(store, STORE_HEAD, (char const *const[]){ tree_of }, (struct span){}, out,
+	CHECK(!run(store, STORE_HEAD, (char const *const[]){ tree_of }, span(nullptr, 0), out,
 	           sizeof out, &len) && !oid_init_line(&tree, (struct cstr_view){ out, len }));
 	/* The blob of the file a at c3. */
 	char const *const blob = "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f";
@@ -1201,7 +1200,7 @@ test_reach (struct store const *store,
 		                       rows[i].to, rows[i].tip);
 		CHECK(n > 0 && n < (int)sizeof in);
 		int const status = run(store, STORE_REACH, nullptr,
-		                       (struct span){ (unsigned char *)in, (size_t)n }, out, sizeof out,
+		                       span((unsigned char *)in, (size_t)n), out, sizeof out,
 		                       &len);
 		CHECK(status == rows[i].status);
 		char want[OID_SHA1 + 2] = "";
@@ -1228,7 +1227,7 @@ test_git (char const *path)
 
 	static char out[1 << 16];
 	size_t len = 0;
-	CHECK(!run(store, STORE_CREATE, nullptr, (struct span){}, out, sizeof out, &len));
+	CHECK(!run(store, STORE_CREATE, nullptr, span(nullptr, 0), out, sizeof out, &len));
 	CHECK(store_exists(store));
 
 	/* A root commit without file parts has the empty tree. */
@@ -1243,7 +1242,7 @@ test_git (char const *path)
 	CHECK(!commit_run(store, &commit, &c1, out, sizeof out, &len));
 	CHECK(oid_len(&c1) == OID_SHA1);
 	CHECK(!run(store, STORE_FILES, (char const *const[]){ c1.hex, nullptr },
-	           (struct span){}, out, sizeof out, &len) && !len);
+	           span(nullptr, 0), out, sizeof out, &len) && !len);
 
 	/* A file part adds the file. */
 	struct buf files = buf();
@@ -1257,7 +1256,7 @@ test_git (char const *path)
 	static char tree[4096];
 	size_t tree_len = 0;
 	CHECK(!run(store, STORE_FILES, (char const *const[]){ c2.hex, nullptr },
-	           (struct span){}, tree, sizeof tree, &tree_len));
+	           span(nullptr, 0), tree, sizeof tree, &tree_len));
 	CHECK(tree_len && !tree[tree_len - 1]);
 	SAME(tree, tree_len - 1, "100644 blob f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f       3\ta");
 
@@ -1274,7 +1273,7 @@ test_git (char const *path)
 	CHECK(!commit_run(store, &cited, &u, out, sizeof out, &len));
 	buf_fini(&files);
 	CHECK(!run(store, STORE_FILES, (char const *const[]){ u.hex, nullptr },
-	           (struct span){}, out, sizeof out, &len));
+	           span(nullptr, 0), out, sizeof out, &len));
 	CHECK(len && !out[len - 1]);
 	SAME(out, len - 1, "100644 blob f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f       3\tc/d");
 	/* git refuses a blob that is not in the repository. The cause is the
@@ -1286,26 +1285,26 @@ test_git (char const *path)
 	cited.tip = &u;
 	CHECK(commit_run(store, &cited, &c4, out, sizeof out, &len) > 0);
 	buf_fini(&files);
-	struct cstr_view const refused = store_cause((struct span){ (unsigned char *)out, len });
+	struct cstr_view const refused = store_cause(span((unsigned char *)out, len));
 	CHECK(cstr_view_starts(refused, CSTR_VIEW("fatal: ")) &&
 	      !memchr(refused.data, '\n', refused.len));
 
 	/* A commit without file parts has the tree of its parent. */
 	commit.message = CSTR_VIEW("Keep");
-	commit.files = (struct span){};
+	commit.files = span(nullptr, 0);
 	commit.tip = &c2;
 	CHECK(!commit_run(store, &commit, &c3, out, sizeof out, &len));
 	CHECK(!run(store, STORE_FILES, (char const *const[]){ c3.hex, nullptr },
-	           (struct span){}, out, sizeof out, &len));
+	           span(nullptr, 0), out, sizeof out, &len));
 	CHECK(len == tree_len && !memcmp(out, tree, len));
-	CHECK(!run(store, STORE_HEAD, (char const *const[]){ commit.ref }, (struct span){}, out,
+	CHECK(!run(store, STORE_HEAD, (char const *const[]){ commit.ref }, span(nullptr, 0), out,
 	           sizeof out, &len));
 	CHECK(len == OID_SHA1 + 1 && !memcmp(out, c3.hex, OID_SHA1) && out[OID_SHA1] == '\n');
 
 	/* git writes the committer as the author too. */
 	char line[OID_SHA1 + 2];
 	CHECK(snprintf(line, sizeof line, "%s\n", c3.hex) == OID_SHA1 + 1);
-	CHECK(!run(store, STORE_READ, nullptr, (struct span){ (unsigned char *)line, OID_SHA1 + 1 },
+	CHECK(!run(store, STORE_READ, nullptr, span((unsigned char *)line, OID_SHA1 + 1),
 	           out, sizeof out, &len));
 	CHECK(len > OID_SHA1 && !memcmp(out, c3.hex, OID_SHA1));
 	CHECK(memmem(out, len, "\nauthor gpu1 <askai> ", 21));
@@ -1317,17 +1316,17 @@ test_git (char const *path)
 	commit.message = CSTR_VIEW("Race");
 	commit.tip = &c2;
 	CHECK(commit_run(store, &commit, &c4, out, sizeof out, &len) > 0);
-	CHECK(store_raced((struct span){ (unsigned char *)out, len }));
+	CHECK(store_raced(span((unsigned char *)out, len)));
 	commit.tip = &root;
 	CHECK(commit_run(store, &commit, &c4, out, sizeof out, &len) > 0);
-	CHECK(store_raced((struct span){ (unsigned char *)out, len }));
-	CHECK(!store_raced((struct span){}));
-	CHECK(!store_raced((struct span){ (unsigned char *)"Saved", 5 }));
+	CHECK(store_raced(span((unsigned char *)out, len)));
+	CHECK(!store_raced(span(nullptr, 0)));
+	CHECK(!store_raced(span((unsigned char *)"Saved", 5)));
 	/* Two root commits of one ref at the same time make git say this. */
 	static char const exists[] = "error: cannot lock ref 'refs/askai/members/bro': reference "
 	                             "already exists\n";
-	CHECK(store_raced((struct span){ (unsigned char *)exists, sizeof exists - 1 }));
-	CHECK(!run(store, STORE_HEAD, (char const *const[]){ commit.ref }, (struct span){}, out,
+	CHECK(store_raced(span((unsigned char *)exists, sizeof exists - 1)));
+	CHECK(!run(store, STORE_HEAD, (char const *const[]){ commit.ref }, span(nullptr, 0), out,
 	           sizeof out, &len));
 	CHECK(len == OID_SHA1 + 1 && !memcmp(out, c3.hex, OID_SHA1));
 
@@ -1358,7 +1357,7 @@ test_git (char const *path)
 	CHECK(!run_words(store_directory(store), log, out, sizeof out, &len));
 	SAME(out, len, want);
 	CHECK(!run(store, STORE_FILES, (char const *const[]){ c5.hex, nullptr },
-	           (struct span){}, out, sizeof out, &len));
+	           span(nullptr, 0), out, sizeof out, &len));
 	CHECK(len > tree_len && !memcmp(out, tree, tree_len) && memmem(out, len, "\tb", 3));
 
 	/* A member record is a root commit with the empty tree, and git reads
@@ -1379,7 +1378,7 @@ test_git (char const *path)
 	struct oid m;
 	CHECK(!commit_run(store, &member, &m, out, sizeof out, &len));
 	CHECK(!run(store, STORE_FILES, (char const *const[]){ m.hex, nullptr },
-	           (struct span){}, out, sizeof out, &len) && !len);
+	           span(nullptr, 0), out, sizeof out, &len) && !len);
 	char const *const show[] = {
 		"log", "-1", "--format=%(trailers:only)|%an <%ae>|%cn <%ce>|%P|%B", m.hex, nullptr
 	};

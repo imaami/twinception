@@ -93,7 +93,7 @@ keep (struct seen     **p_seen,
 	struct buf request = buf();
 	request_of(&request, id, args);
 	if (large) {
-		struct span room;
+		struct span room = {};
 		CHECK(!buf_reserve(&request, TOOL_TEXT_MAX, SIZE_MAX, &room));
 		memset(room.ptr, 'a', TOOL_TEXT_MAX);
 		buf_commit(&request, TOOL_TEXT_MAX);

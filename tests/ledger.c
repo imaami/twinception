@@ -238,7 +238,7 @@ test_restore (void)
 	struct hexid key;
 	CHECK(!hexid_init(&key, CSTR_VIEW("0123456789abcdef0123456789abcdef")));
 	unsigned char result[] = "\"result\":{\"content\":[]}}";
-	struct span body = { result, sizeof result - 1 };
+	struct span body = span(result, sizeof result - 1);
 	struct ledger_wait *w = test_wait(l, A, &e);
 	struct ledger_task *done = ledger_restore(l, A, LEDGER_JOB, 7, &key, 10, 20,
 	                                         LEDGER_COMPLETED, body, nullptr,
@@ -261,10 +261,10 @@ test_restore (void)
 	      look.tasks[0] == done);
 	ledger_look_put(&look);
 	CHECK(!ledger_restore(l, A, LEDGER_JOB, 9, &key, 99, 0, LEDGER_WORKING,
-	                      (struct span){}, test_loop, handle(0), test_cancel,
+	                      span(nullptr, 0), test_loop, handle(0), test_cancel,
 	                      &e) && e == EEXIST);
 	CHECK(!ledger_restore(l, B, LEDGER_JOB, 9, &key, 99, 0, LEDGER_FAILED,
-	                      (struct span){}, nullptr, handle(0), nullptr,
+	                      span(nullptr, 0), nullptr, handle(0), nullptr,
 	                      &e) && e == EEXIST);
 	CHECK(l->tasks.n == 1 && done->tool == 7 && done->created == 10 &&
 	      ledger_task_status(done) == LEDGER_COMPLETED &&
@@ -276,7 +276,7 @@ test_restore (void)
 	key.hex[0] = '1';
 	struct handle who = handle(UINT64_C(0x0100000300000004));
 	struct ledger_task *running = ledger_restore(l, A, LEDGER_JOB, 8, &key, 5, 0,
-	                                            LEDGER_WORKING, (struct span){},
+	                                            LEDGER_WORKING, span(nullptr, 0),
 	                                            test_loop, who, test_cancel, &e);
 	CHECK(running && !e);
 	if (running) {
@@ -315,25 +315,25 @@ test_restore_limits (void)
 		return;
 	struct hexid key = {};
 	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, nullptr, 1, 0, LEDGER_WORKING,
-	                      (struct span){}, test_loop, handle(0), test_cancel,
+	                      span(nullptr, 0), test_loop, handle(0), test_cancel,
 	                      &e) && e == EINVAL);
 	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, &key, 1, 0, LEDGER_WORKING,
-	                      (struct span){}, test_loop, handle(0), test_cancel,
+	                      span(nullptr, 0), test_loop, handle(0), test_cancel,
 	                      &e) && e == EINVAL);
 	memset(key.hex, '0', sizeof key.hex - 1);
 	unsigned char x[] = "x";
-	struct span some = { x, 1 };
+	struct span some = span(x, 1);
 	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, &key, 1, 0,
-	                      (enum ledger_status)-1, (struct span){}, nullptr,
+	                      (enum ledger_status)-1, span(nullptr, 0), nullptr,
 	                      handle(0), nullptr, &e) && e == EINVAL);
 	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, &key, 1, 0, LEDGER_FAILED,
-	                      (struct span){ nullptr, 1 }, nullptr, handle(0),
+	                      span(nullptr, 1), nullptr, handle(0),
 	                      nullptr, &e) && e == EINVAL);
 	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, &key, 1, 0, LEDGER_WORKING,
-	                      (struct span){}, nullptr, handle(0), test_cancel,
+	                      span(nullptr, 0), nullptr, handle(0), test_cancel,
 	                      &e) && e == EINVAL);
 	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, &key, 1, 2, LEDGER_WORKING,
-	                      (struct span){}, test_loop, handle(0), test_cancel,
+	                      span(nullptr, 0), test_loop, handle(0), test_cancel,
 	                      &e) && e == EINVAL);
 	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, &key, 1, 0, LEDGER_WORKING,
 	                      some, test_loop, handle(0), test_cancel,
@@ -346,16 +346,16 @@ test_restore_limits (void)
 	for (size_t k = 0; k < LEDGER_RUNNING; ++k) {
 		key.hex[0] = '0' + k;
 		running[k] = ledger_restore(l, A, LEDGER_JOB, 1, &key, 1, 0, LEDGER_WORKING,
-		                            (struct span){}, test_loop, handle(0),
+		                            span(nullptr, 0), test_loop, handle(0),
 		                            test_cancel, &e);
 		CHECK(running[k] && !e);
 	}
 	key.hex[0] = 'f';
 	CHECK(!ledger_restore(l, A, LEDGER_JOB, 1, &key, 1, 0, LEDGER_WORKING,
-	                      (struct span){}, test_loop, handle(0), test_cancel,
+	                      span(nullptr, 0), test_loop, handle(0), test_cancel,
 	                      &e) && e == EBUSY);
 	struct ledger_task *done = ledger_restore(l, A, LEDGER_JOB, 1, &key, 1, 2,
-	                                         LEDGER_FAILED, (struct span){}, nullptr,
+	                                         LEDGER_FAILED, span(nullptr, 0), nullptr,
 	                                         handle(0), nullptr, &e);
 	CHECK(done && !e && ledger_owner_find(l, A)->running == LEDGER_RUNNING &&
 	      l->tasks.n == LEDGER_RUNNING + 1);
@@ -388,7 +388,7 @@ test_remove (void)
 	      ledger_remove(l, B, &id) == ENOENT &&
 	      ledger_remove(l, A, &id) == EBUSY && test_found(l, A, &old->id));
 	unsigned char result[] = "\"error\":{\"message\":\"interrupted\"}}";
-	struct span body = { result, sizeof result - 1 };
+	struct span body = span(result, sizeof result - 1);
 	CHECK(!ledger_task_reserve(old, body.len) && !ledger_task_write(old, body));
 	ledger_end(l, old, LEDGER_FAILED);
 	struct ledger_task *reader = ledger_find(l, A, &old->id);
@@ -401,7 +401,7 @@ test_remove (void)
 	      !memcmp(dstr_get(&old->result), body.ptr, body.len) &&
 	      !l->tasks.n && !l->owners.n && !l->bytes);
 	struct ledger_task *next = ledger_restore(l, A, LEDGER_JOB, 5, &id, old->created, 0,
-	                                         LEDGER_WORKING, (struct span){}, test_loop,
+	                                         LEDGER_WORKING, span(nullptr, 0), test_loop,
 	                                         handle(0), test_cancel, &e);
 	CHECK(next && !e && next != old && test_found(l, A, &old->id));
 	if (next) {

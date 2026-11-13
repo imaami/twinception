@@ -97,7 +97,7 @@ test_record (struct store const *store,
 	buf_clear(out);
 	struct child_end end;
 	CHECK(!store_run(store, STORE_READ, nullptr, nullptr,
-	                 (struct span){ (unsigned char *)line, (size_t)n }, out, &end) &&
+	                 span((unsigned char *)line, (size_t)n), out, &end) &&
 	      !end.status);
 }
 
@@ -547,7 +547,7 @@ test_exists (struct store const *store,
 	char const *const words[] = { ref };
 	struct buf out = buf();
 	struct child_end end;
-	CHECK(!store_run(store, STORE_HEAD, words, nullptr, (struct span){}, &out, &end));
+	CHECK(!store_run(store, STORE_HEAD, words, nullptr, span(nullptr, 0), &out, &end));
 	buf_fini(&out);
 	return !end.status;
 }
@@ -786,7 +786,7 @@ test_tip (struct store const *store,
 	char const *const words[] = { ref };
 	struct buf out = buf();
 	struct child_end end;
-	CHECK(!store_run(store, STORE_HEAD, words, nullptr, (struct span){}, &out, &end) &&
+	CHECK(!store_run(store, STORE_HEAD, words, nullptr, span(nullptr, 0), &out, &end) &&
 	      !end.status);
 	struct span const s = buf_peek(&out);
 	struct oid tip;
@@ -808,7 +808,7 @@ test_take (struct store const *store,
            char const *const  *words)
 {
 	struct git_run run;
-	CHECK(!store_command(store, &run, STORE_REFS, words, nullptr, (struct span){},
+	CHECK(!store_command(store, &run, STORE_REFS, words, nullptr, span(nullptr, 0),
 	                     loop_clock()));
 	int e = -1;
 	unsigned const before = ended;
@@ -1194,7 +1194,7 @@ test_session (char const                 *path,
 	struct buf in = buf();
 	struct buf out = buf();
 	struct child_end end;
-	CHECK(!store_run(store, STORE_CREATE, nullptr, nullptr, (struct span){}, &out, &end) &&
+	CHECK(!store_run(store, STORE_CREATE, nullptr, nullptr, span(nullptr, 0), &out, &end) &&
 	      !end.status);
 	struct store_commit const commit = {
 		.committer = { CSTR_VIEW("old"), CSTR_VIEW("askai") },
@@ -1391,7 +1391,7 @@ test_busy (struct store const           *store,
 {
 	extern char **environ;
 	static char const *const argv[] = { "sleep", "60", nullptr };
-	struct child_cmd const cmd = child_cmd("sleep", argv, environ, (struct span){}, 16, 0, 0,
+	struct child_cmd const cmd = child_cmd("sleep", argv, environ, span(nullptr, 0), 16, 0, 0,
 	                                       0);
 	test_git_ended(children);
 	struct child *sleepers[CHILD_MAX] = {};
@@ -1711,9 +1711,9 @@ main (int    argc,
 	struct buf head = buf();
 	struct child_end end;
 	char const *const bro[] = { "refs/askai/members/bro" };
-	CHECK(!store_run(store, STORE_HEAD, bro, nullptr, (struct span){}, &head, &end));
+	CHECK(!store_run(store, STORE_HEAD, bro, nullptr, span(nullptr, 0), &head, &end));
 	struct member_registry *again = test_registry_make(store, "bro", "gpu2", 0, "");
-	CHECK(!store_run(store, STORE_HEAD, bro, nullptr, (struct span){}, &head, &end));
+	CHECK(!store_run(store, STORE_HEAD, bro, nullptr, span(nullptr, 0), &head, &end));
 	struct span const heads = buf_peek(&head);
 	CHECK(heads.len == 2 * (OID_SHA1 + 1) && !memcmp(heads.ptr, heads.ptr + OID_SHA1 + 1,
 	                                                  OID_SHA1));

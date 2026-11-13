@@ -602,7 +602,7 @@ git_run_test_run (char const *repo)
 
 	/* The input of the struct child_cmd. */
 	struct child_cmd input = how;
-	input.in = (struct span){ (unsigned char *)"abc", 3 };
+	input.in = span((unsigned char *)"abc", 3);
 	char const *const hash[] = { "hash-object", "--stdin", nullptr };
 	CHECK(!git_run_test_git(&at, hash, input, child_fds(), &out, &end, &ms));
 	CHECK(end.code == CLD_EXITED && !end.status && !end.flags);
