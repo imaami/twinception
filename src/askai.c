@@ -871,7 +871,7 @@ askai_run (struct askai_shared *s,
 		metrics_mcp_init(&app->counts);
 		app->shared = s;
 	}
-	bcfg.home = (struct brainstem_app){
+	bcfg.home = brainstem_app(
 		.ctx = home,
 		.start = askai_home_start,
 		.open = askai_home_open,
@@ -880,15 +880,15 @@ askai_run (struct askai_shared *s,
 		.alone = askai_home_alone,
 		.reload = cfg->path || cfg->http.tls ? askai_home_reload : nullptr,
 		.stop = askai_home_stop
-	};
-	bcfg.client = (struct brainstem_app){
+	);
+	bcfg.client = brainstem_app(
 		.ctx = s->clients,
 		.stride = sizeof *s->clients,
 		.start = askai_client_start,
 		.drain = askai_client_drain,
 		.relieve = askai_keep_relieve,
 		.stop = askai_client_stop
-	};
+	);
 	log_threshold = cfg->flags & CFG_VERBOSE ? LOG_VERBOSE : LOG_INFO;
 	int status = brainstem_run(&bcfg);
 	if (s->tasks)

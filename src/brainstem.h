@@ -36,6 +36,8 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
+#include "compat.h"
+
 struct blocker;
 struct loop;
 
@@ -121,6 +123,14 @@ struct brainstem_app {
 	void (*stop)    (void           *ctx,
 	                 struct loop    *loop);
 };
+
+static force_inline struct brainstem_app
+brainstem_app (struct brainstem_app const a)
+{
+	return a;
+}
+
+#define brainstem_app(...) (brainstem_app)((struct brainstem_app){__VA_ARGS__})
 
 struct brainstem_cfg {
 	struct brainstem_app home;         /**< runs on home, whose loop is 0 */
