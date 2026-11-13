@@ -18,7 +18,7 @@ cli_loop_nop (struct loop      *loop,
 int
 cli_loop_init (struct cli_loop *loop)
 {
-	loop->wake = (struct loop_step){.fn = cli_loop_nop};
+	loop->wake = loop_step(cli_loop_nop);
 	loop->after_turn = nullptr;
 	loop->until = UINT64_MAX;
 	loop->dispatching = 0;

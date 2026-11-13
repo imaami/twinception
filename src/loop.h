@@ -75,6 +75,14 @@ struct loop_step {
 	                 struct loop_step *step);
 };
 
+/** Returns an entry whose function is @p fn and that is on no ready list. */
+static force_inline struct loop_step
+loop_step (void (*fn) (struct loop      *loop,
+                       struct loop_step *step))
+{
+	return (struct loop_step){ .fn = fn };
+}
+
 /** What a loop has done since it began: its one writer is the loop, and any
  *  thread may read it (src/hist.h). Times are in ns.
  */
