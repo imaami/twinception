@@ -1306,12 +1306,8 @@ autocomplete_matches_add (struct autocomplete_matches *set,
 		return ENOMEM;
 	if (!set->count || label_begin < set->begin)
 		set->begin = label_begin;
-	set->matches[set->count++] = (struct autocomplete_match){
-		.line = {nullptr, length},
-		.cursor = cursor,
-		.label_begin = (uint32_t)label_begin,
-		.kind = kind,
-	};
+	set->matches[set->count++] = autocomplete_match(cstr_view_n(nullptr, length), cursor,
+	                                                (uint32_t)label_begin, kind);
 	return 0;
 }
 

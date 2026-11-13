@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 
+#include "compat.h"
 #include "cstr_view.h"
 #include "dstr.h"
 
@@ -43,6 +44,24 @@ struct autocomplete_match {
 	uint32_t               label_begin;
 	enum autocomplete_kind kind;
 };
+
+/** Returns the match of the kind @p kind with the replacement line
+ *  @p line. @p cursor is the byte offset of the editing cursor in the line,
+ *  and the suggested token begins at the byte offset @p label_begin.
+ */
+static force_inline struct autocomplete_match
+autocomplete_match (struct cstr_view       line,
+                    size_t                 cursor,
+                    uint32_t               label_begin,
+                    enum autocomplete_kind kind)
+{
+	return (struct autocomplete_match){
+		.line        = line,
+		.cursor      = cursor,
+		.label_begin = label_begin,
+		.kind        = kind,
+	};
+}
 
 /** AUTOCOMPLETE_MATCHES is the maximum number of matches of a completion.
  *  AUTOCOMPLETE_BYTES is the maximum size of the lines of the matches with
