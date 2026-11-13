@@ -1110,7 +1110,7 @@ manual_start (struct mcp_slot    *slot,
 	}
 	*call = (struct manual_call){ .heading = json_object_get(heading), .depth = UINT32_MAX };
 	*mcp_slot_own(slot) = call;
-	struct handle who;
+	struct handle who = {};
 	struct manual_page *found = nullptr;
 	int e = mcp_slot_name(slot, &who);
 	e = e ? e : manual_find(mcp_slot_part(slot), page, sect, who, &found);

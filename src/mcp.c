@@ -1137,7 +1137,7 @@ mcp_forget (struct mcp    *mcp,
             struct handle *h)
 {
 	loop_forget(mcp->loop, *h);
-	*h = (struct handle){};
+	*h = handle(0);
 }
 
 static void mcp_slot_step (struct loop *loop, struct loop_step *step);
@@ -2783,7 +2783,7 @@ mcp_journal_wait_take (void                    *wait,
 	struct mcp_req *req = mcp_req_named(loop, w->who);
 	if (req) {
 		loop_forget(loop, w->who);
-		req->archive_call = (struct handle){};
+		req->archive_call = handle(0);
 	}
 	return req;
 }
@@ -3155,7 +3155,7 @@ mcp_req_enrol (struct mcp_req *req)
 	struct mcp *mcp = req->mcp;
 	struct buf key = buf();
 	uint64_t hash;
-	struct handle who;
+	struct handle who = {};
 	int e = mcp_req_key(req, req->id, &key, &hash);
 	if (!e)
 		e = loop_handle(mcp->loop, req, HANDLE_REQ, &who);
@@ -3184,7 +3184,7 @@ mcp_req_record (struct mcp_req   *req,
                 int              *e)
 {
 	struct mcp *mcp = req->mcp;
-	struct handle who;
+	struct handle who = {};
 	*e = loop_handle(mcp->loop, req, HANDLE_REQ, &who);
 	if (*e)
 		return nullptr;
@@ -3747,7 +3747,7 @@ mcp_slot_name (struct mcp_slot *slot,
 {
 	if (!who)
 		return EFAULT;
-	*who = (struct handle){};
+	*who = handle(0);
 	int e = mcp_slot_live(slot, 0, 0);
 	if (!e && !slot->call.bits)
 		e = loop_handle(slot->req->mcp->loop, slot, HANDLE_SLOT, &slot->call);
@@ -6116,7 +6116,7 @@ mcp_recover_back (struct loop           *loop,
 			                       (enum ledger_status)status,
 			                       (struct span){ (unsigned char *)(uintptr_t)text.data,
 			                                      text.len },
-			                       nullptr, (struct handle){}, nullptr, &e);
+			                       nullptr, handle(0), nullptr, &e);
 		json_object_put(result);
 		if (!task && e != EEXIST) {
 			problem = CSTR_VIEW("Cannot restore the saved result of the job.");

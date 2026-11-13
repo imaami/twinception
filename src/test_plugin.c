@@ -355,7 +355,7 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	struct loop_timer bare = { .due = UINT64_MAX };
 	struct loop_timer stray = { .due = UINT64_MAX, .fn = test_plugin_never, .slot = 1000 };
 	struct msg bare_msg = {};
-	struct handle who = { 1 };
+	struct handle who = handle(1);
 	enum loop_unit const beyond = (enum loop_unit)(LOOP_UNITS + 7);
 	uint32_t const unknown = 1u << 7;
 	size_t taken;
@@ -455,7 +455,7 @@ static void
 test_plugin_misuse_handles (struct mcp_slot *slot,
                             struct loop     *loop)
 {
-	struct handle own;
+	struct handle own = {};
 	if (mcp_slot_name(slot, &own)) {
 		mcp_slot_tell(slot, CSTR_VIEW("The call has no handle."), TOOL_FAILED);
 		return;
@@ -469,7 +469,7 @@ test_plugin_misuse_handles (struct mcp_slot *slot,
 	unsigned found = 0;
 	for (uint64_t i = at > 8 ? at - 8 : 0; i <= at + 8; ++i)
 		for (uint64_t gen = 1; gen <= last; ++gen) {
-			struct handle const h = { top | i << 32 | gen };
+			struct handle const h = handle(top | i << 32 | gen);
 			struct mcp_slot const *named = mcp_slot_named(loop, h);
 			foreign += named && named != slot;
 			found += named == slot;
@@ -538,7 +538,7 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 	}
 	mcp_slot_tell(slot, CSTR_VIEW("first"), 0);
 	size_t taken = 0;
-	struct handle who;
+	struct handle who = {};
 	struct web_request const get = {
 		.url = "http://127.0.0.1/", .max = 1, .timeout = 1
 	};

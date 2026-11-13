@@ -390,7 +390,7 @@ loop_handle (struct loop   *loop,
 	}
 	loop->slots[i].obj = obj;
 	loop->slots[i].kind = kind;
-	*h = (struct handle){ loop->id << 56 | (uint64_t)i << 32 | loop->slots[i].gen };
+	*h = handle(loop->id << 56 | (uint64_t)i << 32 | loop->slots[i].gen);
 	return 0;
 }
 

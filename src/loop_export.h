@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "compat.h"
 #include "export.h"
 
 struct loop;
@@ -33,6 +34,15 @@ struct handle {
 	uint64_t bits;  /**< from the highest bit: 8 bits for the loop, 24 bits
 	                     for the slot, 32 bits for the generation */
 };
+
+/** Returns the handle whose bits are @p bits. handle(0) is the value that
+ *  is not a handle.
+ */
+static const_inline struct handle
+handle (uint64_t bits)
+{
+	return (struct handle){ .bits = bits };
+}
 
 /**
  * The units in which a step counts its work. Each unit has a bound per

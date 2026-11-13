@@ -20,8 +20,8 @@ test_reuse (struct loop *l)
 {
 	int a;
 	int b;
-	struct handle ha;
-	struct handle hb;
+	struct handle ha = {};
+	struct handle hb = {};
 	CHECK(!loop_handle(l, &a, 1, &ha));
 	CHECK(ha.bits && loop_lookup(l, ha, 1) == &a);
 	loop_forget(l, ha);
@@ -41,7 +41,7 @@ static void
 test_kind (struct loop *l)
 {
 	int a;
-	struct handle h;
+	struct handle h = {};
 	CHECK(!loop_handle(l, &a, 2, &h));
 	CHECK(loop_lookup(l, h, 2) == &a);
 	CHECK(!loop_lookup(l, h, 1) && !loop_lookup(l, h, 3));
@@ -56,13 +56,13 @@ static void
 test_foreign (struct loop *l)
 {
 	int a;
-	struct handle h;
+	struct handle h = {};
 	CHECK(!loop_handle(l, &a, 1, &h));
 	CHECK(h.bits >> 56 == l->id);
-	CHECK(!loop_lookup(l, (struct handle){ h.bits ^ 1ULL << 56 }, 1));
-	CHECK(!loop_lookup(l, (struct handle){ h.bits + (1ULL << 40) }, 1));
-	CHECK(!loop_lookup(l, (struct handle){}, 1));
-	loop_forget(l, (struct handle){ h.bits ^ 1ULL << 56 });
+	CHECK(!loop_lookup(l, handle(h.bits ^ 1ULL << 56), 1));
+	CHECK(!loop_lookup(l, handle(h.bits + (1ULL << 40)), 1));
+	CHECK(!loop_lookup(l, handle(0), 1));
+	loop_forget(l, handle(h.bits ^ 1ULL << 56));
 	CHECK(loop_lookup(l, h, 1) == &a);
 	loop_forget(l, h);
 }
@@ -73,14 +73,14 @@ static void
 test_wrap (struct loop *l)
 {
 	int a;
-	struct handle h;
+	struct handle h = {};
 	CHECK(!loop_handle(l, &a, 1, &h));
 	loop_forget(l, h);
 	l->slots[slot(h)].gen = UINT32_MAX;
 	CHECK(!loop_handle(l, &a, 1, &h));
 	CHECK((uint32_t)h.bits == UINT32_MAX && loop_lookup(l, h, 1) == &a);
 	loop_forget(l, h);
-	struct handle const zero = { h.bits & ~(uint64_t)UINT32_MAX };
+	struct handle const zero = handle(h.bits & ~(uint64_t)UINT32_MAX);
 	loop_forget(l, zero);
 	CHECK(!loop_handle(l, &a, 1, &h));
 	CHECK(slot(h) != slot(zero) && loop_lookup(l, h, 1) == &a);
@@ -95,7 +95,7 @@ test_grow (struct loop *l)
 {
 	enum { N = 3 * SLOTS_MIN };
 	static int objs[N];
-	struct handle h[N];
+	struct handle h[N] = {};
 	for (size_t i = 0; i < N; ++i)
 		CHECK(!loop_handle(l, &objs[i], 1, &h[i]));
 	CHECK(l->slots_cap >= N);
@@ -105,7 +105,7 @@ test_grow (struct loop *l)
 		CHECK(loop_lookup(l, h[i], 1) == &objs[i]);
 	loop_forget(l, h[5]);
 	loop_forget(l, h[N - 1]);
-	struct handle again;
+	struct handle again = {};
 	CHECK(!loop_handle(l, &objs[0], 1, &again));
 	CHECK(slot(again) == slot(h[N - 1]));
 	CHECK(!loop_handle(l, &objs[1], 1, &again));

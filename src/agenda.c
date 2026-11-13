@@ -324,7 +324,7 @@ agenda_wait_start (struct mcp_slot    *slot,
 			               (int)util_clip(id.data, id.len, HEXID_DIGITS), id.data);
 		return;
 	}
-	struct handle who;
+	struct handle who = {};
 	int e = mcp_slot_name(slot, &who);
 	w->wait = e ? nullptr : ledger_wait_enter(ledger, owner, loop, who, agenda_wait_wake, &e);
 	if (!w->wait) {
