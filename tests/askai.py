@@ -11987,9 +11987,10 @@ def check_notes(binary, up):
                 assert all(git("show", f"{own}:{name}") == b"r" for name in names), said
             # git cannot list the records of the members. The action members
             # and a call whose notebook argument names no member of the
-            # table are refused with one sentence. The log names the cause
-            # once for each call. The calls work once git lists the records
-            # again.
+            # table are refused with one sentence. The cause is in the log
+            # once for each call, in the line of the member table. The notes
+            # tool logs no line of its own. The calls work once git lists
+            # the records again.
             unread = "!The members could not be read."
             nobody = {"action": "list", "notebook": "nobody"}
             open(norefs, "w").close()
@@ -11999,10 +12000,10 @@ def check_notes(binary, up):
             os.unlink(norefs)
             cause = "member: Could not read the member records: git exited with status 3."
             ai.wait_lines("member: ", [cause] * 2)
-            ai.wait_lines("notes: ", ["notes: cannot read the members of the session"] * 2)
             assert call(nobody).startswith("!No member is named nobody. The members are ")
             assert call({"action": "members"}).startswith("Members of the session ")
             ai.wait_lines("member: ", [cause] * 2)
+            ai.wait_lines("notes: ", [])
             # The call of a new member fails with one fixed sentence if git
             # cannot write the record of the member, and no record is
             # written. The log names the cause of git once for each call. A
@@ -13135,7 +13136,8 @@ def check_notes_texts(binary, up):
                 # At the start of an ask call, git cannot list the members,
                 # and the prompt goes on with the members that the table
                 # lists. Then git cannot list the notes, and the ask call
-                # ends with the reason.
+                # ends with the reason. Each of the two failed spawns is in
+                # the log once, and the notes tool logs no line of its own.
                 os.chmod(f"{bin}/git", 0o644)
                 count = len(up.requests)
                 try:
@@ -13144,7 +13146,8 @@ def check_notes_texts(binary, up):
                     back()
                 assert result.get("isError") and text_of(result) == cannot and \
                     len(up.requests) == count, result
-                ai.wait_log("notes: cannot read the members of the session")
+                wait_for(lambda: ai.log.count(cannot + "\n") == 2)
+                assert not any(line.startswith("notes: ") for line in ai.log), ai.log
                 # git lists the notes and vanishes. The prompt goes on
                 # without the newest note and without the findings.
                 vanish("log")

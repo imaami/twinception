@@ -1244,15 +1244,15 @@ notes_tool_got_members (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct member_table *const members = mcp_slot_members(slot);
-	/* The table logs the cause of a read that failed. */
+	/* The table logs the cause of a read that failed. For a git that did
+	 * not start, child_spawn_why() logged the error in notes_tool_failed(),
+	 * but not EBUSY, which no tool logs. */
 	int e = call->child ? member_table_parse(members, call->child) : EIO;
 	child_destroy(&call->child);
 	if (e == ENOMEM) {
 		notes_tool_end(slot, ENOMEM, true);
 		return;
 	}
-	if (e)
-		LOG(LOG_WARN, "notes: cannot read the members of the session");
 	if (call->then) {
 		notes_tool_prompt_notices(slot);
 		return;
