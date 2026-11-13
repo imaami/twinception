@@ -23,6 +23,13 @@ struct htab_node {
 	struct htab_node *next;  /**< the next node of the bucket, or nullptr */
 };
 
+/** Returns a node with the hash @p hash that is in no bucket. */
+static force_inline struct htab_node
+htab_node (uint64_t hash)
+{
+	return (struct htab_node){ .hash = hash };
+}
+
 /** A hash table. htab_init() allocates its buckets, or the caller
  *  provides them to htab().
  */

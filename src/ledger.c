@@ -578,7 +578,7 @@ ledger_restore (struct ledger      *ledger,
 	t->tool = tool;
 	t->kind = kind;
 	t->id = *id;
-	t->node = (struct htab_node){ .hash = util_hash(0, t->id.hex, HEXID_DIGITS) };
+	t->node = htab_node(util_hash(0, t->id.hex, HEXID_DIGITS));
 
 	struct ledger_metrics *m = &ledger->metrics;
 	struct htab_node *gone = nullptr;
