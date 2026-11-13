@@ -1173,8 +1173,9 @@ member_lookup_drop (struct member_lookup *lookup)
 
 /* Writes the result @p e of @p lookup to @p wait: the member for 0, and
  * else no member. For EPERM, the function also writes the record that
- * refuses the login, which is the record of the name of the login, of the
- * kind lookup->refuser_kind. Returns @p e.
+ * refuses the login. That record is the record of the name of the login,
+ * so the function copies the name array of the login, and sets the kind
+ * to lookup->refuser_kind. Returns @p e.
  */
 static int
 member_lookup_give (struct member_lookup const *lookup,
@@ -1183,12 +1184,13 @@ member_lookup_give (struct member_lookup const *lookup,
 {
 	struct member const *claimed = &lookup->claim.login.member;
 	wait->e = e;
-	wait->member = (struct member){ .kind = claimed->kind };
-	wait->refuser = (struct member){};
-	if (!e)
-		wait->member = *claimed;
-	else if (e == EPERM)
-		wait->refuser = member(lookup->refuser_kind, cstr_view(claimed->name));
+	wait->member = e ? (struct member){ .kind = claimed->kind } : *claimed;
+	if (e == EPERM) {
+		wait->refuser = *claimed;
+		wait->refuser.kind = lookup->refuser_kind;
+	} else {
+		wait->refuser = (struct member){};
+	}
 	return e;
 }
 
