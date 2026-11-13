@@ -271,7 +271,7 @@ code_spawn (struct code_call *call,
 	     w += strlen(w) + 1)
 		argv[k++] = w;
 	argv[k++] = "--";
-	struct git_run_dir dir;
+	struct git_run_dir dir = {};
 	git_pin_dir(pin, &dir);
 	e = git_run_dir_argv(&dir, nullptr, argv + k, array_size(argv) - k);
 	if (e)

@@ -746,7 +746,7 @@ git_pin_spawn (struct git_pin           *pin,
 		break;
 	}
 	argv[k] = nullptr;
-	struct git_run_dir dir;
+	struct git_run_dir dir = {};
 	git_pin_dir(pin, &dir);
 	struct git_run cmd;
 	struct child_cmd const how = child_cmd(
