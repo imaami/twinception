@@ -21,6 +21,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "compat.h"
 #include "cstr_view.h"
 #include "oid.h"
 #include "store.h"
@@ -64,6 +65,16 @@ struct notes_cursor {
 	uint64_t    time;
 	struct oid  commit;
 };
+
+/** Returns the cursor at the end of an output of STORE_LOG that is @p end
+ *  bytes long. notes_entry_before() moves the cursor from there towards the
+ *  start of the output.
+ */
+static force_inline struct notes_cursor
+notes_cursor (size_t end)
+{
+	return (struct notes_cursor){ .end = end };
+}
 
 /** The lines of a note that git sees as binary (struct notes_entry). */
 #define NOTES_BINARY UINT64_MAX

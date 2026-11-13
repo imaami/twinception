@@ -1053,7 +1053,7 @@ notes_tool_history (struct mcp_slot *slot,
 	if (cut && cstr_view_cat(CSTR_VIEW("[The oldest changes are not in the list.]\n"),
 	                         call->text))
 		return ENOMEM;
-	struct notes_cursor cursor = { .end = out.len };
+	struct notes_cursor cursor = notes_cursor(out.len);
 	struct notes_entry entry;
 	bool history = (call->fetch & FETCH_KIND) == FETCH_LIST;
 	struct cstr_view const filter = util_text_view(&call->revision.file);
