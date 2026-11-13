@@ -910,12 +910,12 @@ findings_commit (struct mcp_slot      *slot,
 	call->id = f->id;
 	struct extent part = {};
 	e = e ? e : store_part_file(&part, &call->files, finding_path(f->id.number, path), text);
-	struct store_commit commit = {
+	struct store_commit commit = store_commit(
 		.message = findings_subject(call, id, before, message),
 		.files = buf_peek(&call->files),
 		.ref = ref,
-		.tip = &tip,
-	};
+		.tip = &tip
+	);
 	struct member_byline byline = {};
 	member_byline_put(&byline, &commit, &session->agent, mcp_slot_member(slot),
 	                  mcp_slot_call(slot), session);

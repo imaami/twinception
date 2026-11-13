@@ -756,12 +756,12 @@ notes_tool_write (struct mcp_slot *slot,
 	 * the asker. The request of a call of a client contains none of
 	 * them. */
 	struct buf in = buf();
-	struct store_commit commit = {
+	struct store_commit commit = store_commit(
 		.message = util_text_view(&call->message),
 		.files = buf_peek(&call->file),
 		.ref = call->repo,
-		.tip = &call->revision.tip,
-	};
+		.tip = &call->revision.tip
+	);
 	struct member_byline byline = {};
 	member_byline_put(&byline, &commit, &call->self, mcp_slot_member(slot), mcp_slot_call(slot),
 	                  notes_tool_session(call));

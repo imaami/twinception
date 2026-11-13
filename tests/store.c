@@ -340,13 +340,13 @@ test_input (void)
 
 	/* The input of a commit with a committer is the same byte for byte as
 	 * the input that notes_add_input() wrote before the store. */
-	struct store_commit const commit = {
-		.committer = { CSTR_VIEW("gpu1/upstream"), CSTR_VIEW("askai") },
+	struct store_commit const commit = store_commit(
+		.committer = store_ident(CSTR_VIEW("gpu1/upstream"), CSTR_VIEW("askai")),
 		.message = CSTR_VIEW("Add a (3 bytes)"),
 		.files = s,
 		.ref = "refs/heads/notes/t",
-		.tip = &tip,
-	};
+		.tip = &tip
+	);
 	struct buf in = buf();
 	CHECK(!store_commit_input(&commit, &in));
 	s = buf_peek(&in);
@@ -437,15 +437,15 @@ test_trailer (void)
 		store_trailer(CSTR_VIEW("Asked-by"), CSTR_VIEW("imaami")),
 		store_trailer(CSTR_VIEW("Ask"),      CSTR_VIEW("")),
 	};
-	struct store_commit const commit = {
-		.author = { CSTR_VIEW("bro"), CSTR_VIEW("agent/bro") },
-		.committer = { CSTR_VIEW("gpu1"), CSTR_VIEW("askai") },
+	struct store_commit const commit = store_commit(
+		.author = store_ident(CSTR_VIEW("bro"), CSTR_VIEW("agent/bro")),
+		.committer = store_ident(CSTR_VIEW("gpu1"), CSTR_VIEW("askai")),
 		.message = CSTR_VIEW(""),
 		.trailers = trailers,
 		.n_trailers = array_size(trailers),
 		.ref = "refs/heads/notes/t",
-		.tip = &root,
-	};
+		.tip = &root
+	);
 	struct buf in = buf();
 	CHECK(!store_commit_input(&commit, &in));
 	struct span s = buf_peek(&in);
@@ -953,12 +953,12 @@ test_run (struct store const *store,
 	CHECK(snprintf(lock, sizeof lock, "%s/refs/heads/notes/t.lock", store_directory(store)) > 0);
 	lock_make(lock, 1);
 	struct oid const root = {};
-	struct store_commit const commit = {
-		.committer = { CSTR_VIEW("gpu1"), CSTR_VIEW("askai") },
+	struct store_commit const commit = store_commit(
+		.committer = store_ident(CSTR_VIEW("gpu1"), CSTR_VIEW("askai")),
 		.message = CSTR_VIEW("Race"),
 		.ref = "refs/heads/notes/t",
-		.tip = &root,
-	};
+		.tip = &root
+	);
 	struct buf in = buf();
 	CHECK(!store_commit_input(&commit, &in));
 	CHECK(!store_run(store, STORE_COMMIT, nullptr, commit.ref, buf_peek(&in), &out, &end) &&
@@ -1071,13 +1071,13 @@ race_commit (struct store const *store,
 {
 	static char out[4096];
 	size_t len = 0;
-	struct store_commit const commit = {
-		.committer = { CSTR_VIEW("gpu1"), CSTR_VIEW("askai") },
+	struct store_commit const commit = store_commit(
+		.committer = store_ident(CSTR_VIEW("gpu1"), CSTR_VIEW("askai")),
 		.message = CSTR_VIEW("Change"),
 		.files = buf_peek(files),
 		.ref = ref,
-		.tip = tip,
-	};
+		.tip = tip
+	);
 	CHECK(!commit_run(store, &commit, id, out, sizeof out, &len));
 	buf_fini(files);
 }
@@ -1183,13 +1183,13 @@ test_race (struct store const *store)
 	static char out[4096];
 	size_t len = 0;
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("a/f"), CSTR_VIEW("7")));
-	struct store_commit commit = {
-		.committer = { CSTR_VIEW("gpu1"), CSTR_VIEW("askai") },
+	struct store_commit commit = store_commit(
+		.committer = store_ident(CSTR_VIEW("gpu1"), CSTR_VIEW("askai")),
 		.message = CSTR_VIEW("Add a/f"),
 		.files = buf_peek(&files),
 		.ref = ref,
-		.tip = &r3,
-	};
+		.tip = &r3
+	);
 	struct oid r5;
 	CHECK(commit_run(store, &commit, &r5, out, sizeof out, &len) > 0);
 	CHECK(store_raced(span((unsigned char *)out, len)));
@@ -1292,12 +1292,12 @@ test_git (char const *path)
 
 	/* A root commit without file parts has the empty tree. */
 	struct oid const root = {};
-	struct store_commit commit = {
-		.committer = { CSTR_VIEW("gpu1"), CSTR_VIEW("askai") },
+	struct store_commit commit = store_commit(
+		.committer = store_ident(CSTR_VIEW("gpu1"), CSTR_VIEW("askai")),
 		.message = CSTR_VIEW("Root"),
 		.ref = "refs/heads/notes/t",
-		.tip = &root,
-	};
+		.tip = &root
+	);
 	struct oid c1, c2, c3, c4;
 	CHECK(!commit_run(store, &commit, &c1, out, sizeof out, &len));
 	CHECK(oid_len(&c1) == OID_SHA1);
@@ -1426,15 +1426,15 @@ test_git (char const *path)
 		store_trailer(CSTR_VIEW("Kind"),  CSTR_VIEW("agent")),
 		store_trailer(CSTR_VIEW("Login"), CSTR_VIEW("imaami")),
 	};
-	struct store_commit const member = {
-		.author = { CSTR_VIEW("bro"), CSTR_VIEW("agent/bro") },
-		.committer = { CSTR_VIEW("gpu1"), CSTR_VIEW("askai") },
+	struct store_commit const member = store_commit(
+		.author = store_ident(CSTR_VIEW("bro"), CSTR_VIEW("agent/bro")),
+		.committer = store_ident(CSTR_VIEW("gpu1"), CSTR_VIEW("askai")),
 		.message = CSTR_VIEW("Add the member bro"),
 		.trailers = record,
 		.n_trailers = array_size(record),
 		.ref = "refs/askai/members/bro",
-		.tip = &root,
-	};
+		.tip = &root
+	);
 	struct oid m;
 	CHECK(!commit_run(store, &member, &m, out, sizeof out, &len));
 	CHECK(!run(store, STORE_FILES, (char const *const[]){ m.hex, nullptr },

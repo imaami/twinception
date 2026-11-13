@@ -451,6 +451,14 @@ struct store_commit {
 	                                              exists */
 };
 
+static force_inline struct store_commit
+store_commit (struct store_commit const c)
+{
+	return c;
+}
+
+#define store_commit(...) (store_commit)((struct store_commit){__VA_ARGS__})
+
 /**
  * Writes to @p in the input of STORE_COMMIT for @p commit. The commit
  * message is commit->message, then a blank line and the trailer if

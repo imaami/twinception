@@ -545,16 +545,16 @@ member_commit_input (struct member_registry const *reg,
                      struct oid const             *tip,
                      struct buf                   *in)
 {
-	struct store_commit const commit = {
-		.author = { CSTR_VIEW("askai"), CSTR_VIEW("askai") },
+	struct store_commit const commit = store_commit(
+		.author = store_ident(CSTR_VIEW("askai"), CSTR_VIEW("askai")),
 		.committer = reg->session.committer,
 		.message = message,
-		.files = {},
+		.files = span(nullptr, 0),
 		.trailers = t,
 		.n_trailers = n,
 		.ref = ref,
-		.tip = tip,
-	};
+		.tip = tip
+	);
 	return store_commit_input(&commit, in);
 }
 

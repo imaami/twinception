@@ -746,16 +746,17 @@ test_note (struct store const *store,
 	struct store_trailer const t[] = {
 		store_trailer(CSTR_VIEW("Asked-by"), asker ? cstr_view(asker) : CSTR_VIEW(""))
 	};
-	struct store_commit const commit = {
-		.author = { CSTR_VIEW("bro"), CSTR_VIEW("agent/bro") },
-		.committer = { CSTR_VIEW("gpu1"), CSTR_VIEW("askai") },
+	struct oid const root = {};
+	struct store_commit const commit = store_commit(
+		.author = store_ident(CSTR_VIEW("bro"), CSTR_VIEW("agent/bro")),
+		.committer = store_ident(CSTR_VIEW("gpu1"), CSTR_VIEW("askai")),
 		.message = cstr_view(subject),
 		.files = buf_peek(&files),
 		.trailers = asker ? t : nullptr,
 		.n_trailers = asker ? 1 : 0,
 		.ref = ref,
-		.tip = &(struct oid){},
-	};
+		.tip = &root
+	);
 	struct buf in = buf();
 	struct buf out = buf();
 	struct child_end end = child_end();
@@ -1194,14 +1195,15 @@ test_session (char const                 *path,
 	struct child_end end = child_end();
 	CHECK(!store_run(store, STORE_CREATE, nullptr, nullptr, span(nullptr, 0), &out, &end) &&
 	      !end.status);
-	struct store_commit const commit = {
-		.committer = { CSTR_VIEW("old"), CSTR_VIEW("askai") },
+	struct oid const root = {};
+	struct store_commit const commit = store_commit(
+		.committer = store_ident(CSTR_VIEW("old"), CSTR_VIEW("askai")),
 		.message = CSTR_VIEW("Create the session"),
 		.trailers = t,
 		.n_trailers = n,
 		.ref = "refs/askai/session",
-		.tip = &(struct oid){},
-	};
+		.tip = &root
+	);
 	CHECK(!store_commit_input(&commit, &in));
 	CHECK(!store_run(store, STORE_COMMIT, nullptr, commit.ref, buf_peek(&in), &out, &end) &&
 	      !end.status);
@@ -1684,7 +1686,7 @@ main (int    argc,
 	CHECK(!hexid_init(&call.ask, CSTR_VIEW("0123456789abcdef0123456789abcdef")) &&
 	      !hexid_init(&call.conversation, CSTR_VIEW("fedcba9876543210fedcba9876543210")));
 	struct member_byline byline;
-	struct store_commit commit = {};
+	struct store_commit commit = store_commit();
 	member_byline_put(&byline, &commit, &(struct member){ MEMBER_PERSON, "carol" }, &call, 7,
 	                  session);
 	CHECK(cstr_view_equal(commit.author.name, CSTR_VIEW("carol")) &&
