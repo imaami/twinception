@@ -59,6 +59,15 @@ struct test_plugin_config {
 	UTIL_TEXT(64) greeting;  /* the option "greeting" */
 };
 
+/* Returns the configuration of a plugin without options. The greeting is
+ * "hello".
+ */
+static const_inline struct test_plugin_config
+test_plugin_config (void)
+{
+	return (struct test_plugin_config){ .greeting = { sizeof "hello" - 1, "hello" } };
+}
+
 /* The plugin's instance: what test_state stores for one user on one loop. */
 struct test_plugin_instance {
 	uint64_t      principal;
@@ -666,7 +675,7 @@ test_plugin_configure (void               *config,
 	if (!config || !why || !len)
 		return EINVAL;
 	struct test_plugin_config *c = config;
-	*c = (struct test_plugin_config){ .greeting = { sizeof "hello" - 1, "hello" } };
+	*c = test_plugin_config();
 	if (!options)
 		return 0;
 	if (!json_object_is_type(options, json_type_object))
