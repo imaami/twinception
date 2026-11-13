@@ -13,6 +13,7 @@
 #include "blocker.h"
 #include "buf.h"
 #include "child.h"
+#include "compat.h"
 #include "dstr.h"
 #include "git_run.h"
 #include "hexid.h"
@@ -95,6 +96,16 @@ struct member_records {
 	size_t                          width;    /* the length of the longest
 	                                             name of the members */
 };
+
+/* Returns the records of the output @p out of git before
+ * member_records_parse() reads the output. The records contain no member
+ * and no session record.
+ */
+static force_inline struct member_records
+member_records (struct buf out)
+{
+	return (struct member_records){ .out = out };
+}
 
 struct member_registry {
 	struct member_records  records;  /* the records that askai read as it
@@ -466,7 +477,7 @@ member_records_take (struct member_records  *r,
                      size_t                  len)
 {
 	static char const records[] = "the member records";
-	struct member_records got = { .out = *out };
+	struct member_records got = member_records(*out);
 	*out = buf();
 	int const ended = member_git_result(why, len, "read", records, span(nullptr, 0), e, end);
 	e = ended ? ended : member_records_parse(&got);
