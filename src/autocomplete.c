@@ -62,6 +62,26 @@ struct autocomplete_entry {
 	size_t                        storage;
 };
 
+/* Returns the entry of the tool @p name before autocomplete_add_tool()
+ * resolves the schema and adds the properties. @p title and @p description
+ * are the texts of the tool, @p schema is the input schema, and
+ * @p definition is the definition of the tool. The root of the entry is
+ * @p schema, and the entry contains no property.
+ */
+static force_inline struct autocomplete_entry
+autocomplete_entry (struct cstr_view    name,
+                    struct cstr_view    title,
+                    struct cstr_view    description,
+                    struct json_object *schema,
+                    struct json_object *definition)
+{
+	return (struct autocomplete_entry){
+		.tool       = { name, title, description, schema },
+		.definition = definition,
+		.root       = schema,
+	};
+}
+
 struct autocomplete_names {
 	UTIL_ARRAY(struct dstr);
 };
@@ -695,13 +715,10 @@ autocomplete_add_tool (struct autocomplete *ac,
 	size_t position;
 	struct autocomplete_entry const *previous = autocomplete_entry_find(ac, name, &position);
 	bool replace = previous != nullptr;
-	struct json_object *schema = jb_get(def, "inputSchema");
-	struct autocomplete_entry entry = {
-		.tool = {name, autocomplete_json_text(jb_get(def, "title")),
-		         autocomplete_json_text(jb_get(def, "description")), schema},
-		.definition = json_object_get(def),
-		.root = schema,
-	};
+	struct autocomplete_entry entry =
+		autocomplete_entry(name, autocomplete_json_text(jb_get(def, "title")),
+		                   autocomplete_json_text(jb_get(def, "description")),
+		                   jb_get(def, "inputSchema"), json_object_get(def));
 	size_t schema_size = 0;
 	int error;
 	if (entry.root && !json_object_to_json_string_length(entry.root, JSON_C_TO_STRING_PLAIN, &schema_size)) {
