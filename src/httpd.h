@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "compat.h"
 #include "cstr_view.h"
 
 struct httpd;
@@ -50,7 +51,7 @@ struct httpd_limits {
 /** The defaults (doc/configuration.md, Limits on clients). A message may
  *  have 8 MiB, room for a text of 4 MiB with its JSON.
  */
-static inline struct httpd_limits
+static const_inline struct httpd_limits
 httpd_limits (void)
 {
 	return (struct httpd_limits){
