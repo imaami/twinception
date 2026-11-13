@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 
+#include "compat.h"
 #include "cstr_view.h"
 
 /** The facts about a target. */
@@ -48,6 +49,14 @@ struct godbolt_probe_record {
 	char const *name;
 	char const *value;
 };
+
+/** Returns the record of the name @p name and the value @p value. */
+static force_inline struct godbolt_probe_record
+godbolt_probe_record (char const *name,
+                      char const *value)
+{
+	return (struct godbolt_probe_record){ .name = name, .value = value };
+}
 
 /** A fact about the target, and the names of the macros that it comes
  *  from.

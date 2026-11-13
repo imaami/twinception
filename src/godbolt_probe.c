@@ -639,7 +639,7 @@ godbolt_probe_parse_record (struct godbolt_probe         *p,
 			return GODBOLT_PROBE_BAD("a GBPROBE record occurs twice");
 	if (*n == max)
 		return GODBOLT_PROBE_BAD("the GBPROBE block contains too many records");
-	list[(*n)++] = (struct godbolt_probe_record){ name, value };
+	list[(*n)++] = godbolt_probe_record(name, value);
 	return 0;
 }
 
