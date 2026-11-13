@@ -518,7 +518,7 @@ ledger_open (struct ledger    *ledger,
 {
 	if (!e)
 		return nullptr;
-	struct hexid id;
+	struct hexid id = {};
 	if ((*e = hexid_make(&id)))
 		return nullptr;
 	return ledger_restore(ledger, owner, kind, tool, &id, clk_realtime_ns(), 0,

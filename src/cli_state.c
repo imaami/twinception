@@ -592,7 +592,7 @@ cli_state_repository (struct cli_state *state)
 		group ^= (unsigned char)identity.data[i];
 		group *= UINT64_C(1099511628211);
 	}
-	struct hexid writer;
+	struct hexid writer = {};
 	e = hexid_make(&writer);
 	if (!e)
 		e = cstr_view_store(identity, &state->metadata);

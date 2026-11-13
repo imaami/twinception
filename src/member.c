@@ -974,7 +974,7 @@ member_registry_session_read (struct member_registry *reg,
 	struct member_records *r = &reg->records;
 	int e = member_records_read(r, reg->store, why, len);
 	if (!e && !r->session.data) {
-		struct hexid id;
+		struct hexid id = {};
 		e = hexid_make(&id);
 		if (e) {
 			util_format(why, len, "Could not make the session ID: %s.", strerror(e));

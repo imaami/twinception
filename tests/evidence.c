@@ -444,7 +444,7 @@ test_cite (void)
 	keep(&seen, 4, 2, 1, "", "{\"command\":\"grep\"}", CSTR_VIEW("a:1:x\n"), nullptr, false);
 	keep(&seen, 5, 2, 2, "", "{}", CSTR_VIEW("big"), nullptr, true);
 	keep(&seen, 6, 3, 2, "", "{}", CSTR_VIEW("now"), nullptr, false);
-	struct hexid ask;
+	struct hexid ask = {};
 	CHECK(!hexid_make(&ask));
 	struct evidence_cite const cite = { seen, &ask, tool_name, nullptr, 8, 3 };
 	struct evidence_ref ref;

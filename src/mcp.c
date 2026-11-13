@@ -6806,7 +6806,7 @@ mcp_req_initialize (struct mcp_req     *req,
 
 	/* askai does not store the session ID. The ID only scopes the request
 	 * IDs that a client cancels. */
-	struct hexid id;
+	struct hexid id = {};
 	char fields[sizeof STREAM_JSON_FIELD "Mcp-Session-Id: \r\n" - 1 + sizeof id.hex];
 	struct span f = SPAN(STREAM_JSON_FIELD);
 	if (!hexid_make(&id))

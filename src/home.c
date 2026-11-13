@@ -1309,7 +1309,7 @@ home_start (struct home *home,
 	if (resume) {
 		r->flags &= ~RECOVERY_RESTORING;
 	} else if (home_llama(home)) {
-		struct hexid id;
+		struct hexid id = {};
 		e = hexid_make(&id);
 		if (!e && !(r->provider_id = strdup(id.hex)))
 			e = ENOMEM;

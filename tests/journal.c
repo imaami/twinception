@@ -26,7 +26,7 @@ journal_test_thoughts (struct journal *j)
 	struct loop events = loop();
 	assert(!loop_init(&events));
 	int const success = 0, mismatch = EILSEQ;
-	struct hexid id;
+	struct hexid id = {};
 	/* More files than the descriptor cache holds: verification must survive
 	 * eviction, even though none of these jobs has a recovery checkpoint. */
 	for (unsigned k = 1; k <= JOURNAL_FILES + 1; ++k) {
@@ -532,7 +532,7 @@ journal_test_argv (char const *repo)
 		struct loop events = loop();
 		assert(!loop_init(&events));
 		int const success = 0;
-		struct hexid id;
+		struct hexid id = {};
 		journal_test_id(&id, k);
 		assert(!journal_thought(j, &id, 1, 0, "abc", 3, &events,
 		                        journal_test_done, (void *)&success));
@@ -557,7 +557,7 @@ journal_test_argv (char const *repo)
 	static char const *const import[] = { "fast-import", "--quiet", "--done", nullptr };
 	char *names[2] = {};
 	for (size_t i = 0; i < array_size(names); ++i) {
-		struct hexid id;
+		struct hexid id = {};
 		journal_test_id(&id, (unsigned)i + 2);
 		assert(asprintf(&names[i], "%s:reasoning/%.2s/%s/1.txt", tips[i].hex, id.hex,
 		                id.hex) > 0);
@@ -906,7 +906,7 @@ main (int argc, char **argv)
 	journal_test_git(j);
 	/* Finished, checkpoint-less jobs must not exhaust the bounded table. */
 	for (unsigned k = JOURNAL_FILES + 2; k <= JOURNAL_JOBS + 1; ++k) {
-		struct hexid id;
+		struct hexid id = {};
 		journal_test_id(&id, k);
 		struct journal_job *job = journal_job_find(j, &id);
 		if (!job)
