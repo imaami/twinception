@@ -729,9 +729,11 @@ cli_tools (struct cli       *cli,
 		summary.len = jb_utf8(summary.data, summary.len < 160 ? summary.len : 160);
 		(void)cstr_view_cut(&summary, '\n', &summary);
 		struct cli_console_span const spans[] = {
-			{entry->name, CLI_STYLE_RESET},
-			{summary.len ? CSTR_VIEW("  ") : cstr_view(nullptr), CLI_STYLE_RESET},
-			{summary, CLI_STYLE_RESET}, {CSTR_VIEW("\n"), CLI_STYLE_RESET},
+			cli_console_span(entry->name, CLI_STYLE_RESET),
+			cli_console_span(summary.len ? CSTR_VIEW("  ") : cstr_view(nullptr),
+			                 CLI_STYLE_RESET),
+			cli_console_span(summary, CLI_STYLE_RESET),
+			cli_console_span(CSTR_VIEW("\n"), CLI_STYLE_RESET),
 		};
 		int e = cli_console_print(cli->console, spans, array_size(spans));
 		if (e)
@@ -785,10 +787,13 @@ cli_history_show (struct cli *cli)
 	for (size_t i = 0, count = json_object_array_length(cli->history); i < count; ++i) {
 		struct json_object *turn = json_object_array_get_idx(cli->history, i);
 		struct cli_console_span const spans[] = {
-			{CSTR_VIEW("you:\n"), CLI_STYLE_INFO},
-			{jb_view(jb_get(turn, "prompt")), CLI_STYLE_RESET}, {CSTR_VIEW("\n"), CLI_STYLE_RESET},
-			{tool, CLI_STYLE_INFO}, {CSTR_VIEW(":\n"), CLI_STYLE_INFO},
-			{jb_view(jb_get(turn, "answer")), CLI_STYLE_RESET}, {CSTR_VIEW("\n"), CLI_STYLE_RESET},
+			cli_console_span(CSTR_VIEW("you:\n"), CLI_STYLE_INFO),
+			cli_console_span(jb_view(jb_get(turn, "prompt")), CLI_STYLE_RESET),
+			cli_console_span(CSTR_VIEW("\n"), CLI_STYLE_RESET),
+			cli_console_span(tool, CLI_STYLE_INFO),
+			cli_console_span(CSTR_VIEW(":\n"), CLI_STYLE_INFO),
+			cli_console_span(jb_view(jb_get(turn, "answer")), CLI_STYLE_RESET),
+			cli_console_span(CSTR_VIEW("\n"), CLI_STYLE_RESET),
 		};
 		int e = cli_console_print(cli->console, spans, array_size(spans));
 		if (e)
@@ -1258,9 +1263,10 @@ cli_run (struct cli_options const *options,
 		cli_console_set_completion(cli->console, cli_complete, cli);
 	if (!e && (options->flags & CLI_TTY)) {
 		struct cli_console_span const spans[] = {
-			{CSTR_VIEW("Connected to "), CLI_STYLE_INFO},
-			{cstr_view_dstr(&cli->client.tool), CLI_STYLE_INFO},
-			{CSTR_VIEW(". /help lists commands; Ctrl-C cancels an answer.\n"), CLI_STYLE_INFO},
+			cli_console_span(CSTR_VIEW("Connected to "), CLI_STYLE_INFO),
+			cli_console_span(cstr_view_dstr(&cli->client.tool), CLI_STYLE_INFO),
+			cli_console_span(CSTR_VIEW(". /help lists commands; Ctrl-C cancels an answer.\n"),
+			                 CLI_STYLE_INFO),
 		};
 		e = cli_console_print(cli->console, spans, array_size(spans));
 		if (!e && (cli->client.flags & CLI_CLIENT_OLDER))

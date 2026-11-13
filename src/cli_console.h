@@ -7,6 +7,7 @@
 
 #include "autocomplete.h"
 #include "cli_style.h"
+#include "compat.h"
 #include "cstr_view.h"
 #include "dstr.h"
 #include "list.h"
@@ -178,6 +179,14 @@ struct cli_console_span {
 	struct cstr_view text;
 	uint64_t         style;  /**< enum cli_style, widened over the padding */
 };
+
+/** Returns the span of the text @p text in the style @p style. */
+static force_inline struct cli_console_span
+cli_console_span (struct cstr_view text,
+                  enum cli_style   style)
+{
+	return (struct cli_console_span){ .text = text, .style = style };
+}
 
 /** Write the spans, each in its style, as cli_console_write() does, in one
  * output request; the display ends in the reset style. A span with a style

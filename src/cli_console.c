@@ -1742,8 +1742,8 @@ cli_console_read_text_readline (struct cli_console *console,
 		return ENOMEM;
 	if (console->flags & CLI_CONSOLE_FULLSCREEN) {
 		struct cli_console_span const echo[] = {
-			{cstr_view_dstr(&console->prompt), CLI_STYLE_PROMPT},
-			{cstr_view_dstr(text), CLI_STYLE_USER_INPUT},
+			cli_console_span(cstr_view_dstr(&console->prompt), CLI_STYLE_PROMPT),
+			cli_console_span(cstr_view_dstr(text), CLI_STYLE_USER_INPUT),
 		};
 		e = cli_console_print(console, echo, array_size(echo));
 		if (e)
@@ -2011,7 +2011,8 @@ cli_console_error (struct cli_console *console,
 {
 	if (!console || !(console->flags & CLI_CONSOLE_FULLSCREEN))
 		return cli_console_write_error(&text, 1);
-	return cli_console_print_kept(console, &(struct cli_console_span){text, CLI_STYLE_ERROR}, 1);
+	struct cli_console_span const error = cli_console_span(text, CLI_STYLE_ERROR);
+	return cli_console_print_kept(console, &error, 1);
 }
 
 void
@@ -2036,9 +2037,9 @@ cli_console_take_immediate (struct cli_console *console,
 	if (e)
 		return e;
 	struct cli_console_span const echo[] = {
-		{cstr_view_dstr(&console->prompt), CLI_STYLE_USER_INPUT},
-		{line, CLI_STYLE_USER_INPUT},
-		{CSTR_VIEW("\n"), CLI_STYLE_USER_INPUT},
+		cli_console_span(cstr_view_dstr(&console->prompt), CLI_STYLE_USER_INPUT),
+		cli_console_span(line, CLI_STYLE_USER_INPUT),
+		cli_console_span(CSTR_VIEW("\n"), CLI_STYLE_USER_INPUT),
 	};
 	e = cli_console_print_kept(console, echo, array_size(echo));
 	if (e)

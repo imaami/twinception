@@ -125,8 +125,9 @@ cli_tool_content (struct cli_tool    *tool,
 		if (!kind.data || (is_text && !text.data))
 			return cli_error_set(error, EPROTO, "Malformed tool content");
 		struct cli_console_span const label[] = {
-			{CSTR_VIEW("["), CLI_STYLE_RESET}, {kind, CLI_STYLE_RESET},
-			{CSTR_VIEW(" content]\n"), CLI_STYLE_RESET},
+			cli_console_span(CSTR_VIEW("["), CLI_STYLE_RESET),
+			cli_console_span(kind, CLI_STYLE_RESET),
+			cli_console_span(CSTR_VIEW(" content]\n"), CLI_STYLE_RESET),
 		};
 		int e = is_text ? cli_ui_message(console, text)
 		                : cli_console_print(console, label, array_size(label));

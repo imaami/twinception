@@ -67,8 +67,11 @@ cli_ui_write_action (struct cli_ui    *ui,
 	/* A tool status shows its actor in a style of its own. */
 	enum cli_style lead = style == CLI_STYLE_TOOL_STATUS ? CLI_STYLE_TOOL_ACTOR : style;
 	struct cli_console_span const spans[] = {
-		{CSTR_VIEW("* "), lead}, {actor, lead},
-		{CSTR_VIEW(" "), style}, {text, style}, {CSTR_VIEW("\n"), style},
+		cli_console_span(CSTR_VIEW("* "), lead),
+		cli_console_span(actor, lead),
+		cli_console_span(CSTR_VIEW(" "), style),
+		cli_console_span(text, style),
+		cli_console_span(CSTR_VIEW("\n"), style),
 	};
 	return cli_console_print(ui->console, spans, array_size(spans));
 }
@@ -140,7 +143,10 @@ cli_ui_write_message (struct cli_console *console,
                       struct cstr_view    text,
                       enum cli_style      display)
 {
-	struct cli_console_span const spans[] = {{text, display}, {CSTR_VIEW("\n"), display}};
+	struct cli_console_span const spans[] = {
+		cli_console_span(text, display),
+		cli_console_span(CSTR_VIEW("\n"), display),
+	};
 	return cli_console_print(console, spans, array_size(spans));
 }
 

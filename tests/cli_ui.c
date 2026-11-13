@@ -66,13 +66,13 @@ cli_ui_test_colors (void)
 	assert(!close(master));
 	master = -1;
 	struct cli_console_span const expected[] = {
-		{CSTR_VIEW("[Start thinking]\n\nfirst thought\n"), CLI_STYLE_REASONING},
-		{CSTR_VIEW("local command output\n"), CLI_STYLE_RESET},
-		{CSTR_VIEW("continued thought\n"), CLI_STYLE_REASONING},
-		{CSTR_VIEW("local status\n"), CLI_STYLE_INFO},
-		{CSTR_VIEW(""), CLI_STYLE_RESET},
-		{CSTR_VIEW("[End thinking]\n"), CLI_STYLE_REASONING},
-		{CSTR_VIEW(""), CLI_STYLE_RESET},
+		cli_console_span(CSTR_VIEW("[Start thinking]\n\nfirst thought\n"), CLI_STYLE_REASONING),
+		cli_console_span(CSTR_VIEW("local command output\n"), CLI_STYLE_RESET),
+		cli_console_span(CSTR_VIEW("continued thought\n"), CLI_STYLE_REASONING),
+		cli_console_span(CSTR_VIEW("local status\n"), CLI_STYLE_INFO),
+		cli_console_span(CSTR_VIEW(""), CLI_STYLE_RESET),
+		cli_console_span(CSTR_VIEW("[End thinking]\n"), CLI_STYLE_REASONING),
+		cli_console_span(CSTR_VIEW(""), CLI_STYLE_RESET),
 	};
 	struct cli_style_entry const *palette = cli_style_palette(true);
 	struct cstr_view remaining = cstr_view_dstr(&output);
