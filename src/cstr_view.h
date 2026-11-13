@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "compat.h"
+
 struct dstr;
 
 /**
@@ -32,7 +34,7 @@ struct cstr_view {
 /** Measure a NUL-terminated string once. Returns an empty view for a null
  *  pointer.
  */
-static inline struct cstr_view
+static force_inline struct cstr_view
 cstr_view (char const *text)
 {
 	return (struct cstr_view){ text, text ? strlen(text) : 0 };
