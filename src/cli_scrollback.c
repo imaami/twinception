@@ -20,6 +20,16 @@ struct cli_scrollback_style {
 	enum cli_style id;
 };
 
+/* Returns a style entry of a line. The text of the line is in the style
+ * @p id from the byte offset @p offset on.
+ */
+static const_inline struct cli_scrollback_style
+cli_scrollback_style (uint32_t       offset,
+                      enum cli_style id)
+{
+	return (struct cli_scrollback_style){ .offset = offset, .id = id };
+}
+
 static_assert(CLI_SCROLLBACK_BYTES <= UINT32_MAX);
 static_assert(sizeof(struct cli_scrollback_style) == 8);
 
@@ -193,7 +203,7 @@ cli_scrollback_append_part (struct cli_scrollback *scrollback,
 		if (util_grow(line->styles.items, line->styles.cap, line->styles.n + 1))
 			return ENOMEM;
 		/* The new entry is counted only after the text is appended. */
-		line->styles.items[line->styles.n] = (struct cli_scrollback_style){(uint32_t)old, style};
+		line->styles.items[line->styles.n] = cli_scrollback_style((uint32_t)old, style);
 	}
 	if (cstr_view_cat(part, &line->text))
 		return ENOMEM;
