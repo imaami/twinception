@@ -62,7 +62,7 @@ int
 finding_change_external (struct finding_change *c,
                          struct cstr_view       text)
 {
-	if (util_push(c->external, (struct dstr)DSTR_INIT))
+	if (util_push(c->external, dstr(nullptr)))
 		return ENOMEM;
 	return cstr_view_store(text, &c->external.items[c->external.n - 1]);
 }

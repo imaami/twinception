@@ -562,7 +562,7 @@ ledger_restore (struct ledger      *ledger,
 	list_init(&t->mine);
 	t->owner = nullptr;
 	t->loop = loop;
-	t->result = (struct dstr)DSTR_INIT;
+	t->result = dstr(nullptr);
 	t->size = result.len;
 	if (result.len && !dstr_cat_n(&t->result, (char const *)result.ptr, result.len)) {
 		free(t);
