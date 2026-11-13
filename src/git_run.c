@@ -97,8 +97,7 @@ git_run_now (struct git_run_dir const *dir,
 	/* With a name to read, the exit status 1 is no error. */
 	if (e)
 		return e == EIO && end.code == CLD_EXITED && end.status == 1 ? 0 : e;
-	struct span const got = buf_peek(out);
-	struct cstr_view const text = { (char const *)got.ptr, got.len };
+	struct cstr_view const text = cstr_view_span(buf_peek(out));
 	return oid_init_line(oid, text) ? EIO : 0;
 }
 

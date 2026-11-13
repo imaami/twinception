@@ -102,8 +102,7 @@ code_check (struct config *cfg)
 	/* After a successful check the output is the version of libclang and
 	 * the confinement, one line each. Otherwise the first line of the
 	 * output is the reason why the tool is off. */
-	struct span const got = buf_peek(&out);
-	struct cstr_view const text = { (char const *)got.ptr, got.len };
+	struct cstr_view const text = cstr_view_span(buf_peek(&out));
 	struct cstr_view rest = text;
 	struct cstr_view first = text;
 	bool const two_lines = cstr_view_cut(&rest, '\n', &first) && rest.len;

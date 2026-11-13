@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "buf.h"
 #include "cstr_view.h"
 #include "dstr.h"
 
@@ -26,6 +27,14 @@ main (void)
 	assert(!none.data && !none.len && cstr_view_equal(none, empty));
 	struct cstr_view const part = cstr_view_n(counted + 1, 0);
 	assert(part.data == counted + 1 && !part.len && cstr_view_equal(part, empty));
+	unsigned char raw[] = { 'a', '\0', 'b' };
+	struct cstr_view const bytes = cstr_view_span(span(raw, sizeof raw));
+	assert(bytes.data == (char const *)raw && bytes.len == sizeof raw);
+	assert(cstr_view_equal(bytes, text));
+	struct cstr_view const no_bytes = cstr_view_span(span(nullptr, 0));
+	assert(!no_bytes.data && !no_bytes.len && cstr_view_equal(no_bytes, empty));
+	struct cstr_view const tail = cstr_view_span(span(raw + sizeof raw, 0));
+	assert(tail.data == (char const *)raw + sizeof raw && !tail.len);
 	assert(cstr_view_equal(text, CSTR_VIEW("a\0b")));
 	assert(!cstr_view_equal(text, CSTR_VIEW("a")));
 	assert(!cstr_view_equal(text, CSTR_VIEW("a\0c")));

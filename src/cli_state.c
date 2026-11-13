@@ -212,8 +212,7 @@ cli_state_git (struct cli_state  *state,
 static struct cstr_view
 cli_state_output (struct cli_state const *state)
 {
-	struct span const out = buf_peek(&state->output);
-	return (struct cstr_view){ (char const *)out.ptr, out.len };
+	return cstr_view_span(buf_peek(&state->output));
 }
 
 static int

@@ -89,8 +89,7 @@ git_view_shallow (struct git_view *view,
 	int e = fstat(fd, &st) ? errno : !S_ISREG(st.st_mode) ? EINVAL
 	      : buf_read(&data, fd, (size_t)st.st_size, GIT_VIEW_SHALLOW);
 	util_close(&fd);
-	struct span const s = buf_peek(&data);
-	struct cstr_view const text = { (char const *)s.ptr, s.len };
+	struct cstr_view const text = cstr_view_span(buf_peek(&data));
 	for (struct cstr_view left = text, oid; !e && left.len; )
 		if (!cstr_view_cut(&left, '\n', &oid) || oid.len != width || !oid_valid(oid))
 			e = EINVAL;
@@ -106,8 +105,8 @@ git_view_create (struct span metadata,
                  int        *e)
 {
 	*e = EINVAL;
-	struct cstr_view rest = { (char const *)metadata.ptr, metadata.len };
-	struct cstr_view const packed = { (char const *)refs.ptr, refs.len };
+	struct cstr_view rest = cstr_view_span(metadata);
+	struct cstr_view const packed = cstr_view_span(refs);
 	struct cstr_view objects, shallow, format, head = {};
 	if (git_run_path(&rest, &objects) || git_run_path(&rest, &shallow) ||
 	    !cstr_view_cut(&rest, '\n', &format))

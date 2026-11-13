@@ -1264,7 +1264,7 @@ httpd_stream_head (struct stream *s,
                    size_t         length)
 {
 	struct httpd_conn *conn = container_of(s, struct httpd_conn, stream);
-	struct cstr_view const field = { (char const *)fields.ptr, fields.len };
+	struct cstr_view const field = cstr_view_span(fields);
 	if ((conn->req.flags & (REQ_OPEN | REQ_REPLIED)) != REQ_OPEN ||
 	    httpd_conn_head(conn, status, field, nullptr, 0, length))
 		return EPIPE;
@@ -1298,7 +1298,7 @@ httpd_stream_data (struct stream *s,
 	/* In chunks, each is its size in hexadecimal, a CRLF, its bytes and
 	 * another. */
 	char digits[20];
-	struct cstr_view f[] = { {}, { (char const *)bytes.ptr, bytes.len }, {} };
+	struct cstr_view f[] = { {}, cstr_view_span(bytes), {} };
 	if (conn->req.flags & REQ_CHUNKS) {
 		char *size = digits + sizeof digits - 2;
 		for (size_t n = bytes.len; n; n /= 16)

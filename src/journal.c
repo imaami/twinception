@@ -1266,9 +1266,7 @@ journal_setup (struct journal *j,
 	if (!e) {
 		char const *command[] = { "rev-parse", "--is-bare-repository", nullptr };
 		e = journal_git(j, command, -1, nullptr);
-		struct span const out = buf_peek(&j->out);
-		if (!e && !cstr_view_equal((struct cstr_view){ (char const *)out.ptr, out.len },
-		                           CSTR_VIEW("true\n")))
+		if (!e && !cstr_view_equal(cstr_view_span(buf_peek(&j->out)), CSTR_VIEW("true\n")))
 			e = EINVAL;
 	}
 	if (!e)

@@ -882,7 +882,7 @@ mcp_is_legacy (size_t i)
 static bool
 mcp_is_json (struct span type)
 {
-	struct cstr_view media = { (char const *)type.ptr, type.len };
+	struct cstr_view media = cstr_view_span(type);
 	(void)cstr_view_cut(&media, ';', &media);
 	return cstr_view_equal_case(cstr_view_trim_end(media), CSTR_VIEW("application/json"));
 }
@@ -891,7 +891,7 @@ mcp_is_json (struct span type)
 static bool
 mcp_is_metrics (struct span target)
 {
-	struct cstr_view path = { (char const *)target.ptr, target.len };
+	struct cstr_view path = cstr_view_span(target);
 	(void)cstr_view_cut(&path, '?', &path);
 	return cstr_view_equal(path, CSTR_VIEW("/metrics"));
 }
@@ -914,8 +914,7 @@ mcp_method_index (struct cstr_view method)
 static bool
 mcp_accepts_sse (struct span accept)
 {
-	return cstr_view_list_has((struct cstr_view){ (char const *)accept.ptr, accept.len },
-	                          CSTR_VIEW("text/event-stream"));
+	return cstr_view_list_has(cstr_view_span(accept), CSTR_VIEW("text/event-stream"));
 }
 
 /* Seconds since @p start, a loop_clock(). */
@@ -2140,8 +2139,7 @@ mcp_slot_respond (struct mcp_slot *slot,
 		                                       "%zu bytes.", text.len), TOOL_FAILED);
 		return;
 	}
-	mcp_req_log_call(req, failed ? "failed" : "answered",
-	                 (struct cstr_view){ (char const *)text.ptr, text.len }, failed);
+	mcp_req_log_call(req, failed ? "failed" : "answered", cstr_view_span(text), failed);
 	req->phase = PHASE_REPLY;
 	req->off = util_char_start((char const *)text.ptr, text.len, off);
 	int e = mcp_req_tool_open(req, req->agenda ? cstr_view_dstr(&req->agenda->said)
@@ -2518,7 +2516,7 @@ mcp_req_job_done (struct mcp_req *req)
 {
 	struct job *job = req->job;
 	struct span const result = buf_peek(&job->result);
-	struct cstr_view why = { (char const *)result.ptr, result.len };
+	struct cstr_view why = cstr_view_span(result);
 	buf_fini(&job->key);
 	/* ref_put() drops the reference of the message. The request still owns
 	 * the reference of this loop. */
@@ -3635,9 +3633,7 @@ mcp_slot_source (struct mcp_slot          *slot,
 	if (slot->role == ROLE_OWN || !(req->lent & req->mcp->st->lending.of[KIND_FINDINGS]) ||
 	    (src->lines.first == src->lines.last && src->output.len > mcp_slot_window_max(slot)))
 		return 0;
-	struct span const out = mcp_slot_output(slot);
-	slot->read = seen_read_create(src, (struct cstr_view){ (char const *)out.ptr, out.len },
-	                              &e);
+	slot->read = seen_read_create(src, cstr_view_span(mcp_slot_output(slot)), &e);
 	if (slot->read)
 		loop_work(req->mcp->loop, LOOP_COPY, src->output.len);
 	return e;
@@ -5722,8 +5718,7 @@ mcp_slot_done (struct mcp_slot *slot)
 		               job ? CSTR_VIEW("none") : mcp_req_no_args(req), &shown);
 		char text[QUOTED(ERROR_LOG)] = "";
 		if (failed && out.len)
-			mcp_quote(text, sizeof text,
-			          (struct cstr_view){ (char const *)out.ptr, out.len }, ERROR_LOG);
+			mcp_quote(text, sizeof text, cstr_view_span(out), ERROR_LOG);
 		LOG(LOG_VERBOSE, TURN_FMT "%s %s %s after %.1f s (%zu byte%s); arguments %s%s%s",
 		    TURN_ARGS(req), label[slot->role], tool->name.data,
 		    failed ? "failed" : "answered", mcp_elapsed(slot->start), out.len,
@@ -5929,7 +5924,7 @@ mcp_req_result_write (struct mcp_req *req)
 		loop_work(req->mcp->loop, LOOP_COPY, slot->window.at + slot->window.len);
 		e = seen_keep(&req->seen, &req->calls[req->part], &(struct seen_result const){
 			.parts = parts,
-			.out   = { (char const *)out.ptr, out.len },
+			.out   = cstr_view_span(out),
 			.read  = (slot->of ? slot->of : slot)->read,
 			.stamp = { .output = slot->bytes,
 			           .number = mcp_slot_call(slot),
@@ -7132,7 +7127,7 @@ mcp_req_request (struct mcp_req     *req,
 	struct cstr_view version = jb_view(jb_get(meta, "io.modelcontextprotocol/protocolVersion"));
 	size_t const v = mcp_version(version);
 	struct span header = s->ops->field(s, F_VERSION);
-	struct cstr_view field = { (char const *)header.ptr, header.len };
+	struct cstr_view field = cstr_view_span(header);
 	if ((version.data && !mcp_is_legacy(v)) ||
 	    (field.data && !mcp_is_legacy(mcp_version(field)))) {
 		req->flags |= REQ_MODERN;
@@ -7239,9 +7234,7 @@ static void
 mcp_req_parse (struct mcp_req *req)
 {
 	bool whole = !req->parser.off;
-	struct span body = buf_peek(&req->body);
-	int e = mcp_req_slice(req, &req->mcp->pool,
-	                      (struct cstr_view){ (char const *)body.ptr, body.len });
+	int e = mcp_req_slice(req, &req->mcp->pool, cstr_view_span(buf_peek(&req->body)));
 	if (mcp_req_again(req, e))
 		return;
 	buf_fini(&req->body);

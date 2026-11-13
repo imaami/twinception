@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "compat.h"
+#include "cstr_view.h"
 
 /**
  * Binary byte buffer for sockets, TLS and pipes; [head, tail) is readable.
@@ -58,6 +59,13 @@ span (unsigned char *ptr,
       size_t         len)
 {
 	return (struct span){ .ptr = ptr, .len = len };
+}
+
+/** Returns the view of the bytes of the span @p bytes. */
+static force_inline struct cstr_view
+cstr_view_span (struct span bytes)
+{
+	return cstr_view_n((char const *)bytes.ptr, bytes.len);
 }
 
 /** A run of bytes in a buffer or a text by offset. Unlike a span, an

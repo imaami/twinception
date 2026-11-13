@@ -83,8 +83,7 @@ static bool
 git_run_test_out (struct buf const *out,
                   struct cstr_view  text)
 {
-	struct span const got = buf_peek(out);
-	return cstr_view_equal((struct cstr_view){ (char const *)got.ptr, got.len }, text);
+	return cstr_view_equal(cstr_view_span(buf_peek(out)), text);
 }
 
 /* Tests git_run_dir_argv() and git_run_init() for each shape of a struct

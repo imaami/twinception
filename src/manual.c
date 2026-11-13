@@ -558,7 +558,7 @@ manual_fetch_searched (struct child *c)
 	struct cstr_view const name = cstr_view(key);
 	char const *section = key + name.len + 1;
 	struct span const out = buf_peek(&c->out);
-	struct cstr_view rest = { (char const *)out.ptr, out.len };
+	struct cstr_view rest = cstr_view_span(out);
 	loop_work(f->ml->loop, LOOP_PARSE, out.len);
 	struct tool_scratch *scratch = f->ml->scratch;
 	char *const why = scratch->text;
@@ -634,8 +634,7 @@ manual_fetch_found (struct child *c)
 		manual_fetch_fail(f, why);
 		return;
 	}
-	struct span const out = buf_peek(&c->out);
-	struct cstr_view const paths = { (char const *)out.ptr, out.len };
+	struct cstr_view const paths = cstr_view_span(buf_peek(&c->out));
 	struct cstr_view path = paths;
 	if (!cstr_view_cut(&path, '\n', &path) || !cstr_view_starts(path, CSTR_VIEW("/")) ||
 	    memchr(path.data, '\0', path.len)) {

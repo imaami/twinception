@@ -97,8 +97,7 @@ store_open_common (struct store *store,
 		e = git_run_now(&dir, words, how, child_fds(), out, nullptr);
 	if (e)
 		return e;
-	struct span const got = buf_peek(out);
-	struct cstr_view rest = { (char const *)got.ptr, got.len };
+	struct cstr_view rest = cstr_view_span(buf_peek(out));
 	struct cstr_view line;
 	if (git_run_path(&rest, &line) || rest.len)
 		return EIO;
@@ -142,10 +141,8 @@ store_open (struct store *store,
 			/* After EIO, the message contains the last line of the
 			 * output of git. The line is the error of git, or a line
 			 * of output that is not one absolute path. */
-			struct span const got = buf_peek(&out);
-			struct cstr_view because = cstr_view_last_line((struct cstr_view){
-				(char const *)got.ptr, got.len
-			});
+			struct cstr_view because =
+				cstr_view_last_line(cstr_view_span(buf_peek(&out)));
 			if (e != EIO || !because.len)
 				because = cstr_view(strerror(e));
 			util_format(why, len, "cannot resolve the Git common directory: %.*s",
@@ -361,7 +358,7 @@ store_raced (struct span out)
 struct cstr_view
 store_cause (struct span out)
 {
-	struct cstr_view text = { (char const *)out.ptr, out.len };
+	struct cstr_view text = cstr_view_span(out);
 	struct cstr_view line = cstr_view_last_line(text);
 	if (cstr_view_starts(line, CSTR_VIEW("fast-import: dumping crash report to "))) {
 		text.len = (size_t)(line.data - text.data);
@@ -474,7 +471,7 @@ store_checked (struct span  out,
 	size_t lines = 0;
 	bool dir_file = false;
 	enum store_kind kind = STORE_KIND_OTHER;
-	struct cstr_view rest = { (char const *)out.ptr, out.len };
+	struct cstr_view rest = cstr_view_span(out);
 	struct cstr_view line, size = {};
 	struct oid oid;
 	for (; rest.len; ++lines) {
@@ -733,6 +730,6 @@ store_committed (struct span  out,
 	unsigned char *nl = out.len > 1 ? memrchr(out.ptr, '\n', out.len - 1) : nullptr;
 	if (nl)
 		out = span(nl + 1, out.len - (size_t)(nl + 1 - out.ptr));
-	struct cstr_view const line = { (char const *)out.ptr, out.len };
+	struct cstr_view const line = cstr_view_span(out);
 	return oid_init_line(commit, line) ? EIO : 0;
 }

@@ -1551,8 +1551,7 @@ cxi_cache_export (struct cxi_cache *cache,
 	struct buf list = buf();
 	if (!e)
 		e = cxi_cache_git(cache, count, &list, CXI_LIST);
-	struct span const got = buf_peek(&list);
-	struct cstr_view rest = { (char const *)got.ptr, got.len };
+	struct cstr_view rest = cstr_view_span(buf_peek(&list));
 	size_t files = 0;
 	uint64_t bytes = 0;
 	/* The size of a submodule is "-", which util_digits() reads as 0. */

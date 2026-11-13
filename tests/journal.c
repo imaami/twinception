@@ -341,8 +341,7 @@ static bool
 journal_test_out (struct buf const *out,
                   struct cstr_view  text)
 {
-	struct span const got = buf_peek(out);
-	return cstr_view_equal((struct cstr_view){ (char const *)got.ptr, got.len }, text);
+	return cstr_view_equal(cstr_view_span(buf_peek(out)), text);
 }
 
 /* Tests util_parent_open() and journal_unlock() in a new directory of the

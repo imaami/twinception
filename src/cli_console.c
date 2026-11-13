@@ -1710,7 +1710,7 @@ cli_console_read_text_simple (struct cli_console *console,
 {
 	struct buf bytes = buf();
 	int e = cli_console_read_simple(console, &bytes, multiline, prompt);
-	struct cstr_view line = cstr_view_n((char const *)bytes.data, bytes.tail);
+	struct cstr_view line = cstr_view_span(buf_peek(&bytes));
 	if (!e && !jb_is_text(line))
 		e = EILSEQ;
 	if (!e && cstr_view_cat(line, text))

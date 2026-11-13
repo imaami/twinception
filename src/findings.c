@@ -625,8 +625,7 @@ static void
 findings_got_check (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	struct span const out = buf_peek(&call->child->out);
-	struct cstr_view rest = { (char const *)out.ptr, out.len };
+	struct cstr_view rest = cstr_view_span(buf_peek(&call->child->out));
 	struct cstr_view line, size;
 	struct oid id;
 	if (cstr_view_cut(&rest, '\n', &line) && store_kind(line, &id, &size) == STORE_KIND_BLOB)
@@ -659,8 +658,7 @@ findings_got_files (struct mcp_slot *slot)
 	memcpy(want.id.author, b->author, sizeof want.id.author);
 	int e = 0;
 	while (!e && out.len && !(e = notes_file_next(&out, &file))) {
-		uint32_t const n = finding_path_number((struct cstr_view){ (char const *)file.name.ptr,
-		                                                          file.name.len });
+		uint32_t const n = finding_path_number(cstr_view_span(file.name));
 		if (!n)
 			continue;
 		if (own && n > call->last)
@@ -706,7 +704,7 @@ findings_got_read (struct mcp_slot *slot)
 		struct span data = {};
 		e = store_object_next(&out, &blob, &data);
 		if (!e)
-			e = finding_parse(f, (struct cstr_view){ (char const *)data.ptr, data.len });
+			e = finding_parse(f, cstr_view_span(data));
 		if (e == ENOMEM || (!e && finding_id_equal(&f->id, &w->id)))
 			continue;
 		if (call->prompt) {
@@ -1095,8 +1093,8 @@ findings_expanded (struct mcp_slot *slot,
 		}
 		size_t const at = dstr_len(&call->out);
 		e = evidence_expand(ev, &key, &(struct evidence_material){
-			(struct cstr_view){ (char const *)request.ptr, request.len },
-			(struct cstr_view){ (char const *)result.ptr, result.len },
+			cstr_view_span(request),
+			cstr_view_span(result),
 		}, &call->out);
 		if (e || !turn || !findings_stored(ev, blobs))
 			continue;
@@ -1550,7 +1548,7 @@ findings_got_blobs (struct mcp_slot *slot)
 				mcp_slot_tell(slot, unread, TOOL_FAILED);
 				return;
 			}
-			*m[k] = (struct cstr_view){ (char const *)data.ptr, data.len };
+			*m[k] = cstr_view_span(data);
 		}
 	}
 	findings_cite_end(slot, material);
@@ -1981,8 +1979,7 @@ findings_got_calls (struct mcp_slot *slot)
 		mcp_slot_tell(slot, unread, TOOL_FAILED);
 		return;
 	}
-	struct span const out = buf_peek(&c->out);
-	struct cstr_view rest = child_ok(c) ? (struct cstr_view){ (char const *)out.ptr, out.len }
+	struct cstr_view rest = child_ok(c) ? cstr_view_span(buf_peek(&c->out))
 	                                    : (struct cstr_view){};
 	struct cstr_view const ask = hexid_view(&mcp_slot_member(slot)->ask);
 	char digits[16];

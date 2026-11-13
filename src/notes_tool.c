@@ -903,9 +903,9 @@ static void
 notes_tool_stated (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	struct span const out = child_ok(call->child) ? buf_peek(&call->child->out)
-	                                              : span(nullptr, 0);
-	struct cstr_view rest = { (char const *)out.ptr, out.len }, added, removed;
+	struct cstr_view rest = child_ok(call->child) ? cstr_view_span(buf_peek(&call->child->out))
+	                                              : cstr_view(nullptr);
+	struct cstr_view added, removed;
 	uint64_t a, r;
 	int e = cstr_view_cut(&rest, '\t', &added) && cstr_view_cut(&rest, '\t', &removed) &&
 	        !util_number(added.data, added.len, UINT64_MAX, &a) &&
@@ -1061,7 +1061,7 @@ notes_tool_history (struct mcp_slot *slot,
 	while (notes_entry_before(out, &cursor, &entry)) {
 		char const *name = (char const *)entry.name.ptr;
 		/* Git also matches descendants if this path was once a directory. */
-		if (filter.len && !cstr_view_equal(filter, cstr_view_n(name, entry.name.len)))
+		if (filter.len && !cstr_view_equal(filter, cstr_view_span(entry.name)))
 			continue;
 		char when[WHEN];
 		size_t const w = notes_tool_when(when, sizeof when, entry.time, when_text);
@@ -1424,7 +1424,7 @@ notes_tool_got_diff (struct mcp_slot *slot)
 	int e = notes_tool_head(call);
 	if (!e && !dstr_printf(d, "%s\nfrom %s\nto %s\n\n", r->file.data, r->from.hex, r->to.hex))
 		e = ENOMEM;
-	struct cstr_view const diff = { (char const *)out.ptr, out.len };
+	struct cstr_view const diff = cstr_view_span(out);
 	if (!e)
 		e = !diff.len ? cstr_view_cat(CSTR_VIEW("No differences.\n"), call->text)
 		  : notes_tool_show(d, diff);
@@ -1457,7 +1457,7 @@ notes_tool_got_grep (struct mcp_slot *slot)
 	}
 	size_t const skip = oid_len(&call->revision.from) + 1;
 	struct span const out = buf_peek(&c->out);
-	struct cstr_view rest = { (char const *)out.ptr, out.len }, line;
+	struct cstr_view rest = cstr_view_span(out), line;
 	dstr_auto found = DSTR_INIT;
 	int e = 0;
 	while (!e && cstr_view_cut(&rest, '\n', &line)) {
@@ -1515,7 +1515,7 @@ notes_tool_got_note (struct mcp_slot *slot)
 		notes_tool_got_attach(slot, text, &id);
 		return;
 	}
-	struct cstr_view const body = { (char const *)text.ptr, text.len };
+	struct cstr_view const body = cstr_view_span(text);
 	(void)mcp_slot_shows(slot, &call->book);
 	int e = 0;
 	if (call->fetch & FETCH_REVISION) {
@@ -1562,7 +1562,7 @@ notes_tool_got_attach (struct mcp_slot  *slot,
                        struct oid const *id)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct cstr_view body = { (char const *)text.ptr, text.len };
+	struct cstr_view body = cstr_view_span(text);
 	size_t const valid = jb_text_len(body);
 	bool const binary = valid < body.len;
 	size_t kept = 0;
@@ -1641,7 +1641,7 @@ notes_tool_prompt_list (struct mcp_slot *slot)
 	      ? 0 : ENOMEM;
 	if (!e)
 		e = notes_tool_history(slot, buf_peek(&c->out), c->end.flags & CHILD_CUT, &newest);
-	struct cstr_view const name = { (char const *)newest.ptr, newest.len };
+	struct cstr_view const name = cstr_view_span(newest);
 	/* The name comes from git. git reads the note only if add would accept
 	 * the name as it is. */
 	struct cstr_view checked = name;
@@ -1682,7 +1682,7 @@ notes_tool_newest (struct mcp_slot *slot)
 	struct child const *c = call->child;
 	struct span text = {};
 	int r = child_ok(c) ? notes_read_out(buf_peek(&c->out), &text, nullptr) : EIO;
-	struct cstr_view body = { (char const *)text.ptr, text.len };
+	struct cstr_view body = cstr_view_span(text);
 	size_t len = text.len;
 	/* A note that is not UTF-8 text goes into the prompt as its view. The
 	 * function makes only the start of the view, a little more than the
@@ -2030,7 +2030,7 @@ notes_tool_got_copy (struct mcp_slot *slot,
 		return;
 	}
 	struct cstr_view const to = util_text_view(&call->name);
-	struct cstr_view const bytes = { (char const *)text.ptr, text.len };
+	struct cstr_view const bytes = cstr_view_span(text);
 	int e = store_part_file(&call->part, &call->file, to, bytes);
 	if (!e && fetch & FETCH_COPY)
 		e = dstr_printf(call->text, "Copied note %s of notebook %s at %s into your notebook "

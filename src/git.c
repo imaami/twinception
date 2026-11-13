@@ -768,7 +768,7 @@ static int
 git_pin_resolve (struct git_pin *pin,
                  struct span     out)
 {
-	struct cstr_view text = { (char const *)out.ptr, out.len };
+	struct cstr_view text = cstr_view_span(out);
 	struct oid *roots = pin->roots;
 	for (size_t i = 0; i < pin->n_roots; ++i)
 		if (oid_init_field(&roots[i], &text, '\n') || oid_len(&roots[i]) != oid_len(&roots[0]))
@@ -1416,7 +1416,7 @@ git_read_scan (struct git_read *read,
                struct span      blob,
                struct loop     *loop)
 {
-	struct cstr_view const text = { (char const *)blob.ptr, blob.len };
+	struct cstr_view const text = cstr_view_span(blob);
 	for (struct cstr_view line; loop_lines_next(&read->scan, loop, text, &line); )
 		git_read_line(read, (size_t)(line.data - text.data), line.len);
 }
@@ -1731,7 +1731,7 @@ git_grep_copy (struct git_call *call,
 		if (room < LINE_COST + binary.len + 4)
 			return EAGAIN;
 		room -= LINE_COST;
-		struct cstr_view text = { (char const *)left.ptr, left.len };
+		struct cstr_view text = cstr_view_span(left);
 		size_t taken;
 		if (call->phase == GIT_LINE) {
 			call->phase = GIT_COPY;

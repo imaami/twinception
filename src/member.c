@@ -352,8 +352,7 @@ member_records_parse (struct member_records *r)
 	r->width = 0;
 	r->session = r->name = r->format = (struct cstr_view){};
 	size_t records = 0;
-	struct span const out = buf_peek(&r->out);
-	struct cstr_view rest = { (char const *)out.ptr, out.len };
+	struct cstr_view rest = cstr_view_span(buf_peek(&r->out));
 	while (rest.len) {
 		struct cstr_view f[FIELDS];
 		for (size_t i = 0; i < FIELDS; ++i)

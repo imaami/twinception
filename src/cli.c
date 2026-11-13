@@ -57,7 +57,7 @@ cli_read_file (struct autocomplete_file const *files,
 	int e = fd < 0 ? errno : buf_read(&bytes, fd, 0, CLI_LIMIT);
 	util_close(&fd);
 	struct span const s = buf_peek(&bytes);
-	struct cstr_view const contents = { (char const *)s.ptr, s.len };
+	struct cstr_view const contents = cstr_view_span(s);
 	e = e == ENOBUFS ? cli_error_set(error, EFBIG, "Prompt file exceeds the %d MiB client limit",
 	                                 CLI_LIMIT >> 20)
 	  : e ? cli_error_set(error, e, "%s: %s", dstr_get(&expanded), strerror(e))

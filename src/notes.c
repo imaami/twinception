@@ -81,8 +81,7 @@ notes_revision_next (struct notes_revision *revision,
 	struct oid const *const tip = &revision->tip;
 	switch (revision->phase) {
 	case REVISION_HEAD:
-		if (oid_init_line(&revision->tip,
-		                  (struct cstr_view){ (char const *)out.ptr, out.len }))
+		if (oid_init_line(&revision->tip, cstr_view_span(out)))
 			return EIO;
 		if (!oid_len(&revision->from))
 			revision->from = *tip;
