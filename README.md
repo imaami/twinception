@@ -694,6 +694,50 @@ that is written in another file than the enum, such as an included file of
 list rows, starts with the path and the line in that file:
 `src/list.def:2  LIST_TWO = 2`.
 
+A macro expansion can write the names of enumerators, as the expansion of
+an X-macro list does. The line of such an enumerator is the line where the
+macro is used in the file, and that line does not contain the name. A line
+before the rows of the enumerators that one expansion writes contains the
+macro that is used at that line, the place and the last line of the
+definition of the macro, and the number of the enumerators. This is
+`describe` of `enum member_kind` in `src/member_name.h`:
+
+```text
+enum member_kind: uint8_t, 3 enumerators
+defined src/member_name.h:33
+   line  enumerator = value
+line 35 is the expansion of the macro MEMBER_KIND_LIST (src/member_name.h:29-31). The expansion writes the next 2 enumerators.
+     35  MEMBER_PERSON = 0
+     35  MEMBER_AGENT = 1
+     37  MEMBER_KINDS = 2
+src/member_name.h lines 33 to 38 of 109:
+33	enum member_kind : uint8_t {
+34	#define MEMBER_KIND_ENUM(id, ...) MEMBER_##id,
+35		MEMBER_KIND_LIST(MEMBER_KIND_ENUM)
+36	#undef MEMBER_KIND_ENUM
+37		MEMBER_KINDS
+38	};
+```
+
+The macro is found as the macro of a call is (below): for a macro that is
+passed by name, as `MEMBER_KIND_ENUM` is, the macro is the list. The
+definition of a list can use another list, and the line contains only the
+list that is used in the file. An enumerator that is written as a macro
+argument, as `B` is in `PAIR(A, B)`, is on the line of the argument and is
+not counted.
+
+`describe` of any name that a macro expansion writes prints the same line
+without the number, before the numbered lines. The answer for an enumerator
+of an enum without a name contains the line once, before the rows of the
+expansion. This is the end of `describe` of `MEMBER_AGENT`:
+
+```text
+defined src/member_name.h:35
+line 35 is the expansion of the macro MEMBER_KIND_LIST (src/member_name.h:29-31).
+src/member_name.h line 35 of 109:
+35		MEMBER_KIND_LIST(MEMBER_KIND_ENUM)
+```
+
 `describe` of a function lists the calls of the function, one row per
 callee: the place of the first call, the lines of the later calls, the
 called function and the place of the first declaration of the called

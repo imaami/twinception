@@ -10743,6 +10743,10 @@ enums_local (void)
 \tenum { ENUMS_INNER = 2, ENUMS_INNER_NEXT };
 \treturn ENUMS_INNER + ENUMS_FIRST;
 }
+
+#define ENUMS_COUNT(name) \\
+        int enums_##name##_count = 0
+ENUMS_COUNT(red);
 """
 
 
@@ -11383,8 +11387,12 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # enumerator without an initializer is the value before plus 1. A
         # value is signed or unsigned as the integer type of the enum is,
         # also a value of 64 bits, and a value of more bits is not printed.
-        # The row of an enumerator that is written in an included file
-        # starts with the path and the line of that file.
+        # A line before the rows of the enumerators that one macro
+        # expansion writes contains the macro that is used in the file,
+        # the lines of the definition of the macro, and the number of these
+        # enumerators. An enumerator that is written as a macro argument is
+        # none of them. The row of an enumerator that is written in an
+        # included file starts with the path and the line of that file.
         def enums(error=False, **arguments):
             return call(ai, error=error, repo="proj", action="describe", path="src/enums.c",
                         **arguments)
@@ -11409,14 +11417,23 @@ def check_code_describe(binary, up, call, head, d, cdb):
                  ((22, "ENUMS_READ = 1"), (23, "ENUMS_WRITE = 16"),
                   (24, "ENUMS_HIGH = 2147483648"), (25, "ENUMS_MASK = 2147483665")), (21, 26)),
                 ("enums_color", "uint8_t, 8 enumerators\ndefined src/enums.h:43",
-                 ((44, "ENUMS_NONE = 0"), (46, "ENUMS_RED = 1"), (46, "ENUMS_GREEN = 2"),
-                  (46, "ENUMS_BLUE = 3"), (48, "ENUMS_FORTY = 40"), (48, "ENUMS_LEFT = 41"),
+                 ((44, "ENUMS_NONE = 0"),
+                  "line 46 is the expansion of the macro ENUMS_ALL_LIST (src/enums.h:38-39). "
+                  "The expansion writes the next 3 enumerators.",
+                  (46, "ENUMS_RED = 1"), (46, "ENUMS_GREEN = 2"), (46, "ENUMS_BLUE = 3"),
+                  "line 48 is the expansion of the macro ENUMS_FIXED (src/enums.h:41). "
+                  "The expansion writes the next 1 enumerator.",
+                  (48, "ENUMS_FORTY = 40"), (48, "ENUMS_LEFT = 41"),
                   (48, "ENUMS_RIGHT = 42"), (49, "ENUMS_COLORS = 43")), (43, 50)),
                 ("enums_huge", "unsigned __int128, 1 enumerator\ndefined src/enums.h:52",
                  ((52, "ENUMS_HUGE = a value of more than 64 bits"),), (52, 52)),
                 ("enums_inc", "unsigned int, 4 enumerators\ndefined src/enums.h:54",
                  ((55, "ENUMS_INC_NONE = 0"),
+                  "src/enums.def:1 is the expansion of the macro ENUMS_INC (src/enums.h:56). "
+                  "The expansion writes the next 1 enumerator.",
                   "src/enums.def:1  ENUMS_INC_ONE = 1",
+                  "src/enums.def:2 is the expansion of the macro ENUMS_INC (src/enums.h:56). "
+                  "The expansion writes the next 1 enumerator.",
                   "src/enums.def:2  ENUMS_INC_TWO = 2",
                   (59, "ENUMS_INC_END = 3")), (54, 60))):
             text = enums(name=f"enum {name}")
@@ -11489,7 +11506,7 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "   line  enumerator = value\n"
             "      6  ENUMS_INNER = 2\n"
             "      6  ENUMS_INNER_NEXT = 3\n"
-            "src/enums.c line 6 of 8:\n"
+            "src/enums.c line 6 of 12:\n"
             "6\t\tenum { ENUMS_INNER = 2, ENUMS_INNER_NEXT };\n"), text
         text = enums(name="ENUMS_FIVE")
         assert text == (
@@ -11497,6 +11514,51 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "enumerator ENUMS_FIVE of enum enums_kind: 5\n"
             "defined src/enums.h:6\n"
             f"src/enums.h line 6 of {total}:\n" + numbered(6, 6)), text
+        # A name that a macro expansion writes: the line of the name is the
+        # line where the macro is used in the file, and a line before the
+        # numbered lines contains that macro and the lines of the definition
+        # of the macro. A name that is written as a macro argument is on
+        # the line of the name. The answer for an enumerator of an enum
+        # without a name contains the macro once, before the rows of the
+        # expansion.
+        for name, summary, expansion, line in (
+                ("ENUMS_GREEN", "enumerator ENUMS_GREEN of enum enums_color: 2",
+                 "line 46 is the expansion of the macro ENUMS_ALL_LIST (src/enums.h:38-39).\n",
+                 46),
+                ("ENUMS_FORTY", "enumerator ENUMS_FORTY of enum enums_color: 40",
+                 "line 48 is the expansion of the macro ENUMS_FIXED (src/enums.h:41).\n", 48),
+                ("ENUMS_LEFT", "enumerator ENUMS_LEFT of enum enums_color: 41", "", 48)):
+            text = enums(name=name)
+            assert text == (
+                f"{where}enumerator {name} in the translation unit.]\n{summary}\n"
+                f"defined src/enums.h:{line}\n{expansion}"
+                f"src/enums.h line {line} of {total}:\n" + numbered(line, line)), text
+        text = enums(name="ENUMS_ANY_GREEN")
+        assert text == (
+            f"{where}enumerator ENUMS_ANY_GREEN in the translation unit.]\n"
+            "enumerator ENUMS_ANY_GREEN of enum (unnamed at src/enums.h:62): 1\n"
+            "defined src/enums.h:64\n"
+            "enum (unnamed at src/enums.h:62): unsigned int, 2 enumerators\n"
+            "   line  enumerator = value\n"
+            "line 64 is the expansion of the macro ENUMS_COLOR_LIST (src/enums.h:35-37). "
+            "The expansion writes the next 2 enumerators.\n"
+            "     64  ENUMS_ANY_RED = 0\n"
+            "     64  ENUMS_ANY_GREEN = 1\n"
+            f"src/enums.h line 64 of {total}:\n" + numbered(64, 64)), text
+        text = enums(name="ENUMS_INC_TWO")
+        assert text == (
+            f"{where}enumerator ENUMS_INC_TWO in the translation unit.]\n"
+            "enumerator ENUMS_INC_TWO of enum enums_inc: 2\n"
+            "defined src/enums.def:2\n"
+            "line 2 is the expansion of the macro ENUMS_INC (src/enums.h:56).\n"
+            "src/enums.def line 2 of 2:\n2\tENUMS_INC(TWO)\n"), text
+        text = enums(name="enums_red_count")
+        assert text == (
+            f"{where}variable enums_red_count in the translation unit.]\n"
+            "variable enums_red_count: int\n"
+            "defined src/enums.c:12\n"
+            "line 12 is the expansion of the macro ENUMS_COUNT (src/enums.c:10-11).\n"
+            "src/enums.c line 12 of 12:\n12\tENUMS_COUNT(red);\n"), text
         assert enums(error=True, name="enums_kind.x") == \
             "No struct or union type named enums_kind in the translation unit of src/enums.c."
         # A macro, and its value at the use on a given line. A local

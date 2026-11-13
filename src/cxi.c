@@ -965,6 +965,25 @@ cxi_macro (CXTranslationUnit tu,
 	                                                              : clang_getNullCursor();
 }
 
+/* Appends the end of the sentence about a name that an expansion of
+ * @p macro writes, without a newline: the macro, and the place and the
+ * last line of the definition of the macro. The caller appends the place
+ * of the expansion before.
+ */
+static void
+cxi_out_expansion (struct cxi_out *out,
+                   CXCursor        macro)
+{
+	CXSourceLocation const at = clang_getCursorLocation(macro);
+	unsigned const last = cxi_line(clang_getRangeEnd(clang_getCursorExtent(macro)));
+	cxi_out_printf(out, " is the expansion of the macro ");
+	cxi_out_clang(out, clang_getCursorSpelling(macro));
+	cxi_out_place(out, " (", at, "");
+	if (last > cxi_line(at))
+		cxi_out_printf(out, "-%u", last);
+	cxi_out_printf(out, ").");
+}
+
 /* Writes the first symbol named @p name on the line to @p *c. */
 static int
 cxi_lookup_line (struct cxi *x,
@@ -1202,8 +1221,49 @@ cxi_out_enum_place (struct cxi_out *out,
 		cxi_out_place(out, "", at, "");
 }
 
+/* Appends the line before the rows of the enumerators that one macro
+ * expansion writes, from the enumerator @p i of the @p n enumerators
+ * @p kids on: the place where the macro is used, the macro, and the number
+ * of these enumerators. One macro writes the names at one line. Returns
+ * the index after the last of these enumerators, or @p i + 1 if no macro
+ * writes the name of the enumerator @p i.
+ */
+static size_t
+cxi_enum_run (struct cxi            *x,
+              struct cxi_out        *rows,
+              struct cxi_list const *kids,
+              size_t                 n,
+              size_t                 i,
+              CXFile                 file)
+{
+	CXSourceLocation const at = clang_getCursorLocation(kids->items[i]);
+	CXCursor const macro = cxi_macro(x->tu, at);
+	if (clang_Cursor_isNull(macro))
+		return i + 1;
+	CXFile in;
+	unsigned line;
+	size_t end = i + 1;
+	clang_getFileLocation(at, &in, &line, nullptr, nullptr);
+	for (; end < n; ++end) {
+		CXSourceLocation const next = clang_getCursorLocation(kids->items[end]);
+		CXFile next_in;
+		unsigned next_line;
+		clang_getFileLocation(next, &next_in, &next_line, nullptr, nullptr);
+		if (next_line != line || !clang_File_isEqual(next_in, in) ||
+		    !clang_equalCursors(cxi_macro(x->tu, next), macro))
+			break;
+	}
+	cxi_out_enum_place(rows, kids->items[i], file, "line ", 0);
+	cxi_out_expansion(rows, macro);
+	cxi_out_printf(rows, " The expansion writes the next %zu enumerator%s.\n", end - i,
+	               util_s(end - i));
+	return end;
+}
+
 /* Appends the integer type and the number of enumerators of the enum @p c
  * to @p head, and a row for each enumerator, at most CXI_ROWS, to @p rows.
+ * A line before the rows of the enumerators that one macro expansion
+ * writes contains the macro and the number of these enumerators.
  */
 static void
 cxi_enum (struct cxi     *x,
@@ -1228,8 +1288,11 @@ cxi_enum (struct cxi     *x,
 	cxi_out_clang(head, clang_getTypeSpelling(type));
 	cxi_out_printf(head, ", %zu enumerator%s\n", n, util_s(n));
 	cxi_out_printf(rows, "   line  enumerator = value\n");
-	for (size_t i = 0; i < shown; ++i) {
+	/* The enumerators from i to end - 1 are those of one expansion. */
+	for (size_t i = 0, end = 0; i < shown; ++i) {
 		CXCursor const e = kids.items[i];
+		if (i == end)
+			end = cxi_enum_run(x, rows, &kids, n, i, file);
 		cxi_out_enum_place(rows, e, file, "", 7);
 		cxi_out_printf(rows, "  ");
 		cxi_out_clang(rows, clang_getCursorSpelling(e));
@@ -1247,9 +1310,10 @@ cxi_enum (struct cxi     *x,
  * For a record, an enum and a typedef of one, appends the size of the
  * record or the number of enumerators, and the layout or the enumerators
  * to @p rows. For an enumerator of an enum without a name, appends the
- * enum, the number of enumerators and the enumerators to @p rows.
+ * enum, the number of enumerators and the enumerators to @p rows, and
+ * returns true: these rows contain the macro that writes the enumerator.
  */
-static void
+static bool
 cxi_summary (struct cxi     *x,
              struct cxi_out *rows,
              CXCursor        c)
@@ -1287,7 +1351,7 @@ cxi_summary (struct cxi     *x,
 	}
 	if (clang_Cursor_isNull(tag) || !(alias || is_tag || listed)) {
 		cxi_out_printf(&x->out, "\n");
-		return;
+		return false;
 	}
 	if (!is_tag)
 		cxi_out_printf(&x->out, "\n");
@@ -1299,6 +1363,7 @@ cxi_summary (struct cxi     *x,
 		cxi_enum(x, listed ? rows : &x->out, rows, tag);
 	else
 		cxi_layout(x, rows, clang_getCursorType(tag));
+	return listed;
 }
 
 /* How the program evaluates an expression of a function. The state of an
@@ -1935,10 +2000,11 @@ cxi_describe (struct cxi *x)
 		cxi_out_name(&x->out, c);
 	cxi_out_printf(&x->out, " in the translation unit.]\n");
 	struct cxi_out rows = cxi_out(x->out.tree);
+	bool listed = false;
 	if (k == CXCursor_FieldDecl)
 		cxi_member(x, shown);
 	else
-		cxi_summary(x, &rows, shown);
+		listed = cxi_summary(x, &rows, shown);
 	if (!defined) {
 		cxi_out_place(&x->out, "declared ", clang_getCursorLocation(first), "\n");
 		cxi_out_printf(&x->out, "not defined in the translation unit\n");
@@ -1952,6 +2018,14 @@ cxi_describe (struct cxi *x)
 	cxi_out_put(&x->out, dstr_get(&rows.text), dstr_len(&rows.text));
 	if (k == CXCursor_MacroDefinition && x->line)
 		cxi_value(x, column);
+	/* The rows of the enum of an enumerator contain the macro. */
+	CXSourceLocation const at = clang_getCursorLocation(shown);
+	CXCursor const macro = listed ? clang_getNullCursor() : cxi_macro(x->tu, at);
+	if (!clang_Cursor_isNull(macro)) {
+		cxi_out_printf(&x->out, "line %u", cxi_line(at));
+		cxi_out_expansion(&x->out, macro);
+		cxi_out_printf(&x->out, "\n");
+	}
 	cxi_declaration(x, shown);
 	x->out.e = x->out.e ? x->out.e : rows.e;
 	dstr_cleanup(&rows.text);
