@@ -1513,6 +1513,21 @@ struct cxi_cache {
 	int                state;
 };
 
+/* Returns the cache of a call before cxi_cache_open() opens the directory
+ * and the files. The two paths are empty, and every descriptor is -1.
+ * @p git is the git command line up to the subcommand and a nullptr.
+ * @p deadline is the deadline of the git processes, a loop_clock() time.
+ */
+static force_inline struct cxi_cache
+cxi_cache (char const *const *git,
+           uint64_t           deadline)
+{
+	return (struct cxi_cache){
+		.dir = DSTR_INIT, .tree = DSTR_INIT, .git = git, .deadline = deadline,
+		.fds = child_fds(), .fd = -1, .state = -1,
+	};
+}
+
 /* Runs git with @p words and the lock kept open, as child_cmd_run() runs
  * a command. The output replaces the content of @p out, up to @p max
  * bytes, or goes to /dev/null if @p out is nullptr. Returns EIO for an
@@ -1764,11 +1779,7 @@ cxi_run (struct cxi         *x,
 	int e = cxi_valid(x);
 	if (e)
 		return e;
-	struct cxi_cache cache = {
-		.dir = DSTR_INIT, .tree = DSTR_INIT, .git = git,
-		.deadline = deadline > CXI_EARLY ? deadline - CXI_EARLY : 1,
-		.fds = child_fds(), .fd = -1, .state = -1,
-	};
+	struct cxi_cache cache = cxi_cache(git, deadline > CXI_EARLY ? deadline - CXI_EARLY : 1);
 	struct dstr words = DSTR_INIT;
 	/* clang's names are compared with the tree in normal form. */
 	if (cdb_norm(&cache.dir, cstr_view(nullptr), key[CXI_KEY_CACHE]) ||
