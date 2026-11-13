@@ -216,7 +216,7 @@ static void autocomplete_files(void)
 	struct cstr_view const command = CSTR_VIEW("/read ");
 	struct autocomplete_match const *matches = nullptr;
 	size_t count = 0;
-	assert(!autocomplete_file_complete(files, (struct cstr_view){nullptr, 0}, 0,
+	assert(!autocomplete_file_complete(files, cstr_view(nullptr), 0,
 	                                   command, &matches, &count));
 	assert(!count);
 	struct cstr_view invalid = CSTR_VIEW("/read bad\xc0\xaf");
@@ -227,7 +227,7 @@ static void autocomplete_files(void)
 	assert(autocomplete_file_complete(files, invalid, invalid.len, command,
 	                                  &matches, &count) == EINVAL);
 	assert(!count);
-	assert(autocomplete_file_complete(files, command, command.len, (struct cstr_view){},
+	assert(autocomplete_file_complete(files, command, command.len, cstr_view(nullptr),
 	                                  &matches, &count) == EINVAL);
 	struct cstr_view const tilde = CSTR_VIEW("/read ~");
 	assert(!autocomplete_file_complete(files, tilde, tilde.len, command, &matches, &count));

@@ -119,7 +119,7 @@ test_id (void)
 	CHECK(finding_id_parse(&id, cstr_view(name)) == EINVAL && !*id.author);
 	CHECK(!finding_id_parse(&id, cstr_view(name + 1)) && strlen(id.author) == UTIL_WORD_MAX);
 	/* A view without bytes, and a text with a NUL inside. */
-	CHECK(finding_id_parse(&id, (struct cstr_view){}) == EINVAL && !*id.author);
+	CHECK(finding_id_parse(&id, cstr_view(nullptr)) == EINVAL && !*id.author);
 	CHECK(finding_id_parse(&id, cstr_view_n("bro#5\0/1", 8)) == EINVAL);
 	CHECK(finding_id_parse(&id, cstr_view_n("bro\0#5", 6)) == EINVAL);
 	/* The text ends where the view ends. */

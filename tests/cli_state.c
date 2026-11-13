@@ -355,7 +355,7 @@ check_default (char const *xdg,
 {
 	assert(!setenv("XDG_STATE_HOME", xdg, 1) && !setenv("HOME", home, 1));
 	int e = 0;
-	struct cli_state *state = cli_state_create((struct cstr_view){}, identity, nullptr, &e);
+	struct cli_state *state = cli_state_create(cstr_view(nullptr), identity, nullptr, &e);
 	assert(state && !e);
 	cli_state_destroy(&state);
 	struct stat status;

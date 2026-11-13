@@ -267,7 +267,7 @@ test_input (void)
 	memset(name, 'n', sizeof name);
 	CHECK(store_part_file(&part, &files, cstr_view_n(name, STORE_PATH + 1),
 	                      CSTR_VIEW("")) == EINVAL);
-	CHECK(store_part_delete(&files, (struct cstr_view){}) == EINVAL);
+	CHECK(store_part_delete(&files, cstr_view(nullptr)) == EINVAL);
 	CHECK(store_part_delete(&files, cstr_view_n(name, STORE_PATH + 1)) == EINVAL);
 	CHECK(store_part_delete(nullptr, CSTR_VIEW("d")) == EINVAL);
 	/* A blob part names the blob by its ID and has no data. */
@@ -584,7 +584,7 @@ test_check (void)
 	SAME(s.ptr, s.len, A "\n" A ":x\n");
 	CHECK(store_check_input(nullptr, "r", CSTR_VIEW("x")) == EINVAL);
 	CHECK(store_check_input(&in, nullptr, CSTR_VIEW("x")) == EINVAL);
-	CHECK(store_check_input(&in, "r", (struct cstr_view){}) == EINVAL);
+	CHECK(store_check_input(&in, "r", cstr_view(nullptr)) == EINVAL);
 	buf_fini(&in);
 
 	/* A missing path can be added, also in a missing directory, in a

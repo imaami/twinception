@@ -96,7 +96,7 @@ static int cli_input_run(struct cli_input_driver *driver, int records, bool mult
 			return cli_input_record(records, "STOP ", cstr_view_dstr(&signum));
 		}
 		if (e || eof)
-			return e ? e : cli_input_record(records, "EOF", (struct cstr_view){});
+			return e ? e : cli_input_record(records, "EOF", cstr_view(nullptr));
 		e = cli_input_record(records, "LINE ", cstr_view_dstr(&text));
 		if (e)
 			return e;

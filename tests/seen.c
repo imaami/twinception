@@ -364,7 +364,7 @@ test_read (void)
 	char name[SEEN_NAME_MAX + 1];
 	memset(name, 'n', sizeof name);
 	bad = src;
-	bad.repo = (struct cstr_view){};
+	bad.repo = cstr_view(nullptr);
 	CHECK(read_error(&bad, o) == EINVAL);
 	bad.repo = cstr_view_n(name, 0);
 	CHECK(read_error(&bad, o) == EINVAL);
@@ -380,7 +380,7 @@ test_read (void)
 	CHECK(read_error(&bad, o) == EINVAL);
 	bad.path = cstr_view_n("a\0b", 3);
 	CHECK(read_error(&bad, o) == EINVAL);
-	bad.path = (struct cstr_view){};
+	bad.path = cstr_view(nullptr);
 	CHECK(read_error(&bad, o) == EINVAL);
 	/* Line numbers that do not satisfy 1 <= first <= last <= total. A
 	 * total of 0 is unknown. */
@@ -418,7 +418,7 @@ test_read (void)
 	bad.output = src.output;
 	bad.lines.last = 6;
 	CHECK(read_error(&bad, o) == EINVAL);
-	CHECK(read_error(&src, (struct cstr_view){}) == EINVAL);
+	CHECK(read_error(&src, cstr_view(nullptr)) == EINVAL);
 	/* The last line can end without a newline. */
 	bad.lines.last = 5;
 	bad.output.len = 9 * 3 - 1;
@@ -549,7 +549,7 @@ test_keep (void)
 	 * offset of the window in the whole output. */
 	request_of(&request, 10);
 	parts[0] = cstr_view_n(o.data + 4, 9);
-	parts[2] = parts[3] = (struct cstr_view){};
+	parts[2] = parts[3] = cstr_view(nullptr);
 	r = (struct seen_result){ .parts = parts, .out = o, .read = read, .at = 5000, .skip = 4,
 	                          .stamp = { .output = 6000, .number = 8, .turn = 4 } };
 	CHECK(!seen_keep(&seen, &request, &r));
@@ -561,7 +561,7 @@ test_keep (void)
 	/* A call without lines, identifiers or notices. */
 	request_of(&request, 10);
 	parts[0] = CSTR_VIEW("plain");
-	parts[1] = (struct cstr_view){};
+	parts[1] = cstr_view(nullptr);
 	r = (struct seen_result){ .parts = parts, .out = parts[0],
 	                          .stamp = { .output = 5, .number = 9, .turn = 4, .tool = TOOL_MAX } };
 	CHECK(!seen_keep(&seen, &request, &r));
@@ -572,7 +572,7 @@ test_keep (void)
 	/* An empty output without data. seen_keep() copies FLAG_FAILED and no
 	 * other flag of the stamp, so the call is not too large. */
 	request_of(&request, 10);
-	parts[0] = (struct cstr_view){};
+	parts[0] = cstr_view(nullptr);
 	parts[1] = CSTR_VIEW("note");
 	r = (struct seen_result){ .parts = parts,
 	                          .stamp = { .number = 10, .flags = (uint16_t)~FLAG_FAILED } };
@@ -592,7 +592,7 @@ test_keep (void)
 	parts[0] = cstr_view_n(abc.data + 2, 2);
 	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 2 };
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
-	parts[0] = (struct cstr_view){};
+	parts[0] = cstr_view(nullptr);
 	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 4 };
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	/* A window that is not the bytes of out from skip on. */
@@ -602,7 +602,7 @@ test_keep (void)
 	parts[0] = CSTR_VIEW("ab");
 	r = (struct seen_result){ .parts = parts, .out = abc };
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
-	parts[0] = (struct cstr_view){};
+	parts[0] = cstr_view(nullptr);
 	r = (struct seen_result){ .parts = parts, .out = { nullptr, 2 } };
 	CHECK(seen_keep(&seen, &request, &r) == EFAULT);
 	r = (struct seen_result){ .out = abc };

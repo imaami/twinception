@@ -197,7 +197,7 @@ test_lines (void)
 	struct loop l = loop();
 	struct cstr_view const text = CSTR_VIEW("ab\ncd\n\nlast");
 	struct loop_lines lines = {};
-	struct cstr_view line;
+	struct cstr_view line = {};
 	l.work[LOOP_PARSE] = loop_bound[LOOP_PARSE] - 4;
 	CHECK(loop_lines_next(&lines, &l, text, &line) && cstr_view_equal(line, CSTR_VIEW("ab")));
 	CHECK(!loop_lines_next(&lines, &l, text, &line) && lines.at == 4 && lines.start == 3);
@@ -214,7 +214,7 @@ test_lines (void)
 	      cstr_view_equal(line, CSTR_VIEW("x")));
 	CHECK(!loop_lines_next(&lines, &l, CSTR_VIEW("x\n"), &line) && lines.start == 2);
 	lines = loop_lines(0, 0);
-	CHECK(!loop_lines_next(&lines, &l, (struct cstr_view){}, &line) && !lines.start);
+	CHECK(!loop_lines_next(&lines, &l, cstr_view(nullptr), &line) && !lines.start);
 }
 
 int

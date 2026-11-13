@@ -166,13 +166,13 @@ main (void)
 	CHECK(!jb_args(nullptr, names, 3, 7, of, &seen, &other) && !seen);
 
 	/* Text is UTF-8 without a NUL, or empty. */
-	CHECK(jb_is_text((struct cstr_view){}) && jb_is_text(CSTR_VIEW("\xc3\xa4")));
+	CHECK(jb_is_text(cstr_view(nullptr)) && jb_is_text(CSTR_VIEW("\xc3\xa4")));
 	CHECK(!jb_is_text(CSTR_VIEW("a\0b")) && !jb_is_text(CSTR_VIEW("\xc3")));
 	CHECK(!jb_is_text(cstr_view_n(nullptr, 1)));
 	/* jb_text_len() measures the text before a NUL byte or invalid UTF-8. */
 	CHECK(jb_text_len(CSTR_VIEW("a\xc3\xa4")) == 3 && jb_text_len(CSTR_VIEW("ab\0c")) == 2);
 	CHECK(jb_text_len(CSTR_VIEW("ab\xc3")) == 2 && jb_text_len(CSTR_VIEW("\xff\0")) == 0);
-	CHECK(jb_text_len(CSTR_VIEW("a\xff" "b\0")) == 1 && !jb_text_len((struct cstr_view){}));
+	CHECK(jb_text_len(CSTR_VIEW("a\xff" "b\0")) == 1 && !jb_text_len(cstr_view(nullptr)));
 	CHECK(!jb_text_len(cstr_view_n(nullptr, 1)));
 
 	/* One JSON value, whole or a slice at a time. */

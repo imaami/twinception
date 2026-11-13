@@ -208,7 +208,7 @@ static void
 journal_test_path (char const *repo)
 {
 	struct cstr_view rest = CSTR_VIEW("/a//./bc/.../.");
-	struct cstr_view part;
+	struct cstr_view part = {};
 	assert(!util_path_next(&rest, &part) && cstr_view_equal(part, CSTR_VIEW("a")));
 	assert(!util_path_next(&rest, &part) && cstr_view_equal(part, CSTR_VIEW("bc")));
 	assert(!util_path_next(&rest, &part) && cstr_view_equal(part, CSTR_VIEW("...")));

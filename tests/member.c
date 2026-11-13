@@ -196,7 +196,7 @@ test_names (void)
 	CHECK(!member_init_json(&m, json) && m.kind == MEMBER_PERSON && !strcmp(m.name, "imaami") &&
 	      test_name_zeroed(&m));
 	json_object_put(json);
-	CHECK(!member_json((struct cstr_view){}, MEMBER_PERSON));
+	CHECK(!member_json(cstr_view(nullptr), MEMBER_PERSON));
 	CHECK(!member_json(CSTR_VIEW("imaami"), MEMBER_KINDS));
 	json = jb_object("name", jb_string(valid[array_size(valid) - 1]),
 	                 "kind", json_object_new_string("agent"), nullptr);
@@ -294,7 +294,7 @@ test_logins (struct member_registry const *reg)
 	grant = (struct policy_grant){ .who = CSTR_VIEW("anonymous loopback (role user)") };
 	memset(&login, 'x', sizeof login);
 	CHECK(member_login(&login, reg, &grant, nullptr) == ENOENT && !*login.text);
-	grant.who = (struct cstr_view){};
+	grant.who = cstr_view(nullptr);
 	CHECK(member_login(&login, reg, &grant, nullptr) == ENOENT);
 	grant.who = CSTR_VIEW("identity c7");
 	CHECK(member_login(&login, reg, &grant, nullptr) == EINVAL);

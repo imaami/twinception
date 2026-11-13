@@ -63,7 +63,7 @@ main (void)
 	CHECK(refused("data:,abc%"));
 
 	struct datauri d;
-	CHECK(datauri_init(&d, (struct cstr_view){}) == EINVAL);
+	CHECK(datauri_init(&d, cstr_view(nullptr)) == EINVAL);
 	CHECK(datauri_init(nullptr, CSTR_VIEW("data:,")) == EINVAL);
 
 	return check_report("datauri");

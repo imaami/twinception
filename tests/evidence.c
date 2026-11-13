@@ -298,7 +298,7 @@ test_parse (void)
 	      ref.id.number == 3 && ref.id.item == 4 && !ref.call && ref.n_ranges == 1 &&
 	      ref.form == EVIDENCE_REF_ITEM_LINES);
 	CHECK(evidence_ref_parse(nullptr, CSTR_VIEW("c1")) == EINVAL);
-	CHECK(evidence_ref_parse(&ref, (struct cstr_view){}) == EINVAL);
+	CHECK(evidence_ref_parse(&ref, cstr_view(nullptr)) == EINVAL);
 	/* The ranges ascend, and ranges that overlap or touch become one.
 	 * Ranges with a line between them stay apart. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c7:150,130-145,5,120-140,5,146-149,140-141")));
@@ -949,7 +949,7 @@ test_recite (void)
 	struct dstr lines = DSTR_INIT;
 	char why[512] = "x";
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1")));
-	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(record), (struct cstr_view){}, why,
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(record), cstr_view(nullptr), why,
 	                       sizeof why) && !*why);
 	CHECK(e.kind == EVIDENCE_LINES && !e.item && e.call == 3 && e.turn == 2 && e.output == 400 &&
 	      finding_id_equal(&e.from, &ref.id) && !strcmp(e.from.author, "cuh") &&
@@ -1178,7 +1178,7 @@ test_recite (void)
 	recite_refused("cuh#2/1:5,3-4", call, material, "cuh#2/1:3-5 needs a lines item. cuh#2/1 is "
 	               "a call item.", __LINE__);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1")));
-	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(call), (struct cstr_view){}, why,
+	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(call), cstr_view(nullptr), why,
 	                       sizeof why));
 	CHECK(e.kind == EVIDENCE_CALL && !e.flags && finding_id_equal(&e.from, &ref.id) &&
 	      e.from.item == 1);
@@ -1252,7 +1252,7 @@ test_expand (void)
 	         "exactly as sent. Arguments:]\n{\"command\":\"grep\"}\n[askai: cuh#2/1: result, "
 	         "25 bytes:]\nsrc/a.c\n\n[askai: call c9]\n", __LINE__);
 	/* Missing and changed material. */
-	expanded(&e, args, (struct cstr_view){}, "[askai: cuh#2/1: call c9 of cuh, turn 19, tool "
+	expanded(&e, args, cstr_view(nullptr), "[askai: cuh#2/1: call c9 of cuh, turn 19, tool "
 	         "git, failed, stored exactly as sent. Arguments:]\n{\"command\":\"grep\"}\n"
 	         "[askai: cuh#2/1: result, 25 bytes:]\n[askai: the stored material of cuh#2/1 is "
 	         "missing.]\n", __LINE__);
@@ -1288,10 +1288,10 @@ test_expand (void)
 	e.ranges.items[e.ranges.n++] = range(161, 161);
 	e.ranges.items[e.ranges.n++] = range(171, 171);
 	hash_of(&e.result, lines);
-	expanded(&e, (struct cstr_view){}, lines, "[askai: cuh#2/2 from cuh#1/3: lines 161, 171 of "
+	expanded(&e, cstr_view(nullptr), lines, "[askai: cuh#2/2 from cuh#1/3: lines 161, 171 of "
 	         "src/git.c in repository askai at commit " A ", stored as shown:]\n"
 	         "161\tx\n171\ty\n", __LINE__);
-	expanded(&e, (struct cstr_view){}, (struct cstr_view){}, "[askai: cuh#2/2 from cuh#1/3: "
+	expanded(&e, cstr_view(nullptr), cstr_view(nullptr), "[askai: cuh#2/2 from cuh#1/3: "
 	         "lines 161, 171 of src/git.c in repository askai at commit " A ", stored as "
 	         "shown:]\n[askai: the stored material of cuh#2/2 is missing.]\n",
 	         __LINE__);
