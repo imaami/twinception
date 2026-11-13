@@ -743,8 +743,9 @@ test_note (struct store const *store,
 	struct buf files = buf();
 	struct extent part = {};
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("plan.md"), CSTR_VIEW("x")));
-	struct store_trailer const t[] = { { CSTR_VIEW("Asked-by"), asker ? cstr_view(asker)
-	                                                                  : CSTR_VIEW("") } };
+	struct store_trailer const t[] = {
+		store_trailer(CSTR_VIEW("Asked-by"), asker ? cstr_view(asker) : CSTR_VIEW(""))
+	};
 	struct store_commit const commit = {
 		.author = { CSTR_VIEW("bro"), CSTR_VIEW("agent/bro") },
 		.committer = { CSTR_VIEW("gpu1"), CSTR_VIEW("askai") },
@@ -1264,9 +1265,9 @@ test_registry (char const *dir)
 	/* A session of a later format or without an ID is refused. */
 	CHECK(snprintf(path, sizeof path, "%s/future.git", dir) > 0);
 	struct store_trailer const future[] = {
-		{ CSTR_VIEW("Session"), CSTR_VIEW("6f0c2b9a41d8e3f75a2c1b0d9e8f7a6b") },
-		{ CSTR_VIEW("Name"),    CSTR_VIEW("future") },
-		{ CSTR_VIEW("Format"),  CSTR_VIEW("2") },
+		store_trailer(CSTR_VIEW("Session"), CSTR_VIEW("6f0c2b9a41d8e3f75a2c1b0d9e8f7a6b")),
+		store_trailer(CSTR_VIEW("Name"),    CSTR_VIEW("future")),
+		store_trailer(CSTR_VIEW("Format"),  CSTR_VIEW("2")),
 	};
 	test_session(path, future, array_size(future));
 	store = store_create(path, why, sizeof why, &e);

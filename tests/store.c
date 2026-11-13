@@ -379,8 +379,8 @@ test_trailer (void)
 	 * after a blank line, and the data count includes the line feed after
 	 * the message, the blank line and each line of the trailer. */
 	struct store_trailer const trailers[] = {
-		{ CSTR_VIEW("Asked-by"), CSTR_VIEW("imaami") },
-		{ CSTR_VIEW("Ask"),      CSTR_VIEW("") },
+		store_trailer(CSTR_VIEW("Asked-by"), CSTR_VIEW("imaami")),
+		store_trailer(CSTR_VIEW("Ask"),      CSTR_VIEW("")),
 	};
 	struct store_commit const commit = {
 		.author = { CSTR_VIEW("bro"), CSTR_VIEW("agent/bro") },
@@ -401,8 +401,8 @@ test_trailer (void)
 
 	/* A member record: no author, a message, a trailer and a parent. */
 	struct store_trailer const record[] = {
-		{ CSTR_VIEW("Kind"),  CSTR_VIEW("agent") },
-		{ CSTR_VIEW("Login"), CSTR_VIEW("imaami") },
+		store_trailer(CSTR_VIEW("Kind"),  CSTR_VIEW("agent")),
+		store_trailer(CSTR_VIEW("Login"), CSTR_VIEW("imaami")),
 	};
 	struct store_commit c = commit;
 	c.author = (struct store_ident){};
@@ -450,12 +450,16 @@ test_trailer (void)
 		cstr_view_n(word, UTIL_WORD_MAX + 1),
 	};
 	for (size_t i = 0; i < array_size(keys); ++i) {
-		struct store_trailer const pair[] = { trailers[0], { keys[i], CSTR_VIEW("v") } };
+		struct store_trailer const pair[] = {
+			trailers[0], store_trailer(keys[i], CSTR_VIEW("v"))
+		};
 		c = commit;
 		c.trailers = pair;
 		CHECK(refused(c));
 	}
-	struct store_trailer t[] = { trailers[0], { { word, UTIL_WORD_MAX }, CSTR_VIEW("v") } };
+	struct store_trailer t[] = {
+		trailers[0], store_trailer(cstr_view_n(word, UTIL_WORD_MAX), CSTR_VIEW("v"))
+	};
 	c = commit;
 	c.trailers = t;
 	CHECK(!store_commit_input(&c, &in));
@@ -467,10 +471,10 @@ test_trailer (void)
 		cstr_view_n(big, STORE_MESSAGE),
 	};
 	for (size_t i = 0; i < array_size(values); ++i) {
-		t[1] = (struct store_trailer){ CSTR_VIEW("Key"), values[i] };
+		t[1] = store_trailer(CSTR_VIEW("Key"), values[i]);
 		CHECK(refused(c));
 	}
-	t[1] = (struct store_trailer){ CSTR_VIEW("Key"), { big, STORE_MESSAGE - 1 } };
+	t[1] = store_trailer(CSTR_VIEW("Key"), cstr_view_n(big, STORE_MESSAGE - 1));
 	CHECK(!store_commit_input(&c, &in));
 	buf_fini(&in);
 	c = commit;
@@ -1334,8 +1338,8 @@ test_git (char const *path)
 	/* git reads the author, the committer and the trailer of a commit
 	 * with a parent and a file part. */
 	struct store_trailer const asked[] = {
-		{ CSTR_VIEW("Ask"),      CSTR_VIEW("6f0c2b9a41d8e3f75a2c1b0d9e8f7a6b") },
-		{ CSTR_VIEW("Asked-by"), CSTR_VIEW("imaami") },
+		store_trailer(CSTR_VIEW("Ask"),      CSTR_VIEW("6f0c2b9a41d8e3f75a2c1b0d9e8f7a6b")),
+		store_trailer(CSTR_VIEW("Asked-by"), CSTR_VIEW("imaami")),
 	};
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("b"), CSTR_VIEW("x")));
 	commit.author = (struct store_ident){ CSTR_VIEW("bro"), CSTR_VIEW("agent/bro") };
@@ -1364,8 +1368,8 @@ test_git (char const *path)
 	/* A member record is a root commit with the empty tree, and git reads
 	 * its trailer. */
 	struct store_trailer const record[] = {
-		{ CSTR_VIEW("Kind"),  CSTR_VIEW("agent") },
-		{ CSTR_VIEW("Login"), CSTR_VIEW("imaami") },
+		store_trailer(CSTR_VIEW("Kind"),  CSTR_VIEW("agent")),
+		store_trailer(CSTR_VIEW("Login"), CSTR_VIEW("imaami")),
 	};
 	struct store_commit const member = {
 		.author = { CSTR_VIEW("bro"), CSTR_VIEW("agent/bro") },

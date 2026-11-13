@@ -598,7 +598,7 @@ member_record_input (struct member_registry const *reg,
 	struct member const *member = &login->member;
 	struct cstr_view const kind = member_kinds[member->kind];
 	struct store_trailer t[2 + MEMBER_LOGINS] = {
-		{ CSTR_VIEW("Kind"), kind }
+		store_trailer(CSTR_VIEW("Kind"), kind)
 	};
 	size_t n = 1;
 	struct oid const *tip = &(struct oid){};
@@ -610,7 +610,7 @@ member_record_input (struct member_registry const *reg,
 		for (bool more = logins.len != 0; more && n <= MEMBER_LOGINS; ) {
 			struct cstr_view item = logins;
 			more = cstr_view_cut(&logins, ',', &item);
-			t[n++] = (struct store_trailer){ key, item };
+			t[n++] = store_trailer(key, item);
 		}
 		subject = util_format_view(message, sizeof message, "Add login %s to the %s %s",
 		                           login->text, kind.data, member->name);
@@ -619,7 +619,7 @@ member_record_input (struct member_registry const *reg,
 		                           member->name);
 	}
 	if (text.len)
-		t[n++] = (struct store_trailer){ key, text };
+		t[n++] = store_trailer(key, text);
 	util_format(ref, MEMBER_REF, MEMBERS "%s", member->name);
 	return member_commit_input(reg, ref, subject, t, n, tip, in);
 }
@@ -981,9 +981,9 @@ member_registry_session_read (struct member_registry *reg,
 		char text[MEMBER_NAME];
 		struct cstr_view const name = member_session_name(store_directory(reg->store), text);
 		struct store_trailer const t[] = {
-			{ CSTR_VIEW("Session"), hexid_view(&id) },
-			{ CSTR_VIEW("Name"),    name },
-			{ CSTR_VIEW("Format"),  CSTR_VIEW("1") },
+			store_trailer(CSTR_VIEW("Session"), hexid_view(&id)),
+			store_trailer(CSTR_VIEW("Name"),    name),
+			store_trailer(CSTR_VIEW("Format"),  CSTR_VIEW("1")),
 		};
 		char message[STORE_MESSAGE];
 		struct cstr_view const subject = util_format_view(message, sizeof message,
@@ -1781,16 +1781,15 @@ member_byline_put (struct member_byline        *byline,
 	size_t n = 0;
 	struct store_trailer *t = byline->trailers;
 	if (*call->ask.hex)
-		t[n++] = (struct store_trailer){ CSTR_VIEW("Ask"), hexid_view(&call->ask) };
+		t[n++] = store_trailer(CSTR_VIEW("Ask"), hexid_view(&call->ask));
 	if (k)
-		t[n++] = (struct store_trailer){ CSTR_VIEW("Call"),
-		                                 util_format_view(byline->call, sizeof byline->call,
-		                                                  "%" PRIu32, k) };
+		t[n++] = store_trailer(CSTR_VIEW("Call"),
+		                       util_format_view(byline->call, sizeof byline->call,
+		                                        "%" PRIu32, k));
 	if (*call->conversation.hex)
-		t[n++] = (struct store_trailer){ CSTR_VIEW("Conversation"),
-		                                 hexid_view(&call->conversation) };
+		t[n++] = store_trailer(CSTR_VIEW("Conversation"), hexid_view(&call->conversation));
 	if (*call->asker.name)
-		t[n++] = (struct store_trailer){ CSTR_VIEW("Asked-by"), cstr_view(call->asker.name) };
+		t[n++] = store_trailer(CSTR_VIEW("Asked-by"), cstr_view(call->asker.name));
 	commit->author = (struct store_ident){ cstr_view(self->name), email };
 	commit->committer = session->committer;
 	commit->trailers = t;

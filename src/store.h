@@ -16,6 +16,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "compat.h"
 #include "cstr_view.h"
 #include "git_run.h"
 #include "oid.h"
@@ -396,6 +397,14 @@ struct store_trailer {
 	struct cstr_view key;    /**< letters, digits, underscores and hyphens */
 	struct cstr_view value;  /**< one line */
 };
+
+/** Returns the trailer line of the key @p key and the value @p value. */
+static force_inline struct store_trailer
+store_trailer (struct cstr_view key,
+               struct cstr_view value)
+{
+	return (struct store_trailer){ .key = key, .value = value };
+}
 
 /** The name and the email address of the author or the committer of a
  *  commit, written as NAME <EMAIL>. Neither contains <, >, a line feed or a
