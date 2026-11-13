@@ -102,6 +102,27 @@ def check_options(cli, unused_server):
         result = subprocess.run([cli, option, "1"], capture_output=True, text=True,
                                 timeout=5)
         assert result.returncode != 0, (option, result)
+    version = subprocess.run([cli, "--version"], capture_output=True, text=True, timeout=5)
+    assert version.returncode == 0 and version.stdout == "askai-cli 1\n", version
+    # Each command line that is not valid fails with its reason and writes
+    # nothing to stdout.
+    environment = {k: v for k, v in os.environ.items() if k != "ASKAI_SOCKET"}
+    for arguments, reason in (
+            (("--socket", "/x", "--bogus"), "Invalid option; see --help"),
+            (("--socket", "/x", "extra"), "Unexpected positional argument; see --help"),
+            (("--socket", "/x", "--prompt", "a", "--file", "b"),
+             "Use only one --prompt or --file"),
+            (("--socket", "/x", "--session-id", ""),
+             "--session-id requires a nonempty identity"),
+            ((), "Specify --socket PATH or ASKAI_SOCKET"),
+            (("--socket", ""), "Specify --socket PATH or ASKAI_SOCKET"),
+            (("--socket", "/x", "--no-history", "--history-repo", "/r"),
+             "--history-repo and --no-history are mutually exclusive"),
+            (("--socket", "/x", "--color", "purple"), "--color must be auto, on or off")):
+        result = subprocess.run([cli, *arguments], capture_output=True, text=True,
+                                timeout=5, env=environment, stdin=subprocess.DEVNULL)
+        assert result.returncode == 1 and not result.stdout and \
+            result.stderr.endswith(f"askai-cli: {reason}\n"), (arguments, result)
     with tempfile.TemporaryDirectory() as directory:
         result = run(cli, directory + "/missing", "--single-turn", "--prompt", "Q")
         assert result.returncode != 0 and result.stderr, result

@@ -151,13 +151,20 @@ cli_help (void)
 	#undef CLI_OPTION_HELP
 }
 
-static int
-cli_args (struct cli_options  *out,
-          int                  argc,
-          char               **argv,
-          struct cli_error    *error)
+/** Returns the options of the command line @p argv of @p argc words. The
+ *  socket is the argument of --socket, or else the value of ASKAI_SOCKET,
+ *  without a leading "unix:". The function stores 0 in @p *e if the
+ *  command line is valid. For --help and --version the function writes the
+ *  text, sets CLI_DONE, and stores 0, or EIO if the write failed. For a
+ *  command line that is not valid, the function stores the reason in
+ *  @p error and EINVAL in @p *e, and the options are not complete.
+ */
+static struct cli_options
+cli_options (int                argc,
+             char             **argv,
+             struct cli_error  *error,
+             int               *e)
 {
-	out->socket = getenv("ASKAI_SOCKET");
 	#define CLI_OPTION_ENTRY(name, key, meta, ...) \
 	        {name, sizeof meta > 1 ? required_argument : no_argument, nullptr, key},
 	static struct option const options[] = {
@@ -170,47 +177,54 @@ cli_args (struct cli_options  *out,
 	static uint32_t const flags[128] = {CLI_OPTION_LIST(CLI_OPTION_FLAG)};
 	#undef CLI_OPTION_FLAG
 	static struct cstr_view const colors[] = { CLI_COLOR_LIST(XL_VIEW) };
+	struct cli_options out = { .socket = getenv("ASKAI_SOCKET") };
 	size_t color = CLI_COLOR_AUTO;
 	size_t prompts = 0;
 	int c;
 	while ((c = getopt_long(argc, argv, "hp:f:", options, nullptr)) != -1) {
 		if (c < (int)array_size(flags) && flags[c]) {
-			out->flags |= flags[c];
+			out.flags |= flags[c];
 			continue;
 		}
 		switch (c) {
-		case 's': out->socket = optarg; break;
-		case 't': out->tool = optarg; break;
-		case 'p': out->prompt = optarg; ++prompts; break;
-		case 'f': out->file = optarg; ++prompts; break;
-		case 'S': out->system = optarg; break;
+		case 's': out.socket = optarg; break;
+		case 't': out.tool = optarg; break;
+		case 'p': out.prompt = optarg; ++prompts; break;
+		case 'f': out.file = optarg; ++prompts; break;
+		case 'S': out.system = optarg; break;
 		case 'c': color = cstr_view_index(colors, array_size(colors), cstr_view(optarg)); break;
-		case 'H': out->history_repo = optarg; break;
-		case 'I': out->session_id = optarg; break;
-		case 'h': out->flags |= CLI_DONE; return cli_help();
-		case 'v': out->flags |= CLI_DONE; return puts("askai-cli 1") < 0 ? EIO : 0;
-		default: return cli_error_set(error, EINVAL, "Invalid option; see --help");
+		case 'H': out.history_repo = optarg; break;
+		case 'I': out.session_id = optarg; break;
+		case 'h': out.flags |= CLI_DONE; *e = cli_help(); return out;
+		case 'v': out.flags |= CLI_DONE; *e = puts("askai-cli 1") < 0 ? EIO : 0; return out;
+		default:
+			*e = cli_error_set(error, EINVAL, "Invalid option; see --help");
+			return out;
 		}
 	}
 	struct cstr_view const scheme = CSTR_VIEW("unix:");
-	if (cstr_view_starts(cstr_view(out->socket), scheme))
-		out->socket += scheme.len;
+	if (cstr_view_starts(cstr_view(out.socket), scheme))
+		out.socket += scheme.len;
 	if (optind != argc)
-		return cli_error_set(error, EINVAL, "Unexpected positional argument; see --help");
-	if (prompts > 1)
-		return cli_error_set(error, EINVAL, "Use only one --prompt or --file");
-	if (out->session_id && !*out->session_id)
-		return cli_error_set(error, EINVAL, "--session-id requires a nonempty identity");
-	if (!out->socket || !*out->socket)
-		return cli_error_set(error, EINVAL, "Specify --socket PATH or ASKAI_SOCKET");
-	if ((out->flags & CLI_NO_HISTORY) && out->history_repo && *out->history_repo)
-		return cli_error_set(error, EINVAL, "--history-repo and --no-history are mutually exclusive");
-	if (color == array_size(colors))
-		return cli_error_set(error, EINVAL, "--color must be "
-		                     XL_JOIN(", ", " or ", CLI_COLOR_LIST(XL_TEXT)));
-	out->color = color;
-	out->flags |= isatty(STDIN_FILENO) && isatty(STDOUT_FILENO) ? CLI_TTY : 0;
-	return 0;
+		*e = cli_error_set(error, EINVAL, "Unexpected positional argument; see --help");
+	else if (prompts > 1)
+		*e = cli_error_set(error, EINVAL, "Use only one --prompt or --file");
+	else if (out.session_id && !*out.session_id)
+		*e = cli_error_set(error, EINVAL, "--session-id requires a nonempty identity");
+	else if (!out.socket || !*out.socket)
+		*e = cli_error_set(error, EINVAL, "Specify --socket PATH or ASKAI_SOCKET");
+	else if ((out.flags & CLI_NO_HISTORY) && out.history_repo && *out.history_repo)
+		*e = cli_error_set(error, EINVAL,
+		                   "--history-repo and --no-history are mutually exclusive");
+	else if (color == array_size(colors))
+		*e = cli_error_set(error, EINVAL, "--color must be "
+		                   XL_JOIN(", ", " or ", CLI_COLOR_LIST(XL_TEXT)));
+	else {
+		out.color = color;
+		out.flags |= isatty(STDIN_FILENO) && isatty(STDOUT_FILENO) ? CLI_TTY : 0;
+		*e = 0;
+	}
+	return out;
 }
 
 #undef CLI_OPTION_LIST
@@ -1326,17 +1340,17 @@ int
 main (int    argc,
       char **argv)
 {
-	struct cli_options options = {};
 	struct cli_error error = {};
 	unsigned exit_signal = 0;
 	/* Before askai-cli opens any file, so that none takes such a number. */
 	int e = child_std_open();
 	if (e)
 		(void)cli_error_set(&error, e, "Cannot open /dev/null: %s", strerror(e));
-	else
-		e = cli_args(&options, argc, argv, &error);
-	if (!e && !(options.flags & CLI_DONE))
-		e = cli_run(&options, &error, &exit_signal);
+	else {
+		struct cli_options const options = cli_options(argc, argv, &error, &e);
+		if (!e && !(options.flags & CLI_DONE))
+			e = cli_run(&options, &error, &exit_signal);
+	}
 	if (e == EINTR && exit_signal)
 		return 128 + (int)exit_signal;
 	if (e) {
