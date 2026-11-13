@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "compat.h"
 #include "cstr_view.h"
 #include "tool.h"
 #include "util.h"
@@ -56,6 +57,16 @@ struct registry_plugin {
 	                                    nullptr for a plugin built into
 	                                    askai */
 };
+
+/** Returns the plugin @p plugin in the registry. @p loaded is the plugin as
+ *  registry_load() loaded it, or nullptr for a plugin built into askai.
+ */
+static force_inline struct registry_plugin
+registry_plugin (struct plugin const  *plugin,
+                 struct plugin_loaded *loaded)
+{
+	return (struct registry_plugin){ .plugin = plugin, .loaded = loaded };
+}
 
 struct registry {
 	struct registry_tool   tools[TOOL_MAX];    /**< by id */

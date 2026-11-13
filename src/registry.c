@@ -57,7 +57,7 @@ registry_part (struct registry     *reg,
 	while (i < reg->n_plugins && reg->plugins[i].plugin != plugin)
 		++i;
 	if (i == reg->n_plugins)
-		reg->plugins[reg->n_plugins++] = (struct registry_plugin){ .plugin = plugin };
+		reg->plugins[reg->n_plugins++] = registry_plugin(plugin, nullptr);
 	return i;
 }
 
@@ -103,7 +103,7 @@ registry_load (struct registry    *reg,
 	/* The loop adds tools whose names are pointers into loaded->manifest.
 	 * Therefore the plugin is appended to reg->plugins first, and
 	 * registry_fini() frees it even if registry_add() fails. */
-	reg->plugins[reg->n_plugins++] = (struct registry_plugin){ loaded->plugin, loaded };
+	reg->plugins[reg->n_plugins++] = registry_plugin(loaded->plugin, loaded);
 	for (uint32_t i = 0; i < loaded->n_tools; ++i) {
 		char const *name = loaded->manifest.tools[i];
 		struct registry_tool const tool = {
