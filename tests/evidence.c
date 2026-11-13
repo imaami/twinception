@@ -358,7 +358,7 @@ test_put (void)
 	put("c7:141-150,120-140", "c7:120-150", __LINE__);
 	put("cuh#2/1", "cuh#2/1", __LINE__);
 	put("first.last@ad#12/3:165,161-163", "first.last@ad#12/3:161-163,165", __LINE__);
-	struct range const r[] = { { 1, 1 }, { 3, 9 }, { 11, 4294967295 } };
+	struct range const r[] = { range(1, 1), range(3, 9), range(11, 4294967295) };
 	struct dstr d = DSTR_INIT;
 	CHECK(!evidence_ranges_put(r, 3, ", ", " to ", &d));
 	SAME(dstr_get(&d), dstr_len(&d), "1, 3 to 9, 11 to 4294967295");
