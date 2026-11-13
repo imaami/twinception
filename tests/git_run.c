@@ -384,10 +384,10 @@ git_run_test_name (void)
 	for (size_t i = 0; i < array_size(names); ++i)
 		CHECK(git_run_name_valid(names[i].name) == names[i].valid);
 	/* The bytes after the view are not part of the name. */
-	CHECK(git_run_name_valid((struct cstr_view){ "ab/c", 2 }));
-	CHECK(!git_run_name_valid((struct cstr_view){ "ab/c", 3 }));
-	CHECK(git_run_name_valid((struct cstr_view){ x65, 64 }));
-	CHECK(!git_run_name_valid((struct cstr_view){ x65, 65 }));
+	CHECK(git_run_name_valid(cstr_view_n("ab/c", 2)));
+	CHECK(!git_run_name_valid(cstr_view_n("ab/c", 3)));
+	CHECK(git_run_name_valid(cstr_view_n(x65, 64)));
+	CHECK(!git_run_name_valid(cstr_view_n(x65, 65)));
 }
 
 /* Runs @p words with git in @p dir with the descriptors @p fds, the

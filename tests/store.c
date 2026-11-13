@@ -265,16 +265,16 @@ test_input (void)
 	SAME(s.ptr, s.len, "M 100644 inline \"a\\\"b\\\\c\"\ndata 3\nabc\nD \"d\"\n");
 	char name[STORE_PATH + 2];
 	memset(name, 'n', sizeof name);
-	CHECK(store_part_file(&part, &files, (struct cstr_view){ name, STORE_PATH + 1 },
+	CHECK(store_part_file(&part, &files, cstr_view_n(name, STORE_PATH + 1),
 	                      CSTR_VIEW("")) == EINVAL);
 	CHECK(store_part_delete(&files, (struct cstr_view){}) == EINVAL);
-	CHECK(store_part_delete(&files, (struct cstr_view){ name, STORE_PATH + 1 }) == EINVAL);
+	CHECK(store_part_delete(&files, cstr_view_n(name, STORE_PATH + 1)) == EINVAL);
 	CHECK(store_part_delete(nullptr, CSTR_VIEW("d")) == EINVAL);
 	/* A blob part names the blob by its ID and has no data. */
 	CHECK(!store_part_blob(&files, CSTR_VIEW("e\""), &tip));
 	CHECK(store_part_blob(&files, CSTR_VIEW("e"), &root) == EINVAL);
 	CHECK(store_part_blob(&files, CSTR_VIEW("e"), nullptr) == EINVAL);
-	CHECK(store_part_blob(&files, (struct cstr_view){ name, STORE_PATH + 1 }, &tip) == EINVAL);
+	CHECK(store_part_blob(&files, cstr_view_n(name, STORE_PATH + 1), &tip) == EINVAL);
 	CHECK(store_part_blob(nullptr, CSTR_VIEW("e"), &tip) == EINVAL);
 	/* The buffer contains the file, delete and blob parts, and nothing of
 	 * the refused parts. */
@@ -317,7 +317,7 @@ test_input (void)
 	char big[STORE_MESSAGE];
 	memset(big, 'x', sizeof big);
 	c = commit;
-	c.message = (struct cstr_view){ big, STORE_MESSAGE - 1 };
+	c.message = cstr_view_n(big, STORE_MESSAGE - 1);
 	CHECK(!store_commit_input(&c, &in));
 	buf_fini(&in);
 	c.message.len = STORE_MESSAGE;
@@ -326,7 +326,7 @@ test_input (void)
 	CHECK(store_commit_input(&commit, nullptr) == EINVAL);
 
 	struct cstr_view const bad[] = {
-		{}, { nullptr, 5 }, CSTR_VIEW("a\0b"),
+		{}, cstr_view_n(nullptr, 5), CSTR_VIEW("a\0b"),
 	};
 	for (size_t i = 0; i < array_size(bad); ++i) {
 		c = commit;
@@ -430,7 +430,7 @@ test_trailer (void)
 	buf_fini(&in);
 
 	struct cstr_view const idents[] = {
-		{}, { nullptr, 5 }, CSTR_VIEW("a\0b"), CSTR_VIEW("a<b"), CSTR_VIEW("a>b"),
+		{}, cstr_view_n(nullptr, 5), CSTR_VIEW("a\0b"), CSTR_VIEW("a<b"), CSTR_VIEW("a>b"),
 		CSTR_VIEW("a\nb"),
 	};
 	for (size_t i = 0; i < array_size(idents); ++i) {
@@ -445,9 +445,9 @@ test_trailer (void)
 	char word[UTIL_WORD_MAX + 1];
 	memset(word, 'k', sizeof word);
 	struct cstr_view const keys[] = {
-		{}, { nullptr, 5 }, CSTR_VIEW(""), CSTR_VIEW("Asked by"), CSTR_VIEW("Ask:"),
+		{}, cstr_view_n(nullptr, 5), CSTR_VIEW(""), CSTR_VIEW("Asked by"), CSTR_VIEW("Ask:"),
 		CSTR_VIEW("a\nb"), CSTR_VIEW("a\0b"), CSTR_VIEW("Ask\xc3\xa4"),
-		{ word, UTIL_WORD_MAX + 1 },
+		cstr_view_n(word, UTIL_WORD_MAX + 1),
 	};
 	for (size_t i = 0; i < array_size(keys); ++i) {
 		struct store_trailer const pair[] = { trailers[0], { keys[i], CSTR_VIEW("v") } };
@@ -463,7 +463,8 @@ test_trailer (void)
 	char big[STORE_MESSAGE];
 	memset(big, 'v', sizeof big);
 	struct cstr_view const values[] = {
-		{}, { nullptr, 5 }, CSTR_VIEW("x\ny"), CSTR_VIEW("x\0y"), { big, STORE_MESSAGE },
+		{}, cstr_view_n(nullptr, 5), CSTR_VIEW("x\ny"), CSTR_VIEW("x\0y"),
+		cstr_view_n(big, STORE_MESSAGE),
 	};
 	for (size_t i = 0; i < array_size(values); ++i) {
 		t[1] = (struct store_trailer){ CSTR_VIEW("Key"), values[i] };
@@ -1174,7 +1175,7 @@ test_reach (struct store const *store,
 	CHECK(snprintf(tree_of, sizeof tree_of, "%s^{tree}", c3->hex) == OID_SHA1 + 7);
 	struct oid tree;
 	CHECK(!run(store, STORE_HEAD, (char const *const[]){ tree_of }, span(nullptr, 0), out,
-	           sizeof out, &len) && !oid_init_line(&tree, (struct cstr_view){ out, len }));
+	           sizeof out, &len) && !oid_init_line(&tree, cstr_view_n(out, len)));
 	/* The blob of the file a at c3. */
 	char const *const blob = "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f";
 	struct {

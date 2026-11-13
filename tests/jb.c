@@ -136,7 +136,7 @@ main (void)
 	str = json_object_new_string_len(many, sizeof many);
 	struct cstr_view const all = jb_wire(str);
 	struct dstr out = dstr("x");
-	CHECK(all.data && !jb_escape_cat((struct cstr_view){ many, sizeof many }, &out));
+	CHECK(all.data && !jb_escape_cat(cstr_view_n(many, sizeof many), &out));
 	CHECK(dstr_len(&out) == all.len - 1 && *dstr_get(&out) == 'x' &&
 	      !memcmp(dstr_get(&out) + 1, all.data + 1, all.len - 2));
 	CHECK(jb_escape_cat(CSTR_VIEW("a"), nullptr) == ENOMEM);
@@ -168,12 +168,12 @@ main (void)
 	/* Text is UTF-8 without a NUL, or empty. */
 	CHECK(jb_is_text((struct cstr_view){}) && jb_is_text(CSTR_VIEW("\xc3\xa4")));
 	CHECK(!jb_is_text(CSTR_VIEW("a\0b")) && !jb_is_text(CSTR_VIEW("\xc3")));
-	CHECK(!jb_is_text((struct cstr_view){ nullptr, 1 }));
+	CHECK(!jb_is_text(cstr_view_n(nullptr, 1)));
 	/* jb_text_len() measures the text before a NUL byte or invalid UTF-8. */
 	CHECK(jb_text_len(CSTR_VIEW("a\xc3\xa4")) == 3 && jb_text_len(CSTR_VIEW("ab\0c")) == 2);
 	CHECK(jb_text_len(CSTR_VIEW("ab\xc3")) == 2 && jb_text_len(CSTR_VIEW("\xff\0")) == 0);
 	CHECK(jb_text_len(CSTR_VIEW("a\xff" "b\0")) == 1 && !jb_text_len((struct cstr_view){}));
-	CHECK(!jb_text_len((struct cstr_view){ nullptr, 1 }));
+	CHECK(!jb_text_len(cstr_view_n(nullptr, 1)));
 
 	/* One JSON value, whole or a slice at a time. */
 	CHECK(parse("{\"a\": [1, 2, \"three\"]}", SIZE_MAX, &steps) == 0 && steps == 1);

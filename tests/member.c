@@ -154,16 +154,16 @@ test_names (void)
 		CSTR_VIEW("imaami"), CSTR_VIEW("bro"), CSTR_VIEW("first.last"),
 		CSTR_VIEW("user@ad"), CSTR_VIEW("p"), CSTR_VIEW("ask_ai"), CSTR_VIEW("uid-1000"),
 		CSTR_VIEW("A-b_c.d@e"), CSTR_VIEW("c7x"), CSTR_VIEW("7c"), CSTR_VIEW("a.lck"),
-		{ long_name, UTIL_WORD_MAX },
+		cstr_view_n(long_name, UTIL_WORD_MAX),
 	};
 	for (size_t i = 0; i < array_size(valid); ++i)
 		CHECK(member_name_valid(valid[i]));
 	struct cstr_view const invalid[] = {
-		{}, CSTR_VIEW(""), { nullptr, 3 }, CSTR_VIEW(".x"), CSTR_VIEW("-x"),
+		{}, CSTR_VIEW(""), cstr_view_n(nullptr, 3), CSTR_VIEW(".x"), CSTR_VIEW("-x"),
 		CSTR_VIEW("a..b"), CSTR_VIEW("x."), CSTR_VIEW("x.lock"), CSTR_VIEW("@"),
 		CSTR_VIEW("c7"), CSTR_VIEW("C12"), CSTR_VIEW("a/b"), CSTR_VIEW("bro#5"),
 		CSTR_VIEW("a b"), CSTR_VIEW("a\0b"), CSTR_VIEW("\xc3\xa4"), CSTR_VIEW("a:b"),
-		{ long_name, UTIL_WORD_MAX + 1 },
+		cstr_view_n(long_name, UTIL_WORD_MAX + 1),
 	};
 	for (size_t i = 0; i < array_size(invalid); ++i)
 		CHECK(!member_name_valid(invalid[i]));
@@ -173,8 +173,8 @@ test_names (void)
 	 * "" for an empty view. member() returns a member of the kind with
 	 * the same bytes as the name. */
 	struct cstr_view const sets[] = {
-		CSTR_VIEW("bro"), CSTR_VIEW("p"), { long_name, UTIL_WORD_MAX },
-		{ long_name, sizeof long_name }, {}, CSTR_VIEW(""),
+		CSTR_VIEW("bro"), CSTR_VIEW("p"), cstr_view_n(long_name, UTIL_WORD_MAX),
+		cstr_view_n(long_name, sizeof long_name), {}, CSTR_VIEW(""),
 	};
 	for (size_t i = 0; i < array_size(sets); ++i) {
 		size_t const len = sets[i].len < UTIL_WORD_MAX ? sets[i].len : UTIL_WORD_MAX;

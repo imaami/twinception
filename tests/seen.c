@@ -159,7 +159,7 @@ test_lines (void)
 	got = seen_lines(read, o, extent(0, src.output.at + src.output.len), &e);
 	CHECK(!e && got.range.first == 1 && got.range.last == 3);
 	/* Numbered lines that are empty or not within the output. */
-	got = seen_lines(read, (struct cstr_view){ o.data, src.output.at + src.output.len - 1 },
+	got = seen_lines(read, cstr_view_n(o.data, src.output.at + src.output.len - 1),
 	                 all, &e);
 	CHECK(e == EINVAL && !got.range.first && !got.range.last);
 	read->src.output.len = 0;
@@ -189,7 +189,7 @@ test_lines (void)
 	e = -1;
 	CHECK(!seen_lines(nullptr, o, all, &e).range.first && e == EFAULT);
 	e = -1;
-	CHECK(!seen_lines(read, (struct cstr_view){ nullptr, 2 }, all, &e).range.first &&
+	CHECK(!seen_lines(read, cstr_view_n(nullptr, 2), all, &e).range.first &&
 	      e == EFAULT);
 	CHECK(!seen_lines(read, o, all, nullptr).range.first);
 	seen_read_destroy(&read);
@@ -275,8 +275,8 @@ test_read (void)
 	 * storage of the caller can change after the call. */
 	char repo[] = "proj";
 	char path[] = "src/a.c";
-	src.repo = (struct cstr_view){ repo, sizeof repo - 1 };
-	src.path = (struct cstr_view){ path, sizeof path - 1 };
+	src.repo = cstr_view_n(repo, sizeof repo - 1);
+	src.path = cstr_view_n(path, sizeof path - 1);
 	int e = -1;
 	struct seen_read *read = seen_read_create(&src, o, &e);
 	CHECK(read && !e);
@@ -298,7 +298,7 @@ test_read (void)
 	CHECK(!again);
 	/* The object does not fit a shorter output. */
 	e = -1;
-	CHECK(!seen_read_create_json(obj, (struct cstr_view){ o.data, 4 + 9 * 3 - 1 }, &e) &&
+	CHECK(!seen_read_create_json(obj, cstr_view_n(o.data, 4 + 9 * 3 - 1), &e) &&
 	      e == EINVAL);
 	json_object_put(obj);
 	seen_read_destroy(&read);
@@ -366,19 +366,19 @@ test_read (void)
 	bad = src;
 	bad.repo = (struct cstr_view){};
 	CHECK(read_error(&bad, o) == EINVAL);
-	bad.repo = (struct cstr_view){ name, 0 };
+	bad.repo = cstr_view_n(name, 0);
 	CHECK(read_error(&bad, o) == EINVAL);
-	bad.repo = (struct cstr_view){ name, SEEN_NAME_MAX + 1 };
+	bad.repo = cstr_view_n(name, SEEN_NAME_MAX + 1);
 	CHECK(read_error(&bad, o) == EINVAL);
-	bad.repo = (struct cstr_view){ name, SEEN_NAME_MAX };
+	bad.repo = cstr_view_n(name, SEEN_NAME_MAX);
 	CHECK(!read_error(&bad, o));
-	bad.path = (struct cstr_view){ name, SEEN_NAME_MAX + 1 };
+	bad.path = cstr_view_n(name, SEEN_NAME_MAX + 1);
 	CHECK(read_error(&bad, o) == EINVAL);
-	bad.path = (struct cstr_view){ name, SEEN_NAME_MAX };
+	bad.path = cstr_view_n(name, SEEN_NAME_MAX);
 	CHECK(!read_error(&bad, o));
 	bad.path = CSTR_VIEW("a\xff");
 	CHECK(read_error(&bad, o) == EINVAL);
-	bad.path = (struct cstr_view){ "a\0b", 3 };
+	bad.path = cstr_view_n("a\0b", 3);
 	CHECK(read_error(&bad, o) == EINVAL);
 	bad.path = (struct cstr_view){};
 	CHECK(read_error(&bad, o) == EINVAL);
@@ -425,7 +425,7 @@ test_read (void)
 	CHECK(!read_error(&bad, o));
 	/* Null arguments. */
 	CHECK(read_error(nullptr, o) == EFAULT);
-	CHECK(read_error(&src, (struct cstr_view){ nullptr, 2 }) == EFAULT);
+	CHECK(read_error(&src, cstr_view_n(nullptr, 2)) == EFAULT);
 	CHECK(!seen_read_create(&src, o, nullptr));
 	seen_read_destroy(nullptr);
 	dstr_cleanup(&out);
@@ -506,7 +506,7 @@ test_keep (void)
 	unsigned char const *data = request.data;
 	size_t const skip = 4 + 9 * 2;
 	struct cstr_view parts[SEEN_PARTS] = {
-		{ o.data + skip, 9 * 3 + 2 },
+		cstr_view_n(o.data + skip, 9 * 3 + 2),
 		CSTR_VIEW("\n\n[askai: call c7]"),
 		CSTR_VIEW("\n\n"),
 		CSTR_VIEW("[Job 1 ended.]"),
@@ -548,7 +548,7 @@ test_keep (void)
 	 * recorded, from byte 5000 of the output on. The ring stores the
 	 * offset of the window in the whole output. */
 	request_of(&request, 10);
-	parts[0] = (struct cstr_view){ o.data + 4, 9 };
+	parts[0] = cstr_view_n(o.data + 4, 9);
 	parts[2] = parts[3] = (struct cstr_view){};
 	r = (struct seen_result){ .parts = parts, .out = o, .read = read, .at = 5000, .skip = 4,
 	                          .stamp = { .output = 6000, .number = 8, .turn = 4 } };
@@ -589,14 +589,14 @@ test_keep (void)
 	/* Refusals. The ring stays as it was after a refused call. */
 	request_of(&request, 10);
 	struct cstr_view const abc = CSTR_VIEW("abc");
-	parts[0] = (struct cstr_view){ abc.data + 2, 2 };
+	parts[0] = cstr_view_n(abc.data + 2, 2);
 	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 2 };
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	parts[0] = (struct cstr_view){};
 	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 4 };
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	/* A window that is not the bytes of out from skip on. */
-	parts[0] = (struct cstr_view){ abc.data, 2 };
+	parts[0] = cstr_view_n(abc.data, 2);
 	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 1 };
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	parts[0] = CSTR_VIEW("ab");
@@ -672,7 +672,7 @@ test_drop (void)
 	/* A result longer than the in-place storage of a dstr. */
 	char text[1000];
 	memset(text, 'x', sizeof text);
-	struct cstr_view const big = { text, sizeof text };
+	struct cstr_view const big = cstr_view_n(text, sizeof text);
 	struct seen *seen = nullptr;
 	CHECK(!keep(&seen, 1, 16, big));
 	char const *first = dstr_get(&seen->calls[0].result);

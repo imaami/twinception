@@ -185,13 +185,13 @@ test_invalid (struct ledger *l)
 	struct cstr_view const none = {};
 	CHECK(ledger_timer_set(nullptr, A, 1, none, &id) == EINVAL &&
 	      ledger_timer_set(l, A, 0, none, &id) == EINVAL &&
-	      ledger_timer_set(l, A, 1, (struct cstr_view){ nullptr, 1 }, &id) == EINVAL &&
-	      ledger_timer_set(l, A, 1, (struct cstr_view){ note, sizeof note }, &id) == EINVAL &&
+	      ledger_timer_set(l, A, 1, cstr_view_n(nullptr, 1), &id) == EINVAL &&
+	      ledger_timer_set(l, A, 1, cstr_view_n(note, sizeof note), &id) == EINVAL &&
 	      ledger_timer_set(l, A, 1, none, nullptr) == EINVAL && !id);
 	/* ledger_timer_add() fills the free timers of an array, then refuses. */
 	struct ledger_timer timers[LEDGER_TIMERS] = {};
 	CHECK(ledger_timer_add(timers, 0, 1, none) == EINVAL &&
-	      ledger_timer_add(timers, 1, 1, (struct cstr_view){ note, sizeof note }) == EINVAL);
+	      ledger_timer_add(timers, 1, 1, cstr_view_n(note, sizeof note)) == EINVAL);
 	for (uint32_t i = 0; i < LEDGER_TIMERS; ++i)
 		CHECK(!ledger_timer_add(timers, 1, i + 1, CSTR_VIEW("n")) && timers[i].id == i + 1 &&
 		      cstr_view_equal(util_text_view(&timers[i].note), CSTR_VIEW("n")));

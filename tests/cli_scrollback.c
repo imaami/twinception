@@ -38,7 +38,7 @@ static struct cstr_view
 cli_scrollback_test_sgr (enum cli_style style)
 {
 	struct cli_style_entry const *entry = &cli_style_palette(true)[style];
-	return (struct cstr_view){entry->bytes, entry->length};
+	return cstr_view_n(entry->bytes, entry->length);
 }
 
 #define CLI_SCROLLBACK_FRAME(frame, ...) do { \
@@ -355,14 +355,14 @@ cli_scrollback_test_prefix_eviction (void)
 	assert(text);
 	for (size_t i = 0; i < length; ++i)
 		text[i] = (char)('a' + i / 80 % 26);
-	assert(!cli_scrollback_append_style(&scrollback, (struct cstr_view){text, length}, CLI_STYLE_INFO));
+	assert(!cli_scrollback_append_style(&scrollback, cstr_view_n(text, length), CLI_STYLE_INFO));
 	dstr_auto before = dstr(nullptr);
 	dstr_auto after = dstr(nullptr);
 	cli_scrollback_test_render(&scrollback, 80, 3, false, &before);
 	cli_scrollback_scroll(&scrollback, 10, true);
 	cli_scrollback_test_render(&scrollback, 80, 3, false, &before);
 	memset(text, 'Z', 80);
-	assert(!cli_scrollback_append(&scrollback, (struct cstr_view){text, 80}));
+	assert(!cli_scrollback_append(&scrollback, cstr_view_n(text, 80)));
 	cli_scrollback_test_render(&scrollback, 80, 3, false, &after);
 	assert(cstr_view_equal(cstr_view_dstr(&before), cstr_view_dstr(&after)));
 	assert(scrollback.offset == 11);
@@ -385,7 +385,7 @@ cli_scrollback_test_long_line (void)
 	char *text = malloc(length);
 	assert(text);
 	memset(text, 'a', length);
-	assert(!cli_scrollback_append(&scrollback, (struct cstr_view){text, length}));
+	assert(!cli_scrollback_append(&scrollback, cstr_view_n(text, length)));
 	assert(scrollback.used.bytes == 16 * 1024 * 1024);
 	assert(scrollback.used.n == 1);
 	dstr_auto frame = dstr(nullptr);
@@ -394,7 +394,7 @@ cli_scrollback_test_long_line (void)
 	cli_scrollback_fini(&scrollback);
 	/* Repeated streaming redraws reuse the unchanged prefix's wrapping.
 	 * Checkpoints also bound the work needed to reach the visible tail. */
-	assert(!cli_scrollback_append(&scrollback, (struct cstr_view){text, 2 * 1024 * 1024}));
+	assert(!cli_scrollback_append(&scrollback, cstr_view_n(text, 2 * 1024 * 1024)));
 	for (size_t i = 0; i < 1024; ++i) {
 		assert(!cli_scrollback_append(&scrollback, CSTR_VIEW("z")));
 		cli_scrollback_test_render(&scrollback, 80, 3, false, &frame);

@@ -53,7 +53,7 @@ check_command (struct json_object *cmds,
 	struct dstr words = DSTR_INIT;
 	int e = cdb_command(&map, cmds, cstr_view(rel), &words);
 	if (!e)
-		CHECK(cstr_view_equal(cstr_view_dstr(&words), (struct cstr_view){ want, len }));
+		CHECK(cstr_view_equal(cstr_view_dstr(&words), cstr_view_n(want, len)));
 	dstr_cleanup(&words);
 	return e;
 }

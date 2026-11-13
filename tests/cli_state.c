@@ -404,7 +404,7 @@ main (int argc, char **argv)
 	char *large = malloc((1 << 20) + 1);
 	assert(large);
 	memset(large, 'x', (1 << 20) + 1);
-	assert(cli_state_add_input(first, (struct cstr_view){ large, (1 << 20) + 1 }) == EFBIG);
+	assert(cli_state_add_input(first, cstr_view_n(large, (1 << 20) + 1)) == EFBIG);
 	free(large);
 	large = nullptr;
 	char *saved_path = strdup(getenv("PATH"));

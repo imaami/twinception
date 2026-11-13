@@ -241,7 +241,7 @@ test_ordinal (void)
 	}
 	/* The number ends where the view ends, and a view without bytes is no
 	 * number. */
-	struct cstr_view part = { "1234", 2 };
+	struct cstr_view part = cstr_view_n("1234", 2);
 	uint32_t n = 77;
 	CHECK(!util_ordinal(&part, &n) && n == 12 && !part.len);
 	CHECK(util_ordinal(&part, &n) == EINVAL && n == 12);
@@ -427,7 +427,7 @@ test_cite (void)
 	struct seen_read *read = seen_read_create(&src, o, &e);
 	CHECK(read && !e);
 	struct seen *seen = nullptr;
-	struct cstr_view const window = { o.data + at + 3, 9 * 6 - 3 };
+	struct cstr_view const window = cstr_view_n(o.data + at + 3, 9 * 6 - 3);
 	struct buf request = buf();
 	request_of(&request, "", "{\"command\":\"read\"}");
 	struct cstr_view const parts[SEEN_PARTS] = { window, CSTR_VIEW("\n\n[askai: call c1]") };
@@ -925,7 +925,7 @@ test_recite (void)
 	/* cuh#2/1 is lines 2 to 6 and 8 to 9, the last without a line feed. */
 	static char const stored[] = "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n6\tline 6\n"
 	                             "8\tline 8\n9\tline 9";
-	struct cstr_view const material = { stored, sizeof stored - 1 };
+	struct cstr_view const material = cstr_view_n(stored, sizeof stored - 1);
 	struct evidence item = evidence();
 	item.kind = EVIDENCE_LINES;
 	item.item = 1;
@@ -1020,7 +1020,7 @@ test_recite (void)
 	 * reference comes from the stored range that contains the line, and a
 	 * reference with a line that no stored range contains is refused. */
 	static char const unsorted[] = "8\tline 8\n9\tline 9\n2\tline 2\n3\tline 3\n";
-	struct cstr_view const backwards = { unsorted, sizeof unsorted - 1 };
+	struct cstr_view const backwards = cstr_view_n(unsorted, sizeof unsorted - 1);
 	struct evidence older = evidence();
 	older.kind = EVIDENCE_LINES;
 	older.item = 1;
@@ -1053,7 +1053,7 @@ test_recite (void)
 	 * A reference to the lines 2 to 5 is one range, and the lines of that
 	 * range are in both stored ranges. */
 	static char const reversed[] = "4\tline 4\n5\tline 5\n2\tline 2\n3\tline 3\n";
-	struct cstr_view const reverse = { reversed, sizeof reversed - 1 };
+	struct cstr_view const reverse = cstr_view_n(reversed, sizeof reversed - 1);
 	older.ranges.items[0] = range(4, 5);
 	older.ranges.items[1] = range(2, 3);
 	hash_of(&older.result, reverse);
@@ -1081,7 +1081,7 @@ test_recite (void)
 	 * line of a reference once, from the first stored range that contains
 	 * the line. */
 	static char const twice[] = "1\tline 1\n2\tline 2\n3\tline 3\n3\tline 3\n4\tline 4\n";
-	struct cstr_view const overlap = { twice, sizeof twice - 1 };
+	struct cstr_view const overlap = cstr_view_n(twice, sizeof twice - 1);
 	older.ranges.items[0] = range(1, 3);
 	older.ranges.items[1] = range(3, 4);
 	hash_of(&older.result, overlap);
@@ -1108,7 +1108,7 @@ test_recite (void)
 	 * lines of the two ranges are next to each other in the material, so a
 	 * range of the reference can span both ranges. */
 	static char const joined[] = "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n";
-	struct cstr_view const touch = { joined, sizeof joined - 1 };
+	struct cstr_view const touch = cstr_view_n(joined, sizeof joined - 1);
 	older.ranges.items[0] = range(2, 3);
 	older.ranges.items[1] = range(4, 5);
 	hash_of(&older.result, touch);
@@ -1133,7 +1133,7 @@ test_recite (void)
 	 * the lines in one pass over the material. */
 	static char const pairs[] = "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n7\tline 7\n"
 	                            "8\tline 8\n9\tline 9\n";
-	struct cstr_view const four = { pairs, sizeof pairs - 1 };
+	struct cstr_view const four = cstr_view_n(pairs, sizeof pairs - 1);
 	CHECK(!util_grow(older.ranges.items, older.ranges.cap, 4));
 	older.ranges.items[2] = range(7, 8);
 	older.ranges.items[3] = range(9, 9);
