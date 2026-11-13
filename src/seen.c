@@ -275,8 +275,7 @@ seen_get (struct seen **p_seen)
 		return ENOMEM;
 	*seen = (struct seen){};
 	for (size_t i = 0; i < SEEN_CALLS; ++i)
-		seen->calls[i] = (struct seen_call){ .result = DSTR_INIT, .ids = DSTR_INIT,
-		                                     .stamp = { .tool = TOOL_MAX } };
+		seen->calls[i] = seen_call();
 	*p_seen = seen;
 	return 0;
 }

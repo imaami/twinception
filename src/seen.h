@@ -57,6 +57,7 @@
 #include "flag.h"
 #include "oid.h"
 #include "range.h"
+#include "tool.h"
 #include "util.h"
 
 struct json_object;
@@ -177,6 +178,17 @@ struct seen_call {
 	                                 whole. The window is at the start of
 	                                 result. */
 };
+
+/** Returns a call of the ring that is not in use. The result and the
+ *  identifiers are empty, the tool is unknown, and every other member is
+ *  zero.
+ */
+static force_inline struct seen_call
+seen_call (void)
+{
+	return (struct seen_call){ .result = DSTR_INIT, .ids = DSTR_INIT,
+	                           .stamp = { .tool = TOOL_MAX } };
+}
 
 /** An evidence item that askai printed to the turns. */
 struct seen_item {
