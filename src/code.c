@@ -301,7 +301,7 @@ code_record (struct cstr_view     *text,
              struct seen_source   *src)
 {
 	struct cstr_view rest = *text;
-	struct cstr_view line;
+	struct cstr_view line = {};
 	if (!cstr_view_starts(rest, CSTR_VIEW("lines ")) || !cstr_view_cut(&rest, '\n', &line))
 		return false;
 	line = cstr_view_slice(line, sizeof "lines " - 1, SIZE_MAX);
@@ -394,7 +394,7 @@ code_args (struct code const  *code,
 {
 	struct json_object *of[CODE_ARGS] = {};
 	uint64_t seen;
-	struct cstr_view other;
+	struct cstr_view other = {};
 	if (jb_args(args, code_arg_names, CODE_ARGS, UINT64_MAX, of, &seen, &other))
 		return mcp_slot_tellf(slot, TOOL_FAILED, "%.*s is not an argument of the code "
 		                      "tool.", (int)other.len, other.data), EINVAL;
@@ -458,13 +458,13 @@ code_args (struct code const  *code,
 	e = e ? e : code_word(call, CXI_KEY_NAME, name);
 	e = e ? e : code_word(call, CXI_KEY_LINE,
 	                      line ? util_decimal(digits + sizeof digits, line, 0)
-	                           : (struct cstr_view){});
+	                           : cstr_view(nullptr));
 	for (i = 0; !e && i < n; ++i)
 		e = code_word(call, CXI_KEY_WARNING, jb_view(jb_at(warnings, i)));
 	e = e ? e : code_word(call, CXI_KEY_CDB, cstr_view(cfg->codes[r]));
 	e = e ? e : code_word(call, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
 	return e ? e : code_word(call, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
-	                         ? CSTR_VIEW("1") : (struct cstr_view){});
+	                         ? CSTR_VIEW("1") : cstr_view(nullptr));
 }
 
 /* Starts a call of the code tool in @p slot with the arguments @p args.

@@ -2070,7 +2070,7 @@ config_plugin (struct config      *cfg,
 		};
 		struct json_object *of[array_size(names)] = {};
 		uint64_t seen;
-		struct cstr_view other;
+		struct cstr_view other = {};
 		if (jb_args(v, names, array_size(names), UINT64_MAX, of, &seen, &other))
 			return config_complain(cfg, cfg->path, "plugins: unknown member of a "
 			                       "plugin: %.*s", (int)other.len, other.data);

@@ -33,7 +33,7 @@ autocomplete_file_create (int *const e)
 	*file = (struct autocomplete_file){
 		.found.lines = dstr(nullptr),
 		.directory   = dstr(nullptr),
-		.home        = jb_is_text(home) ? home : (struct cstr_view){},
+		.home        = jb_is_text(home) ? home : cstr_view(nullptr),
 	};
 	*e = 0;
 	return file;
@@ -95,7 +95,7 @@ autocomplete_file_complete (struct autocomplete_file *const         file,
 	struct cstr_view const prefix = cstr_view_slice(line, command.len, cursor - command.len);
 	char const *const slash = memchr(line.data + cursor, '/', line.len - cursor);
 	struct cstr_view const suffix = slash ? cstr_view_slice(line, (size_t)(slash - line.data) + 1, SIZE_MAX)
-	                                      : (struct cstr_view){};
+	                                      : cstr_view(nullptr);
 	size_t directory_len = prefix.len;
 	while (directory_len && prefix.data[directory_len - 1] != '/')
 		--directory_len;

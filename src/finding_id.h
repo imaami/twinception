@@ -47,7 +47,7 @@ finding_id_parse (struct finding_id *id,
                   struct cstr_view   text)
 {
 	*id = (struct finding_id){};
-	struct cstr_view name;
+	struct cstr_view name = {};
 	uint32_t number;
 	uint32_t item = 0;
 	if (!cstr_view_cut(&text, '#', &name) || !member_name_valid(name) ||

@@ -41,7 +41,7 @@ cdb_walk (struct dstr      *out,
           struct cstr_view  rest)
 {
 	bool ok = true;
-	for (struct cstr_view part; ok; ) {
+	for (struct cstr_view part = {}; ok; ) {
 		if (util_path_next(&rest, &part)) {
 			char const *slash = memrchr(dstr_get(out), '/', dstr_len(out));
 			ok = !slash || dstr_erase(out, (size_t)(slash - dstr_get(out)), SIZE_MAX);
@@ -159,7 +159,7 @@ cdb_words (struct cdb_map const *map,
 		                            cstr_view_equal(cstr_view_dstr(tmp), file)))
 			continue;
 		else if (*a.data == '/')
-			e = cdb_path(map, dir, (struct cstr_view){}, a, tmp, words);
+			e = cdb_path(map, dir, cstr_view(nullptr), a, tmp, words);
 		else if (!dstr_cat_n(words, a.data, a.len + 1))
 			e = ENOMEM;
 	}
@@ -210,7 +210,7 @@ cdb_command (struct cdb_map const *map,
 	if (!e && header && !dstr_cat_n(words, "-x\0c-header", sizeof "-x\0c-header"))
 		e = ENOMEM;
 	if (!e)
-		e = cdb_path(map, map->top, (struct cstr_view){}, w, &tmp, words);
+		e = cdb_path(map, map->top, cstr_view(nullptr), w, &tmp, words);
 	dstr_cleanup(&tmp);
 	dstr_cleanup(&file);
 	dstr_cleanup(&want);

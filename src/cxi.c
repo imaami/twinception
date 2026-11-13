@@ -156,7 +156,7 @@ cxi_out_rel (struct cxi_out *out,
              char const     *s,
              struct dstr    *norm)
 {
-	if (*s == '/' && cdb_norm(norm, (struct cstr_view){}, cstr_view(s)))
+	if (*s == '/' && cdb_norm(norm, cstr_view(nullptr), cstr_view(s)))
 		out->e = ENOMEM;
 	struct cstr_view const p = dstr_len(norm) ? cstr_view_dstr(norm) : cstr_view(s);
 	return out->tree.len && cstr_view_starts(p, out->tree)
@@ -402,7 +402,7 @@ cxi_find_line (char const       *text,
                unsigned          n,
                struct cstr_view *line)
 {
-	*line = (struct cstr_view){};
+	*line = cstr_view(nullptr);
 	if (!text)
 		return 0;
 	size_t total = 0;
@@ -476,7 +476,7 @@ cxi_declaration (struct cxi *x,
 	last = clang_Cursor_isNull(body) ? last : column == 1 && line > 1 ? line - 1 : line;
 	size_t size = 0;
 	char const *text = file ? clang_getFileContents(x->tu, file, &size) : nullptr;
-	struct cstr_view here;
+	struct cstr_view here = {};
 	size_t const total = cxi_find_line(text, size, first, &here);
 	last = last < first ? first : last - first < CXI_LINES ? last : first + CXI_LINES - 1;
 	last = last < total ? last : (unsigned)total;
@@ -939,7 +939,7 @@ cxi_lookup_line (struct cxi *x,
 	CXFile const file = clang_getFile(x->tu, x->file);
 	size_t size = 0;
 	char const *text = clang_getFileContents(x->tu, file, &size);
-	struct cstr_view words;
+	struct cstr_view words = {};
 	size_t const total = cxi_find_line(text, size, line, &words);
 	size_t const len = strlen(name);
 	/* A cursor inside a longer word refers to a name that is not @p name. */
@@ -1277,7 +1277,7 @@ cxi_words (struct cxi  *x,
 {
 	for (; *at < argc && strcmp(argv[*at], "--"); ++*at) {
 		struct cstr_view value = cstr_view(argv[*at]);
-		struct cstr_view key;
+		struct cstr_view key = {};
 		size_t const k = cstr_view_cut(&value, '=', &key)
 		                 ? cstr_view_index(cxi_keys, CXI_KEYS, key) : CXI_KEYS;
 		bool const warning = k == CXI_KEY_WARNING && x->n_warnings < CXI_WARNINGS;
@@ -1555,7 +1555,7 @@ cxi_cache_export (struct cxi_cache *cache,
 	size_t files = 0;
 	uint64_t bytes = 0;
 	/* The size of a submodule is "-", which util_digits() reads as 0. */
-	for (struct cstr_view field; cstr_view_cut(&rest, '\0', &field); ++files) {
+	for (struct cstr_view field = {}; cstr_view_cut(&rest, '\0', &field); ++files) {
 		uint64_t size;
 		(void)util_digits(field.data, field.len, UINT64_MAX, &size);
 		bytes += size;
@@ -1740,7 +1740,7 @@ cxi_run (struct cxi         *x,
 	};
 	struct dstr words = DSTR_INIT;
 	/* clang's names are compared with the tree in normal form. */
-	if (cdb_norm(&cache.dir, (struct cstr_view){}, key[CXI_KEY_CACHE]) ||
+	if (cdb_norm(&cache.dir, cstr_view(nullptr), key[CXI_KEY_CACHE]) ||
 	    !dstr_printf(&cache.dir, "/%s/", repo.data) ||
 	    !dstr_printf(&cache.tree, "%stree/", dstr_get(&cache.dir)))
 		e = ENOMEM;
@@ -1759,7 +1759,7 @@ cxi_run (struct cxi         *x,
 	}
 	if (!e)
 		e = cxi_parse(x, dstr_get(&cache.tree), &words, fd);
-	x->out.tree = (struct cstr_view){};
+	x->out.tree = cstr_view(nullptr);
 	dstr_cleanup(&words);
 	util_close(&cache.state);
 	util_close(&cache.fds.keep);
@@ -1801,7 +1801,7 @@ main (int    argc,
 		char const *end = memrchr(text, '\n', TOOL_TEXT_MAX - (sizeof cut - 1));
 		len = end ? (size_t)(end - text) : 0;
 	}
-	struct cstr_view const record = e ? (struct cstr_view){} : cstr_view_dstr(&x.record);
+	struct cstr_view const record = e ? cstr_view(nullptr) : cstr_view_dstr(&x.record);
 	if (util_write_all(fd, record.data, record.len) || util_write_all(fd, text, len) ||
 	    (over && util_write_all(fd, cut, sizeof cut - 1)))
 		e = EIO;

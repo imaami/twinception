@@ -193,7 +193,7 @@ evidence_command (struct seen_call const *c,
 static bool
 evidence_line (struct cstr_view *text)
 {
-	struct cstr_view line;
+	struct cstr_view line = {};
 	if (!text->len)
 		return false;
 	if (!cstr_view_cut(text, '\n', &line))

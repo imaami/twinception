@@ -113,7 +113,7 @@ cli_tool_content (struct cli_tool    *tool,
 		struct json_object *structured = jb_get(result, "structuredContent");
 		if (!structured)
 			return cli_error_set(error, EPROTO, "AskAI returned no tool content");
-		struct cstr_view wire;
+		struct cstr_view wire = {};
 		int e = cli_client_wire(structured, JSON_C_TO_STRING_PRETTY, &wire, error);
 		return e ? e : cli_ui_message(console, wire);
 	}

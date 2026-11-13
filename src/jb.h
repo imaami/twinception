@@ -141,7 +141,7 @@ static inline struct cstr_view
 jb_view (struct json_object *val)
 {
 	if (!json_object_is_type(val, json_type_string))
-		return (struct cstr_view){};
+		return cstr_view(nullptr);
 	return cstr_view_n(json_object_get_string(val), (size_t)json_object_get_string_len(val));
 }
 
@@ -159,7 +159,7 @@ jb_text (struct json_object *val,
 {
 	struct cstr_view const t = jb_view(val);
 	return t.data && t.len >= min && t.len <= max &&
-	       (set ? strspn(t.data, set) : strlen(t.data)) == t.len ? t : (struct cstr_view){};
+	       (set ? strspn(t.data, set) : strlen(t.data)) == t.len ? t : cstr_view(nullptr);
 }
 
 /** Returns the JSON text of @p val, as JB_WIRE writes it, until @p val

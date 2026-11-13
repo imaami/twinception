@@ -240,7 +240,7 @@ journal_open_path (struct journal *j,
 	int fd = open(*path == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	int e = fd < 0 ? errno : 0;
 	struct cstr_view rest = cstr_view(path);
-	struct cstr_view part;
+	struct cstr_view part = {};
 	while (!e && !(e = util_path_next(&rest, &part)) && part.len) {
 		UTIL_TEXT(NAME_MAX + 1) name;
 		int next = -1;

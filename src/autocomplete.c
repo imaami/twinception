@@ -189,7 +189,7 @@ autocomplete_escape (char mark,
                      char byte)
 {
 	return mark == '\'' && byte == '\'' ? CSTR_VIEW("'\\'")
-	     : mark == '"' && (byte == '"' || byte == '\\') ? CSTR_VIEW("\\") : (struct cstr_view){};
+	     : mark == '"' && (byte == '"' || byte == '\\') ? CSTR_VIEW("\\") : cstr_view(nullptr);
 }
 
 static int
@@ -1446,7 +1446,7 @@ autocomplete_parse_call (struct autocomplete             *ac,
 		return ENOENT;
 	}
 	struct cstr_view rest = ac->tokens.n > 2 ? cstr_view_slice(line, tokens[2].begin, SIZE_MAX)
-	                                         : (struct cstr_view){};
+	                                         : cstr_view(nullptr);
 	struct json_object *result;
 	if (rest.len && rest.data[0] == '{') {
 		error = autocomplete_json_parse(ac, rest, &result);

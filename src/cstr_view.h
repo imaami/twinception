@@ -208,7 +208,7 @@ cstr_view_sse_data (struct cstr_view *line)
 {
 	line->len -= line->len && line->data[line->len - 1] == '\r';
 	if (!cstr_view_starts(*line, CSTR_VIEW("data:")))
-		return (struct cstr_view){};
+		return cstr_view(nullptr);
 	struct cstr_view const data = cstr_view_slice(*line, sizeof "data:" - 1, SIZE_MAX);
 	return cstr_view_slice(data, data.len && *data.data == ' ', SIZE_MAX);
 }

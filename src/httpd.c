@@ -759,7 +759,7 @@ httpd_conn_field (struct httpd_conn const *conn,
                   struct httpd_field       f)
 {
 	char const *head = (char const *)buf_peek(&conn->in).ptr;
-	return f.off ? cstr_view_n(head + f.off, f.len) : (struct cstr_view){};
+	return f.off ? cstr_view_n(head + f.off, f.len) : cstr_view(nullptr);
 }
 
 /* The address a client is known by: IPv4 (as IPv4-mapped IPv6), or for other
@@ -1159,7 +1159,7 @@ httpd_conn_respond (struct httpd_conn      *conn,
                     struct cstr_view const *body,
                     size_t                  n_body)
 {
-	struct cstr_view const type = body ? CSTR_VIEW(STREAM_JSON_FIELD) : (struct cstr_view){};
+	struct cstr_view const type = body ? CSTR_VIEW(STREAM_JSON_FIELD) : cstr_view(nullptr);
 	if (!httpd_conn_head(conn, status, type, extra, n_extra, cstr_view_total(body, n_body)))
 		(void)httpd_conn_put(conn, body, n_body);
 	conn->req.flags |= REQ_DONE;
@@ -1231,7 +1231,7 @@ httpd_conn_fail (struct httpd_conn *conn,
 	if (conn->req.flags & REQ_REPLIED)
 		httpd_conn_doom(conn);
 	else
-		httpd_conn_error(conn, status, (struct cstr_view){}, nullptr, 0);
+		httpd_conn_error(conn, status, cstr_view(nullptr), nullptr, 0);
 }
 
 static void
@@ -1328,7 +1328,7 @@ httpd_stream_end (struct stream *s,
 	conn->req.flags &= ~(REQ_OPEN | REQ_WAITS | REQ_WRITABLE);
 	conn->stream.user = nullptr;
 	if (!(was & REQ_REPLIED)) {
-		httpd_conn_error(conn, 500, (struct cstr_view){}, nullptr, 0);
+		httpd_conn_error(conn, 500, cstr_view(nullptr), nullptr, 0);
 	} else if (error) {
 		/* The client sees the body cut short as the connection closes. */
 		conn->flags |= CONN_CLOSING;
@@ -1374,7 +1374,7 @@ httpd_bearer (struct cstr_view auth)
 	struct cstr_view const scheme = CSTR_VIEW("Bearer");
 	if (!cstr_view_starts_case(auth, scheme) ||
 	    (auth.len > scheme.len && auth.data[scheme.len] != ' '))
-		return (struct cstr_view){};
+		return cstr_view(nullptr);
 	return cstr_view_slice(auth, scheme.len + 1, SIZE_MAX);
 }
 
@@ -1693,7 +1693,7 @@ httpd_conn_begin (struct httpd_conn *conn)
 	             span(head, (size_t)req->target.off - 1),
 	             span(head + req->target.off, req->target.len), length);
 	/* The text is in the policy, which a reload can free (stream.h). */
-	conn->stream.grant.who = (struct cstr_view){};
+	conn->stream.grant.who = cstr_view(nullptr);
 	if ((req->flags & (REQ_OPEN | REQ_BODY_IN)) == (REQ_OPEN | REQ_BODY_IN))
 		app->on_body(&conn->stream, span(nullptr, 0), true);
 }
@@ -1756,7 +1756,7 @@ httpd_conn_parse (struct httpd_conn *conn,
 	size_t head = httpd_conn_head_length(conn, in);
 	if (!head)
 		return in.len < srv->lim.head ? NEXT_INPUT
-		       : httpd_conn_refuse(conn, 431, (struct cstr_view){});
+		       : httpd_conn_refuse(conn, 431, cstr_view(nullptr));
 	struct cstr_view why = {};
 	unsigned status = httpd_conn_admit(conn, (char *)in.ptr, head, &why);
 	if (status)
@@ -3214,7 +3214,7 @@ httpd_home_create (struct loop            *loop,
 		.spare_fd = -1
 	};
 	struct policy_grant g;
-	if (policy_grant(cfg->policy, (struct cstr_view){}, POLICY_REMOTE, nullptr, &g) ==
+	if (policy_grant(cfg->policy, cstr_view(nullptr), POLICY_REMOTE, nullptr, &g) ==
 	    POLICY_GRANTED && g.tools)
 		home->flags = HOME_ANYONE;
 	httpd_home_budget(home);

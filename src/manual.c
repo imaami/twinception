@@ -476,7 +476,7 @@ manual_fetch_rendered (struct child *c)
 	struct manual_fetch *f = c->owner;
 	size_t const note = c->end.flags & CHILD_CUT ? manual_cut.len : 0;
 	struct tool_scratch *scratch = f->ml->scratch;
-	struct cstr_view const why = note ? (struct cstr_view){}
+	struct cstr_view const why = note ? cstr_view(nullptr)
 	                             : child_end_why(&c->end, "man", MANUAL_SECONDS * NS, c->max,
 	                                             scratch->text, sizeof scratch->text);
 	if (why.data) {
@@ -486,7 +486,7 @@ manual_fetch_rendered (struct child *c)
 	size_t const len = buf_peek(&c->out).len;
 	struct manual_page *page = malloc(sizeof *page + len + note);
 	if (!page) {
-		manual_fetch_fail(f, (struct cstr_view){});
+		manual_fetch_fail(f, cstr_view(nullptr));
 		return;
 	}
 	page->ctime = f->st.st_ctim;
@@ -570,7 +570,7 @@ manual_fetch_searched (struct child *c)
 	                        "%s:", key);
 	uint32_t const lead = len;
 	/* A line is "NAME (SECTION) - what the page is about". */
-	for (struct cstr_view line, page; cstr_view_cut(&rest, '\n', &line); ) {
+	for (struct cstr_view line = {}, page = {}; cstr_view_cut(&rest, '\n', &line); ) {
 		if (cstr_view_cut(&line, ' ', &page) && cstr_view_starts_case(page, name) &&
 		    cstr_view_starts(line, CSTR_VIEW("(")) && cstr_view_cut(&line, ')', &line))
 			manual_list_add(&len, why, sizeof scratch->text, manual_more_pages,
@@ -589,7 +589,7 @@ manual_fetch_searched (struct child *c)
 static struct cstr_view
 manual_path_section (struct cstr_view path)
 {
-	struct cstr_view section = {}, part;
+	struct cstr_view section = {}, part = {};
 	while (cstr_view_cut(&path, '/', &part))
 		continue;
 	while (cstr_view_cut(&path, '.', &part))
@@ -627,7 +627,7 @@ manual_fetch_found (struct child *c)
 	 * passed to manual_fetch_fail() before the next one is written. */
 	struct tool_scratch *scratch = f->ml->scratch;
 	char *const text = scratch->text;
-	struct cstr_view const why = c->end.flags & CHILD_CUT ? (struct cstr_view){}
+	struct cstr_view const why = c->end.flags & CHILD_CUT ? cstr_view(nullptr)
 	                             : child_end_why(&c->end, "man", MANUAL_SECONDS * NS, c->max,
 	                                             text, sizeof scratch->text);
 	if (why.data) {
@@ -646,7 +646,7 @@ manual_fetch_found (struct child *c)
 	(void)util_text_printf_(&len, text, sizeof scratch->text, "Pages named %s are in more than "
 	                        "one section:", f->alias->key);
 	uint32_t digits = 0;  /* bit d: a page in section d */
-	for (struct cstr_view rest = paths, line; cstr_view_cut(&rest, '\n', &line); ) {
+	for (struct cstr_view rest = paths, line = {}; cstr_view_cut(&rest, '\n', &line); ) {
 		struct cstr_view const s = manual_path_section(line);
 		if (s.len == 1)
 			digits |= 1u << (*s.data - '0');
@@ -672,7 +672,7 @@ manual_fetch_found (struct child *c)
 	child_destroy(&f->child);
 	f->file = file;
 	if (!file) {
-		manual_fetch_fail(f, (struct cstr_view){});
+		manual_fetch_fail(f, cstr_view(nullptr));
 		return;
 	}
 	if (stat(file->key, &f->st)) {
@@ -831,7 +831,8 @@ manual_step (struct mcp_slot *slot)
 	struct cstr_view const heading = jb_view(call->heading);
 	struct loop *loop = mcp_slot_loop(slot);
 	bool done = false;
-	for (struct cstr_view line; !done && loop_lines_next(&call->lines, loop, text, &line); )
+	for (struct cstr_view line = {};
+	     !done && loop_lines_next(&call->lines, loop, text, &line); )
 		done = manual_call_line(call, text, heading, line);
 	if (!done && call->lines.start < text.len) {
 		(void)mcp_slot_ready(slot);
@@ -1093,7 +1094,7 @@ manual_start (struct mcp_slot    *slot,
 		               !memchr(head.data, '\n', head.len))
 		? CSTR_VIEW("The heading argument must be 1 to 128 bytes without a line "
 		            "feed, such as SYNOPSIS. The first byte must not be a space.")
-		: (struct cstr_view){};
+		: cstr_view(nullptr);
 	static_assert(MANUAL_NAME == 128 && MANUAL_SECTION == 16 && MANUAL_HEADING == 128,
 	              "the problems say");
 	if (problem.data) {

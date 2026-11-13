@@ -241,7 +241,7 @@ cli_state_commit (struct cli_state *state)
 	(void)dstr_clear(&state->tree);
 	struct oid blob;
 	int e = cli_state_git(state, (char const *[]){ "hash-object", "-w", "--", dstr_get(&state->name), nullptr },
-	                      (struct cstr_view){}, -1, &blob);
+	                      cstr_view(nullptr), -1, &blob);
 	if (!e)
 		e = cli_state_tree_entry(state, &blob, "snapshot");
 	/* The identity of a writer never changes: write its blob once. */
@@ -288,7 +288,7 @@ cli_state_commit (struct cli_state *state)
 	 * gc.auto to 6700, the default of git, for this gc only, so that
 	 * gc --auto packs the loose objects of the history repository. */
 	(void)cli_state_git(state, (char const *[]){ "-c", "gc.auto=6700", "gc", "--auto", "--quiet", nullptr },
-	                    (struct cstr_view){}, -1, nullptr);
+	                    cstr_view(nullptr), -1, nullptr);
 	return 0;
 }
 
@@ -413,7 +413,7 @@ cli_state_snapshot (struct cli_state *state,
 	if (ftruncate(fd, 0) || lseek(fd, 0, SEEK_SET) < 0)
 		return errno;
 	int e = cli_state_git(state, (char const *[]){ "cat-file", "blob", dstr_get(&state->scratch), nullptr },
-	                      (struct cstr_view){}, fd, nullptr);
+	                      cstr_view(nullptr), fd, nullptr);
 	if (!e && lseek(fd, 0, SEEK_SET) < 0)
 		e = errno;
 	char magic[sizeof cli_state_magic - 1];
@@ -496,7 +496,7 @@ cli_state_load (struct cli_state *state,
 	if (!e)
 		e = cli_state_git(state, (char const *[]){ "for-each-ref", "--sort=-committerdate", option,
 		                      "--format=%(objectname)", dstr_get(&state->scratch), nullptr },
-		                      (struct cstr_view){}, -1, nullptr);
+		                      cstr_view(nullptr), -1, nullptr);
 	size_t n = 1;
 	for (struct cstr_view out = cli_state_output(state); !e && out.len; )
 		if (n == array_size(tips) || oid_init_field(&tips[n], &out, '\n'))
@@ -543,7 +543,7 @@ cli_state_repository_open (struct cli_state *state)
 		if (!S_ISREG(status.st_mode))
 			return EACCES;
 		int e = cli_state_git(state, (char const *[]){ "config", "--local", "--get", "askai.cliHistoryVersion", nullptr },
-		                      (struct cstr_view){}, -1, nullptr);
+		                      cstr_view(nullptr), -1, nullptr);
 		if (!e && !cstr_view_equal(cli_state_output(state), CSTR_VIEW("1\n")))
 			e = EINVAL;
 		return e;
@@ -553,10 +553,10 @@ cli_state_repository_open (struct cli_state *state)
 	int e = util_dir_empty(state->directory, &cli_state_init_lock, 1);
 	if (!e)
 		e = cli_state_git(state, (char const *[]){ GIT_INIT_BARE_WORDS("history"), nullptr },
-		                  (struct cstr_view){}, -1, nullptr);
+		                  cstr_view(nullptr), -1, nullptr);
 	if (!e)
 		e = cli_state_git(state, (char const *[]){ "config", "--local", "askai.cliHistoryVersion", "1", nullptr },
-		                  (struct cstr_view){}, -1, nullptr);
+		                  cstr_view(nullptr), -1, nullptr);
 	return e;
 }
 
@@ -616,7 +616,7 @@ cli_state_repository (struct cli_state *state)
 	if (e)
 		return e;
 	e = cli_state_git(state, (char const *[]){ "rev-parse", "--verify", "--quiet", dstr_get(&state->latest), nullptr },
-	                  (struct cstr_view){}, -1, &state->parent);
+	                  cstr_view(nullptr), -1, &state->parent);
 	/* The parent is empty if the latest ref of the group does not exist
 	 * yet. */
 	if (e || !oid_len(&state->parent))
@@ -718,7 +718,7 @@ struct cstr_view
 cli_state_recovery_file (struct cli_state const *state)
 {
 	return state && (state->flags & CLI_STATE_SNAPSHOT_PENDING) ? cstr_view_dstr(&state->name)
-	                                                            : (struct cstr_view){};
+	                                                            : cstr_view(nullptr);
 }
 
 size_t
@@ -733,7 +733,7 @@ cli_state_input_at (struct cli_state const *state,
 {
 	return state && index < state->ring.used.n
 	       ? cstr_view_dstr(&state->inputs[cli_state_ring_slot(&state->ring, index)])
-	       : (struct cstr_view){};
+	       : cstr_view(nullptr);
 }
 
 size_t

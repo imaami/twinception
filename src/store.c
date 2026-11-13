@@ -98,7 +98,7 @@ store_open_common (struct store *store,
 	if (e)
 		return e;
 	struct cstr_view rest = cstr_view_span(buf_peek(out));
-	struct cstr_view line;
+	struct cstr_view line = {};
 	if (git_run_path(&rest, &line) || rest.len)
 		return EIO;
 	char *common = strndup(line.data, line.len);
@@ -381,7 +381,7 @@ store_kind (struct cstr_view  line,
 	*oid = (struct oid){};
 	if (cstr_view_ends(line, CSTR_VIEW(" missing")))
 		return STORE_KIND_MISSING;
-	struct cstr_view kind;
+	struct cstr_view kind = {};
 	if (oid_init_field(oid, &line, ' ') || !cstr_view_cut(&line, ' ', &kind))
 		return STORE_KIND_OTHER;
 	*size = line;
@@ -472,7 +472,7 @@ store_checked (struct span  out,
 	bool dir_file = false;
 	enum store_kind kind = STORE_KIND_OTHER;
 	struct cstr_view rest = cstr_view_span(out);
-	struct cstr_view line, size = {};
+	struct cstr_view line = {}, size = {};
 	struct oid oid;
 	for (; rest.len; ++lines) {
 		if (!cstr_view_cut(&rest, '\n', &line))

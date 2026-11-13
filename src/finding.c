@@ -96,7 +96,7 @@ finding_path_number (struct cstr_view path)
 	    !cstr_view_ends(path, tail))
 		return 0;
 	struct cstr_view n = cstr_view_slice(path, head.len, path.len - head.len - tail.len);
-	struct cstr_view d;
+	struct cstr_view d = {};
 	uint64_t dir;
 	uint32_t number;
 	if (!cstr_view_cut(&n, '/', &d) || util_number(d.data, d.len, UINT32_MAX, &dir) ||
@@ -262,7 +262,7 @@ finding_render (struct finding const        *f,
 {
 	/* A new claim makes the claim of f the claim before of the change c. */
 	struct cstr_view now = cstr_view_dstr(&f->claim);
-	struct cstr_view was = c ? cstr_view_dstr(&c->claim_before) : (struct cstr_view){};
+	struct cstr_view was = c ? cstr_view_dstr(&c->claim_before) : cstr_view(nullptr);
 	if (claim.len) {
 		was = now;
 		now = claim;

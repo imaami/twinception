@@ -522,7 +522,7 @@ cli_history_input (struct cli       *cli,
 {
 	if (line && input.len && input.data[input.len - 1] == '\n')
 		--input.len;
-	return cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_INPUT, input, (struct cstr_view){}), error);
+	return cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_INPUT, input, cstr_view(nullptr)), error);
 }
 
 /** Mark the client busy or idle; manual tool calls keep it shown busy. */
@@ -717,7 +717,7 @@ cli_tools (struct cli       *cli,
 		int e = cli_ui_info(cli->console, entry->name);
 		if (!e && entry->description.len)
 			e = cli_ui_message(cli->console, entry->description);
-		struct cstr_view wire;
+		struct cstr_view wire = {};
 		if (!e)
 			e = cli_client_wire(entry->schema, JSON_C_TO_STRING_PRETTY, &wire, error);
 		return e ? e : cli_ui_message(cli->console, wire);
@@ -730,7 +730,7 @@ cli_tools (struct cli       *cli,
 		(void)cstr_view_cut(&summary, '\n', &summary);
 		struct cli_console_span const spans[] = {
 			{entry->name, CLI_STYLE_RESET},
-			{summary.len ? CSTR_VIEW("  ") : (struct cstr_view){}, CLI_STYLE_RESET},
+			{summary.len ? CSTR_VIEW("  ") : cstr_view(nullptr), CLI_STYLE_RESET},
 			{summary, CLI_STYLE_RESET}, {CSTR_VIEW("\n"), CLI_STYLE_RESET},
 		};
 		int e = cli_console_print(cli->console, spans, array_size(spans));
@@ -884,7 +884,7 @@ cli_command_run (struct cli               *cli,
 		size_t count = json_object_array_length(cli->history);
 		if (count)
 			(void)json_object_array_del_idx(cli->history, 0, count);
-		int e = cli->saved ? cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_CLEAR, (struct cstr_view){}, (struct cstr_view){}), error) : 0;
+		int e = cli->saved ? cli_save_error(cli, cli_history_update(cli, CLI_HISTORY_CLEAR, cstr_view(nullptr), cstr_view(nullptr)), error) : 0;
 		return e || !(cli->options->flags & CLI_TTY) ? e : cli_ui_info(cli->console, CSTR_VIEW("Conversation cleared."));
 	}
 	case CLI_COMMAND_REGEN: {
@@ -912,7 +912,7 @@ cli_immediate_command (void             *ctx,
 	struct cli *cli = ctx;
 	if (cli->flags & CLI_QUITTING)
 		return false;
-	struct cstr_view rest;
+	struct cstr_view rest = {};
 	struct cli_command const *command = cli_command_parse(line, &rest);
 	return command && (command->id == CLI_COMMAND_QUIT || command->id == CLI_COMMAND_EXIT ||
 	                   ((cli->flags & CLI_BUSY) && command->policy != CLI_COMMAND_WAIT));
@@ -951,7 +951,7 @@ cli_immediate (struct cli *cli)
 	int e = cli_console_take_immediate(cli->console, &text, &ready);
 	if (e || !ready)
 		return e;
-	struct cstr_view rest;
+	struct cstr_view rest = {};
 	struct cli_command const *command = cli_command_parse(cstr_view_dstr(&text), &rest);
 	if (!command)
 		return EINVAL;
@@ -972,7 +972,7 @@ cli_immediate (struct cli *cli)
 	enum cli_action action;
 	e = cli_command_run(cli, &text, command, rest, &action, &error);
 	if (e)
-		e = cli_ui_error(cli->console, cli_error_text(&error, e), (struct cstr_view){});
+		e = cli_ui_error(cli->console, cli_error_text(&error, e), cstr_view(nullptr));
 	if (!e && cli->saved)
 		e = cli_input_append(cli, &text, CLI_INPUT_HANDLED);
 	return e;
@@ -1100,7 +1100,7 @@ cli_chat_error (struct cli       *cli,
 	}
 	if (!(flags & CLI_TTY) || ferror(stdout))
 		return e;
-	return cli_ui_error(cli->console, cli_error_text(error, e), (struct cstr_view){});
+	return cli_ui_error(cli->console, cli_error_text(error, e), cstr_view(nullptr));
 }
 
 /* Move the first queued input into prompt. An input that a command
@@ -1146,7 +1146,7 @@ cli_chat_read (struct cli       *cli,
 	}
 	bool eof;
 	e = cli_console_read(cli->console, prompt, options->flags & CLI_MULTILINE, &eof,
-	                     options->flags & CLI_TTY ? CSTR_VIEW("\n> ") : (struct cstr_view){});
+	                     options->flags & CLI_TTY ? CSTR_VIEW("\n> ") : cstr_view(nullptr));
 	if (!e && eof) {
 		cli->flags |= CLI_QUITTING;
 		return EAGAIN;

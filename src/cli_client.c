@@ -41,7 +41,7 @@ cli_client_wire (struct json_object *value,
                  struct cstr_view   *wire,
                  struct cli_error   *error)
 {
-	*wire = (struct cstr_view){};
+	*wire = cstr_view(nullptr);
 	if (!value)
 		return ENOMEM;
 	wire->data = json_object_to_json_string_length(value, flags, &wire->len);
@@ -161,7 +161,7 @@ static int cli_client_response_header(struct cstr_view line, void *context)
 		response->sse = false;
 		dstr_clear(&response->session);
 	}
-	struct cstr_view value = line, key;
+	struct cstr_view value = line, key = {};
 	if (!cstr_view_cut(&value, ':', &key))
 		return 0;
 	value = cstr_view_trim(value);
@@ -238,7 +238,7 @@ static int cli_client_notification(struct cli_client *client, char const *method
 	cli_json_auto message = cli_client_packet(method, params, 0);
 	struct cli_client_response response;
 	cli_client_response_init(&response, client, nullptr, nullptr, 0, error);
-	struct cstr_view wire;
+	struct cstr_view wire = {};
 	int e = cli_client_wire(message, JB_WIRE, &wire, error);
 	if (!e)
 		e = cli_client_post(client, wire, &response, flags, timeout);
@@ -350,7 +350,7 @@ int cli_client_rpc(struct cli_client *client, char const *method,
 	cli_json_auto message = cli_client_packet(method, params, id);
 	struct cli_client_response response;
 	cli_client_response_init(&response, client, notify, context, id, error);
-	struct cstr_view wire;
+	struct cstr_view wire = {};
 	e = cli_client_wire(message, JB_WIRE, &wire, error);
 	long timeout = cli_client_timeout(method, id);
 	if (!e)
@@ -428,7 +428,7 @@ cli_client_call_start (struct cli_client    *client,
                        struct cli_error     *error)
 {
 	cli_json_auto message = cli_client_packet(method, params, id);
-	struct cstr_view wire;
+	struct cstr_view wire = {};
 	int e = cli_client_wire(message, JB_WIRE, &wire, error);
 	if (e)
 		return e;
@@ -524,12 +524,12 @@ static struct cstr_view
 cli_client_file_name (struct cstr_view line)
 {
 	if (!cstr_view_ends(line, CSTR_VIEW(")")))
-		return (struct cstr_view){};
+		return cstr_view(nullptr);
 	size_t open = line.len - 1;
 	while (open && line.data[open] != '(')
 		--open;
 	if (open < 3 || !cstr_view_equal(cstr_view_slice(line, open - 2, 2), CSTR_VIEW("  ")))
-		return (struct cstr_view){};
+		return cstr_view(nullptr);
 	struct cstr_view count = cstr_view_slice(line, open + 1, line.len - open - 2);
 	struct cstr_view name = cstr_view_slice(line, 0, open - 2);
 	uint64_t n;
@@ -537,8 +537,8 @@ cli_client_file_name (struct cstr_view line)
 	struct cstr_view suffix = cstr_view_slice(count, digits, SIZE_MAX);
 	struct cstr_view const unit = CSTR_VIEW(" bytes, ");
 	if (!digits || !cstr_view_starts(suffix, unit))
-		return (struct cstr_view){};
-	return oid_valid(cstr_view_slice(suffix, unit.len, SIZE_MAX)) ? name : (struct cstr_view){};
+		return cstr_view(nullptr);
+	return oid_valid(cstr_view_slice(suffix, unit.len, SIZE_MAX)) ? name : cstr_view(nullptr);
 }
 
 /* Add the note names in text, a listing of the notes tool, to found. A
@@ -548,7 +548,7 @@ static int
 cli_client_read_files (struct cstr_view         text,
                        struct cli_client_files *found)
 {
-	struct cstr_view line;
+	struct cstr_view line = {};
 	while (cstr_view_cut(&text, '\n', &line)) {
 		line = cli_client_file_name(line);
 		if (!line.len)

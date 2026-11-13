@@ -485,7 +485,7 @@ git_option_find (struct cstr_view const *allowed,
                  struct cstr_view        opt,
                  struct cstr_view       *match)
 {
-	*match = (struct cstr_view){};
+	*match = cstr_view(nullptr);
 	int e = ENOENT;
 	for (; allowed->data; ++allowed) {
 		size_t const n = allowed->len;
@@ -567,7 +567,7 @@ git_option_check (struct cstr_view  opt,
                   char             *why,
                   size_t            size)
 {
-	struct cstr_view match;
+	struct cstr_view match = {};
 	int e = git_option_find(commands[command].options, opt, &match);
 	if (!e)
 		return 0;
@@ -885,7 +885,7 @@ git_call_command (struct git_call  *call,
 		return git_wrong(len, why, size, "Tool arguments must be an object.");
 	struct json_object *of[GIT_ARGS] = {};
 	uint64_t seen;
-	struct cstr_view other;
+	struct cstr_view other = {};
 	if (jb_args(args, git_arg_names, GIT_ARGS, UINT64_MAX, of, &seen, &other))
 		return git_wrong(len, why, size, "%.*s is not an argument of the git tool.",
 		                 (int)other.len, other.data);
@@ -1288,7 +1288,7 @@ git_ended (struct mcp_slot *slot,
 		note = CSTR_VIEW("The output is cut at 4 MiB.");
 		failed = c->end.code == CLD_EXITED && c->end.status;
 	} else if (!status) {
-		note = out.len ? (struct cstr_view){} : CSTR_VIEW("No output.");
+		note = out.len ? cstr_view(nullptr) : CSTR_VIEW("No output.");
 		failed = false;
 	} else if (status == 1 && (takes & PATTERN)) {
 		/* grep exits with status 1 when it writes no line. The meaning
@@ -1417,7 +1417,7 @@ git_read_scan (struct git_read *read,
                struct loop     *loop)
 {
 	struct cstr_view const text = cstr_view_span(blob);
-	for (struct cstr_view line; loop_lines_next(&read->scan, loop, text, &line); )
+	for (struct cstr_view line = {}; loop_lines_next(&read->scan, loop, text, &line); )
 		git_read_line(read, (size_t)(line.data - text.data), line.len);
 }
 

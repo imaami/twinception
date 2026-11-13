@@ -37,8 +37,8 @@ notice_arg (char        conv,
 		if (!at)
 			return 0;
 		struct cstr_view rest = cstr_view_n(s, (size_t)(at - s));
-		struct cstr_view name;
-		struct cstr_view kind;
+		struct cstr_view name = {};
+		struct cstr_view kind = {};
 		if (!cstr_view_cut(&rest, ' ', &name) || !member_name_valid(name))
 			return 0;
 		if (!cstr_view_cut(&rest, ')', &kind) || rest.len ||

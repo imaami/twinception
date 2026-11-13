@@ -51,7 +51,7 @@ sse_feed (struct sse *sse,
 	struct cstr_view const input = cstr_view_dstr(&sse->input);
 	struct cstr_view rest = input;
 	int e = 0;
-	for (struct cstr_view line; !e && cstr_view_cut(&rest, '\n', &line);)
+	for (struct cstr_view line = {}; !e && cstr_view_cut(&rest, '\n', &line);)
 		e = sse_line(sse, line);
 
 	dstr_erase(&sse->input, 0, input.len - rest.len);

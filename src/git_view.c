@@ -39,7 +39,7 @@ git_view_refs (struct cstr_view refs,
 	static struct cstr_view const prefixes[] = { GIT_VIEW_REF_LIST(GIT_VIEW_PREFIX) };
 #undef GIT_VIEW_PREFIX
 	while (refs.len) {
-		struct cstr_view line;
+		struct cstr_view line = {};
 		if (!cstr_view_cut(&refs, '\n', &line) || line.len <= width + 1 ||
 		    line.data[width] != ' ' || !oid_valid(cstr_view_slice(line, 0, width)))
 			return EINVAL;
@@ -90,7 +90,7 @@ git_view_shallow (struct git_view *view,
 	      : buf_read(&data, fd, (size_t)st.st_size, GIT_VIEW_SHALLOW);
 	util_close(&fd);
 	struct cstr_view const text = cstr_view_span(buf_peek(&data));
-	for (struct cstr_view left = text, oid; !e && left.len; )
+	for (struct cstr_view left = text, oid = {}; !e && left.len; )
 		if (!cstr_view_cut(&left, '\n', &oid) || oid.len != width || !oid_valid(oid))
 			e = EINVAL;
 	if (!e)
@@ -107,7 +107,7 @@ git_view_create (struct span metadata,
 	*e = EINVAL;
 	struct cstr_view rest = cstr_view_span(metadata);
 	struct cstr_view const packed = cstr_view_span(refs);
-	struct cstr_view objects, shallow, format, head = {};
+	struct cstr_view objects = {}, shallow = {}, format = {}, head = {};
 	if (git_run_path(&rest, &objects) || git_run_path(&rest, &shallow) ||
 	    !cstr_view_cut(&rest, '\n', &format))
 		return nullptr;

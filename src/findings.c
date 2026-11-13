@@ -399,7 +399,7 @@ static struct cstr_view
 findings_refusal (struct tool_scratch const *scratch,
                   int                        e)
 {
-	return e == EINVAL ? cstr_view(scratch->text) : (struct cstr_view){};
+	return e == EINVAL ? cstr_view(scratch->text) : cstr_view(nullptr);
 }
 
 /* Refuses the call in @p slot for the finding @p id, which does not exist. */
@@ -626,7 +626,7 @@ findings_got_check (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct cstr_view rest = cstr_view_span(buf_peek(&call->child->out));
-	struct cstr_view line, size;
+	struct cstr_view line = {}, size = {};
 	struct oid id;
 	if (cstr_view_cut(&rest, '\n', &line) && store_kind(line, &id, &size) == STORE_KIND_BLOB)
 		call->flags |= CALL_ABOUT;
@@ -873,7 +873,7 @@ findings_commit (struct mcp_slot      *slot,
 	struct cstr_view claim = cstr_view_dstr(&call->claim);
 	if (call->action == FINDINGS_UPDATE) {
 		if (cstr_view_equal(claim, cstr_view_dstr(&f->claim)))
-			claim = (struct cstr_view){};
+			claim = cstr_view(nullptr);
 		call->flags |= (before == call->change.state ? CALL_SAME : 0) |
 		               (claim.len ? CALL_CLAIM : 0);
 	}
@@ -1980,19 +1980,19 @@ findings_got_calls (struct mcp_slot *slot)
 		return;
 	}
 	struct cstr_view rest = child_ok(c) ? cstr_view_span(buf_peek(&c->out))
-	                                    : (struct cstr_view){};
+	                                    : cstr_view(nullptr);
 	struct cstr_view const ask = hexid_view(&mcp_slot_member(slot)->ask);
 	char digits[16];
 	struct cstr_view const number = util_format_view(digits, sizeof digits, "%" PRIu32,
 	                                                 mcp_slot_call(slot));
 	while (rest.len) {
-		struct cstr_view line;
+		struct cstr_view line = {};
 		if (!cstr_view_cut(&rest, '\0', &line)) {
 			line = rest;
-			rest = (struct cstr_view){};
+			rest = cstr_view(nullptr);
 		}
 		struct oid commit;
-		struct cstr_view a, n, verb, id;
+		struct cstr_view a = {}, n = {}, verb = {}, id = {};
 		struct finding_id found;
 		/* The subject is "Add bro#5 (verified)" or "Update bro#5 (...)". A
 		 * commit without the trailer line Ask names no ask call. */

@@ -356,7 +356,7 @@ util_path_next (struct cstr_view *rest,
 static inline bool
 util_path_inside (struct cstr_view path)
 {
-	struct cstr_view part;
+	struct cstr_view part = {};
 	int e = !path.len || *path.data == '/' ? EINVAL : 0;
 	while (!e && !(e = util_path_next(&path, &part)) && part.len)
 		;

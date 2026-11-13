@@ -251,7 +251,7 @@ notes_file_next (struct span       *out,
 	char const *tab = nul ? memchr(s, '\t', (size_t)(nul - s)) : nullptr;
 	/* The record is "MODE blob OID SIZE\tNAME\0", with spaces before SIZE. */
 	struct cstr_view rest = cstr_view_n(s, tab ? (size_t)(tab - s) : 0);
-	struct cstr_view mode, type;
+	struct cstr_view mode = {}, type = {};
 	struct oid id;
 	if (!tab || tab + 1 == nul || !cstr_view_cut(&rest, ' ', &mode) ||
 	    !cstr_view_cut(&rest, ' ', &type) || !cstr_view_equal(type, CSTR_VIEW("blob")) ||
@@ -290,7 +290,7 @@ notes_cursor_header (struct span          out,
 		size_t digits = space ? (size_t)(space - s - token) : len;
 		struct cstr_view rest = cstr_view_slice(cstr_view_n(s + token, len),
 		                                        digits + 1, SIZE_MAX);
-		struct cstr_view asker;
+		struct cstr_view asker = {};
 		if (!oid_init_field(&cursor->commit, &rest, ' ') && cstr_view_cut(&rest, ' ', &asker) &&
 		    !util_number(s + token, digits, UINT64_MAX, &cursor->time)) {
 			cursor->asker = span(out.ptr + (asker.data - s), asker.len);

@@ -555,7 +555,7 @@ child_end_why (struct child_end const *end,
 	case CLD_EXITED:
 		return end->status ? util_format_view(buf, size, "%s exited with status %d.", name,
 		                                      end->status)
-		                   : (struct cstr_view){};
+		                   : cstr_view(nullptr);
 	case 0:
 		return util_format_view(buf, size, "%s ended, and why is unknown.", name);
 	default:

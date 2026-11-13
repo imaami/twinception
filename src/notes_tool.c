@@ -905,7 +905,7 @@ notes_tool_stated (struct mcp_slot *slot)
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct cstr_view rest = child_ok(call->child) ? cstr_view_span(buf_peek(&call->child->out))
 	                                              : cstr_view(nullptr);
-	struct cstr_view added, removed;
+	struct cstr_view added = {}, removed = {};
 	uint64_t a, r;
 	int e = cstr_view_cut(&rest, '\t', &added) && cstr_view_cut(&rest, '\t', &removed) &&
 	        !util_number(added.data, added.len, UINT64_MAX, &a) &&
@@ -1457,11 +1457,12 @@ notes_tool_got_grep (struct mcp_slot *slot)
 	}
 	size_t const skip = oid_len(&call->revision.from) + 1;
 	struct span const out = buf_peek(&c->out);
-	struct cstr_view rest = cstr_view_span(out), line;
+	struct cstr_view rest = cstr_view_span(out), line = {};
 	dstr_auto found = DSTR_INIT;
 	int e = 0;
 	while (!e && cstr_view_cut(&rest, '\n', &line)) {
-		struct cstr_view text = cstr_view_slice(line, skip, SIZE_MAX), name, number;
+		struct cstr_view text = cstr_view_slice(line, skip, SIZE_MAX);
+		struct cstr_view name = {}, number = {};
 		if (!cstr_view_cut(&text, '\0', &name) || !cstr_view_cut(&text, '\0', &number))
 			continue;
 		e = cstr_view_join((struct cstr_view const[]){ name, number, text }, 3, UINT64_MAX,
@@ -1566,7 +1567,7 @@ notes_tool_got_attach (struct mcp_slot  *slot,
 	size_t const valid = jb_text_len(body);
 	bool const binary = valid < body.len;
 	size_t kept = 0;
-	int e = mcp_slot_attach(slot, id, (struct cstr_view){}, &kept, call->text);
+	int e = mcp_slot_attach(slot, id, cstr_view(nullptr), &kept, call->text);
 	if (e != ENOENT) {
 		/* The upstream still stores the file of the note. */
 		if (!e)
@@ -1702,7 +1703,7 @@ notes_tool_newest (struct mcp_slot *slot)
 	                              "\n[askai: bytes 0 to %zu of %zu. Read the note with "
 	                              "\"offset\": %zu for the remaining bytes.]", body.len, len,
 	                              body.len)
-	                            : (struct cstr_view){};
+	                            : cstr_view(nullptr);
 	struct cstr_view const p[] = {
 		r == ENOENT ? CSTR_VIEW("[askai: The note was deleted.]")
 		: r ? CSTR_VIEW("[askai: The note could not be read.]") : body,

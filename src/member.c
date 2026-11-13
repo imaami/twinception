@@ -277,7 +277,7 @@ member_ref_parse (struct cstr_view    ref,
                   enum member_branch *branch)
 {
 	struct cstr_view rest = cstr_view_slice(ref, sizeof HEADS - 1, SIZE_MAX);
-	struct cstr_view kind_name;
+	struct cstr_view kind_name = {};
 	if (!cstr_view_starts(ref, CSTR_VIEW(HEADS)) || !cstr_view_cut(&rest, '/', &kind_name) ||
 	    !cstr_view_cut(&rest, '/', name) || !member_name_valid(*name))
 		return EINVAL;
@@ -307,7 +307,7 @@ member_records_branch (struct member_records  *r,
 		return 0;
 	}
 	enum member_kind kind;
-	struct cstr_view name;
+	struct cstr_view name = {};
 	enum member_branch branch;
 	struct oid tip;
 	uint64_t time = 0;
@@ -350,11 +350,11 @@ member_records_parse (struct member_records *r)
 	r->all.n = 0;
 	r->legacy = 0;
 	r->width = 0;
-	r->session = r->name = r->format = (struct cstr_view){};
+	r->session = r->name = r->format = cstr_view(nullptr);
 	size_t records = 0;
 	struct cstr_view rest = cstr_view_span(buf_peek(&r->out));
 	while (rest.len) {
-		struct cstr_view f[FIELDS];
+		struct cstr_view f[FIELDS] = {};
 		for (size_t i = 0; i < FIELDS; ++i)
 			if (!cstr_view_cut(&rest, '\0', &f[i]))
 				return EIO;
@@ -642,11 +642,11 @@ member_login_why (struct member_login const *login,
                   size_t                     size)
 {
 	if (!login || !buf || !size)
-		return (struct cstr_view){};
+		return cstr_view(nullptr);
 	switch (e) {
 	case EPERM:
 		if (!refuser)
-			return (struct cstr_view){};
+			return cstr_view(nullptr);
 		break;
 	case EIO:
 		return CSTR_VIEW("askai could not read or write the member records.");
@@ -661,7 +661,7 @@ member_login_why (struct member_login const *login,
 	case ECANCELED:
 		return CSTR_VIEW("askai stops.");
 	default:
-		return (struct cstr_view){};
+		return cstr_view(nullptr);
 	}
 	/* The kind of the login, then the kind of the record. */
 	switch (login->member.kind << 1 | refuser->kind) {
@@ -842,7 +842,7 @@ member_user (uint32_t uid,
 		int e = getpwuid_r((uid_t)uid, &pw, storage, size, &found);
 		if (!e && !found)
 			e = ENOENT;
-		struct cstr_view const user = found ? cstr_view(pw.pw_name) : (struct cstr_view){};
+		struct cstr_view const user = found ? cstr_view(pw.pw_name) : cstr_view(nullptr);
 		if (!e && !member_name_valid(user))
 			e = EINVAL;
 		if (!e)
@@ -1056,8 +1056,8 @@ member_registry_create (struct store const *store,
 		*e = EINVAL;
 		return nullptr;
 	}
-	struct cstr_view const agent_name = agent ? cstr_view(agent) : (struct cstr_view){};
-	struct cstr_view const service_name = service ? cstr_view(service) : (struct cstr_view){};
+	struct cstr_view const agent_name = cstr_view(agent);
+	struct cstr_view const service_name = cstr_view(service);
 	if (!store || !member_name_valid(agent_name) || !member_name_valid(service_name)) {
 		*e = util_refuse(why, len, "The registry needs a repository, and an agent and a "
 		                 "service with valid names.");
@@ -1731,7 +1731,7 @@ member_table_names (struct member_table const *table,
 	char items[array_size(views)][MEMBER_TEXT];
 	size_t const n = table->records.all.n;
 	size_t const shown = n < array_size(views) ? n : array_size(views);
-	struct cstr_view const me = you ? cstr_view(you->name) : (struct cstr_view){};
+	struct cstr_view const me = you ? cstr_view(you->name) : cstr_view(nullptr);
 	for (size_t i = 0; i < shown; ++i) {
 		struct member_info const *info = &table->records.all.items[i];
 		bool const self = you && info->kind == you->kind && cstr_view_equal(info->name, me);

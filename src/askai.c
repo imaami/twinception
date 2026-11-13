@@ -727,7 +727,8 @@ askai_separate_repos (char const *notes,
 	bool apart = false;
 	int e = 0;
 	for (size_t i = 0; !e && i < array_size(paths); ++i)
-		for (struct cstr_view part, other; !(e = util_path_next(&paths[i], &part)) && part.len; )
+		for (struct cstr_view part = {}, other = {};
+		     !(e = util_path_next(&paths[i], &part)) && part.len; )
 			apart = apart || (!util_path_next(&rest, &other) && other.len &&
 			                  !cstr_view_equal(part, other));
 	free(cwd);

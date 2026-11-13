@@ -72,7 +72,7 @@ datauri_init (struct datauri   *d,
 {
 	struct cstr_view const scheme = CSTR_VIEW("data:");
 	struct cstr_view const base64 = CSTR_VIEW(";base64");
-	struct cstr_view rest = cstr_view_slice(uri, scheme.len, SIZE_MAX), media;
+	struct cstr_view rest = cstr_view_slice(uri, scheme.len, SIZE_MAX), media = {};
 	if (!d || !cstr_view_starts_case(uri, scheme) || !cstr_view_cut(&rest, ',', &media))
 		return EINVAL;
 	*d = (struct datauri){

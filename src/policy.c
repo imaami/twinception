@@ -1301,7 +1301,7 @@ policy_grant_unix (struct policy const      *policy,
 		}
 	}
 	return policy_grant_role(policy, role, peer->principal,
-	                         (struct cstr_view){}, g);
+	                         cstr_view(nullptr), g);
 }
 
 enum policy_verdict

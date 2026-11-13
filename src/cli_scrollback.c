@@ -212,7 +212,7 @@ cli_scrollback_append_style (struct cli_scrollback *scrollback,
 {
 	if (style >= CLI_STYLE_COUNT)
 		return EINVAL;
-	struct cstr_view line;
+	struct cstr_view line = {};
 	while (cstr_view_cut(&text, '\n', &line)) {
 		int e = cli_scrollback_append_part(scrollback, line, style);
 		if (!e)

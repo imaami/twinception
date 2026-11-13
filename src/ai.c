@@ -1479,7 +1479,7 @@ static struct json_object *
 ai_error_event (struct cstr_view body)
 {
 	struct cstr_view rest = cstr_view_slice(body, 0, 4096);
-	for (struct cstr_view line; cstr_view_cut(&rest, '\n', &line);) {
+	for (struct cstr_view line = {}; cstr_view_cut(&rest, '\n', &line);) {
 		struct cstr_view const data = cstr_view_sse_data(&line);
 		if (data.data)
 			return jb_parse(data.data, data.len, JSON_TOKENER_STRICT, 8);

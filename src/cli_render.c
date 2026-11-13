@@ -69,7 +69,7 @@ cli_render_row (struct dstr *cache, struct dstr *output,
 	    dstr_len(output) - begin > INT_MAX)
 		return EINVAL;
 	struct cstr_view text = cstr_view_slice(cstr_view_dstr(output), begin, SIZE_MAX);
-	struct cstr_view old = cache ? cstr_view_dstr(cache) : (struct cstr_view){};
+	struct cstr_view old = cache ? cstr_view_dstr(cache) : cstr_view(nullptr);
 	if (cache && cstr_view_equal(text, old)) {
 		dstr_erase(output, begin, SIZE_MAX);
 		return 0;

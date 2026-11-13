@@ -1345,7 +1345,7 @@ mcp_shown_object (struct mcp_shown   *w,
 		struct cstr_view const note = size ? util_format_view(text, sizeof text,
 		                                                      "\"(%zu byte%s)\"",
 		                                                      s.len, util_s(s.len))
-		                                   : (struct cstr_view){};
+		                                   : cstr_view(nullptr);
 		bool const fits = mcp_shown_put(w, sep) &&
 		                  mcp_shown_put(w, ESC_VIEW(cstr_view(it.key))) &&
 		                  mcp_shown_put(w, FRAG("\":")) &&
@@ -1566,7 +1566,7 @@ static enum ledger_status
 mcp_req_status (struct mcp_req const *req)
 {
 	struct ledger_task const *task = req->task;
-	struct cstr_view const reply = task ? cstr_view_dstr(&task->result) : (struct cstr_view){};
+	struct cstr_view const reply = task ? cstr_view_dstr(&task->result) : cstr_view(nullptr);
 	bool failed = task && (!task->size || reply.len != task->size ||
 	                      cstr_view_starts(reply, CSTR_VIEW("\"error\":")));
 	return req->error == ECANCELED || req->flags & REQ_WITHDRAWN ? LEDGER_CANCELLED
@@ -2143,7 +2143,7 @@ mcp_slot_respond (struct mcp_slot *slot,
 	req->phase = PHASE_REPLY;
 	req->off = util_char_start((char const *)text.ptr, text.len, off);
 	int e = mcp_req_tool_open(req, req->agenda ? cstr_view_dstr(&req->agenda->said)
-	                                           : (struct cstr_view){});
+	                                           : cstr_view(nullptr));
 	if (e) {
 		mcp_req_abort(req, e);
 		return;
@@ -3113,7 +3113,7 @@ mcp_on_task_cancel (struct loop *loop,
 	ledger_task_put(task);
 	if (!req)
 		return;
-	mcp_req_log_call(req, "cancelled by its client", (struct cstr_view){}, false);
+	mcp_req_log_call(req, "cancelled by its client", cstr_view(nullptr), false);
 	mcp_req_abort(req, ECANCELED);
 }
 
@@ -3136,7 +3136,7 @@ mcp_on_withdraw (struct loop *loop,
 		return;
 	if (!(req->flags & REQ_SSE))
 		(void)req->s->ops->head(req->s, 202, span(nullptr, 0), 0);
-	mcp_req_log_call(req, "cancelled by notifications/cancelled", (struct cstr_view){},
+	mcp_req_log_call(req, "cancelled by notifications/cancelled", cstr_view(nullptr),
 	                 false);
 	req->flags |= REQ_WITHDRAWN;
 	mcp_req_finish(req);
@@ -4046,13 +4046,13 @@ mcp_req_ask (struct mcp_req     *req,
 		? CSTR_VIEW("The messages argument must be an array of at most 1024 messages. "
 		            "Each message must be an object with only role (user or assistant) "
 		            "and content (a string).")
-		: !conversation ? (struct cstr_view){}
+		: !conversation ? cstr_view(nullptr)
 		: !notes ? CSTR_VIEW("The conversation argument requires notes. The server stores "
 		                     "no notes for your calls.")
 		: hexid_init(&req->member.conversation, jb_view(conversation))
 		? CSTR_VIEW("The conversation argument must be a conversation ID from an earlier "
 		            "answer. A conversation ID is 32 hexadecimal digits.")
-		: (struct cstr_view){};
+		: cstr_view(nullptr);
 	if (problem.data) {
 		mcp_slot_result(&req->self, problem, TOOL_FAILED);
 		return;
@@ -5028,7 +5028,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 		            "background, jobs, wait and timer.")
 		: call && !json_object_is_type(call, json_type_object)
 		? not_object
-		: (struct cstr_view){};
+		: cstr_view(nullptr);
 	if (problem.data) {
 		mcp_slot_result(slot, problem, TOOL_FAILED);
 		return;
@@ -5071,7 +5071,7 @@ mcp_slot_background (struct mcp_slot    *slot,
 		            "such as git or man.")
 		: call && !json_object_is_type(call, json_type_object)
 		? not_object
-		: (struct cstr_view){};
+		: cstr_view(nullptr);
 	if (problem.data) {
 		mcp_slot_result(slot, problem, TOOL_FAILED);
 		return;
@@ -5224,7 +5224,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 	struct cstr_view const problem =
 		refused.data ? refused
 		: !task->size ? CSTR_VIEW("The job failed. askai stored no result of the job.")
-		: (struct cstr_view){};
+		: cstr_view(nullptr);
 	if (problem.data) {
 		ledger_task_put(task);
 		mcp_slot_result(slot, problem, TOOL_FAILED);
@@ -5431,7 +5431,7 @@ mcp_slot_timer (struct mcp_slot    *slot,
 		: o && (!note.data || note.len > LEDGER_NOTE ||
 		        jb_utf8(note.data, note.len) < note.len)
 		? CSTR_VIEW("The note argument must be a string of at most 200 bytes.")
-		: (struct cstr_view){};
+		: cstr_view(nullptr);
 	if (problem.data) {
 		mcp_slot_result(slot, problem, TOOL_FAILED);
 		return;
@@ -5892,12 +5892,12 @@ mcp_req_result_write (struct mcp_req *req)
 	struct mcp_slot *slot = &req->slots[req->part];
 	struct span const out = mcp_slot_output(slot);
 	struct cstr_view const told = req->agenda ? cstr_view_dstr(&req->agenda->told)
-	                                          : (struct cstr_view){};
+	                                          : cstr_view(nullptr);
 	struct cstr_view const parts[SEEN_PARTS] = {
 		cstr_view_n(out.len ? (char const *)out.ptr + slot->window.at : nullptr,
 		            slot->window.len),
 		util_text_view(&slot->note),
-		told.len ? CSTR_VIEW("\n\n") : (struct cstr_view){},
+		told.len ? CSTR_VIEW("\n\n") : cstr_view(nullptr),
 		told,
 	};
 	int e = mcp_req_result_put(req, &c, parts);
@@ -6096,7 +6096,7 @@ mcp_recover_back (struct loop           *loop,
 		: jb_uint(jb_get(state, "owner"), 0) != owner ||
 		  !cstr_view_equal(tool, mcp_static_tool(st, req->self.tool)->name)
 		? CSTR_VIEW("You have no job with the given ID from this tool.")
-		: (struct cstr_view){};
+		: cstr_view(nullptr);
 	if (problem.data)
 		goto failed;
 	uint64_t created = jb_uint(jb_get(state, "created"), 0);
@@ -6152,7 +6152,7 @@ mcp_recover_back (struct loop           *loop,
 		        ? CSTR_VIEW("The interrupted turn used background jobs or timers. Check the "
 		                    "outcomes of the background jobs and timers before you "
 		                    "continue.")
-		        : (struct cstr_view){};
+		        : cstr_view(nullptr);
 		if (problem.data) {
 			json_object_put(obj);
 			goto failed;
@@ -6699,7 +6699,7 @@ mcp_slot_ask (struct mcp_slot    *slot,
 		: has_action && (act == ACTION_LIST || act == array_size(actions))
 		? CSTR_VIEW("The action argument must be "
 		            XL_JOIN(", ", " or ", MCP_JOB_ACTION_LIST(XL_TEXT)) ".")
-		: (struct cstr_view){};
+		: cstr_view(nullptr);
 	if (problem.data) {
 		mcp_slot_result(slot, problem, TOOL_FAILED);
 		return;
@@ -7593,7 +7593,7 @@ mcp_on_cancel (struct stream *s)
 		return;
 	/* A reply that has gone whole ends as it did (mcp_req_abort()). */
 	if (req->phase != PHASE_END)
-		mcp_req_log_call(req, "cancelled by a closed connection", (struct cstr_view){}, false);
+		mcp_req_log_call(req, "cancelled by a closed connection", cstr_view(nullptr), false);
 	mcp_req_abort(req, ECANCELED);
 }
 

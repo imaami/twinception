@@ -751,7 +751,7 @@ godbolt_id (struct json_object *v)
 {
 	struct cstr_view const id = jb_text(v, 1, GODBOLT_ID_MAX, godbolt_id_bytes);
 	return cstr_view_equal(id, CSTR_VIEW(".")) || cstr_view_equal(id, CSTR_VIEW(".."))
-	       ? (struct cstr_view){} : id;
+	       ? cstr_view(nullptr) : id;
 }
 
 /* Copies @p t to @p d, and returns the end of the copy. */
@@ -1346,7 +1346,7 @@ godbolt_compiler_row (struct godbolt     *call,
 	for (size_t i = 0; i < n; ++i) {
 		godbolt_put_field(call, f[i]);
 		godbolt_put(call, i < GODBOLT_COLUMNS ? CSTR_VIEW("\t")
-		                  : i + 1 < n ? CSTR_VIEW(",") : (struct cstr_view){});
+		                  : i + 1 < n ? CSTR_VIEW(",") : cstr_view(nullptr));
 	}
 	return godbolt_put(call, n > GODBOLT_COLUMNS ? CSTR_VIEW("\n") : CSTR_VIEW("unknown\n"));
 }
@@ -1407,7 +1407,7 @@ godbolt_absent (struct godbolt const *call)
 	struct godbolt_absent a = {};
 	char *p = a.ids;
 	for (uint32_t m = call->missing; m; m &= m - 1) {
-		p = godbolt_cat(p, p == a.ids ? (struct cstr_view){} : CSTR_VIEW(", "));
+		p = godbolt_cat(p, p == a.ids ? cstr_view(nullptr) : CSTR_VIEW(", "));
 		p = godbolt_cat(p, call->args.ids[stdc_trailing_zeros(m)]);
 	}
 	*p = '\0';
@@ -1507,9 +1507,9 @@ static enum godbolt_go
 godbolt_list_send (struct godbolt *call)
 {
 	if (call->args.action == GODBOLT_LANGUAGES)
-		godbolt_request(call, GODBOLT_GET_LANGUAGES, (struct cstr_view){}, (struct cstr_view){});
+		godbolt_request(call, GODBOLT_GET_LANGUAGES, cstr_view(nullptr), cstr_view(nullptr));
 	else
-		godbolt_request(call, GODBOLT_GET_COMPILERS, call->args.language, (struct cstr_view){});
+		godbolt_request(call, GODBOLT_GET_COMPILERS, call->args.language, cstr_view(nullptr));
 	call->phase = GODBOLT_LIST;
 	return godbolt_send(call);
 }
@@ -1681,9 +1681,9 @@ godbolt_cat_arguments (struct godbolt              *call,
 	if (r->windows)
 		d = godbolt_cat(d, cstr_view_equal(call->args.language, CSTR_VIEW("c")) ? CSTR_VIEW("/TC")
 		                                                                        : CSTR_VIEW("/TP"));
-	d = godbolt_cat(d, d > flags && r->flags.len ? CSTR_VIEW(" ") : (struct cstr_view){});
+	d = godbolt_cat(d, d > flags && r->flags.len ? CSTR_VIEW(" ") : cstr_view(nullptr));
 	d = godbolt_cat(d, r->flags);
-	d = godbolt_cat(d, d > flags && a.len ? CSTR_VIEW(" ") : (struct cstr_view){});
+	d = godbolt_cat(d, d > flags && a.len ? CSTR_VIEW(" ") : cstr_view(nullptr));
 	char *const end = d + jb_escape(d, a.data, a.len);
 	call->escaped = cstr_view_n(d, (size_t)(end - d));
 	loop_work(call->loop, LOOP_ESCAPE, a.len);
@@ -1808,7 +1808,7 @@ godbolt_state (struct godbolt *call)
 	call->phase = GODBOLT_JOB;
 	if (call->cfg->share == GODBOLT_SHARE_STATE)
 		return godbolt_state_link(call) ? godbolt_finish(call, TOOL_FAILED) : GODBOLT_GO;
-	godbolt_request(call, GODBOLT_POST_SHORTEN, (struct cstr_view){},
+	godbolt_request(call, GODBOLT_POST_SHORTEN, cstr_view(nullptr),
 	                cstr_view_n(call->body, call->len));
 	call->phase = GODBOLT_LINK;
 	return godbolt_send(call);
@@ -2034,7 +2034,7 @@ godbolt_targets_parse (struct godbolt *call)
 	loop_work(call->loop, LOOP_PARSE, text.len);
 	free(joined);
 	joined = nullptr;
-	text = (struct cstr_view){};
+	text = cstr_view(nullptr);
 	if (e == ENOMEM)
 		return ENOMEM;
 	if (e) {
@@ -2691,7 +2691,7 @@ godbolt_args_read (struct godbolt_args         *a,
 		                     TOOL_FAILED), EINVAL;
 	struct json_object *of[array_size(godbolt_arg_names)] = {};
 	uint64_t seen;
-	struct cstr_view other;
+	struct cstr_view other = {};
 	if (jb_args(args, godbolt_arg_names, array_size(godbolt_arg_names), t->args & ~off, of,
 	            &seen, &other)) {
 		if (t->args & off && cstr_view_equal(other, godbolt_arg_names[GODBOLT_ARG_SHARE]))
@@ -2760,7 +2760,7 @@ godbolt_create (struct godbolt_args const *a,
                 int                       *e)
 {
 	struct cstr_view const head = a->flags & GODBOLT_WITH_HEADERS
-	                            ? CSTR_VIEW(GODBOLT_HEADERS_LINE) : (struct cstr_view){};
+	                            ? CSTR_VIEW(GODBOLT_HEADERS_LINE) : cstr_view(nullptr);
 	struct cstr_view const source = tool == GODBOLT_TARGETS ? godbolt_probe_source()
 	                              : a->source.len ? a->source : CSTR_VIEW("\n");
 	size_t const bytes = a->language.len + head.len + source.len +
@@ -2904,7 +2904,7 @@ godbolt_configure (void               *config,
 	static struct cstr_view const names[] = { CSTR_VIEW_INIT("url"), CSTR_VIEW_INIT("share") };
 	struct json_object *of[array_size(names)] = {};
 	uint64_t seen;
-	struct cstr_view other;
+	struct cstr_view other = {};
 	if (jb_args(options, names, array_size(names), UINT64_MAX, of, &seen, &other))
 		return util_refuse(why, len, "the member %.*s is not an option", (int)other.len,
 		                   other.data);
@@ -3115,7 +3115,7 @@ godbolt_definition (void const        *service,
 		return nullptr;
 	struct cstr_view const url = util_text_view(&cfg->url);
 	struct cstr_view const link = godbolt_params[tool].args >> GODBOLT_ARG_SHARE & 1
-	                              ? godbolt_share_notes[cfg->share] : (struct cstr_view){};
+	                              ? godbolt_share_notes[cfg->share] : cstr_view(nullptr);
 	char text[2048];
 	if (head.len + url.len + tail.len + link.len > sizeof text)
 		return nullptr;
