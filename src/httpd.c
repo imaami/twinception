@@ -88,6 +88,7 @@
 #include <unistd.h>
 
 #include "buf.h"
+#include "compat.h"
 #include "cstr_view.h"
 #include "hist.h"
 #include "htab.h"
@@ -137,6 +138,14 @@ struct httpd_field {
 	uint16_t off;
 	uint16_t len;
 };
+
+/* Returns the field of @p len bytes at the offset @p off of the head. */
+static const_inline struct httpd_field
+httpd_field (uint16_t off,
+             uint16_t len)
+{
+	return (struct httpd_field){ .off = off, .len = len };
+}
 
 /* What the head of a request says, then where the request stands. */
 enum httpd_req_flag : uint32_t {
@@ -685,7 +694,7 @@ httpd_req_field (struct httpd_req        *req,
 			return 400;
 	while (end > value && (end[-1] == ' ' || end[-1] == '\t'))
 		*--end = '\0';
-	struct httpd_field const f = { (uint16_t)(value - data), (uint16_t)(end - value) };
+	struct httpd_field const f = httpd_field((uint16_t)(value - data), (uint16_t)(end - value));
 	return httpd_req_header(req, app, cstr_view_n(line, (size_t)(colon - line)),
 	                        value, f, max_body);
 }
@@ -706,8 +715,7 @@ httpd_req_line (struct httpd_req *req,
 	char *version = strchr(target + 1, ' ');
 	if (!version || version == target + 1 || strchr(version + 1, ' '))
 		return 400;
-	req->target = (struct httpd_field){ (uint16_t)(target + 1 - line),
-	                                    (uint16_t)(version - target - 1) };
+	req->target = httpd_field((uint16_t)(target + 1 - line), (uint16_t)(version - target - 1));
 	*target = '\0';
 	*version++ = '\0';
 	if (!httpd_token(line))
