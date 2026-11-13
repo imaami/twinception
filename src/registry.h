@@ -44,6 +44,14 @@ struct registry_tool {
 	                                    over the padding. */
 };
 
+static force_inline struct registry_tool
+registry_tool (struct registry_tool const t)
+{
+	return t;
+}
+
+#define registry_tool(...) (registry_tool)((struct registry_tool){__VA_ARGS__})
+
 /** How registry_add() adds a tool. */
 enum registry_flag : uint32_t {
 	REGISTRY_GRANTED = 1u << 0,  /**< a role can grant the tool */

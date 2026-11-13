@@ -8407,11 +8407,11 @@ mcp_register (struct registry     *reg,
 			continue;
 		struct mcp_row const *row = &mcp_rows[k];
 		struct plugin const *plugin = &mcp_host_plugin;
-		struct registry_tool tool = {
+		struct registry_tool tool = registry_tool(
 			.name = row->name.data ? row->name : cstr_view(cfg->tool.name),
 			.kind = &row->kind,
-			.data = row,
-		};
+			.data = row
+		);
 		/* The man, git, notes and findings tools are kinds of built-in
 		 * plugins. */
 		if (row->plugin) {

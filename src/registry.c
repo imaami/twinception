@@ -106,10 +106,10 @@ registry_load (struct registry    *reg,
 	reg->plugins[reg->n_plugins++] = registry_plugin(loaded->plugin, loaded);
 	for (uint32_t i = 0; i < loaded->n_tools; ++i) {
 		char const *name = loaded->manifest.tools[i];
-		struct registry_tool const tool = {
-			.name = { name, loaded->lens[i] },
-			.kind = &loaded->plugin->tools[i],
-		};
+		struct registry_tool const tool = registry_tool(
+			.name = cstr_view_n(name, loaded->lens[i]),
+			.kind = &loaded->plugin->tools[i]
+		);
 		e = registry_add(reg, loaded->plugin, &tool, REGISTRY_GRANTED);
 		if (!e)
 			continue;
