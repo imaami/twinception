@@ -36,9 +36,9 @@ struct cli_scrollback_line {
 };
 
 void
-cli_scrollback_init (struct cli_scrollback *scrollback)
+cli_scrollback_init (struct cli_scrollback *dest)
 {
-	*scrollback = (struct cli_scrollback){.lines = list(&scrollback->lines)};
+	*dest = cli_scrollback(dest);
 }
 
 static void

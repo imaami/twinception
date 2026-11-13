@@ -92,8 +92,7 @@ cli_scrollback_test_characters (void)
 static void
 cli_scrollback_test_wrapping (void)
 {
-	struct cli_scrollback scrollback;
-	cli_scrollback_init(&scrollback);
+	struct cli_scrollback scrollback = cli_scrollback(&scrollback);
 	dstr_auto frame = dstr(nullptr);
 	assert(!cli_scrollback_append(&scrollback, CSTR_VIEW("界界界\néx\n")));
 	cli_scrollback_test_render(&scrollback, 4, 4, false, &frame);
@@ -121,8 +120,7 @@ cli_scrollback_test_wrapping (void)
 static void
 cli_scrollback_test_viewport (void)
 {
-	struct cli_scrollback scrollback;
-	cli_scrollback_init(&scrollback);
+	struct cli_scrollback scrollback = cli_scrollback(&scrollback);
 	for (size_t i = 0; i < 10000; ++i) {
 		dstr_auto line = dstr(nullptr);
 		assert(dstr_printf(&line, "line %zu\n", i));
@@ -150,8 +148,7 @@ cli_scrollback_test_viewport (void)
 static void
 cli_scrollback_test_styles (void)
 {
-	struct cli_scrollback scrollback;
-	cli_scrollback_init(&scrollback);
+	struct cli_scrollback scrollback = cli_scrollback(&scrollback);
 	dstr_auto frame = dstr(nullptr);
 	assert(cli_scrollback_append_style(&scrollback, CSTR_VIEW("invalid"), CLI_STYLE_COUNT) == EINVAL);
 	assert(!scrollback.used.n && !scrollback.used.bytes && !scrollback.styles);
@@ -197,8 +194,7 @@ cli_scrollback_test_styles (void)
 static void
 cli_scrollback_test_pane (void)
 {
-	struct cli_scrollback scrollback;
-	cli_scrollback_init(&scrollback);
+	struct cli_scrollback scrollback = cli_scrollback(&scrollback);
 	dstr_auto frame = dstr(nullptr);
 	assert(cli_scrollback_render_pane(&scrollback, 0, 1, 4, 3, cli_style_palette(false), nullptr, &frame) == EINVAL);
 	assert(cli_scrollback_render_pane(&scrollback, 1, 0, 4, 3, cli_style_palette(false), nullptr, &frame) == EINVAL);
@@ -228,8 +224,7 @@ cli_scrollback_test_pane (void)
 static void
 cli_scrollback_test_cache (void)
 {
-	struct cli_scrollback scrollback;
-	cli_scrollback_init(&scrollback);
+	struct cli_scrollback scrollback = cli_scrollback(&scrollback);
 	struct dstr cache[3] = {dstr(nullptr), dstr(nullptr), dstr(nullptr)};
 	dstr_auto frame = dstr(nullptr);
 	assert(!cli_scrollback_append_style(&scrollback, CSTR_VIEW("first\nsecond\nthird"), CLI_STYLE_REASONING));
@@ -291,9 +286,8 @@ cli_scrollback_test_apply (char                   *screen,
 static void
 cli_scrollback_test_neighbors (void)
 {
-	struct cli_scrollback left, right;
-	cli_scrollback_init(&left);
-	cli_scrollback_init(&right);
+	struct cli_scrollback left = cli_scrollback(&left);
+	struct cli_scrollback right = cli_scrollback(&right);
 	assert(!cli_scrollback_append(&left, CSTR_VIEW("abcdeF")));
 	assert(!cli_scrollback_append_style(&right, CSTR_VIEW("RIGHT"), CLI_STYLE_INFO));
 	dstr_auto frame = dstr(nullptr);
@@ -316,9 +310,8 @@ cli_scrollback_test_neighbors (void)
 static void
 cli_scrollback_test_pane_viewport (void)
 {
-	struct cli_scrollback chat, thoughts;
-	cli_scrollback_init(&chat);
-	cli_scrollback_init(&thoughts);
+	struct cli_scrollback chat = cli_scrollback(&chat);
+	struct cli_scrollback thoughts = cli_scrollback(&thoughts);
 	for (size_t i = 0; i < 100; ++i) {
 		dstr_auto line = dstr(nullptr);
 		assert(dstr_printf(&line, "%03zu\n", i));
@@ -348,8 +341,7 @@ cli_scrollback_test_pane_viewport (void)
 static void
 cli_scrollback_test_prefix_eviction (void)
 {
-	struct cli_scrollback scrollback;
-	cli_scrollback_init(&scrollback);
+	struct cli_scrollback scrollback = cli_scrollback(&scrollback);
 	size_t length = 16 * 1024 * 1024;
 	char *text = malloc(length);
 	assert(text);
@@ -379,8 +371,7 @@ cli_scrollback_test_prefix_eviction (void)
 static void
 cli_scrollback_test_long_line (void)
 {
-	struct cli_scrollback scrollback;
-	cli_scrollback_init(&scrollback);
+	struct cli_scrollback scrollback = cli_scrollback(&scrollback);
 	size_t length = 17 * 1024 * 1024;
 	char *text = malloc(length);
 	assert(text);

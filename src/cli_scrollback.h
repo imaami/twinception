@@ -8,6 +8,7 @@
 #include <stddef.h>
 
 #include "cli_style.h"
+#include "compat.h"
 #include "cstr_view.h"
 #include "dstr.h"
 #include "list.h"
@@ -24,8 +25,19 @@ struct cli_scrollback {
 	size_t       styles;
 };
 
+/** Returns an empty scrollback for the object at @p self. The empty list
+ *  of lines stores the address &self->lines. So @p self must be the
+ *  address of the object that the result initializes, and that object
+ *  must not be copied afterwards.
+ */
+static force_inline struct cli_scrollback
+cli_scrollback (struct cli_scrollback *self)
+{
+	return (struct cli_scrollback){.lines = list(&self->lines)};
+}
+
 extern void
-cli_scrollback_init (struct cli_scrollback *scrollback);
+cli_scrollback_init (struct cli_scrollback *dest);
 
 extern void
 cli_scrollback_fini (struct cli_scrollback *scrollback);
