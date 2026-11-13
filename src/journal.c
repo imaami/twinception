@@ -23,6 +23,7 @@
 #include "buf.h"
 #include "child.h"
 #include "clk.h"
+#include "compat.h"
 #include "git_run.h"
 #include "journal.h"
 #include "loop.h"
@@ -140,6 +141,15 @@ struct journal_file {
 	int          fd;
 	struct hexid id;
 };
+
+/* Returns the entry of the descriptor cache that is not in use. The
+ * descriptor of the entry is -1, and every other member is zero.
+ */
+static const_inline struct journal_file
+journal_file (void)
+{
+	return (struct journal_file){ .fd = -1 };
+}
 
 struct journal {
 	pthread_mutex_t        lock;
@@ -1343,7 +1353,7 @@ journal_create (char const *path,
 	}
 	j->repo_fd = j->state_fd = j->jobs_fd = j->thoughts_fd = j->lock_fd = j->wal_fd = -1;
 	for (size_t k = 0; k < array_size(j->files); ++k)
-		j->files[k].fd = -1;
+		j->files[k] = journal_file();
 	list_init(&j->items);
 	j->digest = EVP_MD_CTX_new();
 	(void)util_format(j->ref, sizeof j->ref, "%s%s", REF, service);
