@@ -347,7 +347,7 @@ static bool
 seen_item_valid (struct json_object *obj)
 {
 	struct json_object *blobs = jb_get(obj, "blobs");
-	struct finding_id key;
+	struct finding_id key = {};
 	uint64_t bytes;
 	uint64_t shown;
 	uint64_t turn;

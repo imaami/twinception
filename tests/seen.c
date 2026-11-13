@@ -855,7 +855,7 @@ test_find (void)
 static struct finding_id
 key_of (char const *text)
 {
-	struct finding_id key;
+	struct finding_id key = {};
 	CHECK(!finding_id_parse(&key, cstr_view(text)));
 	return key;
 }

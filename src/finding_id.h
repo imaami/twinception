@@ -35,6 +35,22 @@ struct finding_id {
 	char     author[MEMBER_NAME];  /**< X of X#n, or "" for no ID */
 };
 
+/** Returns the ID of the finding @p number of the member named @p author,
+ *  or the ID of the evidence item @p item of that finding if @p item is not
+ *  0. The function does not check the name. Every byte of the array author
+ *  after the name is 0, and only the first UTIL_WORD_MAX bytes of a longer
+ *  name are stored.
+ */
+static force_inline struct finding_id
+finding_id (struct cstr_view author,
+            uint32_t         number,
+            uint32_t         item)
+{
+	struct finding_id id = { .number = number, .item = item };
+	member_name_set(id.author, author);
+	return id;
+}
+
 /**
  * Reads the ID @p text into @p id: X#n, the ID of a finding, or X#n/m, the
  * ID of an evidence item. X is a member name (member_name_valid()), and n
@@ -61,9 +77,7 @@ finding_id_parse (struct finding_id *id,
 		if (!slash || util_ordinal(&text, &item) || text.len)
 			return EINVAL;
 	}
-	id->number = number;
-	id->item = item;
-	member_name_set(id->author, name);
+	*id = finding_id(name, number, item);
 	return 0;
 }
 

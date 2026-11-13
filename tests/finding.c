@@ -35,19 +35,6 @@ same (int         line,
 	        got ? (char const *)got : "", want);
 }
 
-/* Returns the ID of the finding @p number of @p author, or of its item
- * @p item if @p item is not 0.
- */
-static struct finding_id
-id_of (char const *author,
-       uint32_t    number,
-       uint32_t    item)
-{
-	struct finding_id id = { .number = number, .item = item };
-	snprintf(id.author, sizeof id.author, "%s", author);
-	return id;
-}
-
 /* Check that finding_id_parse() reads @p text as the ID @p want, and that
  * finding_id_put() writes that ID as @p text again.
  */
@@ -56,7 +43,7 @@ parsed (char const        *text,
         struct finding_id  want,
         int                line)
 {
-	struct finding_id id = id_of("x", 9, 9);
+	struct finding_id id = finding_id(CSTR_VIEW("x"), 9, 9);
 	char back[FINDING_ID_TEXT + 1];
 	memset(back, 'y', sizeof back);
 	int const e = finding_id_parse(&id, cstr_view(text));
@@ -72,27 +59,41 @@ parsed (char const        *text,
 	        id.author, id.number, id.item, back);
 }
 
-/* finding_id_parse() reads the IDs of findings and of items and refuses
- * any other text, finding_id_put() writes them, finding_id_equal() compares
- * them, and finding_id_without_item() returns the ID of the finding of an
- * item.
+/* finding_id() returns the ID of a name and two numbers. finding_id_parse()
+ * reads the IDs of findings and of items and refuses any other text,
+ * finding_id_put() writes them, finding_id_equal() compares them, and
+ * finding_id_without_item() returns the ID of the finding of an item.
  */
 static void
 test_id (void)
 {
-	parsed("bro#5", id_of("bro", 5, 0), __LINE__);
-	parsed("bro#5/2", id_of("bro", 5, 2), __LINE__);
-	parsed("first.last@ad#4294967295", id_of("first.last@ad", UINT32_MAX, 0), __LINE__);
-	parsed("first.last@ad#12/4294967295", id_of("first.last@ad", 12, UINT32_MAX), __LINE__);
-	parsed("c#1", id_of("c", 1, 0), __LINE__);
-	parsed("c7x#10/10", id_of("c7x", 10, 10), __LINE__);
+	/* finding_id() stores the name and the two numbers. Every byte of
+	 * author after the name is 0. The other checks compare with IDs that
+	 * finding_id() returns. */
+	static char const bro[MEMBER_NAME] = "bro";
+	static char const zero[MEMBER_NAME];
+	struct finding_id const made = finding_id(CSTR_VIEW("bro"), 5, 2);
+	CHECK(made.number == 5 && made.item == 2 && !memcmp(made.author, bro, sizeof bro));
+	struct finding_id const empty = finding_id(cstr_view(nullptr), 0, 0);
+	CHECK(!empty.number && !empty.item && !memcmp(empty.author, zero, sizeof zero));
+
+	parsed("bro#5", finding_id(CSTR_VIEW("bro"), 5, 0), __LINE__);
+	parsed("bro#5/2", finding_id(CSTR_VIEW("bro"), 5, 2), __LINE__);
+	parsed("first.last@ad#4294967295",
+	       finding_id(CSTR_VIEW("first.last@ad"), UINT32_MAX, 0), __LINE__);
+	parsed("first.last@ad#12/4294967295",
+	       finding_id(CSTR_VIEW("first.last@ad"), 12, UINT32_MAX), __LINE__);
+	parsed("c#1", finding_id(CSTR_VIEW("c"), 1, 0), __LINE__);
+	parsed("c7x#10/10", finding_id(CSTR_VIEW("c7x"), 10, 10), __LINE__);
 	/* The longest ID fills FINDING_ID_TEXT bytes with its NUL. */
 	char longest[FINDING_ID_TEXT];
 	memset(longest, 'a', UTIL_WORD_MAX);
 	snprintf(longest + UTIL_WORD_MAX, sizeof longest - UTIL_WORD_MAX, "#4294967295/4294967295");
 	CHECK(strlen(longest) == FINDING_ID_TEXT - 1);
-	struct finding_id big = { .number = UINT32_MAX, .item = UINT32_MAX };
-	memset(big.author, 'a', UTIL_WORD_MAX);
+	struct finding_id const big = finding_id(cstr_view_n(longest, UTIL_WORD_MAX), UINT32_MAX,
+	                                         UINT32_MAX);
+	CHECK(big.number == UINT32_MAX && big.item == UINT32_MAX &&
+	      !memcmp(big.author, longest, UTIL_WORD_MAX) && !big.author[UTIL_WORD_MAX]);
 	parsed(longest, big, __LINE__);
 	static_assert(sizeof big.author == UTIL_WORD_MAX + 1, "a member name and its NUL");
 
@@ -104,7 +105,7 @@ test_id (void)
 		"bro#5/1:1-2", "bro/1", "bro/1#5", "/1", "#", "/", "#/", "#5/1", "c7#5/1", "bro#5//1",
 	};
 	for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
-		struct finding_id id = id_of("x", 9, 9);
+		struct finding_id id = finding_id(CSTR_VIEW("x"), 9, 9);
 		if (finding_id_parse(&id, cstr_view(bad[i])) == EINVAL && !*id.author && !id.number &&
 		    !id.item)
 			continue;
@@ -112,12 +113,16 @@ test_id (void)
 		fprintf(stderr, "%s:%d: accepted %s\n", __FILE__, __LINE__, bad[i]);
 	}
 	/* A name of UTIL_WORD_MAX + 1 characters. */
-	struct finding_id id = id_of("x", 9, 9);
+	struct finding_id id = finding_id(CSTR_VIEW("x"), 9, 9);
 	char name[UTIL_WORD_MAX + sizeof "a#5"];
 	memset(name, 'a', UTIL_WORD_MAX + 1);
 	memcpy(name + UTIL_WORD_MAX + 1, "#5", sizeof "#5");
 	CHECK(finding_id_parse(&id, cstr_view(name)) == EINVAL && !*id.author);
 	CHECK(!finding_id_parse(&id, cstr_view(name + 1)) && strlen(id.author) == UTIL_WORD_MAX);
+	/* finding_id() stores the first UTIL_WORD_MAX bytes of that name. */
+	struct finding_id const cut = finding_id(cstr_view_n(name, UTIL_WORD_MAX + 1), 5, 0);
+	CHECK(cut.number == 5 && !cut.item && !memcmp(cut.author, longest, UTIL_WORD_MAX) &&
+	      !cut.author[UTIL_WORD_MAX]);
 	/* A view without bytes, and a text with a NUL inside. */
 	CHECK(finding_id_parse(&id, cstr_view(nullptr)) == EINVAL && !*id.author);
 	CHECK(finding_id_parse(&id, cstr_view_n("bro#5\0/1", 8)) == EINVAL);
@@ -129,21 +134,27 @@ test_id (void)
 	      id.item == 23);
 
 	/* finding_id_equal() compares the author and both numbers. */
-	struct finding_id const a = id_of("bro", 5, 2);
-	struct finding_id const same = id_of("bro", 5, 2);
+	struct finding_id const a = finding_id(CSTR_VIEW("bro"), 5, 2);
+	struct finding_id const same = finding_id(CSTR_VIEW("bro"), 5, 2);
 	struct finding_id const none = {};
 	CHECK(finding_id_equal(&a, &a) && finding_id_equal(&a, &same) &&
 	      finding_id_equal(&none, &none));
 	struct finding_id const other[] = {
-		id_of("bro", 5, 0), id_of("bro", 5, 3), id_of("bro", 6, 2), id_of("cuh", 5, 2),
-		id_of("br", 5, 2), id_of("bro1", 5, 2), id_of("Bro", 5, 2), {},
+		finding_id(CSTR_VIEW("bro"), 5, 0),
+		finding_id(CSTR_VIEW("bro"), 5, 3),
+		finding_id(CSTR_VIEW("bro"), 6, 2),
+		finding_id(CSTR_VIEW("cuh"), 5, 2),
+		finding_id(CSTR_VIEW("br"), 5, 2),
+		finding_id(CSTR_VIEW("bro1"), 5, 2),
+		finding_id(CSTR_VIEW("Bro"), 5, 2),
+		{},
 	};
 	for (size_t i = 0; i < sizeof other / sizeof *other; ++i)
 		CHECK(!finding_id_equal(&a, &other[i]) && !finding_id_equal(&other[i], &a));
 
 	/* The ID of the finding of an item, and of a finding. */
 	struct finding_id const of = finding_id_without_item(&a);
-	struct finding_id const whole = id_of("bro", 5, 0);
+	struct finding_id const whole = finding_id(CSTR_VIEW("bro"), 5, 0);
 	CHECK(finding_id_equal(&of, &whole) && !of.item && a.item == 2);
 	struct finding_id const again = finding_id_without_item(&of);
 	CHECK(finding_id_equal(&again, &whole));
@@ -296,7 +307,7 @@ test_changes (void)
 	finding_change_fini(&c);
 
 	struct finding f = finding();
-	f.id = id_of("bro", 5, 0);
+	f.id = finding_id(CSTR_VIEW("bro"), 5, 0);
 	CHECK(!cstr_view_store(CSTR_VIEW("First claim."), &f.claim));
 	c = change_of(FINDING_CANDIDATE, "Looks so.", 2, 4, 2);
 	c.evidence.items[0].item = 1;
@@ -397,7 +408,7 @@ finding_of (char const         *author,
             enum finding_state  state)
 {
 	struct finding f = finding();
-	f.id = id_of(author, number, 0);
+	f.id = finding_id(cstr_view(author), number, 0);
 	if (*about)
 		CHECK(!finding_id_parse(&f.about, cstr_view(about)));
 	CHECK(!hexid_init(&f.conversation, cstr_view(conversation)));
@@ -443,8 +454,8 @@ test_file (void)
 	}
 	struct finding back = finding();
 	CHECK(!finding_parse(&back, cstr_view_dstr(&text)));
-	struct finding_id const bro5 = id_of("bro", 5, 0);
-	struct finding_id const cuh2 = id_of("cuh", 2, 0);
+	struct finding_id const bro5 = finding_id(CSTR_VIEW("bro"), 5, 0);
+	struct finding_id const cuh2 = finding_id(CSTR_VIEW("cuh"), 2, 0);
 	CHECK(finding_id_equal(&back.id, &bro5) && finding_id_equal(&back.about, &cuh2) &&
 	      !strcmp(back.conversation.hex, CONV) && finding_state(&back) == FINDING_VERIFIED &&
 	      back.changes.n == 2 && back.changes.items[1].items == 2 &&
@@ -548,11 +559,17 @@ test_texts (void)
 		CHECK(finding_find(list, n, &list[i].id) == &list[i] &&
 		      finding_find(list, n, &item) == &list[i]);
 	}
-	struct finding_id const bro12 = id_of("bro", 12, 0);
-	struct finding_id const cuh1 = id_of("cuh", 1, 0);
-	struct finding_id const none[] = { id_of("bro", 6, 0), id_of("bro", 1, 0), id_of("cuh", 3, 0),
-	                                   id_of("dan", 1, 0), id_of("", 12, 0), id_of("br", 12, 0),
-	                                   {} };
+	struct finding_id const bro12 = finding_id(CSTR_VIEW("bro"), 12, 0);
+	struct finding_id const cuh1 = finding_id(CSTR_VIEW("cuh"), 1, 0);
+	struct finding_id const none[] = {
+		finding_id(CSTR_VIEW("bro"), 6, 0),
+		finding_id(CSTR_VIEW("bro"), 1, 0),
+		finding_id(CSTR_VIEW("cuh"), 3, 0),
+		finding_id(CSTR_VIEW("dan"), 1, 0),
+		finding_id(CSTR_VIEW(""), 12, 0),
+		finding_id(CSTR_VIEW("br"), 12, 0),
+		{},
+	};
 	for (size_t i = 0; i < sizeof none / sizeof *none; ++i)
 		CHECK(!finding_find(list, n, &none[i]));
 	CHECK(!finding_find(list, 0, &bro12) && !finding_find(nullptr, n, &bro12) &&
@@ -613,7 +630,7 @@ test_texts (void)
 	/* show lists the findings about a finding and each change. */
 	struct finding *cuh2 = &list[3];
 	struct finding_change c = change_of(FINDING_VERIFIED, "The option table maps -L.", 27, 9, 1);
-	c.evidence.items[0].from = id_of("unc", 1, 1);
+	c.evidence.items[0].from = finding_id(CSTR_VIEW("unc"), 1, 1);
 	c.evidence.items[0].kind = EVIDENCE_LINES;
 	c.evidence.items[0].flags = 0;
 	CHECK(!util_grow(c.evidence.items[0].ranges.items, c.evidence.items[0].ranges.cap, 1));

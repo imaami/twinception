@@ -1209,7 +1209,7 @@ expanded (struct evidence const *e,
 {
 	struct dstr d = DSTR_INIT;
 	struct evidence_material const m = evidence_material(request, result);
-	struct finding_id const id = { .number = 2, .item = e->item, .author = "cuh" };
+	struct finding_id const id = finding_id(CSTR_VIEW("cuh"), 2, e->item);
 	int const got = evidence_expand(e, &id, &m, &d);
 	if (got || strcmp(dstr_get(&d), want)) {
 		++failures;
@@ -1298,7 +1298,7 @@ test_expand (void)
 	         __LINE__);
 	struct dstr d = DSTR_INIT;
 	struct evidence_material const m = evidence_material(args, out);
-	struct finding_id const id = { .number = 2, .item = 2, .author = "cuh" };
+	struct finding_id const id = finding_id(CSTR_VIEW("cuh"), 2, 2);
 	CHECK(evidence_expand(nullptr, &id, &m, &d) == EFAULT);
 	CHECK(evidence_expand(&e, nullptr, &m, &d) == EFAULT);
 	CHECK(evidence_expand(&e, &id, nullptr, &d) == EFAULT);

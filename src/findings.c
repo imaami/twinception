@@ -2019,7 +2019,7 @@ findings_got_calls (struct mcp_slot *slot)
 		}
 		struct oid commit = {};
 		struct cstr_view a = {}, n = {}, verb = {}, id = {};
-		struct finding_id found;
+		struct finding_id found = {};
 		/* The subject is "Add bro#5 (verified)" or "Update bro#5 (...)". A
 		 * commit without the trailer line Ask names no ask call. */
 		if (oid_init_field(&commit, &line, ' ') || !cstr_view_cut(&line, ' ', &a) ||
