@@ -644,8 +644,8 @@ cli_state_create (struct cstr_view    path,
 	for (size_t i = 0; i < array_size(state->inputs); ++i)
 		state->inputs[i] = dstr("");
 	for (size_t i = 0; i < array_size(state->turns); ++i)
-		state->turns[i] = (struct cli_state_turn){ dstr(""), dstr("") };
-	state->pending = (struct cli_state_turn){ dstr(""), dstr("") };
+		state->turns[i] = cli_state_turn();
+	state->pending = cli_state_turn();
 	state->identity = state->path = state->name = state->temporary = state->scratch = dstr("");
 	state->branch = state->latest = state->tree = state->metadata = dstr("");
 	*e = cstr_view_store(identity, &state->identity);

@@ -6,6 +6,7 @@
 
 #include <stdatomic.h>
 
+#include "compat.h"
 #include "cstr_view.h"
 #include "dstr.h"
 #include "tally.h"
@@ -76,6 +77,13 @@ struct cli_state_turn {
 	struct dstr prompt;
 	struct dstr answer;
 };
+
+/** Returns a turn whose prompt and answer are empty. */
+static force_inline struct cli_state_turn
+cli_state_turn (void)
+{
+	return (struct cli_state_turn){ .prompt = dstr(""), .answer = dstr("") };
+}
 
 /** An empty path selects $XDG_STATE_HOME/askai/cli.git (or the HOME
  * fallback). The repository must be private and dedicated to CLI history.
