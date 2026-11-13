@@ -40,18 +40,6 @@ sse_line (struct sse       *sse,
 	       dstr_cat_n(&sse->data, "\n", 1) ? 0 : ENOMEM;
 }
 
-struct sse
-sse (sse_event_cb *event,
-     void         *user)
-{
-	return (struct sse){
-		.input = DSTR_INIT,
-		.data = DSTR_INIT,
-		.event = event,
-		.user = user
-	};
-}
-
 int
 sse_feed (struct sse *sse,
           void const *data,

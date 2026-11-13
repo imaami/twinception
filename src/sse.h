@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 
+#include "compat.h"
 #include "dstr.h"
 
 /** The event callback of a parser. It is called for each event that
@@ -29,9 +30,17 @@ struct sse {
  * RAII-style initializer: an empty parser that reports events to @p event.
  * Assigning it over a parser that holds input leaks; sse_fini() it first.
  */
-extern struct sse
+static force_inline struct sse
 sse (sse_event_cb *event,
-     void         *user);
+     void         *user)
+{
+	return (struct sse){
+		.input = DSTR_INIT,
+		.data = DSTR_INIT,
+		.event = event,
+		.user = user
+	};
+}
 
 extern int
 sse_feed (struct sse *sse,
