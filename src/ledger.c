@@ -739,8 +739,7 @@ ledger_timer_add (struct ledger_timer timers[static LEDGER_TIMERS],
 		++i;
 	if (i == LEDGER_TIMERS)
 		return EBUSY;
-	timers[i] = (struct ledger_timer){ .due = due, .id = id };
-	(void)util_text_store(&timers[i].note, note);
+	timers[i] = ledger_timer(due, id, note);
 	return 0;
 }
 

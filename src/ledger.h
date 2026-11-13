@@ -52,6 +52,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "compat.h"
 #include "cstr_view.h"
 #include "dstr.h"
 #include "hexid.h"
@@ -167,6 +168,20 @@ struct ledger_timer {
 	                                       bytes that would otherwise be
 	                                       padding */
 };
+
+/** Returns the timer of the number @p id that fires at @p due, a
+ *  loop_clock() time, with the note @p note. The caller checks that the
+ *  note is at most LEDGER_NOTE bytes.
+ */
+static force_inline struct ledger_timer
+ledger_timer (uint64_t         due,
+              uint32_t         id,
+              struct cstr_view note)
+{
+	struct ledger_timer t = { .due = due, .id = id };
+	(void)util_text_store(&t.note, note);
+	return t;
+}
 
 /** A call of an owner that waits for the owner's records' calls to end
  *  and for its timers to fire. The ledger has a reference to it while the
