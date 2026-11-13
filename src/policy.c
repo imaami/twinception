@@ -368,7 +368,8 @@ policy_range_parse (char const   *line,
 	/* The number of ids above START, up to UINT32_MAX. Neither this
 	 * subtraction nor the addition below can wrap around. */
 	uint64_t room = UINT32_MAX - start;
-	*r = range((uint32_t)start, (uint32_t)(start + (count - 1 < room ? count - 1 : room)));
+	*r = range((uint32_t)start,
+	           (uint32_t)(start + (count - 1 < room ? count - 1 : room)));
 	return true;
 }
 
