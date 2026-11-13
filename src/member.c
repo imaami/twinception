@@ -1790,7 +1790,7 @@ member_byline_put (struct member_byline        *byline,
 		t[n++] = store_trailer(CSTR_VIEW("Conversation"), hexid_view(&call->conversation));
 	if (*call->asker.name)
 		t[n++] = store_trailer(CSTR_VIEW("Asked-by"), cstr_view(call->asker.name));
-	commit->author = (struct store_ident){ cstr_view(self->name), email };
+	commit->author = store_ident(cstr_view(self->name), email);
 	commit->committer = session->committer;
 	commit->trailers = t;
 	commit->n_trailers = n;

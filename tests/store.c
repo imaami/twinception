@@ -405,7 +405,7 @@ test_trailer (void)
 		store_trailer(CSTR_VIEW("Login"), CSTR_VIEW("imaami")),
 	};
 	struct store_commit c = commit;
-	c.author = (struct store_ident){};
+	c.author = store_ident(cstr_view(nullptr), cstr_view(nullptr));
 	c.message = CSTR_VIEW("Add the member bro");
 	c.trailers = record;
 	c.n_trailers = array_size(record);
@@ -421,7 +421,7 @@ test_trailer (void)
 	/* An author without a name and trailers without a count are left
 	 * out. */
 	c = commit;
-	c.author = (struct store_ident){ {}, CSTR_VIEW("x<y") };
+	c.author = store_ident(cstr_view(nullptr), CSTR_VIEW("x<y"));
 	c.n_trailers = 0;
 	CHECK(!store_commit_input(&c, &in));
 	s = buf_peek(&in);
@@ -1342,7 +1342,7 @@ test_git (char const *path)
 		store_trailer(CSTR_VIEW("Asked-by"), CSTR_VIEW("imaami")),
 	};
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("b"), CSTR_VIEW("x")));
-	commit.author = (struct store_ident){ CSTR_VIEW("bro"), CSTR_VIEW("agent/bro") };
+	commit.author = store_ident(CSTR_VIEW("bro"), CSTR_VIEW("agent/bro"));
 	commit.message = CSTR_VIEW("Add b (1 byte)");
 	commit.files = buf_peek(&files);
 	commit.trailers = asked;

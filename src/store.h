@@ -416,6 +416,16 @@ struct store_ident {
 	struct cstr_view email;
 };
 
+/** Returns the author or the committer with the name @p name and the email
+ *  address @p email.
+ */
+static force_inline struct store_ident
+store_ident (struct cstr_view name,
+             struct cstr_view email)
+{
+	return (struct store_ident){ .name = name, .email = email };
+}
+
 /** A commit, as store_commit_input() writes it for STORE_COMMIT. */
 struct store_commit {
 	struct store_ident          author;      /**< without a name, git
