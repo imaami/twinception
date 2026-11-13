@@ -447,7 +447,7 @@ enum mcp_phase {
 	PHASE_METRICS,   /* rendering the metrics, a share a step */
 };
 
-/* The arguments of a call as the log shows them (mcp_args_shown()). */
+/* The arguments of a call as the log shows them (mcp_shown()). */
 struct mcp_shown {
 	UTIL_TEXT(SHOWN);
 };
@@ -1378,23 +1378,23 @@ mcp_shown_object (struct mcp_shown   *w,
 	return mcp_shown_put(w, FRAG("}"));
 }
 
-/** Writes @p args, the arguments of a call of @p tool, or @p none without
- *  arguments, into @p w as compact JSON on one line, cut to TRACE_ARGS
- *  bytes with "...". The value of the argument that the member sized of
- *  the row of the tool specifies, such as the text of a note, is replaced
- *  by its size.
+/** Returns @p args, the arguments of a call of @p tool, or @p none without
+ *  arguments, as compact JSON on one line, cut to TRACE_ARGS bytes with
+ *  "...". The value of the argument that the member sized of the row of
+ *  the tool specifies, such as the text of a note, is replaced by its
+ *  size.
  */
-static void
-mcp_args_shown (struct registry_tool const *tool,
-                struct json_object         *args,
-                struct cstr_view            none,
-                struct mcp_shown           *w)
+static struct mcp_shown
+mcp_shown (struct registry_tool const *tool,
+           struct json_object         *args,
+           struct cstr_view            none)
 {
-	util_text_clear(w);
-	bool const fits = args ? mcp_shown_value(w, args, mcp_row_of(tool)->sized)
-	                       : mcp_shown_put(w, BYTES(none));
+	struct mcp_shown w = {};
+	bool const fits = args ? mcp_shown_value(&w, args, mcp_row_of(tool)->sized)
+	                       : mcp_shown_put(&w, BYTES(none));
 	if (!fits)
-		(void)util_text_printf(w, "...");
+		(void)util_text_printf(&w, "...");
+	return w;
 }
 
 /* The client of @p req as the log names it. */
@@ -4719,8 +4719,8 @@ mcp_req_log_refused (struct mcp_req const *req,
 	if (log_threshold < LOG_VERBOSE)
 		return;
 	char quoted[QUOTED(NAME_LOG)];
-	struct mcp_shown shown;
-	mcp_args_shown(mcp_static_tool(req->mcp->st, known), args, mcp_req_no_args(req), &shown);
+	struct mcp_shown const shown = mcp_shown(mcp_static_tool(req->mcp->st, known), args,
+	                                         mcp_req_no_args(req));
 	LOG(LOG_VERBOSE, TURN_FMT "tool call %s refused: %s; arguments %s", TURN_ARGS(req),
 	    mcp_quote(quoted, sizeof quoted, name, NAME_LOG),
 	    known < TOOL_MAX ? "not lent to this ask call" : "askai offers no such tool",
@@ -5060,7 +5060,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	/* The log line of the call's end shows the arguments of the job's
 	 * call, by the rules of its tool. */
 	if (log_threshold >= LOG_VERBOSE)
-		mcp_args_shown(tool, call, CSTR_VIEW("none"), &req->call_args);
+		req->call_args = mcp_shown(tool, call, CSTR_VIEW("none"));
 	LOG(LOG_VERBOSE, "tool call background from %s became job %s, a call of %s",
 	    mcp_req_client(req), req->task->id.hex, tool->name.data);
 	/* Last, as the start of the job's call may end the request. */
@@ -5705,8 +5705,8 @@ static void mcp_agenda_job_done (struct mcp_slot *slot);
  *
  * With --verbose, the function logs one line with the ask call, the turn,
  * the name of the tool, whether the call failed, the time that the call
- * took, the size of the output in bytes, the arguments, as mcp_args_shown()
- * writes them, without the text of a note, and the text of a failure. The
+ * took, the size of the output in bytes, the arguments, as mcp_shown()
+ * returns them, without the text of a note, and the text of a failure. The
  * line never contains the output of a call that succeeds, which can be the
  * text of the upstream's notes. A failed call is logged at the verbose
  * level, because a model that calls a tool with wrong arguments is not an
@@ -5733,9 +5733,9 @@ mcp_slot_done (struct mcp_slot *slot)
 		/* A turn's call whose arguments are not a JSON object ends at once
 		 * in mcp_req_call_launch(), so REQ_CUT is still the value of its
 		 * turn. */
-		struct mcp_shown shown;
-		mcp_args_shown(tool, slot->args,
-		               job ? CSTR_VIEW("none") : mcp_req_no_args(req), &shown);
+		struct mcp_shown const shown = mcp_shown(tool, slot->args,
+		                                         job ? CSTR_VIEW("none")
+		                                             : mcp_req_no_args(req));
 		char text[QUOTED(ERROR_LOG)] = "";
 		if (failed && out.len)
 			mcp_quote(text, sizeof text, cstr_view_span(out), ERROR_LOG);
@@ -6809,7 +6809,7 @@ mcp_req_tools_call (struct mcp_req     *req,
 	req->self.tool = (uint8_t)id;
 	struct json_object *args = jb_get(params, "arguments");
 	if (log_threshold >= LOG_VERBOSE)
-		mcp_args_shown(tool, args, CSTR_VIEW("none"), &req->call_args);
+		req->call_args = mcp_shown(tool, args, CSTR_VIEW("none"));
 	mcp_slot_start(&req->self, args);
 }
 
