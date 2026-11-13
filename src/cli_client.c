@@ -526,6 +526,19 @@ struct cli_client_scan {
 	uint64_t             flags;       /* CLI_CLIENT_SCAN_ bits */
 };
 
+/* Returns the scan of a refresh before the refresh reads the tool list.
+ * The four strings are empty, and no flag is set. @p catalog is the
+ * catalog of the scan, which cli_client_scan_fini() destroys.
+ */
+static force_inline struct cli_client_scan
+cli_client_scan (struct autocomplete *catalog)
+{
+	return (struct cli_client_scan){
+		.notes_tool = DSTR_INIT, .session = DSTR_INIT, .agent = DSTR_INIT, .chosen = DSTR_INIT,
+		.catalog = catalog,
+	};
+}
+
 /* The note names that cli_client_read_files() parses, as views into the
  * text that it parses.
  */
@@ -848,10 +861,7 @@ cli_client_refresh (struct cli_client *client,
 	client->flags &= ~(CLI_CLIENT_CATALOG_DIRTY | CLI_CLIENT_NOTES_DIRTY);
 	int e = 0;
 	__attribute__((cleanup(cli_client_scan_fini)))
-	struct cli_client_scan scan = {
-		.notes_tool = DSTR_INIT, .session = DSTR_INIT, .agent = DSTR_INIT, .chosen = DSTR_INIT,
-		.catalog = autocomplete_create(&e),
-	};
+	struct cli_client_scan scan = cli_client_scan(autocomplete_create(&e));
 	if (!scan.catalog)
 		return e;
 	e = cli_client_scan_tools(client, &scan, error);
