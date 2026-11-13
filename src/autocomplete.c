@@ -73,6 +73,16 @@ struct autocomplete_notebook {
 	size_t                    storage;
 };
 
+/* Returns an entry of the note files of a notebook that is not in use.
+ * The name of the tool and the name of the notebook are the empty string,
+ * and the entry contains no path.
+ */
+static force_inline struct autocomplete_notebook
+autocomplete_notebook (void)
+{
+	return (struct autocomplete_notebook){ .tool = dstr(nullptr), .notebook = dstr(nullptr) };
+}
+
 struct autocomplete_token {
 	size_t begin;
 	size_t end;
@@ -856,7 +866,7 @@ autocomplete_set_note_files (struct autocomplete    *ac,
 		if (util_grow(ac->notes.items, ac->notes.cap, index + 1))
 			return ENOMEM;
 		for (size_t i = previous; i < ac->notes.cap; ++i)
-			ac->notes.items[i] = (struct autocomplete_notebook){.tool = dstr(nullptr), .notebook = dstr(nullptr)};
+			ac->notes.items[i] = autocomplete_notebook();
 	}
 	struct autocomplete_notebook *notes = &ac->notes.items[index];
 	int error = cstr_view_store(tool, &notes->tool);
