@@ -389,6 +389,14 @@ struct cli_scrollback_frame {
 	uint64_t                      style;  /* enum cli_style, widened over the padding */
 };
 
+static force_inline struct cli_scrollback_frame
+cli_scrollback_frame (struct cli_scrollback_frame const f)
+{
+	return f;
+}
+
+#define cli_scrollback_frame(...) (cli_scrollback_frame)((struct cli_scrollback_frame){__VA_ARGS__})
+
 static int
 cli_scrollback_frame_style (struct cli_scrollback_frame *frame,
                             enum cli_style               style)
@@ -536,10 +544,10 @@ cli_scrollback_render_pane (struct cli_scrollback        *scrollback,
 	if (!left || !top || !columns || columns > INT_MAX || !height || !palette ||
 	    columns > SIZE_MAX - (left - 1) || height > SIZE_MAX - (top - 1))
 		return EINVAL;
-	struct cli_scrollback_frame frame = {
+	struct cli_scrollback_frame frame = cli_scrollback_frame(
 		.output = output, .cache = cache, .palette = palette, .columns = columns, .height = height,
-		.left = left, .row = top, .start = dstr_len(output), .style = CLI_STYLE_COUNT,
-	};
+		.left = left, .row = top, .start = dstr_len(output), .style = CLI_STYLE_COUNT
+	);
 	size_t rows = 0;
 	struct list *hook;
 	list_foreach(hook, &scrollback->lines) {
