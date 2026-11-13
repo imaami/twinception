@@ -1708,7 +1708,7 @@ cli_console_read_text_simple (struct cli_console *console,
                               bool                multiline,
                               struct cstr_view    prompt)
 {
-	struct buf bytes = {};
+	struct buf bytes = buf();
 	int e = cli_console_read_simple(console, &bytes, multiline, prompt);
 	struct cstr_view line = {(char const *)bytes.data, bytes.tail};
 	if (!e && !jb_is_text(line))

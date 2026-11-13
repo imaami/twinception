@@ -94,7 +94,7 @@ code_check (struct config *cfg)
 		.deadline = loop_clock() + 10 * NS,
 		.flags = CHILD_STDERR,
 	};
-	struct buf out = {};
+	struct buf out = buf();
 	struct child_end end;
 	e = child_capture(&cmd, child_fds(), &out, &end);
 	free(cache);

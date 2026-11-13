@@ -466,7 +466,7 @@ member_records_take (struct member_records  *r,
 {
 	static char const records[] = "the member records";
 	struct member_records got = { .out = *out };
-	*out = (struct buf){};
+	*out = buf();
 	int const ended = member_git_result(why, len, "read", records, (struct span){}, e, end);
 	e = ended ? ended : member_records_parse(&got);
 	if (!e) {
@@ -490,7 +490,7 @@ member_records_read (struct member_records *r,
                      char                  *why,
                      size_t                 len)
 {
-	struct buf out = {};
+	struct buf out = buf();
 	struct child_end end = child_end();
 	int const e = store_run(store, STORE_REFS, member_list, nullptr, (struct span){}, &out, &end);
 	return member_records_take(r, &out, e, &end, why, len);
@@ -571,7 +571,7 @@ member_commit (struct member_registry const *reg,
                char                         *why,
                size_t                        len)
 {
-	struct buf out = {};
+	struct buf out = buf();
 	struct child_end end = child_end();
 	if (!e)
 		e = store_run(reg->store, STORE_COMMIT, nullptr, ref, buf_peek(in), &out, &end);
@@ -805,7 +805,7 @@ member_registry_claim (struct member_registry *reg,
 {
 	struct cstr_view const text = cstr_view(claim->login.text);
 	for (;;) {
-		struct buf in = {};
+		struct buf in = buf();
 		struct member_info const *entry = member_records_login(&reg->records, text);
 		int e = member_claim_step(claim, reg, &reg->records, text, &entry, &in, why, len);
 		if (e == EPERM) {
@@ -991,7 +991,7 @@ member_registry_session_read (struct member_registry *reg,
 		                                                  "Create the session %.*s",
 		                                                  (int)name.len, name.data);
 		for (size_t tries = 0; !e && !r->session.data && tries < STORE_TRIES; ++tries) {
-			struct buf in = {};
+			struct buf in = buf();
 			e = member_commit_input(reg, SESSION, subject, t, array_size(t), &(struct oid){},
 			                        &in);
 			e = member_commit(reg, SESSION, &in, e, why, len);
@@ -1020,7 +1020,7 @@ member_registry_start (struct member_registry *reg,
                        char                   *why,
                        size_t                  len)
 {
-	struct buf out = {};
+	struct buf out = buf();
 	struct child_end end = child_end();
 	int e = store_init(reg->store, &out, &end);
 	e = member_git_result(why, len, "create", "the repository",
@@ -1309,7 +1309,7 @@ member_lookup_step (struct member_lookup     *lookup,
 	struct member_table *table = lookup->table;
 	struct member_login const *login = &lookup->claim.login;
 	struct tool_scratch *scratch = table->scratch;
-	struct buf in = {};
+	struct buf in = buf();
 	int e = member_claim_step(&lookup->claim, table->registry, &table->records, text, &entry,
 	                          lookup->flags & LOOKUP_WRITE ? &in : nullptr, scratch->text,
 	                          sizeof scratch->text);

@@ -53,7 +53,7 @@ cli_read_file (struct autocomplete_file const *files,
 		return ENOMEM;
 	int fd = open(dstr_get(&expanded), O_RDONLY | O_CLOEXEC);
 	/* A file read can end inside a UTF-8 character. Assemble bytes first. */
-	struct buf bytes = {};
+	struct buf bytes = buf();
 	int e = fd < 0 ? errno : buf_read(&bytes, fd, 0, CLI_LIMIT);
 	util_close(&fd);
 	struct span const s = buf_peek(&bytes);

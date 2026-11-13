@@ -142,7 +142,7 @@ run_git (struct git_run *run,
          size_t          size,
          size_t         *len)
 {
-	struct buf got = {};
+	struct buf got = buf();
 	struct child_end end;
 	run->c.max = size - 1;
 	int e = child_capture(&run->c, child_fds(), &got, &end);
@@ -210,7 +210,7 @@ commit_run (struct store const        *store,
             size_t                     size,
             size_t                    *len)
 {
-	struct buf in = {};
+	struct buf in = buf();
 	CHECK(!store_commit_input(commit, &in));
 	struct git_run r;
 	int e = store_command(store, &r, STORE_COMMIT, nullptr, commit->ref, buf_peek(&in),
@@ -230,7 +230,7 @@ commit_run (struct store const        *store,
 static bool
 refused (struct store_commit commit)
 {
-	struct buf in = {};
+	struct buf in = buf();
 	int e = store_commit_input(&commit, &in);
 	bool empty = !buf_peek(&in).len;
 	buf_fini(&in);
@@ -255,7 +255,7 @@ test_input (void)
 	SAME(quoted, (size_t)(end - quoted), "\"\"");
 
 	/* A file part quotes the path as store_quote() does. */
-	struct buf files = {};
+	struct buf files = buf();
 	struct extent part = {};
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("a\"b\\c"), CSTR_VIEW("abc")));
 	CHECK(part.at == 33 && part.len == 3);
@@ -293,7 +293,7 @@ test_input (void)
 		.ref = "refs/heads/notes/t",
 		.tip = &tip,
 	};
-	struct buf in = {};
+	struct buf in = buf();
 	CHECK(!store_commit_input(&commit, &in));
 	s = buf_peek(&in);
 	SAME(s.ptr, s.len, "commit refs/heads/notes/t\nmark :1\n"
@@ -391,7 +391,7 @@ test_trailer (void)
 		.ref = "refs/heads/notes/t",
 		.tip = &root,
 	};
-	struct buf in = {};
+	struct buf in = buf();
 	CHECK(!store_commit_input(&commit, &in));
 	struct span s = buf_peek(&in);
 	SAME(s.ptr, s.len, "commit refs/heads/notes/t\nmark :1\nauthor bro <agent/bro> now\n"
@@ -572,7 +572,7 @@ checked (char const *out,
 static void
 test_check (void)
 {
-	struct buf in = {};
+	struct buf in = buf();
 	CHECK(!store_check_input(&in, "refs/heads/n", CSTR_VIEW("a/b c/d")));
 	struct span s = buf_peek(&in);
 	SAME(s.ptr, s.len, "refs/heads/n\nrefs/heads/n:a\nrefs/heads/n:a/b c\n"
@@ -878,7 +878,7 @@ static void
 test_run (struct store const *store,
           struct oid const   *tip)
 {
-	struct buf out = {};
+	struct buf out = buf();
 	struct child_end end;
 	CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
 	CHECK(!store_run(store, STORE_HEAD, (char const *const[]){ "refs/heads/notes/t" }, nullptr,
@@ -900,7 +900,7 @@ test_run (struct store const *store,
 		.ref = "refs/heads/notes/t",
 		.tip = &root,
 	};
-	struct buf in = {};
+	struct buf in = buf();
 	CHECK(!store_commit_input(&commit, &in));
 	CHECK(!store_run(store, STORE_COMMIT, nullptr, commit.ref, buf_peek(&in), &out, &end) &&
 	      end.code == CLD_EXITED && end.status == 1);
@@ -943,7 +943,7 @@ test_ends (char const *parent)
 	CHECK(store && !e && !store_exists(store));
 	if (!store)
 		return;
-	struct buf out = {};
+	struct buf out = buf();
 	struct child_end end;
 	CHECK(!store_init(store, &out, &end) && end.code == CLD_EXITED && !end.status &&
 	      store_exists(store));
@@ -1037,7 +1037,7 @@ check_at (struct store const *store,
 	static char out[4096];
 	size_t len = 0;
 	uint64_t bytes;
-	struct buf in = {};
+	struct buf in = buf();
 	CHECK(!store_check_input(&in, ref, cstr_view(name)));
 	CHECK(!run(store, STORE_CHECK, nullptr, buf_peek(&in), out, sizeof out, &len));
 	buf_fini(&in);
@@ -1056,7 +1056,7 @@ test_race (struct store const *store)
 	 * which makes the directory m. */
 	char const *ref = "refs/heads/notes/r";
 	struct oid const root = {};
-	struct buf files = {};
+	struct buf files = buf();
 	struct extent part = {};
 	struct oid r1, r2, r3, r4;
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("a/b"), CSTR_VIEW("1")));
@@ -1246,7 +1246,7 @@ test_git (char const *path)
 	           (struct span){}, out, sizeof out, &len) && !len);
 
 	/* A file part adds the file. */
-	struct buf files = {};
+	struct buf files = buf();
 	struct extent part = {};
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("a"), CSTR_VIEW("abc")));
 	commit.message = CSTR_VIEW("Add a");

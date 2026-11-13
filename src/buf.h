@@ -39,6 +39,13 @@ struct buf {
 	size_t         cap;
 };
 
+/** Returns an empty buffer. No storage is allocated for it. */
+static force_inline struct buf
+buf (void)
+{
+	return (struct buf){};
+}
+
 /** A run of bytes in a buffer, valid until the buffer next changes. */
 struct span {
 	unsigned char *ptr;

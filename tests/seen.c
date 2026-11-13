@@ -349,7 +349,7 @@ test_read (void)
 	CHECK(read && !e);
 	read_is(read, B, __LINE__);
 	struct seen *seen = nullptr;
-	struct buf request = {};
+	struct buf request = buf();
 	struct cstr_view const parts[SEEN_PARTS] = { o };
 	struct seen_result const r = { .parts = parts, .out = o, .read = read,
 	                               .stamp = { .output = o.len, .number = 1, .turn = 1 } };
@@ -452,7 +452,7 @@ keep (struct seen     **p_seen,
       size_t            asked,
       struct cstr_view  out)
 {
-	struct buf request = {};
+	struct buf request = buf();
 	request_of(&request, asked);
 	struct cstr_view const parts[SEEN_PARTS] = { out, CSTR_VIEW("\n\n[askai: call c?]") };
 	struct seen_result const r = {
@@ -501,7 +501,7 @@ test_keep (void)
 	int e = -1;
 	struct seen_read *read = seen_read_create(&src, o, &e);
 	CHECK(read && !e);
-	struct buf request = {};
+	struct buf request = buf();
 	request_of(&request, 100);
 	unsigned char const *data = request.data;
 	size_t const skip = 4 + 9 * 2;
@@ -717,7 +717,7 @@ test_drop (void)
 
 	/* A call larger than TOOL_TEXT_MAX stays as a number. The arguments
 	 * stay with the caller. */
-	struct buf request = {};
+	struct buf request = buf();
 	request_of(&request, TOOL_TEXT_MAX);
 	struct cstr_view const parts[SEEN_PARTS] = { CSTR_VIEW("r") };
 	struct seen_result const r = { .parts = parts, .out = parts[0],

@@ -1547,7 +1547,7 @@ cxi_cache_export (struct cxi_cache *cache,
 	}
 	if (!e && mkdirat(cache->fd, "tree", 0700) && errno != EEXIST)
 		e = errno;
-	struct buf list = {};
+	struct buf list = buf();
 	if (!e)
 		e = cxi_cache_git(cache, count, &list, CXI_LIST);
 	struct span const got = buf_peek(&list);

@@ -320,7 +320,7 @@ seen_keep (struct seen              **p_seen,
 		for (size_t i = 0; i < SEEN_PARTS; ++i)
 			(void)dstr_cat_n(&c->result, r->parts[i].data, r->parts[i].len);
 		c->request = *request;
-		*request = (struct buf){};
+		*request = buf();
 	}
 	c->stamp = r->stamp;
 	c->stamp.flags = (r->stamp.flags & FLAG_FAILED) | (large ? SEEN_TOO_LARGE : 0);

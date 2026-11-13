@@ -2527,7 +2527,7 @@ mcp_req_job_done (struct mcp_req *req)
 	mcp_req_unwait(req);
 	if (req->lent) {
 		req->upload = job->request;
-		job->request = (struct buf){};
+		job->request = buf();
 	}
 	buf_fini(&job->request);
 	/* A streamed answer's turn is logged with its calls. */
@@ -2927,7 +2927,7 @@ mcp_req_submit (struct mcp_req *req)
 	}
 	uint64_t const timeout = mcp->st->timeout;
 	job->request = req->upload;
-	req->upload = (struct buf){};
+	req->upload = buf();
 	job->call = req->call;
 	/* A resumed job ends at the realtime deadline of its checkpoint, at
 	 * least 1 ns from now, and another job after the timeout, if set. */
@@ -3153,7 +3153,7 @@ static int
 mcp_req_enrol (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
-	struct buf key = {};
+	struct buf key = buf();
 	uint64_t hash;
 	struct handle who;
 	int e = mcp_req_key(req, req->id, &key, &hash);
@@ -4602,7 +4602,7 @@ mcp_req_turn_write (struct mcp_req *req)
 	}
 	for (uint32_t k = 0; k < req->n_calls; ++k) {
 		req->calls[k] = req->job->calls[k];
-		req->job->calls[k] = (struct buf){};
+		req->job->calls[k] = buf();
 	}
 	mcp_req_drop(req);
 	req->part = 0;
@@ -6838,7 +6838,7 @@ mcp_req_cancel (struct mcp_req     *req,
                 struct json_object *params)
 {
 	struct json_object *id = jb_get(params, "requestId");
-	struct buf key = {};
+	struct buf key = buf();
 	uint64_t hash;
 	if (mcp_id_valid(id) && !mcp_req_key(req, id, &key, &hash))
 		roster_cancel(req->mcp->st->roster, buf_peek(&key), hash);

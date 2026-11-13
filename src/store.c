@@ -136,7 +136,7 @@ store_open (struct store *store,
 		if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
 			return util_refuse(why, len,
 			                   "the repository .git is not a file or directory");
-		struct buf out = {};
+		struct buf out = buf();
 		e = store_open_common(store, &out);
 		if (e) {
 			/* After EIO, the message contains the last line of the

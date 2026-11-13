@@ -672,7 +672,7 @@ journal_test_child_run (void)
 	end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
 	assert(child_cmd_run(&none, child_fds(), nullptr, &end) == ENOENT);
 	assert(!end.code && !end.status && !end.flags);
-	struct buf out = {};
+	struct buf out = buf();
 	assert(!buf_put(&out, "x", 1, SIZE_MAX));
 	end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
 	assert(child_capture(&none, child_fds(), &out, &end) == ENOENT);
@@ -690,7 +690,7 @@ journal_test_child_run (void)
 static void
 journal_test_child_capture (void)
 {
-	struct buf out = {};
+	struct buf out = buf();
 	struct child_end end;
 	uint64_t ms;
 	assert(!journal_test_run("true", 0, 0, 0, &out, &end, &ms));
@@ -779,7 +779,7 @@ journal_test_child_cmd_run (void)
 	static_assert(SIGHUP == 1, "the signal number that equals the exit status 1");
 	struct child_end const unset = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
 	char *const envp[] = { "PATH=/usr/bin:/bin", nullptr };
-	struct buf out = {};
+	struct buf out = buf();
 	for (size_t i = 0; i < array_size(cases); ++i) {
 		char const *const argv[] = { "sh", "-c", cases[i].script, nullptr };
 		struct child_cmd const cmd = { .file = "sh", .argv = argv, .envp = envp, .max = 3 };

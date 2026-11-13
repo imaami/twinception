@@ -1550,7 +1550,7 @@ config_apply_file (struct config *cfg)
 static int
 config_file (struct config *cfg)
 {
-	struct buf text = {};
+	struct buf text = buf();
 	int status = config_slurp(cfg, cfg->path, 0, &text);
 	if (status)
 		return status;
@@ -1953,7 +1953,7 @@ static int
 config_tls_key (struct config    *cfg,
                 struct cstr_view  chain)
 {
-	struct buf key = {};
+	struct buf key = buf();
 	int status = config_slurp(cfg, cfg->tls_key, S_IROTH, &key);
 	if (status)
 		return status;
@@ -1980,7 +1980,7 @@ config_tls (struct config *cfg)
 	if (!cfg->tls_cert || !cfg->tls_key)
 		return config_complain(cfg, nullptr, "a tls: listener needs --tls-cert "
 		                       "and --tls-key");
-	struct buf chain = {};
+	struct buf chain = buf();
 	int status = config_slurp(cfg, cfg->tls_cert, 0, &chain);
 	if (status)
 		return status;

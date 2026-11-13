@@ -90,7 +90,7 @@ keep (struct seen     **p_seen,
       struct seen_read *read,
       bool              large)
 {
-	struct buf request = {};
+	struct buf request = buf();
 	request_of(&request, id, args);
 	if (large) {
 		struct span room;
@@ -428,7 +428,7 @@ test_cite (void)
 	CHECK(read && !e);
 	struct seen *seen = nullptr;
 	struct cstr_view const window = { o.data + at + 3, 9 * 6 - 3 };
-	struct buf request = {};
+	struct buf request = buf();
 	request_of(&request, "", "{\"command\":\"read\"}");
 	struct cstr_view const parts[SEEN_PARTS] = { window, CSTR_VIEW("\n\n[askai: call c1]") };
 	struct seen_result const r = { .parts = parts, .out = o, .read = read, .skip = at + 3,

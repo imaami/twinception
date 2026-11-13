@@ -85,7 +85,7 @@ git_view_shallow (struct git_view *view,
 	if (fd < 0)
 		return errno == ENOENT ? 0 : errno;
 	struct stat st;
-	struct buf data = {};
+	struct buf data = buf();
 	int e = fstat(fd, &st) ? errno : !S_ISREG(st.st_mode) ? EINVAL
 	      : buf_read(&data, fd, (size_t)st.st_size, GIT_VIEW_SHALLOW);
 	util_close(&fd);

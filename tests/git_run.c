@@ -465,7 +465,7 @@ git_run_test_now (struct git_run_dir const *dir)
 	char const *const *const hash = cases[0].words;
 	char const *const *const missing = cases[1].words;
 	struct cstr_view const name = cases[0].out;
-	struct buf out = {};
+	struct buf out = buf();
 	for (size_t i = 0; i < array_size(cases); ++i) {
 		struct child_cmd const how = {
 			.in       = { (unsigned char *)(uintptr_t)cases[i].in.data,
@@ -548,7 +548,7 @@ git_run_test_run (char const *repo)
 	if (!real)
 		return;
 	struct child_cmd const how = { .max = 4096, .grace = GIT_GRACE };
-	struct buf out = {};
+	struct buf out = buf();
 	struct child_end end;
 	uint64_t ms;
 	struct git_run_dir at;

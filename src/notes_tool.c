@@ -520,7 +520,8 @@ notes_tool_prompt_notices (struct mcp_slot *slot)
 		notes_tool_then(slot, e);
 		return;
 	}
-	notes_tool_run(slot, call->first, &(struct buf){}, 0);
+	struct buf in = buf();
+	notes_tool_run(slot, call->first, &in, 0);
 }
 
 /* Finds the member of the login of the client of the call in @p slot. The
@@ -661,7 +662,7 @@ notes_tool_check (struct mcp_slot *slot,
                   int              e)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct buf in = {};
+	struct buf in = buf();
 	if (!e)
 		e = store_check_input(&in, ref, notes_tool_target(call));
 	child_destroy(&call->child);
@@ -754,7 +755,7 @@ notes_tool_write (struct mcp_slot *slot,
 	 * commit of a turn names the ask call, the call, the conversation and
 	 * the asker. The request of a call of a client contains none of
 	 * them. */
-	struct buf in = {};
+	struct buf in = buf();
 	struct store_commit commit = {
 		.message = util_text_view(&call->message),
 		.files = buf_peek(&call->file),
@@ -850,7 +851,7 @@ notes_tool_checked (struct mcp_slot *slot)
 		child_destroy(&call->child);
 		if (fetch & FETCH_APPEND) {
 			/* git reads the note at the tip that the write builds on. */
-			struct buf in = {};
+			struct buf in = buf();
 			int e = notes_read_input(&in, tip.hex, util_text_view(&call->revision.file));
 			notes_tool_run(slot, FETCH_READ, &in, e);
 		} else if (before == NO_NOTE || fetch & FETCH_DELETE ||
@@ -956,7 +957,8 @@ notes_tool_added (struct mcp_slot *slot)
 	}
 	notes_revision_pin(&call->revision, &call->revision.tip, &commit);
 	child_destroy(&call->child);
-	notes_tool_run(slot, FETCH_STAT | FETCH_REVISION, &(struct buf){}, 0);
+	struct buf in = buf();
+	notes_tool_run(slot, FETCH_STAT | FETCH_REVISION, &in, 0);
 }
 
 /* Handles the output of STORE_CHECK for the note of the write in @p slot
@@ -1395,7 +1397,7 @@ notes_tool_revision_step (struct mcp_slot *slot)
 	child_destroy(&call->child);
 	struct notes_revision const *r = &call->revision;
 	if (!notes_revision_ready(r)) {
-		struct buf in = {};
+		struct buf in = buf();
 		int const e = notes_revision_input(r, &in);
 		notes_tool_run(slot, call->fetch, &in, e);
 		return;
@@ -1630,7 +1632,7 @@ notes_tool_prompt_list (struct mcp_slot *slot)
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
 	struct span newest = {};
-	struct buf in = {};
+	struct buf in = buf();
 	int e = dstr_printf(call->text, "[askai: Your notebook is %s. Your note history, oldest "
 	                    "first. A repeated name is an update:]\n", call->self.name)
 	      ? 0 : ENOMEM;
@@ -1796,7 +1798,7 @@ static void
 notes_tool_launch (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	struct buf in = {};
+	struct buf in = buf();
 	int e = 0;
 	switch (call->first) {
 	case FETCH_CHECK:
@@ -1867,7 +1869,8 @@ notes_tool_resolve (struct mcp_slot *slot)
 		               call->self.name);
 		return;
 	} else if (notes_tool_book(call, name)) {
-		notes_tool_run(slot, FETCH_MEMBERS, &(struct buf){}, 0);
+		struct buf in = buf();
+		notes_tool_run(slot, FETCH_MEMBERS, &in, 0);
 		return;
 	}
 	notes_tool_launch(slot);
@@ -1906,7 +1909,8 @@ notes_tool_logged_in (struct mcp_slot *slot)
 	}
 	if (call->then) {
 		(void)mcp_slot_asker(slot, &call->wait.member);
-		notes_tool_run(slot, FETCH_MEMBERS, &(struct buf){}, 0);
+		struct buf in = buf();
+		notes_tool_run(slot, FETCH_MEMBERS, &in, 0);
 		return;
 	}
 	if (!e) {
@@ -2049,7 +2053,7 @@ notes_tool_got_append (struct mcp_slot *slot,
 		                              "The text was not appended."), TOOL_FAILED);
 		return;
 	}
-	struct buf file = {};
+	struct buf file = buf();
 	struct extent part = {};
 	int e = store_part_head(&part, &file, util_text_view(&call->revision.file),
 	                        old.len + lf + add.len);

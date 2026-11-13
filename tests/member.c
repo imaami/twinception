@@ -110,7 +110,7 @@ test_in (struct store const *store,
          char const         *text,
          bool                loud)
 {
-	struct buf out = {};
+	struct buf out = buf();
 	test_record(store, ref, &out);
 	struct span const s = buf_peek(&out);
 	bool const found = s.len && memmem(s.ptr, s.len, text, strlen(text));
@@ -545,7 +545,7 @@ test_exists (struct store const *store,
              char const         *ref)
 {
 	char const *const words[] = { ref };
-	struct buf out = {};
+	struct buf out = buf();
 	struct child_end end;
 	CHECK(!store_run(store, STORE_HEAD, words, nullptr, (struct span){}, &out, &end));
 	buf_fini(&out);
@@ -740,7 +740,7 @@ test_note (struct store const *store,
            char const         *subject,
            char const         *asker)
 {
-	struct buf files = {};
+	struct buf files = buf();
 	struct extent part = {};
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("plan.md"), CSTR_VIEW("x")));
 	struct store_trailer const t[] = { { CSTR_VIEW("Asked-by"), asker ? cstr_view(asker)
@@ -755,8 +755,8 @@ test_note (struct store const *store,
 		.ref = ref,
 		.tip = &(struct oid){},
 	};
-	struct buf in = {};
-	struct buf out = {};
+	struct buf in = buf();
+	struct buf out = buf();
 	struct child_end end;
 	CHECK(!store_commit_input(&commit, &in));
 	CHECK(!store_run(store, STORE_COMMIT, nullptr, ref, buf_peek(&in), &out, &end) &&
@@ -784,7 +784,7 @@ test_tip (struct store const *store,
           char const         *ref)
 {
 	char const *const words[] = { ref };
-	struct buf out = {};
+	struct buf out = buf();
 	struct child_end end;
 	CHECK(!store_run(store, STORE_HEAD, words, nullptr, (struct span){}, &out, &end) &&
 	      !end.status);
@@ -1191,8 +1191,8 @@ test_session (char const                 *path,
 	CHECK(store && !e);
 	if (!store)
 		return;
-	struct buf in = {};
-	struct buf out = {};
+	struct buf in = buf();
+	struct buf out = buf();
 	struct child_end end;
 	CHECK(!store_run(store, STORE_CREATE, nullptr, nullptr, (struct span){}, &out, &end) &&
 	      !end.status);
@@ -1708,7 +1708,7 @@ main (int    argc,
 
 	/* Another service of the agent adopts its record, and another agent
 	 * gets a record. The session stays. */
-	struct buf head = {};
+	struct buf head = buf();
 	struct child_end end;
 	char const *const bro[] = { "refs/askai/members/bro" };
 	CHECK(!store_run(store, STORE_HEAD, bro, nullptr, (struct span){}, &head, &end));

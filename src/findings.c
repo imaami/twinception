@@ -472,7 +472,8 @@ findings_load (struct mcp_slot *slot)
 	call->batch = 0;
 	call->last = 0;
 	call->flags &= CALL_CITED;
-	findings_run(slot, STAGE_REFS, STORE_REFS, member_list, nullptr, &(struct buf){});
+	struct buf in = buf();
+	findings_run(slot, STAGE_REFS, STORE_REFS, member_list, nullptr, &in);
 }
 
 /* Runs git to read the next files of call->wanted, from call->done on, as
@@ -485,7 +486,7 @@ static void
 findings_read_batch (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	struct buf in = {};
+	struct buf in = buf();
 	uint64_t used = 0;
 	uint32_t k = call->done;
 	char const *author = nullptr;
@@ -549,7 +550,8 @@ findings_next (struct mcp_slot *slot)
 	struct findings_call *call = *mcp_slot_own(slot);
 	if (call->branch < call->branches.n) {
 		char const *const words[] = { call->branches.items[call->branch].tip.hex, "findings" };
-		findings_run(slot, STAGE_FILES, STORE_FILES, words, nullptr, &(struct buf){});
+		struct buf in = buf();
+		findings_run(slot, STAGE_FILES, STORE_FILES, words, nullptr, &in);
 		return;
 	}
 	if (call->wanted.n) {
@@ -606,7 +608,7 @@ findings_got_refs (struct mcp_slot *slot)
 		return;
 	}
 	char path[FINDING_FILE];
-	struct buf in = {};
+	struct buf in = buf();
 	e = notes_read_input(&in, tip.hex, finding_path(call->about.number, path));
 	if (e) {
 		buf_fini(&in);
@@ -908,7 +910,7 @@ findings_commit (struct mcp_slot      *slot,
 	struct member_byline byline = {};
 	member_byline_put(&byline, &commit, &session->agent, mcp_slot_member(slot),
 	                  mcp_slot_call(slot), session);
-	struct buf in = {};
+	struct buf in = buf();
 	e = e ? e : store_commit_input(&commit, &in);
 	/* The archive stays for a commit after a race. */
 	buf_cut(&call->files, call->archive, commit.files.len - call->archive);
@@ -1225,7 +1227,7 @@ static void
 findings_expand (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
-	struct buf in = {};
+	struct buf in = buf();
 	uint64_t bytes = 0;
 	size_t items = 0;
 	int e = 0;
@@ -1567,7 +1569,7 @@ findings_cite_blobs (struct mcp_slot *slot)
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct evidence item = evidence();
-	struct buf in = {};
+	struct buf in = buf();
 	uint64_t bytes = 0;
 	uint64_t shown = 0;
 	char const *author = nullptr;
@@ -2067,7 +2069,8 @@ findings_start (struct mcp_slot    *slot,
 	if ((ON_ADD | ON_UPDATE) >> call->action & 1 && mcp_slot_rerun(slot)) {
 		char const *const words[] = { findings_session(slot)->refs[MEMBER_BRANCH_FINDINGS] };
 		call->args = args;
-		findings_run(slot, STAGE_CALLS, STORE_CALLS, words, nullptr, &(struct buf){});
+		struct buf in = buf();
+		findings_run(slot, STAGE_CALLS, STORE_CALLS, words, nullptr, &in);
 		return;
 	}
 	findings_begin(slot, args);

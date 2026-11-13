@@ -791,7 +791,7 @@ git_pin_step (struct git_pin   *pin,
 		switch (pin->phase) {
 		case GIT_PIN_META:
 			pin->metadata = c->out;
-			c->out = (struct buf){};
+			c->out = buf();
 			break;
 		case GIT_PIN_REFS:
 			pin->view = git_view_create(buf_peek(&pin->metadata), buf_peek(&c->out), &e);

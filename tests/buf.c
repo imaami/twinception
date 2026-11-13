@@ -385,8 +385,8 @@ test_stash (void)
 
 	/* Storage given up goes to the stash, and back out of it, last in
 	 * first out. */
-	struct buf a = {};
-	struct buf b = {};
+	struct buf a = buf();
+	struct buf b = buf();
 	CHECK(!buf_put(&a, bytes, 1, SIZE_MAX) && !buf_put(&b, bytes, 1, SIZE_MAX));
 	unsigned char *data = b.data;
 	buf_fini(&a);
