@@ -702,6 +702,7 @@ test_table (struct store const           *store,
 	CHECK(member_table_claim(table, &login, &wait) == EINPROGRESS);
 	test_until(raced + 1);
 	CHECK(wait.e == EAGAIN && test_by_none(&wait) && !*wait.member.name &&
+	      test_name_zeroed(&wait.member) &&
 	      test_cause("Could not write the member record of frank. Other askai services "
 	                 "changed the member record at the same time.") &&
 	      test_why(&wait, &login, "Other askai services changed your member record at the "
@@ -1130,12 +1131,13 @@ test_blocked (struct store const           *store,
 	while (ended == before && loop_clock() < deadline)
 		CHECK(!loop_turn(&test_loop, deadline));
 	CHECK(ended == before + 1 && wait.e == ENODATA && test_why(&wait, &login, unnamed) &&
-	      test_by_none(&wait) && !*wait.member.name);
+	      test_by_none(&wait) && !*wait.member.name && test_name_zeroed(&wait.member));
 	CHECK(!test_exists(store, "refs/askai/members/uid-4242420051"));
 	CHECK(!member_table_find(table, &login, &wait) &&
 	      !strcmp(wait.member.name, "uid-4242420051") && test_name_zeroed(&wait.member));
 	CHECK(member_table_claim(table, &login, &wait) == ENODATA && wait.e == ENODATA &&
-	      test_why(&wait, &login, unnamed) && test_by_none(&wait) && !*wait.member.name);
+	      test_why(&wait, &login, unnamed) && test_by_none(&wait) && !*wait.member.name &&
+	      test_name_zeroed(&wait.member));
 	CHECK(!eventfd_write(test_gate, BLOCKER_THREADS));
 	test_jobs(blockers, 2 * BLOCKER_THREADS + 2);
 	CHECK(held == 2 * BLOCKER_THREADS && ended == before + 1);
@@ -1157,7 +1159,7 @@ test_blocked (struct store const           *store,
 	CHECK(!eventfd_write(test_gate, 1));
 	test_until(stopped + 1);
 	CHECK(wait.e == ECANCELED && test_why(&wait, &login, "askai stops.") &&
-	      test_by_none(&wait) && !*wait.member.name);
+	      test_by_none(&wait) && !*wait.member.name && test_name_zeroed(&wait.member));
 	CHECK(!test_exists(store, "refs/askai/members/uid-4242420052"));
 	CHECK(!eventfd_write(test_gate, 1));
 	uint64_t const end = loop_clock() + 10 * NS;
@@ -1401,7 +1403,8 @@ test_busy (struct store const           *store,
 	unsigned const before = ended;
 	test_scratch = (struct tool_scratch){ "x" };
 	CHECK(member_table_claim(table, &login, &wait) == EBUSY && wait.e == EBUSY &&
-	      test_by_none(&wait) && !*wait.member.name && ended == before && test_cause("x"));
+	      test_by_none(&wait) && !*wait.member.name && test_name_zeroed(&wait.member) &&
+	      ended == before && test_cause("x"));
 	CHECK(test_why(&wait, &login, "askai is busy. Try again in a few seconds."));
 	for (size_t i = 0; i < array_size(sleepers); ++i)
 		child_destroy(&sleepers[i]);
@@ -1442,7 +1445,7 @@ test_user_refused (char const     *dir,
 		unsigned const before = ended;
 		CHECK(member_table_claim(table, &login, &wait) == EPERM && wait.e == EPERM &&
 		      test_by(&wait, MEMBER_AGENT, user) && test_why(&wait, &login, taken) &&
-		      !*wait.member.name && ended == before);
+		      !*wait.member.name && test_name_zeroed(&wait.member) && ended == before);
 		char ref[MEMBER_REF];
 		CHECK(snprintf(ref, sizeof ref, "refs/askai/members/%s", user) > 0);
 		CHECK(test_has(store, ref, "Kind: agent\n") &&
@@ -1570,14 +1573,14 @@ test_ends (char const                   *dir,
 	test_until(before + 1);
 	static char const failed[] = "askai could not read or write the member records.";
 	CHECK(wait.e == EIO && test_cause(reads[FAIL]) && test_why(&wait, &login, failed) &&
-	      test_by_none(&wait) && !*wait.member.name);
+	      test_by_none(&wait) && !*wait.member.name && test_name_zeroed(&wait.member));
 	test_find(table, member_table_claim, &login, 0, MEMBER_PERSON, "hal", "");
 	CHECK(test_has(store, "refs/askai/members/hal", "Login: identity hal\n"));
 	login = test_login(MEMBER_PERSON, "identity ian", "ian");
 	CHECK(!setenv("PATH", paths[NONE], 1));
 	test_scratch = (struct tool_scratch){ "x" };
 	CHECK(member_table_claim(table, &login, &wait) == EIO && wait.e == EIO &&
-	      test_by_none(&wait) && !*wait.member.name);
+	      test_by_none(&wait) && !*wait.member.name && test_name_zeroed(&wait.member));
 	CHECK(!setenv("PATH", old, 1));
 	/* The table logs why git cannot start, and writes no text. */
 	CHECK(test_why(&wait, &login, failed) && test_cause("x"));
@@ -1588,7 +1591,8 @@ test_ends (char const                   *dir,
 	CHECK(!setenv("PATH", old, 1));
 	test_until(found + 1);
 	CHECK(wait.e == EIO && test_cause("Could not write refs/askai/members/ian: fatal: boom") &&
-	      test_why(&wait, &login, failed) && test_by_none(&wait) && !*wait.member.name);
+	      test_why(&wait, &login, failed) && test_by_none(&wait) && !*wait.member.name &&
+	      test_name_zeroed(&wait.member));
 	CHECK(!test_exists(store, "refs/askai/members/ian"));
 	test_find(table, member_table_claim, &login, 0, MEMBER_PERSON, "ian", "");
 	CHECK(test_has(store, "refs/askai/members/ian", "Login: identity ian\n"));
@@ -1610,7 +1614,7 @@ test_ends (char const                   *dir,
 	CHECK(!setenv("PATH", old, 1));
 	test_until(whole + 1);
 	CHECK(wait.e == EIO && test_cause(reason) && test_why(&wait, &login, failed) &&
-	      !test_exists(store, ref) && !*wait.member.name);
+	      !test_exists(store, ref) && !*wait.member.name && test_name_zeroed(&wait.member));
 
 	/* The read that runs too long ends the lookup, and writes no record. */
 	uint64_t const deadline = loop_clock() + GIT_RUN_NS + 10 * NS;
@@ -1618,7 +1622,8 @@ test_ends (char const                   *dir,
 		CHECK(!loop_turn(&test_loop, deadline));
 	CHECK(slow.e == EIO && test_cause("Could not read the member records: git took longer "
 	                                  "than 10 s, and was stopped.") &&
-	      test_why(&slow, &gil, failed) && !*slow.member.name);
+	      test_why(&slow, &gil, failed) && !*slow.member.name &&
+	      test_name_zeroed(&slow.member));
 	CHECK(!test_exists(store, "refs/askai/members/gil"));
 	member_table_destroy(&late);
 	member_table_destroy(&table);
