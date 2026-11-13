@@ -1000,9 +1000,9 @@ test_recite (void)
 	               "src/a.c. Give lines within those ranges.", __LINE__);
 	/* Stored lines that end before the ranges of the item. */
 	struct evidence shorter = item;
-	shorter.ids = (struct dstr)DSTR_INIT;
-	shorter.tool = (struct dstr)DSTR_INIT;
-	shorter.call_id = (struct dstr)DSTR_INIT;
+	shorter.ids = dstr(nullptr);
+	shorter.tool = dstr(nullptr);
+	shorter.call_id = dstr(nullptr);
 	CHECK(!cstr_view_store(cstr_view_dstr(&item.ids), &shorter.ids));
 	shorter.ranges.items = nullptr;
 	shorter.ranges.n = shorter.ranges.cap = 0;
