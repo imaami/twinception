@@ -328,7 +328,7 @@ put (char const *text,
      char const *want,
      int         line)
 {
-	struct evidence_ref ref;
+	struct evidence_ref ref = {};
 	struct dstr d = DSTR_INIT;
 	CHECK(dstr_cat(&d, "x "));
 	bool const ok = !evidence_ref_parse(&ref, cstr_view(text)) && !evidence_ref_put(&ref, &d);
@@ -377,7 +377,7 @@ refused (struct evidence_cite const *cite,
          char const                 *want,
          int                         line)
 {
-	struct evidence_ref ref;
+	struct evidence_ref ref = {};
 	struct evidence e = evidence();
 	struct evidence_material m = {};
 	struct dstr lines = DSTR_INIT;
@@ -447,7 +447,7 @@ test_cite (void)
 	struct hexid ask = {};
 	CHECK(!hexid_make(&ask));
 	struct evidence_cite const cite = { seen, &ask, tool_name, nullptr, 8, 3 };
-	struct evidence_ref ref;
+	struct evidence_ref ref = {};
 	struct evidence ev = evidence();
 	struct evidence_material m;
 	struct dstr lines = DSTR_INIT;
@@ -903,7 +903,7 @@ recite_refused (char const       *text,
                 char const       *want,
                 int               line)
 {
-	struct evidence_ref ref;
+	struct evidence_ref ref = {};
 	struct evidence e = evidence();
 	struct dstr lines = DSTR_INIT;
 	char why[512] = "x";
@@ -945,7 +945,7 @@ test_recite (void)
 	char *record = record_of(&item);
 
 	/* Whole: the same item, without its number, from cuh#2/1. */
-	struct evidence_ref ref;
+	struct evidence_ref ref = {};
 	struct evidence e = evidence();
 	struct dstr lines = DSTR_INIT;
 	char why[512] = "x";

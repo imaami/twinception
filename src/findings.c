@@ -788,7 +788,7 @@ findings_cited (struct findings_call *call,
 	size_t k = 0;
 	for (size_t i = 0; i < c->evidence.n; ++i) {
 		struct evidence const *e = &c->evidence.items[i];
-		struct evidence_ref ref = { .call = e->call, .form = EVIDENCE_REF_CALL };
+		struct evidence_ref ref = evidence_ref(e->call, EVIDENCE_REF_CALL);
 		if (*e->from.author && k < call->cites.n) {
 			ref = call->cites.items[k++].ref;
 		} else if (e->kind == EVIDENCE_LINES) {
@@ -1876,7 +1876,7 @@ findings_evidence (struct mcp_slot    *slot,
 	int e = 0;
 	for (size_t i = 0; !e && i < n; ++i) {
 		struct cstr_view const text = jb_view(jb_at(refs, i));
-		struct evidence_ref ref;
+		struct evidence_ref ref = {};
 		if (evidence_ref_parse(&ref, text))
 			return util_refuse(why, len, "evidence[%zu] is not a reference: %.*s. Give a call "
 			                   "such as c7, lines such as c7:120-140, or an evidence item such "

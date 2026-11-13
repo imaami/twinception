@@ -98,6 +98,16 @@ struct evidence_ref {
 	enum evidence_form form;
 };
 
+/** Returns a reference of the form @p form with the call number @p call.
+ *  The reference contains no ID and no lines.
+ */
+static const_inline struct evidence_ref
+evidence_ref (uint32_t           call,
+              enum evidence_form form)
+{
+	return (struct evidence_ref){ .call = call, .form = form };
+}
+
 /** The size and the SHA-256 of stored material. */
 struct evidence_blob {
 	uint64_t      bytes;
