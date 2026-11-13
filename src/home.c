@@ -1908,14 +1908,14 @@ home_take (struct home        *home,
 		(void)home_job_erred(job, "cannot retain the native background job id", -1);
 		return e;
 	}
-	struct ai_sink const sink = {
+	struct ai_sink const sink = ai_sink(
 		.text    = home_put_text,
 		.thought = job->asks & (JOB_TOOLS | JOB_STREAM) || job->journal
 		         ? home_put_thought : nullptr,
 		.call    = home_put_call,
 		.replay  = job->asks & JOB_TOOLS ? home_put_replay : nullptr,
-		.user    = job,
-	};
+		.user    = job
+	);
 	size_t had = buf_peek(&job->result).len;
 	struct ai_event ev = {};
 	e = ai_event(home->ep->api, &job->reader, root, &sink, &ev);

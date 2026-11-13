@@ -40,7 +40,7 @@ integers_only (enum ai_api  api,
 	struct json_object *ev = json_tokener_parse(json);
 	if (!ev)
 		return false;
-	struct ai_sink const sink = { .text = ignore_text };
+	struct ai_sink const sink = ai_sink(.text = ignore_text);
 	struct ai_reader reader = {};
 	struct ai_event out = {};
 	converted = 0;

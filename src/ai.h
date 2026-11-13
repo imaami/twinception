@@ -192,6 +192,14 @@ struct ai_sink {
 	void       *user;
 };
 
+static force_inline struct ai_sink
+ai_sink (struct ai_sink const s)
+{
+	return s;
+}
+
+#define ai_sink(...) (ai_sink)((struct ai_sink){__VA_ARGS__})
+
 /** What the reading of a streamed answer keeps from one event to the next:
  *  zeroed before its first.
  */
