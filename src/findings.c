@@ -170,16 +170,16 @@ struct findings_cite {
 	                                  of the first reference to the item. */
 };
 
-/* An entry of the output of expand: the item e of the finding f, or the
- * end of the items of f for e nullptr.
+/* An entry of the output of expand. The entry is the item e of the finding
+ * f. If e is nullptr, the entry marks the end of the items of f.
  */
 struct findings_print {
 	struct finding const  *f;
 	struct evidence const *e;
 };
 
-/* Returns the entry of the item @p e of the finding @p f, or of the end of
- * the items of @p f for @p e nullptr.
+/* Returns the entry of the item @p e of the finding @p f. If @p e is
+ * nullptr, the entry marks the end of the items of @p f.
  */
 static force_inline struct findings_print
 findings_print (struct finding const  *f,
