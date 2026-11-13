@@ -1101,7 +1101,7 @@ notes_tool_files (struct mcp_slot *slot,
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
-	struct notes_file file;
+	struct notes_file file = {};
 	int r = 0;
 	while (out.len && !(r = notes_file_next(&out, &file))) {
 		char const *name = (char const *)file.name.ptr;

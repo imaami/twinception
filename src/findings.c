@@ -693,7 +693,7 @@ findings_got_files (struct mcp_slot *slot)
 	bool const every = (ON_LIST | ON_SHOW | ON_EXPAND) >> call->action & 1;
 	struct span out = buf_peek(&call->child->out);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
-	struct notes_file file;
+	struct notes_file file = {};
 	/* The files of the branch are findings of its author. */
 	struct findings_file want = {};
 	memcpy(want.id.author, b->author, sizeof want.id.author);
