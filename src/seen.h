@@ -50,6 +50,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "compat.h"
 #include "cstr_view.h"
 #include "dstr.h"
 #include "finding_id.h"
@@ -244,6 +245,14 @@ struct seen_result {
 	                                      output */
 	size_t                  skip;    /**< offset of the window in @p out */
 };
+
+static force_inline struct seen_result
+seen_result (struct seen_result const r)
+{
+	return r;
+}
+
+#define seen_result(...) (seen_result)((struct seen_result){__VA_ARGS__})
 
 /**
  * Returns a copy of @p src, whose numbered lines are in the output @p out.

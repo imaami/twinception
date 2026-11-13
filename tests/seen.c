@@ -351,8 +351,10 @@ test_read (void)
 	struct seen *seen = nullptr;
 	struct buf request = buf();
 	struct cstr_view const parts[SEEN_PARTS] = { o };
-	struct seen_result const r = { .parts = parts, .out = o, .read = read,
-	                               .stamp = { .output = o.len, .number = 1, .turn = 1 } };
+	struct seen_result const r = seen_result(
+		.parts = parts, .out = o, .read = read,
+		.stamp.output = o.len, .stamp.number = 1, .stamp.turn = 1
+	);
 	CHECK(!seen_keep(&seen, &request, &r) && seen && seen->n == 1);
 	SAME(dstr_get(&seen->calls[0].ids), dstr_len(&seen->calls[0].ids),
 	     "{\"repo\":\"proj\",\"commit\":\"" B "\",\"path\":\"src/a.c\",\"total\":9}");
@@ -455,11 +457,14 @@ keep (struct seen     **p_seen,
 	struct buf request = buf();
 	request_of(&request, asked);
 	struct cstr_view const parts[SEEN_PARTS] = { out, CSTR_VIEW("\n\n[askai: call c?]") };
-	struct seen_result const r = {
-		.parts = parts,
-		.out = out,
-		.stamp = { .output = out.len, .number = number, .turn = number, .tool = 3 },
-	};
+	struct seen_result const r = seen_result(
+		.parts        = parts,
+		.out          = out,
+		.stamp.output = out.len,
+		.stamp.number = number,
+		.stamp.turn   = number,
+		.stamp.tool   = 3
+	);
 	int e = seen_keep(p_seen, &request, &r);
 	buf_fini(&request);
 	return e;
@@ -519,7 +524,9 @@ test_keep (void)
 		.index  = 2,
 		.flags  = FLAG_FAILED,
 	};
-	struct seen_result r = { .parts = parts, .out = o, .read = read, .stamp = stamp, .skip = skip };
+	struct seen_result r = seen_result(
+		.parts = parts, .out = o, .read = read, .stamp = stamp, .skip = skip
+	);
 	struct seen *seen = nullptr;
 	CHECK(!seen_keep(&seen, &request, &r));
 	CHECK(seen && seen->n == 1 && seen->head == 0);
@@ -550,8 +557,8 @@ test_keep (void)
 	request_of(&request, 10);
 	parts[0] = cstr_view_n(o.data + 4, 9);
 	parts[2] = parts[3] = cstr_view(nullptr);
-	r = (struct seen_result){ .parts = parts, .out = o, .read = read, .at = 5000, .skip = 4,
-	                          .stamp = { .output = 6000, .number = 8, .turn = 4 } };
+	r = seen_result(.parts = parts, .out = o, .read = read, .at = 5000, .skip = 4,
+	                .stamp.output = 6000, .stamp.number = 8, .stamp.turn = 4);
 	CHECK(!seen_keep(&seen, &request, &r));
 	c = call_at(seen, 1);
 	CHECK(c->skip == 5004 && c->stamp.output == 6000 && c->lines.range.first == 1 &&
@@ -562,8 +569,8 @@ test_keep (void)
 	request_of(&request, 10);
 	parts[0] = CSTR_VIEW("plain");
 	parts[1] = cstr_view(nullptr);
-	r = (struct seen_result){ .parts = parts, .out = parts[0],
-	                          .stamp = { .output = 5, .number = 9, .turn = 4, .tool = TOOL_MAX } };
+	r = seen_result(.parts = parts, .out = parts[0], .stamp.output = 5, .stamp.number = 9,
+	                .stamp.turn = 4, .stamp.tool = TOOL_MAX);
 	CHECK(!seen_keep(&seen, &request, &r));
 	c = call_at(seen, 2);
 	CHECK(seen->n == 3 && !c->lines.range.first && !c->lines.range.last && !dstr_len(&c->ids) &&
@@ -574,8 +581,8 @@ test_keep (void)
 	request_of(&request, 10);
 	parts[0] = cstr_view(nullptr);
 	parts[1] = CSTR_VIEW("note");
-	r = (struct seen_result){ .parts = parts,
-	                          .stamp = { .number = 10, .flags = (uint16_t)~FLAG_FAILED } };
+	r = seen_result(.parts = parts, .stamp.number = 10,
+	                .stamp.flags = (uint16_t)~FLAG_FAILED);
 	CHECK(!seen_keep(&seen, &request, &r));
 	c = call_at(seen, 3);
 	CHECK(c->stamp.number == 10 && !c->stamp.flags && buf_peek(&c->request).len == 10);
@@ -590,40 +597,40 @@ test_keep (void)
 	request_of(&request, 10);
 	struct cstr_view const abc = CSTR_VIEW("abc");
 	parts[0] = cstr_view_n(abc.data + 2, 2);
-	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 2 };
+	r = seen_result(.parts = parts, .out = abc, .skip = 2);
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	parts[0] = cstr_view(nullptr);
-	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 4 };
+	r = seen_result(.parts = parts, .out = abc, .skip = 4);
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	/* A window that is not the bytes of out from skip on. */
 	parts[0] = cstr_view_n(abc.data, 2);
-	r = (struct seen_result){ .parts = parts, .out = abc, .skip = 1 };
+	r = seen_result(.parts = parts, .out = abc, .skip = 1);
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	parts[0] = CSTR_VIEW("ab");
-	r = (struct seen_result){ .parts = parts, .out = abc };
+	r = seen_result(.parts = parts, .out = abc);
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	parts[0] = cstr_view(nullptr);
-	r = (struct seen_result){ .parts = parts, .out = { nullptr, 2 } };
+	r = seen_result(.parts = parts, .out = cstr_view_n(nullptr, 2));
 	CHECK(seen_keep(&seen, &request, &r) == EFAULT);
-	r = (struct seen_result){ .out = abc };
+	r = seen_result(.out = abc);
 	CHECK(seen_keep(&seen, &request, &r) == EFAULT);
-	r = (struct seen_result){ .parts = parts };
+	r = seen_result(.parts = parts);
 	CHECK(seen_keep(nullptr, &request, &r) == EFAULT);
 	CHECK(seen_keep(&seen, nullptr, &r) == EFAULT);
 	CHECK(seen_keep(&seen, &request, nullptr) == EFAULT);
 	/* A window past TOOL_OUTPUT_MAX in the whole output. */
-	r = (struct seen_result){ .parts = parts, .at = TOOL_OUTPUT_MAX, .stamp = { .number = 12 } };
+	r = seen_result(.parts = parts, .at = TOOL_OUTPUT_MAX, .stamp.number = 12);
 	CHECK(!seen_keep(&seen, &request, &r));
 	request_of(&request, 10);
-	r = (struct seen_result){ .parts = parts, .out = abc, .at = TOOL_OUTPUT_MAX, .skip = 1 };
+	r = seen_result(.parts = parts, .out = abc, .at = TOOL_OUTPUT_MAX, .skip = 1);
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
-	r = (struct seen_result){ .parts = parts, .at = (uint64_t)TOOL_OUTPUT_MAX + 1 };
+	r = seen_result(.parts = parts, .at = (uint64_t)TOOL_OUTPUT_MAX + 1);
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	/* Numbered lines that do not fit the output. */
 	struct seen_read *short_read = seen_read_create(&src, o, &e);
 	short_read->src.lines.last = 4;
 	parts[0] = o;
-	r = (struct seen_result){ .parts = parts, .out = o, .read = short_read };
+	r = seen_result(.parts = parts, .out = o, .read = short_read);
 	CHECK(seen_keep(&seen, &request, &r) == EINVAL);
 	seen_read_destroy(&short_read);
 	CHECK(seen->n == 6 && buf_peek(&request).len == 10 &&
@@ -720,9 +727,11 @@ test_drop (void)
 	struct buf request = buf();
 	request_of(&request, TOOL_TEXT_MAX);
 	struct cstr_view const parts[SEEN_PARTS] = { CSTR_VIEW("r") };
-	struct seen_result const r = { .parts = parts, .out = parts[0],
-	                               .stamp = { .output = 1, .number = 8, .turn = 2, .tool = 1,
-	                                          .index = 7, .flags = FLAG_FAILED } };
+	struct seen_result const r = seen_result(
+		.parts = parts, .out = parts[0],
+		.stamp.output = 1, .stamp.number = 8, .stamp.turn = 2, .stamp.tool = 1,
+		.stamp.index = 7, .stamp.flags = FLAG_FAILED
+	);
 	size_t const before = seen->bytes;
 	CHECK(!seen_keep(&seen, &request, &r));
 	struct seen_call const *c = call_at(seen, seen->n - 1);

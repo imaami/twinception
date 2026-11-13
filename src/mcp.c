@@ -5922,19 +5922,20 @@ mcp_req_result_write (struct mcp_req *req)
 		if (!(req->lent & req->mcp->st->lending.of[KIND_FINDINGS]))
 			break;
 		loop_work(req->mcp->loop, LOOP_COPY, slot->window.at + slot->window.len);
-		e = seen_keep(&req->seen, &req->calls[req->part], &(struct seen_result const){
-			.parts = parts,
-			.out   = cstr_view_span(out),
-			.read  = (slot->of ? slot->of : slot)->read,
-			.stamp = { .output = slot->bytes,
-			           .number = mcp_slot_call(slot),
-			           .turn   = req->turn,
-			           .tool   = slot->tool,
-			           .index  = (uint16_t)req->part,
-			           .flags  = slot->flags & FLAG_FAILED },
-			.at    = slot->at,
-			.skip  = slot->window.at,
-		});
+		struct seen_result const result = seen_result(
+			.parts        = parts,
+			.out          = cstr_view_span(out),
+			.read         = (slot->of ? slot->of : slot)->read,
+			.stamp.output = slot->bytes,
+			.stamp.number = mcp_slot_call(slot),
+			.stamp.turn   = req->turn,
+			.stamp.tool   = slot->tool,
+			.stamp.index  = (uint16_t)req->part,
+			.stamp.flags  = slot->flags & FLAG_FAILED,
+			.at           = slot->at,
+			.skip         = slot->window.at
+		);
+		e = seen_keep(&req->seen, &req->calls[req->part], &result);
 	}
 	if (e) {
 		mcp_req_fail(req, e);
