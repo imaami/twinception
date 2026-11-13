@@ -238,7 +238,7 @@ member_records_find (struct member_records const *r,
 	if (!r->all.n)
 		return nullptr;
 	for (uint32_t kind = 0; kind < MEMBER_KINDS; ++kind) {
-		struct member_info const key = { .name = name, .kind = kind };
+		struct member_info const key = member_info(name, kind);
 		struct member_info *entry = bsearch(&key, r->all.items, r->all.n, sizeof key,
 		                                    member_info_order);
 		if (entry)
@@ -314,7 +314,7 @@ member_records_branch (struct member_records  *r,
 	if (member_ref_parse(f[FIELD_REF], &kind, &name, &branch) || oid_init(&tip, f[FIELD_TIP]) ||
 	    util_number(f[FIELD_TIME].data, f[FIELD_TIME].len, UINT64_MAX, &time))
 		return 0;
-	struct member_info const key = { .name = name, .kind = kind };
+	struct member_info const key = member_info(name, kind);
 	struct member_info *entry = records ? bsearch(&key, r->all.items, records, sizeof key,
 	                                              member_info_name) : nullptr;
 	/* git lists the branches of a member one after the other. */

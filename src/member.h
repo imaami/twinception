@@ -37,6 +37,7 @@
 #include <stdint.h>
 
 #include "clk.h"
+#include "compat.h"
 #include "cstr_view.h"
 #include "hexid.h"
 #include "list.h"
@@ -129,6 +130,17 @@ struct member_info {
 	struct oid       findings;  /**< the tip of the branch of findings, or
 	                                 no name */
 };
+
+/** Returns the entry of a table for the member named @p name of the kind
+ *  @p kind, a value of enum member_kind. Every other member of the entry is
+ *  zero.
+ */
+static force_inline struct member_info
+member_info (struct cstr_view name,
+             uint32_t         kind)
+{
+	return (struct member_info){ .name = name, .kind = kind };
+}
 
 /** The session of a registry, and this askai in it, made once as askai
  *  starts. The views borrow the registry and the name of the service.
