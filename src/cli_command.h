@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include "compat.h"
 #include "cstr_view.h"
 
 /** The commands: X(ID, word, args, policy, syntax, description), the
@@ -62,6 +63,14 @@ struct cli_command_matches {
 	struct cli_command const *data;
 	size_t                    count;
 };
+
+/** Returns the range of the @p count commands that begin at @p data. */
+static force_inline struct cli_command_matches
+cli_command_matches (struct cli_command const *data,
+                     size_t                    count)
+{
+	return (struct cli_command_matches){ .data = data, .count = count };
+}
 
 /** Returns a process-lifetime descriptor, or nullptr for an invalid id. */
 extern struct cli_command const *

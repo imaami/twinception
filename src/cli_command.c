@@ -30,7 +30,7 @@ cli_command_prefix (struct cstr_view prefix)
 	for (size_t offset = 0; offset < prefix.len && first < end; ++offset) {
 		unsigned char byte = (unsigned char)prefix.data[offset];
 		if (!byte)
-			return (struct cli_command_matches){};
+			return cli_command_matches(nullptr, 0);
 		/* Earlier bytes already matched. Only inspect the next byte while
 		 * shrinking the same interval; its boundaries move at most COUNT
 		 * times over the entire lookup. */
@@ -39,7 +39,7 @@ cli_command_prefix (struct cstr_view prefix)
 		while (first < end && cli_command_byte(&cli_command_table[end - 1], offset) > byte)
 			--end;
 	}
-	return (struct cli_command_matches){cli_command_table + first, end - first};
+	return cli_command_matches(cli_command_table + first, end - first);
 }
 
 struct cli_command const *
