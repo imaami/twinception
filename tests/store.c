@@ -146,7 +146,7 @@ run_git (struct git_run *run,
          size_t         *len)
 {
 	struct buf got = buf();
-	struct child_end end;
+	struct child_end end = child_end();
 	run->c.max = size - 1;
 	int e = child_capture(&run->c, child_fds(), &got, &end);
 	CHECK(!e);
@@ -937,7 +937,7 @@ test_run (struct store const *store,
           struct oid const   *tip)
 {
 	struct buf out = buf();
-	struct child_end end;
+	struct child_end end = child_end();
 	CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
 	CHECK(!store_run(store, STORE_HEAD, (char const *const[]){ "refs/heads/notes/t" }, nullptr,
 	                 span(nullptr, 0), &out, &end));
@@ -1002,7 +1002,7 @@ test_ends (char const *parent)
 	if (!store)
 		return;
 	struct buf out = buf();
-	struct child_end end;
+	struct child_end end = child_end();
 	CHECK(!store_init(store, &out, &end) && end.code == CLD_EXITED && !end.status &&
 	      store_exists(store));
 	buf_clear(&out);

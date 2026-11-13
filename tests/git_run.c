@@ -568,7 +568,7 @@ git_run_test_run (char const *repo)
 		return;
 	struct child_cmd const how = { .max = 4096, .grace = GIT_GRACE };
 	struct buf out = buf();
-	struct child_end end;
+	struct child_end end = child_end();
 	uint64_t ms;
 	int e = 0;
 	struct git_run_dir at = git_run_dir(repo, nullptr, nullptr, GIT_RUN_DOT, &e);

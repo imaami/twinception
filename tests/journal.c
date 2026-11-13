@@ -642,7 +642,7 @@ journal_test_git (struct journal *j)
 static void
 journal_test_child_run (void)
 {
-	struct child_end end;
+	struct child_end end = child_end();
 	uint64_t ms;
 	assert(!journal_test_run("exit 0", 0, 0, 0, nullptr, &end, &ms));
 	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags);
@@ -690,7 +690,7 @@ static void
 journal_test_child_capture (void)
 {
 	struct buf out = buf();
-	struct child_end end;
+	struct child_end end = child_end();
 	uint64_t ms;
 	assert(!journal_test_run("true", 0, 0, 0, &out, &end, &ms));
 	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags);

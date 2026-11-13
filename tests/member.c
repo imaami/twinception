@@ -95,7 +95,7 @@ test_record (struct store const *store,
 	int n = snprintf(line, sizeof line, "%s\n", ref);
 	CHECK(n > 0 && (size_t)n < sizeof line);
 	buf_clear(out);
-	struct child_end end;
+	struct child_end end = child_end();
 	CHECK(!store_run(store, STORE_READ, nullptr, nullptr,
 	                 span((unsigned char *)line, (size_t)n), out, &end) &&
 	      !end.status);
@@ -546,7 +546,7 @@ test_exists (struct store const *store,
 {
 	char const *const words[] = { ref };
 	struct buf out = buf();
-	struct child_end end;
+	struct child_end end = child_end();
 	CHECK(!store_run(store, STORE_HEAD, words, nullptr, span(nullptr, 0), &out, &end));
 	buf_fini(&out);
 	return !end.status;
@@ -758,7 +758,7 @@ test_note (struct store const *store,
 	};
 	struct buf in = buf();
 	struct buf out = buf();
-	struct child_end end;
+	struct child_end end = child_end();
 	CHECK(!store_commit_input(&commit, &in));
 	CHECK(!store_run(store, STORE_COMMIT, nullptr, ref, buf_peek(&in), &out, &end) &&
 	      !end.status);
@@ -786,7 +786,7 @@ test_tip (struct store const *store,
 {
 	char const *const words[] = { ref };
 	struct buf out = buf();
-	struct child_end end;
+	struct child_end end = child_end();
 	CHECK(!store_run(store, STORE_HEAD, words, nullptr, span(nullptr, 0), &out, &end) &&
 	      !end.status);
 	struct oid tip;
@@ -1191,7 +1191,7 @@ test_session (char const                 *path,
 		return;
 	struct buf in = buf();
 	struct buf out = buf();
-	struct child_end end;
+	struct child_end end = child_end();
 	CHECK(!store_run(store, STORE_CREATE, nullptr, nullptr, span(nullptr, 0), &out, &end) &&
 	      !end.status);
 	struct store_commit const commit = {
@@ -1707,7 +1707,7 @@ main (int    argc,
 	/* Another service of the agent adopts its record, and another agent
 	 * gets a record. The session stays. */
 	struct buf head = buf();
-	struct child_end end;
+	struct child_end end = child_end();
 	char const *const bro[] = { "refs/askai/members/bro" };
 	CHECK(!store_run(store, STORE_HEAD, bro, nullptr, span(nullptr, 0), &head, &end));
 	struct member_registry *again = test_registry_make(store, "bro", "gpu2", 0, "");

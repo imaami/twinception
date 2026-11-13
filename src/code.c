@@ -95,7 +95,7 @@ code_check (struct config *cfg)
 		.flags = CHILD_STDERR,
 	};
 	struct buf out = buf();
-	struct child_end end;
+	struct child_end end = child_end();
 	e = child_capture(&cmd, child_fds(), &out, &end);
 	free(cache);
 	cache = nullptr;
