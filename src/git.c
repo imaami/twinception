@@ -1535,7 +1535,7 @@ git_read_foot (struct git_call const *call,
 		  CSTR_VIEW(" is the end of the file. The file does not end in a newline.]") },
 		{ CSTR_VIEW("[The file is cut after line "), cstr_view(nullptr), cstr_view(nullptr),
 		  CSTR_VIEW(", at the 4 MiB limit of the git tool.]") },
-		{ CSTR_VIEW("[Line "), {}, {},
+		{ CSTR_VIEW("[Line "), cstr_view(nullptr), cstr_view(nullptr),
 		  CSTR_VIEW(" is cut at the 4 MiB limit of the git tool.]") },
 	};
 	size_t kind = read->last < read->total ? 0 : 1 + 2 * cut + !newline;
