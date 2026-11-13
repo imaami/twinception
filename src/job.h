@@ -51,6 +51,7 @@
 
 #include "ai.h"
 #include "buf.h"
+#include "compat.h"
 #include "hexid.h"
 #include "jb.h"
 #include "list.h"
@@ -115,6 +116,17 @@ struct job_call {
 	uint32_t extra;   /**< of the JSON text it carries back (struct ai_call) */
 	uint32_t args;    /**< of its arguments */
 };
+
+/** Returns the header of a new call. @p index is the index of the call,
+ *  and @p replay is the number of bytes of the replay of the job before the
+ *  call. The lengths of the four parts of the call are zero.
+ */
+static const_inline struct job_call
+job_call (uint32_t index,
+          uint32_t replay)
+{
+	return (struct job_call){ .index = index, .replay = replay };
+}
 
 /** Copies the header of the stored call at @p p into @p *call and returns
  *  the parts of the call, which follow the header.

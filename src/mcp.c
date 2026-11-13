@@ -4436,7 +4436,7 @@ static void
 mcp_req_turn_args (struct mcp_req *req)
 {
 	for (; req->part < req->n_calls; ++req->part) {
-		struct job_call h;
+		struct job_call h = {};
 		struct ai_call c = job_call_parts(&h, buf_peek(&req->job->calls[req->part]).ptr);
 		int e = mcp_req_turn_arg(req, c.args);
 		if (mcp_req_again(req, e))
@@ -4532,7 +4532,7 @@ static int
 mcp_req_turn_call (struct mcp_req         *req,
                    struct ai_format const *f)
 {
-	struct job_call h;
+	struct job_call h = {};
 	struct ai_call c = job_call_parts(&h, buf_peek(&req->job->calls[req->part - 1u]).ptr);
 	struct mcp_piece items = mcp_req_items(req, h.replay);
 	int e = f->call.len ? mcp_req_call_put(req, f, &c, items)
@@ -5527,7 +5527,7 @@ mcp_req_call_launch (struct mcp_req *req)
 	uint32_t k = req->launched;
 	if (k == req->n_calls)
 		return;
-	struct job_call h;
+	struct job_call h = {};
 	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls[k]).ptr);
 	uint32_t known = registry_find(mcp->st->reg, c.name, TOOL_MAX);
 	uint32_t id = mcp_req_lent_tool(req, known);
@@ -5897,7 +5897,7 @@ mcp_req_result_put (struct mcp_req         *req,
 static void
 mcp_req_result_write (struct mcp_req *req)
 {
-	struct job_call h;
+	struct job_call h = {};
 	struct ai_call c = job_call_parts(&h, buf_peek(&req->calls[req->part]).ptr);
 	struct mcp_slot *slot = &req->slots[req->part];
 	struct span const out = mcp_slot_output(slot);

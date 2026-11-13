@@ -1719,10 +1719,7 @@ home_put_call (void                 *user,
 	} else if (n == most) {
 		return EPROTO;
 	} else {
-		c = (struct job_call){
-			.index = index,
-			.replay = (uint32_t)buf_peek(&job->replay).len
-		};
+		c = job_call(index, (uint32_t)buf_peek(&job->replay).len);
 		head = sizeof c;
 		k = n;
 	}
