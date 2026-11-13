@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "child.h"
+#include "compat.h"
 #include "dstr.h"
 #include "evidence.h"
 #include "finding.h"
@@ -176,6 +177,16 @@ struct findings_print {
 	struct finding const  *f;
 	struct evidence const *e;
 };
+
+/* Returns the entry of the item @p e of the finding @p f, or of the end of
+ * the items of @p f for @p e nullptr.
+ */
+static force_inline struct findings_print
+findings_print (struct finding const  *f,
+                struct evidence const *e)
+{
+	return (struct findings_print){ .f = f, .e = e };
+}
 
 /* The state of a findings call. It is the own word of the call's slot. */
 struct findings_call {
@@ -1180,7 +1191,7 @@ findings_expand_item (struct findings_call  *call,
 	if (call->id.item && ev->item != call->id.item)
 		return 0;
 	++*items;
-	int e = util_push(call->prints, (struct findings_print){ f, ev });
+	int e = util_push(call->prints, findings_print(f, ev));
 	if (e || call->fit < call->prints.n)
 		return e;
 	if (!findings_fits(bytes, ev)) {
@@ -1210,7 +1221,7 @@ findings_expand_finding (struct findings_call *call,
 		for (size_t j = 0; !e && j < c->evidence.n; ++j)
 			e = findings_expand_item(call, f, &c->evidence.items[j], ref, bytes, items, in);
 	}
-	return e ? e : util_push(call->prints, (struct findings_print){ f, nullptr });
+	return e ? e : util_push(call->prints, findings_print(f, nullptr));
 }
 
 /* Records in call->prints the output of expand: the items of the finding
