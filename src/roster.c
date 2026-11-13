@@ -64,7 +64,7 @@ roster_enter (struct roster  *roster,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	c->cancel = (struct msg){ .fn = fn };
+	c->cancel = msg(fn);
 	c->node = htab_node(hash);
 	c->hit = nullptr;
 	c->loop = loop;

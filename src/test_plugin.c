@@ -393,7 +393,7 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	 * once. The second post must therefore be refused. */
 	struct msg *twice = malloc(sizeof *twice);
 	if (twice)
-		*twice = (struct msg){ .fn = test_plugin_msg_free };
+		*twice = msg(test_plugin_msg_free);
 	TEST_PLUGIN_REFUSED(twice && !loop_post(loop, twice) &&
 	                    loop_post(loop, twice) == EALREADY);
 	TEST_PLUGIN_REFUSED(loop_timer_set(nullptr, &stray, UINT64_MAX) == EFAULT);

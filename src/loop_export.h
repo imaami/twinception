@@ -122,6 +122,16 @@ struct msg {
 	                          was posted */
 };
 
+/** Returns a message whose function is @p fn and that is not posted.
+ *  loop_post() returns EFAULT for the message msg(nullptr).
+ */
+static force_inline struct msg
+msg (void (*fn) (struct loop *loop,
+                 struct msg  *msg))
+{
+	return (struct msg){ .fn = fn };
+}
+
 /** A deadline in the loop's timer heap. An object has one timer and sets
  *  it again for each of its deadlines. It does not have one timer for
  *  each event.

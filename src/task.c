@@ -276,7 +276,7 @@ task_init (struct task      *task,
                                     struct msg  *msg))
 {
 	task->step = (struct loop_step){ .fn = task_step };
-	task->msg = (struct msg){};
+	task->msg = msg(nullptr);
 	task->hook = (struct list){};
 	task->slice = slice;
 	task->back = back;

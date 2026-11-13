@@ -557,7 +557,7 @@ ledger_restore (struct ledger      *ledger,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	t->cancel = (struct msg){ .fn = fn };
+	t->cancel = msg(fn);
 	list_init(&t->hook);
 	list_init(&t->mine);
 	t->owner = nullptr;
@@ -844,7 +844,7 @@ ledger_wait_enter (struct ledger  *ledger,
 		*e = ENOMEM;
 		return nullptr;
 	}
-	w->wake = (struct msg){ .fn = fn };
+	w->wake = msg(fn);
 	list_init(&w->hook);
 	w->hit = nullptr;
 	w->owner = nullptr;
