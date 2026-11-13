@@ -227,7 +227,7 @@ static unsigned
 cxi_line (CXSourceLocation loc)
 {
 	unsigned line;
-	clang_getExpansionLocation(loc, nullptr, &line, nullptr, nullptr);
+	clang_getFileLocation(loc, nullptr, &line, nullptr, nullptr);
 	return line;
 }
 
@@ -240,7 +240,7 @@ cxi_out_place (struct cxi_out   *out,
 	CXFile file;
 	CXString name;
 	unsigned line;
-	clang_getExpansionLocation(loc, &file, &line, nullptr, nullptr);
+	clang_getFileLocation(loc, &file, &line, nullptr, nullptr);
 	/* A macro of clang or of -D is in <built-in> or <command line>. */
 	if (file)
 		name = clang_getFileName(file);
@@ -388,10 +388,10 @@ cxi_order (void const *a,
 {
 	unsigned x;
 	unsigned y;
-	clang_getExpansionLocation(clang_getCursorLocation(*(CXCursor const *)a), nullptr, nullptr,
-	                           nullptr, &x);
-	clang_getExpansionLocation(clang_getCursorLocation(*(CXCursor const *)b), nullptr, nullptr,
-	                           nullptr, &y);
+	clang_getFileLocation(clang_getCursorLocation(*(CXCursor const *)a), nullptr, nullptr,
+	                      nullptr, &x);
+	clang_getFileLocation(clang_getCursorLocation(*(CXCursor const *)b), nullptr, nullptr,
+	                      nullptr, &y);
 	return (x > y) - (x < y);
 }
 
@@ -495,8 +495,8 @@ cxi_declaration (struct cxi *x,
 	CXFile in;
 	unsigned first;
 	unsigned from;
-	clang_getExpansionLocation(clang_getRangeStart(extent), &file, &first, nullptr, nullptr);
-	clang_getExpansionLocation(clang_getRangeStart(comment), &in, &from, nullptr, nullptr);
+	clang_getFileLocation(clang_getRangeStart(extent), &file, &first, nullptr, nullptr);
+	clang_getFileLocation(clang_getRangeStart(comment), &in, &from, nullptr, nullptr);
 	unsigned last = cxi_line(clang_getRangeEnd(extent));
 	unsigned const to = cxi_line(clang_getRangeEnd(comment));
 	if (!clang_Range_isNull(comment) && clang_File_isEqual(in, file) && to + 1 >= first &&
@@ -509,7 +509,7 @@ cxi_declaration (struct cxi *x,
 		clang_visitChildren(c, cxi_body, &body);
 	unsigned line;
 	unsigned column;
-	clang_getExpansionLocation(clang_getCursorLocation(body), nullptr, &line, &column, nullptr);
+	clang_getFileLocation(clang_getCursorLocation(body), nullptr, &line, &column, nullptr);
 	last = clang_Cursor_isNull(body) ? last : column == 1 && line > 1 ? line - 1 : line;
 	size_t size = 0;
 	char const *text = file ? clang_getFileContents(x->tu, file, &size) : nullptr;

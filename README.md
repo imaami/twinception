@@ -740,8 +740,10 @@ cannot be opened is reported as not found.
 
 Every result starts with the repository and the full ID of the commit.
 Places are `path:line`, relative to the top of the repository, or absolute
-for a system header. The `read` command of the git tool accepts the commit
-and the path.
+for a system header. The place of code that is written as a macro argument
+is the line of the argument. The place of code from the body of a macro is
+the line where the macro is used. The `read` command of the git tool
+accepts the commit and the path.
 
 Only committed files are visible. A call resolves its revision as the git
 tool does, and `askai-code` exports the commit into a tree in its cache.

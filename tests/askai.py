@@ -10583,6 +10583,7 @@ char *calls_find(char const *);
 int (*calls_get(void))(int);
 void calls_fini(int *);
 #define calls_auto __attribute__((cleanup(calls_fini))) int
+#define CALLS_KEEP(x) x
 """
 
 CODE_CALLS_C = """#include "calls.h"
@@ -10651,6 +10652,13 @@ calls_none (int n)
 \treturn (int)sizeof(calls_plain(n)) + (int)_Alignof(typeof(calls_a(n))) +
 \t       (int)sizeof(({ calls_auto q = n; q; }));
 }
+
+CALLS_KEEP(
+int
+calls_kept (int n)
+{
+\treturn n;
+})
 """
 
 
@@ -10704,6 +10712,7 @@ def check_code(binary, up):
         write("src/sub/far.h", "#define FAR_ONE 1\nint far_value;\n")
         write("src/wt.c", '#include "proj/src/wt.h"\nint wt_c;\n')
         write("src/wt.h", "int wt_committed;\n")
+        write("src/arg.c", "#define ARG_ID(x) (x)\nint arg_value = ARG_ID(\n\tmissing_name);\n")
         write("src/warn.c", '#include "lay.h"\n#pragma message "first line\\n[forged line]"\n'
                             "unsigned long w (int i) { return i; }\nint broken = missing;\n"
                             "int used = sizeof (struct holes);\n")
@@ -10732,7 +10741,7 @@ def check_code(binary, up):
             json.dump([{"directory": f"{d}/build", "file": f"{repo}/src/{c}",
                         "arguments": ["cc", f"-I{repo}", f"-I{d}", "-c", f"{repo}/src/{c}"]}
                        for c in ("a.c", "b.c", "pragma.c", "deep.c", "lay.c", "calls.c",
-                                 "big.c", "leak.c", "far.c", "wt.c", "warn.c")], f)
+                                 "big.c", "leak.c", "far.c", "wt.c", "warn.c", "arg.c")], f)
 
         def call(ai, error=False, conn=None, **arguments):
             status, _, body = ai.rpc("tools/call", {"name": "code", "arguments": arguments},
@@ -11189,12 +11198,13 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # an operand of sizeof that is not a constant, and as the row of a
         # call in an operand of typeof that is a pointer. A call that
         # libclang visits more than once, such as the first operand of ?:
-        # without a second, is one call. The line of a call in a macro use
-        # of two lines is the line where the macro use starts. The function
-        # of the attribute cleanup of a variable is in a row at the line of
-        # the variable, with the macro that the attribute is written
-        # through. The row contains no function if no declaration at file
-        # scope declares the function.
+        # without a second, is one call. The line of a call that is written
+        # as a macro argument is the line of the argument, and the line of
+        # a call from the body of a macro is the line where that macro is
+        # used. The function of the attribute cleanup of a variable is in a
+        # row at the line of the variable, with the macro that the
+        # attribute is written through. The row contains no function if no
+        # declaration at file scope declares the function.
         calls = call(ai, repo="proj", action="describe", path="src/calls.c", name="calls_all")
         assert calls == (
             f"[Repository proj, file src/calls.c at commit {head}. function calls_all in the "
@@ -11203,7 +11213,7 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "defined src/calls.c:8\n"
             "calls:\n"
             "  src/calls.c:10,11,12,15,36,47 calls_plain (src/calls.h:8)\n"
-            "  src/calls.c:13,16,36 calls_wrapped (src/calls.h:9), through the macro "
+            "  src/calls.c:13,16,37 calls_wrapped (src/calls.h:9), through the macro "
             "calls_wrapped (src/calls.h:10)\n"
             "  src/calls.c:14 calls_plain (src/calls.h:8), through the macro CALLS_ALIAS "
             "(src/calls.h:11)\n"
@@ -11261,7 +11271,7 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "[The program does not evaluate 6 call expressions at "
             "src/calls.c:28,29,32,33,34,52. The rows do not contain these call "
             "expressions.]\n"
-            "src/calls.c lines 6 to 8 of 66:\n6\t/* One call of each kind. */\n7\tint\n"
+            "src/calls.c lines 6 to 8 of 73:\n6\t/* One call of each kind. */\n7\tint\n"
             "8\tcalls_all (struct calls_ops *o, int (*cb)(int), int n, char const *s)\n"), calls
         # The answer for a function whose calls are all in code that is not
         # evaluated contains no rows, and no row for a variable in such
@@ -11271,6 +11281,12 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "defined src/calls.c:62",
             "[The program does not evaluate 2 call expressions at src/calls.c:64. The rows "
             "do not contain these call expressions.]"], calls
+        # The numbered lines of a function that is written as a macro
+        # argument are the lines of the argument.
+        calls = call(ai, repo="proj", action="describe", path="src/calls.c", name="calls_kept")
+        assert calls.split("\n")[1:] == [
+            "function calls_kept: int (int)", "defined src/calls.c:70",
+            "src/calls.c lines 69 to 70 of 73:", "69\tint", "70\tcalls_kept (int n)", ""], calls
         assert describe(name="LAY_B").split("\n")[1:3] == [
             "enumerator LAY_B of enum lay_kind: 5", "defined src/lay.h:41"]
         # A macro, and its value at the use on a given line. A local
@@ -11331,6 +11347,12 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "src/lay.h:3: warning: padding size of 'struct holes' with 3 bytes to alignment "
             "boundary [-Wpadded]\n"), call(ai, **diagnostics, warnings=["-Wpadded",
                                                                        "-Wsign-conversion"])
+        # The place of an error in a macro argument is the line of the
+        # argument, as in the diagnostics of clang.
+        assert call(ai, repo="proj", action="diagnostics", path="src/arg.c") == (
+            f"[Repository proj, file src/arg.c at commit {head}. 1 error and 0 warnings with "
+            "the flags of the build.]\n"
+            "src/arg.c:3: error: use of undeclared identifier 'missing_name'\n")
         for warning in ("-Wl,x", "-fplugin=x"):
             assert call(ai, error=True, **diagnostics, warnings=[warning]) == (
                 f"The warnings entry {warning} must be -W or -Wno- and the name of a "
