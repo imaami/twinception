@@ -92,7 +92,7 @@ struct manual_wait {
 	struct manual_why    *why;    /**< a reference to the reason of a failed
 	                                   fetch, or nullptr. After a failed
 	                                   fetch, nullptr means that the fetch
-	                                   could not allocate the reason. */
+	                                   ran out of memory. */
 	uint64_t              since;  /**< loop_clock() when the call began to
 	                                   wait */
 	struct handle         who;    /**< the handle of the call on its loop */
@@ -139,7 +139,7 @@ static struct cstr_view const manual_cut =
 	CSTR_VIEW_INIT("\n\n[The page is cut at 4 MiB.]\n");
 static_assert(TOOL_TEXT_MAX == 4U << 20, "the note says 4 MiB");
 
-/* The reason of a fetch that ran out of memory. */
+/* The reason of a fetch that ran out of memory, which manual_back() tells. */
 static struct cstr_view const manual_oom = CSTR_VIEW_INIT("Out of memory.");
 
 /* What ends a list of pages that does not fit (manual_list_add()). */
@@ -321,8 +321,10 @@ manual_fetch_destroy (struct manual_fetch **p_f)
 
 /* Ends the failed fetch @p f. The function removes the alias of the fetch.
  * If calls wait for the page, it copies the reason @p why into one struct
- * manual_why and posts each waiter with a reference to that copy. A waiter
- * is posted without a reason if the copy cannot be allocated. @p why can
+ * manual_why and posts each waiter with a reference to that copy. An empty
+ * @p why means that the fetch ran out of memory. The function then
+ * allocates nothing and posts each waiter without a reason. A waiter is
+ * also posted without a reason if the copy cannot be allocated. @p why can
  * be a text in the scratch of the loop, because the function copies the
  * text before it calls a function that can write the scratch.
  */
@@ -336,14 +338,13 @@ manual_fetch_fail (struct manual_fetch *f,
 	manual_del(m, f->alias);
 	struct manual_wait *w = f->waiters;
 	pthread_mutex_unlock(&m->lock);
-	struct manual_why *reason = w ? malloc(sizeof *reason + why.len) : nullptr;
+	struct manual_why *reason = w && why.len ? malloc(sizeof *reason + why.len) : nullptr;
 	if (reason) {
 		/* The 1 is the reference of this function, which the function
 		 * drops after it has posted the last waiter. */
 		atomic_init(&reason->refs, 1);
 		reason->len = (uint32_t)why.len;
-		if (why.len)
-			memcpy(reason->text, why.data, why.len);
+		memcpy(reason->text, why.data, why.len);
 	}
 	for (struct manual_wait *next; w; w = next) {
 		next = w->next;
@@ -485,7 +486,7 @@ manual_fetch_rendered (struct child *c)
 	size_t const len = buf_peek(&c->out).len;
 	struct manual_page *page = malloc(sizeof *page + len + note);
 	if (!page) {
-		manual_fetch_fail(f, manual_oom);
+		manual_fetch_fail(f, (struct cstr_view){});
 		return;
 	}
 	page->ctime = f->st.st_ctim;
@@ -672,7 +673,7 @@ manual_fetch_found (struct child *c)
 	child_destroy(&f->child);
 	f->file = file;
 	if (!file) {
-		manual_fetch_fail(f, manual_oom);
+		manual_fetch_fail(f, (struct cstr_view){});
 		return;
 	}
 	if (stat(file->key, &f->st)) {
@@ -859,9 +860,9 @@ manual_step (struct mcp_slot *slot)
 /* Handles the end of the fetch that a man call waited for. The function
  * ends the call with the page, or with the reason why there is no page,
  * unless the call has ended. The reason is the text of w->why, or
- * "Out of memory." if the fetch could not allocate a reason. After the
- * loop has stopped, MCP no longer exists, and the function only frees the
- * waiter.
+ * "Out of memory." for a waiter without a reason (manual_fetch_fail()).
+ * After the loop has stopped, MCP no longer exists, and the function only
+ * frees the waiter.
  */
 static void
 manual_back (struct loop *loop,
