@@ -968,6 +968,22 @@ cxi_is_named (CXCursor    c,
 	return named;
 }
 
+/* Returns what the name at @p line and @p column of @p file refers to: the
+ * definition of the macro of a macro use, or the declaration that an
+ * expression or a type refers to. Returns the cursor at the place if it
+ * refers to nothing.
+ */
+static CXCursor
+cxi_symbol (CXTranslationUnit tu,
+            CXFile            file,
+            unsigned          line,
+            unsigned          column)
+{
+	CXCursor const at = clang_getCursor(tu, clang_getLocation(tu, file, line, column));
+	CXCursor const referenced = clang_getCursorReferenced(at);
+	return clang_Cursor_isNull(referenced) ? at : referenced;
+}
+
 /* Writes the first symbol named @p name on the line to @p *c. */
 static int
 cxi_lookup_line (struct cxi *x,
@@ -987,10 +1003,7 @@ cxi_lookup_line (struct cxi *x,
 		if (memcmp(words.data + i, name, len))
 			continue;
 		*column = (unsigned)i + 1;
-		CXSourceLocation const loc = clang_getLocation(x->tu, file, line, *column);
-		CXCursor const at = clang_getCursor(x->tu, loc);
-		CXCursor const referenced = clang_getCursorReferenced(at);
-		*c = clang_Cursor_isNull(referenced) ? at : referenced;
+		*c = cxi_symbol(x->tu, file, line, *column);
 		if (cxi_is_named(*c, name))
 			return 0;
 	}
