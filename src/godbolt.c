@@ -1357,6 +1357,14 @@ struct godbolt_tally {
 	int64_t     count;
 };
 
+/* Returns the count @p count of the key @p key. */
+static force_inline struct godbolt_tally
+godbolt_tally (char const *key,
+               int64_t     count)
+{
+	return (struct godbolt_tally){ .key = key, .count = count };
+}
+
 /* Compares the keys of two struct godbolt_tally byte by byte, for
  * qsort().
  */
@@ -1384,7 +1392,7 @@ godbolt_tallies (struct godbolt *call,
 	size_t i = 0;
 	struct json_object_iter it;
 	json_object_object_foreachC(call->doc, it)
-		t[i++] = (struct godbolt_tally){ it.key, json_object_get_int64(it.val) };
+		t[i++] = godbolt_tally(it.key, json_object_get_int64(it.val));
 	qsort(t, n, sizeof *t, godbolt_tally_cmp);
 	for (size_t k = 0; k < rows; ++k) {
 		godbolt_put_field(call, cstr_view(t[k].key));
