@@ -41,7 +41,7 @@ typedef bool htab_match_fn (struct htab_node const *node,
  *  table. The table must not grow, and htab_fini() must not be called on
  *  it.
  */
-static inline struct htab
+static force_inline struct htab
 htab (struct htab_node **buckets,
       size_t             n)
 {
