@@ -452,7 +452,7 @@ cli_state_read_turns (struct cli_state *state,
 			return e;
 	}
 
-	state->turns_used = (struct tally){ count, CLI_STATE_TURN_BYTES - budget };
+	state->turns_used = tally(count, CLI_STATE_TURN_BYTES - budget);
 
 	char trailing;
 	size_t got;
@@ -784,7 +784,7 @@ cli_state_add_turn (struct cli_state *state,
 	size_t const index = used.n - replace;
 	if (replace)
 		tally_sub(&used, dstr_len(&state->turns[index].prompt) + dstr_len(&state->turns[index].answer));
-	if (!tally_fits(&used, (struct tally){ array_size(state->turns), CLI_STATE_TURN_BYTES },
+	if (!tally_fits(&used, tally(array_size(state->turns), CLI_STATE_TURN_BYTES),
 	                prompt.len + answer.len))
 		return EFBIG;
 	int e = cstr_view_store(prompt, &state->pending.prompt);
@@ -805,6 +805,6 @@ cli_state_clear_turns (struct cli_state *state)
 {
 	if (!state)
 		return EINVAL;
-	state->turns_used = (struct tally){};
+	state->turns_used = tally(0, 0);
 	return cli_state_save(state);
 }

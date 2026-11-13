@@ -16,6 +16,14 @@ struct tally {
 	size_t bytes;
 };
 
+/** Returns the tally of @p n items whose bytes sum to @p bytes. */
+static const_inline struct tally
+tally (size_t n,
+       size_t bytes)
+{
+	return (struct tally){ .n = n, .bytes = bytes };
+}
+
 /** Whether one more item of @p bytes bytes fits in the tally @p used
  *  within the bounds @p max. @p used may be over @p max already.
  */

@@ -50,7 +50,7 @@ cli_state_ring_full (struct cli_state_ring const *ring,
                      size_t                       len)
 {
 	return ring->used.n &&
-	       !tally_fits(&ring->used, (struct tally){ CLI_STATE_INPUTS, CLI_STATE_INPUT_BYTES }, len);
+	       !tally_fits(&ring->used, tally(CLI_STATE_INPUTS, CLI_STATE_INPUT_BYTES), len);
 }
 
 /** Drop the oldest input, of @p len bytes, from @p ring. */

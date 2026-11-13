@@ -425,7 +425,7 @@ cli_console_input_full (struct cli_console *console,
 {
 	return immediate ? console->immediate_line != nullptr :
 	       !tally_fits(&console->queue.used,
-	                   (struct tally){ CLI_CONSOLE_INPUT_COUNT, CLI_CONSOLE_INPUT_LIMIT }, length);
+	                   tally(CLI_CONSOLE_INPUT_COUNT, CLI_CONSOLE_INPUT_LIMIT), length);
 }
 
 int

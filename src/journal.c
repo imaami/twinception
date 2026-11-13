@@ -1025,8 +1025,8 @@ journal_enqueue (struct journal      *j,
 	 * finite and cannot be used by streams, loads, or oversized records. */
 	bool control = item->record && item->record->len <= JOURNAL_CONTROL_RECORD &&
 	               item->record->type == JOURNAL_CANCEL;
-	struct tally const max = { JOURNAL_QUEUE + (control ? JOURNAL_CONTROL : 0),
-	                           JOURNAL_BYTES + (control ? JOURNAL_CONTROL_BYTES : 0) };
+	struct tally const max = tally(JOURNAL_QUEUE + (control ? JOURNAL_CONTROL : 0),
+	                               JOURNAL_BYTES + (control ? JOURNAL_CONTROL_BYTES : 0));
 	pthread_mutex_lock(&j->lock);
 	if (j->flags & WRITER_STOP)
 		e = ECANCELED;

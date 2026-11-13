@@ -765,10 +765,8 @@ cli_network_admit (struct cli_network            *network,
 	if (network->sequence == UINT64_MAX)
 		return EOVERFLOW;
 	bool control = !(post->flags & CLI_NETWORK_INTERRUPTIBLE);
-	struct tally const max = {
-		CLI_NETWORK_CALLS + control * CLI_NETWORK_CONTROL_CALLS,
-		CLI_NETWORK_REQUEST_BYTES + control * CLI_NETWORK_CONTROL_BYTES,
-	};
+	struct tally const max = tally(CLI_NETWORK_CALLS + control * CLI_NETWORK_CONTROL_CALLS,
+	                               CLI_NETWORK_REQUEST_BYTES + control * CLI_NETWORK_CONTROL_BYTES);
 	size_t bytes = sizeof(struct cli_network_request) + 1;
 	size_t const lengths[] = {post->socket.len, post->session.len, post->wire.len};
 	for (size_t i = 0; i < array_size(lengths); ++i) {
