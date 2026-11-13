@@ -216,7 +216,7 @@ notes_read_out (struct span  out,
                 struct span *text,
                 struct oid  *id)
 {
-	struct oid oid;
+	struct oid oid = {};
 	int e = store_object_next(&out, &oid, text);
 	/* The output is the one object. */
 	if (!e && out.len) {
@@ -252,7 +252,7 @@ notes_file_next (struct span       *out,
 	/* The record is "MODE blob OID SIZE\tNAME\0", with spaces before SIZE. */
 	struct cstr_view rest = cstr_view_n(s, tab ? (size_t)(tab - s) : 0);
 	struct cstr_view mode = {}, type = {};
-	struct oid id;
+	struct oid id = {};
 	if (!tab || tab + 1 == nul || !cstr_view_cut(&rest, ' ', &mode) ||
 	    !cstr_view_cut(&rest, ' ', &type) || !cstr_view_equal(type, CSTR_VIEW("blob")) ||
 	    oid_init_field(&id, &rest, ' '))

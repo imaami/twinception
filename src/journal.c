@@ -287,7 +287,7 @@ static int
 journal_tip (struct journal *j)
 {
 	char const *command[] = { "rev-parse", "--verify", "--quiet", j->ref, nullptr };
-	struct oid tip;
+	struct oid tip = {};
 	int e = journal_git(j, command, -1, &tip);
 	/* The tip is empty if the ref does not exist. */
 	if (!e)
@@ -848,7 +848,7 @@ journal_thought_commit (struct journal            *j,
 	if (fdatasync(file->fd) || lseek(file->fd, 0, SEEK_SET) < 0)
 		return errno;
 	char const *hash[] = { "hash-object", "-w", "--stdin", nullptr };
-	struct oid blob;
+	struct oid blob = {};
 	e = journal_git(j, hash, file->fd, &blob);
 	char path[sizeof "reasoning/xx//.txt" + HEXID_DIGITS + UTIL_DECIMAL];
 	int n = snprintf(path, sizeof path, "reasoning/%.2s/%s/%" PRIu32 ".txt",
@@ -861,7 +861,7 @@ journal_thought_commit (struct journal            *j,
 		if (n < 0 || n >= (int)sizeof name)
 			e = EOVERFLOW;
 		char const *find[] = { "rev-parse", "--verify", "--quiet", name, nullptr };
-		struct oid old;
+		struct oid old = {};
 		if (!e)
 			e = journal_git(j, find, -1, &old);
 		/* The check only decides whether the commit can be skipped.

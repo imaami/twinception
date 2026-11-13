@@ -638,7 +638,7 @@ findings_got_check (struct mcp_slot *slot)
 	struct findings_call *call = *mcp_slot_own(slot);
 	struct cstr_view rest = cstr_view_span(buf_peek(&call->child->out));
 	struct cstr_view line = {}, size = {};
-	struct oid id;
+	struct oid id = {};
 	if (cstr_view_cut(&rest, '\n', &line) && store_kind(line, &id, &size) == STORE_KIND_BLOB)
 		call->flags |= CALL_ABOUT;
 	findings_next(slot);
@@ -711,7 +711,7 @@ findings_got_read (struct mcp_slot *slot)
 		struct findings_file const *w = &call->wanted.items[i];
 		struct finding *f = &call->findings.items[call->findings.n++];
 		*f = finding();
-		struct oid blob;
+		struct oid blob = {};
 		struct span data = {};
 		e = store_object_next(&out, &blob, &data);
 		if (!e)
@@ -789,7 +789,7 @@ findings_committed (struct mcp_slot *slot)
 	char id[FINDING_ID_TEXT];
 	finding_id_put(&call->id, id);
 	if (child_ok(c)) {
-		struct oid commit;
+		struct oid commit = {};
 		if (store_committed(buf_peek(&c->out), &commit))
 			LOG(LOG_WARN, "findings: git fast-import gave no commit id");
 		char const *state = finding_state_names[call->change.state].data;
@@ -2003,7 +2003,7 @@ findings_got_calls (struct mcp_slot *slot)
 			line = rest;
 			rest = cstr_view(nullptr);
 		}
-		struct oid commit;
+		struct oid commit = {};
 		struct cstr_view a = {}, n = {}, verb = {}, id = {};
 		struct finding_id found;
 		/* The subject is "Add bro#5 (verified)" or "Update bro#5 (...)". A

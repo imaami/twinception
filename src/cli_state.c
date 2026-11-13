@@ -229,7 +229,7 @@ cli_state_tree_blob (struct cli_state *state,
                      char const       *name,
                      struct cstr_view  text)
 {
-	struct oid oid;
+	struct oid oid = {};
 	int e = cli_state_git(state, (char const *[]){ "hash-object", "-w", "--stdin", nullptr }, text, -1,
 	                      &oid);
 	return e ? e : cli_state_tree_entry(state, &oid, name);
@@ -239,7 +239,7 @@ static int
 cli_state_commit (struct cli_state *state)
 {
 	(void)dstr_clear(&state->tree);
-	struct oid blob;
+	struct oid blob = {};
 	int e = cli_state_git(state, (char const *[]){ "hash-object", "-w", "--", dstr_get(&state->name), nullptr },
 	                      cstr_view(nullptr), -1, &blob);
 	if (!e)
@@ -258,14 +258,14 @@ cli_state_commit (struct cli_state *state)
 		if (!e)
 			e = cli_state_tree_blob(state, "answer.txt", cstr_view_dstr(&last->answer));
 	}
-	struct oid tree;
+	struct oid tree = {};
 	if (!e)
 		e = cli_state_git(state, (char const *[]){ "mktree", nullptr }, cstr_view_dstr(&state->tree), -1,
 		                  &tree);
 	char const *args[] = { "commit-tree", tree.hex, "-F", "-", "-p", state->parent.hex, nullptr };
 	if (!oid_len(&state->parent))
 		args[4] = nullptr;
-	struct oid commit;
+	struct oid commit = {};
 	if (!e)
 		e = cli_state_git(state, args, CSTR_VIEW("Save CLI input history and completed conversation\n"),
 		                  -1, &commit);

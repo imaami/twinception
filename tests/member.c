@@ -790,7 +790,7 @@ test_tip (struct store const *store,
 	struct child_end end = child_end();
 	CHECK(!store_run(store, STORE_HEAD, words, nullptr, span(nullptr, 0), &out, &end) &&
 	      !end.status);
-	struct oid tip;
+	struct oid tip = {};
 	CHECK(!oid_init_line(&tip, cstr_view_span(buf_peek(&out))));
 	buf_fini(&out);
 	return tip;

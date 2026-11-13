@@ -834,7 +834,7 @@ notes_tool_checked (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	struct oid tip;
+	struct oid tip = {};
 	struct notes_file note = {};
 	int r = child_ok(c) ? store_checked(buf_peek(&c->out), &tip, &note.id, &note.bytes) : EIO;
 	uint64_t before = r == EEXIST ? note.bytes : NO_NOTE;
@@ -931,7 +931,7 @@ notes_tool_added (struct mcp_slot *slot)
 		return;
 	}
 	(void)mcp_slot_noted(slot);
-	struct oid commit;
+	struct oid commit = {};
 	if (store_committed(buf_peek(&call->child->out), &commit))
 		LOG(LOG_WARN, "notes: git fast-import gave no commit id");
 	struct cstr_view const id = oid_view(&commit);
@@ -976,7 +976,7 @@ notes_tool_rebased (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	struct oid tip, blob;
+	struct oid tip = {}, blob = {};
 	uint64_t bytes;
 	int r = child_ok(c) ? store_checked(buf_peek(&c->out), &tip, &blob, &bytes) : EIO;
 	if (r == EIO) {
@@ -1493,7 +1493,7 @@ notes_tool_got_note (struct mcp_slot *slot)
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
 	struct span text = {};
-	struct oid id;
+	struct oid id = {};
 	int r = child_ok(c) ? notes_read_out(buf_peek(&c->out), &text, &id) : EIO;
 	if (r == EIO) {
 		notes_tool_unread(slot);

@@ -471,7 +471,7 @@ store_checked (struct span  out,
 	enum store_kind kind = STORE_KIND_OTHER;
 	struct cstr_view rest = cstr_view_span(out);
 	struct cstr_view line = {}, size = {};
-	struct oid oid;
+	struct oid oid = {};
 	for (; rest.len; ++lines) {
 		if (!cstr_view_cut(&rest, '\n', &line))
 			return EIO;

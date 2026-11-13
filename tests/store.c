@@ -547,7 +547,7 @@ object (char const      *line,
         char const      *oid,
         char const      *size)
 {
-	struct oid id;
+	struct oid id = {};
 	CHECK(!oid_init(&id, CSTR_VIEW(A)));
 	struct cstr_view got = CSTR_VIEW("-");
 	return store_kind(cstr_view(line), &id, &got) == kind && !strcmp(id.hex, oid) &&
@@ -574,7 +574,7 @@ test_object (void)
 	char text[] = A " blob 3\nabc\nrefs/heads/x:y missing\n" A " tree 2\nxy\n" A
 	              " blob 0\n\n" A " commit 1\nc\n";
 	struct span out = span((unsigned char *)text, sizeof text - 1);
-	struct oid id;
+	struct oid id = {};
 	struct span data = {};
 	CHECK(!store_object_next(&out, &id, &data) && !strcmp(id.hex, A) && data.len == 3 &&
 	      !memcmp(data.ptr, "abc", 3));
@@ -621,7 +621,7 @@ checked (char const *out,
          char const *id,
          uint64_t    bytes)
 {
-	struct oid t, i;
+	struct oid t = { "-" }, i = { "-" };
 	uint64_t n = 1;
 	int r = store_checked(span((unsigned char *)out, strlen(out)), &t, &i, &n);
 	CHECK(!strcmp(t.hex, tip) && !strcmp(i.hex, id) && n == bytes);
@@ -668,7 +668,7 @@ test_check (void)
 	CHECK(checked(A " commit 9\n" B " tag 9\n", A, "", 0) == EIO);
 	static char const none[] = "r missing\nr:x missing\n";
 	struct span const out = span((unsigned char *)none, sizeof none - 1);
-	struct oid t;
+	struct oid t = {};
 	uint64_t n;
 	CHECK(store_checked(out, nullptr, &t, &n) == EINVAL);
 	CHECK(store_checked(out, &t, nullptr, &n) == EINVAL);
@@ -1117,7 +1117,7 @@ test_race (struct store const *store)
 	struct oid const root = {};
 	struct buf files = buf();
 	struct extent part = {};
-	struct oid r1, r2, r3, r4;
+	struct oid r1 = {}, r2 = {}, r3 = {}, r4 = {};
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("a/b"), CSTR_VIEW("1")));
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("c"), CSTR_VIEW("2")));
 	race_commit(store, ref, &root, &files, &r1);
@@ -1158,7 +1158,7 @@ test_race (struct store const *store)
 		{ { &r3, &r4 }, "m",     { 0,       EISDIR  }, true  },
 	};
 	for (size_t i = 0; i < array_size(paths); ++i) {
-		struct oid tip, blob[2];
+		struct oid tip = {}, blob[2] = { { "-" }, { "-" } };
 		for (size_t k = 0; k < 2; ++k) {
 			int const r = check_at(store, paths[i].at[k]->hex, paths[i].name, &tip,
 			                       &blob[k]);
@@ -1170,7 +1170,7 @@ test_race (struct store const *store)
 	/* At the tip of the ref, the commit is r4. A ref that does not exist
 	 * and an object that does not exist name no commit. A blob, here the
 	 * blob of a/b, is not a commit. */
-	struct oid tip, blob, id;
+	struct oid tip = {}, blob = {}, id = { "-" };
 	CHECK(check_at(store, ref, "a/b", &tip, &blob) == EEXIST && oid_equal(&tip, &r4));
 	CHECK(!check_at(store, "refs/heads/notes/none", "a/b", &tip, &id) && !oid_len(&tip) &&
 	      !oid_len(&id));
@@ -1190,7 +1190,7 @@ test_race (struct store const *store)
 		.ref = ref,
 		.tip = &r3
 	);
-	struct oid r5;
+	struct oid r5 = {};
 	CHECK(commit_run(store, &commit, &r5, out, sizeof out, &len) > 0);
 	CHECK(store_raced(span((unsigned char *)out, len)));
 	CHECK(!check_at(store, r3.hex, "a/f", &tip, &id) && !oid_len(&id));
@@ -1232,7 +1232,7 @@ test_reach (struct store const *store,
 	size_t len = 0;
 	char tree_of[OID_SHA1 + sizeof "^{tree}"];
 	CHECK(snprintf(tree_of, sizeof tree_of, "%s^{tree}", c3->hex) == OID_SHA1 + 7);
-	struct oid tree;
+	struct oid tree = {};
 	CHECK(!run(store, STORE_HEAD, (char const *const[]){ tree_of }, span(nullptr, 0), out,
 	           sizeof out, &len) && !oid_init_line(&tree, cstr_view_n(out, len)));
 	/* The blob of the file a at c3. */
@@ -1298,7 +1298,7 @@ test_git (char const *path)
 		.ref = "refs/heads/notes/t",
 		.tip = &root
 	);
-	struct oid c1, c2, c3, c4;
+	struct oid c1 = {}, c2 = {}, c3 = {}, c4 = {};
 	CHECK(!commit_run(store, &commit, &c1, out, sizeof out, &len));
 	CHECK(oid_len(&c1) == OID_SHA1);
 	CHECK(!run(store, STORE_FILES, (char const *const[]){ c1.hex, nullptr },
@@ -1329,7 +1329,7 @@ test_git (char const *path)
 	cited.files = buf_peek(&files);
 	cited.ref = "refs/heads/notes/u";
 	cited.tip = &root;
-	struct oid u;
+	struct oid u = {};
 	CHECK(!commit_run(store, &cited, &u, out, sizeof out, &len));
 	buf_fini(&files);
 	CHECK(!run(store, STORE_FILES, (char const *const[]){ u.hex, nullptr },
@@ -1403,7 +1403,7 @@ test_git (char const *path)
 	commit.trailers = asked;
 	commit.n_trailers = array_size(asked);
 	commit.tip = &c3;
-	struct oid c5;
+	struct oid c5 = {};
 	CHECK(!commit_run(store, &commit, &c5, out, sizeof out, &len));
 	buf_fini(&files);
 	char const *const log[] = {
@@ -1435,7 +1435,7 @@ test_git (char const *path)
 		.ref = "refs/askai/members/bro",
 		.tip = &root
 	);
-	struct oid m;
+	struct oid m = {};
 	CHECK(!commit_run(store, &member, &m, out, sizeof out, &len));
 	CHECK(!run(store, STORE_FILES, (char const *const[]){ m.hex, nullptr },
 	           span(nullptr, 0), out, sizeof out, &len) && !len);

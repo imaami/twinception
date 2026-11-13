@@ -598,7 +598,7 @@ static void
 journal_test_git (struct journal *j)
 {
 	struct oid tip = j->tip;
-	struct oid oid;
+	struct oid oid = {};
 	assert(oid_len(&tip));
 	assert(!journal_git(j, (char const *[]){ "rev-parse", "--verify", "--quiet", j->ref, nullptr },
 	                    -1, &oid) && oid_equal(&oid, &tip));
