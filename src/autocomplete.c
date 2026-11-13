@@ -79,6 +79,16 @@ struct autocomplete_token {
 	size_t equals;
 };
 
+/* Returns the token of the bytes from @p begin to @p end of a line,
+ * without an equals sign.
+ */
+static const_inline struct autocomplete_token
+autocomplete_token (size_t begin,
+                    size_t end)
+{
+	return (struct autocomplete_token){ .begin = begin, .end = end, .equals = SIZE_MAX };
+}
+
 struct autocomplete {
 	UTIL_ARRAY(struct autocomplete_entry) entries;
 	size_t                        storage;
@@ -295,7 +305,7 @@ autocomplete_tokenize (struct autocomplete *ac,
 			++i;
 			continue;
 		}
-		struct autocomplete_token token = {.begin = i, .equals = SIZE_MAX};
+		struct autocomplete_token token = autocomplete_token(i, 0);
 		int e = autocomplete_token_end(ac, line, &token, strict, why, size);
 		if (!e && util_grow(ac->tokens.items, ac->tokens.cap, ac->tokens.n + 1))
 			e = ENOMEM;
@@ -928,8 +938,8 @@ autocomplete_note_paths (struct autocomplete              *ac,
                          struct autocomplete_names const **paths)
 {
 	*paths = nullptr;
-	struct autocomplete_token action = {.equals = SIZE_MAX};
-	struct autocomplete_token notebook = {.equals = SIZE_MAX};
+	struct autocomplete_token action = autocomplete_token(0, 0);
+	struct autocomplete_token notebook = autocomplete_token(0, 0);
 	for (size_t i = 2; i < ac->tokens.n; ++i) {
 		struct autocomplete_token token = ac->tokens.items[i];
 		if (token.equals == SIZE_MAX)
@@ -1242,7 +1252,7 @@ autocomplete_complete (struct autocomplete              *ac,
 		size_t index = 0;
 		while (index < ac->tokens.n && cursor > ac->tokens.items[index].end)
 			++index;
-		struct autocomplete_token current = {cursor, cursor, SIZE_MAX};
+		struct autocomplete_token current = autocomplete_token(cursor, cursor);
 		if (index < ac->tokens.n && cursor >= ac->tokens.items[index].begin)
 			current = ac->tokens.items[index];
 		error = autocomplete_commands(ac, line, current, cursor, index);
