@@ -205,7 +205,7 @@ test_names (void)
 	      strlen(m.name) == UTIL_WORD_MAX && test_name_zeroed(&m));
 	json_object_put(json);
 	for (size_t i = 0; i < array_size(invalid); ++i) {
-		m = (struct member){ .kind = MEMBER_AGENT, .name = "old" };
+		m = member(MEMBER_AGENT, CSTR_VIEW("old"));
 		json = jb_object("name", invalid[i].data ? jb_string(invalid[i])
 		                                         : json_object_new_int(3),
 		                 "kind", json_object_new_string("person"), nullptr);
@@ -230,7 +230,8 @@ test_names (void)
 
 	/* The refs of the branches of a member, and back. */
 	char ref[MEMBER_REF];
-	member_ref(&(struct member){ MEMBER_PERSON, "first.last@ad" }, MEMBER_BRANCH_NOTES, ref);
+	struct member const first = member(MEMBER_PERSON, CSTR_VIEW("first.last@ad"));
+	member_ref(&first, MEMBER_BRANCH_NOTES, ref);
 	CHECK(!strcmp(ref, "refs/heads/person/first.last@ad/notes"));
 	enum member_kind kind = MEMBER_AGENT;
 	struct cstr_view name = {};
@@ -239,7 +240,7 @@ test_names (void)
 	CHECK(kind == MEMBER_PERSON && cstr_view_equal(name, CSTR_VIEW("first.last@ad")) &&
 	      branch == MEMBER_BRANCH_NOTES);
 	/* The longest ref fills MEMBER_REF. */
-	m = (struct member){ .kind = MEMBER_PERSON };
+	m = member(MEMBER_PERSON, cstr_view(nullptr));
 	memset(m.name, 'n', UTIL_WORD_MAX);
 	member_ref(&m, MEMBER_BRANCH_FINDINGS, ref);
 	CHECK(strlen(ref) == MEMBER_REF - 1 && !strncmp(ref, "refs/heads/person/nnn", 21) &&
@@ -247,7 +248,8 @@ test_names (void)
 	CHECK(!member_ref_parse(cstr_view(ref), &kind, &name, &branch));
 	CHECK(kind == MEMBER_PERSON && name.len == UTIL_WORD_MAX &&
 	      branch == MEMBER_BRANCH_FINDINGS);
-	member_ref(&(struct member){ MEMBER_AGENT, "bro" }, MEMBER_BRANCH_FINDINGS, ref);
+	struct member const bro = member(MEMBER_AGENT, CSTR_VIEW("bro"));
+	member_ref(&bro, MEMBER_BRANCH_FINDINGS, ref);
 	CHECK(!strcmp(ref, "refs/heads/agent/bro/findings"));
 	struct cstr_view const refs[] = {
 		cstr_view(nullptr),
@@ -344,8 +346,8 @@ test_sentences (void)
 		.member = { MEMBER_AGENT, "bro" },
 		.text = "identity bro",
 	};
-	struct member const person = { MEMBER_PERSON, "bro" };
-	struct member const bot = { MEMBER_AGENT, "bro" };
+	struct member const person = member(MEMBER_PERSON, CSTR_VIEW("bro"));
+	struct member const bot = member(MEMBER_AGENT, CSTR_VIEW("bro"));
 	static struct {
 		int         e;
 		bool        agent;  /* the login is the login of an agent */
@@ -1689,8 +1691,8 @@ main (int    argc,
 	      !hexid_init(&call.conversation, CSTR_VIEW("fedcba9876543210fedcba9876543210")));
 	struct member_byline byline;
 	struct store_commit commit = store_commit();
-	member_byline_put(&byline, &commit, &(struct member){ MEMBER_PERSON, "carol" }, &call, 7,
-	                  session);
+	struct member const carol = member(MEMBER_PERSON, CSTR_VIEW("carol"));
+	member_byline_put(&byline, &commit, &carol, &call, 7, session);
 	CHECK(cstr_view_equal(commit.author.name, CSTR_VIEW("carol")) &&
 	      cstr_view_equal(commit.author.email, CSTR_VIEW("person/carol")) &&
 	      commit.committer.name.data == session->committer.name.data &&

@@ -1194,7 +1194,7 @@ member_lookup_give (struct member_lookup const *lookup,
 {
 	struct member const *claimed = &lookup->claim.login.member;
 	wait->e = e;
-	wait->member = e ? (struct member){ .kind = claimed->kind } : *claimed;
+	wait->member = e ? member(claimed->kind, cstr_view(nullptr)) : *claimed;
 	if (e == EPERM) {
 		wait->refuser = *claimed;
 		wait->refuser.kind = lookup->refuser_kind;
