@@ -1008,7 +1008,7 @@ test_items (void)
 	seen_clear(seen);
 	CHECK(!seen->items.n && !find_item(seen, "cuh#2/1"));
 	for (uint32_t k = 1; k <= SEEN_ITEMS + 2; ++k) {
-		c.key = (struct finding_id){ .number = 1, .item = k, .author = "bro" };
+		c.key = finding_id(CSTR_VIEW("bro"), 1, k);
 		CHECK(!seen_print(&seen, &c, k, extent(0, 10)));
 		seen_shown(seen, k, extent(0, 10), 1);
 	}
