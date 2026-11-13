@@ -806,16 +806,16 @@ member_registry_claim (struct member_registry *reg,
                        size_t                  len)
 {
 	struct cstr_view const text = cstr_view(claim->login.text);
-	char const *const name = claim->login.member.name;
 	for (;;) {
 		struct buf in = {};
 		struct member_info const *entry = member_records_login(&reg->records, text);
-		int e = member_claim_step(claim, reg, &reg->records, text, &entry, &in, why,
-		                          len);
-		if (e == EPERM)
+		int e = member_claim_step(claim, reg, &reg->records, text, &entry, &in, why, len);
+		if (e == EPERM) {
+			char const *const name = claim->login.member.name;
 			util_format(why, len, "agent %s: the name %s belongs to the person with "
 			            "login %.*s in this session", name, name,
 			            (int)entry->logins.len, entry->logins.data);
+		}
 		if (e != EINPROGRESS)
 			return e;
 		e = member_commit(reg, claim->ref, &in, 0, why, len);
