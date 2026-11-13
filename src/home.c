@@ -1674,7 +1674,7 @@ home_put_call (void                 *user,
 	 * call. most is the number of buffers, and k stays most if no stored
 	 * call is at the index of the piece. */
 	struct job_call c = {};
-	struct ai_call last = {};
+	struct ai_call last = ai_call();
 	uint32_t const most = array_size(job->calls);
 	uint32_t n = 0;
 	uint32_t k = most;

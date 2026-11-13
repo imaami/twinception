@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "compat.h"
 #include "cstr_view.h"
 
 struct dstr;
@@ -161,6 +162,14 @@ struct ai_call {
 	uint64_t         index;  /**< a uint64_t to fill the padding, but every
 	                              value fits in a uint32_t */
 };
+
+static force_inline struct ai_call
+ai_call (struct ai_call const c)
+{
+	return c;
+}
+
+#define ai_call(...) (ai_call)((struct ai_call){__VA_ARGS__})
 
 /** Receives @p text, a piece of a streamed answer. */
 typedef int ai_text_fn (void             *user,

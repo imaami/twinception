@@ -6599,7 +6599,7 @@ mcp_slot_compact (struct mcp_slot    *slot,
 		return;
 	/* The trace line shows the name of the tool that the turn called. */
 	struct registry_tool const *t = mcp_slot_tool(slot);
-	struct ai_call const c = { .name = t->name };
+	struct ai_call const c = ai_call(.name = t->name);
 	(void)mcp_req_trace(req, &c, args, mcp_row_of(t)->trace);
 	(void)mcp_req_trace_end(req, false, summary.len);
 	hist_add(&req->mcp->counts->calls.compacted[0], 1);

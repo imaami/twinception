@@ -700,13 +700,13 @@ ai_chat_calls (struct ai_sink const *sink,
 		/* extra_content contains the thought signature of Gemini, which
 		 * askai sends back unchanged in the next turn. */
 		struct json_object *extra = jb_get(c, "extra_content");
-		struct ai_call call = {
+		struct ai_call call = ai_call(
 			.id    = jb_view(jb_get(c, "id")),
 			.name  = jb_view(jb_get(fn, "name")),
 			.args  = jb_view(jb_get(fn, "arguments")),
 			.extra = jb_wire(extra),
-			.index = ai_index(jb_get(c, "index")),
-		};
+			.index = ai_index(jb_get(c, "index"))
+		);
 		e = extra && !call.extra.data ? ENOMEM : sink->call(sink->user, &call);
 	}
 	return e;
@@ -791,12 +791,12 @@ ai_responses_item (struct ai_sink const *sink,
 	out->flags |= kind == REASONING ? AI_EV_THOUGHT_END : 0;
 	int e = 0;
 	if (kind == CALL && sink->call) {
-		struct ai_call call = {
+		struct ai_call call = ai_call(
 			.id    = jb_view(jb_get(item, "call_id")),
 			.name  = jb_view(jb_get(item, "name")),
 			.args  = jb_view(jb_get(item, "arguments")),
-			.index = ai_index(at),
-		};
+			.index = ai_index(at)
+		);
 		e = sink->call(sink->user, &call);
 	}
 	return e ? e : ai_replay_item(sink, item);
@@ -861,13 +861,13 @@ ai_call_start (struct ai_sink const *sink,
 		return 0;
 	struct json_object *args = jb_get(item, key);
 	bool whole = jb_members(args);
-	struct ai_call call = {
+	struct ai_call call = ai_call(
 		.id    = jb_view(jb_get(item, "id")),
 		.name  = jb_view(jb_get(item, "name")),
 		.args  = jb_wire(whole ? args : nullptr),
 		.extra = jb_wire(extra),
-		.index = at,
-	};
+		.index = at
+	);
 	if ((whole && !call.args.data) || (extra && !call.extra.data))
 		return ENOMEM;
 	return sink->call(sink->user, &call);
@@ -953,10 +953,10 @@ ai_messages_delta (struct ai_sink const *sink,
 	case INPUT: {
 		if (!sink->call)
 			return 0;
-		struct ai_call call = {
+		struct ai_call call = ai_call(
 			.args  = jb_view(jb_get(delta, "partial_json")),
-			.index = at,
-		};
+			.index = at
+		);
 		return sink->call(sink->user, &call);
 	}
 	}
@@ -1307,10 +1307,10 @@ ai_interactions_delta (struct ai_sink const *sink,
 	case ARGUMENTS: {
 		if (!sink->call)
 			return 0;
-		struct ai_call call = {
+		struct ai_call call = ai_call(
 			.args  = jb_view(jb_get(delta, "arguments")),
-			.index = at,
-		};
+			.index = at
+		);
 		if (!call.args.data)
 			return 0;
 		int e = reader->calls == at + 1 ? 0 : ai_interactions_close(sink, reader);

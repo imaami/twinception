@@ -152,7 +152,7 @@ evidence_parts (struct seen_call const *c)
 {
 	struct span const request = buf_peek(&c->request);
 	struct job_call h;
-	return request.len >= sizeof h ? job_call_parts(&h, request.ptr) : (struct ai_call){};
+	return request.len >= sizeof h ? job_call_parts(&h, request.ptr) : ai_call();
 }
 
 /* Returns the identifiers @p ids, a JSON object text, as a JSON object, or

@@ -126,13 +126,13 @@ job_call_parts (struct job_call     *call,
 	memcpy(call, p, sizeof *call);
 	char const *id = (char const *)p + sizeof *call;
 	char const *extra = id + call->id + call->name;
-	return (struct ai_call){
-		.id    = { id, call->id },
-		.name  = { id + call->id, call->name },
-		.extra = { extra, call->extra },
-		.args  = { extra + call->extra, call->args },
-		.index = call->index,
-	};
+	return ai_call(
+		.id    = cstr_view_n(id, call->id),
+		.name  = cstr_view_n(id + call->id, call->name),
+		.extra = cstr_view_n(extra, call->extra),
+		.args  = cstr_view_n(extra + call->extra, call->args),
+		.index = call->index
+	);
 }
 
 /** The bytes of the call @p c in a job's calls: it and its parts. */
