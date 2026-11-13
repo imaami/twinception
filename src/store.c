@@ -598,7 +598,7 @@ store_part_head (struct extent    *part,
 		return EINVAL;
 	size_t const h = (size_t)(p - head) + (size_t)n;
 	head[h + len] = '\n';
-	*part = (struct extent){ buf_peek(in).len + h, len };
+	*part = extent(buf_peek(in).len + h, len);
 	buf_commit(in, h + len + 1);
 	return 0;
 }

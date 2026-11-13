@@ -741,7 +741,7 @@ test_note (struct store const *store,
            char const         *asker)
 {
 	struct buf files = {};
-	struct extent part;
+	struct extent part = {};
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("plan.md"), CSTR_VIEW("x")));
 	struct store_trailer const t[] = { { CSTR_VIEW("Asked-by"), asker ? cstr_view(asker)
 	                                                                  : CSTR_VIEW("") } };

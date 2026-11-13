@@ -2050,7 +2050,7 @@ notes_tool_got_append (struct mcp_slot *slot,
 		return;
 	}
 	struct buf file = {};
-	struct extent part;
+	struct extent part = {};
 	int e = store_part_head(&part, &file, util_text_view(&call->revision.file),
 	                        old.len + lf + add.len);
 	if (e) {
@@ -2236,7 +2236,7 @@ notes_tool_start (struct mcp_slot    *slot,
 	if (fetch & FETCH_DELETE) {
 		/* The size of the note after a delete is 0 bytes, as the commit
 		 * message prints it. */
-		call->part = (struct extent){};
+		call->part = extent(0, 0);
 		notes_tool_stage(slot, FETCH_CHECK, store_part_delete(&call->file, name));
 	} else if (flags & NOTES_ACTION_SELF) {
 		notes_tool_add(slot, name, args);

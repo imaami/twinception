@@ -897,7 +897,7 @@ findings_commit (struct mcp_slot      *slot,
 	char message[STORE_MESSAGE];
 	finding_id_put(&f->id, id);
 	call->id = f->id;
-	struct extent part;
+	struct extent part = {};
 	e = e ? e : store_part_file(&part, &call->files, finding_path(f->id.number, path), text);
 	struct store_commit commit = {
 		.message = findings_subject(call, id, before, message),
@@ -966,7 +966,7 @@ findings_archive (struct findings_call           *call,
 	int r = 0;
 	for (size_t k = e->kind == EVIDENCE_CALL ? 0 : 1; !r && k < array_size(b); ++k) {
 		char path[EVIDENCE_PATH];
-		struct extent part;
+		struct extent part = {};
 		evidence_path(b[k]->sha256, path);
 		r = oid_len(&blobs[k]) ? store_part_blob(&call->files, cstr_view(path), &blobs[k])
 		                       : store_part_file(&part, &call->files, cstr_view(path), data[k]);
@@ -1100,7 +1100,7 @@ findings_expanded (struct mcp_slot *slot,
 			continue;
 		e = findings_record(ev, &shown.record);
 		e = e ? e : findings_shown(slot, &shown, &key, blobs,
-		                           (struct extent){ at, dstr_len(&call->out) - at });
+		                           extent(at, dstr_len(&call->out) - at));
 		++whole;
 	}
 	dstr_cleanup(&shown.record);
@@ -1465,7 +1465,7 @@ findings_unseen (struct mcp_slot                *slot,
 			continue;
 		e = cstr_view_store(cstr_view_dstr(&cite->record), &shown.record);
 		e = e ? e : findings_shown(slot, &shown, &cite->ref.id, cite->blobs,
-		                           (struct extent){ at[i], at[i + 1] - at[i] });
+		                           extent(at[i], at[i + 1] - at[i]));
 	}
 	dstr_cleanup(&shown.record);
 	findings_end(slot, e, true);

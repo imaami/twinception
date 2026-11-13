@@ -11,6 +11,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "compat.h"
+
 /**
  * Binary byte buffer for sockets, TLS and pipes; [head, tail) is readable.
  *
@@ -50,6 +52,14 @@ struct extent {
 	size_t at;   /**< offset of the first byte */
 	size_t len;  /**< bytes of the run */
 };
+
+/** Returns the extent of @p len bytes at the offset @p at. */
+static const_inline struct extent
+extent (size_t at,
+        size_t len)
+{
+	return (struct extent){ .at = at, .len = len };
+}
 
 /** Size classes of storage: powers of two from 4 KiB to 32 MiB, glibc's
  *  largest mmap threshold. Larger storage is allocated and freed as is.

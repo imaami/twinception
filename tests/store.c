@@ -256,7 +256,7 @@ test_input (void)
 
 	/* A file part quotes the path as store_quote() does. */
 	struct buf files = {};
-	struct extent part;
+	struct extent part = {};
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("a\"b\\c"), CSTR_VIEW("abc")));
 	CHECK(part.at == 33 && part.len == 3);
 	/* A delete part is "D ", the quoted path and a line feed. */
@@ -1057,7 +1057,7 @@ test_race (struct store const *store)
 	char const *ref = "refs/heads/notes/r";
 	struct oid const root = {};
 	struct buf files = {};
-	struct extent part;
+	struct extent part = {};
 	struct oid r1, r2, r3, r4;
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("a/b"), CSTR_VIEW("1")));
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("c"), CSTR_VIEW("2")));
@@ -1247,7 +1247,7 @@ test_git (char const *path)
 
 	/* A file part adds the file. */
 	struct buf files = {};
-	struct extent part;
+	struct extent part = {};
 	CHECK(!store_part_file(&part, &files, CSTR_VIEW("a"), CSTR_VIEW("abc")));
 	commit.message = CSTR_VIEW("Add a");
 	commit.files = buf_peek(&files);

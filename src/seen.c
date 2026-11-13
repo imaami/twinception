@@ -289,7 +289,7 @@ seen_keep (struct seen              **p_seen,
 {
 	if (!p_seen || !request || !r || !r->parts || (!r->out.data && r->out.len))
 		return EFAULT;
-	struct extent const window = { r->skip, r->parts[0].len };
+	struct extent const window = extent(r->skip, r->parts[0].len);
 	if (window.at > r->out.len || window.len > r->out.len - window.at ||
 	    (window.len && r->parts[0].data != r->out.data + window.at) ||
 	    r->at > TOOL_OUTPUT_MAX || window.at > TOOL_OUTPUT_MAX - r->at)

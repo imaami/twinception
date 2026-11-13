@@ -1181,7 +1181,7 @@ mcp_slot_reset (struct mcp_slot *slot)
 	mcp_slot_drop(slot);
 	slot->of = nullptr;
 	dstr_clear(&slot->answer);
-	slot->window = (struct extent){};
+	slot->window = extent(0, 0);
 	slot->at = 0;
 	slot->bytes = 0;
 	util_text_clear(&slot->note);
@@ -5500,7 +5500,7 @@ mcp_slot_replay (struct mcp_slot    *slot,
 	if (e)
 		return e == EINVAL ? EILSEQ : e;
 	slot->start = loop_clock();
-	slot->window = (struct extent){ skip, text.len - skip };
+	slot->window = extent(skip, text.len - skip);
 	slot->at = jb_uint(jb_get(saved, "at"), 0);
 	slot->bytes = jb_uint(jb_get(saved, "bytes"), 0);
 	mcp_slot_result(slot, text,
@@ -5643,7 +5643,7 @@ mcp_slot_window (struct mcp_slot *slot,
 		if (nl)
 			window = (size_t)(nl - out.ptr - skip) + 1;
 	}
-	slot->window = (struct extent){ skip, window };
+	slot->window = extent(skip, window);
 }
 
 /* Say in slot->note where the window is in the output of @p len bytes of
