@@ -104,6 +104,17 @@ struct cli_console_completion {
 	enum autocomplete_kind kind;
 };
 
+/* Returns the completion of the kind @p kind. The label of the completion
+ * is the @p length bytes at the offset @p begin of the completion labels.
+ */
+static const_inline struct cli_console_completion
+cli_console_completion (uint32_t               begin,
+                        uint32_t               length,
+                        enum autocomplete_kind kind)
+{
+	return (struct cli_console_completion){ .begin = begin, .length = length, .kind = kind };
+}
+
 enum cli_console_pane_id : uint32_t {
 	CLI_CONSOLE_CONVERSATION,
 	CLI_CONSOLE_REASONING,
@@ -214,11 +225,10 @@ cli_console_completion_cache (struct cli_console *console)
 		int e = cli_console_output_write(&state, &console->completion_labels, label);
 		if (e)
 			return e;
-		console->completions[i] = (struct cli_console_completion){
-			.begin = (uint32_t)begin,
-			.length = (uint32_t)(dstr_len(&console->completion_labels) - begin),
-			.kind = candidate->kind,
-		};
+		console->completions[i] =
+			cli_console_completion((uint32_t)begin,
+			                       (uint32_t)(dstr_len(&console->completion_labels) - begin),
+			                       candidate->kind);
 	}
 	console->completion_count = console->candidate_count;
 	return 0;
