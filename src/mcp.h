@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "compat.h"
 #include "cstr_view.h"
 #include "export.h"
 #include "loop_export.h"
@@ -60,7 +61,7 @@ struct mcp_limits {
 };
 
 /** The defaults of doc/core-design.md, sections 3 and 5. */
-static inline struct mcp_limits
+static const_inline struct mcp_limits
 mcp_limits (void)
 {
 	return (struct mcp_limits){
