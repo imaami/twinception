@@ -110,6 +110,14 @@ struct web_response {
 	int              e;
 };
 
+static force_inline struct web_response
+web_response (struct web_response const r)
+{
+	return r;
+}
+
+#define web_response(...) (web_response)((struct web_response){__VA_ARGS__})
+
 /* The rest of this file is askai's side. A plugin does not use it. */
 
 struct blocker;

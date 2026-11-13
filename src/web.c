@@ -573,13 +573,14 @@ web_run_done (CURLcode    result,
 		said = *error ? error : curl_easy_strerror(result);
 	}
 	long retry = http_retry_after(web->http);
-	web_run_finish(web, run, &(struct web_response){
+	struct web_response const end = web_response(
 		.type = http_type(web->http),
 		.error = said,
 		.status = status > 0 && status < 1000 ? (uint32_t)status : 0,
 		.retry = retry > 0 && retry <= UINT32_MAX ? (uint32_t)retry : 0,
 		.e = e
-	});
+	);
+	web_run_finish(web, run, &end);
 }
 
 /* The deadline of a run has passed, and the overdue step ends the run.
@@ -643,8 +644,11 @@ web_run_start (struct web     *web,
 	if (e) {
 		char why[96];
 		util_format(why, sizeof why, "askai cannot send the request: %s", strerror(e));
-		web_run_finish(web, run, &(struct web_response){ .error = why,
-		                                                 .e = e == ENOMEM ? ENOMEM : EIO });
+		struct web_response const end = web_response(
+			.error = why,
+			.e = e == ENOMEM ? ENOMEM : EIO
+		);
+		web_run_finish(web, run, &end);
 		return;
 	}
 	/* Without the encodings, the response comes uncompressed. */
@@ -671,20 +675,27 @@ web_run_mail (struct loop *loop,
 		break;
 
 	case RUN_SUBMIT | RUN_EXIT:
-	case RUN_SUBMIT | RUN_CANCEL | RUN_EXIT:
-		web_run_end(web, run, &(struct web_response){ .error = stopping, .e = ESHUTDOWN });
+	case RUN_SUBMIT | RUN_CANCEL | RUN_EXIT: {
+		struct web_response const end = web_response(.error = stopping, .e = ESHUTDOWN);
+		web_run_end(web, run, &end);
 		break;
+	}
 
-	case RUN_SUBMIT | RUN_CANCEL:
-		web_run_end(web, run, &(struct web_response){ .error = "", .e = ECANCELED });
+	case RUN_SUBMIT | RUN_CANCEL: {
+		struct web_response const end = web_response(.error = "", .e = ECANCELED);
+		web_run_end(web, run, &end);
 		break;
+	}
 
 	case RUN_CANCEL:
 	case RUN_CANCEL | RUN_EXIT:
 		if (!list_is_empty(&run->live)) {
 			http_cancel(web->http, &run->transfer);
-			web_run_finish(web, run, &(struct web_response){ .error = "cancelled",
-			                                                 .e = ECANCELED });
+			struct web_response const end = web_response(
+				.error = "cancelled",
+				.e = ECANCELED
+			);
+			web_run_finish(web, run, &end);
 		}
 	}
 
@@ -754,10 +765,11 @@ web_home_stop (struct web *web)
 {
 	if (!web || !web->http)
 		return;
+	struct web_response const end = web_response(.error = stopping, .e = ESHUTDOWN);
 	while (!list_is_empty(&web->live)) {
 		struct web_run *run = container_of(web->live.next, struct web_run, live);
 		http_cancel(web->http, &run->transfer);
-		web_run_finish(web, run, &(struct web_response){ .error = stopping, .e = ESHUTDOWN });
+		web_run_finish(web, run, &end);
 	}
 	loop_unready(&web->overdue);
 	http_destroy(&web->http);
@@ -943,23 +955,23 @@ web_wait_response (struct web_wait const *wait,
 {
 	struct web_reply const *reply = wait->reply;
 	if (!reply) {
-		*response = (struct web_response){
-			.body = { "", 0 },
+		*response = web_response(
+			.body = CSTR_VIEW(""),
 			.type = "",
 			.error = no_memory,
 			.e = ENOMEM
-		};
+		);
 		return;
 	}
-	*response = (struct web_response){
-		.body = { reply->body ? reply->body : "", reply->len },
+	*response = web_response(
+		.body = cstr_view_n(reply->body ? reply->body : "", reply->len),
 		.type = reply->text,
 		.error = reply->error,
 		.status = reply->status,
 		.age = now > reply->received ? (uint32_t)((now - reply->received) / NS) : 0,
 		.retry = reply->retry,
 		.e = reply->e
-	};
+	);
 }
 
 void

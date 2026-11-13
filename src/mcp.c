@@ -3846,7 +3846,7 @@ mcp_slot_fetched (struct mcp_slot const *slot,
 {
 	if (!response)
 		return EFAULT;
-	*response = (struct web_response){};
+	*response = web_response();
 	int e = mcp_slot_live(slot, 0, 0);
 	if (e)
 		return e;
