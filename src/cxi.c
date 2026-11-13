@@ -753,6 +753,18 @@ struct cxi_find {
 	uint32_t         part;
 };
 
+/* Returns a search for the name @p name, of the kind @p kind if not 0. The
+ * list of the search is empty, and its failed pushes set the error of
+ * @p out.
+ */
+static force_inline struct cxi_find
+cxi_find (struct cxi_out   *out,
+          struct cstr_view  name,
+          uint32_t          kind)
+{
+	return (struct cxi_find){ .list = cxi_list(out), .name = name, .kind = kind };
+}
+
 static bool
 cxi_in_tree (struct cxi_out const *out,
              CXCursor              c)
@@ -806,7 +818,7 @@ cxi_lookup (struct cxi *x,
             uint32_t    kind,
             CXCursor   *c)
 {
-	struct cxi_find find = { .list.out = &x->out, .name = cstr_view(name), .kind = kind };
+	struct cxi_find find = cxi_find(&x->out, cstr_view(name), kind);
 	clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_match, &find);
 	size_t const n = find.list.n;
 	if (n == 1) {
@@ -1021,7 +1033,7 @@ cxi_lookup_member (struct cxi *x,
                    char const *member,
                    CXCursor   *c)
 {
-	struct cxi_find find = { .list.out = &x->out, .name = cstr_view(name) };
+	struct cxi_find find = cxi_find(&x->out, cstr_view(name), 0);
 	clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_match, &find);
 	CXCursor record = clang_getNullCursor();
 	for (size_t i = 0; clang_Cursor_isNull(record) && i < find.list.n; ++i)
