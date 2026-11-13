@@ -36,7 +36,7 @@ parse (char const *text,
        size_t      bytes,
        unsigned   *steps)
 {
-	struct jb_pool pool = { .scalar = 16 };
+	struct jb_pool pool = jb_pool(.scalar = 16);
 	struct jb_parser parser = {};
 	size_t len = strlen(text);
 	int e;

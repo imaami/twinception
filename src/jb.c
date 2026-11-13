@@ -39,7 +39,7 @@ jb_parse (char const *data,
           int         flags,
           uint32_t    depth)
 {
-	struct jb_pool pool = { .depth = depth, .flags = flags };
+	struct jb_pool pool = jb_pool(.depth = depth, .flags = flags);
 	struct jb_parser parser = {};
 	while (jb_parser_step(&parser, &pool, data, len, SIZE_MAX, UINT32_MAX) == EAGAIN)
 		;

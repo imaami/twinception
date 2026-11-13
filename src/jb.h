@@ -13,6 +13,7 @@
 
 #include <json-c/json.h>
 
+#include "compat.h"
 #include "cstr_view.h"
 #include "export.h"
 #include "util.h"
@@ -286,6 +287,14 @@ struct jb_pool {
 	                                   as json-c converts one whole; 0: any */
 	int                  flags;   /**< json_tokener_set_flags() */
 };
+
+static force_inline struct jb_pool
+jb_pool (struct jb_pool const p)
+{
+	return p;
+}
+
+#define jb_pool(...) (jb_pool)((struct jb_pool){__VA_ARGS__})
 
 /** Free a tokener whose string buffer is over @p keep bytes; returns that
  *  buffer's size, 0 if there is none.
