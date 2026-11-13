@@ -209,11 +209,11 @@ test_lines (void)
 	CHECK(!loop_lines_next(&lines, &l, text, &line) && lines.start == text.len);
 	CHECK(l.work[LOOP_PARSE] == text.len - 4);
 	/* A final line feed ends the last line, and an empty text has none. */
-	lines = (struct loop_lines){};
+	lines = loop_lines(0, 0);
 	CHECK(loop_lines_next(&lines, &l, CSTR_VIEW("x\n"), &line) &&
 	      cstr_view_equal(line, CSTR_VIEW("x")));
 	CHECK(!loop_lines_next(&lines, &l, CSTR_VIEW("x\n"), &line) && lines.start == 2);
-	lines = (struct loop_lines){};
+	lines = loop_lines(0, 0);
 	CHECK(!loop_lines_next(&lines, &l, (struct cstr_view){}, &line) && !lines.start);
 }
 

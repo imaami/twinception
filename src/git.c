@@ -1630,7 +1630,7 @@ git_scan (struct mcp_slot *slot,
 			               "line from 1 to %zu.", line, total);
 		return;
 	}
-	read->scan = (struct loop_lines){ read->from, read->from };
+	read->scan = loop_lines(read->from, read->from);
 	read->lines = read->line - 1;
 	call->phase = GIT_NUMBER;
 	mcp_slot_ready(slot);

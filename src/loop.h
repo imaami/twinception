@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "compat.h"
 #include "cstr_view.h"
 #include "hist.h"
 #include "list.h"
@@ -286,6 +287,17 @@ struct loop_lines {
 	size_t at;     /**< the bytes of the text looked at */
 	size_t start;  /**< where the next line begins */
 };
+
+/** Returns the state in which loop_lines_next() looked at the first
+ *  @p at bytes of the text and the next line begins at the offset
+ *  @p start. loop_lines(0, 0) is the state at the start of the text.
+ */
+static const_inline struct loop_lines
+loop_lines (size_t at,
+            size_t start)
+{
+	return (struct loop_lines){ .at = at, .start = start };
+}
 
 /**
  * Stores in @p *line the next line of @p text, without its line feed, if
