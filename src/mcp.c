@@ -6412,13 +6412,13 @@ mcp_slot_post_file (struct mcp_slot  *slot,
 {
 	static char const accept[] = "application/json";
 	struct mcp_static const *st = slot->req->mcp->st;
-	struct web_request const request = {
+	struct web_request const request = web_request(
 		.url = dstr_get(&st->files_url),
 		.body = body,
 		.accept = accept,
 		.max = FILES_ANSWER,
 		.timeout = WEB_TIMEOUT_MAX
-	};
+	);
 	struct web_ask ask = {
 		.request = &request,
 		.url = dstr_len(&st->files_url),

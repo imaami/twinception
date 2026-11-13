@@ -25,6 +25,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "compat.h"
 #include "cstr_view.h"
 #include "loop_export.h"
 #include "tool.h"
@@ -69,6 +70,14 @@ struct web_request {
 	 *  that is younger than keep. See mcp_slot_fetch(). */
 	uint32_t         keep;
 };
+
+static force_inline struct web_request
+web_request (struct web_request const r)
+{
+	return r;
+}
+
+#define web_request(...) (web_request)((struct web_request){__VA_ARGS__})
 
 /** The result of a call's request (mcp_slot_fetched()). */
 struct web_response {

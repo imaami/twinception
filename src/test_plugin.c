@@ -419,16 +419,16 @@ test_plugin_misuse_invalid (struct mcp_slot *slot,
 	TEST_PLUGIN_REFUSED(!loop_room(loop, beyond));
 	/* The kind of test_misuse has no step(), but mcp_slot_fetch() checks
 	 * its inputs first, so it does not end the call for them. */
-	struct web_request const get = {
+	struct web_request const get = web_request(
 		.url = "http://127.0.0.1/", .max = 1, .timeout = 1
-	};
-	struct web_request const no_url = { .max = 1, .timeout = 1 };
-	struct web_request const no_body = {
-		.url = "http://127.0.0.1/", .body = { nullptr, 1 }, .max = 1, .timeout = 1
-	};
-	struct web_request const ftp = {
+	);
+	struct web_request const no_url = web_request(.max = 1, .timeout = 1);
+	struct web_request const no_body = web_request(
+		.url = "http://127.0.0.1/", .body = cstr_view_n(nullptr, 1), .max = 1, .timeout = 1
+	);
+	struct web_request const ftp = web_request(
 		.url = "ftp://127.0.0.1/", .max = 1, .timeout = 1
-	};
+	);
 	struct web_response response;
 	TEST_PLUGIN_REFUSED(mcp_slot_fetch(nullptr, &get) == EFAULT);
 	TEST_PLUGIN_REFUSED(mcp_slot_fetch(slot, nullptr) == EFAULT);
@@ -539,9 +539,9 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 	mcp_slot_tell(slot, CSTR_VIEW("first"), 0);
 	size_t taken = 0;
 	struct handle who = {};
-	struct web_request const get = {
+	struct web_request const get = web_request(
 		.url = "http://127.0.0.1/", .max = 1, .timeout = 1
-	};
+	);
 	struct web_response response;
 	/* args is not valid after the end of the call, so the function passes
 	 * nullptr to mcp_slot_offset(). */
@@ -604,14 +604,14 @@ test_plugin_fetch_start (struct mcp_slot    *slot,
 {
 	if (!slot)
 		return;
-	struct web_request const request = {
+	struct web_request const request = web_request(
 		.url = jb_view(jb_get(args, "url")).data,
 		.body = jb_view(jb_get(args, "body")),
 		.accept = jb_view(jb_get(args, "accept")).data,
 		.max = (size_t)jb_int(jb_get(args, "max"), 65536),
 		.timeout = (uint32_t)jb_int(jb_get(args, "timeout"), 10),
 		.keep = (uint32_t)jb_int(jb_get(args, "keep"), 0)
-	};
+	);
 	int const e = mcp_slot_fetch(slot, &request);
 	if (e) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "fetch: %d", e);

@@ -878,7 +878,7 @@ godbolt_request (struct godbolt   *call,
 	char *u = godbolt_cat(call->url, util_text_view(&call->cfg->url));
 	u = godbolt_cat_path(godbolt_cat(u, rule->path), segment);
 	*godbolt_cat(u, rule->tail) = '\0';
-	call->req = (struct web_request){
+	call->req = web_request(
 		.url = call->url,
 		.body = body,
 		.accept = "application/json",
@@ -886,7 +886,7 @@ godbolt_request (struct godbolt   *call,
 		.timeout = rule->timeout,
 		.keep = kind == GODBOLT_POST_COMPILE && !(call->args.flags & GODBOLT_WITH_OFFSET)
 		      ? 1 : rule->keep
-	};
+	);
 	call->kind_of = kind;
 	call->attempt = 0;
 }
