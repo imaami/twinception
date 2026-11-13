@@ -61,11 +61,14 @@ static struct cstr_view const cxi_actions[] = { CXI_ACTION_LIST(XL_VIEW) };
 struct cxi_out {
 	struct dstr      text;
 	struct cstr_view tree;  /* the tree of the commit with a trailing slash,
-	                           which paths in the output lose */
+	                           the prefix that cxi_out_text() and
+	                           cxi_out_rel() remove from a path */
 	int64_t          e;     /* ENOMEM after an append failed */
 };
 
-/* Returns an empty output whose paths lose the tree @p tree. */
+/* Returns an empty output. The functions that append a path to the output
+ * remove the prefix @p tree from the path.
+ */
 static force_inline struct cxi_out
 cxi_out (struct cstr_view tree)
 {
