@@ -1000,7 +1000,7 @@ godbolt_result (struct godbolt *call)
 		call->wait = GODBOLT_IDLE;
 		return GODBOLT_BAD;
 	}
-	struct web_response r;
+	struct web_response r = web_response();
 	int e = mcp_slot_fetched(call->slot, &r);
 	if (e == EINPROGRESS)
 		return GODBOLT_WAIT;

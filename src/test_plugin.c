@@ -542,7 +542,7 @@ test_plugin_misuse_start (struct mcp_slot    *slot,
 	struct web_request const get = web_request(
 		.url = "http://127.0.0.1/", .max = 1, .timeout = 1
 	);
-	struct web_response response;
+	struct web_response response = web_response();
 	/* args is not valid after the end of the call, so the function passes
 	 * nullptr to mcp_slot_offset(). */
 	int const codes[] = {
@@ -632,7 +632,7 @@ test_plugin_fetch_step (struct mcp_slot *slot)
 {
 	if (!slot)
 		return;
-	struct web_response r;
+	struct web_response r = web_response();
 	int e = mcp_slot_fetched(slot, &r);
 	if (e) {
 		mcp_slot_tellf(slot, TOOL_FAILED, "fetched: %d", e);

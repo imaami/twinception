@@ -6500,7 +6500,7 @@ mcp_slot_attached (struct mcp_slot  *slot,
 		return e;
 	struct mcp_req *req = slot->req;
 	struct mcp_static const *st = req->mcp->st;
-	struct web_response r;
+	struct web_response r = web_response();
 	e = mcp_slot_fetched(slot, &r);
 	if (e)
 		return e;
