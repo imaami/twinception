@@ -5,7 +5,9 @@
  *  finds, the common directory of a
  *  clone and of a worktree, and the result and the end record of
  *  store_run() for each way that git ends. The test replaces
- *  mcp_slot_spawn() and mcp_slot_loop().
+ *  mcp_slot_spawn() and mcp_slot_loop(). One test checks oid() and
+ *  oid_init() (src/oid.h), which make the name of a git object from its
+ *  digits.
  */
 #define _GNU_SOURCE /* memmem() */
 #include <errno.h>
@@ -237,11 +239,61 @@ refused (struct store_commit commit)
 	return e == EINVAL && empty;
 }
 
+/* oid() returns the name of 40 or 64 lowercase hexadecimal digits and
+ * stores 0. The bytes after the digits are zero. For any other text,
+ * oid() stores EINVAL and returns the empty name: every byte of the
+ * object is zero. A later call stores 0 again. oid_init() returns the
+ * same error numbers, and an object that contained a name is all zero
+ * after EINVAL.
+ */
+static void
+test_oid (void)
+{
+	static struct cstr_view const good[] = {
+		CSTR_VIEW_INIT(A),
+		CSTR_VIEW_INIT(A "0123456789abcdef01234567"),
+	};
+	static struct cstr_view const bad[] = {
+		{ nullptr, 0 },
+		CSTR_VIEW_INIT(""),
+		CSTR_VIEW_INIT("55aca1e8682351e4c39a92b040721def3f00540"),
+		CSTR_VIEW_INIT(A "0"),
+		CSTR_VIEW_INIT(A "0123456789abcdef0123456"),
+		CSTR_VIEW_INIT(A "0123456789abcdef012345678"),
+		CSTR_VIEW_INIT("55ACA1E8682351E4C39A92B040721DEF3F005402"),
+		CSTR_VIEW_INIT("55aca1e8682351e4c39a92b040721def3f00540g"),
+		CSTR_VIEW_INIT("55aca1e8682351e4c39a92b040721def3f00540\n"),
+	};
+	static struct oid const none = {};
+	for (size_t i = 0; i < array_size(good); ++i) {
+		struct oid want = {};
+		memcpy(want.hex, good[i].data, good[i].len);
+		int e = -1;
+		struct oid const id = oid(good[i], &e);
+		CHECK(!e && !memcmp(&id, &want, sizeof want) && oid_len(&id) == good[i].len &&
+		      cstr_view_equal(oid_view(&id), good[i]));
+		struct oid same;
+		memset(&same, 'x', sizeof same);
+		CHECK(!oid_init(&same, good[i]) && !memcmp(&same, &want, sizeof want) &&
+		      oid_equal(&same, &id));
+		for (size_t k = 0; k < array_size(bad); ++k) {
+			e = 0;
+			struct oid const got = oid(bad[k], &e);
+			CHECK(e == EINVAL && !memcmp(&got, &none, sizeof none) && !oid_len(&got));
+			CHECK(oid_init(&same, bad[k]) == EINVAL &&
+			      !memcmp(&same, &none, sizeof none));
+			same = oid(good[i], &e);
+			CHECK(!e && oid_equal(&same, &id));
+		}
+	}
+}
+
 static void
 test_input (void)
 {
-	struct oid tip;
-	CHECK(!oid_init(&tip, CSTR_VIEW(A)));
+	int e = 0;
+	struct oid tip = oid(CSTR_VIEW(A), &e);
+	CHECK(!e);
 	struct oid const root = {};
 
 	/* store_quote() writes a path as fast-import reads it, without a
@@ -371,8 +423,9 @@ test_input (void)
 static void
 test_trailer (void)
 {
-	struct oid tip;
-	CHECK(!oid_init(&tip, CSTR_VIEW(A)));
+	int e = 0;
+	struct oid tip = oid(CSTR_VIEW(A), &e);
+	CHECK(!e);
 	struct oid const root = {};
 
 	/* The author line comes before the committer line. The trailer comes
@@ -1266,8 +1319,8 @@ test_git (char const *path)
 	SAME(tree, tree_len - 1, "100644 blob f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f       3\ta");
 
 	/* A blob part adds a blob of the repository, here on another ref. */
-	struct oid blob;
-	CHECK(!oid_init(&blob, CSTR_VIEW("f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f")));
+	struct oid blob = oid(CSTR_VIEW("f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f"), &e);
+	CHECK(!e);
 	CHECK(!store_part_blob(&files, CSTR_VIEW("c/d"), &blob));
 	struct store_commit cited = commit;
 	cited.message = CSTR_VIEW("Cite a");
@@ -1422,6 +1475,7 @@ main (int    argc,
 		fprintf(stderr, "usage: %s PATH\n", argv[0]);
 		return 2;
 	}
+	test_oid();
 	test_input();
 	test_trailer();
 	test_object();

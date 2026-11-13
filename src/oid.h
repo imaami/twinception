@@ -66,6 +66,19 @@ oid_init (struct oid       *oid,
 	return 0;
 }
 
+/** Returns the name @p hex and stores 0 in @p *e. If oid_valid() rejects
+ *  @p hex, the function returns the empty name and stores EINVAL in
+ *  @p *e.
+ */
+static force_inline struct oid
+oid (struct cstr_view  hex,
+     int              *e)
+{
+	struct oid id = {};
+	*e = oid_init(&id, hex);
+	return id;
+}
+
 /** Copies the name at the start of @p text, which the byte @p end must
  *  follow, into @p oid, and drops the name and @p end from @p text.
  *  Returns 0, or EINVAL with @p oid empty and @p text unchanged.

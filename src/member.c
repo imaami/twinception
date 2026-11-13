@@ -309,9 +309,10 @@ member_records_branch (struct member_records  *r,
 	enum member_kind kind;
 	struct cstr_view name = {};
 	enum member_branch branch;
-	struct oid tip;
+	int e = 0;
+	struct oid tip = oid(f[FIELD_TIP], &e);
 	uint64_t time = 0;
-	if (member_ref_parse(f[FIELD_REF], &kind, &name, &branch) || oid_init(&tip, f[FIELD_TIP]) ||
+	if (member_ref_parse(f[FIELD_REF], &kind, &name, &branch) || e ||
 	    util_number(f[FIELD_TIME].data, f[FIELD_TIME].len, UINT64_MAX, &time))
 		return 0;
 	struct member_info const key = member_info(name, kind);
@@ -375,9 +376,10 @@ member_records_parse (struct member_records *r)
 		struct cstr_view const name = cstr_view_slice(f[FIELD_REF], sizeof MEMBERS - 1,
 		                                              SIZE_MAX);
 		size_t const kind = cstr_view_index(member_kinds, MEMBER_KINDS, f[FIELD_KIND]);
-		struct oid record;
+		int e = 0;
+		struct oid record = oid(f[FIELD_TIP], &e);
 		if (!cstr_view_starts(f[FIELD_REF], CSTR_VIEW(MEMBERS)) || !member_name_valid(name) ||
-		    kind == MEMBER_KINDS || oid_init(&record, f[FIELD_TIP]))
+		    kind == MEMBER_KINDS || e)
 			continue;
 		if (r->all.n != records ||
 		    (records && cstr_view_compare(r->all.items[records - 1].name, name) >= 0))

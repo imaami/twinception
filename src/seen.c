@@ -125,13 +125,12 @@ seen_read_create_json (struct json_object const *obj,
 	uint64_t first;
 	uint64_t last;
 	uint64_t total;
-	struct oid commit;
+	struct oid commit = oid(jb_view(jb_get(obj, "commit")), e);
 	if (jb_uint_checked(jb_get(obj, "at"), SIZE_MAX, &at) ||
 	    jb_uint_checked(jb_get(obj, "len"), SIZE_MAX, &len) ||
 	    jb_uint_checked(jb_get(obj, "first"), UINT32_MAX, &first) ||
 	    jb_uint_checked(jb_get(obj, "last"), UINT32_MAX, &last) ||
-	    jb_uint_checked(jb_get(obj, "total"), UINT64_MAX, &total) ||
-	    oid_init(&commit, jb_view(jb_get(obj, "commit")))) {
+	    jb_uint_checked(jb_get(obj, "total"), UINT64_MAX, &total) || *e) {
 		*e = EINVAL;
 		return nullptr;
 	}
