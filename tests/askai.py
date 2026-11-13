@@ -10661,6 +10661,90 @@ calls_kept (int n)
 })
 """
 
+# The source files for the enums of describe: an enum of each kind that
+# describe prints in a way of its own.
+CODE_ENUMS_H = """#include <stdint.h>
+
+/* The kinds of one thing. */
+enum enums_kind {
+\tENUMS_FIRST,
+\tENUMS_FIVE = 5,
+\tENUMS_SIX,
+};
+
+enum enums_signed { ENUMS_LOW = -3, ENUMS_NEXT };
+
+enum enums_wide : uint64_t {
+\tENUMS_ONE = 1,
+\tENUMS_TOP = UINT64_MAX,
+};
+
+enum enums_least : int64_t { ENUMS_LEAST = INT64_MIN };
+
+enum enums_byte : uint8_t { ENUMS_ZERO, ENUMS_BYTE = 255 };
+
+enum enums_flag : uint32_t {
+\tENUMS_READ  = 1U << 0,
+\tENUMS_WRITE = 1U << 4,
+\tENUMS_HIGH  = 1U << 31,
+\tENUMS_MASK  = ENUMS_READ | ENUMS_WRITE | ENUMS_HIGH,
+};
+
+enum {
+\tENUMS_ANON = 7,
+\tENUMS_ANON_NEXT,
+};
+
+typedef enum { ENUMS_TYPED } enums_typed;
+
+#define ENUMS_COLOR_LIST(X) \\
+        X(RED,   "red")     \\
+        X(GREEN, "green")
+#define ENUMS_ALL_LIST(X) ENUMS_COLOR_LIST(X) \\
+        X(BLUE,  "blue")
+#define ENUMS_PAIR(a, b) a, b
+#define ENUMS_FIXED ENUMS_FORTY = 40,
+
+enum enums_color : uint8_t {
+\tENUMS_NONE,
+#define ENUMS_ENUM(id, ...) ENUMS_##id,
+\tENUMS_ALL_LIST(ENUMS_ENUM)
+#undef ENUMS_ENUM
+\tENUMS_FIXED ENUMS_PAIR(ENUMS_LEFT, ENUMS_RIGHT),
+\tENUMS_COLORS
+};
+
+enum enums_huge : unsigned __int128 { ENUMS_HUGE = 1 };
+
+enum enums_inc {
+\tENUMS_INC_NONE,
+#define ENUMS_INC(id) ENUMS_INC_##id,
+#include "enums.def"
+#undef ENUMS_INC
+\tENUMS_INC_END
+};
+
+enum {
+#define ENUMS_ENUM(id, ...) ENUMS_ANY_##id,
+\tENUMS_COLOR_LIST(ENUMS_ENUM)
+#undef ENUMS_ENUM
+};
+"""
+
+CODE_ENUMS_DEF = """ENUMS_INC(ONE)
+ENUMS_INC(TWO)
+"""
+
+CODE_ENUMS_C = """#include "enums.h"
+
+int
+enums_local (void)
+{
+\tenum { ENUMS_INNER = 2, ENUMS_INNER_NEXT };
+\treturn ENUMS_INNER + ENUMS_FIRST;
+}
+"""
+
 
 def check_code(binary, up):
     """The code tool with --code REPO=FILE. With a fake helper next to a copy
@@ -10705,8 +10789,12 @@ def check_code(binary, up):
         write("src/lay.c", CODE_LAY_C)
         write("src/calls.h", CODE_CALLS_H)
         write("src/calls.c", CODE_CALLS_C)
+        write("src/enums.h", CODE_ENUMS_H)
+        write("src/enums.def", CODE_ENUMS_DEF)
+        write("src/enums.c", CODE_ENUMS_C)
         write("src/big.c", "struct big {\n" + "".join(f"\tint m{i};\n" for i in range(20000))
-              + "};\nint big_size = sizeof (struct big);\n")
+              + "};\nint big_size = sizeof (struct big);\n"
+              + "enum many {\n" + "".join(f"\tMANY_{i},\n" for i in range(2003)) + "};\n")
         write("src/leak.c", f'#include "{d}/outside/secret.h"\n')
         write("src/far.c", '#include "sub/../sub/./far.h"\nint far_use = FAR_ONE;\n')
         write("src/sub/far.h", "#define FAR_ONE 1\nint far_value;\n")
@@ -10741,7 +10829,8 @@ def check_code(binary, up):
             json.dump([{"directory": f"{d}/build", "file": f"{repo}/src/{c}",
                         "arguments": ["cc", f"-I{repo}", f"-I{d}", "-c", f"{repo}/src/{c}"]}
                        for c in ("a.c", "b.c", "pragma.c", "deep.c", "lay.c", "calls.c",
-                                 "big.c", "leak.c", "far.c", "wt.c", "warn.c", "arg.c")], f)
+                                 "enums.c", "big.c", "leak.c", "far.c", "wt.c", "warn.c",
+                                 "arg.c")], f)
 
         def call(ai, error=False, conn=None, **arguments):
             status, _, body = ai.rpc("tools/call", {"name": "code", "arguments": arguments},
@@ -11086,9 +11175,9 @@ def check_code(binary, up):
 def check_code_describe(binary, up, call, head, d, cdb):
     """describe with the real askai-code: record layouts at the offsets that
     gcc uses, functions with their calls, macros with their values at a use,
-    enumerators, locals, names of several symbols or of none, the limit on
-    rows, and a file outside the repository that only --code-unconfined
-    can read."""
+    enums with the values that gcc uses, enumerators, locals, names of
+    several symbols or of none, the limit on rows, and a file outside the
+    repository that only --code-unconfined can read."""
     with Askai(binary, "-u", up.url(), "--git", f"{d}/proj", "--code", f"proj={cdb}") as ai:
         def describe(error=False, **arguments):
             return call(ai, error=error, repo="proj", action="describe", path="src/lay.c",
@@ -11289,6 +11378,127 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "src/calls.c lines 69 to 70 of 73:", "69\tint", "70\tcalls_kept (int n)", ""], calls
         assert describe(name="LAY_B").split("\n")[1:3] == [
             "enumerator LAY_B of enum lay_kind: 5", "defined src/lay.h:41"]
+        # An enum: the integer type, the number of enumerators, and a row
+        # for each enumerator with the line and the value. The value of an
+        # enumerator without an initializer is the value before plus 1. A
+        # value is signed or unsigned as the integer type of the enum is,
+        # also a value of 64 bits, and a value of more bits is not printed.
+        # The row of an enumerator that is written in an included file
+        # starts with the path and the line of that file.
+        def enums(error=False, **arguments):
+            return call(ai, error=error, repo="proj", action="describe", path="src/enums.c",
+                        **arguments)
+        where = f"[Repository proj, file src/enums.c at commit {head}. "
+        lines = CODE_ENUMS_H.split("\n")
+        total = len(lines) - 1
+
+        def numbered(first, last):
+            return "".join(f"{n}\t{lines[n - 1]}\n" for n in range(first, last + 1))
+        for name, summary, rows, shown in (
+                ("enums_kind", "unsigned int, 3 enumerators\ndefined src/enums.h:4",
+                 ((5, "ENUMS_FIRST = 0"), (6, "ENUMS_FIVE = 5"), (7, "ENUMS_SIX = 6")), (3, 8)),
+                ("enums_signed", "int, 2 enumerators\ndefined src/enums.h:10",
+                 ((10, "ENUMS_LOW = -3"), (10, "ENUMS_NEXT = -2")), (10, 10)),
+                ("enums_wide", "uint64_t, 2 enumerators\ndefined src/enums.h:12",
+                 ((13, "ENUMS_ONE = 1"), (14, "ENUMS_TOP = 18446744073709551615")), (12, 15)),
+                ("enums_least", "int64_t, 1 enumerator\ndefined src/enums.h:17",
+                 ((17, "ENUMS_LEAST = -9223372036854775808"),), (17, 17)),
+                ("enums_byte", "uint8_t, 2 enumerators\ndefined src/enums.h:19",
+                 ((19, "ENUMS_ZERO = 0"), (19, "ENUMS_BYTE = 255")), (19, 19)),
+                ("enums_flag", "uint32_t, 4 enumerators\ndefined src/enums.h:21",
+                 ((22, "ENUMS_READ = 1"), (23, "ENUMS_WRITE = 16"),
+                  (24, "ENUMS_HIGH = 2147483648"), (25, "ENUMS_MASK = 2147483665")), (21, 26)),
+                ("enums_color", "uint8_t, 8 enumerators\ndefined src/enums.h:43",
+                 ((44, "ENUMS_NONE = 0"), (46, "ENUMS_RED = 1"), (46, "ENUMS_GREEN = 2"),
+                  (46, "ENUMS_BLUE = 3"), (48, "ENUMS_FORTY = 40"), (48, "ENUMS_LEFT = 41"),
+                  (48, "ENUMS_RIGHT = 42"), (49, "ENUMS_COLORS = 43")), (43, 50)),
+                ("enums_huge", "unsigned __int128, 1 enumerator\ndefined src/enums.h:52",
+                 ((52, "ENUMS_HUGE = a value of more than 64 bits"),), (52, 52)),
+                ("enums_inc", "unsigned int, 4 enumerators\ndefined src/enums.h:54",
+                 ((55, "ENUMS_INC_NONE = 0"),
+                  "src/enums.def:1  ENUMS_INC_ONE = 1",
+                  "src/enums.def:2  ENUMS_INC_TWO = 2",
+                  (59, "ENUMS_INC_END = 3")), (54, 60))):
+            text = enums(name=f"enum {name}")
+            assert text == (
+                f"{where}enum {name} in the translation unit.]\nenum {name}: {summary}\n"
+                "   line  enumerator = value\n" +
+                "".join(f"{row}\n" if isinstance(row, str) else f"{row[0]:7}  {row[1]}\n"
+                        for row in rows) +
+                (f"src/enums.h line {shown[0]} of {total}:\n" if shown[0] == shown[1] else
+                 f"src/enums.h lines {shown[0]} to {shown[1]} of {total}:\n") +
+                numbered(*shown)), text
+        # The enumerators are of the same values in a program that gcc
+        # compiles.
+        probe = f"{d}/enums.c"
+        with open(probe, "w") as f:
+            f.write('#include <stdio.h>\n#include "enums.h"\n'
+                    "int main(void) { printf(\"%d %d %llu %lld %d %u %u %d %d %d %d %d %d\", "
+                    "ENUMS_SIX, ENUMS_NEXT, (unsigned long long)ENUMS_TOP, "
+                    "(long long)ENUMS_LEAST, ENUMS_BYTE, ENUMS_HIGH, ENUMS_MASK, "
+                    "ENUMS_ANON_NEXT, ENUMS_BLUE, ENUMS_RIGHT, ENUMS_COLORS, "
+                    "ENUMS_INC_END, ENUMS_ANY_GREEN); }\n")
+        subprocess.run(["gcc", "-std=gnu23", "-I", f"{d}/proj/src", "-o", f"{d}/enums", probe],
+                       check=True)
+        gcc = subprocess.run([f"{d}/enums"], capture_output=True, text=True,
+                             check=True).stdout.split()
+        assert gcc == ["6", "-2", "18446744073709551615", "-9223372036854775808", "255",
+                       "2147483648", "2147483665", "8", "3", "42", "43", "3", "1"], gcc
+        # An enum without a name is described through one of the
+        # enumerators of the enum: the enumerator and the place of the
+        # enumerator, then the enum in the spelling of clang and the row of
+        # every enumerator. So is an enum whose only name is the name of a
+        # typedef, and the typedef describes the same enum. The enum is
+        # spelled in one way on both lines. An enum in a function is found
+        # with the line argument. An enumerator of an enum with a name is
+        # described alone.
+        text = enums(name="ENUMS_ANON_NEXT")
+        assert text == (
+            f"{where}enumerator ENUMS_ANON_NEXT in the translation unit.]\n"
+            "enumerator ENUMS_ANON_NEXT of enum (unnamed at src/enums.h:28): 8\n"
+            "defined src/enums.h:30\n"
+            "enum (unnamed at src/enums.h:28): unsigned int, 2 enumerators\n"
+            "   line  enumerator = value\n"
+            "     29  ENUMS_ANON = 7\n"
+            "     30  ENUMS_ANON_NEXT = 8\n"
+            f"src/enums.h line 30 of {total}:\n" + numbered(30, 30)), text
+        text = enums(name="ENUMS_TYPED")
+        assert text == (
+            f"{where}enumerator ENUMS_TYPED in the translation unit.]\n"
+            "enumerator ENUMS_TYPED of enum enums_typed: 0\n"
+            "defined src/enums.h:33\n"
+            "enum enums_typed: unsigned int, 1 enumerator\n"
+            "   line  enumerator = value\n"
+            "     33  ENUMS_TYPED = 0\n"
+            f"src/enums.h line 33 of {total}:\n" + numbered(33, 33)), text
+        text = enums(name="enums_typed")
+        assert text == (
+            f"{where}typedef enums_typed in the translation unit.]\n"
+            "typedef enums_typed: enum enums_typed\n"
+            "enum enums_typed: unsigned int, 1 enumerator\n"
+            "defined src/enums.h:33\n"
+            "   line  enumerator = value\n"
+            "     33  ENUMS_TYPED = 0\n"
+            f"src/enums.h line 33 of {total}:\n" + numbered(33, 33)), text
+        text = enums(name="ENUMS_INNER", line=6)
+        assert text == (
+            f"{where}enumerator ENUMS_INNER in the translation unit.]\n"
+            "enumerator ENUMS_INNER of enum (unnamed at src/enums.c:6): 2\n"
+            "defined src/enums.c:6\n"
+            "enum (unnamed at src/enums.c:6): unsigned int, 2 enumerators\n"
+            "   line  enumerator = value\n"
+            "      6  ENUMS_INNER = 2\n"
+            "      6  ENUMS_INNER_NEXT = 3\n"
+            "src/enums.c line 6 of 8:\n"
+            "6\t\tenum { ENUMS_INNER = 2, ENUMS_INNER_NEXT };\n"), text
+        text = enums(name="ENUMS_FIVE")
+        assert text == (
+            f"{where}enumerator ENUMS_FIVE in the translation unit.]\n"
+            "enumerator ENUMS_FIVE of enum enums_kind: 5\n"
+            "defined src/enums.h:6\n"
+            f"src/enums.h line 6 of {total}:\n" + numbered(6, 6)), text
+        assert enums(error=True, name="enums_kind.x") == \
+            "No struct or union type named enums_kind in the translation unit of src/enums.c."
         # A macro, and its value at the use on a given line. A local
         # variable by its line.
         assert re.fullmatch(
@@ -11368,6 +11578,17 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "as child.flags.]", \
             rows[-3:]
         assert "struct big: 80000 bytes, alignment 4, at least 0 bytes of padding" in text
+        # The rows of an enum of 2,003 enumerators are cut at 2,000 rows.
+        # The first line contains the number of all enumerators.
+        text = call(ai, repo="proj", action="describe", path="src/big.c", name="enum many")
+        rows = text.split("enumerator = value\n")[1].split("\nsrc/big.c lines")[0].split("\n")
+        assert text.split("\n")[1] == "enum many: unsigned int, 2003 enumerators" and \
+            len(rows) == 2001 and rows[0] == "  20005  MANY_0 = 0" and \
+            rows[1999] == "  22004  MANY_1999 = 1999" and rows[2000] == \
+            "[3 more enumerators. To describe one enumerator, give the name of the " \
+            "enumerator.]", (text.split("\n")[1], rows[:1], rows[-3:])
+        assert call(ai, repo="proj", action="describe", path="src/big.c",
+                    name="MANY_2002").split("\n")[1] == "enumerator MANY_2002 of enum many: 2002"
         # Places and lines are named by the path of the file, without the .
         # and .. of the #include.
         text = call(ai, repo="proj", action="describe", path="src/far.c", name="far_value")

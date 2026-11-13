@@ -615,7 +615,8 @@ macro, with `struct`, `union` or `enum` before it to select the type, or a
 member as `struct.member`. The output contains the kind and the type, the
 places of the declaration and the definition, the calls of a function
 (below), the members of a struct or union with their offsets, sizes
-and padding, including the members of anonymous members, and at most 40
+and padding, including the members of anonymous members, the enumerators
+of an enum (below), and at most 40
 numbered lines of the declaration with its comment, a function's without
 its body. A finding can cite these lines (below). With `line`, `describe`
 uses the name on that line of `path`, such as a local variable or a macro
@@ -647,6 +648,51 @@ it matches none, the call fails with the names in the repository that
 contain it. The layout of a record is cut at 2,000 rows, and the padding of
 a cut layout counts only those rows. `describe` of `struct.member` prints
 any one member.
+
+`describe` of an enum prints the integer type of the enum, the number of
+enumerators, and one row per enumerator in the order of the declaration:
+the line, the name and the value. A value is signed or unsigned as the
+integer type is. This is `describe` of `enum child_state` in `src/child.c`:
+
+```text
+enum child_state: uint32_t, 6 enumerators
+defined src/child.h:39
+   line  enumerator = value
+     40  CHILD_CUT = 1
+     42  CHILD_LATE = 2
+     44  CHILD_OUT = 4
+     45  CHILD_EXIT = 8
+     46  CHILD_DUE = 16
+     47  CHILD_EVENTS = 28
+```
+
+The rows are cut at 2,000, and the line of the enum contains the number of
+all enumerators. `describe` of a typedef of an enum prints the same rows.
+`describe` of an enumerator prints the enum and the value of the
+enumerator. An enum without a name is described through any one of the
+enumerators of the enum: after the enumerator and the place of the
+enumerator, the output contains the enum in the spelling of clang, the
+number of enumerators and the rows of the enum. The spelling of an enum
+whose only name is the name of a typedef is `enum` and that name. This is
+`describe` of `CXI_DEPTH` in `src/cxi.c`:
+
+```text
+enumerator CXI_DEPTH of enum (unnamed at src/cxi.c:37): 16
+defined src/cxi.c:41
+enum (unnamed at src/cxi.c:37): unsigned int, 9 enumerators
+   line  enumerator = value
+     38  CXI_FILES = 100000
+     39  CXI_LIST = 2097152
+     40  CXI_CDB = 67108864
+     41  CXI_DEPTH = 16
+...
+```
+
+A value is printed in decimal only. The numbered lines of the declaration
+show an initializer as written, such as `1u << 4`. The row of an enumerator
+that is written in another file than the enum, such as an included file of
+list rows, starts with the path and the line in that file:
+`src/list.def:2  LIST_TWO = 2`.
 
 `describe` of a function lists the calls of the function, one row per
 callee: the place of the first call, the lines of the later calls, the

@@ -40,7 +40,8 @@ enum {
 	CXI_CDB   = 64 << 20, /* the largest compile_commands.json */
 	CXI_DEPTH = 16,       /* the deepest nesting of its JSON */
 	CXI_LINES = 40,       /* the most lines of a declaration in describe */
-	CXI_ROWS  = 2000,     /* the most member rows of a layout */
+	CXI_ROWS  = 2000,     /* the most member rows of a layout, and the most
+	                         enumerator rows of an enum */
 	CXI_BITS  = 48,       /* the size of the text of an offset or a size */
 	CXI_NAME  = 256,      /* the longest part of the name of describe */
 	CXI_BYTES = 1 << 30,  /* the largest total size of the files of a commit */
@@ -970,15 +971,14 @@ cxi_lookup_line (struct cxi *x,
 	return EINVAL;
 }
 
-/* Returns the complete struct or union of the type of @p c, or null. */
+/* Returns the complete struct, union or enum of the type of @p c, or null. */
 static CXCursor
-cxi_record_of (CXCursor c)
+cxi_tag_of (CXCursor c)
 {
 	CXType const type = clang_getCanonicalType(clang_getCursorType(c));
 	CXCursor const decl = clang_getCursorDefinition(clang_getTypeDeclaration(type));
-	enum CXCursorKind const k = clang_getCursorKind(decl);
-	return (k == CXCursor_StructDecl || k == CXCursor_UnionDecl) &&
-	       clang_Type_getSizeOf(type) >= 0 ? decl : clang_getNullCursor();
+	return cxi_tag(clang_getCursorKind(decl)) && clang_Type_getSizeOf(type) >= 0
+	       ? decl : clang_getNullCursor();
 }
 
 struct cxi_seek {
@@ -1010,8 +1010,10 @@ cxi_lookup_member (struct cxi *x,
 	struct cxi_find find = cxi_find(&x->out, cstr_view(name), 0);
 	clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_match, &find);
 	CXCursor record = clang_getNullCursor();
-	for (size_t i = 0; clang_Cursor_isNull(record) && i < find.list.n; ++i)
-		record = cxi_record_of(find.list.items[i]);
+	for (size_t i = 0; clang_Cursor_isNull(record) && i < find.list.n; ++i) {
+		CXCursor const tag = cxi_tag_of(find.list.items[i]);
+		record = clang_getCursorKind(tag) == CXCursor_EnumDecl ? record : tag;
+	}
 	free(find.list.items);
 	if (clang_Cursor_isNull(record)) {
 		cxi_out_printf(&x->out, "No struct or union type named %s in the translation "
@@ -1118,8 +1120,103 @@ cxi_member (struct cxi *x,
 	               clang_Type_getAlignOf(type));
 }
 
-/* Appends the kind, name and type of @p c, the value of an enumerator, and
- * the size of a record, whose layout goes to @p rows.
+/* Appends the value of the enumerator @p c, signed or unsigned as @p type
+ * is, the canonical integer type of the enum.
+ */
+static void
+cxi_out_enum_value (struct cxi_out *out,
+                    CXCursor        c,
+                    CXType          type)
+{
+	if (clang_Type_getSizeOf(type) > 8)
+		cxi_out_printf(out, "a value of more than 64 bits");
+	else if (type.kind >= CXType_Bool && type.kind <= CXType_ULongLong)
+		cxi_out_printf(out, "%llu", clang_getEnumConstantDeclUnsignedValue(c));
+	else
+		cxi_out_printf(out, "%lld", clang_getEnumConstantDeclValue(c));
+}
+
+/* Appends the enum @p c in the spelling of clang, with the word enum
+ * before a spelling without the word. clang spells an enum without a tag
+ * as "enum (unnamed at PLACE)", or as the name of the typedef of the enum.
+ */
+static void
+cxi_out_enum_name (struct cxi_out *out,
+                   CXCursor        c)
+{
+	CXString spelling = clang_getTypeSpelling(clang_getCursorType(c));
+	if (!cstr_view_starts(cstr_view(clang_getCString(spelling)), CSTR_VIEW("enum ")))
+		cxi_out_printf(out, "enum ");
+	cxi_out_clang(out, spelling);
+}
+
+/* Appends the place of the enumerator @p e in the rows of an enum that is
+ * defined in @p file: @p before and the line in @p width columns, or the
+ * path and the line if the enumerator is written in another file.
+ */
+static void
+cxi_out_enum_place (struct cxi_out *out,
+                    CXCursor        e,
+                    CXFile          file,
+                    char const     *before,
+                    int             width)
+{
+	CXSourceLocation const at = clang_getCursorLocation(e);
+	CXFile in;
+	unsigned line;
+	clang_getFileLocation(at, &in, &line, nullptr, nullptr);
+	if (clang_File_isEqual(in, file))
+		cxi_out_printf(out, "%s%*u", before, width, line);
+	else
+		cxi_out_place(out, "", at, "");
+}
+
+/* Appends the integer type and the number of enumerators of the enum @p c
+ * to @p head, and a row for each enumerator, at most CXI_ROWS, to @p rows.
+ */
+static void
+cxi_enum (struct cxi     *x,
+          struct cxi_out *head,
+          struct cxi_out *rows,
+          CXCursor        c)
+{
+	CXType const type = clang_getEnumDeclIntegerType(c);
+	CXType const canonical = clang_getCanonicalType(type);
+	struct cxi_list kids = cxi_list(&x->out);
+	CXFile file;
+	size_t n = 0;
+	clang_getFileLocation(clang_getCursorLocation(c), &file, nullptr, nullptr, nullptr);
+	clang_visitChildren(c, cxi_child, &kids);
+	/* A child is also an attribute or the name of the integer type. */
+	for (size_t i = 0; i < kids.n; ++i) {
+		if (clang_getCursorKind(kids.items[i]) == CXCursor_EnumConstantDecl)
+			kids.items[n++] = kids.items[i];
+	}
+	size_t const shown = n < CXI_ROWS ? n : CXI_ROWS;
+	cxi_out_printf(head, ": ");
+	cxi_out_clang(head, clang_getTypeSpelling(type));
+	cxi_out_printf(head, ", %zu enumerator%s\n", n, util_s(n));
+	cxi_out_printf(rows, "   line  enumerator = value\n");
+	for (size_t i = 0; i < shown; ++i) {
+		CXCursor const e = kids.items[i];
+		cxi_out_enum_place(rows, e, file, "", 7);
+		cxi_out_printf(rows, "  ");
+		cxi_out_clang(rows, clang_getCursorSpelling(e));
+		cxi_out_printf(rows, " = ");
+		cxi_out_enum_value(rows, e, canonical);
+		cxi_out_printf(rows, "\n");
+	}
+	if (n > shown)
+		cxi_out_printf(rows, "[%zu more enumerator%s. To describe one enumerator, give "
+		               "the name of the enumerator.]\n", n - shown, util_s(n - shown));
+	free(kids.items);
+}
+
+/* Appends the kind, name and type of @p c and the value of an enumerator.
+ * For a record, an enum and a typedef of one, appends the size of the
+ * record or the number of enumerators, and the layout or the enumerators
+ * to @p rows. For an enumerator of an enum without a name, appends the
+ * enum, the number of enumerators and the enumerators to @p rows.
  */
 static void
 cxi_summary (struct cxi     *x,
@@ -1138,34 +1235,39 @@ cxi_summary (struct cxi     *x,
 		cxi_out_clang(&x->out, clang_getCursorSpelling(parent));
 	}
 	if (k == CXCursor_EnumConstantDecl) {
-		CXType const t = clang_getCanonicalType(clang_getEnumDeclIntegerType(parent));
-		cxi_out_printf(&x->out, " of enum ");
-		cxi_out_name(&x->out, parent);
-		if (clang_Type_getSizeOf(t) > 8)
-			cxi_out_printf(&x->out, ": a value of more than 64 bits");
-		else if (t.kind >= CXType_Bool && t.kind <= CXType_ULongLong)
-			cxi_out_printf(&x->out, ": %llu", clang_getEnumConstantDeclUnsignedValue(c));
-		else
-			cxi_out_printf(&x->out, ": %lld", clang_getEnumConstantDeclValue(c));
+		cxi_out_printf(&x->out, " of ");
+		cxi_out_enum_name(&x->out, parent);
+		cxi_out_printf(&x->out, ": ");
+		cxi_out_enum_value(&x->out, c, clang_getCanonicalType(
+			clang_getEnumDeclIntegerType(parent)));
 	}
 	CXType const type = alias ? clang_getTypedefDeclUnderlyingType(c)
 	                  : k == CXCursor_EnumDecl ? clang_getEnumDeclIntegerType(c)
 	                  : clang_getCursorType(c);
+	/* tag is c for the definition of a struct, union or enum. In C, the
+	 * type of an enumerator is int if the value fits. */
+	CXCursor const tag = k == CXCursor_EnumConstantDecl ? parent : cxi_tag_of(c);
+	bool const is_tag = clang_equalCursors(tag, c);
+	bool const listed = k == CXCursor_EnumConstantDecl && cxi_unnamed(tag);
 	if (k != CXCursor_EnumConstantDecl && k != CXCursor_MacroDefinition &&
-	    k != CXCursor_StructDecl && k != CXCursor_UnionDecl) {
+	    k != CXCursor_StructDecl && k != CXCursor_UnionDecl && !is_tag) {
 		cxi_out_printf(&x->out, ": ");
 		cxi_out_clang(&x->out, clang_getTypeSpelling(type));
 	}
-	CXCursor const record = cxi_record_of(c);
-	if (clang_Cursor_isNull(record) || (!alias && !clang_equalCursors(record, c))) {
+	if (clang_Cursor_isNull(tag) || !(alias || is_tag || listed)) {
 		cxi_out_printf(&x->out, "\n");
 		return;
 	}
-	if (alias) {
+	if (!is_tag)
 		cxi_out_printf(&x->out, "\n");
+	if (alias)
 		cxi_out_clang(&x->out, clang_getTypeSpelling(type));
-	}
-	cxi_layout(x, rows, clang_getCursorType(record));
+	if (listed)
+		cxi_out_enum_name(rows, tag);
+	if (clang_getCursorKind(tag) == CXCursor_EnumDecl)
+		cxi_enum(x, listed ? rows : &x->out, rows, tag);
+	else
+		cxi_layout(x, rows, clang_getCursorType(tag));
 }
 
 /* How the program evaluates an expression of a function. The state of an
