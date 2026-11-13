@@ -2200,7 +2200,7 @@ godbolt_section_end (struct godbolt *call)
 		call->rec.marks |= GODBOLT_REC_CUT;
 	}
 	call->rec.marks &= ~(GODBOLT_REC_MARKED | GODBOLT_REC_OPENED);
-	call->rec.at = (struct tool_cursor){ .section = call->rec.at.section + 1 };
+	call->rec.at = tool_cursor(call->rec.at.section + 1);
 	return call->e;
 }
 

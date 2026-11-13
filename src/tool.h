@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "compat.h"
 #include "flag.h"
 
 struct json_object;
@@ -135,6 +136,15 @@ struct tool_cursor {
 	size_t byte;     /**< the bytes of that item that are written */
 	size_t section;  /**< the section of the text */
 };
+
+/** Returns the position at the start of the section @p section of a text.
+ *  No item and no byte of the section is written at that position.
+ */
+static const_inline struct tool_cursor
+tool_cursor (size_t section)
+{
+	return (struct tool_cursor){ .section = section };
+}
 
 struct tool_kind {
 	tool_definition_fn *definition;
