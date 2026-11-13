@@ -156,9 +156,11 @@ cxi_out_rel (struct cxi_out *out,
              char const     *s,
              struct dstr    *norm)
 {
-	if (*s == '/' && cdb_norm(norm, cstr_view(nullptr), cstr_view(s)))
+	struct cstr_view const path = cstr_view(s);
+	if (*s == '/' && cdb_norm(norm, cstr_view(nullptr), path))
 		out->e = ENOMEM;
-	struct cstr_view const p = dstr_len(norm) ? cstr_view_dstr(norm) : cstr_view(s);
+	struct cstr_view const full = cstr_view_dstr(norm);
+	struct cstr_view const p = full.len ? full : path;
 	return out->tree.len && cstr_view_starts(p, out->tree)
 	       ? cstr_view_slice(p, out->tree.len, SIZE_MAX) : p;
 }
