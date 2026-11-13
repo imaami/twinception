@@ -302,11 +302,7 @@ static void
 askai_keep_walk (struct askai_keep *keep,
                  struct loop       *loop)
 {
-	walker.job = (struct blocker_job){
-		.done.fn = askai_walk_done,
-		.work = askai_walk,
-		.loop = loop
-	};
+	walker.job = blocker_job(askai_walk_done, askai_walk, loop);
 	walker.keep = keep;
 	if (!blocker_submit(keep->blockers, &walker.job))
 		return;
@@ -502,11 +498,7 @@ askai_home_reload (void        *ctx,
 		r->flags |= RELOAD_AGAIN;
 		return;
 	}
-	r->job = (struct blocker_job){
-		.done.fn = askai_reload_done,
-		.work = askai_reload_work,
-		.loop = loop
-	};
+	r->job = blocker_job(askai_reload_done, askai_reload_work, loop);
 	r->flags = blocker_submit(app->keep.blockers, &r->job) ? 0 : RELOAD_BUSY;
 	if (!r->flags)
 		LOG(LOG_WARN, "configuration not reloaded: the blockers are busy");

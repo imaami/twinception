@@ -97,9 +97,7 @@ cli_io_submit (struct cli_io     *io,
 	if (io->pending == CLI_IO_JOBS)
 		return EAGAIN;
 	job->io = io;
-	job->blocker = (struct blocker_job){
-		.done = {.fn = cli_io_complete}, .work = cli_io_work, .loop = io->ui
-	};
+	job->blocker = blocker_job(cli_io_complete, cli_io_work, io->ui);
 	int e = blocker_submit(io->blocker, &job->blocker);
 	if (!e)
 		++io->pending;

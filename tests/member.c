@@ -1050,9 +1050,7 @@ test_hold_all (struct blocker     *blockers,
                struct blocker_job  jobs[BLOCKER_THREADS])
 {
 	for (size_t i = 0; i < BLOCKER_THREADS; ++i) {
-		jobs[i] = (struct blocker_job){
-			.done.fn = test_held, .work = test_hold, .loop = &test_loop
-		};
+		jobs[i] = blocker_job(test_held, test_hold, &test_loop);
 		CHECK(!blocker_submit(blockers, &jobs[i]));
 	}
 }
@@ -1103,7 +1101,7 @@ test_blocked (struct store const           *store,
 	CHECK(blockers && !e && !blocker_start(blockers));
 	if (!blockers)
 		return;
-	struct blocker_job hold[BLOCKER_THREADS];
+	struct blocker_job hold[BLOCKER_THREADS] = {};
 	test_git_ended(children);
 
 	/* A table that goes away while the job name waits frees the lookup

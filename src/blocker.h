@@ -19,6 +19,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
+#include "compat.h"
 #include "list.h"
 #include "loop.h"
 
@@ -35,6 +36,23 @@ struct blocker_job {
 	                          the value that work stored: an error number,
 	                          widened over the padding */
 };
+
+/** Returns a job for blocker_submit(). A blocker runs @p work. After that
+ *  the message of the job is posted to @p loop, and the loop calls
+ *  @p done.
+ */
+static force_inline struct blocker_job
+blocker_job (void       (*done) (struct loop *loop,
+                                 struct msg  *msg),
+             void       (*work) (struct blocker_job *job),
+             struct loop *loop)
+{
+	return (struct blocker_job){
+		.done.fn = done,
+		.work = work,
+		.loop = loop
+	};
+}
 
 /** Counts the blockers keep, for any thread to read. */
 struct blocker_metrics {
