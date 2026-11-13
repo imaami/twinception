@@ -797,7 +797,7 @@ notes_tool_unchanged (struct mcp_slot         *slot,
                       struct oid const        *tip)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	struct span const data = { buf_peek(&call->file).ptr + call->part.at, call->part.len };
+	struct span const data = span(buf_peek(&call->file).ptr + call->part.at, call->part.len);
 	bool same = false;
 	int e = notes_file_same(note, data, &same);
 	if (e)
@@ -904,7 +904,7 @@ notes_tool_stated (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct span const out = child_ok(call->child) ? buf_peek(&call->child->out)
-	                                              : (struct span){};
+	                                              : span(nullptr, 0);
 	struct cstr_view rest = { (char const *)out.ptr, out.len }, added, removed;
 	uint64_t a, r;
 	int e = cstr_view_cut(&rest, '\t', &added) && cstr_view_cut(&rest, '\t', &removed) &&
@@ -1049,7 +1049,7 @@ notes_tool_history (struct mcp_slot *slot,
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct dstr *d = call->text;
-	*newest = (struct span){};
+	*newest = span(nullptr, 0);
 	if (cut && cstr_view_cat(CSTR_VIEW("[The oldest changes are not in the list.]\n"),
 	                         call->text))
 		return ENOMEM;
@@ -1122,7 +1122,7 @@ notes_tool_got_list (struct mcp_slot *slot)
 	bool const files = (call->fetch & FETCH_KIND) == FETCH_FILES;
 	bool const cut = c->end.flags & CHILD_CUT;
 	struct span const out = buf_peek(&c->out);
-	struct span newest;
+	struct span newest = {};
 	int e = notes_tool_head(call);
 	if (!e && !dstr_cat(call->text, files ? "current notes (bytes, blob):\n\n"
 	                                      : "changes, oldest first (lines +added -removed, "
@@ -2046,7 +2046,7 @@ notes_tool_got_append (struct mcp_slot *slot,
                        struct span      old)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	struct span const add = { buf_peek(&call->file).ptr + call->part.at, call->part.len };
+	struct span const add = span(buf_peek(&call->file).ptr + call->part.at, call->part.len);
 	size_t const lf = old.len && old.ptr[old.len - 1] != '\n';
 	if (old.len + lf + add.len > TOOL_TEXT_MAX) {
 		mcp_slot_tell(slot, CSTR_VIEW("The note would be larger than the 4 MiB limit. "

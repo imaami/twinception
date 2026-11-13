@@ -467,7 +467,7 @@ member_records_take (struct member_records  *r,
 	static char const records[] = "the member records";
 	struct member_records got = { .out = *out };
 	*out = buf();
-	int const ended = member_git_result(why, len, "read", records, (struct span){}, e, end);
+	int const ended = member_git_result(why, len, "read", records, span(nullptr, 0), e, end);
 	e = ended ? ended : member_records_parse(&got);
 	if (!e) {
 		struct member_records const old = *r;
@@ -492,7 +492,7 @@ member_records_read (struct member_records *r,
 {
 	struct buf out = buf();
 	struct child_end end = child_end();
-	int const e = store_run(store, STORE_REFS, member_list, nullptr, (struct span){}, &out, &end);
+	int const e = store_run(store, STORE_REFS, member_list, nullptr, span(nullptr, 0), &out, &end);
 	return member_records_take(r, &out, e, &end, why, len);
 }
 
@@ -785,7 +785,7 @@ member_claim_step (struct member_claim          *claim,
 	buf_fini(in);
 	struct child_end end = child_end();
 	return member_git_result(why, len, "write", claim->ref,
-	                         (struct span){}, e, &end);
+	                         span(nullptr, 0), e, &end);
 }
 
 /*
@@ -1371,7 +1371,7 @@ member_lookup_read_done (struct child *c)
 static int
 member_lookup_read (struct member_lookup *lookup)
 {
-	return member_lookup_git(lookup, STORE_REFS, member_list, nullptr, (struct span){},
+	return member_lookup_git(lookup, STORE_REFS, member_list, nullptr, span(nullptr, 0),
 	                         member_lookup_read_done);
 }
 

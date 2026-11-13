@@ -329,7 +329,7 @@ store_init (struct store const *store,
 		return errno;
 	int e = 0;
 	if (!store_exists(store))
-		e = store_run(store, STORE_CREATE, nullptr, nullptr, (struct span){}, out, end);
+		e = store_run(store, STORE_CREATE, nullptr, nullptr, span(nullptr, 0), out, end);
 	(void)flock(store->fd, LOCK_UN);
 	return e;
 }
@@ -410,7 +410,7 @@ store_object_next (struct span *out,
                    struct oid  *id,
                    struct span *data)
 {
-	*data = (struct span){};
+	*data = span(nullptr, 0);
 	unsigned char const *nl = out->len ? memchr(out->ptr, '\n', out->len) : nullptr;
 	if (!nl) {
 		*id = (struct oid){};
@@ -434,7 +434,7 @@ store_object_next (struct span *out,
 		return EIO;
 	}
 	if (kind == STORE_KIND_BLOB)
-		*data = (struct span){ out->ptr + head, (size_t)n };
+		*data = span(out->ptr + head, (size_t)n);
 	else
 		*id = (struct oid){};
 	out->ptr += head + n + 1;
@@ -585,7 +585,7 @@ store_part_head (struct extent    *part,
 	/* The head is m, the name quoted as a C string, which at most doubles
 	 * its bytes, and the data command. Then come the data and a line
 	 * feed. */
-	struct span s;
+	struct span s = {};
 	int e = buf_reserve(in, sizeof m + 2 * name.len + sizeof "\"\"\ndata \n" + UTIL_DECIMAL +
 	                    len, SIZE_MAX, &s);
 	if (e)
@@ -623,7 +623,7 @@ store_part_delete (struct buf       *in,
 		return EINVAL;
 	/* The part is "D ", the name quoted as a C string, which at most
 	 * doubles its bytes, and a line feed. */
-	struct span s;
+	struct span s = {};
 	int e = buf_reserve(in, sizeof "D \"\"\n" + 2 * name.len, SIZE_MAX, &s);
 	if (e)
 		return e;
@@ -645,7 +645,7 @@ store_part_blob (struct buf       *in,
 	/* The part is "M 100644 ", the ID, a space, the name quoted as a C
 	 * string, which at most doubles its bytes, and a line feed. */
 	static char const m[] = "M 100644 ";
-	struct span s;
+	struct span s = {};
 	int e = buf_reserve(in, sizeof m + n + sizeof " \"\"\n" + 2 * name.len, SIZE_MAX, &s);
 	if (e)
 		return e;
@@ -732,7 +732,7 @@ store_committed (struct span  out,
 		return EINVAL;
 	unsigned char *nl = out.len > 1 ? memrchr(out.ptr, '\n', out.len - 1) : nullptr;
 	if (nl)
-		out = (struct span){ nl + 1, out.len - (size_t)(nl + 1 - out.ptr) };
+		out = span(nl + 1, out.len - (size_t)(nl + 1 - out.ptr));
 	struct cstr_view const line = { (char const *)out.ptr, out.len };
 	return oid_init_line(commit, line) ? EIO : 0;
 }

@@ -1066,7 +1066,7 @@ httpd_conn_put (struct httpd_conn      *conn,
 	size_t total = cstr_view_total(f, n);
 	if (!total)
 		return 0;
-	struct span s;
+	struct span s = {};
 	int e = buf_reserve(&conn->out, total, SIZE_MAX, &s);
 	if (e) {
 		httpd_conn_doom(conn);
@@ -1354,7 +1354,7 @@ httpd_stream_field (struct stream const *s,
 {
 	struct httpd_conn const *conn = container_of(s, struct httpd_conn const, stream);
 	struct cstr_view f = httpd_conn_field(conn, conn->req.app[i]);
-	return (struct span){ (unsigned char *)(uintptr_t)f.data, f.len };
+	return span((unsigned char *)(uintptr_t)f.data, f.len);
 }
 
 static struct stream_ops const httpd_stream_ops = {
@@ -1458,13 +1458,13 @@ httpd_dechunk_line (struct httpd_dechunk *d,
 	unsigned char *start = d->in.ptr + d->rd;
 	size_t avail = d->in.len - d->rd;
 	unsigned char *nl = memchr(start, '\n', avail < max ? avail : max);
-	*line = (struct span){};
+	*line = span(nullptr, 0);
 	if (!nl)
 		return avail < max ? 0 : too_long;
 	d->rd += (size_t)(nl - start) + 1;
 	if (nl == start || nl[-1] != '\r')
 		return 400;
-	*line = (struct span){ start, (size_t)(nl - start) - 1 };
+	*line = span(start, (size_t)(nl - start) - 1);
 	return 0;
 }
 
@@ -1484,7 +1484,7 @@ static unsigned
 httpd_conn_chunk_size (struct httpd_conn    *conn,
                        struct httpd_dechunk *d)
 {
-	struct span line;
+	struct span line = {};
 	unsigned status = httpd_dechunk_line(d, CHUNK_LINE, 400, &line);
 	if (!line.ptr)
 		return status;
@@ -1547,7 +1547,7 @@ httpd_conn_trailer (struct httpd_conn    *conn,
 {
 	struct httpd_limits const *lim = &conn->srv->lim;
 	struct httpd_req *req = &conn->req;
-	struct span line;
+	struct span line = {};
 	unsigned status = httpd_dechunk_line(d, lim->head, 431, &line);
 	if (!line.ptr)
 		return status;
@@ -1638,7 +1638,7 @@ httpd_conn_body (struct httpd_conn *conn)
 	struct span in = buf_peek(&conn->in);
 	size_t avail = in.len - req->head;
 	size_t room = loop_room(loop, LOOP_BODY);
-	struct span body = { in.ptr + req->head, avail < room ? avail : room };
+	struct span body = span(in.ptr + req->head, avail < room ? avail : room);
 	size_t used;
 	size_t out;
 	if (req->flags & REQ_CHUNKED) {
@@ -1656,7 +1656,7 @@ httpd_conn_body (struct httpd_conn *conn)
 	req->got += out;
 	bool last = req->flags & REQ_BODY_IN;
 	if (req->flags & REQ_OPEN && (out || last))
-		conn->srv->app->on_body(&conn->stream, (struct span){ body.ptr, out }, last);
+		conn->srv->app->on_body(&conn->stream, span(body.ptr, out), last);
 	buf_cut(&conn->in, req->head, used);
 	if (req->flags & (REQ_BODY_IN | REQ_DONE))
 		return NEXT_MORE;
@@ -1690,12 +1690,12 @@ httpd_conn_begin (struct httpd_conn *conn)
 	struct stream_app const *app = conn->srv->app;
 	unsigned char *head = buf_peek(&conn->in).ptr;
 	app->on_head(app->ctx, &conn->stream,
-	             (struct span){ head, (size_t)req->target.off - 1 },
-	             (struct span){ head + req->target.off, req->target.len }, length);
+	             span(head, (size_t)req->target.off - 1),
+	             span(head + req->target.off, req->target.len), length);
 	/* The text is in the policy, which a reload can free (stream.h). */
 	conn->stream.grant.who = (struct cstr_view){};
 	if ((req->flags & (REQ_OPEN | REQ_BODY_IN)) == (REQ_OPEN | REQ_BODY_IN))
-		app->on_body(&conn->stream, (struct span){}, true);
+		app->on_body(&conn->stream, span(nullptr, 0), true);
 }
 
 /* The request is done, and its body all in: make way for the next. */
@@ -2095,7 +2095,7 @@ httpd_conn_read (struct httpd_conn *conn)
 	 * error means out of memory. */
 	struct loop *loop = conn->srv->loop;
 	bool first = !(conn->req.flags & REQ_PARSED) && !httpd_conn_input(conn);
-	struct span s;
+	struct span s = {};
 	int e = buf_reserve(&conn->in, READ_MIN, conn->srv->in_max, &s);
 	if (e) {
 		httpd_conn_close(conn);

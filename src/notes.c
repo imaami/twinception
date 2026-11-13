@@ -221,7 +221,7 @@ notes_read_out (struct span  out,
 	int e = store_object_next(&out, &oid, text);
 	/* The output is the one object. */
 	if (!e && out.len) {
-		*text = (struct span){};
+		*text = span(nullptr, 0);
 		e = EIO;
 	}
 	if (id)
@@ -294,8 +294,8 @@ notes_cursor_header (struct span          out,
 		struct cstr_view asker;
 		if (!oid_init_field(&cursor->commit, &rest, ' ') && cstr_view_cut(&rest, ' ', &asker) &&
 		    !util_number(s + token, digits, UINT64_MAX, &cursor->time)) {
-			cursor->asker = (struct span){ out.ptr + (asker.data - s), asker.len };
-			cursor->subject = (struct span){ out.ptr + (rest.data - s), rest.len };
+			cursor->asker = span(out.ptr + (asker.data - s), asker.len);
+			cursor->subject = span(out.ptr + (rest.data - s), rest.len);
 			cursor->first = before;
 			return true;
 		}

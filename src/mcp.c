@@ -851,7 +851,7 @@ struct mcp_piece {
 #define ESC_VIEW(v) ((struct mcp_piece){ (v), true })
 #define ESC(p, n) ((struct mcp_piece){ { (char const *)(p), (n) }, true })
 #define RAW(p, n) ((struct mcp_piece){ { (char const *)(p), (n) }, false })
-#define SPAN(s) ((struct span){ (unsigned char *)(uintptr_t)(s), sizeof s - 1 })
+#define SPAN(s) span((unsigned char *)(uintptr_t)(s), sizeof s - 1)
 
 /** Returns true if the field @p s is present and its bytes equal @p str. */
 static bool
@@ -937,7 +937,7 @@ mcp_piece_write (struct mcp_piece const *p,
 {
 	if (!p->text)
 		return buf_put(buf, p->bytes.data + off, len, max);
-	struct span s;
+	struct span s = {};
 	int e = buf_reserve(buf, 6 * len, max, &s);
 	if (!e)
 		buf_commit(buf, jb_escape((char *)s.ptr, p->bytes.data + off, len));
@@ -1453,7 +1453,7 @@ mcp_slot_drop (struct mcp_slot *slot)
 	slot->own = nullptr;
 	web_wait_leave(&slot->web);
 	instance_table_put(&slot->req->mcp->instances, &slot->inst);
-	slot->lent = (struct span){};
+	slot->lent = span(nullptr, 0);
 	seen_read_destroy(&slot->read);
 	slot->shows = nullptr;
 	loop_unready(&slot->step);
@@ -1713,7 +1713,7 @@ mcp_http_error (struct stream *s,
 	size_t const n = util_format(body, sizeof body, "{\"jsonrpc\":\"2.0\",\"error\":"
 	                             "{\"code\":-32600,\"message\":\"%s\"}}", message);
 	if (!s->ops->head(s, status, fields, n))
-		(void)s->ops->data(s, (struct span){ (unsigned char *)body, n });
+		(void)s->ops->data(s, span((unsigned char *)body, n));
 	s->ops->end(s, 0);
 }
 
@@ -1754,7 +1754,7 @@ mcp_req_send (struct mcp_req *req)
 	struct span reply = buf_peek(&req->reply);
 	size_t room = loop_room(loop, LOOP_SEND);
 	size_t n = reply.len < room ? reply.len : room;
-	int e = n ? mcp_req_write(req, (struct span){ reply.ptr, n }) : 0;
+	int e = n ? mcp_req_write(req, span(reply.ptr, n)) : 0;
 	if (e) {
 		mcp_req_abort(req, e);
 		return;
@@ -2073,8 +2073,8 @@ mcp_slot_output (struct mcp_slot const *slot)
 	if (slot->of)
 		return mcp_slot_output(slot->of);
 	return slot->lent.ptr ? slot->lent
-	     : (struct span){ (unsigned char *)(uintptr_t)dstr_get(&slot->answer),
-	                      dstr_len(&slot->answer) };
+	     : span((unsigned char *)(uintptr_t)dstr_get(&slot->answer),
+	            dstr_len(&slot->answer));
 }
 
 /* The request's output: a streamed answer's text, in the job's result while
@@ -3091,7 +3091,7 @@ mcp_stand_in_field (struct stream const *s,
 {
 	(void)s;
 	(void)i;
-	return (struct span){};
+	return span(nullptr, 0);
 }
 
 static struct stream_ops const stand_in_ops = {
@@ -3137,7 +3137,7 @@ mcp_on_withdraw (struct loop *loop,
 	if (!req || req->phase >= PHASE_REPLY)
 		return;
 	if (!(req->flags & REQ_SSE))
-		(void)req->s->ops->head(req->s, 202, (struct span){}, 0);
+		(void)req->s->ops->head(req->s, 202, span(nullptr, 0), 0);
 	mcp_req_log_call(req, "cancelled by notifications/cancelled", (struct cstr_view){},
 	                 false);
 	req->flags |= REQ_WITHDRAWN;
@@ -3435,7 +3435,7 @@ mcp_slot_told (struct mcp_slot  *slot,
 	mcp_slot_wake(slot);
 	/* The output is the text whole, not lent, nor from an offset. */
 	slot->window.at = 0;
-	slot->lent = (struct span){};
+	slot->lent = span(nullptr, 0);
 	mcp_slot_result(slot, (struct cstr_view){ text.data, len }, end);
 }
 
@@ -3570,7 +3570,7 @@ void
 mcp_slot_lend (struct mcp_slot  *slot,
                struct cstr_view  text)
 {
-	slot->lent = (struct span){ (unsigned char *)(uintptr_t)text.data, text.len };
+	slot->lent = span((unsigned char *)(uintptr_t)text.data, text.len);
 }
 
 /* Return the maximum number of bytes of a tool's output that a turn reads
@@ -6114,8 +6114,8 @@ mcp_recover_back (struct loop           *loop,
 			task = ledger_restore(st->ledger, owner, LEDGER_JOB, req->self.tool, &id,
 			                       created, jb_uint(jb_get(result, "ended"), 0),
 			                       (enum ledger_status)status,
-			                       (struct span){ (unsigned char *)(uintptr_t)text.data,
-			                                      text.len },
+			                       span((unsigned char *)(uintptr_t)text.data,
+			                            text.len),
 			                       nullptr, handle(0), nullptr, &e);
 		json_object_put(result);
 		if (!task && e != EEXIST) {
@@ -6211,7 +6211,7 @@ mcp_recover_back (struct loop           *loop,
 		e = loop_handle(loop, req, HANDLE_REQ, &who);
 	struct ledger_task *task = !e
 		? ledger_restore(st->ledger, owner, LEDGER_JOB, req->self.tool, &id, created, 0,
-		                 LEDGER_WORKING, (struct span){}, loop, who, mcp_on_task_cancel,
+		                 LEDGER_WORKING, span(nullptr, 0), loop, who, mcp_on_task_cancel,
 		                 &e) : nullptr;
 	if (!task) {
 		loop_forget(loop, who);
@@ -6813,9 +6813,9 @@ mcp_req_initialize (struct mcp_req     *req,
 	char fields[sizeof STREAM_JSON_FIELD "Mcp-Session-Id: \r\n" - 1 + sizeof id.hex];
 	struct span f = SPAN(STREAM_JSON_FIELD);
 	if (!hexid_make(&id))
-		f = (struct span){ (unsigned char *)fields,
-		                   util_format(fields, sizeof fields,
-		                               STREAM_JSON_FIELD "Mcp-Session-Id: %s\r\n", id.hex) };
+		f = span((unsigned char *)fields,
+		         util_format(fields, sizeof fields,
+		                     STREAM_JSON_FIELD "Mcp-Session-Id: %s\r\n", id.hex));
 
 	struct mcp_piece const p[] = {
 		FRAG("{\"protocolVersion\":\""),
@@ -7150,7 +7150,7 @@ static void
 mcp_req_accept (struct mcp_req *req)
 {
 	req->method = METHOD_NOTIFY;
-	(void)req->s->ops->head(req->s, 202, (struct span){}, 0);
+	(void)req->s->ops->head(req->s, 202, span(nullptr, 0), 0);
 	mcp_req_finish(req);
 }
 

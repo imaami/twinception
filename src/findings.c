@@ -703,7 +703,7 @@ findings_got_read (struct mcp_slot *slot)
 		struct finding *f = &call->findings.items[call->findings.n++];
 		*f = finding();
 		struct oid blob;
-		struct span data;
+		struct span data = {};
 		e = store_object_next(&out, &blob, &data);
 		if (!e)
 			e = finding_parse(f, (struct cstr_view){ (char const *)data.ptr, data.len });
@@ -1259,7 +1259,7 @@ findings_expand (struct mcp_slot *slot)
 		return;
 	}
 	if (!buf_peek(&in).len) {
-		findings_expanded(slot, (struct span){});
+		findings_expanded(slot, span(nullptr, 0));
 		return;
 	}
 	findings_run(slot, STAGE_ARCHIVE, STORE_READ, nullptr, nullptr, &in);
@@ -1538,7 +1538,7 @@ findings_got_blobs (struct mcp_slot *slot)
 		 * material. */
 		struct cstr_view *const m[] = { &material[i].request, &material[i].result };
 		for (size_t k = cite->kind == EVIDENCE_CALL ? 0 : 1; k < array_size(m); ++k) {
-			struct span data;
+			struct span data = {};
 			int const e = store_object_next(&out, &cite->blobs[k], &data);
 			if (e == ENOENT) {
 				char id[FINDING_ID_TEXT];

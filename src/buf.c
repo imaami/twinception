@@ -143,7 +143,7 @@ buf_reserve (struct buf  *buf,
              size_t       max,
              struct span *room)
 {
-	*room = (struct span){};
+	*room = span(nullptr, 0);
 	size_t len = buf->tail - buf->head;
 	if (len > max || min > max - len)
 		return ENOBUFS;
@@ -170,7 +170,7 @@ buf_reserve (struct buf  *buf,
 	if (n > max - len)
 		n = max - len;
 	if (n)
-		*room = (struct span){ buf->data + buf->tail, n };
+		*room = span(buf->data + buf->tail, n);
 	return 0;
 }
 
@@ -254,7 +254,7 @@ buf_vprintf (struct buf *buf,
              va_list     ap)
 {
 	for (size_t room = 128;;) {
-		struct span s;
+		struct span s = {};
 		int e = buf_reserve(buf, room, SIZE_MAX, &s);
 		if (e)
 			return e;
@@ -294,7 +294,7 @@ buf_read (struct buf *buf,
 	 * one, for which the reservation after it fails. */
 	max += max < SIZE_MAX;
 	for (size_t min = size + 1;; min = 1) {
-		struct span room;
+		struct span room = {};
 		int e = buf_reserve(buf, min, max, &room);
 		if (e)
 			return e;

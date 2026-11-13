@@ -97,7 +97,7 @@ child_read (struct child *c)
 			loop_ready_bulk(loop, &c->step);
 			return;
 		}
-		struct span s;
+		struct span s = {};
 		if (buf_reserve(&c->out, want, c->max + 1, &s)) {
 			c->end.flags |= CHILD_CUT;
 			child_kill(c);

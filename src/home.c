@@ -920,7 +920,7 @@ home_finish_text (struct home *home,
 		home_end(home, job, JOB_TEXT, completed);
 		return;
 	}
-	struct span s;
+	struct span s = {};
 	if (!buf_peek(&job->result).len) {
 		char const *reason = *job->reason ? job->reason : nullptr;
 		if (!buf_reserve(&job->result, AI_NO_ANSWER, SIZE_MAX, &s))
@@ -1532,7 +1532,7 @@ home_put_delta (struct job       *job,
 		return ENOBUFS;
 	struct job_delta header = { .len = (uint32_t)text.len, .thought = thought };
 	size_t len = sizeof header + text.len;
-	struct span s;
+	struct span s = {};
 	int e = buf_reserve(&job->delta, len, 2 * MAX_RESPONSE, &s);
 	if (e)
 		return e;
@@ -1738,7 +1738,7 @@ home_put_call (void                 *user,
 	/* The limit of the buffer is MAX_RESPONSE minus the bytes of the
 	 * other calls, so the calls together stay within MAX_RESPONSE. */
 	struct buf *to = &job->calls[k];
-	struct span s;
+	struct span s = {};
 	int e = buf_reserve(to, len, MAX_RESPONSE - (bytes - buf_peek(to).len), &s);
 	if (e)
 		return e;

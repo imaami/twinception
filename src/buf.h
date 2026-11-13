@@ -52,6 +52,14 @@ struct span {
 	size_t         len;
 };
 
+/** Returns the span of @p len bytes at @p ptr. */
+static force_inline struct span
+span (unsigned char *ptr,
+      size_t         len)
+{
+	return (struct span){ .ptr = ptr, .len = len };
+}
+
 /** A run of bytes in a buffer or a text by offset. Unlike a span, an
  *  extent stays valid when the storage of the bytes moves.
  */
@@ -244,7 +252,7 @@ buf_put (struct buf *buf,
 {
 	if (!len)
 		return 0;
-	struct span s;
+	struct span s = {};
 	int e = buf_reserve(buf, len, max, &s);
 	if (!e) {
 		memcpy(s.ptr, data, len);
@@ -258,8 +266,8 @@ static inline struct span
 buf_peek (struct buf const *buf)
 {
 	return buf->head < buf->tail
-	       ? (struct span){ buf->data + buf->head, buf->tail - buf->head }
-	       : (struct span){};
+	       ? span(buf->data + buf->head, buf->tail - buf->head)
+	       : span(nullptr, 0);
 }
 
 /** Drop all readable bytes, rewinding the buffer. */

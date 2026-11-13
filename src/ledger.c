@@ -522,7 +522,7 @@ ledger_open (struct ledger    *ledger,
 	if ((*e = hexid_make(&id)))
 		return nullptr;
 	return ledger_restore(ledger, owner, kind, tool, &id, clk_realtime_ns(), 0,
-	                      LEDGER_WORKING, (struct span){}, loop, who, fn, e);
+	                      LEDGER_WORKING, span(nullptr, 0), loop, who, fn, e);
 }
 
 struct ledger_task *

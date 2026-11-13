@@ -489,7 +489,7 @@ policy_build_gid (struct policy_build *b,
 		return 0;
 	struct group gr;
 	struct group *r = nullptr;
-	struct span room;
+	struct span room = {};
 	int e = buf_reserve(&b->nss, 1, POLICY_ENTRY_MAX, &room);
 	while (!e && (e = getgrnam_r(name, &gr, (char *)room.ptr, room.len, &r)) == ERANGE)
 		e = buf_reserve(&b->nss, room.len + 1, POLICY_ENTRY_MAX, &room);
