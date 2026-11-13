@@ -92,6 +92,15 @@ struct cxi {
 	uint64_t           line;           /* the value of line, or 0 */
 };
 
+/* Returns the call before cxi_words() reads the request. The answer and
+ * the record line are empty, and every other member is zero.
+ */
+static force_inline struct cxi
+cxi (void)
+{
+	return (struct cxi){ .out = cxi_out(cstr_view(nullptr)), .record = DSTR_INIT };
+}
+
 static void
 cxi_out_put (struct cxi_out *out,
              char const     *p,
@@ -1817,7 +1826,7 @@ int
 main (int    argc,
       char **argv)
 {
-	struct cxi x = { .out.text = DSTR_INIT, .record = DSTR_INIT };
+	struct cxi x = cxi();
 	bool const check = argc > 1 && !strcmp(argv[1], "--check");
 	int at = 1 + check;
 	int fd = 1;
