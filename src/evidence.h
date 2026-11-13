@@ -28,6 +28,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "compat.h"
 #include "cstr_view.h"
 #include "dstr.h"
 #include "finding_id.h"
@@ -156,6 +157,16 @@ struct evidence_material {
 	                                EVIDENCE_CALL item, else empty */
 	struct cstr_view result;   /**< the result, or the lines */
 };
+
+/** Returns the material of the arguments @p request and of the result or
+ *  the lines @p result.
+ */
+static force_inline struct evidence_material
+evidence_material (struct cstr_view request,
+                   struct cstr_view result)
+{
+	return (struct evidence_material){ .request = request, .result = result };
+}
 
 /** What evidence_cite() needs from the findings call that cites. */
 struct evidence_cite {

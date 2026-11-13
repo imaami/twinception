@@ -379,7 +379,7 @@ refused (struct evidence_cite const *cite,
 {
 	struct evidence_ref ref;
 	struct evidence e = evidence();
-	struct evidence_material m;
+	struct evidence_material m = {};
 	struct dstr lines = DSTR_INIT;
 	char why[512] = "x";
 	int const r = evidence_ref_parse(&ref, cstr_view(text));
@@ -1207,7 +1207,7 @@ expanded (struct evidence const *e,
           int                    line)
 {
 	struct dstr d = DSTR_INIT;
-	struct evidence_material const m = { request, result };
+	struct evidence_material const m = evidence_material(request, result);
 	struct finding_id const id = { .number = 2, .item = e->item, .author = "cuh" };
 	int const got = evidence_expand(e, &id, &m, &d);
 	if (got || strcmp(dstr_get(&d), want)) {
@@ -1296,7 +1296,7 @@ test_expand (void)
 	         "shown:]\n[askai: the stored material of cuh#2/2 is missing.]\n",
 	         __LINE__);
 	struct dstr d = DSTR_INIT;
-	struct evidence_material const m = { args, out };
+	struct evidence_material const m = evidence_material(args, out);
 	struct finding_id const id = { .number = 2, .item = 2, .author = "cuh" };
 	CHECK(evidence_expand(nullptr, &id, &m, &d) == EFAULT);
 	CHECK(evidence_expand(&e, nullptr, &m, &d) == EFAULT);

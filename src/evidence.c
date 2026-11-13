@@ -358,7 +358,7 @@ evidence_cite (struct evidence            *dest,
 	if (!dest || !material || !lines || !ref || !cite || !cite->ask || !cite->name || !why ||
 	    !len)
 		return EINVAL;
-	*material = (struct evidence_material){};
+	*material = evidence_material(cstr_view(nullptr), cstr_view(nullptr));
 	*why = '\0';
 	switch (ref->form) {
 	case EVIDENCE_REF_FINDING: {
@@ -427,7 +427,7 @@ evidence_cite (struct evidence            *dest,
 	if (e)
 		return e;
 	if (dest->kind != EVIDENCE_LINES) {
-		*material = (struct evidence_material){ parts.args, cstr_view_dstr(&c->result) };
+		*material = evidence_material(parts.args, cstr_view_dstr(&c->result));
 		evidence_hash(&dest->request, material->request);
 		evidence_hash(&dest->result, material->result);
 		return 0;

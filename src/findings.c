@@ -1092,10 +1092,9 @@ findings_expanded (struct mcp_slot *slot,
 			continue;
 		}
 		size_t const at = dstr_len(&call->out);
-		e = evidence_expand(ev, &key, &(struct evidence_material){
-			cstr_view_span(request),
-			cstr_view_span(result),
-		}, &call->out);
+		struct evidence_material const material = evidence_material(cstr_view_span(request),
+		                                                            cstr_view_span(result));
+		e = evidence_expand(ev, &key, &material, &call->out);
 		if (e || !turn || !findings_stored(ev, blobs))
 			continue;
 		e = findings_record(ev, &shown.record);
@@ -1503,11 +1502,13 @@ findings_cite_end (struct mcp_slot                *slot,
 			findings_stop(slot, e, findings_refusal(scratch, e));
 			return;
 		}
-		if (cite->ref.form == EVIDENCE_REF_ITEM_LINES)
-			e = findings_archive(call, item, &(struct evidence_material){
-				.result = cstr_view_dstr(&lines) }, (struct oid const [2]){});
-		else
+		if (cite->ref.form == EVIDENCE_REF_ITEM_LINES) {
+			struct evidence_material const m = evidence_material(cstr_view(nullptr),
+			                                                     cstr_view_dstr(&lines));
+			e = findings_archive(call, item, &m, (struct oid const [2]){});
+		} else {
 			e = findings_archive(call, item, &(struct evidence_material){}, of->blobs);
+		}
 	}
 	if (e) {
 		findings_end(slot, e, true);
@@ -1852,7 +1853,7 @@ findings_evidence (struct mcp_slot    *slot,
 			e = findings_cite_add(slot, &ref, c->evidence.n - 1, strict, why, len);
 			continue;
 		}
-		struct evidence_material material;
+		struct evidence_material material = {};
 		e = evidence_cite(item, &material, &lines, &ref, &cite, strict, why, len);
 		e = e ? e : findings_archive(call, item, &material, (struct oid const [2]){});
 		loop_work(mcp_slot_loop(slot), LOOP_COPY, material.request.len + material.result.len);
