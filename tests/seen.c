@@ -385,9 +385,9 @@ test_read (void)
 	/* Line numbers that do not satisfy 1 <= first <= last <= total. A
 	 * total of 0 is unknown. */
 	bad = src;
-	bad.lines = (struct range){ 0, 2 };
+	bad.lines = range(0, 2);
 	CHECK(read_error(&bad, o) == EINVAL);
-	bad.lines = (struct range){ 5, 3 };
+	bad.lines = range(5, 3);
 	CHECK(read_error(&bad, o) == EINVAL);
 	bad.lines = src.lines;
 	bad.total = 4;

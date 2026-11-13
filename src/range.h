@@ -19,6 +19,16 @@ struct range {
 	uint32_t last;
 };
 
+/** Returns the range of the numbers from @p first to @p last, both
+ *  included.
+ */
+static const_inline struct range
+range (uint32_t first,
+       uint32_t last)
+{
+	return (struct range){ .first = first, .last = last };
+}
+
 /** Returns how many numbers @p r contains. The result is 64 bits wide,
  *  because the range 0 to UINT32_MAX contains UINT32_MAX + 1 numbers.
  */

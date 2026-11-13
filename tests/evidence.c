@@ -139,17 +139,17 @@ parsed (char const *text,
 static void
 test_range (void)
 {
-	CHECK(range_count((struct range){ 5, 5 }) == 1 && range_count((struct range){ 3, 9 }) == 7);
-	CHECK(range_count((struct range){ 0, UINT32_MAX }) == (uint64_t)UINT32_MAX + 1);
-	struct range const outer = { 3, 9 };
-	CHECK(range_contains(outer, outer) && range_contains(outer, (struct range){ 3, 3 }) &&
-	      range_contains(outer, (struct range){ 9, 9 }) &&
-	      range_contains(outer, (struct range){ 4, 8 }));
-	CHECK(!range_contains(outer, (struct range){ 2, 9 }) &&
-	      !range_contains(outer, (struct range){ 3, 10 }) &&
-	      !range_contains(outer, (struct range){ 2, 10 }) &&
-	      !range_contains(outer, (struct range){ 1, 2 }) &&
-	      !range_contains(outer, (struct range){ 10, UINT32_MAX }));
+	CHECK(range_count(range(5, 5)) == 1 && range_count(range(3, 9)) == 7);
+	CHECK(range_count(range(0, UINT32_MAX)) == (uint64_t)UINT32_MAX + 1);
+	struct range const outer = range(3, 9);
+	CHECK(range_contains(outer, outer) && range_contains(outer, range(3, 3)) &&
+	      range_contains(outer, range(9, 9)) &&
+	      range_contains(outer, range(4, 8)));
+	CHECK(!range_contains(outer, range(2, 9)) &&
+	      !range_contains(outer, range(3, 10)) &&
+	      !range_contains(outer, range(2, 10)) &&
+	      !range_contains(outer, range(1, 2)) &&
+	      !range_contains(outer, range(10, UINT32_MAX)));
 	static struct {
 		struct range in[4];
 		struct range out[4];
@@ -178,7 +178,7 @@ test_range (void)
 		{ { { 5, UINT32_MAX }, { 1, 3 } }, { { 1, 3 }, { 5, UINT32_MAX } }, 2, 2 },
 	};
 	for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
-		struct range r[4];
+		struct range r[4] = {};
 		memcpy(r, cases[i].in, sizeof r);
 		size_t const left = range_merge(r, cases[i].n);
 		if (left == cases[i].left && !memcmp(r, cases[i].out, left * sizeof *r))
@@ -188,7 +188,7 @@ test_range (void)
 		        left, r[0].first, r[0].last);
 	}
 	/* No range. */
-	struct range none = { 2, 4 };
+	struct range none = range(2, 4);
 	CHECK(!range_merge(&none, 0) && none.first == 2 && none.last == 4);
 	CHECK(!range_merge(nullptr, 0));
 }
@@ -704,8 +704,8 @@ test_json (void)
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"path\":\"src/git.c\",\"commit\":\""
 	                                 A "\"}"), &e.ids));
 	CHECK(!util_grow(e.ranges.items, e.ranges.cap, 2));
-	e.ranges.items[e.ranges.n++] = (struct range){ 161, 171 };
-	e.ranges.items[e.ranges.n++] = (struct range){ 180, 180 };
+	e.ranges.items[e.ranges.n++] = range(161, 171);
+	e.ranges.items[e.ranges.n++] = range(180, 180);
 	e.result.bytes = 702;
 	memset(e.result.sha256, 0xab, sizeof e.result.sha256);
 	int err = -1;
@@ -763,7 +763,7 @@ test_json (void)
 	SAME(dstr_get(&text), dstr_len(&text), "call c4, man, failed, 1 byte");
 	back.kind = EVIDENCE_LINES;
 	CHECK(!util_grow(back.ranges.items, back.ranges.cap, 1));
-	back.ranges.items[back.ranges.n++] = (struct range){ 7, 7 };
+	back.ranges.items[back.ranges.n++] = range(7, 7);
 	(void)dstr_clear(&back.ids);
 	(void)dstr_clear(&text);
 	CHECK(!evidence_summary(&back, &text));
@@ -938,8 +938,8 @@ test_recite (void)
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"proj\",\"commit\":\"" A "\",\"path\":"
 	                                 "\"src/a.c\",\"total\":9}"), &item.ids));
 	CHECK(!util_grow(item.ranges.items, item.ranges.cap, 2));
-	item.ranges.items[item.ranges.n++] = (struct range){ 2, 6 };
-	item.ranges.items[item.ranges.n++] = (struct range){ 8, 9 };
+	item.ranges.items[item.ranges.n++] = range(2, 6);
+	item.ranges.items[item.ranges.n++] = range(8, 9);
 	hash_of(&item.result, material);
 	char *record = record_of(&item);
 
@@ -1007,8 +1007,8 @@ test_recite (void)
 	shorter.ranges.items = nullptr;
 	shorter.ranges.n = shorter.ranges.cap = 0;
 	CHECK(!util_grow(shorter.ranges.items, shorter.ranges.cap, 2));
-	shorter.ranges.items[shorter.ranges.n++] = (struct range){ 2, 6 };
-	shorter.ranges.items[shorter.ranges.n++] = (struct range){ 8, 12 };
+	shorter.ranges.items[shorter.ranges.n++] = range(2, 6);
+	shorter.ranges.items[shorter.ranges.n++] = range(8, 12);
 	hash_of(&shorter.result, material);
 	char *cut = record_of(&shorter);
 	recite_refused("cuh#2/1:10", cut, material, "cuh#2/1 shows lines 2 to 6, 8 to 12 of src/a.c. "
@@ -1028,8 +1028,8 @@ test_recite (void)
 	CHECK(!cstr_view_store(CSTR_VIEW("git"), &older.tool));
 	CHECK(!cstr_view_store(CSTR_VIEW("call_2_0"), &older.call_id));
 	CHECK(!util_grow(older.ranges.items, older.ranges.cap, 2));
-	older.ranges.items[older.ranges.n++] = (struct range){ 8, 9 };
-	older.ranges.items[older.ranges.n++] = (struct range){ 2, 3 };
+	older.ranges.items[older.ranges.n++] = range(8, 9);
+	older.ranges.items[older.ranges.n++] = range(2, 3);
 	hash_of(&older.result, backwards);
 	char *old = record_of(&older);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:9")));
@@ -1054,8 +1054,8 @@ test_recite (void)
 	 * range are in both stored ranges. */
 	static char const reversed[] = "4\tline 4\n5\tline 5\n2\tline 2\n3\tline 3\n";
 	struct cstr_view const reverse = { reversed, sizeof reversed - 1 };
-	older.ranges.items[0] = (struct range){ 4, 5 };
-	older.ranges.items[1] = (struct range){ 2, 3 };
+	older.ranges.items[0] = range(4, 5);
+	older.ranges.items[1] = range(2, 3);
 	hash_of(&older.result, reverse);
 	old = record_of(&older);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:2-3,4-5")));
@@ -1082,8 +1082,8 @@ test_recite (void)
 	 * the line. */
 	static char const twice[] = "1\tline 1\n2\tline 2\n3\tline 3\n3\tline 3\n4\tline 4\n";
 	struct cstr_view const overlap = { twice, sizeof twice - 1 };
-	older.ranges.items[0] = (struct range){ 1, 3 };
-	older.ranges.items[1] = (struct range){ 3, 4 };
+	older.ranges.items[0] = range(1, 3);
+	older.ranges.items[1] = range(3, 4);
 	hash_of(&older.result, overlap);
 	old = record_of(&older);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:3-4")));
@@ -1109,8 +1109,8 @@ test_recite (void)
 	 * range of the reference can span both ranges. */
 	static char const joined[] = "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n";
 	struct cstr_view const touch = { joined, sizeof joined - 1 };
-	older.ranges.items[0] = (struct range){ 2, 3 };
-	older.ranges.items[1] = (struct range){ 4, 5 };
+	older.ranges.items[0] = range(2, 3);
+	older.ranges.items[1] = range(4, 5);
 	hash_of(&older.result, touch);
 	old = record_of(&older);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:3-4")));
@@ -1135,8 +1135,8 @@ test_recite (void)
 	                            "8\tline 8\n9\tline 9\n";
 	struct cstr_view const four = { pairs, sizeof pairs - 1 };
 	CHECK(!util_grow(older.ranges.items, older.ranges.cap, 4));
-	older.ranges.items[2] = (struct range){ 7, 8 };
-	older.ranges.items[3] = (struct range){ 9, 9 };
+	older.ranges.items[2] = range(7, 8);
+	older.ranges.items[3] = range(9, 9);
 	older.ranges.n = 4;
 	hash_of(&older.result, four);
 	old = record_of(&older);
@@ -1163,7 +1163,7 @@ test_recite (void)
 	recite_refused("c7", record, material, "", __LINE__);
 	/* One range: "that range". */
 	item.ranges.n = 1;
-	item.ranges.items[0] = (struct range){ 2, 6 };
+	item.ranges.items[0] = range(2, 6);
 	char *one = record_of(&item);
 	recite_refused("cuh#2/1:7", one, material, "cuh#2/1 shows lines 2 to 6 of src/a.c. Give "
 	               "lines within that range.", __LINE__);
@@ -1285,8 +1285,8 @@ test_expand (void)
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\",\"path\":"
 	                                 "\"src/git.c\"}"), &e.ids));
 	CHECK(!util_grow(e.ranges.items, e.ranges.cap, 2));
-	e.ranges.items[e.ranges.n++] = (struct range){ 161, 161 };
-	e.ranges.items[e.ranges.n++] = (struct range){ 171, 171 };
+	e.ranges.items[e.ranges.n++] = range(161, 161);
+	e.ranges.items[e.ranges.n++] = range(171, 171);
 	hash_of(&e.result, lines);
 	expanded(&e, (struct cstr_view){}, lines, "[askai: cuh#2/2 from cuh#1/3: lines 161, 171 of "
 	         "src/git.c in repository askai at commit " A ", stored as shown:]\n"

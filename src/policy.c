@@ -368,10 +368,7 @@ policy_range_parse (char const   *line,
 	/* The number of ids above START, up to UINT32_MAX. Neither this
 	 * subtraction nor the addition below can wrap around. */
 	uint64_t room = UINT32_MAX - start;
-	*r = (struct range){
-		.first = (uint32_t)start,
-		.last = (uint32_t)(start + (count - 1 < room ? count - 1 : room))
-	};
+	*r = range((uint32_t)start, (uint32_t)(start + (count - 1 < room ? count - 1 : room)));
 	return true;
 }
 
@@ -412,7 +409,7 @@ policy_build_ranges (struct policy_build  *b,
 	char *line = nullptr;
 	size_t size = 0;
 	while (getline(&line, &size, f) >= 0) {
-		struct range r;
+		struct range r = {};
 		if (!policy_range_parse(line, &r))
 			continue;
 		e = util_grow(ranges, room, n + 1);

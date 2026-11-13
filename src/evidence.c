@@ -399,8 +399,8 @@ evidence_cite (struct evidence            *dest,
 		shown.n_ranges = 1;
 	}
 	if (shown.form == EVIDENCE_REF_LINES) {
-		struct range const bound = { shown.ranges[0].first,
-		                             shown.ranges[shown.n_ranges - 1].last };
+		struct range const bound = range(shown.ranges[0].first,
+		                                 shown.ranges[shown.n_ranges - 1].last);
 		if (!c->lines.range.first || !range_contains(c->lines.range, bound))
 			return evidence_unshown(ref, c, tool, why, len);
 	}
@@ -581,7 +581,7 @@ evidence_ranges_parse (struct evidence          *dest,
 		    jb_uint_checked(jb_at(pair, 0), UINT32_MAX, &first) ||
 		    jb_uint_checked(jb_at(pair, 1), UINT32_MAX, &last) || !first || last < first)
 			return EINVAL;
-		dest->ranges.items[dest->ranges.n++] = (struct range){ (uint32_t)first, (uint32_t)last };
+		dest->ranges.items[dest->ranges.n++] = range((uint32_t)first, (uint32_t)last);
 	}
 	return 0;
 }
@@ -768,7 +768,7 @@ evidence_recite (struct evidence           *dest,
 	uint32_t copied = 0;
 	(void)dstr_clear(lines);
 	while (!e && i < ref->n_ranges) {
-		struct range const want = { ref->ranges[i].first + copied, ref->ranges[i].last };
+		struct range const want = range(ref->ranges[i].first + copied, ref->ranges[i].last);
 		if (!apart) {
 			rest = material;
 			done = 0;
@@ -783,7 +783,8 @@ evidence_recite (struct evidence           *dest,
 			e = EINVAL;
 			break;
 		}
-		struct range const part = { want.first, want.last < r[k].last ? want.last : r[k].last };
+		struct range const part = range(want.first,
+		                                want.last < r[k].last ? want.last : r[k].last);
 		uint64_t const from = start + (part.first - r[k].first);
 		uint64_t const n = range_count(part);
 		e = evidence_lines_copy(&rest, from - done, n, lines);
