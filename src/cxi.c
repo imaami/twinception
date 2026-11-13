@@ -65,6 +65,13 @@ struct cxi_out {
 	int64_t          e;     /* ENOMEM after an append failed */
 };
 
+/* Returns an empty output whose paths lose the tree @p tree. */
+static force_inline struct cxi_out
+cxi_out (struct cstr_view tree)
+{
+	return (struct cxi_out){ .text = DSTR_INIT, .tree = tree };
+}
+
 /* A call of askai-code: the request from its arguments, the answer, and the
  * parse of the file. For describe, the record line "lines FIRST LAST TOTAL
  * AT LEN PATH" comes before the answer: it names the numbered lines of a
@@ -1186,7 +1193,7 @@ cxi_describe (struct cxi *x)
 	else
 		cxi_out_name(&x->out, c);
 	cxi_out_printf(&x->out, " in the translation unit.]\n");
-	struct cxi_out rows = { .text = DSTR_INIT, .tree = x->out.tree };
+	struct cxi_out rows = cxi_out(x->out.tree);
 	if (k == CXCursor_FieldDecl)
 		cxi_member(x, shown);
 	else
@@ -1241,7 +1248,7 @@ cxi_out_diagnostic (struct cxi_out            *out,
 static int
 cxi_diagnostics (struct cxi *x)
 {
-	struct cxi_out rows = { .text = DSTR_INIT, .tree = x->out.tree };
+	struct cxi_out rows = cxi_out(x->out.tree);
 	unsigned errors = 0;
 	unsigned warnings = 0;
 	for (unsigned i = 0, n = clang_getNumDiagnostics(x->tu); i < n; ++i) {
