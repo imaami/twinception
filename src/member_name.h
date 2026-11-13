@@ -97,7 +97,7 @@ member_name_set (char             dest[static MEMBER_NAME],
 /** Returns the member of the kind @p kind with the name @p name. The name
  *  is written as member_name_set() writes it.
  */
-static inline struct member
+static force_inline struct member
 member (enum member_kind kind,
         struct cstr_view name)
 {
