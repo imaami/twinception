@@ -633,10 +633,8 @@ notes_tool_unwritten (struct mcp_slot *slot)
 		              TOOL_FAILED);
 		return;
 	}
-	struct span out = buf_peek(&c->out);
-	char const *why = (char const *)out.ptr;
-	LOG(LOG_WARN, "notes: git could not write a note: %.*s",
-	    (int)util_clip(why, out.len, 300), why);
+	struct cstr_view const cause = store_cause(buf_peek(&c->out));
+	LOG(LOG_WARN, "notes: git could not write a note: %.*s", (int)cause.len, cause.data);
 	mcp_slot_tell(slot, CSTR_VIEW("Could not write the note."), TOOL_FAILED);
 }
 

@@ -45,6 +45,9 @@ enum {
 	                                          than every write of askai, so
 	                                          that its writer died or
 	                                          hangs */
+	STORE_CAUSE   = 200,                 /**< bytes of the cause of a git
+	                                          that failed (store_cause()),
+	                                          at most */
 };
 
 /** The commands of git in the repository. The words of a command are the
@@ -221,6 +224,17 @@ store_drop (struct child **p_c);
  */
 extern bool
 store_raced (struct span out);
+
+/** Returns why a git that writes failed, from its output @p out. The cause
+ *  is the last line of the output, which is the error of git. A git
+ *  fast-import that fails writes the line "fast-import: dumping crash
+ *  report to FILE" after its error, and the cause is then the line before
+ *  that line. The cause is cut at STORE_CAUSE bytes, at the end of a UTF-8
+ *  character. The view is a part of @p out, without a NUL. The view is
+ *  empty for an output without an error line.
+ */
+extern struct cstr_view
+store_cause (struct span out);
 
 /** The kinds of the objects in the output of STORE_CHECK and STORE_READ
  *  (store_kind()).

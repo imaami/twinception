@@ -816,9 +816,8 @@ findings_committed (struct mcp_slot *slot)
 		               "changed the findings at the same time. Repeat the call.", agent);
 		return;
 	}
-	char const *why = (char const *)out.ptr;
-	LOG(LOG_WARN, "findings: git could not record %s: %.*s", id,
-	    (int)util_clip(why, out.len, 300), why);
+	struct cstr_view const cause = store_cause(out);
+	LOG(LOG_WARN, "findings: git could not record %s: %.*s", id, (int)cause.len, cause.data);
 	if (c->end.flags & CHILD_LATE)
 		mcp_slot_tell(slot, CSTR_VIEW("Could not record the finding. The write timed out."),
 		              TOOL_FAILED);

@@ -1493,7 +1493,8 @@ test_ends (char const                   *dir,
 		[CUT]  = { "cut",  "exec head -c 16777217 /dev/zero\n" },
 		[LATE] = { "late", "exec sleep 60\n" },
 		[NONE] = { "none", nullptr },
-		[LONG] = { "long", "printf 'fatal: %0250d\\n' 0 >&2\nexit 3\n" },
+		[LONG] = { "long", "printf 'fatal: %0250d\\nfast-import: dumping crash report to "
+		                   "x\\n' 0 >&2\nexit 3\n" },
 	};
 	char *old = strdup(getenv("PATH"));
 	CHECK(old);
@@ -1603,8 +1604,11 @@ test_ends (char const                   *dir,
 	CHECK(test_has(store, "refs/askai/members/ian", "Login: identity ian\n"));
 
 	/* A long cause is whole in the scratch of the table. The cause is 301
-	 * bytes: the ref of a name of UTIL_WORD_MAX bytes, and the first 200
-	 * bytes of the error line of git. */
+	 * bytes: the ref of a name of UTIL_WORD_MAX bytes, and the first
+	 * STORE_CAUSE bytes of the error line of git. The fake git writes the
+	 * line of git fast-import about a crash report after the error line,
+	 * and the cause is the error line (store_cause()). */
+	static_assert(STORE_CAUSE == 200, "the reason below is 101 + 200 bytes");
 	char name[MEMBER_NAME], text[MEMBER_LOGIN], ref[MEMBER_REF], reason[512];
 	memset(name, 'n', sizeof name - 1);
 	name[sizeof name - 1] = '\0';

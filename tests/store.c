@@ -828,6 +828,48 @@ test_common (char const *parent)
 	}
 }
 
+/* Returns true if store_cause() of the @p len bytes at @p out is @p cause. */
+static bool
+cause_is (char const *out,
+          size_t      len,
+          char const *cause)
+{
+	struct cstr_view const got = store_cause((struct span){ (unsigned char *)out, len });
+	return cstr_view_equal(got, cstr_view(cause));
+}
+
+/* store_cause() returns the last line of the output of git without its
+ * line end. It returns the line before a last line about the crash report
+ * of git fast-import. It returns an empty view for an output without an
+ * error line, and it cuts a line of more than STORE_CAUSE bytes at the end
+ * of a UTF-8 character.
+ */
+static void
+test_cause (void)
+{
+	static char const one[] = "fatal: boom";
+	static char const two[] = "error: first\nfatal: second\n\n";
+	static char const crash[] = "fatal: third\nfast-import: dumping crash report to "
+	                            "/x/fast_import_crash_1\n";
+	static char const alone[] = "fast-import: dumping crash report to /x\n";
+	CHECK(cause_is(one, sizeof one - 1, "fatal: boom"));
+	CHECK(cause_is(two, sizeof two - 1, "fatal: second"));
+	CHECK(cause_is(crash, sizeof crash - 1, "fatal: third"));
+	CHECK(cause_is(alone, sizeof alone - 1, ""));
+	CHECK(cause_is("\n\n", 2, "") && !store_cause((struct span){}).len);
+	/* The two bytes of U+00E9 are at STORE_CAUSE - 1 and STORE_CAUSE. */
+	char wide[STORE_CAUSE + 8], cut[STORE_CAUSE];
+	memset(wide, 'x', sizeof wide);
+	memcpy(wide + STORE_CAUSE - 1, "\xc3\xa9", 2);
+	memset(cut, 'x', sizeof cut - 1);
+	cut[sizeof cut - 1] = '\0';
+	CHECK(cause_is(wide, sizeof wide, cut));
+	memset(wide, 'x', sizeof wide);
+	struct cstr_view const whole = store_cause((struct span){ (unsigned char *)wide,
+	                                                          sizeof wide });
+	CHECK(whole.len == STORE_CAUSE && whole.data == wide);
+}
+
 /* store_run() runs git on the calling thread, after the lock check of a
  * commit, appends the output to its buffer, and writes how git ended. The
  * ref refs/heads/notes/t of @p store is at the commit @p tip.
@@ -1235,13 +1277,18 @@ test_git (char const *path)
 	           (struct span){}, out, sizeof out, &len));
 	CHECK(len && !out[len - 1]);
 	SAME(out, len - 1, "100644 blob f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f       3\tc/d");
-	/* git refuses a blob that the repository does not have. */
+	/* git refuses a blob that is not in the repository. The cause is the
+	 * error line of git, not the line about the crash report that git
+	 * fast-import writes after the error. */
 	CHECK(!oid_init(&blob, CSTR_VIEW(A)));
 	CHECK(!store_part_blob(&files, CSTR_VIEW("e"), &blob));
 	cited.files = buf_peek(&files);
 	cited.tip = &u;
 	CHECK(commit_run(store, &cited, &c4, out, sizeof out, &len) > 0);
 	buf_fini(&files);
+	struct cstr_view const refused = store_cause((struct span){ (unsigned char *)out, len });
+	CHECK(cstr_view_starts(refused, CSTR_VIEW("fatal: ")) &&
+	      !memchr(refused.data, '\n', refused.len));
 
 	/* A commit without file parts has the tree of its parent. */
 	commit.message = CSTR_VIEW("Keep");
@@ -1375,6 +1422,7 @@ main (int    argc,
 	test_trailer();
 	test_object();
 	test_check();
+	test_cause();
 	test_git(argv[1]);
 	return check_report("store");
 }

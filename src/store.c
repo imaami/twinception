@@ -358,6 +358,19 @@ store_raced (struct span out)
 	return false;
 }
 
+struct cstr_view
+store_cause (struct span out)
+{
+	struct cstr_view text = { (char const *)out.ptr, out.len };
+	struct cstr_view line = cstr_view_last_line(text);
+	if (cstr_view_starts(line, CSTR_VIEW("fast-import: dumping crash report to "))) {
+		text.len = (size_t)(line.data - text.data);
+		line = cstr_view_last_line(text);
+	}
+	line.len = util_clip(line.data, line.len, STORE_CAUSE);
+	return line;
+}
+
 enum store_kind
 store_kind (struct cstr_view  line,
             struct oid       *oid,

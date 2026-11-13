@@ -402,10 +402,10 @@ member_records_parse (struct member_records *r)
  * @p e is 0. @p e is the error that kept git from running or its output
  * from being read, such as an error of store_run(), or 0. Otherwise the
  * function returns EIO, and writes to the @p len bytes at @p why that
- * askai could not @p verb @p object, and then the cause. The cause is the
- * last line of @p out, the errors of a git that writes. Without that line,
- * the cause is the text of @p e if git did not run or exited with status
- * 0, and else why git failed, as child_end_why() writes it.
+ * askai could not @p verb @p object, and then the cause. The cause is
+ * store_cause() of @p out, the output of a git that writes. If that view
+ * is empty, the cause is the text of @p e if git did not run or exited
+ * with status 0, and else why git failed, as child_end_why() writes it.
  */
 static int
 member_git_result (char                   *why,
@@ -420,12 +420,10 @@ member_git_result (char                   *why,
 	if (!e && !status)
 		return 0;
 	size_t const at = util_format(why, len, "Could not %s %s: ", verb, object);
-	struct cstr_view const line = cstr_view_last_line((struct cstr_view){ (char const *)out.ptr,
-	                                                                       out.len });
+	struct cstr_view const cause = store_cause(out);
 	/* end->code is 0 if git did not run. */
-	if (line.len)
-		util_format(why + at, len - at, "%.*s", (int)util_clip(line.data, line.len, 200),
-		            line.data);
+	if (cause.len)
+		util_format(why + at, len - at, "%.*s", (int)cause.len, cause.data);
 	else if (e && (!end->code || !status))
 		util_format(why + at, len - at, "%s.", strerror(e));
 	else
