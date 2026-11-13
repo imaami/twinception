@@ -2705,7 +2705,7 @@ httpd_home_take (struct httpd_home             *home,
 	static_assert(_Generic((uid_t)0, uint32_t: true, default: false));
 	/* A Unix socket's client is on this machine, and counts as its user,
 	 * against the cap. */
-	struct stream_peer addr = { { UINT64_MAX } };
+	struct stream_peer addr = stream_peer(UINT64_MAX, 0);
 	struct ucred cred;
 	struct ucred const *user = nullptr;
 	uint64_t peer = CONN_LOCAL | CONN_UDS;

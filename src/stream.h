@@ -27,6 +27,7 @@
 #include <stdint.h>
 
 #include "buf.h"
+#include "compat.h"
 #include "policy.h"
 
 /** The body length of a request or response not known up front. */
@@ -115,6 +116,16 @@ struct stream_app {
 struct stream_peer {
 	uint64_t key[2];
 };
+
+/** Returns the key whose first word is @p high and whose second word is
+ *  @p low.
+ */
+static const_inline struct stream_peer
+stream_peer (uint64_t high,
+             uint64_t low)
+{
+	return (struct stream_peer){ .key = { high, low } };
+}
 
 /** Returns true if @p a and @p b are the same key. */
 static inline bool

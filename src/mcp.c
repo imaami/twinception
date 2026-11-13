@@ -2911,7 +2911,7 @@ mcp_req_submit (struct mcp_req *req)
 	job->session = 0;
 	if (req->principal) {
 		job->principal = req->principal;
-		job->peer = (struct stream_peer){ { UINT64_MAX, UINT64_MAX } };
+		job->peer = stream_peer(UINT64_MAX, UINT64_MAX);
 	} else {
 		job->peer = s->peer;
 		e = mcp_key(job, s->ops->field(s, F_SESSION));
