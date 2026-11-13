@@ -84,6 +84,7 @@
 #include "child.h"
 #include "clk.h"
 #include "code.h"
+#include "compat.h"
 #include "config.h"
 #include "dstr.h"
 #include "findings.h"
@@ -317,6 +318,15 @@ struct mcp_offer {
 	struct dstr listed;
 	struct dstr lent;
 };
+
+/* Returns the texts of a tool before mcp_static_build() writes them. Both
+ * definitions are the empty string.
+ */
+static force_inline struct mcp_offer
+mcp_offer (void)
+{
+	return (struct mcp_offer){ .listed = DSTR_INIT, .lent = DSTR_INIT };
+}
 
 /* Each member is a mask of the ids of tools in cfg->tools_upstream. by[l]
  * contains the tools with the lending rule l (enum mcp_lend), of[k] the
@@ -8663,7 +8673,7 @@ mcp_static_create (struct config const    *cfg,
 		st->plugins[i] = mcp_static_plugin(st, reg->plugins[i].plugin, manual, git);
 	/* A zeroed dstr is not an empty string (dstr.h). */
 	for (uint32_t id = 0; id < reg->n_tools; ++id)
-		st->offers[id] = (struct mcp_offer){ DSTR_INIT, DSTR_INIT };
+		st->offers[id] = mcp_offer();
 	if (cfg->flags & CFG_UPSTREAM_TOOLS && members && (*e = mcp_static_uploads(st))) {
 		mcp_static_destroy(&st);
 		return nullptr;
