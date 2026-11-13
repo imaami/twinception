@@ -1130,15 +1130,24 @@ cxi_parse_name (struct cxi *x,
 	return 0;
 }
 
+/* Returns the struct or union @p c, or the struct or union around @p c
+ * that is not an anonymous member of another one.
+ */
+static CXCursor
+cxi_record_around (CXCursor c)
+{
+	while (clang_Cursor_isAnonymousRecordDecl(c))
+		c = clang_getCursorSemanticParent(c);
+	return c;
+}
+
 /* Appends the field @p c with its place in the outermost named record. */
 static void
 cxi_member (struct cxi *x,
             CXCursor    c)
 {
 	CXCursor const parent = clang_getCursorSemanticParent(c);
-	CXCursor outer = parent;
-	while (clang_Cursor_isAnonymousRecordDecl(outer))
-		outer = clang_getCursorSemanticParent(outer);
+	CXCursor const outer = cxi_record_around(parent);
 	CXType const record = clang_getCursorType(outer);
 	CXType const type = clang_getCursorType(c);
 	CXString name = clang_getCursorSpelling(c);
