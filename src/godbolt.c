@@ -581,8 +581,8 @@ static struct godbolt_recipe const godbolt_recipes[GODBOLT_TOOLS][GODBOLT_DRIVER
 #undef GODBOLT_PP
 
 /* struct godbolt_args contains the arguments of a call after the checks.
- * godbolt_args_read() stores views into the JSON arguments of the call,
- * and godbolt_create() copies the texts to the blob of struct godbolt.
+ * godbolt_args() stores views into the JSON arguments of the call, and
+ * godbolt_create() copies the texts to the blob of struct godbolt.
  */
 struct godbolt_args {
 	struct cstr_view ids[GODBOLT_IDS];
@@ -2671,22 +2671,24 @@ godbolt_args_set (struct godbolt_args *a,
 }
 
 /* Checks the arguments @p args of the call of the tool @p tool in
- * @p slot, and reads them into @p a. If @p cfg turns links off, the
- * function refuses the argument share. Returns 0, or EINVAL after it has
- * ended the call with a text that says which argument is wrong.
+ * @p slot, and returns them. If @p cfg turns links off, the function
+ * refuses the argument share. The function stores 0 in @p *e if every
+ * argument is right. Otherwise it ends the call with a text about the
+ * wrong argument, stores EINVAL in @p *e, and returns arguments that are
+ * not complete.
  */
-static int
-godbolt_args_read (struct godbolt_args         *a,
-                   struct json_object          *args,
-                   enum godbolt_tool            tool,
-                   struct godbolt_config const *cfg,
-                   struct mcp_slot             *slot)
+static struct godbolt_args
+godbolt_args (struct json_object          *args,
+              enum godbolt_tool            tool,
+              struct godbolt_config const *cfg,
+              struct mcp_slot             *slot,
+              int                         *e)
 {
 	struct godbolt_params const *t = &godbolt_params[tool];
 	uint32_t const off = cfg->share == GODBOLT_SHARE_OFF ? 1u << GODBOLT_ARG_SHARE : 0;
 	/* godbolt_catalog requires the argument action, and the other tools
 	 * read the list of compilers. */
-	*a = (struct godbolt_args){
+	struct godbolt_args a = {
 		.strings = { CSTR_VIEW("") },
 		.language = CSTR_VIEW("c"),
 		.limit = GODBOLT_LIMIT,
@@ -2694,9 +2696,14 @@ godbolt_args_read (struct godbolt_args         *a,
 		.action = GODBOLT_COMPILERS,
 		.flags = tool == GODBOLT_COMPILE ? GODBOLT_SITE_FILTERS : 0
 	};
-	if (args && !json_object_is_type(args, json_type_object))
-		return mcp_slot_tell(slot, CSTR_VIEW("The arguments must be a JSON object."),
-		                     TOOL_FAILED), EINVAL;
+	/* The call is refused before every return statement except the last
+	 * one. */
+	*e = EINVAL;
+	if (args && !json_object_is_type(args, json_type_object)) {
+		mcp_slot_tell(slot, CSTR_VIEW("The arguments must be a JSON object."),
+		              TOOL_FAILED);
+		return a;
+	}
 	struct json_object *of[array_size(godbolt_arg_names)] = {};
 	uint64_t seen;
 	struct cstr_view other = {};
@@ -2708,32 +2715,39 @@ godbolt_args_read (struct godbolt_args         *a,
 		else
 			mcp_slot_tellf(slot, TOOL_FAILED, "%.*s is not an argument of the tool.",
 			               (int)other.len, other.data);
-		return EINVAL;
+		return a;
 	}
 	for (uint64_t m = seen; m; m &= m - 1) {
 		size_t const i = stdc_trailing_zeros(m);
-		if (godbolt_args_set(a, (enum godbolt_arg)i, of[i]))
-			return mcp_slot_tell(slot, godbolt_arg_rules[i], TOOL_FAILED), EINVAL;
+		if (godbolt_args_set(&a, (enum godbolt_arg)i, of[i])) {
+			mcp_slot_tell(slot, godbolt_arg_rules[i], TOOL_FAILED);
+			return a;
+		}
 	}
 	uint32_t const missing = t->needs & ~(uint32_t)seen;
-	if (missing)
-		return mcp_slot_tellf(slot, TOOL_FAILED, "The argument %s is required.",
-		                      godbolt_arg_names[stdc_trailing_zeros(missing)].data), EINVAL;
-	/* The bits of kind, family and architecture are adjacent. */
-	if (a->action == GODBOLT_LANGUAGES && seen >> GODBOLT_ARG_KIND & 7)
-		return mcp_slot_tell(slot, CSTR_VIEW("kind, family and architecture are not valid "
-		                                     "with action languages."),
-		                     TOOL_FAILED), EINVAL;
-	if ((uint32_t)a->n_ids * a->n_strings > GODBOLT_JOBS)
-		return mcp_slot_tell(slot, CSTR_VIEW("The number of compilers times the number of "
-		                                     "strings in args must be at most 32."),
-		                     TOOL_FAILED), EINVAL;
-	/* ids[0] is filled from the list of languages. */
-	if (tool != GODBOLT_CATALOG && !a->n_ids) {
-		a->n_ids = 1;
-		a->action = GODBOLT_LANGUAGES;
+	if (missing) {
+		mcp_slot_tellf(slot, TOOL_FAILED, "The argument %s is required.",
+		               godbolt_arg_names[stdc_trailing_zeros(missing)].data);
+		return a;
 	}
-	return 0;
+	/* The bits of kind, family and architecture are adjacent. */
+	if (a.action == GODBOLT_LANGUAGES && seen >> GODBOLT_ARG_KIND & 7) {
+		mcp_slot_tell(slot, CSTR_VIEW("kind, family and architecture are not valid "
+		                              "with action languages."), TOOL_FAILED);
+		return a;
+	}
+	if ((uint32_t)a.n_ids * a.n_strings > GODBOLT_JOBS) {
+		mcp_slot_tell(slot, CSTR_VIEW("The number of compilers times the number of "
+		                              "strings in args must be at most 32."), TOOL_FAILED);
+		return a;
+	}
+	/* ids[0] is filled from the list of languages. */
+	if (tool != GODBOLT_CATALOG && !a.n_ids) {
+		a.n_ids = 1;
+		a.action = GODBOLT_LANGUAGES;
+	}
+	*e = 0;
+	return a;
 }
 
 /* Copies @p t to *@p p, advances *@p p past the copy, and returns the
@@ -2831,13 +2845,11 @@ godbolt_start (struct mcp_slot    *slot,
 		               "because of an internal error.");
 		return;
 	}
-	struct godbolt_args a;
-	/* After EINVAL, godbolt_args_read() has ended the call. */
-	if (godbolt_args_read(&a, args, tool, cfg, slot))
+	int e = 0;
+	struct godbolt_args const a = godbolt_args(args, tool, cfg, slot, &e);
+	/* godbolt_args() and mcp_slot_offset() end the call if they fail. */
+	if (e || mcp_slot_offset(slot, args))
 		return;
-	if (mcp_slot_offset(slot, args))
-		return;
-	int e;
 	struct godbolt *call = godbolt_create(&a, tool, loop, &e);
 	if (!call) {
 		mcp_slot_fail(slot, e);
