@@ -746,9 +746,12 @@ askai_shared_init (struct askai_shared *s,
 	/* A creator that fails writes its reason here before it returns. */
 	char why[512] = "";
 	int e;
-	if (cfg->notes && !(s->store = store_create(cfg->notes, why, sizeof why, &e))) {
-		fprintf(stderr, "--notes: %s: %s\n", cfg->notes, why);
-		return e;
+	if (cfg->notes) {
+		s->store = store_create(cfg->notes, why, sizeof why, &e);
+		if (!s->store) {
+			fprintf(stderr, "--notes: %s: %s\n", cfg->notes, why);
+			return e;
+		}
 	}
 	if (cfg->transcripts) {
 		if (cfg->notes && (e = askai_separate_repos(store_directory(s->store),
@@ -764,10 +767,13 @@ askai_shared_init (struct askai_shared *s,
 	}
 	/* The session and the record of the agent exist before any loop
 	 * starts, so that every member sees the agent. */
-	if (cfg->notes && !(s->members = member_registry_create(s->store, cfg->agent, cfg->service,
-	                                                        why, sizeof why, &e))) {
-		fprintf(stderr, "--notes: %s: %s\n", cfg->notes, why);
-		return e;
+	if (cfg->notes) {
+		s->members = member_registry_create(s->store, cfg->agent, cfg->service, why,
+		                                    sizeof why, &e);
+		if (!s->members) {
+			fprintf(stderr, "--notes: %s: %s\n", cfg->notes, why);
+			return e;
+		}
 	}
 	/* journal_key() copies the key that journal_create() read from
 	 * askai-journal/principal.key, so the principals stay the same across
