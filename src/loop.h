@@ -296,8 +296,8 @@ struct loop_lines {
 	size_t start;  /**< where the next line begins */
 };
 
-/** Returns the state in which loop_lines_next() looked at the first
- *  @p at bytes of the text and the next line begins at the offset
+/** Returns the state after loop_lines_next() has scanned the first
+ *  @p at bytes of the text, with the next line beginning at the offset
  *  @p start. loop_lines(0, 0) is the state at the start of the text.
  */
 static const_inline struct loop_lines
