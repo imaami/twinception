@@ -92,8 +92,9 @@ agenda_find (struct mcp_slot    *slot,
              struct json_object *args,
              uint32_t            tool)
 {
-	struct hexid id;
-	if (hexid_init(&id, jb_view(jb_get(args, "job")))) {
+	int e = 0;
+	struct hexid id = hexid(jb_view(jb_get(args, "job")), &e);
+	if (e) {
 		mcp_slot_tell(slot, CSTR_VIEW("The job argument must be the ID of a job that you "
 		                              "started."), TOOL_FAILED);
 		return nullptr;

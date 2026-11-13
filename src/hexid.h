@@ -58,6 +58,18 @@ hexid_init (struct hexid     *id,
 	return 0;
 }
 
+/** Returns the id @p hex and stores 0 in @p *e. If hexid_valid() rejects
+ *  @p hex, the function returns no id and stores EINVAL in @p *e.
+ */
+static force_inline struct hexid
+hexid (struct cstr_view  hex,
+       int              *e)
+{
+	struct hexid id = {};
+	*e = hexid_init(&id, hex);
+	return id;
+}
+
 /** Returns a view of the digits of @p id, which is empty for no id. */
 static inline struct cstr_view
 hexid_view (struct hexid const *id)

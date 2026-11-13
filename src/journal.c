@@ -496,8 +496,8 @@ journal_jobs_scan (struct journal *j)
 	if (!directory)
 		return e;
 	for (struct dirent *entry; (entry = util_dir_next(directory, &e)); ) {
-		struct hexid id;
-		if (hexid_init(&id, cstr_view(entry->d_name)))
+		struct hexid id = hexid(cstr_view(entry->d_name), &e);
+		if (e)
 			continue;
 		if (j->n_jobs == JOURNAL_JOBS) {
 			e = EFBIG;

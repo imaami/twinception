@@ -5,7 +5,8 @@
  *  with a fake clock, as tests/turn.c does. The ledger's source is named by
  *  its path, because "ledger.c" alone would name this file. One test checks
  *  the status of the ledger that agenda_job_status() (src/agenda.h) returns
- *  for a job of the turns. */
+ *  for a job of the turns. One test checks hexid() and hexid_init()
+ *  (src/hexid.h), which make the id of a record from its digits. */
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
@@ -224,6 +225,42 @@ test_invalid (struct ledger *l)
 	CHECK(!l->tasks.n && !test_owners(l) && !l->owners.n);
 }
 
+/* hexid() returns the id of 32 lowercase hexadecimal digits and stores 0.
+ * For any other text, hexid() stores EINVAL and returns no id: every byte
+ * of the object is zero. A later call stores 0 again. hexid_init() returns
+ * the same error numbers, and an object that contained an id is all zero
+ * after EINVAL. */
+static void
+test_hexid (void)
+{
+	static struct cstr_view const bad[] = {
+		{ nullptr, 0 },
+		CSTR_VIEW_INIT(""),
+		CSTR_VIEW_INIT("0123456789abcdef0123456789abcde"),
+		CSTR_VIEW_INIT("0123456789abcdef0123456789abcdef0"),
+		CSTR_VIEW_INIT("0123456789ABCDEF0123456789abcdef"),
+		CSTR_VIEW_INIT("0123456789abcdef0123456789abcdeg"),
+		CSTR_VIEW_INIT("0123456789abcdef 123456789abcdef"),
+	};
+	static struct hexid const none = {};
+	struct cstr_view const text = CSTR_VIEW("0123456789abcdef0123456789abcdef");
+	int e = -1;
+	struct hexid const id = hexid(text, &e);
+	CHECK(!e && !strcmp(id.hex, text.data) && cstr_view_equal(hexid_view(&id), text));
+	struct hexid same;
+	memset(&same, 'x', sizeof same);
+	CHECK(!hexid_init(&same, text) && !memcmp(&same, &id, sizeof id) &&
+	      hexid_equal(&same, &id));
+	for (size_t i = 0; i < array_size(bad); ++i) {
+		e = 0;
+		struct hexid const got = hexid(bad[i], &e);
+		CHECK(e == EINVAL && !memcmp(&got, &none, sizeof none) && !hexid_view(&got).len);
+		CHECK(hexid_init(&same, bad[i]) == EINVAL && !memcmp(&same, &none, sizeof none));
+		same = hexid(text, &e);
+		CHECK(!e && hexid_equal(&same, &id));
+	}
+}
+
 /* A restored record preserves its identity, timestamps and copied result.
  * The current handle receives cancellation for a working record; no
  * restored id can replace any owner's record. */
@@ -235,8 +272,8 @@ test_restore (void)
 	CHECK(l && !e);
 	if (!l)
 		return;
-	struct hexid key;
-	CHECK(!hexid_init(&key, CSTR_VIEW("0123456789abcdef0123456789abcdef")));
+	struct hexid key = hexid(CSTR_VIEW("0123456789abcdef0123456789abcdef"), &e);
+	CHECK(!e);
 	unsigned char result[] = "\"result\":{\"content\":[]}}";
 	struct span body = span(result, sizeof result - 1);
 	struct ledger_wait *w = test_wait(l, A, &e);
@@ -940,6 +977,7 @@ main (void)
 		return 1;
 	}
 	test_invalid(l);
+	test_hexid();
 	test_restore();
 	test_restore_limits();
 	test_remove();

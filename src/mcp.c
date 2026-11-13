@@ -6068,9 +6068,9 @@ mcp_recover_back (struct loop           *loop,
 		goto out;
 	struct mcp_static const *st = req->mcp->st;
 	uint64_t const owner = req->owner;
-	struct hexid id;
-	struct ledger_task *found = hexid_init(&id, jb_view(jb_get(args, "job"))) ? nullptr
-	                          : ledger_find(st->ledger, owner, &id);
+	int e = 0;
+	struct hexid id = hexid(jb_view(jb_get(args, "job")), &e);
+	struct ledger_task *found = e ? nullptr : ledger_find(st->ledger, owner, &id);
 	if (found) {
 		ledger_task_put(found);
 		w.handler(&req->self, args);
@@ -6105,7 +6105,7 @@ mcp_recover_back (struct loop           *loop,
 		struct cstr_view const text = jb_view(jb_get(result, "result"));
 		int64_t status = jb_int(jb_get(result, "status"), 0);
 		struct ledger_task *task = nullptr;
-		int e = EINVAL;
+		e = EINVAL;
 		if (text.data && status >= LEDGER_COMPLETED && status <= LEDGER_CANCELLED)
 			task = ledger_restore(st->ledger, owner, LEDGER_JOB, req->self.tool, &id,
 			                       created, jb_uint(jb_get(result, "ended"), 0),
@@ -6186,7 +6186,7 @@ mcp_recover_back (struct loop           *loop,
 	uint64_t prompt_at = jb_uint(jb_get(state, "prompt_at"), 0);
 	struct json_object *names = jb_get(state, "lent");
 	/* The calls of the earlier turns were made before the restart. */
-	int e = seen_resume(&req->seen, jb_get(state, "calls"), jb_get(state, "seen"));
+	e = seen_resume(&req->seen, jb_get(state, "calls"), jb_get(state, "seen"));
 	if (e == EINVAL || !request.len || turn < 1 || turn > UINT32_MAX || !prompt_at ||
 	    prompt_at > request.len || !json_object_is_type(names, json_type_array)) {
 		problem = CSTR_VIEW("The saved request of the job is invalid. No provider request "
@@ -6275,15 +6275,15 @@ mcp_req_recover (struct mcp_req     *req,
                  struct json_object *args,
                  tool_start_fn      *handler)
 {
-	struct hexid id;
-	if (!req->mcp->st->journal || hexid_init(&id, jb_view(jb_get(args, "job"))))
+	int e = 0;
+	struct hexid id = hexid(jb_view(jb_get(args, "job")), &e);
+	if (!req->mcp->st->journal || e)
 		return false;
 	struct ledger_task *task = ledger_find(req->mcp->st->ledger, req->owner, &id);
 	if (task) {
 		ledger_task_put(task);
 		return false;
 	}
-	int e;
 	struct mcp_journal_wait *w = mcp_req_journal_wait(req, &e);
 	if (w) {
 		w->args = json_object_get(args);
@@ -6973,9 +6973,9 @@ mcp_req_tasks (struct mcp_req     *req,
 		                    "\":{}}}}"), 1);
 		return;
 	}
-	struct hexid id;
-	struct ledger_task *task = hexid_init(&id, jb_view(jb_get(params, "taskId"))) ? nullptr
-	                         : ledger_find(st->ledger, req->owner, &id);
+	int e = 0;
+	struct hexid id = hexid(jb_view(jb_get(params, "taskId")), &e);
+	struct ledger_task *task = e ? nullptr : ledger_find(st->ledger, req->owner, &id);
 	if (!task) {
 		mcp_req_error(req, 200, INVALID_PARAMS,
 		              FRAG("Failed to retrieve task: Task not found"), nullptr, 0);
