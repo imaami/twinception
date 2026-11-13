@@ -10552,6 +10552,107 @@ lay_sum (struct holes *h)
 static int lay_dup;
 """
 
+# The source files for the calls of describe: calls_all contains one call of
+# each kind that describe prints in a way of its own.
+CODE_CALLS_H = """struct calls_ops {
+\tint (*op)(int);
+\tint (*table[2])(int);
+\tunion {
+\t\tint (*inner)(int);
+\t};
+};
+int calls_plain(int);
+int calls_wrapped(int);
+#define calls_wrapped(x) (calls_wrapped)(x)
+#define CALLS_ALIAS calls_plain
+#define CALLS_APPLY(f, x) f(x)
+#define CALLS_TWICE(e) ((e) + (e))
+int calls_int(int);
+int calls_long(long);
+#define calls_pick(x) _Generic((x), int: calls_int, long: calls_long)(x)
+int calls_a(int);
+int calls_b(int);
+#define calls_same(x) _Generic((x), int: calls_a, default: calls_b)(x)
+#define calls_value(x) _Generic((x), int: calls_a(x), default: calls_b(x))
+#define calls_choose(x) __builtin_choose_expr(sizeof (x) == 4, calls_a(x), calls_b(x))
+char *calls_find(char const *);
+#define calls_find(s) \\
+        _Generic(0 ? (s) : (void *)1, void const *: (char const *)(calls_find(s)), \\
+                 default: calls_find(s))
+#define CALLS_EACH(X) X(1) X(2)
+int (*calls_get(void))(int);
+void calls_fini(int *);
+#define calls_auto __attribute__((cleanup(calls_fini))) int
+"""
+
+CODE_CALLS_C = """#include "calls.h"
+
+static int (*calls_hook)(int);
+static int (*calls_table[2])(int);
+
+/* One call of each kind. */
+int
+calls_all (struct calls_ops *o, int (*cb)(int), int n, char const *s)
+{
+\tint r = calls_plain(n);
+\tr += (calls_plain)(n);
+\tr += (*calls_plain)(n);
+\tr += calls_wrapped(n);
+\tr += CALLS_ALIAS(n);
+\tr += CALLS_APPLY(calls_plain, n);
+\tr += CALLS_TWICE(calls_wrapped(n));
+\tr += o->op(n);
+\tr += (*o->op)(n);
+\tr += o->inner(n);
+\tr += o->table[1](n);
+\tr += cb(n);
+\tr += calls_hook(n);
+\tr += calls_table[n & 1](n);
+\tr += calls_pick(n);
+\tr += calls_same(n);
+\tr += (n ? calls_a : calls_b)(n);
+\tr += calls_value(n);
+\tr += calls_choose(n);
+\tr += calls_find(s) != 0;
+\tr += calls_a(n) ?: calls_b(n);
+\tr += (int)__builtin_expect(n, 1);
+\tr += (int)sizeof(calls_plain(n));
+\ttypeof(calls_plain(n)) t = calls_a(0);
+\tr += _Generic(calls_plain(n), int: 1, default: 2);
+\tr += (int)sizeof(char[calls_b(n)]);
+\tr += CALLS_TWICE(calls_plain(n) +
+\t                 calls_wrapped(n));
+\tr += __builtin_constant_p(calls_b(n));
+#define CALLS_ADD(i) r += calls_int(i);
+\tCALLS_EACH(CALLS_ADD)
+#undef CALLS_ADD
+\tr += (calls_plain ? calls_a : calls_b)(n);
+\tr += _Generic(&calls_a, int (*)(int): &calls_b, default: &calls_plain)(n);
+\tr += (n ? calls_a : (r ? calls_b : calls_plain))(n);
+\tr += calls_same(n);
+\tr += calls_get()(n);
+\tr += (&calls_plain)(n);
+\ttypeof(calls_get()) p = 0;
+\tr += __builtin_constant_p((n ? calls_a : calls_b)(n));
+\t__builtin_assume(calls_b(n) > 0);
+\ttypeof
+\t\t(calls_plain(n)) u = 0;
+\tcalls_auto c = 0;
+\tint d __attribute__((cleanup(calls_fini))) = 0;
+\tvoid calls_local(int *);
+\tint e [[gnu::cleanup(calls_local)]] = 0;
+\treturn r + t + u + c + d + e + (p != 0);
+}
+
+/* Calls in code that the program does not evaluate, and no other call. */
+int
+calls_none (int n)
+{
+\treturn (int)sizeof(calls_plain(n)) + (int)_Alignof(typeof(calls_a(n))) +
+\t       (int)sizeof(({ calls_auto q = n; q; }));
+}
+"""
+
 
 def check_code(binary, up):
     """The code tool with --code REPO=FILE. With a fake helper next to a copy
@@ -10594,6 +10695,8 @@ def check_code(binary, up):
         write("src/unlisted.c", "int unlisted;\n")
         write("src/lay.h", CODE_LAY_H)
         write("src/lay.c", CODE_LAY_C)
+        write("src/calls.h", CODE_CALLS_H)
+        write("src/calls.c", CODE_CALLS_C)
         write("src/big.c", "struct big {\n" + "".join(f"\tint m{i};\n" for i in range(20000))
               + "};\nint big_size = sizeof (struct big);\n")
         write("src/leak.c", f'#include "{d}/outside/secret.h"\n')
@@ -10628,8 +10731,8 @@ def check_code(binary, up):
         with open(cdb, "w") as f:
             json.dump([{"directory": f"{d}/build", "file": f"{repo}/src/{c}",
                         "arguments": ["cc", f"-I{repo}", f"-I{d}", "-c", f"{repo}/src/{c}"]}
-                       for c in ("a.c", "b.c", "pragma.c", "deep.c", "lay.c", "big.c",
-                                 "leak.c", "far.c", "wt.c", "warn.c")], f)
+                       for c in ("a.c", "b.c", "pragma.c", "deep.c", "lay.c", "calls.c",
+                                 "big.c", "leak.c", "far.c", "wt.c", "warn.c")], f)
 
         def call(ai, error=False, conn=None, **arguments):
             status, _, body = ai.rpc("tools/call", {"name": "code", "arguments": arguments},
@@ -11063,6 +11166,111 @@ def check_code_describe(binary, up, call, head, d, cdb):
                       "17\tint\n18\tlay_sum (struct holes *h)\n"), text), text
         assert describe(name="lay_add").split("\n")[2:4] == [
             "declared src/lay.h:46", "defined src/lay.c:10"]
+        # The calls of a function. A row is the place of the first call of
+        # a callee, the lines of the later calls, and the callee. A call in
+        # parentheses, behind * or & or as a macro argument is in the row of
+        # the function. A call from the body of a macro is in a row with
+        # the macro that is used in the file: the innermost one that is
+        # used, or the outermost one if the macro is passed as an argument.
+        # An indirect call is in the row of the member, variable or
+        # parameter of the function pointer, and a call of the result of a
+        # call is in the row of an expression. Of a _Generic selection, the
+        # selected association is known if it alone is of the type of the
+        # selection. Of ?:, also inside an operand of ?:, and of a _Generic
+        # selection of two functions of one type, the functions are in the
+        # row, but not the function of the condition or of the controlling
+        # expression. The condition and the operand of
+        # __builtin_choose_expr that is not chosen, an association that is
+        # not selected, and the operands of sizeof, typeof and _Generic are
+        # counted in the closing line, also the operand of a typeof on the
+        # line before. clang does not evaluate the argument of
+        # __builtin_constant_p or of __builtin_assume for side effects, so
+        # the row of a call in the argument ends as the row of a call in
+        # an operand of sizeof that is not a constant, and as the row of a
+        # call in an operand of typeof that is a pointer. A call that
+        # libclang visits more than once, such as the first operand of ?:
+        # without a second, is one call. The line of a call in a macro use
+        # of two lines is the line where the macro use starts. The function
+        # of the attribute cleanup of a variable is in a row at the line of
+        # the variable, with the macro that the attribute is written
+        # through. The row contains no function if no declaration at file
+        # scope declares the function.
+        calls = call(ai, repo="proj", action="describe", path="src/calls.c", name="calls_all")
+        assert calls == (
+            f"[Repository proj, file src/calls.c at commit {head}. function calls_all in the "
+            "translation unit.]\n"
+            "function calls_all: int (struct calls_ops *, int (*)(int), int, const char *)\n"
+            "defined src/calls.c:8\n"
+            "calls:\n"
+            "  src/calls.c:10,11,12,15,36,47 calls_plain (src/calls.h:8)\n"
+            "  src/calls.c:13,16,36 calls_wrapped (src/calls.h:9), through the macro "
+            "calls_wrapped (src/calls.h:10)\n"
+            "  src/calls.c:14 calls_plain (src/calls.h:8), through the macro CALLS_ALIAS "
+            "(src/calls.h:11)\n"
+            "  src/calls.c:17,18 indirect, through the member op of struct calls_ops "
+            "(src/calls.h:2)\n"
+            "  src/calls.c:19 indirect, through the member inner of struct calls_ops "
+            "(src/calls.h:5)\n"
+            "  src/calls.c:20 indirect, through an element of the member table of struct "
+            "calls_ops (src/calls.h:3)\n"
+            "  src/calls.c:21 indirect, through the parameter cb (src/calls.c:8)\n"
+            "  src/calls.c:22 indirect, through the variable calls_hook (src/calls.c:3)\n"
+            "  src/calls.c:23 indirect, through an element of the variable calls_table "
+            "(src/calls.c:4)\n"
+            "  src/calls.c:24 calls_int (src/calls.h:14), through the macro calls_pick "
+            "(src/calls.h:16)\n"
+            "  src/calls.c:25,45 calls_a (src/calls.h:17) or calls_b (src/calls.h:18), through "
+            "the macro calls_same (src/calls.h:19). The tool cannot tell which function "
+            "is called.\n"
+            "  src/calls.c:26,42 calls_a (src/calls.h:17) or calls_b (src/calls.h:18). The "
+            "tool cannot tell which function is called.\n"
+            "  src/calls.c:27 calls_a (src/calls.h:17), through the macro calls_value "
+            "(src/calls.h:20). The tool cannot tell if the program evaluates the call.\n"
+            "  src/calls.c:27 calls_b (src/calls.h:18), through the macro calls_value "
+            "(src/calls.h:20). The tool cannot tell if the program evaluates the call.\n"
+            "  src/calls.c:28 calls_a (src/calls.h:17), through the macro calls_choose "
+            "(src/calls.h:21)\n"
+            "  src/calls.c:29 calls_find (src/calls.h:22), through the macro calls_find "
+            "(src/calls.h:23)\n"
+            "  src/calls.c:30,33 calls_a (src/calls.h:17)\n"
+            "  src/calls.c:30 calls_b (src/calls.h:18)\n"
+            "  src/calls.c:31 __builtin_expect (builtin)\n"
+            "  src/calls.c:35,38,50 calls_b (src/calls.h:18). The tool cannot tell if the "
+            "program evaluates the call.\n"
+            "  src/calls.c:38,49 __builtin_constant_p (builtin)\n"
+            "  src/calls.c:40 calls_int (src/calls.h:14), through the macro CALLS_EACH "
+            "(src/calls.h:26)\n"
+            "  src/calls.c:43 calls_b (src/calls.h:18) or calls_plain (src/calls.h:8). The "
+            "tool cannot tell which function is called.\n"
+            "  src/calls.c:44 calls_a (src/calls.h:17) or calls_b (src/calls.h:18) or "
+            "calls_plain (src/calls.h:8). The tool cannot tell which function is called.\n"
+            "  src/calls.c:46 indirect, through an expression\n"
+            "  src/calls.c:46 calls_get (src/calls.h:27)\n"
+            "  src/calls.c:48 calls_get (src/calls.h:27). The tool cannot tell if the "
+            "program evaluates the call.\n"
+            "  src/calls.c:49 calls_a (src/calls.h:17) or calls_b (src/calls.h:18). The tool "
+            "cannot tell which function is called. The tool cannot tell if the program "
+            "evaluates the call.\n"
+            "  src/calls.c:50 __builtin_assume (builtin)\n"
+            "  src/calls.c:53 calls_fini (src/calls.h:28), at the end of the scope of a "
+            "variable (attribute cleanup), through the macro calls_auto (src/calls.h:29)\n"
+            "  src/calls.c:54 calls_fini (src/calls.h:28), at the end of the scope of a "
+            "variable (attribute cleanup)\n"
+            "  src/calls.c:56 a function, at the end of the scope of a variable (attribute "
+            "cleanup). The tool cannot tell which function is called.\n"
+            "[The program does not evaluate 6 call expressions at "
+            "src/calls.c:28,29,32,33,34,52. The rows do not contain these call "
+            "expressions.]\n"
+            "src/calls.c lines 6 to 8 of 66:\n6\t/* One call of each kind. */\n7\tint\n"
+            "8\tcalls_all (struct calls_ops *o, int (*cb)(int), int n, char const *s)\n"), calls
+        # The answer for a function whose calls are all in code that is not
+        # evaluated contains no rows, and no row for a variable in such
+        # code.
+        calls = call(ai, repo="proj", action="describe", path="src/calls.c", name="calls_none")
+        assert calls.split("\n")[2:4] == [
+            "defined src/calls.c:62",
+            "[The program does not evaluate 2 call expressions at src/calls.c:64. The rows "
+            "do not contain these call expressions.]"], calls
         assert describe(name="LAY_B").split("\n")[1:3] == [
             "enumerator LAY_B of enum lay_kind: 5", "defined src/lay.h:41"]
         # A macro, and its value at the use on a given line. A local

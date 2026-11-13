@@ -4,7 +4,7 @@
  * an int returns 0, EINVAL with a tool error in the answer, or another
  * error number.
  */
-#define _GNU_SOURCE /* clearenv() */
+#define _GNU_SOURCE /* clearenv(), memmem() */
 #include <clang-c/Index.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -358,6 +358,15 @@ cxi_list_push (struct cxi_list *list,
 	return true;
 }
 
+/* Collects the children of a cursor into the cxi_list at @p data. */
+static enum CXChildVisitResult
+cxi_child (CXCursor     c,
+           CXCursor,
+           CXClientData data)
+{
+	return cxi_list_push(data, c) ? CXChildVisit_Continue : CXChildVisit_Break;
+}
+
 /* Collects the names that the main file declares or defines. */
 static enum CXChildVisitResult
 cxi_declared (CXCursor     c,
@@ -540,66 +549,6 @@ cxi_declaration (struct cxi *x,
 		x->out.e = ENOMEM;
 	dstr_cleanup(&norm);
 	clang_disposeString(name);
-}
-
-static enum CXChildVisitResult
-cxi_call (CXCursor     c,
-          CXCursor,
-          CXClientData data)
-{
-	enum CXCursorKind const k = clang_getCursorKind(clang_getCursorReferenced(c));
-	bool const call = clang_getCursorKind(c) == CXCursor_CallExpr && k == CXCursor_FunctionDecl;
-	return !call || cxi_list_push(data, c) ? CXChildVisit_Recurse : CXChildVisit_Break;
-}
-
-static CXCursor
-cxi_callee (CXCursor c)
-{
-	return clang_getCanonicalCursor(clang_getCursorReferenced(c));
-}
-
-/* Appends the row of the function @p f to @p out. @p f is the callee of
- * calls->items[i]. The row contains the place of that call, the lines of
- * the later calls to @p f, the name of @p f and the place of its
- * declaration.
- */
-static void
-cxi_out_call (struct cxi_out        *out,
-              struct cxi_list const *calls,
-              size_t                 i,
-              CXCursor               f)
-{
-	CXSourceLocation const at = clang_getCursorLocation(calls->items[i]);
-	unsigned line = cxi_line(at);
-	cxi_out_place(out, "  ", at, "");
-	for (unsigned l; ++i < calls->n; ) {
-		l = cxi_line(clang_getCursorLocation(calls->items[i]));
-		if (!clang_equalCursors(cxi_callee(calls->items[i]), f) || l == line)
-			continue;
-		cxi_out_printf(out, ",%u", l);
-		line = l;
-	}
-	cxi_out_printf(out, " ");
-	cxi_out_clang(out, clang_getCursorSpelling(f));
-	cxi_out_place(out, " (", clang_getCursorLocation(f), ")\n");
-}
-
-static void
-cxi_out_calls (struct cxi_out *out,
-               CXCursor        c)
-{
-	struct cxi_list calls = cxi_list(out);
-	clang_visitChildren(c, cxi_call, &calls);
-	if (calls.n)
-		cxi_out_printf(out, "calls:\n");
-	for (size_t i = 0, j = 0; i < calls.n; ++i, j = 0) {
-		CXCursor const f = cxi_callee(calls.items[i]);
-		while (!clang_equalCursors(cxi_callee(calls.items[j]), f))
-			++j;
-		if (j == i)
-			cxi_out_call(out, &calls, i, f);
-	}
-	free(calls.items);
 }
 
 /* A record in a layout. padding, rows (left to print) and hidden (members
@@ -1219,6 +1168,643 @@ cxi_summary (struct cxi     *x,
 	cxi_layout(x, rows, clang_getCursorType(record));
 }
 
+/* How the program evaluates an expression of a function. The state of an
+ * expression is the larger of two states: the state of the expression
+ * that contains it, and the state of its place in that expression.
+ */
+enum cxi_state : uint32_t {
+	CXI_EVALUATED,    /* evaluated when the program reaches the code */
+	CXI_UNPROVEN,     /* the tool cannot tell if the program evaluates it */
+	CXI_UNEVALUATED,  /* never evaluated, such as an operand of sizeof */
+};
+
+enum cxi_call_flag : uint32_t {
+	CXI_CALL_ELEMENT = 1U << 0,  /* the callee is an element of an array */
+	CXI_CALL_BUILTIN = 1U << 1,  /* the callee is a builtin function that no
+	                                file declares */
+	CXI_CALL_CLEANUP = 1U << 2,  /* the call is that of the attribute cleanup
+	                                of a variable */
+};
+
+/* A call of a function. at is the call expression, or the variable with
+ * the attribute cleanup: the program calls the function of the attribute
+ * at the end of the scope of the variable. The callees are the n
+ * declarations from first on in the member to of struct cxi_calls. One
+ * callee is the first declaration of a function, or of the field, variable
+ * or parameter of a function pointer. Several callees are the functions of
+ * which an expression selects one. n is 0 for any other callee. macro is
+ * the definition of the macro that the call is written through
+ * (cxi_macro()), or null. For a call that is CXI_UNEVALUATED, n is 0 and
+ * macro is null: the call is only counted.
+ */
+struct cxi_call {
+	CXCursor at;
+	CXCursor macro;
+	uint32_t first;
+	uint32_t n;
+	uint32_t state;  /* enum cxi_state */
+	uint32_t flags;  /* enum cxi_call_flag */
+};
+
+/* The calls of a function. to contains the callees of the calls (struct
+ * cxi_call). x is the call of askai-code.
+ */
+struct cxi_calls {
+	UTIL_ARRAY(struct cxi_call);
+	struct cxi_list  to;
+	struct cxi      *x;
+};
+
+/* Returns the calls of a function before cxi_calls_walk() collects them. A
+ * failed push sets the error of the answer of @p x.
+ */
+static force_inline struct cxi_calls
+cxi_calls (struct cxi *x)
+{
+	return (struct cxi_calls){ .to = cxi_list(&x->out), .x = x };
+}
+
+/* Returns the text of a file from the first token of @p c to the end of
+ * the file, and writes the text before the token to @p *before. The file
+ * is the one in which the token is written: for a token of the body of a
+ * macro, the file of the macro definition. Both texts are empty if the
+ * token is written in no file.
+ */
+static struct cstr_view
+cxi_spelling (CXTranslationUnit  tu,
+              CXCursor           c,
+              struct cstr_view  *before)
+{
+	CXFile file;
+	unsigned at;
+	clang_getSpellingLocation(clang_getRangeStart(clang_getCursorExtent(c)), &file, nullptr,
+	                          nullptr, &at);
+	size_t size = 0;
+	char const *text = file ? clang_getFileContents(tu, file, &size) : nullptr;
+	struct cstr_view const all = cstr_view_n(text, text ? size : 0);
+	*before = cstr_view_slice(all, 0, at);
+	return cstr_view_slice(all, at, SIZE_MAX);
+}
+
+/* Returns @p s without the white space at the start (cstr_view_space()). */
+static struct cstr_view
+cxi_skip_space (struct cstr_view s)
+{
+	while (s.len && cstr_view_space(*s.data))
+		s = cstr_view_slice(s, 1, SIZE_MAX);
+	return s;
+}
+
+/* Returns true if clang evaluates @p c to an integer constant, and writes
+ * to @p *nonzero whether the constant is not 0.
+ */
+static bool
+cxi_constant (CXCursor  c,
+              bool     *nonzero)
+{
+	CXEvalResult result = clang_Cursor_Evaluate(c);
+	bool const constant = result && clang_EvalResult_getKind(result) == CXEval_Int;
+	*nonzero = constant && clang_EvalResult_getAsLongLong(result);
+	if (result)
+		clang_EvalResult_dispose(result);
+	return constant;
+}
+
+/* Returns true if the expression @p c is of the canonical type @p type. */
+static bool
+cxi_of_type (CXCursor c,
+             CXType   type)
+{
+	return clang_equalTypes(clang_getCanonicalType(clang_getCursorType(c)), type);
+}
+
+/* Returns true if @p c, with the children @p kids, is a _Generic selection
+ * or a __builtin_choose_expr: the compiler selects one child, and the
+ * program evaluates no other child. Writes the index of the selected
+ * child to @p *chosen, or kids->n if the tool cannot prove which child
+ * that is. Writes 1 to @p *first if the first child is the condition or
+ * the controlling expression, which is never selected, else 0.
+ *
+ * No function of libclang returns the selected association of a _Generic
+ * selection. The selection is of the type of the selected association, so
+ * a child that alone is of that type is the selected one. The first child
+ * is known to be the controlling expression if its first token is written
+ * right after "_Generic (". In libclang, a __builtin_choose_expr is an
+ * unexposed expression of three children, the condition first.
+ */
+static bool
+cxi_selects (struct cxi            *x,
+             CXCursor               c,
+             struct cxi_list const *kids,
+             size_t                *first,
+             size_t                *chosen)
+{
+	enum CXCursorKind const k = clang_getCursorKind(c);
+	*first = 0;
+	*chosen = kids->n;
+	if (k != CXCursor_GenericSelectionExpr && (k != CXCursor_UnexposedExpr || kids->n != 3))
+		return false;
+	struct cstr_view before;
+	struct cstr_view rest = cxi_spelling(x->tu, c, &before);
+	size_t const word = cxi_ident(rest);
+	if (k == CXCursor_UnexposedExpr) {
+		bool nonzero;
+		if (!cstr_view_equal(cstr_view_slice(rest, 0, word),
+		                     CSTR_VIEW("__builtin_choose_expr")))
+			return false;
+		if (cxi_constant(kids->items[0], &nonzero))
+			*chosen = nonzero ? 1 : 2;
+		*first = 1;
+		return true;
+	}
+	rest = cxi_skip_space(cstr_view_slice(rest, word, SIZE_MAX));
+	rest = cxi_skip_space(cstr_view_slice(rest, rest.len && *rest.data == '(', SIZE_MAX));
+	*first = kids->n && rest.len &&
+	         cxi_spelling(x->tu, kids->items[0], &before).data == rest.data;
+	CXType const type = clang_getCanonicalType(clang_getCursorType(c));
+	size_t same = 0;
+	for (size_t i = *first; i < kids->n; ++i) {
+		if (!cxi_of_type(kids->items[i], type))
+			continue;
+		*chosen = i;
+		++same;
+	}
+	if (same != 1)
+		*chosen = kids->n;
+	return true;
+}
+
+/* Returns the state of @p c as an operand of typeof, or CXI_EVALUATED if
+ * @p c is none. The operand is an expression in parentheses, and the
+ * keyword is written before it with only white space between them. The
+ * program evaluates the operand only if the type of the operand is
+ * variably modified. A number, a struct, a union and an enum are not.
+ */
+static uint32_t
+cxi_typeof (struct cxi *x,
+            CXCursor    c)
+{
+	static struct cstr_view const words[] = {
+		CSTR_VIEW_INIT("typeof"),
+		CSTR_VIEW_INIT("typeof_unqual"),
+		CSTR_VIEW_INIT("__typeof__"),
+		CSTR_VIEW_INIT("__typeof"),
+		CSTR_VIEW_INIT("__typeof_unqual__"),
+		CSTR_VIEW_INIT("__typeof_unqual"),
+	};
+	if (clang_getCursorKind(c) != CXCursor_ParenExpr)
+		return CXI_EVALUATED;
+	struct cstr_view before;
+	(void)cxi_spelling(x->tu, c, &before);
+	/* line is the line of the word before the parenthesis, up to the end
+	 * of the word. */
+	struct cstr_view const line = cstr_view_last_line(before);
+	size_t n = 0;
+	while (n < line.len && line.data[line.len - 1 - n] &&
+	       strchr(UTIL_ALNUM "_", line.data[line.len - 1 - n]))
+		++n;
+	struct cstr_view const word = cstr_view_slice(line, line.len - n, SIZE_MAX);
+	if (cstr_view_index(words, array_size(words), word) == array_size(words))
+		return CXI_EVALUATED;
+	/* A line feed ends a directive and a comment that starts with //: the
+	 * word in such a line is not the keyword of a parenthesis in a later
+	 * line. */
+	char const *end = line.data + line.len;
+	if (memchr(end, '\n', (size_t)(before.data + before.len - end)) &&
+	    (memchr(line.data, '#', line.len) || memmem(line.data, line.len, "//", 2)))
+		return CXI_EVALUATED;
+	enum CXTypeKind const t = clang_getCanonicalType(clang_getCursorType(c)).kind;
+	return (t >= CXType_FirstBuiltin && t <= CXType_LastBuiltin) || t == CXType_Record ||
+	       t == CXType_Enum ? CXI_UNEVALUATED : CXI_UNPROVEN;
+}
+
+/* Appends the declaration @p d to the callees of a call, which are the
+ * members of calls->to from @p from on, unless they contain @p d. Returns
+ * false if out of memory.
+ */
+static bool
+cxi_calls_to (struct cxi_calls *calls,
+              size_t            from,
+              CXCursor          d)
+{
+	for (size_t i = from; i < calls->to.n; ++i) {
+		if (clang_equalCursors(calls->to.items[i], d))
+			return true;
+	}
+	return cxi_list_push(&calls->to, d);
+}
+
+/* Appends what the callee expression @p e refers to to the callees of a
+ * call (cxi_calls_to()), and sets the flags of the callee in @p *flags.
+ * Returns false if the tool finds no declaration for @p e, as for the
+ * result of a call: the callees from @p from on are then not valid.
+ */
+static bool
+cxi_callee (struct cxi_calls *calls,
+            CXCursor          e,
+            size_t            from,
+            uint32_t         *flags)
+{
+	struct cxi *x = calls->x;
+	struct cxi_list kids = cxi_list(&x->out);
+	enum CXCursorKind const k = clang_getCursorKind(e);
+	enum CXUnaryOperatorKind const op = clang_getCursorUnaryOperatorKind(e);
+	clang_visitChildren(e, cxi_child, &kids);
+	size_t first;
+	size_t chosen;
+	bool const selects = cxi_selects(x, e, &kids, &first, &chosen);
+	bool found = false;
+	if (k == CXCursor_DeclRefExpr || k == CXCursor_MemberRefExpr) {
+		CXCursor const d = clang_getCanonicalCursor(clang_getCursorReferenced(e));
+		enum CXCursorKind const dk = clang_getCursorKind(d);
+		/* The name of a builtin function that no file declares is of a
+		 * type of its own, which libclang does not expose. */
+		if (dk == CXCursor_FunctionDecl &&
+		    clang_getCanonicalType(clang_getCursorType(e)).kind == CXType_Unexposed)
+			*flags |= CXI_CALL_BUILTIN;
+		found = (dk == CXCursor_FunctionDecl || dk == CXCursor_VarDecl ||
+		         dk == CXCursor_ParmDecl || dk == CXCursor_FieldDecl) &&
+		        cxi_calls_to(calls, from, d);
+	} else if (selects && chosen < kids.n) {
+		found = cxi_callee(calls, kids.items[chosen], from, flags);
+	} else if (selects || (k == CXCursor_ConditionalOperator && kids.n == 3)) {
+		/* The callee is one of several: an association of the type of
+		 * the selection, or the second or the third operand of ?:. The
+		 * condition and the controlling expression are never the
+		 * callee. Several callees are valid only if each one is a
+		 * function. */
+		CXType const type = clang_getCanonicalType(clang_getCursorType(e));
+		found = true;
+		for (size_t i = selects ? first : 1; found && i < kids.n; ++i)
+			found = (selects && !cxi_of_type(kids.items[i], type)) ||
+			        cxi_callee(calls, kids.items[i], from, flags);
+		for (size_t i = from; found && i < calls->to.n; ++i)
+			found = clang_getCursorKind(calls->to.items[i]) == CXCursor_FunctionDecl;
+	} else if (k == CXCursor_ArraySubscriptExpr && kids.n == 2) {
+		/* The array is the child that is a pointer. */
+		CXType const t = clang_getCanonicalType(clang_getCursorType(kids.items[0]));
+		*flags |= CXI_CALL_ELEMENT;
+		found = cxi_callee(calls, kids.items[t.kind != CXType_Pointer], from, flags);
+	} else if (kids.n == 1 &&
+	           (k == CXCursor_ParenExpr || op == CXUnaryOperator_Deref ||
+	            op == CXUnaryOperator_AddrOf ||
+	            (k == CXCursor_UnexposedExpr &&
+	             clang_equalRanges(clang_getCursorExtent(e),
+	                               clang_getCursorExtent(kids.items[0]))))) {
+		/* Parentheses, * and & refer to what the operand refers to. So
+		 * does an unexposed expression of the extent of the child, such
+		 * as an implicit conversion. */
+		found = cxi_callee(calls, kids.items[0], from, flags);
+	}
+	free(kids.items);
+	return found;
+}
+
+/* Returns the definition of the macro through which the token at @p loc
+ * is written, or null if the token is part of no macro body. The macro is
+ * the one that is used at the place of the token in the file: for
+ * LOG(WRAPPER(x)) and a token of the body of WRAPPER, the macro WRAPPER.
+ * libclang records no use of a macro whose name is an argument of another
+ * macro, as X is in LIST(X). The macro is then the outermost one that is
+ * used at the place, LIST.
+ */
+static CXCursor
+cxi_macro (CXTranslationUnit tu,
+           CXSourceLocation  loc)
+{
+	CXFile file;
+	CXFile spelled;
+	unsigned line;
+	unsigned column;
+	unsigned at;
+	unsigned spelled_at;
+	clang_getFileLocation(loc, &file, &line, &column, &at);
+	clang_getSpellingLocation(loc, &spelled, nullptr, nullptr, &spelled_at);
+	if (clang_File_isEqual(file, spelled) && at == spelled_at)
+		return clang_getNullCursor();
+	CXCursor macro = cxi_symbol(tu, file, line, column);
+	if (clang_getCursorKind(macro) != CXCursor_MacroDefinition) {
+		clang_getExpansionLocation(loc, &file, &line, &column, nullptr);
+		macro = cxi_symbol(tu, file, line, column);
+	}
+	return clang_getCursorKind(macro) == CXCursor_MacroDefinition ? macro
+	                                                              : clang_getNullCursor();
+}
+
+/* Appends the call expression @p at, of the children @p kids and in the
+ * state @p state, to @p calls. Returns false if @p calls contains @p at
+ * already: libclang visits an operand of some expressions more than once.
+ */
+static bool
+cxi_calls_add (struct cxi_calls      *calls,
+               CXCursor               at,
+               struct cxi_list const *kids,
+               uint32_t               state)
+{
+	struct cxi *x = calls->x;
+	for (size_t i = 0; i < calls->n; ++i) {
+		if (clang_equalCursors(calls->items[i].at, at))
+			return false;
+	}
+	struct cxi_call call = {
+		.at = at,
+		.macro = clang_getNullCursor(),
+		.first = (uint32_t)calls->to.n,
+		.state = state,
+	};
+	if (state != CXI_UNEVALUATED) {
+		call.macro = cxi_macro(x->tu, clang_getCursorLocation(at));
+		if (!kids->n || !cxi_callee(calls, kids->items[0], call.first, &call.flags)) {
+			calls->to.n = call.first;
+			call.flags = 0;
+		}
+		call.n = (uint32_t)calls->to.n - call.first;
+	}
+	if (util_push(*calls, call))
+		x->out.e = ENOMEM;
+	return true;
+}
+
+/* Returns true if the attribute @p c is written as cleanup: the word is
+ * cleanup or __cleanup__, after gnu:: or __gnu__:: in [[ ]].
+ */
+static bool
+cxi_cleanup_written (struct cxi *x,
+                     CXCursor    c)
+{
+	static struct cstr_view const words[] = {
+		CSTR_VIEW_INIT("cleanup"),
+		CSTR_VIEW_INIT("__cleanup__"),
+	};
+	struct cstr_view before;
+	struct cstr_view rest = cxi_spelling(x->tu, c, &before);
+	size_t word = cxi_ident(rest);
+	struct cstr_view const scope = cxi_skip_space(cstr_view_slice(rest, word, SIZE_MAX));
+	if (cstr_view_starts(scope, CSTR_VIEW("::"))) {
+		rest = cxi_skip_space(cstr_view_slice(scope, 2, SIZE_MAX));
+		word = cxi_ident(rest);
+	}
+	return cstr_view_index(words, array_size(words), cstr_view_slice(rest, 0, word)) <
+	       array_size(words);
+}
+
+/* Appends to @p calls the call of the function of the attribute cleanup of
+ * the variable @p at, of the children @p kids and in the state @p state.
+ * The program calls the function at the end of the scope of the variable.
+ * libclang returns no function of an attribute. clang prints the
+ * declaration of the variable from the syntax tree, with the attribute as
+ * __attribute__((cleanup(NAME))) or [[gnu::cleanup(NAME)]]: NAME is the
+ * function. The call is of no callee if no declaration at file scope
+ * declares NAME. The macro of the call is the macro of the attribute that
+ * is written as cleanup.
+ */
+static void
+cxi_calls_add_cleanup (struct cxi_calls      *calls,
+                       CXCursor               at,
+                       struct cxi_list const *kids,
+                       uint32_t               state)
+{
+	static struct cstr_view const forms[] = {
+		CSTR_VIEW_INIT("__attribute__((cleanup("),
+		CSTR_VIEW_INIT("[[gnu::cleanup("),
+	};
+	struct cxi *x = calls->x;
+	CXCursor written = clang_getNullCursor();
+	size_t attributes = 0;
+	for (size_t i = 0; i < kids->n; ++i) {
+		if (!clang_isAttribute(clang_getCursorKind(kids->items[i])))
+			continue;
+		++attributes;
+		if (cxi_cleanup_written(x, kids->items[i]))
+			written = kids->items[i];
+	}
+	if (!attributes || state == CXI_UNEVALUATED)
+		return;
+	CXPrintingPolicy policy = clang_getCursorPrintingPolicy(at);
+	clang_PrintingPolicy_setProperty(policy, CXPrintingPolicy_SuppressInitializers, 1);
+	CXString printed = clang_getCursorPrettyPrinted(at, policy);
+	clang_PrintingPolicy_dispose(policy);
+	char const *text = clang_getCString(printed);
+	char const *form = nullptr;
+	size_t f = 0;
+	for (; text && !form && f < array_size(forms); ++f)
+		form = strstr(text, forms[f].data);
+	struct cstr_view const rest = cstr_view(form ? form + forms[f - 1].len : nullptr);
+	char name[CXI_NAME + 1];
+	size_t const len = cxi_ident(rest);
+	if (!len || len > CXI_NAME || rest.data[len] != ')') {
+		clang_disposeString(printed);
+		return;
+	}
+	memcpy(name, rest.data, len);
+	name[len] = '\0';
+	clang_disposeString(printed);
+	struct cxi_find find = cxi_find(&x->out, cstr_view_n(name, len), CXCursor_FunctionDecl);
+	clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_match, &find);
+	struct cxi_call call = {
+		.at = at,
+		.macro = cxi_macro(x->tu, clang_getCursorLocation(written)),
+		.first = (uint32_t)calls->to.n,
+		.state = state,
+		.flags = CXI_CALL_CLEANUP,
+	};
+	if (find.list.n && cxi_list_push(&calls->to, clang_getCanonicalCursor(find.list.items[0])))
+		call.n = 1;
+	free(find.list.items);
+	if (util_push(*calls, call))
+		x->out.e = ENOMEM;
+}
+
+/* Returns true if the call @p i of @p calls is a call of a builtin function
+ * whose arguments clang does not evaluate for side effects. The program
+ * evaluates such an argument only if clang finds no side effect in the
+ * argument.
+ */
+static bool
+cxi_calls_unevaluated (struct cxi_calls const *calls,
+                       size_t                  i)
+{
+	static struct cstr_view const names[] = {
+		CSTR_VIEW_INIT("__builtin_constant_p"),
+		CSTR_VIEW_INIT("__builtin_object_size"),
+		CSTR_VIEW_INIT("__builtin_dynamic_object_size"),
+		CSTR_VIEW_INIT("__builtin_classify_type"),
+		CSTR_VIEW_INIT("__builtin_assume"),
+		CSTR_VIEW_INIT("__assume"),
+	};
+	struct cxi_call const *call = &calls->items[i];
+	if (!(call->flags & CXI_CALL_BUILTIN))
+		return false;
+	CXString name = clang_getCursorSpelling(calls->to.items[call->first]);
+	bool const unevaluated = cstr_view_index(names, array_size(names),
+	                                         cstr_view(clang_getCString(name))) <
+	                         array_size(names);
+	clang_disposeString(name);
+	return unevaluated;
+}
+
+/* Collects the calls in @p c, an expression, statement or declaration in
+ * the state @p state.
+ */
+static void
+cxi_calls_walk (struct cxi_calls *calls,
+                CXCursor          c,
+                uint32_t          state)
+{
+	struct cxi *x = calls->x;
+	struct cxi_list kids = cxi_list(&x->out);
+	enum CXCursorKind const k = clang_getCursorKind(c);
+	clang_visitChildren(c, cxi_child, &kids);
+	/* rest is the state of the children, but for the selected child and
+	 * the condition of a _Generic selection or a __builtin_choose_expr.
+	 * The program does not evaluate the operand of a sizeof or alignof
+	 * that is a constant. */
+	bool nonzero;
+	size_t first;
+	size_t chosen;
+	uint32_t rest = state;
+	if (cxi_selects(x, c, &kids, &first, &chosen))
+		rest = chosen < kids.n ? CXI_UNEVALUATED : CXI_UNPROVEN;
+	else if (k == CXCursor_UnaryExpr)
+		rest = cxi_constant(c, &nonzero) ? CXI_UNEVALUATED : CXI_UNPROVEN;
+	rest = rest > state ? rest : state;
+	bool const walk = k != CXCursor_CallExpr || cxi_calls_add(calls, c, &kids, state);
+	if (walk && k == CXCursor_CallExpr && !x->out.e && rest == CXI_EVALUATED &&
+	    cxi_calls_unevaluated(calls, calls->n - 1))
+		rest = CXI_UNPROVEN;
+	for (size_t i = 0; walk && i < kids.n && !x->out.e; ++i) {
+		uint32_t const operand = cxi_typeof(x, kids.items[i]);
+		uint32_t const s = i == chosen ? state : i < first ? CXI_UNEVALUATED : rest;
+		cxi_calls_walk(calls, kids.items[i], s > operand ? s : operand);
+	}
+	if (k == CXCursor_VarDecl)
+		cxi_calls_add_cleanup(calls, c, &kids, state);
+	free(kids.items);
+}
+
+/* Returns true if the calls @p a and @p b of @p calls are of one row. */
+static bool
+cxi_calls_same (struct cxi_calls const *calls,
+                size_t                  a,
+                size_t                  b)
+{
+	struct cxi_call const *p = &calls->items[a];
+	struct cxi_call const *q = &calls->items[b];
+	if (p->state != q->state || p->flags != q->flags || p->n != q->n ||
+	    !clang_equalCursors(p->macro, q->macro))
+		return false;
+	for (uint32_t i = 0; i < p->n; ++i) {
+		if (!clang_equalCursors(calls->to.items[p->first + i], calls->to.items[q->first + i]))
+			return false;
+	}
+	return true;
+}
+
+/* Appends @p before, the place of the call @p i of @p calls, and the lines
+ * of the later calls of the row of that call.
+ */
+static void
+cxi_calls_places (struct cxi_calls const *calls,
+                  size_t                  i,
+                  char const             *before)
+{
+	struct cxi_out *out = &calls->x->out;
+	CXSourceLocation const at = clang_getCursorLocation(calls->items[i].at);
+	unsigned line = cxi_line(at);
+	cxi_out_place(out, before, at, "");
+	for (size_t j = i + 1; j < calls->n; ++j) {
+		unsigned const l = cxi_line(clang_getCursorLocation(calls->items[j].at));
+		if (l == line || !cxi_calls_same(calls, j, i))
+			continue;
+		cxi_out_printf(out, ",%u", l);
+		line = l;
+	}
+}
+
+/* Appends the row of the call @p i of @p calls: the places of the calls of
+ * the row, the callees, and the macro that the calls are written through.
+ */
+static void
+cxi_calls_row (struct cxi_calls const *calls,
+               size_t                  i)
+{
+	struct cxi_out *out = &calls->x->out;
+	struct cxi_call const *call = &calls->items[i];
+	bool const cleanup = call->flags & CXI_CALL_CLEANUP;
+	/* which is true for several functions, and for the function of an
+	 * attribute cleanup that the tool did not find. */
+	bool const which = call->n > 1 || (cleanup && !call->n);
+	bool const unproven = call->state == CXI_UNPROVEN;
+	cxi_calls_places(calls, i, "  ");
+	cxi_out_printf(out, " ");
+	for (uint32_t f = 0; f < call->n; ++f) {
+		CXCursor const to = calls->to.items[call->first + f];
+		enum CXCursorKind const k = clang_getCursorKind(to);
+		cxi_out_printf(out, "%s", f ? " or " : "");
+		if (k != CXCursor_FunctionDecl)
+			cxi_out_printf(out, "indirect, through %sthe %s ",
+			               call->flags & CXI_CALL_ELEMENT ? "an element of " : "",
+			               k == CXCursor_FieldDecl ? "member" : cxi_kind(to));
+		cxi_out_clang(out, clang_getCursorSpelling(to));
+		if (k == CXCursor_FieldDecl) {
+			cxi_out_printf(out, " of ");
+			cxi_out_clang(out, clang_getTypeSpelling(clang_getCursorType(
+				cxi_record_around(clang_getCursorSemanticParent(to)))));
+		}
+		if (call->flags & CXI_CALL_BUILTIN)
+			cxi_out_printf(out, " (builtin)");
+		else
+			cxi_out_place(out, " (", clang_getCursorLocation(to), ")");
+	}
+	if (!call->n)
+		cxi_out_printf(out, cleanup ? "a function" : "indirect, through an expression");
+	if (cleanup)
+		cxi_out_printf(out, ", at the end of the scope of a variable (attribute cleanup)");
+	if (!clang_Cursor_isNull(call->macro)) {
+		cxi_out_printf(out, ", through the macro ");
+		cxi_out_clang(out, clang_getCursorSpelling(call->macro));
+		cxi_out_place(out, " (", clang_getCursorLocation(call->macro), ")");
+	}
+	cxi_out_printf(out, "%s%s%s\n", which || unproven ? "." : "",
+	               which ? " The tool cannot tell which function is called." : "",
+	               unproven ? " The tool cannot tell if the program evaluates the call." : "");
+}
+
+/* Appends the calls of the function @p c: a row for each callee, and after
+ * the rows the count and the places of the call expressions that the
+ * program does not evaluate.
+ */
+static void
+cxi_describe_calls (struct cxi *x,
+                    CXCursor    c)
+{
+	struct cxi_calls calls = cxi_calls(x);
+	cxi_calls_walk(&calls, c, CXI_EVALUATED);
+	size_t rows = 0;
+	size_t unevaluated = 0;
+	size_t first = 0;
+	for (size_t i = 0, j = 0; i < calls.n; ++i, j = 0) {
+		while (!cxi_calls_same(&calls, j, i))
+			++j;
+		if (calls.items[i].state == CXI_UNEVALUATED) {
+			first = j;
+			++unevaluated;
+		} else if (j == i) {
+			cxi_out_printf(&x->out, "%s", rows++ ? "" : "calls:\n");
+			cxi_calls_row(&calls, i);
+		}
+	}
+	if (unevaluated) {
+		cxi_out_printf(&x->out, "[The program does not evaluate %zu call expression%s at",
+		               unevaluated, util_s(unevaluated));
+		cxi_calls_places(&calls, first, " ");
+		cxi_out_printf(&x->out, ". The rows do not contain %s.]\n", unevaluated == 1
+		               ? "this call expression" : "these call expressions");
+	}
+	free(calls.to.items);
+	free(calls.items);
+}
+
 static int
 cxi_describe (struct cxi *x)
 {
@@ -1259,7 +1845,7 @@ cxi_describe (struct cxi *x)
 			cxi_out_place(&x->out, "declared ", clang_getCursorLocation(first), "\n");
 		cxi_out_place(&x->out, "defined ", clang_getCursorLocation(shown), "\n");
 		if (k == CXCursor_FunctionDecl)
-			cxi_out_calls(&x->out, shown);
+			cxi_describe_calls(x, shown);
 	}
 	cxi_out_put(&x->out, dstr_get(&rows.text), dstr_len(&rows.text));
 	if (k == CXCursor_MacroDefinition && x->line)

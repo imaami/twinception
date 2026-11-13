@@ -613,8 +613,8 @@ first and last line of the declaration if they differ:
 is a function, variable, type, struct, union, enum, enumerator, typedef or
 macro, with `struct`, `union` or `enum` before it to select the type, or a
 member as `struct.member`. The output contains the kind and the type, the
-places of the declaration and the definition, the functions that a
-function calls, the members of a struct or union with their offsets, sizes
+places of the declaration and the definition, the calls of a function
+(below), the members of a struct or union with their offsets, sizes
 and padding, including the members of anonymous members, and at most 40
 numbered lines of the declaration with its comment, a function's without
 its body. A finding can cite these lines (below). With `line`, `describe`
@@ -647,6 +647,89 @@ it matches none, the call fails with the names in the repository that
 contain it. The layout of a record is cut at 2,000 rows, and the padding of
 a cut layout counts only those rows. `describe` of `struct.member` prints
 any one member.
+
+`describe` of a function lists the calls of the function, one row per
+callee: the place of the first call, the lines of the later calls, the
+called function and the place of the first declaration of the called
+function. This is the list of `mcp_req_stream` in `src/mcp.c`:
+
+```text
+calls:
+  src/mcp.c:3033 indirect, through the member head of struct stream_ops (src/stream.h:52)
+  src/mcp.c:3033 span (src/buf.h:58), through the macro SPAN (src/mcp.c:864)
+  src/mcp.c:3036 mcp_req_flag (src/mcp.c:1021)
+  src/mcp.c:3040 mcp_req_arm (src/mcp.c:2327)
+```
+
+A row is one of these:
+
+| Row | The call |
+| --- | -------- |
+| `child_cmd (src/child.h:185)` | a call of the function `child_cmd`, also in parentheses or behind `*` or `&` |
+| `__builtin_expect (builtin)` | a call of a builtin function that no file declares |
+| `indirect, through the member head of struct stream_ops (src/stream.h:52)` | a call through a function pointer: a member, a variable or a parameter, or `an element of` one that is an array |
+| `indirect, through an expression` | a call through any other expression, such as the result of a call |
+| `hist_init (src/hist.h:64) or hist_clear (src/hist.h:130). The tool cannot tell which function is called.` | a call of a function that `?:` selects when the program runs, or that a `_Generic` selection selects |
+| `dstr_cleanup (src/dstr.h:384), at the end of the scope of a variable (attribute cleanup)` | the call that the program makes for a variable with the attribute `cleanup`; the place of the row is the line of the variable |
+| `a function, at the end of the scope of a variable (attribute cleanup). The tool cannot tell which function is called.` | the same call, if no declaration at file scope declares the function of the attribute |
+
+The row of `?:` contains the functions of the second and the third operand,
+also those of a `?:` in an operand, and not the function of the condition.
+If an operand or a selected association is not a function, the row is
+`indirect, through an expression`.
+
+`, through the macro child_cmd (src/child.h:190)` after the callee is the
+macro that is used in the file at the place of the call, if the first
+token of the call is part of the body of a macro. For a macro in the
+arguments of another macro, as in `LOG(WRAPPER(x))`, the macro is
+`WRAPPER`. For a macro that is passed by name, as in `LIST(X)`, the macro
+is `LIST`. A call that is written as a macro argument is in the row of the
+callee without a macro.
+
+libclang does not report which association of a `_Generic` selection is
+selected. The selection is of the type of the selected association, so the
+selected association is known if no other association is of that type. If
+the callee is a selection of several functions of one type, the row
+contains the functions. The row of a call inside a selection whose
+selected association is not known ends with `The tool cannot tell if the
+program evaluates the call.` So does the row of a call in an operand of
+`sizeof` whose value is not a constant, of a call in an operand of
+`typeof` whose type can be variably modified, such as a pointer or an
+array, and of a call in an argument of `__builtin_constant_p`,
+`__builtin_object_size`, `__builtin_dynamic_object_size`,
+`__builtin_classify_type`, `__builtin_assume` or `__assume`: clang does not
+evaluate the arguments of these builtin functions for side effects.
+
+A call in code that the program does not evaluate is not listed. Such code
+is an operand of `sizeof`, `alignof` or `typeof`, the controlling
+expression of `_Generic` and an association that is not selected, and the
+condition of `__builtin_choose_expr` and the operand that is not chosen.
+`describe` prints the number and the places of these call expressions in a
+line after the rows:
+
+```text
+[The program does not evaluate 1 call expression at src/store.c:409. The rows do not contain this call expression.]
+```
+
+A variable in such code is not listed for the attribute `cleanup`.
+
+The list is made from one translation unit with the flags of the build:
+code that `#if` removes contains no call. A call in code that the program
+cannot reach is listed. libclang does not report an expression inside the
+type of an association of `_Generic`, such as `typeof(f())`, or inside an
+attribute, such as `__attribute__((assume(f())))`, so a call there is
+neither listed nor counted.
+
+An operand of `typeof` is recognized by the keyword that is written before
+the parenthesis, with only white space between them. A call in an operand
+is listed as a call that the program evaluates if a comment or a line
+continuation is between the keyword and the parenthesis, if the keyword is
+the body of another macro, or if the keyword is on a line before the
+parenthesis and that line contains `#` or `//`. The controlling expression
+of `_Generic` is recognized by the first token that is written right after
+`_Generic (`. If that token is a macro argument, the expression is handled
+as an association: the row of a selected callee can contain a function of
+the controlling expression.
 
 `diagnostics` lists clang's errors and warnings for `path` in clang's order,
 one per line as `path:line: warning: text [-Wflag]`, including those in the
