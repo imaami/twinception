@@ -117,6 +117,27 @@ static int cli_client_response_event(char const *data, size_t len, void *user)
 	return response->notify ? response->notify(response->context, event, response->id, response->error) : 0;
 }
 
+/* Returns the response to the request @p id of @p client, 0 for a
+ * notification, for the object at @p self. The event stream stores
+ * @p self as the context of cli_client_response_event(). So @p self must
+ * be the address of the object that the result initializes, and that
+ * object must not be copied afterwards.
+ */
+static force_inline struct cli_client_response
+cli_client_response (struct cli_client_response *self,
+                     struct cli_client          *client,
+                     cli_client_notify_fn       *notify,
+                     void                       *context,
+                     int64_t                     id,
+                     struct cli_error           *error)
+{
+	return (struct cli_client_response){
+		.stream = sse(cli_client_response_event, self),
+		.session = DSTR_INIT, .client = client, .error = error,
+		.notify = notify, .context = context, .id = id,
+	};
+}
+
 /* Start @p response to the request @p id of @p client, 0 for a
  * notification.
  */
@@ -128,11 +149,7 @@ cli_client_response_init (struct cli_client_response *response,
                           int64_t                     id,
                           struct cli_error           *error)
 {
-	*response = (struct cli_client_response){
-		.stream = sse(cli_client_response_event, response),
-		.session = DSTR_INIT, .client = client, .error = error,
-		.notify = notify, .context = context, .id = id,
-	};
+	*response = cli_client_response(response, client, notify, context, id, error);
 }
 
 /* The partial line and event of a stream are at most CLI_LIMIT bytes. */
@@ -236,8 +253,8 @@ static int cli_client_notification(struct cli_client *client, char const *method
                                    long timeout, struct cli_error *error)
 {
 	cli_json_auto message = cli_client_packet(method, params, 0);
-	struct cli_client_response response;
-	cli_client_response_init(&response, client, nullptr, nullptr, 0, error);
+	struct cli_client_response response = cli_client_response(&response, client, nullptr,
+	                                                          nullptr, 0, error);
 	struct cstr_view wire = {};
 	int e = cli_client_wire(message, JB_WIRE, &wire, error);
 	if (!e)
@@ -348,8 +365,8 @@ int cli_client_rpc(struct cli_client *client, char const *method,
 	if (e)
 		return e;
 	cli_json_auto message = cli_client_packet(method, params, id);
-	struct cli_client_response response;
-	cli_client_response_init(&response, client, notify, context, id, error);
+	struct cli_client_response response = cli_client_response(&response, client, notify,
+	                                                          context, id, error);
 	struct cstr_view wire = {};
 	e = cli_client_wire(message, JB_WIRE, &wire, error);
 	long timeout = cli_client_timeout(method, id);
