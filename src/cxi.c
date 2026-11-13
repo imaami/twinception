@@ -327,6 +327,13 @@ struct cxi_list {
 	struct cxi_out *out;
 };
 
+/* Returns an empty list whose failed pushes set the error of @p out. */
+static force_inline struct cxi_list
+cxi_list (struct cxi_out *out)
+{
+	return (struct cxi_list){ .out = out };
+}
+
 static bool
 cxi_list_push (struct cxi_list *list,
                CXCursor         c)
@@ -370,7 +377,7 @@ cxi_order (void const *a,
 static int
 cxi_outline (struct cxi *x)
 {
-	struct cxi_list list = { .out = &x->out };
+	struct cxi_list list = cxi_list(&x->out);
 	clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_declared, &list);
 	if (list.n)
 		qsort(list.items, list.n, sizeof *list.items, cxi_order);
@@ -569,7 +576,7 @@ static void
 cxi_out_calls (struct cxi_out *out,
                CXCursor        c)
 {
-	struct cxi_list calls = { .out = out };
+	struct cxi_list calls = cxi_list(out);
 	clang_visitChildren(c, cxi_call, &calls);
 	if (calls.n)
 		cxi_out_printf(out, "calls:\n");
