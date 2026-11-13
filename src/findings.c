@@ -170,6 +170,25 @@ struct findings_cite {
 	                                  of the first reference to the item. */
 };
 
+/* Returns the reference @p ref to an item of a finding, before askai reads
+ * the item. @p index is the place of the item in the evidence of the
+ * change, and @p first is the place in call->cites of the first reference
+ * to the item. The record is the empty string, and every other member is
+ * zero.
+ */
+static force_inline struct findings_cite
+findings_cite (uint32_t            index,
+               uint32_t            first,
+               struct evidence_ref ref)
+{
+	return (struct findings_cite){
+		.record = DSTR_INIT,
+		.index  = index,
+		.first  = first,
+		.ref    = ref,
+	};
+}
+
 /* An entry of the output of expand. The entry is the item e of the finding
  * f. If e is nullptr, the entry marks the end of the items of f.
  */
@@ -1776,12 +1795,7 @@ findings_cite_add (struct mcp_slot           *slot,
 		++first;
 	uint8_t const lines = ref->form == EVIDENCE_REF_ITEM_LINES ? CITE_READ : 0;
 	struct findings_cite *cite = &call->cites.items[n];
-	*cite = (struct findings_cite){
-		.record = DSTR_INIT,
-		.index  = (uint32_t)index,
-		.first  = (uint32_t)first,
-		.ref    = *ref,
-	};
+	*cite = findings_cite((uint32_t)index, (uint32_t)first, *ref);
 	if (first < n) {
 		call->cites.items[first].flags |= lines;
 		++call->cites.n;
