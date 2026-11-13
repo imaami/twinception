@@ -87,10 +87,7 @@ store_open_common (struct store *store,
 	static char const *const words[] = {
 		"--git-dir=.git", "rev-parse", "--path-format=absolute", "--git-common-dir", nullptr
 	};
-	struct child_cmd const how = {
-		.max   = STORE_MAX,
-		.flags = CHILD_STDERR,
-	};
+	struct child_cmd const how = child_cmd(.max = STORE_MAX, .flags = CHILD_STDERR);
 	int e = 0;
 	struct git_run_dir dir = git_run_dir(store->directory, nullptr, nullptr, 0, &e);
 	if (!e)
@@ -260,15 +257,16 @@ store_command (struct store const *store,
 	}
 	argv[k] = nullptr;
 	bool const writes = cmd == STORE_CREATE || cmd == STORE_COMMIT;
-	int e = git_run_init(dest, &store->git, argv, &(struct child_cmd){
+	struct child_cmd const how = child_cmd(
 		.in       = in,
 		.max      = STORE_MAX,
 		.deadline = now + GIT_RUN_NS,
 		/* git removes its own lock files on SIGTERM. */
 		.grace    = writes ? GIT_GRACE : 0,
 		/* For the commands that write, the output includes the errors. */
-		.flags    = writes ? CHILD_STDERR : 0,
-	});
+		.flags    = writes ? CHILD_STDERR : 0
+	);
+	int e = git_run_init(dest, &store->git, argv, &how);
 	if (e || cmd != STORE_COMMIT)
 		return e;
 	int64_t age;

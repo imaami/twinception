@@ -182,26 +182,12 @@ struct child_cmd {
 };
 
 static force_inline struct child_cmd
-child_cmd (char const        *file,
-           char const *const *argv,
-           char *const       *envp,
-           struct span        in,
-           size_t             max,
-           uint64_t           deadline,
-           uint64_t           grace,
-           enum child_flag    flags)
+child_cmd (struct child_cmd const c)
 {
-	return (struct child_cmd){
-		.file     = file,
-		.argv     = argv,
-		.envp     = envp,
-		.in       = in,
-		.max      = max,
-		.deadline = deadline,
-		.grace    = grace,
-		.flags    = flags
-	};
+	return c;
 }
+
+#define child_cmd(...) (child_cmd)((struct child_cmd){__VA_ARGS__})
 
 /** The descriptors of a child that child_capture() or child_cmd_run()
  *  runs. A descriptor that the caller does not pass is -1. The input of

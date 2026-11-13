@@ -274,10 +274,7 @@ journal_git (struct journal    *j,
              int                input,
              struct oid        *oid)
 {
-	struct child_cmd const how = {
-		.max   = sizeof j->scratch,
-		.grace = GIT_GRACE,
-	};
+	struct child_cmd const how = child_cmd(.max = sizeof j->scratch, .grace = GIT_GRACE);
 	/* A git child can outlive an askai that was killed. fds.keep passes
 	 * the descriptor of the writer lock to git through exec, so the
 	 * flock() of a new askai on the writer lock fails until git ends. */

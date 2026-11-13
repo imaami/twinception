@@ -1389,8 +1389,9 @@ test_busy (struct store const           *store,
 {
 	extern char **environ;
 	static char const *const argv[] = { "sleep", "60", nullptr };
-	struct child_cmd const cmd = child_cmd("sleep", argv, environ, span(nullptr, 0), 16, 0, 0,
-	                                       0);
+	struct child_cmd const cmd = child_cmd(
+		.file = "sleep", .argv = argv, .envp = environ, .max = 16
+	);
 	test_git_ended(children);
 	struct child *sleepers[CHILD_MAX] = {};
 	int e = -1;

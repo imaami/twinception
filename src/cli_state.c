@@ -197,11 +197,11 @@ cli_state_git (struct cli_state  *state,
 	 * and askai-cli does not remove a stale lock file. At the deadline,
 	 * git_run_now() sends SIGTERM to git, which removes its lock files
 	 * and exits, and SIGKILL GIT_GRACE later. */
-	struct child_cmd const how = {
-		.in    = { (unsigned char *)(uintptr_t)input.data, input.len },
+	struct child_cmd const how = child_cmd(
+		.in    = span((unsigned char *)(uintptr_t)input.data, input.len),
 		.max   = 4 << 10,
-		.grace = GIT_GRACE,
-	};
+		.grace = GIT_GRACE
+	);
 	struct child_fds fds = child_fds();
 	fds.out = output_fd;
 	return git_run_now(&state->git, words, how, fds,

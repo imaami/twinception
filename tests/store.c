@@ -191,11 +191,12 @@ run_words (char const        *path,
 	int e = 0;
 	struct git_run_dir dir = git_run_dir(path, nullptr, nullptr, 0, &e);
 	struct git_run r;
+	struct child_cmd const how = child_cmd(
+		.deadline = loop_clock() + GIT_RUN_NS,
+		.flags    = CHILD_STDERR
+	);
 	if (!e)
-		e = git_run_init(&r, &dir, words, &(struct child_cmd){
-			.deadline = loop_clock() + GIT_RUN_NS,
-			.flags    = CHILD_STDERR,
-		});
+		e = git_run_init(&r, &dir, words, &how);
 	CHECK(!e);
 	return e ? -1 : run_git(&r, out, size, len);
 }

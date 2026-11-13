@@ -1525,9 +1525,9 @@ cxi_cache_git (struct cxi_cache const *cache,
 	char const *argv[256];
 	int const e = child_argv(argv, array_size(argv), parts, array_size(parts));
 	extern char **environ;
-	struct child_cmd const cmd = {
+	struct child_cmd const cmd = child_cmd(
 		.file = "git", .argv = argv, .envp = environ, .max = max, .deadline = cache->deadline
-	};
+	);
 	struct child_end end = child_end();
 	return e ? e : child_cmd_run(&cmd, cache->fds, out, &end);
 }

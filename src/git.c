@@ -749,12 +749,13 @@ git_pin_spawn (struct git_pin           *pin,
 	struct git_run_dir dir;
 	git_pin_dir(pin, &dir);
 	struct git_run cmd;
-	int e = git_run_init(&cmd, &dir, argv, &(struct child_cmd){
+	struct child_cmd const how = child_cmd(
 		.max = TOOL_TEXT_MAX,
 		.deadline = pin->deadline,
 		.grace = GIT_GRACE,
-		.flags = flags,
-	});
+		.flags = flags
+	);
+	int e = git_run_init(&cmd, &dir, argv, &how);
 	if (!e)
 		pin->child = mcp_slot_spawn(slot, &cmd.c, &e);
 	return e;

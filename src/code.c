@@ -86,14 +86,14 @@ code_check (struct config *cfg)
 		cfg->flags & CFG_UNCONFINED ? "unconfined=1" : nullptr, nullptr
 	};
 	char *env[] = { util_env_path(), nullptr };
-	struct child_cmd const cmd = {
+	struct child_cmd const cmd = child_cmd(
 		.file = cfg->code_helper,
 		.argv = argv,
 		.envp = env,
 		.max = CODE_CHECK,
 		.deadline = loop_clock() + 10 * NS,
-		.flags = CHILD_STDERR,
-	};
+		.flags = CHILD_STDERR
+	);
 	struct buf out = buf();
 	struct child_end end = child_end();
 	e = child_capture(&cmd, child_fds(), &out, &end);
@@ -276,15 +276,15 @@ code_spawn (struct code_call *call,
 	e = git_run_dir_argv(&dir, nullptr, argv + k, array_size(argv) - k);
 	if (e)
 		return e;
-	struct child_cmd const cmd = {
+	struct child_cmd const cmd = child_cmd(
 		.file = code->cfg->code_helper,
 		.argv = argv,
 		.envp = dir.env,
 		/* The output can contain the record line of describe in addition
 		 * to a result of TOOL_TEXT_MAX bytes. */
 		.max = TOOL_TEXT_MAX + 4096,
-		.deadline = pin->deadline,
-	};
+		.deadline = pin->deadline
+	);
 	pin->child = mcp_slot_spawn(slot, &cmd, &e);
 	return e;
 }

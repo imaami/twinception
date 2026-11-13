@@ -424,13 +424,13 @@ manual_fetch_run (struct manual_fetch *f,
 {
 	struct manual_loop *ml = f->ml;
 	struct loop *loop = ml->loop;
-	struct child_cmd const cmd = {
+	struct child_cmd const cmd = child_cmd(
 		.file = "man",
 		.argv = argv,
 		.envp = ml->manual->env,
 		.max = max,
 		.deadline = loop->now + MANUAL_SECONDS * NS
-	};
+	);
 	int e = 0;
 	f->child = child_create(loop, ml->children, &cmd, done, f, &e);
 	if (f->child) {

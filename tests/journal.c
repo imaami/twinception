@@ -185,14 +185,14 @@ journal_test_run (char const       *script,
 	char const *const argv[] = { "sh", "-c", script, nullptr };
 	char *const envp[] = { "PATH=/usr/bin:/bin", nullptr };
 	uint64_t start = loop_clock();
-	struct child_cmd const cmd = {
+	struct child_cmd const cmd = child_cmd(
 		.file = "sh",
 		.argv = argv,
 		.envp = envp,
 		.max = max,
 		.deadline = after_ms ? start + after_ms * MS : 0,
-		.grace = grace_ms * MS,
-	};
+		.grace = grace_ms * MS
+	);
 	*end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
 	int e = out ? child_capture(&cmd, child_fds(), out, end)
 	            : child_cmd_run(&cmd, child_fds(), nullptr, end);
@@ -781,7 +781,9 @@ journal_test_child_cmd_run (void)
 	struct buf out = buf();
 	for (size_t i = 0; i < array_size(cases); ++i) {
 		char const *const argv[] = { "sh", "-c", cases[i].script, nullptr };
-		struct child_cmd const cmd = { .file = "sh", .argv = argv, .envp = envp, .max = 3 };
+		struct child_cmd const cmd = child_cmd(
+			.file = "sh", .argv = argv, .envp = envp, .max = 3
+		);
 		struct child_end const *const want = &cases[i].end;
 		assert(!buf_put(&out, "x", 1, SIZE_MAX));
 		struct child_end end = unset;
@@ -804,7 +806,7 @@ journal_test_child_cmd_run (void)
 	}
 	/* The deadline comes 100 ms after the start, before the exit. */
 	char const *const slow[] = { "sh", "-c", "printf abc; exec sleep 5", nullptr };
-	struct child_cmd late = { .file = "sh", .argv = slow, .envp = envp, .max = 3 };
+	struct child_cmd late = child_cmd(.file = "sh", .argv = slow, .envp = envp, .max = 3);
 	assert(!buf_put(&out, "x", 1, SIZE_MAX));
 	late.deadline = loop_clock() + 100 * MS;
 	struct child_end end = unset;

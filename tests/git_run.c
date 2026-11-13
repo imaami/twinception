@@ -139,7 +139,8 @@ git_run_test_shapes (void)
 		CHECK(git_run_test_argv(argv, shapes[i].tail, words));
 		CHECK(git_run_dir_argv(&dir, nullptr, argv, 0) == E2BIG);
 		struct git_run run;
-		CHECK(!git_run_init(&run, &dir, words, &(struct child_cmd){}));
+		struct child_cmd const how = child_cmd();
+		CHECK(!git_run_init(&run, &dir, words, &how));
 		CHECK(git_run_test_argv(run.argv, shapes[i].tail, words));
 		CHECK(run.c.argv == run.argv && run.c.envp == dir.env);
 	}
@@ -486,12 +487,12 @@ git_run_test_now (struct git_run_dir const *dir)
 	struct cstr_view const name = cases[0].out;
 	struct buf out = buf();
 	for (size_t i = 0; i < array_size(cases); ++i) {
-		struct child_cmd const how = {
-			.in       = { (unsigned char *)(uintptr_t)cases[i].in.data,
-			              cases[i].in.len },
+		struct child_cmd const how = child_cmd(
+			.in       = span((unsigned char *)(uintptr_t)cases[i].in.data,
+			                 cases[i].in.len),
 			.max      = cases[i].max,
-			.deadline = 1,
-		};
+			.deadline = 1
+		);
 		CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
 		struct oid oid = { "0123" };
 		CHECK(git_run_now(dir, cases[i].words, how, child_fds(), &out, &oid) == cases[i].e);
@@ -501,12 +502,12 @@ git_run_test_now (struct git_run_dir const *dir)
 		else
 			CHECK(!strcmp(oid.hex, "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f"));
 	}
-	struct child_cmd const how = {
-		.in       = { (unsigned char *)"abc", 3 },
+	struct child_cmd const how = child_cmd(
+		.in       = span((unsigned char *)"abc", 3),
 		.max      = 4096,
 		.deadline = 1,
-		.grace    = GIT_GRACE,
-	};
+		.grace    = GIT_GRACE
+	);
 	struct oid oid = { "0123" };
 	CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
 	CHECK(git_run_now(dir, missing, how, child_fds(), &out, nullptr) == EIO);
@@ -566,7 +567,7 @@ git_run_test_run (char const *repo)
 	CHECK(real != nullptr);
 	if (!real)
 		return;
-	struct child_cmd const how = { .max = 4096, .grace = GIT_GRACE };
+	struct child_cmd const how = child_cmd(.max = 4096, .grace = GIT_GRACE);
 	struct buf out = buf();
 	struct child_end end = child_end();
 	uint64_t ms;
