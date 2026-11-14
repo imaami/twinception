@@ -35,6 +35,7 @@ TAKES_TASKS = {"io.modelcontextprotocol/protocolVersion": MODERN,
                "io.modelcontextprotocol/clientCapabilities": {
                    "extensions": {"io.modelcontextprotocol/tasks": {}}}}
 KEY_VARS = ("ASKAI_TOKEN", "ASKAI_API_KEY", "LLAMA_API_KEY", "OPENAI_API_KEY",
+            "CHATGPT_ACCESS_TOKEN",
             "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
             "DEEPINFRA_API_KEY", "DEEPINFRA_TOKEN", "OPENROUTER_API_KEY")
 # The tools, in order, that the turns get when they are lent git, without
@@ -805,6 +806,8 @@ TOOL_MEMBERS = {"man": ("man", "enabled"), "git": ("git", "repositories"),
                 "code-unconfined": ("code", "unconfined"), "notes": ("notes", "directory"),
                 "client-jobs": ("jobs", "clients")}
 ROOT_MEMBERS = {"agent", "transcripts"}
+# One-shot actions have no configuration-file members.
+CLI_ACTIONS = {"chatgpt-login"}
 
 
 def note_view(data):
@@ -1085,6 +1088,184 @@ def check_protocols(binary, up):
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("openai/responses/anthropic/gemini/interactions requests and answers: "
           "PASS")
+
+
+def check_chatgpt_configuration(binary, up):
+    """OAuth profiles, static credentials and login actions cannot be mixed
+    accidentally, and subscription access never falls back to API billing."""
+    def fails(*args, env=None, message):
+        child_env = {k: v for k, v in os.environ.items() if k not in KEY_VARS}
+        child_env.update(env or {})
+        run = subprocess.run([binary, "-l", "127.0.0.1:0", *args], env=child_env,
+                             stdin=subprocess.DEVNULL, capture_output=True,
+                             text=True, timeout=5, check=False)
+        assert run.returncode == 2 and message in run.stderr, (args, run.stderr)
+
+    fails("-p", "chatgpt", "--api", "chat", "-m", "gpt-6-astra",
+          message="chatgpt has no chat API")
+    fails("-p", "chatgpt", "-m", "gpt-6-astra", "-u", up.url(),
+          env={"OPENAI_API_KEY": "must-not-be-used"},
+          message="a custom URL needs an explicit --key-env")
+    fails("-p", "chatgpt", "-m", "gpt-6-astra", "--chatgpt-auth", "relative.json",
+          message="--chatgpt-auth needs an absolute path")
+    fails("-p", "openai", "-m", "m", "--chatgpt-auth", "/unused.json",
+          message="--chatgpt-auth needs --provider chatgpt")
+    fails("-p", "chatgpt", "-m", "gpt-6-astra", "--chatgpt-auth", "/unused.json",
+          "--key-env", "CHATGPT_ACCESS_TOKEN", env={"CHATGPT_ACCESS_TOKEN": "token"},
+          message="--chatgpt-auth cannot be combined")
+    fails("--chatgpt-login", "-p", "openai",
+          message="--chatgpt-login needs --provider chatgpt")
+    fails("--chatgpt-login", "-u", up.url(),
+          message="--chatgpt-login cannot use")
+    fails("--chatgpt-login", "--key-env", "CHATGPT_ACCESS_TOKEN",
+          message="--chatgpt-login cannot use")
+    for extra, message in (({"input": []}, "chatgpt owns input"),
+                            ({"tools": []}, "chatgpt owns tool namespaces"),
+                            ({"tool_choice": {"type": "function", "name": "git"}},
+                             "chatgpt tool_choice must be")):
+        fails("-p", "chatgpt", "-m", "gpt-6-astra", "-x", json.dumps(extra),
+              message=message)
+    print("chatgpt configuration: provider, credential and login isolation: PASS")
+
+
+def check_chatgpt(binary, up):
+    """Subscription authentication uses Responses with a restricted request
+    shape, local background jobs, and locally executed namespaced tools."""
+    env = {"CHATGPT_ACCESS_TOKEN": "subscription-token"}
+    args = ("-p", "chatgpt", "-u", up.url("/v1/responses"),
+            "-m", "gpt-6-astra", "--key-env", "CHATGPT_ACCESS_TOKEN")
+    unsupported = {name: "unsupported" for name in (
+        "background", "conversation", "previous_response_id", "max_output_tokens",
+        "max_tool_calls", "metadata", "moderation", "multi_agent", "prompt",
+        "prompt_cache_retention", "safety_identifier", "temperature",
+        "top_logprobs", "top_p", "truncation", "user")}
+    extra = unsupported | {"store": True, "stream": False,
+                           "reasoning": {"effort": "high"}}
+    hold = up.reply
+
+    def request_shape(request):
+        body = request["body"]
+        assert request["path"] == "/v1/responses", request
+        assert request["headers"]["authorization"] == "Bearer subscription-token", request
+        assert body["model"] == "gpt-6-astra" and body["store"] is False and \
+            body["stream"] is True, body
+        assert isinstance(body["input"], list), body
+        assert not unsupported.keys() & body.keys(), body
+
+    try:
+        up.reply = lambda r: (200, ANSWERS["responses"])
+        with Askai(binary, *args, "-s", "SYS", "-n", "77", "-t", "0.25",
+                   "--extra", json.dumps(extra), env=env) as ai:
+            assert text_of(ai.ask()) == "A"
+            request = up.last()
+            request_shape(request)
+            assert request["body"]["instructions"] == "SYS", request
+            assert request["body"]["reasoning"] == {"effort": "high"}, request
+            assert request["body"]["input"] == [{"role": "user", "content": "Q"}], request
+
+        # A detached job still runs locally although this provider forbids
+        # the Responses background parameter and remote response storage.
+        with Askai(binary, *args, "--background", env=env) as ai:
+            started = text_of(ai.ask())
+            match = re.match(r"Started job ([0-9a-f]{32})\.", started)
+            assert match, started
+            result = []
+            def finished():
+                result[:] = [ask_result(ai, {"job": match.group(1)})]
+                return text_of(result[0]) == "A"
+            wait_for(finished)
+            assert not result[0].get("isError"), result
+            request_shape(up.last())
+
+        # A function's namespace must survive replay; its unqualified name
+        # dispatches to the same local tool as the ordinary API provider.
+        with tempfile.TemporaryDirectory() as d:
+            repo = f"{d}/proj"
+            git_env = os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null",
+                                   "GIT_CONFIG_NOSYSTEM": "1"}
+            subprocess.run(["git", "init", "-q", repo], check=True, env=git_env)
+            subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c",
+                            "user.email=t@t", "commit", "--allow-empty", "-qm", "first"],
+                           check=True, env=git_env)
+            items = [{"type": "reasoning", "id": "rs_subscription", "summary": [],
+                      "encrypted_content": "encrypted-reasoning"},
+                     {"type": "function_call", "id": "fc_subscription", "call_id": "c1",
+                      "namespace": "askai", "name": "git", "status": "completed",
+                      "arguments": json.dumps({"repo": "proj", "command": "log",
+                                                "options": ["--oneline"]})}]
+            turns = iter((responses_turn(items), responses_turn([], "A")))
+            up.reply = lambda r: (200, next(turns))
+            count = len(up.requests)
+            with Askai(binary, *args, "--upstream-tools", "--git", repo, env=env) as ai:
+                result = ai.ask()
+                assert result["content"][0] == {"type": "text", "text": "A"}, result
+            first, second = up.requests[count:]
+            for request in (first, second):
+                request_shape(request)
+            namespace, = first["body"]["tools"]
+            assert namespace["type"] == "namespace" and namespace["name"] == "askai", namespace
+            assert [(t["type"], t["name"]) for t in namespace["tools"]] == \
+                [("function", name) for name in TURN_TOOLS], namespace
+            replay = second["body"]["input"]
+            assert replay[1:3] == items, replay
+            assert replay[3]["type"] == "function_call_output" and \
+                replay[3]["call_id"] == "c1", replay
+            assert re.fullmatch(r"[0-9a-f]{7} first\n" + re.escape(stamp(1)),
+                                replay[3]["output"]), replay
+
+        # Admission and quota failures remain errors even if HTTP opened
+        # a successful event stream first.
+        failure = {"type": "response.failed", "response": {"status": "failed",
+                   "error": {"code": "subscription_sharing_usage_limit_exceeded",
+                             "message": "Subscription allowance exhausted."}}}
+        up.reply = lambda r: (200, Stream(wire=sse_wire([("response.failed", failure)])))
+        with Askai(binary, *args, env=env) as ai:
+            result = ai.ask()
+            assert result.get("isError") and "Subscription allowance exhausted." in \
+                text_of(result), result
+
+        # Missing managed credentials fail on the worker before any HTTP
+        # submission, without implicitly falling back to an API key.
+        with tempfile.TemporaryDirectory() as d:
+            with Askai(binary, "-p", "chatgpt", "-m", "gpt-6-astra",
+                       "--chatgpt-auth", f"{d}/missing.json",
+                       env={"OPENAI_API_KEY": "must-not-be-used"}) as ai:
+                result = ai.ask()
+                assert result.get("isError") and "Cannot authorize or start ChatGPT" in \
+                    text_of(result), result
+                assert ai.metrics()["askai_upstream_wait_seconds_count"] == 0
+
+        # Refresh locking belongs on a blocking worker. A held credential
+        # lock must not stop the home loop from answering or cancelling.
+        with tempfile.TemporaryDirectory() as d:
+            path = f"{d}/missing.json"
+            fd = os.open(path + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                with Askai(binary, "-p", "chatgpt", "-m", "gpt-6-astra",
+                           "--chatgpt-auth", path, "--background") as ai:
+                    started = text_of(ai.ask())
+                    match = re.match(r"Started job ([0-9a-f]{32})\.", started)
+                    assert match, started
+                    wait_for(lambda: ai.metrics()["askai_upstream_calls"] == 1)
+                    before = time.monotonic()
+                    cancel = ask_result(ai, {"job": match.group(1), "action": "cancel"})
+                    assert not cancel.get("isError"), cancel
+                    result = []
+                    def cancelled():
+                        result[:] = [ask_result(ai, {"job": match.group(1)})]
+                        return text_of(result[0]) == "The job was cancelled."
+                    wait_for(cancelled, seconds=1)
+                    assert time.monotonic() - before < 1
+                    assert result[0].get("isError"), result
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    assert ai.metrics()["askai_upstream_wait_seconds_count"] == 0
+            finally:
+                os.close(fd)
+    finally:
+        up.reply = hold
+    print("chatgpt: subscription requests, bearer token, local background jobs, "
+          "namespaced local tools, reasoning replay and quota errors: PASS")
 
 
 def check_upstream_errors(binary, up):
@@ -5105,7 +5286,7 @@ def check_configuration(binary, up, godbolt):
     groups = ("upstream", "service", "testing", "debugging")
     assert set(members) == set(groups) | others | ROOT_MEMBERS, \
         set(members) ^ (set(groups) | others | ROOT_MEMBERS)
-    assert set(GROUPS) | set(TOOL_MEMBERS) | ROOT_MEMBERS == options and \
+    assert set(GROUPS) | set(TOOL_MEMBERS) | ROOT_MEMBERS | CLI_ACTIONS == options and \
         not set(GROUPS) & set(TOOL_MEMBERS), set(GROUPS) ^ options
     assert all(member in members["tools"][tool]
                for tool, member in TOOL_MEMBERS.values()), members["tools"]
@@ -19506,7 +19687,7 @@ def main():
         os.path.join(os.path.dirname(binary), "godbolt.so")
     up = Upstream()
     try:
-        for check in (check_legacy_session, check_protocols, check_upstream_errors,
+        for check in (check_legacy_session, check_protocols, check_chatgpt_configuration, check_chatgpt, check_upstream_errors,
                       check_modern, check_mcp_tasks, check_client_jobs, check_background, check_recovery, check_recovery_tools,
                       check_recovery_notes, check_recovery_compact, check_recovery_findings,
                       check_durable_cancel,

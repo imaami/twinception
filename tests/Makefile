@@ -3,11 +3,11 @@ override TEST_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
-.PHONY: default check check-ai check-askai check-buf check-cdb check-cli check-completion \
+.PHONY: default check check-ai check-askai check-buf check-cdb check-chatgpt check-cli check-completion \
         check-cstr-view check-datauri check-dstr check-git-run check-jb check-handle check-instance check-journal check-ledger check-load \
         check-evidence check-finding check-member check-ref check-seen check-store check-turn load load-build
 default:; @:
-check: | check-completion check-askai check-cli check-ai check-jb check-cdb check-buf \
+check: | check-completion check-askai check-cli check-ai check-chatgpt check-jb check-cdb check-buf \
          check-datauri check-handle check-turn check-instance check-git-run check-journal check-ledger \
          check-evidence check-finding check-member check-ref check-seen check-store check-dstr check-load
 
@@ -147,6 +147,18 @@ $Otests/ai: $Otests/ai.c.o $Otests/src/ai.c.o $Otests/src/jb.c.o $Otests/src/dst
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -Wl,--wrap=json_object_get_int64 -o "$@" $^ $(JSON_LIBS)
 
 $Otests/ai.c.o $Otests/src/ai.c.o: CPPFLAGS += $(JSON_INCLUDES)
+
+# The OAuth test includes the module to substitute only its HTTP transport;
+# signatures, PKCE, callbacks, credential files and refresh locking are real.
+override CHATGPT_INCLUDES = $(call test-pkg-config,CHATGPT_INCLUDES,--cflags json-c libcurl libcrypto)
+override CHATGPT_LIBS = $(call test-pkg-config,CHATGPT_LIBS,--libs json-c libcurl libcrypto)
+
+check-chatgpt: $Otests/chatgpt; $<
+
+$Otests/chatgpt: $Otests/chatgpt.c.o $Otests/src/jb.c.o $Otests/src/dstr.c.o
+$Otests/chatgpt:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CHATGPT_LIBS)
+
+$Otests/chatgpt.c.o: CPPFLAGS += $(CHATGPT_INCLUDES)
 
 # Unit tests of the JSON helpers, src/jb.c. The test wraps json-c's
 # tokener constructors to make them fail.

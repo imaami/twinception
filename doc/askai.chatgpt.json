@@ -1,0 +1,12 @@
+{
+  "upstream": {
+    "provider": "chatgpt",
+    "model": "gpt-6-astra",
+    "upstream-tools": true,
+    "background": true
+  },
+  "service": {
+    "name": "chatgpt",
+    "listen": "127.0.0.1:8090"
+  }
+}

@@ -161,6 +161,62 @@ ai_request_last (struct json_object *root,
 	return jb_set(root, key, val);
 }
 
+char const *
+ai_chatgpt_check (struct json_object *extra)
+{
+	struct json_object *val;
+	if (json_object_object_get_ex(extra, "input", &val))
+		return "chatgpt owns input and conversation replay; --extra.input is not supported";
+	if (json_object_object_get_ex(extra, "tools", &val))
+		return "chatgpt owns tool namespaces; use --upstream-tools instead of --extra.tools";
+	val = jb_get(extra, "tool_choice");
+	if (val && !jb_is(val, "auto") && !jb_is(val, "none") && !jb_is(val, "required"))
+		return "chatgpt tool_choice must be auto, none or required";
+	val = jb_get(extra, "instructions");
+	if (val && !json_object_is_type(val, json_type_string))
+		return "chatgpt instructions must be a string";
+	val = jb_get(extra, "include");
+	if (val && !json_object_is_type(val, json_type_array))
+		return "chatgpt include must be an array of strings";
+	size_t n = jb_len(val);
+	for (size_t k = 0; k < n; ++k)
+		if (!json_object_is_type(jb_at(val, k), json_type_string))
+			return "chatgpt include must be an array of strings";
+	return nullptr;
+}
+
+/* Retain the tools' serializer: mcp_lent_text() supplies the definitions
+ * lazily, so its JSON array has no elements to copy or iterate here.
+ */
+static struct json_object *
+ai_request_tools (struct ai_endpoint const *ep,
+                  struct json_object       *tools)
+{
+	return ep->provider != AI_CHATGPT ? json_object_get(tools)
+	       : jb_list(jb_object("type", json_object_new_string("namespace"),
+	                           "name", json_object_new_string("askai"),
+	                           "description", json_object_new_string("Tools provided by askai."),
+	                           "tools", json_object_get(tools), nullptr));
+}
+
+/* Subscription inference has a narrower contract than API-key Responses.
+ * Apply it after --extra, which must not restore unsupported fields or
+ * enable stored responses. Background jobs remain managed locally.
+ */
+static int
+ai_chatgpt_request (struct json_object *root)
+{
+	static char const *const omitted[] = {
+		"background", "conversation", "max_output_tokens", "max_tool_calls",
+		"metadata", "moderation", "multi_agent", "previous_response_id", "prompt",
+		"prompt_cache_retention", "safety_identifier", "temperature", "top_logprobs",
+		"top_p", "truncation", "user",
+	};
+	for (size_t k = 0; k < array_size(omitted); ++k)
+		json_object_object_del(root, omitted[k]);
+	return jb_set(root, "store", json_object_new_boolean(false));
+}
+
 /* Append the text of @p val to @p text if @p val is a string and @p text
  * is not nullptr.
  */
@@ -544,7 +600,7 @@ ai_request (struct ai_endpoint const *ep,
 		system = nullptr;
 	}
 	if (jb_set(root, conversation, ai_conversation(ep->api, system, history, prompt)) ||
-	    (tools && (jb_set(root, "tools", json_object_get(tools)) ||
+	    (tools && (jb_set(root, "tools", ai_request_tools(ep, tools)) ||
 	               (b->flags & BODY_USAGE &&
 	                jb_set(root, "stream_options",
 	                       jb_object("include_usage", json_object_new_boolean(1),
@@ -555,6 +611,7 @@ ai_request (struct ai_endpoint const *ep,
 	                      ep->max_tokens > 0 ? ep->max_tokens : b->max_default) ||
 	    (background && jb_set(root, "background", json_object_new_boolean(1))) ||
 	    (b->flags & BODY_STREAM && jb_set(root, "stream", json_object_new_boolean(1))) ||
+	    (ep->provider == AI_CHATGPT && ai_chatgpt_request(root)) ||
 	    ai_request_last(root, conversation))
 		goto fail;
 	return root;

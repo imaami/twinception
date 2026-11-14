@@ -5,6 +5,7 @@ override SRC_askai := \
   blocker.c           \
   brainstem.c         \
   buf.c               \
+  chatgpt.c           \
   child.c             \
   code.c              \
   config.c            \

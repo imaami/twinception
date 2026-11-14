@@ -127,6 +127,7 @@ key variables are then the defaults:
 | ------------ | -------------- | --------------------------------------------------------------------------------- | ---------------------------------------- |
 | `llama`      | `chat`         | `http://127.0.0.1:9931/v1/` + `chat/completions`, `responses`, `messages`         | `LLAMA_API_KEY`, if set                  |
 | `openai`     | `responses`    | `https://api.openai.com/v1/` + `responses`, `chat/completions`                    | `OPENAI_API_KEY`                         |
+| `chatgpt`    | `responses`    | `https://api.openai.com/v1/responses`                                         | OAuth profile, or explicit `--key-env`   |
 | `anthropic`  | `messages`     | `https://api.anthropic.com/v1/` + `messages`, `chat/completions`                  | `ANTHROPIC_API_KEY`                      |
 | `google`     | `interactions` | `https://generativelanguage.googleapis.com/v1beta/` + `interactions`, `models/MODEL:streamGenerateContent?alt=sse`, `openai/chat/completions` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
 | `deepinfra`  | `chat`         | `https://api.deepinfra.com/v1/openai/chat/completions`                            | `DEEPINFRA_API_KEY`, `DEEPINFRA_TOKEN`   |
@@ -155,6 +156,55 @@ begun) and cancel a synchronous call when the client goes. With
 `--background`, the call and its upstream stream instead belong to a job,
 which continues after the client's request ends. A server
 that answers with plain JSON all the same is understood too.
+
+### ChatGPT subscriptions
+
+`chatgpt` uses OpenAI's [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source)
+flow for eligible subscription-backed Responses requests. `openai` keeps
+its existing API-key behavior. Sign in once, opening the printed URL in
+your browser, then start the service:
+
+```sh
+build/askai --chatgpt-login
+build/askai -p chatgpt -m gpt-6-astra --upstream-tools --background
+```
+
+Select a model available to the signed-in account; API-key access to a
+model does not establish subscription access. The model name is passed
+through unchanged. `doc/askai.chatgpt.json` is a minimal configuration.
+
+Credentials default to `$XDG_CONFIG_HOME/askai/chatgpt.json` when
+`XDG_CONFIG_HOME` is absolute, otherwise `$HOME/.config/askai/chatgpt.json`.
+Use `--chatgpt-auth /absolute/path/profile.json` on both commands to select
+another profile. The parent directory must belong to the current user
+and must not be writable by group or others. Login validates OpenAI's
+ID-token signature, issuer, audience, expiry and nonce, and records the
+granted scopes. A profile without consent for plan usage remains disabled.
+Refreshes run
+off the event loops; a file lock serializes refresh-token rotation across
+askai processes, and credentials are replaced atomically with mode 0600.
+
+The browser callback listens only on `127.0.0.1` at an available port.
+For a remote host, forward the port printed in the authorization URL
+over SSH before opening that URL on your local machine. Keep the callback
+URL unchanged. Sign-in waits up to five minutes.
+
+Subscription HTTP requests always use `store:false`, `stream:true` and
+local conversation replay. `--background` keeps the job in askai; it does
+not request OpenAI's native background execution. Unsupported generation
+fields, including temperature and output-token limits, are removed even
+when supplied by `--extra`. Upstream tools are grouped in the `askai`
+namespace and executed locally. `--extra` cannot replace `input` or
+`tools`, or force a particular tool with an object-valued `tool_choice`.
+These restrictions apply only to `chatgpt` and follow the current
+[subscription API limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
+
+For an externally managed OAuth token, use `--key-env VARIABLE` instead
+of a credential profile. That static token is not refreshed by askai.
+Managed credentials are sent only to the official Responses endpoint;
+a custom URL requires an explicitly supplied token or authorization
+header. A subscription-limit error remains a tool error, without a
+fallback to API-key billing.
 
 API keys are read from the environment, never from the command line. A
 provider's usual variables are only read for its own URL: with `-u`, the key is
@@ -2306,8 +2356,10 @@ Session (top-level configuration members):
 
 Upstream AI ("upstream"):
   -p, --provider NAME       llama (llama-server at 127.0.0.1:9931),
-                            openai, anthropic, google, deepinfra or
-                            openrouter; the provider sets the defaults
+                            openai, chatgpt, anthropic, google,
+                            deepinfra or openrouter; chatgpt uses
+                            ChatGPT subscription OAuth. Otherwise,
+                            the provider sets the defaults
                             of --api, --url and --key-env
       --api NAME            chat (chat completions), responses,
                             messages (Anthropic), generate (Gemini) or
@@ -2323,6 +2375,13 @@ Upstream AI ("upstream"):
                             key (default: at the URL of a provider, the
                             usual variable of the provider, which llama
                             may leave unset; else ASKAI_API_KEY, if set)
+      --chatgpt-auth FILE   ChatGPT OAuth credential file (default:
+                            $XDG_CONFIG_HOME/askai/chatgpt.json, or
+                            $HOME/.config/askai/chatgpt.json); mutually
+                            exclusive with an explicit key or auth header
+      --chatgpt-login       sign in with ChatGPT in a browser, save
+                            renewable credentials and exit; implies
+                            --provider chatgpt; no model is needed
   -H, --header LINE         extra request header, Name: value
                             (repeatable)
   -s, --system TEXT         default system prompt

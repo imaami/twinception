@@ -7,6 +7,7 @@
     "url": "http://127.0.0.1:8081/v1/chat/completions",
     "model": "local",
     "key-env": "LLAMA_API_KEY",
+    "chatgpt-auth": "",
     "header": [
       "X-Title: askai"
     ],

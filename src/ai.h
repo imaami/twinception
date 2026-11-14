@@ -33,7 +33,8 @@ enum ai_api : uint16_t { AI_NO_API, AI_API_LIST(AI_API_ENUM) };
 #undef AI_API_ENUM
 
 /** Who serves the upstream, as askai knows them: their URLs, the variables
- *  of their keys and their default API.
+ *  of their keys and their default API. Durable jobs persist these values;
+ *  append new providers without changing the existing numbers.
  */
 enum ai_provider : uint16_t {
 	AI_NO_PROVIDER,  /**< a server that --url names alone */
@@ -43,6 +44,7 @@ enum ai_provider : uint16_t {
 	AI_GOOGLE,
 	AI_DEEPINFRA,
 	AI_OPENROUTER,
+	AI_CHATGPT,      /**< ChatGPT plan usage over Responses with OAuth */
 };
 
 /** Whether @p p may be llama-server, which may need no key or model and
@@ -61,6 +63,8 @@ struct ai_endpoint {
 	char const         *model;
 	char const         *system;       /**< default system prompt, or nullptr */
 	char const *const  *headers;      /**< nullptr-terminated header lines */
+	char const         *chatgpt_auth; /**< renewable OAuth credentials, or
+	                                       nullptr for static headers */
 	uint64_t            background;   /**< nonzero: ask calls return jobs and
 	                                       keep their upstream streams alive */
 	long                max_tokens;   /**< <= 0 leaves the provider default */
@@ -118,6 +122,14 @@ ai_request (struct ai_endpoint const *ep,
             struct json_object       *prompt,
             struct json_object       *history,
             struct json_object       *tools);
+
+/** Validate the ChatGPT provider's --extra object. Returns a static
+ *  diagnostic, or nullptr when valid. Request-owned context and tools may
+ *  not be replaced; unsupported generation fields are omitted by
+ *  ai_request(). The configuration reports this before starting a service.
+ */
+extern char const *
+ai_chatgpt_check (struct json_object *extra);
 
 /** What an event of a streamed answer says in struct ai_event's flags. */
 enum ai_event_flag : uint32_t {
