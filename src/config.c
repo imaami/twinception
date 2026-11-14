@@ -25,6 +25,7 @@
 #include "ai.h"
 #include "brainstem.h"
 #include "buf.h"
+#include "chatgpt.h"
 #include "code.h"
 #include "config.h"
 #include "dstr.h"
@@ -51,6 +52,7 @@ static char const *const auths[] = { AI_API_LIST(CONFIG_API_AUTH) };
 static struct cstr_view const provider_names[] = {
 	[AI_LLAMA]      = CSTR_VIEW_INIT("llama"),
 	[AI_OPENAI]     = CSTR_VIEW_INIT("openai"),
+	[AI_CHATGPT]    = CSTR_VIEW_INIT("chatgpt"),
 	[AI_ANTHROPIC]  = CSTR_VIEW_INIT("anthropic"),
 	[AI_GOOGLE]     = CSTR_VIEW_INIT("google"),
 	[AI_DEEPINFRA]  = CSTR_VIEW_INIT("deepinfra"),
@@ -80,6 +82,10 @@ static struct {
 			[AI_CHAT]      = "https://api.openai.com/v1/chat/completions",
 			[AI_RESPONSES] = "https://api.openai.com/v1/responses",
 		}, { "OPENAI_API_KEY" }, AI_RESPONSES
+	},
+	[AI_CHATGPT] = {
+		{ [AI_RESPONSES] = "https://api.openai.com/v1/responses" },
+		{}, AI_RESPONSES
 	},
 	[AI_ANTHROPIC] = {
 		{
@@ -202,8 +208,10 @@ enum config_arg : uint8_t {
         H("Upstream AI (\"upstream\")")                                                                 \
         X(custom,  PROVIDER,         "provider",         'p', UPSTREAM, ONE, "NAME",                    \
           "llama (llama-server at 127.0.0.1:9931)," NL                                                  \
-          "openai, anthropic, google, deepinfra or" NL                                                  \
-          "openrouter; the provider sets the defaults" NL                                               \
+          "openai, chatgpt, anthropic, google," NL                                                     \
+          "deepinfra or openrouter; chatgpt uses" NL                                                   \
+          "ChatGPT subscription OAuth. Otherwise," NL                                                  \
+          "the provider sets the defaults" NL                                                         \
           "of --api, --url and --key-env")                                                              \
         X(custom,  API,              "api",              ,    UPSTREAM, ONE, "NAME",                    \
           "chat (chat completions), responses," NL                                                      \
@@ -225,6 +233,17 @@ enum config_arg : uint8_t {
           "usual variable of the provider, which llama" NL                                              \
           "may leave unset; else ASKAI_API_KEY, if set)",                                               \
           key_env)                                                                                      \
+        X(text,    CHATGPT_AUTH,     "chatgpt-auth",      ,    UPSTREAM, ONE, "FILE",                    \
+          "ChatGPT OAuth credential file (default:" NL                                                 \
+          "$XDG_CONFIG_HOME/askai/chatgpt.json, or" NL                                                  \
+          "$HOME/.config/askai/chatgpt.json); mutually" NL                                             \
+          "exclusive with an explicit key or auth header",                                             \
+          ep.chatgpt_auth)                                                                               \
+        X(flag,    CHATGPT_LOGIN,    "chatgpt-login",     ,    NONE, NONE, "",                           \
+          "sign in with ChatGPT in a browser, save" NL                                                 \
+          "renewable credentials and exit; implies" NL                                                \
+          "--provider chatgpt; no model is needed",                                                     \
+          CFG_CHATGPT_LOGIN)                                                                             \
         X(custom,  HEADER,           "header",           'H', UPSTREAM, MANY, "LINE",                   \
           "extra request header, Name: value" NL                                                        \
           "(repeatable)")                                                                               \
@@ -1676,6 +1695,10 @@ static int
 config_api (struct config *cfg)
 {
 	struct ai_endpoint *ep = &cfg->ep;
+	if (ep->chatgpt_auth && !*ep->chatgpt_auth)
+		ep->chatgpt_auth = nullptr;
+	if (ep->chatgpt_auth && ep->provider != AI_CHATGPT)
+		return config_complain(cfg, nullptr, "--chatgpt-auth needs --provider chatgpt");
 	if (!ep->api)
 		ep->api = providers[ep->provider].api;
 	if (!ep->provider)
@@ -1929,11 +1952,60 @@ config_headers (struct config *cfg,
 	return 0;
 }
 
+/* A selected profile is private to askai. Its renewable tokens are never
+ * inferred for a custom URL or mixed with a static credential. */
+static int
+config_chatgpt_path (struct config *cfg)
+{
+	if (!cfg->ep.chatgpt_auth) {
+		int e = chatgpt_path(&cfg->chatgpt_owned);
+		if (e)
+			return config_complain(cfg, nullptr, "cannot choose ChatGPT credential "
+			                       "path: %s; pass --chatgpt-auth FILE", strerror(e));
+		cfg->ep.chatgpt_auth = cfg->chatgpt_owned;
+	}
+	return cfg->ep.chatgpt_auth[0] == '/' ? 0
+	       : config_complain(cfg, nullptr, "--chatgpt-auth needs an absolute path");
+}
+
+/* ChatGPT plan access uses the Responses wire format, with a narrower
+ * contract and either a renewable profile or an explicit bearer token. */
+static int
+config_chatgpt (struct config *cfg,
+                bool           has_auth)
+{
+	char const *why = ai_chatgpt_check(cfg->ep.extra);
+	if (why)
+		return config_complain(cfg, nullptr, "chatgpt: %s", why);
+	bool const direct = cfg->key_env || has_auth;
+	if (direct && cfg->ep.chatgpt_auth)
+		return config_complain(cfg, nullptr, "--chatgpt-auth cannot be combined "
+		                       "with --key-env or an Authorization header");
+	char const *key = nullptr;
+	int status = cfg->key_env ? config_key_env(cfg, &key) : 0;
+	if (status)
+		return status;
+	if (key && strpbrk(key, "\r\n"))
+		return config_complain(cfg, nullptr, "the OAuth access token contains a line break");
+	if (!direct) {
+		if (cfg->ep.url && strcmp(cfg->ep.url, providers[AI_CHATGPT].url[AI_RESPONSES]))
+			return config_complain(cfg, nullptr, "ChatGPT OAuth credentials require "
+			                       "https://api.openai.com/v1/responses; a custom URL "
+			                       "needs an explicit --key-env or Authorization header");
+		status = config_chatgpt_path(cfg);
+	}
+	if (!status && !cfg->ep.url)
+		status = config_url_own(cfg);
+	return status ? status : config_headers(cfg, has_auth ? nullptr : key);
+}
+
 /* Work out the upstream's API key, URL and headers. */
 static int
 config_upstream (struct config *cfg)
 {
 	bool has_auth = config_has_header(cfg, auths[cfg->ep.api]);
+	if (cfg->ep.provider == AI_CHATGPT)
+		return config_chatgpt(cfg, has_auth);
 	char const *key = nullptr;
 	int status = cfg->key_env ? config_key_env(cfg, &key)
 	                          : config_key_usual(cfg, has_auth, &key);
@@ -2491,6 +2563,18 @@ config_parse (struct config *cfg)
 	}
 	int status = cfg->path ? config_file(cfg) : config_lists(cfg);
 	status = status ? status : config_argv(cfg);
+	if (!status && cfg->flags & CFG_CHATGPT_LOGIN) {
+		if (cfg->ep.provider && cfg->ep.provider != AI_CHATGPT)
+			return config_complain(cfg, nullptr, "--chatgpt-login needs --provider chatgpt");
+		cfg->ep.provider = AI_CHATGPT;
+		status = config_api(cfg);
+		if (!status && (cfg->key_env || cfg->ep.url ||
+		                config_has_header(cfg, "Authorization:")))
+			status = config_complain(cfg, nullptr, "--chatgpt-login cannot use "
+			                         "--key-env, --url or an Authorization header");
+		status = status ? status : config_chatgpt_path(cfg);
+		return status ? status : -1;
+	}
 	status = status ? status : config_finish(cfg);
 	return status ? status : -1;
 }
@@ -2609,6 +2693,7 @@ config_fini (struct config *cfg)
 	registry_fini(&cfg->registry);
 	free(cfg->url);
 	free(cfg->auth);
+	free(cfg->chatgpt_owned);
 	free(cfg->description);
 	free(cfg->code_helper);
 	free(cfg->code_cache);

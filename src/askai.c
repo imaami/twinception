@@ -17,6 +17,7 @@
 #include "blocker.h"
 #include "brainstem.h"
 #include "buf.h"
+#include "chatgpt.h"
 #include "child.h"
 #include "config.h"
 #include "git.h"
@@ -937,7 +938,15 @@ main (int   argc,
 	}
 	int status;
 	struct config cfg = config(argc, argv, &status);
-	if (status < 0)
+	if (status < 0 && cfg.flags & CFG_CHATGPT_LOGIN) {
+		char why[512] = {};
+		int e = chatgpt_login(cfg.ep.chatgpt_auth, why, sizeof why);
+		if (e)
+			fprintf(stderr, "ChatGPT sign-in: %s\n", *why ? why : strerror(e));
+		else
+			fprintf(stderr, "ChatGPT sign-in saved to %s\n", cfg.ep.chatgpt_auth);
+		status = !!e;
+	} else if (status < 0)
 		status = askai_serve(&cfg);
 	config_fini(&cfg);
 	return status;

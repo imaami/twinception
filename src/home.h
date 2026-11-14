@@ -115,8 +115,10 @@ struct home_metrics {
 
 /**
  * Creates home on @p loop. Home sends the upstream calls to the endpoint
- * cfg->ep with curl, which looks up host names on @p blockers. At most
- * cfg->calls jobs are in flight, and @p door makes room for each of them.
+ * cfg->ep with curl, which looks up host names on @p blockers. Managed
+ * ChatGPT credentials are read and renewed on the blockers before each
+ * request; cancellation prevents a pending authorization from sending it.
+ * At most cfg->calls jobs are in flight, and @p door makes room for each.
  * With CFG_TEST_FIFO, a test aid, all jobs wait in one queue, first in
  * first out. Home counts into @p metrics and @p http. Their atomic members
  * must be valid, and they must outlive every loop that renders them.

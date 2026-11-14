@@ -657,7 +657,7 @@ These options are members of the object `upstream`.
 
 #### `provider`
 
-The value is a string: `llama`, `openai`, `anthropic`, `google`,
+The value is a string: `llama`, `openai`, `chatgpt`, `anthropic`, `google`,
 `deepinfra` or `openrouter`. There is no default. Without a provider,
 `url` is required.
 
@@ -665,13 +665,15 @@ The provider sets the defaults of `api`, `url` and `key-env`. The table in
 section [Upstream providers and
 APIs](../README.md#upstream-providers-and-apis) of `README.md` lists them.
 `llama` is `llama-server` at `http://127.0.0.1:9931`.
+`chatgpt` uses a ChatGPT subscription through OAuth and supports only
+`responses`. `openai` continues to use API-key billing.
 
 #### `api`
 
 The value is a string: `chat` (Chat Completions), `responses` (OpenAI
 Responses), `messages` (Anthropic Messages), `generate` (Gemini
 generateContent) or `interactions` (Gemini Interactions). The default is
-the API of the provider: `responses` for `openai`, `messages` for
+the API of the provider: `responses` for `openai` and `chatgpt`, `messages` for
 `anthropic`, `interactions` for `google`, and `chat` for the other
 providers and without a provider. OpenAI refuses function tools in `chat`
 for its reasoning models, so the turns of `upstream-tools` need
@@ -728,6 +730,47 @@ reads no key variable if a `header` line has the name of the key header,
 such as `Authorization` for `chat`. `askai` ignores case in this
 comparison. Otherwise a missing key is an error at the URL of a provider
 other than `llama`. With `url` or with `llama`, `askai` then sends no key.
+
+`chatgpt` instead uses its renewable OAuth profile unless `key-env` or an
+Authorization header is explicitly given. It never falls back to
+`OPENAI_API_KEY` or `ASKAI_API_KEY`. An explicit variable contains an
+OAuth access token, which askai sends unchanged and does not refresh.
+
+#### `chatgpt-auth`
+
+The value is an absolute path to a private ChatGPT OAuth credential file.
+An empty string selects the default, and is ignored for other providers.
+A nonempty path requires `provider: "chatgpt"`. The default is
+`$XDG_CONFIG_HOME/askai/chatgpt.json` when `XDG_CONFIG_HOME` is absolute,
+otherwise `$HOME/.config/askai/chatgpt.json`.
+
+Run `askai --chatgpt-login --chatgpt-auth FILE` once, then pass the same
+path when serving. Profiles let separate accounts have separate tokens.
+The file and its parent directory must be owned by the current user.
+The directory must not be writable by group or others; the file must
+not be accessible to them. It is written atomically with mode 0600. Expiring access
+tokens are refreshed off the event loops; a lock beside the file
+serializes refreshes between processes. Do not put credentials in a
+configuration file, Git repository, log or transcript.
+
+`chatgpt-auth` cannot be combined with an explicit `key-env` or
+Authorization header. Managed credentials require the exact URL
+`https://api.openai.com/v1/responses`, whether implicit or given in `url`.
+
+#### `chatgpt-login`
+
+This command-line-only action opens a loopback callback listener, prints
+an authorization URL to open in a browser, saves renewable ChatGPT
+credentials and exits. It defaults `provider` to `chatgpt`, needs no
+`model`, and cannot be combined with another provider, `url`, `key-env`
+or an Authorization header. `chatgpt-auth` selects the profile. Complete
+sign-in within five minutes. When running remotely, forward the printed
+loopback port over SSH before opening the URL in your local browser.
+
+The OAuth flow uses PKCE and validates callback state, the ID token and
+the granted `chatgpt.tokens.use.direct` permission. Repeating login uses
+the profile's saved client registration and host identifier. No API key
+or Codex credential file is needed.
 
 #### `header`
 
