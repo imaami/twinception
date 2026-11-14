@@ -357,6 +357,7 @@ enum httpd_home_flag : uint64_t {
 	HOME_OPEN   = 1u << 0,  /* accepting */
 	HOME_ANYONE = 1u << 1,  /* clients that show no token may call tools
 	                           from beyond loopback */
+	HOME_QUIET  = 1u << 2,  /* the embedding application reports its URL */
 };
 
 /* Home's door: the listeners, and the clients' addresses, connections and
@@ -3227,13 +3228,14 @@ httpd_home_create (struct loop            *loop,
 		.policy = policy_get(cfg->policy),
 		.rng = loop_clock() | 1,
 		.seed = util_seed(),
+		.flags = cfg->quiet ? HOME_QUIET : 0,
 		.cap = cfg->limits.clients,
 		.spare_fd = -1
 	};
 	struct policy_grant g;
 	if (policy_grant(cfg->policy, cstr_view(nullptr), POLICY_REMOTE, nullptr, &g) ==
 	    POLICY_GRANTED && g.tools)
-		home->flags = HOME_ANYONE;
+		home->flags |= HOME_ANYONE;
 	httpd_home_budget(home);
 	hub->home = loop;
 	door = home;
@@ -3286,8 +3288,34 @@ httpd_home_open (struct httpd_home *home)
 	home->flags |= HOME_OPEN;
 
 	/* The endpoints say the server is ready. */
-	for (size_t i = 0; i < home->n_listeners; ++i)
-		httpd_listener_announce(&home->listeners[i], home->flags & HOME_ANYONE);
+	if (!(home->flags & HOME_QUIET))
+		for (size_t i = 0; i < home->n_listeners; ++i)
+			httpd_listener_announce(&home->listeners[i], home->flags & HOME_ANYONE);
+}
+
+int
+httpd_home_port (struct httpd_home const *home,
+                 size_t                   i,
+                 uint16_t                *port)
+{
+	if (!home || !port)
+		return EFAULT;
+	if (i >= home->n_listeners)
+		return EINVAL;
+	struct sockaddr_storage address;
+	socklen_t size = sizeof address;
+	if (getsockname(home->listeners[i].fd, (struct sockaddr *)&address, &size))
+		return errno;
+	switch (address.ss_family) {
+	case AF_INET:
+		*port = ntohs(((struct sockaddr_in const *)&address)->sin_port);
+		return 0;
+	case AF_INET6:
+		*port = ntohs(((struct sockaddr_in6 const *)&address)->sin6_port);
+		return 0;
+	default:
+		return EAFNOSUPPORT;
+	}
 }
 
 int

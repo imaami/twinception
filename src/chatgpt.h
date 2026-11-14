@@ -1,39 +1,37 @@
 /** @file chatgpt.h
- *
- * Sign in with ChatGPT credentials. These functions perform blocking file
- * and network operations; serving threads must call them on a blocker.
+ * Sign in with ChatGPT credentials. Blocking work belongs on a blocker.
  */
 #ifndef ASKAI_SRC_CHATGPT_H_
 #define ASKAI_SRC_CHATGPT_H_
 
 #include <stddef.h>
 
-/** Allocate the default credential path under XDG_CONFIG_HOME or HOME.
- *  Returns 0, ENOENT if neither is usable, or ENOMEM.
+struct dstr;
+
+/** Replace @p path with askai's default private credential path under
+ *  XDG_STATE_HOME, or HOME/.local/state. Returns 0 or an error number.
  */
 extern int
-chatgpt_path (char **path);
+chatgpt_path (struct dstr *path);
 
-/** Authorize the account associated with @p path through a loopback OAuth
- *  callback. Prints the authorization URL, waits up to five minutes, and
- *  stores the validated credentials. Each path selects one account/client
- *  registration. Returns 0 or an error number; @p error receives a public
- *  diagnostic, never a credential or the server's untrusted response body.
+/** Authorize the account at @p path, displaying a browser URL and waiting
+ *  up to five minutes for its loopback callback. Store only verified
+ *  credentials. Returns 0 or an error number, with a public diagnostic
+ *  in @p error; each credential path selects one account registration.
  */
 extern int
 chatgpt_login (char const *path,
                char       *error,
                size_t      size);
 
-/** Load the account at @p path, refreshing expiring credentials under a
- *  process-shared lock. Allocate an Authorization header in @p *header,
- *  which the caller frees. Returns 0 or an error number and writes a safe
- *  diagnostic to @p error. On error, @p *header is nullptr.
+/** Replace @p header with an Authorization header for @p path, refreshing
+ *  expiring credentials under a process-shared lock. Returns 0 or an error
+ *  number, leaves @p header empty on error, and writes a safe diagnostic.
  */
 extern int
-chatgpt_header (char const *path,
-                char      **header,
-                char       *error,
-                size_t      size);
+chatgpt_header (char const  *path,
+                struct dstr *header,
+                char        *error,
+                size_t       size);
 
 #endif /* ASKAI_SRC_CHATGPT_H_ */

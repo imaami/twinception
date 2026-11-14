@@ -1,31 +1,23 @@
-/** @file Offline tests of ChatGPT OAuth and credential storage. */
+/** @file OAuth tests with real cryptography, storage and callback HTTP. */
 #define _GNU_SOURCE
-#include <curl/curl.h>
+#include <arpa/inet.h>
 #include <dirent.h>
 #include <openssl/core_names.h>
 #include <openssl/evp.h>
-#include <stdarg.h>
+#include <pthread.h>
+#include <sys/socket.h>
 
 #include "check.h"
+#include "http.h"
 
-static CURL *chatgpt_test_easy_init (void);
-static CURLcode chatgpt_test_setopt (CURL *easy, CURLoption option, ...);
-static CURLcode chatgpt_test_perform (CURL *easy);
-static CURLcode chatgpt_test_getinfo (CURL *easy, CURLINFO info, ...);
+static int chatgpt_test_post (struct http *, char const *, char const *, size_t,
+                              char const *const *, long, http_write_cb *,
+                              http_done_cb *, void *, struct http_request **);
 
-/* Only the HTTP transport is replaced. The production endpoints, JSON,
- * cryptography, locking and file operations run unchanged. */
-#undef curl_easy_setopt
-#undef curl_easy_getinfo
-#define curl_easy_init chatgpt_test_easy_init
-#define curl_easy_setopt chatgpt_test_setopt
-#define curl_easy_perform chatgpt_test_perform
-#define curl_easy_getinfo chatgpt_test_getinfo
+/* Replace only the outbound bridge boundary. Login uses httpd unchanged. */
+#define http_post_json chatgpt_test_post
 #include "../src/chatgpt.c"
-#undef curl_easy_init
-#undef curl_easy_setopt
-#undef curl_easy_perform
-#undef curl_easy_getinfo
+#undef http_post_json
 
 struct chatgpt_test_reply {
 	char const *url;
@@ -37,99 +29,44 @@ struct chatgpt_test_reply {
 
 static struct {
 	struct chatgpt_test_reply const *replies;
-	curl_write_callback             write;
-	void                           *data;
-	char const                     *url;
-	char const                     *form;
-	char                           *last_form;
+	struct dstr                     last_form;
 	size_t                          count;
 	size_t                          next;
-	long                            status;
-} chatgpt_test_http;
+} chatgpt_test_http = { .last_form = DSTR_INIT };
 
-static CURL *
-chatgpt_test_easy_init (void)
+static int
+chatgpt_test_post (struct http          *http,
+                   char const           *url,
+                   char const           *body,
+                   size_t                length,
+                   char const *const    *headers,
+                   long                  timeout,
+                   http_write_cb        *write,
+                   http_done_cb         *done,
+                   void                 *user,
+                   struct http_request **request)
 {
-	chatgpt_test_http.write = nullptr;
-	chatgpt_test_http.data = nullptr;
-	chatgpt_test_http.url = nullptr;
-	chatgpt_test_http.form = nullptr;
-	return curl_easy_init();
-}
-
-static CURLcode
-chatgpt_test_setopt (CURL       *easy,
-                     CURLoption  option,
-                     ...)
-{
-	va_list ap;
-	va_start(ap, option);
-	CURLcode result;
-	if (option == CURLOPT_WRITEFUNCTION) {
-		chatgpt_test_http.write = va_arg(ap, curl_write_callback);
-		result = CURLE_OK;
-	} else if (option >= CURLOPTTYPE_OFF_T && option < CURLOPTTYPE_BLOB) {
-		result = curl_easy_setopt(easy, option, va_arg(ap, curl_off_t));
-	} else if (option >= CURLOPTTYPE_OBJECTPOINT && option < CURLOPTTYPE_FUNCTIONPOINT) {
-		void *value = va_arg(ap, void *);
-		if (option == CURLOPT_URL)
-			chatgpt_test_http.url = value;
-		else if (option == CURLOPT_POSTFIELDS || option == CURLOPT_COPYPOSTFIELDS)
-			chatgpt_test_http.form = value;
-		else if (option == CURLOPT_WRITEDATA)
-			chatgpt_test_http.data = value;
-		result = curl_easy_setopt(easy, option, value);
-	} else if (option < CURLOPTTYPE_OBJECTPOINT) {
-		result = curl_easy_setopt(easy, option, va_arg(ap, long));
-	} else {
-		CHECK(false);
-		result = CURLE_UNKNOWN_OPTION;
+	(void)http;
+	*request = nullptr;
+	CHECK(chatgpt_test_http.next < chatgpt_test_http.count);
+	if (chatgpt_test_http.next >= chatgpt_test_http.count)
+		return EIO;
+	struct chatgpt_test_reply const *reply = &chatgpt_test_http.replies[chatgpt_test_http.next++];
+	CHECK(!strcmp(url, reply->url));
+	CHECK(timeout > 0);
+	CHECK(cstr_view_store(cstr_view_n(body, length), &chatgpt_test_http.last_form) == 0);
+	if (reply->grant) {
+		CHECK(body && strstr(body, reply->grant));
+		CHECK(headers && !strcmp(headers[0], "Content-Type: application/x-www-form-urlencoded"));
 	}
-	va_end(ap);
-	return result;
-}
-
-static CURLcode
-chatgpt_test_perform (CURL *easy)
-{
-	(void)easy;
-	if (chatgpt_test_http.next == chatgpt_test_http.count) {
-		CHECK(false);
-		return CURLE_COULDNT_CONNECT;
-	}
-	struct chatgpt_test_reply const *reply =
-		&chatgpt_test_http.replies[chatgpt_test_http.next++];
-	CHECK(chatgpt_test_http.url && !strcmp(chatgpt_test_http.url, reply->url));
-	if (reply->grant)
-		CHECK(chatgpt_test_http.form && strstr(chatgpt_test_http.form, reply->grant));
-	free(chatgpt_test_http.last_form);
-	chatgpt_test_http.last_form = chatgpt_test_http.form ? strdup(chatgpt_test_http.form) : nullptr;
-	chatgpt_test_http.status = reply->status;
-	if (reply->result)
-		return reply->result;
-	if (reply->body) {
+	CURLcode result = reply->result;
+	if (!result && reply->body) {
 		size_t n = strlen(reply->body);
-		CHECK(chatgpt_test_http.write != nullptr);
-		if (!chatgpt_test_http.write ||
-		    chatgpt_test_http.write((char *)reply->body, 1, n, chatgpt_test_http.data) != n)
-			return CURLE_WRITE_ERROR;
+		if (write(reply->body, n, user) != n)
+			result = CURLE_WRITE_ERROR;
 	}
-	return CURLE_OK;
-}
-
-static CURLcode
-chatgpt_test_getinfo (CURL     *easy,
-                      CURLINFO  info,
-                      ...)
-{
-	(void)easy;
-	va_list ap;
-	va_start(ap, info);
-	CHECK(info == CURLINFO_RESPONSE_CODE);
-	if (info == CURLINFO_RESPONSE_CODE)
-		*va_arg(ap, long *) = chatgpt_test_http.status;
-	va_end(ap);
-	return info == CURLINFO_RESPONSE_CODE ? CURLE_OK : CURLE_UNKNOWN_OPTION;
+	done(result, reply->status, "never expose upstream secrets", user);
+	return 0;
 }
 
 static void
@@ -247,7 +184,7 @@ chatgpt_test_identity (void)
 	if (!key)
 		return;
 	char *jwks = chatgpt_test_jwks(key);
-	struct chatgpt_test_reply reply = { CHATGPT_JWKS, jwks, nullptr, 200, CURLE_OK };
+	struct json_object *keys = json_tokener_parse(jwks);
 	struct json_object *claims = jb_object(
 		"iss", json_object_new_string(CHATGPT_ISSUER),
 		"aud", json_object_new_string("oaiapp_test"),
@@ -258,22 +195,18 @@ chatgpt_test_identity (void)
 	CHECK(claims != nullptr);
 	char *token = chatgpt_test_jwt(key, jb_wire(claims).data);
 	struct json_object *identity = nullptr;
-	chatgpt_test_replies(&reply, 1);
-	CHECK(chatgpt_identity(token, "oaiapp_test", "nonce-test", nullptr, &identity) == 0);
+	CHECK(chatgpt_identity(keys, cstr_view(token), cstr_view("oaiapp_test"), cstr_view("nonce-test"), cstr_view(nullptr), &identity) == 0);
 	CHECK(identity && jb_is(jb_get(identity, "sub"), "user-test"));
-	CHECK(chatgpt_test_http.next == 1);
 	json_object_put(identity);
 	identity = nullptr;
-	chatgpt_test_replies(nullptr, 0);
-	CHECK(chatgpt_identity(token, "oaiapp_other", "nonce-test", nullptr, &identity) == EACCES);
-	CHECK(chatgpt_identity(token, "oaiapp_test", "wrong", nullptr, &identity) == EACCES);
-	CHECK(chatgpt_identity(token, "oaiapp_test", nullptr, "another-user", &identity) == EACCES);
+	CHECK(chatgpt_identity(keys, cstr_view(token), cstr_view("oaiapp_other"), cstr_view("nonce-test"), cstr_view(nullptr), &identity) != 0);
+	CHECK(chatgpt_identity(keys, cstr_view(token), cstr_view("oaiapp_test"), cstr_view("wrong"), cstr_view(nullptr), &identity) != 0);
+	CHECK(chatgpt_identity(keys, cstr_view(token), cstr_view("oaiapp_test"), cstr_view(nullptr), cstr_view("another-user"), &identity) != 0);
 	CHECK(identity == nullptr);
 	/* A different signature with otherwise valid claims is never accepted. */
 	char *signature = strrchr(token, '.') + 1;
 	*signature = *signature == 'A' ? 'B' : 'A';
-	chatgpt_test_replies(&reply, 1);
-	CHECK(chatgpt_identity(token, "oaiapp_test", "nonce-test", nullptr, &identity) == EACCES);
+	CHECK(chatgpt_identity(keys, cstr_view(token), cstr_view("oaiapp_test"), cstr_view("nonce-test"), cstr_view(nullptr), &identity) != 0);
 	CHECK(identity == nullptr);
 	free(token);
 	token = nullptr;
@@ -295,8 +228,7 @@ chatgpt_test_identity (void)
 		CHECK(json_object_deep_copy(claims, &copy, nullptr) == 0);
 		CHECK(jb_set(copy, wrong[i].field, json_tokener_parse(wrong[i].value)) == 0);
 		token = chatgpt_test_jwt(key, jb_wire(copy).data);
-		chatgpt_test_replies(nullptr, 0);
-		CHECK(chatgpt_identity(token, "oaiapp_test", "nonce-test", nullptr, &identity) == EACCES);
+		CHECK(chatgpt_identity(keys, cstr_view(token), cstr_view("oaiapp_test"), cstr_view("nonce-test"), cstr_view(nullptr), &identity) != 0);
 		CHECK(identity == nullptr);
 		free(token);
 		token = nullptr;
@@ -305,12 +237,12 @@ chatgpt_test_identity (void)
 	CHECK(jb_set(claims, "aud", json_tokener_parse("[\"oaiapp_test\",\"other\"]")) == 0);
 	CHECK(jb_set(claims, "azp", json_object_new_string("oaiapp_test")) == 0);
 	token = chatgpt_test_jwt(key, jb_wire(claims).data);
-	chatgpt_test_replies(&reply, 1);
-	CHECK(chatgpt_identity(token, "oaiapp_test", "nonce-test", "user-test", &identity) == 0);
+	CHECK(chatgpt_identity(keys, cstr_view(token), cstr_view("oaiapp_test"), cstr_view("nonce-test"), cstr_view("user-test"), &identity) == 0);
 	json_object_put(identity);
 	json_object_put(claims);
 	free(token);
 	token = nullptr;
+	json_object_put(keys);
 	free(jwks);
 	jwks = nullptr;
 	EVP_PKEY_free(key);
@@ -326,11 +258,9 @@ chatgpt_test_request (uint16_t    port,
 	                              .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
 	                              .sin_port = htons(port) };
 	CHECK(connect(fd, (struct sockaddr *)&address, sizeof address) == 0);
-	char *request = nullptr;
-	CHECK(asprintf(&request, "GET /auth/callback?%s HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", query) >= 0);
-	CHECK(request && util_write_all(fd, request, strlen(request)) == 0);
-	free(request);
-	request = nullptr;
+	dstr_auto request = dstr(nullptr);
+	CHECK(dstr_printf(&request, "GET /auth/callback?%s HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", query));
+	CHECK(util_write_all(fd, dstr_get(&request), dstr_len(&request)) == 0);
 	return fd;
 }
 
@@ -338,52 +268,63 @@ static void
 chatgpt_test_callback (void)
 {
 	struct json_object *params = nullptr;
-	CHECK(chatgpt_query("state=s&code=a%2Bb&client_id=oaiapp_test", &params) == 0);
-	CHECK(jb_is(jb_get(params, "code"), "a+b"));
+	CHECK(chatgpt_query(CSTR_VIEW("scope=openid+email&code=%2B"), &params) == 0);
+	CHECK(jb_is(jb_get(params, "scope"), "openid email") && jb_is(jb_get(params, "code"), "+"));
 	json_object_put(params);
-	CHECK(chatgpt_query("scope=openid+email&code=%2B", &params) == 0);
-	CHECK(jb_is(jb_get(params, "scope"), "openid email"));
-	CHECK(jb_is(jb_get(params, "code"), "+"));
+	CHECK(chatgpt_query(CSTR_VIEW("state=a&state=b"), &params) == EINVAL);
 	json_object_put(params);
-	CHECK(chatgpt_query("state=a&state=b", &params) == EINVAL);
+	CHECK(chatgpt_query(CSTR_VIEW("state=%xy"), &params) == EINVAL);
 	json_object_put(params);
-	CHECK(chatgpt_query("state=a%00b", &params) == EINVAL);
-	json_object_put(params);
-	int listener = -1;
+	struct chatgpt_browser browser;
+	int e = chatgpt_browser_init(&browser);
+	CHECK(e == 0);
+	if (e)
+		return;
 	uint16_t port = 0;
-	CHECK(chatgpt_listener(&listener, &port) == 0);
-	/* A request without the pending state cannot consume the login. */
-	int bad = chatgpt_test_request(port, "state=wrong&code=x&client_id=oaiapp_test");
-	int good = chatgpt_test_request(port, "state=pending&code=ok&client_id=oaiapp_test");
-	CHECK(chatgpt_callback(listener, "pending", nullptr, &params) == 0);
+	CHECK(httpd_home_port(browser.home, 0, &port) == 0 && port == browser.port && port);
+	CHECK(httpd_home_port(browser.home, 1, &port) == EINVAL);
+	CHECK(httpd_home_port(nullptr, 0, &port) == EFAULT);
+	CHECK(httpd_home_port(browser.home, 0, nullptr) == EFAULT);
+	/* Losing a browser connection or receiving a wrong state leaves the
+	 * pending authorization available to the following legitimate callback. */
+	int lost = chatgpt_test_request(browser.port, "state=wrong&code=cancelled");
+	util_close(&lost);
+	int bad = chatgpt_test_request(browser.port, "state=wrong&code=x&client_id=oaiapp_test");
+	int good = chatgpt_test_request(browser.port, "state=pending&code=ok&client_id=oaiapp_test");
+	CHECK(chatgpt_browser_wait(&browser, CSTR_VIEW("pending"), cstr_view(nullptr), &params) == 0);
 	CHECK(jb_is(jb_get(params, "code"), "ok"));
+	CHECK(httpd_home_port(browser.home, 0, &port) == EBADF);
 	json_object_put(params);
-	CHECK(close(bad) == 0);
-	bad = -1;
-	CHECK(close(good) == 0);
-	good = -1;
+	util_close(&bad);
+	util_close(&good);
+	chatgpt_browser_fini(&browser);
 	char const *const refused[] = {
 		"state=pending&code=x&client_id=oaiapp_different",
 		"state=pending&error=access_denied",
 		"state=pending&code=x&iss=https%3A%2F%2Funtrusted.example",
 	};
 	for (size_t i = 0; i < array_size(refused); ++i) {
-		int fd = chatgpt_test_request(port, refused[i]);
-		CHECK(chatgpt_callback(listener, "pending", "oaiapp_test", &params) == EACCES);
+		e = chatgpt_browser_init(&browser);
+		CHECK(e == 0);
+		if (e)
+			break;
+		int fd = chatgpt_test_request(browser.port, refused[i]);
+		CHECK(chatgpt_browser_wait(&browser, CSTR_VIEW("pending"), CSTR_VIEW("oaiapp_test"), &params) == EACCES);
 		json_object_put(params);
-		CHECK(close(fd) == 0);
-		fd = -1;
+		util_close(&fd);
+		chatgpt_browser_fini(&browser);
 	}
-	int fd = chatgpt_test_request(port, "state=pending&code=ok");
-	CHECK(chatgpt_callback(listener, "pending", "oaiapp_test", &params) == 0);
-	json_object_put(params);
-	CHECK(close(fd) == 0);
-	fd = -1;
-	CHECK(close(listener) == 0);
-	listener = -1;
+	/* Cancellation does not manufacture callback parameters. */
+	e = chatgpt_browser_init(&browser);
+	CHECK(e == 0);
+	if (!e) {
+		loop_exit(&browser.loop);
+		CHECK(chatgpt_browser_wait(&browser, CSTR_VIEW("pending"), cstr_view(nullptr), &params) != 0);
+		CHECK(params == nullptr);
+		chatgpt_browser_fini(&browser);
+	}
 }
 
-/* Fragment for auth test owner: cached profiles, never contacts network. */
 static struct json_object *
 chatgpt_test_profile (void)
 {
@@ -447,22 +388,21 @@ chatgpt_test_cached (char const *path)
 		return;
 	CHECK(!chatgpt_test_save(path, profile));
 	char error[256] = {};
-	char *header = nullptr;
+	dstr_auto header = dstr(nullptr);
 	chatgpt_test_replies(nullptr, 0);
 	CHECK(!chatgpt_header(path, &header, error, sizeof error));
-	CHECK(header && !strcmp(header, "Authorization: Bearer offline.access-token"));
-	free(header);
-	header = nullptr;
+	CHECK(cstr_view_equal(cstr_view_dstr(&header), CSTR_VIEW("Authorization: Bearer offline.access-token")));
+	dstr_clear(&header);
 	CHECK(!chmod(path, 0644));
 	CHECK(chatgpt_header(path, &header, error, sizeof error));
-	CHECK(!header);
+	CHECK(!dstr_len(&header));
 	CHECK(!chmod(path, 0600));
 	char *link = nullptr;
 	CHECK(asprintf(&link, "%s.link", path) >= 0);
 	if (link) {
 		CHECK(!symlink(path, link));
 		CHECK(chatgpt_header(link, &header, error, sizeof error));
-		CHECK(!header);
+		CHECK(!dstr_len(&header));
 		CHECK(!unlink(link));
 		free(link);
 		link = nullptr;
@@ -471,7 +411,7 @@ chatgpt_test_cached (char const *path)
 	if (link) {
 		CHECK(linkat(AT_FDCWD, path, AT_FDCWD, link, 0) == 0);
 		CHECK(chatgpt_header(path, &header, error, sizeof error) == EACCES);
-		CHECK(header == nullptr);
+		CHECK(!dstr_len(&header));
 		CHECK(unlink(link) == 0);
 		free(link);
 		link = nullptr;
@@ -479,23 +419,23 @@ chatgpt_test_cached (char const *path)
 	CHECK(!jb_set(profile, "access_token", json_object_new_string("bad\r\nAuthorization: injected")));
 	CHECK(!chatgpt_test_save(path, profile));
 	CHECK(chatgpt_header(path, &header, error, sizeof error));
-	CHECK(!header);
+	CHECK(!dstr_len(&header));
 	CHECK(!jb_set(profile, "access_token", json_object_new_string_len("good\0hidden", 11)));
 	CHECK(!chatgpt_test_save(path, profile));
 	CHECK(chatgpt_header(path, &header, error, sizeof error));
-	CHECK(!header);
+	CHECK(!dstr_len(&header));
 	CHECK(!jb_set(profile, "access_token", json_object_new_string("offline.access-token")));
 	CHECK(!jb_set(profile, "scopes", jb_list(json_object_new_string("openid"))));
 	CHECK(!chatgpt_test_save(path, profile));
 	CHECK(chatgpt_header(path, &header, error, sizeof error));
-	CHECK(!header);
+	CHECK(!dstr_len(&header));
 	json_object_put(profile);
 }
 
 struct chatgpt_test_worker {
 	char const        *path;
 	pthread_barrier_t *barrier;
-	char              *header;
+	struct dstr        header;
 	char               error[256];
 	int                result;
 };
@@ -520,14 +460,14 @@ chatgpt_test_refresh (char const *path)
 	char *before = chatgpt_test_read(path);
 	CHECK(before != nullptr);
 	char error[256];
-	char *header = nullptr;
+	dstr_auto header = dstr(nullptr);
 	/* A key-server outage must not consume a rotating refresh token. */
 	struct chatgpt_test_reply unavailable = {
 		CHATGPT_JWKS, "{\"error\":\"temporarily_unavailable\"}", nullptr, 503, CURLE_OK
 	};
 	chatgpt_test_replies(&unavailable, 1);
 	CHECK(chatgpt_header(path, &header, error, sizeof error) != 0);
-	CHECK(header == nullptr && chatgpt_test_http.next == 1);
+	CHECK(!dstr_len(&header) && chatgpt_test_http.next == 1);
 	char *unchanged = chatgpt_test_read(path);
 	CHECK(before && unchanged && !strcmp(before, unchanged));
 	free(unchanged);
@@ -549,7 +489,7 @@ chatgpt_test_refresh (char const *path)
 		};
 		chatgpt_test_replies(sequence, array_size(sequence));
 		CHECK(chatgpt_header(path, &header, error, sizeof error) != 0);
-		CHECK(header == nullptr);
+		CHECK(!dstr_len(&header));
 		CHECK(chatgpt_test_http.next == 2);
 		CHECK(!strstr(error, "offline-refresh-secret"));
 		char *after = chatgpt_test_read(path);
@@ -560,8 +500,7 @@ chatgpt_test_refresh (char const *path)
 	struct chatgpt_test_reply success = {
 		CHATGPT_TOKEN,
 		"{\"access_token\":\"rotated.access\",\"refresh_token\":\"rotated.refresh\","
-		"\"token_type\":\"Bearer\",\"expires_in\":3600,"
-		"\"scope\":\"openid offline_access resource.invoke chatgpt.tokens.use.direct\"}",
+		"\"token_type\":\"Bearer\",\"expires_in\":3600}",
 		"grant_type=refresh_token", 200, CURLE_OK
 	};
 	struct chatgpt_test_reply sequence[] = {
@@ -570,12 +509,12 @@ chatgpt_test_refresh (char const *path)
 	chatgpt_test_replies(sequence, array_size(sequence));
 	struct stat old;
 	CHECK(stat(path, &old) == 0);
-	/* Two users of the same rotating credential must perform one refresh. */
+	/* Concurrent callers refresh once; absent scope retains the prior grant. */
 	pthread_barrier_t barrier;
 	CHECK(pthread_barrier_init(&barrier, nullptr, 2) == 0);
 	struct chatgpt_test_worker workers[2] = {
-		{ .path = path, .barrier = &barrier },
-		{ .path = path, .barrier = &barrier }
+		{ .path = path, .barrier = &barrier, .header = DSTR_INIT },
+		{ .path = path, .barrier = &barrier, .header = DSTR_INIT }
 	};
 	pthread_t threads[2];
 	for (size_t i = 0; i < array_size(workers); ++i)
@@ -583,16 +522,15 @@ chatgpt_test_refresh (char const *path)
 	for (size_t i = 0; i < array_size(workers); ++i) {
 		CHECK(pthread_join(threads[i], nullptr) == 0);
 		CHECK(workers[i].result == 0);
-		CHECK(workers[i].header && !strcmp(workers[i].header, "Authorization: Bearer rotated.access"));
-		free(workers[i].header);
-		workers[i].header = nullptr;
+		CHECK(!strcmp(dstr_get(&workers[i].header), "Authorization: Bearer rotated.access"));
+		dstr_cleanup(&workers[i].header);
 	}
 	CHECK(pthread_barrier_destroy(&barrier) == 0);
 	CHECK(chatgpt_test_http.next == 2);
-	CHECK(chatgpt_test_http.last_form && strstr(chatgpt_test_http.last_form, "client_id=oaiapp_offline-test"));
-	CHECK(chatgpt_test_http.last_form && strstr(chatgpt_test_http.last_form, "refresh_token=offline-refresh-secret"));
-	CHECK(chatgpt_test_http.last_form && strstr(chatgpt_test_http.last_form, "resource=https%3A%2F%2Fapi.openai.com%2Fv1"));
-	CHECK(chatgpt_test_http.last_form && !strstr(chatgpt_test_http.last_form, "scope="));
+	CHECK(strstr(dstr_get(&chatgpt_test_http.last_form), "client_id=oaiapp_offline-test"));
+	CHECK(strstr(dstr_get(&chatgpt_test_http.last_form), "refresh_token=offline-refresh-secret"));
+	CHECK(strstr(dstr_get(&chatgpt_test_http.last_form), "resource=https%3A%2F%2Fapi.openai.com%2Fv1"));
+	CHECK(!strstr(dstr_get(&chatgpt_test_http.last_form), "scope="));
 	struct stat fresh;
 	CHECK(stat(path, &fresh) == 0);
 	CHECK((fresh.st_mode & 0777) == 0600);
@@ -615,7 +553,7 @@ chatgpt_test_refresh (char const *path)
 	};
 	chatgpt_test_replies(revoked, array_size(revoked));
 	CHECK(chatgpt_header(path, &header, error, sizeof error) == EACCES);
-	CHECK(header == nullptr && chatgpt_test_http.next == 2);
+	CHECK(!dstr_len(&header) && chatgpt_test_http.next == 2);
 	after = chatgpt_test_read(path);
 	saved = after ? json_tokener_parse(after) : nullptr;
 	CHECK(saved && !jb_get(saved, "access_token") && !jb_get(saved, "refresh_token") && !jb_get(saved, "id_token"));
@@ -626,7 +564,7 @@ chatgpt_test_refresh (char const *path)
 	after = nullptr;
 	chatgpt_test_replies(nullptr, 0);
 	CHECK(chatgpt_header(path, &header, error, sizeof error) == EACCES);
-	CHECK(header == nullptr);
+	CHECK(!dstr_len(&header));
 	json_object_put(profile);
 }
 
@@ -638,14 +576,20 @@ chatgpt_test_registration (char const *path)
 	json_object_object_del(profile, "ext_agent_host_id");
 	CHECK(chatgpt_test_save(path, profile) == 0);
 	json_object_put(profile);
-	struct chatgpt_file file;
-	CHECK(chatgpt_file_init(&file, path, false) == 0);
-	CHECK(chatgpt_host(&file) == 0);
-	char *host = strdup(chatgpt_string(file.record, "ext_agent_host_id"));
+	int e;
+	struct chatgpt_file file = chatgpt_file(path, false, &e);
+	CHECK(e == 0);
+	e = e ? e : chatgpt_host(&file);
+	CHECK(e == 0);
+	if (e) {
+		chatgpt_file_fini(&file);
+		return;
+	}
+	char *host = strdup(chatgpt_text(file.record, "ext_agent_host_id").data);
 	CHECK(host && !strncmp(host, "urn:uuid:", sizeof "urn:uuid:" - 1));
 	CHECK(host && strlen(host) == 45);
 	CHECK(chatgpt_host(&file) == 0);
-	CHECK(host && !strcmp(host, chatgpt_string(file.record, "ext_agent_host_id")));
+	CHECK(host && !strcmp(host, chatgpt_text(file.record, "ext_agent_host_id").data));
 	free(host);
 	host = nullptr;
 	char *before = chatgpt_test_read(path);
@@ -670,20 +614,20 @@ chatgpt_test_registration (char const *path)
 		"expires_in", json_object_new_int64(3600), nullptr);
 	chatgpt_test_replies(nullptr, 0);
 	/* Authentication alone is not consent to spend the ChatGPT plan. */
-	CHECK(chatgpt_tokens(&file, tokens, "pending-nonce", true, keys) == EPROTO);
+	CHECK(chatgpt_tokens(&file, tokens, keys, CSTR_VIEW("pending-nonce"), true) == EPROTO);
 	CHECK(jb_set(tokens, "scope", json_object_new_string(CHATGPT_SCOPE)) == 0);
-	CHECK(chatgpt_tokens(&file, tokens, "another-nonce", true, keys) == EACCES);
+	CHECK(chatgpt_tokens(&file, tokens, keys, CSTR_VIEW("another-nonce"), true) == EACCES);
 	char *after = chatgpt_test_read(path);
 	CHECK(before && after && !strcmp(before, after));
 	free(after);
 	after = nullptr;
 	/* Retain the verified account after declined plan consent, disabled. */
 	CHECK(jb_set(tokens, "scope", json_object_new_string("openid email")) == 0);
-	CHECK(chatgpt_tokens(&file, tokens, "pending-nonce", true, keys) == EACCES);
+	CHECK(chatgpt_tokens(&file, tokens, keys, CSTR_VIEW("pending-nonce"), true) == EACCES);
 	CHECK(jb_is(jb_get(file.record, "subject"), "registered-user"));
 	CHECK(!chatgpt_scope(file.record));
 	CHECK(jb_set(tokens, "scope", json_object_new_string(CHATGPT_SCOPE)) == 0);
-	CHECK(chatgpt_tokens(&file, tokens, "pending-nonce", true, keys) == 0);
+	CHECK(chatgpt_tokens(&file, tokens, keys, CSTR_VIEW("pending-nonce"), true) == 0);
 	CHECK(jb_is(jb_get(file.record, "subject"), "registered-user"));
 	CHECK(jb_is(jb_get(file.record, "issuer"), CHATGPT_ISSUER));
 	CHECK(jb_is(jb_get(file.record, "email"), "offline@example.invalid"));
@@ -694,8 +638,13 @@ chatgpt_test_registration (char const *path)
 	free(token);
 	token = chatgpt_test_jwt(key, jb_wire(claims).data);
 	CHECK(jb_set(tokens, "id_token", json_object_new_string(token)) == 0);
-	CHECK(chatgpt_tokens(&file, tokens, "pending-nonce", true, keys) == EACCES);
+	CHECK(chatgpt_tokens(&file, tokens, keys, CSTR_VIEW("pending-nonce"), true) == EACCES);
 	CHECK(jb_is(jb_get(file.record, "subject"), "registered-user"));
+	/* An explicit empty scope revokes the previous direct-use permission. */
+	json_object_object_del(tokens, "id_token");
+	CHECK(jb_set(tokens, "scope", json_object_new_string("")) == 0);
+	CHECK(chatgpt_tokens(&file, tokens, nullptr, cstr_view(nullptr), false) == EACCES);
+	CHECK(!chatgpt_scope(file.record));
 	chatgpt_file_fini(&file);
 	json_object_put(claims);
 	json_object_put(tokens);
@@ -722,10 +671,18 @@ main (void)
 	chatgpt_test_identity();
 	chatgpt_test_callback();
 	chatgpt_test_cached(path);
+	/* A private credential is insufficient inside a shared parent directory. */
+	struct json_object *profile = chatgpt_test_profile();
+	CHECK(chatgpt_test_save(path, profile) == 0);
+	json_object_put(profile);
+	CHECK(chmod(directory, 0755) == 0);
+	dstr_auto header = dstr(nullptr);
+	char error[128];
+	CHECK(chatgpt_header(path, &header, error, sizeof error) == EACCES);
+	CHECK(chmod(directory, 0700) == 0);
 	chatgpt_test_refresh(path);
 	chatgpt_test_registration(path);
-	free(chatgpt_test_http.last_form);
-	chatgpt_test_http.last_form = nullptr;
+	dstr_cleanup(&chatgpt_test_http.last_form);
 	free(path);
 	path = nullptr;
 	DIR *dir = opendir(directory);
