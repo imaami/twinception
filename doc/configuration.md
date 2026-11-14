@@ -741,17 +741,17 @@ OAuth access token, which askai sends unchanged and does not refresh.
 The value is an absolute path to a private ChatGPT OAuth credential file.
 An empty string selects the default, and is ignored for other providers.
 A nonempty path requires `provider: "chatgpt"`. The default is
-`$XDG_CONFIG_HOME/askai/chatgpt.json` when `XDG_CONFIG_HOME` is absolute,
-otherwise `$HOME/.config/askai/chatgpt.json`.
+`$XDG_STATE_HOME/askai/chatgpt.json` when `XDG_STATE_HOME` is absolute,
+otherwise `$HOME/.local/state/askai/chatgpt.json`.
 
 Run `askai --chatgpt-login --chatgpt-auth FILE` once, then pass the same
 path when serving. Profiles let separate accounts have separate tokens.
 The file and its parent directory must be owned by the current user.
-The directory must not be writable by group or others; the file must
-not be accessible to them. It is written atomically with mode 0600. Expiring access
-tokens are refreshed off the event loops; a lock beside the file
-serializes refreshes between processes. Do not put credentials in a
-configuration file, Git repository, log or transcript.
+Neither the file nor its parent directory may be accessible to other
+users (modes 0600 and 0700). It is written atomically with mode 0600.
+Expiring access tokens are refreshed off the event loops; a lock beside
+the file serializes refreshes between processes. Do not put credentials
+in a configuration file, Git repository, log or transcript.
 
 `chatgpt-auth` cannot be combined with an explicit `key-env` or
 Authorization header. Managed credentials require the exact URL

@@ -235,8 +235,8 @@ enum config_arg : uint8_t {
           key_env)                                                                                      \
         X(text,    CHATGPT_AUTH,     "chatgpt-auth",      ,    UPSTREAM, ONE, "FILE",                    \
           "ChatGPT OAuth credential file (default:" NL                                                 \
-          "$XDG_CONFIG_HOME/askai/chatgpt.json, or" NL                                                  \
-          "$HOME/.config/askai/chatgpt.json); mutually" NL                                             \
+          "$XDG_STATE_HOME/askai/chatgpt.json, or" NL                                                   \
+          "$HOME/.local/state/askai/chatgpt.json);" NL                                                 \
           "exclusive with an explicit key or auth header",                                             \
           ep.chatgpt_auth)                                                                               \
         X(flag,    CHATGPT_LOGIN,    "chatgpt-login",     ,    NONE, NONE, "",                           \
@@ -1958,7 +1958,12 @@ static int
 config_chatgpt_path (struct config *cfg)
 {
 	if (!cfg->ep.chatgpt_auth) {
-		int e = chatgpt_path(&cfg->chatgpt_owned);
+		dstr_auto path = dstr(nullptr);
+		int e = chatgpt_path(&path);
+		/* config() returns by value, so its pointers cannot refer to an
+		 * embedded string's short storage. Keep the same ownership as url. */
+		if (!e)
+			e = config_aprintf(&cfg->chatgpt_owned, "%s", dstr_get(&path));
 		if (e)
 			return config_complain(cfg, nullptr, "cannot choose ChatGPT credential "
 			                       "path: %s; pass --chatgpt-auth FILE", strerror(e));

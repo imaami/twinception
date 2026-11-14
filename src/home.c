@@ -143,8 +143,8 @@ struct home_authorization {
 	struct list         hook;
 	struct home        *home;
 	struct job         *request;
-	char               *path;
-	char               *header;
+	struct dstr         path;
+	struct dstr         header;
 	uint64_t            resume;
 	uint64_t            submitted;
 	char                error[256];
@@ -226,11 +226,9 @@ struct home {
 	struct ai_endpoint const *ep;
 	struct htab               whom;        /* the principals with jobs queued */
 	struct http_request      *ask;         /* GET /props, under way */
-	char const              **headers;     /* with llama, the upstream's
-	                                          header lines without an
-	                                          X-Conversation-Id line, and
-	                                          then the line in conversation;
-	                                          nullptr otherwise */
+	char const              **headers;     /* endpoint headers with one
+	                                          per-request line replaced */
+	char const              **header;      /* that line's slot in headers */
 	uint64_t                  timeout;     /* ns from a start to its deadline */
 	uint64_t                  silence;     /* ns an answer may pause */
 	uint64_t                  backoff;     /* the breaker's next open spell */
@@ -1262,33 +1260,21 @@ home_send (struct home *home,
 			return e;
 	} else {
 		body = buf_peek(&job->request);
-		if (home->headers) {
+		if (home_llama(home)) {
 			util_format(home->conversation, sizeof home->conversation, "%s %s",
 			            conversation_id.data, job->recovery.provider_id);
 			headers = home->headers;
 		}
 	}
-	char const **owned = nullptr;
 	if (authorization) {
-		size_t n = 0;
-		while (headers && headers[n])
-			++n;
-		owned = malloc((n + 2) * sizeof *owned);
-		if (!owned) {
-			curl_free(url);
-			return ENOMEM;
-		}
-		if (n)
-			memcpy(owned, headers, n * sizeof *owned);
-		owned[n] = authorization;
-		owned[n + 1] = nullptr;
-		headers = owned;
+		*home->header = authorization;
+		headers = home->headers;
 	}
 	job->flags &= ~(SEEN | DELIVERED);
 	int e = http_post_json(home->http, url ? url : ep->url, (char const *)body.ptr, body.len,
 	                       headers, 0, home_job_write, home_job_done, job, &job->transfer);
-	free(owned);
-	owned = nullptr;
+	if (authorization)
+		*home->header = nullptr;
 	curl_free(url);
 	return e;
 }
@@ -1297,10 +1283,8 @@ static void
 home_authorization_destroy (struct home_authorization **p_auth)
 {
 	struct home_authorization *auth = *p_auth;
-	free(auth->path);
-	auth->path = nullptr;
-	free(auth->header);
-	auth->header = nullptr;
+	dstr_cleanup(&auth->path);
+	dstr_cleanup(&auth->header);
 	free(auth);
 	*p_auth = nullptr;
 }
@@ -1310,7 +1294,8 @@ static void
 home_authorize (struct blocker_job *work)
 {
 	struct home_authorization *auth = container_of(work, struct home_authorization, work);
-	work->error = chatgpt_header(auth->path, &auth->header, auth->error, sizeof auth->error);
+	work->error = chatgpt_header(dstr_get(&auth->path), &auth->header,
+	                             auth->error, sizeof auth->error);
 }
 
 /* A cancelled or timed-out request may have completed while credentials
@@ -1334,7 +1319,7 @@ home_authorized (struct loop *loop,
 		} else {
 			int e = auth->work.error;
 			if (!e)
-				e = home_send(home, job, auth->resume, auth->header);
+				e = home_send(home, job, auth->resume, dstr_get(&auth->header));
 			if (e) {
 				(void)home_job_say(job, "Cannot authorize or start ChatGPT request: %s",
 				                   *auth->error ? auth->error : strerror(e));
@@ -1381,18 +1366,19 @@ home_open (struct home *home,
 		return ENOSYS;
 	if (home->authorizing >= home->max)
 		return EAGAIN;
-	struct home_authorization *auth = calloc(1, sizeof *auth);
+	struct home_authorization *auth = malloc(sizeof *auth);
 	if (!auth)
 		return ENOMEM;
-	list_init(&auth->hook);
-	auth->path = strdup(path);
-	int e = auth->path ? 0 : ENOMEM;
-	if (!e) {
-		auth->work = blocker_job(home_authorized, home_authorize, home->loop);
-		auth->home = home;
-		auth->request = job;
-		auth->resume = resume;
-	}
+	*auth = (struct home_authorization){
+		.work = blocker_job(home_authorized, home_authorize, home->loop),
+		.hook = list(&auth->hook),
+		.home = home,
+		.request = job,
+		.path = dstr(nullptr),
+		.header = dstr(nullptr),
+		.resume = resume,
+	};
+	int e = cstr_view_store(cstr_view(path), &auth->path);
 	if (e) {
 		home_authorization_destroy(&auth);
 		return e;
@@ -2787,12 +2773,13 @@ home_job (struct loop *loop,
 	}
 }
 
-/* With llama, make home->headers: the upstream's header lines without an
- * X-Conversation-Id line, and then home->conversation, which home_open()
- * writes for each job. Returns 0 or ENOMEM.
+/* Reserve a per-request header slot, replacing the endpoint's line of
+ * that name. http_post_json() copies it before home_send() returns.
  */
 static int
-home_conversation_headers (struct home *home)
+home_request_headers (struct home     *home,
+                      struct cstr_view name,
+                      char const      *value)
 {
 	char const *const *lines = home->ep->headers;
 	size_t n = 0;
@@ -2803,10 +2790,11 @@ home_conversation_headers (struct home *home)
 		return ENOMEM;
 	size_t kept = 0;
 	for (size_t k = 0; k < n; ++k)
-		if (!cstr_view_starts_case(cstr_view(lines[k]), conversation_id))
+		if (!cstr_view_starts_case(cstr_view(lines[k]), name))
 			headers[kept++] = lines[k];
-	headers[kept] = home->conversation;
+	headers[kept] = value;
 	home->headers = headers;
+	home->header = headers + kept;
 	return 0;
 }
 
@@ -2866,6 +2854,7 @@ home_fini (struct home *home)
 	buf_fini(&home->answer);
 	free(home->headers);
 	home->headers = nullptr;
+	home->header = nullptr;
 	while (home_relieve(home, BUF_CRITICAL, SIZE_MAX))
 		;
 	self = nullptr;
@@ -2909,6 +2898,7 @@ home_create (struct loop         *loop,
 			.scalar = JB_SCALAR_MAX,
 			.flags = JSON_TOKENER_VALIDATE_UTF8
 		},
+		.authorizations = list(&home->authorizations),
 		.metrics = metrics,
 		.loop = loop,
 		.blockers = blockers,
@@ -2935,13 +2925,14 @@ home_create (struct loop         *loop,
 	list_init(&home->idle);
 	list_init(&home->feeding);
 	list_init(&home->cancellations);
-	list_init(&home->authorizations);
 	list_init(&home->spare.list);
 	*e = htab_init(&home->whom, stdc_bit_ceil(max < KEYS_MAX ? max : (uint32_t)KEYS_MAX));
 	if (!*e)
 		*e = home_arm(home, http);
 	if (!*e && home_llama(home))
-		*e = home_conversation_headers(home);
+		*e = home_request_headers(home, conversation_id, home->conversation);
+	if (!*e && ep->chatgpt_auth)
+		*e = home_request_headers(home, CSTR_VIEW("Authorization:"), nullptr);
 	if (*e) {
 		home_fini(home);
 		free(home);

@@ -148,17 +148,19 @@ $Otests/ai: $Otests/ai.c.o $Otests/src/ai.c.o $Otests/src/jb.c.o $Otests/src/dst
 
 $Otests/ai.c.o $Otests/src/ai.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
-# The OAuth test includes the module to substitute only its HTTP transport;
-# signatures, PKCE, callbacks, credential files and refresh locking are real.
-override CHATGPT_INCLUDES = $(call test-pkg-config,CHATGPT_INCLUDES,--cflags json-c libcurl libcrypto)
-override CHATGPT_LIBS = $(call test-pkg-config,CHATGPT_LIBS,--libs json-c libcurl libcrypto)
+# Only outbound responses are substituted; login uses the real HTTP server.
+override CHATGPT_INCLUDES = $(call test-pkg-config,CHATGPT_INCLUDES,--cflags json-c libcurl libcrypto libssl)
+override CHATGPT_LIBS = $(call test-pkg-config,CHATGPT_LIBS,--libs json-c libcurl libcrypto libssl)
+override CHATGPT_OBJECTS := $(addprefix $Otests/src/,jb.c.o dstr.c.o cstr_view.c.o \
+                           buf.c.o loop.c.o log.c.o http.c.o curl_loop.c.o blocker.c.o \
+                           httpd.c.o policy.c.o tls.c.o registry.c.o plugin.c.o)
 
 check-chatgpt: $Otests/chatgpt; $<
 
-$Otests/chatgpt: $Otests/chatgpt.c.o $Otests/src/jb.c.o $Otests/src/dstr.c.o
-$Otests/chatgpt:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CHATGPT_LIBS)
+$Otests/chatgpt: $Otests/chatgpt.c.o $(CHATGPT_OBJECTS)
+$Otests/chatgpt:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CHATGPT_LIBS) -ldl
 
-$Otests/chatgpt.c.o: CPPFLAGS += $(CHATGPT_INCLUDES)
+$Otests/chatgpt.c.o $(CHATGPT_OBJECTS): CPPFLAGS += $(CHATGPT_INCLUDES)
 
 # Unit tests of the JSON helpers, src/jb.c. The test wraps json-c's
 # tokener constructors to make them fail.

@@ -173,16 +173,16 @@ Select a model available to the signed-in account; API-key access to a
 model does not establish subscription access. The model name is passed
 through unchanged. `doc/askai.chatgpt.json` is a minimal configuration.
 
-Credentials default to `$XDG_CONFIG_HOME/askai/chatgpt.json` when
-`XDG_CONFIG_HOME` is absolute, otherwise `$HOME/.config/askai/chatgpt.json`.
+Credentials default to `$XDG_STATE_HOME/askai/chatgpt.json` when
+`XDG_STATE_HOME` is absolute, otherwise `$HOME/.local/state/askai/chatgpt.json`.
 Use `--chatgpt-auth /absolute/path/profile.json` on both commands to select
-another profile. The parent directory must belong to the current user
-and must not be writable by group or others. Login validates OpenAI's
-ID-token signature, issuer, audience, expiry and nonce, and records the
-granted scopes. A profile without consent for plan usage remains disabled.
-Refreshes run
-off the event loops; a file lock serializes refresh-token rotation across
-askai processes, and credentials are replaced atomically with mode 0600.
+another profile. The file and parent directory must be private to the
+current user (modes 0600 and 0700). Login validates OpenAI's ID-token
+signature, issuer, audience, expiry and nonce, and records the granted
+scopes. A profile without consent for plan usage remains disabled.
+Refreshes run off the event loops; a file lock serializes refresh-token
+rotation across askai processes, and credentials are replaced atomically
+with mode 0600.
 
 The browser callback listens only on `127.0.0.1` at an available port.
 For a remote host, forward the port printed in the authorization URL
@@ -2376,8 +2376,8 @@ Upstream AI ("upstream"):
                             usual variable of the provider, which llama
                             may leave unset; else ASKAI_API_KEY, if set)
       --chatgpt-auth FILE   ChatGPT OAuth credential file (default:
-                            $XDG_CONFIG_HOME/askai/chatgpt.json, or
-                            $HOME/.config/askai/chatgpt.json); mutually
+                            $XDG_STATE_HOME/askai/chatgpt.json, or
+                            $HOME/.local/state/askai/chatgpt.json);
                             exclusive with an explicit key or auth header
       --chatgpt-login       sign in with ChatGPT in a browser, save
                             renewable credentials and exit; implies

@@ -81,6 +81,8 @@ struct httpd_cfg {
 	struct ssl_ctx_st   *tls;      /**< what TLS listeners' clients shake
 	                                    hands by (src/tls.h), if there are
 	                                    any: home takes a reference */
+	uint64_t            quiet;    /**< omit the MCP endpoint announcement;
+	                                    an embedding app reports its URL */
 };
 
 /** httpd_listen_addr() returns the parts of a listen address in this
@@ -152,6 +154,16 @@ httpd_home_create (struct loop            *loop,
 
 extern void
 httpd_home_destroy (struct httpd_home **p_home);
+
+/** The bound TCP port of listener @p i, including the port the kernel
+ *  chose for a listen address ending in :0. Returns 0, EINVAL for an
+ *  index outside the listeners, EAFNOSUPPORT for a Unix socket, or the
+ *  error of getsockname(). Call before httpd_home_drain().
+ */
+extern int
+httpd_home_port (struct httpd_home const *home,
+                 size_t                   i,
+                 uint16_t                *port);
 
 /** Every client loop's server runs: accept clients, unless the door has
  *  drained already.
