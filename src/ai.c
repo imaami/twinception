@@ -338,6 +338,8 @@ enum {
 	TOOL_TYPED   = 1 << 6,  /* a tool has "type": "function" */
 	TOOL_WRAPPED = 1 << 7,  /* a tool is the member function of an object
 	                           with "type": "function" */
+	TOOL_LOOSE   = 1 << 8,  /* a tool has "strict": false. Without it, the
+	                           API makes every argument a required one. */
 };
 
 #define B(s) CSTR_VIEW_INIT(s)
@@ -406,7 +408,7 @@ static struct ai_body {
 		.limit  = "max_output_tokens",
 		.schema = "parameters",
 		.answer = ai_responses_answer,
-		.flags  = BODY_MODEL | BODY_STORE | BODY_STREAM | TOOL_TYPED,
+		.flags  = BODY_MODEL | BODY_STORE | BODY_STREAM | TOOL_TYPED | TOOL_LOOSE,
 	},
 	/* Its turn's text and thinking blocks are in the replay; all its
 	 * results go in one message. */
@@ -1462,6 +1464,8 @@ ai_tool (enum ai_api               api,
 		"description", json_object_get(jb_get(def, "description")),
 		b->schema, json_object_get(jb_get(def, "inputSchema")),
 		nullptr);
+	if (b->flags & TOOL_LOOSE)
+		tool = jb_set_or_free(tool, "strict", json_object_new_boolean(0));
 	return b->flags & TOOL_WRAPPED
 	       ? jb_object("type", json_object_new_string("function"), "function", tool, nullptr)
 	       : b->flags & TOOL_TYPED

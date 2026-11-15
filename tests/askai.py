@@ -13798,8 +13798,8 @@ def check_turn_apis(binary, up):
             assert result["content"][0]["text"] == "A", result
             first, second = up.requests[count:]
             tools = first["body"]["tools"]
-            assert [(t["type"], t["name"]) for t in tools] == \
-                [("function", t) for t in TURN_TOOLS], tools
+            assert [(t["type"], t["name"], t["strict"]) for t in tools] == \
+                [("function", t, False) for t in TURN_TOOLS], tools
             assert tools[0]["parameters"]["properties"]["repo"], tools
             given = second["body"]["input"]
             assert list(second["body"])[-1] == "input", second["body"]
@@ -13837,7 +13837,8 @@ def check_turn_apis(binary, up):
             first, second = up.requests[count:]
             tools = first["body"]["tools"]
             assert [t["name"] for t in tools] == TURN_TOOLS and \
-                tools[0]["input_schema"]["properties"]["repo"], tools
+                tools[0]["input_schema"]["properties"]["repo"] and \
+                "strict" not in tools[0], tools
             messages = second["body"]["messages"]
             assert list(second["body"])[-1] == "messages", second["body"]
             assert messages[0] == {"role": "user", "content": "Q"}, messages
