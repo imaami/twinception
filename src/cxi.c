@@ -203,19 +203,25 @@ cxi_out_text (struct cxi_out *out,
               char const     *s)
 {
 	size_t const n = strlen(s);
+	/* The bytes from from to i are appended as they are, in one piece. */
+	size_t from = 0;
 	for (size_t i = 0; i < n; ) {
 		size_t const col = s[i] == ':' && i && s[i - 1] >= '0' && s[i - 1] <= '9'
 		                   ? strspn(s + i + 1, "0123456789") : 0;
 		struct cstr_view const rest = cstr_view_n(s + i, n - i);
-		size_t const skip = out->tree.len && cstr_view_starts(rest, out->tree) ? out->tree.len
+		/* The test of the first byte spares most calls of memcmp(). */
+		size_t const skip = out->tree.len && s[i] == *out->tree.data &&
+		                    cstr_view_starts(rest, out->tree) ? out->tree.len
 		                  : col && s[i + 1 + col] == ')' ? 1 + col : 0;
 		size_t k;
 		if (skip) {
+			cxi_out_put(out, s + from, i - from);
 			i += skip;
+			from = i;
 		} else if ((k = cxi_char(s + i, n - i))) {
-			cxi_out_put(out, s + i, k);
 			i += k;
 		} else {
+			cxi_out_put(out, s + from, i - from);
 			unsigned char const c = (unsigned char)s[i++];
 			if (c == '\n')
 				cxi_out_lit(out, "\\n");
@@ -223,8 +229,10 @@ cxi_out_text (struct cxi_out *out,
 				cxi_out_lit(out, "\\t");
 			else
 				cxi_out_hex(out, c);
+			from = i;
 		}
 	}
+	cxi_out_put(out, s + from, n - from);
 }
 
 /* Returns @p s without the path of the tree, normalized into @p norm if
@@ -538,13 +546,17 @@ static void
 cxi_out_line (struct cxi_out   *out,
               struct cstr_view  s)
 {
+	/* The bytes from from to i are appended as they are, in one piece. */
+	size_t from = 0;
 	for (size_t i = 0, k; i < s.len; i += k ? k : 1) {
 		k = s.data[i] == '\t' ? 1 : cxi_char(s.data + i, s.len - i);
 		if (k)
-			cxi_out_put(out, s.data + i, k);
-		else
-			cxi_out_hex(out, (unsigned char)s.data[i]);
+			continue;
+		cxi_out_put(out, s.data + from, i - from);
+		cxi_out_hex(out, (unsigned char)s.data[i]);
+		from = i + 1;
 	}
+	cxi_out_put(out, s.data + from, s.len - from);
 }
 
 /* Stores the body of a function in the CXCursor at @p data. */
