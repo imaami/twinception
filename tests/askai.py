@@ -11437,65 +11437,56 @@ def check_code_describe(binary, up, call, head, d, cdb):
         assert describe(name="LAY_B").split("\n")[1:3] == [
             "enumerator LAY_B of enum lay_kind: 5", "defined src/lay.h:41"]
         # callers: the calls of a function in every translation unit of the
-        # compile commands. A row is the place of the first call in a
-        # calling function, the lines of the later calls, the calling
-        # function and the place of its definition, and it ends as the row
-        # of describe does. A call through a macro or a _Generic selection
-        # is in the rows of the function that the selection selects, also
-        # if the associations are of one type. The row of a function that a
-        # header defines is printed once. A static function is another
-        # function than one of the same name in another file. The address
-        # of a function and the call through the pointer are not listed. A
-        # call that the program does not evaluate is not listed. The
-        # closing lines contain the number of translation units and the
-        # files that clang could not parse or reported errors for. clang
-        # crashes in the parse of src/deep.c, which costs only the calls of
-        # that file.
+        # compile commands. The answer is the commit and the number of
+        # translation units, then each file once, and under the file a row
+        # for each calling function: the lines of the calls and the
+        # function. The files and the rows of a file are in order. A call
+        # through a macro or a _Generic selection is in the rows of the
+        # function that the selection selects, also if the associations are
+        # of one type, with the macro in parentheses. The row of a function
+        # that a header defines is printed once. A static function is
+        # another function than one of the same name in another file. The
+        # address of a function and the call through the pointer are not
+        # listed. A call that the program does not evaluate is not listed.
+        # A note in parentheses marks a callee that ?: selects, a call that
+        # the program maybe does not evaluate, and the call of an attribute
+        # cleanup. The closing lines contain the files that clang could not
+        # parse or reported errors for. clang crashes in the parse of
+        # src/deep.c, which costs only the calls of that file.
         def callers(path, name, error=False):
             return call(ai, error=error, repo="proj", action="callers", path=path, name=name)
-        closing = ("[clang could not parse src/deep.c. The rows contain no call from a file "
-                   "that is not parsed.]\n"
-                   "[clang reported errors for src/a.c, src/leak.c, src/wt.c, src/warn.c, "
-                   "src/arg.c. The rows can lack calls from a file with errors. diagnostics "
-                   "lists the errors.]\n")
-        searched = "[15 translation units searched.]\n" + closing
-        for path, name, place, rows in (
-                ("src/who.h", "who_loop_destroy", "src/who.h:4",
-                 "  src/who.h:11 who_drop (src/who.h:11)\n"
-                 "  src/who_a.c:9 who_use_a (src/who_a.c:7), through the macro who_destroy "
-                 "(src/who.h:5)\n"
-                 "  src/who_b.c:7,11 who_use_b (src/who_b.c:4)\n" + searched),
-                ("src/who_b.c", "who_loop_destroy", "src/who.h:4",
-                 "  src/who.h:11 who_drop (src/who.h:11)\n"
-                 "  src/who_a.c:9 who_use_a (src/who_a.c:7), through the macro who_destroy "
-                 "(src/who.h:5)\n"
-                 "  src/who_b.c:7,11 who_use_b (src/who_b.c:4)\n" + searched),
-                ("src/who_c.c", "who_loop_destroy", "src/who_c.c:2",
-                 "  src/who_c.c:4 who_use_c (src/who_c.c:4)\n" + searched),
-                ("src/who.h", "who_io_destroy", "src/who.h:3",
-                 "  src/who_a.c:10 who_use_a (src/who_a.c:7), through the macro who_destroy "
-                 "(src/who.h:5)\n" + searched),
-                ("src/who.h", "who_a", "src/who.h:7",
-                 "  src/who_a.c:12 who_use_a (src/who_a.c:7), through the macro who_same "
-                 "(src/who.h:9)\n"
-                 "  src/who_b.c:12 who_use_b (src/who_b.c:4). The tool cannot tell which "
-                 "function is called.\n" + searched),
-                ("src/who.h", "who_b", "src/who.h:8",
-                 "  src/who_a.c:11 who_use_a (src/who_a.c:7), through the macro who_same "
-                 "(src/who.h:9)\n"
-                 "  src/who_a.c:13 who_use_a (src/who_a.c:7), through the macro who_value "
-                 "(src/who.h:10)\n"
-                 "  src/who_b.c:12 who_use_b (src/who_b.c:4). The tool cannot tell which "
-                 "function is called.\n" + searched),
-                ("src/who.h", "who_drop", "src/who.h:11",
-                 "  src/who_b.c:8 who_use_b (src/who_b.c:4)\n" + searched),
-                ("src/who_a.c", "who_use_a", "src/who_a.c:7",
-                 "[No call of who_use_a in 15 translation units.]\n" + closing)):
+        closing = ("[clang could not parse: src/deep.c]\n"
+                   "[clang reported errors: src/a.c, src/leak.c, src/wt.c, src/warn.c, "
+                   "src/arg.c]\n")
+        who_loop = ("src/who.h\n  11 who_drop\n"
+                    "src/who_a.c\n  9 who_use_a (macro who_destroy)\n"
+                    "src/who_b.c\n  7,11 who_use_b\n")
+        for path, name, rows in (
+                ("src/who.h", "who_loop_destroy", who_loop),
+                ("src/who_b.c", "who_loop_destroy", who_loop),
+                ("src/who_c.c", "who_loop_destroy", "src/who_c.c\n  4 who_use_c\n"),
+                ("src/who.h", "who_io_destroy",
+                 "src/who_a.c\n  10 who_use_a (macro who_destroy)\n"),
+                ("src/who.h", "who_a",
+                 "src/who_a.c\n  12 who_use_a (macro who_same)\n"
+                 "src/who_b.c\n  12 who_use_b (or another function)\n"),
+                ("src/who.h", "who_b",
+                 "src/who_a.c\n  11 who_use_a (macro who_same)\n"
+                 "  13 who_use_a (macro who_value)\n"
+                 "src/who_b.c\n  12 who_use_b (or another function)\n"),
+                ("src/who.h", "who_drop", "src/who_b.c\n  8 who_use_b\n"),
+                ("src/who_a.c", "who_use_a", "[no calls]\n"),
+                ("src/calls.h", "calls_b",
+                 "src/calls.c\n  26,42 calls_all (or another function)\n"
+                 "  30,43 calls_all\n"
+                 "  35,38,50 calls_all (maybe not evaluated)\n"
+                 "  44 calls_all (or another function)\n"
+                 "  49 calls_all (or another function) (maybe not evaluated)\n"),
+                ("src/calls.h", "calls_fini",
+                 "src/calls.c\n  53 calls_all (macro calls_auto) (attribute cleanup)\n"
+                 "  54 calls_all (attribute cleanup)\n")):
             got = callers(path, name)
-            assert got == (
-                f"[Repository proj, file {path} at commit {head}. The calls of function "
-                f"{name} ({place}) in the translation units of the compile commands.]\n"
-                f"{rows}"), got
+            assert got == f"[commit {head}, 15 translation units]\n{rows}{closing}", got
         for name, text in (
                 ("who_destroy", "No function who_destroy in the translation unit of "
                  "src/who.h. Repository names in the translation unit that contain "

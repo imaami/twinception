@@ -304,10 +304,10 @@ cxi_line (CXSourceLocation loc)
 	return line;
 }
 
-/* Appends the place @p loc as PATH:LINE. */
-static void
-cxi_out_place (struct cxi_out   *out,
-               CXSourceLocation  loc)
+/* Appends the path of the file of @p loc and returns the line of @p loc. */
+static unsigned
+cxi_out_file (struct cxi_out   *out,
+              CXSourceLocation  loc)
 {
 	CXFile file;
 	CXString name;
@@ -321,10 +321,19 @@ cxi_out_place (struct cxi_out   *out,
 	char const *path = clang_getCString(name);
 	struct dstr norm = DSTR_INIT;
 	cxi_out_path(out, cxi_out_rel(out, path ? path : "", &norm));
-	cxi_out_lit(out, ":");
-	cxi_out_num(out, line);
 	dstr_cleanup(&norm);
 	clang_disposeString(name);
+	return line;
+}
+
+/* Appends the place @p loc as PATH:LINE. */
+static void
+cxi_out_place (struct cxi_out   *out,
+               CXSourceLocation  loc)
+{
+	unsigned const line = cxi_out_file(out, loc);
+	cxi_out_lit(out, ":");
+	cxi_out_num(out, line);
 }
 
 static bool
@@ -1991,17 +2000,18 @@ cxi_calls_same (struct cxi_calls const *calls,
 	return true;
 }
 
-/* Appends the place of the call @p i of @p calls, and the lines of the later
- * calls of the row of that call.
+/* Appends the file of the call @p i of @p calls, @p sep, the line of the
+ * call, and the lines of the later calls of the row of that call.
  */
 static void
 cxi_calls_places (struct cxi_calls const *calls,
-                  size_t                  i)
+                  size_t                  i,
+                  char                    sep)
 {
 	struct cxi_out *out = &calls->x->out;
-	CXSourceLocation const at = clang_getCursorLocation(calls->items[i].at);
-	unsigned line = cxi_line(at);
-	cxi_out_place(out, at);
+	unsigned line = cxi_out_file(out, clang_getCursorLocation(calls->items[i].at));
+	cxi_out_put(out, &sep, 1);
+	cxi_out_num(out, line);
 	for (size_t j = i + 1; j < calls->n; ++j) {
 		unsigned const l = cxi_line(clang_getCursorLocation(calls->items[j].at));
 		if (l == line || !cxi_calls_same(calls, j, i))
@@ -2012,41 +2022,10 @@ cxi_calls_places (struct cxi_calls const *calls,
 	}
 }
 
-/* Appends the end of the row of the call @p i of @p calls: the attribute
- * cleanup, the macro that the calls of the row are written through, and
- * what the tool cannot tell about the calls.
- */
-static void
-cxi_calls_row_end (struct cxi_calls const *calls,
-                   size_t                  i)
-{
-	struct cxi_out *out = &calls->x->out;
-	struct cxi_call const *call = &calls->items[i];
-	bool const cleanup = call->flags & CXI_CALL_CLEANUP;
-	/* which is true for several functions, and for the function of an
-	 * attribute cleanup that the tool did not find. */
-	bool const which = call->n > 1 || (cleanup && !call->n);
-	bool const unproven = call->state == CXI_UNPROVEN;
-	if (cleanup)
-		cxi_out_lit(out, ", at the end of the scope of a variable (attribute cleanup)");
-	if (!clang_Cursor_isNull(call->macro)) {
-		cxi_out_lit(out, ", through the macro ");
-		cxi_out_clang(out, clang_getCursorSpelling(call->macro));
-		cxi_out_lit(out, " (");
-		cxi_out_place(out, clang_getCursorLocation(call->macro));
-		cxi_out_lit(out, ")");
-	}
-	if (which || unproven)
-		cxi_out_lit(out, ".");
-	if (which)
-		cxi_out_lit(out, " The tool cannot tell which function is called.");
-	if (unproven)
-		cxi_out_lit(out, " The tool cannot tell if the program evaluates the call.");
-	cxi_out_lit(out, "\n");
-}
-
 /* Appends the row of the call @p i of @p calls: the places of the calls of
- * the row, the callees, and the end of the row (cxi_calls_row_end()).
+ * the row, the callees, the attribute cleanup, the macro that the calls of
+ * the row are written through, and what the tool cannot tell about the
+ * calls.
  */
 static void
 cxi_calls_row (struct cxi_calls const *calls,
@@ -2055,8 +2034,12 @@ cxi_calls_row (struct cxi_calls const *calls,
 	struct cxi_out *out = &calls->x->out;
 	struct cxi_call const *call = &calls->items[i];
 	bool const cleanup = call->flags & CXI_CALL_CLEANUP;
+	/* which is true for several functions, and for the function of an
+	 * attribute cleanup that the tool did not find. */
+	bool const which = call->n > 1 || (cleanup && !call->n);
+	bool const unproven = call->state == CXI_UNPROVEN;
 	cxi_out_lit(out, "  ");
-	cxi_calls_places(calls, i);
+	cxi_calls_places(calls, i, ':');
 	cxi_out_lit(out, " ");
 	for (uint32_t f = 0; f < call->n; ++f) {
 		CXCursor const to = calls->to.items[call->first + f];
@@ -2088,7 +2071,22 @@ cxi_calls_row (struct cxi_calls const *calls,
 	if (!call->n)
 		cxi_out_view(out, cleanup ? CSTR_VIEW("a function")
 		                          : CSTR_VIEW("indirect, through an expression"));
-	cxi_calls_row_end(calls, i);
+	if (cleanup)
+		cxi_out_lit(out, ", at the end of the scope of a variable (attribute cleanup)");
+	if (!clang_Cursor_isNull(call->macro)) {
+		cxi_out_lit(out, ", through the macro ");
+		cxi_out_clang(out, clang_getCursorSpelling(call->macro));
+		cxi_out_lit(out, " (");
+		cxi_out_place(out, clang_getCursorLocation(call->macro));
+		cxi_out_lit(out, ")");
+	}
+	if (which || unproven)
+		cxi_out_lit(out, ".");
+	if (which)
+		cxi_out_lit(out, " The tool cannot tell which function is called.");
+	if (unproven)
+		cxi_out_lit(out, " The tool cannot tell if the program evaluates the call.");
+	cxi_out_lit(out, "\n");
 }
 
 /* Appends the calls of the function @p c: a row for each callee, and after
@@ -2119,7 +2117,7 @@ cxi_describe_calls (struct cxi *x,
 	if (unevaluated) {
 		cxi_out_fmt(&x->out, "[The program does not evaluate %zu call expression%s at ",
 		            unevaluated, util_s(unevaluated));
-		cxi_calls_places(&calls, first);
+		cxi_calls_places(&calls, first, ':');
 		cxi_out_view(&x->out, unevaluated == 1
 		             ? CSTR_VIEW(". The rows do not contain this call expression.]\n")
 		             : CSTR_VIEW(". The rows do not contain these call expressions.]\n"));
@@ -2323,7 +2321,6 @@ cxi_tu (struct cxi        *x,
 struct cxi_callers {
 	struct cxi     *x;
 	CXFileUniqueID  file;     /* of the first declaration */
-	size_t          from;     /* the offset of the rows in the answer */
 	uint64_t        linkage;  /* enum CXLinkageKind */
 };
 
@@ -2345,31 +2342,12 @@ cxi_callers_is (struct cxi_callers const *who,
 	       (file && !clang_getFileUniqueID(file, &id) && !memcmp(&id, &who->file, sizeof id));
 }
 
-/* Removes the line of @p out from the offset @p at on if @p out contains
- * the same line from the offset @p from on: a function that a header
- * defines calls the same functions in each translation unit.
- */
-static void
-cxi_out_once (struct cxi_out *out,
-              size_t          from,
-              size_t          at)
-{
-	char const *text = dstr_get(&out->text);
-	char const *line = text + at;
-	size_t const len = dstr_len(&out->text) - at;
-	char const *p = text + from;
-	/* A row is a whole line: a match inside a line is another text. */
-	while (!out->e && (p = memmem(p, (size_t)(line - p), line, len)) && p > text + from &&
-	       p[-1] != '\n')
-		++p;
-	if (!out->e && p && !dstr_erase(&out->text, at, len))
-		out->e = EINVAL;
-}
-
 /* Appends the rows of the calls of the function of the cxi_callers at
  * @p data in @p c, if @p c defines a function in a file of the tree. A row
- * is the places of the calls of a row of describe, the function @p c and
- * the end of that row (cxi_calls_row_end()).
+ * is the file, a tab, the lines of the calls of a row of describe, the
+ * function @p c, and a note for each of: the macro that the calls are
+ * written through, the attribute cleanup, a callee that is one of several,
+ * and a call that the program maybe does not evaluate.
  */
 static enum CXChildVisitResult
 cxi_callers_in (CXCursor     c,
@@ -2378,8 +2356,9 @@ cxi_callers_in (CXCursor     c,
 {
 	struct cxi_callers *who = data;
 	struct cxi *x = who->x;
+	struct cxi_out *out = &x->out;
 	if (clang_getCursorKind(c) != CXCursor_FunctionDecl || !clang_isCursorDefinition(c) ||
-	    !cxi_in_tree(&x->out, c))
+	    !cxi_in_tree(out, c))
 		return CXChildVisit_Continue;
 	struct cxi_calls calls = cxi_calls(x);
 	cxi_calls_walk(&calls, c, CXI_EVALUATED);
@@ -2392,20 +2371,84 @@ cxi_callers_in (CXCursor     c,
 			++j;
 		if (f == call->n || j < i)
 			continue;
-		size_t const at = dstr_len(&x->out.text);
-		cxi_out_lit(&x->out, "  ");
-		cxi_calls_places(&calls, i);
-		cxi_out_lit(&x->out, " ");
-		cxi_out_clang(&x->out, clang_getCursorSpelling(c));
-		cxi_out_lit(&x->out, " (");
-		cxi_out_place(&x->out, clang_getCursorLocation(c));
-		cxi_out_lit(&x->out, ")");
-		cxi_calls_row_end(&calls, i);
-		cxi_out_once(&x->out, who->from, at);
+		cxi_calls_places(&calls, i, '\t');
+		cxi_out_lit(out, " ");
+		cxi_out_clang(out, clang_getCursorSpelling(c));
+		if (!clang_Cursor_isNull(call->macro)) {
+			cxi_out_lit(out, " (macro ");
+			cxi_out_clang(out, clang_getCursorSpelling(call->macro));
+			cxi_out_lit(out, ")");
+		}
+		if (call->flags & CXI_CALL_CLEANUP)
+			cxi_out_lit(out, " (attribute cleanup)");
+		if (call->n > 1)
+			cxi_out_lit(out, " (or another function)");
+		if (call->state == CXI_UNPROVEN)
+			cxi_out_lit(out, " (maybe not evaluated)");
+		cxi_out_lit(out, "\n");
 	}
 	free(calls.to.items);
 	free(calls.items);
-	return x->out.e ? CXChildVisit_Break : CXChildVisit_Continue;
+	return out->e ? CXChildVisit_Break : CXChildVisit_Continue;
+}
+
+/* A row of callers (cxi_callers_in()): the file, the text after the tab,
+ * and the first line of the text.
+ */
+struct cxi_row {
+	struct cstr_view file;
+	struct cstr_view text;
+	uint64_t         line;
+};
+
+/* Orders the rows of callers by file, line and text. */
+static int
+cxi_row_order (void const *a,
+               void const *b)
+{
+	struct cxi_row const *p = a;
+	struct cxi_row const *q = b;
+	int const file = cstr_view_compare(p->file, q->file);
+	return file ? file
+	     : p->line != q->line ? (p->line > q->line) - (p->line < q->line)
+	     : cstr_view_compare(p->text, q->text);
+}
+
+/* Appends the rows @p text of callers by file: the file on a line, then the
+ * text of each row of the file after two spaces, in the order of the lines.
+ * A row that several translation units give, as for a function that a
+ * header defines, is appended once.
+ */
+static void
+cxi_out_rows (struct cxi_out   *out,
+              struct cstr_view  text)
+{
+	size_t const n = cstr_view_count(text, '\n');
+	struct cxi_row *row = malloc(n * sizeof *row);
+	if (!row) {
+		out->e = ENOMEM;
+		return;
+	}
+	for (size_t i = 0; i < n; ++i) {
+		row[i] = (struct cxi_row){};
+		cstr_view_cut(&text, '\n', &row[i].text);
+		cstr_view_cut(&row[i].text, '\t', &row[i].file);
+		(void)util_digits(row[i].text.data, row[i].text.len, UINT64_MAX, &row[i].line);
+	}
+	qsort(row, n, sizeof *row, cxi_row_order);
+	for (size_t i = 0; i < n; ++i) {
+		bool const same = i && cstr_view_equal(row[i].file, row[i - 1].file);
+		if (same && cstr_view_equal(row[i].text, row[i - 1].text))
+			continue;
+		if (!same) {
+			cxi_out_view(out, row[i].file);
+			cxi_out_lit(out, "\n");
+		}
+		cxi_out_lit(out, "  ");
+		/* The byte after the text of a row is the line feed of the row. */
+		cxi_out_put(out, row[i].text.data, row[i].text.len + 1);
+	}
+	free(row);
 }
 
 /* Appends the file of the clang command line @p words to @p list, after a
@@ -2422,20 +2465,19 @@ cxi_out_unit (struct cxi_out   *list,
 	dstr_cleanup(&norm);
 }
 
-/* Appends @p before, the files of @p list (cxi_out_unit()) and @p after to
- * @p out if @p list is not empty. Moves the error of @p list to @p out and
- * frees the text of @p list.
+/* Appends the line of @p before and the files of @p list (cxi_out_unit())
+ * to @p out if @p list is not empty. Moves the error of @p list to @p out
+ * and frees the text of @p list.
  */
 static void
 cxi_out_units (struct cxi_out   *out,
                struct cstr_view  before,
-               struct cxi_out   *list,
-               struct cstr_view  after)
+               struct cxi_out   *list)
 {
 	if (dstr_len(&list->text)) {
 		cxi_out_view(out, before);
 		cxi_out_put(out, dstr_get(&list->text), dstr_len(&list->text));
-		cxi_out_view(out, after);
+		cxi_out_lit(out, "]\n");
 	}
 	out->e = out->e ? out->e : list->e;
 	dstr_cleanup(&list->text);
@@ -2479,10 +2521,10 @@ enum { CXI_UNIT_OK, CXI_UNIT_ERRORS, CXI_UNIT_FAILED };
 
 /* Runs in the child process of a translation unit of callers, which ends
  * with its parent: writes the rows of the calls in the translation unit of
- * the clang command line @p words to @p fd and exits with a status of the
- * enum above. The rows that the answer contains already are not written
- * again. The parse of the file serves as the translation unit with the
- * same command line.
+ * the clang command line @p words (cxi_callers_in()) to @p fd and exits
+ * with a status of the enum above. The answer is empty when the child
+ * starts, and the child collects the rows in it. The parse of the file
+ * serves as the translation unit with the same command line.
  */
 [[noreturn]] static void
 cxi_callers_unit (struct cxi_callers *who,
@@ -2490,13 +2532,11 @@ cxi_callers_unit (struct cxi_callers *who,
                   int                 fd)
 {
 	struct cxi *x = who->x;
-	size_t const at = dstr_len(&x->out.text);
 	(void)prctl(PR_SET_PDEATHSIG, SIGKILL);
 	if (!cstr_view_equal(words, x->words) && cxi_tu(x, words, &x->tu))
 		_exit(CXI_UNIT_FAILED);
 	clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_callers_in, who);
-	size_t const len = dstr_len(&x->out.text) - at;
-	if (x->out.e || util_write_all(fd, dstr_get(&x->out.text) + at, len))
+	if (x->out.e || util_write_all(fd, dstr_get(&x->out.text), dstr_len(&x->out.text)))
 		_exit(CXI_UNIT_FAILED);
 	_exit(cxi_tu_errors(x->tu) ? CXI_UNIT_ERRORS : CXI_UNIT_OK);
 }
@@ -2505,14 +2545,16 @@ cxi_callers_unit (struct cxi_callers *who,
  * compile commands (cdb_next()). Each translation unit is parsed in a child
  * process, so that a crash of clang loses only the calls of one file. No
  * child starts unless twice the time of the longest one so far is left
- * before the deadline.
+ * before the deadline. The answer is the commit and the number of
+ * translation units, the rows by file (cxi_out_rows()), and a line for
+ * each of: the files that clang could not parse, the files with errors,
+ * and the translation units that the deadline left out.
  */
 static int
 cxi_callers (struct cxi *x)
 {
-	char const *name = x->key[CXI_KEY_NAME].data;
 	CXCursor c;
-	int e = cxi_lookup(x, name, CXCursor_FunctionDecl, &c);
+	int e = cxi_lookup(x, x->key[CXI_KEY_NAME].data, CXCursor_FunctionDecl, &c);
 	if (e)
 		return e;
 	CXCursor const first = clang_getCanonicalCursor(c);
@@ -2521,22 +2563,16 @@ cxi_callers (struct cxi *x)
 	clang_getFileLocation(clang_getCursorLocation(first), &file, nullptr, nullptr, nullptr);
 	if (file)
 		(void)clang_getFileUniqueID(file, &who.file);
-	cxi_head(x);
-	cxi_out_lit(&x->out, "The calls of function ");
-	cxi_out_view(&x->out, x->key[CXI_KEY_NAME]);
-	cxi_out_lit(&x->out, " (");
-	cxi_out_place(&x->out, clang_getCursorLocation(first));
-	cxi_out_lit(&x->out, ") in the translation units of the compile commands.]\n");
-	who.from = dstr_len(&x->out.text);
 	struct cdb_map const map = cdb_map(x->key[CXI_KEY_TOP],
 	                                   cstr_view_slice(x->out.tree, 0, x->out.tree.len - 1));
+	struct cxi_out rows = cxi_out(x->out.tree);
 	struct cxi_out failed = cxi_out(x->out.tree);
 	struct cxi_out errors = cxi_out(x->out.tree);
 	struct dstr words = DSTR_INIT;
 	uint64_t longest = 0;
 	size_t searched = 0;
 	size_t late = 0;
-	for (size_t at = 0; !x->out.e && !(e = cdb_next(&map, x->cmds, &at, &words));) {
+	for (size_t at = 0; !rows.e && !(e = cdb_next(&map, x->cmds, &at, &words));) {
 		struct cstr_view const w = cstr_view_dstr(&words);
 		uint64_t const start = loop_clock();
 		if (late || start + 2 * longest + CXI_EARLY > x->deadline) {
@@ -2549,8 +2585,8 @@ cxi_callers (struct cxi *x)
 			cxi_callers_unit(&who, w, end[1]);
 		e = child < 0 ? errno : 0;
 		util_close(&end[1]);
-		size_t const rows = dstr_len(&x->out.text);
-		e = e ? e : cxi_out_read(&x->out, end[0]);
+		size_t const before = dstr_len(&rows.text);
+		e = e ? e : cxi_out_read(&rows, end[0]);
 		util_close(&end[0]);
 		int status = 0;
 		while (!e && waitpid(child, &status, 0) < 0)
@@ -2559,8 +2595,8 @@ cxi_callers (struct cxi *x)
 			break;
 		bool const ok = WIFEXITED(status) && WEXITSTATUS(status) < CXI_UNIT_FAILED;
 		/* Without the rows of a child that did not write all of them. */
-		if (!ok && !x->out.e && !dstr_erase(&x->out.text, rows, SIZE_MAX))
-			x->out.e = EINVAL;
+		if (!ok && !dstr_erase(&rows.text, before, SIZE_MAX))
+			rows.e = EINVAL;
 		if (!ok || WEXITSTATUS(status) == CXI_UNIT_ERRORS)
 			cxi_out_unit(ok ? &errors : &failed, w);
 		searched += ok;
@@ -2568,23 +2604,20 @@ cxi_callers (struct cxi *x)
 		longest = took > longest ? took : longest;
 	}
 	dstr_cleanup(&words);
-	if (dstr_len(&x->out.text) == who.from) {
-		cxi_out_lit(&x->out, "[No call of ");
-		cxi_out_view(&x->out, x->key[CXI_KEY_NAME]);
-		cxi_out_fmt(&x->out, " in %zu translation unit%s.]\n", searched, util_s(searched));
-	} else {
-		cxi_out_fmt(&x->out, "[%zu translation unit%s searched.]\n", searched,
-		            util_s(searched));
-	}
-	cxi_out_units(&x->out, CSTR_VIEW("[clang could not parse "), &failed,
-	              CSTR_VIEW(". The rows contain no call from a file that is not parsed.]\n"));
-	cxi_out_units(&x->out, CSTR_VIEW("[clang reported errors for "), &errors,
-	              CSTR_VIEW(". The rows can lack calls from a file with errors. diagnostics "
-	                        "lists the errors.]\n"));
+	cxi_out_lit(&x->out, "[commit ");
+	cxi_out_view(&x->out, x->key[CXI_KEY_COMMIT]);
+	cxi_out_fmt(&x->out, ", %zu translation unit%s]\n", searched, util_s(searched));
+	if (dstr_len(&rows.text))
+		cxi_out_rows(&x->out, cstr_view_dstr(&rows.text));
+	else
+		cxi_out_lit(&x->out, "[no calls]\n");
+	cxi_out_units(&x->out, CSTR_VIEW("[clang could not parse: "), &failed);
+	cxi_out_units(&x->out, CSTR_VIEW("[clang reported errors: "), &errors);
 	if (late)
-		cxi_out_fmt(&x->out, "[The time limit ended the search before %zu translation "
-		            "unit%s. The rows contain no call from %s.]\n", late, util_s(late),
-		            late == 1 ? "it" : "them");
+		cxi_out_fmt(&x->out, "[time limit: %zu translation unit%s not searched]\n", late,
+		            util_s(late));
+	x->out.e = x->out.e ? x->out.e : rows.e;
+	dstr_cleanup(&rows.text);
 	return x->out.e ? x->out.e : e == ENOENT ? 0 : e;
 }
 

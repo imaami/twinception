@@ -821,33 +821,46 @@ parenthesis and that line contains `#` or `//`.
 
 `callers` lists the calls of the function `name` in every translation unit
 of the compile commands: each entry with `arguments` for a `.c` file of the
-repository. `path` is a file that declares the function. A row is the
-place of the first call in a calling function, the lines of the later
-calls, the calling function and the place of its definition. The end of a
-row is that of a row of `describe`: the macro, the attribute `cleanup`,
-and what the tool cannot tell. This is `callers` of `cxi_selects` in
-`src/cxi.c`:
+repository. `path` is a file that declares the function. The first line is
+the commit and the number of translation units. Each file is printed once.
+A row under a file is the lines of the calls in one calling function, and
+the calling function. The files are in the order of their bytes, and the
+rows of a file in the order of the lines. This is `callers` of
+`cxi_selects` in `src/cxi.c`:
 
 ```text
-[Repository askai, file src/cxi.c at commit 0900409f0e0665ff5590c6b43adc1f30d3410b13. The calls of function cxi_selects (src/cxi.c:1494) in the translation units of the compile commands.]
-  src/cxi.c:1613 cxi_callee (src/cxi.c:1601)
-  src/cxi.c:1833 cxi_calls_walk (src/cxi.c:1817)
-[70 translation units searched.]
+[commit f99c0e9d7b714aa23d47a586c52265f017bea9ce, 70 translation units]
+src/cxi.c
+  1737 cxi_callee
+  1957 cxi_calls_walk
 ```
+
+A row ends with a note in these cases:
+
+- `(macro destroy)`: the calls are written through the macro `destroy`.
+- `(or another function)`: `?:` selects the callee when the program runs.
+- `(maybe not evaluated)`: the tool cannot tell if the program evaluates
+  the call, as in the rows of `describe`.
+- `(attribute cleanup)`: the line is that of a variable with the attribute
+  `cleanup`, and the program calls the function at the end of the scope.
 
 A call through a macro or a `_Generic` selection is a call of the function
 that the program calls: with `#define destroy(p) _Generic(**(p), struct io:
 io_destroy, struct loop: loop_destroy)(p)`, `destroy(l)` is in the rows of
 `loop_destroy` only if `**l` is a `struct loop`. A static function is the
-function of that name whose first declaration is in the same file. The
-row of a calling function that a header defines is printed once. A use of
-the function that is not a call, such as its address in an initializer, is
-not listed, and neither is the call through a function pointer.
+function of that name whose first declaration is in the same file. A row
+that several translation units give, as for a calling function that a
+header defines, is printed once. A use of the function that is not a call,
+such as its address in an initializer, is not listed, and neither is the
+call through a function pointer. `[no calls]` is printed if no row is
+found.
 
-Closing lines contain the number of translation units, the files that
-clang could not parse or reported errors for, and the number of
-translation units that the time limit of the call left out. No parse
-starts unless twice the time of the longest one so far is left.
+Calls in a file can be missing if one of these lines follows the rows:
+
+- `[clang could not parse: FILES]`
+- `[clang reported errors: FILES]`
+- `[time limit: N translation units not searched]`. No parse starts unless
+  twice the time of the longest one so far is left.
 
 `diagnostics` lists clang's errors and warnings for `path` in clang's order,
 one per line as `path:line: warning: text [-Wflag]`, including those in the
