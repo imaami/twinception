@@ -12,7 +12,7 @@
 #include <inttypes.h>
 #include <json-c/json.h>
 #include <signal.h>
-#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
@@ -47,6 +47,7 @@ enum {
 	CXI_ROWS  = 2000,     /* the most member rows of a layout, and the most
 	                         enumerator rows of an enum */
 	CXI_BITS  = 48,       /* the size of the text of an offset or a size */
+	CXI_FMT   = 256,      /* the size of a text of cxi_out_fmt() */
 	CXI_NAME  = 256,      /* the longest part of the name of describe, and
 	                         the longest name of callers */
 	CXI_BYTES = 1 << 30,  /* the largest total size of the files of a commit */
@@ -69,7 +70,7 @@ struct cxi_out {
 	struct cstr_view tree;  /* the tree of the commit with a trailing slash,
 	                           the prefix that cxi_out_text() and
 	                           cxi_out_rel() remove from a path */
-	int64_t          e;     /* ENOMEM after an append failed */
+	int64_t          e;     /* the error of an append that failed */
 };
 
 /* Returns an empty output. The functions that append a path to the output
@@ -114,28 +115,69 @@ cxi (void)
 	return (struct cxi){ .out = cxi_out(cstr_view(nullptr)), .record = DSTR_INIT };
 }
 
+/* Appends the @p n bytes at @p p. */
 static void
 cxi_out_put (struct cxi_out *out,
              char const     *p,
              size_t          n)
 {
-	if (!out->e && n && !dstr_cat_n(&out->text, p, n))
+	if (!dstr_cat_n(&out->text, p, n))
 		out->e = ENOMEM;
 }
 
-/* Appends askai-code's own text, as printf() formats it, to @p out. */
-[[gnu::format(printf, 2, 3)]]
-static void
-cxi_out_printf (struct cxi_out *out,
-                char const     *fmt,
-                ...)
+/* Appends the string literal @p s. */
+#define cxi_out_lit(out, s) cxi_out_put((out), "" s, sizeof (s) - 1)
+
+static force_inline void
+cxi_out_view (struct cxi_out   *out,
+              struct cstr_view  s)
 {
-	char buf[1024];
-	va_list ap;
-	va_start(ap, fmt);
-	size_t n = util_vformat(buf, sizeof buf, fmt, ap);
-	va_end(ap);
-	cxi_out_put(out, buf, n);
+	cxi_out_put(out, s.data, s.len);
+}
+
+/* Appends @p n in decimal. */
+static void
+cxi_out_num (struct cxi_out *out,
+             uint64_t        n)
+{
+	char digits[UTIL_DECIMAL];
+	cxi_out_view(out, util_decimal(digits + sizeof digits, n, 0));
+}
+
+/* Appends the @p n bytes that snprintf() wrote to the @p size bytes at
+ * @p buf. Sets the error of @p out if snprintf() failed or the text did not
+ * fit.
+ */
+static force_inline void
+cxi_out_fmt_ (struct cxi_out *out,
+              char const     *buf,
+              int             size,
+              int             n)
+{
+	if (n < 0 || n >= size)
+		out->e = EOVERFLOW;
+	else
+		cxi_out_put(out, buf, (size_t)n);
+}
+
+/* Appends the text that snprintf() makes of a format and arguments: for a
+ * text that contains a number. The text must fit in CXI_FMT bytes with the
+ * NUL: an argument of %s is a short text of askai-code.
+ */
+#define cxi_out_fmt(out, ...) do {                                              \
+                char cxi_fmt_[CXI_FMT];                                         \
+                cxi_out_fmt_((out), cxi_fmt_, (int)sizeof cxi_fmt_,             \
+                             snprintf(cxi_fmt_, sizeof cxi_fmt_, __VA_ARGS__)); \
+        } while (0)
+
+/* Appends the byte @p c as \xNN. */
+static void
+cxi_out_hex (struct cxi_out *out,
+             unsigned char   c)
+{
+	char text[4] = { '\\', 'x' };
+	util_hex(text + 2, &c, 1);
+	cxi_out_put(out, text, sizeof text);
 }
 
 /* Returns the length of the UTF-8 character at @p p, or 0 for a control
@@ -175,7 +217,12 @@ cxi_out_text (struct cxi_out *out,
 			i += k;
 		} else {
 			unsigned char const c = (unsigned char)s[i++];
-			cxi_out_printf(out, c == '\n' ? "\\n" : c == '\t' ? "\\t" : "\\x%02x", c);
+			if (c == '\n')
+				cxi_out_lit(out, "\\n");
+			else if (c == '\t')
+				cxi_out_lit(out, "\\t");
+			else
+				cxi_out_hex(out, c);
 		}
 	}
 }
@@ -213,15 +260,20 @@ cxi_out_path (struct cxi_out   *out,
 	cxi_out_put(out, p.data, i);
 	while (i < p.len) {
 		unsigned char const c = (unsigned char)p.data[i];
+		/* A backslash and the byte, or three octal digits. */
+		char esc[4] = { '\\', (char)c, (char)('0' + (c >> 3 & 7)), (char)('0' + (c & 7)) };
 		size_t k = 1;
-		if (c == '"' || c == '\\')
-			cxi_out_printf(out, "\\%c", c);
-		else if (c >= '\a' && c <= '\r')
-			cxi_out_printf(out, "\\%c", "abtnvfr"[c - '\a']);
-		else if ((k = cxi_char(p.data + i, p.len - i)))
+		if (c == '"' || c == '\\') {
+			cxi_out_put(out, esc, 2);
+		} else if (c >= '\a' && c <= '\r') {
+			esc[1] = "abtnvfr"[c - '\a'];
+			cxi_out_put(out, esc, 2);
+		} else if ((k = cxi_char(p.data + i, p.len - i))) {
 			cxi_out_put(out, p.data + i, k);
-		else
-			cxi_out_printf(out, "\\%03o", c);
+		} else {
+			esc[1] = (char)('0' + (c >> 6));
+			cxi_out_put(out, esc, sizeof esc);
+		}
 		i += k ? k : 1;
 	}
 	cxi_out_put(out, "\"", quote);
@@ -244,11 +296,10 @@ cxi_line (CXSourceLocation loc)
 	return line;
 }
 
+/* Appends the place @p loc as PATH:LINE. */
 static void
 cxi_out_place (struct cxi_out   *out,
-               char const       *before,
-               CXSourceLocation  loc,
-               char const       *after)
+               CXSourceLocation  loc)
 {
 	CXFile file;
 	CXString name;
@@ -261,9 +312,9 @@ cxi_out_place (struct cxi_out   *out,
 		clang_getPresumedLocation(loc, &name, &line, nullptr);
 	char const *path = clang_getCString(name);
 	struct dstr norm = DSTR_INIT;
-	cxi_out_printf(out, "%s", before);
 	cxi_out_path(out, cxi_out_rel(out, path ? path : "", &norm));
-	cxi_out_printf(out, ":%u%s", line, after);
+	cxi_out_lit(out, ":");
+	cxi_out_num(out, line);
 	dstr_cleanup(&norm);
 	clang_disposeString(name);
 }
@@ -274,31 +325,38 @@ cxi_tag (enum CXCursorKind k)
 	return k == CXCursor_StructDecl || k == CXCursor_UnionDecl || k == CXCursor_EnumDecl;
 }
 
-/* Returns the word for the kind of @p c, or nullptr for a kind to skip. */
-static char const *
+/* Returns the word for the kind of @p c, with data nullptr for a kind to
+ * skip.
+ */
+static struct cstr_view
 cxi_kind (CXCursor c)
 {
-	static char const *const words[] = {
-		[CXCursor_StructDecl] = "struct", [CXCursor_UnionDecl] = "union",
-		[CXCursor_EnumDecl] = "enum", [CXCursor_FunctionDecl] = "function",
-		[CXCursor_VarDecl] = "variable", [CXCursor_TypedefDecl] = "typedef",
-		[CXCursor_FieldDecl] = "field", [CXCursor_EnumConstantDecl] = "enumerator",
-		[CXCursor_ParmDecl] = "parameter",
+	static struct cstr_view const words[] = {
+		[CXCursor_StructDecl] = CSTR_VIEW_INIT("struct"),
+		[CXCursor_UnionDecl] = CSTR_VIEW_INIT("union"),
+		[CXCursor_EnumDecl] = CSTR_VIEW_INIT("enum"),
+		[CXCursor_FunctionDecl] = CSTR_VIEW_INIT("function"),
+		[CXCursor_VarDecl] = CSTR_VIEW_INIT("variable"),
+		[CXCursor_TypedefDecl] = CSTR_VIEW_INIT("typedef"),
+		[CXCursor_FieldDecl] = CSTR_VIEW_INIT("field"),
+		[CXCursor_EnumConstantDecl] = CSTR_VIEW_INIT("enumerator"),
+		[CXCursor_ParmDecl] = CSTR_VIEW_INIT("parameter"),
 	};
 	enum CXCursorKind const k = clang_getCursorKind(c);
-	return k == CXCursor_MacroDefinition ? "macro"
-	     : (size_t)k < array_size(words) ? words[k] : nullptr;
+	return k == CXCursor_MacroDefinition ? CSTR_VIEW("macro")
+	     : (size_t)k < array_size(words) ? words[k] : cstr_view(nullptr);
 }
 
-/* Returns "static " for a declaration of static storage, else "". Only a
- * declaration may go to clang_Cursor_getStorageClass(), which reads any
- * cursor as one.
+/* Returns "static " for a declaration of static storage, else an empty
+ * view. Only a declaration may go to clang_Cursor_getStorageClass(), which
+ * reads any cursor as one.
  */
-static char const *
+static struct cstr_view
 cxi_static (CXCursor c)
 {
 	return clang_isDeclaration(clang_getCursorKind(c)) &&
-	       clang_Cursor_getStorageClass(c) == CX_SC_Static ? "static " : "";
+	       clang_Cursor_getStorageClass(c) == CX_SC_Static ? CSTR_VIEW("static ")
+	                                                       : cstr_view(nullptr);
 }
 
 /* Returns true for a struct, union or enum without a name, also one named
@@ -321,7 +379,7 @@ cxi_out_name (struct cxi_out *out,
               CXCursor        c)
 {
 	if (cxi_tag(clang_getCursorKind(c)) && cxi_unnamed(c))
-		cxi_out_printf(out, "(anonymous)");
+		cxi_out_lit(out, "(anonymous)");
 	else
 		cxi_out_clang(out, clang_getCursorSpelling(c));
 }
@@ -341,9 +399,13 @@ cxi_shown (CXCursor c)
 static void
 cxi_head (struct cxi *x)
 {
-	cxi_out_printf(&x->out, "[Repository %s, file ", x->key[CXI_KEY_REPO].data);
+	cxi_out_lit(&x->out, "[Repository ");
+	cxi_out_view(&x->out, x->key[CXI_KEY_REPO]);
+	cxi_out_lit(&x->out, ", file ");
 	cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-	cxi_out_printf(&x->out, " at commit %s. ", x->key[CXI_KEY_COMMIT].data);
+	cxi_out_lit(&x->out, " at commit ");
+	cxi_out_view(&x->out, x->key[CXI_KEY_COMMIT]);
+	cxi_out_lit(&x->out, ". ");
 }
 
 /* Cursors that a visitor collects; a failed push sets out->e. */
@@ -387,7 +449,7 @@ cxi_declared (CXCursor     c,
               CXClientData data)
 {
 	enum CXCursorKind const k = clang_getCursorKind(c);
-	bool const skip = !cxi_kind(c) ||
+	bool const skip = !cxi_kind(c).data ||
 	                  !clang_Location_isFromMainFile(clang_getCursorLocation(c)) ||
 	                  (cxi_tag(k) && !clang_isCursorDefinition(c)) ||
 	                  (k == CXCursor_MacroDefinition && clang_Cursor_isMacroBuiltin(c));
@@ -416,28 +478,31 @@ cxi_outline (struct cxi *x)
 	if (list.n)
 		qsort(list.items, list.n, sizeof *list.items, cxi_order);
 	cxi_head(x);
-	cxi_out_printf(&x->out, "%zu name%s.]\n", list.n, util_s(list.n));
+	cxi_out_fmt(&x->out, "%zu name%s.]\n", list.n, util_s(list.n));
 	for (size_t i = 0; i < list.n; ++i) {
 		CXCursor const c = list.items[i];
 		enum CXCursorKind const k = clang_getCursorKind(c);
 		CXSourceRange const extent = clang_getCursorExtent(c);
 		unsigned const first = cxi_line(clang_getRangeStart(extent));
 		unsigned const last = cxi_line(clang_getRangeEnd(extent));
-		cxi_out_printf(&x->out, "%u %s%s ", cxi_line(clang_getCursorLocation(c)),
-		               cxi_static(c), cxi_kind(c));
+		cxi_out_num(&x->out, cxi_line(clang_getCursorLocation(c)));
+		cxi_out_lit(&x->out, " ");
+		cxi_out_view(&x->out, cxi_static(c));
+		cxi_out_view(&x->out, cxi_kind(c));
+		cxi_out_lit(&x->out, " ");
 		cxi_out_name(&x->out, c);
 		CXType const type = k == CXCursor_TypedefDecl ? clang_getTypedefDeclUnderlyingType(c)
 		                                              : clang_getCursorType(c);
 		if (k == CXCursor_FunctionDecl || k == CXCursor_VarDecl ||
 		    k == CXCursor_TypedefDecl) {
-			cxi_out_printf(&x->out, ": ");
+			cxi_out_lit(&x->out, ": ");
 			cxi_out_clang(&x->out, clang_getTypeSpelling(type));
 		}
 		if (k == CXCursor_FunctionDecl && !clang_isCursorDefinition(c))
-			cxi_out_printf(&x->out, ", declared");
+			cxi_out_lit(&x->out, ", declared");
 		if (last > first)
-			cxi_out_printf(&x->out, " (%u-%u)", first, last);
-		cxi_out_printf(&x->out, "\n");
+			cxi_out_fmt(&x->out, " (%u-%u)", first, last);
+		cxi_out_lit(&x->out, "\n");
 	}
 	free(list.items);
 	return x->out.e;
@@ -478,7 +543,7 @@ cxi_out_line (struct cxi_out   *out,
 		if (k)
 			cxi_out_put(out, s.data + i, k);
 		else
-			cxi_out_printf(out, "\\x%02x", (unsigned char)s.data[i]);
+			cxi_out_hex(out, (unsigned char)s.data[i]);
 	}
 }
 
@@ -539,14 +604,15 @@ cxi_declaration (struct cxi *x,
 	struct cstr_view const rel = cxi_out_rel(&x->out, path ? path : "", &norm);
 	cxi_out_path(&x->out, rel);
 	if (first == last)
-		cxi_out_printf(&x->out, " line %u of %zu:\n", first, total);
+		cxi_out_fmt(&x->out, " line %u of %zu:\n", first, total);
 	else
-		cxi_out_printf(&x->out, " lines %u to %u of %zu:\n", first, last, total);
+		cxi_out_fmt(&x->out, " lines %u to %u of %zu:\n", first, last, total);
 	size_t const at = dstr_len(&x->out.text);
 	for (unsigned n = first; n <= last; ++n) {
-		cxi_out_printf(&x->out, "%u\t", n);
+		cxi_out_num(&x->out, n);
+		cxi_out_lit(&x->out, "\t");
 		cxi_out_line(&x->out, here);
-		cxi_out_printf(&x->out, "\n");
+		cxi_out_lit(&x->out, "\n");
 		char const *next = here.data + here.len + (here.data + here.len < end);
 		char const *nl = memchr(next, '\n', (size_t)(end - next));
 		here = cstr_view_n(next, nl ? (size_t)(nl - next) : (size_t)(end - next));
@@ -579,40 +645,61 @@ struct cxi_layout {
 	uint32_t        is_union;
 };
 
-/* Writes the offset @p bits to @p text as BYTES or BYTES+BITSb. */
+/* Writes the offset @p bits to the end of @p text as BYTES or BYTES+BITSb,
+ * and returns the string.
+ */
 static char const *
 cxi_offset (char     text[static CXI_BITS],
             uint64_t bits)
 {
-	if (bits % 8)
-		util_format(text, CXI_BITS, "%" PRIu64 "+%" PRIu64 "b", bits / 8, bits % 8);
-	else
-		util_format(text, CXI_BITS, "%" PRIu64, bits / 8);
-	return text;
+	char *end = text + CXI_BITS - 1;
+	*end = '\0';
+	if (bits % 8) {
+		*--end = 'b';
+		*--end = (char)('0' + bits % 8);
+		*--end = '+';
+	}
+	return util_decimal(end, bits / 8, 0).data;
 }
 
-/* Writes the size @p bits to @p text as BYTES, or BITSb. */
+/* Writes the size @p bits to the end of @p text as BYTES, or BITSb, and
+ * returns the string.
+ */
 static char const *
 cxi_size (char     text[static CXI_BITS],
           uint64_t bits)
 {
-	util_format(text, CXI_BITS, bits % 8 ? "%" PRIu64 "b" : "%" PRIu64,
-	            bits % 8 ? bits : bits / 8);
-	return text;
+	char *end = text + CXI_BITS - 1;
+	*end = '\0';
+	if (bits % 8)
+		*--end = 'b';
+	return util_decimal(end, bits % 8 ? bits : bits / 8, 0).data;
 }
 
+/* Appends the indentation of a row of the record @p l. */
+static void
+cxi_layout_indent (struct cxi_layout const *l)
+{
+	for (uint32_t i = 0; i < l->depth; ++i)
+		cxi_out_lit(l->out, "  ");
+}
+
+/* Appends the row of the padding from the bit @p from to the bit @p to,
+ * which ends with @p what.
+ */
 static void
 cxi_layout_padding (struct cxi_layout *l,
                     uint64_t           from,
                     uint64_t           to,
-                    char const        *what)
+                    struct cstr_view   what)
 {
 	char at[CXI_BITS];
 	char size[CXI_BITS];
 	if (to <= from)
 		return;
-	cxi_out_printf(l->out, "%7s%7s%16s%*s(%s)\n", cxi_offset(at, from),
-	               cxi_size(size, to - from), "", (int)(2 * l->depth), "", what);
+	cxi_out_fmt(l->out, "%7s%7s%16s", cxi_offset(at, from), cxi_size(size, to - from), "");
+	cxi_layout_indent(l);
+	cxi_out_view(l->out, what);
 	l->padding += to - from;
 }
 
@@ -641,27 +728,31 @@ cxi_layout_field (CXCursor     c,
 	long long const align = clang_Type_getAlignOf(type);
 	uint64_t const at = l->base + (uint64_t)(offset > 0 ? offset : 0);
 	if (!l->is_union)
-		cxi_layout_padding(l, l->end, at, "padding");
+		cxi_layout_padding(l, l->end, at, CSTR_VIEW("(padding)\n"));
 	CXCursor const decl = clang_getTypeDeclaration(clang_getCanonicalType(type));
 	enum CXCursorKind const k = clang_getCursorKind(decl);
 	bool const nested = (k == CXCursor_StructDecl || k == CXCursor_UnionDecl) &&
 	                    clang_Cursor_isAnonymous(decl);
 	char bits[2][CXI_BITS];
-	cxi_out_printf(l->out, "%7s%7s%7lld%7u  %*s", cxi_offset(bits[0], at),
-	               cxi_size(bits[1], size), align > 0 ? align : 0,
-	               cxi_line(clang_getCursorLocation(c)), (int)(2 * l->depth), "");
+	cxi_out_fmt(l->out, "%7s%7s%7lld%7u  ", cxi_offset(bits[0], at), cxi_size(bits[1], size),
+	            align > 0 ? align : 0, cxi_line(clang_getCursorLocation(c)));
+	cxi_layout_indent(l);
 	if (clang_Cursor_isAnonymousRecordDecl(decl)) {
-		cxi_out_printf(l->out, "(anonymous %s)\n", cxi_kind(decl));
+		cxi_out_lit(l->out, "(anonymous ");
+		cxi_out_view(l->out, cxi_kind(decl));
+		cxi_out_lit(l->out, ")\n");
 	} else {
 		cxi_out_clang(l->out, clang_getCursorSpelling(c));
-		cxi_out_printf(l->out, ": ");
-		if (nested)
-			cxi_out_printf(l->out, "%s (unnamed)", cxi_kind(decl));
-		else
+		cxi_out_lit(l->out, ": ");
+		if (nested) {
+			cxi_out_view(l->out, cxi_kind(decl));
+			cxi_out_lit(l->out, " (unnamed)");
+		} else {
 			cxi_out_clang(l->out, clang_getTypeSpelling(type));
+		}
 		if (bitfield)
-			cxi_out_printf(l->out, " : %lld", n);
-		cxi_out_printf(l->out, "\n");
+			cxi_out_fmt(l->out, " : %lld", n);
+		cxi_out_lit(l->out, "\n");
 	}
 	if (nested)
 		cxi_layout_record(l, clang_getCanonicalType(type), at, l->depth + 1);
@@ -684,7 +775,8 @@ cxi_layout_record (struct cxi_layout *l,
 	long long const size = clang_Type_getSizeOf(type);
 	if (in.rows && size > 0)
 		cxi_layout_padding(&in, in.end, base + 8 * (uint64_t)size, depth
-		                   ? "padding at the end of the member" : "padding at the end");
+		                   ? CSTR_VIEW("(padding at the end of the member)\n")
+		                   : CSTR_VIEW("(padding at the end)\n"));
 	l->padding = in.padding;
 	l->rows = in.rows;
 	l->hidden = in.hidden;
@@ -699,22 +791,22 @@ cxi_layout (struct cxi     *x,
             CXType          type)
 {
 	struct cxi_layout l = { .out = rows, .rows = CXI_ROWS };
-	cxi_out_printf(rows, " offset   size  align   line  member: type\n");
+	cxi_out_lit(rows, " offset   size  align   line  member: type\n");
 	cxi_layout_record(&l, type, 0, 0);
 	if (l.hidden)
-		cxi_out_printf(rows, "[%" PRIu64 " more members. To describe one member, give "
-		               "name as TYPE.MEMBER, such as child.flags.]\n", l.hidden);
-	cxi_out_printf(&x->out, ": %lld bytes, alignment %lld, %s%" PRIu64 " byte%s",
-	               clang_Type_getSizeOf(type), clang_Type_getAlignOf(type),
-	               l.rows ? "" : "at least ", l.padding / 8, util_s(l.padding / 8));
+		cxi_out_fmt(rows, "[%" PRIu64 " more members. To describe one member, give "
+		            "name as TYPE.MEMBER, such as child.flags.]\n", l.hidden);
+	cxi_out_fmt(&x->out, ": %lld bytes, alignment %lld, %s%" PRIu64 " byte%s",
+	            clang_Type_getSizeOf(type), clang_Type_getAlignOf(type),
+	            l.rows ? "" : "at least ", l.padding / 8, util_s(l.padding / 8));
 	if (l.padding % 8)
-		cxi_out_printf(&x->out, " and %" PRIu64 " bit%s", l.padding % 8,
-		               util_s(l.padding % 8));
+		cxi_out_fmt(&x->out, " and %" PRIu64 " bit%s", l.padding % 8,
+		            util_s(l.padding % 8));
 	CXTargetInfo info = clang_getTranslationUnitTargetInfo(x->tu);
-	cxi_out_printf(&x->out, " of padding, ");
+	cxi_out_lit(&x->out, " of padding, ");
 	cxi_out_clang(&x->out, clang_TargetInfo_getTriple(info));
 	clang_TargetInfo_dispose(info);
-	cxi_out_printf(&x->out, "\n");
+	cxi_out_lit(&x->out, "\n");
 }
 
 /* A search for a name, of the kind kind if not 0, or with part for the
@@ -768,7 +860,7 @@ cxi_match (CXCursor     c,
 	bool const named = s && (find->part ? find->name.len && strstr(s, find->name.data)
 	                                    : !strcmp(s, find->name.data));
 	clang_disposeString(spelling);
-	bool const match = named && cxi_kind(c) && k != CXCursor_FieldDecl &&
+	bool const match = named && cxi_kind(c).data && k != CXCursor_FieldDecl &&
 	                   k != CXCursor_ParmDecl && (!find->kind || k == find->kind) &&
 	                   !(tag && cxi_unnamed(c)) &&
 	                   (!find->part || cxi_in_tree(find->list.out, c)) &&
@@ -804,38 +896,45 @@ cxi_lookup (struct cxi *x,
 		size_t tag = 0;
 		while (tag < n && !cxi_tag(clang_getCursorKind(find.list.items[tag])))
 			++tag;
-		cxi_out_printf(&x->out, "%zu symbols in the translation unit of ", n);
+		cxi_out_fmt(&x->out, "%zu symbols in the translation unit of ", n);
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-		cxi_out_printf(&x->out, " are named ");
+		cxi_out_lit(&x->out, " are named ");
 		cxi_out_text(&x->out, x->key[CXI_KEY_NAME].data);
-		if (tag < n)
-			cxi_out_printf(&x->out, ". Give the name %s %s for the type, or give the "
-			               "line argument. The symbols:\n", cxi_kind(find.list.items[tag]),
-			               name);
-		else
-			cxi_out_printf(&x->out, ". Give the line argument. The symbols:\n");
+		if (tag < n) {
+			cxi_out_lit(&x->out, ". Give the name ");
+			cxi_out_view(&x->out, cxi_kind(find.list.items[tag]));
+			cxi_out_lit(&x->out, " ");
+			cxi_out_view(&x->out, find.name);
+			cxi_out_lit(&x->out, " for the type, or give the line argument. The "
+			            "symbols:\n");
+		} else {
+			cxi_out_lit(&x->out, ". Give the line argument. The symbols:\n");
+		}
 	} else {
 		find.part = 1;
 		find.kind = 0;
 		clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_match, &find);
-		cxi_out_printf(&x->out, "No %s ",
-		               kind == CXCursor_FunctionDecl ? "function" : "symbol");
+		cxi_out_view(&x->out, kind == CXCursor_FunctionDecl ? CSTR_VIEW("No function ")
+		                                                    : CSTR_VIEW("No symbol "));
 		cxi_out_text(&x->out, x->key[CXI_KEY_NAME].data);
-		cxi_out_printf(&x->out, " in the translation unit of ");
+		cxi_out_lit(&x->out, " in the translation unit of ");
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-		cxi_out_printf(&x->out, find.list.n ? ". Repository names in the translation unit "
-		                                      "that contain "
-		                                    : ". No repository name in the translation unit "
-		                                      "contains ");
+		cxi_out_view(&x->out, find.list.n
+		             ? CSTR_VIEW(". Repository names in the translation unit that contain ")
+		             : CSTR_VIEW(". No repository name in the translation unit contains "));
 		cxi_out_text(&x->out, name);
-		cxi_out_printf(&x->out, find.list.n ? ":\n" : ".");
+		cxi_out_view(&x->out, find.list.n ? CSTR_VIEW(":\n") : CSTR_VIEW("."));
 	}
 	for (size_t i = 0; i < find.list.n; ++i) {
 		CXCursor const at = cxi_shown(find.list.items[i]);
-		cxi_out_place(&x->out, "  ", clang_getCursorLocation(at), " ");
-		cxi_out_printf(&x->out, "%s%s ", cxi_static(at), cxi_kind(at));
+		cxi_out_lit(&x->out, "  ");
+		cxi_out_place(&x->out, clang_getCursorLocation(at));
+		cxi_out_lit(&x->out, " ");
+		cxi_out_view(&x->out, cxi_static(at));
+		cxi_out_view(&x->out, cxi_kind(at));
+		cxi_out_lit(&x->out, " ");
 		cxi_out_name(&x->out, at);
-		cxi_out_printf(&x->out, "\n");
+		cxi_out_lit(&x->out, "\n");
 	}
 	free(find.list.items);
 	return x->out.e ? x->out.e : EINVAL;
@@ -890,34 +989,32 @@ cxi_value (struct cxi *x,
 	clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_use, &use);
 	if (clang_Cursor_isNull(use.expr))
 		return;
-	cxi_out_printf(&x->out, "at ");
+	cxi_out_lit(&x->out, "at ");
 	cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-	cxi_out_printf(&x->out, ":%u: an expression of type ", line);
+	cxi_out_fmt(&x->out, ":%u: an expression of type ", line);
 	cxi_out_clang(&x->out, clang_getTypeSpelling(clang_getCursorType(use.expr)));
 	CXEvalResult value = clang_Cursor_Evaluate(use.expr);
 	switch (value ? clang_EvalResult_getKind(value) : CXEval_UnExposed) {
 	case CXEval_Int:
 		if (clang_EvalResult_isUnsignedInt(value))
-			cxi_out_printf(&x->out, ", value %llu",
-			               clang_EvalResult_getAsUnsigned(value));
+			cxi_out_fmt(&x->out, ", value %llu", clang_EvalResult_getAsUnsigned(value));
 		else
-			cxi_out_printf(&x->out, ", value %lld",
-			               clang_EvalResult_getAsLongLong(value));
+			cxi_out_fmt(&x->out, ", value %lld", clang_EvalResult_getAsLongLong(value));
 		break;
 	case CXEval_Float:
-		cxi_out_printf(&x->out, ", value %g", clang_EvalResult_getAsDouble(value));
+		cxi_out_fmt(&x->out, ", value %g", clang_EvalResult_getAsDouble(value));
 		break;
 	case CXEval_StrLiteral:
-		cxi_out_printf(&x->out, ", value \"");
+		cxi_out_lit(&x->out, ", value \"");
 		cxi_out_text(&x->out, clang_EvalResult_getAsStr(value));
-		cxi_out_printf(&x->out, "\"");
+		cxi_out_lit(&x->out, "\"");
 		break;
 	default:
 		break;
 	}
 	if (value)
 		clang_EvalResult_dispose(value);
-	cxi_out_printf(&x->out, "\n");
+	cxi_out_lit(&x->out, "\n");
 }
 
 static bool
@@ -926,7 +1023,7 @@ cxi_is_named (CXCursor    c,
 {
 	CXString spelling = clang_getCursorSpelling(c);
 	char const *s = clang_getCString(spelling);
-	bool const named = cxi_kind(c) && s && !strcmp(s, name);
+	bool const named = cxi_kind(c).data && s && !strcmp(s, name);
 	clang_disposeString(spelling);
 	return named;
 }
@@ -989,12 +1086,15 @@ cxi_out_expansion (struct cxi_out *out,
 {
 	CXSourceLocation const at = clang_getCursorLocation(macro);
 	unsigned const last = cxi_line(clang_getRangeEnd(clang_getCursorExtent(macro)));
-	cxi_out_printf(out, " is the expansion of the macro ");
+	cxi_out_lit(out, " is the expansion of the macro ");
 	cxi_out_clang(out, clang_getCursorSpelling(macro));
-	cxi_out_place(out, " (", at, "");
-	if (last > cxi_line(at))
-		cxi_out_printf(out, "-%u", last);
-	cxi_out_printf(out, ").");
+	cxi_out_lit(out, " (");
+	cxi_out_place(out, at);
+	if (last > cxi_line(at)) {
+		cxi_out_lit(out, "-");
+		cxi_out_num(out, last);
+	}
+	cxi_out_lit(out, ").");
 }
 
 /* Writes the first symbol named @p name on the line to @p *c. */
@@ -1021,16 +1121,16 @@ cxi_lookup_line (struct cxi *x,
 			return 0;
 	}
 	if (!words.data) {
-		cxi_out_printf(&x->out, "Line %u is past the end of ", line);
+		cxi_out_fmt(&x->out, "Line %u is past the end of ", line);
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-		cxi_out_printf(&x->out, ". The file contains %zu line%s.", total, util_s(total));
+		cxi_out_fmt(&x->out, ". The file contains %zu line%s.", total, util_s(total));
 		return EINVAL;
 	}
-	cxi_out_printf(&x->out, "Line %u of ", line);
+	cxi_out_fmt(&x->out, "Line %u of ", line);
 	cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-	cxi_out_printf(&x->out, " contains no symbol named ");
+	cxi_out_lit(&x->out, " contains no symbol named ");
 	cxi_out_text(&x->out, name);
-	cxi_out_printf(&x->out, ".");
+	cxi_out_lit(&x->out, ".");
 	return EINVAL;
 }
 
@@ -1079,10 +1179,11 @@ cxi_lookup_member (struct cxi *x,
 	}
 	free(find.list.items);
 	if (clang_Cursor_isNull(record)) {
-		cxi_out_printf(&x->out, "No struct or union type named %s in the translation "
-		               "unit of ", name);
+		cxi_out_lit(&x->out, "No struct or union type named ");
+		cxi_out_view(&x->out, find.name);
+		cxi_out_lit(&x->out, " in the translation unit of ");
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-		cxi_out_printf(&x->out, ".");
+		cxi_out_lit(&x->out, ".");
 		return EINVAL;
 	}
 	struct cxi_seek seek = { member, clang_getNullCursor() };
@@ -1090,9 +1191,11 @@ cxi_lookup_member (struct cxi *x,
 	*c = seek.found;
 	if (!clang_Cursor_isNull(*c))
 		return x->out.e;
-	cxi_out_printf(&x->out, "No member %s in ", member);
+	cxi_out_lit(&x->out, "No member ");
+	cxi_out_view(&x->out, cstr_view(member));
+	cxi_out_lit(&x->out, " in ");
 	cxi_out_clang(&x->out, clang_getTypeSpelling(clang_getCursorType(record)));
-	cxi_out_printf(&x->out, ".");
+	cxi_out_lit(&x->out, ".");
 	return EINVAL;
 }
 
@@ -1133,8 +1236,8 @@ cxi_parse_name (struct cxi *x,
 	size_t const b = dot.len && *dot.data == '.' ? cxi_ident(cstr_view_slice(dot, 1, SIZE_MAX))
 	                                             : 0;
 	if (!a || a > CXI_NAME || b > CXI_NAME || dot.len != (b ? b + 1 : 0)) {
-		cxi_out_printf(&x->out, "The name argument must be a C name, such as git_start, "
-		               "struct dstr or child.flags.");
+		cxi_out_lit(&x->out, "The name argument must be a C name, such as git_start, "
+		            "struct dstr or child.flags.");
 		return EINVAL;
 	}
 	memcpy(name, rest.data, a);
@@ -1168,19 +1271,21 @@ cxi_member (struct cxi *x,
 	long long const offset = clang_Type_getOffsetOf(record, clang_getCString(name));
 	long long const size = clang_Cursor_isBitField(c) ? clang_getFieldDeclBitWidth(c)
 	                     : 8 * clang_Type_getSizeOf(type);
-	cxi_out_printf(&x->out, "field ");
+	cxi_out_lit(&x->out, "field ");
 	cxi_out_clang(&x->out, name);
-	cxi_out_printf(&x->out, " of ");
+	cxi_out_lit(&x->out, " of ");
 	cxi_out_clang(&x->out, clang_getTypeSpelling(record));
-	if (!clang_equalCursors(parent, outer))
-		cxi_out_printf(&x->out, ", in an anonymous %s", cxi_kind(parent));
-	cxi_out_printf(&x->out, ": ");
+	if (!clang_equalCursors(parent, outer)) {
+		cxi_out_lit(&x->out, ", in an anonymous ");
+		cxi_out_view(&x->out, cxi_kind(parent));
+	}
+	cxi_out_lit(&x->out, ": ");
 	cxi_out_clang(&x->out, clang_getTypeSpelling(type));
 	char bits[2][CXI_BITS];
-	cxi_out_printf(&x->out, "\noffset %s, size %s, alignment %lld\n",
-	               cxi_offset(bits[0], offset > 0 ? (uint64_t)offset : 0),
-	               cxi_size(bits[1], size > 0 ? (uint64_t)size : 0),
-	               clang_Type_getAlignOf(type));
+	cxi_out_fmt(&x->out, "\noffset %s, size %s, alignment %lld\n",
+	            cxi_offset(bits[0], offset > 0 ? (uint64_t)offset : 0),
+	            cxi_size(bits[1], size > 0 ? (uint64_t)size : 0),
+	            clang_Type_getAlignOf(type));
 }
 
 /* Appends the value of the enumerator @p c, signed or unsigned as @p type
@@ -1192,11 +1297,11 @@ cxi_out_enum_value (struct cxi_out *out,
                     CXType          type)
 {
 	if (clang_Type_getSizeOf(type) > 8)
-		cxi_out_printf(out, "a value of more than 64 bits");
+		cxi_out_lit(out, "a value of more than 64 bits");
 	else if (type.kind >= CXType_Bool && type.kind <= CXType_ULongLong)
-		cxi_out_printf(out, "%llu", clang_getEnumConstantDeclUnsignedValue(c));
+		cxi_out_num(out, clang_getEnumConstantDeclUnsignedValue(c));
 	else
-		cxi_out_printf(out, "%lld", clang_getEnumConstantDeclValue(c));
+		cxi_out_fmt(out, "%lld", clang_getEnumConstantDeclValue(c));
 }
 
 /* Appends the enum @p c in the spelling of clang, with the word enum
@@ -1209,7 +1314,7 @@ cxi_out_enum_name (struct cxi_out *out,
 {
 	CXString spelling = clang_getTypeSpelling(clang_getCursorType(c));
 	if (!cstr_view_starts(cstr_view(clang_getCString(spelling)), CSTR_VIEW("enum ")))
-		cxi_out_printf(out, "enum ");
+		cxi_out_lit(out, "enum ");
 	cxi_out_clang(out, spelling);
 }
 
@@ -1229,9 +1334,9 @@ cxi_out_enum_place (struct cxi_out *out,
 	unsigned line;
 	clang_getFileLocation(at, &in, &line, nullptr, nullptr);
 	if (clang_File_isEqual(in, file))
-		cxi_out_printf(out, "%s%*u", before, width, line);
+		cxi_out_fmt(out, "%s%*u", before, width, line);
 	else
-		cxi_out_place(out, "", at, "");
+		cxi_out_place(out, at);
 }
 
 /* Appends the line before the rows of the enumerators that one macro
@@ -1268,8 +1373,8 @@ cxi_enum_run (struct cxi            *x,
 	}
 	cxi_out_enum_place(rows, kids->items[i], file, "line ", 0);
 	cxi_out_expansion(rows, macro);
-	cxi_out_printf(rows, " The expansion writes the next %zu enumerator%s.\n", end - i,
-	               util_s(end - i));
+	cxi_out_fmt(rows, " The expansion writes the next %zu enumerator%s.\n", end - i,
+	            util_s(end - i));
 	return end;
 }
 
@@ -1297,25 +1402,25 @@ cxi_enum (struct cxi     *x,
 			kids.items[n++] = kids.items[i];
 	}
 	size_t const shown = n < CXI_ROWS ? n : CXI_ROWS;
-	cxi_out_printf(head, ": ");
+	cxi_out_lit(head, ": ");
 	cxi_out_clang(head, clang_getTypeSpelling(type));
-	cxi_out_printf(head, ", %zu enumerator%s\n", n, util_s(n));
-	cxi_out_printf(rows, "   line  enumerator = value\n");
+	cxi_out_fmt(head, ", %zu enumerator%s\n", n, util_s(n));
+	cxi_out_lit(rows, "   line  enumerator = value\n");
 	/* The enumerators from i to end - 1 are those of one expansion. */
 	for (size_t i = 0, end = 0; i < shown; ++i) {
 		CXCursor const e = kids.items[i];
 		if (i == end)
 			end = cxi_enum_run(x, rows, &kids, n, i, file);
 		cxi_out_enum_place(rows, e, file, "", 7);
-		cxi_out_printf(rows, "  ");
+		cxi_out_lit(rows, "  ");
 		cxi_out_clang(rows, clang_getCursorSpelling(e));
-		cxi_out_printf(rows, " = ");
+		cxi_out_lit(rows, " = ");
 		cxi_out_enum_value(rows, e, canonical);
-		cxi_out_printf(rows, "\n");
+		cxi_out_lit(rows, "\n");
 	}
 	if (n > shown)
-		cxi_out_printf(rows, "[%zu more enumerator%s. To describe one enumerator, give "
-		               "the name of the enumerator.]\n", n - shown, util_s(n - shown));
+		cxi_out_fmt(rows, "[%zu more enumerator%s. To describe one enumerator, give "
+		            "the name of the enumerator.]\n", n - shown, util_s(n - shown));
 	free(kids.items);
 }
 
@@ -1335,17 +1440,21 @@ cxi_summary (struct cxi     *x,
 	bool const alias = k == CXCursor_TypedefDecl;
 	CXCursor const parent = clang_getCursorSemanticParent(c);
 	bool const local = clang_getCursorKind(parent) == CXCursor_FunctionDecl;
-	cxi_out_printf(&x->out, "%s%s%s ", cxi_static(c),
-	               k == CXCursor_VarDecl && local ? "local " : "", cxi_kind(c));
+	cxi_out_view(&x->out, cxi_static(c));
+	if (k == CXCursor_VarDecl && local)
+		cxi_out_lit(&x->out, "local ");
+	cxi_out_view(&x->out, cxi_kind(c));
+	cxi_out_lit(&x->out, " ");
 	cxi_out_name(&x->out, c);
 	if (local) {
-		cxi_out_printf(&x->out, k == CXCursor_ParmDecl ? " of " : " in ");
+		cxi_out_view(&x->out, k == CXCursor_ParmDecl ? CSTR_VIEW(" of ")
+		                                             : CSTR_VIEW(" in "));
 		cxi_out_clang(&x->out, clang_getCursorSpelling(parent));
 	}
 	if (k == CXCursor_EnumConstantDecl) {
-		cxi_out_printf(&x->out, " of ");
+		cxi_out_lit(&x->out, " of ");
 		cxi_out_enum_name(&x->out, parent);
-		cxi_out_printf(&x->out, ": ");
+		cxi_out_lit(&x->out, ": ");
 		cxi_out_enum_value(&x->out, c, clang_getCanonicalType(
 			clang_getEnumDeclIntegerType(parent)));
 	}
@@ -1359,15 +1468,15 @@ cxi_summary (struct cxi     *x,
 	bool const listed = k == CXCursor_EnumConstantDecl && cxi_unnamed(tag);
 	if (k != CXCursor_EnumConstantDecl && k != CXCursor_MacroDefinition &&
 	    k != CXCursor_StructDecl && k != CXCursor_UnionDecl && !is_tag) {
-		cxi_out_printf(&x->out, ": ");
+		cxi_out_lit(&x->out, ": ");
 		cxi_out_clang(&x->out, clang_getTypeSpelling(type));
 	}
 	if (clang_Cursor_isNull(tag) || !(alias || is_tag || listed)) {
-		cxi_out_printf(&x->out, "\n");
+		cxi_out_lit(&x->out, "\n");
 		return false;
 	}
 	if (!is_tag)
-		cxi_out_printf(&x->out, "\n");
+		cxi_out_lit(&x->out, "\n");
 	if (alias)
 		cxi_out_clang(&x->out, clang_getTypeSpelling(type));
 	if (listed)
@@ -1870,23 +1979,23 @@ cxi_calls_same (struct cxi_calls const *calls,
 	return true;
 }
 
-/* Appends @p before, the place of the call @p i of @p calls, and the lines
- * of the later calls of the row of that call.
+/* Appends the place of the call @p i of @p calls, and the lines of the later
+ * calls of the row of that call.
  */
 static void
 cxi_calls_places (struct cxi_calls const *calls,
-                  size_t                  i,
-                  char const             *before)
+                  size_t                  i)
 {
 	struct cxi_out *out = &calls->x->out;
 	CXSourceLocation const at = clang_getCursorLocation(calls->items[i].at);
 	unsigned line = cxi_line(at);
-	cxi_out_place(out, before, at, "");
+	cxi_out_place(out, at);
 	for (size_t j = i + 1; j < calls->n; ++j) {
 		unsigned const l = cxi_line(clang_getCursorLocation(calls->items[j].at));
 		if (l == line || !cxi_calls_same(calls, j, i))
 			continue;
-		cxi_out_printf(out, ",%u", l);
+		cxi_out_lit(out, ",");
+		cxi_out_num(out, l);
 		line = l;
 	}
 }
@@ -1907,15 +2016,21 @@ cxi_calls_row_end (struct cxi_calls const *calls,
 	bool const which = call->n > 1 || (cleanup && !call->n);
 	bool const unproven = call->state == CXI_UNPROVEN;
 	if (cleanup)
-		cxi_out_printf(out, ", at the end of the scope of a variable (attribute cleanup)");
+		cxi_out_lit(out, ", at the end of the scope of a variable (attribute cleanup)");
 	if (!clang_Cursor_isNull(call->macro)) {
-		cxi_out_printf(out, ", through the macro ");
+		cxi_out_lit(out, ", through the macro ");
 		cxi_out_clang(out, clang_getCursorSpelling(call->macro));
-		cxi_out_place(out, " (", clang_getCursorLocation(call->macro), ")");
+		cxi_out_lit(out, " (");
+		cxi_out_place(out, clang_getCursorLocation(call->macro));
+		cxi_out_lit(out, ")");
 	}
-	cxi_out_printf(out, "%s%s%s\n", which || unproven ? "." : "",
-	               which ? " The tool cannot tell which function is called." : "",
-	               unproven ? " The tool cannot tell if the program evaluates the call." : "");
+	if (which || unproven)
+		cxi_out_lit(out, ".");
+	if (which)
+		cxi_out_lit(out, " The tool cannot tell which function is called.");
+	if (unproven)
+		cxi_out_lit(out, " The tool cannot tell if the program evaluates the call.");
+	cxi_out_lit(out, "\n");
 }
 
 /* Appends the row of the call @p i of @p calls: the places of the calls of
@@ -1928,29 +2043,39 @@ cxi_calls_row (struct cxi_calls const *calls,
 	struct cxi_out *out = &calls->x->out;
 	struct cxi_call const *call = &calls->items[i];
 	bool const cleanup = call->flags & CXI_CALL_CLEANUP;
-	cxi_calls_places(calls, i, "  ");
-	cxi_out_printf(out, " ");
+	cxi_out_lit(out, "  ");
+	cxi_calls_places(calls, i);
+	cxi_out_lit(out, " ");
 	for (uint32_t f = 0; f < call->n; ++f) {
 		CXCursor const to = calls->to.items[call->first + f];
 		enum CXCursorKind const k = clang_getCursorKind(to);
-		cxi_out_printf(out, "%s", f ? " or " : "");
-		if (k != CXCursor_FunctionDecl)
-			cxi_out_printf(out, "indirect, through %sthe %s ",
-			               call->flags & CXI_CALL_ELEMENT ? "an element of " : "",
-			               k == CXCursor_FieldDecl ? "member" : cxi_kind(to));
+		if (f)
+			cxi_out_lit(out, " or ");
+		if (k != CXCursor_FunctionDecl) {
+			cxi_out_view(out, call->flags & CXI_CALL_ELEMENT
+			             ? CSTR_VIEW("indirect, through an element of the ")
+			             : CSTR_VIEW("indirect, through the "));
+			cxi_out_view(out, k == CXCursor_FieldDecl ? CSTR_VIEW("member")
+			                                          : cxi_kind(to));
+			cxi_out_lit(out, " ");
+		}
 		cxi_out_clang(out, clang_getCursorSpelling(to));
 		if (k == CXCursor_FieldDecl) {
-			cxi_out_printf(out, " of ");
+			cxi_out_lit(out, " of ");
 			cxi_out_clang(out, clang_getTypeSpelling(clang_getCursorType(
 				cxi_record_around(clang_getCursorSemanticParent(to)))));
 		}
-		if (call->flags & CXI_CALL_BUILTIN)
-			cxi_out_printf(out, " (builtin)");
-		else
-			cxi_out_place(out, " (", clang_getCursorLocation(to), ")");
+		if (call->flags & CXI_CALL_BUILTIN) {
+			cxi_out_lit(out, " (builtin)");
+		} else {
+			cxi_out_lit(out, " (");
+			cxi_out_place(out, clang_getCursorLocation(to));
+			cxi_out_lit(out, ")");
+		}
 	}
 	if (!call->n)
-		cxi_out_printf(out, cleanup ? "a function" : "indirect, through an expression");
+		cxi_out_view(out, cleanup ? CSTR_VIEW("a function")
+		                          : CSTR_VIEW("indirect, through an expression"));
 	cxi_calls_row_end(calls, i);
 }
 
@@ -1974,16 +2099,18 @@ cxi_describe_calls (struct cxi *x,
 			first = j;
 			++unevaluated;
 		} else if (j == i) {
-			cxi_out_printf(&x->out, "%s", rows++ ? "" : "calls:\n");
+			if (!rows++)
+				cxi_out_lit(&x->out, "calls:\n");
 			cxi_calls_row(&calls, i);
 		}
 	}
 	if (unevaluated) {
-		cxi_out_printf(&x->out, "[The program does not evaluate %zu call expression%s at",
-		               unevaluated, util_s(unevaluated));
-		cxi_calls_places(&calls, first, " ");
-		cxi_out_printf(&x->out, ". The rows do not contain %s.]\n", unevaluated == 1
-		               ? "this call expression" : "these call expressions");
+		cxi_out_fmt(&x->out, "[The program does not evaluate %zu call expression%s at ",
+		            unevaluated, util_s(unevaluated));
+		cxi_calls_places(&calls, first);
+		cxi_out_view(&x->out, unevaluated == 1
+		             ? CSTR_VIEW(". The rows do not contain this call expression.]\n")
+		             : CSTR_VIEW(". The rows do not contain these call expressions.]\n"));
 	}
 	free(calls.to.items);
 	free(calls.items);
@@ -2010,27 +2137,35 @@ cxi_describe (struct cxi *x)
 	CXCursor const first = clang_getCanonicalCursor(c);
 	bool const defined = k == CXCursor_MacroDefinition || clang_isCursorDefinition(shown);
 	cxi_head(x);
-	cxi_out_printf(&x->out, "%s ", cxi_kind(c));
-	if (*member && !x->line)
-		cxi_out_printf(&x->out, "%s.%s", name, member);
-	else
+	cxi_out_view(&x->out, cxi_kind(c));
+	cxi_out_lit(&x->out, " ");
+	if (*member && !x->line) {
+		cxi_out_view(&x->out, cstr_view(name));
+		cxi_out_lit(&x->out, ".");
+		cxi_out_view(&x->out, cstr_view(member));
+	} else {
 		cxi_out_name(&x->out, c);
-	cxi_out_printf(&x->out, " in the translation unit.]\n");
+	}
+	cxi_out_lit(&x->out, " in the translation unit.]\n");
 	struct cxi_out rows = cxi_out(x->out.tree);
 	bool listed = false;
 	if (k == CXCursor_FieldDecl)
 		cxi_member(x, shown);
 	else
 		listed = cxi_summary(x, &rows, shown);
-	if (!defined) {
-		cxi_out_place(&x->out, "declared ", clang_getCursorLocation(first), "\n");
-		cxi_out_printf(&x->out, "not defined in the translation unit\n");
-	} else {
-		if (!clang_equalCursors(shown, first))
-			cxi_out_place(&x->out, "declared ", clang_getCursorLocation(first), "\n");
-		cxi_out_place(&x->out, "defined ", clang_getCursorLocation(shown), "\n");
+	if (!defined || !clang_equalCursors(shown, first)) {
+		cxi_out_lit(&x->out, "declared ");
+		cxi_out_place(&x->out, clang_getCursorLocation(first));
+		cxi_out_lit(&x->out, "\n");
+	}
+	if (defined) {
+		cxi_out_lit(&x->out, "defined ");
+		cxi_out_place(&x->out, clang_getCursorLocation(shown));
+		cxi_out_lit(&x->out, "\n");
 		if (k == CXCursor_FunctionDecl)
 			cxi_describe_calls(x, shown);
+	} else {
+		cxi_out_lit(&x->out, "not defined in the translation unit\n");
 	}
 	cxi_out_put(&x->out, dstr_get(&rows.text), dstr_len(&rows.text));
 	if (k == CXCursor_MacroDefinition && x->line)
@@ -2039,9 +2174,10 @@ cxi_describe (struct cxi *x)
 	CXSourceLocation const at = clang_getCursorLocation(shown);
 	CXCursor const macro = listed ? clang_getNullCursor() : cxi_macro(x->tu, at);
 	if (!clang_Cursor_isNull(macro)) {
-		cxi_out_printf(&x->out, "line %u", cxi_line(at));
+		cxi_out_lit(&x->out, "line ");
+		cxi_out_num(&x->out, cxi_line(at));
 		cxi_out_expansion(&x->out, macro);
-		cxi_out_printf(&x->out, "\n");
+		cxi_out_lit(&x->out, "\n");
 	}
 	cxi_declaration(x, shown);
 	x->out.e = x->out.e ? x->out.e : rows.e;
@@ -2057,19 +2193,22 @@ cxi_out_diagnostic (struct cxi_out            *out,
 	CXSourceLocation const loc = clang_getDiagnosticLocation(d);
 	CXFile file;
 	clang_getExpansionLocation(loc, &file, nullptr, nullptr, nullptr);
-	if (file)
-		cxi_out_place(out, "", loc, ": ");
-	cxi_out_printf(out, "%s: ", severity >= CXDiagnostic_Error ? "error" : "warning");
+	if (file) {
+		cxi_out_place(out, loc);
+		cxi_out_lit(out, ": ");
+	}
+	cxi_out_view(out, severity >= CXDiagnostic_Error ? CSTR_VIEW("error: ")
+	                                                 : CSTR_VIEW("warning: "));
 	cxi_out_clang(out, clang_getDiagnosticSpelling(d));
 	CXString option = clang_getDiagnosticOption(d, nullptr);
 	char const *o = clang_getCString(option);
 	if (o && *o) {
-		cxi_out_printf(out, " [");
+		cxi_out_lit(out, " [");
 		cxi_out_text(out, o);
-		cxi_out_printf(out, "]");
+		cxi_out_lit(out, "]");
 	}
 	clang_disposeString(option);
-	cxi_out_printf(out, "\n");
+	cxi_out_lit(out, "\n");
 }
 
 /* Appends the errors and warnings, but not the error that clang cannot
@@ -2106,11 +2245,13 @@ cxi_diagnostics (struct cxi *x)
 		clang_disposeDiagnostic(d);
 	}
 	cxi_head(x);
-	cxi_out_printf(&x->out, "%u error%s and %u warning%s with the flags of the build",
-	               errors, util_s(errors), warnings, util_s(warnings));
-	for (size_t i = 0; i < x->n_warnings; ++i)
-		cxi_out_printf(&x->out, "%s%s", i ? " " : " and ", x->warning[i]);
-	cxi_out_printf(&x->out, ".]\n");
+	cxi_out_fmt(&x->out, "%u error%s and %u warning%s with the flags of the build",
+	            errors, util_s(errors), warnings, util_s(warnings));
+	for (size_t i = 0; i < x->n_warnings; ++i) {
+		cxi_out_view(&x->out, i ? CSTR_VIEW(" ") : CSTR_VIEW(" and "));
+		cxi_out_view(&x->out, cstr_view(x->warning[i]));
+	}
+	cxi_out_lit(&x->out, ".]\n");
 	cxi_out_put(&x->out, dstr_get(&rows.text), dstr_len(&rows.text));
 	x->out.e = x->out.e ? x->out.e : rows.e;
 	dstr_cleanup(&rows.text);
@@ -2240,10 +2381,13 @@ cxi_callers_in (CXCursor     c,
 		if (f == call->n || j < i)
 			continue;
 		size_t const at = dstr_len(&x->out.text);
-		cxi_calls_places(&calls, i, "  ");
-		cxi_out_printf(&x->out, " ");
+		cxi_out_lit(&x->out, "  ");
+		cxi_calls_places(&calls, i);
+		cxi_out_lit(&x->out, " ");
 		cxi_out_clang(&x->out, clang_getCursorSpelling(c));
-		cxi_out_place(&x->out, " (", clang_getCursorLocation(c), ")");
+		cxi_out_lit(&x->out, " (");
+		cxi_out_place(&x->out, clang_getCursorLocation(c));
+		cxi_out_lit(&x->out, ")");
 		cxi_calls_row_end(&calls, i);
 		cxi_out_once(&x->out, who->from, at);
 	}
@@ -2260,7 +2404,8 @@ cxi_out_unit (struct cxi_out   *list,
               struct cstr_view  words)
 {
 	struct dstr norm = DSTR_INIT;
-	cxi_out_printf(list, "%s", dstr_len(&list->text) ? ", " : "");
+	if (dstr_len(&list->text))
+		cxi_out_lit(list, ", ");
 	cxi_out_path(list, cxi_out_rel(list, cxi_last_word(words), &norm));
 	dstr_cleanup(&norm);
 }
@@ -2270,15 +2415,15 @@ cxi_out_unit (struct cxi_out   *list,
  * frees the text of @p list.
  */
 static void
-cxi_out_units (struct cxi_out *out,
-               char const     *before,
-               struct cxi_out *list,
-               char const     *after)
+cxi_out_units (struct cxi_out   *out,
+               struct cstr_view  before,
+               struct cxi_out   *list,
+               struct cstr_view  after)
 {
 	if (dstr_len(&list->text)) {
-		cxi_out_printf(out, "%s", before);
+		cxi_out_view(out, before);
 		cxi_out_put(out, dstr_get(&list->text), dstr_len(&list->text));
-		cxi_out_printf(out, "%s", after);
+		cxi_out_view(out, after);
 	}
 	out->e = out->e ? out->e : list->e;
 	dstr_cleanup(&list->text);
@@ -2365,9 +2510,11 @@ cxi_callers (struct cxi *x)
 	if (file)
 		(void)clang_getFileUniqueID(file, &who.file);
 	cxi_head(x);
-	cxi_out_printf(&x->out, "The calls of function %s", name);
-	cxi_out_place(&x->out, " (", clang_getCursorLocation(first), ")");
-	cxi_out_printf(&x->out, " in the translation units of the compile commands.]\n");
+	cxi_out_lit(&x->out, "The calls of function ");
+	cxi_out_view(&x->out, x->key[CXI_KEY_NAME]);
+	cxi_out_lit(&x->out, " (");
+	cxi_out_place(&x->out, clang_getCursorLocation(first));
+	cxi_out_lit(&x->out, ") in the translation units of the compile commands.]\n");
 	who.from = dstr_len(&x->out.text);
 	struct cdb_map const map = cdb_map(x->key[CXI_KEY_TOP],
 	                                   cstr_view_slice(x->out.tree, 0, x->out.tree.len - 1));
@@ -2409,21 +2556,23 @@ cxi_callers (struct cxi *x)
 		longest = took > longest ? took : longest;
 	}
 	dstr_cleanup(&words);
-	if (dstr_len(&x->out.text) == who.from)
-		cxi_out_printf(&x->out, "[No call of %s in %zu translation unit%s.]\n", name,
-		               searched, util_s(searched));
-	else
-		cxi_out_printf(&x->out, "[%zu translation unit%s searched.]\n", searched,
-		               util_s(searched));
-	cxi_out_units(&x->out, "[clang could not parse ", &failed,
-	              ". The rows contain no call from a file that is not parsed.]\n");
-	cxi_out_units(&x->out, "[clang reported errors for ", &errors,
-	              ". The rows can lack calls from a file with errors. diagnostics lists the "
-	              "errors.]\n");
+	if (dstr_len(&x->out.text) == who.from) {
+		cxi_out_lit(&x->out, "[No call of ");
+		cxi_out_view(&x->out, x->key[CXI_KEY_NAME]);
+		cxi_out_fmt(&x->out, " in %zu translation unit%s.]\n", searched, util_s(searched));
+	} else {
+		cxi_out_fmt(&x->out, "[%zu translation unit%s searched.]\n", searched,
+		            util_s(searched));
+	}
+	cxi_out_units(&x->out, CSTR_VIEW("[clang could not parse "), &failed,
+	              CSTR_VIEW(". The rows contain no call from a file that is not parsed.]\n"));
+	cxi_out_units(&x->out, CSTR_VIEW("[clang reported errors for "), &errors,
+	              CSTR_VIEW(". The rows can lack calls from a file with errors. diagnostics "
+	                        "lists the errors.]\n"));
 	if (late)
-		cxi_out_printf(&x->out, "[The time limit ended the search before %zu translation "
-		               "unit%s. The rows contain no call from %s.]\n", late, util_s(late),
-		               late == 1 ? "it" : "them");
+		cxi_out_fmt(&x->out, "[The time limit ended the search before %zu translation "
+		            "unit%s. The rows contain no call from %s.]\n", late, util_s(late),
+		            late == 1 ? "it" : "them");
 	return x->out.e ? x->out.e : e == ENOENT ? 0 : e;
 }
 
@@ -2445,15 +2594,17 @@ cxi_words (struct cxi  *x,
 		while (i < value.len && (unsigned char)value.data[i] >= 0x20 && value.data[i] != 0x7f)
 			++i;
 		if (!once) {
-			cxi_out_printf(&x->out, "askai-code does not accept the word ");
+			cxi_out_lit(&x->out, "askai-code does not accept the word ");
 			cxi_out_path(&x->out, cstr_view(argv[*at]));
-			cxi_out_printf(&x->out, ". Each key is allowed once, warning up to 16 times, "
-			               "and unconfined only as unconfined=1.");
+			cxi_out_lit(&x->out, ". Each key is allowed once, warning up to 16 times, "
+			            "and unconfined only as unconfined=1.");
 			return EINVAL;
 		}
 		if (i < value.len) {
-			cxi_out_printf(&x->out, "The %s argument contains a control character.",
-			               k == CXI_KEY_WARNING ? "warnings" : cxi_keys[k].data);
+			cxi_out_lit(&x->out, "The ");
+			cxi_out_view(&x->out, k == CXI_KEY_WARNING ? CSTR_VIEW("warnings")
+			                                           : cxi_keys[k]);
+			cxi_out_lit(&x->out, " argument contains a control character.");
 			return EINVAL;
 		}
 		x->key[k] = value;
@@ -2499,26 +2650,29 @@ cxi_check (struct cxi *x)
 	util_close(&fd);
 	dstr_cleanup(&dir);
 	if (e) {
-		cxi_out_printf(&x->out, "cache ");
+		cxi_out_lit(&x->out, "cache ");
 		cxi_out_path(&x->out, cache);
-		cxi_out_printf(&x->out, ": %s", why ? why : strerror(e));
+		cxi_out_lit(&x->out, ": ");
+		cxi_out_view(&x->out, cstr_view(why ? why : strerror(e)));
 		return EINVAL;
 	}
 	if (x->key[CXI_KEY_UNCONFINED].data) {
 		cxi_out_clang(&x->out, clang_getClangVersion());
-		cxi_out_printf(&x->out, "\nnone (--code-unconfined)\n");
+		cxi_out_lit(&x->out, "\nnone (--code-unconfined)\n");
 		return 0;
 	}
 	int const abi = confine_abi();
 	e = confine_cage(nullptr);
 	if (e) {
-		cxi_out_printf(&x->out, "%s; --code-unconfined runs askai-code without Landlock and "
-		               "seccomp", !abi ? "no Landlock" : e == ENOTSUP
-		               ? "no seccomp filter for this architecture" : strerror(e));
+		cxi_out_view(&x->out, !abi ? CSTR_VIEW("no Landlock") : e == ENOTSUP
+		             ? CSTR_VIEW("no seccomp filter for this architecture")
+		             : cstr_view(strerror(e)));
+		cxi_out_lit(&x->out, "; --code-unconfined runs askai-code without Landlock and "
+		            "seccomp");
 		return EINVAL;
 	}
 	cxi_out_clang(&x->out, clang_getClangVersion());
-	cxi_out_printf(&x->out, "\nLandlock ABI %d, seccomp\n", abi);
+	cxi_out_fmt(&x->out, "\nLandlock ABI %d, seccomp\n", abi);
 	return 0;
 }
 
@@ -2544,41 +2698,40 @@ cxi_valid (struct cxi *x)
 		if (!name || (*rest && (!digits || rest[1 + digits])))
 			break;
 	}
-	char const *why = x->action == CXI_ACTIONS
-	                  ? "The action argument must be "
-	                    XL_JOIN(", ", " or ", CXI_ACTION_LIST(XL_TEXT)) "."
-	                : describe && !name.data
-	                  ? "Give describe a name argument, such as git_start or child.flags."
-	                : callers && (!name.data || name.len > CXI_NAME ||
-	                              cxi_ident(name) != name.len)
-	                  ? "Give callers a name argument, the name of a function, such as "
-	                    "git_start."
-	                : !describe && !callers && name.data
-	                  ? "The name argument is only for describe and callers."
-	                : !describe && line.data
-	                  ? "The line argument is only for describe."
-	                : line.data && (util_number(line.data, line.len, UINT32_MAX, &x->line) ||
-	                                !x->line)
-	                  ? "The line argument must be a whole number from 1."
-	                : x->n_warnings && x->action != CXI_ACTION_DIAGNOSTICS
-	                  ? "The warnings argument is only for diagnostics." : nullptr;
-	if (why) {
-		cxi_out_printf(&x->out, "%s", why);
+	struct cstr_view const why =
+		x->action == CXI_ACTIONS
+		? CSTR_VIEW("The action argument must be "
+		            XL_JOIN(", ", " or ", CXI_ACTION_LIST(XL_TEXT)) ".")
+		: describe && !name.data
+		? CSTR_VIEW("Give describe a name argument, such as git_start or child.flags.")
+		: callers && (!name.data || name.len > CXI_NAME || cxi_ident(name) != name.len)
+		? CSTR_VIEW("Give callers a name argument, the name of a function, such as "
+		            "git_start.")
+		: !describe && !callers && name.data
+		? CSTR_VIEW("The name argument is only for describe and callers.")
+		: !describe && line.data
+		? CSTR_VIEW("The line argument is only for describe.")
+		: line.data && (util_number(line.data, line.len, UINT32_MAX, &x->line) || !x->line)
+		? CSTR_VIEW("The line argument must be a whole number from 1.")
+		: x->n_warnings && x->action != CXI_ACTION_DIAGNOSTICS
+		? CSTR_VIEW("The warnings argument is only for diagnostics.") : cstr_view(nullptr);
+	if (why.data) {
+		cxi_out_view(&x->out, why);
 	} else if (i < x->n_warnings) {
-		cxi_out_printf(&x->out, "The warnings entry ");
+		cxi_out_lit(&x->out, "The warnings entry ");
 		cxi_out_path(&x->out, cstr_view(x->warning[i]));
-		cxi_out_printf(&x->out, " must be -W or -Wno- and the name of a warning, such as "
-		               "-Wpadded.");
+		cxi_out_lit(&x->out, " must be -W or -Wno- and the name of a warning, such as "
+		            "-Wpadded.");
 	} else if (memchr(path.data, ':', path.len)) {
-		cxi_out_printf(&x->out, "The path argument must not contain a colon. Give the "
-		               "commit as the revision argument.");
+		cxi_out_lit(&x->out, "The path argument must not contain a colon. Give the "
+		            "commit as the revision argument.");
 	} else if (!util_path_inside(path)) {
-		cxi_out_printf(&x->out, "The path argument must be relative to the top of the "
-		               "repository, with no .. component.");
+		cxi_out_lit(&x->out, "The path argument must be relative to the top of the "
+		            "repository, with no .. component.");
 	} else if (!cstr_view_ends(path, CSTR_VIEW(".c")) && !cstr_view_ends(path, CSTR_VIEW(".h"))) {
-		cxi_out_printf(&x->out, "The path argument must be a .c or .h file, not ");
+		cxi_out_lit(&x->out, "The path argument must be a .c or .h file, not ");
 		cxi_out_path(&x->out, path);
-		cxi_out_printf(&x->out, ".");
+		cxi_out_lit(&x->out, ".");
 	} else {
 		return 0;
 	}
@@ -2595,10 +2748,10 @@ cxi_command (struct cxi       *x,
              struct cstr_view  tree,
              struct dstr      *words)
 {
-	char const *const repo = x->key[CXI_KEY_REPO].data;
-	char const *const file = x->key[CXI_KEY_CDB].data;
+	struct cstr_view const repo = x->key[CXI_KEY_REPO];
+	struct cstr_view const file = x->key[CXI_KEY_CDB];
 	int dir = open(x->key[CXI_KEY_TOP].data, O_PATH | O_DIRECTORY | O_CLOEXEC);
-	int fd = openat(dir, file, O_RDONLY | O_CLOEXEC);
+	int fd = openat(dir, file.data, O_RDONLY | O_CLOEXEC);
 	util_close(&dir);
 	struct stat st;
 	int e = fd < 0 || fstat(fd, &st) ? errno
@@ -2606,11 +2759,14 @@ cxi_command (struct cxi       *x,
 	x->cmds = e ? nullptr : json_object_from_fd_ex(fd, CXI_DEPTH);
 	util_close(&fd);
 	if (!x->cmds) {
-		cxi_out_printf(&x->out, "The compile commands of %s in ", repo);
-		cxi_out_path(&x->out, cstr_view(file));
-		cxi_out_printf(&x->out, " cannot be read (%s).",
-		               e == EFBIG ? "not a regular file of at most 64 MiB"
-		                          : e ? strerror(e) : "not JSON");
+		cxi_out_lit(&x->out, "The compile commands of ");
+		cxi_out_view(&x->out, repo);
+		cxi_out_lit(&x->out, " in ");
+		cxi_out_path(&x->out, file);
+		cxi_out_lit(&x->out, " cannot be read (");
+		cxi_out_view(&x->out, e == EFBIG ? CSTR_VIEW("not a regular file of at most 64 MiB")
+		                    : e ? cstr_view(strerror(e)) : CSTR_VIEW("not JSON"));
+		cxi_out_lit(&x->out, ").");
 		return EINVAL;
 	}
 	struct cdb_map const map = cdb_map(x->key[CXI_KEY_TOP],
@@ -2620,12 +2776,16 @@ cxi_command (struct cxi       *x,
 	x->file = cxi_last_word(x->words);
 	if (e == ENOENT) {
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-		cxi_out_printf(&x->out, " is not in the compile commands of %s.", repo);
+		cxi_out_lit(&x->out, " is not in the compile commands of ");
+		cxi_out_view(&x->out, repo);
+		cxi_out_lit(&x->out, ".");
 	} else if (e == EINVAL) {
-		cxi_out_printf(&x->out, "The compile commands of %s in ", repo);
-		cxi_out_path(&x->out, cstr_view(file));
-		cxi_out_printf(&x->out, " contain no entry with arguments for a file of the "
-		               "repository.");
+		cxi_out_lit(&x->out, "The compile commands of ");
+		cxi_out_view(&x->out, repo);
+		cxi_out_lit(&x->out, " in ");
+		cxi_out_path(&x->out, file);
+		cxi_out_lit(&x->out, " contain no entry with arguments for a file of the "
+		            "repository.");
 	}
 	return e == ENOENT ? EINVAL : e;
 }
@@ -2745,8 +2905,10 @@ cxi_cache_export (struct cxi_cache *cache,
 	buf_fini(&list);
 	static_assert(CXI_FILES == 100000 && CXI_BYTES == 1 << 30, "update the text of the limits");
 	if (e == EFBIG || (!e && (files > CXI_FILES || bytes > CXI_BYTES))) {
-		cxi_out_printf(out, "Commit %s is too large for the code tool. The limits are "
-		               "100000 files and directories and 1 GiB.", commit.data);
+		cxi_out_lit(out, "Commit ");
+		cxi_out_view(out, commit);
+		cxi_out_lit(out, " is too large for the code tool. The limits are 100000 files and "
+		            "directories and 1 GiB.");
 		return EINVAL;
 	}
 	if (!e)
@@ -2754,8 +2916,9 @@ cxi_cache_export (struct cxi_cache *cache,
 	if (!e)
 		e = cxi_cache_git(cache, export, nullptr, 0);
 	if (e == EIO || e == ETIMEDOUT) {
-		cxi_out_printf(out, "git cannot export commit %s%s.", commit.data,
-		               e == EIO ? "" : " in time");
+		cxi_out_lit(out, "git cannot export commit ");
+		cxi_out_view(out, commit);
+		cxi_out_view(out, e == EIO ? CSTR_VIEW(".") : CSTR_VIEW(" in time."));
 		return EINVAL;
 	}
 	return e ? e : cxi_cache_set_state(cache, commit);
@@ -2812,9 +2975,11 @@ cxi_cache_open (struct cxi_cache *cache,
 	dstr_cleanup(&index);
 	if (!e)
 		return 0;
-	cxi_out_printf(out, "The cache directory ");
+	cxi_out_lit(out, "The cache directory ");
 	cxi_out_path(out, cstr_view_dstr(&cache->dir));
-	cxi_out_printf(out, " cannot be used (%s).", why ? why : strerror(e));
+	cxi_out_lit(out, " cannot be used (");
+	cxi_out_view(out, cstr_view(why ? why : strerror(e)));
+	cxi_out_lit(out, ").");
 	return EINVAL;
 }
 
@@ -2845,17 +3010,19 @@ cxi_parse (struct cxi *x,
 	if (!e && !x->key[CXI_KEY_UNCONFINED].data)
 		e = confine_cage(tree);
 	if (e) {
-		cxi_out_printf(&x->out, "askai-code cannot confine the process (%s).", strerror(e));
+		cxi_out_lit(&x->out, "askai-code cannot confine the process (");
+		cxi_out_view(&x->out, cstr_view(strerror(e)));
+		cxi_out_lit(&x->out, ").");
 		return EINVAL;
 	}
 	x->index = clang_createIndex(0, 0);
 	enum CXErrorCode const failed = cxi_tu(x, x->words, &x->tu);
 	if (failed) {
-		cxi_out_printf(&x->out, failed == CXError_Crashed
-		               ? "clang ran out of memory or crashed in the parse of "
-		               : "clang could not parse ");
+		cxi_out_view(&x->out, failed == CXError_Crashed
+		             ? CSTR_VIEW("clang ran out of memory or crashed in the parse of ")
+		             : CSTR_VIEW("clang could not parse "));
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-		cxi_out_printf(&x->out, ".");
+		cxi_out_lit(&x->out, ".");
 		e = EINVAL;
 	} else {
 		e = action[x->action](x);
@@ -2883,10 +3050,10 @@ cxi_run (struct cxi         *x,
 	    !cstr_view_starts(key[CXI_KEY_CACHE], CSTR_VIEW("/")) ||
 	    util_number(key[CXI_KEY_DEADLINE].data, key[CXI_KEY_DEADLINE].len, UINT64_MAX,
 	                &x->deadline)) {
-		cxi_out_printf(&x->out, "askai-code requires the words action, repo, path, cdb, "
-		               "commit, deadline, top and cache. repo is the name of a --git "
-		               "repository. commit is a commit ID. deadline is in nanoseconds. "
-		               "top and cache are absolute paths.");
+		cxi_out_lit(&x->out, "askai-code requires the words action, repo, path, cdb, "
+		            "commit, deadline, top and cache. repo is the name of a --git "
+		            "repository. commit is a commit ID. deadline is in nanoseconds. "
+		            "top and cache are absolute paths.");
 		return EINVAL;
 	}
 	int e = cxi_valid(x);
@@ -2910,7 +3077,9 @@ cxi_run (struct cxi         *x,
 	struct stat st;
 	if (!e && (fstatat(cache.fd, x->file, &st, AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode))) {
 		cxi_out_path(&x->out, key[CXI_KEY_PATH]);
-		cxi_out_printf(&x->out, " is not a file of commit %s.", commit.data);
+		cxi_out_lit(&x->out, " is not a file of commit ");
+		cxi_out_view(&x->out, commit);
+		cxi_out_lit(&x->out, ".");
 		e = EINVAL;
 	}
 	if (!e)
@@ -2948,7 +3117,9 @@ main (int    argc,
 		int const why = x.out.e ? x.out.e : e;
 		dstr_clear(&x.out.text);
 		x.out.e = 0;
-		cxi_out_printf(&x.out, "askai-code failed (%s).", strerror(why));
+		cxi_out_lit(&x.out, "askai-code failed (");
+		cxi_out_view(&x.out, cstr_view(strerror(why)));
+		cxi_out_lit(&x.out, ").");
 	}
 	/* An answer longer than TOOL_TEXT_MAX is cut at the end of a line. */
 	static char const cut[] = "\n[The answer is cut at 4 MiB.]";
