@@ -166,6 +166,29 @@ cdb_words (struct cdb_map const *map,
 	return e;
 }
 
+/* Returns the arguments of @p entry, and writes the directory of the entry
+ * to @p *dir and the path of its file, in normal form, to @p file. Returns
+ * nullptr for an entry without a directory, a file or arguments that are
+ * strings, and for a file that is not under the top. @p *e is then 0, or
+ * ENOMEM if out of memory.
+ */
+static struct json_object *
+cdb_entry (struct cdb_map const *map,
+           struct json_object   *entry,
+           struct cstr_view     *dir,
+           struct dstr          *file,
+           int                  *e)
+{
+	struct json_object *args = cdb_arguments(entry);
+	struct cstr_view const name = jb_view(jb_get(entry, "file"));
+	*dir = jb_view(jb_get(entry, "directory"));
+	*e = 0;
+	if (!dir->data || !name.data || !args || (*e = cdb_norm(file, *dir, name)) ||
+	    !cdb_under(cstr_view_dstr(file), map->top))
+		return nullptr;
+	return args;
+}
+
 int
 cdb_command (struct cdb_map const *map,
              struct json_object   *cmds,
@@ -183,12 +206,9 @@ cdb_command (struct cdb_map const *map,
 	size_t common = 0;
 	bool usable = false;
 	for (size_t i = 0, n = jb_len(cmds); !e && i < n; ++i) {
-		struct json_object *entry = jb_at(cmds, i);
-		struct json_object *a = cdb_arguments(entry);
-		struct cstr_view const d = jb_view(jb_get(entry, "directory"));
-		struct cstr_view const name = jb_view(jb_get(entry, "file"));
-		if (!d.data || !name.data || !a ||
-		    (e = cdb_norm(&tmp, d, name)) || !cdb_under(cstr_view_dstr(&tmp), map->top))
+		struct cstr_view d;
+		struct json_object *a = cdb_entry(map, jb_at(cmds, i), &d, &tmp, &e);
+		if (!a)
 			continue;
 		/* A header takes the entry with the longest common directory. */
 		struct cstr_view const path = cstr_view_dstr(&tmp);
@@ -214,5 +234,33 @@ cdb_command (struct cdb_map const *map,
 	dstr_cleanup(&tmp);
 	dstr_cleanup(&file);
 	dstr_cleanup(&want);
+	return e;
+}
+
+int
+cdb_next (struct cdb_map const *map,
+          struct json_object   *cmds,
+          size_t               *at,
+          struct dstr          *words)
+{
+	struct dstr file = DSTR_INIT;
+	struct dstr tmp = DSTR_INIT;
+	struct json_object *args = nullptr;
+	struct cstr_view dir;
+	int e = 0;
+	for (size_t const n = jb_len(cmds); !e && !args && *at < n; ++*at) {
+		args = cdb_entry(map, jb_at(cmds, *at), &dir, &file, &e);
+		if (!cstr_view_ends(cstr_view_dstr(&file), CSTR_VIEW(".c")))
+			args = nullptr;
+	}
+	dstr_clear(words);
+	if (!e && !args)
+		e = ENOENT;
+	if (!e)
+		e = cdb_words(map, args, dir, cstr_view_dstr(&file), &tmp, words);
+	if (!e)
+		e = cdb_path(map, map->top, cstr_view(nullptr), cstr_view_dstr(&file), &tmp, words);
+	dstr_cleanup(&tmp);
+	dstr_cleanup(&file);
 	return e;
 }

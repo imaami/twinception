@@ -1,6 +1,6 @@
 /** @file Tests of the compile commands of a repository, src/cdb.c: the
- *  choice of the entry of a file, the words that are removed, and the
- *  paths that are mapped into the tree or removed.
+ *  choice of the entry of a file, the words that are removed, the paths
+ *  that are mapped into the tree or removed, and the entries in turn.
  */
 #include <errno.h>
 #include <json-c/json.h>
@@ -81,6 +81,20 @@ main (void)
 	CHECK(!check_command(cmds, "tests/t.c", t_c, sizeof t_c));
 	static char const t_h[] = "clang\0-DT\0-x\0c-header\0/c/proj/tree/tests/t.h";
 	CHECK(!check_command(cmds, "tests/t.h", t_h, sizeof t_h));
+
+	/* cdb_next() writes the command line of each entry in turn that has
+	 * arguments for a .c file under the top. */
+	struct cdb_map const map = cdb_map(CSTR_VIEW("/r/proj"), CSTR_VIEW("/c/proj/tree"));
+	struct dstr words = DSTR_INIT;
+	size_t at = 0;
+	memcpy(want + sizeof a_words - 1, a_c, sizeof a_c);
+	CHECK(!cdb_next(&map, cmds, &at, &words) && at == 1);
+	CHECK(cstr_view_equal(cstr_view_dstr(&words),
+	                      cstr_view_n(want, sizeof a_words - 1 + sizeof a_c)));
+	CHECK(!cdb_next(&map, cmds, &at, &words) && at == 2);
+	CHECK(cstr_view_equal(cstr_view_dstr(&words), cstr_view_n(t_c, sizeof t_c)));
+	CHECK(cdb_next(&map, cmds, &at, &words) == ENOENT && at == 4 && !dstr_len(&words));
+	dstr_cleanup(&words);
 
 	/* ENOENT for a .c file without an entry or with an entry that
 	 * contains only "command". */

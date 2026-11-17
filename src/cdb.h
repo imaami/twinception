@@ -53,4 +53,18 @@ cdb_command (struct cdb_map const *map,
              struct cstr_view      rel,
              struct dstr          *words);
 
+/**
+ * Replaces the content of @p words with the command line, as cdb_command()
+ * writes one, of the first entry of @p cmds from the index @p *at on that
+ * has "arguments" and is for a .c file under the top, and sets @p *at to
+ * the index after that entry. Each such entry is a translation unit: a file
+ * of two entries has two. Returns 0, ENOENT if no such entry is left, or
+ * ENOMEM.
+ */
+extern int
+cdb_next (struct cdb_map const *map,
+          struct json_object   *cmds,
+          size_t               *at,
+          struct dstr          *words);
+
 #endif /* ASKAI_SRC_CDB_H_ */
