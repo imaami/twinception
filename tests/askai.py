@@ -11276,12 +11276,12 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # used, or the outermost one if the macro is passed as an argument.
         # An indirect call is in the row of the member, variable or
         # parameter of the function pointer, and a call of the result of a
-        # call is in the row of an expression. Of a _Generic selection, the
-        # selected association is known if it alone is of the type of the
-        # selection. Of ?:, also inside an operand of ?:, and of a _Generic
-        # selection of two functions of one type, the functions are in the
-        # row, but not the function of the condition or of the controlling
-        # expression. The condition and the operand of
+        # call is in the row of an expression. The row of a call through a
+        # _Generic selection contains the function of the selected
+        # association, also if another association is of the same type. Of
+        # ?:, also inside an operand of ?:, the functions are in the row,
+        # but not the function of the condition. The condition and the
+        # operand of
         # __builtin_choose_expr that is not chosen, an association that is
         # not selected, and the operands of sizeof, typeof and _Generic are
         # counted in the closing line, also the operand of a typeof on the
@@ -11322,29 +11322,24 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "(src/calls.c:4)\n"
             "  src/calls.c:24 calls_int (src/calls.h:14), through the macro calls_pick "
             "(src/calls.h:16)\n"
-            "  src/calls.c:25,45 calls_a (src/calls.h:17) or calls_b (src/calls.h:18), through "
-            "the macro calls_same (src/calls.h:19). The tool cannot tell which function "
-            "is called.\n"
+            "  src/calls.c:25,45 calls_a (src/calls.h:17), through the macro calls_same "
+            "(src/calls.h:19)\n"
             "  src/calls.c:26,42 calls_a (src/calls.h:17) or calls_b (src/calls.h:18). The "
             "tool cannot tell which function is called.\n"
             "  src/calls.c:27 calls_a (src/calls.h:17), through the macro calls_value "
-            "(src/calls.h:20). The tool cannot tell if the program evaluates the call.\n"
-            "  src/calls.c:27 calls_b (src/calls.h:18), through the macro calls_value "
-            "(src/calls.h:20). The tool cannot tell if the program evaluates the call.\n"
+            "(src/calls.h:20)\n"
             "  src/calls.c:28 calls_a (src/calls.h:17), through the macro calls_choose "
             "(src/calls.h:21)\n"
             "  src/calls.c:29 calls_find (src/calls.h:22), through the macro calls_find "
             "(src/calls.h:23)\n"
             "  src/calls.c:30,33 calls_a (src/calls.h:17)\n"
-            "  src/calls.c:30 calls_b (src/calls.h:18)\n"
+            "  src/calls.c:30,43 calls_b (src/calls.h:18)\n"
             "  src/calls.c:31 __builtin_expect (builtin)\n"
             "  src/calls.c:35,38,50 calls_b (src/calls.h:18). The tool cannot tell if the "
             "program evaluates the call.\n"
             "  src/calls.c:38,49 __builtin_constant_p (builtin)\n"
             "  src/calls.c:40 calls_int (src/calls.h:14), through the macro CALLS_EACH "
             "(src/calls.h:26)\n"
-            "  src/calls.c:43 calls_b (src/calls.h:18) or calls_plain (src/calls.h:8). The "
-            "tool cannot tell which function is called.\n"
             "  src/calls.c:44 calls_a (src/calls.h:17) or calls_b (src/calls.h:18) or "
             "calls_plain (src/calls.h:8). The tool cannot tell which function is called.\n"
             "  src/calls.c:46 indirect, through an expression\n"
@@ -11361,8 +11356,8 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "variable (attribute cleanup)\n"
             "  src/calls.c:56 a function, at the end of the scope of a variable (attribute "
             "cleanup). The tool cannot tell which function is called.\n"
-            "[The program does not evaluate 6 call expressions at "
-            "src/calls.c:28,29,32,33,34,52. The rows do not contain these call "
+            "[The program does not evaluate 7 call expressions at "
+            "src/calls.c:27,28,29,32,33,34,52. The rows do not contain these call "
             "expressions.]\n"
             "src/calls.c lines 6 to 8 of 73:\n6\t/* One call of each kind. */\n7\tint\n"
             "8\tcalls_all (struct calls_ops *o, int (*cb)(int), int n, char const *s)\n"), calls

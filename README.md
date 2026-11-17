@@ -33,7 +33,9 @@ direction for shared notes, stable members, and multiple execution routes.
   tests' certificates
 - Linux epoll + timerfd
 - libclang 19 or later, with its headers and `llvm-config`, for `askai-code`
-  and the tool `code` (optional)
+  and the tool `code` (optional). `askai-code` also needs a C++ compiler,
+  the C++ headers of clang and LLVM of the same version, and the LLVM
+  library (on Debian, `libclang-N-dev` and `llvm-N-dev`)
 
 ## Build
 
@@ -759,7 +761,7 @@ A row is one of these:
 | `__builtin_expect (builtin)` | a call of a builtin function that no file declares |
 | `indirect, through the member head of struct stream_ops (src/stream.h:52)` | a call through a function pointer: a member, a variable or a parameter, or `an element of` one that is an array |
 | `indirect, through an expression` | a call through any other expression, such as the result of a call |
-| `hist_init (src/hist.h:64) or hist_clear (src/hist.h:130). The tool cannot tell which function is called.` | a call of a function that `?:` selects when the program runs, or that a `_Generic` selection selects |
+| `hist_init (src/hist.h:64) or hist_clear (src/hist.h:130). The tool cannot tell which function is called.` | a call of a function that `?:` selects when the program runs |
 | `dstr_cleanup (src/dstr.h:384), at the end of the scope of a variable (attribute cleanup)` | the call that the program makes for a variable with the attribute `cleanup`; the place of the row is the line of the variable |
 | `a function, at the end of the scope of a variable (attribute cleanup). The tool cannot tell which function is called.` | the same call, if no declaration at file scope declares the function of the attribute |
 
@@ -776,19 +778,19 @@ arguments of another macro, as in `LOG(WRAPPER(x))`, the macro is
 is `LIST`. A call that is written as a macro argument is in the row of the
 callee without a macro.
 
-libclang does not report which association of a `_Generic` selection is
-selected. The selection is of the type of the selected association, so the
-selected association is known if no other association is of that type. If
-the callee is a selection of several functions of one type, the row
-contains the functions. The row of a call inside a selection whose
-selected association is not known ends with `The tool cannot tell if the
-program evaluates the call.` So does the row of a call in an operand of
-`sizeof` whose value is not a constant, of a call in an operand of
-`typeof` whose type can be variably modified, such as a pointer or an
-array, and of a call in an argument of `__builtin_constant_p`,
-`__builtin_object_size`, `__builtin_dynamic_object_size`,
-`__builtin_classify_type`, `__builtin_assume` or `__assume`: clang does not
-evaluate the arguments of these builtin functions for side effects.
+The row of a call through a `_Generic` selection contains the function of
+the selected association. No function of libclang returns the selected
+association, so `askai-code` reads it from the syntax tree of clang
+(`src/cxi_ast.cpp`, the one C++ file).
+
+A row ends with `The tool cannot tell if the program evaluates the call.`
+for a call in an operand of `sizeof` whose value is not a constant, for a
+call in an operand of `typeof` whose type can be variably modified, such as
+a pointer or an array, and for a call in an argument of
+`__builtin_constant_p`, `__builtin_object_size`,
+`__builtin_dynamic_object_size`, `__builtin_classify_type`,
+`__builtin_assume` or `__assume`: clang does not evaluate the arguments of
+these builtin functions for side effects.
 
 A call in code that the program does not evaluate is not listed. Such code
 is an operand of `sizeof`, `alignof` or `typeof`, the controlling
@@ -815,11 +817,7 @@ the parenthesis, with only white space between them. A call in an operand
 is listed as a call that the program evaluates if a comment or a line
 continuation is between the keyword and the parenthesis, if the keyword is
 the body of another macro, or if the keyword is on a line before the
-parenthesis and that line contains `#` or `//`. The controlling expression
-of `_Generic` is recognized by the first token that is written right after
-`_Generic (`. If that token is a macro argument, the expression is handled
-as an association: the row of a selected callee can contain a function of
-the controlling expression.
+parenthesis and that line contains `#` or `//`.
 
 `diagnostics` lists clang's errors and warnings for `path` in clang's order,
 one per line as `path:line: warning: text [-Wflag]`, including those in the

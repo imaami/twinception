@@ -26,6 +26,7 @@
 #include "confine.h"
 #include "cstr_view.h"
 #include "cxi.h"
+#include "cxi_ast.h"
 #include "dstr.h"
 #include "git_run.h"
 #include "jb.h"
@@ -1483,12 +1484,11 @@ cxi_of_type (CXCursor c,
  * that is. Writes 1 to @p *first if the first child is the condition or
  * the controlling expression, which is never selected, else 0.
  *
- * No function of libclang returns the selected association of a _Generic
- * selection. The selection is of the type of the selected association, so
- * a child that alone is of that type is the selected one. The first child
- * is known to be the controlling expression if its first token is written
- * right after "_Generic (". In libclang, a __builtin_choose_expr is an
- * unexposed expression of three children, the condition first.
+ * clang knows the selected association of a _Generic selection
+ * (cxi_ast_generic()). The selection is of the type of the selected
+ * association: a child of another type is not accepted as the selected
+ * one. In libclang, a __builtin_choose_expr is an unexposed expression of
+ * three children, the condition first.
  */
 static bool
 cxi_selects (struct cxi            *x,
@@ -1500,35 +1500,26 @@ cxi_selects (struct cxi            *x,
 	enum CXCursorKind const k = clang_getCursorKind(c);
 	*first = 0;
 	*chosen = kids->n;
-	if (k != CXCursor_GenericSelectionExpr && (k != CXCursor_UnexposedExpr || kids->n != 3))
-		return false;
-	struct cstr_view before;
-	struct cstr_view rest = cxi_spelling(x->tu, c, &before);
-	size_t const word = cxi_ident(rest);
-	if (k == CXCursor_UnexposedExpr) {
-		bool nonzero;
-		if (!cstr_view_equal(cstr_view_slice(rest, 0, word),
-		                     CSTR_VIEW("__builtin_choose_expr")))
-			return false;
-		if (cxi_constant(kids->items[0], &nonzero))
-			*chosen = nonzero ? 1 : 2;
-		*first = 1;
+	if (k == CXCursor_GenericSelectionExpr) {
+		size_t at;
+		if (cxi_ast_generic(c, first, &at) || at >= kids->n ||
+		    !cxi_of_type(kids->items[at], clang_getCanonicalType(clang_getCursorType(c))))
+			*first = 0;
+		else
+			*chosen = at;
 		return true;
 	}
-	rest = cxi_skip_space(cstr_view_slice(rest, word, SIZE_MAX));
-	rest = cxi_skip_space(cstr_view_slice(rest, rest.len && *rest.data == '(', SIZE_MAX));
-	*first = kids->n && rest.len &&
-	         cxi_spelling(x->tu, kids->items[0], &before).data == rest.data;
-	CXType const type = clang_getCanonicalType(clang_getCursorType(c));
-	size_t same = 0;
-	for (size_t i = *first; i < kids->n; ++i) {
-		if (!cxi_of_type(kids->items[i], type))
-			continue;
-		*chosen = i;
-		++same;
-	}
-	if (same != 1)
-		*chosen = kids->n;
+	if (k != CXCursor_UnexposedExpr || kids->n != 3)
+		return false;
+	struct cstr_view before;
+	struct cstr_view const rest = cxi_spelling(x->tu, c, &before);
+	bool nonzero;
+	if (!cstr_view_equal(cstr_view_slice(rest, 0, cxi_ident(rest)),
+	                     CSTR_VIEW("__builtin_choose_expr")))
+		return false;
+	if (cxi_constant(kids->items[0], &nonzero))
+		*chosen = nonzero ? 1 : 2;
+	*first = 1;
 	return true;
 }
 
