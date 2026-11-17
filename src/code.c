@@ -159,7 +159,7 @@ code_definition (void const *service)
 		repos = jb_push_or_free(repos, jb_string(git_run_name(cfg->code_repos[i])));
 	static struct cstr_view const actions[] = { CXI_ACTION_LIST(XL_VIEW) };
 	static struct cstr_view const required[] = {
-		CSTR_VIEW_INIT("repo"), CSTR_VIEW_INIT("action"), CSTR_VIEW_INIT("path"),
+		CSTR_VIEW_INIT("repo"), CSTR_VIEW_INIT("action"),
 	};
 	return jb_object(
 		"name", json_object_new_string("code"),
@@ -191,15 +191,17 @@ code_definition (void const *service)
 			"to 40 numbered lines of the declaration, without the body of a function. "
 			"A finding can cite the numbered lines, such as c7:120-140. callers lists "
 			"the calls of the function name in every translation unit of the compile "
-			"commands. path is a file that declares the function. callers prints "
-			"each file once. Each row under a file is the lines of the calls and the "
-			"calling function. A row ends with (macro NAME) for calls that are "
-			"written through a macro. For a call through a _Generic selection, "
-			"describe and callers list the selected function. callers does not list "
-			"a use of the function that is not a call, such as the address of the "
-			"function in an initializer. A closing line of callers names the files "
-			"that clang could not parse or reported errors for. Calls in these files "
-			"can be missing. diagnostics "
+			"commands. callers works without path. Each function of that name is a "
+			"callee, printed with the file and the lines of the definition. With "
+			"path, the callee is the function that the translation unit of path "
+			"declares. A row under a callee is the file and the lines of the calls, "
+			"the calling function, and the lines of the calling function. A row ends "
+			"with [macro NAME] for calls that are written through a macro. For a call "
+			"through a _Generic selection, describe and callers list the selected "
+			"function. callers does not list a use of the function that is not a "
+			"call, such as the address of the function in an initializer. The closing "
+			"rows of callers name the files that clang could not parse or reported "
+			"errors for. Calls in these files can be missing. diagnostics "
 			"lists the errors and warnings of clang for path. A place is path:line. "
 			"To read the code at a place, call git read with \"revisions\": "
 			"[\"<commit>:<path>\"] and \"line\": <line>. Only committed files are "
@@ -212,7 +214,8 @@ code_definition (void const *service)
 				                      nullptr),
 				"path", schema_property("string",
 					"A .c or .h file of the commit, relative to the "
-					"repository's top, such as src/git.c."),
+					"repository's top, such as src/git.c. Only callers "
+					"works without path."),
 				"name", schema_property("string",
 					"The symbol for describe, such as git_start or struct "
 					"dstr. Give a member as TYPE.MEMBER, such as "
@@ -449,7 +452,7 @@ code_args (struct code const  *code,
 	struct cstr_view const revision = of[CODE_ARG_REVISION]
 	                                  ? jb_text(of[CODE_ARG_REVISION], 1, CODE_WORD, nullptr)
 	                                  : CSTR_VIEW("HEAD");
-	char const *bad = !action.data ? "action" : !path.data ? "path"
+	char const *bad = !action.data ? "action" : of[CODE_ARG_PATH] && !path.data ? "path"
 	                : of[CODE_ARG_NAME] && !name.data ? "name"
 	                : !revision.data ? "revision" : nullptr;
 	static_assert(CODE_WORD == 1024 && CXI_WARNINGS == 16, "update the texts of the limits");

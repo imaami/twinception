@@ -597,7 +597,7 @@ the cache, the startup check and `--code-unconfined`.
 The arguments of a call are `repo`, `action` and `path`, a `.c` or `.h`
 file of the commit relative to the top of the repository, and optionally a
 `revision` (in the form that the git tool accepts, `HEAD` by default) and
-an `offset`.
+an `offset`. Only `callers` works without `path`.
 
 `outline` lists the names that the file declares, one per line: the line
 of the name, its kind, the type of a function, variable or typedef, and the
@@ -821,46 +821,63 @@ parenthesis and that line contains `#` or `//`.
 
 `callers` lists the calls of the function `name` in every translation unit
 of the compile commands: each entry with `arguments` for a `.c` file of the
-repository. `path` is a file that declares the function. The first line is
-the commit and the number of translation units. Each file is printed once.
-A row under a file is the lines of the calls in one calling function, and
-the calling function. The files are in the order of their bytes, and the
-rows of a file in the order of the lines. This is `callers` of
-`cxi_selects` in `src/cxi.c`:
+repository. `callers` works without `path`. This is `callers` of
+`cxi_selects`:
 
 ```text
-[commit f99c0e9d7b714aa23d47a586c52265f017bea9ce, 70 translation units]
-src/cxi.c
-  1737 cxi_callee
-  1957 cxi_calls_walk
+- repo: askai
+- commit: 64f82e12a507f233186b41cdc968c3d6bf187cc6
+- callee: cxi_selects (src/cxi.c:1635-1666)
+  - callers
+    - src/cxi.c:1746 cxi_callee (1733-1792)
+    - src/cxi.c:1966 cxi_calls_walk (1949-1983)
 ```
+
+The parts of the answer:
+
+- `callee`: the function, with the file and the lines of the definition.
+  Each function named `name` is a callee: a static function of one file
+  and a function of the same name in another file are two callees. With
+  `path`, the only callee is the function that the translation unit of
+  `path` declares.
+- `callee: NAME (declared FILE:LINE)`: no translation unit defines the
+  function, as for a function of a library. The place is that of the
+  declaration. The same is printed for a call in a translation unit that
+  does not define the function, if several translation units define a
+  function of that name that is not static: the tool cannot tell which
+  one the program calls.
+- `callee: NAME (not found)`: no translation unit declares a function
+  `name`.
+- A row under `callers`: the file and the lines of the calls in one
+  calling function, the calling function, and the lines of the definition
+  of the calling function. The rows are in the order of the files and the
+  lines.
+- `callers: none`: no translation unit calls the function.
 
 A row ends with a note in these cases:
 
-- `(macro destroy)`: the calls are written through the macro `destroy`.
-- `(or another function)`: `?:` selects the callee when the program runs.
-- `(maybe not evaluated)`: the tool cannot tell if the program evaluates
+- `[macro destroy]`: the calls are written through the macro `destroy`.
+- `[or another function]`: `?:` selects the callee when the program runs.
+- `[maybe not evaluated]`: the tool cannot tell if the program evaluates
   the call, as in the rows of `describe`.
-- `(attribute cleanup)`: the line is that of a variable with the attribute
+- `[attribute cleanup]`: the line is that of a variable with the attribute
   `cleanup`, and the program calls the function at the end of the scope.
 
 A call through a macro or a `_Generic` selection is a call of the function
 that the program calls: with `#define destroy(p) _Generic(**(p), struct io:
 io_destroy, struct loop: loop_destroy)(p)`, `destroy(l)` is in the rows of
-`loop_destroy` only if `**l` is a `struct loop`. A static function is the
-function of that name whose first declaration is in the same file. A row
-that several translation units give, as for a calling function that a
-header defines, is printed once. A use of the function that is not a call,
-such as its address in an initializer, is not listed, and neither is the
-call through a function pointer. `[no calls]` is printed if no row is
-found.
+`loop_destroy` only if `**l` is a `struct loop`. A row that several
+translation units give, as for a calling function that a header defines,
+is printed once. A use of the function that is not a call, such as its
+address in an initializer, is not listed, and neither is the call through
+a function pointer.
 
-Calls in a file can be missing if one of these lines follows the rows:
+Calls in a file can be missing if one of these rows closes the answer:
 
-- `[clang could not parse: FILES]`
-- `[clang reported errors: FILES]`
-- `[time limit: N translation units not searched]`. No parse starts unless
-  twice the time of the longest one so far is left.
+- `- not parsed: FILES`: clang could not parse these files.
+- `- parsed with errors: FILES`: clang reported errors for these files.
+- `- not searched: N translation units (time limit)`. No parse starts
+  unless twice the time of the longest one so far is left.
 
 `diagnostics` lists clang's errors and warnings for `path` in clang's order,
 one per line as `path:line: warning: text [-Wflag]`, including those in the

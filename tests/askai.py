@@ -10951,7 +10951,7 @@ def check_code(binary, up):
             schema = tools[2]["inputSchema"]
             assert list(schema["properties"]) == [
                 "repo", "action", "path", "name", "line", "warnings", "revision",
-                "offset"] and schema["required"] == ["repo", "action", "path"] and \
+                "offset"] and schema["required"] == ["repo", "action"] and \
                 schema["properties"]["repo"]["enum"] == ["proj", "lib"] and \
                 schema["properties"]["action"]["enum"] == [
                     "describe", "outline", "diagnostics", "callers"] and \
@@ -11108,8 +11108,8 @@ def check_code(binary, up):
                                    *words], capture_output=True, text=True, timeout=10)
             assert proc.returncode == 1 and proc.stdout == (
                 "The action argument must be describe, outline, diagnostics or callers." if valid else
-                "askai-code requires the words action, repo, path, cdb, commit, deadline, top "
-                "and cache. repo is the name of a --git repository. commit is a commit ID. "
+                "askai-code requires the words action, repo, cdb, commit, deadline, top and "
+                "cache. repo is the name of a --git repository. commit is a commit ID. "
                 "deadline is in nanoseconds. top and cache are absolute paths."), (name, proc)
         # A relative FILE is relative to the directory of the repository.
         with Askai(binary, "-u", up.url(), "--git", repo, "--code",
@@ -11189,6 +11189,9 @@ def check_code(binary, up):
                     ("HEAD:src/a.c", "The path argument must not contain a colon. Give the "
                                      "commit as the revision argument.")):
                 assert call(ai, error=True, **outline, path=path) == text, path
+            # Only callers works without path.
+            assert call(ai, error=True, **outline) == (
+                "Give a path argument, such as src/git.c. Only callers works without path.")
             # A commit with more files than the limit is refused before the
             # export: 100,001 files, five levels of ten trees of ten, and one
             # more file.
@@ -11436,57 +11439,91 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "src/calls.c lines 69 to 70 of 73:", "69\tint", "70\tcalls_kept (int n)", ""], calls
         assert describe(name="LAY_B").split("\n")[1:3] == [
             "enumerator LAY_B of enum lay_kind: 5", "defined src/lay.h:41"]
-        # callers: the calls of a function in every translation unit of the
-        # compile commands. The answer is the commit and the number of
-        # translation units, then each file once, and under the file a row
-        # for each calling function: the lines of the calls and the
-        # function. The files and the rows of a file are in order. A call
-        # through a macro or a _Generic selection is in the rows of the
-        # function that the selection selects, also if the associations are
-        # of one type, with the macro in parentheses. The row of a function
-        # that a header defines is printed once. A static function is
-        # another function than one of the same name in another file. The
-        # address of a function and the call through the pointer are not
-        # listed. A call that the program does not evaluate is not listed.
-        # A note in parentheses marks a callee that ?: selects, a call that
-        # the program maybe does not evaluate, and the call of an attribute
-        # cleanup. The closing lines contain the files that clang could not
-        # parse or reported errors for. clang crashes in the parse of
-        # src/deep.c, which costs only the calls of that file.
+        # callers: the calls of the functions of a name in every translation
+        # unit of the compile commands. The answer is a list: the
+        # repository, the commit, and each callee with the file and the
+        # lines of the definition. A function that no translation unit
+        # defines is printed with the place of the declaration. A row under
+        # a callee is the file and the lines of the calls in one calling
+        # function, the function, and the lines of the function. The
+        # callees, the files and the rows of a file are in order. Without
+        # path, a static function and another function of the same name
+        # are two callees. With path, the callee is the function that the
+        # translation unit of path declares. A call through a macro or a
+        # _Generic selection is in the rows of the function that the
+        # selection selects, also if the associations are of one type, with
+        # the macro in brackets. The row of a function that a header
+        # defines is printed once. The address of a function and the call
+        # through the pointer are not listed. A call that the program does
+        # not evaluate is not listed. A note in brackets marks a callee
+        # that ?: selects, a call that the program maybe does not evaluate,
+        # and the call of an attribute cleanup. The closing rows contain
+        # the files that clang could not parse or reported errors for.
+        # clang crashes in the parse of src/deep.c, which costs only the
+        # calls of that file.
         def callers(path, name, error=False):
-            return call(ai, error=error, repo="proj", action="callers", path=path, name=name)
-        closing = ("[clang could not parse: src/deep.c]\n"
-                   "[clang reported errors: src/a.c, src/leak.c, src/wt.c, src/warn.c, "
-                   "src/arg.c]\n")
-        who_loop = ("src/who.h\n  11 who_drop\n"
-                    "src/who_a.c\n  9 who_use_a (macro who_destroy)\n"
-                    "src/who_b.c\n  7,11 who_use_b\n")
+            arguments = {"path": path} if path else {}
+            return call(ai, error=error, repo="proj", action="callers", name=name, **arguments)
+        closing = ("- not parsed: src/deep.c\n"
+                   "- parsed with errors: src/a.c, src/leak.c, src/wt.c, src/warn.c, "
+                   "src/arg.c\n")
+        who_loop = ("- callee: who_loop_destroy (src/who_a.c:3)\n"
+                    "  - callers\n"
+                    "    - src/who.h:11 who_drop (11)\n"
+                    "    - src/who_a.c:9 who_use_a (6-16) [macro who_destroy]\n"
+                    "    - src/who_b.c:7,11 who_use_b (3-13)\n")
+        who_loop_c = ("- callee: who_loop_destroy (src/who_c.c:2)\n"
+                      "  - callers\n"
+                      "    - src/who_c.c:4 who_use_c (4)\n")
+        who_b = ("- callee: who_b (src/who_a.c:4)\n"
+                 "  - callers\n"
+                 "    - src/who_a.c:11 who_use_a (6-16) [macro who_same]\n"
+                 "    - src/who_a.c:13 who_use_a (6-16) [macro who_value]\n"
+                 "    - src/who_b.c:12 who_use_b (3-13) [or another function]\n")
         for path, name, rows in (
+                (None, "who_loop_destroy", who_loop + who_loop_c),
                 ("src/who.h", "who_loop_destroy", who_loop),
                 ("src/who_b.c", "who_loop_destroy", who_loop),
-                ("src/who_c.c", "who_loop_destroy", "src/who_c.c\n  4 who_use_c\n"),
-                ("src/who.h", "who_io_destroy",
-                 "src/who_a.c\n  10 who_use_a (macro who_destroy)\n"),
+                ("src/who_c.c", "who_loop_destroy", who_loop_c),
+                (None, "who_io_destroy",
+                 "- callee: who_io_destroy (declared src/who.h:3)\n"
+                 "  - callers\n"
+                 "    - src/who_a.c:10 who_use_a (6-16) [macro who_destroy]\n"),
                 ("src/who.h", "who_a",
-                 "src/who_a.c\n  12 who_use_a (macro who_same)\n"
-                 "src/who_b.c\n  12 who_use_b (or another function)\n"),
-                ("src/who.h", "who_b",
-                 "src/who_a.c\n  11 who_use_a (macro who_same)\n"
-                 "  13 who_use_a (macro who_value)\n"
-                 "src/who_b.c\n  12 who_use_b (or another function)\n"),
-                ("src/who.h", "who_drop", "src/who_b.c\n  8 who_use_b\n"),
-                ("src/who_a.c", "who_use_a", "[no calls]\n"),
-                ("src/calls.h", "calls_b",
-                 "src/calls.c\n  26,42 calls_all (or another function)\n"
-                 "  30,43 calls_all\n"
-                 "  35,38,50 calls_all (maybe not evaluated)\n"
-                 "  44 calls_all (or another function)\n"
-                 "  49 calls_all (or another function) (maybe not evaluated)\n"),
+                 "- callee: who_a (declared src/who.h:7)\n"
+                 "  - callers\n"
+                 "    - src/who_a.c:12 who_use_a (6-16) [macro who_same]\n"
+                 "    - src/who_b.c:12 who_use_b (3-13) [or another function]\n"),
+                ("src/who.h", "who_b", who_b),
+                (None, "who_b", who_b +
+                 "- callee: who_b (src/who_c.c:3)\n"
+                 "  - callers\n"
+                 "    - src/who_c.c:4 who_use_c (4)\n"),
+                (None, "who_drop",
+                 "- callee: who_drop (src/who.h:11)\n"
+                 "  - callers\n"
+                 "    - src/who_b.c:8 who_use_b (3-13)\n"),
+                (None, "who_use_a",
+                 "- callee: who_use_a (src/who_a.c:6-16)\n"
+                 "  - callers: none\n"),
+                (None, "who_nothing", "- callee: who_nothing (not found)\n"),
+                (None, "calls_b",
+                 "- callee: calls_b (declared src/calls.h:18)\n"
+                 "  - callers\n"
+                 "    - src/calls.c:26,42 calls_all (7-58) [or another function]\n"
+                 "    - src/calls.c:30,43 calls_all (7-58)\n"
+                 "    - src/calls.c:35,38,50 calls_all (7-58) [maybe not evaluated]\n"
+                 "    - src/calls.c:44 calls_all (7-58) [or another function]\n"
+                 "    - src/calls.c:49 calls_all (7-58) [or another function] "
+                 "[maybe not evaluated]\n"),
                 ("src/calls.h", "calls_fini",
-                 "src/calls.c\n  53 calls_all (macro calls_auto) (attribute cleanup)\n"
-                 "  54 calls_all (attribute cleanup)\n")):
+                 "- callee: calls_fini (declared src/calls.h:28)\n"
+                 "  - callers\n"
+                 "    - src/calls.c:53 calls_all (7-58) [macro calls_auto] "
+                 "[attribute cleanup]\n"
+                 "    - src/calls.c:54 calls_all (7-58) [attribute cleanup]\n")):
             got = callers(path, name)
-            assert got == f"[commit {head}, 15 translation units]\n{rows}{closing}", got
+            assert got == f"- repo: proj\n- commit: {head}\n{rows}{closing}", got
         for name, text in (
                 ("who_destroy", "No function who_destroy in the translation unit of "
                  "src/who.h. Repository names in the translation unit that contain "
