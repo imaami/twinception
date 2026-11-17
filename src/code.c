@@ -189,7 +189,14 @@ code_definition (void const *service)
 			"line contains the number of the calls that are not listed. describe "
 			"lists a call in code that the program cannot reach. describe prints up "
 			"to 40 numbered lines of the declaration, without the body of a function. "
-			"A finding can cite the numbered lines, such as c7:120-140. diagnostics "
+			"A finding can cite the numbered lines, such as c7:120-140. callers lists "
+			"the calls of the function name in every translation unit of the compile "
+			"commands. path is a file that declares the function. Each callers row "
+			"is the lines of the calls, the calling function, and the place where "
+			"the calling function is defined. For a call through a _Generic "
+			"selection, describe and callers list the selected function. callers "
+			"does not list a use of the function that is not a call, such as the "
+			"address of the function in an initializer. diagnostics "
 			"lists the errors and warnings of clang for path. A place is path:line. "
 			"To read the code at a place, call git read with \"revisions\": "
 			"[\"<commit>:<path>\"] and \"line\": <line>. Only committed files are "
@@ -207,7 +214,7 @@ code_definition (void const *service)
 					"The symbol for describe, such as git_start or struct "
 					"dstr. Give a member as TYPE.MEMBER, such as "
 					"child.flags. struct, union or enum before a name "
-					"selects the type."),
+					"selects the type. For callers, the name of a function."),
 				"line", schema_count(1,
 					"For describe, the line of path that contains name. "
 					"Give line for a local variable, a parameter or a macro "

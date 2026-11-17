@@ -4,18 +4,21 @@
  * an int returns 0, EINVAL with a tool error in the answer, or another
  * error number.
  */
-#define _GNU_SOURCE /* clearenv(), memmem() */
+#define _GNU_SOURCE /* clearenv(), memmem(), pipe2() */
 #include <clang-c/Index.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ftw.h>
 #include <inttypes.h>
 #include <json-c/json.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "buf.h"
@@ -44,7 +47,8 @@ enum {
 	CXI_ROWS  = 2000,     /* the most member rows of a layout, and the most
 	                         enumerator rows of an enum */
 	CXI_BITS  = 48,       /* the size of the text of an offset or a size */
-	CXI_NAME  = 256,      /* the longest part of the name of describe */
+	CXI_NAME  = 256,      /* the longest part of the name of describe, and
+	                         the longest name of callers */
 	CXI_BYTES = 1 << 30,  /* the largest total size of the files of a commit */
 };
 
@@ -77,21 +81,28 @@ cxi_out (struct cstr_view tree)
 	return (struct cxi_out){ .text = DSTR_INIT, .tree = tree };
 }
 
-/* A call of askai-code: the request from its arguments, the answer, and the
- * parse of the file. For describe, the record line "lines FIRST LAST TOTAL
- * AT LEN PATH" comes before the answer: it names the numbered lines of a
- * file of the repository in the answer, at the offset AT for LEN bytes.
+/* A call of askai-code: the request from its arguments, the answer, the
+ * compile commands, and the parse of the file. For describe, the record
+ * line "lines FIRST LAST TOTAL AT LEN PATH" comes before the answer: it
+ * names the numbered lines of a file of the repository in the answer, at
+ * the offset AT for LEN bytes.
  */
 struct cxi {
-	struct cxi_out     out;
-	struct dstr        record;
-	struct cstr_view   key[CXI_KEYS];  /* each value, or data nullptr */
-	char const        *file;           /* the path of the file in the tree */
-	char const        *warning[CXI_WARNINGS];
-	CXTranslationUnit  tu;
-	uint64_t           n_warnings;
-	uint64_t           action;         /* enum cxi_action */
-	uint64_t           line;           /* the value of line, or 0 */
+	struct cxi_out      out;
+	struct dstr         record;
+	struct cstr_view    key[CXI_KEYS];  /* each value, or data nullptr */
+	struct cstr_view    words;          /* the clang command line of the file,
+	                                       each word followed by a NUL */
+	struct json_object *cmds;           /* the compile commands */
+	char const         *file;           /* the path of the file in the tree */
+	char const         *warning[CXI_WARNINGS];
+	CXIndex             index;
+	CXTranslationUnit   tu;             /* the parse that the functions of
+	                                       an action look at */
+	uint64_t            deadline;       /* of the call, in loop_clock() time */
+	uint64_t            n_warnings;
+	uint64_t            action;         /* enum cxi_action */
+	uint64_t            line;           /* the value of line, or 0 */
 };
 
 /* Returns the call before cxi_words() reads the request. The answer and
@@ -807,7 +818,8 @@ cxi_lookup (struct cxi *x,
 		find.part = 1;
 		find.kind = 0;
 		clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_match, &find);
-		cxi_out_printf(&x->out, "No symbol ");
+		cxi_out_printf(&x->out, "No %s ",
+		               kind == CXCursor_FunctionDecl ? "function" : "symbol");
 		cxi_out_text(&x->out, x->key[CXI_KEY_NAME].data);
 		cxi_out_printf(&x->out, " in the translation unit of ");
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
@@ -1879,12 +1891,13 @@ cxi_calls_places (struct cxi_calls const *calls,
 	}
 }
 
-/* Appends the row of the call @p i of @p calls: the places of the calls of
- * the row, the callees, and the macro that the calls are written through.
+/* Appends the end of the row of the call @p i of @p calls: the attribute
+ * cleanup, the macro that the calls of the row are written through, and
+ * what the tool cannot tell about the calls.
  */
 static void
-cxi_calls_row (struct cxi_calls const *calls,
-               size_t                  i)
+cxi_calls_row_end (struct cxi_calls const *calls,
+                   size_t                  i)
 {
 	struct cxi_out *out = &calls->x->out;
 	struct cxi_call const *call = &calls->items[i];
@@ -1893,6 +1906,28 @@ cxi_calls_row (struct cxi_calls const *calls,
 	 * attribute cleanup that the tool did not find. */
 	bool const which = call->n > 1 || (cleanup && !call->n);
 	bool const unproven = call->state == CXI_UNPROVEN;
+	if (cleanup)
+		cxi_out_printf(out, ", at the end of the scope of a variable (attribute cleanup)");
+	if (!clang_Cursor_isNull(call->macro)) {
+		cxi_out_printf(out, ", through the macro ");
+		cxi_out_clang(out, clang_getCursorSpelling(call->macro));
+		cxi_out_place(out, " (", clang_getCursorLocation(call->macro), ")");
+	}
+	cxi_out_printf(out, "%s%s%s\n", which || unproven ? "." : "",
+	               which ? " The tool cannot tell which function is called." : "",
+	               unproven ? " The tool cannot tell if the program evaluates the call." : "");
+}
+
+/* Appends the row of the call @p i of @p calls: the places of the calls of
+ * the row, the callees, and the end of the row (cxi_calls_row_end()).
+ */
+static void
+cxi_calls_row (struct cxi_calls const *calls,
+               size_t                  i)
+{
+	struct cxi_out *out = &calls->x->out;
+	struct cxi_call const *call = &calls->items[i];
+	bool const cleanup = call->flags & CXI_CALL_CLEANUP;
 	cxi_calls_places(calls, i, "  ");
 	cxi_out_printf(out, " ");
 	for (uint32_t f = 0; f < call->n; ++f) {
@@ -1916,16 +1951,7 @@ cxi_calls_row (struct cxi_calls const *calls,
 	}
 	if (!call->n)
 		cxi_out_printf(out, cleanup ? "a function" : "indirect, through an expression");
-	if (cleanup)
-		cxi_out_printf(out, ", at the end of the scope of a variable (attribute cleanup)");
-	if (!clang_Cursor_isNull(call->macro)) {
-		cxi_out_printf(out, ", through the macro ");
-		cxi_out_clang(out, clang_getCursorSpelling(call->macro));
-		cxi_out_place(out, " (", clang_getCursorLocation(call->macro), ")");
-	}
-	cxi_out_printf(out, "%s%s%s\n", which || unproven ? "." : "",
-	               which ? " The tool cannot tell which function is called." : "",
-	               unproven ? " The tool cannot tell if the program evaluates the call." : "");
+	cxi_calls_row_end(calls, i);
 }
 
 /* Appends the calls of the function @p c: a row for each callee, and after
@@ -2051,6 +2077,19 @@ cxi_out_diagnostic (struct cxi_out            *out,
  * it the reason, such as "Permission denied", would show whether it exists.
  * The error that the file is not found follows it.
  */
+/* Returns the severity of @p d in an answer: clang's, or
+ * CXDiagnostic_Ignored for the message that clang cannot open a file.
+ */
+static enum CXDiagnosticSeverity
+cxi_severity (CXDiagnostic d)
+{
+	CXString text = clang_getDiagnosticSpelling(d);
+	bool const open = cstr_view_starts(cstr_view(clang_getCString(text)),
+	                                   CSTR_VIEW("cannot open file '"));
+	clang_disposeString(text);
+	return open ? CXDiagnostic_Ignored : clang_getDiagnosticSeverity(d);
+}
+
 static int
 cxi_diagnostics (struct cxi *x)
 {
@@ -2059,12 +2098,7 @@ cxi_diagnostics (struct cxi *x)
 	unsigned warnings = 0;
 	for (unsigned i = 0, n = clang_getNumDiagnostics(x->tu); i < n; ++i) {
 		CXDiagnostic d = clang_getDiagnostic(x->tu, i);
-		CXString text = clang_getDiagnosticSpelling(d);
-		char const *s = clang_getCString(text);
-		enum CXDiagnosticSeverity const severity =
-			cstr_view_starts(cstr_view(s), CSTR_VIEW("cannot open file '"))
-			? CXDiagnostic_Ignored : clang_getDiagnosticSeverity(d);
-		clang_disposeString(text);
+		enum CXDiagnosticSeverity const severity = cxi_severity(d);
 		errors += severity >= CXDiagnostic_Error;
 		warnings += severity == CXDiagnostic_Warning;
 		if (severity >= CXDiagnostic_Warning)
@@ -2084,6 +2118,315 @@ cxi_diagnostics (struct cxi *x)
 }
 
 /* Reads the words KEY=VALUE from @p *at up to "--", and moves past it. */
+/* Returns the last word of @p words, the path of the file of a clang
+ * command line (cdb_command()).
+ */
+static char const *
+cxi_last_word (struct cstr_view words)
+{
+	char const *last = words.len ? memrchr(words.data, '\0', words.len - 1) : nullptr;
+	return last ? last + 1 : words.data;
+}
+
+/* Parses the file of the clang command line @p words into @p *tu, with the
+ * options of askai-code and the warnings of the request after the words.
+ * Returns the error of libclang, or CXError_Crashed if out of memory.
+ */
+static enum CXErrorCode
+cxi_tu (struct cxi        *x,
+        struct cstr_view   words,
+        CXTranslationUnit *tu)
+{
+	/* -fparse-all-comments gives describe the plain comments of a
+	 * declaration; with it, -Wdocumentation would warn about them. */
+	static char const *const extra[] = {
+		"-Xclang", "-disable-pragma-debug-crash", "-fparse-all-comments",
+	};
+	size_t const n_extra = array_size(extra) - (x->action != CXI_ACTION_DESCRIBE);
+	size_t n = 0;
+	for (size_t i = 0; i < words.len; ++i)
+		n += !words.data[i];
+	size_t const argc = n + n_extra + x->n_warnings;
+	char const **argv = malloc(argc * sizeof *argv);
+	if (!argv)
+		return CXError_Crashed;
+	char const *word = words.data;
+	for (size_t i = 0; i < n; ++i, word += strlen(word) + 1)
+		argv[i] = word;
+	memcpy(argv + n, extra, n_extra * sizeof *argv);
+	memcpy(argv + n + n_extra, x->warning, x->n_warnings * sizeof *argv);
+	enum CXErrorCode const failed = clang_parseTranslationUnit2FullArgv(
+		x->index, nullptr, argv, (int)argc, nullptr, 0,
+		CXTranslationUnit_DetailedPreprocessingRecord | CXTranslationUnit_KeepGoing, tu);
+	free(argv);
+	return failed;
+}
+
+/* The search of callers for the calls of a function. A static function is
+ * known by its name and the file of its first declaration, any other
+ * function by its name: the search goes through several parses, and a
+ * cursor is of one parse.
+ */
+struct cxi_callers {
+	struct cxi     *x;
+	CXFileUniqueID  file;     /* of the first declaration */
+	size_t          from;     /* the offset of the rows in the answer */
+	uint64_t        linkage;  /* enum CXLinkageKind */
+};
+
+/* Returns true if @p d, the first declaration of a callee, declares the
+ * function of @p who.
+ */
+static bool
+cxi_callers_is (struct cxi_callers const *who,
+                CXCursor                  d)
+{
+	if (clang_getCursorKind(d) != CXCursor_FunctionDecl ||
+	    clang_getCursorLinkage(d) != who->linkage ||
+	    !cxi_is_named(d, who->x->key[CXI_KEY_NAME].data))
+		return false;
+	CXFile file;
+	CXFileUniqueID id;
+	clang_getFileLocation(clang_getCursorLocation(d), &file, nullptr, nullptr, nullptr);
+	return who->linkage != CXLinkage_Internal ||
+	       (file && !clang_getFileUniqueID(file, &id) && !memcmp(&id, &who->file, sizeof id));
+}
+
+/* Removes the line of @p out from the offset @p at on if @p out contains
+ * the same line from the offset @p from on: a function that a header
+ * defines calls the same functions in each translation unit.
+ */
+static void
+cxi_out_once (struct cxi_out *out,
+              size_t          from,
+              size_t          at)
+{
+	char const *text = dstr_get(&out->text);
+	char const *line = text + at;
+	size_t const len = dstr_len(&out->text) - at;
+	char const *p = text + from;
+	/* A row is a whole line: a match inside a line is another text. */
+	while (!out->e && (p = memmem(p, (size_t)(line - p), line, len)) && p > text + from &&
+	       p[-1] != '\n')
+		++p;
+	if (!out->e && p && !dstr_erase(&out->text, at, len))
+		out->e = EINVAL;
+}
+
+/* Appends the rows of the calls of the function of the cxi_callers at
+ * @p data in @p c, if @p c defines a function in a file of the tree. A row
+ * is the places of the calls of a row of describe, the function @p c and
+ * the end of that row (cxi_calls_row_end()).
+ */
+static enum CXChildVisitResult
+cxi_callers_in (CXCursor     c,
+                CXCursor,
+                CXClientData data)
+{
+	struct cxi_callers *who = data;
+	struct cxi *x = who->x;
+	if (clang_getCursorKind(c) != CXCursor_FunctionDecl || !clang_isCursorDefinition(c) ||
+	    !cxi_in_tree(&x->out, c))
+		return CXChildVisit_Continue;
+	struct cxi_calls calls = cxi_calls(x);
+	cxi_calls_walk(&calls, c, CXI_EVALUATED);
+	for (size_t i = 0, j = 0; i < calls.n; ++i, j = 0) {
+		struct cxi_call const *call = &calls.items[i];
+		uint32_t f = 0;
+		while (f < call->n && !cxi_callers_is(who, calls.to.items[call->first + f]))
+			++f;
+		while (!cxi_calls_same(&calls, j, i))
+			++j;
+		if (f == call->n || j < i)
+			continue;
+		size_t const at = dstr_len(&x->out.text);
+		cxi_calls_places(&calls, i, "  ");
+		cxi_out_printf(&x->out, " ");
+		cxi_out_clang(&x->out, clang_getCursorSpelling(c));
+		cxi_out_place(&x->out, " (", clang_getCursorLocation(c), ")");
+		cxi_calls_row_end(&calls, i);
+		cxi_out_once(&x->out, who->from, at);
+	}
+	free(calls.to.items);
+	free(calls.items);
+	return x->out.e ? CXChildVisit_Break : CXChildVisit_Continue;
+}
+
+/* Appends the file of the clang command line @p words to @p list, after a
+ * comma if @p list is not empty.
+ */
+static void
+cxi_out_unit (struct cxi_out   *list,
+              struct cstr_view  words)
+{
+	struct dstr norm = DSTR_INIT;
+	cxi_out_printf(list, "%s", dstr_len(&list->text) ? ", " : "");
+	cxi_out_path(list, cxi_out_rel(list, cxi_last_word(words), &norm));
+	dstr_cleanup(&norm);
+}
+
+/* Appends @p before, the files of @p list (cxi_out_unit()) and @p after to
+ * @p out if @p list is not empty. Moves the error of @p list to @p out and
+ * frees the text of @p list.
+ */
+static void
+cxi_out_units (struct cxi_out *out,
+               char const     *before,
+               struct cxi_out *list,
+               char const     *after)
+{
+	if (dstr_len(&list->text)) {
+		cxi_out_printf(out, "%s", before);
+		cxi_out_put(out, dstr_get(&list->text), dstr_len(&list->text));
+		cxi_out_printf(out, "%s", after);
+	}
+	out->e = out->e ? out->e : list->e;
+	dstr_cleanup(&list->text);
+}
+
+/* Returns true if clang reported an error for @p tu. */
+static bool
+cxi_tu_errors (CXTranslationUnit tu)
+{
+	bool errors = false;
+	for (unsigned i = 0, n = clang_getNumDiagnostics(tu); !errors && i < n; ++i) {
+		CXDiagnostic d = clang_getDiagnostic(tu, i);
+		errors = cxi_severity(d) >= CXDiagnostic_Error;
+		clang_disposeDiagnostic(d);
+	}
+	return errors;
+}
+
+/* Appends what read() returns from @p fd up to the end of the file to
+ * @p out. Returns 0 or the error of read().
+ */
+static int
+cxi_out_read (struct cxi_out *out,
+              int             fd)
+{
+	char buf[4096];
+	for (;;) {
+		ssize_t const n = read(fd, buf, sizeof buf);
+		if (n > 0)
+			cxi_out_put(out, buf, (size_t)n);
+		else if (!n || errno != EINTR)
+			return n ? errno : 0;
+	}
+}
+
+/* The exit status of the child process of a translation unit of callers:
+ * the rows are written, they are written and clang reported an error, or
+ * no row is written.
+ */
+enum { CXI_UNIT_OK, CXI_UNIT_ERRORS, CXI_UNIT_FAILED };
+
+/* Runs in the child process of a translation unit of callers, which ends
+ * with its parent: writes the rows of the calls in the translation unit of
+ * the clang command line @p words to @p fd and exits with a status of the
+ * enum above. The rows that the answer contains already are not written
+ * again. The parse of the file serves as the translation unit with the
+ * same command line.
+ */
+[[noreturn]] static void
+cxi_callers_unit (struct cxi_callers *who,
+                  struct cstr_view    words,
+                  int                 fd)
+{
+	struct cxi *x = who->x;
+	size_t const at = dstr_len(&x->out.text);
+	(void)prctl(PR_SET_PDEATHSIG, SIGKILL);
+	if (!cstr_view_equal(words, x->words) && cxi_tu(x, words, &x->tu))
+		_exit(CXI_UNIT_FAILED);
+	clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_callers_in, who);
+	size_t const len = dstr_len(&x->out.text) - at;
+	if (x->out.e || util_write_all(fd, dstr_get(&x->out.text) + at, len))
+		_exit(CXI_UNIT_FAILED);
+	_exit(cxi_tu_errors(x->tu) ? CXI_UNIT_ERRORS : CXI_UNIT_OK);
+}
+
+/* callers: the calls of the function name in each translation unit of the
+ * compile commands (cdb_next()). Each translation unit is parsed in a child
+ * process, so that a crash of clang loses only the calls of one file. No
+ * child starts unless twice the time of the longest one so far is left
+ * before the deadline.
+ */
+static int
+cxi_callers (struct cxi *x)
+{
+	char const *name = x->key[CXI_KEY_NAME].data;
+	CXCursor c;
+	int e = cxi_lookup(x, name, CXCursor_FunctionDecl, &c);
+	if (e)
+		return e;
+	CXCursor const first = clang_getCanonicalCursor(c);
+	struct cxi_callers who = { .x = x, .linkage = clang_getCursorLinkage(first) };
+	CXFile file;
+	clang_getFileLocation(clang_getCursorLocation(first), &file, nullptr, nullptr, nullptr);
+	if (file)
+		(void)clang_getFileUniqueID(file, &who.file);
+	cxi_head(x);
+	cxi_out_printf(&x->out, "The calls of function %s", name);
+	cxi_out_place(&x->out, " (", clang_getCursorLocation(first), ")");
+	cxi_out_printf(&x->out, " in the translation units of the compile commands.]\n");
+	who.from = dstr_len(&x->out.text);
+	struct cdb_map const map = cdb_map(x->key[CXI_KEY_TOP],
+	                                   cstr_view_slice(x->out.tree, 0, x->out.tree.len - 1));
+	struct cxi_out failed = cxi_out(x->out.tree);
+	struct cxi_out errors = cxi_out(x->out.tree);
+	struct dstr words = DSTR_INIT;
+	uint64_t longest = 0;
+	size_t searched = 0;
+	size_t late = 0;
+	for (size_t at = 0; !x->out.e && !(e = cdb_next(&map, x->cmds, &at, &words));) {
+		struct cstr_view const w = cstr_view_dstr(&words);
+		uint64_t const start = loop_clock();
+		if (late || start + 2 * longest + CXI_EARLY > x->deadline) {
+			++late;
+			continue;
+		}
+		int end[2] = { -1, -1 };
+		pid_t const child = pipe2(end, O_CLOEXEC) ? -1 : fork();
+		if (!child)
+			cxi_callers_unit(&who, w, end[1]);
+		e = child < 0 ? errno : 0;
+		util_close(&end[1]);
+		size_t const rows = dstr_len(&x->out.text);
+		e = e ? e : cxi_out_read(&x->out, end[0]);
+		util_close(&end[0]);
+		int status = 0;
+		while (!e && waitpid(child, &status, 0) < 0)
+			e = errno == EINTR ? 0 : errno;
+		if (e)
+			break;
+		bool const ok = WIFEXITED(status) && WEXITSTATUS(status) < CXI_UNIT_FAILED;
+		/* Without the rows of a child that did not write all of them. */
+		if (!ok && !x->out.e && !dstr_erase(&x->out.text, rows, SIZE_MAX))
+			x->out.e = EINVAL;
+		if (!ok || WEXITSTATUS(status) == CXI_UNIT_ERRORS)
+			cxi_out_unit(ok ? &errors : &failed, w);
+		searched += ok;
+		uint64_t const took = loop_clock() - start;
+		longest = took > longest ? took : longest;
+	}
+	dstr_cleanup(&words);
+	if (dstr_len(&x->out.text) == who.from)
+		cxi_out_printf(&x->out, "[No call of %s in %zu translation unit%s.]\n", name,
+		               searched, util_s(searched));
+	else
+		cxi_out_printf(&x->out, "[%zu translation unit%s searched.]\n", searched,
+		               util_s(searched));
+	cxi_out_units(&x->out, "[clang could not parse ", &failed,
+	              ". The rows contain no call from a file that is not parsed.]\n");
+	cxi_out_units(&x->out, "[clang reported errors for ", &errors,
+	              ". The rows can lack calls from a file with errors. diagnostics lists the "
+	              "errors.]\n");
+	if (late)
+		cxi_out_printf(&x->out, "[The time limit ended the search before %zu translation "
+		               "unit%s. The rows contain no call from %s.]\n", late, util_s(late),
+		               late == 1 ? "it" : "them");
+	return x->out.e ? x->out.e : e == ENOENT ? 0 : e;
+}
+
 static int
 cxi_words (struct cxi  *x,
            int          argc,
@@ -2188,7 +2531,9 @@ cxi_valid (struct cxi *x)
 	struct cstr_view const line = x->key[CXI_KEY_LINE];
 	struct cstr_view const path = x->key[CXI_KEY_PATH];
 	x->action = cstr_view_index(cxi_actions, CXI_ACTIONS, x->key[CXI_KEY_ACTION]);
+	struct cstr_view const name = x->key[CXI_KEY_NAME];
 	bool const describe = x->action == CXI_ACTION_DESCRIBE;
+	bool const callers = x->action == CXI_ACTION_CALLERS;
 	size_t i = 0;
 	for (; i < x->n_warnings; ++i) {
 		char const *w = x->warning[i];
@@ -2202,10 +2547,16 @@ cxi_valid (struct cxi *x)
 	char const *why = x->action == CXI_ACTIONS
 	                  ? "The action argument must be "
 	                    XL_JOIN(", ", " or ", CXI_ACTION_LIST(XL_TEXT)) "."
-	                : describe && !x->key[CXI_KEY_NAME].data
+	                : describe && !name.data
 	                  ? "Give describe a name argument, such as git_start or child.flags."
-	                : !describe && (x->key[CXI_KEY_NAME].data || line.data)
-	                  ? "The name and line arguments are only for describe."
+	                : callers && (!name.data || name.len > CXI_NAME ||
+	                              cxi_ident(name) != name.len)
+	                  ? "Give callers a name argument, the name of a function, such as "
+	                    "git_start."
+	                : !describe && !callers && name.data
+	                  ? "The name argument is only for describe and callers."
+	                : !describe && line.data
+	                  ? "The line argument is only for describe."
 	                : line.data && (util_number(line.data, line.len, UINT32_MAX, &x->line) ||
 	                                !x->line)
 	                  ? "The line argument must be a whole number from 1."
@@ -2234,9 +2585,10 @@ cxi_valid (struct cxi *x)
 	return EINVAL;
 }
 
-/* Writes the clang command line of the file to @p words (cdb_command())
- * and points x->file at its last word, the file in @p tree. A relative
- * path of the compile commands is relative to the repository's directory.
+/* Reads the compile commands into x->cmds, writes the clang command line of
+ * the file to @p words (cdb_command()), and points x->words at the words
+ * and x->file at the last word, the file in @p tree. A relative path of the
+ * compile commands is relative to the repository's directory.
  */
 static int
 cxi_command (struct cxi       *x,
@@ -2251,9 +2603,9 @@ cxi_command (struct cxi       *x,
 	struct stat st;
 	int e = fd < 0 || fstat(fd, &st) ? errno
 	      : !S_ISREG(st.st_mode) || st.st_size > CXI_CDB ? EFBIG : 0;
-	struct json_object *cmds = e ? nullptr : json_object_from_fd_ex(fd, CXI_DEPTH);
+	x->cmds = e ? nullptr : json_object_from_fd_ex(fd, CXI_DEPTH);
 	util_close(&fd);
-	if (!cmds) {
+	if (!x->cmds) {
 		cxi_out_printf(&x->out, "The compile commands of %s in ", repo);
 		cxi_out_path(&x->out, cstr_view(file));
 		cxi_out_printf(&x->out, " cannot be read (%s).",
@@ -2263,10 +2615,9 @@ cxi_command (struct cxi       *x,
 	}
 	struct cdb_map const map = cdb_map(x->key[CXI_KEY_TOP],
 	                                   cstr_view_slice(tree, 0, tree.len - 1));
-	e = cdb_command(&map, cmds, x->key[CXI_KEY_PATH], words);
-	json_object_put(cmds);
-	char const *last = e ? nullptr : memrchr(dstr_get(words), '\0', dstr_len(words) - 1);
-	x->file = last ? last + 1 : dstr_get(words);
+	e = cdb_command(&map, x->cmds, x->key[CXI_KEY_PATH], words);
+	x->words = cstr_view_dstr(words);
+	x->file = cxi_last_word(x->words);
 	if (e == ENOENT) {
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
 		cxi_out_printf(&x->out, " is not in the compile commands of %s.", repo);
@@ -2467,41 +2818,23 @@ cxi_cache_open (struct cxi_cache *cache,
 	return EINVAL;
 }
 
-/* Parses the file with @p words and appends the answer of the action.
- * The function first copies fd 1 to @p *fd for the answer and points fd 1
- * at /dev/null, so that clang cannot write into the answer. Then it
- * changes to @p tree, clears the environment and confines the process.
+/* Parses the file with x->words (cxi_tu()) and appends the answer of the
+ * action. The function first copies fd 1 to @p *fd for the answer and
+ * points fd 1 at /dev/null, so that clang cannot write into the answer.
+ * Then it changes to @p tree, clears the environment and confines the
+ * process.
  */
 static int
-cxi_parse (struct cxi        *x,
-           char const        *tree,
-           struct dstr const *words,
-           int               *fd)
+cxi_parse (struct cxi *x,
+           char const *tree,
+           int        *fd)
 {
 	static int (*const action[CXI_ACTIONS])(struct cxi *) = {
 		[CXI_ACTION_DESCRIBE] = cxi_describe,
 		[CXI_ACTION_OUTLINE] = cxi_outline,
 		[CXI_ACTION_DIAGNOSTICS] = cxi_diagnostics,
+		[CXI_ACTION_CALLERS] = cxi_callers,
 	};
-	/* -fparse-all-comments gives describe the plain comments of a
-	 * declaration; with it, -Wdocumentation would warn about them. */
-	static char const *const extra[] = {
-		"-Xclang", "-disable-pragma-debug-crash", "-fparse-all-comments",
-	};
-	size_t const n_extra = array_size(extra) - (x->action != CXI_ACTION_DESCRIBE);
-	struct cstr_view const w = cstr_view_dstr(words);
-	size_t n = 0;
-	for (size_t i = 0; i < w.len; ++i)
-		n += !w.data[i];
-	size_t const argc = n + n_extra + x->n_warnings;
-	char const **argv = malloc(argc * sizeof *argv);
-	if (!argv)
-		return ENOMEM;
-	char const *word = w.data;
-	for (size_t i = 0; i < n; ++i, word += strlen(word) + 1)
-		argv[i] = word;
-	memcpy(argv + n, extra, n_extra * sizeof *argv);
-	memcpy(argv + n + n_extra, x->warning, x->n_warnings * sizeof *argv);
 	int const copy = fcntl(1, F_DUPFD_CLOEXEC, 3);
 	int null = open("/dev/null", O_WRONLY | O_CLOEXEC);
 	int e = copy < 0 || null < 0 || dup2(null, 1) < 0 || chdir(tree) || clearenv() ? errno : 0;
@@ -2513,14 +2846,10 @@ cxi_parse (struct cxi        *x,
 		e = confine_cage(tree);
 	if (e) {
 		cxi_out_printf(&x->out, "askai-code cannot confine the process (%s).", strerror(e));
-		free(argv);
 		return EINVAL;
 	}
-	CXIndex index = clang_createIndex(0, 0);
-	enum CXErrorCode const failed = clang_parseTranslationUnit2FullArgv(
-		index, nullptr, argv, (int)argc, nullptr, 0,
-		CXTranslationUnit_DetailedPreprocessingRecord | CXTranslationUnit_KeepGoing, &x->tu);
-	free(argv);
+	x->index = clang_createIndex(0, 0);
+	enum CXErrorCode const failed = cxi_tu(x, x->words, &x->tu);
 	if (failed) {
 		cxi_out_printf(&x->out, failed == CXError_Crashed
 		               ? "clang ran out of memory or crashed in the parse of "
@@ -2532,7 +2861,7 @@ cxi_parse (struct cxi        *x,
 		e = action[x->action](x);
 	}
 	clang_disposeTranslationUnit(x->tu);
-	clang_disposeIndex(index);
+	clang_disposeIndex(x->index);
 	return e;
 }
 
@@ -2547,14 +2876,13 @@ cxi_run (struct cxi         *x,
 	struct cstr_view const *key = x->key;
 	struct cstr_view const repo = key[CXI_KEY_REPO];
 	struct cstr_view const commit = key[CXI_KEY_COMMIT];
-	uint64_t deadline;
 	/* The name of the repository is a directory of the cache. */
 	if (!key[CXI_KEY_ACTION].data || !git_run_name_valid(repo) || !key[CXI_KEY_PATH].data ||
 	    !key[CXI_KEY_CDB].data || !oid_valid(commit) ||
 	    !cstr_view_starts(key[CXI_KEY_TOP], CSTR_VIEW("/")) ||
 	    !cstr_view_starts(key[CXI_KEY_CACHE], CSTR_VIEW("/")) ||
 	    util_number(key[CXI_KEY_DEADLINE].data, key[CXI_KEY_DEADLINE].len, UINT64_MAX,
-	                &deadline)) {
+	                &x->deadline)) {
 		cxi_out_printf(&x->out, "askai-code requires the words action, repo, path, cdb, "
 		               "commit, deadline, top and cache. repo is the name of a --git "
 		               "repository. commit is a commit ID. deadline is in nanoseconds. "
@@ -2564,7 +2892,8 @@ cxi_run (struct cxi         *x,
 	int e = cxi_valid(x);
 	if (e)
 		return e;
-	struct cxi_cache cache = cxi_cache(git, deadline > CXI_EARLY ? deadline - CXI_EARLY : 1);
+	struct cxi_cache cache = cxi_cache(git, x->deadline > CXI_EARLY ? x->deadline - CXI_EARLY
+	                                                                : 1);
 	struct dstr words = DSTR_INIT;
 	/* clang's names are compared with the tree in normal form. */
 	if (cdb_norm(&cache.dir, cstr_view(nullptr), key[CXI_KEY_CACHE]) ||
@@ -2585,8 +2914,11 @@ cxi_run (struct cxi         *x,
 		e = EINVAL;
 	}
 	if (!e)
-		e = cxi_parse(x, dstr_get(&cache.tree), &words, fd);
+		e = cxi_parse(x, dstr_get(&cache.tree), fd);
 	x->out.tree = cstr_view(nullptr);
+	json_object_put(x->cmds);
+	x->cmds = nullptr;
+	x->words = cstr_view(nullptr);
 	dstr_cleanup(&words);
 	util_close(&cache.state);
 	util_close(&cache.fds.keep);

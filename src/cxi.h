@@ -16,7 +16,8 @@
 #define CXI_ACTION_LIST(X)            \
         X(DESCRIBE,    "describe")    \
         X(OUTLINE,     "outline")     \
-        X(DIAGNOSTICS, "diagnostics")
+        X(DIAGNOSTICS, "diagnostics") \
+        X(CALLERS,     "callers")
 
 #define CXI_ACTION_ENUM(id, ...) CXI_ACTION_##id,
 enum cxi_action : uint8_t { CXI_ACTION_LIST(CXI_ACTION_ENUM) CXI_ACTIONS };

@@ -10661,6 +10661,61 @@ calls_kept (int n)
 })
 """
 
+# The source files of callers: three translation units and a header. who.h
+# defines a function that calls. who_c.c defines static functions with the
+# names of functions of who.h.
+CODE_WHO_H = """struct who_io { int a; };
+struct who_loop { int b; };
+void who_io_destroy(struct who_io **);
+void who_loop_destroy(struct who_loop **);
+#define who_destroy(pp) _Generic(**(pp), struct who_io: who_io_destroy, \\
+        struct who_loop: who_loop_destroy)(pp)
+int who_a(int);
+int who_b(int);
+#define who_same(x) _Generic((x), int: who_a, default: who_b)(x)
+#define who_value(x) _Generic((x), int: who_a(x), default: who_b(x))
+static inline void who_drop(struct who_loop **l) { who_loop_destroy(l); }
+"""
+
+CODE_WHO_A_C = """#include "who.h"
+
+void who_loop_destroy(struct who_loop **l) { (void)l; }
+int who_b(int x) { return x; }
+
+int
+who_use_a (struct who_loop **l, struct who_io **i, long n, int k)
+{
+\twho_destroy(l);
+\twho_destroy(i);
+\tint r = who_same(n);
+\tr += who_same(k);
+\tr += who_value(n) + who_value(n);
+\tr += (int)sizeof(who_b(1));
+\treturn r;
+}
+"""
+
+CODE_WHO_B_C = """#include "who.h"
+
+int
+who_use_b (struct who_loop **l, int c)
+{
+\tif (c)
+\t\twho_loop_destroy(l);
+\twho_drop(l);
+\tvoid (*p)(struct who_loop **) = who_loop_destroy;
+\tp(l);
+\twho_loop_destroy(l);
+\treturn (c ? who_a : who_b)(c);
+}
+"""
+
+CODE_WHO_C_C = """struct who_loop;
+static void who_loop_destroy(struct who_loop **l) { (void)l; }
+static int who_b(int x) { return x; }
+int who_use_c(struct who_loop **l) { who_loop_destroy(l); return who_b(1); }
+"""
+
 # The source files for the enums of describe: an enum of each kind that
 # describe prints in a way of its own.
 CODE_ENUMS_H = """#include <stdint.h>
@@ -10794,6 +10849,10 @@ def check_code(binary, up):
         write("src/calls.h", CODE_CALLS_H)
         write("src/calls.c", CODE_CALLS_C)
         write("src/enums.h", CODE_ENUMS_H)
+        write("src/who.h", CODE_WHO_H)
+        write("src/who_a.c", CODE_WHO_A_C)
+        write("src/who_b.c", CODE_WHO_B_C)
+        write("src/who_c.c", CODE_WHO_C_C)
         write("src/enums.def", CODE_ENUMS_DEF)
         write("src/enums.c", CODE_ENUMS_C)
         write("src/big.c", "struct big {\n" + "".join(f"\tint m{i};\n" for i in range(20000))
@@ -10834,7 +10893,7 @@ def check_code(binary, up):
                         "arguments": ["cc", f"-I{repo}", f"-I{d}", "-c", f"{repo}/src/{c}"]}
                        for c in ("a.c", "b.c", "pragma.c", "deep.c", "lay.c", "calls.c",
                                  "enums.c", "big.c", "leak.c", "far.c", "wt.c", "warn.c",
-                                 "arg.c")], f)
+                                 "arg.c", "who_a.c", "who_b.c", "who_c.c")], f)
 
         def call(ai, error=False, conn=None, **arguments):
             status, _, body = ai.rpc("tools/call", {"name": "code", "arguments": arguments},
@@ -10895,7 +10954,7 @@ def check_code(binary, up):
                 "offset"] and schema["required"] == ["repo", "action", "path"] and \
                 schema["properties"]["repo"]["enum"] == ["proj", "lib"] and \
                 schema["properties"]["action"]["enum"] == [
-                    "describe", "outline", "diagnostics"] and \
+                    "describe", "outline", "diagnostics", "callers"] and \
                 "A finding can cite the numbered lines, such as c7:120-140." in \
                 tools[2]["description"], tools[2]
 
@@ -11048,7 +11107,7 @@ def check_code(binary, up):
             proc = subprocess.run([helper, *(() if name is None else (f"repo={name}",)),
                                    *words], capture_output=True, text=True, timeout=10)
             assert proc.returncode == 1 and proc.stdout == (
-                "The action argument must be describe, outline or diagnostics." if valid else
+                "The action argument must be describe, outline, diagnostics or callers." if valid else
                 "askai-code requires the words action, repo, path, cdb, commit, deadline, top "
                 "and cache. repo is the name of a --git repository. commit is a commit ID. "
                 "deadline is in nanoseconds. top and cache are absolute paths."), (name, proc)
@@ -11173,7 +11232,7 @@ def check_code(binary, up):
                 f"[Repository proj, file src/b.c at commit {head}. 2 names.]\n"
                 "1 variable b_value: int\n2 variable b_more: int\n")
     print("code: off reasons, refusals, request, statuses, deadline, cap, outline of "
-          "an export, its cache, its limits, describe, diagnostics and confinement: PASS")
+          "an export, its cache, its limits, describe, callers, diagnostics and confinement: PASS")
 
 
 def check_code_describe(binary, up, call, head, d, cdb):
@@ -11377,6 +11436,78 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "src/calls.c lines 69 to 70 of 73:", "69\tint", "70\tcalls_kept (int n)", ""], calls
         assert describe(name="LAY_B").split("\n")[1:3] == [
             "enumerator LAY_B of enum lay_kind: 5", "defined src/lay.h:41"]
+        # callers: the calls of a function in every translation unit of the
+        # compile commands. A row is the place of the first call in a
+        # calling function, the lines of the later calls, the calling
+        # function and the place of its definition, and it ends as the row
+        # of describe does. A call through a macro or a _Generic selection
+        # is in the rows of the function that the selection selects, also
+        # if the associations are of one type. The row of a function that a
+        # header defines is printed once. A static function is another
+        # function than one of the same name in another file. The address
+        # of a function and the call through the pointer are not listed. A
+        # call that the program does not evaluate is not listed. The
+        # closing lines contain the number of translation units and the
+        # files that clang could not parse or reported errors for. clang
+        # crashes in the parse of src/deep.c, which costs only the calls of
+        # that file.
+        def callers(path, name, error=False):
+            return call(ai, error=error, repo="proj", action="callers", path=path, name=name)
+        closing = ("[clang could not parse src/deep.c. The rows contain no call from a file "
+                   "that is not parsed.]\n"
+                   "[clang reported errors for src/a.c, src/leak.c, src/wt.c, src/warn.c, "
+                   "src/arg.c. The rows can lack calls from a file with errors. diagnostics "
+                   "lists the errors.]\n")
+        searched = "[15 translation units searched.]\n" + closing
+        for path, name, place, rows in (
+                ("src/who.h", "who_loop_destroy", "src/who.h:4",
+                 "  src/who.h:11 who_drop (src/who.h:11)\n"
+                 "  src/who_a.c:9 who_use_a (src/who_a.c:7), through the macro who_destroy "
+                 "(src/who.h:5)\n"
+                 "  src/who_b.c:7,11 who_use_b (src/who_b.c:4)\n" + searched),
+                ("src/who_b.c", "who_loop_destroy", "src/who.h:4",
+                 "  src/who.h:11 who_drop (src/who.h:11)\n"
+                 "  src/who_a.c:9 who_use_a (src/who_a.c:7), through the macro who_destroy "
+                 "(src/who.h:5)\n"
+                 "  src/who_b.c:7,11 who_use_b (src/who_b.c:4)\n" + searched),
+                ("src/who_c.c", "who_loop_destroy", "src/who_c.c:2",
+                 "  src/who_c.c:4 who_use_c (src/who_c.c:4)\n" + searched),
+                ("src/who.h", "who_io_destroy", "src/who.h:3",
+                 "  src/who_a.c:10 who_use_a (src/who_a.c:7), through the macro who_destroy "
+                 "(src/who.h:5)\n" + searched),
+                ("src/who.h", "who_a", "src/who.h:7",
+                 "  src/who_a.c:12 who_use_a (src/who_a.c:7), through the macro who_same "
+                 "(src/who.h:9)\n"
+                 "  src/who_b.c:12 who_use_b (src/who_b.c:4). The tool cannot tell which "
+                 "function is called.\n" + searched),
+                ("src/who.h", "who_b", "src/who.h:8",
+                 "  src/who_a.c:11 who_use_a (src/who_a.c:7), through the macro who_same "
+                 "(src/who.h:9)\n"
+                 "  src/who_a.c:13 who_use_a (src/who_a.c:7), through the macro who_value "
+                 "(src/who.h:10)\n"
+                 "  src/who_b.c:12 who_use_b (src/who_b.c:4). The tool cannot tell which "
+                 "function is called.\n" + searched),
+                ("src/who.h", "who_drop", "src/who.h:11",
+                 "  src/who_b.c:8 who_use_b (src/who_b.c:4)\n" + searched),
+                ("src/who_a.c", "who_use_a", "src/who_a.c:7",
+                 "[No call of who_use_a in 15 translation units.]\n" + closing)):
+            got = callers(path, name)
+            assert got == (
+                f"[Repository proj, file {path} at commit {head}. The calls of function "
+                f"{name} ({place}) in the translation units of the compile commands.]\n"
+                f"{rows}"), got
+        for name, text in (
+                ("who_destroy", "No function who_destroy in the translation unit of "
+                 "src/who.h. Repository names in the translation unit that contain "
+                 "who_destroy:\n  src/who.h:5 macro who_destroy\n"),
+                ("struct who_io", "Give callers a name argument, the name of a function, "
+                 "such as git_start."),
+                (None, "Give callers a name argument, the name of a function, such as "
+                 "git_start.")):
+            arguments = {"name": name} if name else {}
+            got = call(ai, error=True, repo="proj", action="callers", path="src/who.h",
+                       **arguments)
+            assert got == text, got
         # An enum: the integer type, the number of enumerators, and a row
         # for each enumerator with the line and the value. The value of an
         # enumerator without an initializer is the value before plus 1. A
@@ -11590,7 +11721,9 @@ def check_code_describe(binary, up, call, head, d, cdb):
                 ({}, "Give describe a name argument, such as git_start or child.flags.")):
             assert describe(error=True, **arguments) == text, (arguments, text)
         assert call(ai, error=True, repo="proj", action="outline", path="src/lay.c",
-                    name="x") == "The name and line arguments are only for describe."
+                    name="x") == "The name argument is only for describe and callers."
+        assert call(ai, error=True, repo="proj", action="callers", path="src/lay.c",
+                    name="lay_add", line=1) == "The line argument is only for describe."
         # diagnostics: errors and warnings without notes or columns,
         # including those in headers, and a message with a newline printed
         # on one line.

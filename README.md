@@ -819,6 +819,36 @@ continuation is between the keyword and the parenthesis, if the keyword is
 the body of another macro, or if the keyword is on a line before the
 parenthesis and that line contains `#` or `//`.
 
+`callers` lists the calls of the function `name` in every translation unit
+of the compile commands: each entry with `arguments` for a `.c` file of the
+repository. `path` is a file that declares the function. A row is the
+place of the first call in a calling function, the lines of the later
+calls, the calling function and the place of its definition. The end of a
+row is that of a row of `describe`: the macro, the attribute `cleanup`,
+and what the tool cannot tell. This is `callers` of `cxi_selects` in
+`src/cxi.c`:
+
+```text
+[Repository askai, file src/cxi.c at commit 0900409f0e0665ff5590c6b43adc1f30d3410b13. The calls of function cxi_selects (src/cxi.c:1494) in the translation units of the compile commands.]
+  src/cxi.c:1613 cxi_callee (src/cxi.c:1601)
+  src/cxi.c:1833 cxi_calls_walk (src/cxi.c:1817)
+[70 translation units searched.]
+```
+
+A call through a macro or a `_Generic` selection is a call of the function
+that the program calls: with `#define destroy(p) _Generic(**(p), struct io:
+io_destroy, struct loop: loop_destroy)(p)`, `destroy(l)` is in the rows of
+`loop_destroy` only if `**l` is a `struct loop`. A static function is the
+function of that name whose first declaration is in the same file. The
+row of a calling function that a header defines is printed once. A use of
+the function that is not a call, such as its address in an initializer, is
+not listed, and neither is the call through a function pointer.
+
+Closing lines contain the number of translation units, the files that
+clang could not parse or reported errors for, and the number of
+translation units that the time limit of the call left out. No parse
+starts unless twice the time of the longest one so far is left.
+
 `diagnostics` lists clang's errors and warnings for `path` in clang's order,
 one per line as `path:line: warning: text [-Wflag]`, including those in the
 headers that it includes, without notes or columns. `warnings` adds up to
