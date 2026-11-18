@@ -10617,7 +10617,7 @@ calls_all (struct calls_ops *o, int (*cb)(int), int n, char const *s)
 \tr += calls_find(s) != 0;
 \tr += calls_a(n) ?: calls_b(n);
 \tr += (int)__builtin_expect(n, 1);
-\tr += (int)sizeof(calls_plain(n));
+\tr += (int)sizeof(calls_plain(n) ?: 1L);
 \ttypeof(calls_plain(n)) t = calls_a(0);
 \tr += _Generic(calls_plain(n), int: 1, default: 2);
 \tr += (int)sizeof(char[calls_b(n)]);
@@ -10637,12 +10637,12 @@ calls_all (struct calls_ops *o, int (*cb)(int), int n, char const *s)
 \tr += __builtin_constant_p((n ? calls_a : calls_b)(n));
 \t__builtin_assume(calls_b(n) > 0);
 \ttypeof
-\t\t(calls_plain(n)) u = 0;
+\t\t(calls_plain(n)) u = 0, v = 0;
 \tcalls_auto c = 0;
 \tint d __attribute__((cleanup(calls_fini))) = 0;
 \tvoid calls_local(int *);
 \tint e [[gnu::cleanup(calls_local)]] = 0;
-\treturn r + t + u + c + d + e + (p != 0);
+\treturn r + t + u + v + c + d + e + (p != 0);
 }
 
 /* Calls in code that the program does not evaluate, and no other call. */
@@ -11352,8 +11352,10 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # the row of a call in the argument ends as the row of a call in
         # an operand of sizeof that is not a constant, and as the row of a
         # call in an operand of typeof that is a pointer. A call that
-        # libclang visits more than once, such as the first operand of ?:
-        # without a second, is one call. The line of a call that is written
+        # libclang visits more than once is one call: the first operand of
+        # ?: without a second, also in the implicit conversion of that
+        # operand, and the operand of a typeof that declares two
+        # variables. The line of a call that is written
         # as a macro argument is the line of the argument, and the line of
         # a call from the body of a macro is the line where that macro is
         # used. The function of the attribute cleanup of a variable is in a

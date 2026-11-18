@@ -1634,18 +1634,21 @@ enum cxi_call_flag : uint32_t {
  * which an expression selects one. n is 0 for any other callee. macro is
  * the definition of the macro that the call is written through
  * (cxi_macro()), or null. For a call that is CXI_UNEVALUATED, n is 0 and
- * macro is null: the call is only counted. row is the index of the first
- * call of the function with the same state, flags, macro and callees
- * (cxi_calls_push()): an answer prints these calls as one row.
+ * macro is null: the call is only counted. node is at in the syntax tree
+ * (cxi_ast_node()), by which a second visit of at is known. row is the
+ * index of the first call of the function with the same state, flags,
+ * macro and callees: an answer prints these calls as one row.
+ * cxi_calls_push() sets node and row.
  */
 struct cxi_call {
-	CXCursor at;
-	CXCursor macro;
-	uint64_t row;
-	uint32_t first;
-	uint32_t n;
-	uint32_t state;  /* enum cxi_state */
-	uint32_t flags;  /* enum cxi_call_flag */
+	CXCursor    at;
+	CXCursor    macro;
+	void const *node;
+	uint64_t    row;
+	uint32_t    first;
+	uint32_t    n;
+	uint32_t    state;  /* enum cxi_state */
+	uint32_t    flags;  /* enum cxi_call_flag */
 };
 
 static force_inline struct cxi_call
@@ -2316,16 +2319,31 @@ cxi_calls_same (struct cxi_calls const *calls,
 	return true;
 }
 
-/* Appends @p call to @p calls and sets the row of the call. Returns 0 or
- * ENOMEM.
+/* Appends @p call to @p calls and sets the node and the row of the call.
+ * Returns 0, ENOMEM, or EALREADY if @p calls contains a call at the same
+ * node: the callees of @p call are then removed. libclang visits some
+ * expressions more than once, and not only as the child before
+ * (cxi_walk_step()): the first operand of ?: without a second once more in
+ * an implicit conversion, and the operand of typeof for each variable of a
+ * declaration. The cursors of two visits of an expression are not always
+ * equal for clang_equalCursors().
  */
 static int
 cxi_calls_push (struct cxi_calls *calls,
                 struct cxi_call   call)
 {
+	call.node = cxi_ast_node(call.at);
+	for (size_t i = 0; i < calls->n; ++i) {
+		if (calls->items[i].node == call.node) {
+			calls->walk.to.n = call.first;
+			return EALREADY;
+		}
+	}
+
 	int const e = util_push(*calls, call);
 	if (e)
 		return e;
+
 	size_t const last = calls->n - 1;
 	size_t row = 0;
 	while (!cxi_calls_same(calls, row, last))
@@ -2411,7 +2429,8 @@ cxi_calls_add_cleanup (struct cxi_calls *calls,
 
 /* Moves the walk of the cxi_calls at @p data to @p c, and calls the
  * function of the calls for a call expression or for a variable with
- * attributes.
+ * attributes. The visit does not enter a cursor that it has entered
+ * before: the walk or the calls then return EALREADY.
  */
 static enum CXChildVisitResult
 cxi_calls_visit (CXCursor     c,
@@ -2420,12 +2439,15 @@ cxi_calls_visit (CXCursor     c,
 {
 	struct cxi_calls *calls = data;
 	int e = cxi_walk_step(&calls->walk, c, parent);
-	if (e == EALREADY)
-		return CXChildVisit_Continue;
+
 	if (!e && c.kind == CXCursor_CallExpr)
 		e = calls->call(calls, c);
 	else if (!e && c.kind == CXCursor_VarDecl && clang_Cursor_hasAttrs(c))
 		e = calls->cleanup(calls, c);
+
+	if (e == EALREADY)
+		return CXChildVisit_Continue;
+
 	calls->walk.e = e;
 	return e ? CXChildVisit_Break : CXChildVisit_Recurse;
 }
