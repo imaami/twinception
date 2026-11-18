@@ -2694,6 +2694,16 @@ cxi_graph_call (struct cxi_graph      *g,
 	};
 	int e = cxi_graph_file(g, clang_getCursorLocation(call->at), &to.file,
 	                       &to.line);
+	/* The function of a call that the program does not evaluate is in the
+	 * graph, also one that only a declaration in a function declares. It
+	 * is no callee of the call. */
+	CXCursor const named = call->state == GRAPH_UNEVALUATED
+	                       ? clang_getCursorReferenced(call->at)
+	                       : clang_getNullCursor();
+	if (!e && named.kind == CXCursor_FunctionDecl) {
+		uint32_t id;
+		e = cxi_graph_fn(g, clang_getCanonicalCursor(named), &id);
+	}
 	for (uint32_t i = 0; !e && i < call->n; ++i) {
 		CXCursor const d = g->calls.walk.to.items[call->first + i];
 		uint32_t id;

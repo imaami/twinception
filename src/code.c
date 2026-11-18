@@ -557,7 +557,7 @@ code_parse_done (struct child *c)
  * the index of its entry in the compile commands, a NUL, the path of its
  * file, and a NUL. No unit is parsed. The caller has the lock of the
  * service. Returns the build, or nullptr with ENOMEM, EOVERFLOW, or EINVAL
- * for an index that is no number, in @p *e.
+ * for units that are not such pairs to the end, in @p *e.
  */
 static struct code_build *
 code_build_create (struct code            *code,
@@ -589,12 +589,14 @@ code_build_create (struct code            *code,
 	err = err ? err : code_word(words, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
 	err = err ? err : code_word(words, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
 	                            ? CSTR_VIEW("1") : cstr_view(nullptr));
-	struct cstr_view index;
-	struct cstr_view path;
-	while (!err && cstr_view_cut(&units, '\0', &index) &&
-	       cstr_view_cut(&units, '\0', &path)) {
+	/* Each unit is an index and a path, to the end of the answer. */
+	while (!err && units.len) {
+		struct cstr_view index;
+		struct cstr_view path;
 		uint64_t entry;
-		err = util_number(index.data, index.len, SIZE_MAX, &entry);
+		err = !cstr_view_cut(&units, '\0', &index) ||
+		      !cstr_view_cut(&units, '\0', &path) || !path.len
+		      ? EINVAL : util_number(index.data, index.len, SIZE_MAX, &entry);
 		err = err ? err : build_add(&made->b, (size_t)entry, path);
 	}
 	*e = err;

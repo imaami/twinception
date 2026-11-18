@@ -11460,11 +11460,13 @@ def check_code_build(binary, up, call, d):
     write("k.h", "int k_one(int);\nint k_two(int);\n")
     write("k1.c", '#include "k.h"\nint k_one(int n) { return n; }\n')
     write("k2.c", '#include "k.h"\nint k_two(int n) { return k_one(n); }\n')
-    write("k3.c", '#include "k.h"\nint k_three(int n) { return k_two(n); }\n')
+    unused = "int k_four(void) { extern int k_five(void); return (int)sizeof(k_five()); }\n"
+    write("k3.c", '#include "k.h"\nint k_three(int n) { return k_two(n); }\n' + unused)
     sh("init", "-q", "-b", "main")
     sh("add", "src")
     sh("commit", "-q", "-m", "first")
-    write("k3.c", '#include "k.h"\nint k_three(int n) { return k_one(n) + k_two(n); }\n')
+    write("k3.c", '#include "k.h"\nint k_three(int n) { return k_one(n) + k_two(n); }\n'
+          + unused)
     sh("commit", "-q", "-am", "second")
     head = sh("rev-parse", "HEAD").strip()
     parent = sh("rev-parse", "HEAD~1").strip()
@@ -11525,6 +11527,14 @@ def check_code_build(binary, up, call, d):
         assert callers(ai, "k_two") == two
         assert callers(ai, "k_one", path="src/k3.c") == one
         assert runs() == (2, [])
+        # A function that only a declaration in a function declares, and
+        # that the program calls only in code that it does not evaluate, is
+        # a callee without a call.
+        assert callers(ai, "k_five") == (
+            f"- repo: keep\n- commit: {head}\n"
+            "- callee: k_five (declared src/k3.c:3)\n"
+            "  - callers: none\n")
+        assert runs() == (1, [])
         # Another commit is another build. The build of the first commit is
         # kept: it needs no parse after the tree of the cache has changed.
         assert callers(ai, "k_one", revision="HEAD~1") == (
