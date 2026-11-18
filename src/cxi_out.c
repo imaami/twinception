@@ -2,10 +2,12 @@
  *
  * The texts of the code tool (src/cxi_out.h).
  */
+#define _GNU_SOURCE /* memrchr() */
 #include <string.h>
 
 #include "cxi_out.h"
 #include "jb.h"
+#include "tool.h"
 #include "util.h"
 
 void
@@ -142,4 +144,21 @@ cxi_out_range (struct cxi_out *out,
 		cxi_out_lit(out, "-");
 		cxi_out_num(out, last);
 	}
+}
+
+struct cstr_view
+cxi_out_answer (struct cxi_out *out)
+{
+	static char const cut[] = "\n[The answer is cut at 4 MiB.]";
+	static_assert(TOOL_TEXT_MAX == 4 << 20, "update the text of cut");
+	char *text = (char *)dstr_raw(&out->text);
+	size_t len = dstr_len(&out->text);
+	if (len > TOOL_TEXT_MAX) {
+		/* The note is shorter than the text that it replaces. */
+		char const *end = memrchr(text, '\n', TOOL_TEXT_MAX - (sizeof cut - 1));
+		len = end ? (size_t)(end - text) : 0;
+		memcpy(text + len, cut, sizeof cut - 1);
+		len += sizeof cut - 1;
+	}
+	return cstr_view_n(text, len);
 }

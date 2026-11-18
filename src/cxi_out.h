@@ -123,6 +123,13 @@ extern void
 cxi_out_path (struct cxi_out   *out,
               struct cstr_view  p);
 
+/** Returns the text of @p out as an answer of the tool: a text longer than
+ *  TOOL_TEXT_MAX is cut at the end of a line, and a note of the cut is
+ *  written into @p out after that line.
+ */
+extern struct cstr_view
+cxi_out_answer (struct cxi_out *out);
+
 /** Appends the lines @p first to @p last of a declaration as FIRST-LAST, or
  *  as FIRST if the declaration is one line.
  */

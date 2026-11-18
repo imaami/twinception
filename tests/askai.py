@@ -11217,6 +11217,7 @@ def check_code(binary, up):
             with open(f"{tree}/commit") as f:
                 assert f.read() == head
             check_code_describe(binary, up, call, head, d, cdb)
+            check_code_build(binary, up, call, d)
         # git cannot list a commit of seven levels of ten trees of ten before
         # the deadline. It is killed in time for the next call to export.
         for _ in range(2):
@@ -11236,6 +11237,173 @@ def check_code(binary, up):
                 "1 variable b_value: int\n2 variable b_more: int\n")
     print("code: off reasons, refusals, request, statuses, deadline, cap, outline of "
           "an export, its cache, its limits, describe, callers, diagnostics and confinement: PASS")
+
+
+# A wrapper of the real askai-code for check_code_build(). It appends the
+# words of each run to the file runs in its directory. While the file stale
+# exists, the run of the unit 2 removes the file and exits with status 3, as
+# for a tree of the cache at another commit. While the file slow exists, the
+# run of the unit 3 writes its process ID to the file pid and sleeps.
+CODE_WRAPPER = """#!/bin/sh
+here=${0%/*}
+echo "$*" >> "$here/runs"
+case " $* " in
+*" unit=2 "*) [ -e "$here/stale" ] && rm "$here/stale" && exit 3;;
+*" unit=3 "*) [ -e "$here/slow" ] && echo $$ > "$here/pid" && exec sleep 60;;
+esac
+exec "$here/real" "$@"
+"""
+
+
+def check_code_build(binary, up, call, d):
+    """callers with the graphs that askai keeps for all client loops: one
+    askai-code parses each translation unit of a build, once, also for
+    calls of several loops at a time; a later call starts no parse; a
+    commit and a change of the compile commands each make another build; a
+    parse that finds the tree at another commit is done again after the next
+    export; a call answers at its deadline without the units that are not
+    parsed; a parse runs on after its call is gone, and askai kills it when
+    it exits."""
+    git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+    repo = f"{d}/keep"
+    os.makedirs(f"{repo}/src")
+
+    def sh(*args):
+        return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t",
+                               *args], check=True, env=os.environ | git, capture_output=True,
+                              text=True).stdout
+
+    def write(name, text):
+        with open(f"{repo}/src/{name}", "w") as f:
+            f.write(text)
+    write("k.h", "int k_one(int);\nint k_two(int);\n")
+    write("k1.c", '#include "k.h"\nint k_one(int n) { return n; }\n')
+    write("k2.c", '#include "k.h"\nint k_two(int n) { return k_one(n); }\n')
+    write("k3.c", '#include "k.h"\nint k_three(int n) { return k_two(n); }\n')
+    sh("init", "-q", "-b", "main")
+    sh("add", "src")
+    sh("commit", "-q", "-m", "first")
+    write("k3.c", '#include "k.h"\nint k_three(int n) { return k_one(n) + k_two(n); }\n')
+    sh("commit", "-q", "-am", "second")
+    head = sh("rev-parse", "HEAD").strip()
+    parent = sh("rev-parse", "HEAD~1").strip()
+    # The entry 1 of the compile commands is no translation unit, so the
+    # units are the entries 0, 2 and 3.
+    cdb = f"{d}/keep.json"
+    with open(cdb, "w") as f:
+        json.dump([{"directory": repo, "file": f"{repo}/src/{c}",
+                    "arguments": ["cc", "-c", f"{repo}/src/{c}"]}
+                   for c in ("k1.c", "k.h", "k2.c", "k3.c")], f)
+    bin = f"{d}/keepbin"
+    os.mkdir(bin)
+    shutil.copy(binary, f"{bin}/askai")
+    shutil.copy(os.path.join(os.path.dirname(binary), "askai-code"), f"{bin}/real")
+    with open(f"{bin}/askai-code", "w") as f:
+        f.write(CODE_WRAPPER)
+    os.chmod(f"{bin}/askai-code", 0o755)
+
+    def runs():
+        """The runs of askai-code since the last call of runs(): the number
+        of the requests with an action, and the units of the others."""
+        with open(f"{bin}/runs") as f:
+            lines = f.read().splitlines()
+        os.remove(f"{bin}/runs")
+        return (sum("action=" in line for line in lines),
+                sorted(word for line in lines for word in line.split()
+                       if word.startswith("unit=")))
+
+    def callers(ai, name, error=False, **arguments):
+        return call(ai, error=error, repo="keep", action="callers", name=name, **arguments)
+    one = (f"- repo: keep\n- commit: {head}\n"
+           "- callee: k_one (src/k1.c:2)\n"
+           "  - callers\n"
+           "    - src/k2.c:2 k_two (2)\n"
+           "    - src/k3.c:2 k_three (2)\n")
+    two = (f"- repo: keep\n- commit: {head}\n"
+           "- callee: k_two (src/k2.c:2)\n"
+           "  - callers\n"
+           "    - src/k3.c:2 k_three (2)\n")
+    units = ["unit=0", "unit=2", "unit=3"]
+    # askai spreads the connections of the calls over four client loops,
+    # which share the builds.
+    with Askai(f"{bin}/askai", "-u", up.url(), "--git", repo, "--code",
+               f"keep={cdb}") as ai:
+        # Eight calls at a time run askai-code once each for the request,
+        # and together once for each translation unit.
+        answers = []
+        threads = [threading.Thread(target=lambda: answers.append(callers(ai, "k_one")))
+                   for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert answers == [one] * 8, answers
+        assert runs() == (8, units)
+        # A later call runs askai-code only for the request, also for
+        # another function and with a path.
+        assert callers(ai, "k_two") == two
+        assert callers(ai, "k_one", path="src/k3.c") == one
+        assert runs() == (2, [])
+        # Another commit is another build. The build of the first commit is
+        # kept: it needs no parse after the tree of the cache has changed.
+        assert callers(ai, "k_one", revision="HEAD~1") == (
+            f"- repo: keep\n- commit: {parent}\n"
+            "- callee: k_one (src/k1.c:2)\n"
+            "  - callers\n"
+            "    - src/k2.c:2 k_two (2)\n")
+        assert runs() == (1, units)
+        assert callers(ai, "k_one") == one
+        assert runs() == (1, [])
+        # A change of the file of the compile commands makes another build.
+        # The parse of a unit that finds the tree at another commit is not
+        # the end of that unit: the call exports the commit once more, and
+        # the unit is parsed then.
+        os.utime(cdb, ns=(1, 1))
+        open(f"{bin}/stale", "w").close()
+        assert callers(ai, "k_two") == two
+        assert runs() == (2, ["unit=0", "unit=2", "unit=2", "unit=3"])
+        assert not os.path.exists(f"{bin}/stale")
+    # A call answers at its deadline with the units that are parsed, and
+    # counts the others. The process that parses a unit gets the same time,
+    # and a unit that takes longer is not parsed.
+    open(f"{bin}/slow", "w").close()
+    with Askai(f"{bin}/askai", "-u", up.url(), "--git", repo, "--code", f"keep={cdb}",
+               "--git-timeout", "1") as ai:
+        start = time.monotonic()
+        assert callers(ai, "k_one") == (
+            f"- repo: keep\n- commit: {head}\n"
+            "- callee: k_one (src/k1.c:2)\n"
+            "  - callers\n"
+            "    - src/k2.c:2 k_two (2)\n"
+            "- not searched: 1 translation unit (time limit)\n")
+        assert 0.9 < time.monotonic() - start < 3
+        wait_for(lambda: callers(ai, "k_one") == (
+            f"- repo: keep\n- commit: {head}\n"
+            "- callee: k_one (src/k1.c:2)\n"
+            "  - callers\n"
+            "    - src/k2.c:2 k_two (2)\n"
+            "- not parsed: src/k3.c\n"))
+        assert runs()[1] == units
+    # The parse of a build runs on after the client of its call has gone,
+    # and askai kills the process when it exits.
+    os.remove(f"{bin}/pid")
+    with Askai(f"{bin}/askai", "-u", up.url(), "--git", repo, "--code",
+               f"keep={cdb}") as ai:
+        conn = ai.connect()
+        conn.request("POST", "/mcp", body=json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "code", "arguments": {
+                "repo": "keep", "action": "callers", "name": "k_one"}}}),
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json, text/event-stream"})
+        wait_for(lambda: os.path.exists(f"{bin}/pid"))
+        conn.close()
+        with open(f"{bin}/pid") as f:
+            pid = int(f.read())
+        time.sleep(0.2)
+        os.kill(pid, 0)
+    wait_for(lambda: not os.path.exists(f"/proc/{pid}"))
+    os.remove(f"{bin}/slow")
 
 
 def check_code_describe(binary, up, call, head, d, cdb):

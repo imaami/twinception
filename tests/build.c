@@ -12,6 +12,7 @@
 #include "cxi_out.h"
 #include "dstr.h"
 #include "graph.h"
+#include "tool.h"
 
 enum { MAX = 1 << 16 };
 
@@ -240,6 +241,22 @@ main (void)
 		.mask = GRAPH_FN_STATIC,
 	}, CLOSED("- callee: inl (not found)\n")));
 #undef CLOSED
+
+	/* An answer of more than TOOL_TEXT_MAX bytes is cut after a whole
+	 * line, and a note says so. A shorter one is the text. */
+	static char const line[] = "0123456789abcdef0123456789abcde\n";
+	static char const note[] = "\n[The answer is cut at 4 MiB.]";
+	struct cxi_out out = cxi_out(cstr_view(nullptr));
+	cxi_out_lit(&out, "short\n");
+	CHECK(cstr_view_equal(cxi_out_answer(&out), CSTR_VIEW("short\n")));
+	while (dstr_len(&out.text) <= TOOL_TEXT_MAX)
+		cxi_out_put(&out, line, sizeof line - 1);
+	struct cstr_view const cut = cxi_out_answer(&out);
+	CHECK(!out.e && cut.len <= TOOL_TEXT_MAX);
+	CHECK(cut.len > TOOL_TEXT_MAX - sizeof line - sizeof note);
+	CHECK(cstr_view_ends(cut, cstr_view_n(note, sizeof note - 1)));
+	CHECK(cut.data[cut.len - sizeof note] == 'e');
+	cxi_out_fini(&out);
 
 	/* A build of parsed units without errors has no closing lines. */
 	build_fini(&b);

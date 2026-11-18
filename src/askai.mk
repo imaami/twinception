@@ -5,11 +5,13 @@ override SRC_askai := \
   blocker.c           \
   brainstem.c         \
   buf.c               \
+  build.c             \
   child.c             \
   code.c              \
   config.c            \
   cstr_view.c         \
   curl_loop.c         \
+  cxi_out.c           \
   datauri.c           \
   dstr.c              \
   evidence.c          \
@@ -18,6 +20,7 @@ override SRC_askai := \
   git.c               \
   git_run.c           \
   git_view.c          \
+  graph.c             \
   home.c              \
   http.c              \
   httpd.c             \

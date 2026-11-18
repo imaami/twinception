@@ -875,8 +875,20 @@ Calls in a file can be missing if one of these rows closes the answer:
 
 - `- not parsed: FILES`: clang could not parse these files.
 - `- parsed with errors: FILES`: clang reported errors for these files.
-- `- not searched: N translation units (time limit)`. No parse starts
-  unless twice the time of the longest one so far is left.
+- `- not searched: N translation units (time limit)`: the parse of these
+  files was not done at the deadline of the call. The parse runs on, and a
+  later call has their calls.
+
+`askai` keeps what clang finds for `callers`. The first `callers` call for
+a commit runs one `askai-code` for each translation unit of `FILE`, up to 8
+at a time, and each writes the functions and the calls of its file to
+`askai`. A later `callers` call for the same commit gets its answer from
+that memory, without a parse, also after the tree of the cache has changed
+to another commit. A change of `FILE`, by its size or its time, makes the
+next call parse again. All client loops share the memory, so a commit is
+parsed once. `askai` frees the memory of the commits that no call uses
+once it is more than 1 GiB. A `callers` call with `path` still parses the
+file of `path`, to find the function that `path` declares.
 
 `diagnostics` lists clang's errors and warnings for `path` in clang's order,
 one per line as `path:line: warning: text [-Wflag]`, including those in the
@@ -912,7 +924,8 @@ is parsed with the command of the listed file nearest to it and
 `-x c-header`.
 
 `askai-code` runs once per call with the environment of the git tool, and
-clears the environment before the parse. Before the parse, it also
+for `callers` once more for each translation unit that is not yet parsed.
+It clears the environment before the parse. Before the parse, it also
 confines itself. It sets no_new_privs, disables core files and file
 writes, and limits its memory to 1 GiB. With Landlock, it can read only
 `/usr`, a few system files and the tree, and write only `/dev/null`. With
@@ -923,6 +936,8 @@ exists. clang's debug pragmas are disabled. A parse that crashes, such as
 one of deeply nested expressions, ends the call with the signal. At
 `--git-timeout` (30 s for resolving the revision and the parse together),
 `askai-code` is killed with SIGKILL, and its git processes shortly before.
+The parse of one translation unit for `callers` gets the same time, and a
+file that takes longer is listed as not parsed.
 The result is at most 4 MiB, and `offset` continues past the end of one
 result.
 

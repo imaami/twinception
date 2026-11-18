@@ -8570,7 +8570,7 @@ mcp_static_plugin (struct mcp_static   *st,
 		{ &mcp_host_plugin, { .service = st } },
 		{ &manual_plugin, { manual, manual_loop_create, manual_loop_destroy } },
 		{ &git_plugin, { .service = git } },
-		{ &code_plugin, { .service = &st->code } },
+		{ &code_plugin, { &st->code, code_loop_create, code_loop_destroy } },
 		{ &notes_tool_plugin,
 		  { &st->notes_tool, notes_tool_loop_create, notes_tool_loop_destroy } },
 		{ &findings_plugin, { .service = st->members } },
@@ -8666,7 +8666,6 @@ mcp_static_create (struct config const    *cfg,
 		.members = members,
 		.notes_tool = { .members = members,
 		                .files_inline = mcp_files_inline(cfg->http.limits.body) },
-		.code = { git, cfg },
 		.journal = journal,
 		.ledger = ledger,
 		.roster = roster,
@@ -8677,6 +8676,11 @@ mcp_static_create (struct config const    *cfg,
 		.lim = cfg->mcp,
 		.turns = cfg->turns
 	};
+	*e = code_init(&st->code, git, cfg);
+	if (*e) {
+		free(st);
+		return nullptr;
+	}
 	uint64_t const url = util_hash(st->seed, ep->url, strlen(ep->url));
 	st->endpoint = ep->model ? util_hash(url, ep->model, strlen(ep->model)) : url;
 	for (uint64_t i = 0; i < reg->n_plugins; ++i)
@@ -8722,6 +8726,7 @@ mcp_static_destroy (struct mcp_static **p_static)
 	dstr_cleanup(&st->server_meta);
 	dstr_cleanup(&st->versions);
 	uploads_destroy(&st->uploads);
+	code_fini(&st->code);
 	dstr_cleanup(&st->files_url);
 	free(st->files_lines);
 	st->files_lines = nullptr;

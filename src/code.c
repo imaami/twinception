@@ -5,19 +5,24 @@
 #include <errno.h>
 #include <json-c/json.h>
 #include <libgen.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "buf.h"
+#include "build.h"
 #include "child.h"
+#include "clk.h"
 #include "code.h"
 #include "config.h"
 #include "cstr_view.h"
 #include "cxi.h"
+#include "cxi_out.h"
 #include "dstr.h"
 #include "git.h"
 #include "git_run.h"
 #include "jb.h"
+#include "list.h"
 #include "log.h"
 #include "loop.h"
 #include "mcp.h"
@@ -28,9 +33,29 @@
 #include "xlist.h"
 
 enum {
-	CODE_WORD  = 1024,  /* the maximum length of a string argument */
-	CODE_CHECK = 4096,  /* the maximum length of the --check output */
+	CODE_WORD   = 1024,      /* the maximum length of a string argument */
+	CODE_CHECK  = 4096,      /* the maximum length of the --check output */
+	CODE_PARSES = 8,         /* the most processes that parse translation
+	                            units at a time: of one loop, and of all
+	                            loops together, so that the git processes
+	                            of the tools get the other children of
+	                            CHILD_MAX */
+	CODE_GRAPH  = 1 << 28,   /* the largest graph of a translation unit */
+	CODE_UNITS  = 64 << 20,  /* the largest answer of askai-code to callers,
+	                            which lists the translation units of the
+	                            compile commands */
 };
+static_assert(CODE_PARSES + 1 <= CHILD_MAX, "the other tools need a child");
+
+/* The service frees builds that no call uses while the graphs of its
+ * builds are more bytes than this.
+ */
+#define CODE_KEEP ((size_t)1 << 30)
+
+/* A call that waits for a build looks at the build again after this time:
+ * a process of another loop that ends does not queue the step of the call.
+ */
+#define CODE_RETRY (10 * MS)
 
 /* The arguments: X(ID, name). */
 #define CODE_ARG_LIST(X)        \
@@ -50,13 +75,103 @@ enum code_arg : uint8_t { CODE_ARG_LIST(CODE_ARG_ENUM) CODE_ARGS };
 static struct cstr_view const code_arg_names[] = { CODE_ARG_LIST(XL_VIEW) };
 #undef CODE_ARG_LIST
 
+static struct cstr_view const code_actions[] = { CXI_ACTION_LIST(XL_VIEW) };
+static struct cstr_view const code_keys[] = { CXI_KEY_LIST(XL_VIEW) };
+
+/* The size of a word of code_number(): the longest name of a key, '=', a
+ * number and a NUL.
+ */
+enum { CODE_NUMBER = sizeof "unconfined=" + UTIL_DECIMAL };
+
+struct code_build;
+struct code_loop;
+
+/* A process of a loop that parses a translation unit of a build: askai-code
+ * with unit=N (src/cxi.h). While child is not nullptr, the place has a
+ * reference to build, and the unit is BUILD_PARSING.
+ */
+struct code_parse {
+	struct code_loop  *cl;
+	struct code_build *build;
+	struct child      *child;
+	size_t             unit;   /* the index of the unit in the build */
+};
+
+/* The code tool's part of a client loop: the processes of the loop that
+ * parse for the builds of the service, which are on the list of the
+ * children of the loop, and the calls of the loop that wait for a build.
+ * Only the thread of the loop reads and writes the part.
+ */
+struct code_loop {
+	struct list        waiting;
+	struct list       *children;
+	struct loop       *loop;
+	struct code       *code;
+	struct code_parse  parse[CODE_PARSES];
+};
+
+enum code_build_flag : uint64_t {
+	CODE_STALLED = 1U << 0,  /* a process found the tree of the cache at
+	                            another commit: no process starts until a
+	                            call has exported the commit again */
+};
+
+/* A build that the service keeps for all loops: the translation units of
+ * the compile commands of a repository at a commit, with their graphs
+ * (src/build.h). id is the name that askai-code gives the build in its
+ * answer to callers. words contains the words of the request of a unit to
+ * askai-code without unit and deadline, each followed by a NUL.
+ *
+ * The id, the words, and the path and the index of each unit do not change
+ * after the build is created. The lock of the service guards the other
+ * members, and the state and the graph of each unit. A unit that is
+ * BUILD_GRAPH or BUILD_FAILED does not change, so a thread that has read
+ * with the lock that left is 0 reads the units and the graphs without the
+ * lock, while it has a reference.
+ */
+struct code_build {
+	struct list  hook;     /* on the builds of the service */
+	struct build b;
+	struct dstr  id;
+	struct dstr  words;
+	size_t       refs;     /* one of the service, one of each call that
+	                          has joined the build, and one of each process
+	                          that parses for it */
+	size_t       next;     /* no unit before this one is BUILD_NONE */
+	size_t       left;     /* the units that are BUILD_NONE or
+	                          BUILD_PARSING */
+	size_t       parsing;  /* the units that are BUILD_PARSING */
+	size_t       bytes;    /* of the graphs */
+	uint64_t     flags;    /* enum code_build_flag */
+};
+
+enum code_call_flag : uint64_t {
+	CODE_CALLERS = 1U << 0,  /* the action is callers */
+	CODE_WORDED  = 1U << 1,  /* words contains the words of code_spawn() */
+};
+
 /* A call of the code tool. pin resolves the revision, and pin.child is the
  * askai-code process once the pin is done. words contains the KEY=VALUE
  * words of the request to askai-code, each followed by a NUL.
+ *
+ * For callers, askai-code names the build and the callee, which are views
+ * of its output. The call then has a reference to the build and waits
+ * until the units are parsed or the deadline of the call comes, and answer
+ * is the text that the build gives.
  */
 struct code_call {
-	struct git_pin pin;
-	struct dstr    words;
+	struct git_pin       pin;
+	struct dstr          words;
+	struct cxi_out       answer;
+	struct list          wait;    /* on the waiting calls of the loop while
+	                                 the call has a build */
+	struct loop_timer    timer;   /* when the call looks at the build again */
+	struct mcp_slot     *slot;
+	struct code_build   *build;   /* nullptr until askai-code has named it */
+	struct build_callee  callee;
+	size_t               repo;    /* the index of the repository in the
+	                                 values of --code */
+	uint64_t             flags;   /* enum code_call_flag */
 };
 
 int
@@ -157,7 +272,6 @@ code_definition (void const *service)
 	struct json_object *repos = json_object_new_array();
 	for (size_t i = 0; repos && i < cfg->n_codes; ++i)
 		repos = jb_push_or_free(repos, jb_string(git_run_name(cfg->code_repos[i])));
-	static struct cstr_view const actions[] = { CXI_ACTION_LIST(XL_VIEW) };
 	static struct cstr_view const required[] = {
 		CSTR_VIEW_INIT("repo"), CSTR_VIEW_INIT("action"),
 	};
@@ -210,7 +324,8 @@ code_definition (void const *service)
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
-				"action", schema_enum(schema_names(actions, array_size(actions)),
+				"action", schema_enum(schema_names(code_actions,
+				                                   array_size(code_actions)),
 				                      nullptr),
 				"path", schema_property("string",
 					"A .c or .h file of the commit, relative to the "
@@ -244,31 +359,323 @@ code_definition (void const *service)
 		nullptr);
 }
 
+/* Appends the word KEY=VALUE, with the name of @p key and @p value, to
+ * @p words, the words of a request to askai-code, unless value.data is
+ * nullptr. Returns 0 or ENOMEM.
+ */
+static int
+code_word (struct dstr      *words,
+           enum cxi_key      key,
+           struct cstr_view  value)
+{
+	return !value.data || dstr_printf(words, "%s=%.*s%c", code_keys[key].data,
+	                                  (int)value.len, value.data, '\0') ? 0 : ENOMEM;
+}
+
+/* Writes the word KEY=N, with the name of @p key and @p n in decimal, and
+ * a NUL at the end of @p word. Returns the word.
+ */
+static char const *
+code_number (char         word[static CODE_NUMBER],
+             enum cxi_key key,
+             uint64_t     n)
+{
+	char *const end = word + CODE_NUMBER - 1;
+	*end = '\0';
+	char *at = end - util_decimal(end, n, 0).len - 1;
+	*at = '=';
+	at -= code_keys[key].len;
+	memcpy(at, code_keys[key].data, code_keys[key].len);
+	return at;
+}
+
+/* Frees @p build, which nothing refers to. */
+static void
+code_build_free (struct code_build *build)
+{
+	dstr_cleanup(&build->words);
+	dstr_cleanup(&build->id);
+	build_fini(&build->b);
+	free(build);
+}
+
+/* Lets go of a reference to @p build, and frees the build if no reference
+ * is left. The caller has the lock of the service.
+ */
+static void
+code_build_put (struct code_build *build)
+{
+	if (!--build->refs)
+		code_build_free(build);
+}
+
+/* Makes the unit @p unit of @p build, whose parse ended without a result,
+ * BUILD_NONE again. The caller has the lock of the service.
+ */
+static void
+code_build_undo (struct code_build *build,
+                 size_t             unit)
+{
+	build->b.items[unit].state = BUILD_NONE;
+	if (unit < build->next)
+		build->next = unit;
+}
+
+static void
+code_parse_done (struct child *c);
+
+/* Starts askai-code for the unit @p unit of @p build, which is BUILD_NONE,
+ * in @p parse, a place of a loop without a process. The unit is then
+ * BUILD_PARSING, and the place has a reference to the build. The process
+ * gets the time of a git of the git tool. The caller has the lock of the
+ * service. Returns 0 or the error of child_create().
+ */
+static int
+code_parse_spawn (struct code_parse *parse,
+                  struct code_build *build,
+                  size_t             unit)
+{
+	struct code_loop const *cl = parse->cl;
+	struct code *code = cl->code;
+	struct config const *cfg = code->cfg;
+	uint64_t const deadline = cl->loop->now + cfg->git_timeout;
+	char number[2][CODE_NUMBER];
+	/* The helper, the two words with a number, a word for each other key
+	 * of the words of the build, and a nullptr. */
+	char const *argv[1 + CXI_KEYS + 1] = {
+		cfg->code_helper,
+		code_number(number[0], CXI_KEY_UNIT, build->b.items[unit].index),
+		code_number(number[1], CXI_KEY_DEADLINE, deadline),
+	};
+	size_t k = 3;
+	for (char const *w = dstr_get(&build->words), *last = w + dstr_len(&build->words);
+	     w < last && k < array_size(argv) - 1; w += strlen(w) + 1)
+		argv[k++] = w;
+	char *env[] = { util_env_path(), nullptr };
+	struct child_cmd const cmd = child_cmd(
+		.file     = cfg->code_helper,
+		.argv     = argv,
+		.envp     = env,
+		.max      = CODE_GRAPH,
+		.deadline = deadline
+	);
+	int e = 0;
+	parse->child = child_create(cl->loop, cl->children, &cmd, code_parse_done,
+	                            parse, &e);
+	if (e)
+		return e;
+
+	parse->build = build;
+	parse->unit = unit;
+	build->b.items[unit].state = BUILD_PARSING;
+	++build->parsing;
+	++build->refs;
+	++code->parses;
+	return 0;
+}
+
+/* Lets go of the process of @p parse, which is killed if it runs. The
+ * place is free then. The caller has the lock of the service, and lets go
+ * of the reference of the place to the build (code_build_put()).
+ */
+static void
+code_parse_end (struct code_parse *parse)
+{
+	child_destroy(&parse->child);
+	--parse->build->parsing;
+	--parse->cl->code->parses;
+}
+
+/* Starts a process of @p cl for each unit of @p build that is BUILD_NONE,
+ * in the order of the units, while a place of the loop is free, fewer than
+ * CODE_PARSES processes of all loops parse, and the process starts. A
+ * stalled build starts none. The caller has the lock of the service.
+ */
+static void
+code_build_run (struct code_build *build,
+                struct code_loop  *cl)
+{
+	struct build const *b = &build->b;
+	struct code const *code = cl->code;
+	for (size_t i = 0; i < CODE_PARSES && code->parses < CODE_PARSES &&
+	                   !(build->flags & CODE_STALLED); ++i) {
+		if (cl->parse[i].child)
+			continue;
+
+		while (build->next < b->n && b->items[build->next].state != BUILD_NONE)
+			++build->next;
+		if (build->next == b->n ||
+		    code_parse_spawn(&cl->parse[i], build, build->next))
+			break;
+
+		++build->next;
+	}
+}
+
+/* Ends the parse of a unit: @p c is the process, which has ended. The
+ * output of a process that exited with status 0 is the graph of the unit.
+ * After CXI_STALE the unit is BUILD_NONE again and the build is stalled. A
+ * process that ended in another way could not parse the unit. The loop
+ * then starts its next processes for the build. If no unit is left, or no
+ * process parses, the step of each call of the loop that waits for a build
+ * is queued (code_waited()).
+ */
+static void
+code_parse_done (struct child *c)
+{
+	struct code_parse *parse = c->owner;
+	struct code_loop *cl = parse->cl;
+	struct code *code = cl->code;
+	struct code_build *build = parse->build;
+	int const status = child_status(c);
+	pthread_mutex_lock(&code->lock);
+	if (status == CXI_STALE) {
+		build->flags |= CODE_STALLED;
+		code_build_undo(build, parse->unit);
+	} else {
+		build_parsed(&build->b, parse->unit, status ? nullptr : &c->out);
+		size_t const bytes = buf_peek(&build->b.items[parse->unit].g.bytes).len;
+		build->bytes += bytes;
+		code->bytes += bytes;
+		--build->left;
+	}
+	code_parse_end(parse);
+	code_build_run(build, cl);
+	bool const wake = !build->left || !build->parsing;
+	code_build_put(build);
+	pthread_mutex_unlock(&code->lock);
+	if (!wake)
+		return;
+
+	for (struct list *at = cl->waiting.next; at != &cl->waiting; at = at->next)
+		(void)mcp_slot_ready(container_of(at, struct code_call, wait)->slot);
+}
+
+/* Creates the build that askai-code names @p id in its answer to callers
+ * for @p call, as the last build of @p code, with the reference of the
+ * service. @p units is the rest of the answer: for each translation unit
+ * the index of its entry in the compile commands, a NUL, the path of its
+ * file, and a NUL. No unit is parsed. The caller has the lock of the
+ * service. Returns the build, or nullptr with ENOMEM, EOVERFLOW, or EINVAL
+ * for an index that is no number, in @p *e.
+ */
+static struct code_build *
+code_build_create (struct code            *code,
+                   struct cstr_view        id,
+                   struct cstr_view        units,
+                   struct code_call const *call,
+                   int                    *e)
+{
+	struct code_build *made = malloc(sizeof *made);
+	if (!made) {
+		*e = ENOMEM;
+		return nullptr;
+	}
+	*made = (struct code_build){
+		.hook  = list(&made->hook),
+		.b     = build(),
+		.id    = DSTR_INIT,
+		.words = DSTR_INIT,
+		.refs  = 1
+	};
+	struct config const *cfg = code->cfg;
+	struct git_pin const *pin = &call->pin;
+	struct dstr *words = &made->words;
+	int err = cstr_view_store(id, &made->id);
+	err = err ? err : code_word(words, CXI_KEY_REPO, pin->repo->name);
+	err = err ? err : code_word(words, CXI_KEY_CDB, cstr_view(cfg->codes[call->repo]));
+	err = err ? err : code_word(words, CXI_KEY_COMMIT, oid_view(&pin->roots[0]));
+	err = err ? err : code_word(words, CXI_KEY_TOP, cstr_view(pin->repo->path));
+	err = err ? err : code_word(words, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
+	err = err ? err : code_word(words, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
+	                            ? CSTR_VIEW("1") : cstr_view(nullptr));
+	struct cstr_view index;
+	struct cstr_view path;
+	while (!err && cstr_view_cut(&units, '\0', &index) &&
+	       cstr_view_cut(&units, '\0', &path)) {
+		uint64_t entry;
+		err = util_number(index.data, index.len, SIZE_MAX, &entry);
+		err = err ? err : build_add(&made->b, (size_t)entry, path);
+	}
+	*e = err;
+	if (err) {
+		code_build_free(made);
+		return nullptr;
+	}
+	made->left = made->b.n;
+	list_append(&code->builds, &made->hook);
+	return made;
+}
+
+/* Returns the build of @p code that askai-code names @p id, or nullptr.
+ * The caller has the lock of the service.
+ */
+static struct code_build *
+code_find (struct code      *code,
+           struct cstr_view  id)
+{
+	for (struct list *at = code->builds.next; at != &code->builds; at = at->next) {
+		struct code_build *build = container_of(at, struct code_build, hook);
+		if (cstr_view_equal(cstr_view_dstr(&build->id), id))
+			return build;
+	}
+	return nullptr;
+}
+
+/* Frees builds of @p code that only the service refers to, the one that a
+ * call used longest ago first, while the graphs of the builds of @p code
+ * are more than CODE_KEEP bytes. The caller has the lock of the service.
+ */
+static void
+code_trim (struct code *code)
+{
+	struct list *at = code->builds.next;
+	while (code->bytes > CODE_KEEP && at != &code->builds) {
+		struct code_build *build = container_of(at, struct code_build, hook);
+		at = at->next;
+		if (build->refs > 1)
+			continue;
+
+		list_del(&build->hook);
+		code->bytes -= build->bytes;
+		code_build_put(build);
+	}
+}
+
+/* Lets @p call, a call of a loop of @p code, leave its build, if it has
+ * one.
+ */
+static void
+code_leave (struct code_call *call,
+            struct code      *code)
+{
+	struct code_build *build = call->build;
+	list_del(&call->wait);
+	call->build = nullptr;
+	if (!build)
+		return;
+
+	pthread_mutex_lock(&code->lock);
+	code_build_put(build);
+	pthread_mutex_unlock(&code->lock);
+}
+
 /* Frees the call of @p slot, which kills its child process if it runs, and
- * sets the call pointer of the slot (mcp_slot_own()) to nullptr.
+ * sets the call pointer of the slot (mcp_slot_own()) to nullptr. A call
+ * that waits for a build leaves the build, and the build stays.
  */
 static void
 code_drop (struct mcp_slot *slot)
 {
+	struct code_loop const *cl = mcp_slot_part(slot);
 	struct code_call *call = *mcp_slot_own(slot);
+	(void)loop_timer_stop(mcp_slot_loop(slot), &call->timer);
+	code_leave(call, cl->code);
+	cxi_out_fini(&call->answer);
 	git_pin_fini(&call->pin);
 	dstr_cleanup(&call->words);
 	free(call);
 	*mcp_slot_own(slot) = nullptr;
-}
-
-/* Appends the word KEY=VALUE, with the name of @p key and @p value, to the
- * words of the request of @p call to askai-code, unless value.data is
- * nullptr. Returns 0 or ENOMEM.
- */
-static int
-code_word (struct code_call *call,
-           enum cxi_key      key,
-           struct cstr_view  value)
-{
-	static struct cstr_view const keys[] = { CXI_KEY_LIST(XL_VIEW) };
-	return !value.data || dstr_printf(&call->words, "%s=%.*s%c", keys[key].data,
-	                                  (int)value.len, value.data, '\0') ? 0 : ENOMEM;
 }
 
 /* Spawns askai-code for @p call, whose pin is done, as the child process
@@ -279,13 +686,19 @@ static int
 code_spawn (struct code_call *call,
             struct mcp_slot  *slot)
 {
-	struct code const *code = mcp_slot_part(slot);
+	struct code_loop const *cl = mcp_slot_part(slot);
+	struct config const *cfg = cl->code->cfg;
 	struct git_pin *pin = &call->pin;
-	char digits[UTIL_DECIMAL];
-	int e = code_word(call, CXI_KEY_COMMIT, oid_view(&pin->roots[0]));
-	e = e ? e : code_word(call, CXI_KEY_DEADLINE,
-	                      util_decimal(digits + sizeof digits, pin->deadline, 0));
-	e = e ? e : code_word(call, CXI_KEY_TOP, cstr_view(pin->repo->path));
+	int e = 0;
+	/* A call that exports its commit once more has these words. */
+	if (!(call->flags & CODE_WORDED)) {
+		char digits[UTIL_DECIMAL];
+		e = code_word(&call->words, CXI_KEY_COMMIT, oid_view(&pin->roots[0]));
+		e = e ? e : code_word(&call->words, CXI_KEY_DEADLINE,
+		                      util_decimal(digits + sizeof digits, pin->deadline, 0));
+		e = e ? e : code_word(&call->words, CXI_KEY_TOP, cstr_view(pin->repo->path));
+		call->flags |= CODE_WORDED;
+	}
 	if (e)
 		return e;
 	/* The helper, at most a word for each key but CXI_KEY_WARNING and for
@@ -293,7 +706,7 @@ code_spawn (struct code_call *call,
 	char const *argv[GIT_RUN_ARGV];
 	static_assert(1 + CXI_KEYS - 1 + CXI_WARNINGS + 1 < array_size(argv));
 	size_t k = 0;
-	argv[k++] = code->cfg->code_helper;
+	argv[k++] = cfg->code_helper;
 	for (char const *w = dstr_get(&call->words), *last = w + dstr_len(&call->words); w < last;
 	     w += strlen(w) + 1)
 		argv[k++] = w;
@@ -304,12 +717,13 @@ code_spawn (struct code_call *call,
 	if (e)
 		return e;
 	struct child_cmd const cmd = child_cmd(
-		.file = code->cfg->code_helper,
+		.file = cfg->code_helper,
 		.argv = argv,
 		.envp = dir.env,
 		/* The output can contain the record line of describe in addition
-		 * to a result of TOOL_TEXT_MAX bytes. */
-		.max = TOOL_TEXT_MAX + 4096,
+		 * to a result of TOOL_TEXT_MAX bytes. The answer to callers is
+		 * the list of the translation units. */
+		.max = call->flags & CODE_CALLERS ? CODE_UNITS : TOOL_TEXT_MAX + 4096,
 		.deadline = pin->deadline
 	);
 	pin->child = mcp_slot_spawn(slot, &cmd, &e);
@@ -348,23 +762,182 @@ code_record (struct cstr_view     *text,
 	return true;
 }
 
+/* Reads the answer of askai-code to callers for @p call, the output of the
+ * child of the pin: the name of the functions, a NUL, a letter and the path
+ * of a file, a NUL, the name of the build, a NUL, and the translation units
+ * (code_build_create()). The letter is A for each function of the name, or
+ * for the function that one translation unit declares S if it is static
+ * and E if not: the file is then that of the first declaration. The call
+ * gets a reference to the build of that name, which is created if the
+ * service does not keep it, and joins the waiting calls of @p cl. Returns
+ * 0, ENOMEM, EOVERFLOW, or EINVAL if the output is no such answer.
+ */
+static int
+code_join (struct code_call *call,
+           struct code_loop *cl)
+{
+	struct cstr_view rest = cstr_view_span(buf_peek(&call->pin.child->out));
+	struct build_callee *callee = &call->callee;
+	struct cstr_view id;
+	if (!cstr_view_cut(&rest, '\0', &callee->name) ||
+	    !cstr_view_cut(&rest, '\0', &callee->file) ||
+	    !cstr_view_cut(&rest, '\0', &id) ||
+	    !callee->file.len || !memchr("AES", *callee->file.data, 3))
+		return EINVAL;
+
+	char const letter = *callee->file.data;
+	callee->file = cstr_view_slice(callee->file, 1, SIZE_MAX);
+	callee->mask = letter == 'A' ? 0 : GRAPH_FN_STATIC;
+	callee->flags = letter == 'S' ? GRAPH_FN_STATIC : 0;
+
+	struct code *code = cl->code;
+	int e = 0;
+	pthread_mutex_lock(&code->lock);
+	struct code_build *build = code_find(code, id);
+	if (!build)
+		build = code_build_create(code, id, rest, call, &e);
+	if (build) {
+		/* The build that a call used last is the last one of the list.
+		 * The call has exported the commit of the build. */
+		list_move(&code->builds, &build->hook);
+		++build->refs;
+		build->flags &= ~(uint64_t)CODE_STALLED;
+		code_trim(code);
+	}
+	pthread_mutex_unlock(&code->lock);
+	if (!build)
+		return e;
+
+	call->build = build;
+	list_append(&cl->waiting, &call->wait);
+	return 0;
+}
+
+/* Appends the answer of callers from the build of @p call to the answer
+ * of the call: the repository, the commit, and the rows of
+ * build_callers(). The caller has the lock of the service, unless no unit
+ * of the build is left.
+ */
+static void
+code_text (struct code_call *call)
+{
+	struct cxi_out *out = &call->answer;
+	cxi_out_lit(out, "- repo: ");
+	cxi_out_view(out, call->pin.repo->name);
+	cxi_out_lit(out, "\n- commit: ");
+	cxi_out_view(out, oid_view(&call->pin.roots[0]));
+	cxi_out_lit(out, "\n");
+	build_callers(&call->build->b, &call->callee, out);
+}
+
+/* Ends the call in @p slot with the answer of @p call (code_text()). */
+static void
+code_answer (struct mcp_slot  *slot,
+             struct code_call *call)
+{
+	struct cxi_out *out = &call->answer;
+	if (out->e) {
+		mcp_slot_fail(slot, (int)out->e);
+		return;
+	}
+	struct cstr_view const text = cxi_out_answer(out);
+	loop_work(mcp_slot_loop(slot), LOOP_COPY, text.len);
+	mcp_slot_lend(slot, text);
+	mcp_slot_finish(slot, 0);
+}
+
+/* Queues the step of the call of the timer @p timer, a call that waits
+ * for a build.
+ */
+static void
+code_call_late (struct loop *,
+                struct loop_timer *timer)
+{
+	(void)mcp_slot_ready(container_of(timer, struct code_call, timer)->slot);
+}
+
+/* Runs on the call in @p slot, which waits for the build of @p call. The
+ * call ends with its answer once each unit of the build is parsed or has
+ * failed, or at its deadline: the answer then counts the units that are
+ * left. Before that, a call whose build is stalled without a process
+ * leaves the build and spawns askai-code once more, which exports the
+ * commit again. Any other call lets its loop start processes for the
+ * build, and looks at the build again after CODE_RETRY, or when a process
+ * of its loop has ended (code_parse_done()).
+ */
+static void
+code_waited (struct mcp_slot  *slot,
+             struct code_call *call)
+{
+	struct code_loop *cl = mcp_slot_part(slot);
+	struct code *code = cl->code;
+	struct code_build *build = call->build;
+	struct loop *loop = mcp_slot_loop(slot);
+	uint64_t const deadline = call->pin.deadline;
+	pthread_mutex_lock(&code->lock);
+	bool const complete = !build->left;
+	if (complete || loop->now >= deadline) {
+		/* No unit of a complete build changes, so its graphs are read
+		 * without the lock. The units of a build that is parsed on are
+		 * read with it. */
+		if (complete)
+			pthread_mutex_unlock(&code->lock);
+		code_text(call);
+		if (!complete)
+			pthread_mutex_unlock(&code->lock);
+		code_answer(slot, call);
+		return;
+	}
+	bool const stalled = build->flags & CODE_STALLED && !build->parsing;
+	if (!stalled)
+		code_build_run(build, cl);
+	pthread_mutex_unlock(&code->lock);
+
+	int e = 0;
+	if (stalled) {
+		(void)loop_timer_stop(loop, &call->timer);
+		code_leave(call, code);
+		child_destroy(&call->pin.child);
+		e = code_spawn(call, slot);
+	} else {
+		uint64_t const again = loop->now + CODE_RETRY;
+		e = loop_timer_set(loop, &call->timer, again < deadline ? again : deadline);
+	}
+	if (e)
+		git_step_failed(slot, e, cstr_view(nullptr), "askai-code");
+}
+
 /* Ends the call in @p slot after askai-code has exited. With exit status
  * 0, the output is the result, and the numbered lines that describe
- * printed go to the ring of the calls. With exit status 1, the output
- * is a tool error. Otherwise the call fails with the reason.
+ * printed go to the ring of the calls. The output of callers names a
+ * build, which gives the result (code_join()). With exit status 1, the
+ * output is a tool error. Otherwise the call fails with the reason.
  */
 static void
 code_ended (struct mcp_slot  *slot,
             struct code_call *call)
 {
-	struct code const *code = mcp_slot_part(slot);
+	struct code_loop *cl = mcp_slot_part(slot);
 	struct child *c = call->pin.child;
 	int const status = child_status(c);
 	if (status != 0 && status != 1) {
 		struct tool_scratch *scratch = mcp_slot_scratch(slot);
-		mcp_slot_tell(slot, child_end_why(&c->end, "askai-code", code->cfg->git_timeout,
-		                                  c->max, scratch->text, sizeof scratch->text),
+		uint64_t const timeout = cl->code->cfg->git_timeout;
+		mcp_slot_tell(slot, child_end_why(&c->end, "askai-code", timeout, c->max,
+		                                  scratch->text, sizeof scratch->text),
 		              TOOL_FAILED);
+		return;
+	}
+	if (!status && call->flags & CODE_CALLERS) {
+		int const e = code_join(call, cl);
+		if (e == EINVAL)
+			mcp_slot_tell(slot, CSTR_VIEW("askai-code wrote no answer to "
+			                              "callers that askai can read."),
+			              TOOL_FAILED);
+		else if (e)
+			mcp_slot_fail(slot, e);
+		else
+			code_waited(slot, call);
 		return;
 	}
 	struct span const out = buf_peek(&c->out);
@@ -387,14 +960,19 @@ code_ended (struct mcp_slot  *slot,
 
 /* Runs the call in @p slot on: after the exit of a git of the pin, or at
  * the start, spawns the next git of the pin, or askai-code once the pin is
- * done. After askai-code, ends the call. A call that ends is dropped by
- * askai (code_drop()).
+ * done. After askai-code, ends the call, or for callers runs the call on
+ * until the build has the answer (code_waited()). A call that ends is
+ * dropped by askai (code_drop()).
  */
 static void
 code_step (struct mcp_slot *slot)
 {
 	struct code_call *call = *mcp_slot_own(slot);
 	struct git_pin *pin = &call->pin;
+	if (call->build) {
+		code_waited(slot, call);
+		return;
+	}
 	if (pin->phase == GIT_PIN_DONE) {
 		code_ended(slot, call);
 		return;
@@ -478,19 +1056,23 @@ code_args (struct code const  *code,
 		return mcp_slot_tell(slot, CSTR_VIEW("The revision argument must be a commit name "
 		                                     "or hash, with optional ^ and ~ suffixes, such "
 		                                     "as HEAD~1."), TOOL_FAILED), EINVAL;
+	call->repo = r;
+	if (cstr_view_equal(action, code_actions[CXI_ACTION_CALLERS]))
+		call->flags |= CODE_CALLERS;
+	struct dstr *words = &call->words;
 	char digits[UTIL_DECIMAL];
-	e = e ? e : code_word(call, CXI_KEY_ACTION, action);
-	e = e ? e : code_word(call, CXI_KEY_REPO, repo);
-	e = e ? e : code_word(call, CXI_KEY_PATH, path);
-	e = e ? e : code_word(call, CXI_KEY_NAME, name);
-	e = e ? e : code_word(call, CXI_KEY_LINE,
+	e = e ? e : code_word(words, CXI_KEY_ACTION, action);
+	e = e ? e : code_word(words, CXI_KEY_REPO, repo);
+	e = e ? e : code_word(words, CXI_KEY_PATH, path);
+	e = e ? e : code_word(words, CXI_KEY_NAME, name);
+	e = e ? e : code_word(words, CXI_KEY_LINE,
 	                      line ? util_decimal(digits + sizeof digits, line, 0)
 	                           : cstr_view(nullptr));
 	for (i = 0; !e && i < n; ++i)
-		e = code_word(call, CXI_KEY_WARNING, jb_view(jb_at(warnings, i)));
-	e = e ? e : code_word(call, CXI_KEY_CDB, cstr_view(cfg->codes[r]));
-	e = e ? e : code_word(call, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
-	return e ? e : code_word(call, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
+		e = code_word(words, CXI_KEY_WARNING, jb_view(jb_at(warnings, i)));
+	e = e ? e : code_word(words, CXI_KEY_CDB, cstr_view(cfg->codes[r]));
+	e = e ? e : code_word(words, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
+	return e ? e : code_word(words, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
 	                         ? CSTR_VIEW("1") : cstr_view(nullptr));
 }
 
@@ -502,13 +1084,20 @@ static void
 code_start (struct mcp_slot    *slot,
             struct json_object *args)
 {
-	struct code const *code = mcp_slot_part(slot);
+	struct code_loop const *cl = mcp_slot_part(slot);
+	struct code const *code = cl->code;
 	struct code_call *call = malloc(sizeof *call);
 	if (!call) {
 		mcp_slot_fail(slot, ENOMEM);
 		return;
 	}
-	*call = (struct code_call){ .words = DSTR_INIT };
+	*call = (struct code_call){
+		.words  = DSTR_INIT,
+		.answer = cxi_out(cstr_view(nullptr)),
+		.wait   = list(&call->wait),
+		.timer  = { .fn = code_call_late },
+		.slot   = slot
+	};
 	git_pin_init(&call->pin, code->git, jb_view(jb_get(args, "repo")),
 	             mcp_slot_loop(slot)->now + code->cfg->git_timeout);
 	*mcp_slot_own(slot) = call;
@@ -520,6 +1109,78 @@ code_start (struct mcp_slot    *slot,
 		mcp_slot_fail(slot, e);
 	else if (!mcp_slot_offset(slot, args))
 		code_step(slot);
+}
+
+void *
+code_loop_create (void                *service,
+                  struct loop         *loop,
+                  struct blocker      *,
+                  struct list         *children,
+                  struct tool_scratch *,
+                  int                 *e)
+{
+	struct code_loop *cl = malloc(sizeof *cl);
+	if (!cl) {
+		*e = ENOMEM;
+		return nullptr;
+	}
+	*cl = (struct code_loop){
+		.waiting  = list(&cl->waiting),
+		.children = children,
+		.loop     = loop,
+		.code     = service
+	};
+	for (size_t i = 0; i < CODE_PARSES; ++i)
+		cl->parse[i].cl = cl;
+	*e = 0;
+	return cl;
+}
+
+void
+code_loop_destroy (void **p_part)
+{
+	struct code_loop *cl = *p_part;
+	if (!cl)
+		return;
+	*p_part = nullptr;
+	struct code *code = cl->code;
+	pthread_mutex_lock(&code->lock);
+	for (size_t i = 0; i < CODE_PARSES; ++i) {
+		struct code_parse *parse = &cl->parse[i];
+		if (!parse->child)
+			continue;
+
+		code_parse_end(parse);
+		code_build_undo(parse->build, parse->unit);
+		code_build_put(parse->build);
+	}
+	pthread_mutex_unlock(&code->lock);
+	free(cl);
+}
+
+int
+code_init (struct code         *dest,
+           struct git const    *git,
+           struct config const *cfg)
+{
+	*dest = (struct code){
+		.git    = git,
+		.cfg    = cfg,
+		.builds = list(&dest->builds)
+	};
+	return pthread_mutex_init(&dest->lock, nullptr);
+}
+
+void
+code_fini (struct code *code)
+{
+	while (!list_is_empty(&code->builds)) {
+		struct code_build *build = container_of(code->builds.next,
+		                                        struct code_build, hook);
+		list_del(&build->hook);
+		code_build_free(build);
+	}
+	pthread_mutex_destroy(&code->lock);
 }
 
 struct plugin const code_plugin = {
