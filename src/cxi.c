@@ -2216,10 +2216,16 @@ cxi_cleanup_name (CXCursor c,
 	size_t f = 0;
 	for (; text && !form && f < array_size(forms); ++f)
 		form = strstr(text, forms[f].data);
-	struct cstr_view const rest = cstr_view(form ? form + forms[f - 1].len : nullptr);
-	size_t len = cxi_ident(rest);
-	len = len <= CXI_NAME && rest.data[len] == ')' ? len : 0;
-	memcpy(name, rest.data, len);
+	size_t len = 0;
+	if (form) {
+		/* The text after the form ends with a NUL. */
+		char const *rest = form + forms[f - 1].len;
+		size_t const n = cxi_ident(cstr_view(rest));
+		if (n <= CXI_NAME && rest[n] == ')') {
+			memcpy(name, rest, n);
+			len = n;
+		}
+	}
 	name[len] = '\0';
 	clang_disposeString(printed);
 	return len;

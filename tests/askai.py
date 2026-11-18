@@ -10595,7 +10595,7 @@ static int (*calls_table[2])(int);
 int
 calls_all (struct calls_ops *o, int (*cb)(int), int n, char const *s)
 {
-\tint r = calls_plain(n);
+\tint r [[maybe_unused]] = calls_plain(n);
 \tr += (calls_plain)(n);
 \tr += (*calls_plain)(n);
 \tr += calls_wrapped(n);
@@ -11359,7 +11359,8 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # used. The function of the attribute cleanup of a variable is in a
         # row at the line of the variable, with the macro that the
         # attribute is written through. The row contains no function if no
-        # declaration at file scope declares the function.
+        # declaration at file scope declares the function. A variable with
+        # another attribute has no row of its own.
         calls = call(ai, repo="proj", action="describe", path="src/calls.c", name="calls_all")
         assert calls == (
             f"[Repository proj, file src/calls.c at commit {head}. function calls_all in the "
