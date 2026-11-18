@@ -35,9 +35,11 @@ void const *
 cxi_ast_node (CXCursor c)
 {
 	/* The first data pointer of the cursor of a declaration is the
-	 * declaration: getCursorDecl() in the same file. The second one of
-	 * the cursor of a statement is the statement, as of an expression. */
-	if (clang_isDeclaration(c.kind))
+	 * declaration, and that of the cursor of a macro definition is the
+	 * record of the definition: getCursorDecl() and
+	 * getCursorMacroDefinition() in the same file. The second one of the
+	 * cursor of a statement is the statement, as of an expression. */
+	if (clang_isDeclaration(c.kind) || c.kind == CXCursor_MacroDefinition)
 		return c.data[0];
 	return clang_isExpression(c.kind) || clang_isStatement(c.kind)
 	       ? c.data[1] : nullptr;

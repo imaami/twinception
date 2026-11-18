@@ -32,6 +32,7 @@
 #include "cxi_ast.h"
 #include "dstr.h"
 #include "git_run.h"
+#include "graph.h"
 #include "jb.h"
 #include "oid.h"
 #include "tool.h"
@@ -345,20 +346,33 @@ cxi_line (CXSourceLocation loc)
 	return line;
 }
 
+/* Returns the name of @p file, the file of @p loc. Without a file, returns
+ * the name that clang presumes for @p loc and writes the line that it
+ * presumes to @p *line: a macro of clang or of -D is in <built-in> or
+ * <command line>. The caller disposes of the name.
+ */
+static CXString
+cxi_file_name (CXSourceLocation  loc,
+               CXFile            file,
+               unsigned         *line)
+{
+	CXString name;
+	if (file)
+		return clang_getFileName(file);
+
+	clang_getPresumedLocation(loc, &name, line, nullptr);
+	return name;
+}
+
 /* Appends the path of the file of @p loc and returns the line of @p loc. */
 static unsigned
 cxi_out_file (struct cxi_out   *out,
               CXSourceLocation  loc)
 {
 	CXFile file;
-	CXString name;
 	unsigned line;
 	clang_getFileLocation(loc, &file, &line, nullptr, nullptr);
-	/* A macro of clang or of -D is in <built-in> or <command line>. */
-	if (file)
-		name = clang_getFileName(file);
-	else
-		clang_getPresumedLocation(loc, &name, &line, nullptr);
+	CXString name = cxi_file_name(loc, file, &line);
 	char const *path = clang_getCString(name);
 	cxi_out_path(out, cxi_out_rel(out, path ? path : ""));
 	clang_disposeString(name);
@@ -375,16 +389,14 @@ cxi_out_place (struct cxi_out   *out,
 	cxi_out_num(out, line);
 }
 
-/* Appends the lines of the declaration @p c as FIRST-LAST, or as FIRST if
- * the declaration is one line.
+/* Appends the lines @p first to @p last of a declaration as FIRST-LAST, or
+ * as FIRST if the declaration is one line.
  */
 static void
-cxi_out_lines (struct cxi_out *out,
-               CXCursor        c)
+cxi_out_range (struct cxi_out *out,
+               uint32_t        first,
+               uint32_t        last)
 {
-	CXSourceRange const extent = clang_getCursorExtent(c);
-	unsigned const first = cxi_line(clang_getRangeStart(extent));
-	unsigned const last = cxi_line(clang_getRangeEnd(extent));
 	cxi_out_num(out, first);
 	if (last != first) {
 		cxi_out_lit(out, "-");
@@ -1635,24 +1647,6 @@ cxi_summary (struct cxi     *x,
 	return listed;
 }
 
-/* How the program evaluates an expression of a function. The state of an
- * expression is the largest of the states of its place in each expression
- * that contains it.
- */
-enum cxi_state : uint32_t {
-	CXI_EVALUATED,    /* evaluated when the program reaches the code */
-	CXI_UNPROVEN,     /* the tool cannot tell if the program evaluates it */
-	CXI_UNEVALUATED,  /* never evaluated, such as an operand of sizeof */
-};
-
-enum cxi_call_flag : uint32_t {
-	CXI_CALL_ELEMENT = 1U << 0,  /* the callee is an element of an array */
-	CXI_CALL_BUILTIN = 1U << 1,  /* the callee is a builtin function that no
-	                                file declares */
-	CXI_CALL_CLEANUP = 1U << 2,  /* the call is that of the attribute cleanup
-	                                of a variable */
-};
-
 /* A call of a function. at is the call expression, or the variable with
  * the attribute cleanup: the program calls the function of the attribute
  * at the end of the scope of the variable. The callees are the n
@@ -1661,7 +1655,7 @@ enum cxi_call_flag : uint32_t {
  * or parameter of a function pointer. Several callees are the functions of
  * which an expression selects one. n is 0 for any other callee. macro is
  * the definition of the macro that the call is written through
- * (cxi_macro()), or null. For a call that is CXI_UNEVALUATED, n is 0 and
+ * (cxi_macro()), or null. For a call that is GRAPH_UNEVALUATED, n is 0 and
  * macro is null: the call is only counted. node is at in the syntax tree
  * (cxi_ast_node()), by which a second visit of at is known. row is the
  * index of the first call of the function with the same state, flags,
@@ -1675,15 +1669,15 @@ struct cxi_call {
 	uint64_t    row;
 	uint32_t    first;
 	uint32_t    n;
-	uint32_t    state;  /* enum cxi_state */
-	uint32_t    flags;  /* enum cxi_call_flag */
+	uint32_t    state;  /* enum graph_state */
+	uint32_t    flags;  /* enum graph_call_flag */
 };
 
 static force_inline struct cxi_call
 cxi_call (CXCursor           at,
           uint32_t           first,
           uint32_t           n,
-          enum cxi_call_flag flags)
+          enum graph_call_flag flags)
 {
 	return (struct cxi_call){
 		.at    = at,
@@ -1876,7 +1870,7 @@ cxi_choose (CXCursor const kids[static 3])
 	return cxi_constant(kids[0], &nonzero) ? 2 - nonzero : 3;
 }
 
-/* Returns the state of @p c as an operand of typeof, or CXI_EVALUATED if
+/* Returns the state of @p c as an operand of typeof, or GRAPH_EVALUATED if
  * @p c is none. The operand is an expression in parentheses, and the
  * keyword is written before it with only white space between them. The
  * program evaluates the operand only if the type of the operand is
@@ -1905,17 +1899,17 @@ cxi_typeof (CXTranslationUnit tu,
 		++n;
 	struct cstr_view const word = cstr_view_slice(line, line.len - n, SIZE_MAX);
 	if (cstr_view_index(words, array_size(words), word) == array_size(words))
-		return CXI_EVALUATED;
+		return GRAPH_EVALUATED;
 	/* A line feed ends a directive and a comment that starts with //: the
 	 * word in such a line is not the keyword of a parenthesis in a later
 	 * line. */
 	char const *end = line.data + line.len;
 	if (memchr(end, '\n', (size_t)(before.data + before.len - end)) &&
 	    (memchr(line.data, '#', line.len) || memmem(line.data, line.len, "//", 2)))
-		return CXI_EVALUATED;
+		return GRAPH_EVALUATED;
 	enum CXTypeKind const t = clang_getCanonicalType(clang_getCursorType(c)).kind;
 	return (t >= CXType_FirstBuiltin && t <= CXType_LastBuiltin) || t == CXType_Record ||
-	       t == CXType_Enum ? CXI_UNEVALUATED : CXI_UNPROVEN;
+	       t == CXType_Enum ? GRAPH_UNEVALUATED : GRAPH_UNPROVEN;
 }
 
 static int
@@ -1938,7 +1932,7 @@ cxi_walk_callee_name (struct cxi_walk *walk,
 		/* The name of a builtin function that no file declares is of a
 		 * type of its own, which libclang does not expose. */
 		if (clang_getCanonicalType(clang_getCursorType(e)).kind == CXType_Unexposed)
-			call->flags |= CXI_CALL_BUILTIN;
+			call->flags |= GRAPH_CALL_BUILTIN;
 		[[fallthrough]];
 	case CXCursor_VarDecl:
 	case CXCursor_ParmDecl:
@@ -2025,7 +2019,7 @@ cxi_walk_callee_through (struct cxi_walk *walk,
 		if (n != 2)
 			return ENOENT;
 		/* The array is the child that is a pointer. */
-		call->flags |= CXI_CALL_ELEMENT;
+		call->flags |= GRAPH_CALL_ELEMENT;
 		return cxi_walk_callee(walk, kids[clang_getCanonicalType(clang_getCursorType(
 			kids[0])).kind != CXType_Pointer], call);
 	case CXCursor_UnaryOperator: {
@@ -2114,14 +2108,14 @@ cxi_walk_selected (struct cxi_walk *walk,
 		size_t first = 1;
 		size_t const chosen = generic ? cxi_generic(c, walk->kids.items + at, n, &first)
 		                              : cxi_choose(walk->kids.items + at);
-		*state = kid == chosen ? CXI_EVALUATED
-		       : kid < first || chosen < n ? CXI_UNEVALUATED : CXI_UNPROVEN;
+		*state = kid == chosen ? GRAPH_EVALUATED
+		       : kid < first || chosen < n ? GRAPH_UNEVALUATED : GRAPH_UNPROVEN;
 	}
 	walk->kids.n = at;
 	return e;
 }
 
-/* Writes CXI_UNPROVEN to @p *state if the call expression @p c is a call
+/* Writes GRAPH_UNPROVEN to @p *state if the call expression @p c is a call
  * of a builtin function whose arguments clang does not evaluate for side
  * effects. The program evaluates such an argument only if clang finds no
  * side effect in the argument.
@@ -2154,14 +2148,14 @@ cxi_walk_unevaluated (struct cxi_walk *walk,
 	                                (uint32_t)walk->to.n, 0, 0);
 	int const e = cxi_walk_call(walk, c, &call);
 	walk->to.n = call.first;
-	if (call.flags & CXI_CALL_BUILTIN)
-		*state = CXI_UNPROVEN;
+	if (call.flags & GRAPH_CALL_BUILTIN)
+		*state = GRAPH_UNPROVEN;
 	return e;
 }
 
 /* Writes the state of the cursor of the visit of @p walk, the last node of
  * the path, to @p *state: the largest state of the place of a node in the
- * node before it. The places that are not CXI_EVALUATED are an operand of
+ * node before it. The places that are not GRAPH_EVALUATED are an operand of
  * a sizeof or alignof, which the program does not evaluate if the
  * expression is a constant, a child of a selection (cxi_walk_selected()),
  * an argument of some builtin functions (cxi_walk_unevaluated()), and the
@@ -2172,11 +2166,11 @@ cxi_walk_state (struct cxi_walk *walk,
                 uint32_t        *state)
 {
 	int e = 0;
-	*state = CXI_EVALUATED;
-	for (size_t i = 0; !e && i + 1 < walk->n && *state < CXI_UNEVALUATED; ++i) {
+	*state = GRAPH_EVALUATED;
+	for (size_t i = 0; !e && i + 1 < walk->n && *state < GRAPH_UNEVALUATED; ++i) {
 		CXCursor const up = walk->items[i].c;
 		CXCursor const c = walk->items[i + 1].c;
-		uint32_t place = CXI_EVALUATED;
+		uint32_t place = GRAPH_EVALUATED;
 		bool nonzero;
 		switch (up.kind) {
 		case CXCursor_GenericSelectionExpr:
@@ -2184,7 +2178,7 @@ cxi_walk_state (struct cxi_walk *walk,
 			e = cxi_walk_selected(walk, up, walk->items[i].kids - 1, &place);
 			break;
 		case CXCursor_UnaryExpr:
-			place = cxi_constant(up, &nonzero) ? CXI_UNEVALUATED : CXI_UNPROVEN;
+			place = cxi_constant(up, &nonzero) ? GRAPH_UNEVALUATED : GRAPH_UNPROVEN;
 			break;
 		case CXCursor_CallExpr:
 			e = cxi_walk_unevaluated(walk, up, &place);
@@ -2193,7 +2187,7 @@ cxi_walk_state (struct cxi_walk *walk,
 			break;
 		}
 		uint32_t const operand = c.kind == CXCursor_ParenExpr ? cxi_typeof(walk->tu, c)
-		                                                      : CXI_EVALUATED;
+		                                                      : GRAPH_EVALUATED;
 		place = place > operand ? place : operand;
 		*state = *state > place ? *state : place;
 	}
@@ -2285,33 +2279,20 @@ cxi_walk_cleanup_macro (struct cxi_walk *walk,
 	return e;
 }
 
-/* The calls of a function, with the walk that collects them. x is the call
- * of askai-code. The visit of the code of a function (cxi_calls_collect())
- * calls call for a call expression and cleanup for a variable with
- * attributes. Each appends the call that an action wants to the calls, and
- * returns 0 or the error that stops the visit.
+/* The calls of a function, with the walk that collects them
+ * (cxi_calls_collect()). x is the call of askai-code.
  */
 struct cxi_calls {
 	UTIL_ARRAY(struct cxi_call);
-	struct cxi_walk   walk;
-	struct cxi       *x;
-	int             (*call) (struct cxi_calls *calls, CXCursor c);
-	int             (*cleanup) (struct cxi_calls *calls, CXCursor c);
+	struct cxi_walk  walk;
+	struct cxi      *x;
 };
 
-/* Returns the calls of a function before a visit collects them, with the
- * functions @p call and @p cleanup of an action.
- */
+/* Returns the calls of a function before a visit collects them. */
 static force_inline struct cxi_calls
-cxi_calls (struct cxi  *x,
-           int        (*call) (struct cxi_calls *calls, CXCursor c),
-           int        (*cleanup) (struct cxi_calls *calls, CXCursor c))
+cxi_calls (struct cxi *x)
 {
-	return (struct cxi_calls){
-		.x       = x,
-		.call    = call,
-		.cleanup = cleanup
-	};
+	return (struct cxi_calls){ .x = x };
 }
 
 /* Frees the calls and the walk of @p calls. */
@@ -2391,7 +2372,7 @@ cxi_calls_add (struct cxi_calls *calls,
 	struct cxi_walk *walk = &calls->walk;
 	struct cxi_call call = cxi_call(c, (uint32_t)walk->to.n, 0, 0);
 	int e = cxi_walk_state(walk, &call.state);
-	if (!e && call.state != CXI_UNEVALUATED) {
+	if (!e && call.state != GRAPH_UNEVALUATED) {
 		call.macro = cxi_macro(walk->tu, clang_getCursorLocation(c));
 		e = cxi_walk_call(walk, c, &call);
 	}
@@ -2411,11 +2392,11 @@ cxi_calls_add_cleanup (struct cxi_calls *calls,
 	char name[CXI_NAME + 1];
 	struct cxi_walk *walk = &calls->walk;
 	struct cxi_call call = cxi_call(c, (uint32_t)walk->to.n,
-	                                0, CXI_CALL_CLEANUP);
+	                                0, GRAPH_CALL_CLEANUP);
 	if (!cxi_cleanup_name(c, name))
 		return 0;
 	int e = cxi_walk_state(walk, &call.state);
-	if (e || call.state == CXI_UNEVALUATED)
+	if (e || call.state == GRAPH_UNEVALUATED)
 		return e;
 	e = cxi_walk_cleanup_macro(walk, c, &call.macro);
 	struct cxi_seek seek = cxi_seek(name);
@@ -2428,10 +2409,10 @@ cxi_calls_add_cleanup (struct cxi_calls *calls,
 	return e ? e : cxi_calls_push(calls, call);
 }
 
-/* Moves the walk of the cxi_calls at @p data to @p c, and calls the
- * function of the calls for a call expression or for a variable with
- * attributes. The visit does not enter a cursor that it has entered
- * before: the walk or the calls then return EALREADY.
+/* Moves the walk of the cxi_calls at @p data to @p c, and appends the call
+ * of a call expression or of a variable with the attribute cleanup. The
+ * visit does not enter a cursor that it has entered before: the walk or
+ * the calls then return EALREADY.
  */
 static enum CXChildVisitResult
 cxi_calls_visit (CXCursor     c,
@@ -2442,9 +2423,9 @@ cxi_calls_visit (CXCursor     c,
 	int e = cxi_walk_step(&calls->walk, c, parent);
 
 	if (!e && c.kind == CXCursor_CallExpr)
-		e = calls->call(calls, c);
+		e = cxi_calls_add(calls, c);
 	else if (!e && c.kind == CXCursor_VarDecl && clang_Cursor_hasAttrs(c))
-		e = calls->cleanup(calls, c);
+		e = cxi_calls_add_cleanup(calls, c);
 
 	if (e == EALREADY)
 		return CXChildVisit_Continue;
@@ -2502,11 +2483,11 @@ cxi_calls_row (struct cxi_calls const *calls,
 {
 	struct cxi_out *out = &calls->x->out;
 	struct cxi_call const *call = &calls->items[i];
-	bool const cleanup = call->flags & CXI_CALL_CLEANUP;
+	bool const cleanup = call->flags & GRAPH_CALL_CLEANUP;
 	/* which is true for several functions, and for the function of an
 	 * attribute cleanup that the tool did not find. */
 	bool const which = call->n > 1 || (cleanup && !call->n);
-	bool const unproven = call->state == CXI_UNPROVEN;
+	bool const unproven = call->state == GRAPH_UNPROVEN;
 	cxi_out_lit(out, "  ");
 	cxi_calls_places(calls, i, ':');
 	cxi_out_lit(out, " ");
@@ -2516,7 +2497,7 @@ cxi_calls_row (struct cxi_calls const *calls,
 		if (f)
 			cxi_out_lit(out, " or ");
 		if (k != CXCursor_FunctionDecl) {
-			cxi_out_view(out, call->flags & CXI_CALL_ELEMENT
+			cxi_out_view(out, call->flags & GRAPH_CALL_ELEMENT
 			             ? CSTR_VIEW("indirect, through an element of the ")
 			             : CSTR_VIEW("indirect, through the "));
 			cxi_out_view(out, k == CXCursor_FieldDecl ? CSTR_VIEW("member")
@@ -2529,7 +2510,7 @@ cxi_calls_row (struct cxi_calls const *calls,
 			cxi_out_clang(out, clang_getTypeSpelling(clang_getCursorType(
 				cxi_record_around(clang_getCursorSemanticParent(to)))));
 		}
-		if (call->flags & CXI_CALL_BUILTIN) {
+		if (call->flags & GRAPH_CALL_BUILTIN) {
 			cxi_out_lit(out, " (builtin)");
 		} else {
 			cxi_out_lit(out, " (");
@@ -2566,14 +2547,14 @@ static int
 cxi_describe_calls (struct cxi *x,
                     CXCursor    c)
 {
-	struct cxi_calls calls = cxi_calls(x, cxi_calls_add, cxi_calls_add_cleanup);
+	struct cxi_calls calls = cxi_calls(x);
 	int const e = cxi_calls_collect(&calls, c);
 	size_t rows = 0;
 	size_t unevaluated = 0;
 	size_t first = 0;
 	for (size_t i = 0; !e && i < calls.n; ++i) {
 		struct cxi_call const *call = &calls.items[i];
-		if (call->state == CXI_UNEVALUATED) {
+		if (call->state == GRAPH_UNEVALUATED) {
 			first = call->row;
 			++unevaluated;
 		} else if (call->row == i) {
@@ -2781,265 +2762,298 @@ cxi_tu (struct cxi        *x,
 	return failed;
 }
 
-/* A translation unit of callers: the search for the calls of the functions
- * of a name in one parse. One translation unit declares one function of a
- * name. named is the first declaration of that function, or null while the
- * search has reached none. wanted is true if the function is one of the
- * search, and key is then the callee of its rows (cxi_unit_found()).
- *
- * linkage is CXLinkage_Invalid for a search for each function of the name.
- * With a path in the request, the search is for the one function that the
- * translation unit of the path declares: linkage is the linkage of that
- * function, and a static function is known by file, the file of its first
- * declaration. The search goes through several parses, and a cursor is of
- * one parse.
- */
-struct cxi_unit {
-	struct cxi_calls calls;    /* of the functions of the search, in the
-	                              function of a visit */
-	struct cxi_out   key;
-	CXCursor         named;
-	CXFileUniqueID   file;
-	uint32_t         linkage;  /* enum CXLinkageKind */
-	uint32_t         wanted;
+/* The number of a node of a parse. */
+struct cxi_id {
+	void const *node;
+	uint64_t    id;
 };
 
-static int
-cxi_unit_call (struct cxi_calls *calls,
-               CXCursor          c);
-
-static int
-cxi_unit_cleanup (struct cxi_calls *calls,
-                  CXCursor          c);
-
-/* Returns a search for each function of the name of the request of @p x,
- * before the search reaches a function.
+/* The numbers of the nodes of a parse: a hash table of room slots, a power
+ * of two, of which n contain a node. The node of an empty slot is null. At
+ * most half of the slots contain a node.
  */
-static force_inline struct cxi_unit
-cxi_unit (struct cxi *x)
-{
-	return (struct cxi_unit){
-		.calls   = cxi_calls(x, cxi_unit_call, cxi_unit_cleanup),
-		.key     = cxi_out(x->out.tree),
-		.named   = clang_getNullCursor(),
-		.linkage = CXLinkage_Invalid,
-	};
-}
+struct cxi_ids {
+	struct cxi_id *slots;
+	size_t         n;
+	size_t         room;
+};
 
-/* Frees the calls and the callee of @p unit. */
+/* Frees the slots of @p ids. */
 static void
-cxi_unit_fini (struct cxi_unit *unit)
+cxi_ids_fini (struct cxi_ids *ids)
 {
-	cxi_out_fini(&unit->key);
-	cxi_calls_fini(&unit->calls);
+	free(ids->slots);
+	*ids = (struct cxi_ids){};
 }
 
-/* Limits the search of @p unit to the function of the name that the
- * translation unit of the path of the request declares, which is parsed.
- * The error is that of cxi_lookup().
+/* Returns the slot of @p node among the @p room slots at @p slots: the one
+ * that contains @p node, or the empty one where @p node belongs. At least
+ * one slot is empty.
+ */
+static struct cxi_id *
+cxi_ids_slot (struct cxi_id *slots,
+              size_t         room,
+              void const    *node)
+{
+	/* The low bits of a pointer to an object are 0. */
+	uint64_t const hash = ((uintptr_t)node >> 4) *
+	                      UINT64_C(0x9e3779b97f4a7c15);
+	size_t i = (size_t)(hash >> 32) & (room - 1);
+	while (slots[i].node && slots[i].node != node)
+		i = (i + 1) & (room - 1);
+	return &slots[i];
+}
+
+/* Returns true and writes the number of @p node to @p *id if @p ids
+ * contains @p node.
+ */
+static bool
+cxi_ids_get (struct cxi_ids const *ids,
+             void const           *node,
+             uint32_t             *id)
+{
+	if (!ids->room)
+		return false;
+
+	struct cxi_id const *slot = cxi_ids_slot(ids->slots, ids->room, node);
+	if (!slot->node)
+		return false;
+
+	*id = (uint32_t)slot->id;
+	return true;
+}
+
+/* Gives @p node, which @p ids does not contain, the number @p id. Returns
+ * 0, ENOMEM, or EINVAL for a null pointer.
  */
 static int
-cxi_unit_limit (struct cxi_unit *unit)
+cxi_ids_put (struct cxi_ids *ids,
+             void const     *node,
+             uint32_t        id)
 {
-	struct cxi *x = unit->calls.x;
-	CXCursor c;
-	CXFile file;
-	int const e = cxi_lookup(x, x->key[CXI_KEY_NAME].data, CXCursor_FunctionDecl, &c);
-	if (e)
-		return e;
-	CXCursor const first = clang_getCanonicalCursor(c);
-	unit->linkage = clang_getCursorLinkage(first);
-	clang_getFileLocation(clang_getCursorLocation(first), &file, nullptr, nullptr, nullptr);
-	if (file)
-		(void)clang_getFileUniqueID(file, &unit->file);
+	if (!node)
+		return EINVAL;
+
+	if (2 * (ids->n + 1) > ids->room) {
+		size_t const room = ids->room ? 2 * ids->room : 256;
+		struct cxi_id *slots = calloc(room, sizeof *slots);
+		if (!slots)
+			return ENOMEM;
+		for (size_t i = 0; i < ids->room; ++i) {
+			struct cxi_id const *old = &ids->slots[i];
+			if (old->node)
+				*cxi_ids_slot(slots, room, old->node) = *old;
+		}
+		free(ids->slots);
+		ids->slots = slots;
+		ids->room = room;
+	}
+
+	*cxi_ids_slot(ids->slots, ids->room, node) = (struct cxi_id){
+		.node = node,
+		.id   = id
+	};
+	++ids->n;
 	return 0;
 }
 
-/* Makes @p d, the first declaration of a function of the name, the function
- * of the name of @p unit. If the function is one of the search, sets the
- * callee of its rows, and appends the row of a callee without a call.
- *
- * The callee is a letter and the place of the function as FILE:FIRST-LAST.
- * The place is that of the definition in the translation unit, or of @p d
- * if there is none. The letter is S for a static function and E for any
- * other one, in lower case if the translation unit does not define the
- * function: the definition of an e is then in another translation unit, or
- * in none.
+/* The graph of the translation unit of a parse while a visit fills it
+ * (cxi_graph_function()): the draft, the numbers in the draft of the
+ * nodes of the parse, and the calls of the function of the visit. The
+ * number of a function is the index of its record. The number of a file is
+ * the offset of the text of its path, and that of the definition of a
+ * macro the offset of the text of its name.
  */
+struct cxi_graph {
+	struct cxi_calls   calls;
+	struct graph_draft draft;
+	struct cxi_ids     ids;
+};
+
+/* Returns an empty graph for a parse of the call @p x of askai-code. */
+static force_inline struct cxi_graph
+cxi_graph (struct cxi *x)
+{
+	return (struct cxi_graph){
+		.calls = cxi_calls(x),
+		.draft = graph_draft()
+	};
+}
+
+/* Frees the draft, the numbers and the calls of @p g. */
 static void
-cxi_unit_found (struct cxi_unit *unit,
-                CXCursor         d)
+cxi_graph_fini (struct cxi_graph *g)
 {
-	struct cxi_out *out = &unit->calls.x->out;
-	uint32_t const linkage = clang_getCursorLinkage(d);
-	unit->named = d;
-	unit->wanted = unit->linkage == CXLinkage_Invalid || linkage == unit->linkage;
-	if (unit->wanted && unit->linkage == CXLinkage_Internal) {
-		CXFile file;
-		CXFileUniqueID id;
-		clang_getFileLocation(clang_getCursorLocation(d), &file, nullptr, nullptr, nullptr);
-		unit->wanted = file && !clang_getFileUniqueID(file, &id) &&
-		               !memcmp(&id, &unit->file, sizeof id);
-	}
-	if (!unit->wanted)
-		return;
-	CXCursor const definition = clang_getCursorDefinition(d);
-	bool const defined = !clang_Cursor_isNull(definition);
-	CXCursor const at = defined ? definition : d;
-	cxi_out_put(&unit->key, &"SsEe"[2 * (linkage != CXLinkage_Internal) + !defined], 1);
-	(void)cxi_out_file(&unit->key, clang_getCursorLocation(at));
-	cxi_out_lit(&unit->key, ":");
-	cxi_out_lines(&unit->key, at);
-	cxi_out_view(out, cstr_view_dstr(&unit->key.text));
-	cxi_out_lit(out, "\t\t\n");
+	cxi_ids_fini(&g->ids);
+	graph_draft_fini(&g->draft);
+	cxi_calls_fini(&g->calls);
 }
 
-/* Returns true if @p d, the first declaration of a callee, is a function of
- * the search of @p unit.
- */
-static bool
-cxi_unit_is (struct cxi_unit *unit,
-             CXCursor         d)
-{
-	if (d.kind != CXCursor_FunctionDecl)
-		return false;
-	/* While no declaration at file scope has declared a function of the
-	 * name, a declaration in a block or an implicit one can. */
-	if (clang_Cursor_isNull(unit->named) &&
-	    cxi_spelled(d, unit->calls.x->key[CXI_KEY_NAME].data))
-		cxi_unit_found(unit, d);
-	return unit->wanted && clang_equalCursors(d, unit->named);
-}
-
-/* Appends the call expression @p c, the cursor of the visit, to @p calls,
- * the calls of a cxi_unit, if a callee is a function of the search and the
- * program can evaluate the call. The callee of most calls is a name, and
- * libclang returns the declaration of the name for the call. The state and
- * the macro of a call are looked for only if a callee is a function of the
- * search.
+/* Writes to @p *file the offset in the text of @p g of the path of the
+ * file of @p loc, as cxi_out_file() appends the path before it quotes it,
+ * and to @p *line the line of @p loc.
  */
 static int
-cxi_unit_call (struct cxi_calls *calls,
-               CXCursor          c)
+cxi_graph_file (struct cxi_graph *g,
+                CXSourceLocation  loc,
+                uint32_t         *file,
+                uint32_t         *line)
 {
-	struct cxi_unit *unit = container_of(calls, struct cxi_unit, calls);
-	struct cxi_walk *walk = &calls->walk;
-	struct cxi_call call = cxi_call(c, (uint32_t)walk->to.n, 0, 0);
-	CXCursor const d = clang_getCursorReferenced(c);
-	uint32_t i = 0;
+	struct cxi_out *out = &g->calls.x->out;
+	CXFile f;
+	unsigned l;
 	int e = 0;
-	if (clang_Cursor_isNull(d)) {
-		/* The callee is an expression, such as a _Generic selection. */
-		e = cxi_walk_call(walk, c, &call);
-		while (!e && i < call.n && !cxi_unit_is(unit, walk->to.items[call.first + i]))
-			++i;
-	} else if (d.kind == CXCursor_FunctionDecl &&
-	           cxi_unit_is(unit, clang_getCanonicalCursor(d))) {
-		e = util_push(walk->to, unit->named);
-		call.n = 1;
+	clang_getFileLocation(loc, &f, &l, nullptr, nullptr);
+	if (!f || !cxi_ids_get(&g->ids, f, file)) {
+		CXString name = cxi_file_name(loc, f, &l);
+		char const *path = clang_getCString(name);
+		e = graph_draft_text(&g->draft,
+		                     cxi_out_rel(out, path ? path : ""), file);
+		clang_disposeString(name);
+		if (!e && f)
+			e = cxi_ids_put(&g->ids, f, *file);
 	}
-	if (!e && i < call.n)
-		e = cxi_walk_state(walk, &call.state);
-	if (e || i == call.n || call.state == CXI_UNEVALUATED) {
-		walk->to.n = call.first;
-		return e;
-	}
-	call.macro = cxi_macro(walk->tu, clang_getCursorLocation(c));
-	return cxi_calls_push(calls, call);
+	*line = l;
+	return e;
 }
 
-/* Appends to @p calls, the calls of a cxi_unit, the call of the function
- * of the attribute cleanup of the variable @p c, the cursor of the visit,
- * if the function is one of the search and the program can evaluate the
- * declaration. The function of an attribute is declared at file scope
- * before the variable.
+/* Writes the file and the lines of the declaration @p c to @p *place, as
+ * cxi_graph_file() and the extent of @p c give them.
  */
 static int
-cxi_unit_cleanup (struct cxi_calls *calls,
-                  CXCursor          c)
+cxi_graph_place (struct cxi_graph   *g,
+                 CXCursor            c,
+                 struct graph_place *place)
 {
-	char name[CXI_NAME + 1];
-	struct cxi_unit *unit = container_of(calls, struct cxi_unit, calls);
-	struct cxi_walk *walk = &calls->walk;
-	struct cxi_call call = cxi_call(c, (uint32_t)walk->to.n,
-	                                1, CXI_CALL_CLEANUP);
-	if (!unit->wanted || !cstr_view_equal(cstr_view_n(name, cxi_cleanup_name(c, name)),
-	                                      calls->x->key[CXI_KEY_NAME]))
-		return 0;
-	int e = cxi_walk_state(walk, &call.state);
-	if (e || call.state == CXI_UNEVALUATED)
-		return e;
-	e = cxi_walk_cleanup_macro(walk, c, &call.macro);
-	if (!e)
-		e = util_push(walk->to, unit->named);
-	return e ? e : cxi_calls_push(calls, call);
+	CXSourceRange const extent = clang_getCursorExtent(c);
+	uint32_t line;
+	place->first = cxi_line(clang_getRangeStart(extent));
+	place->last = cxi_line(clang_getRangeEnd(extent));
+	return cxi_graph_file(g, clang_getCursorLocation(c), &place->file,
+	                      &line);
 }
 
-/* Appends the rows of the calls of @p unit, which are in the function
- * @p c. A row is the callee (cxi_unit_found()), a tab, the file, a tab, the
- * lines of the calls of a row of describe, the function @p c with its
- * lines, and in brackets a note for each of: the macro that the calls are
- * written through, the attribute cleanup, a callee that is one of several,
- * and a call that the program maybe does not evaluate.
+/* Writes to @p *id the index in @p g of the function whose first
+ * declaration is @p d, and appends the function if @p g does not contain
+ * it: the name, the linkage, the place of @p d, and the place of the
+ * definition if the translation unit has one.
  */
-static void
-cxi_unit_rows (struct cxi_unit const *unit,
-               CXCursor               c)
+static int
+cxi_graph_fn (struct cxi_graph *g,
+              CXCursor          d,
+              uint32_t         *id)
 {
-	struct cxi_calls const *calls = &unit->calls;
-	struct cxi_out *out = &calls->x->out;
-	for (size_t i = 0; i < calls->n; ++i) {
-		struct cxi_call const *call = &calls->items[i];
-		if (call->row != i)
-			continue;
-		cxi_out_view(out, cstr_view_dstr(&unit->key.text));
-		cxi_out_lit(out, "\t");
-		cxi_calls_places(calls, i, '\t');
-		cxi_out_lit(out, " ");
-		cxi_out_clang(out, clang_getCursorSpelling(c));
-		cxi_out_lit(out, " (");
-		cxi_out_lines(out, c);
-		cxi_out_lit(out, ")");
-		if (!clang_Cursor_isNull(call->macro)) {
-			cxi_out_lit(out, " [macro ");
-			cxi_out_clang(out, clang_getCursorSpelling(call->macro));
-			cxi_out_lit(out, "]");
-		}
-		if (call->flags & CXI_CALL_CLEANUP)
-			cxi_out_lit(out, " [attribute cleanup]");
-		if (call->n > 1)
-			cxi_out_lit(out, " [or another function]");
-		if (call->state == CXI_UNPROVEN)
-			cxi_out_lit(out, " [maybe not evaluated]");
-		cxi_out_lit(out, "\n");
-	}
+	void const *node = cxi_ast_node(d);
+	if (cxi_ids_get(&g->ids, node, id))
+		return 0;
+
+	struct graph_fn fn = {
+		.flags   = clang_getCursorLinkage(d) == CXLinkage_Internal
+		           ? GRAPH_FN_STATIC : 0,
+		.defined = { .file = GRAPH_NONE }
+	};
+	CXString name = clang_getCursorSpelling(d);
+	int e = graph_draft_text(&g->draft, cstr_view(clang_getCString(name)),
+	                         &fn.name);
+	clang_disposeString(name);
+	if (!e)
+		e = cxi_graph_place(g, d, &fn.declared);
+
+	CXCursor const definition = clang_getCursorDefinition(d);
+	if (!e && !clang_Cursor_isNull(definition))
+		e = cxi_graph_place(g, definition, &fn.defined);
+
+	*id = (uint32_t)g->draft.fns.n;
+	if (!e)
+		e = util_push(g->draft.fns, fn);
+	return e ? e : cxi_ids_put(&g->ids, node, *id);
 }
 
-/* Looks at each function at file scope for the cxi_unit at @p data. The
- * first one of the name is the function of the name of the translation
- * unit. The calls in the code of a function that a file of the tree
- * defines are searched, and their rows appended.
+/* Writes to @p *at the offset in the text of @p g of the name of the macro
+ * that @p macro defines, and appends the name if @p g does not contain it.
+ */
+static int
+cxi_graph_macro (struct cxi_graph *g,
+                 CXCursor          macro,
+                 uint32_t         *at)
+{
+	void const *node = cxi_ast_node(macro);
+	if (cxi_ids_get(&g->ids, node, at))
+		return 0;
+
+	CXString name = clang_getCursorSpelling(macro);
+	int e = graph_draft_text(&g->draft, cstr_view(clang_getCString(name)),
+	                         at);
+	clang_disposeString(name);
+	return e ? e : cxi_ids_put(&g->ids, node, *at);
+}
+
+/* Appends @p call, one of the calls of @p g, to the draft of @p g. A
+ * callee is in the graph only if it is a function: the one callee that is
+ * a variable, a parameter or a field is left out.
+ */
+static int
+cxi_graph_call (struct cxi_graph      *g,
+                struct cxi_call const *call)
+{
+	struct graph_call to = {
+		.to    = (uint32_t)g->draft.to.n,
+		.macro = GRAPH_NONE,
+		.state = call->state,
+		.flags = call->flags
+	};
+	int e = cxi_graph_file(g, clang_getCursorLocation(call->at), &to.file,
+	                       &to.line);
+	for (uint32_t i = 0; !e && i < call->n; ++i) {
+		CXCursor const d = g->calls.walk.to.items[call->first + i];
+		uint32_t id;
+		if (d.kind != CXCursor_FunctionDecl)
+			continue;
+		e = cxi_graph_fn(g, d, &id);
+		if (!e)
+			e = util_push(g->draft.to, id);
+	}
+	to.n = (uint32_t)g->draft.to.n - to.to;
+	if (!e && !clang_Cursor_isNull(call->macro))
+		e = cxi_graph_macro(g, call->macro, &to.macro);
+	return e ? e : util_push(g->draft.calls, to);
+}
+
+/* Appends each function at file scope to the cxi_graph at @p data, and the
+ * calls in the code of a function that a file of the tree defines. A visit
+ * that clang_visitChildren() reports as stopped has failed.
  */
 static enum CXChildVisitResult
-cxi_unit_function (CXCursor     c,
-                   CXCursor,
-                   CXClientData data)
+cxi_graph_function (CXCursor     c,
+                    CXCursor,
+                    CXClientData data)
 {
-	struct cxi_unit *unit = data;
-	struct cxi *x = unit->calls.x;
+	struct cxi_graph *g = data;
+	struct cxi_calls *calls = &g->calls;
 	if (c.kind != CXCursor_FunctionDecl)
 		return CXChildVisit_Continue;
-	if (clang_Cursor_isNull(unit->named) && cxi_spelled(c, x->key[CXI_KEY_NAME].data))
-		cxi_unit_found(unit, clang_getCanonicalCursor(c));
-	if (!clang_isCursorDefinition(c) || !cxi_in_tree(x->out.tree, c))
-		return CXChildVisit_Continue;
-	if (cxi_calls_collect(&unit->calls, c))
+
+	uint32_t id;
+	int e = cxi_graph_fn(g, clang_getCanonicalCursor(c), &id);
+	if (e)
 		return CXChildVisit_Break;
-	cxi_unit_rows(unit, c);
-	return x->out.e ? CXChildVisit_Break : CXChildVisit_Continue;
+	if (!clang_isCursorDefinition(c) || !cxi_in_tree(calls->x->out.tree, c))
+		return CXChildVisit_Continue;
+
+	e = cxi_calls_collect(calls, c);
+	uint32_t const first = (uint32_t)g->draft.calls.n;
+	for (size_t i = 0; !e && i < calls->n; ++i)
+		e = cxi_graph_call(g, &calls->items[i]);
+	if (e)
+		return CXChildVisit_Break;
+
+	/* A callee can have moved the functions of the draft. */
+	g->draft.fns.items[id].calls = first;
+	g->draft.fns.items[id].n_calls = (uint32_t)g->draft.calls.n - first;
+	return CXChildVisit_Continue;
 }
 
-/* A row of callers (cxi_unit_rows()): the callee, the file, the text
+/* A row of callers (cxi_wanted_rows()): the callee, the file, the text
  * after the second tab, and the first line of the text. The row of a
  * callee without a call is the callee and two tabs.
  */
@@ -3068,7 +3082,7 @@ cxi_row_order (void const *a,
  * callee the name and the place, and under it the file and the text of each
  * row, in the order of the files and the lines. A row that several
  * translation units give, as for a function that a header defines, is
- * appended once. A callee e (cxi_unit_found()) is the one E of the
+ * appended once. A callee e (cxi_wanted_rows()) is the one E of the
  * rows. If the rows contain no E or several, the callee is the
  * declaration, as is a static function without a definition: the place is
  * then appended after the word declared. Without a row, the function is
@@ -3186,26 +3200,8 @@ cxi_tu_errors (CXTranslationUnit tu)
 	return errors;
 }
 
-/* Appends what read() returns from @p fd up to the end of the file to
- * @p out. Returns 0 or the error of read().
- */
-static int
-cxi_out_read (struct cxi_out *out,
-              int             fd)
-{
-	char buf[4096];
-	for (;;) {
-		ssize_t const n = read(fd, buf, sizeof buf);
-		if (n > 0)
-			cxi_out_put(out, buf, (size_t)n);
-		else if (!n || errno != EINTR)
-			return n ? errno : 0;
-	}
-}
-
-/* The exit status of the child process of a translation unit of callers:
- * the rows are written, they are written and clang reported an error, or
- * no row is written.
+/* The exit status of the child process of a translation unit: the graph is
+ * written, it is written and clang reported an error, or it is not written.
  */
 enum {
 	CXI_UNIT_OK,
@@ -3213,36 +3209,237 @@ enum {
 	CXI_UNIT_FAILED
 };
 
-/* Runs in the child process of a translation unit of callers, which ends
- * with its parent: writes the rows of the translation unit of the clang
- * command line @p words to @p fd and exits with a status of the enum above.
- * The rows are one without a call for the function of the search that the
- * translation unit declares (cxi_unit_found()), and the rows of the calls
- * (cxi_unit_rows()). The answer is empty when the child starts, and the
- * child collects the rows in it. The parse of the file of the path serves
- * as the translation unit with the same command line. The process exits
- * without freeing its memory.
+/* Runs in the child process of a translation unit, which ends with its
+ * parent: fills @p g from the parse of the translation unit of the clang
+ * command line @p words, writes the graph to @p fd and exits with a status
+ * of the enum above. The parse of the file of the path serves as the
+ * translation unit with the same command line. The process exits without
+ * freeing its memory.
  */
 [[noreturn]] static void
-cxi_unit_run (struct cxi_unit  *unit,
-              struct cstr_view  words,
-              int               fd)
+cxi_graph_run (struct cxi_graph *g,
+               struct cstr_view  words,
+               int               fd)
 {
-	struct cxi *x = unit->calls.x;
+	struct cxi *x = g->calls.x;
 	if (prctl(PR_SET_PDEATHSIG, SIGKILL) ||
 	    (!cstr_view_equal(words, x->words) && cxi_tu(x, words, &x->tu)) ||
-	    clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_unit_function, unit) ||
-	    x->out.e || unit->key.e ||
-	    util_write_all(fd, dstr_get(&x->out.text), dstr_len(&x->out.text)))
+	    clang_visitChildren(clang_getTranslationUnitCursor(x->tu),
+	                        cxi_graph_function, g) ||
+	    x->out.e ||
+	    graph_draft_write(&g->draft, fd))
 		_exit(CXI_UNIT_FAILED);
 	_exit(cxi_tu_errors(x->tu) ? CXI_UNIT_ERRORS : CXI_UNIT_OK);
 }
+
+/* The functions that callers looks for in the graphs: each function named
+ * name. With a path in the request, only the function that the translation
+ * unit of the path declares: mask is then GRAPH_FN_STATIC and flags tells
+ * if that function is static, and a static function is the one whose first
+ * declaration is in file, the path as a graph names it. key is the callee
+ * of the rows of one function of a graph (cxi_wanted_rows()).
+ */
+struct cxi_wanted {
+	struct cstr_view name;
+	struct cxi_out   file;
+	struct cxi_out   key;
+	uint32_t         mask;
+	uint32_t         flags;
+};
+
+/* Returns a search for each function of the name of the request of @p x. */
+static force_inline struct cxi_wanted
+cxi_wanted (struct cxi const *x)
+{
+	return (struct cxi_wanted){
+		.name = x->key[CXI_KEY_NAME],
+		.file = cxi_out(x->out.tree),
+		.key  = cxi_out(x->out.tree)
+	};
+}
+
+/* Frees the file and the callee of @p wanted. */
+static void
+cxi_wanted_fini (struct cxi_wanted *wanted)
+{
+	cxi_out_fini(&wanted->key);
+	cxi_out_fini(&wanted->file);
+}
+
+/* Limits @p wanted to the function of the name that the translation unit
+ * of the path of the request of @p x declares, which is parsed. The error
+ * is that of cxi_lookup().
+ */
+static int
+cxi_wanted_limit (struct cxi_wanted *wanted,
+                  struct cxi        *x)
+{
+	CXCursor c;
+	int const e = cxi_lookup(x, wanted->name.data, CXCursor_FunctionDecl,
+	                         &c);
+	if (e)
+		return e;
+
+	CXCursor const first = clang_getCanonicalCursor(c);
+	CXSourceLocation const loc = clang_getCursorLocation(first);
+	CXFile file;
+	unsigned line;
+	clang_getFileLocation(loc, &file, &line, nullptr, nullptr);
+	CXString name = cxi_file_name(loc, file, &line);
+	char const *path = clang_getCString(name);
+	cxi_out_view(&wanted->file,
+	             cxi_out_rel(&wanted->file, path ? path : ""));
+	clang_disposeString(name);
+	wanted->mask = GRAPH_FN_STATIC;
+	wanted->flags = clang_getCursorLinkage(first) == CXLinkage_Internal
+	                ? GRAPH_FN_STATIC : 0;
+	return (int)wanted->file.e;
+}
+
+/* Returns true if the calls @p p and @p q of @p g are of one row: the same
+ * state, flags, macro and callees.
+ */
+static bool
+cxi_wanted_same (struct graph const      *g,
+                 struct graph_call const *p,
+                 struct graph_call const *q)
+{
+	return p->state == q->state &&
+	       p->flags == q->flags &&
+	       p->macro == q->macro &&
+	       p->n     == q->n     &&
+	       !memcmp(&g->to[p->to], &g->to[q->to], p->n * sizeof *g->to);
+}
+
+/* Returns true if the function @p fn of @p g is a callee of @p call. */
+static bool
+cxi_wanted_called (struct graph const      *g,
+                   struct graph_call const *call,
+                   uint32_t                 fn)
+{
+	uint32_t i = 0;
+	while (i < call->n && g->to[call->to + i] != fn)
+		++i;
+	return i < call->n;
+}
+
+/* Appends to @p out the rows of the calls of the function @p fn of @p g in
+ * the code of the function @p by. A row is the callee of @p wanted, a tab,
+ * the file, a tab, the lines of the calls of one row (cxi_wanted_same()),
+ * the function @p by with its lines, and in brackets a note for each of:
+ * the macro that the calls are written through, the attribute cleanup, a
+ * callee that is one of several, and a call that the program maybe does
+ * not evaluate. A call that the program does not evaluate has no callee.
+ */
+static void
+cxi_wanted_calls (struct cxi_wanted const *wanted,
+                  struct graph const      *g,
+                  uint32_t                 fn,
+                  struct graph_fn const   *by,
+                  struct cxi_out          *out)
+{
+	struct graph_call const *calls = &g->calls[by->calls];
+	for (uint32_t i = 0; i < by->n_calls; ++i) {
+		struct graph_call const *call = &calls[i];
+		if (!cxi_wanted_called(g, call, fn))
+			continue;
+
+		/* A row is appended for its first call. */
+		uint32_t j = 0;
+		while (j < i && !(cxi_wanted_called(g, &calls[j], fn) &&
+		                  cxi_wanted_same(g, &calls[j], call)))
+			++j;
+		if (j < i)
+			continue;
+
+		uint32_t line = call->line;
+		cxi_out_view(out, cstr_view_dstr(&wanted->key.text));
+		cxi_out_lit(out, "\t");
+		cxi_out_path(out, cstr_view(graph_text(g, call->file)));
+		cxi_out_lit(out, "\t");
+		cxi_out_num(out, line);
+		for (j = i + 1; j < by->n_calls; ++j) {
+			if (calls[j].line == line ||
+			    !cxi_wanted_called(g, &calls[j], fn) ||
+			    !cxi_wanted_same(g, &calls[j], call))
+				continue;
+			line = calls[j].line;
+			cxi_out_lit(out, ",");
+			cxi_out_num(out, line);
+		}
+		cxi_out_lit(out, " ");
+		cxi_out_text(out, graph_text(g, by->name));
+		cxi_out_lit(out, " (");
+		cxi_out_range(out, by->defined.first, by->defined.last);
+		cxi_out_lit(out, ")");
+		if (call->macro != GRAPH_NONE) {
+			cxi_out_lit(out, " [macro ");
+			cxi_out_text(out, graph_text(g, call->macro));
+			cxi_out_lit(out, "]");
+		}
+		if (call->flags & GRAPH_CALL_CLEANUP)
+			cxi_out_lit(out, " [attribute cleanup]");
+		if (call->n > 1)
+			cxi_out_lit(out, " [or another function]");
+		if (call->state == GRAPH_UNPROVEN)
+			cxi_out_lit(out, " [maybe not evaluated]");
+		cxi_out_lit(out, "\n");
+	}
+}
+
+/* Appends to @p out the rows of each function of @p g that @p wanted
+ * names: a row of the callee and two tabs, and the rows of the calls of
+ * the function (cxi_wanted_calls()).
+ *
+ * The callee is a letter and the place of the function as FILE:FIRST-LAST.
+ * The place is that of the definition in the translation unit, or of the
+ * first declaration if there is none. The letter is S for a static
+ * function and E for any other one, in lower case if the translation unit
+ * does not define the function: the definition of an e is then in another
+ * translation unit, or in none.
+ */
+static void
+cxi_wanted_rows (struct cxi_wanted  *wanted,
+                 struct graph const *g,
+                 struct cxi_out     *out)
+{
+	struct cxi_out *key = &wanted->key;
+	for (uint32_t i = 0; i < g->n_fns; ++i) {
+		struct graph_fn const *fn = &g->fns[i];
+		if ((fn->flags & wanted->mask) != wanted->flags ||
+		    strcmp(graph_text(g, fn->name), wanted->name.data) ||
+		    (wanted->flags && strcmp(graph_text(g, fn->declared.file),
+		                             dstr_get(&wanted->file.text))))
+			continue;
+
+		bool const defined = fn->defined.file != GRAPH_NONE;
+		struct graph_place const *at = defined ? &fn->defined
+		                                       : &fn->declared;
+		bool const is_static = fn->flags & GRAPH_FN_STATIC;
+		if (!dstr_clear(&key->text))
+			key->e = EINVAL;
+		cxi_out_put(key, &"SsEe"[2 * !is_static + !defined], 1);
+		cxi_out_path(key, cstr_view(graph_text(g, at->file)));
+		cxi_out_lit(key, ":");
+		cxi_out_range(key, at->first, at->last);
+		cxi_out_view(out, cstr_view_dstr(&key->text));
+		cxi_out_lit(out, "\t\t\n");
+		for (uint32_t by = 0; by < g->n_fns; ++by)
+			cxi_wanted_calls(wanted, g, i, &g->fns[by], out);
+	}
+	out->e = out->e ? out->e : key->e;
+}
+
+/* The largest graph of a translation unit that callers reads. */
+enum { CXI_GRAPH_MAX = 1 << 28 };
 
 /* callers: the calls of the functions named name in each translation unit
  * of the compile commands (cdb_next()). With a path, only the calls of the
  * function that the translation unit of the path declares. Each translation
  * unit is parsed in a child process, so that a crash of clang loses only
- * the calls of one file. No child starts unless twice the time of the
+ * the calls of one file. The child writes the graph of the translation
+ * unit (cxi_graph_run()), and the rows of the functions come from the
+ * graph (cxi_wanted_rows()). No child starts unless twice the time of the
  * longest one so far is left before the deadline. The answer is a list: the
  * repository, the commit, the callees with their callers (cxi_out_rows()),
  * and a line for each of: the files that clang could not parse, the files
@@ -3251,18 +3448,20 @@ cxi_unit_run (struct cxi_unit  *unit,
 static int
 cxi_callers (struct cxi *x)
 {
-	struct cxi_unit unit = cxi_unit(x);
-	int e = x->key[CXI_KEY_PATH].data ? cxi_unit_limit(&unit) : 0;
+	struct cxi_wanted wanted = cxi_wanted(x);
+	int e = x->key[CXI_KEY_PATH].data ? cxi_wanted_limit(&wanted, x) : 0;
 	if (e) {
-		cxi_unit_fini(&unit);
+		cxi_wanted_fini(&wanted);
 		return e;
 	}
 	struct cdb_map const map = cdb_map(x->key[CXI_KEY_TOP],
 	                                   cstr_view_slice(x->out.tree, 0, x->out.tree.len - 1));
+	struct cxi_graph draft = cxi_graph(x);
 	struct cxi_out rows = cxi_out(x->out.tree);
 	struct cxi_out failed = cxi_out(x->out.tree);
 	struct cxi_out errors = cxi_out(x->out.tree);
 	struct dstr words = DSTR_INIT;
+	struct buf bytes = buf();
 	uint64_t longest = 0;
 	size_t late = 0;
 	for (size_t at = 0; !rows.e && !(e = cdb_next(&map, x->cmds, &at, &words));) {
@@ -3275,28 +3474,34 @@ cxi_callers (struct cxi *x)
 		int end[2] = { -1, -1 };
 		pid_t const child = pipe2(end, O_CLOEXEC) ? -1 : fork();
 		if (!child)
-			cxi_unit_run(&unit, w, end[1]);
+			cxi_graph_run(&draft, w, end[1]);
 		e = child < 0 ? errno : 0;
 		util_close(&end[1]);
-		size_t const before = dstr_len(&rows.text);
-		e = e ? e : cxi_out_read(&rows, end[0]);
+		buf_clear(&bytes);
+		e = e ? e : buf_read(&bytes, end[0], 0, CXI_GRAPH_MAX);
 		util_close(&end[0]);
 		int status = 0;
 		while (!e && waitpid(child, &status, 0) < 0)
 			e = errno == EINTR ? 0 : errno;
 		if (e)
 			break;
-		bool const ok = WIFEXITED(status) && WEXITSTATUS(status) < CXI_UNIT_FAILED;
-		/* Without the rows of a child that did not write all of them. */
-		if (!ok && !dstr_erase(&rows.text, before, SIZE_MAX))
-			rows.e = EINVAL;
-		if (!ok || WEXITSTATUS(status) == CXI_UNIT_ERRORS)
-			cxi_out_unit(ok ? &errors : &failed, w);
+		/* The bytes of a child that did not write all of them are not
+		 * read as a graph. */
+		int bad = !WIFEXITED(status) ||
+		          WEXITSTATUS(status) >= CXI_UNIT_FAILED;
+		struct graph g = bad ? (struct graph){} : graph(&bytes, &bad);
+		if (!bad)
+			cxi_wanted_rows(&wanted, &g, &rows);
+		graph_fini(&g);
+		if (bad || WEXITSTATUS(status) == CXI_UNIT_ERRORS)
+			cxi_out_unit(bad ? &failed : &errors, w);
 		uint64_t const took = loop_clock() - start;
 		longest = took > longest ? took : longest;
 	}
+	buf_fini(&bytes);
 	dstr_cleanup(&words);
-	cxi_unit_fini(&unit);
+	cxi_graph_fini(&draft);
+	cxi_wanted_fini(&wanted);
 	cxi_out_lit(&x->out, "- repo: ");
 	cxi_out_view(&x->out, x->key[CXI_KEY_REPO]);
 	cxi_out_lit(&x->out, "\n- commit: ");

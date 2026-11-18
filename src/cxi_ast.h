@@ -30,10 +30,11 @@ cxi_ast_generic (CXCursor  c,
 
 /**
  * Returns the declaration, statement or expression of the cursor @p c in
- * the syntax tree, or a null pointer for a cursor of another kind. Two
- * cursors of one expression are not always equal for clang_equalCursors():
- * the cursor of an expression also contains the declaration through which
- * the visit reached the expression.
+ * the syntax tree, or the record of the definition of a macro, or a null
+ * pointer for a cursor of another kind. Two cursors of one expression are
+ * not always equal for clang_equalCursors(): the cursor of an expression
+ * also contains the declaration through which the visit reached the
+ * expression.
  */
 extern void const *
 cxi_ast_node (CXCursor c);

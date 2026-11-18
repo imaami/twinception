@@ -5,11 +5,12 @@ $(call set-build-dir,$(TEST_DIR)../build)
 
 .PHONY: default check check-ai check-askai check-buf check-cdb check-cli check-completion \
         check-cstr-view check-datauri check-dstr check-git-run check-jb check-handle check-instance check-journal check-ledger check-load \
-        check-evidence check-finding check-member check-ref check-seen check-store check-turn load load-build
+        check-evidence check-finding check-graph check-member check-ref check-seen check-store check-turn load load-build
 default:; @:
 check: | check-completion check-askai check-cli check-ai check-jb check-cdb check-buf \
          check-datauri check-handle check-turn check-instance check-git-run check-journal check-ledger \
-         check-evidence check-finding check-member check-ref check-seen check-store check-dstr check-load
+         check-evidence check-finding check-graph check-member check-ref check-seen check-store check-dstr \
+         check-load
 
 # Nothing below this comment is defined when tab-completing.
 
@@ -204,6 +205,10 @@ $Otests/finding.c.o $Otests/src/finding.c.o: CPPFLAGS += $(JSON_INCLUDES)
 check-buf: $Otests/buf
 	$<
 
+# Unit tests of the bytes of the graph of a translation unit, src/graph.c.
+check-graph: $Otests/graph
+	$<
+
 # Unit tests of the data: URIs of files that clients hand askai,
 # src/datauri.c.
 check-datauri: $Otests/datauri
@@ -287,10 +292,11 @@ $Otests/member.c.o $Otests/src/member.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
 # The unit tests. Each test links the object of its own source and the
 # objects of the files of src/ that the lines below list.
-override UNIT := buf datauri handle instance ledger ref turn
+override UNIT := buf datauri graph handle instance ledger ref turn
 
 $Otests/buf: $Otests/src/buf.c.o
 $Otests/datauri: $Otests/src/datauri.c.o
+$Otests/graph: $Otests/src/graph.c.o $Otests/src/buf.c.o
 $Otests/handle $Otests/instance $Otests/ledger $Otests/turn: $Otests/src/log.c.o
 $Otests/ledger: $Otests/src/dstr.c.o
 

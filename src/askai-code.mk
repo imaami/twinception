@@ -21,6 +21,7 @@ override SRC_askai-code := $(if $(LLVM_CONFIG), \
   cxi.c                                         \
   cxi_ast.cpp                                   \
   dstr.c                                        \
+  graph.c                                       \
   jb.c                                          \
   log.c                                         \
   loop.c)
