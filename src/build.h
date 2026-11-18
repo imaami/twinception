@@ -22,6 +22,8 @@ struct cxi_out;
 /** What a build contains for a translation unit. */
 enum build_state : uint32_t {
 	BUILD_NONE,     /**< nothing: no parse of the unit has ended */
+	BUILD_AGAIN,    /**< nothing: a parse of the unit took too long, and the
+	                     unit is parsed once more */
 	BUILD_PARSING,  /**< nothing yet: a parse of the unit runs */
 	BUILD_GRAPH,    /**< the graph of the unit. The unit does not change
 	                     after this. */
@@ -29,20 +31,29 @@ enum build_state : uint32_t {
 	                     does not change after this. */
 };
 
+/** Returns true if a unit in the state @p state waits for a parse. */
+static force_inline bool
+build_waits (uint32_t state)
+{
+	return state == BUILD_NONE || state == BUILD_AGAIN;
+}
+
 /** A translation unit of a build. */
 struct build_unit {
-	struct graph g;      /**< empty unless state is BUILD_GRAPH */
-	size_t       index;  /**< the index of the entry of the unit in the
-	                          compile commands */
-	uint32_t     path;   /**< the offset in the text of the build of the
-	                          path of the file of the unit, without the path
-	                          of the tree */
-	uint32_t     state;  /**< enum build_state */
+	struct graph g;        /**< empty unless state is BUILD_GRAPH */
+	uint32_t     path;     /**< the offset in the text of the build of the
+	                            path of the file of the unit, without the
+	                            path of the tree */
+	uint32_t     words;    /**< the offset in the text of the clang command
+	                            line of the unit */
+	uint32_t     n_words;  /**< the bytes of the command line, whose words
+	                            are each followed by a NUL */
+	uint32_t     state;    /**< enum build_state */
 };
 
 /** The translation units of a build, in the order of the compile commands.
- *  text contains the paths of the files, each followed by a NUL. A zeroed
- *  build is empty.
+ *  text contains the paths of the files, each followed by a NUL, and the
+ *  command lines. A zeroed build is empty.
  */
 struct build {
 	UTIL_ARRAY(struct build_unit);
@@ -61,14 +72,15 @@ extern void
 build_fini (struct build *b);
 
 /**
- * Appends to @p b the translation unit of the entry @p index of the compile
- * commands, for the file @p path. The unit is BUILD_NONE. Returns 0, ENOMEM,
- * or EOVERFLOW if the text of the build would reach 4 GiB.
+ * Appends to @p b the translation unit of the file @p path, which clang
+ * parses with the command line @p words, each word followed by a NUL. The
+ * unit is BUILD_NONE. Returns 0, ENOMEM, or EOVERFLOW if the text of the
+ * build would reach 4 GiB.
  */
 extern int
 build_add (struct build     *b,
-           size_t            index,
-           struct cstr_view  path);
+           struct cstr_view  path,
+           struct cstr_view  words);
 
 /** Returns the path of the file of @p unit, a unit of @p b. */
 static force_inline char const *
@@ -76,6 +88,15 @@ build_path (struct build const      *b,
             struct build_unit const *unit)
 {
 	return (char const *)buf_peek(&b->text).ptr + unit->path;
+}
+
+/** Returns the clang command line of @p unit, a unit of @p b. */
+static force_inline struct cstr_view
+build_words (struct build const      *b,
+             struct build_unit const *unit)
+{
+	return cstr_view_n((char const *)buf_peek(&b->text).ptr + unit->words,
+	                   unit->n_words);
 }
 
 /**
@@ -90,10 +111,12 @@ build_parsed (struct build *b,
               struct buf   *bytes);
 
 /** The functions that callers looks for in the graphs of a build: each
- *  function named name. With the mask GRAPH_FN_STATIC, only the function
- *  that one translation unit declares: flags tells if that function is
- *  static, and a static function is the one whose first declaration is in
- *  file, a path as a graph names it.
+ *  function and each function-like macro named name. With a mask of
+ *  GRAPH_FN_STATIC and GRAPH_FN_MACRO, only the one that one translation
+ *  unit declares: flags tells if it is a macro, or a static function. A
+ *  macro or a static function is then the one whose first declaration is
+ *  in file, a path as a graph names it. For another function, if file is
+ *  not empty, a function that another file defines is no callee.
  */
 struct build_callee {
 	struct cstr_view name;
@@ -105,14 +128,16 @@ struct build_callee {
 /**
  * Appends to @p out the callers of @p callee in the graphs of @p b, as a
  * list. Each function that @p callee names is a callee, with the file and
- * the lines of its definition, or after the word declared those of its
- * first declaration. Under a callee, a row for each caller: the file and
- * the lines of the calls, the calling function and its lines, and notes in
- * brackets. A row that several translation units give, as for a function
+ * the lines of its definition, after the word macro for a macro, or after
+ * the word declared those of its first declaration. Under a callee, a row
+ * for each caller: the file and the lines of the calls, the calling
+ * function and its lines, and notes in brackets. The caller of a use of a
+ * macro can also be a macro, or the file scope. A row that several
+ * translation units give, as for a function
  * that a header defines, is appended once. Then a line for each of: the
  * files of the units that are BUILD_FAILED, the files of the graphs with
- * GRAPH_ERRORS, and the number of the units that are BUILD_NONE or
- * BUILD_PARSING.
+ * GRAPH_ERRORS, and the number of the units without a parse that has
+ * ended.
  */
 extern void
 build_callers (struct build const        *b,

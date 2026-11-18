@@ -17,8 +17,8 @@ enum { MAX = 1 << 16 };
  * of a test fit in the pipe.
  */
 static int
-written (struct graph_draft const *draft,
-         struct buf               *bytes)
+written (struct graph_draft *draft,
+         struct buf         *bytes)
 {
 	int fd[2];
 	if (pipe(fd))
@@ -35,10 +35,10 @@ written (struct graph_draft const *draft,
  * SIZE_MAX, and without the last @p cut bytes.
  */
 static int
-refused (struct graph_draft const *draft,
-         size_t                    at,
-         uint32_t                  value,
-         size_t                    cut)
+refused (struct graph_draft *draft,
+         size_t              at,
+         uint32_t            value,
+         size_t              cut)
 {
 	struct buf bytes = buf();
 	int e = written(draft, &bytes);
@@ -126,6 +126,17 @@ main (void)
 	CHECK(g.calls[0].macro == GRAPH_NONE && g.calls[0].state == GRAPH_EVALUATED);
 	CHECK(!strcmp(graph_text(&g, g.calls[1].macro), "M"));
 	CHECK(g.calls[1].state == GRAPH_UNPROVEN && g.calls[1].flags == GRAPH_CALL_CLEANUP);
+	/* The one use of f is the call 0 in the code of g. The names are in
+	 * their order, and a name of the graph is found whole. */
+	CHECK(g.n_uses == 1 && g.fns[0].n_uses == 1 && !g.fns[1].n_uses);
+	CHECK(g.uses[g.fns[0].uses].call == 0 && g.uses[g.fns[0].uses].by == 1);
+	CHECK(g.names[0] == 0 && g.names[1] == 1);
+	uint32_t n = 0;
+	uint32_t const *named = graph_named(&g, CSTR_VIEW("g"), &n);
+	CHECK(n == 1 && named && *named == 1);
+	CHECK(!graph_named(&g, CSTR_VIEW("ff"), &n) && !n);
+	CHECK(!graph_named(&g, CSTR_VIEW("h"), &n) && !n);
+	CHECK(!graph_named(&g, cstr_view(nullptr), &n) && !n);
 	graph_fini(&g);
 	CHECK(!g.fns && !g.n_text && !g.bytes.data);
 
@@ -133,11 +144,13 @@ main (void)
 	CHECK(!refused(&draft, SIZE_MAX, 0, 0));
 	/* Bytes that end early, another magic, a flag that is none, and a count
 	 * that does not agree with the length of the bytes. */
-	size_t const head = 6 * sizeof(uint32_t);
+	size_t const head = 8 * sizeof(uint32_t);
 	size_t const fn = sizeof(struct graph_fn);
 	size_t const call = head + 2 * fn;
 	size_t const to = call + 2 * sizeof(struct graph_call);
-	size_t const text = to + sizeof(uint32_t);
+	size_t const uses = to + sizeof(uint32_t);
+	size_t const names = uses + sizeof(struct graph_use);
+	size_t const text = names + 2 * sizeof(uint32_t);
 	CHECK(refused(&draft, SIZE_MAX, 0, 1) == EINVAL);
 	CHECK(refused(&draft, SIZE_MAX, 0, 15) == EINVAL);
 	CHECK(refused(&draft, SIZE_MAX, 0, text + 15 - 3) == EINVAL);
@@ -164,6 +177,15 @@ main (void)
 	CHECK(refused(&draft, call + offsetof(struct graph_call, state), GRAPH_UNEVALUATED, 0) ==
 	      EINVAL);
 	CHECK(refused(&draft, to, 2, 0) == EINVAL);
+	/* A use that names a call or a function that the graph does not
+	 * contain, and uses of a function that it does not contain. */
+	CHECK(refused(&draft, uses, 2, 0) == EINVAL);
+	CHECK(refused(&draft, uses + sizeof(uint32_t), 2, 0) == EINVAL);
+	CHECK(refused(&draft, head + offsetof(struct graph_fn, n_uses), 2, 0) == EINVAL);
+	/* A name of a function that the graph does not contain, and names that
+	 * are not in their order: f is then named as the file is. */
+	CHECK(refused(&draft, names, 2, 0) == EINVAL);
+	CHECK(refused(&draft, head, 0, 0) == EINVAL);
 	/* A text part that does not end with a NUL: its last four bytes are
 	 * replaced. */
 	CHECK(refused(&draft, text + 15 - sizeof(uint32_t), 0x4d4d4d4d, 0) == EINVAL);

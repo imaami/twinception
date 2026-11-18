@@ -11422,19 +11422,21 @@ def check_code(binary, up):
 
 # A wrapper of the real askai-code for check_code_build(). It appends the
 # words of each run to the file runs in its directory. While the file stale
-# exists, the run of the unit 2 removes the file and exits with status 3, as
+# exists, the run of the unit 1 removes the file and exits with status 3, as
 # for a tree of the cache at another commit. While the file moved exists,
-# the run of the unit 2 removes the file and appends a line feed to the file
-# of the compile commands. While the file slow exists, the run of the unit 3
-# writes its process ID to the file pid and sleeps.
+# the run of the unit 1 removes the file and appends a line feed to the file
+# of the compile commands. While the file slow exists, the run of the unit 2
+# writes its process ID to the file pid and sleeps. The run of a unit of the
+# repository wide sleeps for 0.3 s.
 CODE_WRAPPER = """#!/bin/sh
 here=${0%/*}
 echo "$*" >> "$here/runs"
 case " $* " in
-*" unit=2 "*)
+*" unit="*" repo=wide "*) sleep 0.3;;
+*" unit=1 "*)
         [ -e "$here/stale" ] && rm "$here/stale" && exit 3
         [ -e "$here/moved" ] && rm "$here/moved" && echo >> "$here/../keep.json";;
-*" unit=3 "*) [ -e "$here/slow" ] && echo $$ > "$here/pid" && exec sleep 60;;
+*" unit=2 "*) [ -e "$here/slow" ] && echo $$ > "$here/pid" && exec sleep 60;;
 esac
 exec "$here/real" "$@"
 """
@@ -11443,12 +11445,15 @@ exec "$here/real" "$@"
 def check_code_build(binary, up, call, d):
     """callers with the graphs that askai keeps for all client loops: one
     askai-code parses each translation unit of a build, once, also for
-    calls of several loops at a time; a later call starts no parse; a
-    commit and a change of the compile commands each make another build; a
-    parse that finds the tree at another commit is done again after the next
-    export; a call answers at its deadline without the units that are not
-    parsed; a parse runs on after its call is gone, and askai kills it when
-    it exits."""
+    calls of several loops at a time; a later call starts no parse and
+    exports no commit; a commit and a change of the compile commands each
+    make another build; a parse that finds the tree at another commit is
+    done again after the next export; a build is of the compile commands as
+    they were when its units were listed; a call answers at its deadline
+    without the units that are not parsed, and a unit that took too long is
+    parsed once more; a parse runs on after its call is gone, and askai
+    kills it when it exits; a build of many units leaves a place to a call
+    of another build."""
     git = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
     repo = f"{d}/keep"
     os.makedirs(f"{repo}/src")
@@ -11462,8 +11467,10 @@ def check_code_build(binary, up, call, d):
         with open(f"{repo}/src/{name}", "w") as f:
             f.write(text)
     write("k.h", "int k_one(int);\nint k_two(int);\n")
-    write("k1.c", '#include "k.h"\nint k_one(int n) { return n; }\n')
-    write("k2.c", '#include "k.h"\nint k_two(int n) { return k_one(n); }\n')
+    write("k1.c", '#include "k.h"\nint k_one(int n) { return n; }\n'
+          "int k_dup(void) { return 1; }\n")
+    write("k2.c", '#include "k.h"\nint k_two(int n) { return k_one(n); }\n'
+          "int k_dup(void) { return 2; }\n")
     unused = "int k_four(void) { extern int k_five(void); return (int)sizeof(k_five()); }\n"
     write("k3.c", '#include "k.h"\nint k_three(int n) { return k_two(n); }\n' + unused)
     sh("init", "-q", "-b", "main")
@@ -11474,8 +11481,7 @@ def check_code_build(binary, up, call, d):
     sh("commit", "-q", "-am", "second")
     head = sh("rev-parse", "HEAD").strip()
     parent = sh("rev-parse", "HEAD~1").strip()
-    # The entry 1 of the compile commands is no translation unit, so the
-    # units are the entries 0, 2 and 3.
+    # The entry of k.h in the compile commands is no translation unit.
     cdb = f"{d}/keep.json"
 
     def commands(indent=None):
@@ -11495,11 +11501,13 @@ def check_code_build(binary, up, call, d):
 
     def runs():
         """The runs of askai-code since the last call of runs(): the number
-        of the requests with an action, and the units of the others."""
+        of the requests with an action, those of them that list the units,
+        and the units of the others."""
         with open(f"{bin}/runs") as f:
             lines = f.read().splitlines()
         os.remove(f"{bin}/runs")
         return (sum("action=" in line for line in lines),
+                sum("list=1" in line for line in lines),
                 sorted(word for line in lines for word in line.split()
                        if word.startswith("unit=")))
 
@@ -11514,13 +11522,14 @@ def check_code_build(binary, up, call, d):
            "- callee: k_two (src/k2.c:2)\n"
            "  - callers\n"
            "    - src/k3.c:2 k_three (2)\n")
-    units = ["unit=0", "unit=2", "unit=3"]
+    units = ["unit=0", "unit=1", "unit=2"]
     # askai spreads the connections of the calls over four client loops,
     # which share the builds.
     with Askai(f"{bin}/askai", "-u", up.url(), "--git", repo, "--code",
                f"keep={cdb}") as ai:
         # Eight calls at a time run askai-code once each for the request,
-        # and together once for each translation unit.
+        # at most once more each to list the units of the new build, and
+        # together once for each translation unit.
         answers = []
         threads = [threading.Thread(target=lambda: answers.append(callers(ai, "k_one")))
                    for _ in range(8)]
@@ -11529,12 +11538,13 @@ def check_code_build(binary, up, call, d):
         for thread in threads:
             thread.join()
         assert answers == [one] * 8, answers
-        assert runs() == (8, units)
+        requests, lists, parsed = runs()
+        assert parsed == units and 1 <= lists <= 8 and requests == 8 + lists
         # A later call runs askai-code only for the request, also for
-        # another function and with a path.
+        # another function and with a path, and does not list the units.
         assert callers(ai, "k_two") == two
         assert callers(ai, "k_one", path="src/k3.c") == one
-        assert runs() == (2, [])
+        assert runs() == (2, 0, [])
         # A function that only a declaration in a function declares, and
         # that the program calls only in code that it does not evaluate, is
         # a callee without a call.
@@ -11542,17 +11552,34 @@ def check_code_build(binary, up, call, d):
             f"- repo: keep\n- commit: {head}\n"
             "- callee: k_five (declared src/k3.c:3)\n"
             "  - callers: none\n")
-        assert runs() == (1, [])
+        assert runs() == (1, 0, [])
+        # Two files each define a function k_dup. With a path, the callee
+        # is the one that the file of the path defines.
+        assert callers(ai, "k_dup") == (
+            f"- repo: keep\n- commit: {head}\n"
+            "- callee: k_dup (src/k1.c:3)\n"
+            "  - callers: none\n"
+            "- callee: k_dup (src/k2.c:3)\n"
+            "  - callers: none\n")
+        assert callers(ai, "k_dup", path="src/k2.c") == (
+            f"- repo: keep\n- commit: {head}\n"
+            "- callee: k_dup (src/k2.c:3)\n"
+            "  - callers: none\n")
+        assert runs() == (2, 0, [])
         # Another commit is another build. The build of the first commit is
-        # kept: it needs no parse after the tree of the cache has changed.
+        # kept: it needs no parse after the tree of the cache has changed,
+        # and its call does not export its commit again.
         assert callers(ai, "k_one", revision="HEAD~1") == (
             f"- repo: keep\n- commit: {parent}\n"
             "- callee: k_one (src/k1.c:2)\n"
             "  - callers\n"
             "    - src/k2.c:2 k_two (2)\n")
-        assert runs() == (1, units)
+        assert runs() == (2, 1, units)
+        tree = f"{ai.state.name}/askai/code/keep"
         assert callers(ai, "k_one") == one
-        assert runs() == (1, [])
+        assert runs() == (1, 0, [])
+        with open(f"{tree}/commit") as f:
+            assert f.read() == parent
         # A file of the compile commands that is written again with the same
         # bytes is the same build, and other bytes make another build. The
         # parse of a unit that finds the tree at another commit is not the
@@ -11561,23 +11588,27 @@ def check_code_build(binary, up, call, d):
         commands()
         os.utime(cdb, ns=(1, 1))
         assert callers(ai, "k_two") == two
-        assert runs() == (1, [])
+        assert runs() == (1, 0, [])
         commands(indent=1)
         open(f"{bin}/stale", "w").close()
         assert callers(ai, "k_two") == two
-        assert runs() == (2, ["unit=0", "unit=2", "unit=2", "unit=3"])
+        assert runs() == (3, 2, ["unit=0", "unit=1", "unit=1", "unit=2"])
         assert not os.path.exists(f"{bin}/stale")
-        # A graph is for the bytes of the compile commands that its build
-        # names. A change of the file while the units of a build are parsed
-        # ends that parse, and the call gets the build of the changed file.
+        # A build is of the compile commands as they were when its units
+        # were listed. A change of the file while the units are parsed does
+        # not change the build, and the next call gets the build of the
+        # changed file.
         commands(indent=2)
         open(f"{bin}/moved", "w").close()
         assert callers(ai, "k_two") == two
-        assert runs() == (2, ["unit=0", "unit=0", "unit=2", "unit=2", "unit=3", "unit=3"])
+        assert runs() == (2, 1, units)
         assert not os.path.exists(f"{bin}/moved")
+        assert callers(ai, "k_two") == two
+        assert runs() == (2, 1, units)
     # A call answers at its deadline with the units that are parsed, and
-    # counts the others. The process that parses a unit gets the same time,
-    # and a unit that takes longer is not parsed.
+    # counts the others. The process that parses a unit gets the same time.
+    # A unit that takes longer is parsed once more, by the next call, and is
+    # not parsed after that.
     open(f"{bin}/slow", "w").close()
     with Askai(f"{bin}/askai", "-u", up.url(), "--git", repo, "--code", f"keep={cdb}",
                "--git-timeout", "1") as ai:
@@ -11595,7 +11626,7 @@ def check_code_build(binary, up, call, d):
             "  - callers\n"
             "    - src/k2.c:2 k_two (2)\n"
             "- not parsed: src/k3.c\n"))
-        assert runs()[1] == units
+        assert runs()[2] == units + ["unit=2"]
     # The parse of a build runs on after the client of its call has gone,
     # and askai kills the process when it exits.
     os.remove(f"{bin}/pid")
@@ -11616,6 +11647,38 @@ def check_code_build(binary, up, call, d):
         os.kill(pid, 0)
     wait_for(lambda: not os.path.exists(f"/proc/{pid}"))
     os.remove(f"{bin}/slow")
+    # The 40 units of the repository wide take 0.3 s each, and 8 processes
+    # parse at a time. A call for a build of keep that starts while they
+    # are parsed gets a place when the first of them end: the units of keep
+    # are started before the last ones of wide.
+    wide = f"{d}/wide"
+    os.makedirs(f"{wide}/src")
+    for i in range(40):
+        with open(f"{wide}/src/w{i}.c", "w") as f:
+            f.write(f"int w{i};\n")
+    for args in (("init", "-q", "-b", "main"), ("add", "src"),
+                 ("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "wide")):
+        subprocess.run(["git", "-C", wide, *args], check=True, env=os.environ | git,
+                       capture_output=True)
+    with open(f"{d}/wide.json", "w") as f:
+        json.dump([{"directory": wide, "file": f"{wide}/src/w{i}.c",
+                    "arguments": ["cc", "-c", f"{wide}/src/w{i}.c"]} for i in range(40)], f)
+    os.remove(f"{bin}/runs")
+    commands(indent=3)
+    with Askai(f"{bin}/askai", "-u", up.url(), "--git", repo, "--git", wide, "--code",
+               f"keep={cdb}", "--code", f"wide={d}/wide.json") as ai:
+        first = threading.Thread(target=lambda: call(ai, repo="wide", action="callers",
+                                                     name="none"))
+        first.start()
+        wait_for(lambda: os.path.exists(f"{bin}/runs") and
+                 sum("repo=wide" in line and "unit=" in line
+                     for line in open(f"{bin}/runs").read().splitlines()) == 8)
+        assert callers(ai, "k_one") == one
+        first.join()
+        with open(f"{bin}/runs") as f:
+            started = [line for line in f.read().splitlines() if "unit=" in line]
+        at = [i for i, line in enumerate(started) if "repo=keep" in line]
+        assert len(at) == 3 and len(started) == 43 and at[0] < 40, (at, len(started))
 
 
 def check_code_describe(binary, up, call, head, d, cdb):
@@ -11900,6 +11963,34 @@ def check_code_describe(binary, up, call, head, d, cdb):
                  "    - src/calls.c:44 calls_all (7-58) [or another function]\n"
                  "    - src/calls.c:49 calls_all (7-58) [or another function] "
                  "[maybe not evaluated]\n"),
+                # A function-like macro is a callee, with the word macro
+                # before its place: its calls are the places where a file
+                # writes it with arguments, also in the definition of
+                # another macro and at file scope. With a path, the callee
+                # is the macro that the translation unit of the path
+                # defines, if it declares no function of the name.
+                (None, "who_destroy",
+                 "- callee: who_destroy (macro src/who.h:5-6)\n"
+                 "  - callers\n"
+                 "    - src/who_a.c:9,10 who_use_a (6-16)\n"),
+                ("src/who.h", "who_destroy",
+                 "- callee: who_destroy (macro src/who.h:5-6)\n"
+                 "  - callers\n"
+                 "    - src/who_a.c:9,10 who_use_a (6-16)\n"),
+                (None, "who_value",
+                 "- callee: who_value (macro src/who.h:10)\n"
+                 "  - callers\n"
+                 "    - src/who_a.c:13 who_use_a (6-16)\n"),
+                (None, "CALLS_ADD",
+                 "- callee: CALLS_ADD (macro src/calls.c:39)\n"
+                 "  - callers: none\n"),
+                (None, "calls_wrapped",
+                 "- callee: calls_wrapped (macro src/calls.h:10)\n"
+                 "  - callers\n"
+                 "    - src/calls.c:13,16,37 calls_all (7-58)\n"
+                 "- callee: calls_wrapped (declared src/calls.h:9)\n"
+                 "  - callers\n"
+                 "    - src/calls.c:13,16,37 calls_all (7-58) [macro calls_wrapped]\n"),
                 ("src/calls.h", "calls_fini",
                  "- callee: calls_fini (declared src/calls.h:28)\n"
                  "  - callers\n"
@@ -11909,13 +12000,13 @@ def check_code_describe(binary, up, call, head, d, cdb):
             got = callers(path, name)
             assert got == f"- repo: proj\n- commit: {head}\n{rows}{closing}", got
         for name, text in (
-                ("who_destroy", "No function who_destroy in the translation unit of "
-                 "src/who.h. Repository names in the translation unit that contain "
-                 "who_destroy:\n  src/who.h:5 macro who_destroy\n"),
-                ("struct who_io", "Give callers a name argument, the name of a function, "
-                 "such as git_start."),
-                (None, "Give callers a name argument, the name of a function, such as "
-                 "git_start.")):
+                ("who_valu", "No function or function-like macro who_valu in the "
+                 "translation unit of src/who.h. Repository names in the translation "
+                 "unit that contain who_valu:\n  src/who.h:10 macro who_value\n"),
+                ("struct who_io", "Give callers a name argument, the name of a function "
+                 "or of a function-like macro, such as git_start."),
+                (None, "Give callers a name argument, the name of a function or of a "
+                 "function-like macro, such as git_start.")):
             arguments = {"name": name} if name else {}
             got = call(ai, error=True, repo="proj", action="callers", path="src/who.h",
                        **arguments)

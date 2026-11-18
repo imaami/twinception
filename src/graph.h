@@ -2,6 +2,9 @@
  *
  * The graph of a translation unit: the functions that the translation unit
  * declares, and the calls in the code of the functions that it defines.
+ * A function-like macro is a function of the graph too: a use of the macro
+ * with arguments that a file of the tree writes is a call, in the code of a
+ * function, in the definition of another macro, or in neither.
  * askai-code fills a draft from one parse of clang (src/cxi.c) and writes
  * the graph as bytes. A reader gets the graph from the bytes without clang.
  *
@@ -11,6 +14,10 @@
  * in its part, and a text by the offset of the first byte of that text in
  * the text part. Each text ends with a NUL. graph() checks each index and
  * offset of the bytes, so that a reader follows them without a check.
+ *
+ * Two parts are for a reader that looks for the calls of a function: the
+ * functions in the order of their names, and for each function the calls
+ * that name it. graph_draft_write() makes both.
  */
 #ifndef ASKAI_SRC_GRAPH_H_
 #define ASKAI_SRC_GRAPH_H_
@@ -47,10 +54,18 @@ enum graph_call_flag : uint32_t {
 	                                    that no file declares */
 	GRAPH_CALL_CLEANUP = 1U << 2,  /**< the call is that of the attribute
 	                                    cleanup of a variable */
+	GRAPH_CALL_MACRO   = 1U << 3,  /**< the call is a use of a function-like
+	                                    macro with arguments: the callee is
+	                                    the macro */
 };
 
 enum graph_fn_flag : uint32_t {
 	GRAPH_FN_STATIC = 1U << 0,  /**< the function has internal linkage */
+	GRAPH_FN_MACRO  = 1U << 1,  /**< a function-like macro, not a function.
+	                                 The declaration and the definition are
+	                                 the definition of the macro, and the
+	                                 calls are the uses of macros that the
+	                                 definition writes. */
 };
 
 /** What a graph says of the parse of the translation unit. */
@@ -81,6 +96,11 @@ struct graph_fn {
 	                                   calls of a function are in the
 	                                   graph only if a file of the tree
 	                                   defines the function. */
+	uint32_t           uses;      /**< the index of the first use of the
+	                                   function */
+	uint32_t           n_uses;    /**< the number of the uses: one for each
+	                                   call that names the function as a
+	                                   callee, in the order of the calls */
 };
 
 /** A call in the code of a function: a call expression, or the call of the
@@ -103,20 +123,32 @@ struct graph_call {
 	uint32_t flags;  /**< enum graph_call_flag */
 };
 
+/** A use of a function: a call that names the function as a callee, and
+ *  the function whose code contains the call, or GRAPH_NONE for a call in
+ *  the code of no function.
+ */
+struct graph_use {
+	uint32_t call;
+	uint32_t by;
+};
+
 /** A graph that a reader got from bytes. The parts are in bytes, which the
- *  graph owns. A zeroed graph is empty.
+ *  graph owns. names contains the index of each function, in the order of
+ *  the names. A zeroed graph is empty.
  */
 struct graph {
 	struct graph_fn const   *fns;
 	struct graph_call const *calls;
 	uint32_t const          *to;
+	struct graph_use const  *uses;
+	uint32_t const          *names;
 	char const              *text;
 	struct buf               bytes;
-	uint64_t                 flags;  /**< enum graph_flag, widened over the
-	                                      padding */
+	uint32_t                 flags;  /**< enum graph_flag */
 	uint32_t                 n_fns;
 	uint32_t                 n_calls;
 	uint32_t                 n_to;
+	uint32_t                 n_uses;
 	uint32_t                 n_text;
 };
 
@@ -142,6 +174,16 @@ graph_text (struct graph const *g,
 {
 	return g->text + at;
 }
+
+/**
+ * Returns the indices of the functions of @p g that are named @p name, and
+ * writes their number to @p *n: a part of the names of @p g, or nullptr if
+ * there is none.
+ */
+extern uint32_t const *
+graph_named (struct graph const *g,
+             struct cstr_view    name,
+             uint32_t           *n);
 
 /** The parts of a graph while a parse fills them. A writer appends the
  *  records of the functions, the calls and the callees to the arrays
@@ -179,11 +221,14 @@ graph_draft_text (struct graph_draft *draft,
                   uint32_t           *at);
 
 /**
- * Writes @p draft to @p fd as the bytes of a graph. Returns 0, the error
- * of write(), or EOVERFLOW if a part has GRAPH_NONE records or more.
+ * Writes @p draft to @p fd as the bytes of a graph, with the uses of the
+ * functions and the order of the names, and sets the uses of each function
+ * of @p draft. Returns 0, the error of write(), ENOMEM, EOVERFLOW if a
+ * part has GRAPH_NONE records or more, or EINVAL if a record names a call,
+ * a callee, a function or a text that the draft does not contain.
  */
 extern int
-graph_draft_write (struct graph_draft const *draft,
-                   int                       fd);
+graph_draft_write (struct graph_draft *draft,
+                   int                 fd);
 
 #endif /* ASKAI_SRC_GRAPH_H_ */

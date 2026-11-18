@@ -22,6 +22,7 @@
 #include "list.h"
 #include "mcp.h"
 
+struct code_build;
 struct config;
 struct git;
 struct plugin;
@@ -38,6 +39,10 @@ struct code {
 	size_t               bytes;   /**< of the graphs of the builds */
 	size_t               parses;  /**< the processes of all loops that parse
 	                                   a translation unit */
+	struct code_build   *hungry;  /**< a build whose call waits for a place
+	                                   for a process while the processes of
+	                                   other builds have each place, or
+	                                   nullptr */
 };
 
 /** Initializes the service @p dest of the code tool for the repositories of

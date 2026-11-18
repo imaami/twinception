@@ -895,12 +895,18 @@ The parts of the answer:
   does not define the function, if several translation units define a
   function of that name that is not static: the tool cannot tell which
   one the program calls.
-- `callee: NAME (not found)`: no translation unit declares a function
-  `name`.
+- `callee: NAME (macro FILE:LINES)`: `name` is a function-like macro. Its
+  calls are the places where a file of the repository writes the macro
+  with arguments. A macro name that is passed as an argument of another
+  macro is not listed, and neither is a use that only the expansion of
+  another macro writes.
+- `callee: NAME (not found)`: no translation unit declares a function or
+  a function-like macro `name`.
 - A row under `callers`: the file and the lines of the calls in one
   calling function, the calling function, and the lines of the definition
   of the calling function. The rows are in the order of the files and the
-  lines.
+  lines. For a macro, the caller can also be `macro NAME (LINES)`, if the
+  definition of that macro writes the call, or `at file scope`.
 - `callers: none`: no translation unit calls the function.
 
 A row ends with a note in these cases:
@@ -988,8 +994,9 @@ exists. clang's debug pragmas are disabled. A parse that crashes, such as
 one of deeply nested expressions, ends the call with the signal. At
 `--git-timeout` (30 s for resolving the revision and the parse together),
 `askai-code` is killed with SIGKILL, and its git processes shortly before.
-The parse of one translation unit for `callers` gets the same time, and a
-file that takes longer is listed as not parsed.
+The parse of one translation unit for `callers` gets the same time. A
+file that takes longer is parsed once more by the next call, and is listed
+as not parsed if it takes too long again.
 The result is at most 4 MiB, and `offset` continues past the end of one
 result.
 

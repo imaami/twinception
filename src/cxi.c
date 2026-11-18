@@ -820,7 +820,7 @@ cxi_lookup (struct cxi *x,
 		find.kind = 0;
 		if (clang_visitChildren(unit, cxi_find_match, &find))
 			x->out.e = ENOMEM;
-		cxi_out_view(&x->out, kind == CXCursor_FunctionDecl ? CSTR_VIEW("No function ")
+		cxi_out_view(&x->out, kind == CXCursor_FunctionDecl ? CSTR_VIEW("No function or function-like macro ")
 		                                                    : CSTR_VIEW("No symbol "));
 		cxi_out_text(&x->out, x->key[CXI_KEY_NAME].data);
 		cxi_out_lit(&x->out, " in the translation unit of ");
@@ -1422,13 +1422,15 @@ cxi_summary (struct cxi     *x,
  * which an expression selects one. n is 0 for any other callee. macro is
  * the definition of the macro that the call is written through
  * (cxi_macro()), or null. For a call that is GRAPH_UNEVALUATED, n is 0 and
- * macro is null: the call is only counted. row is the index of the first
- * call of the function with the same state, flags, macro and callees
+ * macro is null: the call is only counted. file is the file of the call.
+ * row is the index of the first call of the function in the same file
+ * with the same state, flags, macro and callees
  * (cxi_calls_push()): an answer prints these calls as one row.
  */
 struct cxi_call {
 	CXCursor at;
 	CXCursor macro;
+	CXFile   file;
 	uint64_t row;
 	uint32_t first;
 	uint32_t n;
@@ -1442,9 +1444,13 @@ cxi_call (CXCursor           at,
           uint32_t           n,
           enum graph_call_flag flags)
 {
+	CXFile file;
+	clang_getFileLocation(clang_getCursorLocation(at), &file, nullptr, nullptr,
+	                      nullptr);
 	return (struct cxi_call){
 		.at    = at,
 		.macro = clang_getNullCursor(),
+		.file  = file,
 		.first = first,
 		.n     = n,
 		.flags = flags,
@@ -2106,7 +2112,8 @@ cxi_calls_same (struct cxi_calls const *calls,
 	struct cxi_call const *p = &calls->items[a];
 	struct cxi_call const *q = &calls->items[b];
 
-	if (p->state != q->state ||
+	if (p->file  != q->file  ||
+	    p->state != q->state ||
 	    p->flags != q->flags ||
 	    p->n     != q->n     ||
 	    !clang_equalCursors(p->macro, q->macro))
@@ -2549,17 +2556,81 @@ cxi_tu (struct cxi        *x,
 	return failed;
 }
 
-/* The graph of the translation unit of a parse while a visit fills it
- * (cxi_graph_function()): the draft, the numbers in the draft of the
- * nodes of the parse, and the calls of the function of the visit. The
- * number of a function is the index of its record. The number of a file is
- * the offset of the text of its path, and that of the definition of a
- * macro the offset of the text of its name.
+/* Returns true if the macro that @p def defines is function-like. libclang
+ * tells that only for a macro that is still defined at the end of the
+ * translation unit. For another one, "(" follows the name in the file at
+ * once.
+ */
+static bool
+cxi_fn_like (CXTranslationUnit tu,
+             CXCursor          def)
+{
+	if (clang_Cursor_isMacroFunctionLike(def))
+		return true;
+
+	CXFile file;
+	unsigned at;
+	size_t size = 0;
+	clang_getFileLocation(clang_getCursorLocation(def), &file, nullptr, nullptr, &at);
+	char const *text = file ? clang_getFileContents(tu, file, &size) : nullptr;
+	if (!text || at >= size)
+		return false;
+
+	size_t const name = cxi_ident(cstr_view_n(text + at, size - at));
+	return at + name < size && text[at + name] == '(';
+}
+
+/* A use of a function-like macro with arguments that a file of the tree
+ * writes.
+ */
+struct cxi_expansion {
+	CXFile   file;
+	uint32_t at;    /* the offset of the use in the file */
+	uint32_t line;
+	uint32_t text;  /* the offset in the text of the draft of the path of
+	                   the file */
+	uint32_t to;    /* the index of the macro in the draft, or GRAPH_NONE
+	                   once the use is a call of the draft */
+};
+
+/* Orders two uses by file and by offset in the file. */
+static int
+cxi_expansion_order (void const *a,
+                     void const *b)
+{
+	struct cxi_expansion const *p = a;
+	struct cxi_expansion const *q = b;
+	uintptr_t const pf = (uintptr_t)p->file;
+	uintptr_t const qf = (uintptr_t)q->file;
+	return pf != qf ? (pf > qf) - (pf < qf) : (p->at > q->at) - (p->at < q->at);
+}
+
+/* A function-like macro of a draft: the offset of its name in the text,
+ * and its index among the functions.
+ */
+struct cxi_named {
+	uint32_t name;
+	uint32_t fn;
+};
+
+/* The graph of the translation unit of a parse while the visits fill it
+ * (cxi_graph_write()): the draft, the numbers in the draft of the nodes of
+ * the parse, and the calls of the function of the visit. The number of a
+ * function is the index of its record. The number of a file is the offset
+ * of the text of its path, and that of the definition of a macro the offset
+ * of the text of its name. macros contains the index of the record of each
+ * function-like macro of the draft, named contains these macros in the
+ * order of their names, and defs the definitions of those that a file of
+ * the tree defines. uses contains the uses of the macros.
  */
 struct cxi_graph {
-	struct cxi_calls   calls;
-	struct graph_draft draft;
-	struct cxi_ids     ids;
+	struct cxi_calls                 calls;
+	struct graph_draft               draft;
+	struct cxi_ids                   ids;
+	struct cxi_ids                   macros;
+	struct cxi_list                  defs;
+	UTIL_ARRAY(struct cxi_expansion) uses;
+	UTIL_ARRAY(struct cxi_named)     named;
 };
 
 /* Returns an empty graph for a parse of the call @p x of askai-code. */
@@ -2568,14 +2639,18 @@ cxi_graph (struct cxi *x)
 {
 	return (struct cxi_graph){
 		.calls = cxi_calls(x),
-		.draft = graph_draft()
+		.draft = graph_draft(),
 	};
 }
 
-/* Frees the draft, the numbers and the calls of @p g. */
+/* Frees the draft, the numbers, the macros and the calls of @p g. */
 static void
 cxi_graph_fini (struct cxi_graph *g)
 {
+	free(g->named.items);
+	free(g->uses.items);
+	cxi_list_fini(&g->defs);
+	cxi_ids_fini(&g->macros);
 	cxi_ids_fini(&g->ids);
 	graph_draft_fini(&g->draft);
 	cxi_calls_fini(&g->calls);
@@ -2680,6 +2755,131 @@ cxi_graph_macro (struct cxi_graph *g,
 	return e ? e : cxi_ids_put(&g->ids, node, *at);
 }
 
+/* Returns the index in the macros by name of @p g of the first macro whose
+ * name is not before @p name.
+ */
+static size_t
+cxi_graph_named (struct cxi_graph const *g,
+                 char const             *name)
+{
+	size_t first = 0;
+	size_t end = g->named.n;
+	while (first < end) {
+		size_t const mid = first + (end - first) / 2;
+		if (strcmp(g->draft.text.items + g->named.items[mid].name, name) < 0)
+			first = mid + 1;
+		else
+			end = mid;
+	}
+	return first;
+}
+
+/* Writes to @p *id the index in @p g of the function-like macro that
+ * @p def defines, and appends the macro if @p g does not contain it: the
+ * name and the place of the definition.
+ */
+static int
+cxi_graph_macro_fn (struct cxi_graph *g,
+                    CXCursor          def,
+                    uint32_t         *id)
+{
+	void const *node = cxi_ast_node(def);
+	if (cxi_ids_get(&g->macros, node, id))
+		return 0;
+
+	struct graph_fn fn = { .flags = GRAPH_FN_MACRO };
+	int e = cxi_graph_macro(g, def, &fn.name);
+	if (!e)
+		e = cxi_graph_place(g, def, &fn.declared);
+	fn.defined = fn.declared;
+	*id = (uint32_t)g->draft.fns.n;
+	if (!e)
+		e = util_push(g->draft.fns, fn);
+	if (!e)
+		e = cxi_ids_put(&g->macros, node, *id);
+	if (!e)
+		e = util_push(g->named, (struct cxi_named){});
+	if (e)
+		return e;
+
+	/* The macro goes to its place in the order of the names. */
+	struct cxi_named *named = g->named.items;
+	size_t const last = g->named.n - 1;
+	size_t at = 0;
+	size_t end = last;
+	char const *name = g->draft.text.items + fn.name;
+	while (at < end) {
+		size_t const mid = at + (end - at) / 2;
+		if (strcmp(g->draft.text.items + named[mid].name, name) < 0)
+			at = mid + 1;
+		else
+			end = mid;
+	}
+	memmove(&named[at + 1], &named[at], (last - at) * sizeof *named);
+	named[at] = (struct cxi_named){
+		.name = fn.name,
+		.fn   = *id,
+	};
+	return 0;
+}
+
+/* Appends to the draft of @p g the call of the use @p use of a macro,
+ * which is then no use that waits for its call.
+ */
+static int
+cxi_graph_use (struct cxi_graph     *g,
+               struct cxi_expansion *use)
+{
+	struct graph_call const call = {
+		.file  = use->text,
+		.line  = use->line,
+		.to    = (uint32_t)g->draft.to.n,
+		.n     = 1,
+		.macro = GRAPH_NONE,
+		.flags = GRAPH_CALL_MACRO,
+	};
+	int const e = util_push(g->draft.to, use->to);
+	use->to = GRAPH_NONE;
+	return e ? e : util_push(g->draft.calls, call);
+}
+
+/* Appends to the draft of @p g the uses of macros in the code of the
+ * function @p c, whose code is in one file. The uses of @p g are in the
+ * order of the files and the offsets.
+ */
+static int
+cxi_graph_uses (struct cxi_graph *g,
+                CXCursor          c)
+{
+	CXSourceRange const extent = clang_getCursorExtent(c);
+	CXFile file;
+	CXFile last;
+	unsigned from;
+	unsigned to;
+	clang_getFileLocation(clang_getRangeStart(extent), &file, nullptr, nullptr, &from);
+	clang_getFileLocation(clang_getRangeEnd(extent), &last, nullptr, nullptr, &to);
+	if (file != last)
+		return 0;
+
+	struct cxi_expansion const key = { .file = file, .at = from };
+	struct cxi_expansion *uses = g->uses.items;
+	size_t at = 0;
+	size_t end = g->uses.n;
+	while (at < end) {
+		size_t const mid = at + (end - at) / 2;
+		if (cxi_expansion_order(&uses[mid], &key) < 0)
+			at = mid + 1;
+		else
+			end = mid;
+	}
+	int e = 0;
+	for (; !e && at < g->uses.n && uses[at].file == file && uses[at].at < to; ++at) {
+		if (uses[at].to != GRAPH_NONE)
+			e = cxi_graph_use(g, &uses[at]);
+	}
+	return e;
+}
+
 /* Appends @p call, one of the calls of @p g, to the draft of @p g. A
  * callee is in the graph only if it is a function: the one callee that is
  * a variable, a parameter or a field is left out.
@@ -2722,7 +2922,8 @@ cxi_graph_call (struct cxi_graph      *g,
 }
 
 /* Appends each function at file scope to the cxi_graph at @p data, and the
- * calls in the code of a function that a file of the tree defines. A visit
+ * calls in the code of a function that a file of the tree defines, with the
+ * uses of macros in that code. A visit
  * that clang_visitChildren() reports as stopped has failed, with the error
  * in the walk of the calls.
  */
@@ -2746,6 +2947,7 @@ cxi_graph_function (CXCursor     c,
 	uint32_t const first = (uint32_t)g->draft.calls.n;
 	for (size_t i = 0; !e && i < calls->n; ++i)
 		e = cxi_graph_call(g, &calls->items[i]);
+	e = e ? e : cxi_graph_uses(g, c);
 	if (e) {
 		calls->walk.e = e;
 		return CXChildVisit_Break;
@@ -2770,18 +2972,147 @@ cxi_tu_errors (CXTranslationUnit tu)
 	return errors;
 }
 
-/* Writes the graph of the translation unit of the parse of @p x to @p fd.
- * Returns 0, the error of the visit that fills the graph, or the error of
- * the write.
+/* Appends to the cxi_graph at @p data each function-like macro that a file
+ * of the tree defines, and each use of a function-like macro with
+ * arguments that a file of the tree writes. A visit that
+ * clang_visitChildren() reports as stopped has failed, with the error in
+ * the walk of the calls.
+ */
+static enum CXChildVisitResult
+cxi_graph_macros (CXCursor     c,
+                  CXCursor,
+                  CXClientData data)
+{
+	struct cxi_graph *g = data;
+	CXSourceLocation const loc = clang_getCursorLocation(c);
+	int e = 0;
+	if (c.kind == CXCursor_MacroDefinition) {
+		uint32_t id;
+		if (clang_Location_isInSystemHeader(loc) ||
+		    !cxi_fn_like(g->calls.x->tu, c) ||
+		    !cxi_in_tree(g->calls.x->out.tree, c))
+			return CXChildVisit_Continue;
+
+		e = cxi_graph_macro_fn(g, c, &id);
+		e = e ? e : util_push(g->defs, c);
+	} else if (c.kind == CXCursor_MacroExpansion) {
+		CXCursor const def = clang_getCursorReferenced(c);
+		if (def.kind != CXCursor_MacroDefinition ||
+		    clang_Location_isInSystemHeader(loc) ||
+		    !cxi_fn_like(g->calls.x->tu, def))
+			return CXChildVisit_Continue;
+
+		struct cxi_expansion use = {};
+		unsigned at;
+		clang_getFileLocation(loc, &use.file, nullptr, nullptr, &at);
+		use.at = at;
+		e = cxi_graph_file(g, loc, &use.text, &use.line);
+		/* The path of a file of the tree is without the path of the
+		 * tree. */
+		char const first = e ? '/' : g->draft.text.items[use.text];
+		if (!use.file || first == '/' || first == '<' || !first)
+			return e ? CXChildVisit_Break : CXChildVisit_Continue;
+
+		e = cxi_graph_macro_fn(g, def, &use.to);
+		e = e ? e : util_push(g->uses, use);
+	}
+	g->calls.walk.e = e;
+	return e ? CXChildVisit_Break : CXChildVisit_Continue;
+}
+
+/* Returns true if the spelling of @p token is @p text. */
+static bool
+cxi_token_is (CXTranslationUnit  tu,
+              CXToken            token,
+              char const        *text)
+{
+	CXString spelled = clang_getTokenSpelling(tu, token);
+	char const *s = clang_getCString(spelled);
+	bool const is = s && !strcmp(s, text);
+	clang_disposeString(spelled);
+	return is;
+}
+
+/* Appends to the draft of @p g the uses of macros in the definition of
+ * each macro of the tree: an identifier of the definition after the
+ * parameters that names another function-like macro of the draft, that
+ * "(" follows, and that is no parameter of the macro. The uses are the
+ * calls of the macro.
+ */
+static int
+cxi_graph_bodies (struct cxi_graph *g)
+{
+	CXTranslationUnit tu = g->calls.x->tu;
+	int e = 0;
+	for (size_t d = 0; !e && d < g->defs.n; ++d) {
+		CXCursor const def = g->defs.items[d];
+		uint32_t id;
+		if (!cxi_ids_get(&g->macros, cxi_ast_node(def), &id))
+			continue;
+
+		CXToken *tokens = nullptr;
+		unsigned n = 0;
+		clang_tokenize(tu, clang_getCursorExtent(def), &tokens, &n);
+		/* The name, "(", the parameters and ")" come first. */
+		unsigned close = 2;
+		while (close < n && !cxi_token_is(tu, tokens[close], ")"))
+			++close;
+		uint32_t const first = (uint32_t)g->draft.calls.n;
+		for (unsigned t = close + 1; !e && t + 1 < n; ++t) {
+			if (clang_getTokenKind(tokens[t]) != CXToken_Identifier)
+				continue;
+
+			CXString spelled = clang_getTokenSpelling(tu, tokens[t]);
+			char const *name = clang_getCString(spelled);
+			size_t const at = name ? cxi_graph_named(g, name) : g->named.n;
+			struct cxi_expansion use = {
+				.to = at < g->named.n ? g->named.items[at].fn : GRAPH_NONE,
+			};
+			/* A macro is not expanded in its own expansion. */
+			bool used = use.to != GRAPH_NONE && use.to != id &&
+			            !strcmp(g->draft.text.items + g->named.items[at].name, name) &&
+			            strcmp(g->draft.text.items + g->draft.fns.items[id].name, name) &&
+			            cxi_token_is(tu, tokens[t + 1], "(");
+			for (unsigned p = 2; used && p < close; ++p)
+				used = !cxi_token_is(tu, tokens[p], name);
+			if (used)
+				e = cxi_graph_file(g, clang_getTokenLocation(tu, tokens[t]),
+				                   &use.text, &use.line);
+			if (used && !e)
+				e = cxi_graph_use(g, &use);
+			clang_disposeString(spelled);
+		}
+		clang_disposeTokens(tu, tokens, n);
+		g->draft.fns.items[id].calls = first;
+		g->draft.fns.items[id].n_calls = (uint32_t)g->draft.calls.n - first;
+	}
+	return e;
+}
+
+/* Writes the graph of the translation unit of the parse of @p x to @p fd:
+ * the macros and their uses, the uses in the definitions of macros, the
+ * functions with their calls, and then the uses of macros in the code of
+ * no function. Returns 0, the error of a visit that fills the graph, or
+ * the error of the write.
  */
 static int
 cxi_graph_write (struct cxi *x,
                  int         fd)
 {
+	CXCursor const unit = clang_getTranslationUnitCursor(x->tu);
 	struct cxi_graph g = cxi_graph(x);
-	int e = clang_visitChildren(clang_getTranslationUnitCursor(x->tu),
-	                            cxi_graph_function, &g)
-	        ? (int)g.calls.walk.e : (int)x->out.e;
+	int e = clang_visitChildren(unit, cxi_graph_macros, &g) ? (int)g.calls.walk.e : 0;
+	if (!e && g.uses.n)
+		qsort(g.uses.items, g.uses.n, sizeof *g.uses.items, cxi_expansion_order);
+	if (!e)
+		e = cxi_graph_bodies(&g);
+	if (!e)
+		e = clang_visitChildren(unit, cxi_graph_function, &g)
+		    ? (int)g.calls.walk.e : (int)x->out.e;
+	for (size_t i = 0; !e && i < g.uses.n; ++i) {
+		if (g.uses.items[i].to != GRAPH_NONE)
+			e = cxi_graph_use(&g, &g.uses.items[i]);
+	}
 	g.draft.flags = cxi_tu_errors(x->tu) ? GRAPH_ERRORS : 0;
 	if (!e)
 		e = graph_draft_write(&g.draft, fd);
@@ -2809,78 +3140,132 @@ cxi_out_build (struct cxi_out   *out,
 	cxi_out_put(out, hex, sizeof hex);
 }
 
-/* Returns true if @p name is the name of the build of the request of
- * @p x (cxi_out_build()).
+/* Appends the path of the file of @p loc as it is, without the path of the
+ * tree: the path of cxi_out_file() without quotes.
  */
-static bool
-cxi_build_is (struct cxi const *x,
-              struct cstr_view  name)
+static void
+cxi_out_raw (struct cxi_out   *out,
+             CXSourceLocation  loc)
 {
-	struct cxi_out own = cxi_out(cstr_view(nullptr));
-	cxi_out_build(&own, x);
-	bool const same = !own.e && cstr_view_equal(cstr_view_dstr(&own.text), name);
-	cxi_out_fini(&own);
-	return same;
+	CXFile file;
+	unsigned line;
+	clang_getFileLocation(loc, &file, &line, nullptr, nullptr);
+	CXString name = cxi_file_name(loc, file, &line);
+	char const *path = clang_getCString(name);
+	cxi_out_view(out, cxi_out_rel(out, path ? path : ""));
+	clang_disposeString(name);
+}
+
+/* The search for the callee of callers that the translation unit of a path
+ * declares: the first function named name, and the last function-like
+ * macro of that name. Each one is null while the search has reached none.
+ */
+struct cxi_callee {
+	char const *name;
+	CXCursor    fn;
+	CXCursor    macro;
+};
+
+/* Returns a search for @p name that has reached no cursor. */
+static force_inline struct cxi_callee
+cxi_callee (char const *name)
+{
+	return (struct cxi_callee){
+		.name  = name,
+		.fn    = clang_getNullCursor(),
+		.macro = clang_getNullCursor(),
+	};
+}
+
+/* Stores the function and the macro that the cxi_callee at @p data names
+ * in it.
+ */
+static enum CXChildVisitResult
+cxi_callee_visit (CXCursor     c,
+                  CXCursor,
+                  CXClientData data)
+{
+	struct cxi_callee *callee = data;
+	if (c.kind == CXCursor_FunctionDecl) {
+		if (clang_Cursor_isNull(callee->fn) && cxi_spelled(c, callee->name))
+			callee->fn = c;
+	} else if (c.kind == CXCursor_MacroDefinition && cxi_spelled(c, callee->name) &&
+	           cxi_fn_like(clang_Cursor_getTranslationUnit(c), c)) {
+		callee->macro = c;
+	}
+	return CXChildVisit_Continue;
 }
 
 /* callers: what askai needs to answer from the graphs of the build
- * (src/build.h), after the request is checked and the commit exported. The
- * answer is the name of the functions, a NUL, a letter and the path of a
- * file, a NUL, the name of the build, a NUL, and for each translation unit
- * of the compile commands (cdb_next()) the index of its entry, a NUL, the
- * path of its file, and a NUL.
+ * (src/build.h), after the request is checked. The answer is the name of
+ * the functions, a NUL, a letter and the path of a file, a NUL, and the
+ * name of the build (cxi_out_build()) with a NUL. With list=1, the
+ * translation units of the compile commands follow (cdb_next()): for each
+ * one the path of its file, a NUL, the number of the bytes of its clang
+ * command line, a NUL, and the words of the command line, each followed by
+ * a NUL.
  *
- * The letter is A for each function of the name. With a path, the callee is
- * only the function of the name that the translation unit of the path
- * declares, which is parsed: the letter is S if that function is static and
- * E if not, and the file is that of its first declaration. A change of
- * the bytes of the file of the compile commands makes another build,
- * because the name of the build tells them (cxi_out_build()).
+ * The letter is A for each function and each function-like macro of the
+ * name. With a path, the callee is only the one that the translation unit
+ * of the path declares, which is parsed: the function, or without one the
+ * macro. The letter is then S for a static function, with the file of its
+ * first declaration, and E for another function, with the file of its
+ * definition if the translation unit defines it: another definition of the
+ * name is then no callee. The letter is M for a macro, with the file of
+ * its definition.
  */
 static int
 cxi_callers (struct cxi *x)
 {
 	struct cxi_out *out = &x->out;
 	struct cstr_view const name = x->key[CXI_KEY_NAME];
-	CXCursor first = clang_getNullCursor();
+	struct cxi_callee callee = cxi_callee(name.data);
 	if (x->key[CXI_KEY_PATH].data) {
-		CXCursor c;
-		int const e = cxi_lookup(x, name.data, CXCursor_FunctionDecl, &c);
+		clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_callee_visit,
+		                    &callee);
+		/* The error of cxi_lookup() lists the names of the translation
+		 * unit that contain the name. */
+		int const e = clang_Cursor_isNull(callee.fn) && clang_Cursor_isNull(callee.macro)
+		              ? cxi_lookup(x, name.data, CXCursor_FunctionDecl, &callee.fn) : 0;
 		if (e)
 			return e;
-		first = clang_getCanonicalCursor(c);
 	}
 	/* The name is a word of the request, so a NUL follows it. */
+	CXCursor const first = clang_getCanonicalCursor(callee.fn);
 	cxi_out_put(out, name.data, name.len + 1);
-	if (clang_Cursor_isNull(first)) {
-		cxi_out_lit(out, "A");
+	if (!clang_Cursor_isNull(first) &&
+	    clang_getCursorLinkage(first) == CXLinkage_Internal) {
+		cxi_out_lit(out, "S");
+		cxi_out_raw(out, clang_getCursorLocation(first));
+	} else if (!clang_Cursor_isNull(first)) {
+		CXCursor const definition = clang_getCursorDefinition(first);
+		cxi_out_lit(out, "E");
+		if (!clang_Cursor_isNull(definition))
+			cxi_out_raw(out, clang_getCursorLocation(definition));
+	} else if (!clang_Cursor_isNull(callee.macro)) {
+		cxi_out_lit(out, "M");
+		cxi_out_raw(out, clang_getCursorLocation(callee.macro));
 	} else {
-		CXSourceLocation const loc = clang_getCursorLocation(first);
-		CXFile f;
-		unsigned line;
-		clang_getFileLocation(loc, &f, &line, nullptr, nullptr);
-		CXString file = cxi_file_name(loc, f, &line);
-		char const *path = clang_getCString(file);
-		cxi_out_view(out, clang_getCursorLinkage(first) == CXLinkage_Internal
-		             ? CSTR_VIEW("S") : CSTR_VIEW("E"));
-		cxi_out_view(out, cxi_out_rel(out, path ? path : ""));
-		clang_disposeString(file);
+		cxi_out_lit(out, "A");
 	}
 	cxi_out_put(out, "", 1);
 	cxi_out_build(out, x);
 	cxi_out_put(out, "", 1);
+	if (!x->key[CXI_KEY_LIST].data)
+		return (int)out->e;
 
 	struct cdb_map const map = cdb_map(x->key[CXI_KEY_TOP],
 	                                   cstr_view_slice(out->tree, 0, out->tree.len - 1));
 	struct dstr words = DSTR_INIT;
 	int e;
 	for (size_t at = 0; !(e = cdb_next(&map, x->cmds, &at, &words));) {
-		char const *last = cxi_last_word(cstr_view_dstr(&words));
-		struct cstr_view const file = cxi_out_rel(out, last);
-		cxi_out_num(out, at - 1);
-		cxi_out_put(out, "", 1);
+		struct cstr_view const w = cstr_view_dstr(&words);
+		struct cstr_view const file = cxi_out_rel(out, cxi_last_word(w));
 		/* The file is a word of the command line, so a NUL follows it. */
 		cxi_out_put(out, file.data, file.len + 1);
+		cxi_out_num(out, w.len);
+		cxi_out_put(out, "", 1);
+		cxi_out_view(out, w);
 	}
 	dstr_cleanup(&words);
 	return out->e ? (int)out->e : e == ENOENT ? 0 : e;
@@ -3017,8 +3402,8 @@ cxi_valid (struct cxi *x)
 		: describe && !name.data
 		? CSTR_VIEW("Give describe a name argument, such as git_start or child.flags.")
 		: callers && (!name.data || name.len > CXI_NAME || cxi_ident(name) != name.len)
-		? CSTR_VIEW("Give callers a name argument, the name of a function, such as "
-		            "git_start.")
+		? CSTR_VIEW("Give callers a name argument, the name of a function or of a "
+		            "function-like macro, such as git_start.")
 		: !describe && !callers && name.data
 		? CSTR_VIEW("The name argument is only for describe and callers.")
 		: !callers && !path.data
@@ -3057,11 +3442,10 @@ cxi_valid (struct cxi *x)
 
 /* Reads the compile commands into x->cmds, writes the clang command line of
  * the file of the path to @p words (cdb_command()), and points x->words at
- * the words and x->file at the last word, the file in @p tree. With a unit
- * in place of a path, the command line is that of the translation unit of
- * that entry (cdb_next()). Without both, x->words and x->file stay null,
- * and the compile commands must contain a translation unit. A relative
- * path of the compile commands is relative to the repository's directory.
+ * the words and x->file at the last word, the file in @p tree. Without a
+ * path, x->words and x->file stay null, and the compile commands must
+ * contain a translation unit (cdb_next()). A relative path of the compile
+ * commands is relative to the repository's directory.
  */
 static int
 cxi_command (struct cxi       *x,
@@ -3095,11 +3479,6 @@ cxi_command (struct cxi       *x,
 		json_tokener_free(tok);
 	}
 	buf_fini(&bytes);
-	/* The graph of a unit is for one build: for the bytes of the compile
-	 * commands that the name of the build tells. */
-	struct cstr_view const unit = x->key[CXI_KEY_UNIT];
-	if (unit.data && (!x->cmds || !cxi_build_is(x, x->key[CXI_KEY_BUILD])))
-		return ESTALE;
 	if (!x->cmds) {
 		cxi_out_lit(&x->out, "The compile commands of ");
 		cxi_out_view(&x->out, repo);
@@ -3115,23 +3494,14 @@ cxi_command (struct cxi       *x,
 	struct cdb_map const map = cdb_map(x->key[CXI_KEY_TOP],
 	                                   cstr_view_slice(tree, 0, tree.len - 1));
 	struct cstr_view const path = x->key[CXI_KEY_PATH];
-	uint64_t entry = 0;
 	size_t at = 0;
 	if (path.data) {
 		e = cdb_command(&map, x->cmds, path, words);
-	} else if (unit.data && util_number(unit.data, unit.len, SIZE_MAX - 1, &entry)) {
-		e = EINVAL;
-	} else {
-		/* No translation unit, or none at the entry of the unit, is the
-		 * EINVAL of cdb_command(). */
-		at = (size_t)entry;
-		e = cdb_next(&map, x->cmds, &at, words);
-		if (e == ENOENT || (!e && unit.data && at != entry + 1))
-			e = EINVAL;
-	}
-	if (!e && (path.data || unit.data)) {
 		x->words = cstr_view_dstr(words);
 		x->file = cxi_last_word(x->words);
+	} else if ((e = cdb_next(&map, x->cmds, &at, words)) == ENOENT) {
+		/* No translation unit is the EINVAL of cdb_command(). */
+		e = EINVAL;
 	}
 	if (e == ENOENT) {
 		cxi_out_path(&x->out, path);
@@ -3143,11 +3513,8 @@ cxi_command (struct cxi       *x,
 		cxi_out_view(&x->out, repo);
 		cxi_out_lit(&x->out, " in ");
 		cxi_out_path(&x->out, file);
-		cxi_out_view(&x->out, unit.data
-		             ? CSTR_VIEW(" contain no translation unit at the entry of "
-		                         "the unit.")
-		             : CSTR_VIEW(" contain no entry with arguments for a file "
-		                         "of the repository."));
+		cxi_out_lit(&x->out, " contain no entry with arguments for a file of the "
+		            "repository.");
 	}
 	return e == ENOENT ? EINVAL : e;
 }
@@ -3309,8 +3676,9 @@ cxi_cache_export (struct cxi_cache *cache,
 }
 
 /* Takes a shared lock once the tree contains @p commit, exported under the
- * exclusive lock if needed. Returns ESTALE if the tree contains another
- * commit and the request exports none.
+ * exclusive lock if needed. A request that exports no commit does not wait
+ * for the lock: ESTALE if another process exports, or if the tree contains
+ * another commit.
  */
 static int
 cxi_cache_lock (struct cxi_cache *cache,
@@ -3320,8 +3688,8 @@ cxi_cache_lock (struct cxi_cache *cache,
 	for (int op = LOCK_SH, e;; op = op == LOCK_SH ? LOCK_EX : LOCK_SH) {
 		char now[OID_SHA256 + 3];
 		size_t n;
-		if (flock(cache->fds.keep, op))
-			return errno;
+		if (flock(cache->fds.keep, cache->git ? op : op | LOCK_NB))
+			return errno == EWOULDBLOCK ? ESTALE : errno;
 		if ((e = util_read_all(cache->state, now, sizeof now, 0, &n)))
 			return e;
 		struct cstr_view const was = cstr_view_n(now, n);
@@ -3427,7 +3795,8 @@ cxi_parse (struct cxi *x,
 }
 
 /* Runs the request with @p git, the git command line up to the
- * subcommand and a nullptr. A request with a unit runs no git.
+ * subcommand and a nullptr. For a request with a unit, @p git is the clang
+ * command line of the unit, and the request runs no git.
  */
 static int
 cxi_run (struct cxi         *x,
@@ -3440,10 +3809,9 @@ cxi_run (struct cxi         *x,
 	bool const unit = key[CXI_KEY_UNIT].data;
 	/* The name of the repository is a directory of the cache. */
 	if (unit == (key[CXI_KEY_ACTION].data != nullptr) ||
-	    unit != (key[CXI_KEY_BUILD].data != nullptr) ||
-	    !git_run_name_valid(repo) || !key[CXI_KEY_CDB].data ||
-	    !oid_valid(commit) ||
-	    !cstr_view_starts(key[CXI_KEY_TOP], CSTR_VIEW("/")) ||
+	    !git_run_name_valid(repo) || !oid_valid(commit) ||
+	    (!unit && (!key[CXI_KEY_CDB].data ||
+	               !cstr_view_starts(key[CXI_KEY_TOP], CSTR_VIEW("/")))) ||
 	    !cstr_view_starts(key[CXI_KEY_CACHE], CSTR_VIEW("/")) ||
 	    util_number(key[CXI_KEY_DEADLINE].data, key[CXI_KEY_DEADLINE].len, UINT64_MAX,
 	                &x->deadline)) {
@@ -3469,11 +3837,23 @@ cxi_run (struct cxi         *x,
 	    !dstr_printf(&cache.tree, "%stree/", dstr_get(&cache.dir)))
 		e = ENOMEM;
 	x->out.tree = cstr_view_dstr(&cache.tree);
-	if (!e)
+	for (char const *const *w = git; unit && !e && *w; ++w) {
+		if (!dstr_cat_n(&words, *w, strlen(*w) + 1))
+			e = ENOMEM;
+	}
+	if (unit && !e) {
+		x->words = cstr_view_dstr(&words);
+		x->file = cxi_last_word(x->words);
+	} else if (!e) {
 		e = cxi_command(x, x->out.tree, &words);
-	if (!e)
+	}
+	/* callers without a path reads no file of the tree. It exports the
+	 * commit only with list=1, for the units that askai then parses. */
+	bool const tree = x->action != CXI_ACTION_CALLERS || key[CXI_KEY_PATH].data ||
+	                  key[CXI_KEY_LIST].data;
+	if (!e && tree)
 		e = cxi_cache_open(&cache, commit, &x->out);
-	if (!e)
+	if (!e && tree)
 		e = cxi_cache_lock(&cache, commit, &x->out);
 	struct stat st;
 	if (!e && x->file &&
@@ -3486,7 +3866,7 @@ cxi_run (struct cxi         *x,
 		e = EINVAL;
 	}
 	if (!e)
-		e = cxi_parse(x, dstr_get(&cache.tree), fd);
+		e = tree ? cxi_parse(x, dstr_get(&cache.tree), fd) : cxi_callers(x);
 	x->out.tree = cstr_view(nullptr);
 	json_object_put(x->cmds);
 	x->cmds = nullptr;

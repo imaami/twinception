@@ -88,18 +88,20 @@ int
 main (void)
 {
 	struct build b = build();
-	CHECK(!build_add(&b, 0, CSTR_VIEW("src/a.c")));
-	CHECK(!build_add(&b, 2, CSTR_VIEW("src/b.c")));
-	CHECK(!build_add(&b, 3, CSTR_VIEW("src/q\"x.c")));
-	CHECK(!build_add(&b, 7, CSTR_VIEW("src/d.c")));
-	CHECK(!build_add(&b, 8, CSTR_VIEW("src/e.c")));
-	CHECK(b.n == 5 && b.items[1].index == 2 && b.items[3].state == BUILD_NONE);
+	CHECK(!build_add(&b, CSTR_VIEW("src/a.c"), CSTR_VIEW("clang\0src/a.c\0")));
+	CHECK(!build_add(&b, CSTR_VIEW("src/b.c"), CSTR_VIEW("clang\0-O2\0src/b.c\0")));
+	CHECK(!build_add(&b, CSTR_VIEW("src/q\"x.c"), CSTR_VIEW("c\0")));
+	CHECK(!build_add(&b, CSTR_VIEW("src/d.c"), CSTR_VIEW("c\0")));
+	CHECK(!build_add(&b, CSTR_VIEW("src/e.c"), CSTR_VIEW("c\0")));
+	CHECK(b.n == 5 && b.items[3].state == BUILD_NONE && build_waits(b.items[3].state));
 	CHECK(!strcmp(build_path(&b, &b.items[0]), "src/a.c"));
 	CHECK(!strcmp(build_path(&b, &b.items[3]), "src/d.c"));
+	CHECK(cstr_view_equal(build_words(&b, &b.items[1]), CSTR_VIEW("clang\0-O2\0src/b.c\0")));
 
 	/* src/a.c defines f, which src/h.h declares, and g, which calls f on
-	 * two lines. The static function inl of src/h.h calls f through the
-	 * macro M. clang reported an error for the unit. */
+	 * two lines, and in a line of src/h.h that the code of g includes. The
+	 * static function inl of src/h.h calls f through the macro M. clang
+	 * reported an error for the unit. */
 	struct graph_draft d = graph_draft();
 	uint32_t a_c = text(&d, "src/a.c");
 	uint32_t h_h = text(&d, "src/h.h");
@@ -113,27 +115,57 @@ main (void)
 		.declared = { a_c, 7, 7 },
 		.defined  = { a_c, 7, 9 },
 		.calls    = 0,
-		.n_calls  = 2,
+		.n_calls  = 3,
 	}));
 	CHECK(!util_push(d.fns, (struct graph_fn){
 		.name     = text(&d, "inl"),
 		.flags    = GRAPH_FN_STATIC,
 		.declared = { h_h, 4, 4 },
 		.defined  = { h_h, 4, 4 },
-		.calls    = 2,
+		.calls    = 3,
+		.n_calls  = 2,
+	}));
+	/* The macro MAC of src/h.h is used in inl, in the definition of the
+	 * macro WRAP, and in the code of no function. */
+	CHECK(!util_push(d.fns, (struct graph_fn){
+		.name     = text(&d, "MAC"),
+		.flags    = GRAPH_FN_MACRO,
+		.declared = { h_h, 30, 31 },
+		.defined  = { h_h, 30, 31 },
+	}));
+	CHECK(!util_push(d.fns, (struct graph_fn){
+		.name     = text(&d, "WRAP"),
+		.flags    = GRAPH_FN_MACRO,
+		.declared = { h_h, 33, 33 },
+		.defined  = { h_h, 33, 33 },
+		.calls    = 5,
 		.n_calls  = 1,
 	}));
 	uint32_t const f = 0;
+	uint32_t const mac = 3;
 	call(&d, a_c, 8, &f, 1, (struct graph_call){ .macro = GRAPH_NONE });
+	call(&d, h_h, 20, &f, 1, (struct graph_call){ .macro = GRAPH_NONE });
 	call(&d, a_c, 9, &f, 1, (struct graph_call){ .macro = GRAPH_NONE });
 	call(&d, h_h, 4, &f, 1, (struct graph_call){ .macro = text(&d, "M") });
+	call(&d, h_h, 4, &mac, 1, (struct graph_call){
+		.macro = GRAPH_NONE,
+		.flags = GRAPH_CALL_MACRO,
+	});
+	call(&d, h_h, 33, &mac, 1, (struct graph_call){
+		.macro = GRAPH_NONE,
+		.flags = GRAPH_CALL_MACRO,
+	});
+	call(&d, a_c, 40, &mac, 1, (struct graph_call){
+		.macro = GRAPH_NONE,
+		.flags = GRAPH_CALL_MACRO,
+	});
 	d.flags = GRAPH_ERRORS;
 	parsed(&b, 0, &d);
 
 	/* src/b.c declares f and other and does not define them. k calls f in
 	 * code that the program maybe does not evaluate, f or other, and f for
 	 * the attribute cleanup of a variable. The unit contains inl of
-	 * src/h.h as src/a.c does. */
+	 * src/h.h as src/a.c does, and a function g of its own. */
 	d = graph_draft();
 	uint32_t b_c = text(&d, "src/b.c");
 	h_h = text(&d, "src/h.h");
@@ -162,6 +194,11 @@ main (void)
 		.calls    = 3,
 		.n_calls  = 1,
 	}));
+	CHECK(!util_push(d.fns, (struct graph_fn){
+		.name     = text(&d, "g"),
+		.declared = { b_c, 8, 8 },
+		.defined  = { b_c, 8, 8 },
+	}));
 	uint32_t const either[] = { 0, 1 };
 	call(&d, b_c, 3, either, 1, (struct graph_call){
 		.macro = GRAPH_NONE,
@@ -176,9 +213,12 @@ main (void)
 	parsed(&b, 1, &d);
 
 	/* clang could not parse the third unit, and bytes that are no graph
-	 * leave a unit as that. The fourth unit is not parsed, and a parse of
-	 * the fifth one runs. */
+	 * leave a unit as that. The fourth unit is to be parsed once more, and
+	 * a parse of the fifth one runs. */
+	b.items[3].state = BUILD_AGAIN;
 	b.items[4].state = BUILD_PARSING;
+	CHECK(build_waits(BUILD_AGAIN) && !build_waits(BUILD_PARSING) &&
+	      !build_waits(BUILD_GRAPH) && !build_waits(BUILD_FAILED));
 	build_parsed(&b, 2, nullptr);
 	CHECK(b.items[2].state == BUILD_FAILED);
 	struct buf junk = buf();
@@ -202,17 +242,58 @@ main (void)
 		"    - src/b.c:3 k (2-6) [maybe not evaluated]\n"
 		"    - src/b.c:4 k (2-6) [or another function]\n"
 		"    - src/b.c:5 k (2-6) [attribute cleanup]\n"
-		"    - src/h.h:4 inl (4) [macro M]\n")));
+		"    - src/h.h:4 inl (4) [macro M]\n"
+		"    - src/h.h:20 g (7-9)\n")));
 	/* A function that no unit defines is a declaration. */
 	CHECK(answers(&b, (struct build_callee){ .name = CSTR_VIEW("other") }, CLOSED(
 		"- callee: other (declared src/h.h:2)\n"
 		"  - callers\n"
 		"    - src/b.c:4 k (2-6) [or another function]\n")));
-	/* A function without a call, and a name of no function. A name that
-	 * starts with the name of a function is another name. */
+	/* Two functions of one name, without a call. With the file of a
+	 * definition, the function that another file defines is no callee, and
+	 * a function that a unit only declares is one. */
 	CHECK(answers(&b, (struct build_callee){ .name = CSTR_VIEW("g") }, CLOSED(
 		"- callee: g (src/a.c:7-9)\n"
+		"  - callers: none\n"
+		"- callee: g (src/b.c:8)\n"
 		"  - callers: none\n")));
+	CHECK(answers(&b, (struct build_callee){
+		.name = CSTR_VIEW("g"),
+		.file = CSTR_VIEW("src/b.c"),
+		.mask = GRAPH_FN_STATIC | GRAPH_FN_MACRO,
+	}, CLOSED(
+		"- callee: g (src/b.c:8)\n"
+		"  - callers: none\n")));
+	CHECK(answers(&b, (struct build_callee){
+		.name = CSTR_VIEW("other"),
+		.file = CSTR_VIEW("src/b.c"),
+		.mask = GRAPH_FN_STATIC | GRAPH_FN_MACRO,
+	}, CLOSED(
+		"- callee: other (declared src/h.h:2)\n"
+		"  - callers\n"
+		"    - src/b.c:4 k (2-6) [or another function]\n")));
+	/* A macro is a callee, with the word macro before its place. A use is
+	 * in a function, in the definition of a macro, or at file scope. With
+	 * a mask, the callee is the macro of one file. */
+	static char const mac_rows[] = CLOSED(
+		"- callee: MAC (macro src/h.h:30-31)\n"
+		"  - callers\n"
+		"    - src/a.c:40 at file scope\n"
+		"    - src/h.h:4 inl (4)\n"
+		"    - src/h.h:33 macro WRAP (33)\n");
+	CHECK(answers(&b, (struct build_callee){ .name = CSTR_VIEW("MAC") }, mac_rows));
+	CHECK(answers(&b, (struct build_callee){
+		.name  = CSTR_VIEW("MAC"),
+		.file  = CSTR_VIEW("src/h.h"),
+		.mask  = GRAPH_FN_STATIC | GRAPH_FN_MACRO,
+		.flags = GRAPH_FN_MACRO,
+	}, mac_rows));
+	CHECK(answers(&b, (struct build_callee){
+		.name = CSTR_VIEW("MAC"),
+		.mask = GRAPH_FN_STATIC | GRAPH_FN_MACRO,
+	}, CLOSED("- callee: MAC (not found)\n")));
+	/* A name of no function. A name that starts with the name of a
+	 * function is another name. */
 	CHECK(answers(&b, (struct build_callee){ .name = CSTR_VIEW("in") }, CLOSED(
 		"- callee: in (not found)\n")));
 	CHECK(answers(&b, (struct build_callee){ .name = CSTR_VIEW("inline") }, CLOSED(
@@ -227,18 +308,18 @@ main (void)
 	CHECK(answers(&b, (struct build_callee){
 		.name  = CSTR_VIEW("inl"),
 		.file  = CSTR_VIEW("src/h.h"),
-		.mask  = GRAPH_FN_STATIC,
+		.mask  = GRAPH_FN_STATIC | GRAPH_FN_MACRO,
 		.flags = GRAPH_FN_STATIC,
 	}, inl));
 	CHECK(answers(&b, (struct build_callee){
 		.name  = CSTR_VIEW("inl"),
 		.file  = CSTR_VIEW("src/h"),
-		.mask  = GRAPH_FN_STATIC,
+		.mask  = GRAPH_FN_STATIC | GRAPH_FN_MACRO,
 		.flags = GRAPH_FN_STATIC,
 	}, CLOSED("- callee: inl (not found)\n")));
 	CHECK(answers(&b, (struct build_callee){
 		.name = CSTR_VIEW("inl"),
-		.mask = GRAPH_FN_STATIC,
+		.mask = GRAPH_FN_STATIC | GRAPH_FN_MACRO,
 	}, CLOSED("- callee: inl (not found)\n")));
 #undef CLOSED
 

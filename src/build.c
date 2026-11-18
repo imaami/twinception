@@ -23,17 +23,20 @@ build_fini (struct build *b)
 
 int
 build_add (struct build     *b,
-           size_t            index,
-           struct cstr_view  path)
+           struct cstr_view  path,
+           struct cstr_view  words)
 {
 	size_t const at = buf_peek(&b->text).len;
 	int e = buf_put(&b->text, path.data, path.len, UINT32_MAX);
 	if (!e)
 		e = buf_put(&b->text, "", 1, UINT32_MAX);
 	if (!e)
+		e = buf_put(&b->text, words.data, words.len, UINT32_MAX);
+	if (!e)
 		e = util_push(*b, (struct build_unit){
-			.index = index,
-			.path  = (uint32_t)at
+			.path    = (uint32_t)at,
+			.words   = (uint32_t)(at + path.len + 1),
+			.n_words = (uint32_t)words.len,
 		});
 	if (e)
 		/* The bytes of a path without a unit are removed. */
@@ -69,59 +72,47 @@ build_text_is (char const       *text,
 }
 
 /* Returns true if the calls @p p and @p q of @p g are of one row: the same
- * state, flags, macro and callees.
+ * file, state, flags, macro and callees.
  */
 static bool
 build_call_same (struct graph const      *g,
                  struct graph_call const *p,
                  struct graph_call const *q)
 {
-	return p->state == q->state &&
+	return p->file  == q->file  &&
+	       p->state == q->state &&
 	       p->flags == q->flags &&
 	       p->macro == q->macro &&
 	       p->n     == q->n     &&
 	       !memcmp(&g->to[p->to], &g->to[q->to], p->n * sizeof *g->to);
 }
 
-/* Returns true if the function @p fn of @p g is a callee of @p call. */
-static bool
-build_call_to (struct graph const      *g,
-               struct graph_call const *call,
-               uint32_t                 fn)
-{
-	uint32_t i = 0;
-	while (i < call->n && g->to[call->to + i] != fn)
-		++i;
-	return i < call->n;
-}
-
-/* Appends to @p out the rows of the calls of the function @p fn of @p g in
- * the code of the function @p by. A row is @p key, a tab, the file, a tab,
- * the lines of the calls of one row (build_call_same()), the function
- * @p by with its lines, and in brackets a note for each of: the macro that
- * the calls are written through, the attribute cleanup, a callee that is
- * one of several, and a call that the program maybe does not evaluate. A
- * call that the program does not evaluate has no callee.
+/* Appends to @p out the rows of the uses of the function @p fn of @p g.
+ * The uses in the code of one function follow each other. A row is @p key,
+ * a tab, the file, a tab, the lines of the calls of one row
+ * (build_call_same()) in the code of one function, that function with its
+ * lines, after the word macro if it is one, or the words at file scope,
+ * and in brackets a note for each of: the macro that the calls are
+ * written through, the attribute cleanup, a callee that is one of several,
+ * and a call that the program maybe does not evaluate. A call that the
+ * program does not evaluate has no callee.
  */
 static void
-build_callee_calls (struct cstr_view         key,
-                    struct graph const      *g,
-                    uint32_t                 fn,
-                    struct graph_fn const   *by,
-                    struct cxi_out          *out)
+build_callee_uses (struct cstr_view       key,
+                   struct graph const    *g,
+                   struct graph_fn const *fn,
+                   struct cxi_out        *out)
 {
-	struct graph_call const *calls = &g->calls[by->calls];
-	for (uint32_t i = 0; i < by->n_calls; ++i) {
-		struct graph_call const *call = &calls[i];
-		if (!build_call_to(g, call, fn))
-			continue;
-
+	struct graph_use const *uses = fn->n_uses ? &g->uses[fn->uses] : nullptr;
+	for (uint32_t i = 0; i < fn->n_uses; ++i) {
+		struct graph_call const *call = &g->calls[uses[i].call];
+		uint32_t const by = uses[i].by;
 		/* A row is appended for its first call. */
-		uint32_t j = 0;
-		while (j < i && !(build_call_to(g, &calls[j], fn) &&
-		                  build_call_same(g, &calls[j], call)))
-			++j;
-		if (j < i)
+		uint32_t j = i;
+		while (j && uses[j - 1].by == by &&
+		       !build_call_same(g, &g->calls[uses[j - 1].call], call))
+			--j;
+		if (j && uses[j - 1].by == by)
 			continue;
 
 		uint32_t line = call->line;
@@ -130,20 +121,25 @@ build_callee_calls (struct cstr_view         key,
 		cxi_out_path(out, cstr_view(graph_text(g, call->file)));
 		cxi_out_lit(out, "\t");
 		cxi_out_num(out, line);
-		for (j = i + 1; j < by->n_calls; ++j) {
-			if (calls[j].line == line ||
-			    !build_call_to(g, &calls[j], fn) ||
-			    !build_call_same(g, &calls[j], call))
+		for (j = i + 1; j < fn->n_uses && uses[j].by == by; ++j) {
+			struct graph_call const *next = &g->calls[uses[j].call];
+			if (next->line == line || !build_call_same(g, next, call))
 				continue;
-			line = calls[j].line;
+			line = next->line;
 			cxi_out_lit(out, ",");
 			cxi_out_num(out, line);
 		}
-		cxi_out_lit(out, " ");
-		cxi_out_text(out, graph_text(g, by->name));
-		cxi_out_lit(out, " (");
-		cxi_out_range(out, by->defined.first, by->defined.last);
-		cxi_out_lit(out, ")");
+		if (by == GRAPH_NONE) {
+			cxi_out_lit(out, " at file scope");
+		} else {
+			struct graph_fn const *in = &g->fns[by];
+			cxi_out_view(out, in->flags & GRAPH_FN_MACRO ? CSTR_VIEW(" macro ")
+			                                             : CSTR_VIEW(" "));
+			cxi_out_text(out, graph_text(g, in->name));
+			cxi_out_lit(out, " (");
+			cxi_out_range(out, in->defined.first, in->defined.last);
+			cxi_out_lit(out, ")");
+		}
 		if (call->macro != GRAPH_NONE) {
 			cxi_out_lit(out, " [macro ");
 			cxi_out_text(out, graph_text(g, call->macro));
@@ -161,15 +157,15 @@ build_callee_calls (struct cstr_view         key,
 
 /* Appends to @p out the rows of each function of @p g that @p callee
  * names: a row of the key of the function and two tabs, and the rows of the
- * calls of the function (build_callee_calls()). @p key is the text of the
+ * uses of the function (build_callee_uses()). @p key is the text of the
  * key of one function at a time.
  *
  * The key is a letter and the place of the function as FILE:FIRST-LAST.
  * The place is that of the definition in the translation unit, or of the
- * first declaration if there is none. The letter is S for a static
- * function and E for any other one, in lower case if the translation unit
- * does not define the function: the definition of an e is then in another
- * translation unit, or in none.
+ * first declaration if there is none. The letter is M for a macro, S for
+ * a static function and E for any other one, in lower case if the
+ * translation unit does not define the function: the definition of an e is
+ * then in another translation unit, or in none.
  */
 static void
 build_callee_rows (struct build_callee const *callee,
@@ -177,29 +173,32 @@ build_callee_rows (struct build_callee const *callee,
                    struct cxi_out            *key,
                    struct cxi_out            *out)
 {
-	for (uint32_t i = 0; i < g->n_fns; ++i) {
-		struct graph_fn const *fn = &g->fns[i];
+	uint32_t n;
+	uint32_t const *named = graph_named(g, callee->name, &n);
+	for (uint32_t k = 0; k < n; ++k) {
+		struct graph_fn const *fn = &g->fns[named[k]];
+		bool const defined = fn->defined.file != GRAPH_NONE;
+		bool const is_static = fn->flags & GRAPH_FN_STATIC;
+		bool const is_macro = fn->flags & GRAPH_FN_MACRO;
+		/* The file of a callee that one translation unit declares. */
+		uint32_t const file = is_static || is_macro ? fn->declared.file
+		                                            : fn->defined.file;
 		if ((fn->flags & callee->mask) != callee->flags ||
-		    !build_text_is(graph_text(g, fn->name), callee->name) ||
-		    (callee->flags &&
-		     !build_text_is(graph_text(g, fn->declared.file), callee->file)))
+		    (callee->file.len && file != GRAPH_NONE &&
+		     !build_text_is(graph_text(g, file), callee->file)))
 			continue;
 
-		bool const defined = fn->defined.file != GRAPH_NONE;
 		struct graph_place const *at = defined ? &fn->defined
 		                                       : &fn->declared;
-		bool const is_static = fn->flags & GRAPH_FN_STATIC;
 		if (!dstr_clear(&key->text))
 			key->e = EINVAL;
-		cxi_out_put(key, &"SsEe"[2 * !is_static + !defined], 1);
+		cxi_out_put(key, is_macro ? "M" : &"SsEe"[2 * !is_static + !defined], 1);
 		cxi_out_path(key, cstr_view(graph_text(g, at->file)));
 		cxi_out_lit(key, ":");
 		cxi_out_range(key, at->first, at->last);
 		cxi_out_view(out, cstr_view_dstr(&key->text));
 		cxi_out_lit(out, "\t\t\n");
-		for (uint32_t by = 0; by < g->n_fns; ++by)
-			build_callee_calls(cstr_view_dstr(&key->text), g, i,
-			                   &g->fns[by], out);
+		build_callee_uses(cstr_view_dstr(&key->text), g, fn, out);
 	}
 }
 
@@ -235,7 +234,8 @@ build_row_order (void const *a,
  * (build_callee_rows()) is the one E of the rows. If the rows contain no E
  * or several, the callee is the declaration, as is a static function
  * without a definition: the place is then appended after the word declared.
- * Without a row, the function is not found.
+ * The place of a macro is appended after the word macro. Without a row,
+ * the function is not found.
  */
 static void
 build_rows (struct cxi_out   *out,
@@ -282,8 +282,10 @@ build_rows (struct cxi_out   *out,
 		if (first) {
 			cxi_out_lit(out, "- callee: ");
 			cxi_out_view(out, name);
-			cxi_out_view(out, r->callee.len && *r->callee.data >= 'a'
-			             ? CSTR_VIEW(" (declared ") : CSTR_VIEW(" ("));
+			char const letter = r->callee.len ? *r->callee.data : 'E';
+			cxi_out_view(out, letter >= 'a' ? CSTR_VIEW(" (declared ")
+			                  : letter == 'M' ? CSTR_VIEW(" (macro ")
+			                  : CSTR_VIEW(" ("));
 			cxi_out_view(out, cstr_view_slice(r->callee, 1, SIZE_MAX));
 			cxi_out_lit(out, ")\n");
 			bare = true;
@@ -341,7 +343,7 @@ build_callers (struct build const        *b,
 	/* The graph of a unit that is not BUILD_GRAPH is empty. */
 	for (size_t i = 0; i < b->n; ++i) {
 		uint32_t const state = b->items[i].state;
-		late += state == BUILD_NONE || state == BUILD_PARSING;
+		late += state != BUILD_GRAPH && state != BUILD_FAILED;
 		build_callee_rows(callee, &b->items[i].g, &key, &rows);
 	}
 	build_rows(out, callee->name, cstr_view_dstr(&rows.text));
