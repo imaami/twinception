@@ -1255,23 +1255,54 @@ cxi_tag_of (CXCursor c)
 	       ? decl : clang_getNullCursor();
 }
 
+/* The search for the first cursor of a name: a member of a record
+ * (cxi_seek_member()), or a function that a declaration at file scope
+ * declares (cxi_seek_function()). found is null while the search has
+ * reached none.
+ */
 struct cxi_seek {
 	char const *name;
 	CXCursor    found;
 };
 
-/* Finds the member seek->name, also inside anonymous members. */
+/* Returns a search for @p name that has reached no cursor. */
+static force_inline struct cxi_seek
+cxi_seek (char const *name)
+{
+	return (struct cxi_seek){
+		.name  = name,
+		.found = clang_getNullCursor()
+	};
+}
+
+/* Stores the member that the cxi_seek at @p data names in it, also a
+ * member of an anonymous member.
+ */
 static enum CXVisitorResult
-cxi_seek_visit (CXCursor     c,
-                CXClientData data)
+cxi_seek_member (CXCursor     c,
+                 CXClientData data)
 {
 	struct cxi_seek *seek = data;
 	CXType const type = clang_getCanonicalType(clang_getCursorType(c));
 	if (clang_Cursor_isAnonymousRecordDecl(clang_getTypeDeclaration(type)))
-		clang_Type_visitFields(type, cxi_seek_visit, seek);
+		clang_Type_visitFields(type, cxi_seek_member, seek);
 	seek->found = clang_Cursor_isNull(seek->found) && cxi_is_named(c, seek->name) ? c
 	            : seek->found;
 	return clang_Cursor_isNull(seek->found) ? CXVisit_Continue : CXVisit_Break;
+}
+
+/* Stores the first function that the cxi_seek at @p data names in it. */
+static enum CXChildVisitResult
+cxi_seek_function (CXCursor     c,
+                   CXCursor,
+                   CXClientData data)
+{
+	struct cxi_seek *seek = data;
+	if (c.kind != CXCursor_FunctionDecl || !cxi_spelled(c, seek->name))
+		return CXChildVisit_Continue;
+
+	seek->found = c;
+	return CXChildVisit_Break;
 }
 
 /* Writes @p member of the record of the first @p name of one to @p *c. */
@@ -1298,11 +1329,8 @@ cxi_lookup_member (struct cxi *x,
 		cxi_out_lit(&x->out, ".");
 		return EINVAL;
 	}
-	struct cxi_seek seek = {
-		.name  = member,
-		.found = clang_getNullCursor()
-	};
-	clang_Type_visitFields(clang_getCursorType(record), cxi_seek_visit, &seek);
+	struct cxi_seek seek = cxi_seek(member);
+	clang_Type_visitFields(clang_getCursorType(record), cxi_seek_member, &seek);
 	*c = seek.found;
 	if (!clang_Cursor_isNull(*c))
 		return x->out.e;
@@ -2370,30 +2398,6 @@ cxi_calls_add (struct cxi_calls *calls,
 	return e ? e : cxi_calls_push(calls, call);
 }
 
-/* The search for the first declaration at file scope of the function
- * name.
- */
-struct cxi_function {
-	char const *name;
-	CXCursor    found;
-};
-
-/* Stores the first function named as the cxi_function at @p data wants in
- * it.
- */
-static enum CXChildVisitResult
-cxi_function_named (CXCursor     c,
-                    CXCursor,
-                    CXClientData data)
-{
-	struct cxi_function *fn = data;
-	if (c.kind != CXCursor_FunctionDecl || !cxi_spelled(c, fn->name))
-		return CXChildVisit_Continue;
-
-	fn->found = c;
-	return CXChildVisit_Break;
-}
-
 /* Appends to @p calls the call of the function of the attribute cleanup of
  * the variable @p c, the cursor of the visit, if the variable is one with
  * the attribute and the program can evaluate the declaration. The program
@@ -2406,10 +2410,6 @@ cxi_calls_add_cleanup (struct cxi_calls *calls,
 {
 	char name[CXI_NAME + 1];
 	struct cxi_walk *walk = &calls->walk;
-	struct cxi_function function = {
-		.name  = name,
-		.found = clang_getNullCursor()
-	};
 	struct cxi_call call = cxi_call(c, (uint32_t)walk->to.n,
 	                                0, CXI_CALL_CLEANUP);
 	if (!cxi_cleanup_name(c, name))
@@ -2418,10 +2418,11 @@ cxi_calls_add_cleanup (struct cxi_calls *calls,
 	if (e || call.state == CXI_UNEVALUATED)
 		return e;
 	e = cxi_walk_cleanup_macro(walk, c, &call.macro);
-	clang_visitChildren(clang_getTranslationUnitCursor(walk->tu), cxi_function_named,
-	                    &function);
-	if (!e && !clang_Cursor_isNull(function.found)) {
-		e = util_push(walk->to, clang_getCanonicalCursor(function.found));
+	struct cxi_seek seek = cxi_seek(name);
+	clang_visitChildren(clang_getTranslationUnitCursor(walk->tu),
+	                    cxi_seek_function, &seek);
+	if (!e && !clang_Cursor_isNull(seek.found)) {
+		e = util_push(walk->to, clang_getCanonicalCursor(seek.found));
 		call.n = !e;
 	}
 	return e ? e : cxi_calls_push(calls, call);
