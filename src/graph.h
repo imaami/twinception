@@ -66,6 +66,10 @@ enum graph_fn_flag : uint32_t {
 	                                 the definition of the macro, and the
 	                                 calls are the uses of macros that the
 	                                 definition writes. */
+	GRAPH_FN_OBJECT = 1U << 2,  /**< with GRAPH_FN_MACRO: an object-like
+	                                 macro. It is in the graph only for the
+	                                 uses of macros that its definition
+	                                 writes, and no call names it. */
 };
 
 /** What a graph says of the parse of the translation unit. */
@@ -178,7 +182,7 @@ graph_text (struct graph const *g,
 /**
  * Returns the indices of the functions of @p g that are named @p name, and
  * writes their number to @p *n: a part of the names of @p g, or nullptr if
- * there is none.
+ * there is none. No function is named an empty name or one with a NUL.
  */
 extern uint32_t const *
 graph_named (struct graph const *g,

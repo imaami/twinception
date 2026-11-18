@@ -137,6 +137,7 @@ main (void)
 	CHECK(!graph_named(&g, CSTR_VIEW("ff"), &n) && !n);
 	CHECK(!graph_named(&g, CSTR_VIEW("h"), &n) && !n);
 	CHECK(!graph_named(&g, cstr_view(nullptr), &n) && !n);
+	CHECK(!graph_named(&g, CSTR_VIEW("g\0x"), &n) && !n);
 	graph_fini(&g);
 	CHECK(!g.fns && !g.n_text && !g.bytes.data);
 
@@ -186,6 +187,12 @@ main (void)
 	 * are not in their order: f is then named as the file is. */
 	CHECK(refused(&draft, names, 2, 0) == EINVAL);
 	CHECK(refused(&draft, head, 0, 0) == EINVAL);
+	/* Names that contain a function twice. A use in the code of a function
+	 * that does not contain the call, and a use whose call does not name
+	 * the function. */
+	CHECK(refused(&draft, names + sizeof(uint32_t), 0, 0) == EINVAL);
+	CHECK(refused(&draft, uses + sizeof(uint32_t), 0, 0) == EINVAL);
+	CHECK(refused(&draft, uses, 1, 0) == EINVAL);
 	/* A text part that does not end with a NUL: its last four bytes are
 	 * replaced. */
 	CHECK(refused(&draft, text + 15 - sizeof(uint32_t), 0x4d4d4d4d, 0) == EINVAL);
@@ -198,5 +205,30 @@ main (void)
 	g = graph(&bytes, &e);
 	CHECK(!e && !g.n_fns && !g.n_calls && !g.n_to && !g.n_text);
 	graph_fini(&g);
+
+	/* Two calls that name one callee of the draft are two uses. */
+	CHECK(!graph_draft_text(&draft, CSTR_VIEW("a.c"), &file));
+	CHECK(!graph_draft_text(&draft, CSTR_VIEW("f"), &f));
+	CHECK(!util_push(draft.fns, (struct graph_fn){
+		.name     = f,
+		.declared = { file, 1, 1 },
+		.defined  = { file, 1, 3 },
+		.n_calls  = 2,
+	}));
+	CHECK(!util_push(draft.to, 0));
+	for (uint32_t line = 2; line < 4; ++line)
+		CHECK(!util_push(draft.calls, (struct graph_call){
+			.file  = file,
+			.line  = line,
+			.n     = 1,
+			.macro = GRAPH_NONE,
+		}));
+	e = written(&draft, &bytes);
+	CHECK(!e);
+	g = graph(&bytes, &e);
+	CHECK(!e && g.n_to == 1 && g.n_uses == 2 && g.fns[0].n_uses == 2);
+	CHECK(g.uses[0].call == 0 && g.uses[1].call == 1 && g.uses[1].by == 0);
+	graph_fini(&g);
+	graph_draft_fini(&draft);
 	return check_report("graph");
 }

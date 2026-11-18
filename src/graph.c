@@ -57,9 +57,11 @@ graph_text_order (char const       *text,
 }
 
 /* Returns true if each index and offset of the records of @p g is of a
- * record or a text of @p g, and the names are in their order. The offset
- * of a text is valid if it is in the text part, because the part ends with
- * a NUL.
+ * record or a text of @p g, the names are each function once in the order
+ * of the names and the indices, and each use is a call that names the
+ * function, in the code of the function that the use tells. The offset of
+ * a text is valid if it is in the text part, because the part ends with a
+ * NUL.
  */
 static bool
 graph_valid (struct graph const *g)
@@ -83,8 +85,9 @@ graph_valid (struct graph const *g)
 
 	/* The names of the functions are valid texts after the loop above. */
 	for (uint32_t i = 1; i < g->n_fns; ++i) {
-		if (strcmp(graph_text(g, g->fns[g->names[i - 1]].name),
-		           graph_text(g, g->fns[g->names[i]].name)) > 0)
+		int const order = strcmp(graph_text(g, g->fns[g->names[i - 1]].name),
+		                         graph_text(g, g->fns[g->names[i]].name));
+		if (order > 0 || (!order && g->names[i - 1] >= g->names[i]))
 			return false;
 	}
 
@@ -109,6 +112,23 @@ graph_valid (struct graph const *g)
 		if (use->call >= g->n_calls ||
 		    (use->by != GRAPH_NONE && use->by >= g->n_fns))
 			return false;
+	}
+
+	for (uint32_t f = 0; f < g->n_fns; ++f) {
+		struct graph_fn const *fn = &g->fns[f];
+		for (uint32_t u = 0; u < fn->n_uses; ++u) {
+			struct graph_use const *use = &g->uses[fn->uses + u];
+			struct graph_call const *call = &g->calls[use->call];
+			struct graph_fn const *by = use->by == GRAPH_NONE ? nullptr
+			                                                  : &g->fns[use->by];
+			uint32_t to = 0;
+			while (to < call->n && g->to[call->to + to] != f)
+				++to;
+			if (to == call->n ||
+			    (by && (use->call < by->calls ||
+			            use->call - by->calls >= by->n_calls)))
+				return false;
+		}
 	}
 
 	return true;
@@ -169,8 +189,9 @@ graph_named (struct graph const *g,
              uint32_t           *n)
 {
 	/* first is the first function whose name is not before @p name. */
+	bool const none = !name.len || memchr(name.data, '\0', name.len);
 	uint32_t first = 0;
-	uint32_t end = name.len ? g->n_fns : 0;
+	uint32_t end = none ? 0 : g->n_fns;
 	while (first < end) {
 		uint32_t const mid = first + (end - first) / 2;
 		if (graph_text_order(graph_text(g, g->fns[g->names[mid]].name), name) < 0)
@@ -178,7 +199,7 @@ graph_named (struct graph const *g,
 		else
 			end = mid;
 	}
-	while (name.len && end < g->n_fns &&
+	while (!none && end < g->n_fns &&
 	       !graph_text_order(graph_text(g, g->fns[g->names[end]].name), name))
 		++end;
 	*n = end - first;
@@ -235,15 +256,15 @@ graph_name_order (void const *a,
 
 /* Writes to @p uses the uses of the functions of @p draft, for each
  * function those of the calls that name it, in the order of the calls, and
- * sets the uses of each function. @p by and @p next are scratch of a
- * number for each call and for each function. Returns the number of the
- * uses, which is at most @p room, or SIZE_MAX if a record of the draft
- * names a call, a callee or a function that the draft does not contain.
+ * sets the uses of each function. The callees of each call are in the
+ * draft, and @p uses has room for a use of each of them. @p by and @p next
+ * are scratch of a number for each call and for each function. Returns
+ * false if a record of the draft names a call or a function that the draft
+ * does not contain.
  */
-static size_t
+static bool
 graph_draft_uses (struct graph_draft *draft,
                   struct graph_use   *uses,
-                  size_t              room,
                   uint32_t           *by,
                   uint32_t           *next)
 {
@@ -257,27 +278,19 @@ graph_draft_uses (struct graph_draft *draft,
 	for (size_t f = 0; f < n_fns; ++f) {
 		struct graph_fn *fn = &fns[f];
 		if (fn->calls > n_calls || fn->n_calls > n_calls - fn->calls)
-			return SIZE_MAX;
+			return false;
 		for (uint32_t c = 0; c < fn->n_calls; ++c)
 			by[fn->calls + c] = (uint32_t)f;
 		fn->n_uses = 0;
 	}
-	size_t total = 0;
 	for (size_t c = 0; c < n_calls; ++c) {
-		struct graph_call const *call = &calls[c];
-		if (call->to > draft->to.n || call->n > draft->to.n - call->to)
-			return SIZE_MAX;
-		for (uint32_t i = 0; i < call->n; ++i) {
-			uint32_t const to = draft->to.items[call->to + i];
+		for (uint32_t i = 0; i < calls[c].n; ++i) {
+			uint32_t const to = draft->to.items[calls[c].to + i];
 			if (to >= n_fns)
-				return SIZE_MAX;
+				return false;
 			++fns[to].n_uses;
 		}
-		total += call->n;
 	}
-	if (total > room)
-		return SIZE_MAX;
-
 	uint32_t at = 0;
 	for (size_t f = 0; f < n_fns; ++f) {
 		fns[f].uses = at;
@@ -291,7 +304,7 @@ graph_draft_uses (struct graph_draft *draft,
 				.by   = by[c],
 			};
 	}
-	return total;
+	return true;
 }
 
 int
@@ -305,14 +318,25 @@ graph_draft_write (struct graph_draft *draft,
 	    draft->text.n >= GRAPH_NONE)
 		return EOVERFLOW;
 
+	/* A use for each callee of each call: two calls can name one callee
+	 * of the draft. */
+	size_t n_uses = 0;
+	for (size_t c = 0; c < n_calls; ++c) {
+		struct graph_call const *call = &draft->calls.items[c];
+		if (call->to > n_to || call->n > n_to - call->to)
+			return EINVAL;
+		n_uses += call->n;
+	}
+	if (n_uses >= GRAPH_NONE)
+		return EOVERFLOW;
+
 	/* One more record than needed, so that no size is 0. */
 	uint32_t *numbers = malloc((n_calls + n_fns + 1) * sizeof *numbers);
-	struct graph_use *uses = malloc((n_to + 1) * sizeof *uses);
+	struct graph_use *uses = malloc((n_uses + 1) * sizeof *uses);
 	struct graph_name *order = malloc((n_fns + 1) * sizeof *order);
 	int e = !numbers || !uses || !order ? ENOMEM : 0;
 	uint32_t *names = e ? nullptr : numbers + n_calls;
-	size_t const n_uses = e ? 0 : graph_draft_uses(draft, uses, n_to, numbers, names);
-	if (n_uses == SIZE_MAX)
+	if (!e && !graph_draft_uses(draft, uses, numbers, names))
 		e = EINVAL;
 	for (size_t f = 0; !e && f < n_fns; ++f) {
 		if (draft->fns.items[f].name >= draft->text.n)

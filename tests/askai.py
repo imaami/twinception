@@ -11483,7 +11483,8 @@ def check_code_build(binary, up, call, d):
     def write(name, text):
         with open(f"{repo}/src/{name}", "w") as f:
             f.write(text)
-    write("k.h", "int k_one(int);\nint k_two(int);\n")
+    write("k.h", "int k_one(int);\nint k_two(int);\n#define K_M(x) (x)\n"
+          "#define K_OBJ K_M(1)\n#if defined K_M\n#endif\n")
     write("k1.c", '#include "k.h"\nint k_one(int n) { return n; }\n'
           "int k_dup(void) { return 1; }\n")
     write("k2.c", '#include "k.h"\nint k_two(int n) { return k_one(n); }\n'
@@ -11569,6 +11570,14 @@ def check_code_build(binary, up, call, d):
             f"- repo: keep\n- commit: {head}\n"
             "- callee: k_five (declared src/k3.c:3)\n"
             "  - callers: none\n")
+        assert runs() == (1, 0, [])
+        # The name of a macro after defined is no use of the macro, and a
+        # use in the definition of an object-like macro is one.
+        assert callers(ai, "K_M") == (
+            f"- repo: keep\n- commit: {head}\n"
+            "- callee: K_M (macro src/k.h:3)\n"
+            "  - callers\n"
+            "    - src/k.h:4 macro K_OBJ (4)\n")
         assert runs() == (1, 0, [])
         # Two files each define a function k_dup. With a path, the callee
         # is the one that the file of the path defines.
@@ -11667,7 +11676,9 @@ def check_code_build(binary, up, call, d):
     # The 40 units of the repository wide take 0.3 s each, and 8 processes
     # parse at a time. A call for a build of keep that starts while they
     # are parsed gets a place when the first of them end: the units of keep
-    # are started before the last ones of wide.
+    # are started before the last ones of wide. The last unit of wide has a
+    # command line that no process can start with: it is not parsed, and
+    # the other units are.
     wide = f"{d}/wide"
     os.makedirs(f"{wide}/src")
     for i in range(40):
@@ -11679,13 +11690,16 @@ def check_code_build(binary, up, call, d):
                        capture_output=True)
     with open(f"{d}/wide.json", "w") as f:
         json.dump([{"directory": wide, "file": f"{wide}/src/w{i}.c",
-                    "arguments": ["cc", "-c", f"{wide}/src/w{i}.c"]} for i in range(40)], f)
+                    "arguments": ["cc", "-c", f"{wide}/src/w{i}.c"]} for i in range(40)] +
+                  [{"directory": wide, "file": f"{wide}/src/big.c",
+                    "arguments": ["cc", "-D" + "X" * 200000, "-c", f"{wide}/src/big.c"]}], f)
     os.remove(f"{bin}/runs")
     commands(indent=3)
     with Askai(f"{bin}/askai", "-u", up.url(), "--git", repo, "--git", wide, "--code",
                f"keep={cdb}", "--code", f"wide={d}/wide.json") as ai:
-        first = threading.Thread(target=lambda: call(ai, repo="wide", action="callers",
-                                                     name="none"))
+        answer = []
+        first = threading.Thread(target=lambda: answer.append(
+            call(ai, repo="wide", action="callers", name="none")))
         first.start()
         wait_for(lambda: os.path.exists(f"{bin}/runs") and
                  sum("repo=wide" in line and "unit=" in line
@@ -11696,6 +11710,8 @@ def check_code_build(binary, up, call, d):
             started = [line for line in f.read().splitlines() if "unit=" in line]
         at = [i for i, line in enumerate(started) if "repo=keep" in line]
         assert len(at) == 3 and len(started) == 43 and at[0] < 40, (at, len(started))
+        assert answer[0].endswith("- callee: none (not found)\n- not parsed: src/big.c\n"), \
+            answer
 
 
 def check_code_describe(binary, up, call, head, d, cdb):

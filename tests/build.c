@@ -93,7 +93,8 @@ main (void)
 	CHECK(!build_add(&b, CSTR_VIEW("src/q\"x.c"), CSTR_VIEW("c\0")));
 	CHECK(!build_add(&b, CSTR_VIEW("src/d.c"), CSTR_VIEW("c\0")));
 	CHECK(!build_add(&b, CSTR_VIEW("src/e.c"), CSTR_VIEW("c\0")));
-	CHECK(b.n == 5 && b.items[3].state == BUILD_NONE && build_waits(b.items[3].state));
+	CHECK(!build_add(&b, CSTR_VIEW("src/c.c"), CSTR_VIEW("c\0")));
+	CHECK(b.n == 6 && b.items[3].state == BUILD_NONE && build_waits(b.items[3].state));
 	CHECK(!strcmp(build_path(&b, &b.items[0]), "src/a.c"));
 	CHECK(!strcmp(build_path(&b, &b.items[3]), "src/d.c"));
 	CHECK(cstr_view_equal(build_words(&b, &b.items[1]), CSTR_VIEW("clang\0-O2\0src/b.c\0")));
@@ -125,8 +126,10 @@ main (void)
 		.calls    = 3,
 		.n_calls  = 2,
 	}));
-	/* The macro MAC of src/h.h is used in inl, in the definition of the
-	 * macro WRAP, and in the code of no function. */
+	/* The macro MAC of src/h.h is used in inl, in the definitions of the
+	 * macro WRAP and of the object-like macro OBJ, and in the code of no
+	 * function. src/h.h defines a second macro MAC, and the use in WRAP is
+	 * of one of the two. */
 	CHECK(!util_push(d.fns, (struct graph_fn){
 		.name     = text(&d, "MAC"),
 		.flags    = GRAPH_FN_MACRO,
@@ -141,8 +144,23 @@ main (void)
 		.calls    = 5,
 		.n_calls  = 1,
 	}));
+	CHECK(!util_push(d.fns, (struct graph_fn){
+		.name     = text(&d, "OBJ"),
+		.flags    = GRAPH_FN_MACRO | GRAPH_FN_OBJECT,
+		.declared = { h_h, 35, 35 },
+		.defined  = { h_h, 35, 35 },
+		.calls    = 7,
+		.n_calls  = 1,
+	}));
+	CHECK(!util_push(d.fns, (struct graph_fn){
+		.name     = text(&d, "MAC"),
+		.flags    = GRAPH_FN_MACRO,
+		.declared = { h_h, 50, 50 },
+		.defined  = { h_h, 50, 50 },
+	}));
 	uint32_t const f = 0;
 	uint32_t const mac = 3;
+	uint32_t const macs[] = { 3, 6 };
 	call(&d, a_c, 8, &f, 1, (struct graph_call){ .macro = GRAPH_NONE });
 	call(&d, h_h, 20, &f, 1, (struct graph_call){ .macro = GRAPH_NONE });
 	call(&d, a_c, 9, &f, 1, (struct graph_call){ .macro = GRAPH_NONE });
@@ -151,11 +169,15 @@ main (void)
 		.macro = GRAPH_NONE,
 		.flags = GRAPH_CALL_MACRO,
 	});
-	call(&d, h_h, 33, &mac, 1, (struct graph_call){
+	call(&d, h_h, 33, macs, 2, (struct graph_call){
 		.macro = GRAPH_NONE,
 		.flags = GRAPH_CALL_MACRO,
 	});
 	call(&d, a_c, 40, &mac, 1, (struct graph_call){
+		.macro = GRAPH_NONE,
+		.flags = GRAPH_CALL_MACRO,
+	});
+	call(&d, h_h, 35, &mac, 1, (struct graph_call){
 		.macro = GRAPH_NONE,
 		.flags = GRAPH_CALL_MACRO,
 	});
@@ -212,6 +234,23 @@ main (void)
 	call(&d, h_h, 4, either, 1, (struct graph_call){ .macro = text(&d, "M") });
 	parsed(&b, 1, &d);
 
+	/* src/c.c declares g, which it does not define, and calls it in m. */
+	d = graph_draft();
+	uint32_t const c_c = text(&d, "src/c.c");
+	CHECK(!util_push(d.fns, (struct graph_fn){
+		.name     = text(&d, "g"),
+		.declared = { text(&d, "src/h.h"), 9, 9 },
+		.defined  = { GRAPH_NONE, 0, 0 },
+	}));
+	CHECK(!util_push(d.fns, (struct graph_fn){
+		.name     = text(&d, "m"),
+		.declared = { c_c, 1, 1 },
+		.defined  = { c_c, 1, 3 },
+		.n_calls  = 1,
+	}));
+	call(&d, c_c, 2, (uint32_t const[]){ 0 }, 1, (struct graph_call){ .macro = GRAPH_NONE });
+	parsed(&b, 5, &d);
+
 	/* clang could not parse the third unit, and bytes that are no graph
 	 * leave a unit as that. The fourth unit is to be parsed once more, and
 	 * a parse of the fifth one runs. */
@@ -249,21 +288,28 @@ main (void)
 		"- callee: other (declared src/h.h:2)\n"
 		"  - callers\n"
 		"    - src/b.c:4 k (2-6) [or another function]\n")));
-	/* Two functions of one name, without a call. With the file of a
-	 * definition, the function that another file defines is no callee, and
-	 * a function that a unit only declares is one. */
+	/* Two files define a function g, and a third one only declares and
+	 * calls it: the tool cannot tell which definition that call is of.
+	 * With the file of a definition, the function that another file
+	 * defines is no callee, and the call stays one of the declaration. */
 	CHECK(answers(&b, (struct build_callee){ .name = CSTR_VIEW("g") }, CLOSED(
 		"- callee: g (src/a.c:7-9)\n"
 		"  - callers: none\n"
 		"- callee: g (src/b.c:8)\n"
-		"  - callers: none\n")));
+		"  - callers: none\n"
+		"- callee: g (declared src/h.h:9)\n"
+		"  - callers\n"
+		"    - src/c.c:2 m (1-3)\n")));
 	CHECK(answers(&b, (struct build_callee){
 		.name = CSTR_VIEW("g"),
 		.file = CSTR_VIEW("src/b.c"),
 		.mask = GRAPH_FN_STATIC | GRAPH_FN_MACRO,
 	}, CLOSED(
 		"- callee: g (src/b.c:8)\n"
-		"  - callers: none\n")));
+		"  - callers: none\n"
+		"- callee: g (declared src/h.h:9)\n"
+		"  - callers\n"
+		"    - src/c.c:2 m (1-3)\n")));
 	CHECK(answers(&b, (struct build_callee){
 		.name = CSTR_VIEW("other"),
 		.file = CSTR_VIEW("src/b.c"),
@@ -273,14 +319,21 @@ main (void)
 		"  - callers\n"
 		"    - src/b.c:4 k (2-6) [or another function]\n")));
 	/* A macro is a callee, with the word macro before its place. A use is
-	 * in a function, in the definition of a macro, or at file scope. With
-	 * a mask, the callee is the macro of one file. */
+	 * in a function, in the definition of a macro, or at file scope. An
+	 * object-like macro is a caller and no callee. With a mask, the callee
+	 * is the macro of one file. */
 	static char const mac_rows[] = CLOSED(
 		"- callee: MAC (macro src/h.h:30-31)\n"
 		"  - callers\n"
 		"    - src/a.c:40 at file scope\n"
 		"    - src/h.h:4 inl (4)\n"
-		"    - src/h.h:33 macro WRAP (33)\n");
+		"    - src/h.h:33 macro WRAP (33) [or another macro of the name]\n"
+		"    - src/h.h:35 macro OBJ (35)\n"
+		"- callee: MAC (macro src/h.h:50)\n"
+		"  - callers\n"
+		"    - src/h.h:33 macro WRAP (33) [or another macro of the name]\n");
+	CHECK(answers(&b, (struct build_callee){ .name = CSTR_VIEW("OBJ") },
+	              CLOSED("- callee: OBJ (not found)\n")));
 	CHECK(answers(&b, (struct build_callee){ .name = CSTR_VIEW("MAC") }, mac_rows));
 	CHECK(answers(&b, (struct build_callee){
 		.name  = CSTR_VIEW("MAC"),

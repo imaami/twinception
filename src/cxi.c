@@ -1425,7 +1425,7 @@ cxi_summary (struct cxi     *x,
  * macro is null: the call is only counted. file is the file of the call.
  * row is the index of the first call of the function in the same file
  * with the same state, flags, macro and callees
- * (cxi_calls_push()): an answer prints these calls as one row.
+ * (cxi_describe_calls()): describe prints these calls as one row.
  */
 struct cxi_call {
 	CXCursor at;
@@ -2128,7 +2128,7 @@ cxi_calls_same (struct cxi_calls const *calls,
 	return true;
 }
 
-/* Appends @p call to @p calls and sets the row of the call. Returns 0,
+/* Appends @p call to @p calls. Returns 0,
  * ENOMEM, or EALREADY if the calls have contained a call at the same node
  * of the syntax tree (cxi_ast_node()): the callees of @p call are then
  * removed. libclang visits some expressions more than once, and not only
@@ -2148,18 +2148,8 @@ cxi_calls_push (struct cxi_calls *calls,
 		return EALREADY;
 	}
 
-	int e = cxi_ids_put(&calls->nodes, node, 0);
-	if (!e)
-		e = util_push(*calls, call);
-	if (e)
-		return e;
-
-	size_t const last = calls->n - 1;
-	size_t row = 0;
-	while (!cxi_calls_same(calls, row, last))
-		++row;
-	calls->items[last].row = row;
-	return 0;
+	int const e = cxi_ids_put(&calls->nodes, node, 0);
+	return e ? e : util_push(*calls, call);
 }
 
 /* Appends the call expression @p c, the cursor of the visit, to @p calls,
@@ -2343,6 +2333,14 @@ cxi_describe_calls (struct cxi *x,
 {
 	struct cxi_calls calls = cxi_calls(x);
 	int const e = cxi_calls_collect(&calls, c);
+	/* Only describe prints rows, so the graph of a unit is made without
+	 * this search. */
+	for (size_t i = 0; !e && i < calls.n; ++i) {
+		size_t row = 0;
+		while (!cxi_calls_same(&calls, row, i))
+			++row;
+		calls.items[i].row = row;
+	}
 	size_t rows = 0;
 	size_t unevaluated = 0;
 	size_t first = 0;
@@ -2556,6 +2554,23 @@ cxi_tu (struct cxi        *x,
 	return failed;
 }
 
+/* Returns the text of @p file after the identifier at the offset @p at, to
+ * the end of the file, or an empty view without the text.
+ */
+static struct cstr_view
+cxi_after_name (CXTranslationUnit tu,
+                CXFile            file,
+                unsigned          at)
+{
+	size_t size = 0;
+	char const *text = file ? clang_getFileContents(tu, file, &size) : nullptr;
+	if (!text || at >= size)
+		return cstr_view(nullptr);
+
+	struct cstr_view const rest = cstr_view_n(text + at, size - at);
+	return cstr_view_slice(rest, cxi_ident(rest), SIZE_MAX);
+}
+
 /* Returns true if the macro that @p def defines is function-like. libclang
  * tells that only for a macro that is still defined at the end of the
  * translation unit. For another one, "(" follows the name in the file at
@@ -2570,14 +2585,25 @@ cxi_fn_like (CXTranslationUnit tu,
 
 	CXFile file;
 	unsigned at;
-	size_t size = 0;
 	clang_getFileLocation(clang_getCursorLocation(def), &file, nullptr, nullptr, &at);
-	char const *text = file ? clang_getFileContents(tu, file, &size) : nullptr;
-	if (!text || at >= size)
-		return false;
+	struct cstr_view const rest = cxi_after_name(tu, file, at);
+	return rest.len && *rest.data == '(';
+}
 
-	size_t const name = cxi_ident(cstr_view_n(text + at, size - at));
-	return at + name < size && text[at + name] == '(';
+/* Returns true if the name of a function-like macro at the offset @p at of
+ * @p file has arguments: "(" follows the name, after white space. A name
+ * after #ifdef or defined has none, and libclang reports that as a use of
+ * the macro too.
+ */
+static bool
+cxi_called (CXTranslationUnit tu,
+            CXFile            file,
+            unsigned          at)
+{
+	struct cstr_view rest = cxi_after_name(tu, file, at);
+	while (rest.len && cstr_view_space(*rest.data))
+		rest = cstr_view_slice(rest, 1, SIZE_MAX);
+	return rest.len && *rest.data == '(';
 }
 
 /* A use of a function-like macro with arguments that a file of the tree
@@ -2619,8 +2645,8 @@ struct cxi_named {
  * function is the index of its record. The number of a file is the offset
  * of the text of its path, and that of the definition of a macro the offset
  * of the text of its name. macros contains the index of the record of each
- * function-like macro of the draft, named contains these macros in the
- * order of their names, and defs the definitions of those that a file of
+ * macro of the draft, named contains the function-like ones in the order
+ * of their names, and defs the definitions of the macros that a file of
  * the tree defines. uses contains the uses of the macros.
  */
 struct cxi_graph {
@@ -2774,20 +2800,22 @@ cxi_graph_named (struct cxi_graph const *g,
 	return first;
 }
 
-/* Writes to @p *id the index in @p g of the function-like macro that
- * @p def defines, and appends the macro if @p g does not contain it: the
- * name and the place of the definition.
+/* Writes to @p *id the index in @p g of the macro that @p def defines, and
+ * appends the macro with @p flags if @p g does not contain it: the name
+ * and the place of the definition. Only a function-like macro is among the
+ * macros by name.
  */
 static int
 cxi_graph_macro_fn (struct cxi_graph *g,
                     CXCursor          def,
+                    uint32_t          flags,
                     uint32_t         *id)
 {
 	void const *node = cxi_ast_node(def);
 	if (cxi_ids_get(&g->macros, node, id))
 		return 0;
 
-	struct graph_fn fn = { .flags = GRAPH_FN_MACRO };
+	struct graph_fn fn = { .flags = flags };
 	int e = cxi_graph_macro(g, def, &fn.name);
 	if (!e)
 		e = cxi_graph_place(g, def, &fn.declared);
@@ -2797,8 +2825,9 @@ cxi_graph_macro_fn (struct cxi_graph *g,
 		e = util_push(g->draft.fns, fn);
 	if (!e)
 		e = cxi_ids_put(&g->macros, node, *id);
-	if (!e)
-		e = util_push(g->named, (struct cxi_named){});
+	if (e || flags & GRAPH_FN_OBJECT)
+		return e;
+	e = util_push(g->named, (struct cxi_named){});
 	if (e)
 		return e;
 
@@ -2974,9 +3003,9 @@ cxi_tu_errors (CXTranslationUnit tu)
 
 /* Appends to the cxi_graph at @p data each function-like macro that a file
  * of the tree defines, and each use of a function-like macro with
- * arguments that a file of the tree writes. A visit that
- * clang_visitChildren() reports as stopped has failed, with the error in
- * the walk of the calls.
+ * arguments that a file of the tree writes. Each macro definition of the
+ * tree is kept for cxi_graph_bodies(). A visit that clang_visitChildren()
+ * reports as stopped has failed, with the error in the walk of the calls.
  */
 static enum CXChildVisitResult
 cxi_graph_macros (CXCursor     c,
@@ -2984,37 +3013,37 @@ cxi_graph_macros (CXCursor     c,
                   CXClientData data)
 {
 	struct cxi_graph *g = data;
+	CXTranslationUnit tu = g->calls.x->tu;
 	CXSourceLocation const loc = clang_getCursorLocation(c);
 	int e = 0;
 	if (c.kind == CXCursor_MacroDefinition) {
 		uint32_t id;
 		if (clang_Location_isInSystemHeader(loc) ||
-		    !cxi_fn_like(g->calls.x->tu, c) ||
 		    !cxi_in_tree(g->calls.x->out.tree, c))
 			return CXChildVisit_Continue;
 
-		e = cxi_graph_macro_fn(g, c, &id);
+		if (cxi_fn_like(tu, c))
+			e = cxi_graph_macro_fn(g, c, GRAPH_FN_MACRO, &id);
 		e = e ? e : util_push(g->defs, c);
 	} else if (c.kind == CXCursor_MacroExpansion) {
 		CXCursor const def = clang_getCursorReferenced(c);
-		if (def.kind != CXCursor_MacroDefinition ||
-		    clang_Location_isInSystemHeader(loc) ||
-		    !cxi_fn_like(g->calls.x->tu, def))
-			return CXChildVisit_Continue;
-
-		struct cxi_expansion use = {};
+		struct cxi_expansion use = { .to = GRAPH_NONE };
 		unsigned at;
 		clang_getFileLocation(loc, &use.file, nullptr, nullptr, &at);
 		use.at = at;
+		if (def.kind != CXCursor_MacroDefinition ||
+		    clang_Location_isInSystemHeader(loc) ||
+		    !cxi_fn_like(tu, def) || !cxi_called(tu, use.file, at))
+			return CXChildVisit_Continue;
+
 		e = cxi_graph_file(g, loc, &use.text, &use.line);
 		/* The path of a file of the tree is without the path of the
 		 * tree. */
-		char const first = e ? '/' : g->draft.text.items[use.text];
-		if (!use.file || first == '/' || first == '<' || !first)
-			return e ? CXChildVisit_Break : CXChildVisit_Continue;
-
-		e = cxi_graph_macro_fn(g, def, &use.to);
-		e = e ? e : util_push(g->uses, use);
+		char const first = e ? '\0' : g->draft.text.items[use.text];
+		if (!e && first && first != '/')
+			e = cxi_graph_macro_fn(g, def, GRAPH_FN_MACRO, &use.to);
+		if (!e && use.to != GRAPH_NONE)
+			e = util_push(g->uses, use);
 	}
 	g->calls.walk.e = e;
 	return e ? CXChildVisit_Break : CXChildVisit_Continue;
@@ -3033,11 +3062,70 @@ cxi_token_is (CXTranslationUnit  tu,
 	return is;
 }
 
+/* Appends to the draft of @p g the uses of macros in the definition
+ * @p def of a macro, whose tokens are the @p n tokens at @p tokens: an
+ * identifier from the token @p body on that names a function-like macro of
+ * the draft, that "(" follows, and that is neither the macro itself, which
+ * is not expanded in its own expansion, nor one of its parameters, the
+ * tokens from 2 to @p body - 1. A name of several macros of the draft is a
+ * use of one of them. The uses are the calls of the macro, which is
+ * appended to the draft for its first use if it is object-like.
+ */
+static int
+cxi_graph_body (struct cxi_graph *g,
+                CXCursor          def,
+                CXToken const    *tokens,
+                unsigned          n,
+                unsigned          body)
+{
+	CXTranslationUnit tu = g->calls.x->tu;
+	uint32_t const first = (uint32_t)g->draft.calls.n;
+	uint32_t id = GRAPH_NONE;
+	(void)cxi_ids_get(&g->macros, cxi_ast_node(def), &id);
+	int e = 0;
+	for (unsigned t = body; !e && t + 1 < n; ++t) {
+		if (clang_getTokenKind(tokens[t]) != CXToken_Identifier)
+			continue;
+
+		CXString spelled = clang_getTokenSpelling(tu, tokens[t]);
+		char const *name = clang_getCString(spelled);
+		size_t at = name ? cxi_graph_named(g, name) : g->named.n;
+		char const *text = g->draft.text.items;
+		bool used = at < g->named.n && !strcmp(text + g->named.items[at].name, name) &&
+		            cxi_token_is(tu, tokens[t + 1], "(") &&
+		            !cxi_token_is(tu, tokens[0], name);
+		for (unsigned p = 2; used && p + 1 < body; ++p)
+			used = !cxi_token_is(tu, tokens[p], name);
+		struct graph_call call = {
+			.to    = (uint32_t)g->draft.to.n,
+			.macro = GRAPH_NONE,
+			.flags = GRAPH_CALL_MACRO,
+		};
+		if (used && id == GRAPH_NONE)
+			e = cxi_graph_macro_fn(g, def, GRAPH_FN_MACRO | GRAPH_FN_OBJECT, &id);
+		if (used && !e)
+			e = cxi_graph_file(g, clang_getTokenLocation(tu, tokens[t]),
+			                   &call.file, &call.line);
+		/* The texts of the draft can have moved. */
+		for (; used && !e && at < g->named.n &&
+		       !strcmp(g->draft.text.items + g->named.items[at].name, name); ++at)
+			e = util_push(g->draft.to, g->named.items[at].fn);
+		call.n = (uint32_t)g->draft.to.n - call.to;
+		if (used && !e)
+			e = util_push(g->draft.calls, call);
+		clang_disposeString(spelled);
+	}
+	if (id != GRAPH_NONE) {
+		g->draft.fns.items[id].calls = first;
+		g->draft.fns.items[id].n_calls = (uint32_t)g->draft.calls.n - first;
+	}
+	return e;
+}
+
 /* Appends to the draft of @p g the uses of macros in the definition of
- * each macro of the tree: an identifier of the definition after the
- * parameters that names another function-like macro of the draft, that
- * "(" follows, and that is no parameter of the macro. The uses are the
- * calls of the macro.
+ * each macro of the tree (cxi_graph_body()). The tokens of a function-like
+ * macro start with the name, "(", the parameters and ")". An object-like
+ * macro whose definition contains no "(" writes no use.
  */
 static int
 cxi_graph_bodies (struct cxi_graph *g)
@@ -3046,45 +3134,32 @@ cxi_graph_bodies (struct cxi_graph *g)
 	int e = 0;
 	for (size_t d = 0; !e && d < g->defs.n; ++d) {
 		CXCursor const def = g->defs.items[d];
+		CXSourceRange const extent = clang_getCursorExtent(def);
 		uint32_t id;
-		if (!cxi_ids_get(&g->macros, cxi_ast_node(def), &id))
+		bool const fn_like = cxi_ids_get(&g->macros, cxi_ast_node(def), &id);
+		CXFile file;
+		unsigned from;
+		unsigned to;
+		clang_getFileLocation(clang_getRangeStart(extent), &file, nullptr, nullptr, &from);
+		clang_getFileLocation(clang_getRangeEnd(extent), nullptr, nullptr, nullptr, &to);
+		size_t size = 0;
+		char const *text = file ? clang_getFileContents(tu, file, &size) : nullptr;
+		if (!fn_like && (!text || from > to || to > size ||
+		                 !memchr(text + from, '(', to - from)))
 			continue;
 
 		CXToken *tokens = nullptr;
 		unsigned n = 0;
-		clang_tokenize(tu, clang_getCursorExtent(def), &tokens, &n);
-		/* The name, "(", the parameters and ")" come first. */
-		unsigned close = 2;
-		while (close < n && !cxi_token_is(tu, tokens[close], ")"))
-			++close;
-		uint32_t const first = (uint32_t)g->draft.calls.n;
-		for (unsigned t = close + 1; !e && t + 1 < n; ++t) {
-			if (clang_getTokenKind(tokens[t]) != CXToken_Identifier)
-				continue;
-
-			CXString spelled = clang_getTokenSpelling(tu, tokens[t]);
-			char const *name = clang_getCString(spelled);
-			size_t const at = name ? cxi_graph_named(g, name) : g->named.n;
-			struct cxi_expansion use = {
-				.to = at < g->named.n ? g->named.items[at].fn : GRAPH_NONE,
-			};
-			/* A macro is not expanded in its own expansion. */
-			bool used = use.to != GRAPH_NONE && use.to != id &&
-			            !strcmp(g->draft.text.items + g->named.items[at].name, name) &&
-			            strcmp(g->draft.text.items + g->draft.fns.items[id].name, name) &&
-			            cxi_token_is(tu, tokens[t + 1], "(");
-			for (unsigned p = 2; used && p < close; ++p)
-				used = !cxi_token_is(tu, tokens[p], name);
-			if (used)
-				e = cxi_graph_file(g, clang_getTokenLocation(tu, tokens[t]),
-				                   &use.text, &use.line);
-			if (used && !e)
-				e = cxi_graph_use(g, &use);
-			clang_disposeString(spelled);
+		clang_tokenize(tu, extent, &tokens, &n);
+		unsigned body = 1;
+		if (fn_like) {
+			body = 2;
+			while (body < n && !cxi_token_is(tu, tokens[body], ")"))
+				++body;
+			++body;
 		}
+		e = cxi_graph_body(g, def, tokens, n, body);
 		clang_disposeTokens(tu, tokens, n);
-		g->draft.fns.items[id].calls = first;
-		g->draft.fns.items[id].n_calls = (uint32_t)g->draft.calls.n - first;
 	}
 	return e;
 }

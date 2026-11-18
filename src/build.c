@@ -148,7 +148,9 @@ build_callee_uses (struct cstr_view       key,
 		if (call->flags & GRAPH_CALL_CLEANUP)
 			cxi_out_lit(out, " [attribute cleanup]");
 		if (call->n > 1)
-			cxi_out_lit(out, " [or another function]");
+			cxi_out_view(out, call->flags & GRAPH_CALL_MACRO
+			             ? CSTR_VIEW(" [or another macro of the name]")
+			             : CSTR_VIEW(" [or another function]"));
 		if (call->state == GRAPH_UNPROVEN)
 			cxi_out_lit(out, " [maybe not evaluated]");
 		cxi_out_lit(out, "\n");
@@ -180,12 +182,14 @@ build_callee_rows (struct build_callee const *callee,
 		bool const defined = fn->defined.file != GRAPH_NONE;
 		bool const is_static = fn->flags & GRAPH_FN_STATIC;
 		bool const is_macro = fn->flags & GRAPH_FN_MACRO;
-		/* The file of a callee that one translation unit declares. */
-		uint32_t const file = is_static || is_macro ? fn->declared.file
-		                                            : fn->defined.file;
-		if ((fn->flags & callee->mask) != callee->flags ||
-		    (callee->file.len && file != GRAPH_NONE &&
-		     !build_text_is(graph_text(g, file), callee->file)))
+		/* An object-like macro is no callee. A macro or a static function
+		 * that one translation unit declares is the one of its file. The
+		 * definitions of another function in other files are left out
+		 * after all rows are known (build_rows()). */
+		if (fn->flags & GRAPH_FN_OBJECT ||
+		    (fn->flags & callee->mask) != callee->flags ||
+		    (callee->file.len && (is_static || is_macro) &&
+		     !build_text_is(graph_text(g, fn->declared.file), callee->file)))
 			continue;
 
 		struct graph_place const *at = defined ? &fn->defined
@@ -236,13 +240,20 @@ build_row_order (void const *a,
  * without a definition: the place is then appended after the word declared.
  * The place of a macro is appended after the word macro. Without a row,
  * the function is not found.
+ *
+ * @p only is empty, or E and the path of a file with a colon, as a callee
+ * starts: the rows of a function that another file defines are then left
+ * out. That is done after the one E is known, so that a call in a
+ * translation unit that only declares the function is not a call of the
+ * definition of @p only if another file defines the function too.
  */
 static void
 build_rows (struct cxi_out   *out,
             struct cstr_view  name,
-            struct cstr_view  text)
+            struct cstr_view  text,
+            struct cstr_view  only)
 {
-	size_t const n = cstr_view_count(text, '\n');
+	size_t n = cstr_view_count(text, '\n');
 	if (!n) {
 		cxi_out_lit(out, "- callee: ");
 		cxi_out_view(out, name);
@@ -274,6 +285,13 @@ build_rows (struct cxi_out   *out,
 		if (cstr_view_starts(row[i].callee, CSTR_VIEW("e")))
 			row[i].callee = defined;
 	}
+	size_t kept = 0;
+	for (size_t i = 0; i < n; ++i) {
+		if (!only.len || !cstr_view_starts(row[i].callee, CSTR_VIEW("E")) ||
+		    cstr_view_starts(row[i].callee, only))
+			row[kept++] = row[i];
+	}
+	n = kept;
 	qsort(row, n, sizeof *row, build_row_order);
 	bool bare = false;
 	for (size_t i = 0; i < n; ++i) {
@@ -346,7 +364,19 @@ build_callers (struct build const        *b,
 		late += state != BUILD_GRAPH && state != BUILD_FAILED;
 		build_callee_rows(callee, &b->items[i].g, &key, &rows);
 	}
-	build_rows(out, callee->name, cstr_view_dstr(&rows.text));
+	/* The one definition of a function that is not static, for a callee
+	 * that one translation unit declares. */
+	if (callee->file.len && callee->mask && !callee->flags) {
+		if (!dstr_clear(&key.text))
+			key.e = EINVAL;
+		cxi_out_lit(&key, "E");
+		cxi_out_path(&key, callee->file);
+		cxi_out_lit(&key, ":");
+		build_rows(out, callee->name, cstr_view_dstr(&rows.text),
+		           cstr_view_dstr(&key.text));
+	} else {
+		build_rows(out, callee->name, cstr_view_dstr(&rows.text), cstr_view(nullptr));
+	}
 	build_units(b, CSTR_VIEW("- not parsed: "), BUILD_FAILED, 0, out);
 	build_units(b, CSTR_VIEW("- parsed with errors: "), BUILD_GRAPH,
 	            GRAPH_ERRORS, out);

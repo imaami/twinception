@@ -119,6 +119,10 @@ enum code_build_flag : uint64_t {
 	CODE_STALLED = 1U << 0,  /* a process found the tree of the cache at
 	                            another commit: no process starts until a
 	                            call has exported the commit again */
+	CODE_CALLED  = 1U << 1,  /* a call has joined the build after the last
+	                            unit became BUILD_AGAIN: these units are
+	                            parsed. Without the flag they wait for the
+	                            next call. */
 };
 
 /* A build that the service keeps for all loops: the translation units of
@@ -142,8 +146,9 @@ struct code_build {
 	size_t       refs;     /* one of the service, one of each call that
 	                          has joined the build, and one of each process
 	                          that parses for it */
-	size_t       next;     /* no unit before this one waits for a parse
-	                          (build_waits()) */
+	size_t       next;     /* no unit before this one can be started
+	                          (code_build_run()) */
+	size_t       again;    /* the units that are BUILD_AGAIN */
 	size_t       left;     /* the units that are neither BUILD_GRAPH nor
 	                          BUILD_FAILED */
 	size_t       parsing;  /* the units that are BUILD_PARSING */
@@ -424,15 +429,21 @@ code_build_put (struct code_build *build)
 }
 
 /* Makes the unit of @p parse, whose process ended without a result, wait
- * for a parse again: for its last one after CODE_AGAIN. The caller has the
- * lock of the service.
+ * for a parse again: for its last one after CODE_AGAIN, and then for the
+ * next call that joins the build. The caller has the lock of the service.
  */
 static void
 code_build_undo (struct code_build       *build,
                  struct code_parse const *parse)
 {
-	build->b.items[parse->unit].state = parse->flags & CODE_AGAIN ? BUILD_AGAIN
-	                                                              : BUILD_NONE;
+	struct build_unit *unit = &build->b.items[parse->unit];
+	if (parse->flags & CODE_AGAIN) {
+		unit->state = BUILD_AGAIN;
+		++build->again;
+		build->flags &= ~(uint64_t)CODE_CALLED;
+	} else {
+		unit->state = BUILD_NONE;
+	}
 	if (parse->unit < build->next)
 		build->next = parse->unit;
 }
@@ -496,7 +507,11 @@ code_parse_spawn (struct code_parse *parse,
 
 	parse->build = build;
 	parse->unit = unit;
-	parse->flags = u->state == BUILD_AGAIN ? CODE_AGAIN : 0;
+	parse->flags = 0;
+	if (u->state == BUILD_AGAIN) {
+		parse->flags = CODE_AGAIN;
+		--build->again;
+	}
 	u->state = BUILD_PARSING;
 	++build->parsing;
 	++build->refs;
@@ -517,35 +532,50 @@ code_parse_end (struct code_parse *parse)
 }
 
 /* Starts a process of @p cl for each unit of @p build that waits for a
- * parse, in the order of the units, while a place of the loop is free,
- * fewer than CODE_PARSES processes of all loops parse, and the process
- * starts. A stalled build starts none. While a call of another build waits
- * for a place (code_waited()), this build starts none either, so that a
- * build of many units does not keep each place that its processes free.
- * The caller has the lock of the service.
+ * parse, in the order of the units, while a place of the loop is free and
+ * fewer than CODE_PARSES processes of all loops parse. A unit that is
+ * BUILD_AGAIN waits until a call has joined the build. A unit whose
+ * process cannot start is not parsed, except for EBUSY: the loops have
+ * CHILD_MAX children then, and the unit waits. A stalled build starts
+ * none. While a call of another build waits for a place (code_waited()),
+ * this build starts none either, so that a build of many units does not
+ * keep each place that its processes free. The caller has the lock of the
+ * service.
  */
 static void
 code_build_run (struct code_build *build,
                 struct code_loop  *cl)
 {
 	struct code *code = cl->code;
-	struct build const *b = &build->b;
+	struct build *b = &build->b;
 	if (build->flags & CODE_STALLED || (code->hungry && code->hungry != build))
 		return;
 
-	for (size_t i = 0;; ++i) {
-		while (build->next < b->n && !build_waits(b->items[build->next].state))
+	for (;;) {
+		while (build->next < b->n &&
+		       b->items[build->next].state != BUILD_NONE &&
+		       !(b->items[build->next].state == BUILD_AGAIN &&
+		         build->flags & CODE_CALLED))
 			++build->next;
+		size_t i = 0;
 		while (i < CODE_PARSES && cl->parse[i].child)
 			++i;
 		if (build->next == b->n || i == CODE_PARSES ||
-		    code->parses == CODE_PARSES ||
-		    code_parse_spawn(&cl->parse[i], build, build->next))
+		    code->parses == CODE_PARSES)
 			break;
 
-		/* The build has got a place. */
-		if (code->hungry == build)
+		int const e = code_parse_spawn(&cl->parse[i], build, build->next);
+		if (e == EBUSY)
+			break;
+		if (e) {
+			if (b->items[build->next].state == BUILD_AGAIN)
+				--build->again;
+			build_parsed(b, build->next, nullptr);
+			--build->left;
+		} else if (code->hungry == build) {
+			/* The build has got a place. */
 			code->hungry = nullptr;
+		}
 	}
 	if (build->next == b->n && code->hungry == build)
 		code->hungry = nullptr;
@@ -863,11 +893,16 @@ code_join (struct code_call *call,
 		        ? code_build_create(code, id, rest, call, &e) : nullptr;
 	if (build) {
 		/* The build that a call used last is the last one of the list.
-		 * A call that got the units has exported the commit. */
+		 * A call that got the units has exported the commit. A unit
+		 * that took too long is parsed once more for this call. */
 		list_move(&code->builds, &build->hook);
 		++build->refs;
 		if (call->flags & CODE_LIST)
 			build->flags &= ~(uint64_t)CODE_STALLED;
+		if (build->again) {
+			build->flags |= CODE_CALLED;
+			build->next = 0;
+		}
 		code_trim(code);
 	}
 	pthread_mutex_unlock(&code->lock);
@@ -931,8 +966,9 @@ code_call_late (struct loop *,
  * leaves the build and spawns askai-code once more, which exports the
  * commit again. Any other call lets its loop start processes for the
  * build, and looks at the build again after CODE_RETRY, or when a process
- * of its loop has ended (code_parse_done()). If a unit then still waits
- * for a place for a process, the build gets the next place that is free.
+ * of its loop has ended (code_parse_done()). If no process parses for the
+ * build after that, and a unit waits for a place for a process, the build
+ * gets the next place that is free.
  */
 static void
 code_waited (struct mcp_slot  *slot,
@@ -954,13 +990,20 @@ code_waited (struct mcp_slot  *slot,
 		code_text(call);
 		if (!complete)
 			pthread_mutex_unlock(&code->lock);
+		/* The answer needs the build no more. A call whose result askai
+		 * keeps for a while would otherwise keep the build, and a place
+		 * that the build waits for. */
+		(void)loop_timer_stop(loop, &call->timer);
+		code_leave(call, code);
 		code_answer(slot, call);
 		return;
 	}
 	bool const stalled = build->flags & CODE_STALLED;
 	if (!stalled) {
 		code_build_run(build, cl);
-		if (!code->hungry && build->next < build->b.n)
+		/* Only a build without a process waits for a place: one that
+		 * parses gets its next place when a process of its own ends. */
+		if (!code->hungry && !build->parsing && build->next < build->b.n)
 			code->hungry = build;
 	}
 	bool const idle = !build->parsing;
