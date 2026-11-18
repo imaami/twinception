@@ -247,8 +247,10 @@ class Stream:
     them), @p gap seconds apart, and then @p stall seconds of silence before
     the end."""
 
-    def __init__(self, payload=None, wire=None, sizes=(), gap=0, stall=0):
+    def __init__(self, payload=None, wire=None, sizes=(), gap=0, stall=0,
+                 media="text/event-stream"):
         self.wire = wire if wire is not None else sse_wire(sse_of(payload))
+        self.media = media
         self.sizes = sizes
         self.gap = gap
         self.stall = stall
@@ -386,7 +388,8 @@ class Upstream:
 
             def stream(self, answer):
                 self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
+                if answer.media is not None:
+                    self.send_header("Content-Type", answer.media)
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
                 try:
@@ -1223,6 +1226,20 @@ def check_chatgpt(binary, up):
             result = ai.ask()
             assert result.get("isError") and "Subscription allowance exhausted." in \
                 text_of(result), result
+
+            # Responses events with a missing or incorrect media type:
+            # the first event's prefix may straddle writes, and a later
+            # event can still fail the request.
+            success = sse_of(ANSWERS["responses"])
+            for media, events, expected in (
+                    ("application/json", success, "A"),
+                    (None, [success[0], ("response.failed", failure)],
+                     "Upstream error (HTTP 200): Subscription allowance exhausted.")):
+                up.reply = lambda r, m=media, ev=events: (200, Stream(
+                    wire=sse_wire(ev), sizes=(2, 1, 2), gap=0.02, media=m))
+                result = ai.ask()
+                assert bool(result.get("isError")) == (events is not success) and \
+                    text_of(result) == expected, (media, result)
 
         # Missing managed credentials fail on the worker before any HTTP
         # submission, without implicitly falling back to an API key.

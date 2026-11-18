@@ -1075,8 +1075,27 @@ home_job_write (char const *data,
 	if (home->silence && home->timers[TIMER_QUIET].due == UINT64_MAX)
 		(void)loop_timer_set(home->loop, &home->timers[TIMER_QUIET],
 		                     job->active + home->silence);
-	if (!(job->flags & STREAM))
-		return home_receive(job, &job->result, data, len);
+	if (!(job->flags & STREAM)) {
+		size_t before = buf_peek(&job->result).len;
+		size_t n = home_receive(job, &job->result, data, len);
+		/* A Responses stream can arrive without its event-stream media
+		 * type. Its opening field may span writes. Once recognized,
+		 * hand the buffered bytes to the normal stream reader. */
+		if (!n || job->http < 200 || job->http >= 300 || home->ep->api != AI_RESPONSES ||
+		    before >= sizeof "event:" - 1)
+			return n;
+		struct cstr_view body = cstr_view_span(buf_peek(&job->result));
+		if (!cstr_view_starts(body, CSTR_VIEW("event:")) &&
+		    !cstr_view_starts(body, CSTR_VIEW("data:")) &&
+		    !cstr_view_starts(body, CSTR_VIEW(":")))
+			return n;
+		struct buf empty = job->wire;
+		job->wire = job->result;
+		job->result = empty;
+		job->flags |= STREAM;
+		home_feed(home, job);
+		return n;
+	}
 	if (job->flags & DELTA_PENDING || buf_peek(&job->wire).len - job->scan >= LOOP_STEP_RECV) {
 		job->flags |= BACKED;
 		list_del(&job->idle);
