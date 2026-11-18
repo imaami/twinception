@@ -53,6 +53,12 @@ enum graph_fn_flag : uint32_t {
 	GRAPH_FN_STATIC = 1U << 0,  /**< the function has internal linkage */
 };
 
+/** What a graph says of the parse of the translation unit. */
+enum graph_flag : uint32_t {
+	GRAPH_ERRORS = 1U << 0,  /**< clang reported an error. Calls can be
+	                              missing in the graph. */
+};
+
 /** The lines of a declaration in a file. */
 struct graph_place {
 	uint32_t file;   /**< text: the path of the file as an answer prints
@@ -106,6 +112,8 @@ struct graph {
 	uint32_t const          *to;
 	char const              *text;
 	struct buf               bytes;
+	uint64_t                 flags;  /**< enum graph_flag, widened over the
+	                                      padding */
 	uint32_t                 n_fns;
 	uint32_t                 n_calls;
 	uint32_t                 n_to;
@@ -145,6 +153,8 @@ struct graph_draft {
 	UTIL_ARRAY(struct graph_call) calls;
 	UTIL_ARRAY(uint32_t)          to;
 	UTIL_ARRAY(char)              text;
+	uint64_t                      flags;  /**< enum graph_flag, widened
+	                                           over the padding */
 };
 
 /** Returns an empty draft. */

@@ -105,12 +105,16 @@ main (void)
 		.flags = GRAPH_CALL_CLEANUP,
 	}));
 
-	/* The graph of the bytes contains the records of the draft. */
+	draft.flags = GRAPH_ERRORS;
+
+	/* The graph of the bytes contains the flags and the records of the
+	 * draft. */
 	struct buf bytes = buf();
 	int e = written(&draft, &bytes);
 	CHECK(!e);
 	struct graph g = graph(&bytes, &e);
 	CHECK(!e && !buf_peek(&bytes).len);
+	CHECK(g.flags == GRAPH_ERRORS);
 	CHECK(g.n_fns == 2 && g.n_calls == 2 && g.n_to == 1 && g.n_text == 15);
 	CHECK(!strcmp(graph_text(&g, g.fns[0].name), "f"));
 	CHECK(g.fns[0].flags == GRAPH_FN_STATIC && g.fns[0].defined.file == GRAPH_NONE);
@@ -127,9 +131,9 @@ main (void)
 
 	/* The bytes as they are written are a graph. */
 	CHECK(!refused(&draft, SIZE_MAX, 0, 0));
-	/* Bytes that end early, another magic, and a count that does not
-	 * agree with the length of the bytes. */
-	size_t const head = 5 * sizeof(uint32_t);
+	/* Bytes that end early, another magic, a flag that is none, and a count
+	 * that does not agree with the length of the bytes. */
+	size_t const head = 6 * sizeof(uint32_t);
 	size_t const fn = sizeof(struct graph_fn);
 	size_t const call = head + 2 * fn;
 	size_t const to = call + 2 * sizeof(struct graph_call);
@@ -139,7 +143,8 @@ main (void)
 	CHECK(refused(&draft, SIZE_MAX, 0, text + 15 - 3) == EINVAL);
 	CHECK(refused(&draft, SIZE_MAX, 0, text + 15) == EINVAL);
 	CHECK(refused(&draft, 0, 0, 0) == EINVAL);
-	CHECK(refused(&draft, sizeof(uint32_t), 3, 0) == EINVAL);
+	CHECK(refused(&draft, sizeof(uint32_t), GRAPH_ERRORS << 1, 0) == EINVAL);
+	CHECK(refused(&draft, 2 * sizeof(uint32_t), 3, 0) == EINVAL);
 	/* A record that names a text, a call, a callee or a function that the
 	 * graph does not contain, and a state that is none. The name is the
 	 * first member of a function. */

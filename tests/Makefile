@@ -3,11 +3,11 @@ override TEST_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 include $(TEST_DIR)../mk/o.mk
 $(call set-build-dir,$(TEST_DIR)../build)
 
-.PHONY: default check check-ai check-askai check-buf check-cdb check-cli check-completion \
+.PHONY: default check check-ai check-askai check-buf check-build check-cdb check-cli check-completion \
         check-cstr-view check-datauri check-dstr check-git-run check-jb check-handle check-instance check-journal check-ledger check-load \
         check-evidence check-finding check-graph check-member check-ref check-seen check-store check-turn load load-build
 default:; @:
-check: | check-completion check-askai check-cli check-ai check-jb check-cdb check-buf \
+check: | check-completion check-askai check-cli check-ai check-jb check-cdb check-buf check-build \
          check-datauri check-handle check-turn check-instance check-git-run check-journal check-ledger \
          check-evidence check-finding check-graph check-member check-ref check-seen check-store check-dstr \
          check-load
@@ -168,6 +168,18 @@ $Otests/cdb: $Otests/cdb.c.o $Otests/src/cdb.c.o $Otests/src/cstr_view.c.o $Otes
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
 
 $Otests/cdb.c.o $Otests/src/cdb.c.o: CPPFLAGS += $(JSON_INCLUDES)
+
+# Unit tests of the translation units of a build of the code tool,
+# src/build.c.
+check-build: $Otests/build
+	$<
+
+$Otests/build: $Otests/build.c.o $Otests/src/build.c.o $Otests/src/graph.c.o \
+               $Otests/src/cxi_out.c.o $Otests/src/buf.c.o $Otests/src/cstr_view.c.o \
+               $Otests/src/dstr.c.o $Otests/src/jb.c.o
+	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
+
+$Otests/src/cxi_out.c.o: CPPFLAGS += $(JSON_INCLUDES)
 
 # Unit tests of the ring of the calls of an ask call, src/seen.c.
 check-seen: $Otests/seen

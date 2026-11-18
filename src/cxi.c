@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "buf.h"
+#include "build.h"
 #include "cdb.h"
 #include "child.h"
 #include "clk.h"
@@ -2744,140 +2745,6 @@ cxi_graph_function (CXCursor     c,
 	return CXChildVisit_Continue;
 }
 
-/* A row of callers (cxi_wanted_rows()): the callee, the file, the text
- * after the second tab, and the first line of the text. The row of a
- * callee without a call is the callee and two tabs.
- */
-struct cxi_row {
-	struct cstr_view callee;
-	struct cstr_view file;
-	struct cstr_view text;
-	uint64_t         line;
-};
-
-/* Orders the rows of callers by callee, file, line and text. */
-static int
-cxi_row_order (void const *a,
-               void const *b)
-{
-	struct cxi_row const *p = a;
-	struct cxi_row const *q = b;
-	int const callee = cstr_view_compare(p->callee, q->callee);
-	int const file = callee ? callee : cstr_view_compare(p->file, q->file);
-	return file ? file
-	     : p->line != q->line ? (p->line > q->line) - (p->line < q->line)
-	     : cstr_view_compare(p->text, q->text);
-}
-
-/* Appends the rows @p text of callers for the functions @p name: for each
- * callee the name and the place, and under it the file and the text of each
- * row, in the order of the files and the lines. A row that several
- * translation units give, as for a function that a header defines, is
- * appended once. A callee e (cxi_wanted_rows()) is the one E of the
- * rows. If the rows contain no E or several, the callee is the
- * declaration, as is a static function without a definition: the place is
- * then appended after the word declared. Without a row, the function is
- * not found.
- */
-static void
-cxi_out_rows (struct cxi_out   *out,
-              struct cstr_view  name,
-              struct cstr_view  text)
-{
-	size_t const n = cstr_view_count(text, '\n');
-	if (!n) {
-		cxi_out_lit(out, "- callee: ");
-		cxi_out_view(out, name);
-		cxi_out_lit(out, " (not found)\n");
-		return;
-	}
-	struct cxi_row *row = malloc(n * sizeof *row);
-	if (!row) {
-		out->e = ENOMEM;
-		return;
-	}
-	/* defined is an E of the rows, and several is true if the rows contain
-	 * more than one. */
-	struct cstr_view defined = {};
-	bool several = false;
-	for (size_t i = 0; i < n; ++i) {
-		struct cxi_row *r = &row[i];
-		*r = (struct cxi_row){};
-		cstr_view_cut(&text, '\n', &r->text);
-		cstr_view_cut(&r->text, '\t', &r->callee);
-		cstr_view_cut(&r->text, '\t', &r->file);
-		(void)util_digits(r->text.data, r->text.len, UINT64_MAX, &r->line);
-		if (!cstr_view_starts(r->callee, CSTR_VIEW("E")))
-			continue;
-		several = several || (defined.data && !cstr_view_equal(r->callee, defined));
-		defined = r->callee;
-	}
-	for (size_t i = 0; defined.data && !several && i < n; ++i) {
-		if (cstr_view_starts(row[i].callee, CSTR_VIEW("e")))
-			row[i].callee = defined;
-	}
-	qsort(row, n, sizeof *row, cxi_row_order);
-	bool bare = false;
-	for (size_t i = 0; i < n; ++i) {
-		struct cxi_row const *r = &row[i];
-		bool const first = !i || !cstr_view_equal(r->callee, r[-1].callee);
-		if (first) {
-			cxi_out_lit(out, "- callee: ");
-			cxi_out_view(out, name);
-			cxi_out_view(out, r->callee.len && *r->callee.data >= 'a'
-			             ? CSTR_VIEW(" (declared ") : CSTR_VIEW(" ("));
-			cxi_out_view(out, cstr_view_slice(r->callee, 1, SIZE_MAX));
-			cxi_out_lit(out, ")\n");
-			bare = true;
-		}
-		if (r->text.len && (first || !cstr_view_equal(r->file, r[-1].file) ||
-		                    !cstr_view_equal(r->text, r[-1].text))) {
-			if (bare)
-				cxi_out_lit(out, "  - callers\n");
-			bare = false;
-			cxi_out_lit(out, "    - ");
-			cxi_out_view(out, r->file);
-			cxi_out_lit(out, ":");
-			/* The byte after the text of a row is the line feed of the
-			 * row. */
-			cxi_out_put(out, r->text.data, r->text.len + 1);
-		}
-		if (bare && (i + 1 == n || !cstr_view_equal(r->callee, r[1].callee)))
-			cxi_out_lit(out, "  - callers: none\n");
-	}
-	free(row);
-}
-
-/* Appends the file of the clang command line @p words to @p list, after a
- * comma if @p list is not empty.
- */
-static void
-cxi_out_unit (struct cxi_out   *list,
-              struct cstr_view  words)
-{
-	if (dstr_len(&list->text))
-		cxi_out_lit(list, ", ");
-	cxi_out_path(list, cxi_out_rel(list, cxi_last_word(words)));
-}
-
-/* Appends a line of @p before and the files of @p list (cxi_out_unit()) to
- * @p out if @p list is not empty. Moves the error of @p list to @p out and
- * frees @p list.
- */
-static void
-cxi_out_units (struct cxi_out   *out,
-               struct cstr_view  before,
-               struct cxi_out   *list)
-{
-	if (dstr_len(&list->text)) {
-		cxi_out_view(out, before);
-		cxi_out_put(out, dstr_get(&list->text), dstr_len(&list->text));
-		cxi_out_lit(out, "\n");
-	}
-	out->e = out->e ? out->e : list->e;
-	cxi_out_fini(list);
-}
-
 /* Returns true if clang reported an error for @p tu. */
 static bool
 cxi_tu_errors (CXTranslationUnit tu)
@@ -2891,21 +2758,12 @@ cxi_tu_errors (CXTranslationUnit tu)
 	return errors;
 }
 
-/* The exit status of the child process of a translation unit: the graph is
- * written, it is written and clang reported an error, or it is not written.
- */
-enum {
-	CXI_UNIT_OK,
-	CXI_UNIT_ERRORS,
-	CXI_UNIT_FAILED
-};
-
 /* Runs in the child process of a translation unit, which ends with its
  * parent: fills @p g from the parse of the translation unit of the clang
- * command line @p words, writes the graph to @p fd and exits with a status
- * of the enum above. The parse of the file of the path serves as the
- * translation unit with the same command line. The process exits without
- * freeing its memory.
+ * command line @p words and writes the graph to @p fd. The exit status is
+ * EXIT_SUCCESS only if the graph is written. The parse of the file of the
+ * path serves as the translation unit with the same command line. The
+ * process exits without freeing its memory.
  */
 [[noreturn]] static void
 cxi_graph_run (struct cxi_graph *g,
@@ -2917,208 +2775,44 @@ cxi_graph_run (struct cxi_graph *g,
 	    (!cstr_view_equal(words, x->words) && cxi_tu(x, words, &x->tu)) ||
 	    clang_visitChildren(clang_getTranslationUnitCursor(x->tu),
 	                        cxi_graph_function, g) ||
-	    x->out.e ||
-	    graph_draft_write(&g->draft, fd))
-		_exit(CXI_UNIT_FAILED);
-	_exit(cxi_tu_errors(x->tu) ? CXI_UNIT_ERRORS : CXI_UNIT_OK);
+	    x->out.e)
+		_exit(EXIT_FAILURE);
+
+	g->draft.flags = cxi_tu_errors(x->tu) ? GRAPH_ERRORS : 0;
+	_exit(graph_draft_write(&g->draft, fd) ? EXIT_FAILURE : EXIT_SUCCESS);
 }
 
-/* The functions that callers looks for in the graphs: each function named
- * name. With a path in the request, only the function that the translation
- * unit of the path declares: mask is then GRAPH_FN_STATIC and flags tells
- * if that function is static, and a static function is the one whose first
- * declaration is in file, the path as a graph names it. key is the callee
- * of the rows of one function of a graph (cxi_wanted_rows()).
- */
-struct cxi_wanted {
-	struct cstr_view name;
-	struct cxi_out   file;
-	struct cxi_out   key;
-	uint32_t         mask;
-	uint32_t         flags;
-};
-
-/* Returns a search for each function of the name of the request of @p x. */
-static force_inline struct cxi_wanted
-cxi_wanted (struct cxi const *x)
-{
-	return (struct cxi_wanted){
-		.name = x->key[CXI_KEY_NAME],
-		.file = cxi_out(x->out.tree),
-		.key  = cxi_out(x->out.tree)
-	};
-}
-
-/* Frees the file and the callee of @p wanted. */
-static void
-cxi_wanted_fini (struct cxi_wanted *wanted)
-{
-	cxi_out_fini(&wanted->key);
-	cxi_out_fini(&wanted->file);
-}
-
-/* Limits @p wanted to the function of the name that the translation unit
- * of the path of the request of @p x declares, which is parsed. The error
- * is that of cxi_lookup().
+/* Limits @p callee to the function of its name that the translation unit
+ * of the path of the request of @p x declares, which is parsed. The path
+ * of the file of the first declaration of the function is appended to
+ * @p file, and callee->file is that text. The error is that of
+ * cxi_lookup().
  */
 static int
-cxi_wanted_limit (struct cxi_wanted *wanted,
-                  struct cxi        *x)
+cxi_callee_limit (struct build_callee *callee,
+                  struct cxi_out      *file,
+                  struct cxi          *x)
 {
 	CXCursor c;
-	int const e = cxi_lookup(x, wanted->name.data, CXCursor_FunctionDecl,
+	int const e = cxi_lookup(x, callee->name.data, CXCursor_FunctionDecl,
 	                         &c);
 	if (e)
 		return e;
 
 	CXCursor const first = clang_getCanonicalCursor(c);
 	CXSourceLocation const loc = clang_getCursorLocation(first);
-	CXFile file;
+	CXFile f;
 	unsigned line;
-	clang_getFileLocation(loc, &file, &line, nullptr, nullptr);
-	CXString name = cxi_file_name(loc, file, &line);
+	clang_getFileLocation(loc, &f, &line, nullptr, nullptr);
+	CXString name = cxi_file_name(loc, f, &line);
 	char const *path = clang_getCString(name);
-	cxi_out_view(&wanted->file,
-	             cxi_out_rel(&wanted->file, path ? path : ""));
+	cxi_out_view(file, cxi_out_rel(file, path ? path : ""));
 	clang_disposeString(name);
-	wanted->mask = GRAPH_FN_STATIC;
-	wanted->flags = clang_getCursorLinkage(first) == CXLinkage_Internal
+	callee->file = cstr_view_dstr(&file->text);
+	callee->mask = GRAPH_FN_STATIC;
+	callee->flags = clang_getCursorLinkage(first) == CXLinkage_Internal
 	                ? GRAPH_FN_STATIC : 0;
-	return (int)wanted->file.e;
-}
-
-/* Returns true if the calls @p p and @p q of @p g are of one row: the same
- * state, flags, macro and callees.
- */
-static bool
-cxi_wanted_same (struct graph const      *g,
-                 struct graph_call const *p,
-                 struct graph_call const *q)
-{
-	return p->state == q->state &&
-	       p->flags == q->flags &&
-	       p->macro == q->macro &&
-	       p->n     == q->n     &&
-	       !memcmp(&g->to[p->to], &g->to[q->to], p->n * sizeof *g->to);
-}
-
-/* Returns true if the function @p fn of @p g is a callee of @p call. */
-static bool
-cxi_wanted_called (struct graph const      *g,
-                   struct graph_call const *call,
-                   uint32_t                 fn)
-{
-	uint32_t i = 0;
-	while (i < call->n && g->to[call->to + i] != fn)
-		++i;
-	return i < call->n;
-}
-
-/* Appends to @p out the rows of the calls of the function @p fn of @p g in
- * the code of the function @p by. A row is the callee of @p wanted, a tab,
- * the file, a tab, the lines of the calls of one row (cxi_wanted_same()),
- * the function @p by with its lines, and in brackets a note for each of:
- * the macro that the calls are written through, the attribute cleanup, a
- * callee that is one of several, and a call that the program maybe does
- * not evaluate. A call that the program does not evaluate has no callee.
- */
-static void
-cxi_wanted_calls (struct cxi_wanted const *wanted,
-                  struct graph const      *g,
-                  uint32_t                 fn,
-                  struct graph_fn const   *by,
-                  struct cxi_out          *out)
-{
-	struct graph_call const *calls = &g->calls[by->calls];
-	for (uint32_t i = 0; i < by->n_calls; ++i) {
-		struct graph_call const *call = &calls[i];
-		if (!cxi_wanted_called(g, call, fn))
-			continue;
-
-		/* A row is appended for its first call. */
-		uint32_t j = 0;
-		while (j < i && !(cxi_wanted_called(g, &calls[j], fn) &&
-		                  cxi_wanted_same(g, &calls[j], call)))
-			++j;
-		if (j < i)
-			continue;
-
-		uint32_t line = call->line;
-		cxi_out_view(out, cstr_view_dstr(&wanted->key.text));
-		cxi_out_lit(out, "\t");
-		cxi_out_path(out, cstr_view(graph_text(g, call->file)));
-		cxi_out_lit(out, "\t");
-		cxi_out_num(out, line);
-		for (j = i + 1; j < by->n_calls; ++j) {
-			if (calls[j].line == line ||
-			    !cxi_wanted_called(g, &calls[j], fn) ||
-			    !cxi_wanted_same(g, &calls[j], call))
-				continue;
-			line = calls[j].line;
-			cxi_out_lit(out, ",");
-			cxi_out_num(out, line);
-		}
-		cxi_out_lit(out, " ");
-		cxi_out_text(out, graph_text(g, by->name));
-		cxi_out_lit(out, " (");
-		cxi_out_range(out, by->defined.first, by->defined.last);
-		cxi_out_lit(out, ")");
-		if (call->macro != GRAPH_NONE) {
-			cxi_out_lit(out, " [macro ");
-			cxi_out_text(out, graph_text(g, call->macro));
-			cxi_out_lit(out, "]");
-		}
-		if (call->flags & GRAPH_CALL_CLEANUP)
-			cxi_out_lit(out, " [attribute cleanup]");
-		if (call->n > 1)
-			cxi_out_lit(out, " [or another function]");
-		if (call->state == GRAPH_UNPROVEN)
-			cxi_out_lit(out, " [maybe not evaluated]");
-		cxi_out_lit(out, "\n");
-	}
-}
-
-/* Appends to @p out the rows of each function of @p g that @p wanted
- * names: a row of the callee and two tabs, and the rows of the calls of
- * the function (cxi_wanted_calls()).
- *
- * The callee is a letter and the place of the function as FILE:FIRST-LAST.
- * The place is that of the definition in the translation unit, or of the
- * first declaration if there is none. The letter is S for a static
- * function and E for any other one, in lower case if the translation unit
- * does not define the function: the definition of an e is then in another
- * translation unit, or in none.
- */
-static void
-cxi_wanted_rows (struct cxi_wanted  *wanted,
-                 struct graph const *g,
-                 struct cxi_out     *out)
-{
-	struct cxi_out *key = &wanted->key;
-	for (uint32_t i = 0; i < g->n_fns; ++i) {
-		struct graph_fn const *fn = &g->fns[i];
-		if ((fn->flags & wanted->mask) != wanted->flags ||
-		    strcmp(graph_text(g, fn->name), wanted->name.data) ||
-		    (wanted->flags && strcmp(graph_text(g, fn->declared.file),
-		                             dstr_get(&wanted->file.text))))
-			continue;
-
-		bool const defined = fn->defined.file != GRAPH_NONE;
-		struct graph_place const *at = defined ? &fn->defined
-		                                       : &fn->declared;
-		bool const is_static = fn->flags & GRAPH_FN_STATIC;
-		if (!dstr_clear(&key->text))
-			key->e = EINVAL;
-		cxi_out_put(key, &"SsEe"[2 * !is_static + !defined], 1);
-		cxi_out_path(key, cstr_view(graph_text(g, at->file)));
-		cxi_out_lit(key, ":");
-		cxi_out_range(key, at->first, at->last);
-		cxi_out_view(out, cstr_view_dstr(&key->text));
-		cxi_out_lit(out, "\t\t\n");
-		for (uint32_t by = 0; by < g->n_fns; ++by)
-			cxi_wanted_calls(wanted, g, i, &g->fns[by], out);
-	}
-	out->e = out->e ? out->e : key->e;
+	return (int)file->e;
 }
 
 /* The largest graph of a translation unit that callers reads. */
@@ -3129,39 +2823,40 @@ enum { CXI_GRAPH_MAX = 1 << 28 };
  * function that the translation unit of the path declares. Each translation
  * unit is parsed in a child process, so that a crash of clang loses only
  * the calls of one file. The child writes the graph of the translation
- * unit (cxi_graph_run()), and the rows of the functions come from the
- * graph (cxi_wanted_rows()). No child starts unless twice the time of the
- * longest one so far is left before the deadline. The answer is a list: the
- * repository, the commit, the callees with their callers (cxi_out_rows()),
- * and a line for each of: the files that clang could not parse, the files
- * with errors, and the translation units that the deadline left out.
+ * unit (cxi_graph_run()), which the build keeps. No child starts unless
+ * twice the time of the longest one so far is left before the deadline. The
+ * answer is a list: the repository, the commit, and the rows that the build
+ * gives for the functions (build_callers()).
  */
 static int
 cxi_callers (struct cxi *x)
 {
-	struct cxi_wanted wanted = cxi_wanted(x);
-	int e = x->key[CXI_KEY_PATH].data ? cxi_wanted_limit(&wanted, x) : 0;
+	struct build_callee callee = { .name = x->key[CXI_KEY_NAME] };
+	struct cxi_out file = cxi_out(x->out.tree);
+	int e = x->key[CXI_KEY_PATH].data ? cxi_callee_limit(&callee, &file, x)
+	                                  : 0;
 	if (e) {
-		cxi_wanted_fini(&wanted);
+		cxi_out_fini(&file);
 		return e;
 	}
 	struct cdb_map const map = cdb_map(x->key[CXI_KEY_TOP],
 	                                   cstr_view_slice(x->out.tree, 0, x->out.tree.len - 1));
 	struct cxi_graph draft = cxi_graph(x);
-	struct cxi_out rows = cxi_out(x->out.tree);
-	struct cxi_out failed = cxi_out(x->out.tree);
-	struct cxi_out errors = cxi_out(x->out.tree);
+	struct build b = build();
 	struct dstr words = DSTR_INIT;
 	struct buf bytes = buf();
 	uint64_t longest = 0;
-	size_t late = 0;
-	for (size_t at = 0; !rows.e && !(e = cdb_next(&map, x->cmds, &at, &words));) {
+	bool late = false;
+	for (size_t at = 0; !(e = cdb_next(&map, x->cmds, &at, &words));) {
 		struct cstr_view const w = cstr_view_dstr(&words);
+		e = build_add(&b, at - 1, cxi_out_rel(&x->out, cxi_last_word(w)));
+		if (e)
+			break;
+		/* A unit that the deadline leaves out stays BUILD_NONE. */
 		uint64_t const start = loop_clock();
-		if (late || start + 2 * longest + CXI_EARLY > x->deadline) {
-			++late;
+		late = late || start + 2 * longest + CXI_EARLY > x->deadline;
+		if (late)
 			continue;
-		}
 		int end[2] = { -1, -1 };
 		pid_t const child = pipe2(end, O_CLOEXEC) ? -1 : fork();
 		if (!child)
@@ -3178,34 +2873,22 @@ cxi_callers (struct cxi *x)
 			break;
 		/* The bytes of a child that did not write all of them are not
 		 * read as a graph. */
-		int bad = !WIFEXITED(status) ||
-		          WEXITSTATUS(status) >= CXI_UNIT_FAILED;
-		struct graph g = bad ? (struct graph){} : graph(&bytes, &bad);
-		if (!bad)
-			cxi_wanted_rows(&wanted, &g, &rows);
-		graph_fini(&g);
-		if (bad || WEXITSTATUS(status) == CXI_UNIT_ERRORS)
-			cxi_out_unit(bad ? &failed : &errors, w);
+		bool const written = WIFEXITED(status) && !WEXITSTATUS(status);
+		build_parsed(&b, b.n - 1, written ? &bytes : nullptr);
 		uint64_t const took = loop_clock() - start;
 		longest = took > longest ? took : longest;
 	}
 	buf_fini(&bytes);
 	dstr_cleanup(&words);
 	cxi_graph_fini(&draft);
-	cxi_wanted_fini(&wanted);
 	cxi_out_lit(&x->out, "- repo: ");
 	cxi_out_view(&x->out, x->key[CXI_KEY_REPO]);
 	cxi_out_lit(&x->out, "\n- commit: ");
 	cxi_out_view(&x->out, x->key[CXI_KEY_COMMIT]);
 	cxi_out_lit(&x->out, "\n");
-	cxi_out_rows(&x->out, x->key[CXI_KEY_NAME], cstr_view_dstr(&rows.text));
-	cxi_out_units(&x->out, CSTR_VIEW("- not parsed: "), &failed);
-	cxi_out_units(&x->out, CSTR_VIEW("- parsed with errors: "), &errors);
-	if (late)
-		cxi_out_fmt(&x->out, "- not searched: %zu translation unit%s (time limit)\n", late,
-		            util_s(late));
-	x->out.e = x->out.e ? x->out.e : rows.e;
-	cxi_out_fini(&rows);
+	build_callers(&b, &callee, &x->out);
+	build_fini(&b);
+	cxi_out_fini(&file);
 	return x->out.e ? x->out.e : e == ENOENT ? 0 : e;
 }
 

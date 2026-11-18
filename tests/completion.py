@@ -31,7 +31,8 @@ SRC = """
 
 TESTS = """
     default
-    check check-ai check-askai check-buf check-cdb check-cli check-completion check-cstr-view
+    check check-ai check-askai check-buf check-build check-cdb check-cli check-completion
+    check-cstr-view
     check-datauri
     check-dstr check-git-run check-jb
     check-handle check-instance check-journal check-ledger check-load check-member check-ref

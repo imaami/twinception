@@ -21,16 +21,17 @@ enum {
 	GRAPH_PARTS
 };
 
-/* The first bytes of a graph: the magic of this layout of the records, and
- * the number of the records of each part. Another layout of a record or of
- * the parts gets another magic.
+/* The first bytes of a graph: the magic of this layout of the records, the
+ * flags of the graph (enum graph_flag), and the number of the records of
+ * each part. Another layout of a record or of the parts gets another magic.
  */
 struct graph_head {
 	uint32_t magic;
+	uint32_t flags;
 	uint32_t n[GRAPH_PARTS];
 };
 
-#define GRAPH_MAGIC UINT32_C(0x31677361)  /* "asg1" */
+#define GRAPH_MAGIC UINT32_C(0x32677361)  /* "asg2" */
 
 /* The size of a record of each part. */
 static size_t const graph_size[GRAPH_PARTS] = {
@@ -95,7 +96,8 @@ graph (struct buf *bytes,
 	uint64_t at[GRAPH_PARTS + 1] = { sizeof head };
 	for (size_t i = 0; i < GRAPH_PARTS; ++i)
 		at[i + 1] = at[i] + (uint64_t)head.n[i] * graph_size[i];
-	if (head.magic != GRAPH_MAGIC || at[GRAPH_PARTS] != all.len)
+	if (head.magic != GRAPH_MAGIC || (head.flags & ~(uint32_t)GRAPH_ERRORS) ||
+	    at[GRAPH_PARTS] != all.len)
 		return (struct graph){};
 
 	struct graph g = {
@@ -103,6 +105,7 @@ graph (struct buf *bytes,
 		.calls   = (void const *)(all.ptr + at[GRAPH_CALLS]),
 		.to      = (void const *)(all.ptr + at[GRAPH_TO]),
 		.text    = (char const *)(all.ptr + at[GRAPH_TEXT]),
+		.flags   = head.flags,
 		.n_fns   = head.n[GRAPH_FNS],
 		.n_calls = head.n[GRAPH_CALLS],
 		.n_to    = head.n[GRAPH_TO],
@@ -166,7 +169,10 @@ graph_draft_write (struct graph_draft const *draft,
 		[GRAPH_TO]    = { draft->to.items,    draft->to.n    },
 		[GRAPH_TEXT]  = { draft->text.items,  draft->text.n  },
 	};
-	struct graph_head head = { .magic = GRAPH_MAGIC };
+	struct graph_head head = {
+		.magic = GRAPH_MAGIC,
+		.flags = (uint32_t)draft->flags
+	};
 	for (size_t i = 0; i < GRAPH_PARTS; ++i) {
 		if (part[i].n >= GRAPH_NONE)
 			return EOVERFLOW;

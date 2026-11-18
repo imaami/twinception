@@ -14,6 +14,7 @@ override LLVM_INCLUDEDIR := $(if $(LLVM_CONFIG),$(shell echo $(LLVM_CONFIG) --in
 
 override SRC_askai-code := $(if $(LLVM_CONFIG), \
   buf.c                                         \
+  build.c                                       \
   cdb.c                                         \
   child.c                                       \
   confine.c                                     \
