@@ -1656,21 +1656,18 @@ cxi_summary (struct cxi     *x,
  * which an expression selects one. n is 0 for any other callee. macro is
  * the definition of the macro that the call is written through
  * (cxi_macro()), or null. For a call that is GRAPH_UNEVALUATED, n is 0 and
- * macro is null: the call is only counted. node is at in the syntax tree
- * (cxi_ast_node()), by which a second visit of at is known. row is the
- * index of the first call of the function with the same state, flags,
- * macro and callees: an answer prints these calls as one row.
- * cxi_calls_push() sets node and row.
+ * macro is null: the call is only counted. row is the index of the first
+ * call of the function with the same state, flags, macro and callees
+ * (cxi_calls_push()): an answer prints these calls as one row.
  */
 struct cxi_call {
-	CXCursor    at;
-	CXCursor    macro;
-	void const *node;
-	uint64_t    row;
-	uint32_t    first;
-	uint32_t    n;
-	uint32_t    state;  /* enum graph_state */
-	uint32_t    flags;  /* enum graph_call_flag */
+	CXCursor at;
+	CXCursor macro;
+	uint64_t row;
+	uint32_t first;
+	uint32_t n;
+	uint32_t state;  /* enum graph_state */
+	uint32_t flags;  /* enum graph_call_flag */
 };
 
 static force_inline struct cxi_call
@@ -2279,12 +2276,110 @@ cxi_walk_cleanup_macro (struct cxi_walk *walk,
 	return e;
 }
 
+/* The number of a node of a parse. */
+struct cxi_id {
+	void const *node;
+	uint64_t    id;
+};
+
+/* The numbers of the nodes of a parse: a hash table of room slots, a power
+ * of two, of which n contain a node. The node of an empty slot is null. At
+ * most half of the slots contain a node.
+ */
+struct cxi_ids {
+	struct cxi_id *slots;
+	size_t         n;
+	size_t         room;
+};
+
+/* Frees the slots of @p ids. */
+static void
+cxi_ids_fini (struct cxi_ids *ids)
+{
+	free(ids->slots);
+	*ids = (struct cxi_ids){};
+}
+
+/* Returns the slot of @p node among the @p room slots at @p slots: the one
+ * that contains @p node, or the empty one where @p node belongs. At least
+ * one slot is empty.
+ */
+static struct cxi_id *
+cxi_ids_slot (struct cxi_id *slots,
+              size_t         room,
+              void const    *node)
+{
+	/* The low bits of a pointer to an object are 0. */
+	uint64_t const hash = ((uintptr_t)node >> 4) *
+	                      UINT64_C(0x9e3779b97f4a7c15);
+	size_t i = (size_t)(hash >> 32) & (room - 1);
+	while (slots[i].node && slots[i].node != node)
+		i = (i + 1) & (room - 1);
+	return &slots[i];
+}
+
+/* Returns true and writes the number of @p node to @p *id if @p ids
+ * contains @p node.
+ */
+static bool
+cxi_ids_get (struct cxi_ids const *ids,
+             void const           *node,
+             uint32_t             *id)
+{
+	if (!ids->room)
+		return false;
+
+	struct cxi_id const *slot = cxi_ids_slot(ids->slots, ids->room, node);
+	if (!slot->node)
+		return false;
+
+	*id = (uint32_t)slot->id;
+	return true;
+}
+
+/* Gives @p node, which @p ids does not contain, the number @p id. Returns
+ * 0, ENOMEM, or EINVAL for a null pointer.
+ */
+static int
+cxi_ids_put (struct cxi_ids *ids,
+             void const     *node,
+             uint32_t        id)
+{
+	if (!node)
+		return EINVAL;
+
+	if (2 * (ids->n + 1) > ids->room) {
+		size_t const room = ids->room ? 2 * ids->room : 256;
+		struct cxi_id *slots = calloc(room, sizeof *slots);
+		if (!slots)
+			return ENOMEM;
+		for (size_t i = 0; i < ids->room; ++i) {
+			struct cxi_id const *old = &ids->slots[i];
+			if (old->node)
+				*cxi_ids_slot(slots, room, old->node) = *old;
+		}
+		free(ids->slots);
+		ids->slots = slots;
+		ids->room = room;
+	}
+
+	*cxi_ids_slot(ids->slots, ids->room, node) = (struct cxi_id){
+		.node = node,
+		.id   = id
+	};
+	++ids->n;
+	return 0;
+}
+
 /* The calls of a function, with the walk that collects them
- * (cxi_calls_collect()). x is the call of askai-code.
+ * (cxi_calls_collect()). nodes contains the node of each call that the
+ * calls contained, also for an earlier function: a node is in the code of
+ * one function. x is the call of askai-code.
  */
 struct cxi_calls {
 	UTIL_ARRAY(struct cxi_call);
 	struct cxi_walk  walk;
+	struct cxi_ids   nodes;
 	struct cxi      *x;
 };
 
@@ -2295,10 +2390,11 @@ cxi_calls (struct cxi *x)
 	return (struct cxi_calls){ .x = x };
 }
 
-/* Frees the calls and the walk of @p calls. */
+/* Frees the calls, the nodes and the walk of @p calls. */
 static void
 cxi_calls_fini (struct cxi_calls *calls)
 {
+	cxi_ids_fini(&calls->nodes);
 	cxi_walk_fini(&calls->walk);
 	free(calls->items);
 	*calls = (struct cxi_calls){};
@@ -2328,28 +2424,29 @@ cxi_calls_same (struct cxi_calls const *calls,
 	return true;
 }
 
-/* Appends @p call to @p calls and sets the node and the row of the call.
- * Returns 0, ENOMEM, or EALREADY if @p calls contains a call at the same
- * node: the callees of @p call are then removed. libclang visits some
- * expressions more than once, and not only as the child before
- * (cxi_walk_step()): the first operand of ?: without a second once more in
- * an implicit conversion, and the operand of typeof for each variable of a
- * declaration. The cursors of two visits of an expression are not always
- * equal for clang_equalCursors().
+/* Appends @p call to @p calls and sets the row of the call. Returns 0,
+ * ENOMEM, or EALREADY if the calls have contained a call at the same node
+ * of the syntax tree (cxi_ast_node()): the callees of @p call are then
+ * removed. libclang visits some expressions more than once, and not only
+ * as the child before (cxi_walk_step()): the first operand of ?: without a
+ * second once more in an implicit conversion, and the operand of typeof
+ * for each variable of a declaration. The cursors of two visits of an
+ * expression are not always equal for clang_equalCursors().
  */
 static int
 cxi_calls_push (struct cxi_calls *calls,
                 struct cxi_call   call)
 {
-	call.node = cxi_ast_node(call.at);
-	for (size_t i = 0; i < calls->n; ++i) {
-		if (calls->items[i].node == call.node) {
-			calls->walk.to.n = call.first;
-			return EALREADY;
-		}
+	void const *node = cxi_ast_node(call.at);
+	uint32_t id;
+	if (cxi_ids_get(&calls->nodes, node, &id)) {
+		calls->walk.to.n = call.first;
+		return EALREADY;
 	}
 
-	int const e = util_push(*calls, call);
+	int e = cxi_ids_put(&calls->nodes, node, 0);
+	if (!e)
+		e = util_push(*calls, call);
 	if (e)
 		return e;
 
@@ -2760,101 +2857,6 @@ cxi_tu (struct cxi        *x,
 		CXTranslationUnit_DetailedPreprocessingRecord | CXTranslationUnit_KeepGoing, tu);
 	free(argv);
 	return failed;
-}
-
-/* The number of a node of a parse. */
-struct cxi_id {
-	void const *node;
-	uint64_t    id;
-};
-
-/* The numbers of the nodes of a parse: a hash table of room slots, a power
- * of two, of which n contain a node. The node of an empty slot is null. At
- * most half of the slots contain a node.
- */
-struct cxi_ids {
-	struct cxi_id *slots;
-	size_t         n;
-	size_t         room;
-};
-
-/* Frees the slots of @p ids. */
-static void
-cxi_ids_fini (struct cxi_ids *ids)
-{
-	free(ids->slots);
-	*ids = (struct cxi_ids){};
-}
-
-/* Returns the slot of @p node among the @p room slots at @p slots: the one
- * that contains @p node, or the empty one where @p node belongs. At least
- * one slot is empty.
- */
-static struct cxi_id *
-cxi_ids_slot (struct cxi_id *slots,
-              size_t         room,
-              void const    *node)
-{
-	/* The low bits of a pointer to an object are 0. */
-	uint64_t const hash = ((uintptr_t)node >> 4) *
-	                      UINT64_C(0x9e3779b97f4a7c15);
-	size_t i = (size_t)(hash >> 32) & (room - 1);
-	while (slots[i].node && slots[i].node != node)
-		i = (i + 1) & (room - 1);
-	return &slots[i];
-}
-
-/* Returns true and writes the number of @p node to @p *id if @p ids
- * contains @p node.
- */
-static bool
-cxi_ids_get (struct cxi_ids const *ids,
-             void const           *node,
-             uint32_t             *id)
-{
-	if (!ids->room)
-		return false;
-
-	struct cxi_id const *slot = cxi_ids_slot(ids->slots, ids->room, node);
-	if (!slot->node)
-		return false;
-
-	*id = (uint32_t)slot->id;
-	return true;
-}
-
-/* Gives @p node, which @p ids does not contain, the number @p id. Returns
- * 0, ENOMEM, or EINVAL for a null pointer.
- */
-static int
-cxi_ids_put (struct cxi_ids *ids,
-             void const     *node,
-             uint32_t        id)
-{
-	if (!node)
-		return EINVAL;
-
-	if (2 * (ids->n + 1) > ids->room) {
-		size_t const room = ids->room ? 2 * ids->room : 256;
-		struct cxi_id *slots = calloc(room, sizeof *slots);
-		if (!slots)
-			return ENOMEM;
-		for (size_t i = 0; i < ids->room; ++i) {
-			struct cxi_id const *old = &ids->slots[i];
-			if (old->node)
-				*cxi_ids_slot(slots, room, old->node) = *old;
-		}
-		free(ids->slots);
-		ids->slots = slots;
-		ids->room = room;
-	}
-
-	*cxi_ids_slot(ids->slots, ids->room, node) = (struct cxi_id){
-		.node = node,
-		.id   = id
-	};
-	++ids->n;
-	return 0;
 }
 
 /* The graph of the translation unit of a parse while a visit fills it
