@@ -238,14 +238,17 @@ build_row_order (void const *a,
  * (build_callee_rows()) is the one E of the rows. If the rows contain no E
  * or several, the callee is the declaration, as is a static function
  * without a definition: the place is then appended after the word declared.
+ * The callees e are then one callee, with the place of one declaration.
  * The place of a macro is appended after the word macro. Without a row,
  * the function is not found.
  *
- * @p only is empty, or E and the path of a file with a colon, as a callee
- * starts: the rows of a function that another file defines are then left
- * out. That is done after the one E is known, so that a call in a
- * translation unit that only declares the function is not a call of the
- * definition of @p only if another file defines the function too.
+ * @p only is empty, or E and the path of a file with a colon, as the
+ * callee of a function that this file defines starts: the rows of a
+ * function that another file defines are then left out, and a callee e is
+ * the one E only if that E is of this file. A call in a translation unit
+ * that only declares the function is thus not a call of a definition that
+ * the caller did not ask for. If no row is left, the function is not
+ * found.
  */
 static void
 build_rows (struct cxi_out   *out,
@@ -254,14 +257,8 @@ build_rows (struct cxi_out   *out,
             struct cstr_view  only)
 {
 	size_t n = cstr_view_count(text, '\n');
-	if (!n) {
-		cxi_out_lit(out, "- callee: ");
-		cxi_out_view(out, name);
-		cxi_out_lit(out, " (not found)\n");
-		return;
-	}
-	struct build_row *row = malloc(n * sizeof *row);
-	if (!row) {
+	struct build_row *row = n ? malloc(n * sizeof *row) : nullptr;
+	if (n && !row) {
 		out->e = ENOMEM;
 		return;
 	}
@@ -281,17 +278,40 @@ build_rows (struct cxi_out   *out,
 		several = several || (defined.data && !cstr_view_equal(r->callee, defined));
 		defined = r->callee;
 	}
-	for (size_t i = 0; defined.data && !several && i < n; ++i) {
+	/* The rest of a callee of the file of only is the lines, without a
+	 * colon. */
+	#define BUILD_ONLY(callee)                                             \
+	        (cstr_view_starts((callee), only) &&                           \
+	         !memchr((callee).data + only.len, ':', (callee).len - only.len))
+	bool const one = defined.data && !several && (!only.len || BUILD_ONLY(defined));
+	/* Without the one E, the callees e are one function that is not
+	 * static, also if the translation units first declare it in different
+	 * headers: its place is the first of these in the order of the rows. */
+	struct cstr_view declared = one ? defined : cstr_view(nullptr);
+	for (size_t i = 0; !one && i < n; ++i) {
+		if (cstr_view_starts(row[i].callee, CSTR_VIEW("e")) &&
+		    (!declared.data || cstr_view_compare(row[i].callee, declared) < 0))
+			declared = row[i].callee;
+	}
+	for (size_t i = 0; declared.data && i < n; ++i) {
 		if (cstr_view_starts(row[i].callee, CSTR_VIEW("e")))
-			row[i].callee = defined;
+			row[i].callee = declared;
 	}
 	size_t kept = 0;
 	for (size_t i = 0; i < n; ++i) {
 		if (!only.len || !cstr_view_starts(row[i].callee, CSTR_VIEW("E")) ||
-		    cstr_view_starts(row[i].callee, only))
+		    BUILD_ONLY(row[i].callee))
 			row[kept++] = row[i];
 	}
+	#undef BUILD_ONLY
 	n = kept;
+	if (!n) {
+		cxi_out_lit(out, "- callee: ");
+		cxi_out_view(out, name);
+		cxi_out_lit(out, " (not found)\n");
+		free(row);
+		return;
+	}
 	qsort(row, n, sizeof *row, build_row_order);
 	bool bare = false;
 	for (size_t i = 0; i < n; ++i) {

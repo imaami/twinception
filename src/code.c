@@ -86,7 +86,7 @@ enum { CODE_NUMBER = sizeof "unconfined=" + UTIL_DECIMAL };
 struct code_loop;
 
 enum code_parse_flag : uint64_t {
-	CODE_AGAIN = 1U << 0,  /* the unit was BUILD_AGAIN: it is not parsed
+	CODE_AGAIN = 1U << 0,  /* the unit was BUILD_RETRY: it is not parsed
 	                          once more after this process */
 };
 
@@ -119,10 +119,6 @@ enum code_build_flag : uint64_t {
 	CODE_STALLED = 1U << 0,  /* a process found the tree of the cache at
 	                            another commit: no process starts until a
 	                            call has exported the commit again */
-	CODE_CALLED  = 1U << 1,  /* a call has joined the build after the last
-	                            unit became BUILD_AGAIN: these units are
-	                            parsed. Without the flag they wait for the
-	                            next call. */
 };
 
 /* A build that the service keeps for all loops: the translation units of
@@ -147,7 +143,7 @@ struct code_build {
 	                          has joined the build, and one of each process
 	                          that parses for it */
 	size_t       next;     /* no unit before this one can be started
-	                          (code_build_run()) */
+	                          (build_waits()) */
 	size_t       again;    /* the units that are BUILD_AGAIN */
 	size_t       left;     /* the units that are neither BUILD_GRAPH nor
 	                          BUILD_FAILED */
@@ -324,14 +320,19 @@ code_definition (void const *service)
 			"path, the callee is the function that the translation unit of path "
 			"declares. A row under a callee is the file and the lines of the calls, "
 			"the calling function, and the lines of the calling function. A row ends "
-			"with [macro NAME] for calls that are written through a macro. For a call "
+			"with [macro NAME] for calls that are written through a macro, with [or "
+			"another function] for a call of one of several functions, such as "
+			"(c ? f : g)(x), and with [maybe not evaluated] for a call in code that "
+			"the program maybe does not evaluate. For a call "
 			"through a _Generic selection, describe and callers list the selected "
 			"function. callers does not list a use of the function that is not a "
 			"call, such as the address of the function in an initializer. name can "
 			"also be a function-like macro. The calls of a macro are the places where "
 			"a file of the repository writes the macro with arguments: in a function, "
 			"in the definition of another macro, or at file scope. callers does not "
-			"list a macro name that is an argument of another macro. The closing "
+			"list a macro name that is an argument of another macro. A name that is "
+			"a function and a macro is two callees. With path, it is the function. "
+			"The closing "
 			"rows of callers name the files that clang could not parse or reported "
 			"errors for. Calls in these files can be missing. diagnostics "
 			"lists the errors and warnings of clang for path. A place is path:line. "
@@ -429,21 +430,15 @@ code_build_put (struct code_build *build)
 }
 
 /* Makes the unit of @p parse, whose process ended without a result, wait
- * for a parse again: for its last one after CODE_AGAIN, and then for the
- * next call that joins the build. The caller has the lock of the service.
+ * for a parse again: for its last one after CODE_AGAIN. The caller has the
+ * lock of the service.
  */
 static void
 code_build_undo (struct code_build       *build,
                  struct code_parse const *parse)
 {
-	struct build_unit *unit = &build->b.items[parse->unit];
-	if (parse->flags & CODE_AGAIN) {
-		unit->state = BUILD_AGAIN;
-		++build->again;
-		build->flags &= ~(uint64_t)CODE_CALLED;
-	} else {
-		unit->state = BUILD_NONE;
-	}
+	build->b.items[parse->unit].state = parse->flags & CODE_AGAIN ? BUILD_RETRY
+	                                                              : BUILD_NONE;
 	if (parse->unit < build->next)
 		build->next = parse->unit;
 }
@@ -507,11 +502,7 @@ code_parse_spawn (struct code_parse *parse,
 
 	parse->build = build;
 	parse->unit = unit;
-	parse->flags = 0;
-	if (u->state == BUILD_AGAIN) {
-		parse->flags = CODE_AGAIN;
-		--build->again;
-	}
+	parse->flags = u->state == BUILD_RETRY ? CODE_AGAIN : 0;
 	u->state = BUILD_PARSING;
 	++build->parsing;
 	++build->refs;
@@ -533,9 +524,9 @@ code_parse_end (struct code_parse *parse)
 
 /* Starts a process of @p cl for each unit of @p build that waits for a
  * parse, in the order of the units, while a place of the loop is free and
- * fewer than CODE_PARSES processes of all loops parse. A unit that is
- * BUILD_AGAIN waits until a call has joined the build. A unit whose
- * process cannot start is not parsed, except for EBUSY: the loops have
+ * fewer than CODE_PARSES processes of all loops parse (build_waits()). A
+ * unit whose process cannot start is not parsed, except for EBUSY: the
+ * loops have
  * CHILD_MAX children then, and the unit waits. A stalled build starts
  * none. While a call of another build waits for a place (code_waited()),
  * this build starts none either, so that a build of many units does not
@@ -552,10 +543,7 @@ code_build_run (struct code_build *build,
 		return;
 
 	for (;;) {
-		while (build->next < b->n &&
-		       b->items[build->next].state != BUILD_NONE &&
-		       !(b->items[build->next].state == BUILD_AGAIN &&
-		         build->flags & CODE_CALLED))
+		while (build->next < b->n && !build_waits(b->items[build->next].state))
 			++build->next;
 		size_t i = 0;
 		while (i < CODE_PARSES && cl->parse[i].child)
@@ -568,8 +556,6 @@ code_build_run (struct code_build *build,
 		if (e == EBUSY)
 			break;
 		if (e) {
-			if (b->items[build->next].state == BUILD_AGAIN)
-				--build->again;
 			build_parsed(b, build->next, nullptr);
 			--build->left;
 		} else if (code->hungry == build) {
@@ -584,8 +570,9 @@ code_build_run (struct code_build *build,
 /* Ends the parse of a unit: @p c is the process, which has ended. The
  * output of a process that exited with status 0 is the graph of the unit.
  * After CXI_STALE the unit waits for a parse again and the build is
- * stalled. A unit whose process took too long is parsed once more, by a
- * later call. A process that ended in another way could not parse the
+ * stalled. A unit whose process took too long for the first time is
+ * BUILD_AGAIN: a later call has it parsed once more (code_join()). A
+ * process that ended in another way could not parse the
  * unit. The loop then starts its next processes for the build. If no unit
  * is left, or no process parses, the step of each call of the loop that
  * waits for a build is queued (code_waited()).
@@ -604,8 +591,8 @@ code_parse_done (struct child *c)
 		build->flags |= CODE_STALLED;
 		code_build_undo(build, parse);
 	} else if (late && !(parse->flags & CODE_AGAIN)) {
-		parse->flags |= CODE_AGAIN;
-		code_build_undo(build, parse);
+		build->b.items[parse->unit].state = BUILD_AGAIN;
+		++build->again;
 	} else {
 		build_parsed(&build->b, parse->unit, status ? nullptr : &c->out);
 		size_t const bytes = buf_peek(&build->b.items[parse->unit].g.bytes).len;
@@ -899,9 +886,12 @@ code_join (struct code_call *call,
 		++build->refs;
 		if (call->flags & CODE_LIST)
 			build->flags &= ~(uint64_t)CODE_STALLED;
-		if (build->again) {
-			build->flags |= CODE_CALLED;
-			build->next = 0;
+		for (size_t i = 0; build->again && i < build->b.n; ++i) {
+			if (build->b.items[i].state != BUILD_AGAIN)
+				continue;
+			build->b.items[i].state = BUILD_RETRY;
+			--build->again;
+			build->next = i < build->next ? i : build->next;
 		}
 		code_trim(code);
 	}

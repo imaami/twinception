@@ -256,8 +256,9 @@ main (void)
 	 * a parse of the fifth one runs. */
 	b.items[3].state = BUILD_AGAIN;
 	b.items[4].state = BUILD_PARSING;
-	CHECK(build_waits(BUILD_AGAIN) && !build_waits(BUILD_PARSING) &&
-	      !build_waits(BUILD_GRAPH) && !build_waits(BUILD_FAILED));
+	CHECK(build_waits(BUILD_RETRY) && !build_waits(BUILD_AGAIN) &&
+	      !build_waits(BUILD_PARSING) && !build_waits(BUILD_GRAPH) &&
+	      !build_waits(BUILD_FAILED));
 	build_parsed(&b, 2, nullptr);
 	CHECK(b.items[2].state == BUILD_FAILED);
 	struct buf junk = buf();
@@ -391,6 +392,85 @@ main (void)
 	CHECK(cstr_view_ends(cut, cstr_view_n(note, sizeof note - 1)));
 	CHECK(cut.data[cut.len - sizeof note] == 'e');
 	cxi_out_fini(&out);
+
+	/* A build without the unit that defines g in src/b.c: another file
+	 * defines g, in a path that starts as src/b.c does, and src/c.c only
+	 * declares and calls it. For the g of src/b.c, the other definition is
+	 * no callee, and the call stays one of the declaration. Without the
+	 * unit of src/c.c, no row is left, and the function is not found. */
+	struct build part = build();
+	CHECK(!build_add(&part, CSTR_VIEW("src/b.c:x.c"), CSTR_VIEW("c\0")));
+	CHECK(!build_add(&part, CSTR_VIEW("src/c.c"), CSTR_VIEW("c\0")));
+	d = graph_draft();
+	uint32_t const other = text(&d, "src/b.c:x.c");
+	CHECK(!util_push(d.fns, (struct graph_fn){
+		.name     = text(&d, "g"),
+		.declared = { other, 8, 8 },
+		.defined  = { other, 8, 8 },
+	}));
+	parsed(&part, 0, &d);
+	struct build_callee const of_b = {
+		.name = CSTR_VIEW("g"),
+		.file = CSTR_VIEW("src/b.c"),
+		.mask = GRAPH_FN_STATIC | GRAPH_FN_MACRO,
+	};
+	CHECK(answers(&part, of_b,
+	              "- callee: g (not found)\n"
+	              "- not searched: 1 translation unit (time limit)\n"));
+	d = graph_draft();
+	uint32_t const c_file = text(&d, "src/c.c");
+	CHECK(!util_push(d.fns, (struct graph_fn){
+		.name     = text(&d, "g"),
+		.declared = { text(&d, "src/h.h"), 9, 9 },
+		.defined  = { GRAPH_NONE, 0, 0 },
+	}));
+	CHECK(!util_push(d.fns, (struct graph_fn){
+		.name     = text(&d, "m"),
+		.declared = { c_file, 1, 1 },
+		.defined  = { c_file, 1, 3 },
+		.n_calls  = 1,
+	}));
+	call(&d, c_file, 2, (uint32_t const[]){ 0 }, 1, (struct graph_call){ .macro = GRAPH_NONE });
+	parsed(&part, 1, &d);
+	CHECK(answers(&part, of_b,
+	              "- callee: g (declared src/h.h:9)\n"
+	              "  - callers\n"
+	              "    - src/c.c:2 m (1-3)\n"));
+	CHECK(answers(&part, (struct build_callee){ .name = CSTR_VIEW("g") },
+	              "- callee: g (src/b.c:x.c:8)\n"
+	              "  - callers\n"
+	              "    - src/c.c:2 m (1-3)\n"));
+	build_fini(&part);
+
+	/* Two units declare a function first in different headers, and none
+	 * defines it: it is one callee. */
+	struct build two = build();
+	CHECK(!build_add(&two, CSTR_VIEW("src/p.c"), CSTR_VIEW("c\0")));
+	CHECK(!build_add(&two, CSTR_VIEW("src/q.c"), CSTR_VIEW("c\0")));
+	for (uint32_t i = 0; i < 2; ++i) {
+		d = graph_draft();
+		uint32_t const file = text(&d, i ? "src/q.c" : "src/p.c");
+		CHECK(!util_push(d.fns, (struct graph_fn){
+			.name     = text(&d, "lib"),
+			.declared = { text(&d, i ? "/usr/x.h" : "/usr/y.h"), 5 + i, 5 + i },
+			.defined  = { GRAPH_NONE, 0, 0 },
+		}));
+		CHECK(!util_push(d.fns, (struct graph_fn){
+			.name     = text(&d, i ? "q" : "p"),
+			.declared = { file, 1, 1 },
+			.defined  = { file, 1, 3 },
+			.n_calls  = 1,
+		}));
+		call(&d, file, 2, (uint32_t const[]){ 0 }, 1,
+		     (struct graph_call){ .macro = GRAPH_NONE });
+		parsed(&two, i, &d);
+	}
+	CHECK(answers(&two, (struct build_callee){ .name = CSTR_VIEW("lib") },
+	              "- callee: lib (declared /usr/x.h:6)\n"
+	              "  - callers\n"
+	              "    - src/p.c:2 p (1-3)\n"
+	              "    - src/q.c:2 q (1-3)\n"));
+	build_fini(&two);
 
 	/* A build of parsed units without errors has no closing lines. */
 	build_fini(&b);

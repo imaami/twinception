@@ -2590,20 +2590,24 @@ cxi_fn_like (CXTranslationUnit tu,
 	return rest.len && *rest.data == '(';
 }
 
-/* Returns true if the name of a function-like macro at the offset @p at of
- * @p file has arguments: "(" follows the name, after white space. A name
- * after #ifdef or defined has none, and libclang reports that as a use of
- * the macro too.
+/* Returns true if the use @p c of a function-like macro has arguments: its
+ * extent is then more than the name. libclang also reports the name after
+ * #ifdef or defined as a use of the macro, with the extent of the name.
  */
 static bool
 cxi_called (CXTranslationUnit tu,
-            CXFile            file,
-            unsigned          at)
+            CXCursor          c)
 {
-	struct cstr_view rest = cxi_after_name(tu, file, at);
-	while (rest.len && cstr_view_space(*rest.data))
-		rest = cstr_view_slice(rest, 1, SIZE_MAX);
-	return rest.len && *rest.data == '(';
+	CXSourceRange const extent = clang_getCursorExtent(c);
+	CXFile file;
+	unsigned from;
+	unsigned to;
+	clang_getFileLocation(clang_getRangeStart(extent), &file, nullptr, nullptr, &from);
+	clang_getFileLocation(clang_getRangeEnd(extent), nullptr, nullptr, nullptr, &to);
+	size_t size = 0;
+	char const *text = file ? clang_getFileContents(tu, file, &size) : nullptr;
+	return text && from < to && to <= size &&
+	       cxi_ident(cstr_view_n(text + from, to - from)) < to - from;
 }
 
 /* A use of a function-like macro with arguments that a file of the tree
@@ -2803,7 +2807,7 @@ cxi_graph_named (struct cxi_graph const *g,
 /* Writes to @p *id the index in @p g of the macro that @p def defines, and
  * appends the macro with @p flags if @p g does not contain it: the name
  * and the place of the definition. Only a function-like macro is among the
- * macros by name.
+ * macros by name. @p *id is written only if the draft contains the macro.
  */
 static int
 cxi_graph_macro_fn (struct cxi_graph *g,
@@ -2816,20 +2820,24 @@ cxi_graph_macro_fn (struct cxi_graph *g,
 		return 0;
 
 	struct graph_fn fn = { .flags = flags };
+	uint32_t const made = (uint32_t)g->draft.fns.n;
 	int e = cxi_graph_macro(g, def, &fn.name);
 	if (!e)
 		e = cxi_graph_place(g, def, &fn.declared);
 	fn.defined = fn.declared;
-	*id = (uint32_t)g->draft.fns.n;
 	if (!e)
 		e = util_push(g->draft.fns, fn);
 	if (!e)
-		e = cxi_ids_put(&g->macros, node, *id);
-	if (e || flags & GRAPH_FN_OBJECT)
-		return e;
-	e = util_push(g->named, (struct cxi_named){});
+		e = cxi_ids_put(&g->macros, node, made);
+	if (!e && !(flags & GRAPH_FN_OBJECT))
+		e = util_push(g->named, (struct cxi_named){});
 	if (e)
 		return e;
+
+	/* The draft contains the macro. */
+	*id = made;
+	if (flags & GRAPH_FN_OBJECT)
+		return 0;
 
 	/* The macro goes to its place in the order of the names. */
 	struct cxi_named *named = g->named.items;
@@ -2847,7 +2855,7 @@ cxi_graph_macro_fn (struct cxi_graph *g,
 	memmove(&named[at + 1], &named[at], (last - at) * sizeof *named);
 	named[at] = (struct cxi_named){
 		.name = fn.name,
-		.fn   = *id,
+		.fn   = made,
 	};
 	return 0;
 }
@@ -3033,7 +3041,7 @@ cxi_graph_macros (CXCursor     c,
 		use.at = at;
 		if (def.kind != CXCursor_MacroDefinition ||
 		    clang_Location_isInSystemHeader(loc) ||
-		    !cxi_fn_like(tu, def) || !cxi_called(tu, use.file, at))
+		    !cxi_fn_like(tu, def) || !cxi_called(tu, c))
 			return CXChildVisit_Continue;
 
 		e = cxi_graph_file(g, loc, &use.text, &use.line);

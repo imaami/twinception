@@ -11484,7 +11484,8 @@ def check_code_build(binary, up, call, d):
         with open(f"{repo}/src/{name}", "w") as f:
             f.write(text)
     write("k.h", "int k_one(int);\nint k_two(int);\n#define K_M(x) (x)\n"
-          "#define K_OBJ K_M(1)\n#if defined K_M\n#endif\n")
+          "#define K_OBJ K_M(1)\n#if defined K_M\n#endif\n"
+          "static inline int k_c(void) { return K_M /* c */ (2) + K_M\n(3); }\n")
     write("k1.c", '#include "k.h"\nint k_one(int n) { return n; }\n'
           "int k_dup(void) { return 1; }\n")
     write("k2.c", '#include "k.h"\nint k_two(int n) { return k_one(n); }\n'
@@ -11571,13 +11572,15 @@ def check_code_build(binary, up, call, d):
             "- callee: k_five (declared src/k3.c:3)\n"
             "  - callers: none\n")
         assert runs() == (1, 0, [])
-        # The name of a macro after defined is no use of the macro, and a
-        # use in the definition of an object-like macro is one.
+        # The name of a macro after defined is no use of the macro. A use
+        # in the definition of an object-like macro is one, and so is a
+        # name with a comment or a line end before its arguments.
         assert callers(ai, "K_M") == (
             f"- repo: keep\n- commit: {head}\n"
             "- callee: K_M (macro src/k.h:3)\n"
             "  - callers\n"
-            "    - src/k.h:4 macro K_OBJ (4)\n")
+            "    - src/k.h:4 macro K_OBJ (4)\n"
+            "    - src/k.h:7 k_c (7-8)\n")
         assert runs() == (1, 0, [])
         # Two files each define a function k_dup. With a path, the callee
         # is the one that the file of the path defines.

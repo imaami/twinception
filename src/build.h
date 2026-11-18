@@ -22,8 +22,10 @@ struct cxi_out;
 /** What a build contains for a translation unit. */
 enum build_state : uint32_t {
 	BUILD_NONE,     /**< nothing: no parse of the unit has ended */
-	BUILD_AGAIN,    /**< nothing: a parse of the unit took too long, and the
-	                     unit is parsed once more */
+	BUILD_AGAIN,    /**< nothing: a parse of the unit took too long. The
+	                     unit is parsed once more for the next caller. */
+	BUILD_RETRY,    /**< nothing: as BUILD_AGAIN, and that caller has
+	                     come: the next parse of the unit is its last */
 	BUILD_PARSING,  /**< nothing yet: a parse of the unit runs */
 	BUILD_GRAPH,    /**< the graph of the unit. The unit does not change
 	                     after this. */
@@ -31,11 +33,11 @@ enum build_state : uint32_t {
 	                     does not change after this. */
 };
 
-/** Returns true if a unit in the state @p state waits for a parse. */
+/** Returns true if a parse of a unit in the state @p state can start. */
 static force_inline bool
 build_waits (uint32_t state)
 {
-	return state == BUILD_NONE || state == BUILD_AGAIN;
+	return state == BUILD_NONE || state == BUILD_RETRY;
 }
 
 /** A translation unit of a build. */
