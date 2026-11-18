@@ -11,6 +11,7 @@
 #include <ftw.h>
 #include <inttypes.h>
 #include <json-c/json.h>
+#include <openssl/sha.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -72,8 +73,6 @@ struct cxi {
 	struct cstr_view    words;          /* the clang command line of the file,
 	                                       each word followed by a NUL */
 	struct json_object *cmds;           /* the compile commands */
-	struct stat         cdb;            /* the file of the compile commands
-	                                       as it was read */
 	char const         *file;           /* the path of the file in the tree */
 	char const         *warning[CXI_WARNINGS];
 	CXIndex             index;
@@ -83,6 +82,9 @@ struct cxi {
 	uint64_t            n_warnings;
 	uint64_t            action;         /* enum cxi_action */
 	uint64_t            line;           /* the value of line, or 0 */
+	uint64_t            cdb_size;       /* the bytes of the file of the
+	                                       compile commands */
+	unsigned char       cdb_hash[SHA256_DIGEST_LENGTH];  /* their SHA-256 */
 };
 
 /* Returns the call before cxi_words() reads the request. The answer and
@@ -2787,6 +2789,40 @@ cxi_graph_write (struct cxi *x,
 	return e;
 }
 
+/* Appends the name of the build of the request of @p x: the repository,
+ * the commit, and the size and the SHA-256 of the bytes of the file of the
+ * compile commands. A file that is written again with the same bytes is of
+ * the same build.
+ */
+static void
+cxi_out_build (struct cxi_out   *out,
+               struct cxi const *x)
+{
+	char hex[2 * sizeof x->cdb_hash];
+	util_hex(hex, x->cdb_hash, sizeof x->cdb_hash);
+	cxi_out_view(out, x->key[CXI_KEY_REPO]);
+	cxi_out_lit(out, " ");
+	cxi_out_view(out, x->key[CXI_KEY_COMMIT]);
+	cxi_out_lit(out, " ");
+	cxi_out_num(out, x->cdb_size);
+	cxi_out_lit(out, " ");
+	cxi_out_put(out, hex, sizeof hex);
+}
+
+/* Returns true if @p name is the name of the build of the request of
+ * @p x (cxi_out_build()).
+ */
+static bool
+cxi_build_is (struct cxi const *x,
+              struct cstr_view  name)
+{
+	struct cxi_out own = cxi_out(cstr_view(nullptr));
+	cxi_out_build(&own, x);
+	bool const same = !own.e && cstr_view_equal(cstr_view_dstr(&own.text), name);
+	cxi_out_fini(&own);
+	return same;
+}
+
 /* callers: what askai needs to answer from the graphs of the build
  * (src/build.h), after the request is checked and the commit exported. The
  * answer is the name of the functions, a NUL, a letter and the path of a
@@ -2797,10 +2833,9 @@ cxi_graph_write (struct cxi *x,
  * The letter is A for each function of the name. With a path, the callee is
  * only the function of the name that the translation unit of the path
  * declares, which is parsed: the letter is S if that function is static and
- * E if not, and the file is that of its first declaration. The name of the
- * build is the repository, the commit, and the device, the inode, the size
- * and the time of the last change of the file of the compile commands: a
- * change of that file makes another build.
+ * E if not, and the file is that of its first declaration. A change of
+ * the bytes of the file of the compile commands makes another build,
+ * because the name of the build tells them (cxi_out_build()).
  */
 static int
 cxi_callers (struct cxi *x)
@@ -2832,20 +2867,7 @@ cxi_callers (struct cxi *x)
 		clang_disposeString(file);
 	}
 	cxi_out_put(out, "", 1);
-	cxi_out_view(out, x->key[CXI_KEY_REPO]);
-	cxi_out_lit(out, " ");
-	cxi_out_view(out, x->key[CXI_KEY_COMMIT]);
-	uint64_t const state[] = {
-		x->cdb.st_dev,
-		x->cdb.st_ino,
-		(uint64_t)x->cdb.st_size,
-		(uint64_t)x->cdb.st_mtim.tv_sec,
-		(uint64_t)x->cdb.st_mtim.tv_nsec,
-	};
-	for (size_t i = 0; i < array_size(state); ++i) {
-		cxi_out_lit(out, " ");
-		cxi_out_num(out, state[i]);
-	}
+	cxi_out_build(out, x);
 	cxi_out_put(out, "", 1);
 
 	struct cdb_map const map = cdb_map(x->key[CXI_KEY_TOP],
@@ -3051,17 +3073,41 @@ cxi_command (struct cxi       *x,
 	int dir = open(x->key[CXI_KEY_TOP].data, O_PATH | O_DIRECTORY | O_CLOEXEC);
 	int fd = openat(dir, file.data, O_RDONLY | O_CLOEXEC);
 	util_close(&dir);
-	int e = fd < 0 || fstat(fd, &x->cdb) ? errno
-	      : !S_ISREG(x->cdb.st_mode) || x->cdb.st_size > CXI_CDB ? EFBIG : 0;
-	x->cmds = e ? nullptr : json_object_from_fd_ex(fd, CXI_DEPTH);
+	struct stat st;
+	struct buf bytes = buf();
+	int e = fd < 0 || fstat(fd, &st) ? errno
+	      : !S_ISREG(st.st_mode) || st.st_size > CXI_CDB ? EFBIG
+	      : buf_read(&bytes, fd, (size_t)st.st_size, CXI_CDB);
 	util_close(&fd);
+	struct json_tokener *tok = e ? nullptr : json_tokener_new_ex(CXI_DEPTH);
+	if (tok) {
+		/* The commands are parsed from the bytes that the name of the
+		 * build tells (cxi_out_build()). */
+		struct span const all = buf_peek(&bytes);
+		char const *text = all.ptr ? (char const *)all.ptr : "";
+		x->cdb_size = all.len;
+		(void)SHA256((unsigned char const *)text, all.len, x->cdb_hash);
+		x->cmds = json_tokener_parse_ex(tok, text, (int)all.len);
+		if (json_tokener_get_error(tok) != json_tokener_success) {
+			json_object_put(x->cmds);
+			x->cmds = nullptr;
+		}
+		json_tokener_free(tok);
+	}
+	buf_fini(&bytes);
+	/* The graph of a unit is for one build: for the bytes of the compile
+	 * commands that the name of the build tells. */
+	struct cstr_view const unit = x->key[CXI_KEY_UNIT];
+	if (unit.data && (!x->cmds || !cxi_build_is(x, x->key[CXI_KEY_BUILD])))
+		return ESTALE;
 	if (!x->cmds) {
 		cxi_out_lit(&x->out, "The compile commands of ");
 		cxi_out_view(&x->out, repo);
 		cxi_out_lit(&x->out, " in ");
 		cxi_out_path(&x->out, file);
 		cxi_out_lit(&x->out, " cannot be read (");
-		cxi_out_view(&x->out, e == EFBIG ? CSTR_VIEW("not a regular file of at most 64 MiB")
+		cxi_out_view(&x->out, e == EFBIG || e == ENOBUFS
+		                    ? CSTR_VIEW("not a regular file of at most 64 MiB")
 		                    : e ? cstr_view(strerror(e)) : CSTR_VIEW("not JSON"));
 		cxi_out_lit(&x->out, ").");
 		return EINVAL;
@@ -3069,7 +3115,6 @@ cxi_command (struct cxi       *x,
 	struct cdb_map const map = cdb_map(x->key[CXI_KEY_TOP],
 	                                   cstr_view_slice(tree, 0, tree.len - 1));
 	struct cstr_view const path = x->key[CXI_KEY_PATH];
-	struct cstr_view const unit = x->key[CXI_KEY_UNIT];
 	uint64_t entry = 0;
 	size_t at = 0;
 	if (path.data) {
@@ -3395,6 +3440,7 @@ cxi_run (struct cxi         *x,
 	bool const unit = key[CXI_KEY_UNIT].data;
 	/* The name of the repository is a directory of the cache. */
 	if (unit == (key[CXI_KEY_ACTION].data != nullptr) ||
+	    unit != (key[CXI_KEY_BUILD].data != nullptr) ||
 	    !git_run_name_valid(repo) || !key[CXI_KEY_CDB].data ||
 	    !oid_valid(commit) ||
 	    !cstr_view_starts(key[CXI_KEY_TOP], CSTR_VIEW("/")) ||

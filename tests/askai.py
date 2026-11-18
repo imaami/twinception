@@ -11423,13 +11423,17 @@ def check_code(binary, up):
 # A wrapper of the real askai-code for check_code_build(). It appends the
 # words of each run to the file runs in its directory. While the file stale
 # exists, the run of the unit 2 removes the file and exits with status 3, as
-# for a tree of the cache at another commit. While the file slow exists, the
-# run of the unit 3 writes its process ID to the file pid and sleeps.
+# for a tree of the cache at another commit. While the file moved exists,
+# the run of the unit 2 removes the file and appends a line feed to the file
+# of the compile commands. While the file slow exists, the run of the unit 3
+# writes its process ID to the file pid and sleeps.
 CODE_WRAPPER = """#!/bin/sh
 here=${0%/*}
 echo "$*" >> "$here/runs"
 case " $* " in
-*" unit=2 "*) [ -e "$here/stale" ] && rm "$here/stale" && exit 3;;
+*" unit=2 "*)
+        [ -e "$here/stale" ] && rm "$here/stale" && exit 3
+        [ -e "$here/moved" ] && rm "$here/moved" && echo >> "$here/../keep.json";;
 *" unit=3 "*) [ -e "$here/slow" ] && echo $$ > "$here/pid" && exec sleep 60;;
 esac
 exec "$here/real" "$@"
@@ -11473,10 +11477,14 @@ def check_code_build(binary, up, call, d):
     # The entry 1 of the compile commands is no translation unit, so the
     # units are the entries 0, 2 and 3.
     cdb = f"{d}/keep.json"
-    with open(cdb, "w") as f:
-        json.dump([{"directory": repo, "file": f"{repo}/src/{c}",
-                    "arguments": ["cc", "-c", f"{repo}/src/{c}"]}
-                   for c in ("k1.c", "k.h", "k2.c", "k3.c")], f)
+
+    def commands(indent=None):
+        """Writes the compile commands, with other bytes for another indent."""
+        with open(cdb, "w") as f:
+            json.dump([{"directory": repo, "file": f"{repo}/src/{c}",
+                        "arguments": ["cc", "-c", f"{repo}/src/{c}"]}
+                       for c in ("k1.c", "k.h", "k2.c", "k3.c")], f, indent=indent)
+    commands()
     bin = f"{d}/keepbin"
     os.mkdir(bin)
     shutil.copy(binary, f"{bin}/askai")
@@ -11545,15 +11553,28 @@ def check_code_build(binary, up, call, d):
         assert runs() == (1, units)
         assert callers(ai, "k_one") == one
         assert runs() == (1, [])
-        # A change of the file of the compile commands makes another build.
-        # The parse of a unit that finds the tree at another commit is not
-        # the end of that unit: the call exports the commit once more, and
-        # the unit is parsed then.
+        # A file of the compile commands that is written again with the same
+        # bytes is the same build, and other bytes make another build. The
+        # parse of a unit that finds the tree at another commit is not the
+        # end of that unit: the call exports the commit once more, and the
+        # unit is parsed then.
+        commands()
         os.utime(cdb, ns=(1, 1))
+        assert callers(ai, "k_two") == two
+        assert runs() == (1, [])
+        commands(indent=1)
         open(f"{bin}/stale", "w").close()
         assert callers(ai, "k_two") == two
         assert runs() == (2, ["unit=0", "unit=2", "unit=2", "unit=3"])
         assert not os.path.exists(f"{bin}/stale")
+        # A graph is for the bytes of the compile commands that its build
+        # names. A change of the file while the units of a build are parsed
+        # ends that parse, and the call gets the build of the changed file.
+        commands(indent=2)
+        open(f"{bin}/moved", "w").close()
+        assert callers(ai, "k_two") == two
+        assert runs() == (2, ["unit=0", "unit=0", "unit=2", "unit=2", "unit=3", "unit=3"])
+        assert not os.path.exists(f"{bin}/moved")
     # A call answers at its deadline with the units that are parsed, and
     # counts the others. The process that parses a unit gets the same time,
     # and a unit that takes longer is not parsed.

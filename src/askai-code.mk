@@ -29,6 +29,7 @@ override SRC_askai-code := $(if $(LLVM_CONFIG), \
 
 override LIB_askai-code := \
   json-c                   \
+  libcrypto                \
   -lclang $(if $(LLVM_CONFIG),-L$(shell echo $(LLVM_CONFIG) --libdir >&2; $(LLVM_CONFIG) --libdir) \
                               $(shell echo $(LLVM_CONFIG) --libs support >&2; $(LLVM_CONFIG) --libs support))
 

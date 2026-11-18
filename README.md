@@ -934,8 +934,10 @@ a commit runs one `askai-code` for each translation unit of `FILE`, up to 8
 at a time, and each writes the functions and the calls of its file to
 `askai`. A later `callers` call for the same commit gets its answer from
 that memory, without a parse, also after the tree of the cache has changed
-to another commit. A change of `FILE`, by its size or its time, makes the
-next call parse again. All client loops share the memory, so a commit is
+to another commit. A change of the bytes of `FILE` makes the next call
+parse again: `askai-code` compares the size and the SHA-256 of the file,
+so a `FILE` that is written again with the same bytes is not parsed again.
+All client loops share the memory, so a commit is
 parsed once. `askai` frees the memory of the commits that no call uses
 once it is more than 1 GiB. A `callers` call with `path` still parses the
 file of `path`, to find the function that `path` declares.

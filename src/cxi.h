@@ -11,9 +11,11 @@
  *
  * With the word unit=N in place of an action, askai-code writes the graph
  * of one translation unit (src/graph.h) with exit status 0: the unit of
- * the entry N of the compile commands, the first entry being 0. Such a
- * request names no git and exports no commit: the exit status is CXI_STALE
- * if the tree of the cache is at another commit.
+ * the entry N of the compile commands, the first entry being 0. The word
+ * build=NAME is the name that the answer to callers gave the build. Such a
+ * request names no git and exports no commit. The exit status is CXI_STALE
+ * if the tree of the cache is at another commit, or if the bytes of the
+ * file of the compile commands are not those that NAME tells.
  */
 #ifndef ASKAI_SRC_CXI_H_
 #define ASKAI_SRC_CXI_H_
@@ -45,7 +47,8 @@ enum cxi_action : uint8_t { CXI_ACTION_LIST(CXI_ACTION_ENUM) CXI_ACTIONS };
         X(CDB,        "cdb")        \
         X(CACHE,      "cache")      \
         X(UNCONFINED, "unconfined") \
-        X(UNIT,       "unit")
+        X(UNIT,       "unit")       \
+        X(BUILD,      "build")
 
 #define CXI_KEY_ENUM(id, ...) CXI_KEY_##id,
 enum cxi_key : uint8_t { CXI_KEY_LIST(CXI_KEY_ENUM) CXI_KEYS };
@@ -54,8 +57,9 @@ enum cxi_key : uint8_t { CXI_KEY_LIST(CXI_KEY_ENUM) CXI_KEYS };
 /** The most warning options of a request. */
 enum { CXI_WARNINGS = 16 };
 
-/** The exit status of a request with unit=N if the tree of the cache is at
- *  another commit than that of the request.
+/** The exit status of a request with unit=N that finds another commit in
+ *  the tree of the cache, or other bytes in the file of the compile
+ *  commands, than those of its build.
  */
 enum { CXI_STALE = 3 };
 

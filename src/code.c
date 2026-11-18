@@ -589,6 +589,7 @@ code_build_create (struct code            *code,
 	err = err ? err : code_word(words, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
 	err = err ? err : code_word(words, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
 	                            ? CSTR_VIEW("1") : cstr_view(nullptr));
+	err = err ? err : code_word(words, CXI_KEY_BUILD, id);
 	/* Each unit is an index and a path, to the end of the answer. */
 	while (!err && units.len) {
 		struct cstr_view index;
