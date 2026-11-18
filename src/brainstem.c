@@ -156,7 +156,7 @@ struct brainstem_metrics brainstem_metrics;
 static _Atomic uint32_t relieving;
 static _Atomic uint64_t relieved;
 
-static uint32_t
+static force_inline uint32_t
 brainstem_thread_state (struct brainstem_thread const *t)
 {
 	return atomic_load_explicit(&t->state, memory_order_acquire);

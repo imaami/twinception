@@ -17,7 +17,7 @@ list (struct list *self_pointer)
 {
 	return (struct list){
 		.next = self_pointer,
-		.prev = self_pointer
+		.prev = self_pointer,
 	};
 }
 
@@ -44,10 +44,16 @@ list_append (struct list *dest,
 }
 
 static force_inline void
-list_del (struct list *node)
+list_detach (struct list *node)
 {
 	node->prev->next = node->next;
 	node->next->prev = node->prev;
+}
+
+static force_inline void
+list_del (struct list *node)
+{
+	list_detach(node);
 	list_init(node);
 }
 

@@ -277,7 +277,7 @@ task_init (struct task      *task,
 {
 	task->step = loop_step(task_step);
 	task->msg = msg(nullptr);
-	task->hook = (struct list){};
+	task->hook = list(nullptr);
 	task->slice = slice;
 	task->back = back;
 	task->pool = pool;

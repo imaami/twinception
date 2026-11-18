@@ -210,8 +210,7 @@ loop (void)
 static void
 loop_blank (struct loop *loop)
 {
-	size_t at = offsetof(struct loop, refs);
-	memset((unsigned char *)loop + at, 0, sizeof *loop - at);
+	memset(&loop->refs, 0, sizeof *loop - offsetof(struct loop, refs));
 	loop->wake.fd = -1;
 	loop->epfd = -1;
 }
@@ -433,12 +432,13 @@ loop_watch (struct loop     *loop,
 		return errno;
 
 	*ref = (struct loop_ref){
-		.cb = cb,
-		.owner = owner,
+		.hook   = list(&ref->hook),
+		.cb     = cb,
+		.owner  = owner,
 		.events = events,
-		.fd = fd
+		.fd     = fd,
 	};
-	list_init(&ref->hook);
+
 	list_append(&loop->refs, &ref->hook);
 	return 0;
 }
@@ -473,8 +473,12 @@ loop_unwatch (struct loop     *loop,
 		loop_fail(loop, errno);
 
 	if (ref->hook.next && ref->hook.prev)
-		list_del(&ref->hook);
-	*ref = (struct loop_ref){ .fd = -1 };
+		list_detach(&ref->hook);
+
+	*ref = (struct loop_ref){
+		.hook = list(&ref->hook),
+		.fd   = -1,
+	};
 }
 
 void
@@ -482,10 +486,10 @@ loop_close (struct loop     *loop,
             struct loop_ref *ref)
 {
 	int fd = ref->fd;
-	if (fd < 0)
-		return;
-	loop_unwatch(loop, ref);
-	(void)close(fd);
+	if (fd >= 0) {
+		loop_unwatch(loop, ref);
+		(void)close(fd);
+	}
 }
 
 void
@@ -519,8 +523,8 @@ void
 loop_unready (struct loop_step *step)
 {
 	if (step->hook.next) {
-		list_del(&step->hook);
-		step->hook = (struct list){};
+		list_detach(&step->hook);
+		step->hook = list(nullptr);
 	}
 }
 
