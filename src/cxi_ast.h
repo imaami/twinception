@@ -39,6 +39,13 @@ cxi_ast_generic (CXCursor  c,
 extern void const *
 cxi_ast_node (CXCursor c);
 
+/**
+ * Returns the first declaration of the function of the attribute cleanup
+ * @p c, or a null cursor if @p c is not the cursor of an attribute cleanup.
+ */
+extern CXCursor
+cxi_ast_cleanup (CXCursor c);
+
 #ifdef __cplusplus
 }
 #endif

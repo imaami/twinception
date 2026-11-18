@@ -763,7 +763,6 @@ A row is one of these:
 | `indirect, through an expression` | a call through any other expression, such as the result of a call |
 | `hist_init (src/hist.h:64) or hist_clear (src/hist.h:130). The tool cannot tell which function is called.` | a call of a function that `?:` selects when the program runs |
 | `dstr_cleanup (src/dstr.h:384), at the end of the scope of a variable (attribute cleanup)` | the call that the program makes for a variable with the attribute `cleanup`; the place of the row is the line of the variable |
-| `a function, at the end of the scope of a variable (attribute cleanup). The tool cannot tell which function is called.` | the same call, if no declaration at file scope declares the function of the attribute |
 
 The row of `?:` contains the functions of the second and the third operand,
 also those of a `?:` in an operand, and not the function of the condition.

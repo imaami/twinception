@@ -10595,7 +10595,7 @@ static int (*calls_table[2])(int);
 int
 calls_all (struct calls_ops *o, int (*cb)(int), int n, char const *s)
 {
-\tint r [[maybe_unused]] = calls_plain(n);
+\tint r [[maybe_unused]] __attribute__((annotate("__attribute__((cleanup(calls_fini)))"))) = calls_plain(n);
 \tr += (calls_plain)(n);
 \tr += (*calls_plain)(n);
 \tr += calls_wrapped(n);
@@ -11360,9 +11360,10 @@ def check_code_describe(binary, up, call, head, d, cdb):
         # a call from the body of a macro is the line where that macro is
         # used. The function of the attribute cleanup of a variable is in a
         # row at the line of the variable, with the macro that the
-        # attribute is written through. The row contains no function if no
-        # declaration at file scope declares the function. A variable with
-        # another attribute has no row of its own.
+        # attribute is written through, also a function that only a
+        # declaration in the function declares. A variable with another
+        # attribute has no row of its own, also if a string of that
+        # attribute contains the text of an attribute cleanup.
         calls = call(ai, repo="proj", action="describe", path="src/calls.c", name="calls_all")
         assert calls == (
             f"[Repository proj, file src/calls.c at commit {head}. function calls_all in the "
@@ -11419,8 +11420,8 @@ def check_code_describe(binary, up, call, head, d, cdb):
             "variable (attribute cleanup), through the macro calls_auto (src/calls.h:29)\n"
             "  src/calls.c:54 calls_fini (src/calls.h:28), at the end of the scope of a "
             "variable (attribute cleanup)\n"
-            "  src/calls.c:56 a function, at the end of the scope of a variable (attribute "
-            "cleanup). The tool cannot tell which function is called.\n"
+            "  src/calls.c:56 calls_local (src/calls.c:55), at the end of the scope of a "
+            "variable (attribute cleanup)\n"
             "[The program does not evaluate 7 call expressions at "
             "src/calls.c:27,28,29,32,33,34,52. The rows do not contain these call "
             "expressions.]\n"

@@ -1267,10 +1267,8 @@ cxi_tag_of (CXCursor c)
 	       ? decl : clang_getNullCursor();
 }
 
-/* The search for the first cursor of a name: a member of a record
- * (cxi_seek_member()), or a function that a declaration at file scope
- * declares (cxi_seek_function()). found is null while the search has
- * reached none.
+/* The search for the first member of a record that is named name
+ * (cxi_seek_member()). found is null while the search has reached none.
  */
 struct cxi_seek {
 	char const *name;
@@ -1301,20 +1299,6 @@ cxi_seek_member (CXCursor     c,
 	seek->found = clang_Cursor_isNull(seek->found) && cxi_is_named(c, seek->name) ? c
 	            : seek->found;
 	return clang_Cursor_isNull(seek->found) ? CXVisit_Continue : CXVisit_Break;
-}
-
-/* Stores the first function that the cxi_seek at @p data names in it. */
-static enum CXChildVisitResult
-cxi_seek_function (CXCursor     c,
-                   CXCursor,
-                   CXClientData data)
-{
-	struct cxi_seek *seek = data;
-	if (c.kind != CXCursor_FunctionDecl || !cxi_spelled(c, seek->name))
-		return CXChildVisit_Continue;
-
-	seek->found = c;
-	return CXChildVisit_Break;
 }
 
 /* Writes @p member of the record of the first @p name of one to @p *c. */
@@ -1785,15 +1769,6 @@ cxi_spelling (CXTranslationUnit  tu,
 	return cstr_view_slice(all, at, SIZE_MAX);
 }
 
-/* Returns @p s without the white space at the start (cstr_view_space()). */
-static struct cstr_view
-cxi_skip_space (struct cstr_view s)
-{
-	while (s.len && cstr_view_space(*s.data))
-		s = cstr_view_slice(s, 1, SIZE_MAX);
-	return s;
-}
-
 /* Returns true if clang evaluates @p c to an integer constant, and writes
  * to @p *nonzero whether the constant is not 0.
  */
@@ -2191,88 +2166,28 @@ cxi_walk_state (struct cxi_walk *walk,
 	return e;
 }
 
-/* Returns true if the attribute @p c is written as cleanup: the word is
- * cleanup or __cleanup__, after gnu:: or __gnu__:: in [[ ]].
- */
-static bool
-cxi_cleanup_written (CXTranslationUnit tu,
-                     CXCursor          c)
-{
-	static struct cstr_view const words[] = {
-		CSTR_VIEW_INIT("cleanup"),
-		CSTR_VIEW_INIT("__cleanup__"),
-	};
-	struct cstr_view before;
-	struct cstr_view rest = cxi_spelling(tu, c, &before);
-	size_t word = cxi_ident(rest);
-	struct cstr_view const scope = cxi_skip_space(cstr_view_slice(rest, word, SIZE_MAX));
-	if (cstr_view_starts(scope, CSTR_VIEW("::"))) {
-		rest = cxi_skip_space(cstr_view_slice(scope, 2, SIZE_MAX));
-		word = cxi_ident(rest);
-	}
-	return cstr_view_index(words, array_size(words), cstr_view_slice(rest, 0, word)) <
-	       array_size(words);
-}
-
-/* Writes the name of the function of the attribute cleanup of the variable
- * @p c to @p name, and returns the length of the name, or 0 if the variable
- * is without the attribute. libclang returns no function of an attribute.
- * clang prints the declaration of the variable from the syntax tree, with
- * the attribute as __attribute__((cleanup(NAME))) or [[gnu::cleanup(NAME)]]:
- * NAME is the function.
- */
-static size_t
-cxi_cleanup_name (CXCursor c,
-                  char     name[static CXI_NAME + 1])
-{
-	static struct cstr_view const forms[] = {
-		CSTR_VIEW_INIT("__attribute__((cleanup("),
-		CSTR_VIEW_INIT("[[gnu::cleanup("),
-	};
-	CXPrintingPolicy policy = clang_getCursorPrintingPolicy(c);
-	clang_PrintingPolicy_setProperty(policy, CXPrintingPolicy_SuppressInitializers, 1);
-	CXString printed = clang_getCursorPrettyPrinted(c, policy);
-	clang_PrintingPolicy_dispose(policy);
-	char const *text = clang_getCString(printed);
-	char const *form = nullptr;
-	size_t f = 0;
-	for (; text && !form && f < array_size(forms); ++f)
-		form = strstr(text, forms[f].data);
-	size_t len = 0;
-	if (form) {
-		/* The text after the form ends with a NUL. */
-		char const *rest = form + forms[f - 1].len;
-		size_t const n = cxi_ident(cstr_view(rest));
-		if (n <= CXI_NAME && rest[n] == ')') {
-			memcpy(name, rest, n);
-			len = n;
-		}
-	}
-	name[len] = '\0';
-	clang_disposeString(printed);
-	return len;
-}
-
-/* Writes to @p *macro the macro through which the attribute cleanup of the
- * variable @p c is written (cxi_macro()), or null: the macro of the
- * attribute that is written as cleanup (cxi_cleanup_written()).
+/* Writes to @p *fn the first declaration of the function of the attribute
+ * cleanup of the variable @p c (cxi_ast_cleanup()), and to @p *attr the
+ * attribute. @p *fn is null for a variable without the attribute. clang
+ * calls the function of the first attribute cleanup in the syntax tree of a
+ * variable. clang 23 keeps only the last one that is written.
  */
 static int
-cxi_walk_cleanup_macro (struct cxi_walk *walk,
-                        CXCursor         c,
-                        CXCursor        *macro)
+cxi_walk_cleanup (struct cxi_walk *walk,
+                  CXCursor         c,
+                  CXCursor        *attr,
+                  CXCursor        *fn)
 {
 	size_t const at = walk->kids.n;
 	int const e = cxi_list_children(&walk->kids, c);
-	CXCursor written = clang_getNullCursor();
-	for (size_t i = at; !e && i < walk->kids.n; ++i) {
-		CXCursor const kid = walk->kids.items[i];
-		if (clang_isAttribute(kid.kind) && cxi_cleanup_written(walk->tu, kid))
-			written = kid;
+	*attr = clang_getNullCursor();
+	*fn = *attr;
+	for (size_t i = at;
+	     !e && clang_Cursor_isNull(*fn) && i < walk->kids.n; ++i) {
+		*attr = walk->kids.items[i];
+		*fn = cxi_ast_cleanup(*attr);
 	}
 	walk->kids.n = at;
-	*macro = clang_Cursor_isNull(written) ? written
-	       : cxi_macro(walk->tu, clang_getCursorLocation(written));
 	return e;
 }
 
@@ -2479,30 +2394,27 @@ cxi_calls_add (struct cxi_calls *calls,
 /* Appends to @p calls the call of the function of the attribute cleanup of
  * the variable @p c, the cursor of the visit, if the variable is one with
  * the attribute and the program can evaluate the declaration. The program
- * calls the function at the end of the scope of the variable. The call is
- * of no callee if no declaration at file scope declares the function.
+ * calls the function at the end of the scope of the variable.
  */
 static int
 cxi_calls_add_cleanup (struct cxi_calls *calls,
                        CXCursor          c)
 {
-	char name[CXI_NAME + 1];
 	struct cxi_walk *walk = &calls->walk;
+	CXCursor attr;
+	CXCursor fn;
+	int e = cxi_walk_cleanup(walk, c, &attr, &fn);
+	if (e || clang_Cursor_isNull(fn))
+		return e;
+
 	struct cxi_call call = cxi_call(c, (uint32_t)walk->to.n,
-	                                0, GRAPH_CALL_CLEANUP);
-	if (!cxi_cleanup_name(c, name))
-		return 0;
-	int e = cxi_walk_state(walk, &call.state);
+	                                1, GRAPH_CALL_CLEANUP);
+	e = cxi_walk_state(walk, &call.state);
 	if (e || call.state == GRAPH_UNEVALUATED)
 		return e;
-	e = cxi_walk_cleanup_macro(walk, c, &call.macro);
-	struct cxi_seek seek = cxi_seek(name);
-	clang_visitChildren(clang_getTranslationUnitCursor(walk->tu),
-	                    cxi_seek_function, &seek);
-	if (!e && !clang_Cursor_isNull(seek.found)) {
-		e = util_push(walk->to, clang_getCanonicalCursor(seek.found));
-		call.n = !e;
-	}
+
+	call.macro = cxi_macro(walk->tu, clang_getCursorLocation(attr));
+	e = util_push(walk->to, fn);
 	return e ? e : cxi_calls_push(calls, call);
 }
 
@@ -2580,10 +2492,7 @@ cxi_calls_row (struct cxi_calls const *calls,
 {
 	struct cxi_out *out = &calls->x->out;
 	struct cxi_call const *call = &calls->items[i];
-	bool const cleanup = call->flags & GRAPH_CALL_CLEANUP;
-	/* which is true for several functions, and for the function of an
-	 * attribute cleanup that the tool did not find. */
-	bool const which = call->n > 1 || (cleanup && !call->n);
+	bool const which = call->n > 1;
 	bool const unproven = call->state == GRAPH_UNPROVEN;
 	cxi_out_lit(out, "  ");
 	cxi_calls_places(calls, i, ':');
@@ -2616,9 +2525,8 @@ cxi_calls_row (struct cxi_calls const *calls,
 		}
 	}
 	if (!call->n)
-		cxi_out_view(out, cleanup ? CSTR_VIEW("a function")
-		                          : CSTR_VIEW("indirect, through an expression"));
-	if (cleanup)
+		cxi_out_lit(out, "indirect, through an expression");
+	if (call->flags & GRAPH_CALL_CLEANUP)
 		cxi_out_lit(out, ", at the end of the scope of a variable (attribute cleanup)");
 	if (!clang_Cursor_isNull(call->macro)) {
 		cxi_out_lit(out, ", through the macro ");
