@@ -20,6 +20,7 @@ override SRC_askai-code := $(if $(LLVM_CONFIG), \
   cstr_view.c                                   \
   cxi.c                                         \
   cxi_ast.cpp                                   \
+  cxi_out.c                                     \
   dstr.c                                        \
   graph.c                                       \
   jb.c                                          \

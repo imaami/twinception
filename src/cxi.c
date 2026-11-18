@@ -30,6 +30,7 @@
 #include "cstr_view.h"
 #include "cxi.h"
 #include "cxi_ast.h"
+#include "cxi_out.h"
 #include "dstr.h"
 #include "git_run.h"
 #include "graph.h"
@@ -48,7 +49,6 @@ enum {
 	CXI_ROWS  = 2000,     /* the most member rows of a layout, and the most
 	                         enumerator rows of an enum */
 	CXI_BITS  = 48,       /* the size of the text of an offset or a size */
-	CXI_FMT   = 256,      /* the size of a text of cxi_out_fmt() */
 	CXI_NAME  = 256,      /* the longest part of the name of describe, and
 	                         the longest name of callers */
 	CXI_BYTES = 1 << 30,  /* the largest total size of the files of a commit */
@@ -61,41 +61,6 @@ enum {
 
 static struct cstr_view const cxi_keys[] = { CXI_KEY_LIST(XL_VIEW) };
 static struct cstr_view const cxi_actions[] = { CXI_ACTION_LIST(XL_VIEW) };
-
-/* An output of askai-code: the answer or rows of it. A text from clang or
- * from the commit can contain any bytes, so the functions that append one
- * escape control bytes and bytes that are not UTF-8.
- */
-struct cxi_out {
-	struct dstr      text;
-	struct dstr      norm;  /* the path of the last cxi_out_rel() in normal
-	                           form */
-	struct cstr_view tree;  /* the tree of the commit with a trailing slash,
-	                           the prefix that cxi_out_text() and
-	                           cxi_out_rel() remove from a path */
-	int64_t          e;     /* the error of an append that failed */
-};
-
-/* Returns an empty output. The functions that append a path to the output
- * remove the prefix @p tree from the path.
- */
-static force_inline struct cxi_out
-cxi_out (struct cstr_view tree)
-{
-	return (struct cxi_out){
-		.text = DSTR_INIT,
-		.norm = DSTR_INIT,
-		.tree = tree
-	};
-}
-
-/* Frees the text of @p out. */
-static void
-cxi_out_fini (struct cxi_out *out)
-{
-	dstr_cleanup(&out->norm);
-	dstr_cleanup(&out->text);
-}
 
 /* A call of askai-code: the request from its arguments, the answer, the
  * compile commands, and the parse of the file. For describe, the record
@@ -141,129 +106,6 @@ cxi_fini (struct cxi *x)
 	cxi_out_fini(&x->out);
 }
 
-/* Appends the @p n bytes at @p p. */
-static void
-cxi_out_put (struct cxi_out *out,
-             char const     *p,
-             size_t          n)
-{
-	if (!dstr_cat_n(&out->text, p, n))
-		out->e = ENOMEM;
-}
-
-/* Appends the string literal @p s. */
-#define cxi_out_lit(out, s) cxi_out_put((out), "" s, sizeof (s) - 1)
-
-static force_inline void
-cxi_out_view (struct cxi_out   *out,
-              struct cstr_view  s)
-{
-	cxi_out_put(out, s.data, s.len);
-}
-
-/* Appends @p n in decimal. */
-static void
-cxi_out_num (struct cxi_out *out,
-             uint64_t        n)
-{
-	char digits[UTIL_DECIMAL];
-	cxi_out_view(out, util_decimal(digits + sizeof digits, n, 0));
-}
-
-/* Appends the @p n bytes that snprintf() wrote to the @p size bytes at
- * @p buf. Sets the error of @p out if snprintf() failed or the text did not
- * fit.
- */
-static force_inline void
-cxi_out_fmt_ (struct cxi_out *out,
-              char const     *buf,
-              int             size,
-              int             n)
-{
-	if (n < 0 || n >= size)
-		out->e = EOVERFLOW;
-	else
-		cxi_out_put(out, buf, (size_t)n);
-}
-
-/* Appends the text that snprintf() makes of a format and arguments: for a
- * text that contains a number. The text must fit in CXI_FMT bytes with the
- * NUL: an argument of %s is a short text of askai-code.
- */
-#define cxi_out_fmt(out, ...) do {              \
-        char cxi_fmt_[CXI_FMT];                 \
-        cxi_out_fmt_((out), cxi_fmt_,           \
-                     (int)sizeof cxi_fmt_,      \
-                     snprintf(cxi_fmt_,         \
-                              sizeof cxi_fmt_,  \
-                              __VA_ARGS__));    \
-} while (0)
-
-/* Appends the byte @p c as \xNN. */
-static void
-cxi_out_hex (struct cxi_out *out,
-             unsigned char   c)
-{
-	char text[4] = { '\\', 'x' };
-	util_hex(text + 2, &c, 1);
-	cxi_out_put(out, text, sizeof text);
-}
-
-/* Returns the length of the UTF-8 character at @p p, or 0 for a control
- * character or bytes that are not UTF-8.
- */
-static size_t
-cxi_char (char const *p,
-          size_t      n)
-{
-	unsigned char const c = (unsigned char)*p;
-	size_t const k = c < 0x80 ? 1 : c >= 0xf0 ? 4 : c >= 0xe0 ? 3 : 2;
-	if (c < 0x20 || c == 0x7f || k > n || (c == 0xc2 && (unsigned char)p[1] < 0xa0))
-		return 0;
-	return k == 1 || jb_utf8(p, k) == k ? k : 0;
-}
-
-/* Appends @p s from clang, the commit or the request without the path of
- * the tree and the column of a place, as in (unnamed at src/x.h:7:2), with
- * control bytes and bytes that are not UTF-8 as \n, \t or \xNN.
- */
-static void
-cxi_out_text (struct cxi_out *out,
-              char const     *s)
-{
-	size_t const n = strlen(s);
-	/* The bytes from from to i are appended as they are, in one piece. */
-	size_t from = 0;
-	for (size_t i = 0; i < n; ) {
-		size_t const col = s[i] == ':' && i && s[i - 1] >= '0' && s[i - 1] <= '9'
-		                   ? strspn(s + i + 1, "0123456789") : 0;
-		struct cstr_view const rest = cstr_view_n(s + i, n - i);
-		/* The test of the first byte spares most calls of memcmp(). */
-		size_t const skip = out->tree.len && s[i] == *out->tree.data &&
-		                    cstr_view_starts(rest, out->tree) ? out->tree.len
-		                  : col && s[i + 1 + col] == ')' ? 1 + col : 0;
-		size_t k;
-		if (skip) {
-			cxi_out_put(out, s + from, i - from);
-			i += skip;
-			from = i;
-		} else if ((k = cxi_char(s + i, n - i))) {
-			i += k;
-		} else {
-			cxi_out_put(out, s + from, i - from);
-			unsigned char const c = (unsigned char)s[i++];
-			if (c == '\n')
-				cxi_out_lit(out, "\\n");
-			else if (c == '\t')
-				cxi_out_lit(out, "\\t");
-			else
-				cxi_out_hex(out, c);
-			from = i;
-		}
-	}
-	cxi_out_put(out, s + from, n - from);
-}
-
 /* Returns the path @p s without the path of the tree. An absolute path is
  * first normalized, because clang names a file as #include spells it: the
  * view is then valid until the next call with @p out.
@@ -281,52 +123,6 @@ cxi_out_rel (struct cxi_out *out,
 	}
 	return out->tree.len && cstr_view_starts(p, out->tree)
 	       ? cstr_view_slice(p, out->tree.len, SIZE_MAX) : p;
-}
-
-/* Appends the path or request word @p p, quoted as git quotes a path that
- * contains '"', '\\', a control character or bytes that are not UTF-8.
- */
-static void
-cxi_out_path (struct cxi_out   *out,
-              struct cstr_view  p)
-{
-	size_t i = 0;
-	for (size_t k; i < p.len
-	            && (k = cxi_char(p.data + i, p.len - i))
-	            && !memchr("\"\\", p.data[i], 2); i += k)
-		;
-
-	bool const quote = i < p.len;
-	if (quote)
-		cxi_out_put(out, "\"", 1);
-	cxi_out_put(out, p.data, i);
-
-	while (i < p.len) {
-		unsigned char const c = (unsigned char)p.data[i];
-		/* A backslash and the byte, or three octal digits. */
-		char esc[4] = {
-			'\\',
-			(char)c,
-			(char)('0' + (c >> 3 & 7)),
-			(char)('0' + (c & 7))
-		};
-		size_t k = 1;
-		if (c == '"' || c == '\\') {
-			cxi_out_put(out, esc, 2);
-		} else if (c >= '\a' && c <= '\r') {
-			esc[1] = "abtnvfr"[c - '\a'];
-			cxi_out_put(out, esc, 2);
-		} else if ((k = cxi_char(p.data + i, p.len - i))) {
-			cxi_out_put(out, p.data + i, k);
-		} else {
-			esc[1] = (char)('0' + (c >> 6));
-			cxi_out_put(out, esc, sizeof esc);
-		}
-		i += k ? k : 1;
-	}
-
-	if (quote)
-		cxi_out_put(out, "\"", 1);
 }
 
 static void
@@ -387,21 +183,6 @@ cxi_out_place (struct cxi_out   *out,
 	unsigned const line = cxi_out_file(out, loc);
 	cxi_out_lit(out, ":");
 	cxi_out_num(out, line);
-}
-
-/* Appends the lines @p first to @p last of a declaration as FIRST-LAST, or
- * as FIRST if the declaration is one line.
- */
-static void
-cxi_out_range (struct cxi_out *out,
-               uint32_t        first,
-               uint32_t        last)
-{
-	cxi_out_num(out, first);
-	if (last != first) {
-		cxi_out_lit(out, "-");
-		cxi_out_num(out, last);
-	}
 }
 
 static bool
@@ -635,7 +416,7 @@ cxi_out_line (struct cxi_out   *out,
 	/* The bytes from from to i are appended as they are, in one piece. */
 	size_t from = 0;
 	for (size_t i = 0, k; i < s.len; i += k ? k : 1) {
-		k = s.data[i] == '\t' ? 1 : cxi_char(s.data + i, s.len - i);
+		k = s.data[i] == '\t' ? 1 : cxi_out_char(s.data + i, s.len - i);
 		if (k)
 			continue;
 		cxi_out_put(out, s.data + from, i - from);
@@ -717,7 +498,7 @@ cxi_declaration (struct cxi *x,
 	/* The record names a file of the tree that is UTF-8 without control
 	 * bytes, so that askai can read it. */
 	size_t i = 0;
-	for (size_t k; i < rel.len && (k = cxi_char(rel.data + i, rel.len - i)); i += k)
+	for (size_t k; i < rel.len && (k = cxi_out_char(rel.data + i, rel.len - i)); i += k)
 		;
 	if (rel.len && *rel.data != '/' && i == rel.len &&
 	    !dstr_printf(&x->record, "lines %u %u %zu %zu %zu %s\n", first, last, total, at,
