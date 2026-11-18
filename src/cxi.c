@@ -81,7 +81,11 @@ struct cxi_out {
 static force_inline struct cxi_out
 cxi_out (struct cstr_view tree)
 {
-	return (struct cxi_out){ .text = DSTR_INIT, .norm = DSTR_INIT, .tree = tree };
+	return (struct cxi_out){
+		.text = DSTR_INIT,
+		.norm = DSTR_INIT,
+		.tree = tree
+	};
 }
 
 /* Frees the text of @p out. */
@@ -122,7 +126,10 @@ struct cxi {
 static force_inline struct cxi
 cxi (void)
 {
-	return (struct cxi){ .out = cxi_out(cstr_view(nullptr)), .record = DSTR_INIT };
+	return (struct cxi){
+		.out    = cxi_out(cstr_view(nullptr)),
+		.record = DSTR_INIT
+	};
 }
 
 /* Frees the answer and the record line of @p x. */
@@ -182,11 +189,14 @@ cxi_out_fmt_ (struct cxi_out *out,
  * text that contains a number. The text must fit in CXI_FMT bytes with the
  * NUL: an argument of %s is a short text of askai-code.
  */
-#define cxi_out_fmt(out, ...) do {                                              \
-                char cxi_fmt_[CXI_FMT];                                         \
-                cxi_out_fmt_((out), cxi_fmt_, (int)sizeof cxi_fmt_,             \
-                             snprintf(cxi_fmt_, sizeof cxi_fmt_, __VA_ARGS__)); \
-        } while (0)
+#define cxi_out_fmt(out, ...) do {              \
+        char cxi_fmt_[CXI_FMT];                 \
+        cxi_out_fmt_((out), cxi_fmt_,           \
+                     (int)sizeof cxi_fmt_,      \
+                     snprintf(cxi_fmt_,         \
+                              sizeof cxi_fmt_,  \
+                              __VA_ARGS__));    \
+} while (0)
 
 /* Appends the byte @p c as \xNN. */
 static void
@@ -280,16 +290,25 @@ cxi_out_path (struct cxi_out   *out,
               struct cstr_view  p)
 {
 	size_t i = 0;
-	for (size_t k; i < p.len && (k = cxi_char(p.data + i, p.len - i)) &&
-	               !memchr("\"\\", p.data[i], 2); i += k)
+	for (size_t k; i < p.len
+	            && (k = cxi_char(p.data + i, p.len - i))
+	            && !memchr("\"\\", p.data[i], 2); i += k)
 		;
-	size_t const quote = i < p.len;
-	cxi_out_put(out, "\"", quote);
+
+	bool const quote = i < p.len;
+	if (quote)
+		cxi_out_put(out, "\"", 1);
 	cxi_out_put(out, p.data, i);
+
 	while (i < p.len) {
 		unsigned char const c = (unsigned char)p.data[i];
 		/* A backslash and the byte, or three octal digits. */
-		char esc[4] = { '\\', (char)c, (char)('0' + (c >> 3 & 7)), (char)('0' + (c & 7)) };
+		char esc[4] = {
+			'\\',
+			(char)c,
+			(char)('0' + (c >> 3 & 7)),
+			(char)('0' + (c & 7))
+		};
 		size_t k = 1;
 		if (c == '"' || c == '\\') {
 			cxi_out_put(out, esc, 2);
@@ -304,7 +323,9 @@ cxi_out_path (struct cxi_out   *out,
 		}
 		i += k ? k : 1;
 	}
-	cxi_out_put(out, "\"", quote);
+
+	if (quote)
+		cxi_out_put(out, "\"", 1);
 }
 
 static void
@@ -417,12 +438,17 @@ cxi_static (CXCursor c)
 static bool
 cxi_unnamed (CXCursor c)
 {
-	CXString usr = clang_getCursorUSR(c);
-	char const *u = clang_getCString(usr);
-	char const *at = u ? strrchr(u, '@') : nullptr;
-	bool const unnamed = at && at - u >= 3 && at[-1] == 'A' && at[-3] == '@';
-	clang_disposeString(usr);
-	return unnamed || clang_Cursor_isAnonymous(c);
+	bool unnamed = clang_Cursor_isAnonymous(c);
+	if (!unnamed) {
+		CXString usr = clang_getCursorUSR(c);
+		char const *u = clang_getCString(usr);
+		char const *at = u ? strrchr(u, '@') : nullptr;
+		unnamed = at && at - u >= 3
+	                     && at[-1] == 'A'
+	                     && at[-3] == '@';
+		clang_disposeString(usr);
+	}
+	return unnamed;
 }
 
 static void
@@ -517,10 +543,10 @@ cxi_order (void const *a,
 {
 	unsigned x;
 	unsigned y;
-	clang_getFileLocation(clang_getCursorLocation(*(CXCursor const *)a), nullptr, nullptr,
-	                      nullptr, &x);
-	clang_getFileLocation(clang_getCursorLocation(*(CXCursor const *)b), nullptr, nullptr,
-	                      nullptr, &y);
+	clang_getFileLocation(clang_getCursorLocation(*(CXCursor const *)a),
+	                      nullptr, nullptr, nullptr, &x);
+	clang_getFileLocation(clang_getCursorLocation(*(CXCursor const *)b),
+	                      nullptr, nullptr, nullptr, &y);
 	return (x > y) - (x < y);
 }
 
@@ -528,7 +554,8 @@ static int
 cxi_outline (struct cxi *x)
 {
 	struct cxi_list list = {};
-	if (clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_list_declared, &list))
+	if (clang_visitChildren(clang_getTranslationUnitCursor(x->tu),
+	                        cxi_list_declared, &list))
 		x->out.e = ENOMEM;
 	if (list.n)
 		qsort(list.items, list.n, sizeof *list.items, cxi_order);
@@ -847,7 +874,10 @@ cxi_describe_layout (struct cxi     *x,
                      struct cxi_out *rows,
                      CXType          type)
 {
-	struct cxi_layout l = { .out = rows, .rows = CXI_ROWS };
+	struct cxi_layout l = {
+		.out  = rows,
+		.rows = CXI_ROWS
+	};
 	cxi_out_lit(rows, " offset   size  align   line  member: type\n");
 	cxi_layout_record(&l, type, 0, 0);
 	if (l.hidden)
@@ -886,7 +916,11 @@ cxi_find (struct cstr_view tree,
           struct cstr_view name,
           uint32_t         kind)
 {
-	return (struct cxi_find){ .name = name, .tree = tree, .kind = kind };
+	return (struct cxi_find){
+		.name = name,
+		.tree = tree,
+		.kind = kind
+	};
 }
 
 /* Returns true if @p c is in a file of @p tree, the tree of the commit with
@@ -1060,7 +1094,10 @@ cxi_value (struct cxi *x,
 	CXFile const file = clang_getFile(x->tu, x->file);
 	CXSourceRange const extent = clang_getCursorExtent(
 		clang_getCursor(x->tu, clang_getLocation(x->tu, file, line, column)));
-	struct cxi_use use = { .expr = clang_getNullCursor(), .file = file };
+	struct cxi_use use = {
+		.expr = clang_getNullCursor(),
+		.file = file
+	};
 	clang_getExpansionLocation(clang_getRangeStart(extent), nullptr, nullptr, nullptr,
 	                           &use.from);
 	clang_getExpansionLocation(clang_getRangeEnd(extent), nullptr, nullptr, nullptr, &use.to);
@@ -1261,7 +1298,10 @@ cxi_lookup_member (struct cxi *x,
 		cxi_out_lit(&x->out, ".");
 		return EINVAL;
 	}
-	struct cxi_seek seek = { member, clang_getNullCursor() };
+	struct cxi_seek seek = {
+		.name  = member,
+		.found = clang_getNullCursor()
+	};
 	clang_Type_visitFields(clang_getCursorType(record), cxi_seek_visit, &seek);
 	*c = seek.found;
 	if (!clang_Cursor_isNull(*c))
@@ -1294,11 +1334,14 @@ cxi_parse_name (struct cxi *x,
                 uint32_t   *kind)
 {
 	/* The empty tag of the last row matches any name. */
-	static struct { struct cstr_view tag; uint64_t kind; } const tags[] = {
+	static struct {
+		struct cstr_view tag;
+		uint64_t         kind;
+	} const tags[] = {
 		{ CSTR_VIEW_INIT("struct "), CXCursor_StructDecl },
-		{ CSTR_VIEW_INIT("union "), CXCursor_UnionDecl },
-		{ CSTR_VIEW_INIT("enum "), CXCursor_EnumDecl },
-		{ CSTR_VIEW_INIT(""), 0 },
+		{ CSTR_VIEW_INIT("union "),  CXCursor_UnionDecl  },
+		{ CSTR_VIEW_INIT("enum "),   CXCursor_EnumDecl   },
+		{ CSTR_VIEW_INIT(""),        0                   },
 	};
 	struct cstr_view rest = x->key[CXI_KEY_NAME];
 	size_t t = 0;
@@ -1591,16 +1634,34 @@ enum cxi_call_flag : uint32_t {
  * which an expression selects one. n is 0 for any other callee. macro is
  * the definition of the macro that the call is written through
  * (cxi_macro()), or null. For a call that is CXI_UNEVALUATED, n is 0 and
- * macro is null: the call is only counted.
+ * macro is null: the call is only counted. row is the index of the first
+ * call of the function with the same state, flags, macro and callees
+ * (cxi_calls_push()): an answer prints these calls as one row.
  */
 struct cxi_call {
 	CXCursor at;
 	CXCursor macro;
+	uint64_t row;
 	uint32_t first;
 	uint32_t n;
 	uint32_t state;  /* enum cxi_state */
 	uint32_t flags;  /* enum cxi_call_flag */
 };
+
+static force_inline struct cxi_call
+cxi_call (CXCursor           at,
+          uint32_t           first,
+          uint32_t           n,
+          enum cxi_call_flag flags)
+{
+	return (struct cxi_call){
+		.at    = at,
+		.macro = clang_getNullCursor(),
+		.first = first,
+		.n     = n,
+		.flags = flags,
+	};
+}
 
 /* A node of the path of a walk: a cursor, and the number of the children of
  * the cursor that the walk reached. The child on the path is the last one
@@ -1826,7 +1887,10 @@ cxi_typeof (CXTranslationUnit tu,
 	       t == CXType_Enum ? CXI_UNEVALUATED : CXI_UNPROVEN;
 }
 
-static int cxi_walk_callee (struct cxi_walk *walk, CXCursor e, struct cxi_call *call);
+static int
+cxi_walk_callee (struct cxi_walk *walk,
+                 CXCursor         e,
+                 struct cxi_call *call);
 
 /* Appends the first declaration of what the name @p e refers to to the
  * callees of @p call, unless they contain it. Returns ENOENT if @p e refers
@@ -2055,7 +2119,8 @@ cxi_walk_unevaluated (struct cxi_walk *walk,
 		return 0;
 	/* A function of the program can be named as one of these builtin
 	 * functions: the flag of the callee tells them apart. */
-	struct cxi_call call = { .first = (uint32_t)walk->to.n };
+	struct cxi_call call = cxi_call(clang_getNullCursor(),
+	                                (uint32_t)walk->to.n, 0, 0);
 	int const e = cxi_walk_call(walk, c, &call);
 	walk->to.n = call.first;
 	if (call.flags & CXI_CALL_BUILTIN)
@@ -2184,19 +2249,32 @@ cxi_walk_cleanup_macro (struct cxi_walk *walk,
 }
 
 /* The calls of a function, with the walk that collects them. x is the call
- * of askai-code.
+ * of askai-code. The visit of the code of a function (cxi_calls_collect())
+ * calls call for a call expression and cleanup for a variable with
+ * attributes. Each appends the call that an action wants to the calls, and
+ * returns 0 or the error that stops the visit.
  */
 struct cxi_calls {
 	UTIL_ARRAY(struct cxi_call);
-	struct cxi_walk  walk;
-	struct cxi      *x;
+	struct cxi_walk   walk;
+	struct cxi       *x;
+	int             (*call) (struct cxi_calls *calls, CXCursor c);
+	int             (*cleanup) (struct cxi_calls *calls, CXCursor c);
 };
 
-/* Returns the calls of a function before a visit collects them. */
+/* Returns the calls of a function before a visit collects them, with the
+ * functions @p call and @p cleanup of an action.
+ */
 static force_inline struct cxi_calls
-cxi_calls (struct cxi *x)
+cxi_calls (struct cxi  *x,
+           int        (*call) (struct cxi_calls *calls, CXCursor c),
+           int        (*cleanup) (struct cxi_calls *calls, CXCursor c))
 {
-	return (struct cxi_calls){ .x = x };
+	return (struct cxi_calls){
+		.x       = x,
+		.call    = call,
+		.cleanup = cleanup
+	};
 }
 
 /* Frees the calls and the walk of @p calls. */
@@ -2208,6 +2286,48 @@ cxi_calls_fini (struct cxi_calls *calls)
 	*calls = (struct cxi_calls){};
 }
 
+/* Returns true if the calls @p a and @p b of @p calls are of one row. */
+static bool
+cxi_calls_same (struct cxi_calls const *calls,
+                size_t                  a,
+                size_t                  b)
+{
+	struct cxi_call const *p = &calls->items[a];
+	struct cxi_call const *q = &calls->items[b];
+
+	if (p->state != q->state ||
+	    p->flags != q->flags ||
+	    p->n     != q->n     ||
+	    !clang_equalCursors(p->macro, q->macro))
+		return false;
+
+	for (uint32_t i = 0; i < p->n; ++i) {
+		if (!clang_equalCursors(calls->walk.to.items[p->first + i],
+		                        calls->walk.to.items[q->first + i]))
+			return false;
+	}
+
+	return true;
+}
+
+/* Appends @p call to @p calls and sets the row of the call. Returns 0 or
+ * ENOMEM.
+ */
+static int
+cxi_calls_push (struct cxi_calls *calls,
+                struct cxi_call   call)
+{
+	int const e = util_push(*calls, call);
+	if (e)
+		return e;
+	size_t const last = calls->n - 1;
+	size_t row = 0;
+	while (!cxi_calls_same(calls, row, last))
+		++row;
+	calls->items[last].row = row;
+	return 0;
+}
+
 /* Appends the call expression @p c, the cursor of the visit, to @p calls,
  * with the state of the call, and for a call that the program can evaluate
  * the macro and the callees.
@@ -2217,15 +2337,13 @@ cxi_calls_add (struct cxi_calls *calls,
                CXCursor          c)
 {
 	struct cxi_walk *walk = &calls->walk;
-	struct cxi_call call = {
-		.at = c, .macro = clang_getNullCursor(), .first = (uint32_t)walk->to.n,
-	};
+	struct cxi_call call = cxi_call(c, (uint32_t)walk->to.n, 0, 0);
 	int e = cxi_walk_state(walk, &call.state);
 	if (!e && call.state != CXI_UNEVALUATED) {
 		call.macro = cxi_macro(walk->tu, clang_getCursorLocation(c));
 		e = cxi_walk_call(walk, c, &call);
 	}
-	return e ? e : util_push(*calls, call);
+	return e ? e : cxi_calls_push(calls, call);
 }
 
 /* The search for the first declaration at file scope of the function
@@ -2244,10 +2362,11 @@ cxi_function_named (CXCursor     c,
                     CXCursor,
                     CXClientData data)
 {
-	struct cxi_function *function = data;
-	if (c.kind != CXCursor_FunctionDecl || !cxi_spelled(c, function->name))
+	struct cxi_function *fn = data;
+	if (c.kind != CXCursor_FunctionDecl || !cxi_spelled(c, fn->name))
 		return CXChildVisit_Continue;
-	function->found = c;
+
+	fn->found = c;
 	return CXChildVisit_Break;
 }
 
@@ -2263,11 +2382,12 @@ cxi_calls_add_cleanup (struct cxi_calls *calls,
 {
 	char name[CXI_NAME + 1];
 	struct cxi_walk *walk = &calls->walk;
-	struct cxi_function function = { name, clang_getNullCursor() };
-	struct cxi_call call = {
-		.at = c, .macro = clang_getNullCursor(), .first = (uint32_t)walk->to.n,
-		.flags = CXI_CALL_CLEANUP,
+	struct cxi_function function = {
+		.name  = name,
+		.found = clang_getNullCursor()
 	};
+	struct cxi_call call = cxi_call(c, (uint32_t)walk->to.n,
+	                                0, CXI_CALL_CLEANUP);
 	if (!cxi_cleanup_name(c, name))
 		return 0;
 	int e = cxi_walk_state(walk, &call.state);
@@ -2280,11 +2400,12 @@ cxi_calls_add_cleanup (struct cxi_calls *calls,
 		e = util_push(walk->to, clang_getCanonicalCursor(function.found));
 		call.n = !e;
 	}
-	return e ? e : util_push(*calls, call);
+	return e ? e : cxi_calls_push(calls, call);
 }
 
-/* Appends each call in the code of a function to the cxi_calls at @p data:
- * a call expression, and the attribute cleanup of a variable.
+/* Moves the walk of the cxi_calls at @p data to @p c, and calls the
+ * function of the calls for a call expression or for a variable with
+ * attributes.
  */
 static enum CXChildVisitResult
 cxi_calls_visit (CXCursor     c,
@@ -2296,34 +2417,31 @@ cxi_calls_visit (CXCursor     c,
 	if (e == EALREADY)
 		return CXChildVisit_Continue;
 	if (!e && c.kind == CXCursor_CallExpr)
-		e = cxi_calls_add(calls, c);
+		e = calls->call(calls, c);
 	else if (!e && c.kind == CXCursor_VarDecl && clang_Cursor_hasAttrs(c))
-		e = cxi_calls_add_cleanup(calls, c);
+		e = calls->cleanup(calls, c);
 	calls->walk.e = e;
 	return e ? CXChildVisit_Break : CXChildVisit_Recurse;
 }
 
-/* Returns true if the calls @p a and @p b of @p calls are of one row. */
-static bool
-cxi_calls_same (struct cxi_calls const *calls,
-                size_t                  a,
-                size_t                  b)
+/* Replaces the calls of @p calls with those in the code of the function
+ * @p c. Returns 0 or the error that stopped the visit.
+ */
+static int
+cxi_calls_collect (struct cxi_calls *calls,
+                   CXCursor          c)
 {
-	struct cxi_call const *p = &calls->items[a];
-	struct cxi_call const *q = &calls->items[b];
-	if (p->state != q->state || p->flags != q->flags || p->n != q->n ||
-	    !clang_equalCursors(p->macro, q->macro))
-		return false;
-	for (uint32_t i = 0; i < p->n; ++i) {
-		if (!clang_equalCursors(calls->walk.to.items[p->first + i],
-		                        calls->walk.to.items[q->first + i]))
-			return false;
-	}
-	return true;
+	calls->n = 0;
+	int const e = cxi_walk_start(&calls->walk, calls->x->tu, c);
+	if (e)
+		return e;
+	clang_visitChildren(c, cxi_calls_visit, calls);
+	return (int)calls->walk.e;
 }
 
-/* Appends the file of the call @p i of @p calls, @p sep, the line of the
- * call, and the lines of the later calls of the row of that call.
+/* Appends the file of the call @p i of @p calls, the first one of a row,
+ * @p sep, the line of the call, and the lines of the later calls of the
+ * row.
  */
 static void
 cxi_calls_places (struct cxi_calls const *calls,
@@ -2336,7 +2454,7 @@ cxi_calls_places (struct cxi_calls const *calls,
 	cxi_out_num(out, line);
 	for (size_t j = i + 1; j < calls->n; ++j) {
 		unsigned const l = cxi_line(clang_getCursorLocation(calls->items[j].at));
-		if (l == line || !cxi_calls_same(calls, j, i))
+		if (l == line || calls->items[j].row != i)
 			continue;
 		cxi_out_lit(out, ",");
 		cxi_out_num(out, l);
@@ -2419,22 +2537,17 @@ static int
 cxi_describe_calls (struct cxi *x,
                     CXCursor    c)
 {
-	struct cxi_calls calls = cxi_calls(x);
-	int e = cxi_walk_start(&calls.walk, x->tu, c);
-	if (!e) {
-		clang_visitChildren(c, cxi_calls_visit, &calls);
-		e = (int)calls.walk.e;
-	}
+	struct cxi_calls calls = cxi_calls(x, cxi_calls_add, cxi_calls_add_cleanup);
+	int const e = cxi_calls_collect(&calls, c);
 	size_t rows = 0;
 	size_t unevaluated = 0;
 	size_t first = 0;
-	for (size_t i = 0, j = 0; !e && i < calls.n; ++i, j = 0) {
-		while (!cxi_calls_same(&calls, j, i))
-			++j;
-		if (calls.items[i].state == CXI_UNEVALUATED) {
-			first = j;
+	for (size_t i = 0; !e && i < calls.n; ++i) {
+		struct cxi_call const *call = &calls.items[i];
+		if (call->state == CXI_UNEVALUATED) {
+			first = call->row;
 			++unevaluated;
-		} else if (j == i) {
+		} else if (call->row == i) {
 			if (!rows++)
 				cxi_out_lit(&x->out, "calls:\n");
 			cxi_calls_row(&calls, i);
@@ -2548,11 +2661,6 @@ cxi_out_diagnostic (struct cxi_out            *out,
 	cxi_out_lit(out, "\n");
 }
 
-/* Appends the errors and warnings, but not the error that clang cannot
- * open a file: every file of the tree can be opened, and for one outside
- * it the reason, such as "Permission denied", would show whether it exists.
- * The error that the file is not found follows it.
- */
 /* Returns the severity of @p d in an answer: clang's, or
  * CXDiagnostic_Ignored for the message that clang cannot open a file.
  */
@@ -2566,6 +2674,11 @@ cxi_severity (CXDiagnostic d)
 	return open ? CXDiagnostic_Ignored : clang_getDiagnosticSeverity(d);
 }
 
+/* Appends the errors and warnings, but not the error that clang cannot
+ * open a file: every file of the tree can be opened, and for one outside
+ * it the reason, such as "Permission denied", would show whether it exists.
+ * The error that the file is not found follows it.
+ */
 static int
 cxi_diagnostics (struct cxi *x)
 {
@@ -2595,7 +2708,6 @@ cxi_diagnostics (struct cxi *x)
 	return x->out.e;
 }
 
-/* Reads the words KEY=VALUE from @p *at up to "--", and moves past it. */
 /* Returns the last word of @p words, the path of the file of a clang
  * command line (cdb_command()).
  */
@@ -2663,6 +2775,14 @@ struct cxi_unit {
 	uint32_t         wanted;
 };
 
+static int
+cxi_unit_call (struct cxi_calls *calls,
+               CXCursor          c);
+
+static int
+cxi_unit_cleanup (struct cxi_calls *calls,
+                  CXCursor          c);
+
 /* Returns a search for each function of the name of the request of @p x,
  * before the search reaches a function.
  */
@@ -2670,7 +2790,9 @@ static force_inline struct cxi_unit
 cxi_unit (struct cxi *x)
 {
 	return (struct cxi_unit){
-		.calls = cxi_calls(x), .key = cxi_out(x->out.tree), .named = clang_getNullCursor(),
+		.calls   = cxi_calls(x, cxi_unit_call, cxi_unit_cleanup),
+		.key     = cxi_out(x->out.tree),
+		.named   = clang_getNullCursor(),
 		.linkage = CXLinkage_Invalid,
 	};
 }
@@ -2760,21 +2882,20 @@ cxi_unit_is (struct cxi_unit *unit,
 	return unit->wanted && clang_equalCursors(d, unit->named);
 }
 
-/* Appends the call expression @p c, the cursor of the visit, to the calls
- * of @p unit if a callee is a function of the search and the program can
- * evaluate the call. The callee of most calls is a name, and libclang
- * returns the declaration of the name for the call. The state and the
- * macro of a call are looked for only if a callee is a function of the
+/* Appends the call expression @p c, the cursor of the visit, to @p calls,
+ * the calls of a cxi_unit, if a callee is a function of the search and the
+ * program can evaluate the call. The callee of most calls is a name, and
+ * libclang returns the declaration of the name for the call. The state and
+ * the macro of a call are looked for only if a callee is a function of the
  * search.
  */
 static int
-cxi_unit_call (struct cxi_unit *unit,
-               CXCursor         c)
+cxi_unit_call (struct cxi_calls *calls,
+               CXCursor          c)
 {
-	struct cxi_walk *walk = &unit->calls.walk;
-	struct cxi_call call = {
-		.at = c, .macro = clang_getNullCursor(), .first = (uint32_t)walk->to.n,
-	};
+	struct cxi_unit *unit = container_of(calls, struct cxi_unit, calls);
+	struct cxi_walk *walk = &calls->walk;
+	struct cxi_call call = cxi_call(c, (uint32_t)walk->to.n, 0, 0);
 	CXCursor const d = clang_getCursorReferenced(c);
 	uint32_t i = 0;
 	int e = 0;
@@ -2795,27 +2916,26 @@ cxi_unit_call (struct cxi_unit *unit,
 		return e;
 	}
 	call.macro = cxi_macro(walk->tu, clang_getCursorLocation(c));
-	return util_push(unit->calls, call);
+	return cxi_calls_push(calls, call);
 }
 
-/* Appends to the calls of @p unit the call of the function of the
- * attribute cleanup of the variable @p c, the cursor of the visit, if the
- * function is one of the search and the program can evaluate the
+/* Appends to @p calls, the calls of a cxi_unit, the call of the function
+ * of the attribute cleanup of the variable @p c, the cursor of the visit,
+ * if the function is one of the search and the program can evaluate the
  * declaration. The function of an attribute is declared at file scope
  * before the variable.
  */
 static int
-cxi_unit_cleanup (struct cxi_unit *unit,
-                  CXCursor         c)
+cxi_unit_cleanup (struct cxi_calls *calls,
+                  CXCursor          c)
 {
 	char name[CXI_NAME + 1];
-	struct cxi_walk *walk = &unit->calls.walk;
-	struct cxi_call call = {
-		.at = c, .macro = clang_getNullCursor(), .first = (uint32_t)walk->to.n, .n = 1,
-		.flags = CXI_CALL_CLEANUP,
-	};
+	struct cxi_unit *unit = container_of(calls, struct cxi_unit, calls);
+	struct cxi_walk *walk = &calls->walk;
+	struct cxi_call call = cxi_call(c, (uint32_t)walk->to.n,
+	                                1, CXI_CALL_CLEANUP);
 	if (!unit->wanted || !cstr_view_equal(cstr_view_n(name, cxi_cleanup_name(c, name)),
-	                                      unit->calls.x->key[CXI_KEY_NAME]))
+	                                      calls->x->key[CXI_KEY_NAME]))
 		return 0;
 	int e = cxi_walk_state(walk, &call.state);
 	if (e || call.state == CXI_UNEVALUATED)
@@ -2823,27 +2943,7 @@ cxi_unit_cleanup (struct cxi_unit *unit,
 	e = cxi_walk_cleanup_macro(walk, c, &call.macro);
 	if (!e)
 		e = util_push(walk->to, unit->named);
-	return e ? e : util_push(unit->calls, call);
-}
-
-/* Appends each call of a function of the search in the code of a function
- * to the calls of the cxi_unit at @p data.
- */
-static enum CXChildVisitResult
-cxi_unit_visit (CXCursor     c,
-                CXCursor     parent,
-                CXClientData data)
-{
-	struct cxi_unit *unit = data;
-	int e = cxi_walk_step(&unit->calls.walk, c, parent);
-	if (e == EALREADY)
-		return CXChildVisit_Continue;
-	if (!e && c.kind == CXCursor_CallExpr)
-		e = cxi_unit_call(unit, c);
-	else if (!e && c.kind == CXCursor_VarDecl && clang_Cursor_hasAttrs(c))
-		e = cxi_unit_cleanup(unit, c);
-	unit->calls.walk.e = e;
-	return e ? CXChildVisit_Break : CXChildVisit_Recurse;
+	return e ? e : cxi_calls_push(calls, call);
 }
 
 /* Appends the rows of the calls of @p unit, which are in the function
@@ -2859,11 +2959,9 @@ cxi_unit_rows (struct cxi_unit const *unit,
 {
 	struct cxi_calls const *calls = &unit->calls;
 	struct cxi_out *out = &calls->x->out;
-	for (size_t i = 0, j = 0; i < calls->n; ++i, j = 0) {
+	for (size_t i = 0; i < calls->n; ++i) {
 		struct cxi_call const *call = &calls->items[i];
-		while (!cxi_calls_same(calls, j, i))
-			++j;
-		if (j < i)
+		if (call->row != i)
 			continue;
 		cxi_out_view(out, cstr_view_dstr(&unit->key.text));
 		cxi_out_lit(out, "\t");
@@ -2900,19 +2998,16 @@ cxi_unit_function (CXCursor     c,
 {
 	struct cxi_unit *unit = data;
 	struct cxi *x = unit->calls.x;
-	struct cxi_walk *walk = &unit->calls.walk;
 	if (c.kind != CXCursor_FunctionDecl)
 		return CXChildVisit_Continue;
 	if (clang_Cursor_isNull(unit->named) && cxi_spelled(c, x->key[CXI_KEY_NAME].data))
 		cxi_unit_found(unit, clang_getCanonicalCursor(c));
 	if (!clang_isCursorDefinition(c) || !cxi_in_tree(x->out.tree, c))
 		return CXChildVisit_Continue;
-	unit->calls.n = 0;
-	if (cxi_walk_start(walk, x->tu, c))
+	if (cxi_calls_collect(&unit->calls, c))
 		return CXChildVisit_Break;
-	clang_visitChildren(c, cxi_unit_visit, unit);
 	cxi_unit_rows(unit, c);
-	return walk->e || x->out.e ? CXChildVisit_Break : CXChildVisit_Continue;
+	return x->out.e ? CXChildVisit_Break : CXChildVisit_Continue;
 }
 
 /* A row of callers (cxi_unit_rows()): the callee, the file, the text
@@ -3083,7 +3178,11 @@ cxi_out_read (struct cxi_out *out,
  * the rows are written, they are written and clang reported an error, or
  * no row is written.
  */
-enum { CXI_UNIT_OK, CXI_UNIT_ERRORS, CXI_UNIT_FAILED };
+enum {
+	CXI_UNIT_OK,
+	CXI_UNIT_ERRORS,
+	CXI_UNIT_FAILED
+};
 
 /* Runs in the child process of a translation unit of callers, which ends
  * with its parent: writes the rows of the translation unit of the clang
@@ -3185,6 +3284,7 @@ cxi_callers (struct cxi *x)
 	return x->out.e ? x->out.e : e == ENOENT ? 0 : e;
 }
 
+/* Reads the words KEY=VALUE from @p *at up to "--", and moves past it. */
 static int
 cxi_words (struct cxi  *x,
            int          argc,
@@ -3443,8 +3543,13 @@ cxi_cache (char const *const *git,
            uint64_t           deadline)
 {
 	return (struct cxi_cache){
-		.dir = DSTR_INIT, .tree = DSTR_INIT, .git = git, .deadline = deadline,
-		.fds = child_fds(), .fd = -1, .state = -1,
+		.dir      = DSTR_INIT,
+		.tree     = DSTR_INIT,
+		.git      = git,
+		.deadline = deadline,
+		.fds      = child_fds(),
+		.fd       = -1,
+		.state    = -1,
 	};
 }
 
@@ -3453,8 +3558,9 @@ static void
 cxi_cache_fini (struct cxi_cache *cache)
 {
 	util_close(&cache->state);
-	util_close(&cache->fds.keep);
 	util_close(&cache->fd);
+	util_close(&cache->fds.keep);
+	cache->git = nullptr;
 	dstr_cleanup(&cache->tree);
 	dstr_cleanup(&cache->dir);
 }
@@ -3475,7 +3581,11 @@ cxi_cache_git (struct cxi_cache const *cache,
 	int const e = child_argv(argv, array_size(argv), parts, array_size(parts));
 	extern char **environ;
 	struct child_cmd const cmd = child_cmd(
-		.file = "git", .argv = argv, .envp = environ, .max = max, .deadline = cache->deadline
+		.file     = "git",
+		.argv     = argv,
+		.envp     = environ,
+		.max      = max,
+		.deadline = cache->deadline
 	);
 	struct child_end end = child_end();
 	return e ? e : child_cmd_run(&cmd, cache->fds, out, &end);
@@ -3695,8 +3805,9 @@ cxi_run (struct cxi         *x,
 	int e = cxi_valid(x);
 	if (e)
 		return e;
-	struct cxi_cache cache = cxi_cache(git, x->deadline > CXI_EARLY ? x->deadline - CXI_EARLY
-	                                                                : 1);
+	struct cxi_cache cache = cxi_cache(git, x->deadline > CXI_EARLY
+	                                      ? x->deadline - CXI_EARLY
+	                                      : 1);
 	struct dstr words = DSTR_INIT;
 	/* clang's names are compared with the tree in normal form. */
 	if (cdb_norm(&cache.dir, cstr_view(nullptr), key[CXI_KEY_CACHE]) ||
