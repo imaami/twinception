@@ -62,7 +62,9 @@ graph_text_order (char const       *text,
  * function, in the code of the function that the use tells. The offset of
  * a text is valid if it is in the text part, because the part ends with a
  * NUL. The name of a function that is GRAPH_FN_SYMBOL is not the last
- * text.
+ * text. The callees of each call are in the order of the indices, and the
+ * calls have as many callees as the graph has uses: the time of the check
+ * is then limited by the size of the graph.
  */
 static bool
 graph_valid (struct graph const *g)
@@ -94,6 +96,7 @@ graph_valid (struct graph const *g)
 			return false;
 	}
 
+	uint64_t callees = 0;
 	for (uint32_t i = 0; i < g->n_calls; ++i) {
 		struct graph_call const *call = &g->calls[i];
 		if (call->file >= g->n_text ||
@@ -103,7 +106,17 @@ graph_valid (struct graph const *g)
 		    call->state > GRAPH_UNEVALUATED ||
 		    (call->state == GRAPH_UNEVALUATED && call->n))
 			return false;
+
+		callees += call->n;
+		if (callees > g->n_uses)
+			return false;
+		for (uint32_t k = 1; k < call->n; ++k) {
+			if (g->to[call->to + k - 1] > g->to[call->to + k])
+				return false;
+		}
 	}
+	if (callees != g->n_uses)
+		return false;
 
 	for (uint32_t i = 0; i < g->n_to; ++i) {
 		if (g->to[i] >= g->n_fns)
@@ -124,10 +137,16 @@ graph_valid (struct graph const *g)
 			struct graph_call const *call = &g->calls[use->call];
 			struct graph_fn const *by = use->by == GRAPH_NONE ? nullptr
 			                                                  : &g->fns[use->by];
-			uint32_t to = 0;
-			while (to < call->n && g->to[call->to + to] != f)
-				++to;
-			if (to == call->n ||
+			uint32_t const *to = g->to + call->to;
+			uint32_t at = 0;
+			for (uint32_t end = call->n; at < end;) {
+				uint32_t const mid = at + (end - at) / 2;
+				if (to[mid] < f)
+					at = mid + 1;
+				else
+					end = mid;
+			}
+			if (at == call->n || to[at] != f ||
 			    (by && (use->call < by->calls ||
 			            use->call - by->calls >= by->n_calls)))
 				return false;
@@ -310,6 +329,16 @@ graph_draft_uses (struct graph_draft *draft,
 	return true;
 }
 
+/* Orders two indices. */
+static int
+graph_index_order (void const *a,
+                   void const *b)
+{
+	uint32_t const p = *(uint32_t const *)a;
+	uint32_t const q = *(uint32_t const *)b;
+	return (p > q) - (p < q);
+}
+
 int
 graph_draft_write (struct graph_draft *draft,
                    int                 fd)
@@ -329,6 +358,11 @@ graph_draft_write (struct graph_draft *draft,
 		if (call->to > n_to || call->n > n_to - call->to)
 			return EINVAL;
 		n_uses += call->n;
+		/* graph() looks for a callee of a call in the order of the
+		 * indices. */
+		if (call->n > 1)
+			qsort(draft->to.items + call->to, call->n, sizeof *draft->to.items,
+			      graph_index_order);
 	}
 	if (n_uses >= GRAPH_NONE)
 		return EOVERFLOW;

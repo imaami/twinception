@@ -11043,6 +11043,13 @@ def check_code(binary, up):
         write("src/deep.c", "int deep = " + "!" * 3000 + "1;\n")
         write("src/unlisted.c", "int unlisted;\n")
         write("src/lay.h", CODE_LAY_H)
+        write("src/un.h", "struct un_fwd;\nstruct un_a { int same; };\n"
+              "struct un_b { long same; };\n"
+              "struct un_pad {\n\tchar c;\n\tunion {\n"
+              "\t\tstruct { char x; int y; } s;\n\t\tlong l;\n\t};\n};\n"
+              "static inline long un_f(struct un_a *a, struct un_b *b) "
+              "{ return a->same + b->same; }\n")
+        write("src/err.h", "#error cannot open file 'settings' in this build\n")
         write("src/lay.c", CODE_LAY_C)
         write("src/calls.h", CODE_CALLS_H)
         write("src/calls.c", CODE_CALLS_C)
@@ -11486,14 +11493,19 @@ def check_code_build(binary, up, call, d):
     write("k.h", "int k_one(int);\nint k_two(int);\n#define K_M(x) (x)\n"
           "#define K_OBJ K_M(1)\n#if defined K_M\n#endif\n"
           "static inline int k_c(void) { return K_M /* c */ (2)\n+ K_M\n(3); }\n"
-          "#define K_C K_M /* c */ (4)\n")
+          "#define K_C K_M /* c */ (4)\n"
+          "#include <stddef.h>\n#define K_OFF(t, m) offsetof(t, m)\n")
     write("k1.c", '#include "k.h"\nint k_one(int n) { return n; }\n'
           "int k_dup(void) { return 1; }\n"
           'extern int k_sym(int) __asm__("k_sym_other");\n'
-          "int k_s1(void) { return k_sym(1); }\n")
+          "int k_s1(void) { return k_sym(1); }\n"
+          'int k_inc(int n) {\n#include "k.def"\nreturn n; }\n')
+    write("k.def", "n += K_M(5);\n")
+    write("k2.def", "K_M(8),\n")
     write("k2.c", '#include "k.h"\nint k_two(int n) { return k_one(n); }\n'
           "int k_dup(void) { return 2; }\n"
-          "int k_s2(void) { extern int k_sym(int); return k_sym(2); }\n")
+          "int k_s2(void) { extern int k_sym(int); return k_sym(2); }\n"
+          'int k_arr[] = {\n#include "k2.def"\n};\n')
     unused = "int k_four(void) { extern int k_five(void); return (int)sizeof(k_five()); }\n"
     write("k3.c", '#include "k.h"\nint k_three(int n) { return k_two(n); }\n' + unused)
     sh("init", "-q", "-b", "main")
@@ -11578,14 +11590,24 @@ def check_code_build(binary, up, call, d):
         assert runs() == (1, 0, [])
         # The name of a macro after defined is no use of the macro. A use
         # in the definition of an object-like macro is one, and so is a
-        # name with a comment or a line end before its arguments.
+        # name with a comment or a line end before its arguments. A use in
+        # a file that the code of a function includes is one of that
+        # function, and one in a file that is included elsewhere is not.
         assert callers(ai, "K_M") == (
             f"- repo: keep\n- commit: {head}\n"
             "- callee: K_M (macro src/k.h:3)\n"
             "  - callers\n"
+            "    - src/k.def:1 k_inc (6-8)\n"
             "    - src/k.h:4 macro K_OBJ (4)\n"
             "    - src/k.h:7,8 k_c (7-9)\n"
-            "    - src/k.h:10 macro K_C (10)\n")
+            "    - src/k.h:10 macro K_C (10)\n"
+            "    - src/k2.def:1 at file scope\n")
+        assert runs() == (1, 0, [])
+        # A macro that no file of the repository defines or uses, in the
+        # definition of a macro.
+        answer = callers(ai, "offsetof")
+        assert answer.startswith(f"- repo: keep\n- commit: {head}\n- callee: offsetof (macro /") \
+            and answer.endswith(")\n  - callers\n    - src/k.h:12 macro K_OFF (12)\n"), answer
         assert runs() == (1, 0, [])
         # A declaration gives the k_sym of k1.c another name for the linker:
         # it is not the k_sym of k2.c, which only a declaration in a
@@ -12282,6 +12304,26 @@ def check_code_describe(binary, up, call, head, d, cdb):
             assert describe(error=True, **arguments) == text, (arguments, text)
         assert call(ai, error=True, repo="proj", action="outline", path="src/lay.c",
                     name="x") == "The name argument is only for describe and callers."
+        # Padding in a member of a union is listed and not counted: 7 bytes
+        # before the union, and 3 in the struct of the union.
+        text = call(ai, repo="proj", action="describe", path="src/un.h", name="struct un_pad")
+        assert "struct un_pad: 16 bytes, alignment 8, 7 bytes of padding" in text and \
+            text.count("(padding)") == 2, text
+        # With a line, a member is the one of its type, also after a member
+        # of the same name of another type.
+        text = call(ai, repo="proj", action="describe", path="src/un.h", name="un_b.same",
+                    line=11)
+        assert "long" in text and "un_b" in text and "un_a" not in text, text
+        assert call(ai, error=True, repo="proj", action="describe", path="src/un.h",
+                    name="un_pad.c", line=11) == \
+            "Line 11 of src/un.h does not name the member c of that type."
+        # outline lists a struct that the file declares and does not define.
+        text = call(ai, repo="proj", action="outline", path="src/un.h")
+        assert "\n1 struct un_fwd, declared\n" in text and "struct un_a, declared" not in text, \
+            text
+        # The text of an #error is an error, whatever it says.
+        text = call(ai, repo="proj", action="diagnostics", path="src/err.h")
+        assert "src/err.h:1: error: cannot open file 'settings' in this build" in text, text
         assert call(ai, error=True, repo="proj", action="callers", path="src/lay.c",
                     name="lay_add", line=1) == "The line argument is only for describe."
         # diagnostics: errors and warnings without notes or columns,

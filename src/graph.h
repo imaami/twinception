@@ -115,7 +115,9 @@ struct graph_fn {
 /** A call in the code of a function: a call expression, or the call of the
  *  function of the attribute cleanup of a variable, at the line of the
  *  variable. The callees are the n indices from to on in the callee part,
- *  each one of a function. Several callees are the functions of which an
+ *  each one of a function, in the order of the indices, as
+ *  graph_draft_write() writes them. Several callees are the functions of
+ *  which an
  *  expression selects one. n is 0 for a call through anything else, such
  *  as a function pointer, and for a call that is GRAPH_UNEVALUATED.
  */

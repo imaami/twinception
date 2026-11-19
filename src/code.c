@@ -297,7 +297,8 @@ code_definition (void const *service)
 			"the type, and the places of the declaration and the definition of name "
 			"in the translation unit of path. describe also lists the value of an "
 			"enumerator, and the members of a struct or union with offsets, sizes and "
-			"padding. For an enum, describe lists the enumerators with the line and "
+			"padding. Padding inside a member of a union is listed and not counted. "
+			"For an enum, describe lists the enumerators with the line and "
 			"the value. For an enumerator of an enum without a name, describe also "
 			"lists the enumerators of the enum. For name or an enumerator that a "
 			"macro expansion writes, describe prints the line where the macro is "
@@ -528,9 +529,11 @@ code_parse_end (struct code_parse *parse)
 /* Starts a process of @p cl for each unit of @p build that waits for a
  * parse, in the order of the units, while a place of the loop is free and
  * fewer than CODE_PARSES processes of all loops parse (build_waits()). A
- * unit whose process cannot start is not parsed, except for EBUSY: the
- * loops have
- * CHILD_MAX children then, and the unit waits. A stalled build starts
+ * unit whose command line is too long for a process (E2BIG) is not parsed:
+ * at most CODE_PARSES such units end a call of this function, so that the
+ * loop is not kept for long. After another error of the start, as when the
+ * loops have CHILD_MAX children, the unit waits, and a later call of this
+ * function starts it. A stalled build starts
  * none. While a call of another build waits for a place (code_waited()),
  * this build starts none either, so that a build of many units does not
  * keep each place that its processes free. The caller has the lock of the
@@ -545,7 +548,7 @@ code_build_run (struct code_build *build,
 	if (build->flags & CODE_STALLED || (code->hungry && code->hungry != build))
 		return;
 
-	for (;;) {
+	for (size_t failed = 0; failed < CODE_PARSES;) {
 		while (build->next < b->n && !build_waits(b->items[build->next].state))
 			++build->next;
 		size_t i = 0;
@@ -556,11 +559,12 @@ code_build_run (struct code_build *build,
 			break;
 
 		int const e = code_parse_spawn(&cl->parse[i], build, build->next);
-		if (e == EBUSY)
-			break;
-		if (e) {
+		if (e == E2BIG) {
 			build_parsed(b, build->next, nullptr);
 			--build->left;
+			++failed;
+		} else if (e) {
+			break;
 		} else if (code->hungry == build) {
 			/* The build has got a place. */
 			code->hungry = nullptr;

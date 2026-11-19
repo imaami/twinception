@@ -314,7 +314,8 @@ cxi_list_children (struct cxi_list *list,
 }
 
 /* Appends each name that the main file declares or defines to the cxi_list
- * at @p data.
+ * at @p data. A declaration of a struct, union or enum that the main file
+ * also defines is left out.
  */
 static enum CXChildVisitResult
 cxi_list_declared (CXCursor     c,
@@ -325,7 +326,9 @@ cxi_list_declared (CXCursor     c,
 	enum CXCursorKind const k = c.kind;
 	bool const skip = !cxi_kind(k).data ||
 	                  !clang_Location_isFromMainFile(clang_getCursorLocation(c)) ||
-	                  (cxi_tag(k) && !clang_isCursorDefinition(c)) ||
+	                  (cxi_tag(k) && !clang_isCursorDefinition(c) &&
+	                   clang_Location_isFromMainFile(clang_getCursorLocation(
+	                           clang_getCursorDefinition(c)))) ||
 	                  (k == CXCursor_MacroDefinition && clang_Cursor_isMacroBuiltin(c));
 	return !skip && util_push(*list, c) ? CXChildVisit_Break : CXChildVisit_Continue;
 }
@@ -374,7 +377,7 @@ cxi_outline (struct cxi *x)
 			cxi_out_lit(&x->out, ": ");
 			cxi_out_clang(&x->out, clang_getTypeSpelling(type));
 		}
-		if (k == CXCursor_FunctionDecl && !clang_isCursorDefinition(c))
+		if ((k == CXCursor_FunctionDecl || cxi_tag(k)) && !clang_isCursorDefinition(c))
 			cxi_out_lit(&x->out, ", declared");
 		if (last > first)
 			cxi_out_fmt(&x->out, " (%u-%u)", first, last);
@@ -512,6 +515,11 @@ cxi_declaration (struct cxi *x,
  * of the outermost record left out) are copied back from nested records.
  * base and end are in bits.
  */
+enum cxi_layout_flag : uint32_t {
+	CXI_LAYOUT_UNION = 1U << 0,  /* the record is a union */
+	CXI_LAYOUT_ARM   = 1U << 1,  /* the record is in a member of a union */
+};
+
 struct cxi_layout {
 	struct cxi_out *out;
 	uint64_t        padding;
@@ -520,7 +528,7 @@ struct cxi_layout {
 	uint64_t        base;
 	uint64_t        end;
 	uint32_t        depth;
-	uint32_t        is_union;
+	uint32_t        flags;  /* enum cxi_layout_flag */
 };
 
 /* Writes the offset @p bits to the end of @p text as BYTES or BYTES+BITSb,
@@ -563,7 +571,8 @@ cxi_layout_indent (struct cxi_layout const *l)
 }
 
 /* Appends the row of the padding from the bit @p from to the bit @p to,
- * which ends with @p what.
+ * which ends with @p what. Padding in a member of a union is not counted:
+ * another member of the union can have data in these bits.
  */
 static void
 cxi_layout_padding (struct cxi_layout *l,
@@ -578,7 +587,8 @@ cxi_layout_padding (struct cxi_layout *l,
 	cxi_out_fmt(l->out, "%7s%7s%16s", cxi_offset(at, from), cxi_size(size, to - from), "");
 	cxi_layout_indent(l);
 	cxi_out_view(l->out, what);
-	l->padding += to - from;
+	if (!(l->flags & CXI_LAYOUT_ARM))
+		l->padding += to - from;
 }
 
 static void cxi_layout_record (struct cxi_layout *l, CXType type, uint64_t base,
@@ -605,7 +615,7 @@ cxi_layout_field (CXCursor     c,
 	uint64_t const size = n > 0 ? (uint64_t)n : 0;
 	long long const align = clang_Type_getAlignOf(type);
 	uint64_t const at = l->base + (uint64_t)(offset > 0 ? offset : 0);
-	if (!l->is_union)
+	if (!(l->flags & CXI_LAYOUT_UNION))
 		cxi_layout_padding(l, l->end, at, CSTR_VIEW("(padding)\n"));
 	CXCursor const decl = clang_getTypeDeclaration(clang_getCanonicalType(type));
 	enum CXCursorKind const k = decl.kind;
@@ -635,7 +645,7 @@ cxi_layout_field (CXCursor     c,
 	if (nested)
 		cxi_layout_record(l, clang_getCanonicalType(type), at, l->depth + 1);
 	uint64_t const end = at + size;
-	l->end = !l->is_union || end > l->end ? end : l->end;
+	l->end = !(l->flags & CXI_LAYOUT_UNION) || end > l->end ? end : l->end;
 	return CXVisit_Continue;
 }
 
@@ -648,7 +658,11 @@ cxi_layout_record (struct cxi_layout *l,
 	struct cxi_layout in = *l;
 	in.base = in.end = base;
 	in.depth = depth;
-	in.is_union = clang_getTypeDeclaration(type).kind == CXCursor_UnionDecl;
+	/* A record in a union, or in a record of one, is in a member of a
+	 * union. */
+	in.flags = (l->flags ? CXI_LAYOUT_ARM : 0) |
+	           (clang_getTypeDeclaration(type).kind == CXCursor_UnionDecl
+	            ? CXI_LAYOUT_UNION : 0);
 	clang_Type_visitFields(type, cxi_layout_field, &in);
 	long long const size = clang_Type_getSizeOf(type);
 	if (in.rows && size > 0)
@@ -1002,7 +1016,10 @@ cxi_out_expansion (struct cxi_out *out,
 	cxi_out_lit(out, ").");
 }
 
-/* Writes the first symbol named @p name on the line to @p *c. */
+/* Writes the first symbol named @p name on the line to @p *c. If @p *c is
+ * not null, it is a member of a struct or union, and the symbol is that
+ * member: the line can name a member of another type too.
+ */
 static int
 cxi_lookup_line (struct cxi *x,
                  char const *name,
@@ -1016,13 +1033,15 @@ cxi_lookup_line (struct cxi *x,
 	struct cstr_view words = {};
 	size_t const total = cxi_find_line(text, size, line, &words);
 	size_t const len = strlen(name);
+	CXCursor const only = *c;
+	bool const any = clang_Cursor_isNull(only);
 	/* A cursor inside a longer word refers to a name that is not @p name. */
 	for (size_t i = 0; i + len <= words.len; ++i) {
 		if (memcmp(words.data + i, name, len))
 			continue;
 		*column = (unsigned)i + 1;
 		*c = cxi_symbol(x->tu, file, line, *column);
-		if (cxi_is_named(*c, name))
+		if (cxi_is_named(*c, name) && (any || clang_equalCursors(*c, only)))
 			return 0;
 	}
 	if (!words.data) {
@@ -1033,9 +1052,10 @@ cxi_lookup_line (struct cxi *x,
 	}
 	cxi_out_fmt(&x->out, "Line %u of ", line);
 	cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
-	cxi_out_lit(&x->out, " contains no symbol named ");
+	cxi_out_view(&x->out, any ? CSTR_VIEW(" contains no symbol named ")
+	                          : CSTR_VIEW(" does not name the member "));
 	cxi_out_text(&x->out, name);
-	cxi_out_lit(&x->out, ".");
+	cxi_out_view(&x->out, any ? CSTR_VIEW(".") : CSTR_VIEW(" of that type."));
 	return EINVAL;
 }
 
@@ -2374,13 +2394,17 @@ cxi_describe (struct cxi *x)
 	char member[CXI_NAME + 1];
 	uint32_t kind;
 	unsigned column = 0;
-	CXCursor c;
+	CXCursor c = clang_getNullCursor();
 	int e = cxi_parse_name(x, name, member, &kind);
 	if (e)
 		return e;
-	e = x->line ? cxi_lookup_line(x, *member ? member : name, &c, &column)
-	  : *member ? cxi_lookup_member(x, name, member, &c)
+	/* The name that a line contains. */
+	char const *last = *member ? member : name;
+	e = last == member ? cxi_lookup_member(x, name, member, &c)
+	  : x->line ? 0
 	  : cxi_lookup(x, name, kind, &c);
+	if (!e && x->line)
+		e = cxi_lookup_line(x, last, &c, &column);
 	if (e)
 		return e;
 	enum CXCursorKind const k = c.kind;
@@ -2464,14 +2488,16 @@ cxi_out_diagnostic (struct cxi_out            *out,
 }
 
 /* Returns the severity of @p d in an answer: clang's, or
- * CXDiagnostic_Ignored for the message that clang cannot open a file.
+ * CXDiagnostic_Ignored for the message that clang cannot open a file,
+ * which has no category. The text of an #error has one.
  */
 static enum CXDiagnosticSeverity
 cxi_severity (CXDiagnostic d)
 {
 	CXString text = clang_getDiagnosticSpelling(d);
 	bool const open = cstr_view_starts(cstr_view(clang_getCString(text)),
-	                                   CSTR_VIEW("cannot open file '"));
+	                                   CSTR_VIEW("cannot open file '")) &&
+	                  !clang_getDiagnosticCategory(d);
 	clang_disposeString(text);
 	return open ? CXDiagnostic_Ignored : clang_getDiagnosticSeverity(d);
 }
@@ -2650,12 +2676,49 @@ struct cxi_named {
  * of their names, and defs the definitions of the macros that a file of
  * the tree defines. uses contains the uses of the macros.
  */
+/* An #include of the translation unit: the file that it includes, and the
+ * file and the offset of the directive. first is the number of the uses of
+ * macros before it, and up the index of the #include of the file of the
+ * directive, or GRAPH_NONE if that is the main file.
+ */
+struct cxi_include {
+	CXFile   file;
+	CXFile   from;
+	size_t   first;
+	uint32_t at;
+	uint32_t up;
+};
+
+/* The code of a function: the offsets in a file of the start and the end
+ * of the definition.
+ */
+struct cxi_extent {
+	CXFile   file;
+	uint32_t from;
+	uint32_t to;
+};
+
+/* Orders the code of functions by file and start. */
+static int
+cxi_extent_order (void const *a,
+                  void const *b)
+{
+	struct cxi_extent const *p = a;
+	struct cxi_extent const *q = b;
+	uintptr_t const pf = (uintptr_t)p->file;
+	uintptr_t const qf = (uintptr_t)q->file;
+	return pf != qf ? (pf > qf) - (pf < qf) : (p->from > q->from) - (p->from < q->from);
+}
+
 struct cxi_graph {
 	struct cxi_calls                 calls;
 	struct graph_draft               draft;
 	struct cxi_ids                   ids;
 	struct cxi_ids                   macros;
 	struct cxi_list                  defs;
+	struct cxi_list                  outer;
+	UTIL_ARRAY(struct cxi_include)   includes;
+	UTIL_ARRAY(struct cxi_extent)    code;
 	UTIL_ARRAY(struct cxi_expansion) uses;
 	UTIL_ARRAY(struct cxi_named)     named;
 };
@@ -2676,6 +2739,9 @@ cxi_graph_fini (struct cxi_graph *g)
 {
 	free(g->named.items);
 	free(g->uses.items);
+	free(g->code.items);
+	free(g->includes.items);
+	cxi_list_fini(&g->outer);
 	cxi_list_fini(&g->defs);
 	cxi_ids_fini(&g->macros);
 	cxi_ids_fini(&g->ids);
@@ -3045,11 +3111,85 @@ cxi_tu_errors (CXTranslationUnit tu)
 	return errors;
 }
 
+/* Returns the index of the last of the first @p n #includes of @p g that
+ * includes @p file, or GRAPH_NONE: the #include through which the parse
+ * is in the file after these.
+ */
+static uint32_t
+cxi_include_of (struct cxi_graph const *g,
+                CXFile                  file,
+                size_t                  n)
+{
+	while (n && g->includes.items[n - 1].file != file)
+		--n;
+	return n ? (uint32_t)(n - 1) : GRAPH_NONE;
+}
+
+/* Returns true if the offset @p at of @p file is in the code of a function
+ * of @p g. The functions are in the order of cxi_extent_order().
+ */
+static bool
+cxi_graph_in_code (struct cxi_graph const *g,
+                   CXFile                  file,
+                   uint32_t                at)
+{
+	struct cxi_extent const key = {
+		.file = file,
+		.from = at,
+	};
+	struct cxi_extent const *code = g->code.items;
+	size_t after = 0;
+	for (size_t end = g->code.n; after < end;) {
+		size_t const mid = after + (end - after) / 2;
+		if (cxi_extent_order(&code[mid], &key) <= 0)
+			after = mid + 1;
+		else
+			end = mid;
+	}
+	/* The last function that starts at the offset or before it. */
+	return after && code[after - 1].file == file && at < code[after - 1].to;
+}
+
+/* Moves each use of a macro in a file that an #include in the code of a
+ * function includes to the place of that #include, so that the use is one
+ * of that function (cxi_graph_uses()). The use keeps the path and the line
+ * of its file. A use in the code of a function of its own file stays, and
+ * so does one whose file no code of a function includes. The uses are in
+ * the order of the translation unit.
+ */
+static void
+cxi_graph_included (struct cxi_graph *g)
+{
+	if (g->code.n)
+		qsort(g->code.items, g->code.n, sizeof *g->code.items, cxi_extent_order);
+	size_t before = 0;
+	for (size_t u = 0; u < g->uses.n; ++u) {
+		struct cxi_expansion *use = &g->uses.items[u];
+		while (before < g->includes.n && g->includes.items[before].first <= u)
+			++before;
+		if (cxi_graph_in_code(g, use->file, use->at))
+			continue;
+
+		for (uint32_t in = cxi_include_of(g, use->file, before); in != GRAPH_NONE;
+		     in = g->includes.items[in].up) {
+			struct cxi_include const *include = &g->includes.items[in];
+			if (!cxi_graph_in_code(g, include->from, include->at))
+				continue;
+
+			use->file = include->from;
+			use->at = include->at;
+			break;
+		}
+	}
+}
+
 /* Appends to the cxi_graph at @p data each function-like macro that a file
  * of the tree defines, and each use of a function-like macro with
  * arguments that a file of the tree writes. Each macro definition of the
- * tree is kept for cxi_graph_bodies(). A visit that clang_visitChildren()
- * reports as stopped has failed, with the error in the walk of the calls.
+ * tree is kept for cxi_graph_bodies(), and each other one for
+ * cxi_graph_outer(). Each #include and the code of each function are kept
+ * for cxi_graph_included(). A visit that clang_visitChildren() reports as
+ * stopped has failed, with the error in the walk of the calls.
  */
 static enum CXChildVisitResult
 cxi_graph_macros (CXCursor     c,
@@ -3062,13 +3202,11 @@ cxi_graph_macros (CXCursor     c,
 	int e = 0;
 	if (c.kind == CXCursor_MacroDefinition) {
 		uint32_t id;
-		if (clang_Location_isInSystemHeader(loc) ||
-		    !cxi_in_tree(g->calls.x->out.tree, c))
-			return CXChildVisit_Continue;
-
-		if (cxi_fn_like(tu, c))
+		bool const outer = clang_Location_isInSystemHeader(loc) ||
+		                   !cxi_in_tree(g->calls.x->out.tree, c);
+		if (!outer && cxi_fn_like(tu, c))
 			e = cxi_graph_macro_fn(g, c, GRAPH_FN_MACRO, &id);
-		e = e ? e : util_push(g->defs, c);
+		e = e ? e : outer ? util_push(g->outer, c) : util_push(g->defs, c);
 	} else if (c.kind == CXCursor_MacroExpansion) {
 		CXCursor const def = clang_getCursorReferenced(c);
 		struct cxi_expansion use = { .to = GRAPH_NONE };
@@ -3088,6 +3226,29 @@ cxi_graph_macros (CXCursor     c,
 			e = cxi_graph_macro_fn(g, def, GRAPH_FN_MACRO, &use.to);
 		if (!e && use.to != GRAPH_NONE)
 			e = util_push(g->uses, use);
+	} else if (c.kind == CXCursor_InclusionDirective) {
+		struct cxi_include include = {
+			.file  = clang_getIncludedFile(c),
+			.first = g->uses.n,
+		};
+		unsigned at;
+		clang_getFileLocation(loc, &include.from, nullptr, nullptr, &at);
+		include.at = at;
+		include.up = cxi_include_of(g, include.from, g->includes.n);
+		e = util_push(g->includes, include);
+	} else if (c.kind == CXCursor_FunctionDecl && clang_isCursorDefinition(c)) {
+		CXSourceRange const extent = clang_getCursorExtent(c);
+		struct cxi_extent code;
+		CXFile last;
+		unsigned from;
+		unsigned to;
+		clang_getFileLocation(clang_getRangeStart(extent), &code.file, nullptr, nullptr,
+		                      &from);
+		clang_getFileLocation(clang_getRangeEnd(extent), &last, nullptr, nullptr, &to);
+		code.from = from;
+		code.to = to;
+		if (code.file == last)
+			e = util_push(g->code, code);
 	}
 	g->calls.walk.e = e;
 	return e ? CXChildVisit_Break : CXChildVisit_Continue;
@@ -3104,6 +3265,20 @@ cxi_token_is (CXTranslationUnit  tu,
 	bool const is = s && !strcmp(s, text);
 	clang_disposeString(spelled);
 	return is;
+}
+
+/* Returns the index of the first of the @p n tokens at @p tokens after the
+ * token @p t that is not a comment, or @p n.
+ */
+static unsigned
+cxi_token_after (CXToken const *tokens,
+                 unsigned       n,
+                 unsigned       t)
+{
+	do
+		++t;
+	while (t < n && clang_getTokenKind(tokens[t]) == CXToken_Comment);
+	return t;
 }
 
 /* Appends to the draft of @p g the uses of macros in the definition
@@ -3128,19 +3303,17 @@ cxi_graph_body (struct cxi_graph *g,
 	uint32_t id = GRAPH_NONE;
 	(void)cxi_ids_get(&g->macros, cxi_ast_node(def), &id);
 	int e = 0;
-	for (unsigned t = body; !e && t + 1 < n; ++t) {
-		if (clang_getTokenKind(tokens[t]) != CXToken_Identifier)
+	for (unsigned t = body; !e && t < n; ++t) {
+		unsigned const next = cxi_token_after(tokens, n, t);
+		if (clang_getTokenKind(tokens[t]) != CXToken_Identifier || next == n ||
+		    !cxi_token_is(tu, tokens[next], "("))
 			continue;
 
-		unsigned next = t + 1;
-		while (next + 1 < n && clang_getTokenKind(tokens[next]) == CXToken_Comment)
-			++next;
 		CXString spelled = clang_getTokenSpelling(tu, tokens[t]);
 		char const *name = clang_getCString(spelled);
 		size_t at = name ? cxi_graph_named(g, name) : g->named.n;
 		char const *text = g->draft.text.items;
 		bool used = at < g->named.n && !strcmp(text + g->named.items[at].name, name) &&
-		            cxi_token_is(tu, tokens[next], "(") &&
 		            !cxi_token_is(tu, tokens[0], name);
 		for (unsigned p = 2; used && p + 1 < body; ++p)
 			used = !cxi_token_is(tu, tokens[p], name);
@@ -3170,15 +3343,100 @@ cxi_graph_body (struct cxi_graph *g,
 	return e;
 }
 
+/* The tokens of the definition of a macro of the tree. The replacement list
+ * starts at the token body.
+ */
+struct cxi_body {
+	CXCursor  def;
+	CXToken  *tokens;
+	unsigned  n;
+	unsigned  body;
+};
+
+/* Orders two strings of clang. */
+static int
+cxi_string_order (void const *a,
+                  void const *b)
+{
+	return strcmp(clang_getCString(*(CXString const *)a),
+	              clang_getCString(*(CXString const *)b));
+}
+
+/* Strings of clang. */
+struct cxi_strings {
+	UTIL_ARRAY(CXString);
+};
+
+/* Appends to @p names the spelling of each identifier in the replacement
+ * list of @p b that "(" follows and that names no macro of the draft of
+ * @p g: a function, or a macro that no file of the tree defines. The
+ * caller disposes of the strings.
+ */
+static int
+cxi_graph_wanted (struct cxi_graph      *g,
+                  struct cxi_body const *b,
+                  struct cxi_strings    *names)
+{
+	CXTranslationUnit tu = g->calls.x->tu;
+	for (unsigned t = b->body; t < b->n; ++t) {
+		unsigned const next = cxi_token_after(b->tokens, b->n, t);
+		if (clang_getTokenKind(b->tokens[t]) != CXToken_Identifier || next == b->n ||
+		    !cxi_token_is(tu, b->tokens[next], "("))
+			continue;
+
+		CXString spelled = clang_getTokenSpelling(tu, b->tokens[t]);
+		char const *name = clang_getCString(spelled);
+		size_t const at = name ? cxi_graph_named(g, name) : g->named.n;
+		bool const known = !name || (at < g->named.n &&
+		                             !strcmp(g->draft.text.items + g->named.items[at].name,
+		                                     name));
+		int const e = known ? 0 : util_push(*names, spelled);
+		if (known || e)
+			clang_disposeString(spelled);
+		if (e)
+			return e;
+	}
+	return 0;
+}
+
+/* Appends to the draft of @p g each function-like macro that no file of
+ * the tree defines and that one of the @p n strings at @p names names. The
+ * strings are in the order of cxi_string_order().
+ */
+static int
+cxi_graph_outer (struct cxi_graph *g,
+                 CXString const   *names,
+                 size_t            n)
+{
+	CXTranslationUnit tu = g->calls.x->tu;
+	int e = 0;
+	for (size_t i = 0; !e && i < g->outer.n; ++i) {
+		CXCursor const def = g->outer.items[i];
+		CXString name = clang_getCursorSpelling(def);
+		uint32_t id;
+		if (clang_getCString(name) &&
+		    bsearch(&name, names, n, sizeof *names, cxi_string_order) &&
+		    cxi_fn_like(tu, def))
+			e = cxi_graph_macro_fn(g, def, GRAPH_FN_MACRO, &id);
+		clang_disposeString(name);
+	}
+	return e;
+}
+
 /* Appends to the draft of @p g the uses of macros in the definition of
  * each macro of the tree (cxi_graph_body()). The tokens of a function-like
  * macro start with the name, "(", the parameters and ")". An object-like
- * macro whose definition contains no "(" writes no use.
+ * macro whose definition contains no "(" writes no use. A macro that no
+ * file of the tree defines is in the draft before this only if a file of
+ * the tree uses it. The definitions can use other such macros, so these
+ * are appended to the draft first (cxi_graph_outer()).
  */
 static int
 cxi_graph_bodies (struct cxi_graph *g)
 {
 	CXTranslationUnit tu = g->calls.x->tu;
+	UTIL_ARRAY(struct cxi_body) bodies = {};
+	struct cxi_strings names = {};
 	int e = 0;
 	for (size_t d = 0; !e && d < g->defs.n; ++d) {
 		CXCursor const def = g->defs.items[d];
@@ -3196,19 +3454,37 @@ cxi_graph_bodies (struct cxi_graph *g)
 		                 !memchr(text + from, '(', to - from)))
 			continue;
 
-		CXToken *tokens = nullptr;
-		unsigned n = 0;
-		clang_tokenize(tu, extent, &tokens, &n);
-		unsigned body = 1;
+		struct cxi_body b = {
+			.def  = def,
+			.body = 1,
+		};
+		clang_tokenize(tu, extent, &b.tokens, &b.n);
 		if (fn_like) {
-			body = 2;
-			while (body < n && !cxi_token_is(tu, tokens[body], ")"))
-				++body;
-			++body;
+			b.body = 2;
+			while (b.body < b.n && !cxi_token_is(tu, b.tokens[b.body], ")"))
+				++b.body;
+			++b.body;
 		}
-		e = cxi_graph_body(g, def, tokens, n, body);
-		clang_disposeTokens(tu, tokens, n);
+		e = util_push(bodies, b);
+		if (e)
+			clang_disposeTokens(tu, b.tokens, b.n);
+		else
+			e = cxi_graph_wanted(g, &b, &names);
 	}
+	if (!e && names.n) {
+		qsort(names.items, names.n, sizeof *names.items, cxi_string_order);
+		e = cxi_graph_outer(g, names.items, names.n);
+	}
+	for (size_t i = 0; i < bodies.n; ++i) {
+		struct cxi_body const *b = &bodies.items[i];
+		if (!e)
+			e = cxi_graph_body(g, b->def, b->tokens, b->n, b->body);
+		clang_disposeTokens(tu, b->tokens, b->n);
+	}
+	for (size_t i = 0; i < names.n; ++i)
+		clang_disposeString(names.items[i]);
+	free(names.items);
+	free(bodies.items);
 	return e;
 }
 
@@ -3225,8 +3501,10 @@ cxi_graph_write (struct cxi *x,
 	CXCursor const unit = clang_getTranslationUnitCursor(x->tu);
 	struct cxi_graph g = cxi_graph(x);
 	int e = clang_visitChildren(unit, cxi_graph_macros, &g) ? (int)g.calls.walk.e : 0;
-	if (!e && g.uses.n)
+	if (!e && g.uses.n) {
+		cxi_graph_included(&g);
 		qsort(g.uses.items, g.uses.n, sizeof *g.uses.items, cxi_expansion_order);
+	}
 	if (!e)
 		e = cxi_graph_bodies(&g);
 	if (!e)

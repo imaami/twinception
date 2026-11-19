@@ -698,7 +698,9 @@ src/finding.h lines 110 to 121 of 303:
 If a name matches several symbols, the call fails with a list of them. If
 it matches none, the call fails with the names in the repository that
 contain it. The layout of a record is cut at 2,000 rows, and the padding of
-a cut layout counts only those rows. `describe` of `struct.member` prints
+a cut layout counts only those rows. Padding inside a member of a union is
+listed and not counted: another member of the union can have data in these
+bytes. `describe` of `struct.member` prints
 any one member.
 
 `describe` of an enum prints the integer type of the enum, the number of

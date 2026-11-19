@@ -237,5 +237,35 @@ main (void)
 	CHECK(refused(&draft, head + offsetof(struct graph_fn, flags), GRAPH_FN_SYMBOL, 0) ==
 	      EINVAL);
 	graph_draft_fini(&draft);
+
+	/* The callees of a call are written in the order of the indices, and
+	 * a graph with callees in another order is refused. */
+	CHECK(!graph_draft_text(&draft, CSTR_VIEW("a.c"), &file));
+	for (uint32_t i = 0; i < 3; ++i) {
+		CHECK(!graph_draft_text(&draft, i ? i == 1 ? CSTR_VIEW("g") : CSTR_VIEW("h")
+		                                  : CSTR_VIEW("f"), &f));
+		CHECK(!util_push(draft.fns, (struct graph_fn){
+			.name     = f,
+			.declared = { file, 1 + i, 1 + i },
+			.defined  = { GRAPH_NONE, 0, 0 },
+		}));
+	}
+	draft.fns.items[2].defined = (struct graph_place){ file, 3, 5 };
+	draft.fns.items[2].n_calls = 1;
+	CHECK(!util_push(draft.to, 1));
+	CHECK(!util_push(draft.to, 0));
+	CHECK(!util_push(draft.calls, (struct graph_call){
+		.file  = file,
+		.line  = 4,
+		.n     = 2,
+		.macro = GRAPH_NONE,
+	}));
+	e = written(&draft, &bytes);
+	CHECK(!e);
+	g = graph(&bytes, &e);
+	CHECK(!e && g.n_to == 2 && g.to[0] == 0 && g.to[1] == 1 && g.n_uses == 2);
+	graph_fini(&g);
+	CHECK(refused(&draft, head + 3 * fn + sizeof(struct graph_call), 2, 0) == EINVAL);
+	graph_draft_fini(&draft);
 	return check_report("graph");
 }
