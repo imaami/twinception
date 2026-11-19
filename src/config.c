@@ -25,6 +25,7 @@
 #include "ai.h"
 #include "brainstem.h"
 #include "buf.h"
+#include "bearer.h"
 #include "chatgpt.h"
 #include "code.h"
 #include "config.h"
@@ -244,6 +245,22 @@ enum config_arg : uint8_t {
           "renewable credentials and exit; implies" NL                                                \
           "--provider chatgpt; no model is needed",                                                     \
           CFG_CHATGPT_LOGIN)                                                                             \
+        X(text,    AUTH_COMMAND,     "auth-command",      ,    UPSTREAM, ONE, "COMMAND",                \
+          "shell command that prints a JSON Web Token;" NL                                              \
+          "askai runs it when it has no token that is" NL                                               \
+          "still valid, and sends the token as the" NL                                                  \
+          "bearer token; exclusive with an explicit key" NL                                             \
+          "or auth header",                                                                             \
+          ep.auth_command)                                                                              \
+        X(text,    AUTH_FILE,        "auth-file",         ,    UPSTREAM, ONE, "FILE",                   \
+          "file that keeps the token of --auth-command" NL                                              \
+          "(default: $XDG_STATE_HOME/askai/bearer.json," NL                                             \
+          "or $HOME/.local/state/askai/bearer.json)",                                                   \
+          ep.auth_file)                                                                                 \
+        X(flag,    AUTH_LOGIN,       "auth-login",        ,    NONE, NONE, "",                          \
+          "run --auth-command now, save its token and" NL                                               \
+          "exit; no model is needed",                                                                   \
+          CFG_AUTH_LOGIN)                                                                               \
         X(custom,  HEADER,           "header",           'H', UPSTREAM, MANY, "LINE",                   \
           "extra request header, Name: value" NL                                                        \
           "(repeatable)")                                                                               \
@@ -1688,6 +1705,25 @@ config_check_codes (struct config *cfg)
 	return cfg->n_codes && code_check(cfg) ? config_oom(cfg) : 0;
 }
 
+/* An empty --auth-command or --auth-file is none. The other options of the
+ * token need --auth-command, which the ChatGPT sign-in does not use.
+ */
+static int
+config_auth_options (struct config *cfg)
+{
+	struct ai_endpoint *ep = &cfg->ep;
+	if (ep->auth_command && !*ep->auth_command)
+		ep->auth_command = nullptr;
+	if (ep->auth_file && !*ep->auth_file)
+		ep->auth_file = nullptr;
+	if (ep->auth_command && ep->provider == AI_CHATGPT)
+		return config_complain(cfg, nullptr, "--auth-command cannot be combined "
+		                       "with --provider chatgpt");
+	return ep->auth_command || !(ep->auth_file || cfg->flags & CFG_AUTH_LOGIN) ? 0
+	       : config_complain(cfg, nullptr, "--auth-file and --auth-login need "
+	                         "--auth-command");
+}
+
 /* Settle the upstream's API, unless --api chose it: its provider's default.
  * A provider must serve it; with none, --url must say where it is.
  */
@@ -1699,6 +1735,9 @@ config_api (struct config *cfg)
 		ep->chatgpt_auth = nullptr;
 	if (ep->chatgpt_auth && ep->provider != AI_CHATGPT)
 		return config_complain(cfg, nullptr, "--chatgpt-auth needs --provider chatgpt");
+	int const status = config_auth_options(cfg);
+	if (status)
+		return status;
 	if (!ep->api)
 		ep->api = providers[ep->provider].api;
 	if (!ep->provider)
@@ -1952,25 +1991,53 @@ config_headers (struct config *cfg,
 	return 0;
 }
 
+/* Sets @p *file, the credential file of the option @p option, to the
+ * default path that @p path writes, kept in @p *owned, if the option is
+ * not set. The path of the file must be absolute.
+ */
+static int
+config_cred_path (struct config  *cfg,
+                  char const    **file,
+                  char          **owned,
+                  int           (*path) (struct dstr *),
+                  char const     *option)
+{
+	if (!*file) {
+		dstr_auto chosen = dstr(nullptr);
+		int e = path(&chosen);
+		/* config() returns by value, so its pointers cannot refer to an
+		 * embedded string's short storage. Keep the same ownership as url. */
+		if (!e)
+			e = config_aprintf(owned, "%s", dstr_get(&chosen));
+		if (e)
+			return config_complain(cfg, nullptr, "cannot choose the default of "
+			                       "--%s: %s; pass --%s FILE", option, strerror(e),
+			                       option);
+		*file = *owned;
+	}
+	return **file == '/' ? 0
+	       : config_complain(cfg, nullptr, "--%s needs an absolute path", option);
+}
+
 /* A selected profile is private to askai. Its renewable tokens are never
  * inferred for a custom URL or mixed with a static credential. */
 static int
 config_chatgpt_path (struct config *cfg)
 {
-	if (!cfg->ep.chatgpt_auth) {
-		dstr_auto path = dstr(nullptr);
-		int e = chatgpt_path(&path);
-		/* config() returns by value, so its pointers cannot refer to an
-		 * embedded string's short storage. Keep the same ownership as url. */
-		if (!e)
-			e = config_aprintf(&cfg->chatgpt_owned, "%s", dstr_get(&path));
-		if (e)
-			return config_complain(cfg, nullptr, "cannot choose ChatGPT credential "
-			                       "path: %s; pass --chatgpt-auth FILE", strerror(e));
-		cfg->ep.chatgpt_auth = cfg->chatgpt_owned;
-	}
-	return cfg->ep.chatgpt_auth[0] == '/' ? 0
-	       : config_complain(cfg, nullptr, "--chatgpt-auth needs an absolute path");
+	return config_cred_path(cfg, &cfg->ep.chatgpt_auth, &cfg->chatgpt_owned, chatgpt_path,
+	                        "chatgpt-auth");
+}
+
+/* The token of --auth-command is the only credential of the upstream. */
+static int
+config_auth (struct config *cfg,
+             bool           has_auth)
+{
+	if (cfg->key_env || has_auth)
+		return config_complain(cfg, nullptr, "--auth-command cannot be combined "
+		                       "with --key-env or an Authorization header");
+	return config_cred_path(cfg, &cfg->ep.auth_file, &cfg->auth_owned, bearer_path,
+	                        "auth-file");
 }
 
 /* ChatGPT plan access uses the Responses wire format, with a narrower
@@ -2012,8 +2079,9 @@ config_upstream (struct config *cfg)
 	if (cfg->ep.provider == AI_CHATGPT)
 		return config_chatgpt(cfg, has_auth);
 	char const *key = nullptr;
-	int status = cfg->key_env ? config_key_env(cfg, &key)
-	                          : config_key_usual(cfg, has_auth, &key);
+	int status = cfg->ep.auth_command ? config_auth(cfg, has_auth)
+	           : cfg->key_env ? config_key_env(cfg, &key)
+	           : config_key_usual(cfg, has_auth, &key);
 	if (status)
 		return status;
 	if (key && strpbrk(key, "\r\n"))
@@ -2580,6 +2648,12 @@ config_parse (struct config *cfg)
 		status = status ? status : config_chatgpt_path(cfg);
 		return status ? status : -1;
 	}
+	if (!status && cfg->flags & CFG_AUTH_LOGIN) {
+		status = config_auth_options(cfg);
+		status = status ? status
+		       : config_auth(cfg, config_has_header(cfg, "Authorization:"));
+		return status ? status : -1;
+	}
 	status = status ? status : config_finish(cfg);
 	return status ? status : -1;
 }
@@ -2698,6 +2772,7 @@ config_fini (struct config *cfg)
 	registry_fini(&cfg->registry);
 	free(cfg->url);
 	free(cfg->auth);
+	free(cfg->auth_owned);
 	free(cfg->chatgpt_owned);
 	free(cfg->description);
 	free(cfg->code_helper);

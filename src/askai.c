@@ -17,6 +17,7 @@
 #include "blocker.h"
 #include "brainstem.h"
 #include "buf.h"
+#include "bearer.h"
 #include "chatgpt.h"
 #include "child.h"
 #include "config.h"
@@ -945,6 +946,14 @@ main (int   argc,
 			fprintf(stderr, "ChatGPT sign-in: %s\n", *why ? why : strerror(e));
 		else
 			fprintf(stderr, "ChatGPT sign-in saved to %s\n", cfg.ep.chatgpt_auth);
+		status = !!e;
+	} else if (status < 0 && cfg.flags & CFG_AUTH_LOGIN) {
+		char why[256];
+		int e = bearer_login(cfg.ep.auth_file, cfg.ep.auth_command, why, sizeof why);
+		if (e)
+			fprintf(stderr, "--auth-command: %s\n", why);
+		else
+			fprintf(stderr, "Token saved to %s\n", cfg.ep.auth_file);
 		status = !!e;
 	} else if (status < 0)
 		status = askai_serve(&cfg);

@@ -13,6 +13,7 @@
 #include "ai.h"
 #include "blocker.h"
 #include "buf.h"
+#include "bearer.h"
 #include "chatgpt.h"
 #include "config.h"
 #include "dstr.h"
@@ -144,6 +145,7 @@ struct home_authorization {
 	struct home        *home;
 	struct job         *request;
 	struct dstr         path;
+	struct dstr         command;  /* of --auth-command, or empty */
 	struct dstr         header;
 	uint64_t            resume;
 	uint64_t            submitted;
@@ -1303,18 +1305,24 @@ home_authorization_destroy (struct home_authorization **p_auth)
 {
 	struct home_authorization *auth = *p_auth;
 	dstr_cleanup(&auth->path);
+	dstr_cleanup(&auth->command);
 	dstr_cleanup(&auth->header);
 	free(auth);
 	*p_auth = nullptr;
 }
 
-/* On a blocker: file locks and refresh HTTPS never hold up an event loop. */
+/* On a blocker: file locks, refresh HTTPS and the command of
+ * --auth-command never hold up an event loop.
+ */
 static void
 home_authorize (struct blocker_job *work)
 {
 	struct home_authorization *auth = container_of(work, struct home_authorization, work);
-	work->error = chatgpt_header(dstr_get(&auth->path), &auth->header,
-	                             auth->error, sizeof auth->error);
+	work->error = dstr_len(&auth->command)
+	              ? bearer_header(dstr_get(&auth->path), dstr_get(&auth->command),
+	                              &auth->header, auth->error, sizeof auth->error)
+	              : chatgpt_header(dstr_get(&auth->path), &auth->header,
+	                               auth->error, sizeof auth->error);
 }
 
 /* A cancelled or timed-out request may have completed while credentials
@@ -1340,7 +1348,7 @@ home_authorized (struct loop *loop,
 			if (!e)
 				e = home_send(home, job, auth->resume, dstr_get(&auth->header));
 			if (e) {
-				(void)home_job_say(job, "Cannot authorize or start ChatGPT request: %s",
+				(void)home_job_say(job, "Cannot authorize or start the request: %s",
 				                   *auth->error ? auth->error : strerror(e));
 				home_end(home, job, JOB_FAILED, &home->metrics->completed);
 			}
@@ -1378,7 +1386,8 @@ home_open (struct home *home,
            struct job  *job,
            bool         resume)
 {
-	char const *path = home->ep->chatgpt_auth;
+	char const *command = home->ep->auth_command;
+	char const *path = command ? home->ep->auth_file : home->ep->chatgpt_auth;
 	if (!path)
 		return home_send(home, job, resume, nullptr);
 	if (!home->blockers)
@@ -1394,10 +1403,13 @@ home_open (struct home *home,
 		.home = home,
 		.request = job,
 		.path = dstr(nullptr),
+		.command = dstr(nullptr),
 		.header = dstr(nullptr),
 		.resume = resume,
 	};
 	int e = cstr_view_store(cstr_view(path), &auth->path);
+	if (!e && command)
+		e = cstr_view_store(cstr_view(command), &auth->command);
 	if (e) {
 		home_authorization_destroy(&auth);
 		return e;
@@ -2950,7 +2962,7 @@ home_create (struct loop         *loop,
 		*e = home_arm(home, http);
 	if (!*e && home_llama(home))
 		*e = home_request_headers(home, conversation_id, home->conversation);
-	if (!*e && ep->chatgpt_auth)
+	if (!*e && (ep->chatgpt_auth || ep->auth_command))
 		*e = home_request_headers(home, CSTR_VIEW("Authorization:"), nullptr);
 	if (*e) {
 		home_fini(home);

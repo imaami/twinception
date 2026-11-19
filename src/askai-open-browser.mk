@@ -1,2 +1,8 @@
 override SRC_askai-open-browser := \
-  askai_open_browser.c
+  buf.c                           \
+  child.c                         \
+  cstr_view.c                     \
+  dstr.c                          \
+  log.c                           \
+  loop.c                          \
+  webtoken.c

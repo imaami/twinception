@@ -50,6 +50,7 @@ enum config_flag {
 	CFG_CODE           = 1u << 11, /**< the code tool is on (code_check()) */
 	CFG_UNCONFINED     = 1u << 12, /**< --code-unconfined */
 	CFG_CHATGPT_LOGIN  = 1u << 13, /**< authorize ChatGPT, then exit */
+	CFG_AUTH_LOGIN     = 1u << 14, /**< run --auth-command, then exit */
 };
 
 /**
@@ -94,6 +95,7 @@ struct config {
 	                                         Gemini's */
 	char                 *auth;         /**< the API key's header line */
 	char                 *chatgpt_owned; /**< default OAuth credential path */
+	char                 *auth_owned;    /**< default path of --auth-file */
 	char                 *description;  /**< tool.description, by default */
 	char                 *code_helper;  /**< the path of askai-code */
 	char                 *code_cache;   /**< the code tool's cache */

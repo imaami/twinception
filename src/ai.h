@@ -65,6 +65,11 @@ struct ai_endpoint {
 	char const *const  *headers;      /**< nullptr-terminated header lines */
 	char const         *chatgpt_auth; /**< renewable OAuth credentials, or
 	                                       nullptr for static headers */
+	char const         *auth_command; /**< a shell command that prints a
+	                                       bearer token (src/bearer.h), or
+	                                       nullptr */
+	char const         *auth_file;    /**< the file that keeps the token of
+	                                       auth_command */
 	uint64_t            background;   /**< nonzero: ask calls return jobs and
 	                                       keep their upstream streams alive */
 	long                max_tokens;   /**< <= 0 leaves the provider default */

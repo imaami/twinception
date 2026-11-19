@@ -577,12 +577,12 @@ chatgpt_test_registration (char const *path)
 	CHECK(chatgpt_test_save(path, profile) == 0);
 	json_object_put(profile);
 	int e;
-	struct chatgpt_file file = chatgpt_file(path, false, &e);
+	struct cred file = cred(path, 0, &e);
 	CHECK(e == 0);
 	e = e ? e : chatgpt_host(&file);
 	CHECK(e == 0);
 	if (e) {
-		chatgpt_file_fini(&file);
+		cred_fini(&file);
 		return;
 	}
 	char *host = strdup(chatgpt_text(file.record, "ext_agent_host_id").data);
@@ -645,7 +645,7 @@ chatgpt_test_registration (char const *path)
 	CHECK(jb_set(tokens, "scope", json_object_new_string("")) == 0);
 	CHECK(chatgpt_tokens(&file, tokens, nullptr, cstr_view(nullptr), false) == EACCES);
 	CHECK(!chatgpt_scope(file.record));
-	chatgpt_file_fini(&file);
+	cred_fini(&file);
 	json_object_put(claims);
 	json_object_put(tokens);
 	json_object_put(keys);

@@ -810,7 +810,7 @@ TOOL_MEMBERS = {"man": ("man", "enabled"), "git": ("git", "repositories"),
                 "client-jobs": ("jobs", "clients")}
 ROOT_MEMBERS = {"agent", "transcripts"}
 # One-shot actions have no configuration-file members.
-CLI_ACTIONS = {"chatgpt-login"}
+CLI_ACTIONS = {"chatgpt-login", "auth-login"}
 
 
 def note_view(data):
@@ -1131,6 +1131,138 @@ def check_chatgpt_configuration(binary, up):
     print("chatgpt configuration: provider, credential and login isolation: PASS")
 
 
+def check_auth_command(binary, up):
+    """--auth-command: the token of a command as the bearer token, kept in a
+    private file until it expires, --auth-login, and askai-open-browser with
+    stand-ins for the programs of Windows."""
+    def part(claims):
+        return base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+
+    def token(exp, sub="u"):
+        return f'{part({"alg": "none"})}.{part({"sub": sub, "exp": exp})}.c2ln'
+    now = int(time.time())
+    with tempfile.TemporaryDirectory() as d:
+        runs, file = f"{d}/runs", f"{d}/state/bearer.json"
+
+        def command(text):
+            return f"echo run >> {runs}; echo {shlex.quote(text)}"
+
+        def ran():
+            with open(runs) as f:
+                n = len(f.read().splitlines())
+            os.remove(runs)
+            return n
+        # The token of the output is the bearer token of each request. The
+        # command runs once: the token is kept in the private file.
+        good = token(now + 3600)
+        args = ("-u", up.url(), "-m", "m", "--auth-file", file, "--auth-command")
+        with Askai(binary, *args, command(json.dumps({"access_token": good})),
+                   env={"ASKAI_API_KEY": "must-not-be-used"}) as ai:
+            for _ in range(2):
+                assert not ai.ask().get("isError")
+                assert up.last()["headers"]["authorization"] == f"Bearer {good}"
+        assert ran() == 1
+        assert os.stat(file).st_mode & 0o777 == 0o600 and \
+            os.stat(os.path.dirname(file)).st_mode & 0o777 == 0o700
+        with open(file) as f:
+            assert json.load(f) == {"token": good, "expires_at": now + 3600}
+        # Another process uses the token of the file.
+        with Askai(binary, *args, command("no token")) as ai:
+            assert not ai.ask().get("isError")
+            assert up.last()["headers"]["authorization"] == f"Bearer {good}"
+        assert not os.path.exists(runs)
+        # A token that expires within a minute is replaced before each
+        # request.
+        soon = token(now + 45, "soon")
+        with open(file, "w") as f:
+            json.dump({"token": token(now + 30), "expires_at": now + 30}, f)
+        with Askai(binary, *args, command(soon)) as ai:
+            for _ in range(2):
+                assert not ai.ask().get("isError")
+                assert up.last()["headers"]["authorization"] == f"Bearer {soon}"
+        assert ran() == 2
+        # An output without a token, a token that has expired, and a command
+        # that fails end the request, and no key of the environment is used.
+        count = len(up.requests)
+        for failing, why in (
+                (command("no token"),
+                 "the output of the auth command contains no JSON Web Token"),
+                (command(token(now - 5)), "the token of the auth command has expired"),
+                (command(f"{part({'alg': 'none'})}.{part({'sub': 'u'})}.c2ln"),
+                 "the token of the auth command has no exp claim"),
+                ("exit 3", "the auth command failed")):
+            with Askai(binary, *args, failing,
+                       env={"ASKAI_API_KEY": "must-not-be-used"}) as ai:
+                result = ai.ask()
+                assert result.get("isError") and text_of(result) == \
+                    f"Cannot authorize or start the request: {why}", result
+        assert len(up.requests) == count
+        os.remove(runs)
+
+        def askai(*words, env=None):
+            return subprocess.run([binary, *words], env=os.environ | (env or {}),
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                  timeout=30, check=False)
+        for words, message in (
+                (("--auth-file", "/x", "--auth-login"),
+                 "--auth-file and --auth-login need --auth-command"),
+                (("--auth-command", "x", "--auth-file", "rel", "--auth-login"),
+                 "--auth-file needs an absolute path"),
+                (("--auth-command", "x", "-k", "KEY", "--auth-login"),
+                 "--auth-command cannot be combined with --key-env or an Authorization header"),
+                (("-p", "chatgpt", "-m", "m", "--auth-command", "x"),
+                 "--auth-command cannot be combined with --provider chatgpt")):
+            run = askai(*words)
+            assert run.returncode == 2 and message in run.stderr, (words, run.stderr)
+
+        # askai-open-browser. curl.exe gets the page without a browser.
+        helper = os.path.join(os.path.dirname(binary), "askai-open-browser")
+        fake, clip, log = f"{d}/bin", f"{d}/clip", f"{d}/log"
+        os.mkdir(fake)
+        page = shlex.quote(json.dumps({"access_token": good, "token_type": "Bearer"}))
+        for name, text in (
+                ("curl.exe", f'[ "$FAKE_CURL" = ok ] || exit 22\necho {page}\n'),
+                ("powershell.exe", f'cat {clip} 2>/dev/null\nexit 0\n'),
+                ("rundll32.exe", f'echo "$@" >> {log}\n(sleep 1; echo {page} > {clip}) &\n'),
+                ("clip.exe", f': > {clip}\necho cleared >> {log}\n')):
+            with open(f"{fake}/{name}", "w") as f:
+                f.write("#!/bin/sh\n" + text)
+            os.chmod(f"{fake}/{name}", 0o755)
+        env = {k: v for k, v in os.environ.items() if k != "BROWSER"} | {
+            "PATH": f"{fake}:{os.environ['PATH']}", "WSL_DISTRO_NAME": "test"}
+        url = "https://example.invalid/token"
+
+        def helped(**more):
+            return subprocess.run([helper, url], env=env | more, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=30, check=False,
+                                  start_new_session=True)
+        run = helped(FAKE_CURL="ok")
+        assert (run.returncode, run.stdout) == (0, good + "\n"), run
+        assert not os.path.exists(log)
+        # Without it, the browser opens the page, and the token is the one
+        # that the clipboard did not contain before. The clipboard is
+        # emptied.
+        with open(clip, "w") as f:
+            f.write(f"old {token(now + 60, 'old')}\n")
+        run = helped()
+        assert (run.returncode, run.stdout) == (0, good + "\n"), run
+        with open(log) as f:
+            assert f.read() == f"url.dll,FileProtocolHandler {url}\ncleared\n"
+        assert os.path.getsize(clip) == 0
+        run = subprocess.run([helper, "file:///etc/passwd"], capture_output=True, text=True,
+                             timeout=30, check=False)
+        assert run.returncode == 2 and run.stdout == "" and "usage:" in run.stderr, run
+        # --auth-login runs the command and saves the token.
+        os.remove(file)
+        run = askai("--auth-command", f"{helper} {url}", "--auth-file", file, "--auth-login",
+                    env=env | {"FAKE_CURL": "ok"})
+        assert run.returncode == 0 and run.stderr == f"Token saved to {file}\n", run
+        with open(file) as f:
+            assert json.load(f) == {"token": good, "expires_at": now + 3600}
+    print("auth command: bearer token of a command, its file, renewal, errors, "
+          "--auth-login and askai-open-browser: PASS")
+
+
 def check_chatgpt(binary, up):
     """Subscription authentication uses Responses with a restricted request
     shape, local background jobs, and locally executed namespaced tools."""
@@ -1248,7 +1380,7 @@ def check_chatgpt(binary, up):
                        "--chatgpt-auth", f"{d}/missing.json",
                        env={"OPENAI_API_KEY": "must-not-be-used"}) as ai:
                 result = ai.ask()
-                assert result.get("isError") and "Cannot authorize or start ChatGPT" in \
+                assert result.get("isError") and "Cannot authorize or start the request" in \
                     text_of(result), result
                 assert ai.metrics()["askai_upstream_wait_seconds_count"] == 0
 
@@ -20237,7 +20369,7 @@ def main():
         os.path.join(os.path.dirname(binary), "godbolt.so")
     up = Upstream()
     try:
-        for check in (check_legacy_session, check_protocols, check_chatgpt_configuration, check_chatgpt, check_upstream_errors,
+        for check in (check_legacy_session, check_protocols, check_chatgpt_configuration, check_chatgpt, check_auth_command, check_upstream_errors,
                       check_modern, check_mcp_tasks, check_client_jobs, check_background, check_recovery, check_recovery_tools,
                       check_recovery_notes, check_recovery_compact, check_recovery_findings,
                       check_durable_cancel,

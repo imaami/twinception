@@ -8,6 +8,8 @@
     "model": "local",
     "key-env": "LLAMA_API_KEY",
     "chatgpt-auth": "",
+    "auth-command": "",
+    "auth-file": "",
     "header": [
       "X-Title: askai"
     ],

@@ -152,7 +152,7 @@ $Otests/ai.c.o $Otests/src/ai.c.o: CPPFLAGS += $(JSON_INCLUDES)
 # Only outbound responses are substituted; login uses the real HTTP server.
 override CHATGPT_INCLUDES = $(call test-pkg-config,CHATGPT_INCLUDES,--cflags json-c libcurl libcrypto libssl)
 override CHATGPT_LIBS = $(call test-pkg-config,CHATGPT_LIBS,--libs json-c libcurl libcrypto libssl)
-override CHATGPT_OBJECTS := $(addprefix $Otests/src/,jb.c.o dstr.c.o cstr_view.c.o \
+override CHATGPT_OBJECTS := $(addprefix $Otests/src/,jb.c.o dstr.c.o cstr_view.c.o cred.c.o jwt.c.o \
                            buf.c.o loop.c.o log.c.o http.c.o curl_loop.c.o blocker.c.o \
                            httpd.c.o policy.c.o tls.c.o registry.c.o plugin.c.o)
 

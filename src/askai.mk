@@ -2,6 +2,7 @@ override SRC_askai := \
   agenda.c            \
   ai.c                \
   askai.c             \
+  bearer.c            \
   blocker.c           \
   brainstem.c         \
   buf.c               \
@@ -10,6 +11,7 @@ override SRC_askai := \
   child.c             \
   code.c              \
   config.c            \
+  cred.c              \
   cstr_view.c         \
   curl_loop.c         \
   cxi_out.c           \
@@ -28,6 +30,7 @@ override SRC_askai := \
   instance.c          \
   jb.c                \
   journal.c           \
+  jwt.c               \
   ledger.c            \
   log.c               \
   loop.c              \

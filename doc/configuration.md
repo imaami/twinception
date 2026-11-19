@@ -736,6 +736,41 @@ Authorization header is explicitly given. It never falls back to
 `OPENAI_API_KEY` or `ASKAI_API_KEY`. An explicit variable contains an
 OAuth access token, which askai sends unchanged and does not refresh.
 
+#### `auth-command`
+
+The value is a shell command that prints a JSON Web Token, alone or inside
+other text such as JSON. askai sends the token as `Authorization: Bearer`
+with each request. It runs the command with `/bin/sh` when the file of
+`auth-file` has no token, or one that expires within a minute, and then
+stores the new token and the time of its `exp` claim in that file. The
+command runs off the event loops with the environment of askai, for up to
+five minutes, and with `/dev/null` as its standard input and standard
+error. A request whose token cannot be had fails with the reason. askai
+does not check the signature of the token: the upstream does.
+
+An empty string is no command. `auth-command` cannot be combined with an
+explicit `key-env`, an Authorization header, or `provider: "chatgpt"`.
+`askai-open-browser URL` is a command for a page that serves the token to
+a browser that is signed in; the README describes its steps.
+
+#### `auth-file`
+
+The value is an absolute path to the private file that keeps the token of
+`auth-command`. An empty string selects the default,
+`$XDG_STATE_HOME/askai/bearer.json` when `XDG_STATE_HOME` is absolute,
+otherwise `$HOME/.local/state/askai/bearer.json`. The file and its parent
+directory must be owned by the current user and not accessible to other
+users (modes 0600 and 0700). It is written atomically with mode 0600, and
+a lock beside the file serializes the processes that use it. `auth-file`
+needs `auth-command`.
+
+#### `auth-login`
+
+This command-line-only action runs the command of `auth-command` once,
+saves its token in the file of `auth-file` and exits. It needs no
+`provider`, `url` or `model`. Run it in a terminal before a service
+starts, so that a command which asks the user for something can do so.
+
 #### `chatgpt-auth`
 
 The value is an absolute path to a private ChatGPT OAuth credential file.

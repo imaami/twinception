@@ -16,12 +16,14 @@
 #include "buf.h"
 #include "chatgpt.h"
 #include "clk.h"
+#include "cred.h"
 #include "cstr_view.h"
 #include "dstr.h"
 #include "hexid.h"
 #include "http.h"
 #include "httpd.h"
 #include "jb.h"
+#include "jwt.h"
 #include "loop.h"
 #include "policy.h"
 #include "registry.h"
@@ -38,13 +40,6 @@
 
 enum { CHATGPT_LIMIT = 1 << 20, CHATGPT_TOKEN_LIMIT = 64 << 10, CHATGPT_WAIT = 300 };
 
-struct chatgpt_file {
-	struct json_object *record;
-	struct dstr         name;
-	int                 directory;
-	int                 lock;
-};
-
 /* Keep JSON strings counted, including when a field contains a NUL. */
 static struct cstr_view
 chatgpt_text (struct json_object *object,
@@ -60,119 +55,6 @@ chatgpt_path (struct dstr *path)
 	int e = util_state_path(&base, &rest);
 	dstr_clear(path);
 	return e ? e : dstr_printf(path, "%s%s/chatgpt.json", base, rest) ? 0 : ENOMEM;
-}
-
-static void
-chatgpt_file_fini (struct chatgpt_file *file)
-{
-	json_object_put(file->record);
-	file->record = nullptr;
-	dstr_cleanup(&file->name);
-	util_close(&file->lock);
-	util_close(&file->directory);
-}
-
-/* The credential and lock share an opened directory. No path component
- * may redirect the transaction through a symbolic link.
- */
-static struct chatgpt_file
-chatgpt_file (char const *path,
-              bool        create,
-              int        *e)
-{
-	struct chatgpt_file file = { .name = dstr(nullptr), .directory = -1, .lock = -1 };
-	dstr_auto scratch = dstr(nullptr);
-	*e = !path || !*path ? EINVAL : cstr_view_store(cstr_view(path), &scratch);
-	if (!*e && create)
-		*e = util_mkdir_parents((char *)dstr_raw(&scratch));
-	int base = *e ? -1 : open(*path == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	if (!*e && base < 0)
-		*e = errno;
-	char const *leaf = nullptr;
-	if (!*e)
-		*e = util_parent_open(base, path + (*path == '/'), &leaf, &file.directory);
-	util_close(&base);
-	if (!*e)
-		*e = util_private_fd(file.directory, S_IFDIR);
-	if (!*e)
-		*e = cstr_view_store(cstr_view(leaf), &file.name);
-	dstr_clear(&scratch);
-	if (!*e && !dstr_printf(&scratch, "%s.lock", dstr_get(&file.name)))
-		*e = ENOMEM;
-	if (!*e)
-		*e = util_private_open(file.directory, dstr_get(&scratch), O_RDWR | O_CREAT | O_NONBLOCK, &file.lock);
-	uint64_t start = clk_monotonic_ns();
-	while (!*e && flock(file.lock, LOCK_EX | LOCK_NB)) {
-		if (errno != EINTR && errno != EWOULDBLOCK) {
-			*e = errno;
-			break;
-		}
-		uint64_t now = clk_monotonic_ns();
-		if (!start || !now || now - start >= 2 * NS) {
-			*e = start && now ? EBUSY : EIO;
-			break;
-		}
-		struct timespec delay = clk_timespec(20 * MS);
-		int wait = clock_nanosleep(CLOCK_MONOTONIC, 0, &delay, nullptr);
-		if (wait && wait != EINTR)
-			*e = wait;
-	}
-	int fd = -1;
-	if (!*e)
-		*e = util_private_open(file.directory, dstr_get(&file.name), O_RDONLY | O_NONBLOCK, &fd);
-	if (*e == ENOENT && create && file.lock >= 0) {
-		file.record = json_object_new_object();
-		*e = file.record ? 0 : ENOMEM;
-		return file;
-	}
-	struct stat st;
-	if (!*e && fstat(fd, &st))
-		*e = errno;
-	struct buf bytes = buf();
-	if (!*e)
-		*e = st.st_size < 0 || st.st_size > CHATGPT_LIMIT ? EFBIG :
-		     buf_read(&bytes, fd, (size_t)st.st_size, (size_t)st.st_size);
-	util_close(&fd);
-	if (!*e) {
-		struct span text = buf_peek(&bytes);
-		file.record = text.len ? jb_parse((char const *)text.ptr, text.len, JSON_TOKENER_STRICT, 16) : nullptr;
-		if (!json_object_is_type(file.record, json_type_object))
-			*e = EINVAL;
-	}
-	buf_wipe(&bytes);
-	buf_fini(&bytes);
-	return file;
-}
-
-static int
-chatgpt_file_save (struct chatgpt_file *file,
-                   struct json_object *record)
-{
-	struct hexid id = {};
-	int e = hexid_make(&id);
-	dstr_auto temporary = dstr(nullptr);
-	if (!e && !dstr_printf(&temporary, ".chatgpt-%s", id.hex))
-		e = ENOMEM;
-	struct cstr_view text = jb_wire(record);
-	if (!e && !text.data)
-		e = ENOMEM;
-	int fd = -1;
-	if (!e)
-		e = util_private_open(file->directory, dstr_get(&temporary), O_WRONLY | O_CREAT | O_EXCL, &fd);
-	if (fd < 0)
-		return e;
-	e = fchmod(fd, 0600) ? errno : util_write_all(fd, text.data, text.len);
-	if (!e && fsync(fd))
-		e = errno;
-	if (fd >= 0 && close(fd) && !e)
-		e = errno;
-	fd = -1;
-	if (!e && (renameat(file->directory, dstr_get(&temporary), file->directory, dstr_get(&file->name)) ||
-	           fsync(file->directory)))
-		e = errno;
-	if (e && dstr_len(&temporary))
-		(void)unlinkat(file->directory, dstr_get(&temporary), 0);
-	return e;
 }
 
 struct chatgpt_field {
@@ -550,46 +432,15 @@ chatgpt_encode (unsigned char const input[32],
 	return 0;
 }
 
-/* JWT and JWK segments are ASCII; their decoded bytes belong in buf. */
-static int
-chatgpt_decode (struct cstr_view input,
-                struct buf      *bytes)
-{
-	buf_clear(bytes);
-	if (!input.len || input.len > CHATGPT_TOKEN_LIMIT || input.len % 4 == 1 ||
-	    cstr_view_spn(input, UTIL_ALNUM "-_") != input.len)
-		return EINVAL;
-	dstr_auto encoded = dstr(nullptr);
-	int e = cstr_view_store(input, &encoded);
-	unsigned char *text = dstr_raw(&encoded);
-	for (size_t i = 0; !e && i < input.len; ++i)
-		if (text[i] == '-') text[i] = '+';
-		else if (text[i] == '_') text[i] = '/';
-	size_t pad = (4 - input.len % 4) % 4;
-	if (!e)
-		e = cstr_view_cat(cstr_view_n("===", pad), &encoded);
-	struct span room = {};
-	if (!e)
-		e = buf_reserve(bytes, dstr_len(&encoded) / 4 * 3, CHATGPT_TOKEN_LIMIT, &room);
-	if (!e) {
-		int n = EVP_DecodeBlock(room.ptr, dstr_raw(&encoded), (int)dstr_len(&encoded));
-		if (n < 0)
-			e = EINVAL;
-		else
-			buf_commit(bytes, (size_t)n - pad);
-	}
-	return e;
-}
-
 static EVP_PKEY *
 chatgpt_rsa (struct json_object *jwk)
 {
 	struct buf bytes = buf();
-	int e = chatgpt_decode(chatgpt_text(jwk, "n"), &bytes);
+	int e = jwt_decode(chatgpt_text(jwk, "n"), &bytes);
 	struct span decoded = buf_peek(&bytes);
 	BIGNUM *n = e ? nullptr : BN_bin2bn(decoded.ptr, (int)decoded.len, nullptr);
 	if (!e)
-		e = chatgpt_decode(chatgpt_text(jwk, "e"), &bytes);
+		e = jwt_decode(chatgpt_text(jwk, "e"), &bytes);
 	decoded = buf_peek(&bytes);
 	BIGNUM *exponent = e ? nullptr : BN_bin2bn(decoded.ptr, (int)decoded.len, nullptr);
 	buf_fini(&bytes);
@@ -649,7 +500,7 @@ chatgpt_identity (struct json_object  *keys,
 	struct buf bytes = buf();
 	int e = 0;
 	for (size_t i = 0; !e && i < array_size(encoded); ++i) {
-		e = chatgpt_decode(encoded[i], &bytes);
+		e = jwt_decode(encoded[i], &bytes);
 		struct span text = buf_peek(&bytes);
 		if (!e && !json_object_is_type(parts[i] = jb_parse((char const *)text.ptr, text.len,
 		                                                   JSON_TOKENER_STRICT, 16), json_type_object))
@@ -676,7 +527,7 @@ chatgpt_identity (struct json_object  *keys,
 			key = chatgpt_rsa(jwk);
 	}
 	if (!e)
-		e = chatgpt_decode(token, &bytes);
+		e = jwt_decode(token, &bytes);
 	struct span signature = buf_peek(&bytes);
 	EVP_MD_CTX *ctx = EVP_MD_CTX_new();
 	if (!e && (!key || !ctx || EVP_DigestVerifyInit(ctx, nullptr, EVP_sha256(), nullptr, key) <= 0 ||
@@ -705,7 +556,7 @@ chatgpt_scope (struct json_object *record)
 }
 
 static int
-chatgpt_tokens (struct chatgpt_file *file,
+chatgpt_tokens (struct cred *file,
                 struct json_object *tokens,
                 struct json_object *keys,
                 struct cstr_view    nonce,
@@ -753,7 +604,7 @@ chatgpt_tokens (struct chatgpt_file *file,
 	}
 	bool allowed = !e && chatgpt_scope(record);
 	if (!e)
-		e = chatgpt_file_save(file, record);
+		e = cred_save(file, record);
 	if (!e) {
 		json_object_put(file->record);
 		file->record = record;
@@ -765,7 +616,7 @@ chatgpt_tokens (struct chatgpt_file *file,
 }
 
 static int
-chatgpt_exchange (struct chatgpt_file *file,
+chatgpt_exchange (struct cred *file,
                   struct cstr_view    form,
                   struct cstr_view    nonce,
                   bool                login)
@@ -791,7 +642,7 @@ chatgpt_exchange (struct chatgpt_file *file,
 			json_object_object_del(file->record, "refresh_token");
 			json_object_object_del(file->record, "id_token");
 			json_object_object_del(file->record, "expires_at");
-			e = chatgpt_file_save(file, file->record);
+			e = cred_save(file, file->record);
 		}
 		if (!e)
 			e = status >= 400 && status <= 403 ? EACCES : EIO;
@@ -812,7 +663,7 @@ chatgpt_header (char const  *path,
 	dstr_clear(header);
 	CURLcode curl_status = curl_global_init(CURL_GLOBAL_DEFAULT);
 	int e;
-	struct chatgpt_file file = chatgpt_file(path, false, &e);
+	struct cred file = cred(path, 0, &e);
 	if (!e && curl_status != CURLE_OK)
 		e = EIO;
 	dstr_auto form = dstr(nullptr);
@@ -840,7 +691,7 @@ chatgpt_header (char const  *path,
 	if (!e && !dstr_printf(header, "Authorization: Bearer %s", chatgpt_text(file.record, "access_token").data))
 		e = ENOMEM;
 	OPENSSL_cleanse(dstr_raw(&form), dstr_len(&form));
-	chatgpt_file_fini(&file);
+	cred_fini(&file);
 	if (curl_status == CURLE_OK)
 		curl_global_cleanup();
 	if (e)
@@ -855,7 +706,7 @@ chatgpt_header (char const  *path,
 }
 
 static int
-chatgpt_host (struct chatgpt_file *file)
+chatgpt_host (struct cred *file)
 {
 	if (chatgpt_text(file->record, "ext_agent_host_id").len)
 		return 0;
@@ -870,7 +721,7 @@ chatgpt_host (struct chatgpt_file *file)
 	                     id.hex, id.hex + 8, id.hex + 12, id.hex + 16, id.hex + 20);
 	if (!e)
 		e = jb_set(file->record, "ext_agent_host_id", jb_string(util_text_view(&host)));
-	return e ? e : chatgpt_file_save(file, file->record);
+	return e ? e : cred_save(file, file->record);
 }
 
 int
@@ -880,7 +731,7 @@ chatgpt_login (char const *path,
 {
 	CURLcode curl_status = curl_global_init(CURL_GLOBAL_DEFAULT);
 	int e;
-	struct chatgpt_file file = chatgpt_file(path, true, &e);
+	struct cred file = cred(path, CRED_CREATE, &e);
 	if (!e && curl_status != CURLE_OK)
 		e = EIO;
 	if (!e)
@@ -933,7 +784,7 @@ chatgpt_login (char const *path,
 	if (!e && !client.len) {
 		e = jb_set(file.record, "client_id", json_object_get(jb_get(params, "client_id")));
 		if (!e)
-			e = chatgpt_file_save(&file, file.record);
+			e = cred_save(&file, file.record);
 	}
 	if (!e) {
 		struct chatgpt_field const fields[] = {
@@ -952,7 +803,7 @@ chatgpt_login (char const *path,
 	OPENSSL_cleanse(verifier, sizeof verifier);
 	OPENSSL_cleanse(random, sizeof random);
 	json_object_put(params);
-	chatgpt_file_fini(&file);
+	cred_fini(&file);
 	if (curl_status == CURLE_OK)
 		curl_global_cleanup();
 	if (e)

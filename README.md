@@ -159,6 +159,53 @@ begun) and cancel a synchronous call when the client goes. With
 which continues after the client's request ends. A server
 that answers with plain JSON all the same is understood too.
 
+### A bearer token from a command
+
+Some upstreams take a short-lived JSON Web Token that only a program can
+get for the user, such as the token of a page behind a single sign-on.
+`--auth-command COMMAND` names a shell command that prints such a token,
+alone or inside other text such as JSON. askai runs the command when it
+has no token that is still valid, sends the token as
+`Authorization: Bearer`, and keeps it in a private file until a minute
+before the time of its `exp` claim:
+
+```sh
+build/askai --url https://llm.example/v1/chat/completions -m some-model \
+    --auth-command 'build/askai-open-browser https://login.example/token'
+```
+
+`--auth-login` runs the command once and saves the token, so that a
+service that starts afterwards has one. The command runs with `/bin/sh`
+and the environment of askai, for up to five minutes, with `/dev/null` as
+its standard input and standard error. askai does not check the signature
+of the token: the upstream does. The file defaults to
+`$XDG_STATE_HOME/askai/bearer.json` when `XDG_STATE_HOME` is absolute,
+otherwise `$HOME/.local/state/askai/bearer.json`; `--auth-file` names
+another one. The file and its directory must be private to the user
+(modes 0600 and 0700). `--auth-command` cannot be combined with
+`--key-env`, an `Authorization` header or `-p chatgpt`.
+
+`askai-open-browser URL` is such a command, for a page that serves the
+token to a browser that is signed in. It runs on Linux and in WSL2, where
+it uses the browser of Windows. A page cannot hand its content to another
+program, so the helper tries three steps, each one only if the one before
+gave no token:
+
+1. In WSL2, `curl.exe` of Windows fetches the page with the integrated
+   authentication of the Windows user. No browser opens. This works only
+   if the host of the URL itself accepts Kerberos or NTLM: curl does not
+   authenticate to a host that the page redirects to.
+2. The default browser opens the page: the browser of `BROWSER`, of
+   Windows in WSL2, or of `xdg-open`. Copy the text of the page (Ctrl+A,
+   Ctrl+C). In WSL2 the helper takes the token from the clipboard of
+   Windows, which it reads with `powershell.exe`, and empties the
+   clipboard. A clipboard history of Windows can still keep the text.
+3. Paste the token at the terminal.
+
+The helper writes its messages to the terminal. Under a service without
+a terminal, step 3 is left out, and the page that opens is the only sign
+that the helper waits for the clipboard, for up to two minutes.
+
 ### ChatGPT subscriptions
 
 `chatgpt` uses OpenAI's [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source)
@@ -2471,6 +2518,17 @@ Upstream AI ("upstream"):
       --chatgpt-login       sign in with ChatGPT in a browser, save
                             renewable credentials and exit; implies
                             --provider chatgpt; no model is needed
+      --auth-command COMMAND
+                            shell command that prints a JSON Web Token;
+                            askai runs it when it has no token that is
+                            still valid, and sends the token as the
+                            bearer token; exclusive with an explicit key
+                            or auth header
+      --auth-file FILE      file that keeps the token of --auth-command
+                            (default: $XDG_STATE_HOME/askai/bearer.json,
+                            or $HOME/.local/state/askai/bearer.json)
+      --auth-login          run --auth-command now, save its token and
+                            exit; no model is needed
   -H, --header LINE         extra request header, Name: value
                             (repeatable)
   -s, --system TEXT         default system prompt
