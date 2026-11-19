@@ -24,6 +24,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "buf.h"
 #include "compat.h"
@@ -70,6 +71,10 @@ enum graph_fn_flag : uint32_t {
 	                                 macro. It is in the graph only for the
 	                                 uses of macros that its definition
 	                                 writes, and no call names it. */
+	GRAPH_FN_SYMBOL = 1U << 3,  /**< a declaration gives the function
+	                                 another name for the linker, as an
+	                                 asm label does: the text after the
+	                                 name */
 };
 
 /** What a graph says of the parse of the translation unit. */
@@ -177,6 +182,19 @@ graph_text (struct graph const *g,
             uint32_t            at)
 {
 	return g->text + at;
+}
+
+/**
+ * Returns the name for the linker of @p fn, a function of @p g: the name
+ * of the function unless it is GRAPH_FN_SYMBOL. Two functions of one name
+ * for the linker that are not static are one function of the program.
+ */
+static force_inline char const *
+graph_link (struct graph const    *g,
+            struct graph_fn const *fn)
+{
+	char const *name = graph_text(g, fn->name);
+	return fn->flags & GRAPH_FN_SYMBOL ? name + strlen(name) + 1 : name;
 }
 
 /**

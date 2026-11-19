@@ -472,6 +472,56 @@ main (void)
 	              "    - src/q.c:2 q (1-3)\n"));
 	build_fini(&two);
 
+	/* A declaration gives the function of the first unit another name for
+	 * the linker: it is not the function of the second unit. */
+	struct build syms = build();
+	CHECK(!build_add(&syms, CSTR_VIEW("src/p.c"), CSTR_VIEW("c\0")));
+	CHECK(!build_add(&syms, CSTR_VIEW("src/q.c"), CSTR_VIEW("c\0")));
+	for (uint32_t i = 0; i < 2; ++i) {
+		d = graph_draft();
+		uint32_t const file = text(&d, i ? "src/q.c" : "src/p.c");
+		uint32_t const name = text(&d, "lib");
+		if (!i)
+			(void)text(&d, "lib_other");
+		CHECK(!util_push(d.fns, (struct graph_fn){
+			.name     = name,
+			.flags    = i ? 0 : GRAPH_FN_SYMBOL,
+			.declared = { text(&d, "/usr/x.h"), 5 + i, 5 + i },
+			.defined  = { GRAPH_NONE, 0, 0 },
+		}));
+		CHECK(!util_push(d.fns, (struct graph_fn){
+			.name     = text(&d, i ? "q" : "p"),
+			.declared = { file, 1, 1 },
+			.defined  = { file, 1, 3 },
+			.n_calls  = 1,
+		}));
+		call(&d, file, 2, (uint32_t const[]){ 0 }, 1,
+		     (struct graph_call){ .macro = GRAPH_NONE });
+		parsed(&syms, i, &d);
+	}
+	CHECK(answers(&syms, (struct build_callee){ .name = CSTR_VIEW("lib") },
+	              "- callee: lib (declared /usr/x.h:6)\n"
+	              "  - callers\n"
+	              "    - src/q.c:2 q (1-3)\n"
+	              "- callee: lib (declared /usr/x.h:5) [symbol lib_other]\n"
+	              "  - callers\n"
+	              "    - src/p.c:2 p (1-3)\n"));
+	CHECK(answers(&syms, (struct build_callee){
+			.name = CSTR_VIEW("lib"),
+			.link = CSTR_VIEW("lib_other"),
+			.mask = GRAPH_FN_STATIC | GRAPH_FN_MACRO,
+		},
+		"- callee: lib (declared /usr/x.h:5) [symbol lib_other]\n"
+		"  - callers\n"
+		"    - src/p.c:2 p (1-3)\n"));
+	CHECK(answers(&syms, (struct build_callee){
+			.name = CSTR_VIEW("lib"),
+			.link = CSTR_VIEW("lib_"),
+			.mask = GRAPH_FN_STATIC | GRAPH_FN_MACRO,
+		},
+		"- callee: lib (not found)\n"));
+	build_fini(&syms);
+
 	/* A build of parsed units without errors has no closing lines. */
 	build_fini(&b);
 	CHECK(!b.n && !b.items && !buf_peek(&b.text).len);

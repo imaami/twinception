@@ -118,11 +118,14 @@ build_parsed (struct build *b,
  *  unit declares: flags tells if it is a macro, or a static function. A
  *  macro or a static function is then the one whose first declaration is
  *  in file, a path as a graph names it. For another function, if file is
- *  not empty, a function that another file defines is no callee.
+ *  not empty, a function that another file defines is no callee, and if
+ *  link is not empty, neither is one with another name for the linker
+ *  (graph_link()).
  */
 struct build_callee {
 	struct cstr_view name;
 	struct cstr_view file;
+	struct cstr_view link;
 	uint32_t         mask;
 	uint32_t         flags;  /**< enum graph_fn_flag */
 };
@@ -131,7 +134,10 @@ struct build_callee {
  * Appends to @p out the callers of @p callee in the graphs of @p b, as a
  * list. Each function that @p callee names is a callee, with the file and
  * the lines of its definition, after the word macro for a macro, or after
- * the word declared those of its first declaration. Under a callee, a row
+ * the word declared those of its first declaration. Functions with
+ * different names for the linker are different callees, and such a name
+ * that is not the name of the function follows the callee as [symbol
+ * NAME]. Under a callee, a row
  * for each caller: the file and the lines of the calls, the calling
  * function and its lines, and notes in brackets. The caller of a use of a
  * macro can also be a macro, or the file scope. A row that several

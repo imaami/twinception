@@ -210,13 +210,15 @@ cdb_command (struct cdb_map const *map,
 		struct json_object *a = cdb_entry(map, jb_at(cmds, i), &d, &tmp, &e);
 		if (!a)
 			continue;
-		/* A header takes the entry with the longest common directory. */
+		/* A header takes the entry of a .c file with the longest common
+		 * directory. */
 		struct cstr_view const path = cstr_view_dstr(&tmp);
 		size_t c = 0;
 		for (size_t k = 0; k < path.len && k < w.len && path.data[k] == w.data[k]; ++k)
 			c = path.data[k] == '/' ? k : c;
 		usable = true;
-		if (header ? !args || c > common : cstr_view_equal(path, w)) {
+		if (header ? cstr_view_ends(path, CSTR_VIEW(".c")) && (!args || c > common)
+		           : cstr_view_equal(path, w)) {
 			args = a;
 			dir = d;
 			common = c;

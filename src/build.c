@@ -157,10 +157,55 @@ build_callee_uses (struct cstr_view       key,
 	}
 }
 
+/* Returns true if @p callee names the function @p fn of @p g. An
+ * object-like macro is no callee. A macro or a static function that one
+ * translation unit declares is the one of its file, and another function
+ * the one of its name for the linker. The definitions of that function in
+ * other files are left out after all rows are known (build_rows()).
+ */
+static bool
+build_callee_is (struct build_callee const *callee,
+                 struct graph const        *g,
+                 struct graph_fn const     *fn)
+{
+	return !(fn->flags & GRAPH_FN_OBJECT) &&
+	       (fn->flags & callee->mask) == callee->flags &&
+	       (!callee->file.len || !(fn->flags & (GRAPH_FN_STATIC | GRAPH_FN_MACRO)) ||
+	        build_text_is(graph_text(g, fn->declared.file), callee->file)) &&
+	       (!callee->link.len || build_text_is(graph_link(g, fn), callee->link));
+}
+
+/* Returns the first name for the linker after @p after, in the order of
+ * strcmp(), of the functions of @p b that @p callee names, or the first
+ * one of all for a null @p after. Returns nullptr if there is none.
+ */
+static char const *
+build_link_next (struct build const        *b,
+                 struct build_callee const *callee,
+                 char const                *after)
+{
+	char const *next = nullptr;
+	for (size_t i = 0; i < b->n; ++i) {
+		struct graph const *g = &b->items[i].g;
+		uint32_t n;
+		uint32_t const *named = graph_named(g, callee->name, &n);
+		for (uint32_t k = 0; k < n; ++k) {
+			struct graph_fn const *fn = &g->fns[named[k]];
+			char const *link = graph_link(g, fn);
+			if (build_callee_is(callee, g, fn) &&
+			    (!after || strcmp(link, after) > 0) &&
+			    (!next || strcmp(link, next) < 0))
+				next = link;
+		}
+	}
+	return next;
+}
+
 /* Appends to @p out the rows of each function of @p g that @p callee
- * names: a row of the key of the function and two tabs, and the rows of the
- * uses of the function (build_callee_uses()). @p key is the text of the
- * key of one function at a time.
+ * names and that the linker knows as @p link: a row of the key of the
+ * function and two tabs, and the rows of the uses of the function
+ * (build_callee_uses()). @p key is the text of the key of one function at
+ * a time.
  *
  * The key is a letter and the place of the function as FILE:FIRST-LAST.
  * The place is that of the definition in the translation unit, or of the
@@ -172,6 +217,7 @@ build_callee_uses (struct cstr_view       key,
 static void
 build_callee_rows (struct build_callee const *callee,
                    struct graph const        *g,
+                   char const                *link,
                    struct cxi_out            *key,
                    struct cxi_out            *out)
 {
@@ -182,14 +228,7 @@ build_callee_rows (struct build_callee const *callee,
 		bool const defined = fn->defined.file != GRAPH_NONE;
 		bool const is_static = fn->flags & GRAPH_FN_STATIC;
 		bool const is_macro = fn->flags & GRAPH_FN_MACRO;
-		/* An object-like macro is no callee. A macro or a static function
-		 * that one translation unit declares is the one of its file. The
-		 * definitions of another function in other files are left out
-		 * after all rows are known (build_rows()). */
-		if (fn->flags & GRAPH_FN_OBJECT ||
-		    (fn->flags & callee->mask) != callee->flags ||
-		    (callee->file.len && (is_static || is_macro) &&
-		     !build_text_is(graph_text(g, fn->declared.file), callee->file)))
+		if (!build_callee_is(callee, g, fn) || strcmp(graph_link(g, fn), link))
 			continue;
 
 		struct graph_place const *at = defined ? &fn->defined
@@ -239,8 +278,10 @@ build_row_order (void const *a,
  * or several, the callee is the declaration, as is a static function
  * without a definition: the place is then appended after the word declared.
  * The callees e are then one callee, with the place of one declaration.
- * The place of a macro is appended after the word macro. Without a row,
- * the function is not found.
+ * The place of a macro is appended after the word macro. @p symbol
+ * follows each callee as [symbol NAME] if it is not empty: the name of the
+ * functions of the rows for the linker, if it is not @p name. Without a
+ * row, the function is not found.
  *
  * @p only is empty, or E and the path of a file with a colon, as the
  * callee of a function that this file defines starts: the rows of a
@@ -253,6 +294,7 @@ build_row_order (void const *a,
 static void
 build_rows (struct cxi_out   *out,
             struct cstr_view  name,
+            struct cstr_view  symbol,
             struct cstr_view  text,
             struct cstr_view  only)
 {
@@ -325,7 +367,13 @@ build_rows (struct cxi_out   *out,
 			                  : letter == 'M' ? CSTR_VIEW(" (macro ")
 			                  : CSTR_VIEW(" ("));
 			cxi_out_view(out, cstr_view_slice(r->callee, 1, SIZE_MAX));
-			cxi_out_lit(out, ")\n");
+			if (symbol.len) {
+				cxi_out_lit(out, ") [symbol ");
+				cxi_out_path(out, symbol);
+				cxi_out_lit(out, "]\n");
+			} else {
+				cxi_out_lit(out, ")\n");
+			}
 			bare = true;
 		}
 		if (r->text.len && (first || !cstr_view_equal(r->file, r[-1].file) ||
@@ -377,25 +425,35 @@ build_callers (struct build const        *b,
 {
 	struct cxi_out rows = cxi_out(cstr_view(nullptr));
 	struct cxi_out key = cxi_out(cstr_view(nullptr));
-	size_t late = 0;
-	/* The graph of a unit that is not BUILD_GRAPH is empty. */
-	for (size_t i = 0; i < b->n; ++i) {
-		uint32_t const state = b->items[i].state;
-		late += state != BUILD_GRAPH && state != BUILD_FAILED;
-		build_callee_rows(callee, &b->items[i].g, &key, &rows);
-	}
+	struct cxi_out only = cxi_out(cstr_view(nullptr));
 	/* The one definition of a function that is not static, for a callee
 	 * that one translation unit declares. */
 	if (callee->file.len && callee->mask && !callee->flags) {
-		if (!dstr_clear(&key.text))
-			key.e = EINVAL;
-		cxi_out_lit(&key, "E");
-		cxi_out_path(&key, callee->file);
-		cxi_out_lit(&key, ":");
-		build_rows(out, callee->name, cstr_view_dstr(&rows.text),
-		           cstr_view_dstr(&key.text));
-	} else {
-		build_rows(out, callee->name, cstr_view_dstr(&rows.text), cstr_view(nullptr));
+		cxi_out_lit(&only, "E");
+		cxi_out_path(&only, callee->file);
+		cxi_out_lit(&only, ":");
+	}
+	/* The functions of one name for the linker are appended together,
+	 * one such name after the other. The graph of a unit that is not
+	 * BUILD_GRAPH is empty. */
+	char const *link = build_link_next(b, callee, nullptr);
+	if (!link)
+		build_rows(out, callee->name, cstr_view(nullptr), cstr_view(nullptr),
+		           cstr_view(nullptr));
+	for (; link; link = build_link_next(b, callee, link)) {
+		if (!dstr_clear(&rows.text))
+			rows.e = EINVAL;
+		for (size_t i = 0; i < b->n; ++i)
+			build_callee_rows(callee, &b->items[i].g, link, &key, &rows);
+		build_rows(out, callee->name,
+		           build_text_is(link, callee->name) ? cstr_view(nullptr)
+		                                             : cstr_view(link),
+		           cstr_view_dstr(&rows.text), cstr_view_dstr(&only.text));
+	}
+	size_t late = 0;
+	for (size_t i = 0; i < b->n; ++i) {
+		uint32_t const state = b->items[i].state;
+		late += state != BUILD_GRAPH && state != BUILD_FAILED;
 	}
 	build_units(b, CSTR_VIEW("- not parsed: "), BUILD_FAILED, 0, out);
 	build_units(b, CSTR_VIEW("- parsed with errors: "), BUILD_GRAPH,
@@ -403,7 +461,8 @@ build_callers (struct build const        *b,
 	if (late)
 		cxi_out_fmt(out, "- not searched: %zu translation unit%s (time limit)\n",
 		            late, util_s(late));
-	out->e = out->e ? out->e : rows.e ? rows.e : key.e;
+	out->e = out->e ? out->e : rows.e ? rows.e : key.e ? key.e : only.e;
+	cxi_out_fini(&only);
 	cxi_out_fini(&key);
 	cxi_out_fini(&rows);
 }

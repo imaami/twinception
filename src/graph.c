@@ -61,7 +61,8 @@ graph_text_order (char const       *text,
  * of the names and the indices, and each use is a call that names the
  * function, in the code of the function that the use tells. The offset of
  * a text is valid if it is in the text part, because the part ends with a
- * NUL.
+ * NUL. The name of a function that is GRAPH_FN_SYMBOL is not the last
+ * text.
  */
 static bool
 graph_valid (struct graph const *g)
@@ -72,6 +73,8 @@ graph_valid (struct graph const *g)
 	for (uint32_t i = 0; i < g->n_fns; ++i) {
 		struct graph_fn const *fn = &g->fns[i];
 		if (fn->name >= g->n_text ||
+		    (fn->flags & GRAPH_FN_SYMBOL &&
+		     strlen(g->text + fn->name) + 1 >= g->n_text - fn->name) ||
 		    fn->declared.file >= g->n_text ||
 		    (fn->defined.file != GRAPH_NONE &&
 		     fn->defined.file >= g->n_text) ||

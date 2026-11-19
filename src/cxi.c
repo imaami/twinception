@@ -2591,23 +2591,20 @@ cxi_fn_like (CXTranslationUnit tu,
 }
 
 /* Returns true if the use @p c of a function-like macro has arguments: its
- * extent is then more than the name. libclang also reports the name after
- * #ifdef or defined as a use of the macro, with the extent of the name.
+ * extent then ends with ")". libclang also reports the name after #ifdef
+ * or defined as a use of the macro, with the extent of the name.
  */
 static bool
 cxi_called (CXTranslationUnit tu,
             CXCursor          c)
 {
-	CXSourceRange const extent = clang_getCursorExtent(c);
 	CXFile file;
-	unsigned from;
 	unsigned to;
-	clang_getFileLocation(clang_getRangeStart(extent), &file, nullptr, nullptr, &from);
-	clang_getFileLocation(clang_getRangeEnd(extent), nullptr, nullptr, nullptr, &to);
+	clang_getFileLocation(clang_getRangeEnd(clang_getCursorExtent(c)), &file, nullptr,
+	                      nullptr, &to);
 	size_t size = 0;
 	char const *text = file ? clang_getFileContents(tu, file, &size) : nullptr;
-	return text && from < to && to <= size &&
-	       cxi_ident(cstr_view_n(text + from, to - from)) < to - from;
+	return text && to && to <= size && text[to - 1] == ')';
 }
 
 /* A use of a function-like macro with arguments that a file of the tree
@@ -2730,10 +2727,39 @@ cxi_graph_place (struct cxi_graph   *g,
 	                      &line);
 }
 
+/* Stores the cursor of the asm label of a function in the cursor at
+ * @p data: the attributes are the first children of a declaration.
+ */
+static enum CXChildVisitResult
+cxi_label_visit (CXCursor     c,
+                 CXCursor,
+                 CXClientData data)
+{
+	if (c.kind == CXCursor_AsmLabelAttr)
+		*(CXCursor *)data = c;
+	return c.kind != CXCursor_AsmLabelAttr && clang_isAttribute(c.kind)
+	       ? CXChildVisit_Continue : CXChildVisit_Break;
+}
+
+/* Returns the cursor of the asm label of the declaration @p d of a
+ * function, whose spelling is the name that the declaration gives the
+ * function for the linker, or a null cursor. A declaration has the labels
+ * of the declarations before it, so the definition is the one to ask, or
+ * without one the first declaration.
+ */
+static CXCursor
+cxi_label (CXCursor d)
+{
+	CXCursor label = clang_getNullCursor();
+	clang_visitChildren(d, cxi_label_visit, &label);
+	return label;
+}
+
 /* Writes to @p *id the index in @p g of the function whose first
  * declaration is @p d, and appends the function if @p g does not contain
  * it: the name, the linkage, the place of @p d, and the place of the
- * definition if the translation unit has one.
+ * definition if the translation unit has one. The asm label of a function
+ * that is not static follows the name in the text if it is another name.
  */
 static int
 cxi_graph_fn (struct cxi_graph *g,
@@ -2749,15 +2775,25 @@ cxi_graph_fn (struct cxi_graph *g,
 		           ? GRAPH_FN_STATIC : 0,
 		.defined = { .file = GRAPH_NONE }
 	};
+	CXCursor const definition = clang_getCursorDefinition(d);
+	bool const defined = !clang_Cursor_isNull(definition);
+	CXCursor const label = fn.flags & GRAPH_FN_STATIC ? clang_getNullCursor()
+	                       : cxi_label(defined ? definition : d);
 	CXString name = clang_getCursorSpelling(d);
-	int e = graph_draft_text(&g->draft, cstr_view(clang_getCString(name)),
-	                         &fn.name);
+	CXString link = clang_getCursorSpelling(label);
+	struct cstr_view const spelled = cstr_view(clang_getCString(name));
+	struct cstr_view const symbol = cstr_view(clang_getCString(link));
+	int e = graph_draft_text(&g->draft, spelled, &fn.name);
+	if (!e && symbol.len && !cstr_view_equal(symbol, spelled)) {
+		uint32_t at;
+		fn.flags |= GRAPH_FN_SYMBOL;
+		e = graph_draft_text(&g->draft, symbol, &at);
+	}
+	clang_disposeString(link);
 	clang_disposeString(name);
 	if (!e)
 		e = cxi_graph_place(g, d, &fn.declared);
-
-	CXCursor const definition = clang_getCursorDefinition(d);
-	if (!e && !clang_Cursor_isNull(definition))
+	if (!e && defined)
 		e = cxi_graph_place(g, definition, &fn.defined);
 
 	*id = (uint32_t)g->draft.fns.n;
@@ -3073,11 +3109,12 @@ cxi_token_is (CXTranslationUnit  tu,
 /* Appends to the draft of @p g the uses of macros in the definition
  * @p def of a macro, whose tokens are the @p n tokens at @p tokens: an
  * identifier from the token @p body on that names a function-like macro of
- * the draft, that "(" follows, and that is neither the macro itself, which
- * is not expanded in its own expansion, nor one of its parameters, the
- * tokens from 2 to @p body - 1. A name of several macros of the draft is a
- * use of one of them. The uses are the calls of the macro, which is
- * appended to the draft for its first use if it is object-like.
+ * the draft, that "(" follows, with or without comments in between, and
+ * that is neither the macro itself, which is not expanded in its own
+ * expansion, nor one of its parameters, the tokens from 2 to @p body - 1.
+ * A name of several macros of the draft is a use of one of them. The uses
+ * are the calls of the macro, which is appended to the draft for its first
+ * use if it is object-like.
  */
 static int
 cxi_graph_body (struct cxi_graph *g,
@@ -3095,12 +3132,15 @@ cxi_graph_body (struct cxi_graph *g,
 		if (clang_getTokenKind(tokens[t]) != CXToken_Identifier)
 			continue;
 
+		unsigned next = t + 1;
+		while (next + 1 < n && clang_getTokenKind(tokens[next]) == CXToken_Comment)
+			++next;
 		CXString spelled = clang_getTokenSpelling(tu, tokens[t]);
 		char const *name = clang_getCString(spelled);
 		size_t at = name ? cxi_graph_named(g, name) : g->named.n;
 		char const *text = g->draft.text.items;
 		bool used = at < g->named.n && !strcmp(text + g->named.items[at].name, name) &&
-		            cxi_token_is(tu, tokens[t + 1], "(") &&
+		            cxi_token_is(tu, tokens[next], "(") &&
 		            !cxi_token_is(tu, tokens[0], name);
 		for (unsigned p = 2; used && p + 1 < body; ++p)
 			used = !cxi_token_is(tu, tokens[p], name);
@@ -3279,10 +3319,27 @@ cxi_callee_visit (CXCursor     c,
 	return CXChildVisit_Continue;
 }
 
+/* Stores in the cxi_callee at @p data the first function that it names
+ * and that any code declares, as a declaration in a function does.
+ */
+static enum CXChildVisitResult
+cxi_callee_inner (CXCursor     c,
+                  CXCursor,
+                  CXClientData data)
+{
+	struct cxi_callee *callee = data;
+	if (c.kind != CXCursor_FunctionDecl || !cxi_spelled(c, callee->name))
+		return CXChildVisit_Recurse;
+
+	callee->fn = c;
+	return CXChildVisit_Break;
+}
+
 /* callers: what askai needs to answer from the graphs of the build
  * (src/build.h), after the request is checked. The answer is the name of
- * the functions, a NUL, a letter and the path of a file, a NUL, and the
- * name of the build (cxi_out_build()) with a NUL. With list=1, the
+ * the functions, a NUL, a letter and the path of a file, a NUL, a name for
+ * the linker, a NUL, and the name of the build (cxi_out_build()) with a
+ * NUL. With list=1, the
  * translation units of the compile commands follow (cdb_next()): for each
  * one the path of its file, a NUL, the number of the bytes of its clang
  * command line, a NUL, and the words of the command line, each followed by
@@ -3294,8 +3351,10 @@ cxi_callee_visit (CXCursor     c,
  * macro. The letter is then S for a static function, with the file of its
  * first declaration, and E for another function, with the file of its
  * definition if the translation unit defines it: another definition of the
- * name is then no callee. The letter is M for a macro, with the file of
- * its definition.
+ * name is then no callee. The name for the linker is that of the function
+ * of E, its asm label or its name, and else empty. The letter is M for a
+ * macro, with the file of its definition. A function that only a
+ * declaration in a function declares is looked for after the others.
  */
 static int
 cxi_callers (struct cxi *x)
@@ -3304,8 +3363,10 @@ cxi_callers (struct cxi *x)
 	struct cstr_view const name = x->key[CXI_KEY_NAME];
 	struct cxi_callee callee = cxi_callee(name.data);
 	if (x->key[CXI_KEY_PATH].data) {
-		clang_visitChildren(clang_getTranslationUnitCursor(x->tu), cxi_callee_visit,
-		                    &callee);
+		CXCursor const unit = clang_getTranslationUnitCursor(x->tu);
+		clang_visitChildren(unit, cxi_callee_visit, &callee);
+		if (clang_Cursor_isNull(callee.fn) && clang_Cursor_isNull(callee.macro))
+			clang_visitChildren(unit, cxi_callee_inner, &callee);
 		/* The error of cxi_lookup() lists the names of the translation
 		 * unit that contain the name. */
 		int const e = clang_Cursor_isNull(callee.fn) && clang_Cursor_isNull(callee.macro)
@@ -3315,6 +3376,8 @@ cxi_callers (struct cxi *x)
 	}
 	/* The name is a word of the request, so a NUL follows it. */
 	CXCursor const first = clang_getCanonicalCursor(callee.fn);
+	CXCursor label = clang_getNullCursor();
+	struct cstr_view link = {};
 	cxi_out_put(out, name.data, name.len + 1);
 	if (!clang_Cursor_isNull(first) &&
 	    clang_getCursorLinkage(first) == CXLinkage_Internal) {
@@ -3322,8 +3385,11 @@ cxi_callers (struct cxi *x)
 		cxi_out_raw(out, clang_getCursorLocation(first));
 	} else if (!clang_Cursor_isNull(first)) {
 		CXCursor const definition = clang_getCursorDefinition(first);
+		bool const defined = !clang_Cursor_isNull(definition);
+		label = cxi_label(defined ? definition : first);
+		link = name;
 		cxi_out_lit(out, "E");
-		if (!clang_Cursor_isNull(definition))
+		if (defined)
 			cxi_out_raw(out, clang_getCursorLocation(definition));
 	} else if (!clang_Cursor_isNull(callee.macro)) {
 		cxi_out_lit(out, "M");
@@ -3331,6 +3397,11 @@ cxi_callers (struct cxi *x)
 	} else {
 		cxi_out_lit(out, "A");
 	}
+	cxi_out_put(out, "", 1);
+	CXString spelling = clang_getCursorSpelling(label);
+	struct cstr_view const symbol = cstr_view(clang_getCString(spelling));
+	cxi_out_view(out, symbol.len ? symbol : link);
+	clang_disposeString(spelling);
 	cxi_out_put(out, "", 1);
 	cxi_out_build(out, x);
 	cxi_out_put(out, "", 1);

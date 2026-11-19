@@ -316,7 +316,9 @@ code_definition (void const *service)
 			"A finding can cite the numbered lines, such as c7:120-140. callers lists "
 			"the calls of the function name in every translation unit of the compile "
 			"commands. callers works without path. Each function of that name is a "
-			"callee, printed with the file and the lines of the definition. With "
+			"callee, printed with the file and the lines of the definition, and "
+			"with [symbol NAME] if a declaration gives the function another name "
+			"for the linker. With "
 			"path, the callee is the function that the translation unit of path "
 			"declares. A row under a callee is the file and the lines of the calls, "
 			"the calling function, and the lines of the calling function. A row ends "
@@ -327,7 +329,8 @@ code_definition (void const *service)
 			"through a _Generic selection, describe and callers list the selected "
 			"function. callers does not list a use of the function that is not a "
 			"call, such as the address of the function in an initializer. name can "
-			"also be a function-like macro. The calls of a macro are the places where "
+			"also be a function-like macro: an object-like macro is not found. The "
+			"calls of a macro are the places where "
 			"a file of the repository writes the macro with arguments: in a function, "
 			"in the definition of another macro, or at file scope. callers does not "
 			"list a macro name that is an argument of another macro. A name that is "
@@ -834,13 +837,15 @@ code_record (struct cstr_view     *text,
 
 /* Reads the answer of askai-code to callers for @p call, the output of the
  * child of the pin: the name of the functions, a NUL, a letter and the path
- * of a file, a NUL, the name of the build, a NUL, and with list=1 the
- * translation units (code_build_create()). The letter is A for each
+ * of a file, a NUL, a name for the linker, a NUL, the name of the build,
+ * a NUL, and with list=1 the translation units (code_build_create()). The
+ * letter is A for each
  * function and macro of the name, or for the one that one translation unit
  * declares M if it is a macro, S if it is a static function and E if not:
  * the file is then that of the definition of a macro, that of the first
  * declaration of a static function, and that of the definition of another
- * function, or empty. The call gets a reference to the build of that
+ * function, or empty. The name for the linker is that of the function
+ * of E, and else empty. The call gets a reference to the build of that
  * name and joins the waiting calls of @p cl, and the output of askai-code
  * is freed. Returns 0, ENOMEM, EOVERFLOW, EINVAL if the output is no such
  * answer, or ENOENT if the service does not keep the build and the answer
@@ -854,9 +859,11 @@ code_join (struct code_call *call,
 	struct build_callee *callee = &call->callee;
 	struct cstr_view name;
 	struct cstr_view file;
+	struct cstr_view link;
 	struct cstr_view id;
 	if (!cstr_view_cut(&rest, '\0', &name) ||
 	    !cstr_view_cut(&rest, '\0', &file) ||
+	    !cstr_view_cut(&rest, '\0', &link) ||
 	    !cstr_view_cut(&rest, '\0', &id) ||
 	    !file.len || !memchr("AESM", *file.data, 4))
 		return EINVAL;
@@ -865,10 +872,12 @@ code_join (struct code_call *call,
 	file = cstr_view_slice(file, 1, SIZE_MAX);
 	int e = cstr_view_store(name, &call->named);
 	e = e ? e : cstr_view_cat(file, &call->named);
+	e = e ? e : cstr_view_cat(link, &call->named);
 	if (e)
 		return e;
 	callee->name = cstr_view_n(dstr_get(&call->named), name.len);
-	callee->file = cstr_view_n(dstr_get(&call->named) + name.len, file.len);
+	callee->file = cstr_view_n(callee->name.data + name.len, file.len);
+	callee->link = cstr_view_n(callee->file.data + file.len, link.len);
 	callee->mask = letter == 'A' ? 0 : GRAPH_FN_STATIC | GRAPH_FN_MACRO;
 	callee->flags = letter == 'S' ? GRAPH_FN_STATIC : letter == 'M' ? GRAPH_FN_MACRO : 0;
 

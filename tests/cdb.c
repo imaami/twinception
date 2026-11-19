@@ -29,7 +29,9 @@ static char const commands[] =
 	" {\"directory\": \"/r/proj/build\", \"file\": \"../tests/t.c\","
 	"  \"arguments\": [\"cc\", \"-DT\", \"../tests/t.c\"]},"
 	" {\"directory\": \"/r/proj/build\", \"file\": \"/r/proj/src/c.c\", \"command\": \"cc c.c\"},"
-	" {\"directory\": \"/r\", \"file\": \"/r/o.c\", \"arguments\": [\"cc\", \"/r/o.c\"]}]";
+	" {\"directory\": \"/r\", \"file\": \"/r/o.c\", \"arguments\": [\"cc\", \"/r/o.c\"]},"
+	" {\"directory\": \"/r/proj/build\", \"file\": \"../tests/sub/u.cpp\","
+	"  \"arguments\": [\"c++\", \"-DU\", \"../tests/sub/u.cpp\"]}]";
 
 /* The words for a.c with the tree /c/proj/tree, without the file. */
 static char const a_words[] =
@@ -81,6 +83,10 @@ main (void)
 	CHECK(!check_command(cmds, "tests/t.c", t_c, sizeof t_c));
 	static char const t_h[] = "clang\0-DT\0-x\0c-header\0/c/proj/tree/tests/t.h";
 	CHECK(!check_command(cmds, "tests/t.h", t_h, sizeof t_h));
+	/* A header does not use the command of a file that is not a .c file,
+	 * also if that file is the nearest one. */
+	static char const u_h[] = "clang\0-DT\0-x\0c-header\0/c/proj/tree/tests/sub/u.h";
+	CHECK(!check_command(cmds, "tests/sub/u.h", u_h, sizeof u_h));
 
 	/* cdb_next() writes the command line of each entry in turn that has
 	 * arguments for a .c file under the top. */
@@ -93,7 +99,7 @@ main (void)
 	                      cstr_view_n(want, sizeof a_words - 1 + sizeof a_c)));
 	CHECK(!cdb_next(&map, cmds, &at, &words) && at == 2);
 	CHECK(cstr_view_equal(cstr_view_dstr(&words), cstr_view_n(t_c, sizeof t_c)));
-	CHECK(cdb_next(&map, cmds, &at, &words) == ENOENT && at == 4 && !dstr_len(&words));
+	CHECK(cdb_next(&map, cmds, &at, &words) == ENOENT && at == 5 && !dstr_len(&words));
 	dstr_cleanup(&words);
 
 	/* ENOENT for a .c file without an entry or with an entry that
@@ -102,6 +108,7 @@ main (void)
 	CHECK(check_command(cmds, "src/c.c", "", 0) == ENOENT);
 
 	/* EINVAL if no entry with "arguments" is for a file under the top. */
+	CHECK(!json_object_array_del_idx(cmds, 4, 1));
 	CHECK(!json_object_array_del_idx(cmds, 0, 2));
 	CHECK(check_command(cmds, "src/c.c", "", 0) == EINVAL);
 	CHECK(check_command(cmds, "src/c.h", "", 0) == EINVAL);

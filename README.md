@@ -895,6 +895,12 @@ The parts of the answer:
   does not define the function, if several translation units define a
   function of that name that is not static: the tool cannot tell which
   one the program calls.
+- `callee: NAME (...) [symbol OTHER]`: a declaration gives the function
+  the name `OTHER` for the linker, as the C library does for one of its
+  two functions `strerror_r`. Functions of one name with different names
+  for the linker are different callees. Declarations of one such name
+  are one callee, also if the translation units first declare the
+  function in different headers.
 - `callee: NAME (macro FILE:LINES)`: `name` is a function-like macro. Its
   calls are the places where a file of the repository writes the macro
   with arguments. A macro name that is passed as an argument of another

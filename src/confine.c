@@ -43,7 +43,9 @@ confine_abi (void)
 	return abi > 0 ? (int)abi : 0;
 }
 
-/* Lowers both limits of @p resource to @p most or the hard limit. */
+/* Lowers the hard limit of @p resource to @p most, and the soft limit to
+ * the hard one. A limit that is less stays as it is.
+ */
 static int
 confine_limit (int    resource,
                rlim_t most)
@@ -51,7 +53,8 @@ confine_limit (int    resource,
 	struct rlimit r;
 	if (getrlimit(resource, &r))
 		return errno;
-	r.rlim_cur = r.rlim_max = r.rlim_max < most ? r.rlim_max : most;
+	r.rlim_max = r.rlim_max < most ? r.rlim_max : most;
+	r.rlim_cur = r.rlim_cur < r.rlim_max ? r.rlim_cur : r.rlim_max;
 	return setrlimit(resource, &r) ? errno : 0;
 }
 

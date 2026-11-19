@@ -11485,11 +11485,15 @@ def check_code_build(binary, up, call, d):
             f.write(text)
     write("k.h", "int k_one(int);\nint k_two(int);\n#define K_M(x) (x)\n"
           "#define K_OBJ K_M(1)\n#if defined K_M\n#endif\n"
-          "static inline int k_c(void) { return K_M /* c */ (2) + K_M\n(3); }\n")
+          "static inline int k_c(void) { return K_M /* c */ (2)\n+ K_M\n(3); }\n"
+          "#define K_C K_M /* c */ (4)\n")
     write("k1.c", '#include "k.h"\nint k_one(int n) { return n; }\n'
-          "int k_dup(void) { return 1; }\n")
+          "int k_dup(void) { return 1; }\n"
+          'extern int k_sym(int) __asm__("k_sym_other");\n'
+          "int k_s1(void) { return k_sym(1); }\n")
     write("k2.c", '#include "k.h"\nint k_two(int n) { return k_one(n); }\n'
-          "int k_dup(void) { return 2; }\n")
+          "int k_dup(void) { return 2; }\n"
+          "int k_s2(void) { extern int k_sym(int); return k_sym(2); }\n")
     unused = "int k_four(void) { extern int k_five(void); return (int)sizeof(k_five()); }\n"
     write("k3.c", '#include "k.h"\nint k_three(int n) { return k_two(n); }\n' + unused)
     sh("init", "-q", "-b", "main")
@@ -11580,8 +11584,25 @@ def check_code_build(binary, up, call, d):
             "- callee: K_M (macro src/k.h:3)\n"
             "  - callers\n"
             "    - src/k.h:4 macro K_OBJ (4)\n"
-            "    - src/k.h:7 k_c (7-8)\n")
+            "    - src/k.h:7,8 k_c (7-9)\n"
+            "    - src/k.h:10 macro K_C (10)\n")
         assert runs() == (1, 0, [])
+        # A declaration gives the k_sym of k1.c another name for the linker:
+        # it is not the k_sym of k2.c, which only a declaration in a
+        # function declares. With a path, the callee is the one of the
+        # translation unit.
+        other = ("- callee: k_sym (declared src/k1.c:4) [symbol k_sym_other]\n"
+                 "  - callers\n"
+                 "    - src/k1.c:5 k_s1 (5)\n")
+        plain = ("- callee: k_sym (declared src/k2.c:4)\n"
+                 "  - callers\n"
+                 "    - src/k2.c:4 k_s2 (4)\n")
+        assert callers(ai, "k_sym") == f"- repo: keep\n- commit: {head}\n" + plain + other
+        assert callers(ai, "k_sym", path="src/k1.c") == (
+            f"- repo: keep\n- commit: {head}\n" + other)
+        assert callers(ai, "k_sym", path="src/k2.c") == (
+            f"- repo: keep\n- commit: {head}\n" + plain)
+        assert runs() == (3, 0, [])
         # Two files each define a function k_dup. With a path, the callee
         # is the one that the file of the path defines.
         assert callers(ai, "k_dup") == (

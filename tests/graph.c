@@ -163,6 +163,9 @@ main (void)
 	 * graph does not contain, and a state that is none. The name is the
 	 * first member of a function. */
 	CHECK(refused(&draft, head, 15, 0) == EINVAL);
+	/* A text follows the name of the second function: the function can
+	 * have another name for the linker. */
+	CHECK(!refused(&draft, head + fn + offsetof(struct graph_fn, flags), GRAPH_FN_SYMBOL, 0));
 	CHECK(refused(&draft, head + offsetof(struct graph_fn, declared.file), 15, 0) == EINVAL);
 	CHECK(refused(&draft, head + offsetof(struct graph_fn, defined.file), 15, 0) == EINVAL);
 	CHECK(refused(&draft, head + fn + offsetof(struct graph_fn, calls), 3, 0) == EINVAL);
@@ -229,6 +232,10 @@ main (void)
 	CHECK(!e && g.n_to == 1 && g.n_uses == 2 && g.fns[0].n_uses == 2);
 	CHECK(g.uses[0].call == 0 && g.uses[1].call == 1 && g.uses[1].by == 0);
 	graph_fini(&g);
+	/* The name of the function is the last text: no name for the linker
+	 * follows it. */
+	CHECK(refused(&draft, head + offsetof(struct graph_fn, flags), GRAPH_FN_SYMBOL, 0) ==
+	      EINVAL);
 	graph_draft_fini(&draft);
 	return check_report("graph");
 }
