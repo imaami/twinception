@@ -186,13 +186,22 @@ cstr_view_cut (struct cstr_view *rest,
                char              c,
                struct cstr_view *head)
 {
-	struct cstr_view const text = *rest;
-	char const *at = text.len ? memchr(text.data, c, text.len) : nullptr;
-	if (!at)
+	if (!rest->len)
 		return false;
-	size_t const n = (size_t)(at - text.data);
-	*rest = cstr_view_n(at + 1, text.len - n - 1);
-	*head = cstr_view_n(text.data, n);
+
+	char const *const d = rest->data;
+	char const *const p = memchr(d, c, rest->len);
+	if (!p)
+		return false;
+
+	/* rest and head can be one object, which is then the head: the
+	 * rest is written first. */
+	size_t const q = (size_t)(p - d);
+	rest->data = p + 1;
+	rest->len -= q + 1;
+	head->data = d;
+	head->len  = q;
+
 	return true;
 }
 

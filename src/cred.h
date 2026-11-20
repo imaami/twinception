@@ -13,7 +13,7 @@
 struct json_object;
 
 enum cred_flag : uint32_t {
-	CRED_CREATE = 1u << 0,  /**< a file that does not exist is an empty
+	CRED_CREATE = 1U << 0,  /**< a file that does not exist is an empty
 	                             record, and its directories are made */
 };
 
@@ -24,8 +24,8 @@ enum cred_flag : uint32_t {
 struct cred {
 	struct json_object *record;
 	struct dstr         name;
-	int                 directory;
-	int                 lock;
+	int                 dir_fd;
+	int                 lock_fd;
 };
 
 /**

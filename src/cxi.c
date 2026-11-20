@@ -30,6 +30,7 @@
 #include "cxi_ast.h"
 #include "cxi_out.h"
 #include "dstr.h"
+#include "fs.h"
 #include "git_run.h"
 #include "graph.h"
 #include "jb.h"
@@ -3752,7 +3753,7 @@ cxi_dir (char         *path,
          char const  **why)
 {
 	*fd = -1;
-	int e = util_mkdir_parents(path);
+	int e = fs_mkdir_parents(path);
 	if (!e && mkdir(path, 0700) && errno != EEXIST)
 		e = errno;
 	struct stat st;

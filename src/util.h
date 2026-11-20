@@ -124,10 +124,10 @@ util_decimal (char     *end,
 /** The plural ending of a noun after the count @p n: "" if @p n is 1, else
  *  "s".
  */
-static inline char const *
+static force_inline char const *
 util_s (uint64_t n)
 {
-	return n == 1 ? "" : "s";
+	return &"s"[n == 1];
 }
 
 /** Write the @p n low bytes of @p v, at most 8, to @p to, the most
@@ -140,7 +140,7 @@ util_be_put (unsigned char *to,
 {
 	while (n--) {
 		to[n] = (unsigned char)v;
-		v >>= 8;
+		v >>= (unsigned)CHAR_BIT;
 	}
 }
 
@@ -152,8 +152,11 @@ util_be_get (unsigned char const *from,
              size_t               n)
 {
 	uint64_t v = 0;
-	for (size_t i = 0; i < n; ++i)
-		v = v << 8 | from[i];
+	if (n) {
+		v = *from;
+		while (--n)
+			v = v << (unsigned)CHAR_BIT | *++from;
+	}
 	return v;
 }
 
@@ -167,16 +170,23 @@ util_digits (char const *s,
              uint64_t    max,
              uint64_t   *value)
 {
-	*value = 0;
+	uint64_t v = 0;
 	size_t i = 0;
-	for (; i < len && s[i] >= '0' && s[i] <= '9'; ++i) {
-		unsigned digit = (unsigned)(s[i] - '0');
-		if (digit > max || *value > (max - digit) / 10) {
-			*value = 0;
-			return 0;
-		}
-		*value = *value * 10 + digit;
+	for (unsigned char const *p = (typeof(p))s;
+	     i < len && p[i] >= (unsigned char)'0'
+	             && p[i] <= (unsigned char)'9'; ++i) {
+		unsigned d = p[i] - (unsigned char)'0';
+		uint64_t q = v;
+		v += (v << 3U) + v + d;
+		if (v < q)
+			goto too_large;
 	}
+	if (v > max) {
+	too_large:
+		v = 0;
+		i = 0;
+	}
+	*value = v;
 	return i;
 }
 
@@ -325,7 +335,7 @@ util_state_path (char const **base,
 }
 
 /** Close the descriptor @p *fd unless it is negative, and set it to -1. */
-static inline void
+static force_inline void
 util_close (int *fd)
 {
 	if (*fd >= 0)
@@ -342,12 +352,25 @@ static inline int
 util_path_next (struct cstr_view *rest,
                 struct cstr_view *part)
 {
-	do {
-		*part = *rest;
-		if (!cstr_view_cut(rest, '/', part))
+	for (;;) {
+		/* The last part is checked as the ones before it. */
+		if (!cstr_view_cut(rest, '/', part)) {
+			*part = *rest;
 			rest->len = 0;
-	} while (part->len ? cstr_view_equal(*part, CSTR_VIEW(".")) : rest->len != 0);
-	return cstr_view_equal(*part, CSTR_VIEW("..")) ? EINVAL : 0;
+		}
+
+		if (part->len > 2 ||
+		    (!part->len ? !rest->len
+		                : (*part->data != '.' ||
+		                   (part->len > 1 &&
+		                    part->data[1] != '.'))))
+			break;
+
+		if (part->len == 2)
+			return EINVAL;
+	}
+
+	return 0;
 }
 
 /** Returns true if @p path is not empty, does not begin with '/' and
@@ -356,26 +379,14 @@ util_path_next (struct cstr_view *rest,
 static inline bool
 util_path_inside (struct cstr_view path)
 {
-	struct cstr_view part = {};
-	int e = !path.len || *path.data == '/' ? EINVAL : 0;
-	while (!e && !(e = util_path_next(&path, &part)) && part.len)
-		;
-	return !e;
-}
-
-/** Make each missing directory above @p path with the mode 0700. Returns 0
- *  or the error number of mkdir().
- */
-static inline int
-util_mkdir_parents (char *path)
-{
-	int e = 0;
-	for (char *slash = path; !e && (slash = strchr(slash + 1, '/')); ) {
-		*slash = '\0';
-		e = mkdir(path, 0700) && errno != EEXIST ? errno : 0;
-		*slash = '/';
+	bool ret = path.len && *path.data != '/';
+	if (ret) {
+		struct cstr_view part = {};
+		do {
+			ret = !util_path_next(&path, &part);
+		} while (ret && part.len);
 	}
-	return e;
+	return ret;
 }
 
 /** Opens a directory stream for the directory @p fd. The stream reads the
@@ -388,18 +399,18 @@ static inline DIR *
 util_dir_open (int  fd,
                int *e)
 {
-	*e = 0;
 	int at = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	if (at < 0) {
-		*e = errno;
-		return nullptr;
+	if (at >= 0) {
+		DIR *dir = fdopendir(at);
+		if (dir) {
+			*e = 0;
+			return dir;
+		}
 	}
-	DIR *dir = fdopendir(at);
-	if (!dir) {
-		*e = errno;
-		close(at);
-	}
-	return dir;
+	*e = errno;
+	if (at >= 0)
+		(void)close(at);
+	return nullptr;
 }
 
 /** Returns the next entry of the directory stream @p dir, or nullptr at
@@ -478,7 +489,7 @@ util_private (struct stat const *st,
 		                       : "the file is not a regular file";
 	if (st->st_uid != geteuid())
 		return "askai's user does not own the file";
-	if (st->st_mode & 0077)
+	if (st->st_mode & (S_IRWXG | S_IRWXO))
 		return "the mode of the file lets other users access it";
 	if (type == S_IFREG && st->st_nlink != 1)
 		return "the file has more than one hard link";

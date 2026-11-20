@@ -22,6 +22,7 @@
 #include "cli_state.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "fs.h"
 #include "git_run.h"
 #include "hexid.h"
 #include "jb.h"
@@ -353,9 +354,9 @@ cli_state_default_path (struct cli_state *state)
 	if (!dstr_printf(&state->path, "%s%s/cli.git", base, rest))
 		return ENOMEM;
 	/* Only cli.git, which cli_state_create() creates with the mode 0700,
-	 * contains data. util_mkdir_parents() does not change the mode of the
+	 * contains data. fs_mkdir_parents() does not change the mode of the
 	 * parent directories that exist. */
-	return util_mkdir_parents((char *)dstr_raw(&state->path));
+	return fs_mkdir_parents((char *)dstr_raw(&state->path));
 }
 
 static int

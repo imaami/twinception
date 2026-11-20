@@ -126,7 +126,7 @@ $Otests/cli_ui:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(CLI_LIBS)
 $Otests/cli_state: $Otests/cli_state.c.o $Otests/src/cli_state.c.o \
                    $Otests/src/dstr.c.o $Otests/src/jb.c.o $Otests/src/child.c.o \
                    $Otests/src/buf.c.o $Otests/src/loop.c.o $Otests/src/log.c.o \
-                   $Otests/src/git_run.c.o
+                   $Otests/src/git_run.c.o $Otests/src/fs.c.o
 	$(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS)
 
 $Otests/autocomplete: $Otests/autocomplete.c.o $Otests/src/autocomplete_file.c.o $(AUTOCOMPLETE_OBJECTS)
@@ -152,7 +152,7 @@ $Otests/ai.c.o $Otests/src/ai.c.o: CPPFLAGS += $(JSON_INCLUDES)
 # Only outbound responses are substituted; login uses the real HTTP server.
 override CHATGPT_INCLUDES = $(call test-pkg-config,CHATGPT_INCLUDES,--cflags json-c libcurl libcrypto libssl)
 override CHATGPT_LIBS = $(call test-pkg-config,CHATGPT_LIBS,--libs json-c libcurl libcrypto libssl)
-override CHATGPT_OBJECTS := $(addprefix $Otests/src/,jb.c.o dstr.c.o cstr_view.c.o cred.c.o jwt.c.o \
+override CHATGPT_OBJECTS := $(addprefix $Otests/src/,jb.c.o dstr.c.o cstr_view.c.o cred.c.o fs.c.o jwt.c.o \
                            buf.c.o loop.c.o log.c.o http.c.o curl_loop.c.o blocker.c.o \
                            httpd.c.o policy.c.o tls.c.o registry.c.o plugin.c.o)
 

@@ -20,6 +20,7 @@ override SRC_askai := \
   evidence.c          \
   finding.c           \
   findings.c          \
+  fs.c                \
   git.c               \
   git_run.c           \
   git_view.c          \
