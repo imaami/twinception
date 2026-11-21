@@ -23,7 +23,9 @@
 #include <unistd.h>
 
 #include "child.h"
+#include "clk.h"
 #include "log.h"
+#include "tty.h"
 #include "util.h"
 
 /* The children spawned and not yet reaped, of every loop. */
@@ -298,23 +300,6 @@ child_cmd_exec (struct child_cmd const *cmd,
 	return e;
 }
 
-/* Make the process group of the caller the foreground one of @p tty again,
- * after a child that was it. The caller is a background process group
- * here, which SIGTTOU stops at this call unless the signal is blocked.
- */
-static void
-child_tty_take (int tty)
-{
-	sigset_t ttou;
-	sigset_t was;
-	sigemptyset(&ttou);
-	sigaddset(&ttou, SIGTTOU);
-	if (pthread_sigmask(SIG_BLOCK, &ttou, &was))
-		return;
-	(void)tcsetpgrp(tty, getpgrp());
-	(void)pthread_sigmask(SIG_SETMASK, &was, nullptr);
-}
-
 /* A file in memory that holds the bytes of @p in, read from its start, in
  * @p *fd; 0 or an error.
  */
@@ -411,62 +396,188 @@ child_start (struct child           *c,
 	return e;
 }
 
-/* Wait for @p pidfd's process, which runs @p cmd, to exit: at its deadline,
- * SIGTERM, and SIGKILL once its grace has passed too, or at once without
- * one. Returns 0, ETIMEDOUT if the deadline came, or why the wait failed,
- * which kills the process.
+/* Sends @p sig to the process group of the child @p pidfd. The caller has
+ * not reaped the child, so its id still names it, and that id is also the
+ * id of its group: the child leads a session or a process group of its
+ * own. The signal goes to the child alone if its id is not known.
+ */
+static void
+child_group_signal (int pidfd,
+                    int sig)
+{
+	pid_t const pid = pidfd_getpid(pidfd);
+	if (pid > 1 && !kill(-pid, sig))
+		return;
+	(void)pidfd_send_signal(pidfd, sig, nullptr, 0);
+}
+
+/* Waits until the child @p pidfd has exited, or until the time @p deadline
+ * of loop_clock(), unless that is 0. Returns 0, ETIMEDOUT, or the error
+ * number of poll().
  */
 static int
-child_await (struct child_cmd const *cmd,
-             int                     pidfd)
+child_exit_wait (int      pidfd,
+                 uint64_t deadline)
 {
 	struct pollfd watch = { .fd = pidfd, .events = POLLIN };
-	uint64_t deadline = cmd->deadline;
-	uint64_t grace = cmd->grace;
-	int e = 0;
 	for (;;) {
 		int timeout = -1;
 		if (deadline) {
-			uint64_t now = loop_clock();
-			uint64_t ms = now < deadline ? (deadline - now + MS - 1) / MS : 0;
+			uint64_t const now = loop_clock();
+			uint64_t const ms = now < deadline ? (deadline - now + MS - 1) / MS : 0;
 			timeout = ms < INT_MAX ? (int)ms : INT_MAX;
 		}
-		int ready = poll(&watch, 1, timeout);
+		int const ready = poll(&watch, 1, timeout);
 		if (ready > 0)
-			return e;
-		if (ready < 0 && errno == EINTR)
-			continue;
-		/* At the first timeout, send SIGTERM if the command has a grace. */
-		if (!ready && grace) {
-			(void)pidfd_send_signal(pidfd, SIGTERM, nullptr, 0);
-			deadline = loop_clock() + grace;
-			grace = 0;
-			e = ETIMEDOUT;
-			continue;
+			return 0;
+		if (!ready)
+			return ETIMEDOUT;
+		if (errno != EINTR)
+			return errno;
+	}
+}
+
+/* The loan of a terminal to a child that is its foreground process group
+ * (child_fds.tty), and what the end of the loan sets again.
+ */
+struct child_tty {
+	sigset_t       wake;   /* the signals that end a wait for the child:
+	                          SIGCHLD, and those that would end the caller */
+	sigset_t       old;    /* the signal mask of the caller */
+	struct termios modes;  /* the modes of the terminal before the loan */
+	pid_t          owner;  /* the process group of the caller */
+};
+
+/* Prepares the loan of the terminal @p *fd, before the spawn: stores the
+ * modes of the terminal and the signal mask of the caller in @p *tty, and
+ * blocks SIGCHLD, SIGTTOU and each signal whose default action would end
+ * the caller. Such a signal then waits until the terminal is as it was
+ * (child_tty_take()). If the caller is not the foreground process group
+ * of the terminal, the function changes nothing and sets @p *fd to -1: only
+ * that group can lend the terminal. Returns 0 or an error number.
+ */
+static int
+child_tty_lend (struct child_tty *tty,
+                int              *fd)
+{
+	tty->owner = getpgrp();
+	if (tcgetpgrp(*fd) != tty->owner) {
+		*fd = -1;
+		return 0;
+	}
+	int e = tty_get(*fd, &tty->modes);
+	if (e)
+		return e;
+	static int const fatal[] = { SIGHUP, SIGINT, SIGQUIT, SIGTERM };
+	sigset_t block;
+	sigemptyset(&block);
+	sigaddset(&block, SIGCHLD);
+	for (size_t i = 0; i < array_size(fatal); ++i) {
+		struct sigaction act;
+		if (!sigaction(fatal[i], nullptr, &act) && act.sa_handler == SIG_DFL)
+			sigaddset(&block, fatal[i]);
+	}
+	/* SIGTTOU is blocked and never waited for. A signal that the caller
+	 * had blocked is not waited for either: it stays for the caller. */
+	tty->wake = block;
+	sigaddset(&block, SIGTTOU);
+	e = pthread_sigmask(SIG_BLOCK, &block, &tty->old);
+	if (e)
+		return e;
+	for (size_t i = 0; i < array_size(fatal); ++i)
+		if (sigismember(&tty->old, fatal[i]) > 0)
+			sigdelset(&tty->wake, fatal[i]);
+	return 0;
+}
+
+/* Ends the loan @p tty of the terminal @p fd: makes the process group of
+ * the caller the foreground one again, sets the modes that the terminal
+ * had before the loan, and then the signal mask of the caller. If @p failed
+ * is not 0, the input that the child did not read is dropped first: the
+ * rest of a paste is no command for the shell. The caller is a background
+ * process group until the first step, and SIGTTOU, which would stop it
+ * there, is blocked until the last one. Returns 0 or the first error.
+ */
+static int
+child_tty_take (struct child_tty const *tty,
+                int                     fd,
+                int                     failed)
+{
+	int const group = tcsetpgrp(fd, tty->owner) ? errno : 0;
+	if (failed)
+		(void)tcflush(fd, TCIFLUSH);
+	int const modes = tty_set(fd, TCSANOW, &tty->modes);
+	int const mask = pthread_sigmask(SIG_SETMASK, &tty->old, nullptr);
+	if (group)
+		return group;
+	if (modes)
+		return modes;
+	return mask;
+}
+
+/* Waits as child_exit_wait() does for a child with the loan @p tty. Also
+ * returns ECANCELED if the child was stopped, as by the suspend key of
+ * the terminal, and EINTR after a signal that would end the caller, which
+ * stays pending. SIGCHLD only wakes the wait: waitid() tells what the child
+ * did, and does not reap it.
+ */
+static int
+child_tty_wait (struct child_tty const *tty,
+                int                     pidfd,
+                uint64_t                deadline)
+{
+	for (;;) {
+		siginfo_t info = {};
+		if (waitid(P_PIDFD, (id_t)pidfd, &info, WEXITED | WSTOPPED | WNOHANG | WNOWAIT))
+			return errno;
+		if (info.si_pid)
+			return info.si_code == CLD_STOPPED || info.si_code == CLD_TRAPPED ? ECANCELED : 0;
+		struct timespec left = {};
+		if (deadline) {
+			uint64_t const now = loop_clock();
+			if (now >= deadline)
+				return ETIMEDOUT;
+			left = clk_timespec(deadline - now);
 		}
-		/* errno is read before pidfd_send_signal() can change it. */
-		int why = e ? e : ready ? errno : ETIMEDOUT;
-		(void)pidfd_send_signal(pidfd, SIGKILL, nullptr, 0);
-		return why;
+		int const sig = sigtimedwait(&tty->wake, nullptr, deadline ? &left : nullptr);
+		if (sig == SIGCHLD || (sig < 0 && errno == EINTR))
+			continue;
+		if (sig < 0)
+			return errno == EAGAIN ? ETIMEDOUT : errno;
+		/* The signal ends the caller once the terminal is as it was. */
+		(void)raise(sig);
+		return EINTR;
 	}
 }
 
 /* Waits for the child @p pidfd of child_run() to end, at most until the
  * deadline of @p cmd, reaps it, closes @p pidfd and writes how the child
- * ended to @p *end. Returns as child_run() does.
+ * ended to @p *end. If the wait ends in another way, with the error
+ * @p waited, the process group of the child is killed before the reap: at
+ * the deadline with SIGTERM first, if @p cmd has a grace, and with SIGKILL
+ * once the child has exited or the grace has passed. SIGKILL also goes to
+ * the group of a child that exited on SIGTERM, as a process of the group
+ * can ignore SIGTERM. Returns as child_run() does.
  */
 static int
 child_run_wait (struct child_cmd const *cmd,
                 int                     pidfd,
+                struct child_tty const *tty,
                 struct child_end       *end)
 {
-	int const waited = child_await(cmd, pidfd);
+	int const waited = tty ? child_tty_wait(tty, pidfd, cmd->deadline)
+	                       : child_exit_wait(pidfd, cmd->deadline);
+	if (waited == ETIMEDOUT && cmd->grace) {
+		child_group_signal(pidfd, SIGTERM);
+		(void)child_exit_wait(pidfd, loop_clock() + cmd->grace);
+	}
+	if (waited)
+		child_group_signal(pidfd, SIGKILL);
 	siginfo_t info = {};
 	int failed;
 	do {
-		failed = waitid(P_PIDFD, (id_t)pidfd, &info, WEXITED);
-	} while (failed && errno == EINTR);
-	int const e = waited ? waited : failed ? errno : info.si_code != CLD_EXITED ? EIO : 0;
+		failed = waitid(P_PIDFD, (id_t)pidfd, &info, WEXITED) ? errno : 0;
+	} while (failed == EINTR);
 	close(pidfd);
 	/* info stays zero if waitid() fails, so end->code is 0 then. */
 	*end = child_end(
@@ -474,7 +585,11 @@ child_run_wait (struct child_cmd const *cmd,
 		.status = info.si_status,
 		.flags  = waited == ETIMEDOUT ? CHILD_LATE : 0
 	);
-	return e;
+	if (waited)
+		return waited;
+	if (failed)
+		return failed;
+	return info.si_code == CLD_EXITED ? 0 : EIO;
 }
 
 /* Runs @p cmd to the end on the calling thread with the descriptors
@@ -482,8 +597,9 @@ child_run_wait (struct child_cmd const *cmd,
  * child_capture() in src/child.h describes the spawn, the deadline and
  * @p *end. The output goes to fds.out, and the function does not read it.
  * Returns 0 if the child exited before the deadline, ETIMEDOUT if the
- * deadline came, EIO if a signal killed the child before the deadline, or
- * the error that stopped the spawn or the wait.
+ * deadline came, EIO if a signal killed the child before the deadline,
+ * ECANCELED or EINTR for a child with a terminal (child_tty_wait()), or
+ * the error that stopped the spawn, the wait or the loan of the terminal.
  */
 static int
 child_run (struct child_cmd const *cmd,
@@ -491,25 +607,32 @@ child_run (struct child_cmd const *cmd,
            struct child_end       *end)
 {
 	*end = child_end();
-	/* Only the foreground process group can lend its terminal. */
-	if (fds.tty >= 0 && tcgetpgrp(fds.tty) != getpgrp())
-		fds.tty = -1;
 	int own = -1;
 	if (fds.in < 0 && cmd->in.len) {
-		int e = child_input(cmd->in, &own);
+		int const e = child_input(cmd->in, &own);
 		if (e)
 			return e;
 		fds.in = own;
 	}
+	struct child_tty loan;
+	int e = fds.tty < 0 ? 0 : child_tty_lend(&loan, &fds.tty);
+	if (e) {
+		util_close(&own);
+		return e;
+	}
+	struct child_tty const *const tty = fds.tty < 0 ? nullptr : &loan;
 	int pidfd = -1;
-	int e = child_cmd_exec(cmd, &fds, &pidfd);
+	e = child_cmd_exec(cmd, &fds, &pidfd);
 	util_close(&own);
 	if (!e)
-		e = child_run_wait(cmd, pidfd, end);
+		e = child_run_wait(cmd, pidfd, tty, end);
+	if (!tty)
+		return e;
 	/* A child that could not execute its file has set the group too. */
-	if (fds.tty >= 0)
-		child_tty_take(fds.tty);
-	return e;
+	int const back = child_tty_take(tty, fds.tty, e || end->status);
+	if (e)
+		return e;
+	return back;
 }
 
 int
@@ -556,7 +679,9 @@ child_cmd_run (struct child_cmd const *cmd,
 	} else {
 		e = child_run(cmd, fds, end);
 	}
-	return e ? e : end->status ? EIO : 0;
+	if (e)
+		return e;
+	return end->status ? EIO : 0;
 }
 
 int
@@ -690,8 +815,14 @@ child_destroy_all (struct list *list)
 }
 
 int
-child_std_open (void)
+child_setup (void)
 {
+	/* A process can start the program with SIGCHLD ignored, and exec does
+	 * not reset that. With SIGCHLD ignored, the kernel reaps each child at
+	 * its exit, and then waitid() and waitpid() fail. */
+	struct sigaction const act = { .sa_handler = SIG_DFL };
+	if (sigaction(SIGCHLD, &act, nullptr))
+		return errno;
 	for (int fd = STDIN_FILENO; fd <= STDERR_FILENO; ++fd) {
 		if (fcntl(fd, F_GETFD) >= 0)
 			continue;

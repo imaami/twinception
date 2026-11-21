@@ -7,7 +7,7 @@
  * The child is reaped by its pid after its output has also ended.
  * child_capture() and child_cmd_run() instead run a child on the calling
  * thread, with its output in a file, and reap the child through its
- * pidfd.
+ * pidfd. A program that starts children calls child_setup() first.
  */
 #ifndef ASKAI_SRC_CHILD_H_
 #define ASKAI_SRC_CHILD_H_
@@ -199,8 +199,16 @@ child_cmd (struct child_cmd const c)
  *  process group of it, the child stays in the session of the caller, as a
  *  process group of its own, and is the foreground process group of the
  *  terminal until it ends. So the child can open /dev/tty, and the keys
- *  of the terminal that send a signal send it to the child. Without such
- *  a terminal the child has a session of its own.
+ *  of the terminal that send a signal send it to the child. The terminal
+ *  has its modes of before the run again after it, also if the child
+ *  changed them and did not end by itself. A child that is stopped, as by
+ *  the suspend key, is killed with its process group, and the run returns
+ *  ECANCELED: the caller could not give the terminal back to its own
+ *  parent otherwise. A signal that would end the caller during the run
+ *  kills the group of the child too, and ends the caller once the
+ *  terminal is as it was; the run returns EINTR if the caller lives on.
+ *  Only a thread of a process with no other thread lends a terminal.
+ *  Without such a terminal the child has a session of its own.
  */
 struct child_fds {
 	int in;
@@ -250,17 +258,19 @@ child_create (struct loop            *loop,
  * appends the output to @p out, up to cmd->max bytes. The child is spawned
  * as child_create() spawns it, but with the descriptors @p fds, and with a
  * file in memory in place of fds.out. If cmd->deadline, a time of
- * loop_clock(), is set, the function sends SIGTERM to the child at that
- * time and SIGKILL after cmd->grace, or SIGKILL at once if cmd->grace is
- * 0. The child does not count toward CHILD_MAX. The function writes the
+ * loop_clock(), is set, the function sends SIGTERM to the process group of
+ * the child at that time, and SIGKILL once the child has exited or
+ * cmd->grace has passed, or SIGKILL at once if cmd->grace is 0. The child
+ * does not count toward CHILD_MAX. The function writes the
  * code and the status of waitid() to @p *end, and sets CHILD_LATE in
  * end->flags if the deadline came. @p *end is all zero if the child was
  * not spawned.
  *
  * Returns 0 if the child exited before the deadline, with any exit
  * status. Returns ETIMEDOUT if the deadline came, EIO if a signal killed
- * the child before the deadline, or the error that stopped the spawn or
- * the wait. The output is read only if the child exited before the
+ * the child before the deadline, ECANCELED or EINTR as the comment of
+ * struct child_fds says, or the error that stopped the spawn or the wait.
+ * The output is read only if the child exited before the
  * deadline. The function then returns the error of the read, or EFBIG for
  * an output of more than cmd->max bytes. After EFBIG, end->flags contains
  * CHILD_CUT, and the first cmd->max bytes of the output are appended to
@@ -321,14 +331,17 @@ child_release (struct child **p_c);
 extern void
 child_destroy_all (struct list *list);
 
-/** Open /dev/null on each of the descriptors 0 to 2 that is closed, for the
- *  other direction than its use, so that a read of 0 or a write of 1 or 2
- *  still fails. A program that starts children calls this first: the file
+/** Prepares a program to start children, before it opens a file or starts a
+ *  thread. Sets the default action of SIGCHLD: a program can be started
+ *  with SIGCHLD ignored, the kernel then reaps each child by itself, and
+ *  the waits of this module fail. Opens /dev/null on each of the
+ *  descriptors 0 to 2 that is closed, for the other direction than its
+ *  use, so that a read of 0 or a write of 1 or 2 still fails: the file
  *  actions of a child replace its descriptors 0 to 2 before they copy the
  *  ones it gets, so one of those with such a number would be lost or
  *  swapped. Returns 0 or an error number.
  */
 extern int
-child_std_open (void);
+child_setup (void);
 
 #endif /* ASKAI_SRC_CHILD_H_ */

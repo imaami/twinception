@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "auth.h"
 #include "blocker.h"
 #include "brainstem.h"
 #include "buf.h"
@@ -152,6 +153,9 @@ struct askai_home {
 	 * here and not in home. */
 	struct http_metrics  http;
 	struct home_metrics  jobs;
+	/* The renewed credential of the upstream, which home and the service
+	 * of HTTP requests use on the loop of home. */
+	struct auth          auth;
 	struct config const *cfg;
 	/* The loop of home, to which the client loops send their jobs. */
 	struct loop         *loop;
@@ -420,9 +424,14 @@ askai_home_parts (struct askai_home *app,
 	app->keep.door = httpd_home_create(loop, hub, &app->cfg->http, &app->jobs.in_flight, &e);
 	if (e)
 		return e;
-	app->keep.home = home_create(loop, blockers, app->keep.door, app->cfg, &app->jobs,
-	                             &app->http, &e);
-	return e ? e : web_home_start(app->keep.web, loop, blockers);
+	e = auth_init(&app->auth, loop, blockers, &app->cfg->ep);
+	if (e)
+		return e;
+	app->keep.home = home_create(loop, blockers, &app->auth, app->keep.door, app->cfg,
+	                             &app->jobs, &app->http, &e);
+	if (e)
+		return e;
+	return web_home_start(app->keep.web, loop, blockers, &app->auth);
 }
 
 static int
@@ -569,6 +578,8 @@ askai_home_stop (void        *ctx,
 	home_destroy(&app->keep.home);
 	journal_stop(container_of(app, struct askai_shared, home)->journal);
 	web_home_stop(app->keep.web);
+	/* After its two users. */
+	auth_fini(&app->auth);
 	httpd_home_destroy(&app->keep.door);
 	askai_keep_stop(&app->keep, loop);
 }
@@ -906,10 +917,6 @@ static int
 askai_serve (struct config const *cfg)
 {
 	static struct askai_shared s;
-	/* A process can start askai with SIGCHLD ignored, and exec does not
-	 * reset that. With SIGCHLD ignored, the kernel reaps each child at its
-	 * exit, and then waitid() and waitpid() in child.c fail. */
-	signal(SIGCHLD, SIG_DFL);
 	askai_tune();
 	int status = askai_shared_init(&s, cfg, cfg->brainstem.loops) ? 1 : askai_run(&s, cfg);
 	askai_shared_fini(&s);
@@ -931,9 +938,9 @@ main (int   argc,
 		return 1;
 	}
 	/* Before askai opens any file, so that none takes such a number. */
-	int e = child_std_open();
+	int e = child_setup();
 	if (e) {
-		LOG(LOG_ERROR, "cannot open /dev/null for a closed standard descriptor: %s",
+		LOG(LOG_ERROR, "cannot prepare SIGCHLD and the standard descriptors: %s",
 		    strerror(e));
 		return 1;
 	}
@@ -948,10 +955,9 @@ main (int   argc,
 			fprintf(stderr, "ChatGPT sign-in saved to %s\n", cfg.ep.chatgpt_auth);
 		status = !!e;
 	} else if (status < 0 && cfg.flags & CFG_AUTH_LOGIN) {
-		char why[256];
-		int e = bearer_login(cfg.ep.auth_file, cfg.ep.auth_command, why, sizeof why);
+		int e = bearer_login(cfg.ep.auth_file, cfg.ep.auth_command);
 		if (e)
-			fprintf(stderr, "--auth-command: %s\n", why);
+			fprintf(stderr, "--auth-command: %s\n", bearer_why(e));
 		else
 			fprintf(stderr, "Token saved to %s\n", cfg.ep.auth_file);
 		status = !!e;

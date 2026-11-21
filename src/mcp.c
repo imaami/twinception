@@ -6445,7 +6445,8 @@ mcp_slot_post_file (struct mcp_slot  *slot,
 		.url = dstr_len(&st->files_url),
 		.accept = sizeof accept - 1,
 		.n_lines = st->files_n_lines,
-		.lines = st->files_lines
+		.lines = st->files_lines,
+		.flags = WEB_UPSTREAM
 	};
 	return mcp_slot_send(slot, &ask);
 }

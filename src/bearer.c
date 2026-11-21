@@ -6,6 +6,7 @@
 #include <json-c/json.h>
 #include <string.h>
 
+#include "auth.h"
 #include "bearer.h"
 #include "buf.h"
 #include "child.h"
@@ -19,10 +20,8 @@
 #include "util.h"
 
 enum {
-	BEARER_WAIT  = 300,           /* the seconds that the command may run */
-	BEARER_EARLY = 60,            /* a token is replaced this many seconds
-	                                 before it expires */
-	BEARER_OUT   = 4 * JWT_LIMIT, /* the bytes of output that are read */
+	BEARER_WAIT = 300,            /* the seconds that the command may run */
+	BEARER_OUT  = 4 * JWT_LIMIT,  /* the bytes of output that are read */
 };
 
 extern char **environ;
@@ -45,17 +44,18 @@ bearer_token (struct cred const *file)
 }
 
 /* Whether the record of @p file is a token of @p command that is valid
- * for more than BEARER_EARLY seconds after @p now. One file can be named
- * for two commands, and the token of one is not sent for the other.
+ * for more than AUTH_EARLY seconds after @p now. One file can be named for
+ * two commands, and the token of one is not sent for the other. Every byte
+ * of the command of the record is compared, also after a NUL.
  */
 static bool
 bearer_fresh (struct cred const *file,
               char const        *command,
               uint64_t           now)
 {
-	struct cstr_view const of = jb_view(jb_get(file->record, "command"));
-	return of.data && !strcmp(of.data, command) && bearer_token(file).len &&
-	       jb_uint(jb_get(file->record, "expires_at"), 0) > now + BEARER_EARLY;
+	return cstr_view_equal(jb_view(jb_get(file->record, "command")), cstr_view(command)) &&
+	       bearer_token(file).len &&
+	       jb_uint(jb_get(file->record, "expires_at"), 0) > now + AUTH_EARLY;
 }
 
 /* Runs @p command and replaces the record of @p file with the command, the
@@ -113,40 +113,30 @@ bearer_renew (struct cred *file,
 	return e;
 }
 
-/* Writes words for the user about the error @p e of a token to the
- * @p size bytes at @p error, or an empty string for 0. Returns @p e.
- */
-static int
-bearer_say (int     e,
-            char   *error,
-            size_t  size)
+char const *
+bearer_why (int e)
 {
 	static char const *const words[] = {
-		[EBUSY]     = "the token file is in use by another process; try again",
-		[EACCES]    = "the token file or its directory is not private to its owner",
-		[ENOMSG]    = "the output of the auth command contains no JSON Web Token",
-		[ESTALE]    = "the token of the auth command has expired",
-		[ENOENT]    = "the token of the auth command has no exp claim",
-		[EINVAL]    = "the token of the auth command or the token file is malformed",
-		[ETIMEDOUT] = "the auth command did not end in time",
-		[EIO]       = "the auth command failed",
-		[EFBIG]     = "the auth command wrote too much",
+		[EBUSY]       = "the token file is in use by another process; try again",
+		[EACCES]      = "the token file or its directory is not private to its owner",
+		[ENOMSG]      = "the output of the auth command contains no JSON Web Token",
+		[ESTALE]      = "the token of the auth command has expired",
+		[EKEYEXPIRED] = "the token of the auth command has expired",
+		[ENOKEY]      = "the token file contains no valid token of the auth command",
+		[ENOENT]      = "the token of the auth command has no exp claim",
+		[EINVAL]      = "the token of the auth command or the token file is malformed",
+		[ETIMEDOUT]   = "the auth command did not end in time",
+		[ECANCELED]   = "the auth command was stopped",
+		[EIO]         = "the auth command failed",
+		[EFBIG]       = "the auth command wrote too much",
 	};
-	char const *known = e > 0 && (size_t)e < array_size(words) ? words[e] : nullptr;
-	char const *text = !e ? "" : known ? known : strerror(e);
-	if (size) {
-		size_t const n = strnlen(text, size - 1);
-		memcpy(error, text, n);
-		error[n] = '\0';
-	}
-	return e;
+	char const *const known = e > 0 && (size_t)e < array_size(words) ? words[e] : nullptr;
+	return known ? known : strerror(e);
 }
 
 int
 bearer_login (char const *path,
-              char const *command,
-              char       *error,
-              size_t      size)
+              char const *command)
 {
 	int e;
 	struct cred file = cred(path, CRED_CREATE, &e);
@@ -156,28 +146,51 @@ bearer_login (char const *path,
 		e = bearer_renew(&file, command, tty);
 	util_close(&tty);
 	cred_fini(&file);
-	return bearer_say(e, error, size);
+	return e;
+}
+
+/* Writes the Authorization line of the token of @p command to @p header
+ * and the end of the token to @p *expires, under the lock of @p file.
+ * Without a fresh token in the file, the command runs, or with AUTH_CACHED
+ * in @p flags the function returns ENOKEY.
+ */
+static int
+bearer_line (struct cred *file,
+             char const  *command,
+             uint32_t     flags,
+             struct dstr *header,
+             uint64_t    *expires)
+{
+	uint64_t const now = clk_realtime_ns() / NS;
+	if (!now)
+		return EIO;
+	if (!bearer_fresh(file, command, now)) {
+		if (flags & AUTH_CACHED)
+			return ENOKEY;
+		int const e = bearer_renew(file, command, -1);
+		if (e)
+			return e;
+	}
+	*expires = jb_uint(jb_get(file->record, "expires_at"), 0);
+	return dstr_printf(header, "Authorization: Bearer %s", bearer_token(file).data) ? 0
+	                                                                                 : ENOMEM;
 }
 
 int
 bearer_header (char const  *path,
                char const  *command,
+               uint32_t     flags,
                struct dstr *header,
-               char        *error,
-               size_t       size)
+               uint64_t    *expires)
 {
 	dstr_clear(header);
+	*expires = 0;
 	int e;
-	struct cred file = cred(path, CRED_CREATE, &e);
-	uint64_t const now = clk_realtime_ns() / NS;
-	if (!e && !now)
-		e = EIO;
-	if (!e && !bearer_fresh(&file, command, now))
-		e = bearer_renew(&file, command, -1);
-	if (!e && !dstr_printf(header, "Authorization: Bearer %s", bearer_token(&file).data))
-		e = ENOMEM;
+	struct cred file = cred(path, flags & AUTH_CACHED ? 0 : CRED_CREATE, &e);
+	if (!e)
+		e = bearer_line(&file, command, flags, header, expires);
 	cred_fini(&file);
 	if (e)
 		dstr_clear(header);
-	return bearer_say(e, error, size);
+	return e;
 }

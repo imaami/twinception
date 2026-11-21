@@ -50,6 +50,7 @@
 #include <string.h>
 
 #include "ai.h"
+#include "auth.h"
 #include "buf.h"
 #include "compat.h"
 #include "hexid.h"
@@ -208,6 +209,9 @@ struct job {
 	struct list            idle;        /**< home's: among the answers under way,
 	                                         by when they last sent */
 	struct list            feed;        /**< home's: among the streams to read */
+	struct auth_wait       auth;        /**< home's: its wait for the renewed
+	                                         credential of the upstream, before
+	                                         its request is sent */
 	struct buf             request;     /**< the front's: written before SUBMIT,
 	                                         read by home until DONE */
 	struct buf             result;      /**< home's: written before DONE, read
@@ -236,7 +240,8 @@ struct job {
 	struct loop           *front;       /**< the front's loop, set as it is made */
 	struct http_request   *transfer;    /**< home's: the request upstream */
 	char                  *cancel_url;  /**< home's: native background job's
-	                                         cancellation URL, or nullptr */
+	                                         cancellation URL, or nullptr. The
+	                                         cancellation takes it. */
 	struct home_principal *who;         /**< home's: whose queue it is on */
 	struct home_delivery_error *delivery_error; /**< home's: transfer error kept
 	                                               while buffered events drain */
@@ -322,6 +327,7 @@ job_init (struct job  *job,
 	list_init(&job->due);
 	list_init(&job->idle);
 	list_init(&job->feed);
+	list_init(&job->auth.hook);
 	job->front = front;
 	atomic_init(&job->progress, 0);
 	atomic_init(&job->home_bits, 0);

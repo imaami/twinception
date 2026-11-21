@@ -749,10 +749,25 @@ files. The command runs off the event loops with the environment of
 askai, for up to five minutes, without a terminal, and with `/dev/null`
 as its standard input and standard error. A request whose token cannot
 be had fails with the reason. The time of the `exp` claim is compared
-with the clock after the command has ended. A request that askai sends
-by itself, such as the cancellation of a background job at the upstream,
-has the token of the last request. askai does not check the signature of
-the token: the upstream does.
+with the clock after the command has ended. At the time limit askai ends
+the command and the other processes of its process group. askai does not
+check the signature of the token: the upstream does.
+
+Every request to the upstream has the token: the request of a job, the
+cancellation of a background job at the upstream, the request for
+`/props` or for the model at the start, and the upload of a note to the
+file store of the upstream. A request waits for a token that is not
+fresh, and a cancellation does so within its own time limit. A service
+runs no command as it starts. Without a valid token in the file, the
+request for `/props` or for the model is sent with the first token of a
+job, and the upstream has the default slots until its answer.
+
+A service keeps the token in memory. It reads the file again a minute
+after its last read, so a token that another process stores, as
+`auth-login` does, is used within a minute. The file does not record the
+upstream: two upstreams with the same command and the same file share one
+token, so give each its own `auth-file` if a token for one must not go
+to the other.
 
 An empty string is no command. `auth-command` cannot be combined with an
 explicit `key-env`, an Authorization header of any API, or
@@ -767,7 +782,9 @@ The value is an absolute path to the private file that keeps the token of
 `$XDG_STATE_HOME/askai/bearer.json` when `XDG_STATE_HOME` is absolute,
 otherwise `$HOME/.local/state/askai/bearer.json`. The file and its parent
 directory must be owned by the current user and not accessible to other
-users (modes 0600 and 0700). It is written atomically with mode 0600, and
+users (modes 0600 and 0700). No part of the path may be a symbolic link.
+askai makes the missing directories of the path with mode 0700, each in
+the one before it. The file is written atomically with mode 0600, and
 a lock beside the file serializes the processes that use it. `auth-file`
 needs `auth-command`.
 
@@ -779,7 +796,11 @@ saves its token in the file of `auth-file` and exits. It needs no
 starts, so that a command which asks the user for something can do so:
 if askai is the foreground job of the terminal, the command is that job
 until it ends. It can open `/dev/tty`, and the keys that send a signal,
-such as Ctrl+C, send it to the command.
+such as Ctrl+C, send it to the command. A command that is stopped, as by
+Ctrl+Z, is ended, and the login fails: askai could not give the terminal
+back to the shell otherwise. After the command the terminal has the modes
+that it had before, also if the command changed them and did not end by
+itself. A signal that ends askai during the login ends the command first.
 
 #### `chatgpt-auth`
 

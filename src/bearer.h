@@ -9,7 +9,7 @@
 #ifndef ASKAI_SRC_BEARER_H_
 #define ASKAI_SRC_BEARER_H_
 
-#include <stddef.h>
+#include <stdint.h>
 
 struct dstr;
 
@@ -24,28 +24,35 @@ bearer_path (struct dstr *path);
  * of its output in the file @p path. The command runs with the environment
  * of askai, its standard input and its standard error /dev/null. If askai
  * is the foreground process group of a terminal, the command is that until
- * it ends, and can open /dev/tty. Returns 0 or an error number, with words
- * for the user in the @p size bytes at @p error.
+ * it ends, and can open /dev/tty (struct child_fds). Returns 0 or an error
+ * number, which bearer_why() puts in words.
  */
 extern int
 bearer_login (char const *path,
-              char const *command,
-              char       *error,
-              size_t      size);
+              char const *command);
 
 /**
- * Replaces @p header with the Authorization header of the token in the
- * file @p path. A token that is missing, that is of another command, or
- * that expires within a minute, is first replaced as bearer_login() stores
- * one, but the command never gets a terminal. Returns 0 or an error
- * number, with @p header empty and words for the user in the @p size bytes
- * at @p error.
+ * Replaces @p header with the Authorization line of the token in the file
+ * @p path, and writes the time of the exp claim of the token to
+ * @p *expires. A token that is missing, that is of another command, or
+ * that expires within AUTH_EARLY seconds, is first replaced as
+ * bearer_login() stores one, but the command never gets a terminal. With
+ * AUTH_CACHED in @p flags, of enum auth_flag (src/auth.h), the command
+ * does not run and the file is not made: the function then returns ENOKEY,
+ * or ENOENT without the file. Returns 0 or an error number, which
+ * bearer_why() puts in words, with @p header empty and @p *expires 0.
  */
 extern int
 bearer_header (char const  *path,
                char const  *command,
+               uint32_t     flags,
                struct dstr *header,
-               char        *error,
-               size_t       size);
+               uint64_t    *expires);
+
+/** Returns words for the user about the error @p e of bearer_login() or
+ *  bearer_header(): a static text, or the text of strerror().
+ */
+extern char const *
+bearer_why (int e);
 
 #endif /* ASKAI_SRC_BEARER_H_ */

@@ -5,6 +5,7 @@
 #define ASKAI_SRC_CHATGPT_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 struct dstr;
 
@@ -25,13 +26,23 @@ chatgpt_login (char const *path,
                size_t      size);
 
 /** Replace @p header with an Authorization header for @p path, refreshing
- *  expiring credentials under a process-shared lock. Returns 0 or an error
- *  number, leaves @p header empty on error, and writes a safe diagnostic.
+ *  expiring credentials under a process-shared lock, and write the time
+ *  at which the access token ends to @p *expires. With AUTH_CACHED in
+ *  @p flags, of enum auth_flag (src/auth.h), nothing is refreshed: ENOKEY
+ *  then for credentials that end within AUTH_EARLY seconds. Returns 0 or an
+ *  error number, which chatgpt_why() puts in words, and leaves @p header
+ *  empty and @p *expires 0 on error.
  */
 extern int
 chatgpt_header (char const  *path,
+                uint32_t     flags,
                 struct dstr *header,
-                char        *error,
-                size_t       size);
+                uint64_t    *expires);
+
+/** Returns a safe diagnostic for the error @p e of chatgpt_header(): a
+ *  static text, or the text of strerror().
+ */
+extern char const *
+chatgpt_why (int e);
 
 #endif /* ASKAI_SRC_CHATGPT_H_ */

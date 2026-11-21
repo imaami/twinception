@@ -1343,7 +1343,7 @@ main (int    argc,
 	struct cli_error error = {};
 	unsigned exit_signal = 0;
 	/* Before askai-cli opens any file, so that none takes such a number. */
-	int e = child_std_open();
+	int e = child_setup();
 	if (e)
 		(void)cli_error_set(&error, e, "Cannot open /dev/null: %s", strerror(e));
 	else {

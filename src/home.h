@@ -56,6 +56,7 @@
 
 #include "buf.h"
 
+struct auth;
 struct blocker;
 struct config;
 struct home;
@@ -115,9 +116,12 @@ struct home_metrics {
 
 /**
  * Creates home on @p loop. Home sends the upstream calls to the endpoint
- * cfg->ep with curl, which looks up host names on @p blockers. Managed
- * ChatGPT credentials are read and renewed on the blockers before each
- * request; cancellation prevents a pending authorization from sending it.
+ * cfg->ep with curl, which looks up host names on @p blockers. @p auth is
+ * the renewed credential of the upstream on the same loop (src/auth.h),
+ * which the caller finalizes after home: each request, each native
+ * cancellation and the GET of /props or of the model is sent with its
+ * Authorization line, and waits for the line if it is not fresh. A job
+ * that ends during the wait is not sent.
  * At most cfg->calls jobs are in flight, and @p door makes room for each.
  * With CFG_TEST_FIFO, a test aid, all jobs wait in one queue, first in
  * first out. Home counts into @p metrics and @p http. Their atomic members
@@ -127,6 +131,7 @@ struct home_metrics {
 extern struct home *
 home_create (struct loop         *loop,
              struct blocker      *blockers,
+             struct auth         *auth,
              struct httpd_home   *door,
              struct config const *cfg,
              struct home_metrics *metrics,

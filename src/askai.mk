@@ -2,6 +2,7 @@ override SRC_askai := \
   agenda.c            \
   ai.c                \
   askai.c             \
+  auth.c              \
   bearer.c            \
   blocker.c           \
   brainstem.c         \
@@ -51,7 +52,9 @@ override SRC_askai := \
   store.c             \
   task.c              \
   tls.c               \
+  tty.c               \
   uploads.c           \
+  util.c              \
   web.c
 
 override LIB_askai := \

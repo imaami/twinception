@@ -1,6 +1,7 @@
 /** @file Recovery loads and gaps, and checkpoint-independent reasoning. */
 #define _GNU_SOURCE
 #include <assert.h>
+#include <poll.h>
 
 #include "../src/journal.c"
 
@@ -248,20 +249,20 @@ journal_test_path (char const *repo)
 	free(j);
 }
 
-/* util_private_fd() on the repository @p repo, a private directory, and on
+/* fs_private_fd() on the repository @p repo, a private directory, and on
  * a file in it: the type, the links and the mode.
  */
 static void
 journal_test_private (char const *repo)
 {
 	int dir = open(repo, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	assert(dir >= 0 && !util_private_fd(dir, S_IFDIR) && util_private_fd(dir, S_IFREG) == EACCES);
+	assert(dir >= 0 && !fs_private_fd(dir, S_IFDIR) && fs_private_fd(dir, S_IFREG) == EACCES);
 	int fd = openat(dir, "private.test", O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-	assert(fd >= 0 && !util_private_fd(fd, S_IFREG) && util_private_fd(fd, S_IFDIR) == EACCES);
+	assert(fd >= 0 && !fs_private_fd(fd, S_IFREG) && fs_private_fd(fd, S_IFDIR) == EACCES);
 	assert(!linkat(dir, "private.test", dir, "private.link", 0));
-	assert(util_private_fd(fd, S_IFREG) == EACCES);
+	assert(fs_private_fd(fd, S_IFREG) == EACCES);
 	assert(!unlinkat(dir, "private.link", 0) && !fchmod(fd, 0640));
-	assert(util_private_fd(fd, S_IFREG) == EACCES);
+	assert(fs_private_fd(fd, S_IFREG) == EACCES);
 	assert(!unlinkat(dir, "private.test", 0));
 	util_close(&fd);
 	util_close(&dir);
@@ -362,8 +363,8 @@ journal_test_out (struct buf const *out,
 	return cstr_view_equal(cstr_view_span(buf_peek(out)), text);
 }
 
-/* Tests util_parent_open() and journal_unlock() in a new directory of the
- * repository @p repo. util_parent_open() refuses an empty or absolute
+/* Tests fs_parent_open() and journal_unlock() in a new directory of the
+ * repository @p repo. fs_parent_open() refuses an empty or absolute
  * path, a path with a ".." part, a part longer than NAME_MAX bytes and a
  * path whose last part is empty or ".", and leaves the path as it was.
  * journal_unlock() removes the regular lock file of the participant, and
@@ -390,21 +391,21 @@ journal_test_unlock (char const *repo)
 	for (size_t i = 0; i < array_size(invalid); ++i) {
 		strcpy(path, invalid[i]);
 		fd = 0;
-		assert(util_parent_open(dir, path, &leaf, &fd) == EINVAL && fd == -1);
+		assert(fs_parent_open(dir, path, 0, &leaf, &fd) == EINVAL && fd == -1);
 		assert(!strcmp(path, invalid[i]));
 	}
 	memset(path, 'a', NAME_MAX + 1);
 	memcpy(path + NAME_MAX + 1, "/a", sizeof "/a");
-	assert(util_parent_open(dir, path, &leaf, &fd) == EINVAL && fd == -1);
+	assert(fs_parent_open(dir, path, 0, &leaf, &fd) == EINVAL && fd == -1);
 	assert(strlen(path) == NAME_MAX + 3 && path[NAME_MAX + 1] == '/');
 	strcpy(path, "refs/heads/a.lock");
-	assert(util_parent_open(dir, path, &leaf, &fd) == ENOENT && fd == -1);
+	assert(fs_parent_open(dir, path, 0, &leaf, &fd) == ENOENT && fd == -1);
 	assert(!strcmp(path, "refs/heads/a.lock"));
-	/* For a path of one part, util_parent_open() opens a copy of the
+	/* For a path of one part, fs_parent_open() opens a copy of the
 	 * descriptor of the directory. */
 	strcpy(path, "a.lock");
 	struct stat st, at;
-	assert(!util_parent_open(dir, path, &leaf, &fd) && leaf == path && fd >= 0 && fd != dir);
+	assert(!fs_parent_open(dir, path, 0, &leaf, &fd) && leaf == path && fd >= 0 && fd != dir);
 	assert(!fstat(fd, &st) && !fstat(dir, &at) && st.st_ino == at.st_ino && st.st_dev == at.st_dev);
 	util_close(&fd);
 
@@ -417,7 +418,7 @@ journal_test_unlock (char const *repo)
 	       !mkdirat(dir, "refs/heads/reasoning", 0700));
 	assert(!journal_unlock(j));
 	strcpy(path, ".//refs//heads/./reasoning/test.lock");
-	assert(!util_parent_open(dir, path, &leaf, &fd) && leaf == path + strlen(path) - 9);
+	assert(!fs_parent_open(dir, path, 0, &leaf, &fd) && leaf == path + strlen(path) - 9);
 	assert(!strcmp(path, ".//refs//heads/./reasoning/test.lock"));
 	assert(!fstat(fd, &st) && !fstatat(dir, "refs/heads/reasoning", &at, AT_SYMLINK_NOFOLLOW) &&
 	       st.st_ino == at.st_ino);
@@ -462,9 +463,101 @@ journal_test_unlock (char const *repo)
 	assert(!symlinkat("..", dir, "refs/heads/reasoning"));
 	assert(journal_unlock(j) == ENOTDIR);
 	strcpy(path, "refs/heads/reasoning/test.lock");
-	assert(util_parent_open(dir, path, &leaf, &fd) == ENOTDIR && fd == -1);
+	assert(fs_parent_open(dir, path, 0, &leaf, &fd) == ENOTDIR && fd == -1);
 	assert(!strcmp(path, "refs/heads/reasoning/test.lock"));
 	free(j);
+	util_close(&dir);
+}
+
+/* Tests the directories that fs_parent_open() and fs_private_dir() make,
+ * in a new directory of the repository @p repo. With FS_PARENTS,
+ * fs_parent_open() makes the missing directories of a path with the mode
+ * 0700, each in the one before it, and makes none behind a part that is a
+ * symbolic link or a file. fs_private_dir() makes and opens a private
+ * directory, with FS_PARENTS its parents too. It follows a symbolic link
+ * in the parents, but not at the directory itself, also if a slash ends
+ * the path, and it refuses a directory that other users may access. Each
+ * function leaves the path as it was.
+ */
+static void
+journal_test_fs (char const *repo)
+{
+	int top = open(repo, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	assert(top >= 0 && !mkdirat(top, "fs", 0700));
+	int dir = openat(top, "fs", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	util_close(&top);
+	assert(dir >= 0);
+
+	char path[32];
+	char const *leaf = nullptr;
+	int fd = -1;
+	struct stat st;
+	strcpy(path, "a/b/file");
+	assert(fs_parent_open(dir, path, 0, &leaf, &fd) == ENOENT && fd == -1);
+	assert(fstatat(dir, "a", &st, 0) && errno == ENOENT);
+	assert(!fs_parent_open(dir, path, FS_PARENTS, &leaf, &fd) && leaf == path + 4);
+	assert(!fstat(fd, &st) && S_ISDIR(st.st_mode) && (st.st_mode & 07777) == 0700);
+	util_close(&fd);
+	assert(!fstatat(dir, "a", &st, 0) && (st.st_mode & 07777) == 0700);
+	assert(fstatat(dir, "a/b/file", &st, 0) && errno == ENOENT);
+	/* A second walk opens the directories that the first one made. */
+	assert(!fs_parent_open(dir, path, FS_PARENTS, &leaf, &fd) && !strcmp(path, "a/b/file"));
+	util_close(&fd);
+
+	/* The walk makes c, stops at the link, and makes nothing behind it. */
+	assert(!mkdirat(dir, "target", 0700) && !symlinkat("../target", dir, "a/link"));
+	strcpy(path, "c/../a/link/new/file");
+	assert(fs_parent_open(dir, path, FS_PARENTS, &leaf, &fd) == EINVAL && fd == -1);
+	strcpy(path, "a/link/new/file");
+	assert(fs_parent_open(dir, path, FS_PARENTS, &leaf, &fd) == ENOTDIR && fd == -1);
+	assert(fstatat(dir, "target/new", &st, 0) && errno == ENOENT);
+	assert(!strcmp(path, "a/link/new/file"));
+	strcpy(path, "c/d/../file");
+	assert(fs_parent_open(dir, path, FS_PARENTS, &leaf, &fd) == EINVAL && fd == -1);
+	/* A file in the place of a directory stops the walk too. */
+	fd = openat(dir, "a/b/file", O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+	assert(fd >= 0);
+	util_close(&fd);
+	strcpy(path, "a/b/file/new/file");
+	assert(fs_parent_open(dir, path, FS_PARENTS, &leaf, &fd) == ENOTDIR && fd == -1);
+
+	/* fs_private_dir() takes a path of the process, not of a directory. */
+	char const *why = "";
+	char *q = nullptr;
+	int const len = asprintf(&q, "%s/fs/p/q//", repo);
+	assert(len > 6);
+	fd = 0;
+	assert(fs_private_dir(q, 0, &fd, &why) == ENOENT && fd == -1 && !why);
+	assert(fstatat(dir, "p", &st, 0) && errno == ENOENT);
+	assert(!fs_private_dir(q, FS_PARENTS, &fd, &why) && fd >= 0 && !why);
+	assert(strlen(q) == (size_t)len && !strcmp(q + len - 6, "/p/q//"));
+	struct stat at;
+	assert(!fstat(fd, &st) && !fstatat(dir, "p/q", &at, AT_SYMLINK_NOFOLLOW) &&
+	       st.st_ino == at.st_ino && (st.st_mode & 07777) == 0700);
+	util_close(&fd);
+	/* The directory exists now: no flag is needed, and no reason. */
+	assert(!fs_private_dir(q, 0, &fd, nullptr) && fd >= 0);
+	util_close(&fd);
+	assert(!fchmodat(dir, "p/q", 0750, 0));
+	assert(fs_private_dir(q, FS_PARENTS, &fd, &why) == EACCES && fd == -1 && why && *why);
+	assert(!fchmodat(dir, "p/q", 0700, 0));
+	free(q);
+
+	/* A link in the parents is followed. */
+	assert(!symlinkat("p", dir, "plink"));
+	assert(asprintf(&q, "%s/fs/plink/r", repo) > 0);
+	assert(!fs_private_dir(q, 0, &fd, &why) && fd >= 0);
+	util_close(&fd);
+	free(q);
+	assert(!fstatat(dir, "p/r", &st, AT_SYMLINK_NOFOLLOW) && S_ISDIR(st.st_mode));
+	/* A link at the directory itself is not, with or without a slash. */
+	assert(!symlinkat("q", dir, "p/qlink"));
+	static char const *const ends[] = { "", "/", "//" };
+	for (size_t i = 0; i < array_size(ends); ++i) {
+		assert(asprintf(&q, "%s/fs/p/qlink%s", repo, ends[i]) > 0);
+		assert(fs_private_dir(q, FS_PARENTS, &fd, &why) == ENOTDIR && fd == -1);
+		free(q);
+	}
 	util_close(&dir);
 }
 
@@ -654,8 +747,9 @@ journal_test_git (struct journal *j)
 /* Tests the run of a child without a buffer, through child_cmd_run(),
  * with exit statuses, a death by a signal, and a deadline without a grace,
  * with a grace that the command honors, and with a grace that the command
- * ignores. Each case asserts the error and the struct child_end. A failed
- * spawn is tested with child_cmd_run() and with child_capture().
+ * ignores. Each case asserts the error and the struct child_end. A
+ * deadline also ends the other processes of the group of the child. A
+ * failed spawn is tested with child_cmd_run() and with child_capture().
  */
 static void
 journal_test_child_run (void)
@@ -678,6 +772,35 @@ journal_test_child_run (void)
 	       ETIMEDOUT);
 	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
 	assert(ms >= 400 && ms < 2500);
+	/* The signals of the deadline go to the process group of the child. A
+	 * process of the group that ignores SIGTERM, and that has the pipe as
+	 * its descriptor 3, is killed after the child has exited on SIGTERM,
+	 * and without a grace at the deadline: the pipe has no writer then. */
+	static char const *const scripts[] = {
+		"(trap '' TERM; exec sleep 30) & exec 3>&-; exec sleep 30",
+		"(exec sleep 30) & exec 3>&-; exec sleep 30",
+	};
+	for (size_t i = 0; i < array_size(scripts); ++i) {
+		int ends[2];
+		assert(!pipe2(ends, O_CLOEXEC));
+		char const *const argv[] = { "sh", "-c", scripts[i], nullptr };
+		struct child_cmd const group = child_cmd(
+			.file     = "/bin/sh",
+			.argv     = argv,
+			.envp     = (char *const[]){ "PATH=/usr/bin:/bin", nullptr },
+			.deadline = loop_clock() + 300 * MS,
+			.grace    = i ? 0 : 3000 * MS
+		);
+		struct child_fds fds = child_fds();
+		fds.keep = ends[1];
+		assert(child_cmd_run(&group, fds, nullptr, &end) == ETIMEDOUT);
+		assert(end.code == CLD_KILLED && end.status == (i ? SIGKILL : SIGTERM) &&
+		       end.flags == CHILD_LATE);
+		util_close(&ends[1]);
+		struct pollfd hup = { .fd = ends[0], .events = POLLIN };
+		assert(poll(&hup, 1, 5000) == 1 && hup.revents & POLLHUP);
+		util_close(&ends[0]);
+	}
 	/* After a failed spawn, every member of the struct child_end is 0, and
 	 * child_capture() appends nothing to the buffer. */
 	struct child_cmd const none = {
@@ -944,6 +1067,7 @@ main (int argc, char **argv)
 	journal_test_child_cmd_run();
 	journal_test_child_end_why();
 	journal_test_unlock(argv[1]);
+	journal_test_fs(argv[1]);
 	journal_test_argv(argv[1]);
 	puts("Journal loads, write gaps, legacy migration, reasoning verification, "
 	     "path walks, private files, secret files, directory streams, child_capture(), "

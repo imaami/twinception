@@ -140,6 +140,21 @@ typedef void web_back_fn (struct loop     *loop,
  *  which the log leaves out, its body may be longer than TOOL_TEXT_MAX, and
  *  it may have more header lines.
  */
+struct auth;
+
+/** The bits of web_ask.flags. No plugin can set one: struct web_request
+ *  has none.
+ */
+enum web_ask_flag : uint32_t {
+	WEB_UPSTREAM = 1U << 0,  /**< the request goes to the upstream of
+	                              askai, so home sends it with the
+	                              Authorization line of the renewed
+	                              credential, if the upstream has one
+	                              (src/auth.h). Only for a request whose
+	                              keep is 0: its response is not stored
+	                              and no other request waits for it. */
+};
+
 struct web_ask {
 	struct web_request const *request;
 	char const               *plugin;  /**< the name of the call's plugin,
@@ -158,6 +173,8 @@ struct web_ask {
 	                                        which askai checked; a line of
 	                                        User-Agent is left out, as askai
 	                                        sends its own */
+	uint64_t                  flags;   /**< enum web_ask_flag, widened over
+	                                        the padding */
 	struct handle             who;     /**< names the call on its loop */
 };
 
@@ -189,13 +206,16 @@ web_destroy (struct web **p_web);
  * on the thread of @p loop. The part has a curl bridge (src/http.h) of its
  * own, so that the requests of the plugins do not use the connections of
  * home's upstream calls. The bridge has at most two connections to one
- * host at once, and it looks host names up on @p blockers. Returns 0, or
- * the error number of http_create().
+ * host at once, and it looks host names up on @p blockers. @p auth is the
+ * renewed credential of the upstream on @p loop, for the requests with
+ * WEB_UPSTREAM, and the caller finalizes it after web_home_stop(). Returns
+ * 0, or the error number of http_create().
  */
 extern int
 web_home_start (struct web     *web,
                 struct loop    *loop,
-                struct blocker *blockers);
+                struct blocker *blockers,
+                struct auth    *auth);
 
 /** Ends every request that is under way with ESHUTDOWN, and posts the
  *  reply to each of its waits. Then destroys the part of the service on

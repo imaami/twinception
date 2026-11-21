@@ -26,7 +26,9 @@ override SRC_askai-code := $(if $(LLVM_CONFIG), \
   graph.c                                       \
   jb.c                                          \
   log.c                                         \
-  loop.c)
+  loop.c                                        \
+  tty.c                                         \
+  util.c)
 
 override LIB_askai-code := \
   json-c                   \

@@ -273,7 +273,8 @@ check-journal: $Otests/journal
 	"$<" "$$directory/transcripts.git"
 
 $Otests/journal: $Otests/journal.c.o $Otests/src/loop.c.o $Otests/src/log.c.o \
-                 $Otests/src/child.c.o $Otests/src/buf.c.o $Otests/src/git_run.c.o
+                 $Otests/src/child.c.o $Otests/src/buf.c.o $Otests/src/git_run.c.o \
+                 $Otests/src/fs.c.o
 $Otests/journal:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ -lcrypto -lm
 
 # Unit tests of the argv and the environment of git, src/git_run.c. The
@@ -315,6 +316,20 @@ $Otests/member: $Otests/member.c.o $Otests/src/member.c.o $Otests/src/store.c.o 
 $Otests/member:; $(CC) $(TEST_FLAGS) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(JSON_LIBS) -lm
 
 $Otests/member.c.o $Otests/src/member.c.o: CPPFLAGS += $(JSON_INCLUDES)
+
+# src/util.c has the functions of src/util.h that format text. Each of
+# these tests calls one of them, or links an object of src/ that does.
+$(addprefix $Otests/,ai autocomplete chatgpt cli_input cli_io cli_loop cli_state cli_ui \
+                     evidence finding git_run handle instance journal ledger member seen \
+                     store turn): $Otests/src/util.c.o
+
+# src/store.c opens the directory of a lock file with src/fs.c.
+$Otests/member $Otests/store: $Otests/src/fs.c.o
+
+# src/child.c and src/cli_console.c set the modes of a terminal with
+# src/tty.c.
+$(addprefix $Otests/,cli_input cli_state cli_ui git_run journal member store): \
+  $Otests/src/tty.c.o
 
 # The unit tests. Each test links the object of its own source and the
 # objects of the files of src/ that the lines below list.

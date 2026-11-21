@@ -32,6 +32,7 @@
 #include "jb.h"
 #include "list.h"
 #include "loop.h"
+#include "tty.h"
 #include "util.h"
 
 enum {
@@ -751,13 +752,13 @@ cli_console_prepare (int meta)
 	rl_prep_terminal(meta);
 	struct cli_console *console = cli_console_active;
 	struct termios state;
-	if (tcgetattr(STDIN_FILENO, &state) < 0) {
-		console->in.error = errno;
-		return;
+	int e = tty_get(STDIN_FILENO, &state);
+	if (!e) {
+		state.c_lflag |= NOFLSH;
+		e = tty_set(STDIN_FILENO, TCSANOW, &state);
 	}
-	state.c_lflag |= NOFLSH;
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &state) < 0)
-		console->in.error = errno;
+	if (e)
+		console->in.error = e;
 }
 
 static void
@@ -1035,8 +1036,9 @@ cli_console_setup_readline (struct cli_console *console)
 	console->previous_locale = uselocale(console->locale);
 	if (!console->previous_locale)
 		return errno;
-	if (tcgetattr(STDIN_FILENO, &console->initial_state) < 0)
-		return errno;
+	int const saved = tty_get(STDIN_FILENO, &console->initial_state);
+	if (saved)
+		return saved;
 	console->flags |= CLI_CONSOLE_TERMINAL_SAVED;
 	console->terminal = fopencookie(console, "w", (cookie_io_functions_t){
 		.write = cli_console_terminal_write,
@@ -1156,14 +1158,14 @@ fail:
 static int
 cli_console_terminal_restore (struct cli_console *console)
 {
-	int e = tcgetattr(STDIN_FILENO, &console->resume_state) < 0 ? errno : 0;
+	int const e = tty_get(STDIN_FILENO, &console->resume_state);
 	/* These short best-effort writes must never wait for a slow terminal. */
 	static char const restore[] = "\033[?2004l\033[?7h\033[0m\033[?1049l";
 	if (console->flags & CLI_CONSOLE_FULLSCREEN)
 		(void)write(STDOUT_FILENO, restore, sizeof restore - 1);
-	while (tcsetattr(STDIN_FILENO, TCSANOW, &console->initial_state) < 0)
-		if (errno != EINTR)
-			return errno;
+	int const restored = tty_set(STDIN_FILENO, TCSANOW, &console->initial_state);
+	if (restored)
+		return restored;
 	return e;
 }
 
@@ -1195,9 +1197,11 @@ cli_console_resume (struct cli_console *console)
 	console->flags = (console->flags & ~CLI_CONSOLE_SUSPENDED) | CLI_CONSOLE_RESIZE_PENDING;
 	console->dirty = CLI_CONSOLE_PAINT_ALL;
 	cli_loop_wake(console->loop);
-	if ((console->flags & CLI_CONSOLE_TERMINAL_SAVED) &&
-	    tcsetattr(STDIN_FILENO, TCSANOW, &console->resume_state) < 0)
-		return errno;
+	if (console->flags & CLI_CONSOLE_TERMINAL_SAVED) {
+		e = tty_set(STDIN_FILENO, TCSANOW, &console->resume_state);
+		if (e)
+			return e;
+	}
 	if (console->flags & CLI_CONSOLE_FULLSCREEN)
 		return cli_console_queue(console, CSTR_VIEW("\033[?1049h\033[?7l\033[?2004h"));
 	return 0;

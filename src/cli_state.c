@@ -298,8 +298,8 @@ cli_state_save (struct cli_state *state)
 {
 	state->flags |= CLI_STATE_UNSAVED;
 	int fd = -1;
-	int e = util_private_open(state->directory, dstr_get(&state->temporary),
-	                          O_WRONLY | O_CREAT, &fd);
+	int e = fs_private_open(state->directory, dstr_get(&state->temporary),
+	                        O_WRONLY | O_CREAT, &fd);
 	if (fd < 0)
 		return e;
 	if (!e && ftruncate(fd, 0))
@@ -351,12 +351,7 @@ cli_state_default_path (struct cli_state *state)
 	int e = util_state_path(&base, &rest);
 	if (e)
 		return e;
-	if (!dstr_printf(&state->path, "%s%s/cli.git", base, rest))
-		return ENOMEM;
-	/* Only cli.git, which cli_state_create() creates with the mode 0700,
-	 * contains data. fs_mkdir_parents() does not change the mode of the
-	 * parent directories that exist. */
-	return fs_mkdir_parents((char *)dstr_raw(&state->path));
+	return dstr_printf(&state->path, "%s%s/cli.git", base, rest) ? 0 : ENOMEM;
 }
 
 static int
@@ -507,8 +502,8 @@ cli_state_load (struct cli_state *state,
 	if (e)
 		return e;
 	int fd = -1;
-	e = util_private_open(state->directory, dstr_get(&state->temporary),
-	                      O_RDWR | O_CREAT | O_EXCL, &fd);
+	e = fs_private_open(state->directory, dstr_get(&state->temporary),
+	                    O_RDWR | O_CREAT | O_EXCL, &fd);
 	if (fd < 0)
 		return e;
 	dstr_auto entry = dstr("");
@@ -568,7 +563,7 @@ static int
 cli_state_repository_init (struct cli_state *state)
 {
 	int fd = -1;
-	int e = util_private_open(state->directory, cli_state_init_lock.data, O_RDWR | O_CREAT, &fd);
+	int e = fs_private_open(state->directory, cli_state_init_lock.data, O_RDWR | O_CREAT, &fd);
 	if (fd < 0)
 		return e;
 	if (!e)
@@ -612,8 +607,8 @@ cli_state_repository (struct cli_state *state)
 	    !dstr_printf(&state->temporary, "cli-%s.snapshot.tmp", writer.hex) ||
 	    !dstr_printf(&state->scratch, "cli-%016" PRIx64 ".lock", group))
 		return ENOMEM;
-	e = util_private_open(state->directory, dstr_get(&state->scratch), O_RDWR | O_CREAT,
-	                      &state->lock);
+	e = fs_private_open(state->directory, dstr_get(&state->scratch), O_RDWR | O_CREAT,
+	                    &state->lock);
 	if (e)
 		return e;
 	e = cli_state_git(state, (char const *[]){ "rev-parse", "--verify", "--quiet", dstr_get(&state->latest), nullptr },
@@ -652,15 +647,12 @@ cli_state_create (struct cstr_view    path,
 	*e = cstr_view_store(identity, &state->identity);
 	if (!*e)
 		*e = path.len ? cstr_view_store(path, &state->path) : cli_state_default_path(state);
-	if (!*e && mkdir(dstr_get(&state->path), 0700) && errno != EEXIST)
-		*e = errno;
-	if (!*e) {
-		state->directory = open(dstr_get(&state->path), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-		if (state->directory < 0)
-			*e = errno;
-	}
+	/* Only cli.git, which is made with the mode 0700, contains data. The
+	 * parents are made only for the default path, and the mode of a
+	 * parent that exists does not change. */
 	if (!*e)
-		*e = util_private_fd(state->directory, S_IFDIR);
+		*e = fs_private_dir((char *)dstr_raw(&state->path), path.len ? 0 : FS_PARENTS,
+		                    &state->directory, nullptr);
 	/* state->path does not change after this point, so state->git can
 	 * point at the content of state->path. */
 	if (!*e)

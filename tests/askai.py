@@ -23,6 +23,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import termios
 import threading
 import time
 import urllib.parse
@@ -1141,6 +1142,27 @@ def jwt_token(exp, sub="u"):
     return f'{jwt_part({"alg": "none"})}.{jwt_part({"sub": sub, "exp": exp})}.c2ln'
 
 
+def jwt_sub(authorization):
+    """The sub claim of the token of the Authorization header."""
+    payload = authorization.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["sub"]
+
+
+def jwt_mint(directory, seconds):
+    """Writes a shell script to the directory that prints a new token on
+    each run, and returns the command of the script. The sub claim of a
+    token is the number of the run, and the token expires seconds after the
+    run."""
+    script, counter = f"{directory}/mint.sh", f"{directory}/minted"
+    with open(script, "w") as f:
+        f.write(f"""echo run >> {counter}
+n=$(($(wc -l < {counter})))
+part() {{ printf %s "$1" | base64 -w0 | tr '+/' '-_' | tr -d '='; }}
+echo "$(part '{{"alg":"none"}}').$(part "{{\\"sub\\":\\"$n\\",\\"exp\\":$(($(date +%s) + {seconds}))}}").c2ln"
+""")
+    return f"sh {script}"
+
+
 def check_auth_command(binary, up):
     """--auth-command: the token of a command as the bearer token, kept in a
     private file until it expires, --auth-login, and askai-open-browser with
@@ -1163,20 +1185,50 @@ def check_auth_command(binary, up):
         good = token(now + 3600)
         first = command(json.dumps({"access_token": good}))
         args = ("-u", up.url(), "-m", "m", "--auth-file", file, "--auth-command")
+
+        def props(since):
+            """The headers of the GETs of /props after the first since."""
+            with up.lock:
+                return [r["headers"] for r in up.get_requests[since:] if r["path"] == "/props"]
+        # A daemon runs no command at its start. Without a token in the
+        # file, it sends no GET of /props then: the GET follows the first
+        # request, with the token.
+        gets = len(up.get_requests)
         with Askai(binary, *args, first, env={"ASKAI_API_KEY": "must-not-be-used"}) as ai:
+            assert not os.path.exists(runs) and not props(gets)
             for _ in range(2):
                 assert not ai.ask().get("isError")
                 assert up.last()["headers"]["authorization"] == f"Bearer {good}"
+            wait_for(lambda: props(gets))
+            assert [h.get("authorization") for h in props(gets)] == [f"Bearer {good}"]
         assert ran() == 1
         assert os.stat(file).st_mode & 0o777 == 0o600 and \
             os.stat(os.path.dirname(file)).st_mode & 0o777 == 0o700
         with open(file) as f:
             assert json.load(f) == {"command": first, "token": good, "expires_at": now + 3600}
-        # Another process with the same command uses the token of the file.
+        # Another process with the same command uses the token of the file,
+        # at its start for the GET of /props. It reads the file again
+        # after a minute, not for each request: the token that another
+        # process stores in the meantime is not used at once.
+        gets = len(up.get_requests)
         with Askai(binary, *args, first) as ai:
+            wait_for(lambda: props(gets))
+            assert [h.get("authorization") for h in props(gets)] == [f"Bearer {good}"]
+            assert not ai.ask().get("isError")
+            with open(file, "w") as f:
+                json.dump({"command": first, "token": token(now + 3600, "later"),
+                           "expires_at": now + 3600}, f)
             assert not ai.ask().get("isError")
             assert up.last()["headers"]["authorization"] == f"Bearer {good}"
         assert not os.path.exists(runs)
+        # Every byte of the command of the file is compared.
+        with open(file, "w") as f:
+            json.dump({"command": first + "\0x", "token": token(now + 3600, "nul"),
+                       "expires_at": now + 3600}, f)
+        with Askai(binary, *args, first) as ai:
+            assert not ai.ask().get("isError")
+            assert up.last()["headers"]["authorization"] == f"Bearer {good}"
+        assert ran() == 1
         # The token of one command is not sent for another command that
         # names the same file.
         other = token(now + 3600, "other")
@@ -1236,6 +1288,14 @@ def check_auth_command(binary, up):
                  "--auth-command cannot be combined with --provider chatgpt")):
             run = askai(*words)
             assert run.returncode == 2 and message in run.stderr, (words, run.stderr)
+        # A symbolic link in the path of the token file is refused before
+        # the command runs, and no directory is made behind the link.
+        os.mkdir(f"{d}/target")
+        os.symlink(f"{d}/target", f"{d}/link")
+        run = askai("--auth-command", command(good), "--auth-file",
+                    f"{d}/link/new/token.json", "--auth-login")
+        assert run.returncode == 1 and "Not a directory" in run.stderr, run
+        assert not os.listdir(f"{d}/target") and not os.path.exists(runs)
 
         # askai-open-browser. curl.exe gets the page without a browser.
         helper = os.path.join(os.path.dirname(binary), "askai-open-browser")
@@ -1282,6 +1342,15 @@ def check_auth_command(binary, up):
         with open(file) as f:
             assert json.load(f) == {"command": f"{helper} {url}", "token": good,
                                     "expires_at": now + 3600}
+        # A process that ignores SIGCHLD can start askai: askai waits for
+        # the command all the same.
+        os.remove(file)
+        run = subprocess.run([binary, "--auth-command", command(good), "--auth-file", file,
+                              "--auth-login"], stdin=subprocess.DEVNULL, capture_output=True,
+                             text=True, timeout=30, check=False,
+                             preexec_fn=lambda: signal.signal(signal.SIGCHLD, signal.SIG_IGN))
+        assert run.returncode == 0 and run.stderr == f"Token saved to {file}\n", run
+        assert ran() == 1
         # --auth-login lends its terminal to the command: without curl.exe
         # and without the clipboard, the helper asks for the token there.
         os.remove(file)
@@ -1310,8 +1379,78 @@ def check_auth_command(binary, up):
         assert login.returncode == 0 and said == f"Token saved to {file}\n", (shown, said)
         with open(file) as f:
             assert json.load(f)["token"] == good
-    print("auth command: bearer token of a command, its file, renewal, errors, "
-          "--auth-login with a terminal and askai-open-browser: PASS")
+        os.remove(file)
+
+        def login_tty(script, act=None):
+            """Runs --auth-login with the command script under a shell that
+            leads a new session on a new terminal, and that askai returns
+            to. act(master, pids) is called once the command has written
+            the process ids of askai and of itself to $READY. Returns the
+            exit status of askai, what askai wrote to its standard error,
+            whether the terminal echoes after the run, and whether the
+            process group of the shell is the foreground one again."""
+            master, slave = os.openpty()
+            assert termios.tcgetattr(slave)[3] & termios.ECHO
+            ready = f"{d}/ready"
+            shell = ('exec < "$LOGIN_TTY"; "$0" "$@"; s=$?; '
+                     'cut -d" " -f5,8 /proc/$$/stat >&2; exit $s')
+            run = subprocess.Popen(
+                ["sh", "-c", shell, binary, "--auth-command", script, "--auth-file", file,
+                 "--auth-login"],
+                env=env | {"LOGIN_TTY": os.ttyname(slave), "READY": ready},
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                start_new_session=True)
+            pids = []
+            until = time.monotonic() + 30
+            while act and len(pids) < 2 and time.monotonic() < until:
+                time.sleep(0.01)
+                if os.path.exists(ready):
+                    with open(ready) as f:
+                        pids = [int(word) for word in f.read().split()]
+            if act:
+                assert len(pids) == 2, pids
+                os.remove(ready)
+                act(master, pids)
+            said = run.communicate(timeout=30)[1].splitlines()
+            echo = bool(termios.tcgetattr(slave)[3] & termios.ECHO)
+            os.close(master)
+            os.close(slave)
+            group, foreground = said.pop().split()
+            assert not os.path.exists(file)
+            return run.returncode, "\n".join(said), echo, group == foreground, pids
+
+        def gone(pid):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            return False
+        # The terminal has its modes and its foreground process group again
+        # after a command that changed the modes and failed.
+        assert login_tty("stty -echo -icanon < /dev/tty; exit 3") == \
+            (1, "--auth-command: the auth command failed", True, True, [])
+        # A command that is stopped is killed, by itself or by the suspend
+        # key, which the terminal sends to the command and not to askai.
+        assert login_tty("stty -echo < /dev/tty; kill -STOP $$") == \
+            (1, "--auth-command: the auth command was stopped", True, True, [])
+        waiting = "echo $PPID $$ > $READY; exec sleep 30"
+        status, said, echo, foreground, pids = login_tty(
+            waiting, lambda master, pids: os.write(master, b"\x1a"))
+        assert (status, said, echo, foreground) == \
+            (1, "--auth-command: the auth command was stopped", True, True), (status, said)
+        assert gone(pids[1])
+        # A signal that ends askai ends the command first, and the terminal
+        # is as it was.
+        status, said, echo, foreground, pids = login_tty(
+            "stty -echo < /dev/tty; " + waiting,
+            lambda master, pids: os.kill(pids[0], signal.SIGTERM))
+        # The shell can write the name of the signal.
+        assert (status, echo, foreground) == (128 + signal.SIGTERM, True, True) and \
+            "auth" not in said, (status, said)
+        assert gone(pids[1])
+    print("auth command: bearer token of a command, its file, renewal, /props with the "
+          "token, errors, --auth-login with a terminal, a stopped command, the modes of "
+          "the terminal and askai-open-browser: PASS")
 
 
 def check_chatgpt(binary, up):
@@ -3645,10 +3784,13 @@ def check_durable_cancel(binary, up):
                 up.reply = reply
                 up.delete = lambda request: (cancels.append(request) or 200, {})
                 up.retrieve = lambda request: (resumes.append(request) or 404, {})
-                bearer = jwt_token(int(time.time()) + 3600)
+                # Each run of the command gives a token that a later
+                # request may not use: it ends within a minute.
+                os.mkdir(f"{d}/{fmt}")
                 args = ("-u", up.url(endpoint), "--api", API[fmt], "--background", "--slots", "2",
                         "--service-name", "cancel", "--transcripts", f"{d}/transcripts.git",
-                        "--auth-file", f"{d}/bearer.json", "--auth-command", f"echo {bearer}")
+                        "--auth-file", f"{d}/{fmt}/state/bearer.json", "--auth-command",
+                        jwt_mint(f"{d}/{fmt}", 45))
                 if fmt == "openai":
                     args += ("-p", "llama")
                 with Askai(binary, *args) as ai:
@@ -3673,10 +3815,11 @@ def check_durable_cancel(binary, up):
                     wait_for(lambda: cancelled(ai, jid), seconds=10)
                     wait_for(lambda: len(cancels) == 1)
                     assert len(creations) == 1 and not resumes, (creations, resumes)
-                    # The cancellation has the token of --auth-command, as
-                    # the request has, next to the conversation of llama.
-                    assert creations[0]["headers"]["authorization"] == f"Bearer {bearer}" == \
-                        cancels[0]["headers"].get("authorization"), (creations, cancels)
+                    # The cancellation has a token of --auth-command, as
+                    # the request has, next to the conversation of llama:
+                    # the second one, as the first is no longer fresh.
+                    assert [jwt_sub(r["headers"].get("authorization", "..e30"))
+                            for r in (creations[0], cancels[0])] == ["1", "2"], (creations, cancels)
                     if fmt == "openai":
                         parsed = urllib.parse.urlsplit(cancels[0]["path"])
                         assert parsed.path == "/v1/stream", cancels
@@ -11239,7 +11382,10 @@ def check_code(binary, up):
               "static inline long un_f(struct un_a *a, struct un_b *b) "
               "{ return a->same + b->same; }\n"
               "static inline int un_g(void) { struct un_in { int deep; } v = { 1 }; "
-              "return v.deep; }\n")
+              "return v.deep; }\n"
+              "static inline int un_h(void) { typedef struct un_tag { int low; } un_t; "
+              "typedef un_t un_u; typedef un_t *un_p; un_u v = { 1 }; un_p p = &v; "
+              "return p->low; }\n")
         write("src/err.h", "#error cannot open file 'settings' in this build\n")
         write("src/lay.c", CODE_LAY_C)
         write("src/calls.h", CODE_CALLS_H)
@@ -12512,6 +12658,17 @@ def check_code_describe(binary, up, call, head, d, cdb):
         text = call(ai, repo="proj", action="describe", path="src/un.h", name="un_in.deep",
                     line=12)
         assert "int" in text and "un_in" in text, text
+        # A typedef of the function names that type too, also through
+        # another typedef. A typedef of a pointer to the type does not, and
+        # a typedef is no tag.
+        for owner in ("un_t", "un_u"):
+            text = call(ai, repo="proj", action="describe", path="src/un.h",
+                        name=owner + ".low", line=13)
+            assert "int" in text and "un_tag" in text, text
+        for owner in ("un_p", "struct un_t"):
+            text = call(ai, error=True, repo="proj", action="describe", path="src/un.h",
+                        name=owner + ".low", line=13)
+            assert "un_" in text, text
         # outline lists a struct that the file declares and does not define.
         text = call(ai, repo="proj", action="outline", path="src/un.h")
         assert "\n1 struct un_fwd, declared\n" in text and "struct un_a, declared" not in text, \
@@ -15357,11 +15514,28 @@ def check_attach(binary, up):
             ai.ask("Q")
             tools = json.dumps(up.last()["body"]["tools"])
             assert '"notes"' in tools and "attach" not in tools, (protocol, tools)
+    # The upload has the token of --auth-command, as the requests of the
+    # turn have.
+    path, _, _, _, calls, answer, _, _ = apis["generate"]
+    bearer = jwt_token(int(time.time()) + 3600)
+    with tempfile.TemporaryDirectory() as notes, \
+            Askai(binary, "--api", "generate", "-u", up.url(path), "-m", "m",
+                  "--auth-command", f"echo {bearer}", "--auth-file", f"{notes}/state/token.json",
+                  "--upstream-tools", "--notes", f"{notes}/notes", "--agent", "generate",
+                  token="attach-1") as ai:
+        stored = len(up.uploads)
+        script[:] = [lambda r: (200, calls([{"action": "add", "file": "own.c", "text": code}])),
+                     lambda r: (200, calls([{"action": "attach", "file": "own.c"}])),
+                     lambda r: (200, answer("A"))]
+        assert ai.ask("Q", conversation="2" * 32)["content"][0]["text"] == "A"
+        [upload] = up.uploads[stored:]
+        assert upload["headers"].get("authorization") == f"Bearer {bearer}" == \
+            up.last()["headers"].get("authorization"), upload
     up.reply = lambda request: (200, ANSWERS["openai"])
     print("attach: notes uploaded once to Gemini's Files API, the note or its "
           "view, given after the results in generateContent and Interactions, "
           "expiries, failed uploads, turns too large, the context, URIs, the "
-          "log, other APIs: PASS")
+          "log, other APIs, the token of an auth command: PASS")
 
 
 def check_turns(binary, up):
@@ -20417,10 +20591,34 @@ def check_classes(binary, up):
         wait_for(lambda: len(ai.listed("upstream requests:") or ()) == 6)
         counts = ai.listed("upstream requests:")
         assert counts[-2:] == ["aborted    1", "preempted  1"], counts
+
+        # One slot, and a credential that takes a second to come: the
+        # background job that waits for the credential is not preempted,
+        # as it has no call upstream to cut. Each request is sent once.
+        del up.requests[:]
+        bearer = jwt_token(int(time.time()) + 3600)
+        with tempfile.TemporaryDirectory() as d, \
+                Askai(binary, "-u", up.url(), "--test-task", "--slots", "1",
+                      "--auth-file", f"{d}/state/token.json",
+                      "--auth-command", f"sleep 1; echo {bearer}") as ai:
+            out = []
+            thread = threading.Thread(target=background, args=(ai, "bg", out))
+            thread.start()
+            wait_for(lambda: ai.metrics()["askai_upstream_background_calls"] == 1)
+            assert timed(ai, "fg1") < 5
+            thread.join(10)
+            assert len(out) == 1 and out[0][1] == 200 and \
+                text_of(out[0][2]["result"]) == "A", out
+            assert prompts() == ["bg", "fg1"], prompts()
+            assert ai.metrics()["askai_jobs_preempted_total"] == 0
+            with up.lock:
+                assert all(r["headers"].get("authorization") == f"Bearer {bearer}"
+                           for r in up.requests), up.requests
     finally:
         up.reply = hold
     print("classes: background work from test_task's prompt, a slot kept for "
-          "interactive work, preemption with one slot, once: PASS")
+          "interactive work, preemption with one slot, once, and none during the "
+          "wait for a credential: PASS")
 
 
 def main():

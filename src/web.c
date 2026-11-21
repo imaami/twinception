@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "auth.h"
 #include "htab.h"
 #include "http.h"
 #include "list.h"
@@ -138,7 +139,10 @@ struct web_run {
 	struct list          late;      /* on web->late once the deadline has
 	                                   passed */
 	struct loop_timer    timer;     /* the deadline */
-	struct http_request *transfer;
+	struct auth_wait     auth;      /* its wait for the credential of the
+	                                   upstream. Its done is nullptr
+	                                   without WEB_UPSTREAM. */
+	struct http_request *transfer;  /* nullptr during that wait */
 	char                *body;      /* the body received so far */
 	size_t               len;       /* the length of the body */
 	size_t               cap;       /* the room in body */
@@ -200,6 +204,7 @@ struct web {
 	struct loop_step   overdue;  /* ends the runs on late */
 	struct http       *http;
 	struct loop       *loop;
+	struct auth       *auth;     /* the renewed credential of the upstream */
 };
 
 /* Returns the length of the bytes of @p key. */
@@ -497,6 +502,7 @@ web_run_finish (struct web                *web,
                 struct web_response const *end)
 {
 	loop_timer_stop(web->loop, &run->timer);
+	auth_wait_leave(&run->auth);
 	list_del(&run->live);
 	list_del(&run->late);
 	char const *method = run->key.post ? "POST" : "GET";
@@ -597,8 +603,31 @@ web_run_late (struct loop       *loop,
 	loop_ready_bulk(loop, &web->overdue);
 }
 
+/* Ends @p run, which has no transfer, with the error @p e: ETIMEDOUT for
+ * its deadline, or else why askai cannot send it, in the words @p why.
+ */
+static void
+web_run_unsent (struct web     *web,
+                struct web_run *run,
+                int             e,
+                char const     *why)
+{
+	char text[96];
+	if (e == ETIMEDOUT)
+		util_format(text, sizeof text, "The request took longer than %" PRIu32 " s.",
+		            run->timeout);
+	else
+		util_format(text, sizeof text, "askai cannot send the request: %s", why);
+	struct web_response const end = web_response(
+		.error = text,
+		.e = e == ENOMEM || e == ETIMEDOUT ? e : EIO
+	);
+	web_run_finish(web, run, &end);
+}
+
 /* Ends the runs whose deadline has passed with ETIMEDOUT, as many in a step
- * as the step's share of requests allows.
+ * as the step's share of requests allows. A run that still waits for the
+ * credential of the upstream has no transfer to end.
  */
 static void
 web_overdue_step (struct loop      *loop,
@@ -610,51 +639,90 @@ web_overdue_step (struct loop      *loop,
 			return;
 		struct web_run *run = container_of(web->late.next, struct web_run, late);
 		run->fault = ETIMEDOUT;
-		http_end(web->http, &run->transfer, CURLE_OPERATION_TIMEDOUT);
+		if (run->transfer)
+			http_end(web->http, &run->transfer, CURLE_OPERATION_TIMEDOUT);
+		else
+			web_run_unsent(web, run, ETIMEDOUT, nullptr);
 	}
 }
 
-/* Starts the transfer of @p run on home's bridge, or ends the run if it
- * cannot start.
+/* Starts the transfer of @p run on home's bridge, with the Authorization
+ * line @p line of the upstream after the lines of the run unless it is
+ * nullptr, or ends the run if the transfer cannot start.
+ */
+static void
+web_run_send (struct web     *web,
+              struct web_run *run,
+              char const     *line)
+{
+	char const *url = run->data;
+	char const *lines = url + run->key.url + 1;
+	char const *body = lines + run->key.lines + 1;
+	/* The header lines, the line of the upstream and a nullptr. */
+	size_t const n = run->key.n_lines;
+	char const *few[4];
+	char const **headers = n + 1 < array_size(few) ? few : malloc((n + 2) * sizeof *headers);
+	if (!headers) {
+		web_run_unsent(web, run, ENOMEM, strerror(ENOMEM));
+		return;
+	}
+	for (size_t k = 0; k < n; ++k, lines += strlen(lines) + 1)
+		headers[k] = lines;
+	headers[n] = line;
+	headers[n + 1] = nullptr;
+	int const e = http_post_json(web->http, url, run->key.post ? body : nullptr,
+	                             run->key.body, headers, run->timeout * 1000L,
+	                             web_run_write, web_run_done, run, &run->transfer);
+	if (headers != few)
+		free(headers);
+	if (e) {
+		web_run_unsent(web, run, e, strerror(e));
+		return;
+	}
+	/* Without the encodings, the response comes uncompressed. */
+	(void)http_accept_encoding(run->transfer);
+}
+
+/* The credential of the upstream for the run of @p wait has come, or the
+ * error @p e. The deadline of the run also bounds this wait.
+ */
+static void
+web_run_authorized (struct auth_wait *wait,
+                    int               e,
+                    char const       *line)
+{
+	struct web_run *run = container_of(wait, struct web_run, auth);
+	struct web *web = run->web;
+	if (e)
+		web_run_unsent(web, run, e, auth_why(web->auth, e));
+	else
+		web_run_send(web, run, line);
+}
+
+/* Starts @p run on home's loop: its time runs from now, and its transfer
+ * starts at once, or for a run with WEB_UPSTREAM once the renewed
+ * credential of the upstream has come.
  */
 static void
 web_run_start (struct web     *web,
                struct web_run *run)
 {
-	char const *url = run->data;
-	char const *lines = url + run->key.url + 1;
-	char const *body = lines + run->key.lines + 1;
-	/* The header lines and a nullptr. */
-	size_t n = run->key.n_lines;
-	char const *few[3];
-	char const **headers = n < array_size(few) ? few : malloc((n + 1) * sizeof *headers);
 	run->since = loop_clock();
 	list_append(&web->live, &run->live);
-	int e = ENOMEM;
-	if (headers) {
-		for (size_t k = 0; k < n; ++k, lines += strlen(lines) + 1)
-			headers[k] = lines;
-		headers[n] = nullptr;
-		e = http_post_json(web->http, url, run->key.post ? body : nullptr,
-		                   run->key.body, headers, run->timeout * 1000L,
-		                   web_run_write, web_run_done, run, &run->transfer);
-		if (headers != few)
-			free(headers);
-	}
-	if (e) {
-		char why[96];
-		util_format(why, sizeof why, "askai cannot send the request: %s", strerror(e));
-		struct web_response const end = web_response(
-			.error = why,
-			.e = e == ENOMEM ? ENOMEM : EIO
-		);
-		web_run_finish(web, run, &end);
+	int e = loop_timer_set(web->loop, &run->timer, run->since + run->timeout * NS);
+	if (!run->auth.done || !auth_renewed(web->auth)) {
+		/* If the timer cannot be set, curl's timeout still ends the run. */
+		web_run_send(web, run, nullptr);
 		return;
 	}
-	/* Without the encodings, the response comes uncompressed. */
-	(void)http_accept_encoding(run->transfer);
-	/* If the timer cannot be set, curl's timeout still ends the run. */
-	(void)loop_timer_set(web->loop, &run->timer, run->since + run->timeout * NS);
+	/* Only the timer ends a wait for the credential. */
+	char const *line = nullptr;
+	if (!e)
+		e = auth_ask(web->auth, &run->auth, 0, &line);
+	if (e)
+		web_run_unsent(web, run, e, strerror(e));
+	else if (line)
+		web_run_send(web, run, line);
 }
 
 /* Handles @p msg, the message of a run, on home's loop. After home's loop
@@ -748,7 +816,8 @@ web_destroy (struct web **p_web)
 int
 web_home_start (struct web     *web,
                 struct loop    *loop,
-                struct blocker *blockers)
+                struct blocker *blockers,
+                struct auth    *auth)
 {
 	int e;
 	web->http = http_create(loop, nullptr, &e);
@@ -757,6 +826,7 @@ web_home_start (struct web     *web,
 	http_resolver(web->http, blockers);
 	http_connections(web->http, WEB_HOST);
 	web->loop = loop;
+	web->auth = auth;
 	return 0;
 }
 
@@ -774,6 +844,7 @@ web_home_stop (struct web *web)
 	loop_unready(&web->overdue);
 	http_destroy(&web->http);
 	web->loop = nullptr;
+	web->auth = nullptr;
 }
 
 size_t
@@ -848,6 +919,8 @@ web_wait_create (struct web           *web,
 		.live = list(&run->live),
 		.late = list(&run->late),
 		.timer = { .due = UINT64_MAX, .fn = web_run_late },
+		.auth = auth_wait(&run->auth, ask->flags & WEB_UPSTREAM && !r->keep
+		                              ? web_run_authorized : nullptr),
 		.key = {
 			.max = r->max,
 			.url = (uint32_t)ask->url,

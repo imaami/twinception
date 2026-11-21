@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <sys/file.h>
 
+#include "auth.h"
 #include "buf.h"
 #include "chatgpt.h"
 #include "clk.h"
@@ -654,13 +655,29 @@ chatgpt_exchange (struct cred *file,
 	return e;
 }
 
+char const *
+chatgpt_why (int e)
+{
+	switch (e) {
+	case EBUSY:
+		return "ChatGPT credentials are busy; retry after sign-in or refresh";
+	case EACCES:
+	case ENOENT:
+	case ENOKEY:
+		return "ChatGPT credentials unavailable; run --chatgpt-login and allow plan usage";
+	default:
+		return strerror(e);
+	}
+}
+
 int
 chatgpt_header (char const  *path,
+                uint32_t     flags,
                 struct dstr *header,
-                char        *error,
-                size_t       size)
+                uint64_t    *expires)
 {
 	dstr_clear(header);
+	*expires = 0;
 	CURLcode curl_status = curl_global_init(CURL_GLOBAL_DEFAULT);
 	int e;
 	struct cred file = cred(path, 0, &e);
@@ -676,7 +693,10 @@ chatgpt_header (char const  *path,
 	uint64_t now = clk_realtime_ns() / NS;
 	if (!e && !now)
 		e = EIO;
-	if (!e && jb_uint(jb_get(file.record, "expires_at"), 0) <= now + 60) {
+	bool const stale = !e && jb_uint(jb_get(file.record, "expires_at"), 0) <= now + AUTH_EARLY;
+	if (stale && flags & AUTH_CACHED)
+		e = ENOKEY;
+	if (stale && !e) {
 		struct cstr_view refresh = chatgpt_text(file.record, "refresh_token");
 		struct chatgpt_field const fields[] = {
 			{ CSTR_VIEW("grant_type"), CSTR_VIEW("refresh_token") },
@@ -690,18 +710,14 @@ chatgpt_header (char const  *path,
 	}
 	if (!e && !dstr_printf(header, "Authorization: Bearer %s", chatgpt_text(file.record, "access_token").data))
 		e = ENOMEM;
+	if (!e)
+		*expires = jb_uint(jb_get(file.record, "expires_at"), 0);
 	OPENSSL_cleanse(dstr_raw(&form), dstr_len(&form));
 	cred_fini(&file);
 	if (curl_status == CURLE_OK)
 		curl_global_cleanup();
 	if (e)
 		dstr_clear(header);
-	if (e)
-		util_format(error, size, e == EBUSY ? "ChatGPT credentials are busy; retry after sign-in or refresh" :
-		            e == EACCES || e == ENOENT ? "ChatGPT credentials unavailable; run --chatgpt-login and allow plan usage" :
-		            "ChatGPT authentication failed: %s", strerror(e));
-	else if (size)
-		*error = '\0';
 	return e;
 }
 

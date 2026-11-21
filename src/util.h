@@ -475,56 +475,6 @@ util_block_async (sigset_t *old)
 	return pthread_sigmask(SIG_BLOCK, &all, old);
 }
 
-/** Returns the reason why the file that @p st describes is not a private
- *  file of the process's user of the type @p type, S_IFREG or S_IFDIR, or
- *  nullptr if it is one. A private file has that type, the user owns it,
- *  no other user may access it, and a regular one has one link.
- */
-static inline char const *
-util_private (struct stat const *st,
-              mode_t             type)
-{
-	if ((st->st_mode & S_IFMT) != type)
-		return type == S_IFDIR ? "the file is not a directory"
-		                       : "the file is not a regular file";
-	if (st->st_uid != geteuid())
-		return "askai's user does not own the file";
-	if (st->st_mode & (S_IRWXG | S_IRWXO))
-		return "the mode of the file lets other users access it";
-	if (type == S_IFREG && st->st_nlink != 1)
-		return "the file has more than one hard link";
-	return nullptr;
-}
-
-/** Returns 0 if the file open as @p fd is a private file of the process's
- *  user of the type @p type, as util_private() says, EACCES if it is not,
- *  or the error number of fstat().
- */
-static inline int
-util_private_fd (int    fd,
-                 mode_t type)
-{
-	struct stat st;
-	return fstat(fd, &st) ? errno : util_private(&st, type) ? EACCES : 0;
-}
-
-/** Open the file @p name in the directory @p dir with @p flags, and store
- *  the file descriptor in @p *fd. A new file is created with the mode
- *  0600. Returns 0, the error number of openat(), or the error of
- *  util_private_fd(), which is EACCES if the file is not a private regular
- *  file of the process's user. @p *fd remains open after an error of
- *  util_private_fd().
- */
-static inline int
-util_private_open (int         dir,
-                   char const *name,
-                   int         flags,
-                   int        *fd)
-{
-	*fd = openat(dir, name, flags | O_CLOEXEC | O_NOFOLLOW, 0600);
-	return *fd < 0 ? errno : util_private_fd(*fd, S_IFREG);
-}
-
 /** Write the @p len bytes at @p buf to @p fd, again after a signal or a
  *  partial write. Returns 0, or the error number, EIO if no byte could be
  *  written.
@@ -768,94 +718,38 @@ util_url_shown (char const *restrict url,
 }
 
 [[gnu::format(printf, 3, 0)]]
-static inline size_t
+extern size_t
 util_vformat (char       *buf,
               size_t      size,
               char const *fmt,
-              va_list     ap)
-{
-	/* Set `len` to `SIZE_MAX` if args are valid, otherwise 0. */
-	size_t len = !buf | !size;
-
-	if (--len) {
-		union { int i; unsigned u; } x = {
-			vsnprintf(buf, size, fmt, ap)
-		};
-		bool const err = x.u & ~(~0U >> 1U);
-
-		/* Wipe on error, otherwise assign the length. */
-		len += err;
-		len &= x.u;
-
-		if (err)
-			/* Terminate buffer on error just in case. */
-			buf[0] = '\0';
-
-		if (len >= size) {
-			/* Truncated write. Adjust the length we intend to
-			 * return, and indicate truncation by changing the
-			 * last characters to "..." if there's room left.
-			 * The dots also replace the rest of a UTF-8
-			 * character that they would split.
-			 */
-			len = --size;
-			if (len > 2U) {
-				size_t const dots = util_clip(buf, len, len - 3U);
-				memset(buf + dots, '.', len - dots);
-			}
-		}
-	}
-
-	return len;
-}
+              va_list     ap);
 
 [[gnu::format(printf, 3, 4)]]
-static inline size_t
+extern size_t
 util_format (char       *buf,
              size_t      size,
              char const *fmt,
-             ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-	size_t len = util_vformat(buf, size, fmt, ap);
-	va_end(ap);
-	return len;
-}
+             ...);
 
 /** Formats text into the @p size bytes at @p buf as util_format() does.
  *  Returns a view of the text in @p buf.
  */
 [[gnu::format(printf, 3, 4)]]
-static inline struct cstr_view
+extern struct cstr_view
 util_format_view (char       *buf,
                   size_t      size,
                   char const *fmt,
-                  ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-	size_t len = util_vformat(buf, size, fmt, ap);
-	va_end(ap);
-	return cstr_view_n(buf, len);
-}
+                  ...);
 
 /** Formats the reason of a refusal into the @p len bytes at @p why as
  *  util_format() does. Returns EINVAL.
  */
 [[gnu::format(printf, 3, 4)]]
-static inline int
+extern int
 util_refuse (char       *why,
              size_t      len,
              char const *fmt,
-             ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-	(void)util_vformat(why, len, fmt, ap);
-	va_end(ap);
-	return EINVAL;
-}
+             ...);
 
 /** A bounded text: @p n bytes of storage, at most n - 1 bytes of text and
  *  a NUL, and the length of the text. A zeroed one is empty. The util_text
@@ -904,83 +798,11 @@ util_text_store_ (uint32_t         *len,
  *  @p data.
  */
 [[gnu::format(printf, 4, 5)]]
-static inline int
+extern int
 util_text_printf_ (uint32_t   *len,
                    char       *data,
                    size_t      size,
                    char const *fmt,
-                   ...)
-{
-	size_t const room = size - *len;
-	if (room < 2)
-		return EINVAL;
-	va_list ap;
-	va_start(ap, fmt);
-	*len += (uint32_t)util_vformat(data + *len, room, fmt, ap);
-	va_end(ap);
-	return *len < size - 1 ? 0 : EINVAL;
-}
-
-/** Open the directory that contains the file @p path, a relative path in
- *  the directory @p dir, and store its file descriptor in @p *fd. The
- *  parts of @p path come from util_path_next(), and each directory is
- *  opened with O_NOFOLLOW, one part at a time, so that no part can be a
- *  symbolic link. @p *leaf is set to the last part of @p path, the name of
- *  the file in the directory. Returns 0, EINVAL for an empty path, a path
- *  that starts with '/', a ".." part, a part longer than NAME_MAX bytes,
- *  or a path that does not end with the name of a file, or the error
- *  number of fcntl() or openat(), such as ENOENT for a missing directory,
- *  or ENOTDIR for a symbolic link or another file that is not a
- *  directory. @p *fd is -1 and @p *leaf is nullptr after an error.
- */
-static inline int
-util_parent_open (int          dir,
-                  char const  *path,
-                  char const **leaf,
-                  int         *fd)
-{
-	*fd = -1;
-	*leaf = nullptr;
-	struct cstr_view rest = cstr_view(path);
-	if (!rest.len || *path == '/')
-		return EINVAL;
-	char const *const end = rest.data + rest.len;
-	struct cstr_view part = {};
-	int e = util_path_next(&rest, &part);
-	if (e)
-		return e;
-	int at = fcntl(dir, F_DUPFD_CLOEXEC, 3);
-	if (at < 0)
-		return errno;
-	/* Each part is a directory if another part comes after it. */
-	for (;;) {
-		struct cstr_view next = {};
-		e = util_path_next(&rest, &next);
-		if (e || !next.len)
-			break;
-		UTIL_TEXT(NAME_MAX + 1) name;
-		e = util_text_store(&name, part);
-		if (e)
-			break;
-		int const down = openat(at, name.data,
-		                        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-		if (down < 0) {
-			e = errno;
-			break;
-		}
-		util_close(&at);
-		at = down;
-		part = next;
-	}
-	if (!e && (!part.len || part.data + part.len != end))
-		e = EINVAL;
-	if (e) {
-		util_close(&at);
-		return e;
-	}
-	*leaf = part.data;
-	*fd = at;
-	return 0;
-}
+                   ...);
 
 #endif /* ASKAI_SRC_UTIL_H_ */

@@ -56,31 +56,25 @@ cred (char const *path,
 		return file;
 	} while (0);
 
-	struct dstr scratch = dstr(path);
-	size_t len = dstr_len(&scratch);
-	if (!len) {
-		*e = ENOMEM;
-		return file;
-	}
-
 	bool const create = flags & CRED_CREATE;
-	*e = create ? fs_mkdir_parents((char *)dstr_raw(&scratch)) : 0;
-	int base = *e ? -1 : open(*path == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	if (!*e && base < 0)
-		*e = errno;
+	/* Each directory of the path is opened in the one before it, and with
+	 * CRED_CREATE made there, so that no symbolic link takes part. */
+	int base = open(*path == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	*e = base < 0 ? errno : 0;
 	char const *leaf = nullptr;
 	if (!*e)
-		*e = util_parent_open(base, path + (*path == '/'), &leaf, &file.dir_fd);
+		*e = fs_parent_open(base, path + (*path == '/'), create ? FS_PARENTS : 0, &leaf,
+		                    &file.dir_fd);
 	util_close(&base);
 	if (!*e)
-		*e = util_private_fd(file.dir_fd, S_IFDIR);
+		*e = fs_private_fd(file.dir_fd, S_IFDIR);
 	if (!*e)
 		*e = cstr_view_store(cstr_view(leaf), &file.name);
-	dstr_clear(&scratch);
+	struct dstr scratch = dstr(nullptr);
 	if (!*e && !dstr_printf(&scratch, "%s.lock", dstr_get(&file.name)))
 		*e = ENOMEM;
 	if (!*e)
-		*e = util_private_open(file.dir_fd, dstr_get(&scratch), O_RDWR | O_CREAT | O_NONBLOCK, &file.lock_fd);
+		*e = fs_private_open(file.dir_fd, dstr_get(&scratch), O_RDWR | O_CREAT | O_NONBLOCK, &file.lock_fd);
 	uint64_t start = clk_monotonic_ns();
 	while (!*e && flock(file.lock_fd, LOCK_EX | LOCK_NB)) {
 		if (errno != EINTR && errno != EWOULDBLOCK) {
@@ -99,7 +93,7 @@ cred (char const *path,
 	}
 	int fd = -1;
 	if (!*e)
-		*e = util_private_open(file.dir_fd, dstr_get(&file.name), O_RDONLY | O_NONBLOCK, &fd);
+		*e = fs_private_open(file.dir_fd, dstr_get(&file.name), O_RDONLY | O_NONBLOCK, &fd);
 	if (*e == ENOENT && create && file.lock_fd >= 0) {
 		file.record = json_object_new_object();
 		*e = file.record ? 0 : ENOMEM;
@@ -140,10 +134,12 @@ cred_save (struct cred *file,
 		e = ENOMEM;
 	int fd = -1;
 	if (!e)
-		e = util_private_open(file->dir_fd, dstr_get(&temporary), O_WRONLY | O_CREAT | O_EXCL, &fd);
+		e = fs_private_open(file->dir_fd, dstr_get(&temporary), O_WRONLY | O_CREAT | O_EXCL, &fd);
 	if (fd < 0)
 		return e;
-	e = fchmod(fd, 0600) ? errno : util_write_all(fd, text.data, text.len);
+	/* A new file that is not private is removed below, and not written. */
+	if (!e)
+		e = fchmod(fd, 0600) ? errno : util_write_all(fd, text.data, text.len);
 	if (!e && fsync(fd))
 		e = errno;
 	if (fd >= 0 && close(fd) && !e)

@@ -15,6 +15,7 @@
 
 #include "child.h"
 #include "clk.h"
+#include "fs.h"
 #include "git_run.h"
 #include "log.h"
 #include "loop.h"
@@ -517,12 +518,12 @@ store_lock (struct store const *store,
 	char *path = nullptr;
 	if (asprintf(&path, "%s.lock", ref) < 0)
 		return ENOMEM;
-	/* util_parent_open() opens the directories of the ref one at a time,
+	/* fs_parent_open() opens the directories of the ref one at a time,
 	 * so that no part of the path can be a symbolic link. */
 	char const *name = nullptr;
 	int fd = -1;
 	int top = open(store->directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	int e = top < 0 ? errno : util_parent_open(top, path, &name, &fd);
+	int e = top < 0 ? errno : fs_parent_open(top, path, 0, &name, &fd);
 	util_close(&top);
 	struct stat st;
 	/* Without the directory, there is no lock file. */

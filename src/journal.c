@@ -24,6 +24,7 @@
 #include "child.h"
 #include "clk.h"
 #include "compat.h"
+#include "fs.h"
 #include "git_run.h"
 #include "journal.h"
 #include "loop.h"
@@ -317,7 +318,7 @@ journal_unlock (struct journal *j)
 		return EOVERFLOW;
 	char const *name;
 	int fd = -1;
-	int e = util_parent_open(j->repo_fd, path, &name, &fd);
+	int e = fs_parent_open(j->repo_fd, path, 0, &name, &fd);
 	if (e)
 		return e == ENOENT ? 0 : e;
 	struct stat st;
@@ -511,7 +512,7 @@ journal_jobs_scan (struct journal *j)
 			break;
 		}
 		int input = -1;
-		e = util_private_open(j->jobs_fd, entry->d_name, O_RDONLY, &input);
+		e = fs_private_open(j->jobs_fd, entry->d_name, O_RDONLY, &input);
 		struct stat st;
 		if (!e && fstat(input, &st))
 			e = errno;
@@ -637,7 +638,7 @@ journal_checkpoint_write (struct journal        *j,
 	if (!state) {
 		if (job && job->bytes) {
 			int input = -1;
-			e = util_private_open(j->jobs_fd, record->id.hex, O_RDONLY, &input);
+			e = fs_private_open(j->jobs_fd, record->id.hex, O_RDONLY, &input);
 			if (!e)
 				e = journal_records_read(j, input, &record->id, false, &records);
 			util_close(&input);
@@ -675,7 +676,7 @@ journal_checkpoint_write (struct journal        *j,
 		e = journal_checkpoint_space(j, job, bytes, terminal);
 	int fd = -1;
 	if (!e)
-		e = util_private_open(j->jobs_fd, ".checkpoint.tmp", O_RDWR | O_CREAT, &fd);
+		e = fs_private_open(j->jobs_fd, ".checkpoint.tmp", O_RDWR | O_CREAT, &fd);
 	if (!e && ftruncate(fd, 0))
 		e = errno;
 	uint64_t sequence = 0;
@@ -715,7 +716,7 @@ journal_load_records (struct journal      *j,
                       struct journal_item *item)
 {
 	int fd = -1;
-	int e = util_private_open(j->jobs_fd, item->id.hex, O_RDONLY, &fd);
+	int e = fs_private_open(j->jobs_fd, item->id.hex, O_RDONLY, &fd);
 	if (!e)
 		e = journal_records_read(j, fd, &item->id, false, &item->record);
 	util_close(&fd);
@@ -763,8 +764,8 @@ journal_thought_file (struct journal            *j,
 	/* Every write appends, wherever a commit left the offset. Only a new
 	 * file's name needs its directory synchronized. */
 	if (!e)
-		e = util_private_open(directory, name, O_RDWR | O_APPEND | (append ? O_CREAT : 0),
-		                      &oldest->fd);
+		e = fs_private_open(directory, name, O_RDWR | O_APPEND | (append ? O_CREAT : 0),
+		                    &oldest->fd);
 	struct stat st;
 	if (!e && fstat(oldest->fd, &st))
 		e = errno;
@@ -1189,7 +1190,7 @@ journal_zero (unsigned char const *buf,
  * other processes from making the same file at the same time. Returns 0,
  * EILSEQ if the file does not have exactly @p len bytes or has only zero
  * bytes, EACCES if it is not a private file of askai's user
- * (util_private()), or another error number. On failure, the
+ * (fs_private()), or another error number. On failure, the
  * function writes to the @p why_len bytes at @p why the path of the file,
  * @p shown and @p name, and what is wrong with it.
  */
@@ -1203,14 +1204,14 @@ journal_secret (int         dir,
                 size_t      why_len)
 {
 	int fd = -1;
-	int e = util_private_open(dir, name, O_RDWR | O_CREAT, &fd);
+	int e = fs_private_open(dir, name, O_RDWR | O_CREAT, &fd);
 	struct stat st;
 	if (!e && fstat(fd, &st))
 		e = errno;
-	/* util_private_open() returns EACCES if the file is not private. */
+	/* fs_private_open() returns EACCES if the file is not private. */
 	char const *problem = nullptr;
 	if (e == EACCES && !fstatat(dir, name, &st, AT_SYMLINK_NOFOLLOW))
-		problem = util_private(&st, S_IFREG);
+		problem = fs_private(&st, S_IFREG);
 	if (!e && !st.st_size) {
 		do
 			e = util_random(secret, len);
@@ -1256,7 +1257,7 @@ journal_setup (struct journal *j,
 	if (!e)
 		e = journal_open_path(j, path);
 	if (!e)
-		e = util_private_open(j->repo_fd, "askai-journal.lock", O_RDWR | O_CREAT, &init_fd);
+		e = fs_private_open(j->repo_fd, "askai-journal.lock", O_RDWR | O_CREAT, &init_fd);
 	if (!e && flock(init_fd, LOCK_EX))
 		e = errno;
 	struct stat st;
@@ -1285,7 +1286,7 @@ journal_setup (struct journal *j,
 	if (!e)
 		e = journal_private(j->state_fd);
 	if (!e)
-		e = util_private_open(j->state_fd, "writer.lock", O_RDWR | O_CREAT, &j->lock_fd);
+		e = fs_private_open(j->state_fd, "writer.lock", O_RDWR | O_CREAT, &j->lock_fd);
 	if (!e && flock(j->lock_fd, LOCK_EX | LOCK_NB)) {
 		e = errno;
 		if (e == EWOULDBLOCK)
@@ -1297,7 +1298,7 @@ journal_setup (struct journal *j,
 	if (!e)
 		e = journal_directory(j->state_fd, "reasoning", &j->thoughts_fd);
 	if (!e) {
-		e = util_private_open(j->state_fd, "records.wal", O_RDONLY, &j->wal_fd);
+		e = fs_private_open(j->state_fd, "records.wal", O_RDONLY, &j->wal_fd);
 		if (e == ENOENT)
 			e = 0;
 	}

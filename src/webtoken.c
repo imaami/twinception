@@ -43,6 +43,7 @@
 #include "cstr_view.h"
 #include "jwt.h"
 #include "loop.h"
+#include "tty.h"
 #include "util.h"
 
 enum {
@@ -239,7 +240,7 @@ webtoken_paste (int               tty,
 {
 	*token = cstr_view(nullptr);
 	struct termios was;
-	if (tcgetattr(tty, &was))
+	if (tty_get(tty, &was))
 		return;
 
 	/* Without ISIG the keys of a signal are bytes, so no signal ends the
@@ -251,7 +252,7 @@ webtoken_paste (int               tty,
 	buf_clear(out);
 	/* The change of the mode drops the bytes typed before it, so the words
 	 * come after it. */
-	if (!tcsetattr(tty, TCSAFLUSH, &quiet)) {
+	if (!tty_set(tty, TCSAFLUSH, &quiet)) {
 		webtoken_say(tty, "Paste the token, or the text of the page, and press Enter: ");
 		uint64_t const deadline = loop_clock() + WEBTOKEN_PASTE * NS;
 		char c = '\0';
@@ -261,7 +262,7 @@ webtoken_paste (int               tty,
 			;
 		if (!key)
 			buf_clear(out);
-		(void)tcsetattr(tty, TCSAFLUSH, &was);
+		(void)tty_set(tty, TCSAFLUSH, &was);
 	}
 	webtoken_say(tty, "\n");
 	*token = jwt_find(cstr_view_span(buf_peek(out)));
@@ -272,6 +273,9 @@ main (int    argc,
       char **argv)
 {
 	char const *url = argc == 2 ? argv[1] : "";
+	/* Before the program opens any file (child_setup()). */
+	if (child_setup())
+		return 1;
 	int tty = open("/dev/tty", O_RDWR | O_CLOEXEC | O_NOCTTY);
 	if (!cstr_view_starts(cstr_view(url), CSTR_VIEW("https://")) &&
 	    !cstr_view_starts(cstr_view(url), CSTR_VIEW("http://"))) {

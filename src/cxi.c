@@ -1017,31 +1017,84 @@ cxi_out_expansion (struct cxi_out *out,
 	cxi_out_lit(out, ").");
 }
 
+/* Returns the struct or union @p c, or the struct or union around @p c
+ * that is not an anonymous member of another one.
+ */
+static CXCursor
+cxi_record_around (CXCursor c)
+{
+	while (clang_Cursor_isAnonymousRecordDecl(c))
+		c = clang_getCursorSemanticParent(c);
+	return c;
+}
+
+/* A search of the body of a function for a typedef of a struct or union. */
+struct cxi_alias {
+	char const *name;    /* of the typedef */
+	CXCursor    record;  /* the canonical cursor of the struct or union */
+	uint64_t    found;   /* bool, widened over the padding */
+};
+
+/* Sets found of the cxi_alias at @p data if @p c is a typedef of its name
+ * for its record. The typedef can name the record through other typedefs.
+ * A typedef of the same name for another type, such as a pointer to the
+ * record or a record of another block, is not one, and the search goes on.
+ */
+static enum CXChildVisitResult
+cxi_alias_visit (CXCursor     c,
+                 CXCursor,
+                 CXClientData data)
+{
+	struct cxi_alias *alias = data;
+	if (c.kind != CXCursor_TypedefDecl || !cxi_spelled(c, alias->name))
+		return CXChildVisit_Recurse;
+	CXType const type = clang_getCanonicalType(clang_getTypedefDeclUnderlyingType(c));
+	if (type.kind != CXType_Record)
+		return CXChildVisit_Continue;
+	CXCursor const record = clang_getCanonicalCursor(clang_getTypeDeclaration(type));
+	alias->found = clang_equalCursors(record, alias->record);
+	return alias->found ? CXChildVisit_Break : CXChildVisit_Continue;
+}
+
 /* Whether @p c is a member of a struct or union named @p owner. A member
  * of an anonymous struct or union is a member of the type around that.
+ * Without a tag keyword in the request, @p kind 0, @p owner can also be a
+ * typedef that the function of the struct or union declares for it: the
+ * lookup of a type by its name does not visit a function body.
  */
 static bool
 cxi_member_of (CXCursor    c,
-               char const *owner)
+               char const *owner,
+               uint32_t    kind)
 {
 	if (c.kind != CXCursor_FieldDecl)
 		return false;
-	CXCursor record = clang_getCursorSemanticParent(c);
-	while (clang_Cursor_isAnonymousRecordDecl(record))
-		record = clang_getCursorSemanticParent(record);
-	return cxi_spelled(record, owner);
+	CXCursor const record = cxi_record_around(clang_getCursorSemanticParent(c));
+	if (cxi_spelled(record, owner))
+		return true;
+	CXCursor const fn = clang_getCursorSemanticParent(record);
+	if (kind || fn.kind != CXCursor_FunctionDecl)
+		return false;
+	struct cxi_alias alias = {
+		.name   = owner,
+		.record = clang_getCanonicalCursor(record)
+	};
+	(void)clang_visitChildren(fn, cxi_alias_visit, &alias);
+	return alias.found;
 }
 
 /* Writes the first symbol named @p name on the line to @p *c. If @p *c is
  * not null, it is a member of a struct or union, and the symbol is that
  * member: the line can name a member of another type too. With @p owner,
- * the symbol is a member of a struct or union of that name, and the
- * function writes no words if the line has none: ENOENT then.
+ * the symbol is a member of a struct or union of that name
+ * (cxi_member_of() with @p kind), and the function writes no words if the
+ * line has none: ENOENT then.
  */
 static int
 cxi_lookup_line (struct cxi *x,
                  char const *name,
                  char const *owner,
+                 uint32_t    kind,
                  CXCursor   *c,
                  unsigned   *column)
 {
@@ -1061,7 +1114,8 @@ cxi_lookup_line (struct cxi *x,
 		*column = (unsigned)i + 1;
 		*c = cxi_symbol(x->tu, file, line, *column);
 		if (cxi_is_named(*c, name) &&
-		    (owner ? cxi_member_of(*c, owner) : any || clang_equalCursors(*c, only)))
+		    (owner ? cxi_member_of(*c, owner, kind)
+		           : any || clang_equalCursors(*c, only)))
 			return 0;
 	}
 	if (owner)
@@ -1211,17 +1265,6 @@ cxi_parse_name (struct cxi *x,
 	memcpy(member, dot.data + !!b, b);
 	member[b] = '\0';
 	return 0;
-}
-
-/* Returns the struct or union @p c, or the struct or union around @p c
- * that is not an anonymous member of another one.
- */
-static CXCursor
-cxi_record_around (CXCursor c)
-{
-	while (clang_Cursor_isAnonymousRecordDecl(c))
-		c = clang_getCursorSemanticParent(c);
-	return c;
 }
 
 /* Appends the field @p c with its place in the outermost named record. */
@@ -2425,13 +2468,14 @@ cxi_describe (struct cxi *x)
 	/* A member is looked for on its line first: its type can be one of a
 	 * function body, which the lookup of a type by its name does not
 	 * visit. */
-	e = last == member && x->line ? cxi_lookup_line(x, member, name, &c, &column) : ENOENT;
+	e = last == member && x->line ? cxi_lookup_line(x, member, name, kind, &c, &column)
+	                              : ENOENT;
 	if (e) {
 		e = last == member ? cxi_lookup_member(x, name, member, &c)
 		  : x->line ? 0
 		  : cxi_lookup(x, name, kind, &c);
 		if (!e && x->line)
-			e = cxi_lookup_line(x, last, nullptr, &c, &column);
+			e = cxi_lookup_line(x, last, nullptr, 0, &c, &column);
 	}
 	if (e)
 		return e;
@@ -3771,26 +3815,6 @@ cxi_words (struct cxi  *x,
 	return 0;
 }
 
-/* Makes the directory @p path and its parents with the mode 0700, opens it
- * as @p *fd and checks that it is private, with the reason in @p *why.
- */
-static int
-cxi_dir (char         *path,
-         int          *fd,
-         char const  **why)
-{
-	*fd = -1;
-	int e = fs_mkdir_parents(path);
-	if (!e && mkdir(path, 0700) && errno != EEXIST)
-		e = errno;
-	struct stat st;
-	if (!e && ((*fd = open(path, O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)) < 0 ||
-	           fstat(*fd, &st)))
-		e = errno;
-	*why = e ? strerror(e) : util_private(&st, S_IFDIR);
-	return e ? e : *why ? EACCES : 0;
-}
-
 /* askai-code --check: makes the cache, confines the process to test that,
  * and writes the version of libclang and the confinement.
  */
@@ -3802,7 +3826,7 @@ cxi_check (struct cxi *x)
 	char const *why = cstr_view_starts(cache, CSTR_VIEW("/")) ? nullptr : "it is not absolute";
 	int fd = -1;
 	int e = why ? EINVAL : cstr_view_store(cache, &dir) ? ENOMEM
-	      : cxi_dir((char *)dstr_raw(&dir), &fd, &why);
+	      : fs_private_dir((char *)dstr_raw(&dir), FS_PARENTS, &fd, &why);
 	util_close(&fd);
 	dstr_cleanup(&dir);
 	if (e) {
@@ -4175,7 +4199,7 @@ cxi_cache_open (struct cxi_cache *cache,
 	char const *why = nullptr;
 	int const flags = O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC;
 	struct dstr index = DSTR_INIT;
-	int e = cxi_dir((char *)dstr_raw(&cache->dir), &cache->fd, &why);
+	int e = fs_private_dir((char *)dstr_raw(&cache->dir), FS_PARENTS, &cache->fd, &why);
 	if (!e && ((cache->fds.keep = openat(cache->fd, "lock", flags, 0600)) < 0 ||
 	           (cache->state = openat(cache->fd, "commit", flags, 0600)) < 0))
 		e = errno;
@@ -4346,7 +4370,7 @@ main (int    argc,
 	bool const check = argc > 1 && !strcmp(argv[1], "--check");
 	int at = 1 + check;
 	int fd = 1;
-	int e = child_std_open();
+	int e = child_setup();
 	if (!e)
 		e = cxi_words(&x, argc, argv, &at);
 	if (!e)

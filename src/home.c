@@ -11,10 +11,9 @@
 #include <string.h>
 
 #include "ai.h"
+#include "auth.h"
 #include "blocker.h"
 #include "buf.h"
-#include "bearer.h"
-#include "chatgpt.h"
 #include "config.h"
 #include "dstr.h"
 #include "hexid.h"
@@ -101,6 +100,9 @@ enum : uint16_t {
 	HOME_ALONE    = 1u << 1,  /* the client loops have exited */
 	HOME_PROBING  = 1u << 2,  /* the breaker's probe is under way */
 	HOME_FIFO     = 1u << 3,  /* all jobs of a class wait in one queue */
+	HOME_DISCOVER = 1u << 4,  /* the GET of /props or of the model is sent
+	                             with the first token of a job: the
+	                             credential file had none at the start */
 };
 
 /* Whom jobs of a class are for: an identity, a session, or a client's
@@ -120,7 +122,9 @@ struct home_principal {
 /* Best-effort cancellation outlives the local job, but not its deadline. */
 struct home_cancellation {
 	struct list          hook;
-	struct http_request *transfer;
+	struct auth_wait     auth;      /* its wait for the credential */
+	struct http_request *transfer;  /* nullptr during that wait */
+	char                *url;       /* of curl, taken from its job */
 	uint64_t             deadline;
 	size_t               received;
 };
@@ -135,23 +139,6 @@ struct home_delivery_error {
 	char message[CURL_ERROR_SIZE];
 };
 
-/* Credential I/O belongs on a blocker. The request reference prevents its
- * reuse after cancellation; path belongs to the operation so that a forced
- * shutdown can detach it from home while its worker is still running.
- */
-struct home_authorization {
-	struct blocker_job  work;
-	struct list         hook;
-	struct home        *home;
-	struct job         *request;
-	struct dstr         path;
-	struct dstr         command;  /* of --auth-command, or empty */
-	struct dstr         header;
-	uint64_t            resume;
-	uint64_t            submitted;
-	char                error[256];
-};
-
 /* The bits of job->recovery.flags. */
 enum : uint64_t {
 	RECOVERY_RESTORING = 1u << 0,  /* the job was restored from its journal,
@@ -162,8 +149,9 @@ enum : uint64_t {
 	                                  write */
 	RECOVERY_OPENING   = 1u << 3,  /* its stream opens once the "meta"
 	                                  record is written */
-	RECOVERY_RESUME    = 1u << 4,  /* with RECOVERY_OPENING, the stream
-	                                  resumes the provider's job */
+	RECOVERY_RESUME    = 1u << 4,  /* with RECOVERY_OPENING, or while the
+	                                  job waits for the credential, the
+	                                  stream resumes the provider's job */
 	RECOVERY_ENDING    = 1u << 5,  /* it ended during a journal write */
 	RECOVERY_THOUGHT   = 1u << 6,  /* a thought is open in the journal */
 	RECOVERY_FINAL     = 1u << 7,  /* the final thought boundary is written */
@@ -214,7 +202,8 @@ struct home {
 	                                          silent longest first */
 	struct list               feeding;     /* the streams with bytes to read */
 	struct list               cancellations; /* native cancellations, oldest first */
-	struct list               authorizations; /* credentials being read or renewed */
+	struct auth_wait          discovery;   /* the wait of the GET of /props or
+	                                          of the model for the credential */
 	struct shelf              spare;       /* principals kept for reuse */
 	struct jb_pool            pool;        /* the events' tokeners */
 	struct jb_reaper          reaper;      /* the events' values left to free */
@@ -223,6 +212,8 @@ struct home {
 	struct home_metrics      *metrics;
 	struct loop              *loop;
 	struct blocker           *blockers;
+	struct auth              *auth;        /* the renewed credential of the
+	                                          upstream, which askai lends */
 	struct http              *http;
 	struct httpd_home        *door;        /* to make room for descriptors */
 	struct ai_endpoint const *ep;
@@ -232,8 +223,6 @@ struct home {
 	                                          the lines that a request
 	                                          replaces, and room for those */
 	char const              **header;      /* the first of those in headers */
-	struct dstr               authorization;  /* the Authorization line of the
-	                                             last renewed credential */
 	uint64_t                  timeout;     /* ns from a start to its deadline */
 	uint64_t                  silence;     /* ns an answer may pause */
 	uint64_t                  backoff;     /* the breaker's next open spell */
@@ -250,7 +239,6 @@ struct home {
 	uint32_t                  running_bg;  /* background jobs running */
 	uint32_t                  cancelling;  /* native cancellation requests */
 	uint32_t                  persisting;  /* journal callbacks still using home */
-	uint32_t                  authorizing; /* queued and running credential reads */
 	uint16_t                  flags;       /* HOME_* */
 	uint16_t                  state;       /* the breaker's */
 };
@@ -262,7 +250,6 @@ static int home_open (struct home *home, struct job *job, bool resume);
 static void home_archive_pending (struct home *home, struct job *job);
 static int home_provider_url (struct home *home, struct job *job,
                               bool cancel, char **out);
-static void home_authorization_submit (struct home *home);
 
 /* The names that home uses for each API. llama is the end of the path of
  * the API's endpoint at llama-server, if its background mode serves the
@@ -544,6 +531,7 @@ home_retire (struct home *home,
 	struct home_metrics *m = home->metrics;
 	uint32_t c = home_job_class(job);
 	list_del(&job->due);
+	auth_wait_leave(&job->auth);
 	hist_add(&m->in_flight, -1ULL);
 	if (job->who)
 		home_unqueue(home, job);
@@ -577,6 +565,8 @@ home_cancel_drop (struct home              *home,
                   struct home_cancellation *cancel)
 {
 	list_del(&cancel->hook);
+	auth_wait_leave(&cancel->auth);
+	curl_free(cancel->url);
 	free(cancel);
 	cancel = nullptr;
 	--home->cancelling;
@@ -617,30 +607,75 @@ home_cancel_done (CURLcode    result,
 }
 
 /* Returns the header lines of a request: the endpoint's, or those of
- * home->headers with the line @p conversation, if not nullptr, and with
- * the Authorization line of the last renewed credential, if there is one.
- * A request that renews no credential itself, a cancellation or a GET of
- * the properties, is sent with that line, which is a minute or more from
- * its end when the request of its job starts. The HTTP bridge copies the
- * lines before the next call.
+ * home->headers with the line @p conversation of llama-server and the
+ * Authorization line @p line of the renewed credential (src/auth.h), each
+ * unless it is nullptr. home->headers exists if a request can have one of
+ * the two lines, with a nullptr after the two slots at home->header. The
+ * HTTP bridge copies the lines before the next call.
  */
 static char const *const *
 home_lines (struct home *home,
-            char const  *conversation)
+            char const  *conversation,
+            char const  *line)
 {
-	char const **own = home->header;
-	if (!own)
+	if (!conversation && !line)
 		return home->ep->headers;
-	if (conversation)
-		*own++ = conversation;
-	if (dstr_len(&home->authorization))
-		*own++ = dstr_get(&home->authorization);
-	*own = nullptr;
-	return own == home->header ? home->ep->headers : home->headers;
+	char const **own = home->header;
+	own[0] = conversation ? conversation : line;
+	own[1] = conversation ? line : nullptr;
+	return home->headers;
+}
+
+/* Sends the request of @p cancel with the Authorization line @p line, or
+ * without one for nullptr, in the time that its deadline leaves. A
+ * cancellation that cannot be sent is logged and forgotten.
+ */
+static void
+home_cancel_send (struct home              *home,
+                  struct home_cancellation *cancel,
+                  char const               *line)
+{
+	uint64_t const now = home->loop->now;
+	if (cancel->deadline <= now) {
+		home_cancel_done(CURLE_OPERATION_TIMEDOUT, 0, "", cancel);
+		return;
+	}
+	long const ms = (long)((cancel->deadline - now + MS - 1) / MS);
+	int e = http_post_json(home->http, cancel->url, "", 0, home_lines(home, nullptr, line),
+	                       ms, home_cancel_write, home_cancel_done, cancel,
+	                       &cancel->transfer);
+	if (!e && home_llama(home))
+		e = http_method(cancel->transfer, "DELETE");
+	if (!e)
+		return;
+	http_cancel(home->http, &cancel->transfer);
+	LOG(LOG_WARN, "native background cancellation unavailable: %s", strerror(e));
+	home_cancel_drop(home, cancel);
+}
+
+/* The credential of the cancellation of @p wait has come, or the error
+ * @p e. The deadline of the cancellation also bounds this wait
+ * (home_cleanup_step()).
+ */
+static void
+home_cancel_authorized (struct auth_wait *wait,
+                        int               e,
+                        char const       *line)
+{
+	struct home_cancellation *cancel = container_of(wait, struct home_cancellation, auth);
+	if (!e) {
+		home_cancel_send(self, cancel, line);
+		return;
+	}
+	LOG(LOG_WARN, "native background cancellation unavailable: %s",
+	    auth_why(self->auth, e));
+	home_cancel_drop(self, cancel);
 }
 
 /* Cancel native work independently of the local job's lifetime. Closing
- * its stream alone would leave it running at the provider.
+ * its stream alone would leave it running at the provider. The request
+ * carries the renewed credential of the upstream, which it waits for like
+ * the request of a job, within its own deadline.
  */
 static void
 home_native_cancel (struct home *home,
@@ -658,23 +693,25 @@ home_native_cancel (struct home *home,
 		    why ? why : "out of memory");
 		return;
 	}
+	/* The job frees its URL as it ends, which can be before the send. */
+	cancel->url = job->cancel_url;
+	job->cancel_url = nullptr;
+	cancel->auth = auth_wait(&cancel->auth, home_cancel_authorized);
 	cancel->deadline = home->loop->now + CANCEL_MS * MS;
-	int e = http_post_json(home->http, job->cancel_url, "", 0, home_lines(home, nullptr),
-	                       CANCEL_MS, home_cancel_write, home_cancel_done, cancel,
-	                       &cancel->transfer);
-	if (!e && home_llama(home))
-		e = http_method(cancel->transfer, "DELETE");
-	if (e) {
-		http_cancel(home->http, &cancel->transfer);
-		free(cancel);
-		cancel = nullptr;
-		LOG(LOG_WARN, "native background cancellation unavailable: %s", strerror(e));
-		return;
-	}
 	list_append(&home->cancellations, &cancel->hook);
 	++home->cancelling;
 	if (home->timers[TIMER_CANCEL].due == UINT64_MAX)
 		(void)loop_timer_set(home->loop, &home->timers[TIMER_CANCEL], cancel->deadline);
+	if (!auth_renewed(home->auth)) {
+		home_cancel_send(home, cancel, nullptr);
+		return;
+	}
+	char const *line;
+	int const e = auth_ask(home->auth, &cancel->auth, 0, &line);
+	if (e)
+		home_cancel_authorized(&cancel->auth, e, nullptr);
+	else if (line)
+		home_cancel_send(home, cancel, line);
 }
 
 /* Bound cancellation even while the bridge waits for a resolver or slot. */
@@ -1287,10 +1324,15 @@ home_connect (struct home *home,
 	return home_metadata(home, job);
 }
 
+/* Sends the request of @p job, or with @p resume the request for the
+ * stream of its job at the provider, with the Authorization line @p line of
+ * the renewed credential, or without one for nullptr.
+ */
 static int
 home_send (struct home *home,
            struct job  *job,
-           bool         resume)
+           bool         resume,
+           char const  *line)
 {
 	struct ai_endpoint const *ep = home->ep;
 	char const *conversation = nullptr;
@@ -1310,134 +1352,89 @@ home_send (struct home *home,
 	}
 	job->flags &= ~(SEEN | DELIVERED);
 	int e = http_post_json(home->http, url ? url : ep->url, (char const *)body.ptr, body.len,
-	                       home_lines(home, conversation), 0, home_job_write, home_job_done,
-	                       job, &job->transfer);
+	                       home_lines(home, conversation, line), 0, home_job_write,
+	                       home_job_done, job, &job->transfer);
 	curl_free(url);
 	return e;
 }
 
-static void
-home_authorization_destroy (struct home_authorization **p_auth)
-{
-	struct home_authorization *auth = *p_auth;
-	dstr_cleanup(&auth->path);
-	dstr_cleanup(&auth->command);
-	dstr_cleanup(&auth->header);
-	free(auth);
-	*p_auth = nullptr;
-}
+static int home_props_ask (struct home *home, char const *line);
 
-/* On a blocker: file locks, refresh HTTPS and the command of
- * --auth-command never hold up an event loop.
+/* Sends the GET of /props or of the model with @p line, if it waited for
+ * the first token of a job (HOME_DISCOVER). A GET that cannot start is not
+ * tried again: home keeps the default.
  */
 static void
-home_authorize (struct blocker_job *work)
+home_discover (struct home *home,
+               char const  *line)
 {
-	struct home_authorization *auth = container_of(work, struct home_authorization, work);
-	work->error = dstr_len(&auth->command)
-	              ? bearer_header(dstr_get(&auth->path), dstr_get(&auth->command),
-	                              &auth->header, auth->error, sizeof auth->error)
-	              : chatgpt_header(dstr_get(&auth->path), &auth->header,
-	                               auth->error, sizeof auth->error);
+	if (!(home->flags & HOME_DISCOVER))
+		return;
+	home->flags &= ~HOME_DISCOVER;
+	(void)home_props_ask(home, line);
 }
 
-/* A cancelled or timed-out request may have completed while credentials
- * were being renewed. Its held reference is released without sending it.
+/* The credential of the job of @p wait has come, or the error @p e. The
+ * job is in flight: a job that ends leaves its wait (home_retire()), and
+ * a job without a transfer is not preempted (home_job_cuttable()). Its
+ * deadline can have passed during the wait.
  */
 static void
-home_authorized (struct loop *loop,
-                 struct msg  *msg)
+home_job_authorized (struct auth_wait *wait,
+                     int               e,
+                     char const       *line)
 {
-	struct home_authorization *auth = container_of(msg, struct home_authorization, work.done);
-	struct home *home = auth->home;
-	struct job *job = auth->request;
-	list_del(&auth->hook);
-	if (home)
-		--home->authorizing;
-	if (home && !(loop->flags & LOOP_EXIT) && !list_is_empty(&job->due)) {
-		if (home->flags & HOME_DRAINING) {
-			home_end(home, job, JOB_CANCELLED, &home->metrics->cancelled);
-		} else if (job->deadline && job->deadline <= loop->now) {
-			home_cut(home, job, CURLE_OPERATION_TIMEDOUT);
-		} else {
-			int e = auth->work.error;
-			if (!e) {
-				dstr_cleanup(&home->authorization);
-				home->authorization = dstr_move(&auth->header);
-				e = home_send(home, job, auth->resume);
-			}
-			if (e) {
-				(void)home_job_say(job, "Cannot authorize or start the request: %s",
-				                   *auth->error ? auth->error : strerror(e));
-				home_end(home, job, JOB_FAILED, &home->metrics->completed);
-			}
-		}
+	struct job *job = container_of(wait, struct job, auth);
+	struct home *home = self;
+	bool const resume = job->recovery.flags & RECOVERY_RESUME;
+	job->recovery.flags &= ~RECOVERY_RESUME;
+	if (home->flags & HOME_DRAINING) {
+		home_end(home, job, JOB_CANCELLED, &home->metrics->cancelled);
+		return;
 	}
-	home_job_put(job, 1);
-	home_authorization_destroy(&auth);
-	if (home) {
-		if (!(loop->flags & LOOP_EXIT) && !list_is_empty(&home->authorizations))
-			home_authorization_submit(home);
-		home_maybe_exit(home);
+	if (job->deadline && job->deadline <= home->loop->now) {
+		home_cut(home, job, CURLE_OPERATION_TIMEDOUT);
+		return;
 	}
+	char const *why = e ? auth_why(home->auth, e) : nullptr;
+	if (!e) {
+		e = home_send(home, job, resume, line);
+		why = strerror(e);
+	}
+	if (!e) {
+		home_discover(home, line);
+		return;
+	}
+	(void)home_job_say(job, "Cannot authorize or start the request: %s", why);
+	home_end(home, job, JOB_FAILED, &home->metrics->completed);
 }
 
-/* One credential operation per home leaves a blocker for other work and
- * keeps simultaneous requests from waiting on the same refresh lock. A
- * cancelled queued request returns without reading or renewing anything.
+/* Sends the request of @p job (home_send()), at once or, for an upstream
+ * with a renewed credential that is not fresh, once the credential has
+ * come (home_job_authorized()). Returns 0, or the error that stopped the
+ * request or the wait.
  */
-static void
-home_authorization_submit (struct home *home)
-{
-	struct home_authorization *auth = container_of(home->authorizations.next,
-	                                               struct home_authorization, hook);
-	auth->submitted = 1;
-	int e = home->flags & HOME_DRAINING || list_is_empty(&auth->request->due)
-	      ? ECANCELED : blocker_submit(home->blockers, &auth->work);
-	if (e) {
-		auth->work.error = e;
-		loop_post(home->loop, &auth->work.done);
-	}
-}
-
 static int
 home_open (struct home *home,
            struct job  *job,
            bool         resume)
 {
-	char const *command = home->ep->auth_command;
-	char const *path = command ? home->ep->auth_file : home->ep->chatgpt_auth;
-	if (!path)
-		return home_send(home, job, resume);
-	if (!home->blockers)
-		return ENOSYS;
-	if (home->authorizing >= home->max)
-		return EAGAIN;
-	struct home_authorization *auth = malloc(sizeof *auth);
-	if (!auth)
-		return ENOMEM;
-	*auth = (struct home_authorization){
-		.work = blocker_job(home_authorized, home_authorize, home->loop),
-		.hook = list(&auth->hook),
-		.home = home,
-		.request = job,
-		.path = dstr(nullptr),
-		.command = dstr(nullptr),
-		.header = dstr(nullptr),
-		.resume = resume,
-	};
-	int e = cstr_view_store(cstr_view(path), &auth->path);
-	if (!e && command)
-		e = cstr_view_store(cstr_view(command), &auth->command);
-	if (e) {
-		home_authorization_destroy(&auth);
+	if (!auth_renewed(home->auth))
+		return home_send(home, job, resume, nullptr);
+	char const *line;
+	int e = auth_ask(home->auth, &job->auth, 0, &line);
+	if (e)
 		return e;
+	if (!line) {
+		job->auth.done = home_job_authorized;
+		if (resume)
+			job->recovery.flags |= RECOVERY_RESUME;
+		return 0;
 	}
-	ref_get(&job->refs);
-	list_append(&home->authorizations, &auth->hook);
-	if (!home->authorizing++)
-		home_authorization_submit(home);
-	return 0;
+	e = home_send(home, job, resume, line);
+	if (!e)
+		home_discover(home, line);
+	return e;
 }
 
 /* When @p job is due: its deadline, or never (UINT64_MAX) without one. */
@@ -2572,11 +2569,12 @@ home_props_step (struct loop      *loop,
  */
 static int
 home_props_get (struct home *home,
-                char const  *url)
+                char const  *url,
+                char const  *line)
 {
 	struct ai_endpoint const *ep = home->ep;
 	long ms = ep->timeout_ms > 0 && ep->timeout_ms < PROPS_MS ? ep->timeout_ms : PROPS_MS;
-	return http_post_json(home->http, url, nullptr, 0, home_lines(home, nullptr), ms,
+	return http_post_json(home->http, url, nullptr, 0, home_lines(home, nullptr, line), ms,
 	                      home_props_write, home_props_done, home, &home->ask);
 }
 
@@ -2585,18 +2583,22 @@ home_props_get (struct home *home,
  * to be no llama-server: one of a provider other than llama, or one that
  * uses one of Gemini's APIs. Unless the context size is known, Gemini's API
  * is asked for the context size of the model instead, at GET models/MODEL
- * at the root of the API of the upstream's URL. Returns 0 once asked,
- * ENOTSUP if the endpoint names no model or no such URL exists, else the
- * error of the URL or of the request.
+ * at the root of the API of the upstream's URL. The request has the
+ * Authorization line @p line of the renewed credential, unless that is
+ * nullptr. Returns 0 once asked, ENOTSUP if the endpoint names no model or
+ * no such URL exists, else the error of the URL or of the request.
  */
 static int
-home_props_ask (struct home *home)
+home_props_ask (struct home *home,
+                char const  *line)
 {
 	struct ai_endpoint const *ep = home->ep;
 	if (!ai_props(ep)) {
 		dstr_auto url = DSTR_INIT;
 		int e = home->context ? ENOENT : ai_model_url(ep, &url);
-		return e == ENOENT ? ENOTSUP : e ? e : home_props_get(home, dstr_get(&url));
+		if (e)
+			return e == ENOENT ? ENOTSUP : e;
+		return home_props_get(home, dstr_get(&url), line);
 	}
 	CURLU *u = curl_url();
 	if (!u)
@@ -2606,7 +2608,7 @@ home_props_ask (struct home *home)
 	        curl_url_set(u, CURLUPART_PATH, "/props", 0) ||
 	        curl_url_set(u, CURLUPART_QUERY, nullptr, 0) ||
 	        curl_url_set(u, CURLUPART_FRAGMENT, nullptr, 0) ||
-	        curl_url_get(u, CURLUPART_URL, &url, 0) ? EINVAL : home_props_get(home, url);
+	        curl_url_get(u, CURLUPART_URL, &url, 0) ? EINVAL : home_props_get(home, url, line);
 	curl_free(url);
 	curl_url_cleanup(u);
 	return e;
@@ -2826,14 +2828,14 @@ home_job (struct loop *loop,
 /* Make home->headers if a request of @p home has header lines of its own,
  * the conversation of llama-server or the Authorization of a renewed
  * credential: the endpoint's lines without the ones of those names, and
- * room for both, which home_lines() fills.
+ * room for both and a nullptr, which home_lines() fills.
  */
 static int
 home_request_headers (struct home *home)
 {
 	struct ai_endpoint const *ep = home->ep;
 	bool const llama = home_llama(home);
-	bool const renewed = ep->chatgpt_auth || ep->auth_command;
+	bool const renewed = auth_renewed(home->auth);
 	if (!llama && !renewed)
 		return 0;
 	char const *const *lines = ep->headers;
@@ -2879,21 +2881,14 @@ static void
 home_fini (struct home *home)
 {
 	http_cancel(home->http, &home->ask);
-	while (!list_is_empty(&home->authorizations)) {
-		struct home_authorization *auth = container_of(home->authorizations.next,
-		                                                struct home_authorization, hook);
-		auth->home = nullptr;
-		list_del(&auth->hook);
-		if (!auth->submitted) {
-			home_job_put(auth->request, 1);
-			home_authorization_destroy(&auth);
-		}
-	}
+	auth_wait_leave(&home->discovery);
 	while (!list_is_empty(&home->cancellations)) {
 		struct home_cancellation *cancel = container_of(home->cancellations.next,
 		                                               struct home_cancellation, hook);
 		http_cancel(home->http, &cancel->transfer);
 		list_del(&cancel->hook);
+		auth_wait_leave(&cancel->auth);
+		curl_free(cancel->url);
 		free(cancel);
 	}
 	struct loop_step *const steps[] = {
@@ -2912,16 +2907,54 @@ home_fini (struct home *home)
 	free(home->headers);
 	home->headers = nullptr;
 	home->header = nullptr;
-	dstr_cleanup(&home->authorization);
 	while (home_relieve(home, BUF_CRITICAL, SIZE_MAX))
 		;
 	self = nullptr;
 	htab_fini(&home->whom);
 }
 
+/* The read of the credential file for the GET of /props or of the model
+ * has ended: with the error @p e, the file contains no token that is still
+ * valid. The start of a daemon runs no auth command, so the first token of
+ * a job sends the GET then (home_discover()), and the upstream has the
+ * default slots until its answer.
+ */
+static void
+home_discovered (struct auth_wait *wait,
+                 int               e,
+                 char const       *line)
+{
+	struct home *home = container_of(wait, struct home, discovery);
+	if (!e)
+		e = home_props_ask(home, line);
+	if (!e)
+		return;
+	home->flags |= HOME_DISCOVER;
+	if (!home->ep->slots)
+		LOG(LOG_INFO, "upstream slots: %" PRIu32 " (the default)", home->slots);
+}
+
+/* Starts the GET of /props or of the model (home_props_ask()). For an
+ * upstream with a renewed credential, the GET waits for a read of the
+ * credential file (home_discovered()). Returns 0 if the GET is under way
+ * or waits, else the error that stopped it.
+ */
+static int
+home_discovery (struct home *home)
+{
+	if (!auth_renewed(home->auth))
+		return home_props_ask(home, nullptr);
+	char const *line;
+	int const e = auth_ask(home->auth, &home->discovery, AUTH_CACHED, &line);
+	if (e || !line)
+		return e;
+	return home_props_ask(home, line);
+}
+
 struct home *
 home_create (struct loop         *loop,
              struct blocker      *blockers,
+             struct auth         *auth,
              struct httpd_home   *door,
              struct config const *cfg,
              struct home_metrics *metrics,
@@ -2956,13 +2989,13 @@ home_create (struct loop         *loop,
 			.scalar = JB_SCALAR_MAX,
 			.flags = JSON_TOKENER_VALIDATE_UTF8
 		},
-		.authorizations = list(&home->authorizations),
+		.discovery = auth_wait(&home->discovery, home_discovered),
 		.metrics = metrics,
 		.loop = loop,
 		.blockers = blockers,
+		.auth = auth,
 		.door = door,
 		.ep = ep,
-		.authorization = DSTR_INIT,
 		.timeout = ep->timeout_ms > 0 ? (uint64_t)ep->timeout_ms * MS : 0,
 		.silence = ep->chunk_ms > 0 ? (uint64_t)ep->chunk_ms * MS : 0,
 		.backoff = BACKOFF_MIN,
@@ -3002,7 +3035,7 @@ home_create (struct loop         *loop,
 	 * request cannot start, log the default now. Otherwise
 	 * home_props_end() logs the number of slots. */
 	if (!ep->slots) {
-		home_slots(home, SLOTS, home_props_ask(home) ? "the default" : nullptr);
+		home_slots(home, SLOTS, home_discovery(home) ? "the default" : nullptr);
 		return home;
 	}
 	/* With --slots, request /props or the model URL only for the context
@@ -3010,7 +3043,7 @@ home_create (struct loop         *loop,
 	 * known. The connection limit is then the number of slots plus 1, so
 	 * that this request does not use a connection of the calls. */
 	bool asked = cfg->flags & CFG_UPSTREAM_TOOLS && !home->context &&
-	             !home_props_ask(home);
+	             !home_discovery(home);
 	home_slots(home, ep->slots, "--slots");
 	if (asked)
 		http_connections(home->http, ep->slots + 1L);

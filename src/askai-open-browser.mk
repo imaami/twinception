@@ -5,4 +5,6 @@ override SRC_askai-open-browser := \
   dstr.c                          \
   log.c                           \
   loop.c                          \
+  tty.c                           \
+  util.c                          \
   webtoken.c

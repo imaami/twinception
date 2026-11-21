@@ -387,21 +387,21 @@ chatgpt_test_cached (char const *path)
 	if (!profile)
 		return;
 	CHECK(!chatgpt_test_save(path, profile));
-	char error[256] = {};
+	uint64_t expires = 0;
 	dstr_auto header = dstr(nullptr);
 	chatgpt_test_replies(nullptr, 0);
-	CHECK(!chatgpt_header(path, &header, error, sizeof error));
+	CHECK(!chatgpt_header(path, 0, &header, &expires));
 	CHECK(cstr_view_equal(cstr_view_dstr(&header), CSTR_VIEW("Authorization: Bearer offline.access-token")));
 	dstr_clear(&header);
 	CHECK(!chmod(path, 0644));
-	CHECK(chatgpt_header(path, &header, error, sizeof error));
+	CHECK(chatgpt_header(path, 0, &header, &expires));
 	CHECK(!dstr_len(&header));
 	CHECK(!chmod(path, 0600));
 	char *link = nullptr;
 	CHECK(asprintf(&link, "%s.link", path) >= 0);
 	if (link) {
 		CHECK(!symlink(path, link));
-		CHECK(chatgpt_header(link, &header, error, sizeof error));
+		CHECK(chatgpt_header(link, 0, &header, &expires));
 		CHECK(!dstr_len(&header));
 		CHECK(!unlink(link));
 		free(link);
@@ -410,7 +410,7 @@ chatgpt_test_cached (char const *path)
 	CHECK(asprintf(&link, "%s.hard", path) >= 0);
 	if (link) {
 		CHECK(linkat(AT_FDCWD, path, AT_FDCWD, link, 0) == 0);
-		CHECK(chatgpt_header(path, &header, error, sizeof error) == EACCES);
+		CHECK(chatgpt_header(path, 0, &header, &expires) == EACCES);
 		CHECK(!dstr_len(&header));
 		CHECK(unlink(link) == 0);
 		free(link);
@@ -418,16 +418,16 @@ chatgpt_test_cached (char const *path)
 	}
 	CHECK(!jb_set(profile, "access_token", json_object_new_string("bad\r\nAuthorization: injected")));
 	CHECK(!chatgpt_test_save(path, profile));
-	CHECK(chatgpt_header(path, &header, error, sizeof error));
+	CHECK(chatgpt_header(path, 0, &header, &expires));
 	CHECK(!dstr_len(&header));
 	CHECK(!jb_set(profile, "access_token", json_object_new_string_len("good\0hidden", 11)));
 	CHECK(!chatgpt_test_save(path, profile));
-	CHECK(chatgpt_header(path, &header, error, sizeof error));
+	CHECK(chatgpt_header(path, 0, &header, &expires));
 	CHECK(!dstr_len(&header));
 	CHECK(!jb_set(profile, "access_token", json_object_new_string("offline.access-token")));
 	CHECK(!jb_set(profile, "scopes", jb_list(json_object_new_string("openid"))));
 	CHECK(!chatgpt_test_save(path, profile));
-	CHECK(chatgpt_header(path, &header, error, sizeof error));
+	CHECK(chatgpt_header(path, 0, &header, &expires));
 	CHECK(!dstr_len(&header));
 	json_object_put(profile);
 }
@@ -436,7 +436,7 @@ struct chatgpt_test_worker {
 	char const        *path;
 	pthread_barrier_t *barrier;
 	struct dstr        header;
-	char               error[256];
+	uint64_t           expires;
 	int                result;
 };
 
@@ -446,8 +446,7 @@ chatgpt_test_header (void *opaque)
 	struct chatgpt_test_worker *worker = opaque;
 	int e = pthread_barrier_wait(worker->barrier);
 	CHECK(e == 0 || e == PTHREAD_BARRIER_SERIAL_THREAD);
-	worker->result = chatgpt_header(worker->path, &worker->header,
-	                                worker->error, sizeof worker->error);
+	worker->result = chatgpt_header(worker->path, 0, &worker->header, &worker->expires);
 	return nullptr;
 }
 
@@ -459,14 +458,14 @@ chatgpt_test_refresh (char const *path)
 	CHECK(chatgpt_test_save(path, profile) == 0);
 	char *before = chatgpt_test_read(path);
 	CHECK(before != nullptr);
-	char error[256];
+	uint64_t expires = 0;
 	dstr_auto header = dstr(nullptr);
 	/* A key-server outage must not consume a rotating refresh token. */
 	struct chatgpt_test_reply unavailable = {
 		CHATGPT_JWKS, "{\"error\":\"temporarily_unavailable\"}", nullptr, 503, CURLE_OK
 	};
 	chatgpt_test_replies(&unavailable, 1);
-	CHECK(chatgpt_header(path, &header, error, sizeof error) != 0);
+	CHECK(chatgpt_header(path, 0, &header, &expires) != 0);
 	CHECK(!dstr_len(&header) && chatgpt_test_http.next == 1);
 	char *unchanged = chatgpt_test_read(path);
 	CHECK(before && unchanged && !strcmp(before, unchanged));
@@ -488,10 +487,11 @@ chatgpt_test_refresh (char const *path)
 			{ CHATGPT_JWKS, "{\"keys\":[{}]}", nullptr, 200, CURLE_OK }, failed[i]
 		};
 		chatgpt_test_replies(sequence, array_size(sequence));
-		CHECK(chatgpt_header(path, &header, error, sizeof error) != 0);
+		int const refused = chatgpt_header(path, 0, &header, &expires);
+		CHECK(refused != 0 && !expires);
 		CHECK(!dstr_len(&header));
 		CHECK(chatgpt_test_http.next == 2);
-		CHECK(!strstr(error, "offline-refresh-secret"));
+		CHECK(!strstr(chatgpt_why(refused), "offline-refresh-secret"));
 		char *after = chatgpt_test_read(path);
 		CHECK(after && before && !strcmp(before, after));
 		free(after);
@@ -552,7 +552,7 @@ chatgpt_test_refresh (char const *path)
 		{ CHATGPT_TOKEN, "{\"error\":\"invalid_grant\"}", "grant_type=refresh_token", 400, CURLE_OK }
 	};
 	chatgpt_test_replies(revoked, array_size(revoked));
-	CHECK(chatgpt_header(path, &header, error, sizeof error) == EACCES);
+	CHECK(chatgpt_header(path, 0, &header, &expires) == EACCES);
 	CHECK(!dstr_len(&header) && chatgpt_test_http.next == 2);
 	after = chatgpt_test_read(path);
 	saved = after ? json_tokener_parse(after) : nullptr;
@@ -563,7 +563,7 @@ chatgpt_test_refresh (char const *path)
 	free(after);
 	after = nullptr;
 	chatgpt_test_replies(nullptr, 0);
-	CHECK(chatgpt_header(path, &header, error, sizeof error) == EACCES);
+	CHECK(chatgpt_header(path, 0, &header, &expires) == EACCES);
 	CHECK(!dstr_len(&header));
 	json_object_put(profile);
 }
@@ -677,8 +677,8 @@ main (void)
 	json_object_put(profile);
 	CHECK(chmod(directory, 0755) == 0);
 	dstr_auto header = dstr(nullptr);
-	char error[128];
-	CHECK(chatgpt_header(path, &header, error, sizeof error) == EACCES);
+	uint64_t expires = 0;
+	CHECK(chatgpt_header(path, 0, &header, &expires) == EACCES);
 	CHECK(chmod(directory, 0700) == 0);
 	chatgpt_test_refresh(path);
 	chatgpt_test_registration(path);
