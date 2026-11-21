@@ -200,6 +200,24 @@ journal_test_run (char const       *script,
 	return e;
 }
 
+/* util_digits() with numbers at and above 2^64. The sum 10 v + d modulo
+ * 2^64 can be greater than v, as with the third and fourth numbers.
+ */
+static void
+journal_test_digits (void)
+{
+	uint64_t v = 1;
+	#define DIGITS(s, max) util_digits(s, sizeof s - 1, max, &v)
+	assert(DIGITS("18446744073709551615", UINT64_MAX) == 20 && v == UINT64_MAX);
+	assert(!DIGITS("18446744073709551616", UINT64_MAX) && !v);
+	assert(!DIGITS("20496382304121724020", UINT64_MAX) && !v);
+	assert(!DIGITS("36893488147419103231", UINT64_MAX) && !v);
+	assert(!DIGITS("65536", 65535) && !v);
+	assert(DIGITS("65535x", 65535) == 5 && v == 65535);
+	assert(!DIGITS("-", UINT64_MAX) && !v);
+	#undef DIGITS
+}
+
 /* The parts of a path, and journal_open_path(), which opens them in the
  * repository @p repo: it skips empty parts and ".", and refuses ".." and a
  * part too long for a file name.
@@ -916,6 +934,7 @@ main (int argc, char **argv)
 	}
 	assert(j->n_jobs == JOURNAL_JOBS);
 	journal_destroy(&j);
+	journal_test_digits();
 	journal_test_path(argv[1]);
 	journal_test_private(argv[1]);
 	journal_test_secret(argv[1]);

@@ -228,9 +228,12 @@ struct home {
 	struct ai_endpoint const *ep;
 	struct htab               whom;        /* the principals with jobs queued */
 	struct http_request      *ask;         /* GET /props, under way */
-	char const              **headers;     /* endpoint headers with one
-	                                          per-request line replaced */
-	char const              **header;      /* that line's slot in headers */
+	char const              **headers;     /* the endpoint's headers without
+	                                          the lines that a request
+	                                          replaces, and room for those */
+	char const              **header;      /* the first of those in headers */
+	struct dstr               authorization;  /* the Authorization line of the
+	                                             last renewed credential */
 	uint64_t                  timeout;     /* ns from a start to its deadline */
 	uint64_t                  silence;     /* ns an answer may pause */
 	uint64_t                  backoff;     /* the breaker's next open spell */
@@ -613,6 +616,29 @@ home_cancel_done (CURLcode    result,
 	home_cancel_drop(self, cancel);
 }
 
+/* Returns the header lines of a request: the endpoint's, or those of
+ * home->headers with the line @p conversation, if not nullptr, and with
+ * the Authorization line of the last renewed credential, if there is one.
+ * A request that renews no credential itself, a cancellation or a GET of
+ * the properties, is sent with that line, which is a minute or more from
+ * its end when the request of its job starts. The HTTP bridge copies the
+ * lines before the next call.
+ */
+static char const *const *
+home_lines (struct home *home,
+            char const  *conversation)
+{
+	char const **own = home->header;
+	if (!own)
+		return home->ep->headers;
+	if (conversation)
+		*own++ = conversation;
+	if (dstr_len(&home->authorization))
+		*own++ = dstr_get(&home->authorization);
+	*own = nullptr;
+	return own == home->header ? home->ep->headers : home->headers;
+}
+
 /* Cancel native work independently of the local job's lifetime. Closing
  * its stream alone would leave it running at the provider.
  */
@@ -633,7 +659,7 @@ home_native_cancel (struct home *home,
 		return;
 	}
 	cancel->deadline = home->loop->now + CANCEL_MS * MS;
-	int e = http_post_json(home->http, job->cancel_url, "", 0, home->ep->headers,
+	int e = http_post_json(home->http, job->cancel_url, "", 0, home_lines(home, nullptr),
 	                       CANCEL_MS, home_cancel_write, home_cancel_done, cancel,
 	                       &cancel->transfer);
 	if (!e && home_llama(home))
@@ -1261,18 +1287,13 @@ home_connect (struct home *home,
 	return home_metadata(home, job);
 }
 
-/* The HTTP bridge copies the header lines before this function returns.
- * A renewed credential is private to this request, never written into the
- * endpoint shared with the client loops.
- */
 static int
 home_send (struct home *home,
            struct job  *job,
-           bool         resume,
-           char const  *authorization)
+           bool         resume)
 {
 	struct ai_endpoint const *ep = home->ep;
-	char const *const *headers = ep->headers;
+	char const *conversation = nullptr;
 	char *url = nullptr;
 	struct span body = {};
 	if (resume) {
@@ -1284,18 +1305,13 @@ home_send (struct home *home,
 		if (home_llama(home)) {
 			util_format(home->conversation, sizeof home->conversation, "%s %s",
 			            conversation_id.data, job->recovery.provider_id);
-			headers = home->headers;
+			conversation = home->conversation;
 		}
-	}
-	if (authorization) {
-		*home->header = authorization;
-		headers = home->headers;
 	}
 	job->flags &= ~(SEEN | DELIVERED);
 	int e = http_post_json(home->http, url ? url : ep->url, (char const *)body.ptr, body.len,
-	                       headers, 0, home_job_write, home_job_done, job, &job->transfer);
-	if (authorization)
-		*home->header = nullptr;
+	                       home_lines(home, conversation), 0, home_job_write, home_job_done,
+	                       job, &job->transfer);
 	curl_free(url);
 	return e;
 }
@@ -1345,8 +1361,11 @@ home_authorized (struct loop *loop,
 			home_cut(home, job, CURLE_OPERATION_TIMEDOUT);
 		} else {
 			int e = auth->work.error;
-			if (!e)
-				e = home_send(home, job, auth->resume, dstr_get(&auth->header));
+			if (!e) {
+				dstr_cleanup(&home->authorization);
+				home->authorization = dstr_move(&auth->header);
+				e = home_send(home, job, auth->resume);
+			}
 			if (e) {
 				(void)home_job_say(job, "Cannot authorize or start the request: %s",
 				                   *auth->error ? auth->error : strerror(e));
@@ -1389,7 +1408,7 @@ home_open (struct home *home,
 	char const *command = home->ep->auth_command;
 	char const *path = command ? home->ep->auth_file : home->ep->chatgpt_auth;
 	if (!path)
-		return home_send(home, job, resume, nullptr);
+		return home_send(home, job, resume);
 	if (!home->blockers)
 		return ENOSYS;
 	if (home->authorizing >= home->max)
@@ -2557,7 +2576,7 @@ home_props_get (struct home *home,
 {
 	struct ai_endpoint const *ep = home->ep;
 	long ms = ep->timeout_ms > 0 && ep->timeout_ms < PROPS_MS ? ep->timeout_ms : PROPS_MS;
-	return http_post_json(home->http, url, nullptr, 0, ep->headers, ms,
+	return http_post_json(home->http, url, nullptr, 0, home_lines(home, nullptr), ms,
 	                      home_props_write, home_props_done, home, &home->ask);
 }
 
@@ -2804,26 +2823,33 @@ home_job (struct loop *loop,
 	}
 }
 
-/* Reserve a per-request header slot, replacing the endpoint's line of
- * that name. http_post_json() copies it before home_send() returns.
+/* Make home->headers if a request of @p home has header lines of its own,
+ * the conversation of llama-server or the Authorization of a renewed
+ * credential: the endpoint's lines without the ones of those names, and
+ * room for both, which home_lines() fills.
  */
 static int
-home_request_headers (struct home     *home,
-                      struct cstr_view name,
-                      char const      *value)
+home_request_headers (struct home *home)
 {
-	char const *const *lines = home->ep->headers;
+	struct ai_endpoint const *ep = home->ep;
+	bool const llama = home_llama(home);
+	bool const renewed = ep->chatgpt_auth || ep->auth_command;
+	if (!llama && !renewed)
+		return 0;
+	char const *const *lines = ep->headers;
 	size_t n = 0;
 	while (lines && lines[n])
 		++n;
-	char const **headers = calloc(n + 2, sizeof *headers);
+	char const **headers = calloc(n + 3, sizeof *headers);
 	if (!headers)
 		return ENOMEM;
 	size_t kept = 0;
-	for (size_t k = 0; k < n; ++k)
-		if (!cstr_view_starts_case(cstr_view(lines[k]), name))
+	for (size_t k = 0; k < n; ++k) {
+		struct cstr_view const line = cstr_view(lines[k]);
+		if (!(llama && cstr_view_starts_case(line, conversation_id)) &&
+		    !(renewed && cstr_view_starts_case(line, CSTR_VIEW("Authorization:"))))
 			headers[kept++] = lines[k];
-	headers[kept] = value;
+	}
 	home->headers = headers;
 	home->header = headers + kept;
 	return 0;
@@ -2886,6 +2912,7 @@ home_fini (struct home *home)
 	free(home->headers);
 	home->headers = nullptr;
 	home->header = nullptr;
+	dstr_cleanup(&home->authorization);
 	while (home_relieve(home, BUF_CRITICAL, SIZE_MAX))
 		;
 	self = nullptr;
@@ -2935,6 +2962,7 @@ home_create (struct loop         *loop,
 		.blockers = blockers,
 		.door = door,
 		.ep = ep,
+		.authorization = DSTR_INIT,
 		.timeout = ep->timeout_ms > 0 ? (uint64_t)ep->timeout_ms * MS : 0,
 		.silence = ep->chunk_ms > 0 ? (uint64_t)ep->chunk_ms * MS : 0,
 		.backoff = BACKOFF_MIN,
@@ -2960,10 +2988,8 @@ home_create (struct loop         *loop,
 	*e = htab_init(&home->whom, stdc_bit_ceil(max < KEYS_MAX ? max : (uint32_t)KEYS_MAX));
 	if (!*e)
 		*e = home_arm(home, http);
-	if (!*e && home_llama(home))
-		*e = home_request_headers(home, conversation_id, home->conversation);
-	if (!*e && (ep->chatgpt_auth || ep->auth_command))
-		*e = home_request_headers(home, CSTR_VIEW("Authorization:"), nullptr);
+	if (!*e)
+		*e = home_request_headers(home);
 	if (*e) {
 		home_fini(home);
 		free(home);

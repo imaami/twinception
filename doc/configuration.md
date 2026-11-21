@@ -741,15 +741,22 @@ OAuth access token, which askai sends unchanged and does not refresh.
 The value is a shell command that prints a JSON Web Token, alone or inside
 other text such as JSON. askai sends the token as `Authorization: Bearer`
 with each request. It runs the command with `/bin/sh` when the file of
-`auth-file` has no token, or one that expires within a minute, and then
-stores the new token and the time of its `exp` claim in that file. The
-command runs off the event loops with the environment of askai, for up to
-five minutes, and with `/dev/null` as its standard input and standard
-error. A request whose token cannot be had fails with the reason. askai
-does not check the signature of the token: the upstream does.
+`auth-file` has no token of this command, or one that expires within a
+minute, and then stores the command, the new token and the time of its
+`exp` claim in that file. The token of one command is never sent for
+another command that names the same file, so two commands need two
+files. The command runs off the event loops with the environment of
+askai, for up to five minutes, without a terminal, and with `/dev/null`
+as its standard input and standard error. A request whose token cannot
+be had fails with the reason. The time of the `exp` claim is compared
+with the clock after the command has ended. A request that askai sends
+by itself, such as the cancellation of a background job at the upstream,
+has the token of the last request. askai does not check the signature of
+the token: the upstream does.
 
 An empty string is no command. `auth-command` cannot be combined with an
-explicit `key-env`, an Authorization header, or `provider: "chatgpt"`.
+explicit `key-env`, an Authorization header of any API, or
+`provider: "chatgpt"`.
 `askai-open-browser URL` is a command for a page that serves the token to
 a browser that is signed in; the README describes its steps.
 
@@ -769,7 +776,10 @@ needs `auth-command`.
 This command-line-only action runs the command of `auth-command` once,
 saves its token in the file of `auth-file` and exits. It needs no
 `provider`, `url` or `model`. Run it in a terminal before a service
-starts, so that a command which asks the user for something can do so.
+starts, so that a command which asks the user for something can do so:
+if askai is the foreground job of the terminal, the command is that job
+until it ends. It can open `/dev/tty`, and the keys that send a signal,
+such as Ctrl+C, send it to the command.
 
 #### `chatgpt-auth`
 

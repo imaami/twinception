@@ -17,14 +17,17 @@
  *    in WSL2, or of xdg-open. The user copies the text of the page (Ctrl+A,
  *    Ctrl+C), and the program takes the token from the clipboard of
  *    Windows, which powershell.exe reads, and empties the clipboard.
- * 3. The user pastes the token at the terminal.
+ * 3. The user pastes the token at the terminal and presses Enter. Ctrl+C
+ *    or Ctrl+D ends the step without a token.
  *
- * The program writes its messages to the terminal, /dev/tty. Without one,
- * as under a daemon, step 3 is left out, and the open page is the only
- * sign that the program waits for the clipboard.
+ * The program writes its messages to the terminal, /dev/tty, which askai
+ * --auth-login lends to its command. Without one, as under a daemon, step
+ * 3 is left out, and the open page is the only sign that the program
+ * waits for the clipboard.
  */
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +50,7 @@ enum {
 	WEBTOKEN_FETCH = 20,             /* the seconds of step 1 */
 	WEBTOKEN_READ  = 10,             /* the seconds of a read of the clipboard */
 	WEBTOKEN_COPY  = 120,            /* the seconds of the wait of step 2 */
+	WEBTOKEN_PASTE = 120,            /* the seconds of the wait of step 3 */
 };
 
 /* The programs of Windows that the steps run. */
@@ -207,9 +211,25 @@ webtoken_copy (char const       *url,
 	buf_fini(&before);
 }
 
+/* Reads one byte of the terminal @p tty into @p *c before the time
+ * @p deadline of loop_clock(). Returns false at the deadline, at an error,
+ * and for Ctrl+C and Ctrl+D.
+ */
+static bool
+webtoken_key (int       tty,
+              uint64_t  deadline,
+              char     *c)
+{
+	uint64_t const now = loop_clock();
+	struct pollfd p = { .fd = tty, .events = POLLIN };
+	return now < deadline && poll(&p, 1, (int)((deadline - now) / MS) + 1) == 1 &&
+	       read(tty, c, 1) == 1 && *c != '\003' && *c != '\004';
+}
+
 /* Step 3: reads a line from the terminal @p tty without an echo, and
  * writes the token of the line to @p *token, a view of @p out, or an empty
- * view. A line of a terminal in its usual mode ends after 4095 bytes,
+ * view: also if no line came in WEBTOKEN_PASTE seconds, or the user ended
+ * the step. A line of a terminal in its usual mode ends after 4095 bytes,
  * which is less than a token can be, so the line is read byte by byte.
  */
 static void
@@ -222,17 +242,25 @@ webtoken_paste (int               tty,
 	if (tcgetattr(tty, &was))
 		return;
 
+	/* Without ISIG the keys of a signal are bytes, so no signal ends the
+	 * program while the terminal does not echo. */
 	struct termios quiet = was;
-	quiet.c_lflag &= ~(tcflag_t)(ECHO | ICANON);
+	quiet.c_lflag &= ~(tcflag_t)(ECHO | ICANON | ISIG);
 	quiet.c_cc[VMIN] = 1;
 	quiet.c_cc[VTIME] = 0;
-	webtoken_say(tty, "Paste the token, or the text of the page, and press Enter: ");
 	buf_clear(out);
+	/* The change of the mode drops the bytes typed before it, so the words
+	 * come after it. */
 	if (!tcsetattr(tty, TCSAFLUSH, &quiet)) {
-		char c;
-		while (read(tty, &c, 1) == 1 && c != '\n' && c != '\r' &&
+		webtoken_say(tty, "Paste the token, or the text of the page, and press Enter: ");
+		uint64_t const deadline = loop_clock() + WEBTOKEN_PASTE * NS;
+		char c = '\0';
+		bool key;
+		while ((key = webtoken_key(tty, deadline, &c)) && c != '\n' && c != '\r' &&
 		       !buf_put(out, &c, 1, WEBTOKEN_OUT))
 			;
+		if (!key)
+			buf_clear(out);
 		(void)tcsetattr(tty, TCSAFLUSH, &was);
 	}
 	webtoken_say(tty, "\n");

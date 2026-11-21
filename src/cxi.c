@@ -1017,13 +1017,31 @@ cxi_out_expansion (struct cxi_out *out,
 	cxi_out_lit(out, ").");
 }
 
+/* Whether @p c is a member of a struct or union named @p owner. A member
+ * of an anonymous struct or union is a member of the type around that.
+ */
+static bool
+cxi_member_of (CXCursor    c,
+               char const *owner)
+{
+	if (c.kind != CXCursor_FieldDecl)
+		return false;
+	CXCursor record = clang_getCursorSemanticParent(c);
+	while (clang_Cursor_isAnonymousRecordDecl(record))
+		record = clang_getCursorSemanticParent(record);
+	return cxi_spelled(record, owner);
+}
+
 /* Writes the first symbol named @p name on the line to @p *c. If @p *c is
  * not null, it is a member of a struct or union, and the symbol is that
- * member: the line can name a member of another type too.
+ * member: the line can name a member of another type too. With @p owner,
+ * the symbol is a member of a struct or union of that name, and the
+ * function writes no words if the line has none: ENOENT then.
  */
 static int
 cxi_lookup_line (struct cxi *x,
                  char const *name,
+                 char const *owner,
                  CXCursor   *c,
                  unsigned   *column)
 {
@@ -1042,9 +1060,12 @@ cxi_lookup_line (struct cxi *x,
 			continue;
 		*column = (unsigned)i + 1;
 		*c = cxi_symbol(x->tu, file, line, *column);
-		if (cxi_is_named(*c, name) && (any || clang_equalCursors(*c, only)))
+		if (cxi_is_named(*c, name) &&
+		    (owner ? cxi_member_of(*c, owner) : any || clang_equalCursors(*c, only)))
 			return 0;
 	}
+	if (owner)
+		return ENOENT;
 	if (!words.data) {
 		cxi_out_fmt(&x->out, "Line %u is past the end of ", line);
 		cxi_out_path(&x->out, x->key[CXI_KEY_PATH]);
@@ -2401,11 +2422,17 @@ cxi_describe (struct cxi *x)
 		return e;
 	/* The name that a line contains. */
 	char const *last = *member ? member : name;
-	e = last == member ? cxi_lookup_member(x, name, member, &c)
-	  : x->line ? 0
-	  : cxi_lookup(x, name, kind, &c);
-	if (!e && x->line)
-		e = cxi_lookup_line(x, last, &c, &column);
+	/* A member is looked for on its line first: its type can be one of a
+	 * function body, which the lookup of a type by its name does not
+	 * visit. */
+	e = last == member && x->line ? cxi_lookup_line(x, member, name, &c, &column) : ENOENT;
+	if (e) {
+		e = last == member ? cxi_lookup_member(x, name, member, &c)
+		  : x->line ? 0
+		  : cxi_lookup(x, name, kind, &c);
+		if (!e && x->line)
+			e = cxi_lookup_line(x, last, nullptr, &c, &column);
+	}
 	if (e)
 		return e;
 	enum CXCursorKind const k = c.kind;

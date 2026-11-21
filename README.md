@@ -177,13 +177,18 @@ build/askai --url https://llm.example/v1/chat/completions -m some-model \
 `--auth-login` runs the command once and saves the token, so that a
 service that starts afterwards has one. The command runs with `/bin/sh`
 and the environment of askai, for up to five minutes, with `/dev/null` as
-its standard input and standard error. askai does not check the signature
-of the token: the upstream does. The file defaults to
+its standard input and standard error. Under `--auth-login` in a terminal
+the command can open `/dev/tty` and ask the user there, and Ctrl+C goes
+to the command. Under a service it has no terminal. askai does not check
+the signature of the token: the upstream does. The file defaults to
 `$XDG_STATE_HOME/askai/bearer.json` when `XDG_STATE_HOME` is absolute,
 otherwise `$HOME/.local/state/askai/bearer.json`; `--auth-file` names
-another one. The file and its directory must be private to the user
-(modes 0600 and 0700). `--auth-command` cannot be combined with
-`--key-env`, an `Authorization` header or `-p chatgpt`.
+another one. The file keeps the command with the token, and the token of
+one command is never sent for another. Give each command its own file:
+two commands that share a file replace the token of each other. The file
+and its directory must be private to the user (modes 0600 and 0700).
+`--auth-command` cannot be combined with `--key-env`, an `Authorization`
+header or `-p chatgpt`.
 
 `askai-open-browser URL` is such a command, for a page that serves the
 token to a browser that is signed in. It runs on Linux and in WSL2, where
@@ -200,11 +205,13 @@ gave no token:
    Ctrl+C). In WSL2 the helper takes the token from the clipboard of
    Windows, which it reads with `powershell.exe`, and empties the
    clipboard. A clipboard history of Windows can still keep the text.
-3. Paste the token at the terminal.
+3. Paste the token at the terminal and press Enter, within two minutes.
+   Ctrl+C or Ctrl+D ends the step without a token.
 
-The helper writes its messages to the terminal. Under a service without
-a terminal, step 3 is left out, and the page that opens is the only sign
-that the helper waits for the clipboard, for up to two minutes.
+The helper writes its messages to the terminal, which it has under
+`askai --auth-login`. Under a service without a terminal, step 3 is left
+out, and the page that opens is the only sign that the helper waits for
+the clipboard, for up to two minutes.
 
 ### ChatGPT subscriptions
 

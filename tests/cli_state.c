@@ -14,6 +14,7 @@
 
 #include "cli_state.h"
 #include "cstr_view.h"
+#include "fs.h"
 #include "git_run.h"
 #include "loop.h"
 #include "util.h"
@@ -445,14 +446,33 @@ main (int argc, char **argv)
 	 * file of the user. */
 	assert(!setenv("GIT_CONFIG_NOSYSTEM", "1", 1) && !setenv("GIT_CONFIG_GLOBAL", "/dev/null", 1));
 	struct dstr path = dstr("");
-	assert(dstr_printf(&path, "%s.full", argv[1]));
+	/* fs_mkdir_parents() makes the directories above the last part of a
+	 * path and not that part. The path is as it was after the call, also
+	 * after an error, here a file in the place of a directory. */
+	struct dstr was = dstr("");
+	assert(dstr_printf(&path, "%s.xdg/p/q/last//", argv[1]) &&
+	       dstr_printf(&was, "%s", dstr_get(&path)));
+	assert(!fs_mkdir_parents((char *)dstr_raw(&path)) &&
+	       !strcmp(dstr_get(&path), dstr_get(&was)));
+	assert(access(dstr_get(&path), F_OK) && errno == ENOENT);
+	assert(dstr_clear(&path) && dstr_printf(&path, "%s.xdg/p/q", argv[1]) &&
+	       !access(dstr_get(&path), F_OK));
+	assert(dstr_clear(&path) && dstr_printf(&path, "%s.xdg/p/file", argv[1]));
+	int file = open(dstr_get(&path), O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+	assert(file >= 0 && !close(file));
+	assert(dstr_printf(&path, "/x/y") && dstr_clear(&was) &&
+	       dstr_printf(&was, "%s", dstr_get(&path)));
+	assert(fs_mkdir_parents((char *)dstr_raw(&path)) == ENOTDIR &&
+	       !strcmp(dstr_get(&path), dstr_get(&was)));
+	dstr_cleanup(&was);
+	assert(dstr_clear(&path) && dstr_printf(&path, "%s.full", argv[1]));
 	check_nonempty(dstr_get(&path));
 	assert(dstr_clear(&path) && dstr_printf(&path, "%s.gc", argv[1]));
 	check_gc(dstr_get(&path));
 	assert(dstr_clear(&path) && dstr_printf(&path, "%s.argv", argv[1]));
 	check_argv(dstr_get(&path));
 	dstr_cleanup(&path);
-	puts("CLI Git history, its default path, the argv of git, the grace of git, "
-	     "gc and nonempty directories: PASS");
+	puts("CLI Git history, its default path, the parents of a path, the argv of git, "
+	     "the grace of git, gc and nonempty directories: PASS");
 	return 0;
 }

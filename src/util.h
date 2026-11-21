@@ -12,6 +12,7 @@
 #include <limits.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdckdint.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -176,9 +177,8 @@ util_digits (char const *s,
 	     i < len && p[i] >= (unsigned char)'0'
 	             && p[i] <= (unsigned char)'9'; ++i) {
 		unsigned d = p[i] - (unsigned char)'0';
-		uint64_t q = v;
-		v += (v << 3U) + v + d;
-		if (v < q)
+		/* 10 v + d can wrap to a value that is not less than v. */
+		if (ckd_mul(&v, v, 10U) || ckd_add(&v, v, d))
 			goto too_large;
 	}
 	if (v > max) {

@@ -223,10 +223,11 @@ child_fd (posix_spawn_file_actions_t *fa,
 	               : posix_spawn_file_actions_addopen(fa, to, "/dev/null", oflag, 0);
 }
 
-/* Have @p fa give the child the descriptors @p fds: its directory first, as
- * a later action may replace that descriptor; its output, its input, or
- * /dev/null for either, and its output as its error too with CHILD_STDERR in
- * @p flags, else /dev/null; the descriptor it keeps, and no other.
+/* Have @p fa give the child the descriptors @p fds: its directory and its
+ * terminal first, as a later action may replace those descriptors; its
+ * output, its input, or /dev/null for either, and its output as its error
+ * too with CHILD_STDERR in @p flags, else /dev/null; the descriptor it
+ * keeps, and no other.
  */
 static int
 child_fds_actions (struct child_fds const     *fds,
@@ -234,6 +235,8 @@ child_fds_actions (struct child_fds const     *fds,
                    uint64_t                    flags)
 {
 	int e = fds->dir < 0 ? 0 : posix_spawn_file_actions_addfchdir_np(fa, fds->dir);
+	if (!e && fds->tty >= 0)
+		e = posix_spawn_file_actions_addtcsetpgrp_np(fa, fds->tty);
 	if (!e)
 		e = child_fd(fa, fds->out, STDOUT_FILENO, O_WRONLY);
 	if (!e)
@@ -246,12 +249,14 @@ child_fds_actions (struct child_fds const     *fds,
 	return e ? e : posix_spawn_file_actions_addclosefrom_np(fa, first);
 }
 
-/* Have @p attr give the child a session of its own, an empty signal mask
- * and every signal's default action: askai blocks every signal but the
- * faults' and ignores SIGPIPE, which a child would inherit.
+/* Have @p attr give the child a session of its own, or with the flag
+ * POSIX_SPAWN_SETPGROUP as @p group only a process group of its own; an
+ * empty signal mask and every signal's default action: askai blocks every
+ * signal but the faults' and ignores SIGPIPE, which a child would inherit.
  */
 static int
-child_attr (posix_spawnattr_t *attr)
+child_attr (posix_spawnattr_t *attr,
+            short              group)
 {
 	sigset_t none;
 	sigset_t all;
@@ -260,7 +265,7 @@ child_attr (posix_spawnattr_t *attr)
 	int e = posix_spawnattr_setsigmask(attr, &none);
 	if (!e)
 		e = posix_spawnattr_setsigdefault(attr, &all);
-	return e ? e : posix_spawnattr_setflags(attr, POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGMASK |
+	return e ? e : posix_spawnattr_setflags(attr, group | POSIX_SPAWN_SETSIGMASK |
 	                                              POSIX_SPAWN_SETSIGDEF);
 }
 
@@ -281,7 +286,8 @@ child_cmd_exec (struct child_cmd const *cmd,
 	if (!e) {
 		e = child_fds_actions(fds, &fa, cmd->flags);
 		if (!e)
-			e = child_attr(&attr);
+			e = child_attr(&attr, fds->tty < 0 ? POSIX_SPAWN_SETSID
+			                                   : POSIX_SPAWN_SETPGROUP);
 		/* POSIX declares the vectors without const. */
 		if (!e)
 			e = pidfd_spawnp(pidfd, cmd->file, &fa, &attr, (char *const *)cmd->argv,
@@ -290,6 +296,23 @@ child_cmd_exec (struct child_cmd const *cmd,
 	}
 	posix_spawn_file_actions_destroy(&fa);
 	return e;
+}
+
+/* Make the process group of the caller the foreground one of @p tty again,
+ * after a child that was it. The caller is a background process group
+ * here, which SIGTTOU stops at this call unless the signal is blocked.
+ */
+static void
+child_tty_take (int tty)
+{
+	sigset_t ttou;
+	sigset_t was;
+	sigemptyset(&ttou);
+	sigaddset(&ttou, SIGTTOU);
+	if (pthread_sigmask(SIG_BLOCK, &ttou, &was))
+		return;
+	(void)tcsetpgrp(tty, getpgrp());
+	(void)pthread_sigmask(SIG_SETMASK, &was, nullptr);
 }
 
 /* A file in memory that holds the bytes of @p in, read from its start, in
@@ -428,6 +451,32 @@ child_await (struct child_cmd const *cmd,
 	}
 }
 
+/* Waits for the child @p pidfd of child_run() to end, at most until the
+ * deadline of @p cmd, reaps it, closes @p pidfd and writes how the child
+ * ended to @p *end. Returns as child_run() does.
+ */
+static int
+child_run_wait (struct child_cmd const *cmd,
+                int                     pidfd,
+                struct child_end       *end)
+{
+	int const waited = child_await(cmd, pidfd);
+	siginfo_t info = {};
+	int failed;
+	do {
+		failed = waitid(P_PIDFD, (id_t)pidfd, &info, WEXITED);
+	} while (failed && errno == EINTR);
+	int const e = waited ? waited : failed ? errno : info.si_code != CLD_EXITED ? EIO : 0;
+	close(pidfd);
+	/* info stays zero if waitid() fails, so end->code is 0 then. */
+	*end = child_end(
+		.code   = info.si_code,
+		.status = info.si_status,
+		.flags  = waited == ETIMEDOUT ? CHILD_LATE : 0
+	);
+	return e;
+}
+
 /* Runs @p cmd to the end on the calling thread with the descriptors
  * @p fds, and writes how the child ended to @p *end. The comment of
  * child_capture() in src/child.h describes the spawn, the deadline and
@@ -442,6 +491,9 @@ child_run (struct child_cmd const *cmd,
            struct child_end       *end)
 {
 	*end = child_end();
+	/* Only the foreground process group can lend its terminal. */
+	if (fds.tty >= 0 && tcgetpgrp(fds.tty) != getpgrp())
+		fds.tty = -1;
 	int own = -1;
 	if (fds.in < 0 && cmd->in.len) {
 		int e = child_input(cmd->in, &own);
@@ -452,22 +504,11 @@ child_run (struct child_cmd const *cmd,
 	int pidfd = -1;
 	int e = child_cmd_exec(cmd, &fds, &pidfd);
 	util_close(&own);
-	if (e)
-		return e;
-	int const waited = child_await(cmd, pidfd);
-	siginfo_t info = {};
-	int failed;
-	do {
-		failed = waitid(P_PIDFD, (id_t)pidfd, &info, WEXITED);
-	} while (failed && errno == EINTR);
-	e = waited ? waited : failed ? errno : info.si_code != CLD_EXITED ? EIO : 0;
-	close(pidfd);
-	/* info stays zero if waitid() fails, so end->code is 0 then. */
-	*end = child_end(
-		.code   = info.si_code,
-		.status = info.si_status,
-		.flags  = waited == ETIMEDOUT ? CHILD_LATE : 0
-	);
+	if (!e)
+		e = child_run_wait(cmd, pidfd, end);
+	/* A child that could not execute its file has set the group too. */
+	if (fds.tty >= 0)
+		child_tty_take(fds.tty);
 	return e;
 }
 

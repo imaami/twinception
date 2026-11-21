@@ -2028,12 +2028,13 @@ config_chatgpt_path (struct config *cfg)
 	                        "chatgpt-auth");
 }
 
-/* The token of --auth-command is the only credential of the upstream. */
+/* The token of --auth-command is the Authorization header of every
+ * request, whatever header the API has for a key.
+ */
 static int
-config_auth (struct config *cfg,
-             bool           has_auth)
+config_auth (struct config *cfg)
 {
-	if (cfg->key_env || has_auth)
+	if (cfg->key_env || config_has_header(cfg, "Authorization:"))
 		return config_complain(cfg, nullptr, "--auth-command cannot be combined "
 		                       "with --key-env or an Authorization header");
 	return config_cred_path(cfg, &cfg->ep.auth_file, &cfg->auth_owned, bearer_path,
@@ -2079,7 +2080,7 @@ config_upstream (struct config *cfg)
 	if (cfg->ep.provider == AI_CHATGPT)
 		return config_chatgpt(cfg, has_auth);
 	char const *key = nullptr;
-	int status = cfg->ep.auth_command ? config_auth(cfg, has_auth)
+	int status = cfg->ep.auth_command ? config_auth(cfg)
 	           : cfg->key_env ? config_key_env(cfg, &key)
 	           : config_key_usual(cfg, has_auth, &key);
 	if (status)
@@ -2650,8 +2651,7 @@ config_parse (struct config *cfg)
 	}
 	if (!status && cfg->flags & CFG_AUTH_LOGIN) {
 		status = config_auth_options(cfg);
-		status = status ? status
-		       : config_auth(cfg, config_has_header(cfg, "Authorization:"));
+		status = status ? status : config_auth(cfg);
 		return status ? status : -1;
 	}
 	status = status ? status : config_finish(cfg);

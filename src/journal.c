@@ -289,7 +289,7 @@ journal_git (struct journal    *j,
 	 * the descriptor of the writer lock to git through exec, so the
 	 * flock() of a new askai on the writer lock fails until git ends. */
 	struct child_fds const fds = { .in = input, .out = -1, .dir = j->repo_fd,
-	                               .keep = j->lock_fd };
+	                               .keep = j->lock_fd, .tty = -1 };
 	return git_run_now(&j->git, command, how, fds, &j->out, oid);
 }
 

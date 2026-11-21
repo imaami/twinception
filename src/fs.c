@@ -41,11 +41,11 @@ fs_mkdir_parents (char *path)
 
 		*sep = '\0';
 		e = mkdir(path, 0700) ? errno : 0;
+		*sep = '/';
 		if (e && e != EEXIST)
 			break;
 		e = 0;
 
-		*sep = '/';
 		for (sep = end; *++sep != '/'; )
 			if (!*sep)
 				return 0;

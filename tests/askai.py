@@ -1131,15 +1131,21 @@ def check_chatgpt_configuration(binary, up):
     print("chatgpt configuration: provider, credential and login isolation: PASS")
 
 
+def jwt_part(claims):
+    """A part of a JSON Web Token: the base64url text of the JSON of claims."""
+    return base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+
+
+def jwt_token(exp, sub="u"):
+    """A JSON Web Token without a real signature that expires at the time exp."""
+    return f'{jwt_part({"alg": "none"})}.{jwt_part({"sub": sub, "exp": exp})}.c2ln'
+
+
 def check_auth_command(binary, up):
     """--auth-command: the token of a command as the bearer token, kept in a
     private file until it expires, --auth-login, and askai-open-browser with
     stand-ins for the programs of Windows."""
-    def part(claims):
-        return base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
-
-    def token(exp, sub="u"):
-        return f'{part({"alg": "none"})}.{part({"sub": sub, "exp": exp})}.c2ln'
+    part, token = jwt_part, jwt_token
     now = int(time.time())
     with tempfile.TemporaryDirectory() as d:
         runs, file = f"{d}/runs", f"{d}/state/bearer.json"
@@ -1155,9 +1161,9 @@ def check_auth_command(binary, up):
         # The token of the output is the bearer token of each request. The
         # command runs once: the token is kept in the private file.
         good = token(now + 3600)
+        first = command(json.dumps({"access_token": good}))
         args = ("-u", up.url(), "-m", "m", "--auth-file", file, "--auth-command")
-        with Askai(binary, *args, command(json.dumps({"access_token": good})),
-                   env={"ASKAI_API_KEY": "must-not-be-used"}) as ai:
+        with Askai(binary, *args, first, env={"ASKAI_API_KEY": "must-not-be-used"}) as ai:
             for _ in range(2):
                 assert not ai.ask().get("isError")
                 assert up.last()["headers"]["authorization"] == f"Bearer {good}"
@@ -1165,17 +1171,25 @@ def check_auth_command(binary, up):
         assert os.stat(file).st_mode & 0o777 == 0o600 and \
             os.stat(os.path.dirname(file)).st_mode & 0o777 == 0o700
         with open(file) as f:
-            assert json.load(f) == {"token": good, "expires_at": now + 3600}
-        # Another process uses the token of the file.
-        with Askai(binary, *args, command("no token")) as ai:
+            assert json.load(f) == {"command": first, "token": good, "expires_at": now + 3600}
+        # Another process with the same command uses the token of the file.
+        with Askai(binary, *args, first) as ai:
             assert not ai.ask().get("isError")
             assert up.last()["headers"]["authorization"] == f"Bearer {good}"
         assert not os.path.exists(runs)
+        # The token of one command is not sent for another command that
+        # names the same file.
+        other = token(now + 3600, "other")
+        with Askai(binary, *args, command(other)) as ai:
+            assert not ai.ask().get("isError")
+            assert up.last()["headers"]["authorization"] == f"Bearer {other}"
+        assert ran() == 1
         # A token that expires within a minute is replaced before each
         # request.
         soon = token(now + 45, "soon")
         with open(file, "w") as f:
-            json.dump({"token": token(now + 30), "expires_at": now + 30}, f)
+            json.dump({"command": command(soon), "token": token(now + 30),
+                       "expires_at": now + 30}, f)
         with Askai(binary, *args, command(soon)) as ai:
             for _ in range(2):
                 assert not ai.ask().get("isError")
@@ -1196,6 +1210,11 @@ def check_auth_command(binary, up):
                 result = ai.ask()
                 assert result.get("isError") and text_of(result) == \
                     f"Cannot authorize or start the request: {why}", result
+        # The time of the exp claim is compared with the clock after the
+        # command, which can run for minutes.
+        with Askai(binary, *args, f"sleep 2; echo {token(int(time.time()) + 2)}") as ai:
+            result = ai.ask()
+            assert result.get("isError") and text_of(result).endswith("has expired"), result
         assert len(up.requests) == count
         os.remove(runs)
 
@@ -1209,6 +1228,9 @@ def check_auth_command(binary, up):
                 (("--auth-command", "x", "--auth-file", "rel", "--auth-login"),
                  "--auth-file needs an absolute path"),
                 (("--auth-command", "x", "-k", "KEY", "--auth-login"),
+                 "--auth-command cannot be combined with --key-env or an Authorization header"),
+                (("-u", up.url(), "-m", "m", "--api", "messages", "-H", "Authorization: Basic x",
+                  "--auth-command", "x"),
                  "--auth-command cannot be combined with --key-env or an Authorization header"),
                 (("-p", "chatgpt", "-m", "m", "--auth-command", "x"),
                  "--auth-command cannot be combined with --provider chatgpt")):
@@ -1258,9 +1280,38 @@ def check_auth_command(binary, up):
                     env=env | {"FAKE_CURL": "ok"})
         assert run.returncode == 0 and run.stderr == f"Token saved to {file}\n", run
         with open(file) as f:
-            assert json.load(f) == {"token": good, "expires_at": now + 3600}
+            assert json.load(f) == {"command": f"{helper} {url}", "token": good,
+                                    "expires_at": now + 3600}
+        # --auth-login lends its terminal to the command: without curl.exe
+        # and without the clipboard, the helper asks for the token there.
+        os.remove(file)
+        none = f"{d}/none"
+        os.mkdir(none)
+        for name, status in (("curl.exe", 22), ("powershell.exe", 1), ("rundll32.exe", 0)):
+            with open(f"{none}/{name}", "w") as f:
+                f.write(f"#!/bin/sh\nexit {status}\n")
+            os.chmod(f"{none}/{name}", 0o755)
+        # The shell is the leader of a new session, so the terminal that it
+        # opens is the terminal of the session.
+        master, slave = os.openpty()
+        login = subprocess.Popen(
+            ["sh", "-c", 'exec "$0" "$@" < "$LOGIN_TTY"', binary, "--auth-command",
+             f"{helper} {url}", "--auth-file", file, "--auth-login"],
+            env=env | {"PATH": f"{none}:{os.environ['PATH']}", "LOGIN_TTY": os.ttyname(slave)},
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            start_new_session=True)
+        shown = b""
+        while b"press Enter: " not in shown and select.select([master], [], [], 30)[0]:
+            shown += os.read(master, 4096)
+        os.write(master, f"{good}\n".encode())
+        said = login.communicate(timeout=30)[1]
+        os.close(master)
+        os.close(slave)
+        assert login.returncode == 0 and said == f"Token saved to {file}\n", (shown, said)
+        with open(file) as f:
+            assert json.load(f)["token"] == good
     print("auth command: bearer token of a command, its file, renewal, errors, "
-          "--auth-login and askai-open-browser: PASS")
+          "--auth-login with a terminal and askai-open-browser: PASS")
 
 
 def check_chatgpt(binary, up):
@@ -3594,8 +3645,10 @@ def check_durable_cancel(binary, up):
                 up.reply = reply
                 up.delete = lambda request: (cancels.append(request) or 200, {})
                 up.retrieve = lambda request: (resumes.append(request) or 404, {})
+                bearer = jwt_token(int(time.time()) + 3600)
                 args = ("-u", up.url(endpoint), "--api", API[fmt], "--background", "--slots", "2",
-                        "--service-name", "cancel", "--transcripts", f"{d}/transcripts.git")
+                        "--service-name", "cancel", "--transcripts", f"{d}/transcripts.git",
+                        "--auth-file", f"{d}/bearer.json", "--auth-command", f"echo {bearer}")
                 if fmt == "openai":
                     args += ("-p", "llama")
                 with Askai(binary, *args) as ai:
@@ -3620,6 +3673,10 @@ def check_durable_cancel(binary, up):
                     wait_for(lambda: cancelled(ai, jid), seconds=10)
                     wait_for(lambda: len(cancels) == 1)
                     assert len(creations) == 1 and not resumes, (creations, resumes)
+                    # The cancellation has the token of --auth-command, as
+                    # the request has, next to the conversation of llama.
+                    assert creations[0]["headers"]["authorization"] == f"Bearer {bearer}" == \
+                        cancels[0]["headers"].get("authorization"), (creations, cancels)
                     if fmt == "openai":
                         parsed = urllib.parse.urlsplit(cancels[0]["path"])
                         assert parsed.path == "/v1/stream", cancels
@@ -11180,7 +11237,9 @@ def check_code(binary, up):
               "struct un_pad {\n\tchar c;\n\tunion {\n"
               "\t\tstruct { char x; int y; } s;\n\t\tlong l;\n\t};\n};\n"
               "static inline long un_f(struct un_a *a, struct un_b *b) "
-              "{ return a->same + b->same; }\n")
+              "{ return a->same + b->same; }\n"
+              "static inline int un_g(void) { struct un_in { int deep; } v = { 1 }; "
+              "return v.deep; }\n")
         write("src/err.h", "#error cannot open file 'settings' in this build\n")
         write("src/lay.c", CODE_LAY_C)
         write("src/calls.h", CODE_CALLS_H)
@@ -12449,6 +12508,10 @@ def check_code_describe(binary, up, call, head, d, cdb):
         assert call(ai, error=True, repo="proj", action="describe", path="src/un.h",
                     name="un_pad.c", line=11) == \
             "Line 11 of src/un.h does not name the member c of that type."
+        # The type of the member can be one of a function body.
+        text = call(ai, repo="proj", action="describe", path="src/un.h", name="un_in.deep",
+                    line=12)
+        assert "int" in text and "un_in" in text, text
         # outline lists a struct that the file declares and does not define.
         text = call(ai, repo="proj", action="outline", path="src/un.h")
         assert "\n1 struct un_fwd, declared\n" in text and "struct un_a, declared" not in text, \

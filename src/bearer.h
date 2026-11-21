@@ -1,9 +1,10 @@
 /** @file bearer.h
  * A bearer token from a command. askai runs the command of --auth-command
- * when it has no token that is still valid, takes the JSON Web Token from
- * the output, and keeps it in a private file until a minute before the
- * time of its exp claim. The signature of the token is not checked: the
- * upstream does that. Blocking work belongs on a blocker.
+ * when it has no token of that command that is still valid, takes the JSON
+ * Web Token from the output, and keeps it with the command in a private
+ * file until a minute before the time of its exp claim. The signature of
+ * the token is not checked: the upstream does that. Blocking work belongs
+ * on a blocker.
  */
 #ifndef ASKAI_SRC_BEARER_H_
 #define ASKAI_SRC_BEARER_H_
@@ -21,9 +22,10 @@ bearer_path (struct dstr *path);
 /**
  * Runs @p command with /bin/sh, up to five minutes, and stores the token
  * of its output in the file @p path. The command runs with the environment
- * of askai, its standard input and its standard error /dev/null. Returns
- * 0 or an error number, with words for the user in the @p size bytes at
- * @p error.
+ * of askai, its standard input and its standard error /dev/null. If askai
+ * is the foreground process group of a terminal, the command is that until
+ * it ends, and can open /dev/tty. Returns 0 or an error number, with words
+ * for the user in the @p size bytes at @p error.
  */
 extern int
 bearer_login (char const *path,
@@ -33,8 +35,9 @@ bearer_login (char const *path,
 
 /**
  * Replaces @p header with the Authorization header of the token in the
- * file @p path. A token that is missing, or that expires within a minute,
- * is first replaced as bearer_login() stores one. Returns 0 or an error
+ * file @p path. A token that is missing, that is of another command, or
+ * that expires within a minute, is first replaced as bearer_login() stores
+ * one, but the command never gets a terminal. Returns 0 or an error
  * number, with @p header empty and words for the user in the @p size bytes
  * at @p error.
  */

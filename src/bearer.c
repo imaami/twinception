@@ -2,6 +2,7 @@
  * The token of --auth-command and its file.
  */
 #include <errno.h>
+#include <fcntl.h>
 #include <json-c/json.h>
 #include <string.h>
 
@@ -43,16 +44,31 @@ bearer_token (struct cred const *file)
 	return jb_text(jb_get(file->record, "token"), 1, JWT_LIMIT, JWT_SET ".");
 }
 
-/* Runs @p command and replaces the record of @p file with the token of its
- * output and the time of the exp claim. @p now is the time in seconds.
- * Returns 0, ENOMSG if the output contains no token, ESTALE if the token
- * has expired, the error of jwt_expiry(), of child_cmd_run() or of
- * cred_save(), or ENOMEM.
+/* Whether the record of @p file is a token of @p command that is valid
+ * for more than BEARER_EARLY seconds after @p now. One file can be named
+ * for two commands, and the token of one is not sent for the other.
+ */
+static bool
+bearer_fresh (struct cred const *file,
+              char const        *command,
+              uint64_t           now)
+{
+	struct cstr_view const of = jb_view(jb_get(file->record, "command"));
+	return of.data && !strcmp(of.data, command) && bearer_token(file).len &&
+	       jb_uint(jb_get(file->record, "expires_at"), 0) > now + BEARER_EARLY;
+}
+
+/* Runs @p command and replaces the record of @p file with the command, the
+ * token of its output and the time of the exp claim. The command gets the
+ * terminal @p tty as child_fds.tty. Returns 0, ENOMSG if the output
+ * contains no token, ESTALE if the token has expired, EIO without a
+ * clock, the error of jwt_expiry(), of child_cmd_run() or of cred_save(),
+ * or ENOMEM.
  */
 static int
 bearer_renew (struct cred *file,
               char const  *command,
-              uint64_t     now)
+              int          tty)
 {
 	char const *const argv[] = { "sh", "-c", command, nullptr };
 	struct child_cmd const cmd = child_cmd(
@@ -65,15 +81,21 @@ bearer_renew (struct cred *file,
 	);
 	struct buf out = buf();
 	struct child_end end;
-	int e = child_cmd_run(&cmd, child_fds(), &out, &end);
+	struct child_fds fds = child_fds();
+	fds.tty = tty;
+	int e = child_cmd_run(&cmd, fds, &out, &end);
+	/* The command can run for minutes: the time is read after it. */
+	uint64_t const now = clk_realtime_ns() / NS;
 	struct cstr_view const token = e ? cstr_view(nullptr)
 	                                 : jwt_find(cstr_view_span(buf_peek(&out)));
 	uint64_t exp = 0;
 	if (!e)
 		e = token.data ? jwt_expiry(token, &exp) : ENOMSG;
-	if (!e && exp <= now)
-		e = ESTALE;
+	if (!e && (!now || exp <= now))
+		e = now ? ESTALE : EIO;
 	struct json_object *record = e ? nullptr : json_object_new_object();
+	if (!e)
+		e = jb_set(record, "command", json_object_new_string(command));
 	if (!e)
 		e = jb_set(record, "token", json_object_new_string_len(token.data, (int)token.len));
 	if (!e)
@@ -128,9 +150,11 @@ bearer_login (char const *path,
 {
 	int e;
 	struct cred file = cred(path, CRED_CREATE, &e);
-	uint64_t const now = clk_realtime_ns() / NS;
+	/* The command of a login can ask the user on the terminal. */
+	int tty = e ? -1 : open("/dev/tty", O_RDWR | O_CLOEXEC | O_NOCTTY);
 	if (!e)
-		e = now ? bearer_renew(&file, command, now) : EIO;
+		e = bearer_renew(&file, command, tty);
+	util_close(&tty);
 	cred_fini(&file);
 	return bearer_say(e, error, size);
 }
@@ -148,9 +172,8 @@ bearer_header (char const  *path,
 	uint64_t const now = clk_realtime_ns() / NS;
 	if (!e && !now)
 		e = EIO;
-	if (!e && (!bearer_token(&file).len ||
-	           jb_uint(jb_get(file.record, "expires_at"), 0) <= now + BEARER_EARLY))
-		e = bearer_renew(&file, command, now);
+	if (!e && !bearer_fresh(&file, command, now))
+		e = bearer_renew(&file, command, -1);
 	if (!e && !dstr_printf(header, "Authorization: Bearer %s", bearer_token(&file).data))
 		e = ENOMEM;
 	cred_fini(&file);

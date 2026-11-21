@@ -79,7 +79,7 @@ child_end_status (struct child_end const *end)
 
 /**
  * A child process, from its spawn until it is reaped and its owner has let
- * go of it. Its session's process group is killed, with SIGKILL, once its
+ * go of it. Its process group is killed, with SIGKILL, once its
  * output goes past the cap, at its deadline, or as its owner lets go of it
  * before it has ended. A child with a grace gets SIGTERM instead, which
  * lets it clean up, and at its deadline SIGKILL once the grace has passed
@@ -195,13 +195,19 @@ child_cmd (struct child_cmd const c)
  *  output is the member out, or else /dev/null. The child runs in the
  *  directory of the member dir, or else in the directory of the caller.
  *  The child inherits the member keep as descriptor 3, such as the lock of
- *  a file.
+ *  a file. The member tty is a terminal: if the caller is the foreground
+ *  process group of it, the child stays in the session of the caller, as a
+ *  process group of its own, and is the foreground process group of the
+ *  terminal until it ends. So the child can open /dev/tty, and the keys
+ *  of the terminal that send a signal send it to the child. Without such
+ *  a terminal the child has a session of its own.
  */
 struct child_fds {
 	int in;
 	int out;
 	int dir;
 	int keep;
+	int tty;
 };
 
 /** Returns a struct child_fds whose descriptors are all -1. */
@@ -212,7 +218,8 @@ child_fds (void)
 		.in   = -1,
 		.out  = -1,
 		.dir  = -1,
-		.keep = -1
+		.keep = -1,
+		.tty  = -1
 	};
 }
 

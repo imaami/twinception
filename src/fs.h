@@ -8,7 +8,10 @@
 
 /** @brief Create all parent directories of `path` with mode 0700.
  *
- * @note Uses `path` as a work buffer and may modify its contents.
+ * The last component of `path` is not created, also if slashes follow it.
+ *
+ * @note Uses `path` as a work buffer: writes to it, and restores its
+ *       contents before the return.
  *
  * @return 0 on success, an error code on failure.
  */
