@@ -903,8 +903,8 @@ journal_thought_commit (struct journal            *j,
 		if (oid_len(&j->tip))
 			fprintf(output, "from %s\n", j->tip.hex);
 		fprintf(output, "M 100644 %s %s\n\ndone\n", blob.hex, path);
-		if (fflush(output) || ferror(output))
-			e = e ? e : EIO;
+		if ((fflush(output) || ferror(output)) && !e)
+			e = EIO;
 		if (!e && lseek(fd, 0, SEEK_SET) < 0)
 			e = errno;
 		char const *import[] = { "fast-import", "--quiet", "--done", nullptr };

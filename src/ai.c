@@ -271,8 +271,10 @@ ai_chat_answer (struct json_object  *root,
 
 	/* Some servers send content as an array of text parts. */
 	int e = ai_append(thought, ai_chat_reasoning(msg));
-	e = e ? e : ai_append(text, content);
-	e = e ? e : ai_append_parts(text, content);
+	if (!e)
+		e = ai_append(text, content);
+	if (!e)
+		e = ai_append_parts(text, content);
 	if (e || !text || dstr_len(text))
 		return e;
 	return ai_append(text, jb_get(msg, "refusal"));
@@ -292,7 +294,8 @@ ai_responses_answer (struct json_object  *root,
 		struct json_object *type = jb_get(item, "type");
 		if (jb_is(type, "reasoning")) {
 			e = ai_append_parts(thought, jb_get(item, "content"));
-			e = e ? e : ai_append_parts(thought, jb_get(item, "summary"));
+			if (!e)
+				e = ai_append_parts(thought, jb_get(item, "summary"));
 			continue;
 		}
 		if (!jb_is(type, "message"))
@@ -823,7 +826,8 @@ ai_chat_delta (struct ai_sink const *sink,
 	struct json_object *part;
 	for (size_t i = 0; !e && (part = jb_at(content, i)); ++i)
 		e = ai_put_text(sink, jb_view(jb_get(part, "text")));
-	e = e ? e : ai_put_text(sink, jb_view(jb_get(delta, "refusal")));
+	if (!e)
+		e = ai_put_text(sink, jb_view(jb_get(delta, "refusal")));
 	return e ? e : ai_chat_calls(sink, jb_get(delta, "tool_calls"));
 }
 
@@ -1125,7 +1129,8 @@ ai_generate_part (struct ai_sink const *sink,
 	struct json_object *fc = jb_get(part, "functionCall");
 	if (fc) {
 		int e = ai_generate_close(sink, reader);
-		e = e ? e : ai_call_start(sink, reader->calls++, fc, "args", nullptr);
+		if (!e)
+			e = ai_call_start(sink, reader->calls++, fc, "args", nullptr);
 		return e ? e : ai_replay_item(sink, part);
 	}
 	struct json_object *text = jb_get(part, "text");
@@ -1247,7 +1252,8 @@ ai_interactions_sign (struct ai_sink const *sink,
 		reader->state ^= SUMMARY_OPEN | SUMMARY_CLOSED;
 		e = ai_replay(sink, CSTR_VIEW("]"));
 	}
-	e = e ? e : ai_replay_open(sink, CSTR_VIEW(",\"signature\":\""), signature);
+	if (!e)
+		e = ai_replay_open(sink, CSTR_VIEW(",\"signature\":\""), signature);
 	return e ? e : ai_replay(sink, CSTR_VIEW("\""));
 }
 
@@ -1271,7 +1277,8 @@ ai_interactions_thought (struct ai_sink const *sink,
 	struct json_object *item;
 	for (size_t i = 0; !e && (item = jb_at(summary, i)); ++i) {
 		e = ai_put_thought(sink, jb_view(jb_get(item, "text")), out);
-		e = e ? e : ai_interactions_summary(sink, reader, item);
+		if (!e)
+			e = ai_interactions_summary(sink, reader, item);
 	}
 	return e;
 }
@@ -1562,8 +1569,10 @@ ai_describe_error (struct dstr        *text,
 		return ENOMEM;
 	struct json_object *event = root ? nullptr : ai_error_event(body);
 	char const *said = event ? ai_event_error(event) : ai_error_text(jb_get(root, "error"));
-	said = said ? said : jb_view(jb_get(root, "message")).data;
-	said = said ? said : jb_view(jb_get(root, "detail")).data;
+	if (!said)
+		said = jb_view(jb_get(root, "message")).data;
+	if (!said)
+		said = jb_view(jb_get(root, "detail")).data;
 	/* Else quote the start of an unparsable body, as far as it is UTF-8
 	 * text. */
 	size_t cut = said ? 0 : jb_utf8(body.data, body.len < 512 ? body.len : 512);
@@ -1687,7 +1696,8 @@ ai_uploaded (enum ai_api       api,
 	int e;
 	if (status < 200 || status > 299 || !at.data) {
 		e = ai_describe_error(why, status, root, body);
-		e = e ? e : EIO;
+		if (!e)
+			e = EIO;
 	} else if (!at.len || at.len > strspn(at.data, ai_uri_bytes)) {
 		e = dstr_cat(why, "The upstream named the file with a URI that is not "
 		             "printable ASCII.") ? EIO : ENOMEM;

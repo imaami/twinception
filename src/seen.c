@@ -254,11 +254,16 @@ seen_ids (struct dstr              *ids,
           struct seen_source const *src)
 {
 	int e = cstr_view_cat(CSTR_VIEW("{\"repo\":\""), ids);
-	e = e ? e : jb_escape_cat(src->repo, ids);
-	e = e ? e : cstr_view_cat(CSTR_VIEW("\",\"commit\":\""), ids);
-	e = e ? e : cstr_view_cat(oid_view(&src->commit), ids);
-	e = e ? e : cstr_view_cat(CSTR_VIEW("\",\"path\":\""), ids);
-	e = e ? e : jb_escape_cat(src->path, ids);
+	if (!e)
+		e = jb_escape_cat(src->repo, ids);
+	if (!e)
+		e = cstr_view_cat(CSTR_VIEW("\",\"commit\":\""), ids);
+	if (!e)
+		e = cstr_view_cat(oid_view(&src->commit), ids);
+	if (!e)
+		e = cstr_view_cat(CSTR_VIEW("\",\"path\":\""), ids);
+	if (!e)
+		e = jb_escape_cat(src->path, ids);
 	return e ? e : dstr_printf(ids, "\",\"total\":%" PRIu64 "}", src->total) ? 0 : ENOMEM;
 }
 
@@ -296,7 +301,8 @@ seen_keep (struct seen              **p_seen,
 	struct seen_read *read = r->read;
 	struct seen_lines const whole = read ? seen_lines(read, r->out, window, &e)
 	                                     : (struct seen_lines){};
-	e = e ? e : seen_get(p_seen);
+	if (!e)
+		e = seen_get(p_seen);
 	if (e)
 		return e;
 	struct seen *seen = *p_seen;

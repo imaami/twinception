@@ -397,12 +397,13 @@ findings_prompted (struct mcp_slot *slot,
 	int r = 0;
 	if (!cstr_view_ends(cstr_view_dstr(d), CSTR_VIEW("\n")))
 		r = cstr_view_cat(CSTR_VIEW("\n\n"), d);
-	if (e)
-		r = r ? r : cstr_view_cat(CSTR_VIEW("[askai: Your findings could not be read.]\n"), d);
-	else
-		r = r ? r : finding_notice(call->findings.items, call->findings.n,
-		                           &mcp_slot_member(slot)->conversation, call->most, d);
-	r = r ? r : seen_notice(mcp_slot_seen(slot), d);
+	if (!r && e)
+		r = cstr_view_cat(CSTR_VIEW("[askai: Your findings could not be read.]\n"), d);
+	else if (!r)
+		r = finding_notice(call->findings.items, call->findings.n,
+		                   &mcp_slot_member(slot)->conversation, call->most, d);
+	if (!r)
+		r = seen_notice(mcp_slot_seen(slot), d);
 	findings_drop(slot);
 	if (r)
 		mcp_slot_fail(slot, r);
@@ -939,7 +940,8 @@ findings_commit (struct mcp_slot      *slot,
 	finding_id_put(&f->id, id);
 	call->id = f->id;
 	struct extent part = {};
-	e = e ? e : store_part_file(&part, &call->files, finding_path(f->id.number, path), text);
+	if (!e)
+		e = store_part_file(&part, &call->files, finding_path(f->id.number, path), text);
 	struct store_commit commit = store_commit(
 		.message = findings_subject(call, id, before, message),
 		.files = buf_peek(&call->files),
@@ -950,7 +952,8 @@ findings_commit (struct mcp_slot      *slot,
 	member_byline_put(&byline, &commit, &session->agent, mcp_slot_member(slot),
 	                  mcp_slot_call(slot), session);
 	struct buf in = buf();
-	e = e ? e : store_commit_input(&commit, &in);
+	if (!e)
+		e = store_commit_input(&commit, &in);
 	/* The archive stays for a commit after a race. */
 	buf_cut(&call->files, call->archive, commit.files.len - call->archive);
 	if (e) {
@@ -971,7 +974,8 @@ findings_record (struct evidence const *e,
 	int err = 0;
 	struct json_object *obj = evidence_json(e, &err);
 	struct cstr_view const wire = jb_wire(obj);
-	err = err ? err : wire.data ? cstr_view_store(wire, d) : ENOMEM;
+	if (!err)
+		err = wire.data ? cstr_view_store(wire, d) : ENOMEM;
 	json_object_put(obj);
 	return err;
 }
@@ -1139,8 +1143,9 @@ findings_expanded (struct mcp_slot *slot,
 		if (e || !turn || !findings_stored(ev, blobs))
 			continue;
 		e = findings_record(ev, &shown.record);
-		e = e ? e : findings_shown(slot, &shown, &key, blobs,
-		                           extent(at, dstr_len(&call->out) - at));
+		if (!e)
+			e = findings_shown(slot, &shown, &key, blobs,
+			                   extent(at, dstr_len(&call->out) - at));
 		++whole;
 	}
 	dstr_cleanup(&shown.record);
@@ -1504,8 +1509,9 @@ findings_unseen (struct mcp_slot                *slot,
 		if (at[i] == at[i + 1])
 			continue;
 		e = cstr_view_store(cstr_view_dstr(&cite->record), &shown.record);
-		e = e ? e : findings_shown(slot, &shown, &cite->ref.id, cite->blobs,
-		                           extent(at[i], at[i + 1] - at[i]));
+		if (!e)
+			e = findings_shown(slot, &shown, &cite->ref.id, cite->blobs,
+			                   extent(at[i], at[i + 1] - at[i]));
 	}
 	dstr_cleanup(&shown.record);
 	findings_end(slot, e, true);
@@ -1891,13 +1897,15 @@ findings_evidence (struct mcp_slot    *slot,
 		}
 		struct evidence_material material = {};
 		e = evidence_cite(item, &material, &lines, &ref, &cite, strict, why, len);
-		e = e ? e : findings_archive(call, item, &material, (struct oid const [2]){});
+		if (!e)
+			e = findings_archive(call, item, &material, (struct oid const [2]){});
 		loop_work(mcp_slot_loop(slot), LOOP_COPY, material.request.len + material.result.len);
 	}
 	for (size_t i = 0; !e && i < m; ++i) {
 		struct cstr_view const text = jb_view(jb_at(external, i));
 		e = evidence_external(text, i, why, len);
-		e = e ? e : finding_change_external(c, text);
+		if (!e)
+			e = finding_change_external(c, text);
 	}
 	return e;
 }

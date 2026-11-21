@@ -819,8 +819,10 @@ policy_build_file (struct policy_build *b,
 		if (of[i] && !json_object_is_type(of[i], json_type_object))
 			return policy_build_fail(b, "%s must be an object", policy_parts[i].data);
 	int e = policy_build_roles(b);
-	e = e ? e : policy_build_identities(b, of[POLICY_IDENTITIES]);
-	e = e ? e : policy_build_groups(b, of[POLICY_GROUPS]);
+	if (!e)
+		e = policy_build_identities(b, of[POLICY_IDENTITIES]);
+	if (!e)
+		e = policy_build_groups(b, of[POLICY_GROUPS]);
 	return e ? e : policy_build_anonymous(b, of[POLICY_ANONYMOUS]);
 }
 

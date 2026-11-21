@@ -422,8 +422,10 @@ evidence_cite (struct evidence            *dest,
 	                          : util_format_view(made, sizeof made, "call_%" PRIu32 "_%u",
 	                                             stamp->turn, (unsigned)stamp->index);
 	e = cstr_view_store(cstr_view(tool), &dest->tool);
-	e = e ? e : cstr_view_store(id, &dest->call_id);
-	e = e ? e : cstr_view_store(cstr_view_dstr(&c->ids), &dest->ids);
+	if (!e)
+		e = cstr_view_store(id, &dest->call_id);
+	if (!e)
+		e = cstr_view_store(cstr_view_dstr(&c->ids), &dest->ids);
 	if (e)
 		return e;
 	if (dest->kind != EVIDENCE_LINES) {
@@ -636,8 +638,10 @@ evidence_parse (struct evidence          *dest,
 		dest->flags = jb_true(failed) ? FLAG_FAILED : 0;
 		struct cstr_view const wire = jb_wire(ids);
 		e = ids && !wire.data ? ENOMEM : cstr_view_store(tool, &dest->tool);
-		e = e ? e : cstr_view_store(call_id, &dest->call_id);
-		e = e ? e : cstr_view_store(wire.data ? wire : CSTR_VIEW(""), &dest->ids);
+		if (!e)
+			e = cstr_view_store(call_id, &dest->call_id);
+		if (!e)
+			e = cstr_view_store(wire.data ? wire : CSTR_VIEW(""), &dest->ids);
 	}
 	if (e)
 		evidence_fini(dest);

@@ -514,8 +514,10 @@ notes_tool_prompt_notices (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	int e = cstr_view_cat(CSTR_VIEW("\n\n"), call->text);
-	e = e ? e : member_notice(&call->self, mcp_slot_member(slot), call->text);
-	e = e ? e : member_table_notice(mcp_slot_members(slot), &call->self, call->text);
+	if (!e)
+		e = member_notice(&call->self, mcp_slot_member(slot), call->text);
+	if (!e)
+		e = member_table_notice(mcp_slot_members(slot), &call->self, call->text);
 	if (e) {
 		notes_tool_then(slot, e);
 		return;
@@ -765,7 +767,8 @@ notes_tool_write (struct mcp_slot *slot,
 	struct member_byline byline = {};
 	member_byline_put(&byline, &commit, &call->self, mcp_slot_member(slot), mcp_slot_call(slot),
 	                  notes_tool_session(call));
-	e = e ? e : store_commit_input(&commit, &in);
+	if (!e)
+		e = store_commit_input(&commit, &in);
 	notes_tool_run(slot, FETCH_ADD, &in, e);
 }
 
@@ -1352,8 +1355,10 @@ notes_tool_view (struct dstr      *d,
 		unsigned char b = (unsigned char)note.data[i++];
 		char x[] = { hex[b >> 4], hex[b & 15] };
 		e = notes_tool_put(d, &w, max, view_open, open);
-		e = e ? e : notes_tool_put(d, &w, max, x, 2);
-		e = e ? e : notes_tool_put(d, &w, max, view_close, close);
+		if (!e)
+			e = notes_tool_put(d, &w, max, x, 2);
+		if (!e)
+			e = notes_tool_put(d, &w, max, view_close, close);
 	}
 	if (size)
 		*size = w;
@@ -1655,7 +1660,8 @@ notes_tool_prompt_list (struct mcp_slot *slot)
 		};
 		e = cstr_view_join(p, array_size(p), UINT64_MAX, CSTR_VIEW(""), CSTR_VIEW(""),
 		                   call->text);
-		e = e ? e : notes_read_input(&in, call->notebook, name);
+		if (!e)
+			e = notes_read_input(&in, call->notebook, name);
 	} else if (!e && name.len) {
 		e = cstr_view_cat(CSTR_VIEW("[askai: The newest note could not be read.]\n"),
 		                  call->text);

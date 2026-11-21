@@ -1002,7 +1002,8 @@ manual_create (uint32_t  recheck,
 	struct htab table = {};
 	struct manual *m = malloc(sizeof *m);
 	*e = !m ? ENOMEM : htab_init(&table, BUCKETS);
-	*e = *e ? *e : pthread_mutex_init(&m->lock, nullptr);
+	if (!*e)
+		*e = pthread_mutex_init(&m->lock, nullptr);
 	if (*e) {
 		htab_fini(&table);
 		free(m);
@@ -1113,7 +1114,8 @@ manual_start (struct mcp_slot    *slot,
 	struct handle who = {};
 	struct manual_page *found = nullptr;
 	int e = mcp_slot_name(slot, &who);
-	e = e ? e : manual_find(mcp_slot_part(slot), page, sect, who, &found);
+	if (!e)
+		e = manual_find(mcp_slot_part(slot), page, sect, who, &found);
 	if (e)
 		mcp_slot_fail(slot, e);
 	else if (!found || manual_answer(slot, found))

@@ -1267,8 +1267,8 @@ godbolt_count (struct godbolt *call,
 		call->list = GODBOLT_LIST_BAD;
 		return call->e;
 	}
-	if (jb_set(call->doc, key, json_object_new_int(1)))
-		call->e = call->e ? call->e : ENOMEM;
+	if (jb_set(call->doc, key, json_object_new_int(1)) && !call->e)
+		call->e = ENOMEM;
 	return call->e;
 }
 
@@ -3150,8 +3150,9 @@ godbolt_definition (void const        *service,
 	int e = jb_set(props, "share", json_tokener_parse(
 		"{\"type\":\"boolean\",\"default\":false,\"description\":\"With true, "
 		"the first line of the output is a Compiler Explorer link.\"}"));
-	e = e ? e : jb_set(jb_get(def, "annotations"), "readOnlyHint",
-	                   json_object_new_boolean(cfg->share != GODBOLT_SHARE_SHORT));
+	if (!e)
+		e = jb_set(jb_get(def, "annotations"), "readOnlyHint",
+		           json_object_new_boolean(cfg->share != GODBOLT_SHARE_SHORT));
 	if (!e)
 		return def;
 	json_object_put(def);

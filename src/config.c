@@ -1593,8 +1593,10 @@ config_file (struct config *cfg)
 	struct cstr_view const json = config_text(&text);
 	status = config_json(cfg, json.data, json.len);
 	buf_fini(&text);
-	status = status ? status : config_lists(cfg);
-	status = status ? status : config_apply_file(cfg);
+	if (!status)
+		status = config_lists(cfg);
+	if (!status)
+		status = config_apply_file(cfg);
 	return status ? status : config_apply_tools(cfg);
 }
 
@@ -1956,7 +1958,8 @@ config_url_generate (struct config *cfg)
 	/* The query up to its alt's value, and what follows that; or all of it,
 	 * and alt. */
 	char const *alt = strstr(query, "?alt=");
-	alt = alt ? alt : strstr(query, "&alt=");
+	if (!alt)
+		alt = strstr(query, "&alt=");
 	if (alt) {
 		char const *value = alt + sizeof "?alt=" - 1;
 		if (config_aprintf(&cfg->url, "%.*s%s%.*salt=sse%s", (int)path, url, stream,
@@ -2636,7 +2639,8 @@ config_parse (struct config *cfg)
 			cfg->path = optarg;
 	}
 	int status = cfg->path ? config_file(cfg) : config_lists(cfg);
-	status = status ? status : config_argv(cfg);
+	if (!status)
+		status = config_argv(cfg);
 	if (!status && cfg->flags & CFG_CHATGPT_LOGIN) {
 		if (cfg->ep.provider && cfg->ep.provider != AI_CHATGPT)
 			return config_complain(cfg, nullptr, "--chatgpt-login needs --provider chatgpt");
@@ -2646,15 +2650,18 @@ config_parse (struct config *cfg)
 		                config_has_header(cfg, "Authorization:")))
 			status = config_complain(cfg, nullptr, "--chatgpt-login cannot use "
 			                         "--key-env, --url or an Authorization header");
-		status = status ? status : config_chatgpt_path(cfg);
+		if (!status)
+			status = config_chatgpt_path(cfg);
 		return status ? status : -1;
 	}
 	if (!status && cfg->flags & CFG_AUTH_LOGIN) {
 		status = config_auth_options(cfg);
-		status = status ? status : config_auth(cfg);
+		if (!status)
+			status = config_auth(cfg);
 		return status ? status : -1;
 	}
-	status = status ? status : config_finish(cfg);
+	if (!status)
+		status = config_finish(cfg);
 	return status ? status : -1;
 }
 

@@ -1080,7 +1080,8 @@ brainstem_wait (struct brainstem *bs)
 		struct brainstem_thread *t = &bs->threads[i];
 		brainstem_alone(bs, t);
 		brainstem_thread_join(t);
-		e = e ? e : t->error;
+		if (!e)
+			e = t->error;
 	}
 	return e;
 }

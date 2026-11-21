@@ -2528,7 +2528,8 @@ cxi_describe (struct cxi *x)
 		cxi_out_lit(&x->out, "\n");
 	}
 	cxi_declaration(x, shown);
-	x->out.e = x->out.e ? x->out.e : rows.e;
+	if (!x->out.e)
+		x->out.e = rows.e;
 	cxi_out_fini(&rows);
 	return x->out.e ? x->out.e : calls;
 }
@@ -2603,7 +2604,8 @@ cxi_diagnostics (struct cxi *x)
 	}
 	cxi_out_lit(&x->out, ".]\n");
 	cxi_out_put(&x->out, dstr_get(&rows.text), dstr_len(&rows.text));
-	x->out.e = x->out.e ? x->out.e : rows.e;
+	if (!x->out.e)
+		x->out.e = rows.e;
 	cxi_out_fini(&rows);
 	return x->out.e;
 }
@@ -3154,11 +3156,13 @@ cxi_graph_function (CXCursor     c,
 	           !cxi_in_tree(calls->x->out.tree, c)))
 		return CXChildVisit_Continue;
 
-	e = e ? e : cxi_calls_collect(calls, c);
+	if (!e)
+		e = cxi_calls_collect(calls, c);
 	uint32_t const first = (uint32_t)g->draft.calls.n;
 	for (size_t i = 0; !e && i < calls->n; ++i)
 		e = cxi_graph_call(g, &calls->items[i]);
-	e = e ? e : cxi_graph_uses(g, c);
+	if (!e)
+		e = cxi_graph_uses(g, c);
 	if (e) {
 		calls->walk.e = e;
 		return CXChildVisit_Break;
@@ -3278,7 +3282,8 @@ cxi_graph_macros (CXCursor     c,
 		                   !cxi_in_tree(g->calls.x->out.tree, c);
 		if (!outer && cxi_fn_like(tu, c))
 			e = cxi_graph_macro_fn(g, c, GRAPH_FN_MACRO, &id);
-		e = e ? e : outer ? util_push(g->outer, c) : util_push(g->defs, c);
+		if (!e)
+			e = outer ? util_push(g->outer, c) : util_push(g->defs, c);
 	} else if (c.kind == CXCursor_MacroExpansion) {
 		CXCursor const def = clang_getCursorReferenced(c);
 		struct cxi_expansion use = { .to = GRAPH_NONE };

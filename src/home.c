@@ -1776,7 +1776,8 @@ home_put_text (void             *user,
 {
 	struct job *job = user;
 	int e = text.len ? home_thought_end(self, job, false) : 0;
-	e = e ? e : home_append_text(self, &job->result, text);
+	if (!e)
+		e = home_append_text(self, &job->result, text);
 	return e ? e : home_put_delta(job, text, false);
 }
 

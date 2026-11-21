@@ -408,7 +408,8 @@ graph_draft_write (struct graph_draft *draft,
 	for (size_t i = 0; i < GRAPH_PARTS; ++i)
 		head.n[i] = (uint32_t)part[i].n;
 
-	e = e ? e : util_write_all(fd, &head, sizeof head);
+	if (!e)
+		e = util_write_all(fd, &head, sizeof head);
 	for (size_t i = 0; !e && i < GRAPH_PARTS; ++i)
 		e = util_write_all(fd, part[i].items, part[i].n * graph_size[i]);
 	free(order);

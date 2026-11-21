@@ -203,8 +203,10 @@ tls_ctx_load (SSL_CTX             *ctx,
               size_t               len)
 {
 	int e = tls_ctx_set_up(ctx, why, len);
-	e = e ? e : tls_ctx_use_chain(ctx, chain, chain_len, why, len);
-	e = e ? e : tls_ctx_use_key(ctx, key, key_len, why, len);
+	if (!e)
+		e = tls_ctx_use_chain(ctx, chain, chain_len, why, len);
+	if (!e)
+		e = tls_ctx_use_key(ctx, key, key_len, why, len);
 	if (e)
 		return e;
 	char const *wrong = SSL_CTX_check_private_key(ctx) != 1

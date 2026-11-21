@@ -460,7 +460,8 @@ finding_list (struct finding const *list,
 			open = false;
 			e = dstr_cat(d, "Closed findings:\n") ? 0 : ENOMEM;
 		}
-		e = e ? e : finding_row(f, width, about, d);
+		if (!e)
+			e = finding_row(f, width, about, d);
 	}
 	return e;
 }

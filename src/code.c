@@ -201,9 +201,11 @@ code_check (struct config *cfg)
 		return config_aprintf(&cfg->code_check, "no cache directory: XDG_CACHE_HOME and HOME "
 		                      "are not absolute");
 	char *cache = nullptr;
-	e = e ? e : config_aprintf(&cfg->code_cache, "%s%s/askai/code", top,
-	                           top == xdg ? "" : "/.cache");
-	e = e ? e : config_aprintf(&cache, "cache=%s", cfg->code_cache);
+	if (!e)
+		e = config_aprintf(&cfg->code_cache, "%s%s/askai/code", top,
+		                   top == xdg ? "" : "/.cache");
+	if (!e)
+		e = config_aprintf(&cache, "cache=%s", cfg->code_cache);
 	if (e)
 		return e;
 	char const *argv[] = {
@@ -651,11 +653,15 @@ code_build_create (struct code            *code,
 	struct git_pin const *pin = &call->pin;
 	struct dstr *words = &made->words;
 	int err = units.len ? cstr_view_store(id, &made->id) : EINVAL;
-	err = err ? err : code_word(words, CXI_KEY_REPO, pin->repo->name);
-	err = err ? err : code_word(words, CXI_KEY_COMMIT, oid_view(&pin->roots[0]));
-	err = err ? err : code_word(words, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
-	err = err ? err : code_word(words, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
-	                            ? CSTR_VIEW("1") : cstr_view(nullptr));
+	if (!err)
+		err = code_word(words, CXI_KEY_REPO, pin->repo->name);
+	if (!err)
+		err = code_word(words, CXI_KEY_COMMIT, oid_view(&pin->roots[0]));
+	if (!err)
+		err = code_word(words, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
+	if (!err)
+		err = code_word(words, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
+		                ? CSTR_VIEW("1") : cstr_view(nullptr));
 	while (!err && units.len) {
 		struct cstr_view path;
 		struct cstr_view size;
@@ -768,9 +774,11 @@ code_spawn (struct code_call *call,
 	if (!(call->flags & CODE_WORDED)) {
 		char digits[UTIL_DECIMAL];
 		e = code_word(&call->words, CXI_KEY_COMMIT, oid_view(&pin->roots[0]));
-		e = e ? e : code_word(&call->words, CXI_KEY_DEADLINE,
-		                      util_decimal(digits + sizeof digits, pin->deadline, 0));
-		e = e ? e : code_word(&call->words, CXI_KEY_TOP, cstr_view(pin->repo->path));
+		if (!e)
+			e = code_word(&call->words, CXI_KEY_DEADLINE,
+			              util_decimal(digits + sizeof digits, pin->deadline, 0));
+		if (!e)
+			e = code_word(&call->words, CXI_KEY_TOP, cstr_view(pin->repo->path));
 		call->flags |= CODE_WORDED;
 	}
 	if (e)
@@ -875,8 +883,10 @@ code_join (struct code_call *call,
 	char const letter = *file.data;
 	file = cstr_view_slice(file, 1, SIZE_MAX);
 	int e = cstr_view_store(name, &call->named);
-	e = e ? e : cstr_view_cat(file, &call->named);
-	e = e ? e : cstr_view_cat(link, &call->named);
+	if (!e)
+		e = cstr_view_cat(file, &call->named);
+	if (!e)
+		e = cstr_view_cat(link, &call->named);
 	if (e)
 		return e;
 	callee->name = cstr_view_n(dstr_get(&call->named), name.len);
@@ -1189,17 +1199,24 @@ code_args (struct code const  *code,
 		call->flags |= CODE_CALLERS;
 	struct dstr *words = &call->words;
 	char digits[UTIL_DECIMAL];
-	e = e ? e : code_word(words, CXI_KEY_ACTION, action);
-	e = e ? e : code_word(words, CXI_KEY_REPO, repo);
-	e = e ? e : code_word(words, CXI_KEY_PATH, path);
-	e = e ? e : code_word(words, CXI_KEY_NAME, name);
-	e = e ? e : code_word(words, CXI_KEY_LINE,
-	                      line ? util_decimal(digits + sizeof digits, line, 0)
-	                           : cstr_view(nullptr));
+	if (!e)
+		e = code_word(words, CXI_KEY_ACTION, action);
+	if (!e)
+		e = code_word(words, CXI_KEY_REPO, repo);
+	if (!e)
+		e = code_word(words, CXI_KEY_PATH, path);
+	if (!e)
+		e = code_word(words, CXI_KEY_NAME, name);
+	if (!e)
+		e = code_word(words, CXI_KEY_LINE,
+		              line ? util_decimal(digits + sizeof digits, line, 0)
+		                   : cstr_view(nullptr));
 	for (i = 0; !e && i < n; ++i)
 		e = code_word(words, CXI_KEY_WARNING, jb_view(jb_at(warnings, i)));
-	e = e ? e : code_word(words, CXI_KEY_CDB, cstr_view(cfg->codes[r]));
-	e = e ? e : code_word(words, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
+	if (!e)
+		e = code_word(words, CXI_KEY_CDB, cstr_view(cfg->codes[r]));
+	if (!e)
+		e = code_word(words, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
 	return e ? e : code_word(words, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
 	                         ? CSTR_VIEW("1") : cstr_view(nullptr));
 }

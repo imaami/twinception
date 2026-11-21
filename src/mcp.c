@@ -1815,7 +1815,8 @@ static int
 mcp_req_flush (struct mcp_req *req,
                int             e)
 {
-	e = e ? e : mcp_req_write(req, buf_peek(&req->reply));
+	if (!e)
+		e = mcp_req_write(req, buf_peek(&req->reply));
 	buf_clear(&req->reply);
 	return e;
 }
@@ -1869,7 +1870,8 @@ mcp_req_close (struct mcp_req *req,
 	mcp_req_unwait(req);
 	mcp_req_drop(req);
 	loop_timer_stop(req->mcp->loop, &req->timer);
-	e = e ? e : mcp_req_head(req, status, fields);
+	if (!e)
+		e = mcp_req_head(req, status, fields);
 	if (e) {
 		mcp_req_abort(req, e);
 		return;
@@ -3296,8 +3298,9 @@ mcp_req_promote (struct mcp_req     *req,
                  struct ledger_task *task)
 {
 	int e = mcp_req_open(req, FRAG("\"result\":"));
-	e = e ? e : mcp_req_task_put(req, task, FRAG("task"), ledger_statuses[LEDGER_WORKING],
-	                             task->created, CSTR_VIEW("null"));
+	if (!e)
+		e = mcp_req_task_put(req, task, FRAG("task"), ledger_statuses[LEDGER_WORKING],
+		                     task->created, CSTR_VIEW("null"));
 	if (!mcp_req_detach(req, task, e ? e : mcp_req_put(req, &FRAG("}}"), 1)))
 		LOG(LOG_VERBOSE, "tool call %s from %s became task %s after %.1f s",
 		    mcp_slot_tool(&req->self)->name.data, mcp_req_client(req), task->id.hex,
@@ -4832,7 +4835,8 @@ mcp_agenda_wait_end (struct mcp_agenda *a)
 	else if (!dstr_printf(&slot->answer, "No job ended and no timer fired in %" PRIu32 " s.",
 	                      a->waited))
 		e = ENOMEM;
-	e = e ? e : mcp_agenda_arm(a);
+	if (!e)
+		e = mcp_agenda_arm(a);
 	if (e) {
 		mcp_req_fail(a->req, e);
 		return;
@@ -6490,7 +6494,8 @@ mcp_slot_attach (struct mcp_slot  *slot,
 		return ENOTSUP;
 	if (file.data) {
 		e = mcp_req_fits(req, file.len, out);
-		e = e ? e : mcp_slot_post_file(slot, file);
+		if (!e)
+			e = mcp_slot_post_file(slot, file);
 		if (e == EAGAIN)
 			return cstr_view_cat(CSTR_VIEW("askai cannot upload the note now. Too many "
 			                               "requests are under way. Try again later."),
@@ -6580,11 +6585,12 @@ mcp_req_compact (struct mcp_req   *req,
 	struct dstr *d = &req->self.answer;
 	dstr_clear(d);
 	int e = cstr_view_cat(head, d);
-	e = e ? e : cstr_view_cat(summary, d);
-	if (lent & l->of[KIND_FINDINGS])
-		e = e ? e : cstr_view_cat(CSTR_VIEW("\n\n" NOTICE_TASK), d);
-	else if (!lent)
-		e = e ? e : cstr_view_cat(CSTR_VIEW("\n"), d);
+	if (!e)
+		e = cstr_view_cat(summary, d);
+	if (!e && lent & l->of[KIND_FINDINGS])
+		e = cstr_view_cat(CSTR_VIEW("\n\n" NOTICE_TASK), d);
+	else if (!e && !lent)
+		e = cstr_view_cat(CSTR_VIEW("\n"), d);
 	req->reminded = 0;
 	mcp_req_drop(req);
 	mcp_req_args_free(req, from, JOB_CALLS);
@@ -6964,9 +6970,11 @@ mcp_req_task_show (struct mcp_req     *req,
 		: FRAG("}"),
 	};
 	int e = mcp_req_open(req, FRAG("\"result\":"));
-	e = e ? e : mcp_req_task_put(req, task, FRAG("complete"), ledger_statuses[status],
-	                             updated_at, ttl);
-	e = e ? e : mcp_req_put(req, p, array_size(p));
+	if (!e)
+		e = mcp_req_task_put(req, task, FRAG("complete"), ledger_statuses[status],
+		                     updated_at, ttl);
+	if (!e)
+		e = mcp_req_put(req, p, array_size(p));
 	if (e || !whole) {
 		ledger_task_put(task);
 		mcp_req_close(req, 200, SPAN(STREAM_JSON_FIELD),

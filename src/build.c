@@ -461,7 +461,8 @@ build_callers (struct build const        *b,
 	if (late)
 		cxi_out_fmt(out, "- not searched: %zu translation unit%s (time limit)\n",
 		            late, util_s(late));
-	out->e = out->e ? out->e : rows.e ? rows.e : key.e ? key.e : only.e;
+	if (!out->e)
+		out->e = rows.e ? rows.e : key.e ? key.e : only.e;
 	cxi_out_fini(&only);
 	cxi_out_fini(&key);
 	cxi_out_fini(&rows);
