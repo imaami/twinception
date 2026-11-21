@@ -2491,8 +2491,9 @@ mcp_req_log_turn (struct mcp_req const *req,
 		[JOB_BUSY]      = "refused as busy",
 		[JOB_CANCELLED] = "cancelled",
 		[JOB_SUSPENDED] = "suspended",
+		[JOB_TEXT]      = "streamed",
 	};
-	static_assert(array_size(ends) == JOB_CANCELLED + 1);
+	static_assert(array_size(ends) == JOB_STATUSES);
 	if (log_threshold < LOG_VERBOSE)
 		return;
 	uint8_t status = job->status < array_size(ends) ? job->status : JOB_FAILED;

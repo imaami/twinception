@@ -73,16 +73,24 @@ enum evidence_kind : uint8_t {
 	EVIDENCE_KINDS
 };
 
-/** The forms of a reference (struct evidence_ref). The type is 16 bits
- *  wide so that struct evidence_ref ends without padding.
+/** The forms of a reference (struct evidence_ref). Each form is a
+ *  combination of three roles: EVIDENCE_REF_RANGES, the reference has line
+ *  ranges; EVIDENCE_REF_STORED, it names an evidence item of a finding;
+ *  EVIDENCE_REF_WHOLE, it names a finding, which is no evidence item and
+ *  takes no ranges. Without a role it names a tool call of the turn. The
+ *  type is 16 bits wide so that struct evidence_ref ends without padding.
  */
 enum evidence_form : uint16_t {
-	EVIDENCE_REF_CALL,        /**< cN */
-	EVIDENCE_REF_LINES,       /**< cN:A-B,C */
-	EVIDENCE_REF_ITEM,        /**< X#n/m */
-	EVIDENCE_REF_ITEM_LINES,  /**< X#n/m:A-B,C */
-	EVIDENCE_REF_FINDING,     /**< X#n, a finding, which is no evidence
-	                               item */
+	EVIDENCE_REF_RANGES = 1u << 0,
+	EVIDENCE_REF_STORED = 1u << 1,
+	EVIDENCE_REF_WHOLE  = 1u << 2,
+
+	EVIDENCE_REF_CALL       = 0,                    /**< cN */
+	EVIDENCE_REF_LINES      = EVIDENCE_REF_RANGES,  /**< cN:A-B,C */
+	EVIDENCE_REF_ITEM       = EVIDENCE_REF_STORED,  /**< X#n/m */
+	EVIDENCE_REF_ITEM_LINES = EVIDENCE_REF_STORED | EVIDENCE_REF_RANGES,
+	                                                /**< X#n/m:A-B,C */
+	EVIDENCE_REF_FINDING    = EVIDENCE_REF_WHOLE,   /**< X#n */
 };
 
 /** A reference of the evidence argument of a findings call. */

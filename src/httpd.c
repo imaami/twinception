@@ -1634,13 +1634,22 @@ httpd_conn_dechunk (struct httpd_conn *conn,
 	return httpd_conn_hold(conn, d.wr) ? 503 : 0;
 }
 
-/* What the connection's step does next. */
+/* What the connection's step does next. Each value is a combination of
+ * three roles. NEXT_OUTSIDE: the step waits for something that is no part
+ * of it, bytes of the client or the application. NEXT_LATER: the request
+ * goes on without new input, in a later step or once the application is
+ * done. NEXT_OVER: the connection takes no more requests.
+ */
 enum httpd_next {
-	NEXT_MORE,   /* go on */
-	NEXT_INPUT,  /* wait for input */
-	NEXT_YIELD,  /* wait for the next step */
-	NEXT_WAIT,   /* wait for the application */
-	NEXT_END,    /* no more requests */
+	NEXT_OUTSIDE = 1u << 0,
+	NEXT_LATER   = 1u << 1,
+	NEXT_OVER    = 1u << 2,
+
+	NEXT_MORE  = 0,                          /* go on */
+	NEXT_INPUT = NEXT_OUTSIDE,               /* wait for input */
+	NEXT_YIELD = NEXT_LATER,                 /* wait for the next step */
+	NEXT_WAIT  = NEXT_OUTSIDE | NEXT_LATER,  /* wait for the application */
+	NEXT_END   = NEXT_OVER,                  /* no more requests */
 };
 
 /* Take in what has come of the body, within the step's share: hand it to the
@@ -2035,7 +2044,7 @@ httpd_conn_wait (struct httpd_conn *conn,
 	if (held)
 		conn->events |= EPOLLIN;
 	bool waiting = !(wait & WAIT_AGAIN) && !held &&
-	               (starved || next == NEXT_WAIT || paused || blocked);
+	               (next & NEXT_OUTSIDE || paused || blocked);
 	if (waiting)
 		loop_unready(&conn->step);
 	else

@@ -155,16 +155,41 @@ job_call_size (struct job_call const *c)
 	return sizeof *c + c->id + c->name + c->extra + c->args;
 }
 
-/** How a job ended. */
+/** What the end of a job can mean. A job status is a combination of these
+ *  roles, so code asks one question of a status with one mask, and does
+ *  not list the statuses.
+ */
+enum job_end {
+	JOB_END_READ  = 1u << 0,  /**< the result is text for the caller to
+	                               read: an answer that was streamed, or
+	                               why there is none. Without this role
+	                               the result is the answer of the
+	                               upstream as it came, or empty. */
+	JOB_END_ABORT = 1u << 1,  /**< the job ended here without an answer,
+	                               so what the provider still runs for it
+	                               is cancelled */
+	JOB_END_AGAIN = 1u << 2,  /**< the same work can be asked for again:
+	                               nothing of it is lost */
+};
+
+/** How a job ended. A zeroed status is JOB_ANSWERED. */
 enum job_status {
-	JOB_ANSWERED,   /**< the result holds the upstream's answer, as it came */
-	JOB_TEXT,       /**< the result holds the text of a streamed answer */
-	JOB_FAILED,     /**< the result says why the upstream call failed */
-	JOB_BUSY,       /**< refused: too many jobs in flight, or queued for its
-	                     principal */
-	JOB_SUSPENDED,  /**< durable stream interrupted: poll to reattach from its journal */
-	JOB_CANCELLED,  /**< cancelled, or refused by a home that drains; the
+	JOB_ANSWERED  = 0,
+	                /**< the result holds the upstream's answer, as it came */
+	JOB_TEXT      = JOB_END_READ,
+	                /**< the result holds the text of a streamed answer */
+	JOB_CANCELLED = JOB_END_ABORT,
+	                /**< cancelled, or refused by a home that drains; the
 	                     result is empty */
+	JOB_FAILED    = JOB_END_ABORT | JOB_END_READ,
+	                /**< the result says why the upstream call failed */
+	JOB_BUSY      = JOB_END_AGAIN,
+	                /**< refused: too many jobs in flight, or queued for its
+	                     principal */
+	JOB_SUSPENDED = JOB_END_AGAIN | JOB_END_READ,
+	                /**< durable stream interrupted: poll to reattach from
+	                     its journal */
+	JOB_STATUSES,   /**< the number of statuses */
 };
 
 /** A piece of the immutable delta mailbox: this header, then len UTF-8 bytes. */

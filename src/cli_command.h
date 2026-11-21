@@ -36,11 +36,18 @@ enum cli_command_id {
 	CLI_COMMAND_COUNT,
 };
 
+/* What follows the name of a command. Each value is a combination of two
+ * roles: CLI_COMMAND_ARGS_TEXT, free text follows, a path or the arguments
+ * of a tool; CLI_COMMAND_ARGS_NAMED, the name of a tool follows.
+ */
 enum cli_command_args {
-	CLI_COMMAND_ARGS_NONE,
-	CLI_COMMAND_ARGS_FILE,
-	CLI_COMMAND_ARGS_TOOL,
-	CLI_COMMAND_ARGS_TOOL_CALL,
+	CLI_COMMAND_ARGS_TEXT  = 1u << 0,
+	CLI_COMMAND_ARGS_NAMED = 1u << 1,
+
+	CLI_COMMAND_ARGS_NONE      = 0,
+	CLI_COMMAND_ARGS_FILE      = CLI_COMMAND_ARGS_TEXT,
+	CLI_COMMAND_ARGS_TOOL      = CLI_COMMAND_ARGS_NAMED,
+	CLI_COMMAND_ARGS_TOOL_CALL = CLI_COMMAND_ARGS_NAMED | CLI_COMMAND_ARGS_TEXT,
 };
 
 enum cli_command_policy : uint64_t {

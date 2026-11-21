@@ -1130,7 +1130,7 @@ autocomplete_commands (struct autocomplete      *ac,
 		return 0;
 	struct autocomplete_token command_token = ac->tokens.items[0];
 	struct cli_command const *command = cli_command_find(cstr_view_slice(line, command_token.begin, command_token.end - command_token.begin));
-	if (!command || (command->args != CLI_COMMAND_ARGS_TOOL && command->args != CLI_COMMAND_ARGS_TOOL_CALL))
+	if (!command || !(command->args & CLI_COMMAND_ARGS_NAMED))
 		return 0;
 	if (index == 1 || ac->tokens.n == 1)
 		return autocomplete_tool_names(ac, line, current, prefix);

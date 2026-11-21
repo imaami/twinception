@@ -750,7 +750,7 @@ home_end (struct home      *home,
           enum job_status   status,
           _Atomic uint64_t *count)
 {
-	if ((status == JOB_CANCELLED || status == JOB_FAILED) &&
+	if (status & JOB_END_ABORT &&
 	    (!(job->asks & JOB_DURABLE) || job->recovery.flags & RECOVERY_CANCEL))
 		home_native_cancel(home, job);
 	if (!list_is_empty(&job->due))

@@ -100,15 +100,13 @@ evidence_ref_parse (struct evidence_ref *dest,
 	bool const colon = cstr_view_cut(&tail, ':', &head);
 	if (colon && evidence_ranges(dest, tail))
 		return EINVAL;
-	/* calls and items are the forms of a call and of an item, the first
-	 * without ranges and the second with ranges. */
-	static enum evidence_form const calls[] = { EVIDENCE_REF_CALL, EVIDENCE_REF_LINES };
-	static enum evidence_form const items[] = { EVIDENCE_REF_ITEM, EVIDENCE_REF_ITEM_LINES };
+	/* The role of a form with ranges, for a call and for an item. */
+	uint16_t const ranges = colon ? EVIDENCE_REF_RANGES : 0;
 	/* The head is the ID X#n or X#n/m, or cN. No member name is c and a
 	 * number, so cN is no ID. */
 	if (!finding_id_parse(&dest->id, head)) {
 		if (dest->id.item) {
-			dest->form = items[colon];
+			dest->form = EVIDENCE_REF_STORED | ranges;
 			return 0;
 		}
 		/* A finding is a reference only without ranges. */
@@ -121,7 +119,7 @@ evidence_ref_parse (struct evidence_ref *dest,
 	head = cstr_view_slice(head, 1, SIZE_MAX);
 	if (util_ordinal(&head, &dest->call) || head.len)
 		return EINVAL;
-	dest->form = calls[colon];
+	dest->form = EVIDENCE_REF_CALL | ranges;
 	return 0;
 }
 
@@ -717,7 +715,7 @@ evidence_recite (struct evidence           *dest,
 	if (why && len)
 		*why = '\0';
 	if (!dest || !lines || !ref || !why || !len ||
-	    (ref->form != EVIDENCE_REF_ITEM && ref->form != EVIDENCE_REF_ITEM_LINES))
+	    !(ref->form & EVIDENCE_REF_STORED))
 		return EINVAL;
 	char id[FINDING_ID_TEXT];
 	int e = evidence_parse_text(dest, record);

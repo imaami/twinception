@@ -1891,7 +1891,7 @@ findings_evidence (struct mcp_slot    *slot,
 			                   findings_session(slot)->agent.name);
 		struct evidence *item = &c->evidence.items[c->evidence.n++];
 		*item = evidence();
-		if (ref.form == EVIDENCE_REF_ITEM || ref.form == EVIDENCE_REF_ITEM_LINES) {
+		if (ref.form & EVIDENCE_REF_STORED) {
 			e = findings_cite_add(slot, &ref, c->evidence.n - 1, strict, why, len);
 			continue;
 		}
