@@ -449,7 +449,7 @@ job_fini (struct job *job)
 /** Set @p bit in @p word, and post @p msg to @p loop with a reference if
  *  that made the word non-zero.
  */
-static inline void
+static force_inline void
 job_post (struct job       *job,
           struct loop      *loop,
           struct msg       *msg,
@@ -461,6 +461,23 @@ job_post (struct job       *job,
 		ref_get(&job->refs);
 		loop_post(loop, msg);
 	}
+}
+
+static force_inline void
+job_post_to_front (struct job *job,
+                   uint32_t    bit)
+{
+	job_post(job, job->front, &job->to_front,
+	         &job->front_bits, bit);
+}
+
+static force_inline void
+job_post_to_home (struct job  *job,
+                  struct loop *loop,
+                  uint32_t     bit)
+{
+	job_post(job, loop, &job->to_home,
+	         &job->home_bits, bit);
 }
 
 #endif /* ASKAI_SRC_JOB_H_ */

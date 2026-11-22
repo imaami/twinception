@@ -1559,10 +1559,11 @@ mcp_req_drop (struct mcp_req *req)
 	}
 	req->job = nullptr;
 	flag_clear(&req->flags, MCP_REQ_DELTA_PENDING);
-	job_post(job, mcp->home, &job->to_home, &job->home_bits,
-	         (flag_any(mcp->flags, MCP_END) || flag_any(req->flags, MCP_REQ_JOB_SUSPENDED)) &&
-	         job->asks & JOB_ASK_DURABLE
-	         ? JOB_SUSPEND : JOB_CANCEL);
+	job_post_to_home(job, mcp->home,
+	                 (flag_any(mcp->flags, MCP_END) ||
+	                  flag_any(req->flags, MCP_REQ_JOB_SUSPENDED)) &&
+	                 job->asks & JOB_ASK_DURABLE
+	                 ? JOB_SUSPEND : JOB_CANCEL);
 	if (!req->call.bits) {
 		if (ref_put(&job->refs, 1))
 			mcp_shelve_job(mcp, job);
@@ -2347,7 +2348,7 @@ mcp_req_delta (struct mcp_req *req)
 	if (flag_any(req->flags, MCP_REQ_BLOCKED))
 		return;
 	flag_clear(&req->flags, MCP_REQ_DELTA_PENDING);
-	job_post(job, req->mcp->home, &job->to_home, &job->home_bits, JOB_DELTA_CONSUMED);
+	job_post_to_home(job, req->mcp->home, JOB_DELTA_CONSUMED);
 	if (flag_any(req->flags, MCP_REQ_TICK_PENDING))
 		loop_ready_bulk(loop, &req->step);
 }
@@ -2697,7 +2698,7 @@ mcp_on_job (struct loop *loop,
 			flag_set(&req->flags, MCP_REQ_DELTA_PENDING);
 			loop_ready_bulk(loop, &req->step);
 		} else {
-			job_post(job, self->home, &job->to_home, &job->home_bits, JOB_DELTA_CONSUMED);
+			job_post_to_home(job, self->home, JOB_DELTA_CONSUMED);
 		}
 	}
 	if (!(bits & JOB_DONE)) {
@@ -3037,12 +3038,13 @@ mcp_req_submit (struct mcp_req *req)
 	req->place = 0;
 	req->turn_at = loop_clock();
 	++req->turn;
-	/* Two references, one for this loop and one for home. job_post() adds
-	 * the reference of the message. */
+	/* Two references, one for this loop and one for home.
+	 * job_post_to_home() adds the reference of the message.
+	 */
 	atomic_store_explicit(&job->refs, 2, memory_order_relaxed);
 	req->job = job;
 	req->phase = PHASE_CALL;
-	job_post(job, mcp->home, &job->to_home, &job->home_bits, JOB_START);
+	job_post_to_home(job, mcp->home, JOB_START);
 	return 0;
 }
 

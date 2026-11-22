@@ -504,7 +504,7 @@ home_job_progress (struct job *job,
 {
 	hist_set(&job->progress, progress);
 	if (job->asks & JOB_ASK_PROGRESS && !flag_any(job->flags, HOME_JOB_DROPPED))
-		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_PROGRESS_CHANGED);
+		job_post_to_front(job, JOB_PROGRESS_CHANGED);
 }
 
 /* Take @p job off its principal's queue, the jobs behind it each a place
@@ -583,20 +583,21 @@ home_job_end (struct job      *job,
 		flag_set(&job->recovery.flags, HOME_RECOVERY_REPORT_PENDING);
 		return;
 	}
-	switch (flag_get(job->flags, HOME_JOB_DELTA_PUBLISHED | HOME_JOB_DROPPED)) {
+	switch (flag_get(job->flags, HOME_JOB_DELTA_PUBLISHED
+	                           | HOME_JOB_DROPPED)) {
 	case HOME_JOB_DELTA_PUBLISHED:
 		flag_set(&job->flags, HOME_JOB_REPORT_PENDING);
 		return;
 	case 0:
 		if (status == JOB_CANCELLED)
 			home_job_drop_answer(job);
-		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DONE);
+		job_post_to_front(job, JOB_DONE);
 		return;
 	}
 	/* HOME_JOB_DROPPED: the front reads neither the mailbox nor the result.
 	 */
 	home_job_drop_answer(job);
-	job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DONE);
+	job_post_to_front(job, JOB_DONE);
 	home_job_put(job, 1);
 }
 
@@ -2249,7 +2250,7 @@ home_take (struct home        *home,
 		home_job_unpersisted(job);
 	if (!flag_any(job->flags, HOME_JOB_DROPPED) && buf_peek(&job->delta).len) {
 		flag_set(&job->flags, HOME_JOB_DELTA_PUBLISHED);
-		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DELTA_PUBLISHED);
+		job_post_to_front(job, JOB_DELTA_PUBLISHED);
 	}
 	return e;
 }
