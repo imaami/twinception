@@ -465,7 +465,7 @@ test_caps (struct ledger *l)
 	for (; n < LEDGER_RUNNING; ++n) {
 		t[n] = test_open(l, A, LEDGER_JOB, &e);
 		CHECK(t[n] && !e && t[n]->kind == LEDGER_JOB && t[n]->tool == 5 &&
-		      !(atomic_load(&t[n]->state) & LEDGER_TOLD));
+		      !(atomic_load(&t[n]->state) & LEDGER_REPORTED));
 	}
 	CHECK(!test_open(l, A, LEDGER_JOB, &e) && e == EBUSY);
 	CHECK(atomic_load(&m->refused) == 1 && !atomic_load(&m->full));
@@ -713,7 +713,7 @@ test_waits (struct ledger *l)
 	struct ledger_look look;
 	CHECK(!ledger_tell(l, w[1], nullptr, 0, &look) && look.n_tasks == 2 &&
 	      look.tasks[0] == t[0] && look.tasks[1] == t[1] && !look.n_timers &&
-	      look.due == UINT64_MAX && atomic_load(&t[0]->state) & LEDGER_TOLD &&
+	      look.due == UINT64_MAX && atomic_load(&t[0]->state) & LEDGER_REPORTED &&
 	      atomic_load(&t[1]->refs) == 3);
 	ledger_look_put(&look);
 	CHECK(!look.n_tasks && atomic_load(&t[1]->refs) == 2);

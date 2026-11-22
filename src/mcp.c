@@ -32,23 +32,23 @@
  * job. A request that goes while it waits cancels its job, freeing its
  * handle.
  *
- * A tool call answers on an event stream (SSE) when the client accepts one
- * and its era has them (all but 2024-11-05): id-less data: events, and a ':'
+ * A tool call answers on an event stream (SSE) when the client accepts one and
+ * its era has them (all but 2024-11-05): id-less data: events, and a ':'
  * comment every keepalive seconds while the upstream works. A call whose
  * params._meta has a progressToken gets notifications/progress on its event
- * stream while it waits, at most one each PROGRESS_NS, as home's PROGRESS
- * messages say how far it is: its place in its principal's queue, then the
- * chunks of its answer, which home reads from a streamed answer into its
- * text, so that the request only escapes that into the reply. An ask call
- * with params._meta.askai.stream true also receives notifications/askai/delta:
- * bounded text or reasoning pieces copied from an immutable job mailbox.
- * Home waits for its acknowledgment. The transcript writer stores decoded
- * reasoning independently of these transport notifications. Closing the
- * stream, which in HTTP/1.1 means closing the connection or its sending side,
- * cancels the call in every era. The caller of a call can also cancel it
- * with notifications/cancelled, on any connection of any loop.
- * mcp_req_cancel() looks the call up in the roster (src/roster.h) by the
- * caller, the session and the request id.
+ * stream while it waits, at most one each PROGRESS_NS, as home's
+ * JOB_PROGRESS_CHANGED messages say how far it is: its place in its principal's
+ * queue, then the chunks of its answer, which home reads from a streamed answer
+ * into its text, so that the request only escapes that into the reply. An ask
+ * call with params._meta.askai.stream true also receives
+ * notifications/askai/delta: bounded text or reasoning pieces copied from an
+ * immutable job mailbox. Home waits for its acknowledgment. The transcript
+ * writer stores decoded reasoning independently of these transport
+ * notifications. Closing the stream, which in HTTP/1.1 means closing the
+ * connection or its sending side, cancels the call in every era. The caller of
+ * a call can also cancel it with notifications/cancelled, on any connection of
+ * any loop. mcp_req_cancel() looks the call up in the roster (src/roster.h) by
+ * the caller, the session and the request id.
  *
  * The man, git and notes tools are built-in plugins (src/plugin.h). Their
  * calls go through the call API (src/mcp.h). The three tools are in
@@ -557,42 +557,82 @@ static void mcp_agenda_destroy (struct mcp_agenda **p_agenda);
  * alone reads and writes them.
  */
 enum mcp_req_flag : uint32_t {
-	REQ_MODERN         = FLAG_OWN(0),   /* the client is of the modern era */
-	REQ_SSE_OK         = FLAG_OWN(1),   /* the client takes an event
-	                                       stream */
-	REQ_SSE            = FLAG_OWN(2),   /* the response is one */
-	REQ_BLOCKED        = FLAG_OWN(3),   /* waiting for on_writable() */
-	REQ_PROGRESS       = FLAG_OWN(4),   /* the job's progress moved on */
-	REQ_TICK           = FLAG_OWN(5),   /* a keep-alive or notification may
-	                                       be due */
-	REQ_DELTA          = FLAG_OWN(6),   /* the job's immutable mailbox is
-	                                       published */
-	REQ_LISTED         = FLAG_OWN(8),   /* the list that the turn's items go
-	                                       in has one */
-	REQ_BRANCH         = FLAG_OWN(9),   /* notes are on the caller's
-	                                       branch */
-	REQ_FILING         = FLAG_OWN(10),  /* the turns attached a file to the
-	                                       conversation since it last began
-	                                       again from the prompt */
-	REQ_STOPPED        = FLAG_OWN(11),  /* the turns ran out with tools
-	                                       called */
-	REQ_CUT            = FLAG_CUT,      /* the turn's answer reached the
-	                                       output token limit */
-	REQ_LOGGED         = FLAG_OWN(13),  /* the end of its tool call is
-	                                       logged */
-	REQ_WITHDRAWN      = FLAG_OWN(14),  /* a notifications/cancelled ended
-	                                       it */
-	REQ_SUSPENDED      = FLAG_OWN(15),  /* its job was suspended, to
-	                                       resume */
-	REQ_RECOVERING     = FLAG_OWN(16),  /* its next job resumes from the
-	                                       journal's records */
-	REQ_DETACH_PENDING = FLAG_OWN(17),  /* it becomes a job once its first
-	                                       checkpoint is durable */
-	REQ_ARCHIVED_END   = FLAG_OWN(18),  /* its end record is written */
-	REQ_RERUN          = FLAG_OWN(19),  /* the calls of its turn may have
-	                                       run before askai restarted */
-	REQ_FINDINGS       = FLAG_OWN(20),  /* the own word of req->self is the
-	                                       call of findings_prompt() */
+	/* The client is of the modern era. */
+	MCP_REQ_MODERN = FLAG_OWN(0),
+
+	/* The client takes an event stream. */
+	MCP_REQ_SSE_OK = FLAG_OWN(1),
+
+	/* The response is an event stream. */
+	MCP_REQ_SSE = FLAG_OWN(2),
+
+	/* The HTTP server reported too much pending output. The request writes
+	 * nothing to the client until on_writable() is called.
+	 */
+	MCP_REQ_BLOCKED = FLAG_OWN(3),
+
+	/* JOB_PROGRESS_CHANGED arrived, and the request has not yet sent the
+	 * progress notification to the client.
+	 */
+	MCP_REQ_PROGRESS_PENDING = FLAG_OWN(4),
+
+	/* A timer or a callback set the bit: mcp_req_tick() runs in the next
+	 * step of the request.
+	 */
+	MCP_REQ_TICK_PENDING = FLAG_OWN(5),
+
+	/* JOB_DELTA_PUBLISHED arrived, and the request has not yet written
+	 * every piece of the mailbox to the client.
+	 */
+	MCP_REQ_DELTA_PENDING = FLAG_OWN(6),
+
+	/* The list that the items of the turn go in already contains an item.
+	 */
+	MCP_REQ_LIST_NONEMPTY = FLAG_OWN(8),
+
+	/* The branch of the caller contains notes or findings of the caller. */
+	MCP_REQ_BRANCH_NONEMPTY = FLAG_OWN(9),
+
+	/* The turns attached a file to the conversation since it last began
+	 * again from the prompt.
+	 */
+	MCP_REQ_FILE_ATTACHED = FLAG_OWN(10),
+
+	/* The turns ran out while the answer still asked for tool calls. */
+	MCP_REQ_TURNS_EXHAUSTED = FLAG_OWN(11),
+
+	/* The answer of the last turn reached the output token limit. */
+	MCP_REQ_TRUNCATED = FLAG_CUT,
+
+	/* The end of the tool call is logged. */
+	MCP_REQ_END_LOGGED = FLAG_OWN(13),
+
+	/* A notifications/cancelled of the caller ended the request. */
+	MCP_REQ_WITHDRAWN = FLAG_OWN(14),
+
+	/* The job of the request ended as JOB_SUSPENDED, so the call can be
+	 * resumed.
+	 */
+	MCP_REQ_JOB_SUSPENDED = FLAG_OWN(15),
+
+	/* The request continues an interrupted ask call, and its next job is
+	 * built from the records of the journal.
+	 */
+	MCP_REQ_RECOVERY_PENDING = FLAG_OWN(16),
+
+	/* The request becomes a job once its first checkpoint is durable. */
+	MCP_REQ_DETACH_PENDING = FLAG_OWN(17),
+
+	/* The end record of the request is queued for the journal. */
+	MCP_REQ_END_ARCHIVED = FLAG_OWN(18),
+
+	/* The request works on the turn that was under way when askai stopped,
+	 * so the calls of the turn may have run before.
+	 */
+	MCP_REQ_RERUNNING = FLAG_OWN(19),
+
+	/* The own word of req->self is the call of findings_prompt(). */
+	MCP_REQ_FINDINGS_READING = FLAG_OWN(20),
 };
 
 /** A request, from its stream's head to its end or cancellation. */
@@ -735,7 +775,7 @@ struct mcp_req {
 	uint16_t             next;       /* the splice to write next, or piece */
 	uint8_t              phase;      /* enum mcp_phase */
 	uint8_t              method;     /* enum metrics_method */
-	uint8_t              asks;       /* enum job_ask: JOB_BACKGROUND for
+	uint8_t              asks;       /* enum job_ask: JOB_ASK_BACKGROUND for
 	                                    test_task's prompt and for a
 	                                    client's job */
 	uint8_t              forced;     /* compactions askai made since a turn
@@ -782,7 +822,7 @@ struct mcp_agenda {
 
 /* The bit of mcp.flags. */
 enum {
-	MCP_DRAINING = FLAG_END,  /* mcp_drain() or mcp_destroy() was called */
+	MCP_END = FLAG_END,  /* mcp_drain() or mcp_destroy() was called */
 };
 
 struct mcp {
@@ -816,7 +856,7 @@ struct mcp {
 	                                         on this loop */
 	uint64_t                  asked;      /* the number of ask calls begun
 	                                         on this loop, for the log */
-	struct flag64             flags;      /* MCP_DRAINING */
+	struct flag64             flags;      /* MCP_END */
 	struct tool_scratch       scratch;    /* the scratch text of the loop
 	                                         (mcp_slot_scratch()) */
 	char                      told[TOOL_TELL_MAX];
@@ -1430,9 +1470,9 @@ mcp_req_log_call (struct mcp_req   *req,
 {
 	static struct log_site sites[2];
 	enum log_level level = failed ? LOG_WARN : LOG_VERBOSE;
-	if (flag_any(req->flags, REQ_LOGGED) || req->self.tool == TOOL_MAX)
+	if (flag_any(req->flags, MCP_REQ_END_LOGGED) || req->self.tool == TOOL_MAX)
 		return;
-	flag_set(&req->flags, REQ_LOGGED);
+	flag_set(&req->flags, MCP_REQ_END_LOGGED);
 	if (level > log_threshold)
 		return;
 	char ask[128] = "";
@@ -1440,7 +1480,7 @@ mcp_req_log_call (struct mcp_req   *req,
 		util_format(ask, sizeof ask, "; ask call %" PRIu64 ".%" PRIu64 ", %" PRIu32
 		            " turn%s, %" PRIu32 " tool call%s%s", req->mcp->loop->id, req->asked,
 		            req->turn, util_s(req->turn), req->traced, util_s(req->traced),
-		            flag_any(req->flags, REQ_STOPPED) ? ", stopped at --max-turns" : "");
+		            flag_any(req->flags, MCP_REQ_TURNS_EXHAUSTED) ? ", stopped at --max-turns" : "");
 	char record[sizeof "; task " + HEXID_DIGITS] = "";
 	if (req->task)
 		util_format(record, sizeof record, "; %s %s", ledger_kinds[req->task->kind],
@@ -1518,10 +1558,10 @@ mcp_req_drop (struct mcp_req *req)
 		return;
 	}
 	req->job = nullptr;
-	flag_clear(&req->flags, REQ_DELTA);
+	flag_clear(&req->flags, MCP_REQ_DELTA_PENDING);
 	job_post(job, mcp->home, &job->to_home, &job->home_bits,
-	         (flag_any(mcp->flags, MCP_DRAINING) || flag_any(req->flags, REQ_SUSPENDED)) &&
-	         job->asks & JOB_DURABLE
+	         (flag_any(mcp->flags, MCP_END) || flag_any(req->flags, MCP_REQ_JOB_SUSPENDED)) &&
+	         job->asks & JOB_ASK_DURABLE
 	         ? JOB_SUSPEND : JOB_CANCEL);
 	if (!req->call.bits) {
 		if (ref_put(&job->refs, 1))
@@ -1546,7 +1586,7 @@ mcp_req_wait (struct mcp_req *req)
 		return;
 	if (!req->hook.next)
 		list_append(&mcp->calls, &req->hook);
-	if (flag_any(mcp->flags, MCP_DRAINING))
+	if (flag_any(mcp->flags, MCP_END))
 		loop_ready_bulk(mcp->loop, &mcp->drain);
 }
 
@@ -1578,7 +1618,7 @@ mcp_req_calls_end (struct mcp_req *req)
 {
 	req->calls_base += req->n_calls;
 	req->n_calls = 0;
-	flag_clear(&req->flags, REQ_RERUN);
+	flag_clear(&req->flags, MCP_REQ_RERUNNING);
 	for (size_t k = 0; k < JOB_CALLS; ++k)
 		buf_fini(&req->calls[k]);
 }
@@ -1612,7 +1652,7 @@ mcp_req_status (struct mcp_req const *req)
 	struct cstr_view const reply = task ? cstr_view_dstr(&task->result) : cstr_view(nullptr);
 	bool failed = task && (!task->size || reply.len != task->size ||
 	                      cstr_view_starts(reply, CSTR_VIEW("\"error\":")));
-	return req->error == ECANCELED || flag_any(req->flags, REQ_WITHDRAWN) ? LEDGER_CANCELLED
+	return req->error == ECANCELED || flag_any(req->flags, MCP_REQ_WITHDRAWN) ? LEDGER_CANCELLED
 	     : req->error || failed ? LEDGER_FAILED : LEDGER_COMPLETED;
 }
 
@@ -1665,7 +1705,7 @@ mcp_req_finish (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
 	loop_timer_stop(mcp->loop, &req->timer);
-	flag_clear(&req->flags, REQ_TICK);
+	flag_clear(&req->flags, MCP_REQ_TICK_PENDING);
 	/* Its job, slots, handles and agenda go first, so that no work of the
 	 * call reaches it while its end is written. */
 	mcp_req_drop(req);
@@ -1698,7 +1738,7 @@ mcp_req_finish (struct mcp_req *req)
 		struct hexid const id = req->task->id;
 		mcp_req_record_end(req, &req->task, mcp_req_status(req));
 		list_del(&req->task_hook);
-		if (flag_any(req->flags, REQ_SUSPENDED))
+		if (flag_any(req->flags, MCP_REQ_JOB_SUSPENDED))
 			(void)ledger_remove(mcp->st->ledger, req->owner, &id);
 	}
 	ledger_task_put(req->shown);
@@ -1736,8 +1776,8 @@ mcp_req_abort (struct mcp_req *req,
 	 * callback reaches the call then. */
 	if (req->phase != PHASE_END)
 		req->error = e;
-	else if (!flag_any(req->mcp->flags, MCP_DRAINING) &&
-	         !flag_any(req->mcp->loop->flags, LOOP_EXIT))
+	else if (!flag_any(req->mcp->flags, MCP_END) &&
+	         !flag_any(req->mcp->loop->flags, LOOP_END))
 		return;
 	mcp_req_finish(req);
 }
@@ -1781,7 +1821,7 @@ mcp_req_write (struct mcp_req *req,
 	int e = req->s->ops->data(req->s, bytes);
 	if (e != EAGAIN)
 		return e;
-	flag_set(&req->flags, REQ_BLOCKED);
+	flag_set(&req->flags, MCP_REQ_BLOCKED);
 	return 0;
 }
 
@@ -1791,7 +1831,7 @@ mcp_req_write (struct mcp_req *req,
 static void
 mcp_req_send (struct mcp_req *req)
 {
-	if (flag_any(req->flags, REQ_BLOCKED))
+	if (flag_any(req->flags, MCP_REQ_BLOCKED))
 		return;
 	struct loop *loop = req->mcp->loop;
 	struct span reply = buf_peek(&req->reply);
@@ -1805,7 +1845,7 @@ mcp_req_send (struct mcp_req *req)
 	buf_consume(&req->reply, n);
 	if (n == reply.len)
 		mcp_req_finish(req);
-	else if (!flag_any(req->flags, REQ_BLOCKED))
+	else if (!flag_any(req->flags, MCP_REQ_BLOCKED))
 		loop_ready_bulk(loop, &req->step);
 }
 
@@ -1828,8 +1868,9 @@ mcp_req_head (struct mcp_req *req,
               struct span     fields)
 {
 	struct stream *s = req->s;
-	return flag_any(req->flags, REQ_SSE) ? mcp_req_put(req, &FRAG("\n\n"), 1)
-	                                     : s->ops->head(s, status, fields, buf_peek(&req->reply).len);
+	return flag_any(req->flags, MCP_REQ_SSE)
+	       ? mcp_req_put(req, &FRAG("\n\n"), 1)
+	       : s->ops->head(s, status, fields, buf_peek(&req->reply).len);
 }
 
 /* Send the reply at once, unless making it failed with @p e, and empty
@@ -1869,7 +1910,7 @@ mcp_req_open (struct mcp_req   *req,
 		id[2] = FRAG(",");
 	}
 	struct mcp_piece const p[] = {
-		flag_any(req->flags, REQ_SSE) ? FRAG("data: ") : FRAG(""),
+		flag_any(req->flags, MCP_REQ_SSE) ? FRAG("data: ") : FRAG(""),
 		FRAG("{\"jsonrpc\":\"2.0\","),
 		id[0],
 		id[1],
@@ -1975,7 +2016,7 @@ mcp_req_fail (struct mcp_req *req,
 static bool
 mcp_req_drained (struct mcp_req *req)
 {
-	if (!flag_any(req->mcp->flags, MCP_DRAINING))
+	if (!flag_any(req->mcp->flags, MCP_END))
 		return false;
 	mcp_req_fail(req, ESHUTDOWN);
 	return true;
@@ -2019,15 +2060,17 @@ mcp_req_tool_open (struct mcp_req   *req,
 static int
 mcp_req_trace_put (struct mcp_req *req)
 {
-	if (!req->lent || (!dstr_len(&req->trace) && !flag_any(req->flags, REQ_BRANCH | REQ_STOPPED)))
+	if (!req->lent ||
+	    (!dstr_len(&req->trace) &&
+	     !flag_any(req->flags, MCP_REQ_BRANCH_NONEMPTY | MCP_REQ_TURNS_EXHAUSTED)))
 		return mcp_req_put(req, &FRAG("\"}"), 1);
 	static_assert(TRACE_MAX == 48, "update the first line of the trace");
 	UTIL_TEXT(256) tail = {};
-	if (flag_any(req->flags, REQ_STOPPED))
+	if (flag_any(req->flags, MCP_REQ_TURNS_EXHAUSTED))
 		(void)util_text_printf(&tail, "The other AI was still calling tools at the limit "
 		                       "of %" PRIu32 " turns.\n", req->turn);
 	struct member_session const *session = member_registry_session(req->mcp->st->members);
-	if (flag_any(req->flags, REQ_BRANCH)) {
+	if (flag_any(req->flags, MCP_REQ_BRANCH_NONEMPTY)) {
 		(void)util_text_printf(&tail, "%s wrote in the session.",
 		                       session ? session->agent.name : "The agent");
 		/* The argument conversation needs notes (mcp_req_ask()). */
@@ -2066,7 +2109,7 @@ mcp_req_tool_close (struct mcp_req *req)
 		req->structured.len ? FRAG(",\"structuredContent\":") : FRAG(""),
 		BYTES(req->structured),
 		flag_how(req->self.flags) == FLAG_FAILED ? FRAG(",\"isError\":true") : FRAG(""),
-		flag_any(req->flags, REQ_MODERN) && !req->task ? DSTR(&st->modern_tail) : FRAG("}"),
+		flag_any(req->flags, MCP_REQ_MODERN) && !req->task ? DSTR(&st->modern_tail) : FRAG("}"),
 		FRAG("}"),
 	};
 	int e = mcp_req_trace_put(req);
@@ -2240,9 +2283,10 @@ mcp_req_notify (struct mcp_req   *req,
 	req->next_note = value + 1;
 }
 
-/* Publish text from the immutable mailbox in bounded UTF-8 pieces. Home
- * cannot change it, advance its parser or deliver DONE before the DRAIN
- * acknowledgment. Transport backpressure therefore also bounds the mailbox.
+/* Publish text from the immutable mailbox in bounded UTF-8 pieces. Home cannot
+ * change it, advance its parser or deliver JOB_DONE before the
+ * JOB_DELTA_CONSUMED acknowledgment. Transport backpressure therefore also
+ * bounds the mailbox.
  */
 static void
 mcp_req_delta (struct mcp_req *req)
@@ -2258,7 +2302,7 @@ mcp_req_delta (struct mcp_req *req)
 	char digits[UTIL_DECIMAL];
 	struct cstr_view const turn = util_decimal(digits + sizeof digits, req->turn, 0);
 	while (req->delta_at < bytes.len) {
-		if (flag_any(req->flags, REQ_BLOCKED))
+		if (flag_any(req->flags, MCP_REQ_BLOCKED))
 			return;
 		struct job_delta header = {};
 		memcpy(&header, bytes.ptr + req->delta_at, sizeof header);
@@ -2300,11 +2344,11 @@ mcp_req_delta (struct mcp_req *req)
 			return;
 		}
 	}
-	if (flag_any(req->flags, REQ_BLOCKED))
+	if (flag_any(req->flags, MCP_REQ_BLOCKED))
 		return;
-	flag_clear(&req->flags, REQ_DELTA);
-	job_post(job, req->mcp->home, &job->to_home, &job->home_bits, JOB_DRAIN);
-	if (flag_any(req->flags, REQ_TICK))
+	flag_clear(&req->flags, MCP_REQ_DELTA_PENDING);
+	job_post(job, req->mcp->home, &job->to_home, &job->home_bits, JOB_DELTA_CONSUMED);
+	if (flag_any(req->flags, MCP_REQ_TICK_PENDING))
 		loop_ready_bulk(loop, &req->step);
 }
 
@@ -2319,11 +2363,11 @@ mcp_req_progress (struct mcp_req *req)
 {
 	uint64_t progress = atomic_load_explicit(&req->job->progress,
 	                                         memory_order_relaxed);
-	uint32_t place = (uint32_t)progress & ~JOB_THINKING;
+	uint32_t place = (uint32_t)progress & ~JOB_PROGRESS_THINKING;
 	uint32_t tokens = (uint32_t)(progress >> 32);
 	if (place > req->place)
 		req->place = place;
-	flag_clear(&req->flags, REQ_PROGRESS);
+	flag_clear(&req->flags, MCP_REQ_PROGRESS_PENDING);
 	/* Queued, a job has no tokens; running, no place. */
 	uint64_t value = req->base + (req->place - place) + tokens;
 	if (value < req->next_note)
@@ -2335,7 +2379,7 @@ mcp_req_progress (struct mcp_req *req)
 		(void)util_text_printf(&text, "queued, position %" PRIu32, place);
 	else
 		(void)util_text_printf(&text, "%s, %" PRIu32 " tokens",
-		                       progress & JOB_THINKING ? "thinking" : "generating", tokens);
+		                       progress & JOB_PROGRESS_THINKING ? "thinking" : "generating", tokens);
 	mcp_req_notify(req, value, util_text_view(&text), false);
 }
 
@@ -2347,7 +2391,7 @@ static void
 mcp_req_notify_tool (struct mcp_req *req,
                      char const     *tool)
 {
-	if (!req->token || flag_get(req->flags, REQ_SSE | REQ_BLOCKED) != REQ_SSE)
+	if (!req->token || flag_get(req->flags, MCP_REQ_SSE | MCP_REQ_BLOCKED) != MCP_REQ_SSE)
 		return;
 	char text[64];
 	mcp_req_notify(req, req->next_note, util_format_view(text, sizeof text, "turn %" PRIu32
@@ -2364,8 +2408,8 @@ mcp_req_arm (struct mcp_req *req)
 {
 	uint64_t const note = req->noted + PROGRESS_NS;
 	uint64_t next = req->ping_at;
-	switch (flag_get(req->flags, REQ_PROGRESS | REQ_BLOCKED)) {
-	case REQ_PROGRESS:
+	switch (flag_get(req->flags, MCP_REQ_PROGRESS_PENDING | MCP_REQ_BLOCKED)) {
+	case MCP_REQ_PROGRESS_PENDING:
 		next = note < next ? note : next;
 		[[fallthrough]];
 	case 0:
@@ -2393,7 +2437,7 @@ mcp_req_tick (struct mcp_req *req)
 {
 	struct loop *loop = req->mcp->loop;
 	uint32_t keepalive = req->mcp->st->lim.keepalive;
-	bool const blocked = flag_any(req->flags, REQ_BLOCKED);
+	bool const blocked = flag_any(req->flags, MCP_REQ_BLOCKED);
 	if (!blocked && req->promote_at <= loop->now) {
 		req->promote_at = UINT64_MAX;
 		int e;
@@ -2410,9 +2454,9 @@ mcp_req_tick (struct mcp_req *req)
 		req->ping_at = loop->now + keepalive * NS;
 	}
 	if (req->phase != PHASE_CALL)
-		flag_clear(&req->flags, REQ_PROGRESS);
+		flag_clear(&req->flags, MCP_REQ_PROGRESS_PENDING);
 	/* The keep-alive can have blocked the stream. */
-	if (flag_get(req->flags, REQ_PROGRESS | REQ_BLOCKED) == REQ_PROGRESS &&
+	if (flag_get(req->flags, MCP_REQ_PROGRESS_PENDING | MCP_REQ_BLOCKED) == MCP_REQ_PROGRESS_PENDING &&
 	    req->noted + PROGRESS_NS <= loop->now)
 		mcp_req_progress(req);
 	mcp_req_arm(req);
@@ -2426,13 +2470,13 @@ static void
 mcp_req_progressed (struct mcp_req *req)
 {
 	struct loop *loop = req->mcp->loop;
-	if (!req->token || !flag_any(req->flags, REQ_SSE) || req->phase != PHASE_CALL)
+	if (!req->token || !flag_any(req->flags, MCP_REQ_SSE) || req->phase != PHASE_CALL)
 		return;
-	flag_set(&req->flags, REQ_PROGRESS);
+	flag_set(&req->flags, MCP_REQ_PROGRESS_PENDING);
 	uint64_t due = req->noted + PROGRESS_NS;
 	if (due <= loop->now ||
 	    loop_timer_set(loop, &req->timer, due < req->timer.due ? due : req->timer.due)) {
-		flag_set(&req->flags, REQ_TICK);
+		flag_set(&req->flags, MCP_REQ_TICK_PENDING);
 		loop_ready(loop, &req->step);
 	}
 }
@@ -2488,7 +2532,7 @@ static bool
 mcp_req_refit (struct mcp_req   *req,
                struct cstr_view  why)
 {
-	if (flag_any(req->flags, REQ_FILING))
+	if (flag_any(req->flags, MCP_REQ_FILE_ATTACHED))
 		uploads_forget(req->mcp->st->uploads, req->owner);
 	return req->turn > 1 && !req->forced && mcp_overflowed(why);
 }
@@ -2589,7 +2633,7 @@ mcp_req_job_done (struct mcp_req *req)
 		mcp_req_fail(req, ESHUTDOWN);
 		return;
 	case JOB_SUSPENDED:
-		flag_set(&req->flags, REQ_SUSPENDED);
+		flag_set(&req->flags, MCP_REQ_JOB_SUSPENDED);
 		break;
 	case JOB_BUSY:
 		why = busy;
@@ -2631,10 +2675,10 @@ mcp_on_job (struct loop *loop,
 {
 	struct job *job = container_of(msg, struct job, to_front);
 	uint32_t bits = atomic_exchange(&job->front_bits, 0);
-	if (flag_any(loop->flags, LOOP_EXIT)) {
+	if (flag_any(loop->flags, LOOP_END)) {
 		/* The last reference frees the job: a completion brings the
 		 * front's too, as its request has gone. */
-		uint32_t refs = bits & JOB_RETURN ? 0 : bits & JOB_DONE ? 2 : 1;
+		uint32_t refs = bits & JOB_RETURNED ? 0 : bits & JOB_DONE ? 2 : 1;
 		if (refs && !ref_put(&job->refs, refs))
 			return;
 		job_fini(job);
@@ -2642,18 +2686,18 @@ mcp_on_job (struct loop *loop,
 		free(job);
 		return;
 	}
-	if (bits & JOB_RETURN) {
+	if (bits & JOB_RETURNED) {
 		mcp_shelve_job(self, job);
 		return;
 	}
 	struct mcp_req *req = loop_lookup(loop, job->call, HANDLE_REQ);
-	if (bits & JOB_DELTA && req) {
-		if (flag_any(req->flags, REQ_SSE)) {
+	if (bits & JOB_DELTA_PUBLISHED && req) {
+		if (flag_any(req->flags, MCP_REQ_SSE)) {
 			req->delta_at = req->delta_read = 0;
-			flag_set(&req->flags, REQ_DELTA);
+			flag_set(&req->flags, MCP_REQ_DELTA_PENDING);
 			loop_ready_bulk(loop, &req->step);
 		} else {
-			job_post(job, self->home, &job->to_home, &job->home_bits, JOB_DRAIN);
+			job_post(job, self->home, &job->to_home, &job->home_bits, JOB_DELTA_CONSUMED);
 		}
 	}
 	if (!(bits & JOB_DONE)) {
@@ -2773,7 +2817,7 @@ static struct mcp_req *
 mcp_req_named (struct loop const *loop,
                struct handle      who)
 {
-	return flag_any(loop->flags, LOOP_EXIT) ? nullptr : loop_lookup(loop, who, HANDLE_REQ);
+	return flag_any(loop->flags, LOOP_END) ? nullptr : loop_lookup(loop, who, HANDLE_REQ);
 }
 
 /* A wait for a journal callback of @p req, which names the request by a
@@ -2897,11 +2941,11 @@ mcp_req_archive_finished (struct mcp_req *req,
 static int
 mcp_req_archive_end (struct mcp_req *req)
 {
-	bool const draining = flag_any(req->mcp->flags, MCP_DRAINING);
-	if (!*req->archive.hex || flag_any(req->flags, REQ_ARCHIVED_END | REQ_SUSPENDED) ||
+	bool const draining = flag_any(req->mcp->flags, MCP_END);
+	if (!*req->archive.hex || flag_any(req->flags, MCP_REQ_END_ARCHIVED | MCP_REQ_JOB_SUSPENDED) ||
 	    (draining && (req->task || req->admitted)))
 		return 0;
-	flag_set(&req->flags, REQ_ARCHIVED_END);
+	flag_set(&req->flags, MCP_REQ_END_ARCHIVED);
 	struct ledger_task const *task = req->task;
 	enum ledger_status status = mcp_req_status(req);
 	struct cstr_view const reply = task && status != LEDGER_CANCELLED &&
@@ -2941,14 +2985,14 @@ mcp_req_submit (struct mcp_req *req)
 	job->journal = mcp->st->journal;
 	job->archive = req->archive;
 	job->archive_turn = req->turn + 1;
-	if (flag_any(req->flags, REQ_RECOVERING)) {
+	if (flag_any(req->flags, MCP_REQ_RECOVERY_PENDING)) {
 		int re = home_job_restore(job, req->recovered);
 		journal_records_destroy(&req->recovered);
 		if (re) {
 			mcp_shelve_job(mcp, job);
 			return re;
 		}
-		flag_clear(&req->flags, REQ_RECOVERING);
+		flag_clear(&req->flags, MCP_REQ_RECOVERY_PENDING);
 	}
 	struct stream const *s = req->s;
 	int e = 0;
@@ -2980,11 +3024,11 @@ mcp_req_submit (struct mcp_req *req)
 	job->deadline = wall ? loop->now + (req->archive_deadline > wall
 	                                    ? req->archive_deadline - wall : 1)
 	              : timeout ? loop->now + timeout : 0;
-	uint8_t asks = req->asks | (req->token && flag_any(req->flags, REQ_SSE) ? JOB_NOTIFY : 0);
+	uint8_t asks = req->asks | (req->token && flag_any(req->flags, MCP_REQ_SSE) ? JOB_ASK_PROGRESS : 0);
 	if (req->task && *req->archive.hex)
-		asks |= JOB_DURABLE;
+		asks |= JOB_ASK_DURABLE;
 	if (req->lent) {
-		asks |= JOB_TOOLS;
+		asks |= JOB_ASK_TOOLS;
 		hist_add(&mcp->counts->calls.turns, 1);
 	}
 	job->asks = asks;
@@ -2998,7 +3042,7 @@ mcp_req_submit (struct mcp_req *req)
 	atomic_store_explicit(&job->refs, 2, memory_order_relaxed);
 	req->job = job;
 	req->phase = PHASE_CALL;
-	job_post(job, mcp->home, &job->to_home, &job->home_bits, JOB_SUBMIT);
+	job_post(job, mcp->home, &job->to_home, &job->home_bits, JOB_START);
 	return 0;
 }
 
@@ -3070,7 +3114,7 @@ mcp_req_stream (struct mcp_req *req)
 	bool const sse = !s->ops->head(s, 200, SPAN("Content-Type: text/event-stream\r\n"
 	                                            "Cache-Control: no-cache\r\n"
 	                                            "X-Accel-Buffering: no\r\n"), STREAM_OPEN);
-	mcp_req_flag(req, REQ_SSE, sse);
+	mcp_req_flag(req, MCP_REQ_SSE, sse);
 	uint32_t keepalive = mcp->st->lim.keepalive;
 	if (sse && keepalive)
 		req->ping_at = mcp->loop->now + keepalive * NS;
@@ -3181,11 +3225,11 @@ mcp_on_withdraw (struct loop *loop,
 	roster_call_put(call);
 	if (!req || req->phase >= PHASE_REPLY)
 		return;
-	if (!flag_any(req->flags, REQ_SSE))
+	if (!flag_any(req->flags, MCP_REQ_SSE))
 		(void)req->s->ops->head(req->s, 202, span(nullptr, 0), 0);
 	mcp_req_log_call(req, "cancelled by notifications/cancelled", cstr_view(nullptr),
 	                 false);
-	flag_set(&req->flags, REQ_WITHDRAWN);
+	flag_set(&req->flags, MCP_REQ_WITHDRAWN);
 	mcp_req_finish(req);
 }
 
@@ -3271,7 +3315,7 @@ mcp_req_detach (struct mcp_req     *req,
 	req->s = &req->stand_in;
 	req->task = task;
 	list_append(&mcp->tasks, &req->task_hook);
-	flag_clear(&req->flags, REQ_SSE_OK | REQ_SSE | REQ_BLOCKED | REQ_PROGRESS);
+	flag_clear(&req->flags, MCP_REQ_SSE_OK | MCP_REQ_SSE | MCP_REQ_BLOCKED | MCP_REQ_PROGRESS_PENDING);
 	req->ping_at = req->promote_at = UINT64_MAX;
 	json_object_put(req->token);
 	req->token = nullptr;
@@ -3663,7 +3707,7 @@ mcp_slot_call (struct mcp_slot const *slot)
 bool
 mcp_slot_rerun (struct mcp_slot const *slot)
 {
-	return slot->role == ROLE_TURN && flag_any(slot->req->flags, REQ_RERUN);
+	return slot->role == ROLE_TURN && flag_any(slot->req->flags, MCP_REQ_RERUNNING);
 }
 
 int
@@ -3744,7 +3788,7 @@ mcp_slot_noted (struct mcp_slot *slot)
 {
 	int e = mcp_slot_live(slot, 0, 0);
 	if (!e)
-		flag_set(&slot->req->flags, REQ_BRANCH);
+		flag_set(&slot->req->flags, MCP_REQ_BRANCH_NONEMPTY);
 	return e;
 }
 
@@ -3759,7 +3803,7 @@ mcp_slot_park (struct mcp_slot *slot)
 		return e;
 	struct mcp_req *req = slot->req;
 	if (mcp_slot_tool(slot)->kind->flags & TOOL_STREAM &&
-	    flag_get(req->flags, REQ_SSE_OK | REQ_SSE) == REQ_SSE_OK)
+	    flag_get(req->flags, MCP_REQ_SSE_OK | MCP_REQ_SSE) == MCP_REQ_SSE_OK)
 		mcp_req_stream(req);
 	mcp_req_wait(req);
 	if (slot == &req->self) {
@@ -3804,7 +3848,7 @@ struct mcp_slot *
 mcp_slot_named (struct loop const *loop,
                 struct handle      who)
 {
-	return loop && !flag_any(loop->flags, LOOP_EXIT) ? loop_lookup(loop, who, HANDLE_SLOT) : nullptr;
+	return loop && !flag_any(loop->flags, LOOP_END) ? loop_lookup(loop, who, HANDLE_SLOT) : nullptr;
 }
 
 /* The reply to @p wait, the HTTP request of the call that @p who names, has
@@ -4039,24 +4083,25 @@ mcp_history_valid (struct json_object *history)
 
 static void mcp_req_add_start (struct mcp_req *req);
 
-/* Goes on with the ask call in @p slot, req->self, once the notes are in
- * the text that askai adds to the prompt. With findings, findings_prompt()
- * first appends the open findings as the own word of req->self
- * (REQ_FINDINGS) and then calls this function again. Then a new ask call
- * builds its upstream request. After a compaction, the upload contains the
- * request up to the prompt (req->prompt_at), and askai appends
- * NOTICE_GO_ON to the text and writes the text into the upload.
+/* Goes on with the ask call in @p slot, req->self, once the notes are in the
+ * text that askai adds to the prompt. With findings, findings_prompt() first
+ * appends the open findings as the own word of req->self
+ * (MCP_REQ_FINDINGS_READING) and then calls this function again. Then a new ask
+ * call builds its upstream request. After a compaction, the upload contains the
+ * request up to the prompt (req->prompt_at), and askai appends NOTICE_GO_ON to
+ * the text and writes the text into the upload.
  */
 static void
 mcp_slot_prompted (struct mcp_slot *slot)
 {
 	struct mcp_req *req = slot->req;
-	if (!flag_any(req->flags, REQ_FINDINGS) && req->lent & req->mcp->st->lending.of[KIND_FINDINGS]) {
-		flag_set(&req->flags, REQ_FINDINGS);
+	if (!flag_any(req->flags, MCP_REQ_FINDINGS_READING) &&
+	    req->lent & req->mcp->st->lending.of[KIND_FINDINGS]) {
+		flag_set(&req->flags, MCP_REQ_FINDINGS_READING);
 		findings_prompt(slot, &slot->answer, mcp_req_lend_max(req), mcp_slot_prompted);
 		return;
 	}
-	flag_clear(&req->flags, REQ_FINDINGS);
+	flag_clear(&req->flags, MCP_REQ_FINDINGS_READING);
 	if (!req->prompt_at)
 		mcp_req_enter(req, PHASE_BUILD);
 	else if (cstr_view_cat(CSTR_VIEW("\n" NOTICE_GO_ON), &slot->answer))
@@ -4107,7 +4152,7 @@ mcp_req_ask (struct mcp_req     *req,
 	}
 	if (background && !req->task) {
 		if (st->journal)
-			flag_set(&req->flags, REQ_DETACH_PENDING);
+			flag_set(&req->flags, MCP_REQ_DETACH_PENDING);
 		else if (mcp_req_background(req, req->self.tool))
 			return;
 	}
@@ -4129,7 +4174,7 @@ mcp_req_ask (struct mcp_req     *req,
 		return;
 	}
 	req->s->ops->waiting(req->s);
-	if (flag_get(req->flags, REQ_SSE_OK | REQ_DETACH_PENDING) == REQ_SSE_OK)
+	if (flag_get(req->flags, MCP_REQ_SSE_OK | MCP_REQ_DETACH_PENDING) == MCP_REQ_SSE_OK)
 		mcp_req_stream(req);
 	/* Every ask starts with the notes of the agent, and with findings the
 	 * open findings of the agent in the conversation. */
@@ -4243,7 +4288,7 @@ mcp_slot_task (struct mcp_slot    *slot,
 		mcp_slot_tell(slot, CSTR_VIEW("Give slices or prompt, not both."), TOOL_FAILED);
 		return;
 	}
-	slot->req->asks = JOB_BACKGROUND;
+	slot->req->asks = JOB_ASK_BACKGROUND;
 	mcp_req_ask(slot->req, args, false);
 }
 
@@ -4403,7 +4448,7 @@ mcp_req_turn_done (struct mcp_req *req)
 	req->filed = req->replay_filed;
 	req->replay_filed = 0;
 	req->context = told > 0 ? (uint32_t)told : job->context;
-	mcp_req_flag(req, REQ_CUT, ai_cut(mcp->st->ep->api, job->reason));
+	mcp_req_flag(req, MCP_REQ_TRUNCATED, ai_cut(mcp->st->ep->api, job->reason));
 	req->forced = 0;
 	/* The calls are in the first n buffers of job->calls. */
 	uint32_t n = 0;
@@ -4426,7 +4471,7 @@ mcp_req_turn_done (struct mcp_req *req)
 		return;
 	}
 	if (req->turn >= mcp->st->turns) {
-		flag_set(&req->flags, REQ_STOPPED);
+		flag_set(&req->flags, MCP_REQ_TURNS_EXHAUSTED);
 		hist_add(&mcp->counts->calls.stopped, 1);
 		mcp_req_enter(req, PHASE_TEXT);
 		return;
@@ -4503,7 +4548,7 @@ mcp_req_items (struct mcp_req const *req,
 	size_t from = req->replayed;
 	if (to <= from)
 		return (struct mcp_piece){};
-	from += !flag_any(req->flags, REQ_LISTED);
+	from += !flag_any(req->flags, MCP_REQ_LIST_NONEMPTY);
 	return RAW(buf_peek(&req->job->replay).ptr + from, to - from);
 }
 
@@ -4520,7 +4565,7 @@ mcp_req_call_args (struct mcp_req const   *req,
                    struct mcp_piece       *p)
 {
 	struct json_object *v = req->slots[k].args;
-	if (!flag_any(f->flags, AI_ARGS_RAW)) {
+	if (!flag_any(f->flags, AI_FORMAT_ARGS_RAW)) {
 		*p = v && c->args.len ? ESC_VIEW(c->args) : TEXT("{}");
 		return 0;
 	}
@@ -4549,7 +4594,8 @@ mcp_req_call_put (struct mcp_req         *req,
 		return e;
 	struct mcp_piece const p[] = {
 		items,
-		BYTES(flag_any(req->flags, REQ_LISTED) || items.bytes.len ? f->call_next : f->call),
+		BYTES(flag_any(req->flags, MCP_REQ_LIST_NONEMPTY) ||
+		      items.bytes.len ? f->call_next : f->call),
 		id,
 		BYTES(f->name),
 		ESC_VIEW(c->name),
@@ -4578,7 +4624,7 @@ mcp_req_turn_call (struct mcp_req         *req,
 	if (e)
 		return e;
 	if (f->call.len || items.bytes.len)
-		flag_set(&req->flags, REQ_LISTED);
+		flag_set(&req->flags, MCP_REQ_LIST_NONEMPTY);
 	req->replayed = h.replay;
 	return 0;
 }
@@ -4615,7 +4661,7 @@ mcp_req_turn_part (struct mcp_req *req)
 	};
 	int e = mcp_req_upload(req, p, array_size(p));
 	if (!e)
-		mcp_req_flag(req, REQ_LISTED, !f->turn.len);
+		mcp_req_flag(req, MCP_REQ_LIST_NONEMPTY, !f->turn.len);
 	return e;
 }
 
@@ -4729,7 +4775,7 @@ mcp_req_granted (struct mcp_req const *req,
 static struct cstr_view
 mcp_req_no_args (struct mcp_req const *req)
 {
-	return flag_any(req->flags, REQ_CUT) ? CSTR_VIEW("cut short by the output token limit")
+	return flag_any(req->flags, MCP_REQ_TRUNCATED) ? CSTR_VIEW("cut short by the output token limit")
 	                         : CSTR_VIEW("not a JSON object");
 }
 
@@ -5051,7 +5097,7 @@ mcp_req_background (struct mcp_req *req,
 		                   "Then call jobs with action result and the job ID.", task->id.hex);
 	struct mcp_piece const p[] = {
 		FRAG("\"}]"),
-		flag_any(req->flags, REQ_MODERN) ? DSTR(&st->modern_tail) : FRAG("}"),
+		flag_any(req->flags, MCP_REQ_MODERN) ? DSTR(&st->modern_tail) : FRAG("}"),
 		FRAG("}"),
 	};
 	e = mcp_req_tool_open(req, text);
@@ -5084,7 +5130,7 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	}
 	if (mcp_req_background(req, id))
 		return;
-	req->asks |= JOB_BACKGROUND;
+	req->asks |= JOB_ASK_BACKGROUND;
 	slot->tool = (uint8_t)id;
 	/* The log line of the call's end shows the arguments of the job's
 	 * call, by the rules of its tool. */
@@ -5279,7 +5325,7 @@ mcp_slot_client_result (struct mcp_slot    *slot,
 		mcp_slot_result(slot, problem, TOOL_FAILED);
 		return;
 	}
-	atomic_fetch_or_explicit(&task->state, LEDGER_TOLD, memory_order_relaxed);
+	atomic_fetch_or_explicit(&task->state, LEDGER_REPORTED, memory_order_relaxed);
 	mcp_slot_end(slot, FLAG_COMPLETED);
 	req->shown = task;
 	int e = mcp_req_open(req, FRAG(""));
@@ -5609,7 +5655,7 @@ mcp_req_call_launch (struct mcp_req *req)
 		/* mcp_slot_start() does not run for this call, so this line sets
 		 * slot->start. mcp_slot_done() logs the time since slot->start. */
 		slot->start = loop_clock();
-		mcp_slot_result(slot, flag_any(req->flags, REQ_CUT)
+		mcp_slot_result(slot, flag_any(req->flags, MCP_REQ_TRUNCATED)
 		                ? CSTR_VIEW("Your answer reached the output token limit. The "
 		                            "limit cut the arguments short. The call was not run.")
 		                : CSTR_VIEW("The arguments were not a JSON object. The call was "
@@ -5759,9 +5805,9 @@ mcp_slot_done (struct mcp_slot *slot)
 	bool job = slot->role == ROLE_JOB;
 	bool const failed = flag_how(slot->flags) == FLAG_FAILED;
 	if (log_threshold >= LOG_VERBOSE && slot->tool != TOOL_MAX) {
-		/* A turn's call whose arguments are not a JSON object ends at once
-		 * in mcp_req_call_launch(), so REQ_CUT is still the value of its
-		 * turn. */
+		/* A turn's call whose arguments are not a JSON object ends at
+		 * once in mcp_req_call_launch(), so MCP_REQ_TRUNCATED is still
+		 * the value of its turn. */
 		struct mcp_shown const shown = mcp_shown(tool, slot->args,
 		                                         job ? CSTR_VIEW("none")
 		                                             : mcp_req_no_args(req));
@@ -5812,8 +5858,8 @@ mcp_slot_done (struct mcp_slot *slot)
 			"skip", json_object_new_uint64(slot->window.at - base),
 			"at", json_object_new_uint64(base),
 			"bytes", json_object_new_uint64(out.len),
-			"branch", json_object_new_boolean(flag_any(req->flags, REQ_BRANCH)),
-			"filing", json_object_new_boolean(flag_any(req->flags, REQ_FILING)),
+			"branch", json_object_new_boolean(flag_any(req->flags, MCP_REQ_BRANCH_NONEMPTY)),
+			"filing", json_object_new_boolean(flag_any(req->flags, MCP_REQ_FILE_ATTACHED)),
 			"filed", json_object_new_uint64(req->filed),
 			"attached", json_object_new_string_len(files.len ? (char const *)files.ptr : "",
 			                                       (int)files.len),
@@ -5894,13 +5940,13 @@ mcp_req_result_put (struct mcp_req         *req,
 	struct span attached = buf_peek(&req->attached);
 	char made[CALL_ID];
 	struct mcp_piece const id = mcp_req_call_id(req, c, req->part, made);
-	/* With AI_RESULT_NAMED, the key of a result is the name of the tool,
-	 * and the id is appended if the call came with an id or askai made one
-	 * up. */
+	/* With AI_FORMAT_RESULT_NAMED, the key of a result is the name of the
+	 * tool, and the id is appended if the call came with an id or askai
+	 * made one up. */
 	struct mcp_piece key = id;
 	struct mcp_piece by = {};
 	struct mcp_piece also = {};
-	if (flag_any(f->flags, AI_RESULT_NAMED)) {
+	if (flag_any(f->flags, AI_FORMAT_RESULT_NAMED)) {
 		key = ESC_VIEW(c->name);
 		if (c->id.len || f->call.len) {
 			by = BYTES(f->result_id);
@@ -6002,14 +6048,14 @@ static void
 mcp_req_archive_submitted (struct mcp_req *req,
                            int             error)
 {
-	if (!error && flag_any(req->mcp->flags, MCP_DRAINING))
+	if (!error && flag_any(req->mcp->flags, MCP_END))
 		error = ESHUTDOWN;
 	if (error) {
 		mcp_req_error(req, 500, INTERNAL_ERROR, FRAG(persist_failed), nullptr, 0);
 		return;
 	}
-	if (flag_any(req->flags, REQ_DETACH_PENDING)) {
-		flag_clear(&req->flags, REQ_DETACH_PENDING);
+	if (flag_any(req->flags, MCP_REQ_DETACH_PENDING)) {
+		flag_clear(&req->flags, MCP_REQ_DETACH_PENDING);
 		if (mcp_req_background(req, req->self.tool))
 			return;
 	}
@@ -6023,7 +6069,7 @@ mcp_req_checkpoint (struct mcp_req *req)
 {
 	struct mcp_static const *st = req->mcp->st;
 	int e = req->archive_error;
-	if (!e && flag_any(req->flags, REQ_DETACH_PENDING) && !req->admitted)
+	if (!e && flag_any(req->flags, MCP_REQ_DETACH_PENDING) && !req->admitted)
 		req->admitted = mcp_req_record(req, LEDGER_JOB, req->self.tool, &e);
 	struct ledger_task const *task = req->task ? req->task : req->admitted;
 	if (!e && !*req->archive.hex) {
@@ -6063,8 +6109,8 @@ mcp_req_checkpoint (struct mcp_req *req)
 		"conversation", json_object_new_string(req->member.conversation.hex),
 		"ask", json_object_new_string(req->member.ask.hex),
 		"asker", member_json(cstr_view(asker->name), asker->kind),
-		"branch", json_object_new_boolean(flag_any(req->flags, REQ_BRANCH)),
-		"filing", json_object_new_boolean(flag_any(req->flags, REQ_FILING)),
+		"branch", json_object_new_boolean(flag_any(req->flags, MCP_REQ_BRANCH_NONEMPTY)),
+		"filing", json_object_new_boolean(flag_any(req->flags, MCP_REQ_FILE_ATTACHED)),
 		"filed", json_object_new_uint64(req->filed),
 		"reminded", json_object_new_int(req->reminded),
 		"forced", json_object_new_int(req->forced),
@@ -6278,8 +6324,8 @@ mcp_recover_back (struct loop           *loop,
 	req->calls_base = req->seen->resumed;
 	req->reminded = (uint16_t)jb_int(jb_get(state, "reminded"), 0);
 	req->forced = (uint8_t)jb_int(jb_get(state, "forced"), 0);
-	mcp_req_flag(req, REQ_BRANCH, json_object_get_boolean(jb_get(local, "branch")));
-	mcp_req_flag(req, REQ_FILING, json_object_get_boolean(jb_get(local, "filing")));
+	mcp_req_flag(req, MCP_REQ_BRANCH_NONEMPTY, json_object_get_boolean(jb_get(local, "branch")));
+	mcp_req_flag(req, MCP_REQ_FILE_ATTACHED, json_object_get_boolean(jb_get(local, "filing")));
 	req->filed = jb_uint(jb_get(local, "filed"), 0);
 	req->replay_filed = last_tool_result ? req->filed : 0;
 	/* An ID that is not one, such as "", and an invalid asker are none. */
@@ -6290,7 +6336,7 @@ mcp_recover_back (struct loop           *loop,
 	if (jb_get(state, "review"))
 		LOG(LOG_INFO, "journal: job %s: the old review record was not restored", id.hex);
 	req->intents = intents;
-	flag_set(&req->flags, REQ_RECOVERING | REQ_RERUN);
+	flag_set(&req->flags, MCP_REQ_RECOVERY_PENDING | MCP_REQ_RERUNNING);
 	req->asked = ++req->mcp->asked;
 	req->recovered = checkpoint->next;
 	checkpoint->next = nullptr;
@@ -6394,7 +6440,7 @@ mcp_req_add_start (struct mcp_req *req)
 	buf_cut(&req->upload, req->prompt_at, up.len - req->prompt_at);
 	buf_fini(&req->attached);
 	req->filed = 0;
-	flag_clear(&req->flags, REQ_FILING);
+	flag_clear(&req->flags, MCP_REQ_FILE_ATTACHED);
 	mcp_req_enter(req, PHASE_ADD);
 }
 
@@ -6448,7 +6494,7 @@ mcp_req_attach (struct mcp_req   *req,
 	if (e)
 		return e;
 	req->filed += bytes;
-	flag_set(&req->flags, REQ_FILING);
+	flag_set(&req->flags, MCP_REQ_FILE_ATTACHED);
 	return 0;
 }
 
@@ -6475,7 +6521,7 @@ mcp_slot_post_file (struct mcp_slot  *slot,
 		.accept = sizeof accept - 1,
 		.n_lines = st->files_n_lines,
 		.lines = st->files_lines,
-		.flags = { WEB_UPSTREAM }
+		.flags = { WEB_ASK_UPSTREAM }
 	};
 	return mcp_slot_send(slot, &ask);
 }
@@ -6694,7 +6740,7 @@ static void
 mcp_slot_ask_step (struct mcp_slot *slot)
 {
 	mcp_slot_unwait(slot);
-	if (flag_any(slot->req->flags, REQ_FINDINGS))
+	if (flag_any(slot->req->flags, MCP_REQ_FINDINGS_READING))
 		findings_step(slot);
 	else
 		notes_tool_step(slot);
@@ -6706,11 +6752,11 @@ mcp_slot_ask_step (struct mcp_slot *slot)
 static void
 mcp_slot_ask_drop (struct mcp_slot *slot)
 {
-	if (flag_any(slot->req->flags, REQ_FINDINGS))
+	if (flag_any(slot->req->flags, MCP_REQ_FINDINGS_READING))
 		findings_drop(slot);
 	else
 		notes_tool_drop(slot);
-	flag_clear(&slot->req->flags, REQ_FINDINGS);
+	flag_clear(&slot->req->flags, MCP_REQ_FINDINGS_READING);
 }
 
 /* Start an ask call in @p slot, the request's own, its turns lent the tools
@@ -6722,7 +6768,7 @@ mcp_slot_ask (struct mcp_slot    *slot,
 {
 	struct mcp_req *req = slot->req;
 	bool const background = req->mcp->st->ep->background;
-	bool const stream = req->asks & JOB_STREAM;
+	bool const stream = req->asks & JOB_ASK_STREAM;
 	struct json_object *override = nullptr;
 	struct json_object *action = nullptr;
 	bool const has_override = json_object_object_get_ex(args, "background", &override);
@@ -6819,14 +6865,14 @@ mcp_req_tools_call (struct mcp_req     *req,
 	bool streamed = has_stream && json_object_get_boolean(stream);
 	bool ask = tool->kind->start == mcp_slot_ask;
 	if (has_stream && (!json_object_is_type(stream, json_type_boolean) ||
-	                   (streamed && (!flag_any(req->flags, REQ_SSE_OK) || !ask)))) {
+	                   (streamed && (!flag_any(req->flags, MCP_REQ_SSE_OK) || !ask)))) {
 		mcp_req_error(req, 200, INVALID_PARAMS,
 		              FRAG("askai.stream must be a boolean. askai.stream true works only "
 		                   "with the ask tool and a client that accepts SSE"), nullptr, 0);
 		return;
 	}
 	if (streamed)
-		req->asks |= JOB_STREAM;
+		req->asks |= JOB_ASK_STREAM;
 	int e = mcp_req_enrol(req);
 	if (e) {
 		mcp_req_fail(req, e);
@@ -6911,7 +6957,7 @@ mcp_req_tools_list (struct mcp_req *req)
 		if (req->s->grant.tools >> id & 1)
 			p[n++] = BYTES(cstr_view_slice(def, skip, SIZE_MAX));
 	}
-	p[n++] = flag_any(req->flags, REQ_MODERN) ? DSTR(&st->list_tail) : FRAG("]}");
+	p[n++] = flag_any(req->flags, MCP_REQ_MODERN) ? DSTR(&st->list_tail) : FRAG("]}");
 	p[n++] = FRAG("}");
 	mcp_req_result(req, p, n, SPAN(STREAM_JSON_FIELD));
 }
@@ -6932,7 +6978,7 @@ mcp_req_show (struct mcp_req *req)
 	struct loop *loop = req->mcp->loop;
 	struct ledger_task *task = req->shown;
 	struct cstr_view const reply = cstr_view_dstr(&task->result);
-	bool tail = flag_any(req->flags, REQ_MODERN) && reply.len > key.len + 1 &&
+	bool tail = flag_any(req->flags, MCP_REQ_MODERN) && reply.len > key.len + 1 &&
 	            cstr_view_starts(reply, key);
 	size_t left = (tail ? reply.len - 2 : reply.len) - req->off;
 	size_t room = loop_room(loop, LOOP_COPY);
@@ -6980,7 +7026,7 @@ mcp_req_task_show (struct mcp_req     *req,
 	 * The reply then contains the end of the call, and the time to live is
 	 * the run time of the call plus the time that the record stays. */
 	if (status != LEDGER_WORKING) {
-		atomic_fetch_or_explicit(&task->state, LEDGER_TOLD, memory_order_relaxed);
+		atomic_fetch_or_explicit(&task->state, LEDGER_REPORTED, memory_order_relaxed);
 		whole = task->size != 0;
 		updated_at = task->ended;
 		uint64_t ran = task->ended > task->created ? task->ended - task->created : 0;
@@ -7065,7 +7111,7 @@ mcp_req_route (struct mcp_req     *req,
 	#undef MCP_ERAS
 	struct mcp_static const *st = req->mcp->st;
 	/* The index of the era of the client: 0 or 1. */
-	uint32_t const modern = flag_any(req->flags, REQ_MODERN);
+	uint32_t const modern = flag_any(req->flags, MCP_REQ_MODERN);
 	if (!(eras[req->method] >> modern & 1)) {
 		/* Legacy clients take a 404 for an expired session, so keep 200. */
 		mcp_req_error(req, modern ? 404 : 200, METHOD_NOT_FOUND,
@@ -7153,7 +7199,7 @@ mcp_req_modern (struct mcp_req     *req,
 		              nullptr, 0);
 		return;
 	}
-	mcp_req_flag(req, REQ_SSE_OK, mcp_accepts_sse(s->ops->field(s, F_ACCEPT)));
+	mcp_req_flag(req, MCP_REQ_SSE_OK, mcp_accepts_sse(s->ops->field(s, F_ACCEPT)));
 	struct json_object *ext = jb_get(jb_get(caps, "extensions"), META_TASKS);
 	mcp_req_route(req, params, json_object_is_type(ext, json_type_object));
 }
@@ -7186,14 +7232,14 @@ mcp_req_request (struct mcp_req     *req,
 	struct cstr_view field = cstr_view_span(header);
 	if ((version.data && !mcp_is_legacy(v)) ||
 	    (field.data && !mcp_is_legacy(mcp_version(field)))) {
-		flag_set(&req->flags, REQ_MODERN);
+		flag_set(&req->flags, MCP_REQ_MODERN);
 		mcp_req_modern(req, params, meta, version, v, method);
 		return;
 	}
 	/* A legacy client without the header uses the revision 2025-03-26,
 	 * which supports event streams. The revision 2024-11-05 does not. */
-	mcp_req_flag(req, REQ_SSE_OK, mcp_accepts_sse(s->ops->field(s, F_ACCEPT)) &&
-	                              !mcp_span_is(header, versions[PRE_STREAMS]));
+	mcp_req_flag(req, MCP_REQ_SSE_OK, mcp_accepts_sse(s->ops->field(s, F_ACCEPT)) &&
+	                                  !mcp_span_is(header, versions[PRE_STREAMS]));
 	mcp_req_route(req, params, false);
 }
 
@@ -7394,10 +7440,11 @@ mcp_req_text (struct mcp_req *req)
 {
 	struct job *job = req->job;
 	struct span body = buf_peek(&job->result);
-	/* A streamed answer without text after REQ_STOPPED is set is a failure. */
+	/* A streamed answer without text after MCP_REQ_TURNS_EXHAUSTED is set
+	 * is a failure. */
 	if (job->status == JOB_TEXT) {
-		mcp_slot_respond(&req->self,
-		                 flag_any(req->flags, REQ_STOPPED) && !body.len ? TOOL_FAILED : 0);
+		mcp_slot_respond(&req->self, flag_any(req->flags, MCP_REQ_TURNS_EXHAUSTED) && !body.len
+		                             ? TOOL_FAILED : 0);
 		return;
 	}
 	bool failed = true;
@@ -7457,12 +7504,12 @@ mcp_req_step (struct loop      *loop,
               struct loop_step *step)
 {
 	struct mcp_req *req = container_of(step, struct mcp_req, step);
-	if (flag_any(req->flags, REQ_DELTA)) {
+	if (flag_any(req->flags, MCP_REQ_DELTA_PENDING)) {
 		mcp_req_delta(req);
 		return;
 	}
-	if (flag_any(req->flags, REQ_TICK) && req->phase < PHASE_REPLY) {
-		flag_clear(&req->flags, REQ_TICK);
+	if (flag_any(req->flags, MCP_REQ_TICK_PENDING) && req->phase < PHASE_REPLY) {
+		flag_clear(&req->flags, MCP_REQ_TICK_PENDING);
 		mcp_req_tick(req);
 	}
 	if (req->reaper.n) {
@@ -7484,7 +7531,7 @@ mcp_req_timer (struct loop       *loop,
                struct loop_timer *timer)
 {
 	struct mcp_req *req = container_of(timer, struct mcp_req, timer);
-	flag_set(&req->flags, REQ_TICK);
+	flag_set(&req->flags, MCP_REQ_TICK_PENDING);
 	loop_ready(loop, &req->step);
 }
 
@@ -7634,7 +7681,7 @@ static void
 mcp_on_writable (struct stream *s)
 {
 	struct mcp_req *req = s->user;
-	flag_put(&req->flags, REQ_BLOCKED | REQ_TICK, REQ_TICK);
+	flag_put(&req->flags, MCP_REQ_BLOCKED | MCP_REQ_TICK_PENDING, MCP_REQ_TICK_PENDING);
 	loop_ready_bulk(req->mcp->loop, &req->step);
 }
 
@@ -7794,7 +7841,7 @@ mcp_destroy (struct mcp **p_mcp)
 	if (!mcp)
 		return;
 	*p_mcp = nullptr;
-	flag_set(&mcp->flags, MCP_DRAINING);
+	flag_set(&mcp->flags, MCP_END);
 
 	/* The transport has cancelled every stream by now, but for the
 	 * stand-ins of the calls that are tasks, which end here, their tasks
@@ -7870,7 +7917,7 @@ mcp_relieve (struct mcp        *mcp,
 void
 mcp_drain (struct mcp *mcp)
 {
-	flag_set(&mcp->flags, MCP_DRAINING);
+	flag_set(&mcp->flags, MCP_END);
 	loop_ready_bulk(mcp->loop, &mcp->drain);
 }
 

@@ -62,7 +62,7 @@ journal_test_thoughts (struct journal *j)
 	loop_fini(&events);
 	assert(journal_test_completed == 2 * (JOURNAL_FILES + 1) + 9);
 	assert(!journal_job_find(j, &id)->thought.error);
-	assert(!flag_any(journal_job_find(j, &id)->flags, JOB_TERMINAL));
+	assert(!flag_any(journal_job_find(j, &id)->flags, JOURNAL_JOB_ENDED));
 	struct journal_item load = { .id = id };
 	assert(!journal_load_records(j, &load) && !load.record);
 }
@@ -127,7 +127,7 @@ journal_test_gap (struct journal *j)
 	r.type = JOURNAL_RESULT;
 	assert(!journal_checkpoint_write(j, &r));
 	assert(!journal_job_find(j, &r.id)->error &&
-	       flag_any(journal_job_find(j, &r.id)->flags, JOB_TERMINAL));
+	       flag_any(journal_job_find(j, &r.id)->flags, JOURNAL_JOB_ENDED));
 }
 
 static void
@@ -155,7 +155,7 @@ journal_test_legacy (struct journal *j)
 	journal_records_destroy(&load.record);
 	record.type = JOURNAL_META;
 	assert(!journal_checkpoint_write(j, &record));
-	assert(flag_any(journal_job_find(j, &record.id)->flags, JOB_LEGACY));
+	assert(flag_any(journal_job_find(j, &record.id)->flags, JOURNAL_JOB_LEGACY));
 	assert(!journal_load_records(j, &load));
 	unsigned count = 0;
 	for (struct journal_record *r = load.record; r; r = r->next) {
@@ -194,7 +194,7 @@ journal_test_run (char const       *script,
 		.deadline = after_ms ? start + after_ms * MS : 0,
 		.grace = grace_ms * MS
 	);
-	*end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
+	*end = child_end(.code = -1, .status = -1, .flags = { UINT32_MAX });
 	int e = out ? child_capture(&cmd, child_fds(), out, end)
 	            : child_cmd_run(&cmd, child_fds(), nullptr, end);
 	*ms = (loop_clock() - start) / MS;
@@ -809,12 +809,12 @@ journal_test_child_run (void)
 		.envp = (char *const[]){ nullptr },
 		.max = 3,
 	};
-	end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
+	end = child_end(.code = -1, .status = -1, .flags = { UINT32_MAX });
 	assert(child_cmd_run(&none, child_fds(), nullptr, &end) == ENOENT);
 	assert(!end.code && !end.status && !end.flags.bits);
 	struct buf out = buf();
 	assert(!buf_put(&out, "x", 1, SIZE_MAX));
-	end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
+	end = child_end(.code = -1, .status = -1, .flags = { UINT32_MAX });
 	assert(child_capture(&none, child_fds(), &out, &end) == ENOENT);
 	assert(!end.code && !end.status && !end.flags.bits);
 	assert(journal_test_out(&out, CSTR_VIEW("x")));
@@ -901,23 +901,23 @@ journal_test_child_cmd_run (void)
 		struct cstr_view  out;    /* the buffer */
 		struct cstr_view  all;    /* the file */
 	} const cases[] = {
-		{ "printf abc", 0, 0, { CLD_EXITED, 0, 0 },
+		{ "printf abc", 0, 0, { CLD_EXITED, 0, { 0 } },
 		  CSTR_VIEW_INIT("abc"), CSTR_VIEW_INIT("abc") },
-		{ "printf abc; exit 1", EIO, EIO, { CLD_EXITED, 1, 0 },
+		{ "printf abc; exit 1", EIO, EIO, { CLD_EXITED, 1, { 0 } },
 		  CSTR_VIEW_INIT("abc"), CSTR_VIEW_INIT("abc") },
-		{ "printf abc; exit 3", EIO, EIO, { CLD_EXITED, 3, 0 },
+		{ "printf abc; exit 3", EIO, EIO, { CLD_EXITED, 3, { 0 } },
 		  CSTR_VIEW_INIT("abc"), CSTR_VIEW_INIT("abc") },
-		{ "printf abcd", EFBIG, 0, { CLD_EXITED, 0, CHILD_CUT },
+		{ "printf abcd", EFBIG, 0, { CLD_EXITED, 0, { CHILD_CUT } },
 		  CSTR_VIEW_INIT("abc"), CSTR_VIEW_INIT("abcd") },
-		{ "printf abcd; exit 3", EFBIG, EIO, { CLD_EXITED, 3, CHILD_CUT },
+		{ "printf abcd; exit 3", EFBIG, EIO, { CLD_EXITED, 3, { CHILD_CUT } },
 		  CSTR_VIEW_INIT("abc"), CSTR_VIEW_INIT("abcd") },
-		{ "printf abc; kill -HUP $$", EIO, EIO, { CLD_KILLED, SIGHUP, 0 },
+		{ "printf abc; kill -HUP $$", EIO, EIO, { CLD_KILLED, SIGHUP, { 0 } },
 		  {}, CSTR_VIEW_INIT("abc") },
-		{ "printf abc; kill -KILL $$", EIO, EIO, { CLD_KILLED, SIGKILL, 0 },
+		{ "printf abc; kill -KILL $$", EIO, EIO, { CLD_KILLED, SIGKILL, { 0 } },
 		  {}, CSTR_VIEW_INIT("abc") },
 	};
 	static_assert(SIGHUP == 1, "the signal number that equals the exit status 1");
-	struct child_end const unset = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
+	struct child_end const unset = child_end(.code = -1, .status = -1, .flags = { UINT32_MAX });
 	char *const envp[] = { "PATH=/usr/bin:/bin", nullptr };
 	struct buf out = buf();
 	for (size_t i = 0; i < array_size(cases); ++i) {
@@ -998,25 +998,25 @@ journal_test_child_end_why (void)
 		int              status;
 		struct cstr_view why;
 	} const cases[] = {
-		{ { CLD_EXITED, 0, 0 }, 0,
+		{ { CLD_EXITED, 0, { 0 } }, 0,
 		  {} },
-		{ { CLD_EXITED, 2, 0 }, 2,
+		{ { CLD_EXITED, 2, { 0 } }, 2,
 		  CSTR_VIEW_INIT("git exited with status 2.") },
-		{ { CLD_KILLED, SIGKILL, 0 }, -1,
+		{ { CLD_KILLED, SIGKILL, { 0 } }, -1,
 		  CSTR_VIEW_INIT("git was killed by signal 9.") },
-		{ { CLD_DUMPED, SIGSEGV, 0 }, -1,
+		{ { CLD_DUMPED, SIGSEGV, { 0 } }, -1,
 		  CSTR_VIEW_INIT("git was killed by signal 11.") },
-		{ { 0, 0, 0 }, -1,
+		{ { 0, 0, { 0 } }, -1,
 		  CSTR_VIEW_INIT("git ended, and why is unknown.") },
-		{ { CLD_KILLED, SIGKILL, CHILD_CUT }, -1,
+		{ { CLD_KILLED, SIGKILL, { CHILD_CUT } }, -1,
 		  CSTR_VIEW_INIT("git wrote more than 4 MiB.") },
-		{ { CLD_EXITED, 0, CHILD_CUT }, -1,
+		{ { CLD_EXITED, 0, { CHILD_CUT } }, -1,
 		  CSTR_VIEW_INIT("git wrote more than 4 MiB.") },
-		{ { CLD_KILLED, SIGKILL, CHILD_LATE }, -1,
+		{ { CLD_KILLED, SIGKILL, { CHILD_LATE } }, -1,
 		  CSTR_VIEW_INIT("git took longer than 10 s, and was stopped.") },
-		{ { CLD_KILLED, SIGKILL, CHILD_CUT | CHILD_LATE }, -1,
+		{ { CLD_KILLED, SIGKILL, { CHILD_CUT | CHILD_LATE } }, -1,
 		  CSTR_VIEW_INIT("git took longer than 10 s, and was stopped.") },
-		{ { CLD_EXITED, 0, CHILD_LATE }, -1,
+		{ { CLD_EXITED, 0, { CHILD_LATE } }, -1,
 		  CSTR_VIEW_INIT("git took longer than 10 s, and was stopped.") },
 	};
 	for (size_t i = 0; i < array_size(cases); ++i) {
@@ -1053,7 +1053,7 @@ main (int argc, char **argv)
 		if (!job)
 			job = journal_job_add(j, &id, &e);
 		assert(job && !e);
-		flag_set(&job->flags, JOB_TERMINAL);
+		flag_set(&job->flags, JOURNAL_JOB_ENDED);
 	}
 	assert(j->n_jobs == JOURNAL_JOBS);
 	journal_destroy(&j);

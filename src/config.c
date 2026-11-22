@@ -133,18 +133,19 @@ static struct cstr_view const group_names[] = {
 };
 
 /* How an option takes its argument: the has_arg of getopt_long() in the
- * bits ARG_HAS, and the bits above them.
+ * bits CONFIG_ARG_HAS_ARG, and the bits above them.
  */
 enum config_arg : uint8_t {
-	ARG_NONE        = no_argument,
-	ARG_ONE         = required_argument,
-	ARG_HAS         = 3,
-	ARG_LIST        = 1u << 2,  /* a member of the configuration file can
-	                               list the values in an array */
-	ARG_RELOAD      = 1u << 3,  /* the option takes effect on a reload */
-	ARG_MANY        = ARG_ONE | ARG_LIST,
-	ARG_ONE_RELOAD  = ARG_ONE | ARG_RELOAD,
-	ARG_NONE_RELOAD = ARG_NONE | ARG_RELOAD,
+	CONFIG_ARG_NONE        = no_argument,
+	CONFIG_ARG_ONE         = required_argument,
+	CONFIG_ARG_HAS_ARG     = 3,
+	CONFIG_ARG_ARRAY       = 1u << 2,  /* a member of the configuration file
+	                                      can list the values in an array */
+	CONFIG_ARG_RELOADABLE  = 1u << 3,  /* the option takes effect on a
+	                                      reload */
+	CONFIG_ARG_MANY        = CONFIG_ARG_ONE | CONFIG_ARG_ARRAY,
+	CONFIG_ARG_ONE_RELOAD  = CONFIG_ARG_ONE | CONFIG_ARG_RELOADABLE,
+	CONFIG_ARG_NONE_RELOAD = CONFIG_ARG_NONE | CONFIG_ARG_RELOADABLE,
 };
 
 /* A line feed and the indentation of the help in the usage text. */
@@ -576,7 +577,7 @@ enum config_row : uint8_t {
  */
 static struct option const options[] = {
 #define CONFIG_OPTION(kind, id, name, s, place, arg, ...) \
-        { name, ARG_##arg & ARG_HAS, nullptr, CONFIG_VALUE(id, s) },
+        { name, CONFIG_ARG_##arg & CONFIG_ARG_HAS_ARG, nullptr, CONFIG_VALUE(id, s) },
 #define CONFIG_VALUE(id, ...) CONFIG_FIRST(__VA_ARGS__ __VA_OPT__(,) 256 + ROW_##id,)
 	CONFIG_OPTION_LIST(CONFIG_OPTION, CONFIG_NO_HEADING)
 #undef CONFIG_VALUE
@@ -748,7 +749,7 @@ config_complain (struct config const *cfg,
 	char const *colon = ": ";
 	if (!where)
 		where = colon = "";
-	if (flag_any(cfg->flags, CFG_LOGGED))
+	if (flag_any(cfg->flags, CFG_ERRORS_TO_LOG))
 		LOG(LOG_ERROR, "%s%s%s", where, colon, what);
 	else
 		fprintf(stderr, "%s%s%s\n", where, colon, what);
@@ -880,16 +881,16 @@ config_apply_extra (struct config *cfg,
 
 /* How an option of rows[] takes its argument. */
 enum config_take : uint8_t {
-	TAKE_BYTES    = 1u << 0,  /* the digits may end in K, M or G for KiB,
-	                             MiB or GiB */
-	TAKE_POSITIVE = 1u << 1,  /* the count is at least 1 */
-	TAKE_TEXT     = 1u << 2,  /* the member points to the argument */
-	TAKE_CUSTOM   = 1u << 3,  /* config_apply() applies the option */
+	CONFIG_TAKE_BYTES    = 1u << 0,  /* the digits may end in K, M or G for
+	                                    KiB, MiB or GiB */
+	CONFIG_TAKE_POSITIVE = 1u << 1,  /* the count is at least 1 */
+	CONFIG_TAKE_TEXT     = 1u << 2,  /* the member points to the argument */
+	CONFIG_TAKE_CUSTOM   = 1u << 3,  /* config_apply() applies the option */
 };
 
 /* Each option, by its row: its place in the configuration file, its ARG_
  * flags, and what it stores. The member of struct config at @p at, of
- * @p width bytes, is set to point to the argument (TAKE_TEXT), or to a
+ * @p width bytes, is set to point to the argument (CONFIG_TAKE_TEXT), or to a
  * count up to @p max, parsed as the bits of @p take say, times @p scale.
  * The option also sets the CFG_ flags @p flag. An option without a member
  * only sets the flags.
@@ -910,24 +911,24 @@ static struct config_option {
 } const rows[] = {
 #define CONFIG_ROW(kind, id, name, s, place, argument, meta, help, ...)          \
         [ROW_##id] = { CONFIG_STORE_##kind(__VA_ARGS__), .group = GROUP_##place, \
-                       .arg = ARG_##argument },
+                       .arg = CONFIG_ARG_##argument },
 /* The place TOOLS("TOOL.NAME"): the group TOOLS, and the member. The
  * place SERVICE("NAME"): the group SERVICE, and the member NAME. */
 #define GROUP_TOOLS(m) GROUP_TOOLS, .member = m
 #define GROUP_SERVICE(m) GROUP_SERVICE, .member = m
 #define CONFIG_AT(m) .at = offsetof(struct config, m), \
                      .width = sizeof ((struct config *)nullptr)->m
-#define CONFIG_STORE_custom() .take = TAKE_CUSTOM
-#define CONFIG_STORE_text(m) CONFIG_AT(m), .take = TAKE_TEXT
+#define CONFIG_STORE_custom() .take = CONFIG_TAKE_CUSTOM
+#define CONFIG_STORE_text(m) CONFIG_AT(m), .take = CONFIG_TAKE_TEXT
 #define CONFIG_STORE_flag(bit) .flag = bit
 #define CONFIG_STORE_count(m, min, max_, ...)                                  \
         .max = max_, .scale = 1, .flag = 0 __VA_OPT__(| __VA_ARGS__),          \
-        CONFIG_AT(m), .take = (min) ? TAKE_POSITIVE : 0
+        CONFIG_AT(m), .take = (min) ? CONFIG_TAKE_POSITIVE : 0
 #define CONFIG_STORE_bytes(m, min, max_, ...)                                  \
         .max = max_, .scale = 1, .flag = 0 __VA_OPT__(| __VA_ARGS__),          \
-        CONFIG_AT(m), .take = TAKE_BYTES | ((min) ? TAKE_POSITIVE : 0)
+        CONFIG_AT(m), .take = CONFIG_TAKE_BYTES | ((min) ? CONFIG_TAKE_POSITIVE : 0)
 #define CONFIG_STORE_seconds(m, min, max_, scale_)                             \
-        .max = max_, .scale = scale_, CONFIG_AT(m), .take = (min) ? TAKE_POSITIVE : 0
+        .max = max_, .scale = scale_, CONFIG_AT(m), .take = (min) ? CONFIG_TAKE_POSITIVE : 0
 	CONFIG_OPTION_LIST(CONFIG_ROW, CONFIG_NO_HEADING)
 #undef CONFIG_STORE_seconds
 #undef CONFIG_STORE_bytes
@@ -959,12 +960,12 @@ config_parse_count (char const                 *str,
 		return EINVAL;
 	unsigned shift = 0;
 	if (str[d]) {
-		char const *unit = n->take & TAKE_BYTES ? strchr(units, str[d]) : nullptr;
+		char const *unit = n->take & CONFIG_TAKE_BYTES ? strchr(units, str[d]) : nullptr;
 		if (!unit || str[d + 1])
 			return EINVAL;
 		shift = 10 * (unsigned)(unit - units + 1);
 	}
-	if (count > n->max >> shift || (!count && n->take & TAKE_POSITIVE))
+	if (count > n->max >> shift || (!count && n->take & CONFIG_TAKE_POSITIVE))
 		return EINVAL;
 	*value = count << shift;
 	return 0;
@@ -980,11 +981,11 @@ config_apply_store (struct config *cfg,
                     char const    *arg,
                     char const    *where)
 {
-	if (row >= array_size(rows) || rows[row].take & TAKE_CUSTOM)
+	if (row >= array_size(rows) || rows[row].take & CONFIG_TAKE_CUSTOM)
 		return 2;
 	struct config_option const *n = &rows[row];
 	unsigned char *member = (unsigned char *)cfg + n->at;
-	if (n->take & TAKE_TEXT) {
+	if (n->take & CONFIG_TAKE_TEXT) {
 		memcpy(member, &arg, sizeof arg);
 		return 0;
 	}
@@ -1155,7 +1156,7 @@ config_apply_member (struct config       *cfg,
                      struct option const *o,
                      struct json_object  *val)
 {
-	if (!(rows[o - options].arg & ARG_LIST) || !json_object_is_type(val, json_type_array))
+	if (!(rows[o - options].arg & CONFIG_ARG_ARRAY) || !json_object_is_type(val, json_type_array))
 		return config_apply_value(cfg, o, val);
 	size_t n = json_object_array_length(val);
 	for (size_t i = 0; i < n; ++i) {
@@ -1368,7 +1369,7 @@ config_same_options (struct config const *cfg,
 	 * compared whole. */
 	for (size_t i = 0; i < array_size(rows); ++i)
 		if (rows[i].group && rows[i].group != GROUP_TOOLS &&
-		    !(rows[i].arg & ARG_RELOAD) &&
+		    !(rows[i].arg & CONFIG_ARG_RELOADABLE) &&
 		    !json_object_equal(config_file_value(cfg, &options[i]),
 		                       config_file_value(from, &options[i])))
 			return false;
@@ -2169,7 +2170,7 @@ static void
 config_note_token (struct config const *cfg)
 {
 	char const *token = getenv("ASKAI_TOKEN");
-	if (flag_any(cfg->flags, CFG_LOGGED) || !token || !*token || !cfg->file)
+	if (flag_any(cfg->flags, CFG_ERRORS_TO_LOG) || !token || !*token || !cfg->file)
 		return;
 	struct json_object_iter it;
 	json_object_object_foreachC(cfg->file, it)
@@ -2568,7 +2569,7 @@ config_finish (struct config *cfg)
 static int
 config_misuse (struct config const *cfg)
 {
-	if (!flag_any(cfg->flags, CFG_LOGGED))
+	if (!flag_any(cfg->flags, CFG_ERRORS_TO_LOG))
 		config_usage(cfg, stderr);
 	return 2;
 }
@@ -2577,7 +2578,7 @@ config_misuse (struct config const *cfg)
 static int
 config_argv (struct config *cfg)
 {
-	opterr = !flag_any(cfg->flags, CFG_LOGGED);
+	opterr = !flag_any(cfg->flags, CFG_ERRORS_TO_LOG);
 	optind = 0;
 	for (int opt; (opt = getopt_long(cfg->argc, cfg->argv, shorts, options,
 	                                 nullptr)) >= 0; ) {
@@ -2632,7 +2633,7 @@ config_parse (struct config *cfg)
 	optind = 0;
 	for (int opt; (opt = getopt_long(cfg->argc, cfg->argv, shorts, options,
 	                                 nullptr)) >= 0; ) {
-		if (opt == 'h' && !flag_any(cfg->flags, CFG_LOGGED)) {
+		if (opt == 'h' && !flag_any(cfg->flags, CFG_ERRORS_TO_LOG)) {
 			config_usage(cfg, stdout);
 			return 0;
 		}
@@ -2681,11 +2682,11 @@ config_reload (struct config       *cfg,
                struct config const *from)
 {
 	*cfg = config_defaults(from->argc, from->argv);
-	flag_set(&cfg->flags, CFG_LOGGED);
+	flag_set(&cfg->flags, CFG_ERRORS_TO_LOG);
 	cfg->running = from;
 	int status = config_parse(cfg);
 	if (status < 0 && !config_same_options(cfg, from))
-		flag_set(&cfg->flags, CFG_RESTART);
+		flag_set(&cfg->flags, CFG_RESTART_NEEDED);
 	return status;
 }
 

@@ -30,10 +30,11 @@ struct ai_endpoint;
  *  chatgpt_header().
  */
 enum auth_flag : uint32_t {
-	AUTH_CACHED = FLAG_OWN(0),  /**< only the credential file answers: no
-	                                 command runs, nothing is refreshed and
-	                                 no file is made. Without a valid token
-	                                 in the file, the answer is an error. */
+	/** only the credential file answers: no command runs, nothing is
+	 *  refreshed and no file is made. Without a valid token in the file,
+	 *  the answer is an error.
+	 */
+	AUTH_ASK_FILE_ONLY = FLAG_OWN(0),
 };
 
 enum {

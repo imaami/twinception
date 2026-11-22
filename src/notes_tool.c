@@ -128,12 +128,18 @@ static struct cstr_view const members_unread = CSTR_VIEW_INIT("The members could
 
 /* The flags of a notes call (struct notes_tool_call). */
 enum notes_tool_call_flag : uint16_t {
-	CALL_STRIPPED = FLAG_OWN(0),  /* askai cut its notices off the text */
-	CALL_AS       = FLAG_OWN(1),  /* the call gave the argument as */
-	CALL_LOGIN    = FLAG_OWN(2),  /* the call waits for the member of the
-	                                 login of its client, without git */
-	CALL_OWN      = FLAG_OWN(3),  /* the call reads the notebook of the
-	                                 caller */
+	/* askai cut its notices off the text */
+	NOTES_TOOL_CALL_STRIPPED = FLAG_OWN(0),
+
+	/* the call gave the argument as */
+	NOTES_TOOL_CALL_ARG_AS = FLAG_OWN(1),
+
+	/* the call waits for the member of the login of its client, without git
+	 */
+	NOTES_TOOL_CALL_LOGGING_IN = FLAG_OWN(2),
+
+	/* the call reads the notebook of the caller */
+	NOTES_TOOL_CALL_OWN = FLAG_OWN(3),
 };
 
 /* The state of one notes call. It is the own word of the call's slot. An
@@ -529,12 +535,12 @@ notes_tool_prompt_notices (struct mcp_slot *slot)
 }
 
 /* Finds the member of the login of the client of the call in @p slot. The
- * prompt of an ask call (call->then) and an action that writes a note as
- * the caller (NOTES_ACTION_WRITE) claim the member, which makes the
- * record of a new member (member_table_claim()). Any other call only
- * looks the member up (member_table_find()). Once the lookup has ended,
- * the call goes on in notes_tool_logged_in(). While the table looks the
- * login up, the call is parked with CALL_LOGIN, the state from which
+ * prompt of an ask call (call->then) and an action that writes a note as the
+ * caller (NOTES_ACTION_WRITE) claim the member, which makes the record of a new
+ * member (member_table_claim()). Any other call only looks the member up
+ * (member_table_find()). Once the lookup has ended, the call goes on in
+ * notes_tool_logged_in(). While the table looks the login up, the call is
+ * parked with NOTES_TOOL_CALL_LOGGING_IN, the state from which
  * notes_tool_step() goes on.
  */
 static void
@@ -551,7 +557,7 @@ notes_tool_login (struct mcp_slot *slot)
 		notes_tool_logged_in(slot);
 		return;
 	}
-	flag_set(&call->flags, CALL_LOGIN);
+	flag_set(&call->flags, NOTES_TOOL_CALL_LOGGING_IN);
 	(void)mcp_slot_park(slot);
 }
 
@@ -615,9 +621,10 @@ notes_tool_unread (struct mcp_slot *slot)
 	static char const yours[] = "Your notebook %s contains no notes yet.";
 	static char const other[] = "The notebook %s contains no notes yet.";
 	char buf[sizeof yours + MEMBER_NAME];
-	struct cstr_view const none = util_format_view(buf, sizeof buf,
-	                                               flag_any(call->flags, CALL_OWN) ? yours : other,
-	                                               call->book.name);
+	struct cstr_view const none =
+		util_format_view(buf, sizeof buf,
+		                 flag_any(call->flags, NOTES_TOOL_CALL_OWN) ? yours : other,
+		                 call->book.name);
 	if (flag_any(notes_tool_actions[call->action].flags, NOTES_ACTION_FILE))
 		mcp_slot_tell(slot, none, TOOL_FAILED);
 	else if (mcp_slot_from_client(slot))
@@ -729,7 +736,8 @@ notes_tool_call_message (struct notes_tool_call *call,
 		            commit);
 	else if (*commit)
 		util_format(from, sizeof from, " from %s", commit);
-	char const *source = flag_any(call->flags, CALL_AS) ? call->revision.file.data : "";
+	char const *source = flag_any(call->flags, NOTES_TOOL_CALL_ARG_AS)
+	                     ? call->revision.file.data : "";
 	char name[STORE_QUOTED];
 	static_assert(sizeof "Copy  from the notebook of  at : ( bytes)" + UTIL_DECIMAL +
 	              sizeof name + MEMBER_NAME + OID_SHA256 + NOTES_NAME <= STORE_MESSAGE);
@@ -783,7 +791,7 @@ notes_tool_wrote (struct mcp_slot *slot,
                   int              e)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	if (!e && flag_any(call->flags, CALL_STRIPPED))
+	if (!e && flag_any(call->flags, NOTES_TOOL_CALL_STRIPPED))
 		e = cstr_view_cat(CSTR_VIEW(" askai removed the [askai: ...] lines from the end of "
 		                            "the text. askai adds [askai: ...] lines to tool "
 		                            "results, not to notes."), call->text);
@@ -847,7 +855,7 @@ notes_tool_checked (struct mcp_slot *slot)
 	uint32_t fetch = notes_tool_actions[call->action].fetch;
 	if (fetch & FETCH_REPLACE)
 		r = r == EEXIST ? 0 : r && r != ENOTDIR ? r : ENOENT;
-	if (fetch & FETCH_RESTORE && r == EEXIST && !flag_any(call->flags, CALL_AS))
+	if (fetch & FETCH_RESTORE && r == EEXIST && !flag_any(call->flags, NOTES_TOOL_CALL_ARG_AS))
 		r = 0;
 	if (!r) {
 		struct oid const pinned = call->revision.tip;
@@ -1174,7 +1182,7 @@ notes_tool_members (struct notes_tool_call *call,
 		ok = dstr_printf(d, "%-*.*s  %-6s  ", (int)width, (int)info->name.len, info->name.data,
 		                 member_kinds[info->kind].data);
 		char when[WHEN];
-		if (!flag_any(info->flags, MEMBER_NOTES) ||
+		if (!flag_any(info->flags, MEMBER_INFO_NOTES) ||
 		    !notes_tool_when(when, sizeof when, info->time, when_text)) {
 			ok = ok && dstr_cat(d, "no notes yet\n");
 		} else {
@@ -1782,7 +1790,7 @@ notes_tool_step (struct mcp_slot *slot)
 	/* The lookup of a login and attach reach this step without a child.
 	 * For attach, the step handles the answer to the upload. */
 	if (!call->child) {
-		if (flag_any(call->flags, CALL_LOGIN))
+		if (flag_any(call->flags, NOTES_TOOL_CALL_LOGGING_IN))
 			notes_tool_logged_in(slot);
 		else
 			notes_tool_uploaded(slot);
@@ -1842,13 +1850,13 @@ notes_tool_no_member (struct mcp_slot  *slot,
 	mcp_slot_tell(slot, why.len ? why : needs, TOOL_FAILED);
 }
 
-/* Finds the notebook of the call in @p slot once the caller is known, and
- * runs the first git of the call. A call that writes a note as the caller
- * (NOTES_ACTION_WRITE) needs a caller with a member name, and a write
- * writes only the notebook of the caller. Without the notebook argument,
- * the call reads the notebook of the caller (CALL_OWN). Otherwise the
- * argument names a member of the table. For a name without a member in
- * the table, git lists the records of the members first (FETCH_MEMBERS).
+/* Finds the notebook of the call in @p slot once the caller is known, and runs
+ * the first git of the call. A call that writes a note as the caller
+ * (NOTES_ACTION_WRITE) needs a caller with a member name, and a write writes
+ * only the notebook of the caller. Without the notebook argument, the call
+ * reads the notebook of the caller (NOTES_TOOL_CALL_OWN). Otherwise the
+ * argument names a member of the table. For a name without a member in the
+ * table, git lists the records of the members first (FETCH_MEMBERS).
  */
 static void
 notes_tool_resolve (struct mcp_slot *slot)
@@ -1875,7 +1883,7 @@ notes_tool_resolve (struct mcp_slot *slot)
 	/* The action members accepts no notebook argument, so the call reads
 	 * the notebook of the caller. */
 	if (own) {
-		flag_set(&call->flags, CALL_OWN);
+		flag_set(&call->flags, NOTES_TOOL_CALL_OWN);
 		call->book = call->self;
 		memcpy(call->notebook, call->repo, sizeof call->notebook);
 	} else if (flags & NOTES_ACTION_SELF) {
@@ -1905,7 +1913,7 @@ static void
 notes_tool_logged_in (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	flag_clear(&call->flags, CALL_LOGIN);
+	flag_clear(&call->flags, NOTES_TOOL_CALL_LOGGING_IN);
 	int const e = call->wait.e;
 	if (e && e != ENOENT && e != EPERM) {
 		notes_tool_drop(slot);
@@ -2016,7 +2024,7 @@ notes_tool_add (struct mcp_slot    *slot,
 		 * writes after the text. */
 		size_t const lf = turn && kept < TOOL_TEXT_MAX && text.data[kept - 1] != '\n';
 		if (kept < text.len)
-			flag_set(&call->flags, CALL_STRIPPED);
+			flag_set(&call->flags, NOTES_TOOL_CALL_STRIPPED);
 		e = store_part_head(&call->part, &call->file, name, kept + lf);
 		if (!e)
 			*(char *)mempcpy(buf_peek(&call->file).ptr + call->part.at, text.data,
@@ -2240,7 +2248,7 @@ notes_tool_start (struct mcp_slot    *slot,
 				mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 				return;
 			}
-			flag_set(&call->flags, CALL_AS);
+			flag_set(&call->flags, NOTES_TOOL_CALL_ARG_AS);
 		}
 		(void)util_text_store(&call->name, target);
 		notes_tool_revision(slot, (struct json_object *const[]){ revision, nullptr });

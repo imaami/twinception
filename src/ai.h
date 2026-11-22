@@ -139,14 +139,14 @@ ai_chatgpt_check (struct json_object *extra);
 
 /** What an event of a streamed answer says in struct ai_event's flags. */
 enum ai_event_flag : uint32_t {
-	AI_EV_THOUGHT     = FLAG_OWN(0),  /**< the event carries the model's
-	                                       thinking */
-	AI_EV_THOUGHT_END = FLAG_OWN(1),  /**< a whole reasoning item, block or
-	                                       step explicitly ended, after this
-	                                       event's pieces */
-	AI_EV_TRUNCATED   = FLAG_CUT,     /**< the reason is the output token
-	                                       limit */
-	AI_EV_END         = FLAG_OWN(2),  /**< the answer says it has ended */
+	AI_EV_THOUGHT       = FLAG_OWN(0),  /**< the event carries the model's
+	                                         thinking */
+	AI_EV_THOUGHT_ENDED = FLAG_OWN(1),  /**< a whole reasoning item, block
+	                                         or step explicitly ended, after
+	                                         this event's pieces */
+	AI_EV_TRUNCATED     = FLAG_CUT,     /**< the reason is the output token
+	                                         limit */
+	AI_EV_ANSWER_ENDED  = FLAG_OWN(2),  /**< the answer says it has ended */
 };
 
 /** What an event of a streamed answer says besides its text. */
@@ -270,12 +270,14 @@ ai_event (enum ai_api            api,
  *  ai_format's flags).
  */
 enum ai_format_flag {
-	AI_ARGS_RAW     = FLAG_OWN(0),  /**< a call's arguments are a JSON
-	                                     object, not the text of a JSON
-	                                     string */
-	AI_RESULT_NAMED = FLAG_OWN(1),  /**< a result names its call by name,
-	                                     and by id if the call had one or
-	                                     the turn wrote the call (call) */
+	/** a call's arguments are a JSON object, not the text of a JSON string
+	 */
+	AI_FORMAT_ARGS_RAW = FLAG_OWN(0),
+
+	/** a result names its call by name, and by id if the call had one or
+	 *  the turn wrote the call (call)
+	 */
+	AI_FORMAT_RESULT_NAMED = FLAG_OWN(1),
 };
 
 /**
@@ -283,26 +285,26 @@ enum ai_format_flag {
  * whose answers may call tools: each fragment goes between the texts of
  * strings, which are escaped into it, and of JSON as it came.
  *
- * A model's turn is turn, which opens the list of its items, or, empty,
- * leaves them in the conversation's; then text and its text, if the API
- * has text, thought and its thinking's text if it has any, and calls, which
- * opens a list of their own if it is not empty. Then the replay, its items
- * before each call, the call, and the items after the last: each call is
- * call, or call_next after an item in the list, its id, name, its name,
- * args, its arguments (AI_ARGS_RAW), args_end, extra and its extra's JSON
- * text if it has one (struct ai_call), and call_end, unless call is empty,
- * as the calls are in the replay. Then turn_end. An answer, a turn that
- * calls no tool, is the same but for calls, and ends with answer_end.
+ * A model's turn is turn, which opens the list of its items, or, empty, leaves
+ * them in the conversation's; then text and its text, if the API has text,
+ * thought and its thinking's text if it has any, and calls, which opens a list
+ * of their own if it is not empty. Then the replay, its items before each call,
+ * the call, and the items after the last: each call is call, or call_next after
+ * an item in the list, its id, name, its name, args, its arguments
+ * (AI_FORMAT_ARGS_RAW), args_end, extra and its extra's JSON text if it has one
+ * (struct ai_call), and call_end, unless call is empty, as the calls are in the
+ * replay. Then turn_end. An answer, a turn that calls no tool, is the same but
+ * for calls, and ends with answer_end.
  *
  * The tools that a turn may call are an array as the API has them, which
  * tools and tools_end hold, of the items ai_tool() makes.
  *
- * The results of the calls follow: results, then each result after the
- * first result_sep, and result, the call's id, or its name and result_id
- * and its id, if it had one or call is not empty (AI_RESULT_NAMED), output,
- * the result's text, and result_end; then each file that the calls
- * attached, as file, its URI and file_end, if the API takes files
- * (ai_upload()); then results_end.
+ * The results of the calls follow: results, then each result after the first
+ * result_sep, and result, the call's id, or its name and result_id and its id,
+ * if it had one or call is not empty (AI_FORMAT_RESULT_NAMED), output, the
+ * result's text, and result_end; then each file that the calls attached, as
+ * file, its URI and file_end, if the API takes files (ai_upload()); then
+ * results_end.
  *
  * prompt_end ends the prompt's text, after which end ends the conversation
  * and the body: what askai adds to the prompt goes before it. A message

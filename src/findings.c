@@ -56,12 +56,12 @@ static struct cstr_view const findings_actions[] = { FINDINGS_ACTION_LIST(XL_VIE
  * clients can call.
  */
 enum : uint32_t {
-	ON_ADD     = 1U << FINDINGS_ADD,
-	ON_UPDATE  = 1U << FINDINGS_UPDATE,
-	ON_LIST    = 1U << FINDINGS_LIST,
-	ON_SHOW    = 1U << FINDINGS_SHOW,
-	ON_EXPAND  = 1U << FINDINGS_EXPAND,
-	ON_CLIENTS = ON_LIST | ON_SHOW | ON_EXPAND,
+	FINDINGS_ON_ADD         = 1U << FINDINGS_ADD,
+	FINDINGS_ON_UPDATE      = 1U << FINDINGS_UPDATE,
+	FINDINGS_ON_LIST        = 1U << FINDINGS_LIST,
+	FINDINGS_ON_SHOW        = 1U << FINDINGS_SHOW,
+	FINDINGS_ON_EXPAND      = 1U << FINDINGS_EXPAND,
+	FINDINGS_CLIENT_ACTIONS = FINDINGS_ON_LIST | FINDINGS_ON_SHOW | FINDINGS_ON_EXPAND,
 };
 
 /* The names of the arguments of the findings tool, and the actions that
@@ -71,16 +71,17 @@ static struct {
 	struct cstr_view name;
 	uint64_t         actions;  /* uint64_t to fill the padding */
 } const findings_arg_rows[] = {
-	{ CSTR_VIEW_INIT("action"),   ON_ADD | ON_UPDATE | ON_LIST | ON_SHOW | ON_EXPAND },
-	{ CSTR_VIEW_INIT("id"),       ON_UPDATE | ON_SHOW | ON_EXPAND },
-	{ CSTR_VIEW_INIT("claim"),    ON_ADD | ON_UPDATE },
-	{ CSTR_VIEW_INIT("state"),    ON_ADD | ON_UPDATE },
-	{ CSTR_VIEW_INIT("evidence"), ON_ADD | ON_UPDATE },
-	{ CSTR_VIEW_INIT("external"), ON_ADD | ON_UPDATE },
-	{ CSTR_VIEW_INIT("reason"),   ON_ADD | ON_UPDATE },
-	{ CSTR_VIEW_INIT("about"),    ON_ADD },
-	{ CSTR_VIEW_INIT("author"),   ON_LIST },
-	{ CSTR_VIEW_INIT("offset"),   ON_LIST | ON_SHOW | ON_EXPAND },
+	{ CSTR_VIEW_INIT("action"),   FINDINGS_ON_ADD | FINDINGS_ON_UPDATE | FINDINGS_ON_LIST |
+	                              FINDINGS_ON_SHOW | FINDINGS_ON_EXPAND },
+	{ CSTR_VIEW_INIT("id"),       FINDINGS_ON_UPDATE | FINDINGS_ON_SHOW | FINDINGS_ON_EXPAND },
+	{ CSTR_VIEW_INIT("claim"),    FINDINGS_ON_ADD | FINDINGS_ON_UPDATE },
+	{ CSTR_VIEW_INIT("state"),    FINDINGS_ON_ADD | FINDINGS_ON_UPDATE },
+	{ CSTR_VIEW_INIT("evidence"), FINDINGS_ON_ADD | FINDINGS_ON_UPDATE },
+	{ CSTR_VIEW_INIT("external"), FINDINGS_ON_ADD | FINDINGS_ON_UPDATE },
+	{ CSTR_VIEW_INIT("reason"),   FINDINGS_ON_ADD | FINDINGS_ON_UPDATE },
+	{ CSTR_VIEW_INIT("about"),    FINDINGS_ON_ADD },
+	{ CSTR_VIEW_INIT("author"),   FINDINGS_ON_LIST },
+	{ CSTR_VIEW_INIT("offset"),   FINDINGS_ON_LIST | FINDINGS_ON_SHOW | FINDINGS_ON_EXPAND },
 };
 
 /* The text for findings that git could not read. */
@@ -106,21 +107,29 @@ enum findings_stage : uint8_t {
 /* The stages whose step handles a git that failed. The steps of the other
  * stages need the output of a git that succeeded.
  */
-enum { STAGES_FAILED = 1U << STAGE_REFS | 1U << STAGE_COMMIT | 1U << STAGE_CALLS };
+enum { FINDINGS_FAILURE_STAGES = 1U << STAGE_REFS | 1U << STAGE_COMMIT | 1U << STAGE_CALLS };
 
 /* The stored material of the items that one call reads, at most. */
 enum { FINDINGS_MATERIAL = TOOL_OUTPUT_MAX / 2 };
 
 /* The flags of a call. */
 enum findings_flag : uint32_t {
-	CALL_ABOUT = FLAG_OWN(0),  /* the finding of the about argument
-	                              exists */
-	CALL_FOUND = FLAG_OWN(1),  /* the finding of id exists */
-	CALL_SAME  = FLAG_OWN(2),  /* the update does not change the state of
-	                              the finding */
-	CALL_CLAIM = FLAG_OWN(3),  /* the update corrects the claim */
-	CALL_CITED = FLAG_OWN(4),  /* the items that the evidence cites again
-	                              are in the archive of the commit */
+	/* the finding of the about argument exists */
+	FINDINGS_CALL_ABOUT_FOUND = FLAG_OWN(0),
+
+	/* the finding of id exists */
+	FINDINGS_CALL_ID_FOUND = FLAG_OWN(1),
+
+	/* the update does not change the state of the finding */
+	FINDINGS_CALL_SAME_STATE = FLAG_OWN(2),
+
+	/* the update changes the claim */
+	FINDINGS_CALL_NEW_CLAIM = FLAG_OWN(3),
+
+	/* the items that the evidence cites again are in the archive of the
+	 * commit
+	 */
+	FINDINGS_CALL_CITED = FLAG_OWN(4),
 };
 
 /* A branch of findings: its tip and its author. The author is a copy,
@@ -159,10 +168,10 @@ struct findings_file {
  * The flags are set only on the first reference to an item.
  */
 enum findings_cite_flag : uint16_t {
-	CITE_SHOW = FLAG_OWN(0),  /* the turns had not seen the item, which the
-	                             refusal prints */
-	CITE_READ = FLAG_OWN(1),  /* the call reads the archive files of the
-	                             item */
+	FINDINGS_CITE_UNSEEN = FLAG_OWN(0),  /* the turns had not seen the item,
+	                                        which the refusal prints */
+	FINDINGS_CITE_READ   = FLAG_OWN(1),  /* the call reads the archive files
+	                                        of the item */
 };
 
 /* A reference of the evidence argument to an item of a finding, X#n/m or
@@ -518,7 +527,7 @@ findings_load (struct mcp_slot *slot)
 	call->done = 0;
 	call->batch = 0;
 	call->last = 0;
-	call->flags = flag32(flag_get(call->flags, CALL_CITED));
+	call->flags = flag32(flag_get(call->flags, FINDINGS_CALL_CITED));
 	struct buf in = buf();
 	findings_run(slot, STAGE_REFS, STORE_REFS, member_list, nullptr, &in);
 }
@@ -674,7 +683,7 @@ findings_got_check (struct mcp_slot *slot)
 	struct cstr_view line = {}, size = {};
 	struct oid id = {};
 	if (cstr_view_cut(&rest, '\n', &line) && store_kind(line, &id, &size) == STORE_KIND_BLOB)
-		flag_set(&call->flags, CALL_ABOUT);
+		flag_set(&call->flags, FINDINGS_CALL_ABOUT_FOUND);
 	findings_next(slot);
 }
 
@@ -694,7 +703,7 @@ findings_got_files (struct mcp_slot *slot)
 	bool const own = !strcmp(b->author, findings_session(slot)->agent.name);
 	uint32_t const id = strcmp(b->author, call->id.author) ? 0 : call->id.number;
 	uint32_t const only = call->action == FINDINGS_UPDATE ? id : 0;
-	bool const every = (ON_LIST | ON_SHOW | ON_EXPAND) >> call->action & 1;
+	bool const every = (FINDINGS_ON_LIST | FINDINGS_ON_SHOW | FINDINGS_ON_EXPAND) >> call->action & 1;
 	struct span out = buf_peek(&call->child->out);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
 	struct notes_file file = {};
@@ -709,7 +718,7 @@ findings_got_files (struct mcp_slot *slot)
 		if (own && n > call->last)
 			call->last = n;
 		if (n == id)
-			flag_set(&call->flags, CALL_FOUND);
+			flag_set(&call->flags, FINDINGS_CALL_ID_FOUND);
 		if (!every && n != only)
 			continue;
 		want.bytes = file.bytes;
@@ -833,8 +842,9 @@ findings_committed (struct mcp_slot *slot)
 			ok = dstr_printf(&call->out, "Added %s (%s).", id, state);
 		else
 			ok = dstr_printf(&call->out, "%s is %s %s.", id,
-			                 flag_any(call->flags, CALL_SAME) ? "still" : "now", state);
-		if (ok && flag_any(call->flags, CALL_CLAIM))
+			                 flag_any(call->flags, FINDINGS_CALL_SAME_STATE) ? "still" : "now",
+			                 state);
+		if (ok && flag_any(call->flags, FINDINGS_CALL_NEW_CLAIM))
 			ok = dstr_cat(&call->out, " The claim changed.");
 		if (ok)
 			ok = findings_cited(call, id);
@@ -870,10 +880,10 @@ findings_committed (struct mcp_slot *slot)
 		mcp_slot_tell(slot, CSTR_VIEW("Could not record the finding."), TOOL_FAILED);
 }
 
-/* Writes to @p message the subject of the commit of the change of the
- * call to the finding @p id, whose state was @p before: "Add bro#5
- * (verified)", and for an update by CALL_SAME and CALL_CLAIM "Update bro#5
- * (candidate to verified)", "Update bro#5 (claim)" or both. Returns the
+/* Writes to @p message the subject of the commit of the change of the call to
+ * the finding @p id, whose state was @p before: "Add bro#5 (verified)", and for
+ * an update by FINDINGS_CALL_SAME_STATE and FINDINGS_CALL_NEW_CLAIM "Update
+ * bro#5 (candidate to verified)", "Update bro#5 (claim)" or both. Returns the
  * view of the subject in @p message.
  */
 static struct cstr_view
@@ -886,12 +896,12 @@ findings_subject (struct findings_call const *call,
 	char const *was = finding_state_names[before].data;
 	if (call->action == FINDINGS_ADD)
 		return util_format_view(message, STORE_MESSAGE, "Add %s (%s)", id, after);
-	switch (flag_get(call->flags, CALL_SAME | CALL_CLAIM)) {
-	case CALL_SAME:
+	switch (flag_get(call->flags, FINDINGS_CALL_SAME_STATE | FINDINGS_CALL_NEW_CLAIM)) {
+	case FINDINGS_CALL_SAME_STATE:
 		return util_format_view(message, STORE_MESSAGE, "Update %s (%s)", id, after);
-	case CALL_SAME | CALL_CLAIM:
+	case FINDINGS_CALL_SAME_STATE | FINDINGS_CALL_NEW_CLAIM:
 		return util_format_view(message, STORE_MESSAGE, "Update %s (claim)", id);
-	case CALL_CLAIM:
+	case FINDINGS_CALL_NEW_CLAIM:
 		return util_format_view(message, STORE_MESSAGE, "Update %s (%s to %s, claim)", id, was,
 		                        after);
 	default:
@@ -919,8 +929,8 @@ findings_commit (struct mcp_slot      *slot,
 	if (call->action == FINDINGS_UPDATE) {
 		if (cstr_view_equal(claim, cstr_view_dstr(&f->claim)))
 			claim = cstr_view(nullptr);
-		flag_set(&call->flags, (before == call->change.state ? CALL_SAME : 0) |
-		                       (claim.len ? CALL_CLAIM : 0));
+		flag_set(&call->flags, (before == call->change.state ? FINDINGS_CALL_SAME_STATE : 0) |
+		                       (claim.len ? FINDINGS_CALL_NEW_CLAIM : 0));
 	}
 	/* The items of the change are numbered after the items of f. */
 	struct finding_change *c = &call->change;
@@ -1352,11 +1362,11 @@ findings_act (struct mcp_slot *slot)
 		return;
 	case FINDINGS_SHOW:
 	case FINDINGS_UPDATE:
-		if (!flag_any(call->flags, CALL_FOUND))
+		if (!flag_any(call->flags, FINDINGS_CALL_ID_FOUND))
 			missing = &call->id;
 		break;
 	case FINDINGS_ADD:
-		if (*call->about.author && !flag_any(call->flags, CALL_ABOUT))
+		if (*call->about.author && !flag_any(call->flags, FINDINGS_CALL_ABOUT_FOUND))
 			missing = &call->about;
 		break;
 	}
@@ -1367,7 +1377,7 @@ findings_act (struct mcp_slot *slot)
 	/* The items that the evidence cites again are read after the checks
 	 * above, so that the refusal of an item that the turns had not seen
 	 * comes after the refusal of a finding that does not exist. */
-	if (call->cites.n && !flag_any(call->flags, CALL_CITED)) {
+	if (call->cites.n && !flag_any(call->flags, FINDINGS_CALL_CITED)) {
 		findings_cite_records(slot);
 		return;
 	}
@@ -1415,10 +1425,10 @@ findings_act (struct mcp_slot *slot)
 	finding_fini(&added);
 }
 
-/* Writes to call->out the start of the refusal of the add or the update
- * of @p call, whose evidence cites items that the turns had not seen
- * (CITE_SHOW), and the IDs of those items to @p names, each once. Returns 0
- * or ENOMEM.
+/* Writes to call->out the start of the refusal of the add or the update of @p
+ * call, whose evidence cites items that the turns had not seen
+ * (FINDINGS_CITE_UNSEEN), and the IDs of those items to @p names, each once.
+ * Returns 0 or ENOMEM.
  */
 static int
 findings_unseen_head (struct findings_call *call,
@@ -1430,7 +1440,7 @@ findings_unseen_head (struct findings_call *call,
 	uint64_t mask = 0;
 	for (size_t i = 0; i < call->cites.n; ++i) {
 		struct findings_cite const *cite = &call->cites.items[i];
-		if (!flag_any(cite->flags, CITE_SHOW))
+		if (!flag_any(cite->flags, FINDINGS_CITE_UNSEEN))
 			continue;
 		views[i] = finding_id_put(&cite->ref.id, texts[i]);
 		mask |= UINT64_C(1) << i;
@@ -1467,12 +1477,11 @@ findings_too_long (struct mcp_slot   *slot,
 	findings_end(slot, ok ? 0 : ENOMEM, true);
 }
 
-/* Refuses the add or the update of the call in @p slot, whose evidence
- * cites items that the turns had not seen (CITE_SHOW), and prints those
- * items, each once, with the material @p material, so that they count as
- * shown in this turn. Items that do not fit in one result together are
- * named instead, for expand to print a page at a time
- * (findings_too_long()).
+/* Refuses the add or the update of the call in @p slot, whose evidence cites
+ * items that the turns had not seen (FINDINGS_CITE_UNSEEN), and prints those
+ * items, each once, with the material @p material, so that they count as shown
+ * in this turn. Items that do not fit in one result together are named instead,
+ * for expand to print a page at a time (findings_too_long()).
  */
 static void
 findings_unseen (struct mcp_slot                *slot,
@@ -1493,7 +1502,7 @@ findings_unseen (struct mcp_slot                *slot,
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
 		struct findings_cite const *cite = &call->cites.items[i];
 		at[i] = end;
-		if (!flag_any(cite->flags, CITE_SHOW))
+		if (!flag_any(cite->flags, FINDINGS_CITE_UNSEEN))
 			continue;
 		e = evidence_parse_text(&item, cstr_view_dstr(&cite->record));
 		if (!e)
@@ -1520,13 +1529,13 @@ findings_unseen (struct mcp_slot                *slot,
 	findings_end(slot, e, true);
 }
 
-/* Makes the items that the evidence of the call in @p slot cites again,
- * from their records and, for lines, from the stored lines @p material, or
- * refuses the call for items that the turns had not seen (CITE_SHOW). A
+/* Makes the items that the evidence of the call in @p slot cites again, from
+ * their records and, for lines, from the stored lines @p material, or refuses
+ * the call for items that the turns had not seen (FINDINGS_CITE_UNSEEN). A
  * reference uses the record, the git IDs and the material of the first
- * reference to its item. Lines of an item are stored anew, and a whole
- * item is the archive files of the item, by their git IDs. Then the action
- * goes on (findings_act()).
+ * reference to its item. Lines of an item are stored anew, and a whole item is
+ * the archive files of the item, by their git IDs. Then the action goes on
+ * (findings_act()).
  */
 static void
 findings_cite_end (struct mcp_slot                *slot,
@@ -1534,7 +1543,7 @@ findings_cite_end (struct mcp_slot                *slot,
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	for (size_t i = 0; i < call->cites.n; ++i)
-		if (flag_any(call->cites.items[i].flags, CITE_SHOW)) {
+		if (flag_any(call->cites.items[i].flags, FINDINGS_CITE_UNSEEN)) {
 			findings_unseen(slot, material);
 			return;
 		}
@@ -1565,12 +1574,12 @@ findings_cite_end (struct mcp_slot                *slot,
 		return;
 	}
 	call->archive = buf_peek(&call->files).len;
-	flag_set(&call->flags, CALL_CITED);
+	flag_set(&call->flags, FINDINGS_CALL_CITED);
 	findings_act(slot);
 }
 
-/* Handles the output of cat-file for the archive files of the items that
- * the evidence cites again (CITE_READ): their git IDs, and their material
+/* Handles the output of cat-file for the archive files of the items that the
+ * evidence cites again (FINDINGS_CITE_READ): their git IDs, and their material
  * for findings_cite_end().
  */
 static void
@@ -1581,7 +1590,7 @@ findings_got_blobs (struct mcp_slot *slot)
 	struct evidence_material material[EVIDENCE_REFS] = {};
 	for (size_t i = 0; i < call->cites.n; ++i) {
 		struct findings_cite *cite = &call->cites.items[i];
-		if (!flag_any(cite->flags, CITE_READ))
+		if (!flag_any(cite->flags, FINDINGS_CITE_READ))
 			continue;
 		/* The archive files of an item are the arguments, then the
 		 * material. */
@@ -1607,11 +1616,11 @@ findings_got_blobs (struct mcp_slot *slot)
 
 /* Runs git to read the archive files of the items of call->cites that the
  * refusal of the call in @p slot prints or that are cited in part, which
- * findings_cite_add() marked CITE_READ, and of the items whose git IDs the
- * ring does not store. Each item is read once, by its first reference. The
- * call is refused before git runs if the material of the items that the
- * refusal prints is longer than one result. Without items to read, the
- * call goes on at once.
+ * findings_cite_add() marked FINDINGS_CITE_READ, and of the items whose git IDs
+ * the ring does not store. Each item is read once, by its first reference. The
+ * call is refused before git runs if the material of the items that the refusal
+ * prints is longer than one result. Without items to read, the call goes on at
+ * once.
  */
 static void
 findings_cite_blobs (struct mcp_slot *slot)
@@ -1641,9 +1650,9 @@ findings_cite_blobs (struct mcp_slot *slot)
 		cite->kind = item.kind;
 		bool const asked = item.kind == EVIDENCE_CALL;
 		bool const stored = findings_stored(&item, cite->blobs);
-		if (!flag_any(cite->flags, CITE_READ) && stored)
+		if (!flag_any(cite->flags, FINDINGS_CITE_READ) && stored)
 			continue;
-		flag_set(&cite->flags, CITE_READ);
+		flag_set(&cite->flags, FINDINGS_CITE_READ);
 		if (!findings_fits(&bytes, &item)) {
 			evidence_fini(&item);
 			buf_fini(&in);
@@ -1652,7 +1661,7 @@ findings_cite_blobs (struct mcp_slot *slot)
 			              TOOL_FAILED);
 			return;
 		}
-		if (flag_any(cite->flags, CITE_SHOW))
+		if (flag_any(cite->flags, FINDINGS_CITE_UNSEEN))
 			shown += (asked ? item.request.bytes : 0) + item.result.bytes;
 		/* The ring stores the git IDs of an item that a result showed.
 		 * For the other items, the ref of the branch of the author is made
@@ -1750,7 +1759,7 @@ findings_step (struct mcp_slot *slot)
 		[STAGE_CALLS]   = findings_got_calls,
 	};
 	struct findings_call const *call = *mcp_slot_own(slot);
-	if (!(STAGES_FAILED >> call->stage & 1) && !child_ok(call->child)) {
+	if (!(FINDINGS_FAILURE_STAGES >> call->stage & 1) && !child_ok(call->child)) {
 		findings_stop(slot, EINVAL, unread);
 		return;
 	}
@@ -1786,17 +1795,17 @@ findings_texts (struct findings_call *call,
 	return 0;
 }
 
-/* Adds the reference @p ref to an item of a finding, X#n/m or X#n/m:A-B,
- * the item @p index of the evidence of the change of the call in @p slot,
- * to call->cites. findings_cite.first of a later reference is the index of
- * the first reference to the item. For lines of a later reference,
- * CITE_READ is set on the first reference, so that askai reads the archive
- * files of the item. The function copies the record and the git IDs of the
- * item to the first reference if the ring stores the item. With @p strict,
- * an item that a result of this turn showed whole is refused, and the
- * refusal of the call prints an item that no result showed whole
- * (CITE_SHOW). Returns 0, EINVAL with the refusal in the @p len bytes at
- * @p why, or ENOMEM.
+/* Adds the reference @p ref to an item of a finding, X#n/m or X#n/m:A-B, the
+ * item @p index of the evidence of the change of the call in @p slot, to
+ * call->cites. findings_cite.first of a later reference is the index of the
+ * first reference to the item. For lines of a later reference,
+ * FINDINGS_CITE_READ is set on the first reference, so that askai reads the
+ * archive files of the item. The function copies the record and the git IDs of
+ * the item to the first reference if the ring stores the item. With @p strict,
+ * an item that a result of this turn showed whole is refused, and the refusal
+ * of the call prints an item that no result showed whole
+ * (FINDINGS_CITE_UNSEEN). Returns 0, EINVAL with the refusal in the @p len
+ * bytes at @p why, or ENOMEM.
  */
 static int
 findings_cite_add (struct mcp_slot           *slot,
@@ -1813,7 +1822,7 @@ findings_cite_add (struct mcp_slot           *slot,
 	size_t first = 0;
 	while (first < n && !finding_id_equal(&call->cites.items[first].ref.id, &ref->id))
 		++first;
-	uint16_t const lines = ref->form == EVIDENCE_REF_ITEM_LINES ? CITE_READ : 0;
+	uint16_t const lines = ref->form == EVIDENCE_REF_ITEM_LINES ? FINDINGS_CITE_READ : 0;
 	struct findings_cite *cite = &call->cites.items[n];
 	*cite = findings_cite((uint32_t)index, (uint32_t)first, *ref);
 	if (first < n) {
@@ -1830,7 +1839,7 @@ findings_cite_add (struct mcp_slot           *slot,
 		return util_refuse(why, len, "askai showed you %s in this turn. Cite %s for verified or "
 		                   "disproved in a later turn.", id, id);
 	}
-	cite->flags = flag16(strict && !turn ? CITE_SHOW | CITE_READ | lines : lines);
+	cite->flags = flag16(strict && !turn ? FINDINGS_CITE_UNSEEN | FINDINGS_CITE_READ | lines : lines);
 	if (s) {
 		if (cstr_view_store(cstr_view_dstr(&s->record), &cite->record)) {
 			dstr_cleanup(&cite->record);
@@ -1941,7 +1950,7 @@ findings_args (struct mcp_slot    *slot,
 	struct json_object *state = jb_get(args, "state");
 	struct json_object *about = jb_get(args, "about");
 	struct json_object *author = jb_get(args, "author");
-	if ((ON_UPDATE | ON_SHOW) >> call->action & 1 &&
+	if ((FINDINGS_ON_UPDATE | FINDINGS_ON_SHOW) >> call->action & 1 &&
 	    (finding_id_parse(&call->id, jb_view(id)) || call->id.item))
 		return util_refuse(why, len, "%s needs id: a finding, such as %s#5.", action, agent);
 	/* expand of a turn without id prints all open findings of the agent. */
@@ -1964,7 +1973,7 @@ findings_args (struct mcp_slot    *slot,
 	}
 	if (about && (finding_id_parse(&call->about, jb_view(about)) || call->about.item))
 		return util_refuse(why, len, "about must be the id of a finding, such as %s#2.", agent);
-	if (!((ON_ADD | ON_UPDATE) >> call->action & 1))
+	if (!((FINDINGS_ON_ADD | FINDINGS_ON_UPDATE) >> call->action & 1))
 		return 0;
 	size_t const s = cstr_view_index(finding_state_names, FINDING_STATES, jb_view(state));
 	if (state ? s == FINDING_STATES : call->action == FINDINGS_UPDATE)
@@ -2102,7 +2111,7 @@ findings_start (struct mcp_slot    *slot,
 	*mcp_slot_own(slot) = call;
 	/* Clients can only read the findings. */
 	bool const client = mcp_slot_from_client(slot);
-	if (call->action == FINDINGS_ACTIONS || (client && !(ON_CLIENTS >> call->action & 1))) {
+	if (call->action == FINDINGS_ACTIONS || (client && !(FINDINGS_CLIENT_ACTIONS >> call->action & 1))) {
 		mcp_slot_tell(slot, client ? CSTR_VIEW("The action argument must be one of: list, "
 		                                       "show, expand.")
 		                           : CSTR_VIEW("The action argument must be one of: "
@@ -2111,7 +2120,7 @@ findings_start (struct mcp_slot    *slot,
 		              TOOL_FAILED);
 		return;
 	}
-	if ((ON_ADD | ON_UPDATE) >> call->action & 1 && mcp_slot_rerun(slot)) {
+	if ((FINDINGS_ON_ADD | FINDINGS_ON_UPDATE) >> call->action & 1 && mcp_slot_rerun(slot)) {
 		char const *const words[] = { findings_session(slot)->refs[MEMBER_BRANCH_FINDINGS] };
 		call->args = args;
 		struct buf in = buf();
@@ -2121,7 +2130,7 @@ findings_start (struct mcp_slot    *slot,
 	findings_begin(slot, args);
 }
 
-static_assert(ON_CLIENTS == (1U << FINDINGS_ACTIONS) - (1U << FINDINGS_LIST),
+static_assert(FINDINGS_CLIENT_ACTIONS == (1U << FINDINGS_ACTIONS) - (1U << FINDINGS_LIST),
               "the actions of clients are the last actions, from list on");
 
 /* Returns the definition of the findings tool for clients, which can only

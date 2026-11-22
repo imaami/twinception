@@ -97,10 +97,15 @@ struct loop_metrics {
 
 /** The bits of loop.flags. */
 enum {
-	LOOP_EXIT     = FLAG_END,     /**< loop_exit() or loop_fini() was
-	                                   called, so the loop is to end */
-	LOOP_STEPPING = FLAG_OWN(0),  /**< steps run, whose loop_ready() calls
-	                                   queue steps that are not fresh */
+	/** loop_exit() or loop_fini() was called: the loop is to end. From then
+	 *  on the loop calls no handler of an event, a message or a timer and
+	 *  runs no step.
+	 */
+	LOOP_END = FLAG_END,
+
+	/** steps run, whose loop_ready() calls queue steps that are not fresh
+	 */
+	LOOP_STEPPING = FLAG_OWN(0),
 };
 
 /**

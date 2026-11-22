@@ -18,19 +18,19 @@
 enum { MESSAGES_MAX_TOKENS = 4096 };
 
 /* The state of the reading of Gemini's Interactions (struct ai_reader's
- * state): in INTERACTIONS_KIND, the type of the open step, or the end of
+ * state): in AI_INTERACTIONS_KIND, the type of the open step, or the end of
  * the answer, after which no event changes the replay; then the state of
  * the summary array of the open thought, and its signature. An open
  * thought is not in the replay until it has a summary item or a signature.
  */
 enum {
-	INTERACTIONS_THOUGHT = 0,
-	INTERACTIONS_OUTPUT  = 1,
-	INTERACTIONS_ENDED   = 2,
-	INTERACTIONS_KIND    = 3,
-	SUMMARY_OPEN         = 1u << 2,
-	SUMMARY_CLOSED       = 1u << 3,
-	SIGNED               = 1u << 4,
+	AI_INTERACTIONS_THOUGHT        = 0,
+	AI_INTERACTIONS_OUTPUT         = 1,
+	AI_INTERACTIONS_ENDED          = 2,
+	AI_INTERACTIONS_KIND           = 3,
+	AI_INTERACTIONS_SUMMARY_OPEN   = 1u << 2,
+	AI_INTERACTIONS_SUMMARY_CLOSED = 1u << 3,
+	AI_INTERACTIONS_SIGNED         = 1u << 4,
 };
 
 static struct json_object *
@@ -386,21 +386,37 @@ ai_interactions_answer (struct json_object  *root,
  * name.
  */
 enum {
-	BODY_MODEL   = FLAG_OWN(0),  /* the model, first */
-	BODY_USAGE   = FLAG_OWN(1),  /* with tools, the usage in the stream */
-	BODY_STORE   = FLAG_OWN(2),  /* "store", false */
-	BODY_KEEP    = FLAG_OWN(3),  /* "store", true with native background
-	                                execution, which needs storage */
-	BODY_STREAM  = FLAG_OWN(4),  /* "stream", after --extra is merged, so
-	                                that the answer is always streamed */
-	BODY_PARTS   = FLAG_OWN(5),  /* the system prompt in an object with an
-	                                array of parts */
-	TOOL_TYPED   = FLAG_OWN(6),  /* a tool has "type": "function" */
-	TOOL_WRAPPED = FLAG_OWN(7),  /* a tool is the member function of an
-	                                object with "type": "function" */
-	TOOL_LOOSE   = FLAG_OWN(8),  /* a tool has "strict": false. Without it,
-	                                the API makes every argument a required
-	                                one. */
+	/* the model, first */
+	AI_BODY_MODEL = FLAG_OWN(0),
+
+	/* with tools, the usage in the stream */
+	AI_BODY_USAGE = FLAG_OWN(1),
+
+	/* "store", false */
+	AI_BODY_STORE = FLAG_OWN(2),
+
+	/* "store", true with native background execution, which needs storage
+	 */
+	AI_BODY_STORE_BACKGROUND = FLAG_OWN(3),
+
+	/* "stream", after --extra is merged, so that the answer is always
+	 * streamed
+	 */
+	AI_BODY_STREAM = FLAG_OWN(4),
+
+	/* the system prompt in an object with an array of parts */
+	AI_BODY_PARTS = FLAG_OWN(5),
+
+	/* a tool has "type": "function" */
+	AI_BODY_TOOL_TYPED = FLAG_OWN(6),
+
+	/* a tool is the member function of an object with "type": "function" */
+	AI_BODY_TOOL_WRAPPED = FLAG_OWN(7),
+
+	/* a tool has "strict": false. Without it, the API makes every argument
+	 * a required one.
+	 */
+	AI_BODY_TOOL_LOOSE = FLAG_OWN(8),
 };
 
 #define B(s) CSTR_VIEW_INIT(s)
@@ -448,7 +464,7 @@ static struct ai_body {
 		.limit  = "length",
 		.schema = "parameters",
 		.answer = ai_chat_answer,
-		.flags = { BODY_MODEL | BODY_USAGE | BODY_STREAM | TOOL_WRAPPED },
+		.flags = { AI_BODY_MODEL | AI_BODY_USAGE | AI_BODY_STREAM | AI_BODY_TOOL_WRAPPED },
 	},
 	/* Its turn is the replay's items, its calls among them, in the
 	 * input's list. */
@@ -469,7 +485,8 @@ static struct ai_body {
 		.limit  = "max_output_tokens",
 		.schema = "parameters",
 		.answer = ai_responses_answer,
-		.flags = { BODY_MODEL | BODY_STORE | BODY_STREAM | TOOL_TYPED | TOOL_LOOSE },
+		.flags = { AI_BODY_MODEL | AI_BODY_STORE | AI_BODY_STREAM | AI_BODY_TOOL_TYPED |
+		           AI_BODY_TOOL_LOOSE },
 	},
 	/* Its turn's text and thinking blocks are in the replay; all its
 	 * results go in one message. */
@@ -495,7 +512,7 @@ static struct ai_body {
 			.prompt_end   = B("\"}"),
 			.end          = B("]}"),
 			.conversation = "messages",
-			.flags = { AI_ARGS_RAW },
+			.flags = { AI_FORMAT_ARGS_RAW },
 		},
 		.system      = "system",
 		.max         = "max_tokens",
@@ -503,7 +520,7 @@ static struct ai_body {
 		.limit       = "max_tokens",
 		.schema      = "input_schema",
 		.answer      = ai_messages_answer,
-		.flags = { BODY_MODEL | BODY_STREAM },
+		.flags = { AI_BODY_MODEL | AI_BODY_STREAM },
 	},
 	/* Its turn's parts are the replay's, its calls among them, with
 	 * their thought signatures. A file goes after the results, in
@@ -530,7 +547,7 @@ static struct ai_body {
 			.prompt_end   = B("\"}]}"),
 			.end          = B("]}"),
 			.conversation = "contents",
-			.flags = { AI_RESULT_NAMED },
+			.flags = { AI_FORMAT_RESULT_NAMED },
 		},
 		.system  = "systemInstruction",
 		.options = "generationConfig",
@@ -538,7 +555,7 @@ static struct ai_body {
 		.limit   = "MAX_TOKENS",
 		.schema  = "parametersJsonSchema",
 		.answer  = ai_generate_answer,
-		.flags = { BODY_PARTS },
+		.flags = { AI_BODY_PARTS },
 	},
 	/* A turn is the replay's steps and the calls, in the input list,
 	 * a call with its signature. Each result is a step after them,
@@ -568,7 +585,7 @@ static struct ai_body {
 			.prompt_end   = B("\"}]}"),
 			.end          = B("]}"),
 			.conversation = "input",
-			.flags = { AI_ARGS_RAW | AI_RESULT_NAMED },
+			.flags = { AI_FORMAT_ARGS_RAW | AI_FORMAT_RESULT_NAMED },
 		},
 		.system  = "system_instruction",
 		.options = "generation_config",
@@ -576,7 +593,8 @@ static struct ai_body {
 		.limit   = "incomplete",
 		.schema  = "parameters",
 		.answer  = ai_interactions_answer,
-		.flags = { BODY_MODEL | BODY_STORE | BODY_KEEP | BODY_STREAM | TOOL_TYPED },
+		.flags = { AI_BODY_MODEL | AI_BODY_STORE | AI_BODY_STORE_BACKGROUND | AI_BODY_STREAM |
+		           AI_BODY_TOOL_TYPED },
 	},
 };
 #undef B
@@ -594,13 +612,13 @@ ai_request (struct ai_endpoint const *ep,
 	struct ai_body const *b = &ai_bodies[ep->api];
 	char const *conversation = b->format.conversation;
 	bool background = ai_background(ep);
-	if (flag_any(b->flags, BODY_MODEL) && ep->model &&
+	if (flag_any(b->flags, AI_BODY_MODEL) && ep->model &&
 	             jb_set(root, "model", json_object_new_string(ep->model)))
 		goto fail;
 	/* Chat completions has the system prompt as a message in the
 	 * conversation. The other APIs have it in the member b->system. */
 	if (b->system) {
-		if (system && jb_set(root, b->system, flag_any(b->flags, BODY_PARTS)
+		if (system && jb_set(root, b->system, flag_any(b->flags, AI_BODY_PARTS)
 		                                      ? ai_generate_content(nullptr, system)
 		                                      : json_object_get(system)))
 			goto fail;
@@ -608,17 +626,18 @@ ai_request (struct ai_endpoint const *ep,
 	}
 	if (jb_set(root, conversation, ai_conversation(ep->api, system, history, prompt)) ||
 	    (tools && (jb_set(root, "tools", ai_request_tools(ep, tools)) ||
-	               (flag_any(b->flags, BODY_USAGE) &&
+	               (flag_any(b->flags, AI_BODY_USAGE) &&
 	                jb_set(root, "stream_options",
 	                       jb_object("include_usage", json_object_new_boolean(1),
 	                                 nullptr))))) ||
-	    (flag_any(b->flags, BODY_STORE) &&
+	    (flag_any(b->flags, AI_BODY_STORE) &&
 	              jb_set(root, "store",
-	                     json_object_new_boolean(flag_any(b->flags, BODY_KEEP) && background))) ||
+	                     json_object_new_boolean(flag_any(b->flags, AI_BODY_STORE_BACKGROUND) &&
+	                                             background))) ||
 	    ai_request_common(ep, root, b->options, b->max,
 	                      ep->max_tokens > 0 ? ep->max_tokens : b->max_default) ||
 	    (background && jb_set(root, "background", json_object_new_boolean(1))) ||
-	    (flag_any(b->flags, BODY_STREAM) && jb_set(root, "stream", json_object_new_boolean(1))) ||
+	    (flag_any(b->flags, AI_BODY_STREAM) && jb_set(root, "stream", json_object_new_boolean(1))) ||
 	    (ep->provider == AI_CHATGPT && ai_chatgpt_request(root)) ||
 	    ai_request_last(root, conversation))
 		goto fail;
@@ -837,7 +856,7 @@ ai_chat_delta (struct ai_sink const *sink,
 /* Pass @p item, an output item of the Responses API at the place @p at in
  * the output, to @p sink. A function call goes to sink->call. A function
  * call, a reasoning item or a message goes whole to the replay. Set
- * AI_EV_THOUGHT_END if @p item is a reasoning item.
+ * AI_EV_THOUGHT_ENDED if @p item is a reasoning item.
  */
 static int
 ai_responses_item (struct ai_sink const *sink,
@@ -854,7 +873,7 @@ ai_responses_item (struct ai_sink const *sink,
 	size_t kind = cstr_view_index(kinds, KINDS, jb_view(jb_get(item, "type")));
 	if (kind == KINDS)
 		return 0;
-	flag_set(&out->flags, kind == REASONING ? AI_EV_THOUGHT_END : 0);
+	flag_set(&out->flags, kind == REASONING ? AI_EV_THOUGHT_ENDED : 0);
 	int e = 0;
 	if (kind == CALL && sink->call) {
 		struct ai_call call = ai_call(
@@ -869,7 +888,7 @@ ai_responses_item (struct ai_sink const *sink,
 }
 
 /* Pass the pieces of the event @p ev of the Responses API to @p sink. Set
- * AI_EV_THOUGHT if the event contains thinking. Set AI_EV_END and
+ * AI_EV_THOUGHT if the event contains thinking. Set AI_EV_ANSWER_ENDED and
  * out->used when the answer ends.
  */
 static int
@@ -901,7 +920,7 @@ ai_responses_event (struct ai_sink const *sink,
 	case DONE:
 	case CUT: {
 		struct json_object *usage = jb_get(jb_get(ev, "response"), "usage");
-		flag_set(&out->flags, AI_EV_END);
+		flag_set(&out->flags, AI_EV_ANSWER_ENDED);
 		out->used = ai_used(jb_int(jb_get(usage, "input_tokens"), 0),
 		                    jb_int(jb_get(usage, "output_tokens"), 0));
 		return 0;
@@ -1029,11 +1048,11 @@ ai_messages_delta (struct ai_sink const *sink,
 	return 0;
 }
 
-/* Pass the pieces of the event @p ev of Anthropic's Messages to @p sink,
- * with the state of the reading in @p reader. Set AI_EV_THOUGHT if the
- * event contains thinking, out->used when the answer ends, and AI_EV_END
- * at the end of the message. An event of a content block without an index
- * can pass only text to @p sink.
+/* Pass the pieces of the event @p ev of Anthropic's Messages to @p sink, with
+ * the state of the reading in @p reader. Set AI_EV_THOUGHT if the event
+ * contains thinking, out->used when the answer ends, and AI_EV_ANSWER_ENDED at
+ * the end of the message. An event of a content block without an index can pass
+ * only text to @p sink.
  */
 static int
 ai_messages_event (struct ai_sink const *sink,
@@ -1064,7 +1083,7 @@ ai_messages_event (struct ai_sink const *sink,
 	case STOP:
 		if (reader->open != at + 1)
 			return 0;
-		flag_set(&out->flags, reader->calls == at + 1 ? AI_EV_THOUGHT_END : 0);
+		flag_set(&out->flags, reader->calls == at + 1 ? AI_EV_THOUGHT_ENDED : 0);
 		reader->calls = reader->open = 0;
 		return ai_replay(sink, CSTR_VIEW("\"}"));
 	case MESSAGE: {
@@ -1085,7 +1104,7 @@ ai_messages_event (struct ai_sink const *sink,
 		return 0;
 	}
 	case MESSAGE_STOP:
-		flag_set(&out->flags, AI_EV_END);
+		flag_set(&out->flags, AI_EV_ANSWER_ENDED);
 		return 0;
 	}
 	return 0;
@@ -1161,7 +1180,8 @@ static int
 ai_interactions_head (struct ai_sink const   *sink,
                       struct ai_reader const *reader)
 {
-	if (reader->state & (SUMMARY_OPEN | SUMMARY_CLOSED | SIGNED))
+	if (reader->state & (AI_INTERACTIONS_SUMMARY_OPEN | AI_INTERACTIONS_SUMMARY_CLOSED |
+	                     AI_INTERACTIONS_SIGNED))
 		return 0;
 	return ai_replay(sink, CSTR_VIEW(",{\"type\":\"thought\""));
 }
@@ -1179,12 +1199,12 @@ ai_interactions_close (struct ai_sink const *sink,
 		return 0;
 	reader->open = 0;
 	switch (reader->state) {
-	case INTERACTIONS_OUTPUT:
+	case AI_INTERACTIONS_OUTPUT:
 		return ai_replay(sink, CSTR_VIEW("\"}]}"));
-	case INTERACTIONS_THOUGHT:
+	case AI_INTERACTIONS_THOUGHT:
 		return 0;
-	case INTERACTIONS_THOUGHT | SUMMARY_OPEN:
-	case INTERACTIONS_THOUGHT | SUMMARY_OPEN | SIGNED:
+	case AI_INTERACTIONS_THOUGHT | AI_INTERACTIONS_SUMMARY_OPEN:
+	case AI_INTERACTIONS_THOUGHT | AI_INTERACTIONS_SUMMARY_OPEN | AI_INTERACTIONS_SIGNED:
 		return ai_replay(sink, CSTR_VIEW("]}"));
 	default:
 		return ai_replay(sink, CSTR_VIEW("}"));
@@ -1208,11 +1228,11 @@ ai_interactions_text (struct ai_sink const *sink,
 	if (e)
 		return e;
 	if (reader->open == at + 1)
-		return reader->state == INTERACTIONS_OUTPUT ? ai_replay_text(sink, text) : 0;
+		return reader->state == AI_INTERACTIONS_OUTPUT ? ai_replay_text(sink, text) : 0;
 	if (reader->open || !cstr_view_trim_end(piece).len)
 		return 0;
 	reader->open = at + 1;
-	reader->state = INTERACTIONS_OUTPUT;
+	reader->state = AI_INTERACTIONS_OUTPUT;
 	return ai_replay_open(sink, CSTR_VIEW(",{\"type\":\"model_output\",\"content\":"
 	                                      "[{\"type\":\"text\",\"text\":\""), text);
 }
@@ -1228,12 +1248,12 @@ ai_interactions_summary (struct ai_sink const *sink,
                          struct ai_reader     *reader,
                          struct json_object   *item)
 {
-	if (reader->state & SUMMARY_CLOSED || !json_object_is_type(item, json_type_object))
+	if (reader->state & AI_INTERACTIONS_SUMMARY_CLOSED || !json_object_is_type(item, json_type_object))
 		return 0;
-	if (reader->state & SUMMARY_OPEN)
+	if (reader->state & AI_INTERACTIONS_SUMMARY_OPEN)
 		return ai_replay_item(sink, item);
 	int e = ai_interactions_head(sink, reader);
-	reader->state |= SUMMARY_OPEN;
+	reader->state |= AI_INTERACTIONS_SUMMARY_OPEN;
 	return e ? e : ai_replay_after(sink, CSTR_VIEW(",\"summary\":["), item);
 }
 
@@ -1247,12 +1267,12 @@ ai_interactions_sign (struct ai_sink const *sink,
                       struct ai_reader     *reader,
                       struct json_object   *signature)
 {
-	if (reader->state & SIGNED || !jb_view(signature).len)
+	if (reader->state & AI_INTERACTIONS_SIGNED || !jb_view(signature).len)
 		return 0;
 	int e = ai_interactions_head(sink, reader);
-	reader->state |= SIGNED;
-	if (!e && reader->state & SUMMARY_OPEN) {
-		reader->state ^= SUMMARY_OPEN | SUMMARY_CLOSED;
+	reader->state |= AI_INTERACTIONS_SIGNED;
+	if (!e && reader->state & AI_INTERACTIONS_SUMMARY_OPEN) {
+		reader->state ^= AI_INTERACTIONS_SUMMARY_OPEN | AI_INTERACTIONS_SUMMARY_CLOSED;
 		e = ai_replay(sink, CSTR_VIEW("]"));
 	}
 	if (!e)
@@ -1274,7 +1294,7 @@ ai_interactions_thought (struct ai_sink const *sink,
                          struct ai_event      *out)
 {
 	reader->open = at + 1;
-	reader->state = INTERACTIONS_THOUGHT;
+	reader->state = AI_INTERACTIONS_THOUGHT;
 	int e = ai_interactions_sign(sink, reader, jb_get(step, "signature"));
 	struct json_object *summary = jb_get(step, "summary");
 	struct json_object *item;
@@ -1361,7 +1381,7 @@ ai_interactions_delta (struct ai_sink const *sink,
 		[ARGUMENTS] = CSTR_VIEW_INIT("arguments_delta"),
 	};
 	bool thought = reader->open == at + 1 &&
-	               (reader->state & INTERACTIONS_KIND) == INTERACTIONS_THOUGHT;
+	               (reader->state & AI_INTERACTIONS_KIND) == AI_INTERACTIONS_THOUGHT;
 	switch (cstr_view_index(kinds, KINDS, jb_view(jb_get(delta, "type")))) {
 	case TEXT:
 		return ai_interactions_text(sink, reader, at, jb_get(delta, "text"));
@@ -1390,11 +1410,11 @@ ai_interactions_delta (struct ai_sink const *sink,
 	return 0;
 }
 
-/* Process @p ev, an event of Gemini's Interactions of type @p type, with
- * the state of the reading in @p reader. interaction.completed closes the
- * open item in the replay, sets AI_EV_END and the tokens used, and makes
- * the reading ignore the events after it. A step event without an index
- * can pass only text to @p sink.
+/* Process @p ev, an event of Gemini's Interactions of type @p type, with the
+ * state of the reading in @p reader. interaction.completed closes the open item
+ * in the replay, sets AI_EV_ANSWER_ENDED and the tokens used, and makes the
+ * reading ignore the events after it. A step event without an index can pass
+ * only text to @p sink.
  */
 static int
 ai_interactions_event (struct ai_sink const *sink,
@@ -1410,7 +1430,7 @@ ai_interactions_event (struct ai_sink const *sink,
 		[STOP]  = CSTR_VIEW_INIT("step.stop"),
 		[DONE]  = CSTR_VIEW_INIT("interaction.completed"),
 	};
-	if (reader->state == INTERACTIONS_ENDED)
+	if (reader->state == AI_INTERACTIONS_ENDED)
 		return 0;
 	uint32_t at = ai_index(jb_get(ev, "index"));
 	size_t kind = cstr_view_index(kinds, KINDS, jb_view(type));
@@ -1425,8 +1445,8 @@ ai_interactions_event (struct ai_sink const *sink,
 	case STOP:
 		if (reader->open != at + 1)
 			return 0;
-		flag_set(&out->flags, (reader->state & INTERACTIONS_KIND) == INTERACTIONS_THOUGHT
-		                      ? AI_EV_THOUGHT_END : 0);
+		flag_set(&out->flags, (reader->state & AI_INTERACTIONS_KIND) == AI_INTERACTIONS_THOUGHT
+		                      ? AI_EV_THOUGHT_ENDED : 0);
 		return ai_interactions_close(sink, reader);
 	case DONE: {
 		/* The thinking is not sent back in the next request, so the tokens
@@ -1434,13 +1454,13 @@ ai_interactions_event (struct ai_sink const *sink,
 		 * out the thinking. If that sum is not known, the tokens used are
 		 * total_tokens, which include the thinking. */
 		struct json_object *usage = jb_get(jb_get(ev, "interaction"), "usage");
-		flag_set(&out->flags, AI_EV_END);
+		flag_set(&out->flags, AI_EV_ANSWER_ENDED);
 		out->used = ai_used(jb_int(jb_get(usage, "total_input_tokens"), 0),
 		                    jb_int(jb_get(usage, "total_output_tokens"), 0));
 		if (!out->used)
 			out->used = ai_used(jb_int(jb_get(usage, "total_tokens"), 0), 0);
 		int e = ai_interactions_close(sink, reader);
-		reader->state = INTERACTIONS_ENDED;
+		reader->state = AI_INTERACTIONS_ENDED;
 		return e;
 	}
 	}
@@ -1503,15 +1523,16 @@ ai_event (enum ai_api            api,
 		/* interaction.created has a status too, so only the status in
 		 * interaction.completed is the stop reason. */
 		e = ai_interactions_event(sink, reader, jb_get(ev, "event_type"), ev, out);
-		reason = flag_any(out->flags, AI_EV_END) ? jb_get(jb_get(ev, "interaction"), "status")
-		                                         : nullptr;
+		reason = flag_any(out->flags, AI_EV_ANSWER_ENDED)
+		         ? jb_get(jb_get(ev, "interaction"), "status") : nullptr;
 		break;
 	case AI_NO_API:
 		break;
 	}
 	out->reason = jb_view(reason).data;
 	if (out->reason)
-		flag_set(&out->flags, AI_EV_END | (ai_cut(api, out->reason) ? AI_EV_TRUNCATED : 0));
+		flag_set(&out->flags,
+		         AI_EV_ANSWER_ENDED | (ai_cut(api, out->reason) ? AI_EV_TRUNCATED : 0));
 	return e;
 }
 
@@ -1531,11 +1552,11 @@ ai_tool (enum ai_api               api,
 		"description", json_object_get(jb_get(def, "description")),
 		b->schema, json_object_get(jb_get(def, "inputSchema")),
 		nullptr);
-	if (flag_any(b->flags, TOOL_LOOSE))
+	if (flag_any(b->flags, AI_BODY_TOOL_LOOSE))
 		tool = jb_set_or_free(tool, "strict", json_object_new_boolean(0));
-	return flag_any(b->flags, TOOL_WRAPPED)
+	return flag_any(b->flags, AI_BODY_TOOL_WRAPPED)
 	       ? jb_object("type", json_object_new_string("function"), "function", tool, nullptr)
-	                : flag_any(b->flags, TOOL_TYPED)
+	                : flag_any(b->flags, AI_BODY_TOOL_TYPED)
 	                ? jb_set_or_free(tool, "type", json_object_new_string("function"))
 	                : tool;
 }

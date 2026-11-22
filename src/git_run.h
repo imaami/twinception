@@ -180,7 +180,7 @@ git_run_dir_argv (struct git_run_dir const *dir,
  * the bits of enum child_flag are those of @p how. A command that writes
  * to a repository sets .grace = GIT_GRACE, so that git removes its lock
  * files at SIGTERM. A command whose output must contain the errors sets
- * .flags = { CHILD_STDERR }. @p dir and the words must stay valid until the
+ * .flags = { CHILD_CMD_STDERR }. @p dir and the words must stay valid until the
  * spawn, because @p dest points at them. The function initializes the
  * whole of @p dest: every pointer of dest->argv after the nullptr of the
  * argv is nullptr. Returns 0, EINVAL if a pointer is nullptr, or E2BIG if

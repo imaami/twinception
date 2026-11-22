@@ -270,8 +270,8 @@ ledger_owner_tell (struct ledger_owner *o,
 		struct ledger_task *t = container_of(pos, struct ledger_task, mine);
 		if (!ledger_task_status(t) || (n && !ledger_listed(ids, n, &t->id)))
 			continue;
-		if ((atomic_fetch_or_explicit(&t->state, LEDGER_TOLD, memory_order_relaxed) &
-		     LEDGER_TOLD && !n) || !ref_tryget(&t->refs))
+		if ((atomic_fetch_or_explicit(&t->state, LEDGER_REPORTED, memory_order_relaxed) &
+		     LEDGER_REPORTED && !n) || !ref_tryget(&t->refs))
 			continue;
 		out->tasks[out->n_tasks++] = t;
 	}
@@ -707,8 +707,8 @@ void
 ledger_task_cancel (struct ledger_task *task)
 {
 	/* Asked before, or ended: nothing to cancel. */
-	if (atomic_fetch_or_explicit(&task->state, LEDGER_ASKED, memory_order_acquire) &
-	    (LEDGER_ASKED | LEDGER_STATUS))
+	if (atomic_fetch_or_explicit(&task->state, LEDGER_CANCEL, memory_order_acquire) &
+	    (LEDGER_CANCEL | LEDGER_STATUS))
 		return;
 	ref_get(&task->refs);
 	/* A message that loop_post() refuses never runs, so the function drops

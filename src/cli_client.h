@@ -46,17 +46,19 @@ typedef int cli_client_report_fn (struct cli_client *client,
 
 /** The flags of struct cli_client. */
 enum {
-	CLI_CLIENT_CATALOG_DIRTY    = FLAG_OWN(0),  /**< the tools may have
-	                                                 changed */
-	CLI_CLIENT_NOTES_DIRTY      = FLAG_OWN(1),  /**< the note files may have
-	                                                 changed */
-	CLI_CLIENT_IDENTITY_CHANGED = FLAG_OWN(2),  /**< AskAI changed its
-	                                                 session, agent or ask
-	                                                 tool */
-	CLI_CLIENT_OLDER            = FLAG_OWN(3),  /**< AskAI is older than
-	                                                 askai-cli: its notes
-	                                                 tool lists notebooks,
-	                                                 not members */
+	/** the tools may have changed */
+	CLI_CLIENT_CATALOG_REFRESH_PENDING = FLAG_OWN(0),
+
+	/** the note files may have changed */
+	CLI_CLIENT_NOTES_REFRESH_PENDING = FLAG_OWN(1),
+
+	/** AskAI changed its session, agent or ask tool */
+	CLI_CLIENT_IDENTITY_CHANGED = FLAG_OWN(2),
+
+	/** AskAI is older than askai-cli: its notes tool lists notebooks, not
+	 *  members
+	 */
+	CLI_CLIENT_SERVER_OLDER = FLAG_OWN(3),
 };
 
 /** Strings and the catalog are owned; network is borrowed. The client and

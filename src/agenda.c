@@ -128,7 +128,7 @@ agenda_list (struct mcp_slot *slot)
 		struct ledger_task const *t = look.tasks[i];
 		uint64_t state = atomic_load_explicit(&t->state, memory_order_acquire);
 		enum ledger_status status = state & LEDGER_STATUS;
-		bool told = state & LEDGER_TOLD;
+		bool told = state & LEDGER_REPORTED;
 		ok = dstr_printf(&d, "%s %s: %s: ", ledger_kinds[t->kind], t->id.hex,
 		                 mcp_slot_tool_name(slot, t->tool)) &&
 		     (status == LEDGER_WORKING

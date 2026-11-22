@@ -24,40 +24,59 @@ struct ssl_ctx_st;
 
 /** Options that are on or off, as bits of struct config's flags. */
 enum config_flag {
-	CFG_MAN            = FLAG_OWN(0),   /**< offer the man tool */
-	CFG_TEST_FIFO      = FLAG_OWN(1),   /**< test aid: tool calls wait for
-	                                         the upstream in one queue,
-	                                         first in first out */
-	CFG_VERBOSE        = FLAG_OWN(2),   /**< log each tool call, ask call,
-	                                         turn and compaction (README.md,
-	                                         Log) */
-	CFG_TEST_TASK      = FLAG_OWN(3),   /**< test aid: offer test_task, CPU
-	                                         work done as a task
-	                                         (src/task.h) */
-	CFG_TLS_RSA        = FLAG_OWN(4),   /**< a TLS certificate's key may be
-	                                         RSA */
-	CFG_UPSTREAM_TOOLS = FLAG_OWN(5),   /**< the upstream may call tools
-	                                         too, in a loop of turns that
-	                                         the ask tool's call runs
-	                                         (src/mcp.h) */
-	CFG_CLIENT_JOBS    = FLAG_OWN(6),   /**< offer clients background, jobs,
-	                                         wait and timer (src/mcp.h) */
-	CFG_BODY_GIVEN     = FLAG_OWN(7),   /**< --max-body was given, which the
-	                                         budgets then do not lower */
-	CFG_LOGGED         = FLAG_OWN(8),   /**< what is wrong goes to the log,
-	                                         as on a reload */
-	CFG_RESTART        = FLAG_OWN(9),   /**< once reloaded: the file's
-	                                         options other than its policy
-	                                         are not those askai runs with,
-	                                         which take a restart */
-	CFG_LISTEN_FILE    = FLAG_OWN(10),  /**< the listeners so far are the
-	                                         file's */
-	CFG_CODE           = FLAG_OWN(11),  /**< the code tool is on
-	                                         (code_check()) */
-	CFG_UNCONFINED     = FLAG_OWN(12),  /**< --code-unconfined */
-	CFG_CHATGPT_LOGIN  = FLAG_OWN(13),  /**< authorize ChatGPT, then exit */
-	CFG_AUTH_LOGIN     = FLAG_OWN(14),  /**< run --auth-command, then
-	                                         exit */
+	/** offer the man tool */
+	CFG_MAN = FLAG_OWN(0),
+
+	/** test aid: tool calls wait for the upstream in one queue, first in
+	 *  first out
+	 */
+	CFG_TEST_FIFO = FLAG_OWN(1),
+
+	/** log each tool call, ask call, turn and compaction (README.md, Log)
+	 */
+	CFG_VERBOSE = FLAG_OWN(2),
+
+	/** test aid: offer test_task, CPU work done as a task (src/task.h) */
+	CFG_TEST_TASK = FLAG_OWN(3),
+
+	/** a TLS certificate's key may be RSA */
+	CFG_TLS_RSA = FLAG_OWN(4),
+
+	/** the upstream may call tools too, in a loop of turns that the ask
+	 *  tool's call runs (src/mcp.h)
+	 */
+	CFG_UPSTREAM_TOOLS = FLAG_OWN(5),
+
+	/** offer clients background, jobs, wait and timer (src/mcp.h) */
+	CFG_CLIENT_JOBS = FLAG_OWN(6),
+
+	/** --max-body was given, which the budgets then do not lower */
+	CFG_BODY_GIVEN = FLAG_OWN(7),
+
+	/** a reload builds the configuration, so what is wrong goes to the log
+	 */
+	CFG_ERRORS_TO_LOG = FLAG_OWN(8),
+
+	/** a reload found that options of the file other than the policy differ
+	 *  from the options that askai runs with, which take effect at a
+	 *  restart
+	 */
+	CFG_RESTART_NEEDED = FLAG_OWN(9),
+
+	/** the listeners so far are the file's */
+	CFG_LISTEN_FILE = FLAG_OWN(10),
+
+	/** the code tool is on (code_check()) */
+	CFG_CODE = FLAG_OWN(11),
+
+	/** --code-unconfined */
+	CFG_UNCONFINED = FLAG_OWN(12),
+
+	/** authorize ChatGPT, then exit */
+	CFG_CHATGPT_LOGIN = FLAG_OWN(13),
+
+	/** run --auth-command, then exit */
+	CFG_AUTH_LOGIN = FLAG_OWN(14),
 };
 
 /**

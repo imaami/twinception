@@ -223,7 +223,7 @@ chatgpt_replay (void)
 		"\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],"
 		"\"encrypted_content\":\"opaque-content\"}}");
 	CHECK(!ai_event(AI_RESPONSES, &reader, ev, &sink, &out));
-	CHECK(flag_get(out.flags, AI_EV_THOUGHT_END));
+	CHECK(flag_get(out.flags, AI_EV_THOUGHT_ENDED));
 	json_object_put(ev);
 	ev = json_tokener_parse(
 		"{\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{"

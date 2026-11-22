@@ -133,16 +133,24 @@ struct askai_reload {
 	struct blocker_job job;
 	struct config      cfg;     /* as the blocker read it */
 	int                status;  /* config_reload()'s */
-	struct flag32      flags;   /* RELOAD_BUSY, RELOAD_AGAIN */
+	struct flag32      flags;   /* ASKAI_RELOAD_RUNNING,
+	                               ASKAI_RELOAD_START */
 };
 
 /* The flags of the reload. A reload is under way while the range FLAG_WHEN
- * is RELOAD_BUSY. RELOAD_AGAIN says that a SIGHUP came meanwhile, so one
- * more reload is to start after the reload under way.
+ * is ASKAI_RELOAD_RUNNING. ASKAI_RELOAD_START says that a SIGHUP came
+ * meanwhile, so one more reload is to start after the reload under way.
  */
 enum {
-	RELOAD_BUSY  = FLAG_DURING,
-	RELOAD_AGAIN = FLAG_START,
+	/* A blocker has the job of the reload, or the message of the job is on
+	 * the way back to home.
+	 */
+	ASKAI_RELOAD_RUNNING = FLAG_DURING,
+
+	/* The order to reload came during a reload, so one more reload is to
+	 * start when the reload under way has ended.
+	 */
+	ASKAI_RELOAD_START = FLAG_START,
 };
 
 /* What runs on home: the jobs (src/home.h), and the door, which accepts the
@@ -301,7 +309,7 @@ askai_walk_done (struct loop *loop,
                  struct msg  *msg)
 {
 	(void)msg;
-	if (flag_any(loop->flags, LOOP_EXIT))
+	if (flag_any(loop->flags, LOOP_END))
 		return;
 	walker.keep->trim_ns += walker.job.error ? 0 : walker.ns;
 	askai_keep_trimmed(walker.keep);
@@ -509,13 +517,13 @@ askai_home_reload (void        *ctx,
 {
 	struct askai_home *app = ctx;
 	struct askai_reload *r = &app->reload;
-	if (flag_when(r->flags) == RELOAD_BUSY) {
-		flag_set(&r->flags, RELOAD_AGAIN);
+	if (flag_when(r->flags) == ASKAI_RELOAD_RUNNING) {
+		flag_set(&r->flags, ASKAI_RELOAD_START);
 		return;
 	}
 	r->job = blocker_job(askai_reload_done, askai_reload_work, loop);
-	r->flags = flag32(blocker_submit(app->keep.blockers, &r->job) ? 0 : RELOAD_BUSY);
-	if (flag_when(r->flags) != RELOAD_BUSY)
+	r->flags = flag32(blocker_submit(app->keep.blockers, &r->job) ? 0 : ASKAI_RELOAD_RUNNING);
+	if (flag_when(r->flags) != ASKAI_RELOAD_RUNNING)
 		LOG(LOG_WARN, "configuration not reloaded: the blockers are busy");
 }
 
@@ -546,7 +554,7 @@ askai_reload_apply (struct askai_home         *app,
 		cert = " and TLS certificate";
 	}
 	LOG(LOG_INFO, "configuration reloaded: policy%s", cert);
-	if (flag_any(r->cfg.flags, CFG_RESTART))
+	if (flag_any(r->cfg.flags, CFG_RESTART_NEEDED))
 		LOG(LOG_WARN, "warning: other changed options need a restart");
 	config_log_policy(&r->cfg);
 }
@@ -560,12 +568,12 @@ askai_reload_done (struct loop *loop,
 {
 	struct askai_reload *r = container_of(msg, struct askai_reload, job.done);
 	struct askai_home *app = container_of(r, struct askai_home, reload);
-	bool again = flag_any(r->flags, RELOAD_AGAIN);
+	bool again = flag_any(r->flags, ASKAI_RELOAD_START);
 	r->flags = flag32(0);
 	/* Cancelled, as the blockers stop, the work was not done. */
 	if (r->job.error)
 		return;
-	if (!flag_any(loop->flags, LOOP_EXIT))
+	if (!flag_any(loop->flags, LOOP_END))
 		askai_reload_apply(app, r);
 	else
 		again = false;

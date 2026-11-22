@@ -147,13 +147,12 @@ struct auth;
  *  has none.
  */
 enum web_ask_flag : uint32_t {
-	WEB_UPSTREAM = FLAG_OWN(0),  /**< the request goes to the upstream of
-	                                  askai, so home sends it with the
-	                                  Authorization line of the renewed
-	                                  credential, if the upstream has one
-	                                  (src/auth.h). Only for a request whose
-	                                  keep is 0: its response is not stored
-	                                  and no other request waits for it. */
+	/** the request goes to the upstream of askai, so home sends it with the
+	 *  Authorization line of the renewed credential, if the upstream has
+	 *  one (src/auth.h). Only for a request whose keep is 0: its response
+	 *  is not stored and no other request waits for it.
+	 */
+	WEB_ASK_UPSTREAM = FLAG_OWN(0),
 };
 
 struct web_ask {
@@ -209,7 +208,7 @@ web_destroy (struct web **p_web);
  * home's upstream calls. The bridge has at most two connections to one
  * host at once, and it looks host names up on @p blockers. @p auth is the
  * renewed credential of the upstream on @p loop, for the requests with
- * WEB_UPSTREAM, and the caller finalizes it after web_home_stop(). Returns
+ * WEB_ASK_UPSTREAM, and the caller finalizes it after web_home_stop(). Returns
  * 0, or the error number of http_create().
  */
 extern int

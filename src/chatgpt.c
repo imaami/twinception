@@ -406,7 +406,7 @@ chatgpt_browser_wait (struct chatgpt_browser *browser,
 	browser->deadline = loop_clock() + CHATGPT_WAIT * NS;
 	httpd_home_open(browser->home);
 	int e = 0;
-	while (!flag_any(browser->loop.flags, LOOP_EXIT) && loop_clock() < browser->deadline)
+	while (!flag_any(browser->loop.flags, LOOP_END) && loop_clock() < browser->deadline)
 		if ((e = loop_turn(&browser->loop, browser->deadline)))
 			break;
 	if (!e)
@@ -694,7 +694,7 @@ chatgpt_header (char const  *path,
 	if (!e && !now)
 		e = EIO;
 	bool const stale = !e && jb_uint(jb_get(file.record, "expires_at"), 0) <= now + AUTH_EARLY;
-	if (stale && flags & AUTH_CACHED)
+	if (stale && flags & AUTH_ASK_FILE_ONLY)
 		e = ENOKEY;
 	if (stale && !e) {
 		struct cstr_view refresh = chatgpt_text(file.record, "refresh_token");

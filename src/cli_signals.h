@@ -17,10 +17,11 @@ typedef void cli_signals_cb (struct cli_signals *signals, unsigned number);
  *  of each flag that is set.
  */
 enum {
-	CLI_SIGNALS_MASKED  = FLAG_OWN(0),  /**< the signal mask, from
-	                                         previous */
-	CLI_SIGNALS_IGNORED = FLAG_OWN(1),  /**< the action of SIGPIPE, from
-	                                         pipe */
+	/** the signal mask, from previous */
+	CLI_SIGNALS_MASKED = FLAG_OWN(0),
+
+	/** the action of SIGPIPE, from pipe */
+	CLI_SIGNALS_PIPE_IGNORED = FLAG_OWN(1),
 };
 
 struct cli_signals {

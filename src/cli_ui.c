@@ -22,7 +22,7 @@ cli_ui_newline (struct cli_ui *ui)
 {
 	if (flag_any(ui->flags, CLI_UI_TRAILING_NEWLINE))
 		return 0;
-	int e = cli_console_write(ui->console, flag_any(ui->flags, CLI_UI_REASONING), CSTR_VIEW("\n"));
+	int e = cli_console_write(ui->console, flag_any(ui->flags, CLI_UI_REASONING_OPEN), CSTR_VIEW("\n"));
 	if (!e)
 		flag_set(&ui->flags, CLI_UI_TRAILING_NEWLINE);
 	return e;
@@ -35,8 +35,8 @@ cli_ui_push (struct cli_ui    *ui,
 {
 	if (!text.len)
 		return 0;
-	bool reasoning = flag_any(ui->flags, CLI_UI_REASONING);
-	flag_set(&ui->flags, CLI_UI_STREAMING);
+	bool reasoning = flag_any(ui->flags, CLI_UI_REASONING_OPEN);
+	flag_set(&ui->flags, CLI_UI_TEXT_SHOWN);
 	int e = cli_console_set_display(ui->console, cli_ui_modes[reasoning].style);
 	if (!e && thinking != reasoning) {
 		/* The mark is in the reasoning style, and so is the newline that
@@ -49,7 +49,7 @@ cli_ui_push (struct cli_ui    *ui,
 		if (!e)
 			e = cli_console_set_display(ui->console, cli_ui_modes[thinking].style);
 		if (!e)
-			flag_flip(&ui->flags, CLI_UI_REASONING);
+			flag_flip(&ui->flags, CLI_UI_REASONING_OPEN);
 	}
 	if (e)
 		return e;
@@ -79,14 +79,14 @@ cli_ui_write_action (struct cli_ui    *ui,
 int
 cli_ui_finish (struct cli_ui *ui)
 {
-	bool reasoning = flag_any(ui->flags, CLI_UI_REASONING);
+	bool reasoning = flag_any(ui->flags, CLI_UI_REASONING_OPEN);
 	int e = cli_console_set_display(ui->console, cli_ui_modes[reasoning].style);
 	if (!e)
 		e = cli_ui_newline(ui);
 	if (!e && reasoning)
 		e = cli_console_write(ui->console, true, CSTR_VIEW("[End thinking]\n"));
 	int reset = cli_console_set_display(ui->console, CLI_STYLE_RESET);
-	if (!e && !reset && flag_any(ui->flags, CLI_UI_PENDING))
+	if (!e && !reset && flag_any(ui->flags, CLI_UI_PROGRESS_PENDING))
 		e = cli_ui_write_action(ui, cstr_view_dstr(&ui->actor), cstr_view_dstr(&ui->status), CLI_STYLE_PROGRESS);
 	dstr_clear(&ui->actor);
 	dstr_clear(&ui->status);
@@ -121,11 +121,11 @@ cli_ui_progress (struct cli_ui    *ui,
 	if (cstr_view_cat(actor, &ui->actor) || cstr_view_cat(text, &ui->status))
 		return ENOMEM;
 	/* After a shown line or delta, the last line waits for the end. */
-	if (flag_any(ui->flags, CLI_UI_STREAMING | CLI_UI_SHOWN)) {
-		flag_set(&ui->flags, CLI_UI_PENDING);
+	if (flag_any(ui->flags, CLI_UI_TEXT_SHOWN | CLI_UI_PROGRESS_SHOWN)) {
+		flag_set(&ui->flags, CLI_UI_PROGRESS_PENDING);
 		return 0;
 	}
-	flag_set(&ui->flags, CLI_UI_SHOWN);
+	flag_set(&ui->flags, CLI_UI_PROGRESS_SHOWN);
 	return cli_ui_write_action(ui, actor, text, CLI_STYLE_PROGRESS);
 }
 

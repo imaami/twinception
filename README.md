@@ -776,9 +776,9 @@ defined src/child.h:39
    line  enumerator = value
      40  CHILD_CUT = 1
      42  CHILD_LATE = 2
-     44  CHILD_OUT = 4
-     45  CHILD_EXIT = 8
-     46  CHILD_DUE = 16
+     44  CHILD_OUTPUT_PENDING = 4
+     45  CHILD_EXIT_PENDING = 8
+     46  CHILD_DEADLINE_PENDING = 16
      47  CHILD_EVENTS = 28
 ```
 

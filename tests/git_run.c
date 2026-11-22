@@ -225,7 +225,7 @@ git_run_test_init (void)
 		.max      = 7,
 		.deadline = 123,
 		.grace    = GIT_GRACE,
-		.flags = { CHILD_STDERR },
+		.flags = { CHILD_CMD_STDERR },
 	};
 	static char const *const tail[] = { "-C", "/r", "--git-dir=.", nullptr };
 	struct git_run run = { .c = how };
@@ -234,7 +234,8 @@ git_run_test_init (void)
 	CHECK(!git_run_init(&run, &dir, words, &how));
 	CHECK(!strcmp(run.c.file, "git") && run.c.argv == run.argv && run.c.envp == dir.env);
 	CHECK(run.c.in.ptr == how.in.ptr && run.c.in.len == 3 && run.c.max == 7 &&
-	      run.c.deadline == 123 && run.c.grace == GIT_GRACE && run.c.flags.bits == CHILD_STDERR);
+	      run.c.deadline == 123 && run.c.grace == GIT_GRACE &&
+	      run.c.flags.bits == CHILD_CMD_STDERR);
 	CHECK(git_run_test_argv(run.argv, tail, words));
 	for (size_t i = git_run_test_count(run.argv); i < array_size(run.argv); ++i)
 		CHECK(!run.argv[i]);
@@ -432,7 +433,7 @@ git_run_test_git (struct git_run_dir const *dir,
 	struct git_run run;
 	int e = git_run_init(&run, dir, words, &how);
 	CHECK(!e);
-	*end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
+	*end = child_end(.code = -1, .status = -1, .flags = { UINT32_MAX });
 	if (!e)
 		e = out ? child_capture(&run.c, fds, out, end)
 		        : child_cmd_run(&run.c, fds, nullptr, end);
@@ -554,7 +555,7 @@ git_run_test_now (struct git_run_dir const *dir)
  * repository at @p repo: with -C and the path, and with the directory of
  * the child; the options and the entries of the caller as git config
  * reads them; GIT_PAGER of GIT_ENV_FIXED; the input; the errors with and
- * without CHILD_STDERR; the cap; the deadline with and without a grace;
+ * without CHILD_CMD_STDERR; the cap; the deadline with and without a grace;
  * and a git that a signal kills. Runs git through child_cmd_run() with
  * the output in fds.out, at the deadline with and without a grace, and
  * with a signal.
@@ -642,14 +643,14 @@ git_run_test_run (char const *repo)
 	      !memcmp(name, "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f\n", 41));
 	util_close(&file.out);
 
-	/* The standard error goes to the output only with CHILD_STDERR. */
+	/* The standard error goes to the output only with CHILD_CMD_STDERR. */
 	char const *const missing[] = {
 		"rev-parse", "--verify", "--end-of-options", "missing", nullptr
 	};
 	CHECK(!git_run_test_git(&at, missing, how, child_fds(), &out, &end, &ms));
 	CHECK(end.code == CLD_EXITED && end.status == 128 && !end.flags.bits && !buf_peek(&out).len);
 	struct child_cmd errors = how;
-	errors.flags = flag64(CHILD_STDERR);
+	errors.flags = flag64(CHILD_CMD_STDERR);
 	CHECK(!git_run_test_git(&at, missing, errors, child_fds(), &out, &end, &ms));
 	CHECK(end.code == CLD_EXITED && end.status == 128 && !end.flags.bits);
 	struct span got = buf_peek(&out);

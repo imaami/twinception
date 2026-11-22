@@ -320,7 +320,7 @@ loop_deliver (struct loop *loop)
 void
 loop_fini (struct loop *loop)
 {
-	flag_set(&loop->flags, LOOP_EXIT);
+	flag_set(&loop->flags, LOOP_END);
 	for (loop_collect(loop); loop->mail; loop_collect(loop))
 		loop_deliver(loop);
 
@@ -611,7 +611,7 @@ static unsigned
 loop_fire (struct loop *loop)
 {
 	unsigned n = 0;
-	for (; n < TIMERS && loop->timers && !flag_any(loop->flags, LOOP_EXIT); ++n) {
+	for (; n < TIMERS && loop->timers && !flag_any(loop->flags, LOOP_END); ++n) {
 		struct loop_timer *timer = loop->heap[0];
 		if (timer->due > loop->now)
 			break;
@@ -653,7 +653,7 @@ loop_run (struct loop *loop,
 	uint64_t steps = 0;
 	size_t i = *cursor;
 	for (size_t empty = 0;
-	     empty < n && !flag_any(loop->flags, LOOP_EXIT) && (!steps || t < until);
+	     empty < n && !flag_any(loop->flags, LOOP_END) && (!steps || t < until);
 	     i = (i + 1) % n) {
 		if (list_is_empty(&batch[i])) {
 			++empty;
@@ -766,13 +766,13 @@ loop_turn (struct loop *loop,
 
 	uint64_t start = loop->now = loop_clock();
 	atomic_store_explicit(&loop->turn, start, memory_order_relaxed);
-	for (int i = 0; i < n && !flag_any(loop->flags, LOOP_EXIT); ++i) {
+	for (int i = 0; i < n && !flag_any(loop->flags, LOOP_END); ++i) {
 		struct loop_ref *ref = events[i].data.ptr;
 		if (ref && ref->cb)
 			ref->cb(loop, ref, events[i].events);
 	}
 	loop_collect(loop);
-	for (unsigned i = 0; i < MAIL && loop->mail && !flag_any(loop->flags, LOOP_EXIT); ++i) {
+	for (unsigned i = 0; i < MAIL && loop->mail && !flag_any(loop->flags, LOOP_END); ++i) {
 		uint64_t posted = loop->mail->posted;
 		uint64_t now = loop_clock();
 		hist_record(&loop->metrics->inbox, now > posted ? now - posted : 0);
@@ -799,7 +799,7 @@ loop_exec (struct loop *loop)
 	/* Set the timer slack of the thread to 1 ns. The default slack of 50 µs
 	 * delays each timed wake-up. */
 	(void)prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL);
-	while (!flag_any(loop->flags, LOOP_EXIT)) {
+	while (!flag_any(loop->flags, LOOP_END)) {
 		int e = loop_turn(loop, UINT64_MAX);
 		if (e)
 			return e;
@@ -821,5 +821,5 @@ loop_fail (struct loop *loop,
 void
 loop_exit (struct loop *loop)
 {
-	flag_set(&loop->flags, LOOP_EXIT);
+	flag_set(&loop->flags, LOOP_END);
 }

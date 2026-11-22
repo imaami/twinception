@@ -27,7 +27,7 @@ chatgpt_login (char const *path,
 
 /** Replace @p header with an Authorization header for @p path, refreshing
  *  expiring credentials under a process-shared lock, and write the time
- *  at which the access token ends to @p *expires. With AUTH_CACHED in
+ *  at which the access token ends to @p *expires. With AUTH_ASK_FILE_ONLY in
  *  @p flags, of enum auth_flag (src/auth.h), nothing is refreshed: ENOKEY
  *  then for credentials that end within AUTH_EARLY seconds. Returns 0 or an
  *  error number, which chatgpt_why() puts in words, and leaves @p header

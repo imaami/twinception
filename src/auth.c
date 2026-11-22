@@ -19,8 +19,10 @@
  * way.
  */
 enum : uint32_t {
-	AUTH_BUSY = FLAG_DURING,  /* a blocker has the read, or its message is
-	                             on the way back */
+	/* A blocker has the read of the credential file, or the message of the
+	 * read is on the way back to the loop.
+	 */
+	AUTH_READING = FLAG_DURING,
 };
 
 /* A read of the credential file on a blocker, with what it needs and what
@@ -85,13 +87,14 @@ auth_answer (struct auth *auth,
              uint64_t     flags)
 {
 	auth->error = e;
-	if (!e || !(flags & AUTH_CACHED)) {
+	if (!e || !(flags & AUTH_ASK_FILE_ONLY)) {
 		list_transplant(&auth->ready, &auth->waiting);
 	} else {
 		struct list *next;
 		for (struct list *pos = auth->waiting.next; pos != &auth->waiting; pos = next) {
 			next = pos->next;
-			if (flag_any(container_of(pos, struct auth_wait, hook)->flags, AUTH_CACHED))
+			if (flag_any(container_of(pos, struct auth_wait, hook)->flags,
+			             AUTH_ASK_FILE_ONLY))
 				list_move(&auth->ready, pos);
 		}
 	}
@@ -105,7 +108,7 @@ static void
 auth_read (struct auth *auth)
 {
 	struct auth_io *io = auth->io;
-	uint64_t flags = AUTH_CACHED;
+	uint64_t flags = AUTH_ASK_FILE_ONLY;
 	struct list const *pos;
 	list_foreach(pos, &auth->waiting)
 		flags &= container_of(pos, struct auth_wait, hook)->flags.bits;
@@ -114,7 +117,7 @@ auth_read (struct auth *auth)
 	if (e)
 		auth_answer(auth, e, 0);
 	else
-		flag_put(&auth->flags, FLAG_WHEN, AUTH_BUSY);
+		flag_put(&auth->flags, FLAG_WHEN, AUTH_READING);
 }
 
 /* The message of a read that has ended, on the loop. */
@@ -167,7 +170,7 @@ auth_deliver_step (struct loop      *loop,
 		wait->done(wait, e, line);
 		loop_work(loop, LOOP_REQS, 1);
 	}
-	if (!list_is_empty(&auth->waiting) && flag_when(auth->flags) != AUTH_BUSY)
+	if (!list_is_empty(&auth->waiting) && flag_when(auth->flags) != AUTH_READING)
 		auth_read(auth);
 }
 
@@ -222,7 +225,7 @@ auth_fini (struct auth *auth)
 		list_del(auth->ready.next);
 	/* The message of a read under way frees the read. */
 	if (auth->io) {
-		if (flag_when(auth->flags) == AUTH_BUSY)
+		if (flag_when(auth->flags) == AUTH_READING)
 			auth->io->owner = nullptr;
 		else
 			auth_io_destroy(&auth->io);
@@ -249,7 +252,7 @@ auth_ask (struct auth       *auth,
 	wait->flags = flag64(flags);
 	list_append(&auth->waiting, &wait->hook);
 	/* The waits of one read are answered before the next read starts. */
-	if (flag_when(auth->flags) != AUTH_BUSY && list_is_empty(&auth->ready))
+	if (flag_when(auth->flags) != AUTH_READING && list_is_empty(&auth->ready))
 		auth_read(auth);
 	return 0;
 }

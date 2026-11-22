@@ -35,12 +35,19 @@ enum {
 	BURST     = 32,         /* lines one call site may log per second */
 };
 
-/* The logger's state: the values of lg.state. */
+/* The state of the logger thread: the values of lg.state. The value is 0
+ * until log_stop() is called, also when no logger thread exists.
+ */
 enum {
-	RUNNING  = 0,
-	STOPPING = FLAG_END,    /* log_stop() told the logger thread to write
-	                           what the rings contain and then to end */
-	DONE     = FLAG_AFTER,  /* the logger thread has ended */
+	/* log_stop() stored this value: the logger thread is to write what the
+	 * rings contain and then to end. The thread still runs.
+	 */
+	LOG_THREAD_END = FLAG_END,
+
+	/* The logger thread stored this value as its last access to lg: the
+	 * thread has ended.
+	 */
+	LOG_THREAD_EXITED = FLAG_AFTER,
 };
 
 /* A thread's ring buffer. data points to its RING bytes. The thread that
@@ -198,7 +205,7 @@ log_write_all (struct iovec *iov,
 static bool
 log_pending (void)
 {
-	if (atomic_load(&lg.state) != RUNNING)
+	if (atomic_load(&lg.state))
 		return true;
 	for (size_t i = 0; i < lg.n; ++i)
 		if (atomic_load(&lg.rings[i].head) !=
@@ -244,7 +251,7 @@ log_thread (void *arg)
 				                      memory_order_release);
 			continue;
 		}
-		if (atomic_load(&lg.state) != RUNNING)
+		if (atomic_load(&lg.state))
 			break;
 
 		/* Set lg.asleep before the last check of the state and the
@@ -262,7 +269,7 @@ log_thread (void *arg)
 	/* Once done, the logger may be freed: it touches nothing after but
 	 * notify_fd, which its owner keeps open. */
 	int notify_fd = lg.notify_fd;
-	atomic_store(&lg.state, DONE);
+	atomic_store(&lg.state, LOG_THREAD_EXITED);
 	(void)eventfd_write(notify_fd, 1);
 	return nullptr;
 }
@@ -312,8 +319,8 @@ log_attach (void)
 void
 log_stop (void)
 {
-	uint32_t running = RUNNING;
-	if (!lg.rings || !atomic_compare_exchange_strong(&lg.state, &running, STOPPING))
+	uint32_t state = 0;
+	if (!lg.rings || !atomic_compare_exchange_strong(&lg.state, &state, LOG_THREAD_END))
 		return;
 	if (atomic_exchange(&lg.asleep, 0))
 		(void)eventfd_write(lg.wake_fd, 1);
@@ -322,7 +329,7 @@ log_stop (void)
 bool
 log_done (void)
 {
-	return !lg.rings || atomic_load(&lg.state) == DONE;
+	return !lg.rings || atomic_load(&lg.state) == LOG_THREAD_EXITED;
 }
 
 void
@@ -339,6 +346,6 @@ log_fini (void)
 	lg.n = 0;
 	util_close(&lg.wake_fd);
 	atomic_store(&lg.attached, 0);
-	atomic_store(&lg.state, RUNNING);
+	atomic_store(&lg.state, 0);
 	self = nullptr;
 }

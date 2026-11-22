@@ -30,8 +30,8 @@ enum { CHILD_MAX = 16 };
 
 /** How a child is spawned. */
 enum child_flag {
-	CHILD_STDERR = FLAG_OWN(0),  /**< its standard error goes to its output
-	                                  too */
+	CHILD_CMD_STDERR = FLAG_OWN(0),  /**< its standard error goes to its
+	                                      output too */
 };
 
 /** The bits of child_end.flags. The bits of CHILD_EVENTS mark the events
@@ -39,16 +39,34 @@ enum child_flag {
  *  those bits.
  */
 enum child_state : uint32_t {
-	CHILD_CUT    = FLAG_CUT,     /**< its output went past the cap, or
-	                                  memory ran out for it, which killed
-	                                  it */
-	CHILD_LATE   = FLAG_LATE,    /**< its deadline came, which killed it or
-	                                  is about to */
-	CHILD_OUT    = FLAG_OWN(0),  /**< its output can be read, or has
-	                                  ended */
-	CHILD_EXIT   = FLAG_OWN(1),  /**< it has exited */
-	CHILD_DUE    = FLAG_OWN(2),  /**< its deadline has come */
-	CHILD_EVENTS = CHILD_OUT | CHILD_EXIT | CHILD_DUE,
+	/** The output of the child went past the cap, or memory ran out for it,
+	 *  which killed the child.
+	 */
+	CHILD_CUT = FLAG_CUT,
+
+	/** The deadline of the child came, which killed the child or is about
+	 *  to.
+	 */
+	CHILD_LATE = FLAG_LATE,
+
+	/** The pipe of the output can be read or has ended, and the next step
+	 *  of the child reads it. The step clears the bit.
+	 */
+	CHILD_OUTPUT_PENDING = FLAG_OWN(0),
+
+	/** The kernel reported that the process ended, and the next step of the
+	 *  child collects how it ended. The step clears the bit, so the bit
+	 *  does not say that the child has exited.
+	 */
+	CHILD_EXIT_PENDING = FLAG_OWN(1),
+
+	/** The timer of the deadline fired, or the timer of the grace after it,
+	 *  and the next step of the child sends the signal. The step clears the
+	 *  bit.
+	 */
+	CHILD_DEADLINE_PENDING = FLAG_OWN(2),
+
+	CHILD_EVENTS = CHILD_OUTPUT_PENDING | CHILD_EXIT_PENDING | CHILD_DEADLINE_PENDING,
 };
 
 /** How a child ended. For a child of a loop, flags can contain every bit
@@ -237,7 +255,7 @@ child_fds (void)
 }
 
 /**
- * Spawn @p cmd: its standard error /dev/null, but with CHILD_STDERR its
+ * Spawn @p cmd: its standard error /dev/null, but with CHILD_CMD_STDERR its
  * output too; its output a pipe, its signal mask empty and every signal's
  * action the default, and it inherits no other descriptor. The steps of
  * @p loop read its output into out, up to cmd->max bytes, and kill it past

@@ -95,7 +95,7 @@ child_read (struct child *c)
 		size_t room = loop_room(loop, LOOP_RECV);
 		size_t want = left < room ? left : room;
 		if (!want) {
-			flag_set(&c->end.flags, CHILD_OUT);
+			flag_set(&c->end.flags, CHILD_OUTPUT_PENDING);
 			loop_ready_bulk(loop, &c->step);
 			return;
 		}
@@ -176,11 +176,11 @@ child_step (struct loop      *loop,
 	struct child *c = container_of(step, struct child, step);
 	uint32_t events = flag_get(c->end.flags, CHILD_EVENTS);
 	flag_clear(&c->end.flags, CHILD_EVENTS);
-	if (events & CHILD_DUE)
+	if (events & CHILD_DEADLINE_PENDING)
 		child_due(c);
-	if (events & CHILD_OUT && c->pipe.fd >= 0)
+	if (events & CHILD_OUTPUT_PENDING && c->pipe.fd >= 0)
 		child_read(c);
-	if (events & CHILD_EXIT && c->proc.fd >= 0)
+	if (events & CHILD_EXIT_PENDING && c->proc.fd >= 0)
 		child_exited(c);
 	if (c->proc.fd >= 0 || c->pipe.fd >= 0)
 		return;
@@ -199,7 +199,7 @@ child_event (struct loop     *loop,
 {
 	(void)events;
 	struct child *c = ref->owner;
-	flag_set(&c->end.flags, ref == &c->proc ? CHILD_EXIT : CHILD_OUT);
+	flag_set(&c->end.flags, ref == &c->proc ? CHILD_EXIT_PENDING : CHILD_OUTPUT_PENDING);
 	loop_ready_bulk(loop, &c->step);
 }
 
@@ -208,7 +208,7 @@ child_late (struct loop       *loop,
             struct loop_timer *timer)
 {
 	struct child *c = container_of(timer, struct child, timer);
-	flag_set(&c->end.flags, CHILD_DUE);
+	flag_set(&c->end.flags, CHILD_DEADLINE_PENDING);
 	loop_ready_bulk(loop, &c->step);
 }
 
@@ -228,7 +228,7 @@ child_fd (posix_spawn_file_actions_t *fa,
 /* Have @p fa give the child the descriptors @p fds: its directory and its
  * terminal first, as a later action may replace those descriptors; its
  * output, its input, or /dev/null for either, and its output as its error
- * too with CHILD_STDERR in @p flags, else /dev/null; the descriptor it
+ * too with CHILD_CMD_STDERR in @p flags, else /dev/null; the descriptor it
  * keeps, and no other.
  */
 static int
@@ -244,7 +244,7 @@ child_fds_actions (struct child_fds const     *fds,
 	if (!e)
 		e = child_fd(fa, fds->in, STDIN_FILENO, O_RDONLY);
 	if (!e)
-		e = child_fd(fa, flags & CHILD_STDERR ? fds->out : -1, STDERR_FILENO, O_WRONLY);
+		e = child_fd(fa, flags & CHILD_CMD_STDERR ? fds->out : -1, STDERR_FILENO, O_WRONLY);
 	int first = STDERR_FILENO + 1;  /* the first descriptor it does not keep */
 	if (!e && fds->keep >= 0)
 		e = posix_spawn_file_actions_adddup2(fa, fds->keep, first++);

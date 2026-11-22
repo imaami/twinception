@@ -37,7 +37,7 @@ bearer_login (char const *path,
  * @p *expires. A token that is missing, that is of another command, or
  * that expires within AUTH_EARLY seconds, is first replaced as
  * bearer_login() stores one, but the command never gets a terminal. With
- * AUTH_CACHED in @p flags, of enum auth_flag (src/auth.h), the command
+ * AUTH_ASK_FILE_ONLY in @p flags, of enum auth_flag (src/auth.h), the command
  * does not run and the file is not made: the function then returns ENOKEY,
  * or ENOENT without the file. Returns 0 or an error number, which
  * bearer_why() puts in words, with @p header empty and @p *expires 0.

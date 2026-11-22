@@ -16,9 +16,9 @@ enum { CLI_IO_JOBS = 32 };
 
 /* The bit of cli_io.flags. */
 enum {
-	CLI_IO_STOPPED = FLAG_END,  /* cli_io_stop() was called: the blockers
-	                               finish the jobs under way, and
-	                               cli_io_submit() accepts no job */
+	CLI_IO_END = FLAG_END,  /* cli_io_stop() was called: the blockers finish
+	                           the jobs under way, and cli_io_submit()
+	                           accepts no job */
 };
 
 struct cli_io {
@@ -27,7 +27,7 @@ struct cli_io {
 	struct loop_ref notify;   /**< the eventfd that each blocker thread
 	                               writes 1 to as it exits */
 	size_t          pending;
-	struct flag64   flags;    /**< CLI_IO_STOPPED */
+	struct flag64   flags;    /**< CLI_IO_END */
 	uint32_t        exited;
 	uint32_t        started;
 };
@@ -100,7 +100,7 @@ cli_io_submit (struct cli_io     *io,
 {
 	if (!io || !job || !job->work || !job->done)
 		return EINVAL;
-	if (flag_any(io->flags, CLI_IO_STOPPED))
+	if (flag_any(io->flags, CLI_IO_END))
 		return ESHUTDOWN;
 	if (io->pending == CLI_IO_JOBS)
 		return EAGAIN;
@@ -116,7 +116,7 @@ void
 cli_io_stop (struct cli_io *io)
 {
 	if (io) {
-		flag_set(&io->flags, CLI_IO_STOPPED);
+		flag_set(&io->flags, CLI_IO_END);
 		blocker_stop(io->blocker);
 	}
 }

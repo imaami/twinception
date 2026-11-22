@@ -104,9 +104,9 @@ enum member_branch : uint8_t {
 
 /** The flags of a member in a table (struct member_info). */
 enum {
-	MEMBER_RECORD = FLAG_OWN(0),  /**< a record names the member */
-	MEMBER_NOTES  = FLAG_OWN(1),  /**< the notebook of the member contains
-	                                   notes */
+	MEMBER_INFO_RECORD = FLAG_OWN(0),  /**< a record names the member */
+	MEMBER_INFO_NOTES  = FLAG_OWN(1),  /**< the notebook of the member
+	                                        contains notes */
 };
 
 /** A member in a table: the record of the member, the newest change of
@@ -126,7 +126,8 @@ struct member_info {
 	uint64_t         time;      /**< the time of that commit, in seconds
 	                                 since the epoch */
 	uint32_t         kind;      /**< enum member_kind */
-	struct flag32    flags;     /**< MEMBER_RECORD and MEMBER_NOTES */
+	struct flag32    flags;     /**< MEMBER_INFO_RECORD and
+	                                 MEMBER_INFO_NOTES */
 	struct oid       record;    /**< the commit of the record, or no name */
 	struct oid       findings;  /**< the tip of the branch of findings, or
 	                                 no name */

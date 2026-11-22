@@ -33,7 +33,7 @@ struct cli_network_result {
 /** A call that a cancel without force ends. Other calls are for control,
  *  and only a forced cancel ends them.
  */
-enum { CLI_NETWORK_INTERRUPTIBLE = FLAG_OWN(0) };
+enum { CLI_NETWORK_CALL_INTERRUPTIBLE = FLAG_OWN(0) };
 
 /** A request to AskAI. Admission copies the views, and the call passes
  *  context to header and body. socket ends in a NUL.
@@ -46,7 +46,8 @@ struct cli_network_post {
 	cli_network_receive_fn *body;
 	void                   *context;
 	long                    timeout;  /**< seconds, 0 for none */
-	struct flag64           flags;    /**< CLI_NETWORK_INTERRUPTIBLE or 0 */
+	struct flag64           flags;    /**< CLI_NETWORK_CALL_INTERRUPTIBLE or
+	                                       0 */
 };
 
 /** Called once on the UI thread after this call's response bytes. The result

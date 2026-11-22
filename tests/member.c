@@ -908,10 +908,11 @@ test_list (struct store const           *store,
 		bool const moved = !strcmp(names[n], "moved");
 		bool const ghost = !strcmp(names[n], "ghost");
 		CHECK(info->kind == (n < 7 ? MEMBER_PERSON : MEMBER_AGENT));
-		CHECK(info->flags.bits == (moved ? MEMBER_NOTES : bro ? MEMBER_RECORD | MEMBER_NOTES
-		                                                : ghost ? 0 : MEMBER_RECORD));
+		CHECK(info->flags.bits == (moved ? MEMBER_INFO_NOTES
+		                           : bro ? MEMBER_INFO_RECORD | MEMBER_INFO_NOTES
+		                           : ghost ? 0 : MEMBER_INFO_RECORD));
 		/* The commit of the record is set only for a member with a record. */
-		CHECK(!flag_get(info->flags, MEMBER_RECORD) == !oid_len(&info->record));
+		CHECK(!flag_get(info->flags, MEMBER_INFO_RECORD) == !oid_len(&info->record));
 		struct oid const *tip = bro ? &findings[0] : ghost ? &findings[1]
 		                      : moved ? &findings[2] : &(struct oid){};
 		CHECK(oid_equal(&info->findings, tip));
@@ -990,7 +991,7 @@ test_list (struct store const           *store,
 		if (!cstr_view_equal(info->name, CSTR_VIEW("ghost")))
 			continue;
 		++ghosts;
-		CHECK(info->kind == MEMBER_PERSON ? info->flags.bits == MEMBER_NOTES &&
+		CHECK(info->kind == MEMBER_PERSON ? info->flags.bits == MEMBER_INFO_NOTES &&
 		                                    !oid_len(&info->findings)
 		                                  : !info->flags.bits && oid_equal(&info->findings,
 		                                                                   &findings[1]));

@@ -114,9 +114,11 @@ struct manual_loop {
 
 /* The state of the scan of a page for the part under a heading, as bits. */
 enum manual_scan : uint32_t {
-	SCAN_OPEN = FLAG_OWN(0),  /* the lines that follow belong to the part */
-	SCAN_TAGS = FLAG_OWN(1),  /* a line as deep continues the part, as
-	                             -Wformat=n after -Wformat */
+	MANUAL_SCAN_PART_OPEN = FLAG_OWN(0),  /* the lines that follow belong to
+	                                         the part */
+	MANUAL_SCAN_TAGS      = FLAG_OWN(1),  /* a line as deep continues the
+	                                         part, as -Wformat=n after
+	                                         -Wformat */
 };
 
 /* A man call: the page it gives, and for a call with a heading, the scan
@@ -793,15 +795,15 @@ manual_call_line (struct manual_call *call,
 		++depth;
 	struct cstr_view const rest = cstr_view_slice(line, depth, SIZE_MAX);
 	if (!rest.len) {
-		flag_clear(&call->scan, SCAN_TAGS);
+		flag_clear(&call->scan, MANUAL_SCAN_TAGS);
 		return false;
 	}
 	if (depth > call->depth)
-		flag_clear(&call->scan, SCAN_TAGS);
-	else if (depth < call->depth || !flag_any(call->scan, SCAN_TAGS))
+		flag_clear(&call->scan, MANUAL_SCAN_TAGS);
+	else if (depth < call->depth || !flag_any(call->scan, MANUAL_SCAN_TAGS))
 		call->scan = flag32(0);
 	size_t const end = at + line.len + (at + line.len < text.len);
-	if (flag_any(call->scan, SCAN_OPEN)) {
+	if (flag_any(call->scan, MANUAL_SCAN_PART_OPEN)) {
 		call->to = end;
 		return false;
 	}
@@ -810,8 +812,8 @@ manual_call_line (struct manual_call *call,
 		call->from = at;
 		call->to = end;
 		call->depth = (uint32_t)depth;
-		call->scan = flag32(SCAN_OPEN |
-		                    (memmem(rest.data, rest.len, "  ", 2) ? 0 : SCAN_TAGS));
+		call->scan = flag32(MANUAL_SCAN_PART_OPEN |
+		                    (memmem(rest.data, rest.len, "  ", 2) ? 0 : MANUAL_SCAN_TAGS));
 		return false;
 	}
 	if (depth <= HEAD_INDENT && rest.len <= MANUAL_HEADING &&

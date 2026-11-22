@@ -14,14 +14,22 @@ struct cli_console;
 
 /** The flags of struct cli_ui. */
 enum {
-	CLI_UI_REASONING        = FLAG_OWN(0),  /**< the output is in the
-	                                             reasoning */
-	CLI_UI_TRAILING_NEWLINE = FLAG_OWN(1),  /**< the output ends a line */
-	CLI_UI_STREAMING        = FLAG_OWN(2),  /**< deltas were shown */
-	CLI_UI_SHOWN            = FLAG_OWN(3),  /**< a progress line was
-	                                             shown */
-	CLI_UI_PENDING          = FLAG_OWN(4),  /**< a progress line waits for
-	                                             the end */
+	/** the start mark of the reasoning is written, and its end mark is not
+	 */
+	CLI_UI_REASONING_OPEN = FLAG_OWN(0),
+
+	/** the output ends a line */
+	CLI_UI_TRAILING_NEWLINE = FLAG_OWN(1),
+
+	/** text was shown */
+	CLI_UI_TEXT_SHOWN = FLAG_OWN(2),
+
+	/** a progress line was shown */
+	CLI_UI_PROGRESS_SHOWN = FLAG_OWN(3),
+
+	/** the newest progress line is stored and is shown when the text ends
+	 */
+	CLI_UI_PROGRESS_PENDING = FLAG_OWN(4),
 };
 
 /** A streamed turn borrows its console and owns its pending status text.

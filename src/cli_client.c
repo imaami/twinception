@@ -114,7 +114,7 @@ static int cli_client_response_event(char const *data, size_t len, void *user)
 		return 0;
 	}
 	if (jb_is(jb_get(event, "method"), "notifications/tools/list_changed"))
-		flag_set(&response->client->flags, CLI_CLIENT_CATALOG_DIRTY);
+		flag_set(&response->client->flags, CLI_CLIENT_CATALOG_REFRESH_PENDING);
 	return response->notify ? response->notify(response->context, event, response->id, response->error) : 0;
 }
 
@@ -372,7 +372,7 @@ int cli_client_rpc(struct cli_client *client, char const *method,
 	e = cli_client_wire(message, JB_WIRE, &wire, error);
 	long timeout = cli_client_timeout(method, id);
 	if (!e)
-		e = cli_client_post(client, wire, &response, CLI_NETWORK_INTERRUPTIBLE, timeout);
+		e = cli_client_post(client, wire, &response, CLI_NETWORK_CALL_INTERRUPTIBLE, timeout);
 	/* Only a tool call runs without a timeout, and AskAI is told when
 	 * one is interrupted. */
 	if (e == EINTR && !timeout)
@@ -455,7 +455,7 @@ cli_client_call_start (struct cli_client    *client,
 		return e;
 	struct cli_network_post const post = cli_client_network_post(client, wire, &call->response,
 	                                                             cli_client_timeout(method, id),
-	                                                             id ? CLI_NETWORK_INTERRUPTIBLE : 0);
+	                                                             id ? CLI_NETWORK_CALL_INTERRUPTIBLE : 0);
 	e = cli_network_submit(client->network, &post, cli_client_call_done, request);
 	if (e) {
 		cli_client_call_destroy(&call);
@@ -504,16 +504,17 @@ int cli_client_connect(struct cli_client *client, struct cli_error *error)
 		e = cli_error_set(error, EPROTO, "AskAI did not negotiate the supported MCP session");
 	if (!e)
 		e = cli_client_notification(client, "notifications/initialized", json_object_new_object(),
-		                            CLI_NETWORK_INTERRUPTIBLE, 30, error);
+		                            CLI_NETWORK_CALL_INTERRUPTIBLE, 30, error);
 	return e ? e : cli_client_refresh(client, error);
 }
 
 /* The flags of struct cli_client_scan. */
 enum {
-	CLI_CLIENT_SCAN_FILES = FLAG_OWN(0),  /* notes_tool lists note files */
-	CLI_CLIENT_SCAN_OLDER = FLAG_OWN(1),  /* a tool lists notebooks, as the
-	                                         notes tool of an older askai
-	                                         does */
+	/* notes_tool lists note files */
+	CLI_CLIENT_SCAN_FILES = FLAG_OWN(0),
+
+	/* a tool lists notebooks, as the notes tool of an older askai does */
+	CLI_CLIENT_SCAN_NOTEBOOKS = FLAG_OWN(1),
 };
 
 /* cli_client_refresh() fills this struct from the tool list and the
@@ -660,7 +661,7 @@ int
 cli_client_refresh_notes (struct cli_client *client,
                           struct cli_error  *error)
 {
-	flag_clear(&client->flags, CLI_CLIENT_NOTES_DIRTY);
+	flag_clear(&client->flags, CLI_CLIENT_NOTES_REFRESH_PENDING);
 	if (!dstr_len(&client->notes_tool))
 		return 0;
 	autocomplete_clear_note_files(client->catalog);
@@ -809,7 +810,7 @@ cli_client_scan_tool (struct cli_client      *client,
 		e = cli_client_scan_notes(scan, name, meta, props, actions);
 	if (!members && (jb_true(jb_get(meta, "notebooks")) ||
 	                 cli_client_has_action(actions, CSTR_VIEW("notebooks"))))
-		flag_set(&scan->flags, CLI_CLIENT_SCAN_OLDER);
+		flag_set(&scan->flags, CLI_CLIENT_SCAN_NOTEBOOKS);
 	bool candidate = dstr_len(&client->tool) ? cstr_view_equal(name, cstr_view_dstr(&client->tool))
 	                                       : jb_is(jb_get(entry, "title"), "Ask AI");
 	if (e || !candidate)
@@ -860,7 +861,7 @@ int
 cli_client_refresh (struct cli_client *client,
                     struct cli_error  *error)
 {
-	flag_clear(&client->flags, CLI_CLIENT_CATALOG_DIRTY | CLI_CLIENT_NOTES_DIRTY);
+	flag_clear(&client->flags, CLI_CLIENT_CATALOG_REFRESH_PENDING | CLI_CLIENT_NOTES_REFRESH_PENDING);
 	int e = 0;
 	__attribute__((cleanup(cli_client_scan_fini)))
 	struct cli_client_scan scan = cli_client_scan(autocomplete_create(&e));
@@ -889,9 +890,9 @@ cli_client_refresh (struct cli_client *client,
 		flag_set(&client->flags, CLI_CLIENT_IDENTITY_CHANGED);
 		return cli_error_set(error, ESTALE, "AskAI changed its session, agent or ask tool; restart the client to select its history");
 	}
-	flag_clear(&client->flags, CLI_CLIENT_OLDER);
-	if (flag_any(scan.flags, CLI_CLIENT_SCAN_OLDER) && !dstr_len(&scan.notes_tool))
-		flag_set(&client->flags, CLI_CLIENT_OLDER);
+	flag_clear(&client->flags, CLI_CLIENT_SERVER_OLDER);
+	if (flag_any(scan.flags, CLI_CLIENT_SCAN_NOTEBOOKS) && !dstr_len(&scan.notes_tool))
+		flag_set(&client->flags, CLI_CLIENT_SERVER_OLDER);
 	autocomplete_destroy(&client->catalog);
 	client->catalog = scan.catalog;
 	scan.catalog = nullptr;

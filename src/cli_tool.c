@@ -58,7 +58,7 @@ cli_tool_create (struct cli_client  *client,
 	uint64_t dirty = cstr_view_equal(entry->name, cstr_view_dstr(&client->notes_tool)) &&
 	                 WRITES >> cstr_view_index(notes_action_names, array_size(notes_action_names),
 	                                           jb_view(jb_get(arguments, "action"))) & 1
-	                 ? CLI_CLIENT_NOTES_DIRTY : 0;
+	                 ? CLI_CLIENT_NOTES_REFRESH_PENDING : 0;
 	struct cstr_view const token = CSTR_VIEW("tool");
 	cli_json_auto params = jb_object("name", cli_client_string(entry->name),
 	                                 "arguments", json_object_get(arguments),

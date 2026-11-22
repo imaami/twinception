@@ -149,10 +149,10 @@ bearer_login (char const *path,
 	return e;
 }
 
-/* Writes the Authorization line of the token of @p command to @p header
- * and the end of the token to @p *expires, under the lock of @p file.
- * Without a fresh token in the file, the command runs, or with AUTH_CACHED
- * in @p flags the function returns ENOKEY.
+/* Writes the Authorization line of the token of @p command to @p header and the
+ * end of the token to @p *expires, under the lock of @p file. Without a fresh
+ * token in the file, the command runs, or with AUTH_ASK_FILE_ONLY in @p flags
+ * the function returns ENOKEY.
  */
 static int
 bearer_line (struct cred *file,
@@ -165,7 +165,7 @@ bearer_line (struct cred *file,
 	if (!now)
 		return EIO;
 	if (!bearer_fresh(file, command, now)) {
-		if (flags & AUTH_CACHED)
+		if (flags & AUTH_ASK_FILE_ONLY)
 			return ENOKEY;
 		int const e = bearer_renew(file, command, -1);
 		if (e)
@@ -186,7 +186,7 @@ bearer_header (char const  *path,
 	dstr_clear(header);
 	*expires = 0;
 	int e;
-	struct cred file = cred(path, flags & AUTH_CACHED ? 0 : CRED_CREATE, &e);
+	struct cred file = cred(path, flags & AUTH_ASK_FILE_ONLY ? 0 : CRED_CREATE, &e);
 	if (!e)
 		e = bearer_line(&file, command, flags, header, expires);
 	cred_fini(&file);

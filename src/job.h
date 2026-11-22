@@ -12,24 +12,25 @@
  * is one message, and posting never fails. The references count the front,
  * home and each message queued.
  *
- * The front writes the request and posts SUBMIT. Home admits the job, or
+ * The front writes the request and posts JOB_START. Home admits the job, or
  * ends it at once (BUSY when too many are in flight or queued for its
  * principal), queues it for an upstream slot, runs it until its deadline at
- * most, writes the result and its status, and posts DONE: every job ends in
- * exactly one completion. Meanwhile home publishes the job's progress, its
- * place in its principal's queue and then the tokens of its answer, thinking
- * or text, and posts PROGRESS for a front that asked for it, a burst being
- * one message. With JOB_STREAM, home publishes one immutable event mailbox
- * through DELTA and pauses parsing. The front posts DRAIN after consuming it;
- * home then reclaims it and resumes. DONE waits for that acknowledgment and
- * any archive callbacks, which hold their own references until they return.
- * The front posts CANCEL exactly once: before DONE it cancels the job, which
- * home then stops and ends as CANCELLED, and after DONE it lets go of the
- * job, having read the result. Home keeps its reference until then, and
- * gives the result's storage back to its own stash, so that each buffer's
- * storage is taken and given back by one thread. Whoever drops the last
- * reference returns the job to its front, which keeps it for reuse: home does
- * so through the front's inbox (RETURN).
+ * most, writes the result and its status, and posts JOB_DONE: every job ends
+ * in exactly one completion. Meanwhile home publishes the job's progress, its
+ * place in its principal's queue and then the tokens of its answer, thinking or
+ * text, and posts JOB_PROGRESS_CHANGED for a front that asked for it, a burst
+ * being one message. With JOB_ASK_STREAM, home publishes one immutable event
+ * mailbox through JOB_DELTA_PUBLISHED and pauses parsing. The front posts
+ * JOB_DELTA_CONSUMED after consuming it; home then reclaims it and resumes.
+ * JOB_DONE waits for that acknowledgment and any archive callbacks, which hold
+ * their own references until they return. The front posts JOB_CANCEL exactly
+ * once: before JOB_DONE it cancels the job, which home then stops and ends as
+ * JOB_CANCELLED, and after JOB_DONE it lets go of the job, having read the
+ * result. Home keeps its reference until then, and gives the result's storage
+ * back to its own stash, so that each buffer's storage is taken and given back
+ * by one thread. Whoever drops the last reference returns the job to its front,
+ * which keeps it for reuse: home does so through the front's inbox
+ * (JOB_RETURNED).
  *
  * The front names the call that waits for the job by a handle (loop.h), which
  * it frees as it cancels: a completion that finds the handle stale is dropped.
@@ -40,7 +41,7 @@
  * time that home takes for a message does not depend on the length of the
  * key. A notifications/cancelled reaches a call through the roster
  * (src/roster.h), not through home. The call's front then cancels the
- * call's job with CANCEL.
+ * call's job with JOB_CANCEL.
  */
 #ifndef ASKAI_SRC_JOB_H_
 #define ASKAI_SRC_JOB_H_
@@ -72,24 +73,49 @@ struct journal;
  *  JOB_CANCEL that says that the job is to end at the provider too.
  */
 enum {
-	JOB_SUBMIT   = FLAG_START,           /**< run the job */
-	JOB_CANCEL   = FLAG_END | FLAG_NOW,  /**< the front lets go: stop the
-	                                          job if it runs */
-	JOB_SUSPEND  = FLAG_NOW,             /**< let go on shutdown, leaving
-	                                          durable provider work alive */
-	JOB_DRAIN    = FLAG_OWN(0),          /**< the front has consumed the
-	                                          immutable delta mailbox */
+	/** Run the job. It is the first message of a job to home. */
+	JOB_START = FLAG_START,
+
+	/** The front lets go of the job. Before JOB_DONE, home stops the job
+	 *  and ends it as JOB_CANCELLED. After JOB_DONE, the message says that
+	 *  the front has read the result.
+	 */
+	JOB_CANCEL = FLAG_END | FLAG_NOW,
+
+	/** As JOB_CANCEL, for a durable job when the client loop of the front
+	 *  shuts down: home stops the transfer and leaves the work at the
+	 *  provider alive.
+	 */
+	JOB_SUSPEND = FLAG_NOW,
+
+	/** The front is finished with the delta mailbox, so home may change the
+	 *  mailbox and parse on. It is the answer to JOB_DELTA_PUBLISHED.
+	 */
+	JOB_DELTA_CONSUMED = FLAG_OWN(0),
 };
 
 /** The bits of the messages to the front. */
 enum {
-	JOB_DONE     = FLAG_AFTER,   /**< the job has ended: its status and
-	                                  result are set */
-	JOB_PROGRESS = FLAG_OWN(0),  /**< the job's progress moved on */
-	JOB_RETURN   = FLAG_OWN(1),  /**< home dropped the last reference,
-	                                  without one */
-	JOB_DELTA    = FLAG_OWN(2),  /**< the immutable delta mailbox is ready
-	                                  for the front */
+	/** The run of the job has ended: home has written the status and the
+	 *  result and changes neither afterwards.
+	 */
+	JOB_DONE = FLAG_AFTER,
+
+	/** The progress value of the job changed. Home posts it only for a job
+	 *  with JOB_ASK_PROGRESS.
+	 */
+	JOB_PROGRESS_CHANGED = FLAG_OWN(0),
+
+	/** Home dropped the last reference to the job, and the front takes the
+	 *  job back for reuse.
+	 */
+	JOB_RETURNED = FLAG_OWN(1),
+
+	/** The delta mailbox contains the text of one event of the stream. Home
+	 *  does not change the mailbox or parse on until the front posts
+	 *  JOB_DELTA_CONSUMED or JOB_CANCEL.
+	 */
+	JOB_DELTA_PUBLISHED = FLAG_OWN(2),
 };
 
 /** Tool calls that a streamed answer may make, at most. */
@@ -99,19 +125,28 @@ enum { JOB_CALLS = 16 };
 enum { JOB_QUEUED = 8 };
 
 /** In a running job's progress, beside its tokens: the latest was thinking. */
-#define JOB_THINKING (UINT32_C(1) << 31)
+#define JOB_PROGRESS_THINKING (UINT32_C(1) << 31)
 
-/** What the front asks of a job, before SUBMIT. */
+/** What the front asks of a job, before JOB_START. */
 enum job_ask {
-	JOB_NOTIFY     = 1 << 0,  /**< post PROGRESS */
-	JOB_BACKGROUND = 1 << 1,  /**< its class is background, not interactive:
-	                               interactive jobs go first, keep a slot of
-	                               their own, and with one slot preempt it
-	                               (home.c) */
-	JOB_TOOLS      = 1 << 2,  /**< keep a streamed answer's thinking and tool
-	                               calls, which the request offered tools for */
-	JOB_DURABLE    = 1 << 3,  /**< detached work whose journal permits recovery */
-	JOB_STREAM     = 1 << 4,  /**< publish text and thinking through the mailbox */
+	/** post JOB_PROGRESS_CHANGED */
+	JOB_ASK_PROGRESS = 1 << 0,
+
+	/** its class is background, not interactive: interactive jobs go first,
+	 *  keep a slot of their own, and with one slot preempt it (home.c)
+	 */
+	JOB_ASK_BACKGROUND = 1 << 1,
+
+	/** keep a streamed answer's thinking and tool calls, which the request
+	 *  offered tools for
+	 */
+	JOB_ASK_TOOLS = 1 << 2,
+
+	/** detached work whose journal permits recovery */
+	JOB_ASK_DURABLE = 1 << 3,
+
+	/** publish text and thinking through the mailbox */
+	JOB_ASK_STREAM = 1 << 4,
 };
 
 /** The header of a tool call in a streamed answer. Each call is stored in
@@ -226,7 +261,7 @@ struct home_recovery {
 	char          *provider_id;     /**< the id of the provider's native
 	                                     job, or nullptr */
 	uint64_t       thought_offset;  /**< bytes of thinking in the journal */
-	struct flag64  flags;           /**< home's RECOVERY_* bits */
+	struct flag64  flags;           /**< home's HOME_RECOVERY_* bits */
 	uint32_t       pending;         /**< journal writes under way */
 	int            error;           /**< the last error of a journal write,
 	                                     or 0 */
@@ -234,8 +269,11 @@ struct home_recovery {
 
 /** An upstream call, shared by its front and home (R4). */
 struct job {
-	struct msg             to_home;     /**< SUBMIT, CANCEL: the front posts it */
-	struct msg             to_front;    /**< DONE, PROGRESS, RETURN: home posts it */
+	struct msg             to_home;     /**< JOB_START, JOB_CANCEL: the
+	                                         front posts it */
+	struct msg             to_front;    /**< JOB_DONE,
+	                                         JOB_PROGRESS_CHANGED,
+	                                         JOB_RETURNED: home posts it */
 	struct list            spare;       /**< the front's: on its spare list */
 	struct list            queue;       /**< home's: on its principal's queue, a
 	                                         ready list, among the background jobs
@@ -249,28 +287,34 @@ struct job {
 	struct auth_wait       auth;        /**< home's: its wait for the renewed
 	                                         credential of the upstream, before
 	                                         its request is sent */
-	struct buf             request;     /**< the front's: written before SUBMIT,
-	                                         read by home until DONE */
-	struct buf             result;      /**< home's: written before DONE, read
-	                                         by the front until CANCEL */
-	struct buf             delta;       /**< home writes until JOB_DELTA; immutable
-	                                         until the front posts JOB_DRAIN or CANCEL */
-	/** Home writes these buffers before DONE, and the front reads them
-	 *  until CANCEL. With JOB_TOOLS, buffer k contains call k of a
+	struct buf             request;     /**< the front's: written before
+	                                         JOB_START, read by home until
+	                                         JOB_DONE */
+	struct buf             result;      /**< home's: written before
+	                                         JOB_DONE, read by the front
+	                                         until JOB_CANCEL */
+	struct buf             delta;       /**< home writes until
+	                                         JOB_DELTA_PUBLISHED; immutable
+	                                         until the front posts
+	                                         JOB_DELTA_CONSUMED or
+	                                         JOB_CANCEL */
+	/** Home writes these buffers before JOB_DONE, and the front reads them
+	 *  until JOB_CANCEL. With JOB_ASK_TOOLS, buffer k contains call k of a
 	 *  streamed answer (struct job_call). The calls are numbered in the
 	 *  order in which they begin, and the buffers after the last call are
 	 *  empty. */
 	struct buf             calls[JOB_CALLS];
-	struct buf             thought;     /**< likewise: with JOB_TOOLS, its
-	                                         thinking's text */
-	struct buf             replay;      /**< likewise: with JOB_TOOLS, what its
-	                                         turn gives back as it came (struct
-	                                         ai_sink) */
-	struct buf             key;         /**< The front writes it before SUBMIT,
-	                                         and home reads it until DONE. It
-	                                         is the call's session field and a
-	                                         line break, or empty if the
-	                                         request has no session field. */
+	struct buf             thought;     /**< likewise: with JOB_ASK_TOOLS,
+	                                         its thinking's text */
+	struct buf             replay;      /**< likewise: with JOB_ASK_TOOLS,
+	                                         what its turn gives back as it
+	                                         came (struct ai_sink) */
+	struct buf             key;         /**< The front writes it before
+	                                         JOB_START, and home reads it
+	                                         until JOB_DONE. It is the
+	                                         call's session field and a line
+	                                         break, or empty if the request
+	                                         has no session field. */
 	struct buf             wire;        /**< home's: a streamed answer's bytes
 	                                         yet to read */
 	struct jb_parser       parser;      /**< home's: of the stream's event */
@@ -286,11 +330,12 @@ struct job {
 	                                         and recovery checkpoint writer */
 	struct home_recovery   recovery;    /**< home's: journal and replay state */
 	struct handle          call;        /**< the front's: what waits for it */
-	uint64_t               deadline;    /**< the front writes, before SUBMIT, when
-	                                         the call times out waiting, and home
-	                                         as it starts the job, when the
-	                                         upstream does: CLOCK_MONOTONIC ns;
-	                                         0: never */
+	uint64_t               deadline;    /**< the front writes, before
+	                                         JOB_START, when the call times
+	                                         out waiting, and home as it
+	                                         starts the job, when the
+	                                         upstream does: CLOCK_MONOTONIC
+	                                         ns; 0: never */
 	uint64_t               since;       /**< home's: when it started upstream */
 	uint64_t               active;      /**< home's: when its answer last sent */
 	uint64_t               principal;   /**< the front's, with the key: the hash,
@@ -299,10 +344,11 @@ struct job {
 	                                         client, which is the principal
 	                                         without a session; UINT64_MAX
 	                                         twice for a job of an identity */
-	_Atomic uint64_t       progress;    /**< home writes, the front reads: the
-	                                         answer's tokens << 32 | the place in
-	                                         its principal's queue, from 1, or,
-	                                         once it runs, JOB_THINKING or 0 */
+	_Atomic uint64_t       progress;    /**< home writes, the front reads:
+	                                         the answer's tokens << 32 | the
+	                                         place in its principal's queue,
+	                                         from 1, or, once it runs,
+	                                         JOB_PROGRESS_THINKING or 0 */
 	_Atomic uint32_t       home_bits;   /**< pending to home */
 	_Atomic uint32_t       front_bits;  /**< pending to the front */
 	_Atomic uint32_t       refs;        /**< the front, home, each message queued */
@@ -318,21 +364,23 @@ struct job {
 	uint32_t               scan;        /**< how far it has been looked at */
 	uint32_t               chunks;      /**< home's: the answer's tokens, its
 	                                         events with text or thinking */
-	uint32_t               used;        /**< home writes before DONE: the tokens
-	                                         of the request and the answer, as
-	                                         its usage says; 0: unknown */
-	uint32_t               context;     /**< home writes before DONE: the tokens
-	                                         the upstream's context holds, as
-	                                         /props says; 0: unknown */
+	uint32_t               used;        /**< home writes before JOB_DONE:
+	                                         the tokens of the request and
+	                                         the answer, as its usage says;
+	                                         0: unknown */
+	uint32_t               context;     /**< home writes before JOB_DONE:
+	                                         the tokens the upstream's
+	                                         context holds, as /props says;
+	                                         0: unknown */
 	uint32_t               archive_turn; /**< the front's: provider turn number */
 	struct flag32          flags;       /**< home's: what it notes of the run */
 	struct ai_reader       reader;      /**< home's: of the stream's events */
-	uint16_t               http;        /**< home writes before DONE: the answer's
-	                                         HTTP status */
-	uint8_t                status;      /**< home writes before DONE: enum
-	                                         job_status */
-	uint8_t                asks;        /**< the front's, before SUBMIT: enum
-	                                         job_ask */
+	uint16_t               http;        /**< home writes before JOB_DONE:
+	                                         the answer's HTTP status */
+	uint8_t                status;      /**< home writes before JOB_DONE:
+	                                         enum job_status */
+	uint8_t                asks;        /**< the front's, before JOB_START:
+	                                         enum job_ask */
 	char                   reason[43];  /**< home's: the answer's stop reason.
 	                                         The array is longer than any
 	                                         reason that the providers name,

@@ -106,12 +106,18 @@ enum ledger_status {
  *  The status, an enum ledger_status, is in the range LEDGER_STATUS.
  */
 enum ledger_state : uint64_t {
-	LEDGER_STATUS = FLAG_HOW,             /**< the bits of the status */
-	LEDGER_ASKED  = FLAG_END | FLAG_NOW,  /**< a client asked to cancel the
-	                                           task: the task is to end
-	                                           at once */
-	LEDGER_TOLD   = FLAG_OWN(0),          /**< the owner has read the
-	                                           record of the ended call */
+	/** The mask of the status. */
+	LEDGER_STATUS = FLAG_HOW,
+
+	/** A client asked to cancel the call: the call is to end at once. The
+	 *  call can still end as completed or failed.
+	 */
+	LEDGER_CANCEL = FLAG_END | FLAG_NOW,
+
+	/** The record of the ended call was given to its owner once: to a wait,
+	 *  as the result that a client read, or through tasks/get.
+	 */
+	LEDGER_REPORTED = FLAG_OWN(0),
 };
 
 static_assert(LEDGER_STATUSES - 1 <= LEDGER_STATUS);

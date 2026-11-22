@@ -82,8 +82,8 @@ enum git_phase : uint64_t {
  * are the index of the note when git exits with status 1.
  */
 enum {
-	GREP_WITHOUT = 1 << 0,  /* -L or --files-without-match */
-	GREP_INVERT  = 1 << 1,  /* -v or --invert-match */
+	GIT_GREP_WITHOUT = 1 << 0,  /* -L or --files-without-match */
+	GIT_GREP_INVERT  = 1 << 1,  /* -v or --invert-match */
 };
 
 /* A revision argument: a commit, a range of two commits, or a commit and
@@ -136,7 +136,7 @@ struct git_call {
 	struct git_revision    revisions[REVISIONS];
 	struct git_read        read;
 	enum git_phase         phase;
-	uint64_t               grep;  /* GREP_WITHOUT and GREP_INVERT */
+	uint64_t               grep;  /* GIT_GREP_WITHOUT and GIT_GREP_INVERT */
 };
 
 /*
@@ -198,17 +198,37 @@ static struct cstr_view const source_options[] = {
 
 /* Where a command takes what; all revision roots must name commits. */
 enum {
-	FILES   = 1 << 0,  /* paths, after "--" */
-	END     = 1 << 1,  /* --end-of-options, except where git takes it amiss */
-	PATTERN = 1 << 2,  /* a required pattern, after -e */
-	OBJECT  = 1 << 3,  /* a committed path after a revision's colon */
-	RANGE   = 1 << 4,  /* a pair of commits separated by .. or ... */
-	PAIR    = 1 << 5,  /* exactly two commits, separately or as a range */
-	SINGLE  = 1 << 6,  /* at most one revision */
-	LINES   = 1 << 7,  /* the line and count arguments, and numbered lines
-	                      of one committed file that cat-file reads */
-	MODE    = 1 << 8,  /* exactly one option, which selects what to show */
-	ONEPATH = 1 << 9,  /* exactly one path, the file */
+	/* paths, after "--" */
+	GIT_TAKES_FILES = 1 << 0,
+
+	/* --end-of-options, except where git takes it amiss */
+	GIT_TAKES_END_OF_OPTIONS = 1 << 1,
+
+	/* a required pattern, after -e */
+	GIT_TAKES_PATTERN = 1 << 2,
+
+	/* a committed path after a revision's colon */
+	GIT_TAKES_OBJECT = 1 << 3,
+
+	/* a pair of commits separated by .. or ... */
+	GIT_TAKES_RANGE = 1 << 4,
+
+	/* exactly two commits, separately or as a range */
+	GIT_TAKES_PAIR = 1 << 5,
+
+	/* at most one revision */
+	GIT_TAKES_SINGLE = 1 << 6,
+
+	/* the line and count arguments, and numbered lines of one committed
+	 * file that cat-file reads
+	 */
+	GIT_TAKES_LINES = 1 << 7,
+
+	/* exactly one option, which selects what to show */
+	GIT_TAKES_MODE = 1 << 8,
+
+	/* exactly one path, the file */
+	GIT_TAKES_ONEPATH = 1 << 9,
 };
 
 /* The commands: X(ID, name, options, takes, description, forced...), an
@@ -218,53 +238,61 @@ enum {
  * drops the line "Binary file ... matches" if that line comes first
  * (git 2.55).
  */
-#define GIT_COMMAND_LIST(X)                                                                \
-        X(READ,      "read",      read_options,      END | OBJECT | SINGLE | LINES,        \
-          "Numbered lines of a committed file. Give the file as the one revision "         \
-          "commit:path, such as HEAD:src/journal.c. line is the first line to "            \
-          "return. The default line is 1. count is the most lines to return. The "         \
-          "default count is as many lines as fit in one result. The first line of "        \
-          "the output names the commit. If the file goes on, the output ends with "        \
-          "the arguments of the next read. The arguments contain the commit ID in "        \
-          "place of HEAD.", "blob")                                                        \
-        X(LOG,       "log",       log_options,       FILES | END | RANGE,                  \
-          "Committed history. The default revision is HEAD. Paths limit the history.",     \
-          "--no-ext-diff", "--no-textconv")                                                \
-        X(SHOW,      "show",      show_options,      FILES | END | OBJECT,                 \
-          "A commit with the patch. The default revision is HEAD. The revision "           \
-          "commit:path shows a file.", "--no-ext-diff", "--no-textconv")                   \
-        X(DIFF,      "diff",      diff_options,      FILES | END | RANGE | PAIR,           \
-          "Compare two commits. Give two revisions, or one range A..B or A...B. Paths "    \
-          "limit the comparison. --stat or --name-status prints a summary.",               \
-          "--no-ext-diff", "--no-textconv")                                                \
-        X(GREP,      "grep",      grep_options,      FILES | END | PATTERN,                \
-          "Search committed files. The default revision is HEAD. The pattern argument "    \
-          "is an extended regex. -G, -F and -P select basic regex, plain text and Perl "   \
-          "regex. -i ignores case. With one revision, the first line of the output "       \
-          "names the commit. Each file path is on a separate line, above the matches "     \
-          "as line:text. With several revisions, each path starts with the commit ID "     \
-          "and a colon. To read a match, call read with commit:path and the line of "      \
-          "the match. --no-heading puts the path before each match. -l lists the "         \
-          "files with a match. -L lists the files without a match. -c counts the "         \
-          "matching lines in each file. -C3 adds three lines of context. -p adds the "     \
-          "first line of the function that contains a match. -W adds the whole "           \
-          "function. --max-count=N stops after N matches in a file.",                      \
-          "--no-textconv", "-n", "-E", "--heading", "--break", "--threads=1")              \
-        X(BLAME,     "blame",     blame_options,     FILES | SINGLE | ONEPATH,             \
-          "The commit that last changed each line of a committed file. The default "       \
-          "revision is HEAD. Give the file as the one path, such as \"paths\": "           \
-          "[\"src/git.c\"]. -L10,30 limits the output to lines 10 to 30. -s leaves out "   \
-          "the author and the date.", "--no-textconv")                                     \
-        X(LS_TREE,   "ls-tree",   ls_tree_options,   FILES | SINGLE,                       \
-          "Entries of a committed tree. The default revision is HEAD. The path \"src/\" "  \
-          "lists the entries in src. The path \"src\" lists only src. -r recurses. -d "    \
-          "lists only trees.")                                                             \
-        X(CAT_FILE,  "cat-file",  cat_file_options,  END | OBJECT | SINGLE | MODE,         \
-          "Inspect a committed object. The default revision is HEAD. commit:path names a " \
-          "file. Give exactly one option: -p prints the contents, -t the type, -s the "    \
-          "size in bytes. -e only checks that the object exists.")                         \
-        X(REV_PARSE, "rev-parse", rev_parse_options, 0,                                    \
-          "Print the commit ID of each revision. The default revision is HEAD. --verify "  \
+#define GIT_COMMAND_LIST(X)                                                                 \
+        X(READ,      "read",      read_options,                                             \
+          GIT_TAKES_END_OF_OPTIONS | GIT_TAKES_OBJECT | GIT_TAKES_SINGLE | GIT_TAKES_LINES, \
+          "Numbered lines of a committed file. Give the file as the one revision "          \
+          "commit:path, such as HEAD:src/journal.c. line is the first line to "             \
+          "return. The default line is 1. count is the most lines to return. The "          \
+          "default count is as many lines as fit in one result. The first line of "         \
+          "the output names the commit. If the file goes on, the output ends with "         \
+          "the arguments of the next read. The arguments contain the commit ID in "         \
+          "place of HEAD.", "blob")                                                         \
+        X(LOG,       "log",       log_options,                                              \
+          GIT_TAKES_FILES | GIT_TAKES_END_OF_OPTIONS | GIT_TAKES_RANGE,                     \
+          "Committed history. The default revision is HEAD. Paths limit the history.",      \
+          "--no-ext-diff", "--no-textconv")                                                 \
+        X(SHOW,      "show",      show_options,                                             \
+          GIT_TAKES_FILES | GIT_TAKES_END_OF_OPTIONS | GIT_TAKES_OBJECT,                    \
+          "A commit with the patch. The default revision is HEAD. The revision "            \
+          "commit:path shows a file.", "--no-ext-diff", "--no-textconv")                    \
+        X(DIFF,      "diff",      diff_options,                                             \
+          GIT_TAKES_FILES | GIT_TAKES_END_OF_OPTIONS | GIT_TAKES_RANGE | GIT_TAKES_PAIR,    \
+          "Compare two commits. Give two revisions, or one range A..B or A...B. Paths "     \
+          "limit the comparison. --stat or --name-status prints a summary.",                \
+          "--no-ext-diff", "--no-textconv")                                                 \
+        X(GREP,      "grep",      grep_options,                                             \
+          GIT_TAKES_FILES | GIT_TAKES_END_OF_OPTIONS | GIT_TAKES_PATTERN,                   \
+          "Search committed files. The default revision is HEAD. The pattern argument "     \
+          "is an extended regex. -G, -F and -P select basic regex, plain text and Perl "    \
+          "regex. -i ignores case. With one revision, the first line of the output "        \
+          "names the commit. Each file path is on a separate line, above the matches "      \
+          "as line:text. With several revisions, each path starts with the commit ID "      \
+          "and a colon. To read a match, call read with commit:path and the line of "       \
+          "the match. --no-heading puts the path before each match. -l lists the "          \
+          "files with a match. -L lists the files without a match. -c counts the "          \
+          "matching lines in each file. -C3 adds three lines of context. -p adds the "      \
+          "first line of the function that contains a match. -W adds the whole "            \
+          "function. --max-count=N stops after N matches in a file.",                       \
+          "--no-textconv", "-n", "-E", "--heading", "--break", "--threads=1")               \
+        X(BLAME,     "blame",     blame_options,                                            \
+          GIT_TAKES_FILES | GIT_TAKES_SINGLE | GIT_TAKES_ONEPATH,                           \
+          "The commit that last changed each line of a committed file. The default "        \
+          "revision is HEAD. Give the file as the one path, such as \"paths\": "            \
+          "[\"src/git.c\"]. -L10,30 limits the output to lines 10 to 30. -s leaves out "    \
+          "the author and the date.", "--no-textconv")                                      \
+        X(LS_TREE,   "ls-tree",   ls_tree_options,                                          \
+          GIT_TAKES_FILES | GIT_TAKES_SINGLE,                                               \
+          "Entries of a committed tree. The default revision is HEAD. The path \"src/\" "   \
+          "lists the entries in src. The path \"src\" lists only src. -r recurses. -d "     \
+          "lists only trees.")                                                              \
+        X(CAT_FILE,  "cat-file",  cat_file_options,                                         \
+          GIT_TAKES_END_OF_OPTIONS | GIT_TAKES_OBJECT | GIT_TAKES_SINGLE | GIT_TAKES_MODE,  \
+          "Inspect a committed object. The default revision is HEAD. commit:path names a "  \
+          "file. Give exactly one option: -p prints the contents, -t the type, -s the "     \
+          "size in bytes. -e only checks that the object exists.")                          \
+        X(REV_PARSE, "rev-parse", rev_parse_options, 0,                                     \
+          "Print the commit ID of each revision. The default revision is HEAD. --verify "   \
           "requires exactly one valid revision.", "--revs-only")
 
 static struct {
@@ -584,7 +612,7 @@ git_option_check (struct cstr_view  opt,
 		                 (int)at, match.data, value, digits);
 	}
 	if (!git_option_find(source_options, opt, &match)) {
-		char const *source = commands[command].takes & PAIR
+		char const *source = commands[command].takes & GIT_TAKES_PAIR
 			? "two commits or one range A..B or A...B in revisions."
 			: "a commit in revisions. The default revision is HEAD.";
 		return git_wrong(len, why, size,
@@ -909,7 +937,7 @@ git_call_command (struct git_call  *call,
 	}
 	call->command = c;
 	uint64_t const takes = commands[c].takes;
-	bool const read = takes & LINES;
+	bool const read = takes & GIT_TAKES_LINES;
 	struct json_object *help = of[GIT_ARG_HELP];
 	if ((seen >> GIT_ARG_HELP & 1) && !json_object_is_type(help, json_type_boolean))
 		return git_wrong(len, why, size, "The help argument must be a boolean.");
@@ -947,25 +975,26 @@ git_call_command (struct git_call  *call,
 	/* The counts above keep argv in bounds, so the checks below go on
 	 * after a problem. */
 	int bad = 0;
-	if ((takes & SINGLE) && lens[GIT_ARG_REVISIONS] > 1)
+	if ((takes & GIT_TAKES_SINGLE) && lens[GIT_ARG_REVISIONS] > 1)
 		bad = git_wrong(len, why, size, "Give git %.*s at most one revision.", (int)cmd.len,
 		                cmd.data);
-	if (lens[GIT_ARG_PATHS] && !(takes & FILES))
+	if (lens[GIT_ARG_PATHS] && !(takes & GIT_TAKES_FILES))
 		bad = git_wrong(len, why, size,
 		                "Paths are not allowed for git %.*s.%s", (int)cmd.len,
-		                cmd.data, takes & OBJECT ? " To name a file, give the revision "
+		                cmd.data,
+		                takes & GIT_TAKES_OBJECT ? " To name a file, give the revision "
 		                                           "HEAD:path." : "");
-	if ((takes & ONEPATH) && lens[GIT_ARG_PATHS] != 1)
+	if ((takes & GIT_TAKES_ONEPATH) && lens[GIT_ARG_PATHS] != 1)
 		bad = git_wrong(len, why, size, "Give git blame the file as the one path, such as "
 		                "\"paths\": [\"src/git.c\"].");
-	if ((takes & MODE) && lens[GIT_ARG_OPTIONS] != 1)
+	if ((takes & GIT_TAKES_MODE) && lens[GIT_ARG_OPTIONS] != 1)
 		bad = git_wrong(len, why, size,
 		                "Give git cat-file exactly one option: -p prints the "
 		                "contents, -t the type, -s the size. -e checks that the "
 		                "object exists.");
 	struct json_object *pattern = of[GIT_ARG_PATTERN];
 	struct cstr_view const pat = jb_text(pattern, 1, WORD, nullptr);
-	if (takes & PATTERN) {
+	if (takes & GIT_TAKES_PATTERN) {
 		if (!pat.data)
 			bad = git_wrong(len, why, size,
 			                "Give git grep a pattern argument of 1 to %d bytes.", WORD);
@@ -1015,10 +1044,10 @@ git_call_command (struct git_call  *call,
 		}
 		if (cstr_view_equal(opt, CSTR_VIEW("-L")) ||
 		    cstr_view_equal(opt, CSTR_VIEW("--files-without-match")))
-			call->grep |= GREP_WITHOUT;
+			call->grep |= GIT_GREP_WITHOUT;
 		if (cstr_view_equal(opt, CSTR_VIEW("-v")) ||
 		    cstr_view_equal(opt, CSTR_VIEW("--invert-match")))
-			call->grep |= GREP_INVERT;
+			call->grep |= GIT_GREP_INVERT;
 		if (!cstr_view_starts(opt, git_ignore_rev)) {
 			argv[k++] = opt.data;
 			continue;
@@ -1035,7 +1064,7 @@ git_call_command (struct git_call  *call,
 		argv[k++] = "-e";
 		argv[k++] = pat.data;
 	}
-	if (takes & END)
+	if (takes & GIT_TAKES_END_OF_OPTIONS)
 		argv[k++] = "--end-of-options";
 	size_t const listed = lens[GIT_ARG_REVISIONS];
 	size_t endpoints = listed;
@@ -1051,19 +1080,20 @@ git_call_command (struct git_call  *call,
 		if (range && range >= s.data + root)
 			range = nullptr;
 		endpoints += range != nullptr;
-		if (path && (!(takes & OBJECT) ||
+		if (path && (!(takes & GIT_TAKES_OBJECT) ||
 		             !util_path_inside(cstr_view_slice(rev->path, 1, SIZE_MAX)))) {
-			bad = git_wrong(len, why, size, takes & OBJECT
+			bad = git_wrong(len, why, size, takes & GIT_TAKES_OBJECT
 			                ? "In revisions[%zu], give git %.*s a relative path "
 			                  "after the colon, with no .. component."
-			                : takes & FILES
+			                : takes & GIT_TAKES_FILES
 			                ? "In revisions[%zu], give git %.*s only the commit. "
 			                  "Give the path in paths."
 			                : "In revisions[%zu], give git %.*s a commit, not "
 			                  "commit:path.", i, (int)cmd.len, cmd.data);
 			continue;
 		}
-		if (range && (!(takes & RANGE) || ((takes & PAIR) && listed != 1))) {
+		if (range &&
+		    (!(takes & GIT_TAKES_RANGE) || ((takes & GIT_TAKES_PAIR) && listed != 1))) {
 			bad = git_wrong(len, why, size,
 			                "In revisions[%zu], a range is allowed only for "
 			                "log and diff. Give diff a range only as the one "
@@ -1090,10 +1120,10 @@ git_call_command (struct git_call  *call,
 	if (read && !call->revisions[0].path.len)
 		bad = git_wrong(len, why, size, "Give git read the file as the revision, such as "
 		                "\"revisions\": [\"HEAD:src/journal.c\"].");
-	if ((takes & PAIR) && endpoints != 2)
+	if ((takes & GIT_TAKES_PAIR) && endpoints != 2)
 		bad = git_wrong(len, why, size, "Give git diff two commits, or one range A..B or "
 		                "A...B.");
-	if (takes & FILES)
+	if (takes & GIT_TAKES_FILES)
 		argv[k++] = "--";
 	for (size_t i = 0; i < lens[GIT_ARG_PATHS]; ++i) {
 		struct cstr_view const s = jb_view(jb_at(of[GIT_ARG_PATHS], i));
@@ -1128,7 +1158,7 @@ git_help (struct mcp_slot *slot,
 			"Each option is one array entry, with the value attached. Append the "
 			"value after a trailing =. Replace a trailing # with digits. Replace a "
 			"trailing * with a value. Examples: --max-count=20, -n20, -C3."),
-		"pagination", json_object_new_string(takes & LINES
+		"pagination", json_object_new_string(takes & GIT_TAKES_LINES
 			? "git output is cut at 4 MiB. read returns at most count whole lines in "
 			  "at most window_bytes. Each line starts with the line number and a "
 			  "tab. If the file goes on, the output ends with the revision and the "
@@ -1138,16 +1168,16 @@ git_help (struct mcp_slot *slot,
 			  "longer output ends with a note that names the exact next offset for "
 			  "the same arguments."),
 		"limits", jb_object(
-			"options", json_object_new_int(takes & MODE ? 1 : OPTIONS),
-			"revisions", json_object_new_int(takes & SINGLE ? 1 :
-			                                takes & PAIR ? 2 : REVISIONS),
-			"paths", json_object_new_int(takes & ONEPATH ? 1 :
-			                            takes & FILES ? PATHS : 0),
+			"options", json_object_new_int(takes & GIT_TAKES_MODE ? 1 : OPTIONS),
+			"revisions", json_object_new_int(takes & GIT_TAKES_SINGLE ? 1 :
+			                                takes & GIT_TAKES_PAIR ? 2 : REVISIONS),
+			"paths", json_object_new_int(takes & GIT_TAKES_ONEPATH ? 1 :
+			                            takes & GIT_TAKES_FILES ? PATHS : 0),
 			"argument_bytes", json_object_new_int(WORD),
 			"capture_bytes", json_object_new_int(TOOL_TEXT_MAX),
 			"window_bytes", json_object_new_int64((int64_t)mcp_slot_window_max(slot)),
 			nullptr),
-		"pattern_required", json_object_new_boolean(takes & PATTERN),
+		"pattern_required", json_object_new_boolean(takes & GIT_TAKES_PATTERN),
 		nullptr);
 	struct cstr_view const text = jb_wire(help);
 	size_t taken;
@@ -1228,8 +1258,8 @@ git_call_spawn (struct git_call *call,
 	 * as a commit ID. A read discards stderr so that a warning does not
 	 * become a line of the file. */
 	return !ok ? ENOMEM : git_pin_spawn(&call->pin, slot, call->argv,
-	                                    commands[call->command].takes & LINES ? 0
-	                                                                         : CHILD_STDERR);
+	                                    commands[call->command].takes & GIT_TAKES_LINES ? 0
+	                                                                         : CHILD_CMD_STDERR);
 }
 
 /** Takes the output of the ended git of the pin of @p call, if any, and
@@ -1291,19 +1321,20 @@ git_ended (struct mcp_slot *slot,
 	} else if (!status) {
 		note = out.len ? cstr_view(nullptr) : CSTR_VIEW("No output.");
 		failed = false;
-	} else if (status == 1 && (takes & PATTERN)) {
+	} else if (status == 1 && (takes & GIT_TAKES_PATTERN)) {
 		/* grep exits with status 1 when it writes no line. The meaning
 		 * of no line depends on -L and -v. */
 		static struct cstr_view const none[] = {
-			[0]                          = CSTR_VIEW_INIT("No matches."),
-			[GREP_WITHOUT]               = CSTR_VIEW_INIT("Every file contains a match."),
-			[GREP_INVERT]                = CSTR_VIEW_INIT("Every line matches."),
-			[GREP_WITHOUT | GREP_INVERT] = CSTR_VIEW_INIT("Every file contains a line "
-			                                              "that does not match."),
+			[0]                = CSTR_VIEW_INIT("No matches."),
+			[GIT_GREP_WITHOUT] = CSTR_VIEW_INIT("Every file contains a match."),
+			[GIT_GREP_INVERT]  = CSTR_VIEW_INIT("Every line matches."),
+			[GIT_GREP_WITHOUT | GIT_GREP_INVERT] =
+				CSTR_VIEW_INIT("Every file contains a line "
+				               "that does not match."),
 		};
 		note = none[call->grep];
 		failed = false;
-	} else if (status > 0 && takes & OBJECT) {
+	} else if (status > 0 && takes & GIT_TAKES_OBJECT) {
 		static char const fmt[] = "No file at the path in commit %s. ls-tree lists "
 		                          "the files of the commit.%s";
 		static char const hint[] = " If :N after the file name is a line number, "
@@ -1311,7 +1342,7 @@ git_ended (struct mcp_slot *slot,
 		static_assert(sizeof fmt - 4 + OID_SHA256 + sizeof hint - 1 <= sizeof buf,
 		              "the note fits");
 		struct git_revision const *rev = &call->revisions[0];
-		note = takes & (LINES | MODE) && rev->path.len
+		note = takes & (GIT_TAKES_LINES | GIT_TAKES_MODE) && rev->path.len
 		     ? util_format_view(buf, sizeof buf, fmt, call->pin.roots[rev->root].hex,
 		                        git_line_hint(rev->path.data + 1) ? hint : "")
 		     : util_format_view(buf, sizeof buf, "git could not read the committed "
@@ -1781,14 +1812,14 @@ git_step (struct mcp_slot *slot)
 	struct child *c = call->pin.child;
 	uint64_t const takes = commands[call->command].takes;
 	/* Git's failed object lookup may disclose whether a path exists on disk. */
-	if ((takes & OBJECT) && c->end.code == CLD_EXITED && c->end.status) {
+	if ((takes & GIT_TAKES_OBJECT) && c->end.code == CLD_EXITED && c->end.status) {
 		git_ended(slot, call, takes);
 		return;
 	}
 	/* When the output goes past 4 MiB, git is killed. A read then writes
 	 * the lines before the cut, as it does after a git that exited in
 	 * time. */
-	if (takes & LINES) {
+	if (takes & GIT_TAKES_LINES) {
 		uint32_t const end = flag_get(c->end.flags, CHILD_CUT | CHILD_LATE);
 		if (end ? end != CHILD_CUT : c->end.code != CLD_EXITED)
 			git_ended(slot, call, takes);
@@ -1798,8 +1829,8 @@ git_step (struct mcp_slot *slot)
 			git_number(slot, call);
 		return;
 	}
-	int e = (takes & PATTERN) && call->n_revisions == 1 ? git_grep_copy(call, slot)
-	                                                    : git_copy(slot, c);
+	int e = (takes & GIT_TAKES_PATTERN) && call->n_revisions == 1 ? git_grep_copy(call, slot)
+	                                                              : git_copy(slot, c);
 	if (e == EAGAIN || (!e && loop_room(c->loop, LOOP_COPY) < GIT_NOTE)) {
 		mcp_slot_ready(slot);
 		return;

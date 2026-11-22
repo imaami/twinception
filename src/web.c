@@ -15,16 +15,15 @@
  * the request asked for that and the reply is a whole 2xx response. Then
  * it posts each wait to the wait's loop with a reference to the reply.
  *
- * A run has a reference count. Home has one reference from the run's
- * creation to its end, and the run's message has one while it is posted.
- * A wait has no reference to its run. While a wait is on the run's list,
- * which is accessed only with the mutex locked, the run has not ended, and
- * the wait's pointer to the run is valid. Home sets that pointer to
- * nullptr for each wait that it moves. When a call releases its wait, the
- * wait is removed from the list with the mutex locked. If the list is
- * then empty and the run's keep is 0, the call posts CANCEL to home, and
- * home cancels the transfer. A run whose keep is not 0 goes on to its
- * end, so that its response is stored.
+ * A run has a reference count. Home has one reference from the run's creation
+ * to its end, and the run's message has one while it is posted. A wait has no
+ * reference to its run. While a wait is on the run's list, which is accessed
+ * only with the mutex locked, the run has not ended, and the wait's pointer to
+ * the run is valid. Home sets that pointer to nullptr for each wait that it
+ * moves. When a call releases its wait, the wait is removed from the list with
+ * the mutex locked. If the list is then empty and the run's keep is 0, the call
+ * posts WEB_RUN_CANCEL to home, and home cancels the transfer. A run whose keep
+ * is not 0 goes on to its end, so that its response is stored.
  *
  * The table has a fixed number of buckets. The stored responses are also
  * on a list in the order of the times at which their keep passes. To make
@@ -57,13 +56,17 @@ enum {
 	WEB_BUCKETS   = 1 << 12,   /* of the table */
 };
 
-/* The bits of the message of a run to home. web_run_mail() adds LOOP_EXIT
+/* The bits of the message of a run to home. web_run_mail() adds LOOP_END
  * of home's loop to them.
  */
 enum {
-	RUN_SUBMIT = FLAG_START,           /* send the request */
-	RUN_CANCEL = FLAG_END | FLAG_NOW,  /* no call waits for the run, and
-	                                      its keep is 0 */
+	/* Send the request of the run. */
+	WEB_RUN_START = FLAG_START,
+
+	/* The only call that waited for the run has left, and the keep of the
+	 * run is 0: stop the transfer.
+	 */
+	WEB_RUN_CANCEL = FLAG_END | FLAG_NOW,
 };
 
 /* The error texts of a run that askai ends as it stops, and of a run that
@@ -127,7 +130,7 @@ struct web_entry {
 /* A request that home sends. */
 struct web_run {
 	struct msg           to_home;   /* a client loop posts it with
-	                                   RUN_SUBMIT or RUN_CANCEL */
+	                                   WEB_RUN_START or WEB_RUN_CANCEL */
 	struct web          *web;
 	struct loop         *home;
 	/* The mutex is locked for each access to hook and waits. */
@@ -142,7 +145,7 @@ struct web_run {
 	struct loop_timer    timer;     /* the deadline */
 	struct auth_wait     auth;      /* its wait for the credential of the
 	                                   upstream. Its done is nullptr
-	                                   without WEB_UPSTREAM. */
+	                                   without WEB_ASK_UPSTREAM. */
 	struct http_request *transfer;  /* nullptr during that wait */
 	char                *body;      /* the body received so far */
 	size_t               len;       /* the length of the body */
@@ -175,14 +178,20 @@ struct web_wait {
 	struct web_run   *run;    /* the run while the wait is on the run's
 	                             list, else nullptr. The mutex is locked
 	                             for each access. */
-	struct web_reply *reply;  /* a reference, once flags is FLAG_AFTER. It
+	struct web_reply *reply;  /* a reference, once WEB_WAIT_DONE is set. It
 	                             is nullptr if home ran out of memory. */
 	struct loop      *loop;
 	web_back_fn      *back;
 	struct handle     who;
-	struct flag64     flags;  /* FLAG_AFTER once the wait has its reply.
-	                             Only the thread of loop uses it. */
+	struct flag64     flags;  /* WEB_WAIT_DONE. Only the thread of loop
+	                             uses it. */
 };
+
+/* The bit of web_wait.flags. It is set on the loop of the wait when the
+ * message of the wait arrives, or at once when a stored response answers
+ * the wait. From then on wait->reply does not change.
+ */
+enum { WEB_WAIT_DONE = FLAG_AFTER };
 
 struct web {
 	pthread_mutex_t    lock;
@@ -700,7 +709,7 @@ web_run_authorized (struct auth_wait *wait,
 }
 
 /* Starts @p run on home's loop: its time runs from now, and its transfer
- * starts at once, or for a run with WEB_UPSTREAM once the renewed
+ * starts at once, or for a run with WEB_ASK_UPSTREAM once the renewed
  * credential of the upstream has come.
  */
 static void
@@ -735,29 +744,29 @@ web_run_mail (struct loop *loop,
 {
 	struct web_run *run = container_of(msg, struct web_run, to_home);
 	struct web *web = run->web;
-	uint32_t bits = atomic_exchange(&run->bits, 0) & (RUN_SUBMIT | RUN_CANCEL);
+	uint32_t bits = atomic_exchange(&run->bits, 0) & (WEB_RUN_START | WEB_RUN_CANCEL);
 
-	/* LOOP_EXIT is FLAG_END, which RUN_CANCEL contains, so a cancelled
+	/* LOOP_END is FLAG_END, which WEB_RUN_CANCEL contains, so a cancelled
 	 * run ends the same way before and after home's loop has stopped. No
 	 * wait reads its reply. */
-	switch (bits | flag_get(loop->flags, LOOP_EXIT)) {
-	case RUN_SUBMIT:
+	switch (bits | flag_get(loop->flags, LOOP_END)) {
+	case WEB_RUN_START:
 		web_run_start(web, run);
 		break;
 
-	case RUN_SUBMIT | LOOP_EXIT: {
+	case WEB_RUN_START | LOOP_END: {
 		struct web_response const end = web_response(.error = stopping, .e = ESHUTDOWN);
 		web_run_end(web, run, &end);
 		break;
 	}
 
-	case RUN_SUBMIT | RUN_CANCEL: {
+	case WEB_RUN_START | WEB_RUN_CANCEL: {
 		struct web_response const end = web_response(.error = "", .e = ECANCELED);
 		web_run_end(web, run, &end);
 		break;
 	}
 
-	case RUN_CANCEL:
+	case WEB_RUN_CANCEL:
 		if (!list_is_empty(&run->live)) {
 			http_cancel(web->http, &run->transfer);
 			struct web_response const end = web_response(
@@ -779,7 +788,7 @@ web_wait_mail (struct loop *loop,
                struct msg  *msg)
 {
 	struct web_wait *wait = container_of(msg, struct web_wait, msg);
-	flag_set(&wait->flags, FLAG_AFTER);
+	flag_set(&wait->flags, WEB_WAIT_DONE);
 	wait->back(loop, wait->who, wait);
 }
 
@@ -920,7 +929,7 @@ web_wait_create (struct web           *web,
 		.live = list(&run->live),
 		.late = list(&run->late),
 		.timer = { .due = UINT64_MAX, .fn = web_run_late },
-		.auth = auth_wait(&run->auth, flag_any(ask->flags, WEB_UPSTREAM) && !r->keep
+		.auth = auth_wait(&run->auth, flag_any(ask->flags, WEB_ASK_UPSTREAM) && !r->keep
 		                              ? web_run_authorized : nullptr),
 		.key = {
 			.max = r->max,
@@ -936,7 +945,7 @@ web_wait_create (struct web           *web,
 	};
 	/* refs starts at 2, one reference for home and one for the message
 	 * to_home. */
-	atomic_init(&run->bits, RUN_SUBMIT);
+	atomic_init(&run->bits, WEB_RUN_START);
 	atomic_init(&run->refs, 2);
 	char *p = mempcpy(run->data, r->url, ask->url + 1);
 	p = mempcpy(p, agent, sizeof agent - 1);
@@ -981,7 +990,7 @@ web_wait_create (struct web           *web,
 		if (entry && entry->reply->received + r->keep * NS > ask->loop->now &&
 		    ref_tryget(&entry->reply->refs)) {
 			wait->reply = entry->reply;
-			flag_set(&wait->flags, FLAG_AFTER);
+			flag_set(&wait->flags, WEB_WAIT_DONE);
 			to = nullptr;
 		} else {
 			struct web_run *join = web_find_run(web, run);
@@ -1019,7 +1028,7 @@ web_wait_create (struct web           *web,
 bool
 web_wait_done (struct web_wait const *wait)
 {
-	return flag_any(wait->flags, FLAG_AFTER);
+	return flag_any(wait->flags, WEB_WAIT_DONE);
 }
 
 void
@@ -1055,7 +1064,7 @@ web_wait_leave (struct web_wait **p_wait)
 		return;
 	struct web_wait *wait = *p_wait;
 	*p_wait = nullptr;
-	if (flag_any(wait->flags, FLAG_AFTER)) {
+	if (flag_any(wait->flags, WEB_WAIT_DONE)) {
 		web_reply_put(wait->reply);
 		wait->reply = nullptr;
 		free(wait);
@@ -1067,10 +1076,11 @@ web_wait_leave (struct web_wait **p_wait)
 	struct web_run *run = wait->run;
 	if (run) {
 		list_del(&wait->hook);
-		/* A run whose keep is 0 has one wait. The call posts the message
-		 * with a reference if CANCEL makes the word of bits non-zero, so
-		 * the run is not freed before home has handled the message. */
-		cancel = !run->keep && !atomic_fetch_or(&run->bits, RUN_CANCEL) &&
+		/* A run whose keep is 0 has one wait. The call posts the
+		 * message with a reference if WEB_RUN_CANCEL makes the word of
+		 * bits non-zero, so the run is not freed before home has
+		 * handled the message. */
+		cancel = !run->keep && !atomic_fetch_or(&run->bits, WEB_RUN_CANCEL) &&
 		         ref_tryget(&run->refs);
 	}
 	pthread_mutex_unlock(&web->lock);

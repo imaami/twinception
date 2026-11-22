@@ -159,7 +159,7 @@ run_git (struct git_run *run,
 }
 
 /* Runs @p cmd in @p store as store_spawn() would, with the words @p words
- * and the input @p in, as run_git() does. Without CHILD_STDERR, the errors
+ * and the input @p in, as run_git() does. Without CHILD_CMD_STDERR, the errors
  * of git go to /dev/null.
  */
 static int
@@ -193,7 +193,7 @@ run_words (char const        *path,
 	struct git_run r;
 	struct child_cmd const how = child_cmd(
 		.deadline = loop_clock() + GIT_RUN_NS,
-		.flags    = CHILD_STDERR
+		.flags    = { CHILD_CMD_STDERR }
 	);
 	if (!e)
 		e = git_run_init(&r, &dir, words, &how);
@@ -730,7 +730,7 @@ test_argv (struct store const *store)
 		      !strncmp(run.c.envp[0], "PATH=", 5) && !run.c.in.len &&
 		      run.c.max == STORE_MAX && run.c.deadline == 7 + GIT_RUN_NS &&
 		      run.c.grace == (writes ? GIT_GRACE : 0) &&
-		      run.c.flags.bits == (writes ? CHILD_STDERR : 0));
+		      run.c.flags.bits == (writes ? CHILD_CMD_STDERR : 0));
 		/* A command without words does not read the words. */
 		int e = store_command(store, &run, rows[i].cmd, nullptr, ref, span(nullptr, 0), 7);
 		CHECK(e == (rows[i].words[0] ? EINVAL : 0));
@@ -795,12 +795,12 @@ test_spawn (struct store const *store)
 	lock_make(lock, 1);
 	CHECK(store_spawn(store, slot, STORE_COMMIT, nullptr, "refs/heads/notes/t",
 	                  span((unsigned char *)"abc", 3), &e) == &test_child && !e);
-	CHECK(spawned.calls == 3 && spawned.grace == GIT_GRACE && spawned.flags == CHILD_STDERR &&
+	CHECK(spawned.calls == 3 && spawned.grace == GIT_GRACE && spawned.flags == CHILD_CMD_STDERR &&
 	      spawned.in == 3);
 	CHECK(access(lock, F_OK) && errno == ENOENT);
 	CHECK(store_spawn(store, slot, STORE_CREATE, nullptr, nullptr, span(nullptr, 0), &e) ==
 	      &test_child && !e);
-	CHECK(spawned.calls == 4 && spawned.grace == GIT_GRACE && spawned.flags == CHILD_STDERR);
+	CHECK(spawned.calls == 4 && spawned.grace == GIT_GRACE && spawned.flags == CHILD_CMD_STDERR);
 
 	/* A recent lock file stays, and store_lock() writes its age. */
 	int64_t age = -1;
@@ -1009,7 +1009,7 @@ test_ends (char const *parent)
 	buf_clear(&out);
 	/* For a repository that exists, no git runs, and the end is an exit
 	 * with status 0. */
-	end = child_end(.status = -1, .flags = CHILD_LATE);
+	end = child_end(.status = -1, .flags = { CHILD_LATE });
 	CHECK(!store_init(store, &out, &end) && end.code == CLD_EXITED && !end.status &&
 	      !end.flags.bits && !buf_peek(&out).len);
 	CHECK(store_init(nullptr, &out, &end) == EINVAL);
