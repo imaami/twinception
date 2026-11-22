@@ -7,6 +7,7 @@
 
 #include <signal.h>
 
+#include "flag.h"
 #include "loop.h"
 
 struct cli_signals;
@@ -16,8 +17,10 @@ typedef void cli_signals_cb (struct cli_signals *signals, unsigned number);
  *  of each flag that is set.
  */
 enum {
-	CLI_SIGNALS_MASKED  = 1u << 0,  /**< the signal mask, from previous */
-	CLI_SIGNALS_IGNORED = 1u << 1,  /**< the action of SIGPIPE, from pipe */
+	CLI_SIGNALS_MASKED  = FLAG_OWN(0),  /**< the signal mask, from
+	                                         previous */
+	CLI_SIGNALS_IGNORED = FLAG_OWN(1),  /**< the action of SIGPIPE, from
+	                                         pipe */
 };
 
 struct cli_signals {
@@ -26,7 +29,7 @@ struct cli_signals {
 	cli_signals_cb   *fn;
 	sigset_t          previous;
 	struct sigaction  pipe;
-	uint64_t          flags;
+	struct flag64     flags;
 };
 
 /** Call before creating threads or initializing libraries that create them. */

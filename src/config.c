@@ -748,7 +748,7 @@ config_complain (struct config const *cfg,
 	char const *colon = ": ";
 	if (!where)
 		where = colon = "";
-	if (cfg->flags & CFG_LOGGED)
+	if (flag_any(cfg->flags, CFG_LOGGED))
 		LOG(LOG_ERROR, "%s%s%s", where, colon, what);
 	else
 		fprintf(stderr, "%s%s%s\n", where, colon, what);
@@ -1003,7 +1003,7 @@ config_apply_store (struct config *cfg,
 		memcpy(member, &value, sizeof value);
 		break;
 	}
-	cfg->flags |= n->flag;
+	flag_set(&cfg->flags, n->flag);
 	return 0;
 }
 
@@ -1042,9 +1042,9 @@ config_apply (struct config *cfg,
 		break;
 	case ROW_LISTEN:
 		/* The command line's listeners replace the file's. */
-		if (!where && cfg->flags & CFG_LISTEN_FILE)
+		if (!where && flag_any(cfg->flags, CFG_LISTEN_FILE))
 			cfg->n_listens = 0;
-		cfg->flags = (cfg->flags & ~CFG_LISTEN_FILE) | (where ? CFG_LISTEN_FILE : 0);
+		flag_put(&cfg->flags, CFG_LISTEN_FILE, where ? CFG_LISTEN_FILE : 0);
 		config_push(cfg->listens, &cfg->n_listens, arg);
 		break;
 	case ROW_BACKGROUND: ep->background = 1; break;
@@ -1615,7 +1615,7 @@ config_fit_limits (struct config *cfg)
 	for (size_t i = 0; i < array_size(budgets); ++i) {
 		if (lim->body <= budgets[i])
 			continue;
-		if (cfg->flags & CFG_BODY_GIVEN)
+		if (flag_any(cfg->flags, CFG_BODY_GIVEN))
 			return config_complain(cfg, nullptr, "--max-body exceeds %s", names[i]);
 		lim->body = budgets[i];
 	}
@@ -1721,7 +1721,7 @@ config_auth_options (struct config *cfg)
 	if (ep->auth_command && ep->provider == AI_CHATGPT)
 		return config_complain(cfg, nullptr, "--auth-command cannot be combined "
 		                       "with --provider chatgpt");
-	return ep->auth_command || !(ep->auth_file || cfg->flags & CFG_AUTH_LOGIN) ? 0
+	return ep->auth_command || !(ep->auth_file || flag_any(cfg->flags, CFG_AUTH_LOGIN)) ? 0
 	       : config_complain(cfg, nullptr, "--auth-file and --auth-login need "
 	                         "--auth-command");
 }
@@ -1755,7 +1755,7 @@ config_api (struct config *cfg)
 static int
 config_check_upstream (struct config *cfg)
 {
-	if (!(cfg->flags & CFG_UPSTREAM_TOOLS))
+	if (!flag_any(cfg->flags, CFG_UPSTREAM_TOOLS))
 		return 0;
 	/* The turns follow the conversation. */
 	char const *key = ai_format(cfg->ep.api)->conversation;
@@ -2153,7 +2153,8 @@ config_listens (struct config *cfg)
 		int e;
 		struct httpd_listen_addr const a = httpd_listen_addr(cfg->listens[i], &e);
 		if (e)
-			return config_complain(cfg, cfg->flags & CFG_LISTEN_FILE ? cfg->path : nullptr,
+			return config_complain(cfg,
+			                       flag_any(cfg->flags, CFG_LISTEN_FILE) ? cfg->path : nullptr,
 			                       "invalid --listen: %s: %s", cfg->listens[i],
 			                       strerror(e));
 		tls |= a.tls;
@@ -2168,7 +2169,7 @@ static void
 config_note_token (struct config const *cfg)
 {
 	char const *token = getenv("ASKAI_TOKEN");
-	if (cfg->flags & CFG_LOGGED || !token || !*token || !cfg->file)
+	if (flag_any(cfg->flags, CFG_LOGGED) || !token || !*token || !cfg->file)
 		return;
 	struct json_object_iter it;
 	json_object_object_foreachC(cfg->file, it)
@@ -2518,7 +2519,7 @@ config_policy (struct config *cfg)
 	struct config const *run = config_run(cfg);
 	struct registry const *reg = &run->registry;
 	tool_mask upstream = 0;
-	if (run->flags & CFG_UPSTREAM_TOOLS)
+	if (flag_any(run->flags, CFG_UPSTREAM_TOOLS))
 		for (uint32_t id = 0; id < reg->n_granted; ++id)
 			upstream |= reg->tools[id].kind->flags & TOOL_LENT ? (tool_mask)1 << id : 0;
 	char why[1024];
@@ -2567,7 +2568,7 @@ config_finish (struct config *cfg)
 static int
 config_misuse (struct config const *cfg)
 {
-	if (!(cfg->flags & CFG_LOGGED))
+	if (!flag_any(cfg->flags, CFG_LOGGED))
 		config_usage(cfg, stderr);
 	return 2;
 }
@@ -2576,7 +2577,7 @@ config_misuse (struct config const *cfg)
 static int
 config_argv (struct config *cfg)
 {
-	opterr = !(cfg->flags & CFG_LOGGED);
+	opterr = !flag_any(cfg->flags, CFG_LOGGED);
 	optind = 0;
 	for (int opt; (opt = getopt_long(cfg->argc, cfg->argv, shorts, options,
 	                                 nullptr)) >= 0; ) {
@@ -2631,7 +2632,7 @@ config_parse (struct config *cfg)
 	optind = 0;
 	for (int opt; (opt = getopt_long(cfg->argc, cfg->argv, shorts, options,
 	                                 nullptr)) >= 0; ) {
-		if (opt == 'h' && !(cfg->flags & CFG_LOGGED)) {
+		if (opt == 'h' && !flag_any(cfg->flags, CFG_LOGGED)) {
 			config_usage(cfg, stdout);
 			return 0;
 		}
@@ -2641,7 +2642,7 @@ config_parse (struct config *cfg)
 	int status = cfg->path ? config_file(cfg) : config_lists(cfg);
 	if (!status)
 		status = config_argv(cfg);
-	if (!status && cfg->flags & CFG_CHATGPT_LOGIN) {
+	if (!status && flag_any(cfg->flags, CFG_CHATGPT_LOGIN)) {
 		if (cfg->ep.provider && cfg->ep.provider != AI_CHATGPT)
 			return config_complain(cfg, nullptr, "--chatgpt-login needs --provider chatgpt");
 		cfg->ep.provider = AI_CHATGPT;
@@ -2654,7 +2655,7 @@ config_parse (struct config *cfg)
 			status = config_chatgpt_path(cfg);
 		return status ? status : -1;
 	}
-	if (!status && cfg->flags & CFG_AUTH_LOGIN) {
+	if (!status && flag_any(cfg->flags, CFG_AUTH_LOGIN)) {
 		status = config_auth_options(cfg);
 		if (!status)
 			status = config_auth(cfg);
@@ -2680,11 +2681,11 @@ config_reload (struct config       *cfg,
                struct config const *from)
 {
 	*cfg = config_defaults(from->argc, from->argv);
-	cfg->flags |= CFG_LOGGED;
+	flag_set(&cfg->flags, CFG_LOGGED);
 	cfg->running = from;
 	int status = config_parse(cfg);
 	if (status < 0 && !config_same_options(cfg, from))
-		cfg->flags |= CFG_RESTART;
+		flag_set(&cfg->flags, CFG_RESTART);
 	return status;
 }
 
@@ -2712,7 +2713,7 @@ config_log_files (struct config const *cfg)
 		LOG_ALL(LOG_INFO, "  files     off (the API takes none)");
 	else if (ai_upload_url(&cfg->ep, &url))
 		LOG_ALL(LOG_INFO, "  files     off (the URL has no /v1beta/)");
-	else if (!cfg->notes || !(cfg->flags & CFG_UPSTREAM_TOOLS))
+	else if (!cfg->notes || !flag_any(cfg->flags, CFG_UPSTREAM_TOOLS))
 		LOG_ALL(LOG_INFO, "  files     off (--notes and --upstream-tools)");
 	else
 		config_log_url("files", dstr_get(&url));
@@ -2737,7 +2738,7 @@ config_log (struct config const *cfg)
 	bool const props = ai_props(ep);
 	dstr_auto model = DSTR_INIT;
 	bool const gemini = !props && !ai_model_url(ep, &model);
-	bool asked = !ep->slots || cfg->flags & CFG_UPSTREAM_TOOLS;
+	bool asked = !ep->slots || flag_any(cfg->flags, CFG_UPSTREAM_TOOLS);
 	if (ep->context > 0)
 		LOG_ALL(LOG_INFO, "  context   %ld tokens", ep->context);
 	else if (props && asked)
@@ -2765,7 +2766,7 @@ config_log_policy (struct config const *cfg)
 		return;
 	struct config const *run = config_run(cfg);
 	policy_log(cfg->http.policy, cfg->file, &run->registry,
-	           run->flags & CFG_UPSTREAM_TOOLS ? mcp_lent : nullptr, run);
+	           flag_any(run->flags, CFG_UPSTREAM_TOOLS) ? mcp_lent : nullptr, run);
 }
 
 void

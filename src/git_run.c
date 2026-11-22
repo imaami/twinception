@@ -26,7 +26,7 @@ git_run_dir_init (struct git_run_dir *dest,
 		.path  = path,
 		.opts  = opts,
 		.env   = { util_env_path(), GIT_ENV_FIXED },
-		.flags = flags,
+		.flags = { flags },
 	};
 	for (size_t k = 1 + GIT_RUN_ENV_FIXED; env && *env; ++env, ++k) {
 		if (k + 1 == array_size(dest->env)) {
@@ -63,7 +63,8 @@ git_run_dir_argv (struct git_run_dir const *dir,
 		return EINVAL;
 	char const *const at[] = { "-C", dir->path, nullptr };
 	char const *const *const parts[] = {
-		fixed, dir->opts, dir->path ? at : nullptr, dir->flags & GIT_RUN_DOT ? dot : nullptr,
+		fixed, dir->opts, dir->path ? at : nullptr,
+		flag_any(dir->flags, GIT_RUN_DOT) ? dot : nullptr,
 		words,
 	};
 	return child_argv(argv, cap, parts, array_size(parts));

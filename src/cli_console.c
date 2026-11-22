@@ -29,6 +29,7 @@
 #include "cli_state.h"
 #include "compat.h"
 #include "dstr.h"
+#include "flag.h"
 #include "jb.h"
 #include "list.h"
 #include "loop.h"
@@ -46,29 +47,33 @@ enum {
 };
 
 /* The bits of the flags of a console, besides CLI_CONSOLE_SIMPLE. */
-enum {
-	CLI_CONSOLE_FULLSCREEN        = 1u << 2,
-	CLI_CONSOLE_SUSPENDED         = 1u << 3,
-	CLI_CONSOLE_TERMINAL_SAVED    = 1u << 4,
-	CLI_CONSOLE_RESIZE_PENDING    = 1u << 5,
-	CLI_CONSOLE_INTERRUPT_PENDING = 1u << 6,
-	CLI_CONSOLE_TERMINATED        = 1u << 7,
-	CLI_CONSOLE_BUSY              = 1u << 8,
-	CLI_CONSOLE_INPUT_EOF         = 1u << 9,
-	CLI_CONSOLE_MULTILINE         = 1u << 10,
-	CLI_CONSOLE_CALLBACK_ACTIVE   = 1u << 11,
-	CLI_CONSOLE_EOF_PENDING       = 1u << 12,
-	CLI_CONSOLE_INPUT_MACRO       = 1u << 13,
-	CLI_CONSOLE_INPUT_NOTICE      = 1u << 14,
-	CLI_CONSOLE_INPUT_YIELD       = 1u << 15,
-	CLI_CONSOLE_TAB_PENDING       = 1u << 16,
-	CLI_CONSOLE_TAB_ACTIVE        = 1u << 17,
-	CLI_CONSOLE_TAB_LISTING       = 1u << 18,
-	CLI_CONSOLE_TAB_COMPLETED     = 1u << 19,
-	CLI_CONSOLE_IN_REGULAR        = 1u << 20,  /* stdin is a regular file */
-	CLI_CONSOLE_IN_WORKING        = 1u << 21,  /* a blocker runs in.job */
-	CLI_CONSOLE_OUT_REGULAR       = 1u << 22,  /* stdout is a regular file */
-	CLI_CONSOLE_OUT_WORKING       = 1u << 23,  /* a blocker runs out.job */
+enum : uint64_t {
+	CLI_CONSOLE_FULLSCREEN        = FLAG_OWN(2),
+	CLI_CONSOLE_SUSPENDED         = FLAG_OWN(3),
+	CLI_CONSOLE_TERMINAL_SAVED    = FLAG_OWN(4),
+	CLI_CONSOLE_RESIZE_PENDING    = FLAG_OWN(5),
+	CLI_CONSOLE_INTERRUPT_PENDING = FLAG_OWN(6),
+	CLI_CONSOLE_TERMINATED        = FLAG_OWN(7),
+	CLI_CONSOLE_BUSY              = FLAG_DURING,
+	CLI_CONSOLE_INPUT_EOF         = FLAG_OWN(9),
+	CLI_CONSOLE_MULTILINE         = FLAG_OWN(10),
+	CLI_CONSOLE_CALLBACK_ACTIVE   = FLAG_OWN(11),
+	CLI_CONSOLE_EOF_PENDING       = FLAG_OWN(12),
+	CLI_CONSOLE_INPUT_MACRO       = FLAG_OWN(13),
+	CLI_CONSOLE_INPUT_NOTICE      = FLAG_OWN(14),
+	CLI_CONSOLE_INPUT_YIELD       = FLAG_OWN(15),
+	CLI_CONSOLE_TAB_PENDING       = FLAG_OWN(16),
+	CLI_CONSOLE_TAB_ACTIVE        = FLAG_OWN(17),
+	CLI_CONSOLE_TAB_LISTING       = FLAG_OWN(18),
+	CLI_CONSOLE_TAB_COMPLETED     = FLAG_OWN(19),
+	CLI_CONSOLE_IN_REGULAR        = FLAG_OWN(20),  /* stdin is a regular
+	                                                  file */
+	CLI_CONSOLE_IN_WORKING        = FLAG_OWN(21),  /* a blocker runs
+	                                                  in.job */
+	CLI_CONSOLE_OUT_REGULAR       = FLAG_OWN(22),  /* stdout is a regular
+	                                                  file */
+	CLI_CONSOLE_OUT_WORKING       = FLAG_OWN(23),  /* a blocker runs
+	                                                  out.job */
 	CLI_CONSOLE_TAB = CLI_CONSOLE_TAB_PENDING | CLI_CONSOLE_TAB_ACTIVE |
 	                  CLI_CONSOLE_TAB_LISTING | CLI_CONSOLE_TAB_COMPLETED,
 };
@@ -184,7 +189,7 @@ struct cli_console {
 	unsigned                         frame;
 	unsigned                         cursor_column;
 	uint32_t                         dirty;
-	uint64_t                         flags;
+	struct flag64                    flags;
 };
 
 /* Only Readline's callbacks use this bridge. All owned state lives in the
@@ -238,9 +243,9 @@ cli_console_completion_cache (struct cli_console *console)
 static void
 cli_console_remove_callback (struct cli_console *console)
 {
-	if (console->flags & CLI_CONSOLE_CALLBACK_ACTIVE) {
+	if (flag_any(console->flags, CLI_CONSOLE_CALLBACK_ACTIVE)) {
 		rl_callback_handler_remove();
-		console->flags &= ~CLI_CONSOLE_CALLBACK_ACTIVE;
+		flag_clear(&console->flags, CLI_CONSOLE_CALLBACK_ACTIVE);
 	}
 }
 
@@ -257,7 +262,7 @@ cli_console_abort_line (struct cli_console *console)
 static bool
 cli_console_has_input (struct cli_console const *console)
 {
-	return console->input_offset < console->input_size || (console->flags & CLI_CONSOLE_INPUT_EOF);
+	return console->input_offset < console->input_size || flag_any(console->flags, CLI_CONSOLE_INPUT_EOF);
 }
 
 /* Make the count bytes in in.job.bytes the input of the console. A count of
@@ -267,7 +272,7 @@ static void
 cli_console_input_set (struct cli_console *console,
                        ssize_t             count)
 {
-	console->flags = (console->flags & ~CLI_CONSOLE_INPUT_EOF) | (count ? 0 : CLI_CONSOLE_INPUT_EOF);
+	flag_put(&console->flags, CLI_CONSOLE_INPUT_EOF, count ? 0 : CLI_CONSOLE_INPUT_EOF);
 	console->input_offset = 0;
 	console->input_size = (size_t)count;
 }
@@ -276,8 +281,8 @@ static void
 cli_console_input_done (struct cli_io_job *job)
 {
 	struct cli_console *console = container_of(job, struct cli_console, in.job.job);
-	console->flags &= ~CLI_CONSOLE_IN_WORKING;
-	console->in.error = (console->flags & CLI_CONSOLE_TERMINATED) ? EINTR : job->blocker.error;
+	flag_clear(&console->flags, CLI_CONSOLE_IN_WORKING);
+	console->in.error = flag_any(console->flags, CLI_CONSOLE_TERMINATED) ? EINTR : job->blocker.error;
 	if (!job->blocker.error)
 		cli_console_input_set(console, console->in.job.count);
 }
@@ -314,19 +319,19 @@ static int
 cli_console_input_arm (struct cli_console *console)
 {
 	if (cli_console_has_input(console) || console->in.error || console->in.ref.fd >= 0 ||
-	    (console->flags & (CLI_CONSOLE_SUSPENDED | CLI_CONSOLE_IN_WORKING)))
+	    flag_get(console->flags, CLI_CONSOLE_SUSPENDED | CLI_CONSOLE_IN_WORKING))
 		return 0;
-	if (!(console->flags & CLI_CONSOLE_IN_REGULAR)) {
+	if (!flag_any(console->flags, CLI_CONSOLE_IN_REGULAR)) {
 		int e = loop_watch(&console->loop->loop, &console->in.ref, STDIN_FILENO,
 		                   EPOLLIN, cli_console_input_ready, nullptr);
 		if (e != EPERM)
 			return e;
-		console->flags |= CLI_CONSOLE_IN_REGULAR;
+		flag_set(&console->flags, CLI_CONSOLE_IN_REGULAR);
 	}
 	if (console->io) {
 		int e = cli_io_submit(console->io, &console->in.job.job);
 		if (!e)
-			console->flags |= CLI_CONSOLE_IN_WORKING;
+			flag_set(&console->flags, CLI_CONSOLE_IN_WORKING);
 		return e;
 	}
 	/* Console-only tests may omit a worker for a regular file. */
@@ -363,7 +368,7 @@ cli_console_byte (struct cli_console *console)
 		return EOF;
 	if (console->input_offset == console->input_size) {
 		console->in.error = cli_console_wait(console, UINT64_MAX);
-		if (console->in.error || (console->flags & CLI_CONSOLE_INPUT_EOF))
+		if (console->in.error || flag_any(console->flags, CLI_CONSOLE_INPUT_EOF))
 			return EOF;
 	}
 	return console->in.job.bytes[console->input_offset++];
@@ -398,7 +403,7 @@ static bool
 cli_console_is_immediate (struct cli_console *console,
                           struct cstr_view    line)
 {
-	return (console->flags & CLI_CONSOLE_FULLSCREEN) && console->immediate &&
+	return flag_any(console->flags, CLI_CONSOLE_FULLSCREEN) && console->immediate &&
 	       console->immediate(console->immediate_context, line);
 }
 
@@ -407,10 +412,10 @@ cli_console_resume_keys (struct cli_console *console)
 {
 	if (console->immediate_line || rl_pending_input)
 		return;
-	if (console->flags & CLI_CONSOLE_INPUT_MACRO) {
+	if (flag_any(console->flags, CLI_CONSOLE_INPUT_MACRO)) {
 		if (rl_executing_macro)
 			RL_SETSTATE(RL_STATE_MACROINPUT);
-		console->flags &= ~CLI_CONSOLE_INPUT_MACRO;
+		flag_clear(&console->flags, CLI_CONSOLE_INPUT_MACRO);
 	}
 	if (console->pending_input) {
 		rl_execute_next(console->pending_input);
@@ -424,7 +429,7 @@ cli_console_pause_keys (struct cli_console *console)
 	if (!console->pending_input)
 		console->pending_input = rl_pending_input;
 	if (rl_executing_macro)
-		console->flags |= CLI_CONSOLE_INPUT_MACRO;
+		flag_set(&console->flags, CLI_CONSOLE_INPUT_MACRO);
 	rl_clear_pending_input();
 	RL_UNSETSTATE(RL_STATE_MACROINPUT);
 }
@@ -482,12 +487,12 @@ cli_console_accept (char *line)
 {
 	struct cli_console *console = cli_console_active;
 	if (!line) {
-		console->flags |= CLI_CONSOLE_EOF_PENDING;
+		flag_set(&console->flags, CLI_CONSOLE_EOF_PENDING);
 		cli_console_remove_callback(console);
 		return;
 	}
 	struct cstr_view text = cstr_view(line);
-	if (!text.len && (console->flags & CLI_CONSOLE_BUSY)) {
+	if (!text.len && flag_any(console->flags, CLI_CONSOLE_BUSY)) {
 		free(line);
 		return;
 	}
@@ -497,7 +502,7 @@ cli_console_accept (char *line)
 		 * its rejected submission after Readline prepares the next line. */
 		console->restored_line = line;
 		console->restored_point = rl_point;
-		console->flags |= CLI_CONSOLE_INPUT_NOTICE;
+		flag_set(&console->flags, CLI_CONSOLE_INPUT_NOTICE);
 		cli_console_pause_keys(console);
 		console->dirty |= CLI_CONSOLE_PAINT_INPUT;
 		return;
@@ -531,7 +536,7 @@ cli_console_accept (char *line)
 	/* While a request runs, Readline prepares a fresh draft itself. Keep
 	 * its callback installed so editing never returns to canonical input. */
 	uint64_t const working = CLI_CONSOLE_FULLSCREEN | CLI_CONSOLE_BUSY;
-	if (!immediate && (console->flags & working) != working)
+	if (!immediate && !flag_all(console->flags, working))
 		cli_console_remove_callback(console);
 	console->dirty |= CLI_CONSOLE_PAINT_INPUT | CLI_CONSOLE_PAINT_STATUS;
 }
@@ -544,11 +549,11 @@ cli_console_submit (int count,
 	bool immediate = cli_console_is_immediate(console, cstr_view_n(rl_line_buffer, (size_t)rl_end));
 	char last = !immediate && rl_end ? rl_line_buffer[rl_end - 1] : 0;
 	bool marked = last == '/' || last == '\\';
-	bool multiline = console->flags & CLI_CONSOLE_MULTILINE;
+	bool multiline = flag_any(console->flags, CLI_CONSOLE_MULTILINE);
 	bool more = marked ? last == '\\' && !multiline : !immediate && multiline;
-	if (!more && (rl_end || !(console->flags & CLI_CONSOLE_BUSY)) &&
+	if (!more && (rl_end || !flag_any(console->flags, CLI_CONSOLE_BUSY)) &&
 	    cli_console_input_full(console, (size_t)rl_end, immediate)) {
-		console->flags = (console->flags & ~CLI_CONSOLE_INPUT_MACRO) | CLI_CONSOLE_INPUT_NOTICE;
+		flag_put(&console->flags, CLI_CONSOLE_INPUT_MACRO | CLI_CONSOLE_INPUT_NOTICE, CLI_CONSOLE_INPUT_NOTICE);
 		console->pending_input = 0;
 		/* Clearing MACROINPUT alone would replay the remaining macro
 		 * bytes when the user next presses a physical key. */
@@ -635,8 +640,8 @@ cli_console_complete (char const *text,
 	if (!matches)
 		return nullptr;
 	uint64_t const tab = CLI_CONSOLE_TAB_ACTIVE | CLI_CONSOLE_TAB_PENDING;
-	if (console->completion_count == 1 && (console->flags & tab) == tab)
-		console->flags = (console->flags & ~CLI_CONSOLE_TAB_PENDING) | CLI_CONSOLE_TAB_COMPLETED;
+	if (console->completion_count == 1 && flag_all(console->flags, tab))
+		flag_put(&console->flags, CLI_CONSOLE_TAB_PENDING | CLI_CONSOLE_TAB_COMPLETED, CLI_CONSOLE_TAB_COMPLETED);
 	if (rl_completion_type != '?') {
 		rl_point = (int)(line.len - suffix.len);
 	} else if (!matches[1]) {
@@ -683,7 +688,7 @@ cli_console_matches (char **matches,
 	(void)count;
 	(void)width;
 	struct cli_console *console = cli_console_active;
-	if ((console->flags & (CLI_CONSOLE_TAB_ACTIVE | CLI_CONSOLE_TAB_LISTING)) ==
+	if (flag_get(console->flags, CLI_CONSOLE_TAB_ACTIVE | CLI_CONSOLE_TAB_LISTING) ==
 	    CLI_CONSOLE_TAB_ACTIVE)
 		return;
 	static enum cli_style const styles[AUTOCOMPLETE_KIND_COUNT] = {
@@ -727,22 +732,22 @@ cli_console_tab (int count,
 	uint64_t now = loop_clock();
 	bool repeated = rl_last_func == cli_console_tab && now - console->completion_time <= CLI_CONSOLE_TAB_INTERVAL;
 	console->completion_time = now;
-	if (repeated && (console->flags & CLI_CONSOLE_TAB_COMPLETED)) {
+	if (repeated && flag_any(console->flags, CLI_CONSOLE_TAB_COMPLETED)) {
 		/* The first Tab already finished this word. Do not start completing
 		 * its argument with the second keypress of the same pair. */
-		console->flags &= ~CLI_CONSOLE_TAB;
+		flag_clear(&console->flags, CLI_CONSOLE_TAB);
 		return 0;
 	}
-	bool listing = repeated && (console->flags & CLI_CONSOLE_TAB_PENDING);
-	console->flags = (console->flags & ~CLI_CONSOLE_TAB) | CLI_CONSOLE_TAB_ACTIVE |
-	                 (listing ? CLI_CONSOLE_TAB_LISTING : CLI_CONSOLE_TAB_PENDING);
+	bool listing = repeated && flag_any(console->flags, CLI_CONSOLE_TAB_PENDING);
+	flag_put(&console->flags, CLI_CONSOLE_TAB,
+	         CLI_CONSOLE_TAB_ACTIVE | (listing ? CLI_CONSOLE_TAB_LISTING : CLI_CONSOLE_TAB_PENDING));
 	/* Each pair starts a new completion attempt. Readline otherwise treats
 	 * every subsequent Tab as another request to print the same matches. */
 	rl_last_func = nullptr;
 	/* '!' completes unique matches and displays ambiguous ones. Explicit
 	 * possible-completions bindings retain Readline's listing-only '?'. */
 	int e = listing ? rl_complete_internal('!') : rl_complete(count, key);
-	console->flags &= ~(CLI_CONSOLE_TAB_ACTIVE | CLI_CONSOLE_TAB_LISTING);
+	flag_clear(&console->flags, CLI_CONSOLE_TAB_ACTIVE | CLI_CONSOLE_TAB_LISTING);
 	return e;
 }
 
@@ -765,7 +770,7 @@ static void
 cli_console_output_done (struct cli_io_job *job)
 {
 	struct cli_console *console = container_of(job, struct cli_console, out.job.job);
-	console->flags &= ~CLI_CONSOLE_OUT_WORKING;
+	flag_clear(&console->flags, CLI_CONSOLE_OUT_WORKING);
 	console->out.error = job->blocker.error;
 	if (!job->blocker.error)
 		buf_consume(&console->output_queue, (size_t)console->out.job.count);
@@ -792,21 +797,21 @@ cli_console_output_ready (struct loop     *loop,
 static int
 cli_console_output_drain (struct cli_console *console)
 {
-	if (console->out.error || (console->flags & (CLI_CONSOLE_OUT_WORKING | CLI_CONSOLE_SUSPENDED)))
+	if (console->out.error || flag_any(console->flags, CLI_CONSOLE_OUT_WORKING | CLI_CONSOLE_SUSPENDED))
 		return console->out.error;
 	struct span bytes = buf_peek(&console->output_queue);
 	if (!bytes.len) {
 		loop_unwatch(&console->loop->loop, &console->out.ref);
 		return 0;
 	}
-	if ((console->flags & CLI_CONSOLE_OUT_REGULAR) && console->io) {
+	if (flag_any(console->flags, CLI_CONSOLE_OUT_REGULAR) && console->io) {
 		size_t length = bytes.len < sizeof console->out.job.bytes
 		                ? bytes.len : sizeof console->out.job.bytes;
 		memcpy(console->out.job.bytes, bytes.ptr, length);
 		console->out.job.count = (ssize_t)length;
 		int e = cli_io_submit(console->io, &console->out.job.job);
 		if (!e)
-			console->flags |= CLI_CONSOLE_OUT_WORKING;
+			flag_set(&console->flags, CLI_CONSOLE_OUT_WORKING);
 		return e;
 	}
 	/* A turn writes at most one bounded block. EPOLLOUT drives the rest. */
@@ -821,7 +826,7 @@ cli_console_output_drain (struct cli_console *console)
 		loop_unwatch(&console->loop->loop, &console->out.ref);
 		return 0;
 	}
-	if (!(console->flags & CLI_CONSOLE_OUT_REGULAR) && console->out.ref.fd < 0)
+	if (!flag_any(console->flags, CLI_CONSOLE_OUT_REGULAR) && console->out.ref.fd < 0)
 		return loop_watch(&console->loop->loop, &console->out.ref, STDOUT_FILENO,
 		                  EPOLLOUT, cli_console_output_ready, nullptr);
 	return 0;
@@ -941,10 +946,11 @@ cli_console_dimensions (struct cli_console *console)
 static int
 cli_console_editor_start (struct cli_console *console)
 {
-	if (console->flags & (CLI_CONSOLE_SIMPLE | CLI_CONSOLE_CALLBACK_ACTIVE | CLI_CONSOLE_SUSPENDED |
-	                      CLI_CONSOLE_TERMINATED | CLI_CONSOLE_INPUT_EOF | CLI_CONSOLE_EOF_PENDING))
+	if (flag_any(console->flags,
+	             CLI_CONSOLE_SIMPLE | CLI_CONSOLE_CALLBACK_ACTIVE | CLI_CONSOLE_SUSPENDED |
+	             CLI_CONSOLE_TERMINATED | CLI_CONSOLE_INPUT_EOF | CLI_CONSOLE_EOF_PENDING))
 		return 0;
-	console->flags |= CLI_CONSOLE_CALLBACK_ACTIVE;
+	flag_set(&console->flags, CLI_CONSOLE_CALLBACK_ACTIVE);
 	++console->frame;
 	rl_callback_handler_install(dstr_get(&console->prompt), cli_console_accept);
 	if (rl_executing_macro)
@@ -989,7 +995,7 @@ cli_console_bind_keys (struct cli_console *console)
 			continue;
 		rl_bind_keyseq_in_map("\033[5~", rl_history_search_backward, map);
 		rl_bind_keyseq_in_map("\033[6~", rl_history_search_forward, map);
-		if (console->flags & CLI_CONSOLE_FULLSCREEN) {
+		if (flag_any(console->flags, CLI_CONSOLE_FULLSCREEN)) {
 			rl_bind_keyseq_in_map("\033[5;5~", cli_console_page_up, map);
 			rl_bind_keyseq_in_map("\033[6;5~", cli_console_page_down, map);
 			rl_bind_keyseq_in_map("\033[5^", cli_console_page_up, map);
@@ -1039,7 +1045,7 @@ cli_console_setup_readline (struct cli_console *console)
 	int const saved = tty_get(STDIN_FILENO, &console->initial_state);
 	if (saved)
 		return saved;
-	console->flags |= CLI_CONSOLE_TERMINAL_SAVED;
+	flag_set(&console->flags, CLI_CONSOLE_TERMINAL_SAVED);
 	console->terminal = fopencookie(console, "w", (cookie_io_functions_t){
 		.write = cli_console_terminal_write,
 	});
@@ -1056,7 +1062,7 @@ cli_console_setup_readline (struct cli_console *console)
 	rl_variable_bind("output-meta", "on");
 	rl_variable_bind("convert-meta", "off");
 	if (!rl_get_termcap("up") || !rl_get_termcap("cl"))
-		console->flags &= ~CLI_CONSOLE_FULLSCREEN;
+		flag_clear(&console->flags, CLI_CONSOLE_FULLSCREEN);
 	rl_add_defun("askai-accept-line", cli_console_submit, -1);
 	rl_add_defun("askai-scroll-up", cli_console_page_up, -1);
 	rl_add_defun("askai-scroll-down", cli_console_page_down, -1);
@@ -1072,7 +1078,7 @@ cli_console_setup_readline (struct cli_console *console)
 	rl_completer_quote_characters = "";
 	using_history();
 	stifle_history(array_size(console->history_sizes));
-	if (!(console->flags & CLI_CONSOLE_FULLSCREEN))
+	if (!flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
 		return 0;
 	rl_completion_display_matches_hook = cli_console_matches;
 	rl_redisplay_function = cli_console_redisplay;
@@ -1127,14 +1133,14 @@ cli_console_create (uint32_t         flags,
 			console->panes[i].rows[row] = dstr(nullptr);
 	}
 	char const *term = getenv("TERM");
-	console->flags = (flags & CLI_CONSOLE_SIMPLE) || !isatty(STDOUT_FILENO) || !isatty(STDIN_FILENO)
-	               ? CLI_CONSOLE_SIMPLE : term && *term && strcmp(term, "dumb") ? CLI_CONSOLE_FULLSCREEN : 0;
+	console->flags = flag64((flags & CLI_CONSOLE_SIMPLE) || !isatty(STDOUT_FILENO) || !isatty(STDIN_FILENO)
+	               ? CLI_CONSOLE_SIMPLE : term && *term && strcmp(term, "dumb") ? CLI_CONSOLE_FULLSCREEN : 0);
 	struct stat input, output;
 	*e = fstat(STDIN_FILENO, &input) < 0 || fstat(STDOUT_FILENO, &output) < 0 ? errno : 0;
 	if (*e)
 		goto fail;
-	console->flags |= (S_ISREG(input.st_mode) ? CLI_CONSOLE_IN_REGULAR : 0) |
-	                  (S_ISREG(output.st_mode) ? CLI_CONSOLE_OUT_REGULAR : 0);
+	flag_set(&console->flags, (S_ISREG(input.st_mode) ? CLI_CONSOLE_IN_REGULAR : 0) |
+	                          (S_ISREG(output.st_mode) ? CLI_CONSOLE_OUT_REGULAR : 0));
 	console->in.flags = fcntl(STDIN_FILENO, F_GETFL);
 	console->out.flags = fcntl(STDOUT_FILENO, F_GETFL);
 	*e = console->in.flags < 0 || console->out.flags < 0 ? errno
@@ -1142,7 +1148,7 @@ cli_console_create (uint32_t         flags,
 	if (*e)
 		goto fail;
 	cli_console_active = console;
-	*e = (console->flags & CLI_CONSOLE_SIMPLE) ? 0 : cli_console_setup_readline(console);
+	*e = flag_any(console->flags, CLI_CONSOLE_SIMPLE) ? 0 : cli_console_setup_readline(console);
 	if (*e)
 		goto fail;
 	return console;
@@ -1161,7 +1167,7 @@ cli_console_terminal_restore (struct cli_console *console)
 	int const e = tty_get(STDIN_FILENO, &console->resume_state);
 	/* These short best-effort writes must never wait for a slow terminal. */
 	static char const restore[] = "\033[?2004l\033[?7h\033[0m\033[?1049l";
-	if (console->flags & CLI_CONSOLE_FULLSCREEN)
+	if (flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
 		(void)write(STDOUT_FILENO, restore, sizeof restore - 1);
 	int const restored = tty_set(STDIN_FILENO, TCSANOW, &console->initial_state);
 	if (restored)
@@ -1172,10 +1178,10 @@ cli_console_terminal_restore (struct cli_console *console)
 int
 cli_console_suspend (struct cli_console *console)
 {
-	if (console->flags & CLI_CONSOLE_SUSPENDED)
+	if (flag_any(console->flags, CLI_CONSOLE_SUSPENDED))
 		return 0;
-	int e = (console->flags & CLI_CONSOLE_TERMINAL_SAVED) ? cli_console_terminal_restore(console) : 0;
-	console->flags |= CLI_CONSOLE_SUSPENDED;
+	int e = flag_any(console->flags, CLI_CONSOLE_TERMINAL_SAVED) ? cli_console_terminal_restore(console) : 0;
+	flag_set(&console->flags, CLI_CONSOLE_SUSPENDED);
 	loop_unwatch(&console->loop->loop, &console->in.ref);
 	loop_unwatch(&console->loop->loop, &console->out.ref);
 	int flags_error = cli_console_streams_set(console, 0);
@@ -1185,7 +1191,7 @@ cli_console_suspend (struct cli_console *console)
 int
 cli_console_resume (struct cli_console *console)
 {
-	if (!(console->flags & CLI_CONSOLE_SUSPENDED))
+	if (!flag_any(console->flags, CLI_CONSOLE_SUSPENDED))
 		return 0;
 	int e = cli_console_streams_set(console, O_NONBLOCK);
 	if (e) {
@@ -1194,15 +1200,15 @@ cli_console_resume (struct cli_console *console)
 		(void)cli_console_streams_set(console, 0);
 		return e;
 	}
-	console->flags = (console->flags & ~CLI_CONSOLE_SUSPENDED) | CLI_CONSOLE_RESIZE_PENDING;
+	flag_put(&console->flags, CLI_CONSOLE_SUSPENDED | CLI_CONSOLE_RESIZE_PENDING, CLI_CONSOLE_RESIZE_PENDING);
 	console->dirty = CLI_CONSOLE_PAINT_ALL;
 	cli_loop_wake(console->loop);
-	if (console->flags & CLI_CONSOLE_TERMINAL_SAVED) {
+	if (flag_any(console->flags, CLI_CONSOLE_TERMINAL_SAVED)) {
 		e = tty_set(STDIN_FILENO, TCSANOW, &console->resume_state);
 		if (e)
 			return e;
 	}
-	if (console->flags & CLI_CONSOLE_FULLSCREEN)
+	if (flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
 		return cli_console_queue(console, CSTR_VIEW("\033[?1049h\033[?7l\033[?2004h"));
 	return 0;
 }
@@ -1214,7 +1220,7 @@ cli_console_destroy (struct cli_console **ptr)
 		return;
 	struct cli_console *console = *ptr;
 	*ptr = nullptr;
-	if (console->flags & CLI_CONSOLE_CALLBACK_ACTIVE)
+	if (flag_any(console->flags, CLI_CONSOLE_CALLBACK_ACTIVE))
 		cli_console_abort_line(console);
 	(void)cli_console_suspend(console);
 	cli_console_lines_fini(&console->queue);
@@ -1222,7 +1228,7 @@ cli_console_destroy (struct cli_console **ptr)
 	console->restored_line = nullptr;
 	free(console->immediate_line);
 	console->immediate_line = nullptr;
-	if (!(console->flags & CLI_CONSOLE_SIMPLE) && console->terminal) {
+	if (!flag_any(console->flags, CLI_CONSOLE_SIMPLE) && console->terminal) {
 		rl_clear_history();
 		rl_prep_term_function = rl_prep_terminal;
 		rl_completion_display_matches_hook = nullptr;
@@ -1266,7 +1272,7 @@ cli_console_set_display (struct cli_console *console,
 		return EINVAL;
 	struct cli_style_entry const *sequence = &console->palette[display];
 	int e = 0;
-	if (!(console->flags & CLI_CONSOLE_FULLSCREEN) && console->display != display && sequence->length)
+	if (!flag_any(console->flags, CLI_CONSOLE_FULLSCREEN) && console->display != display && sequence->length)
 		e = cli_console_queue(console, cstr_view_n(sequence->bytes, sequence->length));
 	if (!e)
 		console->display = display;
@@ -1285,7 +1291,7 @@ int cli_console_remember(struct cli_console *console, struct cstr_view text)
 		return EINVAL;
 	if (text.len > CLI_CONSOLE_HISTORY_LIMIT)
 		return EFBIG;
-	if ((console->flags & CLI_CONSOLE_SIMPLE) || !text.len ||
+	if (flag_any(console->flags, CLI_CONSOLE_SIMPLE) || !text.len ||
 	    cstr_view_equal(text, cstr_view_dstr(&console->history_last)))
 		return 0;
 	if (cstr_view_store(text, &console->history_last))
@@ -1330,7 +1336,7 @@ static int cli_console_read_simple(struct cli_console *console, struct buf *byte
 		int e = cli_console_read_bytes(console, bytes);
 		if (e)
 			return e;
-		if (console->in.error || ((console->flags & CLI_CONSOLE_INPUT_EOF) && bytes->tail == start))
+		if (console->in.error || (flag_any(console->flags, CLI_CONSOLE_INPUT_EOF) && bytes->tail == start))
 			return console->in.error;
 		if (bytes->tail > start && bytes->data[bytes->tail - 1] == '\r')
 			--bytes->tail;
@@ -1343,7 +1349,7 @@ static int cli_console_read_simple(struct cli_console *console, struct buf *byte
 		e = buf_put(bytes, "\n", 1, CLI_CONSOLE_INPUT_LIMIT);
 		if (e)
 			return e == ENOBUFS ? EFBIG : e;
-	} while (more && !(console->flags & CLI_CONSOLE_INPUT_EOF));
+	} while (more && !flag_any(console->flags, CLI_CONSOLE_INPUT_EOF));
 	return 0;
 }
 
@@ -1471,7 +1477,7 @@ cli_console_status (struct cli_console *console,
 	struct cstr_view status = console->queue.used.n
 		? util_format_view(buffer, sizeof buffer, " askai | %zu queued%s", console->queue.used.n, hint)
 		: util_format_view(buffer, sizeof buffer, " askai | %s%s",
-		                   console->flags & CLI_CONSOLE_BUSY ? "working" : "ready", hint);
+		                   flag_any(console->flags, CLI_CONSOLE_BUSY) ? "working" : "ready", hint);
 	return dstr_printf(output, "%s%-*.*s", cli_console_style(console, CLI_STYLE_STATUS),
 	                   (int)console->columns, (int)console->columns, status.data) ? 0 : ENOMEM;
 }
@@ -1494,7 +1500,7 @@ cli_console_reset (struct cli_console *console)
 static int
 cli_console_render (struct cli_console *console)
 {
-	if ((console->flags & (CLI_CONSOLE_FULLSCREEN | CLI_CONSOLE_SUSPENDED)) != CLI_CONSOLE_FULLSCREEN ||
+	if (flag_get(console->flags, CLI_CONSOLE_FULLSCREEN | CLI_CONSOLE_SUSPENDED) != CLI_CONSOLE_FULLSCREEN ||
 	    !console->dirty || console->output_queue.head != console->output_queue.tail)
 		return 0;
 	bool reset = console->dirty & CLI_CONSOLE_PAINT_RESET;
@@ -1545,27 +1551,27 @@ void
 cli_console_interrupt (struct cli_console *console,
                        bool                terminate)
 {
-	if (terminate || (console->flags & CLI_CONSOLE_SIMPLE)) {
-		console->flags |= CLI_CONSOLE_TERMINATED;
+	if (terminate || flag_any(console->flags, CLI_CONSOLE_SIMPLE)) {
+		flag_set(&console->flags, CLI_CONSOLE_TERMINATED);
 		console->in.error = EINTR;
-	} else if (!(console->flags & CLI_CONSOLE_BUSY)) {
-		console->flags |= CLI_CONSOLE_INTERRUPT_PENDING;
+	} else if (!flag_any(console->flags, CLI_CONSOLE_BUSY)) {
+		flag_set(&console->flags, CLI_CONSOLE_INTERRUPT_PENDING);
 	}
 }
 
 void
 cli_console_resize (struct cli_console *console)
 {
-	console->flags |= CLI_CONSOLE_RESIZE_PENDING;
+	flag_set(&console->flags, CLI_CONSOLE_RESIZE_PENDING);
 }
 
 int
 cli_console_busy (struct cli_console *console,
-                  bool                busy)
+                  uint8_t             busy)
 {
-	console->flags = (console->flags & ~CLI_CONSOLE_BUSY) | (busy ? CLI_CONSOLE_BUSY : 0);
+	flag_put(&console->flags, FLAG_WHEN, busy);
 	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
-	if (busy && (console->flags & CLI_CONSOLE_FULLSCREEN))
+	if (busy && flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
 		return cli_console_editor_start(console);
 	return 0;
 }
@@ -1585,7 +1591,7 @@ cli_console_read_key (struct cli_console *console)
 		 * one. Stop the keyboard macro only now, and put back the line
 		 * that cli_console_accept() did not queue. */
 		rl_free_line_state();
-		console->flags &= ~CLI_CONSOLE_INPUT_MACRO;
+		flag_clear(&console->flags, CLI_CONSOLE_INPUT_MACRO);
 		console->pending_input = 0;
 		rl_replace_line(console->restored_line, 0);
 		rl_point = console->restored_point < rl_end ? console->restored_point : rl_end;
@@ -1593,8 +1599,8 @@ cli_console_read_key (struct cli_console *console)
 		console->restored_line = nullptr;
 		rl_redisplay_function();
 	}
-	if (console->flags & CLI_CONSOLE_INPUT_NOTICE) {
-		console->flags &= ~CLI_CONSOLE_INPUT_NOTICE;
+	if (flag_any(console->flags, CLI_CONSOLE_INPUT_NOTICE)) {
+		flag_clear(&console->flags, CLI_CONSOLE_INPUT_NOTICE);
 		int e = cli_console_error(console, CSTR_VIEW("Input queue full; draft kept.\n"));
 		if (e)
 			return e;
@@ -1612,7 +1618,7 @@ cli_console_read_key (struct cli_console *console)
 static bool
 cli_console_editing (struct cli_console const *console)
 {
-	return (console->flags & CLI_CONSOLE_CALLBACK_ACTIVE) && !console->in.error && !console->immediate_line;
+	return flag_any(console->flags, CLI_CONSOLE_CALLBACK_ACTIVE) && !console->in.error && !console->immediate_line;
 }
 
 /* Apply the pending resize and interrupt, and pass up to 64 keys to
@@ -1623,19 +1629,19 @@ static int
 cli_console_edit (struct cli_console *console)
 {
 	int e = 0;
-	if (console->flags & CLI_CONSOLE_RESIZE_PENDING) {
-		console->flags &= ~CLI_CONSOLE_RESIZE_PENDING;
+	if (flag_any(console->flags, CLI_CONSOLE_RESIZE_PENDING)) {
+		flag_clear(&console->flags, CLI_CONSOLE_RESIZE_PENDING);
 		rl_resize_terminal();
-		if (console->flags & CLI_CONSOLE_FULLSCREEN)
+		if (flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
 			e = cli_console_dimensions(console);
-		else if (console->flags & CLI_CONSOLE_CALLBACK_ACTIVE)
+		else if (flag_any(console->flags, CLI_CONSOLE_CALLBACK_ACTIVE))
 			rl_redisplay();
 	}
 	if (e)
 		return e;
 	uint64_t const interrupt = CLI_CONSOLE_INTERRUPT_PENDING | CLI_CONSOLE_CALLBACK_ACTIVE;
-	if ((console->flags & interrupt) == interrupt) {
-		console->flags &= ~CLI_CONSOLE_INTERRUPT_PENDING;
+	if (flag_all(console->flags, interrupt)) {
+		flag_clear(&console->flags, CLI_CONSOLE_INTERRUPT_PENDING);
 		/* Clear the draft. rl_delete_text() records the deletion in the
 		 * undo list, so Ctrl-_ restores the draft. */
 		rl_begin_undo_group();
@@ -1668,12 +1674,12 @@ cli_console_edit (struct cli_console *console)
 int
 cli_console_service (struct cli_console *console)
 {
-	if (console->flags & CLI_CONSOLE_SUSPENDED)
+	if (flag_any(console->flags, CLI_CONSOLE_SUSPENDED))
 		return 0;
 	if (console->loop->dispatching)
 		return EBUSY;
 	int e = cli_console_output_drain(console);
-	if (!e && !console->frame && !(console->flags & CLI_CONSOLE_SIMPLE))
+	if (!e && !console->frame && !flag_any(console->flags, CLI_CONSOLE_SIMPLE))
 		e = cli_console_edit(console);
 	if (!e)
 		e = cli_console_render(console);
@@ -1687,11 +1693,11 @@ cli_console_readline (struct cli_console *console,
 	if (!cstr_view_equal(prompt, cstr_view_dstr(&console->prompt))) {
 		if (cstr_view_store(prompt, &console->prompt))
 			return ENOMEM;
-		if ((console->flags & CLI_CONSOLE_CALLBACK_ACTIVE) && rl_set_prompt(dstr_get(&console->prompt)))
+		if (flag_any(console->flags, CLI_CONSOLE_CALLBACK_ACTIVE) && rl_set_prompt(dstr_get(&console->prompt)))
 			return EIO;
 		console->dirty |= CLI_CONSOLE_PAINT_INPUT;
 	}
-	if (!(console->flags & CLI_CONSOLE_CALLBACK_ACTIVE) && !cli_console_queued(console)) {
+	if (!flag_any(console->flags, CLI_CONSOLE_CALLBACK_ACTIVE) && !cli_console_queued(console)) {
 		int e = cli_console_editor_start(console);
 		if (e)
 			return e;
@@ -1702,8 +1708,8 @@ cli_console_readline (struct cli_console *console,
 			return e;
 		if (cli_console_queued(console))
 			break;
-		if (console->flags & CLI_CONSOLE_INPUT_YIELD) {
-			console->flags &= ~CLI_CONSOLE_INPUT_YIELD;
+		if (flag_any(console->flags, CLI_CONSOLE_INPUT_YIELD)) {
+			flag_clear(&console->flags, CLI_CONSOLE_INPUT_YIELD);
 			return EAGAIN;
 		}
 		e = cli_loop_turn(console->loop, UINT64_MAX);
@@ -1746,7 +1752,7 @@ cli_console_read_text_readline (struct cli_console *console,
 	int e = cli_console_readline(console, prompt);
 	if (!console->queue.used.n) {
 		if (!e)
-			console->flags |= CLI_CONSOLE_INPUT_EOF;
+			flag_set(&console->flags, CLI_CONSOLE_INPUT_EOF);
 		return e;
 	}
 	if (e)
@@ -1754,7 +1760,7 @@ cli_console_read_text_readline (struct cli_console *console,
 	struct cli_console_line *accepted = container_of(console->queue.lines.next, struct cli_console_line, hook);
 	if (cstr_view_cat(cstr_view_dstr(&accepted->text), text) || !dstr_cat(text, "\n"))
 		return ENOMEM;
-	if (console->flags & CLI_CONSOLE_FULLSCREEN) {
+	if (flag_any(console->flags, CLI_CONSOLE_FULLSCREEN)) {
 		struct cli_console_span const echo[] = {
 			cli_console_span(cstr_view_dstr(&console->prompt), CLI_STYLE_PROMPT),
 			cli_console_span(cstr_view_dstr(text), CLI_STYLE_USER_INPUT),
@@ -1776,23 +1782,24 @@ cli_console_read (struct cli_console *console,
 {
 	dstr_clear(text);
 	*eof = false;
-	if ((console->flags & (CLI_CONSOLE_INPUT_EOF | CLI_CONSOLE_EOF_PENDING)) && !console->queue.used.n) {
+	if (flag_any(console->flags, CLI_CONSOLE_INPUT_EOF | CLI_CONSOLE_EOF_PENDING) && !console->queue.used.n) {
 		*eof = true;
 		return 0;
 	}
-	if (!(console->flags & CLI_CONSOLE_TERMINATED) && !console->queue.used.n)
+	if (!flag_any(console->flags, CLI_CONSOLE_TERMINATED) && !console->queue.used.n)
 		console->in.error = 0;
-	console->flags = (console->flags & ~CLI_CONSOLE_MULTILINE) | (multiline ? CLI_CONSOLE_MULTILINE : 0);
+	flag_put(&console->flags, CLI_CONSOLE_MULTILINE, multiline ? CLI_CONSOLE_MULTILINE : 0);
 	int e = cli_console_set_display(console, CLI_STYLE_USER_INPUT);
 	if (!e)
-		e = console->flags & CLI_CONSOLE_SIMPLE ? cli_console_read_text_simple(console, text, multiline, prompt)
-		                                        : cli_console_read_text_readline(console, text, prompt);
+		e = flag_any(console->flags, CLI_CONSOLE_SIMPLE)
+		    ? cli_console_read_text_simple(console, text, multiline, prompt)
+		    : cli_console_read_text_readline(console, text, prompt);
 	console->dirty |= CLI_CONSOLE_PAINT_STATUS;
-	if ((console->flags & CLI_CONSOLE_EOF_PENDING) && !console->queue.used.n) {
-		console->flags |= CLI_CONSOLE_INPUT_EOF;
+	if (flag_any(console->flags, CLI_CONSOLE_EOF_PENDING) && !console->queue.used.n) {
+		flag_set(&console->flags, CLI_CONSOLE_INPUT_EOF);
 		cli_console_remove_callback(console);
 	}
-	if (console->flags & CLI_CONSOLE_CALLBACK_ACTIVE) {
+	if (flag_any(console->flags, CLI_CONSOLE_CALLBACK_ACTIVE)) {
 		cli_console_resume_keys(console);
 		cli_loop_wake(console->loop);
 	} else {
@@ -1802,7 +1809,7 @@ cli_console_read (struct cli_console *console,
 	}
 	if (e)
 		dstr_clear(text);
-	*eof = (console->flags & CLI_CONSOLE_INPUT_EOF) && !dstr_len(text);
+	*eof = flag_any(console->flags, CLI_CONSOLE_INPUT_EOF) && !dstr_len(text);
 	int reset = cli_console_set_display(console, CLI_STYLE_RESET);
 	return e ? e : reset;
 }
@@ -1897,7 +1904,7 @@ cli_console_write (struct cli_console *console,
 	int e = cli_console_output_write(&pane->output, clean, text);
 	if (e)
 		return e;
-	if (!(console->flags & CLI_CONSOLE_FULLSCREEN))
+	if (!flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
 		return cli_console_queue(console, cstr_view_dstr(clean));
 	e = cli_scrollback_append_style(&pane->scrollback, cstr_view_dstr(clean), console->display);
 	console->dirty |= 1u << target;
@@ -1915,7 +1922,7 @@ cli_console_print (struct cli_console            *console,
 	for (size_t i = 0; i < count; ++i)
 		if (spans[i].style >= CLI_STYLE_COUNT)
 			return EINVAL;
-	if (console->flags & CLI_CONSOLE_FULLSCREEN) {
+	if (flag_any(console->flags, CLI_CONSOLE_FULLSCREEN)) {
 		/* The full-screen UI keeps the style of each span with its text. */
 		int e = 0;
 		for (size_t i = 0; !e && i < count; ++i) {
@@ -1972,20 +1979,20 @@ cli_console_flush (struct cli_console *console)
 bool
 cli_console_pending (struct cli_console const *console)
 {
-	return (console->flags & CLI_CONSOLE_OUT_WORKING) || console->output_queue.head != console->output_queue.tail;
+	return flag_any(console->flags, CLI_CONSOLE_OUT_WORKING) || console->output_queue.head != console->output_queue.tail;
 }
 
 bool
 cli_console_queued (struct cli_console const *console)
 {
-	return console->queue.used.n || (console->flags & CLI_CONSOLE_EOF_PENDING);
+	return console->queue.used.n || flag_any(console->flags, CLI_CONSOLE_EOF_PENDING);
 }
 
 void
 cli_console_yield (struct cli_console *console)
 {
-	if (!(console->flags & CLI_CONSOLE_SIMPLE)) {
-		console->flags |= CLI_CONSOLE_INPUT_YIELD;
+	if (!flag_any(console->flags, CLI_CONSOLE_SIMPLE)) {
+		flag_set(&console->flags, CLI_CONSOLE_INPUT_YIELD);
 		cli_loop_wake(console->loop);
 	}
 }
@@ -2023,7 +2030,7 @@ int
 cli_console_error (struct cli_console *console,
                    struct cstr_view    text)
 {
-	if (!console || !(console->flags & CLI_CONSOLE_FULLSCREEN))
+	if (!console || !flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
 		return cli_console_write_error(&text, 1);
 	struct cli_console_span const error = cli_console_span(text, CLI_STYLE_ERROR);
 	return cli_console_print_kept(console, &error, 1);

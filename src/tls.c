@@ -174,8 +174,8 @@ tls_ctx_key_type (SSL_CTX             *ctx,
 	if (EVP_PKEY_is_a(key, "ED25519"))
 		return nullptr;
 	if (EVP_PKEY_is_a(key, "RSA") || EVP_PKEY_is_a(key, "RSA-PSS"))
-		return cfg->flags & CFG_TLS_RSA ? nullptr : "the key is RSA, which "
-		                                            "needs --tls-allow-rsa";
+		return flag_any(cfg->flags, CFG_TLS_RSA) ? nullptr : "the key is RSA, which "
+		                                                     "needs --tls-allow-rsa";
 	if (!EVP_PKEY_is_a(key, "EC"))
 		return "the key is neither ECDSA nor Ed25519";
 	static char const *const curves[] = { "prime256v1", "secp384r1", "secp521r1" };

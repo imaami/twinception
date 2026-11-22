@@ -53,6 +53,7 @@
 #include "auth.h"
 #include "buf.h"
 #include "compat.h"
+#include "flag.h"
 #include "hexid.h"
 #include "jb.h"
 #include "list.h"
@@ -65,20 +66,30 @@ struct home_delivery_error;
 struct http_request;
 struct journal;
 
-/** The bits of the messages to home. */
+/** The bits of the messages to home. The first three are orders of
+ *  src/flag.h. FLAG_NOW is the part of JOB_CANCEL and JOB_SUSPEND that
+ *  says that the front lets go of the job. FLAG_END is the part of
+ *  JOB_CANCEL that says that the job is to end at the provider too.
+ */
 enum {
-	JOB_SUBMIT   = 1,  /**< run the job */
-	JOB_CANCEL   = 2,  /**< the front lets go: stop the job if it runs */
-	JOB_SUSPEND  = 4,  /**< let go on shutdown, leaving durable provider work alive */
-	JOB_DRAIN    = 8,  /**< the front has consumed the immutable delta mailbox */
+	JOB_SUBMIT   = FLAG_START,           /**< run the job */
+	JOB_CANCEL   = FLAG_END | FLAG_NOW,  /**< the front lets go: stop the
+	                                          job if it runs */
+	JOB_SUSPEND  = FLAG_NOW,             /**< let go on shutdown, leaving
+	                                          durable provider work alive */
+	JOB_DRAIN    = FLAG_OWN(0),          /**< the front has consumed the
+	                                          immutable delta mailbox */
 };
 
 /** The bits of the messages to the front. */
 enum {
-	JOB_DONE     = 1,  /**< the job has ended: its status and result are set */
-	JOB_PROGRESS = 2,  /**< the job's progress moved on */
-	JOB_RETURN   = 4,  /**< home dropped the last reference, without one */
-	JOB_DELTA    = 8,  /**< the immutable delta mailbox is ready for the front */
+	JOB_DONE     = FLAG_AFTER,   /**< the job has ended: its status and
+	                                  result are set */
+	JOB_PROGRESS = FLAG_OWN(0),  /**< the job's progress moved on */
+	JOB_RETURN   = FLAG_OWN(1),  /**< home dropped the last reference,
+	                                  without one */
+	JOB_DELTA    = FLAG_OWN(2),  /**< the immutable delta mailbox is ready
+	                                  for the front */
 };
 
 /** Tool calls that a streamed answer may make, at most. */
@@ -212,12 +223,13 @@ job_delta (uint32_t len,
  *  zeroed one is no state.
  */
 struct home_recovery {
-	char     *provider_id;     /**< the id of the provider's native job, or
-	                                nullptr */
-	uint64_t  thought_offset;  /**< bytes of thinking in the journal */
-	uint64_t  flags;           /**< home's RECOVERY_* bits */
-	uint32_t  pending;         /**< journal writes under way */
-	int       error;           /**< the last error of a journal write, or 0 */
+	char          *provider_id;     /**< the id of the provider's native
+	                                     job, or nullptr */
+	uint64_t       thought_offset;  /**< bytes of thinking in the journal */
+	struct flag64  flags;           /**< home's RECOVERY_* bits */
+	uint32_t       pending;         /**< journal writes under way */
+	int            error;           /**< the last error of a journal write,
+	                                     or 0 */
 };
 
 /** An upstream call, shared by its front and home (R4). */
@@ -313,7 +325,7 @@ struct job {
 	                                         the upstream's context holds, as
 	                                         /props says; 0: unknown */
 	uint32_t               archive_turn; /**< the front's: provider turn number */
-	uint32_t               flags;       /**< home's: what it notes of the run */
+	struct flag32          flags;       /**< home's: what it notes of the run */
 	struct ai_reader       reader;      /**< home's: of the stream's events */
 	uint16_t               http;        /**< home writes before DONE: the answer's
 	                                         HTTP status */

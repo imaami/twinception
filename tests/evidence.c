@@ -110,7 +110,7 @@ keep (struct seen     **p_seen,
 		.stamp.turn   = turn,
 		.stamp.tool   = tool,
 		.stamp.index  = (uint16_t)(number % 3),
-		.stamp.flags  = number == 2 ? FLAG_FAILED : 0
+		.stamp.flags  = { number == 2 ? FLAG_FAILED : FLAG_COMPLETED }
 	);
 	CHECK(!seen_keep(p_seen, &request, &r));
 	buf_fini(&request);
@@ -458,7 +458,7 @@ test_cite (void)
 	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why) && !*why);
 	CHECK(ev.kind == EVIDENCE_LINES && ev.call == 1 && ev.turn == 1 && !ev.item &&
 	      ev.ranges.n == 1 && ev.ranges.items[0].first == 2 && ev.ranges.items[0].last == 6 &&
-	      !ev.flags && !strcmp(ev.ask.hex, ask.hex) && ev.output == o.len && ev.skip == at + 3 &&
+	      !ev.flags.bits && !strcmp(ev.ask.hex, ask.hex) && ev.output == o.len && ev.skip == at + 3 &&
 	      !*ev.from.author && !ev.from.number && !ev.from.item && !m.request.len);
 	SAME(m.result.data, m.result.len, "2\tline 2\n3\tline 3\n4\tline 4\n5\tline 5\n6\tline 6\n");
 	hashed(&ev.result, m.result, __LINE__);
@@ -493,7 +493,7 @@ test_cite (void)
 	/* A call of another tool, which failed, with an ID from the provider. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c2")));
 	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
-	CHECK(ev.kind == EVIDENCE_CALL && ev.flags == FLAG_FAILED && ev.call == 2 &&
+	CHECK(ev.kind == EVIDENCE_CALL && ev.flags.bits == FLAG_FAILED && ev.call == 2 &&
 	      !dstr_len(&ev.ids));
 	SAME(dstr_get(&ev.call_id), dstr_len(&ev.call_id), "toolu_x");
 	SAME(dstr_get(&ev.tool), dstr_len(&ev.tool), "man");
@@ -501,7 +501,7 @@ test_cite (void)
 	/* A git grep shows no lines, so c4 is a call item. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c4")));
 	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why));
-	CHECK(ev.kind == EVIDENCE_CALL && !ev.flags && ev.call == 4 && ev.turn == 2 &&
+	CHECK(ev.kind == EVIDENCE_CALL && ev.flags.bits == FLAG_COMPLETED && ev.call == 4 && ev.turn == 2 &&
 	      !ev.ranges.n);
 	SAME(m.request.data, m.request.len, "{\"command\":\"grep\"}");
 	SAME(m.result.data, m.result.len, "a:1:x\n\n\n[askai: call c4]");
@@ -697,7 +697,7 @@ test_json (void)
 	e.turn = 3;
 	e.output = 900;
 	e.skip = 100;
-	e.flags = FLAG_FAILED;
+	e.flags = flag16(FLAG_FAILED);
 	CHECK(!hexid_init(&e.ask, CSTR_VIEW("9f3c2a71e0b14c55a1d2e3f405162738")));
 	CHECK(!finding_id_parse(&e.from, CSTR_VIEW("cuh#2/2")));
 	CHECK(!cstr_view_store(CSTR_VIEW("git"), &e.tool));
@@ -723,7 +723,7 @@ test_json (void)
 	struct evidence back = evidence();
 	CHECK(!evidence_parse(&back, obj));
 	CHECK(back.kind == EVIDENCE_LINES && back.item == 2 && back.call == 12 && back.turn == 3 &&
-	      back.output == 900 && back.skip == 100 && back.flags == FLAG_FAILED &&
+	      back.output == 900 && back.skip == 100 && back.flags.bits == FLAG_FAILED &&
 	      !strcmp(back.ask.hex, e.ask.hex) && finding_id_equal(&back.from, &e.from) &&
 	      !strcmp(back.from.author, "cuh") && back.from.number == 2 && back.from.item == 2 &&
 	      back.ranges.n == 2 && back.ranges.items[1].first == 180 &&
@@ -750,14 +750,14 @@ test_json (void)
 	CHECK(obj && !err && !jb_get(obj, "ask") && !jb_get(obj, "from") && !jb_get(obj, "ids") &&
 	      !jb_get(obj, "lines") && jb_get(obj, "request"));
 	CHECK(!evidence_parse(&back, obj));
-	CHECK(back.kind == EVIDENCE_CALL && !back.flags &&
+	CHECK(back.kind == EVIDENCE_CALL && back.flags.bits == FLAG_COMPLETED &&
 	      back.request.bytes == 98 && !*back.ask.hex && !*back.from.author &&
 	      !back.from.number && !back.from.item && !dstr_len(&back.ids));
 	(void)dstr_clear(&text);
 	CHECK(!evidence_summary(&back, &text));
 	SAME(dstr_get(&text), dstr_len(&text), "call c4, man, 1 byte");
 	/* The summary of a call names no identifiers. */
-	back.flags |= FLAG_FAILED;
+	flag_put(&back.flags, FLAG_HOW, FLAG_FAILED);
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":\"" A "\"}"), &back.ids));
 	(void)dstr_clear(&text);
 	CHECK(!evidence_summary(&back, &text));
@@ -957,7 +957,7 @@ test_recite (void)
 	      e.from.number == 2 && e.from.item == 1 && !strcmp(e.ask.hex, item.ask.hex) &&
 	      e.ranges.n == 2 &&
 	      e.ranges.items[1].last == 9 && !memcmp(&e.result, &item.result, sizeof e.result) &&
-	      !dstr_len(&lines) && !e.flags);
+	      !dstr_len(&lines) && e.flags.bits == FLAG_COMPLETED);
 	SAME(dstr_get(&e.ids), dstr_len(&e.ids), dstr_get(&item.ids));
 	/* Some lines, from both ranges and up to the last line. */
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:3-4,9")));
@@ -966,7 +966,7 @@ test_recite (void)
 	hashed(&e.result, cstr_view_dstr(&lines), __LINE__);
 	CHECK(e.kind == EVIDENCE_LINES && e.ranges.n == 2 && e.ranges.items[0].first == 3 &&
 	      e.ranges.items[0].last == 4 && e.ranges.items[1].first == 9 &&
-	      finding_id_equal(&e.from, &ref.id) && e.from.item == 1 && !e.item && !e.flags);
+	      finding_id_equal(&e.from, &ref.id) && e.from.item == 1 && !e.item && e.flags.bits == FLAG_COMPLETED);
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1:2,6-6,8")));
 	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(record), material, why, sizeof why));
 	SAME(dstr_get(&lines), dstr_len(&lines), "2\tline 2\n6\tline 6\n8\tline 8\n");
@@ -1181,7 +1181,7 @@ test_recite (void)
 	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("cuh#2/1")));
 	CHECK(!evidence_recite(&e, &lines, &ref, cstr_view(call), cstr_view(nullptr), why,
 	                       sizeof why));
-	CHECK(e.kind == EVIDENCE_CALL && !e.flags && finding_id_equal(&e.from, &ref.id) &&
+	CHECK(e.kind == EVIDENCE_CALL && e.flags.bits == FLAG_COMPLETED && finding_id_equal(&e.from, &ref.id) &&
 	      e.from.item == 1);
 	free(call);
 	CHECK(evidence_recite(nullptr, &lines, &ref, cstr_view(record), material, why,
@@ -1246,7 +1246,7 @@ test_expand (void)
 	/* The whole output, no identifiers, a failed call after a restart. */
 	e.skip = 0;
 	e.output = 7;
-	e.flags |= FLAG_FAILED;
+	flag_put(&e.flags, FLAG_HOW, FLAG_FAILED);
 	e.ask = (struct hexid){};
 	(void)dstr_clear(&e.ids);
 	expanded(&e, args, out, "[askai: cuh#2/1: call c9 of cuh, turn 19, tool git, failed, stored "
@@ -1264,7 +1264,7 @@ test_expand (void)
 	/* An item cited again names no author of the call. The identifiers
 	 * name only a repository, and then only a commit. */
 	e.item = 3;
-	e.flags = 0;
+	e.flags = flag16(FLAG_COMPLETED);
 	CHECK(!finding_id_parse(&e.from, CSTR_VIEW("bro#1/1")));
 	CHECK(!hexid_init(&e.ask, CSTR_VIEW("68177013a5c94f0e8b1d2c3e4f506172")));
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\"}"), &e.ids));

@@ -632,7 +632,7 @@ test_texts (void)
 	struct finding_change c = change_of(FINDING_VERIFIED, "The option table maps -L.", 27, 9, 1);
 	c.evidence.items[0].from = finding_id(CSTR_VIEW("unc"), 1, 1);
 	c.evidence.items[0].kind = EVIDENCE_LINES;
-	c.evidence.items[0].flags = 0;
+	c.evidence.items[0].flags = flag16(0);
 	CHECK(!util_grow(c.evidence.items[0].ranges.items, c.evidence.items[0].ranges.cap, 1));
 	c.evidence.items[0].ranges.items[c.evidence.items[0].ranges.n++] = range(161, 171);
 	CHECK(!cstr_view_store(CSTR_VIEW("{\"repo\":\"askai\",\"commit\":"

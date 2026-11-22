@@ -123,7 +123,7 @@ git_run_test_shapes (void)
 		                                     shapes[i].flags, &e);
 		CHECK(!e);
 		CHECK(dir.path == shapes[i].path && dir.opts == shapes[i].opts &&
-		      dir.flags == shapes[i].flags);
+		      dir.flags.bits == shapes[i].flags);
 		char const *argv[GIT_RUN_ARGV];
 		CHECK(!git_run_dir_argv(&dir, nullptr, argv, array_size(argv)));
 		CHECK(git_run_test_argv(argv, shapes[i].tail, none));
@@ -177,12 +177,12 @@ git_run_test_env (void)
 	      !dir.env[array_size(dir.env) - 1]);
 	char *const four[] = { "A=1", "B=2", "C=3", "D=4", nullptr };
 	CHECK(git_run_dir_init(&dir, "/r", nullptr, four, GIT_RUN_DOT) == E2BIG);
-	CHECK(!dir.path && !dir.opts && !dir.flags);
+	CHECK(!dir.path && !dir.opts && !dir.flags.bits);
 	for (size_t i = 0; i < array_size(dir.env); ++i)
 		CHECK(!dir.env[i]);
-	dir.flags = GIT_RUN_DOT;
+	dir.flags = flag64(GIT_RUN_DOT);
 	CHECK(git_run_dir_init(&dir, "/r", nullptr, nullptr, 1u << 1) == EINVAL);
-	CHECK(dir.flags == GIT_RUN_DOT && !dir.path);
+	CHECK(dir.flags.bits == GIT_RUN_DOT && !dir.path);
 	CHECK(git_run_dir_init(nullptr, "/r", nullptr, nullptr, 0) == EINVAL);
 	static char const *const opts[] = { "--literal-pathspecs", nullptr };
 	static struct git_run_dir const none = {};
@@ -193,7 +193,7 @@ git_run_test_env (void)
 	struct git_run_dir const many = git_run_dir("/r", opts, four, GIT_RUN_DOT, &e);
 	CHECK(e == E2BIG && !memcmp(&many, &none, sizeof none));
 	struct git_run_dir const plain = git_run_dir(nullptr, nullptr, nullptr, 0, &e);
-	CHECK(!e && !plain.path && !plain.opts && !plain.flags && !strcmp(plain.env[0], path) &&
+	CHECK(!e && !plain.path && !plain.opts && !plain.flags.bits && !strcmp(plain.env[0], path) &&
 	      !plain.env[1 + array_size(fixed_env)]);
 	struct git_run_dir const flag = git_run_dir("/r", opts, three, 1u << 1, &e);
 	CHECK(e == EINVAL && !memcmp(&flag, &none, sizeof none));
@@ -225,7 +225,7 @@ git_run_test_init (void)
 		.max      = 7,
 		.deadline = 123,
 		.grace    = GIT_GRACE,
-		.flags    = CHILD_STDERR,
+		.flags = { CHILD_STDERR },
 	};
 	static char const *const tail[] = { "-C", "/r", "--git-dir=.", nullptr };
 	struct git_run run = { .c = how };
@@ -234,7 +234,7 @@ git_run_test_init (void)
 	CHECK(!git_run_init(&run, &dir, words, &how));
 	CHECK(!strcmp(run.c.file, "git") && run.c.argv == run.argv && run.c.envp == dir.env);
 	CHECK(run.c.in.ptr == how.in.ptr && run.c.in.len == 3 && run.c.max == 7 &&
-	      run.c.deadline == 123 && run.c.grace == GIT_GRACE && run.c.flags == CHILD_STDERR);
+	      run.c.deadline == 123 && run.c.grace == GIT_GRACE && run.c.flags.bits == CHILD_STDERR);
 	CHECK(git_run_test_argv(run.argv, tail, words));
 	for (size_t i = git_run_test_count(run.argv); i < array_size(run.argv); ++i)
 		CHECK(!run.argv[i]);
@@ -252,7 +252,7 @@ git_run_test_init (void)
 	many[fit + 1] = nullptr;
 	CHECK(git_run_init(&run, &dir, many, &how) == E2BIG);
 	CHECK(!run.c.file && !run.c.argv && !run.c.envp && !run.c.in.ptr && !run.c.in.len &&
-	      !run.c.max && !run.c.deadline && !run.c.grace && !run.c.flags);
+	      !run.c.max && !run.c.deadline && !run.c.grace && !run.c.flags.bits);
 	for (size_t i = 0; i < array_size(run.argv); ++i)
 		CHECK(!run.argv[i]);
 	CHECK(!git_run_init(&run, &dir, words, &how));
@@ -577,7 +577,7 @@ git_run_test_run (char const *repo)
 	CHECK(!git_run_test_git(&at, (char const *const[]){ "init", "--bare", "--quiet",
 	                                                    "--template=", nullptr },
 	                        how, child_fds(), &out, &end, &ms));
-	CHECK(end.code == CLD_EXITED && !end.status && !end.flags && !buf_peek(&out).len);
+	CHECK(end.code == CLD_EXITED && !end.status && !end.flags.bits && !buf_peek(&out).len);
 	git_run_test_now(&at);
 
 	/* -C and the path, then the directory of the child, with "--git-dir=.". */
@@ -588,7 +588,7 @@ git_run_test_run (char const *repo)
 		"rev-parse", "--is-bare-repository", "--absolute-git-dir", nullptr
 	};
 	CHECK(!git_run_test_git(&at, where, how, child_fds(), &out, &end, &ms));
-	CHECK(end.code == CLD_EXITED && !end.status && !end.flags);
+	CHECK(end.code == CLD_EXITED && !end.status && !end.flags.bits);
 	CHECK(git_run_test_out(&out, bare));
 	buf_clear(&out);
 	struct git_run_dir here = git_run_dir(nullptr, nullptr, nullptr, GIT_RUN_DOT, &e);
@@ -597,7 +597,7 @@ git_run_test_run (char const *repo)
 	fds.dir = open(repo, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	CHECK(fds.dir >= 0);
 	CHECK(!git_run_test_git(&here, where, how, fds, &out, &end, &ms));
-	CHECK(end.code == CLD_EXITED && !end.status && !end.flags);
+	CHECK(end.code == CLD_EXITED && !end.status && !end.flags.bits);
 	CHECK(git_run_test_out(&out, bare));
 	util_close(&fds.dir);
 	buf_clear(&out);
@@ -614,7 +614,7 @@ git_run_test_run (char const *repo)
 	CHECK(!git_run_test_git(&set, (char const *const[]){ "config", "--get-regexp",
 	                                                     "^askai\\.", nullptr },
 	                        how, child_fds(), &out, &end, &ms));
-	CHECK(end.code == CLD_EXITED && !end.status && !end.flags);
+	CHECK(end.code == CLD_EXITED && !end.status && !end.flags.bits);
 	CHECK(git_run_test_out(&out, CSTR_VIEW("askai.env 2\naskai.option 1\n")));
 	buf_clear(&out);
 	CHECK(!git_run_test_git(&at, (char const *const[]){ "var", "GIT_PAGER", nullptr }, how,
@@ -627,7 +627,7 @@ git_run_test_run (char const *repo)
 	input.in = span((unsigned char *)"abc", 3);
 	char const *const hash[] = { "hash-object", "--stdin", nullptr };
 	CHECK(!git_run_test_git(&at, hash, input, child_fds(), &out, &end, &ms));
-	CHECK(end.code == CLD_EXITED && !end.status && !end.flags);
+	CHECK(end.code == CLD_EXITED && !end.status && !end.flags.bits);
 	CHECK(git_run_test_out(&out, CSTR_VIEW("f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f\n")));
 	buf_clear(&out);
 	/* Without a buffer, git writes to fds.out. cli_state runs git in that
@@ -636,7 +636,7 @@ git_run_test_run (char const *repo)
 	file.out = memfd_create("askai-git-run-test", MFD_CLOEXEC);
 	CHECK(file.out >= 0);
 	CHECK(!git_run_test_git(&at, hash, input, file, nullptr, &end, &ms));
-	CHECK(end.code == CLD_EXITED && !end.status && !end.flags);
+	CHECK(end.code == CLD_EXITED && !end.status && !end.flags.bits);
 	char name[64];
 	CHECK(pread(file.out, name, sizeof name, 0) == 41 &&
 	      !memcmp(name, "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f\n", 41));
@@ -647,11 +647,11 @@ git_run_test_run (char const *repo)
 		"rev-parse", "--verify", "--end-of-options", "missing", nullptr
 	};
 	CHECK(!git_run_test_git(&at, missing, how, child_fds(), &out, &end, &ms));
-	CHECK(end.code == CLD_EXITED && end.status == 128 && !end.flags && !buf_peek(&out).len);
+	CHECK(end.code == CLD_EXITED && end.status == 128 && !end.flags.bits && !buf_peek(&out).len);
 	struct child_cmd errors = how;
-	errors.flags = CHILD_STDERR;
+	errors.flags = flag64(CHILD_STDERR);
 	CHECK(!git_run_test_git(&at, missing, errors, child_fds(), &out, &end, &ms));
-	CHECK(end.code == CLD_EXITED && end.status == 128 && !end.flags);
+	CHECK(end.code == CLD_EXITED && end.status == 128 && !end.flags.bits);
 	struct span got = buf_peek(&out);
 	CHECK(got.len > 7 && !memcmp(got.ptr, "fatal: ", 7));
 	buf_clear(&out);
@@ -660,7 +660,7 @@ git_run_test_run (char const *repo)
 	struct child_cmd small = how;
 	small.max = 4;
 	CHECK(git_run_test_git(&at, where, small, child_fds(), &out, &end, &ms) == EFBIG);
-	CHECK(end.code == CLD_EXITED && !end.status && end.flags == CHILD_CUT);
+	CHECK(end.code == CLD_EXITED && !end.status && end.flags.bits == CHILD_CUT);
 	CHECK(git_run_test_out(&out, CSTR_VIEW("true")));
 	buf_clear(&out);
 
@@ -674,19 +674,19 @@ git_run_test_run (char const *repo)
 	struct child_cmd late = how;
 	late.deadline = 100;
 	CHECK(git_run_test_git(&at, hash, late, fds, &out, &end, &ms) == ETIMEDOUT);
-	CHECK(end.code == CLD_KILLED && end.status == SIGTERM && end.flags == CHILD_LATE);
+	CHECK(end.code == CLD_KILLED && end.status == SIGTERM && end.flags.bits == CHILD_LATE);
 	CHECK(ms >= 100 && ms < 2000 && !buf_peek(&out).len);
 	late.grace = 0;
 	CHECK(git_run_test_git(&at, hash, late, fds, &out, &end, &ms) == ETIMEDOUT);
-	CHECK(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	CHECK(end.code == CLD_KILLED && end.status == SIGKILL && end.flags.bits == CHILD_LATE);
 	CHECK(ms >= 100 && ms < 2000 && !buf_peek(&out).len);
 	/* Without a buffer, the deadline ends git in the same way. */
 	CHECK(git_run_test_git(&at, hash, late, fds, nullptr, &end, &ms) == ETIMEDOUT);
-	CHECK(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	CHECK(end.code == CLD_KILLED && end.status == SIGKILL && end.flags.bits == CHILD_LATE);
 	CHECK(ms >= 100 && ms < 2000);
 	late.grace = GIT_GRACE;
 	CHECK(git_run_test_git(&at, hash, late, fds, nullptr, &end, &ms) == ETIMEDOUT);
-	CHECK(end.code == CLD_KILLED && end.status == SIGTERM && end.flags == CHILD_LATE);
+	CHECK(end.code == CLD_KILLED && end.status == SIGTERM && end.flags.bits == CHILD_LATE);
 	CHECK(ms >= 100 && ms < 2000);
 	util_close(&pipe_fds[0]);
 	util_close(&pipe_fds[1]);
@@ -695,10 +695,10 @@ git_run_test_run (char const *repo)
 	 * child_capture() and through child_cmd_run(). */
 	char const *const die[] = { "-c", "alias.die=!kill -KILL $PPID", "die", nullptr };
 	CHECK(git_run_test_git(&at, die, how, child_fds(), &out, &end, &ms) == EIO);
-	CHECK(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags);
+	CHECK(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags.bits);
 	CHECK(!buf_peek(&out).len);
 	CHECK(git_run_test_git(&at, die, how, child_fds(), nullptr, &end, &ms) == EIO);
-	CHECK(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags);
+	CHECK(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags.bits);
 	buf_fini(&out);
 	free(want);
 	free(real);

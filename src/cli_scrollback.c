@@ -6,6 +6,7 @@
 #include "cli_render.h"
 #include "cli_scrollback.h"
 #include "compat.h"
+#include "flag.h"
 #include "util.h"
 
 enum {
@@ -243,15 +244,15 @@ cli_scrollback_append_style (struct cli_scrollback *scrollback,
 
 /* The flags of a struct cli_scrollback_cell. */
 enum {
-	CLI_SCROLLBACK_REPLACE = 1u << 0,  /* shown as a replacement cell */
-	CLI_SCROLLBACK_WRAP    = 1u << 1,  /* starts the next row */
+	CLI_SCROLLBACK_REPLACE = FLAG_OWN(0),  /* shown as a replacement cell */
+	CLI_SCROLLBACK_WRAP    = FLAG_OWN(1),  /* starts the next row */
 };
 
 /* A character of a row: its bytes, its cells and CLI_SCROLLBACK flags. */
 struct cli_scrollback_cell {
-	size_t   bytes;
-	size_t   width;
-	uint64_t flags;
+	size_t        bytes;
+	size_t        width;
+	struct flag64 flags;
 };
 
 /** Measure the character at @p offset of @p text, at @p column of a row of
@@ -278,8 +279,8 @@ cli_scrollback_cell (struct cstr_view text,
 	return (struct cli_scrollback_cell){
 		.bytes = bytes,
 		.width = wrap && tab ? (columns < 8 ? columns : 8) : width,
-		.flags = (!tab && (invalid || cell > columns) ? CLI_SCROLLBACK_REPLACE : 0) |
-		         (wrap ? CLI_SCROLLBACK_WRAP : 0),
+		.flags = { (!tab && (invalid || cell > columns) ? CLI_SCROLLBACK_REPLACE : 0) |
+		           (wrap ? CLI_SCROLLBACK_WRAP : 0) },
 	};
 }
 
@@ -316,7 +317,7 @@ cli_scrollback_line_rows (struct cli_scrollback_line *line,
 	struct cstr_view text = cstr_view_dstr(&line->text);
 	while (line->scanned < text.len) {
 		struct cli_scrollback_cell cell = cli_scrollback_cell(text, line->scanned, line->column, columns);
-		int e = cell.flags & CLI_SCROLLBACK_WRAP ? cli_scrollback_row_start(line) : 0;
+		int e = flag_any(cell.flags, CLI_SCROLLBACK_WRAP) ? cli_scrollback_row_start(line) : 0;
 		if (e)
 			return e;
 		line->column += cell.width;
@@ -349,7 +350,7 @@ cli_scrollback_prefix (struct cli_scrollback_line *line,
 	struct cstr_view text = cstr_view_dstr(&line->text);
 	while (offset < text.len) {
 		struct cli_scrollback_cell cell = cli_scrollback_cell(text, offset, column, line->columns);
-		if (cell.flags & CLI_SCROLLBACK_WRAP) {
+		if (flag_any(cell.flags, CLI_SCROLLBACK_WRAP)) {
 			++row;
 			column = 0;
 		}
@@ -509,7 +510,7 @@ cli_scrollback_cell_write (struct cli_scrollback_line const *line,
 	size_t next = cli_scrollback_style_after(line, offset);
 	if (!e)
 		e = cli_scrollback_frame_style(frame, next ? line->styles.items[next - 1].id : CLI_STYLE_RESET);
-	bool replace = cell.flags & CLI_SCROLLBACK_REPLACE;
+	bool replace = flag_any(cell.flags, CLI_SCROLLBACK_REPLACE);
 	if (!e && !dstr_cat_n(frame->output, replace ? "?" : "        ", replace ? 1 : cell.width))
 		e = ENOMEM;
 	return e;
@@ -529,8 +530,9 @@ cli_scrollback_line_render (struct cli_scrollback_line  *line,
 	/* While rows are skipped, a row starts only where it wraps. */
 	while (offset < text.len && frame->height) {
 		struct cli_scrollback_cell cell = cli_scrollback_cell(text, offset, column, frame->columns);
-		int e = cell.flags & CLI_SCROLLBACK_WRAP ? cli_scrollback_row(line, skip, &start, offset, &column, frame) : 0;
-		bool shown = !*skip && (text.data[offset] == '\t' || (cell.flags & CLI_SCROLLBACK_REPLACE));
+		int e = flag_any(cell.flags, CLI_SCROLLBACK_WRAP)
+		        ? cli_scrollback_row(line, skip, &start, offset, &column, frame) : 0;
+		bool shown = !*skip && (text.data[offset] == '\t' || flag_any(cell.flags, CLI_SCROLLBACK_REPLACE));
 		if (!e && frame->height && shown)
 			e = cli_scrollback_cell_write(line, &start, offset, cell, frame);
 		if (e)

@@ -55,6 +55,7 @@
 #include "compat.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "flag.h"
 #include "hexid.h"
 #include "htab.h"
 #include "list.h"
@@ -101,14 +102,16 @@ enum ledger_status {
 };
 #undef LEDGER_STATUS_ENUM
 
-/** The bits of the state of a record besides its status, an enum
- *  ledger_status in the bits LEDGER_STATUS.
+/** The ranges of the state of a record, which are ranges of src/flag.h.
+ *  The status, an enum ledger_status, is in the range LEDGER_STATUS.
  */
 enum ledger_state : uint64_t {
-	LEDGER_STATUS = 3u,       /**< the bits of the status */
-	LEDGER_ASKED  = 1u << 2,  /**< a client asked to cancel the task */
-	LEDGER_TOLD   = 1u << 3,  /**< the owner has read the record of the
-	                               ended call */
+	LEDGER_STATUS = FLAG_HOW,             /**< the bits of the status */
+	LEDGER_ASKED  = FLAG_END | FLAG_NOW,  /**< a client asked to cancel the
+	                                           task: the task is to end
+	                                           at once */
+	LEDGER_TOLD   = FLAG_OWN(0),          /**< the owner has read the
+	                                           record of the ended call */
 };
 
 static_assert(LEDGER_STATUSES - 1 <= LEDGER_STATUS);

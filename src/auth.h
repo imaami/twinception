@@ -20,6 +20,7 @@
 #include "blocker.h"
 #include "compat.h"
 #include "dstr.h"
+#include "flag.h"
 #include "list.h"
 #include "loop.h"
 
@@ -29,10 +30,10 @@ struct ai_endpoint;
  *  chatgpt_header().
  */
 enum auth_flag : uint32_t {
-	AUTH_CACHED = 1U << 0,  /**< only the credential file answers: no
-	                             command runs, nothing is refreshed and no
-	                             file is made. Without a valid token in
-	                             the file, the answer is an error. */
+	AUTH_CACHED = FLAG_OWN(0),  /**< only the credential file answers: no
+	                                 command runs, nothing is refreshed and
+	                                 no file is made. Without a valid token
+	                                 in the file, the answer is an error. */
 };
 
 enum {
@@ -60,7 +61,7 @@ typedef void auth_wait_fn (struct auth_wait *wait,
 struct auth_wait {
 	struct list   hook;
 	auth_wait_fn *done;
-	uint64_t      flags;  /**< enum auth_flag, widened over the padding */
+	struct flag64 flags;  /**< enum auth_flag, widened over the padding */
 };
 
 /** Returns a wait that does not wait, with @p done as its answer. The
@@ -99,7 +100,7 @@ struct auth {
 	                                 file is read again */
 	int32_t           error;    /**< of the read that the waits on ready
 	                                 waited for */
-	uint32_t          flags;    /**< AUTH_BUSY (src/auth.c) */
+	struct flag32     flags;    /**< AUTH_BUSY (src/auth.c) */
 };
 
 /** Initializes @p auth for the upstream @p ep on @p loop. The reads run on

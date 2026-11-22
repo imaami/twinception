@@ -273,7 +273,7 @@ test_logins (struct member_registry const *reg)
 	uint32_t const uid = 1000;
 	/* A Unix user is a person whose name a lookup finds, also with the
 	 * token of askai's own policy. */
-	grant.flags = POLICY_OPERATOR;
+	grant.flags = flag64(POLICY_OPERATOR);
 	CHECK(!member_login(&login, reg, &grant, &uid));
 	CHECK(!strcmp(login.text, "uid 1000") && login.uid == 1000 &&
 	      login.member.kind == MEMBER_PERSON && !*login.member.name);
@@ -290,7 +290,7 @@ test_logins (struct member_registry const *reg)
 	CHECK(!member_login(&login, reg, &grant, nullptr));
 	CHECK(!strcmp(login.text, "identity alice") && !strcmp(login.member.name, "alice") &&
 	      login.member.kind == MEMBER_PERSON && test_name_zeroed(&login.member));
-	grant.flags = POLICY_AGENT | POLICY_METRICS;
+	grant.flags = flag64(POLICY_AGENT | POLICY_METRICS);
 	CHECK(!member_login(&login, reg, &grant, nullptr));
 	CHECK(!strcmp(login.text, "identity alice") && login.member.kind == MEMBER_AGENT &&
 	      !strcmp(login.member.name, "alice") && test_name_zeroed(&login.member));
@@ -908,10 +908,10 @@ test_list (struct store const           *store,
 		bool const moved = !strcmp(names[n], "moved");
 		bool const ghost = !strcmp(names[n], "ghost");
 		CHECK(info->kind == (n < 7 ? MEMBER_PERSON : MEMBER_AGENT));
-		CHECK(info->flags == (moved ? MEMBER_NOTES : bro ? MEMBER_RECORD | MEMBER_NOTES
-		                                           : ghost ? 0 : MEMBER_RECORD));
+		CHECK(info->flags.bits == (moved ? MEMBER_NOTES : bro ? MEMBER_RECORD | MEMBER_NOTES
+		                                                : ghost ? 0 : MEMBER_RECORD));
 		/* The commit of the record is set only for a member with a record. */
-		CHECK(!(info->flags & MEMBER_RECORD) == !oid_len(&info->record));
+		CHECK(!flag_get(info->flags, MEMBER_RECORD) == !oid_len(&info->record));
 		struct oid const *tip = bro ? &findings[0] : ghost ? &findings[1]
 		                      : moved ? &findings[2] : &(struct oid){};
 		CHECK(oid_equal(&info->findings, tip));
@@ -990,10 +990,10 @@ test_list (struct store const           *store,
 		if (!cstr_view_equal(info->name, CSTR_VIEW("ghost")))
 			continue;
 		++ghosts;
-		CHECK(info->kind == MEMBER_PERSON ? info->flags == MEMBER_NOTES &&
+		CHECK(info->kind == MEMBER_PERSON ? info->flags.bits == MEMBER_NOTES &&
 		                                    !oid_len(&info->findings)
-		                                  : !info->flags && oid_equal(&info->findings,
-		                                                              &findings[1]));
+		                                  : !info->flags.bits && oid_equal(&info->findings,
+		                                                                   &findings[1]));
 	}
 	CHECK(ghosts == 2 && count == n + 1 && width == longest);
 	CHECK(!member_table_name(table, CSTR_VIEW("ghost"), &member));

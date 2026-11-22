@@ -15,7 +15,7 @@ cli_stream (struct cli_console *console,
 		.text = DSTR_INIT,
 		.actor = actor,
 		.token = token,
-		.flags = flags,
+		.flags = { flags },
 	};
 }
 
@@ -53,7 +53,8 @@ cli_stream_notify (void               *context,
 	struct json_object *params = jb_get(event, "params");
 	if (cstr_view_equal(method, CSTR_VIEW("notifications/progress")))
 		return cli_stream_progress(stream, params);
-	if (!(stream->flags & CLI_STREAM_DELTAS) || !cstr_view_equal(method, CSTR_VIEW("notifications/askai/delta")))
+	if (!flag_any(stream->flags, CLI_STREAM_DELTAS) ||
+	    !cstr_view_equal(method, CSTR_VIEW("notifications/askai/delta")))
 		return 0;
 	if (jb_int(jb_get(params, "requestId"), -1) != request_id)
 		return cli_error_set(error, EPROTO, "Unexpected streaming request id");
@@ -79,7 +80,7 @@ cli_stream_notify (void               *context,
 		return cli_ui_push(&stream->ui, false, text);
 	}
 	if (cstr_view_equal(kind, CSTR_VIEW("reasoning")))
-		return stream->flags & CLI_STREAM_REASONING ? cli_ui_push(&stream->ui, true, text) : 0;
+		return flag_any(stream->flags, CLI_STREAM_REASONING) ? cli_ui_push(&stream->ui, true, text) : 0;
 	return cli_error_set(error, EPROTO, "Unknown AskAI delta kind");
 }
 

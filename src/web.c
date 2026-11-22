@@ -41,6 +41,7 @@
 #include <string.h>
 
 #include "auth.h"
+#include "flag.h"
 #include "htab.h"
 #include "http.h"
 #include "list.h"
@@ -56,13 +57,13 @@ enum {
 	WEB_BUCKETS   = 1 << 12,   /* of the table */
 };
 
-/* The bits of the message of a run to home, and the bit that web_run_mail()
- * adds once home's loop has stopped.
+/* The bits of the message of a run to home. web_run_mail() adds LOOP_EXIT
+ * of home's loop to them.
  */
 enum {
-	RUN_SUBMIT = 1,  /* send the request */
-	RUN_CANCEL = 2,  /* no call waits for the run, and its keep is 0 */
-	RUN_EXIT   = 4,  /* home's loop has stopped */
+	RUN_SUBMIT = FLAG_START,           /* send the request */
+	RUN_CANCEL = FLAG_END | FLAG_NOW,  /* no call waits for the run, and
+	                                      its keep is 0 */
 };
 
 /* The error texts of a run that askai ends as it stops, and of a run that
@@ -174,14 +175,13 @@ struct web_wait {
 	struct web_run   *run;    /* the run while the wait is on the run's
 	                             list, else nullptr. The mutex is locked
 	                             for each access. */
-	struct web_reply *reply;  /* a reference, once done is true. It is
-	                             nullptr if home ran out of memory. */
+	struct web_reply *reply;  /* a reference, once flags is FLAG_AFTER. It
+	                             is nullptr if home ran out of memory. */
 	struct loop      *loop;
 	web_back_fn      *back;
 	struct handle     who;
-	uint64_t          done;   /* bool, widened over the padding: the wait
-	                             has its reply. Only the thread of loop
-	                             uses it. */
+	struct flag64     flags;  /* FLAG_AFTER once the wait has its reply.
+	                             Only the thread of loop uses it. */
 };
 
 struct web {
@@ -726,8 +726,8 @@ web_run_start (struct web     *web,
 }
 
 /* Handles @p msg, the message of a run, on home's loop. After home's loop
- * has stopped, home's part of the service is gone, and a new run ends with
- * ESHUTDOWN.
+ * has stopped, home's part of the service is gone, and a new run that was
+ * not cancelled ends with ESHUTDOWN.
  */
 static void
 web_run_mail (struct loop *loop,
@@ -737,13 +737,15 @@ web_run_mail (struct loop *loop,
 	struct web *web = run->web;
 	uint32_t bits = atomic_exchange(&run->bits, 0) & (RUN_SUBMIT | RUN_CANCEL);
 
-	switch (bits | (loop->flags & LOOP_EXIT ? RUN_EXIT : 0)) {
+	/* LOOP_EXIT is FLAG_END, which RUN_CANCEL contains, so a cancelled
+	 * run ends the same way before and after home's loop has stopped. No
+	 * wait reads its reply. */
+	switch (bits | flag_get(loop->flags, LOOP_EXIT)) {
 	case RUN_SUBMIT:
 		web_run_start(web, run);
 		break;
 
-	case RUN_SUBMIT | RUN_EXIT:
-	case RUN_SUBMIT | RUN_CANCEL | RUN_EXIT: {
+	case RUN_SUBMIT | LOOP_EXIT: {
 		struct web_response const end = web_response(.error = stopping, .e = ESHUTDOWN);
 		web_run_end(web, run, &end);
 		break;
@@ -756,7 +758,6 @@ web_run_mail (struct loop *loop,
 	}
 
 	case RUN_CANCEL:
-	case RUN_CANCEL | RUN_EXIT:
 		if (!list_is_empty(&run->live)) {
 			http_cancel(web->http, &run->transfer);
 			struct web_response const end = web_response(
@@ -778,7 +779,7 @@ web_wait_mail (struct loop *loop,
                struct msg  *msg)
 {
 	struct web_wait *wait = container_of(msg, struct web_wait, msg);
-	wait->done = true;
+	flag_set(&wait->flags, FLAG_AFTER);
 	wait->back(loop, wait->who, wait);
 }
 
@@ -919,7 +920,7 @@ web_wait_create (struct web           *web,
 		.live = list(&run->live),
 		.late = list(&run->late),
 		.timer = { .due = UINT64_MAX, .fn = web_run_late },
-		.auth = auth_wait(&run->auth, ask->flags & WEB_UPSTREAM && !r->keep
+		.auth = auth_wait(&run->auth, flag_any(ask->flags, WEB_UPSTREAM) && !r->keep
 		                              ? web_run_authorized : nullptr),
 		.key = {
 			.max = r->max,
@@ -980,7 +981,7 @@ web_wait_create (struct web           *web,
 		if (entry && entry->reply->received + r->keep * NS > ask->loop->now &&
 		    ref_tryget(&entry->reply->refs)) {
 			wait->reply = entry->reply;
-			wait->done = true;
+			flag_set(&wait->flags, FLAG_AFTER);
 			to = nullptr;
 		} else {
 			struct web_run *join = web_find_run(web, run);
@@ -1018,7 +1019,7 @@ web_wait_create (struct web           *web,
 bool
 web_wait_done (struct web_wait const *wait)
 {
-	return wait->done;
+	return flag_any(wait->flags, FLAG_AFTER);
 }
 
 void
@@ -1054,7 +1055,7 @@ web_wait_leave (struct web_wait **p_wait)
 		return;
 	struct web_wait *wait = *p_wait;
 	*p_wait = nullptr;
-	if (wait->done) {
+	if (flag_any(wait->flags, FLAG_AFTER)) {
 		web_reply_put(wait->reply);
 		wait->reply = nullptr;
 		free(wait);

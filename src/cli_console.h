@@ -10,6 +10,7 @@
 #include "compat.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "flag.h"
 #include "list.h"
 #include "tally.h"
 
@@ -55,8 +56,9 @@ cli_console_lines_fini (struct cli_console_lines *queue);
 
 /** The options of cli_console_create(). */
 enum {
-	CLI_CONSOLE_SIMPLE = 1u << 0,  /**< basic line input, also without a terminal */
-	CLI_CONSOLE_COLOR  = 1u << 1,  /**< terminal colors */
+	CLI_CONSOLE_SIMPLE = FLAG_OWN(0),  /**< basic line input, also without a
+	                                        terminal */
+	CLI_CONSOLE_COLOR  = FLAG_OWN(1),  /**< terminal colors */
 };
 
 /** Only the UI thread uses the console. loop and io must outlive it. flags
@@ -85,10 +87,12 @@ cli_console_suspend (struct cli_console *console);
 extern int
 cli_console_resume (struct cli_console *console);
 
-/** Keep the next draft editable while an operation runs. */
+/** Keep the next draft editable while an operation runs: @p busy is
+ *  FLAG_DURING (src/flag.h) while one runs, and 0 after it.
+ */
 extern int
 cli_console_busy (struct cli_console *console,
-                  bool                busy);
+                  uint8_t             busy);
 
 /** Pending bytes are drained by UI turns; stop IO only once this is false. */
 extern bool

@@ -14,12 +14,11 @@
 #include "flag.h"
 #include "xlist.h"
 
-/** The flags of an action, the third column of the lists below. The word
- *  contains the shared bit FLAG_WRITE, so the other bits are FLAG_OWN()
- *  bits (src/flag.h).
+/** The flags of an action, the third column of the lists below. They
+ *  are bits of a flag word of src/flag.h that uses no common range.
  */
 enum notes_action_flag : uint16_t {
-	NOTES_ACTION_WRITE    = FLAG_WRITE,   /**< writes a note to the notebook
+	NOTES_ACTION_WRITE    = FLAG_OWN(4),  /**< writes a note to the notebook
 	                                           of the caller, as the caller,
 	                                           which needs the member name
 	                                           of the caller */

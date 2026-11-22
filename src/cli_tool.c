@@ -94,7 +94,7 @@ cli_tool_destroy (struct cli_tool **pp)
 static int
 cli_tool_begin (struct cli_tool *tool)
 {
-	tool->client->flags |= tool->dirty;
+	flag_set(&tool->client->flags, tool->dirty);
 	struct cstr_view name = cli_tool_name(tool);
 	dstr_auto action = dstr("call ");
 	if (cstr_view_cat(name, &action))
@@ -181,7 +181,7 @@ cli_tool_done (void                   *context,
 {
 	struct cli_tool *tool = container_of(context, struct cli_tool, stream);
 	tool->request = 0;
-	tool->client->flags |= tool->dirty;
+	flag_set(&tool->client->flags, tool->dirty);
 	list_del(&tool->hook);
 	tool->done(tool, tool->context, e, result, error);
 	cli_tool_destroy(&tool);

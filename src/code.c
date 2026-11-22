@@ -19,6 +19,7 @@
 #include "cxi.h"
 #include "cxi_out.h"
 #include "dstr.h"
+#include "flag.h"
 #include "git.h"
 #include "git_run.h"
 #include "jb.h"
@@ -86,8 +87,8 @@ enum { CODE_NUMBER = sizeof "unconfined=" + UTIL_DECIMAL };
 struct code_loop;
 
 enum code_parse_flag : uint64_t {
-	CODE_AGAIN = 1U << 0,  /* the unit was BUILD_RETRY: it is not parsed
-	                          once more after this process */
+	CODE_AGAIN = FLAG_OWN(0),  /* the unit was BUILD_RETRY: it is not parsed
+	                              once more after this process */
 };
 
 /* A process of a loop that parses a translation unit of a build: askai-code
@@ -99,7 +100,7 @@ struct code_parse {
 	struct code_build *build;
 	struct child      *child;
 	size_t             unit;   /* the index of the unit in the build */
-	uint64_t           flags;  /* enum code_parse_flag */
+	struct flag64      flags;  /* enum code_parse_flag */
 };
 
 /* The code tool's part of a client loop: the processes of the loop that
@@ -116,9 +117,9 @@ struct code_loop {
 };
 
 enum code_build_flag : uint64_t {
-	CODE_STALLED = 1U << 0,  /* a process found the tree of the cache at
-	                            another commit: no process starts until a
-	                            call has exported the commit again */
+	CODE_STALLED = FLAG_OWN(0),  /* a process found the tree of the cache at
+	                                another commit: no process starts until
+	                                a call has exported the commit again */
 };
 
 /* A build that the service keeps for all loops: the translation units of
@@ -135,28 +136,30 @@ enum code_build_flag : uint64_t {
  * lock, while it has a reference.
  */
 struct code_build {
-	struct list  hook;     /* on the builds of the service */
-	struct build b;
-	struct dstr  id;
-	struct dstr  words;
-	size_t       refs;     /* one of the service, one of each call that
-	                          has joined the build, and one of each process
-	                          that parses for it */
-	size_t       next;     /* no unit before this one can be started
-	                          (build_waits()) */
-	size_t       again;    /* the units that are BUILD_AGAIN */
-	size_t       left;     /* the units that are neither BUILD_GRAPH nor
-	                          BUILD_FAILED */
-	size_t       parsing;  /* the units that are BUILD_PARSING */
-	size_t       bytes;    /* of the graphs */
-	uint64_t     flags;    /* enum code_build_flag */
+	struct list   hook;     /* on the builds of the service */
+	struct build  b;
+	struct dstr   id;
+	struct dstr   words;
+	size_t        refs;     /* one of the service, one of each call that
+	                           has joined the build, and one of each
+	                           process that parses for it */
+	size_t        next;     /* no unit before this one can be started
+	                           (build_waits()) */
+	size_t        again;    /* the units that are BUILD_AGAIN */
+	size_t        left;     /* the units that are neither BUILD_GRAPH nor
+	                           BUILD_FAILED */
+	size_t        parsing;  /* the units that are BUILD_PARSING */
+	size_t        bytes;    /* of the graphs */
+	struct flag64 flags;    /* enum code_build_flag */
 };
 
 enum code_call_flag : uint64_t {
-	CODE_CALLERS = 1U << 0,  /* the action is callers */
-	CODE_WORDED  = 1U << 1,  /* words contains the words of code_spawn() */
-	CODE_LIST    = 1U << 2,  /* the next askai-code of the call lists the
-	                            units of the build and exports the commit */
+	CODE_CALLERS = FLAG_OWN(0),  /* the action is callers */
+	CODE_WORDED  = FLAG_OWN(1),  /* words contains the words of
+	                                code_spawn() */
+	CODE_LIST    = FLAG_OWN(2),  /* the next askai-code of the call lists
+	                                the units of the build and exports the
+	                                commit */
 };
 
 /* A call of the code tool. pin resolves the revision, and pin.child is the
@@ -181,7 +184,7 @@ struct code_call {
 	struct build_callee  callee;
 	size_t               repo;    /* the index of the repository in the
 	                                 values of --code */
-	uint64_t             flags;   /* enum code_call_flag */
+	struct flag64        flags;   /* enum code_call_flag */
 };
 
 int
@@ -210,7 +213,7 @@ code_check (struct config *cfg)
 		return e;
 	char const *argv[] = {
 		cfg->code_helper, "--check", cache,
-		cfg->flags & CFG_UNCONFINED ? "unconfined=1" : nullptr, nullptr
+		flag_any(cfg->flags, CFG_UNCONFINED) ? "unconfined=1" : nullptr, nullptr
 	};
 	char *env[] = { util_env_path(), nullptr };
 	struct child_cmd const cmd = child_cmd(
@@ -219,7 +222,7 @@ code_check (struct config *cfg)
 		.envp = env,
 		.max = CODE_CHECK,
 		.deadline = loop_clock() + 10 * NS,
-		.flags = CHILD_STDERR
+		.flags = { CHILD_STDERR }
 	);
 	struct buf out = buf();
 	struct child_end end = child_end();
@@ -242,7 +245,7 @@ code_check (struct config *cfg)
 		              : config_aprintf(&cfg->code_check, "askai-code --check exited with "
 		                               "status %d", end.status);
 	} else {
-		cfg->flags |= CFG_CODE;
+		flag_set(&cfg->flags, CFG_CODE);
 		e = config_aprintf(&cfg->code_check, "%.*s",
 		                   (int)(text.len - (text.data[text.len - 1] == '\n')), text.data);
 	}
@@ -443,8 +446,8 @@ static void
 code_build_undo (struct code_build       *build,
                  struct code_parse const *parse)
 {
-	build->b.items[parse->unit].state = parse->flags & CODE_AGAIN ? BUILD_RETRY
-	                                                              : BUILD_NONE;
+	build->b.items[parse->unit].state = flag_any(parse->flags, CODE_AGAIN) ? BUILD_RETRY
+	                                                                       : BUILD_NONE;
 	if (parse->unit < build->next)
 		build->next = parse->unit;
 }
@@ -508,7 +511,7 @@ code_parse_spawn (struct code_parse *parse,
 
 	parse->build = build;
 	parse->unit = unit;
-	parse->flags = u->state == BUILD_RETRY ? CODE_AGAIN : 0;
+	parse->flags = flag64(u->state == BUILD_RETRY ? CODE_AGAIN : 0);
 	u->state = BUILD_PARSING;
 	++build->parsing;
 	++build->refs;
@@ -547,7 +550,7 @@ code_build_run (struct code_build *build,
 {
 	struct code *code = cl->code;
 	struct build *b = &build->b;
-	if (build->flags & CODE_STALLED || (code->hungry && code->hungry != build))
+	if (flag_any(build->flags, CODE_STALLED) || (code->hungry && code->hungry != build))
 		return;
 
 	for (size_t failed = 0; failed < CODE_PARSES;) {
@@ -594,12 +597,12 @@ code_parse_done (struct child *c)
 	struct code *code = cl->code;
 	struct code_build *build = parse->build;
 	int const status = child_status(c);
-	bool const late = c->end.flags & CHILD_LATE;
+	bool const late = flag_any(c->end.flags, CHILD_LATE);
 	pthread_mutex_lock(&code->lock);
 	if (status == CXI_STALE) {
-		build->flags |= CODE_STALLED;
+		flag_set(&build->flags, CODE_STALLED);
 		code_build_undo(build, parse);
-	} else if (late && !(parse->flags & CODE_AGAIN)) {
+	} else if (late && !flag_any(parse->flags, CODE_AGAIN)) {
 		build->b.items[parse->unit].state = BUILD_AGAIN;
 		++build->again;
 	} else {
@@ -660,7 +663,7 @@ code_build_create (struct code            *code,
 	if (!err)
 		err = code_word(words, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
 	if (!err)
-		err = code_word(words, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
+		err = code_word(words, CXI_KEY_UNCONFINED, flag_any(cfg->flags, CFG_UNCONFINED)
 		                ? CSTR_VIEW("1") : cstr_view(nullptr));
 	while (!err && units.len) {
 		struct cstr_view path;
@@ -771,7 +774,7 @@ code_spawn (struct code_call *call,
 	struct git_pin *pin = &call->pin;
 	int e = 0;
 	/* A call that exports its commit once more has these words. */
-	if (!(call->flags & CODE_WORDED)) {
+	if (!flag_any(call->flags, CODE_WORDED)) {
 		char digits[UTIL_DECIMAL];
 		e = code_word(&call->words, CXI_KEY_COMMIT, oid_view(&pin->roots[0]));
 		if (!e)
@@ -779,7 +782,7 @@ code_spawn (struct code_call *call,
 			              util_decimal(digits + sizeof digits, pin->deadline, 0));
 		if (!e)
 			e = code_word(&call->words, CXI_KEY_TOP, cstr_view(pin->repo->path));
-		call->flags |= CODE_WORDED;
+		flag_set(&call->flags, CODE_WORDED);
 	}
 	if (e)
 		return e;
@@ -793,7 +796,7 @@ code_spawn (struct code_call *call,
 	for (char const *w = dstr_get(&call->words), *last = w + dstr_len(&call->words); w < last;
 	     w += strlen(w) + 1)
 		argv[k++] = w;
-	if (call->flags & CODE_LIST)
+	if (flag_any(call->flags, CODE_LIST))
 		argv[k++] = "list=1";
 	argv[k++] = "--";
 	struct git_run_dir dir = {};
@@ -808,7 +811,7 @@ code_spawn (struct code_call *call,
 		/* The output can contain the record line of describe in addition
 		 * to a result of TOOL_TEXT_MAX bytes. The answer to callers is
 		 * the list of the translation units. */
-		.max = call->flags & CODE_CALLERS ? CODE_UNITS : TOOL_TEXT_MAX + 4096,
+		.max = flag_any(call->flags, CODE_CALLERS) ? CODE_UNITS : TOOL_TEXT_MAX + 4096,
 		.deadline = pin->deadline
 	);
 	pin->child = mcp_slot_spawn(slot, &cmd, &e);
@@ -899,7 +902,7 @@ code_join (struct code_call *call,
 	pthread_mutex_lock(&code->lock);
 	struct code_build *build = code_find(code, id);
 	if (!build)
-		build = call->flags & CODE_LIST
+		build = flag_any(call->flags, CODE_LIST)
 		        ? code_build_create(code, id, rest, call, &e) : nullptr;
 	if (build) {
 		/* The build that a call used last is the last one of the list.
@@ -907,8 +910,8 @@ code_join (struct code_call *call,
 		 * that took too long is parsed once more for this call. */
 		list_move(&code->builds, &build->hook);
 		++build->refs;
-		if (call->flags & CODE_LIST)
-			build->flags &= ~(uint64_t)CODE_STALLED;
+		if (flag_any(call->flags, CODE_LIST))
+			flag_clear(&build->flags, (uint64_t)CODE_STALLED);
 		for (size_t i = 0; build->again && i < build->b.n; ++i) {
 			if (build->b.items[i].state != BUILD_AGAIN)
 				continue;
@@ -922,7 +925,7 @@ code_join (struct code_call *call,
 	if (!build)
 		return e ? e : ENOENT;
 
-	call->flags &= ~(uint64_t)CODE_LIST;
+	flag_clear(&call->flags, (uint64_t)CODE_LIST);
 	child_destroy(&call->pin.child);
 	call->build = build;
 	list_append(&cl->waiting, &call->wait);
@@ -1011,7 +1014,7 @@ code_waited (struct mcp_slot  *slot,
 		code_answer(slot, call);
 		return;
 	}
-	bool const stalled = build->flags & CODE_STALLED;
+	bool const stalled = flag_any(build->flags, CODE_STALLED);
 	if (!stalled) {
 		code_build_run(build, cl);
 		/* Only a build without a process waits for a place: one that
@@ -1026,7 +1029,7 @@ code_waited (struct mcp_slot  *slot,
 	if (stalled && idle) {
 		(void)loop_timer_stop(loop, &call->timer);
 		code_leave(call, code);
-		call->flags |= CODE_LIST;
+		flag_set(&call->flags, CODE_LIST);
 		e = code_spawn(call, slot);
 	} else {
 		uint64_t const again = loop->now + CODE_RETRY;
@@ -1057,11 +1060,11 @@ code_ended (struct mcp_slot  *slot,
 		              TOOL_FAILED);
 		return;
 	}
-	if (!status && call->flags & CODE_CALLERS) {
+	if (!status && flag_any(call->flags, CODE_CALLERS)) {
 		int e = code_join(call, cl);
 		if (e == ENOENT) {
 			/* The service does not keep the build of the call. */
-			call->flags |= CODE_LIST;
+			flag_set(&call->flags, CODE_LIST);
 			child_destroy(&call->pin.child);
 			e = code_spawn(call, slot);
 			if (e)
@@ -1196,7 +1199,7 @@ code_args (struct code const  *code,
 		                                     "as HEAD~1."), TOOL_FAILED), EINVAL;
 	call->repo = r;
 	if (cstr_view_equal(action, code_actions[CXI_ACTION_CALLERS]))
-		call->flags |= CODE_CALLERS;
+		flag_set(&call->flags, CODE_CALLERS);
 	struct dstr *words = &call->words;
 	char digits[UTIL_DECIMAL];
 	if (!e)
@@ -1217,7 +1220,7 @@ code_args (struct code const  *code,
 		e = code_word(words, CXI_KEY_CDB, cstr_view(cfg->codes[r]));
 	if (!e)
 		e = code_word(words, CXI_KEY_CACHE, cstr_view(cfg->code_cache));
-	return e ? e : code_word(words, CXI_KEY_UNCONFINED, cfg->flags & CFG_UNCONFINED
+	return e ? e : code_word(words, CXI_KEY_UNCONFINED, flag_any(cfg->flags, CFG_UNCONFINED)
 	                         ? CSTR_VIEW("1") : cstr_view(nullptr));
 }
 

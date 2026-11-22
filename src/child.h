@@ -19,6 +19,7 @@
 #include "buf.h"
 #include "compat.h"
 #include "cstr_view.h"
+#include "flag.h"
 #include "list.h"
 #include "loop.h"
 
@@ -29,7 +30,8 @@ enum { CHILD_MAX = 16 };
 
 /** How a child is spawned. */
 enum child_flag {
-	CHILD_STDERR = 1u << 0,  /**< its standard error goes to its output too */
+	CHILD_STDERR = FLAG_OWN(0),  /**< its standard error goes to its output
+	                                  too */
 };
 
 /** The bits of child_end.flags. The bits of CHILD_EVENTS mark the events
@@ -37,13 +39,15 @@ enum child_flag {
  *  those bits.
  */
 enum child_state : uint32_t {
-	CHILD_CUT    = 1u << 0,  /**< its output went past the cap, or memory
-	                              ran out for it, which killed it */
-	CHILD_LATE   = 1u << 1,  /**< its deadline came, which killed it or is
-	                              about to */
-	CHILD_OUT    = 1u << 2,  /**< its output can be read, or has ended */
-	CHILD_EXIT   = 1u << 3,  /**< it has exited */
-	CHILD_DUE    = 1u << 4,  /**< its deadline has come */
+	CHILD_CUT    = FLAG_CUT,     /**< its output went past the cap, or
+	                                  memory ran out for it, which killed
+	                                  it */
+	CHILD_LATE   = FLAG_LATE,    /**< its deadline came, which killed it or
+	                                  is about to */
+	CHILD_OUT    = FLAG_OWN(0),  /**< its output can be read, or has
+	                                  ended */
+	CHILD_EXIT   = FLAG_OWN(1),  /**< it has exited */
+	CHILD_DUE    = FLAG_OWN(2),  /**< its deadline has come */
 	CHILD_EVENTS = CHILD_OUT | CHILD_EXIT | CHILD_DUE,
 };
 
@@ -52,12 +56,12 @@ enum child_state : uint32_t {
  *  CHILD_LATE.
  */
 struct child_end {
-	int      code;    /**< CLD_EXITED, CLD_KILLED or CLD_DUMPED from
-	                       waitid() after the child exits, and 0 before
-	                       that or if waitid() failed */
-	int      status;  /**< the exit status, or the number of the signal
-	                       that killed the child */
-	uint32_t flags;   /**< enum child_state */
+	int           code;    /**< CLD_EXITED, CLD_KILLED or CLD_DUMPED from
+	                            waitid() after the child exits, and 0
+	                            before that or if waitid() failed */
+	int           status;  /**< the exit status, or the number of the
+	                            signal that killed the child */
+	struct flag32 flags;   /**< enum child_state */
 };
 
 static const_inline struct child_end
@@ -74,7 +78,8 @@ child_end (struct child_end const e)
 static force_inline int
 child_end_status (struct child_end const *end)
 {
-	return end->flags & (CHILD_CUT | CHILD_LATE) || end->code != CLD_EXITED ? -1 : end->status;
+	return flag_any(end->flags, CHILD_CUT | CHILD_LATE) || end->code != CLD_EXITED
+	       ? -1 : end->status;
 }
 
 /**
@@ -177,7 +182,7 @@ struct child_cmd {
 	uint64_t           deadline;  /**< loop_clock(); 0: none */
 	uint64_t           grace;     /**< ns from SIGTERM to SIGKILL at the
 	                                   deadline; 0: SIGKILL at once */
-	uint64_t           flags;     /**< enum child_flag, widened over the
+	struct flag64      flags;     /**< enum child_flag, widened over the
 	                                   padding */
 };
 

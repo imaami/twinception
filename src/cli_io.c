@@ -9,9 +9,17 @@
 
 #include "cli_io.h"
 #include "compat.h"
+#include "flag.h"
 #include "util.h"
 
 enum { CLI_IO_JOBS = 32 };
+
+/* The bit of cli_io.flags. */
+enum {
+	CLI_IO_STOPPED = FLAG_END,  /* cli_io_stop() was called: the blockers
+	                               finish the jobs under way, and
+	                               cli_io_submit() accepts no job */
+};
 
 struct cli_io {
 	struct blocker *blocker;
@@ -19,7 +27,7 @@ struct cli_io {
 	struct loop_ref notify;   /**< the eventfd that each blocker thread
 	                               writes 1 to as it exits */
 	size_t          pending;
-	uint64_t        stopped;
+	struct flag64   flags;    /**< CLI_IO_STOPPED */
 	uint32_t        exited;
 	uint32_t        started;
 };
@@ -92,7 +100,7 @@ cli_io_submit (struct cli_io     *io,
 {
 	if (!io || !job || !job->work || !job->done)
 		return EINVAL;
-	if (io->stopped)
+	if (flag_any(io->flags, CLI_IO_STOPPED))
 		return ESHUTDOWN;
 	if (io->pending == CLI_IO_JOBS)
 		return EAGAIN;
@@ -108,7 +116,7 @@ void
 cli_io_stop (struct cli_io *io)
 {
 	if (io) {
-		io->stopped = true;
+		flag_set(&io->flags, CLI_IO_STOPPED);
 		blocker_stop(io->blocker);
 	}
 }

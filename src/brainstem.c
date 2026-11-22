@@ -30,6 +30,7 @@
 #include "blocker.h"
 #include "brainstem.h"
 #include "buf.h"
+#include "flag.h"
 #include "log.h"
 #include "loop.h"
 #include "util.h"
@@ -52,22 +53,42 @@ enum {
 	                         8 MiB, would not fit many */
 };
 
-/* A loop thread's state; JOINED too before it starts, and if it cannot. */
-enum { JOINED, STARTING, RUNNING, EXITED };
+/* A loop thread's state: the values of the range FLAG_WHEN of src/flag.h.
+ * JOINED too before it starts, and if it cannot.
+ */
+enum {
+	JOINED   = 0,
+	STARTING = FLAG_BEFORE,
+	RUNNING  = FLAG_DURING,
+	EXITED   = FLAG_AFTER,
+};
 
 /* The bits of a loop thread's flags: its loop needs loop_fini(), and it was
  * told to drain.
  */
-enum { THREAD_CREATED = 1, THREAD_DRAINED = 2 };
+enum { THREAD_CREATED = FLAG_OWN(0), THREAD_DRAINED = FLAG_END };
 
-/* Orders to a loop: the bits of one message (design section 2). */
+/* Orders to a loop: the bits of one message (design section 2). DRAIN
+ * tells the loop to end, and OPEN tells home to begin to admit jobs.
+ */
 enum {
-	DRAIN = 1, STATS = 2, STALL = 4, RELIEVE = 8, ALONE = 16, OPEN = 32,
-	RELOAD = 64
+	DRAIN   = FLAG_END,
+	OPEN    = FLAG_START,
+	STATS   = FLAG_OWN(0),
+	STALL   = FLAG_OWN(1),
+	RELIEVE = FLAG_OWN(2),
+	ALONE   = FLAG_OWN(3),
+	RELOAD  = FLAG_OWN(4),
 };
 
-/* Resources found over their threshold, as bits: descriptors, then PSI. */
-enum { HIGH_FDS = 1, HIGH_PSI = 2 };
+/* The bits of brainstem.flags: the shutdown, and the resources found over
+ * their threshold.
+ */
+enum {
+	STOPPING = FLAG_END,     /* shutting down */
+	HIGH_FDS = FLAG_OWN(0),  /* descriptors */
+	HIGH_PSI = FLAG_OWN(1),  /* PSI: this bit and the two after it */
+};
 
 /* Where cgroup v2 is mounted. */
 static char const cgroup_root[] = "/sys/fs/cgroup";
@@ -115,7 +136,7 @@ struct brainstem_thread {
 	_Atomic uint32_t            orders;
 	_Atomic uint32_t            state;
 	int                         error;    /* its own, set before state */
-	uint32_t                    flags;    /* THREAD_* bits, which the
+	struct flag32               flags;    /* THREAD_* bits, which the
 	                                         brainstem alone touches */
 	char                        name[8];  /* the thread's: home, loop1 to
 	                                         loop255 */
@@ -144,8 +165,7 @@ struct brainstem {
 	int                         wake_fd;   /* threads report through it */
 	uint8_t                     levels[PRESSURE_INPUTS];  /* each input's */
 	uint8_t                     level;     /* memory pressure, as published */
-	uint8_t                     high;      /* HIGH_* bits */
-	bool                        stopping;  /* shutting down */
+	struct flag16               flags;     /* STOPPING and the HIGH_* bits */
 };
 
 struct brainstem_metrics brainstem_metrics;
@@ -182,7 +202,7 @@ brainstem_thread_obey (struct loop *loop,
 	struct brainstem_app const *app = t->app;
 	void *ctx = t->ctx;
 	uint32_t orders = atomic_exchange(&t->orders, 0);
-	if (loop->flags & LOOP_EXIT)
+	if (flag_any(loop->flags, LOOP_EXIT))
 		return;
 	if (orders & STATS) {
 		char label[sizeof t->name + 1];
@@ -336,8 +356,8 @@ brainstem_force (struct brainstem *bs,
 	while (!log_done() && loop_clock() < until)
 		(void)brainstem_nap(bs, until);
 	for (size_t i = 0; i < bs->n; ++i)
-		if (bs->threads[i].flags & THREAD_CREATED &&
-		    brainstem_thread_state(&bs->threads[i]) != JOINED)
+		if (flag_any(bs->threads[i].flags, THREAD_CREATED) &&
+		             brainstem_thread_state(&bs->threads[i]) != JOINED)
 			(void)pthread_detach(bs->threads[i].thread);
 	_exit(BRAINSTEM_FORCED);
 }
@@ -362,8 +382,8 @@ brainstem_drain (struct brainstem *bs)
 		bs->drain_by = bs->deadline - bs->cfg->grace_ms * MS / 5;
 	for (size_t i = 0; i < bs->n; ++i) {
 		struct brainstem_thread *t = &bs->threads[i];
-		if (brainstem_thread_state(t) == RUNNING && !(t->flags & THREAD_DRAINED)) {
-			t->flags |= THREAD_DRAINED;
+		if (brainstem_thread_state(t) == RUNNING && !flag_any(t->flags, THREAD_DRAINED)) {
+			flag_set(&t->flags, THREAD_DRAINED);
 			brainstem_thread_order(t, DRAIN);
 		}
 	}
@@ -373,7 +393,7 @@ brainstem_drain (struct brainstem *bs)
 static void
 brainstem_stop (struct brainstem *bs)
 {
-	bs->stopping = true;
+	flag_set(&bs->flags, STOPPING);
 	bs->deadline = loop_clock() + bs->cfg->grace_ms * MS;
 	brainstem_drain(bs);
 }
@@ -382,7 +402,7 @@ brainstem_stop (struct brainstem *bs)
 static void
 brainstem_reload (struct brainstem *bs)
 {
-	if (!bs->stopping && brainstem_thread_state(&bs->threads[HOME]) == RUNNING)
+	if (!flag_any(bs->flags, STOPPING) && brainstem_thread_state(&bs->threads[HOME]) == RUNNING)
 		brainstem_thread_order(&bs->threads[HOME], RELOAD);
 }
 
@@ -408,7 +428,7 @@ brainstem_signal (struct brainstem *bs,
 		brainstem_reload(bs);
 		return;
 	}
-	if (bs->stopping)
+	if (flag_any(bs->flags, STOPPING))
 		brainstem_force(bs, "a second signal");
 	brainstem_stop(bs);
 }
@@ -443,7 +463,7 @@ brainstem_thread_watch (struct brainstem_thread *t,
 		LOG(LOG_WARN, "watchdog: the event loop has been in one turn for %.1f ms "
 		    "(%s)", (double)(now - start) / 1e6, t->name);
 	}
-	if (bs->stopping && seen > STUCK_MS * MS)
+	if (flag_any(bs->flags, STOPPING) && seen > STUCK_MS * MS)
 		brainstem_thread_force(t, "is stuck");
 }
 
@@ -475,19 +495,19 @@ brainstem_watch (struct brainstem *bs,
 }
 
 /* Whether a gauge at @p value went up to @p up (1) or back below @p down
- * (-1): bit @p bit of bs->high is set from the one to the other.
+ * (-1): bit @p bit of bs->flags is set from the one to the other.
  */
 static int
 brainstem_crossed (struct brainstem *bs,
-                   uint32_t          bit,
+                   uint16_t          bit,
                    uint64_t          value,
                    uint64_t          up,
                    uint64_t          down)
 {
-	bool high = bs->high & bit;
+	bool high = flag_any(bs->flags, bit);
 	if (high ? value >= down : value < up)
 		return 0;
-	bs->high ^= bit;
+	flag_flip(&bs->flags, bit);
 	return high ? -1 : 1;
 }
 
@@ -781,7 +801,7 @@ brainstem_mind (struct brainstem *bs,
 	if (now >= bs->deadline)
 		brainstem_force(bs, "the grace period is over");
 	/* A loop that exits on its own shuts the rest down. */
-	for (size_t i = 0; i < bs->n && !bs->stopping; ++i)
+	for (size_t i = 0; i < bs->n && !flag_any(bs->flags, STOPPING); ++i)
 		if (brainstem_thread_state(&bs->threads[i]) == EXITED)
 			brainstem_stop(bs);
 }
@@ -815,7 +835,7 @@ brainstem_thread_start (struct brainstem_thread *t)
 		LOG(LOG_ERROR, "cannot start %s: %s", t->name, strerror(e));
 		return e;
 	}
-	t->flags |= THREAD_CREATED;
+	flag_set(&t->flags, THREAD_CREATED);
 	uint64_t until = loop_clock() + START_MS * MS;
 	while (brainstem_thread_state(t) == STARTING) {
 		if (loop_clock() >= until)
@@ -909,7 +929,7 @@ brainstem_thread_join (struct brainstem_thread *t)
 {
 	if (brainstem_thread_state(t) != EXITED)
 		return;
-	if (!t->bs->stopping)
+	if (!flag_any(t->bs->flags, STOPPING))
 		brainstem_stop(t->bs);
 	(void)pthread_join(t->thread, nullptr);
 	atomic_store_explicit(&t->state, JOINED, memory_order_relaxed);
@@ -1026,10 +1046,11 @@ brainstem_start (struct brainstem *bs)
 {
 	int e = 0;
 	size_t i = 0;
-	while (i < bs->n && !bs->stopping && !(e = brainstem_thread_start(&bs->threads[i])) &&
+	while (i < bs->n && !flag_any(bs->flags, STOPPING) &&
+	       !(e = brainstem_thread_start(&bs->threads[i])) &&
 	       brainstem_thread_state(&bs->threads[i]) == RUNNING)
 		++i;
-	if (bs->stopping)
+	if (flag_any(bs->flags, STOPPING))
 		brainstem_drain(bs);
 	else if (i < bs->n)
 		brainstem_stop(bs);
@@ -1107,7 +1128,7 @@ brainstem_stop_blockers (struct brainstem *bs)
 	}
 	blocker_destroy(&bs->blockers);
 	for (size_t i = 0; i < bs->n; ++i)
-		if (bs->threads[i].flags & THREAD_CREATED)
+		if (flag_any(bs->threads[i].flags, THREAD_CREATED))
 			loop_fini(&bs->threads[i].loop);
 	free(bs->threads);
 	bs->threads = nullptr;

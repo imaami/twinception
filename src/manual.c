@@ -13,6 +13,7 @@
 #include "buf.h"
 #include "child.h"
 #include "cstr_view.h"
+#include "flag.h"
 #include "hist.h"
 #include "htab.h"
 #include "jb.h"
@@ -113,8 +114,9 @@ struct manual_loop {
 
 /* The state of the scan of a page for the part under a heading, as bits. */
 enum manual_scan : uint32_t {
-	SCAN_OPEN = 1u << 0,  /* the lines that follow belong to the part */
-	SCAN_TAGS = 1u << 1,  /* a line as deep continues the part, as -Wformat=n after -Wformat */
+	SCAN_OPEN = FLAG_OWN(0),  /* the lines that follow belong to the part */
+	SCAN_TAGS = FLAG_OWN(1),  /* a line as deep continues the part, as
+	                             -Wformat=n after -Wformat */
 };
 
 /* A man call: the page it gives, and for a call with a heading, the scan
@@ -130,7 +132,7 @@ struct manual_call {
 	                                 ends, its line feed included */
 	uint32_t            depth;    /* the indentation of its first line, or
 	                                 UINT32_MAX while there is no part */
-	uint32_t            scan;     /* enum manual_scan */
+	struct flag32       scan;     /* enum manual_scan */
 	UTIL_TEXT(MANUAL_HEADS) heads;  /* " A, B,": the headings */
 };
 
@@ -474,7 +476,7 @@ static void
 manual_fetch_rendered (struct child *c)
 {
 	struct manual_fetch *f = c->owner;
-	size_t const note = c->end.flags & CHILD_CUT ? manual_cut.len : 0;
+	size_t const note = flag_any(c->end.flags, CHILD_CUT) ? manual_cut.len : 0;
 	struct tool_scratch *scratch = f->ml->scratch;
 	struct cstr_view const why = note ? cstr_view(nullptr)
 	                             : child_end_why(&c->end, "man", MANUAL_SECONDS * NS, c->max,
@@ -627,7 +629,7 @@ manual_fetch_found (struct child *c)
 	 * passed to manual_fetch_fail() before the next one is written. */
 	struct tool_scratch *scratch = f->ml->scratch;
 	char *const text = scratch->text;
-	struct cstr_view const why = c->end.flags & CHILD_CUT ? cstr_view(nullptr)
+	struct cstr_view const why = flag_any(c->end.flags, CHILD_CUT) ? cstr_view(nullptr)
 	                             : child_end_why(&c->end, "man", MANUAL_SECONDS * NS, c->max,
 	                                             text, sizeof scratch->text);
 	if (why.data) {
@@ -791,15 +793,15 @@ manual_call_line (struct manual_call *call,
 		++depth;
 	struct cstr_view const rest = cstr_view_slice(line, depth, SIZE_MAX);
 	if (!rest.len) {
-		call->scan &= ~SCAN_TAGS;
+		flag_clear(&call->scan, SCAN_TAGS);
 		return false;
 	}
 	if (depth > call->depth)
-		call->scan &= ~SCAN_TAGS;
-	else if (depth < call->depth || !(call->scan & SCAN_TAGS))
-		call->scan = 0;
+		flag_clear(&call->scan, SCAN_TAGS);
+	else if (depth < call->depth || !flag_any(call->scan, SCAN_TAGS))
+		call->scan = flag32(0);
 	size_t const end = at + line.len + (at + line.len < text.len);
-	if (call->scan & SCAN_OPEN) {
+	if (flag_any(call->scan, SCAN_OPEN)) {
 		call->to = end;
 		return false;
 	}
@@ -808,7 +810,8 @@ manual_call_line (struct manual_call *call,
 		call->from = at;
 		call->to = end;
 		call->depth = (uint32_t)depth;
-		call->scan = SCAN_OPEN | (memmem(rest.data, rest.len, "  ", 2) ? 0 : SCAN_TAGS);
+		call->scan = flag32(SCAN_OPEN |
+		                    (memmem(rest.data, rest.len, "  ", 2) ? 0 : SCAN_TAGS));
 		return false;
 	}
 	if (depth <= HEAD_INDENT && rest.len <= MANUAL_HEADING &&

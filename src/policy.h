@@ -51,6 +51,7 @@
 #include <stdint.h>
 
 #include "cstr_view.h"
+#include "flag.h"
 #include "tool.h"
 
 struct json_object;
@@ -133,12 +134,13 @@ struct policy_peer {
 
 /** The bits of the member flags of struct policy_grant. */
 enum policy_flag : uint32_t {
-	POLICY_METRICS  = 1u << 0,  /**< the client may read the metrics */
-	POLICY_AGENT    = 1u << 1,  /**< the identity of the client is an agent:
-	                                 its member "agent" is true */
-	POLICY_OPERATOR = 1u << 2,  /**< the client sent ASKAI_TOKEN under
-	                                 askai's own policy, which proves the
-	                                 user who runs askai */
+	POLICY_METRICS  = FLAG_OWN(0),  /**< the client may read the metrics */
+	POLICY_AGENT    = FLAG_OWN(1),  /**< the identity of the client is an
+	                                     agent: its member "agent" is
+	                                     true */
+	POLICY_OPERATOR = FLAG_OWN(2),  /**< the client sent ASKAI_TOKEN under
+	                                     askai's own policy, which proves
+	                                     the user who runs askai */
 };
 
 /** What a client may see and do, and whose share of the upstream its calls
@@ -162,7 +164,7 @@ struct policy_grant {
 	                                  anonymous client over TCP. Bit 63 is
 	                                  never set, and bit 62 is set for an
 	                                  identity. */
-	uint64_t         flags;      /**< enum policy_flag, widened over the
+	struct flag64    flags;      /**< enum policy_flag, widened over the
 	                                  padding */
 };
 

@@ -150,10 +150,10 @@ struct evidence {
 	struct finding_id     from;     /**< the ID of the item that the item
 	                                     cites again, such as cuh#2/1, or no
 	                                     ID */
-	uint16_t              flags;    /**< FLAG_FAILED of src/flag.h if the
-	                                     call failed, and no other bit. The
-	                                     member is 16 bits wide so that the
-	                                     struct ends without padding. */
+	struct flag16         flags;    /**< how the call ended: FLAG_HOW of
+	                                                         src/flag.h, and no other range.
+	                                                         The member is 16 bits wide so that
+	                                                         the struct ends without padding. */
 	enum evidence_kind    kind;
 	struct hexid          ask;      /**< the ask call of the call, or no id
 	                                     for a job resumed from a journal

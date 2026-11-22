@@ -327,7 +327,7 @@ seen_keep (struct seen              **p_seen,
 		*request = buf();
 	}
 	c->stamp = r->stamp;
-	c->stamp.flags = (r->stamp.flags & FLAG_FAILED) | (large ? SEEN_TOO_LARGE : 0);
+	c->stamp.flags = flag16(flag_how(r->stamp.flags) | (large ? SEEN_TOO_LARGE : 0));
 	c->skip = (uint32_t)(r->at + r->skip);
 	c->lines = whole;
 	seen->bytes += bytes;
@@ -623,7 +623,7 @@ seen_notice (struct seen const *seen,
 	uint32_t newest = 0;
 	for (size_t i = 0; i < seen->n; ++i) {
 		struct seen_stamp const *stamp = &seen->calls[seen_call_place(seen, i)].stamp;
-		if (stamp->flags & SEEN_TOO_LARGE)
+		if (flag_any(stamp->flags, SEEN_TOO_LARGE))
 			continue;
 		if (!oldest)
 			oldest = stamp->number;

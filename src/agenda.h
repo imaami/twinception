@@ -36,21 +36,19 @@ extern struct cstr_view const agenda_no_result[LEDGER_STATUSES];
 
 /** Returns the status of a job of the turns as an enum ledger_status,
  *  the type of the status of a job of a client in the ledger. @p flags is
- *  the flag word of the slot of the job in src/mcp.c. Of the shared bits
- *  of src/flag.h, the word contains none while the job runs, and FLAG_DONE
- *  after the job has ended, with FLAG_FAILED for a job that failed or
- *  FLAG_CANCEL for a job that a call cancelled.
+ *  the flag word of the slot of the job in src/mcp.c. The range FLAG_HOW
+ *  of the word is 0 while the job runs, and after that it says how the
+ *  job ended. The values of FLAG_HOW are the values of enum ledger_status.
  */
-static inline enum ledger_status
-agenda_job_status (uint32_t flags)
+static const_inline enum ledger_status
+agenda_job_status (struct flag16 flags)
 {
-	switch (flags & (FLAG_DONE | FLAG_FAILED | FLAG_CANCEL)) {
-	case FLAG_DONE:               return LEDGER_COMPLETED;
-	case FLAG_DONE | FLAG_FAILED: return LEDGER_FAILED;
-	case FLAG_DONE | FLAG_CANCEL: return LEDGER_CANCELLED;
-	default:                      return LEDGER_WORKING;
-	}
+	return (enum ledger_status)flag_how(flags);
 }
+
+static_assert(LEDGER_WORKING == 0 && (int)LEDGER_COMPLETED == FLAG_COMPLETED &&
+              (int)LEDGER_FAILED == FLAG_FAILED && (int)LEDGER_CANCELLED == FLAG_CANCELLED,
+              "FLAG_HOW has the values of enum ledger_status");
 
 /** Appends the notice that the timer @p t fired, with its note, to @p d.
  *  Returns 0, or ENOMEM.

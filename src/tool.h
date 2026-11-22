@@ -13,7 +13,6 @@
 #include <stdint.h>
 
 #include "compat.h"
-#include "flag.h"
 
 struct json_object;
 struct mcp_slot;
@@ -72,22 +71,16 @@ enum tool_flag : uint64_t {
 #define TOOL_OFFSET_ABOUT "The byte of the output to start from. The default is 0."
 
 /** The flags of the functions of src/mcp.h that write the output of a
- *  call or end the call. TOOL_FAILED is the shared bit of a failure
- *  (src/flag.h), and TOOL_MORE is a bit of this word only.
+ *  call or end the call. The two values are part of the plugin ABI, so
+ *  the word is an integer and not a flag word of src/flag.h.
  */
 enum tool_out : uint32_t {
-	TOOL_FAILED = FLAG_FAILED,  /**< the call failed. mcp_slot_tell(),
-	                                 mcp_slot_tellf() and mcp_slot_finish()
-	                                 read the flag. */
-	TOOL_MORE   = FLAG_OWN(0),  /**< the call writes more output after the
-	                                 text. mcp_slot_write() reads the
-	                                 flag. */
+	TOOL_FAILED = 1u << 0,  /**< the call failed. mcp_slot_tell(),
+	                             mcp_slot_tellf() and mcp_slot_finish()
+	                             read the flag. */
+	TOOL_MORE   = 1u << 1,  /**< the call writes more output after the
+	                             text. mcp_slot_write() reads the flag. */
 };
-
-/* The two values are part of the plugin ABI. A plugin that was built
- * before a change of flag.h still passes 1 and 2.
- */
-static_assert(TOOL_FAILED == 1 && TOOL_MORE == 2, "the values are part of the plugin ABI");
 
 /** The scratch text of a client loop. It is storage for one text of at
  *  most TOOL_TELL_MAX - 1 bytes and a NUL. There is one scratch for each

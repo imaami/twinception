@@ -12,6 +12,7 @@
 
 #include "compat.h"
 #include "cstr_view.h"
+#include "flag.h"
 #include "hist.h"
 #include "list.h"
 #include "loop_export.h"
@@ -94,10 +95,13 @@ struct loop_metrics {
 	_Atomic uint64_t work[LOOP_UNITS];  /**< the most of each unit a step did */
 };
 
-/** The bits of loop.flags: loop_exit() or loop_fini() was called, and
- *  steps run, whose loop_ready() calls queue steps that are not fresh.
- */
-enum { LOOP_EXIT = 1, LOOP_STEPPING = 2 };
+/** The bits of loop.flags. */
+enum {
+	LOOP_EXIT     = FLAG_END,     /**< loop_exit() or loop_fini() was
+	                                   called, so the loop is to end */
+	LOOP_STEPPING = FLAG_OWN(0),  /**< steps run, whose loop_ready() calls
+	                                   queue steps that are not fresh */
+};
 
 /**
  * An event loop. Only its own thread touches it, but for loop_post(), which
@@ -134,7 +138,7 @@ struct loop {
 	                                               unless that list is empty */
 	uint64_t               now;               /**< when the turn began, CLOCK_MONOTONIC ns */
 	uint64_t               work[LOOP_UNITS];  /**< done by the step under way */
-	uint64_t               flags;             /**< LOOP_* bits, widened over the
+	struct flag64          flags;             /**< LOOP_* bits, widened over the
 	                                               padding */
 	int                    epfd;
 	int                    error;

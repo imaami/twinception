@@ -11,6 +11,7 @@
 #include "autocomplete.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "flag.h"
 #include "util.h"
 
 enum { CLI_LIMIT = 16 * 1024 * 1024 };
@@ -45,13 +46,17 @@ typedef int cli_client_report_fn (struct cli_client *client,
 
 /** The flags of struct cli_client. */
 enum {
-	CLI_CLIENT_CATALOG_DIRTY    = 1u << 0,  /**< the tools may have changed */
-	CLI_CLIENT_NOTES_DIRTY      = 1u << 1,  /**< the note files may have changed */
-	CLI_CLIENT_IDENTITY_CHANGED = 1u << 2,  /**< AskAI changed its session,
-	                                             agent or ask tool */
-	CLI_CLIENT_OLDER            = 1u << 3,  /**< AskAI is older than askai-cli:
-	                                             its notes tool lists notebooks,
-	                                             not members */
+	CLI_CLIENT_CATALOG_DIRTY    = FLAG_OWN(0),  /**< the tools may have
+	                                                 changed */
+	CLI_CLIENT_NOTES_DIRTY      = FLAG_OWN(1),  /**< the note files may have
+	                                                 changed */
+	CLI_CLIENT_IDENTITY_CHANGED = FLAG_OWN(2),  /**< AskAI changed its
+	                                                 session, agent or ask
+	                                                 tool */
+	CLI_CLIENT_OLDER            = FLAG_OWN(3),  /**< AskAI is older than
+	                                                 askai-cli: its notes
+	                                                 tool lists notebooks,
+	                                                 not members */
 };
 
 /** Strings and the catalog are owned; network is borrowed. The client and
@@ -68,7 +73,7 @@ struct cli_client {
 	struct cli_network    *network;
 	cli_client_report_fn  *report;
 	int64_t                next_id;
-	uint64_t               flags;
+	struct flag64          flags;
 };
 
 extern struct cli_client

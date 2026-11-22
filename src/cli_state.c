@@ -22,6 +22,7 @@
 #include "cli_state.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "flag.h"
 #include "fs.h"
 #include "git_run.h"
 #include "hexid.h"
@@ -57,15 +58,16 @@ struct cli_state {
 	struct tally            turns_used;  /**< the turns and their bytes */
 	int                     directory;
 	int                     lock;
-	uint32_t                flags;
+	struct flag32           flags;
 	struct oid              identity_blob;     /**< empty until hashed */
 	struct oid              parent;
 };
 
 /** The flags of struct cli_state. */
 enum {
-	CLI_STATE_SNAPSHOT_PENDING = 1u << 0,  /**< the snapshot is not committed */
-	CLI_STATE_UNSAVED          = 1u << 1,  /**< the last save failed */
+	CLI_STATE_SNAPSHOT_PENDING = FLAG_OWN(0),  /**< the snapshot is not
+	                                                committed */
+	CLI_STATE_UNSAVED          = FLAG_OWN(1),  /**< the last save failed */
 };
 
 static char const cli_state_magic[] = "ASKAI-CLI-1\n";
@@ -296,7 +298,7 @@ cli_state_commit (struct cli_state *state)
 static int
 cli_state_save (struct cli_state *state)
 {
-	state->flags |= CLI_STATE_UNSAVED;
+	flag_set(&state->flags, CLI_STATE_UNSAVED);
 	int fd = -1;
 	int e = fs_private_open(state->directory, dstr_get(&state->temporary),
 	                        O_WRONLY | O_CREAT, &fd);
@@ -329,14 +331,14 @@ cli_state_save (struct cli_state *state)
 		             state->directory, dstr_get(&state->name)))
 			e = errno;
 		else
-			state->flags |= CLI_STATE_SNAPSHOT_PENDING;
+			flag_set(&state->flags, CLI_STATE_SNAPSHOT_PENDING);
 	}
 	if (!e && fsync(state->directory))
 		e = errno;
 	if (!e)
 		e = cli_state_commit(state);
 	if (!e) {
-		state->flags &= ~(CLI_STATE_SNAPSHOT_PENDING | CLI_STATE_UNSAVED);
+		flag_clear(&state->flags, CLI_STATE_SNAPSHOT_PENDING | CLI_STATE_UNSAVED);
 		if (unlinkat(state->directory, dstr_get(&state->name), 0))
 			e = errno;
 	}
@@ -673,7 +675,7 @@ cli_state_destroy (struct cli_state **pstate)
 	struct cli_state *state = *pstate;
 
 	if (state->directory >= 0) {
-		if (!(state->flags & CLI_STATE_SNAPSHOT_PENDING) && dstr_len(&state->name))
+		if (!flag_any(state->flags, CLI_STATE_SNAPSHOT_PENDING) && dstr_len(&state->name))
 			(void)unlinkat(state->directory, dstr_get(&state->name), 0);
 		if (dstr_len(&state->temporary))
 			(void)unlinkat(state->directory, dstr_get(&state->temporary), 0);
@@ -710,8 +712,8 @@ cli_state_destroy (struct cli_state **pstate)
 struct cstr_view
 cli_state_recovery_file (struct cli_state const *state)
 {
-	return state && (state->flags & CLI_STATE_SNAPSHOT_PENDING) ? cstr_view_dstr(&state->name)
-	                                                            : cstr_view(nullptr);
+	return state && flag_any(state->flags, CLI_STATE_SNAPSHOT_PENDING) ? cstr_view_dstr(&state->name)
+	                                                                   : cstr_view(nullptr);
 }
 
 size_t
@@ -757,7 +759,7 @@ cli_state_add_input (struct cli_state *state,
 		int e = cli_state_push_input(state, text);
 		if (e)
 			return e;
-	} else if (!(state->flags & CLI_STATE_UNSAVED)) {
+	} else if (!flag_any(state->flags, CLI_STATE_UNSAVED)) {
 		return 0;
 	}
 	return cli_state_save(state);

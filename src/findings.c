@@ -15,6 +15,7 @@
 #include "finding.h"
 #include "finding_id.h"
 #include "findings.h"
+#include "flag.h"
 #include "jb.h"
 #include "log.h"
 #include "loop.h"
@@ -111,14 +112,15 @@ enum { STAGES_FAILED = 1U << STAGE_REFS | 1U << STAGE_COMMIT | 1U << STAGE_CALLS
 enum { FINDINGS_MATERIAL = TOOL_OUTPUT_MAX / 2 };
 
 /* The flags of a call. */
-enum findings_flag : uint8_t {
-	CALL_ABOUT = 1U << 0,  /* the finding of the about argument exists */
-	CALL_FOUND = 1U << 1,  /* the finding of id exists */
-	CALL_SAME  = 1U << 2,  /* the update does not change the state of the
-	                          finding */
-	CALL_CLAIM = 1U << 3,  /* the update corrects the claim */
-	CALL_CITED = 1U << 4,  /* the items that the evidence cites again are
-	                          in the archive of the commit */
+enum findings_flag : uint32_t {
+	CALL_ABOUT = FLAG_OWN(0),  /* the finding of the about argument
+	                              exists */
+	CALL_FOUND = FLAG_OWN(1),  /* the finding of id exists */
+	CALL_SAME  = FLAG_OWN(2),  /* the update does not change the state of
+	                              the finding */
+	CALL_CLAIM = FLAG_OWN(3),  /* the update corrects the claim */
+	CALL_CITED = FLAG_OWN(4),  /* the items that the evidence cites again
+	                              are in the archive of the commit */
 };
 
 /* A branch of findings: its tip and its author. The author is a copy,
@@ -156,10 +158,11 @@ struct findings_file {
 /* The flags of a reference to an item of a finding (struct findings_cite).
  * The flags are set only on the first reference to an item.
  */
-enum findings_cite_flag : uint8_t {
-	CITE_SHOW = 1U << 0,  /* the turns had not seen the item, which the
-	                         refusal prints */
-	CITE_READ = 1U << 1,  /* the call reads the archive files of the item */
+enum findings_cite_flag : uint16_t {
+	CITE_SHOW = FLAG_OWN(0),  /* the turns had not seen the item, which the
+	                             refusal prints */
+	CITE_READ = FLAG_OWN(1),  /* the call reads the archive files of the
+	                             item */
 };
 
 /* A reference of the evidence argument to an item of a finding, X#n/m or
@@ -177,7 +180,7 @@ struct findings_cite {
 	                                  cuh#2/1 */
 	struct oid          blobs[2];  /* the git IDs of the archive files of
 	                                  the item, or no name */
-	uint8_t             flags;     /* enum findings_cite_flag */
+	struct flag16       flags;     /* enum findings_cite_flag */
 	enum evidence_kind  kind;      /* the kind of the item.
 	                                  findings_cite_blobs() sets the member
 	                                  of the first reference to the item. */
@@ -274,7 +277,7 @@ struct findings_call {
 	uint16_t               tries;     /* commits that raced, at most
 	                                     STORE_TRIES, widened over the
 	                                     padding */
-	uint32_t               flags;     /* enum findings_flag, widened over
+	struct flag32          flags;     /* enum findings_flag, widened over
 	                                     the padding */
 };
 
@@ -515,7 +518,7 @@ findings_load (struct mcp_slot *slot)
 	call->done = 0;
 	call->batch = 0;
 	call->last = 0;
-	call->flags &= CALL_CITED;
+	call->flags = flag32(flag_get(call->flags, CALL_CITED));
 	struct buf in = buf();
 	findings_run(slot, STAGE_REFS, STORE_REFS, member_list, nullptr, &in);
 }
@@ -671,7 +674,7 @@ findings_got_check (struct mcp_slot *slot)
 	struct cstr_view line = {}, size = {};
 	struct oid id = {};
 	if (cstr_view_cut(&rest, '\n', &line) && store_kind(line, &id, &size) == STORE_KIND_BLOB)
-		call->flags |= CALL_ABOUT;
+		flag_set(&call->flags, CALL_ABOUT);
 	findings_next(slot);
 }
 
@@ -706,7 +709,7 @@ findings_got_files (struct mcp_slot *slot)
 		if (own && n > call->last)
 			call->last = n;
 		if (n == id)
-			call->flags |= CALL_FOUND;
+			flag_set(&call->flags, CALL_FOUND);
 		if (!every && n != only)
 			continue;
 		want.bytes = file.bytes;
@@ -830,8 +833,8 @@ findings_committed (struct mcp_slot *slot)
 			ok = dstr_printf(&call->out, "Added %s (%s).", id, state);
 		else
 			ok = dstr_printf(&call->out, "%s is %s %s.", id,
-			                 call->flags & CALL_SAME ? "still" : "now", state);
-		if (ok && call->flags & CALL_CLAIM)
+			                 flag_any(call->flags, CALL_SAME) ? "still" : "now", state);
+		if (ok && flag_any(call->flags, CALL_CLAIM))
 			ok = dstr_cat(&call->out, " The claim changed.");
 		if (ok)
 			ok = findings_cited(call, id);
@@ -842,7 +845,7 @@ findings_committed (struct mcp_slot *slot)
 		return;
 	}
 	struct span const out = buf_peek(&c->out);
-	if (!(c->end.flags & CHILD_LATE) && store_raced(out)) {
+	if (!flag_any(c->end.flags, CHILD_LATE) && store_raced(out)) {
 		int64_t const age = store_stale(member_registry_store(findings_registry(slot)),
 		                                session->refs[MEMBER_BRANCH_FINDINGS], "findings");
 		if (age) {
@@ -860,7 +863,7 @@ findings_committed (struct mcp_slot *slot)
 	}
 	struct cstr_view const cause = store_cause(out);
 	LOG(LOG_WARN, "findings: git could not record %s: %.*s", id, (int)cause.len, cause.data);
-	if (c->end.flags & CHILD_LATE)
+	if (flag_any(c->end.flags, CHILD_LATE))
 		mcp_slot_tell(slot, CSTR_VIEW("Could not record the finding. The write timed out."),
 		              TOOL_FAILED);
 	else
@@ -883,7 +886,7 @@ findings_subject (struct findings_call const *call,
 	char const *was = finding_state_names[before].data;
 	if (call->action == FINDINGS_ADD)
 		return util_format_view(message, STORE_MESSAGE, "Add %s (%s)", id, after);
-	switch (call->flags & (CALL_SAME | CALL_CLAIM)) {
+	switch (flag_get(call->flags, CALL_SAME | CALL_CLAIM)) {
 	case CALL_SAME:
 		return util_format_view(message, STORE_MESSAGE, "Update %s (%s)", id, after);
 	case CALL_SAME | CALL_CLAIM:
@@ -916,8 +919,8 @@ findings_commit (struct mcp_slot      *slot,
 	if (call->action == FINDINGS_UPDATE) {
 		if (cstr_view_equal(claim, cstr_view_dstr(&f->claim)))
 			claim = cstr_view(nullptr);
-		call->flags |= (before == call->change.state ? CALL_SAME : 0) |
-		               (claim.len ? CALL_CLAIM : 0);
+		flag_set(&call->flags, (before == call->change.state ? CALL_SAME : 0) |
+		                       (claim.len ? CALL_CLAIM : 0));
 	}
 	/* The items of the change are numbered after the items of f. */
 	struct finding_change *c = &call->change;
@@ -1349,11 +1352,11 @@ findings_act (struct mcp_slot *slot)
 		return;
 	case FINDINGS_SHOW:
 	case FINDINGS_UPDATE:
-		if (!(call->flags & CALL_FOUND))
+		if (!flag_any(call->flags, CALL_FOUND))
 			missing = &call->id;
 		break;
 	case FINDINGS_ADD:
-		if (*call->about.author && !(call->flags & CALL_ABOUT))
+		if (*call->about.author && !flag_any(call->flags, CALL_ABOUT))
 			missing = &call->about;
 		break;
 	}
@@ -1364,7 +1367,7 @@ findings_act (struct mcp_slot *slot)
 	/* The items that the evidence cites again are read after the checks
 	 * above, so that the refusal of an item that the turns had not seen
 	 * comes after the refusal of a finding that does not exist. */
-	if (call->cites.n && !(call->flags & CALL_CITED)) {
+	if (call->cites.n && !flag_any(call->flags, CALL_CITED)) {
 		findings_cite_records(slot);
 		return;
 	}
@@ -1427,7 +1430,7 @@ findings_unseen_head (struct findings_call *call,
 	uint64_t mask = 0;
 	for (size_t i = 0; i < call->cites.n; ++i) {
 		struct findings_cite const *cite = &call->cites.items[i];
-		if (!(cite->flags & CITE_SHOW))
+		if (!flag_any(cite->flags, CITE_SHOW))
 			continue;
 		views[i] = finding_id_put(&cite->ref.id, texts[i]);
 		mask |= UINT64_C(1) << i;
@@ -1490,7 +1493,7 @@ findings_unseen (struct mcp_slot                *slot,
 	for (size_t i = 0; !e && i < call->cites.n; ++i) {
 		struct findings_cite const *cite = &call->cites.items[i];
 		at[i] = end;
-		if (!(cite->flags & CITE_SHOW))
+		if (!flag_any(cite->flags, CITE_SHOW))
 			continue;
 		e = evidence_parse_text(&item, cstr_view_dstr(&cite->record));
 		if (!e)
@@ -1531,7 +1534,7 @@ findings_cite_end (struct mcp_slot                *slot,
 {
 	struct findings_call *call = *mcp_slot_own(slot);
 	for (size_t i = 0; i < call->cites.n; ++i)
-		if (call->cites.items[i].flags & CITE_SHOW) {
+		if (flag_any(call->cites.items[i].flags, CITE_SHOW)) {
 			findings_unseen(slot, material);
 			return;
 		}
@@ -1562,7 +1565,7 @@ findings_cite_end (struct mcp_slot                *slot,
 		return;
 	}
 	call->archive = buf_peek(&call->files).len;
-	call->flags |= CALL_CITED;
+	flag_set(&call->flags, CALL_CITED);
 	findings_act(slot);
 }
 
@@ -1578,7 +1581,7 @@ findings_got_blobs (struct mcp_slot *slot)
 	struct evidence_material material[EVIDENCE_REFS] = {};
 	for (size_t i = 0; i < call->cites.n; ++i) {
 		struct findings_cite *cite = &call->cites.items[i];
-		if (!(cite->flags & CITE_READ))
+		if (!flag_any(cite->flags, CITE_READ))
 			continue;
 		/* The archive files of an item are the arguments, then the
 		 * material. */
@@ -1638,9 +1641,9 @@ findings_cite_blobs (struct mcp_slot *slot)
 		cite->kind = item.kind;
 		bool const asked = item.kind == EVIDENCE_CALL;
 		bool const stored = findings_stored(&item, cite->blobs);
-		if (!(cite->flags & CITE_READ) && stored)
+		if (!flag_any(cite->flags, CITE_READ) && stored)
 			continue;
-		cite->flags |= CITE_READ;
+		flag_set(&cite->flags, CITE_READ);
 		if (!findings_fits(&bytes, &item)) {
 			evidence_fini(&item);
 			buf_fini(&in);
@@ -1649,7 +1652,7 @@ findings_cite_blobs (struct mcp_slot *slot)
 			              TOOL_FAILED);
 			return;
 		}
-		if (cite->flags & CITE_SHOW)
+		if (flag_any(cite->flags, CITE_SHOW))
 			shown += (asked ? item.request.bytes : 0) + item.result.bytes;
 		/* The ring stores the git IDs of an item that a result showed.
 		 * For the other items, the ref of the branch of the author is made
@@ -1810,11 +1813,11 @@ findings_cite_add (struct mcp_slot           *slot,
 	size_t first = 0;
 	while (first < n && !finding_id_equal(&call->cites.items[first].ref.id, &ref->id))
 		++first;
-	uint8_t const lines = ref->form == EVIDENCE_REF_ITEM_LINES ? CITE_READ : 0;
+	uint16_t const lines = ref->form == EVIDENCE_REF_ITEM_LINES ? CITE_READ : 0;
 	struct findings_cite *cite = &call->cites.items[n];
 	*cite = findings_cite((uint32_t)index, (uint32_t)first, *ref);
 	if (first < n) {
-		call->cites.items[first].flags |= lines;
+		flag_set(&call->cites.items[first].flags, lines);
 		++call->cites.n;
 		return 0;
 	}
@@ -1827,7 +1830,7 @@ findings_cite_add (struct mcp_slot           *slot,
 		return util_refuse(why, len, "askai showed you %s in this turn. Cite %s for verified or "
 		                   "disproved in a later turn.", id, id);
 	}
-	cite->flags = strict && !turn ? CITE_SHOW | CITE_READ | lines : lines;
+	cite->flags = flag16(strict && !turn ? CITE_SHOW | CITE_READ | lines : lines);
 	if (s) {
 		if (cstr_view_store(cstr_view_dstr(&s->record), &cite->record)) {
 			dstr_cleanup(&cite->record);

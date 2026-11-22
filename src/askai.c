@@ -22,6 +22,7 @@
 #include "chatgpt.h"
 #include "child.h"
 #include "config.h"
+#include "flag.h"
 #include "git.h"
 #include "home.h"
 #include "http.h"
@@ -132,13 +133,16 @@ struct askai_reload {
 	struct blocker_job job;
 	struct config      cfg;     /* as the blocker read it */
 	int                status;  /* config_reload()'s */
-	uint32_t           flags;   /* RELOAD_BUSY, RELOAD_AGAIN */
+	struct flag32      flags;   /* RELOAD_BUSY, RELOAD_AGAIN */
 };
 
-/* Whether a reload is under way, and whether a SIGHUP came meanwhile. */
+/* The flags of the reload. A reload is under way while the range FLAG_WHEN
+ * is RELOAD_BUSY. RELOAD_AGAIN says that a SIGHUP came meanwhile, so one
+ * more reload is to start after the reload under way.
+ */
 enum {
-	RELOAD_BUSY  = 1u << 0,
-	RELOAD_AGAIN = 1u << 1,
+	RELOAD_BUSY  = FLAG_DURING,
+	RELOAD_AGAIN = FLAG_START,
 };
 
 /* What runs on home: the jobs (src/home.h), and the door, which accepts the
@@ -297,7 +301,7 @@ askai_walk_done (struct loop *loop,
                  struct msg  *msg)
 {
 	(void)msg;
-	if (loop->flags & LOOP_EXIT)
+	if (flag_any(loop->flags, LOOP_EXIT))
 		return;
 	walker.keep->trim_ns += walker.job.error ? 0 : walker.ns;
 	askai_keep_trimmed(walker.keep);
@@ -505,13 +509,13 @@ askai_home_reload (void        *ctx,
 {
 	struct askai_home *app = ctx;
 	struct askai_reload *r = &app->reload;
-	if (r->flags & RELOAD_BUSY) {
-		r->flags |= RELOAD_AGAIN;
+	if (flag_when(r->flags) == RELOAD_BUSY) {
+		flag_set(&r->flags, RELOAD_AGAIN);
 		return;
 	}
 	r->job = blocker_job(askai_reload_done, askai_reload_work, loop);
-	r->flags = blocker_submit(app->keep.blockers, &r->job) ? 0 : RELOAD_BUSY;
-	if (!r->flags)
+	r->flags = flag32(blocker_submit(app->keep.blockers, &r->job) ? 0 : RELOAD_BUSY);
+	if (flag_when(r->flags) != RELOAD_BUSY)
 		LOG(LOG_WARN, "configuration not reloaded: the blockers are busy");
 }
 
@@ -542,7 +546,7 @@ askai_reload_apply (struct askai_home         *app,
 		cert = " and TLS certificate";
 	}
 	LOG(LOG_INFO, "configuration reloaded: policy%s", cert);
-	if (r->cfg.flags & CFG_RESTART)
+	if (flag_any(r->cfg.flags, CFG_RESTART))
 		LOG(LOG_WARN, "warning: other changed options need a restart");
 	config_log_policy(&r->cfg);
 }
@@ -556,15 +560,15 @@ askai_reload_done (struct loop *loop,
 {
 	struct askai_reload *r = container_of(msg, struct askai_reload, job.done);
 	struct askai_home *app = container_of(r, struct askai_home, reload);
-	uint32_t again = r->flags & RELOAD_AGAIN;
-	r->flags = 0;
+	bool again = flag_any(r->flags, RELOAD_AGAIN);
+	r->flags = flag32(0);
 	/* Cancelled, as the blockers stop, the work was not done. */
 	if (r->job.error)
 		return;
-	if (!(loop->flags & LOOP_EXIT))
+	if (!flag_any(loop->flags, LOOP_EXIT))
 		askai_reload_apply(app, r);
 	else
-		again = 0;
+		again = false;
 	config_fini(&r->cfg);
 	if (again)
 		askai_home_reload(app, loop);
@@ -690,13 +694,13 @@ askai_shared_make (struct askai_shared *s,
 	if (cfg->n_gits &&
 	    !(s->git = git_create(cfg->gits, cfg->n_gits, cfg->git_timeout, &e)))
 		return e;
-	if (cfg->flags & CFG_TEST_TASK && !(s->tasks = task_pool_create(n, &e)))
+	if (flag_any(cfg->flags, CFG_TEST_TASK) && !(s->tasks = task_pool_create(n, &e)))
 		return e;
 	s->clients = calloc(n, sizeof *s->clients);
 	s->loops = calloc(n + 1, sizeof *s->loops);
 	if (!s->clients || !s->loops)
 		return ENOMEM;
-	if (cfg->flags & CFG_MAN && !(s->manual = manual_create(cfg->man_recheck, &e)))
+	if (flag_any(cfg->flags, CFG_MAN) && !(s->manual = manual_create(cfg->man_recheck, &e)))
 		return e;
 	if (!(s->ledger = ledger_create(&e)) || !(s->roster = roster_create(&e)) ||
 	    !(s->web = web_create(&e)))
@@ -902,7 +906,7 @@ askai_run (struct askai_shared *s,
 		.relieve = askai_keep_relieve,
 		.stop = askai_client_stop
 	);
-	log_threshold = cfg->flags & CFG_VERBOSE ? LOG_VERBOSE : LOG_INFO;
+	log_threshold = flag_any(cfg->flags, CFG_VERBOSE) ? LOG_VERBOSE : LOG_INFO;
 	int status = brainstem_run(&bcfg);
 	if (s->tasks)
 		askai_tasks_report(s->tasks, n);
@@ -946,7 +950,7 @@ main (int   argc,
 	}
 	int status;
 	struct config cfg = config(argc, argv, &status);
-	if (status < 0 && cfg.flags & CFG_CHATGPT_LOGIN) {
+	if (status < 0 && flag_any(cfg.flags, CFG_CHATGPT_LOGIN)) {
 		char why[512] = {};
 		int e = chatgpt_login(cfg.ep.chatgpt_auth, why, sizeof why);
 		if (e)
@@ -954,7 +958,7 @@ main (int   argc,
 		else
 			fprintf(stderr, "ChatGPT sign-in saved to %s\n", cfg.ep.chatgpt_auth);
 		status = !!e;
-	} else if (status < 0 && cfg.flags & CFG_AUTH_LOGIN) {
+	} else if (status < 0 && flag_any(cfg.flags, CFG_AUTH_LOGIN)) {
 		int e = bearer_login(cfg.ep.auth_file, cfg.ep.auth_command);
 		if (e)
 			fprintf(stderr, "--auth-command: %s\n", bearer_why(e));

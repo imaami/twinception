@@ -406,7 +406,7 @@ chatgpt_browser_wait (struct chatgpt_browser *browser,
 	browser->deadline = loop_clock() + CHATGPT_WAIT * NS;
 	httpd_home_open(browser->home);
 	int e = 0;
-	while (!(browser->loop.flags & LOOP_EXIT) && loop_clock() < browser->deadline)
+	while (!flag_any(browser->loop.flags, LOOP_EXIT) && loop_clock() < browser->deadline)
 		if ((e = loop_turn(&browser->loop, browser->deadline)))
 			break;
 	if (!e)

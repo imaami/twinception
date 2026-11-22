@@ -684,7 +684,7 @@ git_pin_dir (struct git_pin const *pin,
 	} else {
 		*dir = pin->git->dirs[git_view_has_head(view)];
 		dir->path = git_view_directory(view);
-		dir->flags = GIT_RUN_DOT;
+		dir->flags = flag64(GIT_RUN_DOT);
 	}
 	dir->opts = pin->repo->opts;
 }
@@ -753,7 +753,7 @@ git_pin_spawn (struct git_pin           *pin,
 		.max = TOOL_TEXT_MAX,
 		.deadline = pin->deadline,
 		.grace = GIT_GRACE,
-		.flags = flags
+		.flags = { flags }
 	);
 	int e = git_run_init(&cmd, &dir, argv, &how);
 	if (!e)
@@ -808,7 +808,7 @@ git_pin_step (struct git_pin   *pin,
 			break;
 		}
 	}
-	bool const late = c->end.flags & CHILD_LATE;
+	bool const late = flag_any(c->end.flags, CHILD_LATE);
 	child_destroy(&pin->child);
 	if (!e)
 		return ++pin->phase == GIT_PIN_DONE ? 0 : git_pin_spawn(pin, slot, nullptr, 0);
@@ -1285,7 +1285,7 @@ git_ended (struct mcp_slot *slot,
 	                                      sizeof buf);
 	int const status = child_status(c);
 	bool failed = true;
-	if ((c->end.flags & (CHILD_CUT | CHILD_LATE)) == CHILD_CUT) {
+	if (flag_get(c->end.flags, CHILD_CUT | CHILD_LATE) == CHILD_CUT) {
 		note = CSTR_VIEW("The output is cut at 4 MiB.");
 		failed = c->end.code == CLD_EXITED && c->end.status;
 	} else if (!status) {
@@ -1617,7 +1617,7 @@ git_scan (struct mcp_slot *slot,
 		/* git_drop() frees the call, and the read is a part of the call. */
 		size_t const line = read->line;
 		size_t const total = read->total;
-		bool const cut = c->end.flags & CHILD_CUT;
+		bool const cut = flag_any(c->end.flags, CHILD_CUT);
 		git_drop(slot);
 		if (!total)
 			mcp_slot_tellf(slot, TOOL_FAILED,
@@ -1649,7 +1649,7 @@ git_number (struct mcp_slot *slot,
 	struct git_read *read = &call->read;
 	struct child *c = call->pin.child;
 	struct span blob = buf_peek(&c->out);
-	bool const cut = c->end.flags & CHILD_CUT;
+	bool const cut = flag_any(c->end.flags, CHILD_CUT);
 	bool const newline = read->to && blob.ptr[read->to - 1] == '\n';
 	int e = 0;
 	if (!read->head) {
@@ -1789,7 +1789,7 @@ git_step (struct mcp_slot *slot)
 	 * the lines before the cut, as it does after a git that exited in
 	 * time. */
 	if (takes & LINES) {
-		uint32_t const end = c->end.flags & (CHILD_CUT | CHILD_LATE);
+		uint32_t const end = flag_get(c->end.flags, CHILD_CUT | CHILD_LATE);
 		if (end ? end != CHILD_CUT : c->end.code != CLD_EXITED)
 			git_ended(slot, call, takes);
 		else if (call->phase == GIT_RUN)

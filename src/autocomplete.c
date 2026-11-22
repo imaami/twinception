@@ -12,6 +12,7 @@
 #include "cli_command.h"
 #include "compat.h"
 #include "dstr.h"
+#include "flag.h"
 #include "jb.h"
 #include "notes_action.h"
 #include "util.h"
@@ -23,16 +24,16 @@ enum {
 };
 
 enum autocomplete_flag : uint64_t {
-	AUTOCOMPLETE_STRING       = UINT64_C(1) <<  0,
-	AUTOCOMPLETE_QUOTED       = UINT64_C(1) <<  1,
-	AUTOCOMPLETE_VALID        = UINT64_C(1) <<  2,
-	AUTOCOMPLETE_TYPED        = UINT64_C(1) <<  3,
-	AUTOCOMPLETE_UNION        = UINT64_C(1) <<  4,
-	AUTOCOMPLETE_CONSTANT     = UINT64_C(1) <<  5,
-	AUTOCOMPLETE_ENUMERATED   = UINT64_C(1) <<  6,
-	AUTOCOMPLETE_NAMES        = UINT64_C(1) <<  7,
+	AUTOCOMPLETE_STRING       = FLAG_OWN(0),
+	AUTOCOMPLETE_QUOTED       = FLAG_OWN(1),
+	AUTOCOMPLETE_VALID        = FLAG_OWN(2),
+	AUTOCOMPLETE_TYPED        = FLAG_OWN(3),
+	AUTOCOMPLETE_UNION        = FLAG_OWN(4),
+	AUTOCOMPLETE_CONSTANT     = FLAG_OWN(5),
+	AUTOCOMPLETE_ENUMERATED   = FLAG_OWN(6),
+	AUTOCOMPLETE_NAMES        = FLAG_OWN(7),
 	/* The flag of each JSON type is the flag of null shifted by the type. */
-	AUTOCOMPLETE_TYPE_NULL    = UINT64_C(1) <<  8,
+	AUTOCOMPLETE_TYPE_NULL    = FLAG_OWN(8),
 	AUTOCOMPLETE_TYPE_BOOLEAN = AUTOCOMPLETE_TYPE_NULL << json_type_boolean,
 	AUTOCOMPLETE_TYPE_NUMBER  = AUTOCOMPLETE_TYPE_NULL << json_type_double,
 	AUTOCOMPLETE_TYPE_INTEGER = AUTOCOMPLETE_TYPE_NULL << json_type_int,
@@ -42,15 +43,15 @@ enum autocomplete_flag : uint64_t {
 };
 
 struct autocomplete_candidate {
-	struct dstr value;
-	uint64_t    flags;
+	struct dstr   value;
+	struct flag64 flags;
 };
 
 struct autocomplete_property {
 	struct cstr_view               name;
 	struct autocomplete_candidate *values;
 	size_t                         count;
-	uint64_t                       flags;
+	struct flag64                  flags;
 };
 
 struct autocomplete_entry {
@@ -542,9 +543,9 @@ autocomplete_candidate_init (struct autocomplete_candidate *candidate,
 	*candidate = (struct autocomplete_candidate){.value = dstr(nullptr)};
 	struct cstr_view text = jb_view(value);
 	if (text.data) {
-		candidate->flags = AUTOCOMPLETE_STRING;
+		candidate->flags = flag64(AUTOCOMPLETE_STRING);
 		if ((flags & (AUTOCOMPLETE_UNION | AUTOCOMPLETE_STRING)) != AUTOCOMPLETE_STRING)
-			candidate->flags |= AUTOCOMPLETE_QUOTED;
+			flag_set(&candidate->flags, AUTOCOMPLETE_QUOTED);
 	} else {
 		text.data = json_object_to_json_string_length(value, JSON_C_TO_STRING_PLAIN, &text.len);
 		if (!text.data)
@@ -552,7 +553,7 @@ autocomplete_candidate_init (struct autocomplete_candidate *candidate,
 	}
 	if (text.len && !autocomplete_safe(text, false))
 		return 0;
-	candidate->flags |= AUTOCOMPLETE_VALID;
+	flag_set(&candidate->flags, AUTOCOMPLETE_VALID);
 	return cstr_view_store(text, &candidate->value);
 }
 
@@ -588,7 +589,7 @@ autocomplete_property_init (struct autocomplete_property *property,
 	if (schema && !enumeration && !(flags & AUTOCOMPLETE_CONSTANT) &&
 	    ((flags & (AUTOCOMPLETE_TYPED | AUTOCOMPLETE_TYPE_STRING)) != AUTOCOMPLETE_TYPED))
 		flags |= AUTOCOMPLETE_NAMES;
-	property->flags = flags;
+	property->flags = flag64(flags);
 	if (flags & AUTOCOMPLETE_CONSTANT)
 		count = 1;
 	if (!count)
@@ -1019,7 +1020,7 @@ autocomplete_values (struct autocomplete                *ac,
 {
 	if (!property)
 		return 0;
-	uint64_t flags = property->flags;
+	uint64_t flags = property->flags.bits;
 	struct cstr_view input = cstr_view_slice(line, current.equals + 1, cursor - current.equals - 1);
 	int error = autocomplete_unquote(&ac->decoded, input);
 	if (error)
@@ -1028,10 +1029,10 @@ autocomplete_values (struct autocomplete                *ac,
 	char mark = input.len && (input.data[0] == '\'' || input.data[0] == '"') ? input.data[0] : 0;
 	for (size_t i = 0; i < property->count; ++i) {
 		struct autocomplete_candidate const *candidate = &property->values[i];
-		if (!(candidate->flags & AUTOCOMPLETE_VALID))
+		if (!flag_any(candidate->flags, AUTOCOMPLETE_VALID))
 			continue;
 		error = autocomplete_value_match(ac, line, current, prefix, cstr_view_dstr(&candidate->value),
-		                                 candidate->flags, mark, AUTOCOMPLETE_VALUE);
+		                                 candidate->flags.bits, mark, AUTOCOMPLETE_VALUE);
 		if (error)
 			return error;
 	}
@@ -1423,7 +1424,7 @@ autocomplete_parse_pairs (struct autocomplete             *ac,
 		if (!property && closed)
 			return util_refuse(why, size, "Unknown tool argument: %.*s", (int)key.len, key.data);
 		/* Without a property, flags is 0, and every type is valid. */
-		uint64_t flags = property ? property->flags : 0;
+		uint64_t flags = property ? property->flags.bits : 0;
 		struct json_object *converted;
 		error = autocomplete_convert(ac, cstr_view_slice(line, token.equals + 1, token.end - token.equals - 1),
 		                             flags, &converted);

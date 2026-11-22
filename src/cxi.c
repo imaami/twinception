@@ -30,6 +30,7 @@
 #include "cxi_ast.h"
 #include "cxi_out.h"
 #include "dstr.h"
+#include "flag.h"
 #include "fs.h"
 #include "git_run.h"
 #include "graph.h"
@@ -517,8 +518,9 @@ cxi_declaration (struct cxi *x,
  * base and end are in bits.
  */
 enum cxi_layout_flag : uint32_t {
-	CXI_LAYOUT_UNION = 1U << 0,  /* the record is a union */
-	CXI_LAYOUT_ARM   = 1U << 1,  /* the record is in a member of a union */
+	CXI_LAYOUT_UNION = FLAG_OWN(0),  /* the record is a union */
+	CXI_LAYOUT_ARM   = FLAG_OWN(1),  /* the record is in a member of a
+	                                    union */
 };
 
 struct cxi_layout {
@@ -529,7 +531,7 @@ struct cxi_layout {
 	uint64_t        base;
 	uint64_t        end;
 	uint32_t        depth;
-	uint32_t        flags;  /* enum cxi_layout_flag */
+	struct flag32   flags;  /* enum cxi_layout_flag */
 };
 
 /* Writes the offset @p bits to the end of @p text as BYTES or BYTES+BITSb,
@@ -588,7 +590,7 @@ cxi_layout_padding (struct cxi_layout *l,
 	cxi_out_fmt(l->out, "%7s%7s%16s", cxi_offset(at, from), cxi_size(size, to - from), "");
 	cxi_layout_indent(l);
 	cxi_out_view(l->out, what);
-	if (!(l->flags & CXI_LAYOUT_ARM))
+	if (!flag_any(l->flags, CXI_LAYOUT_ARM))
 		l->padding += to - from;
 }
 
@@ -616,7 +618,7 @@ cxi_layout_field (CXCursor     c,
 	uint64_t const size = n > 0 ? (uint64_t)n : 0;
 	long long const align = clang_Type_getAlignOf(type);
 	uint64_t const at = l->base + (uint64_t)(offset > 0 ? offset : 0);
-	if (!(l->flags & CXI_LAYOUT_UNION))
+	if (!flag_any(l->flags, CXI_LAYOUT_UNION))
 		cxi_layout_padding(l, l->end, at, CSTR_VIEW("(padding)\n"));
 	CXCursor const decl = clang_getTypeDeclaration(clang_getCanonicalType(type));
 	enum CXCursorKind const k = decl.kind;
@@ -646,7 +648,7 @@ cxi_layout_field (CXCursor     c,
 	if (nested)
 		cxi_layout_record(l, clang_getCanonicalType(type), at, l->depth + 1);
 	uint64_t const end = at + size;
-	l->end = !(l->flags & CXI_LAYOUT_UNION) || end > l->end ? end : l->end;
+	l->end = !flag_any(l->flags, CXI_LAYOUT_UNION) || end > l->end ? end : l->end;
 	return CXVisit_Continue;
 }
 
@@ -661,9 +663,9 @@ cxi_layout_record (struct cxi_layout *l,
 	in.depth = depth;
 	/* A record in a union, or in a record of one, is in a member of a
 	 * union. */
-	in.flags = (l->flags ? CXI_LAYOUT_ARM : 0) |
+	in.flags = flag32((l->flags.bits ? CXI_LAYOUT_ARM : 0) |
 	           (clang_getTypeDeclaration(type).kind == CXCursor_UnionDecl
-	            ? CXI_LAYOUT_UNION : 0);
+	                   ? CXI_LAYOUT_UNION : 0));
 	clang_Type_visitFields(type, cxi_layout_field, &in);
 	long long const size = clang_Type_getSizeOf(type);
 	if (in.rows && size > 0)

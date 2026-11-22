@@ -10,6 +10,7 @@
 
 #include "ai.h"
 #include "dstr.h"
+#include "flag.h"
 #include "jb.h"
 #include "util.h"
 
@@ -385,20 +386,21 @@ ai_interactions_answer (struct json_object  *root,
  * name.
  */
 enum {
-	BODY_MODEL   = 1 << 0,  /* the model, first */
-	BODY_USAGE   = 1 << 1,  /* with tools, the usage in the stream */
-	BODY_STORE   = 1 << 2,  /* "store", false */
-	BODY_KEEP    = 1 << 3,  /* "store", true with native background
-	                           execution, which needs storage */
-	BODY_STREAM  = 1 << 4,  /* "stream", after --extra is merged, so that
-	                           the answer is always streamed */
-	BODY_PARTS   = 1 << 5,  /* the system prompt in an object with an
-	                           array of parts */
-	TOOL_TYPED   = 1 << 6,  /* a tool has "type": "function" */
-	TOOL_WRAPPED = 1 << 7,  /* a tool is the member function of an object
-	                           with "type": "function" */
-	TOOL_LOOSE   = 1 << 8,  /* a tool has "strict": false. Without it, the
-	                           API makes every argument a required one. */
+	BODY_MODEL   = FLAG_OWN(0),  /* the model, first */
+	BODY_USAGE   = FLAG_OWN(1),  /* with tools, the usage in the stream */
+	BODY_STORE   = FLAG_OWN(2),  /* "store", false */
+	BODY_KEEP    = FLAG_OWN(3),  /* "store", true with native background
+	                                execution, which needs storage */
+	BODY_STREAM  = FLAG_OWN(4),  /* "stream", after --extra is merged, so
+	                                that the answer is always streamed */
+	BODY_PARTS   = FLAG_OWN(5),  /* the system prompt in an object with an
+	                                array of parts */
+	TOOL_TYPED   = FLAG_OWN(6),  /* a tool has "type": "function" */
+	TOOL_WRAPPED = FLAG_OWN(7),  /* a tool is the member function of an
+	                                object with "type": "function" */
+	TOOL_LOOSE   = FLAG_OWN(8),  /* a tool has "strict": false. Without it,
+	                                the API makes every argument a required
+	                                one. */
 };
 
 #define B(s) CSTR_VIEW_INIT(s)
@@ -415,7 +417,7 @@ static struct ai_body {
 	                          struct dstr         *thought,
 	                          char const         **reason);
 	int32_t          max_default;
-	uint32_t         flags;
+	struct flag32    flags;
 } const ai_bodies[] = {
 	[AI_CHAT] = {
 		.format = {
@@ -446,7 +448,7 @@ static struct ai_body {
 		.limit  = "length",
 		.schema = "parameters",
 		.answer = ai_chat_answer,
-		.flags  = BODY_MODEL | BODY_USAGE | BODY_STREAM | TOOL_WRAPPED,
+		.flags = { BODY_MODEL | BODY_USAGE | BODY_STREAM | TOOL_WRAPPED },
 	},
 	/* Its turn is the replay's items, its calls among them, in the
 	 * input's list. */
@@ -467,7 +469,7 @@ static struct ai_body {
 		.limit  = "max_output_tokens",
 		.schema = "parameters",
 		.answer = ai_responses_answer,
-		.flags  = BODY_MODEL | BODY_STORE | BODY_STREAM | TOOL_TYPED | TOOL_LOOSE,
+		.flags = { BODY_MODEL | BODY_STORE | BODY_STREAM | TOOL_TYPED | TOOL_LOOSE },
 	},
 	/* Its turn's text and thinking blocks are in the replay; all its
 	 * results go in one message. */
@@ -493,7 +495,7 @@ static struct ai_body {
 			.prompt_end   = B("\"}"),
 			.end          = B("]}"),
 			.conversation = "messages",
-			.flags        = AI_ARGS_RAW,
+			.flags = { AI_ARGS_RAW },
 		},
 		.system      = "system",
 		.max         = "max_tokens",
@@ -501,7 +503,7 @@ static struct ai_body {
 		.limit       = "max_tokens",
 		.schema      = "input_schema",
 		.answer      = ai_messages_answer,
-		.flags       = BODY_MODEL | BODY_STREAM,
+		.flags = { BODY_MODEL | BODY_STREAM },
 	},
 	/* Its turn's parts are the replay's, its calls among them, with
 	 * their thought signatures. A file goes after the results, in
@@ -528,7 +530,7 @@ static struct ai_body {
 			.prompt_end   = B("\"}]}"),
 			.end          = B("]}"),
 			.conversation = "contents",
-			.flags        = AI_RESULT_NAMED,
+			.flags = { AI_RESULT_NAMED },
 		},
 		.system  = "systemInstruction",
 		.options = "generationConfig",
@@ -536,7 +538,7 @@ static struct ai_body {
 		.limit   = "MAX_TOKENS",
 		.schema  = "parametersJsonSchema",
 		.answer  = ai_generate_answer,
-		.flags   = BODY_PARTS,
+		.flags = { BODY_PARTS },
 	},
 	/* A turn is the replay's steps and the calls, in the input list,
 	 * a call with its signature. Each result is a step after them,
@@ -566,7 +568,7 @@ static struct ai_body {
 			.prompt_end   = B("\"}]}"),
 			.end          = B("]}"),
 			.conversation = "input",
-			.flags        = AI_ARGS_RAW | AI_RESULT_NAMED,
+			.flags = { AI_ARGS_RAW | AI_RESULT_NAMED },
 		},
 		.system  = "system_instruction",
 		.options = "generation_config",
@@ -574,7 +576,7 @@ static struct ai_body {
 		.limit   = "incomplete",
 		.schema  = "parameters",
 		.answer  = ai_interactions_answer,
-		.flags   = BODY_MODEL | BODY_STORE | BODY_KEEP | BODY_STREAM | TOOL_TYPED,
+		.flags = { BODY_MODEL | BODY_STORE | BODY_KEEP | BODY_STREAM | TOOL_TYPED },
 	},
 };
 #undef B
@@ -592,13 +594,13 @@ ai_request (struct ai_endpoint const *ep,
 	struct ai_body const *b = &ai_bodies[ep->api];
 	char const *conversation = b->format.conversation;
 	bool background = ai_background(ep);
-	if (b->flags & BODY_MODEL && ep->model &&
-	    jb_set(root, "model", json_object_new_string(ep->model)))
+	if (flag_any(b->flags, BODY_MODEL) && ep->model &&
+	             jb_set(root, "model", json_object_new_string(ep->model)))
 		goto fail;
 	/* Chat completions has the system prompt as a message in the
 	 * conversation. The other APIs have it in the member b->system. */
 	if (b->system) {
-		if (system && jb_set(root, b->system, b->flags & BODY_PARTS
+		if (system && jb_set(root, b->system, flag_any(b->flags, BODY_PARTS)
 		                                      ? ai_generate_content(nullptr, system)
 		                                      : json_object_get(system)))
 			goto fail;
@@ -606,16 +608,17 @@ ai_request (struct ai_endpoint const *ep,
 	}
 	if (jb_set(root, conversation, ai_conversation(ep->api, system, history, prompt)) ||
 	    (tools && (jb_set(root, "tools", ai_request_tools(ep, tools)) ||
-	               (b->flags & BODY_USAGE &&
+	               (flag_any(b->flags, BODY_USAGE) &&
 	                jb_set(root, "stream_options",
 	                       jb_object("include_usage", json_object_new_boolean(1),
 	                                 nullptr))))) ||
-	    (b->flags & BODY_STORE &&
-	     jb_set(root, "store", json_object_new_boolean(b->flags & BODY_KEEP && background))) ||
+	    (flag_any(b->flags, BODY_STORE) &&
+	              jb_set(root, "store",
+	                     json_object_new_boolean(flag_any(b->flags, BODY_KEEP) && background))) ||
 	    ai_request_common(ep, root, b->options, b->max,
 	                      ep->max_tokens > 0 ? ep->max_tokens : b->max_default) ||
 	    (background && jb_set(root, "background", json_object_new_boolean(1))) ||
-	    (b->flags & BODY_STREAM && jb_set(root, "stream", json_object_new_boolean(1))) ||
+	    (flag_any(b->flags, BODY_STREAM) && jb_set(root, "stream", json_object_new_boolean(1))) ||
 	    (ep->provider == AI_CHATGPT && ai_chatgpt_request(root)) ||
 	    ai_request_last(root, conversation))
 		goto fail;
@@ -654,7 +657,7 @@ ai_put_thought (struct ai_sink const *sink,
                 struct cstr_view      text,
                 struct ai_event      *out)
 {
-	out->flags |= text.len ? AI_EV_THOUGHT : 0;
+	flag_set(&out->flags, text.len ? AI_EV_THOUGHT : 0);
 	return text.data && sink->thought ? sink->thought(sink->user, text) : 0;
 }
 
@@ -851,7 +854,7 @@ ai_responses_item (struct ai_sink const *sink,
 	size_t kind = cstr_view_index(kinds, KINDS, jb_view(jb_get(item, "type")));
 	if (kind == KINDS)
 		return 0;
-	out->flags |= kind == REASONING ? AI_EV_THOUGHT_END : 0;
+	flag_set(&out->flags, kind == REASONING ? AI_EV_THOUGHT_END : 0);
 	int e = 0;
 	if (kind == CALL && sink->call) {
 		struct ai_call call = ai_call(
@@ -898,7 +901,7 @@ ai_responses_event (struct ai_sink const *sink,
 	case DONE:
 	case CUT: {
 		struct json_object *usage = jb_get(jb_get(ev, "response"), "usage");
-		out->flags |= AI_EV_END;
+		flag_set(&out->flags, AI_EV_END);
 		out->used = ai_used(jb_int(jb_get(usage, "input_tokens"), 0),
 		                    jb_int(jb_get(usage, "output_tokens"), 0));
 		return 0;
@@ -1061,7 +1064,7 @@ ai_messages_event (struct ai_sink const *sink,
 	case STOP:
 		if (reader->open != at + 1)
 			return 0;
-		out->flags |= reader->calls == at + 1 ? AI_EV_THOUGHT_END : 0;
+		flag_set(&out->flags, reader->calls == at + 1 ? AI_EV_THOUGHT_END : 0);
 		reader->calls = reader->open = 0;
 		return ai_replay(sink, CSTR_VIEW("\"}"));
 	case MESSAGE: {
@@ -1082,7 +1085,7 @@ ai_messages_event (struct ai_sink const *sink,
 		return 0;
 	}
 	case MESSAGE_STOP:
-		out->flags |= AI_EV_END;
+		flag_set(&out->flags, AI_EV_END);
 		return 0;
 	}
 	return 0;
@@ -1422,8 +1425,8 @@ ai_interactions_event (struct ai_sink const *sink,
 	case STOP:
 		if (reader->open != at + 1)
 			return 0;
-		out->flags |= (reader->state & INTERACTIONS_KIND) == INTERACTIONS_THOUGHT
-		              ? AI_EV_THOUGHT_END : 0;
+		flag_set(&out->flags, (reader->state & INTERACTIONS_KIND) == INTERACTIONS_THOUGHT
+		                      ? AI_EV_THOUGHT_END : 0);
 		return ai_interactions_close(sink, reader);
 	case DONE: {
 		/* The thinking is not sent back in the next request, so the tokens
@@ -1431,7 +1434,7 @@ ai_interactions_event (struct ai_sink const *sink,
 		 * out the thinking. If that sum is not known, the tokens used are
 		 * total_tokens, which include the thinking. */
 		struct json_object *usage = jb_get(jb_get(ev, "interaction"), "usage");
-		out->flags |= AI_EV_END;
+		flag_set(&out->flags, AI_EV_END);
 		out->used = ai_used(jb_int(jb_get(usage, "total_input_tokens"), 0),
 		                    jb_int(jb_get(usage, "total_output_tokens"), 0));
 		if (!out->used)
@@ -1500,15 +1503,15 @@ ai_event (enum ai_api            api,
 		/* interaction.created has a status too, so only the status in
 		 * interaction.completed is the stop reason. */
 		e = ai_interactions_event(sink, reader, jb_get(ev, "event_type"), ev, out);
-		reason = out->flags & AI_EV_END ? jb_get(jb_get(ev, "interaction"), "status")
-		                                : nullptr;
+		reason = flag_any(out->flags, AI_EV_END) ? jb_get(jb_get(ev, "interaction"), "status")
+		                                         : nullptr;
 		break;
 	case AI_NO_API:
 		break;
 	}
 	out->reason = jb_view(reason).data;
 	if (out->reason)
-		out->flags |= AI_EV_END | (ai_cut(api, out->reason) ? AI_EV_TRUNCATED : 0);
+		flag_set(&out->flags, AI_EV_END | (ai_cut(api, out->reason) ? AI_EV_TRUNCATED : 0));
 	return e;
 }
 
@@ -1528,13 +1531,13 @@ ai_tool (enum ai_api               api,
 		"description", json_object_get(jb_get(def, "description")),
 		b->schema, json_object_get(jb_get(def, "inputSchema")),
 		nullptr);
-	if (b->flags & TOOL_LOOSE)
+	if (flag_any(b->flags, TOOL_LOOSE))
 		tool = jb_set_or_free(tool, "strict", json_object_new_boolean(0));
-	return b->flags & TOOL_WRAPPED
+	return flag_any(b->flags, TOOL_WRAPPED)
 	       ? jb_object("type", json_object_new_string("function"), "function", tool, nullptr)
-	       : b->flags & TOOL_TYPED
-	       ? jb_set_or_free(tool, "type", json_object_new_string("function"))
-	       : tool;
+	                : flag_any(b->flags, TOOL_TYPED)
+	                ? jb_set_or_free(tool, "type", json_object_new_string("function"))
+	                : tool;
 }
 
 /* The data of the first event of the event stream @p body, parsed, if it

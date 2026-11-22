@@ -52,11 +52,11 @@ cli_signals_init (struct cli_signals *signals,
 	int e = pthread_sigmask(SIG_BLOCK, &mask, &signals->previous);
 	if (e)
 		return e;
-	signals->flags |= CLI_SIGNALS_MASKED;
+	flag_set(&signals->flags, CLI_SIGNALS_MASKED);
 	struct sigaction ignore = {.sa_handler = SIG_IGN};
 	if (sigemptyset(&ignore.sa_mask) || sigaction(SIGPIPE, &ignore, &signals->pipe))
 		return errno;
-	signals->flags |= CLI_SIGNALS_IGNORED;
+	flag_set(&signals->flags, CLI_SIGNALS_IGNORED);
 	int fd = signalfd(-1, &mask, SFD_CLOEXEC | SFD_NONBLOCK);
 	if (fd < 0)
 		return errno;
@@ -71,9 +71,9 @@ cli_signals_fini (struct cli_signals *signals)
 {
 	if (signals->loop)
 		loop_close(signals->loop, &signals->ref);
-	if (signals->flags & CLI_SIGNALS_IGNORED)
+	if (flag_any(signals->flags, CLI_SIGNALS_IGNORED))
 		(void)sigaction(SIGPIPE, &signals->pipe, nullptr);
-	if (signals->flags & CLI_SIGNALS_MASKED)
+	if (flag_any(signals->flags, CLI_SIGNALS_MASKED))
 		(void)pthread_sigmask(SIG_SETMASK, &signals->previous, nullptr);
-	signals->flags = 0;
+	signals->flags = flag64(0);
 }

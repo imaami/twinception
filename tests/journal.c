@@ -62,7 +62,7 @@ journal_test_thoughts (struct journal *j)
 	loop_fini(&events);
 	assert(journal_test_completed == 2 * (JOURNAL_FILES + 1) + 9);
 	assert(!journal_job_find(j, &id)->thought.error);
-	assert(!(journal_job_find(j, &id)->flags & JOB_TERMINAL));
+	assert(!flag_any(journal_job_find(j, &id)->flags, JOB_TERMINAL));
 	struct journal_item load = { .id = id };
 	assert(!journal_load_records(j, &load) && !load.record);
 }
@@ -127,7 +127,7 @@ journal_test_gap (struct journal *j)
 	r.type = JOURNAL_RESULT;
 	assert(!journal_checkpoint_write(j, &r));
 	assert(!journal_job_find(j, &r.id)->error &&
-	       journal_job_find(j, &r.id)->flags & JOB_TERMINAL);
+	       flag_any(journal_job_find(j, &r.id)->flags, JOB_TERMINAL));
 }
 
 static void
@@ -155,7 +155,7 @@ journal_test_legacy (struct journal *j)
 	journal_records_destroy(&load.record);
 	record.type = JOURNAL_META;
 	assert(!journal_checkpoint_write(j, &record));
-	assert(journal_job_find(j, &record.id)->flags & JOB_LEGACY);
+	assert(flag_any(journal_job_find(j, &record.id)->flags, JOB_LEGACY));
 	assert(!journal_load_records(j, &load));
 	unsigned count = 0;
 	for (struct journal_record *r = load.record; r; r = r->next) {
@@ -638,7 +638,7 @@ journal_test_argv (char const *repo)
 		int e = 0;
 		struct journal *j = journal_create(pin, "pin", why, sizeof why, &e);
 		assert(j && !e);
-		assert(!j->git.path && j->git.opts == git_options && j->git.flags == GIT_RUN_DOT);
+		assert(!j->git.path && j->git.opts == git_options && j->git.flags.bits == GIT_RUN_DOT);
 		assert(!strcmp(j->git.env[0], path) && !strcmp(j->git.env[1], "HOME=/nonexistent"));
 		struct loop events = loop();
 		assert(!loop_init(&events));
@@ -757,20 +757,20 @@ journal_test_child_run (void)
 	struct child_end end = child_end();
 	uint64_t ms;
 	assert(!journal_test_run("exit 0", 0, 0, 0, nullptr, &end, &ms));
-	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags);
+	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags.bits);
 	assert(journal_test_run("exit 3", 0, 0, 0, nullptr, &end, &ms) == EIO);
-	assert(end.code == CLD_EXITED && end.status == 3 && !end.flags);
+	assert(end.code == CLD_EXITED && end.status == 3 && !end.flags.bits);
 	assert(journal_test_run("kill -KILL $$", 0, 0, 0, nullptr, &end, &ms) == EIO);
-	assert(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags.bits);
 	assert(journal_test_run("exec sleep 5", 100, 0, 0, nullptr, &end, &ms) == ETIMEDOUT);
-	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags.bits == CHILD_LATE);
 	assert(ms >= 100 && ms < 2000);
 	assert(journal_test_run("exec sleep 5", 100, 3000, 0, nullptr, &end, &ms) == ETIMEDOUT);
-	assert(end.code == CLD_KILLED && end.status == SIGTERM && end.flags == CHILD_LATE);
+	assert(end.code == CLD_KILLED && end.status == SIGTERM && end.flags.bits == CHILD_LATE);
 	assert(ms >= 100 && ms < 2000);
 	assert(journal_test_run("trap '' TERM; exec sleep 5", 100, 300, 0, nullptr, &end, &ms) ==
 	       ETIMEDOUT);
-	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags.bits == CHILD_LATE);
 	assert(ms >= 400 && ms < 2500);
 	/* The signals of the deadline go to the process group of the child. A
 	 * process of the group that ignores SIGTERM, and that has the pipe as
@@ -795,7 +795,7 @@ journal_test_child_run (void)
 		fds.keep = ends[1];
 		assert(child_cmd_run(&group, fds, nullptr, &end) == ETIMEDOUT);
 		assert(end.code == CLD_KILLED && end.status == (i ? SIGKILL : SIGTERM) &&
-		       end.flags == CHILD_LATE);
+		       end.flags.bits == CHILD_LATE);
 		util_close(&ends[1]);
 		struct pollfd hup = { .fd = ends[0], .events = POLLIN };
 		assert(poll(&hup, 1, 5000) == 1 && hup.revents & POLLHUP);
@@ -811,12 +811,12 @@ journal_test_child_run (void)
 	};
 	end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
 	assert(child_cmd_run(&none, child_fds(), nullptr, &end) == ENOENT);
-	assert(!end.code && !end.status && !end.flags);
+	assert(!end.code && !end.status && !end.flags.bits);
 	struct buf out = buf();
 	assert(!buf_put(&out, "x", 1, SIZE_MAX));
 	end = child_end(.code = -1, .status = -1, .flags = UINT32_MAX);
 	assert(child_capture(&none, child_fds(), &out, &end) == ENOENT);
-	assert(!end.code && !end.status && !end.flags);
+	assert(!end.code && !end.status && !end.flags.bits);
 	assert(journal_test_out(&out, CSTR_VIEW("x")));
 	buf_fini(&out);
 }
@@ -834,26 +834,26 @@ journal_test_child_capture (void)
 	struct child_end end = child_end();
 	uint64_t ms;
 	assert(!journal_test_run("true", 0, 0, 0, &out, &end, &ms));
-	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags);
+	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags.bits);
 	assert(!buf_peek(&out).len);
 	assert(!journal_test_run("printf abc", 0, 0, 3, &out, &end, &ms));
-	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags);
+	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags.bits);
 	assert(journal_test_out(&out, CSTR_VIEW("abc")));
 	/* The cap applies to the output, not to the bytes already in out. */
 	assert(!journal_test_run("printf de; exit 3", 0, 0, 2, &out, &end, &ms));
-	assert(end.code == CLD_EXITED && end.status == 3 && !end.flags);
+	assert(end.code == CLD_EXITED && end.status == 3 && !end.flags.bits);
 	assert(journal_test_out(&out, CSTR_VIEW("abcde")));
 	assert(journal_test_run("printf fghi", 0, 0, 3, &out, &end, &ms) == EFBIG);
-	assert(end.code == CLD_EXITED && end.status == 0 && end.flags == CHILD_CUT);
+	assert(end.code == CLD_EXITED && end.status == 0 && end.flags.bits == CHILD_CUT);
 	assert(journal_test_out(&out, CSTR_VIEW("abcdefgh")));
 	buf_clear(&out);
 	assert(journal_test_run("printf a", 0, 0, 0, &out, &end, &ms) == EFBIG);
-	assert(end.code == CLD_EXITED && end.flags == CHILD_CUT && !buf_peek(&out).len);
+	assert(end.code == CLD_EXITED && end.flags.bits == CHILD_CUT && !buf_peek(&out).len);
 	/* Outputs of 64 KiB and of one byte more, with a cap of 64 KiB. Both
 	 * buffers contain the first 64 KiB of the output. */
 	static char const line[] = "abcdefg\n";
 	assert(!journal_test_run("yes abcdefg | head -c 65536", 0, 0, 64 << 10, &out, &end, &ms));
-	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags);
+	assert(end.code == CLD_EXITED && end.status == 0 && !end.flags.bits);
 	struct span got = buf_peek(&out);
 	assert(got.len == 64 << 10);
 	for (size_t i = 0; i < got.len; ++i)
@@ -861,7 +861,7 @@ journal_test_child_capture (void)
 	buf_clear(&out);
 	assert(journal_test_run("yes abcdefg | head -c 65537", 0, 0, 64 << 10, &out, &end, &ms) ==
 	       EFBIG);
-	assert(end.code == CLD_EXITED && end.status == 0 && end.flags == CHILD_CUT);
+	assert(end.code == CLD_EXITED && end.status == 0 && end.flags.bits == CHILD_CUT);
 	got = buf_peek(&out);
 	assert(got.len == 64 << 10);
 	for (size_t i = 0; i < got.len; ++i)
@@ -870,11 +870,11 @@ journal_test_child_capture (void)
 	buf_clear(&out);
 	assert(!buf_put(&out, "x", 1, SIZE_MAX));
 	assert(journal_test_run("printf abc; kill -KILL $$", 0, 0, 3, &out, &end, &ms) == EIO);
-	assert(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && !end.flags.bits);
 	assert(journal_test_out(&out, CSTR_VIEW("x")));
 	assert(journal_test_run("printf abc; exec sleep 5", 100, 0, 3, &out, &end, &ms) ==
 	       ETIMEDOUT);
-	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags.bits == CHILD_LATE);
 	assert(ms >= 100 && ms < 2000);
 	assert(journal_test_out(&out, CSTR_VIEW("x")));
 	buf_fini(&out);
@@ -930,7 +930,7 @@ journal_test_child_cmd_run (void)
 		struct child_end end = unset;
 		assert(child_cmd_run(&cmd, child_fds(), &out, &end) == cases[i].e);
 		assert(end.code == want->code && end.status == want->status &&
-		       end.flags == want->flags);
+		       end.flags.bits == want->flags.bits);
 		assert(journal_test_out(&out, cases[i].out));
 		/* A file has no cap, so the output is not cut. */
 		struct child_fds fds = child_fds();
@@ -938,7 +938,7 @@ journal_test_child_cmd_run (void)
 		assert(fds.out >= 0);
 		end = unset;
 		assert(child_cmd_run(&cmd, fds, nullptr, &end) == cases[i].plain);
-		assert(end.code == want->code && end.status == want->status && !end.flags);
+		assert(end.code == want->code && end.status == want->status && !end.flags.bits);
 		char text[8];
 		struct cstr_view const all = cases[i].all;
 		assert(pread(fds.out, text, sizeof text, 0) == (ssize_t)all.len &&
@@ -952,19 +952,19 @@ journal_test_child_cmd_run (void)
 	late.deadline = loop_clock() + 100 * MS;
 	struct child_end end = unset;
 	assert(child_cmd_run(&late, child_fds(), &out, &end) == ETIMEDOUT);
-	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags.bits == CHILD_LATE);
 	assert(!buf_peek(&out).len);
 	late.deadline = loop_clock() + 100 * MS;
 	end = unset;
 	assert(child_cmd_run(&late, child_fds(), nullptr, &end) == ETIMEDOUT);
-	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags.bits == CHILD_LATE);
 	/* A deadline in the past ends the child at once. */
 	assert(!buf_put(&out, "x", 1, SIZE_MAX));
 	late.deadline = 1;
 	end = unset;
 	uint64_t const start = loop_clock();
 	assert(child_cmd_run(&late, child_fds(), &out, &end) == ETIMEDOUT);
-	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags == CHILD_LATE);
+	assert(end.code == CLD_KILLED && end.status == SIGKILL && end.flags.bits == CHILD_LATE);
 	assert(loop_clock() - start < 2000 * MS && !buf_peek(&out).len);
 	/* A child that is not spawned. */
 	struct child_cmd const none = {
@@ -976,10 +976,10 @@ journal_test_child_cmd_run (void)
 	assert(!buf_put(&out, "x", 1, SIZE_MAX));
 	end = unset;
 	assert(child_cmd_run(&none, child_fds(), &out, &end) == ENOENT);
-	assert(!end.code && !end.status && !end.flags && !buf_peek(&out).len);
+	assert(!end.code && !end.status && !end.flags.bits && !buf_peek(&out).len);
 	end = unset;
 	assert(child_cmd_run(&none, child_fds(), nullptr, &end) == ENOENT);
-	assert(!end.code && !end.status && !end.flags);
+	assert(!end.code && !end.status && !end.flags.bits);
 	buf_fini(&out);
 }
 
@@ -1053,7 +1053,7 @@ main (int argc, char **argv)
 		if (!job)
 			job = journal_job_add(j, &id, &e);
 		assert(job && !e);
-		job->flags |= JOB_TERMINAL;
+		flag_set(&job->flags, JOB_TERMINAL);
 	}
 	assert(j->n_jobs == JOURNAL_JOBS);
 	journal_destroy(&j);

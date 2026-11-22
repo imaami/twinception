@@ -95,13 +95,13 @@ child_read (struct child *c)
 		size_t room = loop_room(loop, LOOP_RECV);
 		size_t want = left < room ? left : room;
 		if (!want) {
-			c->end.flags |= CHILD_OUT;
+			flag_set(&c->end.flags, CHILD_OUT);
 			loop_ready_bulk(loop, &c->step);
 			return;
 		}
 		struct span s = {};
 		if (buf_reserve(&c->out, want, c->max + 1, &s)) {
-			c->end.flags |= CHILD_CUT;
+			flag_set(&c->end.flags, CHILD_CUT);
 			child_kill(c);
 			return;
 		}
@@ -111,7 +111,7 @@ child_read (struct child *c)
 		loop_work(loop, LOOP_RECV, got);
 		if (len + got > c->max) {
 			buf_cut(&c->out, c->max, len + got - c->max);
-			c->end.flags |= CHILD_CUT;
+			flag_set(&c->end.flags, CHILD_CUT);
 			child_kill(c);
 			return;
 		}
@@ -155,8 +155,8 @@ child_exited (struct child *c)
 static void
 child_due (struct child *c)
 {
-	bool term = c->grace && !(c->end.flags & CHILD_LATE) && c->pid > 0;
-	c->end.flags |= CHILD_LATE;
+	bool term = c->grace && !flag_any(c->end.flags, CHILD_LATE) && c->pid > 0;
+	flag_set(&c->end.flags, CHILD_LATE);
 	if (!term) {
 		child_signal(c, SIGKILL);
 		return;
@@ -174,8 +174,8 @@ child_step (struct loop      *loop,
             struct loop_step *step)
 {
 	struct child *c = container_of(step, struct child, step);
-	uint32_t events = c->end.flags & CHILD_EVENTS;
-	c->end.flags &= ~CHILD_EVENTS;
+	uint32_t events = flag_get(c->end.flags, CHILD_EVENTS);
+	flag_clear(&c->end.flags, CHILD_EVENTS);
 	if (events & CHILD_DUE)
 		child_due(c);
 	if (events & CHILD_OUT && c->pipe.fd >= 0)
@@ -199,7 +199,7 @@ child_event (struct loop     *loop,
 {
 	(void)events;
 	struct child *c = ref->owner;
-	c->end.flags |= ref == &c->proc ? CHILD_EXIT : CHILD_OUT;
+	flag_set(&c->end.flags, ref == &c->proc ? CHILD_EXIT : CHILD_OUT);
 	loop_ready_bulk(loop, &c->step);
 }
 
@@ -208,7 +208,7 @@ child_late (struct loop       *loop,
             struct loop_timer *timer)
 {
 	struct child *c = container_of(timer, struct child, timer);
-	c->end.flags |= CHILD_DUE;
+	flag_set(&c->end.flags, CHILD_DUE);
 	loop_ready_bulk(loop, &c->step);
 }
 
@@ -286,7 +286,7 @@ child_cmd_exec (struct child_cmd const *cmd,
 	posix_spawnattr_t attr;
 	e = posix_spawnattr_init(&attr);
 	if (!e) {
-		e = child_fds_actions(fds, &fa, cmd->flags);
+		e = child_fds_actions(fds, &fa, cmd->flags.bits);
 		if (!e)
 			e = child_attr(&attr, fds->tty < 0 ? POSIX_SPAWN_SETSID
 			                                   : POSIX_SPAWN_SETPGROUP);
@@ -583,7 +583,7 @@ child_run_wait (struct child_cmd const *cmd,
 	*end = child_end(
 		.code   = info.si_code,
 		.status = info.si_status,
-		.flags  = waited == ETIMEDOUT ? CHILD_LATE : 0
+		.flags  = { waited == ETIMEDOUT ? CHILD_LATE : 0 }
 	);
 	if (waited)
 		return waited;
@@ -659,7 +659,7 @@ child_capture (struct child_cmd const *cmd,
 	 * then returns ENOBUFS. */
 	if (e == ENOBUFS) {
 		buf_cut(out, max, buf_peek(out).len - max);
-		end->flags |= CHILD_CUT;
+		flag_set(&end->flags, CHILD_CUT);
 		e = EFBIG;
 	}
 	close(fds.out);
@@ -712,10 +712,10 @@ child_end_why (struct child_end const *end,
                char                   *buf,
                size_t                  size)
 {
-	if (end->flags & CHILD_LATE)
+	if (flag_any(end->flags, CHILD_LATE))
 		return util_format_view(buf, size, "%s took longer than %" PRIu64 " s, and was "
 		                        "stopped.", name, timeout / NS);
-	if (end->flags & CHILD_CUT)
+	if (flag_any(end->flags, CHILD_CUT))
 		return util_format_view(buf, size, "%s wrote more than %zu MiB.", name, max >> 20);
 	switch (end->code) {
 	case CLD_EXITED:

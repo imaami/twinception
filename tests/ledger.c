@@ -934,25 +934,25 @@ test_cancels (struct ledger *l)
 }
 
 /* agenda_job_status() maps the flag word of the slot of a job of the turns
- * to a status of the ledger. The bits that are no state of a job do not
+ * to a status of the ledger. The bits outside the range FLAG_HOW do not
  * change the status. */
 static void
 test_job_status (void)
 {
-	CHECK(agenda_job_status(0) == LEDGER_WORKING);
-	CHECK(agenda_job_status(FLAG_DONE) == LEDGER_COMPLETED);
-	CHECK(agenda_job_status(FLAG_DONE | FLAG_FAILED) == LEDGER_FAILED);
-	CHECK(agenda_job_status(FLAG_DONE | FLAG_CANCEL) == LEDGER_CANCELLED);
-	uint32_t const other = ~(uint32_t)(FLAG_DONE | FLAG_FAILED | FLAG_CANCEL);
-	CHECK(agenda_job_status(other) == LEDGER_WORKING);
-	CHECK(agenda_job_status(other | FLAG_DONE) == LEDGER_COMPLETED);
-	CHECK(agenda_job_status(other | FLAG_DONE | FLAG_FAILED) == LEDGER_FAILED);
-	CHECK(agenda_job_status(other | FLAG_DONE | FLAG_CANCEL) == LEDGER_CANCELLED);
+	CHECK(agenda_job_status(flag16(0)) == LEDGER_WORKING);
+	CHECK(agenda_job_status(flag16(FLAG_COMPLETED)) == LEDGER_COMPLETED);
+	CHECK(agenda_job_status(flag16(FLAG_FAILED)) == LEDGER_FAILED);
+	CHECK(agenda_job_status(flag16(FLAG_CANCELLED)) == LEDGER_CANCELLED);
+	uint16_t const other = (uint16_t)~FLAG_HOW;
+	CHECK(agenda_job_status(flag16(other)) == LEDGER_WORKING);
+	CHECK(agenda_job_status(flag16(other | FLAG_COMPLETED)) == LEDGER_COMPLETED);
+	CHECK(agenda_job_status(flag16(other | FLAG_FAILED)) == LEDGER_FAILED);
+	CHECK(agenda_job_status(flag16(other | FLAG_CANCELLED)) == LEDGER_CANCELLED);
 	/* The names that src/mcp.c reads by the status. */
-	CHECK(!strcmp(ledger_statuses[agenda_job_status(FLAG_DONE | FLAG_FAILED)].data, "failed"));
-	CHECK(!strcmp(ledger_statuses[agenda_job_status(FLAG_DONE | FLAG_CANCEL)].data,
+	CHECK(!strcmp(ledger_statuses[agenda_job_status(flag16(FLAG_FAILED))].data, "failed"));
+	CHECK(!strcmp(ledger_statuses[agenda_job_status(flag16(FLAG_CANCELLED))].data,
 	              "cancelled"));
-	CHECK(!strcmp(ledger_statuses[agenda_job_status(FLAG_DONE)].data, "completed"));
+	CHECK(!strcmp(ledger_statuses[agenda_job_status(flag16(FLAG_COMPLETED))].data, "completed"));
 }
 
 int

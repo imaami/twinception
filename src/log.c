@@ -18,6 +18,7 @@
 
 #include "clk.h"
 #include "compat.h"
+#include "flag.h"
 #include "hist.h"
 #include "log.h"
 #include "util.h"
@@ -34,8 +35,13 @@ enum {
 	BURST     = 32,         /* lines one call site may log per second */
 };
 
-/* The logger's state. */
-enum { RUNNING, STOPPING, DONE };
+/* The logger's state: the values of lg.state. */
+enum {
+	RUNNING  = 0,
+	STOPPING = FLAG_END,    /* log_stop() told the logger thread to write
+	                           what the rings contain and then to end */
+	DONE     = FLAG_AFTER,  /* the logger thread has ended */
+};
 
 /* A thread's ring buffer. data points to its RING bytes. The thread that
  * uses the ring writes head and the bytes, and the logger thread writes

@@ -27,6 +27,7 @@
 #include "buf.h"
 #include "compat.h"
 #include "cstr_view.h"
+#include "flag.h"
 #include "loop_export.h"
 #include "tool.h"
 
@@ -146,13 +147,13 @@ struct auth;
  *  has none.
  */
 enum web_ask_flag : uint32_t {
-	WEB_UPSTREAM = 1U << 0,  /**< the request goes to the upstream of
-	                              askai, so home sends it with the
-	                              Authorization line of the renewed
-	                              credential, if the upstream has one
-	                              (src/auth.h). Only for a request whose
-	                              keep is 0: its response is not stored
-	                              and no other request waits for it. */
+	WEB_UPSTREAM = FLAG_OWN(0),  /**< the request goes to the upstream of
+	                                  askai, so home sends it with the
+	                                  Authorization line of the renewed
+	                                  credential, if the upstream has one
+	                                  (src/auth.h). Only for a request whose
+	                                  keep is 0: its response is not stored
+	                                  and no other request waits for it. */
 };
 
 struct web_ask {
@@ -173,7 +174,7 @@ struct web_ask {
 	                                        which askai checked; a line of
 	                                        User-Agent is left out, as askai
 	                                        sends its own */
-	uint64_t                  flags;   /**< enum web_ask_flag, widened over
+	struct flag64             flags;   /**< enum web_ask_flag, widened over
 	                                        the padding */
 	struct handle             who;     /**< names the call on its loop */
 };

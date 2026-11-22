@@ -125,7 +125,7 @@ mcp_slot_spawn (struct mcp_slot        *slot,
 	join(cmd->argv, spawned.argv, sizeof spawned.argv);
 	spawned.deadline = cmd->deadline;
 	spawned.grace = cmd->grace;
-	spawned.flags = cmd->flags;
+	spawned.flags = cmd->flags.bits;
 	spawned.max = cmd->max;
 	spawned.in = cmd->in.len;
 	spawned.path = !strncmp(cmd->envp[0], "PATH=", 5);
@@ -730,7 +730,7 @@ test_argv (struct store const *store)
 		      !strncmp(run.c.envp[0], "PATH=", 5) && !run.c.in.len &&
 		      run.c.max == STORE_MAX && run.c.deadline == 7 + GIT_RUN_NS &&
 		      run.c.grace == (writes ? GIT_GRACE : 0) &&
-		      run.c.flags == (writes ? CHILD_STDERR : 0));
+		      run.c.flags.bits == (writes ? CHILD_STDERR : 0));
 		/* A command without words does not read the words. */
 		int e = store_command(store, &run, rows[i].cmd, nullptr, ref, span(nullptr, 0), 7);
 		CHECK(e == (rows[i].words[0] ? EINVAL : 0));
@@ -942,7 +942,7 @@ test_run (struct store const *store,
 	CHECK(!buf_put(&out, "x", 1, SIZE_MAX));
 	CHECK(!store_run(store, STORE_HEAD, (char const *const[]){ "refs/heads/notes/t" }, nullptr,
 	                 span(nullptr, 0), &out, &end));
-	CHECK(end.code == CLD_EXITED && !end.status && !end.flags);
+	CHECK(end.code == CLD_EXITED && !end.status && !end.flags.bits);
 	struct span s = buf_peek(&out);
 	CHECK(s.len == OID_SHA1 + 2 && s.ptr[0] == 'x' && !memcmp(s.ptr + 1, tip->hex, OID_SHA1));
 	buf_clear(&out);
@@ -970,7 +970,7 @@ test_run (struct store const *store,
 
 	/* Refusals run no git, and the end record of a refusal is all zero. */
 	CHECK(store_run(store, STORE_COMMIT, nullptr, nullptr, span(nullptr, 0), &out, &end) ==
-	      EINVAL && !end.code && !end.status && !end.flags);
+	      EINVAL && !end.code && !end.status && !end.flags.bits);
 	CHECK(store_run(store, STORE_HEAD, nullptr, nullptr, span(nullptr, 0), &out, &end) ==
 	      EINVAL);
 	CHECK(store_run(nullptr, STORE_READ, nullptr, nullptr, span(nullptr, 0), &out, &end) ==
@@ -1011,7 +1011,7 @@ test_ends (char const *parent)
 	 * with status 0. */
 	end = child_end(.status = -1, .flags = CHILD_LATE);
 	CHECK(!store_init(store, &out, &end) && end.code == CLD_EXITED && !end.status &&
-	      !end.flags && !buf_peek(&out).len);
+	      !end.flags.bits && !buf_peek(&out).len);
 	CHECK(store_init(nullptr, &out, &end) == EINVAL);
 	CHECK(store_init(store, nullptr, &end) == EINVAL);
 	CHECK(store_init(store, &out, nullptr) == EINVAL);
@@ -1049,7 +1049,7 @@ test_ends (char const *parent)
 		e = store_run(store, STORE_READ, nullptr, nullptr, span(nullptr, 0), &out, &end);
 		CHECK(!setenv("PATH", old, 1));
 		struct span const got = buf_peek(&out);
-		CHECK(e == fakes[i].e && end.flags == fakes[i].flags && got.len == fakes[i].len &&
+		CHECK(e == fakes[i].e && end.flags.bits == fakes[i].flags && got.len == fakes[i].len &&
 		      *got.ptr == 'x');
 		CHECK(fakes[i].flags & CHILD_CUT ? end.code == CLD_EXITED && !end.status
 		                                 : end.code == CLD_KILLED && end.status == SIGKILL);

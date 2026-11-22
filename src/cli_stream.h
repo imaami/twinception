@@ -10,14 +10,15 @@
 #include "cli_ui.h"
 #include "cstr_view.h"
 #include "dstr.h"
+#include "flag.h"
 
 struct cli_console;
 struct cli_error;
 struct json_object;
 
 enum {
-	CLI_STREAM_DELTAS    = 1U << 0,
-	CLI_STREAM_REASONING = 1U << 1,
+	CLI_STREAM_DELTAS    = FLAG_OWN(0),
+	CLI_STREAM_REASONING = FLAG_OWN(1),
 };
 
 /** Owns rendering state and accumulated text; borrows its console, actor
@@ -30,7 +31,7 @@ struct cli_stream {
 	struct cstr_view actor;
 	struct cstr_view token;
 	int64_t          turn;
-	uint64_t         flags;
+	struct flag64    flags;
 };
 
 extern struct cli_stream

@@ -20,11 +20,11 @@ static struct cli_console_span const cli_ui_modes[] = {
 static int
 cli_ui_newline (struct cli_ui *ui)
 {
-	if (ui->flags & CLI_UI_TRAILING_NEWLINE)
+	if (flag_any(ui->flags, CLI_UI_TRAILING_NEWLINE))
 		return 0;
-	int e = cli_console_write(ui->console, ui->flags & CLI_UI_REASONING, CSTR_VIEW("\n"));
+	int e = cli_console_write(ui->console, flag_any(ui->flags, CLI_UI_REASONING), CSTR_VIEW("\n"));
 	if (!e)
-		ui->flags |= CLI_UI_TRAILING_NEWLINE;
+		flag_set(&ui->flags, CLI_UI_TRAILING_NEWLINE);
 	return e;
 }
 
@@ -35,8 +35,8 @@ cli_ui_push (struct cli_ui    *ui,
 {
 	if (!text.len)
 		return 0;
-	bool reasoning = ui->flags & CLI_UI_REASONING;
-	ui->flags |= CLI_UI_STREAMING;
+	bool reasoning = flag_any(ui->flags, CLI_UI_REASONING);
+	flag_set(&ui->flags, CLI_UI_STREAMING);
 	int e = cli_console_set_display(ui->console, cli_ui_modes[reasoning].style);
 	if (!e && thinking != reasoning) {
 		/* The mark is in the reasoning style, and so is the newline that
@@ -49,12 +49,12 @@ cli_ui_push (struct cli_ui    *ui,
 		if (!e)
 			e = cli_console_set_display(ui->console, cli_ui_modes[thinking].style);
 		if (!e)
-			ui->flags ^= CLI_UI_REASONING;
+			flag_flip(&ui->flags, CLI_UI_REASONING);
 	}
 	if (e)
 		return e;
-	ui->flags = (ui->flags & ~CLI_UI_TRAILING_NEWLINE) |
-	            (text.data[text.len - 1] == '\n' ? CLI_UI_TRAILING_NEWLINE : 0);
+	flag_put(&ui->flags, CLI_UI_TRAILING_NEWLINE,
+	         text.data[text.len - 1] == '\n' ? CLI_UI_TRAILING_NEWLINE : 0);
 	return cli_console_write(ui->console, thinking, text);
 }
 
@@ -79,18 +79,18 @@ cli_ui_write_action (struct cli_ui    *ui,
 int
 cli_ui_finish (struct cli_ui *ui)
 {
-	bool reasoning = ui->flags & CLI_UI_REASONING;
+	bool reasoning = flag_any(ui->flags, CLI_UI_REASONING);
 	int e = cli_console_set_display(ui->console, cli_ui_modes[reasoning].style);
 	if (!e)
 		e = cli_ui_newline(ui);
 	if (!e && reasoning)
 		e = cli_console_write(ui->console, true, CSTR_VIEW("[End thinking]\n"));
 	int reset = cli_console_set_display(ui->console, CLI_STYLE_RESET);
-	if (!e && !reset && (ui->flags & CLI_UI_PENDING))
+	if (!e && !reset && flag_any(ui->flags, CLI_UI_PENDING))
 		e = cli_ui_write_action(ui, cstr_view_dstr(&ui->actor), cstr_view_dstr(&ui->status), CLI_STYLE_PROGRESS);
 	dstr_clear(&ui->actor);
 	dstr_clear(&ui->status);
-	ui->flags &= CLI_UI_TRAILING_NEWLINE;
+	ui->flags = flag64(flag_get(ui->flags, CLI_UI_TRAILING_NEWLINE));
 	return e ? e : reset;
 }
 
@@ -121,11 +121,11 @@ cli_ui_progress (struct cli_ui    *ui,
 	if (cstr_view_cat(actor, &ui->actor) || cstr_view_cat(text, &ui->status))
 		return ENOMEM;
 	/* After a shown line or delta, the last line waits for the end. */
-	if (ui->flags & (CLI_UI_STREAMING | CLI_UI_SHOWN)) {
-		ui->flags |= CLI_UI_PENDING;
+	if (flag_any(ui->flags, CLI_UI_STREAMING | CLI_UI_SHOWN)) {
+		flag_set(&ui->flags, CLI_UI_PENDING);
 		return 0;
 	}
-	ui->flags |= CLI_UI_SHOWN;
+	flag_set(&ui->flags, CLI_UI_SHOWN);
 	return cli_ui_write_action(ui, actor, text, CLI_STYLE_PROGRESS);
 }
 

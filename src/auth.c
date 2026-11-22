@@ -12,12 +12,15 @@
 #include "chatgpt.h"
 #include "clk.h"
 #include "cstr_view.h"
+#include "flag.h"
 #include "util.h"
 
-/* A bit of auth.flags, above those of enum auth_flag. */
+/* The value of the range FLAG_WHEN of auth.flags while a read is under
+ * way.
+ */
 enum : uint32_t {
-	AUTH_BUSY = 1U << 8,  /* a blocker has the read, or its message is on
-	                         the way back */
+	AUTH_BUSY = FLAG_DURING,  /* a blocker has the read, or its message is
+	                             on the way back */
 };
 
 /* A read of the credential file on a blocker, with what it needs and what
@@ -32,7 +35,7 @@ struct auth_io {
 	                                 ChatGPT sign-in */
 	struct dstr         header;   /* the Authorization line that it read */
 	uint64_t            expires;  /* when the token of header ends */
-	uint64_t            flags;    /* enum auth_flag of this read, widened
+	struct flag64       flags;    /* enum auth_flag of this read, widened
 	                                 over the padding */
 };
 
@@ -63,7 +66,7 @@ static void
 auth_io_work (struct blocker_job *work)
 {
 	struct auth_io *io = container_of(work, struct auth_io, work);
-	uint32_t const flags = (uint32_t)io->flags;
+	uint32_t const flags = (uint32_t)io->flags.bits;
 	work->error = dstr_len(&io->command)
 	              ? bearer_header(dstr_get(&io->path), dstr_get(&io->command), flags,
 	                              &io->header, &io->expires)
@@ -88,7 +91,7 @@ auth_answer (struct auth *auth,
 		struct list *next;
 		for (struct list *pos = auth->waiting.next; pos != &auth->waiting; pos = next) {
 			next = pos->next;
-			if (container_of(pos, struct auth_wait, hook)->flags & AUTH_CACHED)
+			if (flag_any(container_of(pos, struct auth_wait, hook)->flags, AUTH_CACHED))
 				list_move(&auth->ready, pos);
 		}
 	}
@@ -105,13 +108,13 @@ auth_read (struct auth *auth)
 	uint64_t flags = AUTH_CACHED;
 	struct list const *pos;
 	list_foreach(pos, &auth->waiting)
-		flags &= container_of(pos, struct auth_wait, hook)->flags;
-	io->flags = flags;
+		flags &= container_of(pos, struct auth_wait, hook)->flags.bits;
+	io->flags = flag64(flags);
 	int const e = auth->blockers ? blocker_submit(auth->blockers, &io->work) : ENOSYS;
 	if (e)
 		auth_answer(auth, e, 0);
 	else
-		auth->flags |= AUTH_BUSY;
+		flag_put(&auth->flags, FLAG_WHEN, AUTH_BUSY);
 }
 
 /* The message of a read that has ended, on the loop. */
@@ -125,7 +128,7 @@ auth_io_done (struct loop *loop,
 		auth_io_destroy(&io);
 		return;
 	}
-	auth->flags &= ~AUTH_BUSY;
+	flag_put(&auth->flags, FLAG_WHEN, 0);
 	int const e = (int)io->work.error;
 	/* After a failed read no line of before is given: the file can have
 	 * changed. */
@@ -137,7 +140,7 @@ auth_io_done (struct loop *loop,
 		auth->expires = io->expires;
 		auth->review = loop->now + AUTH_REVIEW * NS;
 	}
-	auth_answer(auth, e, io->flags);
+	auth_answer(auth, e, io->flags.bits);
 }
 
 /* Answers the waits on auth->ready, as many in a step as the share of the
@@ -164,7 +167,7 @@ auth_deliver_step (struct loop      *loop,
 		wait->done(wait, e, line);
 		loop_work(loop, LOOP_REQS, 1);
 	}
-	if (!list_is_empty(&auth->waiting) && !(auth->flags & AUTH_BUSY))
+	if (!list_is_empty(&auth->waiting) && flag_when(auth->flags) != AUTH_BUSY)
 		auth_read(auth);
 }
 
@@ -219,7 +222,7 @@ auth_fini (struct auth *auth)
 		list_del(auth->ready.next);
 	/* The message of a read under way frees the read. */
 	if (auth->io) {
-		if (auth->flags & AUTH_BUSY)
+		if (flag_when(auth->flags) == AUTH_BUSY)
 			auth->io->owner = nullptr;
 		else
 			auth_io_destroy(&auth->io);
@@ -243,10 +246,10 @@ auth_ask (struct auth       *auth,
 		*line = auth->line;
 		return 0;
 	}
-	wait->flags = flags;
+	wait->flags = flag64(flags);
 	list_append(&auth->waiting, &wait->hook);
 	/* The waits of one read are answered before the next read starts. */
-	if (!(auth->flags & AUTH_BUSY) && list_is_empty(&auth->ready))
+	if (flag_when(auth->flags) != AUTH_BUSY && list_is_empty(&auth->ready))
 		auth_read(auth);
 	return 0;
 }

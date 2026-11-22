@@ -15,6 +15,7 @@
 #include "cstr_view.h"
 #include "datauri.h"
 #include "dstr.h"
+#include "flag.h"
 #include "hexid.h"
 #include "jb.h"
 #include "list.h"
@@ -88,10 +89,10 @@ static struct notes_tool_fetch_step const *notes_tool_fetch_step (uint32_t fetch
  * (NOTES_ACTION_ALL_LIST).
  */
 static struct {
-	uint32_t              flags;
+	struct flag32         flags;
 	enum notes_tool_fetch fetch;
 } const notes_tool_actions[] = {
-#define NOTES_ACTION_ROW(id, name, flags, fetch) { flags, fetch },
+#define NOTES_ACTION_ROW(id, name, flags, fetch) { { flags }, fetch },
 	NOTES_ACTION_ALL_LIST(NOTES_ACTION_ROW)
 #undef NOTES_ACTION_ROW
 };
@@ -126,12 +127,13 @@ static struct cstr_view const raced =
 static struct cstr_view const members_unread = CSTR_VIEW_INIT("The members could not be read.");
 
 /* The flags of a notes call (struct notes_tool_call). */
-enum notes_tool_call_flag : uint8_t {
-	CALL_STRIPPED = 1u << 0,  /* askai cut its notices off the text */
-	CALL_AS       = 1u << 1,  /* the call gave the argument as */
-	CALL_LOGIN    = 1u << 2,  /* the call waits for the member of the login
-	                             of its client, without git */
-	CALL_OWN      = 1u << 3,  /* the call reads the notebook of the caller */
+enum notes_tool_call_flag : uint16_t {
+	CALL_STRIPPED = FLAG_OWN(0),  /* askai cut its notices off the text */
+	CALL_AS       = FLAG_OWN(1),  /* the call gave the argument as */
+	CALL_LOGIN    = FLAG_OWN(2),  /* the call waits for the member of the
+	                                 login of its client, without git */
+	CALL_OWN      = FLAG_OWN(3),  /* the call reads the notebook of the
+	                                 caller */
 };
 
 /* The state of one notes call. It is the own word of the call's slot. An
@@ -193,7 +195,7 @@ struct notes_tool_call {
 	uint8_t                 action;    /* the row of notes_tool_actions[] */
 	uint8_t                 tries;     /* the commits of a write that
 	                                      raced, at most STORE_TRIES */
-	uint8_t                 flags;     /* enum notes_tool_call_flag */
+	struct flag16           flags;     /* enum notes_tool_call_flag */
 	struct oid              blob;      /* the blob of the note of a write
 	                                      at revision.tip, or no name for a
 	                                      new note. The commit of the write
@@ -541,14 +543,15 @@ notes_tool_login (struct mcp_slot *slot)
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct member_table *const members = mcp_slot_members(slot);
 	struct member_login const *login = &mcp_slot_member(slot)->login;
-	bool const claim = call->then || notes_tool_actions[call->action].flags & NOTES_ACTION_WRITE;
+	bool const claim = call->then ||
+	                   flag_any(notes_tool_actions[call->action].flags, NOTES_ACTION_WRITE);
 	int const e = claim ? member_table_claim(members, login, &call->wait)
 	                    : member_table_find(members, login, &call->wait);
 	if (e != EINPROGRESS) {
 		notes_tool_logged_in(slot);
 		return;
 	}
-	call->flags |= CALL_LOGIN;
+	flag_set(&call->flags, CALL_LOGIN);
 	(void)mcp_slot_park(slot);
 }
 
@@ -584,7 +587,7 @@ notes_tool_loop_prompt (struct notes_tool_loop *loop,
 static bool
 notes_tool_listed (struct child const *c)
 {
-	return c && (c->end.flags & CHILD_CUT || !child_status(c));
+	return c && (flag_any(c->end.flags, CHILD_CUT) || !child_status(c));
 }
 
 /* Returns true if git exited with status 128. It does so if the
@@ -613,9 +616,9 @@ notes_tool_unread (struct mcp_slot *slot)
 	static char const other[] = "The notebook %s contains no notes yet.";
 	char buf[sizeof yours + MEMBER_NAME];
 	struct cstr_view const none = util_format_view(buf, sizeof buf,
-	                                               call->flags & CALL_OWN ? yours : other,
+	                                               flag_any(call->flags, CALL_OWN) ? yours : other,
 	                                               call->book.name);
-	if (notes_tool_actions[call->action].flags & NOTES_ACTION_FILE)
+	if (flag_any(notes_tool_actions[call->action].flags, NOTES_ACTION_FILE))
 		mcp_slot_tell(slot, none, TOOL_FAILED);
 	else if (mcp_slot_from_client(slot))
 		mcp_slot_tell(slot, none, 0);
@@ -631,7 +634,7 @@ notes_tool_unwritten (struct mcp_slot *slot)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	if (c->end.flags & CHILD_LATE) {
+	if (flag_any(c->end.flags, CHILD_LATE)) {
 		mcp_slot_tell(slot, CSTR_VIEW("Could not write the note. The write timed out."),
 		              TOOL_FAILED);
 		return;
@@ -684,7 +687,7 @@ notes_tool_unadded (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	if (c->end.flags & CHILD_LATE || !store_raced(buf_peek(&c->out))) {
+	if (flag_any(c->end.flags, CHILD_LATE) || !store_raced(buf_peek(&c->out))) {
 		notes_tool_unwritten(slot);
 		return;
 	}
@@ -726,7 +729,7 @@ notes_tool_call_message (struct notes_tool_call *call,
 		            commit);
 	else if (*commit)
 		util_format(from, sizeof from, " from %s", commit);
-	char const *source = call->flags & CALL_AS ? call->revision.file.data : "";
+	char const *source = flag_any(call->flags, CALL_AS) ? call->revision.file.data : "";
 	char name[STORE_QUOTED];
 	static_assert(sizeof "Copy  from the notebook of  at : ( bytes)" + UTIL_DECIMAL +
 	              sizeof name + MEMBER_NAME + OID_SHA256 + NOTES_NAME <= STORE_MESSAGE);
@@ -780,7 +783,7 @@ notes_tool_wrote (struct mcp_slot *slot,
                   int              e)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
-	if (!e && call->flags & CALL_STRIPPED)
+	if (!e && flag_any(call->flags, CALL_STRIPPED))
 		e = cstr_view_cat(CSTR_VIEW(" askai removed the [askai: ...] lines from the end of "
 		                            "the text. askai adds [askai: ...] lines to tool "
 		                            "results, not to notes."), call->text);
@@ -844,7 +847,7 @@ notes_tool_checked (struct mcp_slot *slot)
 	uint32_t fetch = notes_tool_actions[call->action].fetch;
 	if (fetch & FETCH_REPLACE)
 		r = r == EEXIST ? 0 : r && r != ENOTDIR ? r : ENOENT;
-	if (fetch & FETCH_RESTORE && r == EEXIST && !(call->flags & CALL_AS))
+	if (fetch & FETCH_RESTORE && r == EEXIST && !flag_any(call->flags, CALL_AS))
 		r = 0;
 	if (!r) {
 		struct oid const pinned = call->revision.tip;
@@ -1124,7 +1127,7 @@ notes_tool_got_list (struct mcp_slot *slot)
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
 	bool const files = (call->fetch & FETCH_KIND) == FETCH_FILES;
-	bool const cut = c->end.flags & CHILD_CUT;
+	bool const cut = flag_any(c->end.flags, CHILD_CUT);
 	struct span const out = buf_peek(&c->out);
 	struct span newest = {};
 	int e = notes_tool_head(call);
@@ -1171,7 +1174,7 @@ notes_tool_members (struct notes_tool_call *call,
 		ok = dstr_printf(d, "%-*.*s  %-6s  ", (int)width, (int)info->name.len, info->name.data,
 		                 member_kinds[info->kind].data);
 		char when[WHEN];
-		if (!(info->flags & MEMBER_NOTES) ||
+		if (!flag_any(info->flags, MEMBER_NOTES) ||
 		    !notes_tool_when(when, sizeof when, info->time, when_text)) {
 			ok = ok && dstr_cat(d, "no notes yet\n");
 		} else {
@@ -1433,7 +1436,7 @@ notes_tool_got_diff (struct mcp_slot *slot)
 	if (!e)
 		e = !diff.len ? cstr_view_cat(CSTR_VIEW("No differences.\n"), call->text)
 		  : notes_tool_show(d, diff);
-	if (!e && c->end.flags & CHILD_CUT)
+	if (!e && flag_any(c->end.flags, CHILD_CUT))
 		e = cstr_view_cat(CSTR_VIEW("\n[The diff is incomplete.]\n"), call->text);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len);
 	notes_tool_end(slot, e, false);
@@ -1451,7 +1454,7 @@ notes_tool_got_grep (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
 	struct child const *c = call->child;
-	bool const cut = c->end.flags & CHILD_CUT;
+	bool const cut = flag_any(c->end.flags, CHILD_CUT);
 	int const status = child_status(c);
 	if (status != 0 && status != 1 && !cut) {
 		mcp_slot_tell(slot, status == 128 ? CSTR_VIEW("A line of the pattern is not an "
@@ -1646,7 +1649,8 @@ notes_tool_prompt_list (struct mcp_slot *slot)
 	                    "first. A repeated name is an update:]\n", call->self.name)
 	      ? 0 : ENOMEM;
 	if (!e)
-		e = notes_tool_history(slot, buf_peek(&c->out), c->end.flags & CHILD_CUT, &newest);
+		e = notes_tool_history(slot, buf_peek(&c->out), flag_any(c->end.flags, CHILD_CUT),
+		                       &newest);
 	struct cstr_view const name = cstr_view_span(newest);
 	/* The name comes from git. git reads the note only if add would accept
 	 * the name as it is. */
@@ -1778,7 +1782,7 @@ notes_tool_step (struct mcp_slot *slot)
 	/* The lookup of a login and attach reach this step without a child.
 	 * For attach, the step handles the answer to the upload. */
 	if (!call->child) {
-		if (call->flags & CALL_LOGIN)
+		if (flag_any(call->flags, CALL_LOGIN))
 			notes_tool_logged_in(slot);
 		else
 			notes_tool_uploaded(slot);
@@ -1850,7 +1854,7 @@ static void
 notes_tool_resolve (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	uint32_t const flags = notes_tool_actions[call->action].flags;
+	uint32_t const flags = notes_tool_actions[call->action].flags.bits;
 	struct cstr_view const name = cstr_view(call->book.name);
 	bool const own = !name.len || cstr_view_equal(name, cstr_view(call->self.name));
 	if (!*call->self.name) {
@@ -1871,7 +1875,7 @@ notes_tool_resolve (struct mcp_slot *slot)
 	/* The action members accepts no notebook argument, so the call reads
 	 * the notebook of the caller. */
 	if (own) {
-		call->flags |= CALL_OWN;
+		flag_set(&call->flags, CALL_OWN);
 		call->book = call->self;
 		memcpy(call->notebook, call->repo, sizeof call->notebook);
 	} else if (flags & NOTES_ACTION_SELF) {
@@ -1901,7 +1905,7 @@ static void
 notes_tool_logged_in (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	call->flags &= ~CALL_LOGIN;
+	flag_clear(&call->flags, CALL_LOGIN);
 	int const e = call->wait.e;
 	if (e && e != ENOENT && e != EPERM) {
 		notes_tool_drop(slot);
@@ -2012,7 +2016,7 @@ notes_tool_add (struct mcp_slot    *slot,
 		 * writes after the text. */
 		size_t const lf = turn && kept < TOOL_TEXT_MAX && text.data[kept - 1] != '\n';
 		if (kept < text.len)
-			call->flags |= CALL_STRIPPED;
+			flag_set(&call->flags, CALL_STRIPPED);
 		e = store_part_head(&call->part, &call->file, name, kept + lf);
 		if (!e)
 			*(char *)mempcpy(buf_peek(&call->file).ptr + call->part.at, text.data,
@@ -2171,7 +2175,7 @@ notes_tool_start (struct mcp_slot    *slot,
 		return;
 	}
 	call->action = which;
-	uint32_t const flags = notes_tool_actions[which].flags;
+	uint32_t const flags = notes_tool_actions[which].flags.bits;
 	uint32_t const fetch = notes_tool_actions[which].fetch;
 	uint32_t const kind = fetch & FETCH_KIND;
 	bool const diff = kind == FETCH_DIFF;
@@ -2236,7 +2240,7 @@ notes_tool_start (struct mcp_slot    *slot,
 				mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 				return;
 			}
-			call->flags |= CALL_AS;
+			flag_set(&call->flags, CALL_AS);
 		}
 		(void)util_text_store(&call->name, target);
 		notes_tool_revision(slot, (struct json_object *const[]){ revision, nullptr });

@@ -24,6 +24,7 @@
 #include "child.h"
 #include "clk.h"
 #include "compat.h"
+#include "flag.h"
 #include "fs.h"
 #include "git_run.h"
 #include "journal.h"
@@ -115,23 +116,26 @@ enum { TERMINAL = KIND(JOURNAL_RESULT) | KIND(JOURNAL_CANCEL) };
 /* The bits of journal_job.flags: the job runs no more, and its records
  * came from the legacy WAL.
  */
-enum { JOB_TERMINAL = 1, JOB_LEGACY = 2 };
+enum { JOB_TERMINAL = FLAG_AFTER, JOB_LEGACY = FLAG_OWN(0) };
 
-/* The bits of journal.flags: the writer was started, and was told to stop. */
-enum { WRITER_STARTED = 1, WRITER_STOP = 2 };
+/* The flags of a journal. The range FLAG_WHEN is WRITER_STARTED once the
+ * writer was started, and WRITER_STOP says that the writer was told to
+ * stop.
+ */
+enum { WRITER_STARTED = FLAG_DURING, WRITER_STOP = FLAG_END };
 
 struct journal_job {
-	uint64_t     bytes; /* zero until a recovery checkpoint exists */
-	uint64_t     touched;
+	uint64_t      bytes; /* zero until a recovery checkpoint exists */
+	uint64_t      touched;
 	struct {
 		uint64_t seen;
 		uint32_t turn;
 		int      error;
-	}            thought;
-	int          error;   /* the error of a lost record; the job's later
-	                         appends fail with it */
-	uint16_t     flags;   /* JOB_* bits */
-	struct hexid id;
+	}             thought;
+	int           error;   /* the error of a lost record; the job's later
+	                          appends fail with it */
+	struct flag16 flags;   /* JOB_* bits */
+	struct hexid  id;
 };
 
 struct journal_file {
@@ -179,7 +183,7 @@ struct journal {
 	int                    thoughts_fd;
 	int                    lock_fd;
 	int                    wal_fd;
-	uint8_t                flags;     /* WRITER_* bits, set before the writer
+	struct flag8           flags;     /* WRITER_* bits, set before the writer
 	                                     starts or under the lock */
 	struct oid             tip;
 	char                   ref[sizeof REF + UTIL_WORD_MAX];
@@ -531,7 +535,7 @@ journal_jobs_scan (struct journal *j)
 			job->id = id;
 			job->bytes = size;
 			job->touched = st.st_mtim.tv_sec < 0 ? 0 : clk_ns(st.st_mtim);
-			job->flags = journal_job_flags(records);
+			job->flags = flag16(journal_job_flags(records));
 			j->recovery_bytes += job->bytes;
 		}
 		journal_records_destroy(&records);
@@ -561,7 +565,7 @@ journal_checkpoint_space (struct journal     *j,
 		for (size_t k = 0; k < array_size(j->jobs); ++k) {
 			struct journal_job *job = &j->jobs[k];
 			if (job != keep && *job->id.hex &&
-			    (job->flags & (JOB_TERMINAL | JOB_LEGACY)) == JOB_TERMINAL &&
+			    flag_get(job->flags, JOB_TERMINAL | JOB_LEGACY) == JOB_TERMINAL &&
 			    (!oldest || job->touched < oldest->touched))
 				oldest = job;
 		}
@@ -632,7 +636,7 @@ journal_checkpoint_write (struct journal        *j,
 	 * terminal record, which keeps only the state, replaces them all. */
 	if (job && job->error && !(kind & (KIND(JOURNAL_STATE) | TERMINAL)))
 		return job->error;
-	bool legacy = job && job->flags & JOB_LEGACY;
+	bool legacy = job && flag_any(job->flags, JOB_LEGACY);
 	struct journal_record *records = nullptr;
 	int e = 0;
 	if (!state) {
@@ -704,7 +708,7 @@ journal_checkpoint_write (struct journal        *j,
 	uint64_t now = clk_realtime_ns();
 	if (now)
 		job->touched = now;
-	job->flags = had | (legacy ? JOB_LEGACY : 0) | (terminal ? JOB_TERMINAL : 0);
+	job->flags = flag16(had | (legacy ? JOB_LEGACY : 0) | (terminal ? JOB_TERMINAL : 0));
 	job->error = 0;
 	if (state)
 		job->thought = (typeof(job->thought)){};
@@ -830,7 +834,7 @@ journal_thought_put (struct journal            *j,
 	e = begin ? 0 : job->thought.error ? job->thought.error : journal_thought_write(j, item);
 	job->thought.error = e;
 	if (!job->bytes)
-		job->flags &= ~JOB_TERMINAL;
+		flag_clear(&job->flags, JOB_TERMINAL);
 	if (!e)
 		job->thought.seen = item->offset + item->record->len;
 	return e;
@@ -938,7 +942,7 @@ journal_thought_close (struct journal            *j,
 	struct journal_job *job = journal_job_find(j, &item->id);
 	int e = journal_thought_commit(j, item, job);
 	if (!e && job && !job->bytes && item->operation == JOURNAL_THOUGHT_FINISH)
-		job->flags |= JOB_TERMINAL;
+		flag_set(&job->flags, JOB_TERMINAL);
 	return e;
 }
 
@@ -995,7 +999,7 @@ journal_thread (void *arg)
 	(void)pthread_setname_np(pthread_self(), "journal");
 	for (;;) {
 		pthread_mutex_lock(&j->lock);
-		while (list_is_empty(&j->items) && !(j->flags & WRITER_STOP))
+		while (list_is_empty(&j->items) && !flag_any(j->flags, WRITER_STOP))
 			pthread_cond_wait(&j->ready, &j->lock);
 		struct journal_item *item = journal_take(j);
 		pthread_mutex_unlock(&j->lock);
@@ -1036,7 +1040,7 @@ journal_enqueue (struct journal      *j,
 	struct tally const max = tally(JOURNAL_QUEUE + (control ? JOURNAL_CONTROL : 0),
 	                               JOURNAL_BYTES + (control ? JOURNAL_CONTROL_BYTES : 0));
 	pthread_mutex_lock(&j->lock);
-	if (j->flags & WRITER_STOP)
+	if (flag_any(j->flags, WRITER_STOP))
 		e = ECANCELED;
 	else if (!tally_fits(&j->queue, max, item->bytes))
 		e = EAGAIN;
@@ -1368,10 +1372,10 @@ journal_create (char const *path,
 		if (!*e) {
 			/* The writer reads the flags, so they change before it
 			 * starts, and back if it does not. */
-			j->flags |= WRITER_STARTED;
+			flag_put(&j->flags, FLAG_WHEN, WRITER_STARTED);
 			*e = pthread_create(&j->thread, nullptr, journal_thread, j);
 			if (*e)
-				j->flags &= ~WRITER_STARTED;
+				flag_put(&j->flags, FLAG_WHEN, 0);
 			int restore = pthread_sigmask(SIG_SETMASK, &old, nullptr);
 			if (!*e)
 				*e = restore;
@@ -1388,10 +1392,10 @@ journal_create (char const *path,
 void
 journal_stop (struct journal *j)
 {
-	if (!j || (j->flags & (WRITER_STARTED | WRITER_STOP)) != WRITER_STARTED)
+	if (!j || flag_get(j->flags, FLAG_WHEN | WRITER_STOP) != WRITER_STARTED)
 		return;
 	pthread_mutex_lock(&j->lock);
-	j->flags |= WRITER_STOP;
+	flag_set(&j->flags, WRITER_STOP);
 	pthread_mutex_unlock(&j->lock);
 	pthread_cond_signal(&j->ready);
 	(void)pthread_join(j->thread, nullptr);

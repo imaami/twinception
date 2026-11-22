@@ -16,6 +16,7 @@
 #include "buf.h"
 #include "config.h"
 #include "dstr.h"
+#include "flag.h"
 #include "hexid.h"
 #include "hist.h"
 #include "home.h"
@@ -53,31 +54,35 @@ enum {
 
 /* What home notes of a job's run, in its flags. */
 enum : uint32_t {
-	OVERFLOW      = 1u << 0,   /* the answer passed MAX_RESPONSE */
-	DROPPED       = 1u << 1,   /* its front let go of it while it ran */
-	PROVIDER_DONE = 1u << 2,   /* the provider's native job is in a final
-	                              state */
-	RUNNING       = 1u << 3,   /* it uses one of the upstream slots */
-	PROBE         = 1u << 4,   /* it is the breaker's probe */
-	SEEN          = 1u << 5,   /* its answer has begun */
-	STREAM        = 1u << 6,   /* the answer is an event stream */
-	BACKED        = 1u << 7,   /* held back until its stream is read on */
-	DELIVERED     = 1u << 8,   /* libcurl has handed over all of the stream */
-	EVENT         = 1u << 9,   /* an event of it is whole, and is being
-	                              parsed */
-	TRUNCATED     = 1u << 10,  /* its stop reason is the output token limit */
-	ERRED         = 1u << 11,  /* the result is the text of the upstream's
-	                              error */
-	STALLED       = 1u << 12,  /* the chunk timeout ended it */
-	ENDED         = 1u << 13,  /* an event of its stream marked the end of
-	                              the answer */
-	READY         = 1u << 14,  /* a slot was free for it: on a ready list */
-	PREEMPTED     = 1u << 15,  /* an interactive job preempted it once, which
-	                              no other may again */
-	DELTA_PENDING = 1u << 16,  /* the front has not yet drained the delta
-	                              mailbox */
-	DELTA_ENDED   = 1u << 17,  /* the job has ended, and DONE is posted once
-	                              the front drains the mailbox */
+	OVERFLOW      = FLAG_OWN(0),   /* the answer passed MAX_RESPONSE */
+	DROPPED       = FLAG_OWN(1),   /* its front let go of it while it ran */
+	PROVIDER_DONE = FLAG_OWN(2),   /* the provider's native job is in a
+	                                  final state */
+	RUNNING       = FLAG_OWN(3),   /* it uses one of the upstream slots */
+	PROBE         = FLAG_OWN(4),   /* it is the breaker's probe */
+	SEEN          = FLAG_OWN(5),   /* its answer has begun */
+	STREAM        = FLAG_OWN(6),   /* the answer is an event stream */
+	BACKED        = FLAG_OWN(7),   /* held back until its stream is read
+	                                  on */
+	DELIVERED     = FLAG_OWN(8),   /* libcurl has handed over all of the
+	                                  stream */
+	EVENT         = FLAG_OWN(9),   /* an event of it is whole, and is being
+	                                  parsed */
+	TRUNCATED     = FLAG_CUT,      /* its stop reason is the output token
+	                                  limit */
+	ERRED         = FLAG_OWN(11),  /* the result is the text of the
+	                                  upstream's error */
+	STALLED       = FLAG_LATE,     /* the chunk timeout ended it */
+	ENDED         = FLAG_OWN(13),  /* an event of its stream marked the end
+	                                  of the answer */
+	READY         = FLAG_OWN(14),  /* a slot was free for it: on a ready
+	                                  list */
+	PREEMPTED     = FLAG_OWN(15),  /* an interactive job preempted it once,
+	                                  which no other may again */
+	DELTA_PENDING = FLAG_OWN(16),  /* the front has not yet drained the
+	                                  delta mailbox */
+	DELTA_ENDED   = FLAG_OWN(17),  /* the job has ended, and DONE is posted
+	                                  once the front drains the mailbox */
 };
 
 /* The breaker's states, as /metrics gives them. */
@@ -95,14 +100,17 @@ enum {
 
 /* The bits of home->flags. */
 enum : uint16_t {
-	HOME_DRAINING = 1u << 0,  /* home cancels the jobs in flight and
-	                             refuses new ones */
-	HOME_ALONE    = 1u << 1,  /* the client loops have exited */
-	HOME_PROBING  = 1u << 2,  /* the breaker's probe is under way */
-	HOME_FIFO     = 1u << 3,  /* all jobs of a class wait in one queue */
-	HOME_DISCOVER = 1u << 4,  /* the GET of /props or of the model is sent
-	                             with the first token of a job: the
-	                             credential file had none at the start */
+	HOME_DRAINING = FLAG_END | FLAG_NOW,  /* home cancels the jobs in flight
+	                                         and refuses new ones */
+	HOME_ALONE    = FLAG_OWN(1),          /* the client loops have exited */
+	HOME_PROBING  = FLAG_OWN(2),          /* the breaker's probe is under
+	                                         way */
+	HOME_FIFO     = FLAG_OWN(3),          /* all jobs of a class wait in one
+	                                         queue */
+	HOME_DISCOVER = FLAG_OWN(4),          /* the GET of /props or of the
+	                                         model is sent with the first
+	                                         token of a job: the credential
+	                                         file had none at the start */
 };
 
 /* Whom jobs of a class are for: an identity, a session, or a client's
@@ -141,20 +149,25 @@ struct home_delivery_error {
 
 /* The bits of job->recovery.flags. */
 enum : uint64_t {
-	RECOVERY_RESTORING = 1u << 0,  /* the job was restored from its journal,
-	                                  and home_start() reattaches to the
-	                                  provider's stream */
-	RECOVERY_CANCEL    = 1u << 1,  /* its front cancelled it with JOB_CANCEL */
-	RECOVERY_DEFERRED  = 1u << 2,  /* its transfer ended during a journal
-	                                  write */
-	RECOVERY_OPENING   = 1u << 3,  /* its stream opens once the "meta"
-	                                  record is written */
-	RECOVERY_RESUME    = 1u << 4,  /* with RECOVERY_OPENING, or while the
-	                                  job waits for the credential, the
-	                                  stream resumes the provider's job */
-	RECOVERY_ENDING    = 1u << 5,  /* it ended during a journal write */
-	RECOVERY_THOUGHT   = 1u << 6,  /* a thought is open in the journal */
-	RECOVERY_FINAL     = 1u << 7,  /* the final thought boundary is written */
+	RECOVERY_RESTORING = FLAG_OWN(0),  /* the job was restored from its
+	                                      journal, and home_start()
+	                                      reattaches to the provider's
+	                                      stream */
+	RECOVERY_CANCEL    = FLAG_END,     /* its front cancelled it with
+	                                      JOB_CANCEL */
+	RECOVERY_DEFERRED  = FLAG_OWN(2),  /* its transfer ended during a
+	                                      journal write */
+	RECOVERY_OPENING   = FLAG_OWN(3),  /* its stream opens once the "meta"
+	                                      record is written */
+	RECOVERY_RESUME    = FLAG_OWN(4),  /* with RECOVERY_OPENING, or while
+	                                      the job waits for the credential,
+	                                      the stream resumes the provider's
+	                                      job */
+	RECOVERY_ENDING    = FLAG_OWN(5),  /* it ended during a journal write */
+	RECOVERY_THOUGHT   = FLAG_OWN(6),  /* a thought is open in the
+	                                      journal */
+	RECOVERY_FINAL     = FLAG_OWN(7),  /* the final thought boundary is
+	                                      written */
 };
 
 /*
@@ -239,7 +252,7 @@ struct home {
 	uint32_t                  running_bg;  /* background jobs running */
 	uint32_t                  cancelling;  /* native cancellation requests */
 	uint32_t                  persisting;  /* journal callbacks still using home */
-	uint16_t                  flags;       /* HOME_* */
+	struct flag16             flags;       /* HOME_* */
 	uint16_t                  state;       /* the breaker's */
 };
 
@@ -313,9 +326,9 @@ home_job_restore (struct job                  *job,
                   struct journal_record const *records)
 {
 	struct home_recovery *r = &job->recovery;
-	if (r->flags)
+	if (r->flags.bits)
 		return EBUSY;
-	r->flags = RECOVERY_RESTORING;
+	r->flags = flag64(RECOVERY_RESTORING);
 	for (; records; records = records->next) {
 		if (records->type != JOURNAL_META)
 			continue;
@@ -385,7 +398,7 @@ static struct home_principal *
 home_find_whom (struct home const *home,
                 struct job const  *job)
 {
-	struct htab_node *node = home->flags & HOME_FIFO
+	struct htab_node *node = flag_any(home->flags, HOME_FIFO)
 	                       ? *htab_find(&home->whom, home_job_class(job), home_class_is, job)
 	                       : *htab_find(&home->whom, job->principal, home_principal_is, job);
 	return node ? container_of(node, struct home_principal, node) : nullptr;
@@ -397,7 +410,7 @@ home_job_progress (struct job *job,
                    uint64_t    progress)
 {
 	hist_set(&job->progress, progress);
-	if (job->asks & JOB_NOTIFY && !(job->flags & DROPPED))
+	if (job->asks & JOB_NOTIFY && !flag_any(job->flags, DROPPED))
 		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_PROGRESS);
 }
 
@@ -422,7 +435,7 @@ home_unqueue (struct home *home,
 		hist_add(&home->metrics->principals, -1ULL);
 		return;
 	}
-	if (home->flags & HOME_FIFO)
+	if (flag_any(home->flags, HOME_FIFO))
 		return;
 	for (; node != &p->jobs; node = node->next) {
 		struct job *next = container_of(node, struct job, queue);
@@ -435,7 +448,7 @@ static void
 home_job_drop_answer (struct job *job)
 {
 	job_drop_answer(job);
-	job->flags &= ~(DELTA_PENDING | DELTA_ENDED);
+	flag_clear(&job->flags, DELTA_PENDING | DELTA_ENDED);
 }
 
 /* Drop @p n references to @p job, and hand it back to its front if they were
@@ -456,7 +469,7 @@ static void
 home_job_reset (struct job *job,
                 uint32_t    flags)
 {
-	job->flags = flags;
+	job->flags = flag32(flags);
 	job->http = 0;
 	job->ev = job->evlen = job->line = job->scan = job->chunks = job->used = 0;
 	job->reader = (struct ai_reader){};
@@ -474,12 +487,12 @@ home_job_end (struct job      *job,
 {
 	job->status = (uint8_t)status;
 	if (job->recovery.pending) {
-		job->recovery.flags |= RECOVERY_ENDING;
+		flag_set(&job->recovery.flags, RECOVERY_ENDING);
 		return;
 	}
-	switch (job->flags & (DELTA_PENDING | DROPPED)) {
+	switch (flag_get(job->flags, DELTA_PENDING | DROPPED)) {
 	case DELTA_PENDING:
-		job->flags |= DELTA_ENDED;
+		flag_set(&job->flags, DELTA_ENDED);
 		return;
 	case 0:
 		if (status == JOB_CANCELLED)
@@ -535,16 +548,16 @@ home_retire (struct home *home,
 	hist_add(&m->in_flight, -1ULL);
 	if (job->who)
 		home_unqueue(home, job);
-	home->readied[c] -= (job->flags & READY) != 0;
+	home->readied[c] -= flag_get(job->flags, READY) != 0;
 	list_del(&job->queue);
-	if (job->flags & RUNNING) {
+	if (flag_any(job->flags, RUNNING)) {
 		hist_add(&m->running, -1ULL);
 		if (c) {
 			hist_add(&m->background, -1ULL);
 			--home->running_bg;
 		}
-		if (job->flags & PROBE)
-			home->flags &= ~HOME_PROBING;
+		if (flag_any(job->flags, PROBE))
+			flag_clear(&home->flags, HOME_PROBING);
 		loop_ready_bulk(home->loop, &home->start);
 	}
 	home_unstream(home, job);
@@ -554,8 +567,8 @@ home_retire (struct home *home,
 static void
 home_maybe_exit (struct home *home)
 {
-	if (home->flags & HOME_ALONE && !hist_get(&home->metrics->in_flight) && !home->cancelling &&
-	    !home->persisting)
+	if (flag_any(home->flags, HOME_ALONE) && !hist_get(&home->metrics->in_flight) &&
+	    !home->cancelling && !home->persisting)
 		loop_exit(home->loop);
 }
 
@@ -681,7 +694,7 @@ static void
 home_native_cancel (struct home *home,
                     struct job  *job)
 {
-	if (!home_native(home) || (job->flags & (RUNNING | PROVIDER_DONE)) != RUNNING)
+	if (!home_native(home) || flag_get(job->flags, RUNNING | PROVIDER_DONE) != RUNNING)
 		return;
 	if (!job->cancel_url && job->recovery.provider_id)
 		(void)home_provider_url(home, job, true, &job->cancel_url);
@@ -751,7 +764,7 @@ home_end (struct home      *home,
           _Atomic uint64_t *count)
 {
 	if (status & JOB_END_ABORT &&
-	    (!(job->asks & JOB_DURABLE) || job->recovery.flags & RECOVERY_CANCEL))
+	    (!(job->asks & JOB_DURABLE) || flag_any(job->recovery.flags, RECOVERY_CANCEL)))
 		home_native_cancel(home, job);
 	if (!list_is_empty(&job->due))
 		home_retire(home, job);
@@ -785,7 +798,7 @@ home_job_erred (struct job *job,
                 char const *what,
                 int         len)
 {
-	job->flags |= ERRED;
+	flag_set(&job->flags, ERRED);
 	return home_job_say(job, "Upstream error (HTTP %d): %.*s", job->http, len, what);
 }
 
@@ -795,7 +808,7 @@ home_job_erred (struct job *job,
 static void
 home_job_unpersisted (struct job *job)
 {
-	job->flags |= ERRED;
+	flag_set(&job->flags, ERRED);
 	(void)home_job_say(job, "Transcript persistence failed: %s", strerror(job->recovery.error));
 }
 
@@ -864,7 +877,7 @@ home_job_cuttable (struct home const *home,
 {
 	return !home_native(home) && !(job->asks & JOB_DURABLE) && job->transfer &&
 	       !(job->recovery.pending || job->recovery.thought_offset) &&
-	       !(job->flags & (PROBE | DELIVERED | ENDED));
+	       !flag_any(job->flags, PROBE | DELIVERED | ENDED);
 }
 
 /* How many background jobs running hold slots they may not: with one slot,
@@ -896,9 +909,9 @@ home_preempt_excess (struct home *home)
 			return;
 		struct job *job = container_of(node, struct job, queue);
 		/* Once at most. */
-		if (!home_job_cuttable(home, job) || job->flags & PREEMPTED)
+		if (!home_job_cuttable(home, job) || flag_any(job->flags, PREEMPTED))
 			continue;
-		job->flags |= PREEMPTED;
+		flag_set(&job->flags, PREEMPTED);
 		list_move(&home->preempting, &job->queue);
 		loop_ready_bulk(home->loop, &home->preempt);
 		--over;
@@ -914,8 +927,8 @@ home_breaker_probed (struct home *home,
                      bool         failure,
                      long         retry)
 {
-	job->flags &= ~PROBE;
-	home->flags &= ~HOME_PROBING;
+	flag_clear(&job->flags, PROBE);
+	flag_clear(&home->flags, HOME_PROBING);
 	if (failure) {
 		home_breaker_open(home, retry);
 		return;
@@ -941,7 +954,7 @@ home_breaker_note (struct home *home,
                    bool         failure,
                    long         retry)
 {
-	if (job->flags & PROBE) {
+	if (flag_any(job->flags, PROBE)) {
 		home_breaker_probed(home, job, failure, retry);
 		return;
 	}
@@ -977,10 +990,10 @@ home_explain (struct home *home,
               CURLcode     result,
               char const  *error)
 {
-	if (job->flags & OVERFLOW)
+	if (flag_any(job->flags, OVERFLOW))
 		return home_job_say(job, "Upstream response exceeds %d MiB.",
 		                    MAX_RESPONSE >> 20);
-	if (job->flags & STALLED)
+	if (flag_any(job->flags, STALLED))
 		return home_job_say(job, "Upstream answer stalled: nothing came for %.0f s.",
 		                    (double)home->silence / 1e9);
 	if (result == CURLE_OPERATION_TIMEDOUT)
@@ -1013,7 +1026,7 @@ home_finish_text (struct home *home,
 		home_end(home, job, JOB_FAILED, completed);
 		return;
 	}
-	if (job->flags & TRUNCATED)
+	if (flag_any(job->flags, TRUNCATED))
 		(void)buf_put(&job->result, AI_CUT_NOTE, sizeof AI_CUT_NOTE - 1, SIZE_MAX);
 	home_end(home, job, JOB_TEXT, completed);
 }
@@ -1031,9 +1044,9 @@ home_finish (struct home *home,
 {
 	bool const failed = home_job_failure(job, result);
 	home_breaker_note(home, job, failed, retry);
-	if (result || job->flags & ERRED) {
+	if (result || flag_any(job->flags, ERRED)) {
 		(void)home_explain(home, job, result, error);
-		bool resumable = result && failed && !(job->flags & (ERRED | PROVIDER_DONE)) &&
+		bool resumable = result && failed && !flag_any(job->flags, ERRED | PROVIDER_DONE) &&
 		                 job->asks & JOB_DURABLE && job->journal && job->recovery.provider_id &&
 		                 home_native(home) &&
 		                 (!job->deadline || home->loop->now < job->deadline);
@@ -1041,7 +1054,7 @@ home_finish (struct home *home,
 		         &home->metrics->completed);
 		return;
 	}
-	if (job->flags & STREAM)
+	if (flag_any(job->flags, STREAM))
 		home_finish_text(home, job);
 	else
 		home_end(home, job, JOB_ANSWERED, &home->metrics->completed);
@@ -1065,7 +1078,7 @@ home_cut (struct home *home,
 static bool
 home_job_waits (struct job const *job)
 {
-	return job->flags & DELTA_PENDING || job->recovery.pending;
+	return flag_any(job->flags, DELTA_PENDING) || job->recovery.pending;
 }
 
 /* Have the feed step read @p job's stream. */
@@ -1096,9 +1109,9 @@ home_head (struct home *home,
 	bool const stream = status >= 200 && status < 300 &&
 	                    cstr_view_equal_case(cstr_view_trim(media),
 	                                         CSTR_VIEW("text/event-stream"));
-	job->flags = (job->flags & ~STREAM) | SEEN | (stream ? STREAM : 0);
+	flag_put(&job->flags, STREAM | SEEN, SEEN | (stream ? STREAM : 0));
 	job->http = (uint16_t)status;
-	if (job->flags & PROBE && !home_job_failure(job, CURLE_OK))
+	if (flag_any(job->flags, PROBE) && !home_job_failure(job, CURLE_OK))
 		home_breaker_probed(home, job, false, 0);
 }
 
@@ -1113,7 +1126,7 @@ home_receive (struct job *job,
 {
 	int e = buf_put(to, data, len, MAX_RESPONSE);
 	if (e) {
-		job->flags |= e == ENOBUFS ? OVERFLOW : 0;
+		flag_set(&job->flags, e == ENOBUFS ? OVERFLOW : 0);
 		return 0;
 	}
 	return len;
@@ -1133,14 +1146,14 @@ home_job_write (char const *data,
 	struct home *home = self;
 	if (!len)
 		return 0;
-	if (!(job->flags & SEEN))
+	if (!flag_any(job->flags, SEEN))
 		home_head(home, job);
 	job->active = home->loop->now;
 	list_move(&home->idle, &job->idle);
 	if (home->silence && home->timers[TIMER_QUIET].due == UINT64_MAX)
 		(void)loop_timer_set(home->loop, &home->timers[TIMER_QUIET],
 		                     job->active + home->silence);
-	if (!(job->flags & STREAM)) {
+	if (!flag_any(job->flags, STREAM)) {
 		size_t before = buf_peek(&job->result).len;
 		size_t n = home_receive(job, &job->result, data, len);
 		/* A Responses stream can arrive without its event-stream media
@@ -1157,12 +1170,13 @@ home_job_write (char const *data,
 		struct buf empty = job->wire;
 		job->wire = job->result;
 		job->result = empty;
-		job->flags |= STREAM;
+		flag_set(&job->flags, STREAM);
 		home_feed(home, job);
 		return n;
 	}
-	if (job->flags & DELTA_PENDING || buf_peek(&job->wire).len - job->scan >= LOOP_STEP_RECV) {
-		job->flags |= BACKED;
+	if (flag_any(job->flags, DELTA_PENDING) ||
+	    buf_peek(&job->wire).len - job->scan >= LOOP_STEP_RECV) {
+		flag_set(&job->flags, BACKED);
 		list_del(&job->idle);
 		return CURL_WRITEFUNC_PAUSE;
 	}
@@ -1190,7 +1204,7 @@ home_job_done (CURLcode    result,
 	 * native background stream, wait for the transfer's end, which the
 	 * job keeps. */
 	bool pending = job->recovery.pending;
-	bool events = result && job->flags & STREAM && ai_background(home->ep) &&
+	bool events = result && flag_any(job->flags, STREAM) && ai_background(home->ep) &&
 	              buf_peek(&job->wire).len;
 	struct home_delivery_error *d = pending || events ? malloc(sizeof *d) : nullptr;
 	if (d) {
@@ -1200,16 +1214,16 @@ home_job_done (CURLcode    result,
 		};
 		util_format(d->message, sizeof d->message, "%s", error);
 		job->delivery_error = d;
-		job->flags |= DELIVERED;
+		flag_set(&job->flags, DELIVERED);
 	}
 	if (pending) {
 		if (!d)
 			job->recovery.error = ENOMEM;
-		job->recovery.flags |= RECOVERY_DEFERRED;
+		flag_set(&job->recovery.flags, RECOVERY_DEFERRED);
 		return;
 	}
-	if (d || (result == CURLE_OK && job->flags & STREAM)) {
-		job->flags |= DELIVERED;
+	if (d || (result == CURLE_OK && flag_any(job->flags, STREAM))) {
+		flag_set(&job->flags, DELIVERED);
 		home_feed(home, job);
 		return;
 	}
@@ -1230,7 +1244,7 @@ home_journal_done (struct loop *loop,
 	--r->pending;
 	if (home)
 		--home->persisting;
-	if (!home || loop->flags & LOOP_EXIT) {
+	if (!home || flag_any(loop->flags, LOOP_EXIT)) {
 		home_job_put(job, 1);
 		return;
 	}
@@ -1238,8 +1252,8 @@ home_journal_done (struct loop *loop,
 		r->error = error;
 	if (r->pending)
 		goto done;
-	if (r->flags & RECOVERY_ENDING) {
-		r->flags &= ~RECOVERY_ENDING;
+	if (flag_any(r->flags, RECOVERY_ENDING)) {
+		flag_clear(&r->flags, RECOVERY_ENDING);
 		if (r->error && job->status != JOB_CANCELLED) {
 			home_job_unpersisted(job);
 			job->status = JOB_FAILED;
@@ -1254,9 +1268,9 @@ home_journal_done (struct loop *loop,
 		home_cut(home, job, CURLE_OK);
 		goto done;
 	}
-	if (r->flags & RECOVERY_OPENING) {
-		bool resume = r->flags & RECOVERY_RESUME;
-		r->flags &= ~(RECOVERY_OPENING | RECOVERY_RESUME);
+	if (flag_any(r->flags, RECOVERY_OPENING)) {
+		bool resume = flag_any(r->flags, RECOVERY_RESUME);
+		flag_clear(&r->flags, RECOVERY_OPENING | RECOVERY_RESUME);
 		int e = home_open(home, job, resume);
 		if (e) {
 			(void)home_job_say(job, "Cannot %s provider stream: %s",
@@ -1265,9 +1279,9 @@ home_journal_done (struct loop *loop,
 		}
 		goto done;
 	}
-	bool const deferred = r->flags & RECOVERY_DEFERRED;
-	r->flags &= ~RECOVERY_DEFERRED;
-	if (job->flags & STREAM) {
+	bool const deferred = flag_any(r->flags, RECOVERY_DEFERRED);
+	flag_clear(&r->flags, RECOVERY_DEFERRED);
+	if (flag_any(job->flags, STREAM)) {
 		home_feed(home, job);
 	} else if (deferred) {
 		struct home_delivery_error const *d = job->delivery_error;
@@ -1320,7 +1334,7 @@ home_connect (struct home *home,
 			return e;
 		home_archive_pending(home, job);
 	}
-	job->recovery.flags |= RECOVERY_OPENING | (resume ? RECOVERY_RESUME : 0);
+	flag_set(&job->recovery.flags, RECOVERY_OPENING | (resume ? RECOVERY_RESUME : 0));
 	return home_metadata(home, job);
 }
 
@@ -1350,7 +1364,7 @@ home_send (struct home *home,
 			conversation = home->conversation;
 		}
 	}
-	job->flags &= ~(SEEN | DELIVERED);
+	flag_clear(&job->flags, SEEN | DELIVERED);
 	int e = http_post_json(home->http, url ? url : ep->url, (char const *)body.ptr, body.len,
 	                       home_lines(home, conversation, line), 0, home_job_write,
 	                       home_job_done, job, &job->transfer);
@@ -1368,9 +1382,9 @@ static void
 home_discover (struct home *home,
                char const  *line)
 {
-	if (!(home->flags & HOME_DISCOVER))
+	if (!flag_any(home->flags, HOME_DISCOVER))
 		return;
-	home->flags &= ~HOME_DISCOVER;
+	flag_clear(&home->flags, HOME_DISCOVER);
 	(void)home_props_ask(home, line);
 }
 
@@ -1386,9 +1400,9 @@ home_job_authorized (struct auth_wait *wait,
 {
 	struct job *job = container_of(wait, struct job, auth);
 	struct home *home = self;
-	bool const resume = job->recovery.flags & RECOVERY_RESUME;
-	job->recovery.flags &= ~RECOVERY_RESUME;
-	if (home->flags & HOME_DRAINING) {
+	bool const resume = flag_any(job->recovery.flags, RECOVERY_RESUME);
+	flag_clear(&job->recovery.flags, RECOVERY_RESUME);
+	if (flag_any(home->flags, HOME_DRAINING)) {
 		home_end(home, job, JOB_CANCELLED, &home->metrics->cancelled);
 		return;
 	}
@@ -1428,7 +1442,7 @@ home_open (struct home *home,
 	if (!line) {
 		job->auth.done = home_job_authorized;
 		if (resume)
-			job->recovery.flags |= RECOVERY_RESUME;
+			flag_set(&job->recovery.flags, RECOVERY_RESUME);
 		return 0;
 	}
 	e = home_send(home, job, resume, line);
@@ -1472,11 +1486,11 @@ home_start (struct home *home,
 	struct home_metrics *m = home->metrics;
 	struct loop *loop = home->loop;
 	if (home->state == HALF) {
-		job->flags |= PROBE;
-		home->flags |= HOME_PROBING;
+		flag_set(&job->flags, PROBE);
+		flag_set(&home->flags, HOME_PROBING);
 		hist_add(&m->probes, 1);
 	}
-	job->flags |= RUNNING;
+	flag_set(&job->flags, RUNNING);
 	hist_add(&m->running, 1);
 	hist_add(&m->dispatched, 1);
 	if (home_job_class(job)) {
@@ -1493,10 +1507,10 @@ home_start (struct home *home,
 	/* A restored job reattaches to its provider stream; it never submits
 	 * the original request again. */
 	struct home_recovery *r = &job->recovery;
-	bool resume = r->flags & RECOVERY_RESTORING;
+	bool resume = flag_any(r->flags, RECOVERY_RESTORING);
 	int e = 0;
 	if (resume) {
-		r->flags &= ~RECOVERY_RESTORING;
+		flag_clear(&r->flags, RECOVERY_RESTORING);
 	} else if (home_llama(home)) {
 		struct hexid id = {};
 		e = hexid_make(&id);
@@ -1552,15 +1566,15 @@ home_start_step (struct loop      *loop,
                  struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, start);
-	while (!(home->flags & (HOME_DRAINING | HOME_PROBING)) && home->state != OPEN &&
+	while (!flag_any(home->flags, HOME_DRAINING | HOME_PROBING) && home->state != OPEN &&
 	       hist_get(&home->metrics->running) < home->slots) {
 		struct job *job = home_next(home, true);
 		if (!job)
 			return;
 		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		if (job->flags & READY) {
-			job->flags &= ~READY;
+		if (flag_any(job->flags, READY)) {
+			flag_clear(&job->flags, READY);
 			--home->readied[home_job_class(job)];
 			list_del(&job->queue);
 		} else {
@@ -1608,17 +1622,17 @@ static void
 home_expire (struct home *home,
              struct job  *job)
 {
-	if (job->flags & DROPPED) {
+	if (flag_any(job->flags, DROPPED)) {
 		home_cancel(home, job);
 		return;
 	}
-	if (job->flags & RUNNING) {
+	if (flag_any(job->flags, RUNNING)) {
 		home_cut(home, job, CURLE_OPERATION_TIMEDOUT);
 		return;
 	}
 	struct home_metrics *m = home->metrics;
 	double s = (double)home->ep->timeout_ms / 1e3;
-	if (job->flags & PREEMPTED) {
+	if (flag_any(job->flags, PREEMPTED)) {
 		/* It went upstream, and keeps its deadline from then. */
 		(void)home_job_say(job, "Timed out after %.0f s: an interactive call "
 		                   "preempted it, and it could not start again in time.", s);
@@ -1676,7 +1690,7 @@ home_silent_step (struct loop      *loop,
 		}
 		if (loop_spent(loop, step, LOOP_REQS))
 			return;
-		job->flags |= STALLED;
+		flag_set(&job->flags, STALLED);
 		hist_add(&home->metrics->stalls, 1);
 		home_cut(home, job, CURLE_OPERATION_TIMEDOUT);
 	}
@@ -1715,7 +1729,7 @@ home_put_delta (struct job       *job,
                 struct cstr_view  text,
                 bool              thought)
 {
-	if (!(job->asks & JOB_STREAM) || job->flags & DROPPED || !text.len)
+	if (!(job->asks & JOB_STREAM) || flag_any(job->flags, DROPPED) || !text.len)
 		return 0;
 	if (text.len > MAX_RESPONSE)
 		return ENOBUFS;
@@ -1752,7 +1766,7 @@ home_thought_end (struct home *home,
                   bool         final)
 {
 	struct home_recovery *r = &job->recovery;
-	uint64_t const thought = r->flags & (RECOVERY_THOUGHT | RECOVERY_FINAL);
+	uint64_t const thought = flag_get(r->flags, RECOVERY_THOUGHT | RECOVERY_FINAL);
 	if (!job->journal || thought & RECOVERY_FINAL || (!thought && !final))
 		return 0;
 	int e = journal_thought_end(job->journal, &job->archive, job->archive_turn,
@@ -1761,7 +1775,7 @@ home_thought_end (struct home *home,
 		r->error = e;
 		return e;
 	}
-	r->flags = (r->flags & ~RECOVERY_THOUGHT) | (final ? RECOVERY_FINAL : 0);
+	flag_put(&r->flags, RECOVERY_THOUGHT | RECOVERY_FINAL, final ? RECOVERY_FINAL : 0);
 	home_archive_pending(home, job);
 	return 0;
 }
@@ -1799,7 +1813,7 @@ home_journal_thought (struct home      *home,
 		return e;
 	}
 	r->thought_offset += text.len;
-	r->flags |= RECOVERY_THOUGHT;
+	flag_set(&r->flags, RECOVERY_THOUGHT);
 	home_archive_pending(home, job);
 	return 0;
 }
@@ -2071,7 +2085,7 @@ home_native_event (struct home        *home,
 	struct json_object *status = jb_get(api->update.len && cstr_view_equal(kind, api->update)
 	                                    ? root : object, "status");
 	if (cstr_view_index(ends, array_size(ends), jb_view(status)) < array_size(ends))
-		job->flags |= PROVIDER_DONE;
+		flag_set(&job->flags, PROVIDER_DONE);
 	if (job->cancel_url || !cstr_view_equal(kind, api->created))
 		return 0;
 	int e = home_native_id(home, job, jb_get(object, "id"));
@@ -2106,22 +2120,21 @@ home_take (struct home        *home,
 	size_t had = buf_peek(&job->result).len;
 	struct ai_event ev = {};
 	e = ai_event(home->ep->api, &job->reader, root, &sink, &ev);
-	if (!e && ev.flags & (AI_EV_THOUGHT_END | AI_EV_END))
-		e = home_thought_end(home, job, ev.flags & AI_EV_END);
+	if (!e && flag_any(ev.flags, AI_EV_THOUGHT_END | AI_EV_END))
+		e = home_thought_end(home, job, flag_any(ev.flags, AI_EV_END));
 	hist_add(&home->metrics->chunks, 1);
 	if (buf_peek(&job->result).len > had)
 		home_job_progress(job, (uint64_t)++job->chunks << 32);
-	else if (ev.flags & AI_EV_THOUGHT)
+	else if (flag_any(ev.flags, AI_EV_THOUGHT))
 		home_job_progress(job, (uint64_t)++job->chunks << 32 | JOB_THINKING);
 	job->used = ev.used ? ev.used : job->used;
-	job->flags |= (ev.flags & AI_EV_END ? ENDED | PROVIDER_DONE : 0) |
-	              (e == ENOBUFS ? OVERFLOW : 0);
+	flag_set(&job->flags, (flag_any(ev.flags, AI_EV_END) ? ENDED | PROVIDER_DONE : 0) |
+	                               (e == ENOBUFS ? OVERFLOW : 0));
 	if (ev.reason) {
 		size_t len = jb_utf8(ev.reason, strnlen(ev.reason, sizeof job->reason - 1));
 		memcpy(job->reason, ev.reason, len);
 		job->reason[len] = '\0';
-		job->flags = ev.flags & AI_EV_TRUNCATED ? job->flags | TRUNCATED
-		                                         : job->flags & ~TRUNCATED;
+		flag_put(&job->flags, FLAG_CUT, flag_get(ev.flags, FLAG_CUT));
 	}
 	if (ev.error) {
 		size_t len = strnlen(ev.error, MAX_ERROR);
@@ -2133,8 +2146,8 @@ home_take (struct home        *home,
 	}
 	if (e && job->recovery.error)
 		home_job_unpersisted(job);
-	if (!(job->flags & DROPPED) && buf_peek(&job->delta).len) {
-		job->flags |= DELTA_PENDING;
+	if (!flag_any(job->flags, DROPPED) && buf_peek(&job->delta).len) {
+		flag_set(&job->flags, DELTA_PENDING);
 		job_post(job, job->front, &job->to_front, &job->front_bits, JOB_DELTA);
 	}
 	return e;
@@ -2188,8 +2201,8 @@ home_read_event (struct home *home,
 	char const *data = (char const *)buf_peek(&job->wire).ptr + job->ev;
 	int e = 0;
 	if (cstr_view_equal(cstr_view_n(data, job->evlen), CSTR_VIEW("[DONE]"))) {
-		job->flags |= home->ep->api == AI_INTERACTIONS ? 0 : ENDED;
-		if (job->flags & ENDED)
+		flag_set(&job->flags, home->ep->api == AI_INTERACTIONS ? 0 : ENDED);
+		if (flag_any(job->flags, ENDED))
 			e = home_thought_end(home, job, true);
 	} else if (!home_parse(home, &job->parser, data, job->evlen))
 		return EAGAIN;
@@ -2197,8 +2210,8 @@ home_read_event (struct home *home,
 		e = home_event(home, job);
 	buf_consume(&job->wire, job->line);
 	job->ev = job->evlen = job->line = job->scan = 0;
-	job->flags &= ~EVENT;
-	if (job->flags & ERRED) {
+	flag_clear(&job->flags, EVENT);
+	if (flag_any(job->flags, ERRED)) {
 		home_cut(home, job, CURLE_OK);
 		return ECANCELED;
 	}
@@ -2233,7 +2246,7 @@ home_job_line (struct job *job,
 		return;
 	}
 	if (!n) {
-		job->flags |= line.len ? 0 : EVENT;
+		flag_set(&job->flags, line.len ? 0 : EVENT);
 		return;
 	}
 	wire[job->ev + job->evlen++] = '\n';
@@ -2282,10 +2295,10 @@ static int
 home_drained (struct home *home,
               struct job  *job)
 {
-	if (!(job->flags & DELIVERED)) {
+	if (!flag_any(job->flags, DELIVERED)) {
 		list_del(&job->feed);
-		if (job->flags & BACKED) {
-			job->flags &= ~BACKED;
+		if (flag_any(job->flags, BACKED)) {
+			flag_clear(&job->flags, BACKED);
 			http_resume(job->transfer);
 		}
 		return ENODATA;
@@ -2295,13 +2308,13 @@ home_drained (struct home *home,
 		return 0;
 	}
 	if (job->evlen) {
-		job->flags |= EVENT;
+		flag_set(&job->flags, EVENT);
 		return 0;
 	}
 	if (job->delivery_error) {
 		struct home_delivery_error const *error = job->delivery_error;
 		home_finish(home, job, error->result, error->message, error->retry);
-	} else if (job->flags & ENDED)
+	} else if (flag_any(job->flags, ENDED))
 		home_finish(home, job, CURLE_OK, "", 0);
 	else
 		home_finish(home, job, CURLE_PARTIAL_FILE,
@@ -2322,7 +2335,7 @@ home_read_stream (struct home *home,
 			list_del(&job->feed);
 			return true;
 		}
-		int e = job->flags & EVENT ? home_read_event(home, job) : home_scan(home, job);
+		int e = flag_any(job->flags, EVENT) ? home_read_event(home, job) : home_scan(home, job);
 		if (e == ENODATA)
 			e = home_drained(home, job);
 		if (e)
@@ -2419,7 +2432,7 @@ home_preempt_step (struct loop      *loop,
 			home_preempt(home, job);
 			continue;
 		}
-		job->flags &= ~PREEMPTED;
+		flag_clear(&job->flags, PREEMPTED);
 		list_append(&home->background, &job->queue);
 	}
 }
@@ -2434,7 +2447,7 @@ home_stop_step (struct loop      *loop,
                 struct loop_step *step)
 {
 	struct home *home = container_of(step, struct home, stop);
-	bool const all = home->flags & HOME_DRAINING;
+	bool const all = flag_any(home->flags, HOME_DRAINING);
 	struct list *jobs = all ? &home->timeline : &home->dropped;
 	for (; !list_is_empty(jobs); loop_work(loop, LOOP_REQS, 1)) {
 		if (loop_spent(loop, step, LOOP_REQS))
@@ -2666,7 +2679,7 @@ home_wait (struct home           *home,
 		if (!p)
 			return ENOMEM;
 		*p = (struct home_principal){
-			.node.hash = home->flags & HOME_FIFO ? c : job->principal,
+			.node.hash = flag_any(home->flags, HOME_FIFO) ? c : job->principal,
 			.jobs = list(&p->jobs),
 			.class = c
 		};
@@ -2696,7 +2709,7 @@ home_admit (struct home *home,
             struct job  *job)
 {
 	struct home_metrics *m = home->metrics;
-	if (home->flags & HOME_DRAINING) {
+	if (flag_any(home->flags, HOME_DRAINING)) {
 		home_end(home, job, JOB_CANCELLED, &m->rejected);
 		return;
 	}
@@ -2706,7 +2719,7 @@ home_admit (struct home *home,
 	}
 	struct home_principal *who = home_find_whom(home, job);
 	if (hist_get(&m->in_flight) >= home->max ||
-	    (who && !(home->flags & HOME_FIFO) && who->queued >= JOB_QUEUED)) {
+	    (who && !flag_any(home->flags, HOME_FIFO) && who->queued >= JOB_QUEUED)) {
 		home_end(home, job, JOB_BUSY, &m->rejected);
 		return;
 	}
@@ -2714,7 +2727,7 @@ home_admit (struct home *home,
 	if (home_vacant(home, c)) {
 		home_register(home, job);
 		list_append(&home->ready[c], &job->queue);
-		job->flags |= READY;
+		flag_set(&job->flags, READY);
 		++home->readied[c];
 	} else if (home_wait(home, job, c, who)) {
 		home_end(home, job, JOB_FAILED, &m->rejected);
@@ -2753,9 +2766,9 @@ static void
 home_delta_release (struct job *job)
 {
 	buf_fini(&job->delta);
-	uint32_t const was = job->flags;
-	job->flags &= ~(DELTA_PENDING | DELTA_ENDED);
-	if (was & DELTA_ENDED)
+	struct flag32 const was = job->flags;
+	flag_clear(&job->flags, DELTA_PENDING | DELTA_ENDED);
+	if (flag_any(was, DELTA_ENDED))
 		home_job_end(job, job->status);
 }
 
@@ -2769,9 +2782,11 @@ home_release (struct home *home,
               uint32_t     bits)
 {
 	home_delta_release(job);
-	job->recovery.flags |= bits & JOB_CANCEL ? RECOVERY_CANCEL : 0;
+	/* FLAG_END is the part of JOB_CANCEL that JOB_SUSPEND lacks, and it is
+	 * RECOVERY_CANCEL. */
+	flag_set(&job->recovery.flags, bits & RECOVERY_CANCEL);
 	if (job->transfer) {
-		job->flags |= DROPPED;
+		flag_set(&job->flags, DROPPED);
 		home_drop(home, job);
 		home_job_put(job, 1);
 		return;
@@ -2809,7 +2824,7 @@ home_job (struct loop *loop,
 {
 	struct job *job = container_of(msg, struct job, to_home);
 	uint32_t bits = atomic_exchange(&job->home_bits, 0);
-	if (loop->flags & LOOP_EXIT) {
+	if (flag_any(loop->flags, LOOP_EXIT)) {
 		home_job_orphan(job, bits);
 		return;
 	}
@@ -2820,7 +2835,7 @@ home_job (struct loop *loop,
 		home_release(home, job, bits);
 	else if (bits & JOB_DRAIN) {
 		home_delta_release(job);
-		if (!list_is_empty(&job->due) && job->flags & STREAM)
+		if (!list_is_empty(&job->due) && flag_any(job->flags, STREAM))
 			home_feed(home, job);
 		home_job_put(job, 1);
 	}
@@ -2930,7 +2945,7 @@ home_discovered (struct auth_wait *wait,
 		e = home_props_ask(home, line);
 	if (!e)
 		return;
-	home->flags |= HOME_DISCOVER;
+	flag_set(&home->flags, HOME_DISCOVER);
 	if (!home->ep->slots)
 		LOG(LOG_INFO, "upstream slots: %" PRIu32 " (the default)", home->slots);
 }
@@ -3005,7 +3020,7 @@ home_create (struct loop         *loop,
 		 * Without --context, it is 0 until home_props_step() sets it
 		 * from the answer of /props or of the model URL. */
 		.context = ep->context > 0 ? (uint32_t)ep->context : 0,
-		.flags = cfg->flags & CFG_TEST_FIFO ? HOME_FIFO : 0
+		.flags = { flag_any(cfg->flags, CFG_TEST_FIFO) ? HOME_FIFO : 0 }
 	};
 	for (size_t c = 0; c < array_size(home->ring); ++c) {
 		list_init(&home->ring[c]);
@@ -3043,7 +3058,7 @@ home_create (struct loop         *loop,
 	 * size, if CFG_UPSTREAM_TOOLS is set and the context size is not
 	 * known. The connection limit is then the number of slots plus 1, so
 	 * that this request does not use a connection of the calls. */
-	bool asked = cfg->flags & CFG_UPSTREAM_TOOLS && !home->context &&
+	bool asked = flag_any(cfg->flags, CFG_UPSTREAM_TOOLS) && !home->context &&
 	             !home_discovery(home);
 	home_slots(home, ep->slots, "--slots");
 	if (asked)
@@ -3084,14 +3099,14 @@ home_destroy (struct home **p_home)
 void
 home_drain (struct home *home)
 {
-	home->flags |= HOME_DRAINING;
+	flag_set(&home->flags, HOME_DRAINING);
 	loop_ready_bulk(home->loop, &home->stop);
 }
 
 void
 home_alone (struct home *home)
 {
-	home->flags |= HOME_ALONE;
+	flag_set(&home->flags, HOME_ALONE);
 	home_drain(home);
 	home_maybe_exit(home);
 }

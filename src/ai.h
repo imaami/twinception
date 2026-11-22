@@ -10,6 +10,7 @@
 
 #include "compat.h"
 #include "cstr_view.h"
+#include "flag.h"
 
 struct dstr;
 struct json_object;
@@ -138,23 +139,23 @@ ai_chatgpt_check (struct json_object *extra);
 
 /** What an event of a streamed answer says in struct ai_event's flags. */
 enum ai_event_flag : uint32_t {
-	AI_EV_THOUGHT     = 1u << 0,  /**< the event carries the model's
-	                                   thinking */
-	AI_EV_THOUGHT_END = 1u << 1,  /**< a whole reasoning item, block or step
-	                                   explicitly ended, after this event's
-	                                   pieces */
-	AI_EV_TRUNCATED   = 1u << 2,  /**< the reason is the output token
-	                                   limit */
-	AI_EV_END         = 1u << 3,  /**< the answer says it has ended */
+	AI_EV_THOUGHT     = FLAG_OWN(0),  /**< the event carries the model's
+	                                       thinking */
+	AI_EV_THOUGHT_END = FLAG_OWN(1),  /**< a whole reasoning item, block or
+	                                       step explicitly ended, after this
+	                                       event's pieces */
+	AI_EV_TRUNCATED   = FLAG_CUT,     /**< the reason is the output token
+	                                       limit */
+	AI_EV_END         = FLAG_OWN(2),  /**< the answer says it has ended */
 };
 
 /** What an event of a streamed answer says besides its text. */
 struct ai_event {
-	char const *error;   /**< the upstream's error message, or nullptr */
-	char const *reason;  /**< the answer's stop reason, or nullptr */
-	uint32_t    used;    /**< the tokens of the request and the answer, if
-	                          it says; else 0 */
-	uint32_t    flags;   /**< enum ai_event_flag */
+	char const    *error;   /**< the upstream's error message, or nullptr */
+	char const    *reason;  /**< the answer's stop reason, or nullptr */
+	uint32_t       used;    /**< the tokens of the request and the answer,
+	                             if it says; else 0 */
+	struct flag32  flags;   /**< enum ai_event_flag */
 };
 
 /** A tool call's index that an event does not give: the call it says
@@ -269,11 +270,12 @@ ai_event (enum ai_api            api,
  *  ai_format's flags).
  */
 enum ai_format_flag {
-	AI_ARGS_RAW     = 1u << 0,  /**< a call's arguments are a JSON object,
-	                                 not the text of a JSON string */
-	AI_RESULT_NAMED = 1u << 1,  /**< a result names its call by name, and
-	                                 by id if the call had one or the turn
-	                                 wrote the call (call) */
+	AI_ARGS_RAW     = FLAG_OWN(0),  /**< a call's arguments are a JSON
+	                                     object, not the text of a JSON
+	                                     string */
+	AI_RESULT_NAMED = FLAG_OWN(1),  /**< a result names its call by name,
+	                                     and by id if the call had one or
+	                                     the turn wrote the call (call) */
 };
 
 /**
@@ -337,7 +339,7 @@ struct ai_format {
 	                 end;
 	char const      *conversation;  /**< the name of the body member that
 	                                     contains the conversation */
-	uint64_t         flags;         /**< enum ai_format_flag */
+	struct flag64    flags;         /**< enum ai_format_flag */
 };
 
 /**

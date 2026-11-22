@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "buf.h"
+#include "flag.h"
 #include "jb.h"
 #include "log.h"
 #include "policy.h"
@@ -64,7 +65,7 @@ struct policy_token {
 	struct cstr_view who;        /* "identity NAME", for the log */
 	uint64_t         principal;
 	size_t           role;
-	uint64_t         flags;      /* POLICY_AGENT and POLICY_OPERATOR of
+	struct flag64    flags;      /* POLICY_AGENT and POLICY_OPERATOR of
 	                                enum policy_flag */
 };
 
@@ -292,7 +293,7 @@ policy_token_add (struct policy       *p,
 	memcpy(t->digest, digest, DIGEST);
 	t->who = who;
 	t->role = role;
-	t->flags = flags;
+	t->flags = flag64(flags);
 }
 
 static int
@@ -614,7 +615,7 @@ policy_build_member (struct policy_build *b,
 		return policy_build_fail(b, "role %s: unknown member %s", name, key);
 	if (!json_object_is_type(val, json_type_boolean))
 		return policy_build_fail(b, "role %s: metrics must be true or false", name);
-	r->flags = json_object_get_boolean(val) ? POLICY_METRICS : 0;
+	r->flags = flag64(json_object_get_boolean(val) ? POLICY_METRICS : 0);
 	return 0;
 }
 
@@ -839,7 +840,9 @@ policy_build_own (struct policy_build *b,
 {
 	struct policy *p = b->p;
 	tool_mask all = policy_all(b->reg);
-	p->roles[0] = (struct policy_grant){ .tools = all, .upstream = all, .flags = POLICY_METRICS };
+	p->roles[0] = (struct policy_grant){
+		.tools = all, .upstream = all, .flags = { POLICY_METRICS }
+	};
 	p->roles[1] = (struct policy_grant){ .tools = all, .upstream = all };
 	if (!token) {
 		p->anonymous[POLICY_LOOPBACK] = 0;
@@ -1037,7 +1040,8 @@ policy_log_roles (struct policy const   *policy,
 			up = lent(ctx, r->tools, r->upstream);
 			policy_log_tools("upstream tools", 14, reg, up);
 		}
-		LOG_ALL(LOG_INFO, "  metrics         %s", r->flags & POLICY_METRICS ? "yes" : "no");
+		LOG_ALL(LOG_INFO, "  metrics         %s",
+		        flag_any(r->flags, POLICY_METRICS) ? "yes" : "no");
 		listed |= r->tools | up;
 	}
 	return listed;
@@ -1281,7 +1285,7 @@ policy_grant_token (struct policy const *policy,
 	                                       sizeof *policy->tokens, policy_by_digest);
 	if (!t || policy_grant_role(policy, t->role, t->principal, t->who, g) != POLICY_GRANTED)
 		return POLICY_REFUSED;
-	g->flags |= t->flags;
+	flag_set(&g->flags, t->flags.bits);
 	return POLICY_GRANTED;
 }
 

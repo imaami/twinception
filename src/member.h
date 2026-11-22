@@ -39,6 +39,7 @@
 #include "clk.h"
 #include "compat.h"
 #include "cstr_view.h"
+#include "flag.h"
 #include "hexid.h"
 #include "list.h"
 #include "member_name.h"
@@ -103,9 +104,9 @@ enum member_branch : uint8_t {
 
 /** The flags of a member in a table (struct member_info). */
 enum {
-	MEMBER_RECORD = 1u << 0,  /**< a record names the member */
-	MEMBER_NOTES  = 1u << 1,  /**< the notebook of the member contains
-	                               notes */
+	MEMBER_RECORD = FLAG_OWN(0),  /**< a record names the member */
+	MEMBER_NOTES  = FLAG_OWN(1),  /**< the notebook of the member contains
+	                                   notes */
 };
 
 /** A member in a table: the record of the member, the newest change of
@@ -125,7 +126,7 @@ struct member_info {
 	uint64_t         time;      /**< the time of that commit, in seconds
 	                                 since the epoch */
 	uint32_t         kind;      /**< enum member_kind */
-	uint32_t         flags;     /**< MEMBER_RECORD and MEMBER_NOTES */
+	struct flag32    flags;     /**< MEMBER_RECORD and MEMBER_NOTES */
 	struct oid       record;    /**< the commit of the record, or no name */
 	struct oid       findings;  /**< the tip of the branch of findings, or
 	                                 no name */

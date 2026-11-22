@@ -15,6 +15,7 @@
 #include "child.h"
 #include "compat.h"
 #include "dstr.h"
+#include "flag.h"
 #include "git_run.h"
 #include "hexid.h"
 #include "jb.h"
@@ -158,12 +159,12 @@ struct member_claim {
 
 /* The flags of a lookup. */
 enum {
-	LOOKUP_NAME  = 1u << 0,  /* the job name is with a blocker */
-	LOOKUP_WRITE = 1u << 1,  /* a wait needs the record of the member, so
-	                            git writes a missing record */
-	LOOKUP_GUESS = 1u << 2,  /* the name is uid-N, because the lookup of
-	                            the name of the user failed in a way that a
-	                            retry can fix */
+	LOOKUP_NAME  = FLAG_OWN(0),  /* the job name is with a blocker */
+	LOOKUP_WRITE = FLAG_OWN(1),  /* a wait needs the record of the member,
+	                                so git writes a missing record */
+	LOOKUP_GUESS = FLAG_OWN(2),  /* the name is uid-N, because the lookup of
+	                                the name of the user failed in a way
+	                                that a retry can fix */
 };
 
 /* The lookup of a login whose member the records of a table do not name,
@@ -194,7 +195,7 @@ struct member_lookup {
 	                                              once the records decide,
 	                                              and the record that git
 	                                              writes */
-	uint32_t               flags;
+	struct flag32          flags;
 	int16_t                result;             /* EINPROGRESS until the
 	                                              lookup ends, then the
 	                                              result of the end. After
@@ -346,7 +347,7 @@ member_records_branch (struct member_records  *r,
 	entry->change = f[FIELD_SUBJECT];
 	entry->asker = f[FIELD_ASKER];
 	entry->time = time;
-	entry->flags |= MEMBER_NOTES;
+	flag_set(&entry->flags, MEMBER_NOTES);
 	return 0;
 }
 
@@ -399,7 +400,7 @@ member_records_parse (struct member_records *r)
 			.name   = name,
 			.logins = f[FIELD_LOGIN],
 			.kind   = (uint32_t)kind,
-			.flags  = MEMBER_RECORD,
+			.flags = { MEMBER_RECORD },
 			.record = record,
 		}))
 			return ENOMEM;
@@ -765,7 +766,7 @@ member_claim_step (struct member_claim          *claim,
 	int e = 0;
 	if (!entry && *login->member.name) {
 		entry = member_records_find(r, cstr_view(login->member.name));
-		if (entry && !(entry->flags & MEMBER_RECORD))
+		if (entry && !flag_any(entry->flags, MEMBER_RECORD))
 			entry = nullptr;
 		e = entry ? member_adopt(entry, login, text) : ENOENT;
 		*p_entry = entry;
@@ -881,7 +882,7 @@ member_login (struct member_login          *dest,
 		util_format(dest->text, sizeof dest->text, "uid %" PRIu32, *uid);
 		return 0;
 	}
-	if (grant->flags & POLICY_OPERATOR) {
+	if (flag_any(grant->flags, POLICY_OPERATOR)) {
 		*dest = registry->own;
 		return 0;
 	}
@@ -891,7 +892,7 @@ member_login (struct member_login          *dest,
 		return ENOENT;
 	if (!member_name_valid(name))
 		return EINVAL;
-	dest->member = member(grant->flags & POLICY_AGENT ? MEMBER_AGENT : MEMBER_PERSON, name);
+	dest->member = member(flag_any(grant->flags, POLICY_AGENT) ? MEMBER_AGENT : MEMBER_PERSON, name);
 	util_format(dest->text, sizeof dest->text, "%.*s", (int)grant->who.len, grant->who.data);
 	return 0;
 }
@@ -1142,7 +1143,7 @@ member_registry_report (struct member_registry const *registry)
 	LOG_ALL(LOG_INFO, "session members:");
 	for (size_t i = 0; i < r->all.n; ++i) {
 		struct member_info const *info = &r->all.items[i];
-		if (!(info->flags & MEMBER_RECORD))
+		if (!flag_any(info->flags, MEMBER_RECORD))
 			continue;
 		char logins[MEMBER_LOGINS * (MEMBER_LOGIN + 1)] = "";
 		size_t at = 0;
@@ -1177,7 +1178,7 @@ member_lookup_drop (struct member_lookup *lookup)
 	while (!list_is_empty(&lookup->waits))
 		list_del(lookup->waits.next);
 	store_drop(&lookup->git);
-	if (!(lookup->flags & LOOKUP_NAME))
+	if (!flag_any(lookup->flags, LOOKUP_NAME))
 		free(lookup);
 }
 
@@ -1218,7 +1219,7 @@ member_lookup_end (struct member_lookup *lookup,
                    struct member_wait   *now)
 {
 	lookup->result = (int16_t)e;
-	lookup->flags &= ~LOOKUP_WRITE;
+	flag_clear(&lookup->flags, LOOKUP_WRITE);
 	if (now)
 		(void)member_lookup_give(lookup, now, e);
 	struct list waits = list(&waits);
@@ -1226,7 +1227,7 @@ member_lookup_end (struct member_lookup *lookup,
 	struct list *node;
 	list_foreach (node, &waits)
 		(void)member_lookup_give(lookup, container_of(node, struct member_wait, hook), e);
-	if (e && e != EPERM && !(lookup->flags & LOOKUP_NAME))
+	if (e && e != EPERM && !flag_any(lookup->flags, LOOKUP_NAME))
 		member_lookup_drop(lookup);
 	while (!list_is_empty(&waits)) {
 		struct member_wait *wait = container_of(waits.next, struct member_wait, hook);
@@ -1295,7 +1296,7 @@ member_lookup_submit (struct member_lookup *lookup)
 		(void)loop_timer_stop(loop, &lookup->timer);
 		return EBUSY;
 	}
-	lookup->flags |= LOOKUP_NAME;
+	flag_set(&lookup->flags, LOOKUP_NAME);
 	return EINPROGRESS;
 }
 
@@ -1322,7 +1323,7 @@ member_lookup_step (struct member_lookup     *lookup,
 	struct tool_scratch *scratch = table->scratch;
 	struct buf in = buf();
 	int e = member_claim_step(&lookup->claim, table->registry, &table->records, text, &entry,
-	                          lookup->flags & LOOKUP_WRITE ? &in : nullptr, scratch->text,
+	                          flag_any(lookup->flags, LOOKUP_WRITE) ? &in : nullptr, scratch->text,
 	                          sizeof scratch->text);
 	switch (e) {
 	case 0:
@@ -1431,7 +1432,7 @@ member_lookup_named (struct member_lookup *lookup,
                      int                   e)
 {
 	struct member_login *login = &lookup->claim.login;
-	lookup->flags &= ~LOOKUP_GUESS;
+	flag_clear(&lookup->flags, LOOKUP_GUESS);
 	if (!e) {
 		memcpy(login->member.name, lookup->user, sizeof login->member.name);
 		return 0;
@@ -1455,8 +1456,8 @@ member_lookup_named (struct member_lookup *lookup,
 		    strerror(e));
 		break;
 	}
-	lookup->flags |= LOOKUP_GUESS;
-	return lookup->flags & LOOKUP_WRITE ? ENODATA : 0;
+	flag_set(&lookup->flags, LOOKUP_GUESS);
+	return flag_any(lookup->flags, LOOKUP_WRITE) ? ENODATA : 0;
 }
 
 /* On the loop: the job name of a lookup came back, also after MEMBER_NS.
@@ -1468,7 +1469,7 @@ member_lookup_name_done (struct loop *,
                          struct msg  *msg)
 {
 	struct member_lookup *lookup = container_of(msg, struct member_lookup, name.done);
-	lookup->flags &= ~LOOKUP_NAME;
+	flag_clear(&lookup->flags, LOOKUP_NAME);
 	if (!lookup->table) {
 		member_lookup_drop(lookup);
 		return;
@@ -1480,7 +1481,7 @@ member_lookup_name_done (struct loop *,
 		return;
 	}
 	e = member_lookup_named(lookup, e);
-	if (!e && !(lookup->flags & LOOKUP_GUESS))
+	if (!e && !flag_any(lookup->flags, LOOKUP_GUESS))
 		e = member_lookup_search(lookup);
 	if (e != EINPROGRESS)
 		member_lookup_end(lookup, e, nullptr);
@@ -1520,7 +1521,7 @@ member_lookup_create (struct member_table       *table,
 		.timer.fn = member_lookup_late,
 		.table = table,
 		.claim.login = *login,
-		.flags = flags,
+		.flags = { flags },
 		.result = EINPROGRESS,
 	};
 	list_init(&lookup->waits);
@@ -1632,7 +1633,7 @@ member_table_lookup (struct member_table       *table,
 	case EINPROGRESS:
 		/* A lookup that a wait joins writes the record if any wait needs
 		 * it. */
-		lookup->flags |= write;
+		flag_set(&lookup->flags, write);
 		return member_lookup_join(lookup, wait, EINPROGRESS);
 	case EPERM:
 		return member_lookup_give(lookup, wait, EPERM);
@@ -1644,7 +1645,7 @@ member_table_lookup (struct member_table       *table,
 	 * uid goes to the blockers. */
 	if (!write)
 		return member_lookup_give(lookup, wait, 0);
-	switch (lookup->flags & (LOOKUP_NAME | LOOKUP_GUESS)) {
+	switch (flag_get(lookup->flags, LOOKUP_NAME | LOOKUP_GUESS)) {
 	case 0:
 		break;
 	case LOOKUP_GUESS:
@@ -1653,7 +1654,7 @@ member_table_lookup (struct member_table       *table,
 	default:
 		return member_lookup_give(lookup, wait, ENODATA);
 	}
-	lookup->flags = (lookup->flags & ~LOOKUP_GUESS) | LOOKUP_WRITE;
+	flag_put(&lookup->flags, LOOKUP_GUESS | LOOKUP_WRITE, LOOKUP_WRITE);
 	lookup->result = EINPROGRESS;
 	lookup->claim.writes = 0;
 	/* The search above found no record of the login in the records. */

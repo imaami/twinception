@@ -77,9 +77,9 @@ enum {
 	                                         ring, at most */
 };
 
-/** The flags of a call in the ring. The flags of a failed call contain
- *  FLAG_FAILED, the shared bit of src/flag.h. SEEN_TOO_LARGE is a bit of
- *  this word only.
+/** The flags of a call in the ring. The range FLAG_HOW of src/flag.h
+ *  says how the call ended, and it is FLAG_FAILED for a failed call.
+ *  SEEN_TOO_LARGE is a bit of this word only.
  */
 enum seen_flag : uint16_t {
 	SEEN_TOO_LARGE = FLAG_OWN(0),  /**< the arguments and the result were
@@ -167,7 +167,9 @@ struct seen_stamp {
 	uint16_t index;   /**< K of the call in its turn, from 0, as in the ID
 	                       call_T_K of a call without an ID from the
 	                       provider */
-	uint16_t flags;   /**< FLAG_FAILED and enum seen_flag */
+	struct flag16 flags;
+	                  /**< how the call ended (FLAG_HOW of src/flag.h), and
+	                       enum seen_flag */
 };
 
 /** A call in the ring. */
@@ -261,7 +263,7 @@ struct seen_result {
 	struct seen_read       *read;    /**< the numbered lines of a file in
 	                                      @p out, or nullptr */
 	struct seen_stamp       stamp;   /**< the stamp of the call. seen_keep()
-	                                      copies only FLAG_FAILED of
+	                                      copies only FLAG_HOW of
 	                                      stamp.flags. */
 	uint64_t                at;      /**< offset of @p out in the whole
 	                                      output */

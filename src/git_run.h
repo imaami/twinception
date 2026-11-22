@@ -22,6 +22,7 @@
 #include "clk.h"
 #include "compat.h"
 #include "cstr_view.h"
+#include "flag.h"
 #include "util.h"
 
 struct oid;
@@ -94,9 +95,9 @@ enum {
  *  child_flag, as for any child.
  */
 enum git_run_dir_flag : uint32_t {
-	GIT_RUN_DOT = 1u << 0,  /**< write "--git-dir=." after the options, so
-	                             that git uses the directory as the
-	                             repository */
+	GIT_RUN_DOT = FLAG_OWN(0),  /**< write "--git-dir=." after the options,
+	                                 so that git uses the directory as the
+	                                 repository */
 };
 
 /** Where git runs, the options of the caller, and the environment of git.
@@ -111,7 +112,7 @@ struct git_run_dir {
 	char              *env[GIT_RUN_ENV];  /**< PATH, GIT_ENV_FIXED, the
 	                                           entries of the caller, and
 	                                           nullptr */
-	uint64_t           flags;             /**< enum git_run_dir_flag,
+	struct flag64      flags;             /**< enum git_run_dir_flag,
 	                                           widened over the padding */
 };
 
@@ -179,7 +180,7 @@ git_run_dir_argv (struct git_run_dir const *dir,
  * the bits of enum child_flag are those of @p how. A command that writes
  * to a repository sets .grace = GIT_GRACE, so that git removes its lock
  * files at SIGTERM. A command whose output must contain the errors sets
- * .flags = CHILD_STDERR. @p dir and the words must stay valid until the
+ * .flags = { CHILD_STDERR }. @p dir and the words must stay valid until the
  * spawn, because @p dest points at them. The function initializes the
  * whole of @p dest: every pointer of dest->argv after the nullptr of the
  * argv is nullptr. Returns 0, EINVAL if a pointer is nullptr, or E2BIG if

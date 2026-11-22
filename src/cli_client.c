@@ -7,6 +7,7 @@
 #include "cli_client.h"
 #include "cli_network.h"
 #include "compat.h"
+#include "flag.h"
 #include "jb.h"
 #include "notes_action.h"
 #include "oid.h"
@@ -113,7 +114,7 @@ static int cli_client_response_event(char const *data, size_t len, void *user)
 		return 0;
 	}
 	if (jb_is(jb_get(event, "method"), "notifications/tools/list_changed"))
-		response->client->flags |= CLI_CLIENT_CATALOG_DIRTY;
+		flag_set(&response->client->flags, CLI_CLIENT_CATALOG_DIRTY);
 	return response->notify ? response->notify(response->context, event, response->id, response->error) : 0;
 }
 
@@ -227,7 +228,7 @@ cli_client_network_post (struct cli_client          *client,
 	return (struct cli_network_post){
 		.socket = cstr_view_dstr(&client->socket), .session = cstr_view_dstr(&client->session),
 		.wire = wire, .header = cli_client_response_header, .body = cli_client_response_receive,
-		.context = response, .timeout = timeout, .flags = flags,
+		.context = response, .timeout = timeout, .flags = { flags },
 	};
 }
 
@@ -509,9 +510,10 @@ int cli_client_connect(struct cli_client *client, struct cli_error *error)
 
 /* The flags of struct cli_client_scan. */
 enum {
-	CLI_CLIENT_SCAN_FILES = 1u << 0,  /* notes_tool lists note files */
-	CLI_CLIENT_SCAN_OLDER = 1u << 1,  /* a tool lists notebooks, as the notes
-	                                     tool of an older askai does */
+	CLI_CLIENT_SCAN_FILES = FLAG_OWN(0),  /* notes_tool lists note files */
+	CLI_CLIENT_SCAN_OLDER = FLAG_OWN(1),  /* a tool lists notebooks, as the
+	                                         notes tool of an older askai
+	                                         does */
 };
 
 /* cli_client_refresh() fills this struct from the tool list and the
@@ -523,7 +525,7 @@ struct cli_client_scan {
 	struct dstr          agent;       /* the agent in the askai _meta of notes_tool */
 	struct dstr          chosen;      /* the name of the ask tool */
 	struct autocomplete *catalog;
-	uint64_t             flags;       /* CLI_CLIENT_SCAN_ bits */
+	struct flag64        flags;       /* CLI_CLIENT_SCAN_ bits */
 };
 
 /* Returns the scan of a refresh before the refresh reads the tool list.
@@ -658,7 +660,7 @@ int
 cli_client_refresh_notes (struct cli_client *client,
                           struct cli_error  *error)
 {
-	client->flags &= ~CLI_CLIENT_NOTES_DIRTY;
+	flag_clear(&client->flags, CLI_CLIENT_NOTES_DIRTY);
 	if (!dstr_len(&client->notes_tool))
 		return 0;
 	autocomplete_clear_note_files(client->catalog);
@@ -782,7 +784,7 @@ cli_client_scan_notes (struct cli_client_scan *scan,
 		e = cstr_view_store(jb_view(jb_get(meta, "session")), &scan->session);
 	if (jb_get(props, "file") && jb_get(props, "notebook") &&
 	    cli_client_has_action(actions, notes_action_names[NOTES_ACTION_LIST]))
-		scan->flags |= CLI_CLIENT_SCAN_FILES;
+		flag_set(&scan->flags, CLI_CLIENT_SCAN_FILES);
 	return e;
 }
 
@@ -807,7 +809,7 @@ cli_client_scan_tool (struct cli_client      *client,
 		e = cli_client_scan_notes(scan, name, meta, props, actions);
 	if (!members && (jb_true(jb_get(meta, "notebooks")) ||
 	                 cli_client_has_action(actions, CSTR_VIEW("notebooks"))))
-		scan->flags |= CLI_CLIENT_SCAN_OLDER;
+		flag_set(&scan->flags, CLI_CLIENT_SCAN_OLDER);
 	bool candidate = dstr_len(&client->tool) ? cstr_view_equal(name, cstr_view_dstr(&client->tool))
 	                                       : jb_is(jb_get(entry, "title"), "Ask AI");
 	if (e || !candidate)
@@ -858,7 +860,7 @@ int
 cli_client_refresh (struct cli_client *client,
                     struct cli_error  *error)
 {
-	client->flags &= ~(CLI_CLIENT_CATALOG_DIRTY | CLI_CLIENT_NOTES_DIRTY);
+	flag_clear(&client->flags, CLI_CLIENT_CATALOG_DIRTY | CLI_CLIENT_NOTES_DIRTY);
 	int e = 0;
 	__attribute__((cleanup(cli_client_scan_fini)))
 	struct cli_client_scan scan = cli_client_scan(autocomplete_create(&e));
@@ -875,7 +877,7 @@ cli_client_refresh (struct cli_client *client,
 		                               cli_client_discover_members(client, &scan, &listing, error));
 	if (!e)
 		e = cli_client_read_members(&scan, jb_get(jb_get(listing, "structuredContent"), "members"));
-	if (!e && (scan.flags & CLI_CLIENT_SCAN_FILES))
+	if (!e && flag_any(scan.flags, CLI_CLIENT_SCAN_FILES))
 		e = cli_client_report_optional(client, CSTR_VIEW("Note filename discovery failed"), error,
 		                               cli_client_discover_files(client, scan.catalog,
 		                                                         cstr_view_dstr(&scan.notes_tool), error));
@@ -884,19 +886,19 @@ cli_client_refresh (struct cli_client *client,
 	if (client->catalog && (!cstr_view_equal(cstr_view_dstr(&client->session_key), cstr_view_dstr(&scan.session)) ||
 	                        !cstr_view_equal(cstr_view_dstr(&client->agent), cstr_view_dstr(&scan.agent)) ||
 	                        !cstr_view_equal(cstr_view_dstr(&client->tool), cstr_view_dstr(&scan.chosen)))) {
-		client->flags |= CLI_CLIENT_IDENTITY_CHANGED;
+		flag_set(&client->flags, CLI_CLIENT_IDENTITY_CHANGED);
 		return cli_error_set(error, ESTALE, "AskAI changed its session, agent or ask tool; restart the client to select its history");
 	}
-	client->flags &= ~CLI_CLIENT_OLDER;
-	if ((scan.flags & CLI_CLIENT_SCAN_OLDER) && !dstr_len(&scan.notes_tool))
-		client->flags |= CLI_CLIENT_OLDER;
+	flag_clear(&client->flags, CLI_CLIENT_OLDER);
+	if (flag_any(scan.flags, CLI_CLIENT_SCAN_OLDER) && !dstr_len(&scan.notes_tool))
+		flag_set(&client->flags, CLI_CLIENT_OLDER);
 	autocomplete_destroy(&client->catalog);
 	client->catalog = scan.catalog;
 	scan.catalog = nullptr;
 	dstr_cleanup(&client->tool);
 	client->tool = dstr_move(&scan.chosen);
 	dstr_cleanup(&client->notes_tool);
-	if (scan.flags & CLI_CLIENT_SCAN_FILES)
+	if (flag_any(scan.flags, CLI_CLIENT_SCAN_FILES))
 		client->notes_tool = dstr_move(&scan.notes_tool);
 	dstr_cleanup(&client->session_key);
 	client->session_key = dstr_move(&scan.session);
