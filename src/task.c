@@ -9,7 +9,6 @@
 #include "hist.h"
 #include "list.h"
 #include "loop.h"
-#include "ref.h"
 #include "task.h"
 
 /* A client loop's part. */
@@ -98,7 +97,7 @@ static void
 task_abandon (struct task *task)
 {
 	hist_count(&task->pool->metrics.abandoned, 1);
-	task_put(task, 1);
+	task_put(task, TASK_RUNNER);
 }
 
 /* A task moved to this loop; once the loop has stopped, it never runs, and
@@ -170,7 +169,7 @@ task_step (struct loop      *loop,
 	struct task_pool *pool = task->pool;
 	struct task_lane *self = task_pool_lane(pool, loop);
 	_Atomic uint64_t *ended = &pool->metrics.cancelled;
-	if (!atomic_load_explicit(&task->cancel, memory_order_acquire)) {
+	if (atomic_load_explicit(&task->refs, memory_order_acquire) & TASK_OWNER) {
 		enum task_state state = task->slice(task, loop, loop_clock() + TASK_SLICE_NS);
 		loop_work(loop, LOOP_TASKS, 1);
 		hist_add(&self->metrics.slices, 1);
@@ -186,7 +185,7 @@ task_step (struct loop      *loop,
 	/* A message that the owner's loop refuses never runs, so the runner's
 	 * reference goes here. */
 	if (loop_post(task->owner, &task->msg))
-		task_put(task, 1);
+		task_put(task, TASK_RUNNER);
 }
 
 struct task_pool *
@@ -283,8 +282,7 @@ task_init (struct task      *task,
 	task->pool = pool;
 	task->owner = loop;
 	task->moves = 0;
-	atomic_init(&task->cancel, 0);
-	atomic_init(&task->refs, 2);
+	atomic_init(&task->refs, TASK_OWNER | TASK_RUNNER);
 }
 
 void
@@ -300,14 +298,18 @@ task_submit (struct task *task,
 void
 task_drop (struct task *task)
 {
-	atomic_store_explicit(&task->cancel, 1, memory_order_release);
-	task_put(task, 1);
+	task_put(task, TASK_OWNER);
 }
 
+/* The release orders the accesses of the caller before its drop, and the
+ * acquire orders the free after the accesses of the other side, as in
+ * ref_put() of src/ref.h. The release is also what the acquire load of
+ * task_step() pairs with.
+ */
 void
 task_put (struct task *task,
-          uint32_t     n)
+          uint64_t     refs)
 {
-	if (ref_put(&task->refs, n))
+	if (atomic_fetch_and_explicit(&task->refs, ~refs, memory_order_acq_rel) == refs)
 		free(task);
 }

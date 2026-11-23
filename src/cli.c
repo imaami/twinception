@@ -547,13 +547,18 @@ cli_history_input (struct cli       *cli,
 }
 
 /** Mark the client busy or idle: @p busy is CLI_BUSY or 0. Manual tool
- *  calls keep it shown busy.
+ *  calls keep it shown busy. An interrupt belongs to the busy period in
+ *  which it arrived: if it came after the last work of the period had
+ *  passed its last test of cancel_io, it is dropped here, and it does not
+ *  cancel the next prompt.
  */
 static int
 cli_busy (struct cli *cli,
           uint8_t     busy)
 {
 	flag_put(&cli->flags, FLAG_WHEN, busy);
+	if (!busy && !cli_stopping(cli))
+		atomic_store(&cli->cancel_io, false);
 	return cli_console_busy(cli->console, list_is_empty(&cli->tools) ? busy : CLI_BUSY);
 }
 
@@ -967,7 +972,6 @@ cli_input_save (struct cli       *cli,
 	int e = cli_history_input(cli, cstr_view_dstr(text), true, error);
 	if (e != EINTR || cli_stopping(cli))
 		return e;
-	atomic_store(&cli->cancel_io, false);
 	return cli_input_append(cli, text, CLI_INPUT_HANDLED);
 }
 
@@ -1087,10 +1091,7 @@ cli_chat_refresh (struct cli       *cli,
 		e = display;
 	switch (e) {
 	case EINTR:
-		if (cli_stopping(cli) || flag_any(cli->options->flags, CLI_OPTIONS_SINGLE))
-			return e;
-		atomic_store(&cli->cancel_io, false);
-		return 0;
+		return cli_stopping(cli) || flag_any(cli->options->flags, CLI_OPTIONS_SINGLE) ? e : 0;
 	case 0:
 	case ENOMEM:
 		return e;
@@ -1121,7 +1122,6 @@ cli_chat_error (struct cli       *cli,
 	case EINTR:
 		if (cli->exit_signal)
 			return e;
-		atomic_store(&cli->cancel_io, false);
 		return cli_ui_info(cli->console, CSTR_VIEW("Cancelled."));
 	case ENOMEM:
 		return e;

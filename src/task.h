@@ -14,11 +14,13 @@
  *
  * A task is plain memory, the first member of a malloc()ed object, that one
  * thread holds at a time: its owner, or the loop that runs it, between which
- * it moves by message (R1, R3). Two words in it are shared (R4): the owner
- * sets cancel, which the loop that runs it reads at each slice; and its
- * references, the owner's and the runner's, either of which may let go first
- * as askai stops, the last freeing it. A loop's count of the tasks placed
- * on it is shared too: placers add, the loop takes away.
+ * it moves by message (R1, R3). One word in it is shared (R4): its
+ * references, a bit for the owner's and a bit for the runner's. Either can
+ * be dropped first as askai stops, and the drop of the last frees the task.
+ * The owner's bit is the cancel order too: the loop that runs the task reads
+ * the bit before each slice and runs no slice once the bit is clear. A
+ * loop's count of the tasks placed on it is shared too: placers add, the
+ * loop takes away.
  */
 #ifndef ASKAI_SRC_TASK_H_
 #define ASKAI_SRC_TASK_H_
@@ -27,6 +29,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "flag.h"
 #include "list.h"
 #include "loop.h"
 
@@ -34,6 +37,23 @@ enum {
 	TASK_SLICE_NS = 250000,   /**< a slice, at most (loop.c's BULK_NS) */
 	TASK_BACKLOG  = 8,        /**< tasks a loop holds before one moves:
 	                               2 ms of slices */
+};
+
+/** The references to a task: the bits of task.refs. A task has exactly these
+ *  two references, so a bit for each replaces a count, and the owner's bit
+ *  replaces a cancel flag. A third reference needs a count again
+ *  (src/ref.h).
+ */
+enum : uint64_t {
+	/** The owner's reference. task_drop() clears the bit, which cancels the
+	 *  task: the loop that runs it tests the bit before each slice.
+	 */
+	TASK_OWNER = FLAG_OWN(0),
+
+	/** The reference of the loop that runs the task. When the task is back
+	 *  on the loop of its owner, the function back drops it.
+	 */
+	TASK_RUNNER = FLAG_OWN(1),
 };
 
 /** What a slice leaves to do. */
@@ -60,8 +80,8 @@ struct task {
 	struct task_pool *pool;
 	struct loop      *owner;
 	uint64_t          moves;   /**< times it moved between loops */
-	_Atomic uint32_t  cancel;  /**< bool: the owner sets, the runner reads */
-	_Atomic uint32_t  refs;    /**< the owner's and the runner's */
+	_Atomic uint64_t  refs;    /**< TASK_OWNER and TASK_RUNNER, widened
+	                                over the padding */
 };
 
 /** A client loop's tasks, as GET /metrics renders them: the loop writes, any
@@ -137,15 +157,17 @@ extern void
 task_submit (struct task *task,
              struct loop *loop);
 
-/** The owner lets go of @p task: cancel it, if it is not back, and put the
- *  owner's reference.
+/** The owner lets go of @p task: drops the owner's reference, which cancels
+ *  the task if it is not back.
  */
 extern void
 task_drop (struct task *task);
 
-/** Put @p n references to @p task: the last frees it. */
+/** Drop the references @p refs to @p task, TASK_OWNER, TASK_RUNNER or both.
+ *  The drop of the last reference frees the task.
+ */
 extern void
 task_put (struct task *task,
-          uint32_t     n);
+          uint64_t     refs);
 
 #endif /* ASKAI_SRC_TASK_H_ */

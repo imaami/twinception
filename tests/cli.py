@@ -9,6 +9,7 @@ import os
 import pty
 import re
 import select
+import shutil
 import signal
 import socket
 import socketserver
@@ -1010,6 +1011,63 @@ def check_peer_input_history(cli, unused_server):
     print("cli input persistence: Up recalls commands and PgUp recalls prompts after restart: PASS")
 
 
+def check_peer_late_interrupt(cli, unused_server):
+    """An interrupt that arrives while the last save of a turn runs, after the
+    save has taken its lock, belongs to that turn. It must not cancel the
+    next prompt."""
+    calls = []
+
+    def reply(request):
+        calls.append(request["params"]["arguments"]["prompt"])
+        return 200, "application/json", {"result": {"content": [
+            {"type": "text", "text": f"answer-{len(calls)}"}]}}
+
+    with Peer(reply) as peer:
+        directory = peer.directory.name
+        mark = directory + "/saving"
+        os.mkdir(directory + "/bin")
+        # The first "git update-ref" of a turn saves the input, and the second
+        # saves the turn, after the save has taken its lock. The wrapper
+        # delays the second one of the first turn and creates the marker.
+        # The client gives git an environment of its own, so the wrapper
+        # contains the paths.
+        with open(directory + "/bin/git", "w") as wrapper:
+            wrapper.write(f'#!/bin/sh\ncase " $* " in *" update-ref "*)\n'
+                          f'if [ -e {mark}.1 ] && [ ! -e {mark} ]; then : > {mark}; /bin/sleep 0.3\n'
+                          f'else : > {mark}.1; fi;; esac\nexec {shutil.which("git")} "$@"\n')
+        os.chmod(directory + "/bin/git", 0o755)
+        master, slave = pty.openpty()
+        environment = os.environ | {"TERM": "dumb", "LC_ALL": "C.UTF-8", "INPUTRC": os.devnull,
+                                    "PATH": directory + "/bin:" + os.environ["PATH"]}
+        proc = subprocess.Popen([cli, "--socket", peer.socket, "--color", "off", "--history-repo",
+                                 directory + "/history.git", "--session-id", "late-interrupt"],
+                                stdin=slave, stdout=slave, stderr=slave, env=environment)
+        try:
+            read_until(proc, b"\n> ", 5, master)
+            os.write(master, b"first prompt\r")
+            until = time.monotonic() + 5
+            while not os.path.exists(mark) and time.monotonic() < until:
+                time.sleep(0.01)
+            assert os.path.exists(mark), "the save of the turn did not run git update-ref"
+            proc.send_signal(signal.SIGINT)
+            output = read_until(proc, b"\n> ", 5, master)
+            assert b"answer-1" in output and b"Cancelled." not in output, output
+            os.write(master, b"second prompt\r")
+            output = read_until(proc, b"\n> ", 5, master)
+            assert b"answer-2" in output and b"Cancelled." not in output, output
+            assert calls == ["first prompt\n", "second prompt\n"], calls
+            os.write(master, b"\x04")
+            assert proc.wait(timeout=5) == 0, proc.returncode
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            os.close(master)
+            os.close(slave)
+    print("cli late interrupt: an interrupt during the last save of a turn "
+          "does not cancel the next prompt: PASS")
+
+
 def main():
     if len(sys.argv) != 3:
         raise SystemExit("usage: cli.py ASKAI-CLI ASKAI")
@@ -1021,7 +1079,8 @@ def main():
                   check_tools, check_cancel, check_broken_pipe, check_peer_errors, check_peer_stream,
                   check_peer_progress,
                   check_peer_catalog, check_peer_catalog_changed, check_peer_autocomplete_error,
-                  check_peer_notes, check_peer_older, check_peer_history, check_peer_input_history):
+                  check_peer_notes, check_peer_older, check_peer_history, check_peer_input_history,
+                  check_peer_late_interrupt):
         check(cli, server)
 
 

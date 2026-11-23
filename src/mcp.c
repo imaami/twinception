@@ -4232,13 +4232,13 @@ mcp_spin_back (struct loop *loop,
 	struct mcp_spin *s = container_of(task, struct mcp_spin, task);
 	struct mcp_slot *slot = mcp_slot_named(loop, s->call);
 	if (!slot) {
-		task_put(task, 1);
+		task_put(task, TASK_RUNNER);
 		return;
 	}
 	*mcp_slot_own(slot) = nullptr;
 	mcp_slot_tellf(slot, 0, "Ran %" PRIu64 " slices. The task moved %" PRIu64 " times "
 	               "between loops.", s->slices, task->moves);
-	task_put(task, 2);
+	task_put(task, TASK_OWNER | TASK_RUNNER);
 }
 
 /* Run the @p slices a test_task call in @p slot asks for as a task, which
