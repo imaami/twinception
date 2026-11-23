@@ -170,15 +170,15 @@ struct flag64 {
         }                                                                \
                                                                          \
         static force_inline void                                         \
-        flag##n##_clear (struct flag##n *f,                              \
-                         uint##n##_t     bits)                           \
+        flag##n##_clr (struct flag##n *f,                                \
+                       uint##n##_t     bits)                             \
         {                                                                \
                 f->bits &= (uint##n##_t)~bits;                           \
         }                                                                \
                                                                          \
         static force_inline void                                         \
-        flag##n##_flip (struct flag##n *f,                               \
-                        uint##n##_t     bits)                            \
+        flag##n##_xor (struct flag##n *f,                                \
+                       uint##n##_t     bits)                             \
         {                                                                \
                 f->bits ^= bits;                                         \
         }                                                                \
@@ -233,10 +233,10 @@ FLAG_FUNCTIONS(64)
 #define flag_set(f, bits)        FLAG_AT(f, set)((f), (bits))
 
 /** Clears the bits @p bits in the word that @p f points to. */
-#define flag_clear(f, bits)      FLAG_AT(f, clear)((f), (bits))
+#define flag_clr(f, bits)        FLAG_AT(f, clr)((f), (bits))
 
 /** Inverts the bits @p bits in the word that @p f points to. */
-#define flag_flip(f, bits)       FLAG_AT(f, flip)((f), (bits))
+#define flag_xor(f, bits)        FLAG_AT(f, xor)((f), (bits))
 
 /** Replaces the bits of @p mask in the word that @p f points to with
  *  @p value, which contains no bit outside @p mask. With the mask of a

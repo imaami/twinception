@@ -786,7 +786,7 @@ loop_turn (struct loop *loop,
 	uint64_t steps = loop_run(loop, &loop->ready[FRESH], 2, &loop->cursor,
 	                          start + INTERACTIVE_NS, false);
 	steps += loop_run(loop, &loop->ready[BULK], 1, &(size_t){}, start + BULK_NS, true);
-	flag_clear(&loop->flags, LOOP_STEPPING);
+	flag_clr(&loop->flags, LOOP_STEPPING);
 	loop_most(&s->steps, steps);
 	loop_reap(loop);
 	loop_stats_time(s, TIME_TURN, &loop->metrics->turn, loop_clock() - start);

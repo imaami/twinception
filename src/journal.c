@@ -851,7 +851,7 @@ journal_thought_put (struct journal            *j,
 	e = begin ? 0 : job->thought.error ? job->thought.error : journal_thought_write(j, item);
 	job->thought.error = e;
 	if (!job->bytes)
-		flag_clear(&job->flags, JOURNAL_JOB_ENDED);
+		flag_clr(&job->flags, JOURNAL_JOB_ENDED);
 	if (!e)
 		job->thought.seen = item->offset + item->record->len;
 	return e;

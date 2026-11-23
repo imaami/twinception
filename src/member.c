@@ -1227,7 +1227,7 @@ member_lookup_end (struct member_lookup *lookup,
                    struct member_wait   *now)
 {
 	lookup->result = (int16_t)e;
-	flag_clear(&lookup->flags, MEMBER_LOOKUP_WRITE);
+	flag_clr(&lookup->flags, MEMBER_LOOKUP_WRITE);
 	if (now)
 		(void)member_lookup_give(lookup, now, e);
 	struct list waits = list(&waits);
@@ -1439,7 +1439,7 @@ member_lookup_named (struct member_lookup *lookup,
                      int                   e)
 {
 	struct member_login *login = &lookup->claim.login;
-	flag_clear(&lookup->flags, MEMBER_LOOKUP_GUESSED);
+	flag_clr(&lookup->flags, MEMBER_LOOKUP_GUESSED);
 	if (!e) {
 		memcpy(login->member.name, lookup->user, sizeof login->member.name);
 		return 0;
@@ -1476,7 +1476,7 @@ member_lookup_name_done (struct loop *,
                          struct msg  *msg)
 {
 	struct member_lookup *lookup = container_of(msg, struct member_lookup, name.done);
-	flag_clear(&lookup->flags, MEMBER_LOOKUP_NAME_RUNNING);
+	flag_clr(&lookup->flags, MEMBER_LOOKUP_NAME_RUNNING);
 	if (!lookup->table) {
 		member_lookup_drop(lookup);
 		return;

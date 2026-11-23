@@ -338,7 +338,7 @@ cli_state_save (struct cli_state *state)
 	if (!e)
 		e = cli_state_commit(state);
 	if (!e) {
-		flag_clear(&state->flags, CLI_STATE_SNAPSHOT_PENDING | CLI_STATE_UNSAVED);
+		flag_clr(&state->flags, CLI_STATE_SNAPSHOT_PENDING | CLI_STATE_UNSAVED);
 		if (unlinkat(state->directory, dstr_get(&state->name), 0))
 			e = errno;
 	}

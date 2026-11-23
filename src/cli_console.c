@@ -294,7 +294,7 @@ cli_console_remove_callback (struct cli_console *console)
 {
 	if (flag_any(console->flags, CLI_CONSOLE_EDITOR_RUNNING)) {
 		rl_callback_handler_remove();
-		flag_clear(&console->flags, CLI_CONSOLE_EDITOR_RUNNING);
+		flag_clr(&console->flags, CLI_CONSOLE_EDITOR_RUNNING);
 	}
 }
 
@@ -330,7 +330,7 @@ static void
 cli_console_input_done (struct cli_io_job *job)
 {
 	struct cli_console *console = container_of(job, struct cli_console, in.job.job);
-	flag_clear(&console->flags, CLI_CONSOLE_IN_RUNNING);
+	flag_clr(&console->flags, CLI_CONSOLE_IN_RUNNING);
 	console->in.error = flag_any(console->flags, CLI_CONSOLE_INPUT_CLOSED) ? EINTR : job->blocker.error;
 	if (!job->blocker.error)
 		cli_console_input_set(console, console->in.job.count);
@@ -464,7 +464,7 @@ cli_console_resume_keys (struct cli_console *console)
 	if (flag_any(console->flags, CLI_CONSOLE_MACRO_PAUSED)) {
 		if (rl_executing_macro)
 			RL_SETSTATE(RL_STATE_MACROINPUT);
-		flag_clear(&console->flags, CLI_CONSOLE_MACRO_PAUSED);
+		flag_clr(&console->flags, CLI_CONSOLE_MACRO_PAUSED);
 	}
 	if (console->pending_input) {
 		rl_execute_next(console->pending_input);
@@ -784,7 +784,7 @@ cli_console_tab (int count,
 	if (repeated && flag_any(console->flags, CLI_CONSOLE_TAB_UNIQUE)) {
 		/* The first Tab already finished this word. Do not start completing
 		 * its argument with the second keypress of the same pair. */
-		flag_clear(&console->flags, CLI_CONSOLE_TAB);
+		flag_clr(&console->flags, CLI_CONSOLE_TAB);
 		return 0;
 	}
 	bool listing = repeated && flag_any(console->flags, CLI_CONSOLE_TAB_FIRST);
@@ -796,7 +796,7 @@ cli_console_tab (int count,
 	/* '!' completes unique matches and displays ambiguous ones. Explicit
 	 * possible-completions bindings retain Readline's listing-only '?'. */
 	int e = listing ? rl_complete_internal('!') : rl_complete(count, key);
-	flag_clear(&console->flags, CLI_CONSOLE_TAB_COMPLETING | CLI_CONSOLE_TAB_LISTING);
+	flag_clr(&console->flags, CLI_CONSOLE_TAB_COMPLETING | CLI_CONSOLE_TAB_LISTING);
 	return e;
 }
 
@@ -819,7 +819,7 @@ static void
 cli_console_output_done (struct cli_io_job *job)
 {
 	struct cli_console *console = container_of(job, struct cli_console, out.job.job);
-	flag_clear(&console->flags, CLI_CONSOLE_OUT_RUNNING);
+	flag_clr(&console->flags, CLI_CONSOLE_OUT_RUNNING);
 	console->out.error = job->blocker.error;
 	if (!job->blocker.error)
 		buf_consume(&console->output_queue, (size_t)console->out.job.count);
@@ -1111,7 +1111,7 @@ cli_console_setup_readline (struct cli_console *console)
 	rl_variable_bind("output-meta", "on");
 	rl_variable_bind("convert-meta", "off");
 	if (!rl_get_termcap("up") || !rl_get_termcap("cl"))
-		flag_clear(&console->flags, CLI_CONSOLE_FULLSCREEN);
+		flag_clr(&console->flags, CLI_CONSOLE_FULLSCREEN);
 	rl_add_defun("askai-accept-line", cli_console_submit, -1);
 	rl_add_defun("askai-scroll-up", cli_console_page_up, -1);
 	rl_add_defun("askai-scroll-down", cli_console_page_down, -1);
@@ -1640,7 +1640,7 @@ cli_console_read_key (struct cli_console *console)
 		 * one. Stop the keyboard macro only now, and put back the line
 		 * that cli_console_accept() did not queue. */
 		rl_free_line_state();
-		flag_clear(&console->flags, CLI_CONSOLE_MACRO_PAUSED);
+		flag_clr(&console->flags, CLI_CONSOLE_MACRO_PAUSED);
 		console->pending_input = 0;
 		rl_replace_line(console->restored_line, 0);
 		rl_point = console->restored_point < rl_end ? console->restored_point : rl_end;
@@ -1649,7 +1649,7 @@ cli_console_read_key (struct cli_console *console)
 		rl_redisplay_function();
 	}
 	if (flag_any(console->flags, CLI_CONSOLE_NOTICE_PENDING)) {
-		flag_clear(&console->flags, CLI_CONSOLE_NOTICE_PENDING);
+		flag_clr(&console->flags, CLI_CONSOLE_NOTICE_PENDING);
 		int e = cli_console_error(console, CSTR_VIEW("Input queue full; draft kept.\n"));
 		if (e)
 			return e;
@@ -1679,7 +1679,7 @@ cli_console_edit (struct cli_console *console)
 {
 	int e = 0;
 	if (flag_any(console->flags, CLI_CONSOLE_RESIZE_PENDING)) {
-		flag_clear(&console->flags, CLI_CONSOLE_RESIZE_PENDING);
+		flag_clr(&console->flags, CLI_CONSOLE_RESIZE_PENDING);
 		rl_resize_terminal();
 		if (flag_any(console->flags, CLI_CONSOLE_FULLSCREEN))
 			e = cli_console_dimensions(console);
@@ -1690,7 +1690,7 @@ cli_console_edit (struct cli_console *console)
 		return e;
 	uint64_t const interrupt = CLI_CONSOLE_INTERRUPT_PENDING | CLI_CONSOLE_EDITOR_RUNNING;
 	if (flag_all(console->flags, interrupt)) {
-		flag_clear(&console->flags, CLI_CONSOLE_INTERRUPT_PENDING);
+		flag_clr(&console->flags, CLI_CONSOLE_INTERRUPT_PENDING);
 		/* Clear the draft. rl_delete_text() records the deletion in the
 		 * undo list, so Ctrl-_ restores the draft. */
 		rl_begin_undo_group();
@@ -1758,7 +1758,7 @@ cli_console_readline (struct cli_console *console,
 		if (cli_console_queued(console))
 			break;
 		if (flag_any(console->flags, CLI_CONSOLE_INPUT_YIELD)) {
-			flag_clear(&console->flags, CLI_CONSOLE_INPUT_YIELD);
+			flag_clr(&console->flags, CLI_CONSOLE_INPUT_YIELD);
 			return EAGAIN;
 		}
 		e = cli_loop_turn(console->loop, UINT64_MAX);

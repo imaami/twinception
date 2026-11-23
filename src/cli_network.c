@@ -228,7 +228,7 @@ cli_network_finish (struct cli_network_request *request,
 		request->error = EIO;
 	if (flag_any(request->flags, CLI_NETWORK_REQUEST_ATTACHED)) {
 		(void)curl_multi_remove_handle(network->curl.multi, request->easy);
-		flag_clear(&request->flags, CLI_NETWORK_REQUEST_ATTACHED);
+		flag_clr(&request->flags, CLI_NETWORK_REQUEST_ATTACHED);
 	}
 	cli_network_request_release(request);
 	list_del(&request->hook);
@@ -438,7 +438,7 @@ cli_network_progress (struct cli_network *network)
 		list_move(&network->requests, &request->hook);
 		if (!flag_any(request->flags, CLI_NETWORK_REQUEST_PAUSED))
 			continue;
-		flag_clear(&request->flags, CLI_NETWORK_REQUEST_PAUSED);
+		flag_clr(&request->flags, CLI_NETWORK_REQUEST_PAUSED);
 		CURLcode code = curl_easy_pause(request->easy, CURLPAUSE_CONT);
 		if (code != CURLE_OK)
 			cli_network_finish(request, EIO, curl_easy_strerror(code));
@@ -465,7 +465,7 @@ cli_network_service (struct cli_network *network)
 		return;
 	flag_set(&network->flags, CLI_NETWORK_DELIVERING);
 	cli_network_deliver(network);
-	flag_clear(&network->flags, CLI_NETWORK_DELIVERING);
+	flag_clr(&network->flags, CLI_NETWORK_DELIVERING);
 	bool ready = !network->ready || network->ready(network->ready_context);
 	struct list *node;
 	list_foreach (node, &network->calls) {

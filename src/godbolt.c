@@ -2225,7 +2225,7 @@ godbolt_section_end (struct godbolt *call)
 		godbolt_put(call, godbolt_cut_note);
 		flag_set(&call->rec.marks, GODBOLT_REC_CUT_NOTED);
 	}
-	flag_clear(&call->rec.marks, GODBOLT_REC_CUT_NOTE_PENDING | GODBOLT_REC_SECTION_OPEN);
+	flag_clr(&call->rec.marks, GODBOLT_REC_CUT_NOTE_PENDING | GODBOLT_REC_SECTION_OPEN);
 	call->rec.at = tool_cursor(call->rec.at.section + 1);
 	return call->e;
 }

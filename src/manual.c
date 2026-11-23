@@ -795,11 +795,11 @@ manual_call_line (struct manual_call *call,
 		++depth;
 	struct cstr_view const rest = cstr_view_slice(line, depth, SIZE_MAX);
 	if (!rest.len) {
-		flag_clear(&call->scan, MANUAL_SCAN_TAGS);
+		flag_clr(&call->scan, MANUAL_SCAN_TAGS);
 		return false;
 	}
 	if (depth > call->depth)
-		flag_clear(&call->scan, MANUAL_SCAN_TAGS);
+		flag_clr(&call->scan, MANUAL_SCAN_TAGS);
 	else if (depth < call->depth || !flag_any(call->scan, MANUAL_SCAN_TAGS))
 		call->scan = flag32(0);
 	size_t const end = at + line.len + (at + line.len < text.len);

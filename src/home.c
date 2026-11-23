@@ -541,7 +541,7 @@ static void
 home_job_drop_answer (struct job *job)
 {
 	job_drop_answer(job);
-	flag_clear(&job->flags, HOME_JOB_DELTA_PUBLISHED | HOME_JOB_REPORT_PENDING);
+	flag_clr(&job->flags, HOME_JOB_DELTA_PUBLISHED | HOME_JOB_REPORT_PENDING);
 }
 
 /* Drop @p n references to @p job, and hand it back to its front if they were
@@ -652,7 +652,7 @@ home_retire (struct home *home,
 			--home->running_bg;
 		}
 		if (flag_any(job->flags, HOME_JOB_PROBE))
-			flag_clear(&home->flags, HOME_PROBING);
+			flag_clr(&home->flags, HOME_PROBING);
 		loop_ready_bulk(home->loop, &home->start);
 	}
 	home_unstream(home, job);
@@ -1023,8 +1023,8 @@ home_breaker_probed (struct home *home,
                      bool         failure,
                      long         retry)
 {
-	flag_clear(&job->flags, HOME_JOB_PROBE);
-	flag_clear(&home->flags, HOME_PROBING);
+	flag_clr(&job->flags, HOME_JOB_PROBE);
+	flag_clr(&home->flags, HOME_PROBING);
 	if (failure) {
 		home_breaker_open(home, retry);
 		return;
@@ -1351,7 +1351,7 @@ home_journal_done (struct loop *loop,
 	if (r->pending)
 		goto done;
 	if (flag_any(r->flags, HOME_RECOVERY_REPORT_PENDING)) {
-		flag_clear(&r->flags, HOME_RECOVERY_REPORT_PENDING);
+		flag_clr(&r->flags, HOME_RECOVERY_REPORT_PENDING);
 		if (r->error && job->status != JOB_CANCELLED) {
 			home_job_unpersisted(job);
 			job->status = JOB_FAILED;
@@ -1368,7 +1368,7 @@ home_journal_done (struct loop *loop,
 	}
 	if (flag_any(r->flags, HOME_RECOVERY_OPEN_PENDING)) {
 		bool resume = flag_any(r->flags, HOME_RECOVERY_RESUME);
-		flag_clear(&r->flags, HOME_RECOVERY_OPEN_PENDING | HOME_RECOVERY_RESUME);
+		flag_clr(&r->flags, HOME_RECOVERY_OPEN_PENDING | HOME_RECOVERY_RESUME);
 		int e = home_open(home, job, resume);
 		if (e) {
 			(void)home_job_say(job, "Cannot %s provider stream: %s",
@@ -1378,7 +1378,7 @@ home_journal_done (struct loop *loop,
 		goto done;
 	}
 	bool const deferred = flag_any(r->flags, HOME_RECOVERY_FINISH_PENDING);
-	flag_clear(&r->flags, HOME_RECOVERY_FINISH_PENDING);
+	flag_clr(&r->flags, HOME_RECOVERY_FINISH_PENDING);
 	if (flag_any(job->flags, HOME_JOB_STREAM)) {
 		home_feed(home, job);
 	} else if (deferred) {
@@ -1463,7 +1463,7 @@ home_send (struct home *home,
 			conversation = home->conversation;
 		}
 	}
-	flag_clear(&job->flags, HOME_JOB_ANSWER_BEGUN | HOME_JOB_TRANSFER_ENDED);
+	flag_clr(&job->flags, HOME_JOB_ANSWER_BEGUN | HOME_JOB_TRANSFER_ENDED);
 	int e = http_post_json(home->http, url ? url : ep->url, (char const *)body.ptr, body.len,
 	                       home_lines(home, conversation, line), 0, home_job_write,
 	                       home_job_done, job, &job->transfer);
@@ -1483,7 +1483,7 @@ home_discover (struct home *home,
 {
 	if (!flag_any(home->flags, HOME_DISCOVER_PENDING))
 		return;
-	flag_clear(&home->flags, HOME_DISCOVER_PENDING);
+	flag_clr(&home->flags, HOME_DISCOVER_PENDING);
 	(void)home_props_ask(home, line);
 }
 
@@ -1500,7 +1500,7 @@ home_job_authorized (struct auth_wait *wait,
 	struct job *job = container_of(wait, struct job, auth);
 	struct home *home = self;
 	bool const resume = flag_any(job->recovery.flags, HOME_RECOVERY_RESUME);
-	flag_clear(&job->recovery.flags, HOME_RECOVERY_RESUME);
+	flag_clr(&job->recovery.flags, HOME_RECOVERY_RESUME);
 	if (flag_any(home->flags, HOME_CANCEL)) {
 		home_end(home, job, JOB_CANCELLED, &home->metrics->cancelled);
 		return;
@@ -1609,7 +1609,7 @@ home_start (struct home *home,
 	bool resume = flag_any(r->flags, HOME_RECOVERY_RESTORE);
 	int e = 0;
 	if (resume) {
-		flag_clear(&r->flags, HOME_RECOVERY_RESTORE);
+		flag_clr(&r->flags, HOME_RECOVERY_RESTORE);
 	} else if (home_llama(home)) {
 		struct hexid id = {};
 		e = hexid_make(&id);
@@ -1673,7 +1673,7 @@ home_start_step (struct loop      *loop,
 		if (loop_spent(loop, step, LOOP_REQS))
 			return;
 		if (flag_any(job->flags, HOME_JOB_READY)) {
-			flag_clear(&job->flags, HOME_JOB_READY);
+			flag_clr(&job->flags, HOME_JOB_READY);
 			--home->readied[home_job_class(job)];
 			list_del(&job->queue);
 		} else {
@@ -2312,7 +2312,7 @@ home_read_event (struct home *home,
 		e = home_event(home, job);
 	buf_consume(&job->wire, job->line);
 	job->ev = job->evlen = job->line = job->scan = 0;
-	flag_clear(&job->flags, HOME_JOB_EVENT_PENDING);
+	flag_clr(&job->flags, HOME_JOB_EVENT_PENDING);
 	if (flag_any(job->flags, HOME_JOB_RESULT_ERROR)) {
 		home_cut(home, job, CURLE_OK);
 		return ECANCELED;
@@ -2400,7 +2400,7 @@ home_drained (struct home *home,
 	if (!flag_any(job->flags, HOME_JOB_TRANSFER_ENDED)) {
 		list_del(&job->feed);
 		if (flag_any(job->flags, HOME_JOB_TRANSFER_PAUSED)) {
-			flag_clear(&job->flags, HOME_JOB_TRANSFER_PAUSED);
+			flag_clr(&job->flags, HOME_JOB_TRANSFER_PAUSED);
 			http_resume(job->transfer);
 		}
 		return ENODATA;
@@ -2535,7 +2535,7 @@ home_preempt_step (struct loop      *loop,
 			home_preempt(home, job);
 			continue;
 		}
-		flag_clear(&job->flags, HOME_JOB_PREEMPTED);
+		flag_clr(&job->flags, HOME_JOB_PREEMPTED);
 		list_append(&home->background, &job->queue);
 	}
 }
@@ -2870,7 +2870,7 @@ home_delta_release (struct job *job)
 {
 	buf_fini(&job->delta);
 	struct flag32 const was = job->flags;
-	flag_clear(&job->flags, HOME_JOB_DELTA_PUBLISHED | HOME_JOB_REPORT_PENDING);
+	flag_clr(&job->flags, HOME_JOB_DELTA_PUBLISHED | HOME_JOB_REPORT_PENDING);
 	if (flag_any(was, HOME_JOB_REPORT_PENDING))
 		home_job_end(job, job->status);
 }

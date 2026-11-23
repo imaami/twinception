@@ -661,7 +661,7 @@ int
 cli_client_refresh_notes (struct cli_client *client,
                           struct cli_error  *error)
 {
-	flag_clear(&client->flags, CLI_CLIENT_NOTES_REFRESH_PENDING);
+	flag_clr(&client->flags, CLI_CLIENT_NOTES_REFRESH_PENDING);
 	if (!dstr_len(&client->notes_tool))
 		return 0;
 	autocomplete_clear_note_files(client->catalog);
@@ -861,7 +861,7 @@ int
 cli_client_refresh (struct cli_client *client,
                     struct cli_error  *error)
 {
-	flag_clear(&client->flags, CLI_CLIENT_CATALOG_REFRESH_PENDING | CLI_CLIENT_NOTES_REFRESH_PENDING);
+	flag_clr(&client->flags, CLI_CLIENT_CATALOG_REFRESH_PENDING | CLI_CLIENT_NOTES_REFRESH_PENDING);
 	int e = 0;
 	__attribute__((cleanup(cli_client_scan_fini)))
 	struct cli_client_scan scan = cli_client_scan(autocomplete_create(&e));
@@ -890,7 +890,7 @@ cli_client_refresh (struct cli_client *client,
 		flag_set(&client->flags, CLI_CLIENT_IDENTITY_CHANGED);
 		return cli_error_set(error, ESTALE, "AskAI changed its session, agent or ask tool; restart the client to select its history");
 	}
-	flag_clear(&client->flags, CLI_CLIENT_SERVER_OLDER);
+	flag_clr(&client->flags, CLI_CLIENT_SERVER_OLDER);
 	if (flag_any(scan.flags, CLI_CLIENT_SCAN_NOTEBOOKS) && !dstr_len(&scan.notes_tool))
 		flag_set(&client->flags, CLI_CLIENT_SERVER_OLDER);
 	autocomplete_destroy(&client->catalog);

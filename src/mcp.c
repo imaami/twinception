@@ -1558,7 +1558,7 @@ mcp_req_drop (struct mcp_req *req)
 		return;
 	}
 	req->job = nullptr;
-	flag_clear(&req->flags, MCP_REQ_DELTA_PENDING);
+	flag_clr(&req->flags, MCP_REQ_DELTA_PENDING);
 	job_post_to_home(job, mcp->home,
 	                 (flag_any(mcp->flags, MCP_END) ||
 	                  flag_any(req->flags, MCP_REQ_JOB_SUSPENDED)) &&
@@ -1619,7 +1619,7 @@ mcp_req_calls_end (struct mcp_req *req)
 {
 	req->calls_base += req->n_calls;
 	req->n_calls = 0;
-	flag_clear(&req->flags, MCP_REQ_RERUNNING);
+	flag_clr(&req->flags, MCP_REQ_RERUNNING);
 	for (size_t k = 0; k < JOB_CALLS; ++k)
 		buf_fini(&req->calls[k]);
 }
@@ -1706,7 +1706,7 @@ mcp_req_finish (struct mcp_req *req)
 {
 	struct mcp *mcp = req->mcp;
 	loop_timer_stop(mcp->loop, &req->timer);
-	flag_clear(&req->flags, MCP_REQ_TICK_PENDING);
+	flag_clr(&req->flags, MCP_REQ_TICK_PENDING);
 	/* Its job, slots, handles and agenda go first, so that no work of the
 	 * call reaches it while its end is written. */
 	mcp_req_drop(req);
@@ -2347,7 +2347,7 @@ mcp_req_delta (struct mcp_req *req)
 	}
 	if (flag_any(req->flags, MCP_REQ_BLOCKED))
 		return;
-	flag_clear(&req->flags, MCP_REQ_DELTA_PENDING);
+	flag_clr(&req->flags, MCP_REQ_DELTA_PENDING);
 	job_post_to_home(job, req->mcp->home, JOB_DELTA_CONSUMED);
 	if (flag_any(req->flags, MCP_REQ_TICK_PENDING))
 		loop_ready_bulk(loop, &req->step);
@@ -2368,7 +2368,7 @@ mcp_req_progress (struct mcp_req *req)
 	uint32_t tokens = (uint32_t)(progress >> 32);
 	if (place > req->place)
 		req->place = place;
-	flag_clear(&req->flags, MCP_REQ_PROGRESS_PENDING);
+	flag_clr(&req->flags, MCP_REQ_PROGRESS_PENDING);
 	/* Queued, a job has no tokens; running, no place. */
 	uint64_t value = req->base + (req->place - place) + tokens;
 	if (value < req->next_note)
@@ -2455,7 +2455,7 @@ mcp_req_tick (struct mcp_req *req)
 		req->ping_at = loop->now + keepalive * NS;
 	}
 	if (req->phase != PHASE_CALL)
-		flag_clear(&req->flags, MCP_REQ_PROGRESS_PENDING);
+		flag_clr(&req->flags, MCP_REQ_PROGRESS_PENDING);
 	/* The keep-alive can have blocked the stream. */
 	if (flag_get(req->flags, MCP_REQ_PROGRESS_PENDING | MCP_REQ_BLOCKED) == MCP_REQ_PROGRESS_PENDING &&
 	    req->noted + PROGRESS_NS <= loop->now)
@@ -2993,7 +2993,7 @@ mcp_req_submit (struct mcp_req *req)
 			mcp_shelve_job(mcp, job);
 			return re;
 		}
-		flag_clear(&req->flags, MCP_REQ_RECOVERY_PENDING);
+		flag_clr(&req->flags, MCP_REQ_RECOVERY_PENDING);
 	}
 	struct stream const *s = req->s;
 	int e = 0;
@@ -3317,7 +3317,7 @@ mcp_req_detach (struct mcp_req     *req,
 	req->s = &req->stand_in;
 	req->task = task;
 	list_append(&mcp->tasks, &req->task_hook);
-	flag_clear(&req->flags, MCP_REQ_SSE_OK | MCP_REQ_SSE | MCP_REQ_BLOCKED | MCP_REQ_PROGRESS_PENDING);
+	flag_clr(&req->flags, MCP_REQ_SSE_OK | MCP_REQ_SSE | MCP_REQ_BLOCKED | MCP_REQ_PROGRESS_PENDING);
 	req->ping_at = req->promote_at = UINT64_MAX;
 	json_object_put(req->token);
 	req->token = nullptr;
@@ -4103,7 +4103,7 @@ mcp_slot_prompted (struct mcp_slot *slot)
 		findings_prompt(slot, &slot->answer, mcp_req_lend_max(req), mcp_slot_prompted);
 		return;
 	}
-	flag_clear(&req->flags, MCP_REQ_FINDINGS_READING);
+	flag_clr(&req->flags, MCP_REQ_FINDINGS_READING);
 	if (!req->prompt_at)
 		mcp_req_enter(req, PHASE_BUILD);
 	else if (cstr_view_cat(CSTR_VIEW("\n" NOTICE_GO_ON), &slot->answer))
@@ -6057,7 +6057,7 @@ mcp_req_archive_submitted (struct mcp_req *req,
 		return;
 	}
 	if (flag_any(req->flags, MCP_REQ_DETACH_PENDING)) {
-		flag_clear(&req->flags, MCP_REQ_DETACH_PENDING);
+		flag_clr(&req->flags, MCP_REQ_DETACH_PENDING);
 		if (mcp_req_background(req, req->self.tool))
 			return;
 	}
@@ -6442,7 +6442,7 @@ mcp_req_add_start (struct mcp_req *req)
 	buf_cut(&req->upload, req->prompt_at, up.len - req->prompt_at);
 	buf_fini(&req->attached);
 	req->filed = 0;
-	flag_clear(&req->flags, MCP_REQ_FILE_ATTACHED);
+	flag_clr(&req->flags, MCP_REQ_FILE_ATTACHED);
 	mcp_req_enter(req, PHASE_ADD);
 }
 
@@ -6758,7 +6758,7 @@ mcp_slot_ask_drop (struct mcp_slot *slot)
 		findings_drop(slot);
 	else
 		notes_tool_drop(slot);
-	flag_clear(&slot->req->flags, MCP_REQ_FINDINGS_READING);
+	flag_clr(&slot->req->flags, MCP_REQ_FINDINGS_READING);
 }
 
 /* Start an ask call in @p slot, the request's own, its turns lent the tools
@@ -7511,7 +7511,7 @@ mcp_req_step (struct loop      *loop,
 		return;
 	}
 	if (flag_any(req->flags, MCP_REQ_TICK_PENDING) && req->phase < PHASE_REPLY) {
-		flag_clear(&req->flags, MCP_REQ_TICK_PENDING);
+		flag_clr(&req->flags, MCP_REQ_TICK_PENDING);
 		mcp_req_tick(req);
 	}
 	if (req->reaper.n) {

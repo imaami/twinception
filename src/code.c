@@ -919,7 +919,7 @@ code_join (struct code_call *call,
 		list_move(&code->builds, &build->hook);
 		++build->refs;
 		if (flag_any(call->flags, CODE_CALL_LIST_UNITS))
-			flag_clear(&build->flags, (uint64_t)CODE_BUILD_EXPORT_PENDING);
+			flag_clr(&build->flags, (uint64_t)CODE_BUILD_EXPORT_PENDING);
 		for (size_t i = 0; build->again && i < build->b.n; ++i) {
 			if (build->b.items[i].state != BUILD_AGAIN)
 				continue;
@@ -933,7 +933,7 @@ code_join (struct code_call *call,
 	if (!build)
 		return e ? e : ENOENT;
 
-	flag_clear(&call->flags, (uint64_t)CODE_CALL_LIST_UNITS);
+	flag_clr(&call->flags, (uint64_t)CODE_CALL_LIST_UNITS);
 	child_destroy(&call->pin.child);
 	call->build = build;
 	list_append(&cl->waiting, &call->wait);

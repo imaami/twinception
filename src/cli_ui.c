@@ -49,7 +49,7 @@ cli_ui_push (struct cli_ui    *ui,
 		if (!e)
 			e = cli_console_set_display(ui->console, cli_ui_modes[thinking].style);
 		if (!e)
-			flag_flip(&ui->flags, CLI_UI_REASONING_OPEN);
+			flag_xor(&ui->flags, CLI_UI_REASONING_OPEN);
 	}
 	if (e)
 		return e;

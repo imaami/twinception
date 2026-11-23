@@ -757,7 +757,7 @@ httpd_req_header (struct httpd_req        *req,
 			flag_set(&req->flags, HTTPD_REQ_CONN_END);
 		else if (flag_any(req->flags, HTTPD_REQ_HTTP10) &&
 		         cstr_view_list_has(list, CSTR_VIEW("keep-alive")))
-			flag_clear(&req->flags, HTTPD_REQ_CONN_END);
+			flag_clr(&req->flags, HTTPD_REQ_CONN_END);
 		return 0;
 	case HEADER_EXPECT:
 		if (strcasecmp(value, "100-continue"))
@@ -1039,7 +1039,7 @@ httpd_conn_stream_cancel (struct httpd_conn *conn)
 {
 	if (!flag_any(conn->req.flags, HTTPD_REQ_STREAM_GIVEN))
 		return;
-	flag_clear(&conn->req.flags,
+	flag_clr(&conn->req.flags,
 	           HTTPD_REQ_STREAM_GIVEN | HTTPD_REQ_APP_WAITING | HTTPD_REQ_WRITABLE_PENDING);
 	conn->srv->app->on_cancel(&conn->stream);
 	conn->stream.user = nullptr;
@@ -1443,7 +1443,7 @@ httpd_stream_end (struct stream *s,
 	struct flag32 const was = conn->req.flags;
 	if (!flag_any(was, HTTPD_REQ_STREAM_GIVEN))
 		return;
-	flag_clear(&conn->req.flags,
+	flag_clr(&conn->req.flags,
 	           HTTPD_REQ_STREAM_GIVEN | HTTPD_REQ_APP_WAITING | HTTPD_REQ_WRITABLE_PENDING);
 	conn->stream.user = nullptr;
 	if (!flag_any(was, HTTPD_REQ_REPLY_BEGUN)) {
@@ -1794,7 +1794,7 @@ httpd_conn_body (struct httpd_conn *conn)
 		return HTTPD_NEXT_YIELD;
 	if (flag_any(req->flags, HTTPD_REQ_CONTINUE_PENDING)) {
 		(void)httpd_conn_put(conn, &CSTR_VIEW("HTTP/1.1 100 Continue\r\n\r\n"), 1);
-		flag_clear(&req->flags, HTTPD_REQ_CONTINUE_PENDING);
+		flag_clr(&req->flags, HTTPD_REQ_CONTINUE_PENDING);
 	}
 	return HTTPD_NEXT_INPUT;
 }
@@ -2197,7 +2197,7 @@ httpd_conn_pump (struct httpd_conn *conn)
 	 * writable. */
 	if (flag_any(conn->req.flags, HTTPD_REQ_WRITABLE_PENDING) &&
 	    pending <= srv->lim.out_pause / 2) {
-		flag_clear(&conn->req.flags, HTTPD_REQ_WRITABLE_PENDING);
+		flag_clr(&conn->req.flags, HTTPD_REQ_WRITABLE_PENDING);
 		srv->app->on_writable(&conn->stream);
 		if (flag_all(conn->flags, HTTPD_CONN_CANCEL)) {
 			httpd_conn_close(conn);
@@ -2972,7 +2972,7 @@ httpd_home_accept_step (struct loop      *loop,
 			e = httpd_home_shed(home, l);
 		if (!e || httpd_accept_next(e))
 			continue;
-		flag_clear(&l->flags, HTTPD_LISTENER_ACCEPT_PENDING);
+		flag_clr(&l->flags, HTTPD_LISTENER_ACCEPT_PENDING);
 		if (e == EAGAIN || e == EWOULDBLOCK)
 			continue;
 		/* Out of memory or descriptors: retry on the next tick. */
@@ -3477,7 +3477,7 @@ httpd_home_tls (struct httpd_home *home,
 void
 httpd_home_drain (struct httpd_home *home)
 {
-	flag_clear(&home->flags, HTTPD_HOME_OPENED);
+	flag_clr(&home->flags, HTTPD_HOME_OPENED);
 	loop_unready(&home->accept);
 	for (size_t i = 0; i < home->n_listeners; ++i) {
 		struct httpd_listener *l = &home->listeners[i];

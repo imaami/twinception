@@ -1913,7 +1913,7 @@ static void
 notes_tool_logged_in (struct mcp_slot *slot)
 {
 	struct notes_tool_call *call = *mcp_slot_own(slot);
-	flag_clear(&call->flags, NOTES_TOOL_CALL_LOGGING_IN);
+	flag_clr(&call->flags, NOTES_TOOL_CALL_LOGGING_IN);
 	int const e = call->wait.e;
 	if (e && e != ENOENT && e != EPERM) {
 		notes_tool_drop(slot);

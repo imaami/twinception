@@ -175,7 +175,7 @@ child_step (struct loop      *loop,
 {
 	struct child *c = container_of(step, struct child, step);
 	uint32_t events = flag_get(c->end.flags, CHILD_EVENTS);
-	flag_clear(&c->end.flags, CHILD_EVENTS);
+	flag_clr(&c->end.flags, CHILD_EVENTS);
 	if (events & CHILD_DEADLINE_PENDING)
 		child_due(c);
 	if (events & CHILD_OUTPUT_PENDING && c->pipe.fd >= 0)

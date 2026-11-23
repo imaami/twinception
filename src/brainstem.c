@@ -566,7 +566,7 @@ brainstem_crossed (struct brainstem *bs,
 	bool high = flag_any(bs->flags, bit);
 	if (high ? value >= down : value < up)
 		return 0;
-	flag_flip(&bs->flags, bit);
+	flag_xor(&bs->flags, bit);
 	return high ? -1 : 1;
 }
 
