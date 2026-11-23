@@ -9829,7 +9829,8 @@ def check_git(binary, up):
             assert [t["name"] for t in tools] == ["ask_ai", "git"], tools
             schema = tools[1]["inputSchema"]
             assert schema["properties"]["repo"]["enum"] == ["proj", "other"] and \
-                schema["required"] == ["repo", "command"], schema
+                schema["required"] == ["repo"] and \
+                schema["properties"]["argv"]["maxItems"] == 64, schema
             # The description has an example call that reads a file with read
             # and HEAD:path, so that a model tries that first, and says that a
             # read goes on with the commit's ID, not HEAD.
@@ -10014,14 +10015,14 @@ def check_git(binary, up):
                     # A path in a revision goes where the command takes it.
                     ({"repo": "proj", "command": "log", "revisions": ["HEAD:a.txt"]},
                      "In revisions[0], give git log only the commit. Give the path in "
-                     "paths."),
+                     "paths. A directory path ends with a slash, such as src/."),
                     ({"repo": "proj", "command": "blame", "revisions": ["HEAD:a.txt"],
                       "paths": ["a.txt"]},
                      "In revisions[0], give git blame only the commit. Give the path in "
-                     "paths."),
+                     "paths. A directory path ends with a slash, such as src/."),
                     ({"repo": "proj", "command": "ls-tree", "revisions": ["HEAD:src"]},
                      "In revisions[0], give git ls-tree only the commit. Give the path in "
-                     "paths."),
+                     "paths. A directory path ends with a slash, such as src/."),
                     ({"repo": "proj", "command": "rev-parse", "revisions": ["HEAD:a.txt"]},
                      "In revisions[0], give git rev-parse a commit, not commit:path."),
                     ({"repo": "proj", "command": "rev-parse", "paths": ["a.txt"]},
@@ -10066,6 +10067,116 @@ def check_git(binary, up):
                 assert bool(result.get("isError")) == failed and \
                     text_of(result) == text, (arguments, result)
             conn.close()
+
+            # argv is the words of a git command line after git. The call
+            # runs as the call with command, options, pattern, revisions and
+            # paths does. An option takes its value from the next word. A
+            # word before -- with a wildcard or a slash at its end is a path.
+            # The first other word of a grep is the pattern. blame, ls-tree
+            # and diff read the words after their revisions as paths. For
+            # log, show and grep, git rev-parse decides: the first word that
+            # names no commit is a path, and so is every word after it. The
+            # files of the working tree decide nothing: topic is a file
+            # there for these calls, and it stays the branch.
+            with open(f"{repo}/topic", "w") as f:
+                f.write("not committed\n")
+            def same(argv, **arguments):
+                got = call(ai, repo="proj", argv=argv)
+                want = call(ai, repo="proj", **arguments)
+                assert not got.get("isError") and not want.get("isError") and \
+                    text_of(got) == text_of(want), (argv, got, want)
+            same(["log", "--oneline", "-n", "1"], command="log", options=["--oneline", "-n1"])
+            same(["git", "log", "--max-count", "1", "main", "--", "a.txt"], command="log",
+                 options=["--max-count=1"], revisions=["main"], paths=["a.txt"])
+            same(["log", "--format", "%s", "topic", "--", "a.txt"], command="log",
+                 options=["--format=%s"], revisions=["topic"], paths=["a.txt"])
+            same(["grep", "alpha", "--", "a.txt"], command="grep", pattern="alpha",
+                 paths=["a.txt"])
+            same(["grep", "alpha", "a.txt"], command="grep", pattern="alpha", paths=["a.txt"])
+            same(["grep", "text", "topic", "a.txt"], command="grep", pattern="text",
+                 revisions=["topic"], paths=["a.txt"])
+            same(["grep", "alpha", "nosuchname", "topic"], command="grep", pattern="alpha",
+                 paths=["nosuchname", "topic"])
+            same(["log", "--format=%s", "topic"], command="log", options=["--format=%s"],
+                 revisions=["topic"])
+            same(["log", "--format=%s", "topic", "a.txt"], command="log",
+                 options=["--format=%s"], revisions=["topic"], paths=["a.txt"])
+            same(["log", "--format=%s", "topic~0", "main", "a.txt", "big.txt"], command="log",
+                 options=["--format=%s"], revisions=["topic~0", "main"],
+                 paths=["a.txt", "big.txt"])
+            same(["log", "--format=%s", "a.txt"], command="log", options=["--format=%s"],
+                 paths=["a.txt"])
+            same(["show", "--format=%s", "topic", "a.txt"], command="show",
+                 options=["--format=%s"], revisions=["topic"], paths=["a.txt"])
+            same(["grep", "-i", "-e", "ALPHA", "topic", "*.txt"], command="grep",
+                 options=["-i"], pattern="ALPHA", revisions=["topic"], paths=["*.txt"])
+            same(["grep", "-C", "1", "alpha", "topic", "--", "a.txt"], command="grep",
+                 options=["-C1"], pattern="alpha", revisions=["topic"], paths=["a.txt"])
+            same(["ls-tree", "-r", "--name-only", "HEAD", "--", "a.txt", "big.txt"],
+                 command="ls-tree", options=["-r", "--name-only"], revisions=["HEAD"],
+                 paths=["a.txt", "big.txt"])
+            same(["ls-tree", "topic", "a.txt"], command="ls-tree", revisions=["topic"],
+                 paths=["a.txt"])
+            same(["blame", "-s", "-L", "1,1", "a.txt"], command="blame",
+                 options=["-s", "-L1,1"], paths=["a.txt"])
+            same(["blame", "-s", "topic", "a.txt"], command="blame", options=["-s"],
+                 revisions=["topic"], paths=["a.txt"])
+            same(["diff", "--stat", "main", "topic"], command="diff", options=["--stat"],
+                 revisions=["main", "topic"])
+            same(["diff", "main", "topic", "a.txt"], command="diff",
+                 revisions=["main", "topic"], paths=["a.txt"])
+            same(["diff", "main..topic", "a.txt"], command="diff", revisions=["main..topic"],
+                 paths=["a.txt"])
+            same(["show", "topic:a.txt"], command="show", revisions=["topic:a.txt"])
+            same(["cat-file", "-s", "HEAD:a.txt"], command="cat-file", options=["-s"],
+                 revisions=["HEAD:a.txt"])
+            same(["rev-parse", "HEAD~0"], command="rev-parse", revisions=["HEAD~0"])
+            got = call(ai, repo="proj", argv=["read", "topic:a.txt"], line=1, count=1)
+            want = call(ai, repo="proj", command="read", revisions=["topic:a.txt"], line=1,
+                        count=1)
+            assert not got.get("isError") and text_of(got) == text_of(want), (got, want)
+            # ls-tree takes a tree as commit:path, as git does.
+            read_as = " The words of argv were read as "
+            before_dashes = " In argv, write a path after --."
+            got = call(ai, repo="proj", argv=["ls-tree", "HEAD:src", "--bogus"])
+            assert got.get("isError") and text_of(got) == \
+                bad_option("ls-tree", "--bogus") + read_as + \
+                '{"command":"ls-tree","options":["--bogus"],"revisions":["HEAD"],' \
+                '"paths":["src/"]}.', got
+            for arguments, text in (
+                    ({"argv": ["log"], "command": "log"},
+                     "Give argv without command, options, revisions, paths and pattern."),
+                    ({"argv": ["log"], "paths": ["a.txt"]},
+                     "Give argv without command, options, revisions, paths and pattern."),
+                    ({"argv": []}, None), ({"argv": "log"}, None), ({"argv": ["log", 1]}, None),
+                    ({"argv": ["log", ""]}, None), ({"argv": ["log"] * 65}, None),
+                    ({"argv": ["status"]},
+                     "git status is not available. Only committed files are visible. To "
+                     "list the committed files, call ls-tree with \"options\": [\"-r\", "
+                     "\"--name-only\"]." + read_as +
+                     '{"command":"status","options":[],"revisions":[],"paths":[]}.'),
+                    ({"argv": ["grep", "-e"]},
+                     "Give git grep a pattern argument of 1 to 1024 bytes. " +
+                     bad_option("grep", "-e") + read_as +
+                     '{"command":"grep","options":["-e"],"revisions":[],"paths":[]}.'),
+                    # A word that cannot be a path must name a commit: an
+                    # abbreviated commit ID, or a word with ~.
+                    ({"argv": ["log", "deadbeef"]},
+                     history + before_dashes + read_as +
+                     '{"command":"log","options":[],"revisions":["deadbeef"],"paths":[]}.'),
+                    ({"argv": ["grep", "alpha", "nosuchname~1", "a.txt"]},
+                     history + before_dashes + read_as +
+                     '{"command":"grep","options":[],"revisions":["HEAD","nosuchname~1",'
+                     '"a.txt"],"paths":[],"pattern":"alpha"}.'),
+                    ({"argv": ["log", "a", "b", "c", "d", "e"]},
+                     "The revisions argument can contain at most 4 entries, not 5." +
+                     read_as + '{"command":"log","options":[],"revisions":["a","b","c",'
+                     '"d","e"],"paths":[]}.')):
+                got = call(ai, repo="proj", **arguments)
+                assert got.get("isError") and (text_of(got) == text if text else text_of(
+                    got).startswith("The argv argument must be an array of 1 to 64 strings "
+                                    "of 1 to 1024 bytes")), (arguments, got)
+            os.unlink(f"{repo}/topic")
 
             # Repair instructions follow the selected command's spelling,
             # including flags whose meaning differs between commands.
@@ -12760,8 +12871,10 @@ def check_code_describe(binary, up, call, head, d, cdb):
         assert call(ai, error=True, repo="proj", action="describe", path="src/wt.c",
                     name="wt_uncommitted").startswith("No symbol wt_uncommitted ")
 
-    # A finding of a later turn can cite the numbered lines that describe
-    # printed, all of them or some, and the finding stores them.
+    # A finding of a later turn can cite some of the numbered lines that
+    # describe printed, and the finding stores them. A describe result
+    # contains more than lines of the file, so a call cited without lines
+    # is stored whole.
     def turn(name, *calls):
         return lambda r: (200, turn_stream([(f"f{k}", name, json.dumps(c))
                                             for k, c in enumerate(calls)]))
@@ -12785,7 +12898,7 @@ def check_code_describe(binary, up, call, head, d, cdb):
         results = [m["content"] for m in unstamped(messages[last + 1:])]
         assert re.fullmatch(r"Added bro#1 \(verified\)\. Evidence bro#1/1 from c1:16-18\. "
                             r"Commit [0-9a-f]{8}\.", results[0]), results
-        assert re.fullmatch(r"Added bro#2 \(verified\)\. Evidence bro#2/1 from c3:2\. "
+        assert re.fullmatch(r"Added bro#2 \(verified\)\. Evidence bro#2/1 from call c3\. "
                             r"Commit [0-9a-f]{8}\.", results[1]), results
         assert re.fullmatch(r"Call c1 showed lines \d+ to 18 of src/lay\.c whole\. Give lines "
                             r"within that range\.", results[2]), results
@@ -12798,6 +12911,11 @@ def check_code_describe(binary, up, call, head, d, cdb):
         [item] = stored["changes"][0]["evidence"]
         assert (item["kind"], item["tool"], item["lines"], item["ids"]["path"],
                 item["ids"]["commit"]) == ("lines", "code", [[16, 18]], "src/lay.c", head), item
+        stored = json.loads(subprocess.run(
+            ["git", "--git-dir", session, "show", "refs/heads/agent/bro/findings:findings/0/2.json"],
+            check=True, capture_output=True, text=True).stdout)
+        [item] = stored["changes"][0]["evidence"]
+        assert (item["kind"], item["tool"]) == ("call", "code") and "lines" not in item, item
     up.reply = lambda request: (200, ANSWERS["openai"])
 
 
@@ -13440,6 +13558,23 @@ def check_notes(binary, up):
                 assert said == searched(book, lines), said
             assert call({"action": "search", "pattern": "FOUND", "notebook": "writers"}) == \
                 searched("writers (agent)", "found.md:1:found\n")
+            # With file, search reads only that note, or the notes in that
+            # directory. A name that is no note matches nothing.
+            for name, lines in (
+                    ("plan.md", "plan.md:2:ready\n"),
+                    ("copies", "copies/f.md:1:found\n"),
+                    ("found.md", "found.md:1:found\n"),
+                    ("copies/f.md", "copies/f.md:1:found\n"),
+                    ("missing.md", "No line of missing.md matches the pattern. list shows "
+                     "the current notes.\n")):
+                said = call({"action": "search", "pattern": "^found$\nready", "file": name})
+                assert said == searched(book, lines), said
+            assert call({"action": "search", "pattern": "x", "file": ".git"}) \
+                .startswith("!A note name must be 1 to 255 bytes"), "search in .git"
+            # list and members read no note, and refuse file.
+            for action in ("list", "members"):
+                assert call({"action": action, "file": "plan.md"}) == \
+                    "!members and list take no file argument.", action
             said = call({"action": "search", "pattern": "^line 07"})
             assert said.count("\n") == 102 and call({"action": "search", "pattern": "^line 07",
                                                       "offset": 200}) == \
@@ -14554,7 +14689,8 @@ def check_notes_texts(binary, up):
                         "read or restore with revision.",
                         "file": "The note name, 1 to 255 bytes, such as plan.md or "
                         "design/locks.md. Pick an extension that matches the format of the "
-                        "text. With file, history lists only the changes to the note.",
+                        "text. With file, history lists only the changes to the note, "
+                        "and search reads only the note.",
                         "text": "The text for add, append or replace, 1 byte to 4 MiB.",
                         "pattern": "Each line of pattern is an extended regular expression. "
                         "Case is ignored. A line of a note matches if any expression matches.",
@@ -16008,6 +16144,32 @@ def check_turns(binary, up):
             n = int(cut.group(1))
             assert n <= 64 << 10 and int(cut.group(2)) == len(whole) and \
                 int(cut.group(3)) == n and shown[head:head + n] == whole[:n], cut
+            # The history of a prompt lists the newest 20 changes, numbered
+            # as the action history numbers them, after a line that names
+            # that action.
+            changes = int(sh("--git-dir", book, "rev-list", "--count", branch, cwd=d))
+            assert changes < 20, changes
+            for k in range(25):
+                subprocess.run(["git", "--git-dir", book, "fast-import", "--quiet"],
+                               input=f"commit {branch}\ncommitter askai <askai> ".encode()
+                               + str(int(time.time())).encode() + b" +0000\ndata 0\n"
+                               + f"from {branch}^0\nM 100644 inline many.md\ndata 2\n{k % 10}\n"
+                               .encode() + b"\n", check=True,
+                               env=os.environ | {"GIT_CONFIG_GLOBAL": "/dev/null",
+                                                 "GIT_CONFIG_NOSYSTEM": "1"})
+            changes += 25
+            count = len(up.requests)
+            ai.ask("Many", conversation=mine)
+            listed = prompt(up.requests[count]).split(history, 1)[1].split("\n")
+            assert listed[0] == f"[askai: The list shows the newest 20 of {changes} changes. " \
+                "notes with action history lists every change.]", listed[:3]
+            assert [row.split(". ", 1)[0] for row in listed[1:21]] == \
+                [str(k) for k in range(changes - 19, changes + 1)] and \
+                all("  many.md  (+1 -1)" in row for row in listed[2:21]) and \
+                listed[21] == "[askai: The current text of your newest note, many.md:]", listed
+            said = client_notes({"action": "history", "notebook": "turns"})
+            assert f"\n{changes}. " in said and "\n1. " in said and \
+                "The list shows" not in said, said
 
         # A turn that writes a result back into its note leaves out the
         # notices that askai gave the result: the notebook of a read, the
@@ -16477,7 +16639,8 @@ def check_turns(binary, up):
             assert said(3, "j3") == "The job had already completed.", said(3, "j3")
             assert said(4, "w2") == "[askai: timer 1 fired: check it.]\n", said(4, "w2")
             assert said(5, "b2") == "Started job 2." and \
-                said(5, "b3").startswith("The tool argument must name a tool") and \
+                said(5, "b3") == "The tool argument must be one of the tools that can run " \
+                "as a job: git." and \
                 re.fullmatch(r"job 1: git .*: completed, \d+ bytes\njob 2: git .*: running\n"
                              r"timer 2: fires in \d+ s\n", said(5, "r1")) and \
                 said(5, "r2") == "The job is still running. Call wait to wait for the " \
@@ -16784,8 +16947,8 @@ def check_findings(binary, up):
     """With --upstream-tools and --notes, the turns get findings beside any
     tool that they are lent. A finding of the agent bro has the ID bro#N on
     the branch refs/heads/agent/bro/findings of the session. add records a
-    finding, update changes a finding of the agent, list lists the findings
-    of every member and show prints a finding with its changes. Each add and
+    finding, update changes a finding of the agent, list lists the newest
+    finding of each member and show prints a finding with its changes. Each add and
     update is one commit with the file of the finding and the archive of its
     evidence. The evidence is calls of the ring of the ask call: a whole
     call, lines of a read, the message of a git show or log, or the files of
@@ -16902,11 +17065,11 @@ def check_findings(binary, up):
                     text) if rows else NO_OPEN
             if more:
                 text += f"[askai: {more} more open finding{'s' * (more > 1)}. Call findings " \
-                    "with action list.]\n"
+                    "with action list and author bro.]\n"
             if other:
                 text += f"[askai: You have {other} open finding{'s' * (other > 1)} in other " \
-                    "conversations. Call findings with action list to see the findings of " \
-                    "every member.]\n"
+                    "conversations. Call findings with action list and author bro to list " \
+                    "your findings.]\n"
             return text
 
         read = {"repo": "proj", "command": "read", "revisions": ["HEAD:src/a.c"], "line": 1,
@@ -16940,7 +17103,8 @@ def check_findings(binary, up):
                 "your open findings.", schema
             assert schema["properties"]["evidence"]["description"] == \
                 "The evidence for the state, at most 16 items. c7 is your call c7 of this ask " \
-                "call. c7:120-140,150 is lines of a git read or a code describe in call c7. " \
+                "call. For a git read, c7 is the lines that the read showed whole. " \
+                "c7:120-140,150 is lines of a git read or a code describe in call c7. " \
                 "bro#5/2 is an evidence item that expand showed you. bro#5/2:120-140 is lines " \
                 "120 to 140 of the lines item bro#5/2.", schema
             assert lent["findings"]["description"].startswith(
@@ -17032,8 +17196,9 @@ def check_findings(binary, up):
                 "such as sha256:9b1c...",
                 "The action argument must be one of: add, update, list, show, expand."], second
             third = results(sent[3])
-            listed = ("Findings of the session session, open first (id, state, about, "
-                      f"claim):\nbro#2  verified   -  {claim}\nbro#1  verified   -  C1b\n")
+            listed = ("Newest finding of each member of the session session (id, state, about, "
+                      f"claim):\nbro#2  verified   -  {claim}\nOlder findings, not listed: bro "
+                      "1. list with author lists every finding of a member.\n")
             ask = re.search(r"Ask: ([0-9a-f]{32})", notes(
                 "log", "-1", "--format=%B", "refs/heads/agent/bro/findings"))[1]
             shown = (f"Finding bro#1 by bro: verified\nclaim: C1b\nChange 1: candidate, ask "
@@ -17172,12 +17337,12 @@ def check_findings(binary, up):
             said = results(up.requests[count + 1])
             assert re.fullmatch(r"Added bro#3 \(candidate\)\. Commit [0-9a-f]{8}\.", said[0])
             assert said[1] == (
-                "Findings of the session session, open first (id, state, about, claim):\n"
+                "Newest finding of each member of the session session (id, state, about, "
+                "claim):\n"
                 "bro#3  candidate  cuh#1  One commit.\n"
-                "bro#1  verified   -      C1b\n"
                 "cuh#1  verified   -      Two commits.\n"
-                "Closed findings:\n"
-                f"bro#2  retracted  -      {claim}\n"), said[1]
+                "Older findings, not listed: bro 2. list with author lists every finding "
+                "of a member.\n"), said[1]
             assert said[2].startswith("Finding cuh#1 by cuh: verified\nclaim: Two commits.\n"
                                       "Findings about cuh#1: bro#3 (candidate)\nChange 1: "
                                       "verified, ask "), said[2]
@@ -17955,8 +18120,8 @@ def check_findings_cases(binary, up):
             cuh.ask("Q")
             assert prompt(up.requests[count]).endswith(
                 "[askai: You have no open findings in this conversation.]\n[askai: You have 1 "
-                "open finding in other conversations. Call findings with action list to see "
-                "the findings of every member.]\n"), prompt(up.requests[count])
+                "open finding in other conversations. Call findings with action list and "
+                "author cuh to list your findings.]\n"), prompt(up.requests[count])
 
         # N4-4 and N3-3: the commit that cuh read is rewritten away.
         sh("commit", "-q", "--amend", "-m", "rewritten")
@@ -17981,8 +18146,8 @@ def check_findings_cases(binary, up):
             count = len(up.requests)
             bro.ask("Q")
             listed, expanded = results(up.requests[count + 1])
-            assert listed == "Findings of the session session, open first (id, state, about, " \
-                "claim):\ncuh#1  verified   -  a.c declares a and b.\n", listed
+            assert listed == "Newest finding of each member of the session session (id, " \
+                "state, about, claim):\ncuh#1  verified   -  a.c declares a and b.\n", listed
             assert f"[askai: cuh#1/1: result, {len(shown.encode())} bytes:]\n{shown}\n" in \
                 expanded and expanded.endswith("[askai: You saw cuh#1/1 whole. Cite cuh#1/1 "
                                                "for verified or disproved from your next turn "
@@ -18062,7 +18227,7 @@ def check_findings_cases(binary, up):
                             *["expand needs id: a finding, such as bro#5, or an evidence item, "
                               "such as bro#5/2."] * 2], said
             assert client(action="show", id="cuh#1/1") == said[0], said
-            listed = client(action="list")
+            listed = client(action="list", author="bro")
             assert "bro#3 " in listed and "bro#4" not in listed and \
                 "bro#1  verified " in listed, listed
             # The ID in the file of a finding must be the author of its
@@ -18539,6 +18704,13 @@ def check_plugin(binary, up, plugin):
             assert [t["function"]["name"] for t in first["body"]["tools"]] == \
                 ["man", "test_echo", "test_state", "test_misuse", "compact", "background",
                  "jobs", "wait", "timer"], first
+            # The tool argument of background lists the lent tools whose
+            # kind has TOOL_DETACH.
+            background = next(t["function"] for t in first["body"]["tools"]
+                              if t["function"]["name"] == "background")
+            assert background["parameters"]["properties"]["tool"] == {
+                "type": "string", "enum": ["man", "test_state"],
+                "description": "The name of the tool to call."}, background
             assert [m["content"] for m in second["body"]["messages"][2:]] == \
                 ["The seconds argument must be a whole number from 1 to 3600." + stamp(1),
                  "x" + stamp(2)], second
@@ -19951,8 +20123,14 @@ def check_godbolt(binary, up, godbolt):
                 assert ok(ai, "godbolt_catalog", action="families", limit=2,
                           match="x86-64") == \
                     "family\tcompilers\nclang\t1\ngcc\t2\n" + left(1) + "\nListed 2 of " \
-                    "the 3 families of the 3 matching compilers. Compiler Explorer lists 17 " \
-                    "compilers for language c.\n"
+                    "the 3 families of the 3 matching compilers, from number 1. For the " \
+                    "next, call again with first: 3. Compiler Explorer lists 17 compilers " \
+                    "for language c.\n"
+                assert ok(ai, "godbolt_catalog", action="families", limit=2, first=3,
+                          match="x86-64") == \
+                    "family\tcompilers\nllvm\t1\n" + left(1) + "\nListed 1 of the 3 " \
+                    "families of the 3 matching compilers, from number 3. Compiler " \
+                    "Explorer lists 17 compilers for language c.\n"
                 assert ok(ai, "godbolt_catalog", action="architectures", kind="ticlang") \
                     .endswith("\nListed 1 of the 1 architecture of the 1 matching compiler. "
                               "Compiler Explorer lists 17 compilers for language c.\n")
@@ -19962,11 +20140,43 @@ def check_godbolt(binary, up, godbolt):
                 assert full.split("\n")[1:5] == [
                     "cg142\tx86-64 gcc 14.2\tdefault\t14.2\tamd64\tstable\tgcc",
                     "cclang19\tx86-64 clang 19.1\tclang\t19.1\tamd64\tstable\tclang,llvm",
-                    left(1), "Listed 2 of 17 matching compilers. Compiler Explorer lists 17 "
-                    "compilers for language c."], full
+                    left(1), "Listed 2 of 17 matching compilers, from number 1. For the next, "
+                    "call again with first: 3. Compiler Explorer lists 17 compilers for "
+                    "language c."], full
                 half = len(full.encode()) // 2
                 assert ok(ai, "godbolt_catalog", action="compilers", limit=2,
                           offset=half) == full.encode()[half:].decode()
+
+                # first and limit select a range of the matching items, counted
+                # from 1. The last line names the first of the next items.
+                assert ids(first=2, limit=3) == ["cclang19", "cvc19", "cclangcl19"]
+                assert ids(first=2, limit=1, kind="default") == ["cgtrunk"]
+                text = ok(ai, "godbolt_catalog", action="compilers", first=16, limit=1)
+                assert text.split("\n")[1].startswith("labels\t") and text.endswith(
+                    "\nListed 1 of 17 matching compilers, from number 16. For the next, "
+                    "call again with first: 17. Compiler Explorer lists 17 compilers for "
+                    "language c.\n"), text
+                assert ok(ai, "godbolt_catalog", action="compilers", first=17).endswith(
+                    "\narray\tspecial array\tdefault\t1.0\tamd64\tstable\tgcc\n" + left(1) +
+                    "\nListed 1 of 17 matching compilers, from number 17. Compiler "
+                    "Explorer lists 17 compilers for language c.\n")
+                assert ok(ai, "godbolt_catalog", action="compilers", first=18).endswith(
+                    "families\n" + left(1) + "\nListed 0 of 17 matching compilers. "
+                    "Compiler Explorer lists 17 compilers for language c.\n")
+                assert ok(ai, "godbolt_catalog", action="languages", first=2, limit=2) \
+                    .endswith("default\nc++\tC++\tcppg142\nnone\tNo compilers\tnone\n"
+                              "Listed 2 of 5 matching languages, from number 2. For the "
+                              "next, call again with first: 4. Compiler Explorer lists 5 "
+                              "languages.\n")
+                assert refused(ai, "godbolt_catalog", action="compilers", first=0) == \
+                    "first must be a whole number from 1 to 4294967295."
+
+                # A word of match that starts with a digit does not match
+                # directly after a digit: 42 is not in the id cg142 or in the
+                # version 14.2, and 14 and 142 are.
+                assert ids(match="42") == []
+                assert ids(match="gcc 14") == ["cg142"] and ids(match="142") == ["cg142"]
+                assert ids(match="19.1") == ["cclang19", "cclangcl19"]
 
                 # askai stores the lists, so each list was sent once. Another
                 # language is another list.

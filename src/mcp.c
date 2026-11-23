@@ -5144,6 +5144,42 @@ mcp_slot_client_background (struct mcp_slot    *slot,
 	mcp_slot_start(slot, call);
 }
 
+/** Stores in @p names the names of the tools of @p mask, in the order of
+ *  the registry, and returns how many there are.
+ */
+static size_t
+mcp_static_names (struct mcp_static const *st,
+                  tool_mask                mask,
+                  struct cstr_view         names[static TOOL_MAX])
+{
+	size_t n = 0;
+	for (uint32_t id = 0; id < st->reg->n_tools; ++id)
+		if (mask >> id & 1)
+			names[n++] = st->reg->tools[id].name;
+	return n;
+}
+
+/** Refuses the background call of a turn in @p slot whose tool argument
+ *  names no tool that the turn can run as a job. The refusal lists the
+ *  tools that the turn can run as jobs.
+ */
+static void
+mcp_slot_background_refuse (struct mcp_slot *slot)
+{
+	struct mcp_req *req = slot->req;
+	struct mcp_static const *st = req->mcp->st;
+	struct cstr_view names[TOOL_MAX];
+	size_t const n = mcp_static_names(st, req->lent & st->lending.detach, names);
+	dstr_auto text = DSTR_INIT;
+	if (!dstr_cat(&text, "The tool argument must be one of the tools that can run as a "
+	              "job: ") ||
+	    cstr_view_join_more(names, n, n, &text) || !dstr_cat_n(&text, ".", 1)) {
+		mcp_req_fail(req, ENOMEM);
+		return;
+	}
+	mcp_slot_result(slot, cstr_view_dstr(&text), TOOL_FAILED);
+}
+
 /** Starts the call that @p args describes as a job in the background, in a
  *  slot of the agenda. The turns must be lent the tool, and the flags of
  *  its kind must contain TOOL_DETACH. The call in @p slot returns the
@@ -5162,15 +5198,12 @@ mcp_slot_background (struct mcp_slot    *slot,
 	struct json_object *call = jb_get(args, "arguments");
 	uint32_t id = mcp_req_lent_tool(req, registry_find(st->reg, jb_view(jb_get(args, "tool")),
 	                                                   TOOL_MAX));
-	struct cstr_view problem =
-		!(mcp_static_tool(st, id)->kind->flags & TOOL_DETACH)
-		? CSTR_VIEW("The tool argument must name a tool that can run in the background, "
-		            "such as git or man.")
-		: call && !json_object_is_type(call, json_type_object)
-		? not_object
-		: cstr_view(nullptr);
-	if (problem.data) {
-		mcp_slot_result(slot, problem, TOOL_FAILED);
+	if (!(mcp_static_tool(st, id)->kind->flags & TOOL_DETACH)) {
+		mcp_slot_background_refuse(slot);
+		return;
+	}
+	if (call && !json_object_is_type(call, json_type_object)) {
+		mcp_slot_result(slot, not_object, TOOL_FAILED);
 		return;
 	}
 	int e;
@@ -8051,8 +8084,15 @@ mcp_compact_definition (void const *service)
 static struct json_object *
 mcp_background_definition (void const *service)
 {
-	(void)service;
 	static_assert(JOBS_MAX == 8, "update the description");
+	/* The tools of the kinds with TOOL_DETACH that a role can allow the
+	 * turns. The list is the same for every client. For a request,
+	 * mcp_slot_background_refuse() lists the tools of its client. */
+	struct mcp_static const *st = service;
+	struct mcp_lending const *l = &st->lending;
+	tool_mask const jobs = (l->by[LEND_GRANTED] | l->by[LEND_ALWAYS]) & l->detach;
+	struct cstr_view names[TOOL_MAX];
+	size_t const n = mcp_static_names(st, jobs, names);
 	return schema_tool("background",
 		"Run a call of another tool as a job. background returns the job "
 		"number at once. When the job ends, a notice appears in a later tool "
@@ -8060,8 +8100,8 @@ mcp_background_definition (void const *service)
 		"Call jobs with action result to read the output of the job. You can "
 		"start at most 8 jobs.",
 		jb_object(
-			"tool", schema_property("string", "The name of the tool to call, "
-			                        "such as git or man."),
+			"tool", schema_enum(schema_names(names, n),
+			                    "The name of the tool to call."),
 			"arguments", schema_property("object",
 				"The arguments for the tool, as in a direct call."),
 			nullptr),

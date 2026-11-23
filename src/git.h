@@ -99,6 +99,15 @@ struct git_pin {
 	struct git_repo const *repo;      /**< nullptr for an unknown name */
 	uint64_t               deadline;  /**< a loop_clock() time */
 	size_t                 n_roots;
+	size_t                 n_maybe;   /**< the last n_maybe roots are
+	                                       revisions only if git resolves
+	                                       them. rev-parse resolves the
+	                                       roots in their order and stops
+	                                       at the first that names no
+	                                       commit. The pin then removes that
+	                                       root and the roots after it, and
+	                                       n_maybe becomes the number of
+	                                       these roots that are left. */
 	enum git_pin_phase     phase;
 	struct oid             roots[GIT_ROOTS];  /**< the commit IDs */
 };

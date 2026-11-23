@@ -239,12 +239,15 @@ finding_claim_line (struct finding const *f);
 
 /**
  * Appends to @p d the list of the @p n findings at @p list, which
- * finding_sort() sorted, as the action list writes it: a header that names
- * the session @p session, or the member @p author if it is not "", the
- * open findings, and the closed findings, one finding a line with its ID,
- * state, about and claim. If @p author is not "", @p list must be the
- * findings of @p author. A claim is cut at its first line feed and at
- * FINDING_CLAIM bytes. Returns 0 or ENOMEM.
+ * finding_sort() sorted, as the action list writes it, one finding a line
+ * with its ID, state, about and claim. If @p author is "", the list names
+ * the session @p session and contains the newest finding of each author,
+ * the finding with the largest number, then a line with the number of the
+ * other findings of each author. If @p author is not "", @p list must be
+ * the findings of @p author, and the list contains them all: a header that
+ * names @p author, the open findings, and the closed findings. A claim is
+ * cut at its first line feed and at FINDING_CLAIM bytes. Returns 0 or
+ * ENOMEM.
  */
 extern int
 finding_list (struct finding const *list,

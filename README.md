@@ -638,6 +638,36 @@ rejected. `status`, `ls-files`, and index and worktree options are unavailable.
 `log` also takes `--all`, `--branches`, `--tags` and `--remotes`. Every resolved
 commit, including `blame --ignore-rev` values, must be reachable from `HEAD`, a
 branch, a tag or a remote-tracking ref.
+
+A call can give `argv` in place of `command`, `options`, `revisions`, `paths`
+and `pattern`: the words of a git command line after `git`, at most 64.
+
+```json
+{ "repo": "proj", "argv": ["grep", "-i", "todo", "HEAD~1", "--", "src/"] }
+```
+
+The first word is the command. `askai` reads the other words as git does, and
+then checks them as the arguments above. An option takes its value from the
+same word or from the next word (`-n20`, `-n 20`, `--max-count=20`,
+`--max-count 20`). The pattern of a `grep` is the word after `-e`, or the
+first word that is no option. A word after `--` is a path. Before `--`, a word
+that contains `*`, `?` or `[` or ends with a slash is a path: no revision has
+such a name. A command that takes a fixed number of revisions reads the words
+after them as paths: `blame` a revision and then the file, `ls-tree` a commit
+and then paths, `diff` two commits or a range and then paths. `log`, `show`
+and `grep` take any number of revisions and then paths. For them, the
+`git rev-parse` that resolves the revisions of every call decides: a word is a
+revision if it names a commit, and the first word that names no commit is a
+path, and so is every word after it. This holds for a word that could be a
+path: a relative path that is no abbreviated commit ID and has none of `^`,
+`~`, `@`, `{`, `}`, `:` and `..`. Any other word must name a commit. `askai`
+reads no file of a working tree to tell a path from a revision, because the
+tool shows only committed trees. A path that has the name of a branch or a tag
+goes after `--`. `ls-tree` also takes a tree as `commit:path`, which `askai`
+reads as the commit and the path with a slash. A call without a revision runs
+on `HEAD`, as with the other arguments. A refusal of such a call ends with the
+arguments that `askai` made from the words. `line`, `count`, `help` and
+`offset` stay separate arguments.
 Knowing a stash or dangling commit's hash does not grant access. A commit
 deliberately added to ordinary history becomes available through that history.
 Paths are relative to the repository's top, with no `..` component
@@ -1196,8 +1226,9 @@ a claim and a state, `candidate` unless the model gives another, and with
 changes the state of a finding of the agent to `candidate`, `verified`,
 `disproved` or `retracted`, and with `claim` corrects the claim; the
 change stores the earlier claim. Only the author changes a finding. `list`
-lists the findings of every member, open first, or with `author` those of
-one member. `show` prints a finding with every change, and the findings
+lists the newest finding of each member and the number of the older
+findings of each member, or with `author` every finding of one member,
+open first. `show` prints a finding with every change, and the findings
 about it. `expand` prints the stored evidence of a finding (`id` such as
 `cuh#2`), of one evidence item (`cuh#2/1`), or without `id` of all open
 findings of the agent, newest first, a window at a time from `offset`.
@@ -1205,9 +1236,10 @@ The state of a finding is the state of its last change, and `candidate`
 and `verified` findings are open.
 
 A change cites evidence, at most 16 references: `c7` is the call c7 of
-the ask call, its arguments and its result as the model got them, or the
-lines of a `git` `read` or a `code` `describe` that its result showed
-whole; `c7:120-140,150` is some of those lines; `cuh#2/1` is the
+the ask call, its arguments and its result as the model got them, or for
+a `git` `read` the lines that its result showed whole;
+`c7:120-140,150` is some of the lines that a `git` `read` or a `code`
+`describe` showed whole; `cuh#2/1` is the
 evidence item 1 of the finding `cuh#2`, and
 `cuh#2/1:161-165` some lines of such an item. The ranges can come in any
 order. `askai` stores them in ascending order, ranges that overlap or touch
@@ -1382,11 +1414,15 @@ several files added by one commit. `list` reflects the current tree;
 - The prompt of an ask call begins its notes with who the agent is and who
   made the ask call, then the members of the session and their kinds, at
   most 32, and the number of the others, then the note history of the
-  agent and its newest note, or a line that the notebook contains no notes
-  yet. After a compaction, the same notices follow the summary.
+  agent, its newest 20 changes at most, and its newest note, or a line
+  that the notebook contains no notes yet. A longer history starts with a
+  line that names the action `history`, which lists every change. After a
+  compaction, the same notices follow the summary.
 - `search` lists the lines of the selected notebook's current notes that
   match `pattern`, as `file:line:text`. Each line of `pattern` is an
-  extended regular expression, and case is ignored.
+  extended regular expression, and case is ignored. With `file`, `search`
+  reads only that note, or the notes in that directory. `list` and
+  `members` refuse `file`.
 - `list` shows each current file once, with its byte count and blob ID.
   `history` lists changes oldest first, with full commit IDs, times, the
   lines added and removed, such as `(+3 -1)`, or `(binary)` for a change
@@ -2046,6 +2082,11 @@ it. It has these tools:
   compilers of each kind, family or architecture. Its filters select
   compilers by id, kind, family tag, architecture, and words in their ids,
   names, kinds, versions, architectures, release tracks and family tags.
+  A word that starts with a digit does not match directly after a digit:
+  `14` matches `14.2` and not `cg114`. `first` and `limit` select a range
+  of the matching items, such as `first` 101 and `limit` 100 for the items
+  101 to 200, and the last line of the output names the `first` of the
+  next items.
 - `godbolt_compile` compiles source code once with each of up to 16
   compilers and each of up to 8 argument strings, and at most 32 times in
   all. The output has a record for each compilation, with the exit code,

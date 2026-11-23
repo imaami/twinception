@@ -388,10 +388,13 @@ evidence_cite (struct evidence            *dest,
 		return util_refuse(why, len, "Call c%" PRIu32 " was made in this turn. Cite c%" PRIu32
 		                   " for verified or disproved in a later turn.", stamp->number,
 		                   stamp->number);
-	/* The lines of cN are all the lines that the call showed whole. The
-	 * ranges ascend, so the first and the last range bound them. */
+	/* cN of a call whose only facts are lines of a file, a git read, cites
+	 * all the lines that the call showed whole. cN of any other call cites
+	 * the whole result, as for a code describe (SEEN_DERIVED). The ranges
+	 * ascend, so the first and the last range bound them. */
 	struct evidence_ref shown = *ref;
-	if (ref->form == EVIDENCE_REF_CALL && c->lines.range.first) {
+	if (ref->form == EVIDENCE_REF_CALL && c->lines.range.first &&
+	    !flag_any(stamp->flags, SEEN_DERIVED)) {
 		shown.form = EVIDENCE_REF_LINES;
 		shown.ranges[0] = c->lines.range;
 		shown.n_ranges = 1;

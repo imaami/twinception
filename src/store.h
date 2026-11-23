@@ -100,7 +100,8 @@ enum store_cmd : uint8_t {
 	                      commits. */
 	STORE_GREP,      /**< Runs git grep -IniEz. The output lists the lines
 	                      of the files that match the patterns in the input.
-	                      The caller passes a commit. */
+	                      The caller passes a commit, then a path or
+	                      nullptr. */
 };
 
 /** Opens the repository at @p path. An empty directory or a missing one

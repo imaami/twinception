@@ -58,9 +58,12 @@ notes_revision_words (struct notes_revision const *revision,
 	case REVISION_DATA:
 		break;
 	}
-	words[0] = revision->from.hex;
-	words[1] = revision->to.hex;
-	words[2] = revision->file.data;
+	/* STORE_GREP takes one commit, then the note or nullptr. */
+	char const **w = words;
+	*w++ = revision->from.hex;
+	if (cmd != STORE_GREP)
+		*w++ = revision->to.hex;
+	*w = revision->file.len ? revision->file.data : nullptr;
 	return cmd;
 }
 

@@ -78,13 +78,21 @@ enum {
 };
 
 /** The flags of a call in the ring. The range FLAG_HOW of src/flag.h
- *  says how the call ended, and it is FLAG_FAILED for a failed call.
- *  SEEN_TOO_LARGE is a bit of this word only.
+ *  says how the call ended, and it is FLAG_FAILED for a failed call. The
+ *  other flags are bits of this word only. The flags of a struct
+ *  seen_source contain SEEN_DERIVED or nothing.
  */
 enum seen_flag : uint16_t {
 	SEEN_TOO_LARGE = FLAG_OWN(0),  /**< the arguments and the result were
 	                                    larger than TOOL_TEXT_MAX, so the
 	                                    ring stores neither */
+	SEEN_DERIVED   = FLAG_OWN(1),  /**< besides the numbered lines of the
+	                                    file, the result contains facts that
+	                                    the tool derived from the file, such
+	                                    as the layout in a code describe. A
+	                                    reference to the call without lines
+	                                    then cites the whole result
+	                                    (evidence_cite()). */
 };
 
 /** Where seen_find() found a call. */
@@ -132,6 +140,8 @@ struct seen_source {
 	                               unknown */
 	struct range     lines;   /**< numbers of the first and the last line,
 	                               from 1 */
+	struct flag16    flags;   /**< SEEN_DERIVED, or no flag for an output
+	                               whose only facts are the lines */
 	struct oid       commit;  /**< name of the commit */
 };
 
@@ -302,7 +312,8 @@ extern void
 seen_read_destroy (struct seen_read **p_read);
 
 /** Returns @p read as a JSON object, or nullptr with EFAULT (for a nullptr
- *  @p read) or ENOMEM in @p *e.
+ *  @p read) or ENOMEM in @p *e. The object contains the member derived,
+ *  true, only for a source with SEEN_DERIVED.
  */
 extern struct json_object *
 seen_read_json (struct seen_read const *read,

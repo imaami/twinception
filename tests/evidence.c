@@ -421,7 +421,8 @@ test_cite (void)
 	for (unsigned n = 1; n <= 9; ++n)
 		CHECK(dstr_printf(&out, "%u\tline %u\n", n, n));
 	struct seen_source const src = { CSTR_VIEW("proj"), CSTR_VIEW("src/a.c"),
-	                                 { at, dstr_len(&out) - at }, 9, { 1, 9 }, { A } };
+	                                 { at, dstr_len(&out) - at }, 9, { 1, 9 },
+	                                 .commit = { A } };
 	struct cstr_view const o = cstr_view_dstr(&out);
 	int e = -1;
 	struct seen_read *read = seen_read_create(&src, o, &e);
@@ -638,6 +639,51 @@ external (char const *text,
 		return;
 	++failures;
 	fprintf(stderr, "%s:%d: %s: error %d, %s\n", __FILE__, line, text, e, why);
+}
+
+/* The output of a call with SEEN_DERIVED, as of a code describe, contains
+ * more than lines of the file. cN of such a call cites the whole result,
+ * and cN:LINES cites lines.
+ */
+static void
+test_cite_derived (void)
+{
+	static char const text[] = "struct s, 8 bytes\nsrc/a.c lines 7 to 8 of 9:\n"
+	                           "7\tstruct s {\n8\t\tlong x; };\n";
+	struct cstr_view const o = cstr_view_n(text, sizeof text - 1);
+	size_t const at = sizeof "struct s, 8 bytes\nsrc/a.c lines 7 to 8 of 9:\n" - 1;
+	struct seen_source const src = { CSTR_VIEW("proj"), CSTR_VIEW("src/a.c"),
+	                                 { at, o.len - at }, 9, { 7, 8 }, { SEEN_DERIVED },
+	                                 { A } };
+	int e = -1;
+	struct seen_read *read = seen_read_create(&src, o, &e);
+	CHECK(read && !e);
+	struct seen *seen = nullptr;
+	keep(&seen, 1, 1, 1, "", "{\"action\":\"describe\"}", o, read, false);
+	seen_read_destroy(&read);
+	CHECK(flag_any(seen->calls[0].stamp.flags, SEEN_DERIVED) &&
+	      seen->calls[0].lines.range.first == 7 && seen->calls[0].lines.range.last == 8);
+	struct hexid ask = {};
+	CHECK(!hexid_make(&ask));
+	struct evidence_cite const cite = { seen, &ask, tool_name, nullptr, 2, 2 };
+	struct evidence_ref ref = {};
+	struct evidence ev = evidence();
+	struct evidence_material m;
+	struct dstr lines = DSTR_INIT;
+	char why[512] = "";
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c1")));
+	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why) && !*why);
+	CHECK(ev.kind == EVIDENCE_CALL && ev.call == 1 && !ev.ranges.n);
+	SAME(m.request.data, m.request.len, "{\"action\":\"describe\"}");
+	SAME(m.result.data, m.result.len, "struct s, 8 bytes\nsrc/a.c lines 7 to 8 of 9:\n"
+	     "7\tstruct s {\n8\t\tlong x; };\n\n\n[askai: call c1]");
+	CHECK(!evidence_ref_parse(&ref, CSTR_VIEW("c1:8")));
+	CHECK(!evidence_cite(&ev, &m, &lines, &ref, &cite, true, why, sizeof why) && !*why);
+	CHECK(ev.kind == EVIDENCE_LINES && ev.ranges.n == 1 && ev.ranges.items[0].first == 8);
+	SAME(m.result.data, m.result.len, "8\t\tlong x; };\n");
+	evidence_fini(&ev);
+	dstr_cleanup(&lines);
+	seen_destroy(&seen);
 }
 
 /* evidence_external() needs an exact hash in a short text on one line. */
@@ -1316,6 +1362,7 @@ main (void)
 	test_parse();
 	test_put();
 	test_cite();
+	test_cite_derived();
 	test_external();
 	test_path();
 	test_json();

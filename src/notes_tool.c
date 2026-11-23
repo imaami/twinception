@@ -34,6 +34,9 @@
 #include "store.h"
 #include "util.h"
 
+/* The changes in the note history of a prompt, at most: the newest ones. */
+enum { NOTES_TOOL_RECENT = 20 };
+
 /* A fetch value says why git runs on the notes (src/store.h). The values
  * up to FETCH_KIND are kinds, and FETCH_KIND masks them. Each kind is a
  * row of notes_tool_fetch_steps[]. The bits above FETCH_KIND are flags.
@@ -1053,12 +1056,16 @@ notes_tool_change (struct dstr      *d,
 /* Appends the history in @p out, the output of git for STORE_LOG, to
  * call->text, the oldest change first. Stores the name of the newest note
  * in @p *newest. @p cut is true if askai cut the output of git. A cut
- * output lacks the oldest changes. Returns 0 or ENOMEM.
+ * output lacks the oldest changes. The history of a prompt, which names no
+ * note, lists the newest @p most changes, numbered as the action history
+ * numbers them, after a line that says how to list the others. @p most is
+ * SIZE_MAX for the action history. Returns 0 or ENOMEM.
  */
 static int
 notes_tool_history (struct mcp_slot *slot,
                     struct span      out,
                     bool             cut,
+                    size_t           most,
                     struct span     *newest)
 {
 	struct notes_tool_call const *call = *mcp_slot_own(slot);
@@ -1067,13 +1074,25 @@ notes_tool_history (struct mcp_slot *slot,
 	if (cut && cstr_view_cat(CSTR_VIEW("[The oldest changes are not in the list.]\n"),
 	                         call->text))
 		return ENOMEM;
-	struct notes_cursor cursor = notes_cursor(out.len);
 	struct notes_entry entry;
+	size_t all = 0;
+	for (struct notes_cursor c = notes_cursor(out.len);
+	     most != SIZE_MAX && notes_entry_before(out, &c, &entry); )
+		++all;
+	size_t skip = all > most ? all - most : 0;
+	if (skip && !dstr_printf(d, "[askai: The list shows the newest %zu of %zu changes. notes "
+	                         "with action history lists every change.]\n", most, all))
+		return ENOMEM;
+	struct notes_cursor cursor = notes_cursor(out.len);
 	bool history = (call->fetch & FETCH_KIND) == FETCH_LIST;
 	struct cstr_view const filter = util_text_view(&call->revision.file);
-	uint32_t k = 0;
+	uint32_t k = (uint32_t)skip;
 	while (notes_entry_before(out, &cursor, &entry)) {
 		char const *name = (char const *)entry.name.ptr;
+		if (skip) {
+			--skip;
+			continue;
+		}
 		/* Git also matches descendants if this path was once a directory. */
 		if (filter.len && !cstr_view_equal(filter, cstr_view_span(entry.name)))
 			continue;
@@ -1145,7 +1164,7 @@ notes_tool_got_list (struct mcp_slot *slot)
 		e = ENOMEM;
 	if (!e)
 		e = files ? notes_tool_files(slot, out, cut)
-		          : notes_tool_history(slot, out, cut, &newest);
+		          : notes_tool_history(slot, out, cut, SIZE_MAX, &newest);
 	bool const bad = e == EIO;
 	if (bad)
 		e = cstr_view_cat(CSTR_VIEW("Cannot decode the notebook file list."), call->text);
@@ -1450,6 +1469,20 @@ notes_tool_got_diff (struct mcp_slot *slot)
 	notes_tool_end(slot, e, false);
 }
 
+/* Appends to call->text the line of a search that found no line. A search
+ * of one note names the note, because git prints the same for a note
+ * without a match and for a name that is not a note.
+ */
+static int
+notes_tool_unmatched (struct notes_tool_call const *call)
+{
+	if (!call->revision.file.len)
+		return cstr_view_cat(CSTR_VIEW("No line of the current notes matches the "
+		                               "pattern.\n"), call->text);
+	return dstr_printf(call->text, "No line of %s matches the pattern. list shows the "
+	                   "current notes.\n", call->revision.file.data) ? 0 : ENOMEM;
+}
+
 /* Handles the output of git grep for search. git starts each line with
  * the commit that it searched, the notebook's tip, and a colon, which the
  * result leaves out. With -z, git quotes no name and ends the name and the
@@ -1491,9 +1524,7 @@ notes_tool_got_grep (struct mcp_slot *slot)
 	if (!e && !dstr_cat(call->text, "lines that match the pattern (file:line:text):\n\n"))
 		e = ENOMEM;
 	if (!e)
-		e = lines.len ? notes_tool_show(call->text, lines)
-		  : cstr_view_cat(CSTR_VIEW("No line of the current notes matches the "
-		                            "pattern.\n"), call->text);
+		e = lines.len ? notes_tool_show(call->text, lines) : notes_tool_unmatched(call);
 	if (!e && cut)
 		e = cstr_view_cat(CSTR_VIEW("[The search output is incomplete.]\n"), call->text);
 	loop_work(mcp_slot_loop(slot), LOOP_COPY, out.len + lines.len);
@@ -1658,7 +1689,7 @@ notes_tool_prompt_list (struct mcp_slot *slot)
 	      ? 0 : ENOMEM;
 	if (!e)
 		e = notes_tool_history(slot, buf_peek(&c->out), flag_any(c->end.flags, CHILD_CUT),
-		                       &newest);
+		                       NOTES_TOOL_RECENT, &newest);
 	struct cstr_view const name = cstr_view_span(newest);
 	/* The name comes from git. git reads the note only if add would accept
 	 * the name as it is. */
@@ -2099,7 +2130,7 @@ notes_tool_got_append (struct mcp_slot *slot,
 /* Starts search of the notebook of the call in @p slot. git grep -E -f -
  * takes @p pattern on its input: extended regular expressions, one on each
  * line. git pins the notebook's tip first, and then searches the notes at
- * that commit.
+ * that commit, or only the note call->revision.file if the call names one.
  */
 static void
 notes_tool_search (struct mcp_slot  *slot,
@@ -2193,6 +2224,14 @@ notes_tool_start (struct mcp_slot    *slot,
 		                              "note, such as plan.md."), TOOL_FAILED);
 		return;
 	}
+	/* history and search accept file too. history then lists only the
+	 * changes to that note, and search reads only that note. */
+	bool const accepts = flags & NOTES_ACTION_FILE || kind == FETCH_LIST || kind == FETCH_GREP;
+	if (file && !accepts) {
+		mcp_slot_tell(slot, CSTR_VIEW("members and list take no file argument."),
+		              TOOL_FAILED);
+		return;
+	}
 	struct json_object *revision = jb_get(args, "revision");
 	struct json_object *from = jb_get(args, "from");
 	struct json_object *to = jb_get(args, "to");
@@ -2227,10 +2266,9 @@ notes_tool_start (struct mcp_slot    *slot,
 	}
 	if ((flags & NOTES_ACTION_OFFSET) && mcp_slot_offset(slot, args))
 		return;
-	/* history accepts file too, and then lists only the changes to that note. */
 	bool const history = kind == FETCH_LIST && file;
 	struct cstr_view name = jb_view(file);
-	if (flags & NOTES_ACTION_FILE || history) {
+	if (file) {
 		if (notes_name(&name)) {
 			mcp_slot_tell(slot, bad_name, TOOL_FAILED);
 			return;
@@ -2310,7 +2348,7 @@ notes_tool_schema (struct notes_tool const *tool,
 		"file", schema_property("string",
 			"The note name, 1 to 255 bytes, such as plan.md or design/locks.md. Pick "
 			"an extension that matches the format of the text. With file, history "
-			"lists only the changes to the note."),
+			"lists only the changes to the note, and search reads only the note."),
 		"revision", schema_property("string",
 			"A full commit ID from the notebook history, or current. The default for "
 			"read is current. restore needs revision."),

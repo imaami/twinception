@@ -122,7 +122,10 @@ notes_revision_pin (struct notes_revision *revision,
  *  (STORE_HEAD), check that the tip reaches the commits from and to
  *  (STORE_REACH, with the input of notes_revision_input()), then run
  *  @p cmd, STORE_READ, STORE_DIFF, STORE_STAT or STORE_GREP, on those
- *  exact snapshots. The words point into @p revision and @p repo.
+ *  exact snapshots. The words of @p cmd are the commits from and to and
+ *  the note of @p revision. STORE_GREP reads one snapshot: its words are
+ *  the commit from and the note, or nullptr if @p revision names no note.
+ *  The words point into @p revision and @p repo.
  */
 extern enum store_cmd
 notes_revision_words (struct notes_revision const *revision,

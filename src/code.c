@@ -854,6 +854,8 @@ code_record (struct cstr_view     *text,
 		.repo = pin->repo->name, .commit = pin->roots[0],
 		.path = line, .total = v[2], .output = { v[3], v[4] },
 		.lines = { (uint32_t)v[0], (uint32_t)v[1] },
+		/* The declaration above the lines is not text of the file. */
+		.flags = { SEEN_DERIVED },
 	};
 	return true;
 }

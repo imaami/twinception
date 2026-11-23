@@ -44,6 +44,7 @@ enum {
 	REVISIONS = 4,        /**< its revisions */
 	PATHS     = 32,       /**< its paths */
 	WORD      = 1024,     /**< bytes of an option, a revision, a path or a pattern */
+	ARGV      = 64,       /**< words of the argument argv, at most */
 	/** The most words that git_run_dir_argv() writes before a command:
 	 *  GIT_RUN_PREFIX and the options of a repository. */
 	PREFIX    = GIT_RUN_PREFIX + array_size((struct git_repo){}.opts) - 1,
@@ -130,10 +131,20 @@ struct git_read {
 struct git_call {
 	struct git_pin         pin;
 	struct json_object    *args;
+	struct json_object    *derived;  /* the command, options, pattern, revisions
+	                                    and paths that git_argv() made from the
+	                                    argument argv, or nullptr */
 	char const            *argv[GIT_RUN_ARGV];
 	size_t                 command;
 	size_t                 n_revisions;
-	struct git_revision    revisions[REVISIONS];
+	struct git_revision    revisions[REVISIONS + 1];  /* and the HEAD of maybe */
+	size_t                 ignored;   /* the roots of the pin before the
+	                                     revisions: the values of --ignore-rev */
+	size_t                 maybe;     /* an argv call: the last maybe revisions
+	                                     are the words that are revisions only
+	                                     if git resolves them, and revisions[0]
+	                                     is a HEAD that git_argv() added
+	                                     (git_argv_settle()) */
 	struct git_read        read;
 	enum git_phase         phase;
 	uint64_t               grep;  /* GIT_GREP_WITHOUT and GIT_GREP_INVERT */
@@ -229,6 +240,11 @@ enum {
 
 	/* exactly one path, the file */
 	GIT_TAKES_ONEPATH = 1 << 9,
+
+	/* in argv, a tree as commit:path, which becomes the commit and the
+	 * path with a slash at its end
+	 */
+	GIT_TAKES_TREE = 1 << 10,
 };
 
 /* The commands: X(ID, name, options, takes, description, forced...), an
@@ -282,7 +298,7 @@ enum {
           "[\"src/git.c\"]. -L10,30 limits the output to lines 10 to 30. -s leaves out "    \
           "the author and the date.", "--no-textconv")                                      \
         X(LS_TREE,   "ls-tree",   ls_tree_options,                                          \
-          GIT_TAKES_FILES | GIT_TAKES_SINGLE,                                               \
+          GIT_TAKES_FILES | GIT_TAKES_SINGLE | GIT_TAKES_TREE,                              \
           "Entries of a committed tree. The default revision is HEAD. The path \"src/\" "   \
           "lists the entries in src. The path \"src\" lists only src. -r recurses. -d "     \
           "lists only trees.")                                                              \
@@ -440,7 +456,7 @@ git_definition (void const *service)
 	for (size_t i = 0; repos && i < git->n; ++i)
 		repos = jb_push_or_free(repos, jb_string(git->repo[i].name));
 	struct json_object *cmds = schema_names(git_command_names, array_size(git_command_names));
-	struct cstr_view const required[] = { CSTR_VIEW("repo"), CSTR_VIEW("command") };
+	struct cstr_view const required[] = { CSTR_VIEW("repo") };
 	return jb_object(
 		"name", json_object_new_string("git"),
 		"title", json_object_new_string("Git"),
@@ -459,12 +475,26 @@ git_definition (void const *service)
 			"the first line of the grep output names the commit. Each file path "
 			"is on a separate line, above the matches as <line>:<text>. To read a "
 			"match, call read with \"revisions\": [\"<commit>:<path>\"] and "
-			"\"line\": <line>. Attach the value to the option: --max-count=20, "
-			"not -n 20."),
+			"\"line\": <line>. In options, attach the value to the option: "
+			"--max-count=20, not -n 20. A call can give argv in place of command, "
+			"options, revisions, paths and pattern. argv is the words of a git "
+			"command line after git. Example: {\"argv\": [\"grep\", \"-i\", "
+			"\"todo\", \"HEAD~1\", \"--\", \"src/\"]}."),
 		"inputSchema", schema_object(
 			jb_object(
 				"repo", schema_enum(repos, nullptr),
 				"command", schema_enum(cmds, nullptr),
+				"argv", schema_array(schema_property("string", nullptr), ARGV,
+					"The words of a git command line after git: the command, "
+					"then options, revisions and paths, as in [\"log\", "
+					"\"--oneline\", \"-n\", \"5\", \"HEAD\", \"--\", "
+					"\"src/\"]. A word after -- is a path. Before --, a word is "
+					"a revision if the word names a commit. The first word "
+					"that names no commit is a path, and so is every word "
+					"after it, as in [\"grep\", \"todo\", \"main\", "
+					"\"src/git.c\"]. For grep, the first word that is no "
+					"option is the pattern. Write a path that has the name of "
+					"a branch or a tag after --."),
 				"help", schema_property("boolean",
 					"Describe the command instead of running git."),
 				"options", schema_array(schema_property("string", nullptr), OPTIONS,
@@ -790,8 +820,12 @@ git_pin_spawn (struct git_pin           *pin,
 }
 
 /* Replaces each root of @p pin with a commit ID from @p out, the output of
- * rev-parse. Returns 0, or EINVAL if @p out does not contain exactly one
- * ID of the same length for each root.
+ * rev-parse, which stops at the first root that names no commit. If that
+ * root is one of the last pin->n_maybe roots, the function removes it and
+ * the roots after it from the pin, and pin->n_maybe becomes the number of
+ * these roots that are left. Returns 0, or EINVAL if @p out does not
+ * contain one ID of the same length for each other root, and nothing
+ * else.
  */
 static int
 git_pin_resolve (struct git_pin *pin,
@@ -799,10 +833,16 @@ git_pin_resolve (struct git_pin *pin,
 {
 	struct cstr_view text = cstr_view_span(out);
 	struct oid *roots = pin->roots;
-	for (size_t i = 0; i < pin->n_roots; ++i)
-		if (oid_init_field(&roots[i], &text, '\n') || oid_len(&roots[i]) != oid_len(&roots[0]))
+	size_t const firm = pin->n_roots - pin->n_maybe;
+	size_t n = 0;
+	for (; n < pin->n_roots && (n < firm || text.len); ++n)
+		if (oid_init_field(&roots[n], &text, '\n') || oid_len(&roots[n]) != oid_len(&roots[0]))
 			return EINVAL;
-	return text.len ? EINVAL : 0;
+	if (text.len)
+		return EINVAL;
+	pin->n_maybe = n - firm;
+	pin->n_roots = n;
+	return 0;
 }
 
 int
@@ -887,7 +927,8 @@ git_step_failed (struct mcp_slot  *slot,
         X(PATHS,     "paths")     \
         X(PATTERN,   "pattern")   \
         X(LINE,      "line")      \
-        X(COUNT,     "count")
+        X(COUNT,     "count")     \
+        X(ARGV,      "argv")
 
 #define GIT_ARG_ENUM(id, ...) GIT_ARG_##id,
 enum git_arg : uint8_t { GIT_ARG_LIST(GIT_ARG_ENUM) GIT_ARGS };
@@ -895,6 +936,283 @@ enum git_arg : uint8_t { GIT_ARG_LIST(GIT_ARG_ENUM) GIT_ARGS };
 
 static struct cstr_view const git_arg_names[] = { GIT_ARG_LIST(XL_VIEW) };
 #undef GIT_ARG_LIST
+
+/* Returns how the option @p word of argv takes the next word of argv as its
+ * value, by the options @p allowed of the command: '=' for a long option,
+ * as in --max-count 20, '#' for a short option, as in -n 20, or 0 if
+ * @p word is whole as it is or is no option of the command.
+ */
+static char
+git_argv_value (struct cstr_view const *allowed,
+                struct cstr_view        word)
+{
+	char how = 0;
+	for (; allowed->data; ++allowed) {
+		if (cstr_view_equal(*allowed, word))
+			return 0;
+		if (allowed->len != word.len + 1 || memcmp(allowed->data, word.data, word.len))
+			continue;
+		char const last = allowed->data[word.len];
+		how = last == '=' ? '=' : last == '#' || last == '*' ? '#' : how;
+	}
+	return how;
+}
+
+/* The indexes of the lists of git_argv_word(). */
+enum { GIT_ARGV_OPTIONS, GIT_ARGV_REVISIONS, GIT_ARGV_PATHS, GIT_ARGV_LISTS };
+
+/* Adds the word @p i of @p argv, a word before --, to the lists @p lists of
+ * the command @p c, or stores it in @p *pattern: an option, with the next
+ * word as its value if the option takes one (git_argv_value()); the
+ * pattern of a grep, which is the word after -e or the first other word; a
+ * tree commit:path of ls-tree as the commit and the path; a path, if the
+ * word contains *, ? or [ or ends with a slash, which no name of a
+ * revision does; or else a revision. The function reads no file: the tool
+ * shows only committed trees, so the files of a working tree do not decide
+ * what a word is. @p text is scratch storage. Returns the number of words
+ * that the function read, 1 or 2, or 0 if out of memory.
+ */
+static size_t
+git_argv_word (size_t               c,
+               struct json_object  *argv,
+               size_t               i,
+               struct json_object  *lists[static GIT_ARGV_LISTS],
+               struct json_object **pattern,
+               struct dstr         *text)
+{
+	struct json_object *item = jb_at(argv, i);
+	struct json_object *next = jb_at(argv, i + 1);
+	struct cstr_view const word = jb_view(item);
+	uint64_t const takes = commands[c].takes;
+	if (word.len > 1 && word.data[0] == '-') {
+		if (next && (takes & GIT_TAKES_PATTERN) && cstr_view_equal(word, CSTR_VIEW("-e"))) {
+			*pattern = next;
+			return 2;
+		}
+		char const how = next ? git_argv_value(commands[c].options, word) : 0;
+		if (!how)
+			return jb_push(lists[GIT_ARGV_OPTIONS], json_object_get(item)) ? 0 : 1;
+		struct cstr_view const value = jb_view(next);
+		(void)dstr_clear(text);
+		return dstr_printf(text, "%.*s%s%.*s", (int)word.len, word.data,
+		                   how == '=' ? "=" : "", (int)value.len, value.data) &&
+		       !jb_push(lists[GIT_ARGV_OPTIONS], jb_string(cstr_view_dstr(text))) ? 2 : 0;
+	}
+	if ((takes & GIT_TAKES_PATTERN) && !*pattern) {
+		*pattern = item;
+		return 1;
+	}
+	char const *const colon = takes & GIT_TAKES_TREE ? memchr(word.data, ':', word.len)
+	                                                 : nullptr;
+	if (colon) {
+		struct cstr_view const dir = cstr_view_slice(word, (size_t)(colon - word.data) + 1,
+		                                             SIZE_MAX);
+		(void)dstr_clear(text);
+		return dir.len &&
+		       dstr_printf(text, "%.*s%s", (int)dir.len, dir.data,
+		                   dir.data[dir.len - 1] == '/' ? "" : "/") &&
+		       !jb_push(lists[GIT_ARGV_PATHS], jb_string(cstr_view_dstr(text))) &&
+		       !jb_push(lists[GIT_ARGV_REVISIONS],
+		                jb_string(cstr_view_n(word.data, (size_t)(colon - word.data))))
+		       ? 1 : 0;
+	}
+	size_t const to = strpbrk(word.data, "*?[") || word.data[word.len - 1] == '/'
+	                ? GIT_ARGV_PATHS : GIT_ARGV_REVISIONS;
+	return jb_push(lists[to], json_object_get(item)) ? 0 : 1;
+}
+
+/* Moves the revisions of @p lists after the first @p keep to the paths. A
+ * command that takes a fixed number of revisions reads the words after
+ * them as paths, as git does. Returns 0 or ENOMEM.
+ */
+static int
+git_argv_rest (struct json_object *lists[static GIT_ARGV_LISTS],
+               size_t              keep)
+{
+	struct json_object *revisions = lists[GIT_ARGV_REVISIONS];
+	size_t const n = jb_len(revisions);
+	for (size_t i = keep; i < n; ++i)
+		if (jb_push(lists[GIT_ARGV_PATHS], json_object_get(jb_at(revisions, i))))
+			return ENOMEM;
+	return n > keep && json_object_array_del_idx(revisions, keep, n - keep) ? ENOMEM : 0;
+}
+
+/* Returns whether the word @p word of argv can be a path as well as a
+ * revision: a relative path inside the repository, without the characters
+ * of the syntax of revisions, that is no abbreviated commit ID. Only a ref
+ * of the view of the pin can have such a name, so the answer of git to it
+ * says nothing about a commit that no ref reaches.
+ */
+static bool
+git_argv_plain (struct cstr_view word)
+{
+	size_t const hex = strspn(word.data, "0123456789abcdefABCDEF");
+	return util_path_inside(word) && !strpbrk(word.data, "^~@{}:") &&
+	       !strstr(word.data, "..") && (hex < word.len || hex < 4);
+}
+
+/* Counts in @p *maybe the last revisions of @p lists that can be paths
+ * (git_argv_plain()), at most REVISIONS. git resolves the revisions in
+ * their order and reads the first word that names no commit, and the words
+ * after it, as paths (git_argv_settle()). If there are such revisions, the
+ * function puts HEAD before the revisions: the call runs on HEAD if git
+ * reads all its words as paths. Returns 0 or ENOMEM.
+ */
+static int
+git_argv_maybe (struct json_object *lists[static GIT_ARGV_LISTS],
+                size_t             *maybe)
+{
+	struct json_object *revisions = lists[GIT_ARGV_REVISIONS];
+	size_t const n = jb_len(revisions);
+	size_t plain = 0;
+	while (plain < n && git_argv_plain(jb_view(jb_at(revisions, n - 1 - plain))))
+		++plain;
+	if (!plain || n > REVISIONS)
+		return 0;
+	struct json_object *with = json_object_new_array();
+	bool ok = with && !jb_push(with, json_object_new_string("HEAD"));
+	for (size_t i = 0; ok && i < n; ++i)
+		ok = !jb_push(with, json_object_get(jb_at(revisions, i)));
+	if (!ok) {
+		json_object_put(with);
+		return ENOMEM;
+	}
+	json_object_put(revisions);
+	lists[GIT_ARGV_REVISIONS] = with;
+	*maybe = plain;
+	return 0;
+}
+
+/* Makes paths of the last revisions of an argv call that git did not
+ * resolve, once the pin is done (git_argv_maybe()): in call->argv, the
+ * word -- moves before their words, which take the places of their
+ * revisions and of the old --. revisions[0] is the HEAD that
+ * git_argv_maybe() added. The call uses it only if no other revision is
+ * left.
+ */
+static void
+git_argv_settle (struct git_call *call)
+{
+	struct json_object *words = jb_get(call->derived, "revisions");
+	char const **base = call->argv;
+	while (*base != git_derived)
+		++base;
+	size_t const n = call->n_revisions;
+	size_t const kept = n - call->maybe + call->pin.n_maybe;
+	base[kept] = "--";
+	for (size_t i = kept; i < n; ++i)
+		base[i + 1] = jb_view(jb_at(words, i)).data;
+	call->n_revisions = kept;
+	call->maybe = 0;
+	if (kept == 1)
+		return;
+	memmove(call->revisions, call->revisions + 1, (kept - 1) * sizeof *call->revisions);
+	--call->n_revisions;
+	size_t rest = 0;
+	while (base[rest])
+		++rest;
+	memmove(base, base + 1, rest * sizeof *base);
+}
+
+/* Makes the arguments command, options, pattern, revisions and paths of a
+ * call from the argument argv, the words of a git command line after
+ * "git": the command, then options, revisions and paths
+ * (git_argv_word()), and after a word -- only paths. Without --, the words
+ * after the revisions that the command takes are paths: blame takes a
+ * revision and then the file, ls-tree a commit and then paths, and diff
+ * two commits or a range and then paths. The function stores
+ * the arguments in call->derived and in @p of, and their bits in
+ * @p *seen. Returns 0, ENOMEM, or EINVAL with a message in @p why
+ * (git_wrong()).
+ */
+static int
+git_argv (struct git_call    *call,
+          struct json_object *of[static GIT_ARGS],
+          uint64_t           *seen,
+          uint32_t           *len,
+          char               *why,
+          size_t              size)
+{
+	static_assert(ARGV == 64 && WORD == 1024, "the message says");
+	struct json_object *argv = of[GIT_ARG_ARGV];
+	size_t const n = jb_len(argv);
+	size_t i = 0;
+	while (i < n && jb_text(jb_at(argv, i), 1, WORD, nullptr).data)
+		++i;
+	if (!n || n > ARGV || i < n)
+		return git_wrong(len, why, size,
+		                 "The argv argument must be an array of 1 to 64 strings of 1 to "
+		                 "1024 bytes with no NUL: the words of a git command line after "
+		                 "git, such as [\"log\", \"--oneline\", \"-n\", \"5\", \"HEAD\", "
+		                 "\"--\", \"src/\"].");
+	uint64_t const replaced = 1U << GIT_ARG_COMMAND | 1U << GIT_ARG_OPTIONS |
+	                          1U << GIT_ARG_REVISIONS | 1U << GIT_ARG_PATHS |
+	                          1U << GIT_ARG_PATTERN;
+	if (*seen & replaced)
+		return git_wrong(len, why, size, "Give argv without command, options, revisions, "
+		                 "paths and pattern.");
+	/* A word "git" before the command is not a word of the command. */
+	i = n > 1 && cstr_view_equal(jb_view(jb_at(argv, 0)), CSTR_VIEW("git"));
+	struct json_object *command = jb_at(argv, i);
+	size_t const c = cstr_view_index(git_command_names, array_size(git_command_names),
+	                                 jb_view(command));
+	struct json_object *lists[GIT_ARGV_LISTS] = {
+		json_object_new_array(), json_object_new_array(), json_object_new_array()
+	};
+	struct json_object *pattern = nullptr;
+	dstr_auto text = DSTR_INIT;
+	bool ok = lists[GIT_ARGV_OPTIONS] && lists[GIT_ARGV_REVISIONS] && lists[GIT_ARGV_PATHS];
+	/* git_call_command() refuses an unknown command, and the words after
+	 * it are not read. paths becomes true at the word --. */
+	bool const known = c < array_size(git_command_names);
+	bool paths = false;
+	++i;
+	while (ok && known && i < n) {
+		struct json_object *item = jb_at(argv, i);
+		size_t read = 1;
+		if (paths)
+			ok = !jb_push(lists[GIT_ARGV_PATHS], json_object_get(item));
+		else if (cstr_view_equal(jb_view(item), CSTR_VIEW("--")))
+			paths = true;
+		else
+			read = git_argv_word(c, argv, i, lists, &pattern, &text);
+		ok = ok && read;
+		i += read;
+	}
+	/* Without --, the words after the revisions that the command takes
+	 * are paths: the file of a blame, the paths of an ls-tree, and the
+	 * paths after the two commits or the range of a diff. */
+	uint64_t const takes = known ? commands[c].takes : 0;
+	size_t const revisions = jb_len(lists[GIT_ARGV_REVISIONS]);
+	char const *const first = revisions ? jb_view(jb_at(lists[GIT_ARGV_REVISIONS], 0)).data
+	                                    : "";
+	size_t const keep =
+		paths ? revisions
+		: (takes & GIT_TAKES_ONEPATH) && !jb_len(lists[GIT_ARGV_PATHS]) ? revisions > 1
+		: (takes & GIT_TAKES_FILES) && (takes & GIT_TAKES_SINGLE) ? 1
+		: takes & GIT_TAKES_PAIR ? 2 - !!strstr(first, "..")
+		: revisions;
+	ok = ok && !git_argv_rest(lists, keep);
+	/* log, show and grep take any number of revisions and then paths. */
+	if (ok && !paths && (takes & GIT_TAKES_FILES) &&
+	    !(takes & (GIT_TAKES_SINGLE | GIT_TAKES_PAIR)))
+		ok = !git_argv_maybe(lists, &call->maybe);
+	call->derived = jb_object("command", json_object_get(command),
+	                          "options", lists[GIT_ARGV_OPTIONS],
+	                          "revisions", lists[GIT_ARGV_REVISIONS],
+	                          "paths", lists[GIT_ARGV_PATHS], nullptr);
+	if (pattern && call->derived)
+		call->derived = jb_set_or_free(call->derived, "pattern", json_object_get(pattern));
+	if (!ok || !call->derived)
+		return ENOMEM;
+	of[GIT_ARG_COMMAND] = jb_get(call->derived, "command");
+	of[GIT_ARG_OPTIONS] = lists[GIT_ARGV_OPTIONS];
+	of[GIT_ARG_REVISIONS] = lists[GIT_ARGV_REVISIONS];
+	of[GIT_ARG_PATHS] = lists[GIT_ARGV_PATHS];
+	of[GIT_ARG_PATTERN] = jb_get(call->derived, "pattern");
+	*seen |= replaced & ~(uint64_t)(pattern ? 0 : 1U << GIT_ARG_PATTERN);
+	return 0;
+}
 
 /*
  * Validate the call and retain its arguments and revision roots. Returns 0,
@@ -921,6 +1239,11 @@ git_call_command (struct git_call  *call,
 
 	if (!call->pin.repo)
 		return git_repos_wrong(git, len, why, size);
+	if (seen >> GIT_ARG_ARGV & 1) {
+		int const e = git_argv(call, of, &seen, len, why, size);
+		if (e)
+			return e;
+	}
 	struct cstr_view const cmd = jb_text(of[GIT_ARG_COMMAND], 1, WORD, nullptr);
 	size_t const c = cstr_view_index(git_command_names, array_size(git_command_names), cmd);
 	if (c == array_size(git_command_names)) {
@@ -960,7 +1283,8 @@ git_call_command (struct git_call  *call,
 			                 "The %s argument must be an array of at most %zu "
 			                 "strings.", name, most[l]);
 		lens[l] = json_object_array_length(of[l]);
-		if (lens[l] > most[l])
+		/* An argv call with maybe revisions has one more, HEAD. */
+		if (lens[l] > most[l] + (l == GIT_ARG_REVISIONS && call->maybe))
 			return git_wrong(len, why, size,
 			                 "The %s argument can contain at most %zu entries, "
 			                 "not %zu.", name, most[l], lens[l]);
@@ -1066,6 +1390,7 @@ git_call_command (struct git_call  *call,
 	}
 	if (takes & GIT_TAKES_END_OF_OPTIONS)
 		argv[k++] = "--end-of-options";
+	call->ignored = call->pin.n_roots;
 	size_t const listed = lens[GIT_ARG_REVISIONS];
 	size_t endpoints = listed;
 	call->n_revisions = listed ? listed : 1;
@@ -1087,7 +1412,8 @@ git_call_command (struct git_call  *call,
 			                  "after the colon, with no .. component."
 			                : takes & GIT_TAKES_FILES
 			                ? "In revisions[%zu], give git %.*s only the commit. "
-			                  "Give the path in paths."
+			                  "Give the path in paths. A directory path ends with "
+			                  "a slash, such as src/."
 			                : "In revisions[%zu], give git %.*s a commit, not "
 			                  "commit:path.", i, (int)cmd.len, cmd.data);
 			continue;
@@ -1135,6 +1461,8 @@ git_call_command (struct git_call  *call,
 		argv[k++] = s.data;
 	}
 	argv[k] = nullptr;
+	/* The roots of the maybe revisions are the last roots of the pin. */
+	call->pin.n_maybe = call->maybe;
 	return bad;
 }
 
@@ -1199,6 +1527,8 @@ git_drop (struct mcp_slot *slot)
 	git_pin_fini(&call->pin);
 	json_object_put(call->args);
 	call->args = nullptr;
+	json_object_put(call->derived);
+	call->derived = nullptr;
 	free(call);
 	*mcp_slot_own(slot) = nullptr;
 }
@@ -1244,7 +1574,7 @@ git_call_spawn (struct git_call *call,
 	struct dstr *text = &call->pin.text;
 	dstr_clear(text);
 	bool ok = true;
-	for (size_t i = 0; ok && i < call->revisions[0].root; ++i)
+	for (size_t i = 0; ok && i < call->ignored; ++i)
 		ok = dstr_printf(text, "%s%s%c", git_ignore_rev.data, roots[i].hex, '\0');
 	for (size_t i = 0; ok && i < call->n_revisions; ++i) {
 		struct git_revision const *rev = &call->revisions[i];
@@ -1273,10 +1603,20 @@ git_call_advance (struct git_call *call,
 {
 	struct cstr_view why = {};
 	int e = git_pin_step(&call->pin, slot, &why);
+	if (!e && !call->pin.child && call->maybe)
+		git_argv_settle(call);
 	if (!e && !call->pin.child)
 		e = git_call_spawn(call, slot);
 	if (!e)
 		return;
+	/* A word of argv that had to name a commit may be a path that was
+	 * written before --. The refusal says how the words were read. */
+	struct cstr_view const derived = jb_wire(call->derived);
+	struct tool_scratch *scratch = mcp_slot_scratch(slot);
+	if (e == EINVAL && why.len && derived.data)
+		why = util_format_view(scratch->text, sizeof scratch->text, "%.*s In argv, write "
+		                       "a path after --. The words of argv were read as %.*s.",
+		                       (int)why.len, why.data, (int)derived.len, derived.data);
 	git_drop(slot);
 	git_step_failed(slot, e, why, "git");
 }
@@ -1861,6 +2201,11 @@ git_start (struct mcp_slot    *slot,
 	struct tool_scratch *scratch = mcp_slot_scratch(slot);
 	uint32_t len = 0;
 	e = git_call_command(call, git, &len, scratch->text, sizeof scratch->text);
+	/* The refusals name the arguments that git_argv() made from argv. */
+	struct cstr_view const derived = jb_wire(call->derived);
+	if (e == EINVAL && derived.data)
+		util_text_printf_(&len, scratch->text, sizeof scratch->text, " The words of argv "
+		                  "were read as %.*s.", (int)derived.len, derived.data);
 	if (e == EINVAL)
 		mcp_slot_tell(slot, cstr_view_n(scratch->text, len), TOOL_FAILED);
 	else if (e)

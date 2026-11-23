@@ -306,8 +306,8 @@ context. The upstream must accept tools in the request. With
 
 The model calls `compact` with a summary of at most 4 MiB. `askai` then
 removes the conversation after the prompt, and adds the summary, the notices of
-the agent and of the members of the session, the note history of the agent,
-the newest note, and with `findings` the open findings of the agent in the
+the agent and of the members of the session, the note history of the agent
+(its newest 20 changes at most), the newest note, and with `findings` the open findings of the agent in the
 conversation and the calls that a finding can cite (section [Findings](#findings))
 to the prompt. A newest note longer than a
 tool result in a turn (section [`context`](#context)) is cut there, with the
@@ -372,9 +372,10 @@ findings are open.
 - `update` changes the state of a finding of the agent, and with `claim`
   corrects the claim. The change keeps the earlier claim. Only the author
   changes a finding.
-- `list` lists the findings of every member, open first, a line each
-  with the ID, the state, the about and the claim, cut at 200 bytes. With
-  `author`, it lists the findings of one member.
+- `list` lists the newest finding of each member, a line each with the
+  ID, the state, the about and the claim, cut at 200 bytes, and then the
+  number of the older findings of each member. With `author`, it lists
+  every finding of one member, open first.
 - `show` prints a finding, the findings about it, and each change with
   its reason and a summary of its evidence. `show` does not count as
   reading the evidence.
@@ -394,7 +395,7 @@ A change can cite evidence, at most 16 references:
 
 | Reference | Meaning |
 |---|---|
-| `c7` | the call c7 of the `ask_ai` call: its arguments and its result as the model got them, or for a `git` `read` or a `code` `describe` the lines that the result showed whole |
+| `c7` | the call c7 of the `ask_ai` call: its arguments and its result as the model got them, or for a `git` `read` the lines that the result showed whole. A `code` `describe` also shows facts that are not lines of the file, such as a layout, so `c7` stores its whole result |
 | `c7:120-140,150` | lines that a `git` `read` or a `code` `describe` in call c7 showed whole, at most 16 ranges |
 | `cuh#2/1` | the evidence item 1 of the finding `cuh#2` |
 | `cuh#2/1:161-165` | lines of the lines item `cuh#2/1`, at most 16 ranges |
@@ -512,7 +513,9 @@ In each case with `upstream-tools`, the turns also get these tools:
   `findings` too when `notes` is set;
 - `background` when the turns get a tool that can run in the background:
   `man`, `git`, `code`, or a plugin tool whose kind has the flag `TOOL_DETACH`
-  (`src/tool.h`).
+  (`src/tool.h`). The `tool` argument of `background` lists these tools,
+  and a call that names another tool is refused with the tools that the
+  turns of the client can run in the background.
 
 The member `tools` applies before these rules: a tool that `tools` denies
 to the upstream does not count in them. So the turns get `compact`,
@@ -978,7 +981,7 @@ tools:
 | ---- | ------------ | --------------------- |
 | `notes` | writes, lists and reads shared session notebooks | in every call with `notes` |
 | `compact` | replaces the conversation after the prompt with a summary | with any other tool |
-| `findings` | records the findings of the agent in the notes repository, with evidence from the calls of the turns, lists and shows the findings of every member, and expands their stored evidence | with any other tool, when `notes` is set |
+| `findings` | records the findings of the agent in the notes repository, with evidence from the calls of the turns, lists the newest finding of each member or every finding of one member, shows a finding, and expands their stored evidence | with any other tool, when `notes` is set |
 | `background` | runs a call of a tool as a job, and returns the number of the job at once | with a tool that can run in the background |
 | `jobs` | lists the jobs and the timers, returns the output of an ended job, or cancels a job or a timer | with any other tool |
 | `wait` | waits up to 10 minutes for a job or a timer | with any other tool |

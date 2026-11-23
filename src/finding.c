@@ -352,14 +352,13 @@ finding_sort (struct finding *list,
 		qsort(list, n, sizeof *list, finding_order);
 }
 
-struct finding const *
-finding_find (struct finding const    *list,
-              size_t                   n,
-              struct finding_id const *id)
+/* Returns the number of open findings of the @p n findings at @p list.
+ * finding_sort() puts the open findings first.
+ */
+static size_t
+finding_open (struct finding const *list,
+              size_t                n)
 {
-	if (!list || !id)
-		return nullptr;
-	/* The open findings come first. open becomes their number. */
 	size_t open = 0;
 	for (size_t end = n; open < end; ) {
 		size_t const mid = open + (end - open) / 2;
@@ -368,6 +367,17 @@ finding_find (struct finding const    *list,
 		else
 			end = mid;
 	}
+	return open;
+}
+
+struct finding const *
+finding_find (struct finding const    *list,
+              size_t                   n,
+              struct finding_id const *id)
+{
+	if (!list || !id)
+		return nullptr;
+	size_t const open = finding_open(list, n);
 	struct finding const key = { .id = *id };
 	struct finding const *f = bsearch(&key, list, open, sizeof *list, finding_order_id);
 	return f ? f : bsearch(&key, list + open, n - open, sizeof *list, finding_order_id);
@@ -426,6 +436,97 @@ finding_row (struct finding const *f,
 	return dstr_printf(d, "%.*s\n", (int)claim.len, claim.len ? claim.data : "") ? 0 : ENOMEM;
 }
 
+/* Widens @p *width to the ID of @p f and @p *about to the about of @p f,
+ * the widths of two columns of a list.
+ */
+static void
+finding_columns (struct finding const *f,
+                 int                  *width,
+                 int                  *about)
+{
+	int const w = finding_id_width(&f->id);
+	int const a = finding_id_width(&f->about);
+	*width = w > *width ? w : *width;
+	*about = a > *about ? a : *about;
+}
+
+/* A place in a list that finding_sort() sorted: the next open finding and
+ * the next closed finding. Each part of the list is in the order of the
+ * authors, and the findings of an author are in it newest first.
+ */
+struct finding_place {
+	size_t open;
+	size_t closed;
+};
+
+/* Returns the newest finding of the next author after @p *at in the @p n
+ * findings at @p list, the finding of the author with the largest number,
+ * or nullptr after the last author. @p closed is the number of open
+ * findings, the index of the first closed finding. The function stores the
+ * number of findings of the author in @p *count, and moves @p *at past
+ * them.
+ */
+static struct finding const *
+finding_newest (struct finding const *list,
+                size_t                closed,
+                size_t                n,
+                struct finding_place *at,
+                size_t               *count)
+{
+	struct finding const *x = at->open < closed ? &list[at->open] : nullptr;
+	struct finding const *y = at->closed < n ? &list[at->closed] : nullptr;
+	if (!x && !y)
+		return nullptr;
+	/* The next author is the author of x, of y, or of both. */
+	int const by = !x ? 1 : !y ? -1 : strcmp(x->id.author, y->id.author);
+	char const *const author = by <= 0 ? x->id.author : y->id.author;
+	struct finding_place const from = *at;
+	while (at->open < closed && !strcmp(list[at->open].id.author, author))
+		++at->open;
+	while (at->closed < n && !strcmp(list[at->closed].id.author, author))
+		++at->closed;
+	*count = at->open - from.open + at->closed - from.closed;
+	if (by)
+		return by < 0 ? x : y;
+	return x->id.number > y->id.number ? x : y;
+}
+
+/* Appends to @p d the newest finding of each author of the @p n findings
+ * at @p list, and a line with the number of the other findings of each
+ * author. finding_list() describes the arguments. Returns 0 or ENOMEM.
+ */
+static int
+finding_list_newest (struct finding const *list,
+                     size_t                n,
+                     struct cstr_view      session,
+                     struct dstr          *d)
+{
+	size_t const closed = finding_open(list, n);
+	struct finding_place at = { 0, closed };
+	size_t count;
+	int width = 0;
+	int about = 1;
+	for (struct finding const *f; (f = finding_newest(list, closed, n, &at, &count)); )
+		finding_columns(f, &width, &about);
+	int e = dstr_printf(d, "Newest finding of each member of the session %.*s (id, state, "
+	                    "about, claim):\n", (int)session.len, session.data) ? 0 : ENOMEM;
+	dstr_auto older = DSTR_INIT;
+	at = (struct finding_place){ 0, closed };
+	for (struct finding const *f;
+	     !e && (f = finding_newest(list, closed, n, &at, &count)); ) {
+		e = finding_row(f, width, about, d);
+		if (!e && count > 1 &&
+		    !dstr_printf(&older, "%s%s %zu", dstr_len(&older) ? ", " : "", f->id.author,
+		                 count - 1))
+			e = ENOMEM;
+	}
+	if (!e && dstr_len(&older) &&
+	    !dstr_printf(d, "Older findings, not listed: %s. list with author lists every "
+	                 "finding of a member.\n", dstr_get(&older)))
+		e = ENOMEM;
+	return e;
+}
+
 int
 finding_list (struct finding const *list,
               size_t                n,
@@ -433,24 +534,18 @@ finding_list (struct finding const *list,
               char const           *author,
               struct dstr          *d)
 {
+	if (n && !*author)
+		return finding_list_newest(list, n, session, d);
 	int width = 0;
 	int about = 1;
-	for (size_t i = 0; i < n; ++i) {
-		int const w = finding_id_width(&list[i].id);
-		int const a = finding_id_width(&list[i].about);
-		width = w > width ? w : width;
-		about = a > about ? a : about;
-	}
-	bool ok;
-	if (!n)
-		ok = *author ? dstr_printf(d, "%s has no findings yet.\n", author)
-		             : dstr_printf(d, "No member of the session %.*s has findings yet.\n",
-		                           (int)session.len, session.data);
-	else if (*author)
-		ok = dstr_printf(d, "Findings of %s, open first (id, state, about, claim):\n", author);
-	else
-		ok = dstr_printf(d, "Findings of the session %.*s, open first (id, state, about, "
-		                 "claim):\n", (int)session.len, session.data);
+	for (size_t i = 0; i < n; ++i)
+		finding_columns(&list[i], &width, &about);
+	bool const ok =
+		n ? dstr_printf(d, "Findings of %s, open first (id, state, about, claim):\n",
+		                author)
+		: *author ? dstr_printf(d, "%s has no findings yet.\n", author)
+		: dstr_printf(d, "No member of the session %.*s has findings yet.\n",
+		              (int)session.len, session.data);
 	/* finding_sort() puts the open findings first. */
 	int e = ok ? 0 : ENOMEM;
 	bool open = true;
@@ -588,14 +683,16 @@ finding_notice (struct finding const *list,
 		used += len;
 		--left;
 	}
+	/* Below, the list is the agent's own, and it contains an open
+	 * finding. */
 	if (!e && left &&
-	    !dstr_printf(d, "[askai: %zu more open finding%s. Call findings with action list.]\n",
-	                 left, util_s(left)))
+	    !dstr_printf(d, "[askai: %zu more open finding%s. Call findings with action list and "
+	                 "author %s.]\n", left, util_s(left), list[0].id.author))
 		e = ENOMEM;
 	if (!e && other &&
 	    !dstr_printf(d, "[askai: You have %zu open finding%s in other conversations. Call "
-	                 "findings with action list to see the findings of every member.]\n",
-	                 other, util_s(other)))
+	                 "findings with action list and author %s to list your findings.]\n",
+	                 other, util_s(other), list[0].id.author))
 		e = ENOMEM;
 	return e;
 }

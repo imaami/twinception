@@ -579,14 +579,29 @@ test_texts (void)
 	struct dstr text = DSTR_INIT;
 	CHECK(!finding_list(list, n, CSTR_VIEW("test1"), "", &text));
 	SAME(dstr_get(&text), dstr_len(&text),
-	     "Findings of the session test1, open first (id, state, about, claim):\n"
-	     "bro#12  candidate  -      An old one.\n"
-	     "bro#5   candidate  cuh#2  git grep -L at d02cc233 lists only the 246 files.\n"
-	     "bro#4   verified   -      The git tool labels every exit status 1 as \"No matches.\".\n"
-	     "cuh#2   verified   -      git grep -L lists every file of the commit.\n"
-	     "Closed findings:\n"
-	     "bro#3   disproved  -      Closed.\n"
-	     "cuh#1   retracted  -      grep -c ignores -e.\n");
+	     "Newest finding of each member of the session test1 (id, state, about, claim):\n"
+	     "bro#12  candidate  -  An old one.\n"
+	     "cuh#2   verified   -  git grep -L lists every file of the commit.\n"
+	     "Older findings, not listed: bro 3, cuh 1. list with author lists every finding "
+	     "of a member.\n");
+	/* The newest finding of an author can be a closed one, and the about
+	 * column is as wide as the widest about of the listed findings. */
+	struct finding const mixed[] = { list[1], list[2], list[4], list[5] };
+	(void)dstr_clear(&text);
+	CHECK(!finding_list(mixed, 2, CSTR_VIEW("test1"), "", &text));
+	SAME(dstr_get(&text), dstr_len(&text),
+	     "Newest finding of each member of the session test1 (id, state, about, claim):\n"
+	     "bro#5  candidate  cuh#2  git grep -L at d02cc233 lists only the 246 files.\n"
+	     "Older findings, not listed: bro 1. list with author lists every finding of a "
+	     "member.\n");
+	(void)dstr_clear(&text);
+	CHECK(!finding_list(mixed + 1, 3, CSTR_VIEW("test1"), "", &text));
+	SAME(dstr_get(&text), dstr_len(&text),
+	     "Newest finding of each member of the session test1 (id, state, about, claim):\n"
+	     "bro#4  verified   -  The git tool labels every exit status 1 as \"No matches.\".\n"
+	     "cuh#1  retracted  -  grep -c ignores -e.\n"
+	     "Older findings, not listed: bro 1. list with author lists every finding of a "
+	     "member.\n");
 	/* The findings of one author. */
 	struct finding const of_cuh[] = { list[3], list[5] };
 	(void)dstr_clear(&text);
@@ -610,21 +625,21 @@ test_texts (void)
 	(void)dstr_clear(&text);
 	CHECK(!finding_list(&big, 1, CSTR_VIEW("test1"), "", &text));
 	CHECK(strstr(dstr_get(&text), "unc#1  candidate  -  xxx") &&
-	      dstr_len(&text) == sizeof "Findings of the session test1, open first (id, state, "
-	                         "about, claim):\nunc#1  candidate  -  \n" - 1 + FINDING_CLAIM);
+	      dstr_len(&text) == sizeof "Newest finding of each member of the session test1 (id, "
+	                         "state, about, claim):\nunc#1  candidate  -  \n" - 1 +
+	                         FINDING_CLAIM);
 
 	/* Only open findings, and only closed findings. */
 	(void)dstr_clear(&text);
 	CHECK(!finding_list(list + 4, 2, CSTR_VIEW("test1"), "", &text));
 	SAME(dstr_get(&text), dstr_len(&text),
-	     "Findings of the session test1, open first (id, state, about, claim):\n"
-	     "Closed findings:\n"
+	     "Newest finding of each member of the session test1 (id, state, about, claim):\n"
 	     "bro#3  disproved  -  Closed.\n"
 	     "cuh#1  retracted  -  grep -c ignores -e.\n");
 	(void)dstr_clear(&text);
 	CHECK(!finding_list(list + 2, 2, CSTR_VIEW("test1"), "", &text));
 	SAME(dstr_get(&text), dstr_len(&text),
-	     "Findings of the session test1, open first (id, state, about, claim):\n"
+	     "Newest finding of each member of the session test1 (id, state, about, claim):\n"
 	     "bro#4  verified   -  The git tool labels every exit status 1 as \"No matches.\".\n"
 	     "cuh#2  verified   -  git grep -L lists every file of the commit.\n");
 	/* show lists the findings about a finding and each change. */
@@ -674,27 +689,27 @@ test_texts (void)
 	     "bro#5  candidate  git grep -L at d02cc233 lists only the 246 files.\n"
 	     "bro#4  verified   The git tool labels every exit status 1 as \"No matches.\".\n"
 	     "[askai: You have 1 open finding in other conversations. Call findings with action "
-	     "list to see the findings of every member.]\n");
+	     "list and author bro to list your findings.]\n");
 	/* Cut after the first line. */
 	(void)dstr_clear(&text);
 	CHECK(!finding_notice(bro, 4, &(struct hexid){ CONV }, 80, &text));
 	SAME(dstr_get(&text), dstr_len(&text),
 	     "[askai: Your open findings in this conversation (id, state, claim):]\n"
 	     "bro#5  candidate  git grep -L at d02cc233 lists only the 246 files.\n"
-	     "[askai: 1 more open finding. Call findings with action list.]\n"
+	     "[askai: 1 more open finding. Call findings with action list and author bro.]\n"
 	     "[askai: You have 1 open finding in other conversations. Call findings with action "
-	     "list to see the findings of every member.]\n");
+	     "list and author bro to list your findings.]\n");
 	(void)dstr_clear(&text);
 	CHECK(!finding_notice(bro, 4, &(struct hexid){ CONV }, 0, &text));
 	CHECK(strstr(dstr_get(&text), "[askai: 2 more open findings. Call findings with action "
-	                              "list.]\n"));
+	                              "list and author bro.]\n"));
 	(void)dstr_clear(&text);
 	CHECK(!finding_notice(bro, 4, &(struct hexid){ "fedcba9876543210fedcba9876543210" },
 	                      SIZE_MAX, &text));
 	SAME(dstr_get(&text), dstr_len(&text),
 	     "[askai: You have no open findings in this conversation.]\n"
 	     "[askai: You have 3 open findings in other conversations. Call findings with action "
-	     "list to see the findings of every member.]\n");
+	     "list and author bro to list your findings.]\n");
 	(void)dstr_clear(&text);
 	CHECK(!finding_notice(bro, 0, &(struct hexid){ CONV }, SIZE_MAX, &text));
 	SAME(dstr_get(&text), dstr_len(&text),

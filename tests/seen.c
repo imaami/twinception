@@ -65,7 +65,7 @@ output (struct dstr        *out,
 	size_t const len = dstr_len(out) - at;
 	CHECK(dstr_printf(out, "\n[f]"));
 	*src = (struct seen_source){ CSTR_VIEW("proj"), CSTR_VIEW("src/a.c"), { at, len }, 9,
-	                             { first, last }, { A } };
+	                             { first, last }, .commit = { A } };
 }
 
 /* Check that the window of @p window bytes from @p skip of the output of
@@ -179,7 +179,8 @@ test_lines (void)
 	for (int i = 0; i < 13; ++i)
 		CHECK(dstr_printf(&more, "a\n"));
 	struct seen_source const many = { CSTR_VIEW("proj"), CSTR_VIEW("src/a.c"),
-	                                  { 4, dstr_len(&more) - 4 }, 0, { 1, 13 }, { A } };
+	                                  { 4, dstr_len(&more) - 4 }, 0, { 1, 13 },
+	                                  .commit = { A } };
 	read = seen_read_create(&many, cstr_view_dstr(&more), &e);
 	CHECK(read && !e);
 	read->src.lines.last = 3;
@@ -292,7 +293,7 @@ test_read (void)
 	     "\"first\":3,\"last\":5,\"total\":9}");
 	e = -1;
 	struct seen_read *again = seen_read_create_json(obj, o, &e);
-	CHECK(again && !e && again != read);
+	CHECK(again && !e && again != read && !again->src.flags.bits);
 	read_is(again, A, __LINE__);
 	seen_read_destroy(&again);
 	CHECK(!again);
@@ -300,6 +301,17 @@ test_read (void)
 	e = -1;
 	CHECK(!seen_read_create_json(obj, cstr_view_n(o.data, 4 + 9 * 3 - 1), &e) &&
 	      e == EINVAL);
+	json_object_put(obj);
+	/* The object of a source with SEEN_DERIVED contains the member
+	 * derived, and a read from the object has the flag. */
+	flag_set(&read->src.flags, SEEN_DERIVED);
+	e = -1;
+	obj = seen_read_json(read, &e);
+	CHECK(obj && !e && jb_true(jb_get(obj, "derived")));
+	e = -1;
+	again = seen_read_create_json(obj, o, &e);
+	CHECK(again && !e && again->src.flags.bits == SEEN_DERIVED);
+	seen_read_destroy(&again);
 	json_object_put(obj);
 	seen_read_destroy(&read);
 	e = -1;

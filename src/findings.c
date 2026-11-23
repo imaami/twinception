@@ -2153,12 +2153,13 @@ findings_definition (void const *service)
 	struct json_object *props = jb_object(
 		"action", schema_enum(schema_names(findings_actions + FINDINGS_LIST,
 		                                   FINDINGS_ACTIONS - FINDINGS_LIST),
-			"list lists the findings of every member, open first. show prints a finding "
-			"and every change. expand prints the stored evidence of a finding or of one "
-			"evidence item."),
+			"list lists the newest finding of each member, or with author every "
+			"finding of that member, open first. show prints a finding and every "
+			"change. expand prints the stored evidence of a finding or of one evidence "
+			"item."),
 		"id", schema_property("string", dstr_get(&id)),
 		"author", schema_property("string",
-			"For list: list only the findings of this member."),
+			"For list: list every finding of this member."),
 		"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 		nullptr);
 	struct json_object *def = schema_tool("findings", dstr_get(&about), props,
@@ -2197,7 +2198,8 @@ findings_upstream_definition (void const *service)
 	    !dstr_printf(&add, "For add: the finding of another member that your finding checks, "
 	                 "such as %s#2.", agent) ||
 	    !dstr_printf(&evidence, "The evidence for the state, at most 16 items. c7 is your call "
-	                 "c7 of this ask call. c7:120-140,150 is lines of a git read or a code "
+	                 "c7 of this ask call. For a git read, c7 is the lines that the read "
+	                 "showed whole. c7:120-140,150 is lines of a git read or a code "
 	                 "describe in call c7. %s#5/2 is an evidence item that expand showed you. "
 	                 "%s#5/2:120-140 is lines 120 to 140 of the lines item %s#5/2.", agent,
 	                 agent, agent))
@@ -2205,9 +2207,10 @@ findings_upstream_definition (void const *service)
 	struct json_object *props = jb_object(
 		"action", schema_enum(schema_names(findings_actions, FINDINGS_ACTIONS),
 			"add records a finding. update changes your finding. list lists the "
-			"findings of every member, open first. show prints a finding and every "
-			"change. expand prints the stored evidence of a finding, of one evidence "
-			"item, or of all your open findings."),
+			"newest finding of each member, or with author every finding of that "
+			"member, open first. show prints a finding and every change. expand "
+			"prints the stored evidence of a finding, of one evidence item, or of all "
+			"your open findings."),
 		"id", schema_property("string", dstr_get(&id)),
 		"claim", schema_property("string",
 			"What you found. Required for add. For update, give claim only to correct "
@@ -2227,7 +2230,7 @@ findings_upstream_definition (void const *service)
 			"for verified, disproved and retracted."),
 		"about", schema_property("string", dstr_get(&add)),
 		"author", schema_property("string",
-			"For list: list only the findings of this member."),
+			"For list: list every finding of this member."),
 		"offset", schema_count(0, TOOL_OFFSET_ABOUT),
 		nullptr);
 	return schema_tool("findings", dstr_get(&about), props, CSTR_VIEW("action"));

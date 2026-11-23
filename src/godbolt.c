@@ -402,6 +402,7 @@ enum godbolt_outcome : uint8_t {
         X(FAMILY,       "family",       GODBOLT_VALUE_RULE)                             \
         X(ARCHITECTURE, "architecture", GODBOLT_VALUE_RULE)                             \
         X(LIMIT,        "limit",        "must be a whole number from 1 to 2000.")       \
+        X(FIRST,        "first",        "must be a whole number from 1 to 4294967295.") \
         X(OFFSET,       "offset",       "")                                             \
         X(COMPILERS,    "compilers",                                                    \
           "must be an array of 1 to 16 different compiler ids. Each id must be 1 to "   \
@@ -463,7 +464,8 @@ static struct godbolt_params const godbolt_params[] = {
 	[GODBOLT_CATALOG] = {
 		.args = GODBOLT_BIT(ACTION) | GODBOLT_BIT(LANGUAGE) | GODBOLT_BIT(IDS) |
 		        GODBOLT_BIT(MATCH) | GODBOLT_BIT(KIND) | GODBOLT_BIT(FAMILY) |
-		        GODBOLT_BIT(ARCHITECTURE) | GODBOLT_BIT(LIMIT) | GODBOLT_BIT(OFFSET),
+		        GODBOLT_BIT(ARCHITECTURE) | GODBOLT_BIT(LIMIT) | GODBOLT_BIT(FIRST) |
+		        GODBOLT_BIT(OFFSET),
 		.needs = GODBOLT_BIT(ACTION)
 	},
 	[GODBOLT_COMPILE] = {
@@ -594,6 +596,8 @@ struct godbolt_args {
 	struct cstr_view values[3]; /* the arguments kind, family and
 	                               architecture, in this order */
 	uint64_t         limit;
+	uint64_t         first;     /* the number of the first matching item
+	                               that the catalog lists, from 1 */
 	uint8_t          n_ids;
 	uint8_t          n_strings;
 	uint8_t          n_words;
@@ -739,14 +743,18 @@ static_assert(GODBOLT_URL_MAX + sizeof "/api/compilers/" + 3 * GODBOLT_LANGUAGE_
 #undef GODBOLT_FIELDS
 
 /* Returns whether @p text contains @p word. The comparison ignores the case
- * of ASCII letters.
+ * of ASCII letters. A word that starts with a digit does not match directly
+ * after a digit: "cg114" does not contain the word 14, and "14.2" does.
  */
 static bool
 godbolt_has (struct cstr_view text,
              struct cstr_view word)
 {
-	for (size_t i = 0; i + word.len <= text.len; ++i)
-		if (cstr_view_starts_case(cstr_view_slice(text, i, SIZE_MAX), word))
+	bool const number = word.len && word.data[0] >= '0' && word.data[0] <= '9';
+	char before = '\0';
+	for (size_t i = 0; i + word.len <= text.len; before = text.data[i++])
+		if (!(number && before >= '0' && before <= '9') &&
+		    cstr_view_starts_case(cstr_view_slice(text, i, SIZE_MAX), word))
 			return true;
 	return false;
 }
@@ -1202,13 +1210,15 @@ godbolt_matches (struct godbolt         *call,
 	return true;
 }
 
-/* Returns whether the limit allows another row of the catalog, and counts
- * the row in call->listed if it does.
+/* Returns whether the catalog lists the matching item that
+ * godbolt_matches() counted last, and counts the row in call->listed if it
+ * does. The arguments first and limit select the items: the numbers first
+ * to first + limit - 1 of the matching items, counted from 1.
  */
 static bool
 godbolt_row (struct godbolt *call)
 {
-	if (call->listed == call->args.limit)
+	if (call->matching < call->args.first || call->listed == call->args.limit)
 		return false;
 	++call->listed;
 	return true;
@@ -1394,16 +1404,17 @@ godbolt_tally_cmp (void const *a,
 }
 
 /* Writes the @p n counts of the catalog in the byte order of their keys,
- * as many as the limit allows, and stores the number of rows in
- * call->listed. @p n is from 1 to GODBOLT_KEYS, and a key is at most
- * GODBOLT_VALUE_MAX bytes long, so one step writes them. Returns 0, or
- * call->e.
+ * from the number of the argument first on, as many as the limit allows,
+ * and stores the number of rows in call->listed. @p n is from 1 to
+ * GODBOLT_KEYS, and a key is at most GODBOLT_VALUE_MAX bytes long, so one
+ * step writes them. Returns 0, or call->e.
  */
 static int
 godbolt_tallies (struct godbolt *call,
                  size_t          n)
 {
-	size_t const rows = n < call->args.limit ? n : call->args.limit;
+	size_t const from = call->args.first - 1 < n ? call->args.first - 1 : n;
+	size_t const rows = n - from < call->args.limit ? n - from : call->args.limit;
 	call->listed = (uint32_t)rows;
 	struct godbolt_tally t[GODBOLT_KEYS];
 	size_t i = 0;
@@ -1411,7 +1422,7 @@ godbolt_tallies (struct godbolt *call,
 	json_object_object_foreachC(call->doc, it)
 		t[i++] = godbolt_tally(it.key, json_object_get_int64(it.val));
 	qsort(t, n, sizeof *t, godbolt_tally_cmp);
-	for (size_t k = 0; k < rows; ++k) {
+	for (size_t k = from; k < from + rows; ++k) {
 		godbolt_put_field(call, cstr_view(t[k].key));
 		godbolt_putf(call, "\t%" PRId64 "\n", t[k].count);
 	}
@@ -1461,17 +1472,26 @@ godbolt_catalog_end (struct godbolt *call)
 	if (call->malformed)
 		godbolt_putf(call, "Left out %" PRIu32 " invalid list element%s.\n",
 		             call->malformed, util_s(call->malformed));
-	/* The first sentence of the last line counts the listed items, and the
-	 * second sentence counts all items of the list. */
+	/* The first sentence of the last line counts the listed items. If the
+	 * output lacks items, the sentence names the number of the first listed
+	 * item, and the next sentence the argument that lists the items after
+	 * the output. The last sentence counts all items of the list. */
 	char const *const singular = godbolt_actions[call->args.action].singular;
+	uint32_t const all = counts ? keys : call->matching;
 	if (counts)
 		godbolt_putf(call, "Listed %" PRIu32 " of the %" PRIu32 " %s of the %" PRIu32
-		             " matching compiler%s. ", call->listed, keys,
+		             " matching compiler%s", call->listed, keys,
 		             keys == 1 ? singular : godbolt_action_names[call->args.action].data,
 		             call->matching, util_s(call->matching));
 	else
-		godbolt_putf(call, "Listed %" PRIu32 " of %" PRIu32 " matching %s%s. ",
+		godbolt_putf(call, "Listed %" PRIu32 " of %" PRIu32 " matching %s%s",
 		             call->listed, call->matching, singular, util_s(call->matching));
+	uint64_t const next = call->args.first + call->listed;
+	if (call->listed && call->listed < all)
+		godbolt_putf(call, ", from number %" PRIu64, call->args.first);
+	godbolt_put(call, CSTR_VIEW(". "));
+	if (call->listed && next <= all)
+		godbolt_putf(call, "For the next, call again with first: %" PRIu64 ". ", next);
 	if (languages)
 		godbolt_putf(call, "Compiler Explorer lists %" PRIu32 " language%s.\n",
 		             call->total, util_s(call->total));
@@ -2663,6 +2683,9 @@ godbolt_args_set (struct godbolt_args *a,
 	case GODBOLT_ARG_LIMIT:
 		a->limit = jb_count(v, GODBOLT_LIMIT_MAX);
 		return a->limit ? 0 : EINVAL;
+	case GODBOLT_ARG_FIRST:
+		a->first = jb_count(v, UINT32_MAX);
+		return a->first ? 0 : EINVAL;
 	case GODBOLT_ARG_OFFSET:
 		/* mcp_slot_offset() checks the offset. */
 		a->flags |= jb_int(v, 0) > 0 ? GODBOLT_WITH_OFFSET : 0;
@@ -2711,6 +2734,7 @@ godbolt_args (struct json_object          *args,
 		.strings = { CSTR_VIEW("") },
 		.language = CSTR_VIEW("c"),
 		.limit = GODBOLT_LIMIT,
+		.first = 1,
 		.n_strings = 1,
 		.action = GODBOLT_COMPILERS,
 		.flags = tool == GODBOLT_COMPILE ? GODBOLT_SITE_FILTERS : 0
@@ -3014,8 +3038,10 @@ static struct {
 		"list or another filter excludes the id.\"},"
 		"\"match\":{\"type\":\"string\",\"description\":\"Words to find in any "
 		"letter case, such as \\\"gcc 14\\\". Each word must occur in a column of "
-		"the item. For action languages, the default column does not count. "
-		"match is at most 8 words and 256 bytes.\"},"
+		"the item. A word that starts with a digit does not match directly "
+		"after a digit: 14 matches 14.2 and not 114. For action languages, the "
+		"default column does not count. match is at most 8 words and 256 "
+		"bytes.\"},"
 		"\"kind\":{\"type\":\"string\",\"description\":\"The exact compilerType "
 		"of the compilers to list, such as clang or win32-vc. The kind default "
 		"means no compilerType and a GCC-style driver. Action kinds lists the "
@@ -3030,6 +3056,10 @@ static struct {
 		"\"default\":100,\"description\":\"The maximum number of items in the "
 		"output. The last output line contains the number of matching "
 		"items.\"},"
+		"\"first\":{\"type\":\"integer\",\"minimum\":1,\"default\":1,"
+		"\"description\":\"The number of the first matching item in the output, "
+		"counted from 1. first 101 with limit 100 lists the items 101 to "
+		"200.\"},"
 		GODBOLT_DEF_OFFSET "},"
 		"\"required\":[\"action\"],\"additionalProperties\":false},"
 		GODBOLT_DEF_HINTS "}",

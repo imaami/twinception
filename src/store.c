@@ -67,7 +67,7 @@ static char const *const cmds[][10] = {
 	[STORE_DIFF]     = { "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
 	                     "--no-color", "--submodule=short", word, word, "--", word },
 	[STORE_STAT]     = { "diff", "--numstat", "--no-textconv", word, word },
-	[STORE_GREP]     = { "grep", "-IniEz", "--no-color", "-f", "-", word, "--" },
+	[STORE_GREP]     = { "grep", "-IniEz", "--no-color", "-f", "-", word, "--", word },
 };
 
 /* A git that writes ends, at its deadline and grace at the latest, before

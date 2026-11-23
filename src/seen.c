@@ -105,6 +105,8 @@ seen_read_json (struct seen_read const *read,
 	                                    "last", json_object_new_uint64(src->lines.last),
 	                                    "total", json_object_new_uint64(src->total),
 	                                    nullptr);
+	if (flag_any(src->flags, SEEN_DERIVED))
+		obj = jb_set_or_free(obj, "derived", json_object_new_boolean(true));
 	*e = obj ? 0 : ENOMEM;
 	return obj;
 }
@@ -142,6 +144,7 @@ seen_read_create_json (struct json_object const *obj,
 		.total  = total,
 		.output = { (size_t)at, (size_t)len },
 		.lines  = { (uint32_t)first, (uint32_t)last },
+		.flags  = { jb_true(jb_get(obj, "derived")) ? SEEN_DERIVED : 0 },
 	};
 	return seen_read_create(&src, out, e);
 }
@@ -327,7 +330,8 @@ seen_keep (struct seen              **p_seen,
 		*request = buf();
 	}
 	c->stamp = r->stamp;
-	c->stamp.flags = flag16(flag_how(r->stamp.flags) | (large ? SEEN_TOO_LARGE : 0));
+	c->stamp.flags = flag16(flag_how(r->stamp.flags) | (large ? SEEN_TOO_LARGE : 0) |
+	                        (read ? flag_get(read->src.flags, SEEN_DERIVED) : 0));
 	c->skip = (uint32_t)(r->at + r->skip);
 	c->lines = whole;
 	seen->bytes += bytes;
