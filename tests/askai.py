@@ -9912,10 +9912,12 @@ def check_git(binary, up):
                      "The repo argument must be proj or other."),
                     ({"repo": "proj", "command": "log", "options": ["--output=/x"]},
                      bad_option("log", "--output=/x")),
-                    ({"repo": "proj", "command": "log", "options": ["-n", "3"]},
-                     "The value of options[0] '-n' is missing. Give '-nNUMBER' as one "
-                     "entry, with decimal digits for NUMBER. " + bad_option(
-                         "log", "3").replace("options[0]", "options[1]")),
+                    ({"repo": "proj", "command": "log", "options": ["--oneline", "-n"]},
+                     "The value of options[1] '-n' is missing. Give '-nNUMBER', or NUMBER "
+                     "as the next entry, with decimal digits for NUMBER."),
+                    ({"repo": "proj", "command": "log", "options": ["-3x"]},
+                     "The value of options[0] '-3x' is not a decimal number. Give "
+                     "'-NUMBER', with decimal digits for NUMBER."),
                     # Every problem is named, not only the first.
                     ({"repo": "proj", "command": "grep", "options": ["--bogus"],
                       "paths": ["../x"]},
@@ -10086,6 +10088,15 @@ def check_git(binary, up):
                 assert not got.get("isError") and not want.get("isError") and \
                     text_of(got) == text_of(want), (argv, got, want)
             same(["log", "--oneline", "-n", "1"], command="log", options=["--oneline", "-n1"])
+            same(["log", "--oneline", "-1"], command="log", options=["--oneline", "-n1"])
+            # The array options takes the value of an option from the next
+            # entry too, as a command line does.
+            for options in (["--oneline", "-n", "1"], ["--oneline", "--max-count", "1"],
+                            ["--oneline", "-1"]):
+                same(["log", "--oneline", "-n1"], command="log", options=options)
+            same(["grep", "-C1", "alpha"], command="grep", options=["-C", "1"], pattern="alpha")
+            same(["log", "--format=%s", "-n1"], command="log",
+                 options=["--format", "%s", "-n", "1"])
             same(["git", "log", "--max-count", "1", "main", "--", "a.txt"], command="log",
                  options=["--max-count=1"], revisions=["main"], paths=["a.txt"])
             same(["log", "--format", "%s", "topic", "--", "a.txt"], command="log",

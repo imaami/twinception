@@ -220,7 +220,7 @@ struct git_call {
 static struct cstr_view const log_options[] = {
 	DISPLAY, O("--graph"), O("--reverse"), O("--first-parent"), O("--no-merges"),
 	O("--all"), O("--branches"), O("--tags"), O("--remotes"),
-	O("--merges"), O("--follow"), O("--max-count="), O("-n#"),
+	O("--merges"), O("--follow"), O("--max-count="), O("-n#"), O("-#"),
 	O("--skip="), O("--since="), O("--until="), O("--after="), O("--before="),
 	O("--author="), O("--committer="), O("--grep="), O("-i"),
 	O("--regexp-ignore-case"), O("--all-match"), O("--invert-grep"), O("-E"),
@@ -531,8 +531,9 @@ git_definition (void const *service)
 			"the first line of the grep output names the commit. Each file path "
 			"is on a separate line, above the matches as <line>:<text>. To read a "
 			"match, call read with \"revisions\": [\"<commit>:<path>\"] and "
-			"\"line\": <line>. In options, attach the value to the option: "
-			"--max-count=20, not -n 20. A call can give argv in place of command, "
+			"\"line\": <line>. An option takes its value in the same entry or in "
+			"the next: --max-count=20, --max-count 20, -n20 and -n 20 are the same. "
+			"A call can give argv in place of command, "
 			"options, revisions, paths and pattern. argv is the words of a git "
 			"command line after git. Example: {\"argv\": [\"grep\", \"-i\", "
 			"\"todo\", \"HEAD~1\", \"--\", \"src/\"]}."),
@@ -554,8 +555,9 @@ git_definition (void const *service)
 				"help", schema_property("boolean",
 					"Describe the command instead of running git."),
 				"options", schema_array(schema_property("string", nullptr), OPTIONS,
-					"Options, such as --oneline or --max-count=20, each with "
-					"the value attached. help:true lists the allowed options."),
+					"Options, such as --oneline, -n 20 or --max-count=20. The "
+					"value of an option is in its entry or in the next entry. "
+					"help:true lists the allowed options."),
 				"revisions", schema_array(schema_property("string", nullptr), REVISIONS,
 					"Commits, such as main, HEAD~3 or a commit hash. Only log "
 					"and diff accept a range, such as main..topic. For read, "
@@ -604,6 +606,12 @@ git_option_find (struct cstr_view const *allowed,
 	for (; allowed->data; ++allowed) {
 		size_t const n = allowed->len;
 		char const last = allowed->data[n - 1];
+		/* -# is -NUMBER, as in log -5. It matches only an option whose
+		 * second byte is a digit, so that it is not the match of every
+		 * other option that starts with a dash. */
+		bool const number = opt.len > 1 && opt.data[1] >= '0' && opt.data[1] <= '9';
+		if (n == 2 && last == '#' && !number)
+			continue;
 		/* An exact spelling matches only itself, which then passes the
 		 * value tests below. */
 		bool const exact = last != '=' && last != '#' && last != '*';
@@ -691,11 +699,15 @@ git_option_check (struct cstr_view  opt,
 		size_t at = match.len - (last != '=');
 		char const *value = last == '#' ? "NUMBER" : "VALUE";
 		char const *digits = last == '#' ? ", with decimal digits for NUMBER" : "";
+		if (e == ENODATA)
+			return git_wrong(len, why, size,
+			                 "The value of options[%zu] '%.*s' is missing. Give "
+			                 "'%.*s%s', or %s as the next entry%s.", index, quoted,
+			                 opt.data, (int)at, match.data, value, value, digits);
 		return git_wrong(len, why, size,
-		                 "The value of options[%zu] '%.*s' %s. Give '%.*s%s' as "
-		                 "one entry%s.", index, quoted, opt.data,
-		                 e == ENODATA ? "is missing" : "is not a decimal number",
-		                 (int)at, match.data, value, digits);
+		                 "The value of options[%zu] '%.*s' is not a decimal number. "
+		                 "Give '%.*s%s'%s.", index, quoted, opt.data, (int)at,
+		                 match.data, value, digits);
 	}
 	if (!git_option_find(source_options, opt, &match)) {
 		char const *source = commands[command].takes & GIT_TAKES_PAIR
@@ -1513,11 +1525,29 @@ git_call_command (struct git_call  *call,
 	     ++i)
 		argv[k++] = commands[c].forced[i];
 	/* The options, then the pattern, the revisions and the paths, each
-	 * checked as it goes in. */
+	 * checked as it goes in. An entry of the argument options takes the
+	 * value of the option from the next entry, as a command line does:
+	 * -n 20 is -n20. git_argv_word() joined the words of argv already. */
+	size_t room = 0;
+	for (size_t i = 0; !w->argv && i < w->n; ++i)
+		room += w->kind[i] == GIT_OPTION ? w->word[i].len + 2 : 0;
 	size_t at = 0;
 	for (size_t i = 0; i < lens[GIT_ARG_OPTIONS]; ++i) {
-		struct cstr_view const opt = git_words_next(w, GIT_OPTION, &at);
-		int e = git_option_check(opt, c, i, len, why, size);
+		size_t const entry = i;
+		struct cstr_view opt = git_words_next(w, GIT_OPTION, &at);
+		char const how = !w->argv && i + 1 < lens[GIT_ARG_OPTIONS]
+		               ? git_argv_value(commands[c].options, opt) : 0;
+		if (how) {
+			struct cstr_view const joined[3] = {
+				opt, how == '=' ? CSTR_VIEW("=") : cstr_view(nullptr),
+				git_words_next(w, GIT_OPTION, &at)
+			};
+			++i;
+			opt = git_argv_make(call, room, joined);
+			if (!opt.data)
+				return ENOMEM;
+		}
+		int e = git_option_check(opt, c, entry, len, why, size);
 		if (e) {
 			bad = e;
 			continue;
@@ -1641,9 +1671,11 @@ git_help (struct mcp_slot *slot,
 		"description", json_object_new_string(commands[command].description),
 		"options", options,
 		"option_values", json_object_new_string(
-			"Each option is one array entry, with the value attached. Append the "
-			"value after a trailing =. Replace a trailing # with digits. Replace a "
-			"trailing * with a value. Examples: --max-count=20, -n20, -C3."),
+			"An option ending in = takes a value after the =, or in the next "
+			"entry. An option ending in # takes digits in place of the #, or "
+			"the digits in the next entry. An option ending in * takes any "
+			"value in place of the *, or in the next entry. Examples: "
+			"--max-count=20, --max-count 20, -n20, -n 20, -5, -C3."),
 		"pagination", json_object_new_string(takes & GIT_TAKES_LINES
 			? "git output is cut at 4 MiB. read returns at most count whole lines in "
 			  "at most window_bytes. Each line starts with the line number and a "

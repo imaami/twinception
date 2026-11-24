@@ -628,7 +628,9 @@ Use `"help": true` with a command to list its options, source selection and
 argument limits, and the bytes of output that one result of the caller takes
 (`window_bytes`: a turn's window, or 16 MiB for a client). The other arguments
 of such a call, except `offset`, are ignored. Each option must be on that
-command's allowlist, with its value attached (`--max-count=20`, not `-n 20`).
+command's allowlist. An option takes its value in the same entry or in the
+next entry, as on a command line: `--max-count=20`, `--max-count 20`, `-n20`,
+`-n 20` and, for `log`, `-20` are the same.
 Revisions name commits, optionally with `^` or `~` ancestry; `log` and `diff`
 also accept explicit ranges. Only `read`, `show` and `cat-file` take a path in a
 revision, as `commit:path`; `ls-tree` lists the entries in a directory given in

@@ -1632,7 +1632,8 @@ With one revision, the first line of the output names the commit:
 matches in the file follow as `line:text`, and an empty line separates the
 files. With several revisions, the commit ID and a colon come before each
 path. `--no-heading` gives `path:line:text` for each match.
-Option values stay attached in one array entry. To read a committed file, use
+An option takes its value in the same array entry or in the next one, as on
+a command line: `-n20` and `-n 20` are the same. To read a committed file, use
 `command: "read"` with `"revisions":["HEAD:src/journal.c"]`, and optionally
 `line`, the first line (default 1), and `count`, the most lines (default as
 many as fit in one result). Each line comes after its number and a tab. The
