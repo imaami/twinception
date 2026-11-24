@@ -10135,7 +10135,26 @@ def check_git(binary, up):
             want = call(ai, repo="proj", command="read", revisions=["topic:a.txt"], line=1,
                         count=1)
             assert not got.get("isError") and text_of(got) == text_of(want), (got, want)
-            # ls-tree takes a tree as commit:path, as git does.
+            # ls-tree takes a tree as commit:dir, as git does, and reads the
+            # paths of such a call in that tree: a.txt is d/a.txt, and no
+            # file of the root. commit: is the tree of the commit.
+            sh("switch", "-q", "-c", "sub")
+            os.mkdir(f"{repo}/d")
+            for name in ("d/a.txt", "d/in.txt"):
+                with open(f"{repo}/{name}", "w") as f:
+                    f.write("inside\n")
+            sh("add", "d")
+            sh("commit", "-q", "-m", "sub")
+            sh("switch", "-q", "main")
+            for words, text in ((["sub:d"], "d/a.txt\nd/in.txt\n"),
+                                (["sub:d/"], "d/a.txt\nd/in.txt\n"),
+                                (["sub:d", "--", "a.txt"], "d/a.txt\n"),
+                                (["sub:d", "in.txt", "a.txt"], "d/a.txt\nd/in.txt\n"),
+                                (["sub:", "a.txt", "d"], "a.txt\nd\n")):
+                got = call(ai, repo="proj", argv=["ls-tree", "--name-only", *words])
+                assert not got.get("isError") and text_of(got) == text, (words, got)
+            same(["ls-tree", "sub:d", "--", "big.txt"], command="ls-tree", revisions=["sub"],
+                 paths=["d/big.txt"])
             read_as = " The words of argv were read as "
             before_dashes = " In argv, write a path after --."
             got = call(ai, repo="proj", argv=["ls-tree", "HEAD:src", "--bogus"])
@@ -10155,6 +10174,17 @@ def check_git(binary, up):
                      "list the committed files, call ls-tree with \"options\": [\"-r\", "
                      "\"--name-only\"]." + read_as +
                      '{"command":"status","options":[],"revisions":[],"paths":[]}.'),
+                    # A call takes one pattern. git would search for both.
+                    ({"argv": ["grep", "-e", "alpha", "-e", "beta"]},
+                     "Give git grep one pattern. Run one search for each pattern, or join "
+                     "the patterns with | in one extended regex." + read_as +
+                     '{"command":"grep","options":[],"revisions":[],"paths":[],'
+                     '"pattern":"beta"}.'),
+                    ({"argv": ["grep", "alpha", "-e", "beta"]},
+                     "Give git grep one pattern. Run one search for each pattern, or join "
+                     "the patterns with | in one extended regex." + read_as +
+                     '{"command":"grep","options":[],"revisions":[],"paths":[],'
+                     '"pattern":"beta"}.'),
                     ({"argv": ["grep", "-e"]},
                      "Give git grep a pattern argument of 1 to 1024 bytes. " +
                      bad_option("grep", "-e") + read_as +

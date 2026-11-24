@@ -958,27 +958,38 @@ git_argv_value (struct cstr_view const *allowed,
 	return how;
 }
 
-/* The indexes of the lists of git_argv_word(). */
+/* The indexes of the lists of struct git_argv. */
 enum { GIT_ARGV_OPTIONS, GIT_ARGV_REVISIONS, GIT_ARGV_PATHS, GIT_ARGV_LISTS };
 
-/* Adds the word @p i of @p argv, a word before --, to the lists @p lists of
- * the command @p c, or stores it in @p *pattern: an option, with the next
- * word as its value if the option takes one (git_argv_value()); the
- * pattern of a grep, which is the word after -e or the first other word; a
- * tree commit:path of ls-tree as the commit and the path; a path, if the
- * word contains *, ? or [ or ends with a slash, which no name of a
- * revision does; or else a revision. The function reads no file: the tool
- * shows only committed trees, so the files of a working tree do not decide
- * what a word is. @p text is scratch storage. Returns the number of words
- * that the function read, 1 or 2, or 0 if out of memory.
+/* The arguments that git_argv() sorts the words of argv into. */
+struct git_argv {
+	struct json_object *lists[GIT_ARGV_LISTS];
+	struct json_object *pattern;   /* the pattern of a grep: a word of argv,
+	                                  or nullptr */
+	struct json_object *tree;      /* the directory of the tree commit:dir of
+	                                  an ls-tree, with a slash at its end: a
+	                                  new string, or nullptr */
+	size_t              patterns;  /* the patterns in argv. A call takes
+	                                  one. */
+};
+
+/* Adds the word @p i of @p argv, a word before --, to the arguments @p s of
+ * the command @p c: an option, with the next word as its value if the
+ * option takes one (git_argv_value()); the pattern of a grep, which is the
+ * word after -e or the first other word; a tree commit:dir of ls-tree as
+ * the commit and s->tree; a path, if the word contains *, ? or [ or ends
+ * with a slash, which no name of a revision does; or else a revision. The
+ * function reads no file: the tool shows only committed trees, so the
+ * files of a working tree do not decide what a word is. @p text is scratch
+ * storage. Returns the number of words that the function read, 1 or 2, or
+ * 0 if out of memory.
  */
 static size_t
-git_argv_word (size_t               c,
-               struct json_object  *argv,
-               size_t               i,
-               struct json_object  *lists[static GIT_ARGV_LISTS],
-               struct json_object **pattern,
-               struct dstr         *text)
+git_argv_word (size_t              c,
+               struct json_object *argv,
+               size_t              i,
+               struct git_argv    *s,
+               struct dstr        *text)
 {
 	struct json_object *item = jb_at(argv, i);
 	struct json_object *next = jb_at(argv, i + 1);
@@ -986,39 +997,76 @@ git_argv_word (size_t               c,
 	uint64_t const takes = commands[c].takes;
 	if (word.len > 1 && word.data[0] == '-') {
 		if (next && (takes & GIT_TAKES_PATTERN) && cstr_view_equal(word, CSTR_VIEW("-e"))) {
-			*pattern = next;
+			s->pattern = next;
+			++s->patterns;
 			return 2;
 		}
 		char const how = next ? git_argv_value(commands[c].options, word) : 0;
 		if (!how)
-			return jb_push(lists[GIT_ARGV_OPTIONS], json_object_get(item)) ? 0 : 1;
+			return jb_push(s->lists[GIT_ARGV_OPTIONS], json_object_get(item)) ? 0 : 1;
 		struct cstr_view const value = jb_view(next);
 		(void)dstr_clear(text);
-		return dstr_printf(text, "%.*s%s%.*s", (int)word.len, word.data,
-		                   how == '=' ? "=" : "", (int)value.len, value.data) &&
-		       !jb_push(lists[GIT_ARGV_OPTIONS], jb_string(cstr_view_dstr(text))) ? 2 : 0;
+		bool const ok = dstr_printf(text, "%.*s%s%.*s", (int)word.len, word.data,
+		                            how == '=' ? "=" : "", (int)value.len, value.data);
+		return ok && !jb_push(s->lists[GIT_ARGV_OPTIONS], jb_string(cstr_view_dstr(text)))
+		       ? 2 : 0;
 	}
-	if ((takes & GIT_TAKES_PATTERN) && !*pattern) {
-		*pattern = item;
+	if ((takes & GIT_TAKES_PATTERN) && !s->patterns) {
+		s->pattern = item;
+		++s->patterns;
 		return 1;
 	}
 	char const *const colon = takes & GIT_TAKES_TREE ? memchr(word.data, ':', word.len)
 	                                                 : nullptr;
 	if (colon) {
+		/* commit: names the tree of the commit, which has no directory. */
 		struct cstr_view const dir = cstr_view_slice(word, (size_t)(colon - word.data) + 1,
 		                                             SIZE_MAX);
+		struct cstr_view const commit = cstr_view_n(word.data, (size_t)(colon - word.data));
+		json_object_put(s->tree);
+		s->tree = nullptr;
 		(void)dstr_clear(text);
-		return dir.len &&
-		       dstr_printf(text, "%.*s%s", (int)dir.len, dir.data,
-		                   dir.data[dir.len - 1] == '/' ? "" : "/") &&
-		       !jb_push(lists[GIT_ARGV_PATHS], jb_string(cstr_view_dstr(text))) &&
-		       !jb_push(lists[GIT_ARGV_REVISIONS],
-		                jb_string(cstr_view_n(word.data, (size_t)(colon - word.data))))
-		       ? 1 : 0;
+		bool const ok = !dir.len ||
+		                (dstr_printf(text, "%.*s%s", (int)dir.len, dir.data,
+		                             dir.data[dir.len - 1] == '/' ? "" : "/") &&
+		                 (s->tree = jb_string(cstr_view_dstr(text))));
+		return ok && !jb_push(s->lists[GIT_ARGV_REVISIONS], jb_string(commit)) ? 1 : 0;
 	}
 	size_t const to = strpbrk(word.data, "*?[") || word.data[word.len - 1] == '/'
 	                ? GIT_ARGV_PATHS : GIT_ARGV_REVISIONS;
-	return jb_push(lists[to], json_object_get(item)) ? 0 : 1;
+	return jb_push(s->lists[to], json_object_get(item)) ? 0 : 1;
+}
+
+/* Puts the paths of an ls-tree of the tree commit:dir into the directory
+ * s->tree: git reads the paths of such a call in that tree, so each path
+ * of @p s becomes dir/path, and a call without paths lists dir/. @p text is
+ * scratch storage. Returns 0 or ENOMEM.
+ */
+static int
+git_argv_tree (struct git_argv *s,
+               struct dstr     *text)
+{
+	struct cstr_view const dir = jb_view(s->tree);
+	struct json_object *paths = s->lists[GIT_ARGV_PATHS];
+	size_t const n = jb_len(paths);
+	if (!n)
+		return jb_push(paths, json_object_get(s->tree));
+	struct json_object *in = json_object_new_array();
+	bool ok = in;
+	for (size_t i = 0; ok && i < n; ++i) {
+		struct cstr_view const path = jb_view(jb_at(paths, i));
+		(void)dstr_clear(text);
+		ok = dstr_printf(text, "%.*s%.*s", (int)dir.len, dir.data, (int)path.len,
+		                 path.data) &&
+		     !jb_push(in, jb_string(cstr_view_dstr(text)));
+	}
+	if (!ok) {
+		json_object_put(in);
+		return ENOMEM;
+	}
+	json_object_put(paths);
+	s->lists[GIT_ARGV_PATHS] = in;
+	return 0;
 }
 
 /* Moves the revisions of @p lists after the first @p keep to the paths. A
@@ -1156,10 +1204,10 @@ git_argv (struct git_call    *call,
 	struct json_object *command = jb_at(argv, i);
 	size_t const c = cstr_view_index(git_command_names, array_size(git_command_names),
 	                                 jb_view(command));
-	struct json_object *lists[GIT_ARGV_LISTS] = {
+	struct git_argv s = { .lists = {
 		json_object_new_array(), json_object_new_array(), json_object_new_array()
-	};
-	struct json_object *pattern = nullptr;
+	} };
+	struct json_object **const lists = s.lists;
 	dstr_auto text = DSTR_INIT;
 	bool ok = lists[GIT_ARGV_OPTIONS] && lists[GIT_ARGV_REVISIONS] && lists[GIT_ARGV_PATHS];
 	/* git_call_command() refuses an unknown command, and the words after
@@ -1175,7 +1223,7 @@ git_argv (struct git_call    *call,
 		else if (cstr_view_equal(jb_view(item), CSTR_VIEW("--")))
 			paths = true;
 		else
-			read = git_argv_word(c, argv, i, lists, &pattern, &text);
+			read = git_argv_word(c, argv, i, &s, &text);
 		ok = ok && read;
 		i += read;
 	}
@@ -1193,6 +1241,9 @@ git_argv (struct git_call    *call,
 		: takes & GIT_TAKES_PAIR ? 2 - !!strstr(first, "..")
 		: revisions;
 	ok = ok && !git_argv_rest(lists, keep);
+	if (ok && s.tree)
+		ok = !git_argv_tree(&s, &text);
+	json_object_put(s.tree);
 	/* log, show and grep take any number of revisions and then paths. */
 	if (ok && !paths && (takes & GIT_TAKES_FILES) &&
 	    !(takes & (GIT_TAKES_SINGLE | GIT_TAKES_PAIR)))
@@ -1201,16 +1252,23 @@ git_argv (struct git_call    *call,
 	                          "options", lists[GIT_ARGV_OPTIONS],
 	                          "revisions", lists[GIT_ARGV_REVISIONS],
 	                          "paths", lists[GIT_ARGV_PATHS], nullptr);
+	struct json_object *const pattern = s.pattern ? json_object_get(s.pattern) : nullptr;
 	if (pattern && call->derived)
-		call->derived = jb_set_or_free(call->derived, "pattern", json_object_get(pattern));
+		call->derived = jb_set_or_free(call->derived, "pattern", pattern);
+	else
+		json_object_put(pattern);
 	if (!ok || !call->derived)
 		return ENOMEM;
+	if (s.patterns > 1)
+		return git_wrong(len, why, size, "Give git grep one pattern. Run one search for "
+		                 "each pattern, or join the patterns with | in one extended "
+		                 "regex.");
 	of[GIT_ARG_COMMAND] = jb_get(call->derived, "command");
 	of[GIT_ARG_OPTIONS] = lists[GIT_ARGV_OPTIONS];
 	of[GIT_ARG_REVISIONS] = lists[GIT_ARGV_REVISIONS];
 	of[GIT_ARG_PATHS] = lists[GIT_ARGV_PATHS];
 	of[GIT_ARG_PATTERN] = jb_get(call->derived, "pattern");
-	*seen |= replaced & ~(uint64_t)(pattern ? 0 : 1U << GIT_ARG_PATTERN);
+	*seen |= replaced & ~(uint64_t)(s.pattern ? 0 : 1U << GIT_ARG_PATTERN);
 	return 0;
 }
 

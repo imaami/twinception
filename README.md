@@ -663,9 +663,12 @@ path: a relative path that is no abbreviated commit ID and has none of `^`,
 `~`, `@`, `{`, `}`, `:` and `..`. Any other word must name a commit. `askai`
 reads no file of a working tree to tell a path from a revision, because the
 tool shows only committed trees. A path that has the name of a branch or a tag
-goes after `--`. `ls-tree` also takes a tree as `commit:path`, which `askai`
-reads as the commit and the path with a slash. A call without a revision runs
-on `HEAD`, as with the other arguments. A refusal of such a call ends with the
+goes after `--`. `ls-tree` also takes a tree as `commit:dir`. `askai` reads it
+as the commit and the path `dir/`, and reads the paths of such a call in that
+tree: `["ls-tree", "HEAD:doc", "--", "README.md"]` lists `doc/README.md`, with
+the path from the top of the repository. A call takes one pattern: `askai`
+refuses a `grep` with a second `-e`. A call without a revision runs on `HEAD`,
+as with the other arguments. A refusal of such a call ends with the
 arguments that `askai` made from the words. `line`, `count`, `help` and
 `offset` stay separate arguments.
 Knowing a stash or dangling commit's hash does not grant access. A commit
