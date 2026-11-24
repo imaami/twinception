@@ -2218,17 +2218,19 @@ word of order n from 2 to 5 has one child of order n+1 for each mask: 2, 8,
 is the child of exactly one word. The address of a word is the masks on the
 way from the root, such as `1.7.127.32767`.
 
+The output of an action is its result alone, as the output of a calculator:
+
 | Action | Arguments | Output |
 | ------ | --------- | ------ |
-| `expand` | `word`, `order` 2 to 5, `mask` | the child of the word for the mask |
-| `collapse` | `word`, `order` 3 to 6 | the parent of the word, and the mask of the word in the parent |
-| `path` | `address` | the words on the way from the root, with the order and the mask of each |
-| `address` | `word`, `order` 2 to 6 | the address of the word, and the same rows as `path` |
-| `children` | `word`, `order` 2 to 5, `first`, `limit` | the children from the mask `first` on, 64 unless `limit` says otherwise, and the `first` of the next children |
-| `windows` | `word`, `order` 2 to 6 | the bits of the word, and for each place in the word the value of the `order` bits that start there |
+| `expand` | `word`, `order` 2 to 5, `mask` | the child, such as `0x04653adf` |
+| `collapse` | `word`, `order` 3 to 6 | the parent and the mask of the word in the parent, such as `0x09af 127` |
+| `path` | `address` | the words of the address without the root, such as `17.09af.04653adf.0218a392cd3d5dbf` |
+| `address` | `word`, `order` 3 to 6 | the address, such as `1.7.127.32767` |
+| `children` | `word`, `order` 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
+| `windows` | `word`, `order` 2 to 6 | for each place from the most significant bit, the value of the `order` bits that start there, one on a line |
 
 An action refuses an argument that it does not use, and a word that is no
-de Bruijn word of its order.
+word of its order.
 
 ## Limits
 

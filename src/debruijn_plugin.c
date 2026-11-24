@@ -10,18 +10,19 @@
  * address of a word is the masks on the way from the root to the word, such
  * as 1.7.127.32767.
  *
- * The actions of the tool:
+ * The output of an action is its result and nothing else, as the output of
+ * a calculator:
  *
- * - expand prints the child of a word for a mask.
- * - collapse prints the parent of a word, and the mask of the word in the
- *   parent.
- * - path prints the words on the way from the root for an address.
- * - address prints the address of a word, and the words on the way from
- *   the root.
- * - children lists children of a word from the mask first on, at most
- *   limit of them.
- * - windows prints the bits of a word, and for each place in the word the
- *   value of the order bits that start there.
+ * - expand: the child of a word for a mask, such as 0x04653adf.
+ * - collapse: the parent of a word and the mask of the word in the parent,
+ *   such as 0x09af 127.
+ * - path: the words on the way from the root for an address, without the
+ *   root, as 17.09af.04653adf.0218a392cd3d5dbf.
+ * - address: the address of a word, such as 1.7.127.32767.
+ * - children: the children of a word from the mask first on, at most limit
+ *   of them, one on a line.
+ * - windows: for each place in a word, the value of the order bits that
+ *   start there, one on a line.
  *
  * The plugin has no options, no instances and no data of its own, and a
  * call ends before its start() returns. check_debruijn (tests/askai.py)
@@ -199,6 +200,9 @@ debruijn_plugin_address (struct cstr_view  text,
 		if (!cstr_view_cut(&text, '.', &part)) {
 			part = text;
 			text = cstr_view(nullptr);
+		} else if (!text.len) {
+			/* A dot ends no address. */
+			return EINVAL;
 		}
 		uint64_t value = 0;
 		bool const hex = cstr_view_starts(part, CSTR_VIEW("0x"));
@@ -218,10 +222,8 @@ debruijn_plugin_no_word (struct mcp_slot *slot,
                          uint64_t         word,
                          unsigned         order)
 {
-	mcp_slot_tellf(slot, TOOL_FAILED, "0x%0*" PRIx64 " is no de Bruijn word of order %u "
-	               "that starts with %u zero bits. Such a word has %u bits, and every "
-	               "value of %u bits is in the word once.", debruijn_plugin_digits(order),
-	               word, order, order, 1U << order, order);
+	mcp_slot_tellf(slot, TOOL_FAILED, "0x%0*" PRIx64 " is no word of order %u.",
+	               debruijn_plugin_digits(order), word, order);
 }
 
 /* expand: the child of @p word for @p mask. */
@@ -236,9 +238,7 @@ debruijn_plugin_expand (struct debruijn_plugin_out *out,
 		debruijn_plugin_no_word(out->slot, word, order);
 		return;
 	}
-	debruijn_plugin_line(out, "0x%0*" PRIx64 " is the child of 0x%0*" PRIx64 " (order %u) for "
-	                     "the mask %u. Its order is %u.\n", debruijn_plugin_digits(order + 1),
-	                     child, debruijn_plugin_digits(order), word, order, mask, order + 1);
+	debruijn_plugin_line(out, "0x%0*" PRIx64 "\n", debruijn_plugin_digits(order + 1U), child);
 	debruijn_plugin_end(out);
 }
 
@@ -254,29 +254,25 @@ debruijn_plugin_collapse (struct debruijn_plugin_out *out,
 		debruijn_plugin_no_word(out->slot, word, order);
 		return;
 	}
-	debruijn_plugin_line(out, "0x%0*" PRIx64 " is the parent of 0x%0*" PRIx64 " (order %u). "
-	                     "Its order is %u, and the mask of the child is %u.\n",
-	                     debruijn_plugin_digits(order - 1U), parent,
-	                     debruijn_plugin_digits(order), word, order, order - 1U, mask);
+	debruijn_plugin_line(out, "0x%0*" PRIx64 " %u\n", debruijn_plugin_digits(order - 1U),
+	                     parent, mask);
 	debruijn_plugin_end(out);
 }
 
-/* Writes the @p n words of an address as rows: the order, the mask and the
- * word of each, from the root on. words[0] is the root, and masks[i] is the
- * mask of words[i + 1].
+/* Writes the words @p words[1] to @p words[n - 1] of an address, with a dot
+ * between two, each at the width of its order: 17.09af.04653adf. words[0]
+ * is the root, which the line leaves out.
  */
 static void
-debruijn_plugin_rows (struct debruijn_plugin_out *out,
-                      uint64_t const             *words,
-                      unsigned const             *masks,
-                      size_t                      n)
+debruijn_plugin_chain (struct debruijn_plugin_out *out,
+                       uint64_t const             *words,
+                       size_t                      n)
 {
-	debruijn_plugin_line(out, "order  mask   word\n    2  -      0x%" PRIx64 "\n", words[0]);
 	for (size_t i = 1; i < n; ++i) {
-		unsigned const order = DEBRUIJN_MIN_ORDER + (unsigned)i;
-		debruijn_plugin_line(out, "    %u  %-5u  0x%0*" PRIx64 "\n", order, masks[i - 1],
-		                     debruijn_plugin_digits(order), words[i]);
+		int const digits = debruijn_plugin_digits(DEBRUIJN_MIN_ORDER + (unsigned)i);
+		debruijn_plugin_line(out, "%s%0*" PRIx64, i > 1 ? "." : "", digits, words[i]);
 	}
+	debruijn_plugin_line(out, "\n");
 }
 
 /* path: the words on the way from the root for the address @p text. */
@@ -298,11 +294,11 @@ debruijn_plugin_path (struct debruijn_plugin_out *out,
 		                                   "order."), TOOL_FAILED);
 		return;
 	}
-	debruijn_plugin_rows(out, words, masks, n + 1);
+	debruijn_plugin_chain(out, words, n + 1);
 	debruijn_plugin_end(out);
 }
 
-/* address: the address of @p word, and the words on the way from the root. */
+/* address: the address of @p word, a word of order 3 to 6. */
 static void
 debruijn_plugin_locate (struct debruijn_plugin_out *out,
                         uint64_t                    word,
@@ -320,11 +316,9 @@ debruijn_plugin_locate (struct debruijn_plugin_out *out,
 		debruijn_plugin_no_word(out->slot, word, order);
 		return;
 	}
-	debruijn_plugin_line(out, "address: ");
 	for (size_t i = 0; i < n; ++i)
 		debruijn_plugin_line(out, "%s%u", i ? "." : "", masks[i]);
-	debruijn_plugin_line(out, "%s\n", n ? "" : "(the root has no address)");
-	debruijn_plugin_rows(out, words, masks, n + 1);
+	debruijn_plugin_line(out, "\n");
 	debruijn_plugin_end(out);
 }
 
@@ -345,22 +339,12 @@ debruijn_plugin_children (struct debruijn_plugin_out *out,
 	}
 	uint64_t const all = (uint64_t)debruijn_plugin_masks(order) + 1;
 	uint64_t const end = first < all && limit < all - first ? first + limit : all;
-	debruijn_plugin_line(out, "mask   child (order %u)\n", order + 1);
-	for (uint64_t mask = first; mask < end; ++mask) {
+	for (uint64_t mask = first; !out->e && mask < end; ++mask) {
 		uint64_t child = 0;
-		(void)debruijn_generate(&child, &seed, (unsigned)mask);
-		debruijn_plugin_line(out, "%-5" PRIu64 "  0x%0*" PRIx64 "\n", mask,
-		                     debruijn_plugin_digits(order + 1), child);
+		out->e = debruijn_generate(&child, &seed, (unsigned)mask);
+		debruijn_plugin_line(out, "0x%0*" PRIx64 "\n", debruijn_plugin_digits(order + 1U),
+		                     child);
 	}
-	uint64_t const listed = first < end ? end - first : 0;
-	debruijn_plugin_line(out, "Listed %" PRIu64 " of %" PRIu64 " children", listed, all);
-	if (listed && listed < all)
-		debruijn_plugin_line(out, ", from mask %" PRIu64, first);
-	debruijn_plugin_line(out, ".");
-	if (listed && end < all)
-		debruijn_plugin_line(out, " For the next, call again with first: %" PRIu64 ".",
-		                     end);
-	debruijn_plugin_line(out, "\n");
 	debruijn_plugin_end(out);
 }
 
@@ -377,23 +361,16 @@ debruijn_plugin_windows (struct debruijn_plugin_out *out,
 		debruijn_plugin_no_word(out->slot, word, order);
 		return;
 	}
+	/* Place 0 is the most significant bit. A window that runs over the end
+	 * of the word reads on at its start: the bit positions count down
+	 * modulo the 2^order bits. */
 	unsigned const bits = 1U << order;
-	char text[65];
-	for (unsigned i = 0; i < bits; ++i)
-		text[i] = (char)('0' + (word >> (bits - 1 - i) & 1));
-	text[bits] = '\0';
-	debruijn_plugin_line(out, "0x%0*" PRIx64 " (order %u), most significant bit first:\n%s\n"
-	                     "place  bits%*s  value\n", debruijn_plugin_digits(order), word, order,
-	                     text, (int)order - 4 > 0 ? (int)order - 4 : 0, "");
 	for (unsigned place = 0; place < bits; ++place) {
-		char window[DEBRUIJN_MAX_ORDER + 1];
+		unsigned const top = bits - 1U - place;
 		unsigned value = 0;
-		for (unsigned i = 0; i < order; ++i) {
-			window[i] = text[(place + i) % bits];
-			value = value << 1 | (unsigned)(window[i] - '0');
-		}
-		window[order] = '\0';
-		debruijn_plugin_line(out, "%5u  %-4s  %5u\n", place, window, value);
+		for (unsigned i = 0; i < order; ++i)
+			value = value << 1 | (unsigned)(word >> ((top - i) & (bits - 1U)) & 1U);
+		debruijn_plugin_line(out, "%u\n", value);
 	}
 	debruijn_plugin_end(out);
 }
@@ -408,40 +385,36 @@ debruijn_plugin_definition (void const *service)
 	static_assert(DEBRUIJN_PLUGIN_LIMIT == 64, "the description says");
 	return json_tokener_parse(
 		"{\"name\":\"debruijn\",\"title\":\"De Bruijn words\","
-		"\"description\":\"Explore the binary de Bruijn words of the orders 2 to 6. A "
-		"word of order n has 2^n bits, and every value of n bits is in the word once, "
-		"also across the end of the word to its start. The words of this tool start "
-		"with n zero bits. Write a word as hexadecimal digits, such as 0x09af for order "
-		"4. The word 0x3 of order 2 is the root of a tree. A word of order n from 2 to 5 "
-		"has one child of order n+1 for each mask: 2, 8, 128 and 32768 children for the "
-		"orders 2, 3, 4 and 5. A word of order 3 to 6 is the child of one word. The "
-		"address of a word is the masks on the way from the root, such as "
-		"1.7.127.32767.\","
+		"\"description\":\"Binary de Bruijn words of the orders 2 to 6. A word of "
+		"order n has 2^n bits and starts with n zero bits. Every value of n bits is in "
+		"the word once, also across the end of the word. A word is hexadecimal digits "
+		"at the width of its order, such as 0x09af for order 4. The word 0x3 of order "
+		"2 is the root of a tree. A word of order n from 2 to 5 has a child of order "
+		"n+1 for each mask: 2, 8, 128 and 32768 children for the orders 2, 3, 4 and 5. "
+		"The address of a word is the masks on the way from the root, such as "
+		"1.7.127.32767. The output is the result alone.\","
 		"\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		"\"action\":{\"type\":\"string\",\"enum\":["
 		XL_JOIN(",", ",", DEBRUIJN_PLUGIN_ACTION_LIST(XL_JSON)) "],\"description\":"
-		"\"expand prints the child of word for mask. collapse prints the parent of word "
-		"and the mask of word in the parent. path prints the words on the way from the "
-		"root for address. address prints the address of word and the words on the way "
-		"from the root. children lists children of word from the mask first on. windows "
-		"prints the bits of word, and for each place in word the value of the order "
-		"bits that start there.\"},"
+		"\"expand: the child of word for mask. collapse: the parent of word and the mask "
+		"of word in the parent, as 0x09af 127. path: the words of address without the "
+		"root, as 17.09af.04653adf.0218a392cd3d5dbf. address: the address of word. "
+		"children: the children of word from the mask first on, at most limit, one on a "
+		"line. windows: for each place in word from the most significant bit, the value "
+		"of the order bits that start there, one on a line.\"},"
 		"\"word\":{\"type\":\"string\",\"description\":\"A word as 1 to 16 hexadecimal "
-		"digits, with or without 0x, such as 0x04653adf.\"},"
+		"digits, with or without 0x.\"},"
 		"\"order\":{\"type\":\"integer\",\"minimum\":2,\"maximum\":6,\"description\":"
-		"\"The order of word: 2 to 5 for expand and children, 3 to 6 for collapse, 2 to "
-		"6 for address and windows.\"},"
-		"\"mask\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"For expand: the "
-		"mask of the child, at most 1, 7, 127 and 32767 for the orders 2, 3, 4 and "
-		"5.\"},"
-		"\"address\":{\"type\":\"string\",\"description\":\"For path: 1 to 4 masks with "
-		"a dot between two, such as 1.7.127.32767. A mask is a decimal number or "
-		"hexadecimal digits after 0x.\"},"
+		"\"The order of word: 2 to 5 for expand and children, 3 to 6 for collapse and "
+		"address, 2 to 6 for windows.\"},"
+		"\"mask\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"For expand: "
+		"at most 1, 7, 127 and 32767 for the orders 2, 3, 4 and 5.\"},"
+		"\"address\":{\"type\":\"string\",\"description\":\"For path: 1 to 4 masks "
+		"with a dot between two. A mask is decimal, or hexadecimal after 0x.\"},"
 		"\"first\":{\"type\":\"integer\",\"minimum\":0,\"default\":0,\"description\":"
-		"\"For children: the mask of the first child in the output.\"},"
+		"\"For children: the mask of the first child.\"},"
 		"\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":32768,\"default\":64,"
-		"\"description\":\"For children: the maximum number of children in the "
-		"output.\"},"
+		"\"description\":\"For children: the most children.\"},"
 		"\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":\""
 		TOOL_OFFSET_ABOUT "\"}},"
 		"\"required\":[\"action\"],\"additionalProperties\":false},"
@@ -500,8 +473,8 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	uint64_t limit = DEBRUIJN_PLUGIN_LIMIT;
 	/* The orders of an action: expand and children make a child, collapse
 	 * finds a parent. */
-	unsigned const low = action == DEBRUIJN_PLUGIN_COLLAPSE ? DEBRUIJN_MIN_ORDER + 1
-	                                                        : DEBRUIJN_MIN_ORDER;
+	unsigned const low = action == DEBRUIJN_PLUGIN_COLLAPSE || action == DEBRUIJN_PLUGIN_ADDRESS
+	                   ? DEBRUIJN_MIN_ORDER + 1 : DEBRUIJN_MIN_ORDER;
 	unsigned const high = action == DEBRUIJN_PLUGIN_EXPAND || action == DEBRUIJN_PLUGIN_CHILDREN
 	                    ? DEBRUIJN_MAX_ORDER - 1 : DEBRUIJN_MAX_ORDER;
 	struct cstr_view const digits = jb_view(of[DEBRUIJN_PLUGIN_ARG_WORD]);

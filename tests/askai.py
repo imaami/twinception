@@ -20014,9 +20014,6 @@ def check_debruijn(binary, up, debruijn):
         assert result.get("isError"), (arguments, result)
         return text_of(result)
 
-    rows = "order  mask   word\n    2  -      0x3\n    3  1      0x17\n" \
-        "    4  7      0x09af\n    5  127    0x04653adf\n" \
-        "    6  32767  0x0218a392cd3d5dbf\n"
     with tempfile.TemporaryDirectory() as d:
         path = f"{os.path.realpath(d)}/askai.json"
         with open(path, "w") as f:
@@ -20031,56 +20028,48 @@ def check_debruijn(binary, up, debruijn):
                 schema["required"] == ["action"] and \
                 schema["properties"]["offset"]["description"] == OFFSET_ABOUT, schema
 
-            # A child, and the parent of the child with the mask of the child.
-            assert ok(ai, action="expand", word="0x09af", order=4, mask=127) == \
-                "0x04653adf is the child of 0x09af (order 4) for the mask 127. Its order " \
-                "is 5.\n"
-            assert ok(ai, action="expand", word="04653adf", order=5, mask=0) \
-                .startswith("0x03f668bab7929c61 is the child of 0x04653adf (order 5)")
-            assert ok(ai, action="expand", word="0x3", order=2, mask=0).startswith("0x1d ")
+            # The output of an action is its result alone. A child, and the
+            # parent of the child with the mask of the child.
+            assert ok(ai, action="expand", word="0x09af", order=4, mask=127) == "0x04653adf\n"
+            assert ok(ai, action="expand", word="04653adf", order=5, mask=0) == \
+                "0x03f668bab7929c61\n"
+            assert ok(ai, action="expand", word="0x3", order=2, mask=0) == "0x1d\n"
             assert ok(ai, action="collapse", word="0x0218a392cd3d5dbf", order=6) == \
-                "0x04653adf is the parent of 0x0218a392cd3d5dbf (order 6). Its order is 5, " \
-                "and the mask of the child is 32767.\n"
-            # The words of an address, and the address of a word.
-            assert ok(ai, action="path", address="1.7.127.32767") == rows
-            assert ok(ai, action="path", address="1.7.0x7f.0x7fff") == rows
-            assert ok(ai, action="path", address="0.0") == \
-                "order  mask   word\n    2  -      0x3\n    3  0      0x1d\n" \
-                "    4  0      0x0f65\n"
+                "0x04653adf 32767\n"
+            assert ok(ai, action="collapse", word="0x17", order=3) == "0x3 1\n"
+            # The words of an address, and the address of a word, as the
+            # owner's debruijn program prints them.
+            chain = "17.09af.04653adf.0218a392cd3d5dbf\n"
+            assert ok(ai, action="path", address="1.7.127.32767") == chain
+            assert ok(ai, action="path", address="1.7.0x7f.0x7fff") == chain
+            assert ok(ai, action="path", address="0.0.0.0") == \
+                "1d.0f65.07dcd629.03f79d71b4cb0a89\n"
+            assert ok(ai, action="path", address="0.0") == "1d.0f65\n"
             assert ok(ai, action="address", word="0x0218a392cd3d5dbf", order=6) == \
-                "address: 1.7.127.32767\n" + rows
-            assert ok(ai, action="address", word="3", order=2) == \
-                "address: (the root has no address)\norder  mask   word\n" \
-                "    2  -      0x3\n"
-            # The children of a word, a range of them, and the next range.
-            assert ok(ai, action="children", word="0x3", order=2) == \
-                "mask   child (order 3)\n0      0x1d\n1      0x17\nListed 2 of 2 children.\n"
-            text = ok(ai, action="children", word="0x17", order=3, first=6, limit=5)
-            assert text == "mask   child (order 4)\n6      0x0d2f\n7      0x09af\n" \
-                "Listed 2 of 8 children, from mask 6.\n", text
-            text = ok(ai, action="children", word="0x04653adf", order=5, first=32766, limit=1)
-            assert text.endswith("Listed 1 of 32768 children, from mask 32766. For the next, "
-                                 "call again with first: 32767.\n"), text
+                "1.7.127.32767\n"
+            assert ok(ai, action="address", word="0x1d", order=3) == "0\n"
+            # The children of a word, one on a line, from the mask first on.
+            assert ok(ai, action="children", word="0x3", order=2) == "0x1d\n0x17\n"
+            assert ok(ai, action="children", word="0x17", order=3) == \
+                "0x0f59\n0x0a7b\n0x0f4b\n0x09eb\n0x0d79\n0x0a6f\n0x0d2f\n0x09af\n"
+            assert ok(ai, action="children", word="0x17", order=3, first=6, limit=5) == \
+                "0x0d2f\n0x09af\n"
+            assert ok(ai, action="children", word="0x04653adf", order=5, first=32767) == \
+                "0x0218a392cd3d5dbf\n"
             whole = ok(ai, action="children", word="0x09af", order=4, limit=128)
             lines = whole.split("\n")
-            assert len(lines) == 131 and lines[128] == "127    0x04653adf" and \
-                lines[129] == "Listed 128 of 128 children.", lines[-4:]
+            assert len(lines) == 129 and lines[127] == "0x04653adf" and \
+                len(set(lines[:128])) == 128, lines[-3:]
             assert ok(ai, action="children", word="0x09af", order=4, limit=128,
                       offset=100) == whole[100:]
-            assert ok(ai, action="children", word="0x09af", order=4, first=128) == \
-                "mask   child (order 5)\nListed 0 of 128 children.\n"
+            assert ok(ai, action="children", word="0x09af", order=4, first=128) == ""
             # Each value of order bits is in the word once.
-            text = ok(ai, action="windows", word="0x17", order=3)
-            assert text == "0x17 (order 3), most significant bit first:\n00010111\n" \
-                "place  bits  value\n    0  000       0\n    1  001       1\n" \
-                "    2  010       2\n    3  101       5\n    4  011       3\n" \
-                "    5  111       7\n    6  110       6\n    7  100       4\n", text
-            text = ok(ai, action="windows", word="0x0218a392cd3d5dbf", order=6)
-            values = [int(line.split()[2]) for line in text.split("\n")[3:67]]
-            assert sorted(values) == list(range(64)), values
+            assert ok(ai, action="windows", word="0x17", order=3) == \
+                "0\n1\n2\n5\n3\n7\n6\n4\n"
+            values = ok(ai, action="windows", word="0x0218a392cd3d5dbf", order=6).split()
+            assert sorted(map(int, values)) == list(range(64)), values
 
-            no_word = "0x1e is no de Bruijn word of order 3 that starts with 3 zero bits. " \
-                "Such a word has 8 bits, and every value of 3 bits is in the word once."
+            no_word = "0x1e is no word of order 3."
             for arguments, text in (
                     ({"action": "expand", "word": "0x1e", "order": 3, "mask": 0}, no_word),
                     ({"action": "collapse", "word": "0x1e", "order": 3}, no_word),
@@ -20101,6 +20090,8 @@ def check_debruijn(binary, up, debruijn):
                      "The order argument must be a whole number from 2 to 5 for expand."),
                     ({"action": "collapse", "word": "0x3", "order": 2},
                      "The order argument must be a whole number from 3 to 6 for collapse."),
+                    ({"action": "address", "word": "0x3", "order": 2},
+                     "The order argument must be a whole number from 3 to 6 for address."),
                     ({"action": "expand", "word": "0x17", "order": 3, "mask": 8},
                      "The mask argument must be a whole number from 0 to 7 for order 3."),
                     ({"action": "expand", "word": "xyz", "order": 3, "mask": 0},
@@ -20118,6 +20109,8 @@ def check_debruijn(binary, up, debruijn):
                      "this order."),
                     ({"action": "path", "address": "1.7.127.32767.0"}, None),
                     ({"action": "path", "address": "1..7"}, None),
+                    ({"action": "path", "address": "1."}, None),
+                    ({"action": "path", "address": "."}, None),
                     ({"action": "path", "address": ""}, None),
                     ({"action": "expand", "word": "0x17", "order": 3, "mask": 0, "x": 1},
                      "x is not an argument of the tool.")):
