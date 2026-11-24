@@ -112,15 +112,9 @@ struct dstr {
 		 *  depending on compile-time settings, but only the last
 		 *  one is ever used for metadata storage.
 		 */
-		union {
-			struct {
-				char      *ptr[DSTR_OBJ_SIZE / sizeof (char *) - 1];
-				uintptr_t  last_uptr;
-			};
-			struct {
-				unsigned char pad_[DSTR_OBJ_SIZE - 1];
-				unsigned char meta;
-			};
+		struct {
+			char      *ptr[DSTR_OBJ_SIZE / sizeof (char *) - 1];
+			uintptr_t  meat;
 		} mem;
 	};
 };
@@ -165,61 +159,17 @@ struct dstr_info {
 	size_t state;
 };
 
-#define dstr_last_byte_(obj_size, obj_raw) (obj_raw)[(obj_size) - 1U]
-#define dstr_last_byte(obj) dstr_last_byte_(sizeof *(obj), (obj)->raw)
-
-#define dstr_last_uptr_const_(obj_size, obj_raw) \
-  ((uintptr_t const *)&(obj_raw)[0])[(obj_size) / sizeof (uintptr_t) - 1U]
-
-#define dstr_last_uptr_(obj_size, obj_raw) \
-  ((uintptr_t *)&(obj_raw)[0])[(obj_size) / sizeof (uintptr_t) - 1U]
-
-#define dstr_last_uptr(obj) \
-  (obj)->uptr[sizeof *(obj) / sizeof (obj)->uptr[0] - 1U]
-
-#define dstr_is_sso_(obj_size, obj_raw) \
-  (dstr_last_byte_(obj_size, obj_raw) < (obj_size))
-
-#define dstr_is_sso(obj) dstr_is_sso_(sizeof *(obj), (obj)->raw)
-
-#define dstr_is_ptr_(obj_size, obj_raw) \
-  (dstr_last_byte_(obj_size, obj_raw) & DSTR_PTR_FLAG)
-
-#define dstr_is_ptr(obj) dstr_is_ptr_(sizeof *(obj), (obj)->raw)
-
-#define dstr_sso_space_left_(obj_size, obj_raw) \
-  dstr_last_byte_(obj_size, obj_raw)
-
-#define dstr_sso_space_left(obj) \
-  dstr_sso_space_left_(sizeof *(obj), (obj)->raw)
-
-#define dstr_sso_len_(obj_size, obj_raw) \
-  ((obj_size) - 1U - dstr_last_byte_(obj_size, obj_raw))
-
-#define dstr_sso_len(obj) dstr_sso_len_(sizeof *(obj), (obj)->raw)
-
-#define dstr_ptr_len_(obj_uptr) \
-  (size_t)((unsigned char const *)((obj_uptr)[1]) \
-         - (unsigned char const *)((obj_uptr)[0]))
-
-#define dstr_ptr_len(obj) dstr_ptr_len_((obj)->uptr)
-
-#define dstr_uptr_block_count_(up) \
+#define dstr_blk_count(up) \
   (((up) >> DSTR_BLK_COUNT_POS) & DSTR_BLK_COUNT_MASK)
 
-#define dstr_ptr_block_count_(obj_size, obj_raw) \
-  dstr_uptr_block_count_(dstr_last_uptr_const_(obj_size, obj_raw))
-
-#define dstr_ptr_block_count(obj) \
-  dstr_uptr_block_count_(dstr_last_uptr(obj))
-
-#define dstr_ptr_space_left_(obj_size, obj_raw) \
-  (dstr_ptr_block_count_(obj_size, obj_raw) * DSTR_BLK_SIZE \
-   - 1U - dstr_ptr_len_((uintptr_t const *)(obj_raw)))
-
-#define dstr_ptr_space_left(obj) \
-  (dstr_ptr_block_count(obj) * DSTR_BLK_SIZE \
-   - 1U - dstr_ptr_len(obj))
+#define dstr_is_ptr(obj) ((obj)->sso.meta & DSTR_PTR_FLAG)
+#define dstr_is_sso(obj) ((obj)->sso.meta < (unsigned char)(sizeof *(obj)))
+#define dstr_ptr_blk_count(obj) dstr_blk_count((obj)->mem.meat)
+#define dstr_ptr_len(obj) (size_t)((obj)->mem.ptr[1] - (obj)->mem.ptr[0])
+#define dstr_ptr_space_left(obj) (DSTR_BLK_SIZE * \
+  dstr_ptr_blk_count(obj) - 1U - dstr_ptr_len(obj))
+#define dstr_sso_len(obj) (sizeof *(obj) - 1U - (obj)->sso.meta)
+#define dstr_sso_space_left(obj) (obj)->sso.meta
 
 /* Note: MSVC support isn't actually planned */
 #ifndef _MSC_VER
@@ -248,8 +198,8 @@ dstr_n_ (char const *const src,
 	struct dstr ret = DSTR_INIT;
 
 	if (len < sizeof ret) {
-		(void)memcpy(&ret.str[0], src, len);
-		dstr_last_byte(&ret) -= (unsigned char)len;
+		(void)memcpy(&ret.sso.str[0], src, len);
+		ret.sso.meta -= (unsigned char)len;
 		return ret;
 	}
 
@@ -302,9 +252,9 @@ dstr (char const *const str)
 #else
 
 /* Whether `x` is an array of `char`. Internal; stays defined (see 7) */
-# define dstr_is_array_(x) _Generic((__typeof__(x) *)0, \
-  char (*)[sizeof (__typeof__(x))]: 1, \
-  char const (*)[sizeof (__typeof__(x))]: 1, \
+# define dstr_is_array_(x) _Generic((typeof(x) *)0, \
+  char (*)[sizeof (typeof(x))]: 1, \
+  char const (*)[sizeof (typeof(x))]: 1, \
   default: 0)
 
 /* Whether `x` is a string literal. Internal; stays defined (see 7) */
@@ -317,7 +267,7 @@ dstr (char const *const str)
  */
 # define dstr_fit_(x, n) \
   __builtin_choose_expr( \
-    dstr_is_literal_(x) && sizeof (__typeof__(x)) <= (n), x, "")
+    dstr_is_literal_(x) && sizeof (typeof(x)) <= (n), x, "")
 
 /* Initializer for a string literal: a constant if it fits in place
  * (the meta byte of a full one is its terminator), otherwise allocated
@@ -325,17 +275,17 @@ dstr (char const *const str)
  */
 # define dstr_literal_(x) \
   __builtin_choose_expr( \
-    sizeof (__typeof__(x)) < sizeof (struct dstr), \
+    sizeof (typeof(x)) < sizeof (struct dstr), \
     __extension__ (struct dstr){ .sso = { \
-      .str  = dstr_fit_(x, sizeof (struct dstr) - 1U), \
+      .str  = dstr_fit_(x, sizeof (struct dstr){0}.sso.str), \
       .meta = (unsigned char)(sizeof (struct dstr) - \
-                              sizeof (__typeof__(x))) } }, \
+                              sizeof (typeof(x))) } }, \
     __builtin_choose_expr( \
-      sizeof (__typeof__(x)) == sizeof (struct dstr), \
+      sizeof (typeof(x)) == sizeof (struct dstr), \
       __extension__ (struct dstr){ \
         .str = dstr_fit_(x, sizeof (struct dstr)) }, \
       dstr_n_(dstr_fit_(x, SIZE_MAX), \
-              sizeof (__typeof__(x)) - 1U)))
+              sizeof (typeof(x)) - 1U)))
 
 /**
  * @brief Initialize a @ref dstr, choosing how at compile time
@@ -358,7 +308,7 @@ dstr (char const *const str)
   __builtin_choose_expr( \
     dstr_is_literal_(x) && \
     __builtin_strlen(dstr_fit_(x, SIZE_MAX)) == \
-    sizeof (__typeof__(x)) - 1U, \
+    sizeof (typeof(x)) - 1U, \
     dstr_literal_(x), \
     (dstr)(x))
 
@@ -392,7 +342,7 @@ dstr_cleanup (struct dstr *const ds)
 	/* The library gets the heap buffer, never the object, so that the
 	 * object's address doesn't escape; the object is reset inline */
 	if (dstr_is_ptr(ds))
-		dstr_free_((void *)ds->ptr[0], (void *)ds->ptr[1]);
+		dstr_free_((void *)ds->mem.ptr[0], (void *)ds->mem.ptr[1]);
 	*ds = (struct dstr)DSTR_INIT;
 }
 
@@ -410,7 +360,7 @@ dstr_len (struct dstr const *const ds)
 	if (ds) {
 		if (dstr_is_sso(ds))
 			return dstr_sso_len(ds);
-		if (dstr_is_ptr(ds) && ds->ptr[0] && ds->ptr[1])
+		if (dstr_is_ptr(ds) && ds->mem.ptr[0] && ds->mem.ptr[1])
 			return dstr_ptr_len(ds);
 	}
 	return 0U;
@@ -432,7 +382,7 @@ dstr_get_block_count (struct dstr const *const ds)
 {
 	if (!ds || !dstr_is_ptr(ds))
 		return 0U;
-	return dstr_ptr_block_count(ds);
+	return dstr_ptr_blk_count(ds);
 }
 
 /**
@@ -458,7 +408,7 @@ dstr_space_left (struct dstr const *const ds)
 		if (dstr_is_sso(ds))
 			return dstr_sso_space_left(ds);
 
-		if (dstr_is_ptr(ds) && ds->ptr[0] && ds->ptr[1])
+		if (dstr_is_ptr(ds) && ds->mem.ptr[0] && ds->mem.ptr[1])
 			return dstr_ptr_space_left(ds);
 	}
 	return 0U;
@@ -472,12 +422,12 @@ dstr_info (struct dstr const *const ds)
 			return (struct dstr_info){
 				.length = dstr_sso_len(ds),
 				.space  = dstr_sso_space_left(ds),
-				.state  = DSTR_IS_SSO
+				.state  = DSTR_IS_SSO,
 			};
 		}
 
-		if (dstr_is_ptr(ds) && ds->ptr[0] && ds->ptr[1]) {
-			size_t const blk = dstr_ptr_block_count(ds);
+		if (dstr_is_ptr(ds) && ds->mem.ptr[0] && ds->mem.ptr[1]) {
+			size_t const blk = dstr_ptr_blk_count(ds);
 			if (blk) {
 				size_t const size = blk * DSTR_BLK_SIZE;
 				size_t const len = dstr_ptr_len(ds);
@@ -486,19 +436,19 @@ dstr_info (struct dstr const *const ds)
 						.blocks = blk,
 						.length = len,
 						.space  = size - 1U - len,
-						.state  = DSTR_IS_PTR
+						.state  = DSTR_IS_PTR,
 					};
 				}
 			}
 		}
 
 		return (struct dstr_info){
-			.state  = DSTR_IS_BAD
+			.state  = DSTR_IS_BAD,
 		};
 	}
 
 	return (struct dstr_info){
-		.state = DSTR_IS_NOT
+		.state = DSTR_IS_NOT,
 	};
 }
 
@@ -516,9 +466,9 @@ dstr_get (struct dstr const *const ds)
 {
 	if (ds) {
 		if (dstr_is_sso(ds))
-			return &ds->str[0];
+			return &ds->sso.str[0];
 		if (dstr_is_ptr(ds))
-			return (char const *)ds->ptr[0];
+			return (char const *)ds->mem.ptr[0];
 	}
 	return nullptr;
 }
@@ -538,7 +488,7 @@ dstr_raw (struct dstr *const ds)
 		if (dstr_is_sso(ds))
 			return &ds->raw[0];
 		if (dstr_is_ptr(ds))
-			return (unsigned char *)ds->ptr[0];
+			return (unsigned char *)ds->mem.ptr[0];
 	}
 	return nullptr;
 }
@@ -557,11 +507,11 @@ dstr_get_write_ptr (struct dstr *const ds)
 {
 	if (ds) {
 		if (dstr_is_sso(ds))
-			return &ds->str[
+			return &ds->sso.str[
 				dstr_sso_len(ds)
 			];
-		if (dstr_is_ptr(ds) && ds->ptr[0])
-			return ds->ptr[1];
+		if (dstr_is_ptr(ds) && ds->mem.ptr[0])
+			return ds->mem.ptr[1];
 	}
 	return nullptr;
 }
@@ -656,7 +606,7 @@ dstr_reserve (struct dstr *const ds,
  *
  * On success, `ds` is returned. If `len` is 0, nothing is done and
  * `ds` is returned, whatever `src` is. If `ds` is `nullptr`, or `src`
- * is `nullptr` and `len` isn't 0, nothing is done and `nullptr` is
+ * is `nullptr` and `len` is not 0, nothing is done and `nullptr` is
  * returned. If memory allocation fails, nothing is done and `nullptr`
  * is returned.
  *
@@ -688,9 +638,9 @@ dstr_cat_n (struct dstr *const ds,
 	(void)memcpy(ptr, src, len);
 
 	if (dstr_is_ptr(ds))
-		ds->ptr[1] += len;
+		ds->mem.ptr[1] += len;
 	else if (dstr_is_sso(ds))
-		dstr_last_byte(ds) -= (unsigned char)len;
+		ds->sso.meta -= (unsigned char)len;
 
 	/* This right here, inserting a null byte, MUST be done
 	 * _after_ the length is subtracted from the meta byte.
@@ -815,15 +765,15 @@ dstr_erase (struct dstr *const ds,
 	/* Move the rest down and wipe the bytes it leaves behind, up to
 	 * the old terminator */
 	size_t const end = info.length - n;
-	char *const str = info.state == DSTR_IS_PTR ?  ds->ptr[0]
-	                                            : &ds->str[0];
+	char *const str = info.state == DSTR_IS_PTR ?  ds->mem.ptr[0]
+	                                            : &ds->sso.str[0];
 	(void)memmove(&str[pos], &str[pos + n], end - pos);
 	(void)memset(&str[end], 0, n);
 
 	if (info.state == DSTR_IS_PTR)
-		ds->ptr[1] -= n;
+		ds->mem.ptr[1] -= n;
 	else
-		dstr_last_byte(ds) += (unsigned char)n;
+		ds->sso.meta += (unsigned char)n;
 
 	return ds;
 }

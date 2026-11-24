@@ -17,25 +17,13 @@
 #undef dstr_printf_like
 #undef dstr_useless
 #undef dstr_ptr_space_left
-#undef dstr_ptr_space_left_
-#undef dstr_ptr_block_count
-#undef dstr_ptr_block_count_
-#undef dstr_uptr_block_count_
+#undef dstr_ptr_blk_count
+#undef dstr_blk_count
 #undef dstr_ptr_len
-#undef dstr_ptr_len_
 #undef dstr_sso_len
-#undef dstr_sso_len_
 #undef dstr_sso_space_left
-#undef dstr_sso_space_left_
 #undef dstr_is_ptr
-#undef dstr_is_ptr_
 #undef dstr_is_sso
-#undef dstr_is_sso_
-#undef dstr_last_uptr
-#undef dstr_last_uptr_
-#undef dstr_last_uptr_const_
-#undef dstr_last_byte
-#undef dstr_last_byte_
 
 /* Don't move this include statement or reorder lines in relation to it! */
 #include "dstr.h"

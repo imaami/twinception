@@ -49,6 +49,37 @@
 # define dstr_error(fmt, ...) do{}while(0)
 #endif /* NDEBUG */
 
+#define dstr_meta_(obj_size, obj_raw) (obj_raw)[(obj_size) - 1U]
+
+#define dstr_meat_const_(obj_size, obj_raw) \
+  ((uintptr_t const *)&(obj_raw)[0])[(obj_size) / sizeof (uintptr_t) - 1U]
+
+#define dstr_meat_(obj_size, obj_raw) \
+  ((uintptr_t *)&(obj_raw)[0])[(obj_size) / sizeof (uintptr_t) - 1U]
+
+#define dstr_is_sso_(obj_size, obj_raw) \
+  (dstr_meta_(obj_size, obj_raw) < (obj_size))
+
+#define dstr_is_ptr_(obj_size, obj_raw) \
+  (dstr_meta_(obj_size, obj_raw) & DSTR_PTR_FLAG)
+
+#define dstr_sso_space_left_(obj_size, obj_raw) \
+  dstr_meta_(obj_size, obj_raw)
+
+#define dstr_sso_len_(obj_size, obj_raw) \
+  ((obj_size) - 1U - dstr_meta_(obj_size, obj_raw))
+
+#define dstr_ptr_len_(obj_uptr) \
+  (size_t)((unsigned char const *)((obj_uptr)[1]) \
+         - (unsigned char const *)((obj_uptr)[0]))
+
+#define dstr_ptr_blk_count_(obj_size, obj_raw) \
+  dstr_blk_count(dstr_meat_const_(obj_size, obj_raw))
+
+#define dstr_ptr_space_left_(obj_size, obj_raw) \
+  (dstr_ptr_blk_count_(obj_size, obj_raw) * DSTR_BLK_SIZE \
+   - 1U - dstr_ptr_len_((uintptr_t const *)(obj_raw)))
+
 dstr_useless static force_inline size_t
 dstr_len_ (size_t const        obj_size,
            unsigned char const obj_raw[const obj_size])
@@ -110,7 +141,7 @@ dstr_init_n_ (size_t const      obj_size,
 
 	if (len < obj_size) {
 		(void)memcpy(obj_raw, src_str, len);
-		dstr_last_byte_(obj_size, obj_raw) -= (unsigned char)len;
+		dstr_meta_(obj_size, obj_raw) -= (unsigned char)len;
 		return 0;
 	}
 
@@ -128,9 +159,9 @@ dstr_init_n_ (size_t const      obj_size,
 
 	(*dest)[0] = (char *)buf;
 	(*dest)[1] = (char *)&buf[len];
-	dstr_last_uptr_(obj_size, obj_raw) = (uintptr_t)n_blocks
-	                                   << DSTR_BLK_COUNT_POS;
-	dstr_last_byte_(obj_size, obj_raw) |= DSTR_PTR_FLAG;
+	dstr_meat_(obj_size, obj_raw) = (uintptr_t)n_blocks
+	                              << DSTR_BLK_COUNT_POS;
+	dstr_meta_(obj_size, obj_raw) |= DSTR_PTR_FLAG;
 
 	return 0;
 }
@@ -195,8 +226,8 @@ dstr_info_ (size_t const        obj_size,
 		obj_type const *const ptr = (typeof(ptr))obj_raw;
 
 		if ((*ptr)[0] && (*ptr)[1]) {
-			size_t const blk = dstr_ptr_block_count_(obj_size,
-			                                         obj_raw);
+			size_t const blk = dstr_ptr_blk_count_(obj_size,
+			                                       obj_raw);
 			if (blk) {
 				size_t const size = blk * DSTR_BLK_SIZE;
 				size_t const len = dstr_ptr_len_(*ptr);
@@ -270,7 +301,7 @@ dstr_resize_ (size_t const  obj_size,
 		bool truncate = orig_len >= new_size;
 
 		/* The growth count survives a resize of the buffer */
-		unsigned char const count = dstr_last_byte_(obj_size, obj_raw)
+		unsigned char const count = dstr_meta_(obj_size, obj_raw)
 		                          & DSTR_GROW_COUNT_MASK;
 
 		/* Possibly calculate a truncated string length */
@@ -299,7 +330,7 @@ dstr_resize_ (size_t const  obj_size,
 			 * the SSO state indicator as well). After this
 			 * we're done and the object is a valid SSO.
 			 */
-			dstr_last_byte_(obj_size, obj_raw) =
+			dstr_meta_(obj_size, obj_raw) =
 				(unsigned char)(obj_size - 1U - i.length);
 
 		} else {
@@ -337,10 +368,9 @@ dstr_resize_ (size_t const  obj_size,
 
 				(*dest)[0] = (char *)ptr;
 				(*dest)[1] = (char *)&ptr[i.length];
-				dstr_last_uptr_(obj_size, obj_raw) = (uintptr_t)n_blocks
-				                                   << DSTR_BLK_COUNT_POS;
-				dstr_last_byte_(obj_size, obj_raw) |= DSTR_PTR_FLAG
-				                                    | count;
+				dstr_meat_(obj_size, obj_raw) = (uintptr_t)n_blocks
+				                              << DSTR_BLK_COUNT_POS;
+				dstr_meta_(obj_size, obj_raw) |= DSTR_PTR_FLAG | count;
 			}
 		}
 
@@ -364,9 +394,9 @@ dstr_resize_ (size_t const  obj_size,
 		(void)memset(obj_raw, 0, obj_size);
 		(*dest)[0] = (char *)ptr;
 		(*dest)[1] = (char *)&ptr[i.length];
-		dstr_last_uptr_(obj_size, obj_raw) = (uintptr_t)n_blocks
-		                                   << DSTR_BLK_COUNT_POS;
-		dstr_last_byte_(obj_size, obj_raw) |= DSTR_PTR_FLAG;
+		dstr_meat_(obj_size, obj_raw) = (uintptr_t)n_blocks
+		                              << DSTR_BLK_COUNT_POS;
+		dstr_meta_(obj_size, obj_raw) |= DSTR_PTR_FLAG;
 	}
 
 	return 0;
@@ -429,7 +459,7 @@ dstr_grow_ (size_t const  obj_size,
 	/* An in-place string has no growth count: its meta byte is the
 	 * space left */
 	unsigned const count = i.state == DSTR_IS_PTR
-	                     ? dstr_last_byte_(obj_size, obj_raw)
+	                     ? dstr_meta_(obj_size, obj_raw)
 	                       & DSTR_GROW_COUNT_MASK
 	                     : 0U;
 	size_t const shift = exact ? 0U
@@ -448,7 +478,7 @@ dstr_grow_ (size_t const  obj_size,
 	/* Count the growth. The object owns a buffer now, and the count is
 	 * in the lowest bits, so the increment stays inside them. */
 	if (count < DSTR_GROW_COUNT_MASK)
-		++dstr_last_byte_(obj_size, obj_raw);
+		++dstr_meta_(obj_size, obj_raw);
 
 	return 0;
 }
@@ -511,7 +541,7 @@ dstr_vprintf_ (size_t const      obj_size,
 		err = m < 0 && errno ? errno : EILSEQ;
 		(void)memset(ptr, 0, len + 1U);
 		if (i.state == DSTR_IS_SSO)
-			dstr_last_byte_(obj_size, obj_raw) = (unsigned char)i.space;
+			dstr_meta_(obj_size, obj_raw) = (unsigned char)i.space;
 		dstr_errno(err, "vsnprintf");
 		return err;
 	}
@@ -519,7 +549,7 @@ dstr_vprintf_ (size_t const      obj_size,
 	if (i.state == DSTR_IS_PTR)
 		(*dest)[1] += len;
 	else
-		dstr_last_byte_(obj_size, obj_raw) = (unsigned char)(i.space - len);
+		dstr_meta_(obj_size, obj_raw) = (unsigned char)(i.space - len);
 
 	return 0;
 }
