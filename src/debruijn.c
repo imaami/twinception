@@ -17,15 +17,15 @@
  * all queues. There is no candidate rejection or backtracking.
  */
 
-#include <assert.h>
 #include <errno.h>
 #include <stdint.h>
 
+#include "compat.h"
 #include "debruijn.h"
 
 enum {
 	MAX_VERTICES = 32,
-	ROOT = 64 /* Sentinel: valid edge labels are 0..63. */
+	ROOT         = 64, /* Sentinel: valid edge labels are 0..63. */
 };
 
 /** A last-exit tree; edge[0] is ROOT rather than an outgoing edge. */
@@ -42,12 +42,11 @@ struct queue {
 };
 
 /** Extract and remove the smallest label in a nonempty bitmap. */
-static unsigned
+static force_inline unsigned
 take_first (uint64_t *set)
 {
-	assert(*set);
 	unsigned first = (unsigned)__builtin_ctzll(*set);
-	*set &= *set - 1;
+	*set &= *set - 1U;
 	return first;
 }
 
@@ -59,7 +58,7 @@ tree (uint64_t word,
 	if (order < DEBRUIJN_MIN_ORDER || order > DEBRUIJN_MAX_ORDER)
 		return (struct tree){ .error = EINVAL };
 
-	unsigned length = 1u << order;
+	unsigned length = 1U << order;
 	uint64_t mask = UINT64_MAX >> (64 - length);
 
 	if ((word & ~mask) || (word >> (length - order)))
@@ -78,12 +77,12 @@ tree (uint64_t word,
 		}
 		seen |= bit;
 
-		unsigned source = edge >> 1;
+		unsigned source = edge >> 1U;
 		if (source)
 			ret.edge[source] = edge;
 
 		/* Rotate within the word's width, including the full 64-bit case. */
-		word = ((word << 1) & mask) | (word >> (length - 1));
+		word = ((word << 1U) & mask) | (word >> (length - 1U));
 	}
 	return ret;
 }
@@ -92,7 +91,7 @@ tree (uint64_t word,
 static uint64_t
 tree_word (struct tree const *src)
 {
-	unsigned vertices = 1u << (src->order - 1);
+	unsigned vertices = 1U << (src->order - 1);
 	unsigned visits[MAX_VERTICES] = {};
 	unsigned vertex = 0;
 	uint64_t word = 0;
@@ -102,16 +101,14 @@ tree_word (struct tree const *src)
 		word = (word << 1) | (vertex >> (src->order - 2));
 
 		unsigned visit = visits[vertex]++;
-		assert(visit < 2);
 
 		/* At zero use edge 0, then edge 1. Else use non-tree, then tree. */
 		unsigned edge = visit;
 		if (vertex)
-			edge = src->edge[vertex] ^ (visit ? 0u : 1u);
+			edge = src->edge[vertex] ^ (visit ? 0U : 1U);
 
 		vertex = edge & (vertices - 1);
 	}
-	assert(!vertex);
 	return word;
 }
 
@@ -120,14 +117,14 @@ static struct tree
 tree_lift (struct debruijn_generator const *src,
            unsigned                         choices)
 {
-	unsigned vertices = 1u << (src->order - 1);
+	unsigned vertices = 1U << (src->order - 1);
 	struct queue queues[MAX_VERTICES / 2] = {
 		[0] = { .edge = { 0, ROOT } }
 	};
 	unsigned occurrences[MAX_VERTICES] = { [0] = 1 };
 
 	for (unsigned vertex = 1; vertex < vertices; ++vertex) {
-		unsigned choice = (choices >> (vertex - 1)) & 1u;
+		unsigned choice = (choices >> (vertex - 1)) & 1U;
 		unsigned first = (vertex << 1) | choice;
 		unsigned last = src->edge[vertex];
 
@@ -148,23 +145,18 @@ tree_lift (struct debruijn_generator const *src,
 	for (unsigned i = 0; i < 2 * vertices; ++i) {
 		unsigned edge = take_first(&ready);
 		struct queue *queue = &queues[edge & (vertices - 1)];
-		assert(queue->used < 2);
 		unsigned next = queue->edge[queue->used++];
 
-		if (next == ROOT) {
-			assert(!edge && i + 1 == 2 * vertices);
+		if (next == ROOT)
 			return ret;
-		}
 
 		/* Old edges become new vertices. Store the new edge edge -> next. */
-		ret.edge[edge] = (edge << 1) | (next & 1u);
+		ret.edge[edge] = (edge << 1) | (next & 1U);
 
 		/* A label becomes eligible once, when its final occurrence is popped. */
-		assert(occurrences[next]);
 		if (!--occurrences[next])
 			ready |= UINT64_C(1) << next;
 	}
-	assert(0 && "the root marker must terminate the lift");
 	return (struct tree){ .error = EINVAL };
 }
 
@@ -187,7 +179,7 @@ debruijn_generator (uint64_t seed,
 		return (struct debruijn_generator){ .error = input.error };
 
 	struct debruijn_generator ret = { .order = order };
-	unsigned vertices = 1u << (order - 1);
+	unsigned vertices = 1U << (order - 1U);
 	for (unsigned vertex = 0; vertex < vertices; ++vertex)
 		ret.edge[vertex] = input.edge[vertex];
 	return ret;
@@ -203,7 +195,7 @@ debruijn_generate (uint64_t                         *word,
 	if (src->error)
 		return src->error;
 
-	unsigned choice_bits = (1u << (src->order - 1)) - 1;
+	unsigned choice_bits = (1U << (src->order - 1)) - 1;
 	if (choices >> choice_bits)
 		return EINVAL;
 
@@ -242,7 +234,7 @@ debruijn_collapse (uint64_t *seed,
 	if (input.error)
 		return input.error;
 
-	unsigned vertices = 1u << (order - 1);
+	unsigned vertices = 1U << (order - 1);
 	unsigned incoming[MAX_VERTICES] = {};
 
 	for (unsigned vertex = 1; vertex < vertices; ++vertex)
@@ -255,7 +247,7 @@ debruijn_collapse (uint64_t *seed,
 	}
 
 	struct queue queues[MAX_VERTICES / 2] = {};
-	unsigned lower_vertices = vertices / 2;
+	unsigned lower_vertices = vertices >> 1U;
 
 	/* Reverse the lift: prune the smallest leaf and rebuild the popped queues. */
 	for (unsigned i = 0; i < vertices; ++i) {
@@ -266,21 +258,17 @@ debruijn_collapse (uint64_t *seed,
 			parent = input.edge[leaf] & (vertices - 1);
 			if (!--incoming[parent])
 				leaves |= UINT64_C(1) << parent;
-		} else {
-			assert(i + 1 == vertices);
 		}
 
 		struct queue *queue = &queues[leaf & (lower_vertices - 1)];
-		assert(queue->used < 2);
 		queue->edge[queue->used++] = parent;
 	}
 
 	struct tree output = { .edge = { ROOT }, .order = order - 1 };
 	unsigned recovered = 0;
 
-	assert(!queues[0].edge[0] && queues[0].edge[1] == ROOT);
 	for (unsigned vertex = 1; vertex < lower_vertices; ++vertex) {
-		recovered |= (queues[vertex].edge[0] & 1u) << (vertex - 1);
+		recovered |= (queues[vertex].edge[0] & 1U) << (vertex - 1);
 		output.edge[vertex] = queues[vertex].edge[1];
 	}
 

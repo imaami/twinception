@@ -72,7 +72,7 @@ static struct cstr_view const debruijn_plugin_arg_names[] = {
 	DEBRUIJN_PLUGIN_ARG_LIST(XL_VIEW)
 };
 
-#define A(id) (1u << DEBRUIJN_PLUGIN_ARG_##id)
+#define A(id) (1U << DEBRUIJN_PLUGIN_ARG_##id)
 
 /* The actions of the tool: X(ID, name, arguments), with the arguments that
  * the action needs. children also takes first and limit. Every action
@@ -149,7 +149,7 @@ debruijn_plugin_end (struct debruijn_plugin_out *out)
 static int
 debruijn_plugin_digits (unsigned order)
 {
-	return (int)(1u << order >> 2);
+	return (int)(1U << order >> 2U);
 }
 
 /* Returns the largest mask of a word of the order @p order from 2 to 5:
@@ -158,7 +158,7 @@ debruijn_plugin_digits (unsigned order)
 static unsigned
 debruijn_plugin_masks (unsigned order)
 {
-	return (1u << ((1u << (order - 1)) - 1)) - 1;
+	return (1U << ((1U << (order - 1U)) - 1U)) - 1U;
 }
 
 /* Reads the hexadecimal digits @p text, with or without 0x before them,
@@ -177,7 +177,7 @@ debruijn_plugin_hex (struct cstr_view  text,
 		unsigned const digit = util_hex_digit((unsigned char)text.data[i]);
 		if (digit > 15)
 			return EINVAL;
-		value = value << 4 | digit;
+		value = value << 4U | digit;
 	}
 	*word = value;
 	return 0;
@@ -221,7 +221,7 @@ debruijn_plugin_no_word (struct mcp_slot *slot,
 	mcp_slot_tellf(slot, TOOL_FAILED, "0x%0*" PRIx64 " is no de Bruijn word of order %u "
 	               "that starts with %u zero bits. Such a word has %u bits, and every "
 	               "value of %u bits is in the word once.", debruijn_plugin_digits(order),
-	               word, order, order, 1u << order, order);
+	               word, order, order, 1U << order, order);
 }
 
 /* expand: the child of @p word for @p mask. */
@@ -256,8 +256,8 @@ debruijn_plugin_collapse (struct debruijn_plugin_out *out,
 	}
 	debruijn_plugin_line(out, "0x%0*" PRIx64 " is the parent of 0x%0*" PRIx64 " (order %u). "
 	                     "Its order is %u, and the mask of the child is %u.\n",
-	                     debruijn_plugin_digits(order - 1), parent,
-	                     debruijn_plugin_digits(order), word, order, order - 1, mask);
+	                     debruijn_plugin_digits(order - 1U), parent,
+	                     debruijn_plugin_digits(order), word, order, order - 1U, mask);
 	debruijn_plugin_end(out);
 }
 
@@ -377,7 +377,7 @@ debruijn_plugin_windows (struct debruijn_plugin_out *out,
 		debruijn_plugin_no_word(out->slot, word, order);
 		return;
 	}
-	unsigned const bits = 1u << order;
+	unsigned const bits = 1U << order;
 	char text[65];
 	for (unsigned i = 0; i < bits; ++i)
 		text[i] = (char)('0' + (word >> (bits - 1 - i) & 1));
@@ -486,7 +486,7 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 	                       (action == DEBRUIJN_PLUGIN_CHILDREN ? A(FIRST) | A(LIMIT) : 0);
 	uint32_t const wrong = (needs & ~(uint32_t)seen) | ((uint32_t)seen & ~takes);
 	if (wrong) {
-		unsigned const arg = (unsigned)stdc_trailing_zeros(wrong);
+		unsigned const arg = stdc_trailing_zeros(wrong);
 		mcp_slot_tellf(slot, TOOL_FAILED, needs >> arg & 1 ? "%s needs the argument %s."
 		                                                    : "%s takes no argument %s.",
 		               debruijn_plugin_action_names[action].data,
@@ -567,7 +567,7 @@ struct plugin const askai_plugin = {
 		{
 			.definition = debruijn_plugin_definition,
 			.start = debruijn_plugin_start,
-			.flags = TOOL_LENT | TOOL_PAGED
+			.flags = TOOL_LENT | TOOL_PAGED,
 		},
 	},
 };

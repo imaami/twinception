@@ -8,7 +8,7 @@
 enum {
 	DEBRUIJN_MIN_ORDER = 2,
 	DEBRUIJN_MAX_ORDER = 6,
-	DEBRUIJN_ROOT_SEED = 0x3 /* the unique normalized order-2 word */
+	DEBRUIJN_ROOT_SEED = 0x3, /* the unique normalized order-2 word */
 };
 
 /** Prepared seed; obtain by constructor and treat its contents as read-only. */
