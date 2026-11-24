@@ -198,7 +198,7 @@ dstr_n_ (char const *const src,
 	struct dstr ret = DSTR_INIT;
 
 	if (len < sizeof ret) {
-		(void)memcpy(&ret.sso.str[0], src, len);
+		(void)memcpy(&ret.str[0], src, len);
 		ret.sso.meta -= (unsigned char)len;
 		return ret;
 	}
@@ -277,7 +277,7 @@ dstr (char const *const str)
   __builtin_choose_expr( \
     sizeof (typeof(x)) < sizeof (struct dstr), \
     __extension__ (struct dstr){ .sso = { \
-      .str  = dstr_fit_(x, sizeof (struct dstr){0}.sso.str), \
+      .str  = dstr_fit_(x, sizeof ((struct dstr *)0)->sso.str), \
       .meta = (unsigned char)(sizeof (struct dstr) - \
                               sizeof (typeof(x))) } }, \
     __builtin_choose_expr( \
@@ -466,7 +466,7 @@ dstr_get (struct dstr const *const ds)
 {
 	if (ds) {
 		if (dstr_is_sso(ds))
-			return &ds->sso.str[0];
+			return &ds->str[0];
 		if (dstr_is_ptr(ds))
 			return (char const *)ds->mem.ptr[0];
 	}
@@ -507,7 +507,7 @@ dstr_get_write_ptr (struct dstr *const ds)
 {
 	if (ds) {
 		if (dstr_is_sso(ds))
-			return &ds->sso.str[
+			return &ds->str[
 				dstr_sso_len(ds)
 			];
 		if (dstr_is_ptr(ds) && ds->mem.ptr[0])
@@ -766,7 +766,7 @@ dstr_erase (struct dstr *const ds,
 	 * the old terminator */
 	size_t const end = info.length - n;
 	char *const str = info.state == DSTR_IS_PTR ?  ds->mem.ptr[0]
-	                                            : &ds->sso.str[0];
+	                                            : &ds->str[0];
 	(void)memmove(&str[pos], &str[pos + n], end - pos);
 	(void)memset(&str[end], 0, n);
 
