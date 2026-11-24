@@ -43,6 +43,15 @@ diag_clang(ignored "-Wpre-c23-compat")
 # endif // __clang_major__ >= 18
 #endif // __STDC_VERSION__ >= 202000L
 
+// The code passes no argument for the ... of a variadic macro, an extension
+// before C23. Every clang names the warning about it
+// -Wgnu-zero-variadic-macro-arguments, except clang 19 before C23, which
+// names it -Wc23-extensions only.
+diag_clang(ignored "-Wgnu-zero-variadic-macro-arguments")
+#if __STDC_VERSION__ < 202311L && clang_at_least_version(19) && clang_older_than_version(20)
+diag_clang(ignored "-Wc23-extensions")
+#endif // __clang_major__ == 19 before C23
+
 #define array_size(x) (sizeof (x) / sizeof (x)[0])
 #define container_of(ptr, T, member) \
         ((T *)(void *)((unsigned char *)(ptr) - offsetof(T, member)))
