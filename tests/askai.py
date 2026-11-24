@@ -19982,6 +19982,141 @@ def ce_records(text):
             for i in range(1, len(parts), 4)], last + "\n"
 
 
+def check_debruijn(binary, up, debruijn):
+    """The debruijn plugin (src/debruijn_plugin.c): the tool debruijn with
+    each action, against the examples of the library that it uses
+    (src/debruijn.h), and the arguments that it refuses."""
+    debruijn = os.path.realpath(debruijn)
+
+    def call(ai, **arguments):
+        status, _, body = ai.rpc("tools/call", {"name": "debruijn", "arguments": arguments})
+        assert status == 200 and "result" in body, (status, body)
+        return body["result"]
+
+    def ok(ai, **arguments):
+        result = call(ai, **arguments)
+        assert not result.get("isError"), (arguments, result)
+        return text_of(result)
+
+    def refused(ai, **arguments):
+        result = call(ai, **arguments)
+        assert result.get("isError"), (arguments, result)
+        return text_of(result)
+
+    rows = "order  mask   word\n    2  -      0x3\n    3  1      0x17\n" \
+        "    4  7      0x09af\n    5  127    0x04653adf\n" \
+        "    6  32767  0x0218a392cd3d5dbf\n"
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{os.path.realpath(d)}/askai.json"
+        with open(path, "w") as f:
+            json.dump(grouped({"url": up.url(), "plugins": [{"path": debruijn}]}), f)
+        os.chmod(path, 0o600)
+        with Askai(binary, "-c", path) as ai:
+            tools = ai.rpc("tools/list")[2]["result"]["tools"]
+            assert [t["name"] for t in tools] == ["ask_ai", "debruijn"], tools
+            schema = tools[1]["inputSchema"]
+            assert schema["properties"]["action"]["enum"] == \
+                ["expand", "collapse", "path", "address", "children", "windows"] and \
+                schema["required"] == ["action"] and \
+                schema["properties"]["offset"]["description"] == OFFSET_ABOUT, schema
+
+            # A child, and the parent of the child with the mask of the child.
+            assert ok(ai, action="expand", word="0x09af", order=4, mask=127) == \
+                "0x04653adf is the child of 0x09af (order 4) for the mask 127. Its order " \
+                "is 5.\n"
+            assert ok(ai, action="expand", word="04653adf", order=5, mask=0) \
+                .startswith("0x03f668bab7929c61 is the child of 0x04653adf (order 5)")
+            assert ok(ai, action="expand", word="0x3", order=2, mask=0).startswith("0x1d ")
+            assert ok(ai, action="collapse", word="0x0218a392cd3d5dbf", order=6) == \
+                "0x04653adf is the parent of 0x0218a392cd3d5dbf (order 6). Its order is 5, " \
+                "and the mask of the child is 32767.\n"
+            # The words of an address, and the address of a word.
+            assert ok(ai, action="path", address="1.7.127.32767") == rows
+            assert ok(ai, action="path", address="1.7.0x7f.0x7fff") == rows
+            assert ok(ai, action="path", address="0.0") == \
+                "order  mask   word\n    2  -      0x3\n    3  0      0x1d\n" \
+                "    4  0      0x0f65\n"
+            assert ok(ai, action="address", word="0x0218a392cd3d5dbf", order=6) == \
+                "address: 1.7.127.32767\n" + rows
+            assert ok(ai, action="address", word="3", order=2) == \
+                "address: (the root has no address)\norder  mask   word\n" \
+                "    2  -      0x3\n"
+            # The children of a word, a range of them, and the next range.
+            assert ok(ai, action="children", word="0x3", order=2) == \
+                "mask   child (order 3)\n0      0x1d\n1      0x17\nListed 2 of 2 children.\n"
+            text = ok(ai, action="children", word="0x17", order=3, first=6, limit=5)
+            assert text == "mask   child (order 4)\n6      0x0d2f\n7      0x09af\n" \
+                "Listed 2 of 8 children, from mask 6.\n", text
+            text = ok(ai, action="children", word="0x04653adf", order=5, first=32766, limit=1)
+            assert text.endswith("Listed 1 of 32768 children, from mask 32766. For the next, "
+                                 "call again with first: 32767.\n"), text
+            whole = ok(ai, action="children", word="0x09af", order=4, limit=128)
+            lines = whole.split("\n")
+            assert len(lines) == 131 and lines[128] == "127    0x04653adf" and \
+                lines[129] == "Listed 128 of 128 children.", lines[-4:]
+            assert ok(ai, action="children", word="0x09af", order=4, limit=128,
+                      offset=100) == whole[100:]
+            assert ok(ai, action="children", word="0x09af", order=4, first=128) == \
+                "mask   child (order 5)\nListed 0 of 128 children.\n"
+            # Each value of order bits is in the word once.
+            text = ok(ai, action="windows", word="0x17", order=3)
+            assert text == "0x17 (order 3), most significant bit first:\n00010111\n" \
+                "place  bits  value\n    0  000       0\n    1  001       1\n" \
+                "    2  010       2\n    3  101       5\n    4  011       3\n" \
+                "    5  111       7\n    6  110       6\n    7  100       4\n", text
+            text = ok(ai, action="windows", word="0x0218a392cd3d5dbf", order=6)
+            values = [int(line.split()[2]) for line in text.split("\n")[3:67]]
+            assert sorted(values) == list(range(64)), values
+
+            no_word = "0x1e is no de Bruijn word of order 3 that starts with 3 zero bits. " \
+                "Such a word has 8 bits, and every value of 3 bits is in the word once."
+            for arguments, text in (
+                    ({"action": "expand", "word": "0x1e", "order": 3, "mask": 0}, no_word),
+                    ({"action": "collapse", "word": "0x1e", "order": 3}, no_word),
+                    ({"action": "address", "word": "0x1e", "order": 3}, no_word),
+                    ({"action": "children", "word": "0x1e", "order": 3}, no_word),
+                    ({"action": "windows", "word": "0x1e", "order": 3}, no_word),
+                    ({"action": "grow"}, "The action argument must be one of: expand, "
+                     "collapse, path, address, children, windows."),
+                    ({"action": "expand", "word": "0x17", "order": 3},
+                     "expand needs the argument mask."),
+                    ({"action": "collapse", "word": "0x17", "order": 3, "mask": 1},
+                     "collapse takes no argument mask."),
+                    ({"action": "path", "address": "1", "word": "0x17"},
+                     "path takes no argument word."),
+                    ({"action": "windows", "word": "0x17", "order": 3, "first": 1},
+                     "windows takes no argument first."),
+                    ({"action": "expand", "word": "0x17", "order": 6, "mask": 0},
+                     "The order argument must be a whole number from 2 to 5 for expand."),
+                    ({"action": "collapse", "word": "0x3", "order": 2},
+                     "The order argument must be a whole number from 3 to 6 for collapse."),
+                    ({"action": "expand", "word": "0x17", "order": 3, "mask": 8},
+                     "The mask argument must be a whole number from 0 to 7 for order 3."),
+                    ({"action": "expand", "word": "xyz", "order": 3, "mask": 0},
+                     "The word argument must be a string of 1 to 16 hexadecimal digits, "
+                     "with or without 0x."),
+                    ({"action": "expand", "word": "0x" + "1" * 17, "order": 3, "mask": 0},
+                     "The word argument must be a string of 1 to 16 hexadecimal digits, "
+                     "with or without 0x."),
+                    ({"action": "children", "word": "0x17", "order": 3, "limit": 0},
+                     "first must be a whole number from 0, and limit a whole number from "
+                     "1 to 32768."),
+                    ({"action": "path", "address": "1.8"},
+                     "The address argument must be 1 to 4 masks with a dot between two, "
+                     "such as 1.7.127.32767. The masks are at most 1, 7, 127 and 32767, in "
+                     "this order."),
+                    ({"action": "path", "address": "1.7.127.32767.0"}, None),
+                    ({"action": "path", "address": "1..7"}, None),
+                    ({"action": "path", "address": ""}, None),
+                    ({"action": "expand", "word": "0x17", "order": 3, "mask": 0, "x": 1},
+                     "x is not an argument of the tool.")):
+                got = refused(ai, **arguments)
+                assert got == text if text else got.startswith("The address argument"), \
+                    (arguments, got)
+    print("debruijn: the tool listed; expand, collapse, path, address, children with first "
+          "and limit, windows; refused words, orders, masks, addresses and arguments: PASS")
+
+
 def check_godbolt(binary, up, godbolt):
     """The godbolt plugin (src/godbolt.c) against a local mock of Compiler
     Explorer (MockCE).
@@ -20868,6 +21003,8 @@ def main():
         os.path.join(os.path.dirname(binary), "test_plugin.so")
     godbolt = sys.argv[3] if len(sys.argv) > 3 else \
         os.path.join(os.path.dirname(binary), "godbolt.so")
+    debruijn = sys.argv[4] if len(sys.argv) > 4 else \
+        os.path.join(os.path.dirname(binary), "debruijn.so")
     up = Upstream()
     try:
         for check in (check_legacy_session, check_protocols, check_chatgpt_configuration, check_chatgpt, check_auth_command, check_upstream_errors,
@@ -20901,6 +21038,7 @@ def main():
                       lambda binary, up: check_misuse(binary, up, plugin),
                       lambda binary, up: check_web(binary, up, plugin),
                       lambda binary, up: check_godbolt(binary, up, godbolt),
+                      lambda binary, up: check_debruijn(binary, up, debruijn),
                       check_classes,
                       check_shutdown,
                       check_watchdog, check_stalled_stderr):

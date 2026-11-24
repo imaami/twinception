@@ -2196,6 +2196,38 @@ the same output. `askai` does not store a failed response, so a call with
 `offset` sends a failed request again, and the record of that compilation
 can differ. The `keep` of a request for a short link is a day.
 
+### The debruijn plugin
+
+`debruijn.so` adds one tool, `debruijn`, that explores the binary de Bruijn
+words of the orders 2 to 6. `make debruijn.so` builds it from
+`src/debruijn_plugin.c` and the construction in `src/debruijn.c`. The plugin
+has no options:
+
+```json
+{ "path": "/usr/libexec/askai/debruijn.so" }
+```
+
+A word of order n has 2^n bits, and every value of n bits is in the word
+once, also across the end of the word to its start. The words of the tool
+start with n zero bits and are written as hexadecimal digits, such as
+`0x09af` for order 4. The word `0x3` of order 2 is the root of a tree. A
+word of order n from 2 to 5 has one child of order n+1 for each mask: 2, 8,
+128 and 32768 children for the orders 2, 3, 4 and 5. A word of order 3 to 6
+is the child of exactly one word. The address of a word is the masks on the
+way from the root, such as `1.7.127.32767`.
+
+| Action | Arguments | Output |
+| ------ | --------- | ------ |
+| `expand` | `word`, `order` 2 to 5, `mask` | the child of the word for the mask |
+| `collapse` | `word`, `order` 3 to 6 | the parent of the word, and the mask of the word in the parent |
+| `path` | `address` | the words on the way from the root, with the order and the mask of each |
+| `address` | `word`, `order` 2 to 6 | the address of the word, and the same rows as `path` |
+| `children` | `word`, `order` 2 to 5, `first`, `limit` | the children from the mask `first` on, 64 unless `limit` says otherwise, and the `first` of the next children |
+| `windows` | `word`, `order` 2 to 6 | the bits of the word, and for each place in the word the value of the `order` bits that start there |
+
+An action refuses an argument that it does not use, and a word that is no
+de Bruijn word of its order.
+
 ## Limits
 
 `askai` bounds what each client may send and hold, so that slow, oversized or

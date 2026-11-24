@@ -24,6 +24,7 @@ SRC = """
     askai clean-askai purge-askai
     askai-cli clean-askai-cli purge-askai-cli
     askai-open-browser clean-askai-open-browser purge-askai-open-browser
+    debruijn.so clean-debruijn.so purge-debruijn.so
     godbolt.so clean-godbolt.so purge-godbolt.so
     test_plugin.so clean-test_plugin.so purge-test_plugin.so
     compile_commands.json clean-compile_commands.json
