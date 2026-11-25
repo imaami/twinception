@@ -121,8 +121,12 @@ tree_lift (struct debruijn_generator const *src,
 	unsigned occurrences[MAX_VERTICES] = { [0] = 1 };
 
 	for (unsigned vertex = 1; vertex < vertices; ++vertex) {
+		/* first is the out-edge that ends in 1 for a clear choice bit
+		 * and the one that ends in 0 for a set bit, so that the masks 0
+		 * from the root give the numerically first word of each order
+		 * and the largest masks the last. */
 		unsigned choice = (choices >> (vertex - 1)) & 1U;
-		unsigned first = (vertex << 1) | choice;
+		unsigned first = (vertex << 1) | (choice ^ 1U);
 		unsigned last = src->edge[vertex];
 
 		queues[vertex] = (struct queue){ .edge = { first, last } };
@@ -327,7 +331,8 @@ debruijn_collapse (uint64_t *seed,
 	unsigned recovered = 0;
 
 	for (unsigned vertex = 1; vertex < lower_vertices; ++vertex) {
-		recovered |= (queues[vertex].edge[0] & 1U) << (vertex - 1);
+		/* The bit is set if the first edge ends in 0 (tree_lift()). */
+		recovered |= (~queues[vertex].edge[0] & 1U) << (vertex - 1);
 		output.edge[vertex] = queues[vertex].edge[1];
 	}
 

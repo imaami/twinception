@@ -2216,7 +2216,10 @@ start with n zero bits and are written as hexadecimal digits, such as
 word of order n from 2 to 5 has one child of order n+1 for each mask: 2, 8,
 128 and 32768 children for the orders 2, 3, 4 and 5. A word of order 3 to 6
 is the child of exactly one word. The address of a word is the masks on the
-way from the root, such as `1.7.127.32767`.
+way from the root, such as `1.7.127.32767`. The masks 0 lead to the
+numerically first word of each order and the largest masks to the last: the
+words of the address `0.0.0.0` are `17.09af.04653adf.0218a392cd3d5dbf`, and
+those of `1.7.127.32767` are `1d.0f65.07dcd629.03f79d71b4cb0a89`.
 
 An action also takes a rotation of a word, such as `0x9af0` for `0x09af`,
 and rotates it to start with its n zero bits before it reads it; `windows`
@@ -2230,9 +2233,9 @@ The output of an action is its result alone, as the output of a calculator:
 
 | Action | Arguments | Output |
 | ------ | --------- | ------ |
-| `expand` | `word` of order 2 to 5, `mask` | the child, such as `0x04653adf` |
-| `collapse` | `word` of order 3 to 6 | the parent and the mask of the word in the parent, such as `0x09af 127` |
-| `path` | `address` | the words of the address without the root, such as `17.09af.04653adf.0218a392cd3d5dbf` |
+| `expand` | `word` of order 2 to 5, `mask` | the child, such as `0x07dcd629` |
+| `collapse` | `word` of order 3 to 6 | the parent and the mask of the word in the parent, such as `0x0f65 127` |
+| `path` | `address` | the words of the address without the root, such as `1d.0f65.07dcd629.03f79d71b4cb0a89` |
 | `address` | `word` of order 3 to 6 | the address, such as `1.7.127.32767` |
 | `children` | `word` of order 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
 | `windows` | `word` of order 2 to 6 | for each place from the most significant bit, the value of the n bits that start there for order n, one on a line |
@@ -2241,7 +2244,7 @@ The output of an action is its result alone, as the output of a calculator:
 | `ordered` | `order` 2 to 6, optional `first` and `limit` | consecutive `unrank` rows from rank `first` (default 0), at most `limit` (1 to 256, default 64) |
 
 For example, `unrank` with `order:6, rank:1234567` returns
-`0x021d16a7b37e4ae3 1.6.27.22219`; `rank` with `address:"1.6.27.22219"`
+`0x021d16a7b37e4ae3 0.1.100.10548`; `rank` with `address:"0.1.100.10548"`
 returns `1234567`. The orders 2 through 6 contain 1, 2, 16, 2048 and
 67108864 words respectively. `unrank` refuses a rank outside its order;
 `ordered` stops at the end and returns no rows for `first` past the last rank.

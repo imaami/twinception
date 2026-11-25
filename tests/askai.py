@@ -20031,36 +20031,37 @@ def check_debruijn(binary, up, debruijn):
 
             # The output of an action is its result alone. A child, and the
             # parent of the child with the mask of the child.
-            assert ok(ai, action="expand", word="0x09af", order=4, mask=127) == "0x04653adf\n"
-            assert ok(ai, action="expand", word="04653adf", order=5, mask=0) == \
+            assert ok(ai, action="expand", word="0x0f65", order=4, mask=127) == "0x07dcd629\n"
+            assert ok(ai, action="expand", word="04653adf", order=5, mask=32767) == \
                 "0x03f668bab7929c61\n"
-            assert ok(ai, action="expand", word="0x3", order=2, mask=0) == "0x1d\n"
-            assert ok(ai, action="collapse", word="0x0218a392cd3d5dbf", order=6) == \
-                "0x04653adf 32767\n"
-            assert ok(ai, action="collapse", word="0x17", order=3) == "0x3 1\n"
-            # The words of an address, and the address of a word, as the
-            # owner's debruijn program prints them.
-            chain = "17.09af.04653adf.0218a392cd3d5dbf\n"
+            assert ok(ai, action="expand", word="0x3", order=2, mask=0) == "0x17\n"
+            assert ok(ai, action="collapse", word="0x03f79d71b4cb0a89", order=6) == \
+                "0x07dcd629 32767\n"
+            assert ok(ai, action="collapse", word="0x1d", order=3) == "0x3 1\n"
+            # The words of an address, and the address of a word. The masks 0
+            # lead to the numerically first word of each order, and the
+            # largest masks to the last.
+            chain = "1d.0f65.07dcd629.03f79d71b4cb0a89\n"
             assert ok(ai, action="path", address="1.7.127.32767") == chain
             assert ok(ai, action="path", address="1.7.0x7f.0x7fff") == chain
             assert ok(ai, action="path", address="0.0.0.0") == \
-                "1d.0f65.07dcd629.03f79d71b4cb0a89\n"
-            assert ok(ai, action="path", address="0.0") == "1d.0f65\n"
-            assert ok(ai, action="address", word="0x0218a392cd3d5dbf", order=6) == \
+                "17.09af.04653adf.0218a392cd3d5dbf\n"
+            assert ok(ai, action="path", address="0.0") == "17.09af\n"
+            assert ok(ai, action="address", word="0x03f79d71b4cb0a89", order=6) == \
                 "1.7.127.32767\n"
-            assert ok(ai, action="address", word="0x1d", order=3) == "0\n"
+            assert ok(ai, action="address", word="0x17", order=3) == "0\n"
             # The children of a word, one on a line, from the mask first on.
-            assert ok(ai, action="children", word="0x3", order=2) == "0x1d\n0x17\n"
+            assert ok(ai, action="children", word="0x3", order=2) == "0x17\n0x1d\n"
             assert ok(ai, action="children", word="0x17", order=3) == \
-                "0x0f59\n0x0a7b\n0x0f4b\n0x09eb\n0x0d79\n0x0a6f\n0x0d2f\n0x09af\n"
+                "0x09af\n0x0d2f\n0x0a6f\n0x0d79\n0x09eb\n0x0f4b\n0x0a7b\n0x0f59\n"
             assert ok(ai, action="children", word="0x17", order=3, first=6, limit=5) == \
-                "0x0d2f\n0x09af\n"
+                "0x0a7b\n0x0f59\n"
             assert ok(ai, action="children", word="0x04653adf", order=5, first=32767) == \
-                "0x0218a392cd3d5dbf\n"
+                "0x03f668bab7929c61\n"
             whole = ok(ai, action="children", word="0x09af", order=4, limit=128)
             lines = whole.split("\n")
-            assert len(lines) == 129 and lines[127] == "0x04653adf" and \
-                len(set(lines[:128])) == 128, lines[-3:]
+            assert len(lines) == 129 and lines[0] == "0x04653adf" and \
+                len(set(lines[:128])) == 128, lines[:3]
             assert ok(ai, action="children", word="0x09af", order=4, limit=128,
                       offset=100) == whole[100:]
             assert ok(ai, action="children", word="0x09af", order=4, first=128) == ""
@@ -20078,22 +20079,22 @@ def check_debruijn(binary, up, debruijn):
                 return [f"0x{(value << r | value >> (bits - r)) & ((1 << bits) - 1):x}"
                         for r in range(bits)]
 
-            assert ok(ai, action="expand", word="0x09af", mask=127) == "0x04653adf\n"
-            assert ok(ai, action="children", word="3") == "0x1d\n0x17\n"
+            assert ok(ai, action="expand", word="0x0f65", mask=127) == "0x07dcd629\n"
+            assert ok(ai, action="children", word="3") == "0x17\n0x1d\n"
             assert ok(ai, action="rank", word="0x021d16a7b37e4ae3") == "1234567\n"
-            for x in rotations("0218a392cd3d5dbf", 6):
-                assert ok(ai, action="collapse", word=x) == "0x04653adf 32767\n", x
+            for x in rotations("03f79d71b4cb0a89", 6):
+                assert ok(ai, action="collapse", word=x) == "0x07dcd629 32767\n", x
                 assert ok(ai, action="address", word=x, order=6) == "1.7.127.32767\n", x
-            for x in rotations("09af", 4):
-                assert ok(ai, action="expand", word=x, mask=127) == "0x04653adf\n", x
-                assert ok(ai, action="collapse", word=x, order=4) == "0x17 7\n", x
+            for x in rotations("0f65", 4):
+                assert ok(ai, action="expand", word=x, mask=127) == "0x07dcd629\n", x
+                assert ok(ai, action="collapse", word=x, order=4) == "0x1d 7\n", x
             base = "0 1 2 5 3 7 6 4".split()
             for r, x in enumerate(rotations("17", 3)):
-                assert ok(ai, action="children", word=x, first=6) == "0x0d2f\n0x09af\n", x
+                assert ok(ai, action="children", word=x, first=6) == "0x0a7b\n0x0f59\n", x
                 assert ok(ai, action="rank", word=x) == "0\n", x
                 assert ok(ai, action="windows", word=x).split() == base[r:] + base[:r], x
             for x in rotations("3", 2):
-                assert ok(ai, action="expand", word=x, mask=1) == "0x17\n", x
+                assert ok(ai, action="expand", word=x, mask=1) == "0x1d\n", x
 
             # Independent order-4 oracle: old mask-order traversal, sorted by word.
             pairs = []
@@ -20116,17 +20117,17 @@ def check_debruijn(binary, up, debruijn):
 
             # A page crosses parent boundaries. Large seeks need no table or scan.
             assert ok(ai, action="ordered", order=6, limit=3) == (
-                "0x0218a392cd3d5dbf 1.7.127.32767\n"
-                "0x0218a392cd3dbabf 1.7.111.32767\n"
-                "0x0218a392cd3f576f 1.7.127.16383\n")
-            for k, w, a in ((1234567, "0x021d16a7b37e4ae3", "1.6.27.22219"),
-                            (33554432, "0x0308a4d5971dbcfd", "0.7.127.32766"),
-                            (67108863, "0x03f79d71b4cb0a89", "0.0.0.0")):
+                "0x0218a392cd3d5dbf 0.0.0.0\n"
+                "0x0218a392cd3dbabf 0.0.16.0\n"
+                "0x0218a392cd3f576f 0.0.0.16384\n")
+            for k, w, a in ((1234567, "0x021d16a7b37e4ae3", "0.1.100.10548"),
+                            (33554432, "0x0308a4d5971dbcfd", "1.0.0.1"),
+                            (67108863, "0x03f79d71b4cb0a89", "1.7.127.32767")):
                 assert ok(ai, action="unrank", order=6, rank=k) == f"{w} {a}\n"
                 assert ok(ai, action="rank", order=6, word=w) == f"{k}\n"
                 assert ok(ai, action="rank", address=a) == f"{k}\n"
             assert ok(ai, action="ordered", order=6, first=67108862, limit=256) == (
-                "0x03f79d71b4cb0915 0.0.0.2\n0x03f79d71b4cb0a89 0.0.0.0\n")
+                "0x03f79d71b4cb0915 1.7.127.32765\n0x03f79d71b4cb0a89 1.7.127.32767\n")
             assert ok(ai, action="ordered", order=6, first=4294967295) == ""
 
             no_word = "0x1e is no word of order 3."

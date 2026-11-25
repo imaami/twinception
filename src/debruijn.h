@@ -63,6 +63,8 @@ debruijn_normalize (uint64_t *word,
  * order must be 2..5. There are 2^(order - 1) - 1 independent choice bits;
  * bit (v - 1) belongs to nonroot vertex v. Hence choices is 0..127 for
  * order 4, or 0..32767 for order 5. Every permitted choice succeeds.
+ * Expanding DEBRUIJN_ROOT_SEED with the mask 0 at each order gives the
+ * numerically first word of each order, and with the largest mask the last.
  *
  * Return 0 on success, EFAULT for a null output pointer, or EINVAL for an
  * invalid seed, order, or choice mask. Leave *word unchanged on failure.

@@ -8,16 +8,17 @@
  * each mask from 0 to 2^(2^(n-1)-1) - 1 (debruijn_expand()), and a word of
  * order 3 to 6 is the child of exactly one word (debruijn_collapse()). The
  * address of a word is the masks on the way from the root to the word, such
- * as 1.7.127.32767.
+ * as 1.7.127.32767. The masks 0 lead to the numerically first word of each
+ * order, and the largest masks to the last.
  *
  * The output of an action is its result and nothing else, as the output of
  * a calculator:
  *
- * - expand: the child of a word for a mask, such as 0x04653adf.
+ * - expand: the child of a word for a mask, such as 0x07dcd629.
  * - collapse: the parent of a word and the mask of the word in the parent,
- *   such as 0x09af 127.
+ *   such as 0x0f65 127.
  * - path: the words on the way from the root for an address, without the
- *   root, as 17.09af.04653adf.0218a392cd3d5dbf.
+ *   root, as 1d.0f65.07dcd629.03f79d71b4cb0a89.
  * - address: the address of a word, such as 1.7.127.32767.
  * - children: the children of a word from the mask first on, at most limit
  *   of them, one on a line.
@@ -446,14 +447,15 @@ debruijn_plugin_definition (void const *service)
 		"windows reads the rotation as given. The word 0x3 of order 2 is the root of a "
 		"tree. A word of order n from 2 to 5 has a child of order n+1 for each mask: 2, "
 		"8, 128 and 32768 children for the orders 2, 3, 4 and 5. The address of a word "
-		"is the masks on the way from the root, such as 1.7.127.32767. The output is "
-		"the result alone.\","
+		"is the masks on the way from the root, such as 1.7.127.32767. The masks 0 lead "
+		"to the numerically first word of each order and the largest masks to the last. "
+		"The output is the result alone.\","
 		"\"inputSchema\":{\"type\":\"object\",\"properties\":{"
 		"\"action\":{\"type\":\"string\",\"enum\":["
 		XL_JOIN(",", ",", DEBRUIJN_PLUGIN_ACTION_LIST(XL_JSON)) "],\"description\":"
 		"\"expand: the child of word for mask. collapse: the parent of word and the mask "
-		"of word in the parent, as 0x09af 127. path: the words of address without the "
-		"root, as 17.09af.04653adf.0218a392cd3d5dbf. address: the address of word. "
+		"of word in the parent, as 0x0f65 127. path: the words of address without the "
+		"root, as 1d.0f65.07dcd629.03f79d71b4cb0a89. address: the address of word. "
 		"children: the children of word from the mask first on, at most limit, one on a "
 		"line. windows: for each place in word from the most significant bit, the value "
 		"of the order bits that start there, one on a line. rank: the zero-based position "
