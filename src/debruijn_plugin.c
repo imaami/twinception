@@ -237,11 +237,9 @@ debruijn_plugin_address (struct cstr_view  text,
 static unsigned
 debruijn_plugin_order (uint64_t word)
 {
-	unsigned const width = stdc_bit_width(word);
-	unsigned order = DEBRUIJN_MIN_ORDER;
-	while (width > 1U << order)
-		++order;
-	return width + order >= 1U << order ? order : 0;
+	unsigned const w = stdc_bit_width(word);
+	return (w > 32U) + (w > 16U) + (w > 8U)
+	     + (w >  4U) + (w >  2U) + (w > 1U);
 }
 
 /* Refuses a word that is no rotation of a word of the order @p order, or of
@@ -369,7 +367,9 @@ debruijn_plugin_locate (struct debruijn_plugin_out *out,
 }
 
 static int
-debruijn_plugin_emit (uint64_t word, unsigned order, void *arg)
+debruijn_plugin_emit (uint64_t  word,
+                      unsigned  order,
+                      void     *arg)
 {
 	struct debruijn_plugin_out *out = arg;
 	debruijn_plugin_line(out, "0x%0*" PRIx64 "%s", debruijn_plugin_digits(order), word,

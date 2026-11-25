@@ -36,7 +36,8 @@ debruijn_word_count (unsigned order)
  * is positive by the same theorem (contract the outside vertices to zero).
  */
 static unsigned
-debruijn_completions (unsigned vertices, struct exits exits)
+debruijn_completions (unsigned     vertices,
+                      struct exits exits)
 {
 	int64_t a[VMAX - 1][VMAX - 1] = {};
 	unsigned const m = vertices - 1;
@@ -64,16 +65,20 @@ debruijn_completions (unsigned vertices, struct exits exits)
 }
 
 int
-debruijn_rank (unsigned *rank, uint64_t word, unsigned order)
+debruijn_rank (unsigned *rank,
+               uint64_t  word,
+               unsigned  order)
 {
 	if (!rank)
 		return EFAULT;
 	if (!debruijn_valid(word, order))
 		return EINVAL;
-	unsigned vertices = 1U << (order - 1), length = 2 * vertices;
+	unsigned length = 1U << order;
+	unsigned vertices = length >> 1U;
 	struct exits exits = { { UINT32_MAX, UINT32_MAX } };
 	uint64_t tour = word << (order - 1);
-	unsigned k = 0, v = 0;
+	unsigned k = 0;
+	unsigned v = 0;
 	for (unsigned i = 0; i < length; ++i, tour <<= 1) {
 		unsigned b = (unsigned)(tour >> (length - 1)) & 1U;
 		uint32_t bit = UINT32_C(1) << v;
@@ -85,7 +90,7 @@ debruijn_rank (unsigned *rank, uint64_t word, unsigned order)
 			}
 			exits.allow[b] &= ~bit;
 		}
-		v = (2 * v + b) & (vertices - 1);
+		v = ((v << 1U) + b) & (vertices - 1);
 	}
 	*rank = k;
 	return 0;
@@ -96,7 +101,10 @@ debruijn_rank (unsigned *rank, uint64_t word, unsigned order)
  * use the new suffix. No determinants on the sequential part of a page.
  */
 static bool
-debruijn_feasible (unsigned mask, struct exits exits, unsigned v, unsigned u)
+debruijn_feasible (unsigned     mask,
+                   struct exits exits,
+                   unsigned     v,
+                   unsigned     u)
 {
 	uint32_t seen = UINT32_C(1) << v;
 	uint32_t todo = (UINT32_C(1) << u) & ~seen;
@@ -117,15 +125,21 @@ debruijn_feasible (unsigned mask, struct exits exits, unsigned v, unsigned u)
 struct page {
 	debruijn_emit_fn *emit;
 	void             *arg;
-	unsigned          vertices, order, skip, left;
+	unsigned          vertices;
+	unsigned          order;
+	unsigned          skip;
+	unsigned          left;
 };
 
 /* Recurse only on a new last-exit choice: depth <= vertices - 1. */
 static int
-debruijn_visit (struct page *p, struct exits exits, uint64_t bits, unsigned i)
+debruijn_visit (struct page  *p,
+                struct exits  exits,
+                uint64_t      bits,
+                unsigned      i)
 {
-	unsigned mask = p->vertices - 1;
-	for (; i < 2 * p->vertices; ++i) {
+	unsigned mask = p->vertices - 1U;
+	for (; i < p->vertices << 1U; ++i) {
 		unsigned v = (unsigned)bits & mask;
 		uint32_t bit = UINT32_C(1) << v;
 		if (v && (exits.allow[0] & exits.allow[1] & bit)) {
@@ -138,7 +152,7 @@ debruijn_visit (struct page *p, struct exits exits, uint64_t bits, unsigned i)
 						p->skip -= z;
 						continue;
 					}
-				} else if (!debruijn_feasible(mask, child, v, (2*v + (1-b)) & mask)) {
+				} else if (!debruijn_feasible(mask, child, v, ((v << 1U) + (1-b)) & mask)) {
 					continue;
 				}
 				int e = debruijn_visit(p, child, bits << 1 | b, i + 1);
@@ -155,8 +169,11 @@ debruijn_visit (struct page *p, struct exits exits, uint64_t bits, unsigned i)
 }
 
 int
-debruijn_ordered (unsigned order, unsigned first, unsigned limit,
-                  debruijn_emit_fn *emit, void *arg)
+debruijn_ordered (unsigned          order,
+                  unsigned          first,
+                  unsigned          limit,
+                  debruijn_emit_fn *emit,
+                  void             *arg)
 {
 	if (!emit)
 		return EFAULT;

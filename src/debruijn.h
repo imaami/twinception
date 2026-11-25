@@ -29,7 +29,7 @@ debruijn_generator (uint64_t seed,
  * an out-of-range mask. Leave *word unchanged on failure; do not change errno.
  */
 extern int
-debruijn_generate (uint64_t                         *word,
+debruijn_generate (uint64_t                        *word,
                    struct debruijn_generator const *src,
                    unsigned                         choices);
 
@@ -96,7 +96,9 @@ debruijn_word_count (unsigned order);
  * output unchanged on failure.
  */
 extern int
-debruijn_rank (unsigned *rank, uint64_t word, unsigned order);
+debruijn_rank (unsigned *rank,
+               uint64_t  word,
+               unsigned  order);
 
 typedef int debruijn_emit_fn (uint64_t word, unsigned order, void *arg);
 
@@ -106,7 +108,10 @@ typedef int debruijn_emit_fn (uint64_t word, unsigned order, void *arg);
  * error. Return EINVAL for invalid order or EFAULT for a null callback.
  */
 extern int
-debruijn_ordered (unsigned order, unsigned first, unsigned limit,
-                  debruijn_emit_fn *emit, void *arg);
+debruijn_ordered (unsigned          order,
+                  unsigned          first,
+                  unsigned          limit,
+                  debruijn_emit_fn *emit,
+                  void             *arg);
 
 #endif /* DEBRUIJN_H_ */

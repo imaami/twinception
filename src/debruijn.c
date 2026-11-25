@@ -55,9 +55,6 @@ static struct tree
 tree (uint64_t word,
       unsigned order)
 {
-	if (order < DEBRUIJN_MIN_ORDER || order > DEBRUIJN_MAX_ORDER)
-		return (struct tree){ .error = EINVAL };
-
 	unsigned length = 1U << order;
 	uint64_t mask = UINT64_MAX >> (64 - length);
 
