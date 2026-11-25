@@ -28,6 +28,11 @@
  * - unrank: the word and address at that zero-based rank.
  * - ordered: rows as for unrank, from rank first on, at most limit rows.
  *
+ * A word, and each mask of an address, is a number as strtoll() and
+ * strtoull() read it with the base 0 (debruijn_plugin_number()):
+ * hexadecimal after 0x, binary after 0b, octal after 0, else decimal. The
+ * words in the output are hexadecimal.
+ *
  * An action takes a word in any rotation, and rotates it to start with its
  * n zero bits (debruijn_normalize()) before the library reads it. windows
  * reads the word as it is given. Without the argument order, the bit width
@@ -42,7 +47,7 @@
 #include <inttypes.h>
 #include <stdbit.h>
 #include <stdint.h>
-#include <string.h>
+#include <stdlib.h>
 
 #include <json-c/json.h>
 
@@ -177,30 +182,42 @@ debruijn_plugin_masks (unsigned order)
 	return (1U << ((1U << (order - 1U)) - 1U)) - 1U;
 }
 
-/* Reads the hexadecimal digits @p text, with or without 0x before them,
- * into @p *word. Returns 0, or EINVAL if @p text is not 1 to 16 digits.
+/* Returns the number @p text as strtoll() reads it with the base 0, or as
+ * strtoull() reads it if it is over INT64_MAX: hexadecimal after 0x, binary
+ * after 0b, octal after 0, else decimal. A negative number gives its two's
+ * complement. Stores 0 in @p *e, or ENODATA for an empty @p text, ERANGE for
+ * a number that 64 bits cannot hold, or EINVAL if @p text is not one number
+ * from its start to its end. strtoll() reads up to the first byte that
+ * cannot be in a number, which can be after @p text: the 0 that json-c
+ * writes after a string, or the dot after a mask. A number that goes on
+ * after @p text is refused.
  */
-static int
-debruijn_plugin_hex (struct cstr_view  text,
-                     uint64_t         *word)
+static uint64_t
+debruijn_plugin_number (struct cstr_view  text,
+                        int              *e)
 {
-	if (cstr_view_starts(text, CSTR_VIEW("0x")) || cstr_view_starts(text, CSTR_VIEW("0X")))
-		text = cstr_view_slice(text, 2, SIZE_MAX);
-	if (!text.len || text.len > 16)
-		return EINVAL;
-	uint64_t value = 0;
-	for (size_t i = 0; i < text.len; ++i) {
-		unsigned const digit = util_hex_digit((unsigned char)text.data[i]);
-		if (digit > 15)
-			return EINVAL;
-		value = value << 4U | digit;
+	if (!text.len) {
+		*e = ENODATA;
+		return 0;
 	}
-	*word = value;
-	return 0;
+	char *end;
+	/* strtoll() and strtoull() report a range error only in errno. */
+	errno = 0;
+	int64_t const i64 = _Generic(i64, long: strtol, long long: strtoll)(text.data, &end, 0);
+	uint64_t u64 = (uint64_t)i64;
+	if (errno == ERANGE && i64 == INT64_MAX) {
+		errno = 0;
+		u64 = _Generic(u64, unsigned long: strtoul,
+		                    unsigned long long: strtoull)(text.data, &end, 0);
+	}
+	*e = errno;
+	if (!*e && end != text.data + text.len)
+		*e = EINVAL;
+	return u64;
 }
 
 /* Reads the address @p text, 1 to 4 masks with a dot between two, each a
- * decimal number or hexadecimal digits after 0x, into @p masks. Stores the
+ * number as debruijn_plugin_number() reads it, into @p masks. Stores the
  * number of masks in @p *n. Returns 0 or EINVAL.
  */
 static int
@@ -219,12 +236,9 @@ debruijn_plugin_address (struct cstr_view  text,
 			/* A dot ends no address. */
 			return EINVAL;
 		}
-		uint64_t value = 0;
-		bool const hex = cstr_view_starts(part, CSTR_VIEW("0x"));
-		if (hex ? debruijn_plugin_hex(part, &value)
-		        : !part.len || util_number(part.data, part.len, UINT32_MAX, &value))
-			return EINVAL;
-		if (value > UINT32_MAX)
+		int e;
+		uint64_t const value = debruijn_plugin_number(part, &e);
+		if (e || value > UINT32_MAX)
 			return EINVAL;
 		masks[(*n)++] = (unsigned)value;
 	}
@@ -443,9 +457,9 @@ debruijn_plugin_definition (void const *service)
 		"{\"name\":\"debruijn\",\"title\":\"De Bruijn words\","
 		"\"description\":\"Binary de Bruijn words of the orders 2 to 6. A word of "
 		"order n has 2^n bits and starts with n zero bits. Every value of n bits is in "
-		"the word once, also across the end of the word. A word is hexadecimal digits "
-		"at the width of its order, such as 0x09af for order 4. An action also takes a "
-		"rotation of a word, such as 0x9af0 for 0x09af, and reads it as the word; "
+		"the word once, also across the end of the word. Output words are hexadecimal "
+		"digits at the width of their order, such as 0x09af for order 4. An action also "
+		"takes a rotation of a word, such as 0x9af0 for 0x09af, and reads it as the word; "
 		"windows reads the rotation as given. The word 0x3 of order 2 is the root of a "
 		"tree. A word of order n from 2 to 5 has a child of order n+1 for each mask: 2, "
 		"8, 128 and 32768 children for the orders 2, 3, 4 and 5. The address of a word "
@@ -457,7 +471,8 @@ debruijn_plugin_definition (void const *service)
 		XL_JOIN(",", ",", DEBRUIJN_PLUGIN_ACTION_LIST(XL_JSON)) "],\"description\":"
 		"\"expand: the child of word for mask. collapse: the parent of word and the mask "
 		"of word in the parent, as 0x0f65 127. path: the words of address without the "
-		"root, as 1d.0f65.07dcd629.03f79d71b4cb0a89. address: the address of word. "
+		"root, in hexadecimal without 0x, as 1d.0f65.07dcd629.03f79d71b4cb0a89. "
+		"address: the address of word. "
 		"children: the children of word from the mask first on, at most limit, one on a "
 		"line. windows: for each place in word from the most significant bit, the value "
 		"of the order bits that start there, one on a line. rank: the zero-based position "
@@ -465,8 +480,9 @@ debruijn_plugin_definition (void const *service)
 		"in order, return word and decimal dotted address separated by a space (word "
 		"alone for order 2). ordered: the same rows in ascending order from rank first "
 		"on, at most limit rows.\"},"
-		"\"word\":{\"type\":\"string\",\"description\":\"A word as 1 to 16 hexadecimal "
-		"digits, with or without 0x.\"},"
+		"\"word\":{\"type\":\"string\",\"description\":\"A word as a number, as strtoull() "
+		"reads it with the base 0: hexadecimal after 0x, such as 0x09af, binary after "
+		"0b, octal after 0, else decimal.\"},"
 		"\"order\":{\"type\":\"integer\",\"minimum\":2,\"maximum\":6,\"description\":"
 		"\"The order of word: 2 to 5 for expand and children, 3 to 6 for collapse and "
 		"address, 2 to 6 for windows, rank, unrank and ordered. With word, order is "
@@ -475,7 +491,7 @@ debruijn_plugin_definition (void const *service)
 		"\"mask\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"For expand: "
 		"at most 1, 7, 127 and 32767 for the orders 2, 3, 4 and 5.\"},"
 		"\"address\":{\"type\":\"string\",\"description\":\"For path or rank: 1 to 4 masks "
-		"with a dot between two. A mask is decimal, or hexadecimal after 0x.\"},"
+		"with a dot between two. A mask is a number as for word, such as 127 or 0x7f.\"},"
 		"\"rank\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":67108863,\"description\":"
 		"\"For unrank: less than 1, 2, 16, 2048 or 67108864 for orders 2 through 6.\"},"
 		"\"first\":{\"type\":\"integer\",\"minimum\":0,\"default\":0,\"description\":"
@@ -556,10 +572,12 @@ debruijn_plugin_start (struct mcp_slot    *slot,
 		return;
 	}
 	if (needs & A(WORD)) {
-		if (debruijn_plugin_hex(jb_view(of[DEBRUIJN_PLUGIN_ARG_WORD]), &word)) {
-			mcp_slot_tell(slot, CSTR_VIEW("The word argument must be a string of 1 to 16 "
-			                              "hexadecimal digits, with or without 0x."),
-			              TOOL_FAILED);
+		int e;
+		word = debruijn_plugin_number(jb_view(of[DEBRUIJN_PLUGIN_ARG_WORD]), &e);
+		if (e) {
+			mcp_slot_tell(slot, CSTR_VIEW("The word argument must be a string of a 64-bit "
+			                              "number: hexadecimal after 0x, binary after 0b, "
+			                              "octal after 0, else decimal."), TOOL_FAILED);
 			return;
 		}
 		/* The library reads a word whose first order bits are zero: normal

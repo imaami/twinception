@@ -2211,8 +2211,8 @@ numeric ordering in `src/debruijn_order.c`. The plugin has no options:
 
 A word of order n has 2^n bits, and every value of n bits is in the word
 once, also across the end of the word to its start. The words of the tool
-start with n zero bits and are written as hexadecimal digits, such as
-`0x09af` for order 4. The word `0x3` of order 2 is the root of a tree. A
+start with n zero bits, and the output shows them as hexadecimal digits, such
+as `0x09af` for order 4. The word `0x3` of order 2 is the root of a tree. A
 word of order n from 2 to 5 has one child of order n+1 for each mask: 2, 8,
 128 and 32768 children for the orders 2, 3, 4 and 5. A word of order 3 to 6
 is the child of exactly one word. The address of a word is the masks on the
@@ -2220,6 +2220,11 @@ way from the root, such as `1.7.127.32767`. The masks 0 lead to the
 numerically first word of each order and the largest masks to the last: the
 words of the address `0.0.0.0` are `17.09af.04653adf.0218a392cd3d5dbf`, and
 those of `1.7.127.32767` are `1d.0f65.07dcd629.03f79d71b4cb0a89`.
+
+A word, and each mask of an address, is a number as `strtoull()` reads it
+with the base 0: hexadecimal after `0x`, binary after `0b`, octal after `0`,
+and else decimal. So `0x17`, `0b10111`, `027` and `23` are the same word,
+while `17` is `0x11`, and `09af` is not a number.
 
 An action also takes a rotation of a word, such as `0x9af0` for `0x09af`,
 and rotates it to start with its n zero bits before it reads it; `windows`
@@ -2235,7 +2240,7 @@ The output of an action is its result alone, as the output of a calculator:
 | ------ | --------- | ------ |
 | `expand` | `word` of order 2 to 5, `mask` | the child, such as `0x07dcd629` |
 | `collapse` | `word` of order 3 to 6 | the parent and the mask of the word in the parent, such as `0x0f65 127` |
-| `path` | `address` | the words of the address without the root, such as `1d.0f65.07dcd629.03f79d71b4cb0a89` |
+| `path` | `address` | the words of the address without the root, in hexadecimal without `0x`, such as `1d.0f65.07dcd629.03f79d71b4cb0a89` |
 | `address` | `word` of order 3 to 6 | the address, such as `1.7.127.32767` |
 | `children` | `word` of order 2 to 5, `first`, `limit` | the children from the mask `first` on, at most `limit` (64 by default), one on a line |
 | `windows` | `word` of order 2 to 6 | for each place from the most significant bit, the value of the n bits that start there for order n, one on a line |

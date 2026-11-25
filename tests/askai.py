@@ -20032,7 +20032,7 @@ def check_debruijn(binary, up, debruijn):
             # The output of an action is its result alone. A child, and the
             # parent of the child with the mask of the child.
             assert ok(ai, action="expand", word="0x0f65", order=4, mask=127) == "0x07dcd629\n"
-            assert ok(ai, action="expand", word="04653adf", order=5, mask=32767) == \
+            assert ok(ai, action="expand", word="0x04653adf", order=5, mask=32767) == \
                 "0x03f668bab7929c61\n"
             assert ok(ai, action="expand", word="0x3", order=2, mask=0) == "0x17\n"
             assert ok(ai, action="collapse", word="0x03f79d71b4cb0a89", order=6) == \
@@ -20070,6 +20070,12 @@ def check_debruijn(binary, up, debruijn):
                 "0\n1\n2\n5\n3\n7\n6\n4\n"
             values = ok(ai, action="windows", word="0x0218a392cd3d5dbf", order=6).split()
             assert sorted(map(int, values)) == list(range(64)), values
+            # A word or a mask is a number as strtoull() reads it with the
+            # base 0: hexadecimal after 0x, binary after 0b, octal after 0,
+            # else decimal.
+            for x in ("0x17", "0X17", "0b10111", "0B10111", "027", "23", "+23"):
+                assert ok(ai, action="children", word=x, order=3, limit=1) == "0x09af\n", x
+            assert ok(ai, action="path", address="0b1.07.0x7f.32767") == chain
 
             # Without order, the bit width of the word gives the order. An
             # action reads a rotation of a word as the word, and windows
@@ -20131,6 +20137,9 @@ def check_debruijn(binary, up, debruijn):
             assert ok(ai, action="ordered", order=6, first=4294967295) == ""
 
             no_word = "0x1e is no word of order 3."
+            no_number = ("The word argument must be a string of a 64-bit number: "
+                         "hexadecimal after 0x, binary after 0b, octal after 0, else "
+                         "decimal.")
             for arguments, text in (
                     ({"action": "expand", "word": "0x1e", "order": 3, "mask": 0}, no_word),
                     ({"action": "collapse", "word": "0x1e", "order": 3}, no_word),
@@ -20146,6 +20155,11 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "windows", "word": "0x1"},
                      "0x1 is no word of any order from 2 to 6."),
                     ({"action": "rank", "word": "0"}, "0x0 is no word of any order from 2 to 6."),
+                    ({"action": "children", "word": "17"}, "0x11 is no word of order 3."),
+                    ({"action": "windows", "word": "-1"},
+                     "0xffffffffffffffff is no word of order 6."),
+                    ({"action": "windows", "word": "0xffffffffffffffff"},
+                     "0xffffffffffffffff is no word of order 6."),
                     ({"action": "expand", "word": "0x0218a392cd3d5dbf", "mask": 0},
                      "0x0218a392cd3d5dbf is a word of order 6, and expand takes the orders "
                      "2 to 5."),
@@ -20184,12 +20198,14 @@ def check_debruijn(binary, up, debruijn):
                      "The order argument must be a whole number from 3 to 6 for address."),
                     ({"action": "expand", "word": "0x17", "order": 3, "mask": 8},
                      "The mask argument must be a whole number from 0 to 7 for order 3."),
-                    ({"action": "expand", "word": "xyz", "order": 3, "mask": 0},
-                     "The word argument must be a string of 1 to 16 hexadecimal digits, "
-                     "with or without 0x."),
+                    ({"action": "expand", "word": "xyz", "order": 3, "mask": 0}, no_number),
                     ({"action": "expand", "word": "0x" + "1" * 17, "order": 3, "mask": 0},
-                     "The word argument must be a string of 1 to 16 hexadecimal digits, "
-                     "with or without 0x."),
+                     no_number),
+                    ({"action": "children", "word": "09af"}, no_number),
+                    ({"action": "children", "word": "0x17 "}, no_number),
+                    ({"action": "children", "word": "0x17\0"}, no_number),
+                    ({"action": "children", "word": ""}, no_number),
+                    ({"action": "children", "word": 23}, no_number),
                     ({"action": "children", "word": "0x17", "order": 3, "limit": 0},
                      "first must be a whole number from 0, and limit a whole number from "
                      "1 to 32768."),
@@ -20202,14 +20218,18 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "path", "address": "1."}, None),
                     ({"action": "path", "address": "."}, None),
                     ({"action": "path", "address": ""}, None),
+                    ({"action": "path", "address": "1.010"}, None),
+                    ({"action": "path", "address": "1.7 "}, None),
+                    ({"action": "path", "address": "1.-1"}, None),
+                    ({"action": "path", "address": "0x"}, None),
                     ({"action": "expand", "word": "0x17", "order": 3, "mask": 0, "x": 1},
                      "x is not an argument of the tool.")):
                 got = refused(ai, **arguments)
                 assert got == text if text else got.startswith("The address argument"), \
                     (arguments, got)
     print("debruijn: mask tree, windows, numeric rank, unrank and ordered pages; the "
-          "order from the width, rotated words; refused words, orders, ranks, masks, "
-          "addresses and arguments: PASS")
+          "order from the width, rotated words, numbers in each base; refused words, "
+          "orders, ranks, masks, addresses and arguments: PASS")
 
 
 def check_godbolt(binary, up, godbolt):
