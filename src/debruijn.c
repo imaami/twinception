@@ -161,7 +161,8 @@ bool
 debruijn_valid (uint64_t word,
                 unsigned order)
 {
-	return !tree(word, order).error;
+	return order >= DEBRUIJN_MIN_ORDER && order <= DEBRUIJN_MAX_ORDER &&
+	       !tree(word, order).error;
 }
 
 /** Test a bit of a bitmap and set it; return whether it was set before. */
