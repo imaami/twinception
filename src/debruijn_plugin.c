@@ -230,16 +230,17 @@ debruijn_plugin_address (struct cstr_view  text,
 	return 0;
 }
 
-/* Returns the order of @p word from its bit width, or 0 if no order has that
- * width. A rotation of a word of order n is 2^n - n to 2^n bits wide: the n
- * zero bits of the word can be at its top, in whole or in part, or not.
+/* Returns the smallest order n from 2 to 6 with 2^n at least the bit width
+ * of @p word, or 0 for a word under 2 bits wide. A rotation of a word of
+ * order n is 2^n - n to 2^n bits wide: the n zero bits of the word can be at
+ * its top, in whole or in part, or not.
  */
 static unsigned
 debruijn_plugin_order (uint64_t word)
 {
 	unsigned const w = stdc_bit_width(word);
 	return (w > 32U) + (w > 16U) + (w > 8U)
-	     + (w >  4U) + (w >  2U) + (w > 1U);
+	     + (w >  4U) + (w >  1U) * 2U;
 }
 
 /* Refuses a word that is no rotation of a word of the order @p order, or of

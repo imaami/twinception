@@ -20141,7 +20141,9 @@ def check_debruijn(binary, up, debruijn):
                     ({"action": "collapse", "word": "0x17", "order": 4},
                      "0x0017 is no word of order 4."),
                     ({"action": "windows", "word": "0x1fffff"},
-                     "0x1fffff is no word of any order from 2 to 6."),
+                     "0x001fffff is no word of order 5."),
+                    ({"action": "windows", "word": "0x1"},
+                     "0x1 is no word of any order from 2 to 6."),
                     ({"action": "rank", "word": "0"}, "0x0 is no word of any order from 2 to 6."),
                     ({"action": "expand", "word": "0x0218a392cd3d5dbf", "mask": 0},
                      "0x0218a392cd3d5dbf is a word of order 6, and expand takes the orders "
